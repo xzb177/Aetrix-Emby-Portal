@@ -131,7 +131,7 @@ watch(
     <RouterView v-slot="{ Component }">
       <!-- max=12：key 按登录会话隔离，登出/换号后旧实例不再命中，攒多了自动淘汰最旧的 -->
       <KeepAlive :include="KEEP_ALIVE_VIEWS" :max="12">
-        <Transition name="page" mode="out-in">
+        <Transition name="page">
           <component :is="Component" :key="viewCacheKey" />
         </Transition>
       </KeepAlive>
@@ -152,18 +152,15 @@ watch(
 
 /* 顶栏是 sticky 的，占文档流；登录页全屏居中、播放页全黑无栏，两者已由 showChrome 排除 */
 
-/* ===== 页面转场：180ms 淡入淡出（只动 opacity）===== */
-.page-enter-active,
-.page-leave-active {
+/* ===== 页面转场：新页面立即挂载、180ms 淡入（只动 opacity）；旧页面无淡出，导航零等待 ===== */
+.page-enter-active {
   transition: opacity var(--au-dur-fast, 180ms) var(--au-ease, ease);
 }
-.page-enter-from,
-.page-leave-to {
+.page-enter-from {
   opacity: 0;
 }
 @media (prefers-reduced-motion: reduce) {
-  .page-enter-active,
-  .page-leave-active {
+  .page-enter-active {
     transition: none;
   }
 }
