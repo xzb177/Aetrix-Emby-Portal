@@ -489,6 +489,16 @@ jobs:
       - name: PG 兼容冒烟（建表 / 迁移方言 / 类型读写 / ilike）
         run: python scripts/smoke_test_pg_compat.py
 
+      # 优惠券单人限领并发回归：reserve() 的 INSERT ... SELECT 在 PG READ COMMITTED
+      # 下曾不是原子的，两笔并发下单会同时绕过 per_user_limit（已加行锁修复）。
+      # DATABASE_URL 由本 job 的 env 指向真 PG；无 PG 时测试自动跳过。
+      - name: 安装 pytest
+        run: pip install pytest
+
+      - name: 优惠券并发回归（真 PG 行锁）
+        timeout-minutes: 10
+        run: python -m pytest tests/test_coupons_reserve_race.py -q
+
   deploy-check:
     name: 后端 · 部署自检（真起服务 + 真发 HTTP）
     needs: frontend
