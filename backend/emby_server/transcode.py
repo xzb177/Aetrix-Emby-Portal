@@ -185,13 +185,14 @@ def _cache_mtime(entry_path: str) -> float:
         return 0.0
 
 
-def _active_cache_dirs() -> set[str]:
+def _active_cache_dirs() -> set[str] | None:
     """正被已注册转码会话服务中的缓存目录（abspath 集合）。
 
     LRU 淘汰必须跳过它们：``register_cache_session`` 登记后，客户端后续所有
     切片都从 ``info["dir"]`` 直读；删掉该目录会让播放中途 404/503。
     会话被回收（reap_idle/stop 摘除登记）后，目录才可淘汰。
-    任何异常内部吞掉返回空集——``_streaming()`` 能失败时不可能存在已注册会话。
+    任何异常内部吞掉返回 None（活跃会话未知）；调用方须按 fail-closed
+    跳过本轮淘汰——删目录不可逆，未知时宁可不删。
     """
     try:
         streaming = _streaming()
@@ -205,7 +206,7 @@ def _active_cache_dirs() -> set[str]:
                 dirs.add(os.path.abspath(d))
         return dirs
     except Exception:
-        return set()
+        return None
 
 
 def _enforce_cache_capacity(new_dir: str) -> None:
@@ -213,7 +214,8 @@ def _enforce_cache_capacity(new_dir: str) -> None:
 
     上限由 EMBY_TRANSCODE_CACHE_MAX_GB 控制（默认 10G）；超限时按最旧优先
     删除，直到回到上限 90%。跳过刚落盘的 new_dir，以及正被活跃会话服务中
-    的目录（删掉会导致播放中途 404/503）。全部异常内部吞掉。
+    的目录（删掉会导致播放中途 404/503）。活跃集合未知时整轮跳过淘汰
+    （fail-closed），删除前再逐个复查。全部异常内部吞掉。
     """
     try:
         max_gb = float(os.getenv("EMBY_TRANSCODE_CACHE_MAX_GB", "10") or 10)
@@ -235,8 +237,11 @@ def _enforce_cache_capacity(new_dir: str) -> None:
     if total <= limit:
         return
     # 最旧优先；跳过刚落盘的目录，以及正被活跃会话服务中的目录
-    # （删掉会导致该会话后续切片 404/503、播放中途断掉）
+    # （删掉会导致该会话后续切片 404/503、播放中途断掉）。
+    # fail-closed：活跃集合未知（None）时整轮跳过，宁可不删。
     active = _active_cache_dirs()
+    if active is None:
+        return
     victims = sorted(
         (
             p
@@ -250,6 +255,11 @@ def _enforce_cache_capacity(new_dir: str) -> None:
     for path in victims:
         if total <= limit * 0.9:
             break
+        # 删除前复查：快照与删除之间的窗口里可能有新会话登记复用了该目录
+        # （TOCTOU）；集合未知（None）或该目录已活跃时跳过，不删。
+        current_active = _active_cache_dirs()
+        if current_active is None or os.path.abspath(path) in current_active:
+            continue
         try:
             shutil.rmtree(path, ignore_errors=False)
         except OSError as exc:

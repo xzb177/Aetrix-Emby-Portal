@@ -88,13 +88,6 @@ def parse_thresholds(db: Session) -> list[int]:
     return sorted(days, reverse=True) or list(DEFAULT_THRESHOLDS)
 
 
-def _sent_kinds(db: Session, subscription_id: int) -> set[str]:
-    rows = db.query(models.SubscriptionReminder.kind).filter(
-        models.SubscriptionReminder.subscription_id == subscription_id
-    ).all()
-    return {r[0] for r in rows}
-
-
 _SCAN_BATCH = 500  # 键集分页扫描的每页订阅数
 
 
