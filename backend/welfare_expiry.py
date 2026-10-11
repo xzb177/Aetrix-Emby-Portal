@@ -22,6 +22,9 @@ def _safe_get_int(db: Session, key: str, default: int) -> int:
         return default
 
 
+_SCAN_BATCH = 500
+
+
 def check_welfare_expiry(db: Session) -> dict:
     """扫描已过期的公益用户。
 
@@ -29,34 +32,49 @@ def check_welfare_expiry(db: Session) -> dict:
     超过保留期的用户自动取消公益身份（is_welfare=False），
     并写入 channel="auto_expire" 的 WelfareGrantLog。
     单个用户处理失败时记录错误日志并继续处理下一个用户。
+    键集分页（id > last_id）而不是 offset：过期用户被置 is_welfare=False 后会从
+    结果集里消失，offset 继续往后跳就会整批漏扫后面的用户（与 vitality.daily_deduct
+    同一口径）。
     """
     now = datetime.now()
     grace = _safe_get_int(db, "welfare_grace_days", 7)
-    try:
-        users = db.query(models.WebUser).filter(models.WebUser.is_welfare == True).all()
-    except Exception as e:
-        logger.error("查询公益用户列表失败: %s", e, exc_info=True)
-        return {"checked": 0, "grace": [], "expired": []}
-
     grace_ids, expired_ids = [], []
-    for u in users:
+    checked = 0
+    last_id = 0
+    while True:
         try:
-            exp = u.welfare_expires_at
-            if exp is None or exp > now:
-                continue
-            expired_days = (now - exp).days
-            if expired_days < grace:
-                grace_ids.append(u.id)
-            else:
-                u.is_welfare = False
-                db.add(models.WelfareGrantLog(user_id=u.id, channel="auto_expire", days=0, granted_by=None))
-                db.commit()
-                expired_ids.append(u.id)
+            users = (
+                db.query(models.WebUser)
+                .filter(models.WebUser.is_welfare == True, models.WebUser.id > last_id)
+                .order_by(models.WebUser.id)
+                .limit(_SCAN_BATCH)
+                .all()
+            )
         except Exception as e:
-            db.rollback()
-            logger.error("处理公益过期用户 %s 失败: %s", getattr(u, "id", "?"), e, exc_info=True)
-            continue
-    return {"checked": len(users), "grace": grace_ids, "expired": expired_ids}
+            logger.error("查询公益用户列表失败: %s", e, exc_info=True)
+            return {"checked": checked, "grace": grace_ids, "expired": expired_ids}
+        if not users:
+            break
+        checked += len(users)
+        for u in users:
+            try:
+                exp = u.welfare_expires_at
+                if exp is None or exp > now:
+                    continue
+                expired_days = (now - exp).days
+                if expired_days < grace:
+                    grace_ids.append(u.id)
+                else:
+                    u.is_welfare = False
+                    db.add(models.WelfareGrantLog(user_id=u.id, channel="auto_expire", days=0, granted_by=None))
+                    db.commit()
+                    expired_ids.append(u.id)
+            except Exception as e:
+                db.rollback()
+                logger.error("处理公益过期用户 %s 失败: %s", getattr(u, "id", "?"), e, exc_info=True)
+                continue
+        last_id = users[-1].id
+    return {"checked": checked, "grace": grace_ids, "expired": expired_ids}
 
 
 def check_inactive_users(db: Session) -> dict:
@@ -67,34 +85,49 @@ def check_inactive_users(db: Session) -> dict:
     超过 inactive_days（welfare_inactive_days）未活跃的用户取消公益身份，
     并写入 channel="auto_inactive" 的 WelfareGrantLog。
     单个用户处理失败时记录错误日志并继续处理下一个用户。
+    键集分页（id > last_id）而不是 offset：禁用用户被置 is_welfare=False 后会从
+    结果集里消失，offset 继续往后跳就会整批漏扫后面的用户（与 vitality.daily_deduct
+    同一口径）。
     """
     now = datetime.now()
     inactive_days = _safe_get_int(db, "welfare_inactive_days", 30)
-    try:
-        users = db.query(models.WebUser).filter(models.WebUser.is_welfare == True).all()
-    except Exception as e:
-        logger.error("查询公益用户列表失败: %s", e, exc_info=True)
-        return {"checked": 0, "disabled": []}
-
     disabled_ids = []
-    for u in users:
+    checked = 0
+    last_id = 0
+    while True:
         try:
-            exp = u.welfare_expires_at
-            if exp is not None and exp <= now:
-                continue
-            last_active = u.last_login_at or u.welfare_granted_at
-            if last_active is None:
-                continue
-            if (now - last_active).days >= inactive_days:
-                u.is_welfare = False
-                db.add(models.WelfareGrantLog(user_id=u.id, channel="auto_inactive", days=0, granted_by=None))
-                db.commit()
-                disabled_ids.append(u.id)
+            users = (
+                db.query(models.WebUser)
+                .filter(models.WebUser.is_welfare == True, models.WebUser.id > last_id)
+                .order_by(models.WebUser.id)
+                .limit(_SCAN_BATCH)
+                .all()
+            )
         except Exception as e:
-            db.rollback()
-            logger.error("处理不活跃公益用户 %s 失败: %s", getattr(u, "id", "?"), e, exc_info=True)
-            continue
-    return {"checked": len(users), "disabled": disabled_ids}
+            logger.error("查询公益用户列表失败: %s", e, exc_info=True)
+            return {"checked": checked, "disabled": disabled_ids}
+        if not users:
+            break
+        checked += len(users)
+        for u in users:
+            try:
+                exp = u.welfare_expires_at
+                if exp is not None and exp <= now:
+                    continue
+                last_active = u.last_login_at or u.welfare_granted_at
+                if last_active is None:
+                    continue
+                if (now - last_active).days >= inactive_days:
+                    u.is_welfare = False
+                    db.add(models.WelfareGrantLog(user_id=u.id, channel="auto_inactive", days=0, granted_by=None))
+                    db.commit()
+                    disabled_ids.append(u.id)
+            except Exception as e:
+                db.rollback()
+                logger.error("处理不活跃公益用户 %s 失败: %s", getattr(u, "id", "?"), e, exc_info=True)
+                continue
+        last_id = users[-1].id
+    return {"checked": checked, "disabled": disabled_ids}
 _SCHEDULER_STARTED = False
 _SCHEDULER_LOCK = threading.Lock()
 
