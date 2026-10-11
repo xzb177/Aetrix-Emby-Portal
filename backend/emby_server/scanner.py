@@ -2796,6 +2796,10 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
     - 有 file_id 的文件跳过——file_id 是权威身份，没匹配上就是真新文件。
     """
     from types import SimpleNamespace
+    # 版本签名模块：函数顶部导入一次，_ver_sig 在热路径（逐文件×逐候选行）
+    # 被调用，import 语句虽走 sys.modules 缓存仍是无谓开销。
+    # （episode_versions 顶层只依赖 logging/os/typing，与 scanner 无循环导入）
+    from backend.emby_server import episode_versions as _ev
 
     def _norm(name: str) -> str:
         return "".join(
@@ -2807,7 +2811,6 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         # 版本签名（P1）：同集多版本（2160p / 1080p / H265…）不再互认为改名。
         # 纯字符串解析，零 IO。任一版本缺签名则退化为旧口径（相等），不误伤正常改名。
         try:
-            from backend.emby_server import episode_versions as _ev
             return _ev.version_signature(path)
         except Exception:  # noqa: BLE001
             return (None, None, None)

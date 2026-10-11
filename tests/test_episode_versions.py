@@ -129,8 +129,23 @@ def test_merge_is_idempotent(db):
     ev.merge_episode_versions(db, library_id=1)
     stats = ev.merge_episode_versions(db, library_id=1)
     db.commit()
-    assert stats["groups"] == 1  # 组还在（2 行可见）
-    assert stats["merged"] == 0  # 但无需再合并
+    # 已收敛的组（仅主记录未合并）直接跳过：第二轮无事可做，全零
+    assert stats == {"groups": 0, "merged": 0, "promoted": 0,
+                     "unmerged_orphans": 0}
+
+
+def test_merge_second_run_skips_converged_groups(db):
+    """N+1 回归：已合并的组第二轮不再被逐组查询（having 只计未合并行）。"""
+    _mk(db, id=1, guid="g1", height=720, file_path="/x/S01E01 - 720p.strm")
+    _mk(db, id=2, guid="g2", height=2160, file_path="/x/S01E01 - 2160p.strm")
+    first = ev.merge_episode_versions(db, library_id=1)
+    assert first["groups"] == 1 and first["merged"] == 1
+    db.commit()
+    # 第三轮、第四轮同样全零：收敛后每轮只有 1 条 GROUP BY，无逐组查询
+    for _ in range(2):
+        stats = ev.merge_episode_versions(db, library_id=1)
+        assert stats["groups"] == 0, f"已收敛组不应再进入逐组处理：{stats}"
+    db.commit()
 
 
 def test_merge_ignores_single_version(db):
@@ -231,3 +246,54 @@ def test_guid_held_by_other_sees_soft_deleted(db):
     db.commit()
     # 软删除的行仍占唯一键，必须算占用（否则 UPDATE 照样撞库）
     assert _sc._guid_held_by_other(db, "g2", 1) == 2
+
+
+# ---------- F2: _merge_once 纯孤儿回收也必须提交 ----------
+
+def test_merge_once_commits_orphan_recovery(tmp_path, monkeypatch):
+    """F2 回归：worker 路径 _merge_once 里，纯孤儿回收场景下
+    （groups=0 但 unmerged_orphans>0）也必须 commit。
+
+    旧代码只在 ev_stats["groups"] 为真时提交，孤儿解除合并的修改在
+    db.close() 时被回滚 → 该集永久不可见（所有列表出口都过滤 merged 行）。
+    """
+    import backend.database as _dbmod
+    from backend.emby_server import merge_versions_worker as _mvw
+    from datetime import datetime
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/ev_orphan.db",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(_dbmod, "SessionLocal", sessionmaker(bind=engine))
+
+    s = Session()
+    v1 = em.MediaItem(guid="g1", library_id=1, item_type="episode", name="S01E01",
+                      series_id=100, season_number=1, episode_number=1,
+                      file_path="/x/S01E01 - 720p.strm", height=720, size=100)
+    v2 = em.MediaItem(guid="g2", library_id=1, item_type="episode", name="S01E01",
+                      series_id=100, season_number=1, episode_number=1,
+                      file_path="/x/S01E01 - 2160p.strm", height=2160, size=200)
+    s.add_all([v1, v2])
+    s.commit()
+    v1_id = v1.id
+    ev.merge_episode_versions(s, library_id=1)
+    s.commit()
+    # 主记录（2160p）被删 → v1 成为孤儿；此时组内可见行只剩 1 行
+    s.get(em.MediaItem, v2.id).deleted_at = datetime.now()
+    s.commit()
+    s.close()
+
+    groups, merged = _mvw._merge_once()
+
+    check = Session()
+    try:
+        row = check.get(em.MediaItem, v1_id)
+        assert row.merged_into_id is None, (
+            "孤儿回收的修改必须被提交：旧代码 groups=0 时跳过 commit，"
+            "这里仍指向已删除的主记录")
+    finally:
+        check.close()
+        engine.dispose()

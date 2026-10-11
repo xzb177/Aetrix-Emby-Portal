@@ -293,12 +293,15 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
         counts.update({pid: n for pid, n in rows})
 
     # 3b) series 未播放集数（卡片「未看 N 集」角标用，一条分组 SQL，不逐卡查询）
+    # 单集多版本：被合并的版本不计入（与上面 total 计数、_item_dto 回退查询同口径，
+    # 否则同一集的多个版本会把角标虚高）。
     unplayed: dict[int, int] = {}
     if series_ids_all:
         rows = (
             db.query(em.MediaItem.series_id, func.count(em.MediaItem.id))
             .filter(em.MediaItem.series_id.in_(series_ids_all),
-                    em.MediaItem.item_type == "episode")
+                    em.MediaItem.item_type == "episode",
+                    em.MediaItem.merged_into_id.is_(None))
             .outerjoin(em.UserMediaData,
                        (em.UserMediaData.item_id == em.MediaItem.id)
                        & (em.UserMediaData.user_id == user_id))
@@ -695,7 +698,10 @@ def _child_count(item: em.MediaItem, db: Session) -> int | None:
                                   em.MediaItem.item_type == "episode",
                                   em.MediaItem.merged_into_id.is_(None))
         if item.item_type == "series"
-        else soft_delete.count_visible(db, em.MediaItem.parent_id == item.id)
+        # season 分支同样排除被合并的版本（与 series 分支同口径），
+        # 否则季封面的集数会把隐藏版本也算进去
+        else soft_delete.count_visible(db, em.MediaItem.parent_id == item.id,
+                                       em.MediaItem.merged_into_id.is_(None))
     ) or None
 
 
@@ -2099,6 +2105,15 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
 
     if ids:
         query = query.filter(em.MediaItem.guid.in_(ids))
+
+    if not ids:
+        # 单集多版本：被合并的版本不独立出现在列表里（与 get_episodes 同口径）。
+        # 注意只管 episode：电影/剧集的多版本仍走 dedup 层（历史行为，不动）。
+        # 按 guid 直接取条目时不过滤——版本切换/播放走直接取条目。
+        query = query.filter(
+            or_(em.MediaItem.item_type != "episode",
+                em.MediaItem.merged_into_id.is_(None))
+        )
 
     if parent_id:
         parent = db.query(em.MediaItem).filter(em.MediaItem.guid == parent_id).first()

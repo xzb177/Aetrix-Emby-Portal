@@ -270,7 +270,11 @@ def _merge_once() -> Tuple[int, int]:
             from backend.emby_server import episode_versions as _ev
             if _ev.EPISODE_VERSIONS_ENABLED:
                 ev_stats = _ev.merge_episode_versions(db)
-                if ev_stats.get("groups"):
+                # merge_episode_versions 自己不 commit：任何有实际写库的统计量
+                # （含纯孤儿回收：groups=0 但 unmerged_orphans>0）都要提交，
+                # 否则变更在 db.close() 时被回滚、孤儿永远恢复不了。
+                if any(ev_stats.get(k) for k in
+                       ("groups", "merged", "promoted", "unmerged_orphans")):
                     db.commit()
                     total_merged += ev_stats.get("merged", 0)
                     logger.info("单集多版本合并：%s", ev_stats)
@@ -292,9 +296,11 @@ def _merge_loop():
     except Exception as e:
         logger.warning("多版本合并首轮失败: %s", e)
     while not _stop_event.is_set():
-        _wake_event.clear()
-        # 等待：24h 超时 或 被 nudge() 唤醒（扫描完成）；stop 时退出
+        # 等待：24h 超时 或 被 nudge() 唤醒（扫描完成）；stop 时退出。
+        # 先 wait 后 clear：clear 放前面会吞掉 _merge_once 执行期间到达的
+        # nudge（下一轮循环开头被清掉），只能等 24h 兜底。
         _wake_event.wait(MERGE_VERSIONS_INTERVAL_SEC)
+        _wake_event.clear()
         if _stop_event.is_set():
             break
         try:
