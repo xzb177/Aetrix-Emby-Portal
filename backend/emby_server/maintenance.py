@@ -675,35 +675,8 @@ def strm_sig_refresh_tick(db=None) -> dict:
     return result
 
 
-def _strm_sig_refresh_step(result: dict, run_strm_refresh: bool) -> None:
-    """janitor_tick 中的 .strm 签名刷新步骤（抽出来以便单测）。
-
-    - run_strm_refresh=False（worker / EA）：它们的 /strm 是只读挂载，
-      刷新只能跑在 api 容器，这里记 skipped/not_api_role，不调 tick。
-    - True：调 strm_sig_refresh_tick；异常隔离，不影响整轮维护。
-    """
-    # .strm 签名刷新：只在 api 容器运行（worker / EA 容器的 /strm 是只读挂载，
-    # 写 .tmp 会 OSError；api 侧另有专属刷新线程，见 start_strm_sig_refresh_loop）。
-    # 内部按 TTL 推导的节奏节流；异常隔离，不影响整轮维护。
-    if run_strm_refresh:
-        try:
-            result["strm_sig_refresh"] = strm_sig_refresh_tick()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(".strm 签名刷新失败: %s", exc)
-            result["strm_sig_refresh"] = {"skipped": True, "reason": "error"}
-    else:
-        result["strm_sig_refresh"] = {"skipped": True, "reason": "not_api_role"}
-
-
-def janitor_tick(run_strm_refresh: bool = True) -> dict:
-    """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）
-
-    run_strm_refresh：是否执行 .strm 签名刷新。刷新必须写 /strm 文件
-    （.tmp + os.replace），只有 api 容器的挂载是 rw（worker / EA 都是只读），
-    所以 worker 与 EA 启动 janitor 时必须传 False（方案 1：签名刷新移到
-    api 容器运行，见 start_strm_sig_refresh_loop）；单体模式（未设
-    AETRIX_ROLE）保持默认 True，向后兼容。
-    """
+def janitor_tick() -> dict:
+    """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）"""
     from backend.database import SessionLocal
     from backend.emby_server import streaming
 
@@ -853,7 +826,12 @@ def janitor_tick(run_strm_refresh: bool = True) -> dict:
         result["idle_gc_done"] = bool(_idle_gc_if_quiet())
     except Exception as exc:  # noqa: BLE001
         logger.warning("空闲 GC 失败: %s", exc)
-    _strm_sig_refresh_step(result, run_strm_refresh)
+    # .strm 签名刷新（内部按 TTL 推导的节奏节流；异常隔离，不影响整轮维护）
+    try:
+        result["strm_sig_refresh"] = strm_sig_refresh_tick()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(".strm 签名刷新失败: %s", exc)
+        result["strm_sig_refresh"] = {"skipped": True, "reason": "error"}
     return result
 
 
@@ -896,12 +874,8 @@ def _idle_gc_if_quiet() -> int:
     return freed
 
 
-def start_janitor(interval_seconds: Optional[int] = None, *, run_strm_refresh: bool = True) -> bool:
-    """启动后台维护线程（同一进程只启动一次；daemon，随进程退出）
-
-    run_strm_refresh：见 janitor_tick。worker / EA 入口必须传 False
-    （它们的 /strm 是只读挂载，签名刷新只在 api 容器跑）。
-    """
+def start_janitor(interval_seconds: Optional[int] = None) -> bool:
+    """启动后台维护线程（同一进程只启动一次；daemon，随进程退出）"""
     global _JANITOR_STARTED
     interval = MAINTENANCE_INTERVAL if interval_seconds is None else max(30, interval_seconds)
     with _JANITOR_LOCK:
@@ -913,7 +887,7 @@ def start_janitor(interval_seconds: Optional[int] = None, *, run_strm_refresh: b
         while True:
             threading.Event().wait(interval)
             try:
-                summary = janitor_tick(run_strm_refresh=run_strm_refresh)
+                summary = janitor_tick()
                 if any(summary.values()):
                     logger.info("维护周期完成: %s", summary)
                 gc.collect()  # 2026-10-07 压力测试：强制回收防内存不回落
@@ -922,39 +896,6 @@ def start_janitor(interval_seconds: Optional[int] = None, *, run_strm_refresh: b
 
     threading.Thread(target=_loop, daemon=True, name="maintenance-janitor").start()
     logger.info("后台维护已启动（每 %s 秒）", interval)
-    return True
-
-
-_STRM_REFRESH_LOOP_STARTED = False
-_STRM_REFRESH_LOOP_LOCK = threading.Lock()
-
-
-def start_strm_sig_refresh_loop(interval_seconds: Optional[int] = None) -> bool:
-    """api 容器专用：后台线程周期刷新 .strm 签名（同一进程只启动一次；daemon，随进程退出）。
-
-    背景（方案 1）：签名刷新要写 /strm（.tmp + os.replace 原子替换），
-    worker / EA 容器的 /strm 是只读挂载，只有 api 容器是 rw；且 janitor
-    在 api role 下根本不启动，所以 api 需要这条专属轻量循环。
-    触发节奏走 MAINTENANCE_INTERVAL，实际节流由 strm_sig_refresh_tick
-    内部按 TTL 推导（不会刷太勤）。
-    """
-    global _STRM_REFRESH_LOOP_STARTED
-    interval = MAINTENANCE_INTERVAL if interval_seconds is None else max(60, interval_seconds)
-    with _STRM_REFRESH_LOOP_LOCK:
-        if _STRM_REFRESH_LOOP_STARTED:
-            return False
-        _STRM_REFRESH_LOOP_STARTED = True
-
-    def _loop() -> None:
-        while True:
-            threading.Event().wait(interval)
-            try:
-                strm_sig_refresh_tick()
-            except Exception as exc:  # noqa: BLE001 — tick 本身永不抛，这里是双保险
-                logger.warning(".strm 签名刷新循环异常: %s", exc)
-
-    threading.Thread(target=_loop, daemon=True, name="strm-sig-refresh").start()
-    logger.info(".strm 签名刷新已启动（api 容器专属，每 %s 秒触发，内部按 TTL 节流）", interval)
     return True
 
 

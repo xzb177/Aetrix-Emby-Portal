@@ -301,9 +301,7 @@ def main() -> int:
         from backend.emby_server import maintenance
         try:
             maintenance.run_startup_maintenance()
-            # worker 容器的 /strm 是只读挂载：签名刷新只在 api 容器跑
-            # （方案 1），这里显式关闭，避免只读 OSError 洪水与 api 重复刷新。
-            if maintenance.start_janitor(run_strm_refresh=False):
+            if maintenance.start_janitor():
                 started.append("janitor")
                 logger.info("✅ 维护任务已启动")
         except Exception as e:
