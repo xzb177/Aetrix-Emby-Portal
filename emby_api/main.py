@@ -149,9 +149,11 @@ async def lifespan(app: FastAPI):
 
     # 崩溃残留的收尾 + 长期运行的后台维护（扫描标志 / 过期会话 / 转码目录 / 字幕缓存）。
     # 同一套库可能同时被 EM 与多台 EA 打开，这里做的是幂等且带阈值判断的清理。
+    # EA 容器的 /strm 是只读挂载：签名刷新只在 api 容器跑（方案 1），这里显式关闭，
+    # 避免只读 OSError 洪水与 api 重复刷新。
     try:
         maintenance.run_startup_maintenance()
-        maintenance.start_janitor()
+        maintenance.start_janitor(run_strm_refresh=False)
     except Exception as exc:  # noqa: BLE001 — 维护失败不影响出流
         logger.warning("启动维护失败（可忽略）: %s", exc)
 
