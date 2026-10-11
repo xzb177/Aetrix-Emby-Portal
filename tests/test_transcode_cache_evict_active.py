@@ -98,3 +98,51 @@ def test_evict_prefers_idle_victim(cache_env, monkeypatch):
     assert os.path.isfile(os.path.join(old, "master.m3u8")), "活跃会话的目录必须保留"
     assert not os.path.exists(mid), "闲置的中间目录应被淘汰"
     assert os.path.isdir(new)
+
+
+def test_evict_fail_closed_on_registry_error(cache_env, monkeypatch):
+    """活跃集合未知（_streaming 异常）时整轮跳过淘汰：fail-closed。
+
+    回归 P1：旧实现异常时返回空集（fail-open），会被当成"无活跃会话"
+    把正在服务的目录删掉。未知时宁可不删。
+    """
+    old = _make_cache_entry(cache_env, "aaa_old", days_ago=3)
+    new = _make_cache_entry(cache_env, "zzz_new", days_ago=0)
+
+    def _boom():
+        raise RuntimeError("streaming 不可用")
+
+    monkeypatch.setattr(tc, "_streaming", _boom)
+
+    tc._enforce_cache_capacity(new)
+
+    assert os.path.isfile(os.path.join(old, "master.m3u8")), \
+        "活跃集合未知时不得删除任何缓存目录（fail-closed）"
+    assert os.path.isdir(new)
+
+
+def test_evict_rechecks_active_before_each_delete(cache_env, monkeypatch):
+    """删除前复查：快照之后才登记的会话，其目录不得被删（TOCTOU）。
+
+    第一次 _active_cache_dirs 调用（淘汰快照）返回空集，之后调用返回 {old}，
+    模拟"快照与删除之间的窗口里新会话复用了旧目录"。旧目录必须存活。
+    """
+    old = _make_cache_entry(cache_env, "aaa_old", days_ago=3)
+    new = _make_cache_entry(cache_env, "zzz_new", days_ago=0)
+    old_abs = os.path.abspath(old)
+
+    calls = {"n": 0}
+
+    def _flaky_active():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return set()  # 淘汰快照：当时没有活跃会话
+        return {old_abs}  # 删除前复查：已有会话登记复用该目录
+
+    monkeypatch.setattr(tc, "_active_cache_dirs", _flaky_active)
+
+    tc._enforce_cache_capacity(new)
+
+    assert os.path.isfile(os.path.join(old, "master.m3u8")), \
+        "删除前复查发现目录已活跃时不得删除（TOCTOU 已闭合）"
+    assert os.path.isdir(new)
