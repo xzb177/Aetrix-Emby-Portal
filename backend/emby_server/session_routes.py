@@ -15,7 +15,9 @@
 - **列表**：普通用户只能看到自己的会话，``is_staff`` 可看全站；
 - **结束**：只能结束自己的会话（``session.user_id == user.id``），``is_staff`` 可停任意；
 - **会话键**：客户端自带的 ``PlaySessionId`` 只有满足 ``^[A-Za-z0-9_.:-]{1,64}$`` 且没有被
-  别的用户占用时才复用，其余一律 ``s<随机>``（不会再出现可预测的键，也不会改写别人的会话）。
+  别的用户占用时才复用；其余按「用户 | 设备 | 条目」做 HMAC-SHA256（key=SECRET_KEY）
+  派生稳定键（同一设备同一条目的多次上报复用同一行，不再每报新建一行；不同设备键不同；
+  无服务端密钥不可预测，也不会改写别人的会话）。
 
 上报路由（``Sessions/Playing`` / ``Progress`` / ``Stopped``）保留 ``api.py`` 里的原处理函数：
 本模块只把 body 里的 ``PlaySessionId`` 换成归一化后的可信会话键，播放进度、已看状态等
@@ -23,10 +25,11 @@
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import inspect
 import logging
 import re
-import secrets
 from datetime import datetime
 
 from fastapi import Depends, HTTPException, Request
@@ -37,8 +40,9 @@ from backend.database import get_db
 from backend.emby_server import api as emby_api
 from backend.emby_server import compat_routes
 from backend.emby_server import models as em
-from backend.emby_server.auth import get_emby_user
+from backend.emby_server.auth import get_emby_user, parse_emby_authorization
 from backend.emby_server.streaming import stop_transcodes_for
+from backend.security import SECRET_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +69,37 @@ def _is_staff(user: models.WebUser) -> bool:
     return bool(getattr(user, "is_staff", False))
 
 
-def resolve_session_key(db: Session, user: models.WebUser, body: dict) -> str:
-    """解析本次上报使用的会话键
+def _device_id_of(request: Request) -> str:
+    """从请求头取设备 id（口径与 ``auth.issue_token`` 一致）"""
+    device_id = ""
+    try:
+        parsed = parse_emby_authorization(request.headers.get("X-Emby-Authorization") or "")
+        if parsed:
+            device_id = str(parsed.get("DeviceId") or "")
+    except Exception:  # noqa: BLE001 — 取不到设备 id 就回退，不影响会话键派生
+        device_id = ""
+    if not device_id:
+        try:
+            device_id = str(request.headers.get("X-Device-Id") or "")
+        except Exception:  # noqa: BLE001
+            device_id = ""
+    device_id = device_id.strip()[:100]
+    return device_id or "unknown-device"
 
-    - 客户端自带的 ``PlaySessionId``：只在本用户已有会话（或尚未被占用）时复用；
-    - 未带 / 带得不合法 / 属于别的用户：一律返回新的随机键。
+
+def resolve_session_key(db: Session, user: models.WebUser, body: dict,
+                        device_id: str = "") -> str:
+    """
+    解析并返回本次播放上报应当使用的会话键（PlaybackSession.session_key）。
+
+    策略：
+    1. 客户端自带合法且未被占用的 PlaySessionId 时直接复用（原样返回），保持与客户端/上游
+       播放会话的对应关系；若该键已被其它用户占用，则忽略并降级到第 2 步。
+    2. 否则按 “用户 | 设备 | 条目” 做 HMAC-SHA256（key = SECRET_KEY）派生稳定键：
+       - 同一设备、同一条目的多次上报（Playing / Progress / Stopped）会落到同一行，
+         不再每报新建一行，避免播放会话表被同一段播放刷爆；
+       - 不同设备派生出的键不同，因此同播检测（多设备并发播放）不受影响；
+       - 没有服务端密钥 SECRET_KEY 的一方无法预测该键，避免客户端伪造/碰撞。
     """
     raw = str(body.get("PlaySessionId") or "").strip()
     if raw and SESSION_KEY_RE.match(raw):
@@ -81,7 +111,14 @@ def resolve_session_key(db: Session, user: models.WebUser, body: dict) -> str:
         if owner is None or owner[0] == user.id:
             return raw
         logger.warning("忽略被其它用户占用的 PlaySessionId: %s", raw)
-    return f"s{secrets.token_urlsafe(16)}"
+
+    item_ref = str(body.get("ItemId") or "").strip()
+    dev = (device_id or "").strip() or "unknown-device"
+    msg = f"playback-session-v1|{user.id}|{dev}|{item_ref}"
+    digest = hmac.new(
+        SECRET_KEY.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256
+    ).hexdigest()[:32]
+    return f"s{digest}"
 
 
 # ==================== 新实现 ====================
@@ -178,7 +215,9 @@ def _install_report_routes(router, originals: dict) -> int:
                 # 就地改写：starlette 会缓存 Request.json() 的结果，
                 # 原处理函数随后读到的就是归一化后的 body。
                 # P0（2026-09-29）：sync DB helper 经 run_db 扔线程池，不卡事件循环。
-                body["PlaySessionId"] = await run_db(resolve_session_key, db, user, body)
+                # 设备 id 是纯同步的头解析，在 run_db 之前取好传进去。
+                body["PlaySessionId"] = await run_db(
+                    resolve_session_key, db, user, body, _device_id_of(request))
             # 原处理函数是同步 def（拆分后跑在线程池）时不 await，直接取返回值
             result = _original(request, user, db)
             if inspect.isawaitable(result):
