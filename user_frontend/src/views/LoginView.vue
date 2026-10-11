@@ -166,9 +166,9 @@ onMounted(() => {
 
 <template>
   <div class="auth-page">
-    <!-- 暗房影院：背景只有暖黑底 + 全局胶片颗粒，不再有光斑与网格 -->
+    <div class="auth-grid" aria-hidden="true"></div>
 
-    <div class="auth-card">
+    <div class="auth-column">
       <div class="auth-brand">
         <div class="brand-mark">
           <img decoding="async" v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
@@ -198,7 +198,7 @@ onMounted(() => {
         >
           注册
         </button>
-        <div class="mode-indicator" :class="{ right: mode === 'register' }"></div>
+        <div class="mode-indicator" :class="{ right: mode === 'register' }" aria-hidden="true"></div>
       </div>
 
       <!-- 登录表单 -->
@@ -237,11 +237,11 @@ onMounted(() => {
           </div>
         </label>
 
-        <p v-if="error" class="form-error">{{ error }}</p>
+        <p v-if="error" class="form-error" role="alert">{{ error }}</p>
 
         <CaptchaChallenge ref="captchaRef" action="login" @update:token="captchaToken = $event" />
 
-        <button type="submit" class="submit-btn" :disabled="loading">
+        <button type="submit" class="submit-btn" :disabled="loading || !loginForm.username || !loginForm.password">
           <span v-if="loading" class="spinner"></span>
           {{ loading ? '登录中…' : '登 录' }}
         </button>
@@ -334,11 +334,11 @@ onMounted(() => {
           </div>
         </label>
 
-        <p v-if="error" class="form-error">{{ error }}</p>
+        <p v-if="error" class="form-error" role="alert">{{ error }}</p>
 
         <CaptchaChallenge ref="captchaRef" action="register" @update:token="captchaToken = $event" />
 
-        <button type="submit" class="submit-btn" :disabled="loading || registrationClosed">
+        <button type="submit" class="submit-btn" :disabled="loading || registrationClosed || !registerForm.username || !registerForm.password || !registerForm.confirmPassword">
           <span v-if="loading" class="spinner"></span>
           {{ loading ? '注册中…' : '注 册' }}
         </button>
@@ -353,51 +353,96 @@ onMounted(() => {
 
 <style scoped>
 .auth-page {
+  box-sizing: border-box;
   min-height: 100vh;
+  min-height: 100svh;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1.5rem;
+  padding: 48px 24px;
   position: relative;
+  isolation: isolate;
   overflow: hidden;
   background: var(--au-bg);
 }
 
-.auth-card {
-  position: relative;
-  width: 100%;
-  max-width: 400px;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-lg);
-  padding: 2rem 1.75rem 1.5rem;
-  box-shadow: var(--au-shadow-2);
-  animation: cardIn var(--au-fade-in) var(--au-ease) both;
+/* 氛围光独立于内容层，不拦截表单交互。 */
+.auth-page::before,
+.auth-page::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  width: clamp(360px, 52vw, 720px);
+  height: clamp(360px, 52vw, 720px);
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
 }
 
-/* 从黑场淡入（只动透明度） */
-@keyframes cardIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+.auth-page::before {
+  top: -18%;
+  left: -20%;
+  background: radial-gradient(circle, rgba(34,211,238,0.5), transparent 60%);
+}
+
+.auth-page::after {
+  right: -20%;
+  bottom: -20%;
+  background: radial-gradient(circle, rgba(167,139,250,0.5), transparent 60%);
+}
+
+/* 单独遮罩网格，避免遮罩影响光晕、品牌或表单。 */
+.auth-grid {
+  --auth-grid-line: rgba(128, 128, 128, 0.14);
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, var(--auth-grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--auth-grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 30%, transparent 100%);
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 30%, transparent 100%);
+}
+
+@supports (color: color-mix(in srgb, black 70%, transparent)) {
+  .auth-grid {
+    --auth-grid-line: color-mix(in srgb, var(--au-border) 70%, transparent);
+  }
+}
+
+/* 无卡片底色、边框与阴影，内容直接浮于页面背景。 */
+.auth-column {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 400px;
+  min-width: 0;
+  animation: authColumnIn 0.4s cubic-bezier(0.22,1,0.36,1) both;
+}
+
+@keyframes authColumnIn {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
 }
 
 .auth-brand {
   text-align: center;
-  margin-bottom: 1.5rem;
+  margin-bottom: 2rem;
 }
 
 .brand-mark {
   width: 46px;
   height: 46px;
-  margin: 0 auto 0.875rem;
+  margin: 0 auto 1rem;
   border-radius: var(--au-r-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--au-primary);
+  color: var(--au-text-2);
 }
 
-/* 自定义 Logo：铺满方块并保留圆角（图片比图标宽窄不一，用 contain 不裁切） */
 .brand-mark img {
   width: 100%;
   height: 100%;
@@ -406,40 +451,46 @@ onMounted(() => {
 }
 
 .brand-title {
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   font-weight: 700;
-  letter-spacing: 0.28em;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--au-text);
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.625rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .brand-subtitle {
   font-size: 0.8125rem;
   color: var(--au-text-3);
   margin: 0;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
-/* 模式切换 */
+/* 胶囊模式切换 */
 .mode-switch {
+  box-sizing: border-box;
   position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr;
+  height: 44px;
   background: var(--au-surface);
   border: 1px solid var(--au-border);
-  border-radius: var(--au-r-md);
+  border-radius: var(--au-r-full);
   padding: 4px;
-  margin-bottom: 1.25rem;
+  margin-bottom: 1.5rem;
 }
 
 .mode-btn {
   position: relative;
   z-index: 1;
-  padding: 0.5rem;
+  min-width: 0;
+  padding: 0 0.75rem;
   border: none;
   background: transparent;
-  border-radius: 9px;
+  border-radius: var(--au-r-full);
+  font: inherit;
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--au-text-3);
@@ -458,8 +509,9 @@ onMounted(() => {
   left: 4px;
   width: calc(50% - 4px);
   height: calc(100% - 8px);
-  border-radius: 9px;
+  border-radius: var(--au-r-full);
   background: var(--au-primary);
+  pointer-events: none;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -467,39 +519,45 @@ onMounted(() => {
   transform: translateX(100%);
 }
 
-/* 表单 */
+/* 全胶囊表单 */
 .auth-form {
   display: flex;
   flex-direction: column;
-  gap: 0.875rem;
+  gap: 1rem;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .field-label {
+  padding: 0 20px;
   font-size: 0.8125rem;
   font-weight: 500;
+  line-height: 1.5;
   color: var(--au-text-3);
 }
 
 .optional {
+  margin-left: 0.25rem;
+  font-size: 0.75rem;
   font-style: normal;
+  font-weight: 400;
   color: var(--au-text-3);
 }
 
 .field-box {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
-  height: 44px;
-  /* 字段底色走输入框令牌：--au-overlay-soft 是「图片上的压暗层」，浅色主题下它是一块深灰 */
+  height: 52px;
   background: var(--au-input-bg);
   border: 1px solid var(--au-border);
-  border-radius: 11px;
-  padding: 0 0.75rem;
+  border-radius: var(--au-r-full);
+  padding: 0 20px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -510,8 +568,9 @@ onMounted(() => {
 
 .field-icon {
   color: var(--au-text-3);
-  margin-right: 0.5rem;
+  margin-right: 0.625rem;
   flex-shrink: 0;
+  transition: color 0.2s ease;
 }
 
 .field-box:focus-within .field-icon {
@@ -519,56 +578,74 @@ onMounted(() => {
 }
 
 .field-box input {
+  box-sizing: border-box;
   flex: 1;
   min-width: 0;
   height: 100%;
+  padding: 0;
   background: transparent;
   border: none;
   outline: none;
   color: var(--au-text);
-  font-size: 0.875rem;
+  font: inherit;
+  font-size: 0.9375rem;
 }
 
 .field-box input::placeholder {
   color: var(--au-text-3);
+  opacity: 1;
 }
 
 .eye-btn {
-  width: 28px;
-  height: 28px;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
+  margin-left: 0.375rem;
   background: transparent;
   border: none;
   color: var(--au-text-3);
   cursor: pointer;
-  border-radius: 7px;
+  border-radius: 50%;
+  transition: color 0.2s ease, background-color 0.2s ease;
 }
 
 .eye-btn:hover {
   color: var(--au-text-2);
+  background: var(--au-surface);
+}
+
+.mode-btn:focus-visible,
+.eye-btn:focus-visible,
+.submit-btn:focus-visible {
+  outline: 2px solid var(--au-border-focus);
+  outline-offset: 3px;
 }
 
 /* 密码强度 */
 .strength {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.625rem;
   margin-top: 0.125rem;
+  padding: 0 20px;
 }
 
 .strength-track {
   flex: 1;
   height: 3px;
   background: var(--au-surface-2);
-  border-radius: 2px;
+  border-radius: var(--au-r-full);
   overflow: hidden;
 }
 
 .strength-fill {
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--au-r-full);
   transition: width 0.3s ease, background 0.3s ease;
   width: 0;
 }
@@ -583,46 +660,52 @@ onMounted(() => {
   min-width: 16px;
 }
 
-/* 错误提示 */
+/* 错误与注册关闭提示保留独立语义色。 */
 .form-error {
   margin: 0;
-  padding: 0.5rem 0.75rem;
-  border-radius: 9px;
+  padding: 0.75rem 20px;
+  border-radius: 26px;
   background: var(--au-danger-soft);
   border: 1px solid var(--au-danger-border);
   color: var(--au-danger);
   font-size: 0.8125rem;
-  line-height: 1.4;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-/* 注册关闭提示：跟随暗房影院警告色 */
 .closed-notice {
   margin: 0;
-  padding: 0.75rem;
-  border-radius: 9px;
+  padding: 0.75rem 20px;
+  border-radius: 26px;
   background: var(--au-warning-soft, var(--au-danger-soft));
   border: 1px solid var(--au-warning-border, var(--au-danger-border));
   color: var(--au-warning, var(--au-danger));
   font-size: 0.875rem;
+  line-height: 1.5;
   text-align: center;
 }
 
-/* 提交按钮 */
+/* 渐变胶囊提交按钮 */
 .submit-btn {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  height: 46px;
+  width: 100%;
+  height: 52px;
+  flex-shrink: 0;
   margin-top: 0.25rem;
-  background: var(--au-primary);
+  padding: 0 20px;
+  background: var(--au-gradient);
   border: none;
-  border-radius: var(--au-r-md);
+  border-radius: var(--au-r-full);
   color: var(--au-on-primary);
+  font: inherit;
   font-size: 0.9375rem;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+  transition: transform 0.15s ease, filter 0.2s ease, color 0.2s ease;
 }
 
 .submit-btn:hover:not(:disabled) {
@@ -634,7 +717,8 @@ onMounted(() => {
 }
 
 .submit-btn:disabled {
-  opacity: 0.55;
+  background: var(--au-surface-3);
+  color: var(--au-text-3);
   cursor: not-allowed;
 }
 
@@ -647,23 +731,49 @@ onMounted(() => {
   animation: au-spin 0.8s linear infinite;
 }
 
+@keyframes au-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .auth-footnote {
-  margin: 1.25rem 0 0;
+  margin: 1.5rem 0 0;
   text-align: center;
   font-size: 0.8125rem;
   color: var(--au-text-3);
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
-@media (max-width: 480px) {
-  .auth-card {
-    padding: 1.5rem 1.25rem 1.25rem;
-    border-radius: var(--au-r-lg);
+@media (max-width: 767px) {
+  .auth-page {
+    padding-top: 32px;
+    padding-left: 24px;
+    padding-right: 24px;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .auth-column {
+    max-width: 100%;
+  }
+
+  .field-box,
+  .submit-btn {
+    height: 52px;
+  }
+
+  .field-box input {
+    font-size: 16px;
+  }
+
+  .auth-footnote {
+    margin-bottom: 24px;
   }
 }
 
-/* 手机：图标按钮的点按宽度补到 44px（高度由 mobile.css 统一补齐） */
-@media (max-width: 768px) {
-  .eye-btn { min-width: 44px; }
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 </style>
