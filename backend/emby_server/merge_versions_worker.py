@@ -53,7 +53,20 @@ MERGE_VERSIONS_BATCH_LIMIT = env_int(
 
 _merge_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
+_wake_event = threading.Event()  # nudge() 唤醒：扫描完成后提前跑一轮，不必等 24h
 _start_lock = threading.Lock()
+
+
+def nudge() -> None:
+    """唤醒合并 worker 提前跑一轮（best-effort）。
+
+    扫描器在每轮扫描结束时调用：同进程（worker）内即时生效；
+    跨进程/未启动时无影响，由周期调度兜底。零查询、永不抛异常。
+    """
+    try:
+        _wake_event.set()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +242,10 @@ def unmerge_all(db, primary_id: int) -> int:
 
 
 def _merge_once() -> Tuple[int, int]:
-    """跑一轮合并：返回 (组数, 合并条目数)。"""
+    """跑一轮合并：返回 (组数, 合并条目数)。
+
+    含两部分：电影/剧集级（按 tmdb_id）+ 单集级（按 series/season/episode）。
+    """
     from backend.database import SessionLocal
 
     groups = []
@@ -249,6 +265,18 @@ def _merge_once() -> Tuple[int, int]:
             except Exception as e:
                 db.rollback()
                 logger.warning("合并组失败: %s", e)
+        # 单集多版本（与电影/剧集同一套 merged_into_id 机制）
+        try:
+            from backend.emby_server import episode_versions as _ev
+            if _ev.EPISODE_VERSIONS_ENABLED:
+                ev_stats = _ev.merge_episode_versions(db)
+                if ev_stats.get("groups"):
+                    db.commit()
+                    total_merged += ev_stats.get("merged", 0)
+                    logger.info("单集多版本合并：%s", ev_stats)
+        except Exception as e:
+            db.rollback()
+            logger.warning("单集多版本合并失败: %s", e)
         return len(groups), total_merged
     finally:
         db.close()
@@ -263,10 +291,15 @@ def _merge_loop():
         logger.info("多版本合并首轮完成：%d 组，合并 %d 条", groups, merged)
     except Exception as e:
         logger.warning("多版本合并首轮失败: %s", e)
-    while not _stop_event.wait(MERGE_VERSIONS_INTERVAL_SEC):
+    while not _stop_event.is_set():
+        _wake_event.clear()
+        # 等待：24h 超时 或 被 nudge() 唤醒（扫描完成）；stop 时退出
+        _wake_event.wait(MERGE_VERSIONS_INTERVAL_SEC)
+        if _stop_event.is_set():
+            break
         try:
             groups, merged = _merge_once()
-            if groups:
+            if groups or merged:
                 logger.info("多版本合并完成：%d 组，合并 %d 条", groups, merged)
         except Exception as e:
             logger.warning("多版本合并失败: %s", e)
@@ -296,3 +329,4 @@ def start() -> bool:
 
 def stop():
     _stop_event.set()
+    _wake_event.set()  # 正在 wait 的循环立即醒来并退出
