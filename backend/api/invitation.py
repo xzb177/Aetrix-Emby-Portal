@@ -17,6 +17,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -68,6 +69,49 @@ def get_invite_config(db: Session) -> dict:
     }
 
 
+def _claim_invitation_use(db: Session, code: models.InvitationCode, now: datetime) -> bool:
+    """**原子占位**一次邀请码消耗：抢不到（已停用 / 过期 / 用尽）返回 False。
+
+    「先读 use_count 判断、再写 use_count + 1」是读-改-写：同一张 max_uses=2 的邀请码
+    被多个注册请求同时提交时，各方都读到 use_count < 2，于是都发奖、都写回 +1——
+    超发（发奖数超过 max_uses）且丢更新（写回互相覆盖）。与兑换码 claim_code 同一写法：
+    条件 UPDATE 把"是否可用"表达完整，只有仍然可用的那一行会被 +1，并发下第二个请求
+    拿到 rowcount=0，直接拒绝。**不提交**——占位与发奖必须同一个事务，调用方提交前
+    崩溃时两者一起回滚，不会留下"占了名额但没发奖"。
+    """
+    claimed = (
+        db.query(models.InvitationCode)
+        .filter(
+            models.InvitationCode.id == code.id,
+            models.InvitationCode.is_active.is_(True),
+            or_(
+                models.InvitationCode.expires_at.is_(None),
+                models.InvitationCode.expires_at > now,
+            ),
+            or_(
+                models.InvitationCode.max_uses.is_(None),
+                models.InvitationCode.max_uses == 0,
+                func.coalesce(models.InvitationCode.use_count, 0)
+                < models.InvitationCode.max_uses,
+            ),
+        )
+        .update(
+            {models.InvitationCode.use_count:
+             func.coalesce(models.InvitationCode.use_count, 0) + 1},
+            synchronize_session=False,
+        )
+    )
+    if not claimed:
+        return False
+    # 注意：不要在这里手写 `code.use_count += 1`。
+    # bulk UPDATE 用的是 synchronize_session=False，session 里的 code 实例保持干净；
+    # 一旦给它赋值就会变脏，后续 flush 会把这个"读时旧值 +1"的 stale 值写回 DB，
+    # 把并发下其它事务刚 +1 好的计数值覆盖掉——正是本修复要消灭的丢更新。
+    # 本函数之后没有任何逻辑再读 code.use_count（promotion.grant 只读 code.id），
+    # 所以实例保持未同步是最安全的。
+    return True
+
+
 def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dict:
     """注册流程调用：应用邀请码，双向发奖，写邀请记录。失败静默（不阻塞注册）"""
     config = get_invite_config(db)
@@ -110,6 +154,14 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
         logger.info("邀请关系已存在，跳过重复发奖: invitee=%s", user.id)
         return {"applied": False}
 
+    # P0 原子占位：把"读 use_count 判断 + 写 use_count+1"合成一次条件 UPDATE。
+    # 读检查（上面那行 max_uses 判断）只是快速失败；真正的名额以这一次 UPDATE 为准，
+    # 并发下抢不到名额的直接拒绝，不会走到后面的发奖。占位失败整体回滚，不留半截状态。
+    if not _claim_invitation_use(db, code, now):
+        db.rollback()
+        logger.info("邀请码名额并发占位失败: code=%s user=%s", code_str, user.id)
+        return {"applied": False}
+
     # 记录邀请关系
     record = models.InvitationRecord(
         inviter_id=inviter.id,
@@ -137,8 +189,6 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
         _ml.add_xp(db, inviter, 10, "invite", f"invite:{user.id}")
     except Exception:  # noqa: BLE001
         logger.exception("邀请经验累加失败: inviter=%s", inviter.id)
-
-    code.use_count = (code.use_count or 0) + 1
 
     # 推广奖励（v2.44.0）：独立开关、独立阈值，**默认关闭** → 这里返回 None，
     # 既有行为逐字不变。它不 flush：下面这一次 flush 会把邀请关系、双向积分、
