@@ -29,10 +29,6 @@ watch(
   },
   { flush: 'sync' },
 )
-
-function navigate(): void {
-  window.location.href = props.href
-}
 </script>
 
 <template>
@@ -40,10 +36,7 @@ function navigate(): void {
     class="media-card"
     :href="href"
     :title="title"
-    role="button"
     tabindex="0"
-    @keydown.enter="navigate"
-    @keydown.space.prevent="navigate"
   >
     <span class="media-frame">
       <span
@@ -84,8 +77,8 @@ function navigate(): void {
         </span>
 
         <span class="hover-actions">
-          <span class="hover-play" @click.stop>▶ 播放</span>
-          <span class="hover-detail" @click.stop>详情</span>
+          <span class="hover-play">▶ 播放</span>
+          <span class="hover-detail">详情</span>
         </span>
       </span>
     </span>
@@ -128,7 +121,7 @@ function navigate(): void {
 .media-card:focus-visible .media-frame {
   transform: translateY(-6px);
   border-color: var(--au-primary-border);
-  box-shadow: 0 0 24px rgba(232, 168, 74, 0.15);
+  box-shadow: 0 0 24px var(--au-primary-soft);
 }
 
 .media-card:focus-visible {
@@ -189,10 +182,10 @@ function navigate(): void {
   background:
     radial-gradient(
       ellipse at 50% 25%,
-      rgba(232, 168, 74, 0.12),
+      var(--au-primary-soft),
       transparent 70%
     ),
-    linear-gradient(160deg, #2d241d, var(--au-surface-2) 65%, #17130f);
+    linear-gradient(160deg, var(--au-surface-3), var(--au-surface-2) 65%, var(--au-surface));
 }
 
 .poster-type-title {
@@ -237,7 +230,7 @@ function navigate(): void {
   top: 8px;
   left: 8px;
   padding: 2px 8px;
-  color: #ffd75e;
+  color: var(--au-warning);
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: var(--au-r-full);
@@ -250,7 +243,7 @@ function navigate(): void {
   right: 8px;
   min-width: 20px;
   padding: 3px 7px;
-  color: #1a1205;
+  color: var(--au-on-primary);
   background: var(--au-primary);
   border-radius: var(--au-r-full);
 }
@@ -260,7 +253,7 @@ function navigate(): void {
   right: 8px;
   width: 20px;
   height: 20px;
-  color: #1a1205;
+  color: var(--au-on-primary);
   background: var(--au-success);
   border-radius: 50%;
   font-size: 12px;
@@ -324,7 +317,7 @@ function navigate(): void {
   overflow: hidden;
   padding: 2px 8px;
   color: var(--au-text-2);
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--au-on-image);
   border-radius: var(--au-r-full);
   font-size: 10px;
   line-height: 1.4;
@@ -357,12 +350,12 @@ function navigate(): void {
 }
 
 .hover-play {
-  color: #1a1205;
+  color: var(--au-on-primary);
   background: var(--au-primary);
 }
 
 .hover-detail {
-  color: #fff;
+  color: var(--au-text);
   background: transparent;
   border: 1px solid rgba(255, 255, 255, 0.4);
 }
