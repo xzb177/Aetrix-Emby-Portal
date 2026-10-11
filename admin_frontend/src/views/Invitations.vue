@@ -45,6 +45,8 @@ import {
 } from '@/api/admin'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import { useTableSelection } from '@/composables/useTableSelection'
+import type { RowKey } from '@/composables/useTableSelection'
 
 const loading = ref(false)
 /** 积分流水单独的 loading：翻页 / 切类型只刷流水，不让邀请记录表跟着闪 */
@@ -395,6 +397,53 @@ async function loadCodes() {
 const usesText = (row: InvitationCodeRow) =>
   row.max_uses ? `${row.use_count} / ${row.max_uses}` : `${row.use_count} / 不限`
 
+/**
+ * 邀请码表批量作废（v2.58）
+ * - 只动邀请码表这张 DataTable，邀请记录/积分流水两张表不动
+ * - 复用后端真正的批量接口 revokeInvitationCodes(ids)，一次调用，不循环
+ * - isRowSelectable：已作废（is_active=false）的行不可选
+ */
+const selection = useTableSelection()
+/** 模板 v-model 用的可写代理：嵌套 ref 在模板里不会自动解包 */
+const selectedKeys = computed<RowKey[]>({
+  get: () => selection.selectedKeys.value,
+  set: (v) => { selection.selectedKeys.value = v },
+})
+const bulkRevokeBusy = ref(false)
+
+function onCodesFilter() {
+  // 筛选变化清空选择：老选择对应的行可能已不在结果里。
+  // 不要在 loadCodes 内部清——批量作废后也要调 loadCodes()，在那里清会误清失败项
+  selection.clear()
+  loadCodes()
+}
+
+async function bulkRevokeCodes() {
+  const ids = selection.selectedKeys.value as number[]
+  if (!ids.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将作废 ${ids.length} 个邀请码？它们不能再被使用，但已产生的邀请关系不受影响。`,
+      '批量作废邀请码',
+      { type: 'warning', confirmButtonText: '作废', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  bulkRevokeBusy.value = true
+  try {
+    const res = await revokeInvitationCodes(ids)
+    // 作废后行变不可选（is_active=false），留着选择无意义，全清
+    selection.clear()
+    ElMessage.success(res.message || `已作废 ${ids.length} 个邀请码`)
+    await loadCodes()
+  } catch {
+    // 失败时不清空选择，保留可重试；错误由请求拦截器统一提示
+  } finally {
+    bulkRevokeBusy.value = false
+  }
+}
+
 // --- 批量生成 ---
 const genVisible = ref(false)
 const genLoading = ref(false)
@@ -652,11 +701,11 @@ onMounted(reloadAll)
             class="f-search"
             placeholder="搜邀请码"
             clearable
-            @change="loadCodes"
+            @change="onCodesFilter"
           >
             <template #prefix><Search :size="14" /></template>
           </el-input>
-          <el-select v-model="invState" class="f-select" placeholder="全部状态" clearable @change="loadCodes">
+          <el-select v-model="invState" class="f-select" placeholder="全部状态" clearable @change="onCodesFilter">
             <el-option v-for="st in invStates" :key="st.value" :label="st.label" :value="st.value" />
           </el-select>
         </div>
@@ -675,7 +724,13 @@ onMounted(reloadAll)
         :columns="invColumns"
         :loading="invLoading"
         empty="还没有邀请码"
+        selectable
+        v-model:selectedKeys="selectedKeys"
+        :is-row-selectable="(row: InvitationCodeRow) => row.is_active"
       >
+        <template #bulk-bar>
+          <el-button type="danger" plain size="small" :loading="bulkRevokeBusy" @click="bulkRevokeCodes">批量作废</el-button>
+        </template>
         <template #cell-code="{ row }">
           <span class="inv-code mono">{{ row.code }}</span>
         </template>
