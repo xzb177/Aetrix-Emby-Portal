@@ -10,11 +10,14 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
+from backend.emby_server.models import MediaItem
 from backend.integrations import branding as branding_capability
 
 logger = logging.getLogger(__name__)
@@ -26,6 +29,52 @@ site_router = APIRouter(prefix="/api/site", tags=["站点信息"])
 def get_branding(db: Session = Depends(get_db)):
     """站点名称 / Logo / 主题色 / SEO（公开）"""
     return branding_capability.public_info(db)
+
+
+# 登录页海报拼贴（公开）：服务端缓存 10 分钟，海报不常变
+_LOGIN_POSTERS_TTL = 600
+_login_posters_cache: dict = {"at": 0.0, "items": []}
+
+
+@site_router.get("/login-posters")
+def get_login_posters(db: Session = Depends(get_db)):
+    """登录页背景海报拼贴用到的条目（公开）
+
+    只返回 32 位 guid + 片名：图片 URL 由前端用已公开的
+    ``/emby/Items/{id}/Images/Primary`` 端点拼装，不暴露文件路径、
+    播放地址或任何用户数据。异常时返回空列表，前端回退静态背景。
+    """
+    now = time.monotonic()
+    if now - _login_posters_cache["at"] < _LOGIN_POSTERS_TTL:
+        return {"items": _login_posters_cache["items"]}
+    try:
+        rows = (
+            db.query(MediaItem.guid, MediaItem.name)
+            .filter(
+                MediaItem.deleted_at.is_(None),
+                MediaItem.item_type.in_(("movie", "series")),
+                or_(
+                    and_(
+                        MediaItem.poster_path.isnot(None),
+                        MediaItem.poster_path != "",
+                    ),
+                    and_(
+                        MediaItem.primary_image_url.isnot(None),
+                        MediaItem.primary_image_url != "",
+                    ),
+                ),
+            )
+            .order_by(func.random())
+            .limit(36)
+            .all()
+        )
+        items = [{"id": r.guid, "name": r.name} for r in rows]
+    except Exception:
+        logger.exception("login-posters 查询失败")
+        return {"items": []}
+    _login_posters_cache["at"] = now
+    _login_posters_cache["items"] = items
+    return {"items": items}
 
 
 __all__ = ["site_router"]
