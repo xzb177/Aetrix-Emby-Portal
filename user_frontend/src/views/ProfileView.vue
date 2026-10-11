@@ -355,6 +355,15 @@ function formatDate(iso?: string | null) {
     <!-- Hero 身份区：放映机票根式 -->
 <section class="hero">
   <div class="hero-ambiance" aria-hidden="true"></div>
+  <!-- 骨架屏：首屏加载时占位 -->
+  <div v-if="loading" class="hero-skeleton" aria-hidden="true">
+    <div class="au-skeleton sk-avatar"></div>
+    <div class="sk-hero-main">
+      <div class="au-skeleton sk-hero-name"></div>
+      <div class="au-skeleton sk-hero-meta"></div>
+    </div>
+  </div>
+  <div v-else>
   <div class="hero-top">
     <div class="hero-avatar" :class="{ 'is-vip': activeSub || user?.is_vip }">{{ initial }}</div>
     <div class="hero-main">
@@ -375,6 +384,7 @@ function formatDate(iso?: string | null) {
     <div class="hero-stat"><strong>{{ watchHours }}</strong><span>累计观看</span></div>
     <div class="hero-stat"><strong>{{ stats?.total_plays ?? '—' }}</strong><span>播放次数</span></div>
     <div class="hero-stat"><strong>{{ stats?.watched_items ?? '—' }}</strong><span>看过影片</span></div>
+  </div>
   </div>
 </section>
 
@@ -773,6 +783,40 @@ function formatDate(iso?: string | null) {
   background: linear-gradient(180deg, var(--au-surface), var(--au-bg-soft));
   border: 1px solid var(--au-border);
   padding: 28px 24px 0;
+}
+
+/* ===== 我的页骨架屏 ===== */
+.hero-skeleton {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 4px 0 20px;
+}
+.sk-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sk-hero-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sk-hero-name {
+  width: 40%;
+  max-width: 160px;
+  height: 24px;
+}
+.sk-hero-meta {
+  width: 70%;
+  height: 14px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-skeleton .au-skeleton {
+    animation: none;
+  }
 }
 
 /* 氛围光：radial 琥珀晕开 + feTurbulence 颗粒，深色专享 */

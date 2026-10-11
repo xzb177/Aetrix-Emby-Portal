@@ -437,7 +437,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     <div class="header-container">
       <RouterLink to="/" class="header-logo" @click="closeMenus">
         <span class="logo-mark">
-          <img decoding="async" v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
+          <img decoding="async" fetchpriority="high" v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
           <Clapperboard v-else :size="17" />
         </span>
         <span class="logo-text">{{ branding.site_name }}</span>

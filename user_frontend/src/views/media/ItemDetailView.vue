@@ -354,9 +354,29 @@ onMounted(loadItem)
         返回
       </button>
 
-      <div v-if="loading" class="loading">
-        <Film :size="24" class="pulse" />
-        <p>加载中…</p>
+      <div v-if="loading" class="detail-skeleton" aria-hidden="true">
+        <div class="skeleton-head">
+          <div class="au-skeleton skeleton-poster"></div>
+          <div class="skeleton-info">
+            <div class="au-skeleton skeleton-title"></div>
+            <div class="skeleton-meta">
+              <div v-for="n in 5" :key="n" class="au-skeleton skeleton-meta-item"></div>
+            </div>
+            <div class="skeleton-genres">
+              <div v-for="n in 3" :key="n" class="au-skeleton skeleton-genre"></div>
+            </div>
+            <div class="skeleton-overview">
+              <div v-for="n in 5" :key="n" class="au-skeleton skeleton-line"></div>
+            </div>
+          </div>
+        </div>
+        <div class="skeleton-episodes">
+          <div class="au-skeleton skeleton-section-title"></div>
+          <div class="au-skeleton skeleton-season"></div>
+          <div class="skeleton-episode-grid">
+            <div v-for="n in 12" :key="n" class="au-skeleton skeleton-episode"></div>
+          </div>
+        </div>
       </div>
 
       <div v-else-if="loadError" class="load-error">
@@ -368,7 +388,7 @@ onMounted(loadItem)
       <template v-else-if="item">
         <div class="head-grid">
           <div class="poster-col">
-            <img decoding="async" v-if="poster && posterOk" :src="poster" :alt="item.Name" class="poster" @error="posterOk = false" />
+            <img decoding="async" fetchpriority="high" v-if="poster && posterOk" :src="poster" :alt="item.Name" class="poster" @error="posterOk = false" />
             <div v-else class="poster placeholder">
               <span class="placeholder-char">{{ titleChar }}</span>
             </div>
@@ -597,7 +617,7 @@ onMounted(loadItem)
   background-position: center 20%;
   /* 与首页 Hero 同一口径：背景图是一块「银幕」，两套主题都是暗的、底边硬切，
      海报压在切口上（白日模式下不再渐隐成一片发灰的奶油色） */
-  background-color: #11100e;
+  background-color: var(--au-always-dark-soft);
   pointer-events: none;
 }
 
@@ -628,7 +648,7 @@ onMounted(loadItem)
 }
 
 .back-btn:hover {
-  color: #f3ede4;
+  color: var(--au-always-light);
 }
 
 .loading {
@@ -642,6 +662,107 @@ onMounted(loadItem)
 
 .pulse {
   animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ===== 详情页骨架屏 ===== */
+.detail-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--au-space-lg, 24px);
+  width: 100%;
+  min-width: 0;
+}
+.skeleton-head {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: start;
+  gap: 32px;
+}
+.skeleton-poster {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+}
+.skeleton-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.skeleton-title {
+  width: 75%;
+  max-width: 420px;
+  height: 36px;
+}
+.skeleton-meta,
+.skeleton-genres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.skeleton-meta-item {
+  width: 52px;
+  height: 16px;
+}
+.skeleton-meta-item:nth-child(2) { width: 76px; }
+.skeleton-meta-item:nth-child(3) { width: 44px; }
+.skeleton-genre {
+  width: 64px;
+  height: 24px;
+  border-radius: var(--au-r-full, 999px);
+}
+.skeleton-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skeleton-line {
+  width: 100%;
+  height: 16px;
+}
+.skeleton-line:nth-child(3) { width: 92%; }
+.skeleton-line:last-child { width: 65%; }
+.skeleton-episodes {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.skeleton-section-title {
+  width: 120px;
+  height: 26px;
+}
+.skeleton-season {
+  width: 140px;
+  height: 36px;
+}
+.skeleton-episode-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 12px;
+}
+.skeleton-episode {
+  height: 44px;
+}
+@media (max-width: 600px) {
+  .skeleton-head {
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 20px 16px;
+  }
+  .skeleton-title {
+    width: 90%;
+    height: 28px;
+  }
+  .skeleton-overview {
+    grid-column: 1 / -1;
+  }
+  .skeleton-episode-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .detail-skeleton .au-skeleton {
+    animation: none;
+  }
 }
 
 @keyframes pulse {

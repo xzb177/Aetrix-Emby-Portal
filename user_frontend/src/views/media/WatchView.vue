@@ -973,7 +973,7 @@ onBeforeUnmount(() => {
   max-height: calc(100vh - 0px);
   /* 故意不用令牌：视频上下留边必须是纯黑，和画面本身一致，
      跟主题的蓝调背景混在一起反而会看出一条“框” */
-  background: #000;
+  background: var(--au-video-black);
   touch-action: pan-x pan-y;
 }
 

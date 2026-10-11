@@ -394,7 +394,24 @@ onBeforeUnmount(stopPayPoll)
   <div class="au-page wallet-view">
     <div class="wallet-ambiance" aria-hidden="true"></div>
 
+    <!-- 骨架屏：首屏加载时占位 -->
+    <div v-if="loading && !hasLoaded" class="wallet-skeleton" aria-hidden="true">
+      <div class="au-skeleton sk-balance-num"></div>
+      <div class="au-skeleton sk-balance-note"></div>
+      <div class="au-skeleton sk-redeem"></div>
+      <div class="sk-list">
+        <div v-for="n in 5" :key="n" class="sk-row">
+          <div class="au-skeleton sk-row-icon"></div>
+          <div class="sk-row-text">
+            <div class="au-skeleton sk-row-title"></div>
+            <div class="au-skeleton sk-row-sub"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 余额主卡：大数字 + 签到态 + 活力值（核销已独立成区） -->
+    <template v-else>
     <section class="balance-hero au-anim-up">
       <div class="bh-main">
         <span class="balance-label">
@@ -595,6 +612,7 @@ onBeforeUnmount(stopPayPoll)
         </div>
       </div>
     </section>
+    </template>
 
     <!-- 活力值续活弹窗 -->
     <div v-if="showRechargeVitality" class="result-mask" @click.self="showRechargeVitality = false">
@@ -631,6 +649,64 @@ onBeforeUnmount(stopPayPoll)
   pointer-events: none;
   z-index: 0;
   background: radial-gradient(ellipse 55% 35% at 20% 0%, rgba(232,168,74,0.09), transparent 70%);
+}
+
+/* ===== 钱包页骨架屏 ===== */
+.wallet-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--au-space-md, 16px);
+  position: relative;
+  z-index: 1;
+}
+.sk-balance-num {
+  width: 45%;
+  max-width: 220px;
+  height: 44px;
+}
+.sk-balance-note {
+  width: 80%;
+  height: 14px;
+}
+.sk-redeem {
+  width: 100%;
+  height: 52px;
+  border-radius: var(--au-r-md, 12px);
+}
+.sk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sk-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.sk-row-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sk-row-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sk-row-title {
+  width: 60%;
+  height: 14px;
+}
+.sk-row-sub {
+  width: 40%;
+  height: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wallet-skeleton .au-skeleton {
+    animation: none;
+  }
 }
 
 .wallet-ambiance::after {

@@ -770,6 +770,7 @@ onActivated(() => {
         alt=""
         aria-hidden="true"
         decoding="async"
+        fetchpriority="high"
         @error="heroImageFailed = true"
       />
       <div class="hero-shade" aria-hidden="true"></div>
@@ -1166,7 +1167,7 @@ onActivated(() => {
   overflow: hidden;
   color: var(--au-text);
   /* 没有背景图时：一块暖黑渐变，像放映前的幕布（写死暗色，不跟主题） */
-  background: linear-gradient(180deg, #171412 0%, #11100e 60%, #0c0a09 100%);
+  background: linear-gradient(180deg, var(--au-always-dark-surface) 0%, var(--au-always-dark-soft) 60%, var(--au-always-dark) 100%);
   animation: hero-fade var(--au-fade-in) var(--au-ease) both;
 }
 
@@ -1275,7 +1276,7 @@ onActivated(() => {
   font-weight: 700;
   line-height: 1.15;
   letter-spacing: 0.02em;
-  color: #f3ede4;
+  color: var(--au-always-light);
   text-shadow: 0 2px 18px rgba(0, 0, 0, 0.5);
   text-wrap: balance;
   overflow-wrap: anywhere;
@@ -1315,7 +1316,7 @@ onActivated(() => {
   padding: 0 1.5rem;
   font-size: 0.9375rem;
   font-weight: 600;
-  color: #f3ede4;
+  color: var(--au-always-light);
   text-decoration: none;
   white-space: nowrap;
   background: transparent;
@@ -1328,9 +1329,9 @@ onActivated(() => {
 }
 
 .hero-cta-outline:hover {
-  background: #f3ede4;
-  border-color: #f3ede4;
-  color: #14100c;
+  background: var(--au-always-light);
+  border-color: var(--au-always-light);
+  color: var(--au-always-dark);
 }
 
 .hero-cta-outline:active {
@@ -1831,7 +1832,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   padding: 0.75rem;
   background:
     radial-gradient(120% 80% at 50% 0%, rgba(232, 168, 74, 0.12), transparent 60%),
-    #1e1a17;
+    var(--au-always-dark-surface-2);
   text-align: center;
 }
 
@@ -1844,7 +1845,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   font-size: 0.9375rem;
   font-weight: 600;
   line-height: 1.35;
-  color: #f3ede4;
+  color: var(--au-always-light);
   overflow-wrap: anywhere;
 }
 

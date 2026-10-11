@@ -19,6 +19,8 @@ import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
 import { branding } from '@/composables/useBranding'
 import { getRegisterConfig } from '@/api/user'
 import { tgApi } from '@/api/tg'
+import { fetchLoginPosters, type LoginPoster } from '@/api/site'
+import PosterCollage from '@/components/ui/PosterCollage.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -149,6 +151,9 @@ async function handleRegister() {
 
 let restoreLoginTheme: (() => void) | null = null
 
+// 海报拼贴背景：延迟到浏览器空闲时拉取，不阻塞表单首屏渲染
+const loginPosters = ref<LoginPoster[]>([])
+
 onMounted(() => {
   // 修复1：登录页强制深色（品牌第一屏不跟随系统，用户决策 2026-10-11）。
   // 只动 DOM，不写 localStorage；离开时恢复进入前的主题，不影响用户偏好。
@@ -179,6 +184,17 @@ onMounted(() => {
     registerForm.inviteCode = String(route.query.invite)
     toast.info(`已收到好友邀请码，注册成功后双方都得积分奖励`, 5000)
   }
+
+  // 海报拼贴背景：requestIdleCallback 延迟拉取（降级 setTimeout 800ms），
+  // 失败时静默降级（loginPosters 为空 → 不渲染拼贴，回退现有背景）
+  const loadPosters = () => {
+    fetchLoginPosters().then((items) => {
+      if (items.length > 0) loginPosters.value = items
+    }).catch(() => { /* 静默降级 */ })
+  }
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback
+  if (typeof ric === 'function') ric(loadPosters)
+  else setTimeout(loadPosters, 800)
 })
 
 onUnmounted(() => {
@@ -190,12 +206,13 @@ onUnmounted(() => {
 
 <template>
   <div class="auth-page">
+    <PosterCollage v-if="loginPosters.length > 0" :posters="loginPosters" />
     <div class="auth-grid" aria-hidden="true"></div>
 
     <div class="auth-column">
       <div class="auth-brand">
         <div class="brand-mark">
-          <img decoding="async" v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
+          <img decoding="async" loading="lazy" v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
           <Clapperboard v-else :size="22" />
         </div>
         <h1 class="brand-title">{{ branding.site_name }}</h1>
@@ -390,30 +407,7 @@ onUnmounted(() => {
   background: var(--au-bg);
 }
 
-/* 氛围光独立于内容层，不拦截表单交互。 */
-.auth-page::before,
-.auth-page::after {
-  content: '';
-  position: absolute;
-  z-index: 0;
-  width: clamp(360px, 52vw, 720px);
-  height: clamp(360px, 52vw, 720px);
-  border-radius: 50%;
-  filter: blur(80px);
-  pointer-events: none;
-}
-
-.auth-page::before {
-  top: -18%;
-  left: -20%;
-  background: radial-gradient(circle, rgba(34,211,238,0.5), transparent 60%);
-}
-
-.auth-page::after {
-  right: -20%;
-  bottom: -20%;
-  background: radial-gradient(circle, rgba(167,139,250,0.5), transparent 60%);
-}
+/* 氛围光已移除：海报拼贴本身提供视觉丰富度（2026-10-11，品牌收敛到琥珀）。 */
 
 /* 单独遮罩网格，避免遮罩影响光晕、品牌或表单。 */
 .auth-grid {
