@@ -1419,6 +1419,7 @@ class LotteryRound(Base):
     start_at = Column(DateTime, default=datetime.now)
     draw_at = Column(DateTime, nullable=True)      # 计划开奖时间，空=手动开奖
     drawn_at = Column(DateTime, nullable=True)
+    drawing_at = Column(DateTime, nullable=True)  # 认领开奖时间戳：drawing 僵尸回收用
     max_participants = Column(Integer, nullable=False, default=0)  # 0=不限
     # 抽奖类型：button=按钮抽奖 / password=口令抽奖
     lottery_type = Column(String(20), nullable=False, default='button', server_default='button')
