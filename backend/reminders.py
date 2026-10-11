@@ -115,6 +115,21 @@ def _record(db: Session, item: dict, kind: str) -> bool:
         return False
 
 
+def _retract(db: Session, subscription_id: int, kind: str) -> None:
+    """撤掉本轮占用的去重占位（发送失败时调用）。
+
+    ``_record`` 先占位是防并发双发的必要代价（多实例/任务重叠时靠唯一约束只发一次），
+    但发送真失败时必须把这行撤掉：否则「失败」被永久记成「已发送」，
+    下一轮 ``collect_due`` 看到 kind 已在 sent 里就再也不会补发，一条续费提醒就此丢失。
+    唯一约束保证这行就是本轮自己占的位，删它不会误删别人的记录。
+    """
+    db.query(models.SubscriptionReminder).filter(
+        models.SubscriptionReminder.subscription_id == subscription_id,
+        models.SubscriptionReminder.kind == kind,
+    ).delete(synchronize_session=False)  # 行是刚 commit 的，不在 session 缓存里纠缠
+    db.commit()
+
+
 def _site_url(db: Session) -> str:
     return (_config_value(db, "site_url") or "").strip().rstrip("/")
 
@@ -240,16 +255,24 @@ async def run_expiry_reminders(db: Session, now: Optional[datetime] = None,
             continue
         title, content = _reminder_text(db, item)
         try:
-            await notify_admin_event(
+            sent_result = await notify_admin_event(
                 event_type=AdminEvent.SUBSCRIPTION_EXPIRED if is_expired
                 else AdminEvent.SUBSCRIPTION_REMINDER,
                 user_id=item["user_id"],
                 title=title,
                 content=content,
                 related_id=item["subscription_id"],
-            )
+            ) or {}
         except Exception as exc:  # noqa: BLE001 — 一条失败不能带走整轮
             logger.warning("到期提醒发送失败（订阅 %s）: %s", item["subscription_id"], exc)
+            _retract(db, item["subscription_id"], item["kind"])  # 撤掉占位，下一轮还能补发
+            result["failed"] += 1
+            continue
+        # 模式 B —— 静默失败：所有渠道都返回 False（InAppChannel.send 内部吞掉异常，从不抛），
+        # 消息其实没写进站内信表，不能记成「已发送」。部分渠道成功即算成功，不撤记录。
+        if not any(sent_result.values()):
+            logger.warning("到期提醒全部渠道发送失败（订阅 %s）: %s", item["subscription_id"], sent_result)
+            _retract(db, item["subscription_id"], item["kind"])  # 同上，撤掉占位等下一轮重试
             result["failed"] += 1
             continue
         if is_expired:
