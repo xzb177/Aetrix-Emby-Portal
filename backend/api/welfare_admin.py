@@ -613,8 +613,25 @@ def draw_lottery_round(
     db.commit()
     if not claimed:
         raise HTTPException(status_code=409, detail="该活动正在开奖或已开奖，请刷新后查看")
-    winners = lottery_module.draw_round(db, round_id)
-    distribute_result = lottery_module.distribute_round(db, round_id)
+    try:
+        winners = lottery_module.draw_round(db, round_id)
+        distribute_result = lottery_module.distribute_round(db, round_id)
+    except Exception as exc:
+        db.rollback()
+        # 与自动开奖 run_due_draws 同一口径：认领后开奖失败要把状态打回 open，
+        # 否则轮次永久卡死在 drawing（调度只扫 open、管理后台拒绝非 open 重试）。
+        # draw 已提交（status=done）但 distribute 失败时 WHERE drawing 匹配不到行，
+        # 不会误删开奖结果；未发放的中奖者走上面的 done+pending 路径补发。
+        try:
+            db.execute(
+                text("UPDATE lottery_rounds SET status='open' WHERE id=:id AND status='drawing'"),
+                {"id": round_id},
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("群抽奖手动开奖状态回滚失败 round_id=%s", round_id)
+        raise HTTPException(status_code=500, detail=f"开奖失败：{exc}，已恢复为可重试状态")
     # 手动开奖也要通知到群（与自动开奖 run_due_draws 同一口径）。
     # 之前漏掉了 notify 调用，导致管理后台点"开奖"后群里收不到开奖公告。
     # 通知失败不影响开奖结果，只记日志。
