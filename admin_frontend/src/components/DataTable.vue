@@ -13,6 +13,7 @@
  * 页面只需要声明列 + 提供 `#cell-<key>` 插槽（桌面与手机共用同一份渲染逻辑）。
  */
 import { computed } from 'vue'
+import type { CheckboxValueType } from 'element-plus'
 import { AlertTriangle, Inbox, RotateCw } from 'lucide-vue-next'
 import { EmptyState } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -245,7 +246,7 @@ function onPageChange(page: number) {
             :model-value="allChecked"
             :indeterminate="isIndeterminate"
             @click.stop
-            @change="(v: boolean) => toggleSelectAll(v)"
+            @change="(v: CheckboxValueType) => toggleSelectAll(v === true)"
           />
         </template>
         <template #default="{ row, $index }">
@@ -253,7 +254,7 @@ function onPageChange(page: number) {
             :model-value="isSelected(keyOf(row, $index))"
             :disabled="!rowSelectable(row)"
             @click.stop
-            @change="(v: boolean) => setRowChecked(row, $index, v)"
+            @change="(v: CheckboxValueType) => setRowChecked(row, $index, v === true)"
           />
         </template>
       </el-table-column>
@@ -339,7 +340,7 @@ function onPageChange(page: number) {
               :model-value="isSelected(keyOf(row, index))"
               :disabled="!rowSelectable(row)"
               aria-label="选择该行"
-              @change="(v: boolean) => setRowChecked(row, index, v)"
+              @change="(v: CheckboxValueType) => setRowChecked(row, index, v === true)"
             />
           </div>
 
