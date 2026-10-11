@@ -40,11 +40,10 @@ def snapshot(db: Session) -> dict:
     counts = line_stats.snapshot()
     counter = counts[0] if counts else {}
     cdn_state = _cdn_state(db)
+    # 缓存状态只取一次：hits/misses 与 hit_rate 必须来自同一次快照，避免并发下对不上
     cache_state = _cache_state(db)
-
-    cache = _cache_state(db)
-    hits = int(cache.get("hits") or 0)
-    misses = int(cache.get("misses") or 0)
+    hits = int(cache_state.get("hits") or 0)
+    misses = int(cache_state.get("misses") or 0)
 
     return {
         "path": "relay",
