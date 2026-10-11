@@ -8,7 +8,7 @@
  *
  * 登录成功后自动跳转 ?redirect= 指定的受保护页面。
  */
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
@@ -147,7 +147,25 @@ async function handleRegister() {
   }
 }
 
+let restoreLoginTheme: (() => void) | null = null
+
 onMounted(() => {
+  // 修复1：登录页强制深色（品牌第一屏不跟随系统，用户决策 2026-10-11）。
+  // 只动 DOM，不写 localStorage；离开时恢复进入前的主题，不影响用户偏好。
+  const htmlEl = document.documentElement
+  const hadLight = htmlEl.getAttribute('data-theme') === 'light'
+  const metaEl = document.querySelector('meta[name="theme-color"]')
+  const prevMeta = metaEl?.getAttribute('content') ?? null
+  if (hadLight) {
+    htmlEl.removeAttribute('data-theme')
+    // 深色暗房工具栏色（与 useTheme.ts applyTheme 口径一致）
+    metaEl?.setAttribute('content', '#0c0a09')
+  }
+  restoreLoginTheme = () => {
+    if (hadLight) htmlEl.setAttribute('data-theme', 'light')
+    if (metaEl && prevMeta !== null) metaEl.setAttribute('content', prevMeta)
+  }
+
   // 拉取注册页开关（公开接口）：按管理端配置显示/隐藏邀请码输入框、是否关闭注册
   getRegisterConfig().then((cfg) => {
     // code 模式已下线：后端/此处统一归一为 open
@@ -161,6 +179,12 @@ onMounted(() => {
     registerForm.inviteCode = String(route.query.invite)
     toast.info(`已收到好友邀请码，注册成功后双方都得积分奖励`, 5000)
   }
+})
+
+onUnmounted(() => {
+  // 恢复进入登录页前的主题（修复1 的收尾）
+  restoreLoginTheme?.()
+  restoreLoginTheme = null
 })
 </script>
 
@@ -497,6 +521,10 @@ onMounted(() => {
   color: var(--au-text-3);
   cursor: pointer;
   transition: color 0.2s ease;
+  /* 修复3：文字在胶囊内严格水平垂直居中（移动端 UA 默认样式可能偏） */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .mode-btn.active {
@@ -595,6 +623,16 @@ onMounted(() => {
 .field-box input::placeholder {
   color: var(--au-text-3);
   opacity: 1;
+}
+
+/* 修复2：浏览器自动填充（Chrome/Safari）默认底色会盖住输入框，强制跟随主题 */
+.field-box input:-webkit-autofill,
+.field-box input:-webkit-autofill:hover,
+.field-box input:-webkit-autofill:focus,
+.field-box input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--au-text);
+  -webkit-box-shadow: 0 0 0 1000px var(--au-input-bg) inset;
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 .eye-btn {
