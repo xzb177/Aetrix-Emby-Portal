@@ -102,7 +102,9 @@ async def lifespan(app: FastAPI):
     # 启动时
     logger.info("🚀 Aetrix Portal 正在启动...")
     # 后端拆分（v2.41.0）：AETRIX_ROLE 环境变量
-    # - "api"：只跑 HTTP，不启动任何后台任务（后台任务由 aetrix-worker 进程负责）
+    # - "api"：只跑 HTTP，不启动任何后台任务（后台任务由 aetrix-worker 进程负责）；
+    #   唯一例外是 .strm 签名刷新：刷新必须写 /strm，只有 api 容器的挂载是 rw
+    #   （worker/EA 只读），所以刷新线程只能跑在 api（见 maintenance.start_strm_sig_refresh_loop）
     # - "worker"：不应走 main.py（用 backend/worker.py），这里做保护性提示
     # - 未设置：单体模式，保持原有行为（向后兼容）
     _role = os.getenv("AETRIX_ROLE", "").strip().lower()
@@ -111,6 +113,13 @@ async def lifespan(app: FastAPI):
         logger.warning("AETRIX_ROLE=worker 但走了 main.py 入口：后台任务不会在这里启动，请用 backend/worker.py")
     if _is_api_role:
         logger.info("AETRIX_ROLE=api：API 模式，后台任务由 worker 进程负责，这里跳过启动")
+        # .strm 签名刷新例外（见上）：只有 api 容器的 /strm 是 rw 挂载，
+        # worker/EA 的 janitor 已显式跳过刷新，这里起专属线程。失败不影响启动。
+        try:
+            if maintenance.start_strm_sig_refresh_loop():
+                logger.info(".strm 签名刷新线程已启动（api 容器专属）")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动 .strm 签名刷新失败（可忽略）: {e}")
 
     logger.info(f"📊 数据库类型: {DATABASE_TYPE}")
     # Hardware transcode detection (Linger): one-frame self-test at startup
