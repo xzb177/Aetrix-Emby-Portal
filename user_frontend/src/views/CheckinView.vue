@@ -9,11 +9,13 @@ import {
 } from 'lucide-vue-next'
 import { checkinApi, pointsApi, type CheckinStatus, type PointsLogEntry } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
+import { useHaptics } from '@/composables/useHaptics'
 import { tgApi, type TgBindStatus } from '@/api/tg'
 import TgBindCard from '@/components/TgBindCard.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
+const haptics = useHaptics()
 
 const loading = ref(true)
 const loadError = ref(false)
@@ -95,6 +97,7 @@ async function handleSign() {
     const res = await checkinApi.doCheckin()
     justSigned.value = true
     toast.success(res.message || `签到成功 +${res.points_awarded}`)
+    haptics.success()
     await load()
     setTimeout(() => { justSigned.value = false }, 2600)
   } catch (err: any) {

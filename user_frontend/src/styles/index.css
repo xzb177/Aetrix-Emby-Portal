@@ -475,6 +475,18 @@ body.theme-transition *::after {
   border-color: var(--au-primary-border);
 }
 
+/* 按压反馈工具类（opt-in）
+   只给真实可点、且自身没有任何 :active 反馈的元素挂载。
+   已有 :active 的组件（Button / IconButton / MediaCard / ListItem / Chip /
+   SegmentedControl / StatCard 等）不要叠加，避免双重缩放。
+   reduced-motion 下 --neo-scale-press=1、--neo-duration-fast=0ms，自动无缩放。 */
+.au-pressable {
+  transition: transform var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+}
+.au-pressable:active {
+  transform: scale(var(--neo-scale-press, 0.98));
+}
+
 /* ========================================
    加载状态
    ======================================== */

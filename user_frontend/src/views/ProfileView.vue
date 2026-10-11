@@ -24,6 +24,7 @@ import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { tgApi, type TgBindStatus } from '@/api/tg'
 import TgBindModal from '@/components/TgBindModal.vue'
 import { useToast } from '@/composables/useToast'
+import { useHaptics } from '@/composables/useHaptics'
 import { useClipboard } from '@/composables/useClipboard'
 import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -36,6 +37,7 @@ import {
 const router = useRouter()
 const userStore = useUserStore()
 const toast = useToast()
+const haptics = useHaptics()
 const { copy } = useClipboard()
 
 const user = computed(() => userStore.user as AuthUser | null)
@@ -55,6 +57,7 @@ const activeSub = computed(() => subscriptions.value.find(s => s.status === 'act
 
 async function cancelSubscription(s: MySubscription) {
   if (!confirm(`确定要终止「${s.plan_name}」订阅吗？终止后立即失效，不可恢复。`)) return
+  haptics.confirm()
   cancellingSub.value = s.id
   try {
     const res = await subscriptionApi.cancel(s.id)
