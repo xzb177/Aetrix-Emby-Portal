@@ -30,6 +30,9 @@ import type { AdminUserRow, DeviceRow, UserDetail, UserGrantCard, UserGrants } f
 import { useAuthStore } from '@/stores/auth'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import { useTableSelection } from '@/composables/useTableSelection'
+import { runBulkOperation, bulkSummaryText, BULK_LIMIT } from '@/utils/runBulkOperation'
+import type { RowKey } from '@/composables/useTableSelection'
 
 const auth = useAuthStore()
 /** 手机上详情抽屉铺满整屏（620px 抽屉在 390px 屏幕上会被裁掉） */
@@ -97,13 +100,65 @@ watch(search, () => {
 })
 onBeforeUnmount(() => clearTimeout(searchTimer))
 
+/**
+ * 行选择 + 批量禁用/启用（v2.58）
+ * - 选择是纯前端状态，筛选提交时清空；翻页保留（后端分页、每页重新勾选成本高）
+ * - 自己和超管（is_staff）不可勾选：批量操作不该动到自己或超管账号
+ */
+const selection = useTableSelection()
+/**
+ * 模板 v-model 用的可写代理：`selection.selectedKeys` 是对象里的嵌套 ref，
+ * 模板不会自动解包（直接绑会把 Ref 对象传给子组件导致类型错乱），包一层 computed 最稳。
+ */
+const selectedKeys = computed<RowKey[]>({
+  get: () => selection.selectedKeys.value,
+  set: (v) => { selection.selectedKeys.value = v },
+})
+const bulkBusy = ref(false)
+
+/** 行可勾选规则：排除自己和超管 */
+function isRowSelectable(row: AdminUserRow): boolean {
+  return row.id !== auth.admin?.id && !row.is_staff
+}
+
+async function bulkToggleActive(enable: boolean) {
+  const keys = selection.selectedKeys.value as number[]
+  if (!keys.length) return
+  if (keys.length > BULK_LIMIT) {
+    ElMessage.warning(`一次最多操作 ${BULK_LIMIT} 项`)
+    return
+  }
+  const action = enable ? '启用' : '禁用'
+  try {
+    await ElMessageBox.confirm(
+      `确定要${action}选中的 ${keys.length} 个用户吗？`,
+      `批量${action}`,
+      { type: 'warning', confirmButtonText: `确认${action}`, cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  bulkBusy.value = true
+  try {
+    const summary = await runBulkOperation(keys, (id) => updateUser(id, { is_active: enable }))
+    // 失败项保留选中态，方便直接重试；成功项已在 load() 后刷新，无需保留
+    selection.selectedKeys.value = summary.failedKeys as RowKey[]
+    ElMessage[summary.failed ? 'warning' : 'success'](bulkSummaryText(summary, action))
+    await load()
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
 function applyFilter() {
-  clearTimeout(searchTimer)
+  // 筛选提交清空选择：老选择对应的行可能已不在结果里
+  selection.clear()
   page.value = 0
   load()
 }
 
 function resetFilters() {
+  selection.clear()
   search.value = ''
   activeFilter.value = ''
   channelFilter.value = ''
@@ -671,7 +726,14 @@ function fmtCount(n: number | null | undefined): string {
 
       <DataTable :rows="users" :columns="columns" :loading="loading" empty="没有匹配的用户"
         :pagination="{ total, page: page + 1, pageSize: PAGE_SIZE }"
+        selectable
+        v-model:selectedKeys="selectedKeys"
+        :is-row-selectable="isRowSelectable"
         @page-change="(p: number) => { page = p - 1; load() }">
+        <template #bulk-bar>
+          <el-button type="warning" plain size="small" :loading="bulkBusy" @click="bulkToggleActive(false)">批量禁用</el-button>
+          <el-button type="success" plain size="small" :loading="bulkBusy" @click="bulkToggleActive(true)">批量启用</el-button>
+        </template>
         <template #empty>
           <EmptyState
             v-if="loadError"

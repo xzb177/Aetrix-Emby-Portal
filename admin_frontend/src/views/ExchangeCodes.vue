@@ -3,11 +3,14 @@
  * 兑换码管理：批量生成（积分/订阅/折扣型）、停用/启用、使用审计
  */
 import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Gift, Plus, RefreshCw, Search, CheckCircle2, Ticket } from 'lucide-vue-next'
 import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import { useTableSelection } from '@/composables/useTableSelection'
+import { runBulkOperation, bulkSummaryText, BULK_LIMIT } from '@/utils/runBulkOperation'
+import type { RowKey } from '@/composables/useTableSelection'
 
 /** 手机卡片：兑换码为标题，奖励/使用/状态/有效期做键值行 */
 const columns: DataColumn[] = [
@@ -115,6 +118,53 @@ async function toggleCode(row: ExchangeCodeRow) {
   }
 }
 
+/**
+ * 兑换码批量停用（v2.58）
+ * - DataTable 绑的是前端筛选后的 visibleCodes，选择基于它
+ * - 兑换码没有删除接口，只有停用：循环调 updateExchangeCode(id, false)，并发 2
+ */
+const selection = useTableSelection()
+/** 模板 v-model 用的可写代理：嵌套 ref 在模板里不会自动解包 */
+const selectedKeys = computed<RowKey[]>({
+  get: () => selection.selectedKeys.value,
+  set: (v) => { selection.selectedKeys.value = v },
+})
+const bulkBusy = ref(false)
+
+async function bulkDeactivate() {
+  const ids = selection.selectedKeys.value as number[]
+  if (!ids.length) return
+  if (ids.length > BULK_LIMIT) {
+    ElMessage.warning(`一次最多操作 ${BULK_LIMIT} 项`)
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定要停用选中的 ${ids.length} 个兑换码吗？停用后这些码不能再被使用。`,
+      '批量停用',
+      { type: 'warning', confirmButtonText: '确认停用', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  bulkBusy.value = true
+  try {
+    const summary = await runBulkOperation(ids, (id) => updateExchangeCode(id, false), { concurrency: 2 })
+    // 失败项保留选中态可重试
+    selection.selectedKeys.value = summary.failedKeys as RowKey[]
+    ElMessage[summary.failed ? 'warning' : 'success'](bulkSummaryText(summary, '停用'))
+    // 列表是前端筛选（visibleCodes），直接更新本地状态即可，无需重拉（重拉会重置滚动）
+    for (const id of ids) {
+      if (!summary.failedKeys.includes(id)) {
+        const row = codes.value.find((c) => c.id === id)
+        if (row) row.is_active = false
+      }
+    }
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
 const rewardText = (row: ExchangeCodeRow) =>
   row.type === 'points'
     ? `${row.points_value} 积分`
@@ -149,9 +199,16 @@ const appliedKeyword = ref('')
 let keywordTimer: ReturnType<typeof setTimeout> | undefined
 watch(keyword, (kw) => {
   clearTimeout(keywordTimer)
-  // 清空是立即的：点 × 或「清空筛选」不用等
-  if (!kw.trim()) appliedKeyword.value = ''
-  else keywordTimer = setTimeout(() => { appliedKeyword.value = kw }, 250)
+  // 清空是立即的：点 × 或「清空筛选」不用等；筛选关键字变化时清掉旧选择
+  if (!kw.trim()) {
+    appliedKeyword.value = ''
+    selection.clear()
+  } else {
+    keywordTimer = setTimeout(() => {
+      appliedKeyword.value = kw
+      selection.clear()
+    }, 250)
+  }
 })
 onUnmounted(() => clearTimeout(keywordTimer))
 const typeFilter = ref<'' | 'points' | 'subscription' | 'discount'>('')
@@ -170,6 +227,7 @@ const visibleCodes = computed(() => {
 })
 
 function resetFilters() {
+  selection.clear()
   keyword.value = ''
   typeFilter.value = ''
   statusFilter.value = ''
@@ -238,8 +296,14 @@ onMounted(load)
         :error="loadError"
         :empty="hasFilter ? '没有匹配的兑换码' : '还没有兑换码'"
         :empty-description="hasFilter ? '换个关键字或清空筛选。' : '点右上角「批量生成」做第一批。'"
+        selectable
+        v-model:selectedKeys="selectedKeys"
+        :is-row-selectable="(row: ExchangeCodeRow) => row.is_active"
         @retry="load"
       >
+        <template #bulk-bar>
+          <el-button type="warning" plain size="small" :loading="bulkBusy" @click="bulkDeactivate">批量停用</el-button>
+        </template>
         <template #cell-code="{ row }">
           <span class="mono code">{{ row.code }}</span>
         </template>

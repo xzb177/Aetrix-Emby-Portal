@@ -15,6 +15,9 @@ import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import { useQueryFilter } from '@/composables/useQueryFilter'
+import { useTableSelection } from '@/composables/useTableSelection'
+import { runBulkOperation, bulkSummaryText, BULK_LIMIT } from '@/utils/runBulkOperation'
+import type { RowKey } from '@/composables/useTableSelection'
 
 /** 手机卡片：商品名为标题，金额/状态/用户/时间做键值行，订单号收进详情（太长会撑满一行） */
 const columns: DataColumn[] = [
@@ -112,9 +115,121 @@ function refreshAll() {
   load()
 }
 
+/**
+ * 行选择 + 批量标记已支付 / 批量退款（v2.58）
+ * - 选择是纯前端状态，筛选提交时清空；翻页保留
+ * - rowKey 是 order_id（string）
+ */
+const selection = useTableSelection()
+/** 模板 v-model 用的可写代理：嵌套 ref 在模板里不会自动解包，直接绑 selection.selectedKeys 会传 Ref 对象 */
+const selectedKeys = computed<RowKey[]>({
+  get: () => selection.selectedKeys.value,
+  set: (v) => { selection.selectedKeys.value = v },
+})
+const bulkBusy = ref(false)
+
+function selectedOrders(): OrderRow[] {
+  const ids = new Set(selection.selectedKeys.value as string[])
+  return orders.value.filter((o) => ids.has(o.order_id))
+}
+
+/** 批量标记已支付：只对选中里的待支付订单执行 */
+async function bulkMarkPaid() {
+  if (bulkBusy.value) return
+  const pendings = selectedOrders().filter((o) => o.status === 'pending')
+  if (!pendings.length) {
+    ElMessage.warning('所选项中没有待支付订单')
+    return
+  }
+  if (pendings.length > BULK_LIMIT) {
+    ElMessage.warning(`一次最多操作 ${BULK_LIMIT} 项`)
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认将 ${pendings.length} 个待支付订单标记为已支付并履约？用于线下收款或回调丢失的补单。`,
+      '批量人工补单',
+      { type: 'warning', confirmButtonText: '确认补单', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  if (bulkBusy.value) return
+  bulkBusy.value = true
+  try {
+    const summary = await runBulkOperation(pendings.map((o) => o.order_id), (id) => markOrderPaid(id))
+    // 失败保留选中态可重试
+    selection.selectedKeys.value = summary.failedKeys as RowKey[]
+    ElMessage[summary.failed ? 'warning' : 'success'](bulkSummaryText(summary, '补单'))
+    // 不调 afterAction：它会关掉订单详情弹窗；这里直接刷新三块数据
+    load()
+    loadStats()
+    loadRecords()
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
+/** 批量退款对话框：独立于单条退款对话框（refundDialog），字段结构一致，现有单条逻辑不动 */
+const batchRefundDialog = ref({
+  visible: false,
+  ids: [] as string[],
+  reason: '',
+  revoke: true,
+  allowNegative: false,
+  reverseRebate: true,
+})
+
+function openBatchRefund() {
+  if (bulkBusy.value) return
+  const ids = selectedOrders().filter((o) => o.status === 'paid').map((o) => o.order_id)
+  if (!ids.length) {
+    ElMessage.warning('所选项中没有已支付订单')
+    return
+  }
+  if (ids.length > BULK_LIMIT) {
+    ElMessage.warning(`一次最多操作 ${BULK_LIMIT} 项`)
+    return
+  }
+  batchRefundDialog.value = {
+    visible: true, ids, reason: '', revoke: true, allowNegative: false, reverseRebate: true,
+  }
+}
+
+async function submitBatchRefund() {
+  if (bulkBusy.value) return
+  const d = batchRefundDialog.value
+  if (!d.reason.trim()) {
+    ElMessage.warning('请填写退款原因（对账与客服复盘都要用）')
+    return
+  }
+  bulkBusy.value = true
+  try {
+    // 逐条执行退款，失败的不自动重试
+    const summary = await runBulkOperation(
+      d.ids,
+      (id) => refundOrder(id, {
+        reason: d.reason.trim(),
+        revoke_entitlement: d.revoke,
+        allow_negative: d.allowNegative,
+        reverse_rebate: d.reverseRebate,
+      }),
+      { concurrency: 2 },
+    )
+    selection.selectedKeys.value = summary.failedKeys as RowKey[]
+    ElMessage[summary.failed ? 'warning' : 'success'](bulkSummaryText(summary, '退款'))
+    batchRefundDialog.value.visible = false
+    load()
+    loadStats()
+    loadRecords()
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
 /** 筛选变化 / 点「查询」：回到第一页再拉 */
 function query() {
-  clearTimeout(searchTimer)
+  selection.clear()
   page.value = 1
   load()
 }
@@ -132,6 +247,7 @@ onBeforeUnmount(() => clearTimeout(searchTimer))
 const hasFilter = computed(() => !!(statusFilter.value || kindFilter.value || search.value))
 
 function resetFilters() {
+  selection.clear()
   statusFilter.value = ''
   kindFilter.value = ''
   search.value = ''
@@ -377,10 +493,16 @@ onMounted(() => {
         :columns="columns"
         :loading="loading"
         row-key="order_id"
+        selectable
+        v-model:selectedKeys="selectedKeys"
         empty="暂无订单"
         :pagination="{ total, page, pageSize }"
         @page-change="(p: number) => { page = p; load() }"
       >
+        <template #bulk-bar>
+          <el-button type="success" plain size="small" :loading="bulkBusy" @click="bulkMarkPaid">批量标记已支付</el-button>
+          <el-button type="danger" plain size="small" :loading="bulkBusy" @click="openBatchRefund">批量退款</el-button>
+        </template>
         <template #cell-item_name="{ row }">{{ row.item_name }}</template>
 
         <template #cell-order_id="{ row }">
@@ -486,6 +608,40 @@ onMounted(() => {
       <template #footer>
         <el-button @click="refundDialog.visible = false">取消</el-button>
         <el-button type="danger" :loading="refundSaving" @click="submitRefund">确认退款</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量退款：字段与单条退款对话框一致（原因必填 + 三个开关），单条逻辑不动 -->
+    <el-dialog v-model="batchRefundDialog.visible" :title="`批量退款（${batchRefundDialog.ids.length} 个订单）`" width="min(480px, 92vw)">
+      <p class="muted" style="margin-bottom: 12px">将逐条执行退款，失败的不自动重试。</p>
+      <el-form label-position="top">
+        <el-form-item label="退款原因（必填，写入审计）">
+          <el-input v-model="batchRefundDialog.reason" placeholder="例如：线下重复付款 / 用户申请退款" />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="batchRefundDialog.revoke">
+            回滚权益（充值扣回积分 / 订阅回滚天数）
+          </el-checkbox>
+          <p class="opt-hint">
+            取消勾选则只记账、不动权益——用于客服补偿这类"钱退了但东西留着"的场景。
+          </p>
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="batchRefundDialog.reverseRebate">同时撤回邀请人返利</el-checkbox>
+          <p class="opt-hint">
+            返利是这笔订单产生的；只退买家不退返利，等于站点为一次退款付两遍钱。
+          </p>
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="batchRefundDialog.allowNegative">用户余额不足时允许扣成负数</el-checkbox>
+          <p class="opt-hint">
+            不勾选时余额不够会被拒绝（并回报当前余额），避免悄悄把账户扣成负数。
+          </p>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="bulkBusy" @click="batchRefundDialog.visible = false">取消</el-button>
+        <el-button type="danger" :loading="bulkBusy" @click="submitBatchRefund">确认退款</el-button>
       </template>
     </el-dialog>
 
