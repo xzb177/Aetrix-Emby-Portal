@@ -619,11 +619,31 @@ def strm_sig_refresh_tick(db=None) -> dict:
                     new_text = _replace_first_url(full, signed, first_url)
                 else:
                     new_text = _replace_first_url(head, signed, first_url)
-                tmp_path = path + ".tmp"
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    f.write(new_text)
-                os.replace(tmp_path, path)
-                refreshed += 1
+                # tmp 文件名带 pid+线程 id：.strm 生成器与签名刷新都跑在 api 进程
+                # 的不同线程（#605 后刷新线程为 strm-sig-refresh），可能并发写同一文件；
+                # 确定性的 "<file>.tmp" 会让双方交错写入同一个 tmp，再由 os.replace
+                # 发布撕裂内容。唯一 tmp 名保证每次发布的都是完整文件。
+                tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident():x}"
+                try:
+                    with open(tmp_path, "w", encoding="utf-8") as f:
+                        f.write(new_text)
+                    # CAS：replace 前确认文件首行仍是我们签名的那个 URL。
+                    # 若生成器在本轮处理期间重写了该文件，以新内容为准、本轮跳过
+                    # （下个 tick 再处理），避免用过期读覆盖生成器的新文件。
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        cur_head = f.read(4096)
+                    if _first_strm_url(cur_head) != first_url:
+                        logger.debug("strm_sig_refresh: %s 在本轮处理期间被改写，跳过", path)
+                        skipped_files += 1
+                    else:
+                        os.replace(tmp_path, path)
+                        refreshed += 1
+                finally:
+                    # best-effort 清理自己的 tmp（replace 成功后文件已不存在，忽略报错）
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
             except Exception:  # noqa: BLE001 — 单个文件异常隔离
                 logger.debug("strm_sig_refresh: 处理文件失败 %s", path, exc_info=True)
                 errors += 1
@@ -954,3 +974,4 @@ def shutdown_cleanup() -> dict:
     if any(result.values()):
         logger.info("退出收尾完成: %s", result)
     return result
+

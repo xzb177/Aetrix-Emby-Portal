@@ -622,16 +622,30 @@ def draw_lottery_round(
         # 否则轮次永久卡死在 drawing（调度只扫 open、管理后台拒绝非 open 重试）。
         # draw 已提交（status=done）但 distribute 失败时 WHERE drawing 匹配不到行，
         # 不会误删开奖结果；未发放的中奖者走上面的 done+pending 路径补发。
+        # rowcount 区分三种结局，保证返回给管理员的文案与实际状态一致
+        # （之前三种结局都写"已恢复为可重试状态"，回滚失败/已 done 时与事实不符）。
+        reset_done = False
+        reset_failed = False
         try:
-            db.execute(
-                text("UPDATE lottery_rounds SET status='open', drawing_at=NULL WHERE id=:id AND status='drawing'"),
-                {"id": round_id},
+            reset_done = (
+                db.execute(
+                    text("UPDATE lottery_rounds SET status='open', drawing_at=NULL WHERE id=:id AND status='drawing'"),
+                    {"id": round_id},
+                ).rowcount
+                > 0
             )
             db.commit()
         except Exception:
             db.rollback()
+            reset_failed = True
             logger.exception("群抽奖手动开奖状态回滚失败 round_id=%s", round_id)
-        raise HTTPException(status_code=500, detail=f"开奖失败：{exc}，已恢复为可重试状态")
+        if reset_failed:
+            detail = f"开奖失败：{exc}，且状态回滚失败（轮次可能卡在 drawing），请人工检查"
+        elif reset_done:
+            detail = f"开奖失败：{exc}，已恢复为可重试状态"
+        else:
+            detail = f"开奖失败：{exc}，开奖结果已保留，未发放的奖品可在轮次页重试补发"
+        raise HTTPException(status_code=500, detail=detail)
     # 手动开奖也要通知到群（与自动开奖 run_due_draws 同一口径）。
     # 之前漏掉了 notify 调用，导致管理后台点"开奖"后群里收不到开奖公告。
     # 通知失败不影响开奖结果，只记日志。
@@ -755,3 +769,4 @@ def remove_lottery_blacklist(
     _audit(db, current_admin.id, "lottery_blacklist_remove", "lottery_blacklist", user_id, {})
     db.commit()
     return {"success": True}
+

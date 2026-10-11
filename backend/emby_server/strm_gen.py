@@ -541,9 +541,12 @@ def _delete_state_rows(remote_paths: list[str]):
 
 def _write_strm_file(full_path: str, url: str) -> bool:
     """原子写入 .strm 文件。"""
+    tmp = None
     try:
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        tmp = full_path + ".tmp"
+        # tmp 文件名带 pid+线程 id：签名刷新线程（strm-sig-refresh）也可能并发写
+        # 同一文件，确定性的 "<file>.tmp" 会让双方交错写入同一个 tmp 造成撕裂文件。
+        tmp = f"{full_path}.tmp.{os.getpid()}.{threading.get_ident():x}"
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             f.write(url + "\n")
         os.replace(tmp, full_path)
@@ -551,6 +554,13 @@ def _write_strm_file(full_path: str, url: str) -> bool:
     except OSError as exc:
         logger.warning("strm_gen: 写入失败 %s: %s", full_path, exc)
         return False
+    finally:
+        # best-effort 清理自己的 tmp（replace 成功后文件已不存在，忽略报错）
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _resolve_collision(desired: str, used: set[str]) -> str:
@@ -928,3 +938,4 @@ def start_scheduler() -> bool:
         _scheduler_started = True
         logger.info("strm_gen: 定时调度已启动")
         return True
+
