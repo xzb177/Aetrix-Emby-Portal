@@ -568,7 +568,7 @@ def gdrive_sa_rotate(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """手动触发 SA 轮换（切换到下一个账号）"""
+    """手动触发 SA 轮换（切换账号；步长 1..n 随机，反风控）"""
     from pathlib import Path
     from backend.emby_server import playback_tune
 
