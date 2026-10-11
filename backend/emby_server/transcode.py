@@ -185,11 +185,35 @@ def _cache_mtime(entry_path: str) -> float:
         return 0.0
 
 
+def _active_cache_dirs() -> set[str]:
+    """正被已注册转码会话服务中的缓存目录（abspath 集合）。
+
+    LRU 淘汰必须跳过它们：``register_cache_session`` 登记后，客户端后续所有
+    切片都从 ``info["dir"]`` 直读；删掉该目录会让播放中途 404/503。
+    会话被回收（reap_idle/stop 摘除登记）后，目录才可淘汰。
+    任何异常内部吞掉返回空集——``_streaming()`` 能失败时不可能存在已注册会话。
+    """
+    try:
+        streaming = _streaming()
+        procs = getattr(streaming, "_TRANSCODE_PROCS", None)
+        if not procs:
+            return set()
+        dirs: set[str] = set()
+        for _sid, info in list(procs.items()):
+            d = info.get("dir") if isinstance(info, dict) else None
+            if d:
+                dirs.add(os.path.abspath(d))
+        return dirs
+    except Exception:
+        return set()
+
+
 def _enforce_cache_capacity(new_dir: str) -> None:
     """P1 修复（审查）：转码缓存 LRU 淘汰，防止无上限写满磁盘。
 
     上限由 EMBY_TRANSCODE_CACHE_MAX_GB 控制（默认 10G）；超限时按最旧优先
-    删除，直到回到上限 90%。跳过刚落盘的 new_dir。全部异常内部吞掉。
+    删除，直到回到上限 90%。跳过刚落盘的 new_dir，以及正被活跃会话服务中
+    的目录（删掉会导致播放中途 404/503）。全部异常内部吞掉。
     """
     try:
         max_gb = float(os.getenv("EMBY_TRANSCODE_CACHE_MAX_GB", "10") or 10)
@@ -210,9 +234,16 @@ def _enforce_cache_capacity(new_dir: str) -> None:
     limit = max_gb * 1024 ** 3
     if total <= limit:
         return
-    # 最旧优先，跳过刚落盘的目录
+    # 最旧优先；跳过刚落盘的目录，以及正被活跃会话服务中的目录
+    # （删掉会导致该会话后续切片 404/503、播放中途断掉）
+    active = _active_cache_dirs()
     victims = sorted(
-        (p for p in entries if os.path.abspath(p) != os.path.abspath(new_dir)),
+        (
+            p
+            for p in entries
+            if os.path.abspath(p) != os.path.abspath(new_dir)
+            and os.path.abspath(p) not in active
+        ),
         key=_cache_mtime,
     )
     removed, freed = 0, 0
