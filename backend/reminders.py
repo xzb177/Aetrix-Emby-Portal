@@ -95,6 +95,29 @@ def _sent_kinds(db: Session, subscription_id: int) -> set[str]:
     return {r[0] for r in rows}
 
 
+_SCAN_BATCH = 500  # 键集分页扫描的每页订阅数
+
+
+def _sent_kinds_batch(db: Session, subscription_ids: list[int]) -> dict[int, set[str]]:
+    """批量取回这批订阅已发送过的 kind，返回 ``{subscription_id: {kind, ...}}``。
+
+    替代逐条调用的 `_sent_kinds`，避免 N+1 查询；没发过任何提醒的订阅不会出现在
+    返回值里，调用方需用 ``sent_map.get(sub_id, set())`` 兜底。
+    """
+    if not subscription_ids:
+        return {}
+    rows = db.query(
+        models.SubscriptionReminder.subscription_id,
+        models.SubscriptionReminder.kind,
+    ).filter(
+        models.SubscriptionReminder.subscription_id.in_(subscription_ids)
+    ).all()
+    sent_map: dict[int, set[str]] = {}
+    for sub_id, kind in rows:
+        sent_map.setdefault(sub_id, set()).add(kind)
+    return sent_map
+
+
 def _record(db: Session, item: dict, kind: str) -> bool:
     """登记一条发送记录；已被别的进程/上一轮记过则返回 False
 
@@ -143,54 +166,63 @@ def collect_due(db: Session, now: Optional[datetime] = None) -> dict:
     thresholds = parse_thresholds(db)
     horizon = now + timedelta(days=max(thresholds))
 
-    subs = db.query(models.UserSubscription).filter(
-        models.UserSubscription.status == "active",
-        models.UserSubscription.end_date != None,  # noqa: E711 — 允许 end_date 缺失的老行不参与
-    ).all()
-    if not subs:
-        return {"reminders": [], "expired": [], "thresholds": thresholds}
-
-    plan_names = {
-        p.id: p.name for p in db.query(models.SubscriptionPlan).filter(
-            models.SubscriptionPlan.id.in_([s.plan_id for s in subs if s.plan_id])
-        ).all()
-    } if any(s.plan_id for s in subs) else {}
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
     reminders: list[dict] = []
     expired: list[dict] = []
-    for sub in subs:
-        end = sub.end_date
-        if end is None:
-            continue
-        sent = _sent_kinds(db, sub.id)
-        # days_left 按「整天」算：今天 23:59 到期就是 0 天，与用户端 `days_left` 口径一致
-        seconds_left = (end - now).total_seconds()
-        days_left = int(seconds_left // 86400) if seconds_left > 0 else -1
-        info = {
-            "subscription_id": sub.id,
-            "user_id": sub.user_id,
-            "realm_id": sub.realm_id,
-            "realm_name": realm_names.get(sub.realm_id, "") if sub.realm_id else "",
-            "plan_name": plan_names.get(sub.plan_id) or "会员",
-            "end_date": end,
-        }
+    last_id = 0
+    # 键集分页：按 id 升序一页页扫，避免一次性把全表订阅读进内存
+    while True:
+        page = db.query(models.UserSubscription).filter(
+            models.UserSubscription.id > last_id,
+            models.UserSubscription.status == "active",
+            models.UserSubscription.end_date != None,  # noqa: E711 — 允许 end_date 缺失的老行不参与
+        ).order_by(models.UserSubscription.id.asc()).limit(_SCAN_BATCH).all()
+        if not page:
+            break
+        last_id = page[-1].id
 
-        if seconds_left <= 0:
-            # 刚过期：只发一次「已到期」，之后不再打扰（续费靠用户自己或运营触达）
-            if "expired" not in sent:
-                expired.append({**info, "kind": "expired", "days_left": 0})
-            continue
+        # 本页已发送 kind 一次取回，循环里不再逐条查库
+        sent_map = _sent_kinds_batch(db, [s.id for s in page])
+        plan_ids = [s.plan_id for s in page if s.plan_id]
+        plan_names = {
+            p.id: p.name for p in db.query(models.SubscriptionPlan).filter(
+                models.SubscriptionPlan.id.in_(plan_ids)
+            ).all()
+        } if plan_ids else {}
 
-        if end > horizon:
-            continue
-        # 取**最贴近**的那一档（升序里第一个 >= days_left）。
-        # 不能取最宽松的那一档：还剩 2 天的订阅如果走 7 天档，7 天档就用掉了，
-        # 真正该发的「3 天」永远不会发（而且文案会说“还有 6 天”）。
-        tightest = next((t for t in sorted(thresholds) if days_left <= t), None)
-        if tightest is not None and f"{tightest}d" not in sent:
-            reminders.append({**info, "kind": f"{tightest}d",
-                              "threshold": tightest, "days_left": days_left})
+        for sub in page:
+            end = sub.end_date
+            if end is None:
+                continue
+            sent = sent_map.get(sub.id, set())
+            # days_left 按「整天」算：今天 23:59 到期就是 0 天，与用户端 `days_left` 口径一致
+            seconds_left = (end - now).total_seconds()
+            days_left = int(seconds_left // 86400) if seconds_left > 0 else -1
+            info = {
+                "subscription_id": sub.id,
+                "user_id": sub.user_id,
+                "realm_id": sub.realm_id,
+                "realm_name": realm_names.get(sub.realm_id, "") if sub.realm_id else "",
+                "plan_name": plan_names.get(sub.plan_id) or "会员",
+                "end_date": end,
+            }
+
+            if seconds_left <= 0:
+                # 刚过期：只发一次「已到期」，之后不再打扰（续费靠用户自己或运营触达）
+                if "expired" not in sent:
+                    expired.append({**info, "kind": "expired", "days_left": 0})
+                continue
+
+            if end > horizon:
+                continue
+            # 取**最贴近**的那一档（升序里第一个 >= days_left）。
+            # 不能取最宽松的那一档：还剩 2 天的订阅如果走 7 天档，7 天档就用掉了，
+            # 真正该发的「3 天」永远不会发（而且文案会说“还有 6 天”）。
+            tightest = next((t for t in sorted(thresholds) if days_left <= t), None)
+            if tightest is not None and f"{tightest}d" not in sent:
+                reminders.append({**info, "kind": f"{tightest}d",
+                                  "threshold": tightest, "days_left": days_left})
     return {"reminders": reminders, "expired": expired, "thresholds": thresholds}
 
 
