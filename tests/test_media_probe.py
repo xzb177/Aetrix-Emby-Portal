@@ -463,3 +463,164 @@ class TestProbeUrlConversion:
                 os.unlink(strm_path)
             _cleanup(db, lib)
             db.close()
+
+
+class TestQuotaRetry:
+    """配额 403 长退避重试（C-P1-1）：永不判死，24h 后自动重试。"""
+
+    def test_mark_long_retry_24h_backoff(self):
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing",
+                              probe_attempts=2)
+            media_probe.mark_long_retry(db, item, "远端配额耗尽（HTTP 403）", kind="quota")
+            db.refresh(item)
+            assert item.probe_status == "pending"
+            assert item.probe_attempts == 2  # 不消耗普通重试次数
+            delta = (item.probe_next_retry_at - datetime.now()).total_seconds()
+            assert 23 * 3600 <= delta <= 25 * 3600, delta  # 24h 长退避
+            assert "[quota]" in (item.probe_last_error or "")
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_probe_one_quota_403_never_fails(self):
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing",
+                              probe_attempts=0)
+            fake_probe = {"_http_code": 403, "_error": "quota",
+                          "_error_detail": "配额耗尽"}
+            with mock.patch.object(media_probe, "probe_metadata",
+                                   return_value=fake_probe), \
+                 mock.patch.object(media_probe, "resolve_probe_input",
+                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                status = media_probe.probe_one(db, item)
+            db.refresh(item)
+            assert status == "pending"
+            assert item.probe_status == "pending"
+            assert item.probe_attempts == 0  # 配额重试不计次数
+            delta = (item.probe_next_retry_at - datetime.now()).total_seconds()
+            assert 23 * 3600 <= delta <= 25 * 3600, delta
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_probe_one_403_without_error_flag_treated_as_quota(self):
+        # 防御性：即使 _error 缺失，403 本身也按配额处理（不判死）
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing",
+                              probe_attempts=0)
+            fake_probe = {"_http_code": 403}
+            with mock.patch.object(media_probe, "probe_metadata",
+                                   return_value=fake_probe), \
+                 mock.patch.object(media_probe, "resolve_probe_input",
+                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                status = media_probe.probe_one(db, item)
+            db.refresh(item)
+            assert status == "pending"
+            assert item.probe_status == "pending"
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_probe_one_404_still_fails_fast(self):
+        # 回归：404/410 依然直接判死（地址无效）
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing",
+                              probe_attempts=0)
+            fake_probe = {"_http_code": 404, "_error": "not_found"}
+            with mock.patch.object(media_probe, "probe_metadata",
+                                   return_value=fake_probe), \
+                 mock.patch.object(media_probe, "resolve_probe_input",
+                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                status = media_probe.probe_one(db, item)
+            db.refresh(item)
+            assert status == "failed"
+            assert item.probe_status == "failed"
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_mark_retry_timeout_goes_long_retry_after_limit(self):
+        # 超时：3 次普通重试后转 24h 长退避，不判死
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing",
+                              probe_attempts=media_probe.PROBE_MAX_ATTEMPTS - 1)
+            media_probe.mark_retry(db, item, "ffprobe 超时", is_timeout=True)
+            db.refresh(item)
+            assert item.probe_status == "pending"
+            assert item.probe_next_retry_at is not None
+            delta = (item.probe_next_retry_at - datetime.now()).total_seconds()
+            assert 23 * 3600 <= delta <= 25 * 3600, delta
+            assert "[timeout]" in (item.probe_last_error or "")
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_mark_retry_nontimeout_still_fails_after_limit(self):
+        # 回归：非超时失败 3 次后依然判死
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            item = _make_item(db, lib, video_codec=None, probe_status="probing",
+                              probe_attempts=media_probe.PROBE_MAX_ATTEMPTS - 1)
+            media_probe.mark_retry(db, item, "boom")
+            db.refresh(item)
+            assert item.probe_status == "failed"
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+
+class TestReviveQuotaFailed:
+    """历史配额判死自愈：revive_quota_failed 把配额 403 判死条目捞回 pending。"""
+
+    def _make_failed_item(self, db, lib, error):
+        item = _make_item(db, lib, video_codec=None, probe_status="failed",
+                          probe_attempts=3)
+        item.probe_last_error = error
+        db.commit()
+        db.refresh(item)
+        return item
+
+    def test_revive_quota_failed_items(self):
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            q1 = self._make_failed_item(db, lib, "远端配额耗尽（HTTP 403）（24h后重试）")
+            q2 = self._make_failed_item(db, lib, "[quota] 远端配额耗尽（HTTP 403）")
+            q3 = self._make_failed_item(db, lib, "远端返回 HTTP 403，地址无效")
+            other = self._make_failed_item(db, lib, "远端返回 HTTP 404，地址无效")
+            n = probe_worker.revive_quota_failed(db)
+            assert n == 3, n
+            for it in (q1, q2, q3):
+                db.refresh(it)
+                assert it.probe_status == "pending"
+                assert it.probe_attempts == 0
+                delta = (it.probe_next_retry_at - datetime.now()).total_seconds()
+                assert 23 * 3600 <= delta <= 25 * 3600, delta
+            db.refresh(other)
+            assert other.probe_status == "failed"  # 404 不误伤
+        finally:
+            _cleanup(db, lib)
+            db.close()
+
+    def test_revive_no_match_returns_zero(self):
+        db = SessionLocal()
+        lib = _make_lib(db)
+        try:
+            self._make_failed_item(db, lib, "远端返回 HTTP 404，地址无效")
+            n = probe_worker.revive_quota_failed(db)
+            assert n == 0
+        finally:
+            _cleanup(db, lib)
+            db.close()
