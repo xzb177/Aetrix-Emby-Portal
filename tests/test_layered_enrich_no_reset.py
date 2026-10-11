@@ -50,11 +50,13 @@ def _cleanup(db, lib):
     db.commit()
 
 
-def _scanfile(path, size=64):
+def _scanfile(path, size=None):
     st = os.stat(path)
     return scanner.ScanFile(
         stored_path=str(path), name=path.name,
-        local_dir=str(path.parent), size=size, container="mp4",
+        local_dir=str(path.parent),
+        size=size if size is not None else st.st_size,
+        container="mp4",
         mtime_ns=st.st_mtime_ns,
     )
 
@@ -91,6 +93,127 @@ def test_layered_new_file_gets_pending(tmp_path, monkeypatch, db):
             em.MediaItem.library_id == lib.id).one()
         assert row.enrich_status == "pending", \
             f"新文件应标 pending，实际 {row.enrich_status}"
+    finally:
+        _cleanup(db, lib)
+
+
+def test_layered_size_change_triggers_reenrich(tmp_path, monkeypatch, db):
+    """已 done 条目文件大小真实变化 → 分层扫描应标 pending 重新补全。
+
+    注意：mtime 不可靠（.strm 批量重生成的生产事故），只有大小变化
+    才视为内容真实变更（与 scanner.py 下方 probe 优先级的 size_changed
+    口径一致）。round3 重做版。
+    """
+    movie = tmp_path / "Changed Movie (2024).mp4"
+    movie.write_bytes(b"\x00" * 64)
+
+    lib = em.Library(guid=_guid(), name="大小变更测试库",
+                     collection_type="movies", paths=str(tmp_path))
+    db.add(lib)
+    db.commit()
+    try:
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        # 模拟 enrich 完成
+        row.enrich_status = "done"
+        db.commit()
+        db.expire_all()
+
+        # 改文件内容（大小 64→128）+ mtime 变
+        movie.write_bytes(b"\x01" * 128)
+        new_mtime = time.time() + 3600
+        os.utime(movie, (new_mtime, new_mtime))
+
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        db.expire_all()
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        assert row.enrich_status == "pending", \
+            f"大小变更的老条目应重新 pending，实际 {row.enrich_status}"
+    finally:
+        _cleanup(db, lib)
+
+
+def test_layered_failed_self_heals_on_size_change(tmp_path, monkeypatch, db):
+    """enrich 失败的老条目 + 文件大小变化 → 标 pending 自愈，
+    且 attempts 清零、next_retry_at 设为未来（1 小时退避）。
+
+    不清零/不退避会导致「扫描→pending→worker 立刻抢走→尝试→又 failed→
+    下次扫描又 pending」无限空转，每轮都烧 TMDB 配额。round3 重做版。
+    """
+    from datetime import datetime
+
+    movie = tmp_path / "Failed Movie (2024).mp4"
+    movie.write_bytes(b"\x00" * 64)
+
+    lib = em.Library(guid=_guid(), name="失败自愈测试库",
+                     collection_type="movies", paths=str(tmp_path))
+    db.add(lib)
+    db.commit()
+    try:
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        # 模拟 enrich 重试超限转 failed
+        row.enrich_status = "failed"
+        row.enrich_attempts = 5
+        row.enrich_next_retry_at = None
+        db.commit()
+        db.expire_all()
+
+        # 文件大小变化 + mtime 变
+        movie.write_bytes(b"\x01" * 128)
+        new_mtime = time.time() + 3600
+        os.utime(movie, (new_mtime, new_mtime))
+
+        before = datetime.now()
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        db.expire_all()
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        assert row.enrich_status == "pending", \
+            f"failed 条目大小变化后应自愈为 pending，实际 {row.enrich_status}"
+        assert (row.enrich_attempts or 0) == 0, \
+            f"自愈必须清零 attempts，实际 {row.enrich_attempts}"
+        assert row.enrich_next_retry_at is not None and \
+            row.enrich_next_retry_at > before, \
+            "自愈必须设置未来时间的退避，否则 worker 立刻抢走造成空转"
+    finally:
+        _cleanup(db, lib)
+
+
+def test_layered_failed_stays_on_mtime_only(tmp_path, monkeypatch, db):
+    """enrich 失败的老条目仅 mtime 变化（大小不变）→ 保持 failed，
+    不触发自愈。防止 .strm 这类 mtime 抖动把 failed 条目反复打回队列
+    造成空转烧配额。round3 重做版。"""
+    movie = tmp_path / "Failed Mtime Movie (2024).mp4"
+    movie.write_bytes(b"\x00" * 64)
+
+    lib = em.Library(guid=_guid(), name="失败mtime测试库",
+                     collection_type="movies", paths=str(tmp_path))
+    db.add(lib)
+    db.commit()
+    try:
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        row.enrich_status = "failed"
+        row.enrich_attempts = 5
+        row.enrich_next_retry_at = None
+        db.commit()
+        db.expire_all()
+
+        # 只改 mtime，大小不变
+        new_mtime = time.time() + 3600
+        os.utime(movie, (new_mtime, new_mtime))
+
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        db.expire_all()
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        assert row.enrich_status == "failed", \
+            f"仅 mtime 变化不应触发 failed 自愈，实际 {row.enrich_status}"
     finally:
         _cleanup(db, lib)
 
