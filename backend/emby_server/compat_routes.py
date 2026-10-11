@@ -110,19 +110,30 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
             # 全部落到机房所在城市，跨城市检测就废了。下面 remote_addr
             # 保持原有口径，不在这里跟着改。
             ip = real_client_ip(request)
-            verdict = share_guard.note_session(db, user, session_key, ip)
+            # commit=False：判定落库（事件/站内信）与下面的建会话行由本函数末尾
+            # 统一提交。note_session 内取的用户行锁于是覆盖「判定 → 建行 →
+            # 提交」整个区间，并发两路新建会话在此串行化；拦下时先提交已暂存
+            # 的事件再返回（审计轨迹不丢，只是没有会话行）。
+            verdict = share_guard.note_session(db, user, session_key, ip, commit=False)
             if verdict and verdict.get("blocked"):
                 logger.info("同播拦截：user=%s session=%s", user.id, session_key)
+                db.commit()
                 return None, False
-            verdict = share_guard.note_activity(db, user, ip)
+            verdict = share_guard.note_activity(db, user, ip, commit=False)
             if verdict and verdict.get("blocked"):
                 logger.info("跨城市停用后拒绝建会话：user=%s", user.id)
+                db.commit()
                 return None, False
         if session is None:
             # 真·新会话：建行；上面复活分支走进来时复用旧行，不另建
             session = em.PlaybackSession(
                 session_key=session_key, user_id=user.id, item_id=item.id,
             )
+            # 存点（savepoint）保护：防共享判定用 commit=False，事件行暂存
+            # 在本事务里；begin_nested 会先把它们 flush 进事务再建存点，
+            # 撞键回滚时只丢弃本次的 insert 本体，不丢判定事件（实测：
+            # 回滚后撞键对象已自动 expunge，无需手动清理）。
+            _sp = db.begin_nested()
             db.add(session)
             try:
                 # 确定性会话键（HMAC 派生）下，Playing 与紧随的 Progress 可能
@@ -131,9 +142,9 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
                 # （此前随机键永不碰撞，不需要这道防线。）
                 db.flush()
             except IntegrityError:
-                # 之前在本函数里只可能有已提交的防共享事件写入（commit=True），
-                # 回滚只丢弃本次未提交的 insert 本体，是安全的。
-                db.rollback()
+                # 回滚到存点：只丢弃撞键的 insert 本体，存点前已 flush 的
+                # 防共享事件行保留，之后随本函数末尾统一提交。
+                _sp.rollback()
                 session = (
                     db.query(em.PlaybackSession)
                     .filter(em.PlaybackSession.session_key == session_key)

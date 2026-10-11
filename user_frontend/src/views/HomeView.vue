@@ -83,6 +83,8 @@ import {
 } from '@/api'
 import { useToast } from '@/composables/useToast'
 import Modal from '@/components/ui/Modal.vue'
+import MediaCard from '@/components/media/MediaCard.vue'
+import MediaRow from '@/components/media/MediaRow.vue'
 import { homeApi, type HomeSummary } from '@/api/economy'
 import { fetchCalendar, type CalendarItem } from '@/api/calendar'
 import { ensureEmbyBase, imageUrl, posterUrl, type EmbyItem } from '@/api/emby'
@@ -948,33 +950,17 @@ onActivated(() => {
             </RouterLink>
           </div>
         </div>
-        <div class="poster-row">
-          <a
+        <MediaRow>
+          <MediaCard
             v-for="card in recentCards"
             :key="card.key"
+            :title="card.title"
+            :year="card.year"
+            :poster="card.poster"
             :href="card.href"
-            class="poster-card"
-            :title="`在 Rex 里打开：${card.title}`"
-          >
-            <span class="poster-frame">
-              <img
-                v-if="card.poster"
-                :key="card.poster"
-                :src="card.poster"
-                :alt="card.title"
-                loading="lazy"
-                decoding="async"
-                @error="onPosterError(card)"
-              />
-              <!-- 没图：排版占位卡（暗色暖底 + 衬线片名 + 年份），像一张没印图的片名卡 -->
-              <span v-else class="poster-type" aria-hidden="true">
-                <span class="poster-type-title">{{ card.title }}</span>
-                <span v-if="card.year" class="poster-type-year">{{ card.year }}</span>
-              </span>
-            </span>
-            <span class="poster-name">{{ card.title }}</span>
-          </a>
-        </div>
+            @poster-error="onPosterError(card)"
+          />
+        </MediaRow>
       </section>
 
       <!-- ③b 继续观看：最多 3 条，最近播放的在前；没有条目整段不渲染。
@@ -1831,89 +1817,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 .sk-stub-btn { display: block; width: 6rem; height: 32px; }
 
 /* ==================== ③ 今日入库 ====================
-   横滑行向两侧出血到屏幕边，但第一张卡与页面 gutter 对齐：
-   padding-inline = gutter 决定起始位置，scroll-padding-inline 让 scroll-snap 也按 gutter 对齐
-   （没有它，snap 会把第一张卡吸到屏幕最左边） */
-
-.poster-row {
-  display: flex;
-  gap: 0.75rem;
-  margin: -0.75rem calc(var(--gutter) * -1) 0;
-  padding: 0.75rem var(--gutter) 0.25rem;
-  scroll-padding-inline: var(--gutter);
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scroll-snap-type: x proximity;
-  scrollbar-width: none;
-}
-
-.poster-row::-webkit-scrollbar { display: none; }
-
-.poster-card {
-  flex: 0 0 auto;
-  width: 120px;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  color: inherit;
-  text-decoration: none;
-  scroll-snap-align: start;
-}
-
-@media (min-width: 1024px) {
-  .poster-card {
-    width: 144px;
-  }
-}
-
-.poster-card:hover .poster-name {
-  color: var(--au-text);
-}
-
-.poster-card:focus-visible {
-  outline: 2px solid var(--au-primary);
-  outline-offset: 2px;
-  border-radius: var(--au-r-sm);
-}
-
-.poster-frame {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  aspect-ratio: 2 / 3;
-  overflow: hidden;
-  border-radius: var(--au-r-sm);
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  color: var(--au-text-4);
-  transition: box-shadow 150ms ease-out, border-color 150ms ease-out;
-}
-
-.poster-frame img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transition: filter var(--au-fast) var(--au-ease);
-}
-
-.poster-card:hover .poster-frame img { filter: brightness(1.08); }
-
-@media (hover: hover) and (pointer: fine) {
-  .poster-card:hover .poster-frame {
-    border-color: rgba(232, 168, 74, 0.6);
-    box-shadow: 0 0 12px rgba(232, 168, 74, 0.4);
-  }
-}
-
-/* 移动端按压：手指盖住中心也能从边缘看到反馈 */
-.poster-card:active .poster-frame {
-  border-color: rgba(232, 168, 74, 0.7);
-  box-shadow: 0 0 12px rgba(232, 168, 74, 0.5);
-  filter: brightness(0.88);
-  transform: scale(0.97);
-  transition: none;
-}
+   已迁移到 MediaRow/MediaCard 组件（components/media/），样式在组件内 */
 
 /* 没有海报：排版占位卡。暗色暖底（两套主题都暗，像一张片名卡）+ 衬线片名居中 + 年份 */
 .poster-type {
@@ -1951,16 +1855,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   color: rgba(232, 168, 74, 0.85);
 }
 
-.poster-name {
-  display: block;
-  min-width: 0;
-  font-size: 0.8125rem;
-  line-height: 1.4;
-  color: var(--au-text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* .poster-name 已迁移到 MediaCard 组件内 */
 
 /* ==================== ③b 继续观看 ==================== */
 
@@ -2425,9 +2320,7 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
 
   .stat-foot .stat-short { display: block; }
 
-  .poster-card {
-    width: 104px;
-  }
+  /* .poster-card 宽度已迁移到 MediaCard/MediaRow 组件内 */
 
   /* 手机：剧照占卡片约 40% 宽，文字区收紧 */
   .resume-card {
