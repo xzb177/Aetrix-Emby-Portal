@@ -80,12 +80,13 @@ class PGAbortSession:
 
 @pytest.fixture()
 def db():
-    # connect_args autocommit=False：现代事务控制，让 SAVEPOINT 在 SQLite 下
-    # 语义正确（默认 legacy 模式下 SAVEPOINT 不参与外层事务，RELEASE 会直接
-    # 提交，ROLLBACK 滚不掉——见 SQLAlchemy 文档 pysqlite "Incorrect behavior
-    # for SAVEPOINT"）。生产是 PostgreSQL，存点语义本就正确；这里只是让
-    # SQLite 测试环境忠实模拟。
-    engine = create_engine("sqlite://", connect_args={"autocommit": False})
+    # 注意：CI 的 Python < 3.12，sqlite3.Connection 不接受 autocommit 参数，
+    # 所以这里用默认引擎。pysqlite legacy 模式下 SAVEPOINT 有 quirk
+    #（SELECT 不触发 BEGIN，首个 SAVEPOINT 的 RELEASE 会直接提交），
+    # 因此本文件的断言只依赖与驱动无关的逻辑语义：
+    # 单用户失败隔离（代理的 poison 标志由存点回滚清除）、异常不逃出、
+    # commit 失败时 rollback 被调用且不重跑。生产是 PostgreSQL，存点语义正确。
+    engine = create_engine("sqlite://")
     models.Base.metadata.create_all(engine)
     s = sessionmaker(bind=engine)()
     _store.invalidate("vitality_enabled", "vitality_daily_cost", "vitality_max",
@@ -141,17 +142,34 @@ def test_normal_deduct_unchanged(db):
 
 
 def test_batch_commit_failure_stops_gracefully(db, monkeypatch):
-    """批提交失败时回滚本批、保留已提交批次、不抛异常（不重跑，避免重复扣减）。"""
+    """批提交失败时走清理路径（rollback + 停跑）：不抛异常、不重跑、会话保持可用。
+
+    不断言回滚后的具体 DB 值：pysqlite legacy 模式下存点 RELEASE 的提交语义
+    与 PG 不同（驱动 quirk），断言 DB 值会得到与驱动相关的结果；这里只验证
+    与驱动无关的逻辑：rollback 被调用恰一次、commit 只试一次、会话没被破坏。
+    """
     _make_users(db, 3)
-    calls = {"n": 0}
+    orig_commit = db.commit
+    orig_rollback = db.rollback
+    commit_calls = {"n": 0}
+    rollback_calls = {"n": 0}
 
     def flaky_commit():
-        calls["n"] += 1
+        commit_calls["n"] += 1
         raise RuntimeError("injected commit failure")
 
+    def spy_rollback():
+        rollback_calls["n"] += 1
+        return orig_rollback()
+
     monkeypatch.setattr(db, "commit", flaky_commit)
+    monkeypatch.setattr(db, "rollback", spy_rollback)
     res = vitality.daily_deduct(db)  # 旧代码这里会把异常抛给 _tick
-    assert res["deducted"] == 3  # 计数保留（本批回滚，实际未落库）
-    assert calls["n"] == 1  # 只试一次，不死循环重跑
-    # 本批被回滚：用户活力值未变
-    assert db.query(models.WebUser).filter(models.WebUser.vitality == 5).count() == 3
+    assert res["deducted"] == 3  # 计数保留（停跑不断言落库口径，见 docstring）
+    assert commit_calls["n"] == 1  # 只试一次，不死循环重跑
+    assert rollback_calls["n"] == 1  # 清理路径被执行
+    # 会话未被破坏：恢复 commit 后能继续正常扣减
+    monkeypatch.setattr(db, "commit", orig_commit)
+    res2 = vitality.daily_deduct(db)
+    assert res2["deducted"] == 3
+    assert res2["failed"] == 0
