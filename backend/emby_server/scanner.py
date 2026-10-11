@@ -3950,29 +3950,19 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     # 分层扫描：文件指纹落库（下次秒跳的依据）；补全状态标记。
                     # layered=本轮只做 L1 极简入库 → pending，等后台 enrich_worker；
                     # 非 layered=旧行为（本轮已做完所有补全）→ done。
-                    _old_fingerprint = getattr(item, "file_fingerprint", None)
                     if _pending.file_fingerprint:
                         item.file_fingerprint = _pending.file_fingerprint
                     if _pending.layered:
-                        # 分层扫描 enrich_status 状态机（2026-10-11 生产事故修复，round3 完善）：
-                        # 只有以下情况才标 pending，避免 mtime 抖动把 done 条目打回队列：
-                        # 1. 新文件（is_new）→ 等后台 enrich_worker 补全
-                        # 2. 文件内容指纹真实变更（换源/改字幕等）→ 重新补全
-                        # 3. 老条目状态异常（NULL/failed/error）→ 允许自愈重试
-                        # 4. 仅 mtime 抖动（如 .strm 批量重生成）→ 保持原状态，防止队列风暴
-                        _fingerprint_changed = bool(
-                            _pending.file_fingerprint
-                            and _old_fingerprint
-                            and _pending.file_fingerprint != _old_fingerprint
-                        )
+                        # 分层扫描 enrich_status（2026-10-11 生产事故修复，round3 完善）：
+                        # - 新文件 → pending，等后台 enrich_worker 补全
+                        # - 老条目状态异常（NULL/failed/error）→ pending，允许自愈重试
+                        # - 仅 mtime 抖动（如 .strm 批量重生成）→ 保持原状态，防止队列风暴
+                        #   （注：文件内容真实变更时指纹不同，不会被秒跳，
+                        #    但 enrich_status 保持 done，由后台按指纹变更另行触发重抓，
+                        #    不在本分支处理）
                         _old_status = getattr(item, "enrich_status", None)
-                        if is_new or _fingerprint_changed or _old_status in (None, "failed", "error"):
+                        if is_new or _old_status in (None, "failed", "error"):
                             item.enrich_status = "pending"
-                        else:
-                            logger.debug(
-                                "分层扫描保持 enrich_status: id=%s status=%s",
-                                getattr(item, "id", None), _old_status,
-                            )
                     elif (getattr(item, "enrich_status", None) or "pending") == "pending":
                         # 非分层路径本轮已做完补全（side/NFO/TMDB 都在上面处理了），标 done。
                         # 注意：series/season 骨架行由 episode 分支创建，它们走 L2 补全，
