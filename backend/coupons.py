@@ -235,6 +235,10 @@ def reserve(db: Session, *, coupon: models.CouponCode, user: models.WebUser,
         db.query(models.CouponCode)
         .filter(models.CouponCode.id == coupon.id)
         .with_for_update()
+        # identity map 已有该券对象时 first() 直接返回缓存实例、属性不刷新；
+        # 加 populate_existing 让 per_user_limit / max_uses 真正取到锁内最新值
+        # （与下行注释"锁内读到的最新值"一致；调用方刚 load 过，默认会读到旧值）。
+        .populate_existing()
         .first()
     )
     if locked is None:

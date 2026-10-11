@@ -126,12 +126,14 @@ def _pick_sa() -> dict[str, Any] | None:
     try:
         drive_changes = _load_drive_changes()
         sa_files = drive_changes._discover_sa_files() or []
+        if not sa_files:
+            return None
+        # 轮换起点：经 drive_changes 的统一实现取得（带随机抖动，反风控）。
+        # 放进 try：懒加载模块上的动态属性调用若缺失会抛 AttributeError，
+        # 本模块承诺永不抛异常（调用方依赖该契约做降级），此时返回 None。
+        start = drive_changes._sa_rotation_start(len(sa_files))
     except Exception:
         return None
-    if not sa_files:
-        return None
-    # 轮换起点：经 drive_changes 的统一实现取得（带随机抖动，反风控）
-    start = drive_changes._sa_rotation_start(len(sa_files))
     for offset in range(len(sa_files)):
         entry = sa_files[(start + offset) % len(sa_files)]
         try:
