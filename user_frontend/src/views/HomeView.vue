@@ -72,7 +72,7 @@
  * 该条目最近一次播放会话。点击与「本周入库」一致走 Rex deep link；没有条目整段不渲染，
  * 请求失败也静默。首页是 keep-alive，切回来时后台刷新一次（刚在客户端看完回来要对得上）。
  */
-import { ref, computed, onMounted, onActivated } from 'vue'
+import { ref, computed, onMounted, onActivated, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 // 观影数据卡无落地页（媒体库已下线），同模板里 RouterLink 与 div 二选一
 import { useUserStore } from '@/stores/user'
@@ -82,7 +82,9 @@ import {
   type PortalResumeItem,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
+import { checkAndRecordHomeVisit } from '@/composables/useHomeVisitMemory'
 import Modal from '@/components/ui/Modal.vue'
+import WelcomeBackCard from '@/components/home/WelcomeBackCard.vue'
 import MediaCard from '@/components/media/MediaCard.vue'
 import MediaRow from '@/components/media/MediaRow.vue'
 import { homeApi, type HomeSummary } from '@/api/economy'
@@ -677,6 +679,35 @@ function onResumeThumbError(card: ResumeCard) {
   }
 }
 
+// ===== 「好久不见」欢迎卡（装修第二期 U2）：>72h 未进首页才显示 =====
+// 访问记忆按账号隔离（localStorage 只存时间戳）；先读后写，不阻塞首屏、不新增请求。
+const accountId = computed(() => userStore.user?.id ?? null)
+const showWelcomeBack = ref(false)
+
+/** 欢迎卡文案：按继续观看第一条真实数据生成（resumeCards.title 已是"《剧名》第 N 集"口径），无则通用文案 */
+const welcomeCard = computed(() => {
+  const first = resumeCards.value[0]
+  if (!first) {
+    return { message: '欢迎回来，找一部想看的作品吧', href: '' }
+  }
+  return { message: `上次看到${first.title}，接着看吧`, href: first.href }
+})
+
+watch(
+  accountId,
+  (id, oldId) => {
+    // 切号：清掉旧账号的欢迎态与继续观看，防止串号闪现
+    if (oldId != null && id !== oldId) {
+      showWelcomeBack.value = false
+      resumeItems.value = []
+      resumeThumbAttempts.value = {}
+      resumeLoaded = false
+    }
+    showWelcomeBack.value = id != null ? checkAndRecordHomeVisit(id) : false
+  },
+  { immediate: true },
+)
+
 /** Hero 眉题：有片单时只写「今晚放映 · 今日新片」——片名是 H1 的主角，眉题不再重复 */
 const heroEyebrow = computed(() => {
   if (!heroItem.value) return '今晚放映'
@@ -963,6 +994,13 @@ onActivated(() => {
           />
         </MediaRow>
       </section>
+
+      <!-- U2 「好久不见」欢迎卡：>72h 未进首页才显示；纯展示，不阻塞首屏、不新增请求 -->
+      <WelcomeBackCard
+        v-if="showWelcomeBack"
+        :message="welcomeCard.message"
+        :href="welcomeCard.href"
+      />
 
       <!-- ③b 继续观看：最多 3 条，最近播放的在前；没有条目整段不渲染。
            点击与「本周入库」一致走 Rex deep link -->
