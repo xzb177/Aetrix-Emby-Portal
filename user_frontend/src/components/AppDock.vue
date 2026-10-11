@@ -80,7 +80,9 @@ function isActive(path: string) {
 }
 
 .dock-item:active {
-  transform: scale(0.96);
+  /* 按压缩放走 --neo-scale-press 变量：与 .au-pressable 统一为 0.98；
+     prefers-reduced-motion 下变量为 1，自动无缩放（上面注释的承诺） */
+  transform: scale(var(--neo-scale-press, 0.98));
 }
 
 .dock-ic {

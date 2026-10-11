@@ -40,6 +40,12 @@ function posterSrc(id: string): string {
   // 直连 EA 公开图片端点（基地址由后端下发；登录页未登录时 embyBaseRef 为空，不能用 imageUrl()）
   return `${props.embyBaseUrl}/emby/Items/${encodeURIComponent(id)}/Images/Primary?maxWidth=320`
 }
+
+/** 海报加载失败（404/裂图）时隐藏该图：两轮复制用同一 URL，要么都成功要么都隐藏，无缝滚动对称性不受影响 */
+function hideBrokenPoster(e: Event): void {
+  const t = e.target as HTMLImageElement | null
+  if (t) t.style.display = 'none'
+}
 </script>
 
 <template>
@@ -61,6 +67,7 @@ function posterSrc(id: string): string {
           loading="lazy"
           decoding="async"
           draggable="false"
+          @error="hideBrokenPoster"
         />
       </template>
     </div>
