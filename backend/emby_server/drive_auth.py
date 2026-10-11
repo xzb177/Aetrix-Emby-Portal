@@ -11,6 +11,10 @@
   剩余有效期大于 120 秒直接命中；由 threading.Lock 保护，减少重复换 token 的开销。
 - 任何失败（无可用 SA、换 token 异常等）均返回 None，由调用方降级处理，
   本模块永不抛出异常。
+- 401 失效机制：播放 relay 层（streaming.py 的 serve_remote / serve_remote_async）
+  在 Drive 源站返回 401 时，经 note_drive_unauthorized 按 token 值失效该坏 token，
+  drive_auth 外层缓存与 drive_changes 内层缓存会被同时清除，下次请求重新换取新 token。
+  按值而非按 email 清除，避免误删并发场景下刚重换出来的新 token。
 """
 
 from __future__ import annotations
@@ -28,6 +32,8 @@ __all__ = [
     "get_drive_bearer_token",
     "drive_auth_headers",
     "drive_api_media_url",
+    "invalidate_drive_bearer_token",
+    "note_drive_unauthorized",
 ]
 
 logger = logging.getLogger(__name__)
@@ -197,6 +203,98 @@ def drive_auth_headers(url: str) -> dict[str, str]:
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}
+
+
+def invalidate_drive_bearer_token(token: str) -> bool:
+    """按 token 值精确失效 Drive Bearer token 缓存（内外两层同时清除）。
+
+    401 毒化修复：Drive 源站返回 401 说明该 token 已失效，但外层缓存
+    ``_token_cache``（key=client_email）与 ``drive_changes`` 模块内部的同名
+    缓存都会把坏 token 原样吐回，最长毒化 55 分钟。这里按 **token 值** 匹配
+    清除外层所有值相等的条目，并对涉及的 client_email 顺带清掉
+    ``drive_changes._token_cache`` 的同 key 条目，使下次请求重新换取新 token。
+
+    只按值删、不按 email 删：并发场景下同一 SA 可能已被其他线程换成新 token，
+    按 email 删会误删刚换到的新 token，造成无谓的重复换取。
+
+    Args:
+        token: 待失效的 access_token 原始值（不含 "Bearer " 前缀）。
+
+    Returns:
+        是否至少清除了一条外层缓存条目；token 为空或任何异常均返回 False。
+    """
+    if not token:
+        return False
+    try:
+        with _cache_lock:
+            emails = [
+                email
+                for email, (cached_token, _expire_at) in _token_cache.items()
+                if cached_token == token
+            ]
+            if not emails:
+                return False
+            for email in emails:
+                _token_cache.pop(email, None)
+            # best-effort 清除 drive_changes 内层缓存：内层 key 同样是 client_email，
+            # 不清内层会把坏 token 原样吐回（实测只清外层无效）。
+            try:
+                drive_changes = _load_drive_changes()
+                inner_cache = getattr(drive_changes, "_token_cache", None)
+                if isinstance(inner_cache, dict):
+                    for email in emails:
+                        inner_cache.pop(email, None)
+            except Exception:
+                # 拿不到模块 / 无该属性 / 内层实现变更：静默跳过，外层已失效
+                pass
+            logger.info(
+                "drive_auth: 已按值失效 %d 个 SA 的 Drive Bearer token 缓存（401 毒化修复）",
+                len(emails),
+            )
+            return True
+    except Exception as exc:
+        logger.warning("drive_auth: 按值失效 Drive Bearer token 缓存失败: %s", exc)
+        return False
+
+
+def note_drive_unauthorized(url: str, auth_header: str) -> bool:
+    """记录一次 Drive 源站 401 未授权，并按 token 值失效缓存。
+
+    供播放 relay 层（streaming.py 的 serve_remote / serve_remote_async）
+    在源站返回 401 时调用。
+
+    参数:
+        url: 触发 401 的请求 URL，仅当指向 Drive 相关域名时才处理。
+        auth_header: 形如 ``Bearer <token>`` 的 Authorization 头，
+            scheme 大小写不敏感，允许前后空白，token 部分 strip 后须非空。
+
+    返回:
+        True 表示成功失效了对应 token 的缓存（内外两层），
+        False 表示 url 非 Drive、header 格式不合法或未命中缓存。
+
+    本函数永不抛异常。
+    """
+    try:
+        if not is_drive_url(url):
+            return False
+
+        if not isinstance(auth_header, str):
+            return False
+
+        parts = auth_header.strip().split(None, 1)
+        if len(parts) != 2:
+            return False
+
+        scheme, token = parts[0], parts[1].strip()
+        if scheme.lower() != "bearer" or not token:
+            return False
+
+        return invalidate_drive_bearer_token(token)
+    except Exception:
+        logger.warning(
+            "note_drive_unauthorized failed for url=%r", url, exc_info=True
+        )
+        return False
 
 
 def drive_api_media_url(url: str) -> str:
