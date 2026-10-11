@@ -270,7 +270,7 @@ def _add_event(
     return row
 
 
-def _notify_staff(db: Session, title: str, content: str) -> int:
+def _notify_staff(db: Session, title: str, content: str, *, commit: bool = True) -> int:
     """给每位启用中的管理员写一条站内信，返回条数
 
     这里刻意**同步**落库，而不是调 ``notifications.notify_staff_users``：判定发生在
@@ -299,7 +299,7 @@ def _notify_staff(db: Session, title: str, content: str) -> int:
                 is_read=False,
             )
         )
-    if staff:
+    if staff and commit:
         db.commit()
     return len(staff)
 
@@ -401,6 +401,7 @@ def note_activity(
             f"防共享：账号「{user.username}」疑似跨城市使用",
             f"{detail}。处置档位：{ACTION_LABELS[action]}。"
             f"可在后台「用户与账号 → 防共享」调整。",
+            commit=commit,
         )
     if action == "enforce":
         _disable_user(db, user, detail=detail, commit=commit)
@@ -456,6 +457,13 @@ def note_session(
     if action == "off" or getattr(user, "is_staff", False):
         return None
 
+    # 串行化同一账号的准入：「数活会话 → 判上限」与调用方紧接着的
+    # 「建会话行 → commit」必须是原子的，否则并发两路新建会话会同时看到
+    # others < limit 而双双放行（check-then-act）。锁由本事务持有到提交/回滚；
+    # 懒导入：顶层引 economy 有循环导入风险（本文件已有 geoip 等懒导入先例）。
+    from backend.api.economy import lock_user_row
+    lock_user_row(db, user.id)
+
     limit = concurrent_limit(db)
     others = _other_live_sessions(db, user.id, session_key)
     # 上限 N = 允许 N 路并发。第 N+1 路才是同播，所以 others >= limit 才算超
@@ -483,6 +491,7 @@ def note_session(
             f"防共享：账号「{user.username}」疑似同时多人观看",
             f"{detail}。处置档位：{ACTION_LABELS[action]}。"
             f"可在后台「用户与账号 → 防共享」调整。",
+            commit=commit,
         )
     return {"kind": KIND_CONCURRENT, "action": action, "region": region,
             "sessions": len(others) + 1, "detail": detail, "blocked": action == "enforce"}
