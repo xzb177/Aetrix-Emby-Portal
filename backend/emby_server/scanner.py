@@ -1977,6 +1977,10 @@ class _ScanContext:
     ext_subtitles: dict = field(default_factory=dict)
     # 本批条目的外挂字幕：item_id → {external_path}（秒跳时比对用，一批只查一次 DB，
     # 不能每个文件查一次，否则 202 个文件就是 202 条 SQL，直接撑爆 SQL 预算）
+    # enrich done→pending 翻转明细（v2.55.x 翻转监控）：每项
+    # {item_id, item_type, reason, old_size, new_size}。本轮结束时
+    # finish_scan 汇总，超阈值则告警 + 写 PG 事件（容器重建也丢不掉）。
+    enrich_flips: list = field(default_factory=list)
 
 
 
@@ -3768,6 +3772,53 @@ def _cover_autogen_after_scan(db: Session, library, stats: dict) -> None:
         logger.warning("封面任务入队失败 library_id=%s", library_id, exc_info=True)
 
 
+def _maybe_alert_enrich_flip(db: Session, library: emby_models.Library,
+                             stats: dict, run_id: Optional[int]) -> None:
+    """v2.55.x 翻转监控：本轮 done→pending 翻转超阈值则告警。
+
+    2026-10-11 生产事故：5723 条翻转触发源未知、日志丢失。以后这类事件：
+    1. warning 日志（docker logs 即时可见）；
+    2. PG 写 EnrichFlipEvent（持久现场，容器重建不丢）；
+    3. /api/health 暴露 enrich_flip_last_hour（见 health_report）。
+    监控失败只记日志，不影响扫描结果落库。
+    """
+    flip_count = int((stats or {}).get("enrich_flips") or 0)
+    if not flip_count:
+        return
+    try:
+        from backend.emby_server import enrich_flip_monitor as _fm
+        if not _fm.should_alert(flip_count):
+            return
+        # 触发源：从扫描流水取（manual/client/node/repair），取不到就记 scan
+        trigger = "scan"
+        if run_id:
+            try:
+                run = db.query(emby_models.ScanRun).filter(
+                    emby_models.ScanRun.id == run_id).first()
+                if run is not None and getattr(run, "trigger", None):
+                    trigger = f"scan:{run.trigger}"
+            except Exception:  # noqa: BLE001
+                pass
+        reasons = (stats or {}).get("enrich_flip_reasons") or {}
+        sample_ids = (stats or {}).get("enrich_flip_sample_ids") or []
+        # 明细已在 _scan_library_body 聚合成 reasons/sample_ids，直接组 details
+        details = {"reasons": reasons, "item_types": {},
+                   "sample_ids": sample_ids}
+        logger.warning(
+            "enrich 批量翻转告警：%d 条 done→pending（阈值 %d）trigger=%s "
+            "library_id=%s scan_run_id=%s reasons=%s sample_ids=%s",
+            flip_count, _fm.FLIP_ALERT_THRESHOLD, trigger,
+            getattr(library, "id", None), run_id, reasons, sample_ids,
+        )
+        _fm.record_flip_event(
+            db, flip_count=flip_count, trigger=trigger,
+            library_id=getattr(library, "id", None),
+            scan_run_id=run_id, details=details,
+        )
+    except Exception as exc:  # noqa: BLE001 — 监控不能影响扫描
+        logger.warning("enrich 翻转告警检查失败: %s", exc)
+
+
 def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict],
                 run_id: Optional[int] = None) -> str:
     """写入一轮扫描的结果，返回归类后的状态
@@ -3784,6 +3835,8 @@ def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]
     _write_scan_state(db, library, status, stats, error)
     # 与媒体库状态分开两次提交：流水写不进去不该影响「上一轮扫得怎么样」这条主状态
     _finish_scan_run(db, run_id, status, stats, error)
+    # v2.55.x 翻转监控：本轮 done→pending 超阈值则告警 + 写 PG 事件（持久现场）
+    _maybe_alert_enrich_flip(db, library, stats, run_id)
     # 结果已经落库了，封面重生成即使失败也不影响上面那两条状态
     _cover_autogen_after_scan(db, library, stats)
     return status
@@ -3875,7 +3928,11 @@ def _write_enrich_status(
       * layered=True  -> PENDING means "enrich_worker will fill the rest"
       * layered=False -> DONE means "this scan finalizes the item"
     `reason` is mandatory so every transition is auditable in logs.
+
+    Returns True when this write was a done→pending flip (v2.55.x 翻转监控：
+    调用方把明细记到 ctx.enrich_flips，本轮结束超阈值则告警）。
     """
+    was_done = (old_status or _ENRICH_PENDING) == _ENRICH_DONE
     item.enrich_status = status
 
     attempts_reset = False
@@ -3901,6 +3958,7 @@ def _write_enrich_status(
         new_size,
         attempts_reset,
     )
+    return was_done and status == _ENRICH_PENDING
 
 
 def _compute_size_change(item, scan_file):
@@ -3925,10 +3983,26 @@ def _compute_size_change(item, scan_file):
     return old_size, new_size, size_changed
 
 
-def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type):
-    """Decide and write enrich_status. Max nesting depth: 2."""
+def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
+                         flip_tracker=None):
+    """Decide and write enrich_status. Max nesting depth: 2.
+
+    flip_tracker（v2.55.x 翻转监控）：可选的 list，done→pending 翻转时
+    追加 {"item_id", "item_type", "reason", "old_size", "new_size"}。
+    调用方（扫描写库循环）传 ctx.enrich_flips。
+    """
     old_status = getattr(item, "enrich_status", None)
     old_size, new_size, size_changed = _compute_size_change(item, scan_file)
+
+    def _record(reason):
+        if flip_tracker is not None:
+            flip_tracker.append({
+                "item_id": getattr(item, "id", None),
+                "item_type": item_type,
+                "reason": reason,
+                "old_size": old_size,
+                "new_size": new_size,
+            })
 
     if not layered:
         # 非分层：本轮已做完补全，直接终结。
@@ -3951,7 +4025,7 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type):
     # （2026-10-11 生产事故修复 #593，round3 完善）：
     # mtime 不可靠，内容真实变更只看文件大小变化。
     if is_new or old_status is None:
-        _write_enrich_status(
+        flipped = _write_enrich_status(
             item,
             _ENRICH_PENDING,
             reason="new_item" if is_new else "no_prior_status",
@@ -3959,10 +4033,12 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type):
             old_size=old_size,
             new_size=new_size,
         )
+        if flipped:
+            _record("new_item" if is_new else "no_prior_status")
         return
 
     if size_changed:
-        _write_enrich_status(
+        flipped = _write_enrich_status(
             item,
             _ENRICH_PENDING,
             reason="size_changed",
@@ -3971,6 +4047,8 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type):
             new_size=new_size,
             reset_failed_attempts=True,
         )
+        if flipped:
+            _record("size_changed")
         return
 
     # 仅 mtime 抖动 / 无实质变化：保持原状态，防止队列风暴。
@@ -4090,12 +4168,15 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         item.file_fingerprint = _pending.file_fingerprint
                     # enrich_status 统一走 _apply_enrich_status（P2-1/P2-3/P3-1 重构，
                     # 2026-10-11 round3-p2p3）：单一写入点 + reason 必填日志 + 早返回结构。
+                    # v2.55.x 翻转监控：done→pending 明细记到 ctx.enrich_flips，
+                    # 本轮结束超阈值则告警 + 写 PG 事件。
                     _apply_enrich_status(
                         item,
                         scan_file,
                         is_new=is_new,
                         layered=_pending.layered,
                         item_type=_pending.item_type,
+                        flip_tracker=ctx.enrich_flips,
                     )
                     platforms = detect_platforms(full_path)  # 发行平台标签（虚拟媒体库用）
                     if platforms:
@@ -4400,5 +4481,18 @@ def _scan_library_body(db: Session, library: emby_models.Library,
         emby_models.MediaItem.library_id == library.id,
         emby_models.MediaItem.item_type.in_(["movie", "series"]),
     )
+    # v2.55.x 翻转监控：本轮 done→pending 翻转数进 stats，finish_scan 汇总告警。
+    # 明细在 ctx.enrich_flips（内存），告警事件写 PG（持久，容器重建不丢）。
+    stats["enrich_flips"] = len(ctx.enrich_flips)
+    if ctx.enrich_flips:
+        _flip_reasons: dict = {}
+        _flip_sample_ids: list = []
+        for _f in ctx.enrich_flips:
+            _r = str(_f.get("reason", "?"))
+            _flip_reasons[_r] = _flip_reasons.get(_r, 0) + 1
+            if len(_flip_sample_ids) < 10:
+                _flip_sample_ids.append(_f.get("item_id"))
+        stats["enrich_flip_reasons"] = _flip_reasons
+        stats["enrich_flip_sample_ids"] = _flip_sample_ids
     db.commit()
     return stats

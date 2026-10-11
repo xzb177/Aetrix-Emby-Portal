@@ -1831,6 +1831,18 @@ def retry_unmatched(db) -> int:
                 logger.info("重试未匹配项：已清掉 %d 份旧搜索缓存（下轮补搜真打 TMDB）", purged)
         except Exception as exc:  # noqa: BLE001 — 缓存清理失败不影响重试入队
             logger.debug("清理 TMDB 搜索缓存失败: %s", exc)
+    # v2.55.x 翻转监控：这是管理端手动触发的 done→pending 批量操作，
+    # 超阈值同样留告警 + PG 事件（和未知触发源的翻转区分开，trigger 不同）。
+    if n:
+        try:
+            from backend.emby_server import enrich_flip_monitor as _fm
+            _fm.alert_flip(
+                db, flip_count=n, trigger="retry_unmatched",
+                flips=[{"item_id": None, "item_type": "series/movie",
+                        "reason": "retry_unmatched"}],
+            )
+        except Exception as exc:  # noqa: BLE001 — 监控不能影响主流程
+            logger.warning("重试未匹配项翻转告警失败: %s", exc)
     return n
 
 

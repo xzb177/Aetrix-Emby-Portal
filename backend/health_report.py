@@ -289,6 +289,22 @@ def collect(db) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计补全状态出错: %s", exc)
 
+    # ---- enrich done→pending 批量翻转监控（v2.55.x）----
+    # 2026-10-11 生产事故：5723 条翻转触发源未知、日志丢失。从此任何超阈值的
+    # 翻转都写 EnrichFlipEvent（PG 持久），这里暴露近 1 小时翻转数；>0 就 warn。
+    try:
+        from backend.emby_server import enrich_flip_monitor as _fm
+        flip_1h = _fm.flip_count_last_hours(db, hours=1)
+        metrics["enrich_flip_last_hour"] = flip_1h
+        if flip_1h > 0:
+            _bump("warn")
+            issues.append({
+                "level": "warn", "key": "enrich_flip",
+                "message": f"近 1 小时 enrich done→pending 翻转 {flip_1h} 条 —— "
+                           "检查翻转告警日志与 EnrichFlipEvent 记录，确认触发源"})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("统计 enrich 翻转数出错: %s", exc)
+
     # ---- 扫描（库级别的真实故障）----
     try:
         scans = library_scan_summary(db)
