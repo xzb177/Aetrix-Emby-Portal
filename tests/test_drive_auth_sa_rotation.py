@@ -39,12 +39,27 @@ def _make_fake_drive_changes(emails=SA_EMAILS, token_side_effect=None):
         fake._sa_access_token.side_effect = lambda sa: "token-for-" + sa["client_email"]
     else:
         fake._sa_access_token.side_effect = token_side_effect
+
+    rotation = {"i": 0}
+
+    def _deterministic_rotation_start(n):
+        s = rotation["i"] % n
+        rotation["i"] += 1
+        return s
+
+    fake._sa_rotation_start.side_effect = _deterministic_rotation_start
+
+    def _reset_rotation():
+        rotation["i"] = 0
+
+    fake.reset_rotation = _reset_rotation
+
     return fake
 
 
 @pytest.fixture(autouse=True)
 def reset_drive_auth_state():
-    """每个用例前后重置模块级 token 缓存与 SA 轮询计数器。"""
+    """每个用例前后重置模块级 token 缓存。"""
     drive_auth._reset_state()
     yield
     drive_auth._reset_state()
@@ -60,7 +75,6 @@ def fake_drive_changes(monkeypatch):
 
 def test_token_rotates_across_sas(fake_drive_changes):
     """连续 3 次调用应轮询到 3 个不同的 SA，各拿各自的 token。"""
-    drive_auth._sa_rr_index = 0  # 固定轮询起点，保证确定性
 
     tokens = [drive_auth.get_drive_bearer_token() for _ in range(3)]
 
@@ -74,7 +88,6 @@ def test_per_sa_cache_hit(fake_drive_changes):
     first_round = [drive_auth.get_drive_bearer_token() for _ in range(3)]
     assert fake_drive_changes._sa_access_token.call_count == 3
 
-    drive_auth._sa_rr_index = 0  # 回到起点，再轮询一轮（应全部命中分账号缓存）
     second_round = [drive_auth.get_drive_bearer_token() for _ in range(3)]
 
     assert second_round == first_round
@@ -96,10 +109,9 @@ def test_empty_token_not_cached(fake_drive_changes):
     tokens = iter(["", "token-for-sa1@x"])
     fake_drive_changes._sa_access_token.side_effect = lambda sa: next(tokens)
 
-    drive_auth._sa_rr_index = 0
     assert drive_auth.get_drive_bearer_token() is None
     assert fake_drive_changes._sa_access_token.call_count == 1
 
-    drive_auth._sa_rr_index = 0  # 再次轮询到同一个 SA：空值未缓存，必须重试
+    fake_drive_changes.reset_rotation()  # 回到起点，再次轮询到同一个 SA：空值未缓存，必须重试
     assert drive_auth.get_drive_bearer_token() == "token-for-sa1@x"
     assert fake_drive_changes._sa_access_token.call_count == 2

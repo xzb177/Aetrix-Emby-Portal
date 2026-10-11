@@ -23,6 +23,7 @@ import configparser
 import json
 import logging
 import os
+import random as _random
 import threading
 import time
 from datetime import datetime, timezone
@@ -199,15 +200,25 @@ def _discover_sa_files() -> list[str]:
     return _sa_files
 
 
+def _sa_rotation_start(n: int) -> int:
+    """取一个带随机抖动的 SA 轮换起点，并推进轮换计数器。
+
+    反风控：严格的 +1 轮询是完全规律的循环模式，容易被识别为机器行为；
+    步长取 1..n 的随机值，打破固定循环。全项目 SA 轮换只此一处实现，
+    drive_auth 复用它，不各自维护计数器。
+    """
+    global _sa_index
+    with _sa_lock:
+        start = _sa_index % n
+        _sa_index += _random.randint(1, max(1, n))
+    return start
+
 def _next_sa() -> dict | None:
     """轮询取下一个 SA 的凭证内容"""
-    global _sa_index
     files = _discover_sa_files()
     if not files:
         return None
-    with _sa_lock:
-        path = files[_sa_index % len(files)]
-        _sa_index += 1
+    path = files[_sa_rotation_start(len(files))]
     try:
         with open(path) as f:
             return json.load(f)

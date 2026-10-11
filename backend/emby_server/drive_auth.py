@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import logging
-import random as _random
 import threading
 import time
 from types import ModuleType
@@ -55,22 +54,19 @@ _cache_lock = threading.Lock()
 # 导致 100 个 SA 的轮询形同虚设、流量全压在单个 SA 上把配额干爆（probe 403）。
 _token_cache: dict[str, tuple[str, float]] = {}
 
-# P1 修复（审查）：播放 token 按 SA 轮换，不再永远用第一个 SA。
-# 进程启动时随机起点，避免多 worker 进程同时从第 0 个 SA 开始。
-_sa_rr_index = _random.randint(0, 1000000)
-_sa_rr_lock = threading.Lock()
+# SA 轮换：复用 drive_changes._sa_rotation_start（带随机抖动的统一实现），
+# 本模块不再维护独立计数器（横切能力只许一套）。
 
 
 def _reset_state() -> None:
-    """清空按 SA 分账号的 token 缓存并复位轮询起点。
+    """清空按 SA 分账号的 token 缓存。
 
     测试/调试用的显式重置点（生产路径不会调用）。
+    SA 轮换计数器已收敛到 drive_changes._sa_rotation_start，抖动本身
+    不需要确定性复位，故这里不再复位轮询起点。
     """
-    global _sa_rr_index
     with _cache_lock:
         _token_cache.clear()
-    with _sa_rr_lock:
-        _sa_rr_index = 0
 
 
 def _load_drive_changes() -> ModuleType:
@@ -125,9 +121,8 @@ def _pick_sa() -> dict[str, Any] | None:
 
     P1 修复（审查）：此前永远取第一个可用 SA，全站播放回源流量压在单个 SA
     配额上（与"100 子账号轮询"的设计相悖）。现按 round-robin 轮换，
-    与 drive_changes._next_sa 同口径。
+    轮换实现统一收敛到 drive_changes._sa_rotation_start，本模块不再维护独立计数器。
     """
-    global _sa_rr_index
     try:
         drive_changes = _load_drive_changes()
         sa_files = drive_changes._discover_sa_files() or []
@@ -135,10 +130,8 @@ def _pick_sa() -> dict[str, Any] | None:
         return None
     if not sa_files:
         return None
-    # 轮询起点：每次调用换一个 SA
-    with _sa_rr_lock:
-        start = _sa_rr_index % len(sa_files)
-        _sa_rr_index += 1
+    # 轮换起点：经 drive_changes 的统一实现取得（带随机抖动，反风控）
+    start = drive_changes._sa_rotation_start(len(sa_files))
     for offset in range(len(sa_files)):
         entry = sa_files[(start + offset) % len(sa_files)]
         try:
