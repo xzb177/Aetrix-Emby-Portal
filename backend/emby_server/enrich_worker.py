@@ -1621,6 +1621,9 @@ def _claim_batch(db, limit: int) -> list:
                                *base_order))
         return q.order_by(*base_order)
 
+    # 多版本（电影/剧集/单集）：被合并的版本不独立补全，元数据走主记录。
+    # （probe/subtitle/thumbnail worker 已有同口径过滤。）
+    not_merged = em.MediaItem.merged_into_id.is_(None)
     # 先看优先级最高 / 最近入库的若干个组：通常 1~3 个组就能填满一批；被别的 worker
     # 锁住（抢到 0 行）的组自动跳过，继续看下一个。GROUP BY 查询没法带
     # FOR UPDATE（PG 限制），所以是「选组」与「抢行」两步。
@@ -1628,7 +1631,7 @@ def _claim_batch(db, limit: int) -> list:
                          _func.max(em.MediaItem.date_added).label("latest"),
                          em.MediaItem.library_id.label("lib"))
                 .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
-                        not_episode)
+                        not_episode, not_merged)
                 # library_id 必须显式入组（PG 要求）：组键是全局 id，
                 # 同一组恒在同一库内，(group_key, library_id) 与 group_key 等价。
                 .group_by(group_key, em.MediaItem.library_id))
@@ -1640,7 +1643,7 @@ def _claim_batch(db, limit: int) -> list:
             break
         q = (db.query(em.MediaItem)
              .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
-                     not_episode, group_key == gid)
+                     not_episode, not_merged, group_key == gid)
              .order_by(
                  # 父级（剧/电影）先于子级：父级先落 done，子集才能纯继承
                  _case((em.MediaItem.item_type.in_(["series", "movie"]), 0), else_=1),

@@ -2393,6 +2393,30 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
         p.claimed_item = by_id.get(p.claimed_id)
 
 
+def _guid_held_by_other(db: Session, guid: Optional[str], row_id: int) -> Optional[int]:
+    """检查 guid 是否已被另一行占用（P0 改名冲突保护）。
+
+    改名识别（file_id / 指纹）在 ``_load_items`` 之后运行：并发扫描、批次重试
+    可能让当时不存在的行现在已存在。复用旧行前必须确认目标 guid 空闲，
+    否则写库时的 ``item.guid = new_guid`` 会撞 ``ix_emby_items_guid`` 唯一键、
+    整批回滚（2026-10-11 生产事故：同集多版本互认成改名，两次撞库）。
+
+    软删除的行也算占用：唯一约束不看 ``deleted_at``。
+    guid 为空（mock/异常路径）时直接返回 None：无法检查就不拦。
+    返回占用者的 id，无占用返回 None。
+    """
+    if not guid:
+        return None
+    MI = emby_models.MediaItem
+    with _soft_delete.include_deleted():
+        hit = (
+            db.query(MI.id)
+            .filter(MI.guid == guid, MI.id != row_id)
+            .first()
+        )
+    return hit[0] if hit else None
+
+
 def _resolve_conflict(db: Session, guid: str) -> Any:
     """upsert 没抢到（别人先插了）时，把那行取出来给扫描器当已存在条目用
 
@@ -2722,6 +2746,17 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
             p.item = row
             continue
         # 改名/移动：复用这一行
+        # P0 改名冲突保护（与指纹路径同理）：目标 guid 被占用则放弃改名，
+        # 让 pending 走正常新文件占位流程，避免撞唯一键整批回滚。
+        _holder = _guid_held_by_other(db, getattr(p, "guid", None), row.id)
+        if _holder is not None:
+            logger.warning(
+                "扫描改名识别放弃（file_id）：%s 的目标 guid 已被条目 %s 占用，"
+                "按新文件处理",
+                p.scan_file.stored_path, _holder)
+            ctx.stats["rename_collision_skipped"] = (
+                ctx.stats.get("rename_collision_skipped", 0) + 1)
+            continue
         p.item = row
         p.renamed = True
         matched += 1
@@ -2768,6 +2803,15 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
             if not ch.isspace() and ch not in "._-"
         )
 
+    def _ver_sig(path: str) -> tuple:
+        # 版本签名（P1）：同集多版本（2160p / 1080p / H265…）不再互认为改名。
+        # 纯字符串解析，零 IO。任一版本缺签名则退化为旧口径（相等），不误伤正常改名。
+        try:
+            from backend.emby_server import episode_versions as _ev
+            return _ev.version_signature(path)
+        except Exception:  # noqa: BLE001
+            return (None, None, None)
+
     def _pending_fp(p) -> Optional[tuple]:
         size = p.scan_file.size or 0
         if size <= 0:
@@ -2782,7 +2826,8 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
                     or parsed.get("episode") is None):
                 return None
             return ("episode", size, _norm(p.series_name),
-                    parsed["season"], parsed["episode"])
+                    parsed["season"], parsed["episode"],
+                    _ver_sig(p.scan_file.stored_path))
         return None
 
     def _row_fp(row) -> Optional[tuple]:
@@ -2813,7 +2858,8 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
                 or parsed.get("episode") is None):
             return None
         return ("episode", row.size, _norm(series_name),
-                parsed["season"], parsed["episode"])
+                parsed["season"], parsed["episode"],
+                _ver_sig(row.file_path or ""))
 
     need: list = []
     for p in prepared:
@@ -2843,6 +2889,10 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
             )
 
     by_fp: dict = {}
+    # 版本签名回退索引：任一侧签名缺失（全 None）时退化为旧口径（相等），
+    # 不误伤正常改名。key 为去掉版本签名的基础指纹，value 为 (row, ver_sig) 列表。
+    by_fp_base: dict = {}
+    _EMPTY_SIG = (None, None, None)
     for row in candidates:
         if row.guid in ctx.seen_guids:
             continue  # 本轮还见到的行是重复文件，不是改名
@@ -2850,6 +2900,7 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         if fp is None:
             continue
         by_fp.setdefault(fp, []).append(row)
+        by_fp_base.setdefault(fp[:-1], []).append((row, fp[-1]))
 
     # 1:1 才认领：同一指纹多个待匹配文件，或多个候选行，都算歧义，放弃
     want_count: dict = {}
@@ -2861,9 +2912,40 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         if want_count[fp] != 1:
             continue
         rows = [r for r in by_fp.get(fp, []) if r.id not in claimed_rows]
+        if not rows:
+            # 版本签名回退：精确指纹无命中时，若任一侧版本签名缺失（全 None），
+            # 退化为旧口径（去掉版本签名比较）。两边都有明确签名且不一致时
+            # （如 1080p vs 2160p）不回退——那是多版本，不是改名。
+            _p_ver = fp[-1]
+            for _r, _r_ver in by_fp_base.get(fp[:-1], []):
+                if _r.id in claimed_rows:
+                    continue
+                if _p_ver == _EMPTY_SIG or _r_ver == _EMPTY_SIG:
+                    rows.append(_r)
+            # 去重（同一行可能被多次加入）
+            _seen = set()
+            _uniq = []
+            for _r in rows:
+                if _r.id not in _seen:
+                    _seen.add(_r.id)
+                    _uniq.append(_r)
+            rows = _uniq
         if len(rows) != 1:
             continue
         row = rows[0]
+        # P0 改名冲突保护：p.guid 可能已被另一行占用（并发扫描/批次重试
+        # 导致 _load_items 时不存在的行现在已存在）。直接复用会撞唯一键，
+        # 整批回滚。放弃改名，让 pending 走正常新文件占位流程
+        # （_claim_guid  upsert + _resolve_conflict 兜底）。
+        _holder = _guid_held_by_other(db, getattr(p, "guid", None), row.id)
+        if _holder is not None:
+            logger.warning(
+                "扫描改名识别放弃：%s 的目标 guid 已被条目 %s 占用，"
+                "按新文件处理（疑似同集多版本或并发写入）",
+                p.scan_file.stored_path, _holder)
+            ctx.stats["rename_collision_skipped"] = (
+                ctx.stats.get("rename_collision_skipped", 0) + 1)
+            continue
         claimed_rows.add(row.id)
         p.item = row
         p.renamed = True
@@ -3884,7 +3966,14 @@ def scan_library_sync(db: Session, library: emby_models.Library,
         try:
             stats = _scan_library_body(db, library, snap)
         except Exception as exc:  # noqa: BLE001 — 异常要落到库里，再原样抛给调用方
-            logger.exception("媒体库「%s」扫描失败", snap.name)
+            if isinstance(exc, RuntimeError) and "interpreter shutdown" in str(exc):
+                # 容器重启/部署时扫描线程被中断：不是扫描逻辑故障，给用户一句人话，
+                # 而不是 "cannot schedule new futures after interpreter shutdown"。
+                logger.warning("媒体库「%s」扫描被容器重启/部署中断，重扫即可", snap.name)
+                exc = RuntimeError("扫描被容器重启中断（部署/重建），重扫即可")
+                exc.__cause__ = None
+            else:
+                logger.exception("媒体库「%s」扫描失败", snap.name)
             fail_scan(db, library, exc, run_id,
                       duration_ms=int((time.perf_counter() - started) * 1000))
             raise
@@ -4149,8 +4238,36 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     # v2.52.0: 改名/移动的行，guid 跟着新路径走（保持 guid=path 派生不变式）；
                     # 元数据（TMDB/刮削/播放进度）都在同一行上，全保留。
                     if getattr(_pending, "renamed", False):
-                        item.guid = _pending.guid
-                        ctx.stats["renamed_updated"] = ctx.stats.get("renamed_updated", 0) + 1
+                        _new_guid = _pending.guid
+                        if item.guid != _new_guid:
+                            # P0 最后一道防线：匹配阶段与写库之间可能有并发提交。
+                            # 目标 guid 被占用则放弃改名，直接更新归属行
+                            # （等价于 _resolve_conflict 的处理），绝不撞唯一键。
+                            _holder_id = _guid_held_by_other(db, _new_guid, item.id)
+                            if _holder_id is not None:
+                                _holder_item = db.get(emby_models.MediaItem, _holder_id)
+                                if _holder_item is not None:
+                                    logger.warning(
+                                        "扫描改名 guid 冲突保护：%s 的目标 guid 已被条目 %s 持有，"
+                                        "放弃改名复用，改走更新分支",
+                                        full_path, _holder_id)
+                                    item = _holder_item
+                                    _pending.item = _holder_item
+                                    stats["rename_collision_rerouted"] = (
+                                        stats.get("rename_collision_rerouted", 0) + 1)
+                                else:
+                                    # 归属行在别的未提交事务里：本轮跳过，下一轮处理
+                                    stats["conflict_skipped"] = (
+                                        stats.get("conflict_skipped", 0) + 1)
+                                    logger.warning(
+                                        "扫描跳过条目 %s：目标 guid 正被其他事务持有，"
+                                        "本轮不处理，留给下一轮扫描", full_path)
+                                    continue
+                            else:
+                                item.guid = _new_guid
+                                ctx.stats["renamed_updated"] = (
+                                    ctx.stats.get("renamed_updated", 0) + 1)
+                        # else: guid 本来就一致，无需更新
                     # v2.52.0: 落 drive_file_id（改名识别 + Changes API 都靠它）
                     _fid = getattr(scan_file, "file_id", "") or ""
                     if _fid:
@@ -4476,6 +4593,14 @@ def _scan_library_body(db: Session, library: emby_models.Library,
         emby_models.MediaItem.library_id == library.id,
         emby_models.MediaItem.item_type.in_(["movie", "series"]),
     )
+    # 单集多版本：扫描结束后唤醒合并 worker（best-effort，零查询）。
+    # 合并本身在 merge_versions_worker 后台做，不占用扫描的资源预算；
+    # 同一进程（worker）内 nudge 即时生效，跨进程时由 worker 周期兜底。
+    try:
+        from backend.emby_server import merge_versions_worker as _mvw
+        _mvw.nudge()
+    except Exception:  # noqa: BLE001 — 唤醒失败不影响扫描结果
+        pass
     # v2.55.x 翻转监控：本轮 done→pending 翻转数进 stats，finish_scan 汇总告警。
     # 明细在 ctx.enrich_flips（内存），告警事件写 PG（持久，容器重建不丢）。
     stats["enrich_flips"] = len(ctx.enrich_flips)

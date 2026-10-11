@@ -2134,3 +2134,27 @@ def admin_unmerge_all(
            {"count": count})
     db.commit()
     return {"success": True, "message": f"已解除 {count} 个版本的合并"}
+
+
+@admin_router.post("/media/episode-versions/merge")
+def admin_merge_episode_versions(
+    library_id: Optional[int] = None,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """手动触发单集多版本合并（存量回填 / 主动整理）。
+
+    同一 (series, season, episode) 的多个文件合并为多版本：
+    主记录展示，其他版本 merged_into_id 指向主记录，
+    通过 AlternateVersions 查看/选择播放。
+    不传 library_id 则全库执行。
+    """
+    from backend.emby_server import episode_versions as _ev
+
+    if not _ev.EPISODE_VERSIONS_ENABLED:
+        raise HTTPException(status_code=400, detail="单集多版本功能已关闭（EPISODE_VERSIONS_ENABLED=0）")
+    stats = _ev.merge_episode_versions(db, library_id)
+    _audit(db, current_admin, "merge_episode_versions", "library",
+           library_id or 0, stats)
+    db.commit()
+    return {"success": True, **stats}
