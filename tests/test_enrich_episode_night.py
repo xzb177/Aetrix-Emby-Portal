@@ -123,8 +123,8 @@ def test_night_config_default_off(db):
     """默认关闭：不读库、不设环境变量时 enabled=False"""
     cfg = enrich_worker._episode_night_config(db)
     assert cfg["enabled"] is False
-    assert cfg["start"] == "02:00"
-    assert cfg["end"] == "06:00"
+    assert cfg["night_start"] == "02:00"
+    assert cfg["night_end"] == "06:00"
     assert cfg["from_env"] is False
 
 
@@ -135,8 +135,8 @@ def test_night_config_env_wins(db):
     os.environ[enrich_worker.ENRICH_NIGHT_END_ENV] = "06:00"
     cfg = enrich_worker._episode_night_config(db)
     assert cfg["enabled"] is True
-    assert cfg["start"] == "22:00"
-    assert cfg["end"] == "06:00"
+    assert cfg["night_start"] == "22:00"
+    assert cfg["night_end"] == "06:00"
     assert cfg["from_env"] is True
 
 
@@ -161,8 +161,8 @@ def test_night_config_db_backed(db):
     db.commit()
     cfg = enrich_worker._episode_night_config(db)
     assert cfg["enabled"] is True
-    assert cfg["start"] == "01:00"
-    assert cfg["end"] == "05:00"
+    assert cfg["night_start"] == "01:00"
+    assert cfg["night_end"] == "05:00"
     assert cfg["from_env"] is False
 
 
@@ -236,3 +236,34 @@ def test_claim_batch_daytime_series_group_excludes_episodes(db, monkeypatch):
     assert series.id in claimed_ids
     assert ep1.id not in claimed_ids
     assert ep2.id not in claimed_ids
+
+
+# ---------- 管理后台字段名一致性（回归：前端 EnrichEpisodeNightConfig 接口） ----------
+
+def test_public_config_field_names_match_frontend(db):
+    """get_episode_night_config 返回的顶层字段必须与前端
+    EnrichEpisodeNightConfig 接口一致（night_start/night_end），
+    否则管理后台时间选择器显示为空（2026-10-11 回归）。"""
+    cfg = enrich_worker.get_episode_night_config(db)
+    assert "night_start" in cfg, "顶层缺 night_start，前端读不到"
+    assert "night_end" in cfg, "顶层缺 night_end，前端读不到"
+    assert "start" not in cfg, "旧字段 start 残留"
+    assert "end" not in cfg, "旧字段 end 残留"
+    assert cfg["night_start"] == "02:00"
+    assert cfg["night_end"] == "06:00"
+    assert "enabled" in cfg and "in_window" in cfg and "from_env" in cfg
+
+
+def test_save_returns_frontend_compatible_fields(db):
+    """save_episode_night_config 的返回值同样必须带 night_start/night_end，
+    否则保存后前端界面立刻变空。"""
+    try:
+        cfg = enrich_worker.save_episode_night_config(db, True, "22:00", "06:00")
+        assert cfg["enabled"] is True
+        assert cfg["night_start"] == "22:00"
+        assert cfg["night_end"] == "06:00"
+        assert "start" not in cfg and "end" not in cfg
+    finally:
+        # 清理：关闭开关，避免 SystemConfig 污染后续测试文件
+        # （test_enrich_worker.py 共用同一临时库，开关开着会跳过单集）
+        enrich_worker.save_episode_night_config(db, False, "02:00", "06:00")
