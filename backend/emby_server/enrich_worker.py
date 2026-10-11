@@ -235,6 +235,28 @@ class _EnrichItemSnapshot:
     series_id: Optional[int] = None
     parent_id: Optional[int] = None
     metadata_locked: bool = False
+    # 认领归属校验用：僵尸 worker 防护（_claim_still_ours）。慢 IO 阶段不碰 ORM，
+    # 写回/记失败时凭它判断"这行是否还属于我这次认领"。
+    enrich_claim_token: Optional[str] = None
+
+
+def _claim_still_ours(item: Any, claim_token: Optional[str]) -> bool:
+    """纯函数：判断当前行是否仍属于本 worker 的认领（不碰 DB）。
+
+    背景：worker 认领后若慢 IO 超过租约，janitor 会把行打回 pending，
+    别的 worker 会重新认领并处理完。此时原 worker 是"僵尸"——它迟到的
+    _mark_failed / _requeue_* 绝不许覆盖行的新状态（曾把 done 翻成 failed，
+    终态卡死）。claim_token 为 None 时不做归属校验，保持旧行为（向后兼容）。
+    """
+    if claim_token is None:
+        return True
+    if item is None:
+        return False
+    if getattr(item, "enrich_status", None) != "enriching":
+        return False
+    if getattr(item, "enrich_claim_token", None) != claim_token:
+        return False
+    return True
 
 
 def _snapshot_item(item: Any) -> _EnrichItemSnapshot:
@@ -259,6 +281,7 @@ def _snapshot_item(item: Any) -> _EnrichItemSnapshot:
         metadata_locked=bool(getattr(item, "metadata_locked", False)),
         series_id=item.series_id,
         parent_id=item.parent_id,
+        enrich_claim_token=getattr(item, "enrich_claim_token", None),
     )
 
 
@@ -1655,15 +1678,26 @@ def _library_turn(start_lib_id: Optional[int] = None) -> Optional[int]:
     return _library_turn_state["lib_id"]
 
 
-def _mark_failed(db, item_id: int, attempts: int, error: str) -> str:
+def _mark_failed(db, item_id: int, attempts: int, error: str,
+                 claim_token: Optional[str] = None) -> str:
     """失败：attempts+1，指数退避，超限转 failed。单条短事务。
 
-    返回 "failed" / "retry"，供调用方计入完成速率（v2.42.9）。
+    返回 "failed" / "retry" / "skip"，供调用方计入完成速率（v2.42.9）。
+
+    claim_token：本次认领的令牌（_claim_batch 写入）。传了就做归属校验：
+    行已被 janitor 回收、别人接手后，本 worker 已是"僵尸"，返回 "skip"
+    不覆盖新状态（否则会把别人做完的 done 翻成 failed）。为 None 时保持
+    旧行为（向后兼容：现有测试/旧调用方）。
     """
     try:
         item = db.query(em.MediaItem).filter(
             em.MediaItem.id == item_id).first()
         if item is None:
+            return "skip"
+        if not _claim_still_ours(item, claim_token):
+            # 僵尸 worker：认领已失效，行有了新主人/新状态，不许覆盖
+            logger.debug("补全记失败跳过（认领已失效）id=%s", item_id)
+            db.rollback()
             return "skip"
         attempts = (attempts or 0) + 1
         item.enrich_attempts = attempts
@@ -1864,18 +1898,25 @@ def _mount_id_of(file_path: Optional[str]) -> Optional[int]:
     return int(head) if head.isdigit() else None
 
 
-def _requeue_mount_unavailable(db, item_id: int, mount_id: Optional[int] = None) -> str:
+def _requeue_mount_unavailable(db, item_id: int, mount_id: Optional[int] = None,
+                                claim_token: Optional[str] = None) -> str:
     """存储读不动：打回 pending + 长 next_retry_at（**不是 failed**）。
 
     坏挂载上的条目重试只会重复失败：让它们吃长退避，把队列让给健康挂载；
     attempts 不涨（这不是条目本身的失败，是存储不可用），挂载恢复后自然重补。
     单条短事务。
+
+    claim_token：同 _mark_failed，僵尸 worker 不许覆盖行的新状态。
     """
     try:
         from backend.emby_server import mounts as mount_lib
         retry_sec = mount_lib.MOUNT_UNAVAILABLE_RETRY_SEC
         item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
         if item is None:
+            return "skip"
+        if not _claim_still_ours(item, claim_token):
+            logger.debug("补全跳过（认领已失效）id=%s", item_id)
+            db.rollback()
             return "skip"
         item.enrich_status = "pending"
         item.enrich_claimed_at = None
@@ -1890,13 +1931,21 @@ def _requeue_mount_unavailable(db, item_id: int, mount_id: Optional[int] = None)
         return "skip"
 
 
-def _requeue_douban_banned(db, item_id: int) -> str:
-    """豆瓣封禁冷却中：打回 pending，冷却结束后再补；attempts 不涨。单条短事务。"""
+def _requeue_douban_banned(db, item_id: int,
+                           claim_token: Optional[str] = None) -> str:
+    """豆瓣封禁冷却中：打回 pending，冷却结束后再补；attempts 不涨。单条短事务。
+
+    claim_token：同 _mark_failed，僵尸 worker 不许覆盖行的新状态。
+    """
     try:
         from backend.emby_server import douban as _dbn
         wait = max(60, int(_dbn.ban_remaining()) + 5)
         item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
         if item is None:
+            return "skip"
+        if not _claim_still_ours(item, claim_token):
+            logger.debug("补全延后跳过（认领已失效）id=%s", item_id)
+            db.rollback()
             return "skip"
         item.enrich_status = "pending"
         item.enrich_claimed_at = None
@@ -1966,14 +2015,18 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
         db.rollback()
         from backend.emby_server import mounts as mount_lib
         if isinstance(exc, mount_lib.MountError):
-            return _requeue_mount_unavailable(db, item_id, mount_id)
-        return _mark_failed(db, item_id, attempts, str(exc))
+            return _requeue_mount_unavailable(
+                db, item_id, mount_id, claim_token=snapshot.enrich_claim_token)
+        return _mark_failed(db, item_id, attempts, str(exc),
+                            claim_token=snapshot.enrich_claim_token)
     if not fetched.get("ok"):
         db.rollback()
         if fetched.get("douban_banned"):
-            return _requeue_douban_banned(db, item_id)
+            return _requeue_douban_banned(
+                db, item_id, claim_token=snapshot.enrich_claim_token)
         return _mark_failed(db, item_id, attempts,
-                            fetched.get("error") or "fetch failed")
+                            fetched.get("error") or "fetch failed",
+                            claim_token=snapshot.enrich_claim_token)
 
     # ---- 写库阶段：重新加载 ORM，单条短事务 ----
     try:
@@ -1991,7 +2044,8 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全写库失败 id=%s: %s", item_id, exc)
         db.rollback()
-        return _mark_failed(db, item_id, attempts, str(exc))
+        return _mark_failed(db, item_id, attempts, str(exc),
+                            claim_token=snapshot.enrich_claim_token)
 
 
 def _process_batch(db, batch: list) -> None:
@@ -2090,9 +2144,11 @@ def _process_batch(db, batch: list) -> None:
             logger.warning("批量补全 IO 失败 id=%s: %s", item_id, exc)
             db.rollback()
             if isinstance(exc, mount_lib.MountError):
-                outcome = _requeue_mount_unavailable(db, item_id, mount_id)
+                outcome = _requeue_mount_unavailable(
+                    db, item_id, mount_id, claim_token=snapshot.enrich_claim_token)
             else:
-                outcome = _mark_failed(db, item_id, attempts, str(exc))
+                outcome = _mark_failed(db, item_id, attempts, str(exc),
+                                       claim_token=snapshot.enrich_claim_token)
             progress.note_stage(
                 "enrich_item", (time.monotonic() - started) * 1000.0)
             progress.note_completed(outcome)
@@ -2100,10 +2156,12 @@ def _process_batch(db, batch: list) -> None:
         if not fetched.get("ok"):
             db.rollback()
             if fetched.get("douban_banned"):
-                outcome = _requeue_douban_banned(db, item_id)
+                outcome = _requeue_douban_banned(
+                    db, item_id, claim_token=snapshot.enrich_claim_token)
             else:
                 outcome = _mark_failed(db, item_id, attempts,
-                                      fetched.get("error") or "fetch failed")
+                                      fetched.get("error") or "fetch failed",
+                                      claim_token=snapshot.enrich_claim_token)
             progress.note_stage(
                 "enrich_item", (time.monotonic() - started) * 1000.0)
             progress.note_completed(outcome)
@@ -2123,7 +2181,8 @@ def _process_batch(db, batch: list) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("批量补全写库失败 id=%s: %s", item_id, exc)
             db.rollback()
-            outcome = _mark_failed(db, item_id, attempts, str(exc))
+            outcome = _mark_failed(db, item_id, attempts, str(exc),
+                                   claim_token=snapshot.enrich_claim_token)
         progress.note_stage(
             "enrich_item", (time.monotonic() - started) * 1000.0)
         progress.note_completed(outcome)
