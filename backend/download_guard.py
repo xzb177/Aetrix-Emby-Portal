@@ -18,6 +18,7 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,6 @@ class DownloadGuardMiddleware:
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http" or not is_download_path(scope.get("path", "")):
             return await self.app(scope, receive, send)
-
-        from starlette.concurrency import run_in_threadpool
 
         allowed_by_policy, blocked = await run_in_threadpool(self._verdict, scope)
         if allowed_by_policy:
