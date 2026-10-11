@@ -223,7 +223,24 @@ def reserve(db: Session, *, coupon: models.CouponCode, user: models.WebUser,
     任一步抢不到就抛 400，整笔下单一起回滚——不会留下「占了额度却没订单」的半张核销记录。
 
     成功后返回核销记录；抢不到说明已被自己或别人用完。
+
+    注意：下面的「条件 INSERT ... SELECT」单独看在 PostgreSQL READ COMMITTED 下
+    **不是**原子的——两个并发事务会同时看到 count < limit 而都插入成功（已用
+    tests/test_coupons_reserve_race.py 复现）。所以入口先对券行加
+    ``with_for_update()`` 行锁，把同一张券的所有占位串行化，锁内的 count 才可信；
+    锁也顺带让后面的总额度条件 UPDATE 不用跟别的占位事务抢行锁。
+    （economy.py 里积分链尾 / 订阅发放的同类竞态也是这么修的。）
     """
+    locked = (
+        db.query(models.CouponCode)
+        .filter(models.CouponCode.id == coupon.id)
+        .with_for_update()
+        .first()
+    )
+    if locked is None:
+        raise _invalid("优惠码不存在")
+    coupon = locked  # 后续都用锁住的这一行：限额/开关是锁内读到的最新值
+
     now = datetime.now()
     per_user_limit = int(coupon.per_user_limit or 0)
     if per_user_limit > 0:
