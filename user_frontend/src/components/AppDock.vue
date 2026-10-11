@@ -62,6 +62,8 @@ function isActive(path: string) {
 .dock-item {
   flex: 1;
   max-width: 96px;
+  /* 触控区 ≥48px（图标 26px + 标签 + 内边距，实测约 55px，这里显式兜底） */
+  min-height: 48px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -70,7 +72,15 @@ function isActive(path: string) {
   padding: 0.375rem 0 0.25rem;
   text-decoration: none;
   color: var(--au-text-3);
-  transition: color var(--au-fast) var(--au-ease);
+  /* 按压反馈：纯 CSS :active 缩放，零 JS、零布局抖动。
+     reduced-motion 下 --neo-scale-press=1、--neo-duration-fast=0ms，自动无缩放 */
+  transition:
+    color var(--au-fast) var(--au-ease),
+    transform var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+}
+
+.dock-item:active {
+  transform: scale(0.96);
 }
 
 .dock-ic {

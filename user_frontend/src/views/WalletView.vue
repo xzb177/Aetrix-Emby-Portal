@@ -24,9 +24,11 @@ import {
   type OrderRow, type CheckinStatus, type CodePreview, type VitalityStatus,
 } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
+import { useHaptics } from '@/composables/useHaptics'
 import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
+const haptics = useHaptics()
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
@@ -320,6 +322,7 @@ async function pollPaymentResult() {
         // 会员身份 / 付费墙状态随之刷新（头像、VIP 标识、详情页提示）
         userStore.fetchUser().catch(() => {})
         toast.success(`支付成功，「${arrived.item_name}」已到账`)
+        haptics.success()
         stopPayPoll()
         return
       }
