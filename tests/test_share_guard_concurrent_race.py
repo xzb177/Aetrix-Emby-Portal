@@ -23,6 +23,7 @@ Bug
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -31,6 +32,7 @@ from sqlalchemy.orm import sessionmaker
 from backend import models
 from backend import share_guard
 from backend.emby_server import models as em
+from backend.emby_server import compat_routes
 from backend.integrations import store
 
 
@@ -241,3 +243,117 @@ def test_guard_off_passes_without_judgement(factory):
         )
     finally:
         db.close()
+def test_same_key_collision_keeps_staged_guard_event(factory, monkeypatch):
+    # 1. 配置：并发异常档位 record、上限 1、travel 关。
+    with factory() as db:
+        db.add_all([
+            models.SystemConfig(key=share_guard.CONFIG_CONCURRENT_ACTION, value="record"),
+            models.SystemConfig(key=share_guard.CONFIG_CONCURRENT_LIMIT, value="1"),
+            models.SystemConfig(key=share_guard.CONFIG_TRAVEL_ACTION, value="off"),
+        ])
+        db.commit()
+    store.invalidate()
+
+    # 2. 用户 + 条目 + 2 个已存在的活会话行（2 others + limit=1 → 新会话必判 concurrent 异常）。
+    with factory() as db:
+        u = models.WebUser(
+            username="racer3",
+            password_hash="x",
+            is_active=True,
+            is_staff=False,
+        )
+        it = em.MediaItem(guid="c" * 32, library_id=1, item_type="movie", name="M3")
+        db.add_all([u, it])
+        db.flush()
+        uid, iid, guid = u.id, it.id, it.guid
+        db.add_all([
+            em.PlaybackSession(session_key="other-1", user_id=uid, ended_at=None),
+            em.PlaybackSession(session_key="other-2", user_id=uid, ended_at=None),
+        ])
+        db.commit()
+
+    # 3. 请求构造。
+    def req():
+        return SimpleNamespace(
+            headers={
+                "X-Emby-Authorization": (
+                    'MediaBrowser Client="TinyPlayer", Device="Box", '
+                    'DeviceId="dev-sp", Version="1.0"'
+                )
+            },
+            client=SimpleNamespace(host="1.2.3.4"),
+        )
+
+    body = {"ItemId": guid, "PlaySessionId": "K-sp2", "PositionTicks": 0}
+
+    # 4. 线程编排。
+    # 原理：T1 先拿到用户行锁、判定出 concurrent 异常并暂存事件（commit=False），
+    # 在 note_activity 处等 T2；T2 的 top-read 在此之前完成（看到 None），
+    # 随后在 note_session 的用户行锁上阻塞；T1 继续建行并提交释放锁；
+    # T2 被唤醒后同样判定异常并暂存事件，建行时撞 T1 已提交的同键行
+    # → begin_nested 存点回滚（只丢 insert 本体）→ 复用 winner 行。
+    # 若这里用裸 db.rollback()，T2 暂存的判定事件会被一起吞掉。
+    mk = factory
+    outcome = {}
+    t2_topread_done = threading.Event()
+
+    def run(tag):
+        db = mk()
+        try:
+            u = db.get(models.WebUser, uid)
+            it = db.get(em.MediaItem, iid)
+            sess, _ = compat_routes._upsert_session(db, req(), u, it, dict(body))
+            outcome[tag] = sess.session_key if sess is not None else None
+        except Exception as exc:
+            outcome[tag] = f"error: {exc!r}"
+        finally:
+            db.close()
+
+    th1 = threading.Thread(target=lambda: run("t1"))
+    th2 = threading.Thread(target=lambda: run("t2"))
+
+    orig_ns, orig_na = share_guard.note_session, share_guard.note_activity
+
+    def gated_ns(db, user, session_key, ip, **kw):
+        # _upsert_session 的 top-read 在调 note_session 之前；
+        # th2 到这里时 top-read 已完成（看到 None），随后在行锁上等 T1 提交。
+        if threading.current_thread() is th2:
+            t2_topread_done.set()
+        return orig_ns(db, user, session_key, ip, **kw)
+
+    def gated_na(db, user, ip, **kw):
+        if threading.current_thread() is th1:
+            assert t2_topread_done.wait(timeout=15), "T2 未完成 top-read"
+            time.sleep(0.3)  # 确保 T2 已卡在用户行锁上
+        return orig_na(db, user, ip, **kw)
+
+    monkeypatch.setattr(share_guard, "note_session", gated_ns)
+    monkeypatch.setattr(share_guard, "note_activity", gated_na)
+
+    th1.start()
+    th2.start()
+    th1.join(30)
+    th2.join(30)
+    assert not th1.is_alive() and not th2.is_alive(), "线程 30 秒内未结束（疑似死锁）"
+
+    # 5. 断言。
+    assert outcome["t1"] == "K-sp2", f"T1 未拿到会话: {outcome['t1']!r}"
+    assert outcome["t2"] == "K-sp2", f"T2 未拿到会话（可能 500 或复用失败）: {outcome['t2']!r}"
+
+    with factory() as db:
+        n_sess = (
+            db.query(em.PlaybackSession)
+            .filter(em.PlaybackSession.session_key == "K-sp2")
+            .count()
+        )
+        assert n_sess == 1, f"同键会话行应只有 1 条（T2 复用 winner），实际 {n_sess}"
+
+        n_ev = (
+            db.query(models.ShareGuardEvent)
+            .filter(models.ShareGuardEvent.kind == "concurrent")
+            .count()
+        )
+        assert n_ev == 2, (
+            "concurrent 事件应为 2 条（T1、T2 各暂存一条；"
+            f"撞键回滚不应吞掉 T2 的暂存事件），实际 {n_ev}"
+        )
