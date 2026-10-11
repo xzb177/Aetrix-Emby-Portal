@@ -8,11 +8,12 @@
  * - aria-hidden + pointer-events: none，不拦截表单交互
  */
 import { computed } from 'vue'
-import { imageUrl } from '@/api/emby'
 import type { LoginPoster } from '@/api/site'
 
 const props = defineProps<{
   posters: LoginPoster[]
+  /** EA 海报直链基地址（后端 /api/site/login-posters 下发，不在前端硬编码） */
+  embyBaseUrl: string
 }>()
 
 const isMobile = computed(() =>
@@ -36,7 +37,8 @@ const columns = computed((): LoginPoster[][] => {
 const durations = ['60s', '85s', '70s']
 
 function posterSrc(id: string): string {
-  return imageUrl(id, 'Primary', 320)
+  // 直连 EA 公开图片端点（基地址由后端下发；登录页未登录时 embyBaseRef 为空，不能用 imageUrl()）
+  return `${props.embyBaseUrl}/emby/Items/${encodeURIComponent(id)}/Images/Primary?maxWidth=320`
 }
 </script>
 

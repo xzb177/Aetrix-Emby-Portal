@@ -153,6 +153,8 @@ let restoreLoginTheme: (() => void) | null = null
 
 // 海报拼贴背景：延迟到浏览器空闲时拉取，不阻塞表单首屏渲染
 const loginPosters = ref<LoginPoster[]>([])
+// EA 海报直链基地址（后端下发；为空则不渲染拼贴，避免相对路径被反代到错误后端）
+const loginPostersBaseUrl = ref('')
 
 onMounted(() => {
   // 修复1：登录页强制深色（品牌第一屏不跟随系统，用户决策 2026-10-11）。
@@ -186,10 +188,13 @@ onMounted(() => {
   }
 
   // 海报拼贴背景：requestIdleCallback 延迟拉取（降级 setTimeout 800ms），
-  // 失败时静默降级（loginPosters 为空 → 不渲染拼贴，回退现有背景）
+  // 失败时静默降级（loginPosters 为空或基地址为空 → 不渲染拼贴，回退现有背景）
   const loadPosters = () => {
-    fetchLoginPosters().then((items) => {
-      if (items.length > 0) loginPosters.value = items
+    fetchLoginPosters().then(({ items, embyBaseUrl }) => {
+      if (items.length > 0 && embyBaseUrl) {
+        loginPosters.value = items
+        loginPostersBaseUrl.value = embyBaseUrl
+      }
     }).catch(() => { /* 静默降级 */ })
   }
   const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback
@@ -206,7 +211,7 @@ onUnmounted(() => {
 
 <template>
   <div class="auth-page">
-    <PosterCollage v-if="loginPosters.length > 0" :posters="loginPosters" />
+    <PosterCollage v-if="loginPosters.length > 0 && loginPostersBaseUrl" :posters="loginPosters" :emby-base-url="loginPostersBaseUrl" />
     <div class="auth-grid" aria-hidden="true"></div>
 
     <div class="auth-column">
