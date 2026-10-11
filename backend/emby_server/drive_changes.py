@@ -235,13 +235,19 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _sa_access_token(sa: dict) -> str | None:
-    """用 JWT 断言换 access_token（带缓存）"""
+def _sa_access_token(sa: dict, min_remaining: float = 60) -> str | None:
+    """用 JWT 断言换 access_token（带缓存）
+
+    ``min_remaining``：缓存命中要求的最小剩余寿命（秒）。仅当缓存 token 的
+    过期时刻晚于 ``now + min_remaining`` 时才复用，否则重新换取新 token。
+    默认 60 保持既有调用方（``_get_token``）行为不变；调用方可传更大的值
+    以索取“剩余寿命更长”的 token。
+    """
     client_email = sa.get("client_email", "")
     cache_key = client_email or sa.get("private_key_id", "")
     now = time.time()
     cached = _token_cache.get(cache_key)
-    if cached and cached[1] > now + 60:
+    if cached and cached[1] > now + min_remaining:
         return cached[0]
 
     private_key_pem = sa.get("private_key", "")
