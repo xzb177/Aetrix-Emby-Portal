@@ -3848,6 +3848,142 @@ def scan_library_sync(db: Session, library: emby_models.Library,
         _release_scan(snap.library_id)
 
 
+# ---- enrich_status 统一写入点（P2-1/P2-3/P3-1，2026-10-11 round3-p2p3）----
+# 原两套写入语义（分层状态机 vs 非分层简单标记）已统一到 _apply_enrich_status。
+# 所有 enrich_status 写入必须走 _write_enrich_status，reason 必填，保证日志可审计。
+_ENRICH_PENDING = "pending"
+_ENRICH_DONE = "done"
+_ENRICH_FAILED = "failed"
+_ENRICH_RETRY_DELAY = timedelta(hours=1)
+# 参与后台补全流水线的类型（保留原非分层路径行为）。
+_ENRICH_SUPPORTED_TYPES = ("movie", "episode")
+
+
+def _write_enrich_status(
+    item,
+    status,
+    *,
+    reason,
+    old_status=None,
+    old_size=None,
+    new_size=None,
+    reset_failed_attempts=False,
+):
+    """Single writer for item.enrich_status.
+
+    Contract:
+      * layered=True  -> PENDING means "enrich_worker will fill the rest"
+      * layered=False -> DONE means "this scan finalizes the item"
+    `reason` is mandatory so every transition is auditable in logs.
+    """
+    item.enrich_status = status
+
+    attempts_reset = False
+    if (
+        status == _ENRICH_PENDING
+        and reset_failed_attempts
+        and old_status == _ENRICH_FAILED
+    ):
+        item.enrich_attempts = 0
+        item.enrich_next_retry_at = datetime.now() + _ENRICH_RETRY_DELAY
+        attempts_reset = True
+
+    # PENDING 低频且运维关键 -> INFO；DONE 高频幂等 -> DEBUG 防日志风暴。
+    log = logger.info if status == _ENRICH_PENDING else logger.debug
+    log(
+        "enrich_status write: id=%s status=%s reason=%s old_status=%s "
+        "old_size=%s new_size=%s attempts_reset=%s",
+        getattr(item, "id", None),
+        status,
+        reason,
+        old_status,
+        old_size,
+        new_size,
+        attempts_reset,
+    )
+
+
+def _compute_size_change(item, scan_file):
+    """Return (old_size, new_size, size_changed), keep item.size in sync.
+
+    修复隐藏 bug：原代码 size 变化时未回写 item.size，导致下次扫描
+    看到旧 size 又判定 size_changed=True，无限重排。
+    """
+    old_size = getattr(item, "size", 0) or 0
+    new_size = getattr(scan_file, "size", 0) or 0
+
+    if not old_size and new_size:
+        # 首次得知大小：记下，本轮不视为"变化"。
+        item.size = new_size
+        return old_size, new_size, False
+
+    size_changed = bool(old_size and new_size and old_size != new_size)
+    if size_changed:
+        # 必须回写，否则下次扫描看到旧 size 又判为变化，无限重排。
+        item.size = new_size
+
+    return old_size, new_size, size_changed
+
+
+def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type):
+    """Decide and write enrich_status. Max nesting depth: 2."""
+    old_status = getattr(item, "enrich_status", None)
+    old_size, new_size, size_changed = _compute_size_change(item, scan_file)
+
+    if not layered:
+        # 非分层：本轮已做完补全，直接终结。
+        # 注意：series/season 骨架行由 episode 分支创建，走 L2 补全，这里不抢标。
+        if (
+            item_type in _ENRICH_SUPPORTED_TYPES
+            and (old_status or _ENRICH_PENDING) == _ENRICH_PENDING
+        ):
+            _write_enrich_status(
+                item,
+                _ENRICH_DONE,
+                reason="flat_scan_finalized",
+                old_status=old_status,
+                old_size=old_size,
+                new_size=new_size,
+            )
+        return
+
+    # 分层扫描 enrich_status 状态机
+    # （2026-10-11 生产事故修复 #593，round3 完善）：
+    # mtime 不可靠，内容真实变更只看文件大小变化。
+    if is_new or old_status is None:
+        _write_enrich_status(
+            item,
+            _ENRICH_PENDING,
+            reason="new_item" if is_new else "no_prior_status",
+            old_status=old_status,
+            old_size=old_size,
+            new_size=new_size,
+        )
+        return
+
+    if size_changed:
+        _write_enrich_status(
+            item,
+            _ENRICH_PENDING,
+            reason="size_changed",
+            old_status=old_status,
+            old_size=old_size,
+            new_size=new_size,
+            reset_failed_attempts=True,
+        )
+        return
+
+    # 仅 mtime 抖动 / 无实质变化：保持原状态，防止队列风暴。
+    logger.debug(
+        "enrich_status kept: id=%s status=%s old_size=%s new_size=%s",
+        getattr(item, "id", None),
+        old_status,
+        old_size,
+        new_size,
+    )
+
+
+
 def _scan_library_body(db: Session, library: emby_models.Library,
                        snap: LibrarySnapshot) -> dict:
     """一轮扫描的主体（不含进程内互斥与结果落库，见 scan_library_sync）"""
@@ -3952,58 +4088,15 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     # 非 layered=旧行为（本轮已做完所有补全）→ done。
                     if _pending.file_fingerprint:
                         item.file_fingerprint = _pending.file_fingerprint
-                    if _pending.layered:
-                        # 分层扫描 enrich_status 状态机
-                        # （2026-10-11 生产事故修复 #593，round3 完善）：
-                        # mtime 不可靠：.strm 批量重生成曾让 8.5 万文件 mtime 变化，
-                        # 把 2.4 万 done 条目打回队列（积压 0→25000）。
-                        # 因此「内容真实变更」的信号只看文件大小变化——与本函数
-                        # 下方 probe 优先级的 size_changed 口径一致（"换源：大小变了"）。
-                        _old_status = getattr(item, "enrich_status", None)
-                        _old_size = getattr(item, "size", 0) or 0
-                        _new_size = getattr(scan_file, "size", 0) or 0
-                        if not _old_size and _new_size:
-                            # 库里没记过大小（新行占位时 size 为 0，probe 在后台跑，
-                            # 分层扫描本轮拿不到）：先记下本轮的，为下次比较打基础，
-                            # 本轮不视为"变化"。
-                            item.size = _new_size
-                            _size_changed = False
-                        else:
-                            _size_changed = bool(
-                                _old_size and _new_size
-                                and _old_size != _new_size
-                            )
-                        if is_new or _old_status is None:
-                            # 新文件 / 从未标记过：等后台 enrich_worker 补全。
-                            item.enrich_status = "pending"
-                        elif _size_changed:
-                            # 内容真实变更（换源/改字幕导致大小变化）：重新补全。
-                            item.enrich_status = "pending"
-                            if _old_status == "failed":
-                                # failed 条目自愈：必须同时清零 attempts 并给退避，
-                                # 否则「扫描→pending→worker 立刻抢走→尝试→又 failed→
-                                # 下次扫描又 pending」无限空转，每轮都烧 TMDB 配额。
-                                item.enrich_attempts = 0
-                                item.enrich_next_retry_at = (
-                                    datetime.now() + timedelta(hours=1)
-                                )
-                                logger.info(
-                                    "分层扫描 failed 条目自愈: id=%s 大小变化，"
-                                    "attempts 清零，1 小时后重试",
-                                    getattr(item, "id", None),
-                                )
-                        else:
-                            # 仅 mtime 抖动 / 无实质变化：保持原状态，防止队列风暴。
-                            logger.debug(
-                                "分层扫描保持 enrich_status: id=%s status=%s",
-                                getattr(item, "id", None), _old_status,
-                            )
-                    elif (getattr(item, "enrich_status", None) or "pending") == "pending":
-                        # 非分层路径本轮已做完补全（side/NFO/TMDB 都在上面处理了），标 done。
-                        # 注意：series/season 骨架行由 episode 分支创建，它们走 L2 补全，
-                        # 这里不抢标（它们的 enrich_status 由 enrich_worker 负责）。
-                        if _pending.item_type in ("movie", "episode"):
-                            item.enrich_status = "done"
+                    # enrich_status 统一走 _apply_enrich_status（P2-1/P2-3/P3-1 重构，
+                    # 2026-10-11 round3-p2p3）：单一写入点 + reason 必填日志 + 早返回结构。
+                    _apply_enrich_status(
+                        item,
+                        scan_file,
+                        is_new=is_new,
+                        layered=_pending.layered,
+                        item_type=_pending.item_type,
+                    )
                     platforms = detect_platforms(full_path)  # 发行平台标签（虚拟媒体库用）
                     if platforms:
                         item.platforms = ",".join(platforms)
