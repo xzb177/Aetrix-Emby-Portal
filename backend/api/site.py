@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from fastapi import APIRouter, Depends, Request
@@ -35,7 +36,13 @@ def get_branding(db: Session = Depends(get_db)):
 
 # 登录页海报拼贴（公开）：服务端缓存 10 分钟，海报不常变
 _LOGIN_POSTERS_TTL = 600
-_login_posters_cache: dict = {"at": 0.0, "items": [], "emby_base_url": ""}
+# 失败负缓存：DB 抖动期间留 30 秒窗口，避免每个请求都重打全表随机查询
+_LOGIN_POSTERS_FAIL_TTL = 30
+# at 初值用 None 表示"从未刷新"：monotonic() 起点是系统启动时刻，
+# 用 0.0 会在开机不足 TTL 时误判缓存新鲜，导致登录页持续空白
+_login_posters_cache: dict = {"at": None, "items": [], "emby_base_url": ""}
+# single-flight 锁：TTL 到期瞬间只放一个线程去刷，其余直接返回旧缓存
+_login_posters_lock = threading.Lock()
 
 
 @site_router.get("/login-posters")
@@ -51,42 +58,73 @@ def get_login_posters(db: Session = Depends(get_db), request: Request = None):
     前端据此拼出 EA 上的海报直链，避免相对路径被反代到错误的后端。
     """
     now = time.monotonic()
-    if now - _login_posters_cache["at"] < _LOGIN_POSTERS_TTL:
+    at = _login_posters_cache["at"]
+    # 命中缓存（含失败后的负缓存窗口）直接返回
+    if at is not None:
+        ttl = _LOGIN_POSTERS_TTL if _login_posters_cache["items"] else _LOGIN_POSTERS_FAIL_TTL
+        if now - at < ttl:
+            return {
+                "items": _login_posters_cache["items"],
+                "emby_base_url": _login_posters_cache["emby_base_url"],
+            }
+    # single-flight：拿不到锁说明已有线程在刷，直接返回旧缓存
+    # （哪怕已过期，旧海报也比并发打爆 DB 好）
+    if not _login_posters_lock.acquire(blocking=False):
         return {
             "items": _login_posters_cache["items"],
             "emby_base_url": _login_posters_cache["emby_base_url"],
         }
     try:
-        rows = (
-            db.query(MediaItem.guid, MediaItem.name)
-            .filter(
-                MediaItem.deleted_at.is_(None),
-                MediaItem.item_type.in_(("movie", "series")),
-                or_(
-                    and_(
-                        MediaItem.poster_path.isnot(None),
-                        MediaItem.poster_path != "",
+        # 拿锁后二次检查：等待期间可能已被别的线程刷过
+        now = time.monotonic()
+        at = _login_posters_cache["at"]
+        if at is not None:
+            ttl = _LOGIN_POSTERS_TTL if _login_posters_cache["items"] else _LOGIN_POSTERS_FAIL_TTL
+            if now - at < ttl:
+                return {
+                    "items": _login_posters_cache["items"],
+                    "emby_base_url": _login_posters_cache["emby_base_url"],
+                }
+        try:
+            rows = (
+                db.query(MediaItem.guid, MediaItem.name)
+                .filter(
+                    MediaItem.deleted_at.is_(None),
+                    MediaItem.item_type.in_(("movie", "series")),
+                    or_(
+                        and_(
+                            MediaItem.poster_path.isnot(None),
+                            MediaItem.poster_path != "",
+                        ),
+                        and_(
+                            MediaItem.primary_image_url.isnot(None),
+                            MediaItem.primary_image_url != "",
+                        ),
                     ),
-                    and_(
-                        MediaItem.primary_image_url.isnot(None),
-                        MediaItem.primary_image_url != "",
-                    ),
-                ),
+                )
+                .order_by(func.random())
+                .limit(36)
+                .all()
             )
-            .order_by(func.random())
-            .limit(36)
-            .all()
-        )
-        items = [{"id": r.guid, "name": r.name} for r in rows]
-    except Exception:
-        logger.exception("login-posters 查询失败")
-        return {"items": [], "emby_base_url": ""}
-    # EA 地址：与 /api/user/emby/server 的 base_url 同一配置源（不硬编码）
-    emby_base_url = resolve_emby_base_url(db, realms.active_realm_id(db), request) or ""
-    _login_posters_cache["at"] = now
-    _login_posters_cache["items"] = items
-    _login_posters_cache["emby_base_url"] = emby_base_url
-    return {"items": items, "emby_base_url": emby_base_url}
+            items = [{"id": r.guid, "name": r.name} for r in rows]
+            # EA 地址：与 /api/user/emby/server 的 base_url 同一配置源（不硬编码）
+            # 与查询同处 try：active_realm_id / resolve_emby_base_url 都会读 DB、都可能抛异常，
+            # 必须一并兜底，否则前端拿不到降级响应
+            emby_base_url = resolve_emby_base_url(db, realms.active_realm_id(db), request) or ""
+        except Exception:
+            logger.exception("login-posters 查询失败")
+            # 失败也推进 at（保留旧 items）：负缓存 30 秒，避免 DB 抖动期故障放大
+            _login_posters_cache["at"] = now
+            return {
+                "items": _login_posters_cache["items"],
+                "emby_base_url": _login_posters_cache["emby_base_url"],
+            }
+        _login_posters_cache["at"] = now
+        _login_posters_cache["items"] = items
+        _login_posters_cache["emby_base_url"] = emby_base_url
+        return {"items": items, "emby_base_url": emby_base_url}
+    finally:
+        _login_posters_lock.release()
 
 
 __all__ = ["site_router"]
