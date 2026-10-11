@@ -7,8 +7,11 @@
   并且**真的没有**把别人的会话结束掉（旧实现是匿名 200 直接踢人）；
 - 普通用户只能列出自己的会话，删自己的可以，删别人的 403，不存在的键 404；
 - 管理员（is_staff）可列出全站会话、可结束任意会话；
-- 会话键不再可预测：没带 PlaySessionId 时是随机键（``s<random>``），
-  非法键与「被别人占用的键」都会被换成随机键，且不会改写别人的会话行；
+- 会话键不再可预测：没带 PlaySessionId 时按「用户 | 设备 | 条目」HMAC 派生稳定键
+  （``s<32位hex>``，无服务端密钥不可预测），
+  非法键与「被别人占用的键」都会被换成派生键，且不会改写别人的会话行；
+- 同一设备同一条目的多次上报（Playing / Progress / Stopped）复用同一行，
+  不再每报新建一行（旧行为会刷爆会话表，还会让同播检测把正常播放自己 DoS 掉）；
 - 上报路由（Playing / Progress）仍然走 api.py 的原逻辑（进度、已看状态照常落库）。
 """
 from __future__ import annotations
@@ -179,18 +182,23 @@ with SessionLocal() as db:
     before_ids = {s.id for s in db.query(em.PlaybackSession).all()}
 
 row = playing(alice_id, H_ALICE, {"ItemId": ITEM_GUID})
-check("未带 PlaySessionId 时会话键是随机键", bool(PREDICTABLE_RE.match(row.session_key or "")),
+check("未带 PlaySessionId 时会话键不可预测（派生键，非旧的可算出键）",
+      bool(PREDICTABLE_RE.match(row.session_key or "")),
       f"实际 {row.session_key}")
 check("旧的可预测回退键已不复存在",
       row.session_key != f"{alice_id}-{ITEM_GUID[:16]}" and ITEM_GUID[:16] not in (row.session_key or ""),
       f"实际 {row.session_key}")
 
 row2 = playing(alice_id, H_ALICE, {"ItemId": ITEM_GUID})
-check("再上报一次得到新的随机键（不再是同一个可算出键）", row2.id != row.id and row2.session_key != row.session_key,
+check("同一设备再次上报复用同一行、同一会话键（不再每报新建一行）",
+      row2.id == row.id and row2.session_key == row.session_key,
       f"{row.session_key} vs {row2.session_key}")
+check("复用的键仍不可预测（不是旧的可算出回退键）",
+      row2.session_key != f"{alice_id}-{ITEM_GUID[:16]}",
+      f"实际 {row2.session_key}")
 
 row3 = playing(bob_id, H_BOB, {"ItemId": ITEM_GUID, "PlaySessionId": "/etc/passwd"})
-check("非法 PlaySessionId 被换成随机键", bool(PREDICTABLE_RE.match(row3.session_key or "")) and "/" not in row3.session_key,
+check("非法 PlaySessionId 被换成不可预测的派生键", bool(PREDICTABLE_RE.match(row3.session_key or "")) and "/" not in row3.session_key,
       f"实际 {row3.session_key}")
 
 alice_before = session_row(ALICE_KEY)

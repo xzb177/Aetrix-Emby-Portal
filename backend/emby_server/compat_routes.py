@@ -89,6 +89,12 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
     ).first()
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
     new_session = session is None
+    if session is not None and session.ended_at is not None and not ended:
+        # 同一会话键的新一轮播放（客户端复用了旧键 / 确定性键命中了已结束行）：
+        # 复活该行并重新走一次判定。否则这次播放既不会被计入并发、也不会被
+        # 同播/跨城市检查看到，还会被「已结束会话裁剪」在播放中途删掉。
+        session.ended_at = None
+        new_session = True
     if new_session:
         # 防共享两件套（默认全部 off，不判定也不写库）：
         # 1) 同播检测——并发超上限时 enforce 档直接拦下这条会话（返回 None）；
@@ -111,10 +117,12 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
             if verdict and verdict.get("blocked"):
                 logger.info("跨城市停用后拒绝建会话：user=%s", user.id)
                 return None, False
-        session = em.PlaybackSession(
-            session_key=session_key, user_id=user.id, item_id=item.id,
-        )
-        db.add(session)
+        if session is None:
+            # 真·新会话：建行；上面复活分支走进来时复用旧行，不另建
+            session = em.PlaybackSession(
+                session_key=session_key, user_id=user.id, item_id=item.id,
+            )
+            db.add(session)
 
     position = int(body.get("PositionTicks") or 0)
     paused = bool(body.get("IsPaused", False))
