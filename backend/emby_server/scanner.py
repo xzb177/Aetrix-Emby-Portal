@@ -3972,7 +3972,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             logger.debug(
                                 "分层扫描保持 enrich_status: id=%s status=%s",
                                 getattr(item, "id", None), _old_status,
-                            )"
+                            )
                     elif (getattr(item, "enrich_status", None) or "pending") == "pending":
                         # 非分层路径本轮已做完补全（side/NFO/TMDB 都在上面处理了），标 done。
                         # 注意：series/season 骨架行由 episode 分支创建，它们走 L2 补全，
