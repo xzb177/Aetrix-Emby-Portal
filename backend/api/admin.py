@@ -1404,12 +1404,17 @@ def get_admin_logs(
 
     logs = query.order_by(models.AdminLog.created_at.desc()).limit(min(limit, 500)).all()
 
+    # P1 修复（F-P1-1）：批量查询操作员，避免 N+1（500 条日志 → 501 次查询）
+    admin_ids = {log.admin_user_id for log in logs if log.admin_user_id}
+    operators = {}
+    if admin_ids:
+        for u in db.query(models.WebUser).filter(models.WebUser.id.in_(admin_ids)).all():
+            operators[u.id] = u
+
     result = []
     for log in logs:
         # 统一账号体系后 admin_user_id 存 WebUser.id
-        operator = db.query(models.WebUser).filter(
-            models.WebUser.id == log.admin_user_id
-        ).first()
+        operator = operators.get(log.admin_user_id)
 
         result.append({
             "id": log.id,

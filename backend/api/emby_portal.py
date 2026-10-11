@@ -419,8 +419,18 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
 
     # P3（审查第八批）：改密/登出后旧 refresh_token 作废，否则换新 access 形同虚设
-    from backend.security import enforce_token_freshness
+    # P1 修复（A-P1-1）：轮换时吊销旧 refresh 的 jti，防止旧 refresh 被无限重用。
+    # 若旧 refresh 的 jti 已在吊销表中（重用攻击），视为 token 泄露，吊销该用户全部 token。
+    from backend.security import enforce_token_freshness, is_jti_revoked, revoke_jti, revoke_all_user_tokens
+    old_jti = payload.get("jti")
+    if old_jti and is_jti_revoked(db, old_jti):
+        # 已吊销的 refresh 再次出现 → 可能的 token 泄露，按业界标准吊销该用户全部 token
+        revoke_all_user_tokens(db, user.id, reason="refresh_reuse_detected")
+        raise HTTPException(status_code=401, detail="检测到异常的刷新凭证，已吊销全部会话")
     enforce_token_freshness(db, payload, user)
+    # 吊销旧 refresh token（轮换）
+    if old_jti:
+        revoke_jti(db, old_jti, user.id, reason="refresh_rotation")
 
     return {
         "access_token": create_access_token(user.id, {"username": user.username},
@@ -447,8 +457,9 @@ def logout(request: Request,
            db: Session = Depends(get_db)):
     """登出：吊销当前 access token（jti 进吊销表），客户端同时清除本地 token。
 
-    P2 修复（审查）：此前登出只是客户端清除，服务端无吊销能力，
-    偷到的 token 在过期前一直有效。
+    P1 修复（A-P1-1）：同时吊销 refresh token。此前登出只吊销 access，
+    refresh 可无限续签，登出形同虚设。现在 bump token_version 使该用户
+    所有旧 token（含 refresh）失效，实现全设备登出。
     """
     from backend.security import decode_token, revoke_jti
     token = None
@@ -462,6 +473,13 @@ def logout(request: Request,
         payload = decode_token(token, expected_type="access")
         if payload:
             revoke_jti(db, payload.get("jti"), current_user.id, reason="logout")
+    # 吊销 refresh：bump token_version 使所有已签发的 refresh 失效
+    # （enforce_token_freshness 会校验 token_version）
+    try:
+        current_user.token_version = int(current_user.token_version or 0) + 1
+        db.commit()
+    except Exception:
+        db.rollback()
     return {"success": True, "message": "已登出"}
 
 

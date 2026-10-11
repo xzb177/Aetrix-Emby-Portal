@@ -219,3 +219,19 @@ def resolve_jwt_user_id(token: str) -> Optional[int]:
         return int(payload.get("sub"))
     except (TypeError, ValueError):
         return None
+
+
+def revoke_all_user_tokens(db, user_id: int, reason: str = "security") -> None:
+    """吊销用户的所有 token（P1 修复 A-P1-1：refresh 重用检测）。
+
+    通过 bump token_version 使该用户所有已签发的 token（含 access 和 refresh）
+    立即失效。用于检测到 refresh token 重用（可能的 token 泄露）时的应急响应。
+    """
+    try:
+        from backend.models import WebUser
+        user = db.query(WebUser).filter(WebUser.id == user_id).first()
+        if user:
+            user.token_version = int(user.token_version or 0) + 1
+            db.commit()
+    except Exception:
+        db.rollback()

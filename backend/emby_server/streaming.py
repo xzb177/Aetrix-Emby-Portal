@@ -853,7 +853,8 @@ def find_transcodes(user_id: int, item_guid: Optional[str] = None) -> list:
 def find_active_transcode(user_id: int, item_guid: str,
                         tier: Optional[str] = None) -> Optional[str]:
     """查找同一用户同一影片仍在运行的转码会话（tier 指定时只复用同档）"""
-    for sid, info in _TRANSCODE_PROCS.items():
+    # P1 修复（D-P1-2）：用 list() 快照避免与回收线程的 pop 并发时抛 RuntimeError
+    for sid, info in list(_TRANSCODE_PROCS.items()):
         if info.get("user_id") != user_id or info.get("item_guid") != item_guid:
             continue
         if tier is not None and info.get("tier") != tier:

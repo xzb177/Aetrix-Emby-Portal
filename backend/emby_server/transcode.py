@@ -32,6 +32,12 @@ from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
+# P1 修复（D-P1-1）：转码入场检查与启动之间的竞态。
+# ensure_slot_or_503() 只做"检查时判定"，N 个并发请求可同时通过检查并全部 fork ffmpeg。
+# 加模块级锁，把"检查→登记"做成原子"取号"，调用方必须用 transcode_slot() 上下文管理器。
+import threading as _threading
+_transcode_slot_lock = _threading.Lock()
+
 # 2026-10 简化：删除服务端三档转码（480p/720p/1080p）。
 # 转码参数由客户端在 PlaybackInfo/播放请求里指定，服务端只管"转不转、转几路"，
 # 不再把客户端要的码率归档到固定档位（学 Linger 的"薄服务器"思路）。
@@ -136,8 +142,8 @@ def live_transcode_count() -> int:
 def ensure_slot_or_503() -> None:
     """转码入场检查：达到并发上限就 503，让客户端降级走直连。
 
-    这里只做「检查时」的判定（与 ``playback_policy.ensure_transcode_allowed``
-    同口径，接受瞬时竞态；持续超限由 ``enforce_transcode_capacity`` 回收闲置）。
+    注意：本函数只做检查，不持有锁。调用方必须使用 transcode_slot()
+    上下文管理器来保证"检查→启动"的原子性，否则仍有竞态。
     """
     limit = max_concurrent()
     running = live_transcode_count()
@@ -153,6 +159,23 @@ def ensure_slot_or_503() -> None:
             status_code=503,
             detail=f"转码忙（{running}/{limit} 路），请使用直连播放",
         )
+
+
+import contextlib as _contextlib
+
+@_contextlib.contextmanager
+def transcode_slot():
+    """转码槽位上下文管理器（P1 修复 D-P1-1）。
+
+    用法：
+        with transcode_mod.transcode_slot():
+            session_id = start_transcode(...)
+
+    在锁内做入场检查，保证"检查→启动"原子，突发请求不会绕过并发上限打满 CPU。
+    """
+    with _transcode_slot_lock:
+        ensure_slot_or_503()
+        yield
 
 
 def _dir_size(path: str) -> int:

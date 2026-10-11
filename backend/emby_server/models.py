@@ -416,6 +416,12 @@ class PlaybackSession(Base):
     """播放会话"""
 
     __tablename__ = "emby_playback_sessions"
+    # P1 修复（E-P1-5）：janitor 每 10 分钟按 (ended_at, last_update_at) 全表扫描，
+    # 表只增不减。加复合索引避免全表扫描。
+    __table_args__ = (
+        Index("ix_emby_playback_sessions_ended_last_update",
+              "ended_at", "last_update_at"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_key = Column(String(64), unique=True, index=True)

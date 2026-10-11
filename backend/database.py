@@ -97,11 +97,12 @@ engine_config = {
 if DATABASE_TYPE == "sqlite":
     # busy timeout：等待写锁而不是立刻报 "database is locked"（媒体扫描/播放上报并发场景）
     engine_config["connect_args"] = {"check_same_thread": False, "timeout": 30}
-# 原值 20+40=60 是**每进程**的上限；api / worker / EA 三个进程各自持有独立 engine，
-# 峰值 180 > PG 默认 max_connections(100) → 高峰期随机 "too many clients already"。
-# 改为可配 + 对多进程安全的默认值（3×(25+25)=150（需 PG max_connections≥200），留足运维连接余量）。
-_POOL_SIZE = _env_int_or("DB_POOL_SIZE", 25, 1)
-_MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 25, 0)
+# P1 修复（E-P1-1）：默认连接池预算不得超过 PG 默认 max_connections(100)。
+# api / worker / EA 三个进程各自持有独立 engine，旧默认 3×(25+25)=150 >
+# PG 默认 100 → 高峰期随机 "too many clients already" 全站 500。
+# 新默认 3×(10+10)=60，留足 PG 默认 100 的余量；需要更大并发时通过环境变量显式配置。
+_POOL_SIZE = _env_int_or("DB_POOL_SIZE", 10, 1)
+_MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 10, 0)
 if DATABASE_TYPE == "postgresql":
     engine_config["pool_size"] = _POOL_SIZE
     engine_config["max_overflow"] = _MAX_OVERFLOW
@@ -418,6 +419,18 @@ class CacheManager:
     _memory_cache: dict = {}
     _memory_cache_order: list = []  # FIFO 顺序，配合淘汰
     _MEMORY_CACHE_MAX = 2000
+    _memory_cache_lock = None  # 延迟初始化锁（P1 修复 E-P1-2：并发保护）
+
+    @staticmethod
+    def _memory_lock():
+        """获取内存缓存锁（延迟初始化，线程安全）"""
+        import threading
+        if CacheManager._memory_cache_lock is None:
+            # 双重检查锁定模式
+            with threading.Lock():
+                if CacheManager._memory_cache_lock is None:
+                    CacheManager._memory_cache_lock = threading.Lock()
+        return CacheManager._memory_cache_lock
 
     @staticmethod
     def _memory_get(key: str) -> Optional[str]:
@@ -427,38 +440,55 @@ class CacheManager:
         value, expire_at = entry
         import time as _time
         if expire_at is not None and _time.time() > expire_at:
-            CacheManager._memory_cache.pop(key, None)
-            try:
-                CacheManager._memory_cache_order.remove(key)
-            except ValueError:
-                pass
+            # P1 修复（E-P1-2）：过期条目同步清理 order，防止无界增长
+            with CacheManager._memory_lock():
+                CacheManager._memory_cache.pop(key, None)
+                try:
+                    CacheManager._memory_cache_order.remove(key)
+                except ValueError:
+                    pass
             return None
         return value
 
     @staticmethod
     def _memory_set(key: str, value: str, ttl: int = 300) -> None:
         import time as _time
-        cache = CacheManager._memory_cache
-        expire_at = _time.time() + ttl if ttl and ttl > 0 else None
-        if key not in cache:
-            # 写满：先清过期条目，不够再按 FIFO 淘汰最老
-            while len(cache) >= CacheManager._MEMORY_CACHE_MAX:
-                evicted = False
-                now = _time.time()
-                for k in list(cache.keys()):
-                    _, exp = cache[k]
-                    if exp is not None and now > exp:
-                        cache.pop(k, None)
-                        evicted = True
-                        break
-                if not evicted:
-                    oldest = CacheManager._memory_cache_order.pop(0) if CacheManager._memory_cache_order else None
-                    if oldest is not None:
-                        cache.pop(oldest, None)
-                    else:
-                        break
-            CacheManager._memory_cache_order.append(key)
-        cache[key] = (value, expire_at)
+        # P1 修复（E-P1-2）：加锁保护并发访问；淘汰过期条目时同步清理 order 列表；
+        # FIFO 分支处理已失效的 order 条目，避免忙转。
+        with CacheManager._memory_lock():
+            cache = CacheManager._memory_cache
+            order = CacheManager._memory_cache_order
+            expire_at = _time.time() + ttl if ttl and ttl > 0 else None
+            if key not in cache:
+                # 写满：先清过期条目，不够再按 FIFO 淘汰最老
+                while len(cache) >= CacheManager._MEMORY_CACHE_MAX:
+                    evicted = False
+                    now = _time.time()
+                    for k in list(cache.keys()):
+                        _, exp = cache[k]
+                        if exp is not None and now > exp:
+                            cache.pop(k, None)
+                            # 同步从 order 中删除，避免 order 无界增长
+                            try:
+                                order.remove(k)
+                            except ValueError:
+                                pass
+                            evicted = True
+                            break
+                    if not evicted:
+                        # FIFO 淘汰：跳过已不在 cache 中的失效 order 条目
+                        while order:
+                            oldest = order.pop(0)
+                            if oldest in cache:
+                                cache.pop(oldest, None)
+                                evicted = True
+                                break
+                            # oldest 已不在 cache 中，继续找下一个（不计为淘汰）
+                        if not evicted:
+                            break
+                # 只有新 key 才追加到 order（更新已存在 key 时不重复追加）
+                order.append(key)
+            cache[key] = (value, expire_at)
 
     @staticmethod
     def get(key: str) -> Optional[str]:
@@ -1477,8 +1507,16 @@ def _acquire_migrate_lock():
                     try:
                         conn.execute(text("SELECT pg_advisory_unlock(:k)"),
                                      {"k": _PG_LOCK_KEY})
-                    except Exception:  # noqa: BLE001 — 解锁失败不影响已完成的迁移
-                        pass
+                    except Exception:  # noqa: BLE001
+                        # P1 修复（E-P1-3）：解锁失败时必须丢弃连接，不能归还到池中。
+                        # 否则带锁连接回到池里，下次迁移在另一连接上 pg_advisory_lock 会永久阻塞。
+                        import logging
+                        logging.getLogger(__name__).error(
+                            "pg_advisory_unlock 失败，丢弃连接避免锁泄漏",
+                            exc_info=True,
+                        )
+                        conn.invalidate()
+                        raise
             finally:
                 conn.close()
             return
