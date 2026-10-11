@@ -25,6 +25,8 @@ import {
 } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
 import { useHaptics } from '@/composables/useHaptics'
+import { toastCopy, toastSystem } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
@@ -69,12 +71,12 @@ async function handleTransfer() {
   transferring.value = true
   try {
     const res = await pointsApi.transfer(to, amt)
-    toast.success(`已转给 ${res.recipient} ${res.amount} 积分` + (res.fee > 0 ? `（手续费 ${res.fee} 积分）` : ''))
+    toast.success(toastCopy.transferSuccess(res.recipient, res.amount, res.fee))
     transferRecipient.value = ''
     transferAmount.value = null
     balance.value = res.balance
   } catch (e: any) {
-    toast.error(e?.response?.data?.detail || '转账失败')
+    toast.error(toUserMessage(e, 'transferFailed'))
   } finally {
     transferring.value = false
   }
@@ -124,7 +126,7 @@ async function handleRedeem() {
         return
       }
       const res = await exchangeApi.redeem(code)
-      toast.success(res.message || '兑换成功')
+      toast.success(res.message || toastCopy.exchangeSuccess())
       redeemCode.value = ''
       await Promise.all([refreshBalance(), refreshSubscriptions()])
       return
@@ -139,8 +141,7 @@ async function handleRedeem() {
     // 邀请码 / 无效码 / 未识别：直接把后端给出的指引显示在面板下方
     codeNotice.value = preview.message || '卡码或兑换码不存在'
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '核销失败，请稍后重试')
+    toast.error(toUserMessage(err, 'redeemFailed'))
   } finally {
     redeemLoading.value = false
   }
@@ -161,14 +162,13 @@ async function confirmCodeRedeem() {
   redeemLoading.value = true
   try {
     const res = await membershipApi.redeem(code)
-    toast.success(res.message || '卡码核销成功')
+    toast.success(res.message || toastCopy.redeemSuccess())
     redeemCode.value = ''
     codePreview.value = null
     // Fix 7：卡码可能发放积分（M1 统一码系统），余额也要刷新
     await Promise.all([refreshBalance(), refreshSubscriptions()])
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '核销失败，请稍后重试')
+    toast.error(toUserMessage(err, 'redeemFailed'))
   } finally {
     redeemLoading.value = false
   }
@@ -321,7 +321,7 @@ async function pollPaymentResult() {
         await refreshBalance()
         // 会员身份 / 付费墙状态随之刷新（头像、VIP 标识、详情页提示）
         userStore.fetchUser().catch(() => {})
-        toast.success(`支付成功，「${arrived.item_name}」已到账`)
+        toast.success(toastCopy.paySuccess(arrived.item_name))
         haptics.success()
         stopPayPoll()
         return
@@ -332,7 +332,7 @@ async function pollPaymentResult() {
 
     if (attempts >= 10) {
       stopPayPoll()
-      toast.info('暂未收到支付结果，到账后余额与会员会自动更新（可点刷新）', 5000)
+      toast.info(toastSystem.payUnknown, 5000)
     }
   }, 3000)
 }
@@ -358,7 +358,7 @@ function handleEntryQuery() {
     const key = `${order ?? ''}|${route.query.paid ?? ''}`
     if (lastHandledEntry.value !== key) {
       lastHandledEntry.value = key
-      toast.info('支付已提交，正在确认到账结果…', 4000)
+      toast.info(toastCopy.paySubmitted(), 4000)
       pollPaymentResult()
     }
   }

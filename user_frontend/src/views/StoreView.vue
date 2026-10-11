@@ -24,6 +24,8 @@ import {
 import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
 import { useHaptics } from '@/composables/useHaptics'
+import { toastCopy, toastSystem } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import { tgApi, type TgBindStatus } from '@/api/tg'
 import TgBindCard from '@/components/TgBindCard.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -291,7 +293,7 @@ async function handleRedeem() {
         return
       }
       const res = await exchangeApi.redeem(code)
-      toast.success(res.message || '兑换成功')
+      toast.success(res.message || toastCopy.exchangeSuccess())
       redeemCode.value = ''
       await Promise.all([refreshBalance(), refreshSubscriptions()])
       return
@@ -306,8 +308,7 @@ async function handleRedeem() {
     // 邀请码 / 无效码 / 未识别：直接把后端给出的指引显示在面板下方
     codeNotice.value = preview.message || '卡码或兑换码不存在'
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '核销失败，请稍后重试')
+    toast.error(toUserMessage(err, 'redeemFailed'))
   } finally {
     redeemLoading.value = false
   }
@@ -328,13 +329,12 @@ async function confirmCodeRedeem() {
   redeemLoading.value = true
   try {
     const res = await membershipApi.redeem(code)
-    toast.success(res.message || '卡码核销成功')
+    toast.success(res.message || toastCopy.redeemSuccess())
     redeemCode.value = ''
     codePreview.value = null
     await refreshSubscriptions()
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '核销失败，请稍后重试')
+    toast.error(toUserMessage(err, 'redeemFailed'))
   } finally {
     redeemLoading.value = false
   }
@@ -343,7 +343,7 @@ async function confirmCodeRedeem() {
 // ===== 下单 =====
 async function handleOrder(kind: 'recharge' | 'subscription', itemId?: number) {
   if (!methods.value.length) {
-    toast.error('暂无可用支付方式，请联系管理员')
+    toast.error(toastSystem.noPayMethod)
     return
   }
   orderLoading.value = itemId
@@ -360,11 +360,10 @@ async function handleOrder(kind: 'recharge' | 'subscription', itemId?: number) {
       toast.success('正在跳转支付…')
       window.location.href = res.pay_url
     } else {
-      toast.error('未获取到支付链接')
+      toast.error(toastSystem.payLinkFailed)
     }
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '下单失败，请稍后重试')
+    toast.error(toUserMessage(err, 'orderFailed'))
   } finally {
     orderLoading.value = null
   }
@@ -388,9 +387,9 @@ async function handleCustomRecharge() {
   try {
     const res = await paymentApi.createOrder({ kind: 'recharge', payment_method: payMethod.value, custom_amount: amt })
     if (res.pay_url) { toast.success('正在跳转支付…'); window.location.href = res.pay_url }
-    else toast.error('未获取到支付链接')
+    else toast.error(toastSystem.payLinkFailed)
   } catch (err: any) {
-    toast.error(err?.response?.data?.detail || '下单失败，请稍后重试')
+    toast.error(toUserMessage(err, 'orderFailed'))
   } finally { orderLoading.value = null }
 }
 
@@ -517,7 +516,7 @@ async function pollPaymentResult() {
         await refreshBalance()
         // 会员身份 / 付费墙状态随之刷新（头像、VIP 标识、详情页提示）
         userStore.fetchUser().catch(() => {})
-        toast.success(`支付成功，「${arrived.item_name}」已到账`)
+        toast.success(toastCopy.paySuccess(arrived.item_name))
         haptics.success()
         stopPayPoll()
         return
@@ -528,7 +527,7 @@ async function pollPaymentResult() {
 
     if (attempts >= 10) {
       stopPayPoll()
-      toast.info('暂未收到支付结果，到账后余额与会员会自动更新（可点刷新）', 5000)
+      toast.info(toastSystem.payUnknown, 5000)
     }
   }, 3000)
 }
@@ -541,7 +540,7 @@ function handleEntryQuery() {
   const entryKey = `${String(route.query.order ?? '')}|${String(route.query.paid ?? '')}`
   if ((paidFlag.value || route.query.order) && !payPolling.value && entryKey !== lastHandledEntry.value) {
     lastHandledEntry.value = entryKey
-    toast.info('支付已提交，正在确认到账结果…', 4000)
+    toast.info(toastCopy.paySubmitted(), 4000)
     pollPaymentResult()
   }
 }

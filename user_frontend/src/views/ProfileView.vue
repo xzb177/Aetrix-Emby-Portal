@@ -24,6 +24,8 @@ import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { tgApi, type TgBindStatus } from '@/api/tg'
 import TgBindModal from '@/components/TgBindModal.vue'
 import { useToast } from '@/composables/useToast'
+import { toastCopy, confirmCopy } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import { useHaptics } from '@/composables/useHaptics'
 import { useClipboard } from '@/composables/useClipboard'
 import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
@@ -56,15 +58,15 @@ const cancellingSub = ref<number | null>(null)
 const activeSub = computed(() => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null)
 
 async function cancelSubscription(s: MySubscription) {
-  if (!confirm(`确定要终止「${s.plan_name}」订阅吗？终止后立即失效，不可恢复。`)) return
+  if (!confirm(confirmCopy.cancelSubscription(s.plan_name))) return
   haptics.confirm()
   cancellingSub.value = s.id
   try {
     const res = await subscriptionApi.cancel(s.id)
-    toast.success(res.message || '订阅已终止')
+    toast.success(res.message || toastCopy.subscriptionCancelled())
     await loadProfile(true)
   } catch (err: any) {
-    toast.error(err?.response?.data?.detail || '终止失败，请稍后重试')
+    toast.error(toUserMessage(err, 'cancelFailed'))
   } finally {
     cancellingSub.value = null
   }
@@ -123,8 +125,7 @@ async function handleUnlockView() {
     showUnlockConfirm.value = false
     account.value = await embyApi.getAccountCard()
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '解锁失败')
+    toast.error(toUserMessage(err, 'unlockFailed'))
   } finally {
     unlocking.value = false
   }
@@ -195,12 +196,11 @@ async function handleChangePassword() {
   pwdLoading.value = true
   try {
     await authApi.changePassword({ old_password: oldPassword, new_password: newPassword })
-    toast.success('密码修改成功，播放密码已同步')
+    toast.success(toastCopy.passwordChanged())
     showChangePwd.value = false
     pwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    pwdError.value = typeof detail === 'string' ? detail : '修改失败，请稍后重试'
+    pwdError.value = toUserMessage(err, 'settingFailed')
   } finally {
     pwdLoading.value = false
   }
@@ -219,13 +219,12 @@ async function handleSetPlayPassword() {
   playPwdLoading.value = true
   try {
     await embyApi.setPassword(playPwd.value)
-    toast.success('播放密码已设置')
+    toast.success(toastCopy.playPasswordSet())
     showSetPlayPwd.value = false
     playPwd.value = ''
     account.value = await embyApi.getAccountCard()
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '设置失败')
+    toast.error(toUserMessage(err, 'settingFailed'))
   } finally {
     playPwdLoading.value = false
   }
@@ -270,11 +269,10 @@ async function handleRemoveDevice(device: MyDevice) {
   removingDevice.value = device.device_id
   try {
     const res = await deviceApi.remove(device.device_id)
-    toast.success(res.message || '设备已移除')
+    toast.success(res.message || toastCopy.deviceRemoved())
     await loadDevices()
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '移除失败，请稍后重试')
+    toast.error(toUserMessage(err, 'removeFailed'))
   } finally {
     removingDevice.value = ''
   }

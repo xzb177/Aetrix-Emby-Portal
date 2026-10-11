@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 import { messageApi, type StationMessage } from '@/api'
 import { useToast } from '@/composables/useToast'
+import { toUserMessage } from '@/utils/toUserMessage'
 import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
@@ -153,8 +154,8 @@ async function markAllRead() {
     await messageApi.markAllRead()
     messages.value.forEach((m) => { m.is_read = true })
     toast.success('已全部标为已读')
-  } catch {
-    toast.error('操作失败，请稍后重试')
+  } catch (err) {
+    toast.error(toUserMessage(err, 'markReadFailed'))
   }
 }
 

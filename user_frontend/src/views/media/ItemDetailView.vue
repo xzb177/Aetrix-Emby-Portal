@@ -11,6 +11,8 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { embyApi, posterUrl, backdropUrl, progressPercent, ticksToSeconds, formatDuration, type EmbyItem } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
+import { toastCopy, toastFallback } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import { pageTitle } from '@/composables/useBranding'
 import { useUserStore } from '@/stores/user'
 import {
@@ -164,7 +166,7 @@ async function loadItem() {
     }
   } catch {
     loadError.value = '详情加载失败，请检查网络连接后重试'
-    toast.error('加载详情失败')
+    toast.error(toastFallback.loadDetailFailed)
   } finally {
     loading.value = false
   }
@@ -177,7 +179,7 @@ watch(selectedSeasonId, async (sid) => {
     try {
       episodes.value = await embyApi.getEpisodes(itemId.value, sid)
     } catch {
-      toast.error('加载剧集失败')
+      toast.error(toastFallback.loadEpisodesFailed)
     } finally {
       episodesLoading.value = false
     }
@@ -213,9 +215,9 @@ async function toggleFavorite() {
   try {
     const ud = await embyApi.setFavorite(item.value.Id, !isFavorite.value)
     item.value.UserData = { ...item.value.UserData, ...ud }
-    toast.success(ud.IsFavorite ? '已加入收藏' : '已取消收藏')
+    toast.success(ud.IsFavorite ? toastCopy.favoriteAdded() : toastCopy.favoriteRemoved())
   } catch {
-    toast.error('操作失败')
+    toast.error(toastFallback.favoriteFailed)
   } finally {
     togglingFavorite.value = false
   }
@@ -226,9 +228,9 @@ async function togglePlayed() {
   try {
     const ud = await embyApi.setPlayed(item.value.Id, !isPlayed.value)
     item.value.UserData = { ...item.value.UserData, ...ud }
-    toast.success(ud.Played ? '已标记为看过' : '已标记为未看')
+    toast.success(ud.Played ? toastCopy.markedWatched() : toastCopy.markedUnwatched())
   } catch {
-    toast.error('操作失败')
+    toast.error(toastFallback.markWatchedFailed)
   }
 }
 
