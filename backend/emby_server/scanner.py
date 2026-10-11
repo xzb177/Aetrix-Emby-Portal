@@ -2393,7 +2393,7 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
         p.claimed_item = by_id.get(p.claimed_id)
 
 
-def _guid_held_by_other(db: Session, guid: str, row_id: int) -> Optional[int]:
+def _guid_held_by_other(db: Session, guid: Optional[str], row_id: int) -> Optional[int]:
     """检查 guid 是否已被另一行占用（P0 改名冲突保护）。
 
     改名识别（file_id / 指纹）在 ``_load_items`` 之后运行：并发扫描、批次重试
@@ -2402,8 +2402,11 @@ def _guid_held_by_other(db: Session, guid: str, row_id: int) -> Optional[int]:
     整批回滚（2026-10-11 生产事故：同集多版本互认成改名，两次撞库）。
 
     软删除的行也算占用：唯一约束不看 ``deleted_at``。
+    guid 为空（mock/异常路径）时直接返回 None：无法检查就不拦。
     返回占用者的 id，无占用返回 None。
     """
+    if not guid:
+        return None
     MI = emby_models.MediaItem
     with _soft_delete.include_deleted():
         hit = (
@@ -2745,7 +2748,7 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
         # 改名/移动：复用这一行
         # P0 改名冲突保护（与指纹路径同理）：目标 guid 被占用则放弃改名，
         # 让 pending 走正常新文件占位流程，避免撞唯一键整批回滚。
-        _holder = _guid_held_by_other(db, p.guid, row.id)
+        _holder = _guid_held_by_other(db, getattr(p, "guid", None), row.id)
         if _holder is not None:
             logger.warning(
                 "扫描改名识别放弃（file_id）：%s 的目标 guid 已被条目 %s 占用，"
@@ -2911,7 +2914,7 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         # 导致 _load_items 时不存在的行现在已存在）。直接复用会撞唯一键，
         # 整批回滚。放弃改名，让 pending 走正常新文件占位流程
         # （_claim_guid  upsert + _resolve_conflict 兜底）。
-        _holder = _guid_held_by_other(db, p.guid, row.id)
+        _holder = _guid_held_by_other(db, getattr(p, "guid", None), row.id)
         if _holder is not None:
             logger.warning(
                 "扫描改名识别放弃：%s 的目标 guid 已被条目 %s 占用，"
