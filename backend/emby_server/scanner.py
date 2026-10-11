@@ -3953,7 +3953,12 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     if _pending.file_fingerprint:
                         item.file_fingerprint = _pending.file_fingerprint
                     if _pending.layered:
-                        item.enrich_status = "pending"
+                        # 只有新文件才标 pending。已存在的条目保持原 enrich_status：
+                        # mtime 抖动（如 .strm 批量重生成）不应把已 done 的条目打回
+                        # 待补全队列（2026-10-11 生产事故：8.5 万文件 mtime 变化，
+                        # 2.4 万 done 条目被误重置，积压 0→25000）。
+                        if is_new:
+                            item.enrich_status = "pending"
                     elif (getattr(item, "enrich_status", None) or "pending") == "pending":
                         # 非分层路径本轮已做完补全（side/NFO/TMDB 都在上面处理了），标 done。
                         # 注意：series/season 骨架行由 episode 分支创建，它们走 L2 补全，
