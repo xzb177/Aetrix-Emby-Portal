@@ -141,14 +141,19 @@ def test_run_due_draws_skips_no_draw_at(db):
 
 
 def test_run_due_draws_atomic_claim(db):
-    # 模拟别的 worker 已认领（status=drawing），本轮不重复开奖
+    # 模拟别的 worker 刚刚认领（status=drawing 且 drawing_at 新鲜），本轮不重复开奖；
+    # 只有超过宽限期的 drawing 才会被 reap_stale_drawing_rounds 回收（见
+    # test_lottery_stale_drawing_reaper.py），新鲜认领不许被偷。
     rnd = _make_round(db, draw_at=datetime.now() - timedelta(minutes=5))
     rnd.status = "drawing"
+    rnd.drawing_at = datetime.now()
     db.commit()
     result = lottery.run_due_draws(db)
-    # drawing 状态不在扫描范围（只扫 open），checked=0
+    # drawing 状态不在开奖扫描范围（只扫 open），checked=0
     assert result["checked"] == 0
     assert result["drawn"] == []
+    db.refresh(rnd)
+    assert rnd.status == "drawing"
 
 
 def test_run_due_draws_disabled_switch(db):

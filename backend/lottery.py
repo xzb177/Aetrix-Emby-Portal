@@ -405,8 +405,10 @@ def draw_round(db: Session, round_id: int) -> list[models.LotteryRoundWinner]:
     drawing 视为上次开奖中断，可重入（先清理遗留 winner 行再重算）。
     entry 为空或 prize 为空时正常结束：status='done'、drawn_at 落库、返回 []。
 
-    注意：drawing 重入是给"开奖进程崩溃"准备的恢复路径，不是给并发调用准备的——
-    调用方（定时任务/管理后台）必须保证同一轮次同一时刻只有一个开奖者在跑。
+    注意：drawing 重入是"开奖进程崩溃"的恢复路径——run_due_draws 开头的
+    reap_stale_drawing_rounds 会把僵尸 drawing 打回 open，下一 tick 重新认领后
+    走到这里重算。它不是给并发调用准备的：调用方（定时任务/管理后台）必须保证
+    同一轮次同一时刻只有一个开奖者在跑（认领 SQL 原子保证）。
     """
     round = db.query(models.LotteryRound).filter(models.LotteryRound.id == round_id).first()
     if not round:
@@ -421,8 +423,10 @@ def draw_round(db: Session, round_id: int) -> list[models.LotteryRoundWinner]:
     if round.status == "cancelled":
         raise ValueError("已取消的轮次不能开奖")
 
-    # 先占状态，防并发重复开奖
+    # 先占状态，防并发重复开奖；drawing_at 给僵尸回收计时（直调本函数也生效，
+    # 不依赖调用方的认领 SQL 是否带了 drawing_at）
     round.status = "drawing"
+    round.drawing_at = datetime.now()
     db.commit()
 
     # 清理上次中断遗留的 winner 行，保证幂等
@@ -855,6 +859,63 @@ def notify_new_round(db: Session, round_id: int) -> dict:
     return result
 
 
+# 僵尸 drawing 宽限期：draw_round 处于 drawing 状态的真实耗时只有 drand 抓取(<=10s)
+# + 计算 + 写库；发奖阶段状态已是 done，不受影响。15 分钟远大于正常耗时，
+# 误伤仍存活进程的概率可忽略。
+_STALE_DRAWING_GRACE = timedelta(minutes=15)
+
+
+def reap_stale_drawing_rounds(db: Session, summary: dict | None = None) -> list[int]:
+    """回收僵尸 drawing 轮次：认领后进程崩溃，in-process 回滚够不着。
+
+    认领(open→drawing)已提交、开奖完成前进程崩溃（SIGKILL/OOM/部署重启）时，
+    轮次永久卡死在 drawing：调度只扫 open、管理后台认领要求 open、取消要求 open。
+    本函数把超过宽限期仍为 drawing 的轮次打回 open，下一 tick 重新认领开奖
+    （draw_round 的 drawing 重入路径会清理遗留 winner 行重算；distribute 幂等）。
+    drawing_at IS NULL 覆盖升级前遗留的、无时间戳的僵尸行。
+    """
+    cutoff = datetime.now() - _STALE_DRAWING_GRACE
+    try:
+        rows = db.execute(
+            text(
+                "SELECT id FROM lottery_rounds "
+                "WHERE status = 'drawing' "
+                "AND (drawing_at IS NULL OR drawing_at < :cutoff)"
+            ),
+            {"cutoff": cutoff},
+        ).fetchall()
+    except Exception:
+        db.rollback()
+        logger.exception("群抽奖查询僵尸 drawing 轮次失败")
+        if summary is not None:
+            summary["reaped_stale_drawing"] = []
+        return []
+
+    reaped: list[int] = []
+    for (rid,) in rows:
+        try:
+            result = db.execute(
+                text(
+                    "UPDATE lottery_rounds SET status = 'open', drawing_at = NULL "
+                    "WHERE id = :id AND status = 'drawing'"
+                ),
+                {"id": rid},
+            )
+            db.commit()
+            if result.rowcount > 0:
+                reaped.append(rid)
+                logger.warning(
+                    "群抽奖回收僵尸 drawing 轮次 round_id=%s，已打回 open", rid
+                )
+        except Exception:
+            db.rollback()
+            logger.exception("群抽奖回收僵尸 drawing 轮次失败 round_id=%s", rid)
+
+    if summary is not None:
+        summary["reaped_stale_drawing"] = reaped
+    return reaped
+
+
 def run_due_draws(db: Session) -> dict:
     """扫描并自动开奖所有到期的轮次。
 
@@ -863,6 +924,10 @@ def run_due_draws(db: Session) -> dict:
     单个轮次失败回滚并记入 errors，不中断整批。
     """
     summary: dict[str, Any] = {"checked": 0, "drawn": [], "errors": []}
+    # 先回收僵尸 drawing（崩溃遗留），再扫到期轮次：回收后打回 open 的自动轮次
+    # 本 tick 即可被重新认领开奖；手动轮次打回 open 后管理后台可重试。
+    # 回收不依赖自动开奖总开关——解卡死与是否自动开奖无关。
+    reap_stale_drawing_rounds(db, summary)
     if not auto_draw_enabled(db):
         return summary
     now = datetime.now()
@@ -881,8 +946,8 @@ def run_due_draws(db: Session) -> dict:
     for round_id in due_ids:
         try:
             claimed = db.execute(
-                text("UPDATE lottery_rounds SET status='drawing' WHERE id=:id AND status='open'"),
-                {"id": round_id},
+                text("UPDATE lottery_rounds SET status='drawing', drawing_at=:now WHERE id=:id AND status='open'"),
+                {"id": round_id, "now": datetime.now()},
             ).rowcount
             db.commit()
             if not claimed:
@@ -903,7 +968,7 @@ def run_due_draws(db: Session) -> dict:
             # （draw 的 seed 确定性 + distribute 的 distributed 幂等保证重试安全）
             try:
                 db.execute(
-                    text("UPDATE lottery_rounds SET status='open' WHERE id=:id AND status='drawing'"),
+                    text("UPDATE lottery_rounds SET status='open', drawing_at=NULL WHERE id=:id AND status='drawing'"),
                     {"id": round_id},
                 )
                 db.commit()

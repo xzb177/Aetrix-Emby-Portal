@@ -1005,6 +1005,13 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
     with engine.begin() as conn:
         conn.execute(text("UPDATE lottery_rounds SET lottery_type = 'button' WHERE lottery_type IS NULL"))
 
+    # 僵尸 drawing 回收：lottery_rounds 补 drawing_at 列（老库）
+    cols = {c["name"] for c in inspector.get_columns("lottery_rounds")}
+    if "drawing_at" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE lottery_rounds ADD COLUMN drawing_at TIMESTAMP"))
+        print("  🔧 已迁移: lottery_rounds 加列 drawing_at（僵尸 drawing 回收）")
+
 
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
                   required_column: Optional[str], message: str) -> None:

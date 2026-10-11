@@ -607,8 +607,8 @@ def draw_lottery_round(
     # 原子认领（与自动开奖调度 run_due_draws 同一口径）：只看 status 再开奖是读-判-写，
     # 管理员手动开奖与调度/重复点击并发时会两边都开奖、两边都发奖
     claimed = db.execute(
-        text("UPDATE lottery_rounds SET status='drawing' WHERE id=:id AND status='open'"),
-        {"id": round_id},
+        text("UPDATE lottery_rounds SET status='drawing', drawing_at=:now WHERE id=:id AND status='open'"),
+        {"id": round_id, "now": datetime.now()},
     ).rowcount
     db.commit()
     if not claimed:
@@ -624,7 +624,7 @@ def draw_lottery_round(
         # 不会误删开奖结果；未发放的中奖者走上面的 done+pending 路径补发。
         try:
             db.execute(
-                text("UPDATE lottery_rounds SET status='open' WHERE id=:id AND status='drawing'"),
+                text("UPDATE lottery_rounds SET status='open', drawing_at=NULL WHERE id=:id AND status='drawing'"),
                 {"id": round_id},
             )
             db.commit()
