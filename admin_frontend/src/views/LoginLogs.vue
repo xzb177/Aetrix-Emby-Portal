@@ -6,13 +6,15 @@
  * 供风控审查；支持按保留天数清理，避免表无限增长。
  */
 import { computed, onMounted, ref } from 'vue'
-import { RefreshCw, Search, Trash2, ShieldAlert, ScrollText, KeyRound, Database } from 'lucide-vue-next'
+import { RefreshCw, Trash2, ShieldAlert, ScrollText, KeyRound, Database } from 'lucide-vue-next'
 import { fetchLoginLogs } from '@/api/admin'
 import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { useDangerOps } from '@/composables/useDangerOps'
 import type { LoginLogRow, LoginLogsResponse } from '@/types'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import FilterBar, { defaultChipText } from '@/components/FilterBar.vue'
+import type { AppliedFilter, FilterConfig, FilterOption } from '@/components/FilterBar.vue'
 
 /** 手机卡片：用户为标题，事件/结果/风险/IP/详情/时间做键值行，客户端 UA 太长故隐藏 */
 const columns: DataColumn[] = [
@@ -27,25 +29,121 @@ const columns: DataColumn[] = [
   { key: 'user_agent', label: '客户端', minWidth: 180, mobile: 'hide' },
 ]
 
+type LoginLogFilters = {
+  username: string
+  ip: string
+  reason: string
+  success: string
+}
+
+type FilterKey = keyof LoginLogFilters
+
 const data = ref<LoginLogsResponse | null>(null)
 const loading = ref(false)
 const loadError = ref('')
-const filters = ref<{ username: string; ip: string; reason: string; success: string }>({
+
+/** 草稿与提交快照分开：输入尚未提交时，刷新、chips 和空态仍对应已提交条件。 */
+const draft = ref<LoginLogFilters>({
   username: '',
   ip: '',
   reason: '',
   success: '',
 })
+const committed = ref<LoginLogFilters>({ ...draft.value })
+
+const reasonOptions = computed<FilterOption[]>(() => [
+  { label: '全部事件', value: '' },
+  ...(data.value?.reasons ?? []).map((reason) => ({
+    label: reason.label,
+    value: reason.value,
+  })),
+])
+
+const successOptions: FilterOption[] = [
+  { label: '全部结果', value: '' },
+  { label: '成功', value: 'true' },
+  { label: '失败', value: 'false' },
+]
+
+/** 同页有两个文本筛选器，不能共用一个 search；custom 插槽由页面提供输入框，FilterBar 负责布局。 */
+const filterConfigs = computed<FilterConfig[]>(() => [
+  {
+    key: 'username',
+    label: '用户名',
+    type: 'custom',
+    value: draft.value.username,
+  },
+  {
+    key: 'ip',
+    label: 'IP',
+    type: 'custom',
+    value: draft.value.ip,
+  },
+  {
+    key: 'reason',
+    label: '事件',
+    type: 'select',
+    value: draft.value.reason,
+    placeholder: '全部事件',
+    options: reasonOptions.value,
+  },
+  {
+    key: 'success',
+    label: '结果',
+    type: 'select',
+    value: draft.value.success,
+    placeholder: '全部结果',
+    options: successOptions,
+  },
+])
+
+/** chips 只从提交快照派生，选项标签更新也只重算展示，不触发请求。 */
+const appliedFilters = computed<AppliedFilter[]>(() => {
+  const filters: AppliedFilter[] = []
+  const value = committed.value
+
+  if (value.username) {
+    filters.push({ key: 'username', label: '用户名', text: value.username })
+  }
+  if (value.ip) {
+    filters.push({ key: 'ip', label: 'IP', text: value.ip })
+  }
+  if (value.reason) {
+    filters.push({
+      key: 'reason',
+      label: '事件',
+      text: defaultChipText(value.reason, reasonOptions.value),
+    })
+  }
+  if (value.success) {
+    filters.push({
+      key: 'success',
+      label: '结果',
+      text: value.success === 'true' ? '成功' : '失败',
+    })
+  }
+
+  return filters
+})
+
+const committedHasFilter = computed(() =>
+  Boolean(
+    committed.value.username ||
+      committed.value.ip ||
+      committed.value.reason ||
+      committed.value.success,
+  ),
+)
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
     data.value = await fetchLoginLogs({
-      username: filters.value.username || undefined,
-      ip: filters.value.ip || undefined,
-      reason: filters.value.reason || undefined,
-      success: filters.value.success === '' ? undefined : filters.value.success === 'true',
+      username: committed.value.username || undefined,
+      ip: committed.value.ip || undefined,
+      reason: committed.value.reason || undefined,
+      success: committed.value.success === '' ? undefined : committed.value.success === 'true',
       limit: 300,
     })
   } catch (e) {
@@ -54,6 +152,50 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+/** 先标准化再比对快照：重复回车、清空或查询不重复请求，也不为筛选引入额外等待。 */
+function commitQuery() {
+  const next: LoginLogFilters = {
+    username: draft.value.username.trim(),
+    ip: draft.value.ip.trim(),
+    reason: draft.value.reason,
+    success: draft.value.success,
+  }
+  const previous = committed.value
+
+  if (
+    next.username === previous.username &&
+    next.ip === previous.ip &&
+    next.reason === previous.reason &&
+    next.success === previous.success
+  ) {
+    return
+  }
+
+  committed.value = next
+  void load()
+}
+
+function isFilterKey(key: string): key is FilterKey {
+  return key === 'username' || key === 'ip' || key === 'reason' || key === 'success'
+}
+
+function handleFilterChange(key: string, value: unknown) {
+  if (!isFilterKey(key) || typeof value !== 'string') return
+  draft.value[key] = value
+  commitQuery()
+}
+
+function removeFilter(key: string) {
+  if (!isFilterKey(key)) return
+  draft.value[key] = ''
+  commitQuery()
+}
+
+function clearFilters() {
+  draft.value = { username: '', ip: '', reason: '', success: '' }
+  commitQuery()
 }
 
 onMounted(load)
@@ -76,15 +218,6 @@ async function purge(preset: number) {
 function fmt(s: string | null): string {
   if (!s) return '—'
   return s.slice(0, 19).replace('T', ' ')
-}
-
-const hasFilter = computed(() =>
-  Boolean(filters.value.username || filters.value.ip || filters.value.reason || filters.value.success),
-)
-
-function resetFilters() {
-  filters.value = { username: '', ip: '', reason: '', success: '' }
-  load()
 }
 
 function riskBadge(row: LoginLogRow): string {
@@ -137,23 +270,37 @@ function riskLevel(row: LoginLogRow): string {
 
     <SectionCard title="登录事件" :icon="ScrollText" :meta="data ? `${data.logs.length} 条` : ''" flush>
       <div class="list-bar">
-        <div class="filter-bar">
-          <el-input v-model="filters.username" placeholder="用户名" clearable @keyup.enter="load" @clear="load" />
-          <el-input v-model="filters.ip" placeholder="IP" clearable @keyup.enter="load" @clear="load" />
-          <el-select v-model="filters.reason" placeholder="全部事件" @change="load">
-            <el-option value="" label="全部事件" />
-            <el-option v-for="r in data?.reasons || []" :key="r.value" :value="r.value" :label="r.label" />
-          </el-select>
-          <el-select v-model="filters.success" placeholder="全部结果" @change="load">
-            <el-option value="" label="全部结果" />
-            <el-option value="true" label="成功" />
-            <el-option value="false" label="失败" />
-          </el-select>
-        </div>
-        <div class="head-actions">
-          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
-          <el-button type="primary" @click="load" :icon="Search">查询</el-button>
-        </div>
+        <!-- 多输入框且无主搜索的页面也需要统一查询按钮，因此只启用 queryButton，不传 search。 -->
+        <FilterBar
+          class="fb-grow"
+          :filters="filterConfigs"
+          :applied-filters="appliedFilters"
+          :query-button="true"
+          :loading="loading"
+          @filter-change="handleFilterChange"
+          @query="commitQuery"
+          @remove-chip="removeFilter"
+          @clear="clearFilters"
+        >
+          <template #filter-username>
+            <el-input
+              v-model="draft.username"
+              placeholder="用户名"
+              clearable
+              @keyup.enter="commitQuery"
+              @clear="removeFilter('username')"
+            />
+          </template>
+          <template #filter-ip>
+            <el-input
+              v-model="draft.ip"
+              placeholder="IP"
+              clearable
+              @keyup.enter="commitQuery"
+              @clear="removeFilter('ip')"
+            />
+          </template>
+        </FilterBar>
       </div>
 
       <DataTable
@@ -161,8 +308,8 @@ function riskLevel(row: LoginLogRow): string {
         :columns="columns"
         :loading="loading"
         :error="loadError"
-        :empty="hasFilter ? '没有匹配的登录记录' : '暂无登录日志'"
-        :empty-description="hasFilter ? '换个用户名 / IP，或清空筛选再查。' : ''"
+        :empty="committedHasFilter ? '没有匹配的登录记录' : '暂无登录日志'"
+        :empty-description="committedHasFilter ? '换个用户名 / IP，或清空筛选再查。' : ''"
         @retry="load"
       >
         <template #cell-username="{ row }">
@@ -217,7 +364,7 @@ function riskLevel(row: LoginLogRow): string {
   padding: 4px 20px 12px;
 }
 
-.list-bar .filter-bar { flex: 1 1 auto; }
+.list-bar .fb-grow { flex: 1 1 auto; }
 .list-bar .head-actions { justify-content: flex-end; }
 
 /* 危险操作全部收在「系统设置 → 危险操作」：这里只留一个入口，不开第二个现场 */
