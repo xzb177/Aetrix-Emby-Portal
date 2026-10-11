@@ -126,8 +126,9 @@ def _episode_night_config(db=None) -> dict:
     """单集夜间刮削的有效配置（环境变量优先，否则读 SystemConfig）。
 
     db 可空：传了 db 才读库；60 秒 TTL 缓存，管理后台保存后最多 60 秒生效。
-    返回 {"enabled": bool, "start": "HH:MM", "end": "HH:MM",
+    返回 {"enabled": bool, "night_start": "HH:MM", "night_end": "HH:MM",
            "from_env": bool, "in_window": bool}
+    （字段名与管理后台前端 EnrichEpisodeNightConfig 接口保持一致）
     """
     now_ts = time.monotonic()
     cached = _night_cfg_cache["cfg"]
@@ -166,11 +167,11 @@ def _episode_night_config(db=None) -> dict:
                     NIGHT_END_DEFAULT)
             except Exception:  # noqa: BLE001
                 logger.warning("夜间窗口读库失败，用默认值", exc_info=True)
-        cfg = {"enabled": enabled, "start": start, "end": end,
+        cfg = {"enabled": enabled, "night_start": start, "night_end": end,
                "from_env": from_env}
         _night_cfg_cache["at"] = now_ts
         _night_cfg_cache["cfg"] = dict(cfg)
-    cfg["in_window"] = _in_night_window(datetime.now(), cfg["start"], cfg["end"])
+    cfg["in_window"] = _in_night_window(datetime.now(), cfg["night_start"], cfg["night_end"])
     return cfg
 
 
@@ -1600,7 +1601,7 @@ def _claim_batch(db, limit: int) -> list:
     if _skip_episode:
         logger.debug("单集夜间刮削：当前 %s 不在夜间窗口 %s-%s，跳过单集",
                      datetime.now().strftime("%H:%M"),
-                     _night_cfg["start"], _night_cfg["end"])
+                     _night_cfg["night_start"], _night_cfg["night_end"])
     not_episode = True if not _skip_episode else (em.MediaItem.item_type != "episode")
     group_key = _func.coalesce(em.MediaItem.series_id, em.MediaItem.id)
 
