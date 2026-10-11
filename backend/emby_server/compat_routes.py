@@ -43,7 +43,6 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, or_
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from backend.emby_server.api import (
@@ -110,13 +109,19 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
             # 全部落到机房所在城市，跨城市检测就废了。下面 remote_addr
             # 保持原有口径，不在这里跟着改。
             ip = real_client_ip(request)
-            verdict = share_guard.note_session(db, user, session_key, ip)
+            # commit=False：判定落库（事件/站内信）与下面的建会话行由本函数末尾
+            # 统一提交。note_session 内取的用户行锁于是覆盖「判定 → 建行 →
+            # 提交」整个区间，并发两路新建会话在此串行化；拦下时先提交已暂存
+            # 的事件再返回（审计轨迹不丢，只是没有会话行）。
+            verdict = share_guard.note_session(db, user, session_key, ip, commit=False)
             if verdict and verdict.get("blocked"):
                 logger.info("同播拦截：user=%s session=%s", user.id, session_key)
+                db.commit()
                 return None, False
-            verdict = share_guard.note_activity(db, user, ip)
+            verdict = share_guard.note_activity(db, user, ip, commit=False)
             if verdict and verdict.get("blocked"):
                 logger.info("跨城市停用后拒绝建会话：user=%s", user.id)
+                db.commit()
                 return None, False
         if session is None:
             # 真·新会话：建行；上面复活分支走进来时复用旧行，不另建
@@ -124,25 +129,6 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
                 session_key=session_key, user_id=user.id, item_id=item.id,
             )
             db.add(session)
-            try:
-                # 确定性会话键（HMAC 派生）下，Playing 与紧随的 Progress 可能
-                # 并发走到这里：先 flush 抢唯一键，撞键则回滚并复用 winner 的行，
-                # 避免第二个请求直接 IntegrityError 500。
-                # （此前随机键永不碰撞，不需要这道防线。）
-                db.flush()
-            except IntegrityError:
-                # 之前在本函数里只可能有已提交的防共享事件写入（commit=True），
-                # 回滚只丢弃本次未提交的 insert 本体，是安全的。
-                db.rollback()
-                session = (
-                    db.query(em.PlaybackSession)
-                    .filter(em.PlaybackSession.session_key == session_key)
-                    .first()
-                )
-                if session is None:
-                    raise
-                logger.info("播放会话并发建行合并：user=%s session=%s 复用已存在行",
-                            user.id, session_key)
 
     position = int(body.get("PositionTicks") or 0)
     paused = bool(body.get("IsPaused", False))
