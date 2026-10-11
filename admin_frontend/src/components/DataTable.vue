@@ -32,6 +32,14 @@ export interface DataColumn {
   mobile?: 'title' | 'hide'
 }
 
+/** 分页配置（1-based 页码，与 el-pagination 口径一致） */
+export interface DataTablePagination {
+  total: number
+  /** 当前页（1-based） */
+  page: number
+  pageSize: number
+}
+
 const props = withDefaults(
   defineProps<{
     rows: T[]
@@ -46,11 +54,18 @@ const props = withDefaults(
     rowKey?: string
     /** 点整行触发 row-click（手机卡片同样生效） */
     clickable?: boolean
+    /** 分页：传入则在表格/卡片下方渲染 el-pagination；不传则不渲染（向后兼容） */
+    pagination?: DataTablePagination
   }>(),
   { loading: false, empty: '暂无数据', emptyDescription: '', error: '', rowKey: 'id', clickable: false },
 )
 
-const emit = defineEmits<{ 'row-click': [row: T]; retry: [] }>()
+const emit = defineEmits<{
+  'row-click': [row: T]
+  retry: []
+  /** 分页页码变化（1-based） */
+  'page-change': [page: number]
+}>()
 
 // 插槽按列定义：`#cell-<列 key>` 同时用于桌面单元格与手机卡片取值
 // （插槽名是动态的，必须显式声明类型，否则页面里解构不到 row）
@@ -106,6 +121,15 @@ function rowId(row: T, index: number): string {
 
 function onRowClick(row: T) {
   if (props.clickable) emit('row-click', row)
+}
+
+/** 是否显示分页：传入 pagination 且总数超过一页 */
+const showPagination = computed(
+  () => !!props.pagination && props.pagination.total > props.pagination.pageSize,
+)
+
+function onPageChange(page: number) {
+  emit('page-change', page)
 }
 </script>
 
@@ -230,6 +254,19 @@ function onRowClick(row: T) {
       </slot>
     </div>
   </div>
+
+  <!-- 分页（桌面/手机共用，total 超过一页时显示） -->
+  <div v-if="showPagination" class="dt-pagination">
+    <el-pagination
+      :total="pagination!.total"
+      :page-size="pagination!.pageSize"
+      :current-page="pagination!.page"
+      :pager-count="isPhone ? 5 : 7"
+      layout="prev, pager, next, total"
+      size="small"
+      @current-change="onPageChange"
+    />
+  </div>
 </template>
 
 <style scoped>
@@ -316,6 +353,15 @@ function onRowClick(row: T) {
 }
 
 .dt-actions :deep(.el-button) { flex: 1 1 auto; min-width: 84px; margin-left: 0; }
+
+.dt-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+@media (max-width: 640px) {
+  .dt-pagination { justify-content: center; }
+}
 
 :deep(.el-table.is-clickable .el-table__row) { cursor: pointer; }
 </style>

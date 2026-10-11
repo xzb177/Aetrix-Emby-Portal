@@ -407,6 +407,15 @@ async function addKey() {
 }
 
 async function removeKey(row: TmdbKeyPoolRow) {
+  try {
+    await ElMessageBox.confirm(
+      `删除这把 TMDB Key（${row.masked ?? ''}）？删除后该 Key 不再参与轮询，可重新添加。`,
+      '删除 TMDB Key',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
   keyBusyIndex.value = row.index
   try {
     const res = await deleteTmdbKey(row.index)

@@ -800,6 +800,15 @@ function requestCoverUpload(l: EmbyLibrary, options: UploadRequestOptions) {
 }
 
 async function removeCover(l: EmbyLibrary) {
+  try {
+    await ElMessageBox.confirm(
+      `移除「${l.name}」的自定义封面？移除后显示默认封面，可随时重新上传。`,
+      '移除媒体库封面',
+      { type: 'warning', confirmButtonText: '确认移除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
   await removeLibraryCover(l.id)
   const old = coverUrls.value[l.id]
   if (old) URL.revokeObjectURL(old)
