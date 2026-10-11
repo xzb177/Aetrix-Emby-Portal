@@ -329,6 +329,11 @@ const SECTIONS: GroupSection[] = (() => {
 const loading = ref(true)
 /** 运营参数读取失败：显示错误态，避免管理员对着空表单点保存 */
 const paramsError = ref(false)
+/** 分组目录横向滚动归零：移动端是横滑导航，数据重载后回到起点，避免首个标签停在被裁的位置 */
+const groupNavRef = ref<HTMLElement | null>(null)
+function resetGroupNavScroll() {
+  nextTick(() => { if (groupNavRef.value) groupNavRef.value.scrollLeft = 0 })
+}
 const savingGroup = ref('')
 const settings = reactive<EconomySettings>({})
 const original = ref<EconomySettings>({})
@@ -542,6 +547,8 @@ async function load() {
     paramsError.value = true
   } finally {
     loading.value = false
+    // 分组目录回到横向起点（移动端横滑导航）
+    resetGroupNavScroll()
   }
 }
 
@@ -851,7 +858,9 @@ watch(
           />
 
           <!-- 分组目录：按三段归类一眼看全，带未保存标记，点击跳转；滚动时吸顶 -->
-          <nav class="group-nav" aria-label="运营参数分组">
+          <!-- 吸顶层与横向滚动层分离：sticky 元素自身不再是滚动容器，避免移动端吸顶态滚动原点偏移 -->
+          <div class="group-nav-sticky">
+          <nav ref="groupNavRef" class="group-nav" aria-label="运营参数分组">
             <div v-for="sec in SECTIONS" :key="sec.id" class="group-nav-sec">
               <span class="group-nav-label">{{ sec.title }}</span>
               <button
@@ -885,6 +894,7 @@ watch(
               </button>
             </div>
           </nav>
+          </div>
 
           <template v-for="sec in SECTIONS" :key="sec.id">
           <h2 :id="`section-${sec.id}`" class="au-eyebrow section-title">{{ sec.title }}</h2>
@@ -1351,19 +1361,23 @@ watch(
 .sk-card { height: 220px; border-radius: var(--au-r-lg); }
 
 /* ==================== 运营参数：分组目录 ==================== */
-.group-nav {
+/* 吸顶层：只负责吸顶，不再是滚动容器（与横向滚动的 nav 分离，避免移动端吸顶态滚动原点偏移） */
+.group-nav-sticky {
   position: sticky;
   top: calc(62px + env(safe-area-inset-top));
   z-index: 5;
+  background: var(--au-bg);
+  border-bottom: 1px solid var(--au-border);
+}
+.group-nav {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 18px;
   padding: 10px 0;
-  background: var(--au-bg);
-  border-bottom: 1px solid var(--au-border);
 }
 .group-nav-sec { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.group-nav-label { font-size: 11.5px; color: var(--au-text-3); margin-right: 2px; white-space: nowrap; }
+/* 标签永不被压缩：窄屏下 chips 已是 flex: none，标签也要同等待遇，避免被挤到 pill 下面 */
+.group-nav-label { flex-shrink: 0; font-size: 11.5px; color: var(--au-text-3); margin-right: 2px; white-space: nowrap; }
 .section-title { margin: 8px 0 -4px; scroll-margin-top: 140px; }
 .field-hint.warn { color: var(--au-warning); }
 .group-chip {
@@ -1536,6 +1550,8 @@ watch(
   .purge-input { flex: 1 1 100px; }
   .settings-body { gap: 12px; }
   .group-nav { flex-wrap: nowrap; overflow-x: auto; padding: 8px 0; scrollbar-width: none; }
+  /* scrollbar-width 只 Firefox 认，WebKit 内核要这一行才真藏得住 */
+  .group-nav::-webkit-scrollbar { display: none; }
   .group-nav-sec { flex-wrap: nowrap; flex: none; }
   .group-chip { flex: none; }
   .cap-grid { grid-template-columns: 1fr; }
