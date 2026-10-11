@@ -11,6 +11,7 @@ import { checkinApi, pointsApi, type CheckinStatus, type PointsLogEntry } from '
 import { useToast } from '@/composables/useToast'
 import { tgApi, type TgBindStatus } from '@/api/tg'
 import TgBindCard from '@/components/TgBindCard.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
 
@@ -235,10 +236,12 @@ onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {
             <ChevronRight :size="13" />
           </RouterLink>
         </header>
-        <div v-if="!checkinLogs.length" class="au-empty compact">
-          <CalendarCheck :size="26" />
-          <p>还没有签到记录</p>
-        </div>
+        <EmptyState
+          v-if="!checkinLogs.length"
+          size="compact"
+          title="还没有签到记录"
+          description="成功签到后会显示在这里"
+        />
         <ul v-else class="gains-list">
           <li v-for="g in checkinLogs.slice(0, 7)" :key="g.id">
             <span class="gains-dot" />

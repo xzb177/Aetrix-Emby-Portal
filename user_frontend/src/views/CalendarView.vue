@@ -26,6 +26,7 @@ import {
 import { embyApi, posterUrl, type EmbyItem } from '@/api/emby'
 import { rexDeepLink } from '@/utils/rexDeepLink'
 import { useToast } from '@/composables/useToast'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
 const route = useRoute()
@@ -358,9 +359,11 @@ watch([year, month, libraryId, selectedTypes], async () => {
         <span class="au-spinner" aria-hidden="true" />
         <span>正在读取入库记录…</span>
       </div>
-      <p v-else-if="isEmptyMonth" class="cal-note">
-        这个区间还没有新上架的条目。条目是扫描进库时写下的入库时间，扫完就会出现。
-      </p>
+      <EmptyState
+        v-else-if="isEmptyMonth"
+        title="这个时间段暂时没有内容"
+        description="条目是扫描进库时写下的入库时间，扫完就会出现，可以切换日期看看"
+      />
       <p v-else class="cal-note">
         格子里的封面点开就是详情页；角标是当天的真实条数（超出可展示数量的部分只计数）。
       </p>

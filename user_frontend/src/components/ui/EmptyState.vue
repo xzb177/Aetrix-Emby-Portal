@@ -1,5 +1,9 @@
 <template>
-  <div :class="['empty-state', `empty-state--${variant}`, { 'empty-state--compact': compact }]">
+  <div
+    :class="['empty-state', `empty-state--${variant}`, `empty-state--${resolvedSize}`]"
+    :role="announce ? 'status' : undefined"
+    :aria-live="announce ? 'polite' : undefined"
+  >
     <div class="empty-state__illustration">
       <slot name="illustration">
         <!-- 默认插图 -->
@@ -103,17 +107,30 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 export interface EmptyStateProps {
   variant?: 'default' | 'search' | 'error' | 'network' | 'success'
   title?: string
   description?: string
+  /** @deprecated 用 size="compact" 代替 */
   compact?: boolean
+  size?: 'regular' | 'compact'
+  /** 为 true 时以 role="status" + aria-live="polite" 播报 */
+  announce?: boolean
 }
 
-withDefaults(defineProps<EmptyStateProps>(), {
+const props = withDefaults(defineProps<EmptyStateProps>(), {
   variant: 'default',
-  compact: false
+  compact: false,
+  size: undefined,
+  announce: false
 })
+
+// size 优先；未传 size 时用 legacy compact 兜底
+const resolvedSize = computed<'regular' | 'compact'>(() =>
+  props.size ?? (props.compact ? 'compact' : 'regular')
+)
 </script>
 
 <style scoped>
@@ -128,11 +145,15 @@ withDefaults(defineProps<EmptyStateProps>(), {
 }
 
 .empty-state--compact {
-  padding: 2rem 1rem;
+  padding: 1.5rem 1rem;
 }
 
 .empty-state__illustration {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.empty-state--compact .empty-state__illustration {
+  margin-bottom: 0.75rem;
 }
 
 .empty-state__svg {
@@ -142,8 +163,8 @@ withDefaults(defineProps<EmptyStateProps>(), {
 }
 
 .empty-state--compact .empty-state__svg {
-  width: 80px;
-  height: 80px;
+  width: 48px;
+  height: 48px;
 }
 
 .empty-state__svg--success {
@@ -175,22 +196,30 @@ withDefaults(defineProps<EmptyStateProps>(), {
   flex-wrap: wrap;
 }
 
-/* 进入动画 */
+/* 入场动画：只 opacity + translateY，短促不挡交互 */
 .empty-state__illustration {
-  animation: fadeInScale 0.7s ease-out;
+  animation: empty-fade-in 0.3s ease-out;
 }
 
 .empty-state__content {
-  animation: fadeInUp 0.7s ease-out 0.1s both;
+  animation: empty-fade-up 0.3s ease-out 0.05s both;
 }
 
-@keyframes fadeInScale {
+@keyframes empty-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
-@keyframes fadeInUp {
-  from { opacity: 0; }
-  to { opacity: 1; }
+@keyframes empty-fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* reduced-motion：直接呈现，无位移无渐变 */
+@media (prefers-reduced-motion: reduce) {
+  .empty-state__illustration,
+  .empty-state__content {
+    animation: none;
+  }
 }
 </style>

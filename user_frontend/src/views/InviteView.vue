@@ -13,6 +13,7 @@ import {
   type MyPromotions, type PromotionRewardRow,
 } from '@/api/economy'
 import { useClipboard } from '@/composables/useClipboard'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const { copy } = useClipboard()
 
@@ -215,10 +216,16 @@ onMounted(load)
           <h3><UserPlus :size="16" /> 邀请记录</h3>
           <span class="au-badge au-badge-cyan">{{ records.length }} 条</span>
         </header>
-        <div v-if="!records.length" class="au-empty compact">
-          <UserPlus :size="26" />
-          <p>还没有邀请记录，快去分享吧</p>
-        </div>
+        <EmptyState
+          v-if="!records.length"
+          size="compact"
+          title="还没有邀请记录"
+          description="分享链接邀请朋友"
+        >
+          <template #action>
+            <button class="au-btn au-btn-ghost au-btn-sm" @click="copyText(inviteLink, 'link')">复制邀请链接</button>
+          </template>
+        </EmptyState>
         <ul v-else class="rows">
           <li v-for="r in records" :key="r.id">
             <span class="row-avatar">{{ r.invitee_username.charAt(0).toUpperCase() }}</span>

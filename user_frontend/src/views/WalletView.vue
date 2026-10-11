@@ -24,6 +24,7 @@ import {
   type OrderRow, type CheckinStatus, type CodePreview, type VitalityStatus,
 } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
 const route = useRoute()
@@ -592,10 +593,15 @@ onBeforeUnmount(stopPayPoll)
 
     <!-- 流水 -->
     <section v-if="tab === 'log'" class="tab-body au-anim-up">
-      <div v-if="!logs.length" class="au-empty">
-        <ArrowDownLeft :size="30" />
-        <p>暂无积分流水</p>
-      </div>
+      <EmptyState
+        v-if="!logs.length"
+        title="还没有积分记录"
+        description="积分变动记录会显示在这里"
+      >
+        <template #action>
+          <RouterLink to="/store" class="au-btn au-btn-ghost au-btn-sm">逛逛商店</RouterLink>
+        </template>
+      </EmptyState>
       <div v-else class="log-list au-card">
         <div v-for="l in logs" :key="l.id" class="log-item">
           <span class="log-icon" :class="typeMeta(l.type).income ? 'in' : 'out'">
