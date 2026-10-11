@@ -514,6 +514,33 @@ class ScanRun(Base):
     error = Column(String(500))   # partial / failed 的原因摘要
 
 
+class EnrichFlipEvent(Base):
+    """enrich done→pending 批量翻转的告警事件（v2.55.x）
+
+    背景（2026-10-11 生产事故）：17:52 发生 5723 条 done→pending 翻转，
+    触发源未知；旧容器在 17:54 部署时被重建，docker 日志丢失，无法追查。
+    此后任何单次批量翻转（≥ ENRICH_FLIP_ALERT_THRESHOLD，默认 100 条）
+    都在这里留一条持久记录：
+    - 存在 PG，容器重建 / 日志轮转都丢不掉 —— 这就是「现场保留」；
+    - /api/health 暴露 enrich_flip_last_hour 指标；
+    - 管理端可按库、按时间查「谁把多少条翻回去了」。
+    由 ``create_all`` 自动建表，老库无需 ALTER（见 database._auto_migrate）。
+    """
+
+    __tablename__ = "enrich_flip_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    # 哪次扫描触发的（扫描之外的触发源如 retry_unmatched 为空）
+    library_id = Column(Integer, nullable=True, index=True)
+    scan_run_id = Column(Integer, nullable=True)
+    # 触发源：scan（扫描器 size_changed 等）/ retry_unmatched（管理端手动重试未匹配）
+    trigger = Column(String(40), nullable=False, default="scan")
+    flip_count = Column(Integer, nullable=False)
+    threshold = Column(Integer, nullable=False)  # 触发时的告警阈值（可配置，会变）
+    details = Column(Text)  # JSON：{reasons: {size_changed: N}, item_types: {...}, sample_ids: [...]}
+
+
 class StorageMount(Base):
     """存储挂载：媒体库的内容来源
 
