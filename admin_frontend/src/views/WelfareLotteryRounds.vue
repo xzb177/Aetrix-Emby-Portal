@@ -279,6 +279,8 @@ onMounted(() => {
         empty="还没有抽奖活动"
         empty-description="点右上角「新建活动」在指定群里发起一次抽奖。"
         @retry="load"
+        :pagination="{ total, page, pageSize }"
+        @page-change="(p: number) => { page = p; load() }"
       >
         <template #cell-status="{ row }">
           <el-tag :type="statusTagType(row.status)" size="small">{{ statusMap[row.status] ?? row.status }}</el-tag>
@@ -290,16 +292,6 @@ onMounted(() => {
           <el-button v-if="row.status === 'open'" link type="danger" @click="handleCancel(row)">取消</el-button>
         </template>
       </DataTable>
-      <el-pagination
-        v-if="total > pageSize"
-        v-model:current-page="page"
-        class="au-pagination"
-        :page-size="pageSize"
-        :total="total"
-        :layout="isPhone ? 'prev, pager, next' : 'total, prev, pager, next'"
-        :pager-count="isPhone ? 5 : 7"
-        @change="load"
-      />
     </SectionCard>
 
     <SectionCard title="功能开关" :icon="Settings2" meta="总开关与允许群ID 两行配置">

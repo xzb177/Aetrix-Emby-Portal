@@ -669,7 +669,9 @@ function fmtCount(n: number | null | undefined): string {
         </div>
       </div>
 
-      <DataTable :rows="users" :columns="columns" :loading="loading" empty="没有匹配的用户">
+      <DataTable :rows="users" :columns="columns" :loading="loading" empty="没有匹配的用户"
+        :pagination="{ total, page: page + 1, pageSize: PAGE_SIZE }"
+        @page-change="(p: number) => { page = p - 1; load() }">
         <template #empty>
           <EmptyState
             v-if="loadError"
@@ -766,20 +768,6 @@ function fmtCount(n: number | null | undefined): string {
           </el-dropdown>
         </template>
       </DataTable>
-
-      <template v-if="total > PAGE_SIZE" #footer>
-        <div class="pager">
-          <el-pagination
-            layout="prev, pager, next, total"
-            :total="total"
-            :page-size="PAGE_SIZE"
-            :current-page="page + 1"
-            :pager-count="isPhone ? 5 : 7"
-            size="small"
-            @current-change="(p: number) => { page = p - 1; load() }"
-          />
-        </div>
-      </template>
     </SectionCard>
 
     <!-- ==================== 用户 360° 详情 ==================== -->

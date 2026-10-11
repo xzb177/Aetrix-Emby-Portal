@@ -7,6 +7,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import { Coins, Crown, Plus, RefreshCw } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import DataTable from '@/components/DataTable.vue'
@@ -61,12 +62,36 @@ const packages = ref<PackageRow[]>([])
 // ===== 套餐表单 =====
 const planVisible = ref(false)
 const planEditing = ref<PlanRowFull | null>(null)
+const planFormRef = ref<FormInstance>()
 const planForm = ref({
   name: '', description: '', price: 19.9, duration_days: 30,
   features: '', is_active: true, is_popular: false, sort_order: 0,
   points_price: null as number | null,
   realm_id: null as number | null,
 })
+const planRules: FormRules = {
+  name: [
+    { required: true, message: '请输入套餐名称', trigger: 'blur' },
+    { max: 50, message: '名称最多 50 个字', trigger: 'blur' },
+  ],
+  realm_id: [{ required: true, message: '请选择归属服', trigger: 'change' }],
+  price: [
+    { required: true, message: '请输入价格', trigger: 'blur' },
+    { type: 'number', min: 0, message: '价格不能为负数', trigger: 'blur' },
+  ],
+  duration_days: [
+    { required: true, message: '请输入时长', trigger: 'blur' },
+    { type: 'number', min: 1, max: 3650, message: '时长需在 1–3650 天之间', trigger: 'blur' },
+  ],
+  sort_order: [{ type: 'number', min: 0, message: '排序不能为负数', trigger: 'blur' }],
+}
+
+/** 校验失败时滚动到第一个错误项 */
+function scrollToFirstError() {
+  requestAnimationFrame(() => {
+    document.querySelector('.el-dialog .el-form-item.is-error')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+}
 
 /** 可选的归属服：默认取面板当前服 */
 const realmOptions = computed(() => realm.realms)
@@ -100,8 +125,13 @@ function openPlanEdit(row: PlanRowFull) {
 }
 
 async function savePlan() {
+  try {
+    await planFormRef.value?.validate()
+  } catch {
+    scrollToFirstError()
+    return
+  }
   const f = planForm.value
-  if (!f.name.trim()) { ElMessage.warning('请输入套餐名称'); return }
   const payload = {
     name: f.name.trim(),
     description: f.description.trim() || null,
@@ -148,7 +178,24 @@ async function removePlan(row: PlanRowFull) {
 // ===== 充值套餐表单 =====
 const pkgVisible = ref(false)
 const pkgEditing = ref<PackageRow | null>(null)
+const pkgFormRef = ref<FormInstance>()
 const pkgForm = ref({ name: '', amount: 500, price: 25, bonus: 50, is_active: true, is_popular: false, sort_order: 0 })
+const pkgRules: FormRules = {
+  name: [
+    { required: true, message: '请输入套餐名称', trigger: 'blur' },
+    { max: 50, message: '名称最多 50 个字', trigger: 'blur' },
+  ],
+  amount: [
+    { required: true, message: '请输入积分数', trigger: 'blur' },
+    { type: 'number', min: 1, message: '积分数至少为 1', trigger: 'blur' },
+  ],
+  bonus: [{ type: 'number', min: 0, message: '赠送积分不能为负数', trigger: 'blur' }],
+  price: [
+    { required: true, message: '请输入价格', trigger: 'blur' },
+    { type: 'number', min: 0, message: '价格不能为负数', trigger: 'blur' },
+  ],
+  sort_order: [{ type: 'number', min: 0, message: '排序不能为负数', trigger: 'blur' }],
+}
 
 function openPkgCreate() {
   pkgEditing.value = null
@@ -166,8 +213,13 @@ function openPkgEdit(row: PackageRow) {
 }
 
 async function savePkg() {
+  try {
+    await pkgFormRef.value?.validate()
+  } catch {
+    scrollToFirstError()
+    return
+  }
   const f = pkgForm.value
-  if (!f.name.trim()) { ElMessage.warning('请输入套餐名称'); return }
   const payload = { ...f, name: f.name.trim() }
   try {
     if (pkgEditing.value) {
@@ -340,9 +392,9 @@ onMounted(load)
 
     <!-- 订阅套餐对话框 -->
     <el-dialog v-model="planVisible" :title="planEditing ? '编辑订阅套餐' : '新增订阅套餐'" width="min(520px, 92vw)">
-      <el-form label-position="top">
-        <el-form-item label="名称"><el-input v-model="planForm.name" maxlength="50" /></el-form-item>
-        <el-form-item label="归属服">
+      <el-form ref="planFormRef" :model="planForm" :rules="planRules" label-position="top">
+        <el-form-item label="名称" prop="name"><el-input v-model="planForm.name" maxlength="50" /></el-form-item>
+        <el-form-item label="归属服" prop="realm_id">
           <el-select v-model="planForm.realm_id" placeholder="选择这个套餐属于哪个服" class="w-full">
             <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
@@ -350,18 +402,18 @@ onMounted(load)
             用户在哪个服买这份套餐，会员就开在那个服（不同服的会员互不影响）。
           </p>
         </el-form-item>
-        <el-form-item label="描述"><el-input v-model="planForm.description" maxlength="200" /></el-form-item>
+        <el-form-item label="描述" prop="description"><el-input v-model="planForm.description" maxlength="200" /></el-form-item>
         <div class="form-grid">
-          <el-form-item label="价格 (¥)"><el-input-number v-model="planForm.price" :min="0" :precision="2" class="w-full" /></el-form-item>
-          <el-form-item label="积分价">
+          <el-form-item label="价格 (¥)" prop="price"><el-input-number v-model="planForm.price" :min="0" :precision="2" class="w-full" /></el-form-item>
+          <el-form-item label="积分价" prop="points_price">
             <el-input-number v-model="planForm.points_price" :min="0" :precision="0" placeholder="空=不支持积分购买" class="w-full" />
           </el-form-item>
-          <el-form-item label="时长 (天)"><el-input-number v-model="planForm.duration_days" :min="1" :max="3650" class="w-full" /></el-form-item>
+          <el-form-item label="时长 (天)" prop="duration_days"><el-input-number v-model="planForm.duration_days" :min="1" :max="3650" class="w-full" /></el-form-item>
         </div>
-        <el-form-item label="特性">
+        <el-form-item label="特性" prop="features">
           <el-input v-model="planForm.features" type="textarea" :rows="3" placeholder="每行一条，如：4K 原画" />
         </el-form-item>
-        <el-form-item label="排序"><el-input-number v-model="planForm.sort_order" :min="0" class="w-full" /></el-form-item>
+        <el-form-item label="排序" prop="sort_order"><el-input-number v-model="planForm.sort_order" :min="0" class="w-full" /></el-form-item>
         <el-form-item label="选项">
           <el-checkbox v-model="planForm.is_active">上架</el-checkbox>
           <el-checkbox v-model="planForm.is_popular">推荐</el-checkbox>
@@ -375,14 +427,14 @@ onMounted(load)
 
     <!-- 充值套餐对话框 -->
     <el-dialog v-model="pkgVisible" :title="pkgEditing ? '编辑充值套餐' : '新增充值套餐'" width="min(480px, 92vw)">
-      <el-form label-position="top">
-        <el-form-item label="名称"><el-input v-model="pkgForm.name" maxlength="50" /></el-form-item>
+      <el-form ref="pkgFormRef" :model="pkgForm" :rules="pkgRules" label-position="top">
+        <el-form-item label="名称" prop="name"><el-input v-model="pkgForm.name" maxlength="50" /></el-form-item>
         <div class="form-grid">
-          <el-form-item label="积分数"><el-input-number v-model="pkgForm.amount" :min="1" class="w-full" /></el-form-item>
-          <el-form-item label="赠送积分"><el-input-number v-model="pkgForm.bonus" :min="0" class="w-full" /></el-form-item>
+          <el-form-item label="积分数" prop="amount"><el-input-number v-model="pkgForm.amount" :min="1" class="w-full" /></el-form-item>
+          <el-form-item label="赠送积分" prop="bonus"><el-input-number v-model="pkgForm.bonus" :min="0" class="w-full" /></el-form-item>
         </div>
-        <el-form-item label="价格 (¥)"><el-input-number v-model="pkgForm.price" :min="0" :precision="2" class="w-full" /></el-form-item>
-        <el-form-item label="排序"><el-input-number v-model="pkgForm.sort_order" :min="0" class="w-full" /></el-form-item>
+        <el-form-item label="价格 (¥)" prop="price"><el-input-number v-model="pkgForm.price" :min="0" :precision="2" class="w-full" /></el-form-item>
+        <el-form-item label="排序" prop="sort_order"><el-input-number v-model="pkgForm.sort_order" :min="0" class="w-full" /></el-form-item>
         <el-form-item label="选项">
           <el-checkbox v-model="pkgForm.is_active">上架</el-checkbox>
           <el-checkbox v-model="pkgForm.is_popular">超值推荐</el-checkbox>

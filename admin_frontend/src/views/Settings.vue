@@ -21,6 +21,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import {
   CalendarCheck, Coins, Flame, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, ShieldAlert, Lock, Zap,
@@ -348,6 +349,16 @@ const reg = reactive({
   ratelimitWindow: 3600,
 })
 const regSaving = ref(false)
+const regFormRef = ref<FormInstance>()
+const regRules: FormRules = {
+  ratelimitMax: [
+    { type: 'number', min: 1, max: 10000, message: '次数需在 1–10000 之间', trigger: 'blur' },
+  ],
+  ratelimitWindow: [
+    { type: 'number', min: 60, max: 86400, message: '窗口需在 60–86400 秒之间', trigger: 'blur' },
+  ],
+  message: [{ max: 200, message: '提示最多 200 个字', trigger: 'blur' }],
+}
 
 const regModeHint = computed(() => {
   const map: Record<string, string> = {
@@ -669,7 +680,12 @@ const paymentReady = computed(() => {
 })
 
 async function saveRegistration() {
-  // 注册限流前端校验（C5）
+  try {
+    await regFormRef.value?.validate()
+  } catch {
+    return
+  }
+  // 注册限流前端校验（C5）——保留作为双保险
   const rlMax = Number.parseInt(String(reg.ratelimitMax), 10)
   const rlWindow = Number.parseInt(String(reg.ratelimitWindow), 10)
   if (!Number.isFinite(rlMax) || rlMax < 1) {
@@ -908,7 +924,7 @@ watch(
             description="决定新用户如何进入站点"
             class="group-card"
           >
-            <el-form label-position="top" class="field-form">
+            <el-form ref="regFormRef" :model="reg" :rules="regRules" label-position="top" class="field-form">
               <el-form-item label="注册模式">
                 <div class="field-stack">
                   <el-radio-group v-model="reg.mode">
@@ -927,7 +943,7 @@ watch(
                   />
                 </div>
               </el-form-item>
-              <el-form-item v-if="reg.mode === 'closed'" label="关闭提示">
+              <el-form-item v-if="reg.mode === 'closed'" label="关闭提示" prop="message">
                 <el-input v-model="reg.message" type="textarea" :rows="2" placeholder="展示给无法注册的用户…" />
               </el-form-item>
               <el-form-item label="新用户注册限流">
@@ -936,13 +952,13 @@ watch(
                   <span class="field-hint">按 IP 限制新用户注册频率，防批量注册。关闭后同一 IP 可无限制注册。</span>
                 </div>
               </el-form-item>
-              <el-form-item v-if="reg.ratelimitEnabled" label="窗口内最大注册次数">
+              <el-form-item v-if="reg.ratelimitEnabled" label="窗口内最大注册次数" prop="ratelimitMax">
                 <div class="field-stack">
                   <el-input-number v-model="reg.ratelimitMax" :min="1" :max="10000" :step="1" />
                   <span class="field-hint">同一 IP 在一个时间窗口内最多可注册次数（默认 5）</span>
                 </div>
               </el-form-item>
-              <el-form-item v-if="reg.ratelimitEnabled" label="限流时间窗口（秒）">
+              <el-form-item v-if="reg.ratelimitEnabled" label="限流时间窗口（秒）" prop="ratelimitWindow">
                 <div class="field-stack">
                   <el-input-number v-model="reg.ratelimitWindow" :min="60" :max="86400" :step="60" />
                   <span class="field-hint">滑动窗口长度，单位秒（默认 3600，即 1 小时）</span>

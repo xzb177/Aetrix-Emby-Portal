@@ -14,6 +14,7 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import {
   AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Search, Settings, ShieldCheck, UserPlus,
 } from 'lucide-vue-next'
@@ -149,6 +150,14 @@ const ruleForm = reactive<RuleForm>({
   promotion_reward_amount: 0,
   promotion_reward_days: 0,
 })
+const ruleFormRef = ref<FormInstance>()
+const ruleRules: FormRules = {
+  invitation_reward_points: [{ type: 'number', min: 0, message: '奖励积分不能为负数', trigger: 'blur' }],
+  invitation_invitee_reward_points: [{ type: 'number', min: 0, message: '奖励积分不能为负数', trigger: 'blur' }],
+  invitation_rebate_percent: [{ type: 'number', min: 0, max: 100, message: '返利比例需在 0–100 之间', trigger: 'blur' }],
+  promotion_reward_amount: [{ type: 'number', min: 0, message: '奖励数值不能为负数', trigger: 'blur' }],
+  promotion_reward_days: [{ type: 'number', min: 0, message: '天数不能为负数', trigger: 'blur' }],
+}
 
 /** 字符串 -> 布尔 */
 function parseRuleBool(val: string | undefined, fallback = false): boolean {
@@ -188,6 +197,12 @@ async function openRuleDialog(): Promise<void> {
 
 /** 保存邀请规则（只提交这 8 个 key） */
 async function saveRuleSettings(): Promise<void> {
+  try {
+    await ruleFormRef.value?.validate()
+  } catch {
+    scrollToFirstError()
+    return
+  }
   ruleSaving.value = true
   try {
     const toIntStr = (v: number): string => {
@@ -213,8 +228,23 @@ async function saveRuleSettings(): Promise<void> {
 
 // ===== 手动调整 =====
 const adjustVisible = ref(false)
+const adjustFormRef = ref<FormInstance>()
 const adjustForm = ref({ user_id: undefined as number | undefined, amount: 100, reason: '' })
+const adjustRules: FormRules = {
+  user_id: [{ required: true, message: '请选择用户', trigger: 'change' }],
+  amount: [
+    { required: true, message: '请输入调整数量', trigger: 'blur' },
+    { type: 'number', message: '请输入有效的数字', trigger: 'blur' },
+  ],
+  reason: [{ max: 100, message: '原因最多 100 个字', trigger: 'blur' }],
+}
 const adjustLoading = ref(false)
+
+function scrollToFirstError() {
+  requestAnimationFrame(() => {
+    document.querySelector('.el-dialog .el-form-item.is-error')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+}
 
 /** 用户搜索（远程）：不再要求管理员手填数据库 ID */
 const userOptions = ref<{ id: number; username: string }[]>([])
@@ -295,11 +325,15 @@ async function openAdjust() {
 }
 
 async function handleAdjust() {
-  if (!adjustForm.value.user_id) { ElMessage.warning('请输入用户 ID'); return }
-  if (!adjustForm.value.amount) { ElMessage.warning('请输入调整数量'); return }
+  try {
+    await adjustFormRef.value?.validate()
+  } catch {
+    scrollToFirstError()
+    return
+  }
   adjustLoading.value = true
   try {
-    const res = await adjustUserPoints(adjustForm.value.user_id, {
+    const res = await adjustUserPoints(adjustForm.value.user_id!, {
       amount: adjustForm.value.amount,
       reason: adjustForm.value.reason || undefined,
     })
@@ -364,7 +398,17 @@ const usesText = (row: InvitationCodeRow) =>
 // --- 批量生成 ---
 const genVisible = ref(false)
 const genLoading = ref(false)
+const genFormRef = ref<FormInstance>()
 const genForm = ref({ owner_user_id: null as number | null, count: 5, max_uses: 100, expires_days: 0, whitelist: '' })
+const genRules: FormRules = {
+  owner_user_id: [{ required: true, message: '请选择归属用户', trigger: 'change' }],
+  count: [
+    { required: true, message: '请输入生成数量', trigger: 'blur' },
+    { type: 'number', min: 1, max: 200, message: '数量需在 1–200 之间', trigger: 'blur' },
+  ],
+  max_uses: [{ type: 'number', min: 0, max: 100000, message: '次数需在 0–100000 之间', trigger: 'blur' }],
+  expires_days: [{ type: 'number', min: 0, max: 3650, message: '天数需在 0–3650 之间', trigger: 'blur' }],
+}
 const genOwner = computed(() =>
   userOptions.value.find((u) => u.id === genForm.value.owner_user_id)?.username,
 )
@@ -376,11 +420,16 @@ async function openGen() {
 }
 
 async function handleGen() {
-  if (!genForm.value.owner_user_id) { ElMessage.warning('请先选择归属用户'); return }
+  try {
+    await genFormRef.value?.validate()
+  } catch {
+    scrollToFirstError()
+    return
+  }
   genLoading.value = true
   try {
     const res = await generateInvitationCodes({
-      owner_user_id: genForm.value.owner_user_id,
+      owner_user_id: genForm.value.owner_user_id!,
       count: genForm.value.count,
       max_uses: genForm.value.max_uses,
       expires_days: genForm.value.expires_days,
@@ -399,7 +448,12 @@ async function handleGen() {
 // --- 改单张 ---
 const editVisible = ref(false)
 const editLoading = ref(false)
+const editFormRef = ref<FormInstance>()
 const editForm = ref({ id: 0, code: '', max_uses: 100, expires_days: 0, whitelist: '', is_active: true })
+const editRules: FormRules = {
+  max_uses: [{ type: 'number', min: 0, max: 100000, message: '次数需在 0–100000 之间', trigger: 'blur' }],
+  expires_days: [{ type: 'number', min: 0, max: 3650, message: '天数需在 0–3650 之间', trigger: 'blur' }],
+}
 
 function openEdit(row: InvitationCodeRow) {
   editForm.value = {
@@ -415,6 +469,12 @@ function openEdit(row: InvitationCodeRow) {
 }
 
 async function handleEdit() {
+  try {
+    await editFormRef.value?.validate()
+  } catch {
+    scrollToFirstError()
+    return
+  }
   editLoading.value = true
   try {
     const res = await updateInvitationCode(editForm.value.id, {
@@ -690,7 +750,9 @@ onMounted(reloadAll)
         <EmptyState v-if="logsError && !logs.length" :icon="AlertTriangle" title="积分流水加载失败" compact>
           <template #actions><el-button size="small" :loading="logsLoading" @click="loadLogs">重试</el-button></template>
         </EmptyState>
-        <DataTable v-else class="flush-table" :rows="logs" :columns="logColumns" :loading="logsLoading" empty="暂无积分流水">
+        <DataTable v-else class="flush-table" :rows="logs" :columns="logColumns" :loading="logsLoading" empty="暂无积分流水"
+          :pagination="{ total: logTotal, page: logPage, pageSize: 30 }"
+          @page-change="(p: number) => { logPage = p; loadLogs() }">
           <template #cell-username="{ row }">
             <span class="user-name">{{ row.username }}</span>
           </template>
@@ -714,18 +776,6 @@ onMounted(reloadAll)
             <EmptyState compact :icon="History" :title="logTypeFilter ? '这个类型下还没有流水' : '暂无积分流水'" />
           </template>
         </DataTable>
-
-        <template v-if="logTotal > 30" #footer>
-          <el-pagination
-            v-model:current-page="logPage"
-            :page-size="30"
-            :total="logTotal"
-            layout="prev, pager, next"
-            size="small"
-            class="card-pager"
-            @current-change="loadLogs"
-          />
-        </template>
       </SectionCard>
     </div>
 
@@ -857,8 +907,8 @@ onMounted(reloadAll)
 
     <!-- 调整积分对话框 -->
     <el-dialog v-model="adjustVisible" title="手动调整用户积分" width="min(440px, 92vw)">
-      <el-form label-position="top">
-        <el-form-item label="用户">
+      <el-form ref="adjustFormRef" :model="adjustForm" :rules="adjustRules" label-position="top">
+        <el-form-item label="用户" prop="user_id">
           <el-select
             v-model="adjustForm.user_id"
             filterable
@@ -878,11 +928,11 @@ onMounted(reloadAll)
           </el-select>
           <div class="form-hint">支持按用户名模糊搜索，无需再手填数据库 ID</div>
         </el-form-item>
-        <el-form-item label="调整数量">
+        <el-form-item label="调整数量" prop="amount">
           <el-input-number v-model="adjustForm.amount" :step="10" style="width: 100%" />
           <div class="form-hint">正数发放 / 负数扣除（记账留审计）</div>
         </el-form-item>
-        <el-form-item label="原因">
+        <el-form-item label="原因" prop="reason">
           <el-input v-model="adjustForm.reason" maxlength="100" placeholder="活动补偿等（选填）" />
         </el-form-item>
         <div v-if="selectedUser" class="adjust-preview">
@@ -897,8 +947,8 @@ onMounted(reloadAll)
 
     <!-- 批量生成邀请码 -->
     <el-dialog v-model="genVisible" title="批量生成邀请码" width="min(460px, 92vw)">
-      <el-form label-position="top">
-        <el-form-item label="归属用户">
+      <el-form ref="genFormRef" :model="genForm" :rules="genRules" label-position="top">
+        <el-form-item label="归属用户" prop="owner_user_id">
           <el-select
             v-model="genForm.owner_user_id"
             filterable
@@ -912,15 +962,15 @@ onMounted(reloadAll)
             <el-option v-for="u in userOptions" :key="u.id" :label="u.username" :value="u.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="生成数量">
+        <el-form-item label="生成数量" prop="count">
           <el-input-number v-model="genForm.count" :min="1" :max="200" style="width: 100%" />
           <div class="form-hint">1–200 张，同一规格，每张码不同</div>
         </el-form-item>
-        <el-form-item label="每码可用次数">
+        <el-form-item label="每码可用次数" prop="max_uses">
           <el-input-number v-model="genForm.max_uses" :min="0" :max="100000" style="width: 100%" />
           <div class="form-hint">0 = 不限次数</div>
         </el-form-item>
-        <el-form-item label="有效天数">
+        <el-form-item label="有效天数" prop="expires_days">
           <el-input-number v-model="genForm.expires_days" :min="0" :max="3650" style="width: 100%" />
           <div class="form-hint">0 = 永不过期；从生成那一刻开始算</div>
         </el-form-item>
@@ -939,12 +989,12 @@ onMounted(reloadAll)
 
     <!-- 改单张邀请码 -->
     <el-dialog v-model="editVisible" :title="`编辑邀请码 ${editForm.code}`" width="min(460px, 92vw)">
-      <el-form label-position="top">
-        <el-form-item label="每码可用次数">
+      <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-position="top">
+        <el-form-item label="每码可用次数" prop="max_uses">
           <el-input-number v-model="editForm.max_uses" :min="0" :max="100000" style="width: 100%" />
           <div class="form-hint">0 = 不限次数</div>
         </el-form-item>
-        <el-form-item label="有效天数（从现在起）">
+        <el-form-item label="有效天数（从现在起）" prop="expires_days">
           <el-input-number v-model="editForm.expires_days" :min="0" :max="3650" style="width: 100%" />
           <div class="form-hint">0 = 永不过期</div>
         </el-form-item>
@@ -971,19 +1021,19 @@ onMounted(reloadAll)
         <p>规则加载失败，请重试</p>
         <el-button type="primary" @click="openRuleDialog">重新加载</el-button>
       </div>
-      <el-form v-else label-position="top">
+      <el-form v-else ref="ruleFormRef" :model="ruleForm" :rules="ruleRules" label-position="top">
         <el-form-item label="启用邀请">
           <el-switch v-model="ruleForm.invitation_enabled" active-text="开" inactive-text="关" />
         </el-form-item>
-        <el-form-item label="邀请人奖励">
+        <el-form-item label="邀请人奖励" prop="invitation_reward_points">
           <el-input-number v-model="ruleForm.invitation_reward_points" :min="0" style="width: 100%" />
           <div class="form-hint">积分</div>
         </el-form-item>
-        <el-form-item label="被邀请人奖励">
+        <el-form-item label="被邀请人奖励" prop="invitation_invitee_reward_points">
           <el-input-number v-model="ruleForm.invitation_invitee_reward_points" :min="0" style="width: 100%" />
           <div class="form-hint">积分</div>
         </el-form-item>
-        <el-form-item label="消费返利">
+        <el-form-item label="消费返利" prop="invitation_rebate_percent">
           <el-input-number v-model="ruleForm.invitation_rebate_percent" :min="0" :max="100" style="width: 100%" />
           <div class="form-hint">% · 下级充值/消费时邀请人可得的比例</div>
         </el-form-item>
@@ -998,11 +1048,11 @@ onMounted(reloadAll)
           </el-select>
           <div class="form-hint">选「有效期」时给邀请人叠加会员天数，归属当前服</div>
         </el-form-item>
-        <el-form-item label="推广奖励·余额数值">
+        <el-form-item label="推广奖励·余额数值" prop="promotion_reward_amount">
           <el-input-number v-model="ruleForm.promotion_reward_amount" :min="0" style="width: 100%" />
           <div class="form-hint">积分 · 类型为「余额」时生效；0 = 不发</div>
         </el-form-item>
-        <el-form-item label="推广奖励·有效期天数">
+        <el-form-item label="推广奖励·有效期天数" prop="promotion_reward_days">
           <el-input-number v-model="ruleForm.promotion_reward_days" :min="0" style="width: 100%" />
           <div class="form-hint">天 · 类型为「有效期」时生效；0 = 不发</div>
         </el-form-item>
