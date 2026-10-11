@@ -449,6 +449,9 @@ async def serve_remote_async(
     # 与同步版同一套口径：重定向自己追，逐跳校验目标、跨主机剥凭据（见 serve_remote）
     # 共享 client（连接复用）；**响应**仍然每次独立，用完在 iter_remote 里关。
     client = get_relay_client()
+    # 兜底异常分支（PoolTimeout / 其它异常）里要关掉已经拿到的流式响应，
+    # 否则这条连接永远不会归还给进程共享的连接池，反复命中会耗尽 RELAY_MAX_CONNECTIONS。
+    resp = None
     try:
         # Drive 私有化修复（2026-10-10）：同同步版，uc 直链转 API alt=media。
         try:
@@ -491,11 +494,18 @@ async def serve_remote_async(
     except httpx.PoolTimeout as exc:
         # S2：上游连接池满（并发远程播放超过 RELAY_MAX_CONNECTIONS）：快速 503，
         # 让播放器稍后重试，而不是白等 30 秒再 502
+        # 先把已打开的流式响应关掉归还共享池（aclose 幂等，多调无副作用，漏调才泄漏）
+        if resp is not None:
+            await resp.aclose()
         logger.warning("远程代理连接池已满（上限 %s），拒绝 %s", _RELAY_MAX_CONNECTIONS,
                        url.split("?")[0])
         raise HTTPException(status_code=503, detail="中转繁忙，请稍后重试",
                             headers={"Retry-After": "2"}) from exc
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
+        # 同上：畸形 Location（如 http://[::1）会让 _next_redirect 抛非 MountError 的
+        # ValueError，落到这里时 resp 可能已经打开，不关就会慢泄漏共享连接池
+        if resp is not None:
+            await resp.aclose()
         logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
         raise HTTPException(status_code=502, detail="源站不可达") from exc
 
