@@ -80,6 +80,13 @@ function commitQuery() {
   load()
 }
 
+/** v2.59 空状态"清除筛选"：与 FilterBar 的清除逻辑一致 */
+function clearFilters() {
+  draft.value.keyword = ''
+  draft.value.only_blocked = false
+  commitQuery()
+}
+
 const committedHasFilter = computed(() =>
   Boolean(committed.value.keyword || committed.value.only_blocked),
 )
@@ -250,7 +257,7 @@ function ago(s: string | null): string {
             if (key === 'only_blocked') draft.only_blocked = false;
             commitQuery();
           }"
-          @clear="() => { draft.keyword = ''; draft.only_blocked = false; commitQuery() }"
+          @clear="clearFilters"
         />
       </div>
 
@@ -259,9 +266,11 @@ function ago(s: string | null): string {
         :columns="columns"
         :loading="loading"
         :error="loadError"
-        :empty="committedHasFilter ? '没有匹配的设备' : '暂无设备记录'"
-        :empty-description="committedHasFilter ? '换个关键字，或取消「只看已封禁」。' : '用户用第三方客户端登录后，设备会登记在这里。'"
+        empty="暂无设备记录"
+        empty-description="用户用第三方客户端登录后，设备会登记在这里。"
+        :has-active-filters="committedHasFilter"
         @retry="load"
+        @clear-filters="clearFilters"
       >
         <template #cell-username="{ row }">
           <span class="user-name">{{ row.username }}</span>

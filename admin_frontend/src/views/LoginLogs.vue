@@ -308,9 +308,10 @@ function riskLevel(row: LoginLogRow): string {
         :columns="columns"
         :loading="loading"
         :error="loadError"
-        :empty="committedHasFilter ? '没有匹配的登录记录' : '暂无登录日志'"
-        :empty-description="committedHasFilter ? '换个用户名 / IP，或清空筛选再查。' : ''"
+        empty="暂无登录记录"
+        :has-active-filters="committedHasFilter"
         @retry="load"
+        @clear-filters="clearFilters"
       >
         <template #cell-username="{ row }">
           <span class="user-name">{{ row.username || '—' }}</span>

@@ -365,9 +365,11 @@ function statusLabel(status: string): string {
         :columns="columns"
         :loading="loading"
         :error="loadError"
-        :empty="committedStatus ? `没有「${statusLabel(committedStatus)}」的求片` : '暂无求片记录'"
-        :empty-description="committedStatus ? '清空状态筛选看看全部。' : scope === 'realm' ? '当前服还没人求片；可切到「全部服」看看。' : '用户提交的求片会出现在这里。'"
+        empty="暂无求片记录"
+        :empty-description="scope === 'realm' ? '当前服还没人求片；可切到「全部服」看看。' : '用户提交的求片会出现在这里。'"
+        :has-active-filters="!!committedStatus"
         @retry="load"
+        @clear-filters="clearStatus"
       >
         <template #cell-movie_name="{ row }">
           <span class="movie-name">《{{ row.movie_name }}》</span>
