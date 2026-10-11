@@ -301,10 +301,11 @@ def daily_deduct(db: Session) -> dict:
     """每日 00:00 扣减公益服用户活力值"""
     cfg = get_vitality_config(db)
     if not cfg["enabled"]:
-        return {"deducted": 0, "suspended": 0, "skipped": True}
+        return {"deducted": 0, "suspended": 0, "failed": 0, "skipped": True}
     cost = cfg["daily_cost"]
     deducted = 0
     suspended = 0
+    failed = 0
     last_id = 0
     # 键集分页（id > last_id）而不是 offset：过滤条件是 vitality > 0，本批扣到 0 的用户
     # 会从结果集里消失，offset 继续往后跳就会整批漏扣后面的用户
@@ -317,15 +318,25 @@ def daily_deduct(db: Session) -> dict:
             break
         for (uid,) in rows:
             try:
-                new_v = _add_vitality(db, uid, -cost, "daily_deduct")
+                # PG 事务中任一语句失败后整个事务 aborted，后续语句全失败；存点把单个用户失败
+                # 隔离在 ROLLBACK TO SAVEPOINT 范围内，不污染本批其他用户
+                with db.begin_nested():
+                    new_v = _add_vitality(db, uid, -cost, "daily_deduct")
                 deducted += 1
                 if new_v <= 0:
                     suspended += 1
             except Exception:
+                failed += 1
                 logger.exception("vitality daily_deduct failed for user %s", uid)
-        db.commit()
+        # commit 失败语义不明不能重跑（可能重复扣减），停跑保留已提交批次
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("vitality daily_deduct batch commit failed, stop")
+            break
         last_id = rows[-1][0]
-    return {"deducted": deducted, "suspended": suspended}
+    return {"deducted": deducted, "suspended": suspended, "failed": failed}
 
 _SCHEDULER_STARTED = False
 _SCHEDULER_LOCK = threading.Lock()
