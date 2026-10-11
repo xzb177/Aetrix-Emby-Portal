@@ -661,3 +661,32 @@ def test_watcher_loop_waits_with_jitter():
     for w in waits[1:]:
         assert lo <= w <= hi, f"轮询等待 {w} 不在抖动范围 [{lo}, {hi}] 内"
         assert w != base or ratio == 0, "等待间隔与固定值完全一致，抖动未生效"
+
+
+def test_watcher_loop_survives_jitter_exception():
+    """_jittered_interval 抛异常也不应杀死守护线程：记 warning 后用固定间隔继续。
+
+    旧代码里 _jittered_interval() 在 try 之外，异常会直接抛出来杀死线程，
+    本测试在旧代码上失败（pytest.raises 外的异常），新代码上通过。
+    """
+    waits = []
+    stop_event = mock.Mock()
+    # 跑一轮就退出
+    stop_event.is_set.side_effect = [False, True]
+    stop_event.wait.side_effect = lambda s: waits.append(s)
+    calls = {"n": 0}
+
+    def _boom_once():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("jitter boom")
+        return 123.0
+
+    with mock.patch.object(drive_changes, "_watcher_stop", stop_event), \
+         mock.patch.object(drive_changes, "poll_once",
+                           return_value={"changes": 0}), \
+         mock.patch.object(drive_changes, "_jittered_interval", _boom_once):
+        drive_changes._watcher_loop()  # 旧代码这里会抛 RuntimeError
+    assert waits[0] == 60, "启动等待应保持 60 秒"
+    assert waits[1] == float(drive_changes.POLL_INTERVAL), \
+        f"抖动异常后应退回固定间隔，实际 waits={waits}"

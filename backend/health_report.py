@@ -294,7 +294,10 @@ def collect(db) -> dict:
     # 翻转都写 EnrichFlipEvent（PG 持久），这里暴露近 1 小时翻转数；>0 就 warn。
     try:
         from backend.emby_server import enrich_flip_monitor as _fm
-        flip_1h = _fm.flip_count_last_hours(db, hours=1)
+        # retry_unmatched 是管理端手动触发的已知操作：事件仍在 PG 留痕审计，
+        # 但不应把 health 打成 warn。
+        flip_1h = _fm.flip_count_last_hours(
+            db, hours=1, exclude_triggers=("retry_unmatched",))
         metrics["enrich_flip_last_hour"] = flip_1h
         if flip_1h > 0:
             _bump("warn")

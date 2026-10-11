@@ -3801,19 +3801,14 @@ def _maybe_alert_enrich_flip(db: Session, library: emby_models.Library,
                 pass
         reasons = (stats or {}).get("enrich_flip_reasons") or {}
         sample_ids = (stats or {}).get("enrich_flip_sample_ids") or []
-        # 明细已在 _scan_library_body 聚合成 reasons/sample_ids，直接组 details
-        details = {"reasons": reasons, "item_types": {},
-                   "sample_ids": sample_ids}
-        logger.warning(
-            "enrich 批量翻转告警：%d 条 done→pending（阈值 %d）trigger=%s "
-            "library_id=%s scan_run_id=%s reasons=%s sample_ids=%s",
-            flip_count, _fm.FLIP_ALERT_THRESHOLD, trigger,
-            getattr(library, "id", None), run_id, reasons, sample_ids,
-        )
-        _fm.record_flip_event(
+        item_types = (stats or {}).get("enrich_flip_item_types") or {}
+        # 复用 alert_flip 共享能力（内部自带 should_alert + warning 日志 + 写库），
+        # 不再手写一遍"warning + record_flip_event"。
+        _fm.alert_flip(
             db, flip_count=flip_count, trigger=trigger,
-            library_id=getattr(library, "id", None),
-            scan_run_id=run_id, details=details,
+            library_id=getattr(library, "id", None), scan_run_id=run_id,
+            summary={"reasons": reasons, "item_types": item_types,
+                     "sample_ids": sample_ids},
         )
     except Exception as exc:  # noqa: BLE001 — 监控不能影响扫描
         logger.warning("enrich 翻转告警检查失败: %s", exc)
@@ -4487,12 +4482,16 @@ def _scan_library_body(db: Session, library: emby_models.Library,
     if ctx.enrich_flips:
         _flip_reasons: dict = {}
         _flip_sample_ids: list = []
+        _flip_item_types: dict = {}
         for _f in ctx.enrich_flips:
             _r = str(_f.get("reason", "?"))
             _flip_reasons[_r] = _flip_reasons.get(_r, 0) + 1
+            _it = str(_f.get("item_type", "?"))
+            _flip_item_types[_it] = _flip_item_types.get(_it, 0) + 1
             if len(_flip_sample_ids) < 10:
                 _flip_sample_ids.append(_f.get("item_id"))
         stats["enrich_flip_reasons"] = _flip_reasons
         stats["enrich_flip_sample_ids"] = _flip_sample_ids
+        stats["enrich_flip_item_types"] = _flip_item_types
     db.commit()
     return stats
