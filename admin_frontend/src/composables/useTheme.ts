@@ -18,15 +18,15 @@ const metaTheme: HTMLMetaElement | null =
     ? document.querySelector('meta[name="theme-color"]')
     : null
 
-const preference = ref<ThemePreference>('system')
+const preference = ref<ThemePreference>('dark')
 const systemLight = ref(false)
 
 function readStored(): ThemePreference {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
+    return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'dark'
   } catch {
-    return 'system'
+    return 'dark'
   }
 }
 

@@ -15,6 +15,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import {
   AlertTriangle, CircleCheck, Clock3, Plus, RefreshCw, Search, Settings2, TicketPercent, Tickets,
 } from 'lucide-vue-next'
@@ -37,6 +38,12 @@ import {
 
 const realm = useRealmStore()
 const realms = computed(() => realm.realms)
+
+function scrollToFirstError() {
+  requestAnimationFrame(() => {
+    document.querySelector('.el-dialog .el-form-item.is-error')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  })
+}
 
 const loading = ref(false)
 const coupons = ref<CouponRow[]>([])
@@ -178,6 +185,7 @@ const createVisible = ref(false)
 const creating = ref(false)
 const createResult = ref<string[]>([])
 const resultVisible = ref(false)
+const createFormRef = ref<FormInstance>()
 const createForm = ref<CouponCreatePayload & { validMode: 'days' | 'until'; valid_until_text: string }>({
   count: 1,
   code: '',
@@ -195,6 +203,86 @@ const createForm = ref<CouponCreatePayload & { validMode: 'days' | 'until'; vali
   note: '',
 })
 
+const createRules: FormRules = {
+  kind: [
+    { required: true, message: '请选择适用范围', trigger: 'change' },
+  ],
+  realm_id: [
+    { type: 'number', message: '请选择有效的限定服', trigger: 'change' },
+  ],
+  discount_type: [
+    { required: true, message: '请选择折扣方式', trigger: 'change' },
+  ],
+  value: [
+    { required: true, message: '请输入优惠数值', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        const percent = createForm.value.discount_type === 'percent'
+        const min = percent ? 1 : 0.01
+        const max = percent ? 100 : 100000
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+          callback(new Error(percent ? '实付百分比应在 1 到 100 之间' : '减免金额应在 0.01 到 100000 元之间'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  min_amount: [
+    { required: true, message: '请输入门槛金额', trigger: 'blur' },
+    { type: 'number', min: 0, message: '门槛金额不能小于 0', trigger: 'blur' },
+  ],
+  max_discount: [
+    { required: true, message: '请输入封顶减免金额', trigger: 'blur' },
+    { type: 'number', min: 0, message: '封顶减免金额不能小于 0', trigger: 'blur' },
+  ],
+  max_uses: [
+    { required: true, message: '请输入总次数上限', trigger: 'blur' },
+    { type: 'number', min: 0, message: '总次数上限不能小于 0', trigger: 'blur' },
+  ],
+  per_user_limit: [
+    { required: true, message: '请输入每人限用次数', trigger: 'blur' },
+    { type: 'number', min: 0, message: '每人限用次数不能小于 0', trigger: 'blur' },
+  ],
+  code: [
+    { max: 32, message: '优惠码不能超过 32 个字符', trigger: 'blur' },
+  ],
+  count: [
+    {
+      validator: (_rule, value, callback) => {
+        if (createForm.value.code) {
+          callback()
+          return
+        }
+        if (value === undefined || value === null) {
+          callback(new Error('请输入生成数量'))
+          return
+        }
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 1 || value > 200) {
+          callback(new Error('生成数量应在 1 到 200 之间'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  validMode: [
+    { required: true, message: '请选择有效期方式', trigger: 'change' },
+  ],
+  valid_days: [
+    { required: true, message: '请输入有效天数', trigger: 'blur' },
+    { type: 'number', min: 0, max: 3650, message: '有效天数应在 0 到 3650 之间', trigger: 'blur' },
+  ],
+  valid_until_text: [
+    { required: true, whitespace: true, message: '请输入截止时间', trigger: 'blur' },
+  ],
+  note: [
+    { max: 60, message: '备注不能超过 60 个字符', trigger: 'blur' },
+  ],
+}
+
 function resetCreateForm() {
   createForm.value = {
     count: 1, code: '', kind: 'all', discount_type: 'percent', value: 90,
@@ -204,6 +292,13 @@ function resetCreateForm() {
 }
 
 async function handleCreate() {
+  try {
+    await createFormRef.value?.validate()
+  } catch {
+    scrollToFirstError()
+    return
+  }
+
   creating.value = true
   try {
     const f = createForm.value
@@ -249,6 +344,7 @@ function copyCodes() {
 const editVisible = ref(false)
 const editing = ref(false)
 const editTarget = ref<CouponRow | null>(null)
+const editFormRef = ref<FormInstance>()
 const editForm = ref({
   kind: 'all' as CouponRow['kind'],
   discount_type: 'percent' as CouponRow['discount_type'],
@@ -262,6 +358,59 @@ const editForm = ref({
   is_active: true,
   note: '',
 })
+
+const editRules: FormRules = {
+  kind: [
+    { required: true, message: '请选择适用范围', trigger: 'change' },
+  ],
+  realm_id: [
+    { type: 'number', message: '请选择有效的限定服', trigger: 'change' },
+  ],
+  discount_type: [
+    { required: true, message: '请选择折扣方式', trigger: 'change' },
+  ],
+  value: [
+    { required: true, message: '请输入优惠数值', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        const percent = editForm.value.discount_type === 'percent'
+        const min = percent ? 1 : 0.01
+        const max = percent ? 100 : 100000
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+          callback(new Error(percent ? '实付百分比应在 1 到 100 之间' : '减免金额应在 0.01 到 100000 元之间'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  min_amount: [
+    { required: true, message: '请输入门槛金额', trigger: 'blur' },
+    { type: 'number', min: 0, message: '门槛金额不能小于 0', trigger: 'blur' },
+  ],
+  max_discount: [
+    { required: true, message: '请输入封顶减免金额', trigger: 'blur' },
+    { type: 'number', min: 0, message: '封顶减免金额不能小于 0', trigger: 'blur' },
+  ],
+  max_uses: [
+    { required: true, message: '请输入总次数上限', trigger: 'blur' },
+    { type: 'number', min: 0, message: '总次数上限不能小于 0', trigger: 'blur' },
+  ],
+  per_user_limit: [
+    { required: true, message: '请输入每人限用次数', trigger: 'blur' },
+    { type: 'number', min: 0, message: '每人限用次数不能小于 0', trigger: 'blur' },
+  ],
+  valid_until_text: [
+    { type: 'string', message: '请输入有效的截止时间', trigger: 'blur' },
+  ],
+  is_active: [
+    { required: true, type: 'boolean', message: '请选择状态', trigger: 'change' },
+  ],
+  note: [
+    { max: 60, message: '备注不能超过 60 个字符', trigger: 'blur' },
+  ],
+}
 
 function openEdit(row: CouponRow) {
   editTarget.value = row
@@ -282,6 +431,13 @@ function openEdit(row: CouponRow) {
 }
 
 async function handleUpdate() {
+  try {
+    await editFormRef.value?.validate()
+  } catch {
+    scrollToFirstError()
+    return
+  }
+
   if (!editTarget.value) return
   editing.value = true
   try {
@@ -580,27 +736,27 @@ onMounted(() => {
 
     <!-- 新建 -->
     <el-dialog v-model="createVisible" title="新建优惠券" width="min(560px, 92vw)">
-      <el-form label-position="top">
+      <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-position="top">
         <div class="form-grid">
-          <el-form-item label="适用范围">
+          <el-form-item label="适用范围" prop="kind">
             <el-select v-model="createForm.kind" style="width: 100%">
               <el-option label="全部商品（充值 + 会员）" value="all" />
               <el-option label="仅会员" value="subscription" />
               <el-option label="仅充值" value="recharge" />
             </el-select>
           </el-form-item>
-          <el-form-item label="限定服（可选）">
+          <el-form-item label="限定服（可选）" prop="realm_id">
             <el-select v-model="createForm.realm_id" clearable placeholder="不限定" style="width: 100%">
               <el-option v-for="r in realms" :key="r.id" :label="r.name" :value="r.id" />
             </el-select>
           </el-form-item>
-          <el-form-item label="折扣方式">
+          <el-form-item label="折扣方式" prop="discount_type">
             <el-radio-group v-model="createForm.discount_type">
               <el-radio-button value="percent">按比例打折</el-radio-button>
               <el-radio-button value="fixed">固定减免</el-radio-button>
             </el-radio-group>
           </el-form-item>
-          <el-form-item :label="createForm.discount_type === 'percent' ? '实付百分比（90 = 九折）' : '减免金额（元）'">
+          <el-form-item :label="createForm.discount_type === 'percent' ? '实付百分比（90 = 九折）' : '减免金额（元）'" prop="value">
             <el-input-number
               v-model="createForm.value"
               :min="createForm.discount_type === 'percent' ? 1 : 0.01"
@@ -609,43 +765,43 @@ onMounted(() => {
               style="width: 100%"
             />
           </el-form-item>
-          <el-form-item label="门槛（满多少可用，0 = 不限）">
+          <el-form-item label="门槛（满多少可用，0 = 不限）" prop="min_amount">
             <el-input-number v-model="createForm.min_amount" :min="0" :precision="2" style="width: 100%" />
           </el-form-item>
-          <el-form-item label="封顶减免（0 = 不封顶）">
+          <el-form-item label="封顶减免（0 = 不封顶）" prop="max_discount">
             <el-input-number v-model="createForm.max_discount" :min="0" :precision="2" style="width: 100%" />
           </el-form-item>
-          <el-form-item label="总次数上限（0 = 不限）">
+          <el-form-item label="总次数上限（0 = 不限）" prop="max_uses">
             <el-input-number v-model="createForm.max_uses" :min="0" style="width: 100%" />
           </el-form-item>
-          <el-form-item label="每人限用（0 = 不限）">
+          <el-form-item label="每人限用（0 = 不限）" prop="per_user_limit">
             <el-input-number v-model="createForm.per_user_limit" :min="0" style="width: 100%" />
           </el-form-item>
         </div>
 
         <el-divider content-position="left">生成方式</el-divider>
         <div class="form-grid">
-          <el-form-item label="指定优惠码（留空 = 随机生成）">
+          <el-form-item label="指定优惠码（留空 = 随机生成）" prop="code">
             <el-input v-model="createForm.code" placeholder="如 SAVE10" maxlength="32" />
           </el-form-item>
-          <el-form-item label="数量（随机码时有效，最多 200）">
+          <el-form-item label="数量（随机码时有效，最多 200）" prop="count">
             <el-input-number v-model="createForm.count" :min="1" :max="200" :disabled="!!createForm.code" style="width: 100%" />
           </el-form-item>
-          <el-form-item label="有效期">
+          <el-form-item label="有效期" prop="validMode">
             <el-radio-group v-model="createForm.validMode">
               <el-radio-button value="days">按天数</el-radio-button>
               <el-radio-button value="until">指定时间</el-radio-button>
             </el-radio-group>
           </el-form-item>
-          <el-form-item v-if="createForm.validMode === 'days'" label="有效天数（0 = 长期）">
+          <el-form-item v-if="createForm.validMode === 'days'" label="有效天数（0 = 长期）" prop="valid_days">
             <el-input-number v-model="createForm.valid_days" :min="0" :max="3650" style="width: 100%" />
           </el-form-item>
-          <el-form-item v-else label="截止时间">
+          <el-form-item v-else label="截止时间" prop="valid_until_text">
             <el-input v-model="createForm.valid_until_text" placeholder="2026-10-01 12:00" />
           </el-form-item>
         </div>
 
-        <el-form-item label="备注">
+        <el-form-item label="备注" prop="note">
           <el-input v-model="createForm.note" placeholder="活动名称等（选填）" maxlength="60" />
         </el-form-item>
       </el-form>
@@ -673,27 +829,27 @@ onMounted(() => {
         description="已下单的订单保留当时的优惠快照，金额与记录都不会跟着变。"
         style="margin-bottom: 12px"
       />
-      <el-form label-position="top">
+      <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-position="top">
         <div class="form-grid">
-          <el-form-item label="适用范围">
+          <el-form-item label="适用范围" prop="kind">
             <el-select v-model="editForm.kind" style="width: 100%">
               <el-option label="全部商品" value="all" />
               <el-option label="仅会员" value="subscription" />
               <el-option label="仅充值" value="recharge" />
             </el-select>
           </el-form-item>
-          <el-form-item label="限定服">
+          <el-form-item label="限定服" prop="realm_id">
             <el-select v-model="editForm.realm_id" clearable placeholder="不限定" style="width: 100%">
               <el-option v-for="r in realms" :key="r.id" :label="r.name" :value="r.id" />
             </el-select>
           </el-form-item>
-          <el-form-item label="折扣方式">
+          <el-form-item label="折扣方式" prop="discount_type">
             <el-radio-group v-model="editForm.discount_type">
               <el-radio-button value="percent">比例</el-radio-button>
               <el-radio-button value="fixed">固定减免</el-radio-button>
             </el-radio-group>
           </el-form-item>
-          <el-form-item :label="editForm.discount_type === 'percent' ? '实付百分比（90 = 九折）' : '减免金额（元）'">
+          <el-form-item :label="editForm.discount_type === 'percent' ? '实付百分比（90 = 九折）' : '减免金额（元）'" prop="value">
             <el-input-number
               v-model="editForm.value"
               :min="editForm.discount_type === 'percent' ? 1 : 0.01"
@@ -702,26 +858,26 @@ onMounted(() => {
               style="width: 100%"
             />
           </el-form-item>
-          <el-form-item label="门槛">
+          <el-form-item label="门槛" prop="min_amount">
             <el-input-number v-model="editForm.min_amount" :min="0" :precision="2" style="width: 100%" />
           </el-form-item>
-          <el-form-item label="封顶减免">
+          <el-form-item label="封顶减免" prop="max_discount">
             <el-input-number v-model="editForm.max_discount" :min="0" :precision="2" style="width: 100%" />
           </el-form-item>
-          <el-form-item label="总次数上限（不能低于已占用）">
+          <el-form-item label="总次数上限（不能低于已占用）" prop="max_uses">
             <el-input-number v-model="editForm.max_uses" :min="0" style="width: 100%" />
           </el-form-item>
-          <el-form-item label="每人限用">
+          <el-form-item label="每人限用" prop="per_user_limit">
             <el-input-number v-model="editForm.per_user_limit" :min="0" style="width: 100%" />
           </el-form-item>
-          <el-form-item label="截止时间（留空 = 不限）">
+          <el-form-item label="截止时间（留空 = 不限）" prop="valid_until_text">
             <el-input v-model="editForm.valid_until_text" placeholder="2026-10-01 12:00" />
           </el-form-item>
-          <el-form-item label="状态">
+          <el-form-item label="状态" prop="is_active">
             <el-switch v-model="editForm.is_active" active-text="启用" inactive-text="停用" />
           </el-form-item>
         </div>
-        <el-form-item label="备注">
+        <el-form-item label="备注" prop="note">
           <el-input v-model="editForm.note" maxlength="60" />
         </el-form-item>
       </el-form>

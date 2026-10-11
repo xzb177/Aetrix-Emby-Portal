@@ -378,6 +378,8 @@ onMounted(() => {
         :loading="loading"
         row-key="order_id"
         empty="暂无订单"
+        :pagination="{ total, page, pageSize }"
+        @page-change="(p: number) => { page = p; load() }"
       >
         <template #cell-item_name="{ row }">{{ row.item_name }}</template>
 
@@ -425,17 +427,6 @@ onMounted(() => {
           </EmptyState>
         </template>
       </DataTable>
-
-      <template v-if="total > pageSize" #footer>
-        <el-pagination
-          v-model:current-page="page"
-          :page-size="pageSize"
-          :total="total"
-          layout="prev, pager, next, total"
-          class="card-pager"
-          @current-change="load"
-        />
-      </template>
     </SectionCard>
 
     <!-- 退款 / 关单记录：订单表只有状态标签，说不清「为什么退的」 -->
