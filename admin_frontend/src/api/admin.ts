@@ -1252,19 +1252,6 @@ export const testMetaSourceKeys = (
   kind: data.kind,
 })
 
-export interface RescrapeSummary {
-  notes: string[]
-  changed: Record<string, string>
-  nfo_found: boolean
-}
-
-/** 条目级手动刮削（同步）：电影/剧集优先，季/集按 NFO 能力处理 */
-export const rescrapeItem = (id: number) =>
-  post<{ success: boolean; item: { id: number; name: string; item_type: string }; summary: RescrapeSummary }>(
-    `${E}/scrape/items/${id}/rescrape`,
-    {},
-  )
-
 /** 库级手动刮削：触发一次该库扫描，policy 只覆盖本轮快照（missing_only | all） */
 export const rescrapeLibrary = (id: number, policy: 'missing_only' | 'all' = 'missing_only') =>
   post<{ success: boolean; started: boolean; already?: boolean; message: string }>(
