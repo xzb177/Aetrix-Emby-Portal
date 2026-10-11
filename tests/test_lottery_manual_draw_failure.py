@@ -151,3 +151,64 @@ def test_manual_draw_distribute_failure_keeps_done(db, monkeypatch):
         welfare_admin.draw_lottery_round(rnd.id, current_admin=admin, db=db)
     assert ei2.value.status_code == 400
     assert db.query(models.PointsLog).filter(models.PointsLog.user_id.in_(user_ids)).count() == 1
+
+
+def test_manual_draw_failure_detail_matches_actual_state_draw(db, monkeypatch):
+    """500 文案必须与实际状态一致：draw 阶段失败→打回 open，文案承诺可重试。"""
+    monkeypatch.setattr(welfare_admin, "_audit", lambda *a, **k: None)
+    _set_config(db, "lottery_notify_winners", "0")
+    admin = _make_user(db, "admin_mdraw_detail1", 999013)
+    rnd = _make_round(db, title="文案-draw失败")
+
+    monkeypatch.setattr(lottery, "draw_round", _boom_draw)
+    with pytest.raises(HTTPException) as ei:
+        welfare_admin.draw_lottery_round(rnd.id, current_admin=admin, db=db)
+    assert ei.value.status_code == 500
+    assert "已恢复为可重试状态" in ei.value.detail
+    db.refresh(rnd)
+    assert rnd.status == "open"
+
+
+def test_manual_draw_failure_detail_matches_actual_state_distribute(db, monkeypatch):
+    """500 文案必须与实际状态一致：distribute 失败（draw 已提交 done）→
+    不打回 open，文案必须说明走补发路径，而不是谎称"已恢复为可重试状态"。"""
+    monkeypatch.setattr(welfare_admin, "_audit", lambda *a, **k: None)
+    _set_config(db, "lottery_notify_winners", "0")
+    admin = _make_user(db, "admin_mdraw_detail2", 999014)
+    rnd = _make_round(db, title="文案-distribute失败")
+
+    monkeypatch.setattr(lottery, "distribute_round", _boom_distribute)
+    with pytest.raises(HTTPException) as ei:
+        welfare_admin.draw_lottery_round(rnd.id, current_admin=admin, db=db)
+    assert ei.value.status_code == 500
+    assert "已恢复为可重试状态" not in ei.value.detail
+    assert "补发" in ei.value.detail
+    db.refresh(rnd)
+    assert rnd.status == "done"
+
+
+def test_manual_draw_reset_failure_detail_warns_manual_check(db, monkeypatch):
+    """500 文案必须与实际状态一致：状态回滚本身失败→轮次卡在 drawing，
+    文案必须提示人工检查，而不是谎称已恢复。"""
+    monkeypatch.setattr(welfare_admin, "_audit", lambda *a, **k: None)
+    _set_config(db, "lottery_notify_winners", "0")
+    admin = _make_user(db, "admin_mdraw_detail3", 999015)
+    rnd = _make_round(db, title="文案-回滚失败")
+
+    real_execute = db.execute
+
+    def boom_execute(stmt, *a, **k):
+        if "SET status='open'" in str(stmt):
+            raise RuntimeError("db down")
+        return real_execute(stmt, *a, **k)
+
+    monkeypatch.setattr(db, "execute", boom_execute)
+    monkeypatch.setattr(lottery, "draw_round", _boom_draw)
+    with pytest.raises(HTTPException) as ei:
+        welfare_admin.draw_lottery_round(rnd.id, current_admin=admin, db=db)
+    assert ei.value.status_code == 500
+    assert "人工检查" in ei.value.detail
+    assert "已恢复为可重试状态" not in ei.value.detail
+    db.refresh(rnd)
+    assert rnd.status == "drawing"
+

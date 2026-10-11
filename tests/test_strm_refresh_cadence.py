@@ -127,3 +127,74 @@ def test_refresh_errors_emit_warning(db, monkeypatch, tmp_path, caplog):
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("刷新失败" in r.getMessage() for r in warnings), \
         f"expected warning about refresh failures, got: {[r.getMessage() for r in warnings]}"
+
+
+
+def test_refresh_cas_skips_file_rewritten_mid_tick(db, monkeypatch, tmp_path):
+    """.strm 生成器（api 进程）若在本轮处理期间重写了同一文件，刷新必须跳过，
+    不能用过期读出的旧 URL 覆盖生成器的新文件（否则新 file_id 的签名被旧签名覆盖，
+    播放断流直到下次重签阈值）。"""
+    import os as _os
+    from backend.emby_server import maintenance, strm_config
+    from backend.emby_server import strm_sign as strm_sign_mod
+
+    root = tmp_path / "s"
+    root.mkdir()
+    f = root / "x.strm"
+    old_url = "https://drive.example.com/uc?id=OLD\n"
+    f.write_text(old_url, encoding="utf-8")
+    strm_config.write_config(db, enabled=True, host_dir="/opt/strm", container_path=str(root))
+    monkeypatch.setattr(maintenance, "STRM_REFRESH_LAST_FILE", str(tmp_path / "last"))
+
+    new_url = "https://drive.example.com/uc?id=NEW\n"
+    real_sign = strm_sign_mod.sign_strm_url
+
+    def sign_and_rewrite(url, ttl_seconds):
+        # 确定性模拟并发：签名计算时生成器重写了该文件（Drive 上文件被替换，file_id 变化）
+        f.write_text(new_url, encoding="utf-8")
+        return real_sign(url, ttl_seconds)
+
+    # maintenance 在函数内延迟 import，直接 patch 源模块属性
+    monkeypatch.setattr(strm_sign_mod, "sign_strm_url", sign_and_rewrite)
+
+    result = maintenance.strm_sig_refresh_tick(db=db)
+
+    # 修复前：refreshed==1 且文件被旧签名覆盖（测试失败）；
+    # 修复后：检测到改写→跳过，生成器的新内容原样保留。
+    assert result["refreshed"] == 0, f"expected CAS skip, got refreshed={result['refreshed']}"
+    assert f.read_text(encoding="utf-8") == new_url
+
+
+def test_refresh_tmp_name_unique_and_cleaned(db, monkeypatch, tmp_path):
+    """tmp 文件名必须带 pid+线程 id（api 生成器与 worker 刷新跨进程写同一文件时，
+    确定性的 "<file>.tmp" 会交错写入撕裂内容）；replace 失败后自己的 tmp 必须被清理。"""
+    import os as _os
+    from backend.emby_server import maintenance, strm_config
+
+    root = tmp_path / "s"
+    root.mkdir()
+    f = root / "x.strm"
+    f.write_text("https://drive.example.com/uc?id=ABC\n", encoding="utf-8")
+    strm_config.write_config(db, enabled=True, host_dir="/opt/strm", container_path=str(root))
+    monkeypatch.setattr(maintenance, "STRM_REFRESH_LAST_FILE", str(tmp_path / "last"))
+
+    seen_tmps = []
+    real_replace = _os.replace
+
+    def fake_replace(src, dst):
+        seen_tmps.append(src)
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(maintenance.os, "replace", fake_replace)
+
+    result = maintenance.strm_sig_refresh_tick(db=db)
+
+    assert result["errors"] >= 1
+    assert seen_tmps, "expected at least one tmp write attempt"
+    for t in seen_tmps:
+        assert t != str(f) + ".tmp", "tmp 仍是确定性命名，跨进程会撞车"
+        assert f".tmp.{_os.getpid()}." in t, f"tmp 缺少 pid 后缀: {t}"
+        assert not _os.path.exists(t), f"tmp 残留未清理: {t}"
+    leftovers = [p for p in root.iterdir() if ".tmp." in p.name]
+    assert leftovers == [], f"tmp litter: {leftovers}"
+

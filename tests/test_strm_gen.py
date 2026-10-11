@@ -568,3 +568,41 @@ class TestIterDriveVideosFlat:
         assert "other.mkv" in rels
         assert "MoviePilot/剧集/a.mkv" in rels
         assert "MoviePilot/剧集/Season 1/b.mp4" in rels
+
+
+
+class TestWriteStrmFileTmpRace:
+    def test_tmp_name_unique_per_writer(self, monkeypatch, tmp_path):
+        """_write_strm_file 的 tmp 文件名必须带 pid+线程 id：worker 的签名刷新
+        也可能并发写同一文件，确定性的 "<file>.tmp" 会交错写入撕裂内容。"""
+        import os as _os
+
+        seen = []
+        real_replace = _os.replace
+
+        def fake_replace(src, dst):
+            seen.append(src)
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(sg.os, "replace", fake_replace)
+        target = tmp_path / "v.strm"
+        assert sg._write_strm_file(str(target), "https://drive.example.com/uc?id=ABC")
+        assert seen, "expected a tmp write"
+        assert seen[0] != str(target) + ".tmp", "tmp 仍是确定性命名，跨进程会撞车"
+        assert f".tmp.{_os.getpid()}." in seen[0], f"tmp 缺少 pid 后缀: {seen[0]}"
+        assert target.read_text(encoding="utf-8") == "https://drive.example.com/uc?id=ABC\n"
+        # 成功路径也不留 tmp
+        assert [p for p in tmp_path.iterdir() if ".tmp." in p.name] == []
+
+    def test_tmp_cleaned_on_replace_failure(self, monkeypatch, tmp_path):
+        """replace 失败时自己的 tmp 必须被清理，不留残片。"""
+        import os as _os
+
+        def fake_replace(src, dst):
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr(sg.os, "replace", fake_replace)
+        target = tmp_path / "v.strm"
+        assert sg._write_strm_file(str(target), "https://drive.example.com/uc?id=ABC") is False
+        assert [p for p in tmp_path.iterdir() if ".tmp." in p.name] == []
+
