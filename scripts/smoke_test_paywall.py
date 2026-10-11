@@ -68,7 +68,12 @@ db = SessionLocal()
 staff = models.WebUser(username=f"stf{suf}", password_hash=hash_password("pass12345"), is_staff=True, admin_role="super")
 member = models.WebUser(username=f"mem{suf}", password_hash=hash_password("pass12345"))
 free = models.WebUser(username=f"free{suf}", password_hash=hash_password("pass12345"))
-plan = models.SubscriptionPlan(name=f"付费墙套餐{suf}", price=19.9, duration_days=30, is_active=True)
+# 生产里订阅/套餐必带具体 realm_id（遗留 NULL 行在 init_db 时已回填到默认服）：
+# 冒烟造数必须跟生产一致，否则 has_active_subscription 的服过滤会把 NULL 行排除。
+from backend import realms as realm_lib  # noqa: E402
+default_realm_id = realm_lib.active_realm_id(db)
+plan = models.SubscriptionPlan(name=f"付费墙套餐{suf}", price=19.9, duration_days=30, is_active=True,
+                               realm_id=default_realm_id)
 db.add_all([staff, member, free, plan])
 db.commit()
 for row in (staff, member, free, plan):
@@ -76,7 +81,7 @@ for row in (staff, member, free, plan):
 
 now = datetime.now()
 db.add(models.UserSubscription(
-    user_id=member.id, plan_id=plan.id,
+    user_id=member.id, plan_id=plan.id, realm_id=default_realm_id,
     start_date=now - timedelta(days=1), end_date=now + timedelta(days=29), status="active",
 ))
 library = em.Library(guid=f"pwlib{suf}", name=f"付费墙库{suf}", collection_type="movies")
