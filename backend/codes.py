@@ -51,6 +51,18 @@ def is_honeypot(raw) -> bool:
     code = getattr(raw, "code", raw)
     return bool(code) and str(code).strip().upper().startswith(HONEY_MARK)
 
+
+def discount_pct_text(pct) -> str:
+    """实付百分比 → 中文折扣文案：85 → "8.5折"，90 → "9折"。
+
+    discount_pct 在全站是「实付百分比」口径（85=八五折，实付 85%），不是「折扣百分比」。
+    以前各处写 f"{pct}折"（→「85折」）或 f"{100 - pct}折"（→「15折」）都是错的，
+    用户可见折扣文案统一走本函数（横切能力只许一套）。
+    钳制到 1..99，与 economy._exchange_discount_amount 的 max(1, min(99, ...)) 同口径。
+    """
+    pct = max(1, min(99, int(pct or 0)))
+    return f"{pct / 10:g}折"
+
 PERMANENT_DAYS = 36500  # 永久近似（100 年）
 DEFAULT_DAYS = 30
 MAX_RANDOM_LEN = 40
@@ -418,7 +430,7 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
             preview["message"] = error or (f"积分卡码（{preview['points_value']} 积分）" if named_ok else "该卡码限指定账号使用")
         elif reward_type == 'discount':
             preview["discount_pct"] = getattr(code, 'discount_pct', 0) or 0
-            preview["message"] = error or (f"折扣卡码（{100 - preview['discount_pct']} 折）" if named_ok else "该卡码限指定账号使用")
+            preview["message"] = error or (f"折扣卡码（{discount_pct_text(preview['discount_pct'])}）" if named_ok else "该卡码限指定账号使用")
         return preview
 
     invitation = db.query(models.InvitationCode).filter(
@@ -437,7 +449,7 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
         return {
             "valid": False, "kind": "exchange", "days": exchange.duration_days or 0,
             "days_text": format_days(exchange.duration_days) if exchange.type == "subscription" else "-",
-            "discount_text": f"{exchange.discount_pct}折" if exchange.type == "discount" else "-",
+            "discount_text": discount_pct_text(exchange.discount_pct) if exchange.type == "discount" else "-",
             # 兑换码在同一个入口里直接核销，不再指向已经收掉的「钱包 → 兑换码」
             "message": "这是兑换码，点「使用」直接核销",
         }
@@ -555,7 +567,7 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
         return {
             "success": True,
-            "message": f"{type_name}核销成功，获得 {100 - pct} 折优惠券一张",
+            "message": f"{type_name}核销成功，获得 {discount_pct_text(pct)} 优惠券一张",
             "code_type": code.code_type,
             "reward_type": "discount",
             "discount_pct": pct,
