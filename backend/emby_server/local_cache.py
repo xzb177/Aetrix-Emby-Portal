@@ -600,9 +600,14 @@ def _open_remote_stream(url: str, headers: Optional[dict], offset: int):
                 total = int(length)
         start_offset = offset if resp.status_code == 206 else 0
     except _RemoteError:
+        # 与 streaming.serve_remote（#584/#587）同口径：先关可能仍打开的流式响应再关 client
+        if resp is not None:
+            resp.close()
         client.close()
         raise
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出可读原因
+        if resp is not None:
+            resp.close()
         client.close()
         raise _RemoteError(f"源站不可达：{exc}") from exc
 
