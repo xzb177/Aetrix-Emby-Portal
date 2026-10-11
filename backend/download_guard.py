@@ -10,6 +10,7 @@ Emby 客户端还会走 `/Items/{id}/File` 这类等价路径。这里在 ASGI �
 - 路径不匹配时原样透传（零开销），匹配时才查库判策略。
 - 未认证 / 解析不到用户时放行，交回原路由返回 401，不改变原有错误语义。
 - 管理员始终放行，与路由内 `ensure_download_allowed` 口径一致。
+- `_verdict` 的同步 SQLAlchemy 判定经 `run_in_threadpool` 下放到线程池，绝不占用事件循环（口径同 access_guard）
 """
 from __future__ import annotations
 
@@ -44,7 +45,9 @@ class DownloadGuardMiddleware:
         if scope.get("type") != "http" or not is_download_path(scope.get("path", "")):
             return await self.app(scope, receive, send)
 
-        allowed_by_policy, blocked = self._verdict(scope)
+        from starlette.concurrency import run_in_threadpool
+
+        allowed_by_policy, blocked = await run_in_threadpool(self._verdict, scope)
         if allowed_by_policy:
             # 把「本站点允许下载」这个结论留给下游路由：路由里的 ensure_download_allowed
             # 直接复用，同一请求不再把「全局开关 + 该服策略」重查一遍。
