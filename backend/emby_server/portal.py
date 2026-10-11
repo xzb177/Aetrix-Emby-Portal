@@ -2456,41 +2456,93 @@ def grant_welfare(db, user, channel, days, granted_by=None):
     - 已有未过期资格时，在原到期时间上累加天数；
     - 资格已过期（或从未开通）时，从当前时间开始计算；
     - 已是永不过期的用户再次开通有限天数，仍保持永不过期。
+
+    并发修复：
+    - 使用 Compare-And-Swap + 有界重试（最多 5 次）实现原子发放；
+    - 每轮重新读取最新的 (is_welfare, welfare_expires_at)，避免并发丢失更新；
+    - 若连续 5 次 CAS 失败则抛出 RuntimeError。
     """
-    now = datetime.now()
+    uid = user.id
     days = days or 0
-    if days > 0:
-        # 注意：welfare_expires_at 为 None 有两种互斥含义——
-        #   1) 永不过期：用户已拥有公益资格（is_welfare 为真），只是没有到期时间；
-        #   2) 从未开通：新建 WebUser 行的该列默认值就是 None，此时 is_welfare 为假。
-        # 旧实现只看 expires_at 是否为 None，把两者混为一谈，导致从未开通的用户
-        # 首次发放有限天数（积分兑换 / 群抽奖 / 后台发放）时被直接置为永久。
-        # 因此必须结合 is_welfare 标志区分，不能仅凭 expires_at 判断。
-        expires_at = getattr(user, 'welfare_expires_at', None)
-        if getattr(user, 'is_welfare', False) and expires_at is None:
-            # 已是永久资格：再发放有限天数不降级，保持永不过期
-            new_expires = None
-        elif expires_at is not None and expires_at > now:
-            # 已有未过期资格：在原到期时间上累加天数
-            new_expires = expires_at + timedelta(days=days)
+
+    new_expires = None
+    now = None
+
+    for _ in range(5):
+        now = datetime.now()
+
+        row = (
+            db.query(
+                models.WebUser.is_welfare,
+                models.WebUser.welfare_expires_at,
+            )
+            .filter(models.WebUser.id == uid)
+            .one_or_none()
+        )
+        if row is None:
+            raise RuntimeError(f"grant_welfare CAS failed for user {uid}: user not found")
+
+        old_is_welfare_value = row[0]
+        old_expires = row[1]
+        old_is_welfare = bool(old_is_welfare_value)
+
+        if days > 0:
+            # 注意：welfare_expires_at 为 None 有两种互斥含义——
+            #   1) 永不过期：用户已拥有公益资格（is_welfare 为真），只是没有到期时间；
+            #   2) 从未开通：新建 WebUser 行的该列默认值就是 None，此时 is_welfare 为假。
+            # 必须结合 is_welfare 标志区分，不能仅凭 expires_at 是否为 None 判断，
+            # 否则从未开通的用户首次发放有限天数会被误判为永久。
+            if old_is_welfare and old_expires is None:
+                new_expires = None
+            elif old_expires is not None and old_expires > now:
+                new_expires = old_expires + timedelta(days=days)
+            else:
+                new_expires = now + timedelta(days=days)
         else:
-            # 资格已过期，或从未开通（is_welfare 为假且 expires_at 为 None）：
-            # 从当前时间开始计算
-            new_expires = now + timedelta(days=days)
+            new_expires = None
+
+        q = db.query(models.WebUser).filter(models.WebUser.id == uid)
+
+        if old_is_welfare:
+            q = q.filter(models.WebUser.is_welfare.is_(True))
+        else:
+            q = q.filter(models.WebUser.is_welfare.is_not(True))
+
+        if old_expires is None:
+            q = q.filter(models.WebUser.welfare_expires_at.is_(None))
+        else:
+            q = q.filter(models.WebUser.welfare_expires_at == old_expires)
+
+        updated = q.update(
+            {
+                models.WebUser.welfare_expires_at: new_expires,
+                models.WebUser.is_welfare: True,
+                models.WebUser.welfare_grant_channel: channel,
+                models.WebUser.welfare_granted_at: now,
+            },
+            synchronize_session=False,
+        )
+
+        if updated == 1:
+            break
     else:
-        # days=0：永不过期
-        new_expires = None
+        raise RuntimeError(f"grant_welfare CAS failed for user {uid} after 5 retries")
+
+    db.add(
+        models.WelfareGrantLog(
+            user_id=uid,
+            channel=channel,
+            days=days,
+            granted_by=granted_by,
+        )
+    )
+    db.commit()
+
     user.is_welfare = True
     user.welfare_expires_at = new_expires
     user.welfare_grant_channel = channel
     user.welfare_granted_at = now
-    db.add(models.WelfareGrantLog(
-        user_id=user.id,
-        channel=channel,
-        days=days,
-        granted_by=granted_by,
-    ))
-    db.commit()
+
     return new_expires
 
 
