@@ -161,3 +161,64 @@ def test_layered_existing_pending_stays_pending(tmp_path, monkeypatch, db):
             f"pending 条目应保持 pending，实际 {row.enrich_status}"
     finally:
         _cleanup(db, lib)
+
+
+def test_layered_fingerprint_changed_triggers_reenrich(tmp_path, monkeypatch, db):
+    """老文件内容真实变更（指纹变）→ 分层扫描应标 pending 重新补全（round3）。"""
+    movie = tmp_path / "Changed Movie (2024).mp4"
+    movie.write_bytes(b"\x00" * 64)
+
+    lib = em.Library(guid=_guid(), name="指纹变更测试库",
+                     collection_type="movies", paths=str(tmp_path))
+    db.add(lib)
+    db.commit()
+    try:
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        row.enrich_status = "done"
+        db.commit()
+        db.expire_all()
+
+        movie.write_bytes(b"\x01" * 128)
+        new_mtime = time.time() + 3600
+        os.utime(movie, (new_mtime, new_mtime))
+
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        db.expire_all()
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        assert row.enrich_status == "pending", \
+            f"内容变更的老条目应重新 pending，实际 {row.enrich_status}"
+    finally:
+        _cleanup(db, lib)
+
+
+def test_layered_failed_status_self_heals(tmp_path, monkeypatch, db):
+    """enrich 失败的老条目再次扫描 → 应标 pending 允许自愈（round3）。"""
+    movie = tmp_path / "Failed Movie (2024).mp4"
+    movie.write_bytes(b"\x00" * 64)
+
+    lib = em.Library(guid=_guid(), name="失败自愈测试库",
+                     collection_type="movies", paths=str(tmp_path))
+    db.add(lib)
+    db.commit()
+    try:
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        row.enrich_status = "failed"
+        db.commit()
+        db.expire_all()
+
+        new_mtime = time.time() + 3600
+        os.utime(movie, (new_mtime, new_mtime))
+
+        _run_scan(monkeypatch, tmp_path, db, lib)
+        db.expire_all()
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).one()
+        assert row.enrich_status == "pending", \
+            f"failed 条目应自愈为 pending，实际 {row.enrich_status}"
+    finally:
+        _cleanup(db, lib)
