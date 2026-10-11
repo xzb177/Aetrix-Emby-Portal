@@ -211,7 +211,7 @@ onUnmounted(() => {
           :aria-selected="mode === 'login'"
           @click="mode = 'login'"
         >
-          登录
+          <span class="mode-btn-label">登录</span>
         </button>
         <button
           class="mode-btn"
@@ -220,7 +220,7 @@ onUnmounted(() => {
           :aria-selected="mode === 'register'"
           @click="mode = 'register'"
         >
-          注册
+          <span class="mode-btn-label">注册</span>
         </button>
         <div class="mode-indicator" :class="{ right: mode === 'register' }" aria-hidden="true"></div>
       </div>
@@ -518,6 +518,7 @@ onUnmounted(() => {
   font: inherit;
   font-size: 0.875rem;
   font-weight: 500;
+  line-height: 1;
   color: var(--au-text-3);
   cursor: pointer;
   transition: color 0.2s ease;
@@ -525,6 +526,13 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* CJK 光学垂直居中：PingFang SC 等中文字形在行盒内视觉重心偏下，
+   line-height: 1 收紧行盒后再微调上移，保证文字在琥珀胶囊内真正居中 */
+.mode-btn-label {
+  line-height: 1;
+  transform: translateY(-0.05em);
 }
 
 .mode-btn.active {
