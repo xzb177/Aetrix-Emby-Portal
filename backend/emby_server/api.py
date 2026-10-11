@@ -277,7 +277,8 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
         rows = (
             db.query(em.MediaItem.series_id, func.count(em.MediaItem.id))
             .filter(em.MediaItem.series_id.in_(series_ids_all),
-                    em.MediaItem.item_type == "episode")
+                    em.MediaItem.item_type == "episode",
+                    em.MediaItem.merged_into_id.is_(None))
             .group_by(em.MediaItem.series_id)
             .all()
         )
@@ -604,7 +605,8 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
             unp = (
                 db.query(func.count(em.MediaItem.id))
                 .filter(em.MediaItem.series_id == item.id,
-                        em.MediaItem.item_type == "episode")
+                        em.MediaItem.item_type == "episode",
+                        em.MediaItem.merged_into_id.is_(None))
                 .outerjoin(em.UserMediaData,
                            (em.UserMediaData.item_id == em.MediaItem.id)
                            & (em.UserMediaData.user_id == user_id))
@@ -690,7 +692,8 @@ def _child_count(item: em.MediaItem, db: Session) -> int | None:
         return counts[item.id] or None
     return (
         soft_delete.count_visible(db, em.MediaItem.series_id == item.id,
-                                  em.MediaItem.item_type == "episode")
+                                  em.MediaItem.item_type == "episode",
+                                  em.MediaItem.merged_into_id.is_(None))
         if item.item_type == "series"
         else soft_delete.count_visible(db, em.MediaItem.parent_id == item.id)
     ) or None
@@ -2678,6 +2681,8 @@ def get_episodes(item_id: str, request: Request,
     query = db.query(em.MediaItem).filter(
         or_(em.MediaItem.series_id.in_(series_ids), em.MediaItem.parent_id == item.id),
         em.MediaItem.item_type == "episode",
+        # 单集多版本：被合并的版本不独立出现在列表里，走主记录的 AlternateVersions
+        em.MediaItem.merged_into_id.is_(None),
     )
     if season_id:
         season = db.query(em.MediaItem).filter(em.MediaItem.guid == season_id).first()
@@ -2766,6 +2771,7 @@ def _next_up_first_unwatched(db: Session, user_id: int, series_ids) -> dict:
             MI.item_type == "episode",
             MI.series_id.in_(list(series_ids)),
             MI.is_hidden == False,  # noqa: E712
+            MI.merged_into_id.is_(None),
             ~_watched_exists(user_id),
         )
         .subquery()
@@ -2807,6 +2813,7 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
                 em.MediaItem.item_type == "episode",
                 em.MediaItem.series_id == requested_series.id,
                 em.MediaItem.is_hidden == False,  # noqa: E712
+                em.MediaItem.merged_into_id.is_(None),
                 ~_watched_exists(user.id),
             )
             .order_by(
