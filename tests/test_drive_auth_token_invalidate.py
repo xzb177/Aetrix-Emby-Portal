@@ -46,7 +46,7 @@ def fake_drive_changes(monkeypatch):
     # 内层缓存必须是真的 dict：invalidate 会 best-effort 清它。
     fake._token_cache = {}
     fake._discover_sa_files.return_value = [_make_sa(e) for e in SA_EMAILS]
-    fake._sa_access_token.side_effect = lambda sa: "token-for-" + sa["client_email"]
+    fake._sa_access_token.side_effect = lambda sa, min_remaining=60: "token-for-" + sa["client_email"]
     # 固定选第一个 SA，便于断言 client_email 与内层 key 的对应关系。
     fake._sa_rotation_start.side_effect = lambda n: 0
     monkeypatch.setattr(drive_auth, "_load_drive_changes", lambda: fake)
@@ -104,7 +104,7 @@ def test_invalidate_clears_inner_cache(fake_drive_changes):
 
     只清外层会被 drive_changes 内层 _token_cache 架空：下一次取 token 时内层
     把坏 token 原样吐回并重新写入外层（见证据脚本 repro_inner_cache_defeats）。"""
-    fake_drive_changes._sa_access_token.side_effect = lambda sa: "BAD"
+    fake_drive_changes._sa_access_token.side_effect = lambda sa, min_remaining=60: "BAD"
 
     assert drive_auth.get_drive_bearer_token() == "BAD"
     # 模拟生产状态：换取时内层 _token_cache 也写入了同一个坏 token
@@ -114,7 +114,7 @@ def test_invalidate_clears_inner_cache(fake_drive_changes):
     assert "sa1@x" not in fake_drive_changes._token_cache
 
     # 外层也被清：下次取 token 必须重新换取
-    fake_drive_changes._sa_access_token.side_effect = lambda sa: "GOOD"
+    fake_drive_changes._sa_access_token.side_effect = lambda sa, min_remaining=60: "GOOD"
     assert drive_auth.get_drive_bearer_token() == "GOOD"
     assert fake_drive_changes._sa_access_token.call_count == 2
 

@@ -159,6 +159,12 @@ def get_drive_bearer_token() -> str | None:
     否则经 ``drive_changes._sa_access_token`` 换取新 token，并按 55 分钟写入
     该 SA 自己的缓存条目。换 token 失败/返回空值时不写缓存，避免空值污染
     后续请求；无可用 SA 时直接返回 None，不查缓存。
+
+    关键不变式：外层按 ``_TOKEN_TTL_SECONDS``（3300 秒）缓存，故向内层索取
+    token 时要求 ``min_remaining = _TOKEN_TTL_SECONDS + _TOKEN_MIN_REMAIN_SECONDS``
+    （3420 秒）——内层只会返回真实剩余寿命 ≥3420 秒的 token（不够就重新换取），
+    因此外层写入的 3300 秒缓存永远不会超出 token 的真实寿命。内层的剩余寿命
+    比较全部在其内部用 wall clock（``time.time()``）完成，不做跨时间基准换算。
     """
     try:
         drive_changes = _load_drive_changes()
@@ -180,7 +186,9 @@ def get_drive_bearer_token() -> str | None:
         if cached and now + _TOKEN_MIN_REMAIN_SECONDS < cached[1]:
             return cached[0]
         try:
-            token = drive_changes._sa_access_token(sa)
+            # 要求内层返回剩余寿命 ≥ 外层缓存时长 + 余量，保证外层缓存不超真实寿命
+            token = drive_changes._sa_access_token(
+                sa, min_remaining=_TOKEN_TTL_SECONDS + _TOKEN_MIN_REMAIN_SECONDS)
         except Exception as exc:
             logger.warning(
                 "drive_auth: 为 SA %s 换取 Drive Bearer token 失败，调用方降级处理: %s",

@@ -36,7 +36,7 @@ def _make_fake_drive_changes(emails=SA_EMAILS, token_side_effect=None):
     fake = mock.MagicMock()
     fake._discover_sa_files.return_value = [_make_sa(e) for e in emails]
     if token_side_effect is None:
-        fake._sa_access_token.side_effect = lambda sa: "token-for-" + sa["client_email"]
+        fake._sa_access_token.side_effect = lambda sa, min_remaining=60: "token-for-" + sa["client_email"]
     else:
         fake._sa_access_token.side_effect = token_side_effect
 
@@ -107,7 +107,7 @@ def test_no_sa_returns_none(monkeypatch):
 def test_empty_token_not_cached(fake_drive_changes):
     """换 token 返回空值时返回 None，且空值不入缓存，下次调用会重试。"""
     tokens = iter(["", "token-for-sa1@x"])
-    fake_drive_changes._sa_access_token.side_effect = lambda sa: next(tokens)
+    fake_drive_changes._sa_access_token.side_effect = lambda sa, min_remaining=60: next(tokens)
 
     assert drive_auth.get_drive_bearer_token() is None
     assert fake_drive_changes._sa_access_token.call_count == 1
