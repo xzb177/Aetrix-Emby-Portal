@@ -393,14 +393,13 @@ onMounted(() => {
 
 /* 单独遮罩网格，避免遮罩影响光晕、品牌或表单。 */
 .auth-grid {
-  --auth-grid-line: rgba(128, 128, 128, 0.14);
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(to right, var(--auth-grid-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--auth-grid-line) 1px, transparent 1px);
+    linear-gradient(to right, rgba(128, 128, 128, 0.14) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(128, 128, 128, 0.14) 1px, transparent 1px);
   background-size: 48px 48px;
   -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 30%, transparent 100%);
   mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 30%, transparent 100%);
@@ -408,7 +407,9 @@ onMounted(() => {
 
 @supports (color: color-mix(in srgb, black 70%, transparent)) {
   .auth-grid {
-    --auth-grid-line: color-mix(in srgb, var(--au-border) 70%, transparent);
+    background-image:
+      linear-gradient(to right, color-mix(in srgb, var(--au-border) 70%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in srgb, var(--au-border) 70%, transparent) 1px, transparent 1px);
   }
 }
 
