@@ -604,3 +604,60 @@ def test_map_changes_raises_without_token():
         with pytest.raises(RuntimeError):
             drive_changes.map_changes_to_libraries(
                 db, "0AAA", [{"fileId": "f", "file": {"name": "a.mkv"}}])
+
+
+# ---------------------------------------------------------------------------
+# 轮询间隔抖动（反风控：请求间隔随机化）
+# ---------------------------------------------------------------------------
+
+def test_jittered_interval_within_bounds():
+    """抖动后的间隔落在 [base*(1-ratio), base*(1+ratio)] 内。"""
+    base = drive_changes.POLL_INTERVAL
+    ratio = drive_changes.POLL_JITTER_RATIO
+    assert ratio > 0, "默认应开启抖动"
+    lo, hi = base * (1.0 - ratio), base * (1.0 + ratio)
+    for _ in range(200):
+        v = drive_changes._jittered_interval()
+        assert lo <= v <= hi, f"间隔 {v} 超出抖动范围 [{lo}, {hi}]"
+
+
+def test_jittered_interval_varies():
+    """多次调用应产生不同的间隔（不是固定值）。"""
+    vals = {drive_changes._jittered_interval() for _ in range(50)}
+    assert len(vals) > 1, "抖动间隔每次都相同，随机化失效"
+
+
+def test_jittered_interval_zero_ratio_is_exact():
+    """ratio=0 时返回精确的基础间隔（便于测试/确定性场景）。"""
+    with mock.patch.object(drive_changes, "POLL_JITTER_RATIO", 0.0):
+        for _ in range(10):
+            assert drive_changes._jittered_interval() == float(drive_changes.POLL_INTERVAL)
+
+
+def test_jittered_interval_uses_current_ratio():
+    """每次调用都按当前 ratio 重新计算（不是启动时算一次）。"""
+    with mock.patch.object(drive_changes, "POLL_JITTER_RATIO", 0.5):
+        base = drive_changes.POLL_INTERVAL
+        for _ in range(50):
+            v = drive_changes._jittered_interval()
+            assert base * 0.5 <= v <= base * 1.5
+
+
+def test_watcher_loop_waits_with_jitter():
+    """_watcher_loop 的等待使用抖动间隔而非固定 POLL_INTERVAL。"""
+    waits = []
+    stop_event = mock.Mock()
+    # 第一次 wait(60) 后让循环跑一轮就退出
+    stop_event.is_set.side_effect = [False, True]
+    stop_event.wait.side_effect = lambda s: waits.append(s)
+    with mock.patch.object(drive_changes, "_watcher_stop", stop_event), \
+         mock.patch.object(drive_changes, "poll_once", return_value={"changes": 0}):
+        drive_changes._watcher_loop()
+    assert waits, "watcher 没有调用 wait"
+    assert waits[0] == 60, "启动等待应保持 60 秒"
+    base = drive_changes.POLL_INTERVAL
+    ratio = drive_changes.POLL_JITTER_RATIO
+    lo, hi = base * (1.0 - ratio), base * (1.0 + ratio)
+    for w in waits[1:]:
+        assert lo <= w <= hi, f"轮询等待 {w} 不在抖动范围 [{lo}, {hi}] 内"
+        assert w != base or ratio == 0, "等待间隔与固定值完全一致，抖动未生效"

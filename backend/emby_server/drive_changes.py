@@ -42,6 +42,10 @@ SA_DIR = os.getenv("RCLONE_SA_DIR", "/sa-accounts")
 RCLONE_CONF = os.getenv("MOUNT_RCLONE_CONF", "/config/rclone/rclone.conf")
 #: 轮询间隔（秒），默认 5 分钟
 POLL_INTERVAL = max(60, int(os.getenv("DRIVE_CHANGES_INTERVAL", "300") or 300))
+#: 轮询间隔抖动比例（反风控：请求间隔随机化，避免机械的固定节拍被识别为机器行为）。
+#: 每次等待按 POLL_INTERVAL * uniform(1-ratio, 1+ratio) 重新计算，默认 ±20%。
+#: 设为 0 可关闭抖动（便于测试）。钳制在 [0, 0.5]。
+POLL_JITTER_RATIO = max(0.0, min(0.5, float(os.getenv("DRIVE_CHANGES_JITTER_RATIO", "0.2") or 0.2)))
 #: page token 在 SystemConfig 里的 key 前缀
 TOKEN_KEY_PREFIX = "drive_changes_page_token_"
 #: 开关
@@ -832,8 +836,20 @@ def poll_once() -> dict:
     return stats
 
 
+def _jittered_interval() -> float:
+    """本次轮询等待秒数：基础间隔 ± 抖动，每次调用重新随机化。
+
+    反风控：固定 300.0 秒的机械节拍容易被识别为机器行为，
+    这里按 uniform(1-ratio, 1+ratio) 打散。ratio=0 时返回精确的基础间隔。
+    """
+    if POLL_JITTER_RATIO <= 0:
+        return float(POLL_INTERVAL)
+    return POLL_INTERVAL * _random.uniform(1.0 - POLL_JITTER_RATIO, 1.0 + POLL_JITTER_RATIO)
+
+
 def _watcher_loop() -> None:
-    logger.info("Drive Changes: 增量发现守护线程启动（间隔 %d 秒）", POLL_INTERVAL)
+    logger.info("Drive Changes: 增量发现守护线程启动（基础间隔 %d 秒，±%.0f%% 抖动）",
+                POLL_INTERVAL, POLL_JITTER_RATIO * 100)
     # 启动时等 60 秒，让主流程先完成
     _watcher_stop.wait(60)
     while not _watcher_stop.is_set():
@@ -844,7 +860,7 @@ def _watcher_loop() -> None:
                             stats["changes"], stats["libraries"])
         except Exception as exc:
             logger.warning("Drive Changes: 轮询异常: %s", exc)
-        _watcher_stop.wait(POLL_INTERVAL)
+        _watcher_stop.wait(_jittered_interval())
 
 
 def start() -> bool:
