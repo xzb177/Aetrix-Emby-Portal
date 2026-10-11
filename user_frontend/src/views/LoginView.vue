@@ -212,7 +212,7 @@ onUnmounted(() => {
     <div class="auth-column">
       <div class="auth-brand">
         <div class="brand-mark">
-          <img decoding="async" v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
+          <img decoding="async" loading="lazy" v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
           <Clapperboard v-else :size="22" />
         </div>
         <h1 class="brand-title">{{ branding.site_name }}</h1>

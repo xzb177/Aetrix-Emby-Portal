@@ -79,10 +79,10 @@ function goHome() {
   color: var(--au-text-2, #9aa0a6);
 }
 .tg-login-ok {
-  color: #34d399;
+  color: var(--au-success);
 }
 .tg-login-error {
-  color: #f87171;
+  color: var(--au-danger);
 }
 .tg-login-loading {
   display: flex;

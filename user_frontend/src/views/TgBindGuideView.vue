@@ -294,8 +294,8 @@ onUnmounted(() => {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #e8a84a;
-  color: #1a1205;
+  background: var(--au-primary);
+  color: var(--au-on-primary);
   font-weight: 700;
   font-size: 14px;
   display: flex;
@@ -356,8 +356,8 @@ onUnmounted(() => {
 
 .btn-primary {
   width: 100%;
-  background: #e8a84a;
-  color: #1a1205;
+  background: var(--au-primary);
+  color: var(--au-on-primary);
   border: none;
 }
 

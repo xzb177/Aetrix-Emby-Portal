@@ -37,7 +37,7 @@ defineProps<Props>()
   >
     <div v-if="icon || $slots.icon" class="ui-list-item__icon">
       <slot name="icon">
-        <img decoding="async" v-if="icon" :src="icon" alt="" class="ui-list-item__icon-img">
+        <img decoding="async" loading="lazy" v-if="icon" :src="icon" alt="" class="ui-list-item__icon-img">
       </slot>
     </div>
 

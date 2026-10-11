@@ -31,7 +31,7 @@ const props = withDefaults(defineProps<Props>(), {
 <template>
   <div class="ui-stat-card">
     <div v-if="icon" class="ui-stat-card__icon" :class="`ui-stat-card__icon--${color}`">
-      <img decoding="async" v-if="icon" :src="icon" alt="" class="ui-stat-card__icon-img">
+      <img decoding="async" loading="lazy" v-if="icon" :src="icon" alt="" class="ui-stat-card__icon-img">
     </div>
     <div class="ui-stat-card__content">
       <div class="ui-stat-card__value">{{ value }}</div>

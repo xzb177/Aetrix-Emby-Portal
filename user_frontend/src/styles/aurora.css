@@ -65,6 +65,13 @@
   --au-surface-2: #1e1a17;
   --au-surface-3: #26211d;
   --au-overlay: rgba(12, 10, 9, 0.86);
+  /* 恒暗表面：视频黑边、Hero 银幕等，两套主题都保持暗色（设计意图，非遗漏） */
+  --au-always-dark: #0c0a09;
+  --au-always-dark-soft: #11100e;
+  --au-always-dark-surface: #171412;
+  --au-always-dark-surface-2: #1e1a17;
+  --au-always-light: #f3ede4;
+  --au-video-black: #000;
   /* 图片上方的叠加层（Hero 遮罩 / 封面进度槽）：都是 --au-bg 的透明版本 */
   --au-overlay-soft: rgba(12, 10, 9, 0.35);
   --au-overlay-mid: rgba(12, 10, 9, 0.55);
@@ -93,6 +100,14 @@
   --au-border-strong: rgba(245, 235, 220, 0.14);
   --au-border-focus: rgba(232, 168, 74, 0.55);
 
+  /* 间距：8pt 网格。区块之间只用 24/32/48，不许出现 18px、22px 这种"差不多"的值 */
+  --au-space-xs: 4px;
+  --au-space-sm: 8px;
+  --au-space-md: 16px;
+  --au-space-lg: 24px;
+  --au-space-xl: 32px;
+  --au-space-2xl: 48px;
+
   /* 圆角：收敛，不再有 22px 的大圆角 */
   --au-r-sm: 8px;
   --au-r-md: 10px;
@@ -110,10 +125,15 @@
   --au-shadow-glow: none;
 
   /* 动效：入场 = 从黑场淡入（只动透明度） */
-  --au-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --au-ease: cubic-bezier(0.32, 0.72, 0, 1);
   --au-fast: 0.16s;
   --au-med: 0.26s;
   --au-fade-in: 0.7s;
+  /* 动效时长档（装修计划）：只动 transform/opacity */
+  --au-dur-instant: 120ms;
+  --au-dur-fast: 180ms;
+  --au-dur-normal: 240ms;
+  --au-dur-slow: 400ms;
 
   /* 页面底部安全留白：≤768px 底部导航坞（AppDock，约 58px + 安全区）悬在内容之上，
      全站页面靠这个变量让出高度，不需要各自写一份媒体查询 */
