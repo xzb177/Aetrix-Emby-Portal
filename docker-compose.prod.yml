@@ -50,12 +50,6 @@ services:
     # 不直接暴露公网端口：统一走 aetrix-web（nginx）反代
     expose:
       - "8000"
-    ports:
-      # EA 内部端口：仅供宿主机 nginx 反代。外部访问请走 8001（nginx）。
-      # 必须绑 127.0.0.1：这个端口后面是**裸 uvicorn 的 Emby 协议面**，不经过
-      # nginx。绑 0.0.0.0 等于给公网开第二个前门，绕过 nginx 的限流/安全头/后续
-      # 的 TLS 终止；而且它会按 Host 头把自己宣告成 :8002，把客户端诱到那个口上。
-      - "127.0.0.1:${EA_INTERNAL_PORT:-8002}:8001"
     volumes:
       - aetrix_data:/data
       - ${MEDIA_ROOT:-./media}:/media:ro
