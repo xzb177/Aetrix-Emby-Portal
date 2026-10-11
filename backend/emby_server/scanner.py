@@ -4572,22 +4572,14 @@ def _scan_library_body(db: Session, library: emby_models.Library,
         emby_models.MediaItem.library_id == library.id,
         emby_models.MediaItem.item_type.in_(["movie", "series"]),
     )
-    # 单集多版本：本轮结束把同集多文件合并为多版本（merged_into_id）。
-    # SAVEPOINT 包裹：合并失败只回滚自己，不影响扫描主体写入。
-    # （用户底线：多版本是能力，不是互相覆盖。）
+    # 单集多版本：扫描结束后唤醒合并 worker（best-effort，零查询）。
+    # 合并本身在 merge_versions_worker 后台做，不占用扫描的资源预算；
+    # 同一进程（worker）内 nudge 即时生效，跨进程时由 worker 周期兜底。
     try:
-        from backend.emby_server import episode_versions as _ev
-        if _ev.EPISODE_VERSIONS_ENABLED:
-            with db.begin_nested():
-                _ver_stats = _ev.merge_episode_versions(db, library.id)
-            if _ver_stats.get("groups"):
-                stats["episode_version_groups"] = _ver_stats["groups"]
-                stats["episode_versions_merged"] = _ver_stats["merged"]
-                if _ver_stats.get("promoted"):
-                    stats["episode_versions_promoted"] = _ver_stats["promoted"]
-    except Exception as exc:  # noqa: BLE001 — 合并是增值步骤，失败不影响扫描结果
-        logger.warning("单集多版本合并失败（不影响扫描结果）library=%s: %s",
-                       library.id, exc)
+        from backend.emby_server import merge_versions_worker as _mvw
+        _mvw.nudge()
+    except Exception:  # noqa: BLE001 — 唤醒失败不影响扫描结果
+        pass
     # v2.55.x 翻转监控：本轮 done→pending 翻转数进 stats，finish_scan 汇总告警。
     # 明细在 ctx.enrich_flips（内存），告警事件写 PG（持久，容器重建不丢）。
     stats["enrich_flips"] = len(ctx.enrich_flips)
