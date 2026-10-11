@@ -120,7 +120,7 @@ const rewardText = (row: ExchangeCodeRow) =>
     ? `${row.points_value} 积分`
     : row.type === 'subscription'
       ? `${row.plan_name || '套餐'} × ${row.duration_days} 天`
-      : `${row.discount_pct} 折`
+      : `${row.discount_pct / 10} 折`
 
 /** 剪贴板只在安全上下文（https / localhost）可用：http 部署下 writeText 会直接 reject */
 async function copyAll() {

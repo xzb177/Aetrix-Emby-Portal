@@ -815,7 +815,7 @@ def _redeem_exchange_core(db: Session, user: models.WebUser, code_str: str) -> d
             raise HTTPException(status_code=400, detail="该折扣码配置无效")
         _grant_discount_credit(db, user_id, code)
         result.update(reward_type="discount", discount_pct=code.discount_pct,
-                      message=f"兑换成功，获得订阅 {code.discount_pct} 折优惠，下次购买订阅自动抵扣")
+                      message=f"兑换成功，获得订阅 {code_lib.discount_pct_text(code.discount_pct)} 优惠，下次购买订阅自动抵扣")
     else:
         db.rollback()
         raise HTTPException(status_code=400, detail="兑换码类型不支持")
