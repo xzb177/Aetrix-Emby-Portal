@@ -1071,6 +1071,27 @@ export const fetchTmdbLanguage = () => get<TmdbLanguageStatus>(`${E}/scrape/tmdb
 export const saveTmdbLanguage = (language: string) =>
   put<{ success: boolean; language: string }>(`${E}/scrape/tmdb-language`, { language })
 
+export interface EnrichEpisodeNightConfig {
+  success: boolean
+  enabled: boolean
+  night_start: string
+  night_end: string
+  from_env: boolean
+  in_window: boolean
+  defaults: { enabled: boolean; night_start: string; night_end: string }
+}
+
+/** 单集夜间刮削：白天只刮顶层条目，单集留到夜间窗口刮 */
+export const fetchEnrichEpisodeNight = () =>
+  get<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`)
+
+export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, night_end: string) =>
+  put<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`, {
+    enabled,
+    night_start,
+    night_end,
+  })
+
 export interface TmdbTestResult {
   index: number
   masked: string

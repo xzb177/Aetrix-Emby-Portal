@@ -44,6 +44,7 @@ import {
   fetchStrmConfig,
   fetchTmdbKeys,
   fetchTmdbLanguage,
+  fetchEnrichEpisodeNight,
   generateVirtualLibraries,
   previewLibraryCover,
   regenerateLibraryCover,
@@ -57,11 +58,12 @@ import {
   saveChaseNew,
   saveStrmConfig,
   saveTmdbLanguage,
+  saveEnrichEpisodeNight,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig } from '@/api/admin'
 import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
 import type {
   EmbyLibrary,
@@ -716,6 +718,7 @@ async function load() {
       loadChaseNewConfig().catch(() => undefined),
       loadStrmConfig().catch(() => undefined),
       loadTmdbLanguageConfig().catch(() => undefined),
+      loadEnrichEpisodeNightConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -1072,6 +1075,41 @@ async function saveTmdbLanguageAction() {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
     tmdbLangSaving.value = false
+  }
+}
+
+// ==================== 单集夜间刮削 ====================
+
+/** 白天只刮顶层条目（电影/剧集），单集留到夜间窗口刮：后台配置，60 秒内热生效 */
+const episodeNight = ref<EnrichEpisodeNightConfig | null>(null)
+const episodeNightSaving = ref(false)
+const episodeNightError = ref(false)
+
+async function loadEnrichEpisodeNightConfig() {
+  try {
+    episodeNight.value = await fetchEnrichEpisodeNight()
+    episodeNightError.value = false
+  } catch {
+    episodeNight.value = null // 出错不挡页面其它内容
+    episodeNightError.value = true
+  }
+}
+
+async function saveEnrichEpisodeNightAction() {
+  if (!episodeNight.value) return
+  episodeNightSaving.value = true
+  try {
+    const res = await saveEnrichEpisodeNight(
+      episodeNight.value.enabled,
+      episodeNight.value.night_start,
+      episodeNight.value.night_end,
+    )
+    episodeNight.value = res
+    ElMessage.success('单集夜间刮削已保存，60 秒内生效')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    episodeNightSaving.value = false
   }
 }
 const rescrapeVisible = ref(false)
@@ -1968,6 +2006,51 @@ function typeLabel(t: string): string {
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="tmdbLang?.from_env" class="drawer-hint drawer-hint--after">
                 环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
+              </div>
+            </div>
+            <div class="scrape-block">
+              <h3>单集夜间刮削</h3>
+              <p class="drawer-hint">
+                打开后，白天只刮顶层条目（电影 / 剧集），单集留到夜间窗口再刮，避免单集挤占白天的刮削资源（保存后 60 秒内生效；时间为服务器本地时间，窗口支持跨午夜）
+              </p>
+              <div v-if="episodeNight" class="scrape-actions">
+                <el-switch
+                  v-model="episodeNight.enabled"
+                  active-text="开启"
+                  inactive-text="关闭"
+                  aria-label="单集仅夜间刮削开关"
+                />
+                <el-time-picker
+                  v-model="episodeNight.night_start"
+                  format="HH:mm"
+                  value-format="HH:mm"
+                  placeholder="开始"
+                  style="width: 110px"
+                  aria-label="夜间窗口开始"
+                />
+                <span class="chase-muted">至</span>
+                <el-time-picker
+                  v-model="episodeNight.night_end"
+                  format="HH:mm"
+                  value-format="HH:mm"
+                  placeholder="结束"
+                  style="width: 110px"
+                  aria-label="夜间窗口结束"
+                />
+                <el-button type="primary" size="small" :loading="episodeNightSaving" @click="saveEnrichEpisodeNightAction">
+                  保存
+                </el-button>
+                <span v-if="episodeNight.enabled" class="chase-state" :class="{ 'is-on': episodeNight.in_window }">
+                  {{ episodeNight.in_window ? '夜间窗口内：正在刮单集' : '白天：跳过单集' }}
+                </span>
+              </div>
+              <div v-else-if="episodeNightError" class="drawer-hint drawer-hint--after">
+                读取失败
+                <el-button size="small" text @click="loadEnrichEpisodeNightConfig">重试</el-button>
+              </div>
+              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+              <div v-if="episodeNight?.from_env" class="drawer-hint drawer-hint--after">
+                环境变量（ENRICH_EPISODE_NIGHT_ONLY / ENRICH_NIGHT_START / ENRICH_NIGHT_END）覆盖了这里的设置（改这里不会生效）
               </div>
             </div>
           </div>
