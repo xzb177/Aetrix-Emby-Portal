@@ -27,7 +27,6 @@ import {
   PlugZap,
   RefreshCw,
   BookOpen,
-  RotateCw,
   Search,
   Wand2,
 } from 'lucide-vue-next'
@@ -47,7 +46,6 @@ import {
   probeMetaSources,
   searchItemsForBind,
   searchTmdbCandidates,
-  rescrapeItem,
   resetMetaSourceCooldown,
   resetTmdbKeyCooldown,
   saveDoubanConfig,
@@ -76,33 +74,6 @@ import type {
 } from '@/api/admin'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import './MetadataSources.css'
-
-// ==================== 条目元数据刷新 ====================
-
-const rescrapeItemId = ref('')
-const rescrapeItemLoading = ref(false)
-const rescrapeItemNotes = ref<string[]>([])
-
-/** 按条目 ID 重刮一条：有 NFO 就重读 NFO，再用 TMDB 补缺失的图 / IMDb / 别名 */
-async function doRescrapeItem() {
-  const id = Number(rescrapeItemId.value)
-  if (!id) {
-    ElMessage.warning('请填写条目 ID')
-    return
-  }
-  rescrapeItemLoading.value = true
-  try {
-    const res = await rescrapeItem(id)
-    const changed = Object.keys(res.summary.changed)
-    rescrapeItemNotes.value = [
-      `「${res.item.name}」：${res.summary.notes.join('；')}`,
-      ...(changed.length ? [`变更字段：${changed.join('、')}`] : ['无字段变更']),
-    ]
-    ElMessage.success('已刷新')
-  } finally {
-    rescrapeItemLoading.value = false
-  }
-}
 
 // ==================== 手动绑定 TMDB ====================
 
@@ -1387,24 +1358,7 @@ onMounted(() => {
         </p>
       </SectionCard>
       </div>
-      <!-- 2. 条目元数据刷新 -->
-      <SectionCard class="ms-card" title="条目元数据刷新" :icon="RotateCw">
-        <p class="ms-hint">
-          按条目 ID 立即重刮一条：有 NFO 就重读 NFO（文字以 NFO 为准），
-          再用 TMDB 补缺失的图片 / IMDb / 别名。电影 / 剧集优先，季 / 集按 NFO 能力处理。
-        </p>
-        <div class="ms-actions">
-          <el-input v-model="rescrapeItemId" placeholder="条目 ID" style="width: 160px" clearable />
-          <el-button size="small" :loading="rescrapeItemLoading" @click="doRescrapeItem">
-            刷新元数据
-          </el-button>
-        </div>
-        <div v-if="rescrapeItemNotes.length" class="ms-results">
-          <div v-for="(n, i) in rescrapeItemNotes" :key="i" class="ms-result">{{ n }}</div>
-        </div>
-      </SectionCard>
-
-      <!-- 3. 手动绑定 TMDB（默认折叠） -->
+      <!-- 2. 手动绑定 TMDB（默认折叠） -->
       <SectionCard class="ms-card" title="手动绑定 TMDB" :icon="Wand2">
         <template #actions>
           <el-button size="small" text :aria-expanded="!bindCardCollapsed" @click="toggleBindCard">
@@ -1561,7 +1515,7 @@ onMounted(() => {
         </div>
       </SectionCard>
 
-      <!-- 4. 补全进度 -->
+      <!-- 3. 补全进度 -->
       <SectionCard
         class="ms-card ms-card-wide"
         title="补全进度"
