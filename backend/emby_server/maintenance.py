@@ -645,6 +645,13 @@ def strm_sig_refresh_tick(db=None) -> dict:
         "duration_s": round(time.time() - started, 3),
     }
     logger.info("strm_sig_refresh: %s", result)
+    if errors > 0:
+        logger.warning(
+            "strm_sig_refresh: %d 个文件刷新失败（refreshed=%d, bad=%d），请检查日志",
+            errors,
+            refreshed,
+            bad_files,
+        )
     return result
 
 
