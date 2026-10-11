@@ -14,7 +14,7 @@
  */
 import { computed } from 'vue'
 import type { CheckboxValueType } from 'element-plus'
-import { AlertTriangle, Inbox, RotateCw } from 'lucide-vue-next'
+import { AlertTriangle, Inbox, RotateCw, SearchX } from 'lucide-vue-next'
 import { EmptyState } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
@@ -74,6 +74,13 @@ const props = withDefaults(
     selectedKeys?: RowKey[]
     /** 判断行是否可勾选；未传入时所有行均可勾选 */
     isRowSelectable?: (row: T) => boolean
+    /**
+     * 是否有生效中的筛选条件（v2.59 空状态完善）
+     * 为 true 且无数据时，空状态显示"没有符合条件的结果" + "清除筛选"按钮
+     * （触发 clear-filters 事件），而不是初始的 empty 文案。
+     * 未传时保持兼容：走原有的 empty 逻辑。
+     */
+    hasActiveFilters?: boolean
   }>(),
   {
     loading: false,
@@ -83,6 +90,7 @@ const props = withDefaults(
     rowKey: 'id',
     clickable: false,
     selectable: false,
+    hasActiveFilters: false,
   },
 )
 
@@ -93,6 +101,8 @@ const emit = defineEmits<{
   'page-change': [page: number]
   /** 选择状态变化（始终发送新数组） */
   'update:selectedKeys': [keys: RowKey[]]
+  /** 空状态"清除筛选"按钮点击（仅 hasActiveFilters 为 true 时出现） */
+  'clear-filters': []
 }>()
 
 // 插槽按列定义：`#cell-<列 key>` 同时用于桌面单元格与手机卡片取值
@@ -294,7 +304,19 @@ function onPageChange(page: number) {
           <template #actions><el-button size="small" @click="emit('retry')" :icon="RotateCw">重试</el-button></template>
         </EmptyState>
         <slot v-else name="empty">
-          <EmptyState compact :icon="Inbox" :title="empty" :description="emptyDescription" />
+          <!-- v2.59: 筛选有结果为空时显示"清除筛选"，而不是初始空文案 -->
+          <EmptyState
+            v-if="hasActiveFilters"
+            compact
+            :icon="SearchX"
+            title="没有符合条件的结果"
+            description="换个条件，或清除筛选查看全部。"
+          >
+            <template #actions>
+              <el-button size="small" @click="emit('clear-filters')">清除筛选</el-button>
+            </template>
+          </EmptyState>
+          <EmptyState v-else compact :icon="Inbox" :title="empty" :description="emptyDescription" />
         </slot>
       </template>
     </el-table>
@@ -375,7 +397,19 @@ function onPageChange(page: number) {
 
       <div v-else class="dt-empty">
         <slot name="empty">
-          <EmptyState compact :icon="Inbox" :title="empty" :description="emptyDescription" />
+          <!-- v2.59: 筛选有结果为空时显示"清除筛选"，而不是初始空文案 -->
+          <EmptyState
+            v-if="hasActiveFilters"
+            compact
+            :icon="SearchX"
+            title="没有符合条件的结果"
+            description="换个条件，或清除筛选查看全部。"
+          >
+            <template #actions>
+              <el-button size="small" @click="emit('clear-filters')">清除筛选</el-button>
+            </template>
+          </EmptyState>
+          <EmptyState v-else compact :icon="Inbox" :title="empty" :description="emptyDescription" />
         </slot>
       </div>
     </div>

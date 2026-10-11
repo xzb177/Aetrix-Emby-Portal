@@ -724,36 +724,21 @@ function fmtCount(n: number | null | undefined): string {
         </div>
       </div>
 
-      <DataTable :rows="users" :columns="columns" :loading="loading" empty="没有匹配的用户"
+      <DataTable :rows="users" :columns="columns" :loading="loading"
+        empty="暂无用户"
+        empty-description="用户注册后会出现在这里。"
+        :error="loadError ? '可能是网络或后端暂时不可用。' : ''"
+        :has-active-filters="hasFilter"
         :pagination="{ total, page: page + 1, pageSize: PAGE_SIZE }"
         selectable
         v-model:selectedKeys="selectedKeys"
         :is-row-selectable="isRowSelectable"
-        @page-change="(p: number) => { page = p - 1; load() }">
+        @page-change="(p: number) => { page = p - 1; load() }"
+        @retry="load"
+        @clear-filters="resetFilters">
         <template #bulk-bar>
           <el-button type="warning" plain size="small" :loading="bulkBusy" @click="bulkToggleActive(false)">批量禁用</el-button>
           <el-button type="success" plain size="small" :loading="bulkBusy" @click="bulkToggleActive(true)">批量启用</el-button>
-        </template>
-        <template #empty>
-          <EmptyState
-            v-if="loadError"
-            compact
-            :icon="UserX"
-            title="用户列表加载失败"
-            description="可能是网络或后端暂时不可用。"
-          >
-            <template #actions><el-button size="small" @click="load">重试</el-button></template>
-          </EmptyState>
-          <EmptyState
-            v-else-if="hasFilter"
-            compact
-            :icon="Search"
-            title="没有匹配的用户"
-            description="换个关键词，或清除筛选再看。"
-          >
-            <template #actions><el-button size="small" @click="resetFilters">清除筛选</el-button></template>
-          </EmptyState>
-          <EmptyState v-else compact :icon="UsersIcon" title="还没有用户" description="用户注册后会出现在这里。" />
         </template>
 
         <template #cell-username="{ row }">

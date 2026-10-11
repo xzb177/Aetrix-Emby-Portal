@@ -372,12 +372,14 @@ onMounted(load)
         :columns="columns"
         :loading="loading"
         :error="loadError"
-        :empty="hasFilter ? '没有匹配的兑换码' : '还没有兑换码'"
-        :empty-description="hasFilter ? '换个关键字或清空筛选。' : '点右上角「批量生成」做第一批。'"
+        empty="暂无兑换码"
+        empty-description="点右上角「批量生成」做第一批。"
+        :has-active-filters="hasFilter"
         selectable
         v-model:selectedKeys="selectedKeys"
         :is-row-selectable="(row: ExchangeCodeRow) => row.is_active"
         @retry="load"
+        @clear-filters="clearFilters"
       >
         <template #bulk-bar>
           <el-button type="warning" plain size="small" :loading="bulkBusy" @click="bulkDeactivate">批量停用</el-button>

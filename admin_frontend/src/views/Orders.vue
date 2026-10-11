@@ -496,8 +496,11 @@ onMounted(() => {
         selectable
         v-model:selectedKeys="selectedKeys"
         empty="暂无订单"
+        empty-description="用户充值或订阅后，订单会出现在这里。"
+        :has-active-filters="hasFilter"
         :pagination="{ total, page, pageSize }"
         @page-change="(p: number) => { page = p; load() }"
+        @clear-filters="resetFilters"
       >
         <template #bulk-bar>
           <el-button type="success" plain size="small" :loading="bulkBusy" @click="bulkMarkPaid">批量标记已支付</el-button>
@@ -536,18 +539,6 @@ onMounted(() => {
           </el-button>
         </template>
 
-        <template #empty>
-          <EmptyState
-            compact
-            :icon="Wallet"
-            :title="hasFilter ? '没有符合筛选的订单' : '还没有订单'"
-            :description="hasFilter ? '换个条件，或清空筛选看全部。' : '用户充值或订阅后，订单会出现在这里。'"
-          >
-            <template v-if="hasFilter" #actions>
-              <el-button size="small" @click="resetFilters">清空筛选</el-button>
-            </template>
-          </EmptyState>
-        </template>
       </DataTable>
     </SectionCard>
 

@@ -418,6 +418,13 @@ function onCodesFilter() {
   loadCodes()
 }
 
+/** v2.59 空状态"清除筛选"：清空邀请码筛选条件 */
+function clearCodesFilters() {
+  invKeyword.value = ''
+  invState.value = ''
+  onCodesFilter()
+}
+
 async function bulkRevokeCodes() {
   const ids = selection.selectedKeys.value as number[]
   if (!ids.length) return
@@ -724,9 +731,12 @@ onMounted(reloadAll)
         :columns="invColumns"
         :loading="invLoading"
         empty="还没有邀请码"
+        empty-description="点「批量生成」给渠道或内测发一批。"
+        :has-active-filters="!!(invKeyword || invState)"
         selectable
         v-model:selectedKeys="selectedKeys"
         :is-row-selectable="(row: InvitationCodeRow) => row.is_active"
+        @clear-filters="clearCodesFilters"
       >
         <template #bulk-bar>
           <el-button type="danger" plain size="small" :loading="bulkRevokeBusy" @click="bulkRevokeCodes">批量作废</el-button>
@@ -754,14 +764,6 @@ onMounted(reloadAll)
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button v-if="row.is_active" size="small" type="danger" plain @click="handleRevoke([row])">作废</el-button>
           </div>
-        </template>
-        <template #empty>
-          <EmptyState
-            compact
-            :icon="QrCode"
-            :title="invKeyword || invState ? '没有符合条件的邀请码' : '还没有邀请码'"
-            :description="invKeyword || invState ? '换个条件再试。' : '点「批量生成」给渠道或内测发一批。'"
-          />
         </template>
       </DataTable>
     </SectionCard>
