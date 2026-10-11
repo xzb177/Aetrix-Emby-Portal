@@ -7,12 +7,14 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshCw, Ban, CircleCheck, LogOut, Search, Smartphone, Activity, Gauge } from 'lucide-vue-next'
+import { RefreshCw, Ban, CircleCheck, LogOut, Smartphone, Activity, Gauge } from 'lucide-vue-next'
 import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { fetchDeviceStats, fetchDevices, removeDevice, setDeviceBlocked } from '@/api/admin'
 import type { DeviceRow, DeviceStats } from '@/types'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import FilterBar from '@/components/FilterBar.vue'
+import type { AppliedFilter } from '@/components/FilterBar.vue'
 
 /** 手机卡片：用户为标题，设备/客户端/IP/首次/最近活跃做键值行 */
 const columns: DataColumn[] = [
@@ -32,7 +34,8 @@ const stats = ref<DeviceStats | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const total = ref(0)
-const filters = ref({ keyword: '', only_blocked: false })
+const draft = ref({ keyword: '', only_blocked: false })
+const committed = ref({ keyword: '', only_blocked: false })
 
 async function load() {
   loading.value = true
@@ -41,8 +44,8 @@ async function load() {
     // 统计读不到只隐藏顶部瓦片，不连累设备清单
     const [list, stat] = await Promise.all([
       fetchDevices({
-        keyword: filters.value.keyword || undefined,
-        only_blocked: filters.value.only_blocked || undefined,
+        keyword: committed.value.keyword || undefined,
+        only_blocked: committed.value.only_blocked || undefined,
         limit: 300,
       }),
       fetchDeviceStats().catch(() => null),
@@ -59,12 +62,39 @@ async function load() {
 
 onMounted(load)
 
-const hasFilter = computed(() => Boolean(filters.value.keyword || filters.value.only_blocked))
+function commitQuery() {
+  const next = {
+    keyword: draft.value.keyword.trim(),
+    only_blocked: draft.value.only_blocked,
+  }
 
-function resetFilters() {
-  filters.value = { keyword: '', only_blocked: false }
+  // 先标准化再比对，并在请求前保存快照：弱网下连点查询也不会重复请求。
+  if (
+    next.keyword === committed.value.keyword &&
+    next.only_blocked === committed.value.only_blocked
+  ) {
+    return
+  }
+
+  committed.value = next
   load()
 }
+
+const committedHasFilter = computed(() =>
+  Boolean(committed.value.keyword || committed.value.only_blocked),
+)
+
+// 标签只描述已提交的筛选，不拿草稿冒充当前结果，也不触发请求。
+const appliedFilters = computed<AppliedFilter[]>(() => {
+  const items: AppliedFilter[] = []
+  if (committed.value.keyword) {
+    items.push({ key: 'keyword', label: '关键词', text: committed.value.keyword })
+  }
+  if (committed.value.only_blocked) {
+    items.push({ key: 'only_blocked', label: '', text: '只看已封禁' })
+  }
+  return items
+})
 
 // ==================== 设备详情弹窗（v2.29.0） ====================
 // 以前封禁 / 移除是行里两个按钮，点下去只有一句确认框，看不到设备 ID、客户端版本、
@@ -199,23 +229,29 @@ function ago(s: string | null): string {
 
     <SectionCard title="设备清单" :icon="Smartphone" :meta="loading ? '' : `共 ${total} 台`" flush>
       <div class="list-bar">
-        <div class="filter-bar">
-          <el-input
-            v-model="filters.keyword"
-            placeholder="搜索用户名 / 设备 / 客户端 / IP"
-            clearable
-           
-            @keyup.enter="load"
-            @clear="load"
-          >
-            <template #prefix><Search :size="14" /></template>
-          </el-input>
-          <el-checkbox v-model="filters.only_blocked" @change="load">只看已封禁</el-checkbox>
-        </div>
-        <div class="head-actions">
-          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
-          <el-button type="primary" :icon="Search" @click="load">查询</el-button>
-        </div>
+        <FilterBar
+          class="fb-grow"
+          :search="{
+            value: draft.keyword,
+            placeholder: '搜索用户名 / 设备 / 客户端 / IP',
+            mode: 'submit',
+          }"
+          :filters="[
+            { key: 'only_blocked', label: '只看已封禁', type: 'checkbox', value: draft.only_blocked },
+          ]"
+          :applied-filters="appliedFilters"
+          :loading="loading"
+          @update:search="draft.keyword = $event"
+          @search-submit="commitQuery"
+          @query="commitQuery"
+          @filter-change="(_key, v) => { draft.only_blocked = v; commitQuery() }"
+          @remove-chip="(key) => {
+            if (key === 'keyword') draft.keyword = '';
+            if (key === 'only_blocked') draft.only_blocked = false;
+            commitQuery();
+          }"
+          @clear="() => { draft.keyword = ''; draft.only_blocked = false; commitQuery() }"
+        />
       </div>
 
       <DataTable
@@ -223,8 +259,8 @@ function ago(s: string | null): string {
         :columns="columns"
         :loading="loading"
         :error="loadError"
-        :empty="hasFilter ? '没有匹配的设备' : '暂无设备记录'"
-        :empty-description="hasFilter ? '换个关键字，或取消「只看已封禁」。' : '用户用第三方客户端登录后，设备会登记在这里。'"
+        :empty="committedHasFilter ? '没有匹配的设备' : '暂无设备记录'"
+        :empty-description="committedHasFilter ? '换个关键字，或取消「只看已封禁」。' : '用户用第三方客户端登录后，设备会登记在这里。'"
         @retry="load"
       >
         <template #cell-username="{ row }">
@@ -353,7 +389,7 @@ function ago(s: string | null): string {
   flex-wrap: wrap;
   padding: 4px 20px 12px;
 }
-.list-bar .filter-bar { flex: 1 1 auto; }
+.list-bar .fb-grow { flex: 1 1 auto; }
 .list-bar .head-actions { justify-content: flex-end; }
 
 .user-name { font-weight: 600; color: var(--au-text); }

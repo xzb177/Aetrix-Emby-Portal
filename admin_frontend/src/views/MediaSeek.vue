@@ -13,6 +13,8 @@ import { useQueryFilter } from '@/composables/useQueryFilter'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import FilterBar from '@/components/FilterBar.vue'
+import type { AppliedFilter, FilterConfig } from '@/components/FilterBar.vue'
 
 const realm = useRealmStore()
 /** 统计范围：当前服（默认）或全部服 */
@@ -40,11 +42,43 @@ const columns = computed<DataColumn[]>(() => [
 const list = ref<MediaSeekRow[]>([])
 const loading = ref(false)
 const loadError = ref('')
+/** 下拉框草稿仍用同一个 ref，深链才能直接写入并展示 URL 中的状态 */
 const statusFilter = ref('')
+const committedStatus = ref('')
+
+const filters = computed<FilterConfig[]>(() => [
+  {
+    key: 'status',
+    label: '状态',
+    type: 'select',
+    value: statusFilter.value,
+    placeholder: '全部状态',
+    options: [
+      { label: '全部状态', value: '' },
+      { label: '待审核', value: 'pending' },
+      { label: '已批准', value: 'approved' },
+      { label: '已入库', value: 'completed' },
+      { label: '已拒绝', value: 'rejected' },
+      { label: '已撤回', value: 'withdrawn' },
+    ],
+  },
+])
+
+/** chips 只展示已提交快照，不监听展示变化发请求，弱网下也不会多打一轮 */
+const appliedFilters = computed<AppliedFilter[]>(() => committedStatus.value
+  ? [{ key: 'status', label: '状态', text: statusLabel(committedStatus.value) }]
+  : [],
+)
+
 // v2 排序：latest=按提交时间，hot=按附议数
 const orderBy = ref<'latest' | 'hot'>('latest')
 // 深链：仪表盘「待审求片」/ 命令面板跳过来时带的就是这个筛选（Phase 5）
-useQueryFilter(statusFilter, 'status', load)
+// URL 是外部权威入口：watcher 比较的是上次 URL，不是提交快照，不能被草稿碰巧相等挡掉。
+// 原来 changed 后 load 一次；现在先同步快照再 load 一次，不额外发请求。
+useQueryFilter(statusFilter, 'status', () => {
+  committedStatus.value = statusFilter.value
+  load()
+})
 const busyId = ref<number | null>(null)
 /** 哪几类外部服务已经接好（用于决定显示哪些推送按钮） */
 const pushReady = ref<ServerKind[]>([])
@@ -56,12 +90,36 @@ const canQbittorrent = computed(() => pushReady.value.includes('qbittorrent'))
 /** 一个能推的都没有：直接把入口指去「服务器」页，而不是发一个点了也不动的按钮 */
 const noPushTarget = computed(() => !canMoviePilot.value && !canQbittorrent.value)
 
+/**
+ * 下拉值无需 trim；清空统一为 ''，再与提交快照做纯内存比较，不加防抖或等待。
+ * 原来 change 只在值变化时 load：正常改动仍请求一次，重复事件和无变化查询直接跳过，只减不增。
+ * radio 仍直接 load，读取已提交状态，排序 / 范围切换的请求次数不变。
+ */
+function commitQuery(force = false) {
+  const nextStatus = statusFilter.value
+  if (!force && nextStatus === committedStatus.value) return
+  committedStatus.value = nextStatus
+  return load()
+}
+
+function onFilterChange(key: string, value: any) {
+  if (key !== 'status') return
+  statusFilter.value = value ?? ''
+  commitQuery()
+}
+
+/** 本页只有状态筛选，移除 chip 和清除全部共用一次提交，已清空时不重复请求 */
+function clearStatus() {
+  statusFilter.value = ''
+  commitQuery()
+}
+
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
     const params: { status_filter?: string; realm_id?: number; order?: string } = {}
-    if (statusFilter.value) params.status_filter = statusFilter.value
+    if (committedStatus.value) params.status_filter = committedStatus.value
     // v2 热度排序
     if (orderBy.value === 'hot') params.order = 'hot'
     // 求片登记的是「给哪个服求」；realm_id=0 = 全部服（后端未标注的也算进来）
@@ -225,6 +283,8 @@ function pushLabel(target: string | null): string {
 }
 
 onMounted(() => {
+  // immediate watch 已写入 URL 状态：先同步快照，首次仍只 load 一次，同步本身不发请求。
+  committedStatus.value = statusFilter.value
   load()
   loadPushTargets()
 })
@@ -276,16 +336,17 @@ function statusLabel(status: string): string {
 
     <SectionCard title="求片列表" :icon="MessageSquareDashed" :meta="loading ? '' : `${list.length} 条`" flush>
       <div class="list-bar">
-        <div class="filter-bar">
-          <el-select v-model="statusFilter" placeholder="全部状态" clearable @change="load">
-            <el-option label="待审核" value="pending" />
-            <el-option label="已批准" value="approved" />
-            <el-option label="已入库" value="completed" />
-            <el-option label="已拒绝" value="rejected" />
-            <!-- 用户自己撤掉的默认不在待办里（额度仍按提交数算），需要审计时从这里查 -->
-            <el-option label="已撤回" value="withdrawn" />
-          </el-select>
-        </div>
+        <FilterBar
+          class="fb-grow"
+          :filters="filters"
+          :applied-filters="appliedFilters"
+          :query-button="true"
+          :loading="loading"
+          @filter-change="onFilterChange"
+          @query="commitQuery"
+          @remove-chip="clearStatus"
+          @clear="clearStatus"
+        />
         <div class="head-actions">
           <!-- v2 排序：最新 / 热度（附议数） -->
           <el-radio-group v-model="orderBy" aria-label="排序" @change="load">
@@ -304,8 +365,8 @@ function statusLabel(status: string): string {
         :columns="columns"
         :loading="loading"
         :error="loadError"
-        :empty="statusFilter ? `没有「${statusLabel(statusFilter)}」的求片` : '暂无求片记录'"
-        :empty-description="statusFilter ? '清空状态筛选看看全部。' : scope === 'realm' ? '当前服还没人求片；可切到「全部服」看看。' : '用户提交的求片会出现在这里。'"
+        :empty="committedStatus ? `没有「${statusLabel(committedStatus)}」的求片` : '暂无求片记录'"
+        :empty-description="committedStatus ? '清空状态筛选看看全部。' : scope === 'realm' ? '当前服还没人求片；可切到「全部服」看看。' : '用户提交的求片会出现在这里。'"
         @retry="load"
       >
         <template #cell-movie_name="{ row }">
@@ -504,6 +565,7 @@ function statusLabel(status: string): string {
   flex-wrap: wrap;
   padding: 4px 20px 12px;
 }
+.list-bar .fb-grow { flex: 1 1 auto; }
 .list-bar .head-actions { width: auto; justify-content: flex-end; }
 
 .movie-name { font-weight: 600; color: var(--au-text); }

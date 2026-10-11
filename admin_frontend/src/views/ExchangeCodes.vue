@@ -4,10 +4,12 @@
  */
 import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Gift, Plus, RefreshCw, Search, CheckCircle2, Ticket } from 'lucide-vue-next'
+import { Gift, Plus, RefreshCw, CheckCircle2, Ticket } from 'lucide-vue-next'
 import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
+import FilterBar from '@/components/FilterBar.vue'
+import type { FilterConfig, AppliedFilter } from '@/components/FilterBar.vue'
 import { useTableSelection } from '@/composables/useTableSelection'
 import { runBulkOperation, bulkSummaryText, BULK_LIMIT } from '@/utils/runBulkOperation'
 import type { RowKey } from '@/composables/useTableSelection'
@@ -193,6 +195,7 @@ const usedSummary = computed(() =>
 const activeCount = computed(() => codes.value.filter((c) => c.is_active).length)
 
 // 前端筛选（后端一次给最近 200 条）
+/** FilterBar 用 debounceMs: 0 逐键同步草稿；250ms 防抖只由下面的 watch 负责，避免叠加等待 */
 const keyword = ref('')
 /** 实际参与筛选的关键字：输入停 250ms 再过滤，连续打字时不逐键重算整张表 */
 const appliedKeyword = ref('')
@@ -215,6 +218,57 @@ const typeFilter = ref<'' | 'points' | 'subscription' | 'discount'>('')
 const statusFilter = ref<'' | 'active' | 'inactive'>('')
 const hasFilter = computed(() => Boolean(keyword.value.trim() || typeFilter.value || statusFilter.value))
 
+const filters = computed<FilterConfig[]>(() => [
+  {
+    key: 'type',
+    label: '类型',
+    type: 'select',
+    value: typeFilter.value,
+    placeholder: '全部类型',
+    options: [
+      { label: '全部类型', value: '' },
+      { label: '积分', value: 'points' },
+      { label: '订阅', value: 'subscription' },
+      { label: '折扣', value: 'discount' },
+    ],
+  },
+  {
+    key: 'status',
+    label: '状态',
+    type: 'select',
+    value: statusFilter.value,
+    placeholder: '全部状态',
+    options: [
+      { label: '全部状态', value: '' },
+      { label: '启用', value: 'active' },
+      { label: '停用', value: 'inactive' },
+    ],
+  },
+])
+
+function typeLabel(type: typeof typeFilter.value): string {
+  return type === 'points' ? '积分' : type === 'subscription' ? '订阅' : type === 'discount' ? '折扣' : ''
+}
+
+/** chips 只读已应用值；输入防抖期间不提前展示草稿，也不触发任何请求 */
+const appliedFilters = computed<AppliedFilter[]>(() => {
+  const applied: AppliedFilter[] = []
+  if (appliedKeyword.value) {
+    applied.push({ key: 'keyword', label: '关键词', text: appliedKeyword.value })
+  }
+  if (typeFilter.value) {
+    applied.push({ key: 'type', label: '类型', text: typeLabel(typeFilter.value) })
+  }
+  if (statusFilter.value) {
+    applied.push({
+      key: 'status',
+      label: '状态',
+      text: statusFilter.value === 'active' ? '启用' : '停用',
+    })
+  }
+  return applied
+})
+
 const visibleCodes = computed(() => {
   const kw = appliedKeyword.value.trim().toLowerCase()
   return codes.value.filter((c) => {
@@ -226,7 +280,35 @@ const visibleCodes = computed(() => {
   })
 })
 
-function resetFilters() {
+/** select 的 ref 就是上次提交快照；同值直接返回，变化才清选择并立即筛选，全程零请求 */
+function handleFilterChange(key: string, value: unknown) {
+  if (key === 'type') {
+    if (value !== '' && value !== 'points' && value !== 'subscription' && value !== 'discount') return
+    if (value === typeFilter.value) return
+    typeFilter.value = value
+    selection.clear()
+  } else if (key === 'status') {
+    if (value !== '' && value !== 'active' && value !== 'inactive') return
+    if (value === statusFilter.value) return
+    statusFilter.value = value
+    selection.clear()
+  }
+}
+
+function removeChip(key: string) {
+  if (key === 'keyword') {
+    // 清空草稿走原有 watch，立即清空已应用关键词和选择，不另加防抖
+    keyword.value = ''
+  } else if (key === 'type') {
+    typeFilter.value = ''
+    selection.clear()
+  } else if (key === 'status') {
+    statusFilter.value = ''
+    selection.clear()
+  }
+}
+
+function clearFilters() {
   selection.clear()
   keyword.value = ''
   typeFilter.value = ''
@@ -268,25 +350,21 @@ onMounted(load)
 
     <SectionCard title="全部兑换码" :icon="Gift" :meta="hasFilter ? `筛出 ${visibleCodes.length} / ${codes.length}` : ''" flush>
       <div class="list-bar">
-        <div class="filter-bar">
-          <el-input v-model="keyword" placeholder="搜索兑换码 / 备注 / 核销人" clearable>
-            <template #prefix><Search :size="14" /></template>
-          </el-input>
-          <el-select v-model="typeFilter" placeholder="全部类型">
-            <el-option value="" label="全部类型" />
-            <el-option value="points" label="积分" />
-            <el-option value="subscription" label="订阅" />
-            <el-option value="discount" label="折扣" />
-          </el-select>
-          <el-select v-model="statusFilter" placeholder="全部状态">
-            <el-option value="" label="全部状态" />
-            <el-option value="active" label="启用" />
-            <el-option value="inactive" label="停用" />
-          </el-select>
-        </div>
-        <div class="head-actions">
-          <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
-        </div>
+        <FilterBar
+          class="fb-grow"
+          :search="{
+            value: keyword,
+            placeholder: '搜索兑换码 / 备注 / 核销人',
+            mode: 'debounced',
+            debounceMs: 0,
+          }"
+          :filters="filters"
+          :applied-filters="appliedFilters"
+          @update:search="keyword = $event"
+          @filter-change="handleFilterChange"
+          @remove-chip="removeChip"
+          @clear="clearFilters"
+        />
       </div>
 
       <DataTable
@@ -425,7 +503,7 @@ onMounted(load)
   padding: 4px 20px 12px;
 }
 
-.list-bar .filter-bar { flex: 1 1 auto; }
+.list-bar .fb-grow { flex: 1 1 auto; }
 .list-bar .head-actions { justify-content: flex-end; width: auto; }
 
 .code { letter-spacing: 0.06em; font-weight: 600; color: var(--au-text); }
