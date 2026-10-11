@@ -134,7 +134,7 @@ FREE_REALM_DOWNLOAD_MESSAGE = realms.DEFAULT_FREE_DOWNLOAD_NOTE
 
 def has_active_subscription(db: Session, user_id: int, realm_id: Optional[int] = None) -> bool:
     """是否持有「生效中且未到期」的订阅（可按服判定）"""
-    target = resolve_realm_id(realm_id)
+    target = _scoped_realm_id(db, realm_id)
     query = db.query(models.UserSubscription).filter(
         models.UserSubscription.user_id == user_id,
         models.UserSubscription.status == "active",
@@ -147,7 +147,7 @@ def has_active_subscription(db: Session, user_id: int, realm_id: Optional[int] =
 
 def active_subscription(db: Session, user_id: int, realm_id: Optional[int] = None):
     """取一份生效中的订阅（按服；用于展示用户到底买的是哪个服）"""
-    target = resolve_realm_id(realm_id)
+    target = _scoped_realm_id(db, realm_id)
     query = db.query(models.UserSubscription).filter(
         models.UserSubscription.user_id == user_id,
         models.UserSubscription.status == "active",
@@ -187,8 +187,9 @@ def gate_message(db: Session) -> str:
 def can_play(db: Session, user: models.WebUser, realm_id: Optional[int] = None) -> bool:
     """是否放行播放：管理员始终放行；公益服免费开放；付费墙关闭时全员放行
 
-    订阅判定保持原有口径（显式服 / 本进程的服，不拿面板当前服去做回退），
-    所以付费服的行为与升级前完全一致；公益服是新增的一层判断。
+    订阅判定与免费服判定用同一作用域（显式服 → 本进程的服 → 面板当前服）：
+    EA 上进程级解析器已装，行为与升级前完全一致；EM 上缺省时按面板当前服判定，
+    不再退回跨服口径。
     """
     if getattr(user, "is_staff", False):
         return True
