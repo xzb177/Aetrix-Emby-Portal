@@ -52,8 +52,9 @@ def _write_conf(path: Path, body: str):
     path.write_text(body, encoding="utf-8")
 
 
-def test_sa_rotation_round_robin(tmp_path):
-    # 应用层轮换：每次调用推进到下一个 SA
+def test_sa_rotation_jittered_step(tmp_path, monkeypatch):
+    # 应用层轮换：步长由 _random.randint(1, n) 决定，这里固定为 2（反风控）
+    monkeypatch.setattr(pt._random, "randint", lambda a, b: 2)
     sa_dir = tmp_path / "sa"
     sa_dir.mkdir()
     (sa_dir / "a.json").write_text("{}")
@@ -70,19 +71,54 @@ def test_sa_rotation_round_robin(tmp_path):
 
     r2 = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
     assert r2["changed"] is True  # 轮换推进，不是幂等
-    assert r2["sa_file"].endswith("b.json")
+    assert r2["sa_file"].endswith("c.json")  # 0 + 2 = 2
 
     r3 = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
-    assert r3["sa_file"].endswith("c.json")
+    assert r3["sa_file"].endswith("b.json")  # 2 + 2 = 4 mod 3 = 1
 
     r4 = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
-    assert r4["sa_file"].endswith("a.json")  # 回绕
+    assert r4["sa_file"].endswith("a.json")  # 1 + 2 = 3 mod 3 = 0，回绕
 
     # 配置里写的是单文件模式（rclone 通用）
     cfg = configparser.ConfigParser()
     cfg.read(conf, encoding="utf-8")
     assert cfg.has_option("MP", "service_account_file")
     assert not cfg.has_option("MP", "service_account_file_path")
+
+
+def test_sa_rotation_jitter_not_predictable(tmp_path):
+    # 不 mock 随机数：验证轮换具备覆盖性，且步长不恒为 1（非严格 +1 循环）
+    sa_dir = tmp_path / "sa"
+    sa_dir.mkdir()
+    names = ["a.json", "b.json", "c.json"]
+    for name in names:
+        (sa_dir / name).write_text("{}")
+    conf = tmp_path / "rclone.conf"
+    _write_conf(conf, "[MP]\ntype = drive\nservice_account_file = /old/a.json\n")
+    state = tmp_path / "state.json"
+
+    picked = []
+    for _ in range(60):
+        r = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
+        picked.append(r["sa_file"])
+
+    # ① 覆盖：3 个文件都被选中过
+    for name in names:
+        assert any(p.endswith(name) for p in picked)
+
+    # ② 相邻两次选中的下标差（mod n）不全等于 1
+    name_to_idx = {name: i for i, name in enumerate(names)}
+
+    def _which(path):
+        for name in names:
+            if path.endswith(name):
+                return name_to_idx[name]
+        raise AssertionError("unexpected sa_file: %r" % (path,))
+
+    seq = [_which(p) for p in picked]
+    n = len(names)
+    steps = [(seq[i + 1] - seq[i]) % n for i in range(len(seq) - 1)]
+    assert any(step != 1 for step in steps)
 
 
 def test_sa_rotation_cleans_deprecated_dir_mode(tmp_path):

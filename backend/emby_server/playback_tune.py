@@ -15,6 +15,7 @@ from __future__ import annotations
 import configparser
 import json
 import logging
+import random as _random
 import shutil
 import threading
 import time
@@ -179,8 +180,9 @@ def build_rclone_mount_cmd(remote: str, mountpoint: str,
 # 自动轮换，但该选项在后续版本中被移除（v1.68/v1.75 实测已无此选项，
 # 配置会被静默忽略，导致 "empty token found"）。
 #
-# 现方案（应用层轮换）：本函数每次调用时按轮询（round-robin）从 SA 目录
-# 挑选下一个 SA，写入 ``service_account_file``（单文件模式，rclone 一直支持）。
+# 现方案（应用层轮换）：本函数每次调用时按带随机抖动的步长从 SA 目录
+# 挑选一个 SA，写入 ``service_account_file``（单文件模式，rclone 一直支持）。
+# 步长取 1..n 随机整数（反风控：避免完全规律的轮换模式）。
 # 轮换位置持久化在配置文件同目录的 ``.sa_rotation.json``，重启/重部署后
 # 继续轮换。调用时机：部署时、挂载前（不需要在播放中热切换）。
 #
@@ -194,10 +196,13 @@ def _sa_state_path(conf_path: str | Path) -> Path:
 
 
 def _next_sa_index(sa_files: list[Path], state_path: Path) -> int:
-    """按轮询返回下一个 SA 的索引，并持久化。
+    """返回本次轮换选中的 SA 索引，并持久化。
 
+    反风控：步长取 1..n 的随机整数（n = 文件数，至少 1；与
+    drive_changes._sa_rotation_start 同口径），打破严格 +1 的完全规律循环。
     状态文件损坏/缺失时从 0 开始。索引对文件数取模，SA 增删后自动适应。
     """
+    n = max(1, len(sa_files))
     idx = 0
     try:
         if state_path.is_file():
@@ -205,10 +210,10 @@ def _next_sa_index(sa_files: list[Path], state_path: Path) -> int:
             idx = int(data.get("index", 0))
     except Exception:  # noqa: BLE001 — 状态损坏就从头开始，不影响主流程
         idx = 0
-    idx = idx % max(1, len(sa_files))
+    idx = idx % n
     try:
         state_path.write_text(
-            json.dumps({"index": idx + 1, "file": sa_files[idx].name}),
+            json.dumps({"index": idx + _random.randint(1, n), "file": sa_files[idx].name}),
             encoding="utf-8",
         )
     except Exception:  # noqa: BLE001 — 写失败只打日志，不阻断
@@ -238,7 +243,7 @@ def ensure_sa_rotation(conf_path: str | Path,
                        state_path: str | Path | None = None) -> dict:
     """让 rclone 配置用上 SA 轮换（幂等思想：每次调用推进一次轮换）。
 
-    - SA 目录里有 >=1 个 json：按轮询挑选下一个，写
+    - SA 目录里有 >=1 个 json：按带随机抖动的步长挑选一个，写
       ``service_account_file = <选中文件>``（单文件模式，各版本 rclone 通用）。
     - SA 目录为空/不存在：不动，返回 warning。
     - 配置文件不存在：不动，返回 warning。
