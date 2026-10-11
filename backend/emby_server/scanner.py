@@ -2889,10 +2889,6 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
             )
 
     by_fp: dict = {}
-    # 版本签名回退索引：任一侧签名缺失（全 None）时退化为旧口径（相等），
-    # 不误伤正常改名。key 为去掉版本签名的基础指纹，value 为 (row, ver_sig) 列表。
-    by_fp_base: dict = {}
-    _EMPTY_SIG = (None, None, None)
     for row in candidates:
         if row.guid in ctx.seen_guids:
             continue  # 本轮还见到的行是重复文件，不是改名
@@ -2900,7 +2896,6 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         if fp is None:
             continue
         by_fp.setdefault(fp, []).append(row)
-        by_fp_base.setdefault(fp[:-1], []).append((row, fp[-1]))
 
     # 1:1 才认领：同一指纹多个待匹配文件，或多个候选行，都算歧义，放弃
     want_count: dict = {}
@@ -2912,24 +2907,6 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         if want_count[fp] != 1:
             continue
         rows = [r for r in by_fp.get(fp, []) if r.id not in claimed_rows]
-        if not rows:
-            # 版本签名回退：精确指纹无命中时，若任一侧版本签名缺失（全 None），
-            # 退化为旧口径（去掉版本签名比较）。两边都有明确签名且不一致时
-            # （如 1080p vs 2160p）不回退——那是多版本，不是改名。
-            _p_ver = fp[-1]
-            for _r, _r_ver in by_fp_base.get(fp[:-1], []):
-                if _r.id in claimed_rows:
-                    continue
-                if _p_ver == _EMPTY_SIG or _r_ver == _EMPTY_SIG:
-                    rows.append(_r)
-            # 去重（同一行可能被多次加入）
-            _seen = set()
-            _uniq = []
-            for _r in rows:
-                if _r.id not in _seen:
-                    _seen.add(_r.id)
-                    _uniq.append(_r)
-            rows = _uniq
         if len(rows) != 1:
             continue
         row = rows[0]

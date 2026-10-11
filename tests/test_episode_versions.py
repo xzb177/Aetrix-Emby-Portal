@@ -190,21 +190,14 @@ def test_merge_does_not_touch_movies(db):
 
 
 def test_merge_disabled_by_env(db, monkeypatch):
-    monkeypatch.setenv("EPISODE_VERSIONS_ENABLED", "0")
-    # 模块级常量在 import 时已读取，这里直接测函数对常量的尊重：
-    # 重载模块以应用环境变量
-    import importlib
-    importlib.reload(ev)
-    try:
-        _mk(db, id=1, guid="g1", file_path="/x/S01E01 - 720p.strm")
-        _mk(db, id=2, guid="g2", file_path="/x/S01E01 - 2160p.strm")
-        stats = ev.merge_episode_versions(db, library_id=1)
-        db.commit()
-        assert stats == {"groups": 0, "merged": 0, "promoted": 0,
-                         "unmerged_orphans": 0}
-    finally:
-        monkeypatch.undo()
-        importlib.reload(ev)
+    # 直接 patch 模块常量（不 reload 模块：reload 在全量测试进程里有副作用风险）
+    monkeypatch.setattr(ev, "EPISODE_VERSIONS_ENABLED", False)
+    _mk(db, id=1, guid="g1", file_path="/x/S01E01 - 720p.strm")
+    _mk(db, id=2, guid="g2", file_path="/x/S01E01 - 2160p.strm")
+    stats = ev.merge_episode_versions(db, library_id=1)
+    db.commit()
+    assert stats == {"groups": 0, "merged": 0, "promoted": 0,
+                     "unmerged_orphans": 0}
 
 
 def test_get_version_group(db):
