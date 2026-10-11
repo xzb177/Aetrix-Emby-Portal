@@ -314,6 +314,21 @@ def serve_remote(
                     logger.info("115 direct URL expired, cache cleared")
                 except Exception:
                     pass
+        # Drive 源站 401 检测：SA Bearer token 已失效（密钥轮换/提前吊销），
+        # 按 token 值失效内外两层缓存，下次播放重新换取；否则坏 token 在缓存里
+        # 毒化 55 分钟，期间命中该 SA 的请求全部 401（2026-10-11）。
+        # 与异步版 serve_remote_async 同口径
+        if resp.status_code == 401:
+            try:
+                _auth_value = ""
+                for _k, _v in (forward or {}).items():
+                    if str(_k).lower() == "authorization":
+                        _auth_value = _v or ""
+                        break
+                from backend.emby_server import drive_auth
+                drive_auth.note_drive_unauthorized(current, _auth_value)
+            except Exception:
+                pass
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
@@ -507,6 +522,21 @@ async def serve_remote_async(
                     logger.info("115 direct URL expired, cache cleared")
                 except Exception:
                     pass
+        # Drive 源站 401 检测：SA Bearer token 已失效（密钥轮换/提前吊销），
+        # 按 token 值失效内外两层缓存，下次播放重新换取；否则坏 token 在缓存里
+        # 毒化 55 分钟，期间命中该 SA 的请求全部 401（2026-10-11）。
+        # 与同步版 serve_remote 同口径
+        if resp.status_code == 401:
+            try:
+                _auth_value = ""
+                for _k, _v in (forward or {}).items():
+                    if str(_k).lower() == "authorization":
+                        _auth_value = _v or ""
+                        break
+                from backend.emby_server import drive_auth
+                drive_auth.note_drive_unauthorized(current, _auth_value)
+            except Exception:
+                pass
     except HTTPException:
         raise
     except httpx.PoolTimeout as exc:
