@@ -136,6 +136,17 @@ def handle_group_message(db: Session, update: dict[str, Any]) -> int:
         cap = _to_int(cfg["chat_points_daily_cap"], 20)
         # 锁用户行后再统计今日已得：并发多条消息都读到旧 earned 会绕过日上限
         economy.lock_user_row(db, user.id)
+        # 锁后二次校验分钟窗口：上面的 recent 检查是无锁的 check-then-act，
+        # 并发线程可同时通过；而本线程在等用户行锁期间，对方可能已提交发奖记录，
+        # 因此必须持锁后用新的 cutoff 重新查一次，避免 60 秒窗口被绕过双发。
+        cutoff = datetime.now() - timedelta(seconds=minute_window)
+        recent = db.query(models.ChatPointsLog.id).filter(
+            models.ChatPointsLog.telegram_id == telegram_id,
+            models.ChatPointsLog.created_at >= cutoff,
+        ).limit(1).first()
+        if recent:
+            db.rollback()
+            return 0
         today = datetime.now().date()
         earned = db.query(
             func.coalesce(func.sum(models.ChatPointsLog.points), 0)
