@@ -98,3 +98,32 @@ def test_write_config_rejects_ttl_below_two_ticks(db, monkeypatch):
     payload = play_sign.write_config(db, enabled=True, play_sign_ttl=900, strm_sig_ttl=1200)
     assert payload["strm_sig_ttl"] == 1200
     assert payload["strm_sig_ttl_min"] == 1200
+
+
+def test_refresh_errors_emit_warning(db, monkeypatch, tmp_path, caplog):
+    """刷新失败数 > 0 时必须记 warning（不能只在 info 汇总里当数字）。"""
+    import logging
+    import os as _os
+    from backend.emby_server import maintenance, strm_config
+
+    root = tmp_path / "s"
+    root.mkdir()
+    f = root / "x.strm"
+    f.write_text("https://drive.example.com/uc?id=ABC\n", encoding="utf-8")
+    strm_config.write_config(db, enabled=True, host_dir="/opt/strm", container_path=str(root))
+    monkeypatch.setattr(maintenance, "STRM_REFRESH_LAST_FILE", str(tmp_path / "last"))
+    clock = {"t": 1_800_000_000.0}
+    monkeypatch.setattr(maintenance.time, "time", lambda: clock["t"])
+    # 模拟只读文件系统：os.replace 抛 OSError（生产事故现场）
+    real_replace = _os.replace
+    def fake_replace(src, dst):
+        raise OSError(30, "Read-only file system")
+    monkeypatch.setattr(maintenance.os, "replace", fake_replace)
+
+    with caplog.at_level(logging.WARNING, logger="backend.emby_server.maintenance"):
+        result = maintenance.strm_sig_refresh_tick(db=db)
+
+    assert result["errors"] >= 1
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("刷新失败" in r.getMessage() for r in warnings), \
+        f"expected warning about refresh failures, got: {[r.getMessage() for r in warnings]}"

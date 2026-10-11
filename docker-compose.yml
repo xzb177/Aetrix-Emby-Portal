@@ -177,7 +177,7 @@ services:
     - ${MEDIA_ROOT:-./media}:/media:ro
     - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
     - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
-    - ${STRM_MOUNT_DIR:-/opt/strm}:${STRM_CONTAINER_PATH:-/strm}:ro
+    - ${STRM_MOUNT_DIR:-/opt/strm}:${STRM_CONTAINER_PATH:-/strm}:rw
     - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
     - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
   postgres:
