@@ -147,10 +147,22 @@ def rate_bytes_per_sec(db: Session) -> int:
 
 
 def cache_dir(db: Session, create: bool = False) -> str:
-    """本机缓存目录（create=True 时确保存在）"""
+    """本机缓存目录（create=True 时确保存在且可写，不可写抛 OSError）"""
     path = os.path.expanduser(configured_dir(db))
     if create and path:
         os.makedirs(path, exist_ok=True)
+        # 目录存在≠可写（只读挂载时 makedirs 不报错，下载时才失败）。
+        # 这里探一次，调用方已有 except OSError 兜底（下载任务记 failed）。
+        probe = os.path.join(path, f".write_probe_{os.getpid()}")
+        try:
+            with open(probe, "w") as fh:
+                fh.write("ok")
+        except OSError as exc:
+            raise OSError(f"缓存目录不可写：{path}（{exc}）") from exc
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
     return path
 
 
@@ -173,6 +185,24 @@ def config_payload(db: Session) -> dict:
     }
 
 
+def _probe_writable(directory: str) -> None:
+    """往目录里写一个临时文件再删掉，验证真的可写。
+
+    只抛 ``ValueError``（调用方转 400）：目录存在但不可写时，makedirs 不会报错，
+    不探这一下，保存会"成功"但下载时才失败。
+    """
+    probe = os.path.join(directory, f".write_probe_{os.getpid()}")
+    try:
+        with open(probe, "w") as fh:
+            fh.write("ok")
+    except OSError as exc:
+        raise ValueError(f"缓存目录不可写：{directory}（{exc}）；请填一个有写权限的路径") from exc
+    try:
+        os.unlink(probe)
+    except OSError:
+        pass
+
+
 def write_config(db: Session, *, enabled: bool, dir: str, max_gb_value: int,
                  hot_days_value: int, hot_plays_value: int, rate_mbps_value: int) -> dict:
     """写回配置（管理后台 PUT）。
@@ -191,6 +221,9 @@ def write_config(db: Session, *, enabled: bool, dir: str, max_gb_value: int,
             os.makedirs(dir_text, exist_ok=True)
         except OSError as exc:
             raise ValueError(f"缓存目录建不出来：{dir_text}（{exc}）；请填一个有写权限的路径") from exc
+        # 建出来还不够：目录可能存在但不可写（只读挂载、权限不足）。现在就探一次，
+        # 写不进去直接 400 说清楚，别等下载时才失败让用户一头雾水。
+        _probe_writable(dir_text)
 
     numbers = (
         ("最大占用（GB）", max_gb_value, 0, MAX_GB_LIMIT),
