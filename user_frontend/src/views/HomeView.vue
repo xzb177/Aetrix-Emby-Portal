@@ -82,6 +82,8 @@ import {
   type PortalResumeItem,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
+import { toastSystem } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import { checkAndRecordHomeVisit } from '@/composables/useHomeVisitMemory'
 import Modal from '@/components/ui/Modal.vue'
 import WelcomeBackCard from '@/components/home/WelcomeBackCard.vue'
@@ -329,8 +331,7 @@ async function stopSession(session: MyPlaybackSession) {
     toast.success(`已结束「${session.device || '未知设备'}」上的播放`)
     sessions.value = sessions.value.filter((s) => s.session_key !== session.session_key)
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '结束播放失败')
+    toast.error(toUserMessage(err, 'stopFailed'))
   } finally {
     stoppingSession.value = ''
   }
@@ -462,7 +463,7 @@ async function loadDeferred(silent = false) {
     if (silent || snapshot) return
     loadError.value = true
     if (err?.response?.status !== 401) {
-      toast.error('加载失败，请刷新重试')
+      toast.error(toastSystem.networkError)
     }
   } finally {
     loading.value = false

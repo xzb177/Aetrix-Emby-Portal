@@ -27,6 +27,8 @@ import {
   type MediaSeekCandidate, type TvSeason, type HotMediaSeekRequest,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
+import { toastCopy } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
@@ -298,7 +300,7 @@ async function handleSubmit() {
       tmdb_id: picked.value?.tmdb_id,
       season: seasonPayload(),
     })
-    toast.success('求片已提交，管理员会尽快处理')
+    toast.success(toastCopy.requestSubmitted())
     form.value = { movie_name: '', year: '', type: 'movie', note: '', realm_id: onlyRealm.value?.id ?? null }
     lookupHits.value = []
     lookupDone.value = false
@@ -310,8 +312,7 @@ async function handleSubmit() {
     showForm.value = false
     await loadRequests(false)
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '提交失败，请稍后重试')
+    toast.error(toUserMessage(err, 'submitFailed'))
   } finally {
     submitting.value = false
   }
@@ -321,12 +322,11 @@ async function withdraw(req: MediaSeekRequest) {
   withdrawing.value = req.id
   try {
     await mediaSeekApi.withdraw(req.id)
-    toast.success('已撤回该求片')
+    toast.success(toastCopy.requestWithdrawn())
     requests.value = requests.value.filter((r) => r.id !== req.id)
     await loadRequests()
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '撤回失败')
+    toast.error(toUserMessage(err, 'withdrawFailed'))
   } finally {
     withdrawing.value = null
   }
@@ -376,7 +376,7 @@ async function voteHot(item: HotMediaSeekRequest) {
     item.voted = res.voted
     item.vote_count = res.vote_count
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '附议失败')
+    toast.error(toUserMessage(e, 'voteFailed'))
   } finally {
     voting.value = null
   }

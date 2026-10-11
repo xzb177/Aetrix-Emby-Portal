@@ -19,6 +19,8 @@ import {
   embyApi, posterUrl, ticksToSeconds, type EmbyItem, type EmbyMediaSource,
 } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
+import { toastFallback } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import { useUserStore } from '@/stores/user'
 import { pageTitle } from '@/composables/useBranding'
 import {
@@ -581,7 +583,7 @@ async function openEpSheet() {
     const eps = await embyApi.getEpisodes(it.SeriesId, it.SeasonId || undefined)
     sheetEpisodes.value = [...eps].sort((a, b) => (a.IndexNumber ?? 0) - (b.IndexNumber ?? 0))
   } catch {
-    toast.error('加载选集失败')
+    toast.error(toastFallback.loadEpisodeListFailed)
   } finally {
     sheetLoading.value = false
   }
@@ -653,7 +655,7 @@ async function initPlayback() {
     item.value = await embyApi.getItem(itemId.value)
     document.title = pageTitle(`播放 ${item.value.Name}`)
   } catch {
-    toast.error('加载影片信息失败')
+    toast.error(toastFallback.loadMediaFailed)
     loading.value = false
     return
   }

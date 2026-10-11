@@ -19,6 +19,8 @@ import {
 } from 'lucide-vue-next'
 import { ticketApi, type TicketMessage } from '@/api'
 import { useToast } from '@/composables/useToast'
+import { toastCopy, confirmCopy } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
@@ -127,13 +129,12 @@ async function createTicket() {
       category: createForm.value.category,
       message: createForm.value.message
     })
-    toast.success('工单已提交，管理员会尽快处理')
+    toast.success(toastCopy.ticketSubmitted())
     showCreateModal.value = false
     await fetchTickets()
   } catch (error: any) {
     console.error('创建工单失败:', error)
-    const detail = error?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '创建工单失败，请稍后重试')
+    toast.error(toUserMessage(error, 'ticketCreateFailed'))
   } finally {
     creating.value = false
   }
@@ -179,8 +180,7 @@ async function replyTicket() {
     await fetchTickets(false)
   } catch (error: any) {
     console.error('回复失败:', error)
-    const detail = error?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '回复失败，请稍后重试')
+    toast.error(toUserMessage(error, 'ticketReplyFailed'))
   } finally {
     replying.value = false
   }
@@ -189,17 +189,16 @@ async function replyTicket() {
 // 关闭工单
 async function closeTicket() {
   if (!selectedTicket.value) return
-  if (!confirm('确定要关闭此工单吗？')) return
+  if (!confirm(confirmCopy.closeTicket)) return
 
   try {
     await ticketApi.close(selectedTicket.value.id)
-    toast.success('工单已关闭')
+    toast.success(toastCopy.ticketClosed())
     showDetailModal.value = false
     await fetchTickets()
   } catch (error: any) {
     console.error('关闭工单失败:', error)
-    const detail = error?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '关闭工单失败，请稍后重试')
+    toast.error(toUserMessage(error, 'ticketCloseFailed'))
   }
 }
 

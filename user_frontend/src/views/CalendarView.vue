@@ -26,6 +26,7 @@ import {
 import { embyApi, posterUrl, type EmbyItem } from '@/api/emby'
 import { rexDeepLink } from '@/utils/rexDeepLink'
 import { useToast } from '@/composables/useToast'
+import { toUserMessage } from '@/utils/toUserMessage'
 import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
@@ -232,8 +233,7 @@ async function load() {
   } catch (err: any) {
     if (reqId !== latestRequest) return
     payload.value = null
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '日历加载失败，请稍后重试')
+    toast.error(toUserMessage(err, 'calendarFailed'))
   } finally {
     // 同理：只有最后一次请求才能收 loading，否则会把新请求的骨架屏提前收掉
     if (reqId === latestRequest) loading.value = false

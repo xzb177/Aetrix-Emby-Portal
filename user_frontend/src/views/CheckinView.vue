@@ -9,6 +9,8 @@ import {
 } from 'lucide-vue-next'
 import { checkinApi, pointsApi, type CheckinStatus, type PointsLogEntry } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
+import { toastCopy } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
 import { useHaptics } from '@/composables/useHaptics'
 import { tgApi, type TgBindStatus } from '@/api/tg'
 import TgBindCard from '@/components/TgBindCard.vue'
@@ -96,13 +98,12 @@ async function handleSign() {
   try {
     const res = await checkinApi.doCheckin()
     justSigned.value = true
-    toast.success(res.message || `签到成功 +${res.points_awarded}`)
+    toast.success(res.message || toastCopy.checkinSuccess(res.points_awarded))
     haptics.success()
     await load()
     setTimeout(() => { justSigned.value = false }, 2600)
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '签到失败，请稍后重试')
+    toast.error(toUserMessage(err, 'checkinFailed'))
   } finally {
     signing.value = false
   }
