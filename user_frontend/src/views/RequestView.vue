@@ -27,6 +27,7 @@ import {
   type MediaSeekCandidate, type TvSeason, type HotMediaSeekRequest,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
 const route = useRoute()
@@ -684,11 +685,21 @@ onMounted(async () => {
       </div>
 
       <!-- 空状态 -->
-      <div v-else-if="filtered.length === 0" class="au-empty">
-        <Film :size="30" />
-        <h3>{{ requests.length ? '该状态下没有记录' : '还没有求片记录' }}</h3>
-        <p>{{ requests.length ? '换个状态看看' : '点击右上角「我要求片」提交第一个请求' }}</p>
-      </div>
+      <EmptyState
+        v-else-if="filtered.length === 0 && requests.length"
+        variant="search"
+        title="该状态下没有记录"
+        description="换个状态看看"
+      >
+        <template #action>
+          <button class="au-btn au-btn-ghost au-btn-sm" @click="statusFilter = 'all'">查看全部</button>
+        </template>
+      </EmptyState>
+      <EmptyState
+        v-else-if="filtered.length === 0"
+        title="还没有求片记录"
+        description="点击右上角「我要求片」提交第一个请求"
+      />
 
       <!-- 列表 -->
       <ul v-else class="request-list">
@@ -745,11 +756,6 @@ onMounted(async () => {
           </div>
         </li>
       </ul>
-
-      <div v-if="!loading && requests.length && filtered.length === 0" class="au-empty">
-        <Ban :size="26" />
-        <p>没有符合筛选条件的记录</p>
-      </div>
     </div>
 
     <!-- v2 热门求片：所有人 pending 的求片（匿名），可附议；开关关闭时后端返回空列表 -->

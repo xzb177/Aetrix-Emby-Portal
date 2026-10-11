@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 import { ticketApi, type TicketMessage } from '@/api'
 import { useToast } from '@/composables/useToast'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
 
@@ -276,17 +277,18 @@ onMounted(() => {
         <button @click="fetchTickets()" class="btn btn-secondary">重新加载</button>
       </div>
 
-      <div v-else-if="tickets.length === 0" class="empty-state">
-        <div class="empty-icon">
-          <Ticket :size="32" />
-        </div>
-        <p>暂无工单</p>
-        <p class="empty-hint">遇到问题可以创建工单联系客服</p>
-        <button @click="openCreateModal" class="btn btn-primary">
-          <Plus :size="16" />
-          创建工单
-        </button>
-      </div>
+      <EmptyState
+        v-else-if="tickets.length === 0"
+        title="还没有工单"
+        description="遇到问题可以在这里告诉我们"
+      >
+        <template #action>
+          <button @click="openCreateModal" class="btn btn-primary">
+            <Plus :size="16" />
+            新建工单
+          </button>
+        </template>
+      </EmptyState>
 
       <div v-else class="tickets-list">
         <div

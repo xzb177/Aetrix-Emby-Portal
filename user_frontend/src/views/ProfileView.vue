@@ -26,6 +26,7 @@ import TgBindModal from '@/components/TgBindModal.vue'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
 import PlaybackSessions from '@/components/media/PlaybackSessions.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 import {
   Mail, CalendarDays, Crown, Lock, KeyRound, LogOut, RefreshCw,
   Eye, EyeOff, Copy, Check, Sparkles, MonitorSmartphone, ChevronRight, TriangleAlert,
@@ -571,7 +572,16 @@ function formatDate(iso?: string | null) {
             <span class="badge free">公益服 · 免费开放</span>
             <p class="pane-empty">{{ realmNote }}</p>
           </div>
-          <p v-else class="pane-empty">暂无生效中的订阅。如需开通，请联系管理员。</p>
+          <EmptyState
+            v-else
+            size="compact"
+            title="还没有订阅"
+            description="了解可选方案"
+          >
+            <template #action>
+              <button class="btn primary" @click="router.push('/store')">查看订阅方案</button>
+            </template>
+          </EmptyState>
 
           <ul v-if="subscriptions.length > 1" class="sub-history">
             <li v-for="s in subscriptions.slice(0, 4)" :key="s.id" class="sub-history-item">
@@ -606,9 +616,12 @@ function formatDate(iso?: string | null) {
             </button>
           </header>
 
-          <p v-if="devices.length === 0" class="pane-empty">
-            还没有客户端登录记录。用 Emby 客户端（Infuse / Forward 等）登录后会出现在这里。
-          </p>
+          <EmptyState
+            v-if="devices.length === 0"
+            size="compact"
+            title="还没有设备记录"
+            description="用 Emby 客户端（Infuse / Forward 等）登录后会出现在这里"
+          />
           <template v-else>
             <div v-for="d in devices" :key="d.device_id" class="dev-row">
               <div class="dev-main">

@@ -17,6 +17,7 @@ import {
   Play, Star, Heart, Eye, EyeOff, Clock, Layers, ChevronLeft, ChevronDown, Film,
   Crown, Sparkles, Check,
 } from 'lucide-vue-next'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -547,14 +548,29 @@ onMounted(loadItem)
             </li>
           </ul>
           <p v-if="episodesLoading" class="eps-loading">加载剧集中…</p>
-          <p v-else-if="episodes.length === 0" class="no-eps">该季暂无剧集数据</p>
+          <EmptyState
+            v-else-if="episodes.length === 0"
+            size="compact"
+            title="这一季暂时没有剧集信息"
+            description="看看其他季的内容"
+          >
+            <template v-if="seasons.length > 1" #action>
+              <button type="button" class="au-btn au-btn-ghost au-btn-sm" @click="sheetOpen = true">
+                切换其他季
+              </button>
+            </template>
+          </EmptyState>
         </section>
 
         <!-- 演职员：后端 People 字段恒为空（_item_dto 写死 []），待 TMDB/NFO 刮削支持后接入；此处仅占位说明，不 hardcode 数据 -->
         <!-- TODO(backend): People 刮削落地后，用 embyApi.getItem 返回的 People 渲染横滑卡片 -->
         <section v-if="item" class="cast">
           <h2 class="section-title">演职员</h2>
-          <p class="cast-empty">暂无演职员数据</p>
+          <EmptyState
+            size="compact"
+            title="暂时没有演职员信息"
+            description="信息还未补齐"
+          />
         </section>
       </template>
     </div>

@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 import { messageApi, type StationMessage } from '@/api'
 import { useToast } from '@/composables/useToast'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
 const route = useRoute()
@@ -254,19 +255,26 @@ onMounted(() => {
         <button class="au-btn au-btn-ghost au-btn-sm" @click="load()">重新加载</button>
       </div>
 
-      <div v-else-if="filtered.length === 0" class="au-empty">
-        <Bell :size="30" />
-        <h3>
-          {{ selectedType === 'announcement' && !keyword
-            ? '暂时没有公告'
-            : messages.length ? '没有符合条件的消息' : '暂时没有消息' }}
-        </h3>
-        <p>
-          {{ selectedType === 'announcement' && !keyword
-            ? '站点公告会同时出现在这里与消息列表里'
-            : messages.length ? '试试换个类型或清空搜索' : '管理员的操作通知会出现在这里' }}
-        </p>
-      </div>
+      <EmptyState
+        v-else-if="filtered.length === 0 && selectedType === 'announcement' && !keyword"
+        title="暂时没有公告"
+        description="站点公告会同时出现在这里与消息列表里"
+      />
+      <EmptyState
+        v-else-if="filtered.length === 0 && messages.length"
+        variant="search"
+        title="没有符合条件的消息"
+        description="试试换个类型或清空搜索"
+      >
+        <template #action>
+          <button class="au-btn au-btn-ghost au-btn-sm" @click="keyword = ''; selectedType = 'all'">清除筛选</button>
+        </template>
+      </EmptyState>
+      <EmptyState
+        v-else-if="filtered.length === 0"
+        title="暂时没有消息"
+        description="管理员的操作通知会出现在这里"
+      />
 
       <template v-else>
         <section v-for="group in grouped" :key="group.key" class="msg-group">

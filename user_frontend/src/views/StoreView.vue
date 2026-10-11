@@ -25,6 +25,7 @@ import { subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
 import { useToast } from '@/composables/useToast'
 import { tgApi, type TgBindStatus } from '@/api/tg'
 import TgBindCard from '@/components/TgBindCard.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 const toast = useToast()
 const route = useRoute()
@@ -628,10 +629,11 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
           </div>
         </div>
 
-        <div v-else-if="!packages.length" class="store-empty">
-          <Coins />
-          <p>暂无可用充值套餐</p>
-        </div>
+        <EmptyState
+          v-else-if="!packages.length"
+          title="暂时没有充值套餐"
+          description="可购买的充值套餐会显示在这里"
+        />
 
         <template v-else>
           <div class="pkg-list">
@@ -752,10 +754,11 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
               <span class="store-skel-price"></span>
             </div>
           </div>
-          <div v-else-if="!plans.length" class="store-empty">
-            <Zap />
-            <p>暂无可购买套餐，请联系管理员开通</p>
-          </div>
+          <EmptyState
+            v-else-if="!plans.length"
+            title="暂时没有可购买的套餐"
+            description="可购买的会员套餐会显示在这里"
+          />
 
           <template v-else>
             <div class="plan-list">
@@ -2179,4 +2182,3 @@ button.redeem-clear svg {
   margin: 0;
 }
 </style>
-
