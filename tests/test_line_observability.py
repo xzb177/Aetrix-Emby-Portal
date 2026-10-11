@@ -130,3 +130,32 @@ def test_snapshot_counts_traffic(db):
     snap = line_health.snapshot(db)
     assert snap["requests"] == 1
     assert snap["bytes_out"] == 500
+def test_snapshot_calls_cache_state_exactly_once(db, monkeypatch):
+    """回归：snapshot() 内部 _cache_state(db) 只允许调用一次，避免数据不一致与性能退化。"""
+    calls = {"n": 0}
+
+    def _fake_cache_state(_db):
+        # 每次调用计数，并返回固定快照数据
+        calls["n"] += 1
+        return {
+            "hits": 7,
+            "misses": 3,
+            "hit_rate": 0.7,
+            "enabled": True,
+            "dir_exists": True,
+            "dir": "/tmp/x",
+            "bytes_used": 100,
+            "max_bytes": 1000,
+            "entries_total": 5,
+        }
+
+    monkeypatch.setattr(line_health, "_cache_state", _fake_cache_state)
+
+    snap = line_health.snapshot(db)
+
+    # 只应调用一次
+    assert calls["n"] == 1
+    # 同一快照来源，数据自洽
+    assert snap["cache"]["hits"] == 7
+    assert snap["cache"]["misses"] == 3
+    assert snap["cache"]["hit_rate"] == 0.7
