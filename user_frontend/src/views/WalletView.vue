@@ -1080,6 +1080,8 @@ input.redeem-input:focus {
 .transfer-row input.redeem-input {
   flex: 1;
   min-width: 0;
+  /* 与核销中心输入框统一：设计系统规定输入框用 --au-r-md（见 neo-noir-tokens.css --neo-input-radius） */
+  border-radius: var(--au-r-md);
 }
 
 .transfer-row .au-btn-primary:hover {
