@@ -49,20 +49,36 @@ def db():
 
 @pytest.fixture(autouse=True)
 def _clear_night_cfg_cache():
-    """每个测试前清掉夜间配置的 60 秒 TTL 缓存 + 环境变量，避免测试间污染"""
-    enrich_worker._night_cfg_cache["at"] = 0.0
-    enrich_worker._night_cfg_cache["cfg"] = None
-    for k in (enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
-              enrich_worker.ENRICH_NIGHT_START_ENV,
-              enrich_worker.ENRICH_NIGHT_END_ENV):
-        os.environ.pop(k, None)
+    """每个测试前后清掉夜间配置三处状态，避免测试间污染"""
+    _purge_night_cfg()
     yield
+    _purge_night_cfg()
+
+
+def _purge_night_cfg():
+    """清理夜间配置：内存缓存、环境变量、SystemConfig 表。
+
+    防止写了 enabled=1 的测试污染后续测试（后续测试的 _claim_batch
+    会读到 enabled=True，进而按夜间窗口过滤导致用例失败）。
+    """
     enrich_worker._night_cfg_cache["at"] = 0.0
     enrich_worker._night_cfg_cache["cfg"] = None
     for k in (enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
               enrich_worker.ENRICH_NIGHT_START_ENV,
               enrich_worker.ENRICH_NIGHT_END_ENV):
         os.environ.pop(k, None)
+    # DB 里的三个配置键也要清（save_episode_night_config 会写库）
+    from backend.models import SystemConfig
+    s = SessionLocal()
+    try:
+        s.query(SystemConfig).filter(SystemConfig.key.in_([
+            enrich_worker.CFG_EPISODE_NIGHT_ONLY,
+            enrich_worker.CFG_NIGHT_START,
+            enrich_worker.CFG_NIGHT_END,
+        ])).delete(synchronize_session=False)
+        s.commit()
+    finally:
+        s.close()
 
 
 def _make_item(db, **kw):
