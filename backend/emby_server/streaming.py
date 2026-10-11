@@ -266,6 +266,9 @@ def serve_remote(
     # 引到内网运维接口上。
     # S2：同一套超时（读超时 = 块间空闲上限），源站卡住时不再永久占着线程
     client = httpx.Client(timeout=relay_timeout(), follow_redirects=False)
+    # resp 预置为 None：兜底 except 分支需要关闭已打开的流式响应，
+    # 若第一跳 send 就抛异常则 resp 尚未绑定；与异步版（#584）保持同口径。
+    resp = None
     try:
         # Drive 私有化修复（2026-10-10）：uc?export=download&id= 直链即使带 SA
         # Bearer token 也只返回登录页；转成 Drive API alt=media 端点才能用 token
@@ -301,6 +304,8 @@ def serve_remote(
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — 源站不可达：给出干净的 502，而非 500 堆栈
+        if resp is not None:
+            resp.close()
         client.close()
         logger.warning("远程媒体代理失败 %s: %s", url.split("?")[0], exc)
         raise HTTPException(status_code=502, detail="源站不可达")
