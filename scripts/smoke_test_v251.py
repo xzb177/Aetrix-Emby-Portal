@@ -40,8 +40,13 @@ staff = models.WebUser(username=f"stf{suf}", password_hash=hash_password("staff1
 vip = models.WebUser(username=f"vip{suf}", password_hash=hash_password("pass12345"))
 expired = models.WebUser(username=f"exp{suf}", password_hash=hash_password("pass12345"))
 plain = models.WebUser(username=f"pln{suf}", password_hash=hash_password("pass12345"))
+# 生产里订阅/套餐必带具体 realm_id（遗留 NULL 行在 init_db 时已回填到默认服）：
+# 冒烟造数必须跟生产一致，否则服过滤会把 NULL 行排除。
+from backend import realms as realm_lib  # noqa: E402
+default_realm_id = realm_lib.active_realm_id(db)
 plan = models.SubscriptionPlan(
     name=f"查缺套餐{suf}", price=19.9, duration_days=30, is_active=True,
+    realm_id=default_realm_id,
 )
 db.add_all([staff, vip, expired, plain, plan])
 db.commit()
@@ -51,11 +56,11 @@ for row in (staff, vip, expired, plain, plan):
 now = datetime.now()
 db.add_all([
     # 生效中
-    models.UserSubscription(user_id=vip.id, plan_id=plan.id,
+    models.UserSubscription(user_id=vip.id, plan_id=plan.id, realm_id=default_realm_id,
                             start_date=now - timedelta(days=2), end_date=now + timedelta(days=28),
                             status="active"),
     # 已过期但库内仍是 active（真实场景：无人翻转状态字段）
-    models.UserSubscription(user_id=expired.id, plan_id=plan.id,
+    models.UserSubscription(user_id=expired.id, plan_id=plan.id, realm_id=default_realm_id,
                             start_date=now - timedelta(days=40), end_date=now - timedelta(days=5),
                             status="active"),
 ])
