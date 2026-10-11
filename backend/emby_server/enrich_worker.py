@@ -80,6 +80,128 @@ _ALIAS_INDEX_TTL = max(30, int(os.getenv("ENRICH_ALIAS_INDEX_TTL", "300") or 300
 _ALIAS_INDEX_MAX = max(1000, int(os.getenv("ENRICH_ALIAS_INDEX_MAX", "50000") or 50000))
 _alias_index: dict = {"rows": None, "at": 0.0}
 
+# ---- 单集夜间刮削（默认关闭：不改变现有行为） ----
+# ENRICH_EPISODE_NIGHT_ONLY=1 时，白天只刮顶层条目（movie/series/season），
+# 单集（episode）只在夜间窗口 [ENRICH_NIGHT_START, ENRICH_NIGHT_END) 内刮削。
+# 目的：白天优先把电影/剧集本身的元数据补出来，单集留到低峰期再补。
+# 口径：环境变量优先；未设置时读 SystemConfig（管理后台可配，60 秒缓存热生效，
+# 无需重启）。时间用服务器本地时间（datetime.now），窗口支持跨午夜（如 22:00-06:00）。
+ENRICH_EPISODE_NIGHT_ONLY_ENV = "ENRICH_EPISODE_NIGHT_ONLY"
+ENRICH_NIGHT_START_ENV = "ENRICH_NIGHT_START"
+ENRICH_NIGHT_END_ENV = "ENRICH_NIGHT_END"
+CFG_EPISODE_NIGHT_ONLY = "enrich_episode_night_only"
+CFG_NIGHT_START = "enrich_night_start"
+CFG_NIGHT_END = "enrich_night_end"
+NIGHT_ONLY_DEFAULT = False
+NIGHT_START_DEFAULT = "02:00"
+NIGHT_END_DEFAULT = "06:00"
+_NIGHT_CFG_TTL_SEC = 60.0
+_night_cfg_cache: dict = {"at": 0.0, "cfg": None}
+
+
+def _parse_hhmm(s: Optional[str], default: str) -> str:
+    """解析 HH:MM，非法则回退到默认值（保证下游比较永不抛异常）"""
+    s = (s or "").strip()
+    try:
+        hh, mm = s.split(":")
+        h, m = int(hh), int(mm)
+        if 0 <= h < 24 and 0 <= m < 60:
+            return f"{h:02d}:{m:02d}"
+    except (ValueError, AttributeError):
+        pass
+    return default
+
+
+def _in_night_window(now: datetime, start: str, end: str) -> bool:
+    """now 是否在 [start, end) 夜间窗口内；start > end 视为跨午夜窗口"""
+    t = (now.hour, now.minute)
+    s = (int(start[:2]), int(start[3:5]))
+    e = (int(end[:2]), int(end[3:5]))
+    if s <= e:
+        return s <= t < e
+    return t >= s or t < e
+
+
+def _episode_night_config(db=None) -> dict:
+    """单集夜间刮削的有效配置（环境变量优先，否则读 SystemConfig）。
+
+    db 可空：传了 db 才读库；60 秒 TTL 缓存，管理后台保存后最多 60 秒生效。
+    返回 {"enabled": bool, "start": "HH:MM", "end": "HH:MM",
+           "from_env": bool, "in_window": bool}
+    """
+    now_ts = time.monotonic()
+    cached = _night_cfg_cache["cfg"]
+    if cached is not None and now_ts - _night_cfg_cache["at"] < _NIGHT_CFG_TTL_SEC:
+        cfg = dict(cached)
+    else:
+        env_enabled = (os.getenv(ENRICH_EPISODE_NIGHT_ONLY_ENV) or "").strip().lower()
+        env_start = (os.getenv(ENRICH_NIGHT_START_ENV) or "").strip()
+        env_end = (os.getenv(ENRICH_NIGHT_END_ENV) or "").strip()
+        # 任一环境变量被设置（含显式 "0"）即视为 env 接管：后台改了也不生效，
+        # from_env=True 让管理后台显示提示，避免用户困惑。
+        from_env = bool(env_enabled) or bool(env_start) or bool(env_end)
+        if env_enabled not in {"", "0", "false", "no", "off"}:
+            enabled = True
+        elif env_enabled in {"0", "false", "no", "off"}:
+            enabled = False
+        else:
+            enabled = NIGHT_ONLY_DEFAULT
+            if db is not None:
+                try:
+                    from backend.integrations import store
+                    enabled = store.read_value(
+                        db, CFG_EPISODE_NIGHT_ONLY, "0") == "1"
+                except Exception:  # noqa: BLE001 — 读库失败就按默认关，不挡抢单
+                    logger.warning("单集夜间配置读库失败，按默认关闭", exc_info=True)
+        start = _parse_hhmm(env_start or None, NIGHT_START_DEFAULT)
+        end = _parse_hhmm(env_end or None, NIGHT_END_DEFAULT)
+        if not env_start and not env_end and db is not None and not from_env:
+            try:
+                from backend.integrations import store
+                start = _parse_hhmm(
+                    store.read_value(db, CFG_NIGHT_START, NIGHT_START_DEFAULT),
+                    NIGHT_START_DEFAULT)
+                end = _parse_hhmm(
+                    store.read_value(db, CFG_NIGHT_END, NIGHT_END_DEFAULT),
+                    NIGHT_END_DEFAULT)
+            except Exception:  # noqa: BLE001
+                logger.warning("夜间窗口读库失败，用默认值", exc_info=True)
+        cfg = {"enabled": enabled, "start": start, "end": end,
+               "from_env": from_env}
+        _night_cfg_cache["at"] = now_ts
+        _night_cfg_cache["cfg"] = dict(cfg)
+    cfg["in_window"] = _in_night_window(datetime.now(), cfg["start"], cfg["end"])
+    return cfg
+
+
+def get_episode_night_config(db) -> dict:
+    """管理后台用：当前生效的单集夜间刮削配置（含是否在窗口内）"""
+    return _episode_night_config(db)
+
+
+def save_episode_night_config(db, enabled: bool, start: str, end: str) -> dict:
+    """管理后台用：保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效）"""
+    from backend.integrations import store
+    start = _parse_hhmm(start, NIGHT_START_DEFAULT)
+    end = _parse_hhmm(end, NIGHT_END_DEFAULT)
+    store.write_values(
+        db,
+        {CFG_EPISODE_NIGHT_ONLY: "1" if enabled else "0",
+         CFG_NIGHT_START: start,
+         CFG_NIGHT_END: end},
+        {CFG_EPISODE_NIGHT_ONLY: "单集仅夜间刮削开关（白天只刮顶层条目）",
+         CFG_NIGHT_START: "夜间窗口开始（HH:MM，服务器本地时间）",
+         CFG_NIGHT_END: "夜间窗口结束（HH:MM，服务器本地时间）"},
+    )
+    db.commit()
+    db.expire_all()
+    # 立即清缓存：保存后下一次抢单就用新值，不用等 60 秒 TTL
+    _night_cfg_cache["at"] = 0.0
+    _night_cfg_cache["cfg"] = None
+    logger.info("单集夜间刮削配置已保存: enabled=%s window=%s-%s",
+                enabled, start, end)
+    return get_episode_night_config(db)
+
 _worker_threads: list = []
 _stop_event = threading.Event()
 _worker_lock = threading.Lock()
@@ -1447,6 +1569,16 @@ def _claim_batch(db, limit: int) -> list:
     # isnot(True) 而不是 == False：容忍 NULL 旧行（migration 给 DEFAULT 0，
     # 但手写 SQL/旧版本 ORM 可能留 NULL），NULL 视为未锁定。
     unlocked = em.MediaItem.metadata_locked.isnot(True)
+    # 单集夜间刮削：开关开且当前不在夜间窗口内 → 抢单时跳过单集（episode），
+    # 白天优先刮顶层条目（movie/series/season）。夜间窗口内不限制。
+    # 时间用服务器本地时间。默认关闭，不改变现有行为。
+    _night_cfg = _episode_night_config(db)
+    _skip_episode = _night_cfg["enabled"] and not _night_cfg["in_window"]
+    if _skip_episode:
+        logger.debug("单集夜间刮削：当前 %s 不在夜间窗口 %s-%s，跳过单集",
+                     datetime.now().strftime("%H:%M"),
+                     _night_cfg["start"], _night_cfg["end"])
+    not_episode = True if not _skip_episode else (em.MediaItem.item_type != "episode")
     group_key = _func.coalesce(em.MediaItem.series_id, em.MediaItem.id)
 
     base_order = (
@@ -1471,7 +1603,8 @@ def _claim_batch(db, limit: int) -> list:
     groups_q = (db.query(group_key.label("g"),
                          _func.max(em.MediaItem.date_added).label("latest"),
                          em.MediaItem.library_id.label("lib"))
-                .filter(em.MediaItem.enrich_status == "pending", due, unlocked)
+                .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
+                        not_episode)
                 # library_id 必须显式入组（PG 要求）：组键是全局 id，
                 # 同一组恒在同一库内，(group_key, library_id) 与 group_key 等价。
                 .group_by(group_key, em.MediaItem.library_id))
@@ -1483,7 +1616,7 @@ def _claim_batch(db, limit: int) -> list:
             break
         q = (db.query(em.MediaItem)
              .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
-                     group_key == gid)
+                     not_episode, group_key == gid)
              .order_by(
                  # 父级（剧/电影）先于子级：父级先落 done，子集才能纯继承
                  _case((em.MediaItem.item_type.in_(["series", "movie"]), 0), else_=1),
@@ -2094,6 +2227,8 @@ def get_progress() -> dict:
             "probe": probe_by_status,
             "workers": ENRICH_WORKERS,
             "enabled": ENRICH_ENABLED,
+            # 单集夜间刮削当前生效状态（管理后台展示用；读库失败时回退默认关）
+            "episode_night": _episode_night_config(db),
             # v2.42.9 可观测性：状态计数回答「还有多少」，这两个回答
             # 「一分钟几条、每条卡在哪一段」。进程内计数，重启归零。
             "stages": progress.stage_stats(),
