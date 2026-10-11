@@ -65,6 +65,13 @@ def search_hints(request: Request, user: models.WebUser = Depends(get_emby_user)
     base = _base_url(request)
 
     query = db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False)  # noqa: E712
+    # 单集多版本：被合并的版本不在搜索建议里重复出现（与 get_episodes 同口径；
+    # 这里没有 dedup 层，不过滤就会把同一集的多个版本都列出来）。
+    # 只管 episode：电影/剧集的多版本在搜索建议里的行为保持历史口径，不动。
+    query = query.filter(
+        or_(em.MediaItem.item_type != "episode",
+            em.MediaItem.merged_into_id.is_(None))
+    )
     # 媒体库可见范围：搜索建议是独立于 /Users/{id}/Items 的另一个出口，
     # 不挂上同一份范围，被藏起来的库照样能从搜索框里被搜出来。
     query = library_scope.scope_query(query, library_scope.effective_ids_safe(db, user))

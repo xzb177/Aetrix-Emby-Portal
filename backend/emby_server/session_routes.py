@@ -197,7 +197,8 @@ def stop_session_checked(
 def _install_report_routes(router, originals: dict) -> int:
     """上报路由：改 body 里的会话键后交给 api.py 的原处理函数
 
-    不改业务逻辑，只保证「会话键一定是随机的、且不会指向别人的会话」。
+    不改业务逻辑，只保证「会话键不可预测（无 PlaySessionId 时按
+    用户|设备|条目 HMAC 派生稳定键）、且不会指向别人的会话」。
     """
     installed = 0
     for path, endpoint_name in REPORT_PATHS.items():

@@ -101,15 +101,17 @@ def _group_key(item: Any) -> Optional[Tuple[int, int, int, int]]:
 def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, int]:
     """合并单集多版本。
 
-    对每个 ``(series_id, season_number, episode_number)`` 组：
+    对每个 ``(library_id, series_id, season_number, episode_number)`` 组：
     - 可见行（``deleted_at IS NULL``）中选主记录，其余 ``merged_into_id`` 指向主记录
-    - 主记录被删后：剩余可见行里重新选主（自动晋升）
+    - 主记录被删后：孤儿回收先解散合并，下一轮重新选主（最终一致，至多多一轮；
+      详见 having 条件的注释）
     - 组内只剩一行且被合并过（孤儿）：解除合并，恢复独立
 
     幂等：重复调用结果不变。只写 ``merged_into_id``，不动其他字段。
 
     返回 ``{"groups": 组数, "merged": 合并的版本数, "promoted": 晋升数}``。
     """
+    from sqlalchemy import case as _case
     from sqlalchemy import func as _func
     from backend.emby_server import models as em
 
@@ -120,7 +122,7 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
     MI = em.MediaItem
     q = (
         db.query(
-            MI.series_id, MI.season_number, MI.episode_number,
+            MI.library_id, MI.series_id, MI.season_number, MI.episode_number,
             _func.count(MI.id).label("cnt"),
         )
         .filter(
@@ -134,24 +136,27 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
     if library_id is not None:
         q = q.filter(MI.library_id == library_id)
     groups = (
-        q.group_by(MI.series_id, MI.season_number, MI.episode_number)
-        .having(_func.count(MI.id) > 1)
+        q.group_by(MI.library_id, MI.series_id, MI.season_number, MI.episode_number)
+        # 只处理还有 ≥2 个未合并行的组：已收敛的组（仅主记录未合并）直接跳过，
+        # 避免每轮对全部存量组做 N+1 查询。count(case…) 只计
+        # merged_into_id IS NULL 的行（count 跳过 NULL）。主记录被删时
+        # survivors 都是已合并行，本轮由下面的孤儿回收解散，
+        # 下一轮再以未合并身份重新合并（最终一致）。
+        .having(_func.count(_case((MI.merged_into_id.is_(None), 1))) > 1)
         .all()
     )
-    for series_id, season_number, episode_number, _cnt in groups:
+    for lib_id, series_id, season_number, episode_number, _cnt in groups:
         rows = (
             db.query(MI)
             .filter(
                 MI.item_type == "episode",
                 MI.deleted_at.is_(None),
+                MI.library_id == lib_id,
                 MI.series_id == series_id,
                 MI.season_number == season_number,
                 MI.episode_number == episode_number,
             )
-        )
-        if library_id is not None:
-            rows = rows.filter(MI.library_id == library_id)
-        rows = rows.all()
+        ).all()
         if len(rows) < 2:
             continue
         stats["groups"] += 1
@@ -170,7 +175,9 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
                 if r.merged_into_id != primary.id:
                     r.merged_into_id = primary.id
                     stats["merged"] += 1
-        if stats["groups"] <= 3 or stats["merged"] <= 10:
+        # 只打前 3 个组的明细：or 会让 merged<=10 的条件在回填时长期为真，
+        # 数千条 INFO 刷屏；and 保证"组数≤3 且合并数≤10"才打
+        if stats["groups"] <= 3 and stats["merged"] <= 10:
             logger.info(
                 "单集多版本合并：series=%s S%02dE%02d，主记录=%s，共 %d 个版本",
                 series_id, season_number, episode_number, primary.id, len(rows),

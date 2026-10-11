@@ -165,3 +165,105 @@ def test_foreign_key_falls_back_to_derived(db):
         db, bob, body, session_routes._device_id_of(req))
     assert key != "shared-key", "被占用的键绝不能复用"
     assert key.startswith("s") and len(key) == 33
+
+
+# ==================== F1 并发回归 ====================
+
+import os
+import threading
+
+
+@pytest.fixture()
+def file_engine(tmp_path):
+    """多线程共享的文件 SQLite（内存库跨连接不可见）。"""
+    os.environ.setdefault("DATABASE_TYPE", "sqlite")
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/sess_race.db",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    models.Base.metadata.create_all(engine)
+    em.Base.metadata.create_all(engine)
+    yield engine
+    engine.dispose()
+
+
+def _race_request():
+    return SimpleNamespace(
+        headers={
+            "X-Emby-Authorization":
+                'MediaBrowser Client="TinyPlayer", Device="Box", '
+                'DeviceId="dev-race", Version="1.0"',
+        },
+        client=SimpleNamespace(host="1.2.3.4"),
+    )
+
+
+def test_concurrent_playing_upsert_converges_to_single_row(file_engine):
+    """F1 回归：确定性会话键下，Playing 与紧随的 Progress 并发双报时，
+
+    两个请求可能同时查不到已提交行而各插一行 → 撞 session_key 唯一键。
+    旧代码直接 IntegrityError 500；修复后第二个请求复用 winner 的行，
+    最终每键恰好一行、两个请求都成功返回。
+    """
+    Session = sessionmaker(bind=file_engine, expire_on_commit=False)
+    seed = Session()
+    user = models.WebUser(username="race_u", password_hash="x")
+    seed.add(user)
+    seed.commit()
+    uid = user.id
+    store.invalidate()
+    share_guard._notified_at.clear()
+    _policy(seed)
+    seed.close()
+
+    errors = []
+    N = 60
+    for i in range(N):
+        s = Session()
+        item = em.MediaItem(
+            guid=f"race-item-{i:04d}".ljust(32, "0")[:32],
+            library_id=1, item_type="movie", name=f"Race {i}")
+        s.add(item)
+        s.commit()
+        iid, iguid = item.id, item.guid
+        s.close()
+
+        gate = threading.Barrier(2)
+
+        def run():
+            s2 = Session()
+            try:
+                u2 = s2.get(models.WebUser, uid)
+                it2 = s2.get(em.MediaItem, iid)
+                body = {"ItemId": iguid, "PositionTicks": 0}
+                body["PlaySessionId"] = session_routes.resolve_session_key(
+                    s2, u2, body, "dev-race")
+                gate.wait(timeout=15)
+                sess, _ = compat_routes._upsert_session(
+                    s2, _race_request(), u2, it2, body)
+                assert sess is not None
+            except Exception as exc:  # noqa: BLE001 — 收敛到主线程断言
+                errors.append(exc)
+            finally:
+                s2.close()
+
+        ts = [threading.Thread(target=run) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(30)
+        assert all(not t.is_alive() for t in ts), "线程未在 30s 内结束"
+
+    assert not errors, f"并发上报出现异常（旧代码这里是 IntegrityError 500）: {errors[:3]}"
+
+    check = Session()
+    try:
+        rows = check.query(em.PlaybackSession).filter(
+            em.PlaybackSession.user_id == uid).all()
+        assert len(rows) == N, f"每键应恰好一行，实际 {len(rows)} 行 / {N} 键"
+        keys = {r.session_key for r in rows}
+        assert len(keys) == N, "会话键必须互不相同（一键一行）"
+    finally:
+        check.close()
+        store.invalidate()
+        share_guard._notified_at.clear()

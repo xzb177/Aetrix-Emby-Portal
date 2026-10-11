@@ -2525,7 +2525,14 @@ def grant_welfare(db, user, channel, days, granted_by=None):
 
         if updated == 1:
             break
+        # CAS 未命中：行被并发改了，重试前记一条 warning（5 次连败时可回溯）
+        logger.warning("grant_welfare CAS 未命中 user=%s channel=%s（并发重试中）",
+                       uid, channel)
     else:
+        # 有界重试耗尽：回滚本事务（SELECT/UPDATE 均未提交），再把响亮的错
+        # 抛给调用方——总比带着半开事务悄悄返回强。lottery 按 winner 捕获，
+        # welfare_admin 会 500（极端并发才触发，可接受）。
+        db.rollback()
         raise RuntimeError(f"grant_welfare CAS failed for user {uid} after 5 retries")
 
     db.add(

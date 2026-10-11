@@ -43,6 +43,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from backend.emby_server.api import (
@@ -123,6 +124,25 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
                 session_key=session_key, user_id=user.id, item_id=item.id,
             )
             db.add(session)
+            try:
+                # 确定性会话键（HMAC 派生）下，Playing 与紧随的 Progress 可能
+                # 并发走到这里：先 flush 抢唯一键，撞键则回滚并复用 winner 的行，
+                # 避免第二个请求直接 IntegrityError 500。
+                # （此前随机键永不碰撞，不需要这道防线。）
+                db.flush()
+            except IntegrityError:
+                # 之前在本函数里只可能有已提交的防共享事件写入（commit=True），
+                # 回滚只丢弃本次未提交的 insert 本体，是安全的。
+                db.rollback()
+                session = (
+                    db.query(em.PlaybackSession)
+                    .filter(em.PlaybackSession.session_key == session_key)
+                    .first()
+                )
+                if session is None:
+                    raise
+                logger.info("播放会话并发建行合并：user=%s session=%s 复用已存在行",
+                            user.id, session_key)
 
     position = int(body.get("PositionTicks") or 0)
     paused = bool(body.get("IsPaused", False))
