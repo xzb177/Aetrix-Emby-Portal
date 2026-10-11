@@ -705,8 +705,17 @@ def _create_media_seek_sync(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    # 每日额度：统计**今天提交过多少条**（含后来撤回的，口径见 media_seek.used_today）。
+    # P2 修复（审查）："先 count 后 insert"并发可绕过上限。先锁用户行再统计。
+    from backend.api.economy import lock_user_row
+    lock_user_row(db, user.id)
+
     # 去重：同名**且同季**且仍在处理中的请求不再重复提交（已撤回的不算「在处理中」，可以重新求）。
     # 季参与去重：同一部剧的 S1 在看、S2 还想求，是两条独立请求，不该被名字相同挡回去。
+    # 去重也必须待在用户行锁内，和额度检查同一个道理——锁外「先查后写」并发时，
+    # 两个请求都查不到对方，拿锁后各插一条，409 的承诺被绕过（两条都进审核、都占额度、都发通知）。
+    # 锁内这条 SELECT 是拿到锁之后才发出的新语句：PG READ COMMITTED 能看到先提交的行，
+    # SQLite 写锁同样串行，后到的那个必然撞上先到的行。去重本就按 user_id 过滤，用户行锁粒度正好。
     exists = db.query(models.MovieRequest).filter(
         models.MovieRequest.user_id == user.id,
         func.lower(models.MovieRequest.movie_name) == name.lower(),
@@ -718,10 +727,6 @@ def _create_media_seek_sync(
         suffix = f"（{media_seek.season_label(season)}）" if season and season != media_seek.SEASON_ALL else ""
         raise HTTPException(status_code=409, detail=f"《{name}》{suffix}已在处理中，请耐心等待（可在列表中看到进度）")
 
-    # 每日额度：统计**今天提交过多少条**（含后来撤回的，口径见 media_seek.used_today）。
-    # P2 修复（审查）："先 count 后 insert"并发可绕过上限。先锁用户行再统计。
-    from backend.api.economy import lock_user_row
-    lock_user_row(db, user.id)
     limit = media_seek.daily_limit(db)
     if media_seek.used_today(db, user.id) >= limit:
         raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")
