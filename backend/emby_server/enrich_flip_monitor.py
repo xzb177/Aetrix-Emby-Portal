@@ -93,13 +93,19 @@ def alert_flip(
     library_id: Optional[int] = None,
     scan_run_id: Optional[int] = None,
     flips: Optional[list] = None,
+    summary: Optional[dict] = None,
     threshold: Optional[int] = None,
 ) -> bool:
-    """翻转告警主入口：打 warning 日志 + 写 PG 事件。返回是否触发了告警。"""
+    """翻转告警主入口：打 warning 日志 + 写 PG 事件。返回是否触发了告警。
+
+    summary：调用方已聚合好的摘要（{"reasons", "item_types", "sample_ids"}），
+    传入则跳过 summarize_flips。scanner 侧在 _scan_library_body 已聚合好，
+    直接传进来，避免"共享能力"名实不符（两处各写一遍 warning+写库）。
+    """
     th = FLIP_ALERT_THRESHOLD if threshold is None else threshold
     if not should_alert(flip_count, th):
         return False
-    summary = summarize_flips(flips or [])
+    summary = summary if summary is not None else summarize_flips(flips or [])
     logger.warning(
         "enrich 批量翻转告警：%d 条 done→pending（阈值 %d）trigger=%s "
         "library_id=%s scan_run_id=%s reasons=%s item_types=%s sample_ids=%s",
@@ -114,15 +120,22 @@ def alert_flip(
     return True
 
 
-def flip_count_last_hours(db, hours: int = 1) -> int:
-    """最近 N 小时的翻转总数（/api/health 指标用）。异常返回 0。"""
+def flip_count_last_hours(db, hours: int = 1,
+                          exclude_triggers: tuple = ()) -> int:
+    """最近 N 小时的翻转总数（/api/health 指标用）。异常返回 0。
+
+    exclude_triggers：不计入的触发源。管理端手动「重试未匹配项」是已知操作，
+    事件仍在 PG 留痕审计，但不应把 health 打成 warn，调用方按需排除。
+    """
     try:
         cutoff = datetime.now() - timedelta(hours=hours)
-        rows = (
+        q = (
             db.query(em.EnrichFlipEvent.flip_count)
             .filter(em.EnrichFlipEvent.created_at >= cutoff)
-            .all()
         )
+        if exclude_triggers:
+            q = q.filter(~em.EnrichFlipEvent.trigger.in_(exclude_triggers))
+        rows = q.all()
         return sum(int(r[0] or 0) for r in rows)
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计 enrich 翻转数失败: %s", exc)

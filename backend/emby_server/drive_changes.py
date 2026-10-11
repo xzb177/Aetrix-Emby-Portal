@@ -858,9 +858,13 @@ def _watcher_loop() -> None:
             if stats["changes"]:
                 logger.info("Drive Changes: 本轮 changes=%d libraries=%d",
                             stats["changes"], stats["libraries"])
-        except Exception as exc:
+            # 抖动计算也在 try 内：若抛异常会被下面兜住记 warning，
+            # 而不是静默杀死整个守护线程。
+            wait_s = _jittered_interval()
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Drive Changes: 轮询异常: %s", exc)
-        _watcher_stop.wait(_jittered_interval())
+            wait_s = float(POLL_INTERVAL)
+        _watcher_stop.wait(wait_s)
 
 
 def start() -> bool:

@@ -232,3 +232,65 @@ class TestApplyEnrichStatusTracker:
         _apply_enrich_status(item, _scanfile(200), is_new=False,
                              layered=True, item_type="movie")
         assert item.enrich_status == "pending"
+
+
+class TestMaybeAlertEnrichFlipUsesSharedAlert:
+    """F2：_maybe_alert_enrich_flip 复用 alert_flip 共享能力。
+
+    旧代码手写 logger.warning + record_flip_event，details 里 item_types 恒为 {}。
+    新代码走 alert_flip(summary=...)，item_types 正常落盘。
+    本测试在旧代码上失败（item_types == {}），新代码上通过。
+    """
+
+    def test_item_types_persisted_not_empty(self, db, capture):
+        import json
+
+        stats = {
+            "enrich_flips": 150,
+            "enrich_flip_reasons": {"size_changed": 150},
+            "enrich_flip_sample_ids": [1, 2, 3],
+            "enrich_flip_item_types": {"movie": 150},
+        }
+        scanner._maybe_alert_enrich_flip(
+            db, SimpleNamespace(id=7), stats, run_id=None)
+        rows = db.query(em.EnrichFlipEvent).all()
+        assert len(rows) == 1
+        details = json.loads(rows[0].details or "{}")
+        assert details["item_types"] == {"movie": 150}, \
+            f"item_types 丢失：{details}"
+        assert details["reasons"] == {"size_changed": 150}
+        assert rows[0].trigger == "scan"
+
+    def test_alert_flip_accepts_summary(self, db, capture):
+        """alert_flip(summary=...) 跳过 summarize_flips，直接用传入的摘要。"""
+        fired = fm.alert_flip(
+            db, flip_count=150, trigger="scan",
+            summary={"reasons": {"size_changed": 150},
+                     "item_types": {"movie": 150},
+                     "sample_ids": [1]},
+            threshold=100,
+        )
+        assert fired is True
+        rows = db.query(em.EnrichFlipEvent).all()
+        assert len(rows) == 1
+
+
+class TestFlipCountExcludeTriggers:
+    """F3：flip_count_last_hours(exclude_triggers=...)。
+
+    管理端手动 retry_unmatched 是已知操作，不应计入 /api/health 的 warn 指标。
+    旧代码无 exclude_triggers 参数 → TypeError，本测试在旧代码上失败。
+    """
+
+    def test_exclude_manual_retry(self, db):
+        now = datetime.now()
+        db.add(em.EnrichFlipEvent(trigger="scan", flip_count=100,
+                                  threshold=100,
+                                  created_at=now - timedelta(minutes=10)))
+        db.add(em.EnrichFlipEvent(trigger="retry_unmatched", flip_count=200,
+                                  threshold=100,
+                                  created_at=now - timedelta(minutes=10)))
+        db.commit()
+        assert fm.flip_count_last_hours(db, hours=1) == 300
+        assert fm.flip_count_last_hours(
+            db, hours=1, exclude_triggers=("retry_unmatched",)) == 100

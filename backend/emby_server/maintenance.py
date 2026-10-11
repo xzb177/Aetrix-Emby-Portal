@@ -574,6 +574,22 @@ def strm_sig_refresh_tick(db=None) -> dict:
         logger.info("strm_sig_refresh: .strm 目录不存在，跳过: %s", strm_dir)
         return {"skipped": True, "reason": "no_dir"}
 
+    # 只读挂载提前跳过（EA 容器的 /strm 是 ro）：先探写一次，避免全树 walk
+    # 之后每个需刷新的文件写 .tmp 都 OSError，最后汇总出一条误导性的
+    # "刷新失败请检查日志" warning。探针文件名带 pid+tid，best-effort 清理。
+    _ro_probe = os.path.join(
+        strm_dir, f".write_probe_{os.getpid()}.{threading.get_ident():x}")
+    try:
+        with open(_ro_probe, "w", encoding="utf-8") as _pf:
+            _pf.write("ok")
+    except OSError:
+        logger.info("strm_sig_refresh: .strm 目录只读，跳过: %s", strm_dir)
+        return {"skipped": True, "reason": "read_only"}
+    try:
+        os.unlink(_ro_probe)
+    except OSError:
+        pass
+
     # 3) 延迟 import，避免顶层循环导入
     from backend.emby_server.mounts import strm_url as _first_strm_url
     from backend.emby_server.strm_sign import needs_refresh, sign_strm_url
