@@ -164,11 +164,19 @@ def _redirect_headers(forward: dict, from_url: str, to_url: str) -> dict:
     return {k: v for k, v in forward.items() if k.lower() not in _CREDENTIAL_HEADERS}
 
 
-def _next_redirect(url: str, location: str) -> str:
-    """解析重定向目标并做安全校验（内网 / 回环 / 非法协议一律拒绝）"""
-    from backend.emby_server.playback_security import reject_private_url
+def _next_redirect(url: str, location: str) -> tuple[str, dict[str, list[str]]]:
+    """解析重定向目标并做安全校验（内网 / 回环 / 非法协议一律拒绝）。
 
-    return reject_private_url(urljoin(url, location or ""))
+    返回 ``(目标 URL, dns_pinning)``：pinning 是校验时刻的 DNS 快照，调用方把它
+    并入 pin 版 transport（见 ``dns_pinning.py``），建连时直接连 pin 住的 IP，
+    不再二次解析——堵住 DNS rebinding TOCTOU（A-P2-2）。
+
+    DNS 解析失败时 pinning 为空 dict：保持 fail-open（见 ``playback_security``
+    的事故说明），不重演「DNS 抖动误拦公开 CDN」的生产事故。
+    """
+    from backend.emby_server.playback_security import validate_url_pinned
+
+    return validate_url_pinned(urljoin(url, location or ""), reject_private=True)
 
 
 def _range_header(start: int, end: int, total: int) -> dict:
@@ -333,7 +341,17 @@ def serve_remote(
     # 并在跨主机时剥掉凭据头——否则一个公开直链就能把服务器（带着你的 Cookie / Basic）
     # 引到内网运维接口上。
     # S2：同一套超时（读超时 = 块间空闲上限），源站卡住时不再永久占着线程
-    client = httpx.Client(timeout=relay_timeout(), follow_redirects=False)
+    #
+    # A-P2-2 DNS rebinding 防护：校验时解析一次、建连时 pin 住 IP（见 dns_pinning.py）。
+    # pinning dict 与 transport 共享引用，逐跳 update 后实时生效，无需重建 client。
+    from backend.emby_server.dns_pinning import PinnedHTTPTransport
+
+    _dns_pinning: dict[str, list[str]] = {}
+    client = httpx.Client(
+        transport=PinnedHTTPTransport(_dns_pinning.get),
+        timeout=relay_timeout(),
+        follow_redirects=False,
+    )
     # resp 预置为 None：兜底 except 分支需要关闭已打开的流式响应，
     # 若第一跳 send 就抛异常则 resp 尚未绑定；与异步版（#584）保持同口径。
     resp = None
@@ -362,12 +380,14 @@ def serve_remote(
             if not location:
                 break  # 3xx 却没给 Location：当作最终响应原样透传
             try:
-                target = _next_redirect(current, location)
+                target, _hop_pinning = _next_redirect(current, location)
             except MountError as exc:
                 resp.close()
                 client.close()
                 logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
                 raise HTTPException(status_code=403, detail=str(exc)) from exc
+            # A-P2-2：把校验时刻的 DNS 快照并入 pin 表，下一跳建连直接走 pin 住的 IP
+            _dns_pinning.update(_hop_pinning)
             resp.close()  # 确认要跟着走，这一跳的响应就不要再占着连接了
             forward = _redirect_headers(forward, current, target)
             current = target
@@ -429,6 +449,14 @@ def serve_remote(
         value = resp.headers.get(name)
         if value:
             passthrough[name.title()] = value
+    # 边缘缓存调试头（通用能力，与异步版同口径）
+    try:
+        from backend.emby_server import edge_cache
+        _edge_dbg = edge_cache.debug_header_value()
+        if _edge_dbg:
+            passthrough[edge_cache.DEBUG_HEADER] = _edge_dbg
+    except Exception:
+        pass
     content_type = resp.headers.get("content-type") or media_type
 
     def iter_remote():
@@ -457,6 +485,14 @@ def serve_remote(
 # ``iter_remote`` 的 finally 里关掉。池里的连接会在响应体读完/关掉后归还。
 _shared_client: Optional["httpx.AsyncClient"] = None
 _client_lock = threading.Lock()
+
+# A-P2-2 DNS pinning 共享缓存（async 路径）：host -> [ip, ...]，TTL 300 秒。
+# 只有经 ``_next_redirect`` 校验通过的重定向目标才会写入；每次建连时查。
+# 总开关 EMBY_DNS_PINNING 在 transport 层实时检查，关掉即回退到正常 DNS。
+from backend.emby_server.dns_pinning import PinningCache as _PinningCache
+from backend.emby_server.dns_pinning import dns_pinning_enabled
+
+_PINNING_CACHE = _PinningCache(ttl=300.0)
 
 def _env_number(name: str, default: float, lo: float, hi: float, cast=float):
     """读数值型环境变量并夹到 [lo, hi]；非法值回落默认值（不让一个手误拖垮启动）"""
@@ -613,6 +649,23 @@ def _signature_ttl_seconds(url: str) -> float | None:
     return best
 
 
+def _desensitized_url_for_log(url: str) -> str:
+    """脱敏 URL（日志用）：保留 scheme/host/path 与查询参数名，丢弃所有参数值。
+
+    跳转终点 URL 含 Google 签名参数，值绝不能进日志；参数名（如 expires /
+    signature）是定位"签名 TTL 拦截 vs hostname 拦截"的关键证据，保留。
+    """
+    try:
+        parts = urlsplit(url)
+        qs = dict(parse_qsl(parts.query, keep_blank_values=True))
+        base = "%s://%s%s" % (parts.scheme, parts.hostname or "", parts.path or "")
+        if qs:
+            return "%s?[%s]" % (base, ",".join(sorted(qs.keys())))
+        return base
+    except Exception:
+        return "<unparseable>"
+
+
 def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
     """写入 Drive 跳转缓存（签名感知 TTL，P2-1）。
 
@@ -623,20 +676,17 @@ def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
     sig_ttl = _signature_ttl_seconds(final_url)
     if sig_ttl is not None and sig_ttl <= 0:
         logger.debug(
-            "[redirect-cache] skip store: signature expired (file_id=%s sig_ttl=%.1f)",
-            file_id,
-            sig_ttl,
-        )
+            "redirect_cache_skip reason=signature_expired file_id=%s sig_ttl=%.1f url=%s",
+            file_id, sig_ttl, _desensitized_url_for_log(final_url))
         return
     ttl = _DRIVE_REDIRECT_CACHE_TTL
     if sig_ttl is not None:
         ttl = min(ttl, sig_ttl)
     logger.debug(
-        "[redirect-cache] store: file_id=%s ttl=%.0fs host=%s",
-        file_id,
-        ttl,
-        urlsplit(final_url).hostname,
-    )
+        "redirect_cache_write file_id=%s ttl=%.1f sig_ttl=%s url=%s",
+        file_id, ttl,
+        ("%.1f" % sig_ttl) if sig_ttl is not None else "unknown",
+        _desensitized_url_for_log(final_url))
     _redirect_cache_set(file_id, final_url, ttl=ttl)
 
 
@@ -654,30 +704,27 @@ def _maybe_cache_drive_redirect(
     """
     if not file_id or hops <= 0 or cached_hit:
         logger.debug(
-            "[redirect-cache] skip: file_id=%s hops=%d cached_hit=%s",
-            bool(file_id),
-            hops,
-            cached_hit,
-        )
+            "redirect_cache_skip reason=no_hops file_id=%s hops=%s cached_hit=%s status=%s",
+            file_id, hops, cached_hit, terminal_status)
         return
     if terminal_status in (403, 404, 410):
         logger.debug(
-            "[redirect-cache] skip: bad terminal_status=%s (file_id=%s)",
-            terminal_status,
-            file_id,
-        )
+            "redirect_cache_skip reason=bad_terminal_status file_id=%s hops=%s status=%s url=%s",
+            file_id, hops, terminal_status, _desensitized_url_for_log(final_url))
         return
     try:
         host = urlsplit(final_url).hostname or ""
-        if "drive.usercontent.google.com" not in host:
-            logger.debug(
-                "[redirect-cache] skip: unexpected host=%s (file_id=%s)",
-                host,
-                file_id,
-            )
-            return
-    except Exception as exc:
-        logger.debug("[redirect-cache] skip: urlsplit failed: %s", exc)
+    except Exception:
+        logger.debug(
+            "redirect_cache_skip reason=url_parse_error file_id=%s hops=%s status=%s",
+            file_id, hops, terminal_status)
+        return
+    if "drive.usercontent.google.com" not in host:
+        logger.debug(
+            "redirect_cache_skip reason=hostname_mismatch file_id=%s hops=%s status=%s "
+            "host=%s url=%s",
+            file_id, hops, terminal_status, host,
+            _desensitized_url_for_log(final_url))
         return
     _redirect_cache_store_drive_url(file_id, final_url)
 
@@ -711,7 +758,7 @@ async def _follow_redirects(
         if resp.status_code not in _REDIRECT_CODES or not location:
             break  # 非跳转码 / 3xx 却没给 Location：当作终态
         try:
-            target = _next_redirect(current, location)
+            target, _hop_pinning = _next_redirect(current, location)
         except MountError as exc:
             await resp.aclose()
             resp = None
@@ -729,6 +776,12 @@ async def _follow_redirects(
             return (None, current, hops)
         await resp.aclose()
         resp = None
+        # A-P2-2：把校验时刻的 DNS 快照存入共享 pin 缓存，下一跳建连直接走
+        # pin 住的 IP，不再二次解析（堵 DNS rebinding TOCTOU）。
+        # 开关关闭时不写：避免开关重新打开瞬间用上陈旧 pin。
+        if dns_pinning_enabled():
+            for _pin_host, _pin_ips in _hop_pinning.items():
+                _PINNING_CACHE.store(_pin_host, _pin_ips)
         forward = _redirect_headers(forward, current, target)
         current = target
         hops += 1
@@ -764,13 +817,20 @@ def get_relay_client() -> "httpx.AsyncClient":
     if _shared_client is None:
         with _client_lock:
             if _shared_client is None:
+                from backend.emby_server.dns_pinning import PinnedAsyncHTTPTransport
+
                 limits = httpx.Limits(
                     max_connections=_RELAY_MAX_CONNECTIONS,
                     max_keepalive_connections=_RELAY_MAX_KEEPALIVE,
                 )
                 _shared_client = httpx.AsyncClient(
+                    # A-P2-2：DNS pinning——校验时刻解析一次、建连走 pin 住的 IP，
+                    # 堵住 DNS rebinding TOCTOU；总开关 EMBY_DNS_PINNING 实时生效。
+                    # 注意：传了自定义 transport 后 client 的 limits 参数会被忽略，
+                    # 所以 limits 直接给 transport。
+                    transport=PinnedAsyncHTTPTransport(
+                        _PINNING_CACHE.lookup, limits=limits),
                     timeout=relay_timeout(),
-                    limits=limits,
                     # 重定向仍由本模块自己追（要逐跳校验、跨主机剥凭据）
                     follow_redirects=False,
                 )
@@ -925,6 +985,15 @@ async def serve_remote_async(
     if cache_control and "Cache-Control" not in passthrough:
         passthrough["Cache-Control"] = cache_control
     passthrough["X-Accel-Buffering"] = "no"
+    # 边缘缓存调试头（通用能力）：EDGE_CACHE_MODE=query_ignore 时声明，
+    # 管理员看响应头就能确认服务端模式；off/header 模式不加（行为与今天一致）。
+    try:
+        from backend.emby_server import edge_cache
+        _edge_dbg = edge_cache.debug_header_value()
+        if _edge_dbg:
+            passthrough[edge_cache.DEBUG_HEADER] = _edge_dbg
+    except Exception:
+        pass
     content_type = resp.headers.get("content-type") or media_type
 
     async def iter_remote():
