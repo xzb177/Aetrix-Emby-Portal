@@ -75,9 +75,12 @@ class DriveChangesLister(SourceLister):
     # SystemConfig key 前缀：增量检查点（changes page token）
     TOKEN_KEY_PREFIX = "strm_gen_changes_token_"
 
-    def __init__(self, drive_id: str, dir_path: str):
+    def __init__(self, drive_id: str, dir_path: str, strict_dir: bool = True):
         self.drive_id = drive_id
         self.dir_path = (dir_path or "").strip().strip("/")
+        # strict_dir=False：自动发现模式下，源目录不存在时跳过该盘而非报错
+        # （不是每个盘都有媒体目录，缺目录是预期情况）
+        self.strict_dir = strict_dir
         self._new_token: Optional[str] = None
         # 可观测性计数器（2026-10-12）：列举完成后调用方可读
         self.yielded_count: int = 0          # 成功 yield 的视频文件数
@@ -119,7 +122,8 @@ class DriveChangesLister(SourceLister):
         if not incremental:
             # 全量：回退到现有的 files.list 实现
             from backend.emby_server import strm_gen
-            yield from strm_gen.iter_drive_videos(self.drive_id, self.dir_path)
+            yield from strm_gen.iter_drive_videos(
+                self.drive_id, self.dir_path, strict=self.strict_dir)
             return
 
         from backend.emby_server import drive_changes as dc
@@ -133,7 +137,8 @@ class DriveChangesLister(SourceLister):
             if token:
                 self._new_token = token
             from backend.emby_server import strm_gen
-            yield from strm_gen.iter_drive_videos(self.drive_id, self.dir_path)
+            yield from strm_gen.iter_drive_videos(
+                self.drive_id, self.dir_path, strict=self.strict_dir)
             return
 
         # 增量：拉 changes（2026-10-12 起不再吞错：API 失败直接抛，

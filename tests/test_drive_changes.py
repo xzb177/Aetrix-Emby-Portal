@@ -817,3 +817,70 @@ def test_retry_sleep_sec_bounds():
     # 抖动生效：多次调用结果不全相同
     samples = {drive_changes._retry_sleep_sec(3) for _ in range(20)}
     assert len(samples) > 1, "抖动未生效，退避时间完全固定"
+
+
+def _mock_resp_403_rate_limit():
+    """403 + rateLimitExceeded body 的 mock。"""
+    resp = mock.Mock()
+    resp.status_code = 403
+    resp.request = mock.Mock()
+    resp.json.return_value = {
+        "error": {
+            "code": 403,
+            "message": "Rate Limit Exceeded",
+            "errors": [{"reason": "rateLimitExceeded", "message": "Rate Limit Exceeded"}],
+        }
+    }
+    resp.raise_for_status.side_effect = Exception("HTTP 403")
+    return resp
+
+
+def _mock_resp_403_forbidden():
+    """403 + 普通 forbidden body 的 mock（无权访问，应快速失败）。"""
+    resp = mock.Mock()
+    resp.status_code = 403
+    resp.request = mock.Mock()
+    resp.json.return_value = {
+        "error": {
+            "code": 403,
+            "message": "The user does not have sufficient permissions.",
+            "errors": [{"reason": "forbidden", "message": "Insufficient permissions"}],
+        }
+    }
+    resp.raise_for_status.side_effect = Exception("HTTP 403")
+    return resp
+
+
+def test_is_rate_limit_403():
+    """_is_rate_limit_403：配额类 403 识别。"""
+    assert drive_changes._is_rate_limit_403(_mock_resp_403_rate_limit()) is True
+    assert drive_changes._is_rate_limit_403(_mock_resp_403_forbidden()) is False
+    assert drive_changes._is_rate_limit_403(_mock_resp(403)) is False  # 无 body
+    # json() 抛异常时返回 False
+    bad = mock.Mock()
+    bad.json.side_effect = ValueError("bad json")
+    assert drive_changes._is_rate_limit_403(bad) is False
+
+
+def test_api_get_403_rate_limit_retries():
+    """403 配额类（rateLimitExceeded）走退避重试，最终成功。"""
+    ok = _mock_resp(200)
+    with mock.patch("httpx.get", side_effect=[_mock_resp_403_rate_limit(), ok]), \
+         mock.patch.object(drive_changes.time, "sleep") as sleep, \
+         mock.patch.object(drive_changes, "_api_limiter"):
+        result = drive_changes._api_get("https://example.com", "tok", {})
+        assert result == {"ok": True}
+        assert sleep.call_count == 1  # 重试一次
+
+
+def test_api_get_403_forbidden_fails_fast():
+    """403 非配额类（forbidden）快速失败，不重试。"""
+    with mock.patch("httpx.get", return_value=_mock_resp_403_forbidden()), \
+         mock.patch.object(drive_changes.time, "sleep") as sleep, \
+         mock.patch.object(drive_changes, "_api_limiter"):
+        try:
+            drive_changes._api_get("https://example.com", "tok", {})
+            assert False, "应抛异常"
+        except Exception:
+            pass
+        sleep.assert_not_called()

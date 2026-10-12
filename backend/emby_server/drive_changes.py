@@ -440,6 +440,8 @@ def _api_get(url: str, token: str, params: dict) -> dict:
     """Drive API GET（带风控安全重试）。
 
     - 429/5xx：指数退避重试（最多 5 次），429 优先尊重 Retry-After 头
+    - 403 配额类（rateLimitExceeded 等）：按 429 同款退避重试；
+      其他 403（无权访问等）：直接抛，不重试
     - 网络层瞬时异常（超时/连接重置等）：同 5xx 退避重试
     - 401 → PermissionError（不重试，调用方刷新 token）
     - 404 → DriveNotFoundError（不重试，调用方退避）
@@ -530,11 +532,56 @@ def _api_get(url: str, token: str, params: dict) -> dict:
             )
             time.sleep(sleep_s)
             continue
+        if resp.status_code == 403 and _is_rate_limit_403(resp):
+            # 403 配额类（rateLimitExceeded 等）：Google 有时以 403 而非 429
+            # 返回配额耗尽，按 429 同款退避重试（更保守：2 倍退避）。
+            # 其他 403（无权访问等）仍走下面的快速失败。
+            last_exc = httpx.HTTPStatusError(
+                "Drive API 403 配额类错误，准备重试",
+                request=resp.request,
+                response=resp,
+            )
+            if attempt >= API_MAX_RETRIES:
+                logger.error("Drive API 403 配额类错误，重试 %d 次后放弃: %s",
+                             API_MAX_RETRIES, url[:80])
+                raise last_exc
+            sleep_s = _retry_sleep_sec(attempt, is_rate_limited=True)
+            _retry_state.retry_count = get_last_retry_count() + 1
+            _retry_state.total = getattr(_retry_state, "total", 0) + 1
+            logger.warning(
+                "Drive API 403 配额类错误（第 %d/%d 次），%.1f 秒后重试: %s",
+                attempt + 1, API_MAX_RETRIES + 1, sleep_s, url[:80],
+            )
+            time.sleep(sleep_s)
+            continue
         resp.raise_for_status()
         return resp.json()
     # 理论上到不了这里（循环内要么 return 要么 raise），防御性兜底
     assert last_exc is not None
     raise last_exc
+
+
+def _is_rate_limit_403(resp) -> bool:
+    """判断 403 是否为配额类（应重试）而非权限类（应快速失败）。
+
+    Google 有时会以 403 而非 429 返回配额耗尽：
+    body.errors[].reason 为 rateLimitExceeded / userRateLimitExceeded /
+    quotaExceeded / dailyLimitExceeded 时属于瞬时错误，应退避重试。
+    其他 403（如 driveNotFound、forbidden、无权访问）保持快速失败。
+    """
+    try:
+        body = resp.json()
+    except Exception:
+        return False
+    errors = (body.get("error") or {}).get("errors") or []
+    rate_limit_reasons = {
+        "rateLimitExceeded",
+        "userRateLimitExceeded",
+        "quotaExceeded",
+        "dailyLimitExceeded",
+        "downloadQuotaExceeded",
+    }
+    return any((e.get("reason") or "") in rate_limit_reasons for e in errors)
 
 
 def _is_personal_drive_key(drive_id: str) -> bool:
