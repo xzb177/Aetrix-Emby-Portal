@@ -479,7 +479,7 @@ class TestQuotaRetry:
             assert item.probe_status == "pending"
             assert item.probe_attempts == 2  # 不消耗普通重试次数
             delta = (item.probe_next_retry_at - datetime.now()).total_seconds()
-            assert 23 * 3600 <= delta <= 25 * 3600, delta  # 24h 长退避
+            assert 16 * 3600 <= delta <= 32 * 3600, delta  # 约24h长退避（±30%抖动）
             assert "[quota]" in (item.probe_last_error or "")
         finally:
             _cleanup(db, lib)
@@ -503,7 +503,7 @@ class TestQuotaRetry:
             assert item.probe_status == "pending"
             assert item.probe_attempts == 0  # 配额重试不计次数
             delta = (item.probe_next_retry_at - datetime.now()).total_seconds()
-            assert 23 * 3600 <= delta <= 25 * 3600, delta
+            assert 16 * 3600 <= delta <= 32 * 3600, delta  # 约24h长退避（±30%抖动）
         finally:
             _cleanup(db, lib)
             db.close()
@@ -560,7 +560,7 @@ class TestQuotaRetry:
             assert item.probe_status == "pending"
             assert item.probe_next_retry_at is not None
             delta = (item.probe_next_retry_at - datetime.now()).total_seconds()
-            assert 23 * 3600 <= delta <= 25 * 3600, delta
+            assert 16 * 3600 <= delta <= 32 * 3600, delta  # 约24h长退避（±30%抖动）
             assert "[timeout]" in (item.probe_last_error or "")
         finally:
             _cleanup(db, lib)
@@ -593,6 +593,7 @@ class TestReviveQuotaFailed:
         return item
 
     def test_revive_quota_failed_items(self):
+        """P2-9：只认本系统写入的 [quota] 标记；裸 403/旧中文文本不再复活（防僵尸循环）。"""
         db = SessionLocal()
         lib = _make_lib(db)
         try:
@@ -601,15 +602,17 @@ class TestReviveQuotaFailed:
             q3 = self._make_failed_item(db, lib, "远端返回 HTTP 403，地址无效")
             other = self._make_failed_item(db, lib, "远端返回 HTTP 404，地址无效")
             n = probe_worker.revive_quota_failed(db)
-            assert n == 3, n
-            for it in (q1, q2, q3):
+            assert n == 1, n  # 只有带 [quota] 标记的 q2 被捞回
+            db.refresh(q2)
+            assert q2.probe_status == "pending"
+            assert q2.probe_attempts == 0
+            delta = (q2.probe_next_retry_at - datetime.now()).total_seconds()
+            assert 23 * 3600 <= delta <= 25 * 3600, delta
+            for it in (q1, q3, other):
                 db.refresh(it)
-                assert it.probe_status == "pending"
-                assert it.probe_attempts == 0
-                delta = (it.probe_next_retry_at - datetime.now()).total_seconds()
-                assert 23 * 3600 <= delta <= 25 * 3600, delta
-            db.refresh(other)
-            assert other.probe_status == "failed"  # 404 不误伤
+                # q1：历史中文文本（无标记）不再匹配；q3：真正的 403 权限失败不得复活；
+                # other：404 不误伤
+                assert it.probe_status == "failed", it.probe_last_error
         finally:
             _cleanup(db, lib)
             db.close()
