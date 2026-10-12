@@ -43,7 +43,7 @@ onMounted(async () => {
     if (ok) {
       state.value = 'success'
       window.setTimeout(() => {
-        router.replace('/profile')
+        router.replace('/')
       }, 1000)
     } else {
       state.value = 'error'

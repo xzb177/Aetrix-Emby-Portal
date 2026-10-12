@@ -83,8 +83,3 @@ export const panelApi = {
   /** 机关拨杆（仅管理员） */
   toggles: (payload: Record<string, unknown>) => post('/api/panel/server/toggles', payload),
 }
-
-/** 特性开关：VITE_PANEL_V4_ENABLED=0 时回退老首页；默认开 */
-export function isPanelV4Enabled(): boolean {
-  return import.meta.env.VITE_PANEL_V4_ENABLED !== '0'
-}

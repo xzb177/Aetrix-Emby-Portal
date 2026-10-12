@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi, tokenStore, type AuthUser } from '@/api'
-import { resetEmbyBaseUrl } from '@/api/emby'
 
 export type { AuthUser as User }
 
@@ -120,8 +119,6 @@ export const useUserStore = defineStore('user', () => {
     token.value = null
     sessionSeq.value += 1
     tokenStore.clear()
-    // 缓存的 EA 地址属于上一个登录态，不清的话同浏览器换号会拿到别人的服地址
-    resetEmbyBaseUrl()
   }
 
   function updateUser(userData: Partial<AuthUser>) {

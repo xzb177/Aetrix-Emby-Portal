@@ -2,41 +2,30 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 // 标题里的站名来自「站点与品牌」能力（未配置时用默认值）
 import { pageTitle } from '@/composables/useBranding'
-// v4 面板特性开关（VITE_PANEL_V4_ENABLED=0 时回退老首页）
-import { isPanelV4Enabled } from '@/composables/usePanelApi'
 
-const panelV4 = isPanelV4Enabled()
-
+// v4 探险家日志面板是唯一的用户端：发现 / 收藏家 / 服务器。
+// 登录相关（/login、/tg-login、/tg-bind）保留；管理后台是另一套（admin_frontend），不在这里。
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',
       name: 'home',
-      // v4 面板开时首页切到发现页；关掉则回退现有 HomeView
-      component: () =>
-        panelV4
-          ? import('@/views/panel/DiscoveryView.vue')
-          : import('@/views/HomeView.vue'),
-      meta: { title: '首页' },
+      component: () => import('@/views/panel/DiscoveryView.vue'),
+      meta: { title: '发现' },
     },
-    // v4 面板：收藏家 / 服务器（需要登录，panel 接口全部要鉴权）
-    ...(panelV4
-      ? [
-          {
-            path: '/collector',
-            name: 'collector',
-            component: () => import('@/views/panel/CollectorView.vue'),
-            meta: { title: '收藏家', requiresAuth: true },
-          },
-          {
-            path: '/server',
-            name: 'server',
-            component: () => import('@/views/panel/ServerView.vue'),
-            meta: { title: '服务器', requiresAuth: true },
-          },
-        ]
-      : []),
+    {
+      path: '/collector',
+      name: 'collector',
+      component: () => import('@/views/panel/CollectorView.vue'),
+      meta: { title: '收藏家', requiresAuth: true },
+    },
+    {
+      path: '/server',
+      name: 'server',
+      component: () => import('@/views/panel/ServerView.vue'),
+      meta: { title: '服务器', requiresAuth: true },
+    },
     {
       path: '/login',
       name: 'login',
@@ -51,93 +40,12 @@ const router = createRouter({
       component: () => import('@/views/TgLoginView.vue'),
       meta: { title: 'Telegram 快捷登录' },
     },
-    {
-      path: '/profile',
-      name: 'profile',
-      component: () => import('@/views/ProfileView.vue'),
-      meta: { title: '个人中心', requiresAuth: true },
-    },
-    {
-      path: '/messages',
-      name: 'messages',
-      component: () => import('@/views/MessagesView.vue'),
-      meta: { title: '消息中心', requiresAuth: true },
-    },
-    {
-      path: '/tickets',
-      name: 'tickets',
-      component: () => import('@/views/TicketsView.vue'),
-      meta: { title: '工单中心', requiresAuth: true },
-    },
-    {
-      path: '/request',
-      name: 'request',
-      component: () => import('@/views/RequestView.vue'),
-      meta: { title: '求片中心', requiresAuth: true },
-    },
-    // AI 助手（v2.19.0）：能力「AI 模型设置」的用户侧消费点；
-    // 管理员没配置时页面会说明原因，不会出现「能点但报错」的入口
-    {
-      path: '/assistant',
-      name: 'assistant',
-      component: () => import('@/views/AssistantView.vue'),
-      meta: { title: 'AI 助手', requiresAuth: true },
-    },
-    // ==================== 经济系统（v2.3.0；v2.11.0 商店/钱包拆分） ====================
-    {
-      path: '/store',
-      name: 'store',
-      component: () => import('@/views/StoreView.vue'),
-      meta: { title: '商店', requiresAuth: true },
-    },
-    {
-      path: '/wallet',
-      name: 'wallet',
-      component: () => import('@/views/WalletView.vue'),
-      meta: { title: '钱包', requiresAuth: true },
-    },
-    {
-      path: '/checkin',
-      name: 'checkin',
-      component: () => import('@/views/CheckinView.vue'),
-      meta: { title: '每日签到', requiresAuth: true },
-    },
-    {
-      path: '/invite',
-      name: 'invite',
-      component: () => import('@/views/InviteView.vue'),
-      meta: { title: '邀请返利', requiresAuth: true },
-    },
     // 注册后 TG 绑定引导页：仅注册流程进入，未绑定且管理员开启时展示
     {
       path: '/tg-bind',
       name: 'tg-bind-guide',
       component: () => import('@/views/TgBindGuideView.vue'),
       meta: { title: '绑定 Telegram', requiresAuth: true },
-    },
-    // 追新日历：站内唯一一个「按时间看片」的页面（媒体浏览在第三方客户端，
-    // 门户只保留“最近入库”这一个内容型入口）
-    {
-      path: '/calendar',
-      name: 'calendar',
-      component: () => import('@/views/CalendarView.vue'),
-      meta: { title: '追新日历', requiresAuth: true },
-    },
-    // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删） ====================
-    // 老地址 /media、/library、/search、/favorites、/history 的书签与外部链接：
-    // 媒体浏览统一走第三方客户端（Infuse 等），这些入口不再有对应页面，
-    // 全部落到兜底 404 页（页面里会给「回首页」的出口）。
-    {
-      path: '/media/:id',
-      name: 'media-detail',
-      component: () => import('@/views/media/ItemDetailView.vue'),
-      meta: { title: '详情', requiresAuth: true },
-    },
-    {
-      path: '/watch/:id',
-      name: 'watch',
-      component: () => import('@/views/media/WatchView.vue'),
-      meta: { title: '播放', requiresAuth: true },
     },
     {
       path: '/:pathMatch(.*)*',
@@ -159,7 +67,6 @@ router.beforeEach(async (to) => {
     initialized = true
   }
 
-  // 分段页标题由 LibraryHomeView 按 ?tab= 覆写（媒体库 / 收藏 / 观看记录）
   if (to.meta.title) {
     document.title = pageTitle(to.meta.title as string | undefined)
   }
@@ -188,7 +95,7 @@ router.beforeEach(async (to) => {
   return true
 })
 
-// v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
+// v4 面板只做纸色浅色：在 v4 路由下强制 light，离开时恢复用户主题
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
 const V4_PATHS = new Set(['/', '/collector', '/server'])
 function restoreUserTheme() {
@@ -212,7 +119,6 @@ function restoreUserTheme() {
     ?.setAttribute('content', light ? '#f5f1ea' : '#0c0a09')
 }
 router.afterEach((to) => {
-  if (!panelV4) return
   if (V4_PATHS.has(to.path)) {
     document.documentElement.setAttribute('data-theme', 'light')
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f5f1ea')
@@ -220,14 +126,5 @@ router.afterEach((to) => {
     restoreUserTheme()
   }
 })
-
-// 关键路由预取：用户登录后大概率会去商店 / 个人中心，空闲时预加载对应 chunk
-if (typeof requestIdleCallback !== 'undefined') {
-  requestIdleCallback(() => {
-    import('@/views/StoreView.vue')
-    import('@/views/ProfileView.vue')
-    import('@/views/WalletView.vue')
-  }, { timeout: 3000 })
-}
 
 export default router
