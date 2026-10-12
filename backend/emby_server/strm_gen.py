@@ -54,9 +54,22 @@ CONFIG_LAST_RUN = "strm_gen_last_run"
 CONFIG_LAST_STATS = "strm_gen_last_stats"
 CONFIG_DRIVE_ID = "strm_gen_drive_id"
 CONFIG_PRUNE = "strm_gen_prune"
+# 增量间隔（分钟）：两次增量生成之间的间隔，用户可在后台自由设置。
+# 0 = 关闭间隔，只跑每天定时。默认 60。
+CONFIG_INTERVAL = "strm_gen_interval_minutes"
+# 数据源类型：drive=Google Drive，local=本地目录。默认 drive（向后兼容）。
+CONFIG_SOURCE_TYPE = "strm_gen_source_type"
+# 本地数据源的根目录（source_type=local 时有效）
+CONFIG_LOCAL_ROOT = "strm_gen_local_root"
+# 抖动比例：调度间隔按 uniform(1-ratio, 1+ratio) 打散。
+# 反风控：固定节拍容易被识别为机器行为（Google 风控/本地 IO burst），
+# 每次等待都重新随机化。0=关闭抖动（便于测试）。钳制在 [0, 0.5]。
+CONFIG_JITTER_RATIO = "strm_gen_jitter_ratio"
 
 DEFAULT_SOURCE_DIR = "MoviePilot/"
 DEFAULT_SCHEDULE = "03:00"
+DEFAULT_INTERVAL_MINUTES = 60
+DEFAULT_JITTER_RATIO = 0.2
 
 # token 401 后刷新重试的最大次数
 TOKEN_RETRY_MAX = 3
@@ -134,6 +147,60 @@ def prune_enabled(db) -> bool:
     确认确实不需要了再手动开启。
     """
     return _db_config(db, CONFIG_PRUNE, "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def interval_minutes(db) -> int:
+    """增量间隔（分钟）。用户可在后台自由设置，0=关闭间隔只跑每天定时。
+
+    非法值回退 60，钳制在 [0, 1440]。0 表示关闭。
+    """
+    raw = _db_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL_MINUTES)).strip()
+    try:
+        v = int(raw)
+    except (ValueError, TypeError):
+        return DEFAULT_INTERVAL_MINUTES
+    return max(0, min(1440, v))
+
+
+def source_type(db) -> str:
+    """数据源类型：drive=Google Drive，local=本地目录。默认 drive（向后兼容）。"""
+    raw = _db_config(db, CONFIG_SOURCE_TYPE, "drive").strip().lower()
+    return raw if raw in ("drive", "local") else "drive"
+
+
+def local_root(db) -> str:
+    """本地数据源的根目录（source_type=local 时有效）。"""
+    return _db_config(db, CONFIG_LOCAL_ROOT, "/media").strip()
+
+
+def jitter_ratio(db) -> float:
+    """调度抖动比例，钳制在 [0, 0.5]。
+
+    反风控：固定节拍容易被识别为机器行为，每次等待按
+    uniform(1-ratio, 1+ratio) 重新随机化。0=关闭抖动（便于测试）。
+    """
+    raw = _db_config(db, CONFIG_JITTER_RATIO, str(DEFAULT_JITTER_RATIO)).strip()
+    try:
+        v = float(raw)
+    except (ValueError, TypeError):
+        return DEFAULT_JITTER_RATIO
+    return max(0.0, min(0.5, v))
+
+
+def _jittered_interval_sec(db) -> float:
+    """本次增量等待秒数：interval 分钟 ± 抖动，每次调用重新随机化。
+
+    反风控：用户担心缩短间隔触发 Google 风控。这里做了三层防护：
+    1. 间隔抖动：避免机械的固定节拍（比如精确每小时整点）被识别为机器行为。
+    2. Changes API 本身只拉变化，配额消耗远小于全量 files.list。
+    3. Lister 内部对 burst 操作（多页拉取/大量 stat）也有微抖动限速。
+    """
+    import random as _random
+    base = interval_minutes(db) * 60.0
+    ratio = jitter_ratio(db)
+    if ratio <= 0:
+        return base
+    return base * _random.uniform(1.0 - ratio, 1.0 + ratio)
 
 
 def _safe_relpath(rel: str) -> str:
@@ -660,21 +727,70 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     src_prefix = source_dir(db)
     strm_root = _container_strm_root(db)
 
-    # 确定要跑的盘：显式参数 > strm_gen_drive_id 配置 > 遍历所有发现的共享盘。
-    # （原来只取第一个盘，多共享盘用户其余盘的文件永远不生成且无任何提示。）
-    drive_id = drive_id or drive_id_config(db)
-    if drive_id:
-        drive_ids = [drive_id]
-    else:
-        drives = _discover_drives()
-        if not drives:
+    # 确定数据源：通用增量接口（SourceLister），所有挂载方式都能用。
+    # drive: 用 Changes API 做增量（只拉变化），全量回退到 files.list
+    # local: 用 (mtime_ns, size) 指纹做增量检测
+    stype = source_type(db)
+    all_videos: list[tuple[str, str, int]] = []
+    listers: list = []  # 成功列举的 lister，生成完后 save_checkpoint
+
+    if stype == "local":
+        root = local_root(db)
+        if not os.path.isdir(root):
             _set_progress(phase="error")
-            _add_error("未发现可用 Drive（共享盘）")
-            return {"ok": False, "error": "未发现可用 Drive"}
-        drive_ids = sorted(drives.keys())
-        if len(drive_ids) > 1:
-            logger.info("strm_gen: 发现 %d 个共享盘，逐个生成: %s", len(drive_ids), drive_ids)
-    # 增量状态与已用路径在各盘之间共享（_resolve_collision 跨盘防撞车）
+            _add_error(f"本地源目录不存在: {root}")
+            return {"ok": False, "error": f"本地源目录不存在: {root}"}
+        from backend.emby_server import strm_source
+        lister = strm_source.LocalFsLister(root)
+        listers.append(lister)
+        logger.info("strm_gen: 开始生成 local=%s full=%s", root, full)
+        _set_progress(phase="listing", current=f"正在列举本地文件…（{root}）")
+        videos: list[tuple[str, str, int]] = []
+        try:
+            # 增量模式走指纹比对；全量模式（full=True）走全量 walk
+            for rel, fid, size in lister.iter_videos(incremental=not full):
+                videos.append((rel, fid, size))
+        except Exception as exc:
+            _set_progress(phase="error")
+            _add_error(f"列举失败 [{root}]: {exc}")
+            return {"ok": False, "error": str(exc)}
+        logger.info("strm_gen: local=%s 列举到 %d 个视频文件", root, len(videos))
+        all_videos.extend(videos)
+        # 本地模式下 rel 已是相对 root 的路径，src_prefix 为空
+        src_prefix = ""
+    else:
+        # drive 模式：确定要跑的盘（显式参数 > 配置 > 遍历所有发现的共享盘）
+        drive_id = drive_id or drive_id_config(db)
+        if drive_id:
+            drive_ids = [drive_id]
+        else:
+            drives = _discover_drives()
+            if not drives:
+                _set_progress(phase="error")
+                _add_error("未发现可用 Drive（共享盘）")
+                return {"ok": False, "error": "未发现可用 Drive"}
+            drive_ids = sorted(drives.keys())
+            if len(drive_ids) > 1:
+                logger.info("strm_gen: 发现 %d 个共享盘，逐个生成: %s", len(drive_ids), drive_ids)
+        from backend.emby_server import strm_source
+        for did in drive_ids:
+            logger.info("strm_gen: 开始生成 drive=%s src=%s full=%s", did, src_prefix, full)
+            _set_progress(phase="listing", current=f"正在列举 Drive 文件…（{did}）")
+            lister = strm_source.DriveChangesLister(did, src_prefix)
+            listers.append(lister)
+            videos = []
+            try:
+                # 增量模式走 Changes API；全量模式（full=True）回退到 files.list
+                for rel, fid, size in lister.iter_videos(incremental=not full):
+                    videos.append((rel, fid, size))
+            except Exception as exc:
+                _set_progress(phase="error")
+                _add_error(f"列举失败 [{did}]: {exc}")
+                return {"ok": False, "error": str(exc)}
+            logger.info("strm_gen: drive=%s 列举到 %d 个视频文件", did, len(videos))
+            all_videos.extend(videos)
+
+    # 增量状态与已用路径在各数据源之间共享（_resolve_collision 跨盘防撞车）
     state = {} if full else _load_state()
     used: set[str] = set()
     if full:
@@ -687,27 +803,11 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     else:
         used = {spath for (_fid, _size, spath) in state.values()}
 
-    all_videos: list[tuple[str, str, int]] = []
-    for did in drive_ids:
-        logger.info("strm_gen: 开始生成 drive=%s src=%s full=%s", did, src_prefix, full)
-        # 1. 列举
-        _set_progress(phase="listing", current=f"正在列举 Drive 文件…（{did}）")
-        videos: list[tuple[str, str, int]] = []
-        try:
-            for rel, fid, size in iter_drive_videos(did, src_prefix):
-                videos.append((rel, fid, size))
-        except Exception as exc:
-            _set_progress(phase="error")
-            _add_error(f"列举失败 [{did}]: {exc}")
-            return {"ok": False, "error": str(exc)}
-        logger.info("strm_gen: drive=%s 列举到 %d 个视频文件", did, len(videos))
-        all_videos.extend(videos)
-
-        # 2. 增量比对 + 生成
+    # 2. 增量比对 + 生成
         _set_progress(phase="generating", total=len(all_videos))
         pending_rows: list[tuple[str, str, int, str]] = []
         done = get_progress()["done"]
-        for rel, fid, size in videos:
+        for rel, fid, size in all_videos:
             done += 1
             _set_progress(done=done, current=rel)
             old = state.get(rel)
@@ -773,7 +873,65 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
 
     _set_progress(phase="done", current="")
     logger.info("strm_gen: 完成 %s", stats)
+
+    # 持久化增量检查点（Changes API 的 page token / 本地指纹库）
+    # 只有成功时才保存，失败时保留旧检查点下次重试
+    for lister in listers:
+        try:
+            lister.save_checkpoint()
+        except Exception as exc:
+            logger.warning("strm_gen: 保存增量检查点失败: %s", exc)
+
+    # 打通扫库链路：生成完自动触发 /strm 相关库的增量扫描
+    # （之前生成和扫库是脱节的，中间有断档，新文件要等扫描器下一轮）
+    if stats.get("generated", 0) > 0:
+        _trigger_strm_scan(db)
+
     return {"ok": True, "stats": stats}
+
+
+def _trigger_strm_scan(db) -> None:
+    """生成完自动触发 /strm 相关库的增量扫描。
+
+    用 scan_queue_redis.push_scan_request 入队，复用 Redis 去重机制：
+    - 已在队列中的库不会重复入队
+    - 不会和用户手动扫描冲突（扫描器有库级互斥 _acquire_scan）
+    失败只记 warning（扫库是 best-effort，不能影响生成主流程）。
+    """
+    try:
+        from backend.emby_server import models as em
+        from backend.emby_server import scan_queue_redis
+    except Exception as exc:
+        logger.warning("strm_gen: 扫库触发器加载失败: %s", exc)
+        return
+
+    strm_root = _container_strm_root(db)
+    # 归一化：/strm 结尾不带斜杠，用于前缀匹配
+    strm_prefix = strm_root.rstrip("/")
+    try:
+        libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
+    except Exception as exc:
+        logger.warning("strm_gen: 查询媒体库失败: %s", exc)
+        return
+
+    triggered = 0
+    for lib in libs:
+        if getattr(lib, "is_virtual", False):
+            continue
+        paths = (getattr(lib, "paths", "") or "").split(",")
+        hit = any(p.strip() == strm_prefix or p.strip().startswith(strm_prefix + "/")
+                  for p in paths if p.strip())
+        if not hit:
+            continue
+        try:
+            r = scan_queue_redis.push_scan_request(lib.id, trigger="strm-gen")
+            if r.get("created"):
+                triggered += 1
+                logger.info("strm_gen: 已触发扫库 lib=%s(%s)", lib.id, getattr(lib, "name", ""))
+        except Exception as exc:
+            logger.warning("strm_gen: 触发扫库失败 lib=%s: %s", lib.id, exc)
+    if triggered:
+        logger.info("strm_gen: 共触发 %d 个库的增量扫描", triggered)
 
 
 def _verify_completeness(videos: list[tuple[str, str, int]],
@@ -895,9 +1053,18 @@ def _last_run_date_from_config() -> str:
 
 
 def _scheduler_loop():
+    """调度循环：每天定时（全量/增量）+ 间隔增量。
+
+    反风控设计（用户明确要求）：
+    - 间隔等待加 ±20% 随机抖动（默认），避免机械的固定节拍被 Google 识别为机器行为。
+    - 抖动比例可配置（strm_gen_jitter_ratio），0=关闭（便于测试）。
+    - Changes API 本身只拉变化，配额消耗远小于全量，缩短间隔不会打爆配额。
+    """
     last_run_date = _last_run_date_from_config()
     if last_run_date:
         logger.info("strm_gen: 从配置恢复上次执行日期 %s", last_run_date)
+    # 上次间隔增量执行时间（monotonic，避免系统时间跳变影响）
+    last_interval_ts = 0.0
     while True:
         try:
             from backend.database import SessionLocal
@@ -906,20 +1073,43 @@ def _scheduler_loop():
                 if not enabled(db):
                     time.sleep(300)
                     continue
-                sched = schedule(db)
-                if not sched:
-                    time.sleep(300)
-                    continue
                 now = datetime.now(timezone.utc).astimezone()
                 today = now.strftime("%Y-%m-%d")
-                # 到点且今天没跑过
-                if now.strftime("%H:%M") >= sched and last_run_date != today:
+
+                # 1. 每天定时（保留原有逻辑）
+                sched = schedule(db)
+                if sched and now.strftime("%H:%M") >= sched and last_run_date != today:
                     if get_progress()["running"]:
                         time.sleep(60)
                         continue
-                    logger.info("strm_gen: 定时任务触发 (%s)", sched)
+                    logger.info("strm_gen: 每天定时触发 (%s)", sched)
                     run_generation(db, full=False)
                     last_run_date = today
+                    last_interval_ts = time.monotonic()
+                    continue
+
+                # 2. 间隔增量（新增）：按用户配置的分钟数跑，带抖动防风控
+                iv_min = interval_minutes(db)
+                if iv_min > 0:
+                    wait_sec = _jittered_interval_sec(db)
+                    elapsed = time.monotonic() - last_interval_ts
+                    if last_interval_ts > 0 and elapsed < wait_sec:
+                        # 还没到间隔，短睡后继续（不长睡，保证每天定时能及时触发）
+                        time.sleep(min(60, wait_sec - elapsed))
+                        continue
+                    if get_progress()["running"]:
+                        time.sleep(60)
+                        continue
+                    # 首次启动时 last_interval_ts=0，延迟 5 分钟再跑，避免启动即 burst
+                    if last_interval_ts == 0:
+                        logger.info("strm_gen: 调度器启动，%.0f 秒后开始首次间隔增量", wait_sec)
+                        last_interval_ts = time.monotonic()
+                        time.sleep(min(60, wait_sec))
+                        continue
+                    logger.info("strm_gen: 间隔增量触发（配置 %d 分钟，抖动后 %.0f 秒）",
+                                iv_min, wait_sec)
+                    run_generation(db, full=False)
+                    last_interval_ts = time.monotonic()
             finally:
                 db.close()
         except Exception as exc:

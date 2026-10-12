@@ -38,6 +38,18 @@ class StrmGenConfigSave(BaseModel):
         default=False,
         description="清理 Drive 上已不存在的 .strm 文件及状态行（不可逆，默认只上报不删）",
     )
+    interval_minutes: int = Field(
+        default=60,
+        description="增量间隔分钟数（5-1440），0=关闭间隔只跑每天定时",
+    )
+    source_type: str = Field(
+        default="drive",
+        description="数据源类型：drive=Google Drive，local=本地目录",
+    )
+    local_root: str = Field(
+        default="/media",
+        description="本地数据源根目录（source_type=local 时有效）",
+    )
 
 
 class StrmGenTrigger(BaseModel):
@@ -51,6 +63,9 @@ def _read_config(db: Session) -> dict:
         "schedule": _gen.schedule(db),
         "drive_id": _gen.drive_id_config(db),
         "prune": _gen.prune_enabled(db),
+        "interval_minutes": _gen.interval_minutes(db),
+        "source_type": _gen.source_type(db),
+        "local_root": _gen.local_root(db),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
     }
 
@@ -78,6 +93,16 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         if not ok:
             from fastapi import HTTPException
             raise HTTPException(status_code=400, detail="执行时刻格式应为 HH:MM（如 03:00），留空关闭定时")
+    # 增量间隔：0=关闭，1-1440 分钟
+    iv = int(body.interval_minutes or 0)
+    if iv < 0 or iv > 1440:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="增量间隔应在 0-1440 分钟之间")
+    # 数据源类型校验
+    st = (body.source_type or "drive").strip().lower()
+    if st not in ("drive", "local"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="数据源类型只能是 drive 或 local")
     # 注意：store 只有 write_values（批量写），没有 set_value；
     # 且 write_values 不自动提交，提交时机由调用方决定。
     store.write_values(db, {
@@ -86,12 +111,18 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_SCHEDULE: sched,
         _gen.CONFIG_DRIVE_ID: (body.drive_id or "").strip(),
         _gen.CONFIG_PRUNE: "true" if body.prune else "false",
+        _gen.CONFIG_INTERVAL: str(iv),
+        _gen.CONFIG_SOURCE_TYPE: st,
+        _gen.CONFIG_LOCAL_ROOT: (body.local_root or "/media").strip(),
     }, {
         _gen.CONFIG_ENABLED: ".strm 生成器总开关",
         _gen.CONFIG_SOURCE_DIR: ".strm 生成器 Drive 源目录",
         _gen.CONFIG_SCHEDULE: ".strm 生成器每天执行时刻（HH:MM，服务器本地时间）",
         _gen.CONFIG_DRIVE_ID: ".strm 生成器指定 Drive ID",
         _gen.CONFIG_PRUNE: ".strm 生成器是否清理 Drive 已不存在的文件",
+        _gen.CONFIG_INTERVAL: ".strm 生成器增量间隔（分钟），0=关闭",
+        _gen.CONFIG_SOURCE_TYPE: ".strm 生成器数据源类型",
+        _gen.CONFIG_LOCAL_ROOT: ".strm 生成器本地源根目录",
     })
     db.commit()
     return {"success": True, "config": _read_config(db)}
