@@ -9,6 +9,9 @@
     <router-link to="/server" active-class="on" aria-label="服务器">
       <span class="ic">🌱</span>服务器
     </router-link>
+    <router-link to="/shop" active-class="on" aria-label="补给站">
+      <span class="ic">🎒</span>补给站
+    </router-link>
   </nav>
 </template>
 
