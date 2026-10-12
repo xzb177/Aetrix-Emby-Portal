@@ -382,26 +382,17 @@ def _probe_strm(db) -> dict:
 
 
 def _probe_sa_quota() -> dict:
-    """SA 配额水位：只读内存状态（数量+熔断），绝不调用 Drive API 查配额。
+    """SA 配额水位：只读内存状态（SA 数量），绝不调用 Drive API 查配额。
 
     为什么不去查真实配额：Drive API 的配额查询本身消耗配额，探针高频调用
     = 自己制造限流，违反用户「不触发 Google 风控」底线。
+    熔断状态由 probe 探针统一报告（避免重复查库），这里只报 SA 数量。
     """
     try:
         from backend.emby_server import drive_auth as _da
         m: dict[str, Any] = {"sa_count": _da.sa_count()}
-        # 熔断器状态（内存，无 API 调用）
-        try:
-            from backend.emby_server import probe_worker as _pw
-            rt = (_pw.status_snapshot(None).get("runtime") or {})
-            m["open_breakers"] = [k for k, b in (rt.get("breakers") or {}).items()
-                                  if b.get("open_for_sec")]
-        except Exception:  # noqa: BLE001
-            m["open_breakers"] = []
         if m["sa_count"] == 0:
             return _warn("sa_quota", "未配置 SA 账号", m)
-        if m["open_breakers"]:
-            return _warn("sa_quota", f"{len(m['open_breakers'])} 个挂载熔断中", m)
         return _ok("sa_quota", m, f"{m['sa_count']} 个 SA 就绪")
     except Exception as exc:  # noqa: BLE001
         logger.debug("SA 探针失败: %s", exc)
