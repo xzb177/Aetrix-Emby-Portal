@@ -152,12 +152,14 @@ def test_code_state_sql_matches_python(tmp_path):
                                     use_count=2),  # used_up
             models.RegistrationCode(code="A4", is_active=True, max_uses=5,
                                     use_count=1),  # active
+            models.RegistrationCode(code="A5", is_active=None),  # NULL→disabled（与 Python not None 同口径）
         ]
         db.add_all(rows)
         db.commit()
         expect = {r.code: admin_ops._code_state(r, now) for r in rows}
         assert expect == {"A1": "disabled", "A2": "expired",
-                          "A3": "used_up", "A4": "active"}
+                          "A3": "used_up", "A4": "active",
+                          "A5": "disabled"}
         expr = admin_ops._code_state_sql(now)
         got = {
             r.code: s
@@ -244,16 +246,18 @@ def test_inv_code_state_sql_matches_python(tmp_path):
                                   max_uses=1, use_count=1),  # used_up
             models.InvitationCode(code="I4", user_id=u.id, is_active=True,
                                   max_uses=5, use_count=1),  # active
+            models.InvitationCode(code="I5", user_id=u.id, is_active=None),  # NULL→revoked
         ]
         db.add_all(rows)
         db.commit()
         expect = {r.code: admin_ops._inv_code_state(r, now) for r in rows}
         assert expect == {"I1": "revoked", "I2": "expired",
-                          "I3": "used_up", "I4": "active"}
+                          "I3": "used_up", "I4": "active",
+                          "I5": "revoked"}
         # list_invitation_codes 内联了 CASE；这里验证同构表达式
         from sqlalchemy import and_, case, func
         inv_state = case(
-            (models.InvitationCode.is_active == False, "revoked"),  # noqa: E712
+            (func.coalesce(models.InvitationCode.is_active, False) == False, "revoked"),
             (and_(models.InvitationCode.expires_at.isnot(None),
                   models.InvitationCode.expires_at < now), "expired"),
             (and_(models.InvitationCode.max_uses.isnot(None),
