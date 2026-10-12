@@ -158,7 +158,13 @@ def is_jti_revoked(db, jti: str | None) -> bool:
         from backend.models import RevokedJwt
         row = db.query(RevokedJwt).filter(RevokedJwt.jti == jti).first()
     except Exception:
-        return False
+        # P2 修复（完美审查 A-P2-1）：查不到≠没吊销。DB/连接池故障（语句超时、
+        # 连接闪断）时 fail-closed 抛 401——否则被登出/改密吊销过的 token 会被
+        # 当成有效 token 放行，fail 方向与"登出必须生效"相反。
+        from fastapi import HTTPException, status
+        logger.error("吊销表查询失败，fail-closed 拒绝 token", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="凭证校验失败，请重新登录")
     if row is not None:
         with _revoked_cache_lock:
             if len(_revoked_cache) >= _REVOKED_CACHE_MAX:

@@ -116,6 +116,64 @@ NIGHT_TZ_OPTIONS = [
 _NIGHT_CFG_TTL_SEC = 60.0
 _night_cfg_cache: dict = {"at": 0.0, "cfg": None}
 
+# 单集等父级 ping-pong 上限（P2 修复，完美审查 C-P2-4）：父级长期 pending
+#（如长退避链）时，单集每 300s 被抢单打回一次、"不计失败次数"→无限循环，
+# 每次消耗抢单与写库。进程内计连续等待次数：指数退避 300s→600s…（上限 2h），
+# 超 20 次按父级终态失败处理（走 none，管理端"重试未匹配项"可捞回）。
+_PARENT_WAIT_MAX_TIMES = 20
+_PARENT_WAIT_BASE_SEC = 300
+_PARENT_WAIT_MAX_SEC = 7200
+_parent_wait_counts: dict[int, int] = {}
+
+# douban / altmeta 开关配置的 60s TTL 进程内缓存（P2 修复，完美审查 C-P2-5）：
+# 之前逐条目开短会话读配置（32 worker × 批量 100 条 = 大量短会话），
+# 与 _episode_night_config 同一口径。管理后台保存后最多 60 秒生效。
+_DOUBAN_CFG_TTL_SEC = 60.0
+_douban_cfg_cache: dict = {"at": 0.0, "cfg": None}
+_ALTMETA_CFG_TTL_SEC = 60.0
+_altmeta_cfg_cache: dict = {"at": 0.0, "cfg": None}
+
+
+def _cached_douban_cfg() -> tuple:
+    """豆瓣开关 (enabled, min_interval)，60s TTL 进程内缓存。"""
+    from backend.emby_server import douban as _dbn
+    now_ts = time.monotonic()
+    cached = _douban_cfg_cache["cfg"]
+    if cached is not None and now_ts - _douban_cfg_cache["at"] < _DOUBAN_CFG_TTL_SEC:
+        return cached
+    _db = SessionLocal()
+    try:
+        on = _dbn.enabled(_db)
+        iv = _dbn.min_interval(_db) if on else 0.0
+    finally:
+        _db.close()
+    _douban_cfg_cache["cfg"] = (on, iv)
+    _douban_cfg_cache["at"] = now_ts
+    return on, iv
+
+
+def _cached_altmeta_cfg() -> tuple:
+    """altmeta 开关 (enabled, min_interval, min_interval_bangumi)，60s TTL 进程内缓存。"""
+    from backend.emby_server import altmeta
+    now_ts = time.monotonic()
+    cached = _altmeta_cfg_cache["cfg"]
+    if cached is not None and now_ts - _altmeta_cfg_cache["at"] < _ALTMETA_CFG_TTL_SEC:
+        return cached
+    _db = SessionLocal()
+    try:
+        ok = altmeta.enabled(_db)
+        if ok:
+            altmeta.warn_dead_keys_once(_db)
+            iv = altmeta.min_interval(_db)
+            bgm_iv = altmeta.min_interval_bangumi(_db)
+        else:
+            iv, bgm_iv = 0.0, 0.0
+    finally:
+        _db.close()
+    _altmeta_cfg_cache["cfg"] = (ok, iv, bgm_iv)
+    _altmeta_cfg_cache["at"] = now_ts
+    return ok, iv, bgm_iv
+
 
 def _parse_hhmm(s: Optional[str], default: str) -> str:
     """解析 HH:MM，非法则回退到默认值（保证下游比较永不抛异常）"""
@@ -860,12 +918,10 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
             and not getattr(item, "tmdb_id", None)):
         from backend.emby_server import douban as _dbn
         try:
-            _cfg2 = SessionLocal()
-            try:
-                _dbn_on = _dbn.enabled(_cfg2)
-                _dbn_iv = _dbn.min_interval(_cfg2) if _dbn_on else 0.0
-            finally:
-                _cfg2.close()
+            # P2（完美审查 C-P2-5）：豆瓣开关走 60s TTL 进程内缓存，不再逐条目开短会话。
+            # 注意：配置读取必须留在外层 try 里面——旧代码短会话也在 try 内，
+            # 配置读失败（DB 闪断）时走「豆瓣优先搜索失败」静默跳过，不中断整条补全。
+            _dbn_on, _dbn_iv = _cached_douban_cfg()
             if _dbn_on and _dbn.has_cjk(item.name or ""):
                 _dbn.client._interval = _dbn_iv
                 _dh = _dbn.client.search(
@@ -1039,17 +1095,11 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                     progress.note_stage("enrich_multisource")
                 else:
                     from backend.emby_server import altmeta
-                    # _enrich_fetch 是 IO 阶段函数、只收 item、没有 db（写库在 _enrich_apply）。
-                    # 配置读取因此另开一个短会话，用完即关——绝不在这里借用写事务的 session。
-                    _cfg_db = SessionLocal()
-                    try:
-                        _ok = altmeta.enabled(_cfg_db)
-                        if _ok:
-                            altmeta.warn_dead_keys_once(_cfg_db)
-                            _interval = altmeta.min_interval(_cfg_db)
-                            _bgm_interval = altmeta.min_interval_bangumi(_cfg_db)
-                    finally:
-                        _cfg_db.close()
+                    # P2（完美审查 C-P2-5）：配置读走 60s TTL 进程内缓存
+                    # （_cached_altmeta_cfg），不再逐条目开短会话。
+                    # （_enrich_fetch 是 IO 阶段函数、只收 item 没有 db，
+                    # 之前因此另开短会话，用完即关。）
+                    _ok, _interval, _bgm_interval = _cached_altmeta_cfg()
                     if _ok:
                         try:
                             result["douban_hit"] = altmeta.search(
@@ -1205,6 +1255,50 @@ def _apply_cast(db, item: Any, details: Optional[dict]) -> None:
                 pass
     except Exception as exc:  # noqa: BLE001 — 演员落库失败不该影响主流程
         logger.debug("演员落库失败 %s: %s", getattr(item, "name", ""), exc)
+
+
+def _parent_should_wait(db, item: Any) -> bool:
+    """单集等待父级（v2.55.0）：episode 从不走 TMDB 搜索，只靠父级继承。
+
+    父级还没 done（pending/enriching，如父级在退避期没被一起抢单）时返回 True：
+    调用方把条目打回 pending 等待（此时标 'none' 是误杀——父级 done 后本集本可继承；
+    生产实证：41,811 个标 'none' 的单集父级有 tmdb_id，本可继承却被标死）。
+    父级终态（done 但无 tmdb_id/图、failed 等）时返回 False：调用方继续走 'none'。
+
+    P2 修复（完美审查 C-P2-4）：等待计次 + 指数退避（300s→600s…上限 2h），
+    防 300s ping-pong 无限循环（父级长期 pending 时每 300s 被抢单打回一次、
+    "不计失败次数"→无限空转烧抢单与写库）。超 20 次返回 False，按父级终态
+    失败处理（走 none，管理端"重试未匹配项"可捞回）。
+    """
+    parent_status = ""
+    if item.series_id:
+        try:
+            _p = db.query(em.MediaItem).filter(
+                em.MediaItem.id == item.series_id).first()
+            parent_status = (_p.enrich_status or "") if _p is not None else ""
+        except Exception:  # noqa: BLE001 — 父级查询失败不影响主流程
+            parent_status = ""
+    if parent_status not in ("pending", "enriching"):
+        # 父级已终态（或查不到）：清等待计数，走正常流程
+        _parent_wait_counts.pop(item.id, None)
+        return False
+    waits = _parent_wait_counts.get(item.id, 0) + 1
+    if waits > _PARENT_WAIT_MAX_TIMES:
+        _parent_wait_counts.pop(item.id, None)
+        logger.warning("单集等待父级超限转 none id=%s 等待次数=%s",
+                       item.id, waits)
+        return False
+    _parent_wait_counts[item.id] = waits
+    if len(_parent_wait_counts) > 20000:
+        _parent_wait_counts.clear()
+    backoff = min(_PARENT_WAIT_BASE_SEC * (2 ** (waits - 1)),
+                  _PARENT_WAIT_MAX_SEC)
+    item.enrich_status = "pending"
+    item.enrich_next_retry_at = datetime.now() + timedelta(seconds=backoff)
+    item.enrich_claimed_at = None
+    item.enrich_claim_token = None
+    item.enrich_priority = 0
+    return True
 
 
 def _enrich_apply(db, item: Any, fetched: dict) -> None:
@@ -1507,20 +1601,10 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 生产实证：41,811 个标 'none' 的单集父级有 tmdb_id，本可继承却被标死。
     if (item_type == "episode" and not fetched.get("pure_inherit")
             and not item.metadata_source):
-        _parent_status = ""
-        if item.series_id:
-            try:
-                _p = db.query(em.MediaItem).filter(
-                    em.MediaItem.id == item.series_id).first()
-                _parent_status = (_p.enrich_status or "") if _p is not None else ""
-            except Exception:  # noqa: BLE001 — 父级查询失败不影响主流程
-                _parent_status = ""
-        if _parent_status in ("pending", "enriching"):
-            item.enrich_status = "pending"
-            item.enrich_next_retry_at = datetime.now() + timedelta(seconds=300)
-            item.enrich_claimed_at = None
-            item.enrich_claim_token = None
-            item.enrich_priority = 0
+        # P2（完美审查 C-P2-4）：父级未 done 时打回 pending 等待（_parent_should_wait
+        # 内含等待计次 + 指数退避，防 300s ping-pong 无限循环）；超限或父级已终态
+        # 时返回 False，继续往下走 'none' 终态。
+        if _parent_should_wait(db, item):
             _maybe_queue_probe(db, item)
             return
     # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。

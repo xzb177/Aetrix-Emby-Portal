@@ -133,7 +133,12 @@ _SCHEDULER_LOCK = threading.Lock()
 
 
 def bulk_extend_welfare(db: Session, min_expired_days: int, max_expired_days: int, add_days: int, granted_by=None) -> dict:
-    """批量延期：找出过期天数在 [min_expired_days, max_expired_days] 的公益用户，每人加 add_days 天。"""
+    """批量延期：找出过期天数在 [min_expired_days, max_expired_days] 的公益用户，每人加 add_days 天。
+
+    .. deprecated::
+        已无调用方——管理后台走 ``api/welfare_admin.py::welfare_bulk_extend``
+        的键集分页实现。保留仅防外部脚本引用，请勿新增调用，不删除。
+    """
     from backend.emby_server import portal
     now = datetime.now()
     # (now - exp).days >= min  <=>  exp <= now - min days

@@ -282,6 +282,10 @@ class MountFile:
     # 远端文件稳定 ID（Drive file_id）：改名/移动不变
     # 扫描器用它做文件身份，改名不丢元数据。
     file_id: str = ""
+    #: 远端最后修改时间（Unix 秒；拿不到就是 0.0）。rclone 的 list_dir 会填
+    #: ModTime 解析值；扫描器把它混入文件指纹，同尺寸内容替换也能被增量扫描发现
+    #: （完美审查 C-P2-3）。
+    mod_ts: float = 0.0
 
 
 @dataclass
@@ -1366,7 +1370,10 @@ class RemoteMount(MountProvider):
                         seen_files.add(entry.rel)
                         yield MountFile(rel=entry.rel, name=entry.name, size=entry.size,
                                         is_strm=_is_strm_name(entry.name),
-                                        file_id=getattr(entry, "file_id", "") or "")
+                                        file_id=getattr(entry, "file_id", "") or "",
+                                        # P2（完美审查 C-P2-3）：把远端 ModTime 透给扫描器，
+                                        # 用于文件指纹/目录指纹，同尺寸替换可检出。
+                                        mod_ts=getattr(entry, "mod_ts", 0.0) or 0.0)
         if walk_errors:
             # 生成器收尾时抛：已产出的文件照常处理，上层 _guarded 会把错误记进
             # failed_roots 并跳过清理阶段，避免误删这些子目录下的条目。
