@@ -596,10 +596,17 @@ def _open_remote_stream(url: str, headers: Optional[dict], offset: int):
     forward.setdefault("User-Agent", REMOTE_UA)
     if offset > 0:
         forward["Range"] = f"bytes={offset}-"
+    # A-P2-2：DNS pinning（与 streaming.serve_remote 同口径）
+    from backend.emby_server.dns_pinning import PinnedHTTPTransport
+
+    _dns_pinning: dict[str, list[str]] = {}
     client = httpx.Client(
+        transport=PinnedHTTPTransport(_dns_pinning.get),
         # P1 修复（审查）：此前 read=None 禁用读超时，源站中途卡住（不发送也不断开）
         # 时 iter_bytes 永久阻塞，单线程 worker 整个缓存管线停摆。现设块间空闲上限 60s。
-        timeout=httpx.Timeout(30.0, read=60.0), follow_redirects=False)
+        timeout=httpx.Timeout(30.0, read=60.0),
+        follow_redirects=False,
+    )
     resp = None
     try:
         current = url
@@ -610,7 +617,9 @@ def _open_remote_stream(url: str, headers: Optional[dict], offset: int):
             location = resp.headers.get("location")
             if not location:
                 break
-            target = _next_redirect(current, location)
+            target, _hop_pinning = _next_redirect(current, location)
+            # A-P2-2：校验时刻的 DNS 快照并入 pin 表，下一跳建连走 pin 住的 IP
+            _dns_pinning.update(_hop_pinning)
             resp.close()
             forward = _redirect_headers(forward, current, target)
             current = target

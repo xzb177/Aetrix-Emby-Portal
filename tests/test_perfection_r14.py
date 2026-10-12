@@ -317,7 +317,7 @@ def test_p3_5_follow_redirects_happy_path():
         # _next_redirect 的内网校验已有专门测试；沙箱 DNS 会把测试域名
         # 解析到内网，这里只测跳转跟随逻辑
         with patch("backend.emby_server.streaming._next_redirect",
-                   side_effect=lambda base, loc: urljoin(base, loc)):
+                   side_effect=lambda base, loc: (urljoin(base, loc), {})):
             resp, current, hops = await st._follow_redirects(
                 client, "https://www.googleapis.com/drive/v3/files/ABC?alt=media",
                 {}, silent=False)
@@ -354,7 +354,7 @@ def test_p3_5_follow_redirects_silent_too_many():
 
     async def go():
         with patch("backend.emby_server.streaming._next_redirect",
-                   side_effect=lambda base, loc: urljoin(base, loc)):
+                   side_effect=lambda base, loc: (urljoin(base, loc), {})):
             client, _ = _fake_redirect_client([(307, "https://example.com/loop")] * 10)
             resp, _, hops = await st._follow_redirects(
                 client, "https://example.com/start", {}, silent=True)

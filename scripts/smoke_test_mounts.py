@@ -482,10 +482,10 @@ for target, why in (("http://10.0.0.5/secret", "内网"),
         check(f"重定向目标指向{why}被拒（SSRF）", False, target)
     except mnt.MountError as exc:
         check(f"重定向目标指向{why}被拒（SSRF）", "内部地址" in str(exc), str(exc))
+_redir_target, _redir_pin = st._next_redirect("https://93.184.216.34/movie.mkv", "/other.mkv")
 check("重定向到公开地址照常放行（相对 Location 按当前主机解析）",
-      st._next_redirect("https://93.184.216.34/movie.mkv", "/other.mkv")
-      == "https://93.184.216.34/other.mkv",
-      st._next_redirect("https://93.184.216.34/movie.mkv", "/other.mkv"))
+      _redir_target == "https://93.184.216.34/other.mkv",
+      _redir_target)
 cross = st._redirect_headers({"Authorization": "Basic x", "Cookie": "c", "User-Agent": "u"},
                              "https://a.example.com/1.mkv", "https://b.example.com/2.mkv")
 check("跨主机重定向丢掉凭据头（不把 Basic / Cookie 交给重定向目标）",
