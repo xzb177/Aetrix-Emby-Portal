@@ -2223,11 +2223,6 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
   }
 }
 
-/* 首屏以下区块延迟渲染，减少初始布局/绘制成本 */
-.recent, .playing, .todo, .help, .resume {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 160px;
-}
 </style>
 
 
