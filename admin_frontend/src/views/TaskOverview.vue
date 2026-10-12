@@ -78,6 +78,8 @@ async function load(silent = false) {
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : '加载失败'
     if (!silent) cards.value = []
+    // P2-12：silent 刷新失败时页面无任何提示，补一条警告（当前显示的是旧数据）
+    else ElMessage.warning('数据刷新失败，显示的是旧数据')
   } finally {
     loading.value = false
   }

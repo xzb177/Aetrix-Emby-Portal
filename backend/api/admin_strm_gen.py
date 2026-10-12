@@ -16,7 +16,7 @@ import logging
 import threading
 from typing import Optional
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -118,7 +118,7 @@ def _read_config(db: Session) -> dict:
         "orphan_check_batch": _gen.orphan_check_batch(db),
         "orphan_check_qps": _gen.orphan_check_qps(db),
         # R10：dry_run 长期提醒——配置页"删除保护"分组据此渲染黄条
-        **_gen._dry_run_stale_info(db, _last_stats_dict(db)),
+        **_gen.dry_run_stale_info(db, _last_stats_dict(db)),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
     }
 
@@ -137,30 +137,24 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     # 源目录归一化：只允许相对路径，防止写到奇怪的地方
     src = (body.source_dir or "").strip().replace("\\", "/").strip("/")
     if ".." in src.split("/"):
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="源目录不能包含 ..")
     # 增量间隔：0=关闭，1-1440 分钟
     iv = int(body.interval_minutes or 0)
     if iv < 0 or iv > 1440:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="增量间隔应在 0-1440 分钟之间")
     # 数据源类型校验
     st = (body.source_type or "drive").strip().lower()
     if st not in ("drive", "local"):
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="数据源类型只能是 drive 或 local")
     # 并发数校验：1-10（防风控上限）
     cc = int(body.drive_concurrency or 3)
     if cc < 1 or cc > 10:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="并行列举并发数应在 1-10 之间")
     # API 速率校验：1.0-20.0 QPS
     qps = float(body.api_qps or 8.0)
     if qps < 1.0 or qps > 20.0:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="API 速率上限应在 1.0-20.0 QPS 之间")
     # 删除保护/僵尸校验 8 项：只校验+写入显式提供的值（None=没传=不改）
-    from fastapi import HTTPException
     if body.prune_max_ratio is not None and not (0 < float(body.prune_max_ratio) <= 1):
         raise HTTPException(status_code=400, detail="删除比例上限应在 (0, 1] 范围内")
     if body.prune_max_absolute is not None and int(body.prune_max_absolute) < 1:

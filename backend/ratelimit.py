@@ -12,9 +12,9 @@ import time
 from collections import defaultdict, deque
 from typing import Optional
 
-# P2（完美审查 A-P2-3）：X-Real-IP 合法性校验复用 domain_guard 的 _valid_ip，
+# P2（完美审查 A-P2-3）：X-Real-IP 合法性校验复用 domain_guard 的 is_valid_ip，
 # 横切能力只许一套，不另起。
-from backend.domain_guard import _valid_ip
+from backend.domain_guard import is_valid_ip
 
 
 class SlidingWindowLimiter:
@@ -149,7 +149,7 @@ def get_client_ip(request) -> str:
     real = (request.headers.get("x-real-ip") or "").strip()
     # P2 修复（完美审查 A-P2-3）：必须是合法 IP 才采信——回环直连者可任意伪造
     # X-Real-IP 绕限流（每次换桶）并污染 LoginLog.ip。非法值回落到 XFF/直连 IP。
-    if real and _valid_ip(real):
+    if real and is_valid_ip(real):
         return real
     # 其次取 XFF 最后一段（最近一跳追加的才是真实客户端）
     fwd = request.headers.get("x-forwarded-for")
