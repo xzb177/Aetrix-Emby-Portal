@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from email.utils import formatdate
 from typing import TYPE_CHECKING, Optional
 
@@ -33,70 +33,6 @@ if TYPE_CHECKING:
     import httpx
 
 logger = logging.getLogger(__name__)
-
-# .strm 删除链路（块3）：播放时 Drive alt=media 返回 404 → 后台标记 source_invalid_at。
-# fire-and-forget：模块级小线程池（2 封顶），热路径零阻塞；UPDATE 幂等
-# （WHERE source_invalid_at IS NULL），标记风暴打不爆 DB 连接。
-from concurrent.futures import ThreadPoolExecutor  # noqa: E402
-
-_gone_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gone-marker")
-
-
-def _drive_alt_media_file_id(url: str) -> Optional[str]:
-    """从 Drive alt=media URL 提取 file_id。
-
-    https://www.googleapis.com/drive/v3/files/<fid>?alt=media → fid；
-    非此格式（115/WebDAV/其它）返回 None。
-    """
-    try:
-        parts = urlsplit(url or "")
-        if parts.netloc != "www.googleapis.com":
-            return None
-        segs = parts.path.strip("/").split("/")
-        if len(segs) == 4 and segs[0] == "drive" and segs[1] == "v3" \
-                and segs[2] == "files" and segs[3]:
-            from urllib.parse import unquote
-            return unquote(segs[3])
-    except Exception:
-        pass
-    return None
-
-
-def note_drive_file_gone(file_id: str) -> None:
-    """后台标记源已失效（fire-and-forget 入口）：最多 2 个线程排队，失败只记日志。"""
-    try:
-        _gone_pool.submit(_mark_source_gone_sync, file_id)
-    except Exception as exc:
-        logger.warning("streaming: 提交 gone 标记失败: %s", exc)
-
-
-def _mark_source_gone_sync(file_id: str) -> None:
-    """线程池内执行：幂等 UPDATE emby_items.source_invalid_at。
-
-    drive_file_id 已有索引，单条毫秒级；WHERE source_invalid_at IS NULL 保证幂等
-    （100 个人点同一个死文件，只有第一条真正写行）。
-    用 ORM 而不用 now()：SQLite/PG 通用（now() 是 PG 方言）。
-    """
-    try:
-        from backend.emby_server import models as em
-        from backend.database import SessionLocal
-    except Exception:
-        return
-    sess = SessionLocal()
-    try:
-        sess.query(em.MediaItem).filter(
-            em.MediaItem.drive_file_id == file_id,
-            em.MediaItem.source_invalid_at.is_(None),
-        ).update(
-            {"source_invalid_at": datetime.now(timezone.utc).replace(tzinfo=None)},
-            synchronize_session=False,
-        )
-        sess.commit()
-    except Exception:
-        sess.rollback()
-        logger.warning("streaming: 标记 source_invalid_at 失败", exc_info=True)
-    finally:
-        sess.close()
 
 TRANSCODE_DIR = os.getenv("EMBY_TRANSCODE_DIR", "/tmp/emby_transcode")
 # 远程挂载（115 / WebDAV / AList）代理转发时的 UA
@@ -622,10 +558,21 @@ def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
     """
     sig_ttl = _signature_ttl_seconds(final_url)
     if sig_ttl is not None and sig_ttl <= 0:
+        logger.debug(
+            "[redirect-cache] skip store: signature expired (file_id=%s sig_ttl=%.1f)",
+            file_id,
+            sig_ttl,
+        )
         return
     ttl = _DRIVE_REDIRECT_CACHE_TTL
     if sig_ttl is not None:
         ttl = min(ttl, sig_ttl)
+    logger.debug(
+        "[redirect-cache] store: file_id=%s ttl=%.0fs host=%s",
+        file_id,
+        ttl,
+        urlsplit(final_url).hostname,
+    )
     _redirect_cache_set(file_id, final_url, ttl=ttl)
 
 
@@ -642,13 +589,31 @@ def _maybe_cache_drive_redirect(
     落点是 drive.usercontent.google.com、终态不是 403/404/410（坏 URL 不进缓存）。
     """
     if not file_id or hops <= 0 or cached_hit:
+        logger.debug(
+            "[redirect-cache] skip: file_id=%s hops=%d cached_hit=%s",
+            bool(file_id),
+            hops,
+            cached_hit,
+        )
         return
     if terminal_status in (403, 404, 410):
+        logger.debug(
+            "[redirect-cache] skip: bad terminal_status=%s (file_id=%s)",
+            terminal_status,
+            file_id,
+        )
         return
     try:
-        if "drive.usercontent.google.com" not in (urlsplit(final_url).hostname or ""):
+        host = urlsplit(final_url).hostname or ""
+        if "drive.usercontent.google.com" not in host:
+            logger.debug(
+                "[redirect-cache] skip: unexpected host=%s (file_id=%s)",
+                host,
+                file_id,
+            )
             return
-    except Exception:
+    except Exception as exc:
+        logger.debug("[redirect-cache] skip: urlsplit failed: %s", exc)
         return
     _redirect_cache_store_drive_url(file_id, final_url)
 
@@ -871,19 +836,6 @@ async def serve_remote_async(
 
     if resp.status_code >= 400:
         status = resp.status_code
-        # 块3 播放兜底：只认 Drive alt=media 端点的 404
-        # （= 文件不存在：删除/移出共享/进回收站不可下载，语义明确）。
-        # 403 不认：可能是 SA 权限/限流/共享设置变更，可能是暂时的，标记会误伤。
-        # fire-and-forget 标记 source_invalid_at（热路径零阻塞），对客户端抛 410。
-        if status == 404:
-            fid = _drive_alt_media_file_id(current)
-            if fid:
-                note_drive_file_gone(fid)
-                await resp.aclose()
-                logger.warning("远程媒体 Drive 文件已删除 file_id=%s，返回 410", fid)
-                raise HTTPException(
-                    status_code=410,
-                    detail="该文件已在网盘中删除或移出共享，无法播放")
         await resp.aclose()
         logger.warning("远程媒体源站返回 %s: %s", status, url.split("?")[0])
         raise HTTPException(status_code=502 if status >= 500 else status, detail=f"源站返回 {status}")
