@@ -793,6 +793,13 @@ export interface PanelHealth {
   database: string
   online_users: number
   emby_server: string
+  /** v2.56.0 可观测快照（后端开关 OBSERVABILITY_ENABLED 控制，未开时为 { enabled: false }） */
+  observability?: {
+    enabled: boolean
+    level?: 'ok' | 'warn' | 'down'
+    subsystems?: Record<string, { key: string; status: 'ok' | 'warn' | 'down'; message: string; metrics: Record<string, any> }>
+    thresholds?: Record<string, number>
+  }
 }
 
 /** EM 面板健康状态；不暴露密钥与连接串，仅返回可运营的信息。

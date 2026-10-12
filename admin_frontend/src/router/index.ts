@@ -74,6 +74,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'client-policy', name: 'ClientPolicy', component: () => import('@/views/ClientPolicy.vue'), meta: { title: '客户端策略' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '操作日志' } },
       { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '服务健康' } },
+      // v2.56.0 健康一页：可观测底座的上层 UI，十个子系统红黄绿灯同屏
+      { path: 'health-board', name: 'Health', component: () => import('@/views/Health.vue'), meta: { title: '健康总览' } },
       // 服管理以绝对路径声明：跳转契约检查要求跳转目标与声明的 path 完全一致
       { path: '/realms', name: 'Realms', component: () => import('@/views/Realms.vue'), meta: { title: '服管理' } },
       { path: 'servers', name: 'Servers', component: () => import('@/views/Servers.vue'), meta: { title: '服务器与线路' } },
