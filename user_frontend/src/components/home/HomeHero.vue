@@ -90,6 +90,8 @@ const emit = defineEmits<{
 .hero-inner { position: relative; z-index: 1; padding: 40px 0; }
 .hero-feature, .hero-title { font-family: "Noto Serif SC", serif; font-size: clamp(28px, 5vw, 48px); margin: 8px 0; }
 .hero-meta, .hero-whisper, .hero-status { margin: 6px 0; }
+/* 问候低语：长短两版，默认显示长版，窄屏切短版（从 HomeView 迁移，#706 抽组件时遗漏导致两版同时显示） */
+.whisper-short { display: none; }
 .hero-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,.15); font-size: 12px; margin-right: 8px; }
 .hero-cta { display: flex; gap: 12px; margin-top: 16px; }
 .hero-steps { display: flex; gap: 16px; list-style: none; padding: 0; margin: 16px 0 0; }
@@ -102,4 +104,10 @@ const emit = defineEmits<{
 .hero.is-ready .d4 { transition-delay: .26s; }
 .hero.is-ready .d5 { transition-delay: .33s; }
 .hero.is-ready .d6 { transition-delay: .4s; }
+
+/* 窄屏问候用短版（"晚上好"而不是"晚上好，今晚看什么？"），和票根卡 stat-short 同一套路 */
+@media (max-width: 640px) {
+  .whisper-long { display: none; }
+  .whisper-short { display: inline; }
+}
 </style>
