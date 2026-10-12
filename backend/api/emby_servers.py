@@ -43,6 +43,30 @@ def _validate_url(raw_url: str) -> str:
     return url
 
 
+def _same_url(a: str, b: str) -> bool:
+    """两个 URL 是否指向同一地址（P0-3 密钥复用判定）。
+
+    归一化：去首尾空白/末尾斜杠、scheme+host 小写、默认端口折叠。
+    只要有一个解析失败就判为不同（fail-closed：不复用旧密钥）。
+    """
+    try:
+        na = urlparse(a.strip().rstrip("/"))
+        nb = urlparse(b.strip().rstrip("/"))
+        if not na.hostname or not nb.hostname:
+            return False
+        def _norm(p):
+            scheme = p.scheme.lower()
+            host = p.hostname.lower()
+            port = p.port
+            if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+                port = None
+            path = (p.path or "").rstrip("/")
+            return (scheme, host, port, path)
+        return _norm(na) == _norm(nb)
+    except Exception:
+        return False
+
+
 def value(db: Session, key: str, default: str = "", realm_id: Optional[int] = None) -> str:
     """读配置：收敛到 ``backend.servers.config_value``（横切能力只许一套）"""
     return registry.config_value(db, key, default, realm_id)
@@ -166,6 +190,9 @@ async def save_server(
     url = _validate_url(request.url)
     prefix = "emby_managed" if request.mode == "managed_ea" else "emby_external"
     api_key = request.api_key or ""
+    # P0-3 修复：先记下旧地址/旧密钥。换地址时不允许静默复用旧密钥去探测新主机。
+    old_url = await run_in_threadpool(value, db, "emby_external_url", "", scope_id)
+    old_key = await run_in_threadpool(value, db, "emby_external_api_key", "", scope_id)
 
     def save_connection() -> None:
         """先把这次填的配置落库（同步；下放线程池）"""
@@ -179,8 +206,18 @@ async def save_server(
 
     await run_in_threadpool(save_connection)
 
-    saved_key = await run_in_threadpool(value, db, "emby_external_api_key", "", scope_id)
-    result = await probe(request.mode, url, api_key or saved_key)
+    # P0-3 修复：探测用的密钥必须显式提供，或地址未变时复用旧密钥。
+    # 换地址又不给新密钥时，禁止把旧密钥发给新主机（此前 api_key or saved_key 无条件复用）。
+    if request.mode == "external":
+        if api_key.strip():
+            probe_key = api_key.strip()
+        elif _same_url(url, old_url) and old_key:
+            probe_key = old_key
+        else:
+            raise HTTPException(400, "更换服务器地址时必须提供新的 API 密钥，不能复用旧密钥")
+    else:
+        probe_key = api_key.strip() or old_key
+    result = await probe(request.mode, url, probe_key)
 
     def record_probe() -> None:
         """记下探测结论，并同步进「服务器」清单（同步；下放线程池）"""
@@ -250,8 +287,17 @@ async def test_server(
     # 先校验地址再探测：校验不能只挂在 probe 里，否则替换探测器时就绕过了
     scope_id = await run_in_threadpool(realms.active_realm_id, db)
     url = _validate_url(request.url)
+    saved_url = await run_in_threadpool(value, db, "emby_external_url", "", scope_id)
     saved_key = await run_in_threadpool(value, db, "emby_external_api_key", "", scope_id)
-    result = await probe(request.mode, url, request.api_key or saved_key)
+    # P0-3 修复：只在目标地址与已保存地址一致时才允许复用旧密钥。
+    # 此前 saved_key 无条件发给 request.url 指定的任意主机，一次复制粘贴即外泄。
+    if request.api_key and request.api_key.strip():
+        api_key = request.api_key.strip()
+    elif _same_url(url, saved_url):
+        api_key = saved_key
+    else:
+        raise HTTPException(400, "更换服务器地址时必须提供新的 API 密钥，不能复用旧密钥")
+    result = await probe(request.mode, url, api_key)
     prefix = "emby_managed" if request.mode == "managed_ea" else "emby_external"
 
     def record() -> None:
