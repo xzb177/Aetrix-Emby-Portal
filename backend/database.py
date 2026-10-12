@@ -813,6 +813,14 @@ def _auto_migrate():
         ("red_packets", [
             ("idempotency_key", "VARCHAR(64)", "NULL"),
         ]),
+        # 系统告警（事件型规则）：AlertRule 表扩展事件类型/接收人/冷却列。
+        # 老库补列后 event_type/recipients 为 NULL（= legacy 指标型规则，行为不变），
+        # cooldown_sec 默认 3600（与模型 default 一致）。
+        ("alert_rules", [
+            ("event_type", "VARCHAR(50)", "NULL"),
+            ("recipients", "TEXT", "NULL"),
+            ("cooldown_sec", "INTEGER", "3600"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
