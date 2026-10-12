@@ -1704,6 +1704,12 @@ export interface StrmGenConfig {
   drive_id: string
   /** 清理 Drive 上已不存在的 .strm 文件及状态行（不可逆） */
   prune: boolean
+  /** 增量间隔分钟数，0=关闭 */
+  interval_minutes: number
+  /** 数据源类型：drive=Google Drive，local=本地目录 */
+  source_type: string
+  /** 本地源根目录 */
+  local_root: string
   /** 上次执行时间（ISO 字符串），可能为空 */
   last_run: string
 }
@@ -1752,6 +1758,9 @@ export const saveStrmGenConfig = (data: {
   schedule: string
   drive_id: string
   prune: boolean
+  interval_minutes: number
+  source_type: string
+  local_root: string
 }) => put<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`, data)
 
 /** 手动触发一次生成（full=false 增量，true 全量）；已有任务在跑时后端返回 success=false */
