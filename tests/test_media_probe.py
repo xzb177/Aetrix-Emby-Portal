@@ -243,7 +243,7 @@ class TestRetry:
             assert item.probe_status == "pending"
             assert item.probe_attempts == 1
             delta = (item.probe_next_retry_at - datetime.now()).total_seconds()
-            assert 50 <= delta <= 70, delta  # 基数 60s
+            assert 45 <= delta <= 75, delta  # 基数 60s ±20% 抖动
 
             item.probe_attempts = media_probe.PROBE_MAX_ATTEMPTS - 1
             item.probe_status = "probing"
@@ -267,7 +267,7 @@ class TestRetry:
             with mock.patch.object(media_probe, "probe_metadata",
                                    return_value=fake_probe), \
                  mock.patch.object(media_probe, "resolve_probe_input",
-                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                                   return_value=(("/tmp/x.mkv", {}, 0, ""), None)):
                 status = media_probe.probe_one(db, item)
             db.refresh(item)
             assert status == "failed"
@@ -288,7 +288,7 @@ class TestRetry:
             with mock.patch.object(media_probe, "probe_metadata",
                                    return_value=fake_probe), \
                  mock.patch.object(media_probe, "resolve_probe_input",
-                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                                   return_value=(("/tmp/x.mkv", {}, 0, ""), None)):
                 status = media_probe.probe_one(db, item)
             db.refresh(item)
             assert status == "done"
@@ -307,7 +307,7 @@ class TestRetry:
             with mock.patch.object(media_probe, "probe_metadata",
                                    return_value={"duration_ticks": 0}), \
                  mock.patch.object(media_probe, "resolve_probe_input",
-                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                                   return_value=(("/tmp/x.mkv", {}, 0, ""), None)):
                 status = media_probe.probe_one(db, item)
             db.refresh(item)
             assert status == "pending"
@@ -323,7 +323,7 @@ class TestResolve:
         lib = _make_lib(db)
         try:
             item = _make_item(db, lib, file_path="/tmp/definitely_not_here_xyz.mkv")
-            assert media_probe.resolve_probe_input(db, item) is None
+            assert media_probe.resolve_probe_input(db, item) == (None, None)
         finally:
             _cleanup(db, lib)
             db.close()
@@ -333,7 +333,7 @@ class TestResolve:
         lib = _make_lib(db)
         try:
             item = _make_item(db, lib, file_path="mount://999999/nope.mkv")
-            assert media_probe.resolve_probe_input(db, item) is None
+            assert media_probe.resolve_probe_input(db, item) == (None, None)
         finally:
             _cleanup(db, lib)
             db.close()
@@ -343,7 +343,7 @@ class TestResolve:
         lib = _make_lib(db)
         try:
             item = _make_item(db, lib, file_path="  ")
-            assert media_probe.resolve_probe_input(db, item) is None
+            assert media_probe.resolve_probe_input(db, item) == (None, None)
         finally:
             _cleanup(db, lib)
             db.close()
@@ -431,8 +431,9 @@ class TestProbeUrlConversion:
                 f.write("https://drive.google.com/uc?export=download&id=FILEID99&confirm=t\n")
                 strm_path = f.name
             item = _make_item(db, lib, file_path=strm_path)
-            resolved = media_probe.resolve_probe_input(db, item)
+            resolved, kind = media_probe.resolve_probe_input(db, item)
             assert resolved is not None
+            assert kind is None
             path, headers, size, container = resolved
             assert path == "https://www.googleapis.com/drive/v3/files/FILEID99?alt=media"
             assert isinstance(headers, dict)
@@ -454,8 +455,9 @@ class TestProbeUrlConversion:
                 f.write("https://cdn.example.com/video/abc.mkv\n")
                 strm_path = f.name
             item = _make_item(db, lib, file_path=strm_path)
-            resolved = media_probe.resolve_probe_input(db, item)
+            resolved, kind = media_probe.resolve_probe_input(db, item)
             assert resolved is not None
+            assert kind is None
             path, headers, size, container = resolved
             assert path == "https://cdn.example.com/video/abc.mkv"
         finally:
@@ -496,7 +498,7 @@ class TestQuotaRetry:
             with mock.patch.object(media_probe, "probe_metadata",
                                    return_value=fake_probe), \
                  mock.patch.object(media_probe, "resolve_probe_input",
-                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                                   return_value=(("/tmp/x.mkv", {}, 0, ""), None)):
                 status = media_probe.probe_one(db, item)
             db.refresh(item)
             assert status == "pending"
@@ -519,7 +521,7 @@ class TestQuotaRetry:
             with mock.patch.object(media_probe, "probe_metadata",
                                    return_value=fake_probe), \
                  mock.patch.object(media_probe, "resolve_probe_input",
-                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                                   return_value=(("/tmp/x.mkv", {}, 0, ""), None)):
                 status = media_probe.probe_one(db, item)
             db.refresh(item)
             assert status == "pending"
@@ -539,7 +541,7 @@ class TestQuotaRetry:
             with mock.patch.object(media_probe, "probe_metadata",
                                    return_value=fake_probe), \
                  mock.patch.object(media_probe, "resolve_probe_input",
-                                   return_value=("/tmp/x.mkv", {}, 0, "")):
+                                   return_value=(("/tmp/x.mkv", {}, 0, ""), None)):
                 status = media_probe.probe_one(db, item)
             db.refresh(item)
             assert status == "failed"

@@ -910,6 +910,10 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
                     data["_error"] = "not_found"
                 elif http_code == 401:
                     data["_error"] = "auth"
+                elif http_code == 429:
+                    data["_error"] = "ratelimit"
+                elif http_code in (500, 502, 503, 504):
+                    data["_error"] = "server_error"
                 else:
                     data["_error"] = f"http_{http_code}"
         return data

@@ -108,7 +108,7 @@ def test_probe_one_old_json_without_streams_still_probes(db):
                height=1080, size=1, file_mtime=1.0)
     with mock.patch.object(persist, "deserialize", return_value=True), \
             mock.patch.object(media_probe, "resolve_probe_input",
-                              return_value=("http://x/v.mkv", {}, 0, "")), \
+                              return_value=(("http://x/v.mkv", {}, 0, ""), None)), \
             mock.patch.object(media_probe, "probe_metadata", return_value=dict(PROBE)):
         assert media_probe.probe_one(db, item) == "done"
     assert media_probe.has_internal_streams(db, item)
