@@ -84,9 +84,7 @@ export const toastSystem = {
   /** 支付结果未知（轮询超时等，不鼓励重复支付） */
   payUnknown: '暂时无法确认支付结果，请先查看订单状态',
   /** 没有可用支付方式（配置问题，不推给管理员） */
-  noPayMethod: '当前没有可用的支付方式，请稍后再试',
   /** 没拿到支付链接 */
-  payLinkFailed: '没能获取到支付链接，请稍后重试',
 } as const
 
 /**
@@ -97,29 +95,7 @@ export const toastSystem = {
 export const toastFallback = {
   /** 通用兜底 */
   saveFailed: '暂时没能保存，请稍后重试',
-  transferFailed: '转账没能完成，请稍后重试',
-  redeemFailed: '核销没能完成，请稍后重试',
   checkinFailed: '签到没能完成，请稍后重试',
-  submitFailed: '提交没能完成，请稍后重试',
-  withdrawFailed: '撤回没能完成，请稍后重试',
-  voteFailed: '附议没能完成，请稍后重试',
-  ticketCreateFailed: '工单没能创建，请稍后重试',
-  ticketReplyFailed: '回复没能发送，请稍后重试',
-  ticketCloseFailed: '工单没能关闭，请稍后重试',
-  cancelFailed: '终止没能完成，请稍后重试',
-  unlockFailed: '解锁没能完成，请稍后重试',
-  removeFailed: '移除没能完成，请稍后重试',
-  settingFailed: '设置没能保存，请稍后重试',
-  stopFailed: '结束播放没能完成，请稍后重试',
-  orderFailed: '下单没能完成，请稍后重试',
-  markReadFailed: '标记没能完成，请稍后重试',
-  favoriteFailed: '收藏没能更新，请稍后重试',
-  markWatchedFailed: '标记没能更新，请稍后重试',
-  calendarFailed: '日历暂时没能加载，请稍后重试',
-  loadDetailFailed: '详情暂时没能加载，请稍后重试',
-  loadEpisodesFailed: '剧集暂时没能加载，请稍后重试',
-  loadEpisodeListFailed: '选集暂时没能加载，请稍后重试',
-  loadMediaFailed: '影片信息暂时没能加载，请稍后重试',
 } as const
 
 export type ToastFallbackKey = keyof typeof toastFallback
