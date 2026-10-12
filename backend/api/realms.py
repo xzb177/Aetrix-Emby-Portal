@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from backend import models, realms
 from backend import servers as registry
 from backend.api.admin_core import _audit, get_current_admin
+from backend.api.pagination import pagination_params
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -202,9 +203,11 @@ def realm_subscriptions(
         query = query.filter(or_(models.UserSubscription.status == "expired",
                                  models.UserSubscription.end_date <= now))
 
+    # F-P1-5：分页参数统一钳制（limit∈[1,200]，offset≥0；原 min() 只限上界，limit=-1 可绕过）
+    limit, offset = pagination_params(limit, offset)
     total = query.count()
     rows = (query.order_by(models.UserSubscription.end_date.asc())
-            .offset(offset).limit(min(limit, 200)).all())
+            .offset(offset).limit(limit).all())
 
     user_ids = {r.user_id for r in rows}
     users = {
