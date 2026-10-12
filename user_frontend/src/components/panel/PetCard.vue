@@ -1,0 +1,136 @@
+<template>
+  <div class="v4-pet">
+    <div class="evo" :aria-label="`馆灵：${pet.name}`">{{ pet.icon }}</div>
+    <h3>{{ pet.name }} · {{ stageLabel }}</h3>
+    <p>
+      已经陪你看了 {{ hoursText }}<br />
+      {{ flavorText }}
+    </p>
+    <div
+      class="evo-bar"
+      role="progressbar"
+      :aria-valuenow="Math.round(pet.progress * 100)"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-label="`进化进度 ${Math.round(pet.progress * 100)}%`"
+    >
+      <i :style="{ width: barWidth }"></i>
+    </div>
+    <div class="next">{{ nextText }}</div>
+    <div class="evo-steps">
+      <span
+        v-for="(s, i) in pet.stages"
+        :key="s.name"
+        :class="{ on: i <= pet.stage }"
+      >{{ s.icon }} {{ s.name }}</span>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+import type { PetData } from '@/composables/usePanelApi'
+
+const props = defineProps<{ pet: PetData }>()
+
+/** 阶段文案：按索引给中文阶段名 */
+const STAGE_LABELS = ['雏形', '成长期', '成熟期', '蜕变期', '完全体']
+
+const stageLabel = computed(() => STAGE_LABELS[Math.min(props.pet.stage, STAGE_LABELS.length - 1)] || '成长期')
+
+const hoursText = computed(() => {
+  const h = props.pet.hours || 0
+  return h >= 1 ? `${Math.round(h)} 小时` : `${Math.round(h * 60)} 分钟`
+})
+
+/** 文案：下一阶段还差多少 */
+const nextText = computed(() => {
+  const p = props.pet
+  if (p.next_name && p.next_hours != null) {
+    const remain = Math.max(0, p.next_hours - p.hours)
+    const remainText = remain >= 1 ? `${Math.ceil(remain)} 小时` : `${Math.ceil(remain * 60)} 分钟`
+    return `再看 ${remainText}，进化为「${p.next_name}」`
+  }
+  return '已达最高形态 · 它是你的了 🐉'
+})
+
+/** 趣味文案：根据当前阶段变化 */
+const flavorText = computed(() => {
+  const h = new Date().getHours()
+  const night = h >= 23 || h < 5
+  if (props.pet.stage <= 0) return '它刚睁开眼睛，好奇地看着你的片库'
+  if (night) return '它记得你最爱在深夜看悬疑片'
+  return '你看的每一分钟，都在喂养它'
+})
+
+const barWidth = computed(() => `${Math.round((props.pet.progress || 0) * 100)}%`)
+</script>
+
+<style scoped>
+/* 取自设计稿 .pet / .evo / .evo-bar / .evo-steps */
+.v4-pet {
+  background: #fffdf6;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  text-align: center;
+}
+.v4-pet .evo {
+  font-size: 56px;
+  margin: 6px 0;
+  animation: v4-bob 3s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .v4-pet .evo {
+    animation: none;
+  }
+}
+@keyframes v4-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+.v4-pet h3 {
+  font-size: 15px;
+  margin: 0;
+}
+.v4-pet p {
+  font-size: 12px;
+  color: var(--ink2);
+  margin-top: 6px;
+  line-height: 1.8;
+}
+.evo-bar {
+  height: 10px;
+  background: var(--paper2);
+  border-radius: 6px;
+  margin: 14px 4px 6px;
+  overflow: hidden;
+}
+.evo-bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold), var(--red));
+  border-radius: 6px;
+  transition: width 1s ease;
+}
+.v4-pet .next {
+  font-size: 11px;
+  color: var(--ink2);
+}
+.evo-steps {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  font-size: 10px;
+  color: var(--ink2);
+}
+.evo-steps .on {
+  color: var(--red);
+  font-weight: 700;
+}
+</style>

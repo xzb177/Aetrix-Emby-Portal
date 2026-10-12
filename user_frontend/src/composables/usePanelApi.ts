@@ -55,6 +55,51 @@ export interface ParcelsData {
   parcels: ParcelItem[]
 }
 
+/** 收藏家：口味护照 / 成就星图 / 馆灵 */
+export interface TasteStamp {
+  name: string
+  stamped: boolean
+  count: number
+}
+
+export interface Achievement {
+  key: string
+  name: string
+  desc: string
+  icon: string
+  unlocked: boolean
+}
+
+export interface PetStage {
+  name: string
+  icon: string
+}
+
+export interface PetData {
+  stage: number
+  name: string
+  icon: string
+  hours: number
+  next_name: string | null
+  next_icon: string | null
+  next_hours: number | null
+  progress: number
+  stages: PetStage[]
+}
+
+export interface CollectorData {
+  nickname?: string
+  points?: number
+  watch_hours?: number
+  streak?: number
+  achievement_count?: number
+  tastes?: Record<string, TasteStamp>
+  achievements?: Achievement[]
+  new_unlocks?: string[]
+  pet?: PetData
+  [k: string]: unknown
+}
+
 async function get<T>(url: string): Promise<T> {
   const res = await api.get(url)
   return unwrap<T>(res)
@@ -77,7 +122,7 @@ export const panelApi = {
   /** 每日一封 */
   letter: () => get<Record<string, unknown>>('/api/panel/letter'),
   /** 收藏家数据 */
-  collector: () => get<Record<string, unknown>>('/api/panel/collector'),
+  collector: () => get<CollectorData>('/api/panel/collector'),
   /** 服务器状态 */
   server: () => get<Record<string, unknown>>('/api/panel/server'),
   /** 机关拨杆（仅管理员） */
