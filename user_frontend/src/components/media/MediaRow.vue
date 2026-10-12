@@ -52,6 +52,7 @@ withDefaults(defineProps<Props>(), {
 }
 
 @media (min-width: 1024px) {
+  /* 桌面宽屏：--au-bp-lg 的补集（>1024px），值与断点表同源 */
   .media-row :deep(.media-card) {
     width: 144px;
   }
@@ -61,7 +62,7 @@ withDefaults(defineProps<Props>(), {
   }
 }
 
-@media (max-width: 768px) {
+@media (--au-bp-md) {
   .media-row :deep(.media-card) {
     width: 104px;
   }

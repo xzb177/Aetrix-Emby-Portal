@@ -185,50 +185,14 @@
   }
 }
 
-/* ==================== 超小屏幕优化 ==================== */
-@media (max-width: 480px) {
-  /* 暗房影院：原先这里有 .hero-title / .stat-value / .plan-card / .plan-price 的
-     !important 字号覆盖（旧 Neo-Noir 体系遗留），会把首页问候、票根大数字、
-     套餐价格一律压成 18~20px，各视图自己的字号层级全部失效——已删除，交给视图。 */
-  /* SYS-5：删除 html { font-size: 14px } 全局降字号——它让所有 rem 再缩 12.5%，
-     0.75rem 正文在小屏上只剩 10.5px。字号下限由各处 12px 直接保证。 */
+/* ==================== 超小屏幕优化（480px） ====================
+   home-refactor 已删除：该断点块内 5 条规则（.hero-actions / .hero-btn / .stat-card /
+   .login-form / .login-title）经全项目 class 用量核实，零 template 使用，纯死代码。
+   如未来确需超小屏特例，按 §3.1 在此注明原因后加回，不许新增第二处 480。 */
 
-  .hero-actions {
-    flex-direction: column;
-    width: 100%;
-  }
-
-  .hero-btn {
-    width: 100%;
-    justify-content: center;
-  }
-
-  /* 统计卡片更紧凑 */
-  .stat-card {
-    padding: var(--neo-space-3, 12px) !important;
-  }
-
-  /* 登录表单 */
-  .login-form {
-    padding: var(--neo-space-6, 24px) !important;
-  }
-
-  .login-title {
-    font-size: var(--neo-font-size-xl, 18px) !important;
-  }
-
-}
-
-/* ==================== 平板优化 ==================== */
-@media (min-width: 769px) and (max-width: 1024px) {
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .hero-content {
-    max-width: 600px;
-  }
-}
+/* ==================== 平板优化（769px~1024px） ====================
+   home-refactor 已删除：块内 .stats-grid / .hero-content 零 template 使用，纯死代码。
+   769 形态分界统一写成 @media not (--au-bp-md)，不单独命名。 */
 
 /* ==================== 横屏优化 ==================== */
 @media (max-height: 600px) and (orientation: landscape) {
