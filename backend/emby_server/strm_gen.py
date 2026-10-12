@@ -115,6 +115,37 @@ def drive_id_config(db) -> str:
     return _db_config(db, CONFIG_DRIVE_ID, "").strip()
 
 
+# 源失败记录（供 system_alerts 的 strm_source_failed 事件读取）。
+CONFIG_SOURCE_FAILURES = "strm_gen_source_failures"
+
+
+def _record_source_failures(db, failed: list[dict]) -> None:
+    """把本轮列举失败的源记入 SystemConfig，供告警系统读取。
+
+    格式：[{"did":..., "error":..., "at": ISO}]。只保留最近 20 条。
+    写入失败不影响主流程（告警是辅助能力）。
+    """
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, CONFIG_SOURCE_FAILURES, "") or "[]"
+        try:
+            records = json.loads(raw)
+        except Exception:
+            records = []
+        now = datetime.now(timezone.utc).isoformat()
+        for f in failed:
+            records.append({
+                "did": f.get("did", ""),
+                "error": str(f.get("error", ""))[:300],
+                "at": now,
+            })
+        records = records[-20:]
+        store.write_values(db, {CONFIG_SOURCE_FAILURES: json.dumps(records)}, {})
+        db.commit()
+    except Exception as exc:
+        logger.warning("strm_gen: 记录源失败失败: %s", exc)
+
+
 def list_drives() -> list[dict]:
     """列出发现的 Drive，供管理后台展示/选择。
 
@@ -412,10 +443,15 @@ def _resolve_dir_id(fetch, drive_id: str, dir_path: str) -> Optional[str]:
     return parent_id
 
 
-def iter_drive_videos(drive_id: str, dir_path: str):
+def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True):
     """流式列出源目录下所有视频文件。
 
     yield (root_relpath, file_id, size)。root_relpath 为相对网盘根路径。
+
+    strict=True（默认）：源目录不存在时抛 RuntimeError（显式配置的盘，
+    管理员需要知道配错了）。
+    strict=False：源目录不存在时记 warning 并返回空（自动发现模式下，
+    不是每个盘都有媒体目录，缺目录是预期情况，不应报错）。
 
     实现：扁平全量拉取 + 本地建树。
     旧实现是 BFS、每个目录发一次 files.list（"'{folder_id}' in parents"）：
@@ -434,6 +470,10 @@ def iter_drive_videos(drive_id: str, dir_path: str):
     fetch = _page_fetcher(drive_id)  # 内部已做 SA 凭据检查 + 401 自动刷新
     dir_id = _resolve_dir_id(fetch, drive_id, dir_path)
     if dir_path and not dir_id:
+        if not strict:
+            logger.warning("strm_gen: drive=%s 上找不到源目录 %r，已跳过该盘",
+                           drive_id, dir_path)
+            return
         raise RuntimeError(f"Drive 上找不到源目录: {dir_path!r}")
 
     # 1. 扁平拉取：全盘条目（文件+目录）一次拉完，本地按 parents 建树。
@@ -853,18 +893,23 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         # 并发数按配置（默认 3，钳制 [1, 10]）
         concurrency = drive_concurrency(db)
 
+        # 自动发现模式（未显式配置 drive_id）时，源目录不存在的盘直接跳过
+        # 而非报错——不是每个盘都有媒体目录。
+        auto_discover = not bool(drive_id)
+
         def _list_one_drive(did: str) -> dict:
             """单个 drive 的列举 worker（线程池内执行）。
 
             返回 {"did":..., "videos":[...], "retries":N, "new_token":..., "error":None/str}。
             异常不向外抛，记进 error 字段由主线程统一处理——某盘失败不影响
-            其他盘的列举结果收集，但主线程会按"任一来源失败则整轮失败"处理。
+            其他盘的列举结果收集（失败的盘被跳过并告警）。
 
             增量检查点（changes page token）也在这里带回：主线程在整轮成功后
             统一保存（失败时不保存，下轮用旧 token 重放）。
             """
             dc.reset_total_retry_count()
-            lister = strm_source.DriveChangesLister(did, src_prefix)
+            lister = strm_source.DriveChangesLister(
+                did, src_prefix, strict_dir=not auto_discover)
             videos: list[tuple[str, str, int]] = []
             try:
                 # 增量模式走 Changes API；全量模式（full=True）回退到 files.list
@@ -940,11 +985,20 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
             if r["new_token"]:
                 listers.append((did, r["new_token"]))
         if failed:
-            # 任一来源列举失败 → 整轮标记失败（保守策略，不静默丢数据）
-            first = failed[0]
-            _set_progress(phase="error")
-            _add_error(f"列举失败 [{first['did']}]: {first['error']}")
-            return {"ok": False, "error": f"列举失败 [{first['did']}]: {first['error']}"}
+            # 单个来源失败 → 跳过该盘、记录并告警，其他盘继续生成。
+            # 只有当所有来源都失败时整轮才标记失败（之前是任一失败就整轮失败，
+            # 导致一个配错的盘拖死整个生成器）。
+            succeeded = [r for r in drive_results if not r["error"]]
+            for f in failed:
+                logger.warning("strm_gen: drive=%s 列举失败，已跳过该盘: %s",
+                               f["did"], f["error"])
+                _add_error(f"列举失败 [{f['did']}]: {f['error']}（已跳过该盘）")
+            _record_source_failures(db, failed)
+            if not succeeded:
+                first = failed[0]
+                _set_progress(phase="error")
+                return {"ok": False,
+                        "error": f"列举失败 [{first['did']}]: {first['error']}"}
 
     # 增量状态与已用路径在各数据源之间共享（_resolve_collision 跨盘防撞车）
     state = {} if full else _load_state()

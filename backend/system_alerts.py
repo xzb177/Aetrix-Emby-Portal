@@ -50,6 +50,7 @@ EVT_DISK_FULL = "disk_full"
 EVT_SA_QUOTA_LOW = "sa_quota_low"
 EVT_SCAN_FAILED = "scan_failed"
 EVT_API_ERROR_HIGH = "api_error_high"
+EVT_STRM_SOURCE_FAILED = "strm_source_failed"
 
 ALL_EVENTS = (
     EVT_PROBE_QUEUE_HIGH,
@@ -58,6 +59,7 @@ ALL_EVENTS = (
     EVT_SA_QUOTA_LOW,
     EVT_SCAN_FAILED,
     EVT_API_ERROR_HIGH,
+    EVT_STRM_SOURCE_FAILED,
 )
 
 # ---------------------------------------------------------------------------
@@ -167,6 +169,13 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
         "severity": "warning",
         "channels": ["in_app", "telegram"],
         "cooldown_sec": 3600,
+    },
+    EVT_STRM_SOURCE_FAILED: {
+        "name": "strm 数据源失败",
+        "threshold": lambda: 0.0,  # 条件型：有失败记录即触发
+        "severity": "warning",
+        "channels": ["in_app", "telegram"],
+        "cooldown_sec": 21600,
     },
 }
 
@@ -570,6 +579,52 @@ def _check_api_error(subs: dict, rule) -> Optional[tuple[str, str, dict]]:
     return None
 
 
+def _check_strm_source_failed(subs: dict, rule, db=None) -> Optional[tuple[str, str, dict]]:
+    """strm 生成器数据源失败：读 strm_gen 记录的源失败列表。
+
+    需要 db 参数（读 SystemConfig），check_all 对本事件特殊传 db。
+    """
+    try:
+        from backend.integrations import store
+        from backend.database import SessionLocal
+        own = db is None
+        if own:
+            db = SessionLocal()
+        try:
+            raw = store.get_value(db, "strm_gen_source_failures", "") or "[]"
+        finally:
+            if own:
+                db.close()
+        import json
+        records = json.loads(raw) if raw else []
+    except Exception:
+        return None
+    if not records:
+        return None
+    # 只看最近 24 小时的失败（旧记录不重复告警，冷却机制会去重）
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    recent = []
+    for r in records:
+        try:
+            at = datetime.fromisoformat(str(r.get("at", "")))
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            if at >= cutoff:
+                recent.append(r)
+        except Exception:
+            continue
+    if not recent:
+        return None
+    dids = ", ".join(sorted({str(r.get("did", "?")) for r in recent})[:3])
+    first_err = str(recent[-1].get("error", ""))[:120]
+    return (f"{len(recent)} 个 strm 数据源失败（{dids}）",
+            f"strm 生成器有 {len(recent)} 个数据源列举失败已跳过"
+            f"（{dids}），最新错误：{first_err}。"
+            "请检查数据源配置（管理后台 → strm 生成器）。",
+            {"failed_count": len(recent), "dids": dids})
+
+
 # 事件 → 检查函数（新增事件类型只加一行）
 _CHECKERS = {
     EVT_PROBE_QUEUE_HIGH: _check_probe_queue,
@@ -578,6 +633,7 @@ _CHECKERS = {
     EVT_SA_QUOTA_LOW: _check_sa_quota,
     EVT_SCAN_FAILED: _check_scan_failed,
     EVT_API_ERROR_HIGH: _check_api_error,
+    EVT_STRM_SOURCE_FAILED: _check_strm_source_failed,
 }
 
 
@@ -619,7 +675,7 @@ def check_all(db=None) -> dict:
                     if rule is None:
                         result["skipped"].append(event_type)
                         continue
-                    if event_type == EVT_ENRICH_STALLED:
+                    if event_type in (EVT_ENRICH_STALLED, EVT_STRM_SOURCE_FAILED):
                         hit = checker(subs, rule, db)
                     else:
                         hit = checker(subs, rule)

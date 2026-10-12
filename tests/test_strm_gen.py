@@ -295,7 +295,7 @@ class TestRunGenerationMocked:
 
     def _patch_all(self, tmp_path, monkeypatch, videos, state=None, drives=None):
         monkeypatch.setattr(sg, "iter_drive_videos",
-                            lambda drive_id, dir_path: iter(list(videos)))
+                            lambda drive_id, dir_path, strict=True: iter(list(videos)))
         monkeypatch.setattr(sg, "_discover_drives",
                             lambda: drives if drives is not None else {"d1": ["sa1"]})
         monkeypatch.setattr(sg, "_container_strm_root", lambda db: str(tmp_path))
@@ -357,7 +357,7 @@ class TestRunGenerationMocked:
 
     def test_multi_drive(self, tmp_path, monkeypatch):
         """P1-2：不指定 drive 时遍历所有共享盘（原来只跑第一个）。"""
-        def fake_iter(drive_id, dir_path):
+        def fake_iter(drive_id, dir_path, strict=True):
             return iter([(f"MoviePilot/{drive_id}/a.mkv", f"fid-{drive_id}", 10)])
         monkeypatch.setattr(sg, "iter_drive_videos", fake_iter)
         monkeypatch.setattr(sg, "_discover_drives", lambda: {"d1": ["s"], "d2": ["s"]})
@@ -724,3 +724,102 @@ class TestGetProgressBackfill:
         prog = sg.get_progress(db=db)
         assert prog["phase"] == "idle"
         assert prog["total"] == 0
+
+
+class TestIterDriveVideosStrict:
+    """iter_drive_videos strict 参数：源目录缺失时的行为。"""
+
+    def test_strict_true_raises(self, monkeypatch):
+        """strict=True（默认）：源目录不存在 → 抛 RuntimeError。"""
+        import backend.emby_server.strm_gen as sg2
+        monkeypatch.setattr(sg2, "_page_fetcher", lambda did: lambda q, pt=None: ([], None))
+        monkeypatch.setattr(sg2, "_resolve_dir_id", lambda fetch, did, path: None)
+        with pytest.raises(RuntimeError, match="找不到源目录"):
+            list(sg2.iter_drive_videos("drive123", "MoviePilot/"))
+
+    def test_strict_false_skips_gracefully(self, monkeypatch):
+        """strict=False：源目录不存在 → warning + 返回空，不抛异常。"""
+        import backend.emby_server.strm_gen as sg2
+        monkeypatch.setattr(sg2, "_page_fetcher", lambda did: lambda q, pt=None: ([], None))
+        monkeypatch.setattr(sg2, "_resolve_dir_id", lambda fetch, did, path: None)
+        result = list(sg2.iter_drive_videos("drive123", "MoviePilot/", strict=False))
+        assert result == []
+
+    def test_empty_dir_path_no_check(self, monkeypatch):
+        """dir_path 为空（网盘根）时不检查目录，直接走列举。"""
+        import backend.emby_server.strm_gen as sg2
+        called = {}
+        def fake_fetch(q, pt=None):
+            called["q"] = q
+            return ([], None)
+        monkeypatch.setattr(sg2, "_page_fetcher", lambda did: fake_fetch)
+        # _resolve_dir_id 对空路径返回 None，但空 dir_path 不触发 strict 检查
+        result = list(sg2.iter_drive_videos("drive123", "", strict=True))
+        assert result == []
+        assert called.get("q") == "trashed=false"
+
+
+class TestPerDriveFailureIsolation:
+    """单盘失败隔离：一个盘失败不拖死整轮（2026-10-12 修复）。"""
+
+    def _patch(self, tmp_path, monkeypatch, drive_results):
+        """drive_results: {did: videos|Exception}"""
+        def fake_iter(drive_id, dir_path, strict=True):
+            r = drive_results[drive_id]
+            if isinstance(r, Exception):
+                raise r
+            return iter(r)
+        monkeypatch.setattr(sg, "iter_drive_videos", fake_iter)
+        # 注意：DriveChangesLister 会调 _get_saved_token（真实 DB），这里直接
+        # mock 掉 lister 让它走 fake_iter
+        import backend.emby_server.strm_source as ssrc
+        orig_init = ssrc.DriveChangesLister.__init__
+        def patched_init(self, drive_id, dir_path, strict_dir=True):
+            orig_init(self, drive_id, dir_path, strict_dir=strict_dir)
+        monkeypatch.setattr(ssrc.DriveChangesLister, "__init__", patched_init)
+        # 让 lister.iter_videos 直接调 mocked 的 sg.iter_drive_videos
+        def fake_lister_iter(self, incremental=True):
+            return sg.iter_drive_videos(self.drive_id, self.dir_path,
+                                        strict=self.strict_dir)
+        monkeypatch.setattr(ssrc.DriveChangesLister, "iter_videos", fake_lister_iter)
+        monkeypatch.setattr(ssrc.DriveChangesLister, "_get_saved_token", lambda self: "tok")
+        monkeypatch.setattr(ssrc.DriveChangesLister, "save_checkpoint", lambda self: None)
+        import backend.emby_server.drive_changes as dc
+        monkeypatch.setattr(dc, "list_changes", lambda token, did: ([], "newtok"))
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: {did: ["s"] for did in drive_results})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: str(tmp_path))
+        monkeypatch.setattr(sg, "_load_state", lambda: {})
+        monkeypatch.setattr(sg, "_save_state_rows", lambda rows: None)
+        monkeypatch.setattr(sg, "_delete_state_rows", lambda rows: None)
+        import backend.integrations.store as _store
+        monkeypatch.setattr(_store, "write_values", lambda *a, **k: 0)
+        monkeypatch.setattr(_store, "get_value", lambda *a, **k: "")
+
+    def test_one_drive_fails_others_succeed(self, tmp_path, monkeypatch):
+        """一个盘 403，另一个盘正常 → 整轮成功，失败盘被跳过。"""
+        self._patch(tmp_path, monkeypatch, {
+            "good": [("MoviePilot/a.mkv", "fid1", 100)],
+            "bad": RuntimeError("403 Forbidden"),
+        })
+        try:
+            res = sg.run_generation(_FakeDb({}), full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["ok"] is True
+        assert res["stats"]["generated"] == 1
+        assert res["stats"]["sources"]["bad"]["error"] is not None
+        assert res["stats"]["sources"]["good"]["error"] is None
+
+    def test_all_drives_fail(self, tmp_path, monkeypatch):
+        """所有盘都失败 → 整轮标记失败。"""
+        self._patch(tmp_path, monkeypatch, {
+            "bad1": RuntimeError("403 Forbidden"),
+            "bad2": RuntimeError("404 Not Found"),
+        })
+        try:
+            res = sg.run_generation(_FakeDb({}), full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["ok"] is False
+        assert "列举失败" in res["error"]

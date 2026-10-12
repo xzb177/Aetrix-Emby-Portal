@@ -370,3 +370,56 @@ def test_webhook_non_2xx_is_failure(monkeypatch):
     ch = WebhookChannel(url="https://example.com/hook")
     ok = asyncio.run(ch.send(0, "t", "c"))
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# 7. strm 数据源失败告警
+# ---------------------------------------------------------------------------
+
+def _write_source_failures(db, records):
+    from backend.integrations import store
+    import json as _json
+    store.write_values(db, {"strm_gen_source_failures": _json.dumps(records)}, {})
+    db.commit()
+
+
+def test_strm_source_failed_no_records(db, _clean_alerts):
+    """无失败记录 → 不触发。"""
+    _write_source_failures(db, [])
+    rule = mock.Mock()
+    rule.threshold = 0.0
+    assert sa._check_strm_source_failed({}, rule, db) is None
+
+
+def test_strm_source_failed_fires(db, _clean_alerts):
+    """有 24h 内失败记录 → 触发告警。"""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    _write_source_failures(db, [
+        {"did": "0AERUVu4kfWEfUk9PVA", "error": "403 Forbidden", "at": now},
+        {"did": "myDrive:paul_emby", "error": "找不到源目录", "at": now},
+    ])
+    rule = mock.Mock()
+    rule.threshold = 0.0
+    hit = sa._check_strm_source_failed({}, rule, db)
+    assert hit is not None
+    title, message, metrics = hit
+    assert "2 个" in title
+    assert metrics["failed_count"] == 2
+
+
+def test_strm_source_failed_old_records_ignored(db, _clean_alerts):
+    """超过 24 小时的旧记录 → 不触发（避免重复告警）。"""
+    _write_source_failures(db, [
+        {"did": "old-drive", "error": "x", "at": "2020-01-01T00:00:00+00:00"},
+    ])
+    rule = mock.Mock()
+    rule.threshold = 0.0
+    assert sa._check_strm_source_failed({}, rule, db) is None
+
+
+def test_strm_source_failed_event_registered(db, _clean_alerts):
+    """新事件已注册进 _CHECKERS 和 ALL_EVENTS。"""
+    assert sa.EVT_STRM_SOURCE_FAILED in sa.ALL_EVENTS
+    assert sa.EVT_STRM_SOURCE_FAILED in sa._CHECKERS
+    assert sa.EVT_STRM_SOURCE_FAILED in sa.DEFAULT_RULES
