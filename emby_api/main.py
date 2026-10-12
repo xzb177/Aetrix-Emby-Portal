@@ -84,6 +84,17 @@ SERVICE_NAME = "EA · Emby API"
 
 logger = logging.getLogger(__name__)
 
+# EA 入口统一配置 root 日志（2026-10-12）：uvicorn 默认不配置 root logger，
+# backend 各模块的 logger.info 会被 lastResort 丢弃（WARNING 以下全丢，生产曾因此
+# 看不到 [play-timing] 之外的任何 INFO 日志，P0-2 的诊断日志在生产不可见）。
+# 这里配一次全进程生效；play_timing.py 的兜底 StreamHandler 有"已有 handler 则跳过"
+# 的保护，不会重复添加。EM（backend/main.py）有自己的 basicConfig，不受影响。
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=getattr(logging, os.getenv("LOG_LEVEL", "info").upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
 # EM 初始化后才会存在的表：缺任何一个都说明 EM 还没在这套库上跑过
 _REQUIRED_EM_TABLES = ("web_users", "emby_libraries", "emby_api_tokens")
 
