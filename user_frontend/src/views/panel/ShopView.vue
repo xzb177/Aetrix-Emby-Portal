@@ -25,6 +25,7 @@
         <div class="v4-sec-sub">充积分 = 补充能量 · {{ ratioText }} —— 点一罐看看</div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试</div>
+        <div v-else-if="!rechargeEnabled" class="v4-err">能量充值暂未开启</div>
         <div v-else-if="packages.length === 0" class="v4-err">补给站暂未上架能量罐</div>
         <template v-else>
           <div class="shelf">
@@ -61,7 +62,8 @@
         <div class="v4-sec-sub">买会员 = 领取执照 —— 凭执照解锁全片库，点开看细则</div>
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试</div>
-        <div v-else-if="!plansEnabled" class="v4-err">当前为公益服，全片库免费开放，无需领取执照 🎉</div>
+        <div v-else-if="isFreeRealm" class="v4-err">当前为公益服，全片库免费开放，无需领取执照 🎉<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
+        <div v-else-if="!plansEnabled" class="v4-err">执照领取暂未开启</div>
         <div v-else-if="plans.length === 0" class="v4-err">补给站暂未上架执照</div>
         <template v-else>
           <div class="cur-toggle">
@@ -92,7 +94,7 @@
             </div>
             <div class="detail">
               <div class="kv"><span>有效期</span><b>{{ plan.duration_days }} 天</b></div>
-              <div class="kv" v-for="f in plan.features || []" :key="f"><span>{{ f }}</span><span></span></div>
+              <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ memberDiscountPct }}% off</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
               <button class="buy" :disabled="orderBusy" @click.stop="doBuyPlan(plan)">领取执照 →</button>
@@ -142,7 +144,7 @@
         <div class="v4-sec-title">🤝 带上同伴</div>
         <div class="v4-sec-sub">邀请一位探险家，双方都得能量</div>
         <div v-if="loading" class="v4-skeleton" style="height:120px"></div>
-        <div v-else class="invite">
+        <div v-else-if="inviteEnabled" class="invite">
           <h3>🧭 结伴远行，能量翻倍</h3>
           <p>同伴用你的暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
           <div class="code">
@@ -179,12 +181,16 @@ const plansFailed = ref(false)
 const packages = ref<RechargePackage[]>([])
 const plans = ref<SubscriptionPlan[]>([])
 const plansEnabled = ref(true)
+const isFreeRealm = ref(false)
+const realmNote = ref('')
+const rechargeEnabled = ref(true)
+const inviteEnabled = ref(true)
 const member = ref<MyMemberInfo | null>(null)
 const inviteCode = ref('')
 const inviteReward = ref(0)
 const inviteeReward = ref(0)
 const points = ref<number | null>(null)
-const rechargeRatio = ref(1.2)
+const rechargeRatio = ref<number | null>(null)
 const payMethod = ref('alipay')
 
 const selectedPkg = ref<RechargePackage | null>(null)
@@ -210,6 +216,7 @@ async function loadAll() {
   ])
   if (pkgs.status === 'fulfilled') {
     packages.value = pkgs.value.packages || []
+    rechargeEnabled.value = pkgs.value.enabled !== false
     // 默认选中 is_popular 的那一罐，没有就选中间那罐
     selectedPkg.value =
       pkgs.value.packages.find((p) => p.is_popular) ||
@@ -221,18 +228,22 @@ async function loadAll() {
   }
   if (pls.status === 'fulfilled') {
     plans.value = pls.value.plans || []
-    plansEnabled.value = pls.value.enabled
+    plansEnabled.value = pls.value.enabled !== false
+    // 公益服（免费服）：后端下发 is_free / access_mode，套餐不卖、只展示免费开放
+    isFreeRealm.value = pls.value.is_free === true || pls.value.access_mode === 'free'
+    realmNote.value = pls.value.access_note || ''
   } else {
     plansFailed.value = true
   }
   if (mem.status === 'fulfilled') member.value = mem.value
   if (inv.status === 'fulfilled') {
     inviteCode.value = inv.value.code || ''
+    inviteEnabled.value = inv.value.config?.enabled !== false
     inviteReward.value = inv.value.config?.reward_points ?? 0
     inviteeReward.value = inv.value.config?.invitee_reward_points ?? 0
   }
   if (pts.status === 'fulfilled') points.value = pts.value.balance ?? null
-  if (cur.status === 'fulfilled') rechargeRatio.value = cur.value.recharge_ratio || 1.2
+  if (cur.status === 'fulfilled') rechargeRatio.value = cur.value.recharge_ratio ?? null
   if (methods.status === 'fulfilled' && methods.value.length > 0) {
     payMethod.value = methods.value[0].id
   }
@@ -248,7 +259,9 @@ const pointsText = computed(() => (points.value == null ? '–' : fmtNum(points.
 const memberLevelText = computed(() => (member.value ? `Lv.${member.value.level}` : '–'))
 const memberLevelName = computed(() => member.value?.level_name || '见习探险家')
 const memberDiscountPct = computed(() => member.value?.discount_pct ?? 0)
-const ratioText = computed(() => `1 元 = ${rechargeRatio.value} 能量`)
+const ratioText = computed(() =>
+  rechargeRatio.value == null ? '充值比例加载中' : `1 元 = ${rechargeRatio.value} 能量`,
+)
 
 /* 能量条：按最大一罐做满格 */
 const meterWidth = computed(() => {
@@ -830,6 +843,14 @@ async function copyInviteCode() {
   padding: 0 18px;
   font-size: 13px;
   font-weight: 700;
+}
+
+/* 键盘可达性：role=button 的卡片获得焦点时给出可见轮廓 */
+.can:focus-visible,
+.license:focus-visible,
+.camp:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
 }
 
 /* 尊重系统"减少动态效果"：关掉补给站的过渡与装饰动画 */
