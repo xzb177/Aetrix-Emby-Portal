@@ -224,12 +224,17 @@ def test_all_sa_dicts_dedup():
         {"client_email": "d@x.iam.gserviceaccount.com", "private_key": "k2"},
         {"client_email": "", "private_key": "k3"},  # 无 email 跳过
     ]
-    with patch("backend.emby_server.drive_auth._load_drive_changes") as mock_load:
-        mock_load.return_value = SimpleNamespace(_discover_sa_files=lambda: dup_sas)
-        # _read_sa_file 不会被调用（已经是 dict），直接走 _is_sa_dict
-        result = drive_auth._all_sa_dicts()
-    assert len(result) == 1
-    assert result[0]["client_email"] == "d@x.iam.gserviceaccount.com"
+    # _all_sa_dicts 结果模块级缓存：先重置，避免其他测试残留的缓存干扰
+    drive_auth._reset_state()
+    try:
+        with patch("backend.emby_server.drive_auth._load_drive_changes") as mock_load:
+            mock_load.return_value = SimpleNamespace(_discover_sa_files=lambda: dup_sas)
+            # _read_sa_file 不会被调用（已经是 dict），直接走 _is_sa_dict
+            result = drive_auth._all_sa_dicts()
+        assert len(result) == 1
+        assert result[0]["client_email"] == "d@x.iam.gserviceaccount.com"
+    finally:
+        drive_auth._reset_state()
 
 
 # ---------------------------------------------------------------------------

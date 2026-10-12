@@ -69,6 +69,17 @@ _SA_AFFINITY_MAX_ENTRIES = 4096
 # get_drive_bearer_token 内那个 `with _cache_lock:`（查缓存→换token→写缓存）之外，
 # 即选 SA 阶段，绝不嵌套持锁。
 _sa_affinity: dict[str, tuple[dict[str, Any], float]] = {}
+
+# P2-1（2026-10-12）：_all_sa_dicts 的结果模块级缓存。
+# SA 文件在生产环境静态不变，缓存语义与 drive_changes._discover_sa_files
+# 已有的"发现一次、永不失效"一致。不缓存时每次 open+json.loads 全部 100 个
+# SA 文件（含 private_key 大字段），实测 ~30ms/次（premint 热路径）。
+# 线程安全：预铸（premint 线程）与请求线程可能并发首调，用 _sa_dicts_lock
+# 双重检查锁保护；缓存建成后以不可变 tuple 快照发布，读路径无锁（CPython
+# 全局变量赋值原子）。缓存不可变的语义：每次返回一份新的 list 拷贝，
+# 防止调用方篡改污染快照。
+_sa_dicts_lock = threading.Lock()
+_sa_dicts_cache: tuple[dict[str, Any], ...] | None = None
 # P1 修复（审查）：token 缓存从"全局单条"改为"按 SA 分账号"。
 # key = SA 的 client_email（稳定唯一标识），value = (token, expire_at)。
 # expire_at 以 time.monotonic() 为基准。此前全局缓存 55 分钟，
@@ -80,15 +91,18 @@ _token_cache: dict[str, tuple[str, float]] = {}
 
 
 def _reset_state() -> None:
-    """清空按 SA 分账号的 token 缓存。
+    """清空按 SA 分账号的 token 缓存与 SA 字典列表缓存。
 
     测试/调试用的显式重置点（生产路径不会调用）。
     SA 轮换计数器已收敛到 drive_changes._sa_rotation_start，抖动本身
     不需要确定性复位，故这里不再复位轮询起点。
     """
+    global _sa_dicts_cache
     with _cache_lock:
         _token_cache.clear()
         _sa_affinity.clear()
+    with _sa_dicts_lock:
+        _sa_dicts_cache = None
 
 
 def _load_drive_changes() -> ModuleType:
@@ -405,25 +419,45 @@ def _all_sa_dicts() -> list[dict[str, Any]]:
 
     供 premint_tokens 用：逐个预铸 token，避免冷启动时第一次播放现换
     （JWT 签名 + 1 次 oauth2 POST，约 300~600ms）。
+
+    P2-1（2026-10-12 审查）：结果在模块级缓存——SA 文件静态不变，
+    每次重读 100 个文件的 open+json.loads（~30ms/次）是纯浪费。
+    缓存经 _sa_dicts_lock 双重检查锁建成，不可变 tuple 快照发布；
+    失败路径（异常/无 SA）不缓存，每次重试发现（语义与原先一致）。
     """
-    try:
-        drive_changes = _load_drive_changes()
-        sa_files = drive_changes._discover_sa_files() or []
-    except Exception:
-        return []
-    seen: set[str] = set()
-    result: list[dict[str, Any]] = []
-    for entry in sa_files:
+    global _sa_dicts_cache
+    # 快路径：缓存已建成时无锁读取（CPython 全局变量赋值原子）。
+    snapshot = _sa_dicts_cache
+    if snapshot is not None:
+        return list(snapshot)
+    with _sa_dicts_lock:
+        snapshot = _sa_dicts_cache
+        if snapshot is not None:
+            return list(snapshot)
         try:
-            sa = entry if _is_sa_dict(entry) else _read_sa_file(entry)
+            drive_changes = _load_drive_changes()
+            sa_files = drive_changes._discover_sa_files() or []
         except Exception:
-            continue
-        if _is_sa_dict(sa):
-            email = sa.get("client_email")
-            if email and email not in seen:
-                seen.add(email)
-                result.append(sa)
-    return result
+            return []
+        seen: set[str] = set()
+        result: list[dict[str, Any]] = []
+        for entry in sa_files:
+            try:
+                sa = entry if _is_sa_dict(entry) else _read_sa_file(entry)
+            except Exception:
+                continue
+            if _is_sa_dict(sa):
+                email = sa.get("client_email")
+                if email and email not in seen:
+                    seen.add(email)
+                    result.append(sa)
+        # 只缓存非空结果：空结果（无 SA/全部读失败）不冻结，每次重试
+        # 重新发现——与 _discover_sa_files"无 SA 时每次都重新扫"语义一致。
+        if result:
+            _sa_dicts_cache = tuple(result)
+            snapshot = _sa_dicts_cache
+            return list(snapshot)
+        return result
 
 
 def premint_tokens(max_workers: int = 4) -> dict[str, int]:
