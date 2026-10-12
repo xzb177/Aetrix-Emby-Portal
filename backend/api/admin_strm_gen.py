@@ -1,7 +1,7 @@
 """管理后台 · .strm 生成器
 
 把 Google Drive 视频批量生成 .strm 文件的能力收进后端：
-- 配置：总开关 / Drive 源目录 / 每天执行时刻（服务器本地时间）/ 过期清理开关
+- 配置：总开关 / Drive 源目录 / 增量间隔 / 过期清理开关
   （全部 SystemConfig，热生效）
 - 手动触发：增量（默认）或全量重建
 - 进度查询：轮询看 listing/generating/verifying 各阶段进度
@@ -29,10 +29,6 @@ logger = logging.getLogger(__name__)
 class StrmGenConfigSave(BaseModel):
     enabled: bool = Field(default=True, description="总开关")
     source_dir: str = Field(default="MoviePilot/", description="Drive 源目录（相对网盘根）")
-    schedule: str = Field(
-        default="03:00",
-        description="每天执行时刻 HH:MM（按服务器本地时间，生产为悉尼时间），空=关闭定时",
-    )
     drive_id: str = Field(default="", description="指定 Drive ID，空=自动选择")
     prune: bool = Field(
         default=False,
@@ -40,7 +36,7 @@ class StrmGenConfigSave(BaseModel):
     )
     interval_minutes: int = Field(
         default=60,
-        description="增量间隔分钟数（5-1440），0=关闭间隔只跑每天定时",
+        description="增量间隔分钟数（1-1440），0=关闭",
     )
     source_type: str = Field(
         default="drive",
@@ -60,7 +56,6 @@ def _read_config(db: Session) -> dict:
     return {
         "enabled": _gen.enabled(db),
         "source_dir": _gen.source_dir(db),
-        "schedule": _gen.schedule(db),
         "drive_id": _gen.drive_id_config(db),
         "prune": _gen.prune_enabled(db),
         "interval_minutes": _gen.interval_minutes(db),
@@ -86,13 +81,6 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     if ".." in src.split("/"):
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="源目录不能包含 ..")
-    sched = (body.schedule or "").strip()
-    if sched:
-        ok = (len(sched) == 5 and sched[2] == ":" and sched[:2].isdigit()
-              and sched[3:].isdigit() and 0 <= int(sched[:2]) <= 23 and 0 <= int(sched[3:]) <= 59)
-        if not ok:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=400, detail="执行时刻格式应为 HH:MM（如 03:00），留空关闭定时")
     # 增量间隔：0=关闭，1-1440 分钟
     iv = int(body.interval_minutes or 0)
     if iv < 0 or iv > 1440:
@@ -108,7 +96,6 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     store.write_values(db, {
         _gen.CONFIG_ENABLED: "true" if body.enabled else "false",
         _gen.CONFIG_SOURCE_DIR: (src + "/") if src else "",
-        _gen.CONFIG_SCHEDULE: sched,
         _gen.CONFIG_DRIVE_ID: (body.drive_id or "").strip(),
         _gen.CONFIG_PRUNE: "true" if body.prune else "false",
         _gen.CONFIG_INTERVAL: str(iv),
@@ -117,7 +104,6 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     }, {
         _gen.CONFIG_ENABLED: ".strm 生成器总开关",
         _gen.CONFIG_SOURCE_DIR: ".strm 生成器 Drive 源目录",
-        _gen.CONFIG_SCHEDULE: ".strm 生成器每天执行时刻（HH:MM，服务器本地时间）",
         _gen.CONFIG_DRIVE_ID: ".strm 生成器指定 Drive ID",
         _gen.CONFIG_PRUNE: ".strm 生成器是否清理 Drive 已不存在的文件",
         _gen.CONFIG_INTERVAL: ".strm 生成器增量间隔（分钟），0=关闭",

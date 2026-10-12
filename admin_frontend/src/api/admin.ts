@@ -1702,12 +1702,10 @@ export const saveStrmConfig = (data: { enabled: boolean; host_dir: string; conta
 
 // ==================== .strm 生成器（后端 /api/admin/emby/strm-gen/*） ====================
 
-/** .strm 生成器配置（总开关 / Drive 源目录 / 每天执行时刻 / 指定 Drive / 过期清理） */
+/** .strm 生成器配置（总开关 / Drive 源目录 / 指定 Drive / 过期清理） */
 export interface StrmGenConfig {
   enabled: boolean
   source_dir: string
-  /** 每天执行时刻 HH:MM（服务器本地时间），空=关闭定时 */
-  schedule: string
   /** 指定 Drive ID，空=自动选择 */
   drive_id: string
   /** 清理 Drive 上已不存在的 .strm 文件及状态行（不可逆） */
@@ -1763,7 +1761,6 @@ export const fetchStrmGenConfig = () =>
 export const saveStrmGenConfig = (data: {
   enabled: boolean
   source_dir: string
-  schedule: string
   drive_id: string
   prune: boolean
   interval_minutes: number
