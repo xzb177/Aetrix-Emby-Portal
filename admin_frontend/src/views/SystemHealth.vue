@@ -55,6 +55,8 @@ const alertRulesLoading = ref(false)
 const alertRuleDialogVisible = ref(false)
 const alertRuleSaving = ref(false)
 const alertEditingRule = ref<AlertRule | null>(null)
+/** 收件人配置：对话框里不展示编辑控件，打开时原样带过来、保存时原样回传，避免静默覆盖 */
+const alertRuleRecipients = ref<Record<string, unknown>>({ staff: true })
 const alertRuleForm = ref({
   name: '',
   threshold: 0,
@@ -96,7 +98,9 @@ function alertTimeLabel(v: string | null | undefined): string {
 const alertEnabled = computed(() => !!alertSettings.value?.enabled)
 
 function fmtSize(bytes: number): string {
-  if (!bytes) return '0 B'
+  // 非数字/无穷大（比如后端没返回）直接给占位，避免 "NaN MB"
+  if (!Number.isFinite(bytes)) return '—'
+  if (bytes <= 0) return '0 B'
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
@@ -123,6 +127,8 @@ const checks = computed(() => [
 ])
 
 async function load() {
+  // 并发守卫：加载中重复触发时直接忽略，避免重复请求
+  if (loading.value) return
   loading.value = true
   loadError.value = ''
   try {
@@ -266,6 +272,7 @@ async function onSendTestAlert() {
 
 function openAlertRuleDialog(rule: AlertRule) {
   alertEditingRule.value = rule
+  alertRuleRecipients.value = rule.recipients ?? { staff: true }
   alertRuleForm.value = {
     name: rule.name ?? '',
     threshold: rule.threshold ?? 0,
@@ -287,7 +294,8 @@ async function onSaveAlertRule() {
       threshold: Math.max(0, Number(alertRuleForm.value.threshold) || 0),
       severity: alertRuleForm.value.severity,
       channels: alertRuleForm.value.channels,
-      recipients: { staff: true },
+      // 深拷贝一次再发，避免引用污染表单状态
+      recipients: JSON.parse(JSON.stringify(alertRuleRecipients.value)) as Record<string, unknown>,
       cooldown_sec: Math.max(60, Math.min(86400 * 7, Math.round(alertRuleForm.value.cooldown_sec) || 3600)),
       is_active: alertRuleForm.value.is_active,
     })

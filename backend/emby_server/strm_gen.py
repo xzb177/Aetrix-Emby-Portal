@@ -164,7 +164,9 @@ def _record_source_failures(db, failed: list[dict]) -> None:
             })
         records = records[-20:]
         store.write_values(db, {CONFIG_SOURCE_FAILURES: json.dumps(records)}, {})
-        db.commit()
+        # 不在这里 commit：提交由调用方统一处理（run_owned 的 finally →
+        # _release_progress 落盘统计时会提交），中途提前提交会固化调用方
+        # 未预期的中间状态。
     except Exception as exc:
         logger.warning("strm_gen: 记录源失败失败: %s", exc)
 

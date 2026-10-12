@@ -35,6 +35,12 @@ const LEVEL_ICON = {
   critical: 'is-down',
 } as const
 
+const LEVEL_ORDER = { critical: 0, warn: 1, info: 2 } as const
+
+const sortedFindings = computed(() =>
+  [...(report.value?.findings ?? [])].sort((a, b) => LEVEL_ORDER[a.level] - LEVEL_ORDER[b.level]),
+)
+
 const summary = computed(() => report.value?.summary || { total: 0, info: 0, warn: 0, critical: 0 })
 
 const overallClass = computed(() => {
@@ -116,6 +122,8 @@ function askFix(f: DiagnosisFinding) {
 }
 
 async function run() {
+  // 并发守卫：体检中重复点击直接忽略，避免发重复请求
+  if (loading.value) return
   loading.value = true
   loadError.value = ''
   try {
@@ -150,7 +158,7 @@ onMounted(loadRules)
     <el-skeleton v-if="loading && !report" :rows="6" animated />
 
     <EmptyState
-      v-else-if="loadError"
+      v-else-if="loadError && !report"
       title="体检失败"
       :description="loadError"
     />
@@ -189,9 +197,7 @@ onMounted(loadRules)
       <!-- 结论卡片：严重的排前面 -->
       <div class="au-diagnosis__list">
         <div
-          v-for="f in [...report.findings].sort((a, b) =>
-            ({ critical: 0, warn: 1, info: 2 } as const)[a.level] -
-            ({ critical: 0, warn: 1, info: 2 } as const)[b.level])"
+          v-for="f in sortedFindings"
           :key="f.rule_id"
           class="au-diagnosis__card"
           :class="LEVEL_ICON[f.level]"

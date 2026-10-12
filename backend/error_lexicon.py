@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-__all__ = ["LEXICON", "LEXICON_COUNT", "CATEGORIES", "translate"]
+__all__ = ["LEXICON", "LEXICON_COUNT", "CATEGORIES", "categories", "translate"]
 
 
 def _e(

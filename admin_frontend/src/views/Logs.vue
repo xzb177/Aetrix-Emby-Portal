@@ -185,7 +185,9 @@ function detailText(log: AdminLogRow): string {
           <div v-if="row.error_hint" class="error-hint">
             <div class="error-hint-title">{{ row.error_hint.title }}</div>
             <div class="error-hint-what">{{ row.error_hint.what }}</div>
-            <div class="error-hint-steps">{{ row.error_hint.steps.join('；') }}</div>
+            <ol v-if="row.error_hint.steps?.length" class="error-hint-steps">
+              <li v-for="(s, i) in row.error_hint.steps" :key="i">{{ s }}</li>
+            </ol>
           </div>
         </template>
 
@@ -278,7 +280,8 @@ function detailText(log: AdminLogRow): string {
   font-size: 12px;
   color: var(--au-text-4);
   line-height: 1.5;
-  margin-top: 2px;
+  margin: 2px 0 0;
+  padding-left: 18px;
 }
 
 .muted { color: var(--au-text-4); }
