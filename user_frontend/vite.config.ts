@@ -4,13 +4,9 @@ import vue from '@vitejs/plugin-vue'
 
 // 生产环境禁用 DevTools
 const isProduction = process.env.NODE_ENV === 'production'
-// 设置 ANALYZE=1 时生成打包体积报告（需先 npm i -D rollup-plugin-visualizer）
-const analyze = process.env.ANALYZE === '1'
-
 export default defineConfig({
   plugins: [
     vue(),
-    // analyze && (await import('rollup-plugin-visualizer')).visualizer({ gzipSize: true, brotliSize: true, open: false, filename: 'dist/stats.html' }),
   ].filter(Boolean),
   resolve: {
     alias: {
