@@ -12,8 +12,12 @@
 - 备份方式：``sqlite3.Connection.backup()`` 在线备份——DB 正在被读写时也安全。
   不要直接 cp 数据库文件（WAL 模式下可能拷到写一半的状态）。
   同理，恢复脚本的"防手滑安全备份"也必须走在线备份，裸 cp 在 WAL 下拿到的是旧数据。
-- 位置：与数据库文件同目录的 ``backups/`` 子目录，
-  文件名 ``<库名>-YYYYMMDD-HHMMSS.db.gz``（gzip 压缩）。
+- 位置：SQLite 与数据库文件同目录的 ``backups/`` 子目录，
+  文件名 ``<库名>-YYYYMMDD-HHMMSS.db.gz``（gzip 压缩）；
+  PostgreSQL 落 ``PG_BACKUP_DIR``（默认 ``/var/backups/aetrix``），
+  文件名 ``<库名>-YYYYMMDD-HHMMSS.dump.gz``（pg_dump custom + gzip）。
+  轮转 / 列表 / 残留清扫三个函数统一走 ``_backup_dirs()`` 双目录口径，
+  ``keep_days`` 对两者同样生效（P2-2，2026-10-12）。
 - 可靠性（这几条都是踩过的坑，勿删）：
   - ``_BACKUP_LOCK`` 互斥——手动接口与定时线程可并发，不互斥会写出内容交错的损坏库。
   - 落盘先写 ``.part-*.db.gz`` 再 ``os.replace`` 原子改名，中断不留下半截"有效"备份。
@@ -122,6 +126,34 @@ def get_backup_dir() -> Path | None:
     if db_path is None:
         return None
     return db_path.parent / BACKUP_DIRNAME
+
+
+def _pg_backup_dir_readonly() -> Path | None:
+    """PG 备份目录（只读版）：list/prune/sweep 用，不触发 mkdir。
+
+    ``_get_pg_backup_dir`` 会 mkdir——轮转/列表是读操作，不该有写副作用。
+    """
+    p = Path(os.getenv("PG_BACKUP_DIR", "/var/backups/aetrix"))
+    return p if p.is_dir() else None
+
+
+def _backup_dirs() -> list[Path]:
+    """所有可能落备份文件的目录（P2-2，2026-10-12）。
+
+    SQLite 目录（``get_backup_dir``）+ PG 目录（``_pg_backup_dir_readonly``，只读版不 mkdir）。
+    ``prune_old_backups`` / ``list_backups`` / ``sweep_stale_temp_files``
+    三者统一走这里——之前 PG 分支的 ``*.dump.gz`` 三处全看不到，
+    每天一个全量 dump 无限堆积（生产是 PG）。
+    """
+    dirs: list[Path] = []
+    sqlite_dir = get_backup_dir()
+    if sqlite_dir is not None and sqlite_dir.is_dir():
+        dirs.append(sqlite_dir)
+    if _is_postgres():
+        pg_dir = _pg_backup_dir_readonly()
+        if pg_dir is not None and pg_dir not in dirs:
+            dirs.append(pg_dir)
+    return dirs
 
 
 def _backup_filename(db_path: Path, when: datetime) -> str:
@@ -282,46 +314,59 @@ def _run_pg_backup_locked(reason: str) -> dict:
 def sweep_stale_temp_files() -> int:
     """清扫崩溃/强杀留下的临时文件。返回删除数量。
 
-    这些文件是**未压缩的完整数据库副本**（.tmp-*.db）或半截压缩包（.part-*.db.gz），
-    ``prune_old_backups`` 只 glob ``*.db.gz``，永远看不到也删不掉它们。
+    这些文件是**未压缩的完整数据库副本**（.tmp-*.db）或半截压缩包
+    （.part-*.db.gz / PG 的 .part-*.dump.gz），``prune_old_backups`` 只 glob
+    正式备份后缀（``*.db.gz`` / ``*.dump.gz``），永远看不到也删不掉它们。
     容器被 SIGKILL / 断电时 ``finally`` 不会执行，必须靠这里回收。
     只删超过 1 小时的，避免误伤正在跑的备份。
+    SQLite 与 PG 两个目录都扫（P2-2）。
     """
-    backup_dir = get_backup_dir()
-    if backup_dir is None or not backup_dir.exists():
-        return 0
-    cutoff = datetime.now().timestamp() - _STALE_KEEP_SECONDS
     removed = 0
-    for pattern in (".tmp-*.db", ".part-*.db.gz", ".restore-*.db"):
-        for f in backup_dir.glob(pattern):
-            try:
-                if f.stat().st_mtime >= cutoff:
-                    continue  # 太新，可能正在写
-                f.unlink()
-                removed += 1
-                logger.info("清理崩溃残留的备份临时文件：%s（%.1f MB）",
-                            f.name, f.stat().st_size / 1024 / 1024 if f.exists() else 0)
-            except OSError as exc:  # noqa: BLE001 — 删不掉记一条，不中断
-                logger.warning("清理备份临时文件失败 %s：%s", f.name, exc)
+    for backup_dir in _backup_dirs():
+        removed += _sweep_dir(backup_dir)
     if removed:
         logger.warning("备份清理：删除 %d 个崩溃残留的临时文件", removed)
     return removed
 
 
+def _sweep_dir(backup_dir: Path) -> int:
+    """清扫单个备份目录的崩溃残留。返回删除数量。"""
+    cutoff = datetime.now().timestamp() - _STALE_KEEP_SECONDS
+    removed = 0
+    for pattern in (".tmp-*.db", ".part-*.db.gz", ".part-*.dump.gz", ".restore-*.db"):
+        for f in backup_dir.glob(pattern):
+            try:
+                st = f.stat()
+                if st.st_mtime >= cutoff:
+                    continue  # 太新，可能正在写
+                size_mb = st.st_size / 1024 / 1024
+                f.unlink()
+                removed += 1
+                logger.info("清理崩溃残留的备份临时文件：%s（%.1f MB）", f.name, size_mb)
+            except OSError as exc:  # noqa: BLE001 — 删不掉记一条，不中断
+                logger.warning("清理备份临时文件失败 %s：%s", f.name, exc)
+    return removed
+
+
 def prune_old_backups(keep_days: int) -> int:
-    """删除超过 keep_days 的旧备份（按文件 mtime）。返回删除数量。"""
-    backup_dir = get_backup_dir()
-    if backup_dir is None or not backup_dir.exists():
+    """删除超过 keep_days 的旧备份（按文件 mtime）。返回删除数量。
+
+    SQLite（``*.db.gz``）与 PG（``*.dump.gz``）两个目录都轮转，
+    ``keep_days`` 对两者同样生效（P2-2，2026-10-12）。
+    """
+    dirs = _backup_dirs()
+    if not dirs:
         return 0
     cutoff = datetime.now().timestamp() - keep_days * 86400
     removed = 0
-    for f in backup_dir.glob("*.db.gz"):
-        try:
-            if f.stat().st_mtime < cutoff:
-                f.unlink()
-                removed += 1
-        except OSError as exc:  # noqa: BLE001 — 删不掉记一条，不中断
-            logger.warning("删除旧备份失败 %s：%s", f.name, exc)
+    for backup_dir in dirs:
+        for f in list(backup_dir.glob("*.db.gz")) + list(backup_dir.glob("*.dump.gz")):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    removed += 1
+            except OSError as exc:  # noqa: BLE001 — 删不掉记一条，不中断
+                logger.warning("删除旧备份失败 %s：%s", f.name, exc)
     if removed:
         logger.info("备份轮转：删除 %d 个超过 %d 天的旧备份", removed, keep_days)
     sweep_stale_temp_files()
@@ -329,21 +374,19 @@ def prune_old_backups(keep_days: int) -> int:
 
 
 def list_backups() -> list[dict]:
-    """列出备份文件（新的在前）。"""
-    backup_dir = get_backup_dir()
-    if backup_dir is None or not backup_dir.exists():
-        return []
+    """列出备份文件（新的在前）。SQLite 与 PG 两个目录都列（P2-2）。"""
     rows = []
-    for f in backup_dir.glob("*.db.gz"):
-        try:
-            st = f.stat()
-        except OSError:  # noqa: BLE001
-            continue
-        rows.append({
-            "name": f.name,
-            "size": st.st_size,
-            "created_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-        })
+    for backup_dir in _backup_dirs():
+        for f in list(backup_dir.glob("*.db.gz")) + list(backup_dir.glob("*.dump.gz")):
+            try:
+                st = f.stat()
+            except OSError:  # noqa: BLE001
+                continue
+            rows.append({
+                "name": f.name,
+                "size": st.st_size,
+                "created_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            })
     rows.sort(key=lambda r: r["name"], reverse=True)
     return rows
 

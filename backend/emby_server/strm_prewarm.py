@@ -102,6 +102,7 @@ _counters: dict[str, int] = {
     "skipped_dedup": 0,
     "skipped_busy": 0,
     "skipped_disabled": 0,
+    "skipped_non_strm": 0,
     "failed": 0,
 }
 
@@ -194,8 +195,9 @@ async def maybe_warm(db, item) -> None:
 
     由 api.py 的 playback_info 在后台调用：
     ``asyncio.create_task(strm_prewarm.maybe_warm(db, item))``。
-    注意：db session 只在 maybe_warm 内同步读配置时用，
-    warm 内部用 run_db 新建 session，不跨协程复用。
+    注意：传入的是给后台任务新建的独立 session（不是请求的 db）。
+    maybe_warm 内同步读配置；warm 经 run_db 在线程池顺序复用该 session
+    （await 期间不另碰，符合 async_db 纪律）。
     """
     try:
         _bump("triggered")
@@ -206,6 +208,14 @@ async def maybe_warm(db, item) -> None:
 
         path = str(getattr(item, "file_path", "") or "")
         if not path:
+            return
+
+        # P3-2：非 .strm 直接返回——不写去重表、不占信号量。
+        # warm() 里也有后缀检查（双保险），但那时已在信号量内白等 50~150ms 抖动；
+        # pr686 把触发点移出 IsPlayback 门控后，非 .strm 的 PlaybackInfo 很多，
+        # 放行到信号量会挤掉真正的 .strm 预热（skipped_busy）。
+        if not path.lower().endswith(".strm"):
+            _bump("skipped_non_strm")
             return
 
         # 去重：窗口内同一文件只预热一次

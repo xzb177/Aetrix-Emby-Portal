@@ -22,7 +22,7 @@ from backend.emby_server import hwaccel as _hwaccel
 
 # 开箱即用播放优化：单文件并发 Range 限流（只此一处实现）
 from backend.emby_server.playback_tune import RANGE_LIMITER
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 from backend.emby_server.mounts import MountError
 
@@ -284,6 +284,12 @@ def serve_remote(
         except Exception:
             pass
         current = url
+        # P0-2：Drive 307 跳转缓存（P3-1：同步版接入与异步版同一套 _redirect_cache_*；
+        # _redirect_cache_lock 是 threading.Lock，sync/async 共用同一缓存与锁）。
+        _cache_file_id = _drive_file_id(url)
+        _cached_target = _redirect_cache_get(_cache_file_id) if _cache_file_id else None
+        current = _cached_target or url
+        _redirect_hops = 0  # 实际走的跳转数（缓存命中时为 0）
         for _hop in range(MAX_REDIRECTS + 1):
             resp = client.send(client.build_request("GET", current, headers=forward), stream=True)
             if resp.status_code not in _REDIRECT_CODES:
@@ -301,13 +307,20 @@ def serve_remote(
             resp.close()  # 确认要跟着走，这一跳的响应就不要再占着连接了
             forward = _redirect_headers(forward, current, target)
             current = target
+            _redirect_hops += 1
         else:
             resp.close()
             client.close()
             raise HTTPException(status_code=502, detail="源站重定向次数过多")
-        # 115 直链过期检测：403/404 时清缓存，客户端重试将拿到新直链（2026-10-09）
-        # 与异步版 serve_remote_async 同口径
-        if resp.status_code in (403, 404):
+        # P0-2：走了跳转且落点是 usercontent → 写缓存（坏 URL 不进缓存，签名感知 TTL）。
+        # 缓存命中（_redirect_hops==0）时不重复写。
+        _maybe_cache_drive_redirect(_cache_file_id, current, _redirect_hops,
+                                    bool(_cached_target), resp.status_code)
+        # 115 直链过期检测：403/404/410 时清 115 缓存 + 删跳转缓存（回退重解析），
+        # 客户端重试将拿到新直链（2026-10-09）。与异步版 serve_remote_async 同口径。
+        if resp.status_code in (403, 404, 410):
+            if _cache_file_id:
+                _redirect_cache_invalidate(_cache_file_id)
             _pickcode = (headers or {}).get("X-Pickcode")
             if _pickcode:
                 try:
@@ -414,6 +427,14 @@ _RELAY_WRITE_TIMEOUT = 30.0
 #: 缓存最终 URL 60~120 秒，命中时直接跳过 alt=media 这一跳。
 #: 0 = 关闭。403/410 时自动删缓存回退重解析，不会毒化。
 #: P0-2（2026-10-12）：起播加速。
+#:
+#: 取舍说明（P2-1，2026-10-12）：Location 里若带时效签名且签名有效期 < 本 TTL，
+#: 签名过期后、缓存过期前的窗口内会复用过期 URL → 偶发一次 403（客户端重试即
+#: 恢复，随后自愈删缓存）。_redirect_cache_store_drive_url 在写入前解析可识别
+#: 的过期字段并取 min(本 TTL, 签名剩余有效期)，把该窗口压到最小。
+#: 未知项：Google 307 Location 中签名参数的实际有效期，仓库内无证据——
+#: _SIGNATURE_EXPIRY_PARAMS 是保守启发式（expires/exp 等常见名），不是协议保证；
+#: 识别不出字段时保持本 TTL，终态 403/404/410 的自愈失效链路兜底。
 _DRIVE_REDIRECT_CACHE_TTL = _env_number("DRIVE_REDIRECT_CACHE_TTL", 90.0, 0.0, 600.0, float)
 
 #: file_id -> (final_url, expire_monotonic)。进程内，线程安全（asyncio 单循环
@@ -459,8 +480,12 @@ def _redirect_cache_get(file_id: str) -> str | None:
         return None
 
 
-def _redirect_cache_set(file_id: str, final_url: str) -> None:
-    """写入跳转缓存（TTL 到期自动失效；有界防止泄漏）。"""
+def _redirect_cache_set(file_id: str, final_url: str, ttl: float | None = None) -> None:
+    """写入跳转缓存（TTL 到期自动失效；有界防止泄漏）。
+
+    ``ttl``：None 时用 ``_DRIVE_REDIRECT_CACHE_TTL``；Drive 跳转写入请走
+    ``_redirect_cache_store_drive_url``（签名感知 TTL），不要直接调这里。
+    """
     if _DRIVE_REDIRECT_CACHE_TTL <= 0 or not file_id or not final_url:
         return
     try:
@@ -469,7 +494,7 @@ def _redirect_cache_set(file_id: str, final_url: str) -> None:
             if len(_redirect_cache) >= 4096:
                 _redirect_cache.clear()
             _redirect_cache[file_id] = (
-                final_url, time.monotonic() + _DRIVE_REDIRECT_CACHE_TTL)
+                final_url, time.monotonic() + (ttl if ttl is not None else _DRIVE_REDIRECT_CACHE_TTL))
     except Exception:
         pass
 
@@ -483,6 +508,144 @@ def _redirect_cache_invalidate(file_id: str) -> None:
             _redirect_cache.pop(file_id, None)
     except Exception:
         pass
+
+
+#: Location 查询参数里可识别的过期字段（P2-1，2026-10-12）。
+#: 保守启发式：只认这几个常见名。仓库内无 Google 签名实际有效期的证据，
+#: 识别不出时保持默认 TTL（自愈链路兜底），见 _DRIVE_REDIRECT_CACHE_TTL 注释。
+_SIGNATURE_EXPIRY_PARAMS = frozenset({
+    "expires", "exp", "expire", "expires_in", "x-goog-expires",
+})
+
+
+def _signature_ttl_seconds(url: str) -> float | None:
+    """从最终 URL 的查询参数估算签名剩余有效期（秒）；识别不出返回 None。
+
+    解析规则（保守启发式）：
+    - 值 > 1e9 按 unix 时间戳解读，剩余 = ts - now；
+    - 值 ≤ 1e9 按"自下发起的秒数"解读，剩余 = value（Location 是刚拿到的）。
+    任一字段剩余 ≤ 0（已过期）→ 返回 0.0，调用方应直接放弃写缓存。
+    多个字段时取最小剩余。
+    """
+    try:
+        qs = dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
+    except Exception:
+        return None
+    now = time.time()
+    best: float | None = None
+    for name in _SIGNATURE_EXPIRY_PARAMS:
+        raw = qs.get(name)
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        remaining = (value - now) if value > 1e9 else value
+        if remaining <= 0:
+            return 0.0  # 已过期：写缓存只会毒化
+        if best is None or remaining < best:
+            best = remaining
+    return best
+
+
+def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
+    """写入 Drive 跳转缓存（签名感知 TTL，P2-1）。
+
+    写入前解析 Location 查询参数：若含可识别的过期字段，TTL 取
+    ``min(_DRIVE_REDIRECT_CACHE_TTL, 签名剩余有效期)``；识别不出保持默认 TTL。
+    签名已过期（剩余 ≤ 0）时直接放弃写入——写进去也是毒化。
+    """
+    sig_ttl = _signature_ttl_seconds(final_url)
+    if sig_ttl is not None and sig_ttl <= 0:
+        return
+    ttl = _DRIVE_REDIRECT_CACHE_TTL
+    if sig_ttl is not None:
+        ttl = min(ttl, sig_ttl)
+    _redirect_cache_set(file_id, final_url, ttl=ttl)
+
+
+def _maybe_cache_drive_redirect(
+    file_id: str | None,
+    final_url: str,
+    hops: int,
+    cached_hit: bool,
+    terminal_status: int | None,
+) -> None:
+    """P0-2 跳转缓存写入决策（serve_remote_async / serve_remote / resolve_drive_final_url 共用）。
+
+    写入条件：file_id 非空、本次实际走了跳转（hops > 0，本次不是缓存命中）、
+    落点是 drive.usercontent.google.com、终态不是 403/404/410（坏 URL 不进缓存）。
+    """
+    if not file_id or hops <= 0 or cached_hit:
+        return
+    if terminal_status in (403, 404, 410):
+        return
+    try:
+        if "drive.usercontent.google.com" not in (urlsplit(final_url).hostname or ""):
+            return
+    except Exception:
+        return
+    _redirect_cache_store_drive_url(file_id, final_url)
+
+
+async def _follow_redirects(
+    client,
+    start_url: str,
+    forward: dict,
+    silent: bool = False,
+) -> tuple:
+    """手动跟随 HTTP 重定向（serve_remote_async 与 resolve_drive_final_url 共用，P3-5）。
+
+    每一跳都走 ``_next_redirect`` 内网校验 + ``_redirect_headers`` 跨主机剥凭据；
+    中间跳的响应及时 aclose 归还连接池；终态响应**不关**，由调用方消费/关闭。
+
+    返回 ``(terminal_resp, final_url, hops)``。
+
+    ``silent``：False（播放口径）→ 非法重定向目标抛 HTTPException(403)、跳转超限
+    抛 HTTPException(502)；True（预热口径）→ 这两种情况都返回 ``(None, current, hops)``，
+    调用方静默失败。两种口径下失败时已打开的中间响应都已关闭，无泄漏。
+    """
+    current = start_url
+    hops = 0
+    resp = None
+    for _ in range(MAX_REDIRECTS + 1):
+        resp = await client.send(
+            client.build_request("GET", current, headers=forward),
+            stream=True,
+        )
+        location = resp.headers.get("location")
+        if resp.status_code not in _REDIRECT_CODES or not location:
+            break  # 非跳转码 / 3xx 却没给 Location：当作终态
+        try:
+            target = _next_redirect(current, location)
+        except MountError as exc:
+            await resp.aclose()
+            resp = None
+            logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
+            if not silent:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            return (None, current, hops)
+        except Exception as exc:
+            # 畸形 Location（如 http://[::1）：原来落到外层 except → 502
+            await resp.aclose()
+            resp = None
+            if not silent:
+                logger.warning("重定向目标解析失败 %s: %s", location, exc)
+                raise HTTPException(status_code=502, detail="源站不可达") from exc
+            return (None, current, hops)
+        await resp.aclose()
+        resp = None
+        forward = _redirect_headers(forward, current, target)
+        current = target
+        hops += 1
+    else:
+        if resp is not None:
+            await resp.aclose()
+        if not silent:
+            raise HTTPException(status_code=502, detail="源站重定向次数过多")
+        return (None, current, hops)
+    return (resp, current, hops)
 
 
 def relay_timeout() -> "httpx.Timeout":
@@ -574,36 +737,14 @@ async def serve_remote_async(
         # 命中缓存时直接用最终 URL，省一跳 RTT（约 100~200ms）。
         _cache_file_id = _drive_file_id(url)
         _cached_target = _redirect_cache_get(_cache_file_id) if _cache_file_id else None
-        current = _cached_target or url
-        _redirect_hops = 0  # 实际走的跳转数（缓存命中时为 0）
-        for _hop in range(MAX_REDIRECTS + 1):
-            resp = await client.send(client.build_request("GET", current, headers=forward), stream=True)
-            if resp.status_code not in _REDIRECT_CODES:
-                break
-            location = resp.headers.get("location")
-            if not location:
-                break  # 3xx 却没给 Location：当作最终响应原样透传
-            try:
-                target = _next_redirect(current, location)
-            except MountError as exc:
-                await resp.aclose()
-                logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
-                raise HTTPException(status_code=403, detail=str(exc)) from exc
-            await resp.aclose()  # 确认要跟着走，这一跳的响应就不要再占着连接了
-            forward = _redirect_headers(forward, current, target)
-            current = target
-            _redirect_hops += 1
-        else:
-            await resp.aclose()
-            raise HTTPException(status_code=502, detail="源站重定向次数过多")
-        # P0-2：走了跳转且落点是 usercontent（Drive 最终地址）→ 写缓存。
+        # 跳转跟随走共用 helper（P3-5：与 resolve_drive_final_url 同逻辑，
+        # 逐跳内网校验 + 跨主机剥凭据）；终态 resp 不关，由下面消费/关闭。
+        resp, current, _redirect_hops = await _follow_redirects(
+            client, _cached_target or url, forward, silent=False)
+        # P0-2：写入跳转缓存（坏 URL 不进缓存；签名感知 TTL）。
         # 缓存命中（_redirect_hops==0）时不重复写。
-        if _cache_file_id and _redirect_hops > 0 and not _cached_target:
-            try:
-                if "drive.usercontent.google.com" in (urlsplit(current).hostname or ""):
-                    _redirect_cache_set(_cache_file_id, current)
-            except Exception:
-                pass
+        _maybe_cache_drive_redirect(_cache_file_id, current, _redirect_hops,
+                                    bool(_cached_target), resp.status_code)
         # P0-2：403/410 时删跳转缓存，下次回退重解析（防毒化）。
         # 115 直链过期检测：403/404 时清缓存，客户端重试将拿到新直链（2026-10-09）
         if resp.status_code in (403, 404, 410):
@@ -715,48 +856,32 @@ async def resolve_drive_final_url(
             if cached:
                 return cached
 
-        # 3. 未命中：手动跟随跳转（和 serve_remote_async 同逻辑）
+        # 3. 未命中：手动跟随跳转（走共用 helper，和 serve_remote_async 同逻辑）
         client = get_relay_client()
         if asyncio.iscoroutine(client):
             client = await client
 
         forward = {k: v for k, v in (headers or {}).items()}
         forward.pop("X-Pickcode", None)
+        # 与 serve_remote_async 同口径：带默认 UA（P3-5 漂移修复）
+        forward.setdefault("User-Agent", REMOTE_UA)
 
-        current = api_url
-        hops = 0
-        for _ in range(MAX_REDIRECTS + 1):
-            req = client.build_request("GET", current, headers=forward)
-            resp = await client.send(req, stream=True)
-            try:
-                if resp.status_code not in _REDIRECT_CODES:
-                    break
-                location = resp.headers.get("location")
-                if not location:
-                    break  # 3xx 却没给 Location：当作最终响应
-                try:
-                    target = _next_redirect(current, location)
-                except Exception:
-                    return None  # 非法重定向目标：静默失败
-                forward = _redirect_headers(forward, current, target)
-                current = target
-                hops += 1
-            finally:
-                # 确认跟着走或已到终点，这一跳的响应不再占连接
-                await resp.aclose()
-        else:
-            # 跳转次数超限
-            return None
-
-        # 4. 写 P0-2 缓存（走了跳转才写，和 serve_remote_async 同口径）
-        if file_id and hops > 0:
-            try:
-                if "drive.usercontent.google.com" in (urlsplit(current).hostname or ""):
-                    _redirect_cache_set(file_id, current)
-            except Exception:
-                pass
-
-        return current
+        resp, current, hops = await _follow_redirects(
+            client, api_url, forward, silent=True)
+        if resp is None:
+            return None  # 非法重定向目标 / 跳转超限：静默失败
+        try:
+            terminal_status = resp.status_code
+            if terminal_status in (403, 404, 410):
+                # 坏 URL 不进缓存；清掉可能已存在的旧缓存（与 serve_remote_async 同口径）
+                if file_id:
+                    _redirect_cache_invalidate(file_id)
+                return None
+            # 4. 写 P0-2 缓存（走了跳转才写，和 serve_remote_async 同口径）
+            _maybe_cache_drive_redirect(file_id, current, hops, False, terminal_status)
+            return current
+        finally:
+            await resp.aclose()
     except Exception:
         # 预热静默：任何异常都不抛
         return None
