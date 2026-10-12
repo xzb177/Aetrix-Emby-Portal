@@ -204,6 +204,10 @@ def admin_logout(
     """
     from backend.security import decode_token, revoke_jti
 
+    # 登出是安全动作，记审计（与 change-password 同口径；revoke_jti 内部会 commit，
+    # 无 token 可吊销时靠最后的显式 commit 落盘，避免"已登出但无审计"）
+    _audit(db, current_admin.id, "admin_logout", "self", current_admin.id)
+
     auth = http_request.headers.get("Authorization", "")
     token = auth[7:] if auth.lower().startswith("bearer ") else ""
     if token:
@@ -222,4 +226,5 @@ def admin_logout(
             if refresh_user_id == current_admin.id:
                 revoke_jti(db, payload.get("jti"), current_admin.id, reason="admin_logout")
 
+    db.commit()  # 无 token 可吊销时，审计记录靠这里落盘（有 revoke 时已在内部提交，这里是 no-op）
     return {"success": True, "message": "已登出"}
