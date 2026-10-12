@@ -12,10 +12,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -41,6 +43,8 @@ def _ok(data) -> dict:
 
 
 def _greeting() -> str:
+    # 口径：全项目统一用服务器本地 naive 时间（签到"今天"边界 backend/api/economy.py:96
+    # 同口径），不另造时区框架。问候语纯展示，跨时区错位影响极小。
     h = datetime.now().hour
     if h < 5:
         return "夜深了"
@@ -96,6 +100,7 @@ def panel_today(
             em.MediaItem.item_type.in_(["movie", "series"]),
         ).scalar() or 0
     except Exception:  # noqa: BLE001
+        logger.warning("today 新入库计数查询失败", exc_info=True)
         new_count = 0
 
     # 今日已拆 / 总数
@@ -115,12 +120,12 @@ def panel_today(
 
     return _ok({
         "greeting": _greeting(),
-        "date": now.strftime("%Y-%m-%d"),
+        "date_label": now.strftime("%Y-%m-%d"),
         "weekday": ["一", "二", "三", "四", "五", "六", "日"][now.weekday()],
-        "parcels_total": len(parcel_ids),
-        "parcels_unsealed": unsealed,
-        "streak": _streak(db, user.id),
-        "letter_available": True,  # 每日一封每天都可读
+        "parcel_count": len(parcel_ids),
+        "unsealed_count": unsealed,
+        "streak_days": _streak(db, user.id),
+        "letter_readable": True,  # 每日一封每天都可读
         "nickname": getattr(user, "nickname", None) or user.username,
     })
 
@@ -146,9 +151,13 @@ def panel_parcels(
         logger.exception("parcels 查询失败")
         return _ok({"parcels": []})
 
+    parcel_id_list = [it.id for it in items]
     unsealed_ids = {r[0] for r in db.query(models.PanelUnseal.item_id).filter(
-        models.PanelUnseal.user_id == user.id).all()}
+        models.PanelUnseal.user_id == user.id,
+        models.PanelUnseal.item_id.in_(parcel_id_list)).all()} if parcel_id_list else set()
 
+    # r20: base URL 循环外解析一次（原逐条调 resolve_emby_base_url，5 条=5 次重复查询）
+    base_url = _emby_base_url(db)
     parcels = []
     for it in items:
         parcels.append({
@@ -159,7 +168,7 @@ def panel_parcels(
             "video_resolution": getattr(it, "video_resolution", None),
             "added_at": it.date_added.isoformat() if it.date_added else None,
             "unsealed": it.id in unsealed_ids,
-            "deep_link": _item_deep_link(db, it.id),
+            "deep_link": f"{base_url}/web/index.html#!/item?id={it.id}" if base_url else "",
         })
     return _ok({"parcels": parcels})
 
@@ -186,11 +195,17 @@ def panel_unseal(
     try:
         db.add(models.PanelUnseal(user_id=user.id, item_id=item_id))
         db.commit()
-    except Exception:  # noqa: BLE001 — 并发重复拆，UNIQUE 兜底
+        already = False
+    except IntegrityError:  # 并发重复拆：UNIQUE 冲突，重查确认后返回 already=True
         db.rollback()
+        already = db.query(models.PanelUnseal).filter_by(
+            user_id=user.id, item_id=item_id).first() is not None
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        raise  # 非冲突异常不再吞成假成功
     return _ok({
         "unsealed": True,
-        "already": False,
+        "already": already,
         "item": {
             "id": item.id,
             "name": item.name,
@@ -203,8 +218,29 @@ def panel_unseal(
 
 # ==================== 4. GET /api/panel/pulse ====================
 
-def _derive_activity(db: Session) -> list:
-    """推导版后台活动文案（worker 埋点补上后无缝替换为读 panel_activity 表）"""
+def _evaluate_achievements_async(user_id: int) -> None:
+    """后台线程跑成就评估（幂等）。
+
+    GET /collector 本身不再写库：评估在请求外异步执行，解锁结果通过
+    achievements[].unlocked 在下次请求可见（最终一致）。
+    """
+    try:
+        from backend.database import SessionLocal
+        db2 = SessionLocal()
+        try:
+            from backend.panel_achievements import evaluate
+            evaluate(user_id, db2)
+        finally:
+            db2.close()
+    except Exception:  # noqa: BLE001
+        logger.exception("成就后台评估失败")
+
+
+def _derive_activity(db: Session, health: dict | None = None) -> list:
+    """推导版后台活动文案（worker 埋点补上后无缝替换为读 panel_activity 表）
+
+    health 由调用方传入（panel_pulse 只调一次 _collect_health），避免重复全量聚合。
+    """
     lines = []
     # 优先读埋点表
     try:
@@ -214,10 +250,9 @@ def _derive_activity(db: Session) -> list:
             return [{"text": r.text, "at": r.created_at.isoformat()} for r in rows]
     except Exception:  # noqa: BLE001
         pass
-    # 推导版：从 health 快照推
+    # 推导版：从 health 快照推（调用方传入；无快照则跳过推导）
     try:
-        from backend.main import _collect_health
-        h = _collect_health()
+        h = health or {}
         metrics = h.get("metrics", {}) or {}
         backlog = metrics.get("enrich_backlog", metrics.get("backlog", 0))
         if backlog:
@@ -253,9 +288,11 @@ def panel_pulse(
 ):
     _guard()
     health = {}
+    health_raw: dict | None = None
     try:
         from backend.main import _collect_health
         h = _collect_health()
+        health_raw = h
         health = {
             "status": h.get("status"),
             "level": h.get("level"),
@@ -265,7 +302,7 @@ def panel_pulse(
         health = {"status": "unknown", "level": "unknown", "issues_count": 0}
     return _ok({
         "health": health,
-        "activities": _derive_activity(db),
+        "activities": _derive_activity(db, health_raw),
         "timestamp": datetime.now().isoformat(),
     })
 
@@ -324,14 +361,13 @@ def panel_collector(
     user: models.WebUser = Depends(get_current_user),
 ):
     _guard()
-    from backend.panel_achievements import user_tastes, evaluate
+    from backend.panel_achievements import user_tastes
 
-    # 触发一次成就评估（轻量，幂等）
-    try:
-        new_unlocks = evaluate(user.id, db)
-    except Exception:  # noqa: BLE001
-        logger.exception("成就评估失败")
-        new_unlocks = []
+    # r20: 成就评估移出请求热路径——后台线程异步跑（幂等），GET 本身不再写库。
+    # 本轮 new_unlocks 恒为空；解锁状态通过 achievements[].unlocked 下次可见。
+    threading.Thread(
+        target=_evaluate_achievements_async, args=(user.id,), daemon=True).start()
+    new_unlocks: list = []
 
     tastes = {}
     try:

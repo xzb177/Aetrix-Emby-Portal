@@ -112,13 +112,15 @@ def user_tastes(db: Session, user_id: int) -> dict:
     sessions = db.query(models.EmbySession).filter(
         models.EmbySession.user_id == user_id,
         models.EmbySession.play_duration > 60,  # 至少看 1 分钟才算
-    ).all()
-    seen_names = {s.item_name for s in sessions if s.item_name}
+    ).order_by(models.EmbySession.start_time.desc()).all()
+    # r20 确定性截断：按最近观看倒序、去重保序取前 500（原 list(set)[:500] 顺序不定，
+    # 重度用户每次请求截到不同子集，口味/成就判定抖动）
+    seen_names = list(dict.fromkeys(s.item_name for s in sessions if s.item_name))
     # 批量查 genre
     items = {}
     if seen_names:
         for row in db.query(em.MediaItem.name, em.MediaItem.genres).filter(
-            em.MediaItem.name.in_(list(seen_names)[:500])
+            em.MediaItem.name.in_(seen_names[:500])
         ).all():
             items[row[0]] = _parse_genres(row[1])
 
@@ -196,13 +198,16 @@ def evaluate(user_id: int, db: Session) -> list:
 
     # --- 内容类规则（需要 item genre/年份） ---
     from backend.emby_server import models as em
-    names = {s.item_name for s in valid if s.item_name}
+    # r20 确定性截断：valid 按 start_time 倒序、去重保序取前 500（同上）
+    _ordered = sorted((s for s in valid if s.item_name),
+                      key=lambda s: s.start_time or datetime.min, reverse=True)
+    names = list(dict.fromkeys(s.item_name for s in _ordered))
     item_map = {}
     if names:
         for row in db.query(
             em.MediaItem.name, em.MediaItem.genres, em.MediaItem.production_year,
             em.MediaItem.item_type, em.MediaItem.series_id,
-        ).filter(em.MediaItem.name.in_(list(names)[:500])).all():
+        ).filter(em.MediaItem.name.in_(names[:500])).all():
             item_map[row[0]] = row
 
     for s in valid:

@@ -271,3 +271,64 @@ def test_push_activity_ring_buffer(db):
         panel_api.push_activity(db, f"活动 {i}")
     count = db.query(models.PanelActivity).count()
     assert count == 50  # 环形保留 50 条
+
+
+# ==================== 7. today/parcels 字段契约（r20 P1 修复锁定）===
+
+def test_today_field_contract(db, user):
+    """GET /api/panel/today 返回前端命名契约：字段集合精确锁定。
+
+    后端已改向前段命名（date_label/parcel_count/streak_days/letter_readable），
+    前端 usePanelApi.TodayData + DiscoveryView 按此消费。字段增减必须同步改前端。
+    """
+    app = _make_app(db, user)
+    client = TestClient(app)
+    r = client.get("/api/panel/today")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert set(data.keys()) == {
+        "greeting", "date_label", "weekday", "parcel_count",
+        "unsealed_count", "streak_days", "letter_readable", "nickname",
+    }
+
+
+def test_parcels_envelope_contract(db, user):
+    """GET /api/panel/parcels 的 data 为 {parcels: [...]} 信封，非裸数组。
+
+    前端 usePanelApi.parcels 类型为 { parcels: ParcelItem[] }，与此对齐。
+    """
+    app = _make_app(db, user)
+    client = TestClient(app)
+    r = client.get("/api/panel/parcels")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert set(data.keys()) == {"parcels"}
+    assert isinstance(data["parcels"], list)
+    for p in data["parcels"]:
+        assert "unsealed" in p and "deep_link" in p
+
+
+def test_today_unsealed_count_contract(db, user):
+    """today 的 parcel_count/unsealed_count 随拆封联动（r20 命名锁定）。"""
+    try:
+        from backend.emby_server import models as em
+    except Exception:
+        pytest.skip("EmbyItem 模型不可用")
+    item = em.MediaItem(
+        guid="contract-today-1", library_id=1, item_type="movie",
+        name="契约电影", date_added=datetime.now(),
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+    app = _make_app(db, user)
+    client = TestClient(app)
+    r = client.post(f"/api/panel/parcels/{item.id}/unseal")
+    assert r.json()["data"]["already"] is False
+
+    d = client.get("/api/panel/today").json()["data"]
+    assert d["parcel_count"] >= 1
+    assert d["unsealed_count"] == 1
+    assert d["streak_days"] == 0
+    assert d["letter_readable"] is True
