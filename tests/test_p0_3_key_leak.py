@@ -249,3 +249,43 @@ def test_save_server_external_new_url_with_new_key_persists(db, server_client):
     assert seen["url"] == "http://new-emby.local:8096"
     assert config["emby_external_url"] == "http://new-emby.local:8096"
     assert config["emby_external_api_key"] == "BRAND-NEW-KEY"
+
+
+# ===========================================================================
+# P1-4 返工（r12 第二轮）：同 URL、无已存密钥时恢复空密钥探测宽容
+# ===========================================================================
+
+def test_test_server_same_url_without_saved_key_allows_empty_probe(db, server_client):
+    """返工修复：external 同 URL、无新密钥、无已存密钥 → 空密钥探测（200），不 400。
+
+    旧行为（P1-4 之前）：同 URL 时 `api_key = saved_key`（缺省 ""），走空密钥探测。
+    P1-4 的 `if old_key and _same_url(...)` 无意中把它改成了 400，且文案
+    "更换服务器地址时…"与事实不符（用户根本没换地址）。此处恢复旧宽容。
+    """
+    client, seen, config = server_client
+    admin = _admin(db)
+    # 模拟"从未保存过密钥"：已存密钥为空
+    config["emby_external_api_key"] = ""
+
+    r = client.post("/api/admin/emby/servers/test",
+                    json={"mode": "external", "url": "http://emby.local:8096",
+                          "api_key": "", "enabled": False},
+                    headers=_bearer(admin))
+    assert r.status_code == 200, r.text
+    # 空密钥探测：probe 收到的就是空密钥，没有 400 拦截
+    assert seen["api_key"] == ""
+
+
+def test_save_server_same_url_without_saved_key_uses_empty_probe(db, server_client):
+    """返工修复的连带行为：save_server external 同 URL、无密钥时也不再 400，
+    而是保存后用空密钥探测（探测失败只会记 reachable=false，不切换当前入口）。"""
+    client, seen, config = server_client
+    admin = _admin(db)
+    config["emby_external_api_key"] = ""
+
+    r = client.put("/api/admin/emby/servers",
+                   json={"mode": "external", "url": "http://emby.local:8096",
+                         "api_key": "", "enabled": False},
+                   headers=_bearer(admin))
+    assert r.status_code == 200, r.text
+    assert seen["api_key"] == ""

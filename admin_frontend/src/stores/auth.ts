@@ -151,10 +151,18 @@ export const useAuthStore = defineStore('auth', () => {
 
     // 服务端吊销是最佳努力：失败也不影响本地已退出。
     // 请求 settle 后再清理 localStorage，确保拦截器能取到旧 token。
-    import('@/api/admin')
+    // P2：给吊销请求加 3s 兜底超时——若请求 hang 住（弱网/服务端无响应），
+    // 旧 token 会长期驻留 localStorage，期间刷新页面会被 restoreToken() 读回会话，
+    // 相当于「假退出」。超时则不再等待，直接清理本地（服务端吊销尽力而为）。
+    const revoke = import('@/api/admin')
       .then(({ adminLogout }) => adminLogout())
       .catch(() => {})
-      .finally(clearStoredSession)
+
+    const timeout = new Promise<void>((resolve) => {
+      setTimeout(resolve, 3000)
+    })
+
+    Promise.race([revoke, timeout]).finally(clearStoredSession)
   }
 
   /**

@@ -82,8 +82,18 @@ async def _resolve_probe_key(db: Session, mode: str, url: str, api_key: Optional
                              scope_id: Optional[int]) -> str:
     """解析探测用密钥。
 
-    P1-4 修复：按 mode 对应的 prefix 读取本模式已保存的配置，旧密钥复用仅限同 URL；
-    绝不允许 managed_ea 跨模式复用 emby_external_api_key。
+    规则（按 mode 对应的 prefix 读取本模式已保存的配置，绝不允许 managed_ea 跨模式
+    复用 emby_external_api_key）：
+
+    1. 请求显式提供了非空 api_key：直接使用；
+    2. 目标 URL 与本模式已保存 URL 一致（_same_url）：复用本模式已存密钥，
+       即使已存密钥为空也返回 ""（空密钥探测）——这是恢复 P1-4 之前 test_server 的
+       旧行为：同 URL、无新密钥、无已存密钥时走空密钥探测而非 400；且 P1-4 提交说明
+       宣称 "external 语义不变"，故此处必须保持宽容。空密钥探测无安全风险，它不向
+       任何主机发送密钥，只是会因认证失败而探测不通过；
+    3. URL 确实发生变化且为 external 模式且无新密钥：抛 400（旧密钥跨 URL 复用不安全）；
+    4. managed_ea：自建 EA 探测不需要密钥，返回 ""（即使存在旧 key，也绝不跨模式
+       复用外部密钥）。
     """
     prefix = "emby_managed" if mode == "managed_ea" else "emby_external"
     old_url = await run_in_threadpool(value, db, f"{prefix}_url", "", scope_id)
@@ -93,9 +103,9 @@ async def _resolve_probe_key(db: Session, mode: str, url: str, api_key: Optional
     if provided:
         return provided
 
-    # 仅当目标 URL 与本模式已保存 URL 一致时，才允许复用本模式旧密钥。
-    if old_key and _same_url(url, old_url):
-        return old_key
+    # 同 URL：允许复用本模式旧密钥（old_key 为空也允许，即空密钥探测，保持旧行为宽容）。
+    if _same_url(url, old_url):
+        return old_key or ""
 
     if mode == "external":
         raise HTTPException(400, "更换服务器地址时必须提供新的 API 密钥，不能复用旧密钥")

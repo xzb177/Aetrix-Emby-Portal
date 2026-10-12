@@ -457,6 +457,14 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
         revoke_all_user_tokens(db, user.id, reason="refresh_reuse_detected")  # 内部原子 bump + commit
         raise HTTPException(status_code=401, detail="检测到异常的刷新凭证，已吊销全部会话")
     if in_grace:
+        # P1（安全）：容忍窗口只豁免"旧 jti 已在吊销表"这一项，不能豁免改密/登出。
+        # 注意：此处绝对不能调用 enforce_token_freshness——它内部会检查 payload["jti"] 是否在吊销表，
+        # 而轮换时旧 refresh 的 jti 已被 revoke（refresh_rotation），直接调用会把合法的良性重试误杀。
+        # 因此这里只单独比对 token 版本号，语义与 enforce_token_freshness 中的 tv 校验保持一致：
+        # 改密/登出 bump token_version 后，容忍窗口内旧 refresh 重放必须 401，否则 120s 内
+        # 旧凭证仍能换出新 access，违反"改密/登出后旧 token 立即作废"的安全契约。
+        if int(payload.get("tv", 0) or 0) != int(getattr(user, "token_version", 0) or 0):
+            raise HTTPException(status_code=401, detail="密码已变更，请重新登录")
         logger.warning("refresh 轮换容忍窗口内重试 jti=%s user_id=%s：视为良性重复，放行，不触发应急吊销",
                        old_jti, user.id)
     else:

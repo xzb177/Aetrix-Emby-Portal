@@ -131,6 +131,92 @@ def test_refresh_rotation_revokes_old_jti():
         assert m_r1.called or m_r2.called, "轮换时应吊销旧 refresh jti"
 
 
+def test_refresh_grace_rejects_stale_tv_after_password_change():
+    """P1（安全）：容忍窗口内也必须校验 token_version。
+
+    改密/登出 bump user.token_version 后，120s 容忍窗口内用旧 refresh 重试必须 401，
+    否则旧凭证仍能换出新 access，违反"改密后旧 token 立即作废"。
+    注意：此处不能走 enforce_token_freshness（它含 jti 吊销检查，会误杀良性重试），
+    refresh() 内部应单独比对 tv。
+    """
+    from fastapi import HTTPException
+
+    refresh = portal_mod.refresh
+
+    mock_db = mock.MagicMock()
+    # 用户已改密：token_version 被 bump 到 1
+    fake_user = mock.Mock()
+    fake_user.id = 5
+    fake_user.is_active = True
+    fake_user.username = "u5"
+    fake_user.token_version = 1
+    mock_db.query.return_value.filter.return_value.first.return_value = fake_user
+
+    req = mock.Mock()
+    req.refresh_token = "fake-refresh"
+    # 旧 refresh：tv=0（改密前签发），jti 已在吊销表（轮换产生）
+    decode_ret = {"sub": "5", "jti": "old-jti-9", "tv": 0}
+
+    with mock.patch.object(security_mod, "decode_token", return_value=decode_ret, create=True), \
+         mock.patch.object(portal_mod, "decode_token", return_value=decode_ret, create=True), \
+         mock.patch.object(security_mod, "is_jti_revoked", return_value=True, create=True), \
+         mock.patch.object(portal_mod, "is_jti_revoked", return_value=True, create=True), \
+         mock.patch.object(security_mod, "_refresh_rotation_in_grace", return_value=True, create=True), \
+         mock.patch.object(portal_mod, "_refresh_rotation_in_grace", return_value=True, create=True), \
+         mock.patch.object(security_mod, "revoke_all_user_tokens", create=True) as m_revoke_all, \
+         mock.patch.object(portal_mod, "revoke_all_user_tokens", create=True) as m_revoke_all2:
+        with pytest.raises(HTTPException) as exc_info:
+            refresh(req, mock_db)
+        assert exc_info.value.status_code == 401
+        assert "密码已变更" in exc_info.value.detail
+        # tv 不一致走的是 401 短路，不是复用攻击的应急吊销
+        assert not (m_revoke_all.called or m_revoke_all2.called), \
+            "tv 不一致应直接 401，不触发 revoke_all_user_tokens"
+
+
+def test_refresh_grace_allows_retry_with_matching_tv():
+    """P1（安全）：容忍窗口内 tv 一致（未改密）的良性重试必须放行。
+
+    这是与上一个测试配对的正向用例：修复不能误杀正常轮换重试。
+    """
+    from fastapi import HTTPException
+
+    refresh = portal_mod.refresh
+
+    mock_db = mock.MagicMock()
+    fake_user = mock.Mock()
+    fake_user.id = 5
+    fake_user.is_active = True
+    fake_user.username = "u5"
+    fake_user.token_version = 2
+    mock_db.query.return_value.filter.return_value.first.return_value = fake_user
+
+    req = mock.Mock()
+    req.refresh_token = "fake-refresh"
+    decode_ret = {"sub": "5", "jti": "old-jti-10", "tv": 2}
+
+    with mock.patch.object(security_mod, "decode_token", return_value=decode_ret, create=True), \
+         mock.patch.object(portal_mod, "decode_token", return_value=decode_ret, create=True), \
+         mock.patch.object(security_mod, "is_jti_revoked", return_value=True, create=True), \
+         mock.patch.object(portal_mod, "is_jti_revoked", return_value=True, create=True), \
+         mock.patch.object(security_mod, "_refresh_rotation_in_grace", return_value=True, create=True), \
+         mock.patch.object(portal_mod, "_refresh_rotation_in_grace", return_value=True, create=True), \
+         mock.patch.object(security_mod, "revoke_all_user_tokens", create=True) as m_revoke_all, \
+         mock.patch.object(portal_mod, "revoke_all_user_tokens", create=True) as m_revoke_all2, \
+         mock.patch.object(security_mod, "revoke_jti", create=True), \
+         mock.patch.object(portal_mod, "revoke_jti", create=True), \
+         mock.patch.object(portal_mod, "create_access_token", return_value="a", create=True), \
+         mock.patch.object(portal_mod, "create_refresh_token", return_value="r", create=True), \
+         mock.patch.object(portal_mod, "_user_out", return_value={"id": 5}, create=True):
+        try:
+            result = refresh(req, mock_db)
+        except HTTPException as exc:
+            pytest.fail(f"tv 一致的窗口内重试不应 401，实际抛 {exc.status_code}")
+        assert result["access_token"] == "a"
+        assert result["refresh_token"] == "r"
+        assert not (m_revoke_all.called or m_revoke_all2.called), "窗口内不得触发全量吊销"
+
+
 def test_admin_logs_single_user_query():
     """F-P1-1: get_admin_logs 中 WebUser 只查一次（IN 批量），且操作人名正确映射。
 
