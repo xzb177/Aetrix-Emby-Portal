@@ -16,7 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from backend import (authlog, codes, devices, library_scope, models, promotion,
@@ -24,6 +24,7 @@ from backend import (authlog, codes, devices, library_scope, models, promotion,
 from backend import access_guard  # noqa: E402  - 与其余模块同一行导入
 from backend.api.invitation import _generate_invite_code
 from backend.api.admin_core import _audit, get_current_admin
+from backend.api.pagination import pagination_params
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,35 @@ def _code_state(code: models.RegistrationCode, now: datetime) -> str:
     return "active"
 
 
+def _code_state_sql(now: datetime):
+    """F-P1-7：_code_state 的 SQL 等价表达式（CASE），供状态过滤/统计下推用。
+
+    口径与 Python 版严格一致：
+    disabled = is_active 假；expired = expires_at 非空且已过；
+    used_up = max_uses>0 且 use_count>=max_uses；其余 active。
+    """
+    return case(
+        (models.RegistrationCode.is_active == False, "disabled"),  # noqa: E712
+        (
+            and_(
+                models.RegistrationCode.expires_at.isnot(None),
+                models.RegistrationCode.expires_at < now,
+            ),
+            "expired",
+        ),
+        (
+            and_(
+                models.RegistrationCode.max_uses.isnot(None),
+                models.RegistrationCode.max_uses > 0,
+                func.coalesce(models.RegistrationCode.use_count, 0)
+                >= models.RegistrationCode.max_uses,
+            ),
+            "used_up",
+        ),
+        else_="active",
+    )
+
+
 def _code_usernames(db: Session, code: models.RegistrationCode) -> list:
     ids = [int(i) for i in str(code.used_by or "").split(",") if str(i).strip().isdigit()]
     if not ids:
@@ -55,7 +85,9 @@ def _code_usernames(db: Session, code: models.RegistrationCode) -> list:
 
 
 def code_dto(db: Session, code: models.RegistrationCode, now: Optional[datetime] = None,
-             realm_names: Optional[dict] = None) -> dict:
+             realm_names: Optional[dict] = None,
+             used_by_map: Optional[dict] = None) -> dict:
+    """used_by_map：F-P1-7 批量预取的 {code_id: used_by 用户列表}，传了就不再逐码查库。"""
     now = now or datetime.now()
     code_type = int(code.code_type or codes.CODE_TYPE_REGISTER)
     days = code.days if code.days is not None else codes.DEFAULT_DAYS
@@ -81,7 +113,7 @@ def code_dto(db: Session, code: models.RegistrationCode, now: Optional[datetime]
         "state": _code_state(code, now),
         "note": code.note,
         "expires_at": code.expires_at.isoformat() if code.expires_at else None,
-        "used_by": _code_usernames(db, code),
+        "used_by": used_by_map.get(code.id) if used_by_map is not None else _code_usernames(db, code),
         "created_at": code.created_at.isoformat() if code.created_at else None,
     }
 
@@ -116,18 +148,54 @@ def list_codes(
         ))
 
     now = datetime.now()
-    rows = query.order_by(models.RegistrationCode.created_at.desc()).all()
+    # F-P1-7：状态过滤下推 SQL（CASE 与 _code_state 同口径），再走 SQL 分页。
+    # 原实现全量 .all() 后内存过滤+切片：limit=1 也要把全部匹配行传进内存。
     if state:
-        rows = [r for r in rows if _code_state(r, now) == state]
-    total = len(rows)
-    page = rows[max(offset, 0):max(offset, 0) + min(max(limit, 1), 300)]
+        if state not in ("active", "disabled", "expired", "used_up"):
+            raise HTTPException(status_code=400, detail=f"未知状态：{state}")
+        query = query.filter(_code_state_sql(now) == state)
+    # 本接口历史上限 300（卡码批量管理场景），保持不变；只修"读全量"问题
+    limit, offset = pagination_params(limit, offset, default_limit=100, max_limit=300)
+    total = query.count()
+    page = (
+        query.order_by(models.RegistrationCode.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
+    # code_dto 内逐码查 used_by 用户名也是 N+1：本页一次查完
+    _used_ids: list[int] = []
+    for c in page:
+        _used_ids.extend(
+            int(i) for i in str(c.used_by or "").split(",") if str(i).strip().isdigit()
+        )
+    _uname = (
+        {
+            r[0]: r[1]
+            for r in db.query(models.WebUser.id, models.WebUser.username)
+            .filter(models.WebUser.id.in_(_used_ids or [-1]))
+            .all()
+        }
+        if _used_ids
+        else {}
+    )
+    used_by_map = {
+        c.id: [
+            {"id": i, "username": _uname[i]}
+            for i in (
+                int(x) for x in str(c.used_by or "").split(",") if str(x).strip().isdigit()
+            )
+            if i in _uname
+        ]
+        for c in page
+    }
     return {
         "total": total,
         "realm_id": scope_id,
         "realm_name": realms.get_realm(db, scope_id).name if scope_id else "全部服",
         "realms": [{"id": r.id, "name": r.name} for r in realms.list_realms(db)],
-        "codes": [code_dto(db, c, now, realm_names) for c in page],
+        "codes": [code_dto(db, c, now, realm_names, used_by_map) for c in page],
     }
 
 
@@ -139,50 +207,67 @@ def code_stats(
 ):
     """卡码总览：按类型统计 + 诱饵命中 + 累计授予天数（按服；``realm_id=0`` 为全部服）"""
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
-    rows = realms.scope(db.query(models.RegistrationCode),
-                        models.RegistrationCode.realm_id, scope_id).all()
+    base = realms.scope(db.query(models.RegistrationCode),
+                        models.RegistrationCode.realm_id, scope_id)
     now = datetime.now()
-    by_type: dict = {}
-    counters = {"active": 0, "disabled": 0, "expired": 0, "used_up": 0}
-    decoy_total = decoy_triggered = 0
-    days_granted = 0
+    # F-P1-7：统计下推 SQL（原全量 .all() 后 Python 循环）。
+    # 诱饵码判定：is_honeypot 看 code.upper().startswith("HONEY-")，SQL 等价写法；
+    # code_type 口径与 Python ``c.code_type or CODE_TYPE_REGISTER`` 一致（0/NULL→1）。
+    state_expr = _code_state_sql(now)
+    is_decoy = func.upper(models.RegistrationCode.code).like("HONEY-%")
+    days_col = func.coalesce(models.RegistrationCode.days, codes.DEFAULT_DAYS)
+    used_col = func.coalesce(models.RegistrationCode.use_count, 0)
+    type_col = func.coalesce(
+        func.nullif(models.RegistrationCode.code_type, 0), codes.CODE_TYPE_REGISTER
+    )
 
-    for c in rows:
-        code_type = int(c.code_type or codes.CODE_TYPE_REGISTER)
-        days = c.days if c.days is not None else codes.DEFAULT_DAYS
-        used = c.use_count or 0
-        counters[_code_state(c, now)] += 1
-
-        if codes.is_honeypot(c):
-            decoy_total += 1
-            if used:
-                decoy_triggered += 1
-        elif days > 0:
-            days_granted += days * used
-
-        bucket = by_type.setdefault(code_type, {
-            "code_type": code_type,
-            "code_type_name": codes.CODE_TYPE_NAMES.get(code_type, "卡码"),
-            "total": 0,
-            "used": 0,
-            "available": 0,
-        })
-        bucket["total"] += 1
-        bucket["used"] += used
-        if _code_state(c, now) == "active":
-            bucket["available"] += 1
+    agg = (
+        base.with_entities(
+            func.count().label("total"),
+            func.sum(case((state_expr == "active", 1), else_=0)).label("active"),
+            func.sum(case((state_expr == "disabled", 1), else_=0)).label("disabled"),
+            func.sum(case((state_expr == "expired", 1), else_=0)).label("expired"),
+            func.sum(case((state_expr == "used_up", 1), else_=0)).label("used_up"),
+            func.sum(case((is_decoy, 1), else_=0)).label("decoy_total"),
+            func.sum(case((and_(is_decoy, used_col > 0), 1), else_=0)).label("decoy_triggered"),
+            func.sum(
+                case((and_(~is_decoy, days_col > 0), days_col * used_col), else_=0)
+            ).label("days_granted"),
+        ).first()
+    )
+    type_rows = (
+        base.with_entities(
+            type_col.label("code_type"),
+            func.count().label("total"),
+            func.sum(used_col).label("used"),
+            func.sum(case((state_expr == "active", 1), else_=0)).label("available"),
+        )
+        .group_by(type_col)
+        .all()
+    )
+    by_type = [
+        {
+            "code_type": int(r.code_type),
+            "code_type_name": codes.CODE_TYPE_NAMES.get(int(r.code_type), "卡码"),
+            "total": int(r.total or 0),
+            "used": int(r.used or 0),
+            "available": int(r.available or 0),
+        }
+        for r in type_rows
+    ]
 
     return {
-        "total": len(rows),
-        "active": counters["active"],
-        "disabled": counters["disabled"],
-        "expired": counters["expired"],
-        "used_up": counters["used_up"],
-        "decoy": {"total": decoy_total, "triggered": decoy_triggered},
-        "days_granted": days_granted,
+        "total": int(agg.total or 0),
+        "active": int(agg.active or 0),
+        "disabled": int(agg.disabled or 0),
+        "expired": int(agg.expired or 0),
+        "used_up": int(agg.used_up or 0),
+        "decoy": {"total": int(agg.decoy_total or 0),
+                  "triggered": int(agg.decoy_triggered or 0)},
+        "days_granted": int(agg.days_granted or 0),
         "realm_id": scope_id,
         "realm_name": realms.get_realm(db, scope_id).name if scope_id else "全部服",
-        "by_type": sorted(by_type.values(), key=lambda x: x["code_type"]),
+        "by_type": sorted(by_type, key=lambda x: x["code_type"]),
     }
 
 
@@ -1084,28 +1169,77 @@ def list_invitation_codes(
         query = query.filter(models.InvitationCode.code.ilike(f"%{kw}%"))
 
     now = datetime.now()
-    rows = query.order_by(models.InvitationCode.id.desc()).all()
-    owners = {}
-    owner_ids = {r.user_id for r in rows}
-    if owner_ids:
-        owners = {u.id: u.username for u in db.query(models.WebUser).filter(
-            models.WebUser.id.in_(owner_ids)).all()}
-
-    items = [_inv_code_dto(r, owners.get(r.user_id, f"用户 #{r.user_id}"), now)
-             for r in rows]
+    # F-P1-7：状态过滤与统计下推 SQL（原全量 .all() 后内存过滤/统计/切片）。
+    # 口径与 _inv_code_state 一致：revoked=停用；expired=过期；used_up=用完；其余 active。
+    inv_state = case(
+        (models.InvitationCode.is_active == False, "revoked"),  # noqa: E712
+        (
+            and_(
+                models.InvitationCode.expires_at.isnot(None),
+                models.InvitationCode.expires_at < now,
+            ),
+            "expired",
+        ),
+        (
+            and_(
+                models.InvitationCode.max_uses.isnot(None),
+                models.InvitationCode.max_uses > 0,
+                func.coalesce(models.InvitationCode.use_count, 0)
+                >= models.InvitationCode.max_uses,
+            ),
+            "used_up",
+        ),
+        else_="active",
+    )
     if state:
-        items = [i for i in items if i["state"] == state]
+        if state not in INV_CODE_STATE_LABELS:
+            raise HTTPException(status_code=400, detail=f"未知状态：{state}")
+        query = query.filter(inv_state == state)
+    # 本接口历史上限 300，保持不变；只修"读全量"问题
+    limit, offset = pagination_params(limit, offset, default_limit=100, max_limit=300)
 
-    summary = {key: sum(1 for i in items if i["state"] == key)
-               for key in INV_CODE_STATE_LABELS}
-    summary["total"] = len(items)
-    summary["uses"] = sum(i["use_count"] for i in items)
+    # 汇总在过滤后的集合上统计（GROUP BY 状态），与原语义一致
+    summary = {key: 0 for key in INV_CODE_STATE_LABELS}
+    summary["total"] = 0
+    summary["uses"] = 0
+    for r in (
+        query.with_entities(
+            inv_state.label("st"),
+            func.count().label("n"),
+            func.sum(func.coalesce(models.InvitationCode.use_count, 0)).label("uses"),
+        )
+        .group_by(inv_state)
+        .all()
+    ):
+        if r.st in summary:
+            summary[r.st] = int(r.n or 0)
+        summary["total"] += int(r.n or 0)
+        summary["uses"] += int(r.uses or 0)
 
-    start = max(offset, 0)
-    page = items[start:start + min(max(limit, 1), 300)]
+    page_rows = (
+        query.order_by(models.InvitationCode.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    owner_ids = {r.user_id for r in page_rows}
+    owners = (
+        {
+            u.id: u.username
+            for u in db.query(models.WebUser)
+            .filter(models.WebUser.id.in_(list(owner_ids) or [-1]))
+            .all()
+        }
+        if owner_ids
+        else {}
+    )
+    page = [
+        _inv_code_dto(r, owners.get(r.user_id, f"用户 #{r.user_id}"), now)
+        for r in page_rows
+    ]
     return {
         "success": True,
-        "total": len(items),
+        "total": summary["total"],
         "summary": summary,
         "states": [{"value": "", "label": "全部"}] + [
             {"value": k, "label": v} for k, v in INV_CODE_STATE_LABELS.items()
