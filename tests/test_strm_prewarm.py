@@ -287,3 +287,116 @@ def test_10mb_prewarm_keeps_isplayback_gate():
     gate_indent = len(lines[gate_idx]) - len(lines[gate_idx].lstrip())
     warm_indent = len(lines[warm_idx]) - len(lines[warm_idx].lstrip())
     assert warm_indent > gate_indent, "10MB 预热应保留在 IsPlayback 门控内部"
+
+
+# ---------------------------------------------------------------------------
+# resolve_drive_final_url：跟随跳转 + 写 P0-2 缓存
+# ---------------------------------------------------------------------------
+
+def _make_fake_streaming_client(statuses: list):
+    """构造假 httpx 客户端：按顺序返回指定状态码/Location。"""
+    calls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, status_code, headers=None):
+            self.status_code = status_code
+            self.headers = headers or {}
+            self.closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    class FakeClient:
+        def build_request(self, method, url, headers=None):
+            return (method, url, headers)
+
+        async def send(self, request, stream=True):
+            method, url, headers = request
+            calls.append(url)
+            code, location = statuses[min(len(calls) - 1, len(statuses) - 1)]
+            h = {"location": location} if location else {}
+            return FakeResponse(code, h)
+
+    return FakeClient(), calls
+
+
+def test_resolve_final_url_follows_redirect_and_caches():
+    """307 跳转跟随 → 返回最终 URL → 写 P0-2 缓存 → 第二次命中缓存不再请求。"""
+    import backend.emby_server.streaming as st
+
+    file_id = "TEST_WARM_REDIRECT_X1"
+    api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+    final_url = "https://drive.usercontent.google.com/download?id=XYZ"
+    orig_url = "https://example.com/movie.strm"
+
+    # 确保缓存干净
+    st._redirect_cache_invalidate(file_id)
+
+    fake_client, calls = _make_fake_streaming_client([
+        (307, final_url),   # 第一跳：API 地址 → 307 到 usercontent
+        (200, None),        # 第二跳：最终地址 200
+    ])
+
+    async def run():
+        from urllib.parse import urljoin
+        with patch("backend.emby_server.streaming.get_relay_client", return_value=fake_client):
+            with patch("backend.emby_server.drive_auth.drive_api_media_url", return_value=api_url):
+                # _next_redirect 的内网校验已有专门测试，这里只测跳转跟随逻辑
+                with patch("backend.emby_server.streaming._next_redirect",
+                           side_effect=lambda base, loc: urljoin(base, loc)):
+                    return await st.resolve_drive_final_url(orig_url, {"Authorization": "Bearer t"})
+
+    result = asyncio.run(run())
+    assert result == final_url, f"应返回最终 URL，实际 {result}"
+    # 两跳都走了
+    assert calls == [api_url, final_url], f"应按顺序请求两跳，实际 {calls}"
+    # 缓存里有最终 URL
+    assert st._redirect_cache_get(file_id) == final_url
+
+    # 第二次：命中缓存，不再发起任何请求
+    calls.clear()
+    result2 = asyncio.run(run())
+    assert result2 == final_url
+    assert calls == [], f"缓存命中不应再请求，实际 {calls}"
+
+    st._redirect_cache_invalidate(file_id)
+
+
+def test_resolve_final_url_returns_none_on_redirect_loop():
+    """跳转超限时静默返回 None，不抛异常。"""
+    import backend.emby_server.streaming as st
+
+    file_id = "TEST_WARM_LOOP_X2"
+    api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+    st._redirect_cache_invalidate(file_id)
+
+    # 永远 307 指回自己
+    fake_client, _ = _make_fake_streaming_client([(307, api_url)] * 10)
+
+    async def run():
+        with patch("backend.emby_server.streaming.get_relay_client", return_value=fake_client):
+            with patch("backend.emby_server.drive_auth.drive_api_media_url", return_value=api_url):
+                return await st.resolve_drive_final_url("https://example.com/loop.strm")
+
+    assert asyncio.run(run()) is None
+    st._redirect_cache_invalidate(file_id)
+
+
+def test_resolve_final_url_returns_none_on_bad_target():
+    """非法重定向目标（_next_redirect 拒绝）时静默返回 None。"""
+    import backend.emby_server.streaming as st
+
+    file_id = "TEST_WARM_BAD_X3"
+    api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+    st._redirect_cache_invalidate(file_id)
+
+    # 307 指向内网地址，_next_redirect 会拒绝
+    fake_client, _ = _make_fake_streaming_client([(307, "http://192.168.1.1/evil")])
+
+    async def run():
+        with patch("backend.emby_server.streaming.get_relay_client", return_value=fake_client):
+            with patch("backend.emby_server.drive_auth.drive_api_media_url", return_value=api_url):
+                return await st.resolve_drive_final_url("https://example.com/evil.strm")
+
+    assert asyncio.run(run()) is None
+    st._redirect_cache_invalidate(file_id)

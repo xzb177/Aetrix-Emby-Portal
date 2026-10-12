@@ -686,6 +686,82 @@ async def serve_remote_async(
     )
 
 
+async def resolve_drive_final_url(
+    url: str,
+    headers: dict | None = None,
+) -> str | None:
+    """解析 Drive 最终下载地址（预热用），走和 serve_remote_async 完全相同的路径。
+
+    原始 URL → drive_api_media_url 转 API 地址 → 查 P0-2 跳转缓存 →
+    未命中则手动跟随跳转 → 写缓存。
+
+    返回最终 URL；任何失败返回 None（不抛异常，预热场景静默）。
+    用 streaming 共享客户端（连接复用）；中间响应及时关闭归还连接池。
+    """
+    try:
+        # 1. uc 直链转 Drive API 地址（和 serve_remote_async 同口径）
+        try:
+            from backend.emby_server.drive_auth import drive_api_media_url
+            api_url = drive_api_media_url(url)
+        except Exception:
+            api_url = url
+        if not api_url:
+            return None
+
+        # 2. 查 P0-2 跳转缓存
+        file_id = _drive_file_id(api_url)
+        if file_id:
+            cached = _redirect_cache_get(file_id)
+            if cached:
+                return cached
+
+        # 3. 未命中：手动跟随跳转（和 serve_remote_async 同逻辑）
+        client = get_relay_client()
+        if asyncio.iscoroutine(client):
+            client = await client
+
+        forward = {k: v for k, v in (headers or {}).items()}
+        forward.pop("X-Pickcode", None)
+
+        current = api_url
+        hops = 0
+        for _ in range(MAX_REDIRECTS + 1):
+            req = client.build_request("GET", current, headers=forward)
+            resp = await client.send(req, stream=True)
+            try:
+                if resp.status_code not in _REDIRECT_CODES:
+                    break
+                location = resp.headers.get("location")
+                if not location:
+                    break  # 3xx 却没给 Location：当作最终响应
+                try:
+                    target = _next_redirect(current, location)
+                except Exception:
+                    return None  # 非法重定向目标：静默失败
+                forward = _redirect_headers(forward, current, target)
+                current = target
+                hops += 1
+            finally:
+                # 确认跟着走或已到终点，这一跳的响应不再占连接
+                await resp.aclose()
+        else:
+            # 跳转次数超限
+            return None
+
+        # 4. 写 P0-2 缓存（走了跳转才写，和 serve_remote_async 同口径）
+        if file_id and hops > 0:
+            try:
+                if "drive.usercontent.google.com" in (urlsplit(current).hostname or ""):
+                    _redirect_cache_set(file_id, current)
+            except Exception:
+                pass
+
+        return current
+    except Exception:
+        # 预热静默：任何异常都不抛
+        return None
+
+
 def _file_validators(stat: os.stat_result) -> tuple[str, str]:
     """按「mtime + 大小」生成 ETag 与 Last-Modified（内容一变校验器就变）"""
     return f'"{int(stat.st_mtime)}-{stat.st_size}"', formatdate(stat.st_mtime, usegmt=True)
