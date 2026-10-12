@@ -364,5 +364,13 @@ def _consume_loop():
                 # expunge：enqueue_local 内部会拍快照，lib 不能随 session 关闭失效
                 db.expunge(lib)
         except Exception:
+            # P2 修复（完美审查 C-P2-2）：消费失败必须 ACK（承认本次消费失败），
+            # 否则任务永久滞留 processing——只能靠 worker 重启时的
+            # recover_processing_queue 捞回；确定性失败（如库配置损坏）则卡死，
+            # 且 dedup 集合 TTL 3600s 内 API 侧重入队还会被去重挡掉。
+            # （注意：这里 ACK 不违背 P0-0c——异常意味着任务根本没进本地队列，
+            # 没有"扫描完成前崩溃可恢复"的对象；下次 API 入队可重试。）
             logger.exception(f"处理 Redis 扫描请求失败：库 id={library_id}")
+            if raw:
+                ack_scan_request(raw)
     logger.info("扫描队列消费循环结束")

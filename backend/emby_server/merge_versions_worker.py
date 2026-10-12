@@ -183,6 +183,10 @@ def merge_group(db, group: List) -> int:
         if item.merged_into_id is not None:
             continue
         item.merged_into_id = primary.id
+        # P2 修复（完美审查 C-P2-1）：被合并条目元数据走主记录，enrich 直接记 done——
+        # 否则 _claim_batch 用 merged_into_id.is_(None) 永久排除它们，而 health_report
+        # 的 backlog 照计 pending/enriching：永远不会被处理，也永远不会从 backlog 消失。
+        item.enrich_status = "done"
         merged += 1
         logger.debug(
             "多版本合并：%s (id=%d) → 主记录 %s (id=%d)",

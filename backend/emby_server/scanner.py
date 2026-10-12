@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any, Iterator, Optional
 
 from backend.emby_server.cpu_budget import background_workers as _cpu_workers
+from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.pinyin_sort import make_sort_name
 
 from sqlalchemy import func, select, text
@@ -89,7 +90,7 @@ logger = logging.getLogger(__name__)
 # 现在按「批次」处理：
 #   SCAN_BATCH  一批多少个文件（批量查库 / 批量提交 / 批后清空会话）
 #   SCAN_WORKERS 并行 IO 线程数（ffprobe、目录列举、TMDB 搜索都是“等网络/等磁盘”，不是吃 CPU）
-SCAN_BATCH = max(20, int(os.getenv("SCAN_BATCH", "400") or 400))
+SCAN_BATCH = env_int("SCAN_BATCH", 400, 20, 100000)
 # 并发按 CPU 自适应（cpu_budget）：未配置时按核数一半，永远给前台留一核
 SCAN_WORKERS = _cpu_workers("SCAN_WORKERS")
 # 两阶段扫描（v2.39.0）：
@@ -103,7 +104,7 @@ PROBE_BACKGROUND = SCAN_PROBE_MODE == "background"
 SQL_IN_CHUNK = 200
 # 清理阶段每批读多少条：这一步不碰 IO（只读 4 个列），批越大越省往返。
 # 实测十万条目：每批 400 条 2.1s → 每批 5000 条 0.6s（稳定库还有更快的快速路径，见下）。
-CLEANUP_BATCH = max(20, int(os.getenv("SCAN_CLEANUP_BATCH", "5000") or 5000))
+CLEANUP_BATCH = env_int("SCAN_CLEANUP_BATCH", 5000, 20, 100000)
 
 # ==================== 删除保护（v2.46.0）====================
 # 事故形状：「挂载断开 → 底层空目录还在 → 本轮扫描看到 0 个文件 → 清理阶段把整库删了」。
@@ -112,9 +113,9 @@ CLEANUP_BATCH = max(20, int(os.getenv("SCAN_CLEANUP_BATCH", "5000") or 5000))
 # 2) **数量阈值**：本轮删掉的量超过库内条目数的这个比例（或绝对数），就认为不对劲。
 REMOVAL_MIN_SEEN = 1
 #: 比例阈值：删掉超过库内文件类条目的这个比例就停手（0.5 = 一半以上全没了）
-REMOVAL_MAX_RATIO = float(os.getenv("SCAN_REMOVAL_MAX_RATIO", "0.5") or 0.5)
+REMOVAL_MAX_RATIO = env_float("SCAN_REMOVAL_MAX_RATIO", 0.5, 0.0)
 #: 绝对阈值：小库也要有下限保护（库里总共就 10 条，删 6 条就已经是“全没了”）
-REMOVAL_MAX_ABSOLUTE = max(1, int(os.getenv("SCAN_REMOVAL_MAX_ABSOLUTE", "20") or 20))
+REMOVAL_MAX_ABSOLUTE = env_int("SCAN_REMOVAL_MAX_ABSOLUTE", 20, 1, 1000000)
 
 
 def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, int]:
@@ -164,7 +165,7 @@ _CLEANUP_LAST: dict = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_m
 # 唯一的外部进程，既是最吃 CPU 的一步，也最容易和播放抢磁盘 IO。
 #   SCAN_IO_NICE  探测子进程的 niceness（0 = 关闭，默认 10；越大越让路）
 # 同时若有 ionice 就把 IO 优先级降到 best-effort 最低档（-c2 -n7；只降不升，普通用户即可）。
-SCAN_IO_NICE = max(0, min(19, int(os.getenv("SCAN_IO_NICE", "10") or 0)))
+SCAN_IO_NICE = env_int("SCAN_IO_NICE", 10, 0, 19)
 
 
 def _tool_usable(argv: list) -> bool:
@@ -558,7 +559,16 @@ def _file_fingerprint(scan_file: "ScanFile") -> str:
         raw = "|".join((scan_file.stored_path, str(scan_file.size),
                         str(scan_file.mtime_ns)))
     else:
-        raw = "|".join((scan_file.stored_path, str(scan_file.size)))
+        # P2 修复（完美审查 C-P2-3）：远端指纹混入网盘 ModTime（rclone list_dir
+        # 本来就有，见 MountEntry.mod_ts）——同尺寸内容替换时 path|size 不变，
+        # 之前 L1 秒跳与目录指纹双双放行，元数据永久陈旧。拿不到 ModTime 的
+        # 提供方保持老口径，避免全量指纹抖动。
+        rmt = float(getattr(scan_file, "remote_mod_ts", 0.0) or 0.0)
+        if rmt > 0:
+            raw = "|".join((scan_file.stored_path, str(scan_file.size),
+                            f"{rmt:.0f}"))
+        else:
+            raw = "|".join((scan_file.stored_path, str(scan_file.size)))
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
@@ -793,13 +803,13 @@ PROBE_HTTP_TIMEOUT = 45.0
 #:
 #: 读文件头不需要 90 秒：正常文件秒级返回，读不出来的是挂载本身没响应，等满 90 秒
 #: 也等不到——只会白占一个 worker 槽位。
-PROBE_FILE_TIMEOUT = max(5.0, float(os.getenv("PROBE_FILE_TIMEOUT_SEC", "30") or 30))
+PROBE_FILE_TIMEOUT = env_float("PROBE_FILE_TIMEOUT_SEC", 30.0, 5.0)
 #: 远端 URL 的探测上限不变：网络慢是常态，砍时间会误伤真正在下载的大文件。
-PROBE_REMOTE_TIMEOUT = max(10.0, float(os.getenv("PROBE_REMOTE_TIMEOUT_SEC", "90") or 90))
+PROBE_REMOTE_TIMEOUT = env_float("PROBE_REMOTE_TIMEOUT_SEC", 90.0, 10.0)
 #: ffprobe 分析上限（Hark 6链路第4项）：显式限制，避免在残缺/远程流上无限制读取。
 #: -probesize 字节数（默认 10 MiB），-analyzeduration 微秒数（默认 10s）。
-FFPROBE_PROBESIZE = max(1024, int(os.getenv("FFPROBE_PROBESIZE", "10485760") or 10485760))
-FFPROBE_ANALYZEDURATION = max(1000, int(os.getenv("FFPROBE_ANALYZEDURATION", "10000000") or 10000000))
+FFPROBE_PROBESIZE = env_int("FFPROBE_PROBESIZE", 10485760, 1024, 1 << 34)
+FFPROBE_ANALYZEDURATION = env_int("FFPROBE_ANALYZEDURATION", 10000000, 1000, 1 << 40)
 
 #: 最近一次 ffprobe 是否以超时告终。ffprobe 跑在多个 worker 线程里，所以用线程局部
 #: 存；判定只发生在紧接其后的调用点，不跨条目复用。
@@ -1567,7 +1577,10 @@ class ScanFile:
     rel: str = ""
     # Drive file_id（改名/移动不变）：扫描器用它识别改名
     file_id: str = ""
-    mtime_ns: Optional[int] = None  # 本机文件=st_mtime_ns；远程挂载无mtime，记None""
+    mtime_ns: Optional[int] = None  # 本机文件=st_mtime_ns；远程挂载无mtime，记None
+    #: 远端挂载的最后修改时间（Unix 秒；拿不到记 0.0）——rclone ModTime 解析值，
+    #: 混入文件指纹/目录指纹用（完美审查 C-P2-3：同尺寸内容替换的检出依据）。
+    remote_mod_ts: float = 0.0
     provider: Any = None
     local_target: Any = None      # 本机可读来源的播放目标（strm 的直链在这里）
     _target: Any = None
@@ -1682,6 +1695,8 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
             local_dir=None, dir_rel=dir_rel, size=mount_file.size,
             container=container, mount_id=mount_id, rel=rel, provider=provider,
             file_id=getattr(mount_file, "file_id", "") or "",
+            # P2（完美审查 C-P2-3）：远端 ModTime 进指纹，同尺寸替换可检出。
+            remote_mod_ts=getattr(mount_file, "mod_ts", 0.0) or 0.0,
         )
 
 
@@ -2074,7 +2089,18 @@ def _dir_fingerprint(ctx: "_ScanContext", scan_file: "ScanFile") -> Optional[str
     elif key not in ctx.dir_list_failed:
         entries = _mount_names(ctx, scan_file)
         if key not in ctx.dir_list_failed:
-            value = f"{len(entries)}:{sum(int(e.size or 0) for e in entries)}"
+            # P2 修复（完美审查 C-P2-3）：目录指纹混入各文件的远端 ModTime 摘要——
+            # 否则同尺寸替换只改单个文件时 len:sum(sizes) 不变，_can_skip_file
+            # 直接放行整目录（L1 文件指纹修了也没用）。无 ModTime 的提供方
+            # mod_ts 全 0，摘要退化为"名字+尺寸"仍是确定性的。
+            mod_part = "|".join(
+                f"{e.name}:{int(e.size or 0)}:"
+                f"{float(getattr(e, 'mod_ts', 0.0) or 0.0):.0f}"
+                for e in sorted(entries, key=lambda x: x.name)
+            )
+            mod_digest = hashlib.md5(mod_part.encode("utf-8")).hexdigest()[:16]
+            value = (f"{len(entries)}:{sum(int(e.size or 0) for e in entries)}"
+                     f":{mod_digest}")
     ctx.dir_fingerprints[key] = value
     return value
 
@@ -3517,7 +3543,7 @@ SCAN_TRIGGERS = ("manual", "client", "node", "repair")
 
 # 每个媒体库保留多少轮扫描流水（0 = 不记流水）。一轮一行，超过就按库回收最旧的行——
 # 量很小，但没人清就会随「建库→删库」和长期运行一直涨。
-SCAN_RUN_KEEP = int(os.getenv("EMBY_SCAN_HISTORY", "20"))
+SCAN_RUN_KEEP = env_int("EMBY_SCAN_HISTORY", 20, 1, 10000)
 
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
 SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scraped",
