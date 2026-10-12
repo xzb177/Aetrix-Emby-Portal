@@ -244,37 +244,45 @@ def test_check_disk_pressure_low():
 # ---------------------------------------------------------------- 3. 并发限流
 def test_range_limiter_allows_max_concurrent():
     lim = pt.RangeConcurrencyLimiter(max_concurrent=2, acquire_timeout=1)
-    assert lim.acquire("/x/a.mkv") is True
-    assert lim.acquire("/x/a.mkv") is True
+    l1 = lim.acquire("/x/a.mkv")
+    assert l1 is not None
+    l2 = lim.acquire("/x/a.mkv")
+    assert l2 is not None
+    assert l1 != l2  # 租约 id 唯一
     # 第三个拿不到（1 秒超时）
     t0 = time.monotonic()
-    assert lim.acquire("/x/a.mkv") is False
+    assert lim.acquire("/x/a.mkv") is None
     assert time.monotonic() - t0 < 5
-    lim.release("/x/a.mkv")
-    assert lim.acquire("/x/a.mkv") is True
-    lim.release("/x/a.mkv")
-    lim.release("/x/a.mkv")
+    lim.release("/x/a.mkv", l1)
+    l3 = lim.acquire("/x/a.mkv")
+    assert l3 is not None
+    lim.release("/x/a.mkv", l2)
+    lim.release("/x/a.mkv", l3)
 
 
 def test_range_limiter_try_acquire_nonblocking():
     lim = pt.RangeConcurrencyLimiter(max_concurrent=1, acquire_timeout=30)
-    assert lim.try_acquire("/x/c.mkv") is True
-    # 非阻塞：拿不到立即返回 False，不等 timeout
+    l1 = lim.try_acquire("/x/c.mkv")
+    assert l1 is not None
+    # 非阻塞：拿不到立即返回 None，不等 timeout
     t0 = time.monotonic()
-    assert lim.try_acquire("/x/c.mkv") is False
+    assert lim.try_acquire("/x/c.mkv") is None
     assert time.monotonic() - t0 < 1.0
-    lim.release("/x/c.mkv")
-    assert lim.try_acquire("/x/c.mkv") is True
-    lim.release("/x/c.mkv")
+    lim.release("/x/c.mkv", l1)
+    l2 = lim.try_acquire("/x/c.mkv")
+    assert l2 is not None
+    lim.release("/x/c.mkv", l2)
 
 
 def test_range_limiter_per_file_isolation():
     lim = pt.RangeConcurrencyLimiter(max_concurrent=1, acquire_timeout=1)
-    assert lim.acquire("/x/a.mkv") is True
+    la = lim.acquire("/x/a.mkv")
+    assert la is not None
     # 不同文件互不影响
-    assert lim.acquire("/x/b.mkv") is True
-    lim.release("/x/a.mkv")
-    lim.release("/x/b.mkv")
+    lb = lim.acquire("/x/b.mkv")
+    assert lb is not None
+    lim.release("/x/a.mkv", la)
+    lim.release("/x/b.mkv", lb)
 
 
 def test_range_limiter_threaded():
@@ -283,11 +291,12 @@ def test_range_limiter_threaded():
     lock = threading.Lock()
 
     def worker():
-        if lim.acquire("/x/big.mkv"):
+        lease = lim.acquire("/x/big.mkv")
+        if lease is not None:
             with lock:
                 entered.append(1)
             time.sleep(0.2)
-            lim.release("/x/big.mkv")
+            lim.release("/x/big.mkv", lease)
 
     threads = [threading.Thread(target=worker) for _ in range(6)]
     t0 = time.monotonic()
@@ -298,6 +307,23 @@ def test_range_limiter_threaded():
     # 6 个线程，每个都拿到了名额（排队而非失败），总耗时约 2 轮
     assert len(entered) == 6
     assert time.monotonic() - t0 >= 0.35
+
+
+def test_range_limiter_late_release_after_sweep_ignored():
+    # D-P1-4 ABA 回归：租约被 _sweep 强制回收后，原持有者的迟到 release
+    # 必须被忽略，不能弹掉别人的有效租约（否则计数永久偏小）。
+    lim = pt.RangeConcurrencyLimiter(max_concurrent=1, acquire_timeout=1, lease_ttl=0.05)
+    l1 = lim.try_acquire("/x/aba.mkv")
+    assert l1 is not None
+    time.sleep(0.1)  # 等租约过期
+    l2 = lim.try_acquire("/x/aba.mkv")  # 触发 sweep 回收 l1，拿到新租约
+    assert l2 is not None
+    assert l2 != l1
+    lim.release("/x/aba.mkv", l1)  # 迟到释放：必须被忽略
+    # l2 的租约必须还在——再拿应该拿满（max=1，l2 占着）
+    assert lim.try_acquire("/x/aba.mkv") is None
+    lim.release("/x/aba.mkv", l2)
+    assert lim.try_acquire("/x/aba.mkv") is not None
 
 
 
