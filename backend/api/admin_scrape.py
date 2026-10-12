@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -1125,6 +1125,7 @@ def get_probe_progress(
 @admin_emby_router.post("/scrape/probe/reset")
 def reset_probe_queue(
     req: ProbeResetRequest,
+    request: Request,
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
@@ -1134,6 +1135,13 @@ def reset_probe_queue(
         out = probe_worker.reset(db, req.scope)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # 富审计：scope 与影响行数挂到 request.state，写操作审计中间件会并进操作日志
+    # （调用时间/调用方/IP 由中间件记，这里只补业务细节）
+    request.state.audit_extra = {
+        "scope": req.scope,
+        "reset": out,
+        "reset_total": sum(int(v) for v in out.values()),
+    }
     return {"success": True, "scope": req.scope, "reset": out}
 
 
