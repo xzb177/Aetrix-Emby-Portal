@@ -174,14 +174,16 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
     # （移动端常开 5~7 个并发，7 路同时回源 Drive 会把带宽打满）。
     # 用非阻塞 try_acquire：事件循环里不能调 blocking 的 acquire（会卡住整个
     # 循环）。拿不到名额直接 503，播放器会重试，效果等同排队。
-    if not RANGE_LIMITER.try_acquire(path):
+    # 租约 token（r13）：按 lease_id 精确归还，迟到释放会被忽略（ABA 漂移根治）。
+    lease = RANGE_LIMITER.try_acquire(path)
+    if lease is None:
         raise HTTPException(status_code=503, detail="Server busy, retry later")
 
     def _guarded_iter():
         try:
             yield from iter_file()
         finally:
-            RANGE_LIMITER.release(path)
+            RANGE_LIMITER.release(path, lease)
 
     def iter_file():
         with open(path, "rb") as f:

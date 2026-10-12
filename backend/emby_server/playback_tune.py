@@ -334,8 +334,14 @@ class RangeConcurrencyLimiter:
     D-P1-4 租约制：原实现用 threading.Semaphore，release 只在 generator 的
     finally 里跑——客户端提前断开/高频 seek 时，旧流的释放要等响应对象 GC，
     名额被延迟占用，正常播放也会撞 503。现在每次 acquire 附带 monotonic
-    时间戳租约；acquire 时先清掉超 TTL 的过期租约（强制回收），release 归还
-    最老的一条租约。对外 API（try_acquire/acquire/release）保持不变。
+    时间戳租约；acquire 时先清掉超 TTL 的过期租约（强制回收）。
+
+    租约 token（r13，D-P1-4 ABA 漂移修复）：acquire/try_acquire 成功返回唯一
+    lease_id（锁内单调递增），内部以 (lease_id, timestamp) 元组记录；
+    release(path, lease_id) 按 id 精确归还、找不到则忽略——租约被 _sweep
+    强制回收后原持有者的迟到 finally 不会再弹掉别人的有效租约，根除计数漂移。
+    对外 API 形状不变（try_acquire/acquire/release），但语义从 bool 改为
+    lease_id/None：调用方拿到 id 后必须在 finally 里 release(path, lease_id) 归还。
     """
 
     def __init__(self, max_concurrent: int = MAX_CONCURRENT_RANGES_PER_FILE,
@@ -345,8 +351,10 @@ class RangeConcurrencyLimiter:
         self._timeout = acquire_timeout
         self._lease_ttl = lease_ttl
         self._lock = threading.Lock()
-        self._leases: dict[str, list[float]] = {}
+        # path -> [(lease_id, monotonic 时间戳)]；lease_id 锁内单调递增
+        self._leases: dict[str, list[tuple[int, float]]] = {}
         self._last_used: dict[str, float] = {}
+        self._next_lease_id = 1
         # 指标：供 /api/health 或日志排查（拿满/强制回收计数）
         self._rejected = 0
         self._reclaimed = 0
@@ -357,12 +365,13 @@ class RangeConcurrencyLimiter:
         if not leases:
             return 0
         cutoff = now - self._lease_ttl
-        fresh = [t for t in leases if t > cutoff]
+        fresh = [t for t in leases if t[1] > cutoff]
         expired = len(leases) - len(fresh)
         if expired:
             self._reclaimed += expired
-            logger.warning("RANGE_LIMITER 强制回收 %s 的 %d 个过期租约（TTL %.0fs）",
-                           path, expired, self._lease_ttl)
+            # P3-3：高频 seek + 客户端断开是常态，强制回收降级为 info，避免刷 warning
+            logger.info("RANGE_LIMITER 强制回收 %s 的 %d 个过期租约（TTL %.0fs）",
+                        path, expired, self._lease_ttl)
         if fresh:
             self._leases[path] = fresh
         else:
@@ -379,49 +388,65 @@ class RangeConcurrencyLimiter:
                 self._leases.pop(k, None)
                 self._last_used.pop(k, None)
 
-    def _try_acquire_locked(self, path: str, now: float, quiet: bool = False) -> bool:
+    def _try_acquire_locked(self, path: str, now: float, quiet: bool = False) -> Optional[int]:
+        """持锁调用：成功返回新 lease_id，拿满返回 None（调用方须持锁）。"""
         active = self._sweep(path, now)
         if active >= self._max:
             if not quiet:
                 self._rejected += 1
                 logger.warning("RANGE_LIMITER 拿满：path=%s active=%d/%d（播放器将收到 503 并重试）",
                                path, active, self._max)
-            return False
-        self._leases.setdefault(path, []).append(now)
+            return None
+        lease_id = self._next_lease_id
+        self._next_lease_id += 1
+        self._leases.setdefault(path, []).append((lease_id, now))
         self._touch(path, now)
-        return True
+        return lease_id
 
-    def try_acquire(self, path: str) -> bool:
-        """非阻塞拿名额，拿到返回 True，拿不到立即返回 False。
+    def try_acquire(self, path: str) -> Optional[int]:
+        """非阻塞拿名额：拿到返回 lease_id，拿不到立即返回 None。
 
         在 async 事件循环里必须用这个（blocking 的 acquire 会卡住整个循环）。
-        拿不到时调用方直接 503，播放器会重试，效果等同排队。"""
+        拿不到时调用方直接 503，播放器会重试，效果等同排队。
+        拿到 id 后必须在 finally 里用 release(path, lease_id) 归还。"""
         with self._lock:
             return self._try_acquire_locked(path, time.monotonic())
 
-    def acquire(self, path: str) -> bool:
-        """阻塞最多 ``acquire_timeout`` 秒拿一个名额，拿到返回 True。"""
+    def acquire(self, path: str) -> Optional[int]:
+        """阻塞最多 ``acquire_timeout`` 秒拿一个名额：拿到返回 lease_id，超时返回 None。"""
         deadline = time.monotonic() + self._timeout
         while True:
             with self._lock:
-                if self._try_acquire_locked(path, time.monotonic(), quiet=True):
-                    return True
+                lease_id = self._try_acquire_locked(path, time.monotonic(), quiet=True)
+                if lease_id is not None:
+                    return lease_id
             if time.monotonic() >= deadline:
                 with self._lock:
                     self._rejected += 1
                 logger.warning("RANGE_LIMITER 等待超时：path=%s（%.0fs）", path, self._timeout)
-                return False
+                return None
             time.sleep(0.05)
 
-    def release(self, path: str) -> None:
-        """归还一个名额（归还最老的一条租约；无租约时忽略）。"""
+    def release(self, path: str, lease_id: Optional[int]) -> None:
+        """按 lease_id 精确归还一条租约；找不到（迟到释放/租约已被回收）则忽略。
+
+        lease_id 为 None 时直接忽略。原持有者的迟到 finally 不会再弹掉
+        别人的有效租约——这是 ABA 计数漂移的根治点。"""
+        if lease_id is None:
+            return
         with self._lock:
             leases = self._leases.get(path)
-            if leases:
-                leases.pop(0)
-                if not leases:
-                    self._leases.pop(path, None)
-            # 无租约的重复释放直接忽略（原 Semaphore 语义的 ValueError 分支）
+            if not leases:
+                return
+            for index, (current_id, _ts) in enumerate(leases):
+                if current_id == lease_id:
+                    del leases[index]
+                    break
+            else:
+                # 租约已被 _sweep 强制回收或已归还过：迟到释放，直接忽略
+                return
+            if not leases:
+                self._leases.pop(path, None)
 
     def stats(self) -> dict:
         """当前限流状态快照（排查用）。"""

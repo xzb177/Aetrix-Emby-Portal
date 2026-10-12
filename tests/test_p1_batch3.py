@@ -152,12 +152,25 @@ def test_code_state_sql_matches_python(tmp_path):
                                     use_count=2),  # used_up
             models.RegistrationCode(code="A4", is_active=True, max_uses=5,
                                     use_count=1),  # active
+            # r13：NULL is_active 必须判 disabled（与 Python `not` 口径一致）
+            models.RegistrationCode(code="A5", is_active=None),  # disabled
+            models.RegistrationCode(code="A6", is_active=None,
+                                     expires_at=now - timedelta(days=1)),  # disabled（优先于 expired）
         ]
         db.add_all(rows)
         db.commit()
+        # 真正的 NULL 行：ORM 显式传 None 会触发 Column(default=True) 的默认值，
+        # 必须用 core UPDATE 才能把列写成 NULL（模拟历史脏数据/直接 SQL 写入）。
+        from sqlalchemy import update as sa_update
+        db.execute(sa_update(models.RegistrationCode)
+                   .where(models.RegistrationCode.code.in_(["A5", "A6"]))
+                   .values(is_active=None))
+        db.commit()
+        db.expire_all()
         expect = {r.code: admin_ops._code_state(r, now) for r in rows}
         assert expect == {"A1": "disabled", "A2": "expired",
-                          "A3": "used_up", "A4": "active"}
+                          "A3": "used_up", "A4": "active",
+                          "A5": "disabled", "A6": "disabled"}
         expr = admin_ops._code_state_sql(now)
         got = {
             r.code: s
@@ -168,6 +181,10 @@ def test_code_state_sql_matches_python(tmp_path):
         only_active = (db.query(models.RegistrationCode)
                        .filter(expr == "active").all())
         assert [r.code for r in only_active] == ["A4"]
+        # 状态过滤下推：只查 disabled 应有 A1/A5/A6（NULL 行必须被查到）
+        only_disabled = (db.query(models.RegistrationCode)
+                         .filter(expr == "disabled").all())
+        assert sorted(r.code for r in only_disabled) == ["A1", "A5", "A6"]
     finally:
         db.close()
 
@@ -436,41 +453,61 @@ def test_overview_session_management():
 # ---------- D-P1-4：租约制 ----------
 
 def test_range_limiter_lease_reclaim():
-    """D-P1-4：租约超 TTL 被强制回收；release 归还最老的。"""
+    """D-P1-4：租约超 TTL 被强制回收。"""
     from backend.emby_server.playback_tune import RangeConcurrencyLimiter
     lim = RangeConcurrencyLimiter(max_concurrent=2, lease_ttl=0.2)
-    assert lim.try_acquire("/x") is True
-    assert lim.try_acquire("/x") is True
-    assert lim.try_acquire("/x") is False  # 拿满
+    assert lim.try_acquire("/x") is not None
+    assert lim.try_acquire("/x") is not None
+    assert lim.try_acquire("/x") is None  # 拿满
     # 不 release，等 TTL 过期 → 下次 acquire 强制回收
     time.sleep(0.25)
-    assert lim.try_acquire("/x") is True
+    assert lim.try_acquire("/x") is not None
     stats = lim.stats()
     assert stats["reclaimed_total"] >= 2
     assert stats["rejected_total"] >= 1
 
 
-def test_range_limiter_release_oldest():
+def test_range_limiter_release_by_lease_id():
+    """D-P1-4 r13：release 按 lease_id 精确归还；重复/错误 id/None 直接忽略。"""
     from backend.emby_server.playback_tune import RangeConcurrencyLimiter
     lim = RangeConcurrencyLimiter(max_concurrent=2, lease_ttl=60)
-    lim.try_acquire("/y")
-    lim.try_acquire("/y")
-    lim.release("/y")
-    assert lim.try_acquire("/y") is True
-    assert lim.try_acquire("/y") is False
-    # 重复释放不抛错
-    lim.release("/y")
-    lim.release("/y")
-    lim.release("/y")
+    a = lim.try_acquire("/y")
+    b = lim.try_acquire("/y")
+    assert a is not None and b is not None and a != b  # id 唯一
+    assert lim.try_acquire("/y") is None  # 拿满
+    lim.release("/y", a)  # 归还 a
+    c = lim.try_acquire("/y")
+    assert c is not None
+    assert lim.try_acquire("/y") is None
+    # 迟到/重复/错误释放不抛错、不误删他人租约
+    lim.release("/y", a)       # a 已归还过：忽略
+    lim.release("/y", 999999)  # 不存在的 id：忽略
+    lim.release("/y", None)    # None：忽略
+    assert lim.stats()["active_leases"] == 2  # b、c 仍在
+
+
+def test_range_limiter_late_release_after_reclaim():
+    """D-P1-4 r13 回归：_sweep 强制回收后，原持有者的迟到 release 不得弹掉他人租约。"""
+    from backend.emby_server.playback_tune import RangeConcurrencyLimiter
+    lim = RangeConcurrencyLimiter(max_concurrent=2, lease_ttl=0.2)
+    old = lim.try_acquire("/z")
+    assert old is not None
+    time.sleep(0.25)  # old 租约过期
+    new = lim.try_acquire("/z")  # 触发 sweep 强制回收 old
+    assert new is not None and new != old
+    lim.release("/z", old)  # 原持有者迟到 finally：必须被忽略
+    assert lim.stats()["active_leases"] == 1  # new 的租约还在
+    assert lim.try_acquire("/z") is not None  # 还剩 1 个名额
+    assert lim.try_acquire("/z") is None      # 拿满
 
 
 def test_range_limiter_acquire_timeout():
     from backend.emby_server.playback_tune import RangeConcurrencyLimiter
     lim = RangeConcurrencyLimiter(max_concurrent=1, acquire_timeout=0.3,
                                   lease_ttl=60)
-    assert lim.try_acquire("/z") is True
+    assert lim.try_acquire("/z") is not None
     t0 = time.monotonic()
-    assert lim.acquire("/z") is False
+    assert lim.acquire("/z") is None
     assert time.monotonic() - t0 < 1.0
 
 
@@ -511,3 +548,133 @@ def test_emby_query_params_module():
     assert hasattr(query_params, "qlimit")
     assert hasattr(query_params, "qstart")
     assert hasattr(query_params, "qint")
+
+
+# ---------- r13：perfection-iteration 第 13 轮新增回归测试 ----------
+
+def test_code_state_sql_null_is_active_invitation(tmp_path):
+    """F-P1-7 r13：邀请码 NULL is_active 的 SQL 口径与 Python `not` 口径一致。"""
+    from backend.api import admin_ops
+    Session = _make_session(tmp_path)
+    db = Session()
+    try:
+        now = datetime.now()
+        user = models.WebUser(username="inv_null_t", password_hash="x")
+        db.add(user)
+        db.flush()
+        rows = [
+            models.InvitationCode(code="I1", user_id=user.id, is_active=None),  # revoked
+            models.InvitationCode(code="I2", user_id=user.id, is_active=False),  # revoked
+            models.InvitationCode(code="I3", user_id=user.id, is_active=True),  # active
+        ]
+        db.add_all(rows)
+        db.commit()
+        # 真正的 NULL 行：ORM 显式传 None 会触发 Column(default=True)，
+        # 用 core UPDATE 把 I1 写成 NULL（模拟历史脏数据/直接 SQL 写入）。
+        from sqlalchemy import update as sa_update
+        db.execute(sa_update(models.InvitationCode)
+                   .where(models.InvitationCode.code == "I1")
+                   .values(is_active=None))
+        db.commit()
+        db.expire_all()
+        expect = {r.code: admin_ops._inv_code_state(r, now) for r in rows}
+        assert expect == {"I1": "revoked", "I2": "revoked", "I3": "active"}
+        # 源码口径：邀请码 CASE 首分支必须用 isnot(True)（NULL 与 False 都判 revoked）
+        import inspect
+        from backend.api import admin_ops as ops_src
+        list_src = inspect.getsource(ops_src.list_invitation_codes)
+        assert '(models.InvitationCode.is_active.isnot(True), "revoked")' in list_src
+    finally:
+        db.close()
+
+
+def test_assistant_ask_semaphore_before_quota():
+    """F-P1-16 r13：先抢信号量再扣配额；配额超限时先 release 信号量再 429。"""
+    import inspect
+    from backend.api import assistant as asst
+    src = inspect.getsource(asst.assistant_ask)
+    acq = src.index("_ai_ask_semaphore.acquire(blocking=False)")
+    con = src.index("ai_capability.safe_consume")
+    assert acq < con, "信号量 acquire 必须在配额 safe_consume 之前（否则撞忙会白扣配额）"
+    # 配额超限分支（safe_consume 之后、try: ask 之前）必须先 release 再抛 429
+    quota_branch = src[con:src.index("try:", con)]
+    assert "_ai_ask_semaphore.release()" in quota_branch
+    assert "今日提问次数已用完" in quota_branch
+
+
+def test_enrich_episode_night_tz_restored():
+    """P1-3 r13：night_tz 后端恢复（请求字段 / GET 默认值+选项 / PUT 透传）。"""
+    import inspect
+    from backend.api import admin_scrape
+    # ① 请求模型有 night_tz 字段（可选，不传则后台按默认解释）
+    fields = admin_scrape.EnrichEpisodeNightSaveRequest.model_fields
+    assert "night_tz" in fields
+    assert fields["night_tz"].default is None
+    # ② GET 返回 defaults.night_tz 与顶层 tz_options
+    get_src = inspect.getsource(admin_scrape.get_enrich_episode_night)
+    assert '"night_tz": enrich_worker.NIGHT_TZ_DEFAULT' in get_src
+    assert '"tz_options": enrich_worker.NIGHT_TZ_OPTIONS' in get_src
+    # ③ PUT 把 req.night_tz 透传给 save_episode_night_config
+    put_src = inspect.getsource(admin_scrape.save_enrich_episode_night)
+    assert "req.night_tz" in put_src
+
+
+def test_super_deadlock_checks_use_loginable_count():
+    """P1-4 r13：revoke_admin 与 update_user 的降级/撤销分支用可登录 super 口径。"""
+    import inspect
+    from backend.api import admins_admin, admin as admin_api
+    revoke_src = inspect.getsource(admins_admin.revoke_admin)
+    assert "_locked_loginable_super_count(db)" in revoke_src
+    assert "_locked_super_count(db)" not in revoke_src
+    update_src = inspect.getsource(admin_api.update_user)
+    assert "request.is_staff is False and _locked_loginable_super_count(db)" in update_src
+    assert "request.is_staff is False and _locked_super_count(db)" not in update_src
+
+
+def test_save_emby_server_single_commit():
+    """F-P1-17 r13：save_all 内配置写与清单同步一次提交（upsert_legacy 前无中间 commit）。"""
+    import inspect
+    import re
+    from backend.api import emby_servers
+    src = inspect.getsource(emby_servers)
+    start = src.index("def save_all() -> None:")
+    end = src.index("registry.upsert_legacy(", start)
+    segment = src[start:end]
+    # 匹配真正的代码行 db.commit()（排除注释里的字面提及）
+    assert not re.search(r"^\s*db\.commit\(\)", segment, re.MULTILINE), \
+        "save_all 在 upsert_legacy 前仍有中间 commit"
+
+
+def test_economy_orders_null_created_at_nullslast(tmp_path):
+    """P3-5 r13：NULL created_at 的 SQL 排序口径与 Python 归并一致（NULLS LAST）。"""
+    Session = _make_session(tmp_path)
+    db = Session()
+    try:
+        now = datetime.now()
+        user = models.WebUser(username="ord_null_t", password_hash="x")
+        pkg = models.RechargePackage(name="t", amount=1, price=1)
+        db.add_all([user, pkg])
+        db.flush()
+        db.add_all([
+            models.RechargeOrder(order_id="R-NULL", user_id=user.id, package_id=pkg.id,
+                                 amount=1, price=1, status="paid", created_at=now),
+            models.RechargeOrder(order_id="R-NEW", user_id=user.id, package_id=pkg.id,
+                                 amount=1, price=1, status="paid", created_at=now),
+        ])
+        db.commit()
+        # 真正的 NULL 行：ORM 显式传 None 会触发 Column(default=datetime.now)，
+        # 用 core UPDATE 把 R-NULL 写成 NULL。
+        from sqlalchemy import update as sa_update
+        db.execute(sa_update(models.RechargeOrder)
+                   .where(models.RechargeOrder.order_id == "R-NULL")
+                   .values(created_at=None))
+        db.commit()
+        rows = (db.query(models.RechargeOrder.order_id)
+                .order_by(models.RechargeOrder.created_at.desc().nullslast()).all())
+        assert [r[0] for r in rows] == ["R-NEW", "R-NULL"]
+        # Python 侧归并：x["created_at"] or "" 把 NULL 排最后，与 SQL 口径一致
+        items = [{"created_at": None}, {"created_at": now.isoformat()}]
+        items.sort(key=lambda x: x["created_at"] or "", reverse=True)
+        assert [i["created_at"] for i in items] == [now.isoformat(), None]
+    finally:
+        db.close()

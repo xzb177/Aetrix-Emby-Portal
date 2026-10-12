@@ -225,6 +225,9 @@ async def emby_overview(
         ]
         # F-P1-22：把 ORM 对象剥离会话——探测阶段要归还会话连接，
         # 后续 build() 用新会话；已加载的列属性在剥离后仍可读。
+        # 警示：剥离后对象已 detached，_build_impl/serialize 只可读已加载的列属性，
+        # 任何关系（relationship）访问都会触发 DetachedInstanceError。新增访问
+        # 前请先把所需值取成纯值（见 identity_targets/mount_targets 的做法）。
         db.expunge_all()
         return scope, rows_, entries, identity_targets, mount_targets
 
@@ -256,6 +259,9 @@ async def emby_overview(
                 probe_db.close()
 
     def _build_impl(db: Session) -> dict:
+        # 注意：realm_rows/entry_rows 是 load() 里 expunge 剥离出的 detached 对象，
+        # 这里只能读已加载的列属性（realm.id/realm.slug/…），不要访问任何 relationship，
+        # 否则直接 DetachedInstanceError。需要新数据时用 db 重新查。
         rows: list[dict] = []
         totals = {"entry": 0, "online": 0, "warnings": 0, "libraries": 0, "libraries_unassigned": 0}
         for realm in realm_rows:
