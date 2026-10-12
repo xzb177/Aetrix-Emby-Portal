@@ -542,8 +542,6 @@ async def update_server(
             registry.deactivate_legacy(db, old_kind)
             server.is_active = False
         db.commit()
-        # 把旧 kind 挂在 server 上，供 sync_entry 使用（避免再次查询）
-        server._old_kind_for_sync = old_kind if kind_changed else None
         return server
 
     server = await run_in_threadpool(apply)

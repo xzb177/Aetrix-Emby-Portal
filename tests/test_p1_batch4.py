@@ -130,7 +130,7 @@ class TestF_P1_19_20_CoverFile:
     def test_cleanup_after_commit(self):
         import inspect
         from backend.api import library_cover
-        src = inspect.getsource(library_cover._cleanup_old_cover)
+        src = inspect.getsource(library_cover._cleanup_old_cover_by_path)
         assert 'os.remove' in src
 
     def test_old_cover_deferred(self):
@@ -138,8 +138,8 @@ class TestF_P1_19_20_CoverFile:
         import inspect
         from backend.api import library_cover
         src = inspect.getsource(library_cover._write_generated_cover)
-        # 不应直接删除旧文件
-        assert '_old_cover_to_cleanup' in src
+        # 返回 tuple (新路径, 旧路径)，不直接删除
+        assert 'old_to_cleanup' in src
 
 
 class TestF_P1_21_CoverLock:

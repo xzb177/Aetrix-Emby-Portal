@@ -64,8 +64,8 @@ def _validate_template(template: Optional[str]) -> str:
     return value
 
 
-def _write_generated_cover(lib: em.Library, data: bytes) -> str:
-    """把生成的 WebP 落盘并更新 cover_path；旧图删除
+def _write_generated_cover(lib: em.Library, data: bytes) -> tuple[str, str | None]:
+    """把生成的 WebP 落盘并更新 cover_path；返回 (新相对路径, 旧相对路径或None)
 
     与直传接口同一套路径规则（``library-covers/<guid>.webp``），所以生成的
     封面和上传的封面在客户端侧是同一个 URL，切换时不用清缓存逻辑。
@@ -73,6 +73,9 @@ def _write_generated_cover(lib: em.Library, data: bytes) -> str:
     F-P1-19：先写版本化文件，DB 提交成功后再清理旧文件。
     原逻辑是 os.replace 直接覆盖旧图后才 db.commit()，提交失败时旧图已丢。
     F-P1-20：临时文件名加入 uuid，防同进程并发写同一库时交错。
+
+    返回旧路径由调用方在 commit 成功后调用 _cleanup_old_cover_by_path() 删除。
+    不直接删：提交失败时旧图必须还在。
     """
     # F-P1-19：版本化文件名，提交成功前旧文件原封不动
     version = uuid.uuid4().hex[:8]
@@ -96,27 +99,20 @@ def _write_generated_cover(lib: em.Library, data: bytes) -> str:
         raise
     old = lib.cover_path
     lib.cover_path = relative
-    # F-P1-19：旧文件清理推迟到 DB 提交成功后，由调用方在 commit 后调用
-    # _cleanup_old_cover()。这里只记录，不删除。
-    lib._old_cover_to_cleanup = old if (old and old != relative) else None
-    return relative
+    # F-P1-19：返回旧路径，调用方在 commit 成功后删除
+    old_to_cleanup = old if (old and old != relative) else None
+    return relative, old_to_cleanup
 
 
-def _cleanup_old_cover(lib: em.Library) -> None:
+def _cleanup_old_cover_by_path(old_relative: str | None) -> None:
     """DB 提交成功后调用：删除旧封面文件（F-P1-19）"""
-    old = getattr(lib, "_old_cover_to_cleanup", None)
-    if old:
-        old_abs = image_store.local_path(old)
+    if old_relative:
+        old_abs = image_store.local_path(old_relative)
         if old_abs and os.path.isfile(old_abs):
             try:
                 os.remove(old_abs)
             except OSError:
                 logger.debug("旧封面删除失败：%s", old_abs, exc_info=True)
-        # 清理标记，防重复删除
-        try:
-            delattr(lib, "_old_cover_to_cleanup")
-        except AttributeError:
-            pass
 
 
 @router.post("/{lib_id}/cover/preview")
@@ -183,14 +179,14 @@ def render_library_cover(
                 status_code=422,
                 detail="生成失败：这个库还没有可用海报（等刮削补完再试）",
             )
-        _write_generated_cover(lib, data)
+        _, old_to_cleanup = _write_generated_cover(lib, data)
         # 配置落库：不然「按最新海报重新生成」读不到上次用的样式/标题
         lib.cover_template = template
         lib.cover_title = (payload.get("title") or "")[:100] or None
         lib.cover_subtitle = (payload.get("subtitle") or "")[:100] or None
         db.commit()
         # F-P1-19：提交成功后再清理旧文件
-        _cleanup_old_cover(lib)
+        _cleanup_old_cover_by_path(old_to_cleanup)
     finally:
         with _COVER_LOCK:
             _COVER_RUNNING.discard(lib_id)
@@ -219,10 +215,11 @@ class CoverRegenError(RuntimeError):
         self.status_code = status_code
 
 
-def regenerate_cover_for_library(db: Session, lib: em.Library) -> str:
+def regenerate_cover_for_library(db: Session, lib: em.Library) -> tuple[str, str | None]:
     """按库里已保存的模板/标题重新生成封面（手动按钮与“新片入库后自动更新”共用）
 
-    返回新的 cover_path。**不 commit**：手动接口与扫描钩子各自决定什么时候落库。
+    返回 (新 cover_path, 旧 cover_path或None)。**不 commit**：手动接口与扫描钩子
+    各自决定什么时候落库，commit 成功后调用 _cleanup_old_cover_by_path() 清理旧文件。
     失败抛 :class:`CoverRegenError`，两种调用方都不应该让“封面没画出来”变成别的后果。
     """
     if not lib.cover_template:
@@ -302,10 +299,10 @@ def _cover_worker(stop: threading.Event) -> None:
                     _set_cover_state(lib_id, "done")
                 else:
                     try:
-                        regenerate_cover_for_library(db, lib)
+                        _, old_to_cleanup = regenerate_cover_for_library(db, lib)
                         db.commit()
                         # F-P1-19：提交成功后再清理旧文件
-                        _cleanup_old_cover(lib)
+                        _cleanup_old_cover_by_path(old_to_cleanup)
                         _set_cover_state(lib_id, "done")
                     except CoverRegenError as exc:
                         db.rollback()
@@ -369,12 +366,12 @@ def regenerate_library_cover(
     """按库里已保存的模板/标题重新生成（刮削补完新片后点一下就换新封面）"""
     lib = _load_library(db, lib_id)
     try:
-        regenerate_cover_for_library(db, lib)
+        _, old_to_cleanup = regenerate_cover_for_library(db, lib)
     except CoverRegenError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     db.commit()
     # F-P1-19：提交成功后再清理旧文件
-    _cleanup_old_cover(lib)
+    _cleanup_old_cover_by_path(old_to_cleanup)
     return {
         "success": True,
         "cover_url": f"/api/admin/emby/libraries/{lib.id}/cover",
