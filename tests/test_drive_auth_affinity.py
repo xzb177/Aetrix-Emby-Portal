@@ -177,3 +177,48 @@ def test_drive_auth_headers_passes_file_id_key(fake_drive_changes, monkeypatch):
 def test_drive_auth_headers_non_drive_returns_empty(fake_drive_changes):
     assert drive_auth.drive_auth_headers("https://example.com/x") == {}
     assert fake_drive_changes._sa_access_token.call_count == 0
+
+
+def test_all_sa_dicts_cached_no_repeated_file_reads(fake_drive_changes, monkeypatch):
+    """P2-1：_all_sa_dicts 结果模块级缓存——第二次调用不再读文件。
+
+    模拟 100 个 SA 文件在磁盘上：_discover_sa_files 返回路径列表，
+    _read_sa_file 被计次（代表 open+json.loads）。第一次调用读全部 100 个；
+    之后 _pick_sa_affine 热路径的再次调用必须 0 文件读取、0 重新发现。
+    """
+    drive_auth._reset_state()
+    paths = [f"/tmp/sa{i:03d}.json" for i in range(100)]
+    fake_drive_changes._discover_sa_files.return_value = paths
+    read_calls = {"n": 0}
+
+    def counting_read(path):
+        read_calls["n"] += 1
+        return _make_sa(f"sa-{os.path.basename(path)}@x")
+
+    monkeypatch.setattr(drive_auth, "_read_sa_file", counting_read)
+
+    first = drive_auth._all_sa_dicts()
+    assert len(first) == 100
+    assert read_calls["n"] == 100
+    assert fake_drive_changes._discover_sa_files.call_count == 1
+
+    # 热路径第二次调用：不重复发现、不重复读文件
+    second = drive_auth._all_sa_dicts()
+    assert read_calls["n"] == 100
+    assert fake_drive_changes._discover_sa_files.call_count == 1
+    assert [s["client_email"] for s in second] == [s["client_email"] for s in first]
+
+    # _pick_sa_affine 热路径也受益于缓存（同样的 100s bucket 内）
+    _pin_bucket(monkeypatch, 7)
+    token1 = drive_auth.get_drive_bearer_token(key="fileA")
+    token2 = drive_auth.get_drive_bearer_token(key="fileA")
+    assert token1 == token2
+    assert read_calls["n"] == 100
+    assert fake_drive_changes._discover_sa_files.call_count == 1
+
+    # _reset_state 后缓存失效，恢复"重新发现"语义
+    drive_auth._reset_state()
+    third = drive_auth._all_sa_dicts()
+    assert read_calls["n"] == 200
+    assert fake_drive_changes._discover_sa_files.call_count == 2
+    assert len(third) == 100
