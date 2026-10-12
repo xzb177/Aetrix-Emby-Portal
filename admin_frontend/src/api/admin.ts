@@ -1885,3 +1885,98 @@ export const fetchGDriveSaStatus = () =>
 export const rotateGDriveSa = () =>
   post<{ success: boolean; sa_file?: string; mode?: string; needs_remount?: boolean; remount_hint?: string }>('/gdrive/sa-rotate')
 
+
+// ==================== 系统告警（后端 /api/admin/alerts/*） ====================
+
+/** 告警严重度 */
+export type AlertSeverity = 'info' | 'warning' | 'critical'
+/** 告警渠道 */
+export type AlertChannel = 'in_app' | 'email' | 'telegram' | 'webhook'
+/** 告警记录状态 */
+export type AlertStatus = 'open' | 'acknowledged' | 'resolved'
+
+/** 告警规则 */
+export interface AlertRule {
+  id: number
+  name: string
+  event_type: string
+  threshold: number
+  severity: AlertSeverity
+  channels: string[]
+  recipients: Record<string, unknown>
+  cooldown_sec: number
+  is_active: boolean
+  created_at: string | null
+}
+
+/** 告警规则更新入参 */
+export interface AlertRuleUpdate {
+  name: string
+  threshold: number
+  severity: AlertSeverity
+  channels: string[]
+  recipients: Record<string, unknown>
+  cooldown_sec: number
+  is_active: boolean
+}
+
+/** 告警全局设置 */
+export interface AlertSettings {
+  enabled: boolean
+  enabled_source: 'env' | 'db'
+  enabled_value: string
+  check_interval_sec: number
+  webhook_url: string
+  webhook_secret_set: boolean
+}
+
+/** 告警设置部分更新入参（全部可选，后端只应用非 None 字段） */
+export interface AlertSettingsUpdate {
+  enabled?: boolean
+  check_interval_sec?: number
+  webhook_url?: string
+  webhook_secret?: string
+}
+
+/** 告警记录 */
+export interface AlertRecord {
+  id: number
+  rule_id: number
+  event_type: string | null
+  severity: string
+  title: string
+  message: string
+  status: AlertStatus
+  notified_ok: boolean
+  created_at: string | null
+  acknowledged_at: string | null
+  resolved_at: string | null
+}
+
+/** 告警规则列表（含总开关 / 可用事件 / 可用渠道） */
+export const fetchAlertRules = () =>
+  get<{ enabled: boolean; events: string[]; allowed_channels: string[]; rules: AlertRule[] }>('/alerts/rules')
+
+/** 更新一条告警规则 */
+export const updateAlertRule = (ruleId: number, data: AlertRuleUpdate) =>
+  put<AlertRule>(`/alerts/rules/${ruleId}`, data)
+
+/** 告警全局设置（总开关 / 检查间隔 / webhook） */
+export const fetchAlertSettings = () =>
+  get<AlertSettings>('/alerts/settings')
+
+/** 保存告警设置（部分更新，只传改了的字段） */
+export const saveAlertSettings = (data: AlertSettingsUpdate) =>
+  put<{ enabled: boolean; check_interval_sec: number; changed: Record<string, unknown> }>('/alerts/settings', data)
+
+/** 告警记录（status: open / acknowledged / resolved / all） */
+export const fetchAlerts = (status: AlertStatus | 'all' = 'open', limit = 50) =>
+  get<{ alerts: AlertRecord[] }>('/alerts', { status, limit })
+
+/** 确认一条告警（open → acknowledged） */
+export const ackAlert = (alertId: number) =>
+  post<{ id: number; status: AlertStatus; acknowledged_at: string | null }>(`/alerts/${alertId}/ack`)
+
+/** 发送测试告警（只发给当前管理员） */
+export const sendTestAlert = (channel: AlertChannel) =>
+  post<{ ok: boolean; channel: string }>('/alerts/test', { channel })
