@@ -13,6 +13,10 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_tmppath}"
 from backend import database as _dbmod
 from sqlalchemy import create_engine as _ce
 from sqlalchemy.orm import sessionmaker as _sm
+# 测试隔离：backend.database 可能已被之前的测试文件导入，
+# 此时模块级的 DATABASE_TYPE 已定死，os.environ.setdefault 改不动它。
+# 强制覆盖，保证 init_db() 走 SQLite 分支（fcntl 锁）而非 pg_advisory_lock。
+_dbmod.DATABASE_TYPE = "sqlite"
 _dbmod.engine = _ce(os.environ["DATABASE_URL"])
 _dbmod.configure_session_local(_sm(bind=_dbmod.engine))
 
