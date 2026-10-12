@@ -37,6 +37,7 @@ def _req(path: str, method: str = "POST"):
     "/api/admin/share-guard/policy",
     "/api/admin/admins",
     "/api/admin/playback/policy",
+    "/api/admin/api-keys",  # v2.58.0：Service Token 的创建/吊销（防运营自发 admin Key 提权）
 ])
 def test_operator_cannot_touch_super_only_endpoints(path):
     """运营角色对这些写操作一律 403 —— 界面提示之外，服务端自己也要判一次"""

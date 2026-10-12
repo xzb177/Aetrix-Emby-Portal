@@ -58,6 +58,9 @@ SUPER_ONLY_PREFIXES = (
     # （包括别的管理员）挡在门外，而且这玩意儿本身就是「把自己锁在门外」的保险，
     # 出了事只能回这一页改——所以与防共享同级，只给超管。
     "/api/admin/access-guard",
+    # API Key / Service Token：运营自己给自己发一把 admin scope 的 Key，
+    # 就能绕过上面所有名单——创建/吊销只给超管（只读 GET 不受影响）。
+    "/api/admin/api-keys",
 )
 
 

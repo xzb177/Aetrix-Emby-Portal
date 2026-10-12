@@ -74,6 +74,7 @@ ROUTER_MODULES = (
     "backend.api.playback_admin",
     "backend.api.realms",
     "backend.api.reminders_admin",
+    "backend.api.admin_apikey",  # API Key / Service Token 管理（v2.58.0）
     "backend.api.servers",
     "backend.api.emby_servers",
     "backend.emby_server.portal",
