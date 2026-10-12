@@ -100,6 +100,47 @@ export interface CollectorData {
   [k: string]: unknown
 }
 
+/** 服务器页：生命体 / 雷达 / 生态 / 机关 */
+export interface ServerVitals {
+  status?: string
+  level?: string
+  backlog?: number
+  version?: string
+  [k: string]: unknown
+}
+
+export interface EcoItem {
+  library_id: number
+  name: string
+  count: number
+  [k: string]: unknown
+}
+
+export interface RadarTask {
+  key: string
+  name: string
+  active: boolean
+  [k: string]: unknown
+}
+
+export interface ServerToggle {
+  key: string
+  name: string
+  desc: string
+  on: boolean
+  writable: boolean
+  [k: string]: unknown
+}
+
+export interface ServerData {
+  vitals?: ServerVitals
+  eco?: EcoItem[]
+  radar_tasks?: RadarTask[]
+  toggles?: ServerToggle[]
+  is_admin?: boolean
+  [k: string]: unknown
+}
+
 async function get<T>(url: string): Promise<T> {
   const res = await api.get(url)
   return unwrap<T>(res)
@@ -124,7 +165,7 @@ export const panelApi = {
   /** 收藏家数据 */
   collector: () => get<CollectorData>('/api/panel/collector'),
   /** 服务器状态 */
-  server: () => get<Record<string, unknown>>('/api/panel/server'),
+  server: () => get<ServerData>('/api/panel/server'),
   /** 机关拨杆（仅管理员） */
   toggles: (payload: Record<string, unknown>) => post('/api/panel/server/toggles', payload),
 }
