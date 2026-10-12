@@ -557,8 +557,6 @@ function formatDate(iso?: string | null) {
           @cancel="cancelSubscription"
         />
 
-        </section>
-
         <!-- 我的设备 -->
         <section class="pane">
           <header class="pane-head">

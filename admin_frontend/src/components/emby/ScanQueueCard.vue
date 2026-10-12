@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ListChecks, X } from 'lucide-vue-next'
-import SectionCard from '@/components/SectionCard.vue'
-import EmptyState from '@/components/EmptyState.vue'
+import SectionCard from '@/components/ui/SectionCard.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 defineProps<{
   scanQueue: any
