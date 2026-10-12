@@ -189,6 +189,12 @@ def _locked_db_keys(db: Session) -> list[str]:
     密钥增删是读-改-写：不加锁时两请求读到同一旧列表会互相覆盖新增/删除。
     调用方必须在同一事务内随后调 _save_pool（它会 commit），锁直到提交才释放。
     用 ttl=0 直查 DB，绕过 TTL 缓存，确保读到刚加锁行的最新提交值。
+
+    已知残留窗口（P3-4）：`with_for_update().first()` 只对已存在的行加锁。
+    全新安装且从未用过"批量保存 TMDB Keys"时配置行不存在，此时两并发
+    add_tmdb_key 可互相覆盖。窗口极窄（首次写入前一刻的两并发），且 _save_pool
+    的 upsert 本身是单行写覆盖，覆盖后果也只丢一把 key（界面会提示密钥数异常，
+    可重新添加）；不引入 advisory lock/insert-retry 等侵入修法，留注释说明。
     """
     db.query(base_models.SystemConfig).filter(
         base_models.SystemConfig.key == TMDB_KEYS_CONFIG_KEY
@@ -1057,6 +1063,7 @@ class EnrichEpisodeNightSaveRequest(BaseModel):
     enabled: bool = Field(default=False, description="单集仅夜间刮削开关")
     night_start: str = Field(default="02:00", description="夜间窗口开始 HH:MM")
     night_end: str = Field(default="06:00", description="夜间窗口结束 HH:MM")
+    night_tz: str | None = Field(default=None, description="夜间窗口时区（IANA 时区名），不传则沿用后台已存值")
 
 
 @admin_emby_router.get("/scrape/enrich-episode-night")
@@ -1078,7 +1085,9 @@ def get_enrich_episode_night(
             "enabled": enrich_worker.NIGHT_ONLY_DEFAULT,
             "night_start": enrich_worker.NIGHT_START_DEFAULT,
             "night_end": enrich_worker.NIGHT_END_DEFAULT,
+            "night_tz": enrich_worker.NIGHT_TZ_DEFAULT,
         },
+        "tz_options": enrich_worker.NIGHT_TZ_OPTIONS,
     }
 
 
@@ -1091,7 +1100,7 @@ def save_enrich_episode_night(
     """保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效，无需重启）"""
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.save_episode_night_config(
-        db, req.enabled, req.night_start, req.night_end)
+        db, req.enabled, req.night_start, req.night_end, req.night_tz)
     return {"success": True, **cfg}
 
 

@@ -93,21 +93,23 @@ def assistant_ask(
                 detail=f"单条历史记录不能超过 {MAX_HISTORY_ITEM_CHARS} 字符",
             )
 
-    # 先占额度再调用：并发时靠条件 UPDATE 判定，不会两个请求都放行
-    limit = ai_capability.daily_limit(db)
-    allowed, used = ai_capability.safe_consume(db, current_user.id, limit)
-    if not allowed:
-        raise HTTPException(
-            status_code=429,
-            detail=f"今日提问次数已用完（上限 {limit} 次），明天再来吧",
-        )
-
-    # F-P1-16：阻塞模型调用限并发，超限直接 429（不排队）
+    # F-P1-16 修复：先占并发槽再扣配额，避免撞忙时白白消耗配额
     if not _ai_ask_semaphore.acquire(blocking=False):
         raise HTTPException(
             status_code=429,
             detail="AI 助手正忙（并发已满），请稍后再试",
         )
+
+    # 再占额度：并发时靠条件 UPDATE 判定，不会两个请求都放行
+    limit = ai_capability.daily_limit(db)
+    allowed, used = ai_capability.safe_consume(db, current_user.id, limit)
+    if not allowed:
+        _ai_ask_semaphore.release()
+        raise HTTPException(
+            status_code=429,
+            detail=f"今日提问次数已用完（上限 {limit} 次），明天再来吧",
+        )
+
     try:
         result = ai_capability.ask(db, question, history)
     finally:

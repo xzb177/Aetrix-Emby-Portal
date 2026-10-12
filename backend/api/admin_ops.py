@@ -51,9 +51,10 @@ def _code_state_sql(now: datetime):
     口径与 Python 版严格一致：
     disabled = is_active 假；expired = expires_at 非空且已过；
     used_up = max_uses>0 且 use_count>=max_uses；其余 active。
+    NULL 与 False 都判停用（isnot(True)），与 Python `not is_active` 口径一致（F-P1-7 NULL 对齐修复）。
     """
     return case(
-        (models.RegistrationCode.is_active == False, "disabled"),  # noqa: E712
+        (models.RegistrationCode.is_active.isnot(True), "disabled"),
         (
             and_(
                 models.RegistrationCode.expires_at.isnot(None),
@@ -1172,7 +1173,7 @@ def list_invitation_codes(
     # F-P1-7：状态过滤与统计下推 SQL（原全量 .all() 后内存过滤/统计/切片）。
     # 口径与 _inv_code_state 一致：revoked=停用；expired=过期；used_up=用完；其余 active。
     inv_state = case(
-        (models.InvitationCode.is_active == False, "revoked"),  # noqa: E712
+        (models.InvitationCode.is_active.isnot(True), "revoked"),
         (
             and_(
                 models.InvitationCode.expires_at.isnot(None),

@@ -1174,7 +1174,8 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             })
         items.append(entry)
 
-    # unique_total 改为 SQL 去重计数（原 len(aggregated) 是截断后的值，语义不变：去重后条数）
+    # unique_total 为 SQL 去重计数：旧 Python 版先全量聚合再切片，len(aggregated) 本就是
+    # 全量去重数（不是截断后的值），与这里的 unique_total 语义一致。
     return {"total": total, "unique_total": unique_total, "items": items}
 
 

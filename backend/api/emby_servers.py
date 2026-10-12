@@ -238,7 +238,7 @@ async def save_server(
     result = await probe(request.mode, url, probe_key)
 
     def save_all() -> None:
-        """配置 + 探测结论 + 清单同步，同一事务（同步；下放线程池）"""
+        """配置 + 探测结论 + 清单同步，同一事务一次提交（同步；下放线程池）"""
         save_value(db, f"{prefix}_url", url, "Emby 服务地址", scope_id)
         save_value(db, f"{prefix}_enabled", "true" if request.enabled else "false",
                    "Emby 服务是否启用", scope_id)
@@ -250,7 +250,11 @@ async def save_server(
         # 只有真正探测成功且勾选启用，才切换当前入口；避免保存一个不存在的服务后全站假运行。
         if request.enabled and result.get("ok"):
             save_value(db, "emby_active_mode", request.mode, "当前 Emby 服务模式", scope_id)
-        db.commit()
+        # F-P1-17 一次提交（r13）：中间的 db.commit() 已移除——配置写与清单同步
+        # 都在下面 upsert_legacy 内部的 commit 一起提交（它内部尾部自带 commit）。
+        # 选此方案不选 commit=False 参数：upsert_legacy 已有 commit，删中间
+        # commit 即实现一次提交，侵入更小；它抛错时整事务回滚，语义更严格。
+        # 注意：此后的挂载体检/审计是另一次提交（中间夹网络 IO），非本事务。
         # 两个页面（旧的两个格子 / 新的清单）操作的是同一件事，收敛到一条真相，
         # 旧页保存后新页面就能看到它是「当前使用」。
         registry.upsert_legacy(

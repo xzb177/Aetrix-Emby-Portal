@@ -243,9 +243,11 @@ def revoke_admin(
         raise HTTPException(status_code=400, detail="这个账号不是管理员")
     if user.id == current_admin.id:
         raise HTTPException(status_code=400, detail="不能撤销自己（避免把自己关在门外）")
-    # F-P1-6：行锁后计数，防两名 super 并发互相撤销时同时通过检查
-    if admin_roles.role_of(user) == admin_roles.ROLE_SUPER and _locked_super_count(db) <= 1:
-        raise HTTPException(status_code=400, detail="至少要保留一个超级管理员：请先给别的账号授予超级管理员")
+    # F-P1-6：行锁后计数，防两名 super 并发互相撤销时同时通过检查。
+    # 撤销会让账号同时失去 super 角色与 is_staff，必须按"可登录 super"口径计数，
+    # 否则可能出现角色计数还剩≥2 但可登录 super 归零的死局（F-P1-14 修法扩展到撤销路径）。
+    if admin_roles.role_of(user) == admin_roles.ROLE_SUPER and _locked_loginable_super_count(db) <= 1:
+        raise HTTPException(status_code=400, detail="至少要保留一个可登录的超级管理员：请先给别的账号授予超级管理员")
 
     user.is_staff = False
     user.admin_role = None

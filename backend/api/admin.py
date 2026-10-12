@@ -399,7 +399,6 @@ def update_user(
         MAX_ADMINS,
         _admins_query,
         _locked_loginable_super_count,
-        _locked_super_count,
     )
 
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
@@ -418,13 +417,13 @@ def update_user(
         raise HTTPException(status_code=403, detail="授予 / 撤销管理员只有超级管理员能做")
 
     target_is_super = bool(user.is_staff) and admin_roles.role_of(user) == admin_roles.ROLE_SUPER
-    # F-P1-6/F-P1-14 修复："至少保留一个 super"检查必须行锁后计数，防并发同时通过。
-    # 降级/撤销走角色口径，停用走"可登录 super"口径（只看角色会留下无人能登录的死局）。
+    # F-P1-6/F-P1-14 修复："至少保留一个 super"检查必须行锁后计数，防并发同时通过；
+    # 降级/撤销/停用统一走可登录 super 口径。
     losing_super = target_is_super and (
         request.is_active is False or request.is_staff is False
     )
-    if losing_super and request.is_staff is False and _locked_super_count(db) <= 1:
-        raise HTTPException(status_code=400, detail="至少要保留一个超级管理员：请先给别的账号授予超级管理员")
+    if losing_super and request.is_staff is False and _locked_loginable_super_count(db) <= 1:
+        raise HTTPException(status_code=400, detail="至少要保留一个可登录的超级管理员：请先给别的账号授予超级管理员")
     if losing_super and request.is_active is False and _locked_loginable_super_count(db) <= 1:
         raise HTTPException(status_code=400, detail="至少要保留一个可登录的超级管理员：请先给别的账号授予超级管理员")
 
@@ -2036,7 +2035,10 @@ def economy_list_orders(
                     models.WebUser.username.ilike(like))
             )
         total += q.count()
-        recharge_rows = q.order_by(models.RechargeOrder.created_at.desc()).offset(0).limit(fetch).all()
+        # P3-5：PG 下 ORDER BY created_at DESC 默认 NULLS FIRST，而 Python 侧归并
+        # `x["created_at"] or ""` 把 NULL 排最后——两边口径对不齐时分页边界可能错位。
+        # created_at 列可空（无 nullable=False），故 SQL 侧显式 nullslast() 与 Python 对齐。
+        recharge_rows = q.order_by(models.RechargeOrder.created_at.desc().nullslast()).offset(0).limit(fetch).all()
 
     if want_sub:
         q = db.query(models.SubscriptionOrder)
@@ -2049,7 +2051,7 @@ def economy_list_orders(
                     models.WebUser.username.ilike(like))
             )
         total += q.count()
-        sub_rows = q.order_by(models.SubscriptionOrder.created_at.desc()).offset(0).limit(fetch).all()
+        sub_rows = q.order_by(models.SubscriptionOrder.created_at.desc().nullslast()).offset(0).limit(fetch).all()
 
     # F-P1-1：两类订单的用户一次 IN 查询（原逐单查询 N+1）
     user_ids = {o.user_id for o in recharge_rows} | {o.user_id for o in sub_rows}
