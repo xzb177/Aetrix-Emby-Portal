@@ -699,6 +699,7 @@ async def serve_remote_async(
     headers: Optional[dict] = None,
     media_type: str = "video/mp4",
     cache_control: Optional[str] = None,
+    pt=None,
 ) -> StreamingResponse:
     """远程媒体代理（异步版）：语义与 ``serve_remote`` 完全一致，但不在事件循环上等源站
 
@@ -709,6 +710,10 @@ async def serve_remote_async(
     ``cache_control``（CDN 预留，第 2/3 层）：分片口径时随响应下发，让 CDN 边缘
     能缓存回源结果；None 时不发缓存头（行为与升级前一致）。凭据在查询串里的
     API 响应不走这里，302 分支由调用方自带 no-store。
+
+    ``pt``（可选）：播放链路计时器（``backend.emby_server.play_timing``）。
+    传入时记录 url_convert / redirect_cache_hit|miss / ttfb 并在返回前 done()。
+    只加日志，不改逻辑。
     """
     import httpx
 
@@ -733,14 +738,21 @@ async def serve_remote_async(
             url = drive_api_media_url(url)
         except Exception:
             pass
+        if pt is not None:
+            pt.mark("url_convert")
         # P0-2：Drive 307 跳转缓存。alt=media 会 307 跳到 usercontent，
         # 命中缓存时直接用最终 URL，省一跳 RTT（约 100~200ms）。
         _cache_file_id = _drive_file_id(url)
         _cached_target = _redirect_cache_get(_cache_file_id) if _cache_file_id else None
+        if pt is not None:
+            pt.mark("redirect_cache_hit" if _cached_target else "redirect_cache_miss")
         # 跳转跟随走共用 helper（P3-5：与 resolve_drive_final_url 同逻辑，
         # 逐跳内网校验 + 跨主机剥凭据）；终态 resp 不关，由下面消费/关闭。
         resp, current, _redirect_hops = await _follow_redirects(
             client, _cached_target or url, forward, silent=False)
+        # ttfb：_follow_redirects 返回时已收到源站响应头（首字节就绪）。
+        if pt is not None:
+            pt.mark("ttfb")
         # P0-2：写入跳转缓存（坏 URL 不进缓存；签名感知 TTL）。
         # 缓存命中（_redirect_hops==0）时不重复写。
         _maybe_cache_drive_redirect(_cache_file_id, current, _redirect_hops,
@@ -822,6 +834,9 @@ async def serve_remote_async(
             # 连接会在响应关闭后自动归还池里，供下一次 Range 请求复用。
             await resp.aclose()
 
+    # 播放链路耗时汇总（[play-timing]）：ttfb 已在上面 mark，这里输出整行。
+    if pt is not None:
+        pt.done()
     return StreamingResponse(
         iter_remote(), status_code=resp.status_code, media_type=content_type, headers=passthrough,
     )

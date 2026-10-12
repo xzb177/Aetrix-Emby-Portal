@@ -136,7 +136,7 @@ def test_relay_line_never_redirects_without_explicit_param(monkeypatch):
     monkeypatch.setattr(api, "_play_target", lambda db_, item: target)
     seen = []
 
-    async def fake_proxy(url, request, headers, media_type, cache_control=None):
+    async def fake_proxy(url, request, headers, media_type, cache_control=None, **kwargs):
         seen.append(url)
         return "proxied"
 
@@ -168,7 +168,7 @@ def test_rclone_target_with_credentials_never_redirects(monkeypatch):
     monkeypatch.setattr(api, "_play_target", lambda db_, item: target)
     seen = []
 
-    async def fake_proxy(url, request, headers, media_type, cache_control=None):
+    async def fake_proxy(url, request, headers, media_type, cache_control=None, **kwargs):
         seen.append(url)
         return "proxied"
 
