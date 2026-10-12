@@ -98,23 +98,23 @@ def test_parse_hhmm_invalid_falls_back():
 # ---------- _in_night_window ----------
 
 def test_in_night_window_normal():
-    # 普通窗口 02:00-06:00：左闭右开
-    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 2, 0), "02:00", "06:00")
-    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 5, 59), "02:00", "06:00")
-    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 6, 0), "02:00", "06:00")
-    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 1, 59), "02:00", "06:00")
-    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 12, 0), "02:00", "06:00")
+    # 普通窗口 02:00-06:00：左闭右开（tz=UTC 时 naive 按 UTC 解释，与旧行为一致）
+    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 2, 0), "02:00", "06:00", "UTC")
+    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 5, 59), "02:00", "06:00", "UTC")
+    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 6, 0), "02:00", "06:00", "UTC")
+    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 1, 59), "02:00", "06:00", "UTC")
+    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 12, 0), "02:00", "06:00", "UTC")
 
 
 def test_in_night_window_cross_midnight():
-    # 跨午夜窗口 22:00-06:00
-    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 22, 0), "22:00", "06:00")
-    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 23, 30), "22:00", "06:00")
-    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 0, 0), "22:00", "06:00")
-    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 5, 59), "22:00", "06:00")
-    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 6, 0), "22:00", "06:00")
-    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 21, 59), "22:00", "06:00")
-    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 12, 0), "22:00", "06:00")
+    # 跨午夜窗口 22:00-06:00（tz=UTC 时 naive 按 UTC 解释，与旧行为一致）
+    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 22, 0), "22:00", "06:00", "UTC")
+    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 23, 30), "22:00", "06:00", "UTC")
+    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 0, 0), "22:00", "06:00", "UTC")
+    assert enrich_worker._in_night_window(datetime(2026, 1, 1, 5, 59), "22:00", "06:00", "UTC")
+    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 6, 0), "22:00", "06:00", "UTC")
+    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 21, 59), "22:00", "06:00", "UTC")
+    assert not enrich_worker._in_night_window(datetime(2026, 1, 1, 12, 0), "22:00", "06:00", "UTC")
 
 
 # ---------- _episode_night_config ----------
@@ -190,7 +190,7 @@ def _enable_night_only(monkeypatch, in_window: bool):
     """打开开关，并固定窗口判断结果"""
     monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
     monkeypatch.setattr(
-        enrich_worker, "_in_night_window", lambda now, s, e: in_window)
+        enrich_worker, "_in_night_window", lambda now, s, e, tz=None: in_window)
 
 
 def test_claim_batch_daytime_skips_episodes(db, monkeypatch):

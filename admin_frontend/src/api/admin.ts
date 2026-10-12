@@ -1084,20 +1084,23 @@ export interface EnrichEpisodeNightConfig {
   enabled: boolean
   night_start: string
   night_end: string
+  night_tz: string
   from_env: boolean
   in_window: boolean
-  defaults: { enabled: boolean; night_start: string; night_end: string }
+  defaults: { enabled: boolean; night_start: string; night_end: string; night_tz: string }
+  tz_options?: string[]
 }
 
 /** 单集夜间刮削：白天只刮顶层条目，单集留到夜间窗口刮 */
 export const fetchEnrichEpisodeNight = () =>
   get<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`)
 
-export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, night_end: string) =>
+export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, night_end: string, night_tz: string) =>
   put<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`, {
     enabled,
     night_start,
     night_end,
+    night_tz,
   })
 
 export interface TmdbTestResult {

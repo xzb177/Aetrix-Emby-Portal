@@ -1093,11 +1093,30 @@ async function saveTmdbLanguageAction() {
 const episodeNight = ref<EnrichEpisodeNightConfig | null>(null)
 const episodeNightSaving = ref(false)
 const episodeNightError = ref(false)
+const episodeNightTzOptions = ref<string[]>([
+  'Asia/Shanghai',
+  'Asia/Tokyo',
+  'Asia/Singapore',
+  'Asia/Hong_Kong',
+  'Europe/London',
+  'Europe/Paris',
+  'America/New_York',
+  'America/Los_Angeles',
+  'Australia/Sydney',
+  'UTC',
+])
 
 async function loadEnrichEpisodeNightConfig() {
   try {
     episodeNight.value = await fetchEnrichEpisodeNight()
     episodeNightError.value = false
+    // 后端返回常用时区列表就用后端的，否则用本地默认
+    const opts = episodeNight.value?.tz_options
+    if (opts && opts.length) episodeNightTzOptions.value = opts
+    // 老数据没有 night_tz 字段时回退默认
+    if (episodeNight.value && !episodeNight.value.night_tz) {
+      episodeNight.value.night_tz = episodeNight.value.defaults?.night_tz || 'Asia/Shanghai'
+    }
   } catch {
     episodeNight.value = null // 出错不挡页面其它内容
     episodeNightError.value = true
@@ -1112,6 +1131,7 @@ async function saveEnrichEpisodeNightAction() {
       episodeNight.value.enabled,
       episodeNight.value.night_start,
       episodeNight.value.night_end,
+      episodeNight.value.night_tz || 'Asia/Shanghai',
     )
     episodeNight.value = res
     ElMessage.success('单集夜间刮削已保存，60 秒内生效')
@@ -2020,7 +2040,7 @@ function typeLabel(t: string): string {
             <div class="scrape-block">
               <h3>单集夜间刮削</h3>
               <p class="drawer-hint">
-                打开后，白天只刮顶层条目（电影 / 剧集），单集留到夜间窗口再刮，避免单集挤占白天的刮削资源（保存后 60 秒内生效；时间为服务器本地时间，窗口支持跨午夜）
+                打开后，白天只刮顶层条目（电影 / 剧集），单集留到夜间窗口再刮，避免单集挤占白天的刮削资源（保存后 60 秒内生效；时间按所选时区解释，窗口支持跨午夜）
               </p>
               <div v-if="episodeNight" class="scrape-actions">
                 <el-switch
@@ -2046,11 +2066,30 @@ function typeLabel(t: string): string {
                   style="width: 110px"
                   aria-label="夜间窗口结束"
                 />
+                <el-select
+                  v-model="episodeNight.night_tz"
+                  filterable
+                  allow-create
+                  default-first-option
+                  placeholder="时区"
+                  style="width: 170px"
+                  aria-label="夜间窗口时区"
+                >
+                  <el-option
+                    v-for="tz in episodeNightTzOptions"
+                    :key="tz"
+                    :label="tz"
+                    :value="tz"
+                  />
+                </el-select>
                 <el-button type="primary" size="small" :loading="episodeNightSaving" @click="saveEnrichEpisodeNightAction">
                   保存
                 </el-button>
                 <span v-if="episodeNight.enabled" class="chase-state" :class="{ 'is-on': episodeNight.in_window }">
                   {{ episodeNight.in_window ? '夜间窗口内：正在刮单集' : '白天：跳过单集' }}
+                </span>
+                <span class="drawer-hint drawer-hint--after">
+                  当前生效时区：{{ episodeNight.night_tz || 'Asia/Shanghai' }}
                 </span>
               </div>
               <div v-else-if="episodeNightError" class="drawer-hint drawer-hint--after">
@@ -2059,7 +2098,7 @@ function typeLabel(t: string): string {
               </div>
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="episodeNight?.from_env" class="drawer-hint drawer-hint--after">
-                环境变量（ENRICH_EPISODE_NIGHT_ONLY / ENRICH_NIGHT_START / ENRICH_NIGHT_END）覆盖了这里的设置（改这里不会生效）
+                环境变量（ENRICH_EPISODE_NIGHT_ONLY / ENRICH_NIGHT_START / ENRICH_NIGHT_END / ENRICH_NIGHT_TZ）覆盖了这里的设置（改这里不会生效）
               </div>
             </div>
           </div>

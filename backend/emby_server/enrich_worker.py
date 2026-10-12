@@ -32,6 +32,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from backend.database import SessionLocal
 from backend.emby_server import models as em
@@ -85,16 +86,33 @@ _alias_index: dict = {"rows": None, "at": 0.0}
 # 单集（episode）只在夜间窗口 [ENRICH_NIGHT_START, ENRICH_NIGHT_END) 内刮削。
 # 目的：白天优先把电影/剧集本身的元数据补出来，单集留到低峰期再补。
 # 口径：环境变量优先；未设置时读 SystemConfig（管理后台可配，60 秒缓存热生效，
-# 无需重启）。时间用服务器本地时间（datetime.now），窗口支持跨午夜（如 22:00-06:00）。
+# 无需重启）。时间按可配置时区（enrich_night_tz，默认 Asia/Shanghai）解释，
+# 不再是服务器本地时间；窗口支持跨午夜（如 22:00-06:00）。
 ENRICH_EPISODE_NIGHT_ONLY_ENV = "ENRICH_EPISODE_NIGHT_ONLY"
 ENRICH_NIGHT_START_ENV = "ENRICH_NIGHT_START"
 ENRICH_NIGHT_END_ENV = "ENRICH_NIGHT_END"
+ENRICH_NIGHT_TZ_ENV = "ENRICH_NIGHT_TZ"
 CFG_EPISODE_NIGHT_ONLY = "enrich_episode_night_only"
 CFG_NIGHT_START = "enrich_night_start"
 CFG_NIGHT_END = "enrich_night_end"
+CFG_NIGHT_TZ = "enrich_night_tz"
 NIGHT_ONLY_DEFAULT = False
 NIGHT_START_DEFAULT = "02:00"
 NIGHT_END_DEFAULT = "06:00"
+NIGHT_TZ_DEFAULT = "Asia/Shanghai"
+# 管理后台时区下拉的常用选项（allow-create 允许手填任意 IANA 时区名）
+NIGHT_TZ_OPTIONS = [
+    "Asia/Shanghai",
+    "Asia/Tokyo",
+    "Asia/Singapore",
+    "Asia/Hong_Kong",
+    "Europe/London",
+    "Europe/Paris",
+    "America/New_York",
+    "America/Los_Angeles",
+    "Australia/Sydney",
+    "UTC",
+]
 _NIGHT_CFG_TTL_SEC = 60.0
 _night_cfg_cache: dict = {"at": 0.0, "cfg": None}
 
@@ -112,9 +130,32 @@ def _parse_hhmm(s: Optional[str], default: str) -> str:
     return default
 
 
-def _in_night_window(now: datetime, start: str, end: str) -> bool:
-    """now 是否在 [start, end) 夜间窗口内；start > end 视为跨午夜窗口"""
-    t = (now.hour, now.minute)
+def _parse_tz(name: Optional[str], default: str = NIGHT_TZ_DEFAULT) -> ZoneInfo:
+    """把 IANA 时区名解析为 ZoneInfo；非法/缺失时回退到 default，再失败回退 UTC。
+
+    永不抛异常，保证抢单路径不受坏配置影响。
+    """
+    for candidate in (name, default, "UTC"):
+        if not candidate or not isinstance(candidate, str):
+            continue
+        try:
+            return ZoneInfo(candidate.strip())
+        except (ZoneInfoNotFoundError, ValueError, TypeError, OSError):
+            continue
+    return ZoneInfo("UTC")  # 理论上不可达
+
+
+def _in_night_window(now: datetime, start: str, end: str,
+                     tz: Optional[str | ZoneInfo] = None) -> bool:
+    """now 是否在 [start, end) 夜间窗口内；start > end 视为跨午夜窗口。
+
+    时间按 tz（IANA 时区名或 ZoneInfo，默认 NIGHT_TZ_DEFAULT）解释：
+    naive 的 now 先按 UTC 理解，再转换到目标时区后比较 hour/minute。
+    """
+    zone = _parse_tz(tz) if not isinstance(tz, ZoneInfo) else tz
+    aware = now if now.tzinfo is not None else now.replace(tzinfo=ZoneInfo("UTC"))
+    local = aware.astimezone(zone)
+    t = (local.hour, local.minute)
     s = (int(start[:2]), int(start[3:5]))
     e = (int(end[:2]), int(end[3:5]))
     if s <= e:
@@ -127,7 +168,7 @@ def _episode_night_config(db=None) -> dict:
 
     db 可空：传了 db 才读库；60 秒 TTL 缓存，管理后台保存后最多 60 秒生效。
     返回 {"enabled": bool, "night_start": "HH:MM", "night_end": "HH:MM",
-           "from_env": bool, "in_window": bool}
+           "night_tz": "Asia/Shanghai", "from_env": bool, "in_window": bool}
     （字段名与管理后台前端 EnrichEpisodeNightConfig 接口保持一致）
     """
     now_ts = time.monotonic()
@@ -138,9 +179,10 @@ def _episode_night_config(db=None) -> dict:
         env_enabled = (os.getenv(ENRICH_EPISODE_NIGHT_ONLY_ENV) or "").strip().lower()
         env_start = (os.getenv(ENRICH_NIGHT_START_ENV) or "").strip()
         env_end = (os.getenv(ENRICH_NIGHT_END_ENV) or "").strip()
+        env_tz = (os.getenv(ENRICH_NIGHT_TZ_ENV) or "").strip()
         # 任一环境变量被设置（含显式 "0"）即视为 env 接管：后台改了也不生效，
         # from_env=True 让管理后台显示提示，避免用户困惑。
-        from_env = bool(env_enabled) or bool(env_start) or bool(env_end)
+        from_env = bool(env_enabled) or bool(env_start) or bool(env_end) or bool(env_tz)
         if env_enabled not in {"", "0", "false", "no", "off"}:
             enabled = True
         elif env_enabled in {"0", "false", "no", "off"}:
@@ -156,6 +198,7 @@ def _episode_night_config(db=None) -> dict:
                     logger.warning("单集夜间配置读库失败，按默认关闭", exc_info=True)
         start = _parse_hhmm(env_start or None, NIGHT_START_DEFAULT)
         end = _parse_hhmm(env_end or None, NIGHT_END_DEFAULT)
+        tz = _parse_tz(env_tz or None, NIGHT_TZ_DEFAULT).key
         if not env_start and not env_end and db is not None and not from_env:
             try:
                 from backend.integrations import store
@@ -165,13 +208,18 @@ def _episode_night_config(db=None) -> dict:
                 end = _parse_hhmm(
                     store.read_value(db, CFG_NIGHT_END, NIGHT_END_DEFAULT),
                     NIGHT_END_DEFAULT)
+                # 老配置可能没有 tz 字段：读不到时用默认值（向后兼容）
+                tz = _parse_tz(
+                    store.read_value(db, CFG_NIGHT_TZ, NIGHT_TZ_DEFAULT),
+                    NIGHT_TZ_DEFAULT).key
             except Exception:  # noqa: BLE001
                 logger.warning("夜间窗口读库失败，用默认值", exc_info=True)
         cfg = {"enabled": enabled, "night_start": start, "night_end": end,
-               "from_env": from_env}
+               "night_tz": tz, "from_env": from_env}
         _night_cfg_cache["at"] = now_ts
         _night_cfg_cache["cfg"] = dict(cfg)
-    cfg["in_window"] = _in_night_window(datetime.now(), cfg["night_start"], cfg["night_end"])
+    cfg["in_window"] = _in_night_window(
+        datetime.now(), cfg["night_start"], cfg["night_end"], cfg["night_tz"])
     return cfg
 
 
@@ -180,27 +228,31 @@ def get_episode_night_config(db) -> dict:
     return _episode_night_config(db)
 
 
-def save_episode_night_config(db, enabled: bool, start: str, end: str) -> dict:
+def save_episode_night_config(db, enabled: bool, start: str, end: str,
+                            tz: Optional[str] = None) -> dict:
     """管理后台用：保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效）"""
     from backend.integrations import store
     start = _parse_hhmm(start, NIGHT_START_DEFAULT)
     end = _parse_hhmm(end, NIGHT_END_DEFAULT)
+    tz = _parse_tz(tz, NIGHT_TZ_DEFAULT).key
     store.write_values(
         db,
         {CFG_EPISODE_NIGHT_ONLY: "1" if enabled else "0",
          CFG_NIGHT_START: start,
-         CFG_NIGHT_END: end},
+         CFG_NIGHT_END: end,
+         CFG_NIGHT_TZ: tz},
         {CFG_EPISODE_NIGHT_ONLY: "单集仅夜间刮削开关（白天只刮顶层条目）",
-         CFG_NIGHT_START: "夜间窗口开始（HH:MM，服务器本地时间）",
-         CFG_NIGHT_END: "夜间窗口结束（HH:MM，服务器本地时间）"},
+         CFG_NIGHT_START: "夜间窗口开始（HH:MM，按 enrich_night_tz 时区解释）",
+         CFG_NIGHT_END: "夜间窗口结束（HH:MM，按 enrich_night_tz 时区解释）",
+         CFG_NIGHT_TZ: "夜间窗口时区（IANA 时区名，如 Asia/Shanghai）"},
     )
     db.commit()
     db.expire_all()
     # 立即清缓存：保存后下一次抢单就用新值，不用等 60 秒 TTL
     _night_cfg_cache["at"] = 0.0
     _night_cfg_cache["cfg"] = None
-    logger.info("单集夜间刮削配置已保存: enabled=%s window=%s-%s",
-                enabled, start, end)
+    logger.info("单集夜间刮削配置已保存: enabled=%s window=%s-%s tz=%s",
+                enabled, start, end, tz)
     return get_episode_night_config(db)
 
 _worker_threads: list = []
