@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 import bcrypt
 from jose import JWTError, jwt
+from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
@@ -236,8 +237,9 @@ def revoke_all_user_tokens(db, user_id: int, reason: str = "security") -> None:
 
     try:
         # 原子自增：并发下不会丢更新，且单条 UPDATE 不产生额外查询
+        # 老用户 token_version 可能为 NULL，NULL+1=NULL 会空操作，用 coalesce 兜底
         db.query(WebUser).filter(WebUser.id == user_id).update(
-            {WebUser.token_version: WebUser.token_version + 1},
+            {WebUser.token_version: func.coalesce(WebUser.token_version, 0) + 1},
             synchronize_session=False,
         )
         db.commit()
