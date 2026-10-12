@@ -171,6 +171,10 @@ class MediaItem(Base):
     # Scanner matches existing items by it: rename/move only updates
     # path, never deletes the record or loses metadata.
     drive_file_id = Column(String(64), index=True)
+    # 播放兜底（.strm 删除链路，块3）：Drive alt=media 返回 404 时的 advisory 标记。
+    # 只做"建议性"标记，不触发任何删除；文件恢复后由 strm_gen 生成循环自动清除。
+    # 老库由 database._auto_migrate 补列（NULL = 未标记，行为与升级前一致）。
+    source_invalid_at = Column(DateTime, default=None)
     container = Column(String(20))
     size = Column(BigInteger, default=0)
     # 增量扫描（v2.50.0）：文件修改时间戳，用于 mtime 比对跳过未变更文件。
@@ -795,11 +799,31 @@ class StrmGenFile(Base):
     __tablename__ = "strm_gen_files"
 
     remote_path = Column(String(1024), primary_key=True)
-    file_id = Column(String(128), nullable=False)
+    # 墓碑消费按 file_id IN 批量回查：加索引（老库由 _LEGACY_INDEXES 补，见 database.py）
+    file_id = Column(String(128), nullable=False, index=True)
     size = Column(BigInteger, default=0)
     # 相对 /strm 容器的输出路径（如 "剧集/国产剧/xx.strm"）
     strm_path = Column(String(1024), nullable=False)
     updated_at = Column(DateTime, default=datetime.now)
+
+
+class StrmFileHealth(Base):
+    """file_id 存活状态缓存：反向僵尸校验（run_orphan_drive_check）的结果。
+
+    避免重复查 Drive：每轮最多校验 strm_orphan_check_batch 个 file_id，
+    结果落这里去重；checked_at 最老的优先被复查（兜底全量轮查）。
+    status='unknown' 的行是墓碑消费时积压的疑点（查不到状态行/多盘跳过），
+    下一轮 orphan check 优先复核。
+    由 Base.metadata.create_all 自动建表，老库无需 ALTER。
+    """
+
+    __tablename__ = "strm_file_health"
+
+    file_id = Column(String(128), primary_key=True)
+    drive_id = Column(String(128), default="")
+    status = Column(String(16), default="unknown")  # alive | gone | error | unknown
+    checked_at = Column(DateTime)
+    note = Column(String(512), default="")
 
 
 __all__ = [
@@ -819,4 +843,5 @@ __all__ = [
     "ChaseRun",
     "ChaseSourceState",
     "StrmGenFile",
+    "StrmFileHealth",
 ]

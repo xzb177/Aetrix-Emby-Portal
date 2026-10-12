@@ -19,9 +19,32 @@ import logging
 import os
 import random
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Tombstone:
+    """Drive/本地源上的文件删除信号。只带定位信息，不带路径。
+
+    为什么只有 file_id：Changes API 的 removed 事件里 `file` 字段经常为空，
+    只有 fileId 可靠；路径用 file_id 回查本地状态表还原，零额外 API 调用。
+
+    消费方（strm_gen._consume_tombstones）只删磁盘 .strm + 删状态行；
+    库条目的 deleted_at 交给扫描器下一轮按已有删除保护自然处理，
+    这里不造第二套删除语义。
+    """
+    file_id: str       # Drive fileId；本地源为 "local:"+sha256(relpath)[:32]（与现有 fid 口径一致）
+    drive_id: str      # 来源盘；本地源为 "local:"+sha256(root)[:16]
+    reason: str        # "removed" | "trashed" | "local_deleted" | "orphan_check"
+    detected_at: str   # ISO8601 UTC，本轮拉取时间
+
+
+#: 列举产出：(relpath, file_id, size)，与现状一致
+VideoItem = tuple[str, str, int]
 
 
 class SourceLister:
@@ -36,8 +59,12 @@ class SourceLister:
     # 子类必须覆盖：限速说明（人类可读，供日志/文档）
     RATE_LIMIT_DESC: str = "未定义"
 
-    def iter_videos(self, incremental: bool = True) -> Iterator[tuple[str, str, int]]:
-        """列举视频文件。incremental=True 时只返回变化的文件。"""
+    def iter_videos(self, incremental: bool = True) -> Iterator[VideoItem | Tombstone]:
+        """列举视频文件。incremental=True 时只返回变化的文件。
+
+        产出 VideoItem (relpath, file_id, size) 或 Tombstone（删除信号）。
+        调用方用 strm_gen._split_lister_output 拆分。
+        """
         raise NotImplementedError
 
     def save_checkpoint(self) -> None:
@@ -118,7 +145,7 @@ class DriveChangesLister(SourceLister):
             self._save_token(self._new_token)
             self._new_token = None
 
-    def iter_videos(self, incremental: bool = True) -> Iterator[tuple[str, str, int]]:
+    def iter_videos(self, incremental: bool = True) -> Iterator[VideoItem | Tombstone]:
         if not incremental:
             # 全量：回退到现有的 files.list 实现
             from backend.emby_server import strm_gen
@@ -157,16 +184,24 @@ class DriveChangesLister(SourceLister):
         from backend.emby_server import strm_gen as sg
         access_token = dc._get_token()
         count = 0
+        now = datetime.now(timezone.utc).isoformat()
         for ch in changes:
             fid = ch.get("fileId", "")
             if not fid:
                 continue
-            # 删除/移走的文件：removed=True 或 trashed=True，yield 一个墓碑标记
-            # （调用方按 file_id 查不到则跳过；删除由 prune 逻辑处理）
+            # 删除/移走的文件：removed=True 或 trashed=True，yield 一个墓碑信号。
+            # removed 事件的 file 字段经常为空，不补查 _file_meta（查也查不到，
+            # 且浪费配额）；路径由消费方按 file_id 回查状态表还原。
+            # trashed 字段已在 changes 的 fields 参数里（drive_changes.list_changes），
+            # 零新增 API 调用。
             if ch.get("removed"):
+                yield Tombstone(file_id=fid, drive_id=self.drive_id,
+                                reason="removed", detected_at=now)
                 continue
             f = ch.get("file") or {}
             if f.get("trashed"):
+                yield Tombstone(file_id=fid, drive_id=self.drive_id,
+                                reason="trashed", detected_at=now)
                 continue
             if f.get("mimeType") == "application/vnd.google-apps.folder":
                 continue
@@ -261,9 +296,14 @@ class LocalFsLister(SourceLister):
 
     def __init__(self, root_path: str):
         self.root_path = os.path.abspath(root_path)
-        key_hash = hashlib.sha256(self.root_path.encode()).hexdigest()[:16]
-        self._fp_key = self.FP_KEY_PREFIX + key_hash
+        self.key_hash = hashlib.sha256(self.root_path.encode()).hexdigest()[:16]
+        self._fp_key = self.FP_KEY_PREFIX + self.key_hash
         self._new_fp: Optional[dict] = None
+
+    @property
+    def drive_key(self) -> str:
+        """本数据源在墓碑/状态里的盘标识（与 Tombstone.drive_id 口径一致）。"""
+        return "local:" + self.key_hash
 
     def _db(self):
         from backend.database import SessionLocal
@@ -298,7 +338,7 @@ class LocalFsLister(SourceLister):
             self._save_fp(self._new_fp)
             self._new_fp = None
 
-    def iter_videos(self, incremental: bool = True) -> Iterator[tuple[str, str, int]]:
+    def iter_videos(self, incremental: bool = True) -> Iterator[VideoItem | Tombstone]:
         from backend.emby_server import strm_gen as sg
 
         old_fp = self._load_fp() if incremental else {}
@@ -331,6 +371,16 @@ class LocalFsLister(SourceLister):
                 yield rel, fid, st.st_size
 
         self._new_fp = new_fp
+
+        # walk 结束后的指纹 diff：旧指纹有、新指纹无 = 本轮被删，产墓碑。
+        # 必须守 old_fp 非空：首次运行无基线，跳过墓碑产生（否则全量当删除）。
+        if incremental and old_fp:
+            now = datetime.now(timezone.utc).isoformat()
+            for rel in old_fp:
+                if rel not in new_fp:
+                    fid = "local:" + hashlib.sha256(rel.encode()).hexdigest()[:32]
+                    yield Tombstone(file_id=fid, drive_id=self.drive_key,
+                                    reason="local_deleted", detected_at=now)
 
 
 def get_lister(source_type: str, **kwargs) -> SourceLister:

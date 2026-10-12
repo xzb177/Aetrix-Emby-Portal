@@ -36,6 +36,10 @@ def _engine(tmp_path):
             "item_type TEXT, library_id INTEGER, deleted_at TEXT, drive_file_id TEXT)"
         ))
         conn.execute(text("CREATE TABLE emby_people (id INTEGER PRIMARY KEY, name TEXT)"))
+        conn.execute(text(
+            "CREATE TABLE strm_gen_files (remote_path TEXT PRIMARY KEY, file_id TEXT, "
+            "size INTEGER, strm_path TEXT, updated_at TEXT)"
+        ))
     return eng
 
 
@@ -49,20 +53,24 @@ def test_spec_table_covers_all_seven_in_restored_order():
         "idx_item_probe", "idx_item_probe_retry", "idx_item_enrich", "idx_item_added",
         "idx_item_lib_deleted", "idx_item_drive_file_id",
         "idx_item_merged_into_id", "idx_person_item_tmdb",
+        # .strm 删除链路：墓碑按 file_id IN 批量回查状态表
+        "idx_strm_gen_files_file_id",
     ]
 
 
 def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys):
     eng = _engine(tmp_path)
     monkeypatch.setattr(database, "engine", eng)
-    tables = {"emby_items", "emby_people"}
+    tables = {"emby_items", "emby_people", "strm_gen_files"}
 
     database._ensure_legacy_indexes(tables)
     assert _indexes(eng, "emby_items") == _ITEM_INDEXES
+    assert _indexes(eng, "strm_gen_files") == {
+        "idx_strm_gen_files_file_id": ["file_id"]}
     # person_tmdb_id 列不存在 → 静默跳过
     assert _indexes(eng, "emby_people") == {}
     first = capsys.readouterr().out
-    assert first.count("已迁移") == 7
+    assert first.count("已迁移") == 8
 
     # 第二次：全部已存在，不再建、不再打日志
     database._ensure_legacy_indexes(tables)
