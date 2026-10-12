@@ -506,8 +506,9 @@ def test_h2_emby_user_rejects_jwt_in_query(db):
 
 
 def test_h2_frontends_do_not_put_tokens_in_image_urls():
-    emby_ts = (ROOT / "user_frontend" / "src" / "api" / "emby.ts").read_text(encoding="utf-8")
-    assert "api_key=${encodeURIComponent(token)}" not in emby_ts
+    # v4 重构：user_frontend/src/api/emby.ts 已删除，直连 Emby 拼 token 的图片 URL 不复存在
+    assert not (ROOT / "user_frontend" / "src" / "api" / "emby.ts").exists(), \
+        "emby.ts 应已随 v4 重构删除"
     player = (ROOT / "web_player" / "index.html").read_text(encoding="utf-8")
     assert "'&api_key=' + encodeURIComponent(store.k.token)" not in player
 
