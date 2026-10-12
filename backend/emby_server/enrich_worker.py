@@ -917,9 +917,11 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
             and not (nfo_data and nfo_data.get("tmdb_id"))
             and not getattr(item, "tmdb_id", None)):
         from backend.emby_server import douban as _dbn
-        # P2（完美审查 C-P2-5）：豆瓣开关走 60s TTL 进程内缓存，不再逐条目开短会话。
-        _dbn_on, _dbn_iv = _cached_douban_cfg()
         try:
+            # P2（完美审查 C-P2-5）：豆瓣开关走 60s TTL 进程内缓存，不再逐条目开短会话。
+            # 注意：配置读取必须留在外层 try 里面——旧代码短会话也在 try 内，
+            # 配置读失败（DB 闪断）时走「豆瓣优先搜索失败」静默跳过，不中断整条补全。
+            _dbn_on, _dbn_iv = _cached_douban_cfg()
             if _dbn_on and _dbn.has_cjk(item.name or ""):
                 _dbn.client._interval = _dbn_iv
                 _dh = _dbn.client.search(
