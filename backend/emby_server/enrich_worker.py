@@ -123,6 +123,12 @@ _night_cfg_cache: dict = {"at": 0.0, "cfg": None}
 _PARENT_WAIT_MAX_TIMES = 20
 _PARENT_WAIT_BASE_SEC = 300
 _PARENT_WAIT_MAX_SEC = 7200
+# 注（R18-P3）：_parent_wait_counts 的读-改-写在 32 个 worker 线程下存在
+# 轻微竞态（两线程同读 5、各写回 6，少计一次；clear 也可能被同时触发）。
+# 经评估接受现状不加锁，理由：1）计数差一两次只影响退避时长（300s 粒度）
+# 和 20 次上限的触发时机，不影响正确性；2）GIL 保证单次 dict 操作原子，
+# 不会丢 key；3）加锁会把高频热路径串行化，收益为负。若未来观察到上限
+# 触发明显偏晚，再考虑 threading.Lock 包住读-改-写。
 _parent_wait_counts: dict[int, int] = {}
 
 # douban / altmeta 开关配置的 60s TTL 进程内缓存（P2 修复，完美审查 C-P2-5）：

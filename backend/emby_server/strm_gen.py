@@ -284,6 +284,15 @@ def _dry_run_stale_info(db, stats: dict) -> dict:
     }
 
 
+def dry_run_stale_info(db, stats: dict) -> dict:
+    """公开包装：供管理后台等外部模块调用的 dry_run 长期积压提醒字段。
+
+    R18-P3：原先 admin_strm_gen 直接跨模块调私有函数 _dry_run_stale_info，
+    破坏封装。外部一律走这个公开入口。
+    """
+    return _dry_run_stale_info(db, stats)
+
+
 def prune_max_ratio(db) -> float:
     """单轮删除 ≥ 状态总行数此比例 → 整批中止。默认 0.2，钳制在 (0, 1]。"""
     try:
@@ -975,11 +984,12 @@ def _prune_doomed(db, doomed: list[tuple[str, str]], state: dict,
     预算不通过 → 整批中止，一条都不删（all-or-nothing per run）。
     track_backlog: 是否维护 dry_run 积压时间戳（R10）——只有生成管线设 True，
     orphan 复核路径不碰（它的 would-delete 不进缺集报告，别干扰"持续"口径）。
+    注意：R18-P2 起语义收敛——这里只做 touch(True)（出现积压即记起始时间）；
+    清零统一由 _run_generation_inner 在轮尾根据本轮 stats 一次性判断，避免
+    全量轮里"墓碑路径先 touch(True)、stale 路径空分支又误清"重启 3 天时钟。
     """
     doomed_count = len(doomed)
     if doomed_count == 0:
-        if track_backlog:
-            _dry_run_backlog_touch(db, False)  # 本轮无待删：would-delete 积压清零
         return
     ok, reason = _prune_budget_ok(db, doomed_count, videos_seen)
     if not ok:
@@ -1547,6 +1557,16 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         # 兼容旧统计口径：pruned = 本轮实际删除数
         stats["pruned"] = stats.get("tombstoned", 0)
 
+        # R18-P2：dry_run 积压时间戳清零收敛到轮级别 —— 本轮没有任何
+        # would-delete（墓碑路径与 stale 路径都没产生）才清掉起始时间。
+        # 旧实现在 _prune_doomed 按"调用"清零：全量轮里墓碑路径 touch(True)
+        # 后、stale 路径走空分支被误清，R10 黄条提醒的 3 天时钟被错误重启。
+        # 真删/干关（prune_would_delete 未写入）同样落到这里清掉旧时间戳，
+        # 顺带消掉 CONFIG_DRY_RUN_BACKLOG_SINCE 残留脏数据（R18 后端 P3）。
+        _would = stats.get("prune_would_delete") or {}
+        if not (_would.get("count") or 0):
+            _dry_run_backlog_touch(db, False)
+
     _set_progress(phase="done", current="")
     logger.info("strm_gen: 完成 %s", stats)
 
@@ -1843,8 +1863,13 @@ def run_orphan_drive_check(db) -> dict:
                 continue
             except PermissionError:
                 # 401：token 失效，换 SA 重试一次
+                # R18-P3：只在"还要重试"时才取新 token——旧实现 attempt==1 时
+                # 先取了第三个 SA 的 token 又直接 break，白白烧掉一次 SA 轮换位。
+                if attempt == 1:
+                    note = "token 失效"
+                    break
                 token = dc._get_token()
-                if not token or attempt == 1:
+                if not token:
                     note = "token 失效"
                     break
                 continue

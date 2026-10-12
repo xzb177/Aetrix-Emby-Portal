@@ -1657,6 +1657,7 @@ function typeLabel(t: string): string {
             :last-scan-text="l.last_scan_at ? `上次扫描 ${fmtDate(l.last_scan_at)}` : '尚未扫描'"
             :scan-error="scanError(l)"
             :reach-message="libReach(l)?.level === 'bad' ? libReach(l)?.message : ''"
+            :reach-fix="libReach(l)?.level === 'bad' ? libReach(l)?.fix : ''"
             :cover-uploading="coverUploading[l.id]"
             @cover-upload="(opts) => requestCoverUpload(l, opts)"
             @cover-remove="removeCover(l)"

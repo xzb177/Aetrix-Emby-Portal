@@ -747,8 +747,12 @@ class TestReview709Fixes:
         sg._prune_doomed(memdb, [("r1", "s1")], {}, "/tmp", stats, 5)
         assert stats["prune_would_delete"]["count"] == 1
         assert kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "")
-        # 本轮无待删 → 积压清零
+        # R18-P2：_prune_doomed 只负责 touch(True)，空调用不再按"调用"清零；
+        # 清零统一收敛到 _run_generation_inner 轮尾（按本轮 stats 判断）。
         sg._prune_doomed(memdb, [], {}, "/tmp", {}, 5)
+        assert kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "") != ""
+        # 轮尾清零路径：本轮无 would-delete → 时间戳被清掉
+        sg._dry_run_backlog_touch(memdb, False)
         assert kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "") == ""
 
     def test_dry_run_stale_warning(self, memdb, cfg, kvstore, monkeypatch):

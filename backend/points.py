@@ -56,12 +56,21 @@ def award_chat_points(db: Session, user_id: int) -> int:
         return 0
 
     cap = _get_int(db, "points_chat_daily_cap", 20)
+    if cap < 0:
+        # R18-P3：与 per_msg 同口径——负数记日志回落默认 20。旧实现 earned_today>=cap
+        # 恒成立（earned_today>=0 > 负 cap），奖励被静默永久关闭且无日志，配错了都不知道。
+        logger.warning("points_chat_daily_cap 配置为负数 %s，已回落默认值 20", cap)
+        cap = 20
     per_msg = _get_int(db, "points_chat_per_msg", 1)
     # P2 修复（完美审查 B-P2-5）：负配置会反向扣分——非法值记日志回落默认；
     # 0 视为关闭奖励，直接返回。
     if per_msg < 0:
         logger.warning("points_chat_per_msg 配置为负数 %s，已回落默认值 1", per_msg)
         per_msg = 1
+    if per_msg == 0:
+        # R18-P3：奖励关闭的早退移到行锁 + SUM 查询之前——读配置不需要锁，
+        # 每条聊天消息白拿一次 FOR UPDATE 行锁是纯浪费。
+        return 0
 
     # P2 修复（审查）：每日上限是"先 SUM 后判"，并发两请求都读到同一旧用量、
     # 都判定未超限 → 超发。先锁用户行再统计（与红包频率检查同口径）。
@@ -74,11 +83,6 @@ def award_chat_points(db: Session, user_id: int) -> int:
         models.PointsLog.amount > 0,
         models.PointsLog.created_at >= today,
     ).scalar() or 0
-
-    if per_msg == 0:
-        # 奖励已关闭：同样要结束事务再返回（行锁已持有）。
-        db.rollback()
-        return 0
 
     if earned_today >= cap:
         # P2 修复（完美审查 B-P2-4）：上限分支也要先 rollback 再返回——

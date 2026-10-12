@@ -2532,10 +2532,18 @@ def grant_welfare(db, user, channel, days, granted_by=None):
     - 若连续 5 次 CAS 失败则抛出 RuntimeError。
     """
     uid = user.id
+    # R18-P3：类型归一——days 为真值非数字（如字符串 "-5"）时，旧 `days < 0`
+    # 在 Python 3 会抛 TypeError 而非 ValueError。先做类型归一：数字字符串
+    # 转 int，转不动则按非法输入拒绝。当前调用方（welfare_admin 的 ge=0 校验、
+    # redeem_welfare 只传 7/30、单测传 -5 int）均无字符串调用路径，此为纵深防御。
+    if isinstance(days, str):
+        days = days.strip()
+        try:
+            days = int(days)
+        except ValueError:
+            raise ValueError("days 必须为数字")
     days = days or 0
-    # P2 修复（完美审查 B-P2-1）：纵深防御——负数是真值会原样通过，
-    # days > 0 为假时 new_expires=None → 永不过期。直接拒绝。
-    if days < 0:
+    if not isinstance(days, (int, float)) or days < 0:
         raise ValueError("days 不能为负数")
 
     new_expires = None

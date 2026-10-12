@@ -18,6 +18,8 @@ defineProps<{
   lastScanText: string
   scanError?: string
   reachMessage?: string
+  /** 播放风险"改法"（对应旧 reachTitle 的 verdict.fix；与 reachMessage 拼成悬停说明） */
+  reachFix?: string
   coverUploading?: boolean
 }>()
 
@@ -90,20 +92,20 @@ const emit = defineEmits<{
         <span v-else class="lib-time">{{ lastScanText }}</span>
       </div>
       <div v-if="scanError" class="scan-error" :title="scanError">{{ scanError }}</div>
-      <div v-else-if="reachMessage" class="scan-error">播放风险：{{ reachMessage }}</div>
+      <div v-else-if="reachMessage" class="scan-error" :title="[reachMessage, reachFix].filter(Boolean).join(' ｜ ')">播放风险：{{ reachMessage }}</div>
     </div>
 
     <div class="lib-foot">
-      <el-button size="small" type="primary" plain title="增量扫描" @click="emit('scan')">
+      <el-button size="small" type="primary" plain title="增量扫描：只处理新增/改过的文件，没变化的跳过。日常用这个。" @click="emit('scan')">
         <ScanSearch :size="13" />扫描
       </el-button>
-      <el-button size="small" plain title="全量扫描" @click="emit('scan-full')">
+      <el-button size="small" plain title="全量扫描：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。" @click="emit('scan-full')">
         <RefreshCcw :size="13" />全量扫描
       </el-button>
-      <el-button size="small" plain title="刷新元数据" @click="emit('rescrape')">
+      <el-button size="small" plain title="刷新已有条目的元数据（不扫描新文件）" @click="emit('rescrape')">
         <RefreshCw :size="13" />刷新元数据
       </el-button>
-      <el-button size="small" plain title="识别" @click="emit('identify')">
+      <el-button size="small" plain title="手动识别：跳到「元数据来源」页直接绑定 TMDB / IMDb ID" @click="emit('identify')">
         <Search :size="13" />识别
       </el-button>
       <el-button size="small" plain @click="emit('settings')">
@@ -133,20 +135,54 @@ const emit = defineEmits<{
 .lib-cover { position: relative; aspect-ratio: 16 / 9; background: var(--el-fill-color-light); }
 .lib-cover img { width: 100%; height: 100%; object-fit: cover; }
 .lib-cover-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--el-text-color-secondary); }
-.lib-cover-shade { position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,.35), transparent 50%); pointer-events: none; }
-.lib-cover-badges { position: absolute; top: 8px; left: 8px; display: flex; gap: 4px; }
+/* P2-1：删除 scoped .lib-cover-shade 复写，沿用全局 EmbyAdmin.css 的顶部保护层 */
+.lib-cover-badges { position: absolute; top: 8px; left: 8px; right: 58px; display: flex; gap: 4px; flex-wrap: wrap; }
 .mini-badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; background: rgba(0,0,0,.55); color: #fff; }
 .mini-badge.ok { background: var(--el-color-success); }
 .mini-badge.off { background: var(--el-color-info); }
 .lib-cover-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
-.lib-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.lib-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .lib-head { display: flex; justify-content: space-between; align-items: center; }
-.lib-name { font-weight: 600; }
+/* P2-5：旧规则全文（衬线标题 + 单行省略） */
+.lib-name {
+  font-family: var(--au-font-serif);
+  font-weight: 700; font-size: var(--font-size-lg); color: var(--au-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .lib-meta { font-size: 12px; color: var(--el-text-color-secondary); }
 .lib-facts { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+/* P2-9：.fact 基类旧规则全文 */
+.fact {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--font-size-xs); color: var(--au-text-2);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .fact.warn { color: var(--el-color-warning); }
-.lib-summary { font-size: 12px; color: var(--el-text-color-secondary); }
-.lib-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 12px; }
+/* P2-6：旧全局芯片规则全文（scoped 覆盖全局，故写完整） */
+.lib-summary {
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--au-text-3);
+  padding: 5px 8px;
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* P2-4：旧规则全文（两端对齐 + 顶部发丝线），以旧规则为准 */
+.lib-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;
+  margin-top: 4px; padding-top: 12px;
+  border-top: 1px solid var(--au-border);
+}
+/* P2-7：旧 .lib-live 规则全文 */
+.lib-live {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--font-size-xs); color: var(--au-info);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* P2-8：旧 .lib-time 规则全文 */
+.lib-time { font-size: var(--font-size-xs); color: var(--au-text-4); }
 .scan-error { font-size: 12px; color: var(--el-color-danger); }
 .scan-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--el-color-success); margin-right: 4px; }
 .scan-dot.is-queued { background: var(--el-color-warning); }

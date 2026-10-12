@@ -136,7 +136,11 @@ def _is_private_ip(ip: str) -> bool:
     return addr.is_private or addr.is_loopback
 
 
-def _valid_ip(ip: str) -> bool:
+def is_valid_ip(ip: str) -> bool:
+    """公开工具：校验字符串是否为合法 IPv4/IPv6 地址。
+
+    R18-P3：原为私有 _valid_ip，被 ratelimit 跨模块引用；公开化以正名。
+    """
     try:
         ipaddress.ip_address(ip)
         return True
@@ -280,7 +284,7 @@ class CloudflareIPMiddleware:
                         real_ip = hops[-1] if hops else ""
                     except Exception:
                         real_ip = ""
-            if real_ip and _valid_ip(real_ip) and not _spoofable_target(real_ip):
+            if real_ip and is_valid_ip(real_ip) and not _spoofable_target(real_ip):
                 port = client[1] if isinstance(client, (list, tuple)) and len(client) > 1 else 0
                 scope["client"] = (real_ip, port)
                 # 给下游留个标记：这个 IP 是代理头还原的

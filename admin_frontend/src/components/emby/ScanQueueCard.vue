@@ -97,13 +97,52 @@ const emit = defineEmits<{
 
 <style scoped>
 .queue-card { content-visibility: auto; contain-intrinsic-size: auto 240px; }
+/* R18-P2-9 姊妹项：模板用了 .fact 但本组件无基类定义（旧规则留在了父 EmbyAdmin.vue
+   scoped 里，跨组件失效）。与 LibraryCard 的 P2-9 同一条旧规则。 */
+.fact {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: var(--font-size-xs); color: var(--au-text-2);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .queue-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.queue-col-title { font-weight: 600; margin-bottom: 8px; }
-.queue-row { padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+/* P2-11：旧 .queue-col 规则全文 */
+.queue-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+/* P2-11：旧 .queue-col-title 规则全文 */
+.queue-col-title { font-size: var(--font-size-xs); color: var(--au-text-3); letter-spacing: 0.04em; }
+/* P2-11：旧 .queue-col-title--split 规则全文 */
+.queue-col-title--split { display: flex; align-items: center; justify-content: space-between; }
+/* P2-11：旧圆角卡片行规则全文 */
+.queue-row {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
+  min-width: 0;
+}
 .queue-row-head { display: flex; align-items: center; gap: 8px; }
-.queue-name { font-weight: 500; }
-.queue-row-sub { font-size: 12px; color: var(--el-text-color-secondary); }
-.queue-empty { font-size: 13px; color: var(--el-text-color-secondary); padding: 8px 0; }
+/* P2-11：deep 规则恢复（取消按钮右对齐） */
+.queue-row-head :deep(.el-button) { margin-left: auto; }
+/* P2-11：旧 .queue-name 规则，保留新组件 font-weight: 500 */
+.queue-name {
+  font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* P2-11：旧 .queue-row-sub 规则 + warn/danger 变体（模板在用） */
+.queue-row-sub {
+  font-size: 12px; color: var(--el-text-color-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.queue-row-sub.warn { color: var(--au-warning); }
+.queue-row-sub.danger { color: var(--au-danger); }
+/* P2-11：旧 .queue-empty 虚线框居中规则全文 */
+.queue-empty {
+  padding: 14px 10px;
+  border: 1px dashed var(--au-border);
+  border-radius: var(--au-r-md);
+  text-align: center;
+  font-size: var(--font-size-xs); color: var(--au-text-4);
+}
 .mini-badge { padding: 1px 6px; border-radius: 4px; font-size: 11px; background: var(--el-fill-color); }
 .mini-badge.scanning { background: var(--el-color-primary-light-9); color: var(--el-color-primary); }
 @media (max-width: 900px) { .queue-grid { grid-template-columns: 1fr; } }

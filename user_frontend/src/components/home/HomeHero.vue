@@ -84,16 +84,77 @@ const emit = defineEmits<{
   overflow: hidden;
   color: #fff;
 }
-.hero-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.hero-shade { position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,.85) 0%, rgba(0,0,0,.3) 50%, transparent); }
-.hero-grain { position: absolute; inset: 0; pointer-events: none; opacity: .15; }
+/* P3-11：背景海报取景"偏上 30%"（人物脸部优先）+ max-width 复位（旧 HomeView.vue 第 1217-1225 行） */
+.hero-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; object-fit: cover; object-position: center 30%; }
+/* P2-14：背景图上叠三层（都是写死的暖黑，不跟主题）：
+   暗角（影院感，先画）+ 自左向右压暗（文字区可读）+ 自上而下由透明压到 0.92（底部文字与按钮行落在近黑上） */
+.hero-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 90% 75% at 50% 42%, transparent 58%, rgba(5, 4, 3, 0.42) 100%),
+    linear-gradient(90deg, rgba(12, 10, 9, 0.55) 0%, rgba(12, 10, 9, 0.2) 55%, transparent 85%),
+    linear-gradient(180deg, transparent 0%, rgba(12, 10, 9, 0.35) 40%, rgba(12, 10, 9, 0.92) 100%);
+}
+/* P2-13：胶片颗粒——<5% 的噪点是"高级感"和"塑料感"的分界线（旧第 1242-1249 行，SVG 噪点 data-URI 全文） */
+.hero-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E");
+}
 .hero-inner { position: relative; z-index: 1; padding: 40px 0; }
-.hero-feature, .hero-title { font-family: "Noto Serif SC", serif; font-size: clamp(28px, 5vw, 48px); margin: 8px 0; }
+/* P3-12：衬线走 token，不 hardcode 字体栈 */
+.hero-feature, .hero-title { font-family: var(--au-font-serif); font-size: clamp(28px, 5vw, 48px); margin: 8px 0; }
 .hero-meta, .hero-whisper, .hero-status { margin: 6px 0; }
 /* 问候低语：长短两版，默认显示长版，窄屏切短版（从 HomeView 迁移，#706 抽组件时遗漏导致两版同时显示） */
 .whisper-short { display: none; }
 .hero-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,.15); font-size: 12px; margin-right: 8px; }
 .hero-cta { display: flex; gap: 12px; margin-top: 16px; }
+/* P1-3：描边 CTA（land-book 暗色 Hero 三件套）：平时只描边，hover 才填色。
+   全页的主按钮只有一个琥珀实心（未开通的"立即开通"），已开通页这个描边的是唯一 CTA（旧第 1349-1373 行全文） */
+.hero-cta-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 1.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--au-always-light);
+  text-decoration: none;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid rgba(243, 237, 228, 0.45);
+  border-radius: var(--au-r-md);
+  transition:
+    background var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease);
+}
+.hero-cta-outline:hover {
+  background: var(--au-always-light);
+  border-color: var(--au-always-light);
+  color: var(--au-always-dark);
+}
+.hero-cta-outline:active {
+  transform: scale(0.97);
+}
+/* P2-27：「连接教程」次级文字链——44px 触控行高 + 次级色 + 悬停变琥珀（旧第 1475-1485 行全文） */
+.hero-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  min-height: 44px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--au-text-2);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
+}
+.hero-link:hover { color: var(--au-primary); }
 .hero-steps { display: flex; gap: 16px; list-style: none; padding: 0; margin: 16px 0 0; }
 .step-num { display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,.2); font-size: 12px; margin-right: 6px; }
 .hero-enter { opacity: 0; transform: translateY(8px); }

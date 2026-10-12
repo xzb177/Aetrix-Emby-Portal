@@ -62,7 +62,9 @@ const router = useRouter()
       description="了解可选方案"
     >
       <template #action>
-        <button class="btn primary" @click="router.push('/store')">查看订阅方案</button>
+        <!-- P1-2：改用全局 .btn-primary（styles/index.css:160，琥珀实心 + --au-on-primary 文，
+             与旧 ProfileView .btn.primary 语义一致；.btn 基类自带 font-weight:600） -->
+        <button class="btn btn-primary" @click="router.push('/store')">查看订阅方案</button>
       </template>
     </EmptyState>
 
@@ -86,13 +88,44 @@ const router = useRouter()
 </template>
 
 <style scoped>
-.pane { content-visibility: auto; contain-intrinsic-size: auto 200px; }
+/* 卡片容器：旧 ProfileView.vue .pane 全文（min-width/padding/background/border/radius/animation），
+   合并保留 content-visibility 性能行；@keyframes pane-in 一并迁入（旧文件第 1023-1026 行），
+   全局样式无此 keyframes，不迁则 animation 失效 */
+.pane {
+  min-width: 0;
+  padding: 1.25rem;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  animation: pane-in 0.45s var(--au-ease) both;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}
+@keyframes pane-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
 .pane-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .pane-title { display: flex; align-items: center; gap: 8px; font-size: 16px; margin: 0; }
-.sub-active { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-radius: 8px; background: var(--au-surface); }
-.sub-active.warn { border: 1px solid var(--au-warning); }
-.sub-plan { font-weight: 600; }
-.sub-end { font-size: 13px; color: var(--au-text-3); }
+/* P2-25：旧 ProfileView.vue 第 1407-1436 行全文——生效中琥珀底高亮、临期整块换警示底色 */
+.sub-active {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-md);
+}
+/* 临期状态：整块底色换成警示色，避免"还剩 3 天"淹没在常规配色里 */
+.sub-active.warn {
+  background: var(--au-warning-soft);
+  border-color: var(--au-warning-soft);
+}
+/* P3-13：等宽数字（倒计时不抖动） */
+.sub-plan { font-weight: 600; color: var(--au-text); font-variant-numeric: tabular-nums; }
+.sub-end { margin-top: 0.125rem; font-size: 0.8125rem; color: var(--au-text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sub-warn { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--au-warning); margin: 6px 0 0; }
 .badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; }
 .badge.ok { background: var(--au-success-soft); color: var(--au-success); }
@@ -103,4 +136,17 @@ const router = useRouter()
 .sub-history-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--au-border); font-size: 13px; }
 .sub-history-date { color: var(--au-text-3); margin-left: auto; }
 .text-btn.danger { color: var(--au-danger); background: none; border: none; cursor: pointer; }
+/* P2-26：公益服状态块三条旧规则全文（ProfileView.vue 第 1087 / 1050 / 1469-1473 行） */
+.sub-free { display: flex; flex-direction: column; gap: 0.375rem; align-items: flex-start; }
+.pane-empty {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--au-text-3);
+}
+.sub-realm {
+  font-style: normal;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+}
 </style>
