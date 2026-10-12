@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from backend import admin_roles, models
 from backend.database import get_db
-from backend.security import resolve_jwt_user_id
+from backend.security import decode_token, enforce_token_freshness
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +67,18 @@ def get_current_admin(
             detail="未提供认证凭证",
         )
 
-    user_id = resolve_jwt_user_id(credentials.credentials)
-    if user_id is None:
+    # P0-1 修复：解码一次拿到 payload，后面直接做新鲜度检查，避免重复验签。
+    # 此前这里只验签名/过期，不检查 jti 吊销与 token_version，
+    # 改密/登出后旧 token 在管理后台全部继续有效。
+    payload = decode_token(credentials.credentials, expected_type="access")
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效或已过期的凭证",
+        )
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效或已过期的凭证",
@@ -85,6 +95,10 @@ def get_current_admin(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理员已被禁用",
         )
+
+    # P0-1 修复：与用户端同一套新鲜度检查（jti 吊销表 + token_version）。
+    # 改密/登出后旧 token 在这里同样作废，不许出现"部分接口仍认旧 token"。
+    enforce_token_freshness(db, payload, user)
 
     # 角色判定：只读角色不能写；运营角色不能改系统设置 / 上游 Key / 策略 / 管理员本身
     admin_roles.ensure_admin_allowed(request, user)

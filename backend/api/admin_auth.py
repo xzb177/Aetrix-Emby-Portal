@@ -163,13 +163,68 @@ def admin_change_password(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """管理员修改自己的登录密码"""
+    """管理员修改自己的登录密码
+
+    P0-1 修复：改密后旧 token 必须全部作废（token_version+1），与用户端改密同口径。
+    否则被盗的管理员账号即使改密，攻击者手里的 access/refresh token 仍继续有效，
+    "改密"这个安全动作在管理员面就是空转。
+    """
     if not verify_password(request.old_password, current_admin.password_hash):
         raise HTTPException(status_code=400, detail="原密码错误")
 
     current_admin.password_hash = hash_password(request.new_password)
-    db.commit()
-
-    _audit(db, current_admin, "admin_change_password", "self", current_admin.id)
+    # 改密后旧 token 全部作废：版本号+1，get_current_admin 的新鲜度检查会拒绝旧 tv 的 token
+    current_admin.token_version = int(current_admin.token_version or 0) + 1
+    # 审计与密码修改在同一个事务里提交，避免"密码已改但审计丢失"（双 commit 问题）
+    _audit(db, current_admin.id, "admin_change_password", "self", current_admin.id)
     db.commit()
     return {"success": True, "message": "密码修改成功"}
+
+
+class AdminLogoutRequest(BaseModel):
+    # 可选：一并吊销的 refresh token（jti 进吊销表）。不传则只吊销当前 access token。
+    refresh_token: str | None = None
+
+
+@admin_router.post("/auth/logout")
+def admin_logout(
+    http_request: Request,
+    body: AdminLogoutRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """管理员登出：吊销当前 access token 的 jti（服务端生效）。
+
+    P0-1 修复：此前管理后台没有登出接口，"登出"只是前端清 localStorage，
+    服务端无吊销能力，偷到的 token 在过期前一直有效。现在与用户端
+    /api/user/auth/logout 同口径：登出是安全动作，必须服务端生效。
+
+    如请求体附带 refresh_token，一并吊销（防"已登出"的会话被 refresh 续签）。
+    只吊销属于当前管理员自己的 refresh token，防止跨用户吊销。
+    """
+    from backend.security import decode_token, revoke_jti
+
+    # 登出是安全动作，记审计（与 change-password 同口径；revoke_jti 内部会 commit，
+    # 无 token 可吊销时靠最后的显式 commit 落盘，避免"已登出但无审计"）
+    _audit(db, current_admin.id, "admin_logout", "self", current_admin.id)
+
+    auth = http_request.headers.get("Authorization", "")
+    token = auth[7:] if auth.lower().startswith("bearer ") else ""
+    if token:
+        payload = decode_token(token, expected_type="access")
+        if payload:
+            revoke_jti(db, payload.get("jti"), current_admin.id, reason="admin_logout")
+
+    if body.refresh_token:
+        payload = decode_token(body.refresh_token, expected_type="refresh")
+        if payload:
+            try:
+                refresh_user_id = int(payload.get("sub"))
+            except (TypeError, ValueError):
+                refresh_user_id = None
+            # 只允许吊销自己的 refresh token
+            if refresh_user_id == current_admin.id:
+                revoke_jti(db, payload.get("jti"), current_admin.id, reason="admin_logout")
+
+    db.commit()  # 无 token 可吊销时，审计记录靠这里落盘（有 revoke 时已在内部提交，这里是 no-op）
+    return {"success": True, "message": "已登出"}
