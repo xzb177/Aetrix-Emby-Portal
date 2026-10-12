@@ -3518,7 +3518,10 @@ SCAN_RUN_KEEP = int(os.getenv("EMBY_SCAN_HISTORY", "20"))
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
 SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scraped",
                    "repaired", "unchanged", "resurrected", "removal_skipped",
-                   "failed_roots", "duplicate_files", "duration_ms", "sources")
+                   "failed_roots", "duplicate_files", "duration_ms", "sources",
+                   # 删除保护拦截原因：finish_scan 的 error 兜底链 + _scan_metrics
+                   # 对外口径都依赖它，不进白名单就落不了库（v2.55.x 修复）
+                   "removal_guard")
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
@@ -3620,6 +3623,9 @@ def encode_scan_stats(stats: Optional[dict]) -> Optional[str]:
         if "failed_roots" in out:
             out["failed_roots"] = [str(r)[:SCAN_SOURCE_TEXT_MAX]
                                    for r in (out.get("failed_roots") or [])][:20]
+        if "removal_guard" in out:
+            # 与 scan_error 列同口径截断：超长拦截原因不撑爆统计 JSON
+            out["removal_guard"] = str(out.get("removal_guard") or "")[:500]
         if "sources" in out:
             out["sources"] = _encode_scan_sources(out.get("sources"))
         return json.dumps(out, ensure_ascii=False, sort_keys=True)
@@ -3653,6 +3659,10 @@ def _scan_metrics(stats: dict) -> dict:
         "resurrected": int(stats.get("resurrected") or 0),
         "removal_skipped": bool(stats.get("removal_skipped")),
         "failed_roots": list(stats.get("failed_roots") or []),
+        # 删除保护拦截原因（v2.55.x）：本轮没删任何东西是因为被拦了，而不是
+        # "库里本来就空"。finish_scan() 已把该原因写进 error 兜底链，这里单独
+        # 暴露给排障/接口调用方，避免再出现"有写入、零读取"的死字段。
+        "removal_guard": stats.get("removal_guard") or "",
         # 按来源拆分的明细：只记失败来源的话，「挂载在、但一条文件都没有」这种
         # （挂载点被清空 / 账号范围变了 / 路径写错了但目录存在）根本看不出来
         "sources": [s for s in (stats.get("sources") or []) if isinstance(s, dict)],
@@ -3910,7 +3920,11 @@ def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]
     status = SCAN_STATUS_PARTIAL if stats.get("removal_skipped") else SCAN_STATUS_SUCCESS
     error = None
     if status == SCAN_STATUS_PARTIAL:
+        # 删除保护拦截时优先展示真实拦截原因（removal_guard），而不是误导性的
+        # 兜底文案——failed_roots 为空不代表"没有可用来源"，可能只是"一个文件
+        # 都没看到但库里有旧条目"，这时 guard 里有真正的事故形状描述。
         error = "；".join(str(r) for r in (stats.get("failed_roots") or []))[:500] \
+            or (stats.get("removal_guard") or "")[:500] \
             or "媒体库没有可用来源，本轮已跳过清理"
     _write_scan_state(db, library, status, stats, error)
     # 与媒体库状态分开两次提交：流水写不进去不该影响「上一轮扫得怎么样」这条主状态
