@@ -201,6 +201,8 @@ def get_drive_bearer_token() -> str | None:
         if not token:
             # 空值不入缓存，下次调用重新尝试换取
             return None
+        latency_ms = int((time.monotonic() - now) * 1000)
+        logger.info("drive_token_mint sa=%s latency_ms=%d", email, latency_ms)
         _token_cache[email] = (token, now + _TOKEN_TTL_SECONDS)
         return token
 

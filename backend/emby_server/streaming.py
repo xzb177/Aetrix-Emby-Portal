@@ -613,20 +613,23 @@ def _signature_ttl_seconds(url: str) -> float | None:
     return best
 
 
-def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
+def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> float | None:
     """写入 Drive 跳转缓存（签名感知 TTL，P2-1）。
 
     写入前解析 Location 查询参数：若含可识别的过期字段，TTL 取
     ``min(_DRIVE_REDIRECT_CACHE_TTL, 签名剩余有效期)``；识别不出保持默认 TTL。
     签名已过期（剩余 ≤ 0）时直接放弃写入——写进去也是毒化。
+
+    返回实际写入的 TTL（float，秒）；签名已过期未写入时返回 None。
     """
     sig_ttl = _signature_ttl_seconds(final_url)
     if sig_ttl is not None and sig_ttl <= 0:
-        return
+        return None
     ttl = _DRIVE_REDIRECT_CACHE_TTL
     if sig_ttl is not None:
         ttl = min(ttl, sig_ttl)
     _redirect_cache_set(file_id, final_url, ttl=ttl)
+    return ttl
 
 
 def _maybe_cache_drive_redirect(
@@ -640,17 +643,55 @@ def _maybe_cache_drive_redirect(
 
     写入条件：file_id 非空、本次实际走了跳转（hops > 0，本次不是缓存命中）、
     落点是 drive.usercontent.google.com、终态不是 403/404/410（坏 URL 不进缓存）。
+    跳过/写入均记 INFO 结构化日志（reason=…），用于生产定位跳转缓存 100% miss 根因。
     """
     if not file_id or hops <= 0 or cached_hit:
         return
-    if terminal_status in (403, 404, 410):
-        return
+
     try:
-        if "drive.usercontent.google.com" not in (urlsplit(final_url).hostname or ""):
-            return
+        host = urlsplit(final_url).hostname or ""
     except Exception:
+        logger.info(
+            "redirect_cache_skip reason=%s file_id=%s status=%s host=%s",
+            "url_parse_error",
+            file_id,
+            terminal_status,
+            None,
+        )
         return
-    _redirect_cache_store_drive_url(file_id, final_url)
+
+    if terminal_status in (403, 404, 410):
+        logger.info(
+            "redirect_cache_skip reason=%s file_id=%s status=%s host=%s",
+            "bad_terminal_status",
+            file_id,
+            terminal_status,
+            host,
+        )
+        return
+
+    if "drive.usercontent.google.com" not in host:
+        logger.info(
+            "redirect_cache_skip reason=%s file_id=%s status=%s host=%s",
+            "hostname_mismatch",
+            file_id,
+            terminal_status,
+            host,
+        )
+        return
+
+    ttl = _redirect_cache_store_drive_url(file_id, final_url)
+    if ttl is None:
+        logger.info(
+            "redirect_cache_skip reason=%s file_id=%s status=%s host=%s sig_ttl=%s",
+            "signature_expired",
+            file_id,
+            terminal_status,
+            host,
+            _signature_ttl_seconds(final_url),
+        )
+    else:
+        logger.info("redirect_cache_write file_id=%s ttl=%.0f", file_id, ttl)
 
 
 async def _follow_redirects(
