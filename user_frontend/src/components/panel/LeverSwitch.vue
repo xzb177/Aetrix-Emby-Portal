@@ -130,4 +130,8 @@ async function flip() {
 .lever.busy {
   opacity: 0.6;
 }
+.lever:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
 </style>
