@@ -46,6 +46,14 @@ class StrmGenConfigSave(BaseModel):
         default="/media",
         description="本地数据源根目录（source_type=local 时有效）",
     )
+    drive_concurrency: int = Field(
+        default=3,
+        description="多盘并行列举并发数（1-10），默认 3（保守防风控）",
+    )
+    api_qps: float = Field(
+        default=8.0,
+        description="Drive API 全局速率上限 QPS（1.0-20.0），默认 8.0（保守）",
+    )
 
 
 class StrmGenTrigger(BaseModel):
@@ -61,6 +69,8 @@ def _read_config(db: Session) -> dict:
         "interval_minutes": _gen.interval_minutes(db),
         "source_type": _gen.source_type(db),
         "local_root": _gen.local_root(db),
+        "drive_concurrency": _gen.drive_concurrency(db),
+        "api_qps": _gen.api_qps(db),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
     }
 
@@ -91,6 +101,16 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     if st not in ("drive", "local"):
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="数据源类型只能是 drive 或 local")
+    # 并发数校验：1-10（防风控上限）
+    cc = int(body.drive_concurrency or 3)
+    if cc < 1 or cc > 10:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="并行列举并发数应在 1-10 之间")
+    # API 速率校验：1.0-20.0 QPS
+    qps = float(body.api_qps or 8.0)
+    if qps < 1.0 or qps > 20.0:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="API 速率上限应在 1.0-20.0 QPS 之间")
     # 注意：store 只有 write_values（批量写），没有 set_value；
     # 且 write_values 不自动提交，提交时机由调用方决定。
     store.write_values(db, {
@@ -101,6 +121,8 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_INTERVAL: str(iv),
         _gen.CONFIG_SOURCE_TYPE: st,
         _gen.CONFIG_LOCAL_ROOT: (body.local_root or "/media").strip(),
+        _gen.CONFIG_CONCURRENCY: str(cc),
+        _gen.CONFIG_API_QPS: str(qps),
     }, {
         _gen.CONFIG_ENABLED: ".strm 生成器总开关",
         _gen.CONFIG_SOURCE_DIR: ".strm 生成器 Drive 源目录",
@@ -109,6 +131,8 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_INTERVAL: ".strm 生成器增量间隔（分钟），0=关闭",
         _gen.CONFIG_SOURCE_TYPE: ".strm 生成器数据源类型",
         _gen.CONFIG_LOCAL_ROOT: ".strm 生成器本地源根目录",
+        _gen.CONFIG_CONCURRENCY: ".strm 生成器多盘并行列举并发数（1-10）",
+        _gen.CONFIG_API_QPS: ".strm 生成器 Drive API 全局速率上限 QPS（1.0-20.0）",
     })
     db.commit()
     return {"success": True, "config": _read_config(db)}

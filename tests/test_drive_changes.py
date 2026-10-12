@@ -788,8 +788,10 @@ def test_api_get_403_not_in_retry_list():
     """403 不在重试名单（配额类 403 由 probe 专用逻辑处理，地址无效类应快败）。"""
     assert 403 not in drive_changes.RETRYABLE_STATUS_CODES
     # 403 走 raise_for_status 原有路径（mock 的 raise_for_status 抛异常）
+    # 速率限制器 mock 掉：本测试只验证"403 不重试"，不验证限流
     with mock.patch("httpx.get", return_value=_mock_resp(403)), \
-         mock.patch.object(drive_changes.time, "sleep") as sleep:
+         mock.patch.object(drive_changes.time, "sleep") as sleep, \
+         mock.patch.object(drive_changes, "_api_limiter"):
         try:
             drive_changes._api_get("https://example.com", "tok", {})
             assert False, "应抛异常"
@@ -799,13 +801,19 @@ def test_api_get_403_not_in_retry_list():
 
 
 def test_retry_sleep_sec_bounds():
-    """退避时间有界：[0, min(60, base*2^attempt)]。"""
+    """退避时间有界（2026-10-12 新规格）：2s 起、翻倍、±20% 抖动、cap 60s。
+
+    attempt=0: [1.6, 2.4]；attempt=n: [0.8*min(60,2*2^n), 1.2*min(60,2*2^n)]。
+    下限绝不接近 0（防风控硬性要求）。
+    """
     for attempt in range(6):
+        base = min(drive_changes.API_RETRY_MAX_SEC,
+                   drive_changes.API_RETRY_BASE_SEC * (2 ** attempt))
         for _ in range(20):
             s = drive_changes._retry_sleep_sec(attempt)
-            cap = min(drive_changes.API_RETRY_MAX_SEC,
-                      drive_changes.API_RETRY_BASE_SEC * (2 ** attempt))
-            assert 0 <= s <= cap, f"attempt={attempt} 越界: {s} > {cap}"
+            assert 0.8 * base <= s <= 1.2 * base, f"attempt={attempt} 越界: {s}"
+        # 下限检查：绝不接近 0
+        assert 0.8 * base >= 1.0, f"attempt={attempt} 下限太低，有风控风险"
     # 抖动生效：多次调用结果不全相同
     samples = {drive_changes._retry_sleep_sec(3) for _ in range(20)}
     assert len(samples) > 1, "抖动未生效，退避时间完全固定"
