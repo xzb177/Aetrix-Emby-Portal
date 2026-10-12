@@ -96,6 +96,26 @@ def get_db_file_path() -> Path | None:
     return Path(db_name).resolve()
 
 
+def _is_postgres() -> bool:
+    """当前是否为 PostgreSQL 部署（E-P1-4）"""
+    try:
+        url = engine.url
+    except Exception:  # noqa: BLE001
+        return False
+    return url.drivername in ("postgresql", "postgresql+psycopg", "postgresql+psycopg2")
+
+
+def _get_pg_backup_dir() -> Path | None:
+    """PG 备份目录：环境变量 PG_BACKUP_DIR，默认 /var/backups/aetrix（E-P1-4）"""
+    d = os.getenv("PG_BACKUP_DIR", "/var/backups/aetrix")
+    try:
+        p = Path(d)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    except OSError:
+        return None
+
+
 def get_backup_dir() -> Path | None:
     """备份目录：与数据库文件同目录的 backups/。"""
     db_path = get_db_file_path()
@@ -143,6 +163,9 @@ def run_backup_now(reason: str = "manual") -> dict:
 
 def _run_backup_locked(reason: str) -> dict:
     """备份主体。调用方必须已持有 ``_BACKUP_LOCK``。"""
+    # E-P1-4：PostgreSQL 走 pg_dump 分支
+    if _is_postgres():
+        return _run_pg_backup_locked(reason)
     db_path = get_db_file_path()
     if db_path is None:
         raise RuntimeError("当前不是 SQLite 文件数据库，跳过备份（pg/mysql 请用原生工具）")
@@ -187,6 +210,72 @@ def _run_backup_locked(reason: str) -> dict:
 
     size = final_path.stat().st_size
     logger.info("数据库备份完成（%s）：%s（%.1f MB）", reason, name, size / 1024 / 1024)
+    return {"name": name, "size": size, "path": str(final_path)}
+
+
+def _run_pg_backup_locked(reason: str) -> dict:
+    """PostgreSQL 在线备份分支（E-P1-4）：pg_dump --format=custom + gzip。
+
+    用 custom 格式（二进制）而非 plain SQL：恢复时 pg_restore 可并行，
+    且不依赖 SQL 文本的版本兼容性。
+    """
+    import subprocess
+
+    backup_dir = _get_pg_backup_dir()
+    if backup_dir is None:
+        raise RuntimeError("PG 备份目录不可写（PG_BACKUP_DIR）")
+    try:
+        url = engine.url
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"读取数据库连接信息失败：{exc}") from exc
+
+    # 从 SQLAlchemy URL 提取 pg_dump 参数
+    host = url.host or "localhost"
+    port = url.port or 5432
+    dbname = url.database
+    user = url.username
+    password = url.password
+    if not dbname:
+        raise RuntimeError("无法从连接串解析数据库名")
+
+    now = datetime.now()
+    name = f"{dbname}-{now.strftime('%Y%m%d-%H%M%S')}.dump.gz"
+    final_path = backup_dir / name
+    unique = f"{os.getpid()}-{uuid.uuid4().hex[:6]}"
+    part_path = backup_dir / f".part-{unique}.dump.gz"
+
+    env = dict(os.environ)
+    if password:
+        env["PGPASSWORD"] = password
+
+    cmd = [
+        "pg_dump",
+        "-h", host, "-p", str(port),
+        "-U", user or "postgres",
+        "-F", "c",  # custom 格式
+        "-Z", "6",  # gzip 压缩级别
+        "-f", str(part_path),
+        dbname,
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=3600,
+        )
+    except FileNotFoundError:
+        # pg_dump 不可用时清理 part 文件并抛错
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError("pg_dump 未安装，无法备份 PostgreSQL") from None
+    except subprocess.TimeoutExpired:
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError("pg_dump 超时（1小时）") from None
+    if proc.returncode != 0:
+        part_path.unlink(missing_ok=True)
+        err = (proc.stderr or "")[:500]
+        raise RuntimeError(f"pg_dump 失败（exit {proc.returncode}）：{err}")
+    # 原子改名
+    os.replace(part_path, final_path)
+    size = final_path.stat().st_size
+    logger.info("PG 数据库备份完成（%s）：%s（%.1f MB）", reason, name, size / 1024 / 1024)
     return {"name": name, "size": size, "path": str(final_path)}
 
 
@@ -278,15 +367,16 @@ def get_config(db: Session) -> dict:
     except (TypeError, ValueError):
         keep_days = DEFAULT_KEEP_DAYS
     keep_days = max(1, min(30, keep_days))
-    supported = get_db_file_path() is not None
+    # E-P1-4：SQLite 和 PostgreSQL 都支持内置备份
+    supported = get_db_file_path() is not None or _is_postgres()
     return {
         "enabled": enabled if supported else False,
-        # 非 SQLite 部署：本模块只管 sqlite，pg/mysql 得用各自原生工具。
+        # 非 SQLite/PG 部署：本模块只管 sqlite/pg，mysql 得用原生工具。
         # 必须显式告诉前端，否则"开关打开"会被读成"有备份在跑"。
         "supported": supported,
         "unsupported_reason": (
             "" if supported
-            else "当前不是 SQLite 文件数据库，内置备份不适用（PostgreSQL 请用 pg_dump）"
+            else "当前不是 SQLite/PG 数据库，内置备份不适用"
         ),
         "time": time_str,
         "keep_days": keep_days,
@@ -385,12 +475,11 @@ def start_backup_scheduler() -> bool:
             _tick()
         # wake 被 set 时退出（仅用于测试注入，正常运行不会走到）
 
-    if get_db_file_path() is None:
-        # PG / MySQL：内置备份不适用，默认开关却是开的。与其每天 03:00 抛一次
+    if get_db_file_path() is None and not _is_postgres():
+        # 非 SQLite/PG：内置备份不适用。与其每天 03:00 抛一次
         # RuntimeError 再被吞掉，不如启动时就说清楚（前端也会拿到 supported=false）。
         logger.warning(
-            "当前不是 SQLite 文件数据库，已跳过内置定时备份调度"
-            "（PostgreSQL 请用 pg_dump 等原生工具）"
+            "当前不是 SQLite/PG 数据库，已跳过内置定时备份调度"
         )
         return False
 

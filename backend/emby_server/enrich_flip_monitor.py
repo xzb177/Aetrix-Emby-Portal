@@ -22,6 +22,11 @@ from typing import Any, Optional
 from backend.emby_server import models as em
 from backend.emby_server.env_util import env_int
 
+# F-P1-2：独立会话工厂，测试可 patch
+def _default_session_factory():
+    from backend.database import SessionLocal
+    return SessionLocal()
+
 logger = logging.getLogger(__name__)
 
 # 单次批量翻转超过该条数就告警（可配置）。100 的依据：正常扫描里
@@ -59,14 +64,25 @@ def record_flip_event(
     scan_run_id: Optional[int] = None,
     details: Optional[dict] = None,
     threshold: Optional[int] = None,
+    _session_factory=None,
 ) -> bool:
     """写一条翻转告警事件到 PG（持久化现场）。成功返回 True。
 
     写失败只记日志返回 False —— 监控不能影响业务。
+
+    F-P1-2：用独立 Session 写告警，不碰调用方的 Session。
+    原逻辑在调用方的 Session 上 commit/rollback：调用方 Session 里若有未提交的
+    业务修改，告警成功会提前提交它们，告警失败会撤销它们。
+
+    _session_factory 仅供测试注入，生产代码不传。
     """
     th = FLIP_ALERT_THRESHOLD if threshold is None else threshold
+    # F-P1-2：独立会话，调用方的 db 参数仅保留兼容性，不再使用
+    if _session_factory is None:
+        _session_factory = _default_session_factory
+    _db = _session_factory()
     try:
-        db.add(em.EnrichFlipEvent(
+        _db.add(em.EnrichFlipEvent(
             library_id=library_id,
             scan_run_id=scan_run_id,
             trigger=trigger,
@@ -74,15 +90,20 @@ def record_flip_event(
             threshold=int(th),
             details=json.dumps(details or {}, ensure_ascii=False)[:4000],
         ))
-        db.commit()
+        _db.commit()
         return True
     except Exception as exc:  # noqa: BLE001 — 监控写库失败不能拖垮业务
         logger.warning("写入 enrich 翻转告警事件失败: %s", exc)
         try:
-            db.rollback()
+            _db.rollback()
         except Exception:  # noqa: BLE001
             pass
         return False
+    finally:
+        try:
+            _db.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def alert_flip(

@@ -100,7 +100,11 @@ class TestSummarizeFlips:
 
 
 class TestRecordFlipEvent:
-    def test_writes_persistent_row(self, db, capture):
+    def test_writes_persistent_row(self, db, capture, monkeypatch):
+        # F-P1-2：record_flip_event 现用独立会话，测试时注入测试 db
+        monkeypatch.setattr(
+            fm, "_default_session_factory", lambda: db
+        )
         ok = fm.record_flip_event(
             db, flip_count=5723, trigger="scan:manual",
             library_id=7, scan_run_id=725,
@@ -129,7 +133,14 @@ class TestRecordFlipEvent:
             def rollback(self):
                 pass
 
-        ok = fm.record_flip_event(BadDB(), flip_count=5, trigger="scan")
+            def close(self):
+                pass
+
+        # F-P1-2：record_flip_event 现用独立会话，通过 _session_factory 注入 BadDB
+        ok = fm.record_flip_event(
+            None, flip_count=5, trigger="scan",
+            _session_factory=lambda: BadDB(),
+        )
         assert ok is False  # 监控失败不能抛异常拖垮业务
 
 
@@ -143,7 +154,11 @@ class TestAlertFlip:
         assert db.query(em.EnrichFlipEvent).count() == 0
         assert not any(r[0] == "warning" for r in capture)
 
-    def test_above_threshold_warns_and_persists(self, db, capture):
+    def test_above_threshold_warns_and_persists(self, db, capture, monkeypatch):
+        # F-P1-2：record_flip_event 现用独立会话，测试时注入测试 db
+        monkeypatch.setattr(
+            fm, "_default_session_factory", lambda: db
+        )
         fired = fm.alert_flip(
             db, flip_count=150, trigger="scan:manual",
             library_id=3, scan_run_id=99,
@@ -242,8 +257,14 @@ class TestMaybeAlertEnrichFlipUsesSharedAlert:
     本测试在旧代码上失败（item_types == {}），新代码上通过。
     """
 
-    def test_item_types_persisted_not_empty(self, db, capture):
+    def test_item_types_persisted_not_empty(self, db, capture, monkeypatch):
         import json
+        from backend.emby_server import enrich_flip_monitor
+
+        # F-P1-2：record_flip_event 现用独立会话，测试时注入测试 db
+        monkeypatch.setattr(
+            enrich_flip_monitor, "_default_session_factory", lambda: db
+        )
 
         stats = {
             "enrich_flips": 150,
@@ -261,8 +282,12 @@ class TestMaybeAlertEnrichFlipUsesSharedAlert:
         assert details["reasons"] == {"size_changed": 150}
         assert rows[0].trigger == "scan"
 
-    def test_alert_flip_accepts_summary(self, db, capture):
+    def test_alert_flip_accepts_summary(self, db, capture, monkeypatch):
         """alert_flip(summary=...) 跳过 summarize_flips，直接用传入的摘要。"""
+        # F-P1-2：record_flip_event 现用独立会话，测试时注入测试 db
+        monkeypatch.setattr(
+            fm, "_default_session_factory", lambda: db
+        )
         fired = fm.alert_flip(
             db, flip_count=150, trigger="scan",
             summary={"reasons": {"size_changed": 150},
