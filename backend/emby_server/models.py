@@ -417,6 +417,14 @@ class PlaybackSession(Base):
 
     __tablename__ = "emby_playback_sessions"
 
+    # 复合索引 (ended_at, last_update_at)：janitor 每 10 分钟执行
+    #   WHERE ended_at IS NULL AND last_update_at < cutoff
+    # ended_at 作为等值前缀、last_update_at 作为范围后缀，可命中索引范围扫描，
+    # 避免表增长后全表扫描。
+    __table_args__ = (
+        Index("ix_emby_playback_sessions_ended_last_update", "ended_at", "last_update_at"),
+    )
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_key = Column(String(64), unique=True, index=True)
     user_id = Column(Integer, ForeignKey("web_users.id"))

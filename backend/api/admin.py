@@ -1404,12 +1404,22 @@ def get_admin_logs(
 
     logs = query.order_by(models.AdminLog.created_at.desc()).limit(min(limit, 500)).all()
 
+    # F-P1-1: 批量预加载操作人，修复 N+1（原实现循环内每条日志查一次 WebUser，最多 501 次 DB 往返）
+    # 去重并排除 None，避免无效 id 进入 IN 条件
+    admin_ids = {log.admin_user_id for log in logs if log.admin_user_id is not None}
+    operators = {}
+    if admin_ids:
+        # 仅在非空时查询，避免生成 IN () 语法；整批只查一次
+        operators = {
+            u.id: u
+            for u in db.query(models.WebUser).filter(models.WebUser.id.in_(admin_ids)).all()
+        }
+
     result = []
     for log in logs:
         # 统一账号体系后 admin_user_id 存 WebUser.id
-        operator = db.query(models.WebUser).filter(
-            models.WebUser.id == log.admin_user_id
-        ).first()
+        # F-P1-1: 改为内存映射取值，无额外 DB 查询
+        operator = operators.get(log.admin_user_id)
 
         result.append({
             "id": log.id,

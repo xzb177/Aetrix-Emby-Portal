@@ -17,11 +17,13 @@ Jellyfin 式按需转码的最小可用实现：
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import shutil
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -31,6 +33,11 @@ from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
+
+# D-P1-1：转码槽位互斥锁。
+# 只保护「检查限额 → 登记 _TRANSCODE_PROCS → 启动 ffmpeg」这段临界区，
+# 不覆盖转码全过程，避免锁粒度放大把并发转码串行化。
+_transcode_slot_lock = threading.Lock()
 
 # 2026-10 简化：删除服务端三档转码（480p/720p/1080p）。
 # 转码参数由客户端在 PlaybackInfo/播放请求里指定，服务端只管"转不转、转几路"，
@@ -136,8 +143,10 @@ def live_transcode_count() -> int:
 def ensure_slot_or_503() -> None:
     """转码入场检查：达到并发上限就 503，让客户端降级走直连。
 
-    这里只做「检查时」的判定（与 ``playback_policy.ensure_transcode_allowed``
-    同口径，接受瞬时竞态；持续超限由 ``enforce_transcode_capacity`` 回收闲置）。
+    本函数只做「检查时」的判定，不持有任何锁；N 个并发请求可能同时通过
+    检查再各自 fork ffmpeg，把 CPU 打满。因此调用方必须用
+    ``transcode_slot()`` 包住「检查 → 登记 → 启动」，保证原子性。
+    持续超限由 ``enforce_transcode_capacity`` 回收闲置。
     """
     limit = max_concurrent()
     running = live_transcode_count()
@@ -153,6 +162,28 @@ def ensure_slot_or_503() -> None:
             status_code=503,
             detail=f"转码忙（{running}/{limit} 路），请使用直连播放",
         )
+
+
+@contextlib.contextmanager
+def transcode_slot():
+    """转码槽位入场（原子）：检查限额 → 登记 → 启动 ffmpeg。
+
+    用法::
+
+        with transcode_slot():
+            # 只做「登记 _TRANSCODE_PROCS + 启动 ffmpeg 子进程」等快速操作
+            session_id = start_transcode(...)
+
+    原理：``ensure_slot_or_503`` 本身只做「检查时」判定，并发请求可同时
+    通过检查再各自 fork ffmpeg 打满 CPU。这里用模块级锁把「检查 → 登记
+    → 启动」串成临界区，超限请求在检查阶段即被 503。
+
+    注意：锁在 ``with`` 块内持有、退出即释放，块内必须是快速操作；若块内
+    阻塞（如 ``proc.wait()`` 等待转码结束），会把并发转码退化为串行。
+    """
+    with _transcode_slot_lock:
+        ensure_slot_or_503()
+        yield
 
 
 def _dir_size(path: str) -> int:

@@ -418,9 +418,23 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
 
+    from backend.security import (
+        enforce_token_freshness, is_jti_revoked, revoke_all_user_tokens, revoke_jti,
+    )
+
+    # A-P1-1：refresh 复用检测——旧 refresh 的 jti 已在吊销表中，
+    # 说明同一凭证被重复使用（疑似泄露），触发应急响应吊销该用户全部 token
+    old_jti = payload.get("jti")
+    if old_jti and is_jti_revoked(db, old_jti):
+        revoke_all_user_tokens(db, user.id, reason="refresh_reuse_detected")  # 内部原子 bump + commit
+        raise HTTPException(status_code=401, detail="检测到异常的刷新凭证，已吊销全部会话")
+
     # P3（审查第八批）：改密/登出后旧 refresh_token 作废，否则换新 access 形同虚设
-    from backend.security import enforce_token_freshness
     enforce_token_freshness(db, payload, user)
+
+    # A-P1-1：轮换——旧 refresh 立即进吊销表，避免同一 refresh 被无限重用
+    if old_jti:
+        revoke_jti(db, old_jti, user.id, reason="refresh_rotation")
 
     return {
         "access_token": create_access_token(user.id, {"username": user.username},
@@ -445,10 +459,12 @@ def me(
 def logout(request: Request,
            current_user: models.WebUser = Depends(get_current_user_jwt),
            db: Session = Depends(get_db)):
-    """登出：吊销当前 access token（jti 进吊销表），客户端同时清除本地 token。
+    """登出：吊销当前 access token 的 jti，并 bump token_version 使全部 refresh 失效。
 
     P2 修复（审查）：此前登出只是客户端清除，服务端无吊销能力，
     偷到的 token 在过期前一直有效。
+    A-P1-1 修复：仅吊销 access 的 jti 时 refresh 仍可无限续签，登出形同虚设；
+    此处同步 bump token_version，令该用户所有已签发的 refresh（及 access）立即失效。
     """
     from backend.security import decode_token, revoke_jti
     token = None
@@ -458,10 +474,19 @@ def logout(request: Request,
             token = auth[7:].strip()
     except Exception:
         pass
+    # 1) 吊销当前 access token，缩短其残余有效窗口
     if token:
         payload = decode_token(token, expected_type="access")
         if payload:
             revoke_jti(db, payload.get("jti"), current_user.id, reason="logout")
+    # 2) A-P1-1：bump token_version —— 该用户全部已签发 refresh 立即失效，
+    #    否则攻击者可用旧 refresh 无限换取新 access，登出形同虚设
+    try:
+        current_user.token_version = (current_user.token_version or 0) + 1
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return {"success": True, "message": "已登出"}
 
 
