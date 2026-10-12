@@ -12,10 +12,39 @@ let x = 0
 let ctx: CanvasRenderingContext2D | null = null // 缓存：不每帧调 getContext
 const data: number[] = new Array(200).fill(64)
 const STEP_MS = 90 // 与设计稿 setInterval(90ms) 同节奏
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-function draw(ts: number) {
+/** 静态心跳波形：一段基线 + 周期性搏动（减少动态偏好时画一帧，不留白） */
+function fillStaticWave() {
+  for (let i = 0; i < data.length; i++) {
+    const ph = i % 90
+    const beat = ph < 8 ? 40 * Math.sin((ph / 8) * Math.PI) : Math.sin(i / 6) * 3
+    data[i] = 64 - beat - 2
+  }
+}
+
+function paint() {
   const el = cv.value
   if (!el) return
+  if (!ctx) ctx = el.getContext('2d')
+  if (!ctx) return
+  const w = el.width
+  const h = el.height
+  ctx.clearRect(0, 0, w, h)
+  ctx.strokeStyle = '#9BE08A'
+  ctx.lineWidth = 3 * (w / (el.clientWidth || w)) // 按 DPR 换算回 CSS 像素观感
+  ctx.lineJoin = 'round'
+  ctx.beginPath()
+  data.forEach((v, i) => {
+    const px = (i / (data.length - 1)) * w
+    const py = (v / 64) * h
+    if (i === 0) ctx!.moveTo(px, py)
+    else ctx!.lineTo(px, py)
+  })
+  ctx.stroke()
+}
+
+function draw(ts: number) {
   // 页面不可见时暂停（性能纪律）
   if (document.hidden) {
     raf = requestAnimationFrame(draw)
@@ -28,23 +57,7 @@ function draw(ts: number) {
     const beat = x % 90 < 8 ? Math.random() * 50 : Math.random() * 8
     data.push(64 - beat - Math.random() * 4)
     x++
-    if (!ctx) ctx = el.getContext('2d')
-    if (ctx) {
-      const w = el.width
-      const h = el.height
-      ctx.clearRect(0, 0, w, h)
-      ctx.strokeStyle = '#9BE08A'
-      ctx.lineWidth = 3 * (w / (el.clientWidth || w)) // 按 DPR 换算回 CSS 像素观感
-      ctx.lineJoin = 'round'
-      ctx.beginPath()
-      data.forEach((v, i) => {
-        const px = (i / (data.length - 1)) * w
-        const py = (v / 64) * h
-        if (i === 0) ctx.moveTo(px, py)
-        else ctx.lineTo(px, py)
-      })
-      ctx.stroke()
-    }
+    paint()
   }
   raf = requestAnimationFrame(draw)
 }
@@ -59,16 +72,25 @@ function size() {
   el.height = Math.max(1, Math.round(rect.height * dpr))
 }
 
-onMounted(() => {
-  // 减少动态偏好：不启动动画
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+function onResize() {
   size()
-  window.addEventListener('resize', size)
+  if (reducedMotion) paint() // 静态模式 resize 后重画一帧
+}
+
+onMounted(() => {
+  size()
+  window.addEventListener('resize', onResize)
+  // 减少动态偏好：不启动动画，但画一帧静态波形，不留空白
+  if (reducedMotion) {
+    fillStaticWave()
+    paint()
+    return
+  }
   raf = requestAnimationFrame(draw)
 })
 onUnmounted(() => {
   cancelAnimationFrame(raf)
-  window.removeEventListener('resize', size)
+  window.removeEventListener('resize', onResize)
 })
 </script>
 

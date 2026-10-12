@@ -48,7 +48,7 @@ const tastes = computed(() =>
     return {
       key: o.key,
       emoji: o.emoji,
-      name: s?.name || o.key,
+      name: s?.name || '未知',
       stamped: !!s?.stamped,
     }
   }),

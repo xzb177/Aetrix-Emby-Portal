@@ -24,7 +24,7 @@
             <div class="tdate">{{ dayLabel(day.date, di) }}</div>
             <div class="cards">
               <div
-                v-for="item in day.items.slice(0, 3)"
+                v-for="item in day.items.slice(0, expanded.has(day.date) ? day.items.length : 3)"
                 :key="item.Id"
                 class="treasure"
               >
@@ -38,10 +38,10 @@
                   :class="{ on: plan.has(item.Id) }"
                   @click="togglePlan(item.Id)"
                 >
-                  {{ plan.has(item.Id) ? '已加入 ✓' : '想去' }}
+                  <span class="lbl">{{ plan.has(item.Id) ? '已加入 ✓' : '想去' }}</span>
                 </button>
               </div>
-              <div v-if="day.count > 3" class="more">还有 {{ day.count - 3 }} 件，去第三方播放器看全貌 →</div>
+              <button v-if="day.count > 3" class="more" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (day.count - 3) + ' 件，点我看全部 →' }}</button>
               <div v-if="day.items.length === 0" class="empty-day">这天营地很安静，没有新大陆</div>
             </div>
           </div>
@@ -116,6 +116,15 @@ function togglePlan(id: string) {
   if (next.has(id)) next.delete(id)
   else next.add(id)
   plan.value = next
+}
+
+/** 展开某天全部藏宝（"还有 N 件"按钮用） */
+const expanded = ref<Set<string>>(new Set())
+function toggleExpand(date: string) {
+  const next = new Set(expanded.value)
+  if (next.has(date)) next.delete(date)
+  else next.add(date)
+  expanded.value = next
 }
 
 async function load() {
@@ -199,16 +208,29 @@ onMounted(load)
 .treasure .info span { font-size: 11px; color: var(--ink2); }
 .treasure .want {
   flex-shrink: 0;
-  background: var(--paper2);
-  border: 1.5px solid var(--ink);
+  position: relative;
+  /* 透明 padding + 负 margin：视觉药丸不变，点击区纵向扩大到 44px（R22 LeverSwitch 同款手法） */
+  background: transparent;
+  border: none;
   font-size: 12px;
   font-weight: 700;
-  padding: 7px 12px;
-  border-radius: 16px;
+  padding: 13px 12px;
+  margin: -6px 0;
   cursor: pointer;
   color: var(--ink);
 }
-.treasure .want.on { background: var(--ink); color: #fff; }
+/* 视觉药丸画在 ::before 上，随 padding 偏移（上下各 6px），与原来像素一致 */
+.treasure .want::before {
+  content: "";
+  position: absolute;
+  top: 6px; right: 0; bottom: 6px; left: 0;
+  background: var(--paper2);
+  border: 1.5px solid var(--ink);
+  border-radius: 16px;
+}
+.treasure .want .lbl { position: relative; }
+.treasure .want.on { color: #fff; }
+.treasure .want.on::before { background: var(--ink); }
 .treasure.mystery { background: var(--paper2); border-style: dashed; }
 .treasure.mystery .map { filter: grayscale(1) blur(1px); }
 .treasure.mystery .info b { letter-spacing: 4px; color: var(--ink2); }
@@ -223,7 +245,13 @@ onMounted(load)
   margin-left: 6px;
   vertical-align: middle;
 }
-.more, .empty-day { font-size: 11px; color: var(--ink2); padding: 2px 0; }
+.more {
+  font-size: 11px; color: var(--ink2);
+  background: none; border: none; cursor: pointer; text-align: left;
+  /* 透明 padding + 负 margin：文案行视觉不变，点击区纵向 44px */
+  padding: 14px 0; margin: -12px 0;
+}
+.empty-day { font-size: 11px; color: var(--ink2); padding: 2px 0; }
 .plan-bar {
   position: sticky;
   bottom: 90px;

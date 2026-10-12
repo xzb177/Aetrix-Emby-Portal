@@ -52,12 +52,12 @@ export const usePanelStore = defineStore('panel', () => {
   const loadCollector = (force = false) => load(collector.value, panelApi.collector, force)
   const loadServer = (force = false) => load(server.value, panelApi.server, force)
 
-  /** 拆封：即时写后端（换设备同步），本地 optimistic 更新；返回是否成功，失败返回 false 不抛错 */
-  async function unseal(itemId: string | number): Promise<boolean> {
+  /** 拆封：即时写后端（换设备同步），本地 optimistic 更新；失败抛错（携带人话原因），调用方 toast 提示 */
+  async function unseal(itemId: string | number): Promise<void> {
     try {
       await panelApi.unseal(itemId)
-    } catch {
-      return false
+    } catch (e) {
+      throw new Error(humanizeError(e))
     }
     const data = parcels.value.data as { parcels?: Array<Record<string, unknown>> } | null
     const list = data?.parcels
@@ -66,7 +66,6 @@ export const usePanelStore = defineStore('panel', () => {
       if (hit) hit.unsealed = true
     }
     void loadToday(true) // 拆封成功后刷新 today 计数，不再等 60s TTL
-    return true
   }
 
   /** 机关拨杆：先写后端，成功后 optimistic 更新本地（失败则回滚由调用方处理） */
