@@ -224,7 +224,17 @@ def _derive_activity(db: Session) -> list:
             lines.append(f"正在消化 {backlog} 条待刮削")
         issues = h.get("issues", []) or []
         for issue in issues[:1]:
-            lines.append(str(issue)[:60])
+            # issue 是 {"level","key","message"} dict，直接 str() 会泄漏原始 dict
+            #（线上曾显示 {'level': 'down', 'key': 'enrich_backlog', ...}），只取 message
+            if isinstance(issue, dict):
+                if issue.get("key") == "enrich_backlog" and backlog:
+                    continue  # 已在上面用 backlog 行表达，避免重复
+                msg = issue.get("message") or ""
+            else:
+                msg = str(issue)
+            msg = str(msg).strip()
+            if msg:
+                lines.append(msg[:60])
     except Exception:  # noqa: BLE001
         pass
     if not lines:
