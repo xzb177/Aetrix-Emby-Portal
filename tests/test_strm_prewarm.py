@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -105,54 +104,6 @@ def test_prewarm_dedup(clean_prewarm):
 def test_prewarm_metrics_never_throws(clean_prewarm):
     sp = clean_prewarm
     assert isinstance(sp.metrics_snapshot(), dict)
-
-
-# ---------------------------------------------------------------------------
-# streaming 跳转缓存
-# ---------------------------------------------------------------------------
-
-def test_drive_file_id_extract():
-    from backend.emby_server.streaming import _drive_file_id
-    url = "https://www.googleapis.com/drive/v3/files/abc123XYZ?alt=media"
-    assert _drive_file_id(url) == "abc123XYZ"
-    assert _drive_file_id("https://example.com/x") is None
-    assert _drive_file_id("") is None
-    assert _drive_file_id("not a url") is None
-
-
-def test_redirect_cache_set_get():
-    from backend.emby_server import streaming as st
-    st._redirect_cache.clear()
-    st._redirect_cache_set("fid1", "https://usercontent/final")
-    assert st._redirect_cache_get("fid1") == "https://usercontent/final"
-    st._redirect_cache.clear()
-
-
-def test_redirect_cache_invalidate():
-    from backend.emby_server import streaming as st
-    st._redirect_cache.clear()
-    st._redirect_cache_set("fid2", "https://usercontent/final2")
-    st._redirect_cache_invalidate("fid2")
-    assert st._redirect_cache_get("fid2") is None
-    st._redirect_cache.clear()
-
-
-def test_redirect_cache_ttl_expiry():
-    from backend.emby_server import streaming as st
-    st._redirect_cache.clear()
-    # 手动写入一条已过期的
-    with st._redirect_cache_lock:
-        st._redirect_cache["fid3"] = ("https://usercontent/old", time.monotonic() - 1)
-    assert st._redirect_cache_get("fid3") is None
-    st._redirect_cache.clear()
-
-
-def test_redirect_cache_disabled_when_ttl_zero(monkeypatch):
-    from backend.emby_server import streaming as st
-    monkeypatch.setattr(st, "_DRIVE_REDIRECT_CACHE_TTL", 0.0)
-    st._redirect_cache.clear()
-    st._redirect_cache_set("fid4", "https://usercontent/x")
-    assert st._redirect_cache_get("fid4") is None
 
 
 # ---------------------------------------------------------------------------
@@ -325,17 +276,14 @@ def _make_fake_streaming_client(statuses: list):
     return FakeClient(), calls
 
 
-def test_resolve_final_url_follows_redirect_and_caches():
-    """307 跳转跟随 → 返回最终 URL → 写 P0-2 缓存 → 第二次命中缓存不再请求。"""
+def test_resolve_final_url_follows_redirect():
+    """307 跳转跟随 → 返回最终 URL（跳转缓存已删除，每次都跟随）。"""
     import backend.emby_server.streaming as st
 
     file_id = "TEST_WARM_REDIRECT_X1"
     api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
     final_url = "https://drive.usercontent.google.com/download?id=XYZ"
     orig_url = "https://example.com/movie.strm"
-
-    # 确保缓存干净
-    st._redirect_cache_invalidate(file_id)
 
     fake_client, calls = _make_fake_streaming_client([
         (307, final_url),   # 第一跳：API 地址 → 307 到 usercontent
@@ -349,22 +297,13 @@ def test_resolve_final_url_follows_redirect_and_caches():
                 # _next_redirect 的内网校验已有专门测试，这里只测跳转跟随逻辑
                 with patch("backend.emby_server.streaming._next_redirect",
                            side_effect=lambda base, loc: (urljoin(base, loc), {})):
-                    return await st.resolve_drive_final_url(orig_url, {"Authorization": "Bearer t"})
+                    return await st.resolve_drive_final_url(orig_url, {"Authorization": "Bearer <redacted>"})
 
     result = asyncio.run(run())
     assert result == final_url, f"应返回最终 URL，实际 {result}"
     # 两跳都走了
     assert calls == [api_url, final_url], f"应按顺序请求两跳，实际 {calls}"
-    # 缓存里有最终 URL
-    assert st._redirect_cache_get(file_id) == final_url
 
-    # 第二次：命中缓存，不再发起任何请求
-    calls.clear()
-    result2 = asyncio.run(run())
-    assert result2 == final_url
-    assert calls == [], f"缓存命中不应再请求，实际 {calls}"
-
-    st._redirect_cache_invalidate(file_id)
 
 
 def test_resolve_final_url_returns_none_on_redirect_loop():
@@ -373,7 +312,6 @@ def test_resolve_final_url_returns_none_on_redirect_loop():
 
     file_id = "TEST_WARM_LOOP_X2"
     api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
-    st._redirect_cache_invalidate(file_id)
 
     # 永远 307 指回自己
     fake_client, _ = _make_fake_streaming_client([(307, api_url)] * 10)
@@ -384,7 +322,6 @@ def test_resolve_final_url_returns_none_on_redirect_loop():
                 return await st.resolve_drive_final_url("https://example.com/loop.strm")
 
     assert asyncio.run(run()) is None
-    st._redirect_cache_invalidate(file_id)
 
 
 def test_resolve_final_url_returns_none_on_bad_target():
@@ -393,7 +330,6 @@ def test_resolve_final_url_returns_none_on_bad_target():
 
     file_id = "TEST_WARM_BAD_X3"
     api_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
-    st._redirect_cache_invalidate(file_id)
 
     # 307 指向内网地址，_next_redirect 会拒绝
     fake_client, _ = _make_fake_streaming_client([(307, "http://192.168.1.1/evil")])
@@ -404,4 +340,3 @@ def test_resolve_final_url_returns_none_on_bad_target():
                 return await st.resolve_drive_final_url("https://example.com/evil.strm")
 
     assert asyncio.run(run()) is None
-    st._redirect_cache_invalidate(file_id)

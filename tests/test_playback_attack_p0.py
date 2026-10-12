@@ -1,5 +1,6 @@
-"""播放链路修复（fix/playback-attack）：P0-1 跳转缓存 debug 日志 / P0-2 get_episodes
+"""播放链路修复（fix/playback-attack）：P0-2 get_episodes
 Fields=MediaSources / P1 详情页 .strm 预热。
+（P0-1 跳转缓存已删除，相关日志测试一并移除）
 
 before/after 证据：每个用例的 docstring 注明"before"在旧代码上的表现
 （旧代码上跑这些用例会失败），"after"为新行为。
@@ -7,7 +8,6 @@ before/after 证据：每个用例的 docstring 注明"before"在旧代码上的
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 
@@ -20,163 +20,6 @@ from backend.emby_server import api
 from backend.emby_server import models as em
 from tests.test_items_dedup_sql import _req, seeded  # noqa: F401  复用独立种子库
 
-STREAM_LOG = "backend.emby_server.streaming"
-
-
-def _skip_records(caplog):
-    return [r for r in caplog.records
-            if r.name == STREAM_LOG and "redirect_cache_skip" in r.getMessage()]
-
-
-def _write_records(caplog):
-    return [r for r in caplog.records
-            if r.name == STREAM_LOG and "redirect_cache_write" in r.getMessage()]
-
-
-# ---------------------------------------------------------------------------
-# P0-1：跳转缓存写入决策 debug 日志（只加日志，不改逻辑）
-# ---------------------------------------------------------------------------
-
-def test_redirect_cache_skip_logs_no_hops(caplog):
-    """before：该分支直接 return，无任何日志——生产 0 写入时无法区分原因。
-    after：记 reason=no_hops，带 file_id/hops/cached_hit/status。"""
-    import backend.emby_server.streaming as st
-    fid = "PA_LOG_NOHOPS"
-    st._redirect_cache_invalidate(fid)
-    try:
-        with caplog.at_level(logging.DEBUG, logger=STREAM_LOG):
-            st._maybe_cache_drive_redirect(
-                fid, "https://drive.usercontent.google.com/download?id=X",
-                0, False, 200)
-        recs = _skip_records(caplog)
-        assert recs, "before: 无日志，无法定位拦截分支"
-        msg = recs[0].getMessage()
-        assert "reason=no_hops" in msg, msg
-        assert fid in msg, msg
-        assert st._redirect_cache_get(fid) is None  # 逻辑不变：仍不写
-    finally:
-        st._redirect_cache_invalidate(fid)
-
-
-def test_redirect_cache_skip_logs_bad_terminal_status(caplog):
-    """before：403/404/410 分支无日志。after：记 reason=bad_terminal_status。"""
-    import backend.emby_server.streaming as st
-    fid = "PA_LOG_BADSTATUS"
-    st._redirect_cache_invalidate(fid)
-    try:
-        with caplog.at_level(logging.DEBUG, logger=STREAM_LOG):
-            st._maybe_cache_drive_redirect(
-                fid, "https://drive.usercontent.google.com/download?id=X",
-                2, False, 403)
-        recs = _skip_records(caplog)
-        assert recs, "before: 无日志，无法定位拦截分支"
-        assert any("reason=bad_terminal_status" in r.getMessage() for r in recs)
-        assert st._redirect_cache_get(fid) is None
-    finally:
-        st._redirect_cache_invalidate(fid)
-
-
-def test_redirect_cache_skip_logs_hostname_mismatch(caplog):
-    """before：hostname 拦截分支无日志（两大嫌疑之一）。
-    after：记 reason=hostname_mismatch，带实际 host + 脱敏 URL。"""
-    import backend.emby_server.streaming as st
-    fid = "PA_LOG_HOST"
-    st._redirect_cache_invalidate(fid)
-    try:
-        with caplog.at_level(logging.DEBUG, logger=STREAM_LOG):
-            st._maybe_cache_drive_redirect(
-                fid, "https://example.com/dl/x?foo=bar", 2, False, 200)
-        recs = _skip_records(caplog)
-        assert recs, "before: 无日志，无法定位拦截分支"
-        msg = recs[0].getMessage()
-        assert "reason=hostname_mismatch" in msg, msg
-        assert "example.com" in msg, msg
-        assert st._redirect_cache_get(fid) is None
-    finally:
-        st._redirect_cache_invalidate(fid)
-
-
-def test_redirect_cache_skip_logs_signature_expired(caplog):
-    """before：签名过期放弃写入分支无日志（两大嫌疑之二）。
-    after：记 reason=signature_expired，带 sig_ttl。"""
-    import backend.emby_server.streaming as st
-    fid = "PA_LOG_EXPIRED"
-    st._redirect_cache_invalidate(fid)
-    try:
-        expired = ("https://drive.usercontent.google.com/download?id=X&expires=%d"
-                   % int(time.time() - 5))
-        with caplog.at_level(logging.DEBUG, logger=STREAM_LOG):
-            st._redirect_cache_store_drive_url(fid, expired)
-        recs = _skip_records(caplog)
-        assert recs, "before: 无日志，无法定位拦截分支"
-        assert any("reason=signature_expired" in r.getMessage() for r in recs)
-        assert st._redirect_cache_get(fid) is None  # 逻辑不变：过期仍不写
-    finally:
-        st._redirect_cache_invalidate(fid)
-
-
-def test_redirect_cache_write_logs(caplog):
-    """after：成功写入记 redirect_cache_write，带 ttl/sig_ttl/脱敏 URL。"""
-    import backend.emby_server.streaming as st
-    fid = "PA_LOG_WRITE"
-    st._redirect_cache_invalidate(fid)
-    try:
-        good = "https://drive.usercontent.google.com/download?id=X"
-        with caplog.at_level(logging.DEBUG, logger=STREAM_LOG):
-            st._maybe_cache_drive_redirect(fid, good, 2, False, 200)
-        recs = _write_records(caplog)
-        assert recs, "成功写入应记一条 redirect_cache_write"
-        msg = recs[0].getMessage()
-        assert fid in msg and "ttl=" in msg, msg
-        assert st._redirect_cache_get(fid) == good  # 逻辑不变：照常写入
-    finally:
-        st._redirect_cache_invalidate(fid)
-
-
-def test_redirect_cache_logs_never_contain_secret_values(caplog):
-    """脱敏铁律（P0-2a 更新，2026-10-12）：日志只含 reason + file_id
-    （hostname_mismatch 额外带无签名的 host 供定位），不再打 URL 参数；
-    签名值/密钥绝不出现。
-
-    before：无日志可言；P0-2a 前：参数值被剥掉、只剩参数名；
-    P0-2a 起：连 URL 参数都不打，只留 reason + file_id（定位靠 reason 区分）。
-    """
-    import backend.emby_server.streaming as st
-    secret = "SECRET_SIG_VALUE_abc123xyz"  # secret-scan: allow —— 脱敏断言用的假签名值，非真实凭据
-    fid = "PA_LOG_SECRET"
-    st._redirect_cache_invalidate(fid)
-    try:
-        poisoned = ("https://other.example.com/x?signature=%s&expires=9999999999"
-                    % secret)
-        good = ("https://drive.usercontent.google.com/download?id=X&signature=%s"
-                % secret)
-        with caplog.at_level(logging.INFO, logger=STREAM_LOG):
-            st._maybe_cache_drive_redirect(fid, poisoned, 2, False, 200)
-            st._redirect_cache_store_drive_url(fid, good)
-        texts = [r.getMessage() for r in caplog.records if r.name == STREAM_LOG]
-        assert texts, "应有日志产生"
-        for t in texts:
-            assert secret not in t, f"日志泄漏签名值: {t}"
-            assert "abc123xyz" not in t, f"日志泄漏签名值片段: {t}"
-            assert "url=" not in t, f"不应再打 URL 参数: {t}"
-        joined = " ".join(texts)
-        assert "reason=hostname_mismatch" in joined, joined
-        assert "host=other.example.com" in joined, "无签名 host 应保留供定位"
-        assert "redirect_cache_write" in joined, joined
-        assert fid in joined, joined
-    finally:
-        st._redirect_cache_invalidate(fid)
-
-
-def test_desensitized_url_for_log():
-    """脱敏 helper：保留 scheme/host/path + 参数名，丢弃一切参数值。"""
-    from backend.emby_server.streaming import _desensitized_url_for_log as d
-    out = d("https://drive.usercontent.google.com/download?id=X&signature=S3CR3T&expires=123")
-    assert "S3CR3T" not in out
-    assert "drive.usercontent.google.com" in out
-    assert "signature" in out and "expires" in out and "id" in out
-    assert d("https://h/x") == "https://h/x"
-    assert d("not a url %%") == "<unparseable>" or "not a url" in d("not a url %%")
 
 
 # ---------------------------------------------------------------------------

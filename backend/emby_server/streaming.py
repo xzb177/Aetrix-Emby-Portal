@@ -366,12 +366,7 @@ def serve_remote(
         except Exception:
             pass
         current = url
-        # P0-2：Drive 307 跳转缓存（P3-1：同步版接入与异步版同一套 _redirect_cache_*；
-        # _redirect_cache_lock 是 threading.Lock，sync/async 共用同一缓存与锁）。
-        _cache_file_id = _drive_file_id(url)
-        _cached_target = _redirect_cache_get(_cache_file_id) if _cache_file_id else None
-        current = _cached_target or url
-        _redirect_hops = 0  # 实际走的跳转数（缓存命中时为 0）
+        _redirect_hops = 0  # 实际走的跳转数
         for _hop in range(MAX_REDIRECTS + 1):
             resp = client.send(client.build_request("GET", current, headers=forward), stream=True)
             if resp.status_code not in _REDIRECT_CODES:
@@ -396,15 +391,9 @@ def serve_remote(
             resp.close()
             client.close()
             raise HTTPException(status_code=502, detail="源站重定向次数过多")
-        # P0-2：走了跳转且落点是 usercontent → 写缓存（坏 URL 不进缓存，签名感知 TTL）。
-        # 缓存命中（_redirect_hops==0）时不重复写。
-        _maybe_cache_drive_redirect(_cache_file_id, current, _redirect_hops,
-                                    bool(_cached_target), resp.status_code)
-        # 115 直链过期检测：403/404/410 时清 115 缓存 + 删跳转缓存（回退重解析），
+        # 115 直链过期检测：403/404/410 时清 115 缓存，
         # 客户端重试将拿到新直链（2026-10-09）。与异步版 serve_remote_async 同口径。
         if resp.status_code in (403, 404, 410):
-            if _cache_file_id:
-                _redirect_cache_invalidate(_cache_file_id)
             _pickcode = (headers or {}).get("X-Pickcode")
             if _pickcode:
                 try:
@@ -520,211 +509,6 @@ _RELAY_READ_TIMEOUT = _env_number("RELAY_READ_TIMEOUT", 30.0, 5.0, 600.0)
 #: 现在很快给 503 + Retry-After，播放器会重试。
 _RELAY_POOL_TIMEOUT = _env_number("RELAY_POOL_TIMEOUT", 3.0, 0.1, 60.0)
 _RELAY_WRITE_TIMEOUT = 30.0
-
-
-#: Drive 307 跳转目标缓存 TTL（秒）。drive/v3/files/<id>?alt=media 会 307 跳到
-#: drive.usercontent.google.com，这一跳是纯 RTT（约 100~200ms）。按 file_id
-#: 缓存最终 URL 60~120 秒，命中时直接跳过 alt=media 这一跳。
-#: 0 = 关闭。403/410 时自动删缓存回退重解析，不会毒化。
-#: P0-2（2026-10-12）：起播加速。
-#:
-#: 取舍说明（P2-1，2026-10-12）：Location 里若带时效签名且签名有效期 < 本 TTL，
-#: 签名过期后、缓存过期前的窗口内会复用过期 URL → 偶发一次 403（客户端重试即
-#: 恢复，随后自愈删缓存）。_redirect_cache_store_drive_url 在写入前解析可识别
-#: 的过期字段并取 min(本 TTL, 签名剩余有效期)，把该窗口压到最小。
-#: 未知项：Google 307 Location 中签名参数的实际有效期，仓库内无证据——
-#: _SIGNATURE_EXPIRY_PARAMS 是保守启发式（expires/exp 等常见名），不是协议保证；
-#: 识别不出字段时保持本 TTL，终态 403/404/410 的自愈失效链路兜底。
-_DRIVE_REDIRECT_CACHE_TTL = _env_number("DRIVE_REDIRECT_CACHE_TTL", 90.0, 0.0, 600.0, float)
-
-#: file_id -> (final_url, expire_monotonic)。进程内，线程安全（asyncio 单循环
-#: + 短临界区；serve_remote 同步版也可能并发写，用 threading.Lock 保护）。
-_redirect_cache: dict[str, tuple[str, float]] = {}
-_redirect_cache_lock = threading.Lock()
-
-
-def _drive_file_id(url: str) -> str | None:
-    """从 drive API URL 提取 file_id。
-
-    形如 https://www.googleapis.com/drive/v3/files/<FILE_ID>?alt=media。
-    非 Drive API URL 返回 None。
-    """
-    try:
-        parts = urlsplit(url)
-        if (parts.hostname or "").lower() != "www.googleapis.com":
-            return None
-        # path: /drive/v3/files/<FILE_ID>
-        segs = parts.path.strip("/").split("/")
-        if len(segs) == 4 and segs[:3] == ["drive", "v3", "files"] and segs[3]:
-            return segs[3]
-        return None
-    except Exception:
-        return None
-
-
-def _redirect_cache_get(file_id: str) -> str | None:
-    """查跳转缓存；命中且未过期返回 final_url，否则 None。"""
-    if _DRIVE_REDIRECT_CACHE_TTL <= 0 or not file_id:
-        return None
-    try:
-        with _redirect_cache_lock:
-            entry = _redirect_cache.get(file_id)
-            if not entry:
-                return None
-            final_url, expire_at = entry
-            if time.monotonic() >= expire_at:
-                _redirect_cache.pop(file_id, None)
-                return None
-            return final_url
-    except Exception:
-        return None
-
-
-def _redirect_cache_set(file_id: str, final_url: str, ttl: float | None = None) -> None:
-    """写入跳转缓存（TTL 到期自动失效；有界防止泄漏）。
-
-    ``ttl``：None 时用 ``_DRIVE_REDIRECT_CACHE_TTL``；Drive 跳转写入请走
-    ``_redirect_cache_store_drive_url``（签名感知 TTL），不要直接调这里。
-    """
-    if _DRIVE_REDIRECT_CACHE_TTL <= 0 or not file_id or not final_url:
-        return
-    try:
-        with _redirect_cache_lock:
-            # 有界：超 4096 条清掉一半最老的（简单起见全清，反正 TTL 短会重建）
-            if len(_redirect_cache) >= 4096:
-                _redirect_cache.clear()
-            _redirect_cache[file_id] = (
-                final_url, time.monotonic() + (ttl if ttl is not None else _DRIVE_REDIRECT_CACHE_TTL))
-    except Exception:
-        pass
-
-
-def _redirect_cache_invalidate(file_id: str) -> None:
-    """删一条跳转缓存（403/410 时调用，回退重解析）。"""
-    if not file_id:
-        return
-    try:
-        with _redirect_cache_lock:
-            _redirect_cache.pop(file_id, None)
-    except Exception:
-        pass
-
-
-#: Location 查询参数里可识别的过期字段（P2-1，2026-10-12）。
-#: 保守启发式：只认这几个常见名。仓库内无 Google 签名实际有效期的证据，
-#: 识别不出时保持默认 TTL（自愈链路兜底），见 _DRIVE_REDIRECT_CACHE_TTL 注释。
-_SIGNATURE_EXPIRY_PARAMS = frozenset({
-    "expires", "exp", "expire", "expires_in", "x-goog-expires",
-})
-
-
-def _signature_ttl_seconds(url: str) -> float | None:
-    """从最终 URL 的查询参数估算签名剩余有效期（秒）；识别不出返回 None。
-
-    解析规则（保守启发式）：
-    - 值 > 1e9 按 unix 时间戳解读，剩余 = ts - now；
-    - 值 ≤ 1e9 按"自下发起的秒数"解读，剩余 = value（Location 是刚拿到的）。
-    任一字段剩余 ≤ 0（已过期）→ 返回 0.0，调用方应直接放弃写缓存。
-    多个字段时取最小剩余。
-    """
-    try:
-        qs = dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
-    except Exception:
-        return None
-    now = time.time()
-    best: float | None = None
-    for name in _SIGNATURE_EXPIRY_PARAMS:
-        raw = qs.get(name)
-        if not raw:
-            continue
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            continue
-        remaining = (value - now) if value > 1e9 else value
-        if remaining <= 0:
-            return 0.0  # 已过期：写缓存只会毒化
-        if best is None or remaining < best:
-            best = remaining
-    return best
-
-
-def _desensitized_url_for_log(url: str) -> str:
-    """脱敏 URL（日志用）：保留 scheme/host/path 与查询参数名，丢弃所有参数值。
-
-    跳转终点 URL 含 Google 签名参数，值绝不能进日志；参数名（如 expires /
-    signature）是定位"签名 TTL 拦截 vs hostname 拦截"的关键证据，保留。
-    """
-    try:
-        parts = urlsplit(url)
-        qs = dict(parse_qsl(parts.query, keep_blank_values=True))
-        base = "%s://%s%s" % (parts.scheme, parts.hostname or "", parts.path or "")
-        if qs:
-            return "%s?[%s]" % (base, ",".join(sorted(qs.keys())))
-        return base
-    except Exception:
-        return "<unparseable>"
-
-
-def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
-    """写入 Drive 跳转缓存（签名感知 TTL，P2-1）。
-
-    写入前解析 Location 查询参数：若含可识别的过期字段，TTL 取
-    ``min(_DRIVE_REDIRECT_CACHE_TTL, 签名剩余有效期)``；识别不出保持默认 TTL。
-    签名已过期（剩余 ≤ 0）时直接放弃写入——写进去也是毒化。
-    """
-    sig_ttl = _signature_ttl_seconds(final_url)
-    if sig_ttl is not None and sig_ttl <= 0:
-        logger.info(
-            "redirect_cache_skip reason=signature_expired file_id=%s sig_ttl=%.1f",
-            file_id, sig_ttl)
-        return
-    ttl = _DRIVE_REDIRECT_CACHE_TTL
-    if sig_ttl is not None:
-        ttl = min(ttl, sig_ttl)
-    logger.info(
-        "redirect_cache_write file_id=%s ttl=%.1f sig_ttl=%s",
-        file_id, ttl,
-        ("%.1f" % sig_ttl) if sig_ttl is not None else "unknown")
-    _redirect_cache_set(file_id, final_url, ttl=ttl)
-
-
-def _maybe_cache_drive_redirect(
-    file_id: str | None,
-    final_url: str,
-    hops: int,
-    cached_hit: bool,
-    terminal_status: int | None,
-) -> None:
-    """P0-2 跳转缓存写入决策（serve_remote_async / serve_remote / resolve_drive_final_url 共用）。
-
-    写入条件：file_id 非空、本次实际走了跳转（hops > 0，本次不是缓存命中）、
-    落点是 drive.usercontent.google.com、终态不是 403/404/410（坏 URL 不进缓存）。
-    """
-    if not file_id or hops <= 0 or cached_hit:
-        logger.info(
-            "redirect_cache_skip reason=no_hops file_id=%s hops=%s cached_hit=%s status=%s",
-            file_id, hops, cached_hit, terminal_status)
-        return
-    if terminal_status in (403, 404, 410):
-        logger.info(
-            "redirect_cache_skip reason=bad_terminal_status file_id=%s hops=%s status=%s",
-            file_id, hops, terminal_status)
-        return
-    try:
-        host = urlsplit(final_url).hostname or ""
-    except Exception:
-        logger.info(
-            "redirect_cache_skip reason=url_parse_error file_id=%s hops=%s status=%s",
-            file_id, hops, terminal_status)
-        return
-    if "drive.usercontent.google.com" not in host:
-        logger.info(
-            "redirect_cache_skip reason=hostname_mismatch file_id=%s hops=%s status=%s "
-            "host=%s",
-            file_id, hops, terminal_status, host)
-        return
-    _redirect_cache_store_drive_url(file_id, final_url)
 
 
 async def _follow_redirects(
@@ -863,7 +647,7 @@ async def serve_remote_async(
     API 响应不走这里，302 分支由调用方自带 no-store。
 
     ``pt``（可选）：播放链路计时器（``backend.emby_server.play_timing``）。
-    传入时记录 url_convert / redirect_cache_hit|miss / ttfb 并在返回前 done()。
+    传入时记录 url_convert / ttfb 并在返回前 done()。
     只加日志，不改逻辑。
     """
     import httpx
@@ -891,28 +675,15 @@ async def serve_remote_async(
             pass
         if pt is not None:
             pt.mark("url_convert")
-        # P0-2：Drive 307 跳转缓存。alt=media 会 307 跳到 usercontent，
-        # 命中缓存时直接用最终 URL，省一跳 RTT（约 100~200ms）。
-        _cache_file_id = _drive_file_id(url)
-        _cached_target = _redirect_cache_get(_cache_file_id) if _cache_file_id else None
-        if pt is not None:
-            pt.mark("redirect_cache_hit" if _cached_target else "redirect_cache_miss")
         # 跳转跟随走共用 helper（P3-5：与 resolve_drive_final_url 同逻辑，
         # 逐跳内网校验 + 跨主机剥凭据）；终态 resp 不关，由下面消费/关闭。
         resp, current, _redirect_hops = await _follow_redirects(
-            client, _cached_target or url, forward, silent=False)
+            client, url, forward, silent=False)
         # ttfb：_follow_redirects 返回时已收到源站响应头（首字节就绪）。
         if pt is not None:
             pt.mark("ttfb")
-        # P0-2：写入跳转缓存（坏 URL 不进缓存；签名感知 TTL）。
-        # 缓存命中（_redirect_hops==0）时不重复写。
-        _maybe_cache_drive_redirect(_cache_file_id, current, _redirect_hops,
-                                    bool(_cached_target), resp.status_code)
-        # P0-2：403/410 时删跳转缓存，下次回退重解析（防毒化）。
         # 115 直链过期检测：403/404 时清缓存，客户端重试将拿到新直链（2026-10-09）
         if resp.status_code in (403, 404, 410):
-            if _cache_file_id:
-                _redirect_cache_invalidate(_cache_file_id)
             _pickcode = (headers or {}).get("X-Pickcode")
             if _pickcode:
                 try:
@@ -1037,14 +808,7 @@ async def resolve_drive_final_url(
         if not api_url:
             return None
 
-        # 2. 查 P0-2 跳转缓存
-        file_id = _drive_file_id(api_url)
-        if file_id:
-            cached = _redirect_cache_get(file_id)
-            if cached:
-                return cached
-
-        # 3. 未命中：手动跟随跳转（走共用 helper，和 serve_remote_async 同逻辑）
+        # 2. 手动跟随跳转（走共用 helper，和 serve_remote_async 同逻辑）
         client = get_relay_client()
         if asyncio.iscoroutine(client):
             client = await client
@@ -1061,12 +825,7 @@ async def resolve_drive_final_url(
         try:
             terminal_status = resp.status_code
             if terminal_status in (403, 404, 410):
-                # 坏 URL 不进缓存；清掉可能已存在的旧缓存（与 serve_remote_async 同口径）
-                if file_id:
-                    _redirect_cache_invalidate(file_id)
                 return None
-            # 4. 写 P0-2 缓存（走了跳转才写，和 serve_remote_async 同口径）
-            _maybe_cache_drive_redirect(file_id, current, hops, False, terminal_status)
             return current
         finally:
             await resp.aclose()
