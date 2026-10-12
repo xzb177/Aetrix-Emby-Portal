@@ -69,6 +69,20 @@ def verify_emby_password(plain: str, stored: str) -> bool:
         return False
 
 
+def verify_and_migrate_emby_password(db: Session, user: models.WebUser, password: str) -> bool:
+    """校验 Emby 播放密码；成功时若为明文/旧格式则透明升级为 bcrypt-sha256（A-P1-3）。
+
+    把"校验+升级"收敛到这一处：调用方不再需要手写 startswith 分支判断，
+    避免将来只改一处导致的升级遗漏。ensure_emby_credentials 内部已含
+    needs_password_rehash 判断，明文/旧 $2 格式会在成功登录后被升级，
+    已是新格式时为无操作。
+    """
+    if not verify_emby_password(password, user.emby_password or ""):
+        return False
+    ensure_emby_credentials(db, user, password=password)
+    return True
+
+
 def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None) -> Optional[str]:
     """确保用户拥有自建 Emby 登录凭据；只在缺失/不匹配/旧格式时更新。"""
     changed = False

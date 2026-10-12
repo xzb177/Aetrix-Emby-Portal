@@ -477,10 +477,16 @@ def update_device(
     if not device:
         raise HTTPException(status_code=404, detail="设备不存在")
 
+    # F-P1-8 修复：吊销令牌与封禁状态变更同事务。原先先 commit 封禁、再调
+    # revoke_device_tokens（内部又 commit 一次）：吊销抛错时会留下"封禁已生效
+    # 但令牌未吊销、审计缺失"的部分成功状态。这里内联 UPDATE，只在末尾提交一次。
     device.is_blocked = request.is_blocked
-    db.commit()
     if request.is_blocked:
-        devices.revoke_device_tokens(db, user_id, device_id)
+        from backend.emby_server import models as em
+        db.query(em.EmbyApiToken).filter(
+            em.EmbyApiToken.user_id == user_id,
+            em.EmbyApiToken.device_id == device_id,
+        ).update({"is_revoked": True}, synchronize_session=False)
 
     _audit(db, current_admin, "update_device", "user_device", device.id,
            {"device_id": device_id, "user_id": user_id, "is_blocked": request.is_blocked})

@@ -318,6 +318,8 @@ async def create_ticket(
     username = current_user.username   # 提交后回读属性=隐式回查，先在循环上取成纯值
 
     def _create() -> int:
+        # F-P1-26 修复：工单与首条消息同一事务提交。原先两次 commit，
+        # 第二次提交前异常会留下无首条消息的空工单，用户端展示异常。
         ticket = models.Ticket(
             user_id=user_id,
             title=request.title,
@@ -326,8 +328,7 @@ async def create_ticket(
             priority="medium"
         )
         db.add(ticket)
-        db.commit()
-        db.refresh(ticket)
+        db.flush()  # 拿到 id 但不提交，消息与工单同事务
         ticket_id = ticket.id
 
         # 创建工单消息
@@ -456,18 +457,14 @@ async def reply_ticket(
                 detail="工单不存在"
             )
 
-        if ticket.status == "closed":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="工单已关闭，无法回复"
-            )
-
         if not content:
             raise HTTPException(status_code=400, detail="回复内容不能为空")
         if len(content) > 2000:
             raise HTTPException(status_code=400, detail="回复内容过长（最多 2000 字）")
 
-        # 创建消息
+        # F-P1-27 修复：条件 UPDATE 原子 reopen。原先"检查 closed→写入 open"非原子，
+        # 管理员在检查后关闭工单，用户回复仍会把工单翻回 open。
+        # WHERE status != 'closed' 抢不到行即 400；消息与状态同事务，失败一起回滚。
         message = models.TicketMessage(
             ticket_id=ticket.id,
             user_id=user_id,
@@ -475,10 +472,24 @@ async def reply_ticket(
             is_admin=False
         )
         db.add(message)
-
-        # 更新工单状态和时间
-        ticket.status = "open"
-        ticket.updated_at = datetime.now()
+        reopened = (
+            db.query(models.Ticket)
+            .filter(
+                models.Ticket.id == ticket_id,
+                models.Ticket.user_id == user_id,
+                models.Ticket.status != "closed",
+            )
+            .update(
+                {"status": "open", "updated_at": datetime.now()},
+                synchronize_session=False,
+            )
+        )
+        if not reopened:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="工单已关闭，无法回复"
+            )
 
         db.commit()
         return {"ticket_id": ticket.id, "title": ticket.title}
@@ -817,17 +828,30 @@ def withdraw_media_seek(
     但今天的提交数依然算得进去（见 create_media_seek 里的额度说明）。
     删行会让额度被无限刷新，也会让后台的审计记录凭空少一条。
     """
-    req = db.query(models.MovieRequest).filter(
-        models.MovieRequest.id == request_id,
-        models.MovieRequest.user_id == current_user.id,
-    ).first()
-    if not req:
-        raise HTTPException(status_code=404, detail="求片记录不存在")
-    if req.status != "pending":
+    # F-P1-28 修复：条件 UPDATE 原子撤回。原先"检查 pending→写入 withdrawn"非原子，
+    # 管理员在检查后审核通过会被撤回覆盖。用 WHERE status='pending' 限定，
+    # rowcount=0 时再区分"不存在"与"已被处理"，保持原有 404/400 口径。
+    withdrawn = (
+        db.query(models.MovieRequest)
+        .filter(
+            models.MovieRequest.id == request_id,
+            models.MovieRequest.user_id == current_user.id,
+            models.MovieRequest.status == "pending",
+        )
+        .update(
+            {"status": WITHDRAWN_STATUS, "updated_at": datetime.now()},
+            synchronize_session=False,
+        )
+    )
+    if not withdrawn:
+        db.rollback()
+        exists = db.query(models.MovieRequest).filter(
+            models.MovieRequest.id == request_id,
+            models.MovieRequest.user_id == current_user.id,
+        ).first()
+        if not exists:
+            raise HTTPException(status_code=404, detail="求片记录不存在")
         raise HTTPException(status_code=400, detail="该请求已被处理，无法撤回")
-
-    req.status = WITHDRAWN_STATUS
-    req.updated_at = datetime.now()
     db.commit()
     return {"success": True, "message": "已撤回"}
 
