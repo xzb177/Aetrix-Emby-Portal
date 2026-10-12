@@ -5,9 +5,9 @@
       <header class="v4-loghead">
         <span class="v4-stamp">探险日志 · {{ dateLabel }}</span>
         <h1>{{ greeting }}，{{ nickname }}</h1>
-        <p v-if="today.data">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
+        <p v-if="today.data && parcelTotal !== '?'">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
         <div v-else-if="today.loading" class="v4-skeleton" style="height:28px;width:70%;margin-top:10px"></div>
-        <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}</div>
+        <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
         <div v-if="streak != null && streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
       </header>
 
@@ -16,8 +16,8 @@
         <div class="v4-sec-title">📦 今日封存</div>
         <div class="v4-sec-sub">新入库的片子，先拆为敬 —— 点一下开封</div>
         <div v-if="parcels.loading" class="v4-skeleton" style="height:132px"></div>
-        <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}</div>
-        <div v-else-if="parcelList.length === 0" class="v4-err">今天还没有新封存，明天再来拆 📦</div>
+        <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
+        <div v-else-if="parcelList.length === 0" class="v4-empty">今天还没有新封存，明天再来拆 📦</div>
         <div v-else class="v4-parcels">
           <ParcelBox
             v-for="p in parcelList"
@@ -38,18 +38,22 @@
           <span class="v4-pulse-tag">● LIVE · 后台任务</span>
           <span class="v4-pulse-dot"></span>
         </div>
-        <EcgCanvas />
-        <PulseActivity :items="activityTexts" />
+        <div v-if="pulse.loading" class="v4-skeleton" style="height:98px"></div>
+        <template v-else>
+          <EcgCanvas />
+          <PulseActivity :items="activityTexts" />
+        </template>
       </div>
-      <div v-if="pulse.error" class="v4-sec"><div class="v4-err">脉搏加载失败：{{ pulse.error }}</div></div>
+      <div v-if="pulse.error" class="v4-sec"><div class="v4-err">脉搏加载失败：{{ pulse.error }}<br><button class="v4-retry" @click="() => panel.loadPulse(true)">重试</button></div></div>
 
       <!-- 每日一封 -->
       <section class="v4-sec" style="padding-bottom:20px">
         <div class="v4-sec-title">✉️ 每日一封</div>
         <div class="v4-sec-sub">昨天的你，留了一封信 —— 点开看看</div>
         <div v-if="letter.loading" class="v4-skeleton" style="height:120px"></div>
-        <div v-else-if="letter.error" class="v4-err">信件加载失败：{{ letter.error }}</div>
-        <WaxLetter v-else :letter="letterData" />
+        <div v-else-if="letter.error" class="v4-err">信件加载失败：{{ letter.error }}<br><button class="v4-retry" @click="() => panel.loadLetter(true)">重试</button></div>
+        <WaxLetter v-else-if="hasLetterData" :letter="letterData" />
+        <div v-else class="v4-empty">昨天的信还在路上，先去看片吧</div>
       </section>
     </div>
     <PanelTabbar />
@@ -150,11 +154,13 @@ const activityTexts = computed((): string[] => {
     const texts = acts.map((a) => cleanActivityText(String(a?.text || ''))).filter(Boolean)
     if (texts.length) return texts
   }
-  return ['服务器运行中，一切正常']
+  return ['正在感知服务器…']
 })
 
 /* ---------- 每日一封 ---------- */
 const letterData = computed(() => (letter.value.data || {}) as Record<string, unknown>)
+/** 空对象 = 后端没给信，不渲染"伪造"信封，走空态 */
+const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
 </script>
 
 <style scoped>

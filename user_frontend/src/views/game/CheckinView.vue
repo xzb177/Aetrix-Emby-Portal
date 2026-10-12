@@ -19,7 +19,7 @@
         <div class="v4-sec-title">📖 签到簿 · {{ monthLabel }}</div>
         <div class="v4-sec-sub">红章=已到 · 今天那格闪烁，点"报到"盖章</div>
         <div v-if="statusLoading" class="v4-skeleton" style="height:220px"></div>
-        <div v-else-if="statusError" class="v4-err">签到簿加载失败：{{ statusError }}</div>
+        <div v-else-if="statusError" class="v4-err">签到簿加载失败：{{ statusError }}<br><button class="v4-retry" @click="load">重试</button></div>
         <div v-else class="book">
           <div class="book-head">
             <b>{{ year }}年{{ month + 1 }}月</b>
@@ -64,6 +64,8 @@
 import { computed, onMounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { checkinApi, pointsApi, type CheckinStatus } from '@/api/economy'
+import { useToast } from '@/composables/useToast'
+import { humanizeError } from '@/composables/usePanelApi'
 
 const now = new Date()
 const year = ref(now.getFullYear())
@@ -122,7 +124,7 @@ async function load() {
     if (st.checked_today) days.add(todayNum)
     signedDays.value = days
   } catch (e) {
-    statusError.value = e instanceof Error ? e.message : '网络开小差了'
+    statusError.value = humanizeError(e)
   } finally {
     statusLoading.value = false
   }
@@ -149,7 +151,8 @@ async function doCheckin() {
     // 能量飞入
     flyEnergy(`+${r.points_awarded}⚡`)
   } catch (e) {
-    statusError.value = e instanceof Error ? e.message : '报到失败，再试一次'
+    // 提交失败走 toast，不污染签到簿的 statusError
+    useToast().error(humanizeError(e))
   } finally {
     checking.value = false
   }

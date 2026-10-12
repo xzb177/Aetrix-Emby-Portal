@@ -12,7 +12,7 @@
         <div class="v4-sec-title">🟢 生命体</div>
         <div class="v4-sec-sub">呼吸的健康球 —— 活着，而且很忙</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 260px"></div>
-        <div v-else-if="server.error" class="v4-err">生命体打盹了：{{ server.error }}</div>
+        <div v-else-if="server.error" class="v4-err">生命体打盹了：{{ server.error }}<br><button class="v4-retry" @click="retryServer">重试</button></div>
         <LifeOrb v-else-if="data?.vitals" :vitals="data.vitals" />
         <div v-else class="v4-err">生命体还没有苏醒</div>
       </section>
@@ -22,7 +22,7 @@
         <div class="v4-sec-title">📡 任务雷达</div>
         <div class="v4-sec-sub">后台的小家伙们正在哪忙活 —— 实时扫描</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 280px"></div>
-        <div v-else-if="server.error" class="v4-err">雷达失灵了：{{ server.error }}</div>
+        <div v-else-if="server.error" class="v4-err">雷达失灵了：{{ server.error }}<br><button class="v4-retry" @click="retryServer">重试</button></div>
         <RadarCanvas v-else-if="data?.radar_tasks?.length" :tasks="data.radar_tasks" />
         <div v-else class="v4-err">雷达上空空如也</div>
       </section>
@@ -32,7 +32,7 @@
         <div class="v4-sec-title">🪴 片库生态</div>
         <div class="v4-sec-sub">每个库都是一株植物，长得越高内容越多</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 190px"></div>
-        <div v-else-if="server.error" class="v4-err">花园干旱了：{{ server.error }}</div>
+        <div v-else-if="server.error" class="v4-err">花园干旱了：{{ server.error }}<br><button class="v4-retry" @click="retryServer">重试</button></div>
         <EcoGarden v-else-if="data?.eco?.length" :eco="data.eco" />
         <div v-else class="v4-err">花园里还没有植物</div>
       </section>
@@ -45,7 +45,7 @@
           <span v-if="data && !data.is_admin" class="v4-lock">🔒 仅管理员可拨</span>
         </div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 220px"></div>
-        <div v-else-if="server.error" class="v4-err">机关室上锁了：{{ server.error }}</div>
+        <div v-else-if="server.error" class="v4-err">机关室上锁了：{{ server.error }}<br><button class="v4-retry" @click="retryServer">重试</button></div>
         <div v-else-if="data?.toggles?.length" class="v4-switches">
           <LeverSwitch v-for="t in data.toggles" :key="t.key" :toggle="t" />
         </div>
@@ -75,6 +75,10 @@ const data = computed(() => (server.value.data || null) as ServerData | null)
 onMounted(() => {
   void panel.loadServer()
 })
+
+function retryServer() {
+  void panel.loadServer(true)
+}
 </script>
 
 <style scoped>

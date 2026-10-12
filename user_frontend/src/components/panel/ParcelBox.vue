@@ -3,8 +3,10 @@
     class="v4-parcel"
     :class="{ opened: isOpen, 'is-busy': busy }"
     role="button"
+    tabindex="0"
     :aria-label="isOpen ? parcel.name : '待拆封存，点击开封'"
     @click="onTap"
+    @keydown="onKey"
   >
     <div v-if="!isOpen" class="v4-parcel-hideable">
       <div class="v4-parcel-seal">✦</div>
@@ -79,6 +81,13 @@ const arrivedText = computed(() => {
   return `${d.getMonth() + 1}月${d.getDate()}日 ${hm} 到货`
 })
 
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    onTap()
+  }
+}
+
 function onTap() {
   if (isOpen.value || busy.value) return
   busy.value = true
@@ -127,7 +136,7 @@ function onTap() {
   margin: 0 auto;
 }
 .v4-parcel-lbl { font-size: 12px; font-weight: 700; margin-top: 6px; }
-.v4-parcel-meta { font-size: 10px; color: var(--ink2); }
+.v4-parcel-meta { font-size: 11px; color: var(--ink2); }
 /* 开封态：取自设计稿 .parcel.opened */
 .v4-parcel.opened {
   border-style: solid;
@@ -148,7 +157,7 @@ function onTap() {
   background: var(--ink);
   color: #fff;
   font-size: 11px;
-  padding: 6px 14px;
+  padding: 10px 18px;
   border-radius: 16px;
   text-decoration: none;
   animation: v4-fadein 0.4s ease 0.1s both;

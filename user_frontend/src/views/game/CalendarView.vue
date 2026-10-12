@@ -13,7 +13,7 @@
         <div class="v4-sec-title">🧭 最近抵达</div>
         <div class="v4-sec-sub">藏宝图=已确认到货 · 点卡片去看看</div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
-        <div v-else-if="error" class="v4-err">探险地图加载失败：{{ error }}</div>
+        <div v-else-if="error" class="v4-err">探险地图加载失败：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
         <div v-else class="timeline">
           <div
             v-for="(day, di) in days"
@@ -76,6 +76,7 @@
 import { onMounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { fetchCalendar, type CalendarDay } from '@/api/calendar'
+import { humanizeError } from '@/composables/usePanelApi'
 
 const days = ref<CalendarDay[]>([])
 const loading = ref(true)
@@ -128,7 +129,7 @@ async function load() {
     // 最新在前
     days.value = [...res.days].reverse()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '网络开小差了'
+    error.value = humanizeError(e)
   } finally {
     loading.value = false
   }

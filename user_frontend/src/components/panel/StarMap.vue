@@ -7,7 +7,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { Achievement } from '@/composables/usePanelApi'
 
 const props = defineProps<{
@@ -72,6 +72,15 @@ function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string))
 }
 
+/** 星星点击/回车：已解锁看成就名，未解锁看提示 */
+function onStar(n: StarNode) {
+  if (n.unlocked) {
+    showTip(`✨ <b>${esc(n.name)}</b> · ${esc(n.desc || '')}`)
+  } else {
+    showTip('🌫️ <b>???</b> · 还没发生的事')
+  }
+}
+
 function render() {
   const svg = svgEl.value
   if (!svg) return
@@ -98,14 +107,17 @@ function render() {
     c.setAttribute('cy', String(n.y))
     c.setAttribute('r', n.unlocked ? '6' : '4')
     c.setAttribute('fill', n.unlocked ? '#FFD98A' : '#4a463d')
+    c.setAttribute('tabindex', '0')
     c.style.cursor = 'pointer'
     if (n.unlocked) c.style.filter = 'drop-shadow(0 0 6px #FFD98A)'
     c.addEventListener('click', (e) => {
       e.stopPropagation()
-      if (n.unlocked) {
-        showTip(`✨ <b>${esc(n.name)}</b> · ${esc(n.desc || '')}`)
-      } else {
-        showTip('🌫️ <b>???</b> · 还没发生的事')
+      onStar(n)
+    })
+    c.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        onStar(n)
       }
     })
     const t = document.createElementNS(NS, 'title')
@@ -117,6 +129,9 @@ function render() {
 
 onMounted(render)
 watch(nodes, render)
+onUnmounted(() => {
+  if (tipTimer) clearTimeout(tipTimer)
+})
 </script>
 
 <style scoped>
@@ -144,11 +159,13 @@ watch(nodes, render)
   left: 50%;
   transform: translateX(-50%);
   bottom: 12px;
+  max-width: 88%;
+  white-space: normal;
+  text-align: center;
   background: #fffdf6;
   border-radius: 10px;
   padding: 8px 14px;
   font-size: 12px;
-  white-space: nowrap;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
   animation: v4-fadein 0.25s ease;
 }

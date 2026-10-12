@@ -171,6 +171,18 @@ export const panelApi = {
   toggles: (payload: Record<string, unknown>) => post('/api/panel/server/toggles', payload),
 }
 
+/** 错误文案人话化：把后端英文/技术错误转成用户能看懂的话 */
+export function humanizeError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e ?? '')
+  const msg = raw.trim()
+  if (!msg) return '加载失败，稍后再试'
+  if (/timeout/i.test(msg)) return '请求超时，稍后再试'
+  if (/network error/i.test(msg)) return '网络开小差了，检查网络再试'
+  if (/panel api error/i.test(msg)) return '服务器开小差了，稍后再试'
+  if (/[\u4e00-\u9fff]/.test(msg)) return msg // 含中文保留原文
+  return '加载失败，稍后再试'
+}
+
 /** 特性开关：VITE_PANEL_V4_ENABLED=0 时回退老首页；默认开 */
 export function isPanelV4Enabled(): boolean {
   return import.meta.env.VITE_PANEL_V4_ENABLED !== '0'

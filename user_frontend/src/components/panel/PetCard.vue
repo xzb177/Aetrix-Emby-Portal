@@ -126,7 +126,7 @@ const barWidth = computed(() => `${Math.round((props.pet.progress || 0) * 100)}%
   display: flex;
   justify-content: space-between;
   margin-top: 12px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--ink2);
 }
 .evo-steps .on {

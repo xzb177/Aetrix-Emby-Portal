@@ -127,6 +127,28 @@
   padding: 10px 12px;
   background: var(--paper2);
 }
+/* 空态：中性文案，不用错误样式 */
+.v4-empty {
+  font-size: 12px;
+  color: var(--ink2);
+  text-align: center;
+  padding: 18px 12px;
+}
+/* 错误块里的重试按钮 */
+.v4-retry {
+  display: inline-block;
+  margin-top: 8px;
+  background: var(--ink);
+  color: #F6F1E7;
+  border: none;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 18px;
+  border-radius: 12px;
+  cursor: pointer;
+  min-height: 44px;
+}
+.v4-retry:active { transform: scale(0.96); }
 
 /* 底部导航 */
 .v4-tabbar {
@@ -139,6 +161,7 @@
   background: #FFFDF6;
   border-top: 1.5px solid var(--ink);
   display: flex;
+  padding: 10px 0 10px; /* 老机型兜底：不支持 env() 时不贴底 */
   padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
   z-index: 50;
 }

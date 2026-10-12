@@ -60,7 +60,11 @@ const plants = computed(() => {
   padding-bottom: 0;
   margin-bottom: 8px;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   gap: 4px;
+  /* 右侧渐隐边缘：提示还能横滑 */
+  mask-image: linear-gradient(90deg, #000 92%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, #000 92%, transparent);
 }
 .plant {
   text-align: center;
@@ -72,7 +76,6 @@ const plants = computed(() => {
   margin: 0 auto;
   border-radius: 5px 5px 0 0;
   background: linear-gradient(180deg, #7cb87c, #4a7c59);
-  transition: height 1s ease;
 }
 .plant .leaf {
   font-size: 14px;
