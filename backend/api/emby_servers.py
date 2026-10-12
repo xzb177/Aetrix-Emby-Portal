@@ -78,6 +78,42 @@ def save_value(db: Session, key: str, new_value: str, description: str,
     registry.set_config(db, key, new_value, description, realm_id)
 
 
+async def _resolve_probe_key(db: Session, mode: str, url: str, api_key: Optional[str],
+                             scope_id: Optional[int]) -> str:
+    """解析探测用密钥。
+
+    规则（按 mode 对应的 prefix 读取本模式已保存的配置，绝不允许 managed_ea 跨模式
+    复用 emby_external_api_key）：
+
+    1. 请求显式提供了非空 api_key：直接使用；
+    2. 目标 URL 与本模式已保存 URL 一致（_same_url）：复用本模式已存密钥，
+       即使已存密钥为空也返回 ""（空密钥探测）——这是恢复 P1-4 之前 test_server 的
+       旧行为：同 URL、无新密钥、无已存密钥时走空密钥探测而非 400；且 P1-4 提交说明
+       宣称 "external 语义不变"，故此处必须保持宽容。空密钥探测无安全风险，它不向
+       任何主机发送密钥，只是会因认证失败而探测不通过；
+    3. URL 确实发生变化且为 external 模式且无新密钥：抛 400（旧密钥跨 URL 复用不安全）；
+    4. managed_ea：自建 EA 探测不需要密钥，返回 ""（即使存在旧 key，也绝不跨模式
+       复用外部密钥）。
+    """
+    prefix = "emby_managed" if mode == "managed_ea" else "emby_external"
+    old_url = await run_in_threadpool(value, db, f"{prefix}_url", "", scope_id)
+    old_key = await run_in_threadpool(value, db, f"{prefix}_api_key", "", scope_id)
+
+    provided = (api_key or "").strip()
+    if provided:
+        return provided
+
+    # 同 URL：允许复用本模式旧密钥（old_key 为空也允许，即空密钥探测，保持旧行为宽容）。
+    if _same_url(url, old_url):
+        return old_key or ""
+
+    if mode == "external":
+        raise HTTPException(400, "更换服务器地址时必须提供新的 API 密钥，不能复用旧密钥")
+
+    # managed_ea：自建 EA 探测不需要密钥；即使存在旧 key，也绝不跨模式复用外部密钥。
+    return ""
+
+
 async def refresh_mount_health(db: Session, url: str, realm_id: Optional[int] = None) -> dict:
     """拉一次 EA 视角的挂载体检并落库（按服保存：挂载跟着服走）
 
@@ -190,25 +226,15 @@ async def save_server(
     url = _validate_url(request.url)
     prefix = "emby_managed" if request.mode == "managed_ea" else "emby_external"
     api_key = request.api_key or ""
-    # P0-3 修复：先记下旧地址/旧密钥。换地址时不允许静默复用旧密钥去探测新主机。
-    old_url = await run_in_threadpool(value, db, "emby_external_url", "", scope_id)
-    old_key = await run_in_threadpool(value, db, "emby_external_api_key", "", scope_id)
 
-    # P0-3 修复：探测用的密钥必须显式提供，或地址未变时复用旧密钥。
-    # 换地址又不给新密钥时，禁止把旧密钥发给新主机（此前 api_key or saved_key 无条件复用）。
-    if request.mode == "external":
-        if api_key.strip():
-            probe_key = api_key.strip()
-        elif _same_url(url, old_url) and old_key:
-            probe_key = old_key
-        else:
-            raise HTTPException(400, "更换服务器地址时必须提供新的 API 密钥，不能复用旧密钥")
-    else:
-        probe_key = api_key.strip() or old_key
+    # P1-3 修复：先解析/校验探测密钥（可能抛 400），再落库，避免失败时新地址已写入 DB。
+    probe_key = await _resolve_probe_key(db, request.mode, url, api_key, scope_id)
 
     # F-P1-17 修复：先探测、再落库，一次提交。原先 save_connection 先 commit，
     # 探测失败只记 reachable=false，已写入的新地址/密钥不会回滚——两次提交之间
     # 崩溃还会留下"新地址已存但探测结论未知"的不一致状态。
+    # （合并注：密钥解析沿用 r12 的 _resolve_probe_key——按 mode 读本模式配置，
+    #  managed_ea 绝不跨模式复用外部密钥；不回退到 #664 的内联 external 硬编码版。）
     result = await probe(request.mode, url, probe_key)
 
     def save_all() -> None:
@@ -285,16 +311,9 @@ async def test_server(
     # 先校验地址再探测：校验不能只挂在 probe 里，否则替换探测器时就绕过了
     scope_id = await run_in_threadpool(realms.active_realm_id, db)
     url = _validate_url(request.url)
-    saved_url = await run_in_threadpool(value, db, "emby_external_url", "", scope_id)
-    saved_key = await run_in_threadpool(value, db, "emby_external_api_key", "", scope_id)
-    # P0-3 修复：只在目标地址与已保存地址一致时才允许复用旧密钥。
-    # 此前 saved_key 无条件发给 request.url 指定的任意主机，一次复制粘贴即外泄。
-    if request.api_key and request.api_key.strip():
-        api_key = request.api_key.strip()
-    elif _same_url(url, saved_url):
-        api_key = saved_key
-    else:
-        raise HTTPException(400, "更换服务器地址时必须提供新的 API 密钥，不能复用旧密钥")
+    # P1-4 修复：按请求模式读取本模式旧配置，复用仅限同 URL。
+    # 行为变化：managed_ea 换地址不再 400（自建 EA 本来就不需要密钥）；external 语义不变。
+    api_key = await _resolve_probe_key(db, request.mode, url, request.api_key, scope_id)
     result = await probe(request.mode, url, api_key)
     prefix = "emby_managed" if request.mode == "managed_ea" else "emby_external"
 
