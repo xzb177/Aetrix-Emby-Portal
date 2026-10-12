@@ -1,16 +1,18 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { visualizer } from 'rollup-plugin-visualizer'
 
 // 生产环境禁用 DevTools
 const isProduction = process.env.NODE_ENV === 'production'
+// 设置 ANALYZE=1 时生成打包体积报告（需先 npm i -D rollup-plugin-visualizer）
+const analyze = process.env.ANALYZE === '1'
 
 export default defineConfig({
   plugins: [
     vue(),
-    // 打包分析插件（可选）
-    // visualizer({ gzipSize: true, brotliSize: true, open: false }),
-  ],
+    analyze && visualizer({ gzipSize: true, brotliSize: true, open: false, filename: 'dist/stats.html' }),
+  ].filter(Boolean),
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))

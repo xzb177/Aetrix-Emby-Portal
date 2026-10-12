@@ -1643,7 +1643,7 @@ function typeLabel(t: string): string {
         <div v-if="libraries.length" class="lib-grid">
           <article v-for="l in libraries" :key="l.id" class="lib-card">
             <div class="lib-cover">
-              <img v-if="coverUrls[l.id]" :src="coverUrls[l.id]" :alt="`${l.name} 封面`" />
+              <img v-if="coverUrls[l.id]" :src="coverUrls[l.id]" :alt="`${l.name} 封面`" loading="lazy" decoding="async" />
               <div v-else class="lib-cover-empty">
                 <Film :size="32" />
                 <span>{{ typeLabel(l.collection_type) }}库</span>
@@ -2857,4 +2857,6 @@ function typeLabel(t: string): string {
   .scrape-grid { grid-template-columns: 1fr; gap: 12px; }
   .emby-tabs :deep(.el-tabs__nav-wrap) { overflow-x: auto; }
 }
+
+.lib-grid { content-visibility: auto; contain-intrinsic-size: auto 400px; }
 </style>

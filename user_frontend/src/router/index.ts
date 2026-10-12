@@ -163,4 +163,13 @@ router.beforeEach(async (to) => {
   return true
 })
 
+// 关键路由预取：用户登录后大概率会去商店 / 个人中心，空闲时预加载对应 chunk
+if (typeof requestIdleCallback !== 'undefined') {
+  requestIdleCallback(() => {
+    import('@/views/StoreView.vue')
+    import('@/views/ProfileView.vue')
+    import('@/views/WalletView.vue')
+  }, { timeout: 3000 })
+}
+
 export default router
