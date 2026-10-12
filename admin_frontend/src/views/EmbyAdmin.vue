@@ -1437,10 +1437,6 @@ function reachText(level: string): string {
 }
 
 /** 卡片提示的悬停文案：原因 + 改法（卡片上只放一句，详情靠悬停） */
-function _reachTitle(l: EmbyLibrary): string {
-  const verdict = libReach(l)
-  return [verdict?.message, verdict?.fix].filter(Boolean).join(' ｜ ')
-}
 
 /** 横幅第一行的事实：谁在出流、面板协议面开着吗、用户该连哪个地址、EA 体检什么时候拉的 */
 function reachFacts(): string[] {

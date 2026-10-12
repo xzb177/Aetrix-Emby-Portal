@@ -627,7 +627,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
         :custom-points-preview="customPointsPreview"
         :was-price="wasPrice"
         :paid-price="paidPrice"
-        @order="(type, id) => handleOrder(type as any, id)"
+        @order="(type, id) => handleOrder(type as any, Number(id))"
         @custom="handleCustomRecharge"
         @update:custom-amount="customAmount = $event"
         @update:pay-method="payMethod = $event"
@@ -687,7 +687,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
                 :discount-pct="member?.discount_pct || 0"
                 :order-loading="orderLoading === p.id"
                 :methods-available="!!methods.length"
-                @order="(id) => handleOrder('subscription', id)"
+                @order="(id) => handleOrder('subscription', Number(id))"
               />
             </div>
 
