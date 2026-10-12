@@ -1,1 +1,90 @@
-LyoqCiAqIOi/veaWsOaXpeWOhueahOaciOS7veaVsOWtpu+8muS7iuWkqeaYr+WTquaciOOAgeagvOWtkOaAjuS5iOaOkuOAgeS4iuS4i+aciOaAjuS5iOe/u+OAggogKgogKiDku44gQ2FsZW5kYXJWaWV3LnZ1ZSDph4zmkKzlh7rmnaXvvIzkuI3luKbku7vkvZXnvZHnu5zor7fmsYLigJTigJTnuq/ml6XmnJ/orqHnrpfvvIwKICog5pa55L6/5Lul5ZCO562+5Yiw6aG15oOz5aSN55So5ZCM5LiA5aWX44CM6KGl6b2QIDcg5qC844CN566X5rOV5pe255u05o6l5ou/6LWw44CCCiAqLwppbXBvcnQgeyByZWYsIGNvbXB1dGVkIH0gZnJvbSAndnVlJwoKLyoqIOaXpeWOhuagvOWtkO+8mmRhdGUg5Li656m66KGo56S65Y2g5L2N5qC877yI5YmN5ZCO6KGl6b2Q55So77yJ77yM5LiN5Y+v54K5ICovCmV4cG9ydCBpbnRlcmZhY2UgQ2FsQ2VsbCB7CiAgZGF0ZTogc3RyaW5nCiAgZGF5OiBudW1iZXIKICBpbk1vbnRoOiBib29sZWFuCn0KCmV4cG9ydCBjb25zdCBXRUVLX0xBQkVMUyA9IFsn5pelJywgJ+S4gCcsICfkuownLCAn5LiJJywgJ+WbmycsICfkupQnLCAn5YWtJ10KCi8qKiBZWVlZLU1NLURE77yI5pys5Zyw5pel5pyf77yM5LiN55SoIHRvSVNPU3RyaW5nIOKAlOKAlCDpgqPmmK8gVVRD77yM5Lya5beu5LiA5aSp77yJICovCmV4cG9ydCBmdW5jdGlvbiBpc29PZihkOiBEYXRlKTogc3RyaW5nIHsKICBjb25zdCBtID0gU3RyaW5nKGQuZ2V0TW9udGgoKSArIDEpLnBhZFN0YXJ0KDIsICcwJykKICBjb25zdCBkYXkgPSBTdHJpbmcoZC5nZXREYXRlKCkpLnBhZFN0YXJ0KDIsICcwJykKICByZXR1cm4gYCR7ZC5nZXRGdWxsWWVhcigpfS0ke219LSR7ZGF5fWAKfQoKZXhwb3J0IGZ1bmN0aW9uIHVzZUNhbGVuZGFyTW9udGgoKSB7CiAgY29uc3QgdG9kYXkgPSBuZXcgRGF0ZSgpCiAgY29uc3QgdG9kYXlTdHIgPSBpc29PZih0b2RheSkKCiAgY29uc3QgeWVhciA9IHJlZih0b2RheS5nZXRGdWxsWWVhcigpKQogIGNvbnN0IG1vbnRoID0gcmVmKHRvZGF5LmdldE1vbnRoKCkpIC8vIDAtMTEKCiAgY29uc3QgbW9udGhMYWJlbCA9IGNvbXB1dGVkKCgpID0+IGAke3llYXIudmFsdWV9IOW5tCAke21vbnRoLnZhbHVlICsgMX0g5pyIYCkKICBjb25zdCBpc0N1cnJlbnRNb250aCA9IGNvbXB1dGVkKAogICAgKCkgPT4geWVhci52YWx1ZSA9PT0gdG9kYXkuZ2V0RnVsbFllYXIoKSAmJiBtb250aC52YWx1ZSA9PT0gdG9kYXkuZ2V0TW9udGgoKSwKICApCgogIGNvbnN0IHJhbmdlU3RhcnQgPSBjb21wdXRlZCgoKSA9PiBpc29PZihuZXcgRGF0ZSh5ZWFyLnZhbHVlLCBtb250aC52YWx1ZSwgMSkpKQogIGNvbnN0IHJhbmdlRW5kID0gY29tcHV0ZWQoKCkgPT4gaXNvT2YobmV3IERhdGUoeWVhci52YWx1ZSwgbW9udGgudmFsdWUgKyAxLCAwKSkpCgogIC8qKgogICAqIOaXpeWOhuagvOWtkO+8muWFiOaMiSAxIOWPt+eahOaYn+acn+ihpeWJjeWvvOepuuS9je+8jOWGjeWhqyAxLi5kYXlzSW5Nb250aO+8jAogICAqIOacgOWQjuaKiuWwvumDqOihpeWIsCA3IOeahOWAjeaVsOKAlOKAlOacq+ihjOS4jeWGjeWPguW3ruS4jem9kO+8jOe9keagvOawuOi/nOaYr+WujOaVtOefqeW9ouOAggogICAqIO+8iOS4juetvuWIsOmhteWQjOS4gOWll+eul+azle+8jOWPquaYr+i/memHjOWwvumDqOS5n+ihpem9kO+8iQogICAqLwogIGNvbnN0IG1vbnRoQ2VsbHMgPSBjb21wdXRlZDxDYWxDZWxsW10+KCgpID0+IHsKICAgIGNvbnN0IGZpcnN0ID0gbmV3IERhdGUoeWVhci52YWx1ZSwgbW9udGgudmFsdWUsIDEpCiAgICBjb25zdCBsZWFkID0gZmlyc3QuZ2V0RGF5KCkKICAgIGNvbnN0IHRvdGFsID0gbmV3IERhdGUoeWVhci52YWx1ZSwgbW9udGgudmFsdWUgKyAxLCAwKS5nZXREYXRlKCkKICAgIGNvbnN0IGNlbGxzOiBDYWxDZWxsW10gPSBbXQogICAgZm9yIChsZXQgaSA9IDA7IGkgPCBsZWFkOyBpKyspIHsKICAgICAgY2VsbHMucHVzaCh7IGRhdGU6ICcnLCBkYXk6IDAsIGluTW9udGg6IGZhbHNlIH0pCiAgICB9CiAgICBmb3IgKGxldCBkID0gMTsgZCA8PSB0b3RhbDsgZCsrKSB7CiAgICAgIGNlbGxzLnB1c2goeyBkYXRlOiBpc29PZihuZXcgRGF0ZSh5ZWFyLnZhbHVlLCBtb250aC52YWx1ZSwgZCkpLCBkYXk6IGQsIGluTW9udGg6IHRydWUgfSkKICAgIH0KICAgIHdoaWxlIChjZWxscy5sZW5ndGggJSA3ICE9PSAwKSB7CiAgICAgIGNlbGxzLnB1c2goeyBkYXRlOiAnJywgZGF5OiAwLCBpbk1vbnRoOiBmYWxzZSB9KQogICAgfQogICAgcmV0dXJuIGNlbGxzCiAgfSkKCiAgZnVuY3Rpb24gc2hpZnRNb250aChkZWx0YTogbnVtYmVyKSB7CiAgICBjb25zdCBuZXh0ID0gbmV3IERhdGUoeWVhci52YWx1ZSwgbW9udGgudmFsdWUgKyBkZWx0YSwgMSkKICAgIHllYXIudmFsdWUgPSBuZXh0LmdldEZ1bGxZZWFyKCkKICAgIG1vbnRoLnZhbHVlID0gbmV4dC5nZXRNb250aCgpCiAgfQoKICBmdW5jdGlvbiBnb1RvZGF5KCkgewogICAgeWVhci52YWx1ZSA9IHRvZGF5LmdldEZ1bGxZZWFyKCkKICAgIG1vbnRoLnZhbHVlID0gdG9kYXkuZ2V0TW9udGgoKQogIH0KCiAgZnVuY3Rpb24gaXNUb2RheShkYXRlOiBzdHJpbmcpOiBib29sZWFuIHsKICAgIHJldHVybiBkYXRlID09PSB0b2RheVN0cgogIH0KCiAgcmV0dXJuIHsKICAgIHllYXIsCiAgICBtb250aCwKICAgIHRvZGF5U3RyLAogICAgbW9udGhMYWJlbCwKICAgIGlzQ3VycmVudE1vbnRoLAogICAgcmFuZ2VTdGFydCwKICAgIHJhbmdlRW5kLAogICAgbW9udGhDZWxscywKICAgIHNoaWZ0TW9udGgsCiAgICBnb1RvZGF5LAogICAgaXNUb2RheSwKICB9Cn0K
+/**
+ * 追新日历的月份数学：今天是哪月、格子怎么排、上下月怎么翻。
+ *
+ * 从 CalendarView.vue 里搬出来，不带任何网络请求——纯日期计算，
+ * 方便以后签到页想复用同一套「补齐 7 格」算法时直接拿走。
+ */
+import { ref, computed } from 'vue'
+
+/** 日历格子：date 为空表示占位格（前后补齐用），不可点 */
+export interface CalCell {
+  date: string
+  day: number
+  inMonth: boolean
+}
+
+export const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六']
+
+/** YYYY-MM-DD（本地日期，不用 toISOString —— 那是 UTC，会差一天） */
+export function isoOf(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
+
+export function useCalendarMonth() {
+  const today = new Date()
+  const todayStr = isoOf(today)
+
+  const year = ref(today.getFullYear())
+  const month = ref(today.getMonth()) // 0-11
+
+  const monthLabel = computed(() => `${year.value} 年 ${month.value + 1} 月`)
+  const isCurrentMonth = computed(
+    () => year.value === today.getFullYear() && month.value === today.getMonth(),
+  )
+
+  const rangeStart = computed(() => isoOf(new Date(year.value, month.value, 1)))
+  const rangeEnd = computed(() => isoOf(new Date(year.value, month.value + 1, 0)))
+
+  /**
+   * 日历格子：先按 1 号的星期补前导空位，再填 1..daysInMonth，
+   * 最后把尾部补到 7 的倍数——末行不再参差不齐，网格永远是完整矩形。
+   * （与签到页同一套算法，只是这里尾部也补齐）
+   */
+  const monthCells = computed<CalCell[]>(() => {
+    const first = new Date(year.value, month.value, 1)
+    const lead = first.getDay()
+    const total = new Date(year.value, month.value + 1, 0).getDate()
+    const cells: CalCell[] = []
+    for (let i = 0; i < lead; i++) {
+      cells.push({ date: '', day: 0, inMonth: false })
+    }
+    for (let d = 1; d <= total; d++) {
+      cells.push({ date: isoOf(new Date(year.value, month.value, d)), day: d, inMonth: true })
+    }
+    while (cells.length % 7 !== 0) {
+      cells.push({ date: '', day: 0, inMonth: false })
+    }
+    return cells
+  })
+
+  function shiftMonth(delta: number) {
+    const next = new Date(year.value, month.value + delta, 1)
+    year.value = next.getFullYear()
+    month.value = next.getMonth()
+  }
+
+  function goToday() {
+    year.value = today.getFullYear()
+    month.value = today.getMonth()
+  }
+
+  function isToday(date: string): boolean {
+    return date === todayStr
+  }
+
+  return {
+    year,
+    month,
+    todayStr,
+    monthLabel,
+    isCurrentMonth,
+    rangeStart,
+    rangeEnd,
+    monthCells,
+    shiftMonth,
+    goToday,
+    isToday,
+  }
+}

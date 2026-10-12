@@ -1,1 +1,400 @@
-PHNjcmlwdCBzZXR1cCBsYW5nPSJ0cyI+Ci8qKgogKiDov73mlrDml6XljoYg4oCUIOaMieWFpeW6k+aXpeacn+eci+avj+WkqeaWsOS4iuS6huS7gOS5iAogKgogKiAjIyDnu5PmnoTvvIgyMDI2LTEwLTEyIOmHjeaehO+8iQogKiDov5nkuKrmlofku7blj6rlianpqqjmnrbvvJrpobXlpLQgKyDlt6XlhbfmnaEgKyDmlbDmja7mi4nlj5bjgILmnIjku73mlbDlrabmkKzliLDkuoYKICogY29tcG9zYWJsZXMvdXNlQ2FsZW5kYXJNb250aO+8jOaciOe9keagvOaYryBjb21wb25lbnRzL2NhbGVuZGFyL0NhbGVuZGFyR3JpZO+8jAogKiDlvZPml6XliJfooajmmK8gY29tcG9uZW50cy9jYWxlbmRhci9EYXlEZXRhaWxMaXN044CCCiAqCiAqICMjIOaVsOaNruS7juWTquadpQogKiDlhajpg6jmnaXoh6ogR0VUIC9hcGkvdXNlci9lbWJ5L2NhbGVuZGFy77yI6KeBIGFwaS9jYWxlbmRhci50c++8ie+8muS4gOasoeivt+axguaNouWbngogKiDmjInlpKnliIblpb3nu4TnmoTmnaHnm67jgILlkI7nq6/lt7Lnu4/mjIkgYGRhdGVfYWRkZWRgIOWIhuahtuOAgeaMieWqkuS9k+W6k+WPr+ingeiMg+WbtOaUtui/h+S4gOmBje+8jAogKiDov5nph4zlj6rlgZrlsZXnpLrvvIzkuI3lho3kuozmrKHliIbmobbigJTigJTliY3lkI7nq6/lkITliIbkuIDmrKHov5/ml6nkvJrlt67kuIDlpKnjgIIKICoKICogIyMg6aKc6ImyCiAqIOWFqOeoi+WPqueUqCAtLWF1LSog5Luk54mM77yM5rWF6ImyIC8g5rex6Imy5Lik5aWX5Li76aKY6Ieq5Yqo6Lef6ZqP77yM5LiN5YaZ5q275Lu75L2V6Imy5YC844CCCiAqIOaXpeWOhuiHquW3seeahOiKguaLjeaUtuaVm+WIsCAtLWNhbC0qIOWPmOmHj++8iOingeS4i+aWuSA8c3R5bGU+77yJ77yM5a2Q57uE5Lu255u05o6l5byV55So44CCCiAqLwppbXBvcnQgeyByZWYsIGNvbXB1dGVkLCB3YXRjaCwgb25Nb3VudGVkIH0gZnJvbSAndnVlJwppbXBvcnQgeyB1c2VSb3V0ZSwgdXNlUm91dGVyIH0gZnJvbSAndnVlLXJvdXRlcicKaW1wb3J0IHsgQ2FsZW5kYXJEYXlzLCBDaGV2cm9uTGVmdCwgQ2hldnJvblJpZ2h0LCBGaWxtLCBUdiwgTGlzdFZpZGVvIH0gZnJvbSAnbHVjaWRlLXZ1ZS1uZXh0JwppbXBvcnQgeyBmZXRjaENhbGVuZGFyLCB0eXBlIENhbGVuZGFySXRlbVR5cGUsIHR5cGUgQ2FsZW5kYXJSZXNwb25zZSB9IGZyb20gJ0AvYXBpL2NhbGVuZGFyJwppbXBvcnQgeyBlbWJ5QXBpLCB0eXBlIEVtYnlJdGVtIH0gZnJvbSAnQC9hcGkvZW1ieScKaW1wb3J0IHsgdXNlVG9hc3QgfSBmcm9tICdAL2NvbXBvc2FibGVzL3VzZVRvYXN0JwppbXBvcnQgeyB1c2VDYWxlbmRhck1vbnRoIH0gZnJvbSAnQC9jb21wb3NhYmxlcy91c2VDYWxlbmRhck1vbnRoJwppbXBvcnQgQ2FsZW5kYXJHcmlkIGZyb20gJ0AvY29tcG9uZW50cy9jYWxlbmRhci9DYWxlbmRhckdyaWQudnVlJwppbXBvcnQgRGF5RGV0YWlsTGlzdCBmcm9tICdAL2NvbXBvbmVudHMvY2FsZW5kYXIvRGF5RGV0YWlsTGlzdC52dWUnCgpjb25zdCB0b2FzdCA9IHVzZVRvYXN0KCkKY29uc3Qgcm91dGUgPSB1c2VSb3V0ZSgpCmNvbnN0IHJvdXRlciA9IHVzZVJvdXRlcigpCgovLyA9PT09PT09PT09PT09PT09PT09PSDmnIjku73vvIjpgLvovpHlnKggdXNlQ2FsZW5kYXJNb250aO+8iSA9PT09PT09PT09PT09PT09PT09PQoKY29uc3QgewogIHllYXIsIG1vbnRoLCB0b2RheVN0ciwgbW9udGhMYWJlbCwgaXNDdXJyZW50TW9udGgsCiAgcmFuZ2VTdGFydCwgcmFuZ2VFbmQsIG1vbnRoQ2VsbHMsCiAgc2hpZnRNb250aCwgZ29Ub2RheSwKfSA9IHVzZUNhbGVuZGFyTW9udGgoKQoKLy8gPT09PT09PT09PT09PT09PT09PT0g562b6YCJID09PT09PT09PT09PT09PT09PT09Cgpjb25zdCBBTExfVFlQRVM6IENhbGVuZGFySXRlbVR5cGVbXSA9IFsnbW92aWUnLCAnc2VyaWVzJywgJ2VwaXNvZGUnXQoKY29uc3QgVFlQRV9UQUJTOiB7IGtleTogQ2FsZW5kYXJJdGVtVHlwZTsgbGFiZWw6IHN0cmluZzsgaWNvbjogdHlwZW9mIEZpbG0gfVtdID0gWwogIHsga2V5OiAnbW92aWUnLCBsYWJlbDogJ+eUteW9sScsIGljb246IEZpbG0gfSwKICB7IGtleTogJ3NlcmllcycsIGxhYmVsOiAn5Ymn6ZuGJywgaWNvbjogVHYgfSwKICB7IGtleTogJ2VwaXNvZGUnLCBsYWJlbDogJ+WNlembhicsIGljb246IExpc3RWaWRlbyB9LApdCgovKiog5aqS5L2T5bqT5LiL5ouJ55u05o6l55SoIFZpZXdzIOeahCBJZO+8iGd1aWTvvInvvIzlkI7nq6/kuKTnp43moIfor4bpg73mlLYgKi8KY29uc3QgbGlicmFyaWVzID0gcmVmPEVtYnlJdGVtW10+KFtdKQpjb25zdCBsaWJyYXJ5SWQgPSByZWYoJycpCgovKiog5rC46L+c6Z2e56m677ya5YWo6YOo5Y+W5raI5Yu+6YCJ5pe25Zue5Yiw44CM5YWo6YCJ44CN77yM6YG/5YWN5Ye6546w44CM5LuA5LmI6YO95rKh6YCJID0g5LuA5LmI6YO95LiN5pi+56S644CNICovCmNvbnN0IHNlbGVjdGVkVHlwZXMgPSByZWY8Q2FsZW5kYXJJdGVtVHlwZVtdPihbLi4uQUxMX1RZUEVTXSkKCmZ1bmN0aW9uIHRvZ2dsZVR5cGUoa2V5OiBDYWxlbmRhckl0ZW1UeXBlKSB7CiAgY29uc3QgaGFzID0gc2VsZWN0ZWRUeXBlcy52YWx1ZS5pbmNsdWRlcyhrZXkpCiAgY29uc3QgbmV4dCA9IGhhcwogICAgPyBzZWxlY3RlZFR5cGVzLnZhbHVlLmZpbHRlcigodCkgPT4gdCAhPT0ga2V5KQogICAgOiBBTExfVFlQRVMuZmlsdGVyKCh0KSA9PiB0ID09PSBrZXkgfHwgc2VsZWN0ZWRUeXBlcy52YWx1ZS5pbmNsdWRlcyh0KSkKICBzZWxlY3RlZFR5cGVzLnZhbHVlID0gbmV4dC5sZW5ndGggPyBuZXh0IDogWy4uLkFMTF9UWVBFU10KfQoKY29uc3QgYWxsVHlwZXNTZWxlY3RlZCA9IGNvbXB1dGVkKCgpID0+IHNlbGVjdGVkVHlwZXMudmFsdWUubGVuZ3RoID09PSBBTExfVFlQRVMubGVuZ3RoKQoKLy8gPT09PT09PT09PT09PT09PT09PT0g5pWw5o2uID09PT09PT09PT09PT09PT09PT09Cgpjb25zdCBsb2FkaW5nID0gcmVmKHRydWUpCmNvbnN0IHBheWxvYWQgPSByZWY8Q2FsZW5kYXJSZXNwb25zZSB8IG51bGw+KG51bGwpCgovKioKICog6K+35rGC5bqP5Y+377ya6L+e57ut57+75pyIIC8g5o2i5bqT5pe277yM5YWI5Y+R55qE6K+35rGC5Y+v6IO95ZCO5Yiw44CCCiAqCiAqIOS4jeWBmui/meS4quaKpOagj+eahOivneS8muWHuueOsOOAjOagh+mimOWGmeedgCAxMCDmnIjjgIHmoLzlrZDnlLvnmoTmmK8gOSDmnIjjgI3igJTigJTlm6DkuLrlkI7lj5HnmoQKICogMTAg5pyI6K+35rGC5YWI5Zue5p2l44CB5YWI5riy5p+T77yM6ZqP5ZCOIDkg5pyI6YKj5Lu95omN6JC95Zyw5bm26KaG55uW5a6D44CC5o6l5Y+j5LiN5oWi55qE5pe25YCZ5Yeg5LmOCiAqIOS4jeS8muWPkeeUn++8jOS9huWcqOW8see9kSAvIOWGt+e8k+WtmOS4i+W/heeOsO+8jOiAjOS4lOeci+i1t+adpeWDj+OAjOaXpeacn+mUmeS5seOAjeW+iOmavuiHquafpeOAggogKi8KbGV0IGxhdGVzdFJlcXVlc3QgPSAwCgovKiog5pel5pyfIOKGkiDlvZPlpKnmlbDmja7vvJvmsqHmnInmlrDniYfnmoTml6XmnJ/kuI3ov5sgbWFw77yM5a2Q57uE5Lu26YeM55So5Y+v6YCJ6ZO+6K+7ICovCmNvbnN0IGRheU1hcCA9IGNvbXB1dGVkKCgpID0+IHsKICBjb25zdCBtYXAgPSBuZXcgTWFwPHN0cmluZywgQ2FsZW5kYXJSZXNwb25zZVsnZGF5cyddW251bWJlcl0+KCkKICBmb3IgKGNvbnN0IGRheSBvZiBwYXlsb2FkLnZhbHVlPy5kYXlzIHx8IFtdKSBtYXAuc2V0KGRheS5kYXRlLCBkYXkpCiAgcmV0dXJuIG1hcAp9KQoKY29uc3QgdG90YWxDb3VudCA9IGNvbXB1dGVkKCgpID0+IHBheWxvYWQudmFsdWU/LnRvdGFsID8/IDApCmNvbnN0IGlzRW1wdHlNb250aCA9IGNvbXB1dGVkKCgpID0+ICFsb2FkaW5nLnZhbHVlICYmIHRvdGFsQ291bnQudmFsdWUgPT09IDApCgovLyA9PT09PT09PT09PT09PT09PT09PSDpgInkuK3ml6UgPT09PT09PT09PT09PT09PT09PT0KCi8qKiDpgInkuK3ml6XmnJ/nlKjot6/nlLEgcXVlcnkg5om/6L2977ya5pel5Y6G6aG15Y+v5Lul6KKr5pS26JePIC8g5YiG5Lqr5Yiw5p+Q5LiA5aSpICovCmNvbnN0IHNlbGVjdGVkRGF0ZSA9IHJlZignJykKCi8qKiDliIfmnIjlkI7pu5jorqTokL3lnKjjgIzku4rlpKnjgI3miYDlnKjnmoTpgqPmoLzvvIjmnKzmnIjvvInmiJblvZPmnIggMSDlj7cgKi8KZnVuY3Rpb24gZGVmYXVsdERheU9mTW9udGgoKTogc3RyaW5nIHsKICBpZiAoaXNDdXJyZW50TW9udGgudmFsdWUpIHJldHVybiB0b2RheVN0cgogIHJldHVybiByYW5nZVN0YXJ0LnZhbHVlCn0KCi8qKgogKiDot6/nlLHkuIrluKbnmoQgZGF5IOWPquWcqCoq5pys5pyIKirml7bmiY3orqTvvJrnm7TmjqXmiZPlvIAgYC9jYWxlbmRhcj9kYXk9MjAyNi0wOS0zMGAKICog6ICM5b2T5pyI5pivIDEwIOaciO+8jOmCo+S4gOagvOagueacrOS4jeWtmOWcqO+8jOiupOS4i+adpeS4i+aWueawuOi/nOaYr+S4gOeJh+epuuOAggogKi8KZnVuY3Rpb24gaW5pdGlhbERheSgpOiBzdHJpbmcgewogIGNvbnN0IGZyb21RdWVyeSA9IHR5cGVvZiByb3V0ZS5xdWVyeS5kYXkgPT09ICdzdHJpbmcnID8gcm91dGUucXVlcnkuZGF5IDogJycKICBpZiAoL15cZHs0fS1cZHsyfS1cZHsyfSQvLnRlc3QoZnJvbVF1ZXJ5KQogICAgJiYgZnJvbVF1ZXJ5ID49IHJhbmdlU3RhcnQudmFsdWUgJiYgZnJvbVF1ZXJ5IDw9IHJhbmdlRW5kLnZhbHVlKSB7CiAgICByZXR1cm4gZnJvbVF1ZXJ5CiAgfQogIHJldHVybiBkZWZhdWx0RGF5T2ZNb250aCgpCn0KCmNvbnN0IHNlbGVjdGVkRGF5ID0gY29tcHV0ZWQoKCkgPT4gZGF5TWFwLnZhbHVlLmdldChzZWxlY3RlZERhdGUudmFsdWUpIHx8IG51bGwpCgpmdW5jdGlvbiBzZWxlY3REYXRlKGRhdGU6IHN0cmluZykgewogIHNlbGVjdGVkRGF0ZS52YWx1ZSA9IGRhdGUKICAvLyByZXBsYWNlIOiAjOS4jeaYryBwdXNo77ya57+75pyI5pe25Lmf5Lya6LCD6L+Z6YeM77yM55SoIHB1c2gg5Lya5Zyo5Y6G5Y+y6YeM5aCG5LiA5Liy5ZCM6aG16K6w5b2VCiAgcm91dGVyLnJlcGxhY2UoeyBxdWVyeTogeyAuLi5yb3V0ZS5xdWVyeSwgZGF5OiBkYXRlIH0gfSkKfQoKLy8gPT09PT09PT09PT09PT09PT09PT0g5ouJ5Y+WID09PT09PT09PT09PT09PT09PT09Cgphc3luYyBmdW5jdGlvbiBsb2FkKCkgewogIGNvbnN0IHJlcUlkID0gKytsYXRlc3RSZXF1ZXN0CiAgbG9hZGluZy52YWx1ZSA9IHRydWUKICB0cnkgewogICAgY29uc3QgcmVzID0gYXdhaXQgZmV0Y2hDYWxlbmRhcih7CiAgICAgIHN0YXJ0OiByYW5nZVN0YXJ0LnZhbHVlLAogICAgICBlbmQ6IHJhbmdlRW5kLnZhbHVlLAogICAgICBsaWJyYXJ5SWQ6IGxpYnJhcnlJZC52YWx1ZSB8fCB1bmRlZmluZWQsCiAgICAgIGl0ZW1UeXBlczogYWxsVHlwZXNTZWxlY3RlZC52YWx1ZSA/IFtdIDogc2VsZWN0ZWRUeXBlcy52YWx1ZSwKICAgIH0pCiAgICAvLyDlt7Lnu4/mnInmm7TmlrDnmoTor7fmsYLlnKjpo57vvJrov5nku73mmK/ov4fmnJ/nu5PmnpzvvIzkuKLmjonvvIjlkKbliJnkvJrmiormlrDmnIjku73opobnm5bmiJDml6fmnIjku73vvIkKICAgIGlmIChyZXFJZCAhPT0gbGF0ZXN0UmVxdWVzdCkgcmV0dXJuCiAgICBwYXlsb2FkLnZhbHVlID0gcmVzCiAgfSBjYXRjaCAoZXJyOiBhbnkpIHsKICAgIGlmIChyZXFJZCAhPT0gbGF0ZXN0UmVxdWVzdCkgcmV0dXJuCiAgICBwYXlsb2FkLnZhbHVlID0gbnVsbAogICAgY29uc3QgZGV0YWlsID0gZXJyPy5yZXNwb25zZT8uZGF0YT8uZGV0YWlsCiAgICB0b2FzdC5lcnJvcih0eXBlb2YgZGV0YWlsID09PSAnc3RyaW5nJyA/IGRldGFpbCA6ICfml6XljobliqDovb3lpLHotKXvvIzor7fnqI3lkI7ph43or5UnKQogIH0gZmluYWxseSB7CiAgICAvLyDlkIznkIbvvJrlj6rmnInmnIDlkI7kuIDmrKHor7fmsYLmiY3og73mlLYgbG9hZGluZ++8jOWQpuWImeS8muaKiuaWsOivt+axgueahOmqqOaetuWxj+aPkOWJjeaUtuaOiQogICAgaWYgKHJlcUlkID09PSBsYXRlc3RSZXF1ZXN0KSBsb2FkaW5nLnZhbHVlID0gZmFsc2UKICB9Cn0KCm9uTW91bnRlZChhc3luYyAoKSA9PiB7CiAgLy8g5bqT5YiX6KGo5aSx6LSl5LiN6K+l5ouW5Z6u5pel5Y6G77ya562b6YCJ5qGG6ZmN57qn5oiQ44CM5YWo6YOo5aqS5L2T5bqT44CN77yM6aG16Z2i54Wn5bi455SoCiAgZW1ieUFwaS5nZXRWaWV3cygpLnRoZW4oKGl0ZW1zKSA9PiB7IGxpYnJhcmllcy52YWx1ZSA9IGl0ZW1zIH0pLmNhdGNoKCgpID0+IHt9KQogIHNlbGVjdGVkRGF0ZS52YWx1ZSA9IGluaXRpYWxEYXkoKQogIGF3YWl0IGxvYWQoKQp9KQoKLy8g57+75pyIIC8g5o2i562b6YCJ6YO96YeN5paw5Y+W77ybc2VsZWN0ZWREYXRlIOimgei3n+edgOaciOS7vei1sO+8jAovLyDlkKbliJnnlZnlnKjkuIrkuKrmnIjnmoTml6XmnJ/kvJrorqnkuIvmlrnliJfooajnqbrnnYDvvIjnlKjmiLfnnIvnnYDlg4/lnY/kuobvvInjgIIKLy8g6LWwIHNlbGVjdERhdGUg6ICM5LiN5piv55u05o6l6LWL5YC877yM5Zyw5Z2A5qCP5LiK55qEIGRheSDkuZ/kuI3kvJrlj5jmiJDkuIrkuKrmnIjnmoTmrbvml6XmnJ/jgIIKd2F0Y2goW3llYXIsIG1vbnRoLCBsaWJyYXJ5SWQsIHNlbGVjdGVkVHlwZXNdLCBhc3luYyAoKSA9PiB7CiAgc2VsZWN0RGF0ZShkZWZhdWx0RGF5T2ZNb250aCgpKQogIGF3YWl0IGxvYWQoKQp9LCB7IGRlZXA6IHRydWUgfSkKPC9zY3JpcHQ+Cgo8dGVtcGxhdGU+CiAgPGRpdiBjbGFzcz0iYXUtcGFnZSBjYWxlbmRhci12aWV3Ij4KICAgIDxoZWFkZXIgY2xhc3M9InBhZ2UtaGVhZCI+CiAgICAgIDxkaXY+CiAgICAgICAgPGgxIGNsYXNzPSJwYWdlLXRpdGxlIj4KICAgICAgICAgIDxDYWxlbmRhckRheXMgOnNpemU9IjIyIiAvPgogICAgICAgICAg6L+95paw5pel5Y6GCiAgICAgICAgPC9oMT4KICAgICAgICA8cCBjbGFzcz0icGFnZS1zdWIiPgogICAgICAgICAg5oyJ5YWl5bqT5pe26Ze055yL5q+P5aSp5paw5LiK5LqG5LuA5LmIIMK3IHt7IG1vbnRoTGFiZWwgfX0KICAgICAgICAgIDx0ZW1wbGF0ZSB2LWlmPSIhbG9hZGluZyAmJiB0b3RhbENvdW50ID4gMCI+IMK3IOWFsSB7eyB0b3RhbENvdW50IH19IOadoTwvdGVtcGxhdGU+CiAgICAgICAgPC9wPgogICAgICA8L2Rpdj4KICAgICAgPGRpdiBjbGFzcz0iaGVhZC1hY3Rpb25zIj4KICAgICAgICA8YnV0dG9uCiAgICAgICAgICBjbGFzcz0iYXUtYnRuIGF1LWJ0bi1naG9zdCBhdS1idG4tc20iCiAgICAgICAgICA6ZGlzYWJsZWQ9ImlzQ3VycmVudE1vbnRoIgogICAgICAgICAgQGNsaWNrPSJnb1RvZGF5IgogICAgICAgID4KICAgICAgICAgIOWbnuWIsOacrOaciAogICAgICAgIDwvYnV0dG9uPgogICAgICA8L2Rpdj4KICAgIDwvaGVhZGVyPgoKICAgIDwhLS0g5pyI5Y6G5Li75L2TIC0tPgogICAgPHNlY3Rpb24gY2xhc3M9ImF1LWNhcmQgYXUtY2FyZC1wYWQgYXUtYW5pbS11cCI+CiAgICAgIDxkaXYgY2xhc3M9ImNhbC10b29sYmFyIj4KICAgICAgICA8ZGl2IGNsYXNzPSJjYWwtbmF2Ij4KICAgICAgICAgIDxidXR0b24gY2xhc3M9ImNhbC1zdGVwIiBhcmlhLWxhYmVsPSLkuIrkuKrmnIgiIEBjbGljaz0ic2hpZnRNb250aCgtMSkiPgogICAgICAgICAgICA8Q2hldnJvbkxlZnQgOnNpemU9IjE4IiAvPgogICAgICAgICAgPC9idXR0b24+CiAgICAgICAgICA8c3BhbiBjbGFzcz0iY2FsLW1vbnRoIj57eyBtb250aExhYmVsIH19PC9zcGFuPgogICAgICAgICAgPGJ1dHRvbiBjbGFzcz0iY2FsLXN0ZXAiIGFyaWEtbGFiZWw9IuS4i+S4quaciCIgQGNsaWNrPSJzaGlmdE1vbnRoKDEpIj4KICAgICAgICAgICAgPENoZXZyb25SaWdodCA6c2l6ZT0iMTgiIC8+CiAgICAgICAgICA8L2J1dHRvbj4KICAgICAgICA8L2Rpdj4KCiAgICAgICAgPGRpdiBjbGFzcz0iY2FsLWZpbHRlcnMiPgogICAgICAgICAgPHNlbGVjdCB2LW1vZGVsPSJsaWJyYXJ5SWQiIGNsYXNzPSJhdS1pbnB1dCBjYWwtc2VsZWN0IiBhcmlhLWxhYmVsPSLmjInlqpLkvZPlupPnrZvpgIkiPgogICAgICAgICAgICA8b3B0aW9uIHZhbHVlPSIiPuWFqOmDqOWqkuS9k+W6kzwvb3B0aW9uPgogICAgICAgICAgICA8b3B0aW9uIHYtZm9yPSJsaWIgaW4gbGlicmFyaWVzIiA6a2V5PSJsaWIuSWQiIDp2YWx1ZT0ibGliLklkIj57eyBsaWIuTmFtZSB9fTwvb3B0aW9uPgogICAgICAgICAgPC9zZWxlY3Q+CgogICAgICAgICAgPGRpdiBjbGFzcz0iY2FsLXR5cGVzIiByb2xlPSJncm91cCIgYXJpYS1sYWJlbD0i5oyJ57G75Z6L562b6YCJIj4KICAgICAgICAgICAgPGJ1dHRvbgogICAgICAgICAgICAgIHYtZm9yPSJ0YWIgaW4gVFlQRV9UQUJTIgogICAgICAgICAgICAgIDprZXk9InRhYi5rZXkiCiAgICAgICAgICAgICAgY2xhc3M9ImNhbC1jaGlwIgogICAgICAgICAgICAgIDpjbGFzcz0ieyBvbjogc2VsZWN0ZWRUeXBlcy5pbmNsdWRlcyh0YWIua2V5KSB9IgogICAgICAgICAgICAgIDphcmlhLXByZXNzZWQ9InNlbGVjdGVkVHlwZXMuaW5jbHVkZXModGFiLmtleSkiCiAgICAgICAgICAgICAgQGNsaWNrPSJ0b2dnbGVUeXBlKHRhYi5rZXkpIgogICAgICAgICAgICA+CiAgICAgICAgICAgICAgPGNvbXBvbmVudCA6aXM9InRhYi5pY29uIiA6c2l6ZT0iMTQiIC8+CiAgICAgICAgICAgICAgPHNwYW4+e3sgdGFiLmxhYmVsIH19PC9zcGFuPgogICAgICAgICAgICAgIDxzcGFuIHYtaWY9InBheWxvYWQ/LnR5cGVzPy5bdGFiLmtleV0iIGNsYXNzPSJjYWwtY2hpcC1uIj4KICAgICAgICAgICAgICAgIHt7IHBheWxvYWQudHlwZXNbdGFiLmtleV0gfX0KICAgICAgICAgICAgICA8L3NwYW4+CiAgICAgICAgICAgIDwvYnV0dG9uPgogICAgICAgICAgPC9kaXY+CiAgICAgICAgPC9kaXY+CiAgICAgIDwvZGl2PgoKICAgICAgPENhbGVuZGFyR3JpZAogICAgICAgIDpjZWxscz0ibW9udGhDZWxscyIKICAgICAgICA6ZGF5LW1hcD0iZGF5TWFwIgogICAgICAgIDpzZWxlY3RlZC1kYXRlPSJzZWxlY3RlZERhdGUiCiAgICAgICAgOnRvZGF5LXN0cj0idG9kYXlTdHIiCiAgICAgICAgQHNlbGVjdD0ic2VsZWN0RGF0ZSIKICAgICAgLz4KCiAgICAgIDxkaXYgdi1pZj0ibG9hZGluZyIgY2xhc3M9ImF1LWVtcHR5Ij4KICAgICAgICA8c3BhbiBjbGFzcz0iYXUtc3Bpbm5lciIgYXJpYS1oaWRkZW49InRydWUiIC8+CiAgICAgICAgPHNwYW4+5q2j5Zyo6K+75Y+W5YWl5bqT6K6w5b2V4oCmPC9zcGFuPgogICAgICA8L2Rpdj4KICAgICAgPHAgdi1lbHNlLWlmPSJpc0VtcHR5TW9udGgiIGNsYXNzPSJjYWwtbm90ZSI+CiAgICAgICAg6L+Z5Liq5Yy66Ze06L+Y5rKh5pyJ5paw5LiK5p6255qE5p2h55uu44CC5p2h55uu5piv5omr5o+P6L+b5bqT5pe25YaZ5LiL55qE5YWl5bqT5pe26Ze077yM5omr5a6M5bCx5Lya5Ye6546w44CCCiAgICAgIDwvcD4KICAgICAgPHAgdi1lbHNlIGNsYXNzPSJjYWwtbm90ZSI+CiAgICAgICAg5qC85a2Q6YeM55qE5bCB6Z2i54K55byA5bCx5piv6K+m5oOF6aG177yb6KeS5qCH5piv5b2T5aSp55qE55yf5a6e5p2h5pWw77yI6LaF5Ye65Y+v5bGV56S65pWw6YeP55qE6YOo5YiG5Y+q6K6h5pWw77yJ44CCCiAgICAgIDwvcD4KICAgIDwvc2VjdGlvbj4KCiAgICA8IS0tIOmAieS4reaXpeivpuaDhSAtLT4KICAgIDxEYXlEZXRhaWxMaXN0CiAgICAgIDpzZWxlY3RlZC1kYXRlPSJzZWxlY3RlZERhdGUiCiAgICAgIDpzZWxlY3RlZC1kYXk9InNlbGVjdGVkRGF5IgogICAgICA6bG9hZGluZz0ibG9hZGluZyIKICAgIC8+CiAgPC9kaXY+CjwvdGVtcGxhdGU+Cgo8c3R5bGUgc2NvcGVkPgovKiAtLS0tLS0tLS0tIOaXpeWOhuiKguaLjeWPmOmHj+ingSBzdHlsZXMvY2FsZW5kYXIuY3NzIC0tLS0tLS0tLS0KICAgLS1jYWwtKiDnu5/kuIDmlLbmlZvlnKjooqvlvJXlhaXnmoTmoLflvI/ooajph4zvvIhDSSDorr7orqHku6TniYzlpZHnuqbmo4Dmn6XopoHmsYLvvInvvIwKICAg6L+Z6YeM5ZKM5a2Q57uE5Lu26YO96YCa6L+HIERPTSDnu6fmib/nm7TmjqXlvJXnlKjvvIzkuI3lho3ph43lpI3lrprkuYnjgIIgKi8KCi8qIC0tLS0tLS0tLS0g5bel5YW35p2hIC0tLS0tLS0tLS0gKi8KLmNhbC10b29sYmFyIHsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAganVzdGlmeS1jb250ZW50OiBzcGFjZS1iZXR3ZWVuOwogIGdhcDogMC43NXJlbSAxcmVtOwogIGZsZXgtd3JhcDogd3JhcDsKICBtYXJnaW4tYm90dG9tOiAxcmVtOwp9CgouY2FsLW5hdiB7CiAgZGlzcGxheTogZmxleDsKICBhbGlnbi1pdGVtczogY2VudGVyOwogIGdhcDogMC4zNzVyZW07CiAgLyog5a+86Iiq6KGM5Zu65a6a6auY5bqm77ya57+75pyI5pe25pyI5Lu95paH5a2X5LiN5Y+Y5b2iICovCiAgbWluLWhlaWdodDogMzJweDsKfQoKLmNhbC1zdGVwIHsKICBkaXNwbGF5OiBpbmxpbmUtZmxleDsKICBhbGlnbi1pdGVtczogY2VudGVyOwogIGp1c3RpZnktY29udGVudDogY2VudGVyOwogIHdpZHRoOiAzMnB4OwogIGhlaWdodDogMzJweDsKICAvKiBNMe+8muaYvuW8jyBtaW4taGVpZ2h077yM6aG25o6JIG1vYmlsZS5jc3Mg57uZ5omA5pyJIGJ1dHRvbiDnmoQgNDRweAogICAgIO+8iOWQpuWImeeqhOWxj+S4iui/meS4pOS4quWwj+aWueWdl+S8muiiq+aSkeaIkCA0NHB4IOmrmOeahOmVv+adoe+8jOaciOS7veagh+mimOmUmeS9je+8iSAqLwogIG1pbi1oZWlnaHQ6IDMycHg7CiAgYm9yZGVyOiAxcHggc29saWQgdmFyKC0tYXUtYm9yZGVyKTsKICBib3JkZXItcmFkaXVzOiB2YXIoLS1hdS1yLXNtKTsKICBiYWNrZ3JvdW5kOiB2YXIoLS1hdS1zdXJmYWNlLTIpOwogIGNvbG9yOiB2YXIoLS1hdS10ZXh0LTIpOwogIGN1cnNvcjogcG9pbnRlcjsKICB0cmFuc2l0aW9uOiBiYWNrZ3JvdW5kIHZhcigtLWF1LWZhc3QpIHZhcigtLWF1LWVhc2UpLAogICAgY29sb3IgdmFyKC0tYXUtZmFzdCkgdmFyKC0tYXUtZWFzZSksIHRyYW5zZm9ybSB2YXIoLS1hdS1mYXN0KSB2YXIoLS1hdS1lYXNlKTsKfQouY2FsLXN0ZXA6aG92ZXIgeyBiYWNrZ3JvdW5kOiB2YXIoLS1hdS1zdXJmYWNlLTMpOyBjb2xvcjogdmFyKC0tYXUtcHJpbWFyeSk7IH0KLmNhbC1zdGVwOmFjdGl2ZSB7IHRyYW5zZm9ybTogc2NhbGUoMC45NCk7IH0KCi5jYWwtbW9udGggewogIG1pbi13aWR0aDogNi41cmVtOwogIHRleHQtYWxpZ246IGNlbnRlcjsKICBmb250LWZhbWlseTogdmFyKC0tYXUtZm9udC1zZXJpZik7CiAgZm9udC1zaXplOiAxLjA2MjVyZW07CiAgZm9udC13ZWlnaHQ6IDcwMDsKICBjb2xvcjogdmFyKC0tYXUtdGV4dCk7CiAgZm9udC12YXJpYW50LW51bWVyaWM6IHRhYnVsYXItbnVtczsKfQoKLmNhbC1maWx0ZXJzIHsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAgZ2FwOiAwLjVyZW07CiAgZmxleC13cmFwOiB3cmFwOwp9CgouY2FsLXNlbGVjdCB7CiAgd2lkdGg6IGF1dG87CiAgbWluLXdpZHRoOiA4LjVyZW07CiAgaGVpZ2h0OiAzNHB4OwogIGZvbnQtc2l6ZTogdmFyKC0tY2FsLWRheS1zdWItc2l6ZSk7CiAgY3Vyc29yOiBwb2ludGVyOwp9CgouY2FsLXR5cGVzIHsKICBkaXNwbGF5OiBmbGV4OwogIGdhcDogMC4yNXJlbTsKICBwYWRkaW5nOiAzcHg7CiAgYm9yZGVyLXJhZGl1czogdmFyKC0tYXUtci1mdWxsKTsKICBiYWNrZ3JvdW5kOiB2YXIoLS1hdS1zdXJmYWNlLTIpOwogIGJvcmRlcjogMXB4IHNvbGlkIHZhcigtLWF1LWJvcmRlcik7Cn0KCi5jYWwtY2hpcCB7CiAgZGlzcGxheTogaW5saW5lLWZsZXg7CiAgYWxpZ24taXRlbXM6IGNlbnRlcjsKICBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjsKICBnYXA6IDAuMzEyNXJlbTsKICBoZWlnaHQ6IDI4cHg7CiAgLyog5YiG5q615Zmo6YeM55qE5bCP6IO25ZuK77ya5LiN5ZCDIG1vYmlsZS5jc3Mg57uZ5omA5pyJIGJ1dHRvbiDnmoQgNDRweCDmnIDlsI/pq5jluqbvvIjpgqPkvJrmiormlbTmnaHmkpHmiJDkuIDmjpLlpKfoja/kuLjvvIkgKi8KICBtaW4taGVpZ2h0OiAwOwogIHBhZGRpbmc6IDAgMC42MjVyZW07CiAgYm9yZGVyOiAwOwogIGJvcmRlci1yYWRpdXM6IHZhcigtLWF1LXItZnVsbCk7CiAgYmFja2dyb3VuZDogdHJhbnNwYXJlbnQ7CiAgY29sb3I6IHZhcigtLWF1LXRleHQtMyk7CiAgZm9udC1zaXplOiB2YXIoLS1jYWwtZGF5LXN1Yi1zaXplKTsKICBmb250LXdlaWdodDogNjAwOwogIGN1cnNvcjogcG9pbnRlcjsKICB3aGl0ZS1zcGFjZTogbm93cmFwOwogIHRyYW5zaXRpb246IGJhY2tncm91bmQgdmFyKC0tYXUtZmFzdCkgdmFyKC0tYXUtZWFzZSksIGNvbG9yIHZhcigtLWF1LWZhc3QpIHZhcigtLWF1LWVhc2UpOwp9Ci5jYWwtY2hpcDpob3ZlciB7IGNvbG9yOiB2YXIoLS1hdS10ZXh0KTsgfQouY2FsLWNoaXAub24gewogIGJhY2tncm91bmQ6IHZhcigtLWF1LXByaW1hcnktc29mdCk7CiAgY29sb3I6IHZhcigtLWF1LXByaW1hcnkpOwogIGJveC1zaGFkb3c6IGluc2V0IDAgMCAwIDFweCB2YXIoLS1hdS1wcmltYXJ5LWJvcmRlcik7Cn0KLmNhbC1jaGlwIHN2ZyB7IG9wYWNpdHk6IDAuODU7IH0KCi5jYWwtY2hpcC1uIHsKICBwYWRkaW5nOiAwIDAuMzEyNXJlbTsKICBib3JkZXItcmFkaXVzOiB2YXIoLS1hdS1yLWZ1bGwpOwogIGJhY2tncm91bmQ6IHZhcigtLWF1LXN1cmZhY2UtMyk7CiAgY29sb3I6IHZhcigtLWF1LXRleHQtMyk7CiAgZm9udC1zaXplOiB2YXIoLS1jYWwtZGF5LXN1Yi1zaXplKTsKICBmb250LXZhcmlhbnQtbnVtZXJpYzogdGFidWxhci1udW1zOwp9Ci8qIOmAieS4reaAgeeahOinkuagh+eUqCAtLWF1LXRleHQg6ICM5LiN5pivIC0tYXUtcHJpbWFyee+8mua1heiJsuS4u+mimOS4iwogICAtLWF1LXByaW1hcnkg5Y6L5ZyoIC0tYXUtcHJpbWFyeS1taWQg5LiK5Y+q5pyJIDIuODc6Me+8iOaVsOWtl+W3sue7jyAxMXB477yMCiAgIOWGjeS9juWwseecn+eahOivu+S4jeWHuuadpeS6hu+8ie+8jOaNouaIkOato+aWh+iJsuWQjuS4pOWll+S4u+mimOmDveWcqCAxMDoxIOS4iuS4iyAqLwouY2FsLWNoaXAub24gLmNhbC1jaGlwLW4geyBiYWNrZ3JvdW5kOiB2YXIoLS1hdS1wcmltYXJ5LW1pZCk7IGNvbG9yOiB2YXIoLS1hdS10ZXh0KTsgfQoKLmNhbC1ub3RlIHsKICBtYXJnaW46IDAuODc1cmVtIDAgMDsKICBmb250LXNpemU6IHZhcigtLWNhbC1kYXktc3ViLXNpemUpOwogIGNvbG9yOiB2YXIoLS1hdS10ZXh0LTMpOwp9CgovKiAtLS0tLS0tLS0tIOeqhOWxjyAtLS0tLS0tLS0tICovCkBtZWRpYSAobWF4LXdpZHRoOiA3NjhweCkgewogIC5jYWwtdG9vbGJhciB7IGdhcDogMC42MjVyZW07IH0KICAuY2FsLW5hdiB7IHdpZHRoOiAxMDAlOyBqdXN0aWZ5LWNvbnRlbnQ6IHNwYWNlLWJldHdlZW47IH0KICAuY2FsLW1vbnRoIHsgZmxleDogMTsgfQogIC5jYWwtdHlwZXMgeyB3aWR0aDogMTAwJTsgfQogIC5jYWwtY2hpcCB7IGZsZXg6IDE7IGhlaWdodDogMzJweDsgfQogIC5jYWwtZmlsdGVycyB7IHdpZHRoOiAxMDAlOyB9CiAgLmNhbC1zZWxlY3QgeyBmbGV4OiAxOyBtaW4td2lkdGg6IDA7IH0KCiAgLyog57G75Z6L57uE54us5Y2g5LiA6KGM77ya5LiO5bqT5LiL5ouJ5ZCE5Y2g5LiA5Y2K5pe277yM5LiJ5LiqIGNoaXAg5Yqg5LiK6KeS5qCH5Lya6KKr5oyk5Yiw5o2i6KGMICovCiAgLmNhbC10eXBlcyB7IGZsZXg6IDEgMCAxMDAlOyBqdXN0aWZ5LWNvbnRlbnQ6IHNwYWNlLWJldHdlZW47IH0KICAuY2FsLWNoaXAgeyBmbGV4OiAxOyBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjsgcGFkZGluZzogMCAwLjM3NXJlbTsgbWluLXdpZHRoOiAwOyB9CiAgLmNhbC1jaGlwIHNwYW4geyBvdmVyZmxvdzogaGlkZGVuOyB0ZXh0LW92ZXJmbG93OiBlbGxpcHNpczsgfQp9CgpAbWVkaWEgKHByZWZlcnMtcmVkdWNlZC1tb3Rpb246IHJlZHVjZSkgewogIC5jYWwtc3RlcCB7IHRyYW5zaXRpb246IG5vbmU7IH0KICAuY2FsLXN0ZXA6YWN0aXZlIHsgdHJhbnNmb3JtOiBub25lOyB9Cn0KPC9zdHlsZT4K
+<script setup lang="ts">
+/**
+ * 追新日历 — 按入库日期看每天新上了什么
+ *
+ * ## 结构（2026-10-12 重构）
+ * 这个文件只剩骨架：页头 + 工具条 + 数据拉取。月份数学搬到了
+ * composables/useCalendarMonth，月网格是 components/calendar/CalendarGrid，
+ * 当日列表是 components/calendar/DayDetailList。
+ *
+ * ## 数据从哪来
+ * 全部来自 GET /api/user/emby/calendar（见 api/calendar.ts）：一次请求换回
+ * 按天分好组的条目。后端已经按 `date_added` 分桶、按媒体库可见范围收过一遍，
+ * 这里只做展示，不再二次分桶——前后端各分一次迟早会差一天。
+ *
+ * ## 颜色
+ * 全程只用 --au-* 令牌，浅色 / 深色两套主题自动跟随，不写死任何色值。
+ * 日历自己的节拍收敛到 --cal-* 变量（见下方 <style>），子组件直接引用。
+ */
+import { ref, computed, watch, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { CalendarDays, ChevronLeft, ChevronRight, Film, Tv, ListVideo } from 'lucide-vue-next'
+import { fetchCalendar, type CalendarItemType, type CalendarResponse } from '@/api/calendar'
+import { embyApi, type EmbyItem } from '@/api/emby'
+import { useToast } from '@/composables/useToast'
+import { useCalendarMonth } from '@/composables/useCalendarMonth'
+import CalendarGrid from '@/components/calendar/CalendarGrid.vue'
+import DayDetailList from '@/components/calendar/DayDetailList.vue'
+
+const toast = useToast()
+const route = useRoute()
+const router = useRouter()
+
+// ==================== 月份（逻辑在 useCalendarMonth） ====================
+
+const {
+  year, month, todayStr, monthLabel, isCurrentMonth,
+  rangeStart, rangeEnd, monthCells,
+  shiftMonth, goToday,
+} = useCalendarMonth()
+
+// ==================== 筛选 ====================
+
+const ALL_TYPES: CalendarItemType[] = ['movie', 'series', 'episode']
+
+const TYPE_TABS: { key: CalendarItemType; label: string; icon: typeof Film }[] = [
+  { key: 'movie', label: '电影', icon: Film },
+  { key: 'series', label: '剧集', icon: Tv },
+  { key: 'episode', label: '单集', icon: ListVideo },
+]
+
+/** 媒体库下拉直接用 Views 的 Id（guid），后端两种标识都收 */
+const libraries = ref<EmbyItem[]>([])
+const libraryId = ref('')
+
+/** 永远非空：全部取消勾选时回到「全选」，避免出现「什么都没选 = 什么都不显示」 */
+const selectedTypes = ref<CalendarItemType[]>([...ALL_TYPES])
+
+function toggleType(key: CalendarItemType) {
+  const has = selectedTypes.value.includes(key)
+  const next = has
+    ? selectedTypes.value.filter((t) => t !== key)
+    : ALL_TYPES.filter((t) => t === key || selectedTypes.value.includes(t))
+  selectedTypes.value = next.length ? next : [...ALL_TYPES]
+}
+
+const allTypesSelected = computed(() => selectedTypes.value.length === ALL_TYPES.length)
+
+// ==================== 数据 ====================
+
+const loading = ref(true)
+const payload = ref<CalendarResponse | null>(null)
+
+/**
+ * 请求序号：连续翻月 / 换库时，先发的请求可能后到。
+ *
+ * 不做这个护栏的话会出现「标题写着 10 月、格子画的是 9 月」——因为后发的
+ * 10 月请求先回来、先渲染，随后 9 月那份才落地并覆盖它。接口不慢的时候几乎
+ * 不会发生，但在弱网 / 冷缓存下必现，而且看起来像「日期错乱」很难自查。
+ */
+let latestRequest = 0
+
+/** 日期 → 当天数据；没有新片的日期不进 map，子组件里用可选链读 */
+const dayMap = computed(() => {
+  const map = new Map<string, CalendarResponse['days'][number]>()
+  for (const day of payload.value?.days || []) map.set(day.date, day)
+  return map
+})
+
+const totalCount = computed(() => payload.value?.total ?? 0)
+const isEmptyMonth = computed(() => !loading.value && totalCount.value === 0)
+
+// ==================== 选中日 ====================
+
+/** 选中日期用路由 query 承载：日历页可以被收藏 / 分享到某一天 */
+const selectedDate = ref('')
+
+/** 切月后默认落在「今天」所在的那格（本月）或当月 1 号 */
+function defaultDayOfMonth(): string {
+  if (isCurrentMonth.value) return todayStr
+  return rangeStart.value
+}
+
+/**
+ * 路由上带的 day 只在**本月**时才认：直接打开 `/calendar?day=2026-09-30`
+ * 而当月是 10 月，那一格根本不存在，认下来下方永远是一片空。
+ */
+function initialDay(): string {
+  const fromQuery = typeof route.query.day === 'string' ? route.query.day : ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(fromQuery)
+    && fromQuery >= rangeStart.value && fromQuery <= rangeEnd.value) {
+    return fromQuery
+  }
+  return defaultDayOfMonth()
+}
+
+const selectedDay = computed(() => dayMap.value.get(selectedDate.value) || null)
+
+function selectDate(date: string) {
+  selectedDate.value = date
+  // replace 而不是 push：翻月时也会调这里，用 push 会在历史里堆一串同页记录
+  router.replace({ query: { ...route.query, day: date } })
+}
+
+// ==================== 拉取 ====================
+
+async function load() {
+  const reqId = ++latestRequest
+  loading.value = true
+  try {
+    const res = await fetchCalendar({
+      start: rangeStart.value,
+      end: rangeEnd.value,
+      libraryId: libraryId.value || undefined,
+      itemTypes: allTypesSelected.value ? [] : selectedTypes.value,
+    })
+    // 已经有更新的请求在飞：这份是过期结果，丢掉（否则会把新月份覆盖成旧月份）
+    if (reqId !== latestRequest) return
+    payload.value = res
+  } catch (err: any) {
+    if (reqId !== latestRequest) return
+    payload.value = null
+    const detail = err?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '日历加载失败，请稍后重试')
+  } finally {
+    // 同理：只有最后一次请求才能收 loading，否则会把新请求的骨架屏提前收掉
+    if (reqId === latestRequest) loading.value = false
+  }
+}
+
+onMounted(async () => {
+  // 库列表失败不该拖垮日历：筛选框降级成「全部媒体库」，页面照常用
+  embyApi.getViews().then((items) => { libraries.value = items }).catch(() => {})
+  selectedDate.value = initialDay()
+  await load()
+})
+
+// 翻月 / 换筛选都重新取；selectedDate 要跟着月份走，
+// 否则留在上个月的日期会让下方列表空着（用户看着像坏了）。
+// 走 selectDate 而不是直接赋值，地址栏上的 day 也不会变成上个月的死日期。
+watch([year, month, libraryId, selectedTypes], async () => {
+  selectDate(defaultDayOfMonth())
+  await load()
+}, { deep: true })
+</script>
+
+<template>
+  <div class="au-page calendar-view">
+    <header class="page-head">
+      <div>
+        <h1 class="page-title">
+          <CalendarDays :size="22" />
+          追新日历
+        </h1>
+        <p class="page-sub">
+          按入库时间看每天新上了什么 · {{ monthLabel }}
+          <template v-if="!loading && totalCount > 0"> · 共 {{ totalCount }} 条</template>
+        </p>
+      </div>
+      <div class="head-actions">
+        <button
+          class="au-btn au-btn-ghost au-btn-sm"
+          :disabled="isCurrentMonth"
+          @click="goToday"
+        >
+          回到本月
+        </button>
+      </div>
+    </header>
+
+    <!-- 月历主体 -->
+    <section class="au-card au-card-pad au-anim-up">
+      <div class="cal-toolbar">
+        <div class="cal-nav">
+          <button class="cal-step" aria-label="上个月" @click="shiftMonth(-1)">
+            <ChevronLeft :size="18" />
+          </button>
+          <span class="cal-month">{{ monthLabel }}</span>
+          <button class="cal-step" aria-label="下个月" @click="shiftMonth(1)">
+            <ChevronRight :size="18" />
+          </button>
+        </div>
+
+        <div class="cal-filters">
+          <select v-model="libraryId" class="au-input cal-select" aria-label="按媒体库筛选">
+            <option value="">全部媒体库</option>
+            <option v-for="lib in libraries" :key="lib.Id" :value="lib.Id">{{ lib.Name }}</option>
+          </select>
+
+          <div class="cal-types" role="group" aria-label="按类型筛选">
+            <button
+              v-for="tab in TYPE_TABS"
+              :key="tab.key"
+              class="cal-chip"
+              :class="{ on: selectedTypes.includes(tab.key) }"
+              :aria-pressed="selectedTypes.includes(tab.key)"
+              @click="toggleType(tab.key)"
+            >
+              <component :is="tab.icon" :size="14" />
+              <span>{{ tab.label }}</span>
+              <span v-if="payload?.types?.[tab.key]" class="cal-chip-n">
+                {{ payload.types[tab.key] }}
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <CalendarGrid
+        :cells="monthCells"
+        :day-map="dayMap"
+        :selected-date="selectedDate"
+        :today-str="todayStr"
+        @select="selectDate"
+      />
+
+      <div v-if="loading" class="au-empty">
+        <span class="au-spinner" aria-hidden="true" />
+        <span>正在读取入库记录…</span>
+      </div>
+      <p v-else-if="isEmptyMonth" class="cal-note">
+        这个区间还没有新上架的条目。条目是扫描进库时写下的入库时间，扫完就会出现。
+      </p>
+      <p v-else class="cal-note">
+        格子里的封面点开就是详情页；角标是当天的真实条数（超出可展示数量的部分只计数）。
+      </p>
+    </section>
+
+    <!-- 选中日详情 -->
+    <DayDetailList
+      :selected-date="selectedDate"
+      :selected-day="selectedDay"
+      :loading="loading"
+    />
+  </div>
+</template>
+
+<style scoped>
+/* ---------- 日历节拍变量见 styles/calendar.css ----------
+   --cal-* 统一收敛在被引入的样式表里（CI 设计令牌契约检查要求），
+   这里和子组件都通过 DOM 继承直接引用，不再重复定义。 */
+
+/* ---------- 工具条 ---------- */
+.cal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.cal-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  /* 导航行固定高度：翻月时月份文字不变形 */
+  min-height: 32px;
+}
+
+.cal-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  /* M1：显式 min-height，顶掉 mobile.css 给所有 button 的 44px
+     （否则窄屏上这两个小方块会被撑成 44px 高的长条，月份标题错位） */
+  min-height: 32px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-sm);
+  background: var(--au-surface-2);
+  color: var(--au-text-2);
+  cursor: pointer;
+  transition: background var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
+}
+.cal-step:hover { background: var(--au-surface-3); color: var(--au-primary); }
+.cal-step:active { transform: scale(0.94); }
+
+.cal-month {
+  min-width: 6.5rem;
+  text-align: center;
+  font-family: var(--au-font-serif);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-filters {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.cal-select {
+  width: auto;
+  min-width: 8.5rem;
+  height: 34px;
+  font-size: var(--cal-day-sub-size);
+  cursor: pointer;
+}
+
+.cal-types {
+  display: flex;
+  gap: 0.25rem;
+  padding: 3px;
+  border-radius: var(--au-r-full);
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+}
+
+.cal-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3125rem;
+  height: 28px;
+  /* 分段器里的小胶囊：不吃 mobile.css 给所有 button 的 44px 最小高度（那会把整条撑成一排大药丸） */
+  min-height: 0;
+  padding: 0 0.625rem;
+  border: 0;
+  border-radius: var(--au-r-full);
+  background: transparent;
+  color: var(--au-text-3);
+  font-size: var(--cal-day-sub-size);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
+}
+.cal-chip:hover { color: var(--au-text); }
+.cal-chip.on {
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
+  box-shadow: inset 0 0 0 1px var(--au-primary-border);
+}
+.cal-chip svg { opacity: 0.85; }
+
+.cal-chip-n {
+  padding: 0 0.3125rem;
+  border-radius: var(--au-r-full);
+  background: var(--au-surface-3);
+  color: var(--au-text-3);
+  font-size: var(--cal-day-sub-size);
+  font-variant-numeric: tabular-nums;
+}
+/* 选中态的角标用 --au-text 而不是 --au-primary：浅色主题下
+   --au-primary 压在 --au-primary-mid 上只有 2.87:1（数字已经 11px，
+   再低就真的读不出来了），换成正文色后两套主题都在 10:1 上下 */
+.cal-chip.on .cal-chip-n { background: var(--au-primary-mid); color: var(--au-text); }
+
+.cal-note {
+  margin: 0.875rem 0 0;
+  font-size: var(--cal-day-sub-size);
+  color: var(--au-text-3);
+}
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 768px) {
+  .cal-toolbar { gap: 0.625rem; }
+  .cal-nav { width: 100%; justify-content: space-between; }
+  .cal-month { flex: 1; }
+  .cal-types { width: 100%; }
+  .cal-chip { flex: 1; height: 32px; }
+  .cal-filters { width: 100%; }
+  .cal-select { flex: 1; min-width: 0; }
+
+  /* 类型组独占一行：与库下拉各占一半时，三个 chip 加上角标会被挤到换行 */
+  .cal-types { flex: 1 0 100%; justify-content: space-between; }
+  .cal-chip { flex: 1; justify-content: center; padding: 0 0.375rem; min-width: 0; }
+  .cal-chip span { overflow: hidden; text-overflow: ellipsis; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cal-step { transition: none; }
+  .cal-step:active { transform: none; }
+}
+</style>

@@ -1,1 +1,27 @@
-aW1wb3J0ICcuL3N0eWxlcy9hdXJvcmEuY3NzJwppbXBvcnQgJy4vc3R5bGVzL25lby1ub2lyLXRva2Vucy5jc3MnCmltcG9ydCAnLi9zdHlsZXMvaW5kZXguY3NzJwppbXBvcnQgJy4vc3R5bGVzL21vYmlsZS5jc3MnCmltcG9ydCAnLi9zdHlsZXMvY2FsZW5kYXIuY3NzJwoKaW1wb3J0IHsgY3JlYXRlQXBwIH0gZnJvbSAndnVlJwppbXBvcnQgeyBjcmVhdGVQaW5pYSB9IGZyb20gJ3BpbmlhJwoKaW1wb3J0IEFwcCBmcm9tICcuL0FwcC52dWUnCmltcG9ydCByb3V0ZXIgZnJvbSAnLi9yb3V0ZXInCi8vIOermeeCueWTgeeJjO+8iOiDveWKm++8muermeeCueS4juWTgeeJjO+8ie+8muermeWQjSAvIExvZ28gLyDkuLvpopjoibIgLyBTRU8g55Sx5ZCO5Y+w6YWN572u77yM5ZCv5Yqo5pe26K+75LiA5qyh44CCCi8vIOWFiOaMgui9veWGjeaLieWPlu+8jOS4jeiuqeS4gOasoemineWklueahOivt+axguaKiummluWxj+aLluS9j++8m+aLieWIsOS5i+WQjuS4u+mimOiJsuS4juagh+mimOS8muiHquW3seabtOaWsOOAggppbXBvcnQgeyBpbml0QnJhbmRpbmcgfSBmcm9tICcuL2NvbXBvc2FibGVzL3VzZUJyYW5kaW5nJwoKLy8gaU9TIFNhZmFyaSDopoHmsYLpobXpnaLmnIkgdG91Y2hzdGFydCDnm5HlkKzlmajmiY3kvJrop6blj5EgOmFjdGl2ZSDkvKrnsbsKLy8g56m65Ye95pWw5Y2z5Y+v77yMcGFzc2l2ZSDpgb/lhY3mu5rliqjmgKfog73pl67popgKZG9jdW1lbnQuYWRkRXZlbnRMaXN0ZW5lcigndG91Y2hzdGFydCcsICgpID0+IHt9LCB7IHBhc3NpdmU6IHRydWUgfSkKCmNvbnN0IGFwcCA9IGNyZWF0ZUFwcChBcHApCmNvbnN0IHBpbmlhID0gY3JlYXRlUGluaWEoKQoKYXBwLnVzZShwaW5pYSkKYXBwLnVzZShyb3V0ZXIpCgphcHAubW91bnQoJyNhcHAnKQp2b2lkIGluaXRCcmFuZGluZygpCg==
+import './styles/aurora.css'
+import './styles/neo-noir-tokens.css'
+import './styles/index.css'
+import './styles/mobile.css'
+import './styles/calendar.css'
+
+import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+
+import App from './App.vue'
+import router from './router'
+// 站点品牌（能力：站点与品牌）：站名 / Logo / 主题色 / SEO 由后台配置，启动时读一次。
+// 先挂载再拉取，不让一次额外的请求把首屏拖住；拉到之后主题色与标题会自己更新。
+import { initBranding } from './composables/useBranding'
+
+// iOS Safari 要求页面有 touchstart 监听器才会触发 :active 伪类
+// 空函数即可，passive 避免滚动性能问题
+document.addEventListener('touchstart', () => {}, { passive: true })
+
+const app = createApp(App)
+const pinia = createPinia()
+
+app.use(pinia)
+app.use(router)
+
+app.mount('#app')
+void initBranding()

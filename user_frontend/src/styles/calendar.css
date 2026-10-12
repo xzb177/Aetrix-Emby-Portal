@@ -1,1 +1,33 @@
-LyoqCiAqIOi/veaWsOaXpeWOhuiKguaLjeWPmOmHj++8iC0tY2FsLSrvvIkKICoKICog5Li65LuA5LmI5Y2V54us5LiA5Liq5paH5Lu277yaQ0kg55qE6K6+6K6h5Luk54mM5aWR57qm5qOA5p+l6KaB5rGC44CM5byV55So55qE5Luk54mM5b+F6aG75Zyo6KKr5byV5YWl55qECiAqIOagt+W8j+ihqOmHjOWumuS5iei/h+OAjeKAlOKAlFZ1ZSBzY29wZWQgPHN0eWxlPiDph4znmoTlrprkuYnlroPkuI3orqTjgILov5nph4znu5/kuIDmlLbmlZvvvIwKICog5a2Q57uE5Lu277yIQ2FsZW5kYXJHcmlkIC8gRGF5RGV0YWlsTGlzdO+8iemAmui/hyBET00g57un5om/5ou/5Yiw6L+Z5Lqb5Y+Y6YeP44CCCiAqCiAqIOWAvOWFqOmDqOaYoOWwhCAtLWF1LSrvvIzkuI3mlrDlop7ku7vkvZXoibLlgLzjgIIKICovCi5jYWxlbmRhci12aWV3IHsKICAtLWNhbC1nYXA6IDAuMzEyNXJlbTsgICAgICAgIC8qIOe9keagvOmXtOi3nSAqLwogIC0tY2FsLXdlZWstbWI6IDAuMzc1cmVtOyAgICAgLyog5pif5pyf5aS05LiL6L656LedICovCiAgLS1jYWwtd2Vlay1zaXplOiAwLjgxMjVyZW07ICAvKiDmmJ/mnJ/lpLTlrZflj7cgKi8KICAtLWNhbC1jZWxsLXBhZDogMnB4OyAgICAgICAgIC8qIOagvOWtkOWGhei+uei3nSAqLwogIC0tY2FsLWNlbGwtcmFkaXVzOiB2YXIoLS1hdS1yLXNtKTsKICAtLWNhbC1jZWxsLW1pbi1oOiA0MHB4OyAgICAgIC8qIOagvOWtkOacgOWwj+mrmOW6pu+8iOahjOmdoueUsSBhc3BlY3QtcmF0aW8g5Yaz5a6a77yJICovCiAgLS1jYWwtcm93LWdhcDogM3B4OyAgICAgICAgICAvKiDkuInooYzkuYvpl7TnmoTpl7Tot50gKi8KICAtLWNhbC1yb3cxLWg6IDE2cHg7ICAgICAgICAgIC8qIHIxIOaXpeacnyvop5LmoIfooYzpq5ggKi8KICAtLWNhbC1yb3cyLWg6IDEycHg7ICAgICAgICAgIC8qIHIyIOWwgemdouWchueCueihjOmrmCAqLwogIC0tY2FsLWRheW51bS1zaXplOiAwLjgxMjVyZW07CiAgLS1jYWwtY291bnQtc2l6ZTogMC44MTI1cmVtOwogIC0tY2FsLWRvdC1zaXplOiA5cHg7CiAgLS1jYWwtZG90LWdhcDogMnB4OwogIC0tY2FsLWRheS10aXRsZS1zaXplOiAwLjgxMjVyZW07CiAgLS1jYWwtZGF5LXN1Yi1zaXplOiAwLjgxMjVyZW07Cn0KCkBtZWRpYSAobWF4LXdpZHRoOiA3NjhweCkgewogIC5jYWxlbmRhci12aWV3IHsKICAgIC0tY2FsLWRvdC1zaXplOiA3cHg7CiAgICAtLWNhbC1jZWxsLW1pbi1oOiA0NnB4OyAgICAvKiDnqoTlsY/moLzlrZDlm7rlrprpq5jluqYgKi8KICB9Cn0K
+/**
+ * 追新日历节拍变量（--cal-*）
+ *
+ * 为什么单独一个文件：CI 的设计令牌契约检查要求「引用的令牌必须在被引入的
+ * 样式表里定义过」——Vue scoped <style> 里的定义它不认。这里统一收敛，
+ * 子组件（CalendarGrid / DayDetailList）通过 DOM 继承拿到这些变量。
+ *
+ * 值全部映射 --au-*，不新增任何色值。
+ */
+.calendar-view {
+  --cal-gap: 0.3125rem;        /* 网格间距 */
+  --cal-week-mb: 0.375rem;     /* 星期头下边距 */
+  --cal-week-size: 0.8125rem;  /* 星期头字号 */
+  --cal-cell-pad: 2px;         /* 格子内边距 */
+  --cal-cell-radius: var(--au-r-sm);
+  --cal-cell-min-h: 40px;      /* 格子最小高度（桌面由 aspect-ratio 决定） */
+  --cal-row-gap: 3px;          /* 三行之间的间距 */
+  --cal-row1-h: 16px;          /* r1 日期+角标行高 */
+  --cal-row2-h: 12px;          /* r2 封面圆点行高 */
+  --cal-daynum-size: 0.8125rem;
+  --cal-count-size: 0.8125rem;
+  --cal-dot-size: 9px;
+  --cal-dot-gap: 2px;
+  --cal-day-title-size: 0.8125rem;
+  --cal-day-sub-size: 0.8125rem;
+}
+
+@media (max-width: 768px) {
+  .calendar-view {
+    --cal-dot-size: 7px;
+    --cal-cell-min-h: 46px;    /* 窄屏格子固定高度 */
+  }
+}

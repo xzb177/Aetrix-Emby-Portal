@@ -1,1 +1,236 @@
-PHNjcmlwdCBzZXR1cCBsYW5nPSJ0cyI+Ci8qKgogKiDov73mlrDml6XljoYgwrcg5pyI572R5qC8CiAqCiAqICMjIOW4g+WxgOS4uuS7gOS5iOaYr+OAjOS4ieihjOW8j+OAjQogKiDkuYvliY3moLzlrZDmmK/jgIzml6XmnJ/mlbDlrZcgKyDlsIHpnaLlnIbngrkgKyDlj7PkuIrop5IgYWJzb2x1dGUg6KeS5qCH44CN77yaCiAqIDEuIOacieWchueCueeahOagvOWtkOWSjOayoeWchueCueeahOagvOWtkO+8jOaXpeacn+aVsOWtl+S4jeWcqOWQjOS4gOadoeawtOW5s+e6v+S4igogKiAgICDvvIhmbGV4IOWxheS4re+8jOacieWGheWuueeahOagvOWtkOaKiuaVsOWtl+mhtuS4iuWOu+S6hu+8ieKAlOKAlOi/meWwseaYr+eUqOaIt+ivtOeahOOAjOmUmeS9jeOAje+8mwogKiAyLiBhYnNvbHV0ZSDop5LmoIflnKjnqoTlsY/lsI/moLzlrZDph4zkvJrmuqLlh7rmoLzlrZDop5LvvIzooqvoo4HmjonkuIDljYrjgIIKICoKICog546w5Zyo5q+P5qC85Zu65a6a5LiJ6KGM77yacjEg5pel5pyfK+inkuagh++8iOaWh+aho+a1ge+8jOS4jeWGjSBhYnNvbHV0Ze+8ieOAgXIyIOWwgemdouWchueCuQogKiDvvIjmsqHlhoXlrrnkuZ/ljaDkvY3vvIzpq5jluqbkuI3lj5jvvInjgIFyMyDnu5PmnoTljaDkvY3jgILkuInooYznmoQgbWluLWhlaWdodCDpg73mmK8KICogLS1jYWwtKiDlj5jph4/vvIzlhajmnIjmiYDmnInmoLzlrZDnmoTmr4/kuIDooYzpg73lr7npvZDjgIIKICoKICogIyMgTTEg6Ziy5b6hCiAqIG1vYmlsZS5jc3Mg5Lya57uZ5omA5pyJIGJ1dHRvbiDliqAgbWluLWhlaWdodDogNDRweO+8iOKJpDc2OHB477yJ77yM6L+Z6YeM5q+P5LiqCiAqIGJ1dHRvbiDpg73mmL7lvI/lo7DmmI7oh6rlt7HnmoQgbWluLWhlaWdodC9oZWlnaHTvvIzkuI3lkIPpgqPmnaHlhajlsYDop4TliJnjgIIKICovCmltcG9ydCB7IFdFRUtfTEFCRUxTLCB0eXBlIENhbENlbGwgfSBmcm9tICdAL2NvbXBvc2FibGVzL3VzZUNhbGVuZGFyTW9udGgnCmltcG9ydCB0eXBlIHsgQ2FsZW5kYXJEYXksIENhbGVuZGFySXRlbSB9IGZyb20gJ0AvYXBpL2NhbGVuZGFyJwppbXBvcnQgeyBwb3N0ZXJVcmwgfSBmcm9tICdAL2FwaS9lbWJ5JwoKY29uc3QgcHJvcHMgPSBkZWZpbmVQcm9wczx7CiAgY2VsbHM6IENhbENlbGxbXQogIGRheU1hcDogTWFwPHN0cmluZywgQ2FsZW5kYXJEYXk+CiAgc2VsZWN0ZWREYXRlOiBzdHJpbmcKICB0b2RheVN0cjogc3RyaW5nCn0+KCkKCmNvbnN0IGVtaXQgPSBkZWZpbmVFbWl0czx7CiAgc2VsZWN0OiBbZGF0ZTogc3RyaW5nXQp9PigpCgpmdW5jdGlvbiBjb3VudE9mKGRhdGU6IHN0cmluZyk6IG51bWJlciB7CiAgcmV0dXJuIHByb3BzLmRheU1hcC5nZXQoZGF0ZSk/LmNvdW50IHx8IDAKfQoKZnVuY3Rpb24gaXRlbXNPZihkYXRlOiBzdHJpbmcpOiBDYWxlbmRhckl0ZW1bXSB7CiAgcmV0dXJuIHByb3BzLmRheU1hcC5nZXQoZGF0ZSk/Lml0ZW1zIHx8IFtdCn0KCi8qKiDmoLzlrZDph4znmoTlsIHpnaLngrnvvJrmsqHlm77lsLHkuI3nu5kgYmFja2dyb3VuZC1pbWFnZe+8jOmAgOWbnuW6leiJsiArIOaPj+i+uSAqLwpmdW5jdGlvbiBkb3RTdHlsZShpdGVtOiBDYWxlbmRhckl0ZW0pOiBSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+IHwgdW5kZWZpbmVkIHsKICBjb25zdCB1cmwgPSBwb3N0ZXJVcmwoaXRlbSwgMTYwKQogIHJldHVybiB1cmwgPyB7IGJhY2tncm91bmRJbWFnZTogYHVybCgke3VybH0pYCB9IDogdW5kZWZpbmVkCn0KPC9zY3JpcHQ+Cgo8dGVtcGxhdGU+CiAgPGRpdiBjbGFzcz0iY2FsLXdlZWsiIGFyaWEtaGlkZGVuPSJ0cnVlIj4KICAgIDxzcGFuIHYtZm9yPSJ3IGluIFdFRUtfTEFCRUxTIiA6a2V5PSJ3Ij57eyB3IH19PC9zcGFuPgogIDwvZGl2PgoKICA8ZGl2IGNsYXNzPSJjYWwtZ3JpZCIgcm9sZT0iZ3JpZCIgYXJpYS1sYWJlbD0i5pyI5Y6GIj4KICAgIDxidXR0b24KICAgICAgdi1mb3I9IihjZWxsLCBpZHgpIGluIGNlbGxzIgogICAgICA6a2V5PSJjZWxsLmRhdGUgfHwgYHBhZC0ke2lkeH1gIgogICAgICBjbGFzcz0iY2FsLWNlbGwiCiAgICAgIDpjbGFzcz0iewogICAgICAgIHBhZDogIWNlbGwuaW5Nb250aCwKICAgICAgICB0b2RheTogY2VsbC5kYXRlID09PSB0b2RheVN0ciwKICAgICAgICBwaWNrZWQ6IGNlbGwuZGF0ZSA9PT0gc2VsZWN0ZWREYXRlLAogICAgICAgIGZpbGxlZDogY291bnRPZihjZWxsLmRhdGUpID4gMCwKICAgICAgfSIKICAgICAgOmRpc2FibGVkPSIhY2VsbC5pbk1vbnRoIgogICAgICA6YXJpYS1jdXJyZW50PSJjZWxsLmRhdGUgPT09IHRvZGF5U3RyID8gJ2RhdGUnIDogdW5kZWZpbmVkIgogICAgICA6YXJpYS1sYWJlbD0iY2VsbC5kYXRlID8gYCR7Y2VsbC5kYXRlfSDmlrDlop4gJHtjb3VudE9mKGNlbGwuZGF0ZSl9IOadoWAgOiAnJyIKICAgICAgQGNsaWNrPSJlbWl0KCdzZWxlY3QnLCBjZWxsLmRhdGUpIgogICAgPgogICAgICA8dGVtcGxhdGUgdi1pZj0iY2VsbC5pbk1vbnRoIj4KICAgICAgICA8IS0tIHIx77ya5pel5pyfICsg6KeS5qCH77yI5paH5qGj5rWB77yM6KeS5qCH5LiN5YaNIGFic29sdXRlIOmjnuinkuS4iu+8iSAtLT4KICAgICAgICA8c3BhbiBjbGFzcz0iY2FsLXIxIj4KICAgICAgICAgIDxzcGFuIGNsYXNzPSJjYWwtZGF5bnVtIj57eyBjZWxsLmRheSB9fTwvc3Bhbj4KICAgICAgICAgIDxzcGFuIHYtaWY9ImNvdW50T2YoY2VsbC5kYXRlKSA+IDAiIGNsYXNzPSJjYWwtY291bnQiPnt7IGNvdW50T2YoY2VsbC5kYXRlKSB9fTwvc3Bhbj4KICAgICAgICA8L3NwYW4+CiAgICAgICAgPCEtLSByMu+8muWwgemdouWchueCue+8m+ayoeWGheWuueS5n+WNoOedgOmrmOW6pu+8jOS/neivgeaXpeacn+ihjOWFqOaciOWvuem9kCAtLT4KICAgICAgICA8c3BhbiBjbGFzcz0iY2FsLXIyIj4KICAgICAgICAgIDxzcGFuIHYtaWY9Iml0ZW1zT2YoY2VsbC5kYXRlKS5sZW5ndGgiIGNsYXNzPSJjYWwtZG90cyI+CiAgICAgICAgICAgIDxzcGFuCiAgICAgICAgICAgICAgdi1mb3I9Iml0ZW0gaW4gaXRlbXNPZihjZWxsLmRhdGUpLnNsaWNlKDAsIDMpIgogICAgICAgICAgICAgIDprZXk9Iml0ZW0uSWQiCiAgICAgICAgICAgICAgY2xhc3M9ImNhbC1kb3QiCiAgICAgICAgICAgICAgOnN0eWxlPSJkb3RTdHlsZShpdGVtKSIKICAgICAgICAgICAgLz4KICAgICAgICAgIDwvc3Bhbj4KICAgICAgICA8L3NwYW4+CiAgICAgICAgPCEtLSByM++8mue7k+aehOWNoOS9jeihjO+8jOWQuOaUtuWJqeS9meepuumXtCAtLT4KICAgICAgICA8c3BhbiBjbGFzcz0iY2FsLXIzIiBhcmlhLWhpZGRlbj0idHJ1ZSIgLz4KICAgICAgPC90ZW1wbGF0ZT4KICAgIDwvYnV0dG9uPgogIDwvZGl2Pgo8L3RlbXBsYXRlPgoKPHN0eWxlIHNjb3BlZD4KLyogLS0tLS0tLS0tLSDmmJ/mnJ/lpLQgLS0tLS0tLS0tLSAqLwouY2FsLXdlZWsgewogIGRpc3BsYXk6IGdyaWQ7CiAgZ3JpZC10ZW1wbGF0ZS1jb2x1bW5zOiByZXBlYXQoNywgMWZyKTsKICBnYXA6IHZhcigtLWNhbC1nYXApOwogIG1hcmdpbi1ib3R0b206IHZhcigtLWNhbC13ZWVrLW1iKTsKfQouY2FsLXdlZWsgc3BhbiB7CiAgdGV4dC1hbGlnbjogY2VudGVyOwogIGZvbnQtc2l6ZTogdmFyKC0tY2FsLXdlZWstc2l6ZSk7CiAgZm9udC13ZWlnaHQ6IDYwMDsKICBjb2xvcjogdmFyKC0tYXUtdGV4dC00KTsKICAvKiDkuI7moLzlrZDml6XmnJ/mlbDlrZflkIzlrZflj7fkvZPns7vvvIzop4bop4nln7rnur/kuIDoh7QgKi8KICBsaW5lLWhlaWdodDogMTsKICBtaW4taGVpZ2h0OiB2YXIoLS1jYWwtd2Vlay1zaXplKTsKfQoKLyogLS0tLS0tLS0tLSDnvZHmoLwgLS0tLS0tLS0tLSAqLwouY2FsLWdyaWQgewogIGRpc3BsYXk6IGdyaWQ7CiAgZ3JpZC10ZW1wbGF0ZS1jb2x1bW5zOiByZXBlYXQoNywgMWZyKTsKICBnYXA6IHZhcigtLWNhbC1nYXApOwp9CgouY2FsLWNlbGwgewogIHBvc2l0aW9uOiByZWxhdGl2ZTsKICBhc3BlY3QtcmF0aW86IDEgLyAxOwogIC8qIE0x77ya5pi+5byP6auY5bqm5aOw5piO77yM5LiN5ZCDIG1vYmlsZS5jc3Mg55qEIGJ1dHRvbiA0NHB4IOacgOWwj+mrmOW6piAqLwogIG1pbi1oZWlnaHQ6IHZhcigtLWNhbC1jZWxsLW1pbi1oKTsKICBkaXNwbGF5OiBmbGV4OwogIGZsZXgtZGlyZWN0aW9uOiBjb2x1bW47CiAgYWxpZ24taXRlbXM6IGNlbnRlcjsKICBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjsKICBnYXA6IHZhcigtLWNhbC1yb3ctZ2FwKTsKICBwYWRkaW5nOiB2YXIoLS1jYWwtY2VsbC1wYWQpOwogIGJvcmRlcjogMXB4IHNvbGlkIHRyYW5zcGFyZW50OwogIGJvcmRlci1yYWRpdXM6IHZhcigtLWNhbC1jZWxsLXJhZGl1cyk7CiAgYmFja2dyb3VuZDogdmFyKC0tYXUtc3VyZmFjZSk7CiAgY29sb3I6IHZhcigtLWF1LXRleHQtMik7CiAgY3Vyc29yOiBwb2ludGVyOwogIHRyYW5zaXRpb246IGJhY2tncm91bmQgdmFyKC0tYXUtZmFzdCkgdmFyKC0tYXUtZWFzZSksCiAgICBib3JkZXItY29sb3IgdmFyKC0tYXUtZmFzdCkgdmFyKC0tYXUtZWFzZSksIHRyYW5zZm9ybSB2YXIoLS1hdS1mYXN0KSB2YXIoLS1hdS1lYXNlKTsKfQouY2FsLWNlbGw6bm90KDpkaXNhYmxlZCk6aG92ZXIgewogIGJhY2tncm91bmQ6IHZhcigtLWF1LXN1cmZhY2UtMik7CiAgYm9yZGVyLWNvbG9yOiB2YXIoLS1hdS1ib3JkZXItc3Ryb25nKTsKfQouY2FsLWNlbGw6bm90KDpkaXNhYmxlZCk6YWN0aXZlIHsgdHJhbnNmb3JtOiBzY2FsZSgwLjk2KTsgfQouY2FsLWNlbGwucGFkIHsgYmFja2dyb3VuZDogdHJhbnNwYXJlbnQ7IGN1cnNvcjogZGVmYXVsdDsgfQoKLyog5pyJ5paw54mH55qE6YKj5aSp5bqV6Imy5oqs5LiA5qGj77ya5pW05Liq5pyI5LiA55y86IO955yL5Ye65ZOq5Yeg5aSp5pyJ5pu05paw77yMCiAgIOS4jeW/hemAkOagvOWOu+ivu+inkuagh+OAguWGmeWcqCAudG9kYXkgLyAucGlja2VkIOS5i+WJje+8jOiuqemCo+S4pOS4queKtuaAgeebluS9j+WugyAqLwouY2FsLWNlbGwuZmlsbGVkIHsgYmFja2dyb3VuZDogdmFyKC0tYXUtc3VyZmFjZS0yKTsgfQoKLyogLS0tLS0tLS0tLSDkuInooYzvvJpyMSDml6XmnJ8r6KeS5qCHIC8gcjIg5ZyG54K5IC8gcjMg5Y2g5L2NIC0tLS0tLS0tLS0gKi8KLmNhbC1yMSB7CiAgZGlzcGxheTogZmxleDsKICBhbGlnbi1pdGVtczogY2VudGVyOwogIGp1c3RpZnktY29udGVudDogY2VudGVyOwogIGdhcDogNHB4OwogIC8qIOWbuuWumuihjOmrmO+8muWFqOaciOaJgOacieagvOWtkOeahOaXpeacn+ihjOWcqOWQjOS4gOawtOW5s+e6vyAqLwogIG1pbi1oZWlnaHQ6IHZhcigtLWNhbC1yb3cxLWgpOwp9CgouY2FsLWRheW51bSB7CiAgZm9udC1zaXplOiB2YXIoLS1jYWwtZGF5bnVtLXNpemUpOwogIGZvbnQtd2VpZ2h0OiA2MDA7CiAgZm9udC12YXJpYW50LW51bWVyaWM6IHRhYnVsYXItbnVtczsKICBsaW5lLWhlaWdodDogMTsKfQoKLmNhbC1jb3VudCB7CiAgbWluLXdpZHRoOiAxNnB4OwogIGhlaWdodDogMTZweDsKICBwYWRkaW5nOiAwIDRweDsKICBkaXNwbGF5OiBpbmxpbmUtZmxleDsKICBhbGlnbi1pdGVtczogY2VudGVyOwogIGp1c3RpZnktY29udGVudDogY2VudGVyOwogIGJvcmRlci1yYWRpdXM6IHZhcigtLWF1LXItZnVsbCk7CiAgYmFja2dyb3VuZDogdmFyKC0tYXUtcHJpbWFyeS1zb2Z0KTsKICBjb2xvcjogdmFyKC0tYXUtcHJpbWFyeSk7CiAgZm9udC1zaXplOiB2YXIoLS1jYWwtY291bnQtc2l6ZSk7CiAgZm9udC13ZWlnaHQ6IDcwMDsKICBsaW5lLWhlaWdodDogMTsKICBmb250LXZhcmlhbnQtbnVtZXJpYzogdGFidWxhci1udW1zOwp9CgouY2FsLXIyIHsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgLyog5rKh5ZyG54K55Lmf5Y2g552A77ya5pel5pyf6KGM5omN5LiN5Lya5LiK5LiL5Lmx6LezICovCiAgbWluLWhlaWdodDogdmFyKC0tY2FsLXJvdzItaCk7Cn0KCi5jYWwtZG90cyB7CiAgZGlzcGxheTogZmxleDsKICBnYXA6IHZhcigtLWNhbC1kb3QtZ2FwKTsKICBqdXN0aWZ5LWNvbnRlbnQ6IGNlbnRlcjsKfQoKLmNhbC1kb3QgewogIHdpZHRoOiB2YXIoLS1jYWwtZG90LXNpemUpOwogIGhlaWdodDogdmFyKC0tY2FsLWRvdC1zaXplKTsKICBib3JkZXItcmFkaXVzOiB2YXIoLS1hdS1yLWZ1bGwpOwogIGJhY2tncm91bmQ6IHZhcigtLWF1LXN1cmZhY2UtMyk7CiAgYmFja2dyb3VuZC1zaXplOiBjb3ZlcjsKICBiYWNrZ3JvdW5kLXBvc2l0aW9uOiBjZW50ZXI7CiAgYm94LXNoYWRvdzogMCAwIDAgMXB4IHZhcigtLWF1LWJvcmRlcik7Cn0KCi5jYWwtcjMgewogIGZsZXg6IDEgMSBhdXRvOwogIG1pbi1oZWlnaHQ6IDA7Cn0KCi8qIC0tLS0tLS0tLS0g54q25oCBIC0tLS0tLS0tLS0gKi8KLmNhbC1jZWxsLnRvZGF5IHsKICBib3JkZXItY29sb3I6IHZhcigtLWF1LXByaW1hcnktYm9yZGVyKTsKICBjb2xvcjogdmFyKC0tYXUtdGV4dCk7CiAgZm9udC13ZWlnaHQ6IDcwMDsKfQouY2FsLWNlbGwudG9kYXkgLmNhbC1kYXludW0geyBjb2xvcjogdmFyKC0tYXUtcHJpbWFyeSk7IH0KCi5jYWwtY2VsbC5waWNrZWQgewogIGJhY2tncm91bmQ6IHZhcigtLWF1LXByaW1hcnktc29mdCk7CiAgYm9yZGVyLWNvbG9yOiB2YXIoLS1hdS1wcmltYXJ5KTsKICBib3gtc2hhZG93OiAwIDAgMCAxcHggdmFyKC0tYXUtcHJpbWFyeS1ib3JkZXIpOwp9CgovKiAtLS0tLS0tLS0tIOeqhOWxjyAtLS0tLS0tLS0tICovCkBtZWRpYSAobWF4LXdpZHRoOiA3NjhweCkgewogIC8qIOagvOWtkOS7jiAxOjEg5pS25oiQ5Zu65a6a6auY5bqm77ya5pa55b2i5qC85ZyoIDcg5YiX56qE5bGP5LiK5Y+q5YmpIDQwcHjvvIwKICAgICDlsIHpnaLnvKnliLDlnIbngrnpg73nnIvkuI3muIXvvIzmlLnmiJDjgIzml6XmnJ8r6KeS5qCHK+WchueCueOAjeeahOmrmOW6puWNs+WPryAqLwogIC5jYWwtY2VsbCB7IGFzcGVjdC1yYXRpbzogYXV0bzsgfQp9CgpAbWVkaWEgKHByZWZlcnMtcmVkdWNlZC1tb3Rpb246IHJlZHVjZSkgewogIC5jYWwtY2VsbCB7IHRyYW5zaXRpb246IG5vbmU7IH0KICAuY2FsLWNlbGw6bm90KDpkaXNhYmxlZCk6YWN0aXZlIHsgdHJhbnNmb3JtOiBub25lOyB9Cn0KPC9zdHlsZT4K
+<script setup lang="ts">
+/**
+ * 追新日历 · 月网格
+ *
+ * ## 布局为什么是「三行式」
+ * 之前格子是「日期数字 + 封面圆点 + 右上角 absolute 角标」：
+ * 1. 有圆点的格子和没圆点的格子，日期数字不在同一条水平线上
+ *    （flex 居中，有内容的格子把数字顶上去了）——这就是用户说的「错位」；
+ * 2. absolute 角标在窄屏小格子里会溢出格子角，被裁掉一半。
+ *
+ * 现在每格固定三行：r1 日期+角标（文档流，不再 absolute）、r2 封面圆点
+ * （没内容也占位，高度不变）、r3 结构占位。三行的 min-height 都是
+ * --cal-* 变量，全月所有格子的每一行都对齐。
+ *
+ * ## M1 防御
+ * mobile.css 会给所有 button 加 min-height: 44px（≤768px），这里每个
+ * button 都显式声明自己的 min-height/height，不吃那条全局规则。
+ */
+import { WEEK_LABELS, type CalCell } from '@/composables/useCalendarMonth'
+import type { CalendarDay, CalendarItem } from '@/api/calendar'
+import { posterUrl } from '@/api/emby'
+
+const props = defineProps<{
+  cells: CalCell[]
+  dayMap: Map<string, CalendarDay>
+  selectedDate: string
+  todayStr: string
+}>()
+
+const emit = defineEmits<{
+  select: [date: string]
+}>()
+
+function countOf(date: string): number {
+  return props.dayMap.get(date)?.count || 0
+}
+
+function itemsOf(date: string): CalendarItem[] {
+  return props.dayMap.get(date)?.items || []
+}
+
+/** 格子里的封面点：没图就不给 background-image，退回底色 + 描边 */
+function dotStyle(item: CalendarItem): Record<string, string> | undefined {
+  const url = posterUrl(item, 160)
+  return url ? { backgroundImage: `url(${url})` } : undefined
+}
+</script>
+
+<template>
+  <div class="cal-week" aria-hidden="true">
+    <span v-for="w in WEEK_LABELS" :key="w">{{ w }}</span>
+  </div>
+
+  <div class="cal-grid" role="grid" aria-label="月历">
+    <button
+      v-for="(cell, idx) in cells"
+      :key="cell.date || `pad-${idx}`"
+      class="cal-cell"
+      :class="{
+        pad: !cell.inMonth,
+        today: cell.date === todayStr,
+        picked: cell.date === selectedDate,
+        filled: countOf(cell.date) > 0,
+      }"
+      :disabled="!cell.inMonth"
+      :aria-current="cell.date === todayStr ? 'date' : undefined"
+      :aria-label="cell.date ? `${cell.date} 新增 ${countOf(cell.date)} 条` : ''"
+      @click="emit('select', cell.date)"
+    >
+      <template v-if="cell.inMonth">
+        <!-- r1：日期 + 角标（文档流，角标不再 absolute 飞角上） -->
+        <span class="cal-r1">
+          <span class="cal-daynum">{{ cell.day }}</span>
+          <span v-if="countOf(cell.date) > 0" class="cal-count">{{ countOf(cell.date) }}</span>
+        </span>
+        <!-- r2：封面圆点；没内容也占着高度，保证日期行全月对齐 -->
+        <span class="cal-r2">
+          <span v-if="itemsOf(cell.date).length" class="cal-dots">
+            <span
+              v-for="item in itemsOf(cell.date).slice(0, 3)"
+              :key="item.Id"
+              class="cal-dot"
+              :style="dotStyle(item)"
+            />
+          </span>
+        </span>
+        <!-- r3：结构占位行，吸收剩余空间 -->
+        <span class="cal-r3" aria-hidden="true" />
+      </template>
+    </button>
+  </div>
+</template>
+
+<style scoped>
+/* ---------- 星期头 ---------- */
+.cal-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: var(--cal-gap);
+  margin-bottom: var(--cal-week-mb);
+}
+.cal-week span {
+  text-align: center;
+  font-size: var(--cal-week-size);
+  font-weight: 600;
+  color: var(--au-text-4);
+  /* 与格子日期数字同字号体系，视觉基线一致 */
+  line-height: 1;
+  min-height: var(--cal-week-size);
+}
+
+/* ---------- 网格 ---------- */
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: var(--cal-gap);
+}
+
+.cal-cell {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  /* M1：显式高度声明，不吃 mobile.css 的 button 44px 最小高度 */
+  min-height: var(--cal-cell-min-h);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cal-row-gap);
+  padding: var(--cal-cell-pad);
+  border: 1px solid transparent;
+  border-radius: var(--cal-cell-radius);
+  background: var(--au-surface);
+  color: var(--au-text-2);
+  cursor: pointer;
+  transition: background var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
+}
+.cal-cell:not(:disabled):hover {
+  background: var(--au-surface-2);
+  border-color: var(--au-border-strong);
+}
+.cal-cell:not(:disabled):active { transform: scale(0.96); }
+.cal-cell.pad { background: transparent; cursor: default; }
+
+/* 有新片的那天底色抬一档：整个月一眼能看出哪几天有更新，
+   不必逐格去读角标。写在 .today / .picked 之前，让那两个状态盖住它 */
+.cal-cell.filled { background: var(--au-surface-2); }
+
+/* ---------- 三行：r1 日期+角标 / r2 圆点 / r3 占位 ---------- */
+.cal-r1 {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  /* 固定行高：全月所有格子的日期行在同一水平线 */
+  min-height: var(--cal-row1-h);
+}
+
+.cal-daynum {
+  font-size: var(--cal-daynum-size);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.cal-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--au-r-full);
+  background: var(--au-primary-soft);
+  color: var(--au-primary);
+  font-size: var(--cal-count-size);
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-r2 {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 没圆点也占着：日期行才不会上下乱跳 */
+  min-height: var(--cal-row2-h);
+}
+
+.cal-dots {
+  display: flex;
+  gap: var(--cal-dot-gap);
+  justify-content: center;
+}
+
+.cal-dot {
+  width: var(--cal-dot-size);
+  height: var(--cal-dot-size);
+  border-radius: var(--au-r-full);
+  background: var(--au-surface-3);
+  background-size: cover;
+  background-position: center;
+  box-shadow: 0 0 0 1px var(--au-border);
+}
+
+.cal-r3 {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ---------- 状态 ---------- */
+.cal-cell.today {
+  border-color: var(--au-primary-border);
+  color: var(--au-text);
+  font-weight: 700;
+}
+.cal-cell.today .cal-daynum { color: var(--au-primary); }
+
+.cal-cell.picked {
+  background: var(--au-primary-soft);
+  border-color: var(--au-primary);
+  box-shadow: 0 0 0 1px var(--au-primary-border);
+}
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 768px) {
+  /* 格子从 1:1 收成固定高度：方形格在 7 列窄屏上只剩 40px，
+     封面缩到圆点都看不清，改成「日期+角标+圆点」的高度即可 */
+  .cal-cell { aspect-ratio: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cal-cell { transition: none; }
+  .cal-cell:not(:disabled):active { transform: none; }
+}
+</style>

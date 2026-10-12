@@ -1,1 +1,279 @@
-PHNjcmlwdCBzZXR1cCBsYW5nPSJ0cyI+Ci8qKgogKiDov73mlrDml6XljoYgwrcg6YCJ5Lit5pel55qE5p2h55uu5YiX6KGoCiAqCiAqIOe6r+Wxleekuue7hOS7tu+8muaLv+WIsOWTquWkqeOAgemCo+WkqeeahOaVsOaNruOAgeaYr+S4jeaYr+WcqOWKoOi9ve+8jOWwseeUu+WHuuadpeOAggogKiDngrnmnaHnm67nlKggUmV4IOa3semTvuaJk+W8gO+8iOmAu+i+keWcqCB1dGlscy9yZXhEZWVwTGlua++8jOS4juS5i+WJjeS4gOiHtO+8ieOAggogKi8KaW1wb3J0IHsgQ2FsZW5kYXJEYXlzLCBDaGV2cm9uUmlnaHQsIEZpbG0sIFNwYXJrbGVzIH0gZnJvbSAnbHVjaWRlLXZ1ZS1uZXh0JwppbXBvcnQgdHlwZSB7IENhbGVuZGFyRGF5LCBDYWxlbmRhckl0ZW0gfSBmcm9tICdAL2FwaS9jYWxlbmRhcicKaW1wb3J0IHsgcG9zdGVyVXJsIH0gZnJvbSAnQC9hcGkvZW1ieScKaW1wb3J0IHsgcmV4RGVlcExpbmsgfSBmcm9tICdAL3V0aWxzL3JleERlZXBMaW5rJwppbXBvcnQgeyBXRUVLX0xBQkVMUyB9IGZyb20gJ0AvY29tcG9zYWJsZXMvdXNlQ2FsZW5kYXJNb250aCcKCmRlZmluZVByb3BzPHsKICBzZWxlY3RlZERhdGU6IHN0cmluZwogIHNlbGVjdGVkRGF5OiBDYWxlbmRhckRheSB8IG51bGwKICBsb2FkaW5nOiBib29sZWFuCn0+KCkKCmZ1bmN0aW9uIHBvc3Rlck9mKGl0ZW06IENhbGVuZGFySXRlbSk6IHN0cmluZyB7CiAgcmV0dXJuIHBvc3RlclVybChpdGVtLCAxNjApCn0KCmZ1bmN0aW9uIHR5cGVMYWJlbChpdGVtOiBDYWxlbmRhckl0ZW0pOiBzdHJpbmcgewogIGlmIChpdGVtLlR5cGUgPT09ICdNb3ZpZScpIHJldHVybiAn55S15b2xJwogIGlmIChpdGVtLlR5cGUgPT09ICdTZXJpZXMnKSByZXR1cm4gJ+WJp+mbhicKICByZXR1cm4gJ+WNlembhicKfQoKZnVuY3Rpb24gdHlwZUNsYXNzKGl0ZW06IENhbGVuZGFySXRlbSk6IHN0cmluZyB7CiAgaWYgKGl0ZW0uVHlwZSA9PT0gJ01vdmllJykgcmV0dXJuICdpcy1tb3ZpZScKICBpZiAoaXRlbS5UeXBlID09PSAnU2VyaWVzJykgcmV0dXJuICdpcy1zZXJpZXMnCiAgcmV0dXJuICdpcy1lcGlzb2RlJwp9CgovKiog5Y2V6ZuG5qCH6aKY5YaZ5oiQ44CM5Ymn5ZCNIOesrCBOIOmbhuOAje+8muWFieWGmeOAjOesrCAzIOmbhuOAjeeUqOaIt+iupOS4jeWHuuaYr+WTqumDqCAqLwpmdW5jdGlvbiB0aXRsZU9mKGl0ZW06IENhbGVuZGFySXRlbSk6IHN0cmluZyB7CiAgaWYgKGl0ZW0uVHlwZSA9PT0gJ0VwaXNvZGUnICYmIGl0ZW0uU2VyaWVzTmFtZSkgcmV0dXJuIGl0ZW0uU2VyaWVzTmFtZQogIHJldHVybiBpdGVtLk5hbWUKfQoKZnVuY3Rpb24gc3VidGl0bGVPZihpdGVtOiBDYWxlbmRhckl0ZW0pOiBzdHJpbmcgewogIGlmIChpdGVtLlR5cGUgPT09ICdFcGlzb2RlJykgewogICAgY29uc3Qgbm8gPSBpdGVtLkluZGV4TnVtYmVyID8gYOesrCAke2l0ZW0uSW5kZXhOdW1iZXJ9IOmbhmAgOiAnJwogICAgcmV0dXJuIFtpdGVtLlNlcmllc05hbWUgPyBpdGVtLk5hbWUgOiAnJywgbm9dLmZpbHRlcihCb29sZWFuKS5qb2luKCcgwrcgJykKICB9CiAgcmV0dXJuIFtpdGVtLlByb2R1Y3Rpb25ZZWFyLCBpdGVtLkdlbnJlcz8uc2xpY2UoMCwgMikuam9pbignIC8gJyldLmZpbHRlcihCb29sZWFuKS5qb2luKCcgwrcgJykKfQoKZnVuY3Rpb24gd2Vla2RheU9mKGRhdGU6IHN0cmluZyk6IHN0cmluZyB7CiAgY29uc3QgZCA9IG5ldyBEYXRlKGAke2RhdGV9VDAwOjAwOjAwYCkKICByZXR1cm4gTnVtYmVyLmlzTmFOKGQuZ2V0VGltZSgpKSA/ICcnIDogYOaYn+acnyR7V0VFS19MQUJFTFNbZC5nZXREYXkoKV19YAp9Cjwvc2NyaXB0PgoKPHRlbXBsYXRlPgogIDxzZWN0aW9uIGNsYXNzPSJhdS1jYXJkIGF1LWNhcmQtcGFkIGF1LWFuaW0tdXAgZGF5LXBhbmVsIj4KICAgIDxoZWFkZXIgY2xhc3M9ImNhbC1oZWFkIj4KICAgICAgPGgzPgogICAgICAgIDxTcGFya2xlcyA6c2l6ZT0iMTYiIC8+CiAgICAgICAgPHRlbXBsYXRlIHYtaWY9InNlbGVjdGVkRGF0ZSI+e3sgc2VsZWN0ZWREYXRlIH19IHt7IHdlZWtkYXlPZihzZWxlY3RlZERhdGUpIH19PC90ZW1wbGF0ZT4KICAgICAgICA8dGVtcGxhdGUgdi1lbHNlPumAieaLqeS4gOWkqTwvdGVtcGxhdGU+CiAgICAgIDwvaDM+CiAgICAgIDxzcGFuIHYtaWY9InNlbGVjdGVkRGF5IiBjbGFzcz0iYXUtYmFkZ2UgYXUtYmFkZ2UtY3lhbiI+e3sgc2VsZWN0ZWREYXkuY291bnQgfX0g5p2h5paw5LiKPC9zcGFuPgogICAgPC9oZWFkZXI+CgogICAgPGRpdiB2LWlmPSJsb2FkaW5nIiBjbGFzcz0iYXUtZW1wdHkiPgogICAgICA8c3BhbiBjbGFzcz0iYXUtc3Bpbm5lciIgYXJpYS1oaWRkZW49InRydWUiIC8+CiAgICA8L2Rpdj4KCiAgICA8ZGl2IHYtZWxzZS1pZj0iIXNlbGVjdGVkRGF0ZSIgY2xhc3M9ImF1LWVtcHR5Ij4KICAgICAgPENhbGVuZGFyRGF5cyA6c2l6ZT0iMjgiIC8+CiAgICAgIDxzcGFuPueCueS4iumdouS7u+aEj+S4gOWkqe+8jOeci+eci+mCo+WkqeaWsOS4iuS6huS7gOS5iDwvc3Bhbj4KICAgIDwvZGl2PgoKICAgIDxkaXYgdi1lbHNlLWlmPSIhc2VsZWN0ZWREYXkiIGNsYXNzPSJhdS1lbXB0eSI+CiAgICAgIDxDYWxlbmRhckRheXMgOnNpemU9IjI4IiAvPgogICAgICA8c3Bhbj7ov5nkuIDlpKnmsqHmnInmlrDkuIrmnrbnmoTmnaHnm648L3NwYW4+CiAgICA8L2Rpdj4KCiAgICA8dWwgdi1lbHNlIGNsYXNzPSJkYXktbGlzdCI+CiAgICAgIDxsaSB2LWZvcj0iaXRlbSBpbiBzZWxlY3RlZERheS5pdGVtcyIgOmtleT0iaXRlbS5JZCI+CiAgICAgICAgPGEgOmhyZWY9InJleERlZXBMaW5rKGl0ZW0pIiBjbGFzcz0iZGF5LWl0ZW0iIDp0aXRsZT0iYOWcqCBSZXgg6YeM5omT5byA77yaJHt0aXRsZU9mKGl0ZW0pfWAiPgogICAgICAgICAgPHNwYW4gY2xhc3M9ImRheS1wb3N0ZXIiPgogICAgICAgICAgICA8aW1nCiAgICAgICAgICAgICAgdi1pZj0icG9zdGVyT2YoaXRlbSkiCiAgICAgICAgICAgICAgOnNyYz0icG9zdGVyT2YoaXRlbSkiCiAgICAgICAgICAgICAgOmFsdD0idGl0bGVPZihpdGVtKSIKICAgICAgICAgICAgICBsb2FkaW5nPSJsYXp5IgogICAgICAgICAgICAgIGRlY29kaW5nPSJhc3luYyIKICAgICAgICAgICAgLz4KICAgICAgICAgICAgPEZpbG0gdi1lbHNlIDpzaXplPSIxOCIgYXJpYS1oaWRkZW49InRydWUiIC8+CiAgICAgICAgICA8L3NwYW4+CiAgICAgICAgICA8c3BhbiBjbGFzcz0iZGF5LW1ldGEiPgogICAgICAgICAgICA8c3BhbiBjbGFzcz0iZGF5LXRpdGxlIj57eyB0aXRsZU9mKGl0ZW0pIH19PC9zcGFuPgogICAgICAgICAgICA8c3BhbiBjbGFzcz0iZGF5LXN1YiI+e3sgc3VidGl0bGVPZihpdGVtKSB9fTwvc3Bhbj4KICAgICAgICAgICAgPHNwYW4gY2xhc3M9ImRheS10YWdzIj4KICAgICAgICAgICAgICA8c3BhbiBjbGFzcz0iYXUtYmFkZ2UiIDpjbGFzcz0iYHRhZy0ke3R5cGVDbGFzcyhpdGVtKX1gIj57eyB0eXBlTGFiZWwoaXRlbSkgfX08L3NwYW4+CiAgICAgICAgICAgICAgPHNwYW4gdi1pZj0iaXRlbS5MaWJyYXJ5TmFtZSIgY2xhc3M9ImRheS1saWIiPnt7IGl0ZW0uTGlicmFyeU5hbWUgfX08L3NwYW4+CiAgICAgICAgICAgICAgPHNwYW4gdi1pZj0iaXRlbS5Db21tdW5pdHlSYXRpbmciIGNsYXNzPSJkYXktcmF0ZSI+e3sgaXRlbS5Db21tdW5pdHlSYXRpbmcudG9GaXhlZCgxKSB9fTwvc3Bhbj4KICAgICAgICAgICAgPC9zcGFuPgogICAgICAgICAgPC9zcGFuPgogICAgICAgICAgPENoZXZyb25SaWdodCA6c2l6ZT0iMTYiIGNsYXNzPSJkYXktZ28iIGFyaWEtaGlkZGVuPSJ0cnVlIiAvPgogICAgICAgIDwvYT4KICAgICAgPC9saT4KICAgIDwvdWw+CgogICAgPHAgdi1pZj0ic2VsZWN0ZWREYXkgJiYgc2VsZWN0ZWREYXkuY291bnQgPiBzZWxlY3RlZERheS5pdGVtcy5sZW5ndGgiIGNsYXNzPSJjYWwtbm90ZSI+CiAgICAgIOW9k+WkqeWFsSB7eyBzZWxlY3RlZERheS5jb3VudCB9fSDmnaHvvIzov5nph4zlj6rliJflh7rmnIDov5HlhaXlupPnmoQge3sgc2VsZWN0ZWREYXkuaXRlbXMubGVuZ3RoIH19IOadoeOAggogICAgPC9wPgogICAgPHAgdi1pZj0ic2VsZWN0ZWREYXkiIGNsYXNzPSJjYWwtbm90ZSI+CiAgICAgIOeCueadoeebruS8mueUqCA8c3Ryb25nPlJleDwvc3Ryb25nPiDmiZPlvIDvvJrmnIkgVE1EQiDnvJblj7fnmoTnm7TmjqXot7PliLDpgqPpg6jkvZzlk4HvvIzmsqHmnInnmoTmjInlkI3lrZfkuqTnu5kKICAgICAgUmV4IOaQnOe0ouOAgumcgOimgeWFiOijheWlvSBSZXgg5a6i5oi356uv44CCCiAgICA8L3A+CiAgPC9zZWN0aW9uPgo8L3RlbXBsYXRlPgoKPHN0eWxlIHNjb3BlZD4KLyogLS0tLS0tLS0tLSDlvZPml6XliJfooaggLS0tLS0tLS0tLSAqLwouZGF5LXBhbmVsIHsgbWFyZ2luLXRvcDogMXJlbTsgfQoKLmNhbC1oZWFkIHsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAganVzdGlmeS1jb250ZW50OiBzcGFjZS1iZXR3ZWVuOwogIGdhcDogMC41cmVtOwogIG1hcmdpbi1ib3R0b206IDAuODc1cmVtOwogIC8qIE0x77yaaGVhZGVyIOaYryBkaXYg5LiN5pivIGJ1dHRvbu+8jOS4jeWQgyBtb2JpbGUg6KeE5YiZ77yb6L+Z6YeM5aOw5piO6auY5bqm6Ziy5oqW5YqoICovCiAgbWluLWhlaWdodDogMjRweDsKfQouY2FsLWhlYWQgaDMgewogIGRpc3BsYXk6IGZsZXg7CiAgYWxpZ24taXRlbXM6IGNlbnRlcjsKICBnYXA6IDAuNDM3NXJlbTsKICBtYXJnaW46IDA7CiAgZm9udC1zaXplOiAwLjkzNzVyZW07CiAgZm9udC13ZWlnaHQ6IDcwMDsKICBjb2xvcjogdmFyKC0tYXUtdGV4dCk7CiAgZm9udC12YXJpYW50LW51bWVyaWM6IHRhYnVsYXItbnVtczsKfQouY2FsLWhlYWQgc3ZnIHsgY29sb3I6IHZhcigtLWF1LXByaW1hcnkpOyB9CgouZGF5LWxpc3QgewogIGxpc3Qtc3R5bGU6IG5vbmU7CiAgbWFyZ2luOiAwOwogIHBhZGRpbmc6IDA7CiAgZGlzcGxheTogZ3JpZDsKICBncmlkLXRlbXBsYXRlLWNvbHVtbnM6IHJlcGVhdChhdXRvLWZpbGwsIG1pbm1heCgyNjBweCwgMWZyKSk7CiAgZ2FwOiAwLjVyZW07Cn0KCi5kYXktaXRlbSB7CiAgZGlzcGxheTogZmxleDsKICBhbGlnbi1pdGVtczogY2VudGVyOwogIGdhcDogMC43NXJlbTsKICBoZWlnaHQ6IDEwMCU7CiAgLyogTTHvvJrmmL7lvI/mnIDlsI/pq5jluqbvvIzkuI3lkIMgbW9iaWxlLmNzcyDnu5kgYSDnmoQgNDRweCDop4TliJnvvIzkuZ/kuI3ooqvlroPmkpHlj5jlvaIgKi8KICBtaW4taGVpZ2h0OiA4MHB4OwogIHBhZGRpbmc6IDAuNXJlbTsKICBib3JkZXI6IDFweCBzb2xpZCB2YXIoLS1hdS1ib3JkZXIpOwogIGJvcmRlci1yYWRpdXM6IHZhcigtLWF1LXItbWQpOwogIGJhY2tncm91bmQ6IHZhcigtLWF1LXN1cmZhY2UtMik7CiAgdGV4dC1kZWNvcmF0aW9uOiBub25lOwogIGNvbG9yOiB2YXIoLS1hdS10ZXh0KTsKICB0cmFuc2l0aW9uOiBiYWNrZ3JvdW5kIHZhcigtLWF1LWZhc3QpIHZhcigtLWF1LWVhc2UpLAogICAgYm9yZGVyLWNvbG9yIHZhcigtLWF1LWZhc3QpIHZhcigtLWF1LWVhc2UpLCB0cmFuc2Zvcm0gdmFyKC0tYXUtZmFzdCkgdmFyKC0tYXUtZWFzZSk7Cn0KLmRheS1pdGVtOmhvdmVyIHsKICBiYWNrZ3JvdW5kOiB2YXIoLS1hdS1zdXJmYWNlLTMpOwogIGJvcmRlci1jb2xvcjogdmFyKC0tYXUtcHJpbWFyeS1ib3JkZXIpOwp9Ci5kYXktaXRlbTphY3RpdmUgeyB0cmFuc2Zvcm06IHRyYW5zbGF0ZVkoMCk7IH0KCi5kYXktcG9zdGVyIHsKICBmbGV4OiBub25lOwogIHdpZHRoOiA0NnB4OwogIGhlaWdodDogNjRweDsKICBkaXNwbGF5OiBmbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAganVzdGlmeS1jb250ZW50OiBjZW50ZXI7CiAgYm9yZGVyLXJhZGl1czogdmFyKC0tYXUtci1zbSk7CiAgYmFja2dyb3VuZDogdmFyKC0tYXUtc3VyZmFjZS0zKTsKICBjb2xvcjogdmFyKC0tYXUtdGV4dC00KTsKICBvdmVyZmxvdzogaGlkZGVuOwp9Ci5kYXktcG9zdGVyIGltZyB7CiAgd2lkdGg6IDEwMCU7CiAgaGVpZ2h0OiAxMDAlOwogIG9iamVjdC1maXQ6IGNvdmVyOwogIGRpc3BsYXk6IGJsb2NrOwp9CgouZGF5LW1ldGEgewogIGZsZXg6IDE7CiAgbWluLXdpZHRoOiAwOwogIGRpc3BsYXk6IGZsZXg7CiAgZmxleC1kaXJlY3Rpb246IGNvbHVtbjsKICBnYXA6IDJweDsKfQoKLmRheS10aXRsZSB7CiAgZm9udC1zaXplOiB2YXIoLS1jYWwtZGF5LXRpdGxlLXNpemUpOwogIGZvbnQtd2VpZ2h0OiA2MDA7CiAgY29sb3I6IHZhcigtLWF1LXRleHQpOwogIG92ZXJmbG93OiBoaWRkZW47CiAgdGV4dC1vdmVyZmxvdzogZWxsaXBzaXM7CiAgd2hpdGUtc3BhY2U6IG5vd3JhcDsKfQoKLmRheS1zdWIgewogIGZvbnQtc2l6ZTogdmFyKC0tY2FsLWRheS1zdWItc2l6ZSk7CiAgY29sb3I6IHZhcigtLWF1LXRleHQtMyk7CiAgb3ZlcmZsb3c6IGhpZGRlbjsKICB0ZXh0LW92ZXJmbG93OiBlbGxpcHNpczsKICB3aGl0ZS1zcGFjZTogbm93cmFwOwp9CgouZGF5LXRhZ3MgewogIGRpc3BsYXk6IGZsZXg7CiAgYWxpZ24taXRlbXM6IGNlbnRlcjsKICBnYXA6IDAuMzc1cmVtOwogIGZsZXgtd3JhcDogd3JhcDsKICBtYXJnaW4tdG9wOiAycHg7CiAgLyog5qCH562+6KGM5Zu65a6a6auY5bqm77ya5pyJ5rKh5pyJ6K+E5YiGL+W6k+WQje+8jOihjOmrmOmDveS4jeWPmCAqLwogIG1pbi1oZWlnaHQ6IDIwcHg7Cn0KCi5kYXktdGFncyAuYXUtYmFkZ2UgewogIGZvbnQtc2l6ZTogdmFyKC0tY2FsLWRheS1zdWItc2l6ZSk7CiAgcGFkZGluZzogMCAwLjQzNzVyZW07CiAgaGVpZ2h0OiAyMHB4OwogIGRpc3BsYXk6IGlubGluZS1mbGV4OwogIGFsaWduLWl0ZW1zOiBjZW50ZXI7CiAgYm9yZGVyLXJhZGl1czogdmFyKC0tYXUtci1mdWxsKTsKICBmb250LXdlaWdodDogNjAwOwp9Ci50YWctbW92aWUgeyBiYWNrZ3JvdW5kOiB2YXIoLS1hdS1pbmZvLXNvZnQpOyBjb2xvcjogdmFyKC0tYXUtaW5mbyk7IH0KLnRhZy1zZXJpZXMgeyBiYWNrZ3JvdW5kOiB2YXIoLS1hdS12aW9sZXQtc29mdCk7IGNvbG9yOiB2YXIoLS1hdS12aW9sZXQpOyB9Ci50YWctZXBpc29kZSB7IGJhY2tncm91bmQ6IHZhcigtLWF1LXN1Y2Nlc3Mtc29mdCk7IGNvbG9yOiB2YXIoLS1hdS1zdWNjZXNzKTsgfQoKLmRheS1saWIgewogIGZvbnQtc2l6ZTogdmFyKC0tY2FsLWRheS1zdWItc2l6ZSk7CiAgY29sb3I6IHZhcigtLWF1LXRleHQtNCk7CiAgb3ZlcmZsb3c6IGhpZGRlbjsKICB0ZXh0LW92ZXJmbG93OiBlbGxpcHNpczsKICB3aGl0ZS1zcGFjZTogbm93cmFwOwogIG1heC13aWR0aDogOHJlbTsKfQoKLmRheS1yYXRlIHsKICBmb250LXNpemU6IHZhcigtLWNhbC1kYXktc3ViLXNpemUpOwogIGZvbnQtd2VpZ2h0OiA3MDA7CiAgY29sb3I6IHZhcigtLWF1LXdhcm5pbmcpOwogIGZvbnQtdmFyaWFudC1udW1lcmljOiB0YWJ1bGFyLW51bXM7Cn0KCi5kYXktZ28gewogIGZsZXg6IG5vbmU7CiAgY29sb3I6IHZhcigtLWF1LXRleHQtNCk7CiAgdHJhbnNpdGlvbjogdHJhbnNmb3JtIHZhcigtLWF1LWZhc3QpIHZhcigtLWF1LWVhc2UpLCBjb2xvciB2YXIoLS1hdS1mYXN0KSB2YXIoLS1hdS1lYXNlKTsKfQouZGF5LWl0ZW06aG92ZXIgLmRheS1nbyB7IGNvbG9yOiB2YXIoLS1hdS1wcmltYXJ5KTsgdHJhbnNmb3JtOiB0cmFuc2xhdGVYKDJweCk7IH0KCi5jYWwtbm90ZSB7CiAgbWFyZ2luOiAwLjg3NXJlbSAwIDA7CiAgZm9udC1zaXplOiB2YXIoLS1jYWwtZGF5LXN1Yi1zaXplKTsKICBjb2xvcjogdmFyKC0tYXUtdGV4dC0zKTsKfQoKLyogLS0tLS0tLS0tLSDnqoTlsY8gLS0tLS0tLS0tLSAqLwpAbWVkaWEgKG1heC13aWR0aDogNzY4cHgpIHsKICAuZGF5LWxpc3QgeyBncmlkLXRlbXBsYXRlLWNvbHVtbnM6IDFmcjsgfQp9CgpAbWVkaWEgKHByZWZlcnMtcmVkdWNlZC1tb3Rpb246IHJlZHVjZSkgewogIC5kYXktaXRlbSwgLmRheS1nbyB7IHRyYW5zaXRpb246IG5vbmU7IH0KICAuZGF5LWl0ZW06aG92ZXIgeyB0cmFuc2Zvcm06IG5vbmU7IH0KfQo8L3N0eWxlPgo=
+<script setup lang="ts">
+/**
+ * 追新日历 · 选中日的条目列表
+ *
+ * 纯展示组件：拿到哪天、那天的数据、是不是在加载，就画出来。
+ * 点条目用 Rex 深链打开（逻辑在 utils/rexDeepLink，与之前一致）。
+ */
+import { CalendarDays, ChevronRight, Film, Sparkles } from 'lucide-vue-next'
+import type { CalendarDay, CalendarItem } from '@/api/calendar'
+import { posterUrl } from '@/api/emby'
+import { rexDeepLink } from '@/utils/rexDeepLink'
+import { WEEK_LABELS } from '@/composables/useCalendarMonth'
+
+defineProps<{
+  selectedDate: string
+  selectedDay: CalendarDay | null
+  loading: boolean
+}>()
+
+function posterOf(item: CalendarItem): string {
+  return posterUrl(item, 160)
+}
+
+function typeLabel(item: CalendarItem): string {
+  if (item.Type === 'Movie') return '电影'
+  if (item.Type === 'Series') return '剧集'
+  return '单集'
+}
+
+function typeClass(item: CalendarItem): string {
+  if (item.Type === 'Movie') return 'is-movie'
+  if (item.Type === 'Series') return 'is-series'
+  return 'is-episode'
+}
+
+/** 单集标题写成「剧名 第 N 集」：光写「第 3 集」用户认不出是哪部 */
+function titleOf(item: CalendarItem): string {
+  if (item.Type === 'Episode' && item.SeriesName) return item.SeriesName
+  return item.Name
+}
+
+function subtitleOf(item: CalendarItem): string {
+  if (item.Type === 'Episode') {
+    const no = item.IndexNumber ? `第 ${item.IndexNumber} 集` : ''
+    return [item.SeriesName ? item.Name : '', no].filter(Boolean).join(' · ')
+  }
+  return [item.ProductionYear, item.Genres?.slice(0, 2).join(' / ')].filter(Boolean).join(' · ')
+}
+
+function weekdayOf(date: string): string {
+  const d = new Date(`${date}T00:00:00`)
+  return Number.isNaN(d.getTime()) ? '' : `星期${WEEK_LABELS[d.getDay()]}`
+}
+</script>
+
+<template>
+  <section class="au-card au-card-pad au-anim-up day-panel">
+    <header class="cal-head">
+      <h3>
+        <Sparkles :size="16" />
+        <template v-if="selectedDate">{{ selectedDate }} {{ weekdayOf(selectedDate) }}</template>
+        <template v-else>选择一天</template>
+      </h3>
+      <span v-if="selectedDay" class="au-badge au-badge-cyan">{{ selectedDay.count }} 条新上</span>
+    </header>
+
+    <div v-if="loading" class="au-empty">
+      <span class="au-spinner" aria-hidden="true" />
+    </div>
+
+    <div v-else-if="!selectedDate" class="au-empty">
+      <CalendarDays :size="28" />
+      <span>点上面任意一天，看看那天新上了什么</span>
+    </div>
+
+    <div v-else-if="!selectedDay" class="au-empty">
+      <CalendarDays :size="28" />
+      <span>这一天没有新上架的条目</span>
+    </div>
+
+    <ul v-else class="day-list">
+      <li v-for="item in selectedDay.items" :key="item.Id">
+        <a :href="rexDeepLink(item)" class="day-item" :title="`在 Rex 里打开：${titleOf(item)}`">
+          <span class="day-poster">
+            <img
+              v-if="posterOf(item)"
+              :src="posterOf(item)"
+              :alt="titleOf(item)"
+              loading="lazy"
+              decoding="async"
+            />
+            <Film v-else :size="18" aria-hidden="true" />
+          </span>
+          <span class="day-meta">
+            <span class="day-title">{{ titleOf(item) }}</span>
+            <span class="day-sub">{{ subtitleOf(item) }}</span>
+            <span class="day-tags">
+              <span class="au-badge" :class="`tag-${typeClass(item)}`">{{ typeLabel(item) }}</span>
+              <span v-if="item.LibraryName" class="day-lib">{{ item.LibraryName }}</span>
+              <span v-if="item.CommunityRating" class="day-rate">{{ item.CommunityRating.toFixed(1) }}</span>
+            </span>
+          </span>
+          <ChevronRight :size="16" class="day-go" aria-hidden="true" />
+        </a>
+      </li>
+    </ul>
+
+    <p v-if="selectedDay && selectedDay.count > selectedDay.items.length" class="cal-note">
+      当天共 {{ selectedDay.count }} 条，这里只列出最近入库的 {{ selectedDay.items.length }} 条。
+    </p>
+    <p v-if="selectedDay" class="cal-note">
+      点条目会用 <strong>Rex</strong> 打开：有 TMDB 编号的直接跳到那部作品，没有的按名字交给
+      Rex 搜索。需要先装好 Rex 客户端。
+    </p>
+  </section>
+</template>
+
+<style scoped>
+/* ---------- 当日列表 ---------- */
+.day-panel { margin-top: 1rem; }
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.875rem;
+  /* M1：header 是 div 不是 button，不吃 mobile 规则；这里声明高度防抖动 */
+  min-height: 24px;
+}
+.cal-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+}
+.cal-head svg { color: var(--au-primary); }
+
+.day-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.5rem;
+}
+
+.day-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 100%;
+  /* M1：显式最小高度，不吃 mobile.css 给 a 的 44px 规则，也不被它撑变形 */
+  min-height: 80px;
+  padding: 0.5rem;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-surface-2);
+  text-decoration: none;
+  color: var(--au-text);
+  transition: background var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease);
+}
+.day-item:hover {
+  background: var(--au-surface-3);
+  border-color: var(--au-primary-border);
+}
+.day-item:active { transform: translateY(0); }
+
+.day-poster {
+  flex: none;
+  width: 46px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--au-r-sm);
+  background: var(--au-surface-3);
+  color: var(--au-text-4);
+  overflow: hidden;
+}
+.day-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.day-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.day-title {
+  font-size: var(--cal-day-title-size);
+  font-weight: 600;
+  color: var(--au-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.day-sub {
+  font-size: var(--cal-day-sub-size);
+  color: var(--au-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.day-tags {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  /* 标签行固定高度：有没有评分/库名，行高都不变 */
+  min-height: 20px;
+}
+
+.day-tags .au-badge {
+  font-size: var(--cal-day-sub-size);
+  padding: 0 0.4375rem;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--au-r-full);
+  font-weight: 600;
+}
+.tag-movie { background: var(--au-info-soft); color: var(--au-info); }
+.tag-series { background: var(--au-violet-soft); color: var(--au-violet); }
+.tag-episode { background: var(--au-success-soft); color: var(--au-success); }
+
+.day-lib {
+  font-size: var(--cal-day-sub-size);
+  color: var(--au-text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 8rem;
+}
+
+.day-rate {
+  font-size: var(--cal-day-sub-size);
+  font-weight: 700;
+  color: var(--au-warning);
+  font-variant-numeric: tabular-nums;
+}
+
+.day-go {
+  flex: none;
+  color: var(--au-text-4);
+  transition: transform var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
+}
+.day-item:hover .day-go { color: var(--au-primary); transform: translateX(2px); }
+
+.cal-note {
+  margin: 0.875rem 0 0;
+  font-size: var(--cal-day-sub-size);
+  color: var(--au-text-3);
+}
+
+/* ---------- 窄屏 ---------- */
+@media (max-width: 768px) {
+  .day-list { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .day-item, .day-go { transition: none; }
+  .day-item:hover { transform: none; }
+}
+</style>
