@@ -258,7 +258,7 @@ async def lifespan(app: FastAPI):
     # 挂载，worker/ea 都是 ro 写不进去）。这里不按 _is_api_role 区分——单体模式
     # （未设 AETRIX_ROLE）同样走 main.py，调度器要在两种模式下都跑起来；
     # worker 进程用 backend/worker.py 入口，根本不走这里，不会重复启动。
-    # 调度器内部按 strm_gen_enabled / strm_gen_schedule 配置决定是否真正执行。
+    # 调度器内部按 strm_gen_enabled / strm_gen_interval_minutes 配置决定是否真正执行。
     try:
         from backend.emby_server import strm_gen
         if strm_gen.start_scheduler():
