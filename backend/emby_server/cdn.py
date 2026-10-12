@@ -134,7 +134,7 @@ def is_segment_path(path: str) -> bool:
         return False
     if "/videos/" in lowered and lowered.endswith((".ts", ".m4s", ".aac")):
         return True
-    return lowered.endswith(("/stream", ".mkv", ".mp4", ".ts", ".m4s", ".aac")) and \
+    return lowered.endswith(("/stream", ".mkv", ".mp4", ".strm", ".ts", ".m4s", ".aac")) and \
         ("/videos/" in lowered or lowered.endswith(("/stream",)) or
          ".stream." in lowered.rsplit("/", 1)[-1])
 

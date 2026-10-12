@@ -3279,15 +3279,20 @@ async def video_stream(
 
 @emby_router.get("/emby/videos/{item_id}/stream.mkv")
 @emby_router.get("/emby/videos/{item_id}/stream.mp4")
+@emby_router.get("/emby/videos/{item_id}/stream.strm")
 @emby_router.get("/emby/Videos/{item_id}/stream.mkv")
 @emby_router.get("/emby/Videos/{item_id}/stream.mp4")
+@emby_router.get("/emby/Videos/{item_id}/stream.strm")
 async def video_stream_ext(
     item_id: str,
     request: Request,
     user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
-    """带扩展名的直接流路由（iOS 客户端用 .mkv/.mp4 后缀请求）"""
+    """带扩展名的直接流路由（iOS 客户端用 .mkv/.mp4 后缀请求；
+
+    SenPlayer 按 Emby 约定用 PlaybackInfo 的 Container 拼 stream.strm 取流）
+    """
     return await video_stream(item_id, request, user, db)
 
 
@@ -3299,6 +3304,12 @@ async def video_hls(
     user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
+    # SenPlayer 等客户端按 Emby 约定拼 /emby/videos/{id}/stream.{ext} 取流；
+    # stream.* 是直接流不是转码路径。若被 catch-all 误收会起 ffmpeg 返 m3u8，
+    # 客户端等视频字节流等不到就一直转圈。一律转交直连处理（放最前，避免
+    # 与 video_stream 重复做可见性校验；双层 release_db 关闭会话是幂等的）。
+    if transcode_path.startswith("stream."):
+        return await video_stream(item_id, request, user, db)
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     from backend.emby_server.async_db import run_db
     # 安全修复（P0 / H1）：条目必须在用户可见的库范围内（统一 helper）
