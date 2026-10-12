@@ -1884,4 +1884,6 @@ const opsLastScan = ref<{
   .ops-foot { flex-direction: column; align-items: stretch; }
   .ops-foot .el-button { width: 100%; }
 }
+
+.realm-card, .server-card { content-visibility: auto; contain-intrinsic-size: auto 280px; }
 </style>
