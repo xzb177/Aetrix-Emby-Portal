@@ -1219,9 +1219,10 @@ def revive_quota_failed(db, limit: int = 1000) -> int:
     历史欠账自愈（C-P1-1）：修复前配额窗口内的 403 被永久判死，且配额恢复后
     不自愈。本函数由调度循环定期调用，把这类条目转回 pending，长退避后自动重试。
 
-    识别口径：``probe_status="failed"`` 且 ``probe_last_error`` 含配额 / 403 /
-    quota 标记。为避免误伤真正的 403 权限失败，转回后走 24h 长退避而非立即重试，
-    即使误判也只是一天一次的探测，成本可忽略。
+    识别口径：``probe_status="failed"`` 且 ``probe_last_error`` 含本系统写入的
+    ``[quota]`` 标记（``media_probe.mark_long_retry`` 写入，kind="quota"）；
+    历史中文"配额"/裸"403"文本不再匹配——C-P1-1 上线后 30 分钟一轮的自愈已把历史
+    欠账捞回，不再需要宽口径。
 
     返回转回的条目数。
     """
@@ -1229,9 +1230,7 @@ def revive_quota_failed(db, limit: int = 1000) -> int:
     rows = (db.query(MI.id)
             .filter(MI.probe_status == "failed",
                     MI.probe_last_error.isnot(None),
-                    or_(MI.probe_last_error.like("%配额%"),
-                        MI.probe_last_error.like("%quota%"),
-                        MI.probe_last_error.like("%403%")))
+                    MI.probe_last_error.like("%[quota]%"))
             .limit(limit).all())
     if not rows:
         return 0

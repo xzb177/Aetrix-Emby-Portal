@@ -128,7 +128,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
-   * 退出登录：先同步清本地（调用方不 await 也能立即生效），
+   * 退出登录：本地会话状态立即失效（调用方不 await 也能即刻生效），
    * 再最佳努力通知服务端吊销当前票据（P0-1 安全修复），不阻塞退出。
    *
    * 注意这里不动门户会话（免登还要用它），只吊销后台票据。
@@ -138,16 +138,23 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null
     admin.value = null
     verified.value = false
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(ADMIN_KEY)
     // 主动退出后必须真的退出：本标签页内不再用门户会话自动免登（否则会被立刻「登回去」）
     sessionStorage.setItem(SKIP_SSO_KEY, '1')
-    // 服务端吊销是最佳努力：失败也不影响本地已退出
-    if (current) {
-      import('@/api/admin')
-        .then(({ adminLogout }) => adminLogout())
-        .catch(() => {})
+
+    // P1-1：服务端吊销依赖 Authorization 头，而拦截器从 localStorage 读取 token。
+    // 因此必须在清理 localStorage 之前发出吊销请求；先清理会导致请求无凭证、后端 401，吊销不生效。
+    if (!current || tokenExpired(current)) {
+      // 无 token 或已过期：服务端也用不了，跳过吊销以避免 401 自愈拦截器整页重载。
+      clearStoredSession()
+      return
     }
+
+    // 服务端吊销是最佳努力：失败也不影响本地已退出。
+    // 请求 settle 后再清理 localStorage，确保拦截器能取到旧 token。
+    import('@/api/admin')
+      .then(({ adminLogout }) => adminLogout())
+      .catch(() => {})
+      .finally(clearStoredSession)
   }
 
   /**

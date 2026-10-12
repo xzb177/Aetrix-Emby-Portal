@@ -84,10 +84,15 @@ export const changePassword = (data: { old_password: string; new_password: strin
 
 /**
  * 管理员登出：服务端吊销当前 access token 的 jti（P0-1 安全修复）。
- * 最佳努力：即使请求失败（比如 token 已失效）也继续走本地清理，不阻塞退出。
+ * 最佳努力：即使请求失败（比如 token 已失效）也继续走本地清理，不阻塞退出；
+ * 因此永远 silent，不弹红色错误 toast。
  */
 export const adminLogout = (refreshToken?: string) =>
-  post<{ success: boolean }>('/auth/logout', refreshToken ? { refresh_token: refreshToken } : {})
+  post<{ success: boolean }>(
+    '/auth/logout',
+    refreshToken ? { refresh_token: refreshToken } : {},
+    { silent: true },
+  )
 
 // ==================== 用户管理 ====================
 
@@ -1084,23 +1089,20 @@ export interface EnrichEpisodeNightConfig {
   enabled: boolean
   night_start: string
   night_end: string
-  night_tz: string
   from_env: boolean
   in_window: boolean
-  defaults: { enabled: boolean; night_start: string; night_end: string; night_tz: string }
-  tz_options?: string[]
+  defaults: { enabled: boolean; night_start: string; night_end: string }
 }
 
 /** 单集夜间刮削：白天只刮顶层条目，单集留到夜间窗口刮 */
 export const fetchEnrichEpisodeNight = () =>
   get<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`)
 
-export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, night_end: string, night_tz: string) =>
+export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, night_end: string) =>
   put<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`, {
     enabled,
     night_start,
     night_end,
-    night_tz,
   })
 
 export interface TmdbTestResult {
