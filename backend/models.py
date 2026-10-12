@@ -1725,3 +1725,60 @@ class ApiKey(Base):
     last_used_at = Column(DateTime, nullable=True)
     created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)  # 创建人 admin id
     created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
+# ==================== v4 探险家日志面板 ====================
+
+class PanelUnseal(Base):
+    """面板盲盒拆封记录：用户拆了哪件今日封存（幂等，UNIQUE 约束）"""
+    __tablename__ = 'panel_unseals'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'item_id', name='uq_panel_unseal_user_item'),
+        Index('idx_panel_unseal_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    item_id = Column(Integer, nullable=False)  # emby_items.id
+    unsealed_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
+class PanelAchievementDef(Base):
+    """成就定义（启动时 seed，规则文本不写死在代码里）"""
+    __tablename__ = 'panel_achievement_defs'
+
+    key = Column(String(50), primary_key=True)  # 如 'first_night'
+    name = Column(String(50), nullable=False)
+    desc = Column(String(200), nullable=False)
+    icon = Column(String(20), nullable=False, default='🏅')
+    sort = Column(Integer, default=0, nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)  # 可配置开关
+
+
+class PanelAchievementUnlock(Base):
+    """用户成就解锁记录（幂等，UNIQUE 约束）"""
+    __tablename__ = 'panel_achievement_unlocks'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'ach_key', name='uq_panel_ach_user_key'),
+        Index('idx_panel_ach_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    ach_key = Column(String(50), nullable=False)
+    unlocked_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
+class PanelActivity(Base):
+    """后台活动 feed（环形保留最近 50 条，供面板脉搏文案）"""
+    __tablename__ = 'panel_activity'
+
+    __table_args__ = (
+        Index('idx_panel_activity_time', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    text = Column(String(300), nullable=False)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)

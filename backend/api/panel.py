@@ -1,0 +1,521 @@
+"""v4 探险家日志面板 · 后端 API
+
+新增 backend/api/panel.py，前缀 /api/panel/*。
+全部接口需登录（复用 get_current_user，不许第二套鉴权）。
+返回体统一 {code, msg, data}。
+
+特性开关：PANEL_V4_ENABLED（默认开；关则接口返回 403 disabled）。
+只做加法，不改现有 API。
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from backend import models
+from backend.database import get_db
+from backend.api.user import get_current_user
+
+logger = logging.getLogger("aetrix.panel")
+
+router = APIRouter(prefix="/api/panel", tags=["面板-v4"])
+
+
+def _panel_enabled() -> bool:
+    return os.getenv("PANEL_V4_ENABLED", "1") != "0"
+
+
+def _guard():
+    if not _panel_enabled():
+        raise HTTPException(status_code=403, detail="面板 v4 未启用")
+
+
+def _ok(data) -> dict:
+    return {"code": 0, "msg": "ok", "data": data}
+
+
+def _greeting() -> str:
+    h = datetime.now().hour
+    if h < 5:
+        return "夜深了"
+    if h < 9:
+        return "早上好"
+    if h < 12:
+        return "上午好"
+    if h < 14:
+        return "中午好"
+    if h < 18:
+        return "下午好"
+    return "晚上好"
+
+
+def _streak(db: Session, user_id: int) -> int:
+    rec = db.query(models.CheckinRecord).filter_by(user_id=user_id).order_by(
+        models.CheckinRecord.checkin_date.desc()).first()
+    return rec.streak if rec and rec.streak else 0
+
+
+def _emby_base_url(db: Session) -> str:
+    """复用现有深链能力：Emby 服务器地址"""
+    try:
+        from backend.emby_server.portal import resolve_emby_base_url
+        return resolve_emby_base_url(db) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _item_deep_link(db: Session, item_id: int) -> str:
+    base = _emby_base_url(db)
+    if not base:
+        return ""
+    return f"{base}/web/index.html#!/item?id={item_id}"
+
+
+# ==================== 1. GET /api/panel/today ====================
+
+@router.get("/today")
+def panel_today(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    from backend.emby_server import models as em
+    # 今日新入库件数（按 date_added）
+    try:
+        new_count = db.query(func.count(em.MediaItem.id)).filter(
+            em.MediaItem.date_added >= today_start,
+            em.MediaItem.item_type.in_(["movie", "series"]),
+        ).scalar() or 0
+    except Exception:  # noqa: BLE001
+        new_count = 0
+
+    # 今日已拆 / 总数
+    try:
+        parcel_ids = [r[0] for r in db.query(em.MediaItem.id).filter(
+            em.MediaItem.date_added >= today_start,
+            em.MediaItem.item_type.in_(["movie", "series"]),
+        ).order_by(em.MediaItem.date_added.desc()).limit(5).all()]
+    except Exception:  # noqa: BLE001
+        parcel_ids = []
+    unsealed = 0
+    if parcel_ids:
+        unsealed = db.query(func.count(models.PanelUnseal.id)).filter(
+            models.PanelUnseal.user_id == user.id,
+            models.PanelUnseal.item_id.in_(parcel_ids),
+        ).scalar() or 0
+
+    return _ok({
+        "greeting": _greeting(),
+        "date": now.strftime("%Y-%m-%d"),
+        "weekday": ["一", "二", "三", "四", "五", "六", "日"][now.weekday()],
+        "parcels_total": len(parcel_ids),
+        "parcels_unsealed": unsealed,
+        "streak": _streak(db, user.id),
+        "letter_available": True,  # 每日一封每天都可读
+        "nickname": getattr(user, "nickname", None) or user.username,
+    })
+
+
+# ==================== 2. GET /api/panel/parcels ====================
+
+@router.get("/parcels")
+def panel_parcels(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    from backend.emby_server import models as em
+    try:
+        items = db.query(em.MediaItem).filter(
+            em.MediaItem.date_added >= today_start,
+            em.MediaItem.item_type.in_(["movie", "series"]),
+        ).order_by(em.MediaItem.date_added.desc()).limit(5).all()
+    except Exception:  # noqa: BLE001
+        logger.exception("parcels 查询失败")
+        return _ok({"parcels": []})
+
+    unsealed_ids = {r[0] for r in db.query(models.PanelUnseal.item_id).filter(
+        models.PanelUnseal.user_id == user.id).all()}
+
+    parcels = []
+    for it in items:
+        parcels.append({
+            "id": it.id,
+            "name": it.name,
+            "item_type": it.item_type,
+            "production_year": it.production_year,
+            "video_resolution": getattr(it, "video_resolution", None),
+            "added_at": it.date_added.isoformat() if it.date_added else None,
+            "unsealed": it.id in unsealed_ids,
+            "deep_link": _item_deep_link(db, it.id),
+        })
+    return _ok({"parcels": parcels})
+
+
+# ==================== 3. POST /api/panel/parcels/{item_id}/unseal ====================
+
+@router.post("/parcels/{item_id}/unseal")
+def panel_unseal(
+    item_id: int,
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    # 幂等：已拆直接返回
+    exists = db.query(models.PanelUnseal).filter_by(
+        user_id=user.id, item_id=item_id).first()
+    if exists:
+        return _ok({"unsealed": True, "already": True})
+
+    from backend.emby_server import models as em
+    item = db.query(em.MediaItem).filter_by(id=item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="条目不存在")
+    try:
+        db.add(models.PanelUnseal(user_id=user.id, item_id=item_id))
+        db.commit()
+    except Exception:  # noqa: BLE001 — 并发重复拆，UNIQUE 兜底
+        db.rollback()
+    return _ok({
+        "unsealed": True,
+        "already": False,
+        "item": {
+            "id": item.id,
+            "name": item.name,
+            "item_type": item.item_type,
+            "production_year": item.production_year,
+            "deep_link": _item_deep_link(db, item.id),
+        },
+    })
+
+
+# ==================== 4. GET /api/panel/pulse ====================
+
+def _derive_activity(db: Session) -> list:
+    """推导版后台活动文案（worker 埋点补上后无缝替换为读 panel_activity 表）"""
+    lines = []
+    # 优先读埋点表
+    try:
+        rows = db.query(models.PanelActivity).order_by(
+            models.PanelActivity.created_at.desc()).limit(2).all()
+        if rows:
+            return [{"text": r.text, "at": r.created_at.isoformat()} for r in rows]
+    except Exception:  # noqa: BLE001
+        pass
+    # 推导版：从 health 快照推
+    try:
+        from backend.main import _collect_health
+        h = _collect_health()
+        metrics = h.get("metrics", {}) or {}
+        backlog = metrics.get("enrich_backlog", metrics.get("backlog", 0))
+        if backlog:
+            lines.append(f"正在消化 {backlog} 条待刮削")
+        issues = h.get("issues", []) or []
+        for issue in issues[:1]:
+            lines.append(str(issue)[:60])
+    except Exception:  # noqa: BLE001
+        pass
+    if not lines:
+        lines.append("服务器运行中，一切正常")
+    # 凌晨单集刮削预告
+    now = datetime.now()
+    if now.hour < 2:
+        lines.append("02:00 将开始刮削单集")
+    return [{"text": t, "at": now.isoformat()} for t in lines[:2]]
+
+
+@router.get("/pulse")
+def panel_pulse(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    health = {}
+    try:
+        from backend.main import _collect_health
+        h = _collect_health()
+        health = {
+            "status": h.get("status"),
+            "level": h.get("level"),
+            "issues_count": len(h.get("issues", []) or []),
+        }
+    except Exception:  # noqa: BLE001
+        health = {"status": "unknown", "level": "unknown", "issues_count": 0}
+    return _ok({
+        "health": health,
+        "activities": _derive_activity(db),
+        "timestamp": datetime.now().isoformat(),
+    })
+
+
+# ==================== 5. GET /api/panel/letter ====================
+
+@router.get("/letter")
+def panel_letter(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    now = datetime.now()
+    yesterday_start = (now - timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    sessions = db.query(models.EmbySession).filter(
+        models.EmbySession.user_id == user.id,
+        models.EmbySession.start_time >= yesterday_start,
+        models.EmbySession.start_time < today_start,
+    ).all()
+    total_secs = sum(s.play_duration or 0 for s in sessions)
+    # 看完的条目（去重，播放超 1 分钟）
+    watched = sorted({s.item_name for s in sessions
+                      if s.item_name and (s.play_duration or 0) > 60})
+    # 口味偏移：昨日最多的 genre（尽力而为）
+    taste_shift = ""
+    try:
+        from backend.panel_achievements import user_tastes
+        tastes = user_tastes(db, user.id)
+        top = sorted(tastes.items(), key=lambda kv: kv[1]["count"], reverse=True)
+        if top and top[0][1]["count"] > 0:
+            taste_shift = f"最近偏爱「{top[0][1]['name']}」"
+    except Exception:  # noqa: BLE001
+        pass
+
+    hours = total_secs // 3600
+    minutes = (total_secs % 3600) // 60
+    return _ok({
+        "date": (now - timedelta(days=1)).strftime("%Y-%m-%d"),
+        "watch_duration": f"{hours}小时{minutes}分" if hours else f"{minutes}分",
+        "watch_count": len(watched),
+        "watched": watched[:5],
+        "taste_shift": taste_shift,
+        "streak": _streak(db, user.id),
+        "teaser": "今日封存已送达，去拆盲盒吧 📦",
+    })
+
+
+# ==================== 6. GET /api/panel/collector ====================
+
+@router.get("/collector")
+def panel_collector(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    from backend.panel_achievements import user_tastes, evaluate
+
+    # 触发一次成就评估（轻量，幂等）
+    try:
+        new_unlocks = evaluate(user.id, db)
+    except Exception:  # noqa: BLE001
+        logger.exception("成就评估失败")
+        new_unlocks = []
+
+    tastes = {}
+    try:
+        tastes = user_tastes(db, user.id)
+    except Exception:  # noqa: BLE001
+        logger.exception("口味聚合失败")
+
+    # 成就列表（定义 + 解锁状态）
+    defs = db.query(models.PanelAchievementDef).filter_by(
+        enabled=True).order_by(models.PanelAchievementDef.sort).all()
+    unlocked = {r[0] for r in db.query(
+        models.PanelAchievementUnlock.ach_key).filter_by(user_id=user.id).all()}
+    achievements = [{
+        "key": d.key,
+        "name": d.name,
+        "desc": d.desc,
+        "icon": d.icon,
+        "unlocked": d.key in unlocked,
+    } for d in defs]
+
+    # 馆灵：累计观影小时推导（阈值走 SystemConfig，可配置）
+    total_secs = db.query(func.coalesce(func.sum(models.EmbySession.play_duration), 0)).filter(
+        models.EmbySession.user_id == user.id).scalar() or 0
+    total_hours = total_secs / 3600
+    try:
+        from backend.servers import config_value
+        stages_raw = config_value(db, "panel_pet_stages", "")
+        stages = json.loads(stages_raw) if stages_raw else []
+    except Exception:  # noqa: BLE001
+        stages = []
+    if not stages:
+        stages = [
+            {"name": "蛋", "icon": "🥚", "hours": 0},
+            {"name": "夜枭", "icon": "🦉", "hours": 50},
+            {"name": "守夜者", "icon": "🦅", "hours": 200},
+            {"name": "星语者", "icon": "🦄", "hours": 500},
+            {"name": "馆灵", "icon": "🐉", "hours": 1000},
+        ]
+    cur_idx = 0
+    for i, st in enumerate(stages):
+        if total_hours >= st["hours"]:
+            cur_idx = i
+    cur = stages[cur_idx]
+    nxt = stages[cur_idx + 1] if cur_idx + 1 < len(stages) else None
+    if nxt:
+        span = nxt["hours"] - cur["hours"]
+        progress = min(1.0, max(0.0, (total_hours - cur["hours"]) / span)) if span else 1.0
+    else:
+        progress = 1.0
+
+    points = getattr(user, "points", 0) or 0
+    return _ok({
+        "nickname": getattr(user, "nickname", None) or user.username,
+        "points": points,
+        "watch_hours": round(total_hours, 1),
+        "streak": _streak(db, user.id),
+        "achievement_count": len(unlocked),
+        "tastes": tastes,
+        "achievements": achievements,
+        "new_unlocks": new_unlocks,
+        "pet": {
+            "stage": cur_idx,
+            "name": cur["name"],
+            "icon": cur["icon"],
+            "hours": round(total_hours, 1),
+            "next_name": nxt["name"] if nxt else None,
+            "next_icon": nxt["icon"] if nxt else None,
+            "next_hours": nxt["hours"] if nxt else None,
+            "progress": round(progress, 3),
+            "stages": [{"name": s["name"], "icon": s["icon"]} for s in stages],
+        },
+    })
+
+
+# ==================== 7. GET /api/panel/server ====================
+
+# 机关拨杆定义（key, 名称, 描述）
+TOGGLES = [
+    ("panel_night_scrape", "凌晨刮单集", "02:00–06:00 刮削单集元数据"),
+    ("panel_auto_scan", "定时扫描", "每天定时增量扫描媒体库"),
+    ("panel_douban_first", "豆瓣优先", "中文标题优先走豆瓣刮削"),
+    ("panel_vitality_guard", "活力值守护", "公益服活力值归零自动封禁"),
+]
+
+
+@router.get("/server")
+def panel_server(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    from backend.servers import config_value
+    from backend.emby_server import models as em
+
+    # vitals：四格（尽量从 health 取，失败则占位）
+    vitals = {"status": "unknown", "backlog": 0, "online": 0, "version": ""}
+    try:
+        from backend.main import _collect_health
+        h = _collect_health()
+        metrics = h.get("metrics", {}) or {}
+        vitals = {
+            "status": h.get("status"),
+            "level": h.get("level"),
+            "backlog": metrics.get("enrich_backlog", metrics.get("backlog", 0)),
+            "version": getattr(__import__("backend.main", fromlist=["app"]).app, "version", ""),
+        }
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 片库生态：每库条目数
+    eco = []
+    try:
+        lib_counts = db.query(
+            em.MediaItem.library_id, func.count(em.MediaItem.id)
+        ).filter(em.MediaItem.item_type.in_(["movie", "series"])).group_by(
+            em.MediaItem.library_id).all()
+        # 库名映射
+        lib_names = {}
+        try:
+            for lib in db.query(em.Library).all():
+                lib_names[lib.id] = lib.name
+        except Exception:  # noqa: BLE001
+            pass
+        eco = [{
+            "library_id": lid,
+            "name": lib_names.get(lid, f"库 {lid}"),
+            "count": cnt,
+        } for lid, cnt in sorted(lib_counts, key=lambda x: -x[1])]
+    except Exception:  # noqa: BLE001
+        logger.exception("片库生态查询失败")
+
+    # 雷达任务：固定 4 个后台任务 + 状态
+    radar_tasks = [
+        {"key": "enrich", "name": "刮削", "active": bool(vitals.get("backlog"))},
+        {"key": "probe", "name": "探针", "active": True},
+        {"key": "scan", "name": "扫描", "active": False},
+        {"key": "night", "name": "单集", "active": False},
+    ]
+
+    # 机关开关状态（读 SystemConfig，默认开）
+    toggles = []
+    is_admin = bool(getattr(user, "is_staff", False))
+    for key, name, desc in TOGGLES:
+        val = config_value(db, key, "1")
+        toggles.append({
+            "key": key, "name": name, "desc": desc,
+            "on": val != "0", "writable": is_admin,
+        })
+
+    return _ok({
+        "vitals": vitals,
+        "eco": eco,
+        "radar_tasks": radar_tasks,
+        "toggles": toggles,
+        "is_admin": is_admin,
+    })
+
+
+# ==================== 8. POST /api/panel/server/toggles ====================
+
+@router.post("/server/toggles")
+def panel_toggle(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    if not bool(getattr(user, "is_staff", False)):
+        raise HTTPException(status_code=403, detail="仅管理员可操作机关")
+    from backend.servers import set_config
+    key = (payload or {}).get("key", "")
+    on = (payload or {}).get("on", True)
+    allowed = {t[0] for t in TOGGLES}
+    if key not in allowed:
+        raise HTTPException(status_code=400, detail="未知的机关")
+    set_config(db, key, "1" if on else "0", f"面板机关：{key}")
+    db.commit()
+    return _ok({"key": key, "on": bool(on)})
+
+
+# ==================== 活动埋点（供 worker 调用） ====================
+
+def push_activity(db: Session, text: str) -> None:
+    """写入一条后台活动（环形保留 50 条）"""
+    try:
+        db.add(models.PanelActivity(text=text[:300]))
+        db.commit()
+        # 裁剪：只留最近 50 条
+        cutoff_id = db.query(models.PanelActivity.id).order_by(
+            models.PanelActivity.id.desc()).offset(50).limit(1).scalar()
+        if cutoff_id:
+            db.query(models.PanelActivity).filter(
+                models.PanelActivity.id <= cutoff_id).delete()
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("panel activity 写入失败")

@@ -1618,6 +1618,18 @@ def init_db():
                 _s.close()
         except Exception as e:  # noqa: BLE001 — 播种失败不阻止启动，用户端懒播种兜底
             print(f"⚠️ 会员等级种子写入失败（可忽略）: {e}")
+        # v4 探险家日志面板：幂等播种 12 个成就定义（已存在的跳过）
+        try:
+            from backend import panel_achievements as _pa
+            _s = SessionLocal()
+            try:
+                _added = _pa.seed_achievement_defs(_s)
+                if _added:
+                    print(f"✅ 面板成就定义已播种 {_added} 条")
+            finally:
+                _s.close()
+        except Exception as e:  # noqa: BLE001 — 播种失败不阻止启动
+            print(f"⚠️ 面板成就种子写入失败（可忽略）: {e}")
     print(f"✅ 数据库初始化完成 ({DATABASE_TYPE})")
 
 
