@@ -17,6 +17,7 @@ from __future__ import annotations
 import inspect as _inspect
 import logging
 import os
+import threading
 import tracemalloc as _tracemalloc
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -171,6 +172,21 @@ async def lifespan(app: FastAPI):
         start_loop_monitor()
     except Exception as exc:  # noqa: BLE001 — 监控失败不影响出流
         logger.warning("事件循环监控启动失败（可忽略）: %s", exc)
+
+    # P0-1（2026-10-12）：起播加速。EA 启动后后台预铸全部 SA 的 access_token，
+    # 冷启动后 55min 内 /stream 的 token 获取从 300–600ms 现换降为缓存命中。
+    # daemon 线程 + 函数内部全异常自吞：预铸失败静默，不影响启动与出流。
+    # premint_tokens 本身永不抛异常（外层 try/except + 单 SA try/except），
+    # 这里再包一层是双保险；请求打到 oauth2 token endpoint（非 Drive API 配额），
+    # 每个 SA 换 token 前有 0–0.5s 随机抖动，反风控已由函数内部保证。
+    def _premint_sa_tokens_bg() -> None:
+        try:
+            from backend.emby_server import drive_auth
+            drive_auth.premint_tokens(max_workers=4)
+        except Exception:
+            pass  # premint 本身永不抛异常；这里是双保险
+    threading.Thread(target=_premint_sa_tokens_bg, name="sa-premint-bg",
+                     daemon=True).start()
 
     logger.info("✅ %s 启动完成", SERVICE_NAME)
     yield

@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -153,7 +154,64 @@ def _pick_sa() -> dict[str, Any] | None:
     return None
 
 
-def get_drive_bearer_token() -> str | None:
+# 亲和窗口（秒）：同一 key 在该窗口内经 hash 固定到同一 SA；到期后
+# bucket 递增，hash 输入变化，自动落到另一个 SA，无需状态机/定时器。
+_SA_AFFINITY_WINDOW_SECONDS = 100.0
+
+
+def _pick_sa_affine(key: str) -> dict[str, Any] | None:
+    """按时间分桶的确定性 hash 亲和选 SA（P1 起播加速，2026-10-12）。
+
+    同一 ``key``（file_id）在同一 100s bucket 内永远算出同一 SA → 该 SA 的
+    3300s token 缓存必命中；bucket 递增后 hash 输入变化 → 落到另一个 SA
+    （伪随机，无规律可循，防风控：不固定 hammer 某一个 SA）。
+
+    任何异常（无 SA / hash 失败）都回退到 ``_pick_sa()`` 抖动轮换；永不抛异常。
+    """
+    try:
+        sas = _all_sa_dicts()
+        if not sas:
+            return _pick_sa()
+        bucket = int(time.monotonic() // _SA_AFFINITY_WINDOW_SECONDS)
+        digest = hashlib.sha256(f"{key}:{bucket}".encode("utf-8")).digest()
+        idx = int.from_bytes(digest, "big") % len(sas)
+        sa = sas[idx]
+        if _is_sa_dict(sa):
+            return sa
+    except Exception:
+        pass
+    return _pick_sa()
+
+
+def _drive_file_id_from_url(url: str) -> str | None:
+    """从 Drive URL 提取 file_id（供 P1 SA 亲和），提取失败返回 None。
+
+    支持两种形式：
+    - ``https://drive.google.com/uc?export=download&id=<FILE_ID>``（query id 参数）
+    - ``https://www.googleapis.com/drive/v3/files/<FILE_ID>?alt=media``（path 第 4 段）
+
+    与 ``streaming._drive_file_id`` 是同逻辑（横切只许一套：后续重构应统一，
+    本次不扩大改动面）。永不抛异常。
+    """
+    try:
+        if not url:
+            return None
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if host == "drive.google.com" and parsed.path.rstrip("/") == "/uc":
+            return dict(parse_qsl(parsed.query)).get("id") or None
+        if host == "www.googleapis.com":
+            parts = parsed.path.strip("/").split("/")
+            # drive / v3 / files / <FILE_ID>
+            if len(parts) >= 4 and parts[0] == "drive" and parts[1] == "v3" \
+                    and parts[2] == "files":
+                return parts[3] or None
+    except Exception:
+        return None
+    return None
+
+
+def get_drive_bearer_token(key: str | None = None) -> str | None:
     """获取 Drive 访问用的 Bearer access_token；失败返回 None，永不抛异常。
 
     每次调用都先经 ``_pick_sa()`` round-robin 选出一个 SA，再以该 SA 的
@@ -167,10 +225,14 @@ def get_drive_bearer_token() -> str | None:
     （3420 秒）——内层只会返回真实剩余寿命 ≥3420 秒的 token（不够就重新换取），
     因此外层写入的 3300 秒缓存永远不会超出 token 的真实寿命。内层的剩余寿命
     比较全部在其内部用 wall clock（``time.time()``）完成，不做跨时间基准换算。
+
+    ``key``（P1，2026-10-12）：可选的亲和键（通常为 file_id）。非空时按
+    ``sha256(key:bucket) % n`` 时间分桶亲和选 SA——100s 窗口内同一 key 固定
+    SA、窗口到期自动换 SA；``None`` 时保持原有的抖动轮换行为，不变。
     """
     try:
         drive_changes = _load_drive_changes()
-        sa = _pick_sa()
+        sa = _pick_sa_affine(key) if key else _pick_sa()
     except Exception as exc:
         logger.warning("drive_auth: 加载 Drive 凭据模块失败，调用方降级处理: %s", exc)
         return None
@@ -206,10 +268,14 @@ def get_drive_bearer_token() -> str | None:
 
 
 def drive_auth_headers(url: str) -> dict[str, str]:
-    """为 Drive 直链构造请求头；非 Drive 域名或无 token 时返回空字典。"""
+    """为 Drive 直链构造请求头；非 Drive 域名或无 token 时返回空字典。
+
+    P1（2026-10-12）：内部从 url 提取 file_id 作为亲和 key 传给
+    get_drive_bearer_token——调用方（mounts._strm_play_target）零改动。
+    """
     if not is_drive_url(url):
         return {}
-    token = get_drive_bearer_token()
+    token = get_drive_bearer_token(key=_drive_file_id_from_url(url))
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}

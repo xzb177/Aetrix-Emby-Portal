@@ -675,18 +675,17 @@ def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
     """
     sig_ttl = _signature_ttl_seconds(final_url)
     if sig_ttl is not None and sig_ttl <= 0:
-        logger.debug(
-            "redirect_cache_skip reason=signature_expired file_id=%s sig_ttl=%.1f url=%s",
-            file_id, sig_ttl, _desensitized_url_for_log(final_url))
+        logger.info(
+            "redirect_cache_skip reason=signature_expired file_id=%s sig_ttl=%.1f",
+            file_id, sig_ttl)
         return
     ttl = _DRIVE_REDIRECT_CACHE_TTL
     if sig_ttl is not None:
         ttl = min(ttl, sig_ttl)
-    logger.debug(
-        "redirect_cache_write file_id=%s ttl=%.1f sig_ttl=%s url=%s",
+    logger.info(
+        "redirect_cache_write file_id=%s ttl=%.1f sig_ttl=%s",
         file_id, ttl,
-        ("%.1f" % sig_ttl) if sig_ttl is not None else "unknown",
-        _desensitized_url_for_log(final_url))
+        ("%.1f" % sig_ttl) if sig_ttl is not None else "unknown")
     _redirect_cache_set(file_id, final_url, ttl=ttl)
 
 
@@ -703,28 +702,27 @@ def _maybe_cache_drive_redirect(
     落点是 drive.usercontent.google.com、终态不是 403/404/410（坏 URL 不进缓存）。
     """
     if not file_id or hops <= 0 or cached_hit:
-        logger.debug(
+        logger.info(
             "redirect_cache_skip reason=no_hops file_id=%s hops=%s cached_hit=%s status=%s",
             file_id, hops, cached_hit, terminal_status)
         return
     if terminal_status in (403, 404, 410):
-        logger.debug(
-            "redirect_cache_skip reason=bad_terminal_status file_id=%s hops=%s status=%s url=%s",
-            file_id, hops, terminal_status, _desensitized_url_for_log(final_url))
+        logger.info(
+            "redirect_cache_skip reason=bad_terminal_status file_id=%s hops=%s status=%s",
+            file_id, hops, terminal_status)
         return
     try:
         host = urlsplit(final_url).hostname or ""
     except Exception:
-        logger.debug(
+        logger.info(
             "redirect_cache_skip reason=url_parse_error file_id=%s hops=%s status=%s",
             file_id, hops, terminal_status)
         return
     if "drive.usercontent.google.com" not in host:
-        logger.debug(
+        logger.info(
             "redirect_cache_skip reason=hostname_mismatch file_id=%s hops=%s status=%s "
-            "host=%s url=%s",
-            file_id, hops, terminal_status, host,
-            _desensitized_url_for_log(final_url))
+            "host=%s",
+            file_id, hops, terminal_status, host)
         return
     _redirect_cache_store_drive_url(file_id, final_url)
 
