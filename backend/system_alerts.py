@@ -11,7 +11,8 @@ probe / enrich / scan 等后台 worker 的关键指标越线时，以前一个�
    ``SystemConfig[system_alerts_enabled]=1`` 才工作；关闭时定时检查直接跳过。
 2. **阈值/渠道/接收人/冷却全部可配**：规则存 ``AlertRule`` 表（event_type 非空的
    事件型规则），首次运行时按内置默认播种，之后管理员可在后台改——不写死业务数值。
-3. **冷却去重**：同一规则冷却期内重复越线不重复打扰（防轰炸）。
+3. **冷却去重**：只对"发送成功过"的告警去重——发送失败的不进入冷却，
+   下轮继续重试（R16 P1-2：一次投递失败不再导致整个冷却期失声）。
 4. **自动恢复**：指标回到阈值内，open 的告警自动标 resolved，告警列表不发霉。
 5. **评估只读探针**：复用 ``observability.probe_subsystems``（聚合 COUNT，
    不打 Drive API，不抢主链路）。单个探针异常只跳过该事件，不影响其他。
@@ -67,9 +68,11 @@ MASTER_SWITCH_ENV = "SYSTEM_ALERTS_ENABLED"
 MASTER_SWITCH_KEY = "system_alerts_enabled"
 CHECK_INTERVAL_ENV = "ALERT_CHECK_INTERVAL_SEC"
 DEFAULT_CHECK_INTERVAL_SEC = 600  # 10 分钟
+# 检查间隔的 DB 配置键（R16 P1-1：后台可配，热更新，不再只读环境变量）
+INTERVAL_KEY = "alert_check_interval_sec"
 
 
-def _env_int(name: str, default: int) -> int:
+def env_int(name: str, default: int) -> int:
     try:
         return int(float(os.getenv(name, str(default))))
     except (ValueError, TypeError):
@@ -83,20 +86,38 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _truthy(v: Any) -> bool:
+def is_truthy(v: Any) -> bool:
     return str(v or "").strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def current_interval_sec(db=None) -> int:
+    """当前生效的检查间隔（秒），优先级：DB 配置 > 环境变量 > 默认 600。
+
+    钳制到 60~86400。读库失败时回落到环境变量，不挡主流程。
+    """
+    iv = env_int(CHECK_INTERVAL_ENV, DEFAULT_CHECK_INTERVAL_SEC)
+    if db is not None:
+        try:
+            from backend import models
+            row = db.query(models.SystemConfig).filter(
+                models.SystemConfig.key == INTERVAL_KEY).first()
+            if row is not None and str(row.value or "").strip():
+                iv = int(float(row.value))
+        except Exception:  # noqa: BLE001 — 读库失败按环境变量处理
+            logger.debug("读取告警检查间隔失败，按环境变量处理", exc_info=True)
+    return max(60, min(86400, iv))
 
 
 def enabled(db=None) -> bool:
     """总开关：环境变量或 SystemConfig，任一开即开。默认关。"""
-    if _truthy(os.getenv(MASTER_SWITCH_ENV)):
+    if is_truthy(os.getenv(MASTER_SWITCH_ENV)):
         return True
     if db is not None:
         try:
             from backend import models
             row = db.query(models.SystemConfig).filter(
                 models.SystemConfig.key == MASTER_SWITCH_KEY).first()
-            if row is not None and _truthy(row.value):
+            if row is not None and is_truthy(row.value):
                 return True
         except Exception:  # noqa: BLE001 — 读库失败按关处理，不挡主流程
             logger.debug("读取告警总开关失败，按关闭处理", exc_info=True)
@@ -107,14 +128,14 @@ def enabled(db=None) -> bool:
 DEFAULT_RULES: dict[str, dict[str, Any]] = {
     EVT_PROBE_QUEUE_HIGH: {
         "name": "探测队列堆积",
-        "threshold": lambda: float(_env_int("ALERT_PROBE_QUEUE_HIGH", 5000)),
+        "threshold": lambda: float(env_int("ALERT_PROBE_QUEUE_HIGH", 5000)),
         "severity": "warning",
         "channels": ["in_app", "telegram"],
         "cooldown_sec": 21600,
     },
     EVT_ENRICH_STALLED: {
         "name": "补全停滞",
-        "threshold": lambda: float(_env_int("ALERT_ENRICH_IDLE_SEC", 7200)),
+        "threshold": lambda: float(env_int("ALERT_ENRICH_IDLE_SEC", 7200)),
         "severity": "warning",
         "channels": ["in_app", "telegram"],
         "cooldown_sec": 21600,
@@ -151,7 +172,7 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
 
 # enrich_stalled 的积压下限：积压太少时不算"停滞"（环境变量可配）
 def _enrich_backlog_floor() -> int:
-    return _env_int("ALERT_ENRICH_BACKLOG_FLOOR", 1000)
+    return env_int("ALERT_ENRICH_BACKLOG_FLOOR", 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +183,13 @@ def ensure_default_rules(db) -> int:
     """幂等播种：DB 里没有该 event_type 的规则时，按内置默认插入一条。
 
     返回新插入的条数。legacy 指标型规则（event_type 为空）不受影响。
+
+    R16 P2-2：逐条 add+commit 并捕获 IntegrityError（`event_type` 有唯一约束），
+    防"先查后插"竞态下两个进程同时插入重复规则。R16 P3-14：`notification_channels`
+    是 JSON 列，直接写 list（不再 json.dumps 后再被 SQLAlchemy 包一层）。
     """
+    from sqlalchemy.exc import IntegrityError
+
     from backend import models
     inserted = 0
     for evt, spec in DEFAULT_RULES.items():
@@ -176,15 +203,24 @@ def ensure_default_rules(db) -> int:
             condition="gte",
             threshold=float(spec["threshold"]()),
             severity=spec["severity"],
-            notification_channels=json.dumps(spec["channels"]),
+            notification_channels=list(spec["channels"]),
             event_type=evt,
             recipients=json.dumps({"staff": True}),
             cooldown_sec=spec["cooldown_sec"],
             is_active=True,
         ))
+        try:
+            db.commit()
+        except IntegrityError:
+            # 并发下另一进程/线程刚好先插了 → 回滚后重查，有就算（0 插入）
+            db.rollback()
+            again = db.query(models.AlertRule).filter(
+                models.AlertRule.event_type == evt).first()
+            if again is None:
+                raise
+            continue
         inserted += 1
     if inserted:
-        db.commit()
         logger.info("系统告警默认规则已播种 %d 条", inserted)
     return inserted
 
@@ -254,13 +290,16 @@ async def notify_alert(
     channels: Optional[list[str]] = None,
     cooldown_sec: Optional[int] = None,
     db=None,
+    _ensure_rules: bool = True,
 ) -> bool:
     """系统告警统一入口。
 
     - 总开关关闭 → 直接返回 False（静默跳过）。
-    - 冷却期内同一规则已发过 open 告警 → 去重跳过（防轰炸）。
+    - 冷却期内同一规则已有**发送成功**的 open/acknowledged 告警 → 去重跳过（防轰炸）；
+      发送失败的不进入冷却，下轮继续重试（R16 P1-2）。
     - 渠道走现有三渠道 + webhook；接收人默认全部启用中的管理员。
-    - 无论发送成败都落一条 Alert 记录（status=open），供后台查看与自动恢复。
+    - 落库时记 notified_ok（是否至少一个渠道送达），管理员在面板能区分
+      "已送达"与"发送失败"（R16 P1-2）。
 
     返回 True 表示至少一个渠道发送成功。
     """
@@ -275,7 +314,8 @@ async def notify_alert(
             logger.debug("系统告警总开关关闭，跳过 %s", event_type)
             return False
 
-        ensure_default_rules(db)
+        if _ensure_rules:  # R16 P3-8：check_all 轮首已播种时可跳过
+            ensure_default_rules(db)
         rule = _get_rule(db, event_type)
         if rule is None:
             logger.warning("事件 %s 无可用规则，跳过", event_type)
@@ -286,11 +326,14 @@ async def notify_alert(
         eff_cooldown = cooldown_sec if cooldown_sec is not None else (
             rule.cooldown_sec or 3600)
 
-        # 冷却去重：冷却期内已有 open 告警 → 跳过
+        # 冷却去重：只认发送成功过的记录（open/acknowledged）→ 跳过；
+        # R16 P1-2：发送失败的不去重，下轮重试；
+        # R16 P2-3：ack 确认后冷却期内也不再重复打扰。
         cutoff = datetime.now() - timedelta(seconds=max(60, int(eff_cooldown)))
         recent = db.query(models.Alert).filter(
             models.Alert.rule_id == rule.id,
-            models.Alert.status == "open",
+            models.Alert.status.in_(["open", "acknowledged"]),
+            models.Alert.notified_ok == True,  # noqa: E712
             models.Alert.created_at >= cutoff,
         ).first()
         if recent is not None:
@@ -368,7 +411,7 @@ async def notify_alert(
                 logger.error("告警 webhook 发送失败: %s", exc)
                 results["webhook"] = False
 
-        # 落告警记录（发送成败都记，供后台查看 / 去重 / 自动恢复）
+        # 落告警记录（供后台查看 / 去重 / 自动恢复；notified_ok 区分送达与否）
         try:
             db.add(models.Alert(
                 rule_id=rule.id,
@@ -376,6 +419,7 @@ async def notify_alert(
                 title=title,
                 message=full_message,
                 status="open",
+                notified_ok=sent_any,  # R16 P1-2：失败的不参与冷却去重
             ))
             db.commit()
         except Exception:  # noqa: BLE001 — 记录失败不影响已发出的通知
@@ -393,7 +437,11 @@ async def notify_alert(
 
 
 def resolve_alerts(db, event_type: str) -> int:
-    """指标恢复时，把该事件的 open 告警标为 resolved。返回处理条数。"""
+    """指标恢复时，把该事件的 open/acknowledged 告警标为 resolved。
+
+    R16 P2-3：acknowledged 的也要自动恢复，生命周期闭环（确认后条件持续
+    不再打扰，条件恢复后自动 resolved）。返回处理条数。
+    """
     from backend import models
     rule = _get_rule(db, event_type)
     if rule is None:
@@ -401,7 +449,7 @@ def resolve_alerts(db, event_type: str) -> int:
     now = datetime.now()
     rows = db.query(models.Alert).filter(
         models.Alert.rule_id == rule.id,
-        models.Alert.status == "open",
+        models.Alert.status.in_(["open", "acknowledged"]),
     ).all()
     for r in rows:
         r.status = "resolved"
@@ -419,8 +467,9 @@ def resolve_alerts(db, event_type: str) -> int:
 def _enrich_night_paused(db) -> bool:
     """enrich 夜间模式且当前不在窗口内 → 白天零产出是预期的，不判停滞。"""
     try:
+        # R16 P3-2：走 enrich_worker 的公开包装，不再跨模块调私有函数
         from backend.emby_server import enrich_worker
-        cfg = enrich_worker._episode_night_config(db)
+        cfg = enrich_worker.get_episode_night_config(db)
         return bool(cfg.get("enabled")) and not bool(cfg.get("in_window"))
     except Exception:  # noqa: BLE001 — 读不到配置按"不暂停"处理（宁可误报不漏报）
         return False
@@ -462,7 +511,8 @@ def _check_disk(subs: dict, rule) -> Optional[tuple[str, str, dict]]:
     free_pct = m.get("disk_free_percent")
     if free_pct is None:
         return None
-    thr = float(rule.threshold if rule.threshold else 10.0)
+    # R16 P3-6：threshold=0 不再被 falsy 吞掉回落 10.0（只有 None 才回落）
+    thr = 10.0 if rule.threshold is None else float(rule.threshold)
     if float(free_pct) < thr:
         return (f"磁盘空间不足：仅剩 {float(free_pct):.1f}%",
                 f"磁盘余量 {float(free_pct):.1f}%（阈值 {thr:g}%），"
@@ -509,9 +559,12 @@ def _check_api_error(subs: dict, rule) -> Optional[tuple[str, str, dict]]:
         return None
     thr = float(rule.threshold if rule.threshold else 0.05)
     if float(ratio) >= thr:
+        # R16 P2-5：探针返回了 global_p99_ms=None 时 f"{None:.0f}" 会抛
+        # TypeError → 整个事件静默漏报；用 or 0 防御
+        p99 = m.get("global_p99_ms") or 0
         return (f"API 错误率 {float(ratio):.1%}（阈值 {thr:.1%}）",
                 f"API 错误率 {float(ratio):.1%}，P99 延迟 "
-                f"{m.get('global_p99_ms', 0):.0f}ms。请检查后端日志。",
+                f"{p99:.0f}ms。请检查后端日志。",
                 {"global_error_ratio": ratio,
                  "global_p99_ms": m.get("global_p99_ms", 0)})
     return None
@@ -556,29 +609,37 @@ def check_all(db=None) -> dict:
             result["skipped"].append("probes_failed")
             return result
 
-        for event_type, checker in _CHECKERS.items():
-            try:
-                rule = _get_rule(db, event_type)
-                if rule is None:
+        # R16 P3-7：一轮只建一个事件循环复用到底（asyncio.run 不能嵌套，
+        # 将来若有 async 端点直接调 check_all 会抛 RuntimeError）
+        loop = asyncio.new_event_loop()
+        try:
+            for event_type, checker in _CHECKERS.items():
+                try:
+                    rule = _get_rule(db, event_type)
+                    if rule is None:
+                        result["skipped"].append(event_type)
+                        continue
+                    if event_type == EVT_ENRICH_STALLED:
+                        hit = checker(subs, rule, db)
+                    else:
+                        hit = checker(subs, rule)
+                    if hit:
+                        title, message, metrics = hit
+                        # R16 P3-8：轮首已播种，notify_alert 不再重复 ensure
+                        fired = loop.run_until_complete(notify_alert(
+                            event_type, title, message,
+                            severity=rule.severity, metrics=metrics,
+                            db=db, _ensure_rules=False))
+                        result["fired" if fired else "skipped"].append(event_type)
+                    else:
+                        n = resolve_alerts(db, event_type)
+                        if n:
+                            result["resolved"].append(f"{event_type}:{n}")
+                except Exception:  # noqa: BLE001 — 单个事件异常不影响其他事件
+                    logger.warning("告警检查事件 %s 异常", event_type, exc_info=True)
                     result["skipped"].append(event_type)
-                    continue
-                if event_type == EVT_ENRICH_STALLED:
-                    hit = checker(subs, rule, db)
-                else:
-                    hit = checker(subs, rule)
-                if hit:
-                    title, message, metrics = hit
-                    fired = asyncio.run(notify_alert(
-                        event_type, title, message,
-                        severity=rule.severity, metrics=metrics, db=db))
-                    result["fired" if fired else "skipped"].append(event_type)
-                else:
-                    n = resolve_alerts(db, event_type)
-                    if n:
-                        result["resolved"].append(f"{event_type}:{n}")
-            except Exception:  # noqa: BLE001 — 单个事件异常不影响其他事件
-                logger.warning("告警检查事件 %s 异常", event_type, exc_info=True)
-                result["skipped"].append(event_type)
+        finally:
+            loop.close()
         return result
     finally:
         if own:
@@ -594,6 +655,8 @@ def check_all(db=None) -> dict:
 
 _SCHEDULER_STARTED = False
 _SCHEDULER_LOCK = threading.Lock()
+# R16 P3-13：模块级事件做 wait（不再每轮新建），将来可做优雅退出
+_STOP_EVENT = threading.Event()
 
 
 def start_alert_scheduler(interval_sec: Optional[int] = None) -> bool:
@@ -601,19 +664,40 @@ def start_alert_scheduler(interval_sec: Optional[int] = None) -> bool:
 
     只在面板（EM）上启动：EA 是出流单元，不该自己发告警（多台 EA 会重复打扰）。
     总开关默认关：没开时线程空转等待，不打扰任何现有行为。
+
+    R16 P1-1：`interval_sec` 显式传参仍优先；否则每轮检查前重读
+    `current_interval_sec(db)`（DB 配置 > 环境变量 > 默认 600），后台改了
+    间隔不用重启进程即生效（热更新）。R16 P0-1：worker.py 的 worker 进程
+    也会调这里（生产拓扑下 main.py 的 `if not _is_api_role` 分支在 api
+    进程被跳过，调度器原本永不启动）。
     """
     global _SCHEDULER_STARTED
-    interval = interval_sec or _env_int(CHECK_INTERVAL_ENV, DEFAULT_CHECK_INTERVAL_SEC)
-    interval = max(60, interval)
     with _SCHEDULER_LOCK:
         if _SCHEDULER_STARTED:
             return False
         _SCHEDULER_STARTED = True
 
+    fixed_interval = None
+    if interval_sec is not None:
+        fixed_interval = max(60, int(interval_sec))
+
     def _loop() -> None:
         from backend.database import SessionLocal
-        while True:
-            threading.Event().wait(interval)
+        while not _STOP_EVENT.is_set():
+            # 热更新：每轮重读生效的检查间隔
+            if fixed_interval is not None:
+                interval = fixed_interval
+            else:
+                db_iv = SessionLocal()
+                try:
+                    interval = current_interval_sec(db_iv)
+                finally:
+                    try:
+                        db_iv.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+            if _STOP_EVENT.wait(interval):
+                break
             db = SessionLocal()
             try:
                 summary = check_all(db)
@@ -630,7 +714,7 @@ def start_alert_scheduler(interval_sec: Optional[int] = None) -> bool:
 
     t = threading.Thread(target=_loop, name="system-alerts", daemon=True)
     t.start()
-    logger.info("系统告警定时检查已启动（间隔 %ds，总开关默认关）", interval)
+    logger.info("系统告警定时检查已启动（总开关默认关；间隔热更新）")
     return True
 
 
@@ -638,6 +722,9 @@ __all__ = [
     "EVT_PROBE_QUEUE_HIGH", "EVT_ENRICH_STALLED", "EVT_DISK_FULL",
     "EVT_SA_QUOTA_LOW", "EVT_SCAN_FAILED", "EVT_API_ERROR_HIGH",
     "ALL_EVENTS", "DEFAULT_RULES",
+    # R16 P3-1：is_truthy / env_int 公开，跨模块不再调私有名
+    "is_truthy", "env_int",
+    "INTERVAL_KEY", "current_interval_sec",
     "enabled", "ensure_default_rules",
     "notify_alert", "resolve_alerts", "check_all",
     "start_alert_scheduler",

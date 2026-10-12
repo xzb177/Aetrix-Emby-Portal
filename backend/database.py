@@ -821,6 +821,12 @@ def _auto_migrate():
             ("recipients", "TEXT", "NULL"),
             ("cooldown_sec", "INTEGER", "3600"),
         ]),
+        # R16 P1-2/P2-3：告警记录加送达标记 + 确认时间（老库补列后
+        # notified_ok=0（未确认送达），acknowledged_at=NULL，行为与升级前一致）
+        ("alerts", [
+            ("notified_ok", "BOOLEAN", "0"),
+            ("acknowledged_at", "DATETIME", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
@@ -837,6 +843,21 @@ def _auto_migrate():
                     ))
                     print(f"  🔧 已迁移: {table}.{col_name} ({col_type})")
                     _newly_added_columns.append((table, col_name))
+
+    # R16 P2-2：alert_rules.event_type 唯一索引（老库 create_all 不回填已建的表，
+    # 用 CREATE UNIQUE INDEX 补上；有重复行时记 warning 不崩启动，由下次播种的
+    # IntegrityError 路径兜底）。PG/SQLite 的 UNIQUE 都允许多个 NULL，
+    # legacy 指标型规则不受影响。
+    if "alert_rules" in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_rules_event_type "
+                    "ON alert_rules (event_type)"
+                ))
+            print("  🔧 已迁移: alert_rules 唯一索引 (event_type)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ alert_rules event_type 唯一索引创建跳过: {exc}")
 
     _widen_code_column(existing_tables, inspector)
     _widen_bitrate_column(existing_tables, inspector)

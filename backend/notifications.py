@@ -4,9 +4,11 @@
 实现管理员操作与用户前台的联动
 """
 import asyncio
+import ipaddress
 import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from urllib.parse import urlparse
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
@@ -420,7 +422,38 @@ class WebhookChannel(NotificationChannel):
 
     注意：webhook 是"广播到 URL"不是"发给某用户"，send() 的 user_id 参数
     仅为保持渠道接口一致而保留，会被忽略（但会写进 payload 供接收方参考）。
+
+    R16 P3-9 SSRF 防护：URL 仅允许 http/https，且拦截 localhost / .local /
+    .internal、私网与保留地址（如 10/8、172.16/12、192.168/16、127/8、
+    169.254/16、::1、fe80::/10、fc00::/7）。不安全时只记 warning 并禁用该
+    渠道（enabled=False），不抛异常、不断配置加载——管理员手滑配错地址时
+    其他渠道照常工作。
     """
+
+    @staticmethod
+    def _is_safe_url(url: str) -> bool:
+        """SSRF 检查：只放行公网 http/https 地址。"""
+        try:
+            parsed = urlparse(url)
+        except Exception:  # noqa: BLE001
+            return False
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not host:
+            return False
+        if (host == "localhost" or host.endswith(".localhost")
+                or host.endswith(".local") or host.endswith(".internal")):
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return True  # 普通公网域名（不是字面量 IP）→ 放行
+        # 字面量 IP：私网 / 环回 / 链路本地 / 保留 / 组播 / 未指定一律拦截
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+        return True
 
     def __init__(self, url: str = None, secret: str = None, timeout: int = 10):
         self.name = "webhook"
@@ -428,6 +461,10 @@ class WebhookChannel(NotificationChannel):
         self.secret = (secret or "").strip()
         self.timeout = timeout
         self.enabled = bool(self.url)
+        if self.enabled and not self._is_safe_url(self.url):
+            logger.warning("webhook URL 不安全（疑似内网/保留地址），"
+                           "已禁用该渠道: %s", self.url)
+            self.enabled = False
 
     def _sign(self, body: bytes) -> str:
         import hashlib

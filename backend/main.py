@@ -212,8 +212,8 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动到期提醒失败（可忽略）: {e}")
 
-        # 系统告警：后台指标越线时通知管理员。总开关默认关（见 backend/system_alerts.py），
-        # 没开时线程空转等待，不打扰任何现有行为；EA 侧不启动（多台 EA 会重复打扰）。
+    # 系统告警：后台指标越线时通知管理员。总开关默认关（见 backend/system_alerts.py），
+    # 没开时线程空转等待，不打扰任何现有行为；EA 侧不启动（多台 EA 会重复打扰）。
     if not _is_api_role:
         try:
             from backend import system_alerts

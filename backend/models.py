@@ -1322,6 +1322,13 @@ class AlertRule(Base):
     """
     __tablename__ = 'alert_rules'
 
+    # R16 P2-2：event_type 唯一（PG/SQLite 的 UNIQUE 都允许多个 NULL，
+    # legacy 指标型规则 event_type 为空不受影响）；防 ensure_default_rules
+    # "先查后插"竞态下播种出重复规则
+    __table_args__ = (
+        UniqueConstraint("event_type", name="uq_alert_rules_event_type"),
+    )
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
     metric_name = Column(String(100), nullable=False)
@@ -1360,6 +1367,11 @@ class Alert(Base):
     status = Column(String(20), default='open')  # open, acknowledged, resolved
     resolved_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
+    # R16 P1-2：是否至少一个渠道送达。去重只认 notified_ok=True 的记录，
+    # 发送失败的不进入冷却，下轮继续重试（一次投递失败不再导致整冷却期失声）
+    notified_ok = Column(Boolean, default=False)
+    # R16 P2-3：管理员确认的时间（ack_alert 写入，供审计"谁何时确认的"）
+    acknowledged_at = Column(DateTime, nullable=True)
 
     rule = relationship("AlertRule")
 
