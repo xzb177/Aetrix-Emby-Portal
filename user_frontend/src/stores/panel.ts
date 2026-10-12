@@ -32,7 +32,7 @@ export const usePanelStore = defineStore('panel', () => {
   async function load<T>(entry: CacheEntry<T>, fetcher: () => Promise<T>, force = false) {
     const now = Date.now()
     if (!force && entry.data !== null && now - entry.at < TTL_MS) return
-    if (entry.loading) return
+    if (entry.loading && !force) return
     entry.loading = true
     entry.error = null
     try {

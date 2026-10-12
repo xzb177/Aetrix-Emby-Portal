@@ -206,6 +206,10 @@ function restoreUserTheme() {
       window.matchMedia?.('(prefers-color-scheme: light)').matches)
   if (light) html.setAttribute('data-theme', 'light')
   else html.removeAttribute('data-theme')
+  // 浏览器工具栏色跟回用户主题（与 useTheme.ts applyTheme 一致）
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute('content', light ? '#f5f1ea' : '#0c0a09')
 }
 router.afterEach((to) => {
   if (!panelV4) return
