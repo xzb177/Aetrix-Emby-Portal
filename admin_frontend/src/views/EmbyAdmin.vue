@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ScanQueueCard from '@/components/emby/ScanQueueCard.vue'
 import LibraryCard from '@/components/emby/LibraryCard.vue'
 /**
  * 媒体库管理：库列表/创建/扫描/删除 + 刮削策略 + 平台虚拟媒体库 + 图片修复队列
@@ -1700,100 +1701,22 @@ function typeLabel(t: string): string {
             <span v-if="queueActiveCount" class="tab-count is-live">{{ queueActiveCount }}</span>
           </span>
         </template>
-        <!-- 扫描队列：同一远程挂载同时只跑一个扫描，其它库在这里排队（不再让管理员自己控并发） -->
-        <SectionCard v-if="queueHasContent" class="queue-card" title="扫描队列" :icon="ListChecks">
-          <template #actions>
-            <div class="queue-facts">
-              <span class="fact">并发上限 {{ scanQueue?.max_parallel }}</span>
-              <span class="fact">{{ scanQueue?.mount_serial ? '同一远程挂载串行' : '挂载串行已关闭' }}</span>
-              <span class="fact" title="本轮真实远程请求 / 内存复用 / 在飞请求">
-                远程请求 {{ scanQueue?.remote.lists }} · 复用 {{ scanQueue?.remote.reused }}
-                · 在飞 {{ scanQueue?.remote.inflight }}
-              </span>
-              <!-- 扫描拆给 worker 执行后，本进程看不到它的内存队列：
-                   这两列来自它写进库里的状态（进度按刷盘间隔更新），说清楚免得被当成实时值 -->
-              <span
-                v-if="scanQueue?.view === 'db'"
-                class="fact"
-                title="扫描由执行节点（worker）运行；「正在扫描」「最近完成」两列来自它写进数据库的状态，进度按刷盘间隔更新"
-              >
-                进度来自执行节点
-              </span>
-            </div>
-          </template>
-
-          <div class="queue-grid">
-            <div class="queue-col">
-              <div class="queue-col-title">正在扫描（{{ scanQueue?.running.length || 0 }}）</div>
-              <div v-for="t in scanQueue?.running" :key="'run-' + t.library_id" class="queue-row">
-                <div class="queue-row-head">
-                  <span class="queue-name">{{ t.name }}</span>
-                  <span class="mini-badge scanning">{{ t.progress?.phase_label || '准备中' }}</span>
-                  <span
-                    v-if="t.via === 'db'"
-                    class="mini-badge muted"
-                    title="本轮由执行扫描的节点运行；这里显示的是它写进数据库的进度快照"
-                  >执行节点</span>
-                </div>
-                <div class="queue-row-sub mono">{{ progressLine(t) || '刚刚开始' }}</div>
-                <div v-if="t.progress?.current" class="queue-row-sub mono" :title="t.progress.current">
-                  {{ t.progress.current }}
-                </div>
-              </div>
-              <div v-if="!scanQueue?.running.length" class="queue-empty">没有正在跑的扫描</div>
-            </div>
-
-            <div class="queue-col">
-              <div class="queue-col-title">排队中（{{ scanQueue?.waiting.length || 0 }}）</div>
-              <div v-for="t in scanQueue?.waiting" :key="'wait-' + t.library_id" class="queue-row">
-                <div class="queue-row-head">
-                  <span class="queue-name">{{ t.name }}</span>
-                  <span class="mini-badge muted">第 {{ t.position ?? '-' }} 位</span>
-                  <el-button
-                    size="small"
-                    text
-                    :icon="X"
-                    @click="cancelQueued(t)"
-                  >取消</el-button>
-                </div>
-                <div class="queue-row-sub warn">{{ waitingText(t) }}</div>
-                <div class="queue-row-sub mono">
-                  {{ [queuedSince(t), triggerLabel(t.trigger)].filter(Boolean).join(' · ') }}
-                </div>
-              </div>
-              <div v-if="!scanQueue?.waiting.length" class="queue-empty">没有排队的扫描</div>
-            </div>
-
-            <div class="queue-col">
-              <div class="queue-col-title queue-col-title--split">
-                <span>最近完成</span>
-                <el-switch v-model="showScanHistory" size="small" title="显示/隐藏扫描记录" />
-              </div>
-              <template v-if="showScanHistory">
-              <div v-for="t in queueHistory" :key="'done-' + t.library_id + t.requested_at" class="queue-row">
-                <div class="queue-row-head">
-                  <span class="queue-name">{{ t.name }}</span>
-                  <span class="mini-badge" :class="taskBadge(t).cls">{{ taskBadge(t).text }}</span>
-                </div>
-                <div class="queue-row-sub mono">
-                  {{ [scanCountText(t),
-                     t.duration_ms != null ? `耗时 ${fmtDuration(t.duration_ms)}` : '',
-                     queuedSince(t), triggerLabel(t.trigger),
-                     t.request_count > 1 ? `被点 ${t.request_count} 次` : ''].filter(Boolean).join(' · ') }}
-                </div>
-                <div v-if="t.error" class="queue-row-sub danger" :title="t.error">{{ t.error }}</div>
-              </div>
-              <div v-if="!queueHistory.length" class="queue-empty">还没有跑完的扫描</div>
-              </template>
-            </div>
-          </div>
-        </SectionCard>
-        <EmptyState
-          v-else
-          :icon="ListChecks"
-          title="扫描队列是空的"
-          description="没有正在跑或排队的扫描，也还没有跑完的记录。在「媒体库」标签点「扫描」或「一键扫描全部」后，进度会显示在这里。"
+        <ScanQueueCard
+          :scan-queue="scanQueue"
+          :queue-has-content="queueHasContent"
+          :queue-history="queueHistory"
+          :show-scan-history="showScanHistory"
+          :progress-line="progressLine"
+          :waiting-text="waitingText"
+          :queued-since="queuedSince"
+          :trigger-label="triggerLabel"
+          :task-badge="taskBadge"
+          :scan-count-text="scanCountText"
+          :fmt-duration="fmtDuration"
+          @update:show-scan-history="showScanHistory = $event"
+          @cancel="cancelQueued"
         />
+
       </el-tab-pane>
 
       <el-tab-pane label="定时与刮削" name="schedule">

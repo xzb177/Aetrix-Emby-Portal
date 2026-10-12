@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import PlanCard from '@/components/store/PlanCard.vue'
+import RechargeCard from '@/components/store/RechargeCard.vue'
 /**
  * 商店 — 充积分 / 买会员 / 花积分 / 核销（卡码·兑换码·优惠券）
  * 布局（极简重做）：顶部状态条 + 充积分/买会员双大卡 + 底部核销折叠入口；
@@ -612,114 +613,26 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
     </section>
 
     <div class="store-cards">
-      <section id="card-recharge" class="store-card au-anim-up">
-        <header class="store-card-head">
-          <Coins class="store-card-icon" />
-          <h2>充积分</h2>
-          <small>用人民币购买积分</small>
-          <span class="rate-badge"><span class="nowrap">1&nbsp;元</span><span class="rate-eq">=</span><span class="nowrap">{{ rechargeRatio }}&nbsp;积分</span></span>
-        </header>
+      <RechargeCard
+        :recharge-enabled="rechargeEnabled"
+        :loading="loading"
+        :packages="packages"
+        :recharge-ratio="rechargeRatio"
+        :quick-amounts="quickAmounts"
+        :custom-amount="customAmount"
+        :can-custom-recharge="canCustomRecharge"
+        :order-loading="orderLoading"
+        :methods="methods"
+        :pay-method="payMethod"
+        :custom-points-preview="customPointsPreview"
+        :was-price="wasPrice"
+        :paid-price="paidPrice"
+        @order="handleOrder"
+        @custom="handleCustomRecharge"
+        @update:custom-amount="customAmount = $event"
+        @update:pay-method="payMethod = $event"
+      />
 
-        <div v-if="!rechargeEnabled" class="store-empty">
-          <CircleAlert />
-          <p>充值通道暂未开启，可先通过签到、邀请或兑换获取积分</p>
-        </div>
-
-        <div v-else-if="loading && !packages.length" class="store-skeleton">
-          <div v-for="i in 3" :key="i" class="store-skel-row">
-            <span class="store-skel-points"></span>
-            <span class="store-skel-price"></span>
-          </div>
-        </div>
-
-        <EmptyState
-          v-else-if="!packages.length"
-          title="暂时没有充值套餐"
-          description="可购买的充值套餐会显示在这里"
-        />
-
-        <template v-else>
-          <div class="pkg-list">
-            <button
-              v-for="p in packages"
-              :key="p.id"
-              type="button"
-              class="pkg-row"
-              :class="{ popular: p.is_popular }"
-              :disabled="orderLoading === p.id || !methods.length"
-              @click="handleOrder('recharge', p.id)"
-            >
-              <span class="pkg-info">
-                <span class="nowrap"><strong>{{ p.total_points }}</strong> 积分</span>
-                <span class="pkg-name">{{ p.name }}</span>
-                <span v-if="p.bonus > 0" class="pkg-bonus"><Sparkles /> 含赠送 <span class="nowrap">{{ p.bonus }} 积分</span></span>
-              </span>
-              <span class="pkg-price">
-                <del v-if="wasPrice('recharge', p.id)"><span class="nowrap">¥{{ wasPrice('recharge', p.id) }}</span></del>
-                <span class="pkg-now"><span class="nowrap">¥{{ paidPrice('recharge', p.id, p.price) }}</span></span>
-                <em v-if="p.is_popular" class="pkg-badge">超值</em>
-              </span>
-              <span class="pkg-action">
-                <span v-if="orderLoading === p.id" class="spinner"></span>
-                <template v-else>购买 <ExternalLink /></template>
-              </span>
-            </button>
-          </div>
-
-          <div class="recharge-amount">
-            <span class="sec-label">充值金额</span>
-            <div v-if="quickAmounts.length" class="store-quick">
-              <div class="store-quick-chips">
-                <button
-                  v-for="amt in quickAmounts"
-                  :key="amt"
-                  type="button"
-                  class="quick-chip"
-                  :class="{ active: customAmount === amt }"
-                  @click="customAmount = amt"
-                ><span class="nowrap">¥{{ amt }}</span></button>
-              </div>
-            </div>
-
-            <div class="store-custom">
-            <div class="store-custom-row">
-              <span class="store-custom-currency">¥</span>
-              <input
-                v-model.number="customAmount"
-                type="number"
-                min="1"
-                max="100000"
-                placeholder="输入金额"
-                class="store-custom-input"
-              />
-              <button
-                type="button"
-                class="store-custom-btn"
-                :disabled="!canCustomRecharge || orderLoading === -1 || !methods.length"
-                @click="handleCustomRecharge"
-              >
-                <span v-if="orderLoading === -1" class="spinner"></span>
-                <template v-else>充值<span class="nowrap">{{ customPointsPreview }}积分</span></template>
-              </button>
-            </div>
-            <small class="store-custom-note">按当前比例 <span class="nowrap">{{ rechargeRatio }}</span> 兑换（<span class="nowrap">1 元</span> = <span class="nowrap">{{ rechargeRatio }} 积分</span>）</small>
-          </div>
-          </div>
-
-          <div v-if="methods.length" class="store-pay">
-            <span class="sec-label">支付方式</span>
-            <div class="store-pay-group">
-              <button
-                v-for="m in methods"
-                :key="m.id"
-                type="button"
-                class="store-pay-btn"
-                :class="{ active: payMethod === m.id }"
-                @click="payMethod = m.id"
-              >{{ m.name }}</button>
-            </div>
-          </div>
-        </template>
       </section>
 
       <section id="card-plans" class="store-card au-anim-up">

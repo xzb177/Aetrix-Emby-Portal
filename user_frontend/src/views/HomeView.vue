@@ -90,6 +90,7 @@ import Modal from '@/components/ui/Modal.vue'
 import WelcomeBackCard from '@/components/home/WelcomeBackCard.vue'
 import HomeTicketCard from '@/components/home/HomeTicketCard.vue'
 import HomeContinueWatching from '@/components/home/HomeContinueWatching.vue'
+import HomeHero from '@/components/home/HomeHero.vue'
 import MediaCard from '@/components/media/MediaCard.vue'
 import MediaRow from '@/components/media/MediaRow.vue'
 import { homeApi, type HomeSummary } from '@/api/economy'
@@ -793,91 +794,23 @@ onActivated(() => {
 
 <template>
   <div class="home-view">
-    <!-- ① 银幕 Hero：整幅背景图 + 胶片颗粒 + 暗角。
-         银幕上只讲一部片（近 7 天入库里第一条带背景图的），这是影院和货架的区别。
-         眉题 → 片名（衬线大字）→ 年份类型 → 问候低语 → 状态行 → 唯一一个 CTA。
-         文字按 hasLoaded 依次浮现（幕布拉开的节奏），见 .hero-enter。 -->
-    <section class="hero" :class="{ 'has-image': heroImage && !heroImageFailed, 'is-ready': hasLoaded }">
-      <img
-        v-if="heroImage && !heroImageFailed"
-        class="hero-backdrop"
-        :src="heroImage"
-        alt=""
-        aria-hidden="true"
-        decoding="async"
-        fetchpriority="high"
-        @error="heroImageFailed = true"
-      />
-      <div class="hero-shade" aria-hidden="true"></div>
-      <div class="hero-grain" aria-hidden="true"></div>
-      <div class="container hero-inner">
-        <p class="au-eyebrow hero-eyebrow hero-enter d1">{{ heroEyebrow }}</p>
-        <!-- 有主角：片名是主角；没有片单：问候语顶上（老行为，不空场） -->
-        <h1 v-if="heroFeatureTitle" class="hero-feature hero-enter d2">{{ heroFeatureTitle }}</h1>
-        <h1 v-else class="hero-title hero-enter d2">{{ greeting }}，{{ user?.username || '影迷' }}</h1>
-        <p v-if="heroFeatureTitle && heroMeta" class="hero-meta hero-enter d3">{{ heroMeta }}</p>
-        <p v-if="heroFeatureTitle" class="hero-whisper hero-enter d3">
-          <span class="whisper-long">{{ greetingParts.lead }}，{{ user?.username || '影迷' }}{{ greetingParts.tail }}</span><span class="whisper-short">{{ greeting }}，{{ user?.username || '影迷' }}</span>
-        </p>
-        <p class="hero-status hero-enter d4">
-          <span v-if="isMember" class="hero-tag">
-            <Crown :size="12" />
-            会员
-          </span>
-          <span v-else-if="isFreeRealm" class="hero-tag">
-            <Sparkles :size="12" />
-            公益服
-          </span>
-          <span class="hero-status-text">{{ heroStatus }}</span>
-        </p>
+    <HomeHero
+      :hero-image="heroImage"
+      :hero-image-failed="heroImageFailed"
+      :has-loaded="hasLoaded"
+      :hero-eyebrow="heroEyebrow"
+      :hero-feature-title="heroFeatureTitle"
+      :hero-meta="heroMeta"
+      :hero-status="heroStatus"
+      :greeting="greeting"
+      :greeting-parts="greetingParts"
+      :username="user?.username"
+      :is-member="isMember"
+      :is-free-realm="isFreeRealm"
+      :hero-href="heroHref"
+      @image-error="heroImageFailed = true"
+    />
 
-        <!-- 未开通：先给 CTA（立即开通），再给「入场三步」——
-             门户最大的 friction 是"付了钱不会配置客户端"，所以首屏不讲会员权益、讲"怎么看上片" -->
-        <template v-if="!isMember && !isFreeRealm">
-          <div class="hero-cta hero-enter d5">
-            <RouterLink to="/store" class="au-btn au-btn-primary">
-              立即开通
-            </RouterLink>
-            <RouterLink to="/profile" class="hero-link">
-              连接教程
-              <ChevronRight :size="14" />
-            </RouterLink>
-          </div>
-          <p class="au-eyebrow steps-label hero-enter d6">入场三步</p>
-          <ol class="hero-steps hero-enter d6">
-            <li>
-              <span class="step-num">1</span>
-              <span class="step-body"><strong>开通会员</strong><em>解锁全库影视资源</em></span>
-            </li>
-            <li>
-              <span class="step-num">2</span>
-              <span class="step-body"><strong>下载播放器</strong><em>Infuse / Forward 等 Emby 客户端</em></span>
-            </li>
-            <li>
-              <span class="step-num">3</span>
-              <span class="step-body"><strong>一键导入</strong><em>在个人中心导入服务器地址与账号</em></span>
-            </li>
-          </ol>
-        </template>
-
-        <!-- 已开通 / 公益服：主角就是 CTA——在 Rex 里打开今晚这部片（描边按钮，hover 才填色）。
-             没有主角时回落到「一键导入播放器」 -->
-        <template v-else>
-          <div class="hero-cta hero-enter d5">
-            <a v-if="heroHref" :href="heroHref" class="au-btn hero-cta-outline">
-              在 Rex 里打开
-            </a>
-            <RouterLink v-else to="/profile" class="au-btn au-btn-primary">
-              一键导入播放器
-            </RouterLink>
-            <RouterLink to="/profile" class="hero-link">
-              连接教程
-              <ChevronRight :size="14" />
-            </RouterLink>
-          </div>
-        </template>
-      </div>
-    </section>
 
     <main class="container main">
       <!-- 会员数据加载失败：给错误态 + 重试，而不是静默显示「未开通」 -->
