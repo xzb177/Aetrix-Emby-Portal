@@ -167,7 +167,17 @@ async def warm(db, item) -> None:
         if target is None or getattr(target, "kind", None) != "url":
             return
 
-        ok = await _do_warm_request(target.value, getattr(target, "headers", {}))
+        # 走完整跳转链：原始 URL → Drive API 地址 → 307 跳转到最终地址，
+        # 和 serve_remote_async 完全相同的路径，并写 P0-2 跳转缓存。
+        # 之前只请求原始 URL 不跟跳转，导致第一次播放现做跳转还是慢。
+        from backend.emby_server.streaming import resolve_drive_final_url
+        final_url = await resolve_drive_final_url(
+            target.value, getattr(target, "headers", {}))
+        if not final_url:
+            _bump("failed")
+            return
+
+        ok = await _do_warm_request(final_url, getattr(target, "headers", {}))
         _bump("warmed" if ok else "failed")
     except Exception:
         logger.debug(
