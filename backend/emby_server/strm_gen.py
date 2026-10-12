@@ -496,9 +496,62 @@ _progress: dict[str, Any] = {
 }
 
 
-def get_progress() -> dict[str, Any]:
+def get_progress(db: Any = None) -> dict[str, Any]:
+    """返回当前生成进度。
+
+    db 可选：当进程内状态为"从未运行过"（phase=="idle" 且 running 为 False
+    且 started_at 为 None——进程重启后就是这个状态）且传入 db 时，
+    从 DB 的 strm_gen_last_stats / strm_gen_last_run 回填上次执行的真实统计，
+    phase 置为 "done"，并写回 _progress 缓存（前端轮询不再每次查 DB）。
+
+    回填绝不会覆盖正在运行的任务：只有"从未运行过"才回填。
+    DB 读失败 / 无统计 / JSON 损坏时降级返回内存 idle 拷贝，不抛异常。
+    """
     with _lock:
+        if (db is not None
+                and not _progress["running"]
+                and _progress["phase"] == "idle"
+                and _progress["started_at"] is None):
+            try:
+                _backfill_last_stats(db)
+            except Exception:
+                logger.warning("strm_gen: 从 DB 回填上次生成统计失败", exc_info=True)
         return dict(_progress)
+
+
+def _backfill_last_stats(db) -> None:
+    """从 DB 回填上次执行统计到 _progress。
+
+    调用方必须持有 _lock 且已确认进程内状态为"从未运行过"。
+    任何异常都由调用方捕获并降级，本函数只做"无数据/坏数据时静默跳过"。
+    """
+    raw_stats = _db_config(db, CONFIG_LAST_STATS, "")
+    if not raw_stats:
+        return
+    try:
+        stats = json.loads(raw_stats)
+    except Exception:
+        return
+    if not isinstance(stats, dict):
+        return
+    try:
+        generated = int(stats.get("generated", 0) or 0)
+        skipped = int(stats.get("skipped", 0) or 0)
+        failed = int(stats.get("failed", 0) or 0)
+        _progress.update({
+            "phase": "done",
+            "finished_at": _db_config(db, CONFIG_LAST_RUN, "") or None,
+            "total": int(stats.get("total", 0) or 0),
+            "generated": generated,
+            "skipped": skipped,
+            "failed": failed,
+            "pruned": int(stats.get("pruned", 0) or 0),
+            "done": generated + skipped + failed,
+            "current": "",
+            "errors": [],
+        })
+    except Exception:
+        pass
 
 
 def _set_progress(**kwargs):

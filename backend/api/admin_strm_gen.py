@@ -139,7 +139,7 @@ def strm_gen_trigger(body: StrmGenTrigger,
     """
     if not _gen.try_acquire():
         return {"success": False, "error": "已有生成任务在运行中",
-                "progress": _gen.get_progress()}
+                "progress": _gen.get_progress(db)}
 
     def _run():
         from backend.database import SessionLocal
@@ -157,7 +157,7 @@ def strm_gen_trigger(body: StrmGenTrigger,
 @admin_emby_router.get("/strm-gen/progress")
 def strm_gen_progress(db: Session = Depends(get_db), _staff=Depends(require_staff)):
     """查生成进度（前端轮询用）。"""
-    prog = _gen.get_progress()
+    prog = _gen.get_progress(db)
     return {"success": True, "progress": prog, "config": _read_config(db)}
 
 
