@@ -198,6 +198,7 @@ const navGroups: NavGroup[] = [
       { path: '/health', label: '服务健康', icon: Activity },
       { path: '/health-board', label: '健康总览', icon: Gauge },
       { path: '/diagnosis', label: '一键体检', icon: Stethoscope },
+      { path: '/api-keys', label: 'API Key', icon: KeyRound, superOnly: true },
     ],
   },
 ]

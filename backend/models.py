@@ -1703,3 +1703,25 @@ class RevokedJwt(Base):
     reason = Column(String(50), nullable=False, default="logout")
     revoked_at = Column(DateTime, default=datetime.now, nullable=False)
     expires_at = Column(DateTime, nullable=False, index=True)
+
+
+class ApiKey(Base):
+    """API Key / Service Token 表（服务端对服务端认证）
+
+    - 明文格式：``ak_`` + 48 位 URL 安全随机串，创建时返回一次，库里只存
+      ``SHA256(明文 + pepper)``（见 backend/api_key.py）
+    - ``key_id`` 是明文前 12 字符的公开标识，可安全展示、作查询前缀
+    - scopes：['read', 'write', 'admin']，层级 admin > write > read
+    """
+    __tablename__ = 'api_keys'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key_id = Column(String(32), unique=True, nullable=False, index=True)
+    key_hash = Column(String(64), unique=True, nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    scopes = Column(JSON, default=list)
+    expires_at = Column(DateTime, nullable=True)  # None = 永不过期
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)  # 创建人 admin id
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
