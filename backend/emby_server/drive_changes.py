@@ -311,33 +311,171 @@ def _get_token() -> str | None:
 #: 注意 403 不在此列——配额类 403 由 probe_worker 的专用逻辑处理（C-P1-1），
 #: 地址无效类 403 应快速失败而非重试。
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-#: 指数退避基础秒数
-API_RETRY_BASE_SEC = 1.0
+#: 指数退避基础秒数（2026-10-12 从 1.0 提到 2.0：原来 full-jitter 下首次重试
+#: 可能只等 0.1 秒，太激进，容易被 Google 风控盯上）
+API_RETRY_BASE_SEC = 2.0
 #: 单次退避上限秒数（防负优化：不能无限等）
 API_RETRY_MAX_SEC = 60.0
 #: 最大重试次数（不含首次请求）
 API_MAX_RETRIES = 5
+#: 429 用 Retry-After 头等待时的钳制上限（秒）
+RETRY_AFTER_MAX_SEC = 300.0
 
 
-def _retry_sleep_sec(attempt: int) -> float:
-    """第 attempt 次重试前的等待秒数（从 0 开始计）。
+def _parse_retry_after(value) -> float | None:
+    """解析 Retry-After 响应头为秒数。解析失败/负数/空 → None（调用方回退到 2 倍退避）。
 
-    Full Jitter 退避：uniform(0, min(cap, base * 2^attempt))。
-    反风控：抖动避免固定节拍被 Google 识别为机器行为。
+    只处理 delta-seconds 格式（纯数字）；HTTP-date 格式罕见，不处理，按无头对待。
     """
-    cap = min(API_RETRY_MAX_SEC, API_RETRY_BASE_SEC * (2 ** attempt))
-    return _random.uniform(0, cap)
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = float(text)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _retry_sleep_sec(attempt: int, is_rate_limited: bool = False,
+                     retry_after: float | None = None) -> float:
+    """第 attempt 次重试前的等待秒数（attempt 从 0 开始计）。
+
+    风控安全退避（2026-10-12 用户硬性要求，替代原来的 full-jitter）：
+    - 基础 2s，指数翻倍：2 → 4 → 8 → 16 → 32，上限 60s
+    - 每次 × uniform(0.8, 1.2)（±20% 抖动），绝不固定间隔，也绝不接近 0
+    - 429 有有效 Retry-After 头时按头等待（钳制 [1, 300]s）；无头时按 2 倍退避
+
+    反风控：固定节拍容易被 Google 识别为机器行为，每次等待都重新随机化。
+    """
+    jitter = _random.uniform(0.8, 1.2)
+    if is_rate_limited:
+        if retry_after is not None and retry_after > 0:
+            return min(max(retry_after, 1.0), RETRY_AFTER_MAX_SEC) * jitter
+        return min(API_RETRY_MAX_SEC, 2.0 * API_RETRY_BASE_SEC * (2 ** attempt)) * jitter
+    return min(API_RETRY_MAX_SEC, API_RETRY_BASE_SEC * (2 ** attempt)) * jitter
+
+
+#: 线程本地重试计数器（_api_get 入口置 0，每次重试前 +1）。
+#: 多线程下各线程独立，互不污染。
+#: _total_retries 累计本线程自上次 reset_total_retry_count 以来的总重试数，
+#: 供 strm_gen 统计单个 drive 列举期间的 API 重试总量。
+_retry_state = threading.local()
+
+
+def get_last_retry_count() -> int:
+    """返回本线程上一次 _api_get 的重试次数（0 = 一次成功；没调过也返回 0）。"""
+    return getattr(_retry_state, "retry_count", 0)
+
+
+def reset_total_retry_count() -> None:
+    """清零本线程的累计重试计数（开始列举一个 drive 前调用）。"""
+    _retry_state.total = 0
+
+
+def get_total_retry_count() -> int:
+    """返回本线程自上次 reset_total_retry_count 以来的累计重试数。"""
+    return getattr(_retry_state, "total", 0)
+
+
+class ApiRateLimiter:
+    """Drive API 全局速率限制器（令牌桶），跨所有线程/调用方共享。
+
+    并发 + 重试叠加时总请求速率不能超标：令牌桶是硬上限，
+    即使所有并发 worker 同时重试，总速率也 ≤ qps。
+
+    最坏情况验算：并发上限 10 × 每 worker 串行请求 × 重试退避（2s 起），
+    令牌桶 8 QPS 是硬上限，任何叠加都超不过。
+    Drive API per-user 配额约 10 QPS，默认 8 留有余量。
+    """
+
+    def __init__(self, qps: float):
+        qps = max(1.0, min(20.0, float(qps)))
+        self._qps = qps
+        self._tokens = qps  # 初始桶满
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+
+    def set_qps(self, qps: float) -> None:
+        """运行时调整 QPS（钳制 [1.0, 20.0]），线程安全。"""
+        with self._lock:
+            qps = max(1.0, min(20.0, float(qps)))
+            self._qps = qps
+            self._tokens = min(self._tokens, qps)
+            self._last = time.monotonic()
+
+    def acquire(self) -> None:
+        """阻塞直到拿到一个令牌。
+
+        等待加 ±20% 抖动，避免多线程同时醒来形成固定节拍（反风控）。
+        永不死锁：每次循环都重新计算等待时间。
+        """
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                elapsed = now - self._last
+                self._last = now
+                self._tokens = min(self._qps, self._tokens + elapsed * self._qps)
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait_s = ((1.0 - self._tokens) / self._qps) * _random.uniform(0.8, 1.2)
+            time.sleep(wait_s)
+
+
+#: 模块级单例（默认 8 QPS，保守值；strm_gen 启动时按配置调整）
+_api_limiter = ApiRateLimiter(8.0)
+
+
+def set_api_qps(qps: float) -> None:
+    """设置全局 Drive API 速率上限（QPS），供 strm_gen 按管理后台配置调用。"""
+    _api_limiter.set_qps(qps)
 
 
 def _api_get(url: str, token: str, params: dict) -> dict:
+    """Drive API GET（带风控安全重试）。
+
+    - 429/5xx：指数退避重试（最多 5 次），429 优先尊重 Retry-After 头
+    - 网络层瞬时异常（超时/连接重置等）：同 5xx 退避重试
+    - 401 → PermissionError（不重试，调用方刷新 token）
+    - 404 → DriveNotFoundError（不重试，调用方退避）
+    - 其他 4xx：直接抛，不重试
+    - 每次请求前过全局速率限制器（令牌桶），并发叠加不超标
+    """
+    _retry_state.retry_count = 0
     last_exc: Exception | None = None
     for attempt in range(API_MAX_RETRIES + 1):
-        resp = httpx.get(
-            url,
-            headers={"Authorization": f"Bearer {token}"},
-            params=params,
-            timeout=60,
-        )
+        # 全局速率限制：并发 + 重试叠加时的硬上限
+        _api_limiter.acquire()
+        try:
+            resp = httpx.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                params=params,
+                timeout=60,
+            )
+        except (httpx.TimeoutException, httpx.ConnectError,
+                httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            # 网络层瞬时异常（超时、连接重置）：走 5xx 同款退避
+            last_exc = exc
+            if attempt >= API_MAX_RETRIES:
+                logger.error("Drive API 网络异常，重试 %d 次后放弃: %s %s",
+                             API_MAX_RETRIES, type(exc).__name__, url[:80])
+                raise
+            sleep_s = _retry_sleep_sec(attempt)
+            _retry_state.retry_count = get_last_retry_count() + 1
+            _retry_state.total = getattr(_retry_state, "total", 0) + 1
+            logger.warning(
+                "Drive API 网络异常 %s（第 %d/%d 次），%.1f 秒后重试: %s",
+                type(exc).__name__, attempt + 1, API_MAX_RETRIES + 1,
+                sleep_s, url[:80],
+            )
+            time.sleep(sleep_s)
+            continue
         if resp.status_code == 401:
             raise PermissionError("Drive token 无效或过期")
         if resp.status_code == 404:
@@ -346,25 +484,52 @@ def _api_get(url: str, token: str, params: dict) -> dict:
             # 不要当成普通错误每 5 分钟重试。
             drive_id = (params or {}).get("driveId", "")
             raise DriveNotFoundError(drive_id)
+        if resp.status_code == 429:
+            # 429 限流：优先尊重 Retry-After 头，没有头时按 2 倍退避（更保守）
+            last_exc = httpx.HTTPStatusError(
+                f"Drive API 429 限流，准备重试",
+                request=resp.request,
+                response=resp,
+            )
+            if attempt >= API_MAX_RETRIES:
+                logger.error("Drive API 429 限流，重试 %d 次后放弃: %s",
+                             API_MAX_RETRIES, url[:80])
+                raise last_exc
+            retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+            sleep_s = _retry_sleep_sec(attempt, is_rate_limited=True,
+                                       retry_after=retry_after)
+            _retry_state.retry_count = get_last_retry_count() + 1
+            _retry_state.total = getattr(_retry_state, "total", 0) + 1
+            logger.warning(
+                "Drive API 429 限流（第 %d/%d 次），%.1f 秒后重试%s: %s",
+                attempt + 1, API_MAX_RETRIES + 1, sleep_s,
+                f"（Retry-After: {retry_after}s）" if retry_after else "",
+                url[:80],
+            )
+            time.sleep(sleep_s)
+            continue
         if resp.status_code in RETRYABLE_STATUS_CODES:
-            # 429/5xx：瞬时错误，指数退避重试（Google 官方推荐做法）。
+            # 5xx：瞬时错误，指数退避重试（Google 官方推荐做法）。
             # 401/404 保持原有快速失败逻辑不变。
             last_exc = httpx.HTTPStatusError(
                 f"Drive API 瞬时错误 {resp.status_code}，准备重试",
                 request=resp.request,
                 response=resp,
             )
-            if attempt < API_MAX_RETRIES:
-                sleep_s = _retry_sleep_sec(attempt)
-                logger.warning(
-                    "Drive API %s 瞬时错误（第 %d/%d 次），%.1f 秒后重试: %s",
-                    resp.status_code, attempt + 1, API_MAX_RETRIES + 1,
-                    sleep_s, url[:80],
-                )
-                time.sleep(sleep_s)
-                continue
-            # 重试耗尽，抛出最后一次的错误
-            raise last_exc
+            if attempt >= API_MAX_RETRIES:
+                logger.error("Drive API %s 瞬时错误，重试 %d 次后放弃: %s",
+                             resp.status_code, API_MAX_RETRIES, url[:80])
+                raise last_exc
+            sleep_s = _retry_sleep_sec(attempt)
+            _retry_state.retry_count = get_last_retry_count() + 1
+            _retry_state.total = getattr(_retry_state, "total", 0) + 1
+            logger.warning(
+                "Drive API %s 瞬时错误（第 %d/%d 次），%.1f 秒后重试: %s",
+                resp.status_code, attempt + 1, API_MAX_RETRIES + 1,
+                sleep_s, url[:80],
+            )
+            time.sleep(sleep_s)
+            continue
         resp.raise_for_status()
         return resp.json()
     # 理论上到不了这里（循环内要么 return 要么 raise），防御性兜底
@@ -413,6 +578,11 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
                    "file": {"name":..., "parents": [...], "mimeType":...,
                             "trashed": bool}}
     个人盘不传 driveId 和 includeItemsFromAllDrives，改传 spaces=drive。
+
+    异常契约（2026-10-12）：API 失败直接抛，不再返回 ([], None)。
+    调用方必须区分"报错"和"真的无变化"：
+    - strm_gen 的 DriveChangesLister：异常向上传播 → per-drive 记 error → 整轮 phase=error
+    - drive_changes poller：外层 try/except 记 errors+1，page token 不推进，下轮重放
     """
     token = _get_token()
     if not token:
@@ -422,37 +592,31 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
     next_token: str | None = page_token
     fields = ("changes(fileId,removed,file(id,name,parents,mimeType,trashed)),"
               "newStartPageToken,nextPageToken")
-    try:
-        while next_token:
-            if _is_personal_drive_key(drive_id):
-                params = {
-                    "pageToken": next_token,
-                    "spaces": "drive",
-                    "supportsAllDrives": "true",
-                    "includeRemoved": "true",
-                    "pageSize": 1000,
-                    "fields": fields,
-                }
-            else:
-                params = {
-                    "pageToken": next_token,
-                    "driveId": drive_id,
-                    "supportsAllDrives": "true",
-                    "includeItemsFromAllDrives": "true",
-                    "includeRemoved": "true",
-                    "pageSize": 1000,
-                    "fields": fields,
-                }
-            body = _api_get(CHANGES_LIST_URL, token, params)
-            all_changes.extend(body.get("changes", []))
-            new_start = body.get("newStartPageToken") or new_start
-            next_token = body.get("nextPageToken")
-        return all_changes, new_start
-    except DriveNotFoundError:
-        raise
-    except Exception as exc:
-        logger.error("Drive Changes: list 失败 drive=%s: %s", drive_id, exc)
-        return [], None
+    while next_token:
+        if _is_personal_drive_key(drive_id):
+            params = {
+                "pageToken": next_token,
+                "spaces": "drive",
+                "supportsAllDrives": "true",
+                "includeRemoved": "true",
+                "pageSize": 1000,
+                "fields": fields,
+            }
+        else:
+            params = {
+                "pageToken": next_token,
+                "driveId": drive_id,
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+                "includeRemoved": "true",
+                "pageSize": 1000,
+                "fields": fields,
+            }
+        body = _api_get(CHANGES_LIST_URL, token, params)
+        all_changes.extend(body.get("changes", []))
+        new_start = body.get("newStartPageToken") or new_start
+        next_token = body.get("nextPageToken")
+    return all_changes, new_start
 
 
 def _file_meta(file_id: str, token: str) -> dict | None:

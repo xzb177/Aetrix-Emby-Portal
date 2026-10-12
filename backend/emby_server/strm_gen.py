@@ -63,10 +63,18 @@ CONFIG_LOCAL_ROOT = "strm_gen_local_root"
 # 反风控：固定节拍容易被识别为机器行为（Google 风控/本地 IO burst），
 # 每次等待都重新随机化。0=关闭抖动（便于测试）。钳制在 [0, 0.5]。
 CONFIG_JITTER_RATIO = "strm_gen_jitter_ratio"
+# 多盘并行列举的并发数（2026-10-12）：ThreadPoolExecutor 的 max_workers。
+# 默认 3（保守），范围 [1, 10]。Drive API 并发不超过 10，留余量防风控。
+CONFIG_CONCURRENCY = "strm_gen_drive_concurrency"
+# Drive API 全局速率上限（QPS，2026-10-12）：令牌桶硬上限，
+# 并发 + 重试叠加时总请求速率不能超过它。默认 8.0（保守，Drive per-user 配额约 10 QPS）。
+CONFIG_API_QPS = "strm_gen_api_qps"
 
 DEFAULT_SOURCE_DIR = "MoviePilot/"
 DEFAULT_INTERVAL_MINUTES = 60
 DEFAULT_JITTER_RATIO = 0.2
+DEFAULT_CONCURRENCY = 3
+DEFAULT_API_QPS = 8.0
 
 # token 401 后刷新重试的最大次数
 TOKEN_RETRY_MAX = 3
@@ -168,6 +176,34 @@ def jitter_ratio(db) -> float:
     except (ValueError, TypeError):
         return DEFAULT_JITTER_RATIO
     return max(0.0, min(0.5, v))
+
+
+def drive_concurrency(db) -> int:
+    """多盘并行列举的并发数，钳制在 [1, 10]。
+
+    速度与风控的平衡：Drive API 并发不超过 10，默认 3（保守）。
+    管理员可在后台调整，调整后下次生成生效（热读）。
+    """
+    raw = _db_config(db, CONFIG_CONCURRENCY, str(DEFAULT_CONCURRENCY)).strip()
+    try:
+        v = int(raw)
+    except (ValueError, TypeError):
+        return DEFAULT_CONCURRENCY
+    return max(1, min(10, v))
+
+
+def api_qps(db) -> float:
+    """Drive API 全局速率上限（QPS），钳制在 [1.0, 20.0]。
+
+    令牌桶硬上限：并发 + 重试叠加时总请求速率不能超过它。
+    默认 8.0（保守，Drive per-user 配额约 10 QPS，留余量）。
+    """
+    raw = _db_config(db, CONFIG_API_QPS, str(DEFAULT_API_QPS)).strip()
+    try:
+        v = float(raw)
+    except (ValueError, TypeError):
+        return DEFAULT_API_QPS
+    return max(1.0, min(20.0, v))
 
 
 def _jittered_interval_sec(db) -> float:
@@ -768,7 +804,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     # local: 用 (mtime_ns, size) 指纹做增量检测
     stype = source_type(db)
     all_videos: list[tuple[str, str, int]] = []
-    listers: list = []  # 成功列举的 lister，生成完后 save_checkpoint
+    listers: list = []  # 成功列举的检查点：本地模式存 Lister 对象，drive 并行模式存 (did, new_token)
 
     if stype == "local":
         root = local_root(db)
@@ -807,24 +843,108 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 return {"ok": False, "error": "未发现可用 Drive"}
             drive_ids = sorted(drives.keys())
             if len(drive_ids) > 1:
-                logger.info("strm_gen: 发现 %d 个共享盘，逐个生成: %s", len(drive_ids), drive_ids)
+                logger.info("strm_gen: 发现 %d 个共享盘，并行生成: %s",
+                            len(drive_ids), drive_ids)
         from backend.emby_server import strm_source
-        for did in drive_ids:
-            logger.info("strm_gen: 开始生成 drive=%s src=%s full=%s", did, src_prefix, full)
-            _set_progress(phase="listing", current=f"正在列举 Drive 文件…（{did}）")
+        from backend.emby_server import drive_changes as dc
+
+        # 全局 API 速率按配置调整（热读，默认 8 QPS 保守值）
+        dc.set_api_qps(api_qps(db))
+        # 并发数按配置（默认 3，钳制 [1, 10]）
+        concurrency = drive_concurrency(db)
+
+        def _list_one_drive(did: str) -> dict:
+            """单个 drive 的列举 worker（线程池内执行）。
+
+            返回 {"did":..., "videos":[...], "retries":N, "new_token":..., "error":None/str}。
+            异常不向外抛，记进 error 字段由主线程统一处理——某盘失败不影响
+            其他盘的列举结果收集，但主线程会按"任一来源失败则整轮失败"处理。
+
+            增量检查点（changes page token）也在这里带回：主线程在整轮成功后
+            统一保存（失败时不保存，下轮用旧 token 重放）。
+            """
+            dc.reset_total_retry_count()
             lister = strm_source.DriveChangesLister(did, src_prefix)
-            listers.append(lister)
-            videos = []
+            videos: list[tuple[str, str, int]] = []
             try:
                 # 增量模式走 Changes API；全量模式（full=True）回退到 files.list
+                # （2026-10-12 起 list_changes 不再吞错：API 失败直接抛，
+                # 这里捕获后记 error，绝不静默当成 0 文件）
                 for rel, fid, size in lister.iter_videos(incremental=not full):
                     videos.append((rel, fid, size))
             except Exception as exc:
-                _set_progress(phase="error")
-                _add_error(f"列举失败 [{did}]: {exc}")
-                return {"ok": False, "error": str(exc)}
-            logger.info("strm_gen: drive=%s 列举到 %d 个视频文件", did, len(videos))
-            all_videos.extend(videos)
+                return {
+                    "did": did,
+                    "videos": [],
+                    "retries": dc.get_total_retry_count(),
+                    "path_skipped": lister.path_resolve_skipped,
+                    "new_token": None,
+                    "error": str(exc)[:300],
+                }
+            return {
+                "did": did,
+                "videos": videos,
+                "retries": dc.get_total_retry_count(),
+                "path_skipped": lister.path_resolve_skipped,
+                "new_token": lister._new_token,
+                "error": None,
+            }
+
+        import concurrent.futures as _futures
+        _set_progress(phase="listing",
+                      current=f"正在列举 Drive 文件…（{len(drive_ids)} 个盘并行）")
+        drive_results: list[dict] = []
+        with _futures.ThreadPoolExecutor(max_workers=concurrency,
+                                         thread_name_prefix="strm-list") as _pool:
+            # 线程安全说明：
+            # - 每个 worker 用独立的 lister + videos 列表，无共享可变状态
+            # - DriveChangesLister._db() 每次新建 SessionLocal，线程安全
+            # - _set_progress 走 _lock；dc 的重试计数器/速率限制器都是线程本地/加锁的
+            future_map = {_pool.submit(_list_one_drive, did): did for did in drive_ids}
+            for fut in _futures.as_completed(future_map):
+                did = future_map[fut]
+                try:
+                    res = fut.result()
+                except Exception as exc:  # 防御性：worker 本身不应抛，但兜底
+                    res = {"did": did, "videos": [], "retries": 0,
+                           "path_skipped": 0, "new_token": None,
+                           "error": f"列举线程异常: {exc}"[:300]}
+                drive_results.append(res)
+
+        # 按 drive_ids 原顺序整理结果（日志顺序稳定）
+        drive_results.sort(key=lambda r: drive_ids.index(r["did"]))
+        failed = [r for r in drive_results if r["error"]]
+        for r in drive_results:
+            did = r["did"]
+            if r["error"]:
+                logger.error("strm_gen: drive=%s 列举失败（重试 %d 次）: %s",
+                             did, r["retries"], r["error"])
+            else:
+                # 成功但 0 文件：明确打 warning，与"报错"区分开
+                if not r["videos"]:
+                    logger.warning("strm_gen: drive=%s 列举成功但 0 个视频文件"
+                                   "（源目录 %r 可能为空；重试 %d 次）",
+                                   did, src_prefix, r["retries"])
+                else:
+                    logger.info("strm_gen: drive=%s 列举到 %d 个视频文件"
+                                "（API 重试 %d 次，路径解析跳过 %d）",
+                                did, len(r["videos"]), r["retries"], r["path_skipped"])
+            stats.setdefault("sources", {})[did] = {
+                "listed": len(r["videos"]),
+                "retries": r["retries"],
+                "path_skipped": r["path_skipped"],
+                "error": r["error"],
+            }
+            all_videos.extend(r["videos"])
+            # 收集增量检查点（成功时才有 new_token）
+            if r["new_token"]:
+                listers.append((did, r["new_token"]))
+        if failed:
+            # 任一来源列举失败 → 整轮标记失败（保守策略，不静默丢数据）
+            first = failed[0]
+            _set_progress(phase="error")
+            _add_error(f"列举失败 [{first['did']}]: {first['error']}")
+            return {"ok": False, "error": f"列举失败 [{first['did']}]: {first['error']}"}
 
     # 增量状态与已用路径在各数据源之间共享（_resolve_collision 跨盘防撞车）
     state = {} if full else _load_state()
@@ -912,9 +1032,19 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
 
     # 持久化增量检查点（Changes API 的 page token / 本地指纹库）
     # 只有成功时才保存，失败时保留旧检查点下次重试
-    for lister in listers:
+    # listers 里有两种：本地模式的 Lister 对象（调 save_checkpoint()），
+    # drive 并行模式的 (did, new_token) 元组（直接写 token）
+    for item in listers:
         try:
-            lister.save_checkpoint()
+            if isinstance(item, tuple):
+                did, new_token = item
+                if new_token:
+                    from backend.emby_server import strm_source as _ss
+                    _lister = _ss.DriveChangesLister(did, src_prefix)
+                    _lister._new_token = new_token
+                    _lister.save_checkpoint()
+            else:
+                item.save_checkpoint()
         except Exception as exc:
             logger.warning("strm_gen: 保存增量检查点失败: %s", exc)
 
@@ -1014,13 +1144,25 @@ def _verify_completeness(videos: list[tuple[str, str, int]],
     for group, dcnt in drive_counter.items():
         scnt = strm_counter.get(group, 0)
         if scnt < dcnt:
-            missing = sorted(drive_files[group] - strm_files.get(group, set()))[:50]
+            missing_rels = sorted(drive_files[group] - strm_files.get(group, set()))
+            # 缺集归因（2026-10-12）：区分"源上有但没生成"和".strm 文件丢了"
+            not_generated = 0  # Drive 上有，state 里没有 → 生成漏了/还没跑到
+            strm_lost = 0      # state 里有，但磁盘上 .strm 没了 → 文件丢失
+            for rel in missing_rels:
+                if rel not in state:
+                    not_generated += 1
+                elif not _strm_exists(state[rel][2]):
+                    strm_lost += 1
             incomplete.append({
                 "series": group,
                 "drive_count": dcnt,
                 "strm_count": scnt,
                 "missing_count": dcnt - scnt,
-                "missing_sample": missing,
+                "missing_sample": missing_rels[:50],
+                "missing_breakdown": {
+                    "not_generated": not_generated,
+                    "strm_lost": strm_lost,
+                },
             })
     incomplete.sort(key=lambda x: -x["missing_count"])
     return {

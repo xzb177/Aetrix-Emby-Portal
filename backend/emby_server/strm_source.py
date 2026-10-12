@@ -79,6 +79,9 @@ class DriveChangesLister(SourceLister):
         self.drive_id = drive_id
         self.dir_path = (dir_path or "").strip().strip("/")
         self._new_token: Optional[str] = None
+        # 可观测性计数器（2026-10-12）：列举完成后调用方可读
+        self.yielded_count: int = 0          # 成功 yield 的视频文件数
+        self.path_resolve_skipped: int = 0  # _build_relpath 失败跳过的 changes 数
 
     def _db(self):
         from backend.database import SessionLocal
@@ -133,7 +136,8 @@ class DriveChangesLister(SourceLister):
             yield from strm_gen.iter_drive_videos(self.drive_id, self.dir_path)
             return
 
-        # 增量：拉 changes
+        # 增量：拉 changes（2026-10-12 起不再吞错：API 失败直接抛，
+        # 调用方按"列举失败"处理，绝不能当成"本轮无变化"）
         changes, new_token = dc.list_changes(token, self.drive_id)
         if new_token:
             self._new_token = new_token
@@ -175,6 +179,7 @@ class DriveChangesLister(SourceLister):
             # 建相对路径：用 parents 链回溯
             rel = self._build_relpath(fid, name, parents, access_token)
             if rel is None:
+                self.path_resolve_skipped += 1
                 continue
             # 过滤到 dir_path 子树
             prefix = (self.dir_path + "/") if self.dir_path else ""
@@ -192,9 +197,13 @@ class DriveChangesLister(SourceLister):
                 except (ValueError, TypeError):
                     size = 0
             count += 1
+            self.yielded_count += 1
             # 页间抖动：避免连续补查打爆配额
             if count % 50 == 0:
                 self._jitter_sleep(0.2)
+            # 大目录进度日志：8 万+ 文件卡住时能定位（每 1000 个打一次）
+            if count % 1000 == 0:
+                logger.info("strm_source: drive=%s 已列举 %d 个视频文件", self.drive_id, count)
             yield rel, fid, size
 
     def _build_relpath(self, fid: str, name: str, parents: list,
