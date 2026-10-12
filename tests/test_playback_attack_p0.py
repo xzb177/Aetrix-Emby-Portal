@@ -139,7 +139,7 @@ def test_redirect_cache_logs_never_contain_secret_values(caplog):
     before：无日志可言；after：每条日志的参数值都被剥掉，只剩参数名。
     """
     import backend.emby_server.streaming as st
-    secret = "SECRET_SIG_VALUE_abc123xyz"
+    secret = "SECRET_SIG_VALUE_abc123xyz"  # secret-scan: allow —— 脱敏断言用的假签名值，非真实凭据
     fid = "PA_LOG_SECRET"
     st._redirect_cache_invalidate(fid)
     try:
