@@ -96,7 +96,9 @@ def Finding(
     steps: Optional[list] = None,
     evidence: Optional[dict] = None,
 ) -> dict:
-    assert level in LEVELS, f"未知 level: {level}"
+    if level not in LEVELS:
+        # 不用 assert：python -O 会剥离 assert，后续 _LEVEL_CN[level] 会抛 KeyError
+        raise ValueError(f"未知 level: {level}")
     return {
         "rule_id": rule_id,
         "name": name,
@@ -155,7 +157,19 @@ def _rule_disk(subs: dict) -> dict:
              "如果磁盘其实正常，不用管，下次体检会自动恢复"],
             {},
         )
-    free_f = float(free)
+    try:
+        free_f = float(free)
+    except (TypeError, ValueError):
+        # 探针返回了非数字：规则内转 warn 并注明数据异常，
+        # 不要让它掉进外层兜底变成"检查暂不可用"（会误导用户以为探针故障）。
+        return Finding(
+            "disk_space", "磁盘空间", "warn",
+            "磁盘数据异常",
+            f"探针返回的磁盘余量不是数字（拿到 {free!r}），无法判断空间是否够用（可能是采集异常，不是磁盘真有问题）。",
+            ["去服务器上看一眼磁盘用量",
+             "如果磁盘其实正常，不用管，下次体检会自动恢复"],
+            {"disk_free_percent_raw": free},
+        )
     crit = get_threshold("disk_crit_pct")
     warn = get_threshold("disk_warn_pct")
     ev = {"disk_free_percent": round(free_f, 1),
@@ -385,9 +399,27 @@ def _rule_api(subs: dict) -> dict:
             [],
             {},
         )
-    ratio_f = float(ratio)
+    try:
+        ratio_f = float(ratio)
+    except (TypeError, ValueError):
+        # 探针返回了非数字：规则内转 warn 并注明数据异常，
+        # 不要让它掉进外层兜底变成"检查暂不可用"（会误导用户以为探针故障）。
+        return Finding(
+            "api_errors", "接口指标", "warn",
+            "接口指标数据异常",
+            f"探针返回的接口错误率不是数字（拿到 {ratio!r}），无法判断接口是否健康（可能是采集异常）。",
+            ["看后端日志确认指标采集是否正常",
+             "如果刚部署完：观察 10 分钟，看是否恢复"],
+            {"global_error_ratio_raw": ratio},
+        )
     thr = get_threshold("api_error_ratio")
     p99 = m.get("global_p99_ms") or 0
+    try:
+        p99_f = float(p99)
+    except (TypeError, ValueError):
+        # P99 坏了不影响错误率结论：展示成"数据异常"即可，不抛异常。
+        p99_f = None
+    p99_text = f"{p99_f:.0f}ms" if p99_f is not None else "数据异常"
     ev = {"global_error_ratio": ratio_f, "global_p99_ms": p99}
     if ratio_f >= thr:
         return Finding(
@@ -402,7 +434,7 @@ def _rule_api(subs: dict) -> dict:
     return Finding(
         "api_errors", "接口指标", "info",
         "接口指标正常",
-        f"错误率 {ratio_f:.2%}，P99 延迟 {p99:.0f}ms。",
+        f"错误率 {ratio_f:.2%}，P99 延迟 {p99_text}。",
         [],
         ev,
     )
