@@ -76,6 +76,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '服务健康' } },
       // v2.56.0 健康一页：可观测底座的上层 UI，十个子系统红黄绿灯同屏
       { path: 'health-board', name: 'Health', component: () => import('@/views/Health.vue'), meta: { title: '健康总览' } },
+      // v2.57.0 一键体检：只读诊断规则引擎，大白话结论 + 检查步骤
+      { path: 'diagnosis', name: 'Diagnosis', component: () => import('@/views/Diagnosis.vue'), meta: { title: '一键体检' } },
       // 服管理以绝对路径声明：跳转契约检查要求跳转目标与声明的 path 完全一致
       { path: '/realms', name: 'Realms', component: () => import('@/views/Realms.vue'), meta: { title: '服管理' } },
       { path: 'servers', name: 'Servers', component: () => import('@/views/Servers.vue'), meta: { title: '服务器与线路' } },

@@ -51,6 +51,7 @@ from backend.api.admin_ops import admin_ops_router
 from backend.api.admin_services import services_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.admin_alerts import admin_alerts_router
+from backend.api.admin_diagnosis import admin_diagnosis_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 # v2.19.0：外部服务能力中心（代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地）。
@@ -764,6 +765,8 @@ app.include_router(services_router)
 app.include_router(admin_reminders_router)
 # 系统告警：规则管理 / 告警记录 / 总开关（见 backend/api/admin_alerts.py）
 app.include_router(admin_alerts_router)
+# 一键体检：只读诊断报告（见 backend/api/admin_diagnosis.py）
+app.include_router(admin_diagnosis_router)
 # 订单关单与退款（见 backend/api/orders_admin.py）
 app.include_router(admin_orders_router)
 # 优惠券管理（v2.10.0）：券的 CRUD / 核销记录 / 开关，见 backend/api/coupons_admin.py
