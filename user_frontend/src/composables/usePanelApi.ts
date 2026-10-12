@@ -38,12 +38,21 @@ export interface ParcelItem {
   title?: string
   name?: string
   media_type?: string
+  item_type?: string
   type?: string
   episode_count?: number
   resolution?: string
+  video_resolution?: string
+  production_year?: number
   arrived_at?: string
+  added_at?: string
   unsealed?: boolean
+  deep_link?: string
   [k: string]: unknown
+}
+
+export interface ParcelsData {
+  parcels: ParcelItem[]
 }
 
 async function get<T>(url: string): Promise<T> {
@@ -59,8 +68,8 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
 export const panelApi = {
   /** 问候 / 今日封存件数 / 连签 */
   today: () => get<TodayData>('/api/panel/today'),
-  /** 今日封存列表 */
-  parcels: () => get<ParcelItem[]>('/api/panel/parcels'),
+  /** 今日封存列表（后端返回 {parcels: [...]} 包裹） */
+  parcels: () => get<ParcelsData>('/api/panel/parcels'),
   /** 拆封（幂等） */
   unseal: (itemId: string | number) => post(`/api/panel/parcels/${itemId}/unseal`),
   /** 服务器脉搏 */

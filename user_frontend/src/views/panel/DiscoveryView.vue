@@ -1,38 +1,55 @@
 <template>
   <div class="v4-scope">
     <div class="v4-page">
-      <!-- 日志头：问候 + 封存件数 + 连签（PR-3 填 ParcelBox/EcgCanvas/WaxLetter） -->
+      <!-- 日志头：问候 + 封存件数 + 连签 -->
       <header class="v4-loghead">
         <span class="v4-stamp">探险日志 · {{ dateLabel }}</span>
-        <h1>{{ greeting }}，{{ username }}</h1>
-        <p v-if="today.data">今天片库里有 {{ parcelCount }} 件新封存，等你拆。</p>
+        <h1>{{ greeting }}，{{ nickname }}</h1>
+        <p v-if="today.data">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
         <div v-else-if="today.loading" class="v4-skeleton" style="height:28px;width:70%;margin-top:10px"></div>
         <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}</div>
-        <div v-if="streak != null" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
+        <div v-if="streak != null && streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
       </header>
 
+      <!-- 今日封存：盲盒 -->
       <section class="v4-sec">
         <div class="v4-sec-title">📦 今日封存</div>
-        <div class="v4-sec-sub">新入库的片子，先拆为敬 —— PR-3 接入开封动画</div>
-        <div v-if="parcels.loading" class="v4-skeleton" style="height:120px"></div>
+        <div class="v4-sec-sub">新入库的片子，先拆为敬 —— 点一下开封</div>
+        <div v-if="parcels.loading" class="v4-skeleton" style="height:132px"></div>
         <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}</div>
-        <pre v-else class="v4-err" style="white-space:pre-wrap">{{ parcelText }}</pre>
+        <div v-else-if="parcelList.length === 0" class="v4-err">今天还没有新封存，明天再来拆 📦</div>
+        <div v-else class="v4-parcels">
+          <ParcelBox
+            v-for="p in parcelList"
+            :key="String(p.id)"
+            :parcel="p"
+            @unseal="onUnseal"
+          />
+        </div>
       </section>
 
+      <!-- 服务器脉搏 -->
       <section class="v4-sec">
         <div class="v4-sec-title">💓 服务器脉搏</div>
-        <div class="v4-sec-sub">PR-3 接入心电图画布 + 活动文案轮播</div>
-        <div v-if="pulse.loading" class="v4-skeleton" style="height:60px"></div>
-        <div v-else-if="pulse.error" class="v4-err">脉搏加载失败：{{ pulse.error }}</div>
-        <pre v-else class="v4-err" style="white-space:pre-wrap">{{ pulseText }}</pre>
+        <div class="v4-sec-sub">它现在活着，在干什么 —— 实时</div>
       </section>
+      <div class="v4-pulse-box">
+        <div class="v4-pulse-row">
+          <span class="v4-pulse-tag">● LIVE · 后台任务</span>
+          <span class="v4-pulse-dot"></span>
+        </div>
+        <EcgCanvas />
+        <PulseActivity :items="activityTexts" />
+      </div>
+      <div v-if="pulse.error" class="v4-sec"><div class="v4-err">脉搏加载失败：{{ pulse.error }}</div></div>
 
+      <!-- 每日一封 -->
       <section class="v4-sec" style="padding-bottom:20px">
         <div class="v4-sec-title">✉️ 每日一封</div>
-        <div class="v4-sec-sub">PR-3 接入火漆拆信动画</div>
-        <div v-if="letter.loading" class="v4-skeleton" style="height:60px"></div>
+        <div class="v4-sec-sub">昨天的你，留了一封信 —— 点开看看</div>
+        <div v-if="letter.loading" class="v4-skeleton" style="height:120px"></div>
         <div v-else-if="letter.error" class="v4-err">信件加载失败：{{ letter.error }}</div>
-        <pre v-else class="v4-err" style="white-space:pre-wrap">{{ letterText }}</pre>
+        <WaxLetter v-else :letter="letterData" />
       </section>
     </div>
     <PanelTabbar />
@@ -45,6 +62,11 @@ import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
+import ParcelBox from '@/components/panel/ParcelBox.vue'
+import EcgCanvas from '@/components/panel/EcgCanvas.vue'
+import PulseActivity from '@/components/panel/PulseActivity.vue'
+import WaxLetter from '@/components/panel/WaxLetter.vue'
+import type { ParcelItem, ParcelsData } from '@/composables/usePanelApi'
 
 const panel = usePanelStore()
 const user = useUserStore()
@@ -57,11 +79,20 @@ onMounted(() => {
   void panel.loadLetter()
 })
 
+/* ---------- 日志头 ---------- */
+const todayData = computed(() => (today.value.data || {}) as Record<string, unknown>)
 const dateLabel = computed(() => {
+  const raw = todayData.value.date as string | undefined
+  if (raw) {
+    const d = new Date(raw)
+    if (!Number.isNaN(d.getTime())) return `${d.getMonth() + 1}.${d.getDate()}`
+  }
   const d = new Date()
   return `${d.getMonth() + 1}.${d.getDate()}`
 })
 const greeting = computed(() => {
+  const g = todayData.value.greeting as string | undefined
+  if (g) return g
   const h = new Date().getHours()
   if (h < 5) return '夜深了'
   if (h < 9) return '早上好'
@@ -70,13 +101,85 @@ const greeting = computed(() => {
   if (h < 18) return '下午好'
   return '晚上好'
 })
-const username = computed(() => (user.user as Record<string, unknown> | null)?.nickname as string || '探险家')
-const parcelCount = computed(() => (today.value.data as Record<string, unknown> | null)?.parcel_count ?? '?')
+const nickname = computed(() => {
+  const n = todayData.value.nickname as string | undefined
+  if (n) return n
+  const u = user.user as Record<string, unknown> | null
+  return (u?.nickname as string) || (u?.username as string) || '探险家'
+})
+const parcelTotal = computed(() => {
+  const v = todayData.value.parcels_total
+  return typeof v === 'number' ? v : '?'
+})
 const streak = computed(() => {
-  const v = (today.value.data as Record<string, unknown> | null)?.streak_days
+  const v = todayData.value.streak
   return typeof v === 'number' ? v : null
 })
-const parcelText = computed(() => JSON.stringify(parcels.value.data, null, 2))
-const pulseText = computed(() => JSON.stringify(pulse.value.data, null, 2))
-const letterText = computed(() => JSON.stringify(letter.value.data, null, 2))
+
+/* ---------- 今日封存 ---------- */
+const parcelList = computed((): ParcelItem[] => {
+  const d = parcels.value.data as ParcelsData | null
+  return Array.isArray(d?.parcels) ? d.parcels : []
+})
+async function onUnseal(id: string | number) {
+  try {
+    await panel.unseal(id)
+  } catch {
+    // 失败则静默：下次刷新会纠正；不打断用户
+  }
+}
+
+/* ---------- 服务器脉搏 ---------- */
+const activityTexts = computed((): string[] => {
+  const d = (pulse.value.data || {}) as Record<string, unknown>
+  const acts = d.activities as Array<{ text?: string }> | undefined
+  if (Array.isArray(acts)) {
+    const texts = acts.map((a) => String(a?.text || '')).filter(Boolean)
+    if (texts.length) return texts
+  }
+  return ['服务器运行中，一切正常']
+})
+
+/* ---------- 每日一封 ---------- */
+const letterData = computed(() => (letter.value.data || {}) as Record<string, unknown>)
 </script>
+
+<style scoped>
+/* 封存包裹行：取自设计稿 .parcels */
+.v4-parcels {
+  display: flex;
+  gap: 12px;
+}
+/* 脉搏黑盒：取自设计稿 .pulse-box */
+.v4-pulse-box {
+  background: var(--ink);
+  border-radius: 14px;
+  padding: 16px;
+  margin: 0 20px;
+  color: #EDE6D6;
+  position: relative;
+  overflow: hidden;
+}
+.v4-pulse-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.v4-pulse-tag {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: #9BE08A;
+}
+.v4-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9BE08A;
+  animation: v4-blink 1.6s infinite;
+}
+@keyframes v4-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+</style>
