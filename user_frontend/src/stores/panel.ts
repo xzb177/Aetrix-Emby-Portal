@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { panelApi } from '@/composables/usePanelApi'
+import { panelApi, humanizeError } from '@/composables/usePanelApi'
 
 /**
  * v4 面板数据 store（PR-2 地基）
@@ -39,7 +39,7 @@ export const usePanelStore = defineStore('panel', () => {
       entry.data = await fetcher()
       entry.at = Date.now()
     } catch (e) {
-      entry.error = e instanceof Error ? e.message : '加载失败'
+      entry.error = humanizeError(e)
     } finally {
       entry.loading = false
     }

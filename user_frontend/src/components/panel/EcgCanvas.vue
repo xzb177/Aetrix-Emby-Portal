@@ -9,6 +9,7 @@ const cv = ref<HTMLCanvasElement | null>(null)
 let raf = 0
 let last = 0
 let x = 0
+let ctx: CanvasRenderingContext2D | null = null // 缓存：不每帧调 getContext
 const data: number[] = new Array(200).fill(64)
 const STEP_MS = 90 // 与设计稿 setInterval(90ms) 同节奏
 
@@ -27,7 +28,7 @@ function draw(ts: number) {
     const beat = x % 90 < 8 ? Math.random() * 50 : Math.random() * 8
     data.push(64 - beat - Math.random() * 4)
     x++
-    const ctx = el.getContext('2d')
+    if (!ctx) ctx = el.getContext('2d')
     if (ctx) {
       const w = el.width
       const h = el.height

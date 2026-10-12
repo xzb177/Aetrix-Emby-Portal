@@ -2,7 +2,14 @@
   <div class="v4-organism">
     <div class="orb" :class="orbMood" aria-hidden="true"></div>
     <h3>{{ statusLine }}</h3>
-    <div class="cond" v-html="conditionHtml"></div>
+    <div class="cond">
+      <template v-if="backlog > 0">
+        刚吃下 <b>{{ backlog }}</b> 条待刮削，正在慢慢消化<br>心跳正常 · 胃口很好
+      </template>
+      <template v-else>
+        肠胃清空，一身轻松<br>心跳正常 · 体温正常 · 随时待命
+      </template>
+    </div>
     <div class="vitals">
       <div>
         <b>{{ vitalCells[0].value }}</b>
@@ -48,12 +55,13 @@ const statusLine = computed(() => {
   return '状态：吃饱了，晒太阳 😌'
 })
 
-const conditionHtml = computed(() => {
-  const n = backlog.value
-  if (n > 0) {
-    return `刚吃下 <b>${n}</b> 条待刮削，正在慢慢消化<br>心跳正常 · 胃口很好`
-  }
-  return '肠胃清空，一身轻松<br>心跳正常 · 体温正常 · 随时待命'
+/** 健康等级人话：后端英文 → 中文，未知兜底原文 */
+const levelText = computed(() => {
+  const lv = String(props.vitals.level ?? '').toLowerCase()
+  if (lv === 'healthy') return '健康'
+  if (lv === 'degraded') return '亚健康'
+  if (lv === 'down') return '故障'
+  return String(props.vitals.level ?? '—')
 })
 
 const vitalCells = computed(() => {
@@ -65,7 +73,7 @@ const vitalCells = computed(() => {
   return [
     { value: stText, label: '状态' },
     { value: backlog.value > 0 ? `${backlog.value}` : '0', label: '待消化' },
-    { value: String(props.vitals.level || '—'), label: '健康等级' },
+    { value: levelText.value, label: '健康等级' },
     { value: String(props.vitals.version || '—'), label: '版本' },
   ]
 })

@@ -22,6 +22,9 @@ const activeCount = computed(() => tasks.value.filter((t) => t.active).length)
 
 let raf = 0
 let angle = 0
+let lastTs = 0
+/** 角速度：0.045 rad/帧 × 60fps —— 高刷屏也用时间增量，转速一致 */
+const ANGULAR_SPEED = 0.045 * 60
 const reduced = typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -75,7 +78,7 @@ function drawStatic() {
   }
 }
 
-function tick() {
+function tick(ts: number) {
   const c = cv.value
   if (!c) return
   const dpr = Math.min(window.devicePixelRatio || 1, 2)
@@ -137,7 +140,8 @@ function tick() {
     ctx.textAlign = 'center'
     ctx.fillText(p.label, p.x, p.y - 8)
   }
-  angle += 0.045
+  angle += lastTs > 0 ? ANGULAR_SPEED * Math.min((ts - lastTs) / 1000, 0.1) : 0
+  lastTs = ts
   raf = requestAnimationFrame(tick)
 }
 
@@ -146,6 +150,7 @@ function onVis() {
     cancelAnimationFrame(raf)
     raf = 0
   } else if (!raf && !reduced) {
+    lastTs = 0 // 从后台回来时丢弃旧时间戳，避免跳帧
     raf = requestAnimationFrame(tick)
   }
 }

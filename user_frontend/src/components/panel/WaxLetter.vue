@@ -3,8 +3,10 @@
     class="v4-letter"
     :class="{ open: isOpen }"
     role="button"
-    :aria-label="isOpen ? '昨日回顾信件' : '每日一封，点击拆信'"
-    @click="isOpen = true"
+    tabindex="0"
+    :aria-label="isOpen ? '昨日回顾信件，点击合上' : '每日一封，点击拆信'"
+    @click="toggle"
+    @keydown="onKey"
   >
     <div v-if="!isOpen" class="v4-letter-env">
       <div class="v4-letter-wax">封</div>
@@ -28,6 +30,17 @@ const props = withDefaults(defineProps<{ letter?: Record<string, unknown> }>(), 
 })
 
 const isOpen = ref(false)
+
+/** 拆开/合上切换 */
+function toggle() {
+  isOpen.value = !isOpen.value
+}
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault()
+    toggle()
+  }
+}
 
 /** 信封上的时间：昨日日期 */
 const letterTime = computed(() => {

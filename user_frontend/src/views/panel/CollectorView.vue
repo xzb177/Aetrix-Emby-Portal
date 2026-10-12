@@ -4,13 +4,18 @@
       <!-- 顶栏 -->
       <div class="v4-col-top">
         <h1>🏅 收藏家</h1>
-        <span class="v4-lv">{{ levelText }}</span>
+        <span v-if="collector.loading" class="v4-skeleton" style="height:24px;width:110px;border-radius:14px"></span>
+        <span v-else-if="!collector.error" class="v4-lv">{{ levelText }}</span>
+      </div>
+
+      <!-- 顶层错误卡：失败时各区收起，只留这一张 -->
+      <div v-if="collector.error" class="v4-sec">
+        <div class="v4-err">收藏家没加载出来：{{ collector.error }}<br><button class="v4-retry" @click="retryCollector">重试</button></div>
       </div>
 
       <!-- 收藏家卡 -->
-      <div class="v4-idcard">
+      <div v-if="!collector.error" class="v4-idcard">
         <div v-if="collector.loading" class="v4-skeleton" style="height:110px"></div>
-        <div v-else-if="collector.error" class="v4-err">收藏家数据加载失败：{{ collector.error }}</div>
         <template v-else>
           <div class="v4-id-name">{{ nickname }}</div>
           <div class="v4-id-title">{{ tasteTitle }}</div>
@@ -29,31 +34,29 @@
       </div>
 
       <!-- 口味护照 -->
-      <section class="v4-sec">
+      <section v-if="!collector.error" class="v4-sec">
         <div class="v4-sec-title">🛂 口味护照</div>
         <div class="v4-sec-sub">看够一个类型，就盖一个章 —— 集满 12 枚有惊喜</div>
         <div v-if="collector.loading" class="v4-skeleton" style="height:200px"></div>
-        <div v-else-if="collector.error" class="v4-err">护照加载失败：{{ collector.error }}</div>
         <TastePassport v-else :raw="tastesRaw" />
       </section>
 
       <!-- 成就星图 -->
-      <section class="v4-sec">
+      <section v-if="!collector.error" class="v4-sec">
         <div class="v4-sec-title">✨ 成就星图</div>
         <div class="v4-sec-sub">每颗星都是一个故事 —— 点一下看看</div>
         <div v-if="collector.loading" class="v4-skeleton" style="height:230px"></div>
-        <div v-else-if="collector.error" class="v4-err">星图加载失败：{{ collector.error }}</div>
-        <div v-else-if="achievements.length === 0" class="v4-err">还没有成就定义，去看片吧 ✨</div>
+        <div v-else-if="achievements.length === 0" class="v4-empty">还没有点亮成就，去看片吧 ✨</div>
         <StarMap v-else :achievements="achievements" />
       </section>
 
       <!-- 馆灵养成 -->
-      <section class="v4-sec" style="padding-bottom:20px">
+      <section v-if="!collector.error" class="v4-sec" style="padding-bottom:20px">
         <div class="v4-sec-title">🥚 馆灵养成</div>
         <div class="v4-sec-sub">你看的每一分钟，都在喂养它</div>
         <div v-if="collector.loading" class="v4-skeleton" style="height:220px"></div>
-        <div v-else-if="collector.error" class="v4-err">馆灵加载失败：{{ collector.error }}</div>
         <PetCard v-else-if="pet" :pet="pet" />
+        <div v-else class="v4-empty">馆灵还在路上，多看片把它养出来</div>
       </section>
     </div>
     <PanelTabbar />
@@ -79,6 +82,11 @@ onMounted(() => {
   void panel.loadCollector()
 })
 
+/** 错误卡重试 */
+function retryCollector() {
+  void panel.loadCollector(true)
+}
+
 /* ---------- 数据解包 ---------- */
 const data = computed((): CollectorData => (collector.value.data || {}) as CollectorData)
 
@@ -93,7 +101,7 @@ const points = computed(() => data.value.points ?? '–')
 const watchHoursText = computed(() => {
   const h = data.value.watch_hours
   if (typeof h !== 'number') return '–'
-  return h >= 1 ? `${Math.round(h)}h` : `${Math.round(h * 60)}m`
+  return h >= 1 ? `${Math.round(h)}小时` : `${Math.round(h * 60)}分钟`
 })
 const streakText = computed(() => data.value.streak ?? '–')
 const achievementCount = computed(() => data.value.achievement_count ?? '–')
@@ -210,7 +218,7 @@ const pet = computed((): PetData | null => {
   display: block;
 }
 .v4-id-stats span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--ink2);
 }
 .v4-id-stats div + div {

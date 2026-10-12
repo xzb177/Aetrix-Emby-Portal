@@ -81,19 +81,34 @@ async function flip() {
 .lever {
   width: 56px;
   height: 30px;
-  border-radius: 16px;
-  background: var(--paper2);
-  border: 1.5px solid var(--ink);
+  box-sizing: content-box;
+  /* 透明 padding + 负 margin：视觉轨道保持 30px，点击区纵向扩大到 44px */
+  padding: 7px 0;
+  margin: -7px 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   position: relative;
   cursor: pointer;
-  transition: background 0.25s;
   flex-shrink: 0;
-  padding: 0;
+}
+/* 视觉轨道：画在内容盒（30px）上，随 padding 偏移 +7px */
+.lever::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 0;
+  right: 0;
+  background: var(--paper2);
+  border: 1.5px solid var(--ink);
+  border-radius: 16px;
+  transition: background 0.25s;
 }
 .lever::after {
   content: "";
   position: absolute;
-  top: 2px;
+  top: 9px;
   left: 3px;
   width: 22px;
   height: 22px;
@@ -101,7 +116,7 @@ async function flip() {
   background: var(--ink);
   transition: left 0.25s, background 0.25s;
 }
-.lever.on {
+.lever.on::before {
   background: #cde6c5;
 }
 .lever.on::after {

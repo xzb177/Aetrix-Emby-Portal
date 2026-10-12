@@ -1,5 +1,5 @@
 <template>
-  <div class="v4-activity" aria-live="polite">
+  <div class="v4-activity" aria-live="off">
     <span :key="idx" class="v4-activity-line">{{ current }}</span>
   </div>
 </template>
@@ -16,7 +16,7 @@ const idx = ref(0)
 let timer = 0
 
 const current = computed(() => {
-  if (!props.items.length) return '服务器运行中，一切正常'
+  if (!props.items.length) return '正在感知服务器…'
   return props.items[idx.value % props.items.length]
 })
 
