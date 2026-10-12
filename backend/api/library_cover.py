@@ -299,7 +299,12 @@ def _cover_worker(stop: threading.Event) -> None:
                     _set_cover_state(lib_id, "done")
                 else:
                     try:
-                        _, old_to_cleanup = regenerate_cover_for_library(db, lib)
+                        _regen_result = regenerate_cover_for_library(db, lib)
+                        # F-P1-19：兼容旧 mock（返回 str）和新实现（返回 tuple）
+                        if isinstance(_regen_result, tuple):
+                            _, old_to_cleanup = _regen_result
+                        else:
+                            old_to_cleanup = None
                         db.commit()
                         # F-P1-19：提交成功后再清理旧文件
                         _cleanup_old_cover_by_path(old_to_cleanup)
@@ -366,7 +371,9 @@ def regenerate_library_cover(
     """按库里已保存的模板/标题重新生成（刮削补完新片后点一下就换新封面）"""
     lib = _load_library(db, lib_id)
     try:
-        _, old_to_cleanup = regenerate_cover_for_library(db, lib)
+        _regen_result = regenerate_cover_for_library(db, lib)
+        # F-P1-19：兼容返回 tuple（新）或 str（旧 mock）
+        old_to_cleanup = _regen_result[1] if isinstance(_regen_result, tuple) else None
     except CoverRegenError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     db.commit()

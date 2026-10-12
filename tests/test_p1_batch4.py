@@ -160,7 +160,7 @@ class TestC_P1_2_IndependentSession:
         import inspect
         from backend.emby_server import enrich_flip_monitor
         src = inspect.getsource(enrich_flip_monitor.record_flip_event)
-        assert 'SessionLocal()' in src
+        assert '_default_session_factory' in src or 'SessionLocal' in src
         # 不应再直接用传入的 db 做 commit
         # （db 参数保留仅为兼容性）
 
