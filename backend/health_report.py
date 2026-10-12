@@ -30,6 +30,8 @@ from sqlalchemy import func
 
 logger = logging.getLogger(__name__)
 
+from backend.error_lexicon import translate as _translate_error
+
 # 阈值：经验值，按公测规模调过
 WARN_DISK_FREE_PERCENT = 15.0
 WARN_PROBE_FAIL_RATIO = 0.30        # 探测失败率超过 30%
@@ -82,9 +84,12 @@ def library_scan_summary(db) -> dict:
         elif status == "failed":
             out["failed"] += 1
             if len(out["last_failed"]) < 5:
+                err = (lib.scan_error or "")[:200]
                 out["last_failed"].append({
                     "id": lib.id, "name": lib.name,
-                    "error": (lib.scan_error or "")[:200],
+                    "error": err,
+                    # 错误码大白话：原文旁边直接给中文解释 + 检查步骤
+                    "hint": _translate_error(err),
                     "at": str(lib.last_scan_at or ""),
                 })
         elif not lib.last_scan_at:
@@ -320,6 +325,14 @@ def collect(db) -> dict:
                 "message": f"{scans['failed']} 个媒体库最近一次扫描失败：{names}"})
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计扫描状态出错: %s", exc)
+
+    # ---- 错误码大白话：每条 issue 旁边挂中文解释 + 检查步骤 ----
+    # translate() 命中返回 dict、无命中返回 None（前端按 None 隐藏）。
+    for issue in issues:
+        try:
+            issue["hint"] = _translate_error(issue.get("message", ""))
+        except Exception:  # noqa: BLE001 — 翻译失败不影响健康检查
+            issue["hint"] = None
 
     return {
         "level": level,

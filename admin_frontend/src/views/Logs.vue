@@ -182,6 +182,11 @@ function detailText(log: AdminLogRow): string {
 
         <template #cell-detail="{ row }">
           <span class="log-detail">{{ detailText(row) || '—' }}</span>
+          <div v-if="row.error_hint" class="error-hint">
+            <div class="error-hint-title">{{ row.error_hint.title }}</div>
+            <div class="error-hint-what">{{ row.error_hint.what }}</div>
+            <div class="error-hint-steps">{{ row.error_hint.steps.join('；') }}</div>
+          </div>
         </template>
 
         <template #cell-ip_address="{ row }">
@@ -245,6 +250,35 @@ function detailText(log: AdminLogRow): string {
   font-family: var(--font-mono);
   color: var(--au-text-2);
   word-break: break-all;
+}
+
+/** 错误码大白话：日志详情下的中文解释（只用已有 --au-* 令牌） */
+.error-hint {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--au-primary);
+  background: var(--au-primary-soft);
+  border-radius: 0 var(--au-r-sm) var(--au-r-sm) 0;
+}
+
+.error-hint-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--au-primary);
+  margin-bottom: 2px;
+}
+
+.error-hint-what {
+  font-size: 12px;
+  color: var(--au-text-2);
+  line-height: 1.5;
+}
+
+.error-hint-steps {
+  font-size: 12px;
+  color: var(--au-text-4);
+  line-height: 1.5;
+  margin-top: 2px;
 }
 
 .muted { color: var(--au-text-4); }

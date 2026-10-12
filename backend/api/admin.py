@@ -20,6 +20,8 @@ v2.21.0 起按域拆分成同目录的兄弟模块（导入即注册同一个 ``
 原本单文件两千多行，改一个审计点要在几千行里翻，也没法整体复核。
 """
 from datetime import datetime, timedelta
+import json
+import re
 from decimal import Decimal
 from typing import Optional
 
@@ -33,6 +35,7 @@ from backend import media_seek, models, realms, register_channel
 from backend import qbittorrent
 from backend import servers
 from backend.database import get_db
+from backend.error_lexicon import translate as _translate_error
 from backend.notifications import (
     AdminEvent,
     notify_admin_event,
@@ -1469,6 +1472,18 @@ def get_admin_logs(
         # 统一账号体系后 admin_user_id 存 WebUser.id
         # F-P1-1: 改为内存映射取值，无额外 DB 查询
         operator = operators.get(log.admin_user_id)
+        # 错误码大白话：details 里若含错误原文，旁边挂中文解释 + 检查步骤。
+        # 预过滤：只有看起来像错误的文本才走词典，避免成功操作的审计被误翻。
+        try:
+            _detail_text = (json.dumps(log.details, ensure_ascii=False, default=str)
+                            if log.details else "")
+            _combined = f"{log.action} {_detail_text}"
+            error_hint = None
+            if re.search(r"fail|error|异常|失败|超时|拒绝|错误|exception|traceback",
+                         _combined, re.IGNORECASE):
+                error_hint = _translate_error(_combined)
+        except Exception:  # noqa: BLE001 — 翻译失败不影响日志查询
+            error_hint = None
 
         result.append({
             "id": log.id,
@@ -1479,6 +1494,7 @@ def get_admin_logs(
             "ip_address": log.ip_address,
             "created_at": _log_out(log),
             "admin_name": operator.username if operator else "未知",
+            "error_hint": error_hint,
         })
     return result
 
