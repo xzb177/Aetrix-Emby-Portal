@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import LibraryCard from '@/components/emby/LibraryCard.vue'
 /**
  * 媒体库管理：库列表/创建/扫描/删除 + 刮削策略 + 平台虚拟媒体库 + 图片修复队列
  * + 停止全部转码
@@ -1641,126 +1642,37 @@ function typeLabel(t: string): string {
           </div>
         </div>
         <div v-if="libraries.length" class="lib-grid">
-          <article v-for="l in libraries" :key="l.id" class="lib-card">
-            <div class="lib-cover">
-              <img v-if="coverUrls[l.id]" :src="coverUrls[l.id]" :alt="`${l.name} 封面`" loading="lazy" decoding="async" />
-              <div v-else class="lib-cover-empty">
-                <Film :size="32" />
-                <span>{{ typeLabel(l.collection_type) }}库</span>
-              </div>
-              <div class="lib-cover-shade" />
-              <div class="lib-cover-badges">
-                <span v-if="l.is_virtual" class="mini-badge pin">虚拟库</span>
-                <span class="mini-badge" :class="l.is_enabled ? 'ok' : 'off'">
-                  {{ l.is_enabled ? '启用' : '停用' }}
-                </span>
-                <span v-if="cardBadge(l)" class="mini-badge" :class="cardBadge(l)?.cls">
-                  {{ cardBadge(l)?.text }}
-                </span>
-              </div>
-              <div class="lib-cover-actions">
-                <el-upload
-                  :accept="'image/jpeg,image/png,image/webp'"
-                  :show-file-list="false"
-                  :disabled="coverUploading[l.id]"
-                  :http-request="(options: UploadRequestOptions) => requestCoverUpload(l, options)"
-                >
-                  <el-button
-                    class="cover-button"
-                    circle
-                    text
-                    :loading="coverUploading[l.id]"
-                    :title="l.cover_url ? '更换封面' : '上传封面'"
-                    aria-label="上传媒体库封面"
-                  >
-                    <ImagePlus :size="18" />
-                  </el-button>
-                </el-upload>
-                <el-button
-                  v-if="l.cover_url"
-                  class="cover-button"
-                  circle
-                  text
-                  title="移除封面"
-                  aria-label="移除媒体库封面"
-                  @click="removeCover(l)"
-                >
-                  <X :size="17" />
-                </el-button>
-              </div>
-            </div>
+          <LibraryCard
+            v-for="l in libraries"
+            :key="l.id"
+            :library="l"
+            :cover-url="coverUrls[l.id]"
+            :type-label="typeLabel(l.collection_type)"
+            :badge="cardBadge(l)"
+            :service-text="serviceFact(l).text"
+            :service-warn="serviceFact(l).warn"
+            :source-text="sourceFact(l).text"
+            :source-warn="sourceFact(l).warn"
+            :summary="libSummary(l)"
+            :summary-title="libSummaryTitle(l)"
+            :live-hint="cardLiveHint(l)"
+            :live-state="liveFor(l)?.state"
+            :last-scan-text="l.last_scan_at ? `上次扫描 ${fmtDate(l.last_scan_at)}` : '尚未扫描'"
+            :scan-error="scanError(l)"
+            :reach-message="libReach(l)?.level === 'bad' ? libReach(l)?.message : ''"
+            :cover-uploading="coverUploading[l.id]"
+            @cover-upload="(opts) => requestCoverUpload(l, opts)"
+            @cover-remove="removeCover(l)"
+            @scan="scan(l)"
+            @scan-full="scanFull(l)"
+            @rescrape="openRescrape(l)"
+            @identify="goIdentify(l)"
+            @settings="openSettings(l)"
+            @scans="openScans(l)"
+            @remove="removeLib(l)"
+          />
 
-            <div class="lib-body">
-              <div class="lib-head">
-                <span class="lib-name">{{ l.name }}</span>
-                <span class="lib-meta">{{ typeLabel(l.collection_type) }}库</span>
-              </div>
 
-              <div class="lib-facts">
-                <span class="fact" :class="{ warn: serviceFact(l).warn }" :title="'服务：' + serviceFact(l).text">
-                  <Server :size="12" />{{ serviceFact(l).text }}
-                </span>
-
-                <span class="fact" :class="{ warn: sourceFact(l).warn }" :title="'来源：' + sourceFact(l).text">
-                  <HardDrive :size="12" />{{ sourceFact(l).text }}
-                </span>
-                <span class="fact"><Film :size="12" />{{ l.item_count }} 个条目</span>
-              </div>
-
-              <!-- 一句话策略摘要：路径 / 轮询间隔 / 刮削策略，不点进设置也知道这个库怎么跑 -->
-              <div class="lib-summary" :title="libSummaryTitle(l)">{{ libSummary(l) }}</div>
-
-              <div class="lib-state">
-                <span v-if="cardLiveHint(l)" class="lib-live" :title="cardLiveHint(l)">
-                  <span class="scan-dot" :class="liveFor(l)?.state === 'queued' ? 'is-queued' : 'is-running'" />
-                  {{ cardLiveHint(l) }}
-                </span>
-                <span v-else class="lib-time">
-                  {{ l.last_scan_at ? `上次扫描 ${fmtDate(l.last_scan_at)}` : '尚未扫描' }}
-                </span>
-              </div>
-
-              <div v-if="scanError(l)" class="scan-error" :title="scanError(l)">{{ scanError(l) }}</div>
-              <div v-else-if="libReach(l)?.level === 'bad'" class="scan-error" :title="reachTitle(l)">
-                播放风险：{{ libReach(l)?.message }}
-              </div>
-            </div>
-
-            <div class="lib-foot">
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                title="增量扫描：只处理新增/改过的文件，没变化的跳过。日常用这个。"
-                @click="scan(l)"
-              >
-                <ScanSearch :size="13" />扫描
-              </el-button>
-              <el-button
-                size="small"
-                plain
-                title="全量扫描：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。"
-                @click="scanFull(l)"
-              >
-                <RefreshCcw :size="13" />全量扫描
-              </el-button>
-              <el-button size="small" plain title="刷新已有条目的元数据（不扫描新文件）" @click="openRescrape(l)">
-                <RefreshCw :size="13" />刷新元数据
-              </el-button>
-              <el-button size="small" plain title="手动识别：跳到「元数据来源」页直接绑定 TMDB / IMDb ID" @click="goIdentify(l)">
-                <Search :size="13" />识别
-              </el-button>
-              <el-button size="small" plain @click="openSettings(l)">
-                <Settings2 :size="13" />设置
-              </el-button>
-              <el-button size="small" plain title="扫描记录" @click="openScans(l)">
-                <History :size="13" />
-              </el-button>
-              <el-button size="small" type="danger" plain title="删除媒体库" @click="removeLib(l)">
-                <Delete :size="13" />
-              </el-button>
-            </div>
-          </article>
 
         </div>
         <EmptyState

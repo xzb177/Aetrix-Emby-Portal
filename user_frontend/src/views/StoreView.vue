@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PlanCard from '@/components/store/PlanCard.vue'
 /**
  * 商店 — 充积分 / 买会员 / 花积分 / 核销（卡码·兑换码·优惠券）
  * 布局（极简重做）：顶部状态条 + 充积分/买会员双大卡 + 底部核销折叠入口；
@@ -764,35 +765,17 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
 
           <template v-else>
             <div class="plan-list">
-              <article v-for="p in plans" :key="p.id" class="plan-item" :class="{ popular: p.is_popular }">
-                <header class="plan-head">
-                  <strong class="plan-name">{{ p.name }}</strong>
-                  <em v-if="p.is_popular" class="plan-badge">推荐</em>
-                  <span v-if="p.realm_name" class="plan-realm">{{ p.realm_name }}</span>
-                </header>
-                <div class="plan-price">
-                  <del v-if="wasPrice('subscription', p.id)"><span class="nowrap">¥{{ wasPrice('subscription', p.id) }}</span></del>
-                  <span class="plan-now"><span class="nowrap">¥{{ paidPrice('subscription', p.id, p.price) }}</span></span> / <span class="nowrap">{{ p.duration_days }} 天</span>
-                </div>
-                <p v-if="p.description" class="plan-desc">{{ p.description }}</p>
-                <p v-if="(member?.discount_pct || 0) > 0" class="plan-member-hint">
-                  <Percent :size="12" /> 会员 {{ (100 - (member?.discount_pct || 0)) / 10 }} 折，下单自动抵扣
-                </p>
-                <ul v-if="p.features && p.features.length" class="plan-features">
-                  <li v-for="(f, i) in p.features" :key="i"><CircleCheck /> {{ f }}</li>
-                </ul>
-                <div class="plan-actions">
-                  <button
-                    type="button"
-                    class="plan-buy"
-                    :disabled="orderLoading === p.id || !methods.length"
-                    @click="handleOrder('subscription', p.id)"
-                  >
-                    <span v-if="orderLoading === p.id" class="spinner"></span>
-                    <template v-else><span class="nowrap">¥{{ paidPrice('subscription', p.id, p.price) }}</span> 开通</template>
-                  </button>
-                </div>
-              </article>
+              <PlanCard
+                v-for="p in plans"
+                :key="p.id"
+                :plan="p"
+                :was-price="wasPrice('subscription', p.id)"
+                :paid-price="paidPrice('subscription', p.id, p.price)"
+                :discount-pct="member?.discount_pct || 0"
+                :order-loading="orderLoading === p.id"
+                :methods-available="!!methods.length"
+                @order="(id) => handleOrder('subscription', id)"
+              />
             </div>
 
             <div v-if="couponApplied" class="coupon-strip">
