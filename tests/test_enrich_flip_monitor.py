@@ -123,8 +123,6 @@ class TestRecordFlipEvent:
         assert "size_changed" in (r.details or "")
 
     def test_db_failure_returns_false_not_raise(self, capture):
-        # F-P1-2：record_flip_event 已改用独立会话（_session_factory），
-        # 不再使用传入的 db 参数；用 _session_factory 注入失败会话。
         class BadDB:
             def add(self, *a):
                 raise RuntimeError("db down")
@@ -138,9 +136,9 @@ class TestRecordFlipEvent:
             def close(self):
                 pass
 
+        # F-P1-2：record_flip_event 现用独立会话，通过 _session_factory 注入 BadDB
         ok = fm.record_flip_event(
-            None,  # db 参数仅保留兼容性，不再使用
-            flip_count=5, trigger="scan",
+            None, flip_count=5, trigger="scan",
             _session_factory=lambda: BadDB(),
         )
         assert ok is False  # 监控失败不能抛异常拖垮业务
