@@ -32,7 +32,7 @@ class StrmGenConfigSave(BaseModel):
     drive_id: str = Field(default="", description="指定 Drive ID，空=自动选择")
     prune: bool = Field(
         default=False,
-        description="清理 Drive 上已不存在的 .strm 文件及状态行（不可逆，默认只上报不删）",
+        description="清理 Drive 上已不存在的 .strm 文件及状态行（默认开+演习：dry_run=true 时只记 would-delete 不真删）",
     )
     interval_minutes: int = Field(
         default=60,
@@ -71,6 +71,16 @@ def _read_config(db: Session) -> dict:
         "local_root": _gen.local_root(db),
         "drive_concurrency": _gen.drive_concurrency(db),
         "api_qps": _gen.api_qps(db),
+        # .strm 删除链路（块2/块4）：只读暴露，供管理后台"删除保护"分组展示；
+        # 写入口由前端开发后续在 PUT /strm-gen/config 扩展（不破坏现有契约）
+        "prune_dry_run": _gen.prune_dry_run(db),
+        "prune_max_ratio": _gen.prune_max_ratio(db),
+        "prune_max_absolute": _gen.prune_max_absolute(db),
+        "verify_new_ids": _gen.verify_new_ids(db),
+        "orphan_check_enabled": _gen.orphan_check_enabled(db),
+        "orphan_check_interval_days": _gen.orphan_check_interval_days(db),
+        "orphan_check_batch": _gen.orphan_check_batch(db),
+        "orphan_check_qps": _gen.orphan_check_qps(db),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
     }
 

@@ -777,6 +777,10 @@ def _auto_migrate():
             # 老库补列后为空串 = 以前的 []，行为与升级前一致。
             ("countries", "TEXT", "''"),
             ("languages", "TEXT", "''"),
+            # .strm 删除链路（块3）：播放时 Drive alt=media 返回 404 的 advisory 标记。
+            # 老库补列后为 NULL = 未标记，行为与升级前一致；文件恢复后由
+            # strm_gen 生成循环自动清除（见 _clear_gone_marks）。
+            ("source_invalid_at", "DATETIME", "NULL"),
         ]),
         # 媒体流逐流细节：客户端「媒体信息」页要显示帧率/动态范围/位深/采样率等，
         # 缺了详情页只剩编码与码率几行（对比其它 Emby 服务端就很空）。
@@ -999,6 +1003,11 @@ _LEGACY_INDEXES: tuple[tuple[str, str, str, Optional[str], str], ...] = (
     # person_tmdb_id 列由上面的列迁移先补上；列不存在时静默跳过（防御式）
     ("emby_people", "idx_person_item_tmdb", "item_id, person_tmdb_id", "person_tmdb_id",
      "  已迁移: emby_people.idx_person_item_tmdb"),
+    # .strm 删除链路（块2）：墓碑消费按 file_id IN 批量回查状态表，
+    # 8.5 万行无索引就是全表扫。models.py 的 StrmGenFile.file_id 已声明
+    # index=True（新库 create_all 自带），这里给升级上来的老库补上。
+    ("strm_gen_files", "idx_strm_gen_files_file_id", "file_id", None,
+     "  已迁移: strm_gen_files.idx_strm_gen_files_file_id（墓碑回查索引）"),
 )
 
 

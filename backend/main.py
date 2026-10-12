@@ -298,6 +298,9 @@ async def lifespan(app: FastAPI):
         from backend.emby_server import strm_gen
         if strm_gen.start_scheduler():
             logger.info(".strm 生成器定时调度已启动")
+        # 反向僵尸校验（.strm 删除链路块4）：独立 daemon 线程，每周有界轮查
+        if strm_gen.start_orphan_scheduler():
+            logger.info(".strm 反向僵尸校验调度已启动")
     except Exception as e:  # noqa: BLE001
         logger.warning(f".strm 生成器调度启动失败（可忽略）: {e}")
 

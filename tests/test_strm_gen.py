@@ -296,6 +296,15 @@ class TestRunGenerationMocked:
     def _patch_all(self, tmp_path, monkeypatch, videos, state=None, drives=None):
         monkeypatch.setattr(sg, "iter_drive_videos",
                             lambda drive_id, dir_path, strict=True: iter(list(videos)))
+        # 新并行列举直接调 DriveChangesLister.iter_videos（worker 线程内）：
+        # 让它走 mocked 的 sg.iter_drive_videos
+        import backend.emby_server.strm_source as ssrc
+
+        def fake_lister_iter(self, incremental=True):
+            return sg.iter_drive_videos(self.drive_id, self.dir_path)
+
+        monkeypatch.setattr(ssrc.DriveChangesLister, "iter_videos", fake_lister_iter)
+        monkeypatch.setattr(ssrc.DriveChangesLister, "save_checkpoint", lambda self: None)
         monkeypatch.setattr(sg, "_discover_drives",
                             lambda: drives if drives is not None else {"d1": ["sa1"]})
         monkeypatch.setattr(sg, "_container_strm_root", lambda db: str(tmp_path))
@@ -304,7 +313,8 @@ class TestRunGenerationMocked:
         monkeypatch.setattr(sg, "_save_state_rows",
                             lambda rows: saved.update({r[0]: r for r in rows}))
         deleted: list = []
-        monkeypatch.setattr(sg, "_delete_state_rows", lambda rows: deleted.extend(rows))
+        monkeypatch.setattr(sg, "_delete_state_rows",
+                            lambda rows, db=None: deleted.extend(rows))
         # _release_progress 里真实的 store.set_value 打桩掉
         import backend.integrations.store as _store
         monkeypatch.setattr(_store, "write_values", lambda *a, **k: 0)
@@ -375,8 +385,22 @@ class TestRunGenerationMocked:
         assert (tmp_path / "d1/a.strm").exists()
         assert (tmp_path / "d2/a.strm").exists()
 
+    def test_full_run_generates(self, tmp_path, monkeypatch):
+        """回归：全量模式必须真的生成（曾因生成循环缩进落在 else 分支里，
+        full=True 时空转一轮、一个文件都不生成）。"""
+        videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
+        self._patch_all(tmp_path, monkeypatch, videos)
+        try:
+            res = sg.run_generation(_FakeDb({}), full=True)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["ok"] is True
+        assert res["stats"]["generated"] == 1
+        assert (tmp_path / "剧集/A/a.strm").exists()
+
     def test_prune_removes_stale(self, tmp_path, monkeypatch):
-        """P2-3：prune 开启时删除 Drive 已不存在的条目；默认关闭。"""
+        """P2-3（新语义）：全量 + dry_run 关闭时，删除全量列举没见到的过期条目。
+        增量不再做全量 stale 对比（增量列举只有 delta，会误杀；删除信号走墓碑）。"""
         videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
         state = {
             "MoviePilot/剧集/A/a.mkv": ("fid1", 100, "剧集/A/a.strm"),
@@ -388,7 +412,9 @@ class TestRunGenerationMocked:
         (tmp_path / "剧集/OLD/old.strm").write_text("x")
         _saved, deleted = self._patch_all(tmp_path, monkeypatch, videos, state=state)
         try:
-            res = sg.run_generation(_FakeDb({"strm_gen_prune": "true"}), full=False)
+            res = sg.run_generation(
+                _FakeDb({"strm_gen_prune": "true",
+                         "strm_gen_prune_dry_run": "false"}), full=True)
         finally:
             sg._set_progress(running=False, phase="idle")
         assert res["ok"] is True
@@ -397,14 +423,34 @@ class TestRunGenerationMocked:
         assert (tmp_path / "剧集/A/a.strm").exists()
         assert deleted == ["MoviePilot/剧集/OLD/old.mkv"]
 
-    def test_prune_off_by_default(self, tmp_path, monkeypatch):
+    def test_prune_dry_run_by_default(self, tmp_path, monkeypatch):
+        """默认 dry_run=true：只记 would-delete，不真删。"""
         videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
         state = {"MoviePilot/剧集/OLD/old.mkv": ("fidOld", 100, "剧集/OLD/old.strm")}
         (tmp_path / "剧集/OLD").mkdir(parents=True)
         (tmp_path / "剧集/OLD/old.strm").write_text("x")
         _saved, deleted = self._patch_all(tmp_path, monkeypatch, videos, state=state)
         try:
-            res = sg.run_generation(_FakeDb({}), full=False)
+            res = sg.run_generation(_FakeDb({}), full=True)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["stats"]["pruned"] == 0
+        assert (tmp_path / "剧集/OLD/old.strm").exists()
+        assert deleted == []
+        wd = res["stats"].get("prune_would_delete")
+        assert wd and wd["count"] == 1
+
+    def test_prune_incremental_stale_not_compared(self, tmp_path, monkeypatch):
+        """增量不做全量 stale 对比：state 里有但 delta 里没有的条目不动。"""
+        videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
+        state = {"MoviePilot/剧集/OLD/old.mkv": ("fidOld", 100, "剧集/OLD/old.strm")}
+        (tmp_path / "剧集/OLD").mkdir(parents=True)
+        (tmp_path / "剧集/OLD/old.strm").write_text("x")
+        _saved, deleted = self._patch_all(tmp_path, monkeypatch, videos, state=state)
+        try:
+            res = sg.run_generation(
+                _FakeDb({"strm_gen_prune": "true",
+                         "strm_gen_prune_dry_run": "false"}), full=False)
         finally:
             sg._set_progress(running=False, phase="idle")
         assert res["stats"]["pruned"] == 0
