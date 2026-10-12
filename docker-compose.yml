@@ -115,8 +115,6 @@ services:
     restart: unless-stopped
     volumes:
     - aetrix_data:/data
-    # 备份持久化卷：与部署解耦，docker compose up -d --build 不会删除 named volume；重建容器备份不丢
-    - ${BACKUP_VOLUME:-aetrix_backups}:/var/backups/aetrix
     - ${MEDIA_ROOT:-./media}:/media:ro
     - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
     - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
@@ -178,6 +176,8 @@ services:
     restart: unless-stopped
     volumes:
     - aetrix_data:/data
+    # 备份持久化卷：与部署解耦，docker compose up -d --build 不会删除 named volume；重建容器备份不丢
+    - ${BACKUP_VOLUME:-aetrix_backups}:/var/backups/aetrix
     - ${MEDIA_ROOT:-./media}:/media:ro
     - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
     - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
