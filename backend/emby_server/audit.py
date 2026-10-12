@@ -23,6 +23,12 @@
 3. **记意图而不是记全文**：动作名由「方法 + 路径模板」映射而来（见 `ACTION_TABLE`），
    `details` 里只有方法、路径与路径参数。**绝不记请求体**：115 账号 Cookie、挂载凭据
    都在请求体里，抄进日志等于把密钥又存了一份。
+
+4. **端点可自助富化**：中间件只知道「谁在什么时候动了哪个路径」，不知道业务细节
+   （例如重置 scope、影响行数）。端点在成功后可以把细节挂到
+   `request.state.audit_extra`（dict，只能由服务端代码设置），中间件会原样并进
+   `details`（`method/path/admin_user_id/client_ip` 四个保留键不许覆盖）。
+   这是通用机制：任何端点都能用，不用改中间件，也不会产生两条重复日志。
 """
 
 from __future__ import annotations
@@ -55,6 +61,7 @@ ACTION_TABLE: dict[tuple[str, str], tuple[str, str]] = {
     ("DELETE", "/items/{}"): ("emby_delete_item", "media_item"),
     ("DELETE", "/sessions/{}"): ("emby_stop_session", "playback_session"),
     ("POST", "/transcodes/stop-all"): ("emby_stop_all_transcodes", "transcode"),
+    ("POST", "/scrape/probe/reset"): ("emby_probe_queue_reset", "probe"),
     ("POST", "/115/accounts"): ("emby_create_pan115", "pan115_account"),
     ("PUT", "/115/accounts/{}"): ("emby_update_pan115", "pan115_account"),
     ("DELETE", "/115/accounts/{}"): ("emby_delete_pan115", "pan115_account"),
@@ -66,6 +73,9 @@ ACTION_TABLE: dict[tuple[str, str], tuple[str, str]] = {
 
 # 已知端点里没写进上表的（或将来新增的）统一回落动作名
 FALLBACK_ACTION = "emby_admin_write"
+
+# 端点自助富化审计时不许覆盖的保留键（中间件的权威字段）
+_RESERVED_DETAIL_KEYS = frozenset({"method", "path", "admin_user_id", "client_ip"})
 
 _ITEM_ID_RE = re.compile(r"^(?:[0-9a-f]{16,}|[0-9a-f-]{20,})$", re.IGNORECASE)
 
@@ -230,5 +240,14 @@ class AdminWriteAuditMiddleware:
         except Exception as exc:  # noqa: BLE001 — 解析失败不影响响应
             logger.debug("写操作审计身份解析失败: %s", exc)
             return
+
+        # 端点自助富化：request.state.audit_extra（服务端代码设置，非客户端输入）
+        # 里的业务细节（例如 scope、影响行数）并进 details，保留键不许覆盖。
+        # 通用机制：任何端点都可以在成功后挂自己的细节，不用改中间件。
+        extra = (scope.get("state") or {}).get("audit_extra")
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                if k not in _RESERVED_DETAIL_KEYS:
+                    details[k] = v
 
         record_write(action, target_type, path, details)
