@@ -307,23 +307,69 @@ def _get_token() -> str | None:
 # Changes API
 # ---------------------------------------------------------------------------
 
+#: 可重试的 HTTP 状态码（Google 官方推荐：429/5xx 属瞬时错误，应指数退避重试）。
+#: 注意 403 不在此列——配额类 403 由 probe_worker 的专用逻辑处理（C-P1-1），
+#: 地址无效类 403 应快速失败而非重试。
+RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+#: 指数退避基础秒数
+API_RETRY_BASE_SEC = 1.0
+#: 单次退避上限秒数（防负优化：不能无限等）
+API_RETRY_MAX_SEC = 60.0
+#: 最大重试次数（不含首次请求）
+API_MAX_RETRIES = 5
+
+
+def _retry_sleep_sec(attempt: int) -> float:
+    """第 attempt 次重试前的等待秒数（从 0 开始计）。
+
+    Full Jitter 退避：uniform(0, min(cap, base * 2^attempt))。
+    反风控：抖动避免固定节拍被 Google 识别为机器行为。
+    """
+    cap = min(API_RETRY_MAX_SEC, API_RETRY_BASE_SEC * (2 ** attempt))
+    return _random.uniform(0, cap)
+
+
 def _api_get(url: str, token: str, params: dict) -> dict:
-    resp = httpx.get(
-        url,
-        headers={"Authorization": f"Bearer {token}"},
-        params=params,
-        timeout=60,
-    )
-    if resp.status_code == 401:
-        raise PermissionError("Drive token 无效或过期")
-    if resp.status_code == 404:
-        # drive_id 永久性无效（共享盘被删 / ID 写错 / SA 无权访问，
-        # Drive API 对这三种情况都返回 404），抛专用异常让调用方退避，
-        # 不要当成普通错误每 5 分钟重试。
-        drive_id = (params or {}).get("driveId", "")
-        raise DriveNotFoundError(drive_id)
-    resp.raise_for_status()
-    return resp.json()
+    last_exc: Exception | None = None
+    for attempt in range(API_MAX_RETRIES + 1):
+        resp = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=60,
+        )
+        if resp.status_code == 401:
+            raise PermissionError("Drive token 无效或过期")
+        if resp.status_code == 404:
+            # drive_id 永久性无效（共享盘被删 / ID 写错 / SA 无权访问，
+            # Drive API 对这三种情况都返回 404），抛专用异常让调用方退避，
+            # 不要当成普通错误每 5 分钟重试。
+            drive_id = (params or {}).get("driveId", "")
+            raise DriveNotFoundError(drive_id)
+        if resp.status_code in RETRYABLE_STATUS_CODES:
+            # 429/5xx：瞬时错误，指数退避重试（Google 官方推荐做法）。
+            # 401/404 保持原有快速失败逻辑不变。
+            last_exc = httpx.HTTPStatusError(
+                f"Drive API 瞬时错误 {resp.status_code}，准备重试",
+                request=resp.request,
+                response=resp,
+            )
+            if attempt < API_MAX_RETRIES:
+                sleep_s = _retry_sleep_sec(attempt)
+                logger.warning(
+                    "Drive API %s 瞬时错误（第 %d/%d 次），%.1f 秒后重试: %s",
+                    resp.status_code, attempt + 1, API_MAX_RETRIES + 1,
+                    sleep_s, url[:80],
+                )
+                time.sleep(sleep_s)
+                continue
+            # 重试耗尽，抛出最后一次的错误
+            raise last_exc
+        resp.raise_for_status()
+        return resp.json()
+    # 理论上到不了这里（循环内要么 return 要么 raise），防御性兜底
+    assert last_exc is not None
+    raise last_exc
 
 
 def _is_personal_drive_key(drive_id: str) -> bool:
