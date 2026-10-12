@@ -140,7 +140,7 @@ def _pg_backup_dir_readonly() -> Path | None:
 def _backup_dirs() -> list[Path]:
     """所有可能落备份文件的目录（P2-2，2026-10-12）。
 
-    SQLite 目录（``get_backup_dir``）+ PG 目录（``_get_pg_backup_dir``）。
+    SQLite 目录（``get_backup_dir``）+ PG 目录（``_pg_backup_dir_readonly``，只读版不 mkdir）。
     ``prune_old_backups`` / ``list_backups`` / ``sweep_stale_temp_files``
     三者统一走这里——之前 PG 分支的 ``*.dump.gz`` 三处全看不到，
     每天一个全量 dump 无限堆积（生产是 PG）。

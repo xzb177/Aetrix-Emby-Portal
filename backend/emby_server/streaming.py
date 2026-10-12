@@ -632,7 +632,7 @@ async def _follow_redirects(
             resp = None
             if not silent:
                 logger.warning("重定向目标解析失败 %s: %s", location, exc)
-                raise HTTPException(status_code=502, detail="源站不可达")
+                raise HTTPException(status_code=502, detail="源站不可达") from exc
             return (None, current, hops)
         await resp.aclose()
         resp = None
