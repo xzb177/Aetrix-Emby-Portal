@@ -690,3 +690,122 @@ def test_watcher_loop_survives_jitter_exception():
     assert waits[0] == 60, "启动等待应保持 60 秒"
     assert waits[1] == float(drive_changes.POLL_INTERVAL), \
         f"抖动异常后应退回固定间隔，实际 waits={waits}"
+
+
+# ---------------------------------------------------------------------------
+# _api_get 指数退避重试
+# ---------------------------------------------------------------------------
+
+def _mock_resp(status_code):
+    """构造一个最小化的 httpx Response mock。"""
+    resp = mock.Mock()
+    resp.status_code = status_code
+    resp.request = mock.Mock()
+    resp.json.return_value = {"ok": True}
+    if status_code >= 400:
+        resp.raise_for_status.side_effect = Exception(f"HTTP {status_code}")
+    else:
+        resp.raise_for_status.side_effect = None
+    return resp
+
+
+def test_api_get_success_no_retry():
+    """200 直接返回，不重试。"""
+    with mock.patch("httpx.get", return_value=_mock_resp(200)) as m, \
+         mock.patch.object(drive_changes.time, "sleep") as sleep:
+        result = drive_changes._api_get("https://example.com", "tok", {})
+        assert result == {"ok": True}
+        assert m.call_count == 1
+        sleep.assert_not_called()
+
+
+def test_api_get_401_no_retry():
+    """401 直接抛 PermissionError，不重试。"""
+    with mock.patch("httpx.get", return_value=_mock_resp(401)), \
+         mock.patch.object(drive_changes.time, "sleep") as sleep:
+        try:
+            drive_changes._api_get("https://example.com", "tok", {})
+            assert False, "应抛 PermissionError"
+        except PermissionError:
+            pass
+        sleep.assert_not_called()
+
+
+def test_api_get_404_no_retry():
+    """404 直接抛 DriveNotFoundError，不重试。"""
+    with mock.patch("httpx.get", return_value=_mock_resp(404)), \
+         mock.patch.object(drive_changes.time, "sleep") as sleep:
+        try:
+            drive_changes._api_get("https://example.com", "tok",
+                                   {"driveId": "D123"})
+            assert False, "应抛 DriveNotFoundError"
+        except drive_changes.DriveNotFoundError as e:
+            assert e.drive_id == "D123"
+        sleep.assert_not_called()
+
+
+def test_api_get_500_then_success():
+    """500 → 200：重试一次后成功（模拟用户遇到的场景）。"""
+    with mock.patch("httpx.get",
+                    side_effect=[_mock_resp(500), _mock_resp(200)]) as m, \
+         mock.patch.object(drive_changes.time, "sleep") as sleep:
+        result = drive_changes._api_get("https://example.com", "tok", {})
+        assert result == {"ok": True}
+        assert m.call_count == 2
+        assert sleep.call_count == 1
+        # 退避时间应在 [0, 上限] 内
+        wait = sleep.call_args[0][0]
+        assert 0 <= wait <= drive_changes.API_RETRY_MAX_SEC
+
+
+def test_api_get_500_exhausts_retries():
+    """500 一直失败：重试耗尽后抛错。"""
+    with mock.patch("httpx.get",
+                    return_value=_mock_resp(500)) as m, \
+         mock.patch.object(drive_changes.time, "sleep"):
+        try:
+            drive_changes._api_get("https://example.com", "tok", {})
+            assert False, "应抛 HTTPStatusError"
+        except Exception as e:
+            assert "500" in str(e) or "瞬时错误" in str(e)
+        # 1 首次 + 5 重试 = 6 次请求
+        assert m.call_count == drive_changes.API_MAX_RETRIES + 1
+
+
+def test_api_get_429_502_503_504_retryable():
+    """429/502/503/504 都走重试逻辑。"""
+    for code in (429, 502, 503, 504):
+        with mock.patch("httpx.get",
+                        side_effect=[_mock_resp(code),
+                                     _mock_resp(200)]) as m, \
+             mock.patch.object(drive_changes.time, "sleep"):
+            result = drive_changes._api_get("https://example.com", "tok", {})
+            assert result == {"ok": True}, f"状态码 {code} 应重试后成功"
+            assert m.call_count == 2
+
+
+def test_api_get_403_not_in_retry_list():
+    """403 不在重试名单（配额类 403 由 probe 专用逻辑处理，地址无效类应快败）。"""
+    assert 403 not in drive_changes.RETRYABLE_STATUS_CODES
+    # 403 走 raise_for_status 原有路径（mock 的 raise_for_status 抛异常）
+    with mock.patch("httpx.get", return_value=_mock_resp(403)), \
+         mock.patch.object(drive_changes.time, "sleep") as sleep:
+        try:
+            drive_changes._api_get("https://example.com", "tok", {})
+            assert False, "应抛异常"
+        except Exception:
+            pass
+        sleep.assert_not_called()
+
+
+def test_retry_sleep_sec_bounds():
+    """退避时间有界：[0, min(60, base*2^attempt)]。"""
+    for attempt in range(6):
+        for _ in range(20):
+            s = drive_changes._retry_sleep_sec(attempt)
+            cap = min(drive_changes.API_RETRY_MAX_SEC,
+                      drive_changes.API_RETRY_BASE_SEC * (2 ** attempt))
+            assert 0 <= s <= cap, f"attempt={attempt} 越界: {s} > {cap}"
+    # 抖动生效：多次调用结果不全相同
+    samples = {drive_changes._retry_sleep_sec(3) for _ in range(20)}
+    assert len(samples) > 1, "抖动未生效，退避时间完全固定"
