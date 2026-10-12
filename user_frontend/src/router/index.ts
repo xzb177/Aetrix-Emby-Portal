@@ -35,6 +35,12 @@ const router = createRouter({
             component: () => import('@/views/panel/ServerView.vue'),
             meta: { title: '服务器', requiresAuth: true },
           },
+          {
+            path: '/shop',
+            name: 'shop',
+            component: () => import('@/views/panel/ShopView.vue'),
+            meta: { title: '补给站', requiresAuth: true },
+          },
           // v4 游戏化第一批：营地设施（需要登录）
           {
             path: '/game/checkin',
@@ -209,7 +215,7 @@ router.beforeEach(async (to) => {
 
 // v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
-const V4_PATHS = new Set(['/', '/collector', '/server', '/game/checkin', '/game/calendar', '/game/wishlist'])
+const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game/checkin', '/game/calendar', '/game/wishlist'])
 function restoreUserTheme() {
   // 从 useTheme.ts 同 key 读用户偏好（默认 dark），恢复 data-theme
   let pref = 'dark'
