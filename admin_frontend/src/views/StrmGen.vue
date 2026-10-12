@@ -41,7 +41,8 @@ const missing = ref<{
   list: StrmGenIncomplete[]
 }>({ hasData: false, total: 0, complete: 0, incomplete: 0, list: [] })
 
-const triggering = ref(false)
+const triggeringIncremental = ref(false)
+const triggeringFull = ref(false)
 const saving = ref(false)
 
 // 配置表单（与 config 分开，避免未保存就污染展示）
@@ -153,6 +154,8 @@ async function onTrigger(full: boolean) {
       return
     }
   }
+  // 两个按钮各用独立的 loading，避免"点一个、两个一起转"的误导
+  const triggering = full ? triggeringFull : triggeringIncremental
   triggering.value = true
   try {
     const res = await triggerStrmGen(full)
@@ -214,7 +217,7 @@ onUnmounted(() => {
         <el-button
           type="primary"
           :icon="Play"
-          :loading="triggering"
+          :loading="triggeringIncremental"
           :disabled="!!progress?.running"
           @click="onTrigger(false)"
         >
@@ -222,7 +225,7 @@ onUnmounted(() => {
         </el-button>
         <el-button
           :icon="RotateCcw"
-          :loading="triggering"
+          :loading="triggeringFull"
           :disabled="!!progress?.running"
           @click="onTrigger(true)"
         >
