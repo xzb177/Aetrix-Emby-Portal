@@ -165,3 +165,41 @@ def test_tick_disabled_skips(db, fake_db_file, monkeypatch):
                         lambda reason="": called.append(1) or {"name": "x"})
     db_backup._tick()
     assert called == []
+
+
+def test_backup_dirs_pg_mode_includes_pg_dir(tmp_path, monkeypatch, fake_db_file):
+    # 目的：PG 模式下 _backup_dirs() 必须包含 PG 备份目录（备份持久化卷的挂载点）。
+    pg_dir = tmp_path / "pg_backups"
+    pg_dir.mkdir(parents=True, exist_ok=True)
+
+    sqlite_dir = db_backup.get_backup_dir()
+    sqlite_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("PG_BACKUP_DIR", str(pg_dir))
+    monkeypatch.setattr(db_backup, "_is_postgres", lambda: True)
+
+    dirs = {p.resolve() for p in db_backup._backup_dirs()}
+    assert pg_dir.resolve() in dirs
+    assert sqlite_dir.resolve() in dirs
+
+
+def test_prune_old_backups_removes_expired_pg_dumps(tmp_path, monkeypatch):
+    # 目的：prune_old_backups 能删掉过期的 .dump.gz（PG 分支）。
+    pg_dir = tmp_path / "pg_backups"
+    pg_dir.mkdir(parents=True, exist_ok=True)
+
+    old = pg_dir / "aetrix-20200101-000000.dump.gz"
+    new = pg_dir / "aetrix-20990101-000000.dump.gz"
+    old.write_bytes(b"x")
+    new.write_bytes(b"y")
+
+    old_time = time.time() - 10 * 86400
+    os.utime(old, (old_time, old_time))
+
+    monkeypatch.setenv("PG_BACKUP_DIR", str(pg_dir))
+    monkeypatch.setattr(db_backup, "_is_postgres", lambda: True)
+
+    removed = db_backup.prune_old_backups(keep_days=7)
+    assert removed == 1
+    assert not old.exists()
+    assert new.exists()

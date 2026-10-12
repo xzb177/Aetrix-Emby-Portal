@@ -53,6 +53,8 @@ services:
     restart: unless-stopped
     volumes:
     - aetrix_data:/data
+    # 备份持久化卷：与部署解耦，docker compose up -d --build 不会删除 named volume；重建容器备份不丢
+    - ${BACKUP_VOLUME:-aetrix_backups}:/var/backups/aetrix
     - ${MEDIA_ROOT:-./media}:/media:ro
     - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
     - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
@@ -113,6 +115,8 @@ services:
     restart: unless-stopped
     volumes:
     - aetrix_data:/data
+    # 备份持久化卷：与部署解耦，docker compose up -d --build 不会删除 named volume；重建容器备份不丢
+    - ${BACKUP_VOLUME:-aetrix_backups}:/var/backups/aetrix
     - ${MEDIA_ROOT:-./media}:/media:ro
     - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
     - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
@@ -218,6 +222,9 @@ services:
     volumes:
     - redis_data:/data
 volumes:
+  # aetrix_backups：数据库备份持久化卷。永远不要 docker compose down -v（会删掉所有 named volume 含备份）
+  # 如果改了 PG_BACKUP_DIR 环境变量，挂载目标路径要同步改（默认 /var/backups/aetrix 不用动）
   aetrix_data: null
   postgres_data: null
   redis_data: null
+  aetrix_backups: null
