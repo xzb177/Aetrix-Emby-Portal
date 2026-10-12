@@ -49,23 +49,39 @@ def db():
 
 
 @pytest.fixture(autouse=True)
-def _clear_night_cfg_cache():
-    """每个测试前清掉夜间配置的 60 秒 TTL 缓存 + 环境变量，避免测试间污染"""
-    enrich_worker._night_cfg_cache["at"] = 0.0
-    enrich_worker._night_cfg_cache["cfg"] = None
-    for k in (enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
-              enrich_worker.ENRICH_NIGHT_START_ENV,
-              enrich_worker.ENRICH_NIGHT_END_ENV,
-              enrich_worker.ENRICH_NIGHT_TZ_ENV):
-        os.environ.pop(k, None)
+def _clear_night_cfg_cache(db):
+    """每个测试前后清掉夜间配置：60 秒 TTL 缓存 + 环境变量 + 写进库的配置键。
+
+    谁写谁清：本文件的测试会把 enrich_episode_night_only 等键写进 SystemConfig；
+    同一 pytest 进程里 test_enrich_worker.py 会复用同一个 SessionLocal 指向的库，
+    不删干净会导致它的测试在窗口外时间被误过滤（测试污染）。
+    """
+    from backend.models import SystemConfig
+
+    _NIGHT_DB_KEYS = (
+        enrich_worker.CFG_EPISODE_NIGHT_ONLY,
+        enrich_worker.CFG_NIGHT_START,
+        enrich_worker.CFG_NIGHT_END,
+        enrich_worker.CFG_NIGHT_TZ,
+    )
+
+    def _clean():
+        enrich_worker._night_cfg_cache["at"] = 0.0
+        enrich_worker._night_cfg_cache["cfg"] = None
+        for k in (enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
+                  enrich_worker.ENRICH_NIGHT_START_ENV,
+                  enrich_worker.ENRICH_NIGHT_END_ENV,
+                  enrich_worker.ENRICH_NIGHT_TZ_ENV):
+            os.environ.pop(k, None)
+        # 删掉本文件测试写进库的夜间配置键，避免污染其它测试模块
+        db.query(SystemConfig).filter(
+            SystemConfig.key.in_(_NIGHT_DB_KEYS)).delete(
+            synchronize_session=False)
+        db.commit()
+
+    _clean()
     yield
-    enrich_worker._night_cfg_cache["at"] = 0.0
-    enrich_worker._night_cfg_cache["cfg"] = None
-    for k in (enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
-              enrich_worker.ENRICH_NIGHT_START_ENV,
-              enrich_worker.ENRICH_NIGHT_END_ENV,
-              enrich_worker.ENRICH_NIGHT_TZ_ENV):
-        os.environ.pop(k, None)
+    _clean()
 
 
 # ---------- _parse_tz ----------
