@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from contextlib import asynccontextmanager
 import logging
+import time
 from datetime import datetime
 from prometheus_client import make_asgi_app
 
@@ -27,6 +28,8 @@ from backend import models  # 导入所有模型
 from backend.download_guard import DownloadGuardMiddleware
 from backend.access_guard import AccessGuardMiddleware
 from backend.emby_server.audit import AdminWriteAuditMiddleware
+# P3-3（2026-10-12）：顶层导入——observability 中间件每请求都跑，import 不许留在函数体内
+from backend.emby_server import observability as _observability
 from backend.websocket import websocket_router, notification_router, manager
 from backend.api import user_router, admin_router
 from backend.api.emby_servers import router as emby_servers_router
@@ -431,11 +434,10 @@ async def rate_limit_middleware(request, call_next):
 # 开关默认关（OBSERVABILITY_ENABLED=1 才采集）；记录失败永不影响主链路。
 @app.middleware("http")
 async def observability_middleware(request: Request, call_next):
-    import time as _time
-    from backend.emby_server import observability as _obs
-    if not _obs.enabled():
+    # P3-3：import 已移到模块顶层，这里不再逐请求 import
+    if not _observability.enabled():
         return await call_next(request)
-    start = _time.monotonic()
+    start = time.monotonic()
     status = 500
     try:
         response = await call_next(request)
@@ -443,8 +445,8 @@ async def observability_middleware(request: Request, call_next):
         return response
     finally:
         try:
-            elapsed_ms = (_time.monotonic() - start) * 1000
-            _obs.record_request(request.url.path, request.method, status, elapsed_ms)
+            elapsed_ms = (time.monotonic() - start) * 1000
+            _observability.record_request(request.url.path, request.method, status, elapsed_ms)
         except Exception:  # noqa: BLE001
             pass
 

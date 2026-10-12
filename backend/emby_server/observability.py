@@ -12,13 +12,16 @@
 1. **只读探针**：所有探针只读 DB/内存状态，**绝不调用 Drive API**
    （用户底线：不触发 Google 风控；探针高频打 API = 自己制造限流）。
 2. **不抢主链路**：探针走聚合 COUNT，不做全表扫描；指标是进程内环形缓冲，
-   记录一次 = 一次 deque.append，无锁或细粒度锁。
+   记录一次 = 一次 deque.append + 计数器更新，全程持有**单个全局锁**
+   （P3-4，2026-10-12：临界区仅微秒级，默认关闭时零开销；此前文档误写
+   "无锁或细粒度锁"，以实现为准）。
 3. **开关默认关**：``OBSERVABILITY_ENABLED=1`` 才采集详细指标与探针；
    关闭时聚合接口返回 ``{"enabled": false}``，中间件不记录。
 4. **阈值可配置**：所有红黄灯阈值走环境变量，不写死业务数值（铁律：
    只做能力，不做死业务逻辑）。
-5. **本模块不导入任何项目内模块**（只用标准库 + sqlalchemy 传参），
-   避免循环依赖；调用方把 db 传进来（参考 scan_progress.py 的做法）。
+5. **模块顶层不导入项目内模块**（只用标准库；P3-6，2026-10-12：各探针在函数内
+   按需导入 backend.* ——刻意为之，避免循环依赖；此前"不导入任何项目内模块"
+   表述不准确），调用方把 db 传进来（参考 scan_progress.py 的做法）。
 
 ## 子系统清单
 
@@ -31,7 +34,7 @@
 | enrich     | 积压/速率/失败率                      | DB 聚合 + scan_progress     |
 | scan       | 各库扫描状态                          | library_scan_summary        |
 | strm       | 生成器滞后（上次运行距今）            | store.get_value（DB 配置）  |
-| sa_quota   | SA 数量/熔断（不打 API）              | drive_auth + breaker 状态   |
+| sa_quota   | SA 数量（不打 API）                   | drive_auth.sa_count（文件清单缓存）|
 | workers    | 后台线程存活                          | worker_registry.snapshot    |
 | api        | P50/P99/错误率（进程内）              | 本模块环形缓冲              |
 """
@@ -299,7 +302,13 @@ def _probe_queue(db) -> dict:
 
 
 def _probe_enrich(db) -> dict:
-    """enrich 积压（DB 聚合，只读）。"""
+    """enrich 积压（DB 聚合，只读）。
+
+    P3-5（2026-10-12）：这里与 ``health_report.collect`` 跑完全相同的 4 次
+    enrich_status COUNT（走 ``idx_item_enrich`` 索引，单次开销小）。重复是刻意的：
+    本模块顶层不导入项目内模块（设计原则#5），不与 health_report 共享中间结果，
+    避免循环依赖；开关默认关，/api/health 额外 4 次索引 COUNT 可接受。
+    """
     try:
         from backend.emby_server import models as em
         from sqlalchemy import func
@@ -382,7 +391,8 @@ def _probe_strm(db) -> dict:
 
 
 def _probe_sa_quota() -> dict:
-    """SA 配额水位：只读内存状态（SA 数量），绝不调用 Drive API 查配额。
+    """SA 配额水位：读 SA 文件清单缓存（``_discover_sa_files`` 的 ``_sa_files``
+    全局缓存），绝不调用 Drive API 查配额。
 
     为什么不去查真实配额：Drive API 的配额查询本身消耗配额，探针高频调用
     = 自己制造限流，违反用户「不触发 Google 风控」底线。
