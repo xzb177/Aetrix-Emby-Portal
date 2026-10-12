@@ -117,7 +117,11 @@ def test_allowlist_is_an_explicit_carve_out_everywhere(monkeypatch):
 # ==================== 代理追重定向的细节 ====================
 
 def test_next_redirect_resolves_relative_location():
-    assert streaming._next_redirect(PUBLIC, "/b.mkv") == "https://93.184.216.34/b.mkv"
+    # A-P2-2 起 _next_redirect 返回 (目标URL, dns_pinning) 二元组
+    target, pinning = streaming._next_redirect(PUBLIC, "/b.mkv")
+    assert target == "https://93.184.216.34/b.mkv"
+    # IP 字面量主机：pin 住自己（建连不再二次解析）
+    assert pinning == {"93.184.216.34": ["93.184.216.34"]}
 
 
 def test_next_redirect_rejects_internal_target():

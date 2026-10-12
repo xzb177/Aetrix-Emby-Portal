@@ -54,6 +54,20 @@ def _private(host: str) -> bool:
     return any(getattr(addr, flag) for flag in _PRIVATE_FLAGS)
 
 
+def _resolve_host_ips(host: str) -> list[str] | None:
+    """解析主机名 → IP 字符串列表。
+
+    解析失败返回 None（不是空列表）：名字解析不了不代表它指向内网，真正的请求
+    会以「源站不可达」如实失败。曾经这里 fail-closed，结果 DNS 抖动 / 离线 /
+    临时故障时公开 CDN 域名被当成内网地址拒掉（生产事故）——绝不重演。
+    """
+    try:
+        records = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return None
+    return [record[4][0] for record in records]
+
+
 def _resolves_private(host: str) -> bool:
     """域名解析后落到内网地址才算内部地址
 
@@ -62,15 +76,23 @@ def _resolves_private(host: str) -> bool:
     结果「DNS 里没有这个名字」被当成「内网地址」拒掉（离线 / 内网 DNS / 临时故障
     都会命中，连公开 CDN 域名都播不了）。
     """
-    try:
-        records = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except OSError:
+    ips = _resolve_host_ips(host)
+    if ips is None:
         return False
-    return any(_private(record[4][0]) for record in records)
+    return any(_private(ip) for ip in ips)
 
 
-def _validate_url(raw_url: str, *, reject_private: bool) -> str:
-    """统一的 URL 校验：协议 / 内嵌凭据始终检查，内网地址按需检查"""
+def _validate_url(raw_url: str, *, reject_private: bool) -> tuple[str, dict[str, list[str]]]:
+    """统一的 URL 校验：协议 / 内嵌凭据始终检查，内网地址按需检查
+
+    返回 ``(规范化 URL, dns_pinning)``。dns_pinning 形如 ``{host: [ip, ...]}``，
+    是校验时刻的 DNS 快照——调用方把它喂给 pin 版 transport（``dns_pinning.py``），
+    建连时直接连 pin 住的 IP，不再二次解析，从而堵住 DNS rebinding TOCTOU
+    （校验时返回公网 IP、建连时返回内网 IP 的绕过）。
+
+    DNS 解析失败时 pinning 为空 dict：保持 fail-open（见 ``_resolve_host_ips``
+    的事故说明），不重演误拦。
+    """
     from .mounts import MountError
 
     value = (raw_url or "").strip()
@@ -79,11 +101,19 @@ def _validate_url(raw_url: str, *, reject_private: bool) -> str:
         raise MountError("播放地址必须是 http 或 https URL")
     if parsed.username or parsed.password:
         raise MountError("播放地址禁止携带内嵌凭据")
+    pinning: dict[str, list[str]] = {}
     if reject_private:
         host = parsed.hostname.lower().rstrip(".")
-        if host not in _allowed_hosts() and (_private(host) or _resolves_private(host)):
-            raise MountError("播放地址指向受保护的内部地址")
-    return value
+        if host not in _allowed_hosts():
+            if _private(host):
+                raise MountError("播放地址指向受保护的内部地址")
+            ips = _resolve_host_ips(host)
+            if ips is not None:
+                if any(_private(ip) for ip in ips):
+                    raise MountError("播放地址指向受保护的内部地址")
+                pinning[host] = ips
+            # ips is None → 解析失败：fail-open，不 pin（事故教训）
+    return value, pinning
 
 
 def validate_remote_url(raw_url: str, *, allow_private: Optional[bool] = None) -> str:
@@ -93,12 +123,24 @@ def validate_remote_url(raw_url: str, *, allow_private: Optional[bool] = None) -
     """
     if allow_private is None:
         allow_private = not block_private_urls()
-    return _validate_url(raw_url, reject_private=not allow_private)
+    url, _ = _validate_url(raw_url, reject_private=not allow_private)
+    return url
 
 
 def reject_private_url(raw_url: str) -> str:
     """校验**服务器自己要追过去取**的地址（重定向目标）：一律不许指向内网 / 回环"""
-    return _validate_url(raw_url, reject_private=True)
+    url, _ = _validate_url(raw_url, reject_private=True)
+    return url
+
+
+def validate_url_pinned(raw_url: str, *, reject_private: bool) -> tuple[str, dict[str, list[str]]]:
+    """校验 URL 并返回 DNS pinning（给 pin 版 transport 用，堵 DNS rebinding TOCTOU）。
+
+    返回 ``(规范化 URL, {host: [ip, ...]})``。DNS 解析失败时 pinning 为空 dict
+    （fail-open，见 ``_resolve_host_ips`` 的事故说明），调用方照常放行、
+    建连走正常 DNS。
+    """
+    return _validate_url(raw_url, reject_private=reject_private)
 
 
 def safe_local_path(root: str, relative: str) -> str:

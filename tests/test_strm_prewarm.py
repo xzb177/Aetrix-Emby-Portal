@@ -343,7 +343,7 @@ def test_resolve_final_url_follows_redirect_and_caches():
             with patch("backend.emby_server.drive_auth.drive_api_media_url", return_value=api_url):
                 # _next_redirect 的内网校验已有专门测试，这里只测跳转跟随逻辑
                 with patch("backend.emby_server.streaming._next_redirect",
-                           side_effect=lambda base, loc: urljoin(base, loc)):
+                           side_effect=lambda base, loc: (urljoin(base, loc), {})):
                     return await st.resolve_drive_final_url(orig_url, {"Authorization": "Bearer t"})
 
     result = asyncio.run(run())

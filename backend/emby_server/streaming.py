@@ -164,11 +164,19 @@ def _redirect_headers(forward: dict, from_url: str, to_url: str) -> dict:
     return {k: v for k, v in forward.items() if k.lower() not in _CREDENTIAL_HEADERS}
 
 
-def _next_redirect(url: str, location: str) -> str:
-    """解析重定向目标并做安全校验（内网 / 回环 / 非法协议一律拒绝）"""
-    from backend.emby_server.playback_security import reject_private_url
+def _next_redirect(url: str, location: str) -> tuple[str, dict[str, list[str]]]:
+    """解析重定向目标并做安全校验（内网 / 回环 / 非法协议一律拒绝）。
 
-    return reject_private_url(urljoin(url, location or ""))
+    返回 ``(目标 URL, dns_pinning)``：pinning 是校验时刻的 DNS 快照，调用方把它
+    并入 pin 版 transport（见 ``dns_pinning.py``），建连时直接连 pin 住的 IP，
+    不再二次解析——堵住 DNS rebinding TOCTOU（A-P2-2）。
+
+    DNS 解析失败时 pinning 为空 dict：保持 fail-open（见 ``playback_security``
+    的事故说明），不重演「DNS 抖动误拦公开 CDN」的生产事故。
+    """
+    from backend.emby_server.playback_security import validate_url_pinned
+
+    return validate_url_pinned(urljoin(url, location or ""), reject_private=True)
 
 
 def _range_header(start: int, end: int, total: int) -> dict:
@@ -333,7 +341,17 @@ def serve_remote(
     # 并在跨主机时剥掉凭据头——否则一个公开直链就能把服务器（带着你的 Cookie / Basic）
     # 引到内网运维接口上。
     # S2：同一套超时（读超时 = 块间空闲上限），源站卡住时不再永久占着线程
-    client = httpx.Client(timeout=relay_timeout(), follow_redirects=False)
+    #
+    # A-P2-2 DNS rebinding 防护：校验时解析一次、建连时 pin 住 IP（见 dns_pinning.py）。
+    # pinning dict 与 transport 共享引用，逐跳 update 后实时生效，无需重建 client。
+    from backend.emby_server.dns_pinning import PinnedHTTPTransport
+
+    _dns_pinning: dict[str, list[str]] = {}
+    client = httpx.Client(
+        transport=PinnedHTTPTransport(_dns_pinning.get),
+        timeout=relay_timeout(),
+        follow_redirects=False,
+    )
     # resp 预置为 None：兜底 except 分支需要关闭已打开的流式响应，
     # 若第一跳 send 就抛异常则 resp 尚未绑定；与异步版（#584）保持同口径。
     resp = None
@@ -362,12 +380,14 @@ def serve_remote(
             if not location:
                 break  # 3xx 却没给 Location：当作最终响应原样透传
             try:
-                target = _next_redirect(current, location)
+                target, _hop_pinning = _next_redirect(current, location)
             except MountError as exc:
                 resp.close()
                 client.close()
                 logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
                 raise HTTPException(status_code=403, detail=str(exc)) from exc
+            # A-P2-2：把校验时刻的 DNS 快照并入 pin 表，下一跳建连直接走 pin 住的 IP
+            _dns_pinning.update(_hop_pinning)
             resp.close()  # 确认要跟着走，这一跳的响应就不要再占着连接了
             forward = _redirect_headers(forward, current, target)
             current = target
@@ -465,6 +485,14 @@ def serve_remote(
 # ``iter_remote`` 的 finally 里关掉。池里的连接会在响应体读完/关掉后归还。
 _shared_client: Optional["httpx.AsyncClient"] = None
 _client_lock = threading.Lock()
+
+# A-P2-2 DNS pinning 共享缓存（async 路径）：host -> [ip, ...]，TTL 300 秒。
+# 只有经 ``_next_redirect`` 校验通过的重定向目标才会写入；每次建连时查。
+# 总开关 EMBY_DNS_PINNING 在 transport 层实时检查，关掉即回退到正常 DNS。
+from backend.emby_server.dns_pinning import PinningCache as _PinningCache
+from backend.emby_server.dns_pinning import dns_pinning_enabled
+
+_PINNING_CACHE = _PinningCache(ttl=300.0)
 
 def _env_number(name: str, default: float, lo: float, hi: float, cast=float):
     """读数值型环境变量并夹到 [lo, hi]；非法值回落默认值（不让一个手误拖垮启动）"""
@@ -730,7 +758,7 @@ async def _follow_redirects(
         if resp.status_code not in _REDIRECT_CODES or not location:
             break  # 非跳转码 / 3xx 却没给 Location：当作终态
         try:
-            target = _next_redirect(current, location)
+            target, _hop_pinning = _next_redirect(current, location)
         except MountError as exc:
             await resp.aclose()
             resp = None
@@ -748,6 +776,12 @@ async def _follow_redirects(
             return (None, current, hops)
         await resp.aclose()
         resp = None
+        # A-P2-2：把校验时刻的 DNS 快照存入共享 pin 缓存，下一跳建连直接走
+        # pin 住的 IP，不再二次解析（堵 DNS rebinding TOCTOU）。
+        # 开关关闭时不写：避免开关重新打开瞬间用上陈旧 pin。
+        if dns_pinning_enabled():
+            for _pin_host, _pin_ips in _hop_pinning.items():
+                _PINNING_CACHE.store(_pin_host, _pin_ips)
         forward = _redirect_headers(forward, current, target)
         current = target
         hops += 1
@@ -783,13 +817,20 @@ def get_relay_client() -> "httpx.AsyncClient":
     if _shared_client is None:
         with _client_lock:
             if _shared_client is None:
+                from backend.emby_server.dns_pinning import PinnedAsyncHTTPTransport
+
                 limits = httpx.Limits(
                     max_connections=_RELAY_MAX_CONNECTIONS,
                     max_keepalive_connections=_RELAY_MAX_KEEPALIVE,
                 )
                 _shared_client = httpx.AsyncClient(
+                    # A-P2-2：DNS pinning——校验时刻解析一次、建连走 pin 住的 IP，
+                    # 堵住 DNS rebinding TOCTOU；总开关 EMBY_DNS_PINNING 实时生效。
+                    # 注意：传了自定义 transport 后 client 的 limits 参数会被忽略，
+                    # 所以 limits 直接给 transport。
+                    transport=PinnedAsyncHTTPTransport(
+                        _PINNING_CACHE.lookup, limits=limits),
                     timeout=relay_timeout(),
-                    limits=limits,
                     # 重定向仍由本模块自己追（要逐跳校验、跨主机剥凭据）
                     follow_redirects=False,
                 )
