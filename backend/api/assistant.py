@@ -14,6 +14,7 @@ FastAPI 会把同步端点丢进线程池，播放与协议面不受影响。
 from __future__ import annotations
 
 import logging
+import threading
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -30,6 +31,14 @@ logger = logging.getLogger(__name__)
 assistant_router = APIRouter(prefix="/api/user/ai", tags=["用户端-AI 助手"])
 
 MAX_QUESTION_CHARS = 1000
+# F-P1-15：history 上限（条数 + 单条长度），防解析内存被刷爆
+MAX_HISTORY_ITEMS = 20
+MAX_HISTORY_ITEM_CHARS = 4000
+# F-P1-16：模型调用并发上限。ai_capability.ask 是阻塞调用（默认 60 秒超时），
+# sync 端点跑在 FastAPI 共享线程池；无上限时多用户并发提问可占满线程池，
+# 把 /status 等同步端点饿死。用信号量限并发，超限直接 429（不排队，避免雪崩）。
+AI_ASK_MAX_CONCURRENT = 4
+_ai_ask_semaphore = threading.Semaphore(AI_ASK_MAX_CONCURRENT)
 
 
 class AskRequest(BaseModel):
@@ -64,6 +73,26 @@ def assistant_ask(
     if not question:
         raise HTTPException(status_code=400, detail="问题不能为空")
 
+    # F-P1-15：history 限条数 + 限单条长度（请求体在额度检查前就被完整解析，
+    # 不限制则普通用户可借此消耗解析内存）
+    history = req.history or []
+    if len(history) > MAX_HISTORY_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"历史记录最多 {MAX_HISTORY_ITEMS} 条",
+        )
+    for item in history:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="历史记录格式错误")
+        blob = (item.get("content") or "")
+        if not isinstance(blob, str):
+            blob = str(blob)
+        if len(blob) > MAX_HISTORY_ITEM_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"单条历史记录不能超过 {MAX_HISTORY_ITEM_CHARS} 字符",
+            )
+
     # 先占额度再调用：并发时靠条件 UPDATE 判定，不会两个请求都放行
     limit = ai_capability.daily_limit(db)
     allowed, used = ai_capability.safe_consume(db, current_user.id, limit)
@@ -73,7 +102,16 @@ def assistant_ask(
             detail=f"今日提问次数已用完（上限 {limit} 次），明天再来吧",
         )
 
-    result = ai_capability.ask(db, question, req.history)
+    # F-P1-16：阻塞模型调用限并发，超限直接 429（不排队）
+    if not _ai_ask_semaphore.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="AI 助手正忙（并发已满），请稍后再试",
+        )
+    try:
+        result = ai_capability.ask(db, question, history)
+    finally:
+        _ai_ask_semaphore.release()
     if not result.get("ok"):
         # 上游的错误信息（含模型名与 HTTP 状态）对排错很有用，原样转给用户端
         raise HTTPException(status_code=502, detail=result.get("message") or "模型调用失败")
