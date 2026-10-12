@@ -134,9 +134,12 @@ def test_redirect_cache_write_logs(caplog):
 
 
 def test_redirect_cache_logs_never_contain_secret_values(caplog):
-    """脱敏铁律：日志里只出现参数名，绝不出现签名值/密钥。
+    """脱敏铁律（P0-2a 更新，2026-10-12）：日志只含 reason + file_id
+    （hostname_mismatch 额外带无签名的 host 供定位），不再打 URL 参数；
+    签名值/密钥绝不出现。
 
-    before：无日志可言；after：每条日志的参数值都被剥掉，只剩参数名。
+    before：无日志可言；P0-2a 前：参数值被剥掉、只剩参数名；
+    P0-2a 起：连 URL 参数都不打，只留 reason + file_id（定位靠 reason 区分）。
     """
     import backend.emby_server.streaming as st
     secret = "SECRET_SIG_VALUE_abc123xyz"  # secret-scan: allow —— 脱敏断言用的假签名值，非真实凭据
@@ -147,7 +150,7 @@ def test_redirect_cache_logs_never_contain_secret_values(caplog):
                     % secret)
         good = ("https://drive.usercontent.google.com/download?id=X&signature=%s"
                 % secret)
-        with caplog.at_level(logging.DEBUG, logger=STREAM_LOG):
+        with caplog.at_level(logging.INFO, logger=STREAM_LOG):
             st._maybe_cache_drive_redirect(fid, poisoned, 2, False, 200)
             st._redirect_cache_store_drive_url(fid, good)
         texts = [r.getMessage() for r in caplog.records if r.name == STREAM_LOG]
@@ -155,8 +158,12 @@ def test_redirect_cache_logs_never_contain_secret_values(caplog):
         for t in texts:
             assert secret not in t, f"日志泄漏签名值: {t}"
             assert "abc123xyz" not in t, f"日志泄漏签名值片段: {t}"
+            assert "url=" not in t, f"不应再打 URL 参数: {t}"
         joined = " ".join(texts)
-        assert "signature" in joined, "参数名应保留（定位证据）"
+        assert "reason=hostname_mismatch" in joined, joined
+        assert "host=other.example.com" in joined, "无签名 host 应保留供定位"
+        assert "redirect_cache_write" in joined, joined
+        assert fid in joined, joined
     finally:
         st._redirect_cache_invalidate(fid)
 
