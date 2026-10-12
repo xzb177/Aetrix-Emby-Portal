@@ -19,7 +19,7 @@ void initBranding()
 
 const router = useRouter()
 
-const form = reactive({ username: '', password: '', confirm: '' })
+const form = reactive({ username: '', password: '', confirm: '', bootstrap_token: '' })
 const checking = ref(true)
 const submitting = ref(false)
 const error = ref('')
@@ -68,7 +68,14 @@ async function submit() {
   submitting.value = true
   error.value = ''
   try {
-    await createFirstAdmin({ username: form.username.trim(), password: form.password })
+    await createFirstAdmin({
+      username: form.username.trim(),
+      password: form.password,
+      // P0-4：部署时若配置了 SETUP_BOOTSTRAP_TOKEN，这里必须填一致的 token
+      ...(form.bootstrap_token.trim()
+        ? { bootstrap_token: form.bootstrap_token.trim() }
+        : {}),
+    })
     done.value = true
     setTimeout(() => router.replace({ path: '/login', query: { initialized: '1' } }), 1200)
   } catch (e) {
@@ -140,6 +147,13 @@ async function submit() {
             <input v-model="form.confirm" type="password" name="confirm" autocomplete="new-password" placeholder="再输一次密码" />
           </span>
           <span v-if="confirmHint" class="field-hint warn">{{ confirmHint }}</span>
+        </label>
+        <label class="field">
+          <span class="field-label">部署者凭据 <span class="field-optional">（部署时若配置了 bootstrap token 则必填）</span></span>
+          <span class="field-box">
+            <ShieldCheck :size="16" class="field-icon" />
+            <input v-model="form.bootstrap_token" type="password" name="bootstrap_token" autocomplete="off" placeholder="部署时注入的一次性 token" />
+          </span>
         </label>
 
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>

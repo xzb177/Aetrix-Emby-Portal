@@ -72,8 +72,9 @@ export const login = (data: { username: string; password: string; captcha_token?
 /** 向导状态：初始化是否已完成（免鉴权，前端进 /admin/ 前先问一次） */
 export const setupStatus = () => get<{ setup_completed: boolean }>('/setup/status')
 
-/** 建第一个管理员；成功后向导入口永久关闭（再调直接 403） */
-export const createFirstAdmin = (data: { username: string; password: string }) =>
+/** 建第一个管理员；成功后向导入口永久关闭（再调直接 403）。
+ * P0-4：部署时若配置了 SETUP_BOOTSTRAP_TOKEN，必须携带一致的 bootstrap_token。 */
+export const createFirstAdmin = (data: { username: string; password: string; bootstrap_token?: string }) =>
   post<{ ok: boolean; username: string; setup_completed: boolean }>('/setup', data)
 
 export const fetchMe = () => get<AdminInfo>('/auth/me')
