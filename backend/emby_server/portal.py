@@ -2533,6 +2533,10 @@ def grant_welfare(db, user, channel, days, granted_by=None):
     """
     uid = user.id
     days = days or 0
+    # P2 修复（完美审查 B-P2-1）：纵深防御——负数是真值会原样通过，
+    # days > 0 为假时 new_expires=None → 永不过期。直接拒绝。
+    if days < 0:
+        raise ValueError("days 不能为负数")
 
     new_expires = None
     now = None

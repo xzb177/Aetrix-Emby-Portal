@@ -62,7 +62,8 @@ def welfare_users(
 
 class GrantRequest(BaseModel):
     user_id: int
-    days: int = Field(30, description="天数，0=永不过期")
+    # P2 修复（完美审查 B-P2-1）：负天数会穿透成"永不过期"，必须 ge=0。
+    days: int = Field(30, ge=0, description="天数，0=永不过期")
     channel: str = "admin"
 
 
@@ -107,7 +108,8 @@ def welfare_revoke(
 class BulkExtendRequest(BaseModel):
     min_expired_days: int = Field(0, description="过期天数下限")
     max_expired_days: int = Field(30, description="过期天数上限")
-    add_days: int = Field(30, description="增加天数")
+    # P2 修复（完美审查 B-P2-1）：负天数会穿透成"永不过期"，必须 ge=0。
+    add_days: int = Field(30, ge=0, description="增加天数")
 
 
 @admin_router.post("/welfare/bulk-extend")
@@ -118,19 +120,33 @@ def welfare_bulk_extend(
 ):
     """按过期天数范围批量延期"""
     now = datetime.now()
-    users = db.query(models.WebUser).filter(models.WebUser.is_welfare == True).all()  # noqa: E712
     from backend.emby_server import portal
     affected = 0
-    for u in users:
-        exp = getattr(u, "welfare_expires_at", None)
-        if exp is None:
-            continue  # 永不过期跳过
-        expired_days = (now - exp).days
-        if expired_days < 0:
-            continue  # 未过期跳过
-        if req.min_expired_days <= expired_days <= req.max_expired_days:
-            portal.grant_welfare(db, u, "bulk_extend", req.add_days, granted_by=current_admin.id)
-            affected += 1
+    # P2 修复（完美审查 B-P2-3）：键集分页（id > last_id，每批 500），
+    # 与 welfare_expiry.check_welfare_expiry 同一口径——之前全表 .all()
+    # 无界加载进内存。
+    last_id = 0
+    while True:
+        users = (
+            db.query(models.WebUser)
+            .filter(models.WebUser.is_welfare == True, models.WebUser.id > last_id)  # noqa: E712
+            .order_by(models.WebUser.id)
+            .limit(500)
+            .all()
+        )
+        if not users:
+            break
+        for u in users:
+            last_id = u.id
+            exp = getattr(u, "welfare_expires_at", None)
+            if exp is None:
+                continue  # 永不过期跳过
+            expired_days = (now - exp).days
+            if expired_days < 0:
+                continue  # 未过期跳过
+            if req.min_expired_days <= expired_days <= req.max_expired_days:
+                portal.grant_welfare(db, u, "bulk_extend", req.add_days, granted_by=current_admin.id)
+                affected += 1
     _audit(db, current_admin.id, "welfare_bulk_extend", "system", None, {"affected": affected, "add_days": req.add_days})
     db.commit()
     return {"success": True, "affected": affected}
@@ -675,15 +691,25 @@ def cancel_lottery_round(
 ):
     """取消进行中的群抽奖活动。"""
     _get_lottery()
-    row = db.execute(text("SELECT id, status FROM lottery_rounds WHERE id = :id"), {"id": round_id}).first()
+    # P2 修复（完美审查 B-P2-2）：条件 UPDATE 原子取消，与调度器 run_due_draws
+    # 的 UPDATE ... WHERE status='open' 原子认领同一口径——否则管理员取消与
+    # 自动开奖竞态时，"奖已发出但轮次显示已取消"。
+    result = db.execute(
+        text("UPDATE lottery_rounds SET status = 'cancelled' "
+             "WHERE id = :id AND status = 'open'"),
+        {"id": round_id},
+    )
+    if result.rowcount == 1:
+        _audit(db, current_admin.id, "lottery_round_cancel", "lottery_round", round_id, {})
+        db.commit()
+        return {"success": True}
+    db.rollback()
+    row = db.execute(
+        text("SELECT id FROM lottery_rounds WHERE id = :id"), {"id": round_id}
+    ).first()
     if row is None:
         raise HTTPException(status_code=404, detail="抽奖活动不存在")
-    if dict(row._mapping).get("status") != "open":
-        raise HTTPException(status_code=400, detail="只能取消进行中的活动")
-    db.execute(text("UPDATE lottery_rounds SET status = 'cancelled' WHERE id = :id"), {"id": round_id})
-    _audit(db, current_admin.id, "lottery_round_cancel", "lottery_round", round_id, {})
-    db.commit()
-    return {"success": True}
+    raise HTTPException(status_code=409, detail="该活动正在开奖或已开奖，无法取消")
 
 
 # ==================== 三重门·资格门：黑名单管理 ====================

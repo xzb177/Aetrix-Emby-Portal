@@ -75,9 +75,17 @@ def reserve_hours(db: Session) -> int:
     if row is None or row.value is None or str(row.value).strip() == "":
         return DEFAULT_RESERVE_HOURS
     try:
-        return max(0, int(str(row.value).strip()))
+        v = int(str(row.value).strip())
     except (TypeError, ValueError):
         return DEFAULT_RESERVE_HOURS
+    # P2 修复（完美审查 B-P2-6）：负数属于"写错"，回落默认 24——之前被钳到 0，
+    # 而 0 在本文件约定为"不自动清理"，未支付订单会持续占着券额度。
+    # 只有显式写 0 才表示禁用自动清理。
+    if v < 0:
+        logger.warning("coupon_reserve_hours 配置为负数 %s，已回落默认 %s 小时",
+                       v, DEFAULT_RESERVE_HOURS)
+        return DEFAULT_RESERVE_HOURS
+    return v
 
 
 def active_use_count(db: Session, coupon: models.CouponCode) -> int:
