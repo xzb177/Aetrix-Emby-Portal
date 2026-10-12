@@ -240,3 +240,4 @@ class TestF_P1_25_DeactivateOldKind:
         # 应记录旧 kind 并在换类型时 deactivate
         assert 'old_kind' in src
         assert 'deactivate_legacy' in src
+# CI trigger
