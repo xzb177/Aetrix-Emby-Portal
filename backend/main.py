@@ -49,6 +49,7 @@ from backend.emby_server import maintenance
 from backend import reminders
 from backend.api.admin_ops import admin_ops_router
 from backend.api.admin_services import services_router
+from backend.api.admin_tasks import tasks_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.admin_alerts import admin_alerts_router
 from backend.api.admin_diagnosis import admin_diagnosis_router
@@ -761,6 +762,7 @@ app.include_router(homepage_sections_router)
 app.include_router(admin_router)
 app.include_router(admin_ops_router)
 app.include_router(services_router)
+app.include_router(tasks_router)
 # 订阅到期提醒的面板口径与手动执行（见 backend/api/reminders_admin.py）
 app.include_router(admin_reminders_router)
 # 系统告警：规则管理 / 告警记录 / 总开关（见 backend/api/admin_alerts.py）
