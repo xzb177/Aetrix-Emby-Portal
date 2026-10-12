@@ -230,3 +230,60 @@ def test_all_sa_dicts_dedup():
         result = drive_auth._all_sa_dicts()
     assert len(result) == 1
     assert result[0]["client_email"] == "d@x.iam.gserviceaccount.com"
+
+
+# ---------------------------------------------------------------------------
+# 回归：.strm 预热不能被 IsPlayback 门控（2026-10-12 生产事故）
+# ---------------------------------------------------------------------------
+
+def test_strm_prewarm_not_gated_by_isplayback():
+    """回归测试：.strm 预热必须在 IsPlayback 门控之外。
+
+    2026-10-12 生产证实：客户端不带 IsPlayback=true，预热被包在门控里
+    导致从未触发（metrics 全 0）。修复后 .strm 预热每次 PlaybackInfo 都触发，
+    只有 10MB 文件预热保留 IsPlayback 门控。
+    """
+    import inspect
+    from backend.emby_server import api as api_mod
+    src = inspect.getsource(api_mod.playback_info)
+    lines = src.splitlines()
+
+    gate_idx = next(
+        i for i, l in enumerate(lines) if "if is_pb and item.file_path:" in l
+    )
+    gate_indent = len(lines[gate_idx]) - len(lines[gate_idx].lstrip())
+
+    warm_call_idx = next(
+        i for i, l in enumerate(lines) if "strm_prewarm.maybe_warm" in l
+    )
+    # 从调用点往上找最近的 `if item.file_path:`（.strm 预热的守卫）
+    guard_idx = next(
+        i for i in range(warm_call_idx - 1, gate_idx, -1)
+        if lines[i].lstrip().startswith("if item.file_path:")
+    )
+    guard_indent = len(lines[guard_idx]) - len(lines[guard_idx].lstrip())
+
+    assert guard_indent == gate_indent, (
+        f".strm 预热守卫缩进({guard_indent}) != IsPlayback 门控缩进({gate_indent})，"
+        "预热仍被 IsPlayback 参数门控"
+    )
+
+
+def test_10mb_prewarm_keeps_isplayback_gate():
+    """10MB 文件预热保留 IsPlayback 门控（读 10MB 成本高，只在真点播时触发）。"""
+    import inspect
+    from backend.emby_server import api as api_mod
+    src = inspect.getsource(api_mod.playback_info)
+    lines = src.splitlines()
+
+    gate_idx = next(
+        i for i, l in enumerate(lines) if "if is_pb and item.file_path:" in l
+    )
+    # playback_prewarm.maybe_prewarm 必须在门控块内部（缩进更大）
+    warm_idx = next(
+        i for i, l in enumerate(lines) if "playback_prewarm.maybe_prewarm" in l
+    )
+    assert warm_idx > gate_idx, "10MB 预热调用应在门控之后"
+    gate_indent = len(lines[gate_idx]) - len(lines[gate_idx].lstrip())
+    warm_indent = len(lines[warm_idx]) - len(lines[warm_idx].lstrip())
+    assert warm_indent > gate_indent, "10MB 预热应保留在 IsPlayback 门控内部"

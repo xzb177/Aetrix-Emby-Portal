@@ -3166,12 +3166,16 @@ async def playback_info(
         if is_pb and item.file_path:
             # 点播即预热（默认 10MB，可配）：并发上限/去重/超时/指标全在
             # playback_prewarm 里；DB 读走 run_db（async 纪律），线程只读文件。
+            # 保留 IsPlayback 门控：读 10MB 成本高，只在真点播时触发。
             await run_db(playback_prewarm.maybe_prewarm, db, item.file_path)
-            # .strm 链路预热（P0-1）：PlaybackInfo 和 /stream 之间有 0.3~2 秒窗口，
-            # 提前把 Drive 连接暖好（Range: bytes=0-1 探路，收到响应头即关）。
-            # 后台协程，不阻塞 PlaybackInfo 返回；失败静默。
-            # 注意：db session 和 ORM 对象都不能传给后台协程（请求结束就关/
-            # detach），这里只传纯数据（path/library/guid），warm 内新建 session。
+        # .strm 链路预热（P0-1）：每次 PlaybackInfo 都触发，不依赖 IsPlayback
+        # 参数（客户端实际不带该参数，门控导致预热从未生效）。只是
+        # Range: bytes=0-1 探路，成本 1KB。PlaybackInfo 和 /stream 之间有
+        # 0.3~2 秒窗口，提前把 Drive 连接暖好。
+        # 后台协程，不阻塞 PlaybackInfo 返回；失败静默。
+        # 注意：db session 和 ORM 对象都不能传给后台协程（请求结束就关/
+        # detach），这里只传纯数据（path/library/guid），warm 内新建 session。
+        if item.file_path:
             try:
                 from types import SimpleNamespace
                 from backend.emby_server import strm_prewarm
