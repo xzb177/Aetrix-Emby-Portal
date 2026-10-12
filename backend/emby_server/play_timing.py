@@ -17,6 +17,21 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# ---- 日志自给自足（2026-10-12）----
+# EA（emby_api/main.py）没有 logging.basicConfig，uvicorn 默认也不配置 root logger，
+# 导致本 logger 的有效级别为 WARNING，logger.info() 全被吞掉——生产 EA 一条
+# [play-timing] 都没有，而 EM（backend/main.py）有 basicConfig 则正常。
+# 在此兜底：级别显式设为 INFO；若 root 也没有 handler，自己加一个 StreamHandler
+#（走传播即可时不重复加，避免 EM 侧日志重复）。
+if logger.level == logging.NOTSET:
+    logger.setLevel(logging.INFO)
+if not logger.handlers and not logging.getLogger().handlers:
+    _h = logging.StreamHandler()
+    # done() 里已拼好 "[play-timing] ..." 前缀，这里透传；格式向 uvicorn 看齐。
+    _h.setFormatter(logging.Formatter("%(levelname)s:     %(message)s"))
+    logger.addHandler(_h)
+    logger.propagate = False
+
 # import 时读一次：避免每次 mark 都查环境变量
 _ENABLED = os.getenv("PLAY_TIMING_LOG", "1") not in ("0", "false", "False", "")
 

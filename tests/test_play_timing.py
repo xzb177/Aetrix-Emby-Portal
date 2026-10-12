@@ -76,3 +76,42 @@ def test_is_enabled_reflects_module_flag(monkeypatch):
     assert pt_mod.is_enabled() is True
     monkeypatch.setattr(pt_mod, "_ENABLED", False)
     assert pt_mod.is_enabled() is False
+
+
+def test_done_emits_without_root_logging_config():
+    """EA（emby_api/main.py）无 basicConfig、uvicorn 不配 root 时，
+    [play-timing] 仍须输出（回归：生产 EA 曾一条日志都没有）。"""
+    import subprocess
+    import sys
+
+    code = (
+        "import logging, sys; "
+        "assert not logging.getLogger().handlers, 'root must be unconfigured'; "
+        "from backend.emby_server.play_timing import new_timer; "
+        "t = new_timer('ea-smoke'); t.mark('a'); t.done()"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+    out = r.stdout + r.stderr
+    assert "[play-timing] ea-smoke" in out, out
+
+
+def test_no_duplicate_handler_when_root_configured():
+    """EM（backend/main.py 有 basicConfig）时走传播，不自加 handler，避免重复。"""
+    import subprocess
+    import sys
+
+    code = (
+        "import logging; logging.basicConfig(level=logging.INFO); "
+        "import backend.emby_server.play_timing as m; "
+        "print(len(m.logger.handlers), m.logger.propagate)"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "0 True" in r.stdout, r.stdout
