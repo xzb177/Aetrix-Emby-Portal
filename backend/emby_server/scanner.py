@@ -3521,7 +3521,10 @@ SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scr
                    "failed_roots", "duplicate_files", "duration_ms", "sources",
                    # 删除保护拦截原因：finish_scan 的 error 兜底链 + _scan_metrics
                    # 对外口径都依赖它，不进白名单就落不了库（v2.55.x 修复）
-                   "removal_guard")
+                   "removal_guard",
+                   # 定向扫描标记：清理跳过是预期行为，finish_scan 据此不判 partial
+                   #（v2.56.x 修复"没有可用来源"误报）
+                   "targeted_scan")
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
@@ -3659,6 +3662,8 @@ def _scan_metrics(stats: dict) -> dict:
         "resurrected": int(stats.get("resurrected") or 0),
         "removal_skipped": bool(stats.get("removal_skipped")),
         "failed_roots": list(stats.get("failed_roots") or []),
+        # v2.56.x：定向扫描标记（预期跳过清理，前端可据此不显示警告）
+        "targeted_scan": bool(stats.get("targeted_scan")),
         # 删除保护拦截原因（v2.55.x）：本轮没删任何东西是因为被拦了，而不是
         # "库里本来就空"。finish_scan() 已把该原因写进 error 兜底链，这里单独
         # 暴露给排障/接口调用方，避免再出现"有写入、零读取"的死字段。
@@ -3915,9 +3920,19 @@ def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]
 
     只有「来源全部可用且正常跑完」才算 success；任何来源读不到就记 partial——
     那种情况下清理阶段被跳过，结果本身并不完整，不能对外报「一切正常」。
+
+    v2.56.x：定向扫描（targeted_scan）的清理跳过是预期行为——它只看了部分
+    目录，本来就不能做删除清理。只要没有来源真的失败，就按 success 处理，
+    不再误报"媒体库没有可用来源"。
     """
     stats = stats or {}
-    status = SCAN_STATUS_PARTIAL if stats.get("removal_skipped") else SCAN_STATUS_SUCCESS
+    removal_skipped = bool(stats.get("removal_skipped"))
+    # 定向扫描 + 无真实失败 = 预期内的跳过，不算问题
+    _is_expected_skip = bool(stats.get("targeted_scan")) and not (
+        stats.get("failed_roots") or stats.get("removal_guard")
+    )
+    status = SCAN_STATUS_PARTIAL if (removal_skipped and not _is_expected_skip) \
+        else SCAN_STATUS_SUCCESS
     error = None
     if status == SCAN_STATUS_PARTIAL:
         # 删除保护拦截时优先展示真实拦截原因（removal_guard），而不是误导性的
@@ -4170,6 +4185,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
         "added": 0, "updated": 0, "removed": 0, "probed": 0, "scraped": 0,
         "repaired": 0, "removal_skipped": False, "failed_roots": [],
         "sources": [],  # 按来源记账（虚拟库没有来源，保持空列表）
+        "targeted_scan": False,  # v2.56.x：定向扫描标记（预期跳过清理，不误报）
     }
     clear_dir_cache()  # 新的一轮扫描不复用上一轮的目录列表
     ctx = _ScanContext(snap=snap, lib_id=library.id, stats=stats)
@@ -4587,7 +4603,10 @@ def _scan_library_body(db: Session, library: emby_models.Library,
     if getattr(snap, "targeted", False):
         # v2.52.0 定向扫描（Drive Changes）：只看了部分目录，看不到的不能当成
         # "文件已删除"，跳过清理阶段。删除检测留给整库扫描做。
+        # v2.56.x：标记为预期的跳过——finish_scan 据此不判 partial、不报
+        # "没有可用来源"误报（定向扫描是正常行为，不是来源故障）。
         stats["removal_skipped"] = True
+        stats["targeted_scan"] = True
         logger.info("媒体库「%s」定向扫描，跳过清理阶段", snap.name)
     elif failed_roots or not (snap.paths or snap.mount_ids):
         # 来源列表不完整：禁止清理，宁肯多留几条记录，也不能误删整库
