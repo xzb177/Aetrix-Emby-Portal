@@ -3040,6 +3040,10 @@ async def playback_info(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
+    # 播放链路耗时日志（[play-timing]）：定位"点播放→出画面"慢在哪。
+    # 开关：PLAY_TIMING_LOG=0 关闭。只加日志，不改逻辑。
+    from backend.emby_server.play_timing import new_timer
+    _pt = new_timer(f"playbackinfo item={item_id}")
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     # 所有碰 DB 的同步 helper 都经 run_db 扔线程池。
     from backend.emby_server.async_db import run_db
@@ -3047,6 +3051,7 @@ async def playback_info(
     item = await run_db(_require_visible_item, db, user, item_id)
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
     await run_db(ensure_playback_allowed, db, user)
+    _pt.mark("auth")
     # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
     await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
     # 按需媒体信息探测：远程文件缺 codec 时入队，后台限流探测，不阻塞播放（v2.51.0）
@@ -3059,6 +3064,8 @@ async def playback_info(
         # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
         # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
         # 返回空 MediaSources 是 Emby 客户端认可的「无可播放源」。
+        _pt.mark("no_file_path")
+        _pt.done()
         return _strip_nulls({
             "MediaSources": [],
             "PlaySessionId": secrets.token_hex(8),
@@ -3099,8 +3106,10 @@ async def playback_info(
             cached_source = None
 
     if cached_source is None:
+        _pt.mark("cache_miss")
         # _media_source 读 item.streams（懒加载关系），必须在线程池里，不能直接在事件循环上碰
         media_source = await run_db(_media_source, item, base, "", db)
+        _pt.mark("media_source")
         if cache_key and cache_ttl > 0:
             try:
                 from backend.database import CacheManager
@@ -3109,6 +3118,7 @@ async def playback_info(
             except Exception:  # noqa: BLE001
                 pass
     else:
+        _pt.mark("cache_hit")
         media_source = cached_source
     if hide_media_path():
         # 升级前写进缓存的 media_source 可能还带着 Path（TTL 内），这里兜底去掉
@@ -3199,11 +3209,13 @@ async def playback_info(
                             pass
 
                 asyncio.create_task(_warm_and_close())
+                _pt.mark("prewarm_trigger")
             except Exception:
                 pass
     except Exception:
         pass
 
+    _pt.done()
     return _strip_nulls({
         "MediaSources": [media_source],
         # 每次播放会话一个独立票据，客户端据此上报进度
@@ -3250,17 +3262,26 @@ async def video_stream(
     user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
+    # 播放链路耗时日志（[play-timing]）：定位"点播放→出画面"慢在哪。
+    # 开关：PLAY_TIMING_LOG=0 关闭。只加日志，不改逻辑。
+    from backend.emby_server.play_timing import new_timer
+    _pt = new_timer(f"stream item={item_id}")
     # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
     from backend.emby_server.async_db import run_db
     # 安全修复（P0 / H1）：条目必须在用户可见的库范围内（统一 helper）
     item = await run_db(_require_visible_item, db, user, item_id)
+    _pt.mark("auth_visible")
     # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token / JWT）
     await run_db(ensure_playback_allowed, db, user)
+    _pt.mark("auth_playback")
     await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
+    _pt.mark("auth_client")
     # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）
     await run_db(play_sign.check_referer, request, db)
+    _pt.mark("auth_referer")
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     target = await run_db(_play_target, db, item)
+    _pt.mark("play_target")
     if target.kind == "url":
         # 单一播放路径（2026-10 简化）：中转 + 本地缓存自动层。
         # 分片缓存头：让 CF 边缘能缓存回源结果。
@@ -3269,10 +3290,13 @@ async def video_stream(
         #
         # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
         # 不能让一个用户的拖动进度条把整个事件循环卡住。
+        # 计时器传给 serve_remote_async：它在返回前打 ttfb 等 mark 并 done()。
         return _observe_traffic(
             await serve_remote_async(target.value, request, target.headers, media_type,
-                                     cache_control=seg_cache))
+                                     cache_control=seg_cache, pt=_pt))
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
+    _pt.mark("serve_file")
+    _pt.done()
     return serve_file(target.value, request, media_type,
                       cache_control=cdn.cache_control_for(str(request.url.path)))
 
