@@ -24,7 +24,7 @@ import urllib.parse
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import false, func, or_, select
@@ -2627,6 +2627,7 @@ def get_item_detail(
     request: Request,
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,  # noqa: FastAPI 只认裸 BackgroundTasks 注解做特殊注入
 ):
     if item_id.isdigit():
         # People[].Id 是 emby_people 的行 id（数字串）；客户端点演员会来取详情
@@ -2639,6 +2640,38 @@ def get_item_detail(
         from backend.emby_server import probe_worker
         probe_worker.maybe_enqueue(db, item)
     except Exception:  # noqa: BLE001 — 入队失败不影响详情页
+        pass
+    # P1：详情页预热 .strm 链路 —— 用户在详情页停留 3~10s，足够把 1.9s 的
+    # Drive 跳转走完并写入 P0-2 跳转缓存；点播放时直接命中缓存。
+    # 只预热 .strm（maybe_warm 本来也会跳过非 .strm，这里先过滤，避免每次
+    # 详情页都起后台任务+读配置）。BackgroundTasks 在响应发出后执行，
+    # 不阻塞详情页；与 PlaybackInfo 的预热共用同一事件循环，信号量(4)/
+    # 去重(300s)/抖动控制不变，不会放大 Google API 请求（同一文件 300s 内只预热一次）。
+    try:
+        if (background_tasks is not None and item.file_path
+                and str(item.file_path).lower().endswith(".strm")):
+            from types import SimpleNamespace
+            from backend.emby_server import strm_prewarm
+
+            _warm_item = SimpleNamespace(
+                file_path=item.file_path,
+                library=getattr(item, "library", None),
+                guid=getattr(item, "guid", None),
+            )
+
+            async def _warm_and_close():
+                from backend.database import SessionLocal
+                _warm_db = SessionLocal()
+                try:
+                    await strm_prewarm.maybe_warm(_warm_db, _warm_item)
+                finally:
+                    try:
+                        _warm_db.close()
+                    except Exception:
+                        pass
+
+            background_tasks.add_task(_warm_and_close)
+    except Exception:  # noqa: BLE001 — 预热失败不影响详情页
         pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
                      auth_qs=_url_auth_qs(db, request, user, item.guid))
@@ -2730,7 +2763,14 @@ def get_episodes(item_id: str, request: Request,
         for e in episodes
         if e.series_id and e.series is not None
     }
-    return {"Items": [_item_dto(e, base, user.id, db, series_names=series_names)
+    # Fields=MediaSources：官方 Emby 客户端在选集接口带该参数时期望直接拿到可播放源；
+    # 以前这里恒为 []（_item_dto 默认），部分三方客户端因此选集转圈。
+    fields = {f.strip().lower() for f in request.query_params.get("Fields", "").split(",")}
+    want_sources = "mediasources" in fields
+    return {"Items": [_item_dto(e, base, user.id, db, series_names=series_names,
+                               full=want_sources,
+                               auth_qs=_url_auth_qs(db, request, user, e.guid)
+                               if want_sources else "")
                       for e in episodes],
             "TotalRecordCount": len(episodes), "StartIndex": 0}
 
