@@ -1,4 +1,4 @@
-"""第 14 轮完美主义迭代回归测试（P1-1 / P2-2 / P3-2~P3-6；P2-1/P3-1 跳转缓存已删）。
+"""第 14 轮完美主义迭代回归测试（P1-1 / P2-1 / P2-2 / P3-1~P3-6）。
 
 实现者编写（workbuddy 网关本轮可用，但改动均为片段级精确修复，
 人工编写 + 逐行核验；_follow_redirects helper 由 deepseek-v4.1-flash
@@ -119,6 +119,66 @@ def test_p1_1_demotion_allowed_when_two_loginable(tmp_path):
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# P2-1：跳转缓存签名感知 TTL
+# ---------------------------------------------------------------------------
+
+def test_p2_1_signature_ttl_seconds():
+    from backend.emby_server.streaming import _signature_ttl_seconds
+    now = time.time()
+    # unix 时间戳形式
+    ttl = _signature_ttl_seconds(
+        f"https://drive.usercontent.google.com/download?id=X&expires={int(now + 30)}")
+    assert ttl is not None and 0 < ttl <= 31
+    # 秒数形式
+    assert _signature_ttl_seconds("https://x/?exp=45") == 45.0
+    # 多个字段取最小
+    ttl2 = _signature_ttl_seconds(
+        f"https://x/?expires={int(now + 60)}&exp=20")
+    assert ttl2 == 20.0
+    # 识别不出 → None（保持默认 TTL）
+    assert _signature_ttl_seconds(
+        "https://drive.usercontent.google.com/download?id=X") is None
+    # 已过期 → 0.0（调用方放弃写缓存）
+    assert _signature_ttl_seconds(
+        f"https://x/?expires={int(now - 10)}") == 0.0
+    # 非法值忽略
+    assert _signature_ttl_seconds("https://x/?expires=abc") is None
+
+
+def test_p2_1_cache_store_uses_min_ttl(monkeypatch):
+    import backend.emby_server.streaming as st
+    monkeypatch.setattr(st, "_DRIVE_REDIRECT_CACHE_TTL", 90.0)
+    now = time.time()
+
+    fid = "R14_SIG_TTL"
+    st._redirect_cache_invalidate(fid)
+    try:
+        st._redirect_cache_store_drive_url(
+            fid, f"https://drive.usercontent.google.com/download?id=X&expires={int(now + 30)}")
+        entry = st._redirect_cache.get(fid)
+        assert entry is not None
+        remaining = entry[1] - time.monotonic()
+        assert remaining <= 31, f"TTL 应取 min(90, ~30)，实际剩余 {remaining}"
+
+        # 无签名字段 → 默认 90s
+        fid2 = "R14_SIG_DEFAULT"
+        st._redirect_cache_invalidate(fid2)
+        st._redirect_cache_store_drive_url(
+            fid2, "https://drive.usercontent.google.com/download?id=Y")
+        remaining2 = st._redirect_cache[fid2][1] - time.monotonic()
+        assert 80 < remaining2 <= 90
+
+        # 签名已过期 → 不写缓存（不毒化）
+        fid3 = "R14_SIG_EXPIRED"
+        st._redirect_cache_invalidate(fid3)
+        st._redirect_cache_store_drive_url(
+            fid3, f"https://drive.usercontent.google.com/d?id=Z&expires={int(now - 5)}")
+        assert st._redirect_cache_get(fid3) is None
+    finally:
+        for f in ("R14_SIG_TTL", "R14_SIG_DEFAULT", "R14_SIG_EXPIRED"):
+            st._redirect_cache_invalidate(f)
+
 
 # ---------------------------------------------------------------------------
 # P2-2：PG 备份目录轮转 / 列表 / 残留清扫
@@ -191,8 +251,34 @@ def test_p2_2_backup_dirs_includes_both(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# P3-5：共用 _follow_redirects helper
+# P3-1 / P3-5：跳转缓存写入决策 + 共用 _follow_redirects helper
 # ---------------------------------------------------------------------------
+
+def test_p3_1_maybe_cache_drive_redirect_decisions():
+    import backend.emby_server.streaming as st
+    fid = "R14_MAYBE_CACHE"
+    st._redirect_cache_invalidate(fid)
+    try:
+        good = "https://drive.usercontent.google.com/download?id=X"
+        # hops=0（本次是缓存命中）→ 不重复写
+        st._maybe_cache_drive_redirect(fid, good, 0, False, 200)
+        assert st._redirect_cache_get(fid) is None
+        # 终态 403/404/410 → 坏 URL 不进缓存
+        for bad_status in (403, 404, 410):
+            st._maybe_cache_drive_redirect(fid, good, 2, False, bad_status)
+            assert st._redirect_cache_get(fid) is None, f"status={bad_status}"
+        # 本次就是缓存命中 → 不重复写
+        st._maybe_cache_drive_redirect(fid, good, 2, True, 200)
+        assert st._redirect_cache_get(fid) is None
+        # 落点非 usercontent → 不写
+        st._maybe_cache_drive_redirect(fid, "https://example.com/x", 2, False, 200)
+        assert st._redirect_cache_get(fid) is None
+        # 正常：走了跳转 + 落点 usercontent + 终态 200 → 写
+        st._maybe_cache_drive_redirect(fid, good, 2, False, 200)
+        assert st._redirect_cache_get(fid) == good
+    finally:
+        st._redirect_cache_invalidate(fid)
+
 
 def _fake_redirect_client(statuses):
     """假 httpx 客户端：按顺序返回 (status_code, location)。"""

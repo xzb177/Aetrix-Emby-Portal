@@ -130,11 +130,24 @@ async function onUnseal(id: string | number) {
 }
 
 /* ---------- 服务器脉搏 ---------- */
+/** 防御：后端曾把 Python dict 直接 str() 后塞进 text（如 {'level': 'down', ...}），
+ *  这里把 message 抠出来，避免原始 dict 显示给用户。后端已修（panel.py），
+ *  此为兜底（处理旧缓存/其他漏网路径）。 */
+function cleanActivityText(t: string): string {
+  const s = t.trim()
+  if (s.startsWith('{') && /['"]message['"]/.test(s)) {
+    const m1 = s.match(/'message'\s*:\s*'((?:[^'\\]|\\.)*)'/)
+    if (m1) return m1[1].replace(/\\'/g, "'")
+    const m2 = s.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+    if (m2) return m2[1].replace(/\\"/g, '"')
+  }
+  return s
+}
 const activityTexts = computed((): string[] => {
   const d = (pulse.value.data || {}) as Record<string, unknown>
   const acts = d.activities as Array<{ text?: string }> | undefined
   if (Array.isArray(acts)) {
-    const texts = acts.map((a) => String(a?.text || '')).filter(Boolean)
+    const texts = acts.map((a) => cleanActivityText(String(a?.text || ''))).filter(Boolean)
     if (texts.length) return texts
   }
   return ['服务器运行中，一切正常']
