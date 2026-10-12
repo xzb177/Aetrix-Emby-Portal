@@ -810,7 +810,7 @@ export interface PanelHealth {
  */
 export const fetchPanelHealth = () => getPublic<PanelHealth>('/api/health')
 
-/** 一键体检（v2.57.0）：只读诊断报告与规则清单 */
+/** 一键体检（v2.57.0 只读诊断；阶段二加自动修复）：诊断报告与规则清单 */
 export interface DiagnosisFinding {
   rule_id: string
   name: string
@@ -820,6 +820,13 @@ export interface DiagnosisFinding {
   description: string
   steps: string[]
   evidence: Record<string, any>
+  fixable?: boolean
+}
+
+export interface DiagnosisFixInfo {
+  name: string
+  description: string
+  confirm_text: string
 }
 
 export interface DiagnosisReport {
@@ -833,10 +840,49 @@ export interface DiagnosisRules {
   rules: Array<{ rule_id: string; name: string }>
   thresholds: Record<string, number>
   levels: string[]
+  fixes: Record<string, DiagnosisFixInfo>
+  fix_thresholds: Record<string, number>
+  manual_only: Record<string, string>
+}
+
+export interface DiagnosisFixResult {
+  ok: boolean
+  rule_id: string
+  name: string
+  result?: Record<string, any>
+  error?: string
+  message?: string
 }
 
 export const runDiagnosis = () => get<DiagnosisReport>('/diagnosis/run')
 export const fetchDiagnosisRules = () => get<DiagnosisRules>('/diagnosis/rules')
+export const fixDiagnosisRule = (rule_id: string) =>
+  post<DiagnosisFixResult>('/diagnosis/fix', { rule_id, confirm: true })
+
+// ==================== API Key / Service Token（/api/admin/api-keys/*） ====================
+
+export interface ApiKeyRow {
+  id: number
+  key_id: string
+  key_id_masked: string
+  name: string
+  scopes: string[]
+  expires_at: string | null
+  is_active: boolean
+  last_used_at: string | null
+  created_at: string | null
+}
+
+export interface ApiKeyCreateResponse extends ApiKeyRow {
+  key: string // 明文，只在创建时返回一次
+}
+
+export const fetchApiKeys = () => get<{ items: ApiKeyRow[]; total: number }>('/api-keys')
+export const createApiKey = (data: { name: string; scopes: string[]; expires_days: number | null }) =>
+  post<ApiKeyCreateResponse>('/api-keys', data)
+export const updateApiKey = (keyId: string, data: { name?: string; scopes?: string[]; expires_days?: number | null; is_active?: boolean }) =>
+  put<ApiKeyRow>(`/api-keys/${keyId}`, data)
+export const revokeApiKey = (keyId: string) => del<{ ok: boolean }>(`/api-keys/${keyId}`)
 
 // 注：「Emby 服务入口」那两个格子的页面（及它的读写接口封装）已下线，
 // EA / Emby 入口统一在「服务器」页维护（见 views/Servers.vue）。

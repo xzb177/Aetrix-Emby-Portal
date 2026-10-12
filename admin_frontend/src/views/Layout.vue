@@ -198,6 +198,7 @@ const navGroups: NavGroup[] = [
       { path: '/health', label: '服务健康', icon: Activity },
       { path: '/health-board', label: '健康总览', icon: Gauge },
       { path: '/diagnosis', label: '一键体检', icon: Stethoscope },
+      { path: '/api-keys', label: 'API Key', icon: KeyRound, superOnly: true },
       // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
       { path: '/tasks', label: '任务总览', icon: ListChecks },
     ],

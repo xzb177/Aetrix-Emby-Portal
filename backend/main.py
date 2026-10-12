@@ -53,6 +53,7 @@ from backend.api.admin_tasks import tasks_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.admin_alerts import admin_alerts_router
 from backend.api.admin_diagnosis import admin_diagnosis_router
+from backend.api.admin_apikey import router as admin_apikey_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 # v2.19.0：外部服务能力中心（代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地）。
@@ -299,6 +300,9 @@ async def lifespan(app: FastAPI):
         from backend.emby_server import strm_gen
         if strm_gen.start_scheduler():
             logger.info(".strm 生成器定时调度已启动")
+        # 反向僵尸校验（.strm 删除链路块4）：独立 daemon 线程，每周有界轮查
+        if strm_gen.start_orphan_scheduler():
+            logger.info(".strm 反向僵尸校验调度已启动")
     except Exception as e:  # noqa: BLE001
         logger.warning(f".strm 生成器调度启动失败（可忽略）: {e}")
 
@@ -769,6 +773,8 @@ app.include_router(admin_reminders_router)
 app.include_router(admin_alerts_router)
 # 一键体检：只读诊断报告（见 backend/api/admin_diagnosis.py）
 app.include_router(admin_diagnosis_router)
+# API Key / Service Token：创建/列表/吊销 + 连通性测试（见 backend/api/admin_apikey.py）
+app.include_router(admin_apikey_router)
 # 订单关单与退款（见 backend/api/orders_admin.py）
 app.include_router(admin_orders_router)
 # 优惠券管理（v2.10.0）：券的 CRUD / 核销记录 / 开关，见 backend/api/coupons_admin.py
