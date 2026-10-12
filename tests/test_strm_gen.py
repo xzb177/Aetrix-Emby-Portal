@@ -606,3 +606,129 @@ class TestWriteStrmFileTmpRace:
         assert sg._write_strm_file(str(target), "https://drive.example.com/uc?id=ABC") is False
         assert [p for p in tmp_path.iterdir() if ".tmp." in p.name] == []
 
+
+class TestGetProgressBackfill:
+    """get_progress(db) 的 DB 回填：进程重启后（内存进度为初始值）应返回
+    DB 里上次执行的真实统计，而不是全 0。
+
+    注：模块级 autouse fixture `_patch_db_config` 已把 `sg._db_config` 打桩，
+    配合 `_FakeDb(values)` 使用即可，无需再 patch store。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_progress(self):
+        import copy
+
+        original = copy.deepcopy(sg._progress)
+        with sg._lock:
+            sg._progress.clear()
+            sg._progress.update({
+                "running": False,
+                "started_at": None,
+                "finished_at": None,
+                "phase": "idle",
+                "total": 0,
+                "done": 0,
+                "generated": 0,
+                "skipped": 0,
+                "failed": 0,
+                "errors": [],
+                "current": "",
+            })
+        yield
+        with sg._lock:
+            sg._progress.clear()
+            sg._progress.update(original)
+
+    def _last_run_db(self):
+        return _FakeDb({
+            sg.CONFIG_LAST_STATS: ('{"generated": 120, "skipped": 8000, "failed": 3,'
+                                   ' "pruned": 5, "total": 8123}'),
+            sg.CONFIG_LAST_RUN: "2026-10-12T03:00:00+00:00",
+        })
+
+    def test_backfill_after_restart(self):
+        """模拟进程重启：内存进度为初始值，调 get_progress(db) 应回填 DB 统计。"""
+        prog = sg.get_progress(db=self._last_run_db())
+        assert prog["phase"] == "done"
+        assert prog["generated"] == 120
+        assert prog["skipped"] == 8000
+        assert prog["failed"] == 3
+        assert prog["total"] == 8123
+        assert prog["finished_at"] == "2026-10-12T03:00:00+00:00"
+        assert prog["done"] == 120 + 8000 + 3
+
+        # 回填结果已缓存进内存：无 db 的调用也返回同样值（前端轮询不每次查 DB）
+        cached = sg.get_progress()
+        assert cached["phase"] == "done"
+        assert cached["generated"] == 120
+        assert cached["skipped"] == 8000
+        assert cached["failed"] == 3
+        assert cached["total"] == 8123
+        assert cached["finished_at"] == "2026-10-12T03:00:00+00:00"
+        assert cached["done"] == 120 + 8000 + 3
+
+    def test_no_backfill_when_running(self):
+        """正在运行的任务进度绝不能被回填覆盖。"""
+        with sg._lock:
+            sg._progress.update({
+                "running": True,
+                "phase": "generating",
+                "started_at": "2026-10-12T03:00:00+00:00",
+                "generated": 7,
+            })
+
+        prog = sg.get_progress(db=self._last_run_db())
+        assert prog["running"] is True
+        assert prog["phase"] == "generating"
+        assert prog["generated"] == 7
+
+    def test_no_backfill_when_done_in_memory(self):
+        """内存里已有上次运行结果（phase=done）时，不用 DB 回填覆盖。"""
+        with sg._lock:
+            sg._progress.update({
+                "phase": "done",
+                "started_at": "2026-10-11T03:00:00+00:00",
+                "finished_at": "2026-10-11T04:00:00+00:00",
+                "generated": 50,
+                "total": 100,
+            })
+
+        prog = sg.get_progress(db=self._last_run_db())
+        assert prog["phase"] == "done"
+        assert prog["generated"] == 50  # 内存值保留，不被 DB 的 120 覆盖
+        assert prog["finished_at"] == "2026-10-11T04:00:00+00:00"
+
+    def test_degrade_on_db_error(self, monkeypatch):
+        """DB 读异常时降级返回 idle，不抛异常。"""
+        def boom(db, key, default=""):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(sg, "_db_config", boom)
+
+        prog = sg.get_progress(db=object())
+        assert prog["phase"] == "idle"
+        assert prog["running"] is False
+        assert prog["total"] == 0
+        assert prog["generated"] == 0
+        assert prog["skipped"] == 0
+        assert prog["failed"] == 0
+        assert prog["done"] == 0
+
+    def test_no_stats_in_db(self):
+        """DB 里没有上次统计（全新安装）时返回 idle 全 0。"""
+        prog = sg.get_progress(db=_FakeDb({}))
+        assert prog["phase"] == "idle"
+        assert prog["running"] is False
+        assert prog["total"] == 0
+        assert prog["generated"] == 0
+        assert prog["skipped"] == 0
+        assert prog["failed"] == 0
+        assert prog["done"] == 0
+
+    def test_malformed_stats_json(self):
+        """统计 JSON 损坏时降级返回 idle，不抛异常。"""
+        db = _FakeDb({sg.CONFIG_LAST_STATS: "{not-json"})
+        prog = sg.get_progress(db=db)
+        assert prog["phase"] == "idle"
+        assert prog["total"] == 0
