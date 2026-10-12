@@ -70,6 +70,10 @@ def _locked_super_count(db: Session) -> int:
     「至少保留一个 super」的检查与修改必须同事务串行化：不加锁时两名 super
     并发互相降级可同时读到数量 2 并通过检查。调用方须在判断后、提交前调用，
     锁住的行直到事务提交才释放。
+
+    注意（P1-1，2026-10-12）：角色变更 / 停用 / 撤销路径现已统一用
+    ``_locked_loginable_super_count``（角色口径会留下"无人能登录"的死局）；
+    本函数保留，仅作兼容。
     """
     users = _admins_query(db).with_for_update().all()
     return sum(1 for u in users if admin_roles.role_of(u) == admin_roles.ROLE_SUPER)
@@ -208,8 +212,15 @@ def update_admin(
         role = _parse_role(payload.role)
         if role != admin_roles.role_of(user):
             # F-P1-6：行锁后计数，防并发同时通过"至少保留一个"检查
-            if admin_roles.role_of(user) == admin_roles.ROLE_SUPER and _locked_super_count(db) <= 1:
-                raise HTTPException(status_code=400, detail="至少要保留一个超级管理员：请先给别的账号授予超级管理员")
+            # P1-1（2026-10-12）：角色变更路径同样按"可登录 super"口径计数。
+            # 只看角色的计数会留下死局：super A（在用）+ super B（已停用）时，
+            # 降级 A 能通过检查（角色计数=2），此后可登录 super 归零。
+            # 目标账号本身已停用时，其角色变更不影响可登录数，无需拦截
+            # （与停用路径的语义对称）。
+            if (admin_roles.role_of(user) == admin_roles.ROLE_SUPER
+                    and bool(user.is_active)
+                    and _locked_loginable_super_count(db) <= 1):
+                raise HTTPException(status_code=400, detail="至少要保留一个可登录的超级管理员：请先给别的账号授予超级管理员")
             user.admin_role = role
             changed["role"] = role
     if payload.is_active is not None and bool(payload.is_active) != bool(user.is_active):

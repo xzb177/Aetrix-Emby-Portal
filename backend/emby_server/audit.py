@@ -26,15 +26,18 @@
 
 4. **端点可自助富化**：中间件只知道「谁在什么时候动了哪个路径」，不知道业务细节
    （例如重置 scope、影响行数）。端点在成功后可以把细节挂到
-   `request.state.audit_extra`（dict，只能由服务端代码设置），中间件会原样并进
-   `details`（`method/path/admin_user_id/client_ip` 四个保留键不许覆盖）。
+   `request.state.audit_extra`（dict，只能由服务端代码设置），中间件做序列化守卫后
+   并进 `details`（不可 JSON 序列化的值降级为 repr，保证"坏一个键不丢整条审计"；
+   `method/path/admin_user_id/client_ip` 四个保留键不许覆盖）。
    这是通用机制：任何端点都能用，不用改中间件，也不会产生两条重复日志。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from typing import Any
 
 from backend import models
 
@@ -76,6 +79,27 @@ FALLBACK_ACTION = "emby_admin_write"
 
 # 端点自助富化审计时不许覆盖的保留键（中间件的权威字段）
 _RESERVED_DETAIL_KEYS = frozenset({"method", "path", "admin_user_id", "client_ip"})
+
+
+def _json_safe(value: Any, key: str, path: str) -> Any:
+    """audit_extra 序列化守卫（P3-6）。
+
+    ``AdminLog.details`` 是 JSON 列：未来某端点若塞了 ORM 对象 / datetime /
+    自定义对象，``record_write`` 的 commit 会抛异常、整条审计被 except 吞掉——
+    安全审计场景下"静默丢日志"比 loudly 失败更坏。这里合并前对每个 value 做
+    一次 ``json.dumps`` 试探，不可序列化的降级为 ``repr``（并记 warning），
+    保证"坏一个键不丢整条"。
+    """
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        logger.warning("audit_extra 键 %r 不可 JSON 序列化（%s），已降级为 repr",
+                       key, path)
+        try:
+            return repr(value)
+        except Exception:  # noqa: BLE001 — repr 都挂了就给类型名
+            return f"<unserializable {type(value).__name__}>"
 
 _ITEM_ID_RE = re.compile(r"^(?:[0-9a-f]{16,}|[0-9a-f-]{20,})$", re.IGNORECASE)
 
@@ -248,6 +272,7 @@ class AdminWriteAuditMiddleware:
         if isinstance(extra, dict):
             for k, v in extra.items():
                 if k not in _RESERVED_DETAIL_KEYS:
-                    details[k] = v
+                    # P3-6：合并前做序列化守卫，坏一个键不丢整条审计
+                    details[k] = _json_safe(v, k, path)
 
         record_write(action, target_type, path, details)

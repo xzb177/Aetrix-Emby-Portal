@@ -414,6 +414,13 @@ def premint_tokens(max_workers: int = 4) -> dict[str, int]:
                 if not token:
                     return False
                 with _cache_lock:
+                    # P3-4：持锁写回前复查——启动瞬间可能与 get_drive_bearer_token
+                    # 并发换同一 SA 的 token（_mint_one 是"持锁查→释放→线程池换→
+                    # 持锁写"，查-换-写非原子）。若该 SA 已被他人写入且仍有效，
+                    # 丢弃本次结果，消除重复换 token。
+                    cached = _token_cache.get(email)
+                    if cached and time.monotonic() + _TOKEN_MIN_REMAIN_SECONDS < cached[1]:
+                        return True
                     _token_cache[email] = (token, time.monotonic() + _TOKEN_TTL_SECONDS)
                 return True
             except Exception:

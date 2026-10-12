@@ -3173,8 +3173,10 @@ async def playback_info(
         # Range: bytes=0-1 探路，成本 1KB。PlaybackInfo 和 /stream 之间有
         # 0.3~2 秒窗口，提前把 Drive 连接暖好。
         # 后台协程，不阻塞 PlaybackInfo 返回；失败静默。
-        # 注意：db session 和 ORM 对象都不能传给后台协程（请求结束就关/
-        # detach），这里只传纯数据（path/library/guid），warm 内新建 session。
+        # session 说明（P3-3）：_warm_db 是给后台任务新建的独立 session（不是请求的 db——
+        # 请求的 session 在请求结束时关闭，不能跨协程用）。warm 经 run_db 在线程池
+        # 顺序复用该 session（await 期间不另碰，符合 async_db 纪律）；请求结束前
+        # 后台任务持有该 session，_warm_and_close 的 finally 负责关闭。
         if item.file_path:
             try:
                 from types import SimpleNamespace
