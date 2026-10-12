@@ -2,6 +2,7 @@ import './styles/aurora.css'
 import './styles/neo-noir-tokens.css'
 import './styles/index.css'
 import './styles/mobile.css'
+import './styles/calendar.css'
 
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
