@@ -26,7 +26,7 @@ import {
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Heart, Medal, HardDrive,
-  Sun, Moon, MonitorSmartphone, Gauge,
+  Sun, Moon, MonitorSmartphone, Gauge, Stethoscope,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -197,6 +197,7 @@ const navGroups: NavGroup[] = [
       { path: '/logs', label: '操作日志', icon: ScrollText },
       { path: '/health', label: '服务健康', icon: Activity },
       { path: '/health-board', label: '健康总览', icon: Gauge },
+      { path: '/diagnosis', label: '一键体检', icon: Stethoscope },
     ],
   },
 ]

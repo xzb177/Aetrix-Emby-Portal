@@ -810,6 +810,34 @@ export interface PanelHealth {
  */
 export const fetchPanelHealth = () => getPublic<PanelHealth>('/api/health')
 
+/** 一键体检（v2.57.0）：只读诊断报告与规则清单 */
+export interface DiagnosisFinding {
+  rule_id: string
+  name: string
+  level: 'info' | 'warn' | 'critical'
+  level_cn: string
+  title: string
+  description: string
+  steps: string[]
+  evidence: Record<string, any>
+}
+
+export interface DiagnosisReport {
+  ran_at: string
+  summary: { total: number; info: number; warn: number; critical: number }
+  findings: DiagnosisFinding[]
+  note: string
+}
+
+export interface DiagnosisRules {
+  rules: Array<{ rule_id: string; name: string }>
+  thresholds: Record<string, number>
+  levels: string[]
+}
+
+export const runDiagnosis = () => get<DiagnosisReport>('/diagnosis/run')
+export const fetchDiagnosisRules = () => get<DiagnosisRules>('/diagnosis/rules')
+
 // 注：「Emby 服务入口」那两个格子的页面（及它的读写接口封装）已下线，
 // EA / Emby 入口统一在「服务器」页维护（见 views/Servers.vue）。
 // 后端 /api/admin/emby/servers 仍在（挂载体检与列表页要用），但前端不再直连。
