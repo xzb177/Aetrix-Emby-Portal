@@ -703,7 +703,7 @@ def _maybe_cache_drive_redirect(
     落点是 drive.usercontent.google.com、终态不是 403/404/410（坏 URL 不进缓存）。
     """
     if not file_id or hops <= 0 or cached_hit:
-        logger.debug(
+        logger.info(
             "redirect_cache_skip reason=no_hops file_id=%s hops=%s cached_hit=%s status=%s",
             file_id, hops, cached_hit, terminal_status)
         return
