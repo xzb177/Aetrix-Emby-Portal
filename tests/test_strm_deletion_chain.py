@@ -581,3 +581,297 @@ class TestOrphanDriveCheck:
         cols = {c.key for c in StrmFileHealth.__table__.columns}
         assert {"file_id", "drive_id", "status", "checked_at", "note"} <= cols
         assert [c.key for c in StrmFileHealth.__table__.primary_key.columns] == ["file_id"]
+
+
+# ---------------------------------------------------------------------------
+# PR #709 审查打回 5 项修复的覆盖
+# ---------------------------------------------------------------------------
+
+class TestReview709Fixes:
+    """P1-1 零结果守卫误杀转 orphan / P2-1 admin PUT 写入口 /
+    P2-2 dry_run 长期提醒 / P2-3 orphan 多盘保护 / P2-4 404 换 SA 交叉确认。"""
+
+    @pytest.fixture()
+    def kvstore(self, monkeypatch):
+        """store 的 dict 桩：get_value/write_values 走内存（memdb 无 SystemConfig 表）。"""
+        from backend.integrations import store
+        kv = {}
+
+        def _get(db, key, default="", **kw):
+            return kv.get(key, default)
+
+        def _write(db, values, descriptions=None):
+            kv.update({str(k): str(v) for k, v in (values or {}).items()})
+            return len(values)
+
+        monkeypatch.setattr(store, "get_value", _get)
+        monkeypatch.setattr(store, "write_values", _write)
+        return kv
+
+    # ---- P1-1：零结果守卫拦截 → 墓碑记 health（unknown），不丢失 ----
+    def test_zero_result_guard_defers_tombstones_to_orphan(self, memdb, cfg, tmp_path):
+        for i in range(3):
+            _add_state_row(memdb, "r%d" % i, "fid%d" % i, strm_path="s%d.strm" % i)
+        ts = [Tombstone(file_id="fid0", drive_id="d1", reason="removed",
+                        detected_at="t"),
+              Tombstone(file_id="fid1", drive_id="d1", reason="removed",
+                        detected_at="t")]
+        stats: dict = {}
+        # videos_seen=0（纯删除 delta）→ 零结果守卫整批拦截
+        sg._consume_tombstones(memdb, ts, {}, str(tmp_path), stats, ["d1"], 0)
+        assert stats.get("prune_blocked")  # 拦截发生
+        assert stats.get("tombstone_blocked") == 2
+        assert stats.get("tombstone_blocked_deferred") == 2
+        rows = memdb.query(em.StrmFileHealth).filter(
+            em.StrmFileHealth.status == "unknown").all()
+        assert {r.file_id for r in rows} == {"fid0", "fid1"}
+        # 拦截=一条不删：状态行还在
+        assert memdb.query(em.StrmGenFile).count() == 3
+
+    def test_blocked_tombstone_reverified_by_orphan(self, memdb, cfg, kvstore,
+                                                    monkeypatch, tmp_path):
+        """P1-1 闭环：拦截→health unknown→orphan 复核（404×2→gone→走删除管线）。"""
+        from backend.emby_server import drive_changes as dc
+        cfg["strm_orphan_check_qps"] = "10"
+        _add_state_row(memdb, "rel0", "fid0", strm_path="s0.strm")
+        stats: dict = {}
+        sg._consume_tombstones(memdb, [Tombstone(
+            file_id="fid0", drive_id="d1", reason="removed", detected_at="t")],
+            {}, str(tmp_path), stats, ["d1"], 0)
+        assert stats.get("tombstone_blocked_deferred") == 1
+
+        monkeypatch.setattr(dc, "_get_token", lambda: "tok")
+        monkeypatch.setattr(dc, "_api_get", _raise_404(dc))
+        monkeypatch.setattr(sg, "_load_state",
+                            lambda: {"rel0": ("fid0", "s0.strm", 100)})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: str(tmp_path))
+        monkeypatch.setattr(sg, "_discover_drives", lambda: {"d1": ["sa1"]})
+        result = sg.run_orphan_drive_check(memdb)
+        assert result["ok"] is True
+        assert result["gone"] == 1
+        # dry_run 默认开：would-delete 走到报告，墓碑没丢
+        assert result["prune_stats"]["prune_would_delete"]["count"] == 1
+        row = memdb.query(em.StrmFileHealth).filter_by(file_id="fid0").first()
+        assert row.status == "gone"
+
+    # ---- P2-4：404 换 SA 交叉确认 ----
+    def test_404_cross_check_with_rotated_sa(self, memdb, cfg, kvstore, monkeypatch):
+        from backend.emby_server import drive_changes as dc
+        cfg["strm_orphan_check_qps"] = "10"
+        _add_media_item(memdb, "g1", "fid-flaky", gone=True)
+        _add_media_item(memdb, "g2", "fid-dead", gone=True)
+        token_calls = []
+
+        def fake_get_token():
+            token_calls.append(1)
+            return "tok%d" % len(token_calls)
+
+        attempts = {}
+
+        def fake_api_get(url, token, params):
+            n = attempts.get(url, 0) + 1
+            attempts[url] = n
+            if "fid-flaky" in url:
+                if n == 1:
+                    raise dc.DriveNotFoundError("单 SA 掉权限也回 404")
+                return {"id": "fid-flaky", "trashed": False}
+            raise dc.DriveNotFoundError("真删")
+
+        monkeypatch.setattr(dc, "_get_token", fake_get_token)
+        monkeypatch.setattr(dc, "_api_get", fake_api_get)
+        monkeypatch.setattr(sg, "_load_state", lambda: {"r": ("f", "s", 1)})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: "/tmp")
+        monkeypatch.setattr(sg, "_discover_drives", lambda: {"d1": ["sa1"]})
+        result = sg.run_orphan_drive_check(memdb)
+        assert result["ok"] is True
+        assert result["gone"] == 1 and result["alive"] == 1
+        flaky = memdb.query(em.StrmFileHealth).filter_by(
+            file_id="fid-flaky").first()
+        dead = memdb.query(em.StrmFileHealth).filter_by(
+            file_id="fid-dead").first()
+        assert flaky.status == "alive"  # 换 SA 后 200 → 不是真删，不误杀
+        assert dead.status == "gone"    # 两次 404 → 真删
+        # 初始 1 次 + 每次 404 轮换 1 次
+        assert len(token_calls) == 3
+
+    # ---- P2-3：orphan 多盘整批跳过 ----
+    def test_orphan_multi_disk_skips_batch(self, memdb, cfg, kvstore, monkeypatch):
+        from backend.emby_server import drive_changes as dc
+        cfg["strm_orphan_check_qps"] = "10"
+        _add_media_item(memdb, "g1", "fid-gone", gone=True)
+        monkeypatch.setattr(dc, "_get_token", lambda: "tok")
+        monkeypatch.setattr(dc, "_api_get", _raise_404(dc))
+        monkeypatch.setattr(sg, "_load_state", lambda: {"r": ("f", "s", 1)})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: "/tmp")
+        # 多盘部署：drive_id="unknown" 的候选也不能单独成组删
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: {"d1": ["sa1"], "d2": ["sa2"]})
+        result = sg.run_orphan_drive_check(memdb)
+        assert result["ok"] is True and result["gone"] == 1
+        assert result["prune_stats"].get("tombstone_skipped_multi") == 1
+        # 只跳过删除：health 的 gone 信号保留
+        row = memdb.query(em.StrmFileHealth).filter_by(
+            file_id="fid-gone").first()
+        assert row.status == "gone"
+
+    def test_orphan_single_disk_consumes(self, memdb, cfg, kvstore, monkeypatch):
+        from backend.emby_server import drive_changes as dc
+        cfg["strm_orphan_check_qps"] = "10"
+        _add_state_row(memdb, "rel0", "fid-gone", strm_path="s0.strm")
+        _add_media_item(memdb, "g1", "fid-gone", gone=True)
+        monkeypatch.setattr(dc, "_get_token", lambda: "tok")
+        monkeypatch.setattr(dc, "_api_get", _raise_404(dc))
+        monkeypatch.setattr(sg, "_load_state",
+                            lambda: {"rel0": ("fid-gone", "s0.strm", 100)})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: "/tmp")
+        monkeypatch.setattr(sg, "_discover_drives", lambda: {"d1": ["sa1"]})
+        result = sg.run_orphan_drive_check(memdb)
+        assert result["ok"] is True
+        # 单盘：正常走预算/删除管线（dry_run 默认开 → would-delete）
+        assert "tombstone_skipped_multi" not in result["prune_stats"]
+        assert result["prune_stats"]["prune_would_delete"]["count"] == 1
+
+    # ---- P2-2：dry_run 长期提醒 ----
+    def test_backlog_touch_sets_and_clears(self, memdb, cfg, kvstore):
+        assert kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "") == ""
+        sg._dry_run_backlog_touch(memdb, True)
+        since = kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "")
+        assert since  # 首次积压记时间戳
+        sg._dry_run_backlog_touch(memdb, True)
+        assert kvstore[sg.CONFIG_DRY_RUN_BACKLOG_SINCE] == since  # 不覆盖
+        sg._dry_run_backlog_touch(memdb, False)
+        assert kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "") == ""  # 清零
+
+    def test_prune_doomed_dry_run_touches_backlog(self, memdb, cfg, kvstore):
+        stats: dict = {}
+        sg._prune_doomed(memdb, [("r1", "s1")], {}, "/tmp", stats, 5)
+        assert stats["prune_would_delete"]["count"] == 1
+        assert kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "")
+        # 本轮无待删 → 积压清零
+        sg._prune_doomed(memdb, [], {}, "/tmp", {}, 5)
+        assert kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "") == ""
+
+    def test_dry_run_stale_warning(self, memdb, cfg, kvstore, monkeypatch):
+        from backend.integrations import store
+        from datetime import datetime, timedelta, timezone
+        stats = {
+            "verify": {"total_series": 1, "complete_series": 1,
+                       "incomplete_series": 0, "incomplete": []},
+            "prune_would_delete": {"count": 5, "sample": []},
+        }
+        monkeypatch.setattr(
+            store, "get_value",
+            lambda db, k, d="", **kw: json.dumps(stats)
+            if k == sg.CONFIG_LAST_STATS else kvstore.get(k, d))
+        # 积压 4 天 ≥ 3 天阈值 → 黄条提醒
+        kvstore[sg.CONFIG_DRY_RUN_BACKLOG_SINCE] = (
+            datetime.now(timezone.utc) - timedelta(days=4)).isoformat()
+        rep = sg.missing_report(memdb)
+        assert rep["dry_run_stale_warning"] is True
+        assert "5" in rep["dry_run_stale_text"]
+        assert "dry_run" in rep["dry_run_stale_text"]
+        # 积压刚开始 → 不提醒
+        kvstore[sg.CONFIG_DRY_RUN_BACKLOG_SINCE] = datetime.now(
+            timezone.utc).isoformat()
+        rep2 = sg.missing_report(memdb)
+        assert rep2["dry_run_stale_warning"] is False
+        assert rep2["dry_run_stale_text"] == ""
+
+    def test_stale_warning_off_when_dry_run_disabled(self, memdb, cfg, kvstore,
+                                                     monkeypatch):
+        """dry_run 已关 → 不提醒（armed 流程走通后黄条消失）。"""
+        from backend.integrations import store
+        from datetime import datetime, timedelta, timezone
+        cfg[sg.CONFIG_PRUNE_DRY_RUN] = "false"
+        stats = {
+            "verify": {"total_series": 1, "complete_series": 1,
+                       "incomplete_series": 0, "incomplete": []},
+            "prune_would_delete": {"count": 5, "sample": []},
+        }
+        monkeypatch.setattr(
+            store, "get_value",
+            lambda db, k, d="", **kw: json.dumps(stats)
+            if k == sg.CONFIG_LAST_STATS else kvstore.get(k, d))
+        kvstore[sg.CONFIG_DRY_RUN_BACKLOG_SINCE] = (
+            datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+        rep = sg.missing_report(memdb)
+        assert rep["dry_run_stale_warning"] is False
+
+    # ---- P2-1：admin PUT 写入口 ----
+    def test_admin_put_writes_only_provided(self, memdb, cfg, kvstore,
+                                            monkeypatch):
+        from backend.api import admin_strm_gen as adm
+        from fastapi import HTTPException
+        written = {}
+
+        def _write(db, values, descriptions=None):
+            written.update(values)
+            return len(values)
+
+        monkeypatch.setattr("backend.integrations.store.write_values", _write)
+        body = adm.StrmGenConfigSave(prune_dry_run=False, orphan_check_batch=500)
+        resp = adm.strm_gen_config_save(body, memdb)
+        assert resp["success"] is True
+        assert written[adm._gen.CONFIG_PRUNE_DRY_RUN] == "false"
+        assert written[adm._gen.CONFIG_ORPHAN_BATCH] == "500"
+        # 没传的不写
+        assert adm._gen.CONFIG_PRUNE_MAX_RATIO not in written
+        assert adm._gen.CONFIG_VERIFY_NEW_IDS not in written
+        # 回读：模拟落盘后读函数解析一致
+        cfg.update(written)
+        assert adm._gen.prune_dry_run(memdb) is False
+        assert adm._gen.orphan_check_batch(memdb) == 500
+        # 非法值 400
+        with pytest.raises(HTTPException):
+            adm.strm_gen_config_save(
+                adm.StrmGenConfigSave(prune_max_ratio=1.5), memdb)
+        with pytest.raises(HTTPException):
+            adm.strm_gen_config_save(
+                adm.StrmGenConfigSave(orphan_check_batch=50), memdb)
+        with pytest.raises(HTTPException):
+            adm.strm_gen_config_save(
+                adm.StrmGenConfigSave(orphan_check_qps=99), memdb)
+
+    def test_admin_put_all_eight_roundtrip(self, memdb, cfg, kvstore, monkeypatch):
+        """8 个新配置项都能写，且写的值能被读函数正确解析。"""
+        from backend.api import admin_strm_gen as adm
+        written = {}
+
+        def _write(db, values, descriptions=None):
+            written.update(values)
+            return len(values)
+
+        monkeypatch.setattr("backend.integrations.store.write_values", _write)
+        body = adm.StrmGenConfigSave(
+            prune_dry_run=False, prune_max_ratio=0.3, prune_max_absolute=80,
+            verify_new_ids=False, orphan_check_enabled=False,
+            orphan_check_interval_days=3, orphan_check_batch=500,
+            orphan_check_qps=1.5)
+        resp = adm.strm_gen_config_save(body, memdb)
+        assert resp["success"] is True
+        g = adm._gen
+        assert written[g.CONFIG_PRUNE_DRY_RUN] == "false"
+        assert written[g.CONFIG_PRUNE_MAX_RATIO] == "0.3"
+        assert written[g.CONFIG_PRUNE_MAX_ABSOLUTE] == "80"
+        assert written[g.CONFIG_VERIFY_NEW_IDS] == "false"
+        assert written[g.CONFIG_ORPHAN_ENABLED] == "false"
+        assert written[g.CONFIG_ORPHAN_INTERVAL_DAYS] == "3.0"
+        assert written[g.CONFIG_ORPHAN_BATCH] == "500"
+        assert written[g.CONFIG_ORPHAN_QPS] == "1.5"
+        # 回读：模拟落盘（读函数走 _db_config 桩）后解析一致
+        cfg.update(written)
+        assert g.prune_dry_run(memdb) is False
+        assert g.prune_max_ratio(memdb) == 0.3
+        assert g.prune_max_absolute(memdb) == 80
+        assert g.verify_new_ids(memdb) is False
+        assert g.orphan_check_enabled(memdb) is False
+        assert g.orphan_check_interval_days(memdb) == 3.0
+        assert g.orphan_check_batch(memdb) == 500
+        assert g.orphan_check_qps(memdb) == 1.5
+
+
+def _raise_404(dc):
+    """造一个永远 404 的 _api_get（换 SA 重试也 404）。"""
+    def _fake(url, token, params):
+        raise dc.DriveNotFoundError("gone")
+    return _fake

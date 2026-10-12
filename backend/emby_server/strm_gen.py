@@ -60,6 +60,10 @@ CONFIG_ENABLED = "strm_gen_enabled"
 CONFIG_SOURCE_DIR = "strm_gen_source_dir"
 CONFIG_LAST_RUN = "strm_gen_last_run"
 CONFIG_LAST_STATS = "strm_gen_last_stats"
+# dry_run 演习模式 would-delete 积压起始时间（UTC ISO）：R10 长期提醒用——
+# 积压超过 DRY_RUN_STALE_WARN_DAYS 天未处理，missing_report 给黄条提醒字段。
+CONFIG_DRY_RUN_BACKLOG_SINCE = "strm_gen_dry_run_backlog_since"
+DRY_RUN_STALE_WARN_DAYS = 3
 CONFIG_DRIVE_ID = "strm_gen_drive_id"
 CONFIG_PRUNE = "strm_gen_prune"
 # 删除保护（块2）：演习开关 / 比例阈值 / 绝对上限，全部热读。
@@ -201,6 +205,81 @@ def prune_enabled(db) -> bool:
 def prune_dry_run(db) -> bool:
     """演习开关：true=只统计 would-delete 进报告，不真删。默认 true。"""
     return _db_config(db, CONFIG_PRUNE_DRY_RUN, "true").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _dry_run_backlog_touch(db, has_backlog: bool) -> None:
+    """维护 dry_run 积压起始时间戳（R10 长期提醒）。
+
+    has_backlog=True：首次出现 would-delete 积压时写入当前 UTC ISO 时间；
+    has_backlog=False：本轮无待删项，积压清零则清掉该时间戳。
+    注意：store.write_values 不自动提交，由调用方事务提交；读写包在 SAVEPOINT
+    里，失败只回滚保存点——不污染调用方事务、不抛异常。
+    """
+    try:
+        from backend.integrations import store
+        try:
+            with db.begin_nested():
+                current = store.get_value(db, CONFIG_DRY_RUN_BACKLOG_SINCE, "") or ""
+                if has_backlog:
+                    if current:
+                        return
+                    iso = datetime.now(timezone.utc).isoformat()
+                    store.write_values(
+                        db,
+                        {CONFIG_DRY_RUN_BACKLOG_SINCE: iso},
+                        {CONFIG_DRY_RUN_BACKLOG_SINCE: "dry_run 删除积压起始时间（UTC ISO）"},
+                    )
+                else:
+                    if not current:
+                        return
+                    store.write_values(
+                        db,
+                        {CONFIG_DRY_RUN_BACKLOG_SINCE: ""},
+                        {CONFIG_DRY_RUN_BACKLOG_SINCE: "dry_run 删除积压起始时间（UTC ISO）"},
+                    )
+        except Exception:
+            pass  # 保存点已回滚，外层事务不受影响
+    except Exception as exc:
+        logger.warning("strm_gen: 更新 dry_run 积压时间戳失败: %s", exc)
+
+
+def _dry_run_stale_info(db, stats: dict) -> dict:
+    """纯计算（不写库）：dry_run 长期开着且 would-delete 积压超阈值时的提醒字段。
+
+    返回 {"dry_run_stale_warning", "dry_run_stale_text", "dry_run_backlog_since"}——
+    管理后台配置页"删除保护"分组据此渲染黄条（前端 hook 点）。
+    """
+    would = stats.get("prune_would_delete") or {}
+    try:
+        count = int(would.get("count") or 0)
+    except (ValueError, TypeError):
+        count = 0
+    dry_run_on = prune_dry_run(db)
+    try:
+        from backend.integrations import store
+        try:
+            with db.begin_nested():
+                since_raw = store.get_value(db, CONFIG_DRY_RUN_BACKLOG_SINCE, "") or ""
+        except Exception:
+            since_raw = ""  # 保存点已回滚，外层事务不受影响
+    except Exception:
+        since_raw = ""
+
+    stale = False
+    if dry_run_on and count > 0 and since_raw:
+        try:
+            since = datetime.fromisoformat(since_raw)
+            if since.tzinfo is None:
+                since = since.replace(tzinfo=timezone.utc)
+            stale = (datetime.now(timezone.utc) - since).days >= DRY_RUN_STALE_WARN_DAYS
+        except (ValueError, TypeError):
+            stale = False  # 解析失败按"不提醒"处理
+
+    return {
+        "dry_run_stale_warning": bool(stale),
+        "dry_run_stale_text": ("演习模式已拦截 %d 个删除，请确认后关闭 dry_run" % count) if stale else "",
+        "dry_run_backlog_since": since_raw or None,
+    }
 
 
 def prune_max_ratio(db) -> float:
@@ -885,15 +964,20 @@ def _apply_tombstone_deletions(doomed: list[tuple[str, str]],
 
 def _prune_doomed(db, doomed: list[tuple[str, str]], state: dict,
                   strm_root: str, stats: dict, videos_seen: int,
-                  reason_kind: str = "tombstone") -> None:
+                  reason_kind: str = "tombstone",
+                  track_backlog: bool = True) -> None:
     """统一删除流水线：预算检查 → dry_run → 真删。
 
     reason_kind: "tombstone"（墓碑/orphan_check）或 "stale_scan"（全量 stale 对比），
     只用于日志与 would-delete 报告区分来源。
     预算不通过 → 整批中止，一条都不删（all-or-nothing per run）。
+    track_backlog: 是否维护 dry_run 积压时间戳（R10）——只有生成管线设 True，
+    orphan 复核路径不碰（它的 would-delete 不进缺集报告，别干扰"持续"口径）。
     """
     doomed_count = len(doomed)
     if doomed_count == 0:
+        if track_backlog:
+            _dry_run_backlog_touch(db, False)  # 本轮无待删：would-delete 积压清零
         return
     ok, reason = _prune_budget_ok(db, doomed_count, videos_seen)
     if not ok:
@@ -912,6 +996,8 @@ def _prune_doomed(db, doomed: list[tuple[str, str]], state: dict,
             "sample": [{"remote_path": rp, "strm_path": sp}
                        for rp, sp in doomed[:50]],
         }
+        if track_backlog:
+            _dry_run_backlog_touch(db, True)  # 首次出现积压时记录起始时间（R10）
         logger.info("strm_gen: [演习] 本轮会删除 %d 个 .strm（%s，dry_run，未执行）",
                     doomed_count, reason_kind)
         return
@@ -923,7 +1009,8 @@ def _prune_doomed(db, doomed: list[tuple[str, str]], state: dict,
 
 def _consume_tombstones(db, tombstones: list, state: dict,
                         strm_root: str, stats: dict,
-                        drive_ids: list[str], videos_seen: int) -> None:
+                        drive_ids: list[str], videos_seen: int,
+                        track_backlog: bool = True) -> None:
     """消费墓碑：删磁盘 .strm + 删状态行。库条目不动（交扫描器下一轮）。
 
     - 去重：按 (drive_id, file_id)
@@ -965,6 +1052,7 @@ def _consume_tombstones(db, tombstones: list, state: dict,
         return
 
     doomed: list[tuple[str, str]] = []
+    doomed_tombstones: list = []  # 与 doomed 逐项对应（带 file_id/drive_id）
     for t in tombstones:
         hit = fid_to_entry.get(t.file_id)
         if not hit:
@@ -974,8 +1062,19 @@ def _consume_tombstones(db, tombstones: list, state: dict,
                                    note="tombstone %s 查不到状态行" % t.reason)
             continue
         doomed.append(hit)
+        doomed_tombstones.append(t)
+    blocked_before = stats.get("prune_blocked")
     _prune_doomed(db, doomed, state, strm_root, stats, videos_seen,
-                  reason_kind="tombstone")
+                  reason_kind="tombstone", track_backlog=track_backlog)
+    if doomed_tombstones and stats.get("prune_blocked") is not blocked_before:
+        # 预算/零结果守卫整批拦截：本批墓碑改记 health（unknown），转有界
+        # orphan check 逐个对 Drive 复核——拦截后 tombstone 不能丢弃，
+        # 否则 checkpoint 照常推进、下轮 changes 不再重发，.strm 永久残留。
+        for t in doomed_tombstones:
+            _record_health_unknown(db, t.file_id, t.drive_id,
+                                   note="tombstone %s 被 prune 守卫拦截，转 orphan check 复核" % t.reason)
+        stats["tombstone_blocked_deferred"] = (
+            stats.get("tombstone_blocked_deferred", 0) + len(doomed_tombstones))
 
 
 def _record_health_unknown(db, file_id: str, drive_id: str, note: str = "") -> None:
@@ -1648,8 +1747,8 @@ def run_orphan_drive_check(db) -> dict:
     200 → alive；异常 → error（不记 gone，checked_at 照写避免死循环）。
     alive 的同时清掉其 source_invalid_at 播放标记（文件恢复 → 标记清除）。
 
-    gone 的 file_id 视同墓碑：按 drive_id 分组，单组单盘走 _consume_tombstones
-    同一预算/同一删除路径（reason="orphan_check"）——这是 changes 漏事件
+    gone 的 file_id 视同墓碑：传入真实 drive 列表走 _consume_tombstones
+    同一预算/同一删除路径（多盘部署整批跳过，防跨盘误删）——这是 changes 漏事件
     （token 过期/积压丢事件）的兜底。
 
     反风控：token 走 drive_changes._get_token()，API 走 _api_get
@@ -1729,9 +1828,17 @@ def run_orphan_drive_check(db) -> dict:
                 status = "gone" if body.get("trashed") else "alive"
                 break
             except dc.DriveNotFoundError:
-                # 404 = 文件不存在（删除/移出共享/进回收站不可下载）
-                status = "gone"
-                break
+                # 404：可能是真删除，也可能是单个 SA 掉权限（Drive 对掉权限
+                # 的 SA 也回 404 而非 401）——换一个 SA 交叉确认一次，
+                # 两次都 404 才判 gone，避免误杀。
+                if attempt == 1:
+                    status = "gone"
+                    break
+                token = dc._get_token()
+                if not token:
+                    status = "gone"
+                    break
+                continue
             except PermissionError:
                 # 401：token 失效，换 SA 重试一次
                 token = dc._get_token()
@@ -1779,18 +1886,18 @@ def run_orphan_drive_check(db) -> dict:
         # 限速：per-SA QPS ≤ qps，每次 sleep 独立抖动（反风控）
         time.sleep(sleep_base * random.uniform(0.8, 1.2))
 
-    # gone 视同墓碑：按 drive_id 分组，单组单盘走同一预算/删除路径。
+    # gone 视同墓碑：传入真实 drive 列表走 _consume_tombstones 同一预算/
+    # 同一删除路径（多盘部署整批跳过）；drive_id 未知的候选不再单独成组，
+    # 避免 "unknown" 分组绕过多盘保护（R1）。
     # videos_seen 取状态总行数：每个候选都单独对 Drive 验过，
     # 零结果守卫针对的是 changes token 失效，这里不适用。
     if gone_tombstones:
         state = _load_state()
         strm_root = _container_strm_root(db)
         stats: dict[str, Any] = {}
-        groups: dict[str, list[Tombstone]] = {}
-        for t in gone_tombstones:
-            groups.setdefault(t.drive_id, []).append(t)
-        for did, ts in groups.items():
-            _consume_tombstones(db, ts, state, strm_root, stats, [did], len(state))
+        drive_ids = sorted(_discover_drives().keys())
+        _consume_tombstones(db, gone_tombstones, state, strm_root, stats,
+                            drive_ids, len(state), track_backlog=False)
         result["prune_stats"] = stats
 
     try:
@@ -1817,18 +1924,23 @@ def missing_report(db, limit: int = 100) -> dict[str, Any]:
     - tombstone_pending：上轮收到的墓碑总数
     - prune_blocked：删除保护拦截信息（None=本轮未拦截）
     - prune_would_delete：dry_run 演习清单（count/sample）
+    - dry_run_stale_warning / dry_run_stale_text / dry_run_backlog_since：
+      R10 黄条提醒 hook 点（dry_run 长期开着 + would-delete 持续积压超阈值）
     """
     try:
         from backend.integrations import store
         raw = store.get_value(db, CONFIG_LAST_STATS, "")
         if not raw:
-            return {"ok": True, "has_data": False, "incomplete": []}
+            return {"ok": True, "has_data": False, "incomplete": [],
+                    **_dry_run_stale_info(db, {})}
         stats = json.loads(raw)
+        stale_info = _dry_run_stale_info(db, stats)
         verify = stats.get("verify", {})
         # 生成失败/未完成校验时 stats 里没有 verify，此时视为无数据，
         # 否则前端会显示"剧集总数 0、完整 0、缺集 0"的误导性空报告。
         if not verify:
-            return {"ok": True, "has_data": False, "incomplete": []}
+            return {"ok": True, "has_data": False, "incomplete": [],
+                    **stale_info}
         return {
             "ok": True,
             "has_data": True,
@@ -1842,6 +1954,8 @@ def missing_report(db, limit: int = 100) -> dict[str, Any]:
             "prune_blocked": stats.get("prune_blocked"),
             "prune_would_delete": stats.get(
                 "prune_would_delete", {"count": 0, "sample": []}),
+            # R10：dry_run 长期提醒（黄条 hook 点，配置页"删除保护"分组用）
+            **stale_info,
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

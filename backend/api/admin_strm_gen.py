@@ -11,8 +11,10 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
+from typing import Optional
 
 from fastapi import Depends
 from pydantic import BaseModel, Field
@@ -54,10 +56,45 @@ class StrmGenConfigSave(BaseModel):
         default=8.0,
         description="Drive API 全局速率上限 QPS（1.0-20.0），默认 8.0（保守）",
     )
+    # 删除保护 / 僵尸校验 8 项：Optional，None=前端没传=不改（只写显式提供的值）。
+    # dry_run 默认 true，管理员确认 would-delete 清单无误后手动关闭才真正 armed。
+    prune_dry_run: Optional[bool] = Field(
+        default=None, description="删除保护：演习开关，true=只记 would-delete 不真删",
+    )
+    prune_max_ratio: Optional[float] = Field(
+        default=None, description="删除保护：单轮删除比例上限 (0, 1]，默认 0.2",
+    )
+    prune_max_absolute: Optional[int] = Field(
+        default=None, description="删除保护：单轮删除绝对上限 ≥1，默认 50",
+    )
+    verify_new_ids: Optional[bool] = Field(
+        default=None, description="增量中新文件写盘前是否验一次 file_id",
+    )
+    orphan_check_enabled: Optional[bool] = Field(
+        default=None, description="反向僵尸校验任务开关",
+    )
+    orphan_check_interval_days: Optional[float] = Field(
+        default=None, description="反向僵尸校验周期（天）≥1，默认 7",
+    )
+    orphan_check_batch: Optional[int] = Field(
+        default=None, description="反向校验每轮最多校验数 100-10000，默认 2000",
+    )
+    orphan_check_qps: Optional[float] = Field(
+        default=None, description="反向校验 per-SA QPS 上限 0.5-10，默认 2.0",
+    )
 
 
 class StrmGenTrigger(BaseModel):
     full: bool = Field(default=False, description="true=全量重建，false=增量")
+
+
+def _last_stats_dict(db: Session) -> dict:
+    """读上次生成统计（dict），失败/无数据时返回 {}。"""
+    try:
+        raw = store.get_value(db, _gen.CONFIG_LAST_STATS, "")
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
 
 
 def _read_config(db: Session) -> dict:
@@ -71,8 +108,7 @@ def _read_config(db: Session) -> dict:
         "local_root": _gen.local_root(db),
         "drive_concurrency": _gen.drive_concurrency(db),
         "api_qps": _gen.api_qps(db),
-        # .strm 删除链路（块2/块4）：只读暴露，供管理后台"删除保护"分组展示；
-        # 写入口由前端开发后续在 PUT /strm-gen/config 扩展（不破坏现有契约）
+        # .strm 删除链路（块2/块4）：读+写（PUT 只写显式提供的值）
         "prune_dry_run": _gen.prune_dry_run(db),
         "prune_max_ratio": _gen.prune_max_ratio(db),
         "prune_max_absolute": _gen.prune_max_absolute(db),
@@ -81,6 +117,8 @@ def _read_config(db: Session) -> dict:
         "orphan_check_interval_days": _gen.orphan_check_interval_days(db),
         "orphan_check_batch": _gen.orphan_check_batch(db),
         "orphan_check_qps": _gen.orphan_check_qps(db),
+        # R10：dry_run 长期提醒——配置页"删除保护"分组据此渲染黄条
+        **_gen._dry_run_stale_info(db, _last_stats_dict(db)),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
     }
 
@@ -121,9 +159,21 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     if qps < 1.0 or qps > 20.0:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="API 速率上限应在 1.0-20.0 QPS 之间")
+    # 删除保护/僵尸校验 8 项：只校验+写入显式提供的值（None=没传=不改）
+    from fastapi import HTTPException
+    if body.prune_max_ratio is not None and not (0 < float(body.prune_max_ratio) <= 1):
+        raise HTTPException(status_code=400, detail="删除比例上限应在 (0, 1] 范围内")
+    if body.prune_max_absolute is not None and int(body.prune_max_absolute) < 1:
+        raise HTTPException(status_code=400, detail="删除绝对上限应 ≥ 1")
+    if body.orphan_check_interval_days is not None and float(body.orphan_check_interval_days) < 1:
+        raise HTTPException(status_code=400, detail="僵尸校验间隔应 ≥ 1 天")
+    if body.orphan_check_batch is not None and not (100 <= int(body.orphan_check_batch) <= 10000):
+        raise HTTPException(status_code=400, detail="僵尸校验批量应在 100-10000 之间")
+    if body.orphan_check_qps is not None and not (0.5 <= float(body.orphan_check_qps) <= 10):
+        raise HTTPException(status_code=400, detail="僵尸校验 QPS 应在 0.5-10 之间")
     # 注意：store 只有 write_values（批量写），没有 set_value；
     # 且 write_values 不自动提交，提交时机由调用方决定。
-    store.write_values(db, {
+    values = {
         _gen.CONFIG_ENABLED: "true" if body.enabled else "false",
         _gen.CONFIG_SOURCE_DIR: (src + "/") if src else "",
         _gen.CONFIG_DRIVE_ID: (body.drive_id or "").strip(),
@@ -133,7 +183,8 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_LOCAL_ROOT: (body.local_root or "/media").strip(),
         _gen.CONFIG_CONCURRENCY: str(cc),
         _gen.CONFIG_API_QPS: str(qps),
-    }, {
+    }
+    descriptions = {
         _gen.CONFIG_ENABLED: ".strm 生成器总开关",
         _gen.CONFIG_SOURCE_DIR: ".strm 生成器 Drive 源目录",
         _gen.CONFIG_DRIVE_ID: ".strm 生成器指定 Drive ID",
@@ -143,7 +194,33 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_LOCAL_ROOT: ".strm 生成器本地源根目录",
         _gen.CONFIG_CONCURRENCY: ".strm 生成器多盘并行列举并发数（1-10）",
         _gen.CONFIG_API_QPS: ".strm 生成器 Drive API 全局速率上限 QPS（1.0-20.0）",
-    })
+    }
+    # 8 个删除保护/僵尸校验配置：只写显式提供的值
+    if body.prune_dry_run is not None:
+        values[_gen.CONFIG_PRUNE_DRY_RUN] = "true" if body.prune_dry_run else "false"
+        descriptions[_gen.CONFIG_PRUNE_DRY_RUN] = ".strm 删除保护演习开关（true=只记 would-delete 不真删）"
+    if body.prune_max_ratio is not None:
+        values[_gen.CONFIG_PRUNE_MAX_RATIO] = str(float(body.prune_max_ratio))
+        descriptions[_gen.CONFIG_PRUNE_MAX_RATIO] = ".strm 删除保护单轮删除比例上限"
+    if body.prune_max_absolute is not None:
+        values[_gen.CONFIG_PRUNE_MAX_ABSOLUTE] = str(int(body.prune_max_absolute))
+        descriptions[_gen.CONFIG_PRUNE_MAX_ABSOLUTE] = ".strm 删除保护单轮删除绝对上限"
+    if body.verify_new_ids is not None:
+        values[_gen.CONFIG_VERIFY_NEW_IDS] = "true" if body.verify_new_ids else "false"
+        descriptions[_gen.CONFIG_VERIFY_NEW_IDS] = ".strm 增量新文件写盘前校验 file_id"
+    if body.orphan_check_enabled is not None:
+        values[_gen.CONFIG_ORPHAN_ENABLED] = "true" if body.orphan_check_enabled else "false"
+        descriptions[_gen.CONFIG_ORPHAN_ENABLED] = ".strm 反向僵尸校验任务开关"
+    if body.orphan_check_interval_days is not None:
+        values[_gen.CONFIG_ORPHAN_INTERVAL_DAYS] = str(float(body.orphan_check_interval_days))
+        descriptions[_gen.CONFIG_ORPHAN_INTERVAL_DAYS] = ".strm 反向僵尸校验周期（天）"
+    if body.orphan_check_batch is not None:
+        values[_gen.CONFIG_ORPHAN_BATCH] = str(int(body.orphan_check_batch))
+        descriptions[_gen.CONFIG_ORPHAN_BATCH] = ".strm 反向校验每轮最多校验数"
+    if body.orphan_check_qps is not None:
+        values[_gen.CONFIG_ORPHAN_QPS] = str(float(body.orphan_check_qps))
+        descriptions[_gen.CONFIG_ORPHAN_QPS] = ".strm 反向校验 per-SA QPS 上限"
+    store.write_values(db, values, descriptions)
     db.commit()
     return {"success": True, "config": _read_config(db)}
 
