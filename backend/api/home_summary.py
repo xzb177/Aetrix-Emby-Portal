@@ -42,12 +42,20 @@ logger = logging.getLogger("aetrix.home")
 router = APIRouter(prefix="/api/user/home", tags=["用户端-首页聚合"])
 
 
-def _safe(name: str, fn):
+def _safe(name: str, fn, db=None):
     """单项失败不连带：记日志、返回 None，前端按 null 降级"""
     try:
         return fn()
     except Exception:  # noqa: BLE001
         logger.exception("首页聚合子查询失败: %s", name)
+        # F-P1-18：回滚会话，防污染后续查询。
+        # SQLAlchemy 会话在异常后进入待回滚状态，不回滚则后续查询抛 PendingRollbackError，
+        # 一个子项失败会拖垮整页。
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         return None
 
 
@@ -301,13 +309,13 @@ def home_summary(
     """首页首屏聚合：9 项数据一次返回，单项失败各自为 None"""
     user = current_user
     return {
-        "points": _safe("points", lambda: _points(db, user)),
-        "checkin": _safe("checkin", lambda: _checkin(db, user)),
-        "invite": _safe("invite", lambda: _invite(db, user)),
-        "subscriptions": _safe("subscriptions", lambda: _subscriptions(db, user)),
-        "announcements": _safe("announcements", lambda: _announcements(db)),
-        "stats": _safe("stats", lambda: _stats(db, user)),
-        "media_seek": _safe("media_seek", lambda: _media_seek(db, user)),
-        "tickets": _safe("tickets", lambda: _tickets(db, user)),
-        "sessions": _safe("sessions", lambda: _sessions(db, user)),
+        "points": _safe("points", lambda: _points(db, user), db),
+        "checkin": _safe("checkin", lambda: _checkin(db, user), db),
+        "invite": _safe("invite", lambda: _invite(db, user), db),
+        "subscriptions": _safe("subscriptions", lambda: _subscriptions(db, user), db),
+        "announcements": _safe("announcements", lambda: _announcements(db), db),
+        "stats": _safe("stats", lambda: _stats(db, user), db),
+        "media_seek": _safe("media_seek", lambda: _media_seek(db, user), db),
+        "tickets": _safe("tickets", lambda: _tickets(db, user), db),
+        "sessions": _safe("sessions", lambda: _sessions(db, user), db),
     }

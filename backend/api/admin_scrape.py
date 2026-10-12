@@ -490,7 +490,12 @@ def _read_sibling_text(
         for cand in candidates:
             try:
                 with open(os.path.join(d, cand), "r", encoding="utf-8-sig", errors="ignore") as f:
-                    return f.read()
+                    # F-P1-12：限制 NFO 读取大小（256KB），防异常大文件一次性进内存
+                    data = f.read(256 * 1024)
+                    if f.read(1):
+                        logger.warning("NFO 文件过大已截断：%s（只读前 256KB）",
+                                       os.path.join(d, cand))
+                    return data
             except OSError:
                 continue
         parent = os.path.dirname(d)
@@ -721,6 +726,12 @@ def reset_meta_source_cooldown(
 
     if source_id not in ms_sources.SPEC_BY_ID:
         raise HTTPException(status_code=404, detail=f"未知的数据源：{source_id}")
+    # F-P1-11：TMDB 的密钥池归 Phase 6a 的 TmdbClient 管（单一入口），
+    # 重置冷却必须走 tmdb_client 的接口，不能操作 metasources 的池。
+    if source_id == "tmdb":
+        from backend.emby_server import tmdb as tmdb_module
+        cleared = tmdb_module.tmdb_client.clear_cooldowns()
+        return {"success": True, "cleared": cleared, "config": _meta_sources_view(db)}
     snapshot = ms_config.read_config(db, ms_sources.SPECS)
     source_cfg = snapshot.by_id(source_id)
     keys = list(source_cfg.keys) if source_cfg else []
@@ -854,8 +865,10 @@ def _run_library_rescrape(library_id: int, policy: str) -> None:
             logger.warning("重新刮削：媒体库 %s 不存在", library_id)
             return
         snap = LibrarySnapshot.of(lib)
-        if policy == "all":
-            snap = replace(snap, scrape_policy=normalize_scrape_policy("all"))
+        # F-P1-10：请求级 policy 恒覆盖快照，不限于 all。
+        # 原逻辑只在 policy=="all" 时覆盖，库原配置为 all 而本次请求 missing_only
+        # 时仍按 all 执行，与管理员当轮选择相悖。
+        snap = replace(snap, scrape_policy=normalize_scrape_policy(policy))
         scan_instrument.install()  # 幂等：进度上报点
         scan_library_sync(db, lib, snap, trigger="rescrape")
     except ScanInProgress:

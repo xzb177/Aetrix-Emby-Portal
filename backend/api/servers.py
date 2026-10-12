@@ -516,6 +516,10 @@ async def update_server(
             raise HTTPException(409, "已经有同名服务器了，换个名字吧")
 
         kind_changed = kind != server.kind
+        # F-P1-25：记录旧 kind，换类型时先对旧 kind deactivate_legacy。
+        # 原代码在 sync_entry 里用改后的 server.kind 调 deactivate_legacy，
+        # 换类型后旧类型的配置键未被收回，is_active 沿用旧值。
+        old_kind = server.kind
         server.name = name
         server.kind = kind
         server.url = url
@@ -533,7 +537,13 @@ async def update_server(
             registry.only_known(kind, payload.config or {})
             if kind_changed else registry.merge_config(server, payload.config or {})
         )
+        # F-P1-25：换类型时先收回旧类型的 legacy 配置键，并重置激活状态
+        if kind_changed and old_kind in registry.LEGACY_PREFIX:
+            registry.deactivate_legacy(db, old_kind)
+            server.is_active = False
         db.commit()
+        # 把旧 kind 挂在 server 上，供 sync_entry 使用（避免再次查询）
+        server._old_kind_for_sync = old_kind if kind_changed else None
         return server
 
     server = await run_in_threadpool(apply)

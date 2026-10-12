@@ -62,6 +62,8 @@ class InAppChannel(NotificationChannel):
                    from_user_id: Optional[int] = None,
                    db: Session = None) -> bool:
         """发送站内消息"""
+        # G2-P1-1：自己创建的会话必须显式关闭，不能靠生成器 GC
+        _own_db = db is None
         try:
             # 创建数据库记录
             if db is None:
@@ -101,6 +103,13 @@ class InAppChannel(NotificationChannel):
             if db:
                 db.rollback()
             return False
+        finally:
+            # G2-P1-1：自己创建的会话必须关闭
+            if _own_db and db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
 
 class EmailChannel(NotificationChannel):
@@ -126,6 +135,8 @@ class EmailChannel(NotificationChannel):
             logger.warning("邮件通知未配置，跳过发送")
             return False
 
+        # G2-P1-1：自己创建的会话必须显式关闭
+        _own_db = db is None
         try:
             # 获取用户邮箱
             if db is None:
@@ -163,6 +174,13 @@ class EmailChannel(NotificationChannel):
             if db:
                 db.rollback()
             return False
+        finally:
+            # G2-P1-1：自己创建的会话必须关闭
+            if _own_db and db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     def _deliver(self, to_email: str, title: str, content: str) -> tuple[bool, Optional[str]]:
         """同步 SMTP 投递（放在线程里跑，避免阻塞事件循环）"""
@@ -216,6 +234,8 @@ class TelegramChannel(NotificationChannel):
             logger.warning("Telegram 通知未配置，跳过发送")
             return False
 
+        # G2-P1-1：自己创建的会话必须显式关闭
+        _own_db = db is None
         try:
             # 获取用户的 Telegram ID
             if db is None:
@@ -256,6 +276,13 @@ class TelegramChannel(NotificationChannel):
             if db:
                 db.rollback()
             return False
+        finally:
+            # G2-P1-1：自己创建的会话必须关闭
+            if _own_db and db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     async def _deliver(self, chat_id: int, title: str, content: str) -> tuple[bool, Optional[str]]:
         """调用 Telegram Bot API 投递"""
@@ -487,36 +514,46 @@ class NotificationService:
             channels = ["in_app"]  # 默认只发送站内信
 
         results = {}
+        # G2-P1-1：自己创建的会话必须显式关闭
+        _own_db = db is None
         db_session = db or next(get_db())
+        try:
+            for channel_name in channels:
+                if channel_name not in self.channels:
+                    logger.warning(f"通知渠道 {channel_name} 不存在")
+                    results[channel_name] = False
+                    continue
 
-        for channel_name in channels:
-            if channel_name not in self.channels:
-                logger.warning(f"通知渠道 {channel_name} 不存在")
-                results[channel_name] = False
-                continue
+                channel = self.channels[channel_name]
 
-            channel = self.channels[channel_name]
+                if channel_name == "in_app":
+                    success = await channel.send(
+                        user_id=user_id,
+                        title=title,
+                        content=content,
+                        message_type=message_type,
+                        related_id=related_id,
+                        from_user_id=from_user_id,
+                        db=db_session
+                    )
+                else:
+                    success = await channel.send(
+                        user_id=user_id,
+                        title=title,
+                        content=content,
+                        data=data,
+                        db=db_session
+                    )
 
-            if channel_name == "in_app":
-                success = await channel.send(
-                    user_id=user_id,
-                    title=title,
-                    content=content,
-                    message_type=message_type,
-                    related_id=related_id,
-                    from_user_id=from_user_id,
-                    db=db_session
-                )
-            else:
-                success = await channel.send(
-                    user_id=user_id,
-                    title=title,
-                    content=content,
-                    data=data,
-                    db=db_session
-                )
+                results[channel_name] = success
 
-            results[channel_name] = success
+        finally:
+            # G2-P1-1：自己创建的会话必须关闭
+            if _own_db and db_session is not None:
+                try:
+                    db_session.close()
+                except Exception:
+                    pass
 
         return results
 
@@ -547,65 +584,89 @@ class NotificationService:
 
     async def get_unread_count(self, user_id: int, db: Optional[Session] = None) -> int:
         """获取用户未读消息数量"""
+        # G2-P1-1：自己创建的会话必须显式关闭
+        _own_db = db is None
         if db is None:
             db = next(get_db())
+        try:
+            count = db.query(models.StationMessage).filter(
+                and_(
+                    models.StationMessage.to_user_id == user_id,
+                    models.StationMessage.is_read == False
+                )
+            ).count()
 
-        count = db.query(models.StationMessage).filter(
-            and_(
-                models.StationMessage.to_user_id == user_id,
-                models.StationMessage.is_read == False
-            )
-        ).count()
-
-        return count
+            return count
+        finally:
+            if _own_db and db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     async def mark_as_read(self, message_id: int, user_id: int, db: Optional[Session] = None) -> bool:
         """标记消息为已读"""
+        # G2-P1-1：自己创建的会话必须显式关闭
+        _own_db = db is None
         if db is None:
             db = next(get_db())
+        try:
+            message = db.query(models.StationMessage).filter(
+                and_(
+                    models.StationMessage.id == message_id,
+                    models.StationMessage.to_user_id == user_id
+                )
+            ).first()
 
-        message = db.query(models.StationMessage).filter(
-            and_(
-                models.StationMessage.id == message_id,
-                models.StationMessage.to_user_id == user_id
-            )
-        ).first()
+            if message:
+                message.is_read = True
+                message.read_at = datetime.now()
+                db.commit()
 
-        if message:
-            message.is_read = True
-            message.read_at = datetime.now()
-            db.commit()
+                # 通过 WebSocket 通知未读数更新
+                unread_count = await self.get_unread_count(user_id, db)
+                await send_notification(
+                    notification_type="station.unread_count",
+                    user_id=user_id,
+                    title="",
+                    message="",
+                    data={"unread_count": unread_count}
+                )
 
-            # 通过 WebSocket 通知未读数更新
-            unread_count = await self.get_unread_count(user_id, db)
-            await send_notification(
-                notification_type="station.unread_count",
-                user_id=user_id,
-                title="",
-                message="",
-                data={"unread_count": unread_count}
-            )
+                return True
 
-            return True
-
-        return False
+            return False
+        finally:
+            if _own_db and db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
     async def get_messages(self, user_id: int, limit: int = 50,
                            unread_only: bool = False, db: Optional[Session] = None) -> List[models.StationMessage]:
         """获取用户消息列表"""
+        # G2-P1-1：自己创建的会话必须显式关闭
+        _own_db = db is None
         if db is None:
             db = next(get_db())
+        try:
+            query = db.query(models.StationMessage).filter(
+                models.StationMessage.to_user_id == user_id
+            )
 
-        query = db.query(models.StationMessage).filter(
-            models.StationMessage.to_user_id == user_id
-        )
+            if unread_only:
+                query = query.filter(models.StationMessage.is_read == False)
 
-        if unread_only:
-            query = query.filter(models.StationMessage.is_read == False)
+            messages = query.order_by(models.StationMessage.created_at.desc()).limit(limit).all()
 
-        messages = query.order_by(models.StationMessage.created_at.desc()).limit(limit).all()
-
-        return messages
+            return messages
+        finally:
+            if _own_db and db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    pass
 
 
 # ==================== 管理员操作事件 ====================

@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -68,12 +69,19 @@ def _write_generated_cover(lib: em.Library, data: bytes) -> str:
 
     与直传接口同一套路径规则（``library-covers/<guid>.webp``），所以生成的
     封面和上传的封面在客户端侧是同一个 URL，切换时不用清缓存逻辑。
+
+    F-P1-19：先写版本化文件，DB 提交成功后再清理旧文件。
+    原逻辑是 os.replace 直接覆盖旧图后才 db.commit()，提交失败时旧图已丢。
+    F-P1-20：临时文件名加入 uuid，防同进程并发写同一库时交错。
     """
-    relative = os.path.join("library-covers", f"{lib.guid}.webp")
+    # F-P1-19：版本化文件名，提交成功前旧文件原封不动
+    version = uuid.uuid4().hex[:8]
+    relative = os.path.join("library-covers", f"{lib.guid}.{version}.webp")
     # 注意：image_store.local_path() 是给远程 URL 做内容哈希的，不能解析本地相对路径
     target = os.path.abspath(os.path.join(image_store.image_dir(), relative))
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    temporary = f"{target}.{os.getpid()}.rendering"
+    # F-P1-20：uuid 防同名竞争（原只用 pid）
+    temporary = f"{target}.{os.getpid()}.{uuid.uuid4().hex[:8]}.rendering"
     try:
         with open(temporary, "wb") as handle:
             handle.write(data)
@@ -88,14 +96,27 @@ def _write_generated_cover(lib: em.Library, data: bytes) -> str:
         raise
     old = lib.cover_path
     lib.cover_path = relative
-    if old and old != relative:
+    # F-P1-19：旧文件清理推迟到 DB 提交成功后，由调用方在 commit 后调用
+    # _cleanup_old_cover()。这里只记录，不删除。
+    lib._old_cover_to_cleanup = old if (old and old != relative) else None
+    return relative
+
+
+def _cleanup_old_cover(lib: em.Library) -> None:
+    """DB 提交成功后调用：删除旧封面文件（F-P1-19）"""
+    old = getattr(lib, "_old_cover_to_cleanup", None)
+    if old:
         old_abs = image_store.local_path(old)
         if old_abs and os.path.isfile(old_abs):
             try:
                 os.remove(old_abs)
             except OSError:
                 logger.debug("旧封面删除失败：%s", old_abs, exc_info=True)
-    return relative
+        # 清理标记，防重复删除
+        try:
+            delattr(lib, "_old_cover_to_cleanup")
+        except AttributeError:
+            pass
 
 
 @router.post("/{lib_id}/cover/preview")
@@ -138,25 +159,41 @@ def render_library_cover(
     db: Session = Depends(get_db),
 ):
     """按传入配置生成并保存封面（落库 + 落盘），返回新的封面 URL"""
-    lib = _load_library(db, lib_id)
-    template = _validate_template(payload.get("template"))
-    data = render_cover_bytes(
-        db, lib,
-        template=template,
-        title=(payload.get("title") or "")[:100],
-        subtitle=(payload.get("subtitle") or "")[:100],
-    )
-    if not data:
-        raise HTTPException(
-            status_code=422,
-            detail="生成失败：这个库还没有可用海报（等刮削补完再试）",
+    # F-P1-21：按 lib_id 加锁，防与后台 worker 交错覆盖。
+    # 同一库正在渲染时，同步保存等待或直接拒绝，避免配置与文件互相覆盖。
+    with _COVER_LOCK:
+        if lib_id in _COVER_RUNNING:
+            raise HTTPException(
+                status_code=409,
+                detail="该媒体库封面正在后台生成中，请稍后再试",
+            )
+        # 标记为运行中，防 worker 同时启动
+        _COVER_RUNNING.add(lib_id)
+    try:
+        lib = _load_library(db, lib_id)
+        template = _validate_template(payload.get("template"))
+        data = render_cover_bytes(
+            db, lib,
+            template=template,
+            title=(payload.get("title") or "")[:100],
+            subtitle=(payload.get("subtitle") or "")[:100],
         )
-    _write_generated_cover(lib, data)
-    # 配置落库：不然「按最新海报重新生成」读不到上次用的样式/标题
-    lib.cover_template = template
-    lib.cover_title = (payload.get("title") or "")[:100] or None
-    lib.cover_subtitle = (payload.get("subtitle") or "")[:100] or None
-    db.commit()
+        if not data:
+            raise HTTPException(
+                status_code=422,
+                detail="生成失败：这个库还没有可用海报（等刮削补完再试）",
+            )
+        _write_generated_cover(lib, data)
+        # 配置落库：不然「按最新海报重新生成」读不到上次用的样式/标题
+        lib.cover_template = template
+        lib.cover_title = (payload.get("title") or "")[:100] or None
+        lib.cover_subtitle = (payload.get("subtitle") or "")[:100] or None
+        db.commit()
+        # F-P1-19：提交成功后再清理旧文件
+        _cleanup_old_cover(lib)
+    finally:
+        with _COVER_LOCK:
+            _COVER_RUNNING.discard(lib_id)
     return {
         "success": True,
         "cover_url": f"/api/admin/emby/libraries/{lib.id}/cover",
@@ -267,6 +304,8 @@ def _cover_worker(stop: threading.Event) -> None:
                     try:
                         regenerate_cover_for_library(db, lib)
                         db.commit()
+                        # F-P1-19：提交成功后再清理旧文件
+                        _cleanup_old_cover(lib)
                         _set_cover_state(lib_id, "done")
                     except CoverRegenError as exc:
                         db.rollback()
@@ -334,6 +373,8 @@ def regenerate_library_cover(
     except CoverRegenError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     db.commit()
+    # F-P1-19：提交成功后再清理旧文件
+    _cleanup_old_cover(lib)
     return {
         "success": True,
         "cover_url": f"/api/admin/emby/libraries/{lib.id}/cover",
