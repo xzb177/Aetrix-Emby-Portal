@@ -56,6 +56,19 @@ _TOKEN_TTL_SECONDS: float = 55 * 60
 _TOKEN_MIN_REMAIN_SECONDS: float = 120
 
 _cache_lock = threading.Lock()
+
+# P1（2026-10-12）：会话级 SA 亲和——同一文件 90–120s 内固定用一个 SA，
+# 使连续 Range/拖进度条请求的 token 命中率 ~0→~100%。
+# 反风控：窗口短（90s + 0–30s 随机抖动）+ 到期回到抖动轮换，不形成固定单 SA hammer；
+# 亲和使 token mint 次数下降 → token endpoint QPS 下降（正向）。
+_SA_AFFINITY_TTL_BASE = 90.0
+_SA_AFFINITY_TTL_JITTER = 30.0
+_SA_AFFINITY_MAX_ENTRIES = 4096
+# affinity_key -> (sa_dict, expire_monotonic)；复用 _cache_lock 保护。
+# 注意：_cache_lock 是不可重入的 threading.Lock，亲和的查/写必须发生在
+# get_drive_bearer_token 内那个 `with _cache_lock:`（查缓存→换token→写缓存）之外，
+# 即选 SA 阶段，绝不嵌套持锁。
+_sa_affinity: dict[str, tuple[dict[str, Any], float]] = {}
 # P1 修复（审查）：token 缓存从"全局单条"改为"按 SA 分账号"。
 # key = SA 的 client_email（稳定唯一标识），value = (token, expire_at)。
 # expire_at 以 time.monotonic() 为基准。此前全局缓存 55 分钟，
@@ -75,6 +88,7 @@ def _reset_state() -> None:
     """
     with _cache_lock:
         _token_cache.clear()
+        _sa_affinity.clear()
 
 
 def _load_drive_changes() -> ModuleType:
@@ -153,7 +167,40 @@ def _pick_sa() -> dict[str, Any] | None:
     return None
 
 
-def get_drive_bearer_token() -> str | None:
+def _affinity_pick(affinity_key: str | None) -> dict[str, Any] | None:
+    """亲和选 SA：key 命中且未过期返回原 SA；否则走 _pick_sa() 并写入/刷新亲和条目。
+
+    key 为空 → 与旧行为完全一致（直接 _pick_sa()）。
+    """
+    import random
+
+    if not affinity_key:
+        return _pick_sa()
+    now = time.monotonic()
+    with _cache_lock:
+        entry = _sa_affinity.get(affinity_key)
+        if entry is not None:
+            sa, expire = entry
+            if now < expire and _is_sa_dict(sa):
+                logger.debug("drive_sa_affinity hit key=%.32s", affinity_key)
+                return sa
+            _sa_affinity.pop(affinity_key, None)
+        if len(_sa_affinity) >= _SA_AFFINITY_MAX_ENTRIES:
+            # 与 _redirect_cache_set 同口径：满了整体清掉（下次请求重建亲和，无正确性影响）
+            _sa_affinity.clear()
+    sa = _pick_sa()
+    if sa is not None:
+        ttl = _SA_AFFINITY_TTL_BASE + random.uniform(0, _SA_AFFINITY_TTL_JITTER)
+        with _cache_lock:
+            _sa_affinity[affinity_key] = (sa, now + ttl)
+        logger.info(
+            "drive_sa_affinity new key=%.32s sa=%s ttl=%.0f",
+            affinity_key, sa.get("client_email"), ttl,
+        )
+    return sa
+
+
+def get_drive_bearer_token(affinity_key: str | None = None) -> str | None:
     """获取 Drive 访问用的 Bearer access_token；失败返回 None，永不抛异常。
 
     每次调用都先经 ``_pick_sa()`` round-robin 选出一个 SA，再以该 SA 的
@@ -161,6 +208,9 @@ def get_drive_bearer_token() -> str | None:
     否则经 ``drive_changes._sa_access_token`` 换取新 token，并按 55 分钟写入
     该 SA 自己的缓存条目。换 token 失败/返回空值时不写缓存，避免空值污染
     后续请求；无可用 SA 时直接返回 None，不查缓存。
+
+    ``affinity_key``：P1 会话级 SA 亲和键（同一文件 90–120s 内固定 SA）；
+    为 None 时与旧行为完全一致（每次经抖动轮换选 SA）。
 
     关键不变式：外层按 ``_TOKEN_TTL_SECONDS``（3300 秒）缓存，故向内层索取
     token 时要求 ``min_remaining = _TOKEN_TTL_SECONDS + _TOKEN_MIN_REMAIN_SECONDS``
@@ -170,7 +220,7 @@ def get_drive_bearer_token() -> str | None:
     """
     try:
         drive_changes = _load_drive_changes()
-        sa = _pick_sa()
+        sa = _affinity_pick(affinity_key)
     except Exception as exc:
         logger.warning("drive_auth: 加载 Drive 凭据模块失败，调用方降级处理: %s", exc)
         return None
@@ -207,11 +257,15 @@ def get_drive_bearer_token() -> str | None:
         return token
 
 
-def drive_auth_headers(url: str) -> dict[str, str]:
-    """为 Drive 直链构造请求头；非 Drive 域名或无 token 时返回空字典。"""
+def drive_auth_headers(url: str, affinity_key: str | None = None) -> dict[str, str]:
+    """为 Drive 直链构造请求头；非 Drive 域名或无 token 时返回空字典。
+
+    affinity_key：P1 会话级 SA 亲和键；不传时默认用 url 本身——同一文件的 .strm
+    内容固定（验签后 canonical URL），url 即天然的按文件稳定键。
+    """
     if not is_drive_url(url):
         return {}
-    token = get_drive_bearer_token()
+    token = get_drive_bearer_token(affinity_key if affinity_key is not None else url)
     if not token:
         return {}
     return {"Authorization": f"Bearer {token}"}
