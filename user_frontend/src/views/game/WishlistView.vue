@@ -32,7 +32,7 @@
         <div class="v4-sec-sub">漂流中的心愿，营地正在想办法捞起来</div>
         <div v-if="myLoading" class="v4-skeleton" style="height:80px"></div>
         <div v-else-if="myError" class="v4-err">许愿加载失败：{{ myError }}<br><button class="v4-retry" @click="loadMine">重试</button></div>
-        <div v-else-if="myWishes.length === 0" class="v4-err">池子里还没有你的心愿，投一条下去吧 🏮</div>
+        <div v-else-if="myWishes.length === 0" class="v4-empty">池子里还没有你的心愿，投一条下去吧 🏮</div>
         <div v-else>
           <div
             v-for="w in myWishes"
@@ -59,7 +59,7 @@
         <div class="v4-sec-sub">附议多的心愿，优先被捞起来</div>
         <div v-if="hotLoading" class="v4-skeleton" style="height:80px"></div>
         <div v-else-if="hotError" class="v4-err">众人许愿加载失败：{{ hotError }}<br><button class="v4-retry" @click="loadHot">重试</button></div>
-        <div v-else-if="hotWishes.length === 0" class="v4-err">大家的心愿都在漂流，暂时没有公开的</div>
+        <div v-else-if="hotWishes.length === 0" class="v4-empty">大家的心愿都在漂流，暂时没有公开的</div>
         <div v-else>
           <div v-for="w in hotWishes" :key="w.id" class="crowd">
             <div class="row1">
