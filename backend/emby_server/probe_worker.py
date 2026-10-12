@@ -699,7 +699,7 @@ def _probe_detached(path, headers, size, container, budget):
 
 
 def _finish(item_id: int, outcome: str, reason: str = "", probe: Optional[dict] = None) -> str:
-    """在新 session 里落结果。outcome: ok / retry / failed。"""
+    """在新 session 里落结果。outcome: ok / retry / timeout_retry / quota_retry / failed。"""
     from backend.database import SessionLocal
     db = SessionLocal()
     try:
@@ -717,6 +717,14 @@ def _finish(item_id: int, outcome: str, reason: str = "", probe: Optional[dict] 
         if outcome == "failed":
             media_probe.mark_failed(db, item, reason)
             return "failed"
+        if outcome == "quota_retry":
+            # 配额 403：24h 长退避，永不判死（C-P1-1）
+            media_probe.mark_long_retry(db, item, reason, kind="quota")
+            return "retry"
+        if outcome == "timeout_retry":
+            # 超时：普通重试 3 次后转 24h 长退避，不判死（C-P1-1 超时部分）
+            media_probe.mark_retry(db, item, reason, is_timeout=True)
+            return "failed" if item.probe_status == "failed" else "retry"
         media_probe.mark_retry(db, item, reason)
         return "failed" if item.probe_status == "failed" else "retry"
     finally:
@@ -762,7 +770,7 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
     except proc_util.CallTimeout:
         breaker.record_timeout(key)
         _bump("timeouts")
-        _finish(item_id, "retry", f"解析探测地址超时（>{PROBE_RESOLVE_TIMEOUT_SEC:g}s，挂载无响应）")
+        _finish(item_id, "timeout_retry", f"解析探测地址超时（>{PROBE_RESOLVE_TIMEOUT_SEC:g}s，挂载无响应）")
         return "timeout"
     except Exception as exc:  # noqa: BLE001
         return _finish(item_id, "retry", f"解析探测地址异常: {exc}")
@@ -779,12 +787,17 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
     except proc_util.CallTimeout:
         breaker.record_timeout(key)
         _bump("timeouts")
-        _finish(item_id, "retry", f"探测超时（>{budget:g}s）")
+        _finish(item_id, "timeout_retry", f"探测超时（>{budget:g}s）")
         return "timeout"
     except Exception as exc:  # noqa: BLE001
         return _finish(item_id, "retry", f"ffprobe 异常: {exc}")
 
     http_code = (probe or {}).get("_http_code")
+    # 配额 403 永不判死：走 24h 长退避，配额恢复后自动自愈（C-P1-1）。
+    # _error="quota" 由 scanner.probe_metadata 标记；403 本身也按配额处理。
+    if (probe or {}).get("_error") == "quota" or http_code == 403:
+        breaker.record_ok(key)  # 端点有回应，挂载是活的（配额问题≠挂载故障）
+        return _finish(item_id, "quota_retry", "远端配额耗尽（HTTP 403）")
     if http_code in media_probe.NO_RETRY_HTTP_CODES:
         breaker.record_ok(key)  # 端点有回应，挂载是活的
         return _finish(item_id, "failed", f"远端返回 HTTP {http_code}，地址无效")
@@ -794,7 +807,7 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
     if n_timeouts:
         breaker.record_timeout(key)
         _bump("timeouts")
-        _finish(item_id, "retry", "ffprobe 超时（挂载或端点无响应）")
+        _finish(item_id, "timeout_retry", "ffprobe 超时（挂载或端点无响应）")
         return "timeout"
     breaker.record_ok(key)
     return _finish(item_id, "retry",
@@ -973,6 +986,7 @@ def _dispatcher_loop() -> None:
     idle_rounds = 0  # 连续空轮数（空队列退避用）
     last_reclaim = time.monotonic()
     last_publish = 0.0
+    last_quota_revive = 0.0  # 配额判死自愈上次执行时间（C-P1-1）
 
     def _done_cb(key):
         def _cb(fut):
@@ -1022,6 +1036,22 @@ def _dispatcher_loop() -> None:
                     db = SessionLocal()
                     try:
                         reclaim_stale(db)
+                    finally:
+                        db.close()
+
+                # 配额判死自愈（C-P1-1）：每 30 分钟把历史配额 403 判死条目捞回 pending。
+                # 单独低频定时，避免每 60s 跑 LIKE 查询。
+                if now_m - last_quota_revive > 1800:
+                    last_quota_revive = now_m
+                    db = SessionLocal()
+                    try:
+                        revive_quota_failed(db)
+                    except Exception as exc:  # noqa: BLE001 — 自愈失败不影响调度
+                        logger.warning("探测配额自愈异常: %s", exc)
+                        try:
+                            db.rollback()
+                        except Exception:  # noqa: BLE001
+                            pass
                     finally:
                         db.close()
 
@@ -1181,6 +1211,42 @@ def status_snapshot(db=None) -> dict:
         "runtime": rt,
         "eta_hours": eta_hours,
     }
+
+
+def revive_quota_failed(db, limit: int = 1000) -> int:
+    """把因配额耗尽被判死的条目捞回 pending（24h 后重试）。
+
+    历史欠账自愈（C-P1-1）：修复前配额窗口内的 403 被永久判死，且配额恢复后
+    不自愈。本函数由调度循环定期调用，把这类条目转回 pending，长退避后自动重试。
+
+    识别口径：``probe_status="failed"`` 且 ``probe_last_error`` 含配额 / 403 /
+    quota 标记。为避免误伤真正的 403 权限失败，转回后走 24h 长退避而非立即重试，
+    即使误判也只是一天一次的探测，成本可忽略。
+
+    返回转回的条目数。
+    """
+    MI = em.MediaItem
+    rows = (db.query(MI.id)
+            .filter(MI.probe_status == "failed",
+                    MI.probe_last_error.isnot(None),
+                    or_(MI.probe_last_error.like("%配额%"),
+                        MI.probe_last_error.like("%quota%"),
+                        MI.probe_last_error.like("%403%")))
+            .limit(limit).all())
+    if not rows:
+        return 0
+    ids = [r[0] for r in rows]
+    n = (db.query(MI).filter(MI.id.in_(ids))
+         .update({"probe_status": "pending", "probe_attempts": 0,
+                  "probe_next_retry_at": datetime.now() + timedelta(
+                      seconds=media_probe.PROBE_QUOTA_RETRY_SEC),
+                  "probe_last_error": None},
+                 synchronize_session=False))
+    db.commit()
+    if n:
+        logger.info("探测配额自愈：%d 个历史配额判死条目转回 pending（24h后重试）", n)
+        _wake.set()
+    return n
 
 
 def reset(db, scope: str = "stuck") -> dict:

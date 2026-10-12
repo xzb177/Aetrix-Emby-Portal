@@ -32,8 +32,13 @@ PROBE_MAX_ATTEMPTS = max(1, int(os.getenv("PROBE_MAX_ATTEMPTS", "3") or 3))
 PROBE_RETRY_BASE_SEC = max(10, int(os.getenv("PROBE_RETRY_BASE_SEC", "60") or 60))
 # 退避上限（秒）：指数退避不无限增长
 PROBE_RETRY_MAX_SEC = max(60, int(os.getenv("PROBE_RETRY_MAX_SEC", "21600") or 21600))
-# 这些 HTTP 状态码说明地址本身有问题，重试没用，直接判 failed
-NO_RETRY_HTTP_CODES = frozenset({400, 401, 403, 404, 410})
+# 配额耗尽长退避（秒）：Drive 配额按 24h 窗口重置，配额类 403 永不判死，
+# 24h 后再试一次（C-P1-1）。固定间隔，不指数增长，避免越等越久。
+PROBE_QUOTA_RETRY_SEC = 24 * 3600
+# 这些 HTTP 状态码说明地址本身有问题，重试没用，直接判 failed。
+# 注意：403 不在此列——403 一律按配额耗尽处理（见 probe_one / probe_worker.process_item），
+# 走 24h 长退避重试，永不判死。
+NO_RETRY_HTTP_CODES = frozenset({400, 401, 404, 410})
 
 
 def _probe_url(url: str) -> str:
@@ -230,11 +235,38 @@ def mark_failed(db, item, reason: str) -> None:
                    item.id, item.probe_attempts or 0, reason)
 
 
-def mark_retry(db, item, reason: str) -> None:
-    """记一次失败：次数+1，指数退避；超限转 failed。"""
+def mark_long_retry(db, item, reason: str, kind: str = "quota") -> None:
+    """长退避重试：配额耗尽 / 持续超时等临时性故障专用。
+
+    - 状态保持 pending，``PROBE_QUOTA_RETRY_SEC``（24h）后再试；
+    - 不增加 ``probe_attempts``（不消耗普通重试次数）；
+    - 永不判死——配额恢复 / 挂载恢复后自动自愈（C-P1-1）。
+    - ``kind`` 仅用于日志与 ``probe_last_error`` 标记："quota" / "timeout"。
+
+    防负优化：24h 一次的重试对 Drive 配额 / worker 槽位的影响可忽略；
+    系统性挂载故障由 ``probe_worker.MountBreaker`` 熔断限流，不会打爆。
+    """
+    item.probe_status = "pending"
+    item.probe_next_retry_at = datetime.now() + timedelta(seconds=PROBE_QUOTA_RETRY_SEC)
+    _clear_claim(item, error=f"[{kind}] {reason}（24h后重试）")
+    db.commit()
+    logger.info("按需探测长退避 item=%s kind=%s（24h后重试）: %s",
+                item.id, kind, reason)
+
+
+def mark_retry(db, item, reason: str, *, is_timeout: bool = False) -> None:
+    """记一次失败：次数+1，指数退避；超限转 failed。
+
+    ``is_timeout=True``（ffprobe / 解析超时）时，超限后转 24h 长退避而不判死——
+    超时多为挂载 / 网络临时故障，判死后只能人工 reset 才能恢复（C-P1-1 超时部分）。
+    """
     attempts = (getattr(item, "probe_attempts", 0) or 0) + 1
     item.probe_attempts = attempts
     if attempts >= PROBE_MAX_ATTEMPTS:
+        if is_timeout:
+            mark_long_retry(db, item, f"{reason}（已达 {PROBE_MAX_ATTEMPTS} 次上限）",
+                            kind="timeout")
+            return
         mark_failed(db, item, f"{reason}（已达 {PROBE_MAX_ATTEMPTS} 次上限）")
         return
     delay = min(PROBE_RETRY_MAX_SEC, PROBE_RETRY_BASE_SEC * (2 ** (attempts - 1)))
@@ -279,6 +311,12 @@ def probe_one(db, item) -> str:
         return item.probe_status
 
     http_code = (probe or {}).get("_http_code")
+    # 配额 403 永不判死：走 24h 长退避，配额恢复后自动自愈（C-P1-1）。
+    # scanner.probe_metadata 把 403 统一标为 _error="quota"；即使 _error 缺失，
+    # 403 本身也按配额处理（真权限问题的代价只是 24h 后多一次探测，可接受）。
+    if (probe or {}).get("_error") == "quota" or http_code == 403:
+        mark_long_retry(db, item, "远端配额耗尽（HTTP 403）", kind="quota")
+        return item.probe_status
     if http_code in NO_RETRY_HTTP_CODES:
         mark_failed(db, item, f"远端返回 HTTP {http_code}，地址无效")
         return item.probe_status
