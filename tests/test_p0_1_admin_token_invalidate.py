@@ -48,7 +48,7 @@ def db():
     session.close()
 
 
-def _admin(db, username="boss", password="old-password-123"):
+def _admin(db, username="boss", password="old-password-123"):  # secret-scan: allow —— 测试用假密码，非真实密钥
     u = models.WebUser(username=username, password_hash=hash_password(password),
                        is_staff=True, is_active=True, token_version=0,
                        admin_role="super")
