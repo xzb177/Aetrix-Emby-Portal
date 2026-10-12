@@ -196,11 +196,11 @@ const navGroups: NavGroup[] = [
       { path: '/settings', label: '系统设置', icon: Settings, superOnly: true },
       { path: '/logs', label: '操作日志', icon: ScrollText },
       { path: '/health', label: '服务健康', icon: Activity },
+      // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
+      { path: '/tasks', label: '任务总览', icon: ListChecks },
       { path: '/health-board', label: '健康总览', icon: Gauge },
       { path: '/diagnosis', label: '一键体检', icon: Stethoscope },
       { path: '/api-keys', label: 'API Key', icon: KeyRound, superOnly: true },
-      // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
-      { path: '/tasks', label: '任务总览', icon: ListChecks },
     ],
   },
 ]
