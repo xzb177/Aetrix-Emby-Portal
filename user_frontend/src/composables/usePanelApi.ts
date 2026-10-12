@@ -28,6 +28,7 @@ export interface TodayData {
   greeting?: string
   date_label?: string
   parcel_count?: number
+  unsealed_count?: number
   streak_days?: number
   letter_readable?: boolean
   [k: string]: unknown

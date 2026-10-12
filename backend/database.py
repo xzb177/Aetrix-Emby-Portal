@@ -876,6 +876,7 @@ def _auto_migrate():
     _ensure_lottery_g1_tables(existing_tables)
     _migrate_redpacket_claim_unique(existing_tables)
     _migrate_redpacket_idempotency_unique(existing_tables)
+    _migrate_panel_unseal_fk(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -1163,6 +1164,43 @@ def _migrate_redpacket_idempotency_unique(existing_tables: set) -> None:
             "UNIQUE (idempotency_key)"
         ))
     print("  🔧 已迁移: red_packets 唯一约束 (idempotency_key)")
+
+
+def _migrate_panel_unseal_fk(existing_tables: set) -> None:
+    """panel_unseals.item_id 加外键 → emby_items.id（幂等，r20 P3）
+
+    模型侧已声明 ForeignKey('emby_items.id', ondelete='CASCADE')：新装库由
+    create_all 直接建约束；老库（panel_unseals 已存在）走这里补。
+    SQLite 跳过（create_all 建表时自带约束）；PG/MySQL 显式加。
+    ondelete=CASCADE：条目被物理回收（purge_expired）时拆封记录一并消失——
+    unseal 只按 user_id 查、只在条目存在时有意义，级联无副作用。
+    补约束前先清孤儿行（item_id 在 emby_items 里不存在的），否则 ADD CONSTRAINT 失败。
+    """
+    from sqlalchemy import inspect, text
+
+    if "panel_unseals" not in existing_tables or "emby_items" not in existing_tables:
+        return
+    inspector = inspect(engine)
+    existing = {fk.get("name") for fk in inspector.get_foreign_keys("panel_unseals")}
+    existing |= {fk.get("name") for fk in inspector.get_foreign_keys("panel_unseals")
+                 if (fk.get("constrained_columns") or []) == ["item_id"]}
+    if "fk_panel_unseal_item" in existing:
+        return
+    dialect = engine.dialect.name
+    if dialect not in ("postgresql", "mysql"):
+        return
+    with engine.begin() as conn:
+        # 清孤儿行：item_id 指向已不存在的条目
+        orphan = conn.execute(text(
+            "DELETE FROM panel_unseals WHERE item_id NOT IN (SELECT id FROM emby_items)"
+        )).rowcount
+        if orphan:
+            print(f"  🧹 panel_unseals 孤儿行已清理: {orphan}")
+        conn.execute(text(
+            "ALTER TABLE panel_unseals ADD CONSTRAINT fk_panel_unseal_item "
+            "FOREIGN KEY (item_id) REFERENCES emby_items(id) ON DELETE CASCADE"
+        ))
+    print("  🔧 已迁移: panel_unseals 外键 item_id → emby_items.id (CASCADE)")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:

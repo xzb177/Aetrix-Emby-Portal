@@ -1740,7 +1740,10 @@ class PanelUnseal(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
-    item_id = Column(Integer, nullable=False)  # emby_items.id
+    # emby_items.id（MediaItem 与本表同属 backend.database.Base 同一 metadata，FK 可解析）。
+    # ondelete=CASCADE：条目被物理回收（purge_expired）时拆封记录一并消失——记录只在条目
+    # 存在时有意义（标记今日 5 件封存是否已拆），且 unseal 只按 user_id 查，级联无副作用。
+    item_id = Column(Integer, ForeignKey('emby_items.id', ondelete='CASCADE'), nullable=False)
     unsealed_at = Column(DateTime, default=datetime.now, nullable=False)
 
 
