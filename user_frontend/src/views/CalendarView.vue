@@ -22,6 +22,8 @@ import { CalendarDays, ChevronLeft, ChevronRight, Film, Tv, ListVideo } from 'lu
 import { fetchCalendar, type CalendarItemType, type CalendarResponse } from '@/api/calendar'
 import { embyApi, type EmbyItem } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
+import { toUserMessage } from '@/utils/toUserMessage'
+import EmptyState from '@/components/ui/EmptyState.vue'
 import { useCalendarMonth } from '@/composables/useCalendarMonth'
 import CalendarGrid from '@/components/calendar/CalendarGrid.vue'
 import DayDetailList from '@/components/calendar/DayDetailList.vue'
@@ -139,8 +141,9 @@ async function load() {
   } catch (err: any) {
     if (reqId !== latestRequest) return
     payload.value = null
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '日历加载失败，请稍后重试')
+    // P2-1（2026-10-12）：走 toUserMessage 中央错误文案——断网/超时、403/429
+    // 有专用友好提示，机器码不直接展示给用户；不要在这里内联 detail 透传。
+    toast.error(toUserMessage(err, 'calendarFailed'))
   } finally {
     // 同理：只有最后一次请求才能收 loading，否则会把新请求的骨架屏提前收掉
     if (reqId === latestRequest) loading.value = false
@@ -237,9 +240,11 @@ watch([year, month, libraryId, selectedTypes], async () => {
         <span class="au-spinner" aria-hidden="true" />
         <span>正在读取入库记录…</span>
       </div>
-      <p v-else-if="isEmptyMonth" class="cal-note">
-        这个区间还没有新上架的条目。条目是扫描进库时写下的入库时间，扫完就会出现。
-      </p>
+      <EmptyState
+        v-else-if="isEmptyMonth"
+        title="这个时间段暂时没有内容"
+        description="条目是扫描进库时写下的入库时间，扫完就会出现，可以切换日期看看"
+      />
       <p v-else class="cal-note">
         格子里的封面点开就是详情页；角标是当天的真实条数（超出可展示数量的部分只计数）。
       </p>

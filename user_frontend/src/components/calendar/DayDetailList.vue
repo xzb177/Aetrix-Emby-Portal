@@ -5,21 +5,24 @@
  * 纯展示组件：拿到哪天、那天的数据、是不是在加载，就画出来。
  * 点条目用 Rex 深链打开（逻辑在 utils/rexDeepLink，与之前一致）。
  */
+import { computed } from 'vue'
 import { CalendarDays, ChevronRight, Film, Sparkles } from 'lucide-vue-next'
 import type { CalendarDay, CalendarItem } from '@/api/calendar'
 import { posterUrl } from '@/api/emby'
 import { rexDeepLink } from '@/utils/rexDeepLink'
 import { WEEK_LABELS } from '@/composables/useCalendarMonth'
 
-defineProps<{
+const props = defineProps<{
   selectedDate: string
   selectedDay: CalendarDay | null
   loading: boolean
 }>()
 
-function posterOf(item: CalendarItem): string {
-  return posterUrl(item, 160)
-}
+/** P3-2（2026-10-12）：海报 URL 每个条目只算一次——模板里 v-if/:src 各调一次
+ *  posterOf 是可避免的重复计算，这里预计算后模板只读属性。 */
+const itemsWithPoster = computed(() =>
+  (props.selectedDay?.items || []).map((item) => ({ item, poster: posterUrl(item, 160) })),
+)
 
 function typeLabel(item: CalendarItem): string {
   if (item.Type === 'Movie') return '电影'
@@ -79,12 +82,12 @@ function weekdayOf(date: string): string {
     </div>
 
     <ul v-else class="day-list">
-      <li v-for="item in selectedDay.items" :key="item.Id">
+      <li v-for="{ item, poster } in itemsWithPoster" :key="item.Id">
         <a :href="rexDeepLink(item)" class="day-item" :title="`在 Rex 里打开：${titleOf(item)}`">
           <span class="day-poster">
             <img
-              v-if="posterOf(item)"
-              :src="posterOf(item)"
+              v-if="poster"
+              :src="poster"
               :alt="titleOf(item)"
               loading="lazy"
               decoding="async"
