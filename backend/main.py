@@ -157,6 +157,27 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动维护失败（可忽略）: {e}")
 
+    # P0-3（2026-10-12）：SA token 冷启动预铸。部署后第一次播放要现换 token
+    # （约 300~600ms），这里提前为所有 SA 换好写进缓存。后台线程跑，
+    # 不阻塞启动；失败静默（播放时按需换取兜底）。
+    if not _is_api_role:
+        try:
+            import threading
+
+            def _premint_in_bg():
+                try:
+                    from backend.emby_server import drive_auth
+                    drive_auth.premint_tokens(max_workers=4)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"SA token 预铸失败（可忽略）: {e}")
+
+            _t = threading.Thread(target=_premint_in_bg,
+                                  name="sa-premint-startup", daemon=True)
+            _t.start()
+            logger.info("SA token 预铸已在后台启动")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动 SA token 预铸失败（可忽略）: {e}")
+
 
         # 分层扫描 L2/L3（v2.40.0）：SCAN_LAYERED=1 时启动后台补全 worker，
         # 把 L1 落下的待补全条目（side 图片/NFO/TMDB）慢慢补完。失败不影响启动。
