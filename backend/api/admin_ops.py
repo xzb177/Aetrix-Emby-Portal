@@ -349,20 +349,32 @@ def delete_code(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """删除卡码：已核销的保留审计只允许停用"""
-    code = db.query(models.RegistrationCode).filter(
+    """删除卡码：已核销的保留审计只允许停用
+
+    P0-2 修复：检查与删除必须是原子的（同 economy_delete_exchange_code）。
+    用带 COALESCE(use_count,0)=0 条件的原子 DELETE，防并发核销穿透删除。
+    """
+    code_row = db.query(models.RegistrationCode.code).filter(
         models.RegistrationCode.id == code_id
     ).first()
-    if not code:
+    if not code_row:
         raise HTTPException(status_code=404, detail="卡码不存在")
-    if code.use_count:
+
+    deleted = (
+        db.query(models.RegistrationCode)
+        .filter(
+            models.RegistrationCode.id == code_id,
+            func.coalesce(models.RegistrationCode.use_count, 0) == 0,
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        # 行存在但 use_count > 0：并发核销在我们前面检查后使用了它
+        db.rollback()
         raise HTTPException(status_code=400, detail="该卡码已被使用，只能停用不能删除")
 
-    raw = code.code
-    db.delete(code)
-    db.commit()
     _audit(db, current_admin, "delete_registration_code", "registration_code", code_id,
-           {"code": raw})
+           {"code": code_row[0]})
     db.commit()
     return {"success": True, "message": "卡码已删除"}
 
