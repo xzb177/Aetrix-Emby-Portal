@@ -3,6 +3,8 @@ import './styles/neo-noir-tokens.css'
 import './styles/index.css'
 import './styles/mobile.css'
 import './styles/calendar.css'
+// v4「探险家日志」面板纸色设计系统（PR-2）
+import './styles/v4-paper.css'
 
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'

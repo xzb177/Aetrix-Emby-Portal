@@ -1,0 +1,70 @@
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
+import { panelApi } from '@/composables/usePanelApi'
+
+/**
+ * v4 面板数据 store（PR-2 地基）
+ * - 内存缓存 TTL 60s（方案 §2.4）
+ * - 接口失败时各区块显示纸色占位，不许白屏/转圈（由视图层处理 error 状态）
+ */
+
+const TTL_MS = 60_000
+
+interface CacheEntry<T = unknown> {
+  data: T | null
+  error: string | null
+  loading: boolean
+  at: number
+}
+
+function freshEntry<T>(): CacheEntry<T> {
+  return { data: null, error: null, loading: false, at: 0 }
+}
+
+export const usePanelStore = defineStore('panel', () => {
+  const today = ref<CacheEntry>(freshEntry())
+  const parcels = ref<CacheEntry>(freshEntry())
+  const pulse = ref<CacheEntry>(freshEntry())
+  const letter = ref<CacheEntry>(freshEntry())
+  const collector = ref<CacheEntry>(freshEntry())
+  const server = ref<CacheEntry>(freshEntry())
+
+  async function load<T>(entry: CacheEntry<T>, fetcher: () => Promise<T>, force = false) {
+    const now = Date.now()
+    if (!force && entry.data !== null && now - entry.at < TTL_MS) return
+    if (entry.loading) return
+    entry.loading = true
+    entry.error = null
+    try {
+      entry.data = await fetcher()
+      entry.at = Date.now()
+    } catch (e) {
+      entry.error = e instanceof Error ? e.message : '加载失败'
+    } finally {
+      entry.loading = false
+    }
+  }
+
+  const loadToday = (force = false) => load(today.value, panelApi.today, force)
+  const loadParcels = (force = false) => load(parcels.value, panelApi.parcels, force)
+  const loadPulse = (force = false) => load(pulse.value, panelApi.pulse, force)
+  const loadLetter = (force = false) => load(letter.value, panelApi.letter, force)
+  const loadCollector = (force = false) => load(collector.value, panelApi.collector, force)
+  const loadServer = (force = false) => load(server.value, panelApi.server, force)
+
+  /** 拆封：即时写后端（换设备同步），本地 optimistic 更新 */
+  async function unseal(itemId: string | number) {
+    await panelApi.unseal(itemId)
+    const list = parcels.value.data as Array<Record<string, unknown>> | null
+    if (Array.isArray(list)) {
+      const hit = list.find((p) => String(p.id) === String(itemId))
+      if (hit) hit.unsealed = true
+    }
+  }
+
+  return {
+    today, parcels, pulse, letter, collector, server,
+    loadToday, loadParcels, loadPulse, loadLetter, loadCollector, loadServer,
+    unseal,
+  }
+})
