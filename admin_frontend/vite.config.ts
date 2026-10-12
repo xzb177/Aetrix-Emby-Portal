@@ -4,7 +4,6 @@ import { fileURLToPath, URL } from 'node:url'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import AutoImport from 'unplugin-auto-import/vite'
-import { visualizer } from 'rollup-plugin-visualizer'
 
 const analyze = process.env.ANALYZE === '1'
 
@@ -12,7 +11,7 @@ export default defineConfig({
   base: '/admin/',
   plugins: [
     vue(),
-    analyze && visualizer({ gzipSize: true, brotliSize: true, open: false, filename: 'dist/stats.html' }),
+    // analyze && (await import('rollup-plugin-visualizer')).visualizer({ gzipSize: true, brotliSize: true, open: false, filename: 'dist/stats.html' }),
     // element-plus 按需引入：只打包实际用到的组件（原来全量引入 1MB+）。
     // <el-*> 模板标签自动解析；ElMessage/ElMessageBox 等函数式调用自动引入（含样式）。
     Components({

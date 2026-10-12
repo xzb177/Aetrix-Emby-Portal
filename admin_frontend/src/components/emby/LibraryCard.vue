@@ -2,7 +2,7 @@
 import { Film, Server, HardDrive, ImagePlus, X, ScanSearch, RefreshCcw, RefreshCw, Search, Settings2, History, Delete } from 'lucide-vue-next'
 import type { UploadRequestOptions } from 'element-plus'
 
-const props = defineProps<{
+defineProps<{
   library: any
   coverUrl?: string
   typeLabel: string

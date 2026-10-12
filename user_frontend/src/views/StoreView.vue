@@ -627,7 +627,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
         :custom-points-preview="customPointsPreview"
         :was-price="wasPrice"
         :paid-price="paidPrice"
-        @order="handleOrder"
+        @order="(type, id) => handleOrder(type as any, id)"
         @custom="handleCustomRecharge"
         @update:custom-amount="customAmount = $event"
         @update:pay-method="payMethod = $event"

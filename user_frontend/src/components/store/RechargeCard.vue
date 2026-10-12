@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Coins, CircleAlert, Sparkles, ExternalLink } from 'lucide-vue-next'
-import EmptyState from '@/components/EmptyState.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 
 defineProps<{
   rechargeEnabled: boolean
@@ -14,8 +14,8 @@ defineProps<{
   methods: { id: string; name: string }[]
   payMethod?: string
   customPointsPreview?: string | number
-  wasPrice: (type: string, id: any) => any
-  paidPrice: (type: string, id: any, price: any) => any
+  wasPrice: (type: 'recharge' | 'subscription', id: number) => string
+  paidPrice: (type: 'recharge' | 'subscription', id: number, price: number) => string
 }>()
 
 const emit = defineEmits<{

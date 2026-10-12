@@ -1,7 +1,6 @@
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { visualizer } from 'rollup-plugin-visualizer'
 
 // 生产环境禁用 DevTools
 const isProduction = process.env.NODE_ENV === 'production'
@@ -11,7 +10,7 @@ const analyze = process.env.ANALYZE === '1'
 export default defineConfig({
   plugins: [
     vue(),
-    analyze && visualizer({ gzipSize: true, brotliSize: true, open: false, filename: 'dist/stats.html' }),
+    // analyze && (await import('rollup-plugin-visualizer')).visualizer({ gzipSize: true, brotliSize: true, open: false, filename: 'dist/stats.html' }),
   ].filter(Boolean),
   resolve: {
     alias: {

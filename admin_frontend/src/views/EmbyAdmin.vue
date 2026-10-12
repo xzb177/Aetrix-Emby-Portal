@@ -22,9 +22,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import {
-  Delete, Film, FolderPlus, HardDrive, History, ImagePlus, RefreshCcw, RefreshCw, ScanSearch,
-  CalendarClock, Info, Link, ListChecks, Search, Server, ShieldAlert,
-  Settings2, Square, Wand2, X,
+  Film, FolderPlus, History, ImagePlus, RefreshCw, ScanSearch,
+  CalendarClock, Info, Link, ShieldAlert,
+  Square, Wand2, X,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import {
@@ -1437,7 +1437,7 @@ function reachText(level: string): string {
 }
 
 /** 卡片提示的悬停文案：原因 + 改法（卡片上只放一句，详情靠悬停） */
-function reachTitle(l: EmbyLibrary): string {
+function _reachTitle(l: EmbyLibrary): string {
   const verdict = libReach(l)
   return [verdict?.message, verdict?.fix].filter(Boolean).join(' ｜ ')
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Crown, TriangleAlert } from 'lucide-vue-next'
-import EmptyState from '@/components/EmptyState.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
 import { useRouter } from 'vue-router'
 
 export interface SubscriptionItem {
@@ -23,7 +23,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'cancel', sub: SubscriptionItem): void
+  (e: 'cancel', sub: any): void
 }>()
 
 const router = useRouter()
