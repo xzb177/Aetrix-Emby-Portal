@@ -1906,18 +1906,34 @@ def economy_delete_exchange_code(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """删除兑换码（Fix 5）"""
-    code = db.query(models.ExchangeCode).filter(
+    """删除兑换码（Fix 5）
+
+    P0-2 修复：检查与删除必须是原子的。此前先查 use_count 再按主键删，
+    并发兑换可在检查之后提交使用次数，删除仍执行，删掉已使用记录及其痕迹。
+    现在用带 COALESCE(use_count,0)=0 条件的原子 DELETE：0 行说明
+    "不存在或并发中被使用"，不存在已在前面排除，故 0 行即并发使用。
+    """
+    code_row = db.query(models.ExchangeCode.code).filter(
         models.ExchangeCode.id == code_id
     ).first()
-    if not code:
+    if not code_row:
         raise HTTPException(status_code=404, detail="兑换码不存在")
-    if (code.use_count or 0) > 0:
+
+    deleted = (
+        db.query(models.ExchangeCode)
+        .filter(
+            models.ExchangeCode.id == code_id,
+            func.coalesce(models.ExchangeCode.use_count, 0) == 0,
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        # 行存在但 use_count > 0：并发兑换在我们前面检查后使用了它
+        db.rollback()
         raise HTTPException(status_code=400, detail="已使用过的码不允许删除（请停用）")
-    db.delete(code)
-    db.commit()
+
     _audit(db, current_admin, "economy_delete_exchange_code", "exchange_code",
-           code_id, {"code": code.code})
+           code_id, {"code": code_row[0]})
     db.commit()
     return {"success": True}
 
