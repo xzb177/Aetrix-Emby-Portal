@@ -633,8 +633,6 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
         @update:pay-method="payMethod = $event"
       />
 
-      </section>
-
       <section id="card-plans" class="store-card au-anim-up">
         <header class="store-card-head">
           <Zap class="store-card-icon" />
