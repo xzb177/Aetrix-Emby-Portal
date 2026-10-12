@@ -321,55 +321,119 @@ def _ensure_sa_rotation_locked(conf_path, sa_dir, state_path) -> dict:
 # 效果等同排队）。注意：事件循环里必须用非阻塞的 try_acquire。
 MAX_CONCURRENT_RANGES_PER_FILE = 3
 RANGE_ACQUIRE_TIMEOUT_SEC = 60.0
+# D-P1-4：租约 TTL。一次 Range 流正常几秒到几十秒结束；超过此时长仍未释放的
+# 名额视为"持有者已死"（generator 被 GC 前没跑 finally、连接异常断开等），
+# 下次 acquire 时强制回收，避免高频 seek 下可用名额塌缩成 503。
+RANGE_LEASE_TTL_SEC = 300.0
 
 
 class RangeConcurrencyLimiter:
-    """按文件路径限流的线程信号量池（streaming 的同步 generator 跑在线程池，
-    这里必须用 threading 而非 asyncio）。"""
+    """按文件路径限流的租约池（streaming 的同步 generator 跑在线程池，
+    这里必须用 threading 而非 asyncio）。
+
+    D-P1-4 租约制：原实现用 threading.Semaphore，release 只在 generator 的
+    finally 里跑——客户端提前断开/高频 seek 时，旧流的释放要等响应对象 GC，
+    名额被延迟占用，正常播放也会撞 503。现在每次 acquire 附带 monotonic
+    时间戳租约；acquire 时先清掉超 TTL 的过期租约（强制回收），release 归还
+    最老的一条租约。对外 API（try_acquire/acquire/release）保持不变。
+    """
 
     def __init__(self, max_concurrent: int = MAX_CONCURRENT_RANGES_PER_FILE,
-                 acquire_timeout: float = RANGE_ACQUIRE_TIMEOUT_SEC):
+                 acquire_timeout: float = RANGE_ACQUIRE_TIMEOUT_SEC,
+                 lease_ttl: float = RANGE_LEASE_TTL_SEC):
         self._max = max_concurrent
         self._timeout = acquire_timeout
+        self._lease_ttl = lease_ttl
         self._lock = threading.Lock()
-        self._sems: dict[str, threading.Semaphore] = {}
+        self._leases: dict[str, list[float]] = {}
         self._last_used: dict[str, float] = {}
+        # 指标：供 /api/health 或日志排查（拿满/强制回收计数）
+        self._rejected = 0
+        self._reclaimed = 0
 
-    def _get(self, path: str) -> threading.Semaphore:
-        now = time.monotonic()
-        with self._lock:
-            sem = self._sems.get(path)
-            if sem is None:
-                sem = threading.Semaphore(self._max)
-                self._sems[path] = sem
-            self._last_used[path] = now
-            # 惰性清理：条目太多时清掉 1 小时没用过的，避免无限增长
-            if len(self._sems) > 2000:
-                cutoff = now - 3600
-                stale = [k for k, ts in self._last_used.items() if ts < cutoff]
-                for k in stale:
-                    self._sems.pop(k, None)
-                    self._last_used.pop(k, None)
-            return sem
+    def _sweep(self, path: str, now: float) -> int:
+        """清掉 path 下超 TTL 的过期租约，返回剩余有效租约数（调用方须持锁）。"""
+        leases = self._leases.get(path)
+        if not leases:
+            return 0
+        cutoff = now - self._lease_ttl
+        fresh = [t for t in leases if t > cutoff]
+        expired = len(leases) - len(fresh)
+        if expired:
+            self._reclaimed += expired
+            logger.warning("RANGE_LIMITER 强制回收 %s 的 %d 个过期租约（TTL %.0fs）",
+                           path, expired, self._lease_ttl)
+        if fresh:
+            self._leases[path] = fresh
+        else:
+            self._leases.pop(path, None)
+        return len(fresh)
 
-    def acquire(self, path: str) -> bool:
-        """阻塞最多 ``acquire_timeout`` 秒拿一个名额，拿到返回 True。"""
-        return self._get(path).acquire(timeout=self._timeout)
+    def _touch(self, path: str, now: float) -> None:
+        """更新最后使用时间；条目太多时惰性清理 1 小时没用过的（调用方须持锁）。"""
+        self._last_used[path] = now
+        if len(self._leases) > 2000:
+            cutoff = now - 3600
+            stale = [k for k, ts in self._last_used.items() if ts < cutoff]
+            for k in stale:
+                self._leases.pop(k, None)
+                self._last_used.pop(k, None)
+
+    def _try_acquire_locked(self, path: str, now: float, quiet: bool = False) -> bool:
+        active = self._sweep(path, now)
+        if active >= self._max:
+            if not quiet:
+                self._rejected += 1
+                logger.warning("RANGE_LIMITER 拿满：path=%s active=%d/%d（播放器将收到 503 并重试）",
+                               path, active, self._max)
+            return False
+        self._leases.setdefault(path, []).append(now)
+        self._touch(path, now)
+        return True
 
     def try_acquire(self, path: str) -> bool:
         """非阻塞拿名额，拿到返回 True，拿不到立即返回 False。
 
         在 async 事件循环里必须用这个（blocking 的 acquire 会卡住整个循环）。
         拿不到时调用方直接 503，播放器会重试，效果等同排队。"""
-        return self._get(path).acquire(blocking=False)
+        with self._lock:
+            return self._try_acquire_locked(path, time.monotonic())
+
+    def acquire(self, path: str) -> bool:
+        """阻塞最多 ``acquire_timeout`` 秒拿一个名额，拿到返回 True。"""
+        deadline = time.monotonic() + self._timeout
+        while True:
+            with self._lock:
+                if self._try_acquire_locked(path, time.monotonic(), quiet=True):
+                    return True
+            if time.monotonic() >= deadline:
+                with self._lock:
+                    self._rejected += 1
+                logger.warning("RANGE_LIMITER 等待超时：path=%s（%.0fs）", path, self._timeout)
+                return False
+            time.sleep(0.05)
 
     def release(self, path: str) -> None:
-        sem = self._sems.get(path)
-        if sem is not None:
-            try:
-                sem.release()
-            except ValueError:
-                pass  # 重复释放时忽略
+        """归还一个名额（归还最老的一条租约；无租约时忽略）。"""
+        with self._lock:
+            leases = self._leases.get(path)
+            if leases:
+                leases.pop(0)
+                if not leases:
+                    self._leases.pop(path, None)
+            # 无租约的重复释放直接忽略（原 Semaphore 语义的 ValueError 分支）
+
+    def stats(self) -> dict:
+        """当前限流状态快照（排查用）。"""
+        with self._lock:
+            return {
+                "max_per_file": self._max,
+                "lease_ttl_sec": self._lease_ttl,
+                "tracked_files": len(self._leases),
+                "active_leases": sum(len(v) for v in self._leases.values()),
+                "rejected_total": self._rejected,
+                "reclaimed_total": self._reclaimed,
+            }
 
 
 # 全站单例：所有 worker 线程共享同一份限流状态
