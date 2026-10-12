@@ -127,7 +127,14 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem(ADMIN_KEY, JSON.stringify(info))
   }
 
+  /**
+   * 退出登录：先同步清本地（调用方不 await 也能立即生效），
+   * 再最佳努力通知服务端吊销当前票据（P0-1 安全修复），不阻塞退出。
+   *
+   * 注意这里不动门户会话（免登还要用它），只吊销后台票据。
+   */
   function logout() {
+    const current = token.value
     token.value = null
     admin.value = null
     verified.value = false
@@ -135,6 +142,12 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem(ADMIN_KEY)
     // 主动退出后必须真的退出：本标签页内不再用门户会话自动免登（否则会被立刻「登回去」）
     sessionStorage.setItem(SKIP_SSO_KEY, '1')
+    // 服务端吊销是最佳努力：失败也不影响本地已退出
+    if (current) {
+      import('@/api/admin')
+        .then(({ adminLogout }) => adminLogout())
+        .catch(() => {})
+    }
   }
 
   /**

@@ -81,6 +81,13 @@ export const fetchMe = () => get<AdminInfo>('/auth/me')
 export const changePassword = (data: { old_password: string; new_password: string }) =>
   post<{ success: boolean }>('/auth/change-password', data)
 
+/**
+ * 管理员登出：服务端吊销当前 access token 的 jti（P0-1 安全修复）。
+ * 最佳努力：即使请求失败（比如 token 已失效）也继续走本地清理，不阻塞退出。
+ */
+export const adminLogout = (refreshToken?: string) =>
+  post<{ success: boolean }>('/auth/logout', refreshToken ? { refresh_token: refreshToken } : {})
+
 // ==================== 用户管理 ====================
 
 export const fetchUsers = (params: {
