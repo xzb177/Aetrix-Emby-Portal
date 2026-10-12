@@ -203,9 +203,15 @@ async def extend_subscription(
     admin_id = current_admin.id
 
     def _extend() -> dict:
-        subscription = db.query(models.UserSubscription).filter(
-            models.UserSubscription.id == subscription_id
-        ).first()
+        # F-P1-4 修复：行锁防并发延长丢失。读后写（max+timedelta）不加锁时，
+        # 两个请求读到同一旧日期会互相覆盖。用 with_for_update 让后到的事务
+        # 等前一个提交后重读，串行化后不再丢延长。
+        subscription = (
+            db.query(models.UserSubscription)
+            .filter(models.UserSubscription.id == subscription_id)
+            .with_for_update()
+            .first()
+        )
         if not subscription:
             raise HTTPException(status_code=404, detail="订阅不存在")
 
@@ -373,7 +379,12 @@ def update_user(
     - 目标是管理员时只有超级管理员能改（S2）；不能停用 / 撤销最后一个超级管理员。
     """
     from backend import admin_roles
-    from backend.api.admins_admin import MAX_ADMINS, _admins_query, _super_count
+    from backend.api.admins_admin import (
+        MAX_ADMINS,
+        _admins_query,
+        _locked_loginable_super_count,
+        _locked_super_count,
+    )
 
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
     if not user:
@@ -391,11 +402,15 @@ def update_user(
         raise HTTPException(status_code=403, detail="授予 / 撤销管理员只有超级管理员能做")
 
     target_is_super = bool(user.is_staff) and admin_roles.role_of(user) == admin_roles.ROLE_SUPER
+    # F-P1-6/F-P1-14 修复："至少保留一个 super"检查必须行锁后计数，防并发同时通过。
+    # 降级/撤销走角色口径，停用走"可登录 super"口径（只看角色会留下无人能登录的死局）。
     losing_super = target_is_super and (
         request.is_active is False or request.is_staff is False
     )
-    if losing_super and _super_count(db) <= 1:
+    if losing_super and request.is_staff is False and _locked_super_count(db) <= 1:
         raise HTTPException(status_code=400, detail="至少要保留一个超级管理员：请先给别的账号授予超级管理员")
+    if losing_super and request.is_active is False and _locked_loginable_super_count(db) <= 1:
+        raise HTTPException(status_code=400, detail="至少要保留一个可登录的超级管理员：请先给别的账号授予超级管理员")
 
     changed = {}
     if request.is_active is not None:
