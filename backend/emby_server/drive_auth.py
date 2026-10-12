@@ -34,6 +34,8 @@ __all__ = [
     "drive_api_media_url",
     "invalidate_drive_bearer_token",
     "note_drive_unauthorized",
+    "premint_tokens",
+    "sa_count",
 ]
 
 logger = logging.getLogger(__name__)
@@ -306,7 +308,7 @@ def note_drive_unauthorized(url: str, auth_header: str) -> bool:
 
 
 def drive_api_media_url(url: str) -> str:
-    """把 Drive uc 直链转换为 Drive API alt=media 下载地址。
+    """把 Drive uc 直链转换为 Drive API alt=media 下载地址.
 
     ``https://drive.google.com/uc?export=download&id=<FILE_ID>`` 即使带上 SA 的
     Bearer token 也只会返回登录页（私有文件无法这样下载）；Drive API 的
@@ -330,3 +332,103 @@ def drive_api_media_url(url: str) -> str:
         return "https://www.googleapis.com/drive/v3/files/" + file_id + "?alt=media"
     except Exception:
         return url
+
+
+def sa_count() -> int:
+    """返回发现的 SA 数量（预铸进度/指标用；异常时返回 0）。"""
+    try:
+        drive_changes = _load_drive_changes()
+        sa_files = drive_changes._discover_sa_files() or []
+        return len(sa_files)
+    except Exception:
+        return 0
+
+
+def _all_sa_dicts() -> list[dict[str, Any]]:
+    """返回所有可用的 SA 字典列表（去重按 client_email）。
+
+    供 premint_tokens 用：逐个预铸 token，避免冷启动时第一次播放现换
+    （JWT 签名 + 1 次 oauth2 POST，约 300~600ms）。
+    """
+    try:
+        drive_changes = _load_drive_changes()
+        sa_files = drive_changes._discover_sa_files() or []
+    except Exception:
+        return []
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for entry in sa_files:
+        try:
+            sa = entry if _is_sa_dict(entry) else _read_sa_file(entry)
+        except Exception:
+            continue
+        if _is_sa_dict(sa):
+            email = sa.get("client_email")
+            if email and email not in seen:
+                seen.add(email)
+                result.append(sa)
+    return result
+
+
+def premint_tokens(max_workers: int = 4) -> dict[str, int]:
+    """为所有 SA 预铸 access_token 并写入分账号缓存。
+
+    P0-3（2026-10-12）：起播加速。部署后/空闲后第一次播放要现做
+    JWT→token 交换（约 300~600ms），预铸后冷启动直接命中缓存。
+
+    - 线程池有界并发（默认 4），每个 SA 独立换 token，互不阻塞。
+    - 每个任务前随机抖动 0~0.5 秒，反风控（避免 100 个并发打到 Google）。
+    - 单个 SA 失败不影响其他（try/except 包住）。
+    - token endpoint 不是 Drive API 配额，零风控风险。
+    - 永不抛异常，返回 {"total": N, "ok": M, "failed": K}。
+
+    注意：换 token 是 CPU + 网络混合操作（RSA 签名 + 1 次 POST），
+    用线程池而非 asyncio（drive_changes._sa_access_token 是同步函数）。
+    """
+    import random
+    from concurrent.futures import ThreadPoolExecutor
+
+    result = {"total": 0, "ok": 0, "failed": 0}
+    try:
+        sas = _all_sa_dicts()
+        result["total"] = len(sas)
+        if not sas:
+            return result
+
+        def _mint_one(sa: dict[str, Any]) -> bool:
+            try:
+                # 抖动：打散 100 个 SA 的换 token 请求
+                time.sleep(random.uniform(0, 0.5))
+                email = sa.get("client_email")
+                if not email:
+                    return False
+                # 先查缓存：还有效就跳过（premint 是幂等的）
+                now = time.monotonic()
+                with _cache_lock:
+                    cached = _token_cache.get(email)
+                    if cached and now + _TOKEN_MIN_REMAIN_SECONDS < cached[1]:
+                        return True
+                drive_changes = _load_drive_changes()
+                token = drive_changes._sa_access_token(
+                    sa, min_remaining=_TOKEN_TTL_SECONDS + _TOKEN_MIN_REMAIN_SECONDS)
+                if not token:
+                    return False
+                with _cache_lock:
+                    _token_cache[email] = (token, time.monotonic() + _TOKEN_TTL_SECONDS)
+                return True
+            except Exception:
+                return False
+
+        workers = max(1, min(16, int(max_workers)))
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="sa-premint") as pool:
+            for ok in pool.map(_mint_one, sas):
+                if ok:
+                    result["ok"] += 1
+                else:
+                    result["failed"] += 1
+    except Exception as exc:
+        logger.warning("drive_auth: SA token 预铸失败（不影响启动）: %s", exc)
+    logger.info("drive_auth: SA token 预铸完成 total=%d ok=%d failed=%d",
+                result["total"], result["ok"], result["failed"])
+    return result

@@ -407,6 +407,82 @@ _RELAY_POOL_TIMEOUT = _env_number("RELAY_POOL_TIMEOUT", 3.0, 0.1, 60.0)
 _RELAY_WRITE_TIMEOUT = 30.0
 
 
+#: Drive 307 跳转目标缓存 TTL（秒）。drive/v3/files/<id>?alt=media 会 307 跳到
+#: drive.usercontent.google.com，这一跳是纯 RTT（约 100~200ms）。按 file_id
+#: 缓存最终 URL 60~120 秒，命中时直接跳过 alt=media 这一跳。
+#: 0 = 关闭。403/410 时自动删缓存回退重解析，不会毒化。
+#: P0-2（2026-10-12）：起播加速。
+_DRIVE_REDIRECT_CACHE_TTL = _env_number("DRIVE_REDIRECT_CACHE_TTL", 90.0, 0.0, 600.0, float)
+
+#: file_id -> (final_url, expire_monotonic)。进程内，线程安全（asyncio 单循环
+#: + 短临界区；serve_remote 同步版也可能并发写，用 threading.Lock 保护）。
+_redirect_cache: dict[str, tuple[str, float]] = {}
+_redirect_cache_lock = threading.Lock()
+
+
+def _drive_file_id(url: str) -> str | None:
+    """从 drive API URL 提取 file_id。
+
+    形如 https://www.googleapis.com/drive/v3/files/<FILE_ID>?alt=media。
+    非 Drive API URL 返回 None。
+    """
+    try:
+        parts = urlsplit(url)
+        if (parts.hostname or "").lower() != "www.googleapis.com":
+            return None
+        # path: /drive/v3/files/<FILE_ID>
+        segs = parts.path.strip("/").split("/")
+        if len(segs) == 4 and segs[:3] == ["drive", "v3", "files"] and segs[3]:
+            return segs[3]
+        return None
+    except Exception:
+        return None
+
+
+def _redirect_cache_get(file_id: str) -> str | None:
+    """查跳转缓存；命中且未过期返回 final_url，否则 None。"""
+    if _DRIVE_REDIRECT_CACHE_TTL <= 0 or not file_id:
+        return None
+    try:
+        with _redirect_cache_lock:
+            entry = _redirect_cache.get(file_id)
+            if not entry:
+                return None
+            final_url, expire_at = entry
+            if time.monotonic() >= expire_at:
+                _redirect_cache.pop(file_id, None)
+                return None
+            return final_url
+    except Exception:
+        return None
+
+
+def _redirect_cache_set(file_id: str, final_url: str) -> None:
+    """写入跳转缓存（TTL 到期自动失效；有界防止泄漏）。"""
+    if _DRIVE_REDIRECT_CACHE_TTL <= 0 or not file_id or not final_url:
+        return
+    try:
+        with _redirect_cache_lock:
+            # 有界：超 4096 条清掉一半最老的（简单起见全清，反正 TTL 短会重建）
+            if len(_redirect_cache) >= 4096:
+                _redirect_cache.clear()
+            _redirect_cache[file_id] = (
+                final_url, time.monotonic() + _DRIVE_REDIRECT_CACHE_TTL)
+    except Exception:
+        pass
+
+
+def _redirect_cache_invalidate(file_id: str) -> None:
+    """删一条跳转缓存（403/410 时调用，回退重解析）。"""
+    if not file_id:
+        return
+    try:
+        with _redirect_cache_lock:
+            _redirect_cache.pop(file_id, None)
+    except Exception:
+        pass
+
+
 def relay_timeout() -> "httpx.Timeout":
     """共享代理客户端（以及同步下载代理）用的超时组合"""
     import httpx
@@ -492,7 +568,12 @@ async def serve_remote_async(
             url = drive_api_media_url(url)
         except Exception:
             pass
-        current = url
+        # P0-2：Drive 307 跳转缓存。alt=media 会 307 跳到 usercontent，
+        # 命中缓存时直接用最终 URL，省一跳 RTT（约 100~200ms）。
+        _cache_file_id = _drive_file_id(url)
+        _cached_target = _redirect_cache_get(_cache_file_id) if _cache_file_id else None
+        current = _cached_target or url
+        _redirect_hops = 0  # 实际走的跳转数（缓存命中时为 0）
         for _hop in range(MAX_REDIRECTS + 1):
             resp = await client.send(client.build_request("GET", current, headers=forward), stream=True)
             if resp.status_code not in _REDIRECT_CODES:
@@ -509,11 +590,23 @@ async def serve_remote_async(
             await resp.aclose()  # 确认要跟着走，这一跳的响应就不要再占着连接了
             forward = _redirect_headers(forward, current, target)
             current = target
+            _redirect_hops += 1
         else:
             await resp.aclose()
             raise HTTPException(status_code=502, detail="源站重定向次数过多")
+        # P0-2：走了跳转且落点是 usercontent（Drive 最终地址）→ 写缓存。
+        # 缓存命中（_redirect_hops==0）时不重复写。
+        if _cache_file_id and _redirect_hops > 0 and not _cached_target:
+            try:
+                if "drive.usercontent.google.com" in (urlsplit(current).hostname or ""):
+                    _redirect_cache_set(_cache_file_id, current)
+            except Exception:
+                pass
+        # P0-2：403/410 时删跳转缓存，下次回退重解析（防毒化）。
         # 115 直链过期检测：403/404 时清缓存，客户端重试将拿到新直链（2026-10-09）
-        if resp.status_code in (403, 404):
+        if resp.status_code in (403, 404, 410):
+            if _cache_file_id:
+                _redirect_cache_invalidate(_cache_file_id)
             _pickcode = (headers or {}).get("X-Pickcode")
             if _pickcode:
                 try:

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -3166,6 +3167,34 @@ async def playback_info(
             # 点播即预热（默认 10MB，可配）：并发上限/去重/超时/指标全在
             # playback_prewarm 里；DB 读走 run_db（async 纪律），线程只读文件。
             await run_db(playback_prewarm.maybe_prewarm, db, item.file_path)
+            # .strm 链路预热（P0-1）：PlaybackInfo 和 /stream 之间有 0.3~2 秒窗口，
+            # 提前把 Drive 连接暖好（Range: bytes=0-1 探路，收到响应头即关）。
+            # 后台协程，不阻塞 PlaybackInfo 返回；失败静默。
+            # 注意：db session 和 ORM 对象都不能传给后台协程（请求结束就关/
+            # detach），这里只传纯数据（path/library/guid），warm 内新建 session。
+            try:
+                from types import SimpleNamespace
+                from backend.emby_server import strm_prewarm
+                from backend.database import SessionLocal
+                _warm_item = SimpleNamespace(
+                    file_path=item.file_path,
+                    library=getattr(item, "library", None),
+                    guid=getattr(item, "guid", None),
+                )
+                _warm_db = SessionLocal()
+
+                async def _warm_and_close():
+                    try:
+                        await strm_prewarm.maybe_warm(_warm_db, _warm_item)
+                    finally:
+                        try:
+                            _warm_db.close()
+                        except Exception:
+                            pass
+
+                asyncio.create_task(_warm_and_close())
+            except Exception:
+                pass
     except Exception:
         pass
 

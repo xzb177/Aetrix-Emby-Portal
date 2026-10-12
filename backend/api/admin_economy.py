@@ -225,6 +225,11 @@ ECONOMY_CONFIG_KEYS = {
     "playback_prewarm_dedup_seconds": "int",
     "playback_prewarm_timeout_seconds": "int",
     "playback_prewarm_chunk_bytes": "int",
+    # .strm 链路预热（PlaybackInfo 阶段暖 Drive 连接）：总开关/去重窗口/并发上限
+    # （backend/emby_server/strm_prewarm.py；P0-1 起播加速）
+    "strm_prewarm_enabled": "bool",
+    "strm_prewarm_dedup_seconds": "int",
+    "strm_prewarm_max_concurrent": "int",
 }
 
 
