@@ -1018,6 +1018,7 @@ class EnrichEpisodeNightSaveRequest(BaseModel):
     enabled: bool = Field(default=False, description="单集仅夜间刮削开关")
     night_start: str = Field(default="02:00", description="夜间窗口开始 HH:MM")
     night_end: str = Field(default="06:00", description="夜间窗口结束 HH:MM")
+    night_tz: str = Field(default="Asia/Shanghai", description="夜间窗口时区（IANA 时区名）")
 
 
 @admin_emby_router.get("/scrape/enrich-episode-night")
@@ -1028,7 +1029,7 @@ def get_enrich_episode_night(
     """单集夜间刮削配置：当前生效值 + 默认值。
 
     from_env 为真时环境变量覆盖了后台配置（改这里不生效）。
-    时间为服务器本地时间，窗口支持跨午夜（如 22:00-06:00）。
+    时间按 night_tz 时区解释（默认 Asia/Shanghai），窗口支持跨午夜（如 22:00-06:00）。
     """
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.get_episode_night_config(db)
@@ -1039,7 +1040,9 @@ def get_enrich_episode_night(
             "enabled": enrich_worker.NIGHT_ONLY_DEFAULT,
             "night_start": enrich_worker.NIGHT_START_DEFAULT,
             "night_end": enrich_worker.NIGHT_END_DEFAULT,
+            "night_tz": enrich_worker.NIGHT_TZ_DEFAULT,
         },
+        "tz_options": enrich_worker.NIGHT_TZ_OPTIONS,
     }
 
 
@@ -1052,7 +1055,7 @@ def save_enrich_episode_night(
     """保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效，无需重启）"""
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.save_episode_night_config(
-        db, req.enabled, req.night_start, req.night_end)
+        db, req.enabled, req.night_start, req.night_end, req.night_tz)
     return {"success": True, **cfg}
 
 
