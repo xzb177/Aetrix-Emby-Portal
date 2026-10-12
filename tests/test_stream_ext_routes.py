@@ -15,8 +15,10 @@ from backend.emby_server import api
 EXPECTED_ROUTES = [
     "/emby/videos/{item_id}/stream.mkv",
     "/emby/videos/{item_id}/stream.mp4",
+    "/emby/videos/{item_id}/stream.strm",
     "/emby/Videos/{item_id}/stream.mkv",
     "/emby/Videos/{item_id}/stream.mp4",
+    "/emby/Videos/{item_id}/stream.strm",
 ]
 
 CATCH_ALL_ROUTES = [
@@ -73,3 +75,78 @@ def test_video_stream_ext_delegates_to_video_stream(monkeypatch):
 
     assert result == "STREAM_RESULT"
     assert calls == [("item123", sentinel_request, sentinel_user, sentinel_db)]
+
+
+def test_video_hls_stream_dot_prefix_delegates_to_video_stream(monkeypatch):
+    """video_hls 的 catch-all 收到 stream.*（如 stream.strm）时，必须转交
+    直连处理，绝不能起转码。
+
+    回归：SenPlayer 按 Emby 约定拼 /emby/videos/{id}/stream.strm 取流，
+    曾掉进 video_hls 被误判为新建转码请求，ffmpeg 起来返 m3u8，
+    客户端等视频字节流等不到，一直转圈。
+    """
+    from unittest.mock import MagicMock
+
+    stream_calls = []
+    transcode_calls = []
+
+    async def fake_video_stream(item_id, request, user, db):
+        stream_calls.append((item_id, request, user, db))
+        return "STREAM_RESULT"
+
+    async def fake_prepare(*args, **kwargs):
+        transcode_calls.append(args)
+        return "M3U8"
+
+    monkeypatch.setattr(api, "video_stream", fake_video_stream)
+    monkeypatch.setattr(api, "_prepare_new_transcode", fake_prepare)
+
+    sentinel_request, sentinel_user = object(), object()
+    sentinel_db = MagicMock()
+    for transcode_path in ("stream.strm", "stream.foo", "stream.mkv"):
+        result = asyncio.run(
+            api.video_hls("item123", transcode_path, sentinel_request,
+                          sentinel_user, sentinel_db)
+        )
+        assert result == "STREAM_RESULT", f"{transcode_path} 未转交直连"
+
+    assert len(stream_calls) == 3
+    assert transcode_calls == [], "stream.* 绝不能触发 _prepare_new_transcode"
+
+
+def test_video_hls_non_stream_path_still_transcodes(monkeypatch):
+    """守卫不能误伤正常转码路径：master.m3u8 这类仍走转码流程。"""
+    from unittest.mock import MagicMock
+    from starlette.requests import Request
+
+    async def fake_prepare(*args, **kwargs):
+        return "M3U8"
+
+    monkeypatch.setattr(api, "_prepare_new_transcode", fake_prepare)
+    # video_hls 在函数体内 from backend.emby_server.async_db import run_db，
+    # 要 patch 源模块才够得着
+    import backend.emby_server.async_db as async_db
+
+    async def fake_run_db(fn, *args, **kwargs):
+        return MagicMock()
+    monkeypatch.setattr(async_db, "run_db", fake_run_db)
+
+    scope = {
+        "type": "http", "method": "GET",
+        "path": "/emby/videos/item123/master.m3u8",
+        "query_string": b"", "headers": [],
+    }
+    request = Request(scope)
+    sentinel_db = MagicMock()
+    result = asyncio.run(
+        api.video_hls("item123", "master.m3u8", request,
+                      MagicMock(), sentinel_db)
+    )
+    assert result is not None
+
+
+def test_is_segment_path_stream_strm():
+    """stream.strm 直接流应与 stream.mkv 同等对待，可进 CDN 分片缓存。"""
+    from backend.emby_server import cdn
+    assert cdn.is_segment_path("/emby/videos/x/stream.strm") is True
+    assert cdn.is_segment_path("/emby/Videos/abc123/stream.strm") is True
