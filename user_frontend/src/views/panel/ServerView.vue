@@ -3,32 +3,53 @@
     <div class="v4-page">
       <header class="v4-loghead">
         <span class="v4-stamp">服务器 · 生态</span>
-        <h1>我的服务器</h1>
-        <p>它活着，而且很忙 —— PR-5 填入生命体 / 雷达 / 生态 / 机关组件</p>
+        <h1>🌱 服务器</h1>
+        <p>它不是机器，是你养的一盆生态</p>
       </header>
 
+      <!-- 生命体 -->
       <section class="v4-sec">
         <div class="v4-sec-title">🟢 生命体</div>
-        <div class="v4-sec-sub">PR-5 接入呼吸光球 + 拟人化文案</div>
-        <PlaceholderBlock :entry="server" label="生命体" />
+        <div class="v4-sec-sub">呼吸的健康球 —— 活着，而且很忙</div>
+        <div v-if="server.loading" class="v4-skeleton" style="height: 260px"></div>
+        <div v-else-if="server.error" class="v4-err">生命体打盹了：{{ server.error }}</div>
+        <LifeOrb v-else-if="data?.vitals" :vitals="data.vitals" />
+        <div v-else class="v4-err">生命体还没有苏醒</div>
       </section>
 
+      <!-- 任务雷达 -->
       <section class="v4-sec">
         <div class="v4-sec-title">📡 任务雷达</div>
-        <div class="v4-sec-sub">PR-5 接入 canvas 雷达扫描</div>
-        <PlaceholderBlock :entry="server" label="雷达" />
+        <div class="v4-sec-sub">后台的小家伙们正在哪忙活 —— 实时扫描</div>
+        <div v-if="server.loading" class="v4-skeleton" style="height: 280px"></div>
+        <div v-else-if="server.error" class="v4-err">雷达失灵了：{{ server.error }}</div>
+        <RadarCanvas v-else-if="data?.radar_tasks?.length" :tasks="data.radar_tasks" />
+        <div v-else class="v4-err">雷达上空空如也</div>
       </section>
 
+      <!-- 片库生态 -->
       <section class="v4-sec">
         <div class="v4-sec-title">🪴 片库生态</div>
-        <div class="v4-sec-sub">PR-5 接入植物柱状图</div>
-        <PlaceholderBlock :entry="server" label="生态" />
+        <div class="v4-sec-sub">每个库都是一株植物，长得越高内容越多</div>
+        <div v-if="server.loading" class="v4-skeleton" style="height: 190px"></div>
+        <div v-else-if="server.error" class="v4-err">花园干旱了：{{ server.error }}</div>
+        <EcoGarden v-else-if="data?.eco?.length" :eco="data.eco" />
+        <div v-else class="v4-err">花园里还没有植物</div>
       </section>
 
-      <section class="v4-sec" style="padding-bottom:20px">
+      <!-- 机关 -->
+      <section class="v4-sec" style="padding-bottom: 20px">
         <div class="v4-sec-title">🎛️ 机关</div>
-        <div class="v4-sec-sub">PR-5 接入物理拨杆开关（仅管理员可写）</div>
-        <PlaceholderBlock :entry="server" label="机关" />
+        <div class="v4-sec-sub">
+          扳动它们，服务器照做 —— 拨一下就行
+          <span v-if="data && !data.is_admin" class="v4-lock">🔒 仅管理员可拨</span>
+        </div>
+        <div v-if="server.loading" class="v4-skeleton" style="height: 220px"></div>
+        <div v-else-if="server.error" class="v4-err">机关室上锁了：{{ server.error }}</div>
+        <div v-else-if="data?.toggles?.length" class="v4-switches">
+          <LeverSwitch v-for="t in data.toggles" :key="t.key" :toggle="t" />
+        </div>
+        <div v-else class="v4-err">机关室里空空如也</div>
       </section>
     </div>
     <PanelTabbar />
@@ -36,16 +57,40 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
+import type { ServerData } from '@/composables/usePanelApi'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
-import PlaceholderBlock from '@/components/panel/PlaceholderBlock.vue'
+import LifeOrb from '@/components/panel/LifeOrb.vue'
+import RadarCanvas from '@/components/panel/RadarCanvas.vue'
+import EcoGarden from '@/components/panel/EcoGarden.vue'
+import LeverSwitch from '@/components/panel/LeverSwitch.vue'
 
 const panel = usePanelStore()
 const { server } = storeToRefs(panel)
+
+const data = computed(() => (server.value.data || null) as ServerData | null)
 
 onMounted(() => {
   void panel.loadServer()
 })
 </script>
+
+<style scoped>
+.v4-switches {
+  background: #fffdf6;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.v4-lock {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--ink2);
+  border: 1px dotted var(--line);
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+</style>
