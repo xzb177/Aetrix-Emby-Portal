@@ -76,7 +76,8 @@ _sa_affinity: dict[str, tuple[dict[str, Any], float]] = {}
 # SA 文件（含 private_key 大字段），实测 ~30ms/次（premint 热路径）。
 # 线程安全：预铸（premint 线程）与请求线程可能并发首调，用 _sa_dicts_lock
 # 双重检查锁保护；缓存建成后以不可变 tuple 快照发布，读路径无锁（CPython
-# 全局变量赋值原子）。缓存不可变的语义：每次返回一份新的 list 拷贝，
+# 全局变量赋值原子）。缓存不可变的语义：每次返回一份新的 list 拷贝 +
+# 每个 SA 字典的浅拷贝（SA 记录为扁平 dict，值均为字符串，浅拷贝足够），
 # 防止调用方篡改污染快照。
 _sa_dicts_lock = threading.Lock()
 _sa_dicts_cache: tuple[dict[str, Any], ...] | None = None
@@ -423,17 +424,19 @@ def _all_sa_dicts() -> list[dict[str, Any]]:
     P2-1（2026-10-12 审查）：结果在模块级缓存——SA 文件静态不变，
     每次重读 100 个文件的 open+json.loads（~30ms/次）是纯浪费。
     缓存经 _sa_dicts_lock 双重检查锁建成，不可变 tuple 快照发布；
-    失败路径（异常/无 SA）不缓存，每次重试发现（语义与原先一致）。
+    返回时每个 SA 字典浅拷贝（扁平 dict，浅拷贝足够），调用方无法污染快照。
+    失败路径（异常/无 SA/部分读取失败）不缓存，每次重试发现
+    （语义与原先一致；r21 P2：部分失败若冻结会永久遗漏恢复后的 SA）。
     """
     global _sa_dicts_cache
     # 快路径：缓存已建成时无锁读取（CPython 全局变量赋值原子）。
     snapshot = _sa_dicts_cache
     if snapshot is not None:
-        return list(snapshot)
+        return [dict(sa) for sa in snapshot]
     with _sa_dicts_lock:
         snapshot = _sa_dicts_cache
         if snapshot is not None:
-            return list(snapshot)
+            return [dict(sa) for sa in snapshot]
         try:
             drive_changes = _load_drive_changes()
             sa_files = drive_changes._discover_sa_files() or []
@@ -441,23 +444,26 @@ def _all_sa_dicts() -> list[dict[str, Any]]:
             return []
         seen: set[str] = set()
         result: list[dict[str, Any]] = []
+        read_failed = False
         for entry in sa_files:
             try:
                 sa = entry if _is_sa_dict(entry) else _read_sa_file(entry)
             except Exception:
+                read_failed = True
                 continue
             if _is_sa_dict(sa):
                 email = sa.get("client_email")
                 if email and email not in seen:
                     seen.add(email)
                     result.append(sa)
-        # 只缓存非空结果：空结果（无 SA/全部读失败）不冻结，每次重试
-        # 重新发现——与 _discover_sa_files"无 SA 时每次都重新扫"语义一致。
-        if result:
+        # 只缓存完整结果：空结果或存在读取失败时不冻结，每次重试重新发现——
+        # 否则一次性的文件读取故障会被永久缓存成"缺 SA"的不完整子集
+        # （r21 P2；与 _discover_sa_files"无 SA 时每次都重新扫"语义一致）。
+        if result and not read_failed:
             _sa_dicts_cache = tuple(result)
             snapshot = _sa_dicts_cache
-            return list(snapshot)
-        return result
+            return [dict(sa) for sa in snapshot]
+        return [dict(sa) for sa in result]
 
 
 def premint_tokens(max_workers: int = 4) -> dict[str, int]:
