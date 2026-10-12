@@ -539,19 +539,22 @@ def close_ticket(
 
 @user_router.get("/announcements", response_model=List[AnnouncementResponse])
 def get_announcements(
-    active_only: bool = True,
     db: Session = Depends(get_db)
 ):
-    """获取系统公告 - 与后台公告管理联动"""
-    query = db.query(models.Announcement)
+    """获取系统公告 - 与后台公告管理联动
 
-    if active_only:
-        query = query.filter(models.Announcement.is_active == True)
-
-    announcements = query.order_by(
-        models.Announcement.is_pinned.desc(),
-        models.Announcement.created_at.desc()
-    ).limit(20).all()
+    P0-6 修复：公开接口恒只返回已启用的公告。此前 active_only 参数可被
+    未鉴权客户端传 false 绕过，读出已停用/撤回公告的完整 content。
+    需要看停用公告请走管理端 /api/admin/announcements（需管理员鉴权）。
+    """
+    announcements = (
+        db.query(models.Announcement)
+        .filter(models.Announcement.is_active == True)  # noqa: E712 — 公开接口恒过滤
+        .order_by(
+            models.Announcement.is_pinned.desc(),
+            models.Announcement.created_at.desc()
+        ).limit(20).all()
+    )
 
     return [
         AnnouncementResponse(
