@@ -3362,13 +3362,15 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
             cached_dir, user_id=user.id, item_guid=item.guid,
             video_bitrate=video_bitrate, height=height)
     else:
-        transcode_mod.ensure_slot_or_503()
-        session_id = start_transcode(
-            target.value, start_seconds, video_bitrate, height,
-            user_id=user.id, item_guid=item.guid, input_headers=target.headers,
-            cache_key=transcode_mod.cache_key(item.guid, video_bitrate, height, fingerprint),
-            fingerprint=fingerprint,
-        )
+        # D-P1-1：用 transcode_slot() 保证"检查→启动"原子，
+        # 突发请求不会绕过并发上限打满 CPU。
+        with transcode_mod.transcode_slot():
+            session_id = start_transcode(
+                target.value, start_seconds, video_bitrate, height,
+                user_id=user.id, item_guid=item.guid, input_headers=target.headers,
+                cache_key=transcode_mod.cache_key(item.guid, video_bitrate, height, fingerprint),
+                fingerprint=fingerprint,
+            )
     # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
     # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
     # CDN 预留（第 2/3 层）：启用时变体/切片都走 CDN 域名（回源本服务）。

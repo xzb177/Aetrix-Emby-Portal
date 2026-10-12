@@ -4,6 +4,7 @@
 支持 PostgreSQL/MySQL + Redis 缓存
 """
 import os
+import threading
 from sqlalchemy import create_engine, event, text, Column, Integer, String, Boolean, BigInteger, DateTime, Text, Numeric, ForeignKey, Index, JSON, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -97,11 +98,12 @@ engine_config = {
 if DATABASE_TYPE == "sqlite":
     # busy timeout：等待写锁而不是立刻报 "database is locked"（媒体扫描/播放上报并发场景）
     engine_config["connect_args"] = {"check_same_thread": False, "timeout": 30}
-# 原值 20+40=60 是**每进程**的上限；api / worker / EA 三个进程各自持有独立 engine，
-# 峰值 180 > PG 默认 max_connections(100) → 高峰期随机 "too many clients already"。
-# 改为可配 + 对多进程安全的默认值（3×(25+25)=150（需 PG max_connections≥200），留足运维连接余量）。
-_POOL_SIZE = _env_int_or("DB_POOL_SIZE", 25, 1)
-_MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 25, 0)
+# 每进程连接上限 = _POOL_SIZE + _MAX_OVERFLOW；api / worker / EA 三个进程各自持有独立 engine，
+# 峰值 3×(10+10)=60 < PG 默认 max_connections(100)，为运维/复制/迁移连接留足余量，
+# 避免高峰期随机 "too many clients already" 导致全站 500。
+# 如需放大，请同步调高 PG max_connections，并保证 3×(DB_POOL_SIZE+DB_MAX_OVERFLOW) 仍有富余。
+_POOL_SIZE = _env_int_or("DB_POOL_SIZE", 10, 1)
+_MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 10, 0)
 if DATABASE_TYPE == "postgresql":
     engine_config["pool_size"] = _POOL_SIZE
     engine_config["max_overflow"] = _MAX_OVERFLOW
@@ -415,50 +417,66 @@ class CacheManager:
     无限增长吃掉内存。
     """
 
+    # 修复 E-P1-2：内存缓存被多线程共享，dict 与 FIFO order 必须原子更新
     _memory_cache: dict = {}
     _memory_cache_order: list = []  # FIFO 顺序，配合淘汰
     _MEMORY_CACHE_MAX = 2000
+    _memory_cache_lock = threading.Lock()  # 保护 _memory_cache / _memory_cache_order 的并发读写
 
     @staticmethod
     def _memory_get(key: str) -> Optional[str]:
+        # 热路径：命中且未过期时不加锁，避免读多写少场景下的锁竞争
         entry = CacheManager._memory_cache.get(key)
         if entry is None:
             return None
         value, expire_at = entry
         import time as _time
         if expire_at is not None and _time.time() > expire_at:
-            CacheManager._memory_cache.pop(key, None)
-            try:
-                CacheManager._memory_cache_order.remove(key)
-            except ValueError:
-                pass
-            return None
+            # 修复 E-P1-2：过期删除需加锁，并同步从 FIFO order 中移除，防止 order 无界增长
+            with CacheManager._memory_cache_lock:
+                # 双重检查：期间可能已被其它线程刷新或删除
+                entry = CacheManager._memory_cache.get(key)
+                if entry is None:
+                    return None
+                if entry[1] is not None and _time.time() > entry[1]:
+                    CacheManager._memory_cache.pop(key, None)
+                    try:
+                        CacheManager._memory_cache_order.remove(key)
+                    except ValueError:
+                        pass
+                    return None
+                # 已被其它线程写入新值且未过期，直接返回最新值
+                return entry[0]
         return value
 
     @staticmethod
     def _memory_set(key: str, value: str, ttl: int = 300) -> None:
         import time as _time
-        cache = CacheManager._memory_cache
         expire_at = _time.time() + ttl if ttl and ttl > 0 else None
-        if key not in cache:
-            # 写满：先清过期条目，不够再按 FIFO 淘汰最老
-            while len(cache) >= CacheManager._MEMORY_CACHE_MAX:
-                evicted = False
-                now = _time.time()
-                for k in list(cache.keys()):
-                    _, exp = cache[k]
-                    if exp is not None and now > exp:
-                        cache.pop(k, None)
-                        evicted = True
-                        break
-                if not evicted:
-                    oldest = CacheManager._memory_cache_order.pop(0) if CacheManager._memory_cache_order else None
-                    if oldest is not None:
-                        cache.pop(oldest, None)
-                    else:
-                        break
-            CacheManager._memory_cache_order.append(key)
-        cache[key] = (value, expire_at)
+        # 修复 E-P1-2：淘汰 + 写入全程持锁，保证 dict 与 order 一致；
+        # 临界区内只有内存操作、无 IO，锁粒度可控
+        with CacheManager._memory_cache_lock:
+            cache = CacheManager._memory_cache
+            order = CacheManager._memory_cache_order
+            if key not in cache:
+                if len(cache) >= CacheManager._MEMORY_CACHE_MAX:
+                    now = _time.time()
+                    # 1) 批量清理过期条目，并同步过滤 order，防止 order 只增不减
+                    expired = [k for k, (_, exp) in cache.items()
+                               if exp is not None and now > exp]
+                    if expired:
+                        for k in expired:
+                            cache.pop(k, None)
+                        order[:] = [k for k in order if k in cache]
+                    # 2) 仍超限则按 FIFO 淘汰；跳过已不在 cache 中的失效 order 条目，
+                    #    只有真正删掉一个 key 才继续，避免 order.pop(0) 空转忙等
+                    while len(cache) >= CacheManager._MEMORY_CACHE_MAX and order:
+                        oldest = order.pop(0)
+                        if oldest in cache:
+                            del cache[oldest]
+                # 仅新增 key 时追加 order；更新已有 key 不重复追加
+                order.append(key)
+            cache[key] = (value, expire_at)
 
     @staticmethod
     def get(key: str) -> Optional[str]:
@@ -1477,8 +1495,18 @@ def _acquire_migrate_lock():
                     try:
                         conn.execute(text("SELECT pg_advisory_unlock(:k)"),
                                      {"k": _PG_LOCK_KEY})
-                    except Exception:  # noqa: BLE001 — 解锁失败不影响已完成的迁移
-                        pass
+                    except Exception:  # noqa: BLE001
+                        import logging
+                        logging.getLogger(__name__).error(
+                            "pg_advisory_unlock 失败，丢弃连接以防 advisory lock 泄漏",
+                            exc_info=True,
+                        )
+                        # 必须 invalidate：解锁失败说明该连接仍持有 advisory lock，
+                        # 若直接归还连接池，下次迁移会在另一个连接上 pg_advisory_lock，
+                        # 因锁被池中旧连接占用而永久阻塞（直到 pool_recycle 才回收）。
+                        # invalidate 让连接池丢弃该连接并重建；其后的 finally: conn.close()
+                        # 对已失效连接是安全的，不会把坏连接放回池中。
+                        conn.invalidate()
             finally:
                 conn.close()
             return

@@ -644,15 +644,21 @@ def build_hls_command(
     seek = ["-ss", str(start_seconds)] if start_seconds > 0 else []
     if copy_video:
         vcodec = ["-c:v", "copy"]
+        hw_device_args = []  # 直通无需硬件设备
     else:
+        # D-P1-3：设备参数（如 -vaapi_device）是输入前置选项，必须放在 -i 之前
+        hw_device_args = _hwaccel.get_hw_device_args()
         vcodec = _hwaccel.get_encoder_args() + [
             "-b:v", str(video_bitrate),
             "-maxrate", str(int(video_bitrate * 1.2)), "-bufsize", str(video_bitrate * 2),
         ]
-        if height:
-            vcodec += ["-vf", f"scale=-2:{height}"]
+        # 硬件上传滤镜与 scale 合并为同一条 -vf，逗号连接
+        filters = [f for f in (_hwaccel.get_hw_filter(), f"scale=-2:{height}" if height else "") if f]
+        if filters:
+            vcodec += ["-vf", ",".join(filters)]
     cmd = [
         FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
+        *hw_device_args,
         *seek, *headers_arg(input_headers), "-i", file_path,
         *vcodec,
         "-c:a", "aac", "-b:a", str(audio_bitrate), "-ac", "2",
@@ -853,7 +859,9 @@ def find_transcodes(user_id: int, item_guid: Optional[str] = None) -> list:
 def find_active_transcode(user_id: int, item_guid: str,
                         tier: Optional[str] = None) -> Optional[str]:
     """查找同一用户同一影片仍在运行的转码会话（tier 指定时只复用同档）"""
-    for sid, info in _TRANSCODE_PROCS.items():
+    # D-P1-2：回收线程会 pop _TRANSCODE_PROCS，直接遍历字典会抛
+    # RuntimeError: dictionary changed size during iteration，故用 list() 快照
+    for sid, info in list(_TRANSCODE_PROCS.items()):
         if info.get("user_id") != user_id or info.get("item_guid") != item_guid:
             continue
         if tier is not None and info.get("tier") != tier:

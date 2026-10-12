@@ -184,7 +184,7 @@ def resolve_request_user(db: Session, request: Request) -> Optional[models.WebUs
     与 ``get_emby_user`` 同一口径，但不抛异常、可用于依赖注入之外的位置
     （例如下载策略的网关级中间件）。解析不到用户时返回 None。
     """
-    from backend.security import resolve_jwt_user_id
+    from backend.security import decode_token, enforce_token_freshness, resolve_jwt_user_id
 
     resolved = resolve_token(db, request)
     if resolved is not None:
@@ -206,7 +206,17 @@ def resolve_request_user(db: Session, request: Request) -> Optional[models.WebUs
     if user_id is None:
         return None
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    return user if user and user.is_active else None
+    if not user or not user.is_active:
+        return None
+    # A-P1-2：JWT 回退路径需校验 token 新鲜度，改密/登出后旧 token 立即失效
+    payload = decode_token(raw, expected_type="access")
+    if payload is None:
+        return None
+    try:
+        enforce_token_freshness(db, payload, user)
+    except HTTPException:
+        return None
+    return user
 
 
 def get_emby_user(
@@ -250,13 +260,17 @@ def get_emby_user(
             or request.headers.get("X-Emby-Token", "")
         )
         if raw:
-            from backend.security import resolve_jwt_user_id
+            from backend.security import decode_token, enforce_token_freshness, resolve_jwt_user_id
 
             jwt_user_id = resolve_jwt_user_id(raw)
             if jwt_user_id is not None:
                 user = db.query(models.WebUser).filter(models.WebUser.id == jwt_user_id).first()
                 if user and user.is_active:
-                    return user
+                    # A-P1-2：JWT 回退路径补做 token 新鲜度校验，改密/登出后旧 token 立即失效
+                    payload = decode_token(raw, expected_type="access")
+                    if payload is not None:
+                        enforce_token_freshness(db, payload, user)
+                        return user
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -286,13 +300,17 @@ def get_admin_or_emby_user(request: Request, db: Session = Depends(get_db)) -> m
     # H2：JWT 只从 Authorization 头取，URL 查询串里的 JWT 一律不认
     raw = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
     if raw:
-        from backend.security import resolve_jwt_user_id
+        from backend.security import decode_token, enforce_token_freshness, resolve_jwt_user_id
 
         jwt_user_id = resolve_jwt_user_id(raw)
         if jwt_user_id is not None:
             user = db.query(models.WebUser).filter(models.WebUser.id == jwt_user_id).first()
             if user and user.is_active:
-                return user
+                # A-P1-2：JWT 回退路径补做 token 新鲜度校验，改密/登出后旧 token 立即失效
+                payload = decode_token(raw, expected_type="access")
+                if payload is not None:
+                    enforce_token_freshness(db, payload, user)
+                    return user
 
     # Emby 客户端 token
     result = resolve_token(db, request)

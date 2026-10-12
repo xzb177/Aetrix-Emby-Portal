@@ -219,3 +219,30 @@ def resolve_jwt_user_id(token: str) -> Optional[int]:
         return int(payload.get("sub"))
     except (TypeError, ValueError):
         return None
+
+
+def revoke_all_user_tokens(db, user_id: int, reason: str = "security") -> None:
+    """吊销指定用户的全部 token（应急响应）。
+
+    将 user.token_version 原子自增 1，使该用户所有已签发的 access / refresh
+    token 在后续 enforce_token_freshness 校验时立即失效（token_version 不匹配）。
+    典型场景：检测到已吊销的 refresh token 被重用时（疑似 token 泄露），
+    调用本函数一键踢出该用户全部会话。
+
+    本函数用于应急响应，内部吞掉异常（仅 rollback 并记录日志），不再向外抛出。
+    """
+    import logging
+    from backend.models import WebUser  # 延迟导入，避免循环导入
+
+    try:
+        # 原子自增：并发下不会丢更新，且单条 UPDATE 不产生额外查询
+        db.query(WebUser).filter(WebUser.id == user_id).update(
+            {WebUser.token_version: WebUser.token_version + 1},
+            synchronize_session=False,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logging.getLogger(__name__).exception(
+            "revoke_all_user_tokens 失败: user_id=%s reason=%s", user_id, reason
+        )
