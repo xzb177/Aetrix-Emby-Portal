@@ -5,7 +5,7 @@
  * 把 Google Drive 视频批量生成 .strm 文件的能力收进管理后台：
  * - 生成状态与进度（轮询）
  * - 手动触发增量 / 全量生成
- * - 配置：总开关 / Drive 源目录 / 每天执行时刻 / 指定 Drive / 过期清理
+ * - 配置：总开关 / Drive 源目录 / 增量间隔 / 指定 Drive / 过期清理
  * - 缺集报告：上次生成的完整性校验结果
  *
  * 版式与其它页一致：PageHeader + StatTile + SectionCard，按钮统一 el-button，
@@ -46,7 +46,7 @@ const triggeringFull = ref(false)
 const saving = ref(false)
 
 // 配置表单（与 config 分开，避免未保存就污染展示）
-const form = ref({ enabled: true, source_dir: '', schedule: '', drive_id: '', prune: false, interval_minutes: 60, source_type: 'drive', local_root: '/media' })
+const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, interval_minutes: 60, source_type: 'drive', local_root: '/media' })
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -107,7 +107,6 @@ async function load(silent = false) {
     form.value = {
       enabled: !!config.value?.enabled,
       source_dir: config.value?.source_dir ?? '',
-      schedule: config.value?.schedule ?? '',
       drive_id: config.value?.drive_id ?? '',
       prune: !!config.value?.prune,
       interval_minutes: config.value?.interval_minutes ?? 60,
@@ -281,13 +280,9 @@ onUnmounted(() => {
           <el-input v-model="form.source_dir" placeholder="如 MoviePilot/" clearable style="max-width: 320px" />
           <span class="hint">相对网盘根的目录</span>
         </el-form-item>
-        <el-form-item label="每天执行时刻">
-          <el-input v-model="form.schedule" placeholder="03:00" clearable style="max-width: 160px" />
-          <span class="hint">HH:MM（服务器本地时间），留空关闭定时</span>
-        </el-form-item>
         <el-form-item label="增量间隔">
           <el-input-number v-model="form.interval_minutes" :min="0" :max="1440" :step="5" style="max-width: 160px" />
-          <span class="hint">分钟，0=关闭间隔只跑每天定时。实际间隔加 ±20% 随机抖动防风控</span>
+          <span class="hint">分钟，0=关闭。实际间隔加 ±20% 随机抖动防风控</span>
         </el-form-item>
         <el-form-item label="数据源类型">
           <el-select v-model="form.source_type" style="max-width: 200px">
