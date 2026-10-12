@@ -16,7 +16,6 @@
 
 import logging
 import os
-import random
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -239,7 +238,7 @@ def mark_failed(db, item, reason: str) -> None:
 def mark_long_retry(db, item, reason: str, kind: str = "quota") -> None:
     """长退避重试：配额耗尽 / 持续超时等临时性故障专用。
 
-    - 状态保持 pending，``PROBE_QUOTA_RETRY_SEC`` 约 24h（±30% 抖动）后再试；
+    - 状态保持 pending，``PROBE_QUOTA_RETRY_SEC``（24h）后再试；
     - 不增加 ``probe_attempts``（不消耗普通重试次数）；
     - 永不判死——配额恢复 / 挂载恢复后自动自愈（C-P1-1）。
     - ``kind`` 仅用于日志与 ``probe_last_error`` 标记："quota" / "timeout"。
@@ -248,12 +247,10 @@ def mark_long_retry(db, item, reason: str, kind: str = "quota") -> None:
     系统性挂载故障由 ``probe_worker.MountBreaker`` 熔断限流，不会打爆。
     """
     item.probe_status = "pending"
-    # ±30% 随机抖动，打散重试脉冲（反风控）
-    item.probe_next_retry_at = datetime.now() + timedelta(
-        seconds=int(PROBE_QUOTA_RETRY_SEC * random.uniform(0.7, 1.3)))
-    _clear_claim(item, error=f"[{kind}] {reason}（约24h后重试）")
+    item.probe_next_retry_at = datetime.now() + timedelta(seconds=PROBE_QUOTA_RETRY_SEC)
+    _clear_claim(item, error=f"[{kind}] {reason}（24h后重试）")
     db.commit()
-    logger.info("按需探测长退避 item=%s kind=%s（约24h后重试）: %s",
+    logger.info("按需探测长退避 item=%s kind=%s（24h后重试）: %s",
                 item.id, kind, reason)
 
 

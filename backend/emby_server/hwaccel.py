@@ -45,9 +45,7 @@ def _test_encoder(backend: str) -> bool:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
         cmd += get_hw_device_args(backend)
         cmd += ["-f", "lavfi", "-i", "testsrc=duration=0.04:size=128x128:rate=25"]
-        # 自检必须拼出完整生产滤镜链（含 scale），否则自检通过不代表生产可转码；
-        # height=720 作为代表性生产值。
-        hw_filter = get_production_filter(backend, height=720)
+        hw_filter = get_hw_filter(backend)
         if hw_filter:
             cmd += ["-vf", hw_filter]
         cmd += get_encoder_args(backend) + ["-frames:v", "1", "-y", out_path]
@@ -129,21 +127,6 @@ def get_hw_filter(backend: str = None) -> str:
     if b == "qsv":
         return "format=nv12,hwupload=extra_hw_frames=64"
     return ""
-
-
-def get_production_filter(backend: str = None, height: int | None = None) -> str:
-    """组装生产用的完整 -vf 滤镜链。
-
-    P1-5: vaapi/qsv 要求先软件 scale 再 hwupload（硬件帧不能再过软件 scale）。
-    nvenc/software 无 hw 片段时，这里就是纯 scale。
-    """
-    filters = []
-    if height:
-        filters.append(f"scale=-2:{height}")
-    hw_filter = get_hw_filter(backend)
-    if hw_filter:
-        filters.append(hw_filter)
-    return ",".join(filters)
 
 
 def get_encoder_args(backend: str = None) -> list:

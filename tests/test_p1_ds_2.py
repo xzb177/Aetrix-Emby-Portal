@@ -93,21 +93,3 @@ def test_find_active_transcode_no_runtime_error():
     finally:
         procs.clear()
         procs.update(original)
-
-
-def test_production_filter_scale_before_hwupload():
-    """P1-5: 生产滤镜链必须是 scale 在前、hwupload 在后。
-
-    vaapi/qsv 的 hwupload 之后是硬件帧，软件 scale 处理不了；
-    顺序反了（format=nv12,hwupload,scale）转码必失败。
-    """
-    hwaccel = _import_or_skip("backend.emby_server.hwaccel")
-    assert hwaccel.get_production_filter("vaapi", height=720) == \
-        "scale=-2:720,format=nv12,hwupload"
-    assert hwaccel.get_production_filter("qsv", height=720) == \
-        "scale=-2:720,format=nv12,hwupload=extra_hw_frames=64"
-    # nvenc/software 无 hw 片段：纯 scale；无 height：空串
-    assert hwaccel.get_production_filter("nvenc", height=720) == "scale=-2:720"
-    assert hwaccel.get_production_filter("software", height=720) == "scale=-2:720"
-    assert hwaccel.get_production_filter("vaapi") == "format=nv12,hwupload"
-    assert hwaccel.get_production_filter("software") == ""

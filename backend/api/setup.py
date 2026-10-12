@@ -184,17 +184,6 @@ def setup_first_admin(
     """建第一个管理员并永久关闭向导入口。完成后再次调用一律 403。"""
     ip = client_ip(http_request)
 
-    # P1-2 修复：限流必须在凭据校验之前，所有尝试（含失败的 token 试探）
-    # 都先过限流，防止无限试探与审计表被刷爆。
-    allowed, retry_after = check_rate_limit(f"admin_setup:{ip}", 8, 60)
-    if not allowed:
-        record_event(
-            db, username=request.username.strip(), ip=log_ip(http_request),
-            agent=user_agent(http_request), success=False, reason="admin_setup_failed",
-            detail=f"尝试过于频繁，已限流（{retry_after}s）",
-        )
-        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
-
     # P0-4 修复：部署者凭据。部署时设置了 SETUP_BOOTSTRAP_TOKEN 的，
     # 请求必须携带一致的 bootstrap_token，否则任何能访问该接口的人
     # 都可在管理员完成初始化前抢先创建管理员并永久关闭向导。
@@ -219,7 +208,14 @@ def setup_first_admin(
             "建议在部署时配置该环境变量"
         )
 
-    # （限流检查已移到本函数开头，见 P1-2）
+    allowed, retry_after = check_rate_limit(f"admin_setup:{ip}", 8, 60)
+    if not allowed:
+        record_event(
+            db, username=request.username.strip(), ip=log_ip(http_request),
+            agent=user_agent(http_request), success=False, reason="admin_setup_failed",
+            detail=f"尝试过于频繁，已限流（{retry_after}s）",
+        )
+        raise HTTPException(status_code=429, detail="尝试过于频繁，请稍后再试")
 
     # P0-5 修复：跨进程互斥。threading.Lock 只在进程内有效，多 worker 下
     # 两个进程可同时通过 is_setup_completed 检查并各自创建不同用户名的管理员。

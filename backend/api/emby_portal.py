@@ -403,31 +403,6 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
     return _issue_auth_response(user, db, plain_password=req.password)
 
 
-# E1（P2-6）：refresh 轮换容忍窗口——客户端成功换新后因网络重试/并发双发再次携带
-# 旧 refresh 时，旧 jti 虽已在吊销表但属良性重复，不应触发应急吊销（误杀全部会话）。
-REFRESH_ROTATION_GRACE_SEC = 120
-
-
-def _refresh_rotation_in_grace(db, old_jti: str) -> bool:
-    """判断旧 refresh 的 jti 是否处于轮换容忍窗口内（视为良性重复）。
-
-    仅当吊销原因恰为 refresh_rotation，且吊销时间在 REFRESH_ROTATION_GRACE_SEC 内返回 True；
-    行不存在 / 原因不符 / 已超窗 均返回 False。
-    """
-    if not old_jti:
-        return False
-    # 延迟导入，避免循环导入
-    from datetime import datetime, timedelta
-    from backend.models import RevokedJwt
-
-    row = db.query(RevokedJwt).filter(RevokedJwt.jti == old_jti).first()
-    if row is None:
-        return False
-    if row.reason != "refresh_rotation":
-        return False
-    return (datetime.now() - row.revoked_at) <= timedelta(seconds=REFRESH_ROTATION_GRACE_SEC)
-
-
 @auth_router.post("/refresh")
 def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
     """用 refresh_token 换取新的 access_token（+ 可选轮换的 refresh_token）"""
@@ -448,28 +423,14 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
     )
 
     # A-P1-1：refresh 复用检测——旧 refresh 的 jti 已在吊销表中，
-    # 说明同一凭证被重复使用（疑似泄露），触发应急响应吊销该用户全部 token。
-    # P2-6：轮换容忍窗口内的重试视为良性重复（网络重试/并发双发），放行不误杀。
+    # 说明同一凭证被重复使用（疑似泄露），触发应急响应吊销该用户全部 token
     old_jti = payload.get("jti")
-    reuse_suspected = bool(old_jti) and is_jti_revoked(db, old_jti)
-    in_grace = reuse_suspected and _refresh_rotation_in_grace(db, old_jti)
-    if reuse_suspected and not in_grace:
+    if old_jti and is_jti_revoked(db, old_jti):
         revoke_all_user_tokens(db, user.id, reason="refresh_reuse_detected")  # 内部原子 bump + commit
         raise HTTPException(status_code=401, detail="检测到异常的刷新凭证，已吊销全部会话")
-    if in_grace:
-        # P1（安全）：容忍窗口只豁免"旧 jti 已在吊销表"这一项，不能豁免改密/登出。
-        # 注意：此处绝对不能调用 enforce_token_freshness——它内部会检查 payload["jti"] 是否在吊销表，
-        # 而轮换时旧 refresh 的 jti 已被 revoke（refresh_rotation），直接调用会把合法的良性重试误杀。
-        # 因此这里只单独比对 token 版本号，语义与 enforce_token_freshness 中的 tv 校验保持一致：
-        # 改密/登出 bump token_version 后，容忍窗口内旧 refresh 重放必须 401，否则 120s 内
-        # 旧凭证仍能换出新 access，违反"改密/登出后旧 token 立即作废"的安全契约。
-        if int(payload.get("tv", 0) or 0) != int(getattr(user, "token_version", 0) or 0):
-            raise HTTPException(status_code=401, detail="密码已变更，请重新登录")
-        logger.warning("refresh 轮换容忍窗口内重试 jti=%s user_id=%s：视为良性重复，放行，不触发应急吊销",
-                       old_jti, user.id)
-    else:
-        # P3（审查第八批）：改密/登出后旧 refresh_token 作废，否则换新 access 形同虚设
-        enforce_token_freshness(db, payload, user)
+
+    # P3（审查第八批）：改密/登出后旧 refresh_token 作废，否则换新 access 形同虚设
+    enforce_token_freshness(db, payload, user)
 
     # A-P1-1：轮换——旧 refresh 立即进吊销表，避免同一 refresh 被无限重用
     if old_jti:

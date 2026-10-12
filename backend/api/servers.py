@@ -425,9 +425,12 @@ async def create_server(
             is_enabled=payload.is_enabled, remark=payload.remark or "",
             realm_id=None if shared else (payload.realm_id or realms.active_realm_id(db)),
         )
+        # F-P1-24 修复：只 flush 不提交，与探测、审计同事务。
+        # 原先这里 commit 后探测抛错会留下"已入库但无审计、无可达状态"的脏行。
+        # flush 后 id 已可用；probe_and_store 内部 store() 会提交（含探测结论），
+        # 探测抛错则整个事务回滚，服务器行不会残留。
         db.add(server)
-        db.commit()
-        db.refresh(server)
+        db.flush()
         return server, int(server.id)
 
     server, server_id = await run_in_threadpool(insert)

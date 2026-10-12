@@ -652,11 +652,10 @@ def build_hls_command(
             "-b:v", str(video_bitrate),
             "-maxrate", str(int(video_bitrate * 1.2)), "-bufsize", str(video_bitrate * 2),
         ]
-        # P1-5: vaapi/qsv 要求先软件 scale 再 hwupload（硬件帧不能再过软件 scale），
-        # 由 get_production_filter 统一拼出完整生产滤镜链（与自检共用同一组装）。
-        prod_filter = _hwaccel.get_production_filter(height=height)
-        if prod_filter:
-            vcodec += ["-vf", prod_filter]
+        # 硬件上传滤镜与 scale 合并为同一条 -vf，逗号连接
+        filters = [f for f in (_hwaccel.get_hw_filter(), f"scale=-2:{height}" if height else "") if f]
+        if filters:
+            vcodec += ["-vf", ",".join(filters)]
     cmd = [
         FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin",
         *hw_device_args,
