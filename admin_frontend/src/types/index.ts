@@ -830,6 +830,14 @@ export interface AdminLogRow {
   ip_address: string | null
   created_at: string
   admin_name: string
+  /** 错误码大白话：后端按 details 原文翻译，无命中为 null */
+  error_hint?: {
+    id: string
+    category: string
+    title: string
+    what: string
+    steps: string[]
+  } | null
 }
 
 export interface OverviewStats {

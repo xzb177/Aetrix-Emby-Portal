@@ -64,6 +64,7 @@ from backend.emby_server import media_probe
 from backend.emby_server import models as em
 from backend.emby_server import proc_util
 from backend.emby_server.env_util import env_float, env_int
+from backend.error_lexicon import translate as _translate_error
 
 logger = logging.getLogger(__name__)
 
@@ -1242,6 +1243,13 @@ def status_snapshot(db=None) -> dict:
     pending = counts.get("pending", 0)
     rate = (rt or {}).get("rate_per_min") or 0
     eta_hours = round(pending / rate / 60.0, 2) if rate else None
+    top_errors = []
+    for e, c in errs:
+        try:
+            hint = _translate_error(e)
+        except Exception:  # noqa: BLE001 — 翻译失败不影响状态快照
+            hint = None
+        top_errors.append({"error": e, "count": int(c), "hint": hint})
     return {
         "enabled": PROBE_ENABLED,
         "paused": is_paused(),
@@ -1249,7 +1257,7 @@ def status_snapshot(db=None) -> dict:
         "pending_ready": max(0, pending - int(retrying)),
         "retrying": int(retrying),
         "stale_probing": int(stale),
-        "top_errors": [{"error": e, "count": int(c)} for e, c in errs],
+        "top_errors": top_errors,
         "runtime": rt,
         "eta_hours": eta_hours,
     }
