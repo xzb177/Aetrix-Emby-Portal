@@ -55,7 +55,8 @@ export const usePanelStore = defineStore('panel', () => {
   /** 拆封：即时写后端（换设备同步），本地 optimistic 更新 */
   async function unseal(itemId: string | number) {
     await panelApi.unseal(itemId)
-    const list = parcels.value.data as Array<Record<string, unknown>> | null
+    const data = parcels.value.data as { parcels?: Array<Record<string, unknown>> } | null
+    const list = data?.parcels
     if (Array.isArray(list)) {
       const hit = list.find((p) => String(p.id) === String(itemId))
       if (hit) hit.unsealed = true
