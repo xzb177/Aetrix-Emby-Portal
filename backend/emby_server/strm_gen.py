@@ -23,8 +23,7 @@
 配置项（SystemConfig，全部热读）：
 - strm_gen_enabled：总开关，默认 true
 - strm_gen_source_dir：Drive 上的源目录（相对网盘根，如 "MoviePilot/"），默认 "MoviePilot/"
-- strm_gen_schedule：每天执行时刻 "HH:MM"，默认 "03:00"；空字符串 = 关闭定时
-  （按服务器本地时区解释，生产为悉尼时间 UTC+10/+11）
+- strm_gen_interval_minutes：增量间隔（分钟），默认 60；0 = 关闭定时增量
 - strm_gen_prune：是否删除 Drive 上已不存在的 .strm 文件及状态行，默认 false
   （删文件不可逆：默认只上报不删，先在缺集报告确认再手动开启）
 - strm_gen_last_run：上次执行完成时间（ISO）
@@ -49,13 +48,12 @@ logger = logging.getLogger(__name__)
 
 CONFIG_ENABLED = "strm_gen_enabled"
 CONFIG_SOURCE_DIR = "strm_gen_source_dir"
-CONFIG_SCHEDULE = "strm_gen_schedule"
 CONFIG_LAST_RUN = "strm_gen_last_run"
 CONFIG_LAST_STATS = "strm_gen_last_stats"
 CONFIG_DRIVE_ID = "strm_gen_drive_id"
 CONFIG_PRUNE = "strm_gen_prune"
 # 增量间隔（分钟）：两次增量生成之间的间隔，用户可在后台自由设置。
-# 0 = 关闭间隔，只跑每天定时。默认 60。
+# 0 = 关闭定时增量（只手动触发）。默认 60。
 CONFIG_INTERVAL = "strm_gen_interval_minutes"
 # 数据源类型：drive=Google Drive，local=本地目录。默认 drive（向后兼容）。
 CONFIG_SOURCE_TYPE = "strm_gen_source_type"
@@ -67,7 +65,6 @@ CONFIG_LOCAL_ROOT = "strm_gen_local_root"
 CONFIG_JITTER_RATIO = "strm_gen_jitter_ratio"
 
 DEFAULT_SOURCE_DIR = "MoviePilot/"
-DEFAULT_SCHEDULE = "03:00"
 DEFAULT_INTERVAL_MINUTES = 60
 DEFAULT_JITTER_RATIO = 0.2
 
@@ -105,20 +102,6 @@ def source_dir(db) -> str:
     return (raw + "/") if raw else ""
 
 
-def schedule(db) -> str:
-    """每天执行时刻 "HH:MM"，非法/空 = 关闭定时。
-
-    注意：按服务器本地时区解释（生产为悉尼时间 UTC+10/+11），
-    与用户所在时区可能有差，管理后台配置项上有同样提示。
-    """
-    raw = _db_config(db, CONFIG_SCHEDULE, DEFAULT_SCHEDULE).strip()
-    if len(raw) == 5 and raw[2] == ":" and raw[:2].isdigit() and raw[3:].isdigit():
-        hh, mm = int(raw[:2]), int(raw[3:])
-        if 0 <= hh <= 23 and 0 <= mm <= 59:
-            return raw
-    return ""
-
-
 def drive_id_config(db) -> str:
     """配置指定的 Drive ID（空 = 自动选择）。"""
     return _db_config(db, CONFIG_DRIVE_ID, "").strip()
@@ -150,7 +133,7 @@ def prune_enabled(db) -> bool:
 
 
 def interval_minutes(db) -> int:
-    """增量间隔（分钟）。用户可在后台自由设置，0=关闭间隔只跑每天定时。
+    """增量间隔（分钟）。用户可在后台自由设置，0=关闭定时增量（只手动触发）。
 
     非法值回退 60，钳制在 [0, 1440]。0 表示关闭。
     """
@@ -1025,44 +1008,22 @@ def missing_report(db, limit: int = 100) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 定时调度（daemon 线程，每天到点跑一次）
+# 定时调度（daemon 线程，按增量间隔跑）
 # ---------------------------------------------------------------------------
 
 _scheduler_started = False
 _scheduler_lock = threading.Lock()
 
 
-def _last_run_date_from_config() -> str:
-    """从 strm_gen_last_run 配置恢复上次执行日期（进程重启后不重复跑当天）。
-
-    原来 last_run_date 是纯内存变量：进程重启后若已过当天执行时刻会再跑一次；
-    而 run_generation 本来就会写 strm_gen_last_run（只写不读），现在把它读回来。
-    """
-    try:
-        from backend.database import SessionLocal
-        from backend.integrations import store
-        db = SessionLocal()
-        try:
-            raw = store.get_value(db, CONFIG_LAST_RUN, "") or ""
-            # ISO 格式 "2026-10-10T12:34:56+00:00" 取日期部分
-            return raw[:10] if len(raw) >= 10 and raw[4] == "-" else ""
-        finally:
-            db.close()
-    except Exception:
-        return ""
-
-
 def _scheduler_loop():
-    """调度循环：每天定时（全量/增量）+ 间隔增量。
+    """调度循环：按配置的增量间隔跑增量生成。
 
     反风控设计（用户明确要求）：
     - 间隔等待加 ±20% 随机抖动（默认），避免机械的固定节拍被 Google 识别为机器行为。
     - 抖动比例可配置（strm_gen_jitter_ratio），0=关闭（便于测试）。
     - Changes API 本身只拉变化，配额消耗远小于全量，缩短间隔不会打爆配额。
+    - interval_minutes=0 时关闭定时增量（只手动触发）。
     """
-    last_run_date = _last_run_date_from_config()
-    if last_run_date:
-        logger.info("strm_gen: 从配置恢复上次执行日期 %s", last_run_date)
     # 上次间隔增量执行时间（monotonic，避免系统时间跳变影响）
     last_interval_ts = 0.0
     while True:
@@ -1073,43 +1034,32 @@ def _scheduler_loop():
                 if not enabled(db):
                     time.sleep(300)
                     continue
-                now = datetime.now(timezone.utc).astimezone()
-                today = now.strftime("%Y-%m-%d")
 
-                # 1. 每天定时（保留原有逻辑）
-                sched = schedule(db)
-                if sched and now.strftime("%H:%M") >= sched and last_run_date != today:
-                    if get_progress()["running"]:
-                        time.sleep(60)
-                        continue
-                    logger.info("strm_gen: 每天定时触发 (%s)", sched)
-                    run_generation(db, full=False)
-                    last_run_date = today
-                    last_interval_ts = time.monotonic()
-                    continue
-
-                # 2. 间隔增量（新增）：按用户配置的分钟数跑，带抖动防风控
+                # 间隔增量：按用户配置的分钟数跑，带抖动防风控
                 iv_min = interval_minutes(db)
-                if iv_min > 0:
-                    wait_sec = _jittered_interval_sec(db)
-                    elapsed = time.monotonic() - last_interval_ts
-                    if last_interval_ts > 0 and elapsed < wait_sec:
-                        # 还没到间隔，短睡后继续（不长睡，保证每天定时能及时触发）
-                        time.sleep(min(60, wait_sec - elapsed))
-                        continue
-                    if get_progress()["running"]:
-                        time.sleep(60)
-                        continue
-                    # 首次启动时 last_interval_ts=0，延迟 5 分钟再跑，避免启动即 burst
-                    if last_interval_ts == 0:
-                        logger.info("strm_gen: 调度器启动，%.0f 秒后开始首次间隔增量", wait_sec)
-                        last_interval_ts = time.monotonic()
-                        time.sleep(min(60, wait_sec))
-                        continue
-                    logger.info("strm_gen: 间隔增量触发（配置 %d 分钟，抖动后 %.0f 秒）",
-                                iv_min, wait_sec)
-                    run_generation(db, full=False)
+                if iv_min <= 0:
+                    # 0=关闭定时增量，只手动触发
+                    time.sleep(300)
+                    continue
+                wait_sec = _jittered_interval_sec(db)
+                elapsed = time.monotonic() - last_interval_ts
+                if last_interval_ts > 0 and elapsed < wait_sec:
+                    # 还没到间隔，短睡后继续
+                    time.sleep(min(60, wait_sec - elapsed))
+                    continue
+                if get_progress()["running"]:
+                    time.sleep(60)
+                    continue
+                # 首次启动时 last_interval_ts=0，延迟 5 分钟再跑，避免启动即 burst
+                if last_interval_ts == 0:
+                    logger.info("strm_gen: 调度器启动，%.0f 秒后开始首次间隔增量", wait_sec)
                     last_interval_ts = time.monotonic()
+                    time.sleep(min(60, wait_sec))
+                    continue
+                logger.info("strm_gen: 间隔增量触发（配置 %d 分钟，抖动后 %.0f 秒）",
+                            iv_min, wait_sec)
+                run_generation(db, full=False)
+                last_interval_ts = time.monotonic()
             finally:
                 db.close()
         except Exception as exc:
