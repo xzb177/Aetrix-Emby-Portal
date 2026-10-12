@@ -429,6 +429,14 @@ def serve_remote(
         value = resp.headers.get(name)
         if value:
             passthrough[name.title()] = value
+    # 边缘缓存调试头（通用能力，与异步版同口径）
+    try:
+        from backend.emby_server import edge_cache
+        _edge_dbg = edge_cache.debug_header_value()
+        if _edge_dbg:
+            passthrough[edge_cache.DEBUG_HEADER] = _edge_dbg
+    except Exception:
+        pass
     content_type = resp.headers.get("content-type") or media_type
 
     def iter_remote():
@@ -896,6 +904,15 @@ async def serve_remote_async(
     if cache_control and "Cache-Control" not in passthrough:
         passthrough["Cache-Control"] = cache_control
     passthrough["X-Accel-Buffering"] = "no"
+    # 边缘缓存调试头（通用能力）：EDGE_CACHE_MODE=query_ignore 时声明，
+    # 管理员看响应头就能确认服务端模式；off/header 模式不加（行为与今天一致）。
+    try:
+        from backend.emby_server import edge_cache
+        _edge_dbg = edge_cache.debug_header_value()
+        if _edge_dbg:
+            passthrough[edge_cache.DEBUG_HEADER] = _edge_dbg
+    except Exception:
+        pass
     content_type = resp.headers.get("content-type") or media_type
 
     async def iter_remote():
