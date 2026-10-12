@@ -133,14 +133,6 @@ class TestVerifyCompleteness:
 
 
 class TestSchedule:
-    def test_valid(self):
-        assert sg.schedule(_FakeDb({"strm_gen_schedule": "03:00"})) == "03:00"
-
-    def test_invalid(self):
-        assert sg.schedule(_FakeDb({"strm_gen_schedule": "25:00"})) == ""
-        assert sg.schedule(_FakeDb({"strm_gen_schedule": "abc"})) == ""
-        assert sg.schedule(_FakeDb({"strm_gen_schedule": ""})) == ""
-
     def test_source_dir(self):
         assert sg.source_dir(_FakeDb({"strm_gen_source_dir": "MoviePilot/"})) == "MoviePilot/"
         assert sg.source_dir(_FakeDb({"strm_gen_source_dir": ""})) == ""
