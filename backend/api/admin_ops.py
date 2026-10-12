@@ -49,11 +49,11 @@ def _code_state_sql(now: datetime):
     """F-P1-7：_code_state 的 SQL 等价表达式（CASE），供状态过滤/统计下推用。
 
     口径与 Python 版严格一致：
-    disabled = is_active 假（含 NULL，coalesce 与 Python `not` 同口径）；expired = expires_at 非空且已过；
+    disabled = is_active 假；expired = expires_at 非空且已过；
     used_up = max_uses>0 且 use_count>=max_uses；其余 active。
     """
     return case(
-        (func.coalesce(models.RegistrationCode.is_active, False) == False, "disabled"),
+        (models.RegistrationCode.is_active == False, "disabled"),  # noqa: E712
         (
             and_(
                 models.RegistrationCode.expires_at.isnot(None),
@@ -1172,7 +1172,7 @@ def list_invitation_codes(
     # F-P1-7：状态过滤与统计下推 SQL（原全量 .all() 后内存过滤/统计/切片）。
     # 口径与 _inv_code_state 一致：revoked=停用；expired=过期；used_up=用完；其余 active。
     inv_state = case(
-        (func.coalesce(models.InvitationCode.is_active, False) == False, "revoked"),
+        (models.InvitationCode.is_active == False, "revoked"),  # noqa: E712
         (
             and_(
                 models.InvitationCode.expires_at.isnot(None),
