@@ -23,6 +23,7 @@ EA / Emby 被激活时会同步写回既有的 `emby_managed_*` / `emby_external
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -34,7 +35,7 @@ from sqlalchemy.orm import Session
 from backend import models, realms
 from backend import servers as registry
 from backend.api.admin_core import _audit, get_current_admin
-from backend.database import get_db
+from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server import mount_health
 from backend.emby_server import nodes as node_lib
@@ -222,33 +223,39 @@ async def emby_overview(
             for active in [registry.active_server(db, "ea", r.id)]
             if active and active.is_enabled
         ]
+        # F-P1-22：把 ORM 对象剥离会话——探测阶段要归还会话连接，
+        # 后续 build() 用新会话；已加载的列属性在剥离后仍可读。
+        db.expunge_all()
         return scope, rows_, entries, identity_targets, mount_targets
 
     scope_id, realm_rows, entry_rows, identity_targets, mount_targets = (
         await run_in_threadpool(load)
     )
+    # F-P1-22：load() 已结束，归还连接到池。探测阶段是纯网络 IO，
+    # 不再让请求会话的连接被 8 秒×N 台的探测长期占用。
+    db.close()
 
     # live：先问节点身份（认领 / 自称的服 / 负责哪些库），再重拉当前出流 EA 的挂载体检。
     # 两者都有超时上限：一台掉线的机器不应该让整个总览转圈。
     identities: dict[int, dict] = {}
     if live:
-        for target_id, target_url in identity_targets:
-            try:
-                probe = await node_lib.fetch_node_identity(target_url, timeout=8.0)
-            except Exception as exc:  # noqa: BLE001 — 单台失败不影响整页
-                probe = {"ok": False, "error": str(exc)[:200]}
-            identities[target_id] = probe
+        # F-P1-23：串行改并发（原 N 台 × 8 秒串行累加）。单台仍 8 秒超时，
+        # 另加总超时上限兜底（8×台数，上限 60 秒）。
+        identities = await _probe_identities(identity_targets)
 
         from backend.api.emby_servers import refresh_mount_health
 
         for target_realm, target_url in mount_targets:
+            # F-P1-22：体检写库用独立短会话，用完即关，不占用请求会话
+            probe_db = SessionLocal()
             try:
-                await refresh_mount_health(db, target_url, target_realm)
+                await refresh_mount_health(probe_db, target_url, target_realm)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("服 #%s 的 EA 挂载体检没能完成: %s", target_realm, exc)
+            finally:
+                probe_db.close()
 
-    def build() -> dict:
-        """组装总览（同步；下放线程池）——整页要读几十次库，不能占事件循环"""
+    def _build_impl(db: Session) -> dict:
         rows: list[dict] = []
         totals = {"entry": 0, "online": 0, "warnings": 0, "libraries": 0, "libraries_unassigned": 0}
         for realm in realm_rows:
@@ -385,7 +392,52 @@ async def emby_overview(
             "kinds": registry.SERVER_KINDS,
         }
 
+    def build() -> dict:
+        """组装总览（同步；下放线程池）——整页要读几十次库，不能占事件循环。
+
+        F-P1-22：用独立会话（函数结束即归还连接），不用已关闭的请求会话。
+        """
+        build_db = SessionLocal()
+        try:
+            return _build_impl(build_db)
+        finally:
+            build_db.close()
+
     return await run_in_threadpool(build)
+
+
+async def _probe_identities(
+    identity_targets: list[tuple[int, str]],
+) -> dict[int, dict]:
+    """F-P1-23：并发探测各 EA 节点身份（asyncio.gather）。
+
+    原实现串行 ``for`` + 每次 8 秒超时，N 台掉线即 N×8 秒。
+    单台超时仍 8 秒；另加总超时（8×台数，上限 60 秒）兜底；
+    单台失败只记 error，不影响整页。
+    """
+    if not identity_targets:
+        return {}
+
+    async def _one(target_id: int, target_url: str) -> tuple[int, dict]:
+        try:
+            probe = await node_lib.fetch_node_identity(target_url, timeout=8.0)
+        except Exception as exc:  # noqa: BLE001 — 单台失败不影响整页
+            probe = {"ok": False, "error": str(exc)[:200]}
+        return target_id, probe
+
+    total_timeout = min(8.0 * len(identity_targets) + 5.0, 60.0)
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*[_one(tid, url) for tid, url in identity_targets]),
+            timeout=total_timeout,
+        )
+        return dict(results)
+    except asyncio.TimeoutError:
+        logger.warning("节点身份探测总超时（%.0f 秒），按全部失败处理", total_timeout)
+        return {
+            tid: {"ok": False, "error": f"探测总超时（>{total_timeout:.0f}s）"}
+            for tid, _ in identity_targets
+        }
 
 
 @router.get("/summary")

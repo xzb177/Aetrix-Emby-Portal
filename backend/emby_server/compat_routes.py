@@ -20,6 +20,7 @@ from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server import facets
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
+from backend.emby_server.query_params import qlimit
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
@@ -472,7 +473,8 @@ def similar_items(item_id: str, request: Request,
     genres = [g for g in (item.genres or "").split(",") if g]
     if not genres:
         return _empty_items()
-    limit = int(request.query_params.get("Limit") or 12)
+    # G1-P1-2：Limit 钳制 200（原无上界）
+    limit = qlimit(request.query_params, default=12)
     # 流派匹配走关联表索引（与筛选路径同一个口径）：旧写法是 genres ILIKE '%…%'，
     # 前置通配符用不上索引，等于每打开一个详情页就扫一遍全库文本列。
     if facets.ensure_ready(db):

@@ -40,6 +40,7 @@ from backend.notifications import (
 )
 from backend.security import hash_password
 from backend.db_retry import commit_with_retry
+from backend.api.pagination import pagination_params
 from backend.api.admin_core import (
     _audit,
     _generate_code,
@@ -299,17 +300,32 @@ def list_users(
         else:
             query = query.filter(_not_welfare, ~models.WebUser.id.in_(_active_sub_q))
 
+    # F-P1-5：分页参数统一钳制（limit∈[1,200]，offset≥0；负数/非法输入不再绕过）
+    limit, offset = pagination_params(limit, offset)
     total = query.count()
-    users = query.order_by(models.WebUser.id.desc()).offset(offset).limit(min(limit, 200)).all()
+    users = query.order_by(models.WebUser.id.desc()).offset(offset).limit(limit).all()
     now = datetime.now()
+
+    # F-P1-1：批量取各用户的有效订阅（原逐用户查询 N+1）。
+    # order_by end_date desc + setdefault：同用户第一条即最晚到期的那条。
+    user_ids = [u.id for u in users]
+    sub_map: dict = {}
+    if user_ids:
+        for s in (
+            db.query(models.UserSubscription)
+            .filter(
+                models.UserSubscription.user_id.in_(user_ids),
+                models.UserSubscription.status == "active",
+                models.UserSubscription.end_date > now,
+            )
+            .order_by(models.UserSubscription.end_date.desc())
+            .all()
+        ):
+            sub_map.setdefault(s.user_id, s)
 
     items = []
     for u in users:
-        active_sub = db.query(models.UserSubscription).filter(
-            models.UserSubscription.user_id == u.id,
-            models.UserSubscription.status == "active",
-            models.UserSubscription.end_date > now,
-        ).order_by(models.UserSubscription.end_date.desc()).first()
+        active_sub = sub_map.get(u.id)
         items.append({
             "id": u.id,
             "username": u.username,
@@ -890,14 +906,28 @@ def get_tickets(
 
     tickets = query.order_by(models.Ticket.created_at.desc()).limit(200).all()
 
+    # F-P1-1：批量取用户与各工单最新消息（原 2N+1 次查询）。
+    # 最新消息：一次查出这些工单的全部消息（按时间倒序），Python 里按工单取第一条。
+    ticket_ids = [t.id for t in tickets]
+    user_ids = {t.user_id for t in tickets}
+    users = {
+        u.id: u.username
+        for u in db.query(models.WebUser.id, models.WebUser.username)
+        .filter(models.WebUser.id.in_(list(user_ids) or [-1])).all()
+    } if user_ids else {}
+    latest_map: dict = {}
+    if ticket_ids:
+        for m in (
+            db.query(models.TicketMessage)
+            .filter(models.TicketMessage.ticket_id.in_(ticket_ids))
+            .order_by(models.TicketMessage.created_at.desc())
+            .all()
+        ):
+            latest_map.setdefault(m.ticket_id, m)
+
     result = []
     for ticket in tickets:
-        user = db.query(models.WebUser).filter(
-            models.WebUser.id == ticket.user_id
-        ).first()
-        latest_message = db.query(models.TicketMessage).filter(
-            models.TicketMessage.ticket_id == ticket.id
-        ).order_by(models.TicketMessage.created_at.desc()).first()
+        latest_message = latest_map.get(ticket.id)
 
         result.append({
             "id": ticket.id,
@@ -905,7 +935,7 @@ def get_tickets(
             "category": ticket.category,
             "status": ticket.status,
             "priority": ticket.priority,
-            "user_name": user.username if user else "未知",
+            "user_name": users.get(ticket.user_id, "未知"),
             "created_at": _log_out(ticket),
             "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else "",
             "latest_message": latest_message.message[:100] if latest_message else "",
@@ -1105,11 +1135,16 @@ def get_media_seeks(
         )[:200]
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
+    # F-P1-1：批量取用户（原逐条查询 N+1）
+    _req_user_ids = {r.user_id for r in requests}
+    _req_users = {
+        u.id: u.username
+        for u in db.query(models.WebUser.id, models.WebUser.username)
+        .filter(models.WebUser.id.in_(list(_req_user_ids) or [-1])).all()
+    } if _req_user_ids else {}
+
     result = []
     for req in requests:
-        user = db.query(models.WebUser).filter(
-            models.WebUser.id == req.user_id
-        ).first()
         result.append({
             "id": req.id,
             "user_id": req.user_id,
@@ -1126,7 +1161,7 @@ def get_media_seeks(
             "admin_note": req.admin_note,
             "realm_id": req.realm_id,
             "realm_name": realm_names.get(req.realm_id, "") if req.realm_id else "",
-            "user_name": user.username if user else "未知",
+            "user_name": _req_users.get(req.user_id, "未知"),
             "created_at": _log_out(req),
             # 转交外部服务的结果：让面板能看出「批了但还没真的去下载」
             "push_target": req.push_target,
@@ -1976,12 +2011,20 @@ def economy_list_orders(
     db: Session = Depends(get_db),
 ):
     """充值/订阅订单列表（合并视图）"""
-    items = []
+    # F-P1-3：分页参数统一钳制（limit∈[1,200]，offset≥0）
+    limit, offset = pagination_params(limit, offset)
+    # F-P1-2：两分支各取 offset+limit 条再归并排序。
+    # 原实现两分支各按 (offset, limit) 取再合并：全局第 N 页的订单可能落在
+    # 某分支被截掉的部分，翻页永久遗漏。归并 K 个有序流取全局 [offset, offset+limit)
+    # 时，每流取前 offset+limit 条即足够（全局前 offset+limit 条必来自各流前 offset+limit 条）。
+    fetch = offset + limit
     total = 0
 
     want_recharge = kind in (None, "recharge")
     want_sub = kind in (None, "subscription")
 
+    recharge_rows: list = []
+    sub_rows: list = []
     if want_recharge:
         q = db.query(models.RechargeOrder)
         if status_filter:
@@ -1993,18 +2036,7 @@ def economy_list_orders(
                     models.WebUser.username.ilike(like))
             )
         total += q.count()
-        for o in q.order_by(models.RechargeOrder.created_at.desc()).offset(offset).limit(limit).all():
-            user = db.query(models.WebUser).filter(models.WebUser.id == o.user_id).first()
-            items.append({
-                "order_id": o.order_id, "kind": "recharge",
-                "item_name": f"积分充值（+{o.amount}）",
-                "username": user.username if user else "未知",
-                "user_id": o.user_id,
-                "amount": float(o.price), "status": o.status,
-                "payment_method": o.payment_method,
-                "created_at": o.created_at.isoformat() if o.created_at else None,
-                "paid_at": o.paid_at.isoformat() if o.paid_at else None,
-            })
+        recharge_rows = q.order_by(models.RechargeOrder.created_at.desc()).offset(0).limit(fetch).all()
 
     if want_sub:
         q = db.query(models.SubscriptionOrder)
@@ -2017,21 +2049,42 @@ def economy_list_orders(
                     models.WebUser.username.ilike(like))
             )
         total += q.count()
-        for o in q.order_by(models.SubscriptionOrder.created_at.desc()).offset(offset).limit(limit).all():
-            user = db.query(models.WebUser).filter(models.WebUser.id == o.user_id).first()
-            items.append({
-                "order_id": o.order_id, "kind": "subscription",
-                "item_name": f"订阅 - {o.item_name}",
-                "username": user.username if user else "未知",
-                "user_id": o.user_id,
-                "amount": float(o.amount), "status": o.status,
-                "payment_method": o.payment_method,
-                "created_at": o.created_at.isoformat() if o.created_at else None,
-                "paid_at": o.paid_at.isoformat() if o.paid_at else None,
-            })
+        sub_rows = q.order_by(models.SubscriptionOrder.created_at.desc()).offset(0).limit(fetch).all()
+
+    # F-P1-1：两类订单的用户一次 IN 查询（原逐单查询 N+1）
+    user_ids = {o.user_id for o in recharge_rows} | {o.user_id for o in sub_rows}
+    usernames = {
+        u.id: u.username
+        for u in db.query(models.WebUser.id, models.WebUser.username)
+        .filter(models.WebUser.id.in_(list(user_ids) or [-1])).all()
+    } if user_ids else {}
+
+    items = []
+    for o in recharge_rows:
+        items.append({
+            "order_id": o.order_id, "kind": "recharge",
+            "item_name": f"积分充值（+{o.amount}）",
+            "username": usernames.get(o.user_id, "未知"),
+            "user_id": o.user_id,
+            "amount": float(o.price), "status": o.status,
+            "payment_method": o.payment_method,
+            "created_at": o.created_at.isoformat() if o.created_at else None,
+            "paid_at": o.paid_at.isoformat() if o.paid_at else None,
+        })
+    for o in sub_rows:
+        items.append({
+            "order_id": o.order_id, "kind": "subscription",
+            "item_name": f"订阅 - {o.item_name}",
+            "username": usernames.get(o.user_id, "未知"),
+            "user_id": o.user_id,
+            "amount": float(o.amount), "status": o.status,
+            "payment_method": o.payment_method,
+            "created_at": o.created_at.isoformat() if o.created_at else None,
+            "paid_at": o.paid_at.isoformat() if o.paid_at else None,
+        })
 
     items.sort(key=lambda x: x["created_at"] or "", reverse=True)
-    return {"total": total, "orders": items[:limit]}
+    return {"total": total, "orders": items[offset:offset + limit]}
 
 
 def _mark_order_paid(db: Session, order_id: str, admin_id: int) -> list:

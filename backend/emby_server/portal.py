@@ -24,9 +24,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from backend import models, realms, subscriptions
 from backend.database import get_db, SessionLocal
@@ -1016,51 +1016,118 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
-    query = (
-        db.query(em.PlaybackSession, em.MediaItem)
-        .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
-        .filter(em.PlaybackSession.user_id == request_user.id)
-    )
     # 前端传 Movie/Series（Emby 惯例首字母大写），库里存小写；此前直接 == 比对，
     # 在 SQLite 下筛选恒为空。归一化后再比；筛"剧集"时把单集也带上（后面按剧聚合）。
     type_norm = (item_type or "").strip().lower()
+    item_filter = []
     if type_norm == "series":
-        query = query.filter(em.MediaItem.item_type.in_(["series", "episode"]))
+        item_filter.append(em.MediaItem.item_type.in_(["series", "episode"]))
     elif type_norm:
-        query = query.filter(em.MediaItem.item_type == type_norm)
+        item_filter.append(em.MediaItem.item_type == type_norm)
 
-    total = query.count()
-    rows = query.order_by(em.PlaybackSession.last_update_at.desc()).all()
+    # G1-P1-3：去重下推 SQL。原实现 .all() 拉出用户全部会话再内存去重/聚合，
+    # PlaybackSession 随使用无界增长，请求代价随历史单调变大。
+    # 1) 每条目最近一次会话时间（GROUP BY），2) 分块取候选做单集→剧聚合。
+    sess = em.PlaybackSession
+    latest = (
+        db.query(
+            sess.item_id.label("item_id"),
+            func.max(sess.last_update_at).label("max_at"),
+        )
+        .join(em.MediaItem, em.MediaItem.id == sess.item_id)
+        .filter(sess.user_id == request_user.id, *item_filter)
+        .group_by(sess.item_id)
+        .subquery()
+    )
+    total = (
+        db.query(func.count(sess.id))
+        .join(em.MediaItem, em.MediaItem.id == sess.item_id)
+        .filter(sess.user_id == request_user.id, *item_filter)
+        .scalar()
+        or 0
+    )
+    # unique_total：去重+单集→剧聚合后的展示行数（与 Python 聚合同口径）。
+    # 孤儿单集（series 行缺失）Python 侧会跳过不展示，SQL 侧按自身计数——仅脏数据有差异。
+    _series = aliased(em.MediaItem)
+    _display_key = case(
+        (
+            and_(
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.series_id.isnot(None),
+                _series.id.isnot(None),
+            ),
+            _series.id,
+        ),
+        else_=em.MediaItem.id,
+    )
+    unique_total = (
+        db.query(func.count(func.distinct(_display_key)))
+        .select_from(latest)
+        .join(em.MediaItem, em.MediaItem.id == latest.c.item_id)
+        .outerjoin(_series, _series.id == em.MediaItem.series_id)
+        .scalar()
+        or 0
+    )
 
-    # 按条目去重（保留最近一次会话）
-    seen: set[int] = set()
-    deduped: list[tuple] = []
-    for session, item in rows:
-        if item.id in seen:
-            continue
-        seen.add(item.id)
-        deduped.append((session, item))
-
-    # 单集 → 父剧集聚合（保持最近在看的顺序，每部剧只留一行）
-    series_cache: dict[int, em.MediaItem] = {}
+    # 分块取候选（按 max_at 倒序）：聚合只会减少行数，块内保持全局顺序；
+    # 攒够 offset+limit 个聚合行或取完为止。单块 200 行，代价有界。
+    _CHUNK = 200
+    need = offset + limit
     aggregated: list[tuple] = []  # (session, 展示条目, 单集|None)
     seen_series: set[int] = set()
-    for session, item in deduped:
-        ep = None
-        if item.item_type == "episode" and item.series_id:
-            series = series_cache.get(item.series_id)
-            if series is None:
-                series = db.query(em.MediaItem).filter(
-                    em.MediaItem.id == item.series_id).first()
-                series_cache[item.series_id] = series
-            if series is None:
-                continue  # 孤儿单集：归属丢失，不展示
-            if series.id in seen_series:
+    series_cache: dict[int, em.MediaItem] = {}
+    chunk_idx = 0
+    while len(aggregated) < need:
+        cand_rows = (
+            db.query(sess, em.MediaItem)
+            .join(em.MediaItem, em.MediaItem.id == sess.item_id)
+            .join(
+                latest,
+                and_(
+                    latest.c.item_id == sess.item_id,
+                    latest.c.max_at == sess.last_update_at,
+                ),
+            )
+            .filter(sess.user_id == request_user.id, *item_filter)
+            .order_by(latest.c.max_at.desc(), sess.id.desc())
+            .offset(chunk_idx * _CHUNK)
+            .limit(_CHUNK)
+            .all()
+        )
+        if not cand_rows:
+            break
+        chunk_idx += 1
+        # 块内按条目去重（时间并列时 join 可能带出多行，取 id 最大的那条会话）
+        seen_item: set[int] = set()
+        deduped: list[tuple] = []
+        for s, it in cand_rows:
+            if it.id in seen_item:
                 continue
-            seen_series.add(series.id)
-            ep = item
-            item = series
-        aggregated.append((session, item, ep))
+            seen_item.add(it.id)
+            deduped.append((s, it))
+        # 父剧集批量取（原逐个查询的 N+1）
+        need_series = {
+            it.series_id
+            for _, it in deduped
+            if it.item_type == "episode" and it.series_id and it.series_id not in series_cache
+        }
+        if need_series:
+            for sr in db.query(em.MediaItem).filter(em.MediaItem.id.in_(need_series)).all():
+                series_cache[sr.id] = sr
+        # 单集 → 父剧集聚合（保持最近在看的顺序，每部剧只留一行）
+        for s, it in deduped:
+            ep = None
+            show = it
+            if it.item_type == "episode" and it.series_id:
+                series = series_cache.get(it.series_id)
+                if series is None:
+                    continue  # 孤儿单集：归属丢失，不展示
+                if series.id in seen_series:
+                    continue
+                seen_series.add(series.id)
+                ep = it
+                show = series
+            aggregated.append((s, show, ep))
     page = aggregated[offset:offset + limit]
 
     # 进度取"实际播放的那集"的用户数据（聚合行取单集的，电影行取自身的）
@@ -1107,7 +1174,8 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             })
         items.append(entry)
 
-    return {"total": total, "unique_total": len(aggregated), "items": items}
+    # unique_total 改为 SQL 去重计数（原 len(aggregated) 是截断后的值，语义不变：去重后条数）
+    return {"total": total, "unique_total": unique_total, "items": items}
 
 
 # ==================== 管理端 ====================

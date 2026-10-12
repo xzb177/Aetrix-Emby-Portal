@@ -42,6 +42,7 @@ from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_sign
 from backend.emby_server import playback_prewarm
+from backend.emby_server.query_params import qlimit, qstart
 from backend.emby_server import soft_delete
 from backend.emby_server import title_beautify
 from backend.emby_server import missing_episodes as _missing_episodes
@@ -2064,8 +2065,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     # 客户端（含本站用户端）照着菜单选了却拿到全量结果，看着像「筛选没生效」。
     ratings = (q.get("OfficialRatings") or "").split(",")
     tags = (q.get("Tags") or "").split("|")
-    start = int(q.get("StartIndex") or 0)
-    limit = int(q.get("Limit") or 100)
+    # G1-P1-1：Limit/StartIndex 钳制（原裸 int() 无上界，Limit=1000000 可一次拉全库；
+    # 畸形输入还直接 500）。条目列表是协议最高频入口，上限给 500。
+    start = qstart(q)
+    limit = qlimit(q, default=100, hi=500)
     recursive = (q.get("Recursive") or "false").lower() == "true"
     allowed = _library_scope(db, user)
     random_sort = any(c.strip().lower() == "random" for c in sort_by)
@@ -2408,7 +2411,8 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
     播放进度的单集都会作为一个独立条目混进首页，主人那边就看到了「第 1 集」这种卡片。
     与 ``/Items/Latest`` 同一口径：只保留 movie / series。
     """
-    limit = int(request.query_params.get("Limit") or 12)
+    # G1-P1-2：Limit 钳制 200（原无上界）
+    limit = qlimit(request.query_params, default=12)
     rows = (
         _scope_items(
             db.query(em.UserMediaData, em.MediaItem)
@@ -2444,7 +2448,8 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
     per-library poster rows, so ParentId must filter by library. Unknown
     ParentId -> no extra filter (same as before).
     """
-    limit = int(request.query_params.get("Limit") or 16)
+    # G1-P1-2：Limit 钳制 200（原无上界）
+    limit = qlimit(request.query_params, default=16)
     q = db.query(em.MediaItem).filter(
         em.MediaItem.item_type.in_(["movie", "series"]),
         em.MediaItem.is_hidden == False,  # noqa: E712
@@ -2800,7 +2805,8 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
     （看过至少一集 / 有播放进度 / 有播放次数）的剧集，每部取第一集
     未看的单集，按该剧最近播放时间倒序。
     """
-    limit = int(request.query_params.get("Limit") or 20)
+    # G1-P1-2：Limit 钳制 200（原无上界；batch = max(limit*2, 32) 会随 limit 放大整轮扫描）
+    limit = qlimit(request.query_params, default=20)
     requested_series_guid = (request.query_params.get("SeriesId") or "").strip()
     allowed = _library_scope(db, user)
     if requested_series_guid:
