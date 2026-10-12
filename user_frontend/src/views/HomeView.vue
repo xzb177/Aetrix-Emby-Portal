@@ -85,8 +85,12 @@ import { useToast } from '@/composables/useToast'
 import { toastSystem } from '@/constants/toastMessages'
 import { toUserMessage } from '@/utils/toUserMessage'
 import { checkAndRecordHomeVisit } from '@/composables/useHomeVisitMemory'
+import { deferIdle } from '@/composables/useDefer'
 import Modal from '@/components/ui/Modal.vue'
 import WelcomeBackCard from '@/components/home/WelcomeBackCard.vue'
+import HomeTicketCard from '@/components/home/HomeTicketCard.vue'
+import HomeContinueWatching from '@/components/home/HomeContinueWatching.vue'
+import HomeHero from '@/components/home/HomeHero.vue'
 import MediaCard from '@/components/media/MediaCard.vue'
 import MediaRow from '@/components/media/MediaRow.vue'
 import { homeApi, type HomeSummary } from '@/api/economy'
@@ -773,11 +777,11 @@ function onThumbError(s: MyPlaybackSession) {
 }
 
 // 首屏只出骨架：数据统一走 loadDeferred（公告与资产同批，不再分关键/延后两波）
-// 追新日历与之并行、互不阻塞
+// 追新日历与继续观看非首屏关键路径：延迟到浏览器空闲后再拉
 onMounted(() => {
   loadDeferred()
-  void loadRecent()
-  void loadResume()
+  deferIdle(() => { void loadRecent() })
+  deferIdle(() => { void loadResume() })
 })
 
 // 从别的 tab 切回来（KeepAlive 缓存命中）：后台静默刷新，不闪骨架屏
@@ -790,91 +794,23 @@ onActivated(() => {
 
 <template>
   <div class="home-view">
-    <!-- ① 银幕 Hero：整幅背景图 + 胶片颗粒 + 暗角。
-         银幕上只讲一部片（近 7 天入库里第一条带背景图的），这是影院和货架的区别。
-         眉题 → 片名（衬线大字）→ 年份类型 → 问候低语 → 状态行 → 唯一一个 CTA。
-         文字按 hasLoaded 依次浮现（幕布拉开的节奏），见 .hero-enter。 -->
-    <section class="hero" :class="{ 'has-image': heroImage && !heroImageFailed, 'is-ready': hasLoaded }">
-      <img
-        v-if="heroImage && !heroImageFailed"
-        class="hero-backdrop"
-        :src="heroImage"
-        alt=""
-        aria-hidden="true"
-        decoding="async"
-        fetchpriority="high"
-        @error="heroImageFailed = true"
-      />
-      <div class="hero-shade" aria-hidden="true"></div>
-      <div class="hero-grain" aria-hidden="true"></div>
-      <div class="container hero-inner">
-        <p class="au-eyebrow hero-eyebrow hero-enter d1">{{ heroEyebrow }}</p>
-        <!-- 有主角：片名是主角；没有片单：问候语顶上（老行为，不空场） -->
-        <h1 v-if="heroFeatureTitle" class="hero-feature hero-enter d2">{{ heroFeatureTitle }}</h1>
-        <h1 v-else class="hero-title hero-enter d2">{{ greeting }}，{{ user?.username || '影迷' }}</h1>
-        <p v-if="heroFeatureTitle && heroMeta" class="hero-meta hero-enter d3">{{ heroMeta }}</p>
-        <p v-if="heroFeatureTitle" class="hero-whisper hero-enter d3">
-          <span class="whisper-long">{{ greetingParts.lead }}，{{ user?.username || '影迷' }}{{ greetingParts.tail }}</span><span class="whisper-short">{{ greeting }}，{{ user?.username || '影迷' }}</span>
-        </p>
-        <p class="hero-status hero-enter d4">
-          <span v-if="isMember" class="hero-tag">
-            <Crown :size="12" />
-            会员
-          </span>
-          <span v-else-if="isFreeRealm" class="hero-tag">
-            <Sparkles :size="12" />
-            公益服
-          </span>
-          <span class="hero-status-text">{{ heroStatus }}</span>
-        </p>
+    <HomeHero
+      :hero-image="heroImage"
+      :hero-image-failed="heroImageFailed"
+      :has-loaded="hasLoaded"
+      :hero-eyebrow="heroEyebrow"
+      :hero-feature-title="heroFeatureTitle"
+      :hero-meta="heroMeta"
+      :hero-status="heroStatus"
+      :greeting="greeting"
+      :greeting-parts="greetingParts"
+      :username="user?.username"
+      :is-member="isMember"
+      :is-free-realm="isFreeRealm"
+      :hero-href="heroHref"
+      @image-error="heroImageFailed = true"
+    />
 
-        <!-- 未开通：先给 CTA（立即开通），再给「入场三步」——
-             门户最大的 friction 是"付了钱不会配置客户端"，所以首屏不讲会员权益、讲"怎么看上片" -->
-        <template v-if="!isMember && !isFreeRealm">
-          <div class="hero-cta hero-enter d5">
-            <RouterLink to="/store" class="au-btn au-btn-primary">
-              立即开通
-            </RouterLink>
-            <RouterLink to="/profile" class="hero-link">
-              连接教程
-              <ChevronRight :size="14" />
-            </RouterLink>
-          </div>
-          <p class="au-eyebrow steps-label hero-enter d6">入场三步</p>
-          <ol class="hero-steps hero-enter d6">
-            <li>
-              <span class="step-num">1</span>
-              <span class="step-body"><strong>开通会员</strong><em>解锁全库影视资源</em></span>
-            </li>
-            <li>
-              <span class="step-num">2</span>
-              <span class="step-body"><strong>下载播放器</strong><em>Infuse / Forward 等 Emby 客户端</em></span>
-            </li>
-            <li>
-              <span class="step-num">3</span>
-              <span class="step-body"><strong>一键导入</strong><em>在个人中心导入服务器地址与账号</em></span>
-            </li>
-          </ol>
-        </template>
-
-        <!-- 已开通 / 公益服：主角就是 CTA——在 Rex 里打开今晚这部片（描边按钮，hover 才填色）。
-             没有主角时回落到「一键导入播放器」 -->
-        <template v-else>
-          <div class="hero-cta hero-enter d5">
-            <a v-if="heroHref" :href="heroHref" class="au-btn hero-cta-outline">
-              在 Rex 里打开
-            </a>
-            <RouterLink v-else to="/profile" class="au-btn au-btn-primary">
-              一键导入播放器
-            </RouterLink>
-            <RouterLink to="/profile" class="hero-link">
-              连接教程
-              <ChevronRight :size="14" />
-            </RouterLink>
-          </div>
-        </template>
-      </div>
-    </section>
 
     <main class="container main">
       <!-- 会员数据加载失败：给错误态 + 重试，而不是静默显示「未开通」 -->
@@ -909,66 +845,12 @@ onActivated(() => {
         </div>
       </Transition>
 
-      <!-- ② 票根卡：积分 / 订阅 / 观影数据合成一张电影票。左边票面是三格数字，
-           中间一条打孔虚线（上下各一个半圆缺口），右边票根是订阅主操作 + ADMIT ONE -->
-      <section v-if="loading" class="ticket" aria-hidden="true">
-        <div class="ticket-main">
-          <div v-for="i in 3" :key="i" class="ticket-stat">
-            <span class="au-skeleton sk-stat-label"></span>
-            <span class="au-skeleton sk-stat-value"></span>
-            <span class="au-skeleton sk-stat-desc"></span>
-          </div>
-        </div>
-        <div class="ticket-stub">
-          <span class="au-skeleton sk-stub-btn"></span>
-        </div>
-      </section>
-      <section v-else class="ticket au-anim-up" aria-label="我的资产">
-        <div class="ticket-main">
-          <component
-            :is="c.to ? RouterLink : 'div'"
-            v-for="c in assetCards"
-            :key="c.key"
-            :to="c.to || undefined"
-            class="ticket-stat"
-            :class="{ 'is-static': !c.to }"
-          >
-            <span class="stat-label">
-              <component :is="c.icon" :size="14" class="stat-icon" />
-              {{ c.title }}
-              <span v-if="c.badge" class="stat-badge" :class="{ hot: c.hot }">{{ c.badge }}</span>
-            </span>
-            <span class="stat-value-row">
-              <span class="stat-value">{{ c.value }}</span>
-              <span v-if="c.unit" class="stat-unit">{{ c.unit }}</span>
-            </span>
-            <!-- 数字下面固定一行：订阅是细进度条，其余是一行 ≤6 字的状态。
-                 三格这一行等高，大数字因此落在同一条基线上 -->
-            <span class="stat-foot">
-              <span
-                v-if="c.progress !== null"
-                class="stat-progress"
-                :title="`套餐周期已过 ${c.progress}%`"
-              >
-                <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
-                <span class="stat-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></span>
-              </span>
-              <span v-else-if="c.short" class="stat-short">{{ c.short }}</span>
-            </span>
-            <span class="stat-desc">{{ c.desc }}</span>
-            <span class="stat-note">{{ c.note }}</span>
-          </component>
-        </div>
-        <!-- 票根：左边一行小字 ADMIT ONE · 套餐名，右边一枚紧凑的琥珀按钮（去钱包入口并进来，不再单列） -->
-        <div class="ticket-stub">
-          <span class="stub-admit" aria-hidden="true">
-            ADMIT ONE<span v-if="activeSub" class="stub-plan"><i> · </i>{{ activeSub.plan_name }}</span>
-          </span>
-          <RouterLink v-if="memberStat" to="/store" class="au-btn au-btn-primary au-btn-sm stub-btn">
-            {{ memberStat.footer }}
-          </RouterLink>
-        </div>
-      </section>
+      <HomeTicketCard
+        :loading="loading"
+        :asset-cards="assetCards"
+        :member-footer="memberStat?.footer || '查看套餐'"
+        :plan-name="activeSub?.plan_name || ''"
+      />
 
       <!-- ③ 今日上映：近 7 天入库的竖版海报横滑（追新日历同一份数据），
            点击与追新日历一致走 Rex deep link；没有数据整段不渲染 -->
@@ -1003,57 +885,10 @@ onActivated(() => {
         :href="welcomeCard.href"
       />
 
-      <!-- ③b 继续观看：最多 3 条，最近播放的在前；没有条目整段不渲染。
-           点击与「本周入库」一致走 Rex deep link -->
-      <section v-if="resumeCards.length" class="resume au-anim-up">
-        <div class="program-head">
-          <p class="program-eyebrow">继续放映</p>
-          <div class="program-row">
-            <h2 class="program-title">上次看到一半的</h2>
-          </div>
-        </div>
-        <div class="resume-list">
-          <a
-            v-for="card in resumeCards"
-            :key="card.key"
-            :href="card.href"
-            class="resume-card"
-            :title="`在 Rex 里打开：${card.name}`"
-          >
-            <span class="resume-thumb">
-              <img
-                v-if="card.thumb"
-                :key="card.thumb"
-                :src="card.thumb"
-                alt=""
-                loading="lazy"
-                decoding="async"
-                @error="onResumeThumbError(card)"
-              />
-              <span v-else class="poster-type resume-type" aria-hidden="true">
-                <span class="poster-type-title">{{ card.name }}</span>
-              </span>
-            </span>
-            <span class="resume-main">
-              <span class="resume-title">{{ card.title }}</span>
-              <span v-if="card.meta" class="resume-meta">{{ card.meta }}</span>
-              <span v-if="card.percent !== null" class="resume-progress">
-                <span
-                  class="resume-bar"
-                  role="progressbar"
-                  :aria-valuenow="card.percent"
-                  aria-valuemin="0"
-                  aria-valuemax="100"
-                  :aria-label="`已看 ${card.percent}%`"
-                >
-                  <span class="resume-fill" :style="{ width: card.percent + '%' }"></span>
-                </span>
-                <span class="resume-pct">{{ card.percent }}%</span>
-              </span>
-            </span>
-          </a>
-        </div>
-      </section>
+      <HomeContinueWatching
+        :cards="resumeCards"
+        @thumb-error="onResumeThumbError"
+      />
 
       <!-- ④ 正在播放：有会话才出现（一条状态，不是管理清单）；完整清单在个人中心 -->
       <section v-if="sessions.length" class="playing au-anim-up">
@@ -2386,6 +2221,12 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
   .hero {
     animation: none;
   }
+}
+
+/* 首屏以下区块延迟渲染，减少初始布局/绘制成本 */
+.recent, .playing, .todo, .help, .resume {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
 }
 </style>
 

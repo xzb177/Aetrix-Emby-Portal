@@ -4,13 +4,10 @@ import vue from '@vitejs/plugin-vue'
 
 // 生产环境禁用 DevTools
 const isProduction = process.env.NODE_ENV === 'production'
-
 export default defineConfig({
   plugins: [
     vue(),
-    // 打包分析插件（可选）
-    // visualizer({ gzipSize: true, brotliSize: true, open: false }),
-  ],
+  ].filter(Boolean),
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))

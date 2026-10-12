@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 /**
  * 个人中心 — 账号页（v2.6.30 重设；v2.10.0 加入「正在播放」）
  *
@@ -546,61 +547,15 @@ function formatDate(iso?: string | null) {
           <PlaybackSessions />
           <p class="pane-tip">远程结束播放只会终止会话，不会删除观看记录。</p>
         </section>
-        <!-- 我的订阅 -->
-        <section class="pane">
-          <header class="pane-head">
-            <h2 class="pane-title">
-              <Crown :size="17" />
-              我的订阅
-            </h2>
-          </header>
-
-          <div v-if="activeSub" class="sub-active" :class="{ warn: expiringSoon }">
-            <div class="sub-info">
-              <div class="sub-plan">{{ activeSub.plan_name }}</div>
-              <div class="sub-end">{{ activeSub.end_date.slice(0, 10) }} 到期 · 剩余 {{ activeSub.days_left }} 天</div>
-              <p v-if="expiringSoon" class="sub-warn">
-                <TriangleAlert :size="13" />
-                即将到期，前往「钱包」续费后可无缝接续
-              </p>
-            </div>
-            <span class="badge" :class="expiringSoon ? 'warn' : 'ok'">
-              {{ expiringSoon ? '即将到期' : '生效中' }}
-            </span>
-          </div>
-          <!-- 公益服：没有订阅是正常的，不是“未开通”，也不能引导去购买 -->
-          <div v-else-if="isFreeRealm" class="sub-free">
-            <span class="badge free">公益服 · 免费开放</span>
-            <p class="pane-empty">{{ realmNote }}</p>
-          </div>
-          <EmptyState
-            v-else
-            size="compact"
-            title="还没有订阅"
-            description="了解可选方案"
-          >
-            <template #action>
-              <button class="btn primary" @click="router.push('/store')">查看订阅方案</button>
-            </template>
-          </EmptyState>
-
-          <ul v-if="subscriptions.length > 1" class="sub-history">
-            <li v-for="s in subscriptions.slice(0, 4)" :key="s.id" class="sub-history-item">
-              <span>{{ s.plan_name }}<em v-if="s.realm_name" class="sub-realm">（{{ s.realm_name }}）</em></span>
-              <span class="sub-history-date">{{ s.start_date.slice(0, 10) }} ~ {{ s.end_date.slice(0, 10) }}</span>
-              <span class="badge" :class="s.status === 'active' ? 'ok' : 'off'">
-                {{ s.status === 'active' ? '生效中' : '已结束' }}
-              </span>
-              <button
-                v-if="s.status === 'active'"
-                type="button"
-                class="text-btn danger"
-                :disabled="cancellingSub === s.id"
-                @click="cancelSubscription(s)"
-              >{{ cancellingSub === s.id ? '终止中…' : '终止' }}</button>
-            </li>
-          </ul>
-        </section>
+        <ProfileSubscriptions
+          :active-sub="activeSub"
+          :subscriptions="subscriptions"
+          :expiring-soon="expiringSoon"
+          :is-free-realm="isFreeRealm"
+          :realm-note="realmNote"
+          :cancelling-sub="cancellingSub"
+          @cancel="cancelSubscription"
+        />
 
         <!-- 我的设备 -->
         <section class="pane">

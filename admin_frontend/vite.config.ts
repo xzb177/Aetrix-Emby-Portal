@@ -19,7 +19,7 @@ export default defineConfig({
       resolvers: [ElementPlusResolver()],
       dts: 'src/auto-imports.d.ts',
     }),
-  ],
+  ].filter(Boolean),
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
