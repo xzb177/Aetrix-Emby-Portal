@@ -42,18 +42,29 @@ def db():
         s.close()
 
 
+# R16 P3-12：_staff 建的测试用户 id 记这里，_clean_alerts 按 id 精确清理
+# （不删全表——测试 DB 可能被其他模块共享）
+_CREATED_USER_IDS = []
+
+
+def _wipe_alert_state(db):
+    db.query(models.Alert).delete()
+    db.query(models.AlertRule).filter(
+        models.AlertRule.event_type.isnot(None)).delete()
+    if _CREATED_USER_IDS:
+        db.query(models.WebUser).filter(
+            models.WebUser.id.in_(_CREATED_USER_IDS)
+        ).delete(synchronize_session=False)
+        _CREATED_USER_IDS.clear()
+    db.commit()
+
+
 @pytest.fixture()
 def _clean_alerts(db):
     """每个用例前后清理告警相关表，避免互相污染。"""
-    db.query(models.Alert).delete()
-    db.query(models.AlertRule).filter(
-        models.AlertRule.event_type.isnot(None)).delete()
-    db.commit()
+    _wipe_alert_state(db)
     yield
-    db.query(models.Alert).delete()
-    db.query(models.AlertRule).filter(
-        models.AlertRule.event_type.isnot(None)).delete()
-    db.commit()
+    _wipe_alert_state(db)
 
 
 def _staff(db, username=None):
@@ -64,6 +75,7 @@ def _staff(db, username=None):
     db.add(u)
     db.commit()
     db.refresh(u)
+    _CREATED_USER_IDS.append(u.id)
     return u
 
 
@@ -73,8 +85,14 @@ def _enable(monkeypatch):
 
 def _disable(monkeypatch):
     monkeypatch.delenv(sa.MASTER_SWITCH_ENV, raising=False)
-    # DB 开关也确保关闭
-    # （用新会话，避免 fixture 会话缓存）
+    # DB 开关也确保关闭（用新会话，避免 fixture 会话缓存）
+    s = SessionLocal()
+    try:
+        s.query(models.SystemConfig).filter(
+            models.SystemConfig.key == sa.MASTER_SWITCH_KEY).delete()
+        s.commit()
+    finally:
+        s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +111,9 @@ def test_notify_noop_when_disabled(monkeypatch, db, _clean_alerts):
         sa.EVT_DISK_FULL, "测试", "内容", db=db))
     assert ok is False
     assert db.query(models.Alert).count() == 0
-    assert db.query(models.AlertRule).count() == 0  # 关闭时不播种
+    # R16 P3-12：只断言事件型规则（测试 DB 若残留 legacy 指标型规则不应误失败）
+    assert db.query(models.AlertRule).filter(
+        models.AlertRule.event_type.isnot(None)).count() == 0  # 关闭时不播种
 
 
 def test_check_all_skipped_when_disabled(monkeypatch, db, _clean_alerts):
@@ -118,7 +138,10 @@ def test_seed_default_rules(monkeypatch, db, _clean_alerts):
     assert {r.event_type for r in rules} == set(sa.ALL_EVENTS)
     for r in rules:
         assert r.cooldown_sec and r.cooldown_sec >= 60
-        assert json.loads(r.notification_channels)  # 渠道非空
+        # R16 P3-14：notification_channels 直接写 list，兼容老的 json 字符串
+        nc = r.notification_channels
+        nc = json.loads(nc) if isinstance(nc, str) else nc
+        assert nc  # 渠道非空
         assert json.loads(r.recipients) == {"staff": True}
 
 

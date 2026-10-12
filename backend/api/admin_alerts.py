@@ -2,21 +2,25 @@
 管理后台 · 系统告警 API
 
 系统告警的执行逻辑在 `backend/system_alerts.py`（定时检查 + 冷却去重 +
-自动恢复），这里只提供面板需要的四件事：
+自动恢复），这里只提供面板需要的五件事：
 
 - **看规则**：各事件的阈值 / 渠道 / 接收人 / 冷却 / 开关状态
 - **改规则**：阈值、渠道、接收人、冷却、启用/停用（全部可配，不写死）
-- **看记录**：告警历史（open / resolved），可手动确认
-- **总开关**：一键开/关整个告警系统；测试按钮发一条测试告警
+- **看记录**：告警历史（open / resolved / acknowledged），可手动确认
+- **总开关与设置**：一键开/关整个告警系统；检查间隔、webhook 通知 URL 与
+  签名密钥（R16 P1-1/P2-4：以前这些是"能填但无效"的假控件，现在真写库、
+  保存后立即生效）；测试按钮发一条测试告警
 
 鉴权口径与管理端完全一致：复用 `get_current_admin` + JWT。
 """
 import json
 import logging
+import os
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from backend import models, system_alerts
 from backend.api.admin_core import _audit, get_current_admin
@@ -32,13 +36,18 @@ ALLOWED_SEVERITIES = ("info", "warning", "critical")
 
 
 def _rule_to_dict(rule: models.AlertRule) -> dict:
-    try:
-        channels = json.loads(rule.notification_channels) \
-            if rule.notification_channels else []
-        if not isinstance(channels, list):
+    # R16 P3-14：notification_channels 是 JSON 列，直接读 list（兼容老的
+    # json.dumps 字符串写法，双写过渡期两边都读得出来）
+    raw_channels = rule.notification_channels
+    if isinstance(raw_channels, list):
+        channels = raw_channels
+    else:
+        try:
+            channels = json.loads(raw_channels) if raw_channels else []
+            if not isinstance(channels, list):
+                channels = []
+        except Exception:  # noqa: BLE001
             channels = []
-    except Exception:  # noqa: BLE001
-        channels = []
     try:
         recipients = json.loads(rule.recipients) if rule.recipients else {"staff": True}
         if not isinstance(recipients, dict):
@@ -120,9 +129,11 @@ def update_alert_rule(
     clean = _sanitize_rule_input(req)
     if req.name:
         rule.name = req.name[:100]
-    rule.threshold = float(req.threshold)
+    # R16 P3-6：负数钳掉（阈值不该是负的）
+    rule.threshold = max(0.0, float(req.threshold))
     rule.severity = clean["severity"]
-    rule.notification_channels = json.dumps(clean["channels"])
+    # R16 P3-14：JSON 列直接写 list；recipients 是 Text 列，仍写 json 字符串
+    rule.notification_channels = clean["channels"]
     rule.recipients = json.dumps(clean["recipients"])
     rule.cooldown_sec = clean["cooldown_sec"]
     rule.is_active = bool(req.is_active)
@@ -132,9 +143,32 @@ def update_alert_rule(
     return _rule_to_dict(rule)
 
 
+def _upsert_config(db: Session, key: str, value: str,
+                   description: str = "") -> None:
+    """SystemConfig 有则改、无则增（不 commit，由调用方统一提交）。"""
+    row = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(models.SystemConfig(key=key, value=value,
+                                    description=description))
+
+
+def _get_config_value(db: Session, key: str) -> Optional[str]:
+    row = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == key).first()
+    return row.value if row else None
+
+
 class AlertSettingsRequest(BaseModel):
-    enabled: bool = False
-    check_interval_sec: int = 600
+    # R16 P1-1：全部 Optional——前端做"只改间隔"的部分更新时，不带 enabled
+    # 的 body 不再被 pydantic 缺省 False 顺手关掉总开关
+    enabled: Optional[bool] = None
+    check_interval_sec: Optional[int] = None
+    # R16 P2-4：webhook 配置入口（以前只能直连 DB 手写）
+    webhook_url: Optional[str] = None
+    webhook_secret: Optional[str] = None
 
 
 @admin_alerts_router.get("/alerts/settings")
@@ -142,19 +176,19 @@ def get_alert_settings(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """告警总开关与检查间隔。"""
-    import os
-    row = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == system_alerts.MASTER_SWITCH_KEY).first()
+    """告警总开关、检查间隔、webhook 配置（secret 只返回是否已设置，不回显）。"""
     return {
         "enabled": system_alerts.enabled(db),
-        "enabled_source": "env" if os.getenv(system_alerts.MASTER_SWITCH_ENV)
-        and system_alerts._truthy(os.getenv(system_alerts.MASTER_SWITCH_ENV))
-        else "db",
-        "enabled_value": (row.value if row else "0"),
-        "check_interval_sec": system_alerts._env_int(
-            system_alerts.CHECK_INTERVAL_ENV,
-            system_alerts.DEFAULT_CHECK_INTERVAL_SEC),
+        # R16 P3-5：环境变量设了"0"也算 env 在控制（实际 effective 是关）
+        "enabled_source": "env" if os.getenv(
+            system_alerts.MASTER_SWITCH_ENV) is not None else "db",
+        "enabled_value": (_get_config_value(
+            db, system_alerts.MASTER_SWITCH_KEY) or "0"),
+        # R16 P1-1：返回真实生效值（DB 配置 > 环境变量 > 默认）
+        "check_interval_sec": system_alerts.current_interval_sec(db),
+        "webhook_url": _get_config_value(db, "webhook_alert_url") or "",
+        "webhook_secret_set": bool(_get_config_value(
+            db, "webhook_alert_secret")),
     }
 
 
@@ -164,20 +198,53 @@ def update_alert_settings(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """总开关与检查间隔（环境变量优先：设置了环境变量时 DB 开关不生效）。"""
-    row = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == system_alerts.MASTER_SWITCH_KEY).first()
-    val = "1" if req.enabled else "0"
-    if row:
-        row.value = val
-    else:
-        db.add(models.SystemConfig(
-            key=system_alerts.MASTER_SWITCH_KEY, value=val,
-            description="系统告警总开关（1=开，0=关）"))
-    db.commit()
-    _audit(db, current_admin, "update_alert_settings", "system_config", None,
-           {"system_alerts_enabled": val})
-    return {"enabled": system_alerts.enabled(db)}
+    """总开关 / 检查间隔 / webhook 配置（环境变量优先：设置了环境变量时
+    DB 开关不生效）。只应用请求里非 None 的字段——部分更新不会误关总开关
+    （R16 P1-1）。"""
+    changed: dict = {}
+
+    if req.enabled is not None:
+        val = "1" if req.enabled else "0"
+        _upsert_config(db, system_alerts.MASTER_SWITCH_KEY, val,
+                       description="系统告警总开关（1=开，0=关）")
+        changed["system_alerts_enabled"] = val
+
+    if req.check_interval_sec is not None:
+        # R16 P1-1：钳制 60~86400，持久化到 SystemConfig；调度器每轮重读，热更新
+        iv = max(60, min(86400, int(req.check_interval_sec)))
+        _upsert_config(db, system_alerts.INTERVAL_KEY, str(iv),
+                       description="系统告警检查间隔（秒），60~86400")
+        changed["alert_check_interval_sec"] = iv
+
+    if req.webhook_url is not None:
+        url = (req.webhook_url or "").strip()
+        _upsert_config(db, "webhook_alert_url", url,
+                       description="告警 webhook 通知 URL（可选）")
+        changed["webhook_alert_url"] = url
+
+    secret_changed = False
+    if req.webhook_secret is not None:
+        _upsert_config(db, "webhook_alert_secret", req.webhook_secret or "",
+                       description="告警 webhook HMAC 签名密钥（可选）")
+        # 注意：secret 本身不进审计日志，只记"改了"
+        changed["webhook_secret_set"] = bool(req.webhook_secret)
+        secret_changed = True
+
+    if changed:
+        db.commit()
+        # R16 P3-11：webhook 后配也要 refresh_channels()，否则单例缓存里
+        # 的渠道还是旧配置（邮件/Telegram 保存时已经是这个口径）
+        if "webhook_alert_url" in changed or secret_changed:
+            from backend import notifications as _ntf
+            _ntf.refresh_channels()
+        _audit(db, current_admin, "update_alert_settings", "system_config",
+               None, changed)
+
+    return {
+        "enabled": system_alerts.enabled(db),
+        "check_interval_sec": system_alerts.current_interval_sec(db),
+        "changed": changed,
+    }
 
 
 @admin_alerts_router.get("/alerts")
@@ -187,8 +254,12 @@ def list_alerts(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """告警记录：open（待处理）/ resolved（已恢复）/ all。"""
-    q = db.query(models.Alert)
+    """告警记录：open（待处理）/ acknowledged（已确认）/ resolved（已恢复）/ all。
+
+    R16 P2-1：joinedload 预取 rule，一次查完（以前逐行懒加载，最坏 200 次查询）。
+    R16 P1-2/P2-3：返回 notified_ok（区分已送达/发送失败）与 acknowledged_at。
+    """
+    q = db.query(models.Alert).options(joinedload(models.Alert.rule))
     if status in ("open", "resolved", "acknowledged"):
         q = q.filter(models.Alert.status == status)
     rows = q.order_by(models.Alert.created_at.desc()).limit(
@@ -203,7 +274,10 @@ def list_alerts(
             "title": r.title,
             "message": r.message,
             "status": r.status,
+            "notified_ok": bool(r.notified_ok),
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "acknowledged_at": r.acknowledged_at.isoformat()
+            if r.acknowledged_at else None,
             "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
         })
     return {"alerts": out}
@@ -215,16 +289,24 @@ def ack_alert(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """手动确认一条告警（open → acknowledged，不再参与自动恢复计数）。"""
+    """手动确认一条告警（open → acknowledged）。
+
+    R16 P2-3：确认后冷却期内同一规则不再重复打扰（notify_alert 去重认
+    acknowledged）；条件恢复后自动 resolved（生命周期闭环）。R16 P3-4：
+    记录确认时间（把原来没用到的 datetime 导入用起来）。
+    """
     from datetime import datetime
     row = db.query(models.Alert).filter(models.Alert.id == alert_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="告警不存在")
     if row.status == "open":
         row.status = "acknowledged"
+        row.acknowledged_at = datetime.now()
         db.commit()
         _audit(db, current_admin, "ack_alert", "alert", alert_id, {})
-    return {"id": row.id, "status": row.status}
+    return {"id": row.id, "status": row.status,
+            "acknowledged_at": row.acknowledged_at.isoformat()
+            if row.acknowledged_at else None}
 
 
 class TestAlertRequest(BaseModel):

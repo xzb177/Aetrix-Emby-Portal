@@ -364,6 +364,18 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动到期提醒失败（可忽略）: {e}")
 
+        # 系统告警：后台指标越线时通知管理员（R16 P0-1：原来只在 main.py lifespan
+        # 以 `if not _is_api_role` 启动，生产 api 进程 AETRIX_ROLE=api 被跳过、
+        # worker.py 从未调用 → 生产定时检查永不执行）。worker 进程有 Redis 单实例
+        # 锁，无双跑风险；main.py 的调用保留给单体模式。
+        try:
+            from backend import system_alerts
+            if system_alerts.start_alert_scheduler():
+                started.append("system_alerts")
+                logger.info("✅ 系统告警调度已启动")
+        except Exception as e:
+            logger.warning(f"启动系统告警调度失败（可忽略）: {e}")
+
         # C1 活力值：每日 00:00 扣减公益服用户活力值（daemon 线程，失败可忽略）
         try:
             from backend import vitality
