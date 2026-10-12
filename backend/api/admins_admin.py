@@ -25,7 +25,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend import admin_roles, models
@@ -63,6 +62,30 @@ def _super_count(db: Session) -> int:
         if admin_roles.role_of(user) == admin_roles.ROLE_SUPER:
             count += 1
     return count
+
+
+def _locked_super_count(db: Session) -> int:
+    """行锁所有管理员后计数（F-P1-6 修复）。
+
+    「至少保留一个 super」的检查与修改必须同事务串行化：不加锁时两名 super
+    并发互相降级可同时读到数量 2 并通过检查。调用方须在判断后、提交前调用，
+    锁住的行直到事务提交才释放。
+    """
+    users = _admins_query(db).with_for_update().all()
+    return sum(1 for u in users if admin_roles.role_of(u) == admin_roles.ROLE_SUPER)
+
+
+def _locked_loginable_super_count(db: Session) -> int:
+    """行锁后计数「可登录的超级管理员」（角色 super 且 is_active，F-P1-14 修复）。
+
+    停用 super 走这个口径：只看角色的计数会留下"计数仍为 2 但无人能登录"的死局。
+    """
+    users = _admins_query(db).with_for_update().all()
+    return sum(
+        1
+        for u in users
+        if admin_roles.role_of(u) == admin_roles.ROLE_SUPER and bool(u.is_active)
+    )
 
 
 def _require_user(db: Session, user_id: int) -> models.WebUser:
@@ -125,14 +148,19 @@ def grant_admin(
     if not username and not email:
         raise HTTPException(status_code=400, detail="请填写用户名或邮箱")
 
-    query = db.query(models.WebUser)
+    # F-P1-13 修复：两字段同时填写时分别精确查询，要求命中同一账号。
+    # 原 or_ 查询在"用户名命中甲、邮箱命中乙"时会静默给首条记录授管理员权限。
+    # fail-closed：对不上就 400，不猜。
     if username and email:
-        query = query.filter(or_(models.WebUser.username == username, models.WebUser.email == email))
+        by_username = db.query(models.WebUser).filter(models.WebUser.username == username).first()
+        by_email = db.query(models.WebUser).filter(models.WebUser.email == email).first()
+        if by_username is None or by_email is None or by_username.id != by_email.id:
+            raise HTTPException(status_code=400, detail="用户名与邮箱没有命中同一账号，请检查后重试")
+        user = by_username
     elif username:
-        query = query.filter(models.WebUser.username == username)
+        user = db.query(models.WebUser).filter(models.WebUser.username == username).first()
     else:
-        query = query.filter(models.WebUser.email == email)
-    user = query.first()
+        user = db.query(models.WebUser).filter(models.WebUser.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="找不到这个账号（需要先在站点注册）")
     if user.is_staff:
@@ -179,11 +207,17 @@ def update_admin(
     if payload.role is not None:
         role = _parse_role(payload.role)
         if role != admin_roles.role_of(user):
-            if admin_roles.role_of(user) == admin_roles.ROLE_SUPER and _super_count(db) <= 1:
+            # F-P1-6：行锁后计数，防并发同时通过"至少保留一个"检查
+            if admin_roles.role_of(user) == admin_roles.ROLE_SUPER and _locked_super_count(db) <= 1:
                 raise HTTPException(status_code=400, detail="至少要保留一个超级管理员：请先给别的账号授予超级管理员")
             user.admin_role = role
             changed["role"] = role
     if payload.is_active is not None and bool(payload.is_active) != bool(user.is_active):
+        # F-P1-14：停用 super 同样要保护——只看角色的计数会留下
+        # "计数仍为 2 但无人能登录"的死局，这里按"可登录 super"口径检查
+        if not payload.is_active and admin_roles.role_of(user) == admin_roles.ROLE_SUPER:
+            if _locked_loginable_super_count(db) <= 1:
+                raise HTTPException(status_code=400, detail="至少要保留一个可登录的超级管理员：请先给别的账号授予超级管理员")
         user.is_active = bool(payload.is_active)
         changed["is_active"] = bool(payload.is_active)
 
@@ -209,7 +243,8 @@ def revoke_admin(
         raise HTTPException(status_code=400, detail="这个账号不是管理员")
     if user.id == current_admin.id:
         raise HTTPException(status_code=400, detail="不能撤销自己（避免把自己关在门外）")
-    if admin_roles.role_of(user) == admin_roles.ROLE_SUPER and _super_count(db) <= 1:
+    # F-P1-6：行锁后计数，防两名 super 并发互相撤销时同时通过检查
+    if admin_roles.role_of(user) == admin_roles.ROLE_SUPER and _locked_super_count(db) <= 1:
         raise HTTPException(status_code=400, detail="至少要保留一个超级管理员：请先给别的账号授予超级管理员")
 
     user.is_staff = False

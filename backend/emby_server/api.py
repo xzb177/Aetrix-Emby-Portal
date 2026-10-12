@@ -1273,7 +1273,7 @@ def authenticate_by_name(
             or_(models.WebUser.emby_username == username, models.WebUser.username == username)
         ).first()
 
-    from backend.emby_server.auth import ensure_emby_credentials, issue_token, verify_emby_password
+    from backend.emby_server.auth import issue_token, verify_and_migrate_emby_password
 
     def _auth_fail(detail: str = "用户名或密码错误"):
         from backend.authlog import record_event
@@ -1292,17 +1292,11 @@ def authenticate_by_name(
     if not user or not user.is_active or not password:
         return _auth_fail()
 
-    # 密码校验：支持哈希与明文（明文用于兼容旧数据，校验后自动升级为哈希）
-    if not verify_emby_password(password, user.emby_password or ""):
+    # 密码校验：支持哈希与明文；明文/旧格式在成功后透明升级为 bcrypt-sha256。
+    # A-P1-3："校验+升级"收敛到 verify_and_migrate_emby_password 一处，
+    # 不再手写 startswith 分支（ensure 内已含 needs_password_rehash 判断）。
+    if not verify_and_migrate_emby_password(db, user, password):
         return _auth_fail()
-    if user.emby_password and not user.emby_password.startswith(("$2", "$bcrypt-sha256$")):
-        # 透明升级：历史明文 -> 新的 bcrypt-sha256 格式
-        ensure_emby_credentials(db, user, password=password)
-    elif user.emby_password and user.emby_password.startswith("$2"):
-        # 透明升级：旧 bcrypt 的 72 字节截断格式也在成功登录后替换。
-        ensure_emby_credentials(db, user, password=password)
-
-    ensure_emby_credentials(db, user)
 
     # 设备数上限：超限时拒绝签发（管理员不受限），并落安全日志
     from backend.authlog import record_event

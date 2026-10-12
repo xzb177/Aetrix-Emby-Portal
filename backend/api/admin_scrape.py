@@ -183,6 +183,39 @@ class TmdbKeyAddRequest(BaseModel):
     key: str = Field(..., min_length=8, max_length=200, description="一把新的 TMDB API Key")
 
 
+def _locked_db_keys(db: Session) -> list[str]:
+    """行锁 TMDB 密钥池配置行后读取（F-P1-9 修复）。
+
+    密钥增删是读-改-写：不加锁时两请求读到同一旧列表会互相覆盖新增/删除。
+    调用方必须在同一事务内随后调 _save_pool（它会 commit），锁直到提交才释放。
+    用 ttl=0 直查 DB，绕过 TTL 缓存，确保读到刚加锁行的最新提交值。
+    """
+    db.query(base_models.SystemConfig).filter(
+        base_models.SystemConfig.key == TMDB_KEYS_CONFIG_KEY
+    ).with_for_update().first()
+    raw = store.get_value(db, TMDB_KEYS_CONFIG_KEY, "", ttl=0)
+    return _split_keys(raw)
+
+
+def _lock_metasource_config_rows(db: Session) -> None:
+    """行锁多源元数据配置的所有配置行（F-P1-9 修复）。
+
+    密钥增删是"读快照→改 keys→整体写回"：不加锁时并发的两边会互相覆盖，
+    连带把对方的开关/顺序/限速改动也洗掉。按 key 排序加锁，防死锁。
+    调用方必须在同一事务内随后调 write_config（它会 commit）。
+    """
+    from backend.emby_server.metasources import config as ms_config
+    from backend.emby_server.metasources import sources as ms_sources
+    keys = [ms_config.CONFIG_ENABLED, ms_config.CONFIG_PREFER_CN, ms_config.CONFIG_ORDER]
+    for spec in ms_sources.SPECS:
+        keys.append(ms_config.CONFIG_SOURCE_ENABLED.format(id=spec.id))
+        keys.append(ms_config.CONFIG_SOURCE_KEYS.format(id=spec.id))
+        keys.append(ms_config.CONFIG_SOURCE_RATE.format(id=spec.id))
+    db.query(base_models.SystemConfig).filter(
+        base_models.SystemConfig.key.in_(keys)
+    ).order_by(base_models.SystemConfig.key).with_for_update().all()
+
+
 def _save_pool(db: Session, keys: list[str]) -> int:
     """把密钥池写回 SystemConfig 并热生效（返回写入数量）"""
     count = store.write_values(
@@ -209,7 +242,8 @@ def add_tmdb_key(
     key = req.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="密钥不能为空")
-    existing = _db_keys(db)
+    # F-P1-9：行锁后读，防并发增删互相覆盖
+    existing = _locked_db_keys(db)
     if key in existing:
         raise HTTPException(status_code=409, detail="这把密钥已经在池子里了")
     _save_pool(db, existing + [key])
@@ -232,7 +266,8 @@ def delete_tmdb_key(
     db: Session = Depends(get_db),
 ):
     """逐把删：按**序号**（从 1 开始，与界面展示一致）删掉一把"""
-    keys = _db_keys(db)
+    # F-P1-9：行锁后读，防并发增删互相覆盖
+    keys = _locked_db_keys(db)
     if index < 1 or index > len(keys):
         raise HTTPException(
             status_code=400,
@@ -624,6 +659,8 @@ def add_meta_source_key(
     key = req.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="密钥不能为空")
+    # F-P1-9：行锁所有配置行后读快照，防并发增删/改开关互相覆盖
+    _lock_metasource_config_rows(db)
     snapshot = ms_config.read_config(db, ms_sources.SPECS)
     existing = list((snapshot.by_id(source_id).keys if snapshot.by_id(source_id) else []))
     if key in existing:
@@ -650,6 +687,8 @@ def delete_meta_source_key(
 
     if source_id not in ms_sources.SPEC_BY_ID:
         raise HTTPException(status_code=404, detail=f"未知的数据源：{source_id}")
+    # F-P1-9：行锁所有配置行后读快照，防并发增删/改开关互相覆盖
+    _lock_metasource_config_rows(db)
     snapshot = ms_config.read_config(db, ms_sources.SPECS)
     source_cfg = snapshot.by_id(source_id)
     if source_cfg is None:
@@ -1018,7 +1057,6 @@ class EnrichEpisodeNightSaveRequest(BaseModel):
     enabled: bool = Field(default=False, description="单集仅夜间刮削开关")
     night_start: str = Field(default="02:00", description="夜间窗口开始 HH:MM")
     night_end: str = Field(default="06:00", description="夜间窗口结束 HH:MM")
-    night_tz: str = Field(default="Asia/Shanghai", description="夜间窗口时区（IANA 时区名）")
 
 
 @admin_emby_router.get("/scrape/enrich-episode-night")
@@ -1029,7 +1067,7 @@ def get_enrich_episode_night(
     """单集夜间刮削配置：当前生效值 + 默认值。
 
     from_env 为真时环境变量覆盖了后台配置（改这里不生效）。
-    时间按 night_tz 时区解释（默认 Asia/Shanghai），窗口支持跨午夜（如 22:00-06:00）。
+    时间为服务器本地时间，窗口支持跨午夜（如 22:00-06:00）。
     """
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.get_episode_night_config(db)
@@ -1040,9 +1078,7 @@ def get_enrich_episode_night(
             "enabled": enrich_worker.NIGHT_ONLY_DEFAULT,
             "night_start": enrich_worker.NIGHT_START_DEFAULT,
             "night_end": enrich_worker.NIGHT_END_DEFAULT,
-            "night_tz": enrich_worker.NIGHT_TZ_DEFAULT,
         },
-        "tz_options": enrich_worker.NIGHT_TZ_OPTIONS,
     }
 
 
@@ -1055,7 +1091,7 @@ def save_enrich_episode_night(
     """保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效，无需重启）"""
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.save_episode_night_config(
-        db, req.enabled, req.night_start, req.night_end, req.night_tz)
+        db, req.enabled, req.night_start, req.night_end)
     return {"success": True, **cfg}
 
 

@@ -230,22 +230,21 @@ async def save_server(
     # P1-3 修复：先解析/校验探测密钥（可能抛 400），再落库，避免失败时新地址已写入 DB。
     probe_key = await _resolve_probe_key(db, request.mode, url, api_key, scope_id)
 
-    def save_connection() -> None:
-        """先把这次填的配置落库（同步；下放线程池）"""
+    # F-P1-17 修复：先探测、再落库，一次提交。原先 save_connection 先 commit，
+    # 探测失败只记 reachable=false，已写入的新地址/密钥不会回滚——两次提交之间
+    # 崩溃还会留下"新地址已存但探测结论未知"的不一致状态。
+    # （合并注：密钥解析沿用 r12 的 _resolve_probe_key——按 mode 读本模式配置，
+    #  managed_ea 绝不跨模式复用外部密钥；不回退到 #664 的内联 external 硬编码版。）
+    result = await probe(request.mode, url, probe_key)
+
+    def save_all() -> None:
+        """配置 + 探测结论 + 清单同步，同一事务（同步；下放线程池）"""
         save_value(db, f"{prefix}_url", url, "Emby 服务地址", scope_id)
         save_value(db, f"{prefix}_enabled", "true" if request.enabled else "false",
                    "Emby 服务是否启用", scope_id)
         if request.mode == "external" and api_key.strip():
             save_value(db, "emby_external_api_key", api_key.strip(),
                        "外部 Emby API 密钥", scope_id)
-        db.commit()
-
-    await run_in_threadpool(save_connection)
-
-    result = await probe(request.mode, url, probe_key)
-
-    def record_probe() -> None:
-        """记下探测结论，并同步进「服务器」清单（同步；下放线程池）"""
         save_value(db, f"{prefix}_reachable", "true" if result.get("ok") else "false",
                    "Emby 服务最近一次连接结果", scope_id)
         # 只有真正探测成功且勾选启用，才切换当前入口；避免保存一个不存在的服务后全站假运行。
@@ -260,7 +259,7 @@ async def save_server(
             enabled=request.enabled, reachable=bool(result.get("ok")), realm_id=scope_id,
         )
 
-    await run_in_threadpool(record_probe)
+    await run_in_threadpool(save_all)
 
     # 挂载是主机相对的：EA 能连通不等于它能碰到面板里配的存储。
     # 所以保存 EA 服务入口时顺带做一次 EA 视角的挂载体检，把结果落到面板上。
