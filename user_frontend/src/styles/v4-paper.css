@@ -1,0 +1,168 @@
+/* ============================================================
+ * v4「探险家日志」面板 · 纸色设计系统（PR-2 地基）
+ * 取自设计稿 ~/workspace/your_files/aetrix-v4-mockups/*.html
+ * 第一版只做纸色浅色；v4 路由下强制 light（见 useTheme.ts）
+ * ============================================================ */
+
+.v4-scope {
+  /* 纸色 token（设计稿 :root 原值，不许改） */
+  --paper: #F6F1E7;
+  --paper2: #EFE7D6;
+  --ink: #2A2620;
+  --ink2: #6B6257;
+  --red: #D9482B;
+  --blue: #2E5FA3;
+  --green: #4A7C59;
+  --gold: #C99B3F;
+  --line: #D8CDB8;
+  --paper-card: #FFFDF6;
+
+  color: var(--ink);
+  background: var(--paper);
+  background-image:
+    radial-gradient(circle at 20% 10%, rgba(217, 72, 43, 0.05), transparent 40%),
+    radial-gradient(circle at 85% 80%, rgba(46, 95, 163, 0.05), transparent 40%);
+  min-height: 100vh;
+  font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+/* 页面容器：375px 居中，底部给 tabbar 留安全区（根治旧遮挡 bug） */
+.v4-page {
+  max-width: 375px;
+  margin: 0 auto;
+  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+}
+
+/* 日志头 */
+.v4-loghead {
+  padding: 26px 20px 14px;
+  border-bottom: 2px solid var(--ink);
+  position: relative;
+}
+.v4-stamp {
+  display: inline-block;
+  border: 2px solid var(--red);
+  color: var(--red);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 4px 10px;
+  transform: rotate(-4deg);
+  border-radius: 3px;
+  margin-bottom: 10px;
+}
+.v4-loghead h1 {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  margin: 0;
+}
+.v4-loghead p {
+  color: var(--ink2);
+  font-size: 13px;
+  margin: 6px 0 0;
+}
+.v4-fire {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  background: var(--ink);
+  color: #F6F1E7;
+  font-size: 12px;
+  padding: 7px 12px;
+  border-radius: 20px;
+}
+.v4-fire b { color: #FFB25E; }
+
+/* 分区 */
+.v4-sec { padding: 20px 20px 0; }
+.v4-sec-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  margin-bottom: 4px;
+}
+.v4-sec-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.v4-sec-sub {
+  font-size: 12px;
+  color: var(--ink2);
+  margin-bottom: 12px;
+}
+
+/* 纸卡 */
+.v4-card {
+  background: var(--paper-card);
+  border: 1.5px solid var(--ink);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 3px 3px 0 rgba(42, 38, 32, 0.12);
+}
+
+/* 占位（接口失败/加载中：纸色 shimmer，不许转圈圈） */
+.v4-skeleton {
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--paper2) 25%, #f7f2e6 50%, var(--paper2) 75%);
+  background-size: 200% 100%;
+  animation: v4-shimmer 1.4s infinite linear;
+  min-height: 14px;
+}
+@keyframes v4-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.v4-err {
+  font-size: 12px;
+  color: var(--ink2);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--paper2);
+}
+
+/* 底部导航 */
+.v4-tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 375px;
+  background: #FFFDF6;
+  border-top: 1.5px solid var(--ink);
+  display: flex;
+  padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+  z-index: 50;
+}
+.v4-tabbar a {
+  flex: 1;
+  text-align: center;
+  text-decoration: none;
+  color: var(--ink2);
+  font-size: 11px;
+}
+.v4-tabbar a .ic {
+  font-size: 20px;
+  display: block;
+  margin-bottom: 2px;
+}
+.v4-tabbar a.on {
+  color: var(--red);
+  font-weight: 700;
+}
+
+/* 动效纪律：只用 transform/opacity；尊重减少动态偏好 */
+@media (prefers-reduced-motion: reduce) {
+  .v4-scope *, .v4-scope *::before, .v4-scope *::after {
+    animation-duration: 0.001s !important;
+    transition-duration: 0.001s !important;
+  }
+}

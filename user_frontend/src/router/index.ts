@@ -2,6 +2,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 // 标题里的站名来自「站点与品牌」能力（未配置时用默认值）
 import { pageTitle } from '@/composables/useBranding'
+// v4 面板特性开关（VITE_PANEL_V4_ENABLED=0 时回退老首页）
+import { isPanelV4Enabled } from '@/composables/usePanelApi'
+
+const panelV4 = isPanelV4Enabled()
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -9,9 +13,30 @@ const router = createRouter({
     {
       path: '/',
       name: 'home',
-      component: () => import('@/views/HomeView.vue'),
+      // v4 面板开时首页切到发现页；关掉则回退现有 HomeView
+      component: () =>
+        panelV4
+          ? import('@/views/panel/DiscoveryView.vue')
+          : import('@/views/HomeView.vue'),
       meta: { title: '首页' },
     },
+    // v4 面板：收藏家 / 服务器（需要登录，panel 接口全部要鉴权）
+    ...(panelV4
+      ? [
+          {
+            path: '/collector',
+            name: 'collector',
+            component: () => import('@/views/panel/CollectorView.vue'),
+            meta: { title: '收藏家', requiresAuth: true },
+          },
+          {
+            path: '/server',
+            name: 'server',
+            component: () => import('@/views/panel/ServerView.vue'),
+            meta: { title: '服务器', requiresAuth: true },
+          },
+        ]
+      : []),
     {
       path: '/login',
       name: 'login',
@@ -161,6 +186,39 @@ router.beforeEach(async (to) => {
   }
 
   return true
+})
+
+// v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
+// （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
+const V4_PATHS = new Set(['/', '/collector', '/server'])
+function restoreUserTheme() {
+  // 从 useTheme.ts 同 key 读用户偏好（默认 dark），恢复 data-theme
+  let pref = 'dark'
+  try {
+    const s = localStorage.getItem('aetrix-theme')
+    if (s === 'light' || s === 'dark' || s === 'system') pref = s
+  } catch { /* ignore */ }
+  const html = document.documentElement
+  const light =
+    pref === 'light' ||
+    (pref === 'system' &&
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-color-scheme: light)').matches)
+  if (light) html.setAttribute('data-theme', 'light')
+  else html.removeAttribute('data-theme')
+  // 浏览器工具栏色跟回用户主题（与 useTheme.ts applyTheme 一致）
+  document
+    .querySelector('meta[name="theme-color"]')
+    ?.setAttribute('content', light ? '#f5f1ea' : '#0c0a09')
+}
+router.afterEach((to) => {
+  if (!panelV4) return
+  if (V4_PATHS.has(to.path)) {
+    document.documentElement.setAttribute('data-theme', 'light')
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f5f1ea')
+  } else {
+    restoreUserTheme()
+  }
 })
 
 // 关键路由预取：用户登录后大概率会去商店 / 个人中心，空闲时预加载对应 chunk
