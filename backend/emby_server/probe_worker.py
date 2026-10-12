@@ -698,8 +698,10 @@ def _probe_detached(path, headers, size, container, budget):
     return probe, proc_util.timeout_count() - before
 
 
-def _finish(item_id: int, outcome: str, reason: str = "", probe: Optional[dict] = None) -> str:
-    """在新 session 里落结果。outcome: ok / retry / timeout_retry / quota_retry / failed。"""
+def _finish(item_id: int, outcome: str, reason: str = "", probe: Optional[dict] = None,
+            kind: Optional[str] = None) -> str:
+    """在新 session 里落结果。outcome: ok / retry / timeout_retry / quota_retry /
+    long_retry / auth_retry / failed。"""
     from backend.database import SessionLocal
     db = SessionLocal()
     try:
@@ -721,6 +723,15 @@ def _finish(item_id: int, outcome: str, reason: str = "", probe: Optional[dict] 
             # 配额 403：24h 长退避，永不判死（C-P1-1）
             media_probe.mark_long_retry(db, item, reason, kind="quota")
             return "retry"
+        if outcome == "long_retry":
+            # 429 限流 / 5xx 服务端抖动：24h 长退避，永不判死（仿 quota_retry）
+            media_probe.mark_long_retry(db, item, reason, kind=kind or "ratelimit")
+            return "retry"
+        if outcome == "auth_retry":
+            # 401 认证失败：给 PROBE_AUTH_MAX_ATTEMPTS 次带退避重试，不再一次判死
+            media_probe.mark_retry(db, item, reason,
+                                   max_attempts=media_probe.PROBE_AUTH_MAX_ATTEMPTS)
+            return "failed" if item.probe_status == "failed" else "retry"
         if outcome == "timeout_retry":
             # 超时：普通重试 3 次后转 24h 长退避，不判死（C-P1-1 超时部分）
             media_probe.mark_retry(db, item, reason, is_timeout=True)
@@ -766,7 +777,8 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
 
     # 1) 解析地址（挂载 API / 本机 FUSE stat）
     try:
-        resolved = proc_util.call_with_timeout(_resolve_detached, PROBE_RESOLVE_TIMEOUT_SEC, item_id)
+        resolved, resolve_kind = proc_util.call_with_timeout(
+            _resolve_detached, PROBE_RESOLVE_TIMEOUT_SEC, item_id)
     except proc_util.CallTimeout:
         breaker.record_timeout(key)
         _bump("timeouts")
@@ -775,6 +787,19 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
     except Exception as exc:  # noqa: BLE001
         return _finish(item_id, "retry", f"解析探测地址异常: {exc}")
     if not resolved:
+        # 解析阶段透出原始错误类型：限流 / 服务端抖动类走 24h 长退避，
+        # 不再一律 3 次普通重试后判死。
+        if resolve_kind == "quota":
+            return _finish(item_id, "long_retry", "解析探测地址：远端配额耗尽",
+                           kind="quota")
+        if resolve_kind == "ratelimit":
+            return _finish(item_id, "long_retry", "解析探测地址：远端限流（HTTP 429）",
+                           kind="ratelimit")
+        if resolve_kind == "server":
+            return _finish(item_id, "long_retry", "解析探测地址：远端服务异常",
+                           kind="server")
+        if resolve_kind == "auth":
+            return _finish(item_id, "auth_retry", "解析探测地址：远端认证失败（HTTP 401）")
         return _finish(item_id, "retry", "无法解析探测地址")
 
     # 2) 探测（所有子进程共享总预算，超时整组 SIGKILL）
@@ -793,11 +818,28 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
         return _finish(item_id, "retry", f"ffprobe 异常: {exc}")
 
     http_code = (probe or {}).get("_http_code")
+    err = (probe or {}).get("_error")
     # 配额 403 永不判死：走 24h 长退避，配额恢复后自动自愈（C-P1-1）。
     # _error="quota" 由 scanner.probe_metadata 标记；403 本身也按配额处理。
-    if (probe or {}).get("_error") == "quota" or http_code == 403:
+    if err == "quota" or http_code == 403:
         breaker.record_ok(key)  # 端点有回应，挂载是活的（配额问题≠挂载故障）
         return _finish(item_id, "quota_retry", "远端配额耗尽（HTTP 403）")
+    # 429 限流 / 5xx 服务端抖动：走 24h 长退避，永不判死。
+    # 以前这类错误走普通重试，3 次后被永久判死。
+    if err == "ratelimit" or http_code == 429:
+        breaker.record_ok(key)  # 端点有回应，挂载是活的（限流≠挂载故障）
+        return _finish(item_id, "long_retry", "远端限流（HTTP 429），约24h后重试",
+                       kind="ratelimit")
+    if err == "server_error" or http_code in media_probe.TRANSIENT_HTTP_CODES:
+        breaker.record_ok(key)  # 端点有回应，挂载是活的
+        return _finish(item_id, "long_retry",
+                       f"远端服务异常（HTTP {http_code}），约24h后重试",
+                       kind="server")
+    # 401 认证失败：SA token 轮换间隙的 401 是暂时的，给 2 次带退避重试机会，
+    # 不再一次判死。
+    if err == "auth" or http_code == 401:
+        breaker.record_ok(key)  # 端点有回应，挂载是活的
+        return _finish(item_id, "auth_retry", f"远端认证失败（HTTP 401）")
     if http_code in media_probe.NO_RETRY_HTTP_CODES:
         breaker.record_ok(key)  # 端点有回应，挂载是活的
         return _finish(item_id, "failed", f"远端返回 HTTP {http_code}，地址无效")

@@ -217,11 +217,12 @@ class TestClaimReclaim:
             t0 = datetime.now()
             media_probe.mark_retry(db, it, "超时 A")
             assert it.probe_status == "pending" and it.probe_attempts == 1
-            assert 55 <= (it.probe_next_retry_at - t0).total_seconds() <= 65
+            # 基数 60s ±20% 抖动 → [48, 72]，留执行耗时余量
+            assert 45 <= (it.probe_next_retry_at - t0).total_seconds() <= 75
             assert it.probe_last_error == "超时 A" and it.probe_claimed_at is None
             media_probe.mark_retry(db, it, "超时 B")
-            # 120s 被封顶到 100s
-            assert (it.probe_next_retry_at - t0).total_seconds() <= 105
+            # 120s 被封顶到 100s，再 ×[0.8, 1.2] 抖动 → [80, 120]
+            assert (it.probe_next_retry_at - t0).total_seconds() <= 125
             media_probe.mark_retry(db, it, "超时 C")
             assert it.probe_status == "failed"
             assert "超时 C" in (it.probe_last_error or "")
@@ -325,7 +326,10 @@ class TestProcessItem:
 
     def test_hung_resolve_times_out(self, lib, monkeypatch):
         ev = threading.Event()
-        monkeypatch.setattr(media_probe, "resolve_probe_input", lambda db, it: ev.wait())
+        def _hung_resolve(db, it):
+            ev.wait()
+            return (None, None)
+        monkeypatch.setattr(media_probe, "resolve_probe_input", _hung_resolve)
         db = SessionLocal()
         try:
             i = self._claim(db, lib)
@@ -342,7 +346,7 @@ class TestProcessItem:
     def test_hung_ffprobe_times_out(self, lib, monkeypatch):
         ev = threading.Event()
         monkeypatch.setattr(media_probe, "resolve_probe_input",
-                            lambda db, it: ("http://x/a.mkv", {}, 1, "mkv"))
+                            lambda db, it: (("http://x/a.mkv", {}, 1, "mkv"), None))
         monkeypatch.setattr(media_probe, "probe_metadata", lambda *a, **k: ev.wait())
         db = SessionLocal()
         try:
@@ -357,7 +361,7 @@ class TestProcessItem:
 
     def test_success_writes_back(self, lib, monkeypatch):
         monkeypatch.setattr(media_probe, "resolve_probe_input",
-                            lambda db, it: ("http://x/a.mkv", {}, 1, "mkv"))
+                            lambda db, it: (("http://x/a.mkv", {}, 1, "mkv"), None))
         monkeypatch.setattr(media_probe, "probe_metadata", _ok_probe)
         db = SessionLocal()
         try:
@@ -371,7 +375,7 @@ class TestProcessItem:
 
     def test_http_404_fails_permanently(self, lib, monkeypatch):
         monkeypatch.setattr(media_probe, "resolve_probe_input",
-                            lambda db, it: ("http://x/a.mkv", {}, 1, "mkv"))
+                            lambda db, it: (("http://x/a.mkv", {}, 1, "mkv"), None))
         monkeypatch.setattr(media_probe, "probe_metadata",
                             lambda *a, **k: {"_http_code": 404})
         db = SessionLocal()
@@ -403,7 +407,8 @@ class TestDrain:
         calls = {"n": 0}
 
         def fake_resolve(db, item):
-            return (item.file_path.replace("mount://", "http://fake/"), {}, 1, "mkv")
+            return ((item.file_path.replace("mount://", "http://fake/"), {}, 1, "mkv"),
+                    None)
 
         def fake_probe(path, headers=None, size=0, container=""):
             calls["n"] += 1
