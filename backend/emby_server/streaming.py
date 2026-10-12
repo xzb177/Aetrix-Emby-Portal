@@ -613,6 +613,23 @@ def _signature_ttl_seconds(url: str) -> float | None:
     return best
 
 
+def _desensitized_url_for_log(url: str) -> str:
+    """脱敏 URL（日志用）：保留 scheme/host/path 与查询参数名，丢弃所有参数值。
+
+    跳转终点 URL 含 Google 签名参数，值绝不能进日志；参数名（如 expires /
+    signature）是定位"签名 TTL 拦截 vs hostname 拦截"的关键证据，保留。
+    """
+    try:
+        parts = urlsplit(url)
+        qs = dict(parse_qsl(parts.query, keep_blank_values=True))
+        base = "%s://%s%s" % (parts.scheme, parts.hostname or "", parts.path or "")
+        if qs:
+            return "%s?[%s]" % (base, ",".join(sorted(qs.keys())))
+        return base
+    except Exception:
+        return "<unparseable>"
+
+
 def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
     """写入 Drive 跳转缓存（签名感知 TTL，P2-1）。
 
@@ -622,10 +639,18 @@ def _redirect_cache_store_drive_url(file_id: str, final_url: str) -> None:
     """
     sig_ttl = _signature_ttl_seconds(final_url)
     if sig_ttl is not None and sig_ttl <= 0:
+        logger.debug(
+            "redirect_cache_skip reason=signature_expired file_id=%s sig_ttl=%.1f url=%s",
+            file_id, sig_ttl, _desensitized_url_for_log(final_url))
         return
     ttl = _DRIVE_REDIRECT_CACHE_TTL
     if sig_ttl is not None:
         ttl = min(ttl, sig_ttl)
+    logger.debug(
+        "redirect_cache_write file_id=%s ttl=%.1f sig_ttl=%s url=%s",
+        file_id, ttl,
+        ("%.1f" % sig_ttl) if sig_ttl is not None else "unknown",
+        _desensitized_url_for_log(final_url))
     _redirect_cache_set(file_id, final_url, ttl=ttl)
 
 
@@ -642,13 +667,28 @@ def _maybe_cache_drive_redirect(
     落点是 drive.usercontent.google.com、终态不是 403/404/410（坏 URL 不进缓存）。
     """
     if not file_id or hops <= 0 or cached_hit:
+        logger.debug(
+            "redirect_cache_skip reason=no_hops file_id=%s hops=%s cached_hit=%s status=%s",
+            file_id, hops, cached_hit, terminal_status)
         return
     if terminal_status in (403, 404, 410):
+        logger.debug(
+            "redirect_cache_skip reason=bad_terminal_status file_id=%s hops=%s status=%s url=%s",
+            file_id, hops, terminal_status, _desensitized_url_for_log(final_url))
         return
     try:
-        if "drive.usercontent.google.com" not in (urlsplit(final_url).hostname or ""):
-            return
+        host = urlsplit(final_url).hostname or ""
     except Exception:
+        logger.debug(
+            "redirect_cache_skip reason=url_parse_error file_id=%s hops=%s status=%s",
+            file_id, hops, terminal_status)
+        return
+    if "drive.usercontent.google.com" not in host:
+        logger.debug(
+            "redirect_cache_skip reason=hostname_mismatch file_id=%s hops=%s status=%s "
+            "host=%s url=%s",
+            file_id, hops, terminal_status, host,
+            _desensitized_url_for_log(final_url))
         return
     _redirect_cache_store_drive_url(file_id, final_url)
 
