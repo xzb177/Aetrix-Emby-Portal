@@ -50,6 +50,7 @@ from backend import reminders
 from backend.api.admin_ops import admin_ops_router
 from backend.api.admin_services import services_router
 from backend.api.reminders_admin import admin_reminders_router
+from backend.api.admin_alerts import admin_alerts_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
 # v2.19.0：外部服务能力中心（代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地）。
@@ -210,6 +211,15 @@ async def lifespan(app: FastAPI):
             reminders.start_reminder_scheduler()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动到期提醒失败（可忽略）: {e}")
+
+        # 系统告警：后台指标越线时通知管理员。总开关默认关（见 backend/system_alerts.py），
+        # 没开时线程空转等待，不打扰任何现有行为；EA 侧不启动（多台 EA 会重复打扰）。
+    if not _is_api_role:
+        try:
+            from backend import system_alerts
+            system_alerts.start_alert_scheduler()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"启动系统告警检查失败（可忽略）: {e}")
 
         # 定时扫描：用户在后台「元数据与刮削」里自己决定开不开、几点扫；
         # 默认关闭，不打扰任何现有行为。失败不影响启动。
@@ -752,6 +762,8 @@ app.include_router(admin_ops_router)
 app.include_router(services_router)
 # 订阅到期提醒的面板口径与手动执行（见 backend/api/reminders_admin.py）
 app.include_router(admin_reminders_router)
+# 系统告警：规则管理 / 告警记录 / 总开关（见 backend/api/admin_alerts.py）
+app.include_router(admin_alerts_router)
 # 订单关单与退款（见 backend/api/orders_admin.py）
 app.include_router(admin_orders_router)
 # 优惠券管理（v2.10.0）：券的 CRUD / 核销记录 / 开关，见 backend/api/coupons_admin.py

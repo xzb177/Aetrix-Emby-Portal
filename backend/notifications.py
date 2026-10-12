@@ -411,6 +411,64 @@ class TelegramChannel(NotificationChannel):
 
 # ==================== 多渠道通知管理器 ====================
 
+class WebhookChannel(NotificationChannel):
+    """通用 webhook 渠道：POST JSON 到配置的 URL。
+
+    通用能力，不写死任何第三方格式（企业微信/钉钉/自建系统都接得上）：
+    payload = {"title", "content", "data", "ts", "source": "aetrix"}。
+    可选 HMAC-SHA256 签名（X-Signature 头），接收方用 webhook_alert_secret 验签。
+
+    注意：webhook 是"广播到 URL"不是"发给某用户"，send() 的 user_id 参数
+    仅为保持渠道接口一致而保留，会被忽略（但会写进 payload 供接收方参考）。
+    """
+
+    def __init__(self, url: str = None, secret: str = None, timeout: int = 10):
+        self.name = "webhook"
+        self.url = (url or "").strip()
+        self.secret = (secret or "").strip()
+        self.timeout = timeout
+        self.enabled = bool(self.url)
+
+    def _sign(self, body: bytes) -> str:
+        import hashlib
+        import hmac
+        return hmac.new(self.secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+    async def send(self, user_id: int, title: str, content: str,
+                   data: Optional[dict] = None, db: Session = None) -> bool:
+        """POST 告警 JSON 到 webhook URL。"""
+        if not self.enabled:
+            logger.warning("webhook 通知未配置 URL，跳过发送")
+            return False
+        import json as _json
+        import httpx
+
+        payload = {
+            "title": title,
+            "content": content,
+            "user_id": user_id,
+            "data": data or {},
+            "ts": int(datetime.now().timestamp()),
+            "source": "aetrix",
+        }
+        body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.secret:
+            headers["X-Signature"] = self._sign(body)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(self.url, content=body, headers=headers)
+            if resp.status_code // 100 != 2:
+                logger.error("webhook 发送失败: HTTP %s %s",
+                             resp.status_code, resp.text[:200])
+                return False
+            logger.info("webhook 通知已发送: %s", title)
+            return True
+        except Exception as exc:  # noqa: BLE001 — 投递失败如实返回，不抛异常
+            logger.error("webhook 发送异常: %s: %s", type(exc).__name__, exc)
+            return False
+
+
 class NotificationService:
     """通知服务管理器"""
 
@@ -470,6 +528,22 @@ class NotificationService:
                     bot_token=tg_config.get('telegram_bot_token')
                 )
                 logger.info("Telegram 通知渠道已启用")
+
+            # 通用 webhook 渠道：后台「通知设置」里配 URL（可选 secret 做 HMAC 验签）。
+            # key 用 webhook_ 前缀，与 telegram_% / email_% 的查询模式保持一致。
+            webhook_url = db.query(models.SystemConfig).filter(
+                models.SystemConfig.key == 'webhook_alert_url'
+            ).first()
+            webhook_secret = db.query(models.SystemConfig).filter(
+                models.SystemConfig.key == 'webhook_alert_secret'
+            ).first()
+            url_val = (webhook_url.value if webhook_url else "" or "").strip()
+            if url_val:
+                self.channels['webhook'] = WebhookChannel(
+                    url=url_val,
+                    secret=(webhook_secret.value if webhook_secret else "") or "",
+                )
+                logger.info("webhook 通知渠道已启用")
 
             self._config_loaded = True
 
@@ -929,6 +1003,7 @@ __all__ = [
     "InAppChannel",
     "EmailChannel",
     "TelegramChannel",
+    "WebhookChannel",
     "get_notification_service",
     "refresh_channels",
     "notify_admin_event",

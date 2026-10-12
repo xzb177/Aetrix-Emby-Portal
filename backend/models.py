@@ -1312,7 +1312,14 @@ class SystemMetric(Base):
 
 
 class AlertRule(Base):
-    """告警规则表"""
+    """告警规则表
+
+    两种规则形态（二选一）：
+    - 事件型（event_type 非空）：系统事件告警（probe_queue_high / enrich_stalled /
+      disk_full / sa_quota_low / scan_failed），由 backend/system_alerts.py 的
+      定时检查触发。阈值/渠道/接收人/冷却全部可配。
+    - 指标型（event_type 为空，metric_name 非空）：遗留的通用指标告警形态。
+    """
     __tablename__ = 'alert_rules'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -1324,6 +1331,15 @@ class AlertRule(Base):
     notification_channels = Column(JSON)  # ['telegram', 'email']
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now)
+    # --- 系统告警（事件型）扩展列，见 backend/system_alerts.py ---
+    # 事件类型：probe_queue_high / enrich_stalled / disk_full / sa_quota_low /
+    # scan_failed / api_error_high；为空表示 legacy 指标型规则
+    event_type = Column(String(50), nullable=True)
+    # 接收人 JSON：{"staff": true}（默认，全部启用中的管理员）或
+    # {"user_ids": [1, 2]}（指定用户）
+    recipients = Column(Text, nullable=True)
+    # 同一规则冷却秒数：冷却期内重复越线不重复打扰（防轰炸）
+    cooldown_sec = Column(Integer, default=3600)
 
 
 class Alert(Base):
