@@ -44,7 +44,7 @@ def _stub_stream(monkeypatch, target, proxied):
     _stub_gates(monkeypatch)
     monkeypatch.setattr(api, "_play_target", lambda db, item: target)
 
-    async def fake_proxy(url, request, headers, media_type, cache_control=None):
+    async def fake_proxy(url, request, headers, media_type, cache_control=None, **kwargs):
         proxied.append(url)
         return object()
 
@@ -78,7 +78,7 @@ def test_video_stream_proxies_with_range_headers(monkeypatch):
     monkeypatch.setattr(api, "_play_target", lambda db, item: target)
     proxy = object()
 
-    async def fake_proxy(url, request, headers, media_type, cache_control=None):
+    async def fake_proxy(url, request, headers, media_type, cache_control=None, **kwargs):
         assert (url, headers, media_type) == (target.value, target.headers, "video/mp4")
         from backend.emby_server import cdn
         assert cache_control == cdn.SEGMENT_CACHE_HEADER
