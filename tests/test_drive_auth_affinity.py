@@ -203,10 +203,12 @@ def test_all_sa_dicts_cached_no_repeated_file_reads(fake_drive_changes, monkeypa
     assert fake_drive_changes._discover_sa_files.call_count == 1
     assert [s["client_email"] for s in second] == [s["client_email"] for s in first]
 
-    # 返回的是拷贝：调用方篡改不污染快照
+    # 返回的是拷贝：调用方篡改不污染快照（list 结构 + 每个 SA 字典，r21 P3）
     second.append({"client_email": "evil@x"})
+    second[0]["client_email"] = "tampered@x"
     third = drive_auth._all_sa_dicts()
     assert len(third) == 100
+    assert third[0]["client_email"] == first[0]["client_email"]
 
     # _reset_state 后缓存失效，恢复"重新发现"语义
     drive_auth._reset_state()
@@ -214,3 +216,34 @@ def test_all_sa_dicts_cached_no_repeated_file_reads(fake_drive_changes, monkeypa
     assert read_calls["n"] == 200
     assert fake_drive_changes._discover_sa_files.call_count == 2
     assert len(fourth) == 100
+
+
+def test_all_sa_dicts_partial_read_failure_not_cached(fake_drive_changes, monkeypatch):
+    """r21 P2：部分 SA 文件读取失败时，不冻结不完整子集——恢复后重新进入。
+
+    before：首次调用中 1 个文件读失败 → 不完整子集被永久缓存，
+    失败文件恢复后仍被遗漏（直到进程重启/_reset_state）。
+    after：存在读取失败时不发布缓存；恢复后下次调用重新发现并纳入。
+    """
+    drive_auth._reset_state()
+    paths = [f"/tmp/sa{i:03d}.json" for i in range(5)]
+    fake_drive_changes._discover_sa_files.return_value = paths
+    broken = {paths[2]}
+
+    def flaky_read(path):
+        if path in broken:
+            raise OSError("transient disk hiccup")
+        return _make_sa(f"sa-{os.path.basename(path)}@x")
+
+    monkeypatch.setattr(drive_auth, "_read_sa_file", flaky_read)
+
+    first = drive_auth._all_sa_dicts()
+    assert len(first) == 4  # 坏文件被跳过
+    # 未冻结：第二次调用仍重新发现（不缓存不完整子集）
+    broken.clear()  # 文件恢复
+    second = drive_auth._all_sa_dicts()
+    assert len(second) == 5
+    assert {s["client_email"] for s in second} == {
+        f"sa-sa{i:03d}.json@x" for i in range(5)
+    }
+    assert fake_drive_changes._discover_sa_files.call_count == 2
