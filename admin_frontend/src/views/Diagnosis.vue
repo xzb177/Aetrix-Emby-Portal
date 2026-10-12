@@ -1,27 +1,33 @@
 <script setup lang="ts">
 /**
- * 一键体检（只读诊断，v2.57.0）
+ * 一键体检（只读诊断 v2.57.0；阶段二加自动修复）
  *
  * - 数据源：GET /api/admin/diagnosis/run（后端只读规则引擎，不写库不改配置）
  * - 9 条规则逐项给结论：正常也说一句，报告是一份完整清单
+ * - 可修复的规则带「一键修复」按钮：点击 → 二次确认弹窗 →
+ *   POST /api/admin/diagnosis/fix（confirm=true）→ 展示结果 → 重新体检
  * - 品牌约束：只用 --au-* 变量，零新增色值；暗房影院深色主题
  */
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Play, RefreshCw, Stethoscope } from 'lucide-vue-next'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Play, RefreshCw, Stethoscope, Wrench } from 'lucide-vue-next'
 import { EmptyState, PageHeader } from '@/components/ui'
 import {
   fetchDiagnosisRules,
+  fixDiagnosisRule,
   runDiagnosis,
   type DiagnosisFinding,
+  type DiagnosisFixInfo,
   type DiagnosisReport,
 } from '@/api/admin'
 
 const report = ref<DiagnosisReport | null>(null)
 const ruleNames = ref<Record<string, string>>({})
+const fixes = ref<Record<string, DiagnosisFixInfo>>({})
 const loading = ref(false)
 const loadError = ref('')
 const lastChecked = ref('')
+const fixingRule = ref('')
 
 const LEVEL_ICON = {
   info: 'is-ok',
@@ -59,9 +65,54 @@ async function loadRules() {
     const m: Record<string, string> = {}
     for (const item of r.rules || []) m[item.rule_id] = item.name
     ruleNames.value = m
+    fixes.value = r.fixes || {}
   } catch {
-    // 规则清单拿不到不影响体检，只是不显示"本次检查项"
+    // 规则清单拿不到不影响体检，只是不显示"本次检查项"和修复按钮
   }
+}
+
+function fixErrorMessage(e: unknown): string {
+  const d = (e as { response?: { data?: { detail?: { message?: string } } } })
+    ?.response?.data?.detail
+  if (d && typeof d.message === 'string' && d.message) return d.message
+  return e instanceof Error ? e.message : '请求失败'
+}
+
+async function doFix(ruleId: string) {
+  fixingRule.value = ruleId
+  try {
+    const r = await fixDiagnosisRule(ruleId)
+    const detail = r.result?.detail
+    await ElMessageBox.alert(
+      typeof detail === 'string' && detail ? detail : '修复已执行。',
+      `修复完成 · ${r.name}`,
+      { confirmButtonText: '知道了' },
+    )
+  } catch (e) {
+    await ElMessageBox.alert(fixErrorMessage(e), '修复未执行', {
+      confirmButtonText: '知道了',
+      type: 'warning',
+    }).catch(() => {})
+  } finally {
+    fixingRule.value = ''
+    // 修复后重跑一轮，看红灯灭了没有
+    await run()
+  }
+}
+
+function askFix(f: DiagnosisFinding) {
+  const fix = fixes.value[f.rule_id]
+  if (!fix) return
+  ElMessageBox.confirm(fix.confirm_text, `一键修复 · ${fix.name}`, {
+    confirmButtonText: '确认修复',
+    cancelButtonText: '再想想',
+    type: 'warning',
+    dangerouslyUseHTMLString: false,
+  })
+    .then(() => doFix(f.rule_id))
+    .catch(() => {
+      // 用户点了"再想想"：静默取消，不打扰
+    })
 }
 
 async function run() {
@@ -108,7 +159,7 @@ onMounted(loadRules)
     <EmptyState
       v-else-if="!report"
       title="还没体检过"
-      description="点右上角「开始体检」，9 项检查一次跑完。自动修复是下一阶段的功能，这次只诊断、不动手。"
+      description="点右上角「开始体检」，9 项检查一次跑完。部分检查项支持一键自动修复（执行前会二次确认，每次修复都写审计日志）。"
     >
       <template v-if="Object.keys(ruleNames).length" #extra>
         <div class="au-diagnosis__rules">
@@ -156,6 +207,18 @@ onMounted(loadRules)
             <li v-for="(s, i) in f.steps" :key="i">{{ s }}</li>
           </ol>
           <p v-if="evidenceText(f)" class="au-diagnosis__evidence">数据：{{ evidenceText(f) }}</p>
+          <div v-if="fixes[f.rule_id]" class="au-diagnosis__fixbar">
+            <span class="au-diagnosis__fixdesc">{{ fixes[f.rule_id].description }}</span>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="fixingRule === f.rule_id"
+              @click="askFix(f)"
+            >
+              <el-icon><Wrench :size="12" /></el-icon>
+              {{ fixes[f.rule_id].name }}
+            </el-button>
+          </div>
         </div>
       </div>
 
@@ -288,6 +351,22 @@ onMounted(loadRules)
   margin: 0;
   font-size: 12px;
   color: color-mix(in srgb, var(--au-text) 50%, transparent);
+}
+
+.au-diagnosis__fixbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--au-border);
+}
+
+.au-diagnosis__fixdesc {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--au-text) 60%, transparent);
 }
 
 .au-diagnosis__note {
