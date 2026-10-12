@@ -1,11 +1,36 @@
 import { fileURLToPath, URL } from 'node:url'
-import { defineConfig } from 'vite'
+import { readFileSync } from 'node:fs'
+import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
+
+// 命名断点（home-refactor §3.2）：单一真源是 src/styles/aurora.css 顶部的 @custom-media 定义。
+// postcss-custom-media v11+ 移除了 importFrom（跨文件共享定义），这里在构建期把定义
+// 前置到每个样式模块（含 Vue SFC 的 <style>），插件再展开成真实 px（preserve: false，
+// 输出里不留 @custom-media）。组件内写法统一为 @media (--au-bp-md) { … }。
+const AURORA_CSS = readFileSync(new URL('./src/styles/aurora.css', import.meta.url), 'utf8')
+const AU_CUSTOM_MEDIA =
+  AURORA_CSS.match(/@custom-media\s+--[a-z0-9-]+\s*\([^;]+;/g)?.join('\n') ?? ''
+
+function auCustomMedia(): Plugin {
+  return {
+    name: 'au-custom-media',
+    enforce: 'pre',
+    transform(code, id) {
+      const isStyle =
+        id.endsWith('.css') || (id.includes('.vue') && id.includes('type=style'))
+      if (!isStyle || id.includes('node_modules')) return null
+      // 已有定义的（如 aurora.css 自己）不重复前置
+      if (code.includes('@custom-media --au-bp-')) return null
+      return { code: `${AU_CUSTOM_MEDIA}\n${code}`, map: null }
+    },
+  }
+}
 
 // 生产环境禁用 DevTools
 const isProduction = process.env.NODE_ENV === 'production'
 export default defineConfig({
   plugins: [
+    auCustomMedia(),
     vue(),
   ].filter(Boolean),
   resolve: {

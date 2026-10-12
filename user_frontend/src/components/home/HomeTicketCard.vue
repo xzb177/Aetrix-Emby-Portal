@@ -92,8 +92,6 @@ defineProps<{
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-md);
   overflow: hidden;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 180px;
 }
 .ticket-main {
   display: grid;
@@ -156,9 +154,44 @@ defineProps<{
   min-width: 120px;
 }
 .stub-admit { font-size: 10px; letter-spacing: 0.12em; color: var(--au-text-3); }
-@media (max-width: 768px) {
+@media (--au-bp-md) {
   .ticket { grid-template-columns: 1fr; }
   .ticket-main { grid-template-columns: 1fr; }
   .ticket-stub { border-left: none; border-top: 1px dashed var(--au-border); flex-direction: row; }
+  .stub-btn {
+    flex-shrink: 0;
+    min-width: 5rem;
+  }
+  .stub-plan { letter-spacing: 0.24em; }
+  .stub-plan i { display: inline; }
 }
+
+/* 从 HomeView 迁移（#706 抽取遗漏，home-refactor 修复）：
+   存根 CTA 与骨架屏类在 template 中使用，定义残留在 HomeView scoped（scoped 不穿透 → 样式失效）。 */
+.stub-btn {
+  min-width: 6rem;
+}
+
+/* 紧凑琥珀按钮：盖过 mobile.css 对所有 a 的 44px 最小高度（票根里它不是唯一的点按目标——
+   整张票面三格都可点） */
+.ticket-stub .stub-btn {
+  min-height: 0;
+  height: 36px;
+  padding: 0 1.25rem;
+}
+
+/* 宽屏票根是竖条：ADMIT ONE 一行、套餐名另起一行；窄屏横排时才用「 · 」连成一行 */
+.stub-plan {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  letter-spacing: 0.12em;
+}
+.stub-plan i { display: none; font-style: normal; }
+
+/* 骨架 */
+.sk-stat-label { display: block; width: 4rem; height: 14px; }
+.sk-stat-value { display: block; width: 5.5rem; height: 36px; margin: 0.25rem 0; }
+.sk-stat-desc { display: block; width: 80%; height: 13px; }
+.sk-stub-btn { display: block; width: 6rem; height: 32px; }
 </style>

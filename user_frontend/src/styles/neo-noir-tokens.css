@@ -191,6 +191,8 @@
   --neo-icon-btn-radius: var(--au-r-sm);
 
   /* Safe Area */
+  /* 已冻结（home-refactor §5）：底部安全区唯一路线是 --au-dock-space（aurora.css），
+     --neo-safe-bottom 不再新增使用，存量页面（mobile.css 的三处）逐步迁移后删除。 */
   --neo-safe-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
 }
 

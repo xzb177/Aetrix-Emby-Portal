@@ -24,7 +24,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <section class="hero" :class="{ 'has-image': heroImage && !heroImageFailed, 'is-ready': hasLoaded }">
+  <section class="hero" :class="{ 'is-ready': hasLoaded }">
     <img
       v-if="heroImage && !heroImageFailed"
       class="hero-backdrop"
@@ -106,8 +106,103 @@ const emit = defineEmits<{
 .hero.is-ready .d6 { transition-delay: .4s; }
 
 /* 窄屏问候用短版（"晚上好"而不是"晚上好，今晚看什么？"），和票根卡 stat-short 同一套路 */
-@media (max-width: 640px) {
+@media (--au-bp-sm) {
   .whisper-long { display: none; }
   .whisper-short { display: inline; }
+}
+
+/* 从 HomeView 迁移（#706 抽取遗漏，home-refactor 修复）：
+   以下类在 HomeHero template 中使用，定义残留在 HomeView scoped（scoped 不穿透 → 样式失效）。 */
+.hero-eyebrow {
+  margin: 0 0 0.75rem;
+  max-width: 34rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态行里新接上的文字（heroStatus 一直算着但模板没用过，现在接上） */
+.hero-status-text {
+  color: var(--au-text-3);
+}
+
+/* 入场三步的小标签：和眉题同一套语言 */
+.steps-label {
+  margin: 1.5rem 0 0;
+}
+
+.step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.step-body strong {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.step-body em {
+  font-style: normal;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--au-text-3);
+}
+
+.hero-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  min-height: 44px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--au-text-2);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+.hero-link:hover { color: var(--au-primary); }
+
+/* 描边 CTA：平时只描边，hover 才填色。
+   全页的主按钮只有一个琥珀实心（未开通的"立即开通"），已开通页这个描边的是唯一 CTA */
+.hero-cta-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 1.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--au-always-light);
+  text-decoration: none;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid rgba(243, 237, 228, 0.45);
+  border-radius: var(--au-r-md);
+  transition:
+    background var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease);
+}
+
+.hero-cta-outline:hover {
+  background: var(--au-always-light);
+  border-color: var(--au-always-light);
+  color: var(--au-always-dark);
+}
+
+.hero-cta-outline:active {
+  transform: scale(0.97);
+}
+
+/* reduced-motion：幕布拉开动画直接关掉，不消失（从 HomeView 迁移） */
+@media (prefers-reduced-motion: reduce) {
+  .hero-enter {
+    opacity: 1;
+    transform: none;
+  }
+  .hero.is-ready .hero-enter { transition: none; }
 }
 </style>

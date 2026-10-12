@@ -4,6 +4,15 @@
    衬线标题 · 胶片颗粒。令牌名沿用 --au-*，组件零改名。
    ======================================== */
 
+/* ==================== 命名断点（全项目唯一真源，home-refactor §3） ====================
+   CSS 变量不能用于 @media，改用 PostCSS @custom-media（postcss-custom-media，
+   构建期展开，零运行时成本）。组件内写法：@media (--au-bp-md) { … }。
+   断点值只在这里出现一次，不许在组件里手写 px；900px 是 App 壳层专用，不在表内。 */
+@custom-media --au-bp-xs (max-width: 360px);
+@custom-media --au-bp-sm (max-width: 640px);
+@custom-media --au-bp-md (max-width: 768px);
+@custom-media --au-bp-lg (max-width: 1024px);
+
 :root {
   /* 布局 — 内容区 gutter（与 .container 内边距对齐，横滑 bleed 用） */
   /* 8pt 网格：20px → 24px */
@@ -188,7 +197,7 @@
   --z-tooltip: var(--neo-z-toast);
 }
 
-@media (max-width: 768px) {
+@media (--au-bp-md) {
   :root {
     /* 坞本体约 62px（图标 26 + 标签 + 上下内距）+ iOS 底部安全区 */
     --au-dock-space: calc(62px + env(safe-area-inset-bottom));
@@ -485,8 +494,75 @@ h3,
   max-width: 720px;
 }
 
-@media (max-width: 640px) {
+@media (--au-bp-sm) {
   .au-page { padding: 1.125rem 1rem calc(5rem + var(--au-dock-space)); }
+}
+
+/* ==================== 页面根容器（home-refactor §5） ====================
+   .page 只做一件事：统一消费 --au-dock-space，让内容永不压住底部导航坞。
+   页面级的底部留白基数仍由各自的 .main / .au-page 负责，这里只加坞的高度；
+   组件禁止各自加 padding-bottom 魔数。--neo-safe-bottom 是野路线，已冻结。 */
+.page {
+  padding-bottom: var(--au-dock-space);
+}
+
+/* ==================== 放映单 · 区块标题体系（home-refactor §2.4） ====================
+   从 HomeView.vue scoped 上浮的 L2 全局类：首页 5 处区块头（今日上映 / 继续观看 /
+   正在放映 / 等片中 / 放映指南）共用的排版模式。命名保留 .program-*（全站统一，
+   不改前缀），首页特有样式不许再上浮到这里。 */
+.program-head {
+  margin: 4rem 0 1.25rem;
+}
+
+.program-eyebrow {
+  margin: 0 0 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--au-text-3);
+  white-space: nowrap;
+}
+
+.program-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.program-title {
+  margin: 0;
+  font-family: var(--au-font-serif);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  color: var(--au-text);
+}
+
+.program-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+  text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
+}
+
+a.program-more:hover { color: var(--au-primary); }
+
+@media (--au-bp-sm) {
+  /* 放映单标题体系：区块间距 40px（Carbon 断点跳档），标题收到 20px */
+  .program-head {
+    margin: 2.5rem 0 1rem;
+  }
+
+  .program-title {
+    font-size: 1.25rem;
+  }
 }
 
 /* ==================== 页头（标题 + 说明 + 右侧操作） ====================
@@ -516,7 +592,7 @@ h3,
 
 .page-title svg { color: var(--au-primary); }
 
-@media (max-width: 640px) {
+@media (--au-bp-sm) {
   .page-title { font-size: 1.375rem; }
 }
 
