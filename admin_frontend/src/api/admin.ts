@@ -1471,6 +1471,60 @@ export interface EnrichProgress {
 export const fetchEnrichProgress = () =>
   get<{ success: boolean } & EnrichProgress>(`${E}/scrape/enrich-progress`)
 
+// ==================== 任务总览（路线 2-A）====================
+
+export type TaskCardStatus = 'running' | 'ok' | 'warning' | 'error' | 'idle' | 'disabled'
+
+export interface TaskCardMetric {
+  label: string
+  value: string
+}
+
+export interface TaskCardSwitch {
+  label: string
+  enabled: boolean
+  /** 开关切换时要一起带上的已有配置（各任务已有保存接口需要） */
+  keep?: Record<string, unknown>
+}
+
+export interface TaskCard {
+  key: string
+  title: string
+  status: TaskCardStatus
+  status_text: string
+  summary: string
+  metrics: TaskCardMetric[]
+  last_run: string | null
+  last_run_label: string
+  switch: TaskCardSwitch | null
+  link: string | null
+  /** 仅 scan 卡有：各库最近一轮扫描 */
+  libraries?: Array<{
+    id: number
+    name: string
+    scan_status: string | null
+    last_status: string | null
+    last_started_at: string | null
+    last_finished_at: string | null
+    last_error: string
+  }>
+}
+
+export interface TasksOverview {
+  success: boolean
+  fetched_at: string
+  tasks: TaskCard[]
+}
+
+/** 任务总览：一次拿回所有后台任务的状态、进度、开关 */
+export const fetchTasksOverview = () => get<TasksOverview>('/tasks/overview')
+
+/** 暂停后台探测（跨进程生效） */
+export const pauseProbe = () => post<{ success: boolean; paused: boolean }>(`${E}/scrape/probe/pause`)
+
+/** 恢复后台探测 */
+export const resumeProbe = () => post<{ success: boolean; paused: boolean }>(`${E}/scrape/probe/resume`)
+
 export interface AutoScanConfig {
   enabled: boolean
   /** 每天执行时间，"HH:MM"（服务器本地时间） */
@@ -1847,6 +1901,10 @@ export const saveStrmGenConfig = (data: {
   interval_minutes: number
   source_type: string
   local_root: string
+  /** 多盘并行列举并发数（不传则后端回落默认 3） */
+  drive_concurrency?: number
+  /** Drive API 全局速率上限 QPS（不传则后端回落默认 8.0） */
+  api_qps?: number
 }) => put<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`, data)
 
 /** 手动触发一次生成（full=false 增量，true 全量）；已有任务在跑时后端返回 success=false */
