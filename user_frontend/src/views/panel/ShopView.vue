@@ -140,7 +140,7 @@
       </section>
 
       <!-- 🤝 带上同伴 -->
-      <section class="shop-sec" style="padding-bottom:24px">
+      <section v-if="loading || inviteEnabled" class="shop-sec" style="padding-bottom:24px">
         <div class="v4-sec-title">🤝 带上同伴</div>
         <div class="v4-sec-sub">邀请一位探险家，双方都得能量</div>
         <div v-if="loading" class="v4-skeleton" style="height:120px"></div>

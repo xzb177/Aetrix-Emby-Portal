@@ -1,6 +1,6 @@
 <template>
   <div class="v4-eco">
-    <div class="plants">
+    <div ref="plantsEl" class="plants">
       <div v-for="(p, i) in plants" :key="p.library_id" class="plant">
         <div class="leaf" aria-hidden="true">{{ leafOf(i) }}</div>
         <div class="stem" :style="{ height: p.height + 'px' }"></div>
@@ -13,7 +13,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { EcoItem } from '@/composables/usePanelApi'
 
 const props = defineProps<{ eco: EcoItem[] }>()
@@ -41,6 +41,24 @@ const plants = computed(() => {
     height: Math.max(10, Math.round(((e.count || 0) / max) * MAX_H)),
   }))
 })
+
+const plantsEl = ref<HTMLElement | null>(null)
+/** 内容超出可横滑时才显示右侧渐隐，避免无滚动时误导 */
+function updateScrollHint() {
+  const el = plantsEl.value
+  if (!el) return
+  el.classList.toggle('can-scroll', el.scrollWidth > el.clientWidth + 1)
+}
+onMounted(() => {
+  updateScrollHint()
+  window.addEventListener('resize', updateScrollHint)
+})
+onUnmounted(() => {
+  window.removeEventListener('resize', updateScrollHint)
+})
+watch(plants, () => {
+  requestAnimationFrame(updateScrollHint)
+})
 </script>
 
 <style scoped>
@@ -62,7 +80,9 @@ const plants = computed(() => {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   gap: 4px;
-  /* 右侧渐隐边缘：提示还能横滑 */
+}
+/* 右侧渐隐边缘：仅可横滑时显示，提示还能滑 */
+.plants.can-scroll {
   mask-image: linear-gradient(90deg, #000 92%, transparent);
   -webkit-mask-image: linear-gradient(90deg, #000 92%, transparent);
 }

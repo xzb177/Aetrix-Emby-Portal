@@ -123,4 +123,8 @@ const watchedText = computed(() => {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
 }
+.v4-letter:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
 </style>

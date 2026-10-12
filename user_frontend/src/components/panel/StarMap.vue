@@ -182,4 +182,9 @@ onUnmounted(() => {
     transform: translate(-50%, 0);
   }
 }
+/* 星星是 JS 动态创建的 circle（无 scoped 属性），用 :deep 穿透 */
+.v4-sky :deep(svg circle:focus-visible) {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
 </style>
