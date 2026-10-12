@@ -427,6 +427,28 @@ async def rate_limit_middleware(request, call_next):
     return await call_next(request)
 
 
+# 可观测指标采集（v2.56.0）：记录 API 耗时/P99/错误率，进程内环形缓冲。
+# 开关默认关（OBSERVABILITY_ENABLED=1 才采集）；记录失败永不影响主链路。
+@app.middleware("http")
+async def observability_middleware(request: Request, call_next):
+    import time as _time
+    from backend.emby_server import observability as _obs
+    if not _obs.enabled():
+        return await call_next(request)
+    start = _time.monotonic()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        try:
+            elapsed_ms = (_time.monotonic() - start) * 1000
+            _obs.record_request(request.url.path, request.method, status, elapsed_ms)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # 安全响应头
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
@@ -565,6 +587,21 @@ def _collect_health() -> dict:
                 "metrics": {}}
 
 
+def _collect_observability() -> dict:
+    """跑一次可观测聚合；任何异常都退化，绝不让健康检查 500"""
+    from backend.emby_server import observability as _obs
+    try:
+        db = SessionLocal()
+        try:
+            return _obs.snapshot(db)
+        finally:
+            db.close()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("可观测聚合失败: %s", e)
+        return {"enabled": True, "level": "warn", "subsystems": {},
+                "error": str(e)[:120]}
+
+
 @app.get("/api/health")
 async def health_check():
     """健康检查端点
@@ -578,6 +615,15 @@ async def health_check():
     """
     from starlette.concurrency import run_in_threadpool
     health = await run_in_threadpool(_collect_health)
+    # 可观测底座（v2.56.0）：开关默认关；开时返回各子系统健康探针 + API 指标
+    try:
+        from backend.emby_server import observability as _obs
+        if _obs.enabled():
+            _obs_snapshot = await run_in_threadpool(_collect_observability)
+        else:
+            _obs_snapshot = {"enabled": False}
+    except Exception:  # noqa: BLE001
+        _obs_snapshot = {"enabled": False, "error": "snapshot_failed"}
     # 播放预热指标（并发/去重/超时计数 + 平均耗时；模块内部永不抛异常）
     try:
         from backend.emby_server import playback_prewarm as _pb_prewarm
@@ -590,6 +636,7 @@ async def health_check():
         "health_issues": health["issues"],
         "health_metrics": health["metrics"],
         "playback_prewarm": _prewarm_metrics,
+        "observability": _obs_snapshot,
         "timestamp": datetime.now().isoformat(),
         "database": DATABASE_TYPE,
         "online_users": manager.get_online_count(),
