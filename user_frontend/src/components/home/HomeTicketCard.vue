@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { RouterLink } from 'vue-router'
 import type { Component } from 'vue'
+import './home-ticket.css' // 纸色 token：独立样式表，供 CI 令牌契约检查识别
 
 export interface AssetCard {
   key: string
@@ -27,19 +28,21 @@ defineProps<{
 </script>
 
 <template>
+  <!-- v4 纸片风电影票：概念保留（打孔虚线 + 票根），视觉按纸色设计系统重做，
+       不再使用暗房深色 --au-* 变量 -->
   <section v-if="loading" class="ticket" aria-hidden="true">
     <div class="ticket-main">
       <div v-for="i in 3" :key="i" class="ticket-stat">
-        <span class="au-skeleton sk-stat-label"></span>
-        <span class="au-skeleton sk-stat-value"></span>
-        <span class="au-skeleton sk-stat-desc"></span>
+        <span class="tp-skeleton sk-stat-label"></span>
+        <span class="tp-skeleton sk-stat-value"></span>
+        <span class="tp-skeleton sk-stat-desc"></span>
       </div>
     </div>
     <div class="ticket-stub">
-      <span class="au-skeleton sk-stub-btn"></span>
+      <span class="tp-skeleton sk-stub-btn"></span>
     </div>
   </section>
-  <section v-else class="ticket au-anim-up" aria-label="我的资产">
+  <section v-else class="ticket" aria-label="我的资产">
     <div class="ticket-main">
       <component
         :is="c.to ? RouterLink : 'div'"
@@ -58,12 +61,15 @@ defineProps<{
           <span class="stat-value">{{ c.value }}</span>
           <span v-if="c.unit" class="stat-unit">{{ c.unit }}</span>
         </span>
+        <!-- 数字下面固定一行：订阅是细进度条，其余是一行 ≤6 字的状态。
+             三格这一行等高，大数字因此落在同一条基线上 -->
         <span class="stat-foot">
           <span
             v-if="c.progress !== null"
             class="stat-progress"
             :title="`套餐周期已过 ${c.progress}%`"
           >
+            <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
             <span class="stat-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></span>
           </span>
           <span v-else-if="c.short" class="stat-short">{{ c.short }}</span>
@@ -72,11 +78,12 @@ defineProps<{
         <span class="stat-note">{{ c.note }}</span>
       </component>
     </div>
+    <!-- 票根：打孔虚线 + 上下半圆缺口；ADMIT ONE 做成红色印章；按钮是墨色纸片钮 -->
     <div class="ticket-stub">
       <span class="stub-admit" aria-hidden="true">
         ADMIT ONE<span v-if="planName" class="stub-plan"><i> · </i>{{ planName }}</span>
       </span>
-      <RouterLink to="/store" class="au-btn au-btn-primary au-btn-sm stub-btn">
+      <RouterLink to="/store" class="stub-btn">
         {{ memberFooter }}
       </RouterLink>
     </div>
@@ -84,14 +91,17 @@ defineProps<{
 </template>
 
 <style scoped>
-/* 票根卡样式从 HomeView 迁移，保持视觉一致 */
+/* v4 纸片风电影票：token 定义在同目录 home-ticket.css（见顶部 import），
+   首页不在 .v4-scope 内，用不了 v4-paper.css 的变量 */
 .ticket {
   display: grid;
   grid-template-columns: 1fr auto;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-md);
+  background: var(--tp-paper);
+  border: 1.5px solid var(--tp-ink);
+  border-radius: 12px;
+  box-shadow: 3px 3px 0 rgba(42, 38, 32, 0.12);
   overflow: hidden;
+  color: var(--tp-ink);
 }
 .ticket-main {
   display: grid;
@@ -106,137 +116,204 @@ defineProps<{
   color: inherit;
   text-decoration: none;
 }
+.ticket-stat + .ticket-stat {
+  border-left: 1px dashed var(--tp-line);
+}
 .ticket-stat.is-static { cursor: default; }
+a.ticket-stat:active { background: var(--tp-paper2); }
 .stat-label {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--au-text-3);
+  font-weight: 700;
+  color: var(--tp-ink2);
+  letter-spacing: 1px;
 }
 .stat-icon { flex-shrink: 0; }
 .stat-badge {
   margin-left: auto;
-  padding: 1px 6px;
+  padding: 1px 8px;
   border-radius: 999px;
   font-size: 10px;
-  background: var(--au-surface-2);
+  font-weight: 700;
+  background: var(--tp-paper2);
+  color: var(--tp-ink2);
+  border: 1px solid var(--tp-line);
+  white-space: nowrap;
 }
-.stat-badge.hot { background: var(--au-warning-soft); color: var(--au-warning); }
+.stat-badge.hot {
+  background: rgba(217, 72, 43, 0.12);
+  color: var(--tp-red);
+  border-color: var(--tp-red);
+}
 .stat-value-row { display: flex; align-items: baseline; gap: 4px; }
-.stat-value { font-size: 28px; font-weight: 700; line-height: 1.1; }
-.stat-unit { font-size: 13px; color: var(--au-text-3); }
+.stat-value { font-size: 28px; font-weight: 800; line-height: 1.1; color: var(--tp-ink); }
+.stat-unit { font-size: 13px; color: var(--tp-ink2); }
 .stat-foot { height: 18px; display: flex; align-items: center; }
 .stat-progress {
   flex: 1;
-  height: 4px;
-  background: var(--au-surface-2);
-  border-radius: 2px;
+  height: 6px;
+  background: var(--tp-paper2);
+  border: 1px solid var(--tp-line);
+  border-radius: 3px;
   overflow: hidden;
 }
 .stat-progress-fill {
   display: block;
   height: 100%;
   width: 100%;
-  background: var(--au-primary);
+  background: var(--tp-gold);
   transform-origin: left;
 }
-.stat-short { font-size: 12px; color: var(--au-text-2); }
-/* P2-23：宽屏才有长说明——stat-short 与 stat-desc 讲的是同一件事，宽屏只留后者（旧第 1765-1766 行） */
+.stat-short { font-size: 12px; font-weight: 700; color: var(--tp-ink2); }
 .stat-foot .stat-short { display: none; }
-.stat-desc, .stat-note { font-size: 12px; color: var(--au-text-3); }
-/* P2-22：票根打孔缺口——position: relative + 上下各一个与页面同色的半圆缺口（旧第 1785-1813 行全文） */
+.stat-desc, .stat-note { font-size: 12px; color: var(--tp-ink2); line-height: 1.5; }
+
+/* 票根：左侧一条打孔虚线（全卡唯一一处虚线），上下各一个半圆缺口。
+   缺口圆用页面底色填充——首页浅色底为 #f5f1ea，深色模式跟随 --au-bg */
 .ticket-stub {
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 12px 16px;
-  border-left: 1px dashed var(--au-border-strong); /* P3-8：打孔虚线用 strong 边框色（全卡唯一一处虚线） */
-  min-width: 120px;
+  gap: 10px;
+  padding: 14px 18px;
+  border-left: 2px dashed var(--tp-line);
+  min-width: 128px;
+  background: var(--tp-paper2);
 }
-/* 票根：左侧一条打孔虚线（全卡唯一一处虚线），上下各挖一个与页面同色的半圆缺口 */
-/* R18 P2-22 恢复旧原文（9e5ea96 第 1785-1813 行），测试员逐字核对 */
 .ticket-stub::before,
 .ticket-stub::after {
   content: '';
   position: absolute;
-  left: -11.5px;
+  left: -12px;
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: var(--au-bg);
-  border: 1px solid var(--au-border);
+  background: var(--au-bg, #f5f1ea);
+  border: 1.5px solid var(--tp-ink);
 }
 .ticket-stub::before {
-  top: -12px;
+  top: -13px;
   clip-path: inset(50% 0 0 0);
 }
 .ticket-stub::after {
-  bottom: -12px;
+  bottom: -13px;
   clip-path: inset(0 0 50% 0);
 }
-/* P3-7：ADMIT ONE 票根字——600 字重 / 0.24em 宽松字距 / 暗色小字（旧第 1829-1842 行全文） */
+/* ADMIT ONE 做成红色印章：描边 + 微转 + 宽松字距 */
 .stub-admit {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.25rem;
+  gap: 4px;
   min-width: 0;
   max-width: 100%;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.24em;
-  color: var(--au-text-4);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  color: var(--tp-red);
+  border: 1.5px solid var(--tp-red);
+  border-radius: 4px;
+  padding: 5px 10px 5px 12px;
+  transform: rotate(-3deg);
   white-space: nowrap;
+  background: rgba(217, 72, 43, 0.05);
 }
 /* 宽屏票根是竖条：ADMIT ONE 一行、套餐名另起一行；窄屏横排时才用「 · 」连成一行 */
 .stub-plan {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
+  font-size: 10px;
+  color: var(--tp-ink2);
 }
 .stub-plan i { display: none; font-style: normal; }
-/* --au-bp-md 即 (max-width: 768px)，旧 768px 规则（R18 恢复）并入主分支重构后的新命名媒体查询，避免重复块 */
-@media (--au-bp-md) {
+/* 票根按钮：v4 墨色纸片钮 */
+.stub-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 6rem;
+  min-height: 36px;
+  padding: 0 1.25rem;
+  background: var(--tp-ink);
+  color: #F6F1E7;
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 10px;
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow: 2px 2px 0 rgba(42, 38, 32, 0.2);
+}
+.stub-btn:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 rgba(42, 38, 32, 0.2); }
+
+/* 骨架：纸色 shimmer */
+.tp-skeleton {
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--tp-paper2) 25%, #f7f2e6 50%, var(--tp-paper2) 75%);
+  background-size: 200% 100%;
+  animation: tp-shimmer 1.4s infinite linear;
+  min-height: 14px;
+}
+@keyframes tp-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.sk-stat-label { display: block; width: 4rem; height: 14px; }
+.sk-stat-value { display: block; width: 5.5rem; height: 36px; margin: 0.25rem 0; }
+.sk-stat-desc { display: block; width: 80%; height: 13px; }
+.sk-stub-btn { display: block; width: 6rem; height: 36px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tp-skeleton { animation-duration: 0.001s !important; }
+  .stub-admit { transform: none; }
+}
+
+/* 窄屏：整票变竖排，打孔线横过来，缺口挪到左右两侧 */
+@media (max-width: 768px) {
   .ticket { grid-template-columns: 1fr; }
   .ticket-main { grid-template-columns: 1fr; }
-  /* P3-8：窄屏打孔虚线同样用 strong 边框色，与宽屏 border-left 一致（旧原文如此） */
-  .ticket-stub { border-left: none; border-top: 1px dashed var(--au-border-strong); flex-direction: row; }
-  .stub-btn {
-    flex-shrink: 0;
-    min-width: 5rem;
+  .ticket-stat + .ticket-stat {
+    border-left: none;
+    border-top: 1px dashed var(--tp-line);
   }
-  /* P2-22：票根竖排——打孔线横过来，缺口挪到左右两侧（旧第 2275-2289 行） */
+  .ticket-stub {
+    border-left: none;
+    border-top: 2px dashed var(--tp-line);
+    flex-direction: row;
+    justify-content: space-between;
+    background: var(--tp-paper);
+    padding: 12px 16px;
+  }
   .ticket-stub::before,
   .ticket-stub::after {
-    top: -11.5px;
+    top: -12px;
     bottom: auto;
   }
   .ticket-stub::before {
-    left: -12px;
+    left: -13px;
     clip-path: inset(0 0 0 50%);
   }
   .ticket-stub::after {
     left: auto;
-    right: -12px;
+    right: -13px;
     clip-path: inset(0 50% 0 0);
   }
-  /* P3-7：窄屏票根横排——ADMIT ONE 与套餐名用「 · 」连成一行（旧第 2296-2303 行）；
-     与主分支重构侧规则逐字一致（R18/重构两边都加了），合一处保留 */
   .stub-admit {
     flex-direction: row;
     align-items: baseline;
     gap: 0;
     overflow: hidden;
+    transform: rotate(-2deg);
   }
-  .stub-plan { letter-spacing: 0.24em; }
   .stub-plan i { display: inline; }
+  .stub-btn { flex-shrink: 0; min-width: 5rem; }
 }
-/* P2-23：640px 整组——移动端票根只留 ≤6 字短状态，长说明/备注/徽标隐藏，图标数字收紧（旧第 2343-2362 行） */
+/* 640px：移动端只留 ≤6 字短状态，长说明/备注/徽标隐藏，图标数字收紧 */
 @media (max-width: 640px) {
   .ticket-stat {
     gap: 0.3125rem;
@@ -249,34 +326,4 @@ defineProps<{
   .stat-note { display: none; }
   .stat-foot .stat-short { display: block; }
 }
-
-
-/* 从 HomeView 迁移（#706 抽取遗漏，home-refactor 修复）：
-   存根 CTA 与骨架屏类在 template 中使用，定义残留在 HomeView scoped（scoped 不穿透 → 样式失效）。 */
-.stub-btn {
-  min-width: 6rem;
-}
-
-/* 紧凑琥珀按钮：盖过 mobile.css 对所有 a 的 44px 最小高度（票根里它不是唯一的点按目标——
-   整张票面三格都可点） */
-.ticket-stub .stub-btn {
-  min-height: 0;
-  height: 36px;
-  padding: 0 1.25rem;
-}
-
-/* 宽屏票根是竖条：ADMIT ONE 一行、套餐名另起一行；窄屏横排时才用「 · 」连成一行 */
-.stub-plan {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-  letter-spacing: 0.12em;
-}
-.stub-plan i { display: none; font-style: normal; }
-
-/* 骨架 */
-.sk-stat-label { display: block; width: 4rem; height: 14px; }
-.sk-stat-value { display: block; width: 5.5rem; height: 36px; margin: 0.25rem 0; }
-.sk-stat-desc { display: block; width: 80%; height: 13px; }
-.sk-stub-btn { display: block; width: 6rem; height: 32px; }
 </style>
