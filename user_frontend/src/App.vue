@@ -10,6 +10,7 @@ import { useUserStore } from '@/stores/user'
 import { refreshEmbyBaseUrl } from '@/api/emby'
 import { tgApi } from '@/api/tg'
 import { isPanelV4Enabled } from '@/composables/usePanelApi'
+import { V4_PATHS } from '@/router'
 
 const { messages, remove, warning } = useToast()
 const userStore = useUserStore()
@@ -29,16 +30,14 @@ const showChrome = computed(
 )
 
 /**
- * P1#1 双底部导航：v4 四面板（发现=/、收藏家=/collector、服务器=/server、补给站=/shop）
- * 模板末尾自带纸色 PanelTabbar（fixed bottom，z-index 50），会盖住 AppDock
- * （z-index 40）导致「首页/商店/我的」不可点 —— 这些路由下只渲染 PanelTabbar。
- * /game/*（如 /game/calendar 自带 PanelTabbar）导航行为保持不变，不在此列。
+ * P1#1 双底部导航：v4 15 个路由（V4_PATHS：4 panel + 11 game）模板末尾自带纸色
+ * PanelTabbar（fixed bottom，z-index 50），会盖住 AppDock（z-index 40）导致
+ * 「首页/商店/我的」不可点 —— 这些路由下只渲染 PanelTabbar，隐藏 AppDock。
+ * 尾斜杠规范化与 router/index.ts 的 afterEach 保持一致（/game/ 与 /game 同页）。
  */
 const panelV4 = isPanelV4Enabled()
 const hideDockForPanel = computed(
-  () =>
-    panelV4 &&
-    (route.path === '/' || ['/collector', '/server', '/shop'].includes(route.path)),
+  () => panelV4 && V4_PATHS.has(route.path.replace(/\/+$/, '') || '/'),
 )
 
 /**

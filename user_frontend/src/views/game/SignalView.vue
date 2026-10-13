@@ -678,11 +678,12 @@ textarea:focus { border-color: var(--gold); }
   outline-offset: 2px;
 }
 
-/* R27：关闭确认弹窗 */
+/* R27：关闭确认弹窗 —— 注意：Modal 内容 Teleport 到 body，脱离 .v4-scope，
+   纸色 token 在此解析不到，必须带字面量 fallback（值与 v4-paper.css .v4-scope 同步） */
 .confirm-text {
   font-size: 14px;
   line-height: 1.7;
-  color: var(--ink);
+  color: var(--ink, #2A2620);
   margin: 0;
 }
 .confirm-row {
@@ -698,14 +699,14 @@ textarea:focus { border-color: var(--gold); }
   cursor: pointer;
 }
 .cbtn.ghost {
-  background: var(--paper-card);
-  border: 1.5px solid var(--line);
-  color: var(--ink2);
+  background: var(--paper-card, #FFFDF6);
+  border: 1.5px solid var(--line, #D8CDB8);
+  color: var(--ink2, #6B6257);
 }
 .cbtn.go {
-  background: var(--red);
+  background: var(--red, #D9482B);
   border: none;
-  color: var(--paper-card);
+  color: var(--paper-card, #FFFDF6);
 }
 .cbtn:disabled { opacity: 0.5; cursor: wait; }
 
@@ -718,26 +719,29 @@ textarea:focus { border-color: var(--gold); }
 
 <style>
 /* R27：Modal.vue 用 Teleport 挂到 body，scoped 样式够不到 —— 纸色覆盖写全局，
-   全部挂在 .paper-confirm 命名空间下，不污染其他弹窗 */
+   全部挂在 .paper-confirm 命名空间下，不污染其他弹窗。
+   注意：Teleport 后脱离 .v4-scope，纸色 token 解析不到，全部带字面量 fallback
+   （值与 v4-paper.css .v4-scope 同步：--paper-card #FFFDF6 / --ink #2A2620 /
+   --ink2 #6B6257 / --line #D8CDB8） */
 .paper-confirm .modal-content-wrapper {
-  background: var(--paper-card);
-  border: 1.5px solid var(--ink);
+  background: var(--paper-card, #FFFDF6);
+  border: 1.5px solid var(--ink, #2A2620);
   border-radius: 14px;
-  color: var(--ink);
+  color: var(--ink, #2A2620);
 }
 .paper-confirm .modal-header {
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line, #D8CDB8);
   padding: 14px 18px;
 }
 .paper-confirm .modal-title {
-  color: var(--ink);
+  color: var(--ink, #2A2620);
   font-size: 16px;
   font-weight: 800;
 }
-.paper-confirm .modal-close { color: var(--ink2); }
+.paper-confirm .modal-close { color: var(--ink2, #6B6257); }
 .paper-confirm .modal-body { padding: 16px 18px; }
 .paper-confirm .modal-footer {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--line, #D8CDB8);
   padding: 12px 18px;
 }
 </style>

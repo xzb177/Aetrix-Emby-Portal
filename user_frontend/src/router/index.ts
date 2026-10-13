@@ -215,7 +215,9 @@ router.beforeEach(async (to) => {
 
 // v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
-const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit'])
+export const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit'])
+// R27 打磨：导出给 App.vue 用 —— 凡渲染 PanelTabbar 的 v4 路由（15 个，
+// 4 panel + 11 game），移动端都只留纸色 tabbar，隐藏 AppDock（防双底部导航）
 function restoreUserTheme() {
   // 从 useTheme.ts 同 key 读用户偏好（默认 dark），恢复 data-theme
   let pref = 'dark'
@@ -249,7 +251,7 @@ router.afterEach((to) => {
 })
 
 // 关键路由预取：用户登录后大概率会去补给站（v4 /shop）/ 个人中心，空闲时预加载对应 chunk
-//（R27：旧 StoreView.vue 是已删的旧商店页，预取改成 v4 补给站 ShopView）
+//（R27：原来预取的是旧商店页 StoreView（/store）；v4 补给站是 /shop，改预取 ShopView）
 if (typeof requestIdleCallback !== 'undefined') {
   requestIdleCallback(() => {
     import('@/views/panel/ShopView.vue')
