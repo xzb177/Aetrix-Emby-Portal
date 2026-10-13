@@ -222,9 +222,14 @@ def test_user_frontend_play_line_type_has_no_direct():
 
 
 def test_user_frontend_play_line_is_deprecated():
-    """用户端线路选择已删除：user.ts 只剩废弃兼容，ProfileView 无选择器"""
+    """用户端线路选择已删除：user.ts 只剩废弃兼容
+    （2026-10-13 旧页面清理：ProfileView.vue 已删，P0 功能迁入 /game/account 账号设置设施，
+    新设施里同样没有线路选择器）"""
+    from pathlib import Path
+
     source = _src("user_frontend/src/api/user.ts")
     assert "已废弃" in source or "deprecated" in source.lower()
-    vue = _src("user_frontend/src/views/ProfileView.vue")
+    profile = Path(__file__).resolve().parent.parent / "user_frontend/src/views/ProfileView.vue"
+    assert not profile.exists(), "ProfileView.vue 应已删除（改密码/订阅/设备迁入 AccountSettingsView）"
+    vue = _src("user_frontend/src/views/game/AccountSettingsView.vue")
     assert "pickLine(" not in vue, "线路选择器已删除"
-    assert "中转播放" in vue

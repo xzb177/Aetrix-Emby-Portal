@@ -6,8 +6,8 @@
  * 后续如需走后端配置（管理后台可配），把这里换成接口拉取即可，组件层不用改。
  */
 
-/** 营地地图分组 key（大本营 4 个分区共用；头像菜单排序也用 order） */
-export type GameFacilityGroup = 'daily' | 'social' | 'asset' | 'style'
+/** 营地地图分组 key（大本营各分区共用；头像菜单排序也用 order） */
+export type GameFacilityGroup = 'daily' | 'social' | 'asset' | 'style' | 'account'
 
 export interface GameFacility {
   /** 唯一 key */
@@ -22,7 +22,7 @@ export interface GameFacility {
   desc: string
   /** 印章文字（v4-stamp 风格） */
   stamp: string
-  /** 营地地图分组：daily 每日必做 / social 社交 / asset 资产 / style 形象 */
+  /** 营地地图分组：daily 每日必做 / social 社交 / asset 资产 / style 形象 / account 账号 */
   group: GameFacilityGroup
   /** 组内排序（按现有数组顺序从 0 排起，头像菜单与大本营都按它排） */
   order: number
@@ -32,7 +32,7 @@ export interface GameFacility {
   guideTip?: string
 }
 
-/** 营地地图 4 个分区的分区牌文案（顺序即地图展示顺序） */
+/** 营地地图各分区的分区牌文案（顺序即地图展示顺序） */
 export const gameFacilityGroups: {
   key: GameFacilityGroup
   icon: string
@@ -43,6 +43,7 @@ export const gameFacilityGroups: {
   { key: 'social', icon: '📡', title: '传讯高地', sub: '社交' },
   { key: 'asset', icon: '📒', title: '账房小屋', sub: '资产' },
   { key: 'style', icon: '🎪', title: '生活营区', sub: '形象' },
+  { key: 'account', icon: '⚙️', title: '账号小屋', sub: '账号' },
 ]
 
 /** 探险日志 Hub 页本身的文案（也可配） */
@@ -184,6 +185,18 @@ export const gameFacilities: GameFacility[] = [
     group: 'style',
     order: 10,
     enabled: true,
+  },
+  {
+    key: 'account',
+    name: '账号设置',
+    path: '/game/account',
+    icon: '⚙️',
+    desc: '改登录密码、看我的订阅、管我的设备 —— 账号自己的事都在这儿。',
+    stamp: '账号 · 小屋',
+    group: 'account',
+    order: 10,
+    enabled: true,
+    guideTip: '改密码、看订阅、清设备，账号的事来这儿办。',
   },
 ]
 

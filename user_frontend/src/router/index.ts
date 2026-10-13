@@ -114,6 +114,13 @@ const router = createRouter({
             component: () => import('@/views/game/OperatorView.vue'),
             meta: { title: '接线员', requiresAuth: true },
           },
+          // v4 游戏化：账号设置设施（旧 ProfileView 的 P0 功能承接：改密码 / 我的订阅 / 我的设备）
+          {
+            path: '/game/account',
+            name: 'game-account',
+            component: () => import('@/views/game/AccountSettingsView.vue'),
+            meta: { title: '账号设置', requiresAuth: true },
+          },
         ]
       : []),
     {
@@ -130,12 +137,7 @@ const router = createRouter({
       component: () => import('@/views/TgLoginView.vue'),
       meta: { title: 'Telegram 快捷登录' },
     },
-    {
-      path: '/profile',
-      name: 'profile',
-      component: () => import('@/views/ProfileView.vue'),
-      meta: { title: '个人中心', requiresAuth: true },
-    },
+
     // ==================== 经济系统（v2.3.0；v2.11.0 商店/钱包拆分；2026-10-13 商店统一：/store 301 到 /shop 补给站） ====================
     {
       path: '/store',
@@ -149,22 +151,12 @@ const router = createRouter({
       meta: { title: '绑定 Telegram', requiresAuth: true },
     },
     // 追新日历（2026-10-13 旧页面清理：已删，走 /game/calendar 探险预告）
-    // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删） ====================
-    // 老地址 /media、/library、/search、/favorites、/history 的书签与外部链接：
-    // 媒体浏览统一走第三方客户端（Infuse 等），这些入口不再有对应页面，
+    // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删；
+    // 2026-10-13 旧页面清理：/profile、/media/:id、/watch/:id 三路由已删） ====================
+    // 老地址 /profile、/media/:id、/watch/:id、/media、/library、/search、/favorites、/history
+    // 的书签与外部链接：媒体浏览统一走第三方客户端（Infuse 等），这些入口不再有对应页面，
     // 全部落到兜底 404 页（页面里会给「回首页」的出口）。
-    {
-      path: '/media/:id',
-      name: 'media-detail',
-      component: () => import('@/views/media/ItemDetailView.vue'),
-      meta: { title: '详情', requiresAuth: true },
-    },
-    {
-      path: '/watch/:id',
-      name: 'watch',
-      component: () => import('@/views/media/WatchView.vue'),
-      meta: { title: '播放', requiresAuth: true },
-    },
+    // 注意：/profile 的承接入口是 /game/account（账号设置设施）。
     {
       path: '/:pathMatch(.*)*',
       name: 'not-found',
@@ -216,7 +208,7 @@ router.beforeEach(async (to) => {
 
 // v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
-export const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit'])
+export const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit', '/game/account'])
 // R27 打磨：导出给 App.vue 用 —— 凡渲染 PanelTabbar 的 v4 路由（15 个，
 // 4 panel + 11 game），移动端都只留纸色 tabbar，隐藏 AppDock（防双底部导航）
 function restoreUserTheme() {
@@ -251,12 +243,12 @@ router.afterEach((to) => {
   }
 })
 
-// 关键路由预取：用户登录后大概率会去补给站（v4 /shop）/ 个人中心，空闲时预加载对应 chunk
-//（R27：原来预取的是旧商店页 StoreView（/store）；v4 补给站是 /shop，改预取 ShopView）
+// 关键路由预取：用户登录后大概率会去补给站（v4 /shop）/ 账号设置（/game/account），空闲时预加载对应 chunk
+//（2026-10-13 旧页面清理：ProfileView 已删，改预取 AccountSettingsView）
 if (typeof requestIdleCallback !== 'undefined') {
   requestIdleCallback(() => {
     import('@/views/panel/ShopView.vue')
-    import('@/views/ProfileView.vue')
+    import('@/views/game/AccountSettingsView.vue')
   }, { timeout: 3000 })
 }
 
