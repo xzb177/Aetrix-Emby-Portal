@@ -161,3 +161,43 @@ def test_fs_prefixes_roundtrip(monkeypatch):
     )
     fs = dc._library_fs_prefixes(db)
     assert fs[(44, "/MoviePilot/剧集/国产剧")] == "/strm/剧集/国产剧"
+
+
+def test_change_maps_to_library_scan_prefix(monkeypatch):
+    """端到端：Drive 侧 /MoviePilot/剧集/国产剧/XX/E01.mkv 的变化 →
+    映射到 lib 44，fs 前缀 /strm/剧集/国产剧/XX（enqueue_targeted 可直接用）。"""
+    db = _install_fakes(
+        monkeypatch,
+        libs=[_FakeLib(44, "/strm/剧集/国产剧")],
+        src_dirs=["MoviePilot/", "nastool/"],
+        drives={"0AERUVu4kfWEfUk9PVA": ["MP:"]},
+    )
+    monkeypatch.setattr(dc, "_get_token", lambda: "x")
+    monkeypatch.setattr(
+        dc, "drive_path_of",
+        lambda fid, name, parents, drive_id, token:
+            "/MoviePilot/剧集/国产剧/XX/E01.mkv")
+    changes = [{"fileId": "f1",
+                "file": {"name": "E01.mkv", "mimeType": "video/x-matroska",
+                         "parents": ["p1"]}}]
+    got = dc.map_changes_to_libraries(db, "0AERUVu4kfWEfUk9PVA", changes)
+    assert got == {44: {"/strm/剧集/国产剧/XX"}}
+
+
+def test_change_outside_src_dirs_ignored(monkeypatch):
+    """不在任一源目录下的变化不触发（避免误扫）。"""
+    db = _install_fakes(
+        monkeypatch,
+        libs=[_FakeLib(44, "/strm/剧集/国产剧")],
+        src_dirs=["MoviePilot/"],
+        drives={"0AERUVu4kfWEfUk9PVA": ["MP:"]},
+    )
+    monkeypatch.setattr(dc, "_get_token", lambda: "x")
+    monkeypatch.setattr(
+        dc, "drive_path_of",
+        lambda fid, name, parents, drive_id, token:
+            "/MUSIC(原始)/演唱会/xxx.mp4")
+    changes = [{"fileId": "f1",
+                "file": {"name": "xxx.mp4", "mimeType": "video/mp4",
+                         "parents": ["p1"]}}]
+    assert dc.map_changes_to_libraries(db, "0AERUVu4kfWEfUk9PVA", changes) == {}
