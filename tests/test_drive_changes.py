@@ -884,3 +884,34 @@ def test_api_get_403_forbidden_fails_fast():
         except Exception:
             pass
         sleep.assert_not_called()
+
+
+def _mock_resp_403_empty_body():
+    """403 + 空 body 的 mock（无法解析原因，应有限重试）。"""
+    resp = mock.Mock()
+    resp.status_code = 403
+    resp.request = mock.Mock()
+    resp.text = ""
+    resp.json.side_effect = ValueError("No JSON")
+    resp.raise_for_status.side_effect = Exception("HTTP 403")
+    return resp
+
+
+def test_extract_403_reason():
+    """_extract_403_reason：提取 reason，解析失败返回 None。"""
+    assert drive_changes._extract_403_reason(_mock_resp_403_forbidden()) == "forbidden"
+    assert drive_changes._extract_403_reason(_mock_resp_403_empty_body()) is None
+
+
+def test_api_get_403_unknown_reason_retries_limited():
+    """403 无法解析原因时：有限重试 2 次后放弃（不无限重试）。"""
+    with mock.patch("httpx.get", return_value=_mock_resp_403_empty_body()), \
+         mock.patch.object(drive_changes.time, "sleep") as sleep, \
+         mock.patch.object(drive_changes, "_api_limiter"):
+        try:
+            drive_changes._api_get("https://example.com", "tok", {})
+            assert False, "应抛异常"
+        except Exception:
+            pass
+        # 首次 + 2 次重试 = 3 次调用，sleep 被调用 2 次
+        assert sleep.call_count == 2
