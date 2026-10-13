@@ -172,3 +172,10 @@ class TestChecker:
     def test_event_registered(self):
         assert sa.EVT_STRM_SCAN_TRIGGER_FAILED in sa.ALL_EVENTS
         assert sa._CHECKERS[sa.EVT_STRM_SCAN_TRIGGER_FAILED] is sa._check_strm_scan_trigger_failed
+
+    def test_default_rule_seeded(self):
+        # 新事件必须有默认规则，否则 check_all 里 rule=None 会被永远跳过
+        assert sa.EVT_STRM_SCAN_TRIGGER_FAILED in sa.DEFAULT_RULES
+        spec = sa.DEFAULT_RULES[sa.EVT_STRM_SCAN_TRIGGER_FAILED]
+        assert spec["severity"] == "warning"
+        assert "in_app" in spec["channels"]

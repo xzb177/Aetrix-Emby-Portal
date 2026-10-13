@@ -179,6 +179,13 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
         "channels": ["in_app", "telegram"],
         "cooldown_sec": 21600,
     },
+    EVT_STRM_SCAN_TRIGGER_FAILED: {
+        "name": "strm 扫库触发失败",
+        "threshold": lambda: 0.0,  # 条件型：有失败记录即触发
+        "severity": "warning",
+        "channels": ["in_app", "telegram"],
+        "cooldown_sec": 21600,
+    },
 }
 
 # enrich_stalled 的积压下限：积压太少时不算"停滞"（环境变量可配）
@@ -727,7 +734,8 @@ def check_all(db=None) -> dict:
                     if rule is None:
                         result["skipped"].append(event_type)
                         continue
-                    if event_type in (EVT_ENRICH_STALLED, EVT_STRM_SOURCE_FAILED):
+                    if event_type in (EVT_ENRICH_STALLED, EVT_STRM_SOURCE_FAILED,
+                                        EVT_STRM_SCAN_TRIGGER_FAILED):
                         hit = checker(subs, rule, db)
                     else:
                         hit = checker(subs, rule)
