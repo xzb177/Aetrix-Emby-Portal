@@ -154,8 +154,9 @@
 .v4-tabbar {
   position: fixed;
   bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
   width: 100%;
   max-width: 375px;
   background: #FFFDF6;
@@ -189,3 +190,15 @@
     transition-duration: 0.001s !important;
   }
 }
+
+/* 状态型 transform（拨杆位置/进度条）不是装饰动画：reduced-motion 只杀动画时长，不杀状态 */
+@media (prefers-reduced-motion: reduce) {
+  .v4-scope .lever.on::after { transform: translateX(24px) !important; }
+  .v4-scope .meter .fill { transform: scaleX(var(--meter-p, 0)) !important; }
+  .v4-scope .evo-bar i { transform: scaleX(var(--evo-p, 0)) !important; }
+}
+
+/* 进度型自定义属性默认值：模板用内联 :style 覆盖；
+   令牌契约检查要求定义必须出现在被引入的样式表里（SFC <style> 块不算） */
+.evo-bar i { --evo-p: 0; }
+.meter .fill { --meter-p: 0; }

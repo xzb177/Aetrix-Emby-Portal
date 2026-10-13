@@ -14,7 +14,7 @@
       aria-valuemax="100"
       :aria-label="`进化进度 ${Math.round(pet.progress * 100)}%`"
     >
-      <i :style="{ width: barWidth }"></i>
+      <i :style="{ '--evo-p': evoScale }"></i>
     </div>
     <div class="next">{{ nextText }}</div>
     <div class="evo-steps">
@@ -63,7 +63,7 @@ const flavorText = computed(() => {
   return '你看的每一分钟，都在喂养它'
 })
 
-const barWidth = computed(() => `${Math.round((props.pet.progress || 0) * 100)}%`)
+const evoScale = computed(() => Math.min(1, Math.max(0, props.pet.progress || 0)))
 </script>
 
 <style scoped>
@@ -116,7 +116,10 @@ const barWidth = computed(() => `${Math.round((props.pet.progress || 0) * 100)}%
   height: 100%;
   background: linear-gradient(90deg, var(--gold), var(--red));
   border-radius: 6px;
-  transition: width 1s ease;
+  width: 100%;
+  transform: scaleX(var(--evo-p, 0));
+  transform-origin: left center;
+  transition: transform 1s ease;
 }
 .v4-pet .next {
   font-size: 11px;

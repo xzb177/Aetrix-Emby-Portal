@@ -156,8 +156,10 @@ onUnmounted(() => {
 }
 .v4-star-tip {
   position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
   bottom: 12px;
   max-width: 88%;
   white-space: normal;
@@ -175,11 +177,11 @@ onUnmounted(() => {
 @keyframes v4-fadein {
   from {
     opacity: 0;
-    transform: translate(-50%, 6px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, 0);
+    transform: translateY(0);
   }
 }
 /* 星星是 JS 动态创建的 circle（无 scoped 属性），用 :deep 穿透 */

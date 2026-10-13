@@ -114,14 +114,15 @@ async function flip() {
   height: 22px;
   border-radius: 50%;
   background: var(--ink);
-  transition: left 0.25s, background 0.25s;
+  transform: translateX(0);
+  transition: transform 0.25s, background 0.25s;
 }
 .lever.on::before {
   background: #cde6c5;
 }
 .lever.on::after {
-  left: 27px;
   background: var(--green);
+  transform: translateX(24px);
 }
 .lever:disabled {
   cursor: not-allowed;
