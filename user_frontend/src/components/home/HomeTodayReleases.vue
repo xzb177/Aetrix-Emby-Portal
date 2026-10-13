@@ -30,8 +30,8 @@ defineEmits<{
       <p class="program-eyebrow">本周排片</p>
       <div class="program-row">
         <h2 class="program-title">{{ hasToday ? '今日上映' : '本周上映' }}</h2>
-        <RouterLink to="/calendar" class="program-more">
-          追新日历
+        <RouterLink to="/game/calendar" class="program-more">
+          探险预告
           <ChevronRight :size="14" />
         </RouterLink>
       </div>

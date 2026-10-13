@@ -38,7 +38,7 @@
 
 import type { Component } from 'vue'
 import {
-  Clapperboard, ShoppingBag, User, Wallet,
+  Clapperboard, ShoppingBag, User,
 } from 'lucide-vue-next'
 
 export interface NavItem {
@@ -50,13 +50,12 @@ export interface NavItem {
 }
 
 /** 主导航：全断点共用同一份（宽屏横排、窄屏底部坞）。
- *  四项定稿（v2.11.0）：商店（/store，只管花钱/花积分）与钱包（/wallet，
- *  只管看资产：余额/订单/流水/会员等级）拆分；此前商店 = /wallet 一体。
+ *  三项定稿（2026-10-13 旧页面清理）：钱包（/wallet）已删，资产查看走
+ *  /game/ledger 能量账本；商店（/store，只管花钱/花积分）与我的（/profile）保留。
  *  媒体库与搜索仍可从头像菜单 / 首页帮助区 / 顶栏资产 pill 上下文进入，
  *  不在主导航占位 */
 export const primaryNav: NavItem[] = [
   { name: '首页', path: '/', icon: Clapperboard },
   { name: '商店', path: '/store', icon: ShoppingBag },
-  { name: '钱包', path: '/wallet', icon: Wallet },
   { name: '我的', path: '/profile', icon: User },
 ]

@@ -236,7 +236,7 @@ const assetCards = computed(() => {
   return [
     {
       key: 'points',
-      to: '/wallet',
+      to: '/game/ledger',
       icon: Zap,
       // 功能色定稿（v2.42.4）：积分=金（钱的语义）、订阅=青（品牌主色）、
       // 观影数据=紫；顶栏 pill 已删（v2.42.8），资产卡是唯一的常驻资产入口
