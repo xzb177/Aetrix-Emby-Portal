@@ -154,6 +154,10 @@ _HISTORY: list[ScanTask] = []
 _MOUNT_OWNER: dict[int, int] = {}        # 挂载 id → 正持有它的库 id
 _SCHEDULER: Optional[threading.Thread] = None
 _FLUSHER: Optional[threading.Thread] = None
+# R33 P3-7：补扫入队连续失败计数（库 id → 次数）。连续 5 次失败则毒快照进死信
+# （ACK raws，不再无限重投），成功一次即清零。
+_RESCAN_FAIL_COUNTS: dict[int, int] = {}
+_RESCAN_FAIL_DEAD_LETTER_AFTER = 5
 
 
 # ==================== 入队 / 取消 ====================
@@ -1008,20 +1012,39 @@ def _run_task(task: ScanTask) -> None:
         pending_trigger = task.pending_rescan_trigger
         _rescan_ok = True
         if pending_snapshot is not None:
+            _lib_id = int(task.library_id)
             try:
                 import types
                 _enqueue_with_snapshot(
-                    types.SimpleNamespace(id=int(task.library_id)),
+                    types.SimpleNamespace(id=_lib_id),
                     pending_snapshot, trigger=pending_trigger)
                 logger.info("扫描补扫已入队：库 id=%s（触发=%s，运行中被合并的更宽范围）",
                             task.library_id, pending_trigger)
-                # P1-2(r32)：成功后才清快照。失败时快照保留且不 ACK——合并进来的
-                # Redis raw 留给重投（at-least-once），扫描范围不静默丢失。
+                # P1-2(r32)：成功后才清快照。
                 task.pending_rescan_snapshot = None
+                # R33 P3-7：成功清零连续失败计数。
+                _RESCAN_FAIL_COUNTS.pop(_lib_id, None)
             except Exception:
-                _rescan_ok = False
-                logger.exception("扫描补扫入队失败（库 id=%s），快照保留、Redis raw 不确认",
-                                 task.library_id)
+                # R33 P3-7：补扫入队持久失败 → 死信。5 次以内沿用 r32 语义
+                # （快照保留、raw 不确认，等 Redis 重投）；连续 5 次失败则
+                # ACK raws（毒快照进死信，不再每次 worker 重启全量重扫），
+                # error 日志留痕，人工可在队列面板重触发，计数清零。
+                _fails = _RESCAN_FAIL_COUNTS.get(_lib_id, 0) + 1
+                if _fails >= _RESCAN_FAIL_DEAD_LETTER_AFTER:
+                    _RESCAN_FAIL_COUNTS.pop(_lib_id, None)
+                    task.pending_rescan_snapshot = None
+                    logger.error(
+                        "扫描补扫入队连续 %d 次失败（库 id=%s）：毒快照进死信，"
+                        "Redis raw 已确认，人工可在队列面板重触发",
+                        _fails, task.library_id)
+                else:
+                    _RESCAN_FAIL_COUNTS[_lib_id] = _fails
+                    _rescan_ok = False
+                    # P1-2(r32)：失败时 task 随收尾丢弃，内存快照无用；真正的恢复
+                    # 靠 Redis raw 重投（重投后按 raw 重建快照重新入队），扫描范围
+                    # 不静默丢失。
+                    logger.exception("扫描补扫入队失败（库 id=%s），Redis raw 不确认等待重投",
+                                     task.library_id)
         # P0-0c：Redis 桥接的任务在这里才 ACK——扫描真正完成了。
         # 注意在 _COND 锁之外做（Redis I/O 不可预测），_ack_redis_raws 内部清掉已携带的 raw。
         # P1-2(r32)：补扫入队失败时不 ACK——被合并请求的 raw 由 Redis 重投恢复
@@ -1052,5 +1075,6 @@ def reset_for_tests() -> None:
         _RUNNING.clear()
         _HISTORY.clear()
         _MOUNT_OWNER.clear()
+        _RESCAN_FAIL_COUNTS.clear()
         _SCHEDULER = None
         progress.reset()

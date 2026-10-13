@@ -116,16 +116,9 @@ def _last_stats_dict(db: Session) -> dict:
 
 
 def _resolve_shortcuts_enabled(db: Session) -> bool:
-    """是否解析 Drive 快捷方式（跟随目标内容）。默认 false=现状行为（不解析）。
-
-    读取走 _gen.resolve_shortcuts（随 #830 落地）；getattr 兼容两个 PR 的合并顺序，
-    先合谁都可：本 PR 先上线时直接读配置键，保证开关在后台立即可用。
-    """
-    fn = getattr(_gen, "resolve_shortcuts", None)
-    if callable(fn):
-        return bool(fn(db))
-    key = getattr(_gen, "CONFIG_RESOLVE_SHORTCUTS", "strm_gen_resolve_shortcuts")
-    return store.get_value(db, key, "false").strip().lower() in ("1", "true", "yes", "on")
+    """是否解析 Drive 快捷方式（跟随目标内容）。默认 false=现状行为（不解析）。"""
+    # R33 P3-2：#830 已合，_gen.resolve_shortcuts 真实存在，删 getattr 降级死代码。
+    return bool(_gen.resolve_shortcuts(db))
 
 
 def _dedupe_same_size_enabled(db: Session) -> bool:

@@ -335,7 +335,12 @@ def _oauth_conf_for_remote(remote: str) -> tuple[str, str, dict] | None:
         token_raw = cp.get(remote, "token", fallback="").strip()
         if not (client_id and client_secret and token_raw):
             return None
-        return client_id, client_secret, json.loads(token_raw)
+        token_json = json.loads(token_raw)
+        # R33 P2-4：token=null 这类合法 JSON 非对象 → None（后续走 DriveAuthError，
+        # 不让 AttributeError 从 token_json.get 逃逸）。
+        if not isinstance(token_json, dict):
+            return None
+        return client_id, client_secret, token_json
     except Exception:
         return None
 
@@ -373,6 +378,13 @@ def _oauth_token_for_remote(remote: str, force_refresh: bool = False) -> str:
     if not refresh_token:
         raise DriveAuthError(
             f"个人盘 remote '{remote}' 的 OAuth token 缺 refresh_token，无法刷新")
+    # R33 P3-6：double-checked——真正刷新前在锁内再查一次缓存，别的线程刚刷好
+    # 就直接复用，避免缓存 miss 时多线程各刷一次打爆 OAuth 刷新配额。
+    if not force_refresh:
+        with _oauth_lock:
+            cached = _oauth_token_cache.get(remote)
+        if cached and cached[1] > time.time() + OAUTH_TOKEN_REFRESH_MARGIN_SEC:
+            return cached[0]
     try:
         resp = httpx.post(TOKEN_URL, data={
             "grant_type": "refresh_token",

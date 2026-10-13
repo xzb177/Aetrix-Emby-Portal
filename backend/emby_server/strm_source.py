@@ -176,6 +176,15 @@ class DriveChangesLister(SourceLister):
             return False
 
     def iter_videos(self, incremental: bool = True) -> Iterator[VideoItem | Tombstone]:
+        # R33 P1-2：增量路径不感知 resolve_shortcuts 开关——开关开后全量产出
+        # 别名 .strm，但增量轮次对快捷方式零处理，会静默漏掉目标下新增内容。
+        # 开关开时直接降级走全量分支（与 not incremental 同路），保证别名不丢。
+        # 开关默认关，无回归。
+        if self._resolve_shortcuts_cfg():
+            if incremental:
+                logger.info("strm_source: drive=%s 快捷方式解析开，增量降级为全量列举",
+                            self.drive_id)
+            incremental = False
         if not incremental:
             # 全量：回退到现有的 files.list 实现（多目录：一次扁平拉取 + 本地多前缀过滤）
             self.used_incremental_path = False

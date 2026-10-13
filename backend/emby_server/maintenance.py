@@ -506,8 +506,9 @@ def optimize_query_plans(db: Session) -> bool:
 # strm_sign.refresh_threshold_seconds）：保证任何文件过期前至少被扫到一次，
 # 不再出现"TTL 短于 50 分钟、两次刷新之间全库过期"。
 STRM_REFRESH_INTERVAL_SECONDS = max(600, int(os.getenv("STRM_REFRESH_INTERVAL_SECONDS", "3000") or 3000))
-# 上次 walk 时间戳：优先存 DB（system_configs），跨容器重启持久，且 api/worker
-# 双进程互相节流（第二个看到新鲜时间戳就跳过，避免重复全量 walk）。
+# 上次 walk 时间戳：优先存 DB（system_configs），跨容器重启持久；串行执行时
+# 双进程靠它互相节流（第二个看到新鲜时间戳就跳过）。注意时间戳是 walk 完成后
+# 才写，并发启动时仍可能重复 walk（walk 本身幂等，只是多做一次）。
 # DB 不可用时回落 /tmp 文件（旧行为），janitor 绝不能因为记不住时间戳而罢工。
 STRM_REFRESH_LAST_FILE = "/tmp/strm_sig_refresh.last"
 STRM_REFRESH_LAST_KEY = "strm_sig_refresh_last_ts"
@@ -520,7 +521,10 @@ def _read_last_refresh_ts(db=None) -> float:
             from backend.integrations import store
 
             raw = store.read_value(db, STRM_REFRESH_LAST_KEY, "")
-            return float(raw) if raw else 0.0
+            # R33 P2-6：DB 读通但键空 → 继续走 /tmp 分支（与写侧"DB 失败写 /tmp"
+            # 对称），不再直接返 0.0。
+            if raw:
+                return float(raw)
         except Exception:  # noqa: BLE001 — 读不到就当没跑过，不阻断刷新
             pass
     try:
@@ -627,6 +631,10 @@ def strm_sig_refresh_tick(db=None) -> dict:
     finally:
         if _ts_db is not None:
             _ts_db.close()
+    # R33 P2-7：last 来自 DB（跨容器信任），时钟偏斜/脏数据导致 now-last 为负会
+    # 静默持续跳过——越界（负值或超出现在 5 分钟以上）直接视为从未运行。
+    if not (0 <= last <= now + 300):
+        last = 0.0
     if interval > 0 and now - last < interval - 30:
         return {"skipped": True, "reason": "interval"}
 
