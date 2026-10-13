@@ -8,6 +8,11 @@
         <p>{{ hub.subtitle }}</p>
       </header>
 
+      <!-- 体力槽 -->
+      <section class="v4-sec">
+        <StaminaBar />
+      </section>
+
       <!-- 设施导航：全部来自 @/config/game，不 hardcode -->
       <section class="v4-sec">
         <div class="v4-sec-title">🏕️ 营地设施</div>
@@ -37,6 +42,7 @@
 <script setup lang="ts">
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { gameHubConfig as hub, gameFacilities as facilities } from '@/config/game'
+import StaminaBar from '@/components/game/StaminaBar.vue'
 </script>
 
 <style scoped>
