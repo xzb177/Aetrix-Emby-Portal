@@ -1223,6 +1223,17 @@ export interface EnrichTuningConfig {
   defaults: Record<string, string>
   descriptions: Record<string, string>
   env_names: Record<string, string | null>
+  /** 单集认领配额制状态（链路规划 Step 3）：只读，当天已用配额等 */
+  episode_quota?: {
+    mode: boolean
+    day_quota: number
+    used_today: number
+    banned: boolean
+    effective_quota: number
+    night_enabled: boolean
+    in_window: boolean
+    episode_allowed_now: boolean
+  } | null
   db_pool: {
     pool_size: number
     max_overflow: number

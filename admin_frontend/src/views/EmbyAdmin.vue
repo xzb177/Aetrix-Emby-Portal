@@ -1155,7 +1155,7 @@ async function saveEnrichEpisodeNightAction() {
 
 // ==================== 刮削性能参数（链路规划 Step 1） ====================
 
-/** 原 env-only 旋钮搬进后台：线程数 / 批次 / 退避 / 租约 + Step 3/4 占坑位 + DB 池 */
+/** 原 env-only 旋钮搬进后台：线程数 / 批次 / 退避 / 租约 + DB 池 + Step 3 配额制（Step 4 仍占坑） */
 const enrichTuning = ref<EnrichTuningConfig | null>(null)
 const enrichTuningSaving = ref(false)
 const enrichTuningError = ref(false)
@@ -1163,6 +1163,21 @@ const enrichTuningError = ref(false)
 const tuningDraft = ref<Record<string, string>>({})
 const tmdbBatchDraft = ref(true)
 const dbPoolDraft = ref('10')
+// 单集认领配额制（链路规划 Step 3）：开关 + 日配额（专用区块，不进上面的通用表）
+const quotaModeDraft = ref(false)
+const dayQuotaDraft = ref('2000')
+/** 配额制两个 key 在通用表里不重复展示 */
+const TUNING_QUOTA_KEYS = ['enrich_episode_quota_mode', 'enrich_episode_day_quota']
+const tuningOrderShown = computed(() =>
+  (enrichTuning.value?.order || []).filter((k) => !TUNING_QUOTA_KEYS.includes(k)))
+/** 配额状态一行提示 */
+const quotaHintText = computed(() => {
+  const q = enrichTuning.value?.episode_quota
+  if (!q) return ''
+  if (!q.mode) return '禁令制：夜间窗口外跳过单集（与 Step 3 前一致）'
+  if (!q.night_enabled || q.in_window) return '夜间窗口内：单集不限量认领'
+  return q.episode_allowed_now ? '白天配额内：可认领单集' : '配额已用尽：今天只认领顶层条目'
+})
 
 const TUNING_LABELS: Record<string, string> = {
   enrich_workers: '线程数',
@@ -1174,9 +1189,8 @@ const TUNING_LABELS: Record<string, string> = {
   enrich_episode_day_quota: '白天单集日配额',
   enrich_none_reschedule_days: 'none 回捞周期（天）',
 }
-// 占坑位：Step 3/4 接入前，改了不影响实际行为
+// 占坑位：Step 4 接入前，改了不影响实际行为（Step 3 的日配额现已生效，不再是占坑）
 const TUNING_PLACEHOLDER: Record<string, string> = {
-  enrich_episode_day_quota: 'Step 3 接入前改这里不影响实际行为',
   enrich_none_reschedule_days: 'Step 4 接入前改这里不影响实际行为',
 }
 
@@ -1189,6 +1203,8 @@ async function loadEnrichTuningConfig() {
     for (const k of t.order || []) d[k] = t.raw?.[k] ?? t.defaults?.[k] ?? ''
     tuningDraft.value = d
     tmdbBatchDraft.value = t.values?.enrich_tmdb_batch !== false
+    quotaModeDraft.value = t.values?.enrich_episode_quota_mode === true
+    dayQuotaDraft.value = t.raw?.enrich_episode_day_quota ?? t.defaults?.enrich_episode_day_quota ?? '2000'
     dbPoolDraft.value = t.db_pool?.saved_pool_size || String(t.db_pool?.pool_size ?? 10)
   } catch {
     enrichTuning.value = null // 出错不挡页面其它内容
@@ -1202,12 +1218,16 @@ async function saveEnrichTuningAction() {
   try {
     const values: Record<string, string | boolean> = { ...tuningDraft.value }
     values.enrich_tmdb_batch = tmdbBatchDraft.value
+    values.enrich_episode_quota_mode = quotaModeDraft.value
+    values.enrich_episode_day_quota = dayQuotaDraft.value
     const res = await saveEnrichTuning(values, dbPoolDraft.value)
     enrichTuning.value = res
     const d: Record<string, string> = {}
     for (const k of res.order || []) d[k] = res.raw?.[k] ?? res.defaults?.[k] ?? ''
     tuningDraft.value = d
     tmdbBatchDraft.value = res.values?.enrich_tmdb_batch !== false
+    quotaModeDraft.value = res.values?.enrich_episode_quota_mode === true
+    dayQuotaDraft.value = res.raw?.enrich_episode_day_quota ?? res.defaults?.enrich_episode_day_quota ?? '2000'
     dbPoolDraft.value = res.db_pool?.saved_pool_size || String(res.db_pool?.pool_size ?? 10)
     ElMessage.success('刮削性能参数已保存（线程数 / DB 池需重启生效，其余 60 秒内热生效）')
   } catch (e: any) {
@@ -2067,12 +2087,48 @@ function typeLabel(t: string): string {
               </div>
             </div>
             <div class="scrape-block">
+              <h3>单集认领配额制（链路规划 Step 3）</h3>
+              <p class="drawer-hint">
+                打开后，夜间窗口的含义从"白天禁刮单集"改为"白天单集按日配额认领、夜间不限"：窗口内不限量，窗口外每天最多认领日配额条单集，用尽后当天只认领顶层条目（电影 / 剧集）。保存后 60 秒内生效。
+              </p>
+              <div v-if="enrichTuning" class="scrape-actions">
+                <el-switch
+                  v-model="quotaModeDraft"
+                  active-text="配额制开"
+                  inactive-text="禁令制"
+                  aria-label="单集认领配额制开关"
+                />
+                <span class="chase-muted">白天单集日配额</span>
+                <el-input
+                  v-model="dayQuotaDraft"
+                  style="width: 130px"
+                  aria-label="白天单集日配额"
+                />
+                <el-button type="primary" size="small" :loading="enrichTuningSaving" @click="saveEnrichTuningAction">
+                  保存
+                </el-button>
+                <span class="chase-state" :class="{ 'is-on': enrichTuning.episode_quota?.episode_allowed_now }">
+                  {{ quotaHintText }}
+                </span>
+              </div>
+              <div v-else-if="enrichTuningError" class="drawer-hint drawer-hint--after">
+                读取失败
+                <el-button size="small" text @click="loadEnrichTuningConfig">重试</el-button>
+              </div>
+              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+              <div v-if="enrichTuning?.episode_quota" class="drawer-hint drawer-hint--after">
+                今天已认领单集 {{ enrichTuning.episode_quota.used_today }} / 有效配额 {{ enrichTuning.episode_quota.effective_quota }}
+                （日配额 {{ enrichTuning.episode_quota.day_quota }}<template v-if="enrichTuning.episode_quota.banned">，豆瓣封禁中减半</template>）。
+                豆瓣封禁期有效配额按 0.5 减半（写死）；配额设 0 = 回到夜间禁令制（回滚口径）。
+              </div>
+            </div>
+            <div class="scrape-block">
               <h3>刮削性能参数</h3>
               <p class="drawer-hint">
                 原来只能改环境变量的旋钮，现在后台可配：线程数 / 批次 / 退避 / 租约。线程数与 DB 池大小改完需重启进程生效，其余保存后 60 秒内热生效。被环境变量接管的项会标出（改这里不生效）。
               </p>
               <div v-if="enrichTuning" class="tuning-list">
-                <div v-for="k in (enrichTuning.order || [])" :key="k" class="tuning-row">
+                <div v-for="k in tuningOrderShown" :key="k" class="tuning-row">
                   <span class="tuning-label">{{ TUNING_LABELS[k] || k }}</span>
                   <el-switch
                     v-if="k === 'enrich_tmdb_batch'"
