@@ -76,6 +76,36 @@ class TestShortcutFieldsPresent:
         assert body and body["id"] == "fT"
 
 
+class TestShortcutFieldsSelectorExact:
+    """2026-10-14 hotfix：#841 把 fields 选择器的 files( 右括号弄丢了，
+    拼出的 fields 值以未闭合的 `files(` 结尾，Drive API 对不平衡选择器
+    直接 400 Bad Request —— 所有生成轮次全坏。#841 的 8 个测试只断言了
+    `"shortcutDetails" in fields`（包含即过），从没断言过选择器本身的语法。
+    本测试断言发出参数的 fields 字符串精确值。"""
+
+    EXPECTED = ("nextPageToken,"
+                "files(id,name,mimeType,size,parents,trashed,shortcutDetails)")
+
+    def test_fields_selector_is_balanced_drive_selector(self, monkeypatch):
+        from types import SimpleNamespace
+        captured = {}
+
+        def fake_api_get(url, token, params):
+            captured["params"] = params
+            return {"files": [], "nextPageToken": None}
+
+        monkeypatch.setattr(
+            sg, "_drive_modules",
+            lambda: SimpleNamespace(_api_get=fake_api_get,
+                                    _is_personal_drive_key=lambda did: False))
+        sg._list_files_page("tok", "drv", "q")
+        fields = captured["params"]["fields"]
+        # 括号必须配平，否则 Drive 直接 400
+        assert fields.count("(") == fields.count(")"), fields
+        # 精确值断言：任何字段增删都必须是有意为之的变更
+        assert fields == self.EXPECTED, fields
+
+
 class TestVerifyDedupExemption:
     def _videos(self):
         return [
