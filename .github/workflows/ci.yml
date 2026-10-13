@@ -52,6 +52,13 @@ jobs:
       - name: 设计令牌契约检查（引用的令牌必须有定义）
         run: python3 scripts/check_frontend_tokens.py
 
+      # 纯文本契约检查：头像菜单里已删的「消息中心」「外观」行不许回来。
+      # #769/#780 两次删除，r27/r28 两轮迭代以「窄屏无入口」为由两次恢复，
+      # 2026-10-13 用户手机截图实锤第三次复发。注释留档拦不住下一轮，
+      # 只有 CI 硬断言能拦住（复发机制见脚本头部事故史）。
+      - name: 头像菜单防复发检查（已删条目不许加回）
+        run: python3 scripts/check_avatar_menu_guards.py
+
       - name: 类型检查（vue-tsc）
         working-directory: ${{ matrix.dir }}
         run: npm run type-check
