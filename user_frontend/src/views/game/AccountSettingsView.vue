@@ -21,8 +21,8 @@
         </div>
       </section>
 
-      <!-- 我的订阅：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
-      <section class="v4-sec" aria-label="我的订阅">
+      <!-- 我的会员：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
+      <section class="v4-sec" aria-label="我的会员">
         <div class="v4-sec-sub">会员到期、历史账单、取消续订都在这里</div>
         <div v-if="subsError" class="v4-err">订阅加载失败：{{ subsError }}<br><button class="v4-retry" @click="loadSubs">重试</button></div>
         <ProfileSubscriptions
@@ -126,7 +126,7 @@
  *
  * 只放三件套（移植 ProfileView 逻辑，不重写）：
  * 1. 修改登录密码（authApi.changePassword，全仓唯一入口）
- * 2. 我的订阅（复用 components/profile/ProfileSubscriptions.vue：到期 / 历史 / 取消）
+ * 2. 我的会员（复用 components/profile/ProfileSubscriptions.vue：到期 / 历史 / 取消）
  * 3. 我的设备（deviceApi：设备列表 / 移除，顶上限自救通道）
  *
  * 明确暂无承接（随旧页删除暂时失去）：Emby 多服列表、正在播放远程终止。
@@ -181,7 +181,7 @@ async function handleChangePassword() {
   }
 }
 
-// ===== 我的订阅（ProfileView 移植；展示层全在 ProfileSubscriptions.vue） =====
+// ===== 我的会员（ProfileView 移植；展示层全在 ProfileSubscriptions.vue） =====
 const subscriptions = ref<MySubscription[]>([])
 const subsError = ref('')
 const cancellingSub = ref<number | null>(null)

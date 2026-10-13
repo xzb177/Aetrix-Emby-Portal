@@ -188,16 +188,7 @@ body.theme-transition *::after {
   padding: 1.5rem;
 }
 
-.card-hoverable {
-  transition: background-color var(--au-fast) var(--au-ease),
-              border-color var(--au-fast) var(--au-ease);
-  cursor: pointer;
-}
 
-.card-hoverable:hover {
-  background: var(--au-surface-2);
-  border-color: var(--au-border-strong);
-}
 
 /* ========================================
    输入框样式
@@ -257,14 +248,6 @@ body.theme-transition *::after {
   }
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
-}
 
 /* 按压反馈工具类（opt-in）
    只给真实可点、且自身没有任何 :active 反馈的元素挂载。
@@ -292,14 +275,7 @@ body.theme-transition *::after {
 
 /* 文字颜色（R34：旧文本色类全仓 0 引用，已删） */
 
-/* 背景 */
-.bg-glass { background: var(--bg-glass); }
-.bg-glass-light { background: var(--bg-glass-light); }
-.bg-primary { background: var(--bg-primary); }
 
-/* 边框 */
-.border-glass { border-color: var(--border-glass); }
-.border-glass-light { border-color: var(--border-glass-light); }
 
 /* 隐藏滚动条但保留功能（R34：全仓 0 引用，已删） */
 

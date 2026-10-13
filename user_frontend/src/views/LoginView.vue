@@ -643,6 +643,7 @@ onUnmounted(() => {
 }
 
 .eye-btn {
+  position: relative;
   box-sizing: border-box;
   width: 32px;
   height: 32px;
@@ -658,6 +659,13 @@ onUnmounted(() => {
   cursor: pointer;
   border-radius: 50%;
   transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+/* R35：触点扩到 44px（视觉 32px 不变，::after 透明扩展——R32 .tg-close 先例） */
+.eye-btn::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
 }
 
 .eye-btn:hover {

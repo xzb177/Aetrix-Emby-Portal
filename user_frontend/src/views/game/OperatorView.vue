@@ -193,7 +193,7 @@
                     <span v-if="s.remote_addr" class="addr"><Wifi :size="11" />{{ s.remote_addr }}</span>
                   </div>
                   <div class="op-session-progress">
-                    <div class="bar"><div class="bar-fill" :style="{ width: s.progress + '%' }" /></div>
+                    <div class="bar" role="progressbar" :aria-valuenow="Math.round(s.progress)" aria-valuemin="0" aria-valuemax="100" :aria-label="'播放进度 ' + Math.round(s.progress) + '%'"><div class="bar-fill" :style="{ width: s.progress + '%' }" /></div>
                     <span class="bar-text">{{ s.progress }}%<template v-if="s.updated_at"> · {{ fmtTime(s.updated_at) }}</template></span>
                   </div>
                 </div>

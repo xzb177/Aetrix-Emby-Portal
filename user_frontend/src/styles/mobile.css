@@ -24,8 +24,7 @@
     /* 移动端 container 内边距 16px，gutter 跟着对齐 */
     --gutter: 1rem;
   }
-  /* 增大可点击区域 - 使用 Neo-Noir 触控规范
-     SYS-2：补上 .au-btn（首页四个关键 CTA 是 au-btn-sm，32px） */
+  /* 增大可点击区域 - 使用 Neo-Noir 触控规范 */
   button, .btn, .au-btn, a, .card, .clickable {
     min-height: var(--neo-touch-min, 44px);
   }
@@ -189,10 +188,6 @@
   .hero-section {
     min-height: auto;
     padding: var(--neo-space-5, 20px);
-  }
-
-  .hero-title {
-    font-size: var(--neo-font-size-lg, 16px) !important;
   }
 
   .modal-content {

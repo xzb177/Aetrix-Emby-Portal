@@ -54,7 +54,7 @@ const watchLine = computed(() => {
       <span class="tp-skeleton sk-stub-btn"></span>
     </div>
   </section>
-  <section v-else class="ticket" aria-label="我的资产">
+  <section v-else class="ticket" aria-label="我的票卡">
     <div class="ticket-main">
       <component
         :is="c.to ? RouterLink : 'div'"
@@ -300,7 +300,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
 .sk-stub-btn { display: block; width: 5rem; height: 44px; flex-shrink: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .tp-skeleton { animation-duration: 0.001s !important; }
+  .tp-skeleton { animation: none !important; }
   .stub-admit { transform: none; }
   .stub-btn:active { transform: none; }
 }
