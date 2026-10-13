@@ -107,12 +107,17 @@ CONFIG_CONCURRENCY = "strm_gen_drive_concurrency"
 # Drive API 全局速率上限（QPS，2026-10-12）：令牌桶硬上限，
 # 并发 + 重试叠加时总请求速率不能超过它。默认 8.0（保守，Drive per-user 配额约 10 QPS）。
 CONFIG_API_QPS = "strm_gen_api_qps"
+# 子树限定列举开关（2026-10-13，S1）：全量回退时只拉源目录子树的目录+文件，
+# 不再全盘扁平拉取。默认开；关掉则回退到旧的扁平全量拉取（应急回滚用）。
+CONFIG_SUBTREE_LISTING = "strm_gen_subtree_listing"
 
 DEFAULT_SOURCE_DIR = "MoviePilot/"
 DEFAULT_INTERVAL_MINUTES = 60
 DEFAULT_JITTER_RATIO = 0.2
 DEFAULT_CONCURRENCY = 3
 DEFAULT_API_QPS = 8.0
+#: 子树限定列举默认开（与 CONFIG_SUBTREE_LISTING 缺省值一致）
+DEFAULT_SUBTREE_LISTING = True
 
 # token 401 后刷新重试的最大次数
 TOKEN_RETRY_MAX = 3
@@ -482,6 +487,17 @@ def api_qps(db) -> float:
     return max(1.0, min(20.0, v))
 
 
+def subtree_listing_enabled(db) -> bool:
+    """子树限定列举开关（S1）：全量回退时只拉源目录子树的条目。
+
+    默认开。关闭时回退到旧的扁平全量拉取——应急回滚口，不用重新部署。
+    管理员可在后台调整，调整后下次生成生效（热读）。
+    """
+    raw = _db_config(db, CONFIG_SUBTREE_LISTING,
+                     "1" if DEFAULT_SUBTREE_LISTING else "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def _jittered_interval_sec(db) -> float:
     """本次增量等待秒数：interval 分钟 ± 抖动，每次调用重新随机化。
 
@@ -705,7 +721,8 @@ def _resolve_dir_id(fetch, drive_id: str, dir_path: str) -> Optional[str]:
     return parent_id
 
 
-def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True):
+def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True,
+                      subtree_listing: bool = True):
     """流式列出源目录下所有视频文件。
 
     yield (root_relpath, file_id, size)。root_relpath 为相对网盘根路径。
@@ -715,19 +732,150 @@ def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True):
     strict=False：源目录不存在时记 warning 并返回空（自动发现模式下，
     不是每个盘都有媒体目录，缺目录是预期情况，不应报错）。
 
-    实现：扁平全量拉取 + 本地建树。
-    旧实现是 BFS、每个目录发一次 files.list（"'{folder_id}' in parents"）：
-    8.5 万文件 / 数千目录 = 数千次 API，每次 200~500ms，列举阶段要
-    10~30 分钟，且全程不更新进度——前端一直显示"列举 Drive 文件…"
-    且计数全 0，看起来像卡死（用户实报）。
-    新实现一次 files.list（无 parents 限定，pageSize=1000）分页拉完全盘条目，
-    本地按 parents 建树再从源目录 BFS 展开：API 调用从数千降到约 100，
-    且每拉完一页就汇报进度，前端能看到条目数在涨。
-    代价：会拉取源目录之外的条目元数据（仅 id/name/parents，不下载内容）；
-    对 MoviePilot 这类单用途盘可忽略。
+    subtree_listing=True（默认，S1）：两阶段子树限定列举——阶段一隻拉
+    目录项建树并展开源子树，阶段二按源子树目录分批（'id' in parents）
+    查文件。API 请求数从「全盘条目数/1000」降到「目录数/1000 +
+    子树目录数/30」，请求总数更少（零风控影响）；产出与扁平拉取等价
+    （同一文件集合、同一 rel 构造、同一跳过规则）。
+    subtree_listing=False：旧的扁平全量拉取（应急回滚用，
+    见 strm_gen_subtree_listing 配置）。
+
+    实现演进注记：最早是 BFS 每个目录一次 files.list（数千次 API，每次
+    200~500ms，且全程不更新进度，前端看起来像卡死）；后改扁平全量拉取
+    （约 100~1000 次请求，但为源子树 10 万条目拉全盘 60~100 万条目）；
+    S1 改为子树限定两阶段（约 100~200 次请求）。
 
     （修 P1-1：旧实现只在开始时取一次 token，8 万级文件的长列举
     会因 SA token 过期而整体作废——_page_fetcher 的 401 自动刷新保留）。
+    """
+    if subtree_listing:
+        yield from _iter_drive_videos_subtree(drive_id, dir_path, strict=strict)
+    else:
+        yield from _iter_drive_videos_flat(drive_id, dir_path, strict=strict)
+
+
+#: S1：子树列举阶段二每批 in parents 查询的目录数。
+#: Drive 查询字符串约 2KB 上限；目录 ID 约 33 字节 → "'id' in parents"
+#: 每 ID 约 51 字符（含 or 连接符），30 个 ≈ 1.6KB，留足余量。
+SUBTREE_LIST_BATCH = 30
+
+
+def _iter_drive_videos_subtree(drive_id: str, dir_path: str, strict: bool = True):
+    """S1：两阶段子树限定列举（见 iter_drive_videos 文档）。
+
+    阶段一：只拉目录项（mimeType=folder），本地按 parents 建树，从源目录
+    BFS 展开，得到子树内每个目录 id → [rel_prefix, ...]（遍历语义与扁平
+    实现完全一致：多 parent 的目录每个 parent 链各展开一次）。
+    阶段二：目录 ID 按 SUBTREE_LIST_BATCH 分组，拼
+    "trashed=false and ('id1' in parents or ...)" 批量查文件；文件的每个
+    子树内 parent、每个 rel_prefix 各产出一条（与扁平实现 yield 语义一致）。
+    """
+    fetch = _page_fetcher(drive_id)  # 内部已做 SA 凭据检查 + 401 自动刷新
+    dir_id = _resolve_dir_id(fetch, drive_id, dir_path)
+    if dir_path and not dir_id:
+        if not strict:
+            logger.warning("strm_gen: drive=%s 上找不到源目录 %r，已跳过该盘",
+                           drive_id, dir_path)
+            return
+        raise RuntimeError(f"Drive 上找不到源目录: {dir_path!r}")
+
+    norm = dir_path.strip("/")
+    root_prefix = (norm + "/") if norm else ""
+    if norm:
+        start_id = dir_id
+    else:
+        # 与扁平实现一致：共享盘根目录的顶层 parents 是 drive_id，
+        # 个人盘用 'root' 别名（'root' in parents 是合法查询）。
+        dc = _drive_modules()
+        try:
+            is_personal = dc._is_personal_drive_key(drive_id)
+        except Exception:
+            is_personal = False
+        start_id = "root" if is_personal else drive_id
+
+    # 阶段一：只拉目录项。
+    folder_children: dict[str, list[dict]] = {}
+    listed_folders = 0
+    page_token: Optional[str] = None
+    while True:
+        files, page_token = fetch(
+            "mimeType='application/vnd.google-apps.folder' and trashed=false",
+            page_token)
+        for f in files:
+            if f.get("trashed"):
+                continue
+            if f.get("mimeType") != "application/vnd.google-apps.folder":
+                continue  # 防御：查询已限定，服务端偶发混入时忽略
+            for pid in f.get("parents") or []:
+                folder_children.setdefault(pid, []).append(f)
+        listed_folders += len(files)
+        _set_progress(total=listed_folders,
+                      current=f"正在列举 Drive 目录…（已拉取 {listed_folders} 个目录）")
+        if not page_token:
+            break
+    logger.info("strm_gen: drive=%s 子树列举阶段一：拉取 %d 个目录项",
+                drive_id, listed_folders)
+
+    # 阶段一之二：本地 BFS 展开源子树（遍历语义与扁平实现一致）。
+    dir_prefixes: dict[str, list[str]] = {}
+    stack: list[tuple[str, str]] = [(start_id, "")]
+    while stack:
+        folder_id, rel_prefix = stack.pop()
+        dir_prefixes.setdefault(folder_id, []).append(rel_prefix)
+        for f in folder_children.get(folder_id, []):
+            name = _safe_name(f.get("name", ""))
+            fid = f.get("id", "")
+            if not name or not fid:
+                continue
+            if name.startswith(".") or name in SKIP_DIR_NAMES:
+                continue
+            stack.append((fid, rel_prefix + name + "/"))
+
+    # 阶段二：按批查文件。
+    dir_ids = list(dir_prefixes.keys())
+    listed_files = 0
+    for bi in range(0, len(dir_ids), SUBTREE_LIST_BATCH):
+        batch = dir_ids[bi:bi + SUBTREE_LIST_BATCH]
+        cond = " or ".join(f"'{d}' in parents" for d in batch)
+        q = f"trashed=false and ({cond})"
+        page_token = None
+        while True:
+            files, page_token = fetch(q, page_token)
+            for f in files:
+                if f.get("trashed"):
+                    continue
+                if f.get("mimeType") == "application/vnd.google-apps.folder":
+                    continue  # 目录项只在阶段一处理；这里只收文件（与扁平实现一致：
+                # 扁平实现里目录走 stack 分支，不会当文件 yield）
+                fid = f.get("id", "")
+                name = _safe_name(f.get("name", ""))
+                if not name or not fid:
+                    continue
+                for pid in f.get("parents") or []:
+                    for rp in dir_prefixes.get(pid) or ():
+                        rel = root_prefix + rp + name
+                        if not is_video_path(rel):
+                            continue
+                        try:
+                            size = int(f.get("size") or 0)
+                        except (ValueError, TypeError):
+                            size = 0
+                        yield rel, fid, size
+            listed_files += len(files)
+            _set_progress(total=listed_folders + listed_files,
+                          current=f"正在列举 Drive 文件…（已拉取 {listed_files} 个文件）")
+            if not page_token:
+                break
+    logger.info("strm_gen: drive=%s 子树列举完成：%d 个目录、%d 个文件条目",
+                drive_id, len(dir_ids), listed_files)
+
+
+def _iter_drive_videos_flat(drive_id: str, dir_path: str, strict: bool = True):
+    """旧的扁平全量拉取实现（S1 之前的主路径）。
+
+    保留作应急回滚（strm_gen_subtree_listing=0 时走这里）。
+    实现：一次 files.list（无 parents 限定，pageSize=1000）分页拉完全盘条目，
+    本地按 parents 建树再从源目录 BFS 展开。
     """
     fetch = _page_fetcher(drive_id)  # 内部已做 SA 凭据检查 + 401 自动刷新
     dir_id = _resolve_dir_id(fetch, drive_id, dir_path)
@@ -1669,7 +1817,9 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
             """
             dc.reset_total_retry_count()
             lister = strm_source.DriveChangesLister(
-                did, src_prefix, strict_dir=not auto_discover)
+                did, src_prefix, strict_dir=not auto_discover,
+                # S1：子树限定列举开关（热读，默认开；关掉回退扁平全量拉取）
+                subtree_listing=subtree_listing_enabled(db))
             videos: list[tuple[str, str, int]] = []
             tombstones: list = []
             try:
@@ -1881,8 +2031,17 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
 
     # 3. 完整性校验：按顶层目录统计 Drive vs .strm（校验磁盘真实存在，
     # 原来只比"Drive 枚举 vs DB"，DB 有行但文件被删会误报完整）
+    # S2（2026-10-13）：全增量轮次跳过 8.6 万次磁盘 stat 的全量校验，
+    # 只对本轮 touch 过的目录做轻量校验（delta 闭环 + 受影响目录的僵尸扫描）。
+    # 判定口径与 A3 免检一致：全部成功列举的盘都走了 Changes 增量路径。
     _set_progress(phase="verifying", current="正在校验完整性…")
-    verify = _verify_completeness(all_videos, state, src_prefix, strm_root=strm_root)
+    if _round_is_fully_incremental(stype, full,
+                                   drive_results if stype != "local" else []):
+        verify = _verify_completeness_light(all_videos, state, src_prefix,
+                                           strm_root=strm_root)
+    else:
+        verify = _verify_completeness(all_videos, state, src_prefix,
+                                      strm_root=strm_root)
     stats["verify"] = verify
 
     # 4. 墓碑消费：Drive/本地源删文件 → 删 .strm + 删状态行（块1+块2）。
@@ -1998,6 +2157,18 @@ def _trigger_strm_scan(db) -> None:
         logger.info("strm_gen: 共触发 %d 个库的增量扫描", triggered)
 
 
+def _round_is_fully_incremental(stype: str, full: bool, drive_results: list) -> bool:
+    """本轮是否全走增量路径（供 S2 免全量校验决策）。
+
+    判定口径与 A3 新增 file_id 免检一致：非全量轮、drive 模式、且所有
+    成功列举的盘的 incremental_listing 均为 True。
+    """
+    if full or stype == "local":
+        return False
+    succeeded = [r for r in (drive_results or []) if not r.get("error")]
+    return bool(succeeded) and all(r.get("incremental_listing") for r in succeeded)
+
+
 def _verify_completeness(videos: list[tuple[str, str, int]],
                          state: dict[str, tuple[str, int, str]],
                          src_prefix: str,
@@ -2074,11 +2245,96 @@ def _verify_completeness(videos: list[tuple[str, str, int]],
             })
     incomplete.sort(key=lambda x: -x["missing_count"])
     return {
+        "verify_mode": "full",
         "total_series": len(drive_counter),
         "complete_series": len(drive_counter) - len(incomplete),
         "incomplete_series": len(incomplete),
         "incomplete": incomplete[:100],
         # 块4 §6.1：状态有行但磁盘无文件的僵尸（零 API 成本，随本循环收集）
+        "orphan_disk": {"count": orphan_disk_count, "sample": orphan_disk_sample},
+    }
+
+
+def _verify_completeness_light(videos: list[tuple[str, str, int]],
+                               state: dict[str, tuple[str, int, str]],
+                               src_prefix: str,
+                               strm_root: Optional[str] = None) -> dict[str, Any]:
+    """S2：增量轮轻量校验——只查本轮 touch 过的目录。
+
+    增量轮的 videos 只是 delta（拿 delta 做全量对比会误杀，见
+    _run_generation_inner 注释），_verify_completeness 的 drive_count vs
+    strm_count 在 delta 数据上无意义，且它要对全部 state 行做 os.path.exists
+    （8.6 万次磁盘 stat）。轻量版只做两件事：
+    1. delta 闭环：本轮 delta 的每个文件在 state 里有行且 .strm 在磁盘上；
+    2. 受影响目录的僵尸扫描：touch 过的目录下 state 行的磁盘存在性。
+    返回与 _verify_completeness 同形（total_series/complete_series/
+    incomplete_series/incomplete/orphan_disk），外加 verify_mode 标记。
+    """
+    def _group(rel: str) -> str:
+        short = rel[len(src_prefix):] if src_prefix and rel.startswith(src_prefix) else rel
+        parent = os.path.dirname(short)
+        return parent or short
+
+    def _strm_exists(spath: str) -> bool:
+        if strm_root is None:
+            return True
+        return os.path.exists(os.path.join(strm_root, spath))
+
+    # 一遍 videos：touched 目录 + 每目录的 delta rel 集合
+    touched: set[str] = set()
+    delta_rels: dict[str, set[str]] = {}
+    for rel, _fid, _size in videos:
+        g = _group(rel)
+        touched.add(g)
+        delta_rels.setdefault(g, set()).add(rel)
+
+    # 一遍 state：只保留 touched 目录的行（僵尸扫描范围限定在此）
+    state_in_touched: dict[str, list[tuple[str, tuple[str, int, str]]]] = {}
+    for rel, val in state.items():
+        g = _group(rel)
+        if g in touched:
+            state_in_touched.setdefault(g, []).append((rel, val))
+
+    incomplete = []
+    orphan_disk_count = 0
+    orphan_disk_sample: list[dict[str, str]] = []
+    for group in sorted(touched):
+        # 僵尸扫描（范围限定在本目录）
+        for rel, (_fid, _size, spath) in state_in_touched.get(group, []):
+            if not _strm_exists(spath):
+                orphan_disk_count += 1
+                if len(orphan_disk_sample) < 50:
+                    orphan_disk_sample.append({
+                        "remote_path": rel, "strm_path": spath, "file_id": _fid,
+                    })
+        # delta 闭环
+        missing = []
+        for rel in sorted(delta_rels.get(group, ())):
+            if rel not in state:
+                missing.append((rel, "not_generated"))
+            elif not _strm_exists(state[rel][2]):
+                missing.append((rel, "strm_lost"))
+        if missing:
+            not_generated = sum(1 for _, kind in missing if kind == "not_generated")
+            strm_lost = len(missing) - not_generated
+            incomplete.append({
+                "series": group,
+                "drive_count": len(delta_rels[group]),
+                "strm_count": len(delta_rels[group]) - len(missing),
+                "missing_count": len(missing),
+                "missing_sample": [rel for rel, _ in missing[:50]],
+                "missing_breakdown": {
+                    "not_generated": not_generated,
+                    "strm_lost": strm_lost,
+                },
+            })
+    incomplete.sort(key=lambda x: -x["missing_count"])
+    return {
+        "verify_mode": "light",
+        "total_series": len(touched),
+        "complete_series": len(touched) - len({i["series"] for i in incomplete}),
+        "incomplete_series": len(incomplete),
+        "incomplete": incomplete[:100],
         "orphan_disk": {"count": orphan_disk_count, "sample": orphan_disk_sample},
     }
 
@@ -2331,6 +2587,7 @@ def missing_report(db, limit: int = 100) -> dict[str, Any]:
         return {
             "ok": True,
             "has_data": True,
+            "verify_mode": verify.get("verify_mode", "full"),
             "total_series": verify.get("total_series", 0),
             "complete_series": verify.get("complete_series", 0),
             "incomplete_series": verify.get("incomplete_series", 0),

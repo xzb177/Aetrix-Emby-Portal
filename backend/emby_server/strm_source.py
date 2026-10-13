@@ -96,18 +96,21 @@ class DriveChangesLister(SourceLister):
     RATE_LIMIT_DESC: str = (
         "Changes API 按需拉取，单次增量通常 1-3 次 API 调用；"
         "多页连续拉取时间隔 0.1-0.3s 随机抖动；"
-        "全量回退时复用 strm_gen.iter_drive_videos（约 100 次调用，带 401 自动刷新）"
+        "全量回退时复用 strm_gen.iter_drive_videos（S1 子树限定两阶段列举：约 目录数/1000 + 子树目录数/30 次调用，带 401 自动刷新）"
     )
 
     # SystemConfig key 前缀：增量检查点（changes page token）
     TOKEN_KEY_PREFIX = "strm_gen_changes_token_"
 
-    def __init__(self, drive_id: str, dir_path: str, strict_dir: bool = True):
+    def __init__(self, drive_id: str, dir_path: str, strict_dir: bool = True,
+                 subtree_listing: bool = True):
         self.drive_id = drive_id
         self.dir_path = (dir_path or "").strip().strip("/")
         # strict_dir=False：自动发现模式下，源目录不存在时跳过该盘而非报错
         # （不是每个盘都有媒体目录，缺目录是预期情况）
         self.strict_dir = strict_dir
+        # S1：全量回退时是否走子树限定列举（默认开；关掉回退扁平全量拉取）
+        self.subtree_listing = subtree_listing
         self._new_token: Optional[str] = None
         # 可观测性计数器（2026-10-12）：列举完成后调用方可读
         self.yielded_count: int = 0          # 成功 yield 的视频文件数
@@ -156,7 +159,8 @@ class DriveChangesLister(SourceLister):
             self.used_incremental_path = False
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
-                self.drive_id, self.dir_path, strict=self.strict_dir)
+                self.drive_id, self.dir_path, strict=self.strict_dir,
+                subtree_listing=self.subtree_listing)
             return
 
         from backend.emby_server import drive_changes as dc
@@ -172,7 +176,8 @@ class DriveChangesLister(SourceLister):
                 self._new_token = token
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
-                self.drive_id, self.dir_path, strict=self.strict_dir)
+                self.drive_id, self.dir_path, strict=self.strict_dir,
+                subtree_listing=self.subtree_listing)
             return
 
         # 增量：拉 changes（2026-10-12 起不再吞错：API 失败直接抛，

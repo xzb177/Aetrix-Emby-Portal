@@ -2024,6 +2024,7 @@ export const fetchStrmGenMissing = (limit = 100) =>
   get<{
     ok: boolean
     has_data?: boolean
+    verify_mode?: string
     total_series?: number
     complete_series?: number
     incomplete_series?: number

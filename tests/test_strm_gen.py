@@ -295,7 +295,7 @@ class TestRunGenerationMocked:
 
     def _patch_all(self, tmp_path, monkeypatch, videos, state=None, drives=None):
         monkeypatch.setattr(sg, "iter_drive_videos",
-                            lambda drive_id, dir_path, strict=True: iter(list(videos)))
+                            lambda drive_id, dir_path, strict=True, **kwargs: iter(list(videos)))
         # 新并行列举直接调 DriveChangesLister.iter_videos（worker 线程内）：
         # 让它走 mocked 的 sg.iter_drive_videos
         import backend.emby_server.strm_source as ssrc
@@ -367,7 +367,7 @@ class TestRunGenerationMocked:
 
     def test_multi_drive(self, tmp_path, monkeypatch):
         """P1-2：不指定 drive 时遍历所有共享盘（原来只跑第一个）。"""
-        def fake_iter(drive_id, dir_path, strict=True):
+        def fake_iter(drive_id, dir_path, strict=True, **kwargs):
             return iter([(f"MoviePilot/{drive_id}/a.mkv", f"fid-{drive_id}", 10)])
         monkeypatch.setattr(sg, "iter_drive_videos", fake_iter)
         monkeypatch.setattr(sg, "_discover_drives", lambda: {"d1": ["s"], "d2": ["s"]})
@@ -553,7 +553,9 @@ def _make_fake_fetcher(items, page_size=2):
 
 
 class TestIterDriveVideosFlat:
-    """扁平拉取 + 本地建树：替代原来每目录一次 API 的 BFS。"""
+    """扁平拉取 + 本地建树（旧路径，subtree_listing=False 显式指定）。
+
+    S1 之后默认走子树限定列举；这里锁定旧路径的行为不回归。"""
 
     def _patch(self, monkeypatch, items, page_size=2):
         fake_fetch = _make_fake_fetcher(items, page_size)
@@ -562,7 +564,7 @@ class TestIterDriveVideosFlat:
 
     def test_yields_videos_with_source_prefix(self, monkeypatch):
         self._patch(monkeypatch, _flat_drive_fixture())
-        got = sorted(sg.iter_drive_videos("d1", "MoviePilot/"))
+        got = sorted(sg.iter_drive_videos("d1", "MoviePilot/", subtree_listing=False))
         assert got == [
             ("MoviePilot/剧集/Season 1/b.mp4", "v2", 200),
             ("MoviePilot/剧集/a.mkv", "v1", 100),
@@ -572,7 +574,7 @@ class TestIterDriveVideosFlat:
         # v9 在 d1 根（源目录之外）、c.txt 非视频、v4 在隐藏目录、
         # v5 已删除——都不应出现
         self._patch(monkeypatch, _flat_drive_fixture())
-        ids = {fid for _rel, fid, _size in sg.iter_drive_videos("d1", "MoviePilot/")}
+        ids = {fid for _rel, fid, _size in sg.iter_drive_videos("d1", "MoviePilot/", subtree_listing=False)}
         assert ids == {"v1", "v2"}
 
     def test_source_dir_not_found_raises(self, monkeypatch):
@@ -586,7 +588,7 @@ class TestIterDriveVideosFlat:
         seen = []
         monkeypatch.setattr(sg, "_set_progress",
                             lambda **kw: seen.append(kw.get("total")))
-        list(sg.iter_drive_videos("d1", "MoviePilot/"))
+        list(sg.iter_drive_videos("d1", "MoviePilot/", subtree_listing=False))
         # 10 条 / 每页 2 条 = 5 次进度汇报，且单调递增
         assert len(seen) == 5
         assert seen == sorted(seen) and seen[-1] == 10
@@ -594,13 +596,13 @@ class TestIterDriveVideosFlat:
     def test_single_flat_query_not_per_folder(self, monkeypatch):
         # 扁平拉取：API 调用次数 = 目录解析(1) + 分页数，不随目录数增长
         fake_fetch = self._patch(monkeypatch, _flat_drive_fixture(), page_size=5)
-        list(sg.iter_drive_videos("d1", "MoviePilot/"))
+        list(sg.iter_drive_videos("d1", "MoviePilot/", subtree_listing=False))
         # 1（目录解析）+ 2（10 条 / 每页 5 条）
         assert fake_fetch.calls["n"] == 3
 
     def test_root_dir_shared_drive(self, monkeypatch):
         self._patch(monkeypatch, _flat_drive_fixture())
-        got = sorted(sg.iter_drive_videos("d1", ""))
+        got = sorted(sg.iter_drive_videos("d1", "", subtree_listing=False))
         rels = [r for r, _f, _s in got]
         # 网盘根：所有视频都列出，rel 不带源目录前缀剥离（根即无前缀）
         assert "other.mkv" in rels
@@ -800,7 +802,7 @@ class TestIterDriveVideosStrict:
             return ([], None)
         monkeypatch.setattr(sg2, "_page_fetcher", lambda did: fake_fetch)
         # _resolve_dir_id 对空路径返回 None，但空 dir_path 不触发 strict 检查
-        result = list(sg2.iter_drive_videos("drive123", "", strict=True))
+        result = list(sg2.iter_drive_videos("drive123", "", strict=True, subtree_listing=False))
         assert result == []
         assert called.get("q") == "trashed=false"
 
@@ -810,7 +812,7 @@ class TestPerDriveFailureIsolation:
 
     def _patch(self, tmp_path, monkeypatch, drive_results):
         """drive_results: {did: videos|Exception}"""
-        def fake_iter(drive_id, dir_path, strict=True):
+        def fake_iter(drive_id, dir_path, strict=True, **kwargs):
             r = drive_results[drive_id]
             if isinstance(r, Exception):
                 raise r
@@ -820,8 +822,8 @@ class TestPerDriveFailureIsolation:
         # mock 掉 lister 让它走 fake_iter
         import backend.emby_server.strm_source as ssrc
         orig_init = ssrc.DriveChangesLister.__init__
-        def patched_init(self, drive_id, dir_path, strict_dir=True):
-            orig_init(self, drive_id, dir_path, strict_dir=strict_dir)
+        def patched_init(self, drive_id, dir_path, strict_dir=True, **kwargs):
+            orig_init(self, drive_id, dir_path, strict_dir=strict_dir, **kwargs)
         monkeypatch.setattr(ssrc.DriveChangesLister, "__init__", patched_init)
         # 让 lister.iter_videos 直接调 mocked 的 sg.iter_drive_videos
         def fake_lister_iter(self, incremental=True):

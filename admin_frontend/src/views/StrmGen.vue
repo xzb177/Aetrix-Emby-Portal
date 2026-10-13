@@ -35,11 +35,12 @@ const progress = ref<StrmGenProgress | null>(null)
 const drives = ref<StrmGenDrive[]>([])
 const missing = ref<{
   hasData: boolean
+  verifyMode: string
   total: number
   complete: number
   incomplete: number
   list: StrmGenIncomplete[]
-}>({ hasData: false, total: 0, complete: 0, incomplete: 0, list: [] })
+}>({ hasData: false, verifyMode: 'full', total: 0, complete: 0, incomplete: 0, list: [] })
 
 const triggeringIncremental = ref(false)
 const triggeringFull = ref(false)
@@ -117,10 +118,11 @@ async function load(silent = false) {
     const ds = (drivesRes as { success: boolean; drives?: StrmGenDrive[] }).drives
     drives.value = Array.isArray(ds) ? ds : []
     if ((missRes as { ok: boolean }).ok) {
-      const m = missRes as { has_data?: boolean; total_series?: number; complete_series?: number; incomplete_series?: number; incomplete?: StrmGenIncomplete[] }
+      const m = missRes as { has_data?: boolean; verify_mode?: string; total_series?: number; complete_series?: number; incomplete_series?: number; incomplete?: StrmGenIncomplete[] }
       const list = Array.isArray(m.incomplete) ? m.incomplete : []
       missing.value = {
         hasData: !!m.has_data,
+        verifyMode: m.verify_mode ?? 'full',
         total: m.total_series ?? 0,
         complete: m.complete_series ?? 0,
         incomplete: m.incomplete_series ?? 0,
@@ -332,6 +334,9 @@ onUnmounted(() => {
           <StatTile label="剧集总数" :value="missing.total" />
           <StatTile label="完整" :value="missing.complete" tone="ok" />
           <StatTile label="缺集" :value="missing.incomplete" :tone="missing.incomplete > 0 ? 'danger' : 'ok'" />
+        </div>
+        <div v-if="missing.verifyMode === 'light'" class="muted small" style="margin: 4px 0 8px;">
+          增量轮轻量校验：仅覆盖本轮有变动的目录（全量轮才做全库校验）。
         </div>
         <el-table v-if="missingList.length" :data="missingList" stripe style="width: 100%">
           <el-table-column prop="series" label="剧集" min-width="200" />
