@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 import shutil
 import signal
@@ -12,6 +13,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from email.utils import formatdate
 from typing import TYPE_CHECKING, Optional
@@ -365,32 +367,15 @@ def serve_remote(
             url = drive_api_media_url(url)
         except Exception:
             pass
-        current = url
-        _redirect_hops = 0  # 实际走的跳转数
-        for _hop in range(MAX_REDIRECTS + 1):
-            resp = client.send(client.build_request("GET", current, headers=forward), stream=True)
-            if resp.status_code not in _REDIRECT_CODES:
-                break
-            location = resp.headers.get("location")
-            if not location:
-                break  # 3xx 却没给 Location：当作最终响应原样透传
-            try:
-                target, _hop_pinning = _next_redirect(current, location)
-            except MountError as exc:
-                resp.close()
-                client.close()
-                logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
-                raise HTTPException(status_code=403, detail=str(exc)) from exc
-            # A-P2-2：把校验时刻的 DNS 快照并入 pin 表，下一跳建连直接走 pin 住的 IP
-            _dns_pinning.update(_hop_pinning)
-            resp.close()  # 确认要跟着走，这一跳的响应就不要再占着连接了
-            forward = _redirect_headers(forward, current, target)
-            current = target
-            _redirect_hops += 1
-        else:
-            resp.close()
-            client.close()
-            raise HTTPException(status_code=502, detail="源站重定向次数过多")
+        current = None
+        api_url = url
+        # 建连走共用 helper（与重连建连同一套：手动跟随重定向、逐跳内网校验、
+        # 跨主机剥凭据、DNS pinning）；silent=False 保持原错误语义。
+        # forward_orig：重连建连的起点必须是"剥凭据之前"的原始头（与初始请求一致），
+        # 不能用跳转后被剥过的 forward，否则 115 这类源站重连会丢 Cookie。
+        forward_orig = dict(forward)
+        resp, current, forward = _open_upstream_sync(
+            client, api_url, forward, _dns_pinning, silent=False)
         # 115 直链过期检测：403/404/410 时清 115 缓存，
         # 客户端重试将拿到新直链（2026-10-09）。与异步版 serve_remote_async 同口径。
         if resp.status_code in (403, 404, 410):
@@ -448,14 +433,61 @@ def serve_remote(
         pass
     content_type = resp.headers.get("content-type") or media_type
 
+    # 慢连接自动重连状态：只对可续传上游启用；客户端只看到一条连续响应流，
+    # 状态码/响应头保持初始建连时的值不变。
+    _stall_state = _RelayStallState(
+        _resume_offset(resp, range_header),
+        log_ctx=url.split("?")[0],
+        enabled=_RELAY_STALL_RECONNECT and _upstream_resumable(resp),
+    )
+
     def iter_remote():
+        cur_resp = resp
+        it = None
         try:
-            for chunk in resp.iter_bytes(READ_CHUNK):
+            while True:
+                if it is None:
+                    it = cur_resp.iter_bytes(READ_CHUNK)
+                # 只统计"等上游出数据"的时间：yield 处被慢客户端阻塞的时间不计入，
+                # 客户端下行慢不会误触发重连。
+                t0 = time.monotonic()
+                try:
+                    chunk = next(it)
+                except StopIteration:
+                    break
+                wait = time.monotonic() - t0
                 yield chunk
+                _stall_state.on_chunk(len(chunk), wait)
+                if _stall_state.want_reconnect():
+                    ok, payload = _try_reconnect_upstream_sync(
+                        client, api_url, forward_orig, _dns_pinning, _stall_state)
+                    if ok:
+                        new_resp, new_it = payload
+                        old_resp, old_it = cur_resp, it
+                        cur_resp, it = new_resp, new_it
+                        # make-before-break：新连接已确认可用，才断旧连；
+                        # 先关旧迭代器，再关旧响应。
+                        try:
+                            old_it.close()
+                        except Exception:
+                            pass
+                        try:
+                            old_resp.close()
+                        except Exception:
+                            pass
+                        _stall_state.note_success()
+                        # 首块=上一块（已给过客户端），确认用、此处不再下发
+                        continue
+                    reason = payload
+                    logger.info("[relay-reconnect] 本次重连未生效，继续旧连接 %s：%s",
+                                _stall_state.log_ctx, reason)
         except httpx.TransportError as exc:
             logger.warning("远程代理流中断 %s: %s", url.split("?")[0], type(exc).__name__)
         finally:
-            resp.close()
+            try:
+                cur_resp.close()
+            except Exception:
+                pass
             client.close()
 
     return StreamingResponse(
@@ -494,6 +526,20 @@ def _env_number(name: str, default: float, lo: float, hi: float, cast=float):
     return max(cast(lo), min(cast(hi), value))
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """读布尔型环境变量；非法值记 warning 并回落默认值（fail-closed）"""
+    raw = os.getenv(name, "")
+    if not str(raw).strip():
+        return default
+    v = str(raw).strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    logger.warning("环境变量 %s=%r 不是合法布尔值，使用默认值 %s", name, raw, default)
+    return default
+
+
 #: 同时保持的上游连接数（S2）。每个正在播放的远程流在整个播放期间占一个连接，
 #: 旧默认 24 在第 25 路并发播放时就排队；默认提到 200，``RELAY_MAX_CONNECTIONS`` 可调。
 _RELAY_MAX_CONNECTIONS = _env_number("RELAY_MAX_CONNECTIONS", 200, 4, 5000, int)
@@ -509,6 +555,309 @@ _RELAY_READ_TIMEOUT = _env_number("RELAY_READ_TIMEOUT", 30.0, 5.0, 600.0)
 #: 现在很快给 503 + Retry-After，播放器会重试。
 _RELAY_POOL_TIMEOUT = _env_number("RELAY_POOL_TIMEOUT", 3.0, 0.1, 60.0)
 _RELAY_WRITE_TIMEOUT = 30.0
+
+
+# ---- 慢连接自动重连（2026-10-13）----
+#
+# 背景：Google usercontent 单连接偶发被掐速到几十 KB/s（起播正常、ttfb 正常，
+# 随后单条连接塌速；客户端重连即满速，服务端实测同文件 8.97MB/s）。
+# 客户端（SenPlayer 等）不会自己重连，中继层兜底：监测上游出数据速度，
+# 塌速时 make-before-break 建新连接续传，客户端只看到一条连续的响应流。
+#
+# 三条保护（缺一不可）：
+# 1. make-before-break：新连接确认 206 + 首块数据后才切断旧连；新连失败则
+#    继续用旧连——"慢"绝不能变成"断"。
+# 2. 只看"上游等待时间"：生成器在 yield 处被慢客户端阻塞的时间不计入，
+#    客户端下行慢不会误触发重连。
+# 3. 全局保护：令牌桶（全服重连预算）+ 熔断（短窗口大量塌速→疑似账号级限速/
+#    出口故障，冷却期内全服停重连）+ 重连时换 SA（打破亲和，分散单 SA 风险）。
+# 全部可配，见 docs/relay-stall-reconnect.md；非法值 fail-closed 回默认。
+#: 总开关（默认开）
+_RELAY_STALL_RECONNECT = _env_flag("RELAY_STALL_RECONNECT", True)
+#: 塌速阈值（KB/s）：窗口内"上游字节 / 上游等待秒"低于此值 → 塌速
+_RELAY_STALL_MIN_KBPS = _env_number("RELAY_STALL_MIN_KBPS", 180.0, 10.0, 100000.0)
+#: 判定窗口（秒，按"上游等待时间"累计）
+_RELAY_STALL_WINDOW_SEC = _env_number("RELAY_STALL_WINDOW_SEC", 10.0, 3.0, 120.0)
+#: 起播宽限：已转发字节数 / 墙钟秒数（任一达到即开始判定，首字节阶段不算）
+_RELAY_STALL_GRACE_BYTES = _env_number("RELAY_STALL_GRACE_BYTES", 1048576, 65536, 1 << 30, int)
+_RELAY_STALL_GRACE_SEC = _env_number("RELAY_STALL_GRACE_SEC", 15.0, 1.0, 300.0)
+#: 每条流最多重连尝试次数（0=只监测不重连）
+_RELAY_STALL_MAX_RECONNECTS = _env_number("RELAY_STALL_MAX_RECONNECTS", 3, 0, 10, int)
+#: 同流连续重连退避：基数 * 2^(尝试次数-1)，上限封顶，再加 0~1s 随机抖动（反风控）
+_RELAY_STALL_BACKOFF_BASE = _env_number("RELAY_STALL_BACKOFF_BASE_SEC", 2.0, 0.5, 60.0)
+_RELAY_STALL_BACKOFF_CAP = _env_number("RELAY_STALL_BACKOFF_CAP_SEC", 30.0, 1.0, 300.0)
+#: 全局重连预算：全服每分钟最多重连尝试次数（令牌桶）
+_RELAY_STALL_BUDGET_PER_MIN = _env_number("RELAY_STALL_BUDGET_PER_MIN", 20, 1, 3600, int)
+#: 全局熔断：窗口秒数内重连尝试达到阈值 → 冷却秒数内全服暂停重连
+_RELAY_STALL_BREAKER_WINDOW_SEC = _env_number("RELAY_STALL_BREAKER_WINDOW_SEC", 60.0, 10.0, 3600.0)
+_RELAY_STALL_BREAKER_THRESHOLD = _env_number("RELAY_STALL_BREAKER_THRESHOLD", 10, 2, 1000, int)
+_RELAY_STALL_BREAKER_COOLDOWN_SEC = _env_number("RELAY_STALL_BREAKER_COOLDOWN_SEC", 300.0, 30.0, 3600.0)
+#: 被全局预算/熔断拒绝后的短冷却（秒）：避免每 chunk 刷一次拒绝日志
+_RELAY_STALL_DEFER_COOLDOWN = 5.0
+
+
+class _StallDetector:
+    """塌速判定器：纯逻辑、无 I/O、无锁，每条流独占一个实例。
+
+    只统计"上游等待时间"——await 上游吐出下一个块的耗时。生成器在 ``yield``
+    处被慢客户端阻塞的时间**不计入**（慢客户端只会让 yield park 住，不会让
+    上游出数据变慢），所以客户端下行慢不会误触发重连。
+
+    滑动窗口按上游等待时间的累计值推进：窗口内 上游字节 / 上游等待秒 < 阈值 → 塌速。
+    每 chunk 一次 observe，摊还 O(1)，不给转发热路径加负担。
+    """
+
+    __slots__ = ("_window_sec", "_min_bps", "_grace_bytes", "_grace_sec",
+                 "_samples", "_wait_sum", "_bytes_sum", "_total_bytes", "_start_wall")
+
+    def __init__(self) -> None:
+        # 读模块级常量（测试可 monkeypatch 模块常量改变行为）
+        self._window_sec = float(_RELAY_STALL_WINDOW_SEC)
+        self._min_bps = float(_RELAY_STALL_MIN_KBPS) * 1024.0
+        self._grace_bytes = int(_RELAY_STALL_GRACE_BYTES)
+        self._grace_sec = float(_RELAY_STALL_GRACE_SEC)
+        self._samples: deque[tuple[float, int]] = deque()  # (上游等待秒, 字节)
+        self._wait_sum = 0.0
+        self._bytes_sum = 0
+        self._total_bytes = 0
+        self._start_wall: float | None = None
+
+    def observe(self, nbytes: int, wait_sec: float) -> None:
+        now = time.monotonic()
+        if self._start_wall is None:
+            self._start_wall = now
+        if wait_sec < 0:
+            wait_sec = 0.0
+        self._total_bytes += nbytes
+        self._samples.append((wait_sec, nbytes))
+        self._wait_sum += wait_sec
+        self._bytes_sum += nbytes
+        # 窗口按等待时间累计滑动：只保留最近 _window_sec 秒的等待量（至少留一个样本）
+        while len(self._samples) > 1 and \
+                self._wait_sum - self._samples[0][0] >= self._window_sec:
+            w, b = self._samples.popleft()
+            self._wait_sum -= w
+            self._bytes_sum -= b
+
+    def stalled(self) -> bool:
+        if self._start_wall is None:
+            return False
+        # 起播宽限：字节数和墙钟任一达标才开始判定（首字节/TTFB 阶段不算）
+        if self._total_bytes < self._grace_bytes and \
+                time.monotonic() - self._start_wall < self._grace_sec:
+            return False
+        if self._wait_sum <= 0:
+            return False
+        return (self._bytes_sum / self._wait_sum) < self._min_bps
+
+    def snapshot_kbps(self) -> float:
+        """当前窗口平均速度（KB/s），打日志用。"""
+        if self._wait_sum <= 0:
+            return 0.0
+        return (self._bytes_sum / self._wait_sum) / 1024.0
+
+    def reset(self) -> None:
+        """重连成功后清窗口：新连接重新积累信号，旧连接的慢速不污染判定。
+        宽限期只给一次（_total_bytes / _start_wall 保留）。"""
+        self._samples.clear()
+        self._wait_sum = 0.0
+        self._bytes_sum = 0
+
+
+class _ReconnectBudget:
+    """全局重连令牌桶：全服每分钟重连尝试上限。
+
+    锁只在触发重连的瞬间持有（临界区几次浮点运算）；热路径每 chunk 不碰，
+    不会拖慢转发。
+    """
+
+    def __init__(self, per_min: float, _clock=time.monotonic) -> None:
+        self._capacity = float(per_min)
+        self._tokens = float(per_min)
+        self._lock = threading.Lock()
+        self._clock = _clock
+        self._last = _clock()
+
+    def try_acquire(self) -> bool:
+        now = self._clock()
+        with self._lock:
+            self._tokens = min(self._capacity,
+                               self._tokens + (now - self._last) * self._capacity / 60.0)
+            self._last = now
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return True
+            return False
+
+    def _reset_for_tests(self) -> None:
+        with self._lock:
+            self._tokens = self._capacity
+            self._last = self._clock()
+
+
+class _ReconnectBreaker:
+    """全局熔断：短窗口内重连尝试过多 → 更像账号级限速/出口故障而非单连接运气差，
+    打开冷却期，期间全服不再尝试重连，避免扎堆请求加重限速/触发 Google 风控。
+    冷却结束后自动闭合（下一次尝试正常走预算）。
+
+    ``is_open`` 无锁读 ``_open_until``：CPython 下 float 属性读写原子，
+    并发下最多"晚一点看到闭合"，fail-safe（宁可多拦一次，不多放一次）。
+    """
+
+    def __init__(self, window_sec: float, threshold: int, cooldown_sec: float,
+                 _clock=time.monotonic) -> None:
+        self._window_sec = float(window_sec)
+        self._threshold = int(threshold)
+        self._cooldown_sec = float(cooldown_sec)
+        self._clock = _clock
+        self._attempts: deque[float] = deque()
+        self._open_until = 0.0
+        self._lock = threading.Lock()
+
+    def is_open(self) -> bool:
+        return self._clock() < self._open_until
+
+    def record(self) -> None:
+        """每次实际发起重连尝试后调用；触发熔断时打 warning 日志。"""
+        now = self._clock()
+        tripped = False
+        count = 0
+        with self._lock:
+            self._attempts.append(now)
+            cutoff = now - self._window_sec
+            while self._attempts and self._attempts[0] < cutoff:
+                self._attempts.popleft()
+            count = len(self._attempts)
+            if count >= self._threshold and now >= self._open_until:
+                self._open_until = now + self._cooldown_sec
+                tripped = True
+        if tripped:
+            logger.warning(
+                "[relay-reconnect] 全局熔断打开：%.0fs 内重连尝试 %d 次"
+                "（疑似账号级限速/出口故障），冷却 %.0fs 内暂停全服重连",
+                self._window_sec, count, self._cooldown_sec)
+
+    def _reset_for_tests(self) -> None:
+        with self._lock:
+            self._attempts.clear()
+            self._open_until = 0.0
+
+
+_RECONNECT_BUDGET = _ReconnectBudget(_RELAY_STALL_BUDGET_PER_MIN)
+_RECONNECT_BREAKER = _ReconnectBreaker(
+    _RELAY_STALL_BREAKER_WINDOW_SEC,
+    _RELAY_STALL_BREAKER_THRESHOLD,
+    _RELAY_STALL_BREAKER_COOLDOWN_SEC,
+)
+
+
+def _reset_reconnect_state() -> None:
+    """测试钩子：重置全局预算与熔断（生产代码不调用）。"""
+    _RECONNECT_BUDGET._reset_for_tests()
+    _RECONNECT_BREAKER._reset_for_tests()
+
+
+class _RelayStallState:
+    """单条流的重连状态：检测器 + 已转发字节 + 尝试计数 + 退避（无锁，单流独占）。"""
+
+    def __init__(self, range_start: int, log_ctx: str, enabled: bool) -> None:
+        self.range_start = range_start
+        self.log_ctx = log_ctx
+        self.enabled = enabled
+        self.sent = 0
+        self.attempts = 0
+        self.reconnects = 0
+        self.next_allowed_at = 0.0
+        self.detector = _StallDetector() if enabled else None
+
+    def on_chunk(self, nbytes: int, wait_sec: float) -> None:
+        self.sent += nbytes
+        if self.detector is not None:
+            self.detector.observe(nbytes, wait_sec)
+
+    @property
+    def resume_at(self) -> int:
+        # overlap 回退一整块：httpx 的 ByteChunker 中途只吐整块，旧迭代器里至多
+        # 残留 <1块 已读未吐出的数据；新连接从 sent-READ_CHUNK 开始，首块
+        # （=上一块，已给过客户端）丢弃后无缝续传，无缺口无重复。
+        return self.range_start + self.sent - READ_CHUNK
+
+    def want_reconnect(self) -> bool:
+        if not self.enabled or self.detector is None:
+            return False
+        if self.attempts >= _RELAY_STALL_MAX_RECONNECTS:
+            return False
+        if self.sent < READ_CHUNK:
+            return False
+        if time.monotonic() < self.next_allowed_at:
+            return False
+        return self.detector.stalled()
+
+    def note_attempt(self) -> None:
+        # 指数退避 + 0~1s 随机抖动：避免多条流同时塌速时重连请求扎堆（反风控）
+        self.attempts += 1
+        delay = min(_RELAY_STALL_BACKOFF_BASE * (2 ** (self.attempts - 1)),
+                    _RELAY_STALL_BACKOFF_CAP)
+        self.next_allowed_at = time.monotonic() + delay + random.uniform(0, 1.0)
+
+    def note_deferred(self) -> None:
+        # 被全局预算/熔断拒绝：短冷却避免每 chunk 刷一次拒绝日志，不计入 attempts
+        self.next_allowed_at = (time.monotonic() + _RELAY_STALL_DEFER_COOLDOWN
+                                + random.uniform(0, 1.0))
+
+    def note_success(self) -> None:
+        self.reconnects += 1
+        if self.detector is not None:
+            self.detector.reset()
+
+
+def _upstream_resumable(resp) -> bool:
+    """上游是否支持 Range 续传：只有可续传的才启用慢连接重连。"""
+    accept = (resp.headers.get("accept-ranges") or "").lower()
+    if "bytes" in accept:
+        return True
+    return bool(resp.headers.get("content-range"))
+
+
+def _resume_offset(resp, range_header: str | None) -> int:
+    """续传偏移起点：优先上游 Content-Range，其次客户端 Range，再次 0。"""
+    cr = resp.headers.get("content-range") or ""
+    m = re.match(r"bytes (\d+)-", cr)
+    if m:
+        return int(m.group(1))
+    if range_header:
+        m = RANGE_RE.match(range_header.strip())
+        if m and m.group(1):
+            return int(m.group(1))
+    return 0
+
+
+def _old_auth_token(forward: dict) -> str:
+    for k, v in (forward or {}).items():
+        if str(k).lower() == "authorization":
+            return str(v or "")
+    return ""
+
+
+def _fresh_sa_token(old_authorization: str, api_url: str) -> str | None:
+    """取一个与旧 token 不同的新 SA token（打破亲和，分散单 SA 被掐速的风险）。
+
+    只用于 Drive 上游；失败返回 None（调用方继续用旧 token 建新连接，不阻塞重连）。
+    token 按 SA 独立缓存、预铸常驻，取用是内存命中（毫秒级），不增加 Google 请求。
+    """
+    if not _drive_alt_media_file_id(api_url):
+        return None
+    old_token = old_authorization[len("Bearer "):].strip() \
+        if old_authorization.startswith("Bearer ") else old_authorization.strip()
+    try:
+        from backend.emby_server import drive_auth
+        for _ in range(3):
+            token = drive_auth.get_drive_bearer_token(affinity_key=None)
+            if token and token != old_token:
+                return token
+        return None
+    except Exception:
+        return None
 
 
 async def _follow_redirects(
@@ -628,6 +977,252 @@ async def close_relay_client() -> None:
         await client.aclose()
 
 
+def _open_upstream_sync(client, api_url: str, forward: dict, dns_pinning: dict,
+                        silent: bool = False):
+    """同步建连：手动跟随重定向（逐跳内网校验 + 跨主机剥凭据），与原 serve_remote
+    内联逻辑一致，只是抽出来给初始建连和重连建连共用。
+
+    silent=False（初始建连）：非法重定向目标 → HTTPException(403)，
+    跳转超限 → HTTPException(502)，建连异常向上传播（调用方转 502）。
+    silent=True（重连建连）：上述情况一律返回 ``(None, current, forward)``，
+    不抛异常——调用方继续用旧连接。
+
+    成功返回 ``(resp, final_url, forward)``；resp 为终态流式响应，由调用方关闭。
+    """
+    current = api_url
+    resp = None
+    for _hop in range(MAX_REDIRECTS + 1):
+        try:
+            resp = client.send(client.build_request("GET", current, headers=forward), stream=True)
+        except Exception:
+            if silent:
+                return None, current, forward
+            raise
+        if resp.status_code not in _REDIRECT_CODES:
+            return resp, current, forward
+        location = resp.headers.get("location")
+        if not location:
+            return resp, current, forward  # 3xx 却没给 Location：当作终态
+        try:
+            target, _hop_pinning = _next_redirect(current, location)
+        except MountError as exc:
+            resp.close()
+            logger.warning("拒绝代理到重定向目标 %s: %s", location, exc)
+            if silent:
+                return None, current, forward
+            client.close()
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 — 畸形 Location（如 http://[::1）：
+            # _next_redirect 抛非 MountError 的 ValueError；关掉已打开的 resp
+            # （否则慢泄漏共享池），silent 下返回 None，非 silent 下关 client 转 502
+            # ——与原 serve_remote 内联逻辑的外层 except 口径一致。
+            try:
+                resp.close()
+            except Exception:
+                pass
+            logger.warning("重定向目标解析失败 %s: %s", location, exc)
+            if silent:
+                return None, current, forward
+            client.close()
+            raise HTTPException(status_code=502, detail="源站不可达") from exc
+        # A-P2-2：把校验时刻的 DNS 快照并入 pin 表，下一跳建连直接走 pin 住的 IP
+        dns_pinning.update(_hop_pinning)
+        resp.close()  # 确认要跟着走，这一跳的响应就不要再占着连接了
+        forward = _redirect_headers(forward, current, target)
+        current = target
+    # 跳转超限：最后一个 resp 是 3xx 且还开着，先关掉（与原内联逻辑一致）
+    try:
+        if resp is not None:
+            resp.close()
+    except Exception:
+        pass
+    if silent:
+        return None, current, forward
+    client.close()
+    raise HTTPException(status_code=502, detail="源站重定向次数过多")
+
+
+def _check_new_upstream(resp, offset: int) -> str | None:
+    """校验新连接可用性：必须是 206 且 Content-Range 起点 == 期望偏移。
+
+    返回 None 表示可用；否则返回失败原因（调用方记日志后继续用旧连接）。
+    """
+    if resp.status_code != 206:
+        return f"状态码 {resp.status_code}（期望 206）"
+    cr = resp.headers.get("content-range") or ""
+    m = re.match(r"bytes (\d+)-", cr)
+    if not m:
+        return "缺 Content-Range（无法确认拼接点）"
+    if int(m.group(1)) != offset:
+        return f"Content-Range 起点 {m.group(1)} 与期望偏移 {offset} 不符"
+    return None
+
+
+def _build_reconnect_forward(forward: dict, offset: int, old_auth: str,
+                             api_url: str) -> tuple[dict, bool]:
+    """构造重连请求头：Range 改为续传偏移；Drive 上游换一个 SA（打破亲和）。
+
+    返回 ``(new_forward, sa_switched)``。
+    """
+    new_forward = dict(forward)
+    new_forward["Range"] = f"bytes={offset}-"
+    sa_switched = False
+    new_token = _fresh_sa_token(old_auth, api_url)
+    if new_token:
+        new_forward["Authorization"] = f"Bearer {new_token}"
+        sa_switched = True
+    return new_forward, sa_switched
+
+
+def _reconnect_guards(log_ctx: str, offset: int) -> str | None:
+    """全局保护检查：熔断 / 预算。返回 None 表示放行，否则返回拒绝原因。
+
+    只在触发重连的瞬间调用（热路径不碰）；拒绝后调用方给短冷却，避免刷日志。
+    """
+    if _RECONNECT_BREAKER.is_open():
+        return "熔断冷却中"
+    if not _RECONNECT_BUDGET.try_acquire():
+        return "全局重连预算耗尽"
+    return None
+
+
+async def _try_reconnect_upstream(client, api_url: str, forward: dict,
+                                  state: _RelayStallState):
+    """make-before-break 重连（异步版）：先建新连接并确认 206 + 首块数据，
+    再返回 ``(True, new_resp, new_aiter)``；任何失败返回 ``(False, reason)``，
+    调用方继续用旧连接——"慢"绝不能变成"断"。
+
+    overlap 说明：新连接从 ``state.resume_at``（= 已发送 - 一整块）开始，
+    首块（=上一块，已给过客户端）在确认后丢弃，后续块无缝续传。
+    旧连接在新连接确认可用之前一直开着、继续服务。
+    """
+    log_ctx = state.log_ctx
+    offset = state.resume_at
+    deny = _reconnect_guards(log_ctx, offset)
+    if deny is not None:
+        logger.info("[relay-reconnect] %s，跳过重连 %s 偏移=%d", deny, log_ctx, offset)
+        state.note_deferred()
+        return False, deny
+    state.note_attempt()
+    # 熔断计数：每次实际发起尝试都记（不只记成功的）——账号级限速时新连接会批量
+    # 失败，只记成功就永远打不开熔断，起不到保护作用。
+    _RECONNECT_BREAKER.record()
+    new_forward, sa_switched = _build_reconnect_forward(
+        forward, offset, _old_auth_token(forward), api_url)
+    kbps = state.detector.snapshot_kbps() if state.detector else 0.0
+    logger.info("[relay-reconnect] 塌速触发重连 %s 偏移=%d 已传=%dKB 塌速时=%.0fKB/s"
+                "(阈值%.0f) 第%d次尝试 换SA=%s",
+                log_ctx, offset, state.sent // 1024, kbps,
+                _RELAY_STALL_MIN_KBPS, state.attempts, sa_switched)
+    try:
+        new_resp, _final_url, _hops = await _follow_redirects(
+            client, api_url, new_forward, silent=True)
+    except Exception as exc:  # noqa: BLE001 — 建连异常：旧连接继续服务
+        return False, f"新连接建连异常 {type(exc).__name__}"
+    if new_resp is None:
+        return False, "新连接重定向校验失败"
+    try:
+        if new_resp.status_code == 401:
+            # 新 token 也 401：按既有口径失效它，下次重连会再换一个 SA
+            try:
+                from backend.emby_server import drive_auth
+                drive_auth.note_drive_unauthorized(api_url, new_forward.get("Authorization", ""))
+            except Exception:
+                pass
+        bad = _check_new_upstream(new_resp, offset)
+        if bad is not None:
+            await new_resp.aclose()
+            return False, f"新连接不可用：{bad}"
+        # 读第一块确认真的有数据（旧连接此时还开着，make-before-break）；
+        # 首块 = 上一块（已给过客户端），确认后丢弃。
+        new_aiter = new_resp.aiter_bytes(READ_CHUNK).__aiter__()
+        try:
+            first = await asyncio.wait_for(new_aiter.__anext__(),
+                                           timeout=_RELAY_READ_TIMEOUT)
+        except (TimeoutError, StopAsyncIteration) as exc:
+            await new_resp.aclose()
+            return False, f"新连接首块读取失败 {type(exc).__name__}"
+        if len(first) != READ_CHUNK:
+            # 中途块必须是整块；短块说明上游行为异常，不可信 splicing
+            await new_resp.aclose()
+            return False, f"新连接首块长度 {len(first)} 非整块"
+    except asyncio.CancelledError:
+        # 客户端在确认阶段断开：关掉新连接再向上传播，避免共享池泄漏
+        try:
+            await new_resp.aclose()
+        except Exception:
+            pass
+        raise
+    except Exception as exc:  # noqa: BLE001
+        try:
+            await new_resp.aclose()
+        except Exception:
+            pass
+        return False, f"新连接确认异常 {type(exc).__name__}"
+    logger.info("[relay-reconnect] 重连成功 %s 新偏移=%d 第%d次",
+                log_ctx, offset, state.reconnects + 1)
+    return True, (new_resp, new_aiter)
+
+
+def _try_reconnect_upstream_sync(client, api_url: str, forward: dict,
+                                 dns_pinning: dict, state: _RelayStallState):
+    """make-before-break 重连（同步版）：语义与异步版完全一致。"""
+    log_ctx = state.log_ctx
+    offset = state.resume_at
+    deny = _reconnect_guards(log_ctx, offset)
+    if deny is not None:
+        logger.info("[relay-reconnect] %s，跳过重连 %s 偏移=%d", deny, log_ctx, offset)
+        state.note_deferred()
+        return False, deny
+    state.note_attempt()
+    # 熔断计数：每次实际发起尝试都记（不只记成功的）——账号级限速时新连接会批量
+    # 失败，只记成功就永远打不开熔断，起不到保护作用。
+    _RECONNECT_BREAKER.record()
+    new_forward, sa_switched = _build_reconnect_forward(
+        forward, offset, _old_auth_token(forward), api_url)
+    kbps = state.detector.snapshot_kbps() if state.detector else 0.0
+    logger.info("[relay-reconnect] 塌速触发重连 %s 偏移=%d 已传=%dKB 塌速时=%.0fKB/s"
+                "(阈值%.0f) 第%d次尝试 换SA=%s",
+                log_ctx, offset, state.sent // 1024, kbps,
+                _RELAY_STALL_MIN_KBPS, state.attempts, sa_switched)
+    try:
+        new_resp, _final_url, _fwd = _open_upstream_sync(
+            client, api_url, new_forward, dns_pinning, silent=True)
+    except Exception as exc:  # noqa: BLE001 — 建连异常：旧连接继续服务
+        return False, f"新连接建连异常 {type(exc).__name__}"
+    if new_resp is None:
+        return False, "新连接重定向校验失败"
+    try:
+        if new_resp.status_code == 401:
+            try:
+                from backend.emby_server import drive_auth
+                drive_auth.note_drive_unauthorized(api_url, new_forward.get("Authorization", ""))
+            except Exception:
+                pass
+        bad = _check_new_upstream(new_resp, offset)
+        if bad is not None:
+            new_resp.close()
+            return False, f"新连接不可用：{bad}"
+        new_iter = new_resp.iter_bytes(READ_CHUNK)
+        try:
+            first = next(new_iter)
+        except StopIteration:
+            new_resp.close()
+            return False, "新连接首块为空"
+        if len(first) != READ_CHUNK:
+            new_resp.close()
+            return False, f"新连接首块长度 {len(first)} 非整块"
+    except Exception as exc:  # noqa: BLE001
+        try:
+            new_resp.close()
+        except Exception:
+            pass
+        return False, f"新连接确认异常 {type(exc).__name__}"
+    logger.info("[relay-reconnect] 重连成功 %s 新偏移=%d 第%d次",
+                log_ctx, offset, state.reconnects + 1)
+    return True, (new_resp, new_iter)
+
+
 async def serve_remote_async(
     url: str,
     request: Request,
@@ -675,10 +1270,14 @@ async def serve_remote_async(
             pass
         if pt is not None:
             pt.mark("url_convert")
+        # api_url：重连建连的起点（drive_api_media_url 已转好，幂等，可复用）
+        api_url = url
         # 跳转跟随走共用 helper（P3-5：与 resolve_drive_final_url 同逻辑，
         # 逐跳内网校验 + 跨主机剥凭据）；终态 resp 不关，由下面消费/关闭。
+        # 注意：_follow_redirects 只 rebind 自己的 forward 形参，调用方的 forward
+        # 保持"剥凭据之前"的原始头——重连建连直接复用它（与初始请求一致）。
         resp, current, _redirect_hops = await _follow_redirects(
-            client, url, forward, silent=False)
+            client, api_url, forward, silent=False)
         # ttfb：_follow_redirects 返回时已收到源站响应头（首字节就绪）。
         if pt is not None:
             pt.mark("ttfb")
@@ -765,10 +1364,54 @@ async def serve_remote_async(
         pass
     content_type = resp.headers.get("content-type") or media_type
 
+    # 慢连接自动重连状态：只对可续传上游启用；客户端只看到一条连续响应流，
+    # 状态码/响应头保持初始建连时的值不变。
+    _stall_state = _RelayStallState(
+        _resume_offset(resp, range_header),
+        log_ctx=url.split("?")[0],
+        enabled=_RELAY_STALL_RECONNECT and _upstream_resumable(resp),
+    )
+
     async def iter_remote():
+        cur_resp = resp
+        ait = None
         try:
-            async for chunk in resp.aiter_bytes(READ_CHUNK):
+            while True:
+                if ait is None:
+                    ait = cur_resp.aiter_bytes(READ_CHUNK).__aiter__()
+                # 只统计"等上游出数据"的时间：yield 处被慢客户端阻塞的时间不计入，
+                # 客户端下行慢不会误触发重连。
+                t0 = time.monotonic()
+                try:
+                    chunk = await ait.__anext__()
+                except StopAsyncIteration:
+                    break
+                wait = time.monotonic() - t0
                 yield chunk
+                _stall_state.on_chunk(len(chunk), wait)
+                if _stall_state.want_reconnect():
+                    ok, payload = await _try_reconnect_upstream(
+                        client, api_url, forward, _stall_state)
+                    if ok:
+                        new_resp, new_ait = payload
+                        old_resp, old_ait = cur_resp, ait
+                        cur_resp, ait = new_resp, new_ait
+                        # make-before-break：新连接已确认可用，才断旧连；
+                        # 先关旧迭代器（避免未关闭的 async generator 告警），再关旧响应。
+                        try:
+                            await old_ait.aclose()
+                        except Exception:
+                            pass
+                        try:
+                            await old_resp.aclose()
+                        except Exception:
+                            pass
+                        _stall_state.note_success()
+                        # 首块=上一块（已给过客户端），确认用、此处不再下发
+                        continue
+                    reason = payload
+                    logger.info("[relay-reconnect] 本次重连未生效，继续旧连接 %s：%s",
+                                _stall_state.log_ctx, reason)
         except httpx.TransportError as exc:
             # S2：源站卡住（块间空闲超过 RELAY_READ_TIMEOUT）或中途断开：结束这条流、
             # 归还连接。响应头已发出，只能截断；播放器会对剩余区间重新发 Range。
@@ -776,7 +1419,10 @@ async def serve_remote_async(
         finally:
             # 只关响应，不关 client —— client 是进程共享的，关了会让其它并发请求炸掉。
             # 连接会在响应关闭后自动归还池里，供下一次 Range 请求复用。
-            await resp.aclose()
+            try:
+                await cur_resp.aclose()
+            except Exception:
+                pass
 
     # 播放链路耗时汇总（[play-timing]）：ttfb 已在上面 mark，这里输出整行。
     if pt is not None:
