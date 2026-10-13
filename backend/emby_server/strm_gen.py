@@ -702,7 +702,7 @@ def _list_files_page(token: str, drive_id: str, query: str,
         "q": query,
         "pageSize": PAGE_SIZE,
         "fields": ("nextPageToken,files(id,name,mimeType,size,parents,trashed,"
-                   "shortcutDetails"),  # 2026-10-14：快捷方式解析需要该字段
+                   "shortcutDetails)"),  # 2026-10-14：快捷方式解析需要该字段
         # （_resolve_shortcut_target 取 item["shortcutDetails"]["targetId"]；
         # 缺字段时列举到的快捷方式会被静默跳过，对非快捷方式文件返回空，
         # API 成本可忽略）。
