@@ -238,7 +238,7 @@ export default {
   border-radius: var(--neo-radius-xs, 8px);
   color: var(--neo-text-tertiary);
   cursor: pointer;
-  transition: all var(--neo-duration-fast, 150ms) var(--neo-ease-default);
+  transition: background var(--neo-duration-fast, 150ms) var(--neo-ease-default), color var(--neo-duration-fast, 150ms) var(--neo-ease-default);
   flex-shrink: 0;
 }
 
@@ -310,11 +310,11 @@ export default {
 
 /* 内容进入/离开动画 */
 .modal-content-enter-active {
-  transition: all var(--neo-duration-slow, 300ms) cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity var(--neo-duration-slow, 300ms) cubic-bezier(0.16, 1, 0.3, 1), transform var(--neo-duration-slow, 300ms) cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .modal-content-leave-active {
-  transition: all var(--neo-duration-normal, 200ms) ease-in;
+  transition: opacity var(--neo-duration-normal, 200ms) ease-in, transform var(--neo-duration-normal, 200ms) ease-in;
 }
 
 .modal-content-enter-from {

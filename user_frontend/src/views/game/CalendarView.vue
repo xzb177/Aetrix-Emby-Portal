@@ -76,7 +76,7 @@
           </div>
           </div>
           <!-- R27：无报错但一天都没有 → 空态说明（计划不持久化是 v1 设计，不改） -->
-          <div v-if="!days.length" class="v4-empty">最近没有新大陆抵达 —— 探险计划不留档，刷新页面重新看看 🧭</div>
+          <div v-if="!days.length && !teaserStandalone" class="v4-empty">最近没有新大陆抵达 —— 探险计划不留档，刷新页面重新看看 🧭</div>
         </div>
       </section>
 
