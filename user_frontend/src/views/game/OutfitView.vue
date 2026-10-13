@@ -146,13 +146,10 @@ onBeforeUnmount(() => {
   if (picked.value !== storedPref.value) {
     const id = storedPref.value
     const html = document.documentElement
-    if (id === 'light') html.setAttribute('data-theme', 'light')
-    else if (id === 'dark') html.removeAttribute('data-theme')
-    else {
-      const sysLight = window.matchMedia('(prefers-color-scheme: light)').matches
-      if (sysLight) html.setAttribute('data-theme', 'light')
-      else html.removeAttribute('data-theme')
-    }
+    const light = id === 'light' || (id !== 'dark' && window.matchMedia('(prefers-color-scheme: light)').matches)
+    if (light) html.setAttribute('data-theme', 'light')
+    else html.removeAttribute('data-theme')
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', light ? '#f5f1ea' : '#0c0a09')
     // useTheme 的监听还在，它会在自己的 onMounted 里重新 apply，这里只做兜底
   }
 })
@@ -247,5 +244,10 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .confirm { transition: none; }
+}
+
+.outfit:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
 }
 </style>

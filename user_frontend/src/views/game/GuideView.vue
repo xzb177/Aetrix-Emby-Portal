@@ -189,7 +189,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { aiApi, embyApi, type AiStatus, type AccountCard } from '@/api'
 import { useUserStore } from '@/stores/user'
@@ -214,6 +214,10 @@ const status = ref<AiStatus | null>(null)
 const question = ref('')
 const sending = ref(false)
 const bubbles = ref<Bubble[]>([])
+const MAX_BUBBLES = 80
+function trimBubbles() {
+  if (bubbles.value.length > MAX_BUBBLES) bubbles.value.splice(0, bubbles.value.length - MAX_BUBBLES)
+}
 const scroller = ref<HTMLElement | null>(null)
 /** true=请求抛错（网络开小差）；false=明确未启用（管理员还没请向导） */
 const netError = ref(false)
@@ -258,11 +262,13 @@ const COPY_LABELS: Record<string, string> = {
   server: '服务器地址',
   user: '用户名',
 }
+let copyTimer: number | undefined
 async function copyText(text: string, field: string) {
   const ok = await copy(text, COPY_LABELS[field] || '服务器地址')
   if (!ok) return
   copiedField.value = field
-  setTimeout(() => {
+  window.clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(() => {
     if (copiedField.value === field) copiedField.value = ''
   }, 1600)
 }
@@ -294,7 +300,11 @@ async function handleSetPlayPassword() {
     toast.success(toastCopy.playPasswordSet())
     showSetPlayPwd.value = false
     playPwd.value = ''
-    account.value = await embyApi.getAccountCard()
+    try {
+      account.value = await embyApi.getAccountCard()
+    } catch {
+      // 密码已设置成功，刷新失败只静默，不翻转成功提示
+    }
   } catch (err: any) {
     toast.error(toUserMessage(err, 'settingFailed'))
   } finally {
@@ -347,6 +357,7 @@ async function ask(text?: string) {
   if (!content || sending.value) return
   question.value = ''
   bubbles.value.push({ role: 'me', content })
+  trimBubbles()
   sending.value = true
   scrollToEnd()
   try {
@@ -360,9 +371,11 @@ async function ask(text?: string) {
       .slice(-8)
     const res = await aiApi.ask(content, history)
     bubbles.value.push({ role: 'guide', content: res.answer })
+    trimBubbles()
     status.value = { ...(status.value as AiStatus), ...res }
   } catch (err) {
     bubbles.value.push({ role: 'error', content: humanizeError(err) })
+    trimBubbles()
     toast.error(humanizeError(err))
     // 配额用尽 / 被关闭时刷新一次状态，界面提示随之更新
     load()
@@ -380,6 +393,7 @@ onMounted(() => {
     content: '哟，来了。老陈我在这营地坐了三年，片库里哪部片子后劲大、哪条线路最稳，门儿清。甭客气，随便问。',
   })
 })
+onUnmounted(() => window.clearTimeout(copyTimer))
 </script>
 
 <style scoped>
@@ -641,4 +655,17 @@ onMounted(() => {
 
 .tip { font-size: 12px; color: var(--ink2); }
 .tip b { color: var(--gold); }
+
+.chip:focus-visible,
+.v4-retry:focus-visible,
+.v4-btn-primary:focus-visible,
+.v4-btn-ghost:focus-visible,
+.equip-btn:focus-visible,
+.equip-text-btn:focus-visible,
+.v4-input:focus-visible,
+.inputbar input:focus-visible,
+.inputbar button:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
 </style>
