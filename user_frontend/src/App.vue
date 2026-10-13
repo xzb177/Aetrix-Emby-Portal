@@ -28,15 +28,17 @@ const showChrome = computed(
 )
 
 /**
- * 三个主 Tab（首页 / 商店 / 钱包 / 我的）常驻缓存：切 tab 不再销毁重建，
+ * 两个主 Tab（首页 / 商店 / 我的）常驻缓存：切 tab 不再销毁重建，
  * 回来秒出上次的数据，各视图在 onActivated 里做静默刷新（不闪骨架屏）。
  *
  * 缓存 key = 路由 path + 用户 id + 登录会话序列：
  * - 同一 tab 内的实例复用，滚动位置、选项卡状态都保留；
  * - 登出 / 换号 / 重新登录后旧实例不再复用，不会看到上一个登录态的数据；
  * - 未列入 include 的页面（详情、播放、登录等）不受影响，照常每次重建。
+ *
+ * 2026-10-13：钱包页已删，WalletView 移出缓存。
  */
-const KEEP_ALIVE_VIEWS = ['HomeView', 'StoreView', 'WalletView', 'ProfileView']
+const KEEP_ALIVE_VIEWS = ['HomeView', 'StoreView', 'ProfileView']
 const viewCacheKey = computed(
   () => `${route.path}:${userStore.user?.id ?? 'guest'}#${userStore.sessionSeq}`,
 )

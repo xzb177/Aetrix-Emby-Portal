@@ -403,9 +403,10 @@ async function focusActiveTab(center: boolean) {
   }
 }
 
-// 签到 / 钱包操作后回到任意页面时，头像菜单里的会员状态、顶栏积分即时刷新
+// 商店操作后回到任意页面时，头像菜单里的会员状态、顶栏积分即时刷新
+//（2026-10-13：/wallet、/checkin 旧页面已删，economyPaths 只留 /store）
 watch(() => route.path, (p, old) => {
-  const economyPaths = ['/wallet', '/store', '/checkin']
+  const economyPaths = ['/store']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
     refreshSubscription()
     loadPoints()
@@ -483,22 +484,22 @@ onBeforeUnmount(() => {
            外观按钮放在登录判断**之外**：未登录也能切主题。点一下直接在白日/黑暗
            之间切换，不要下拉菜单 -->
       <div class="user-section">
-        <!-- 积分徽章：登录后显示当前积分，点击进钱包 -->
+        <!-- 积分徽章：登录后显示当前积分，点击进探险大本营（2026-10-13：钱包页已删） -->
         <RouterLink
           v-if="userStore.isLoggedIn && pointsBalance !== null"
-          to="/wallet"
+          to="/game"
           class="points-pill"
-          title="我的积分，点击查看钱包"
+          title="我的积分，点击查看探险大本营"
         >
           <Sparkles :size="13" />
           <span>{{ pointsBalance }}</span>
         </RouterLink>
-        <!-- 活力值徽章：仅公益服用户显示，点击进钱包 -->
+        <!-- 活力值徽章：仅公益服用户显示，点击进探险大本营（2026-10-13：钱包页已删） -->
         <RouterLink
           v-if="userStore.isLoggedIn && vitality !== null"
-          to="/wallet"
+          to="/game"
           class="points-pill vitality-pill"
-          title="我的活力值，点击查看钱包"
+          title="我的活力值，点击查看探险大本营"
         >
           <Zap :size="13" />
           <span>{{ vitality }}</span>
@@ -562,7 +563,7 @@ onBeforeUnmount(() => {
                 </template>
                 <p v-else class="msg-drop-hint">暂时没有新消息</p>
 
-                <RouterLink to="/messages" class="msg-drop-foot" @click="closeMenus">
+                <RouterLink to="/game/pigeon" class="msg-drop-foot" @click="closeMenus">
                   查看全部消息
                   <ChevronRight :size="13" />
                 </RouterLink>

@@ -18,17 +18,17 @@
       </span>
       <span class="help-row-arrow" aria-hidden="true">›</span>
     </RouterLink>
-    <RouterLink to="/request" class="help-row">
+    <RouterLink to="/game/wishlist" class="help-row">
       <span class="help-row-body">
         <strong>求片</strong>
-        <em>库里没有想看的？提交求片，入库后在消息中心通知你</em>
+        <em>库里没有想看的？去许愿池提交，入库后通知你</em>
       </span>
       <span class="help-row-arrow" aria-hidden="true">›</span>
     </RouterLink>
-    <RouterLink to="/tickets" class="help-row">
+    <RouterLink to="/game/signal" class="help-row">
       <span class="help-row-body">
         <strong>联系客服</strong>
-        <em>遇到问题提交工单，客服会尽快回复</em>
+        <em>遇到问题发求救信号，客服会尽快回复</em>
       </span>
       <span class="help-row-arrow" aria-hidden="true">›</span>
     </RouterLink>

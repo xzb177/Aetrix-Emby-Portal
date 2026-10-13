@@ -591,7 +591,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
     <section class="store-hero au-anim-up" aria-label="账户概览">
       <div class="sh-balance">
         <span class="sh-label">积分余额</span>
-        <RouterLink to="/wallet" class="sh-num">
+        <RouterLink to="/game/ledger" class="sh-num">
           <span class="num">{{ balance }}</span>
           <span class="unit">积分</span>
           <ChevronRight class="sh-go" />
