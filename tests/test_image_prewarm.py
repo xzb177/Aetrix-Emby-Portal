@@ -128,7 +128,9 @@ def test_apply_images_uses_the_prewarmed_file(downloads):
     tmdb_client.apply_images(item, DATA)
     assert item.poster_path == image_store.local_path(POSTER_URL)
     assert item.backdrop_path == image_store.local_path(BACKDROP_URL)
-    assert downloads == [POSTER_URL, BACKDROP_URL]     # 全程只下这一遍
+    # v2.57.0 起 prewarm 是 4 线程并行下载（as_completed），完成顺序不确定：
+    # 这里只断言「下载且仅下载这两张、每张一遍」，不断言顺序。
+    assert sorted(downloads) == sorted([POSTER_URL, BACKDROP_URL])  # 全程只下这一遍
 
 
 # ==================== 4. 预热与写库看同一份 URL ====================
