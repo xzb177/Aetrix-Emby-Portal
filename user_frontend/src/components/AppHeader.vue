@@ -5,22 +5,22 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
-  ChevronRight, LayoutDashboard, Zap,
+  ChevronRight, Zap,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
   type StationMessage, type Announcement,
 } from '@/api'
 import type { MySubscription } from '@/api'
-import { primaryNav, menuSections } from '@/config/navigation'
+import { primaryNav } from '@/config/navigation'
+/** v4.1：头像菜单改为「探险设施直达」，设施清单唯一数据源 */
+import { gameFacilities } from '@/config/game'
 import { checkinApi, vitalityApi } from '@/api/economy'
 // 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
 import { branding } from '@/composables/useBranding'
 
 /** 积分余额（顶栏 pill 显示，登录后加载） */
 const pointsBalance = ref<number | null>(null)
-/** 签到功能开关（管理端可配）：关闭时隐藏头像菜单里的签到入口 */
-const checkinEnabled = ref(true)
 async function loadPoints() {
   if (!userStore.isLoggedIn) {
     pointsBalance.value = null
@@ -29,7 +29,6 @@ async function loadPoints() {
   try {
     const st = await checkinApi.status()
     pointsBalance.value = st.points
-    checkinEnabled.value = st.enabled !== false
   } catch {
     /* 拿不到就不显示，不打扰 */
   }
@@ -112,14 +111,11 @@ const menuBadge = computed(() => {
   return { icon: Crown, text: '未开通会员', cls: 'muted' }
 })
 
-/** 用户菜单里的操作项（纸片人式列表）；退出登录独立成红色分区，不混在列表里
- *  签到开关关闭时隐藏「每日签到」入口（与管理端开关同步） */
-const menuActions = computed(() =>
-  menuSections.flatMap((g) => g.items).filter((item) => {
-    if (item.path === '/checkin' && !checkinEnabled.value) return false
-    return true
-  }),
-)
+/** v4.1：头像菜单改为「探险设施直达」——直接列出 @/config/game.ts 的 10 个
+ *  游戏设施（图标+名称+描述），点卡片直达对应 /game/xxx 页面。
+ *  设施开关状态由各游戏页自己处理（如报到未开启时页内提示），菜单不再过滤。
+ *  退出登录独立成红色分区，不混在列表里 */
+const menuFacilities = computed(() => gameFacilities)
 
 /** 昵称展示：登录名可能是一长串邮箱，头像旁只取 @ 前段；@id 用数字 id */
 const displayName = computed(() => {
@@ -299,10 +295,10 @@ function toggleMsgMenu() {
 }
 
 /**
- * 导航分工（v2.6.30）：全站只有一份导航定义，见 src/config/navigation.ts。
+ * 导航分工（v2.6.30，v4.1 更新）：全站只有一份导航定义，见 src/config/navigation.ts。
  *
  *   primaryNav   → 顶栏（宽屏横排、窄屏第二行滑动选项卡），全断点同一批条目、同一个顺序
- *   menuSections → 低频入口统一收进头像菜单（全断点一致）
+ *   头像菜单     → v4.1 起改为「探险设施直达」，设施清单见 src/config/game.ts
  */
 
 function isActive(path: string) {
@@ -586,44 +582,27 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                   </span>
                 </div>
 
-                <!-- ② 操作项列表（外观三段切换器已删：v2.42.9 搬到顶栏那枚圆形按钮） -->
+                <!-- ② 探险设施直达（v4.1）：10 个游戏设施，图标+名称+描述，点卡片直达。
+                     设施清单来自 @/config/game.ts，这里不 hardcode。
+                     原 12 个通用菜单项（追新日历/探险日志/我的订单/积分流水/
+                     每日签到/邀请返利/求片中心/AI 助手/工单支持/消息中心/
+                     外观/管理后台）已从头像菜单移除，对应页面路由保留 -->
+                <div class="dropdown-sec-title">🏕️ 营地设施 · 点卡片直接进</div>
                 <RouterLink
-                  v-for="item in menuActions"
-                  :key="item.path"
-                  :to="item.path"
-                  class="dropdown-item"
+                  v-for="f in menuFacilities"
+                  :key="f.key"
+                  :to="f.path"
+                  class="dropdown-facility"
                   role="menuitem"
                   @click="closeMenus"
                 >
-                  <component :is="item.icon" :size="15" /> {{ item.name }}
-                  <span
-                    v-if="item.path === '/messages' && unreadCount > 0"
-                    class="dropdown-badge"
-                  >{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+                  <span class="facility-icon" aria-hidden="true">{{ f.icon }}</span>
+                  <span class="facility-body">
+                    <span class="facility-name">{{ f.name }}</span>
+                    <span class="facility-desc">{{ f.desc }}</span>
+                  </span>
+                  <span class="facility-go" aria-hidden="true">›</span>
                 </RouterLink>
-
-                <!-- ≤420px：顶栏只留积分与头像，外观切换收进菜单（宽屏仍是顶栏那枚圆钮） -->
-                <button
-                  type="button"
-                  class="dropdown-item dropdown-narrow-only"
-                  role="menuitem"
-                  :title="themeTitle"
-                  @click="toggleTheme"
-                >
-                  <component :is="themeCurrent.icon" :size="15" /> 外观
-                  <span class="dropdown-meta">{{ themeCurrent.label }}</span>
-                </button>
-
-                <!-- 管理后台是另一个前端（同源 /admin/），必须用浏览器跳转：
-                     写成 RouterLink 会被用户端路由当成 404 兜底页 -->
-                <a
-                  v-if="userStore.user?.is_staff"
-                  href="/admin/"
-                  class="dropdown-item"
-                  @click="closeMenus"
-                >
-                  <LayoutDashboard :size="15" /> 管理后台
-                </a>
 
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
@@ -1220,15 +1199,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .dropdown-item:active { background: var(--au-surface-3); }
 .dropdown-item svg { color: var(--au-text-3); transition: color var(--au-fast) var(--au-ease); }
 .dropdown-item:hover svg { color: var(--au-primary); }
-.dropdown-meta {
-  margin-left: auto;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
-}
-.dropdown-narrow-only { display: none; }
-@media (max-width: 420px) {
-  .dropdown-narrow-only { display: flex; }
-}
 .dropdown-badge {
   margin-left: auto;
   min-width: 18px;
@@ -1242,6 +1212,75 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   font-size: 0.8125rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
+}
+/* 探险设施直达（v4.1）：头像菜单里的 10 个游戏设施，纸色迷你卡片风。
+   菜单 Teleport 到 body、不在 .v4-scope 内，v4 token 取不到，就地定义。
+   卡片自带纸底色，深浅主题下都可读 */
+.dropdown-sec-title {
+  padding: 0.625rem 1rem 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--au-text-3);
+}
+.dropdown-facility {
+  --paper-card: #FFFDF6;
+  --paper2: #EFE7D6;
+  --line: #D8CDB8;
+  --ink: #2A2620;
+  --ink2: #6B6257;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin: 0 0.5rem 0.375rem;
+  padding: 0.5rem 0.625rem;
+  background: var(--paper-card);
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  text-decoration: none;
+  color: var(--ink);
+  transition: transform 0.12s ease, border-color var(--au-fast);
+}
+.dropdown-facility:hover { border-color: var(--ink); }
+.dropdown-facility:active { transform: scale(0.98); }
+.facility-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  background: var(--paper2);
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+}
+.facility-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.facility-name {
+  font-size: 0.875rem;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.facility-desc {
+  font-size: 0.75rem;
+  color: var(--ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.facility-go {
+  flex-shrink: 0;
+  font-size: 1.125rem;
+  color: var(--ink2);
 }
 .dropdown-logout {
   color: var(--au-danger);
