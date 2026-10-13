@@ -10,7 +10,8 @@ import type { AssetCard } from '@/components/panel/TicketCard.vue'
 /**
  * 电影票卡数据（原 HomeView.vue 票根卡逻辑，HomeView 删除后迁至此处）
  *
- * 三格：积分 / 订阅 / 观影数据，数据源是首页聚合接口 /api/user/home/summary。
+ * 两行布局：第一行积分 + 订阅并排（积分 / 订阅），第二行票根行里带一行观影小字。
+ * 数据源是首页聚合接口 /api/user/home/summary。
  * 快照沿用 'aetrix:home-summary:v1'（与旧首页同一份），老用户切到发现页后
  * 首屏直接用缓存渲染，不闪骨架。
  */
