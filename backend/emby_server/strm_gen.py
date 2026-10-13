@@ -1159,6 +1159,14 @@ def _save_state_rows(rows: list[tuple[str, str, str, int, str]]):
             sess.query(em.StrmGenFile).filter(
                 em.StrmGenFile.drive_id == did,
                 em.StrmGenFile.remote_path.in_(rps)).delete(synchronize_session=False)
+            # P0(r31): #820 迁移前写入的历史行 drive_id=''，新行用真实 did；
+            # 不清掉的话 _load_state 会把同一文件映射成 ("", rel) 与 (did, rel) 两个键，
+            # stale 剪枝误判 ("", rel) 为"本轮未见"而删除磁盘上仍有效的 .strm。
+            # 随新行写入顺手清理同 rel 的孤儿 '' 行（did 本来就是 '' 时上面已删过）。
+            if did != "":
+                sess.query(em.StrmGenFile).filter(
+                    em.StrmGenFile.drive_id == "",
+                    em.StrmGenFile.remote_path.in_(rps)).delete(synchronize_session=False)
         sess.bulk_insert_mappings(em.StrmGenFile, [
             {"drive_id": did, "remote_path": rp, "file_id": fid, "size": size,
              "strm_path": sp, "updated_at": now}
@@ -1324,6 +1332,7 @@ def _apply_tombstone_deletions(doomed: list[tuple[str, str, str]],
     doomed: [(drive_id, remote_path, strm_path)]。删文件 OSError 容忍，
     记 stats["tombstone_rm_failed"]（状态行照删，下轮不再重试该条）。
     """
+    pairs: list[tuple[str, str]] = []
     for drive_id, remote_path, strm_path in doomed:
         spath = os.path.join(strm_root, strm_path)
         try:
@@ -1332,8 +1341,10 @@ def _apply_tombstone_deletions(doomed: list[tuple[str, str, str]],
         except OSError as exc:
             logger.warning("strm_gen: 删除过期 .strm 失败 %s: %s", spath, exc)
             stats["tombstone_rm_failed"] = stats.get("tombstone_rm_failed", 0) + 1
-        _delete_state_rows([(drive_id, remote_path)], db=db)
+        pairs.append((drive_id, remote_path))
         stats["tombstoned"] = stats.get("tombstoned", 0) + 1
+    # P1(r31): 状态行删除批量一次（原来循环内逐条调 _delete_state_rows，N+1 次 SQL 往返）
+    _delete_state_rows(pairs, db=db)
 
 
 def _prune_doomed(db, doomed: list[tuple[str, str, str]], state: dict,
