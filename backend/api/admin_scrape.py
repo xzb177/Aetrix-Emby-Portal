@@ -549,6 +549,9 @@ class MetaSourcesSaveRequest(BaseModel):
     order: list[str] = Field(default_factory=list, description="源顺序（源 id 数组）")
     toggles: dict[str, bool] = Field(default_factory=dict, description="逐源开关")
     rates: dict[str, float] = Field(default_factory=dict, description="逐源请求间隔（秒）")
+    # Optional：没带这个字段 = 老版本前端/脚本在保存 → 不动该键（write_config 的 no-clobber 语义）；
+    # 带了就按值写。兜底开关是单向棘轮，开了就不该被一次无意的保存关掉。
+    tmdb_miss_fallback: Optional[bool] = Field(default=None, description="TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底")
 
 
 class MetaSourceProbeRequest(BaseModel):
@@ -610,6 +613,7 @@ def _meta_sources_view(db: Session, snapshot=None) -> dict:
     return {
         "enabled": snapshot.enabled,
         "prefer_chinese": snapshot.prefer_chinese,
+        "tmdb_miss_fallback": snapshot.tmdb_miss_fallback,
         "order": order,
         "sources": rows,
         "default_order": list(ms_config.DEFAULT_ORDER),
@@ -634,7 +638,7 @@ def save_meta_sources(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存总开关 / 中文优先 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**）"""
+    """保存总开关 / 中文优先 / TMDB-miss 兜底开关 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**）"""
     from backend.emby_server.metasources import config as ms_config
     from backend.emby_server.metasources import sources as ms_sources
 
@@ -646,7 +650,9 @@ def save_meta_sources(
     rates = {sid: rate for sid, rate in (req.rates or {}).items() if sid in known}
     ms_config.write_config(
         db, enabled=bool(req.enabled), prefer_chinese=bool(req.prefer_chinese),
-        order=order, toggles=toggles, rates=rates)
+        order=order, toggles=toggles, rates=rates,
+        tmdb_miss_fallback=None if req.tmdb_miss_fallback is None
+        else bool(req.tmdb_miss_fallback))
     return _meta_sources_view(db)
 
 
@@ -681,6 +687,8 @@ def add_meta_source_key(
                             order=[s.id for s in snapshot.sources],
                             toggles={s.id: s.enabled for s in snapshot.sources},
                             rates={s.id: s.rate for s in snapshot.sources},
+                            # TMDB-miss 兜底开关原样带回去：逐源增删密钥不许动它
+                            tmdb_miss_fallback=snapshot.tmdb_miss_fallback,
                             keys={source_id: existing + [key]})
     return _meta_sources_view(db)
 
@@ -715,6 +723,8 @@ def delete_meta_source_key(
                             order=[s.id for s in snapshot.sources],
                             toggles={s.id: s.enabled for s in snapshot.sources},
                             rates={s.id: s.rate for s in snapshot.sources},
+                            # TMDB-miss 兜底开关原样带回去：逐源增删密钥不许动它
+                            tmdb_miss_fallback=snapshot.tmdb_miss_fallback,
                             keys={source_id: remaining})
     return _meta_sources_view(db)
 

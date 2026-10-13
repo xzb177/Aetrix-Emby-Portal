@@ -554,6 +554,8 @@ def _should_multisource_on_tmdb_miss(item: Any, kind: str) -> bool:
 
     v2.54.0 新增独立开关 ``meta_sources_tmdb_miss_fallback``（默认 0 关闭）：
     只有显式打开时才在 TMDB-miss 路径走多源兜底。避免默认开启改变现有行为。
+    v2.58.0 起该开关由配置中心统一管理（``ms_config.Snapshot.tmdb_miss_fallback``），
+    后台「多源元数据补全」卡里有这个开关，不再这里直查 SystemConfig。
     """
     if kind not in ("series", "movie"):
         return False
@@ -577,11 +579,10 @@ def _should_multisource_on_tmdb_miss(item: Any, kind: str) -> bool:
             snapshot = ms_config.read_config(_db, ms_sources.SPECS)
             if not snapshot.enabled:
                 return False
-            # 独立开关：meta_sources_tmdb_miss_fallback，默认关闭
-            from backend.models import SystemConfig
-            _flag = _db.query(SystemConfig).filter_by(
-                key="meta_sources_tmdb_miss_fallback").first()
-            if not _flag or (_flag.value or "").strip() not in ("1", "true", "yes", "on"):
+            # 独立开关：meta_sources_tmdb_miss_fallback，默认关闭。
+            # 配置中心统一读写（write_config 同进程即时失效快照，跨进程 30s TTL），
+            # 这里不再直查 SystemConfig，避免两套读法打架。
+            if not snapshot.tmdb_miss_fallback:
                 return False
         finally:
             _db.close()
