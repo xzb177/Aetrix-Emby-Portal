@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { Component } from 'vue'
 import './ticket-card.css' // 纸色 token：独立样式表，供 CI 令牌契约检查识别
@@ -19,26 +20,37 @@ export interface AssetCard {
   hot: boolean
 }
 
-defineProps<{
+const props = defineProps<{
   loading: boolean
   assetCards: AssetCard[]
   memberFooter: string
   planName: string
 }>()
+
+// 两行布局：第一行积分 + 订阅并排（观影数据不单独占一段），
+// 观影数据缩成票根行中间的一行小字
+const mainCards = computed(() => props.assetCards.filter((c) => c.key !== 'watch'))
+const watchCard = computed(() => props.assetCards.find((c) => c.key === 'watch') || null)
+const watchLine = computed(() => {
+  const w = watchCard.value
+  if (!w || w.value === '—') return w?.short || ''
+  return `${w.value}${w.unit} · ${w.short}`
+})
 </script>
 
 <template>
-  <!-- v4 纸片风电影票：概念保留（打孔虚线 + 票根），视觉按纸色设计系统重做，
-       不再使用暗房深色 --au-* 变量 -->
+  <!-- v4 纸片风电影票：两行布局（积分|订阅 / 票根行），纸面 + 墨线 + 打孔虚线 + ADMIT ONE 红印章 -->
   <section v-if="loading" class="ticket" aria-hidden="true">
     <div class="ticket-main">
-      <div v-for="i in 3" :key="i" class="ticket-stat">
+      <div v-for="i in 2" :key="i" class="ticket-stat">
         <span class="tp-skeleton sk-stat-label"></span>
         <span class="tp-skeleton sk-stat-value"></span>
         <span class="tp-skeleton sk-stat-desc"></span>
       </div>
     </div>
     <div class="ticket-stub">
+      <span class="tp-skeleton sk-stub-stamp"></span>
+      <span class="tp-skeleton sk-stub-watch"></span>
       <span class="tp-skeleton sk-stub-btn"></span>
     </div>
   </section>
@@ -46,7 +58,7 @@ defineProps<{
     <div class="ticket-main">
       <component
         :is="c.to ? RouterLink : 'div'"
-        v-for="c in assetCards"
+        v-for="c in mainCards"
         :key="c.key"
         :to="c.to || undefined"
         class="ticket-stat"
@@ -61,28 +73,26 @@ defineProps<{
           <span class="stat-value">{{ c.value }}</span>
           <span v-if="c.unit" class="stat-unit">{{ c.unit }}</span>
         </span>
-        <!-- 数字下面固定一行：订阅是细进度条，其余是一行 ≤6 字的状态。
-             三格这一行等高，大数字因此落在同一条基线上 -->
-        <span class="stat-foot">
-          <span
-            v-if="c.progress !== null"
-            class="stat-progress"
-            :title="`套餐周期已过 ${c.progress}%`"
-          >
-            <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
-            <span class="stat-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></span>
-          </span>
-          <span v-else-if="c.short" class="stat-short">{{ c.short }}</span>
+        <!-- 进度条直接挂在订阅数字下面 -->
+        <span
+          v-if="c.progress !== null"
+          class="stat-progress"
+          :title="`套餐周期已过 ${c.progress}%`"
+        >
+          <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
+          <span class="stat-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></span>
         </span>
-        <span class="stat-desc">{{ c.desc }}</span>
-        <span class="stat-note">{{ c.note }}</span>
+        <span v-else-if="c.short" class="stat-short">{{ c.short }}</span>
+        <!-- 订阅：套餐名 + 到期日一行小字 -->
+        <span v-if="c.key === 'member'" class="stat-desc">{{ c.desc }}</span>
       </component>
     </div>
-    <!-- 票根：打孔虚线 + 上下半圆缺口；ADMIT ONE 做成红色印章；按钮是墨色纸片钮 -->
+    <!-- 票根行：顶部打孔虚线 + 左右半圆缺口；印章 / 观影小字 / 续费按钮一排 -->
     <div class="ticket-stub">
       <span class="stub-admit" aria-hidden="true">
         ADMIT ONE<span v-if="planName" class="stub-plan"><i> · </i>{{ planName }}</span>
       </span>
+      <span v-if="watchLine" class="stub-watch">{{ watchLine }}</span>
       <RouterLink to="/shop" class="stub-btn">
         {{ memberFooter }}
       </RouterLink>
@@ -94,8 +104,8 @@ defineProps<{
 /* v4 纸片风电影票：token 定义在同目录 ticket-card.css（见顶部 import），
    自包含一套纸色 token，不依赖 v4-paper.css 的变量 */
 .ticket {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
+  flex-direction: column;
   background: var(--tp-paper);
   border: 1.5px solid var(--tp-ink);
   border-radius: 12px;
@@ -103,15 +113,17 @@ defineProps<{
   overflow: hidden;
   color: var(--tp-ink);
 }
+
+/* 第一行：积分 | 订阅 */
 .ticket-main {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr 1fr;
 }
 .ticket-stat {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 16px 18px;
+  padding: 14px 16px 12px;
   min-width: 0;
   color: inherit;
   text-decoration: none;
@@ -129,6 +141,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   font-weight: 700;
   color: var(--tp-ink2);
   letter-spacing: 1px;
+  white-space: nowrap;
 }
 .stat-icon { flex-shrink: 0; }
 .stat-badge {
@@ -148,16 +161,16 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   border-color: var(--tp-red);
 }
 .stat-value-row { display: flex; align-items: baseline; gap: 4px; }
-.stat-value { font-size: 28px; font-weight: 800; line-height: 1.1; color: var(--tp-ink); }
+.stat-value { font-size: 26px; font-weight: 800; line-height: 1.1; color: var(--tp-ink); }
 .stat-unit { font-size: 13px; color: var(--tp-ink2); }
-.stat-foot { height: 18px; display: flex; align-items: center; }
+.stat-short { font-size: 12px; font-weight: 700; color: var(--tp-ink2); white-space: nowrap; }
 .stat-progress {
-  flex: 1;
   height: 6px;
   background: var(--tp-paper2);
   border: 1px solid var(--tp-line);
   border-radius: 3px;
   overflow: hidden;
+  margin-top: 2px;
 }
 .stat-progress-fill {
   display: block;
@@ -166,78 +179,87 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   background: var(--tp-gold);
   transform-origin: left;
 }
-.stat-short { font-size: 12px; font-weight: 700; color: var(--tp-ink2); }
-.stat-foot .stat-short { display: none; }
-.stat-desc, .stat-note { font-size: 12px; color: var(--tp-ink2); line-height: 1.5; }
+.stat-desc {
+  font-size: 11px;
+  color: var(--tp-ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-/* 票根：左侧一条打孔虚线（全卡唯一一处虚线），上下各一个半圆缺口。
-   缺口圆用页面底色填充——首页浅色底为 #f5f1ea，深色模式跟随 --au-bg */
+/* 第二行票根：顶部一条打孔虚线，左右各一个半圆缺口（填充页底色 --paper）。
+   缺口圆用页面底色填充——v4 纸色页底为 #F6F1E7（.v4-scope 的 --paper） */
 .ticket-stub {
   position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: 10px;
-  padding: 14px 18px;
-  border-left: 2px dashed var(--tp-line);
-  min-width: 128px;
+  padding: 10px 14px;
+  border-top: 2px dashed var(--tp-line);
   background: var(--tp-paper2);
 }
 .ticket-stub::before,
 .ticket-stub::after {
   content: '';
   position: absolute;
-  left: -12px;
+  top: -12px;
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: var(--au-bg, #f5f1ea);
+  background: var(--paper, #F6F1E7);
   border: 1.5px solid var(--tp-ink);
 }
 .ticket-stub::before {
-  top: -13px;
-  clip-path: inset(50% 0 0 0);
+  left: -13px;
+  clip-path: inset(0 0 0 50%);
 }
 .ticket-stub::after {
-  bottom: -13px;
-  clip-path: inset(0 0 50% 0);
+  right: -13px;
+  clip-path: inset(0 50% 0 0);
 }
 /* ADMIT ONE 做成红色印章：描边 + 微转 + 宽松字距 */
 .stub-admit {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  max-width: 100%;
+  display: inline-flex;
+  align-items: baseline;
+  flex-shrink: 0;
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.18em;
   color: var(--tp-red);
   border: 1.5px solid var(--tp-red);
   border-radius: 4px;
-  padding: 5px 10px 5px 12px;
-  transform: rotate(-3deg);
+  padding: 4px 9px 4px 11px;
+  transform: rotate(-2deg);
   white-space: nowrap;
   background: rgba(217, 72, 43, 0.05);
 }
-/* 宽屏票根是竖条：ADMIT ONE 一行、套餐名另起一行；窄屏横排时才用「 · 」连成一行 */
 .stub-plan {
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+  max-width: 4.5rem;
   letter-spacing: 0.1em;
   font-size: 10px;
   color: var(--tp-ink2);
 }
-.stub-plan i { display: none; font-style: normal; }
+.stub-plan i { font-style: normal; }
+/* 观影数据：一行小字，居中 */
+.stub-watch {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--tp-ink2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
 /* 票根按钮：v4 墨色纸片钮 */
 .stub-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 6rem;
+  flex-shrink: 0;
+  min-width: 5rem;
   min-height: 36px;
   padding: 0 1.25rem;
   background: var(--tp-ink);
@@ -264,66 +286,26 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   to { background-position: -200% 0; }
 }
 .sk-stat-label { display: block; width: 4rem; height: 14px; }
-.sk-stat-value { display: block; width: 5.5rem; height: 36px; margin: 0.25rem 0; }
+.sk-stat-value { display: block; width: 5.5rem; height: 34px; margin: 0.25rem 0; }
 .sk-stat-desc { display: block; width: 80%; height: 13px; }
-.sk-stub-btn { display: block; width: 6rem; height: 36px; }
+.sk-stub-stamp { display: block; width: 7rem; height: 26px; flex-shrink: 0; }
+.sk-stub-watch { display: block; flex: 1; height: 13px; }
+.sk-stub-btn { display: block; width: 5rem; height: 36px; flex-shrink: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .tp-skeleton { animation-duration: 0.001s !important; }
   .stub-admit { transform: none; }
 }
 
-/* 窄屏：整票变竖排，打孔线横过来，缺口挪到左右两侧 */
-@media (max-width: 768px) {
-  .ticket { grid-template-columns: 1fr; }
-  .ticket-main { grid-template-columns: 1fr; }
-  .ticket-stat + .ticket-stat {
-    border-left: none;
-    border-top: 1px dashed var(--tp-line);
-  }
-  .ticket-stub {
-    border-left: none;
-    border-top: 2px dashed var(--tp-line);
-    flex-direction: row;
-    justify-content: space-between;
-    background: var(--tp-paper);
-    padding: 12px 16px;
-  }
-  .ticket-stub::before,
-  .ticket-stub::after {
-    top: -12px;
-    bottom: auto;
-  }
-  .ticket-stub::before {
-    left: -13px;
-    clip-path: inset(0 0 0 50%);
-  }
-  .ticket-stub::after {
-    left: auto;
-    right: -13px;
-    clip-path: inset(0 50% 0 0);
-  }
-  .stub-admit {
-    flex-direction: row;
-    align-items: baseline;
-    gap: 0;
-    overflow: hidden;
-    transform: rotate(-2deg);
-  }
-  .stub-plan i { display: inline; }
-  .stub-btn { flex-shrink: 0; min-width: 5rem; }
-}
-/* 640px：移动端只留 ≤6 字短状态，长说明/备注/徽标隐藏，图标数字收紧 */
+/* 375px 窄屏：数字收紧、徽标隐藏，保证两行一行内完整显示 */
 @media (max-width: 640px) {
-  .ticket-stat {
-    gap: 0.3125rem;
-    padding: 1rem 0.875rem 0.9375rem;
-  }
+  .ticket-stat { padding: 12px 14px 10px; }
   .stat-label svg { display: none; }
-  .stat-value { font-size: 1.75rem; }
-  .stat-badge,
-  .stat-desc,
-  .stat-note { display: none; }
-  .stat-foot .stat-short { display: block; }
+  .stat-value { font-size: 23px; }
+  .stat-badge { display: none; }
+  .stub-admit { font-size: 10px; letter-spacing: 0.12em; }
+  .stub-plan { max-width: 3.5rem; }
+  .stub-watch { font-size: 10px; }
+  .stub-btn { min-width: 4.25rem; min-height: 34px; padding: 0 1rem; }
 }
 </style>
