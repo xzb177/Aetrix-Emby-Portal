@@ -821,18 +821,18 @@ onActivated(() => {
         </button>
       </div>
 
-      <HomeBanner
-        :loading="loading"
-        :banners="banners"
-        :fallback-banner="fallbackBanner"
-        @close="dismissBanner"
-      />
-
       <HomeTicketCard
         :loading="loading"
         :asset-cards="assetCards"
         :member-footer="memberStat?.footer || '查看套餐'"
         :plan-name="activeSub?.plan_name || ''"
+      />
+
+      <HomeBanner
+        :loading="loading"
+        :banners="banners"
+        :fallback-banner="fallbackBanner"
+        @close="dismissBanner"
       />
 
       <HomeTodayReleases
