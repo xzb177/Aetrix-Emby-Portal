@@ -1071,6 +1071,22 @@ def retry_unmatched_items(
     return {"success": True, "requeued": n}
 
 
+@admin_emby_router.post("/scrape/enrich/requeue-inherit-children")
+def requeue_inherit_children(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """空壳 inherit 单集补排（v2.58.0）：父级已有 tmdb_id、但子集没拿到单集级
+    数据（done+inherit 空壳）的，翻回 pending 重跑。
+
+    与常态联动（父级新拿 tmdb_id 自动翻）同一谓词、同一动作；部署后跑一次即可，
+    日常由联动覆盖。返回翻回条数。
+    """
+    from backend.emby_server import enrich_worker
+    n = enrich_worker.requeue_stuck_inherit_children(db)
+    return {"success": True, "requeued": n}
+
+
 
 
 @admin_emby_router.get("/scrape/enrich-progress")
