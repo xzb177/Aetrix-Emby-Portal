@@ -137,12 +137,30 @@
 
           <!-- 正在播放：旧 PlaybackSessions 一比一恢复（#783 删页面时丢了入口） -->
           <section class="v4-sec" aria-label="正在播放">
-            <div class="v4-sec-title">📺 正在播放</div>
+            <div class="v4-sec-title">
+              📺 正在播放
+              <button
+                class="refresh-btn"
+                :class="{ 'is-loading': sessionsLoading }"
+                :disabled="sessionsLoading"
+                aria-label="刷新正在播放"
+                @click="loadSessions"
+              >
+                {{ sessionsLoading ? '刷新中' : '⟳' }}
+              </button>
+            </div>
             <div class="v4-sec-sub">这个账号正在哪台设备上播放，一键远程停掉</div>
 
             <div v-if="sessionsLoading" class="op-session-list">
               <div class="v4-skeleton" style="height:64px"></div>
               <div class="v4-skeleton" style="height:64px"></div>
+            </div>
+
+            <div v-else-if="sessionsError" class="op-session-list">
+              <div class="v4-err">
+                正在播放没加载出来<br>
+                <button class="v4-retry" @click="loadSessions">重试</button>
+              </div>
             </div>
 
             <div v-else-if="sessions.length === 0" class="op-empty">
@@ -303,7 +321,7 @@
           <div class="modal-actions">
             <button class="op-btn ghost" @click="sessionToStop = null">取消</button>
             <button class="op-btn primary" :disabled="!!stopping" @click="doStopSession">
-              {{ stopping ? '结束中…' : '确认结束' }}
+              {{ stopping ? '结束中' : '确认结束' }}
             </button>
           </div>
         </div>
@@ -315,7 +333,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
@@ -469,6 +487,7 @@ function daysLeft(endDate?: string | null): number {
 // 后端两个端点 #783 后都还在（backend/emby_server/portal.py），前端 wrapper 在 api/index.ts
 const sessions = ref<MyPlaybackSession[]>([])
 const sessionsLoading = ref(true)
+const sessionsError = ref(false)
 const stopping = ref<string | null>(null)
 const sessionToStop = ref<MyPlaybackSession | null>(null)
 
@@ -490,11 +509,13 @@ function fmtTime(iso?: string | null) {
 
 async function loadSessions() {
   sessionsLoading.value = true
+  sessionsError.value = false
   try {
     const res = await embyApi.getSessions()
     sessions.value = res.sessions || []
   } catch {
     sessions.value = []
+    sessionsError.value = true
   } finally {
     sessionsLoading.value = false
   }
@@ -502,6 +523,11 @@ async function loadSessions() {
 
 function confirmStopSession(session: MyPlaybackSession) {
   sessionToStop.value = session
+}
+
+/** Esc 关闭结束确认弹窗（照 WishlistView 模式） */
+function onEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape' && sessionToStop.value) sessionToStop.value = null
 }
 
 async function doStopSession() {
@@ -514,7 +540,7 @@ async function doStopSession() {
     sessions.value = sessions.value.filter((s) => s.session_key !== session.session_key)
   } catch (err: any) {
     const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' ? detail : '结束播放失败')
+    toast.error(typeof detail === 'string' && /[\u4e00-\u9fff]/.test(detail) ? detail : humanizeError(err))
   } finally {
     stopping.value = null
     sessionToStop.value = null
@@ -523,7 +549,9 @@ async function doStopSession() {
 
 onMounted(() => {
   void refreshAccount()
+  window.addEventListener('keydown', onEsc)
 })
+onUnmounted(() => window.removeEventListener('keydown', onEsc))
 
 // 有查看权限才拉正在播放（解锁后翻成 granted 也会触发一次）
 watch(viewGranted, (granted) => {
@@ -781,7 +809,7 @@ watch(viewGranted, (granted) => {
   gap: 5px;
   font-size: 13px;
   font-weight: 800;
-  padding: 8px 12px;
+  padding: 12px 16px;
   border-radius: 10px;
   border: 1.5px solid var(--red);
   background: var(--paper-card);
@@ -790,6 +818,15 @@ watch(viewGranted, (granted) => {
 }
 .op-stop-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .op-stop-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+/* 正在播放标题旁刷新按钮（复用 PigeonView 样式，44px 触摸目标） */
+.refresh-btn {
+  width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px;
+  border: 1.5px solid var(--line); background: var(--paper-card);
+  color: var(--ink2); font-size: 18px; cursor: pointer;
+}
+.refresh-btn:disabled { opacity: 0.5; cursor: default; }
+.refresh-btn.is-loading { width: auto; padding: 0 14px; font-size: 14px; }
+.refresh-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 .op-empty {
   text-align: center;
   padding: 20px 0 8px;

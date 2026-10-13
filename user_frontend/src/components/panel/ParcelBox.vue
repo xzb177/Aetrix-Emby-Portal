@@ -1,7 +1,7 @@
 <template>
   <div
     class="v4-parcel"
-    :class="{ opened: isOpen, 'is-busy': busy }"
+    :class="{ opened: isOpen, 'is-busy': busy, 'no-link': isOpen && !parcel.deep_link }"
     :role="isOpen ? undefined : 'button'"
     :tabindex="isOpen ? undefined : '0'"
     :aria-label="isOpen ? undefined : '待拆封存，点击开封'"
@@ -112,6 +112,8 @@ function onKey(e: KeyboardEvent) {
 
 function onTap() {
   if (isOpen.value) {
+    // R29：开封但无跳转链接时整卡不可点，直接 return
+    if (!props.parcel.deep_link) return
     // 已开封：整卡点进播放器（与"去看 →"同一跳转，新开标签页）
     goPlayer()
     return
@@ -142,6 +144,8 @@ function onTap() {
 }
 .v4-parcel:not(.opened) { border-style: dashed; }
 .v4-parcel:active { transform: scale(0.96); }
+/* R29：开封但无跳转链接时整卡不可点 */
+.v4-parcel.no-link { cursor: default; }
 .v4-parcel.is-busy { pointer-events: none; opacity: 0.75; }
 /* 印章：右上角旋转小圆章 */
 .v4-parcel-stamp {
@@ -234,6 +238,8 @@ function onTap() {
 
 /* R27：减少动态偏好下装饰动画/过渡停掉（本地守卫） */
 @media (prefers-reduced-motion: reduce) {
+  .v4-parcel { transition: none; }
+  .v4-parcel:active { transform: none; }
   .v4-parcel.opened { animation: none; transition: none; }
   .v4-parcel-name { animation: none; transition: none; }
   .v4-parcel-go { animation: none; transition: none; }

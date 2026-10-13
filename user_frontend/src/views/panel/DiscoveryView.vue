@@ -26,10 +26,14 @@
       <section class="v4-sec">
         <div class="v4-sec-title">📦 今日封存</div>
         <div class="v4-sec-sub">新入库的片子，先拆为敬 —— 点一下开封</div>
-        <div v-if="parcels.loading" class="v4-skeleton" style="height:224px"></div>
+        <div v-if="parcels.loading" class="v4-skel-row">
+          <div class="v4-skeleton" style="width:132px;height:216px;flex:0 0 auto"></div>
+          <div class="v4-skeleton" style="width:132px;height:216px;flex:0 0 auto"></div>
+          <div class="v4-skeleton" style="width:132px;height:216px;flex:0 0 auto"></div>
+        </div>
         <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
         <div v-else-if="parcelList.length === 0" class="v4-empty">今天还没有新封存，明天再来拆 📦</div>
-        <div v-else class="v4-parcels">
+        <div v-else ref="parcelsEl" class="v4-parcels">
           <ParcelBox
             v-for="p in parcelList"
             :key="String(p.id)"
@@ -74,7 +78,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
@@ -107,6 +111,11 @@ onMounted(() => {
   // perf 2026-10-13：合并为 1 次请求（4 个 RTT → 1 个 RTT）
   void panel.loadHome()
   void loadTicket()
+  updateScrollHint()
+  window.addEventListener('resize', updateScrollHint)
+})
+onUnmounted(() => {
+  window.removeEventListener('resize', updateScrollHint)
 })
 
 /* ---------- 日志头 ---------- */
@@ -151,6 +160,14 @@ const parcelList = computed((): ParcelItem[] => {
   const d = parcels.value.data as ParcelsData | null
   return Array.isArray(d?.parcels) ? d.parcels : []
 })
+/* R29：货架右侧渐隐只在有溢出可滑时显示（照 EcoGarden can-scroll 模式） */
+const parcelsEl = ref<HTMLElement | null>(null)
+function updateScrollHint() {
+  const el = parcelsEl.value
+  if (!el) return
+  el.classList.toggle('can-scroll', el.scrollWidth > el.clientWidth + 1)
+}
+watch(parcelList, () => requestAnimationFrame(updateScrollHint))
 /* 拆封中 id 集合：busy 与请求生命周期绑定（请求完成/失败才释放），替代旧的固定 600ms 释放 */
 const unsealingIds = ref(new Set<string>())
 async function onUnseal(id: string | number) {
@@ -208,10 +225,15 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   margin: 0 -20px;
   padding: 4px 36px 12px 20px;
   scrollbar-width: none;
+}
+/* R29：右侧渐隐只在货架有溢出可横滑时显示，无溢出不误导 */
+.v4-parcels.can-scroll {
   -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 44px), transparent 100%);
   mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 44px), transparent 100%);
 }
 .v4-parcels::-webkit-scrollbar { display: none; }
+/* R29：封存骨架屏与横滑货架同形态（3 个 132×216 卡形横排） */
+.v4-skel-row { display: flex; gap: 12px; overflow: hidden; }
 /* 脉搏黑盒：取自设计稿 .pulse-box */
 .v4-pulse-box {
   background: var(--ink);
