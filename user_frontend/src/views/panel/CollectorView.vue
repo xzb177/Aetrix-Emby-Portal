@@ -175,7 +175,7 @@ const pet = computed((): PetData | null => {
 }
 .v4-idcard {
   margin: 12px 20px 0;
-  background: #fffdf6;
+  background: var(--paper-card);
   border: 1.5px solid var(--ink);
   border-radius: 14px;
   padding: 18px;
@@ -183,7 +183,7 @@ const pet = computed((): PetData | null => {
   overflow: hidden;
 }
 .v4-idcard::before {
-  content: "COLLECTOR";
+  content: "收藏家";
   position: absolute;
   right: -8px;
   top: 8px;

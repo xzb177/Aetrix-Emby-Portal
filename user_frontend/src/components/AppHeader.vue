@@ -84,6 +84,8 @@ function toggleTheme() {
 
 const userMenuOpen = ref(false)
 const userMenuRef = ref<HTMLElement | null>(null)
+/** 头像按钮：Esc 关闭用户菜单后把焦点还给它，键盘用户不迷路 */
+const userBtnRef = ref<HTMLElement | null>(null)
 const navRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
 
@@ -311,6 +313,19 @@ function closeMenus() {
   msgMenuOpen.value = false
 }
 
+/** Esc 关闭用户菜单：焦点被困在菜单里时，一键出来并回到头像按钮 */
+function onDocKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && userMenuOpen.value) {
+    userMenuOpen.value = false
+    userBtnRef.value?.focus()
+  }
+}
+
+/** 跨断点 resize / 转屏：开着菜单时锚点会错乱，直接关掉最稳 */
+function onViewportChange() {
+  if (userMenuOpen.value || msgMenuOpen.value) closeMenus()
+}
+
 async function handleLogout() {
   closeMenus()
   await userStore.logout()
@@ -419,13 +434,21 @@ watch(() => route.path, () => focusActiveTab(true))
 
 onMounted(() => {
   document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onDocKeydown)
+  window.addEventListener('resize', onViewportChange)
+  window.addEventListener('orientationchange', onViewportChange)
   poll()
   loadPoints()
   loadVitality()
   window.setInterval(poll, 60_000)
   focusActiveTab(false)
 })
-onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onDocKeydown)
+  window.removeEventListener('resize', onViewportChange)
+  window.removeEventListener('orientationchange', onViewportChange)
+})
 </script>
 
 <template>
@@ -550,6 +573,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
           <div ref="userMenuRef" class="user-menu">
             <button
+              ref="userBtnRef"
               class="user-btn round-btn"
               :aria-expanded="userMenuOpen"
               aria-haspopup="menu"
@@ -584,16 +608,18 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
                 <!-- ② 探险设施直达（v4.1）：10 个游戏设施，图标+名称+描述，点卡片直达。
                      设施清单来自 @/config/game.ts，这里不 hardcode。
+                     设施为空时整个分区（含标题）不渲染，不留裸奔标题。
                      原 12 个通用菜单项（追新日历/探险日志/我的订单/积分流水/
                      每日签到/邀请返利/求片中心/AI 助手/工单支持/消息中心/
                      外观/管理后台）已从头像菜单移除，对应页面路由保留 -->
+                <template v-if="menuFacilities.length > 0">
                 <div class="dropdown-sec-title">🏕️ 营地设施 · 点卡片直接进</div>
                 <RouterLink
                   v-for="f in menuFacilities"
                   :key="f.key"
                   :to="f.path"
                   class="dropdown-facility"
-                  role="menuitem"
+                  role="menuitemlink"
                   @click="closeMenus"
                 >
                   <span class="facility-icon" aria-hidden="true">{{ f.icon }}</span>
@@ -603,6 +629,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
                   </span>
                   <span class="facility-go" aria-hidden="true">›</span>
                 </RouterLink>
+                </template>
 
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
@@ -1224,6 +1251,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   color: var(--au-text-3);
 }
 .dropdown-facility {
+  /* 纸色 token 与 v4-paper.css .v4-scope 同步，改值只改那边，这里不许私自改 */
   --paper-card: #FFFDF6;
   --paper2: #EFE7D6;
   --line: #D8CDB8;
@@ -1243,6 +1271,12 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 }
 .dropdown-facility:hover { border-color: var(--ink); }
 .dropdown-facility:active { transform: scale(0.98); }
+/* 纸色风键盘焦点环：设施卡片 / 退出登录（与顶栏其余焦点环同配方，颜色取纸色墨色） */
+.dropdown-facility:focus-visible,
+.dropdown-logout:focus-visible {
+  outline: 2px solid var(--ink, #2A2620);
+  outline-offset: 2px;
+}
 .facility-icon {
   flex-shrink: 0;
   width: 36px;

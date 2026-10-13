@@ -140,10 +140,11 @@
       </section>
 
       <!-- 🤝 带上同伴 -->
-      <section v-if="loading || inviteEnabled" class="shop-sec" style="padding-bottom:24px">
+      <section v-if="loading || inviteEnabled || inviteFailed" class="shop-sec" style="padding-bottom:24px">
         <div class="v4-sec-title">🤝 带上同伴</div>
         <div class="v4-sec-sub">邀请一位探险家，双方都得能量</div>
         <div v-if="loading" class="v4-skeleton" style="height:120px"></div>
+        <div v-else-if="inviteFailed" class="v4-err">邀请码加载失败{{ inviteErrMsg ? '：' + inviteErrMsg : '' }}<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <div v-else-if="inviteEnabled" class="invite">
           <h3>🧭 结伴远行，能量翻倍</h3>
           <p>同伴用你的暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
@@ -186,6 +187,8 @@ const isFreeRealm = ref(false)
 const realmNote = ref('')
 const rechargeEnabled = ref(true)
 const inviteEnabled = ref(true)
+const inviteFailed = ref(false)
+const inviteErrMsg = ref('')
 const member = ref<MyMemberInfo | null>(null)
 const inviteCode = ref('')
 const inviteReward = ref(0)
@@ -208,6 +211,8 @@ async function loadAll() {
   loading.value = true
   pkgsFailed.value = false
   plansFailed.value = false
+  inviteFailed.value = false
+  inviteErrMsg.value = ''
   const [pkgs, pls, mem, inv, pts, cur, methods] = await Promise.allSettled([
     paymentApi.packages(),
     paymentApi.plans(),
@@ -244,6 +249,10 @@ async function loadAll() {
     inviteEnabled.value = inv.value.config?.enabled !== false
     inviteReward.value = inv.value.config?.reward_points ?? 0
     inviteeReward.value = inv.value.config?.invitee_reward_points ?? 0
+  } else {
+    // 邀请接口挂了：不再渲染"----"/0 能量的半成品，走错误态 + 重试
+    inviteFailed.value = true
+    inviteErrMsg.value = humanizeError(inv.reason)
   }
   if (pts.status === 'fulfilled') points.value = pts.value.balance ?? null
   if (cur.status === 'fulfilled') rechargeRatio.value = cur.value.recharge_ratio ?? null

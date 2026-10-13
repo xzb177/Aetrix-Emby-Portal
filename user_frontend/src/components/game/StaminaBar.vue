@@ -3,7 +3,7 @@
   <div v-if="visible" class="stamina-bar" :class="{ 'is-low': isLow, 'is-empty': isEmpty }" role="status" :aria-label="`${text.title}${vitality}${text.unit}`">
     <span class="v4-stamp stamina-stamp">{{ text.title }}</span>
     <div class="stamina-track">
-      <div class="stamina-fill" :style="{ width: pct + '%' }"></div>
+      <div class="stamina-fill" :style="{ transform: `scaleX(${pct / 100})` }"></div>
       <div class="stamina-hearts" aria-hidden="true">
         <span v-for="i in maxHearts" :key="i" class="heart" :class="{ lit: i <= vitality }">❤️</span>
       </div>
@@ -56,7 +56,17 @@ async function refresh(): Promise<number | null> {
   return vitality.value
 }
 
-defineExpose({ refresh, load })
+/** 父组件判断用：体力条当前是否可见（决定外层 section 要不要渲染，不留幽灵间隙） */
+function isShown(): boolean {
+  return visible.value
+}
+
+/** 父组件判断用：当前体力数值（报到前后对比，只在数值真涨了才提示"体力已恢复"） */
+function current(): number | null {
+  return vitality.value
+}
+
+defineExpose({ refresh, load, isShown, current })
 
 onMounted(load)
 </script>
@@ -87,9 +97,18 @@ onMounted(load)
 .stamina-fill {
   position: absolute;
   inset: 0 auto 0 0;
+  width: 100%;
+  /* 用 transform 做填充动画：width 是 layout 属性会触发重排，掉帧；
+     scaleX 只走合成层，60fps。JS 里按比例设 scaleX(0~1) 代替 width。 */
+  transform-origin: left center;
   background: linear-gradient(90deg, #e8a33d, #d97b2b);
   border-radius: 11px;
-  transition: width 0.4s ease;
+  transition: transform 0.4s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stamina-fill {
+    transition: none;
+  }
 }
 .stamina-bar.is-low .stamina-fill {
   background: linear-gradient(90deg, #d98a2b, #c25e1e);

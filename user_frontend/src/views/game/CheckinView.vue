@@ -158,11 +158,13 @@ async function doCheckin() {
     }
     // 能量飞入
     flyEnergy(`+${r.points_awarded}⚡`)
-    // 体力恢复提示（仅公益服用户可见体力条时刷新）
+    // 体力恢复提示（仅公益服用户可见体力条时刷新）：
+    // 只有体力数值真的涨了才说"体力已恢复"，体力已满时只说"报到成功"
     try {
+      const before = staminaBar.value?.current() ?? null
       const v = await staminaBar.value?.refresh()
       if (v !== null && v !== undefined) {
-        useToast().success(staminaText.checkinRecovered)
+        useToast().success(before !== null && v > before ? staminaText.checkinRecovered : '报到成功')
       }
     } catch {
       /* 体力刷新失败不打扰主流程 */

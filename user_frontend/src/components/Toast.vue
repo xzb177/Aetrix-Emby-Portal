@@ -192,8 +192,8 @@ const getToastClass = (type: string) => {
 }
 
 /* 过渡动画
-   只做「淡入 + 轻微下移」，不碰水平位移：容器已经用 translateX(-50%) 居中了，
-   子项再写一次 translateX(-50%) 会让每条通知先从左侧半个身位滑回来。 */
+   只做「淡入 + 轻微下移」，不碰水平位移：容器靠 margin: 0 auto + width: max-content
+   居中，子项再写水平位移会让每条通知先从一侧滑回来。 */
 .toast-enter-active {
   transition: opacity var(--au-med) var(--au-ease),
               transform var(--au-med) var(--au-ease);
@@ -238,6 +238,11 @@ const getToastClass = (type: string) => {
   .toast-enter-from,
   .toast-leave-to {
     transform: none;
+  }
+
+  /* TransitionGroup 的 FLIP 重排位移动画也关掉，避免列表重排时滑动 */
+  .toast-move {
+    transition: none;
   }
 
   .toast-close:active {
