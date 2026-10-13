@@ -448,6 +448,7 @@ class RechargePackage(Base):
     is_active = Column(Boolean, default=True)
     is_popular = Column(Boolean, default=False)
     sort_order = Column(Integer, default=0)
+    icon = Column(String(10), nullable=True)  # 套餐图标 emoji，由管理端配置，前端直接渲染
     created_at = Column(DateTime, default=datetime.now)
 
 

@@ -909,7 +909,7 @@ def payment_packages(db: Session = Depends(get_db)):
             {
                 "id": p.id, "name": p.name, "amount": p.amount,
                 "bonus": p.bonus, "price": float(p.price),
-                "is_popular": p.is_popular,
+                "is_popular": p.is_popular, "icon": p.icon,
                 "total_points": p.amount + p.bonus,
             }
             for p in packages
