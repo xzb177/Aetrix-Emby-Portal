@@ -64,7 +64,7 @@
           <div v-for="w in hotWishes" :key="w.id" class="crowd">
             <div class="row1">
               <b>《{{ w.movie_name }}》</b>
-              <span class="chip blue">{{ w.vote_count }} 人也想看</span>
+              <span class="chip blue">{{ w.vote_count > 0 ? w.vote_count + ' 人也想看' : '还没有人附议' }}</span>
             </div>
             <div class="want">{{ shortDate(w.created_at) }} 投入池中</div>
             <button
