@@ -260,7 +260,9 @@ const userStore = useUserStore()
 const loading = ref(true)
 const account = ref<AccountCard | null>(null)
 const accountError = ref('')
-const viewPermission = ref<ViewPermission | null>(null)
+// 查看权限：后端账号卡自带 view_permission（没权限时 200 返回卡，granted=false，只给解锁信息不下发地址）
+// 和 ProfileView 同一口径：从卡里派生，不单独调接口（后端没有 /view-permission 这类端点）
+const viewPermission = computed(() => ((account.value as any)?.view_permission as ViewPermission | null) || null)
 const unlocking = ref(false)
 const showUnlockConfirm = ref(false)
 
@@ -273,8 +275,8 @@ const pwdError = ref('')
 const settingPwd = ref(false)
 const importPassword = ref('')
 
-/** 是否有查看权限：后端下发了 account 即视为有 */
-const viewGranted = computed(() => !!account.value && !accountError.value)
+/** 是否有查看权限：以卡里 view_permission.granted 为准（和 ProfileView 同一口径） */
+const viewGranted = computed(() => !!viewPermission.value?.granted)
 const hasPlayPassword = computed(() => !!(account.value as any)?.has_play_password)
 
 const serverUrl = computed(() => (account.value as any)?.server_url || (account.value as any)?.base_url || '—')
@@ -308,17 +310,9 @@ async function refreshAccount() {
       } catch { /* 看不到就显示已设置 */ }
     }
   } catch (e: any) {
-    // 403 没权限 → 拿解锁信息
-    const status = e?.response?.status ?? e?.status
-    if (status === 403) {
-      try {
-        const perm = await embyApi.getViewPermission()
-        viewPermission.value = perm as ViewPermission
-      } catch { /* 拿不到权限信息就显示通用提示 */ }
-      accountError.value = ''
-    } else {
-      accountError.value = humanizeError(e)
-    }
+    // 没权限时后端直接 200 返回带 view_permission 的卡（granted=false），不会 403；
+    // 这里只处理真正的加载失败（网络/鉴权），和 ProfileView 同一口径
+    accountError.value = humanizeError(e)
   } finally {
     loading.value = false
   }
