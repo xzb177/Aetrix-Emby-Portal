@@ -5,7 +5,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
-  ChevronRight, Zap, ShieldCheck,
+  ChevronRight, Heart, ShieldCheck,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -535,7 +535,7 @@ onBeforeUnmount(() => {
           :title="`我的体力 ${vitality}/${vitalityMax}，点击去报到`"
           :aria-label="`我的体力 ${vitality}/${vitalityMax}，点击去报到`"
         >
-          <Zap :size="13" />
+          <Heart :size="13" /><!-- 活力值用红心（与报到页 StaminaBar 的 ❤️ 统一）；闪电只给能量/积分 -->
           <span>{{ vitality }}/{{ vitalityMax }}</span>
         </RouterLink>
         <button
@@ -927,9 +927,9 @@ onBeforeUnmount(() => {
   color: var(--au-primary);
   flex-shrink: 0;
 }
-/* 活力值徽章：图标用警示色，与积分徽章区分 */
+/* 活力值徽章：图标用红色（红心），与能量徽章的琥珀闪电区分 */
 .vitality-pill svg {
-  color: var(--au-warning, #f59e0b);
+  color: var(--au-danger, #ff5c6c); /* 活力值=红心（与报到页 ❤️ 体力条统一）；闪电的琥珀色只留给能量 */
 }
 
 /* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
