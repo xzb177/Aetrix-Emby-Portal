@@ -51,6 +51,7 @@ EVT_SA_QUOTA_LOW = "sa_quota_low"
 EVT_SCAN_FAILED = "scan_failed"
 EVT_API_ERROR_HIGH = "api_error_high"
 EVT_STRM_SOURCE_FAILED = "strm_source_failed"
+EVT_STRM_SCAN_TRIGGER_FAILED = "strm_scan_trigger_failed"
 
 ALL_EVENTS = (
     EVT_PROBE_QUEUE_HIGH,
@@ -60,6 +61,7 @@ ALL_EVENTS = (
     EVT_SCAN_FAILED,
     EVT_API_ERROR_HIGH,
     EVT_STRM_SOURCE_FAILED,
+    EVT_STRM_SCAN_TRIGGER_FAILED,
 )
 
 # ---------------------------------------------------------------------------
@@ -625,6 +627,55 @@ def _check_strm_source_failed(subs: dict, rule, db=None) -> Optional[tuple[str, 
             {"failed_count": len(recent), "dids": dids})
 
 
+def _check_strm_scan_trigger_failed(subs: dict, rule, db=None) -> Optional[tuple[str, str, dict]]:
+    """strm 生成器扫库触发器失败：读 strm_gen 记录的触发失败列表。
+
+    沿用 strm_source_failed 通道模式：SystemConfig 里的 JSON 记录，
+    只看最近 24 小时。需要 db 参数（读 SystemConfig），check_all 对本事件
+    特殊传 db。
+    """
+    try:
+        from backend.integrations import store
+        from backend.database import SessionLocal
+        own = db is None
+        if own:
+            db = SessionLocal()
+        try:
+            raw = store.get_value(db, "strm_gen_scan_trigger_failures", "") or "[]"
+        finally:
+            if own:
+                db.close()
+        import json
+        records = json.loads(raw) if raw else []
+    except Exception:
+        return None
+    if not records:
+        return None
+    # 只看最近 24 小时的失败（旧记录不重复告警，冷却机制会去重）
+    from datetime import datetime, timezone, timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    recent = []
+    for r in records:
+        try:
+            at = datetime.fromisoformat(str(r.get("at", "")))
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            if at >= cutoff:
+                recent.append(r)
+        except Exception:
+            continue
+    if not recent:
+        return None
+    libs = ", ".join(sorted({str(r.get("lib", "?")) for r in recent})[:3])
+    first_err = str(recent[-1].get("error", ""))[:120]
+    return (f"{len(recent)} 次 strm 扫库触发失败（库 {libs}）",
+            f"strm 生成器生成完触发增量扫描失败 {len(recent)} 次"
+            f"（库 {libs}），最新错误：{first_err}。"
+            "生成与扫库的链路已断开，新 .strm 文件只能等扫描器下一轮——"
+            "请检查扫描队列/Redis（管理后台 → strm 生成器）。",
+            {"failed_count": len(recent), "libs": libs})
+
+
 # 事件 → 检查函数（新增事件类型只加一行）
 _CHECKERS = {
     EVT_PROBE_QUEUE_HIGH: _check_probe_queue,
@@ -634,6 +685,7 @@ _CHECKERS = {
     EVT_SCAN_FAILED: _check_scan_failed,
     EVT_API_ERROR_HIGH: _check_api_error,
     EVT_STRM_SOURCE_FAILED: _check_strm_source_failed,
+    EVT_STRM_SCAN_TRIGGER_FAILED: _check_strm_scan_trigger_failed,
 }
 
 

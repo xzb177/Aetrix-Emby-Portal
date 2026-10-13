@@ -149,6 +149,9 @@ def drive_id_config(db) -> str:
 # 源失败记录（供 system_alerts 的 strm_source_failed 事件读取）。
 CONFIG_SOURCE_FAILURES = "strm_gen_source_failures"
 
+# 扫库触发器失败记录：_trigger_strm_scan 失败时写入，供 system_alerts 的
+# strm_scan_trigger_failed 事件读取（沿用 strm_source_failed 通道模式）。
+CONFIG_SCAN_TRIGGER_FAILURES = "strm_gen_scan_trigger_failures"
 
 def _record_source_failures(db, failed: list[dict]) -> None:
     """把本轮列举失败的源记入 SystemConfig，供告警系统读取。
@@ -177,6 +180,34 @@ def _record_source_failures(db, failed: list[dict]) -> None:
         # 未预期的中间状态。
     except Exception as exc:
         logger.warning("strm_gen: 记录源失败失败: %s", exc)
+
+
+def _record_scan_trigger_failures(db, failures: list[tuple]) -> None:
+    """把扫库触发器失败记入 SystemConfig，供告警系统读取。
+
+    failures: [(lib_id|"-", error)]，lib_id="-" 表示"还没到逐库阶段"
+    （模块加载/查库失败）。格式：[{"lib":..., "error":..., "at": ISO}]，
+    只保留最近 20 条。写入失败不影响主流程（沿用 _record_source_failures
+    的"不提前 commit"约定）。
+    """
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, CONFIG_SCAN_TRIGGER_FAILURES, "") or "[]"
+        try:
+            records = json.loads(raw)
+        except Exception:
+            records = []
+        now = datetime.now(timezone.utc).isoformat()
+        for lib_id, err in failures:
+            records.append({
+                "lib": str(lib_id),
+                "error": str(err)[:300],
+                "at": now,
+            })
+        records = records[-20:]
+        store.write_values(db, {CONFIG_SCAN_TRIGGER_FAILURES: json.dumps(records)}, {})
+    except Exception as exc:
+        logger.warning("strm_gen: 记录扫库触发失败失败: %s", exc)
 
 
 def list_drives() -> list[dict]:
@@ -1807,12 +1838,15 @@ def _trigger_strm_scan(db) -> None:
     - 已在队列中的库不会重复入队
     - 不会和用户手动扫描冲突（扫描器有库级互斥 _acquire_scan）
     失败只记 warning（扫库是 best-effort，不能影响生成主流程）。
+    2026-10-13 起：失败同时写入 strm_gen_scan_trigger_failures，供
+    system_alerts 的 strm_scan_trigger_failed 事件告警——不再静默。
     """
     try:
         from backend.emby_server import models as em
         from backend.emby_server import scan_queue_redis
     except Exception as exc:
         logger.warning("strm_gen: 扫库触发器加载失败: %s", exc)
+        _record_scan_trigger_failures(db, [("-", "触发器加载失败: %s" % exc)])
         return
 
     strm_root = _container_strm_root(db)
@@ -1822,6 +1856,7 @@ def _trigger_strm_scan(db) -> None:
         libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
     except Exception as exc:
         logger.warning("strm_gen: 查询媒体库失败: %s", exc)
+        _record_scan_trigger_failures(db, [("-", "查询媒体库失败: %s" % exc)])
         return
 
     triggered = 0
@@ -1840,6 +1875,7 @@ def _trigger_strm_scan(db) -> None:
                 logger.info("strm_gen: 已触发扫库 lib=%s(%s)", lib.id, getattr(lib, "name", ""))
         except Exception as exc:
             logger.warning("strm_gen: 触发扫库失败 lib=%s: %s", lib.id, exc)
+            _record_scan_trigger_failures(db, [(lib.id, "触发扫库失败: %s" % exc)])
     if triggered:
         logger.info("strm_gen: 共触发 %d 个库的增量扫描", triggered)
 
