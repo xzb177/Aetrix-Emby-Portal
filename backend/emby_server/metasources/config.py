@@ -10,7 +10,7 @@
 |---|---|---|
 | ``meta_sources_enabled`` | 总开关（关掉 = 完全走原来的 NFO → TMDB → 豆瓣/Bangumi 链路） | 0 |
 | ``meta_sources_prefer_chinese`` | 中文信息优先 | 1 |
-| ``meta_sources_tmdb_miss_fallback`` | TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底（须与总开关同时开） | 0 |
+| ``meta_sources_tmdb_miss_fallback`` | TMDB-miss 时走多源兜底：多源总开关的子项（链路规划 Step 2 起，统一兜底链启用时由总开关统一控制，保留键值） | 0 |
 | ``meta_sources_order`` | 源顺序（JSON 数组，**只有这里出现的源会被采集**） | DEFAULT_ORDER |
 | ``meta_source_enabled_{id}`` | 单源开关 | 默认见 DEFAULT_ORDER（都开） |
 | ``meta_source_keys_{id}`` | 该源的密钥池（逗号分隔，与 TMDB 那套同一个拆分口径） | 空 |
@@ -88,7 +88,11 @@ class Snapshot:
     prefer_chinese: bool
     sources: list[SourceConfig]
     #: TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底（默认关）。
-    #: 须与总开关同时开着才生效；后台「多源元数据补全」卡里有这个开关。
+    #:
+    #: 链路规划 Step 2 起降级为多源总开关的子项：统一兜底链
+    #: （``enrich_unified_fallback=1``）启用时，总开关是唯一的门，本键保留
+    #: （回滚/兼容）但不再独立门控；未启用时保持原语义（须与总开关同时开）。
+    #: 后台「多源元数据补全」卡里把它收为总开关下的二级开关，不再与总开关平级。
     tmdb_miss_fallback: bool = False
 
     def ordered(self) -> list[SourceConfig]:
@@ -233,8 +237,8 @@ def write_config(db, *, enabled: bool, prefer_chinese: bool,
     if tmdb_miss_fallback is not None:
         values[CONFIG_TMDB_MISS_FALLBACK] = "1" if tmdb_miss_fallback else "0"
         descriptions[CONFIG_TMDB_MISS_FALLBACK] = (
-            "TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底"
-            "（独立开关：与总开关同时开着才生效）"
+            "TMDB 搜过无命中时走多源兜底（多源总开关的子项：链路规划 Step 2 的"
+            "统一兜底链启用时由总开关统一控制，保留键值用于回滚/兼容）"
         )
     count = store.write_values(db, values, descriptions)
     db.commit()

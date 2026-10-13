@@ -1314,6 +1314,17 @@ export const fetchDoubanBanDowngrade = () =>
 export const saveDoubanBanDowngrade = (enabled: boolean) =>
   put<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`, { enabled })
 
+/** 兜底链路统一（链路规划 Step 2）：一个豆瓣入口（豆瓣 rich → 多源引擎含豆瓣源） */
+export interface UnifiedFallbackConfig {
+  success: boolean
+  enabled: boolean
+}
+export const fetchUnifiedFallback = () =>
+  get<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`)
+
+export const saveUnifiedFallback = (enabled: boolean) =>
+  put<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`, { enabled })
+
 /** 保存总开关 / 中文优先 / TMDB-miss 兜底开关 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
 export const saveMetaSources = (data: {
   enabled: boolean

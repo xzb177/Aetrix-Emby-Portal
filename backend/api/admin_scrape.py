@@ -551,7 +551,9 @@ class MetaSourcesSaveRequest(BaseModel):
     rates: dict[str, float] = Field(default_factory=dict, description="逐源请求间隔（秒）")
     # Optional：没带这个字段 = 老版本前端/脚本在保存 → 不动该键（write_config 的 no-clobber 语义）；
     # 带了就按值写。兜底开关是单向棘轮，开了就不该被一次无意的保存关掉。
-    tmdb_miss_fallback: Optional[bool] = Field(default=None, description="TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底")
+    # 链路规划 Step 2：该键降级为多源总开关的子项（统一兜底链启用时由总开关
+    # 统一控制，保留键值用于回滚/兼容）；后台 UI 上收为二级开关。
+    tmdb_miss_fallback: Optional[bool] = Field(default=None, description="TMDB-miss 时走多源兜底（多源总开关的子项）")
 
 
 class MetaSourceProbeRequest(BaseModel):
@@ -1723,6 +1725,38 @@ def save_douban_ban_downgrade(
     """保存豆瓣封禁降级开关（写 SystemConfig，60 秒内热生效，无需重启）。"""
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.save_douban_ban_downgrade_config(db, body.enabled)
+    return {"success": True, **cfg}
+
+
+# ==================== 兜底链路统一（链路规划 Step 2） ====================
+
+class _UnifiedFallbackBody(BaseModel):
+    enabled: bool = False
+
+
+@admin_emby_router.get("/scrape/unified-fallback")
+def get_unified_fallback(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读取兜底链路统一开关（只读，秒级新鲜）。"""
+    from backend.emby_server import enrich_worker
+    return {"success": True, **enrich_worker.get_unified_fallback_config(db)}
+
+
+@admin_emby_router.put("/scrape/unified-fallback")
+def save_unified_fallback(
+    body: _UnifiedFallbackBody,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存兜底链路统一开关（写 SystemConfig，60 秒内热生效，无需重启）。
+
+    开 = 一个豆瓣入口（豆瓣 rich → 多源引擎含豆瓣源）；
+    关 = 回滚到 Step 1 部署后的原行为。
+    """
+    from backend.emby_server import enrich_worker
+    cfg = enrich_worker.save_unified_fallback_config(db, body.enabled)
     return {"success": True, **cfg}
 
 
