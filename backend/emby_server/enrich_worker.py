@@ -76,6 +76,10 @@ ENRICH_JANITOR_INTERVAL_SEC = max(10, int(os.getenv("ENRICH_JANITOR_INTERVAL_SEC
 #     0 = 默认（沿用旧口径：新入库优先）
 ENRICH_PRIORITY_REPAIR = 100
 ENRICH_PRIORITY_RETRY_UNMATCHED = 50
+# Step 4（链路规划）：none 定时回捞单轮硬上限——写死 2000，不许可配放大。
+# 反风控：单轮最多 2000 条重走 TMDB search（6-9 请求/条），分散在 janitor
+# 周期里；上限放大只会线性增加 TMDB 请求量，故不开放配置。
+ENRICH_NONE_AUTO_RESCHEDULE_BATCH = 2000
 # 按库轮转（处方 4）：每个 worker 进程记住「上一轮从哪个库接着抢」，老分类不再被
 # 新入库条目饿死。库里没有待处理条目时自动跳到下一个库，不多等一轮。
 ENRICH_LIBRARY_FAIRNESS = (os.getenv("ENRICH_LIBRARY_FAIRNESS", "1") or "1").strip().lower() not in {
@@ -503,6 +507,8 @@ CFG_ENRICH_CLAIM_LEASE_SEC = "enrich_claim_lease_sec"
 CFG_ENRICH_EPISODE_DAY_QUOTA = "enrich_episode_day_quota"
 CFG_ENRICH_EPISODE_QUOTA_MODE = "enrich_episode_quota_mode"
 CFG_ENRICH_NONE_RESCHEDULE_DAYS = "enrich_none_reschedule_days"
+# Step 4 的 feature flag：none 定时自动回捞开关（默认 0=关，关时行为与 Step 4 前一致）
+CFG_ENRICH_NONE_AUTO_RESCHEDULE = "enrich_none_auto_reschedule"
 
 # (config_key, env_name, 默认值str, 类型, 下限钳制, 中文说明, 是否重启生效)
 # 类型：workers=io_bound 线程口径（正整数→max(1,min(v,16))，缺省 8）；
@@ -526,7 +532,12 @@ _ENRICH_TUNING_SPECS = [
      "单集认领配额制开关（链路规划 Step 3）：1=白天单集按日配额认领（夜间不限），"
      "0=夜间窗口禁令制（默认，行为与 Step 3 前一致）", False),
     (CFG_ENRICH_NONE_RESCHEDULE_DAYS, None, "30", "int", 1,
-     "【Step 4 占坑】none 条目自动回捞周期（天）；Step 4 接入前改这里不影响实际行为", False),
+     "【Step 4】none 条目自动回捞周期（天）：enrich_none_auto_reschedule=1 时生效，"
+     "开关关闭时改这里不影响实际行为", False),
+    (CFG_ENRICH_NONE_AUTO_RESCHEDULE, None, "0", "flag1", None,
+     "【Step 4】none 条目定时自动回捞开关：1=开（超周期的 done+none 剧/电影由 "
+     "janitor 按最旧优先、单轮 2000 条翻回 pending；资料不全 5 次后转 done+none "
+     "而非 failed），0=关（默认，行为与 Step 4 前完全一致）", False),
 ]
 # 快速查表：key → spec
 _ENRICH_TUNING_BY_KEY = {spec[0]: spec for spec in _ENRICH_TUNING_SPECS}
@@ -2117,6 +2128,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             multi_fields = {}
 
     _incomplete = False
+    _searched_no_hit = False  # Step 4：TMDB 搜过无高置信命中（终态 none 口径）
     if fetched.get("pure_inherit"):
         # 纯继承（处方 3）：本集的数据来自父级剧（图片回退在上面已完成），
         # 不是「跑过没拿到」——单独标 inherit，避免落进无望队列的口径。
@@ -2222,10 +2234,22 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         attempts = (item.enrich_attempts or 0) + 1
         item.enrich_attempts = attempts
         if attempts >= _tuning["values"][CFG_ENRICH_MAX_ATTEMPTS]:
-            item.enrich_status = "failed"
-            item.enrich_next_retry_at = None
-            logger.warning("补全资料不全超限转 failed id=%s attempts=%s",
-                           item.id, attempts)
+            if _tuning["values"][CFG_ENRICH_NONE_AUTO_RESCHEDULE]:
+                # Step 4（链路规划）：资料不全 = 数据性缺失（当前无解），转 done+none
+                # 等自动回捞，不再进 failed（failed 只留给异常：网络/挂载/代码）。
+                # 同一个 flag 包裹：关 flag 时行为与 Step 4 前完全一致（转 failed）。
+                item.enrich_status = "done"
+                item.metadata_source = "none"
+                item.enrich_attempts = 0
+                # 记本次终态化时间：回捞周期后 janitor 按最旧优先自动捞回
+                item.enrich_next_retry_at = datetime.now()
+                logger.warning("补全资料不全超限转 none（数据性缺失，等自动回捞）"
+                               "id=%s attempts=%s", item.id, attempts)
+            else:
+                item.enrich_status = "failed"
+                item.enrich_next_retry_at = None
+                logger.warning("补全资料不全超限转 failed id=%s attempts=%s",
+                               item.id, attempts)
         else:
             backoff = _tuning["values"][CFG_ENRICH_RETRY_BASE_SEC] * (2 ** (attempts - 1))
             item.enrich_status = "pending"
@@ -2235,7 +2259,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     else:
         item.enrich_status = "done"
         item.enrich_attempts = 0
-        item.enrich_next_retry_at = None
+        if _searched_no_hit and enrich_tuning_value(CFG_ENRICH_NONE_AUTO_RESCHEDULE, db):
+            # Step 4：flag 开时，「搜过无命中」的终态 none 记本次终态化时间，
+            # 回捞周期后 janitor 自动捞回；关时保持旧行为（next_retry_at=None）。
+            item.enrich_next_retry_at = datetime.now()
+        else:
+            item.enrich_next_retry_at = None
     item.enrich_claimed_at = None  # 处理完毕，释放 claim 租约（v2.42.9）
     item.enrich_claim_token = None
     # 优先级消费完归零（处方 4）：repair 的 100 在上面已随 repair_requested_at
@@ -2624,6 +2653,11 @@ def _janitor_loop() -> None:
                 n = _reclaim_stale(db)
                 if n:
                     logger.info("补全 janitor 回收 %d 条超时租约（enriching → pending）", n)
+                # Step 4：none 定时回捞（开关默认关；单轮硬上限 2000 条，
+                # 与 _reclaim_stale 同一连接、同一轮顺带做，不额外抢 worker 的 DB）
+                nr = enrich_none_auto_reschedule(db)
+                if nr:
+                    logger.info("补全 janitor 回捞 %d 条超期 none（done → pending）", nr)
             finally:
                 db.close()
         except Exception as exc:  # noqa: BLE001 — 一轮失败不该拖垮 janitor
@@ -2688,6 +2722,113 @@ def retry_unmatched(db) -> int:
         except Exception as exc:  # noqa: BLE001 — 监控不能影响主流程
             logger.warning("重试未匹配项翻转告警失败: %s", exc)
     return n
+
+
+def _none_reschedulable_query(db, cutoff):
+    """Step 4：超期 none 条目的查询（回捞动作与只读计数共用同一口径）。
+
+    口径：enrich_status='done' + metadata_source='none' + 无 tmdb_id +
+    剧/电影 + 有文件指纹 + （enrich_next_retry_at 为 NULL（旧存量/从未记录）或
+    <= cutoff（上次回捞/终态化已超过周期））。
+    """
+    from sqlalchemy import or_ as _or
+    return (db.query(em.MediaItem)
+            .filter(em.MediaItem.enrich_status == "done",
+                    em.MediaItem.metadata_source == "none",
+                    em.MediaItem.tmdb_id.is_(None),
+                    em.MediaItem.item_type.in_(["series", "movie"]),
+                    em.MediaItem.file_fingerprint.isnot(None),
+                    _or(em.MediaItem.enrich_next_retry_at.is_(None),
+                        em.MediaItem.enrich_next_retry_at <= cutoff)))
+
+
+def enrich_none_auto_reschedule(db) -> int:
+    """Step 4 定时回捞：超周期的 done+none 条目翻回 pending（janitor 每轮顺带）。
+
+    - 总开关：``enrich_none_auto_reschedule``（SystemConfig，默认 0=关）。
+      关时直接返回 0，行为与 Step 4 前完全一致。
+    - 超期口径：上次回捞（或首次终态化）时间超过
+      ``enrich_none_reschedule_days``（默认 30 天）。「上次回捞时间」复用现有
+      字段 ``enrich_next_retry_at`` 记录（不加 DB migration）：
+      终态化记 now；翻回 pending 时记 now（认领不受阻，且下次超期前不再被捞）。
+      NULL = 旧存量（Step 4 前终态化的行），视为已超期、本轮优先捞回。
+    - 单轮硬上限 ``ENRICH_NONE_AUTO_RESCHEDULE_BATCH``（2000，写死）：按最旧
+      优先（NULL 最旧，其次按时间戳），捞满即停，下一轮 janitor 继续。
+    - 翻回动作复用 ``retry_unmatched`` 的逻辑：清 TMDB 搜索阴性缓存 +
+      ``enrich_priority=50``。监控用 info 日志（例行调度，不走翻转告警，
+      避免每轮 2000 条刷 PG 事件）。
+    返回本轮实际翻回的条数。
+    """
+    if not enrich_tuning_value(CFG_ENRICH_NONE_AUTO_RESCHEDULE, db):
+        return 0
+    days = enrich_tuning_value(CFG_ENRICH_NONE_RESCHEDULE_DAYS, db)
+    cutoff = datetime.now() - timedelta(days=days)
+    batch = ENRICH_NONE_AUTO_RESCHEDULE_BATCH
+    cands = (_none_reschedulable_query(db, cutoff)
+             .with_entities(em.MediaItem.id, em.MediaItem.name,
+                            em.MediaItem.production_year, em.MediaItem.item_type)
+             .order_by(em.MediaItem.enrich_next_retry_at.asc().nullsfirst(),
+                       em.MediaItem.id.asc())
+             .limit(batch)
+             .all())
+    if not cands:
+        return 0
+    ids = [r[0] for r in cands]
+    affected = {(r[1], r[2], r[3]) for r in cands}
+    n = (db.query(em.MediaItem).filter(em.MediaItem.id.in_(ids))
+         .update({"enrich_status": "pending",
+                  "enrich_attempts": 0,
+                  "enrich_next_retry_at": datetime.now(),
+                  "enrich_priority": ENRICH_PRIORITY_RETRY_UNMATCHED},
+                 synchronize_session=False))
+    db.commit()
+    logger.info("none 定时回捞：%d 条超期无望条目翻回 pending（priority=50，周期 %d 天）",
+                n, days)
+    if n:
+        try:
+            from backend.emby_server import tmdb_cache
+            from backend.emby_server.tmdb import preferred_language
+            lang = preferred_language()
+            purged = 0
+            for name, year, item_type in affected:
+                purged += tmdb_cache.invalidate_search(name, year, item_type, lang)
+            if purged:
+                logger.info("none 定时回捞：已清掉 %d 份旧搜索缓存（下轮补搜真打 TMDB）",
+                            purged)
+        except Exception as exc:  # noqa: BLE001 — 缓存清理失败不影响重试入队
+            logger.debug("none 定时回捞清理 TMDB 搜索缓存失败: %s", exc)
+    return n
+
+
+def none_stock_stats(db) -> dict:
+    """Step 4 只读：done + metadata_source='none' + 无 tmdb_id 的存量统计。
+
+    - by_type：按 item_type 分组的全量 none 存量（所有类型，含单集/季）；
+    - reschedulable_now：当前周期下 janitor 下一轮可捞回的条数
+      （剧/电影 + 超期口径，见 _none_reschedulable_query）；
+    - batch_limit：单轮硬上限（2000）。
+    供管理后台「定时与刮削」只读展示 + 上线前存量计数（handoff SQL 的同口径实现）。
+    """
+    from sqlalchemy import func
+    rows = (db.query(em.MediaItem.item_type, func.count(em.MediaItem.id))
+            .filter(em.MediaItem.enrich_status == "done",
+                    em.MediaItem.metadata_source == "none",
+                    em.MediaItem.tmdb_id.is_(None))
+            .group_by(em.MediaItem.item_type)
+            .all())
+    by_type = {t or "unknown": int(c) for t, c in rows}
+    days = enrich_tuning_value(CFG_ENRICH_NONE_RESCHEDULE_DAYS, db)
+    cutoff = datetime.now() - timedelta(days=days)
+    reschedulable = _none_reschedulable_query(db, cutoff).count()
+    return {
+        "by_type": by_type,
+        "total": sum(by_type.values()),
+        "reschedulable_now": reschedulable,
+        "cycle_days": days,
+        "auto_reschedule_enabled": bool(
+            enrich_tuning_value(CFG_ENRICH_NONE_AUTO_RESCHEDULE, db)),
+        "batch_limit": ENRICH_NONE_AUTO_RESCHEDULE_BATCH,
+    }
 
 
 def _episode_lacks_own_data(ep: Any, parent: Any) -> bool:

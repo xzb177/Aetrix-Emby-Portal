@@ -1257,6 +1257,20 @@ export const saveEnrichTuning = (values: Record<string, string | number | boolea
     db_pool_size: db_pool_size ?? null,
   })
 
+/** none 存量只读计数（链路规划 Step 4）：done+none+无 tmdb_id 按类型分组 + 下一轮可捞回数 */
+export interface EnrichNoneStats {
+  success: boolean
+  by_type: Record<string, number>
+  total: number
+  reschedulable_now: number
+  cycle_days: number
+  auto_reschedule_enabled: boolean
+  batch_limit: number
+}
+
+export const fetchEnrichNoneStats = () =>
+  get<EnrichNoneStats>(`${E}/scrape/enrich-none-stats`)
+
 export interface TmdbTestResult {
   index: number
   masked: string
