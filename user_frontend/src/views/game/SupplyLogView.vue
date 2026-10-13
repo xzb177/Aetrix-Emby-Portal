@@ -237,6 +237,13 @@ onMounted(load)
   letter-spacing: 1px;
 }
 
+/* 键盘可达性：重试按钮与 role=button 的小票获得焦点时给出可见轮廓 */
+.v4-retry:focus-visible,
+.receipt:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+
 /* 减少动态偏好：停掉运输中呼吸闪烁和展开渐显 */
 @media (prefers-reduced-motion: reduce) {
   .seal.ship { animation: none; }

@@ -440,4 +440,16 @@ onMounted(() => { void load(true) })
 /* 状态区 */
 .skeleton-list { display: flex; flex-direction: column; gap: 10px; }
 .v4-empty-emoji { font-size: 40px; margin-bottom: 8px; }
+
+/* 键盘可达性：按钮获得焦点时给出可见轮廓 */
+.unread-toggle:focus-visible,
+.refresh-btn:focus-visible,
+.v4-retry:focus-visible,
+.markall-btn:focus-visible,
+.f:focus-visible,
+.head:focus-visible,
+.wax:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
 </style>

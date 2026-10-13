@@ -415,6 +415,14 @@ onUnmounted(() => window.clearInterval(dateTimer))
 .load-more:active { transform: scale(0.97); }
 .load-more:disabled { opacity: 0.6; cursor: default; }
 
+/* 键盘可达性：按钮获得焦点时给出可见轮廓 */
+.v4-retry:focus-visible,
+.chip:focus-visible,
+.load-more:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .chip, .load-more { transition: none; }
 }
