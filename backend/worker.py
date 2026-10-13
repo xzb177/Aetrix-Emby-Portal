@@ -30,6 +30,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# 日志脱敏：密钥/令牌不得进日志（TMDB api_key 曾明文进 docker logs）
+from backend.log_redact import install_secret_redaction  # noqa: E402
+
+install_secret_redaction()
 logger = logging.getLogger("aetrix-worker")
 
 # 优雅关闭标志
