@@ -819,11 +819,68 @@ def _save_page_token(db, drive_id: str, token: str) -> None:
 # 变化 → 库映射
 # ---------------------------------------------------------------------------
 
+def _strm_lib_drive_mappings(db) -> list[tuple[int, str, str, str]]:
+    """[(library_id, drive_id, drive子目录, fs路径前缀)] —— /strm 库 → Drive 前缀。
+
+    通用能力（数据驱动，不写死任何库路径）：
+    .strm 树是生成器按「盘 × 源目录」镜像写出的 Drive 结构
+    （strm_gen.strm_relpath 会去掉源目录前缀、换 .strm 扩展名），
+    因此库路径 /strm/<rel> 在 Drive 侧对应 /<source_dir>/<rel>
+    （逐盘、逐源目录展开）。盘集合、源目录集合、.strm 输出根全部从
+    生成器配置（strm_gen_drive_id / strm_gen_source_dir）与唯一事实源推导。
+    """
+    from backend.emby_server import models as em
+    try:
+        from backend.emby_server import strm_gen as sg
+    except Exception:
+        return []
+    try:
+        strm_root = (sg._container_strm_root(db) or "/strm").rstrip("/") or "/strm"
+        # 源目录：显式配空 = 网盘根（strm_relpath 保留 Drive 根相对路径）
+        if not (sg.source_dir_raw(db) or "").strip():
+            srcs = [""]
+        else:
+            srcs = [s.rstrip("/") for s in sg.source_dirs(db)]
+        if not srcs:
+            return []
+        drive_cfg = (sg._db_config(db, sg.CONFIG_DRIVE_ID, "") or "").strip()
+        drives = list(discover_drives().keys())
+        if drive_cfg and drive_cfg.lower() != "all":
+            drives = [d for d in drives if d == drive_cfg]
+        libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
+    except Exception:
+        return []
+    out: list[tuple[int, str, str, str]] = []
+    for lib in libs:
+        if getattr(lib, "is_virtual", False):
+            continue
+        for raw in (getattr(lib, "paths", "") or "").split(","):
+            path = raw.strip().rstrip("/")
+            if not path:
+                continue
+            if path == strm_root:
+                rel = ""
+            elif path.startswith(strm_root + "/"):
+                rel = path[len(strm_root) + 1:]
+            else:
+                continue
+            fs_prefix = path
+            for drive_id in drives:
+                for src in srcs:
+                    sub = ("/" + src if src else "") + ("/" + rel if rel else "")
+                    out.append((lib.id, drive_id, sub or "/", fs_prefix))
+    if out:
+        logger.debug("Drive Changes: /strm 库→Drive 前缀映射 %d 条（%d 个库）",
+                     len(out), len({m[0] for m in out}))
+    return out
+
+
 def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
     """返回 [(library_id, drive_id, drive子目录前缀)]。
 
     库路径形如 /mnt/mp/nastool/剧集 → 拆出 rclone remote → team_drive，
     前缀 = remote 下的子目录（Drive 内的相对路径）。
+    /strm/... 库路径走 _strm_lib_drive_mappings（从生成器配置反推）。
     """
     from backend.emby_server import models as em
 
@@ -879,6 +936,9 @@ def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
                             sub = path[len(mp):] or "/"
                             out.append((lib.id, drive_id, sub))
                         break
+    # /strm 库：从生成器配置反推 Drive 前缀（通用能力，见 _strm_lib_drive_mappings）
+    for lib_id, drive_id, sub, _fs in _strm_lib_drive_mappings(db):
+        out.append((lib_id, drive_id, sub))
     return out
 
 
@@ -984,6 +1044,9 @@ def _library_fs_prefixes(db) -> dict[tuple[int, str], str]:
                         drive_sub = path[len(mp):] or "/"
                         out[(lib.id, drive_sub)] = path
                         break
+    # /strm 库的 fs 前缀（与 _library_drive_prefixes 的 sub 一一对应）
+    for lib_id, _drive_id, sub, fs_prefix in _strm_lib_drive_mappings(db):
+        out[(lib_id, sub)] = fs_prefix
     return out
 
 
