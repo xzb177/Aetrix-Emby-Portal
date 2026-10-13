@@ -423,7 +423,179 @@ def save_episode_night_config(db, enabled: bool, start: str, end: str,
                 enabled, start, end, tz)
     return get_episode_night_config(db)
 
+# ---------------------------------------------------------------------------
+# 刮削性能参数（链路规划 Step 1：配置面收口）
+#
+# 原来 env-only 的关键旋钮搬进 SystemConfig + 后台 UI；env 保留为部署覆盖。
+# 口径照抄 _episode_night_config：
+#   - 任一环境变量被设置（含显式 "0"）即 env 接管，后台改了也不生效，
+#     from_env=True 让管理后台显示提示；
+#   - 未设置 env 时读 SystemConfig（backend.integrations.store），
+#     60 秒 TTL 缓存热生效；管理后台保存后立即清缓存，下一次抢单即用新值。
+# 纯搬迁：未设置时行为与今天逐字节一致（各默认值见 _ENRICH_TUNING_SPECS）。
+# ---------------------------------------------------------------------------
+ENRICH_WORKERS_ENV = "ENRICH_WORKERS"
+ENRICH_BATCH_ENV = "ENRICH_BATCH"
+ENRICH_TMDB_BATCH_ENV = "ENRICH_TMDB_BATCH"
+ENRICH_MAX_ATTEMPTS_ENV = "ENRICH_MAX_ATTEMPTS"
+ENRICH_RETRY_BASE_SEC_ENV = "ENRICH_RETRY_BASE_SEC"
+ENRICH_CLAIM_LEASE_SEC_ENV = "ENRICH_CLAIM_LEASE_SEC"
+
+CFG_ENRICH_WORKERS = "enrich_workers"
+CFG_ENRICH_BATCH = "enrich_batch"
+CFG_ENRICH_TMDB_BATCH = "enrich_tmdb_batch"
+CFG_ENRICH_MAX_ATTEMPTS = "enrich_max_attempts"
+CFG_ENRICH_RETRY_BASE_SEC = "enrich_retry_base_sec"
+CFG_ENRICH_CLAIM_LEASE_SEC = "enrich_claim_lease_sec"
+# Step 3 / Step 4 的占坑位：本步只做可配 + UI，不接入认领 / 回捞逻辑
+CFG_ENRICH_EPISODE_DAY_QUOTA = "enrich_episode_day_quota"
+CFG_ENRICH_NONE_RESCHEDULE_DAYS = "enrich_none_reschedule_days"
+
+# (config_key, env_name, 默认值str, 类型, 下限钳制, 中文说明, 是否重启生效)
+# 类型：workers=io_bound 线程口径（正整数→max(1,min(v,16))，缺省 8）；
+#       int=整数下限钳制；flag1=是否为 "1"（口径照抄现状）。
+_ENRICH_TUNING_SPECS = [
+    (CFG_ENRICH_WORKERS, ENRICH_WORKERS_ENV, "8", "workers", None,
+     "补全 worker 线程数（IO 密集型，未配置默认 8，上限 16；改完需重启 worker）", True),
+    (CFG_ENRICH_BATCH, ENRICH_BATCH_ENV, "100", "int", 10,
+     "每批认领条数（下限 10）", False),
+    (CFG_ENRICH_TMDB_BATCH, ENRICH_TMDB_BATCH_ENV, "1", "flag1", None,
+     "TMDB 批量开关：1=批量调 batch_search/batch_details，0=逐条原逻辑", False),
+    (CFG_ENRICH_MAX_ATTEMPTS, ENRICH_MAX_ATTEMPTS_ENV, "5", "int", 1,
+     "异常失败重试上限次数（资料不全的退避基数见下一项）", False),
+    (CFG_ENRICH_RETRY_BASE_SEC, ENRICH_RETRY_BASE_SEC_ENV, "60", "int", 10,
+     "重试退避基数（秒）：按 60s×2ⁿ 指数退避", False),
+    (CFG_ENRICH_CLAIM_LEASE_SEC, ENRICH_CLAIM_LEASE_SEC_ENV, "900", "int", 60,
+     "认领租约（秒）：worker 停滞超过租约即视为死亡、由 janitor 回收", False),
+    (CFG_ENRICH_EPISODE_DAY_QUOTA, None, "2000", "int", 0,
+     "【Step 3 占坑】白天单集日配额；Step 3 接入前改这里不影响实际行为", False),
+    (CFG_ENRICH_NONE_RESCHEDULE_DAYS, None, "30", "int", 1,
+     "【Step 4 占坑】none 条目自动回捞周期（天）；Step 4 接入前改这里不影响实际行为", False),
+]
+# 快速查表：key → spec
+_ENRICH_TUNING_BY_KEY = {spec[0]: spec for spec in _ENRICH_TUNING_SPECS}
+
+_ENRICH_TUNING_TTL_SEC = 60.0
+_enrich_tuning_cache: dict = {"at": 0.0, "cfg": None}
+
+
+def _parse_tuning_value(kind: str, minimum, value_str: str, default: str):
+    """按类型解析单个性能参数，保证永不抛异常、非法值回退默认。"""
+    if kind == "workers":
+        # 口径与 _cpu_workers(io_bound=True) 一致：未配置默认 8，
+        # 手动配置按 max(1, min(v, 16)) 钳制，非法值按未配置处理。
+        try:
+            v = int((value_str or "").strip())
+        except (TypeError, ValueError):
+            v = 0
+        return max(1, min(v, 16)) if v > 0 else 8
+    if kind == "flag1":
+        # 口径照抄现状：os.getenv("ENRICH_TMDB_BATCH", "1") == "1"
+        return (value_str if value_str is not None else "1") == "1"
+    try:
+        v = int(str(value_str).strip())
+    except (TypeError, ValueError):
+        v = int(default)
+    return max(minimum, v)
+
+
+def _enrich_tuning_config(db=None) -> dict:
+    """刮削性能参数的有效配置（环境变量优先，否则读 SystemConfig）。
+
+    db 可空：传了 db 才读库；60 秒 TTL 缓存，管理后台保存后最多 60 秒生效。
+    返回 {"values": {key: 解析后值}, "raw": {key: 字符串值},
+           "from_env": {key: bool}, "restart_required": [CFG_ENRICH_WORKERS]}
+    """
+    now_ts = time.monotonic()
+    cached = _enrich_tuning_cache["cfg"]
+    if cached is not None and now_ts - _enrich_tuning_cache["at"] < _ENRICH_TUNING_TTL_SEC:
+        return {k: (dict(v) if isinstance(v, dict) else list(v) if isinstance(v, list) else v)
+                for k, v in cached.items()}
+    values, raw, from_env = {}, {}, {}
+    for key, env_name, default, kind, minimum, _desc, _restart in _ENRICH_TUNING_SPECS:
+        env_raw = (os.getenv(env_name) or "").strip() if env_name else ""
+        taken = bool(env_raw)
+        from_env[key] = taken
+        if taken:
+            # flag1 保持原口径不对 env 做 strip（现状就是 == "1" 精确比较）
+            s = os.getenv(env_name) if kind == "flag1" else env_raw
+        elif db is not None:
+            try:
+                from backend.integrations import store
+                s = store.read_value(db, key, default)
+            except Exception:  # noqa: BLE001 — 读库失败就按默认，不挡抢单
+                logger.warning("刮削性能参数 %s 读库失败，用默认值", key, exc_info=True)
+                s = default
+        else:
+            s = default
+        raw[key] = s
+        values[key] = _parse_tuning_value(kind, minimum, s, default)
+    cfg = {"values": values, "raw": raw, "from_env": from_env,
+           "restart_required": [CFG_ENRICH_WORKERS]}
+    _enrich_tuning_cache["at"] = now_ts
+    _enrich_tuning_cache["cfg"] = {k: (dict(v) if isinstance(v, dict) else list(v))
+                                   for k, v in cfg.items()}
+    return cfg
+
+
+def enrich_tuning_value(key: str, db=None):
+    """取单个刮削性能参数的解析后值（worker 热路径用；db 可空）。"""
+    return _enrich_tuning_config(db)["values"][key]
+
+
+def _resolve_enrich_workers(db=None) -> int:
+    """线程数：进程启动（start()）时解析，env → SystemConfig → 默认 8。
+
+    运行时动态增减线程不做（不安全），改这里要重启 worker 进程。
+    """
+    return int(_enrich_tuning_config(db)["values"][CFG_ENRICH_WORKERS])
+
+
+def get_enrich_tuning_config(db) -> dict:
+    """管理后台用：当前生效的刮削性能参数（含 from_env / 默认值 / 中文说明）。"""
+    cfg = _enrich_tuning_config(db)
+    return {
+        "values": cfg["values"],
+        "raw": cfg["raw"],
+        "from_env": cfg["from_env"],
+        "restart_required": cfg["restart_required"],
+        "order": [spec[0] for spec in _ENRICH_TUNING_SPECS],
+        "defaults": {spec[0]: spec[2] for spec in _ENRICH_TUNING_SPECS},
+        "descriptions": {spec[0]: spec[5] for spec in _ENRICH_TUNING_SPECS},
+        "env_names": {spec[0]: spec[1] for spec in _ENRICH_TUNING_SPECS},
+    }
+
+
+def save_enrich_tuning_config(db, values: dict) -> dict:
+    """管理后台用：保存刮削性能参数（写 SystemConfig；除线程数外 60 秒内热生效）。
+
+    values 未知的 key 会被忽略；非法值回退该项默认值，保证库里永远是干净值。
+    """
+    from backend.integrations import store
+    payload, descriptions = {}, {}
+    for key, val in (values or {}).items():
+        spec = _ENRICH_TUNING_BY_KEY.get(key)
+        if spec is None:
+            logger.warning("刮削性能参数忽略未知 key: %s", key)
+            continue
+        _k, _env, default, kind, minimum, desc, _restart = spec
+        s = str(val).strip() if val is not None else ""
+        parsed = _parse_tuning_value(kind, minimum, s if s else default, default)
+        payload[key] = ("1" if parsed else "0") if kind == "flag1" else str(int(parsed))
+        descriptions[key] = desc
+    if payload:
+        store.write_values(db, payload, descriptions)
+        db.commit()
+        db.expire_all()
+    # 立即清缓存：保存后下一次抢单就用新值，不用等 60 秒 TTL
+    _enrich_tuning_cache["at"] = 0.0
+    _enrich_tuning_cache["cfg"] = None
+    logger.info("刮削性能参数已保存: %s", payload)
+    return get_enrich_tuning_config(db)
+
+
 _worker_threads: list = []
+_effective_workers: int | None = None  # start() 时解析的实际线程数（供进度上报）
 _stop_event = threading.Event()
 _worker_lock = threading.Lock()
 
@@ -1904,15 +2076,17 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         # 资料不全：按失败计次 + 指数退避，超限转 failed。
         # 之前这里 attempts 清零且 next_retry_at 置空 → 下一轮抢单立刻重新领取 →
         # 无限空转：队列永远不降，还白烧 TMDB 配额。
+        # Step 1：重试参数后台可配（60s 热生效）
+        _tuning = _enrich_tuning_config(db)
         attempts = (item.enrich_attempts or 0) + 1
         item.enrich_attempts = attempts
-        if attempts >= ENRICH_MAX_ATTEMPTS:
+        if attempts >= _tuning["values"][CFG_ENRICH_MAX_ATTEMPTS]:
             item.enrich_status = "failed"
             item.enrich_next_retry_at = None
             logger.warning("补全资料不全超限转 failed id=%s attempts=%s",
                            item.id, attempts)
         else:
-            backoff = ENRICH_RETRY_BASE_SEC * (2 ** (attempts - 1))
+            backoff = _tuning["values"][CFG_ENRICH_RETRY_BASE_SEC] * (2 ** (attempts - 1))
             item.enrich_status = "pending"
             item.enrich_next_retry_at = datetime.now() + timedelta(seconds=backoff)
             logger.info("补全资料不全待重试 id=%s attempts=%s %ss后",
@@ -2139,15 +2313,17 @@ def _mark_failed(db, item_id: int, attempts: int, error: str,
         attempts = (attempts or 0) + 1
         item.enrich_attempts = attempts
         item.enrich_claimed_at = None  # 释放 claim 租约（v2.42.9）
+        # Step 1：重试参数后台可配（60s 热生效）
+        _tuning = _enrich_tuning_config(db)
         item.enrich_claim_token = None
-        if attempts >= ENRICH_MAX_ATTEMPTS:
+        if attempts >= _tuning["values"][CFG_ENRICH_MAX_ATTEMPTS]:
             item.enrich_status = "failed"
             item.enrich_next_retry_at = None
             logger.warning("补全重试超限转 failed id=%s attempts=%s err=%s",
                            item_id, attempts, error[:120])
             outcome = "failed"
         else:
-            backoff = ENRICH_RETRY_BASE_SEC * (2 ** (attempts - 1))
+            backoff = _tuning["values"][CFG_ENRICH_RETRY_BASE_SEC] * (2 ** (attempts - 1))
             item.enrich_status = "pending"
             item.enrich_next_retry_at = datetime.now() + timedelta(seconds=backoff)
             logger.info("补全失败待重试 id=%s attempts=%s %ss后 err=%s",
@@ -2190,7 +2366,8 @@ def _reclaim_stale(db, lease_sec: Optional[int] = None) -> int:
     下一次抢单自然捞到（挂载熔断期间的条目已由长 next_retry_at 挡住）。
     """
     from sqlalchemy import and_ as _and, or_ as _or
-    lease = ENRICH_CLAIM_LEASE_SEC if lease_sec is None else max(1, int(lease_sec))
+    # Step 1：租约后台可配（60s 热生效）；显式传参时保持旧口径
+    lease = enrich_tuning_value(CFG_ENRICH_CLAIM_LEASE_SEC, db) if lease_sec is None else max(1, int(lease_sec))
     cutoff = datetime.now() - timedelta(seconds=lease)
     n = (db.query(em.MediaItem)
          .filter(em.MediaItem.enrich_status == "enriching")
@@ -2208,8 +2385,10 @@ def _reclaim_stale(db, lease_sec: Optional[int] = None) -> int:
 
 def _janitor_loop() -> None:
     """租约 janitor 线程：周期回收停滞的 enriching 行（v2.42.9）"""
+    # Step 1：租约后台可配（60s 热生效），janitor 每轮重读
     logger.info("补全 janitor 启动（租约 %ss，每 %ss 一轮）",
-                ENRICH_CLAIM_LEASE_SEC, ENRICH_JANITOR_INTERVAL_SEC)
+                enrich_tuning_value(CFG_ENRICH_CLAIM_LEASE_SEC),
+                ENRICH_JANITOR_INTERVAL_SEC)
     while not _stop_event.is_set():
         try:
             db = SessionLocal()
@@ -2781,7 +2960,9 @@ def _worker_loop(worker_id: int) -> None:
             # 所有线程永久让路）
             try:
                 try:
-                    batch = _claim_batch(db, ENRICH_BATCH)
+                    # Step 1：批次大小 / TMDB 批量开关后台可配（60s 热生效）
+                    _tuning = _enrich_tuning_config(db)
+                    batch = _claim_batch(db, _tuning["values"][CFG_ENRICH_BATCH])
                 except Exception as exc:  # noqa: BLE001
                     db.rollback()
                     logger.warning("补全 worker 取单失败: %s", exc)
@@ -2795,7 +2976,7 @@ def _worker_loop(worker_id: int) -> None:
                 # 只付一次网络成本；组边界上丢弃重建，缓存不随积压增长。
                 # v2.53.1 TMDB 批量：多条时走 _process_batch（pre 逐条 → TMDB 批量 →
                 # post+写库逐条），批量失败自动回退逐条。
-                if ENRICH_TMDB_BATCH and len(batch) > 1:
+                if _tuning["values"][CFG_ENRICH_TMDB_BATCH] and len(batch) > 1:
                     _process_batch(db, batch)
                 else:
                     holder: Optional[dict] = None
@@ -2850,7 +3031,8 @@ def get_progress() -> dict:
                 "retrying": retrying,
             },
             "probe": probe_by_status,
-            "workers": ENRICH_WORKERS,
+            # Step 1：线程数为 start() 时解析的实际值（后台可配，重启 worker 生效）
+            "workers": _effective_workers if _effective_workers else ENRICH_WORKERS,
             "enabled": ENRICH_ENABLED,
             # 单集夜间刮削当前生效状态（管理后台展示用；读库失败时回退默认关）
             "episode_night": _episode_night_config(db),
@@ -2859,15 +3041,16 @@ def get_progress() -> dict:
             "stages": progress.stage_stats(),
             "throughput": progress.throughput(),
             "mount_io": progress.remote_stats(),
-            "claim_lease_sec": ENRICH_CLAIM_LEASE_SEC,
+            # Step 1：租约后台可配（60s 热生效）
+            "claim_lease_sec": enrich_tuning_value(CFG_ENRICH_CLAIM_LEASE_SEC, db),
         }
     finally:
         db.close()
 
 
 def start() -> None:
-    """启动后台补全线程（幂等），线程数 = ENRICH_WORKERS"""
-    global _worker_threads
+    """启动后台补全线程（幂等），线程数 = start() 时解析（env → 后台配置 → 默认 8）"""
+    global _worker_threads, _effective_workers
     if not ENRICH_ENABLED:
         logger.info("补全 worker 已禁用（ENRICH_WORKER=0）")
         return
@@ -2884,10 +3067,13 @@ def start() -> None:
             m = _suppress_flood(db)
             if m:
                 logger.info("补全 worker 防洪峰：%d 条老数据直接标 done", m)
+            # Step 1：线程数进程启动时解析一次（env 优先，否则后台配置），
+            # 运行时动态增减线程不做（不安全），改配置需重启 worker。
+            _effective_workers = _resolve_enrich_workers(db)
         finally:
             db.close()
         _stop_event.clear()
-        for i in range(ENRICH_WORKERS):
+        for i in range(_effective_workers):
             t = threading.Thread(
                 target=_worker_loop, args=(i,),
                 name=f"enrich-worker-{i}", daemon=True)
@@ -2898,7 +3084,7 @@ def start() -> None:
         j = threading.Thread(target=_janitor_loop, name="enrich-janitor", daemon=True)
         j.start()
         _worker_threads.append(j)
-        logger.info("补全 worker 启动 %d 个线程 + janitor", ENRICH_WORKERS)
+        logger.info("补全 worker 启动 %d 个线程 + janitor", _effective_workers)
 
 
 def stop() -> None:

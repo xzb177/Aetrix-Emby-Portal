@@ -1143,6 +1143,70 @@ def save_enrich_episode_night(
     return {"success": True, **cfg}
 
 
+# ==================== 刮削性能参数（链路规划 Step 1：配置面收口）====================
+
+class EnrichTuningSaveRequest(BaseModel):
+    values: dict = Field(default_factory=dict, description="8 个性能参数的待保存值（key 必须在白名单内）")
+    db_pool_size: Optional[str] = Field(default=None, description="DB 连接池大小（进程启动时解析，改完需重启进程）")
+
+
+@admin_emby_router.get("/scrape/enrich-tuning")
+def get_enrich_tuning(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """刮削性能参数：当前生效值 + 默认值 + 中文说明 + env 接管状态。
+
+    线程数（enrich_workers）与 DB 池大小（db_pool_size）改完需重启进程生效，
+    其余保存后 60 秒内热生效。from_env 为真时环境变量覆盖了后台配置（改这里不生效）。
+    """
+    from backend import database as dbmod
+    from backend.emby_server import enrich_worker
+    from backend.integrations import store
+    cfg = enrich_worker.get_enrich_tuning_config(db)
+    pool = dbmod.db_pool_config()
+    # 已保存但待重启的池大小（与当前生效值不同时提示）
+    saved_pool = (store.read_value(db, dbmod.CFG_DB_POOL_SIZE, "") or "").strip()
+    pool["saved_pool_size"] = saved_pool
+    pool["pending_restart"] = bool(saved_pool) and saved_pool != str(pool["pool_size"])
+    return {"success": True, **cfg, "db_pool": pool}
+
+
+@admin_emby_router.put("/scrape/enrich-tuning")
+def save_enrich_tuning(
+    req: EnrichTuningSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存刮削性能参数（写 SystemConfig；除线程数/DB 池外 60 秒内热生效）"""
+    from backend import database as dbmod
+    from backend.emby_server import enrich_worker
+    from backend.integrations import store
+    allowed = set(enrich_worker.get_enrich_tuning_config(db)["defaults"].keys())
+    unknown = [k for k in (req.values or {}) if k not in allowed]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"未知参数: {', '.join(unknown)}")
+    pool_size = None
+    if req.db_pool_size is not None:
+        try:
+            pool_size = max(1, int(str(req.db_pool_size).strip()))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="db_pool_size 必须是 ≥1 的整数")
+        store.write_values(
+            db,
+            {dbmod.CFG_DB_POOL_SIZE: str(pool_size)},
+            {dbmod.CFG_DB_POOL_SIZE: "DB 连接池大小（进程启动/engine 创建时解析，改完需重启进程生效）"},
+        )
+        db.commit()
+        db.expire_all()
+    cfg = enrich_worker.save_enrich_tuning_config(db, req.values or {})
+    pool = dbmod.db_pool_config()
+    saved_pool = (store.read_value(db, dbmod.CFG_DB_POOL_SIZE, "") or "").strip()
+    pool["saved_pool_size"] = saved_pool
+    pool["pending_restart"] = bool(saved_pool) and saved_pool != str(pool["pool_size"])
+    return {"success": True, **cfg, "db_pool": pool}
+
+
 # ==================== 媒体信息探测 worker（v2.53）====================
 
 class ProbeResetRequest(BaseModel):

@@ -102,7 +102,54 @@ if DATABASE_TYPE == "sqlite":
 # 峰值 3×(10+10)=60 < PG 默认 max_connections(100)，为运维/复制/迁移连接留足余量，
 # 避免高峰期随机 "too many clients already" 导致全站 500。
 # 如需放大，请同步调高 PG max_connections，并保证 3×(DB_POOL_SIZE+DB_MAX_OVERFLOW) 仍有富余。
-_POOL_SIZE = _env_int_or("DB_POOL_SIZE", 10, 1)
+# ---- DB 连接池大小（链路规划 Step 1：配置面收口） ----
+# DB_POOL_SIZE：env 优先（部署覆盖）；未设置时读 SystemConfig（管理后台可配）。
+# engine 创建时解析一次（进程启动时），改完需重启进程生效。
+# import 期用一次性 bootstrap 连接直查 system_configs 表读值（不经过 ORM，
+# 避免 database → store → models → database 的循环导入）；表不存在 / 库不可达
+# 时回退默认 10，永不抛异常。
+DB_POOL_SIZE_ENV = "DB_POOL_SIZE"
+CFG_DB_POOL_SIZE = "db_pool_size"
+DB_POOL_SIZE_DEFAULT = 10
+
+
+def _int_or(value, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(str(value or "").strip() or default))
+    except (ValueError, TypeError):
+        return default
+
+
+def _bootstrap_config_value(key: str, default: str) -> str:
+    """engine 创建前读 SystemConfig：一次性 bootstrap 连接直查表，失败回退默认。"""
+    try:
+        from sqlalchemy import text as _text
+        _boot = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
+        try:
+            with _boot.connect() as _conn:
+                _row = _conn.execute(
+                    _text("SELECT value FROM system_configs WHERE key = :k LIMIT 1"),
+                    {"k": key}).fetchone()
+                if _row is not None and _row[0] not in (None, ""):
+                    return str(_row[0])
+        finally:
+            _boot.dispose()
+    except Exception:
+        pass
+    return default
+
+
+def _resolve_db_pool_size() -> int:
+    raw = (os.getenv(DB_POOL_SIZE_ENV) or "").strip()
+    if raw:
+        return _env_int_or(DB_POOL_SIZE_ENV, DB_POOL_SIZE_DEFAULT, 1)
+    return _int_or(
+        _bootstrap_config_value(CFG_DB_POOL_SIZE, str(DB_POOL_SIZE_DEFAULT)),
+        DB_POOL_SIZE_DEFAULT, 1)
+
+
+_POOL_SIZE = _resolve_db_pool_size()
+_DB_POOL_SIZE_FROM_ENV = bool((os.getenv(DB_POOL_SIZE_ENV) or "").strip())
 _MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 10, 0)
 if DATABASE_TYPE == "postgresql":
     engine_config["pool_size"] = _POOL_SIZE
@@ -113,6 +160,19 @@ elif DATABASE_TYPE == "mysql":
     engine_config["pool_recycle"] = 7200
 
 engine = create_engine(DATABASE_URL, **engine_config)
+
+
+def db_pool_config() -> dict:
+    """管理后台用：DB 连接池当前生效配置（进程启动/engine 创建时解析，改完需重启）。"""
+    return {
+        "pool_size": _POOL_SIZE,
+        "max_overflow": _MAX_OVERFLOW,
+        "from_env": _DB_POOL_SIZE_FROM_ENV,
+        "env_name": DB_POOL_SIZE_ENV,
+        "default": DB_POOL_SIZE_DEFAULT,
+        "database_type": DATABASE_TYPE,
+        "restart_required": True,
+    }
 
 if DATABASE_TYPE == "sqlite":
     @event.listens_for(engine, "connect")
