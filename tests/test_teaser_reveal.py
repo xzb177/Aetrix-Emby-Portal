@@ -150,6 +150,18 @@ def test_write_rejects_bad_datetime(db):
 def test_write_rejects_bad_link(db):
     with pytest.raises(ValueError, match="跳转链接"):
         teaser.write_admin(db, {"teaser_post_link": "javascript:alert(1)"})
+    # 协议相对 URL（//evil.com）不算站内路由，照样拒绝
+    with pytest.raises(ValueError, match="跳转链接"):
+        teaser.write_admin(db, {"teaser_post_link": "//evil.com/x"})
+
+
+def test_write_accepts_good_links(db):
+    cfg = teaser.write_admin(db, {"teaser_post_link": "/game/map"})
+    assert cfg["post_link"] == "/game/map"
+    cfg = teaser.write_admin(db, {"teaser_post_link": "https://example.com/x"})
+    assert cfg["post_link"] == "https://example.com/x"
+    cfg = teaser.write_admin(db, {"teaser_post_link": ""})
+    assert cfg["post_link"] == ""
 
 
 def test_write_round_trip(db):

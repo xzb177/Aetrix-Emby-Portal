@@ -143,7 +143,11 @@ def _validate_link(link: str) -> None:
     text = (link or "").strip()
     if not text:
         return
-    if text.startswith("/") or text.startswith("http://") or text.startswith("https://"):
+    low = text.lower()
+    # // 开头是协议相对 URL（会跳到站外），不算站内路由
+    if text.startswith("/") and not text.startswith("//"):
+        return
+    if low.startswith("http://") or low.startswith("https://"):
         return
     raise ValueError("跳转链接只接受 / 开头的站内路由或 http(s) 外链")
 
