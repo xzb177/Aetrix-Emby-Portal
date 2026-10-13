@@ -587,7 +587,7 @@ onBeforeUnmount(() => {
               @click="toggleUserMenu"
             >
               <span class="avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
-              <!-- ≤420px 消息按钮收进头像菜单：有未读时头像右上角点一颗小圆点 -->
+              <!-- ≤420px 消息铃铛隐藏：有未读时头像右上角点一颗小圆点提示 -->
               <span v-if="unreadCount > 0" class="avatar-dot narrow-only" aria-hidden="true"></span>
             </button>
 
@@ -648,27 +648,6 @@ onBeforeUnmount(() => {
                   <span class="facility-go" aria-hidden="true">›</span>
                 </RouterLink>
                 </template>
-
-                <!-- ≤420px：顶栏只留品牌/积分/头像，外观切换与消息中心收进菜单 -->
-                <button
-                  type="button"
-                  class="dropdown-item dropdown-narrow-only"
-                  role="menuitem"
-                  :title="themeTitle"
-                  @click="toggleTheme"
-                >
-                  <component :is="themeCurrent.icon" :size="15" /> 外观
-                  <span class="dropdown-meta">{{ themeCurrent.label }}</span>
-                </button>
-                <RouterLink
-                  to="/messages"
-                  class="dropdown-item dropdown-narrow-only"
-                  role="menuitem"
-                  @click="closeMenus"
-                >
-                  <Inbox :size="15" /> 消息中心
-                  <span v-if="unreadCount > 0" class="dropdown-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-                </RouterLink>
 
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
@@ -944,7 +923,7 @@ onBeforeUnmount(() => {
    （昵称不再出现在顶栏 → 菜单头部那一行仍是完整身份展示） */
 .user-btn { padding: 3px; }
 
-/* 头像右上角的未读点（只在 ≤420px 消息按钮收进菜单时出现） */
+/* 头像右上角的未读点（只在 ≤420px 消息铃铛隐藏时出现） */
 .avatar-dot {
   position: absolute;
   top: 1px;
@@ -1265,29 +1244,6 @@ onBeforeUnmount(() => {
 .dropdown-item:active { background: var(--au-surface-3); }
 .dropdown-item svg { color: var(--au-text-3); transition: color var(--au-fast) var(--au-ease); }
 .dropdown-item:hover svg { color: var(--au-primary); }
-.dropdown-badge {
-  margin-left: auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-primary);
-  color: var(--au-on-primary);
-  font-size: 0.8125rem;
-  font-weight: 700;
-  border-radius: var(--au-r-full);
-}
-.dropdown-meta {
-  margin-left: auto;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
-}
-.dropdown-narrow-only { display: none; }
-@media (max-width: 420px) {
-  .dropdown-narrow-only { display: flex; }
-}
 /* 探险设施直达（v4.1）：头像菜单里的 10 个游戏设施，纸色迷你卡片风。
    菜单 Teleport 到 body、不在 .v4-scope 内，v4 token 取不到，就地定义。
    卡片自带纸底色，深浅主题下都可读 */
@@ -1404,8 +1360,8 @@ onBeforeUnmount(() => {
 }
 
 /* ≤420px（iPhone 竖屏）：顶栏只留「品牌 · 积分 · 头像」三件事。
-   外观切换与消息入口收进头像菜单（菜单里本就有「消息中心」一项，未读数照常显示），
-   功能一样不少；品牌字距从 0.28em 收到 0.18em，免得四颗圆钮把品牌挤成两行 */
+   外观切换按钮与消息铃铛在窄屏隐藏（2026-10-13：头像菜单里的外观/消息中心
+   旧项已删除）；品牌字距从 0.28em 收到 0.18em，免得圆钮把品牌挤成两行 */
 @media (max-width: 420px) {
   .wide-only { display: none; }
   .narrow-only { display: block; }
