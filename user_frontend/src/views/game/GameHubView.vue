@@ -91,4 +91,9 @@ import { gameHubConfig as hub, gameFacilities as facilities } from '@/config/gam
   color: var(--ink2);
   flex-shrink: 0;
 }
+
+.hub-card:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
 </style>

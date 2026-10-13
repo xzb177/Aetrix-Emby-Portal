@@ -318,6 +318,7 @@ API_RETRY_BASE_SEC = 2.0
 API_RETRY_MAX_SEC = 60.0
 #: 最大重试次数（不含首次请求）
 API_MAX_RETRIES = 5
+UNKNOWN_403_MAX_RETRIES = 2
 #: 429 用 Retry-After 头等待时的钳制上限（秒）
 RETRY_AFTER_MAX_SEC = 300.0
 
@@ -568,14 +569,15 @@ def _api_get(url: str, token: str, params: dict) -> dict:
                     request=resp.request,
                     response=resp,
                 )
-                if attempt >= 2:
-                    logger.error("Drive API 403 未知原因，重试 2 次后放弃: %s | body=%s",
-                                 url[:80], body_preview)
+                if attempt >= UNKNOWN_403_MAX_RETRIES:
+                    logger.error("Drive API 403 未知原因，重试 %d 次后放弃: %s | body=%s",
+                                 UNKNOWN_403_MAX_RETRIES, url[:80], body_preview)
                     raise last_exc
                 sleep_s = _retry_sleep_sec(attempt, is_rate_limited=True)
+                _retry_state.retry_count = get_last_retry_count() + 1
                 logger.warning(
-                    "Drive API 403 未知原因（第 %d/3 次），%.1f 秒后重试: %s | body=%s",
-                    attempt + 1, sleep_s, url[:80], body_preview,
+                    "Drive API 403 未知原因（第 %d/%d 次），%.1f 秒后重试: %s | body=%s",
+                    attempt + 1, UNKNOWN_403_MAX_RETRIES + 1, sleep_s, url[:80], body_preview,
                 )
                 time.sleep(sleep_s)
                 continue
@@ -592,17 +594,22 @@ def _api_get(url: str, token: str, params: dict) -> dict:
 def _extract_403_reason(resp) -> str | None:
     """从 403 响应体提取第一个 error reason，解析失败返回 None。
 
-    返回 None 的情况：body 为空、非 JSON、或没有 errors 数组。
+    返回 None 的情况：body 为空、非 JSON、非 dict、或没有 errors 数组。
     调用方对 None 应视为"未知原因"，给有限重试而非直接放弃。
     """
     try:
         body = resp.json()
+        if not isinstance(body, dict):
+            return None
+        errors = (body.get("error") or {}).get("errors") or []
+        if not errors:
+            return None
+        first = errors[0]
+        if not isinstance(first, dict):
+            return None
+        return first.get("reason")
     except Exception:
         return None
-    errors = (body.get("error") or {}).get("errors") or []
-    if not errors:
-        return None
-    return errors[0].get("reason")
 
 
 def _is_rate_limit_403(resp) -> bool:

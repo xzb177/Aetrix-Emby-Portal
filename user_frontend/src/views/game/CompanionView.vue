@@ -56,7 +56,7 @@
         </section>
 
         <!-- 组队规则：数值全部来自后端 config -->
-        <section v-if="!loading && info && !disabled" class="v4-sec">
+        <section v-if="!loading && info?.config && !disabled" class="v4-sec">
           <div class="rule">
             📜 <b>组队规则</b><br>
             朋友用你的暗号加入营地 —— 他得 <b>+{{ info.config.invitee_reward_points }}⚡</b> 见面礼，
@@ -129,7 +129,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import {
   inviteApi,
@@ -161,7 +161,8 @@ const disabled = computed(() => info.value?.config?.enabled === false)
 const promoEnabled = computed(() => promoConfig.value?.enabled === true)
 
 const AVATARS = ['🦊', '🐼', '🐸', '🦄', '🐙', '🦁', '🐯', '🦉']
-function avatarOf(name: string): string {
+function avatarOf(name?: string | null): string {
+  if (!name) return '🦊'
   let h = 0
   for (const c of name) h = (h * 31 + c.codePointAt(0)!) % 997
   return AVATARS[h % AVATARS.length]
@@ -177,12 +178,15 @@ function fmtTime(iso?: string | null): string {
   return iso.slice(0, 16).replace('T', ' ')
 }
 
+let copyTimer: number | undefined
 async function copyText(text: string, field: string) {
   const ok = await copy(text, field === 'link' ? '组队链接' : '组队暗号')
   if (!ok) return
   copiedField.value = field
-  window.setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1800)
+  window.clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1800)
 }
+onUnmounted(() => window.clearTimeout(copyTimer))
 
 async function load() {
   loading.value = true
@@ -347,4 +351,10 @@ onMounted(load)
 .mate .nm { font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mate .dt { font-size: 11px; color: var(--ink2); margin-top: 2px; }
 .mate .rw { font-size: 14px; font-weight: 800; color: var(--green); white-space: nowrap; }
+
+.copybtn:focus-visible,
+.linkbtn:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
 </style>

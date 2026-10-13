@@ -41,7 +41,7 @@
                   <span class="lbl">{{ plan.has(item.Id) ? '已加入 ✓' : '想去' }}</span>
                 </button>
               </div>
-              <button v-if="day.count > 3" class="more" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (Math.min(day.count, day.items.length) - 3) + ' 件，点我看全部 →' }}</button>
+              <button v-if="day.count > 3" class="more" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + Math.max(0, Math.min(day.count, day.items.length) - 3) + ' 件，点我看全部 →' }}</button>
               <div v-if="day.items.length === 0" class="empty-day">这天营地很安静，没有新大陆</div>
             </div>
           </div>

@@ -88,6 +88,7 @@ const getToastClass = (type: string) => {
   right: 0;
   margin: 0 auto;
   width: max-content;
+  max-width: calc(100vw - 32px);
   z-index: var(--z-tooltip, 700);
   display: flex;
   flex-direction: column;

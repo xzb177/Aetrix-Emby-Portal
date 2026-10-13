@@ -43,6 +43,7 @@
           <EcgCanvas />
           <PulseActivity :items="activityTexts" />
         </template>
+        <div v-else class="v4-err">实时数据加载失败，请稍后重试</div>
       </div>
       <div v-if="pulse.error" class="v4-sec"><div class="v4-err">脉搏加载失败：{{ pulse.error }}<br><button class="v4-retry" @click="() => panel.loadPulse(true)">重试</button></div></div>
 

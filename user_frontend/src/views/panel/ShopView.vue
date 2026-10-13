@@ -95,7 +95,7 @@
             <div class="detail">
               <div class="kv"><span>有效期</span><b>{{ plan.duration_days }} 天</b></div>
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
-              <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ memberDiscountPct }} 折</b></div>
+              <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ (100 - memberDiscountPct) / 10 }} 折</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
               <button class="buy" :disabled="orderBusy" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>领取执照 →</button>
             </div>
@@ -125,7 +125,7 @@
             <span class="flag">{{ campFlag(lv) }}</span>
             <div class="card">
               <div class="lv">Lv.{{ lv.level }} <small>{{ lv.name }}{{ lv.level === member.level ? ' · 你在这里' : '' }}</small></div>
-              <div v-if="lv.discount_pct > 0" class="off">执照 {{ 100 - lv.discount_pct }} 折</div>
+              <div v-if="lv.discount_pct > 0" class="off">执照 {{ (100 - lv.discount_pct) / 10 }} 折</div>
               <div v-else class="xp">经验 {{ lv.xp_threshold }}</div>
             </div>
             <div class="perks" v-if="openCampLevel === lv.level">
