@@ -38,7 +38,11 @@
 # 末尾这个空收尾让默认值恰好也是精简版；发布脚本（publish-images.yml）**另外**
 # 显式写 `--target runtime`，不依赖这个「恰好」。两道保险，顺序上安全的那个是默认的。
 
-FROM python:3.12-slim AS base
+# 基础镜像必须钉住 Debian 大版本（-bookworm 后缀），不能用浮动的 -slim：
+# 2026-10-13 实锤——python:3.12-slim 标签已漂到 trixie，而下面的 PGDG 源写的是
+# bookworm-pgdg，pgdg12 的 libpq5 在 trixie 上依赖无解（libldap-2.5-0 不存在），
+# 导致生产构建 apt exit 100。CI 能过是因为 runner 缓存了旧的 bookworm 层。
+FROM python:3.12-slim-bookworm AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
