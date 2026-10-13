@@ -61,6 +61,15 @@ def _install_fakes(monkeypatch, libs, src_dirs, drive_cfg="all",
     fake_sg.source_dir_raw = lambda db: raw
     fake_sg._db_config = lambda db, k, default="": drive_cfg if k == "strm_gen_drive_id" else default
     monkeypatch.setitem(sys.modules, "backend.emby_server.strm_gen", fake_sg)
+    # 实现里是惰性 `from backend.emby_server import strm_gen`：CPython 的
+    # from-import 优先走包属性 getattr——只换 sys.modules 并不能影子掉一个
+    # 已经被别的测试模块先导入的真模块。全量跑时真 strm_gen 先被导入，
+    # fake 就会 silent 失效，4 个用例按真模块的默认值（drive 全选、
+    # source_dir=MoviePilot/）跑出 4 个失败。必须同时把包属性也换掉；
+    # monkeypatch 在用例结束自动还原两种。
+    _pkg = sys.modules.get("backend.emby_server")
+    if _pkg is not None:
+        monkeypatch.setattr(_pkg, "strm_gen", fake_sg, raising=False)
 
     monkeypatch.setattr(dc, "discover_drives", lambda: drives)
     return _FakeDB(libs)
