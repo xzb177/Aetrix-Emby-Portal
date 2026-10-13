@@ -40,6 +40,10 @@ class StrmGenConfigSave(BaseModel):
         default=60,
         description="增量间隔分钟数（1-1440），0=关闭",
     )
+    lock_timeout_minutes: Optional[int] = Field(
+        default=None,
+        description="运行锁僵死超时（分钟），0=关闭自愈，默认 180",
+    )
     source_type: str = Field(
         default="drive",
         description="数据源类型：drive=Google Drive，local=本地目录",
@@ -104,6 +108,7 @@ def _read_config(db: Session) -> dict:
         "drive_id": _gen.drive_id_config(db),
         "prune": _gen.prune_enabled(db),
         "interval_minutes": _gen.interval_minutes(db),
+        "lock_timeout_minutes": _gen.lock_timeout_minutes(db),
         "source_type": _gen.source_type(db),
         "local_root": _gen.local_root(db),
         "drive_concurrency": _gen.drive_concurrency(db),
@@ -142,6 +147,11 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     iv = int(body.interval_minutes or 0)
     if iv < 0 or iv > 1440:
         raise HTTPException(status_code=400, detail="增量间隔应在 0-1440 分钟之间")
+    # 运行锁僵死超时：0=关闭，1-1440 分钟
+    if body.lock_timeout_minutes is not None:
+        ltm = int(body.lock_timeout_minutes)
+        if ltm < 0 or ltm > 1440:
+            raise HTTPException(status_code=400, detail="运行锁僵死超时应在 0-1440 分钟之间")
     # 数据源类型校验
     st = (body.source_type or "drive").strip().lower()
     if st not in ("drive", "local"):
@@ -199,6 +209,9 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     if body.prune_max_absolute is not None:
         values[_gen.CONFIG_PRUNE_MAX_ABSOLUTE] = str(int(body.prune_max_absolute))
         descriptions[_gen.CONFIG_PRUNE_MAX_ABSOLUTE] = ".strm 删除保护单轮删除绝对上限"
+    if body.lock_timeout_minutes is not None:
+        values[_gen.CONFIG_LOCK_TIMEOUT_MIN] = str(int(body.lock_timeout_minutes))
+        descriptions[_gen.CONFIG_LOCK_TIMEOUT_MIN] = ".strm 生成器运行锁僵死超时（分钟），0=关闭自愈"
     if body.verify_new_ids is not None:
         values[_gen.CONFIG_VERIFY_NEW_IDS] = "true" if body.verify_new_ids else "false"
         descriptions[_gen.CONFIG_VERIFY_NEW_IDS] = ".strm 增量新文件写盘前校验 file_id"

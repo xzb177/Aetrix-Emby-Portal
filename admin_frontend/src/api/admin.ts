@@ -1863,6 +1863,8 @@ export interface StrmGenConfig {
   prune: boolean
   /** 增量间隔分钟数，0=关闭 */
   interval_minutes: number
+  /** 运行锁僵死超时（分钟），0=关闭自愈 */
+  lock_timeout_minutes: number
   /** 数据源类型：drive=Google Drive，local=本地目录 */
   source_type: string
   /** 本地源根目录 */
@@ -1917,6 +1919,8 @@ export const saveStrmGenConfig = (data: {
   interval_minutes: number
   source_type: string
   local_root: string
+  /** 运行锁僵死超时（分钟），不传则后端不改 */
+  lock_timeout_minutes?: number
   /** 多盘并行列举并发数（不传则后端回落默认 3） */
   drive_concurrency?: number
   /** Drive API 全局速率上限 QPS（不传则后端回落默认 8.0） */

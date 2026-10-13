@@ -195,3 +195,70 @@ class TestTimeoutConfig:
         sg._lock_timeout_min_cache = 42
         assert sg.lock_timeout_minutes() == 42
         assert sg.lock_timeout_minutes(db=None) == 42
+
+
+def _memdb_session():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from backend import models
+    from backend.integrations import store
+    store.invalidate()
+    engine = create_engine("sqlite://")
+    models.Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine)()
+
+
+class TestAdminKnob:
+    """管理后台 lock_timeout_minutes 旋钮：读写 + 校验。"""
+
+    def _body(self, **kw):
+        from backend.api import admin_strm_gen as ag
+        base = dict(enabled=True, source_dir="MoviePilot/", drive_id="",
+                    prune=False, interval_minutes=60, source_type="drive",
+                    local_root="/media", drive_concurrency=3, api_qps=8.0)
+        base.update(kw)
+        return ag.StrmGenConfigSave(**base)
+
+    def test_save_and_read(self):
+        from backend.api import admin_strm_gen as ag
+        db = _memdb_session()
+        try:
+            ag.strm_gen_config_save(self._body(lock_timeout_minutes=120), db)
+            assert sg.lock_timeout_minutes(db) == 120
+            cfg = ag._read_config(db)
+            assert cfg["lock_timeout_minutes"] == 120
+        finally:
+            db.close()
+
+    def test_none_means_no_change(self):
+        from backend.api import admin_strm_gen as ag
+        from backend.integrations import store
+        db = _memdb_session()
+        try:
+            ag.strm_gen_config_save(self._body(lock_timeout_minutes=90), db)
+            ag.strm_gen_config_save(self._body(lock_timeout_minutes=None), db)
+            assert sg.lock_timeout_minutes(db) == 90
+            assert store.get_value(db, sg.CONFIG_LOCK_TIMEOUT_MIN, "") == "90"
+        finally:
+            db.close()
+
+    def test_zero_disables(self):
+        from backend.api import admin_strm_gen as ag
+        db = _memdb_session()
+        try:
+            ag.strm_gen_config_save(self._body(lock_timeout_minutes=0), db)
+            assert sg.lock_timeout_minutes(db) == 0
+        finally:
+            db.close()
+
+    def test_validation(self):
+        from fastapi import HTTPException
+        from backend.api import admin_strm_gen as ag
+        db = _memdb_session()
+        try:
+            with pytest.raises(HTTPException):
+                ag.strm_gen_config_save(self._body(lock_timeout_minutes=-1), db)
+            with pytest.raises(HTTPException):
+                ag.strm_gen_config_save(self._body(lock_timeout_minutes=1441), db)
+        finally:
+            db.close()
