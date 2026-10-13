@@ -52,6 +52,25 @@
               </button>
             </div>
             <p class="equip-tip">播放密码只用来在第三方播放器里登录，跟门户登录密码是两回事。</p>
+            <div v-if="hasSchemes" class="equip-import">
+              <div class="equip-import-label">一键导入到播放器</div>
+              <input
+                v-model="importPassword"
+                type="password"
+                class="equip-import-pwd"
+                placeholder="输入播放密码一起导入（可选）"
+                autocomplete="off"
+              />
+              <div class="equip-import-btns">
+                <button
+                  v-for="(url, name) in importSchemes"
+                  :key="name"
+                  class="v4-retry"
+                  type="button"
+                  @click="openScheme(url)"
+                >{{ name }}</button>
+              </div>
+            </div>
           </template>
           <div v-else-if="viewPermission" class="v4-err">
             <template v-if="viewPermission.realm_free">
@@ -312,6 +331,17 @@ async function handleSetPlayPassword() {
   }
 }
 
+
+// 一键导入：密码只存内存，不写 localStorage
+const importPassword = ref('')
+const importSchemes = computed(() => account.value?.import_schemes || {})
+const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
+function openScheme(url: string) {
+  const pwd = importPassword.value.trim()
+  const finalUrl = pwd ? `${url}&password=${encodeURIComponent(pwd)}` : url
+  window.location.href = finalUrl
+}
+
 /** 向导是否在岗（能力来自 aiApi.status，与原 AI 助手页一致） */
 const available = computed(() => status.value?.enabled === true)
 const quotaText = computed(() => {
@@ -432,6 +462,15 @@ onUnmounted(() => window.clearTimeout(copyTimer))
 }
 
 /* ===== 装备调试 ===== */
+.equip-import { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line, #d8cbaa); }
+.equip-import-label { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.equip-import-pwd {
+  width: 100%; padding: 8px 12px; margin-bottom: 8px;
+  border: 1px solid var(--line, #d8cbaa); border-radius: 8px;
+  background: #fffdf6; font-size: 13px; outline: none;
+}
+.equip-import-pwd:focus { border-color: var(--gold, #c8862a); }
+.equip-import-btns { display: flex; gap: 8px; flex-wrap: wrap; }
 .equip-row {
   display: flex;
   align-items: center;

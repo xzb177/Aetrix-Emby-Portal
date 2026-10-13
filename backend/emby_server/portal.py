@@ -307,21 +307,40 @@ def _realm_view_granted(db: Session, user: models.WebUser, realm_id: int | None
 REX_IMPORT_URL = "rex://import"
 
 
-def _rex_import_link(url: str, username: str) -> str:
-    """拼 Rex 播放器一键导入 deep link。
+def _rex_import_link(url: str, username: str, password: str | None = None) -> str:
+    """Build Rex player one-click import deep link.
 
-    host/port 从服务器地址解析；地址里没写端口时按协议补 80/443。
-    密码不拼进链接（服务端不存明文密码，用户在 Rex 里输一次即可）。
+    host/port parsed from server address; default 80/443 by scheme when missing.
+    password is optional: appended only when the user typed it in the frontend
+    (handled in frontend memory only, never stored server-side, never logged).
     """
     scheme = os.getenv("EMBY_URL_SCHEME", "") or urlsplit(url).scheme or "http"
     parsed = urlsplit(url if "://" in url else f"{scheme}://{url}")
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return (
+    link = (
         f"{REX_IMPORT_URL}?type=emby&scheme={scheme}"
         f"&host={host}&port={port}&username={quote(username or '', safe='')}"
     )
+    if password:
+        link += f"&password={quote(password, safe='')}"
+    return link
 
+
+def _senplayer_import_link(url: str, username: str, password: str | None = None) -> str:
+    """Build SenPlayer one-click import deep link.
+
+    password is optional: appended only when the user typed it in the frontend
+    (handled in frontend memory only, never stored server-side, never logged).
+    """
+    link = (
+        f"senplayer://importserver?type=emby&name=Aetrix"
+        f"&address={quote(url or '', safe='')}"
+        f"&username={quote(username or '', safe='')}"
+    )
+    if password:
+        link += f"&password={quote(password, safe='')}"
+    return link
 
 def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None,
                   request: Request | None = None) -> dict:
@@ -369,7 +388,7 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "import_schemes": {} if (external or not granted) else {
             # Rex 播放器一键导入（2026-10-10 用户要求替换 forward）。
             "Rex": _rex_import_link(url, user.emby_username),
-            "senplayer": f"senplayer://importserver?type=emby&name=Aetrix&address={url}&username={user.emby_username}",
+            "senplayer": _senplayer_import_link(url, user.emby_username),
         },
         "view_permission": {
             "granted": granted,

@@ -149,8 +149,13 @@ function daysLeft(end?: string | null): number {
   return diff > 0 ? Math.ceil(diff / 86400000) : 0
 }
 
+// 一键导入密码（只存内存，不写 localStorage，页面刷新即丢）
+const importPassword = ref('')
+
 function openScheme(url: string) {
-  window.location.href = url
+  const pwd = importPassword.value.trim()
+  const finalUrl = pwd ? `${url}&password=${encodeURIComponent(pwd)}` : url
+  window.location.href = finalUrl
 }
 
 /**
@@ -513,6 +518,13 @@ function formatDate(iso?: string | null) {
 
         <div v-if="viewGranted && hasSchemes" class="sub-block">
           <span class="block-label">一键导入到客户端</span>
+          <input
+            v-model="importPassword"
+            type="password"
+            class="import-pwd-input"
+            placeholder="输入播放密码一起导入（可选）"
+            autocomplete="off"
+          />
           <div class="scheme-btns">
             <button
               v-for="(url, name) in importSchemes"
@@ -1280,6 +1292,19 @@ html[data-theme="light"] .hero-ambiance {
 }
 
 /* ==================== 多服 / 一键导入 ==================== */
+.import-pwd-input {
+  width: 100%;
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--au-input-border, #e5ddc9);
+  border-radius: 8px;
+  background: var(--au-input-bg, #fffdf6);
+  font-size: 13px;
+  outline: none;
+}
+.import-pwd-input:focus {
+  border-color: var(--au-primary, #c8862a);
+}
 .sub-block {
   margin-top: 1.125rem;
 }
