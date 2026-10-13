@@ -658,17 +658,6 @@ onBeforeUnmount(() => {
                 </RouterLink>
                 </template>
 
-                <!-- 窄屏（≤420px）专用项：顶栏的外观按钮与消息铃铛被 wide-only 隐藏后，
-                     这里是唯一的切换主题 / 进消息中心入口。
-                     （r26 曾恢复、PR #769 误删，本轮恢复；默认隐藏，窄屏才显示） -->
-                <button class="dropdown-item dropdown-narrow-only" role="menuitem" @click="toggleTheme(); closeMenus()">
-                  <component :is="themeCurrent.icon" :size="15" /> 外观：{{ themeCurrent.label }}
-                </button>
-                <RouterLink to="/game/pigeon" class="dropdown-item dropdown-narrow-only" role="menuitem" @click="closeMenus">
-                  <Inbox :size="15" /> 消息中心
-                  <span v-if="unreadCount > 0" class="dropdown-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-                </RouterLink>
-
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
                   <LogOut :size="15" /> 退出登录
@@ -957,8 +946,6 @@ onBeforeUnmount(() => {
 
 .narrow-only { display: none; }
 
-/* 窄屏（≤420px）菜单专用项：默认隐藏，窄屏才以菜单项形态出现（外观/消息中心入口） */
-.dropdown-narrow-only { display: none; }
 .dropdown-badge {
   margin-left: auto;
   min-width: 20px;
@@ -1397,12 +1384,11 @@ onBeforeUnmount(() => {
 }
 
 /* ≤420px（iPhone 竖屏）：顶栏只留「品牌 · 积分 · 头像」三件事。
-   外观切换按钮与消息铃铛在窄屏隐藏（2026-10-13：头像菜单里的外观/消息中心
-   旧项已删除）；品牌字距从 0.28em 收到 0.18em，免得圆钮把品牌挤成两行 */
+   外观切换按钮与消息铃铛在窄屏隐藏；头像菜单里的外观/消息中心旧项已删除
+   （#769 删、#776 误恢复、本 PR 再删），主题切换走顶栏按钮，消息走信鸽 */
 @media (max-width: 420px) {
   .wide-only { display: none; }
   .narrow-only { display: block; }
-  .dropdown-narrow-only { display: flex; }
   .logo-text { font-size: 0.9375rem; letter-spacing: 0.18em; }
   .logo-mark { width: 26px; height: 26px; }
   .points-pill { padding: 0.3125rem 0.625rem; }
