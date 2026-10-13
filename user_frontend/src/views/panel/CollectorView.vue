@@ -41,15 +41,6 @@
         <TastePassport v-else :raw="tastesRaw" />
       </section>
 
-      <!-- 成就星图 -->
-      <section v-if="!collector.error" class="v4-sec">
-        <div class="v4-sec-title">✨ 成就星图</div>
-        <div class="v4-sec-sub">每颗星都是一个故事 —— 点一下看看</div>
-        <div v-if="collector.loading" class="v4-skeleton" style="height:230px"></div>
-        <div v-else-if="achievements.length === 0" class="v4-empty">还没有点亮成就，去看片吧 ✨</div>
-        <StarMap v-else :achievements="achievements" />
-      </section>
-
       <!-- 馆灵养成 -->
       <section v-if="!collector.error" class="v4-sec" style="padding-bottom:20px">
         <div class="v4-sec-title">🥚 馆灵养成</div>
@@ -70,7 +61,6 @@ import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import TastePassport from '@/components/panel/TastePassport.vue'
-import StarMap from '@/components/panel/StarMap.vue'
 import PetCard from '@/components/panel/PetCard.vue'
 import type { Achievement, CollectorData, PetData, TasteStamp } from '@/composables/usePanelApi'
 

@@ -60,6 +60,7 @@ ACHIEVEMENT_DEFS = [
     ("revisit", "回头", "30 天后重温同一部片", "🔄", 100),
     ("marathon", "马拉松", "周末单日观影超 10 小时", "🏃", 110),
     ("early_bird", "早鸟", "第一次在清晨看片（05:00–08:00）", "🐦", 120),
+    ("yearly_explorer", "年卡探险家", "持有有效的年卡订阅", "🎫", 130),
 ]
 
 
@@ -249,6 +250,22 @@ def evaluate(user_id: int, db: Session) -> list:
     inv = db.query(models.InvitationRecord).filter_by(inviter_id=user_id).count()
     if inv >= 1:
         _grant("sharer")
+
+    # 年卡探险家：持有有效的年卡订阅（套餐时长 >= 365 天）
+    try:
+        yearly = db.query(models.UserSubscription).join(
+            models.SubscriptionPlan,
+            models.UserSubscription.plan_id == models.SubscriptionPlan.id,
+        ).filter(
+            models.UserSubscription.user_id == user_id,
+            models.UserSubscription.status == 'active',
+            models.UserSubscription.end_date >= now,
+            models.SubscriptionPlan.duration_days >= 365,
+        ).first()
+        if yearly:
+            _grant("yearly_explorer")
+    except Exception:
+        pass  # 订阅表不可用时跳过，不影响其他成就
 
     # 回头：同一条目 30 天后再次播放
     name_times: dict = {}

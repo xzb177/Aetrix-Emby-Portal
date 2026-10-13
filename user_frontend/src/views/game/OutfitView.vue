@@ -72,17 +72,60 @@
         aria-label="装备库"
       >
       <div class="v4-sec">
-        <div class="v4-sec-title">🎒 装备库</div>
-        <div class="v4-sec-sub">探险攒下的宝贝都在这儿</div>
-        <!-- 纸片空态：首版先占位 -->
-        <div class="gear-empty">
-          <div class="gear-emoji" aria-hidden="true">📦</div>
-          <div class="gear-title">还没有装备</div>
-          <div class="gear-desc">去探险攒一件，回来就能在这儿看到它。</div>
-          <router-link to="/game" class="gear-go" aria-label="去大本营逛逛">
-            去大本营逛逛 →
-          </router-link>
+        <div class="v4-sec-title">🎒 装备库 · 徽章陈列柜</div>
+        <div class="v4-sec-sub">探险攒下的徽章都在这儿 —— 点一枚戴上，去个人页看看效果</div>
+        <!-- 加载中 -->
+        <div v-if="badgeLoading" class="v4-skeleton" style="height:200px"></div>
+        <!-- 加载失败 -->
+        <div v-else-if="badgeError" class="v4-empty">
+          徽章柜没打开：{{ badgeError }}<br>
+          <button class="v4-retry" @click="loadBadges">重试</button>
         </div>
+        <!-- 徽章墙 -->
+        <div v-else-if="badges.length > 0" class="badge-wall">
+          <div
+            v-for="b in badges"
+            :key="b.key"
+            class="badge"
+            :class="{ locked: !b.unlocked, worn: wornBadgeKey === b.key }"
+            role="button"
+            tabindex="0"
+            :aria-label="`${b.name}：${b.unlocked ? b.desc + '，已解锁' : '未解锁，' + b.desc}`"
+            @click="onBadgeClick(b)"
+            @keyup.enter="onBadgeClick(b)"
+            @keyup.space.prevent="onBadgeClick(b)"
+          >
+            <span v-if="wornBadgeKey === b.key" class="worn-tag">佩戴中</span>
+            <div class="badge-icon" aria-hidden="true">{{ b.unlocked ? b.icon : '🌫️' }}</div>
+            <div class="badge-name">{{ b.unlocked ? b.name : '???' }}</div>
+            <div class="badge-desc">{{ b.unlocked ? b.desc : '还没发生的事' }}</div>
+            <button
+              v-if="b.unlocked && wornBadgeKey !== b.key"
+              class="wear-btn"
+              @click.stop="wearBadge(b)"
+              :aria-label="`佩戴${b.name}徽章`"
+            >
+              戴上
+            </button>
+            <button
+              v-if="wornBadgeKey === b.key"
+              class="wear-btn off"
+              @click.stop="unwearBadge()"
+              aria-label="取下徽章"
+            >
+              取下
+            </button>
+          </div>
+        </div>
+        <!-- 空 -->
+        <div v-else class="v4-empty">还没有徽章，去探险攒一枚 ✨</div>
+        <!-- 新解锁提示 -->
+        <div v-if="newUnlockNames.length > 0" class="v4-fresh" style="margin-top:12px">
+          🎉 新徽章解锁：{{ newUnlockNames.join('、') }}
+        </div>
+      </div>
+      <div class="note">
+        💡 换装是换衣服（营地天色），徽章是别在衣服上的荣誉 —— 两不耽误。
       </div>
       </section>
     </div>
@@ -97,10 +140,78 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch, computed } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useTheme } from '@/composables/useTheme'
 import { useToast } from '@/composables/useToast'
+import { panelApi, humanizeError, type Achievement } from '@/composables/usePanelApi'
+
+/** 佩戴中的徽章 key（localStorage，先放前端，以后再进库） */
+const WORN_BADGE_KEY = 'aetrix_worn_badge_v1'
+
+function readWornBadge(): string | null {
+  try {
+    return localStorage.getItem(WORN_BADGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+/* ---------- 徽章墙（装备库） ---------- */
+const badges = ref<Achievement[]>([])
+const badgeLoading = ref(true)
+const badgeError = ref('')
+const newUnlockKeys = ref<string[]>([])
+const wornBadgeKey = ref<string | null>(readWornBadge())
+
+const newUnlockNames = computed(() => {
+  if (newUnlockKeys.value.length === 0) return []
+  const byKey = new Map(badges.value.map((b) => [b.key, b.name]))
+  return newUnlockKeys.value.map((k) => byKey.get(k) || '未知')
+})
+
+async function loadBadges() {
+  badgeLoading.value = true
+  badgeError.value = ''
+  try {
+    const data = await panelApi.collector()
+    badges.value = Array.isArray(data.achievements) ? data.achievements : []
+    newUnlockKeys.value = Array.isArray(data.new_unlocks) ? data.new_unlocks.map(String) : []
+    // 佩戴的徽章如果已不在列表里（被管理员下架），自动取下
+    if (wornBadgeKey.value && !badges.value.some((b) => b.key === wornBadgeKey.value && b.unlocked)) {
+      wornBadgeKey.value = null
+      try { localStorage.removeItem(WORN_BADGE_KEY) } catch { /* 忽略 */ }
+    }
+  } catch (e) {
+    badgeError.value = humanizeError(e)
+  } finally {
+    badgeLoading.value = false
+  }
+}
+
+function wearBadge(b: Achievement) {
+  wornBadgeKey.value = b.key
+  try {
+    localStorage.setItem(WORN_BADGE_KEY, b.key)
+  } catch { /* 记不住就算了 */ }
+  toast.success(`戴上了 ${b.icon}${b.name} 徽章`)
+}
+
+function unwearBadge() {
+  wornBadgeKey.value = null
+  try {
+    localStorage.removeItem(WORN_BADGE_KEY)
+  } catch { /* 忽略 */ }
+}
+
+function onBadgeClick(b: Achievement) {
+  if (!b.unlocked) {
+    toast.info(`还没解锁：${b.desc}`)
+    return
+  }
+  if (wornBadgeKey.value === b.key) unwearBadge()
+  else wearBadge(b)
+}
 
 /** 双 Tab：outfit 穿搭 / gear 装备库（内部 state，不跳路由） */
 type OutfitTab = 'outfit' | 'gear'
@@ -210,6 +321,8 @@ onMounted(() => {
   // 否则 storedPref 会停在模块默认值上，"当前"徽标标错衣服
   storedPref.value = preference.value
   picked.value = preference.value
+  // 徽章墙数据：进页面就拉，Tab 切换时不用重复拉
+  void loadBadges()
 })
 onBeforeUnmount(() => {
   if (picked.value !== storedPref.value) {
@@ -255,7 +368,85 @@ onBeforeUnmount(() => {
   outline-offset: 2px;
 }
 
-/* 装备库纸片空态 */
+/* 徽章墙 */
+.badge-wall {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.badge {
+  position: relative;
+  background: var(--paper-card);
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 8px 12px;
+  text-align: center;
+  cursor: pointer;
+}
+.badge:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+.badge.locked {
+  opacity: 0.55;
+  border-style: dashed;
+}
+.badge.worn {
+  border-color: var(--red);
+  border-width: 2px;
+  box-shadow: 0 2px 0 rgba(217, 72, 43, 0.25);
+}
+.badge-icon {
+  font-size: 32px;
+  line-height: 1.2;
+}
+.badge-name {
+  font-size: 12px;
+  font-weight: 800;
+  margin-top: 6px;
+  letter-spacing: 1px;
+}
+.badge-desc {
+  font-size: 10px;
+  color: var(--ink2);
+  margin-top: 4px;
+  line-height: 1.5;
+  min-height: 30px;
+}
+.worn-tag {
+  position: absolute;
+  top: -8px;
+  right: 8px;
+  font-size: 10px;
+  font-weight: 800;
+  color: #fff;
+  background: var(--red);
+  border-radius: 10px;
+  padding: 2px 8px;
+  letter-spacing: 1px;
+}
+.wear-btn {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--red);
+  background: transparent;
+  border: 1.5px solid var(--red);
+  border-radius: 10px;
+  padding: 4px 14px;
+  cursor: pointer;
+  letter-spacing: 1px;
+}
+.wear-btn.off {
+  color: var(--ink2);
+  border-color: var(--line);
+}
+.wear-btn:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+
+/* 装备库纸片空态（保留备用） */
 .gear-empty {
   background: var(--paper-card);
   border: 2px dashed var(--line);
