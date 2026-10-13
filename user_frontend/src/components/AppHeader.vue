@@ -3,13 +3,11 @@ import { RouterLink, useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
-  Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
-  Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
-  ChevronRight, Zap,
+  Clapperboard, LogOut, Crown, Sparkles,
+  Sun, Moon, MonitorSmartphone, Zap,
 } from 'lucide-vue-next'
-import api, {
-  messageApi, announcementApi, isExpiringSoon, subscriptionApi,
-  type StationMessage, type Announcement,
+import {
+  isExpiringSoon, subscriptionApi,
 } from '@/api'
 import type { MySubscription } from '@/api'
 import { primaryNav } from '@/config/navigation'
@@ -87,7 +85,6 @@ const userMenuRef = ref<HTMLElement | null>(null)
 /** 头像按钮：Esc 关闭用户菜单后把焦点还给它，键盘用户不迷路 */
 const userBtnRef = ref<HTMLElement | null>(null)
 const navRef = ref<HTMLElement | null>(null)
-const unreadCount = ref(0)
 
 /**
  * 会员状态（v2.42.8 起只留在头像菜单里）：顶栏那两颗常驻 pill（积分 / 会员生效中）
@@ -128,139 +125,6 @@ const displayName = computed(() => {
 
 const userIdLabel = computed(() => (userStore.user?.id ? `@${userStore.user.id}` : ''))
 
-// 顶栏消息入口（v2.10.3 起是全站唯一的消息入口）：既显示「几条未读」，
-// 点开还能先看预览再决定要不要进消息中心
-const msgMenuOpen = ref(false)
-const msgMenuRef = ref<HTMLElement | null>(null)
-const msgPreview = ref<MsgPreviewItem[]>([])
-const msgLoading = ref(false)
-
-interface MsgPreviewItem {
-  key: string
-  title: string
-  meta: string
-  to: string
-  icon: unknown
-  unread: boolean
-  /** 同名未读合并后的条数（1 = 真的只有一条） */
-  count?: number
-  /** 条数是否精确（拉取窗口被占满时，最旧那一组可能还没数完，显示成 N+） */
-  countExact?: boolean
-  /** 这条消息对应哪条公告（公告广播自带 related_id），用于避开同一公告列两遍 */
-  announcementId?: number | null
-}
-
-/** 未读预览一次拉多少条：要够把「同名通知有几条」数准（消息很小，50 条约几十 KB） */
-const UNREAD_WINDOW = 50
-
-// 消息类型 → 图标（与消息中心的分类保持一致；只取预览需要的几种）
-const MSG_ICONS: Record<string, unknown> = {
-  system: AlertCircle,
-  ticket: Ticket,
-  announcement: Megaphone,
-  subscription: Gift,
-  media_seek: Clock,
-  exchange_code: Gift,
-}
-
-const MSG_LABELS: Record<string, string> = {
-  system: '系统',
-  ticket: '工单',
-  announcement: '公告',
-  subscription: '订阅',
-  media_seek: '求片',
-  exchange_code: '兑换',
-}
-
-function relTime(iso?: string): string {
-  if (!iso) return ''
-  const t = new Date(iso).getTime()
-  if (Number.isNaN(t)) return ''
-  const mins = Math.floor((Date.now() - t) / 60_000)
-  if (mins < 1) return '刚刚'
-  if (mins < 60) return `${mins} 分钟前`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours} 小时前`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days} 天前`
-  return iso.slice(0, 10)
-}
-
-/**
- * 铃铛预览：未读优先（同名合并成一条 + 条数），再接置顶公告。
- *
- * v2.10.3：铃铛是站内消息唯一的入口——首页底部那张消息卡已去掉（它和这里列的是
- * 同一批未读）。所以这一份预览就是全站的消息预览。
- */
-async function loadMsgPreview() {
-  msgLoading.value = true
-  try {
-    // 只拉未读：预览要回答的是「有什么在等我」，而不是「最近收到了什么」
-    const [msgs, notices] = await Promise.all([
-      messageApi.getMessages({ unread_only: true, limit: UNREAD_WINDOW }).catch((): StationMessage[] => []),
-      announcementApi.getAnnouncements().catch((): Announcement[] => []),
-    ])
-    const unreadAll = (msgs || []).filter((x) => !x.is_read)
-
-    const unreadRows: MsgPreviewItem[] = []
-    const byTitle = new Map<string, MsgPreviewItem>()
-    let last: MsgPreviewItem | null = null
-    for (const m of unreadAll) {
-      const groupKey = `${m.message_type}:${m.title}`
-      const hit = byTitle.get(groupKey)
-      if (hit) {
-        hit.count = (hit.count || 1) + 1
-        last = hit
-        continue
-      }
-      const row: MsgPreviewItem = {
-        key: `m${m.id}`,
-        title: m.title,
-        meta: `${MSG_LABELS[m.message_type] || '通知'} · ${relTime(m.created_at)}`,
-        to: '/messages',
-        icon: MSG_ICONS[m.message_type] || Bell,
-        unread: true,
-        count: 1,
-        countExact: true,
-        // related_id 只有公告广播那条才指回公告（求片/工单的 related_id 是各自的业务 id，
-        // 拿来跟公告 id 比会误伤）
-        announcementId: m.message_type === 'announcement' ? (m.related_id ?? null) : null,
-      }
-      byTitle.set(groupKey, row)
-      unreadRows.push(row)
-      last = row
-    }
-    // 窗口被未读占满时，最旧那一组可能还有下一批没拉到，标成 N+ 而不是报一个偏小的数
-    if (last && unreadAll.length >= UNREAD_WINDOW) last.countExact = false
-
-    const unread = unreadRows.slice(0, 3)
-    const listedAnnouncementIds = new Set(
-      unread
-        .filter((r) => r.announcementId != null)
-        .map((r) => Number(r.announcementId)),
-    )
-    const pinned = [...(notices || [])]
-      .filter((a) => !listedAnnouncementIds.has(a.id))
-      .sort((a, b) => Number(b.is_pinned) - Number(a.is_pinned))
-      .slice(0, 2)
-
-    msgPreview.value = [
-      ...unread,
-      ...pinned.map((a) => ({
-        key: `a${a.id}`,
-        title: a.title,
-        meta: `公告 · ${relTime(a.created_at)}`,
-        // 直接落到消息中心的「公告」分类：此前只丢到消息中心首页，
-        // 用户还得自己在分类里再找一遍这条公告
-        to: '/messages?tab=announcement',
-        icon: Megaphone,
-        unread: false,
-      })),
-    ]
-  } finally {
-    msgLoading.value = false
-  }
-}
 
 /**
  * 下拉锚点（≥769px）：两个下拉 Teleport 到 body 之后，原来的 `position:absolute; top:100%`
@@ -282,18 +146,8 @@ function anchorDropdown(el: HTMLElement | null) {
 }
 
 function toggleUserMenu() {
-  msgMenuOpen.value = false
   userMenuOpen.value = !userMenuOpen.value
   if (userMenuOpen.value) anchorDropdown(userMenuRef.value)
-}
-
-function toggleMsgMenu() {
-  userMenuOpen.value = false
-  msgMenuOpen.value = !msgMenuOpen.value
-  if (msgMenuOpen.value) {
-    anchorDropdown(msgMenuRef.value)
-    loadMsgPreview()
-  }
 }
 
 /**
@@ -310,7 +164,6 @@ function isActive(path: string) {
 
 function closeMenus() {
   userMenuOpen.value = false
-  msgMenuOpen.value = false
 }
 
 /** Esc 关闭用户菜单：焦点被困在菜单里时，一键出来并回到头像按钮 */
@@ -323,7 +176,7 @@ function onDocKeydown(e: KeyboardEvent) {
 
 /** 跨断点 resize / 转屏：开着菜单时锚点会错乱，直接关掉最稳 */
 function onViewportChange() {
-  if (userMenuOpen.value || msgMenuOpen.value) closeMenus()
+  if (userMenuOpen.value) closeMenus()
 }
 
 async function handleLogout() {
@@ -344,13 +197,6 @@ function onDocClick(e: MouseEvent) {
   ) {
     userMenuOpen.value = false
   }
-  if (
-    msgMenuRef.value &&
-    !msgMenuRef.value.contains(target) &&
-    !el?.closest('.msg-dropdown')
-  ) {
-    msgMenuOpen.value = false
-  }
 }
 
 async function refreshSubscription() {
@@ -367,12 +213,6 @@ async function refreshSubscription() {
 
 async function poll() {
   if (!userStore.isLoggedIn) return
-  try {
-    const res = await api.get<never, { unread_count: number }>('/api/user/messages/unread-count')
-    unreadCount.value = res?.unread_count || 0
-  } catch {
-    /* 静默失败 */
-  }
   refreshSubscription()
 }
 
@@ -405,7 +245,7 @@ async function focusActiveTab(center: boolean) {
 
 // 签到 / 钱包操作后回到任意页面时，头像菜单里的会员状态、顶栏积分即时刷新
 watch(() => route.path, (p, old) => {
-  const economyPaths = ['/wallet', '/store', '/checkin']
+  const economyPaths = ['/wallet', '/store']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
     refreshSubscription()
     loadPoints()
@@ -419,10 +259,7 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
     loadPoints()
     loadVitality()
   } else {
-    unreadCount.value = 0
     activeSub.value = null
-    msgPreview.value = []
-    msgMenuOpen.value = false
     userMenuOpen.value = false
     pointsBalance.value = null
     vitality.value = null
@@ -514,63 +351,6 @@ onBeforeUnmount(() => {
         </button>
 
         <template v-if="userStore.isLoggedIn">
-          <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
-          <div ref="msgMenuRef" class="msg-menu wide-only">
-            <button
-              class="msg-btn round-btn"
-              :class="{ alert: unreadCount > 0, open: msgMenuOpen }"
-              :title="unreadCount > 0 ? `${unreadCount} 条未读消息` : '消息中心'"
-              @click="toggleMsgMenu"
-            >
-              <Inbox :size="18" />
-              <span v-if="unreadCount > 0" class="msg-badge">
-                {{ unreadCount > 99 ? '99+' : unreadCount }}
-              </span>
-            </button>
-
-            <!-- 下拉用 Teleport 挂到 body：header 的 backdrop-filter 会把它变成
-                 fixed 后代的包含块，fixed 定位会相对 header 而非视口（真机自测抓到过） -->
-            <Teleport to="body">
-            <Transition name="dd">
-              <div v-if="msgMenuOpen" class="msg-dropdown" :style="dropStyle">
-                <div class="msg-drop-head">
-                  <span class="msg-drop-title">消息中心</span>
-                  <span v-if="unreadCount > 0" class="msg-drop-unread">{{ unreadCount > 99 ? '99+' : unreadCount }} 条未读</span>
-                  <span v-else class="msg-drop-clear">已全部读完</span>
-                </div>
-
-                <p v-if="msgLoading" class="msg-drop-hint">加载中…</p>
-                <template v-else-if="msgPreview.length">
-                  <RouterLink
-                    v-for="p in msgPreview"
-                    :key="p.key"
-                    :to="p.to"
-                    class="msg-drop-item"
-                    @click="closeMenus"
-                  >
-                    <span class="msg-drop-ic" :class="{ hot: p.unread }">
-                      <component :is="p.icon" :size="14" />
-                    </span>
-                    <span class="msg-drop-body">
-                      <span class="msg-drop-item-title">{{ p.title }}</span>
-                      <span class="msg-drop-meta">
-                        {{ p.meta }}<template v-if="(p.count || 1) > 1"> · 同名 {{ p.count }}{{ p.countExact === false ? '+' : '' }} 条</template>
-                      </span>
-                    </span>
-                    <span v-if="p.unread" class="msg-drop-dot" aria-hidden="true"></span>
-                  </RouterLink>
-                </template>
-                <p v-else class="msg-drop-hint">暂时没有新消息</p>
-
-                <RouterLink to="/messages" class="msg-drop-foot" @click="closeMenus">
-                  查看全部消息
-                  <ChevronRight :size="13" />
-                </RouterLink>
-              </div>
-            </Transition>
-            </Teleport>
-          </div>
-
           <div ref="userMenuRef" class="user-menu">
             <button
               ref="userBtnRef"
@@ -582,8 +362,6 @@ onBeforeUnmount(() => {
               @click="toggleUserMenu"
             >
               <span class="avatar">{{ displayName.charAt(0).toUpperCase() }}</span>
-              <!-- ≤420px 消息按钮收进头像菜单：有未读时头像右上角点一颗小圆点 -->
-              <span v-if="unreadCount > 0" class="avatar-dot narrow-only" aria-hidden="true"></span>
             </button>
 
             <Teleport to="body">
@@ -868,54 +646,13 @@ onBeforeUnmount(() => {
   color: var(--au-warning, #f59e0b);
 }
 
-/* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
-.msg-menu { position: relative; }
-
-.msg-btn.open {
-  color: var(--au-text);
-  background: var(--au-surface-3);
-  border-color: var(--au-border-strong);
-}
-.msg-btn.alert { color: var(--au-warning); border-color: var(--au-warning-border); }
-
-.msg-badge {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--au-warning);
-  color: var(--au-on-warning);
-  font-size: 0.8125rem;
-  font-weight: 800;
-  border-radius: var(--au-r-full);
-  /* 与页面底色同色的描边环，把徽章从任何背景上“抠”出来 */
-  box-shadow: 0 0 0 2px var(--au-overlay);
-}
-
-/* msg-dropdown / user-dropdown 及其内部样式已移至下方全局块（Teleport 到 body 后 scoped 不生效） */
+/* user-dropdown 及其内部样式已移至下方全局块（Teleport 到 body 后 scoped 不生效） */
 
 .user-menu { position: relative; }
 
 /* 头像按钮：与消息按钮同一配方（.round-btn），里面正好嵌一颗 30px 头像
    （昵称不再出现在顶栏 → 菜单头部那一行仍是完整身份展示） */
 .user-btn { padding: 3px; }
-
-/* 头像右上角的未读点（只在 ≤420px 消息按钮收进菜单时出现） */
-.avatar-dot {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--au-warning);
-  box-shadow: 0 0 0 2px var(--au-bg);
-}
 
 .narrow-only { display: none; }
 
@@ -1002,26 +739,13 @@ onBeforeUnmount(() => {
     font-size: 0.8125rem;
   }
 
-  .msg-dropdown { width: min(292px, calc(100vw - 1.5rem)); }
 }
 
 </style>
 
-<!-- 下拉已 Teleport 到 body，scoped 样式不跨树：两个下拉的完整样式放全局块。
-     data-v- 剔除后由类名本身保证作用域（user-dropdown / msg-dropdown 只在这一处渲染） -->
+<!-- 下拉已 Teleport 到 body，scoped 样式不跨树：用户下拉的完整样式放全局块。
+     data-v- 剔除后由类名本身保证作用域（user-dropdown 只在这一处渲染） -->
 <style>
-.msg-dropdown {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  width: 292px;
-  background: var(--au-overlay-menu);
-  border: 1px solid var(--au-border-strong);
-  border-radius: var(--au-r-lg);
-  box-shadow: var(--au-shadow-2);
-  overflow: hidden;
-  z-index: 60;
-}
 
 .user-dropdown {
   position: absolute;
@@ -1041,13 +765,12 @@ onBeforeUnmount(() => {
 
 @media (max-width: 768px) {
   /* 下拉菜单不超出屏幕 */
-  .theme-dropdown, .msg-dropdown, .user-dropdown {
+  .theme-dropdown, .user-dropdown {
     max-width: calc(100vw - 32px);
   }
   /* 挂到 body 后 fixed 终于是真视口定位：底边锚在拇指区之上（--au-dock-space
      由 aurora.css 按断点定义），宽度留 12px 呼吸边，高过视口时内部滚 */
-  .user-dropdown,
-  .msg-dropdown {
+  .user-dropdown {
     position: fixed;
     top: auto;
     right: 12px;
@@ -1057,92 +780,6 @@ onBeforeUnmount(() => {
     overflow-y: auto;
   }
 }
-
-/* msg-dropdown 内部（原 scoped 规则原样搬来） */
-.msg-drop-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.8125rem 1rem;
-  border-bottom: 1px solid var(--au-border);
-}
-.msg-drop-title { font-size: 0.875rem; font-weight: 700; color: var(--au-text); }
-.msg-drop-unread {
-  padding: 0.125rem 0.5rem;
-  background: var(--au-warning-soft);
-  border-radius: var(--au-r-full);
-  color: var(--au-warning);
-  font-size: 0.8125rem;
-  font-weight: 700;
-}
-.msg-drop-clear { font-size: 0.8125rem; color: var(--au-text-3); }
-.msg-drop-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.625rem;
-  padding: 0.6875rem 1rem;
-  text-decoration: none;
-  border-bottom: 1px solid var(--au-border);
-  transition: background var(--au-fast) var(--au-ease);
-}
-.msg-drop-item:hover { background: var(--au-surface-2); }
-.msg-drop-ic {
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: var(--au-surface-2);
-  color: var(--au-text-3);
-}
-.msg-drop-ic.hot { background: var(--au-warning-soft); color: var(--au-warning); }
-.msg-drop-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-  flex: 1;
-}
-.msg-drop-item-title {
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.msg-drop-meta { font-size: 0.8125rem; color: var(--au-text-3); }
-.msg-drop-dot {
-  width: 6px;
-  height: 6px;
-  margin-top: 0.5rem;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--au-warning);
-}
-.msg-drop-hint {
-  margin: 0;
-  padding: 1.125rem 1rem;
-  text-align: center;
-  font-size: 0.8125rem;
-  color: var(--au-text-3);
-  border-bottom: 1px solid var(--au-border);
-}
-.msg-drop-foot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.1875rem;
-  padding: 0.6875rem 1rem;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--au-primary);
-  text-decoration: none;
-  transition: background var(--au-fast) var(--au-ease);
-}
-.msg-drop-foot:hover { background: var(--au-surface-2); }
 
 /* user-dropdown 内部 */
 .dropdown-head {

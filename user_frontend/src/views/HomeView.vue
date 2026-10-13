@@ -93,7 +93,7 @@ import HomeHero from '@/components/home/HomeHero.vue'
 import HomeBanner from '@/components/home/HomeBanner.vue'
 import HomeTodayReleases, { type RecentCard } from '@/components/home/HomeTodayReleases.vue'
 import HomeNowPlaying from '@/components/home/HomeNowPlaying.vue'
-import HomeTodoList from '@/components/home/HomeTodoList.vue'
+import HomeTodoList, { type TodoRow } from '@/components/home/HomeTodoList.vue'
 import HomeGuideList from '@/components/home/HomeGuideList.vue'
 import StopSessionDialog from '@/components/home/StopSessionDialog.vue'
 import { homeApi, type HomeSummary } from '@/api/economy'
@@ -131,8 +131,6 @@ const quickStats = ref({
 // ===== 我的面板（v2.34.0）：观影数据 / 进行中的事项 / 正在播放 =====
 // 「正在播放」在这里只是**状态**（有会话才渲染），不是管理清单——完整会话列表在个人中心。
 const stats = ref<WatchStats | null>(null)
-const seekCounts = ref<{ active: number; completed: number } | null>(null)
-const ticketCounts = ref<{ active: number; settled: number } | null>(null)
 const sessions = ref<MyPlaybackSession[]>([])
 const stoppingSession = ref('')
 
@@ -292,43 +290,9 @@ const assetCards = computed(() => {
 // 进行中的事项：只列「自己提交的东西处理到哪了」。数量为 0 时右侧只留箭头（不写 0 也不写孤零零的「—」，
 // 后者读起来像「数值坏了」），
 // sub 再说清下一步会发生什么——一个孤零零的 0 读起来像「功能坏了」，不像「没事可做」。
-const todoRows = computed(() => {
-  const seek = seekCounts.value
-  const seekActive = seek?.active ?? 0
-  const ticket = ticketCounts.value
-  const ticketActive = ticket?.active ?? 0
-  return [
-    {
-      key: 'seek',
-      to: '/request',
-      icon: MessageSquareDashed,
-      label: '我的求片',
-      value: seekActive > 0 ? String(seekActive) : '',
-      sub: !seek
-        ? '查看求片进度'
-        : seekActive > 0
-          ? '入库后会在消息中心通知你'
-          : seek.completed > 0
-            ? `已入库 ${seek.completed} 部`
-            : '还没提交过求片',
-      hot: seekActive > 0,
-    },
-    {
-      key: 'ticket',
-      to: '/tickets',
-      icon: Ticket,
-      label: '我的工单',
-      value: ticketActive > 0 ? String(ticketActive) : '',
-      sub: !ticket
-        ? '查看工单状态'
-        : ticketActive > 0
-          ? '客服回复会推送到消息中心'
-          : ticket.settled > 0
-            ? `已处理 ${ticket.settled} 个`
-            : '遇到问题可以提交工单',
-      hot: ticketActive > 0,
-    },
-  ]
+const todoRows = computed<TodoRow[]>(() => {
+  // v4.1：求片中心 / 工单支持页面已删除，进行中的事项不再展示
+  return []
 })
 
 async function stopSession(session: MyPlaybackSession) {
@@ -423,19 +387,6 @@ function applySummary(data: HomeSummary) {
       .slice(0, 1)
   }
   if (data.stats) stats.value = data.stats
-  if (data.media_seek) {
-    const rows = data.media_seek.requests || []
-    seekCounts.value = {
-      active: rows.filter((r) => r.status === 'pending' || r.status === 'approved').length,
-      completed: rows.filter((r) => r.status === 'completed').length,
-    }
-  }
-  if (data.tickets) {
-    ticketCounts.value = {
-      active: data.tickets.filter((t) => t.status === 'open' || t.status === 'pending').length,
-      settled: data.tickets.filter((t) => t.status === 'closed' || t.status === 'resolved').length,
-    }
-  }
   if (data.sessions) sessions.value = data.sessions.sessions || []
 }
 

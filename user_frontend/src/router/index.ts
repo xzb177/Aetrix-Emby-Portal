@@ -133,32 +133,6 @@ const router = createRouter({
       component: () => import('@/views/ProfileView.vue'),
       meta: { title: '个人中心', requiresAuth: true },
     },
-    {
-      path: '/messages',
-      name: 'messages',
-      component: () => import('@/views/MessagesView.vue'),
-      meta: { title: '消息中心', requiresAuth: true },
-    },
-    {
-      path: '/tickets',
-      name: 'tickets',
-      component: () => import('@/views/TicketsView.vue'),
-      meta: { title: '工单中心', requiresAuth: true },
-    },
-    {
-      path: '/request',
-      name: 'request',
-      component: () => import('@/views/RequestView.vue'),
-      meta: { title: '求片中心', requiresAuth: true },
-    },
-    // AI 助手（v2.19.0）：能力「AI 模型设置」的用户侧消费点；
-    // 管理员没配置时页面会说明原因，不会出现「能点但报错」的入口
-    {
-      path: '/assistant',
-      name: 'assistant',
-      component: () => import('@/views/AssistantView.vue'),
-      meta: { title: 'AI 助手', requiresAuth: true },
-    },
     // ==================== 经济系统（v2.3.0；v2.11.0 商店/钱包拆分） ====================
     {
       path: '/store',
@@ -172,32 +146,12 @@ const router = createRouter({
       component: () => import('@/views/WalletView.vue'),
       meta: { title: '钱包', requiresAuth: true },
     },
-    {
-      path: '/checkin',
-      name: 'checkin',
-      component: () => import('@/views/CheckinView.vue'),
-      meta: { title: '每日签到', requiresAuth: true },
-    },
-    {
-      path: '/invite',
-      name: 'invite',
-      component: () => import('@/views/InviteView.vue'),
-      meta: { title: '邀请返利', requiresAuth: true },
-    },
     // 注册后 TG 绑定引导页：仅注册流程进入，未绑定且管理员开启时展示
     {
       path: '/tg-bind',
       name: 'tg-bind-guide',
       component: () => import('@/views/TgBindGuideView.vue'),
       meta: { title: '绑定 Telegram', requiresAuth: true },
-    },
-    // 追新日历：站内唯一一个「按时间看片」的页面（媒体浏览在第三方客户端，
-    // 门户只保留“最近入库”这一个内容型入口）
-    {
-      path: '/calendar',
-      name: 'calendar',
-      component: () => import('@/views/CalendarView.vue'),
-      meta: { title: '追新日历', requiresAuth: true },
     },
     // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删） ====================
     // 老地址 /media、/library、/search、/favorites、/history 的书签与外部链接：

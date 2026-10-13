@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /**
- * 钱包 — 余额 / 卡码·兑换码核销 / 订单 / 积分流水
+ * 钱包 — 余额 / 卡码·兑换码核销
+ *（v4.1：订单 / 积分流水页签已删除，菜单不再有入口）
  *
  * v2.43.0：购买功能（充值/订阅/优惠券）已拆到 StoreView（/store）。
  * 原钱包页逻辑： / 积分充值（支付下单）/ 卡码·兑换码·优惠券核销 / 订单记录 / 积分流水
@@ -14,8 +15,8 @@ import { ref, computed, onMounted, onActivated, onBeforeUnmount, watch } from 'v
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
-  Wallet, TicketCheck, Receipt, RefreshCw, Sparkles, Flame,
-  ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
+  Wallet, TicketCheck, RefreshCw, Sparkles, Flame,
+  ArrowUpRight, CircleCheck, Clock, CircleAlert, ChevronRight,
   Undo2, Percent, Zap, Coins, Crown,
 } from 'lucide-vue-next'
 import {
@@ -46,7 +47,6 @@ const recharging = ref(false)
 const vitalityPointCost = ref(10)
 const orders = ref<OrderRow[]>([])
 const logs = ref<PointsLogEntry[]>([])
-const tab = ref<'orders' | 'log'>('orders')
 
 // ===== 积分转账（C2）=====
 const transferConfig = ref<TransferConfig | null>(null)
@@ -249,38 +249,6 @@ async function loadAll(silent = false) {
   }
 }
 
-const TYPE_META: Record<string, { label: string; income: boolean }> = {
-  checkin: { label: '签到', income: true },
-  invite: { label: '邀请奖励', income: true },
-  invitee: { label: '受邀奖励', income: true },
-  rebate: { label: '充值返利', income: true },
-  exchange: { label: '兑换码', income: true },
-  recharge: { label: '充值', income: true },
-  admin_grant: { label: '管理员发放', income: true },
-  admin_deduct: { label: '管理员扣除', income: false },
-  transfer_out: { label: '转账转出', income: false },
-  transfer_in: { label: '转账转入', income: true },
-  transfer_fee: { label: '转账手续费', income: false },
-}
-
-function typeMeta(t: string) {
-  return TYPE_META[t] || { label: t, income: true }
-}
-
-function fmtTime(iso?: string | null) {
-  if (!iso) return '—'
-  return iso.slice(0, 16).replace('T', ' ')
-}
-
-function orderStatusMeta(s: string) {
-  if (s === 'paid') return { label: '已支付', cls: 'au-badge au-badge-green' }
-  if (s === 'pending') return { label: '待支付', cls: 'au-badge au-badge-amber' }
-  // 退款 / 关单（v2.9.0）：用户端要说清楚这笔钱的状态，否则只会来问客服
-  if (s === 'refunded') return { label: '已退款', cls: 'au-badge au-badge-rose' }
-  if (s === 'closed') return { label: '已关闭', cls: 'au-badge au-badge-violet' }
-  return { label: s, cls: 'au-badge au-badge-rose' }
-}
-
 
 const paidFlag = computed(() => route.query.paid === '1')
 
@@ -349,10 +317,6 @@ function handleEntryQuery() {
     return
   }
 
-  if (tabQuery === 'orders' || tabQuery === 'log') {
-    tab.value = tabQuery
-  }
-
   const order = route.query.order
   if ((paidFlag.value || order) && !payPolling.value) {
     const key = `${order ?? ''}|${route.query.paid ?? ''}`
@@ -384,9 +348,6 @@ watch(() => route.query.tab, (tabQuery) => {
     delete query.tab
     router.replace({ path: '/store', query: { ...query, tab: t } })
     return
-  }
-  if (t === 'orders' || t === 'log') {
-    tab.value = t
   }
 })
 
@@ -543,84 +504,6 @@ onBeforeUnmount(stopPayPoll)
       <p class="redeem-hint" v-else>输入金额后显示手续费</p>
     </section>
 
-    <!-- 选项卡 -->
-    <nav class="tabs au-anim-up" style="animation-delay: 100ms">
-      <button class="tab" :class="{ active: tab === 'orders' }" @click="tab = 'orders'">
-        <Receipt :size="15" /> 订单
-      </button>
-      <button class="tab" :class="{ active: tab === 'log' }" @click="tab = 'log'">
-        <ArrowDownLeft :size="15" /> 流水
-      </button>
-    </nav>
-
-    <!-- 订单 -->
-    <section v-if="tab === 'orders'" class="tab-body au-anim-up">
-      <div v-if="!orders.length" class="au-empty">
-        <Receipt :size="30" />
-        <p>还没有订单记录</p>
-      </div>
-      <div v-else class="order-list au-card">
-        <div v-for="o in orders" :key="o.order_id" class="order-item">
-          <span class="order-icon" :class="{ pending: o.status === 'pending', refunded: o.status === 'refunded' }">
-            <Clock v-if="o.status === 'pending'" :size="14" />
-            <CircleCheck v-else-if="o.status === 'paid'" :size="14" />
-            <Undo2 v-else-if="o.status === 'refunded'" :size="14" />
-            <CircleAlert v-else :size="14" />
-          </span>
-          <div class="order-main">
-            <span class="order-name">{{ o.item_name }}</span>
-            <span class="order-sub">
-              <span class="order-id mono">{{ o.order_id }}</span>
-              <span class="order-sep">·</span>
-              <span>{{ fmtTime(o.created_at) }}</span>
-            </span>
-            <span v-if="o.status === 'refunded' && o.refund_reason" class="order-sub order-refund">
-              退款原因：{{ o.refund_reason }}
-            </span>
-            <span v-if="(o.discount_amount || 0) > 0" class="order-sub order-coupon">
-              <Percent :size="11" />
-              优惠码 {{ o.coupon_code || '已用券' }} 已减 ¥{{ (o.discount_amount || 0).toFixed(2) }}
-            </span>
-          </div>
-          <div class="order-side">
-            <span class="order-amount">
-              <em v-if="(o.discount_amount || 0) > 0" class="price-was">¥{{ (o.list_price || 0).toFixed(2) }}</em>
-              ¥{{ o.amount.toFixed(2) }}
-            </span>
-            <span :class="orderStatusMeta(o.status).cls">{{ orderStatusMeta(o.status).label }}</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-
-    <!-- 流水 -->
-    <section v-if="tab === 'log'" class="tab-body au-anim-up">
-      <EmptyState
-        v-if="!logs.length"
-        title="还没有积分记录"
-        description="积分变动记录会显示在这里"
-      >
-        <template #action>
-          <RouterLink to="/store" class="au-btn au-btn-ghost au-btn-sm">逛逛商店</RouterLink>
-        </template>
-      </EmptyState>
-      <div v-else class="log-list au-card">
-        <div v-for="l in logs" :key="l.id" class="log-item">
-          <span class="log-icon" :class="typeMeta(l.type).income ? 'in' : 'out'">
-            <ArrowDownLeft v-if="typeMeta(l.type).income" :size="14" />
-            <ArrowUpRight v-else :size="14" />
-          </span>
-          <div class="log-body">
-            <span class="log-desc">{{ l.description || typeMeta(l.type).label }}</span>
-            <span class="log-time">{{ fmtTime(l.created_at) }}</span>
-          </div>
-          <div class="log-amount" :class="typeMeta(l.type).income ? 'in' : 'out'">
-            {{ typeMeta(l.type).income ? '+' : '' }}{{ l.amount }}
-          </div>
-        </div>
-      </div>
-    </section>
     </template>
 
     <!-- 活力值续活弹窗 -->
