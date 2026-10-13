@@ -33,18 +33,22 @@ async function loadPoints() {
     /* 拿不到就不显示，不打扰 */
   }
 }
-/** 活力值（顶栏 pill 显示，仅公益服用户，403 则不显示） */
+/** 体力（顶栏 pill 显示 x/14 格式，与报到页体力条统一，仅公益服用户，403 则不显示） */
 const vitality = ref<number | null>(null)
+const vitalityMax = ref<number | null>(null)
 async function loadVitality() {
   if (!userStore.isLoggedIn) {
     vitality.value = null
+    vitalityMax.value = null
     return
   }
   try {
     const st = await vitalityApi.status()
     vitality.value = st.vitality
+    vitalityMax.value = st.max
   } catch {
     vitality.value = null
+    vitalityMax.value = null
   }
 }
 // 三档外观（跟随系统 / 白日 / 黑暗），见 useTheme.ts 的口径说明
@@ -113,11 +117,14 @@ const menuBadge = computed(() => {
   return { icon: Crown, text: '未开通会员', cls: 'muted' }
 })
 
-/** v4.1：头像菜单改为「探险设施直达」——直接列出 @/config/game.ts 的 10 个
+/** v4.1：头像菜单改为「探险设施直达」——直接列出 @/config/game.ts 的
  *  游戏设施（图标+名称+描述），点卡片直达对应 /game/xxx 页面。
- *  设施开关状态由各游戏页自己处理（如报到未开启时页内提示），菜单不再过滤。
+ *  只显示 enabled 的设施，按注册表 order 排序——与大本营地图顺序、名字一字不差。
+ *  设施开关状态由各游戏页自己处理（如报到未开启时页内提示）。
  *  退出登录独立成红色分区，不混在列表里 */
-const menuFacilities = computed(() => gameFacilities)
+const menuFacilities = computed(() =>
+  gameFacilities.filter((f) => f.enabled).sort((a, b) => a.order - b.order),
+)
 
 /** 昵称展示：登录名可能是一长串邮箱，头像旁只取 @ 前段；@id 用数字 id */
 const displayName = computed(() => {
@@ -488,25 +495,27 @@ onBeforeUnmount(() => {
            外观按钮放在登录判断**之外**：未登录也能切主题。点一下直接在白日/黑暗
            之间切换，不要下拉菜单 -->
       <div class="user-section">
-        <!-- 积分徽章：登录后显示当前积分，点击进探险大本营（2026-10-13：钱包页已删） -->
+        <!-- 积分徽章：登录后显示当前积分，点击进能量账本 -->
         <RouterLink
           v-if="userStore.isLoggedIn && pointsBalance !== null"
-          to="/game"
+          to="/game/ledger"
           class="points-pill"
-          title="我的积分，点击查看探险大本营"
+          title="我的积分，点击查看能量账本"
+          aria-label="我的积分，点击查看能量账本"
         >
           <Sparkles :size="13" />
           <span>{{ pointsBalance }}</span>
         </RouterLink>
-        <!-- 活力值徽章：仅公益服用户显示，点击进探险大本营（2026-10-13：钱包页已删） -->
+        <!-- 体力徽章：显示 x/14（与报到页体力条统一口径），点击进报到页 -->
         <RouterLink
-          v-if="userStore.isLoggedIn && vitality !== null"
-          to="/game"
+          v-if="userStore.isLoggedIn && vitality !== null && vitalityMax !== null"
+          to="/game/checkin"
           class="points-pill vitality-pill"
-          title="我的活力值，点击查看探险大本营"
+          :title="`我的体力 ${vitality}/${vitalityMax}，点击去报到`"
+          :aria-label="`我的体力 ${vitality}/${vitalityMax}，点击去报到`"
         >
           <Zap :size="13" />
-          <span>{{ vitality }}</span>
+          <span>{{ vitality }}/{{ vitalityMax }}</span>
         </RouterLink>
         <button
           class="theme-btn round-btn wide-only"

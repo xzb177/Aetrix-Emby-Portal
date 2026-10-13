@@ -87,6 +87,7 @@ import { toUserMessage } from '@/utils/toUserMessage'
 import { checkAndRecordHomeVisit } from '@/composables/useHomeVisitMemory'
 import { deferIdle } from '@/composables/useDefer'
 import WelcomeBackCard from '@/components/home/WelcomeBackCard.vue'
+import { campNotes } from '@/config/campNotes'
 import HomeTicketCard from '@/components/home/HomeTicketCard.vue'
 import HomeContinueWatching from '@/components/home/HomeContinueWatching.vue'
 import HomeHero from '@/components/home/HomeHero.vue'
@@ -138,11 +139,11 @@ const stoppingSession = ref('')
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
-  if (hour < 6) return '夜深了'
-  if (hour < 12) return '上午好'
-  if (hour < 14) return '中午好'
-  if (hour < 18) return '下午好'
-  return '晚上好'
+  if (hour < 6) return '夜深了，营地篝火还亮着'
+  if (hour < 12) return '早安，营地新的一天开始了'
+  if (hour < 14) return '中午好，营地开饭了'
+  if (hour < 18) return '下午好，营地阳光正好'
+  return '晚上好，营地灯火正暖'
 })
 
 const user = computed(() => userStore.user)
@@ -714,14 +715,22 @@ const heroEyebrow = computed(() => {
 })
 
 /** 问候语拆成 lead + tail：名字插在中间才顺——"夜深了，影迷，今晚看什么？"
- *  （直接拼 "夜深了，来部电影？，影迷" 会冒出 "?，" 这种怪标点） */
+ *  （直接拼 "夜深了，来部电影？，影迷" 会冒出 "?，" 这种怪标点）
+ *  营地味时段语：全站"探险营地"世界观在首页的落点 */
 const greetingParts = computed(() => {
   const hour = new Date().getHours()
-  if (hour < 6) return { lead: '夜深了', tail: '，今晚看什么？' }
-  if (hour < 12) return { lead: '上午好', tail: '' }
-  if (hour < 14) return { lead: '中午好', tail: '，吃完饭看点什么' }
-  if (hour < 18) return { lead: '下午好', tail: '' }
-  return { lead: '晚上好', tail: '，今晚看什么？' }
+  if (hour < 6) return { lead: '夜深了，营地篝火还亮着', tail: '' }
+  if (hour < 12) return { lead: '早安', tail: '，营地新的一天开始了' }
+  if (hour < 14) return { lead: '中午好', tail: '，营地开饭了' }
+  if (hour < 18) return { lead: '下午好', tail: '，营地阳光正好' }
+  return { lead: '晚上好', tail: '，营地灯火正暖' }
+})
+
+/** 营地晨间便签：按日期种子每天随机取一条，零请求、纯本地 */
+const campNote = computed(() => {
+  const d = new Date()
+  const seed = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate()
+  return campNotes[seed % campNotes.length]
 })
 
 /** Hero 主角：和 heroImage 同一条片子（近 7 天入库里第一条带背景图的）——
@@ -795,6 +804,12 @@ onActivated(() => {
       @image-error="heroImageFailed = true"
     />
 
+    <!-- 营地晨间便签：Hero 下方一张小纸片条，每天一句营地文案（零请求） -->
+    <div class="camp-note" role="note" aria-label="营地晨间便签">
+      <span class="camp-note-pin" aria-hidden="true">📌</span>
+      <span class="camp-note-text">{{ campNote }}</span>
+    </div>
+
     <main class="container main">
       <!-- 会员数据加载失败：给错误态 + 重试，而不是静默显示「未开通」 -->
       <div v-if="loadError && !loading" class="au-empty load-error-card au-card">
@@ -863,6 +878,33 @@ onActivated(() => {
 .home-view {
   min-height: 100dvh;
   color: var(--au-text);
+}
+
+/* 营地晨间便签：v4 纸片风小纸条，Hero 下方一条 */
+.camp-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px auto 0;
+  max-width: 560px;
+  width: calc(100% - 40px);
+  padding: 10px 16px;
+  background: #fffdf6;
+  border: 1.5px dashed #d8cdb8;
+  border-radius: 4px 14px 4px 14px;
+  box-shadow: 1px 2px 0 rgba(0, 0, 0, 0.06);
+  transform: rotate(-0.4deg);
+}
+.camp-note-pin {
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.camp-note-text {
+  font-size: 13px;
+  font-weight: 700;
+  color: #2a2620;
+  line-height: 1.6;
 }
 
 .main {
