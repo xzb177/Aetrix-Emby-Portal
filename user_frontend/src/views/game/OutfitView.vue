@@ -22,6 +22,7 @@
           :aria-label="`试穿${o.label}${storedPref === o.id ? '（当前穿着）' : ''}`"
           @click="tryOn(o.id)"
           @keyup.enter="tryOn(o.id)"
+          @keyup.space.prevent="tryOn(o.id)"
         >
           <span v-if="storedPref === o.id" class="now">当前</span>
           <div class="prev" aria-hidden="true">
@@ -218,16 +219,17 @@ onBeforeUnmount(() => {
 .confirm {
   position: fixed;
   bottom: calc(76px + env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%) translateY(20px);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
   width: calc(100% - 40px);
   max-width: 335px;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.25s, transform 0.25s;
+  transition: opacity 0.25s;
   z-index: 50;
 }
-.confirm.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+.confirm.show { opacity: 1; pointer-events: auto; }
 .confirm button {
   width: 100%;
   background: var(--red);

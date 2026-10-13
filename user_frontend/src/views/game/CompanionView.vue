@@ -241,6 +241,10 @@ onMounted(load)
   background: var(--ink);
   transform: translateX(-50%);
 }
+/* 减少动态偏好：全局 transform:none 会让杆子右偏 4px，用 margin-left 补回居中 */
+@media (prefers-reduced-motion: reduce) {
+  .board .pole { margin-left: -4px; }
+}
 .board .shout {
   font-size: 13px;
   font-weight: 800;
@@ -291,6 +295,7 @@ onMounted(load)
 }
 .linkbtn {
   flex-shrink: 0;
+  min-height: 44px;
   background: var(--paper2);
   border: 1.5px solid var(--ink);
   border-radius: 10px;

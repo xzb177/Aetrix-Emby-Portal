@@ -44,7 +44,7 @@
               <b>《{{ w.movie_name }}》</b>
               <div class="wmeta">
                 {{ shortDate(w.created_at) }} 投下
-                <span v-if="w.status === 'completed' && w.emby_item_id"> · 营地已上架，去播放器看 →</span>
+                <span v-if="w.status === 'completed' && w.emby_item_id"> · 营地已上架，去播放器看</span>
                 <span v-else-if="w.vote_count"> · 已有 {{ w.vote_count }} 人附议</span>
               </div>
             </div>
@@ -230,8 +230,8 @@ function flyBoat(done: () => void) {
   boat.style.top = `${wr.top - 70}px`
   document.body.appendChild(boat)
   requestAnimationFrame(() => {
-    boat.style.transition = 'top .85s cubic-bezier(.5,-.1,.7,.5)'
-    boat.style.top = `${wr.top + wr.height / 2 - 17}px`
+    boat.style.transition = 'transform .85s cubic-bezier(.5,-.1,.7,.5)'
+    boat.style.transform = `translateY(${wr.height / 2 + 53}px)`
   })
   window.setTimeout(() => {
     boat.style.transition = 'opacity .25s'
@@ -312,6 +312,10 @@ onMounted(() => {
   animation: rip 3.2s infinite;
   pointer-events: none;
 }
+/* 减少动态偏好：涟漪纯属装饰，直接隐藏（基态 transform 会被全局置空导致错位） */
+@media (prefers-reduced-motion: reduce) {
+  .ripple { display: none; }
+}
 .r2 { animation-delay: 1.05s; }
 .r3 { animation-delay: 2.1s; }
 /* 只动 transform/opacity：不刷 layout，60fps */
@@ -386,10 +390,11 @@ onMounted(() => {
 }
 .wish.new { animation: glow 1.6s; border-color: var(--gold); }
 @keyframes glow {
-  0% { box-shadow: 0 0 0 0 rgba(201, 155, 63, 0.7); }
-  100% { box-shadow: 0 0 0 14px rgba(201, 155, 63, 0); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
-.wish b { font-size: 14px; }
+.wish > div:first-child { min-width: 0; flex: 1; }
+.wish b { font-size: 14px; display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wmeta { font-size: 11px; color: var(--ink2); margin-top: 4px; }
 .chip {
   font-size: 11px;
@@ -409,7 +414,8 @@ onMounted(() => {
   margin-bottom: 10px;
 }
 .crowd .row1 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.crowd b { font-size: 14px; }
+.crowd .row1 > :first-child { min-width: 0; flex: 1; }
+.crowd b { font-size: 14px; display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .crowd .want { font-size: 11px; color: var(--ink2); margin-top: 6px; }
 .upvote {
   margin-top: 10px;
@@ -461,7 +467,7 @@ onMounted(() => {
 .mcard p { font-size: 12px; color: var(--ink2); margin: 0 0 14px; }
 .mcard input {
   width: 100%;
-  font-size: 15px;
+  font-size: 16px;
   padding: 12px;
   border: 1.5px solid var(--line);
   border-radius: 10px;
@@ -474,6 +480,7 @@ onMounted(() => {
 .mrow { display: flex; gap: 10px; margin-top: 16px; }
 .mbtn {
   flex: 1;
+  min-height: 44px;
   padding: 12px;
   border-radius: 10px;
   font-size: 14px;
