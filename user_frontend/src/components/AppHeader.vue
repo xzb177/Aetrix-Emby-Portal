@@ -290,7 +290,24 @@ function anchorDropdown(el: HTMLElement | null) {
 function toggleUserMenu() {
   msgMenuOpen.value = false
   userMenuOpen.value = !userMenuOpen.value
-  if (userMenuOpen.value) anchorDropdown(userMenuRef.value)
+  if (userMenuOpen.value) {
+    readWornBadge()
+    anchorDropdown(userMenuRef.value)
+  }
+}
+
+/** 佩戴中的徽章（OutfitView 装备库徽章墙写入 localStorage，键 aetrix_worn_badge_v1）。
+ *  每次打开头像菜单时重读 —— 用户可能刚在换装页戴上/取下。 */
+interface WornBadge { key: string; name: string; icon: string }
+const wornBadge = ref<WornBadge | null>(null)
+function readWornBadge(): void {
+  try {
+    const raw = localStorage.getItem('aetrix_worn_badge_v1')
+    if (!raw) { wornBadge.value = null; return }
+    const o = JSON.parse(raw)
+    // 兼容旧版只存 key 字符串的写法
+    wornBadge.value = typeof o === 'string' ? { key: o, name: '', icon: '' } : (o && o.key ? o : null)
+  } catch { wornBadge.value = null }
 }
 
 function toggleMsgMenu() {
@@ -613,6 +630,7 @@ onBeforeUnmount(() => {
                   <span class="dropdown-id">
                     <span class="dropdown-username">{{ displayName }}</span>
                     <span v-if="userIdLabel" class="dropdown-uid">{{ userIdLabel }}</span>
+                    <span v-if="wornBadge" class="dropdown-worn" :title="`佩戴中的徽章：${wornBadge.name}`">{{ wornBadge.icon }} {{ wornBadge.name }}</span>
                   </span>
                   <span v-if="menuBadge" class="dropdown-status" :class="menuBadge.cls">
                     <component :is="menuBadge.icon" :size="11" />
@@ -625,7 +643,8 @@ onBeforeUnmount(() => {
                      设施为空时整个分区（含标题）不渲染，不留裸奔标题。
                      原 12 个通用菜单项（追新日历/探险日志/我的订单/积分流水/
                      每日签到/邀请返利/求片中心/AI 助手/工单支持/消息中心/
-                     外观/管理后台）已从头像菜单移除，对应页面路由保留 -->
+                     外观/管理后台）已从头像菜单移除，对应页面路由保留；
+                     其中消息中心/外观在 ≤420px 窄屏的补位入口见下面 ②.5 -->
                 <template v-if="menuFacilities.length > 0">
                 <div class="dropdown-sec-title">🏕️ 营地设施 · 点卡片直接进</div>
                 <RouterLink
@@ -657,6 +676,28 @@ onBeforeUnmount(() => {
                   <span class="facility-go" aria-hidden="true">›</span>
                 </RouterLink>
                 </template>
+
+                <!-- ②.5 窄屏补位（仅 ≤420px 显示）：顶栏的外观按钮/消息铃铛带 .wide-only，
+                     窄屏下被隐藏 —— 这两项是 ≤420px 时外观切换与消息中心的唯一入口。
+                     r27 恢复过、#780 又删掉（它的注释"主题切换走顶栏按钮"在窄屏不成立：
+                     顶栏按钮同样被 .wide-only 隐藏），r28 再恢复。以后动这里先读这段。 -->
+                <RouterLink
+                  to="/game/pigeon"
+                  class="dropdown-item dropdown-narrow-only"
+                  role="menuitem"
+                  @click="closeMenus"
+                >
+                  <Inbox :size="15" /> 消息中心
+                  <span v-if="unreadCount > 0" class="dropdown-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+                </RouterLink>
+                <button
+                  class="dropdown-item dropdown-narrow-only"
+                  role="menuitem"
+                  :aria-label="themeTitle"
+                  @click="toggleTheme(); closeMenus()"
+                >
+                  <component :is="themeCurrent.icon" :size="15" /> {{ themeTitle }}
+                </button>
 
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
@@ -945,6 +986,29 @@ onBeforeUnmount(() => {
 }
 
 .narrow-only { display: none; }
+
+/* 窄屏补位项（②.5）：桌面/平板隐藏，只在 ≤420px 出现 —— 与 .wide-only 反逻辑。
+   外观按钮与消息铃铛在窄屏被 .wide-only 藏掉后，头像菜单里的这两项是唯一入口。
+   注意：必须写成 .dropdown-item.dropdown-narrow-only（双类），单类会被后面的
+   .dropdown-item{display:flex} 按源码顺序盖掉。 */
+.dropdown-item.dropdown-narrow-only { display: none; }
+
+/* 佩戴中的徽章：昵称下方小红章，读 OutfitView 徽章墙写入的 localStorage */
+.dropdown-worn {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--red);
+  border: 1px solid var(--red);
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-top: 4px;
+  letter-spacing: 1px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .dropdown-badge {
   margin-left: auto;
@@ -1384,11 +1448,13 @@ onBeforeUnmount(() => {
 }
 
 /* ≤420px（iPhone 竖屏）：顶栏只留「品牌 · 积分 · 头像」三件事。
-   外观切换按钮与消息铃铛在窄屏隐藏；头像菜单里的外观/消息中心旧项已删除
-   （#769 删、#776 误恢复、本 PR 再删），主题切换走顶栏按钮，消息走信鸽 */
+   外观切换按钮与消息铃铛带 .wide-only，在窄屏隐藏；补位入口在头像菜单
+   （②.5 窄屏补位项：外观切换 + 消息中心），窄屏不断功能。 */
 @media (max-width: 420px) {
   .wide-only { display: none; }
   .narrow-only { display: block; }
+  /* 窄屏补位项在这里现身：外观切换 / 消息中心（见 ②.5 注释，双类写法防盖掉） */
+  .dropdown-item.dropdown-narrow-only { display: flex; }
   .logo-text { font-size: 0.9375rem; letter-spacing: 0.18em; }
   .logo-mark { width: 26px; height: 26px; }
   .points-pill { padding: 0.3125rem 0.625rem; }
