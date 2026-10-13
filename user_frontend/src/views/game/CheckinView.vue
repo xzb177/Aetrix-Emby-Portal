@@ -97,7 +97,7 @@ const canCheckin = computed(
   () => !!status.value && status.value.enabled && !status.value.checked_today,
 )
 const checkinBtnText = computed(() => {
-  if (checking.value) return '盖章中…'
+  if (checking.value) return '盖章中'
   if (!status.value) return '📋 报 到'
   if (!status.value.enabled) return '报到未开启'
   if (status.value.checked_today) return '✅ 今日已报到'

@@ -226,8 +226,10 @@ export default {
 }
 
 .modal-close {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
+  padding: 6px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;

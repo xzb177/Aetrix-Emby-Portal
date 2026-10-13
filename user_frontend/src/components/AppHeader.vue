@@ -851,8 +851,8 @@ onBeforeUnmount(() => {
    积分仍在首页「我的资产」/ 钱包、会员状态仍在头像菜单头部各有入口。 */
 .round-btn {
   position: relative;
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -971,7 +971,7 @@ onBeforeUnmount(() => {
 
 /* 头像按钮：与消息按钮同一配方（.round-btn），里面正好嵌一颗 30px 头像
    （昵称不再出现在顶栏 → 菜单头部那一行仍是完整身份展示） */
-.user-btn { padding: 3px; }
+.user-btn { padding: 6px; }
 
 /* 头像右上角的未读点（只在 ≤420px 消息铃铛隐藏时出现） */
 .avatar-dot {
@@ -1317,7 +1317,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.625rem;
   width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   padding: 0.625rem 1rem;
   background: none;
   border: none;

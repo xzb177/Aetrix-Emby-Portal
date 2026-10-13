@@ -215,3 +215,4 @@
    令牌契约检查要求定义必须出现在被引入的样式表里（SFC <style> 块不算） */
 .evo-bar i { --evo-p: 0; }
 .meter .fill { --meter-p: 0; }
+.v4-growth .bar-fill { --bar-p: 0; }

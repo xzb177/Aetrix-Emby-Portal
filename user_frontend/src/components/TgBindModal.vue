@@ -3,6 +3,7 @@ import { ref, watch, onBeforeUnmount } from 'vue'
 import { Send, RefreshCw, Check, X, Copy } from 'lucide-vue-next'
 import { tgApi } from '@/api/tg'
 import { useToast } from '@/composables/useToast'
+import { humanizeError } from '@/composables/usePanelApi'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{
@@ -29,7 +30,7 @@ const boundTelegramId = ref<number | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
 let closeTimer: ReturnType<typeof setTimeout> | null = null
 
-function errMsg(e: unknown): string {
+function rawErrMsg(e: unknown): string {
   const anyErr = e as { response?: { data?: unknown }; message?: string }
   const data = anyErr?.response?.data
   if (data && typeof data === 'object') {
@@ -40,6 +41,12 @@ function errMsg(e: unknown): string {
   }
   if (typeof data === 'string') return data
   return anyErr?.message || '网络错误，请稍后重试'
+}
+
+/** 后端原文含中文保留原文，否则人话化 */
+function errMsg(e: unknown): string {
+  const msg = rawErrMsg(e)
+  return /[\u4e00-\u9fff]/.test(msg) ? msg : humanizeError(e)
 }
 
 function stopCountdown() {
@@ -438,6 +445,12 @@ onBeforeUnmount(() => {
   }
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
   }
 }
 </style>

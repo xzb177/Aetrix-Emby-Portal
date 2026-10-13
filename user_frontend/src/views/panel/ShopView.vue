@@ -56,7 +56,7 @@
             🎫 券后 ¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.paid_amount) }}
             <s>¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.list_price) }}</s>
           </div>
-          <button class="charge" :disabled="orderBusy || !methodsReady" @click="doRecharge">⚡ 充能</button>
+          <button class="charge" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" @click="doRecharge">⚡ 充能</button>
           <!-- 自定义金额 -->
           <div class="custom">
             <div class="custom-row">
@@ -70,7 +70,7 @@
                 class="custom-input"
               />
               <button class="custom-btn" :disabled="!canCustomRecharge || orderBusy || !methodsReady" @click="handleCustomRecharge">
-                充这个数
+                <span class="lbl">充这个数</span>
               </button>
             </div>
             <div v-if="quickAmounts.length" class="quick">
@@ -79,7 +79,7 @@
                 :key="q"
                 class="quick-btn"
                 @click="customAmount = q"
-              >¥{{ q }}</button>
+              ><span class="lbl">¥{{ q }}</span></button>
             </div>
             <small v-if="customAmount && customAmount >= 1" class="custom-note">
               ≈ {{ fmtNum(customPointsPreview) }} 能量
@@ -93,13 +93,14 @@
               :key="m.id"
               class="payway"
               :class="{ on: payMethod === m.id }"
+              :aria-pressed="payMethod === m.id"
               @click="payMethod = m.id"
-            >{{ m.name || m.id }}</button>
+            ><span class="lbl">{{ m.name || m.id }}</span></button>
           </div>
           <!-- R28：只有一种支付方式时展示只读标签，不隐藏 -->
           <div v-else-if="methods.length === 1" class="payways">
             <span class="payways-label">支付方式</span>
-            <span class="payway on" aria-current="true">{{ methods[0].name || methods[0].id }}</span>
+            <span class="payway on" aria-current="true"><span class="lbl">{{ methods[0].name || methods[0].id }}</span></span>
           </div>
           <div class="fineprint">能量可用于续命活力值、兑换订阅、发红包 —— 不过期</div>
         </template>
@@ -116,8 +117,8 @@
         <div v-else-if="plans.length === 0" class="v4-empty">补给站暂未上架执照<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <template v-else>
           <div class="cur-toggle">
-            <button :class="{ on: currency === 'y' }" @click="currency = 'y'">¥ 人民币</button>
-            <button :class="{ on: currency === 'e' }" @click="currency = 'e'">⚡ 能量抵扣</button>
+            <button :class="{ on: currency === 'y' }" :aria-pressed="currency === 'y'" @click="currency = 'y'">¥ 人民币</button>
+            <button :class="{ on: currency === 'e' }" :aria-pressed="currency === 'e'" @click="currency = 'e'">⚡ 能量抵扣</button>
           </div>
           <div
             v-for="plan in sortedPlans"
@@ -150,7 +151,7 @@
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ (100 - memberDiscountPct) / 10 }} 折</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
-              <button class="buy" :disabled="orderBusy || !methodsReady" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>领取执照 →</button>
+              <button class="buy" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>领取执照 →</button>
             </div>
           </div>
           <div class="fineprint">人民币 / 能量二选一，价格由服主在后台配置</div>
@@ -201,11 +202,13 @@
         <div v-else-if="inviteFailed" class="v4-err">邀请码加载失败{{ inviteErrMsg ? '：' + inviteErrMsg : '' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="inviteEnabled" class="invite">
           <h3>🧭 结伴远行，能量翻倍</h3>
-          <p>同伴用你的暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
+          <p v-if="inviteReward > 0 || inviteeReward > 0">同伴用你的暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
+          <!-- R30：奖励为 0 时"上不封顶"自相矛盾，改诚实文案 -->
+          <p v-else>当前邀请奖励未开启。</p>
           <div class="code">
             <!-- R27：code 为空不再显示占位 '----'，给生成中态 + 重试 -->
             <div v-if="inviteCode" class="c">{{ inviteCode }}</div>
-            <div v-else class="c generating">邀请码生成中…</div>
+            <div v-else class="c generating">邀请码生成中</div>
             <button @click="copyInviteCode" :disabled="!inviteCode">复制</button>
           </div>
           <button v-if="!inviteCode" class="v4-retry" style="margin-top:10px" @click="loadAll">重试</button>
@@ -228,7 +231,7 @@
               @input="resetCodeFeedback"
             />
             <button type="submit" class="redeem-btn" :class="{ 'is-loading': redeemLoading }" :disabled="redeemLoading || !redeemCode.trim()">
-              使用
+              <span class="lbl">使用</span>
             </button>
           </form>
           <div v-if="codePreview" class="redeem-preview">
@@ -236,13 +239,13 @@
             <span v-if="codePreview.realm_name"> · 开「{{ codePreview.realm_name }}」的会员</span>
             <span v-if="codePreview.is_named"> · 限指定账号</span>
             <button type="button" class="redeem-confirm" :disabled="redeemLoading" @click="confirmCodeRedeem">
-              确认开通
+              <span class="lbl">确认开通</span>
             </button>
           </div>
           <div v-else-if="exchangePreview" class="redeem-preview">
             <span>✅ {{ exchangePreview.type_name || '兑换码' }} · <b>{{ exchangePreview.days_text || exchangePreview.message || '确认后立即兑换' }}</b></span>
             <button type="button" class="redeem-confirm" :disabled="redeemLoading" @click="confirmExchangeRedeem">
-              确认兑换
+              <span class="lbl">确认兑换</span>
             </button>
           </div>
           <div v-else-if="couponApplied" class="redeem-coupon">
@@ -531,7 +534,7 @@ async function handleCustomRecharge() {
       custom_amount: amt,
     })
     if (res.pay_url) {
-      toast.success('正在跳转支付…')
+      toast.success('正在跳转支付')
       window.location.href = res.pay_url
     } else {
       toast.error('支付链接获取失败，请稍后再试')
@@ -715,7 +718,7 @@ async function doRecharge() {
       coupon_code: quote ? quote.code : undefined,
     })
     if (res.pay_url) {
-      toast.success('正在跳转支付…')
+      toast.success('正在跳转支付')
       window.location.href = res.pay_url
     } else {
       toast.error('支付链接获取失败，请稍后再试')
@@ -747,7 +750,7 @@ async function doBuyPlan(plan: SubscriptionPlan) {
       toast.success('执照领取成功，出发吧！')
       void loadAll()
     } else if (res.pay_url) {
-      toast.success('正在跳转支付…')
+      toast.success('正在跳转支付')
       window.location.href = res.pay_url
     } else {
       toast.error('支付链接获取失败，请稍后再试')
@@ -925,6 +928,9 @@ async function copyInviteCode() {
   font-size: 12px;
   font-weight: 700;
   z-index: 1;
+  /* R30：压在红渐变 fill 上，加白色 + 阴影保证对比度 */
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.35);
 }
 .charge {
   display: block;
@@ -1266,6 +1272,13 @@ async function copyInviteCode() {
   .license .ribbon span {
     transform: none;
   }
+  /* R30：按压缩放也关掉 */
+  .can:active,
+  .charge:active,
+  .buy:active,
+  .redeem-btn:active {
+    transform: none;
+  }
 }
 
 /* ---------- 核销中心 ---------- */
@@ -1295,15 +1308,26 @@ async function copyInviteCode() {
   outline-offset: 1px;
 }
 .redeem-btn {
-  background: var(--ink);
-  color: var(--paper);
+  position: relative;
+  /* R30：透明 padding + 负 margin——视觉按钮不变，点击区纵向扩到 ≥44px（R22 LeverSwitch 同款手法） */
+  background: transparent;
   border: none;
-  border-radius: 8px;
-  padding: 10px 18px;
+  color: var(--paper);
+  padding: 15px 18px;
+  margin: -5px 0;
   font-size: 14px;
   font-weight: 700;
   white-space: nowrap;
 }
+/* 视觉按钮画在 ::before 上，随 padding 偏移（上下各 5px），与原来像素一致 */
+.redeem-btn::before {
+  content: "";
+  position: absolute;
+  top: 5px; right: 0; bottom: 5px; left: 0;
+  background: var(--ink);
+  border-radius: 8px;
+}
+.redeem-btn .lbl { position: relative; }
 .redeem-btn:disabled {
   opacity: 0.4;
 }
@@ -1321,6 +1345,15 @@ async function copyInviteCode() {
 @media (prefers-reduced-motion: reduce) {
   .redeem-btn.is-loading { animation: none; opacity: 0.65; }
 }
+/* R30：下单忙碌态复用 R28 呼吸脉冲，不只变灰 */
+.charge.is-busy,
+.buy.is-busy {
+  animation: redeem-pulse 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .charge.is-busy,
+  .buy.is-busy { animation: none; opacity: 0.65; }
+}
 .redeem-preview,
 .redeem-coupon {
   display: flex;
@@ -1335,22 +1368,32 @@ async function copyInviteCode() {
   font-size: 13px;
 }
 .redeem-confirm {
-  background: var(--red);
-  color: #fff;
+  position: relative;
+  /* R30：透明 padding + 负 margin——视觉按钮不变，点击区纵向扩到 ≥44px（R22 LeverSwitch 同款手法） */
+  background: transparent;
   border: none;
-  border-radius: 6px;
-  padding: 6px 14px;
+  color: #fff;
+  padding: 15px 14px;
+  margin: -9px 0 -9px auto;
   font-size: 13px;
   font-weight: 700;
-  margin-left: auto;
 }
+.redeem-confirm::before {
+  content: "";
+  position: absolute;
+  top: 9px; right: 0; bottom: 9px; left: 0;
+  background: var(--red);
+  border-radius: 6px;
+}
+.redeem-confirm .lbl { position: relative; }
 .redeem-clear {
   background: none;
   border: none;
   font-size: 14px;
   color: var(--ink2);
-  margin-left: auto;
-  padding: 4px 8px;
+  /* R30：无背景按钮，透明 padding + 负 margin 直接扩点击区到 ≥44px，视觉不变 */
+  margin: -10px 0 -10px auto;
+  padding: 14px 8px;
 }
 .redeem-note {
   font-size: 12px;
@@ -1389,14 +1432,25 @@ async function copyInviteCode() {
   min-width: 0;
 }
 .custom-btn {
-  background: var(--paper-card);
-  border: 1.5px solid var(--ink);
-  border-radius: 8px;
-  padding: 8px 14px;
+  position: relative;
+  /* R30：透明 padding + 负 margin——视觉按钮不变，点击区纵向扩到 ≥44px（R22 LeverSwitch 同款手法） */
+  background: transparent;
+  border: none;
+  padding: 15px 14px;
+  margin: -5.5px 0;
   font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
 }
+.custom-btn::before {
+  content: "";
+  position: absolute;
+  top: 5.5px; right: 0; bottom: 5.5px; left: 0;
+  background: var(--paper-card);
+  border: 1.5px solid var(--ink);
+  border-radius: 8px;
+}
+.custom-btn .lbl { position: relative; }
 .custom-btn:disabled {
   opacity: 0.4;
 }
@@ -1407,13 +1461,24 @@ async function copyInviteCode() {
   flex-wrap: wrap;
 }
 .quick-btn {
-  background: var(--paper2);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 4px 12px;
+  position: relative;
+  /* R30：透明 padding + 负 margin——视觉药丸不变，点击区纵向扩到 ≥44px（R22 LeverSwitch 同款手法） */
+  background: transparent;
+  border: none;
+  padding: 16px 12px;
+  margin: -11px 0;
   font-size: 12px;
   color: var(--ink);
 }
+.quick-btn::before {
+  content: "";
+  position: absolute;
+  top: 11px; right: 0; bottom: 11px; left: 0;
+  background: var(--paper2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.quick-btn .lbl { position: relative; }
 .custom-note {
   display: block;
   margin-top: 6px;
@@ -1434,18 +1499,31 @@ async function copyInviteCode() {
   color: var(--ink2);
 }
 .payway {
-  background: var(--paper-card);
-  border: 1.5px solid var(--line);
-  border-radius: 14px;
-  padding: 5px 14px;
+  position: relative;
+  /* R30：透明 padding + 负 margin——视觉药丸不变，点击区纵向扩到 ≥44px（R22 LeverSwitch 同款手法） */
+  background: transparent;
+  border: none;
+  padding: 15px 14px;
+  margin: -8.5px 0;
   font-size: 13px;
   color: var(--ink);
 }
+.payway::before {
+  content: "";
+  position: absolute;
+  top: 8.5px; right: 0; bottom: 8.5px; left: 0;
+  background: var(--paper-card);
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+}
+.payway .lbl { position: relative; }
 .payway.on {
-  border-color: var(--ink);
-  background: var(--ink);
   color: var(--paper);
   font-weight: 700;
+}
+.payway.on::before {
+  border-color: var(--ink);
+  background: var(--ink);
 }
 
 /* ---------- 优惠券折后价 ---------- */

@@ -4,7 +4,7 @@
       <div v-for="d in days" :key="d.date" class="bar-col">
         <div class="bar-val">{{ d.count }}</div>
         <div class="bar-track">
-          <div class="bar-fill" :style="{ height: d.height + '%' }"></div>
+          <div class="bar-fill" :style="{ '--bar-p': d.height / 100 }"></div>
         </div>
         <div class="bar-day">{{ d.weekday }}</div>
         <div class="bar-date">{{ d.date }}</div>
@@ -77,9 +77,12 @@ const footText = computed(() => {
 }
 .bar-fill {
   width: 100%;
+  height: 100%;
   background: linear-gradient(180deg, var(--green), color-mix(in srgb, var(--green) 75%, #000));
   border-radius: 0 0 4px 4px;
-  transition: height 0.5s ease;
+  transform: scaleY(var(--bar-p, 0));
+  transform-origin: bottom;
+  transition: transform 0.5s ease;
 }
 .bar-day {
   font-size: 11px;

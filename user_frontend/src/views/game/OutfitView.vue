@@ -461,68 +461,37 @@ onBeforeUnmount(() => {
   letter-spacing: 1px;
 }
 .wear-btn {
-  margin-top: 8px;
+  position: relative;
+  /* 触点 44px+：padding 16px 纵向；负 margin 抵消增量，布局占位与原来一致 */
+  margin: -8px 0 -5px;
   font-size: 11px;
   font-weight: 800;
   color: var(--red);
   background: transparent;
-  border: 1.5px solid var(--red);
+  border: none;
   border-radius: 10px;
-  padding: 4px 14px;
+  /* 透明 padding + 负 margin：视觉药丸不变，触点纵向扩大到 44px（R23 .upvote 同款） */
+  padding: 16px 14px;
   cursor: pointer;
   letter-spacing: 1px;
 }
+.wear-btn::before {
+  content: '';
+  position: absolute;
+  top: 10.5px;
+  right: 0;
+  bottom: 10.5px;
+  left: 0;
+  border: 1.5px solid var(--red);
+  border-radius: 10px;
+}
 .wear-btn.off {
   color: var(--ink2);
+}
+.wear-btn.off::before {
   border-color: var(--line);
 }
 .wear-btn:focus-visible {
-  outline: 2px solid var(--red);
-  outline-offset: 2px;
-}
-
-/* 装备库纸片空态（保留备用） */
-.gear-empty {
-  background: var(--paper-card);
-  border: 2px dashed var(--line);
-  border-radius: 14px;
-  padding: 36px 20px;
-  text-align: center;
-}
-.gear-emoji {
-  font-size: 44px;
-  line-height: 1;
-  margin-bottom: 12px;
-}
-.gear-title {
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: 2px;
-}
-.gear-desc {
-  font-size: 13px;
-  color: var(--ink2);
-  margin: 8px 0 16px;
-}
-.gear-go {
-  display: inline-block;
-  font-size: 14px;
-  font-weight: 800;
-  color: #fff;
-  background: var(--red);
-  border-radius: 12px;
-  padding: 10px 22px;
-  /* R28：触点提到 44px 高（视觉不变） */
-  min-height: 44px;
-  box-sizing: border-box;
-  text-decoration: none;
-  box-shadow: 0 3px 0 #a33319;
-}
-.gear-go:active {
-  transform: translateY(2px);
-  box-shadow: none;
-}
-.gear-go:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
 }

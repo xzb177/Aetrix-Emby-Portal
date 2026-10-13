@@ -181,12 +181,12 @@
   --neo-badge-font-size: 13px;
 
   /* Segmented Control */
-  --neo-segment-height: 36px;
+  --neo-segment-height: 44px;
   --neo-segment-radius: var(--au-r-sm);
 
   /* Icon Button */
   --neo-icon-btn-sm: 32px;
-  --neo-icon-btn-md: 40px;
+  --neo-icon-btn-md: 44px;
   --neo-icon-btn-lg: 48px;
   --neo-icon-btn-radius: var(--au-r-sm);
 

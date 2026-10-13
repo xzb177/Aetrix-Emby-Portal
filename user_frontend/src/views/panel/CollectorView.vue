@@ -101,7 +101,9 @@ const achievementCount = computed(() => data.value.achievement_count ?? '–')
 
 /* ---------- 等级徽章：按成就数给称号 ---------- */
 const levelText = computed(() => {
-  const c = typeof data.value.achievement_count === 'number' ? data.value.achievement_count : 0
+  // achievement_count 缺失时与统计区口径统一：显示 '–'，不按 0 假装 Lv.1
+  if (typeof data.value.achievement_count !== 'number') return '–'
+  const c = data.value.achievement_count
   if (c >= 30) return 'Lv.6 · 传奇藏家'
   if (c >= 20) return 'Lv.5 · 大藏家'
   if (c >= 10) return 'Lv.4 · 资深藏家'
@@ -214,11 +216,15 @@ const pet = computed((): PetData | null => {
 }
 .v4-id-stats div {
   flex: 1;
+  min-width: 0;
   text-align: center;
 }
 .v4-id-stats b {
   font-size: 18px;
   display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .v4-id-stats span {
   font-size: 11px;

@@ -68,7 +68,7 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
   overflow: hidden;
 }
 .v4-passport::after {
-  content: "TASTE PASSPORT";
+  content: "口味护照";
   position: absolute;
   bottom: 6px;
   right: 10px;

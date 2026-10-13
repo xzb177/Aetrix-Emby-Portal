@@ -127,4 +127,10 @@ const svgContent = computed(() => {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-icon--spin :deep(svg) {
+    animation: none;
+  }
+}
 </style>

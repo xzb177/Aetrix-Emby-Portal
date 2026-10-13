@@ -73,7 +73,7 @@
               :disabled="w.voted || voting === w.id"
               @click="upvote(w)"
             >
-              <span class="lbl">{{ w.voted ? '✓ 已附议，坐等打捞' : voting === w.id ? '附议中…' : '+1 附议' }}</span>
+              <span class="lbl">{{ w.voted ? '✓ 已附议，坐等打捞' : voting === w.id ? '附议中' : '+1 附议' }}</span>
             </button>
           </div>
         </div>
@@ -98,7 +98,7 @@
         <div class="mrow">
           <button class="mbtn cancel" @click="closeModal">再想想</button>
           <button class="mbtn go" :disabled="throwing" @click="throwWish">
-            {{ throwing ? '投放中…' : '⛵ 投进池子' }}
+            {{ throwing ? '投放中' : '⛵ 投进池子' }}
           </button>
         </div>
       </div>
