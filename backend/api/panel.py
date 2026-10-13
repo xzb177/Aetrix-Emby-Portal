@@ -353,6 +353,24 @@ def panel_letter(
     })
 
 
+# ==================== 5.5 GET /api/panel/home（perf 优化 2026-10-13） ====================
+# 首页合并接口：一次返回 today/parcels/pulse/letter，把 4 次跨洋 RTT 并成 1 次。
+# 直接调用上方已定义的 4 个函数，不复制逻辑；单个失败不影响其他（各函数内部已有 try/except 兜底）。
+
+@router.get("/home")
+def panel_home(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    return _ok({
+        "today": panel_today(db, user)["data"],
+        "parcels": panel_parcels(db, user)["data"],
+        "pulse": panel_pulse(db, user)["data"],
+        "letter": panel_letter(db, user)["data"],
+    })
+
+
 # ==================== 6. GET /api/panel/collector ====================
 
 @router.get("/collector")

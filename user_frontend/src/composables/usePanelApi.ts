@@ -163,6 +163,13 @@ export const panelApi = {
   pulse: () => get<Record<string, unknown>>('/api/panel/pulse'),
   /** 每日一封 */
   letter: () => get<Record<string, unknown>>('/api/panel/letter'),
+  /** 首页合并（perf 2026-10-13）：一次返回 today/parcels/pulse/letter */
+  home: () => get<{
+    today: TodayData
+    parcels: ParcelsData
+    pulse: Record<string, unknown>
+    letter: Record<string, unknown>
+  }>('/api/panel/home'),
   /** 收藏家数据 */
   collector: () => get<CollectorData>('/api/panel/collector'),
   /** 服务器状态 */

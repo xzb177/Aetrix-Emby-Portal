@@ -257,13 +257,50 @@ def test_envelope_format(db, user):
     app = _make_app(db, user)
     client = TestClient(app)
     for path in ["/api/panel/today", "/api/panel/parcels", "/api/panel/pulse",
-                 "/api/panel/letter", "/api/panel/collector", "/api/panel/server"]:
+                 "/api/panel/letter", "/api/panel/home",
+                 "/api/panel/collector", "/api/panel/server"]:
         r = client.get(path)
         assert r.status_code == 200, path
         body = r.json()
         assert body["code"] == 0, path
         assert body["msg"] == "ok", path
         assert "data" in body, path
+
+
+def test_home_returns_all_four_sections(db, user):
+    """GET /api/panel/home 一次返回 today/parcels/pulse/letter 四个区块（perf 2026-10-13）。"""
+    pa.seed_achievement_defs(db)
+    app = _make_app(db, user)
+    client = TestClient(app)
+    r = client.get("/api/panel/home")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["code"] == 0
+    data = body["data"]
+    for key in ["today", "parcels", "pulse", "letter"]:
+        assert key in data, key
+    # 与逐个接口的数据一致（剔除易变时间字段后比较）
+    def _strip_volatile(section, key):
+        # pulse 的 timestamp / activities[].at 是微秒级时间戳，
+        # 两次 HTTP 调用（相隔几十 ms）必然不同，只能比较结构与业务字段。
+        import copy
+        section = copy.deepcopy(section)
+        if key == "pulse" and isinstance(section, dict):
+            section.pop("timestamp", None)
+            for a in section.get("activities") or []:
+                if isinstance(a, dict):
+                    a.pop("at", None)
+        return section
+
+    for path, key in [("/api/panel/today", "today"),
+                      ("/api/panel/parcels", "parcels"),
+                      ("/api/panel/pulse", "pulse"),
+                      ("/api/panel/letter", "letter")]:
+        r2 = client.get(path)
+        assert r2.status_code == 200, path
+        got = _strip_volatile(r2.json()["data"], key)
+        want = _strip_volatile(data[key], key)
+        assert got == want, f"{path} 数据不一致"
 
 
 def test_push_activity_ring_buffer(db):
