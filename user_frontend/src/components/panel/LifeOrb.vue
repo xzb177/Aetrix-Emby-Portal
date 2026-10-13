@@ -83,7 +83,7 @@ const vitalCells = computed(() => {
 /* 取自设计稿 .organism / .orb / .vitals */
 .v4-organism {
   margin: 14px 0 0;
-  background: #fffdf6;
+  background: var(--paper-card);
   border: 1.5px solid var(--ink);
   border-radius: 16px;
   padding: 20px;

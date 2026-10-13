@@ -56,7 +56,7 @@
             🎫 券后 ¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.paid_amount) }}
             <s>¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.list_price) }}</s>
           </div>
-          <button class="charge" :disabled="orderBusy" @click="doRecharge">⚡ 充能</button>
+          <button class="charge" :disabled="orderBusy || !methodsReady" @click="doRecharge">⚡ 充能</button>
           <!-- 自定义金额 -->
           <div class="custom">
             <div class="custom-row">
@@ -69,7 +69,7 @@
                 placeholder="任意金额"
                 class="custom-input"
               />
-              <button class="custom-btn" :disabled="!canCustomRecharge || orderBusy" @click="handleCustomRecharge">
+              <button class="custom-btn" :disabled="!canCustomRecharge || orderBusy || !methodsReady" @click="handleCustomRecharge">
                 充这个数
               </button>
             </div>
@@ -95,6 +95,11 @@
               :class="{ on: payMethod === m.id }"
               @click="payMethod = m.id"
             >{{ m.name || m.id }}</button>
+          </div>
+          <!-- R28：只有一种支付方式时展示只读标签，不隐藏 -->
+          <div v-else-if="methods.length === 1" class="payways">
+            <span class="payways-label">支付方式</span>
+            <span class="payway on" aria-current="true">{{ methods[0].name || methods[0].id }}</span>
           </div>
           <div class="fineprint">能量可用于续命活力值、兑换订阅、发红包 —— 不过期</div>
         </template>
@@ -145,7 +150,7 @@
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ (100 - memberDiscountPct) / 10 }} 折</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
-              <button class="buy" :disabled="orderBusy" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>领取执照 →</button>
+              <button class="buy" :disabled="orderBusy || !methodsReady" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>领取执照 →</button>
             </div>
           </div>
           <div class="fineprint">人民币 / 能量二选一，价格由服主在后台配置</div>
@@ -166,6 +171,7 @@
             :class="campClass(lv)"
             role="button"
             tabindex="0"
+            :aria-expanded="openCampLevel === lv.level"
             @click="toggleCamp(lv.level)"
             @keydown.enter="toggleCamp(lv.level)"
             @keydown.space.prevent="toggleCamp(lv.level)"
@@ -221,9 +227,8 @@
               class="redeem-input"
               @input="resetCodeFeedback"
             />
-            <button type="submit" class="redeem-btn" :disabled="redeemLoading || !redeemCode.trim()">
-              <span v-if="redeemLoading" class="spin"></span>
-              <template v-else>使用</template>
+            <button type="submit" class="redeem-btn" :class="{ 'is-loading': redeemLoading }" :disabled="redeemLoading || !redeemCode.trim()">
+              使用
             </button>
           </form>
           <div v-if="codePreview" class="redeem-preview">
@@ -234,9 +239,18 @@
               确认开通
             </button>
           </div>
+          <div v-else-if="exchangePreview" class="redeem-preview">
+            <span>✅ {{ exchangePreview.type_name || '兑换码' }} · <b>{{ exchangePreview.days_text || exchangePreview.message || '确认后立即兑换' }}</b></span>
+            <button type="button" class="redeem-confirm" :disabled="redeemLoading" @click="confirmExchangeRedeem">
+              确认兑换
+            </button>
+          </div>
           <div v-else-if="couponApplied" class="redeem-coupon">
             <span>🎫 优惠券 <b>{{ couponApplied }}</b> 已应用，下单自动抵扣</span>
             <button type="button" class="redeem-clear" @click="clearCoupon">✕</button>
+          </div>
+          <div v-else-if="couponHint" class="redeem-coupon">
+            <span>🎫 这张券可用，点「使用」应用抵扣</span>
           </div>
           <p class="redeem-note" :class="{ warn: !!redeemNotice }">{{ redeemNotice || '会员时长 · 积分 · 订阅 · 优惠券，自动识别' }}</p>
         </div>
@@ -289,6 +303,8 @@ const inviteeReward = ref(0)
 const points = ref<number | null>(null)
 const rechargeRatio = ref<number | null>(null)
 const payMethod = ref('alipay')
+/* R28：支付方式接口就绪标记——未就绪时禁用下单按钮，避免用默认值 'alipay' 下单 */
+const methodsReady = ref(false)
 
 const selectedPkg = ref<RechargePackage | null>(null)
 const currency = ref<'y' | 'e'>('y')
@@ -313,6 +329,8 @@ const customPointsPreview = computed(() => {
 const redeemCode = ref('')
 const redeemLoading = ref(false)
 const codePreview = ref<CodePreview | null>(null)
+/* R28：兑换码也走两步确认（预览兑换内容 → 确认兑换），与会员卡码交互一致 */
+const exchangePreview = ref<CodePreview | null>(null)
 const codeNotice = ref('')
 const exchangeEnabled = ref(true)
 const couponEnabled = ref(true)
@@ -320,10 +338,14 @@ const couponApplied = ref('')
 const couponLoading = ref(false)
 const couponError = ref('')
 const couponQuotes = ref<Record<string, CouponQuote>>({})
+/* R28：静默预检只做"检测"，不自动应用改价；用户点「使用」才真正验券应用 */
+const couponHint = ref('')
 const redeemNotice = computed(() => couponError.value || codeNotice.value)
 
 function resetCodeFeedback() {
   codePreview.value = null
+  exchangePreview.value = null
+  couponHint.value = ''
   codeNotice.value = ''
 }
 
@@ -338,7 +360,8 @@ async function previewCoupon(code: string) {
     const preview = await membershipApi.preview(code)
     if (token !== couponPreviewToken) return
     if (preview.kind === 'coupon' && preview.valid && couponEnabled.value) {
-      await applyCoupon(code, { silent: true })
+      // R28：只提示"这张券可用"，不自动改价；点「使用」才应用
+      couponHint.value = code
     }
   } catch {
     // 网络异常静默忽略
@@ -347,6 +370,7 @@ async function previewCoupon(code: string) {
 
 watch(redeemCode, (code) => {
   couponPreviewToken++
+  couponHint.value = ''
   if (couponPreviewTimer) {
     clearTimeout(couponPreviewTimer)
     couponPreviewTimer = null
@@ -373,10 +397,10 @@ function couponTargets(kind: 'recharge' | 'subscription') {
   return plans.value.map((p) => ({ kind: 'subscription' as const, id: p.id }))
 }
 
-async function applyCoupon(code: string, opts?: { silent?: boolean }) {
-  const silent = opts?.silent === true
+/** 应用优惠券：用户主动点「使用」时调用（R28：静默预检不再自动应用） */
+async function applyCoupon(code: string) {
   couponError.value = ''
-  if (!silent) couponLoading.value = true
+  couponLoading.value = true
   try {
     const rows = await Promise.all(
       [...couponTargets('recharge'), ...couponTargets('subscription')].map(async (t) => {
@@ -390,18 +414,18 @@ async function applyCoupon(code: string, opts?: { silent?: boolean }) {
     )
     const ok = rows.filter((r): r is { key: string; quote: CouponQuote } => !!r && r.quote.valid)
     if (ok.length === 0) {
-      if (!silent) couponError.value = '这张券用不上，换一张试试'
+      couponError.value = '这张券用不上，换一张试试'
       return
     }
     const quotes: Record<string, CouponQuote> = {}
     for (const r of ok) quotes[r.key] = r.quote
     couponQuotes.value = quotes
     couponApplied.value = code
-    if (!silent) toast.success('优惠券已应用，下单自动抵扣')
+    toast.success('优惠券已应用，下单自动抵扣')
   } catch {
-    if (!silent) couponError.value = '验券失败，稍后再试'
+    couponError.value = '验券失败，稍后再试'
   } finally {
-    if (!silent) couponLoading.value = false
+    couponLoading.value = false
   }
 }
 
@@ -422,6 +446,8 @@ async function handleRedeem() {
   }
   redeemLoading.value = true
   codePreview.value = null
+  exchangePreview.value = null
+  couponHint.value = ''
   codeNotice.value = ''
   try {
     const preview = await membershipApi.preview(code)
@@ -443,10 +469,8 @@ async function handleRedeem() {
         codeNotice.value = '管理员已关闭兑换，如有兑换码请稍后再试'
         return
       }
-      const res = await exchangeApi.redeem(code)
-      toast.success(res.message || '兑换成功')
-      redeemCode.value = ''
-      await loadAll()
+      // R28：兑换码不可逆，统一走两步确认（先预览兑换内容，再点确认兑换）
+      exchangePreview.value = preview
       return
     }
     if (preview.kind === 'code' && preview.valid) {
@@ -454,6 +478,24 @@ async function handleRedeem() {
       return
     }
     codeNotice.value = preview.message || '卡码或兑换码不存在'
+  } catch (err: unknown) {
+    toast.error(humanizeError(err))
+  } finally {
+    redeemLoading.value = false
+  }
+}
+
+/** R28：兑换码第二步——用户看清预览内容后手动确认，才真正核销 */
+async function confirmExchangeRedeem() {
+  const code = redeemCode.value.trim()
+  if (!code) return
+  redeemLoading.value = true
+  try {
+    const res = await exchangeApi.redeem(code)
+    toast.success(res.message || '兑换成功')
+    redeemCode.value = ''
+    exchangePreview.value = null
+    await loadAll()
   } catch (err: unknown) {
     toast.error(humanizeError(err))
   } finally {
@@ -480,7 +522,7 @@ async function confirmCodeRedeem() {
 
 async function handleCustomRecharge() {
   const amt = customAmount.value ?? 0
-  if (amt < 1 || orderBusy.value) return
+  if (amt < 1 || orderBusy.value || !methodsReady.value) return
   orderBusy.value = true
   try {
     const res = await paymentApi.createOrder({
@@ -561,17 +603,20 @@ async function loadAll() {
   }
   if (methodsRes.status === 'fulfilled') {
     methods.value = Array.isArray(methodsRes.value) ? methodsRes.value : []
+    methodsReady.value = true
     if (methods.value.length > 0) {
       payMethod.value = methods.value[0].id
     }
   }
   if (exCfg.status === 'fulfilled') exchangeEnabled.value = exCfg.value.enabled !== false
   if (cpCfg.status === 'fulfilled') couponEnabled.value = cpCfg.value.enabled !== false
-  // 信鸽兑换通知跳进来：自动展开核销区
-  if (typeof window !== 'undefined' && window.location.hash === '#redeem') {
+  // 信鸽兑换通知跳进来：自动展开核销区（R28：锚点与 PigeonView 深链统一为 #shop-redeem）
+  if (typeof window !== 'undefined' && window.location.hash === '#shop-redeem') {
     const el = document.getElementById('shop-redeem')
     if (el) {
-      setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 300)
+      // R28：减少动态偏好下不用平滑滚动
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      setTimeout(() => el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' }), 300)
     }
   }
   loading.value = false
@@ -615,7 +660,7 @@ function waxText(plan: SubscriptionPlan): string {
   if (plan.duration_days >= 80) return '季\n照'
   return '月\n照'
 }
-/* 执照名：去掉"订阅/会员"等现实词，保留游戏味 */
+/* 执照名：后端配置名原样展示（R28：旧注释"去掉订阅/会员等现实词"与实现不符，已按实现修正，不改行为） */
 function licenseName(plan: SubscriptionPlan): string {
   return plan.name || `${plan.duration_days} 天通行证`
 }
@@ -658,7 +703,7 @@ function toggleCamp(level: number) {
 /* ---------- 下单 ---------- */
 async function doRecharge() {
   const pkg = selectedPkg.value
-  if (!pkg || orderBusy.value) return
+  if (!pkg || orderBusy.value || !methodsReady.value) return
   orderBusy.value = true
   try {
     // 优惠码在试算通过的商品上才带：后端会按同一套口径再算一遍并占额度
@@ -683,7 +728,7 @@ async function doRecharge() {
 }
 
 async function doBuyPlan(plan: SubscriptionPlan) {
-  if (orderBusy.value) return
+  if (orderBusy.value || !methodsReady.value) return
   if (currency.value === 'e' && plan.points_price == null) {
     toast.error('该执照不支持能量抵扣，请切换人民币')
     return
@@ -1238,8 +1283,9 @@ async function copyInviteCode() {
   flex: 1;
   border: 1.5px solid var(--ink);
   border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 14px;
+  padding: 8px 12px;
+  /* R28：iOS 输入框 <16px 聚焦会自动放大页面，提到 16px，padding 收紧补偿视觉高度 */
+  font-size: 16px;
   background: var(--paper);
   color: var(--ink);
   min-width: 0;
@@ -1263,6 +1309,17 @@ async function copyInviteCode() {
 }
 .redeem-btn:active {
   transform: scale(0.97);
+}
+/* R28：加载态不用 CSS 旋转圈（标准3），改用纸片风呼吸脉冲 */
+.redeem-btn.is-loading {
+  animation: redeem-pulse 1.2s ease-in-out infinite;
+}
+@keyframes redeem-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .redeem-btn.is-loading { animation: none; opacity: 0.65; }
 }
 .redeem-preview,
 .redeem-coupon {
@@ -1303,19 +1360,7 @@ async function copyInviteCode() {
 .redeem-note.warn {
   color: var(--red);
 }
-.spin {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255, 255, 255, 0.4);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-  vertical-align: -2px;
-}
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
+/* R28：旧 .spin 旋转圈已删除（标准3：加载态用 shimmer/脉冲，不用转圈） */
 
 /* ---------- 自定义金额 ---------- */
 .custom {
@@ -1336,8 +1381,9 @@ async function copyInviteCode() {
   flex: 1;
   border: 1.5px solid var(--ink);
   border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 14px;
+  padding: 6px 10px;
+  /* R28：iOS 输入框 <16px 聚焦会自动放大页面，提到 16px，padding 收紧补偿视觉高度 */
+  font-size: 16px;
   background: var(--paper);
   color: var(--ink);
   min-width: 0;

@@ -36,6 +36,38 @@ function targetPos(i: number, n: number, cx: number, cy: number, r: number) {
   return { x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr, label: tasks.value[i]?.name || '' }
 }
 
+/**
+ * R28：任务标签防重叠绘制——活跃任务优先画标签，与已绘制标签包围盒
+ * 重叠的次要标签跳过（375px 下任务多时不再糊成一团）。
+ * alphaFor(i) 返回该标签的透明度（静态模式传固定值）。
+ */
+function drawLabels(
+  ctx: CanvasRenderingContext2D,
+  n: number,
+  cx: number,
+  cy: number,
+  r: number,
+  alphaFor: (i: number) => number,
+) {
+  ctx.font = '10px sans-serif'
+  ctx.textAlign = 'center'
+  const drawn: Array<{ x0: number; x1: number; y0: number; y1: number }> = []
+  const order = Array.from({ length: n }, (_, i) => i).sort(
+    (a, b) => Number(!!tasks.value[b]?.active) - Number(!!tasks.value[a]?.active),
+  )
+  for (const i of order) {
+    const p = targetPos(i, n, cx, cy, r)
+    if (!p.label) continue
+    const w = ctx.measureText(p.label).width
+    const box = { x0: p.x - w / 2 - 3, x1: p.x + w / 2 + 3, y0: p.y - 20, y1: p.y - 4 }
+    const hit = drawn.some((b) => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0)
+    if (hit) continue
+    drawn.push(box)
+    ctx.fillStyle = `rgba(237,230,214,${alphaFor(i)})`
+    ctx.fillText(p.label, p.x, p.y - 8)
+  }
+}
+
 function drawStatic() {
   const c = cv.value
   if (!c) return
@@ -71,11 +103,8 @@ function drawStatic() {
     ctx.beginPath()
     ctx.arc(p.x, p.y, 4, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = 'rgba(237,230,214,.85)'
-    ctx.font = '10px sans-serif'
-    ctx.textAlign = 'center'
-    ctx.fillText(p.label, p.x, p.y - 8)
   }
+  drawLabels(ctx, n, cx, cy, R, () => 0.85)
 }
 
 function tick(ts: number) {
@@ -124,22 +153,21 @@ function tick(ts: number) {
   ctx.restore()
   // 任务光点：扫过时高亮
   const n = tasks.value.length
+  const alphas: number[] = new Array(n)
   for (let i = 0; i < n; i++) {
     const p = targetPos(i, n, cx, cy, R)
     const ta = (i / Math.max(n, 1)) * Math.PI * 2 - Math.PI / 2
     let d = (angle - ta) % (Math.PI * 2)
     if (d < 0) d += Math.PI * 2
     const alpha = Math.max(0.25, 1 - d / 2.5)
+    alphas[i] = alpha
     const active = tasks.value[i]?.active
     ctx.fillStyle = active ? `rgba(255,217,138,${alpha})` : `rgba(155,224,138,${alpha * 0.5})`
     ctx.beginPath()
     ctx.arc(p.x, p.y, 4, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = `rgba(237,230,214,${alpha})`
-    ctx.font = '10px sans-serif'
-    ctx.textAlign = 'center'
-    ctx.fillText(p.label, p.x, p.y - 8)
   }
+  drawLabels(ctx, n, cx, cy, R, (i) => alphas[i])
   angle += lastTs > 0 ? ANGULAR_SPEED * Math.min((ts - lastTs) / 1000, 0.1) : 0
   lastTs = ts
   raf = requestAnimationFrame(tick)

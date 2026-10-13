@@ -1,11 +1,10 @@
 /* v4 纸片风电影票令牌。
  *
- * 首页不在 .v4-scope 内，用不了 styles/v4-paper.css 的变量（那套 token 只在
- * .v4-scope 下生效），所以这张票的纸色 token 就地定义在这里。
- *
- * 之所以是独立样式表而不是写在 HomeTicketCard.vue 的 <style> 里：
- * CI 的 scripts/check_frontend_tokens.py 只认「被引入的样式表」里的定义，
+ * 这张票的纸色 token 就地定义在 .ticket 上（独立样式表，而非组件 <style>）。
+ * 原因：CI 的 scripts/check_frontend_tokens.py 只认「被引入的样式表」里的定义，
  * Vue SFC 自带的 <style> 块不计入——令牌写在组件里会导致契约检查失败。
+ * （旧注释"首页不在 .v4-scope 内"已过时：DiscoveryView 现已用 .v4-scope 包裹；
+ *  此处保留独立定义，仅为满足令牌契约。）
  */
 .ticket {
   --tp-paper: #FFFDF6;

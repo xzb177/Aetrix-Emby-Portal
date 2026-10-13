@@ -160,8 +160,12 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   color: var(--tp-red);
   border-color: var(--tp-red);
 }
-.stat-value-row { display: flex; align-items: baseline; gap: 4px; }
-.stat-value { font-size: 26px; font-weight: 800; line-height: 1.1; color: var(--tp-ink); }
+.stat-value-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; }
+.stat-value {
+  font-size: 26px; font-weight: 800; line-height: 1.1; color: var(--tp-ink);
+  /* 长数字防溢出：375px 两列下超长则省略 */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
 .stat-unit { font-size: 13px; color: var(--tp-ink2); }
 .stat-short { font-size: 12px; font-weight: 700; color: var(--tp-ink2); white-space: nowrap; }
 .stat-progress {
@@ -260,7 +264,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   justify-content: center;
   flex-shrink: 0;
   min-width: 5rem;
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 1.25rem;
   background: var(--tp-ink);
   color: #F6F1E7;
@@ -290,7 +294,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
 .sk-stat-desc { display: block; width: 80%; height: 13px; }
 .sk-stub-stamp { display: block; width: 7rem; height: 26px; flex-shrink: 0; }
 .sk-stub-watch { display: block; flex: 1; height: 13px; }
-.sk-stub-btn { display: block; width: 5rem; height: 36px; flex-shrink: 0; }
+.sk-stub-btn { display: block; width: 5rem; height: 44px; flex-shrink: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .tp-skeleton { animation-duration: 0.001s !important; }
@@ -306,6 +310,6 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   .stub-admit { font-size: 10px; letter-spacing: 0.12em; }
   .stub-plan { max-width: 3.5rem; }
   .stub-watch { font-size: 10px; }
-  .stub-btn { min-width: 4.25rem; min-height: 34px; padding: 0 1rem; }
+  .stub-btn { min-width: 4.25rem; min-height: 44px; padding: 0 0.75rem; }
 }
 </style>

@@ -64,7 +64,7 @@ watch(plants, () => {
 <style scoped>
 /* 取自设计稿 .eco / .plants / .plant */
 .v4-eco {
-  background: #fffdf6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 14px;
   padding: 16px;
