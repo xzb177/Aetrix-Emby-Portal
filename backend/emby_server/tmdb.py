@@ -1025,6 +1025,13 @@ class TmdbClient:
         # 运行观测：短路 / 重试 / 网络失败（429 次数在 _limiter 里，那边是加锁的）
         self._stats = {"short_circuit": 0, "retry": 0, "net_fail": 0}
         self.refresh_keys()  # 环境变量优先，为空则回落 SystemConfig
+        # v2.56.0：启动时随机轮转起点——多 worker/多进程同时启动时不要齐步用
+        # 同一把 key，避免规律性被 TMDB 风控（反风控原则：请求间隔随机化）。
+        # 注意：随机只做这一次，之后的 _pick_key 保持确定性轮转（k1→k2→…），
+        # 否则每次调用都随机既不可测试、也让 _key_index 语义失效。
+        if len(self.api_keys) > 1:
+            self._key_index = random.randrange(len(self.api_keys))
+            self.api_key = self.api_keys[self._key_index]
         self._ensure_session()
 
     def _set_keys(self, keys: list[str], source: str) -> None:
@@ -1135,11 +1142,11 @@ class TmdbClient:
             return ""
         excluded = set(exclude)
         now = time.monotonic()
-        # 轮转起点：默认从第一把开始（裸客户端没有 _key_index 时也是从 0 起）
-        # v2.56.0：加随机偏移——多 worker/多进程同时启动时不要齐步用同一把 key，
-        # 避免规律性被 TMDB 风控（反风控原则：请求间隔随机化）。
-        start = (int(getattr(self, "_key_index", 0) or 0)
-                 + random.randint(0, max(0, len(keys) - 1))) % max(1, len(keys))
+        # 轮转起点：默认从第一把开始（裸客户端没有 _key_index 时也是从 0 起）。
+        # v2.56.0 修：随机偏移只在进程启动时做一次（见 __init__），不要在每次
+        # _pick_key 都加——那样轮转完全不可预测，既破坏确定性测试，也让
+        # _key_index 的"下一把"语义失效（每次都被随机起点带偏）。
+        start = int(getattr(self, "_key_index", 0) or 0) % max(1, len(keys))
         with self._key_lock():
             total = len(keys)
             for step in range(total):
