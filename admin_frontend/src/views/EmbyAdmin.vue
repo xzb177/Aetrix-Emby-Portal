@@ -47,6 +47,7 @@ import {
   fetchTmdbKeys,
   fetchTmdbLanguage,
   fetchEnrichEpisodeNight,
+  fetchDoubanBanDowngrade,
   generateVirtualLibraries,
   previewLibraryCover,
   regenerateLibraryCover,
@@ -61,11 +62,12 @@ import {
   saveStrmConfig,
   saveTmdbLanguage,
   saveEnrichEpisodeNight,
+  saveDoubanBanDowngrade,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, DoubanBanDowngradeConfig } from '@/api/admin'
 import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
 import type {
   EmbyLibrary,
@@ -721,6 +723,7 @@ async function load() {
       loadStrmConfig().catch(() => undefined),
       loadTmdbLanguageConfig().catch(() => undefined),
       loadEnrichEpisodeNightConfig().catch(() => undefined),
+      loadBanDowngradeConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -1141,6 +1144,36 @@ async function saveEnrichEpisodeNightAction() {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
     episodeNightSaving.value = false
+  }
+}
+
+// ==================== 豆瓣封禁降级（链路规划 Step 0.5） ====================
+
+/** 封禁期跳过豆瓣走多源兜底：后台开关，60 秒内热生效 */
+const banDowngrade = ref<DoubanBanDowngradeConfig | null>(null)
+const banDowngradeSaving = ref(false)
+const banDowngradeError = ref(false)
+
+async function loadBanDowngradeConfig() {
+  try {
+    banDowngrade.value = await fetchDoubanBanDowngrade()
+    banDowngradeError.value = false
+  } catch {
+    banDowngrade.value = null // 出错不挡页面其它内容
+    banDowngradeError.value = true
+  }
+}
+
+async function saveBanDowngradeAction() {
+  if (!banDowngrade.value) return
+  banDowngradeSaving.value = true
+  try {
+    banDowngrade.value = await saveDoubanBanDowngrade(banDowngrade.value.enabled)
+    ElMessage.success('豆瓣封禁降级已保存，60 秒内生效')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    banDowngradeSaving.value = false
   }
 }
 const rescrapeVisible = ref(false)
@@ -1932,6 +1965,31 @@ function typeLabel(t: string): string {
               <div v-if="episodeNight?.from_env" class="drawer-hint drawer-hint--after">
                 环境变量（ENRICH_EPISODE_NIGHT_ONLY / ENRICH_NIGHT_START / ENRICH_NIGHT_END / ENRICH_NIGHT_TZ）覆盖了这里的设置（改这里不会生效）
               </div>
+            </div>
+            <div class="scrape-block">
+              <h3>豆瓣封禁降级</h3>
+              <p class="drawer-hint">
+                豆瓣封禁 / 冷却期内，中文条目不再整条延后等解封——跳过豆瓣这一站，照常走 TMDB → 多源兜底；期间命中从严（标题 + 年份都对上才落库，宁可没命中也不乱认）。解封后自动恢复原顺序（保存后 60 秒内生效）
+              </p>
+              <div v-if="banDowngrade" class="scrape-actions">
+                <el-switch
+                  v-model="banDowngrade.enabled"
+                  active-text="开启"
+                  inactive-text="关闭"
+                  aria-label="豆瓣封禁降级开关"
+                />
+                <el-button type="primary" size="small" :loading="banDowngradeSaving" @click="saveBanDowngradeAction">
+                  保存
+                </el-button>
+                <span class="chase-state" :class="{ 'is-on': !banDowngrade.banned }">
+                  {{ banDowngrade.banned ? `豆瓣封禁中（剩余约 ${Math.round(banDowngrade.ban_remaining_sec)} 秒），降级${banDowngrade.enabled ? '生效中' : '未开启'}` : '豆瓣正常' }}
+                </span>
+              </div>
+              <div v-else-if="banDowngradeError" class="drawer-hint drawer-hint--after">
+                读取失败
+                <el-button size="small" text @click="loadBanDowngradeConfig">重试</el-button>
+              </div>
+              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
             </div>
           </div>
         </SectionCard>

@@ -1634,6 +1634,34 @@ def save_douban_config(
     return {"success": True, "enabled": enabled, "min_interval": iv}
 
 
+# ==================== 豆瓣封禁降级（链路规划 Step 0.5） ====================
+
+class _DoubanBanDowngradeBody(BaseModel):
+    enabled: bool = False
+
+
+@admin_emby_router.get("/scrape/douban-ban-downgrade")
+def get_douban_ban_downgrade(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读取豆瓣封禁降级开关 + 当前封禁状态（只读，秒级新鲜）。"""
+    from backend.emby_server import enrich_worker
+    return {"success": True, **enrich_worker.get_douban_ban_downgrade_config(db)}
+
+
+@admin_emby_router.put("/scrape/douban-ban-downgrade")
+def save_douban_ban_downgrade(
+    body: _DoubanBanDowngradeBody,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存豆瓣封禁降级开关（写 SystemConfig，60 秒内热生效，无需重启）。"""
+    from backend.emby_server import enrich_worker
+    cfg = enrich_worker.save_douban_ban_downgrade_config(db, body.enabled)
+    return {"success": True, **cfg}
+
+
 @admin_emby_router.get("/scrape/scheduler/status")
 def get_scheduler_status(
     staff: base_models.WebUser = Depends(require_staff),
