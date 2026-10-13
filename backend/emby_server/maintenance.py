@@ -501,12 +501,69 @@ def optimize_query_plans(db: Session) -> bool:
         return False
 
 
-# .strm 签名刷新：节流间隔上限（秒，默认 3000 = 50 分钟）与上次运行时间记录文件。
+# .strm 签名刷新：节流间隔上限（秒，默认 3000 = 50 分钟）与上次运行时间记录。
 # 实际节流 = min(上限, 重签阈值 − tick)，重签阈值 = max(TTL/3, 2×tick)（见
 # strm_sign.refresh_threshold_seconds）：保证任何文件过期前至少被扫到一次，
 # 不再出现"TTL 短于 50 分钟、两次刷新之间全库过期"。
 STRM_REFRESH_INTERVAL_SECONDS = max(600, int(os.getenv("STRM_REFRESH_INTERVAL_SECONDS", "3000") or 3000))
+# 上次 walk 时间戳：优先存 DB（system_configs），跨容器重启持久，且 api/worker
+# 双进程互相节流（第二个看到新鲜时间戳就跳过，避免重复全量 walk）。
+# DB 不可用时回落 /tmp 文件（旧行为），janitor 绝不能因为记不住时间戳而罢工。
 STRM_REFRESH_LAST_FILE = "/tmp/strm_sig_refresh.last"
+STRM_REFRESH_LAST_KEY = "strm_sig_refresh_last_ts"
+
+
+def _read_last_refresh_ts(db=None) -> float:
+    """读上次签名刷新 walk 的时间戳：DB 优先（跨重启持久），失败回落 /tmp。"""
+    if db is not None:
+        try:
+            from backend.integrations import store
+
+            raw = store.read_value(db, STRM_REFRESH_LAST_KEY, "")
+            return float(raw) if raw else 0.0
+        except Exception:  # noqa: BLE001 — 读不到就当没跑过，不阻断刷新
+            pass
+    try:
+        with open(STRM_REFRESH_LAST_FILE, "r", encoding="utf-8") as f:
+            return float(f.read().strip())
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _write_last_refresh_ts(db, ts: float) -> None:
+    """记录本次 walk 时间戳：DB 优先，写失败回落 /tmp；都失败只记 warning。"""
+    if db is not None:
+        try:
+            from backend.integrations import store
+
+            store.write_values(
+                db,
+                {STRM_REFRESH_LAST_KEY: str(int(ts))},
+                {STRM_REFRESH_LAST_KEY: "签名刷新上次全量 walk 时间戳（janitor 节流用，跨重启持久）"},
+            )
+            db.commit()
+            return
+        except Exception:  # noqa: BLE001 — DB 写失败不影响本次已完成的刷新
+            logger.warning("strm_sig_refresh: 上次运行时间写入 DB 失败，回落 /tmp", exc_info=True)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    try:
+        with open(STRM_REFRESH_LAST_FILE, "w", encoding="utf-8") as f:
+            f.write(str(int(ts)))
+    except OSError:
+        logger.warning("strm_sig_refresh: 上次运行时间写入失败 %s", STRM_REFRESH_LAST_FILE)
+
+
+def _refresh_ts_session():
+    """取一个短命会话专门读写节流时间戳（与业务会话隔离，失败返回 None 走 /tmp 回落）。"""
+    try:
+        from backend.database import SessionLocal
+
+        return SessionLocal()
+    except Exception:
+        return None
 
 
 def _strm_refresh_settings(db=None) -> tuple[str, int]:
@@ -543,7 +600,8 @@ def strm_sig_refresh_tick(db=None) -> dict:
     """刷新 .strm 文件签名（节流随 TTL 推导，见 strm_refresh_cadence）：只重签 needs_refresh 的文件。
 
     - legacy（无签名）→ 补签名；ok 但剩余有效期 < max(TTL/3, 2×tick) → 用后台配置的 TTL 重签；
-      bad（签名损坏/过期）→ 跳过计数，不删除不重写，等人工处理。
+      expired-but-authentic（过期但 HMAC 自洽，即我们自己签发的旧链接）→ 重签自愈；
+      只有 HMAC 对不上的（被篡改或换过密钥）才跳过计数，不删除不重写。
     - 只读前 4KB 判断（签名只在第一行），超 4KB 的文件重签时才读全文，
       其余行（注释/空行）原样保留；写入走 tmp + os.replace 原子替换。
     - 单个文件异常隔离（记 debug、计数 errors），不影响整轮。
@@ -561,12 +619,14 @@ def strm_sig_refresh_tick(db=None) -> dict:
     strm_dir, ttl = _strm_refresh_settings(db)
     threshold, interval = strm_refresh_cadence(ttl)
 
-    # 2) 节流：上次运行时间（读不到/非法视为从未运行）；留 30 秒余量吸收 tick 抖动
+    # 2) 节流：上次运行时间优先读 DB（跨容器重启持久；读不到/非法视为从未运行）；
+    #    留 30 秒余量吸收 tick 抖动
+    _ts_db = _refresh_ts_session()
     try:
-        with open(STRM_REFRESH_LAST_FILE, "r", encoding="utf-8") as f:
-            last = float(f.read().strip())
-    except (OSError, ValueError):
-        last = 0.0
+        last = _read_last_refresh_ts(_ts_db)
+    finally:
+        if _ts_db is not None:
+            _ts_db.close()
     if interval > 0 and now - last < interval - 30:
         return {"skipped": True, "reason": "interval"}
 
@@ -665,12 +725,14 @@ def strm_sig_refresh_tick(db=None) -> dict:
                 errors += 1
                 continue
 
-    # 5) 记录本次运行时间（写失败只记 warning）
+    # 5) 记录本次运行时间：DB 优先（跨重启持久、双进程互斥节流），失败回落 /tmp；
+    #    都失败只记 warning，不影响本次已完成的刷新
+    _ts_db = _refresh_ts_session()
     try:
-        with open(STRM_REFRESH_LAST_FILE, "w", encoding="utf-8") as f:
-            f.write(str(int(now)))
-    except OSError:
-        logger.warning("strm_sig_refresh: 上次运行时间写入失败 %s", STRM_REFRESH_LAST_FILE)
+        _write_last_refresh_ts(_ts_db, now)
+    finally:
+        if _ts_db is not None:
+            _ts_db.close()
 
     # 6) 汇总
     result = {
@@ -899,16 +961,23 @@ def start_janitor(interval_seconds: Optional[int] = None) -> bool:
             return False
         _JANITOR_STARTED = True
 
+    def _one_tick() -> None:
+        try:
+            summary = janitor_tick()
+            if any(summary.values()):
+                logger.info("维护周期完成: %s", summary)
+            gc.collect()  # 2026-10-07 压力测试：强制回收防内存不回落
+        except Exception as exc:  # noqa: BLE001 — 维护线程绝不能因为一次失败而退出
+            logger.warning("维护周期异常: %s", exc)
+
     def _loop() -> None:
+        # 首拍不等：原来先 wait(interval) 再跑第一轮，容器重启后要等满 600 秒；
+        # 夜间频繁部署时短命容器（存活 <10 分钟）永远跑不到 janitor，签名刷新
+        # 会被漏掉（2026-10-13 实锤：5 次重建造成 ≥40 分钟刷新真空）。启动即跑一次。
+        _one_tick()
         while True:
             threading.Event().wait(interval)
-            try:
-                summary = janitor_tick()
-                if any(summary.values()):
-                    logger.info("维护周期完成: %s", summary)
-                gc.collect()  # 2026-10-07 压力测试：强制回收防内存不回落
-            except Exception as exc:  # noqa: BLE001 — 维护线程绝不能因为一次失败而退出
-                logger.warning("维护周期异常: %s", exc)
+            _one_tick()
 
     threading.Thread(target=_loop, daemon=True, name="maintenance-janitor").start()
     logger.info("后台维护已启动（每 %s 秒）", interval)
