@@ -86,6 +86,10 @@ CONFIG_ORPHAN_NEXT_RUN = "strm_orphan_check_next_run"
 # 增量间隔（分钟）：两次增量生成之间的间隔，用户可在后台自由设置。
 # 0 = 关闭定时增量（只手动触发）。默认 60。
 CONFIG_INTERVAL = "strm_gen_interval_minutes"
+# 运行锁僵死超时（分钟）：锁被持有超过此时长视为僵死（持有者崩溃/卡死），
+# 新轮次可抢占。默认 180；0=关闭自愈（保持旧行为：锁永久有效）。
+CONFIG_LOCK_TIMEOUT_MIN = "strm_gen_lock_timeout_minutes"
+DEFAULT_LOCK_TIMEOUT_MIN = 180
 # 数据源类型：drive=Google Drive，local=本地目录。默认 drive（向后兼容）。
 CONFIG_SOURCE_TYPE = "strm_gen_source_type"
 # 本地数据源的根目录（source_type=local 时有效）
@@ -363,6 +367,32 @@ def interval_minutes(db) -> int:
     except (ValueError, TypeError):
         return DEFAULT_INTERVAL_MINUTES
     return max(0, min(1440, v))
+
+
+# 运行锁超时读缓存：try_acquire 可能无 db（如纯内存调用），此时用上次热读到的值。
+_lock_timeout_min_cache = DEFAULT_LOCK_TIMEOUT_MIN
+
+
+def lock_timeout_minutes(db=None) -> int:
+    """运行锁僵死超时（分钟）。0=关闭自愈。
+
+    默认 180：增量轮目标 <2 分钟、全量轮历史约 1–2 小时（8.6 万文件），
+    180 分钟是 90 倍余量；此前曾出现锁死 26 小时的真实故障（2026-10-13）。
+    非法值回退默认，钳制在 [0, 1440]。
+    db=None 时返回上次热读缓存（供无 db 的 try_acquire 调用）。
+    """
+    global _lock_timeout_min_cache
+    if db is None:
+        return _lock_timeout_min_cache
+    raw = _db_config(db, CONFIG_LOCK_TIMEOUT_MIN,
+                     str(DEFAULT_LOCK_TIMEOUT_MIN)).strip()
+    try:
+        v = int(raw)
+    except (ValueError, TypeError):
+        v = DEFAULT_LOCK_TIMEOUT_MIN
+    v = max(0, min(1440, v))
+    _lock_timeout_min_cache = v
+    return v
 
 
 def source_type(db) -> str:
@@ -740,6 +770,9 @@ def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True):
 _lock = threading.Lock()
 _progress: dict[str, Any] = {
     "running": False,
+    # acquired_at：运行锁获取时刻（time.monotonic 秒，防系统时间跳变），
+    # B1 自愈用。release 时清 None。
+    "acquired_at": None,
     "started_at": None,
     "finished_at": None,
     "phase": "idle",          # idle | listing | generating | verifying | done | error
@@ -1373,20 +1406,61 @@ def _reset_progress():
             "finished_at": None, "total": 0, "done": 0,
             "generated": 0, "skipped": 0, "failed": 0, "pruned": 0,
             "errors": [], "current": "",
+            # B1：直接调 run_owned（管理后台手动触发）不经过 try_acquire，
+            # 这里也刷新获取时刻，保证僵死判定口径一致。
+            "acquired_at": time.monotonic(),
         })
 
 
-def try_acquire() -> bool:
+def _lock_stale(db=None) -> bool:
+    """运行锁是否处于僵死状态（持有中且超过超时阈值）。
+
+    供"只看不抢"的调用方（如调度循环）用：判断要不要继续等。
+    超时阈值走 lock_timeout_minutes；0=关闭自愈时永远返回 False。
+    调用方必须在判断后经 try_acquire 原子抢占，不可自行置位。
+    """
+    timeout_min = lock_timeout_minutes(db)
+    if timeout_min <= 0:
+        return False
+    with _lock:
+        if not _progress["running"]:
+            return False
+        acquired = _progress.get("acquired_at")
+        if acquired is None:
+            # 老版本/异常路径置 running 但没记时间：按不僵死处理，
+            # 等持有者自己释放，避免误杀正在跑的轮次。
+            return False
+        return (time.monotonic() - acquired) > timeout_min * 60
+
+
+def try_acquire(db=None) -> bool:
     """原子尝试获取运行权：成功返回 True（已置 running），失败返回 False。
 
     给管理后台手动触发用——原来是"查 running → 起线程 → 线程里再置 running"，
     锁在起线程前就释放了，快速连点两次都会返回"已开始"，第二次被静默吞掉。
     现在获取与置位在同一把锁内完成，无竞态。
+
+    B1 锁超时自愈：锁被持有超过 strm_gen_lock_timeout_minutes（默认 180 分钟，
+    0=关闭）时视为僵死（持有线程崩溃/卡死但内存锁没释放），新轮次可抢占并记
+    warning。抢占是原子的：并发两个抢占者只有一个能成功。
     """
+    timeout_min = lock_timeout_minutes(db)
     with _lock:
         if _progress["running"]:
+            if timeout_min > 0:
+                acquired = _progress.get("acquired_at")
+                if (acquired is not None
+                        and (time.monotonic() - acquired) > timeout_min * 60):
+                    held_min = (time.monotonic() - acquired) / 60
+                    logger.warning(
+                        "strm_gen: 运行锁疑似僵死（已持有 %.1f 分钟，超阈值 %d 分钟），"
+                        "新轮次抢占", held_min, timeout_min)
+                    _progress["running"] = True
+                    _progress["acquired_at"] = time.monotonic()
+                    return True
             return False
         _progress["running"] = True
+        _progress["acquired_at"] = time.monotonic()
         return True
 
 
@@ -1399,6 +1473,7 @@ def _release_progress(stats: dict, db):
             _progress["phase"] = "error"
         _progress["running"] = False
         _progress["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _progress["acquired_at"] = None  # B1：释放运行锁时清掉获取时刻
     try:
         from backend.integrations import store
         # 注意：store 只有 write_values（批量写），没有 set_value；
@@ -1425,7 +1500,7 @@ def run_generation(db, full: bool = False, drive_id: Optional[str] = None) -> di
     同一时间只允许一个任务运行（原子获取，见 try_acquire）。
     返回统计 dict。
     """
-    if not try_acquire():
+    if not try_acquire(db):
         return {"ok": False, "error": "已有生成任务在运行中"}
     return run_owned(db, full=full, drive_id=drive_id)
 
@@ -2232,7 +2307,7 @@ def _scheduler_loop():
                     # 还没到间隔，短睡后继续
                     time.sleep(min(60, wait_sec - elapsed))
                     continue
-                if get_progress()["running"]:
+                if get_progress()["running"] and not _lock_stale(db):
                     time.sleep(60)
                     continue
                 # 首次启动时 last_interval_ts=0，延迟 5 分钟再跑，避免启动即 burst
