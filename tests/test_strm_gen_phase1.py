@@ -194,7 +194,7 @@ class TestIncrementalPathFlag:
 
     def test_full_mode_false(self, monkeypatch):
         # incremental=False → 全量回退，标记 False
-        def _fake_iter(drive_id, dir_path, strict=True):
+        def _fake_iter(drive_id, dir_path, strict=True, **kwargs):
             yield ("a/b.mkv", "FID1", 100)
         monkeypatch.setattr(sg, "iter_drive_videos", _fake_iter)
         l = ss.DriveChangesLister("did123", "Movies/")
@@ -209,7 +209,7 @@ class TestIncrementalPathFlag:
                             lambda self: None)
         monkeypatch.setattr(dc, "get_start_page_token", lambda drive_id: "tok0")
         monkeypatch.setattr(sg, "iter_drive_videos",
-                            lambda drive_id, dir_path, strict=True:
+                            lambda drive_id, dir_path, strict=True, **kwargs:
                             iter([("a/b.mkv", "FID1", 100)]))
         l = ss.DriveChangesLister("did123", "Movies/")
         list(l.iter_videos(incremental=True))
