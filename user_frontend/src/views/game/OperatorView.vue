@@ -135,6 +135,61 @@
             <p class="op-tip">密码只放在这一次跳转里，不会存下来，关掉页面就没了。</p>
           </section>
 
+          <!-- 正在播放：旧 PlaybackSessions 一比一恢复（#783 删页面时丢了入口） -->
+          <section class="v4-sec" aria-label="正在播放">
+            <div class="v4-sec-title">📺 正在播放</div>
+            <div class="v4-sec-sub">这个账号正在哪台设备上播放，一键远程停掉</div>
+
+            <div v-if="sessionsLoading" class="op-session-list">
+              <div class="v4-skeleton" style="height:64px"></div>
+              <div class="v4-skeleton" style="height:64px"></div>
+            </div>
+
+            <div v-else-if="sessions.length === 0" class="op-empty">
+              <MonitorSmartphone :size="26" />
+              <p>现在没有正在播放的</p>
+              <p class="op-empty-sub">在任意设备上开始播放后，会在这里显示并可远程结束</p>
+            </div>
+
+            <div v-else class="op-session-list">
+              <div v-for="s in sessions" :key="s.session_key" class="op-session-row">
+                <div class="op-session-icon">
+                  <MonitorSmartphone :size="17" />
+                </div>
+
+                <div class="op-session-main">
+                  <div class="op-session-title">
+                    <span class="op-session-name">{{ s.item }}</span>
+                    <span class="badge type">{{ typeLabel(s.item_type) }}</span>
+                    <span v-if="s.is_paused" class="badge paused">已暂停</span>
+                  </div>
+                  <div class="op-session-meta">
+                    <span>{{ s.device || '未知设备' }}</span>
+                    <span v-if="s.client" class="meta-sep">·</span>
+                    <span v-if="s.client">{{ s.client }}</span>
+                    <span v-if="s.play_method" class="meta-sep">·</span>
+                    <span v-if="s.play_method" class="method">{{ s.play_method === 'Transcode' ? '转码' : '直连' }}</span>
+                    <span v-if="s.remote_addr" class="meta-sep">·</span>
+                    <span v-if="s.remote_addr" class="addr"><Wifi :size="11" />{{ s.remote_addr }}</span>
+                  </div>
+                  <div class="op-session-progress">
+                    <div class="bar"><div class="bar-fill" :style="{ width: s.progress + '%' }" /></div>
+                    <span class="bar-text">{{ s.progress }}%<template v-if="s.updated_at"> · {{ fmtTime(s.updated_at) }}</template></span>
+                  </div>
+                </div>
+
+                <button
+                  class="op-stop-btn"
+                  :disabled="stopping === s.session_key"
+                  @click="confirmStopSession(s)"
+                >
+                  <CircleStop :size="13" />
+                  {{ stopping === s.session_key ? '结束中' : '结束' }}
+                </button>
+              </div>
+            </div>
+          </section>
+
           <!-- 怎么连：小白指引 -->
           <section class="v4-sec">
             <div class="v4-sec-title">🧭 怎么连上？</div>
@@ -236,20 +291,39 @@
       </div>
     </Teleport>
 
+    <!-- 结束播放确认弹窗（二次确认，防手滑） -->
+    <Teleport to="body">
+      <div v-if="sessionToStop" class="modal-mask" @click.self="sessionToStop = null">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-label="确认结束播放">
+          <h3 class="modal-title">结束这次播放？</h3>
+          <p class="modal-desc">
+            将在「<strong>{{ sessionToStop.device || '未知设备' }}</strong>」上停掉
+            「<strong>{{ sessionToStop.item }}</strong>」的播放。
+          </p>
+          <div class="modal-actions">
+            <button class="op-btn ghost" @click="sessionToStop = null">取消</button>
+            <button class="op-btn primary" :disabled="!!stopping" @click="doStopSession">
+              {{ stopping ? '结束中…' : '确认结束' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Check, Copy, Eye, EyeOff } from 'lucide-vue-next'
+import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
 import {
   embyApi,
-  type AccountCard, type AccountRealmCard, type ViewPermission,
+  type AccountCard, type AccountRealmCard, type MyPlaybackSession, type ViewPermission,
 } from '@/api'
 import { useUserStore } from '@/stores/user'
 
@@ -390,9 +464,71 @@ function daysLeft(endDate?: string | null): number {
   return Math.max(0, Math.ceil(diff / 86400000))
 }
 
+// ===== 正在播放（旧 PlaybackSessions.vue 一比一恢复，放接线员页） =====
+// 数据源：GET /api/user/emby/sessions；结束：DELETE /api/user/emby/sessions/{key}
+// 后端两个端点 #783 后都还在（backend/emby_server/portal.py），前端 wrapper 在 api/index.ts
+const sessions = ref<MyPlaybackSession[]>([])
+const sessionsLoading = ref(true)
+const stopping = ref<string | null>(null)
+const sessionToStop = ref<MyPlaybackSession | null>(null)
+
+function typeLabel(t?: string | null) {
+  return ({ Movie: '电影', Series: '剧集', Episode: '剧集' } as Record<string, string>)[t || ''] || '影片'
+}
+
+function fmtTime(iso?: string | null) {
+  if (!iso) return '—'
+  const date = new Date(iso)
+  const diff = Date.now() - date.getTime()
+  const minutes = Math.floor(diff / 60000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  return `${Math.floor(hours / 24)} 天前`
+}
+
+async function loadSessions() {
+  sessionsLoading.value = true
+  try {
+    const res = await embyApi.getSessions()
+    sessions.value = res.sessions || []
+  } catch {
+    sessions.value = []
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+function confirmStopSession(session: MyPlaybackSession) {
+  sessionToStop.value = session
+}
+
+async function doStopSession() {
+  const session = sessionToStop.value
+  if (!session) return
+  stopping.value = session.session_key
+  try {
+    await embyApi.stopSession(session.session_key)
+    toast.success(`已结束「${session.device || '未知设备'}」上的播放`)
+    sessions.value = sessions.value.filter((s) => s.session_key !== session.session_key)
+  } catch (err: any) {
+    const detail = err?.response?.data?.detail
+    toast.error(typeof detail === 'string' ? detail : '结束播放失败')
+  } finally {
+    stopping.value = null
+    sessionToStop.value = null
+  }
+}
+
 onMounted(() => {
   void refreshAccount()
 })
+
+// 有查看权限才拉正在播放（解锁后翻成 granted 也会触发一次）
+watch(viewGranted, (granted) => {
+  if (granted) void loadSessions()
+}, { immediate: true })
 </script>
 
 <style scoped>
@@ -549,6 +685,118 @@ onMounted(() => {
 }
 .guide-step b { font-size: 14px; }
 .guide-step p { font-size: 12px; color: var(--ink2); margin: 4px 0 0; line-height: 1.7; }
+
+/* 正在播放（旧 PlaybackSessions 纸片风重写） */
+.op-session-list { display: flex; flex-direction: column; gap: 10px; }
+.op-session-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--paper-card);
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+}
+.op-session-icon {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(217, 72, 43, 0.1);
+  color: var(--red);
+}
+.op-session-main { flex: 1; min-width: 0; }
+.op-session-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.op-session-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.op-session-title .badge.type {
+  font-size: 11px;
+  font-weight: 800;
+  border-radius: 10px;
+  padding: 2px 10px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  background: rgba(46, 95, 163, 0.12);
+  color: var(--blue);
+  border: 1px solid var(--blue);
+}
+.op-session-title .badge.paused {
+  font-size: 11px;
+  font-weight: 800;
+  border-radius: 10px;
+  padding: 2px 10px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  background: rgba(201, 155, 63, 0.14);
+  color: var(--gold-deep);
+  border: 1px solid var(--gold);
+}
+.op-session-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--ink2);
+  flex-wrap: wrap;
+}
+.op-session-meta .addr { display: inline-flex; align-items: center; gap: 3px; }
+.op-session-meta .method { color: var(--blue); }
+.meta-sep { opacity: 0.5; }
+.op-session-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.op-session-progress .bar {
+  flex: 1;
+  max-width: 220px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--paper2);
+  overflow: hidden;
+}
+.op-session-progress .bar-fill { height: 100%; background: var(--red); }
+.op-session-progress .bar-text { font-size: 12px; color: var(--ink2); white-space: nowrap; }
+.op-stop-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1.5px solid var(--red);
+  background: var(--paper-card);
+  color: var(--red);
+  cursor: pointer;
+}
+.op-stop-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.op-stop-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.op-empty {
+  text-align: center;
+  padding: 20px 0 8px;
+  color: var(--ink2);
+}
+.op-empty p { font-size: 14px; margin: 8px 0 0; }
+.op-empty .op-empty-sub { font-size: 12px; margin-top: 4px; }
 
 /* 按钮 */
 .op-btn {
