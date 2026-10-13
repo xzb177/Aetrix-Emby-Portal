@@ -203,7 +203,7 @@ const notifyWinners = computed({
   get: () => config.value.lottery_notify_winners === '1',
   set: (v: boolean) => { config.value.lottery_notify_winners = v ? '1' : '0' }
 })
-// 三重门·身份门：参赛者必须在 TG 群里
+// 三重门·参赛资格：参赛者必须在 TG 群里
 const requireGroupMember = computed({
   get: () => config.value.lottery_require_group_member !== '0',
   set: (v: boolean) => { config.value.lottery_require_group_member = v ? '1' : '0' }
@@ -315,16 +315,16 @@ onMounted(() => {
           <el-switch v-model="notifyWinners" />
           <span class="field-hint">开奖后在群里公布中奖名单并私聊通知中奖者</span>
         </el-form-item>
-        <el-form-item label="身份门：必须在群里">
+        <el-form-item label="参赛资格：必须在群里">
           <el-switch v-model="requireGroupMember" />
           <span class="field-hint">参赛者必须在 TG 群成员列表里，防群外薅奖</span>
         </el-form-item>
-        <el-form-item label="资格门：新号限制">
+        <el-form-item label="参赛资格：新号限制">
           <el-input v-model="config.lottery_min_account_age_days" class="field-sm" />
           <span class="field-suffix">天</span>
           <span class="field-hint">账号注册满多少天才能参加，0=不限制</span>
         </el-form-item>
-        <el-form-item label="资格门：每日上限">
+        <el-form-item label="参赛资格：每日上限">
           <el-input v-model="config.lottery_max_joins_per_day" class="field-sm" />
           <span class="field-suffix">次</span>
           <span class="field-hint">每人每天最多参加次数，0=不限制</span>

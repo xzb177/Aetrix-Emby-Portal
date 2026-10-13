@@ -15,7 +15,7 @@ function fmtMonthDay(isoDate: string): string {
 /**
  * 电影票卡数据（原 HomeView.vue 票根卡逻辑，HomeView 删除后迁至此处）
  *
- * 两行布局：第一行积分 + 订阅并排（积分 / 订阅），第二行票根行里带一行观影小字。
+ * 两行布局：第一行积分 + 会员并排（积分 / 会员），第二行票根行里带一行观影小字。
  * 数据源是首页聚合接口 /api/user/home/summary。
  * 快照沿用 'aetrix:home-summary:v1'（与旧首页同一份），老用户切到发现页后
  * 首屏直接用缓存渲染，不闪骨架。
@@ -42,19 +42,19 @@ export function useTicketCard() {
     () => subscriptions.value.find((s) => s.status === 'active' && s.days_left > 0) || null,
   )
 
-  // 会员状态卡：订阅中显示套餐与剩余天数；未订阅时展示付费墙引导
+  // 会员状态卡：会员有效期内显示套餐与剩余天数；无会员时展示付费墙引导
   const isMember = computed(() => !!activeSub.value)
   // 临期提醒：与后台「到期前 7 天提醒」同一口径（见 backend/reminders.py）
   const expiringSoon = computed(() => isExpiringSoon(activeSub.value))
   const gateOn = computed(() => !!userStore.user?.subscription_required)
   const gateMessage = computed(() =>
     gateOn.value && !isMember.value
-      ? '当前账号没有生效中的订阅，开通后即可播放全库内容'
+      ? '当前账号没有生效中的会员，开通后即可播放全库内容'
       : '',
   )
   // 公益服：免费开放，不需要会员，不再推销会员
   const isFreeRealm = computed(() => userStore.isFreeRealm)
-  // 套餐周期已过多少：按订阅自己的 start_date → end_date 算
+  // 套餐周期已过多少：按会员自己的 start_date → end_date 算
   const memberProgress = computed(() => {
     const sub = activeSub.value
     if (!sub) return 0
@@ -66,7 +66,7 @@ export function useTicketCard() {
     return Math.max(1, Math.min(100, Math.round((used / total) * 100)))
   })
 
-  // 票根卡的三格：积分 / 订阅 / 观影数据
+  // 票根卡的三格：积分 / 会员 / 观影数据
   const assetCards = computed((): AssetCard[] => {
     const st = stats.value
 
@@ -143,14 +143,14 @@ export function useTicketCard() {
             : '今日未签',
         footer: '去账本',
         badge: !quickStats.value.checkinEnabled ? null : (quickStats.value.checkedToday ? null : '今日未签'),
-        // 未签时徽章走警示色（hot），与订阅临期同一套提醒语言
+        // 未签时徽章走警示色（hot），与会员临期同一套提醒语言
         hot: quickStats.value.checkinEnabled && !quickStats.value.checkedToday,
       },
       {
         key: 'member',
         to: '/store',
         icon: Crown,
-        title: '订阅',
+        title: '会员',
         ...memberCard,
       },
       {
@@ -230,7 +230,7 @@ export function useTicketCard() {
       loading.value = true
     }
     try {
-      // 积分 / 签到 / 订阅 / 观影统计一次取回
+      // 积分 / 签到 / 会员 / 观影统计一次取回
       const data = await homeApi.summary()
       const memberFailed = data.subscriptions === null
       applySummary(data)

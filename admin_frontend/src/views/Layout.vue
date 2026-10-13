@@ -180,7 +180,7 @@ const navGroups: NavGroup[] = [
     title: '运营中心',
     icon: Package,
     items: [
-      { path: '/goods', label: '商品与套餐', icon: Package },
+      { path: '/goods', label: '订阅套餐', icon: Package },
       { path: '/orders', label: '订单', icon: Receipt },
       { path: '/coupons', label: '优惠券', icon: TicketPercent },
       { path: '/invitations', label: '邀请与积分', icon: UserPlus },

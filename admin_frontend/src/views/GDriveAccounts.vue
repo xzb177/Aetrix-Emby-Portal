@@ -2,9 +2,9 @@
 /**
  * Google Drive 账号（Fix 6）
  *
- * 用户实际用的是 Google Drive（100 个 Service Account），不是 115。
- * 本页展示 SA 状态：数量、当前轮换位置、磁盘压力、rclone 缓存大小，
- * 并支持手动触发 SA 轮换。
+ * 用户实际用的是 Google Drive（100 个 Google 子账号），不是 115。
+ * 本页展示子账号状态：数量、当前轮换位置、磁盘压力、rclone 缓存大小，
+ * 并支持手动触发子账号轮换。
  *
  * 版式与其它页一致：PageHeader + StatTile + SectionCard，按钮统一 el-button，
  * 颜色只用 --au-* 令牌（以前的 `.btn` / `.icon-btn` 没有全局样式，按钮是裸的）。
@@ -61,9 +61,9 @@ async function load() {
 async function rotate() {
   try {
     await ElMessageBox.confirm(
-      '切换到下一个 Service Account：rclone 会用新账号继续读写，正在播放的流不受影响。确定吗？',
+      '换下一个 Google 子账号继续读写文件，正在播放的影片不会中断。确定要换吗？',
       '手动轮换',
-      { confirmButtonText: '轮换', cancelButtonText: '取消', type: 'warning' },
+      { confirmButtonText: '换下一个账号', cancelButtonText: '取消', type: 'warning' },
     )
   } catch {
     return
@@ -78,7 +78,7 @@ async function rotate() {
     }
     await load()
   } catch {
-    // 拦截器已提示（例如 SA 目录不存在）
+    // 拦截器已提示（例如子账号目录不存在）
   } finally {
     rotating.value = false
   }
@@ -92,7 +92,7 @@ onMounted(load)
     <PageHeader
       eyebrow="媒体与交付"
       title="Google Drive 账号"
-      description="rclone 使用的 Service Account 池：当前轮换到哪个账号、缓存与磁盘压力。被限流时可以手动轮换。"
+      description="Google 子账号池（rclone 用它读写网盘）：当前用到第几个、缓存和磁盘还剩多少。某个账号被 Google 限流时，可以手动换下一个。"
     >
       <template #actions>
         <el-button :loading="loading" :icon="RefreshCw" @click="load">刷新</el-button>
@@ -107,7 +107,7 @@ onMounted(load)
     </PageHeader>
 
     <SectionCard v-if="loadError && !status">
-      <EmptyState compact :icon="AlertTriangle" title="读取 SA 状态失败" :description="loadError">
+      <EmptyState compact :icon="AlertTriangle" title="读取 Google 子账号状态失败" :description="loadError">
         <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
       </EmptyState>
     </SectionCard>
@@ -118,7 +118,7 @@ onMounted(load)
 
     <template v-else>
       <div class="gd-stats">
-        <StatTile label="SA 账号数" :value="status.sa_count" :icon="Cloud" />
+        <StatTile label="Google 子账号数" :value="status.sa_count" :icon="Cloud" />
         <StatTile
           label="当前账号"
           :value="status.current_sa || '—'"
@@ -160,8 +160,8 @@ onMounted(load)
           v-else
           compact
           :icon="Cloud"
-          title="没有找到 Service Account"
-          description="把 SA 的 JSON 文件放进服务器的 /opt/rclone-sa 目录后刷新。"
+          title="没有找到 Google 子账号"
+          description="把 Google 子账号的 JSON 密钥文件放进服务器的 /opt/rclone-sa 目录，再点右上角「刷新」。"
         />
         <p v-if="status.sa_truncated" class="gd-hint">
           只列出前 20 个文件名；轮换会在全部 {{ status.sa_count }} 个账号里循环。
@@ -177,7 +177,7 @@ onMounted(load)
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
-/* SA 文件名很长：一行省略，悬停看全 */
+/* 子账号文件名很长：一行省略，悬停看全 */
 .gd-current :deep(.au-stat__value) {
   overflow: hidden;
   text-overflow: ellipsis;

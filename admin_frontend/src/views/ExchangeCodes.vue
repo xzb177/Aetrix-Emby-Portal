@@ -446,7 +446,7 @@ onMounted(load)
             <el-select v-model="genForm.plan_id" placeholder="选择订阅套餐" style="width: 100%">
               <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
               <template #empty>
-                <div class="select-empty">还没有订阅套餐，先去「商品与套餐」建一个</div>
+                <div class="select-empty">还没有订阅套餐，先去「订阅套餐」建一个</div>
               </template>
             </el-select>
           </el-form-item>

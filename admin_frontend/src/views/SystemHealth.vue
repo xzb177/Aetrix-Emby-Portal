@@ -75,9 +75,24 @@ const alertAckingId = ref<number | null>(null)
 const ALERT_SEVERITY_LABEL: Record<string, string> = { info: '提示', warning: '警告', critical: '严重' }
 /** 渠道中文 */
 const ALERT_CHANNEL_LABEL: Record<string, string> = { in_app: '站内', email: '邮件', telegram: 'Telegram', webhook: 'Webhook' }
+/** 事件类型中文（后端 event_type 枚举不直接上界面） */
+const ALERT_EVENT_TYPE_LABEL: Record<string, string> = {
+  probe_queue_high: '探测队列堆积',
+  enrich_stalled: '补全停滞',
+  disk_full: '磁盘空间不足',
+  sa_quota_low: 'Google 子账号配额告警',
+  scan_failed: '扫描失败',
+  api_error_high: 'API 错误率过高',
+  strm_source_failed: '.strm 数据源失败',
+  strm_scan_trigger_failed: '.strm 扫库触发失败',
+}
 
 function alertSeverityLabel(s: string | null | undefined): string {
   return ALERT_SEVERITY_LABEL[String(s ?? '')] ?? String(s ?? '未知')
+}
+function alertEventTypeLabel(t: string | null | undefined): string {
+  const k = String(t ?? '')
+  return ALERT_EVENT_TYPE_LABEL[k] ?? (k || '—')
 }
 function alertChannelLabels(channels: unknown): string {
   if (!Array.isArray(channels) || !channels.length) return '—'
@@ -476,7 +491,9 @@ onMounted(() => {
       <div class="alert-block">
         <div class="alert-block-title">告警规则</div>
         <el-table v-if="alertRules.length" :data="alertRules" size="small" class="alert-table">
-          <el-table-column prop="event_type" label="事件" min-width="140" />
+          <el-table-column prop="event_type" label="事件" min-width="140">
+            <template #default="{ row }">{{ alertEventTypeLabel(row.event_type) }}</template>
+          </el-table-column>
           <el-table-column prop="name" label="名称" min-width="120" />
           <el-table-column label="阈值" width="90">
             <template #default="{ row }">{{ row.threshold }}</template>
@@ -501,7 +518,7 @@ onMounted(() => {
             </template>
           </el-table-column>
         </el-table>
-        <EmptyState v-else-if="!alertRulesLoading" compact :icon="Bell" title="暂无告警规则" description="后端会自动播种默认规则，刷新试试。" />
+        <EmptyState v-else-if="!alertRulesLoading" compact :icon="Bell" title="暂无告警规则" description="系统会自动生成一套默认告警规则，点右上角「重新检查」就能看到。" />
       </div>
 
       <!-- 记录 -->
@@ -520,7 +537,7 @@ onMounted(() => {
               <span v-if="!a.notified_ok" class="send-fail">发送失败</span>
             </div>
             <div class="alert-sub muted">
-              <span>{{ a.event_type || '—' }}</span>
+              <span>{{ alertEventTypeLabel(a.event_type) }}</span>
               <span>{{ alertTimeLabel(a.created_at) }}</span>
               <el-button
                 v-if="a.status === 'open'"

@@ -231,7 +231,7 @@
   color: var(--au-text);
 }
 
-/* 二级开关（链路规划 Step 2）：总开关的子项，缩进 + 徽标，不再与总开关平级 */
+/* 二级开关：总开关的子项，缩进 + 徽标，不再与总开关平级 */
 .ms-switch-sub {
   margin-left: 28px;
   padding-left: 14px;

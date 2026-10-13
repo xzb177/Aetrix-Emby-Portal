@@ -222,24 +222,26 @@ const kpis = computed<{
       title: '服务支持',
     },
     {
-      key: 'scan', label: '扫描状态', value: `${scan.ok}/${scan.total}`,
+      key: 'scan', label: '扫描状态', value: `${scan.ok} 个正常/共 ${scan.total} 个库`,
       foot: scan.total
-        ? `正常 / 共 ${scan.total} 个库`
-          + (scan.bad ? ` · 异常 ${scan.bad}` : '')
-          + (scan.scanning ? ` · 扫描中 ${scan.scanning}` : '')
-          + (scan.never ? ` · 未扫过 ${scan.never}` : '')
+        ? [
+            scan.bad ? `异常 ${scan.bad}` : '',
+            scan.scanning ? `扫描中 ${scan.scanning}` : '',
+            scan.never ? `未扫过 ${scan.never}` : '',
+          ].filter(Boolean).join('\n') || '全部正常'
         : '还没有媒体库',
       to: '/emby', icon: ScanSearch,
       tone: scan.bad ? 'warn' : scan.scanning ? 'info' : scan.total ? 'ok' : 'plain',
       title: '媒体库与扫描',
     },
     {
-      key: 'mounts', label: '存储健康', value: `${mount.ok}/${mount.total}`,
+      key: 'mounts', label: '存储健康', value: `${mount.ok} 个正常/共 ${mount.total} 条来源`,
       foot: mount.total
-        ? `可用 / 共 ${mount.total} 条来源`
-          + (mount.failed ? ` · 异常 ${mount.failed}${mount.failedNames ? `（${mount.failedNames}${mount.failedMore ? ' 等' : ''}）` : ''}` : '')
-          + (mount.unchecked ? ` · 未体检 ${mount.unchecked}` : '')
-          + (mount.blocked ? ` · 播放节点够不着 ${mount.blocked}` : '')
+        ? [
+            mount.failed ? `异常 ${mount.failed}${mount.failedNames ? `（${mount.failedNames}${mount.failedMore ? ' 等' : ''}）` : ''}` : '',
+            mount.unchecked ? `未体检 ${mount.unchecked}` : '',
+            mount.blocked ? `播放节点够不着 ${mount.blocked}` : '',
+          ].filter(Boolean).join('\n') || '全部正常'
         : '还没有存储来源',
       to: '/servers', icon: HardDrive,
       tone: mount.failed || mount.blocked ? 'warn' : mount.total ? 'ok' : 'plain',
@@ -306,10 +308,34 @@ const SERVICE_STATUS_LABEL: Record<string, string> = {
   degraded: '降级',
   redis_unavailable: 'Redis 不可用',
   unreachable: '心跳丢失',
+  unknown: '状态未知',
+  no_heartbeat: '无心跳',
+  stale: '心跳过期',
+  error: '读取异常',
 }
 
 function serviceStatusLabel(status: string): string {
   return SERVICE_STATUS_LABEL[status] || status
+}
+
+/** 后端服务名中文映射（aetrix-api 这类内部名不直接上界面） */
+const SERVICE_NAME_LABEL: Record<string, string> = {
+  'aetrix-api': 'API 服务',
+  'aetrix-worker': '后台任务服务',
+}
+
+function serviceNameLabel(name: string): string {
+  return SERVICE_NAME_LABEL[name] || name
+}
+
+/** 后端服务角色中文映射 */
+const SERVICE_ROLE_LABEL: Record<string, string> = {
+  api: '接口服务',
+  worker: '后台任务',
+}
+
+function serviceRoleLabel(role: string): string {
+  return SERVICE_ROLE_LABEL[role] || role
 }
 
 </script>
@@ -412,15 +438,15 @@ function serviceStatusLabel(status: string): string {
           v-for="svc in backendServices"
           :key="svc.name"
           :icon="Server"
-          :label="svc.name"
+          :label="serviceNameLabel(svc.name)"
           :value="serviceStatusLabel(svc.status)"
           :suffix="svc.lag_seconds != null ? `· 心跳 ${svc.lag_seconds}s 前` : ''"
           :tone="svc.status === 'healthy' ? 'ok' : 'warn'"
-          :hint="svc.role === 'worker' && svc.pid ? `PID ${svc.pid}` : 'API 服务'"
+          :hint="svc.role === 'worker' && svc.pid ? `进程号 ${svc.pid}` : '对外接口服务'"
           class="svc-tile"
         >
           <template #label-extra>
-            <span class="au-badge au-badge-muted tile-badge">{{ svc.role }}</span>
+            <span class="au-badge au-badge-muted tile-badge">{{ serviceRoleLabel(svc.role) }}</span>
           </template>
         </StatTile>
       </section>
@@ -573,7 +599,7 @@ function serviceStatusLabel(status: string): string {
       <!-- 排行榜 -->
       <section v-if="playback" class="two-col">
         <SectionCard title="用户播放排行" :icon="Trophy" meta="近 7 天">
-          <EmptyState v-if="playback.user_ranking.length === 0" compact :icon="Users" title="暂无播放数据" />
+          <EmptyState v-if="playback.user_ranking.length === 0" compact :icon="Users" title="暂无播放数据" description="有人播放后这里会出现排行；如果已有人在看却没数据，去「一键体检」查一下。" />
           <div v-for="(u, i) in playback.user_ranking" :key="u.username" class="rank-row">
             <span class="rank-index" :class="{ top: i < 3 }">{{ i + 1 }}</span>
             <span class="rank-name">{{ u.username }}</span>
@@ -582,7 +608,7 @@ function serviceStatusLabel(status: string): string {
         </SectionCard>
 
         <SectionCard title="热门内容" :icon="Flame" meta="近 7 天">
-          <EmptyState v-if="playback.item_ranking.length === 0" compact :icon="Film" title="暂无播放数据" />
+          <EmptyState v-if="playback.item_ranking.length === 0" compact :icon="Film" title="暂无播放数据" description="有人播放后这里会出现排行；如果已有人在看却没数据，去「一键体检」查一下。" />
           <div v-for="(it, i) in playback.item_ranking" :key="it.name" class="rank-row">
             <span class="rank-index" :class="{ top: i < 3 }">{{ i + 1 }}</span>
             <span class="rank-name">
@@ -618,6 +644,11 @@ function serviceStatusLabel(status: string): string {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
+}
+
+/* 扫描/存储卡的 foot 是多行状态（\n 分隔）：按行拆开展示，单行卡不受影响 */
+.kpi-grid :deep(.au-stat__hint) {
+  white-space: pre-line;
 }
 @media (max-width: 1180px) {
   .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }

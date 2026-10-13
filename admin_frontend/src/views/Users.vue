@@ -3,8 +3,8 @@
  * 用户管理
  *
  * v2.4.0 重构：
- * - 新增「用户 360°」详情抽屉（资料 / 订阅 / 积分 / 订单 / 邀请 / 签到 / 观看）
- * - 授予订阅、调整积分、重置密码、发送消息改为正规对话框（原先靠输入序号）
+ * - 新增「用户 360°」详情抽屉（资料 / 会员 / 积分 / 订单 / 邀请 / 签到 / 观看）
+ * - 授予会员、调整积分、重置密码、发送消息改为正规对话框（原先靠输入序号）
  * - 行内操作收敛为「详情 + 更多」下拉，表格不再横向堆 6 个按钮
  *
  * v2.6.10：手机（≤640px）下表格列收窄并隐藏「注册时间」（详情抽屉里本来就有），
@@ -46,7 +46,7 @@ const columns: DataColumn[] = [
   { key: 'user_type', label: '类型', width: 150 },
   { key: 'tg_bound', label: 'TG', width: 70 },
   { key: 'emby_username', label: 'Emby 账号', minWidth: 130 },
-  { key: 'subscription', label: '订阅', minWidth: 160 },
+  { key: 'subscription', label: '会员', minWidth: 160 },
   // 注册渠道（v2.44.0 归因）：一眼看出这个号是哪来的
   { key: 'register_channel_label', label: '来源', width: 105 },
   { key: 'last_login_at', label: '最近登录', width: 150 },
@@ -54,7 +54,7 @@ const columns: DataColumn[] = [
   { key: 'actions', label: '操作', width: 180, fixed: 'right', align: 'right' },
 ]
 
-/** 抽屉里的订阅记录（抽屉在手机上接近全宽，也用卡片形态） */
+/** 抽屉里的会员记录（抽屉在手机上接近全宽，也用卡片形态） */
 const historyColumns: DataColumn[] = [
   { key: 'plan_name', label: '套餐', minWidth: 120, mobile: 'title' },
   { key: 'period', label: '有效期', minWidth: 180 },
@@ -309,7 +309,7 @@ async function removeUserDevice(device: DeviceRow) {
   }
 }
 
-// ==================== 授予 / 延长订阅 ====================
+// ==================== 授予 / 延长会员 ====================
 
 const subDialog = reactive({
   visible: false,
@@ -361,11 +361,11 @@ async function submitSub() {
         return
       }
       await grantSubscription(u.id, { plan_id: subDialog.planId, duration_days: subDialog.days })
-      ElMessage.success('订阅已授予并通知用户')
+      ElMessage.success('会员已授予并通知用户')
     } else {
       if (!u.subscription_id) return
       await extendSubscription(u.subscription_id, subDialog.days)
-      ElMessage.success('订阅已延长并通知用户')
+      ElMessage.success('会员已延长并通知用户')
     }
     subDialog.visible = false
     await load()
@@ -649,11 +649,11 @@ function grantState(card: UserGrantCard): { cls: string; text: string } {
 function grantReason(card: UserGrantCard): string {
   const sub = card.subscription
   if (card.grant === 'subscription') {
-    return `${sub?.plan_name || '订阅'} · ${fmtDay(sub?.end_date ?? null)} 到期`
+    return `${sub?.plan_name || '会员'} · ${fmtDay(sub?.end_date ?? null)} 到期`
   }
   if (card.grant === 'expired') {
-    if (sub?.cancelled) return `${sub.plan_name || '订阅'} 已退款取消`
-    return `${sub?.plan_name || '订阅'} 已于 ${fmtDay(sub?.end_date ?? null)} 到期`
+    if (sub?.cancelled) return `${sub.plan_name || '会员'} 已退款取消`
+    return `${sub?.plan_name || '会员'} 已于 ${fmtDay(sub?.end_date ?? null)} 到期`
   }
   if (card.grant === 'unlock') {
     const u = card.unlock
@@ -676,7 +676,7 @@ function fmtCount(n: number | null | undefined): string {
     <PageHeader
       eyebrow="用户与账号"
       title="用户"
-      description="点用户名或「详情」打开 360° 画像：订阅、积分、订单、邀请、设备与授权资源都在抽屉里处理。"
+      description="点用户名或「详情」打开 360° 画像：会员、积分、订单、邀请、设备与授权资源都在抽屉里处理。"
     >
       <template #actions>
         <el-button @click="broadcastVisible = true">
@@ -715,8 +715,8 @@ function fmtCount(n: number | null | undefined): string {
           </el-select>
           <el-select v-model="typeFilter" class="f-select" placeholder="用户类型" clearable @change="applyFilter">
             <el-option label="公益服" value="welfare" />
-            <el-option label="付费（订阅生效中）" value="paid" />
-            <el-option label="普通（无订阅）" value="normal" />
+            <el-option label="付费（会员生效中）" value="paid" />
+            <el-option label="普通（无会员）" value="normal" />
           </el-select>
         </div>
         <div v-if="hasFilter" class="users-actions">
@@ -760,7 +760,7 @@ function fmtCount(n: number | null | undefined): string {
             <span class="au-badge au-badge-green">生效中</span>
             <div class="user-sub">至 {{ fmtDay(row.subscription_end) }}</div>
           </template>
-          <span v-else class="au-badge au-badge-muted">未订阅</span>
+          <span v-else class="au-badge au-badge-muted">无会员</span>
         </template>
 
         <template #cell-user_type="{ row }">
@@ -797,8 +797,8 @@ function fmtCount(n: number | null | undefined): string {
             </el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="grant">授予订阅</el-dropdown-item>
-                <el-dropdown-item v-if="row.subscription_id" command="extend">延长订阅</el-dropdown-item>
+                <el-dropdown-item command="grant">授予会员</el-dropdown-item>
+                <el-dropdown-item v-if="row.subscription_id" command="extend">延长会员</el-dropdown-item>
                 <el-dropdown-item command="points">调整积分</el-dropdown-item>
                 <el-dropdown-item command="welfare_grant">公益开通/续期</el-dropdown-item>
                 <el-dropdown-item v-if="row.is_welfare" command="welfare_revoke" divided>取消公益资格</el-dropdown-item>
@@ -854,9 +854,9 @@ function fmtCount(n: number | null | undefined): string {
 
           <div class="detail-stats">
             <StatTile
-              label="订阅"
+              label="会员"
               :icon="Crown"
-              :value="detail.subscription.active ? detail.subscription.active.plan_name : '未订阅'"
+              :value="detail.subscription.active ? detail.subscription.active.plan_name : '无会员'"
               :suffix="detail.subscription.active ? `剩 ${detail.subscription.active.days_left} 天` : ''"
               class="text-tile"
             />
@@ -884,9 +884,9 @@ function fmtCount(n: number | null | undefined): string {
 
           <div class="detail-actions">
             <el-button size="small" type="primary" @click="detailUser && openGrant(detailUser)">
-              <Crown :size="13" class="btn-ico" />授予订阅
+              <Crown :size="13" class="btn-ico" />授予会员
             </el-button>
-            <el-button v-if="detailUser?.subscription_id" size="small" @click="detailUser && openExtend(detailUser)">延长订阅</el-button>
+            <el-button v-if="detailUser?.subscription_id" size="small" @click="detailUser && openExtend(detailUser)">延长会员</el-button>
             <el-button size="small" @click="detailUser && openPoints(detailUser)">
               <Coins :size="13" class="btn-ico" />调整积分
             </el-button>
@@ -1010,7 +1010,7 @@ function fmtCount(n: number | null | undefined): string {
                       <Waypoints :size="12" />{{ card.access_note }}
                     </p>
                     <p v-else-if="!card.can_play" class="grant-note muted">
-                      <CircleSlash :size="12" />到「商品与套餐」授予该服会员，或用该服的卡码开通
+                      <CircleSlash :size="12" />到「订阅套餐」授予该服会员，或用该服的卡码开通
                     </p>
                     <p v-else-if="card.is_free && !card.unlock?.unlocked" class="grant-note">
                       <MonitorSmartphone :size="12" />能看全库，但客户端需在个人中心花积分解锁账号地址
@@ -1101,7 +1101,7 @@ function fmtCount(n: number | null | undefined): string {
             </el-tab-pane>
 
             <el-tab-pane label="设备" name="devices">
-              <div class="mini-summary">共 {{ userDevices.length }} 台设备 · 可直接封禁异常设备或踢下线</div>
+              <div class="mini-summary">共 {{ userDevices.length }} 台设备 · 可直接禁用异常设备或踢下线</div>
               <DataTable
                 :rows="userDevices"
                 :columns="deviceColumns"
@@ -1117,11 +1117,11 @@ function fmtCount(n: number | null | undefined): string {
                 <template #cell-ip="{ row }"><span class="mono">{{ row.ip || '—' }}</span></template>
                 <template #cell-last_seen_at="{ row }">{{ fmtDeviceDate(row.last_seen_at) }}</template>
                 <template #cell-is_blocked="{ row }">
-                  <span class="au-badge" :class="row.is_blocked ? 'au-badge-rose' : 'au-badge-green'">{{ row.is_blocked ? '已封禁' : '正常' }}</span>
+                  <span class="au-badge" :class="row.is_blocked ? 'au-badge-rose' : 'au-badge-green'">{{ row.is_blocked ? '已禁用' : '正常' }}</span>
                 </template>
                 <template #cell-actions="{ row }">
                   <el-button size="small" text :type="row.is_blocked ? 'success' : 'warning'" @click="toggleUserDevice(row)">
-                    {{ row.is_blocked ? '解封' : '封禁' }}
+                    {{ row.is_blocked ? '启用' : '禁用' }}
                   </el-button>
                   <el-button size="small" text type="danger" @click="removeUserDevice(row)">踢下线</el-button>
                 </template>
@@ -1132,10 +1132,10 @@ function fmtCount(n: number | null | undefined): string {
       </div>
     </el-drawer>
 
-    <!-- ==================== 授予 / 延长订阅 ==================== -->
+    <!-- ==================== 授予 / 延长会员 ==================== -->
     <el-dialog
       v-model="subDialog.visible"
-      :title="subDialog.mode === 'grant' ? '授予订阅' : '延长订阅'"
+      :title="subDialog.mode === 'grant' ? '授予会员' : '延长会员'"
       width="min(440px, 92vw)"
     >
       <el-form label-width="80px">
@@ -1162,7 +1162,7 @@ function fmtCount(n: number | null | undefined): string {
           <span class="dialog-hint">{{ grantPreview }}</span>
         </el-form-item>
         <el-form-item v-if="plans.length === 0 && subDialog.mode === 'grant'" label=" ">
-          <span class="dialog-hint warn">暂无可用套餐，请先在「商品与套餐」中创建</span>
+          <span class="dialog-hint warn">还没有可授予的套餐，先去「订阅套餐」页创建一个，回来再选</span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1357,7 +1357,7 @@ function fmtCount(n: number | null | undefined): string {
   gap: 10px;
   margin-bottom: 14px;
 }
-/* 订阅格的值是套餐名（文字）：字号收一档，避免长名字换三行 */
+/* 会员格的值是套餐名（文字）：字号收一档，避免长名字换三行 */
 .text-tile :deep(.au-stat__value) { font-size: 1.05rem; }
 
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }

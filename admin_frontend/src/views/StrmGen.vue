@@ -156,7 +156,7 @@ async function onTrigger(full: boolean) {
       await ElMessageBox.confirm(
         '全量重建会重新生成所有 .strm 文件（8 万+ 文件，耗时很长）。确定吗？',
         '全量重建',
-        { confirmButtonText: '开始全量', cancelButtonText: '取消', type: 'warning' },
+        { confirmButtonText: '开始全量重建', cancelButtonText: '取消', type: 'warning' },
       )
     } catch {
       return
@@ -168,7 +168,7 @@ async function onTrigger(full: boolean) {
   try {
     const res = await triggerStrmGen(full)
     if (res.success) {
-      ElMessage.success(res.message || '已开始生成')
+      ElMessage.success(res.message || (full ? '已开始全量重建，进度会在本页实时更新' : '已开始增量生成，进度会在本页实时更新'))
       await load(true)
       ensurePolling()
     } else {
@@ -188,7 +188,7 @@ async function onSave() {
   try {
     const res = await saveStrmGenConfig({ ...form.value })
     config.value = res.config
-    ElMessage.success('已保存，立即生效')
+    ElMessage.success('配置已保存，立即生效')
   } catch {
     // 400 时拦截器会弹出后端 detail（如时刻格式不对）
   } finally {
@@ -218,7 +218,7 @@ onUnmounted(() => {
     <PageHeader
       eyebrow="媒体与交付"
       title=".strm 生成器"
-      description="把 Google Drive 视频批量生成 .strm 文件：定时自动跑，也可手动触发。生成后追新会自动发现新增 .strm 并入库。"
+      description="把 Google Drive 视频批量生成 .strm 文件：定时自动跑，也可手动触发。生成后，「自动发现新增文件」会把新增的 .strm 扫进媒体库。扫描认不认 .strm 的开关在「媒体库」页（定时与刮削标签），别和这里搞混。"
     >
       <template #actions>
         <el-button :loading="loading" :icon="RefreshCw" @click="load()">刷新</el-button>

@@ -1076,7 +1076,7 @@ watch(
             id="group-hotlink"
             title="防盗链"
             :icon="ShieldCheck"
-            description="播放签名校验总开关 + 签名有效期。.strm 文件内容带签名（1 小时过期、定时任务自动刷新），Drive 文件保持私有、服务端用 SA 凭据中转拉流。"
+            description="播放签名校验总开关 + 签名有效期。.strm 文件内容带签名（1 小时过期、定时任务自动刷新），Drive 文件保持私有、服务端用 Google 子账号凭据中转拉流。"
             :tone="hotlinkDirty ? 'accent' : 'default'"
             class="group-card"
           >
@@ -1144,7 +1144,7 @@ watch(
 
           <p class="foot-note">
             <Coins :size="13" />
-            积分、套餐与兑换码的明细请前往「商品与套餐」「兑换码」「邀请与积分」页面管理。
+            积分、套餐与兑换码的明细请前往「订阅套餐」「兑换码」「邀请与积分」页面管理。
           </p>
         </div>
       </el-tab-pane>

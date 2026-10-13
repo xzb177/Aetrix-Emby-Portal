@@ -56,12 +56,58 @@ const overallText = computed(() => {
   return '全部正常'
 })
 
+/** 证据字段中文（后端英文字段名不上界面，未收录的原样兜底） */
+const EVIDENCE_KEY_LABEL: Record<string, string> = {
+  status: '状态',
+  disk_free_percent: '磁盘剩余%',
+  disk_free_percent_raw: '磁盘剩余（原始值）',
+  transcode_sessions: '转码中',
+  pending_ready: '待探测',
+  retrying: '重试中',
+  running: '运行中',
+  paused: '已暂停',
+  rate_per_min: '每分钟处理',
+  eta_hours: '预计完成（小时）',
+  backlog: '积压',
+  idle_sec: '空闲秒数',
+  done_per_min: '每分钟完成',
+  open_breakers: '熔断中的挂载',
+  failed: '失败库数',
+  last_failed: '最近失败的库',
+  scanning: '正在扫描的库数',
+  sa_count: 'Google 子账号数',
+  global_error_ratio: '错误率',
+  global_error_ratio_raw: '错误率（原始值）',
+  global_p99_ms: 'P99 延迟（毫秒）',
+  total: '总数',
+  dead: '已死亡',
+}
+
+function evidenceItemText(v: unknown): string {
+  if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+    const o = v as Record<string, unknown>
+    if (typeof o.name === 'string' && o.name) return o.name
+    return JSON.stringify(v)
+  }
+  return String(v)
+}
+
+function evidenceValue(v: unknown): string {
+  if (Array.isArray(v)) {
+    if (!v.length) return '0 个'
+    const names = v.slice(0, 3).map(evidenceItemText).join('、')
+    return `${v.length} 个（${names}${v.length > 3 ? ' 等' : ''}）`
+  }
+  if (typeof v === 'boolean') return v ? '是' : '否'
+  return String(v)
+}
+
 function evidenceText(f: DiagnosisFinding): string {
   const entries = Object.entries(f.evidence || {}).filter(([, v]) => v !== null && v !== undefined && v !== '')
   if (!entries.length) return ''
   return entries
     .slice(0, 4)
-    .map(([k, v]) => `${k}=${Array.isArray(v) ? v.length : v}`)
+    .map(([k, v]) => `${EVIDENCE_KEY_LABEL[k] ?? k}=${evidenceValue(v)}`)
     .join(' · ')
 }
 
