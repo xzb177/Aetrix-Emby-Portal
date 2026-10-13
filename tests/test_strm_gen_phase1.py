@@ -154,14 +154,17 @@ class TestParseDriveBatchResponse:
 
 
 class TestDriveFileIdsInvalidBatch:
+    # 注意：#830 起本函数吃 (fid, drive_id) 二元组、按盘取凭据
+    # （get_token_for_drive），旧的纯 fid 列表 + _get_token 写法已作废。
     def test_no_token_returns_empty(self, monkeypatch):
         # 无 token → 空集（宁可放行），且不发任何请求
         from backend.emby_server import drive_changes as dc
-        monkeypatch.setattr(dc, "_get_token", lambda: None)
+        monkeypatch.setattr(dc, "get_token_for_drive", lambda did: None)
         def _boom(*a, **k):
             raise AssertionError("无 token 时不应发请求")
         monkeypatch.setattr(sg, "_drive_batch_check", _boom)
-        assert sg._drive_file_ids_invalid_batch(["F1", "F2"]) == set()
+        assert sg._drive_file_ids_invalid_batch(
+            [("F1", "D1"), ("F2", "D1")]) == set()
 
     def test_empty_input(self):
         assert sg._drive_file_ids_invalid_batch([]) == set()
@@ -169,22 +172,24 @@ class TestDriveFileIdsInvalidBatch:
     def test_batch_failure_falls_back_per_file(self, monkeypatch):
         # batch 整体异常 → 回退逐个 _drive_file_id_valid（只慢不坏）
         from backend.emby_server import drive_changes as dc
-        monkeypatch.setattr(dc, "_get_token", lambda: "tok")
+        monkeypatch.setattr(dc, "get_token_for_drive", lambda did: "tok")
         monkeypatch.setattr(dc._api_limiter, "acquire", lambda: None)
         def _raise(fids, token):
             raise RuntimeError("batch 整体 500")
         monkeypatch.setattr(sg, "_drive_batch_check", _raise)
         monkeypatch.setattr(sg, "_drive_file_id_valid",
-                            lambda fid: fid != "BAD")
-        assert sg._drive_file_ids_invalid_batch(["OK1", "BAD", "OK2"]) == {"BAD"}
+                            lambda fid, did: fid != "BAD")
+        assert sg._drive_file_ids_invalid_batch(
+            [("OK1", "D1"), ("BAD", "D1"), ("OK2", "D1")]) == {"BAD"}
 
     def test_success_path(self, monkeypatch):
         from backend.emby_server import drive_changes as dc
-        monkeypatch.setattr(dc, "_get_token", lambda: "tok")
+        monkeypatch.setattr(dc, "get_token_for_drive", lambda did: "tok")
         monkeypatch.setattr(dc._api_limiter, "acquire", lambda: None)
         monkeypatch.setattr(sg, "_drive_batch_check",
                             lambda fids, token: {"F_BAD"})
-        assert sg._drive_file_ids_invalid_batch(["F_OK", "F_BAD"]) == {"F_BAD"}
+        assert sg._drive_file_ids_invalid_batch(
+            [("F_OK", "D1"), ("F_BAD", "D1")]) == {"F_BAD"}
 
 
 class TestIncrementalPathFlag:
