@@ -133,10 +133,18 @@ export interface ServerToggle {
   [k: string]: unknown
 }
 
+export interface GrowthDay {
+  date: string
+  weekday: string
+  count: number
+  [k: string]: unknown
+}
+
 export interface ServerData {
   vitals?: ServerVitals
   eco?: EcoItem[]
   radar_tasks?: RadarTask[]
+  growth?: GrowthDay[]
   toggles?: ServerToggle[]
   is_admin?: boolean
   [k: string]: unknown

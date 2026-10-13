@@ -527,6 +527,27 @@ def panel_server(
     except Exception:  # noqa: BLE001
         logger.exception("片库生态查询失败")
 
+    # 生长记录：过去 7 天每天新入库数（替换"机关"假开关的实用组件）
+    growth = []
+    try:
+        from datetime import timedelta
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        for i in range(6, -1, -1):
+            day_start = today - timedelta(days=i)
+            day_end = day_start + timedelta(days=1)
+            cnt = db.query(func.count(em.MediaItem.id)).filter(
+                em.MediaItem.date_added >= day_start,
+                em.MediaItem.date_added < day_end,
+                em.MediaItem.item_type.in_(["movie", "series"]),
+            ).scalar() or 0
+            growth.append({
+                "date": day_start.strftime("%m-%d"),
+                "weekday": ["一", "二", "三", "四", "五", "六", "日"][day_start.weekday()],
+                "count": cnt,
+            })
+    except Exception:  # noqa: BLE001
+        logger.exception("生长记录查询失败")
+
     # 雷达任务：固定 4 个后台任务 + 状态
     radar_tasks = [
         {"key": "enrich", "name": "刮削", "active": bool(vitals.get("backlog"))},
@@ -549,6 +570,7 @@ def panel_server(
         "vitals": vitals,
         "eco": eco,
         "radar_tasks": radar_tasks,
+        "growth": growth,
         "toggles": toggles,
         "is_admin": is_admin,
     })

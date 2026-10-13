@@ -100,24 +100,9 @@ export const usePanelStore = defineStore('panel', () => {
     void loadToday(true) // 拆封成功后刷新 today 计数，不再等 60s TTL
   }
 
-  /** 机关拨杆：先写后端，成功后 optimistic 更新本地（失败则回滚由调用方处理）；失败抛错（携带人话原因） */
-  async function setServerToggle(key: string, on: boolean) {
-    try {
-      await panelApi.toggles({ key, on })
-    } catch (e) {
-      throw new Error(humanizeError(e))
-    }
-    const data = server.value.data as { toggles?: Array<Record<string, unknown>> } | null
-    const list = data?.toggles
-    if (Array.isArray(list)) {
-      const hit = list.find((t) => String(t.key) === String(key))
-      if (hit) hit.on = on
-    }
-  }
-
   return {
     today, parcels, pulse, letter, collector, server,
     loadToday, loadParcels, loadPulse, loadLetter, loadHome, loadCollector, loadServer,
-    unseal, setServerToggle,
+    unseal,
   }
 })
