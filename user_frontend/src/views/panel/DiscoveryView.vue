@@ -65,6 +65,7 @@ import { computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
+import { useToast } from '@/composables/useToast'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import ParcelBox from '@/components/panel/ParcelBox.vue'
 import EcgCanvas from '@/components/panel/EcgCanvas.vue'
@@ -128,8 +129,9 @@ const parcelList = computed((): ParcelItem[] => {
 async function onUnseal(id: string | number) {
   try {
     await panel.unseal(id)
-  } catch {
-    // 失败则静默：下次刷新会纠正；不打断用户
+  } catch (e) {
+    // 失败不再静默：toast 告诉用户具体原因
+    useToast().error(e instanceof Error ? e.message : '拆封失败，稍后再试')
   }
 }
 

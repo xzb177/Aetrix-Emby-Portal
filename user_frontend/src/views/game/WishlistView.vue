@@ -73,7 +73,7 @@
               :disabled="w.voted || voting === w.id"
               @click="upvote(w)"
             >
-              {{ w.voted ? '✓ 已附议，坐等打捞' : voting === w.id ? '附议中…' : '+1 附议' }}
+              <span class="lbl">{{ w.voted ? '✓ 已附议，坐等打捞' : voting === w.id ? '附议中…' : '+1 附议' }}</span>
             </button>
           </div>
         </div>
@@ -82,7 +82,7 @@
     <PanelTabbar />
 
     <!-- 许愿弹窗 -->
-    <div class="modal" :class="{ show: modalOpen }" @click.self="closeModal">
+    <div class="modal" :class="{ show: modalOpen }" role="dialog" aria-modal="true" aria-label="许愿" @click.self="closeModal">
       <div class="mcard">
         <h3>✍️ 写下你的心愿</h3>
         <p>写下片名，纸条会折成小船，噗通一声投进池子</p>
@@ -92,7 +92,9 @@
           placeholder="比如：《深海之间》"
           maxlength="30"
           @keyup.enter="throwWish"
+          @input="emptyWarn = false"
         >
+        <div v-if="emptyWarn" class="wish-warn">先写下心愿，再投进池子吧 ✍️</div>
         <div class="mrow">
           <button class="mbtn cancel" @click="closeModal">再想想</button>
           <button class="mbtn go" :disabled="throwing" @click="throwWish">
@@ -105,7 +107,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { mediaSeekApi, type MediaSeekRequest, type HotMediaSeekRequest } from '@/api'
 import { useToast } from '@/composables/useToast'
@@ -120,6 +122,7 @@ const hotError = ref('')
 
 const modalOpen = ref(false)
 const wishText = ref('')
+const emptyWarn = ref(false)
 const throwing = ref(false)
 const voting = ref<number | null>(null)
 const justAddedId = ref<number | null>(null)
@@ -144,14 +147,21 @@ function shortDate(iso: string): string {
   if (Number.isNaN(d.getTime())) return ''
   return `${d.getMonth() + 1}-${d.getDate()}`
 }
+function onEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape' && modalOpen.value) closeModal()
+}
 function openModal() {
   modalOpen.value = true
+  window.addEventListener('keydown', onEsc)
   nextTick(() => wishInput.value?.focus())
 }
 function closeModal() {
   modalOpen.value = false
   wishText.value = ''
+  emptyWarn.value = false
+  window.removeEventListener('keydown', onEsc)
 }
+onUnmounted(() => window.removeEventListener('keydown', onEsc))
 
 async function loadMine() {
   myLoading.value = true
@@ -180,7 +190,8 @@ async function loadHot() {
 
 async function throwWish() {
   const name = wishText.value.trim()
-  if (!name || throwing.value) return
+  if (!name) { emptyWarn.value = true; return }
+  if (throwing.value) return
   throwing.value = true
   try {
     const r = await mediaSeekApi.create({ movie_name: name })
@@ -201,6 +212,8 @@ async function throwWish() {
 
 /** 纸船飞入古井动画（设计稿原交互） */
 function flyBoat(done: () => void) {
+  // 减少动态偏好：跳过飞行动画，直接完成
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { done(); return }
   const well = wellRef.value
   if (!well) { done(); return }
   const wr = well.getBoundingClientRect()
@@ -283,18 +296,20 @@ onMounted(() => {
   position: absolute;
   left: 50%;
   top: 50%;
+  width: 200px;
+  height: 200px;
   border: 2px solid rgba(255, 255, 255, 0.55);
   border-radius: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(0.2);
   animation: rip 3.2s infinite;
   pointer-events: none;
 }
-.r1 { width: 60px; height: 60px; }
-.r2 { width: 60px; height: 60px; animation-delay: 1.05s; }
-.r3 { width: 60px; height: 60px; animation-delay: 2.1s; }
+.r2 { animation-delay: 1.05s; }
+.r3 { animation-delay: 2.1s; }
+/* 只动 transform/opacity：不刷 layout，60fps */
 @keyframes rip {
-  0% { width: 40px; height: 40px; opacity: 0.9; }
-  100% { width: 200px; height: 200px; opacity: 0; }
+  0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.9; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
 }
 .well .boat-float {
   position: absolute;
@@ -391,16 +406,26 @@ onMounted(() => {
 .upvote {
   margin-top: 10px;
   width: 100%;
-  background: var(--ink);
-  color: #FFFDF6;
+  position: relative;
+  /* 透明 padding + 负 margin：视觉按钮不变，点击区纵向扩大到 44px */
+  background: transparent;
   border: none;
+  color: #FFFDF6;
   font-size: 13px;
   font-weight: 700;
-  padding: 9px;
-  border-radius: 10px;
+  padding: 14px 9px;
+  margin: 5px 0 -5px;
   cursor: pointer;
 }
-.upvote.done { background: var(--green); }
+.upvote::before {
+  content: "";
+  position: absolute;
+  top: 5px; right: 0; bottom: 5px; left: 0;
+  background: var(--ink);
+  border-radius: 10px;
+}
+.upvote .lbl { position: relative; }
+.upvote.done::before { background: var(--green); }
 .upvote:disabled { cursor: default; }
 
 /* 弹窗 */
@@ -437,6 +462,7 @@ onMounted(() => {
   color: var(--ink);
 }
 .mcard input:focus { border-color: var(--gold); }
+.wish-warn { font-size: 12px; color: var(--red); margin-top: 8px; }
 .mrow { display: flex; gap: 10px; margin-top: 16px; }
 .mbtn {
   flex: 1;

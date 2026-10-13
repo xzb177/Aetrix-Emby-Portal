@@ -61,7 +61,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { checkinApi, pointsApi, type CheckinStatus } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
@@ -70,7 +70,7 @@ import { humanizeError } from '@/composables/usePanelApi'
 const now = new Date()
 const year = ref(now.getFullYear())
 const month = ref(now.getMonth())
-const todayNum = now.getDate()
+const todayNum = ref(now.getDate())
 
 const status = ref<CheckinStatus | null>(null)
 const statusLoading = ref(true)
@@ -98,8 +98,8 @@ const checkinBtnText = computed(() => {
 
 function dayClass(d: number): string {
   if (signedDays.value.has(d)) return 'done'
-  if (d === todayNum) return 'today'
-  if (d > todayNum) return 'future'
+  if (d === todayNum.value) return 'today'
+  if (d > todayNum.value) return 'future'
   return ''
 }
 
@@ -121,7 +121,7 @@ async function load() {
       }
     }
     // 今天已签到时，确保今天也在集合里（流水可能有延迟）
-    if (st.checked_today) days.add(todayNum)
+    if (st.checked_today) days.add(todayNum.value)
     signedDays.value = days
   } catch (e) {
     statusError.value = humanizeError(e)
@@ -140,7 +140,7 @@ async function doCheckin() {
       status.value.streak = r.streak
       status.value.points = r.balance
     }
-    signedDays.value = new Set(signedDays.value).add(todayNum)
+    signedDays.value = new Set(signedDays.value).add(todayNum.value)
     // 盖章动画
     const pop = sealPop.value
     if (pop) {
@@ -159,6 +159,8 @@ async function doCheckin() {
 }
 
 function flyEnergy(text: string) {
+  // 减少动态偏好：跳过飞行动画
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
   const fly = document.createElement('div')
   fly.className = 'energy-fly go'
   fly.textContent = text
@@ -168,7 +170,21 @@ function flyEnergy(text: string) {
   window.setTimeout(() => fly.remove(), 1300)
 }
 
-onMounted(load)
+/** 跨午夜日期刷新：每分钟核对一次，翻天了就更新今天并重载 */
+let dateTimer = 0
+onMounted(() => {
+  load()
+  dateTimer = window.setInterval(() => {
+    const n = new Date()
+    if (n.getDate() !== todayNum.value || n.getMonth() !== month.value || n.getFullYear() !== year.value) {
+      year.value = n.getFullYear()
+      month.value = n.getMonth()
+      todayNum.value = n.getDate()
+      void load()
+    }
+  }, 60_000)
+})
+onUnmounted(() => window.clearInterval(dateTimer))
 </script>
 
 <style scoped>
@@ -229,12 +245,22 @@ onMounted(load)
   margin: 2px;
 }
 .day.today {
+  position: relative;
   border: 2px dashed var(--red);
+}
+/* 脉冲光晕只用 transform/opacity（60fps）：::after 做扩散圆环，不刷 box-shadow */
+.day.today::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border: 2px solid rgba(217, 72, 43, 0.35);
+  border-radius: 8px;
   animation: pulse 1.6s infinite;
+  pointer-events: none;
 }
 @keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 72, 43, 0.25); }
-  50% { box-shadow: 0 0 0 6px rgba(217, 72, 43, 0); }
+  0% { transform: scale(1); opacity: 0.7; }
+  100% { transform: scale(1.18); opacity: 0; }
 }
 .day.future { opacity: 0.45; }
 

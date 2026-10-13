@@ -139,7 +139,7 @@ const newUnlockNames = computed((): string[] => {
   const keys = data.value.new_unlocks
   if (!Array.isArray(keys) || keys.length === 0) return []
   const byKey = new Map(achievements.value.map((a) => [a.key, a.name]))
-  return keys.map((k) => byKey.get(String(k)) || String(k))
+  return keys.map((k) => byKey.get(String(k)) || '未知')
 })
 
 /* ---------- 馆灵 ---------- */

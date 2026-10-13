@@ -24,9 +24,9 @@
         <div class="v4-sec-title">⚡ 能量补给</div>
         <div class="v4-sec-sub">充积分 = 补充能量 · {{ ratioText }} —— 点一罐看看</div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
-        <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试</div>
-        <div v-else-if="!rechargeEnabled" class="v4-err">能量充值暂未开启</div>
-        <div v-else-if="packages.length === 0" class="v4-err">补给站暂未上架能量罐</div>
+        <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="!rechargeEnabled" class="v4-err">能量充值暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="packages.length === 0" class="v4-err">补给站暂未上架能量罐<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <template v-else>
           <div class="shelf">
             <div
@@ -61,10 +61,10 @@
         <div class="v4-sec-title">📜 探险执照</div>
         <div class="v4-sec-sub">买会员 = 领取执照 —— 凭执照解锁全片库，点开看细则</div>
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
-        <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试</div>
+        <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <div v-else-if="isFreeRealm" class="v4-err">当前为公益服，全片库免费开放，无需领取执照 🎉<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
-        <div v-else-if="!plansEnabled" class="v4-err">执照领取暂未开启</div>
-        <div v-else-if="plans.length === 0" class="v4-err">补给站暂未上架执照</div>
+        <div v-else-if="!plansEnabled" class="v4-err">执照领取暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="plans.length === 0" class="v4-err">补给站暂未上架执照<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <template v-else>
           <div class="cur-toggle">
             <button :class="{ on: currency === 'y' }" @click="currency = 'y'">¥ 人民币</button>
@@ -109,7 +109,7 @@
         <div class="v4-sec-title">⛰️ 探险家等级</div>
         <div class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
-        <div v-else-if="!member" class="v4-err">等级数据加载失败</div>
+        <div v-else-if="!member" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <div v-else class="trail">
           <div
             v-for="lv in trailLevels"
@@ -162,6 +162,7 @@
 import { computed, onMounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useToast } from '@/composables/useToast'
+import { humanizeError } from '@/composables/usePanelApi'
 import {
   paymentApi,
   currencyApi,
@@ -205,6 +206,8 @@ onMounted(() => {
 
 async function loadAll() {
   loading.value = true
+  pkgsFailed.value = false
+  plansFailed.value = false
   const [pkgs, pls, mem, inv, pts, cur, methods] = await Promise.allSettled([
     paymentApi.packages(),
     paymentApi.plans(),
@@ -342,7 +345,7 @@ async function doRecharge() {
       toast.error('支付链接获取失败，请稍后再试')
     }
   } catch (err: unknown) {
-    toast.error(err instanceof Error ? err.message : '下单失败，请稍后再试')
+    toast.error(humanizeError(err))
   } finally {
     orderBusy.value = false
   }
@@ -372,7 +375,7 @@ async function doBuyPlan(plan: SubscriptionPlan) {
       toast.error('支付链接获取失败，请稍后再试')
     }
   } catch (err: unknown) {
-    toast.error(err instanceof Error ? err.message : '下单失败，请稍后再试')
+    toast.error(humanizeError(err))
   } finally {
     orderBusy.value = false
   }
