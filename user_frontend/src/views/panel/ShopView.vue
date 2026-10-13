@@ -42,7 +42,7 @@
               @keydown.space.prevent="selectedPkg = pkg"
             >
               <span v-if="pkg.is_popular" class="tag">最划算</span>
-              <span class="bolt">{{ pkg.total_points >= 60 ? '🛢️' : '🔋' }}</span>
+              <span class="bolt">{{ pkg.icon || (pkg.total_points >= 60 ? '🛢️' : '🔋') }}</span>
               <div class="amt">{{ fmtNum(pkg.total_points) }} <small>能量</small></div>
               <div class="price">¥ {{ fmtNum(pkg.price) }}</div>
               <div v-if="pkg.bonus > 0" class="per">多送 {{ fmtNum(pkg.bonus) }}</div>
