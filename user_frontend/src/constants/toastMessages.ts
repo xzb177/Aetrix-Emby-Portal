@@ -63,8 +63,6 @@ export const toastCopy = {
 
   /** 支付成功（不承诺"已到账"，到账由轮询/订单状态确认） */
   paySuccess: (itemName: string) => `「${itemName}」支付成功`,
-  /** 支付已提交，正在轮询确认 */
-  paySubmitted: () => '支付已提交，正在确认到账结果…',
 }
 
 /** 系统级文案（登录过期 / 网络 / 支付状态 / 权限…，供拦截器与 toUserMessage 使用） */

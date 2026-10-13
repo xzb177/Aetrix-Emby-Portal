@@ -119,7 +119,7 @@ const tastesRaw = computed((): Record<string, TasteStamp> | undefined => {
 })
 const tasteTitle = computed(() => {
   const t = tastesRaw.value
-  if (!t) return '口味收集中…'
+  if (!t) return '口味数据没拿到，刷新试试'
   const got = Object.values(t).filter((s) => s?.stamped).map((s) => s.name)
   if (got.length === 0) return '还没有集到口味章，去看片吧'
   return `口味：${got.slice(0, 2).join(' / ')}${got.length > 2 ? ` 等 ${got.length} 种` : ''}`

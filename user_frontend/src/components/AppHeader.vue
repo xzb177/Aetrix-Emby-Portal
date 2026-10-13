@@ -197,6 +197,12 @@ function relTime(iso?: string): string {
   return iso.slice(0, 10)
 }
 
+/** meta 拼装：时间非法时不留悬空分隔符 */
+function msgMeta(label: string, iso?: string): string {
+  const rt = relTime(iso)
+  return rt ? `${label} · ${rt}` : label
+}
+
 /**
  * 铃铛预览：未读优先（同名合并成一条 + 条数），再接置顶公告。
  *
@@ -227,7 +233,7 @@ async function loadMsgPreview() {
       const row: MsgPreviewItem = {
         key: `m${m.id}`,
         title: m.title,
-        meta: `${MSG_LABELS[m.message_type] || '通知'} · ${relTime(m.created_at)}`,
+        meta: msgMeta(MSG_LABELS[m.message_type] || '通知', m.created_at),
         to: '/game/pigeon',
         icon: MSG_ICONS[m.message_type] || Bell,
         unread: true,
@@ -260,7 +266,7 @@ async function loadMsgPreview() {
       ...pinned.map((a) => ({
         key: `a${a.id}`,
         title: a.title,
-        meta: `公告 · ${relTime(a.created_at)}`,
+        meta: msgMeta('公告', a.created_at),
         // 消息中心已迁到信鸽 /game/pigeon（PigeonView 暂不支持 tab 参数，进首页即可）
         to: '/game/pigeon',
         icon: Megaphone,
@@ -422,7 +428,8 @@ async function focusActiveTab(center: boolean) {
 
   if (center) {
     const delta = elRect.left - boxRect.left - (boxRect.width - elRect.width) / 2
-    box.scrollBy({ left: delta, behavior: 'smooth' })
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    box.scrollBy({ left: delta, behavior: reduceMotion ? 'auto' : 'smooth' })
     return
   }
   if (elRect.left < boxRect.left || elRect.right > boxRect.right) {
@@ -574,7 +581,10 @@ onBeforeUnmount(() => {
                   <span v-else class="msg-drop-clear">已全部读完</span>
                 </div>
 
-                <p v-if="msgLoading" class="msg-drop-hint">加载中…</p>
+                <div v-if="msgLoading" class="msg-drop-loading" role="status" aria-label="正在拉取最新消息">
+                  <div class="au-skeleton"></div>
+                  <div class="au-skeleton"></div>
+                </div>
                 <template v-else-if="msgPreview.length">
                   <RouterLink
                     v-for="p in msgPreview"
@@ -612,7 +622,7 @@ onBeforeUnmount(() => {
               class="user-btn round-btn"
               :aria-expanded="userMenuOpen"
               aria-haspopup="menu"
-              :aria-label="`${displayName} · 账号菜单`"
+              :aria-label="unreadCount > 0 ? `${displayName} · 账号菜单 · ${unreadCount} 条未读消息` : `${displayName} · 账号菜单`"
               :title="displayName"
               @click="toggleUserMenu"
             >
@@ -717,6 +727,8 @@ onBeforeUnmount(() => {
 .app-header {
   position: sticky;
   top: 0;
+  /* PWA 刘海屏：顶栏垫进状态栏安全区（非刘海机 env 为 0，无副作用） */
+  padding-top: env(safe-area-inset-top, 0px);
   z-index: 50;
   /* 暗房影院：顶栏 = 页面底色 0.96 + 模糊（滚过去的内容不再透出字形）+ 一根发丝线。
      两套主题都是同一个配方（--au-chrome 在浅色下是奶油纸色） */
@@ -741,12 +753,16 @@ onBeforeUnmount(() => {
 }
 
 .header-logo {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.5rem;
   text-decoration: none;
   flex-shrink: 0;
 }
+
+/* 触点 44px：::after 透明扩展，品牌行视觉不变 */
+.header-logo::after { content: ""; position: absolute; top: -10px; right: -8px; bottom: -10px; left: -8px; }
 
 .logo-mark {
   width: 26px;
@@ -800,6 +816,9 @@ onBeforeUnmount(() => {
   text-decoration: none;
   transition: color var(--au-fast) var(--au-ease);
 }
+
+/* 触点 44px：::before 透明扩展，安静纯文字导航视觉不变（::after 留给当前页圆点） */
+.nav-link::before { content: ""; position: absolute; top: -7px; right: 0; bottom: -7px; left: 0; }
 
 .nav-link svg { display: none; }
 
@@ -905,6 +924,7 @@ onBeforeUnmount(() => {
 
 /* 积分徽章：顶栏常驻小 pill，显示当前积分，点击进钱包 */
 .points-pill {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
@@ -919,6 +939,10 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
 }
+
+/* 触点 44px：::after 透明扩展，胶囊视觉不变（R30 先例） */
+.points-pill::after { content: ""; position: absolute; top: -9px; right: 0; bottom: -9px; left: 0; }
+
 .points-pill:hover {
   border-color: var(--au-primary);
   color: var(--au-text);
@@ -1000,21 +1024,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.dropdown-badge {
-  margin-left: auto;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: var(--au-r-full);
-  background: var(--au-danger);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .avatar {
   width: 30px;
   height: 30px;
@@ -1031,6 +1040,7 @@ onBeforeUnmount(() => {
 /* ==================== 用户菜单样式已移至全局块（Teleport） ==================== */
 
 .login-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   height: 36px;
@@ -1043,6 +1053,10 @@ onBeforeUnmount(() => {
   text-decoration: none;
   transition: transform var(--au-fast);
 }
+
+/* 触点 44px：::after 透明扩展，琥珀按钮视觉尺寸不变（R30 先例） */
+.login-btn::after { content: ""; position: absolute; top: -4px; right: -8px; bottom: -4px; left: -8px; }
+
 .login-btn:hover { filter: brightness(1.08); }
 
 /* 过渡：柔和上浮淡入（opacity+transform，合成器友好） */
@@ -1051,6 +1065,8 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .dd-enter-active, .dd-leave-active { transition: none; }
+  /* 位移类 :active 缩放动效在减弱动态下关闭 */
+  .nav-link:active, .round-btn:active, .dropdown-facility:active { transform: none; }
 }
 
 /* 窄屏：导航条目收窄（顶栏右侧只剩两枚圆形按钮，不再需要给用户名让宽度） */
@@ -1226,12 +1242,20 @@ onBeforeUnmount(() => {
   color: var(--au-text-3);
   border-bottom: 1px solid var(--au-border);
 }
+.msg-drop-loading {
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  border-bottom: 1px solid var(--au-border);
+}
+.msg-drop-loading .au-skeleton { height: 44px; }
 .msg-drop-foot {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.1875rem;
-  padding: 0.6875rem 1rem;
+  padding: 0.875rem 1rem;
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--au-primary);
@@ -1315,7 +1339,7 @@ onBeforeUnmount(() => {
   font-size: 0.8125rem;
   text-decoration: none;
   cursor: pointer;
-  transition: all var(--au-fast);
+  transition: background-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
   text-align: left;
 }
 .dropdown-item:hover { background: var(--au-surface-2); color: var(--au-text); }
