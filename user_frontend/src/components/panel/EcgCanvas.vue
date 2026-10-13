@@ -45,11 +45,6 @@ function paint() {
 }
 
 function draw(ts: number) {
-  // 页面不可见时暂停（性能纪律）
-  if (document.hidden) {
-    raf = requestAnimationFrame(draw)
-    return
-  }
   if (ts - last >= STEP_MS) {
     last = ts
     data.shift()
@@ -77,6 +72,16 @@ function onResize() {
   if (reducedMotion) paint() // 静态模式 resize 后重画一帧
 }
 
+function onVis() {
+  if (document.hidden) {
+    cancelAnimationFrame(raf)
+    raf = 0
+  } else if (!raf && !reducedMotion) {
+    last = 0 // 从后台回来时丢弃旧时间戳，避免跳帧
+    raf = requestAnimationFrame(draw)
+  }
+}
+
 onMounted(() => {
   size()
   window.addEventListener('resize', onResize)
@@ -86,10 +91,12 @@ onMounted(() => {
     paint()
     return
   }
+  document.addEventListener('visibilitychange', onVis)
   raf = requestAnimationFrame(draw)
 })
 onUnmounted(() => {
   cancelAnimationFrame(raf)
+  document.removeEventListener('visibilitychange', onVis)
   window.removeEventListener('resize', onResize)
 })
 </script>

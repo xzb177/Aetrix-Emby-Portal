@@ -84,8 +84,10 @@ const getToastClass = (type: string) => {
   position: fixed;
   /* 贴在吸顶导航下方，并让开刘海区 */
   top: calc(74px + env(safe-area-inset-top, 0px));
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: max-content;
   z-index: var(--z-tooltip, 700);
   display: flex;
   flex-direction: column;

@@ -1,6 +1,6 @@
 <template>
   <div class="v4-passport" role="list" aria-label="口味护照">
-    <h3>TASTE PASSPORT · 已集 {{ stampedCount }}/{{ tastes.length }}</h3>
+    <h3>口味护照 · 已集 {{ stampedCount }}/{{ tastes.length }}</h3>
     <div class="v4-stamps">
       <div
         v-for="t in tastes"

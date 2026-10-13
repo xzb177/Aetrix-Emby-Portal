@@ -4,7 +4,7 @@
     <h3>{{ statusLine }}</h3>
     <div class="cond">
       <template v-if="backlog > 0">
-        刚吃下 <b>{{ backlog }}</b> 条待刮削，正在慢慢消化<br>心跳正常 · 胃口很好
+        刚吃下 <b>{{ backlog }}</b> 条待消化，正在慢慢消化<br>心跳正常 · 胃口很好
       </template>
       <template v-else>
         肠胃清空，一身轻松<br>心跳正常 · 体温正常 · 随时待命
@@ -61,7 +61,7 @@ const levelText = computed(() => {
   if (lv === 'healthy') return '健康'
   if (lv === 'degraded') return '亚健康'
   if (lv === 'down') return '故障'
-  return String(props.vitals.level ?? '—')
+  return '—'
 })
 
 const vitalCells = computed(() => {
@@ -69,7 +69,7 @@ const vitalCells = computed(() => {
   const stText =
     st === 'healthy' || st === 'up' ? '在线' :
     st === 'degraded' ? '有点累' :
-    st === 'down' ? '趴窝' : String(props.vitals.status || props.vitals.level || '—')
+    st === 'down' ? '趴窝' : '—'
   return [
     { value: stText, label: '状态' },
     { value: backlog.value > 0 ? `${backlog.value}` : '0', label: '待消化' },

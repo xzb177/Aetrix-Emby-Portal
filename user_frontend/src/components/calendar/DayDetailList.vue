@@ -67,8 +67,10 @@ function weekdayOf(date: string): string {
       <span v-if="selectedDay" class="au-badge au-badge-cyan">{{ selectedDay.count }} 条新上</span>
     </header>
 
-    <div v-if="loading" class="au-empty">
-      <span class="au-spinner" aria-hidden="true" />
+    <div v-if="loading" class="v4-skeleton-daylist" aria-label="正在加载这一天的上新" role="status">
+      <span class="v4-skeleton" />
+      <span class="v4-skeleton" />
+      <span class="v4-skeleton" />
     </div>
 
     <div v-else-if="!selectedDate" class="au-empty">

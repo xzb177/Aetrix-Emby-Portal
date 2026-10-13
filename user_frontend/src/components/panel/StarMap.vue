@@ -1,7 +1,7 @@
 <template>
   <div class="v4-sky">
-    <h3>CONSTELLATION · {{ unlockedCount }} 颗已点亮</h3>
-    <svg ref="svgEl" viewBox="0 0 335 230" role="img" aria-label="成就星图"></svg>
+    <h3>成就星图 · {{ unlockedCount }} 颗已点亮</h3>
+    <svg ref="svgEl" viewBox="0 0 335 230" role="group" aria-label="成就星图"></svg>
     <div v-if="tipVisible" class="v4-star-tip" v-html="tipHtml"></div>
   </div>
 </template>
@@ -102,6 +102,18 @@ function render() {
   }
   // 星星
   list.forEach((n) => {
+    // 透明大圆热区：触摸目标 ≥44px，视觉半径不变
+    const hot = document.createElementNS(NS, 'circle')
+    hot.setAttribute('cx', String(n.x))
+    hot.setAttribute('cy', String(n.y))
+    hot.setAttribute('r', '22')
+    hot.setAttribute('fill', 'transparent')
+    hot.style.cursor = 'pointer'
+    hot.addEventListener('click', (e) => {
+      e.stopPropagation()
+      onStar(n)
+    })
+    svg.appendChild(hot)
     const c = document.createElementNS(NS, 'circle')
     c.setAttribute('cx', String(n.x))
     c.setAttribute('cy', String(n.y))
