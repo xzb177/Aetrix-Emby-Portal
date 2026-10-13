@@ -208,6 +208,30 @@ class TestDedupeSameVersionSize:
         files = _strm_files(tmp_path)
         assert files == [STEM]
 
+    def test_unknown_size_never_deduped(self, tmp_path, monkeypatch):
+        """R34：大小未知（size=0）的两个不同文件 → 不去重，各自生成（-2 改名）。"""
+        vids = {
+            "d1": [(REL, "fid1", 0)],
+            "d2": [(REL, "fid2", 0)],
+        }
+        res = _two_drives(monkeypatch, tmp_path, vids, {})
+        assert res["ok"] is True
+        stats = res["stats"]
+        assert stats["generated"] == 2
+        assert stats["deduped"] == 0
+        files = _strm_files(tmp_path)
+        assert len(files) == 2
+        assert any("-2" in f for f in files)
+
+    def test_progress_has_deduped_key(self, tmp_path, monkeypatch):
+        """R34：_progress 初始即含 deduped 键；reset 后清零不残留。"""
+        assert "deduped" in sg._progress
+        sg._set_progress(deduped=7)
+        assert sg._progress["deduped"] == 7
+        sg._reset_progress()
+        assert sg._progress["deduped"] == 0
+        sg._set_progress(running=False, phase="idle")
+
 
 class TestDedupeConfigReader:
     def test_default_on(self):

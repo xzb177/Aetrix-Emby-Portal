@@ -1424,6 +1424,16 @@ async function confirmRescrape() {
 
 /** 取消一个还在排队的扫描（正在跑的取不了：停在中途会留下半个库的状态） */
 async function cancelQueued(t: EmbyScanTask) {
+  // R34：排队取消虽可重排，仍加一次轻确认防手滑（Batch B 口径：直接执行的操作都要问一句）
+  try {
+    await ElMessageBox.confirm(
+      `取消「${t.name}」的排队扫描？之后可以重新排队。`,
+      '取消排队',
+      { type: 'warning', confirmButtonText: '取消排队', cancelButtonText: '不取消' },
+    )
+  } catch {
+    return
+  }
   await cancelQueuedScan(t.library_id)
   ElMessage.success(`已取消「${t.name}」的排队`)
   await pollQueue()

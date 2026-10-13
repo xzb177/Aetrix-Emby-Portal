@@ -1417,6 +1417,7 @@ _progress: dict[str, Any] = {
     "generated": 0,
     "skipped": 0,
     "failed": 0,
+    "deduped": 0,             # R34：同名同大小去重跳过数（init 即声明，避免动态键）
     "errors": [],             # 最近的错误信息（最多 20 条）
     "current": "",            # 当前处理的文件
 }
@@ -2152,6 +2153,7 @@ def _reset_progress():
             "started_at": datetime.now(timezone.utc).isoformat(),
             "finished_at": None, "total": 0, "done": 0,
             "generated": 0, "skipped": 0, "failed": 0, "pruned": 0,
+            "deduped": 0,  # R34：reset 即清零，上一轮旧值不残留
             "errors": [], "current": "",
             # B1：直接调 run_owned（管理后台手动触发）不经过 try_acquire，
             # 这里也刷新获取时刻与 token，保证僵死判定口径一致。
@@ -2591,13 +2593,15 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
             matched = next((p for p in src_prefixes if p and rel.startswith(p)), "")
             desired = strm_relpath(rel, matched)
             _registered = full and loaded_state.get((did, rel)) is not None
-            if (dedupe_enabled and not _registered
+            if (dedupe_enabled and not _registered and size > 0
                     and desired in used and size_by_path.get(desired) == size):
                 # 同名同大小去重（2026-10-14 用户规则）：与已登记/已生成文件
                 # 同输出 stem、同字节大小 → 重复，只留一份，跳过生成。
                 # 不登记状态行：重复项不占 DB，下轮仍靠本判定跳过（纯本地比对，零 API）。
                 # _registered 守卫：全量下已登记的 (did, rel) 走复用路径（见 #834），
                 # 绝不在去重里跳过——合并顺序无论谁先谁后都不引入新行为。
+                # R34：size>0 守卫——大小未知（0）不参与去重，避免两个未知大小
+                # 的不同文件被误判重复。
                 stats["deduped"] += 1
                 logger.info("strm_gen: 同名同大小去重跳过 rel=%s fid=%s size=%d 保留=%s",
                             rel, fid, size, desired)
