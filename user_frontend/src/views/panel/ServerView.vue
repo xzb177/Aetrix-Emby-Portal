@@ -40,18 +40,13 @@
         <div v-else class="v4-empty">花园里还没有植物</div>
       </section>
 
-      <!-- 机关 -->
+      <!-- 生长记录 -->
       <section class="v4-sec" style="padding-bottom: 20px">
-        <div class="v4-sec-title">🎛️ 机关</div>
-        <div class="v4-sec-sub">
-          扳动它们，服务器照做 —— 拨一下就行
-          <span v-if="data && !data.is_admin" class="v4-lock">🔒 仅管理员可拨</span>
-        </div>
-        <div v-if="server.loading" class="v4-skeleton" style="height: 220px"></div>
-        <div v-else-if="data?.toggles?.length" class="v4-switches">
-          <LeverSwitch v-for="t in data.toggles" :key="t.key" :toggle="t" />
-        </div>
-        <div v-else class="v4-empty">机关室里空空如也</div>
+        <div class="v4-sec-title">📈 生长记录</div>
+        <div class="v4-sec-sub">过去 7 天，片库每天新长了多少</div>
+        <div v-if="server.loading" class="v4-skeleton" style="height: 190px"></div>
+        <GrowthChart v-else-if="data?.growth?.length" :growth="data.growth" />
+        <div v-else class="v4-empty">还没有生长记录</div>
       </section>
       </div>
     </div>
@@ -68,7 +63,7 @@ import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import LifeOrb from '@/components/panel/LifeOrb.vue'
 import RadarCanvas from '@/components/panel/RadarCanvas.vue'
 import EcoGarden from '@/components/panel/EcoGarden.vue'
-import LeverSwitch from '@/components/panel/LeverSwitch.vue'
+import GrowthChart from '@/components/panel/GrowthChart.vue'
 
 const panel = usePanelStore()
 const { server } = storeToRefs(panel)
@@ -85,19 +80,5 @@ function retryServer() {
 </script>
 
 <style scoped>
-.v4-switches {
-  background: var(--paper-card);
-  border: 1.5px solid var(--line);
-  border-radius: 14px;
-  overflow: hidden;
-}
-.v4-lock {
-  display: inline-block;
-  margin-left: 6px;
-  font-size: 10px;
-  color: var(--ink2);
-  border: 1px dotted var(--line);
-  border-radius: 10px;
-  padding: 1px 8px;
-}
+/* 生长记录区无额外样式，复用 v4-sec */
 </style>
