@@ -499,6 +499,23 @@ function usagesFromManage(row: CouponRow) {
 }
 
 async function toggleCoupon(row: CouponRow) {
+  // 停用是危险方向：用户端立刻不能用。加一次确认（启用直接放行，不打扰）。
+  if (row.is_active) {
+    try {
+      await ElMessageBox.confirm(
+        `停用后，用户端将不能再使用优惠券 ${row.code}；已下的订单不受影响，随时可以再启用。`,
+        '停用优惠券',
+        {
+          type: 'warning',
+          confirmButtonText: '停用这张券',
+          cancelButtonText: '取消',
+          confirmButtonClass: 'el-button--danger',
+        },
+      )
+    } catch {
+      return
+    }
+  }
   try {
     await updateCoupon(row.id, { is_active: !row.is_active })
     row.is_active = !row.is_active
@@ -512,9 +529,14 @@ async function toggleCoupon(row: CouponRow) {
 async function handleDelete(row: CouponRow) {
   try {
     await ElMessageBox.confirm(
-      `删除优惠券 ${row.code}？只有从没用过的券可以删除，有核销记录的请改用停用。`,
+      `优惠券 ${row.code} 将被永久删除。只有从没用过的券才能删除——有核销记录的请改用停用，否则对账对不上。`,
       '删除优惠券',
-      { type: 'warning' },
+      {
+        type: 'warning',
+        confirmButtonText: '删除这张优惠券',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger',
+      },
     )
   } catch {
     return
@@ -968,7 +990,7 @@ onMounted(() => {
 
       <template #footer>
         <div class="mg-footer">
-          <el-button v-if="manage.row" type="danger" plain @click="handleDelete(manage.row)">删除</el-button>
+          <el-button v-if="manage.row" type="danger" plain @click="handleDelete(manage.row)">删除这张券</el-button>
           <div class="mg-footer-right">
             <el-button @click="manage.visible = false">关闭</el-button>
             <template v-if="manage.row">

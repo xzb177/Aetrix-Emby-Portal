@@ -16,7 +16,7 @@
  * 判定与处置逻辑在后端 `backend/share_guard.py`，本页只做配置与展示。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CalendarClock, Eraser, History, MapPin, MonitorPlay, RefreshCw, Save, ShieldAlert, ShieldCheck,
   SlidersHorizontal, TriangleAlert, Undo2,
@@ -100,6 +100,30 @@ onMounted(load)
 async function save() {
   const d = draft.value
   if (!d) return
+  // 「处置」档会停用账号、拦下会话：只在**打开**它时多问一句（别的改动不受影响，
+  // 已经开着时调参数也不打扰）。确认框三件套：标题=动作、后果说清、按钮动词+对象。
+  const cur = data.value?.policy
+  const opening: string[] = []
+  if (cur) {
+    if (d.travel_action === 'enforce' && cur.travel_action !== 'enforce') opening.push('跨城市行为轨迹')
+    if (d.concurrent_action === 'enforce' && cur.concurrent_action !== 'enforce') opening.push('同播检测')
+  }
+  if (opening.length) {
+    try {
+      await ElMessageBox.confirm(
+        `打开后，${opening.join('、')}检测会自动停用被判定共享的账号、拦下多余的播放会话；判错一次就是误伤正在看的用户。建议先只用「只记录」观察几天，确认误判少再打开。`,
+        '打开「处置」档',
+        {
+          type: 'warning',
+          confirmButtonText: '打开「处置」档',
+          cancelButtonText: '取消',
+          confirmButtonClass: 'el-button--danger',
+        },
+      )
+    } catch {
+      return
+    }
+  }
   saving.value = true
   try {
     const res = await saveShareGuardPolicy({

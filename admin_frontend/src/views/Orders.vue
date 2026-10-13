@@ -309,9 +309,14 @@ async function afterAction(orderId: string) {
 async function handleClose(row: OrderRow) {
   try {
     await ElMessageBox.confirm(
-      `确认关闭订单 ${row.order_id}？未支付的订单将被作废，用户不会收到通知（他并没有付款）。`,
+      `订单 ${row.order_id} 将被作废；它还没有支付，用户不会收到通知。`,
       '关闭订单',
-      { confirmButtonText: '确认关闭', cancelButtonText: '取消', type: 'warning' },
+      {
+        confirmButtonText: '关闭这个订单',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      },
     )
   } catch {
     return
@@ -598,7 +603,7 @@ onMounted(() => {
       </el-form>
       <template #footer>
         <el-button @click="refundDialog.visible = false">取消</el-button>
-        <el-button type="danger" :loading="refundSaving" @click="submitRefund">确认退款</el-button>
+        <el-button type="danger" :loading="refundSaving" @click="submitRefund">退这笔款</el-button>
       </template>
     </el-dialog>
 
@@ -632,7 +637,7 @@ onMounted(() => {
       </el-form>
       <template #footer>
         <el-button :disabled="bulkBusy" @click="batchRefundDialog.visible = false">取消</el-button>
-        <el-button type="danger" :loading="bulkBusy" @click="submitBatchRefund">确认退款</el-button>
+        <el-button type="danger" :loading="bulkBusy" @click="submitBatchRefund">退这批款</el-button>
       </template>
     </el-dialog>
 
