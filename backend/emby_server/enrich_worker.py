@@ -499,8 +499,9 @@ CFG_ENRICH_TMDB_BATCH = "enrich_tmdb_batch"
 CFG_ENRICH_MAX_ATTEMPTS = "enrich_max_attempts"
 CFG_ENRICH_RETRY_BASE_SEC = "enrich_retry_base_sec"
 CFG_ENRICH_CLAIM_LEASE_SEC = "enrich_claim_lease_sec"
-# Step 3 / Step 4 的占坑位：本步只做可配 + UI，不接入认领 / 回捞逻辑
+# Step 3 的配额制开关（flag，默认 0=关）；Step 4 的占坑位仍只可配不接入
 CFG_ENRICH_EPISODE_DAY_QUOTA = "enrich_episode_day_quota"
+CFG_ENRICH_EPISODE_QUOTA_MODE = "enrich_episode_quota_mode"
 CFG_ENRICH_NONE_RESCHEDULE_DAYS = "enrich_none_reschedule_days"
 
 # (config_key, env_name, 默认值str, 类型, 下限钳制, 中文说明, 是否重启生效)
@@ -520,7 +521,10 @@ _ENRICH_TUNING_SPECS = [
     (CFG_ENRICH_CLAIM_LEASE_SEC, ENRICH_CLAIM_LEASE_SEC_ENV, "900", "int", 60,
      "认领租约（秒）：worker 停滞超过租约即视为死亡、由 janitor 回收", False),
     (CFG_ENRICH_EPISODE_DAY_QUOTA, None, "2000", "int", 0,
-     "【Step 3 占坑】白天单集日配额；Step 3 接入前改这里不影响实际行为", False),
+     "白天单集日配额（配额制开时生效；夜间窗口内不限；设 0 = 回到夜间禁令制）", False),
+    (CFG_ENRICH_EPISODE_QUOTA_MODE, None, "0", "flag1", None,
+     "单集认领配额制开关（链路规划 Step 3）：1=白天单集按日配额认领（夜间不限），"
+     "0=夜间窗口禁令制（默认，行为与 Step 3 前一致）", False),
     (CFG_ENRICH_NONE_RESCHEDULE_DAYS, None, "30", "int", 1,
      "【Step 4 占坑】none 条目自动回捞周期（天）；Step 4 接入前改这里不影响实际行为", False),
 ]
@@ -542,7 +546,17 @@ def _parse_tuning_value(kind: str, minimum, value_str: str, default: str):
             v = 0
         return max(1, min(v, 16)) if v > 0 else 8
     if kind == "flag1":
-        # 口径照抄现状：os.getenv("ENRICH_TMDB_BATCH", "1") == "1"
+        # 原口径：os.getenv("ENRICH_TMDB_BATCH", "1") == "1"（字符串精确比较）。
+        # 补：管理后台开关发 JSON 布尔，save 路径里 str(val) 后变成 "True"/
+        # "False"，必须显式归一化——否则"开"会存成"0"（Step 1 留下的 latent bug，
+        # Step 3 接入配额制开关前修好）。
+        if isinstance(value_str, bool):
+            return value_str
+        _low = "" if value_str is None else str(value_str).strip().lower()
+        if _low in ("true", "1"):
+            return True
+        if _low in ("false", "0"):
+            return False
         return (value_str if value_str is not None else "1") == "1"
     try:
         v = int(str(value_str).strip())
@@ -2297,6 +2311,76 @@ def _claim_group_atomic(db, q, now) -> list:
     return [rows_by_id[i] for i in cand_ids if i in rows_by_id]
 
 
+# ---------------------------------------------------------------------------
+# 单集认领配额制（链路规划 Step 3）
+#
+# 夜间窗口从"禁令制"改"配额制"：
+#   - feature flag enrich_episode_quota_mode（SystemConfig，默认 0=关）。
+#     关时下面逻辑全部短路，行为与 Step 3 前逐字节一致。
+#   - flag 开 + 夜间窗口内（或夜间开关根本没开）→ 单集不限量；
+#   - flag 开 + 窗口外 → 当天已认领 episode 条数 < 有效配额时才认领单集；
+#   - 豆瓣封禁中 → 有效配额按 0.5 系数减半（写死，UI 文字说明）；
+#   - 配额设 0 → 窗口外永远跳过单集 = 回到禁令制（回滚口径）。
+#
+# 配额口径：enrich_claimed_at >= 今日 0 点（服务器本地时间）且
+# item_type='episode' 的行数。_claim_batch 里一次 COUNT 查询，不给抢单加负担。
+#
+# 反风控：配额放开只影响"认不认领"，不改变抓取路径。单集主要走纯继承
+# （不读 NFO、不查 TMDB：见 _enrich_fetch_pre 纯继承快路径 +
+# _parent_should_wait 的注释 "episode 从不走 TMDB 搜索，只靠父级继承"；
+# 同轮拉单集数据走 _fetch_episode_tmdb，按 key 独立桶限流（#794）），
+# 从不走豆瓣 search（_douban_fallback_on_tmdb_miss 与
+# _douban_ban_presearch_skip 都只认 kind in ("series", "movie")）。
+# 所以放开配额不增加豆瓣 search 请求。
+# ---------------------------------------------------------------------------
+EPISODE_QUOTA_BAN_FACTOR = 0.5  # 封禁期配额减半（写死，UI 文字说明）
+
+
+def _douban_currently_banned() -> bool:
+    """豆瓣当前是否封禁中（封禁冷却剩余 > 0）。判定不了 → 保守按未封禁。"""
+    try:
+        from backend.emby_server import douban as _dbn
+        return _dbn.ban_remaining() > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def enrich_episode_quota_used_today(db) -> int:
+    """当天已认领的 episode 条数（一次 COUNT，抢单外不产生额外负担）。"""
+    from sqlalchemy import func as _func
+    today0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (db.query(_func.count(em.MediaItem.id))
+            .filter(em.MediaItem.item_type == "episode",
+                    em.MediaItem.enrich_claimed_at.isnot(None),
+                    em.MediaItem.enrich_claimed_at >= today0)
+            .scalar() or 0)
+
+
+def enrich_episode_quota_status(db) -> dict:
+    """配额状态（管理后台只读展示 + _claim_batch 用尽判定用）。"""
+    mode = bool(enrich_tuning_value(CFG_ENRICH_EPISODE_QUOTA_MODE, db))
+    quota = int(enrich_tuning_value(CFG_ENRICH_EPISODE_DAY_QUOTA, db))
+    banned = _douban_currently_banned()
+    effective = int(quota * EPISODE_QUOTA_BAN_FACTOR) if banned else quota
+    night = _episode_night_config(db)
+    used = enrich_episode_quota_used_today(db)
+    night_enabled = bool(night["enabled"])
+    in_window = bool(night["in_window"])
+    return {
+        "mode": mode,
+        "day_quota": quota,
+        "used_today": used,
+        "banned": banned,
+        "effective_quota": effective,
+        "night_enabled": night_enabled,
+        "in_window": in_window,
+        # flag 关时=旧行为；夜间开关没开时=旧行为；窗口内不限；
+        # 窗口外：用尽才拦（顶层条目不受配额影响，见 _claim_batch）。
+        "episode_allowed_now": (not mode) or (not night_enabled)
+        or in_window or used < effective,
+    }
+
+
 def _claim_batch(db, limit: int) -> list:
     """原子抢一批待补全条目（多 worker/多进程不重复）。
 
@@ -2330,12 +2414,29 @@ def _claim_batch(db, limit: int) -> list:
     # 单集夜间刮削：开关开且当前不在夜间窗口内 → 抢单时跳过单集（episode），
     # 白天优先刮顶层条目（movie/series/season）。夜间窗口内不限制。
     # 时间用服务器本地时间。默认关闭，不改变现有行为。
+    # 链路规划 Step 3：配额制 flag（enrich_episode_quota_mode）开时，下面分支
+    # 改为"窗口外按日配额限单集"，flag 关时走原禁令制口径。
     _night_cfg = _episode_night_config(db)
-    _skip_episode = _night_cfg["enabled"] and not _night_cfg["in_window"]
-    if _skip_episode:
-        logger.debug("单集夜间刮削：当前 %s 不在夜间窗口 %s-%s，跳过单集",
-                     datetime.now().strftime("%H:%M"),
-                     _night_cfg["night_start"], _night_cfg["night_end"])
+    if enrich_tuning_value(CFG_ENRICH_EPISODE_QUOTA_MODE, db):
+        # 链路规划 Step 3：配额制。窗口语义从"白天禁令"改为
+        # "白天单集日配额 X，夜间不限"：
+        #   - 夜间开关没开 / 在窗口内 → 不限；
+        #   - 窗口外 → 当天已认领单集数 < 有效配额时才认领（用尽后顶层条目不受影响）。
+        #   配额设 0 = 用尽判定恒成立 = 回到禁令制（回滚口径）。
+        _qs = enrich_episode_quota_status(db)
+        _skip_episode = (_qs["night_enabled"] and not _qs["in_window"]
+                         and _qs["used_today"] >= _qs["effective_quota"])
+        logger.debug("单集配额制：窗口内=%s 已用=%s/有效配额=%s（封禁减半=%s）%s",
+                     _qs["in_window"], _qs["used_today"],
+                     _qs["effective_quota"], _qs["banned"],
+                     "跳过单集" if _skip_episode else "可认领单集")
+    else:
+        # flag 关：行为与 Step 3 前逐字节一致（禁令制）
+        _skip_episode = _night_cfg["enabled"] and not _night_cfg["in_window"]
+        if _skip_episode:
+            logger.debug("单集夜间刮削：当前 %s 不在夜间窗口 %s-%s，跳过单集",
+                         datetime.now().strftime("%H:%M"),
+                         _night_cfg["night_start"], _night_cfg["night_end"])
     not_episode = True if not _skip_episode else (em.MediaItem.item_type != "episode")
     group_key = _func.coalesce(em.MediaItem.series_id, em.MediaItem.id)
 

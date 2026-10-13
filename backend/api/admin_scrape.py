@@ -1148,7 +1148,7 @@ def save_enrich_episode_night(
 # ==================== 刮削性能参数（链路规划 Step 1：配置面收口）====================
 
 class EnrichTuningSaveRequest(BaseModel):
-    values: dict = Field(default_factory=dict, description="8 个性能参数的待保存值（key 必须在白名单内）")
+    values: dict = Field(default_factory=dict, description="9 个性能参数的待保存值（key 必须在白名单内）")
     db_pool_size: Optional[str] = Field(default=None, description="DB 连接池大小（进程启动时解析，改完需重启进程）")
 
 
@@ -1161,7 +1161,19 @@ def get_enrich_tuning(
 
     线程数（enrich_workers）与 DB 池大小（db_pool_size）改完需重启进程生效，
     其余保存后 60 秒内热生效。from_env 为真时环境变量覆盖了后台配置（改这里不生效）。
+    episode_quota：单集认领配额制状态（链路规划 Step 3，只读：当天已用配额等）。
     """
+    from backend import database as dbmod
+    from backend.emby_server import enrich_worker
+    from backend.integrations import store
+    cfg = enrich_worker.get_enrich_tuning_config(db)
+    pool = dbmod.db_pool_config()
+    # 已保存但待重启的池大小（与当前生效值不同时提示）
+    saved_pool = (store.read_value(db, dbmod.CFG_DB_POOL_SIZE, "") or "").strip()
+    pool["saved_pool_size"] = saved_pool
+    pool["pending_restart"] = bool(saved_pool) and saved_pool != str(pool["pool_size"])
+    return {"success": True, **cfg, "db_pool": pool,
+            "episode_quota": enrich_worker.enrich_episode_quota_status(db)}
     from backend import database as dbmod
     from backend.emby_server import enrich_worker
     from backend.integrations import store
