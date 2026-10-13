@@ -177,7 +177,11 @@ class _RequestLimiter:
                     self._tokens -= 1.0
                     return
                 wait = (1.0 - self._tokens) / self._rate
-            time.sleep(min(wait, 0.5))
+            # v2.56.0：等待加 0~20% 随机抖动——令牌桶本身是完全规律的，
+            # 多 worker 齐步时会形成固定节拍。抖动打破规律性，防 TMDB 风控。
+            # （反风控原则：轮询/多账号切换必须加随机抖动、避免完全规律的轮换模式）
+            jittered = wait * (1.0 + random.random() * 0.2)
+            time.sleep(min(jittered, 0.6))
 
     def note_throttled(self, retry_after: Optional[float] = None) -> float:
         """429：速率乘性下调并返回建议等待秒数（已按上限截断）"""
@@ -1132,7 +1136,10 @@ class TmdbClient:
         excluded = set(exclude)
         now = time.monotonic()
         # 轮转起点：默认从第一把开始（裸客户端没有 _key_index 时也是从 0 起）
-        start = int(getattr(self, "_key_index", 0) or 0)
+        # v2.56.0：加随机偏移——多 worker/多进程同时启动时不要齐步用同一把 key，
+        # 避免规律性被 TMDB 风控（反风控原则：请求间隔随机化）。
+        start = (int(getattr(self, "_key_index", 0) or 0)
+                 + random.randint(0, max(0, len(keys) - 1))) % max(1, len(keys))
         with self._key_lock():
             total = len(keys)
             for step in range(total):
