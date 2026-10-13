@@ -85,6 +85,25 @@ const router = createRouter({
             component: () => import('@/views/game/SupplyLogView.vue'),
             meta: { title: '补给记录', requiresAuth: true },
           },
+          // v4 游戏化第三批：营地设施（需要登录）
+          {
+            path: '/game/companion',
+            name: 'game-companion',
+            component: () => import('@/views/game/CompanionView.vue'),
+            meta: { title: '结伴同行', requiresAuth: true },
+          },
+          {
+            path: '/game/guide',
+            name: 'game-guide',
+            component: () => import('@/views/game/GuideView.vue'),
+            meta: { title: '向导', requiresAuth: true },
+          },
+          {
+            path: '/game/outfit',
+            name: 'game-outfit',
+            component: () => import('@/views/game/OutfitView.vue'),
+            meta: { title: '换装', requiresAuth: true },
+          },
         ]
       : []),
     {
@@ -240,7 +259,7 @@ router.beforeEach(async (to) => {
 
 // v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
-const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply'])
+const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit'])
 function restoreUserTheme() {
   // 从 useTheme.ts 同 key 读用户偏好（默认 dark），恢复 data-theme
   let pref = 'dark'
