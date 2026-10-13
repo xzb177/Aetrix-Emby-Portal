@@ -99,17 +99,39 @@ const watchHoursText = computed(() => {
 const streakText = computed(() => data.value.streak ?? '–')
 const achievementCount = computed(() => data.value.achievement_count ?? '–')
 
-/* ---------- 等级徽章：按成就数给称号 ---------- */
+/* ---------- 等级徽章：按成就数给称号 ----------
+   R34：阈值改为 API 驱动——后端若在 /api/panel/collector 返回 level_tiers
+   （[{min: 成就数下限, title: 称号}]，按 min 从高到低），前端直接采用；
+   无该字段时用本地兜底（与当前线上值一致），避免无称号。 */
+interface CollectorLevelTier { min: number; title: string }
+const FALLBACK_LEVEL_TIERS: CollectorLevelTier[] = [
+  { min: 30, title: '传奇藏家' },
+  { min: 20, title: '大藏家' },
+  { min: 10, title: '资深藏家' },
+  { min: 5, title: '藏家' },
+  { min: 1, title: '新锐' },
+]
+const BASE_TITLE = '见习'
+
+const levelTiers = computed((): CollectorLevelTier[] => {
+  const raw = data.value.level_tiers
+  if (Array.isArray(raw) && raw.length > 0 && raw.every(
+    (t) => t && typeof (t as CollectorLevelTier).min === 'number' && typeof (t as CollectorLevelTier).title === 'string',
+  )) {
+    return [...raw as CollectorLevelTier[]].sort((a, b) => b.min - a.min)
+  }
+  return FALLBACK_LEVEL_TIERS
+})
+
 const levelText = computed(() => {
   // achievement_count 缺失时与统计区口径统一：显示 '–'，不按 0 假装 Lv.1
   if (typeof data.value.achievement_count !== 'number') return '–'
   const c = data.value.achievement_count
-  if (c >= 30) return 'Lv.6 · 传奇藏家'
-  if (c >= 20) return 'Lv.5 · 大藏家'
-  if (c >= 10) return 'Lv.4 · 资深藏家'
-  if (c >= 5) return 'Lv.3 · 藏家'
-  if (c >= 1) return 'Lv.2 · 新锐'
-  return 'Lv.1 · 见习'
+  const tiers = levelTiers.value
+  for (let i = 0; i < tiers.length; i++) {
+    if (c >= tiers[i].min) return `Lv.${tiers.length - i + 1} · ${tiers[i].title}`
+  }
+  return `Lv.1 · ${BASE_TITLE}`
 })
 
 /* ---------- 口味标题：取已集的前两个 ---------- */

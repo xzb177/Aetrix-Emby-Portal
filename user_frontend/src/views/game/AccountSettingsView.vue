@@ -5,7 +5,7 @@
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('account') }}</span>
         <h1>⚙️ 账号设置</h1>
-        <p>改登录密码、看我的订阅、管我的设备 —— 账号自己的事都在这儿。</p>
+        <p>改登录密码、看我的会员、管我的设备 —— 账号自己的事都在这儿。</p>
       </header>
 
       <!-- 安全设置：修改登录密码（逻辑由 ProfileView 移植，authApi.changePassword） -->
@@ -23,7 +23,7 @@
 
       <!-- 我的订阅：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
       <section class="v4-sec" aria-label="我的订阅">
-        <div class="v4-sec-sub">订阅到期、历史账单、取消续订都在这里</div>
+        <div class="v4-sec-sub">会员到期、历史账单、取消续订都在这里</div>
         <div v-if="subsError" class="v4-err">订阅加载失败：{{ subsError }}<br><button class="v4-retry" @click="loadSubs">重试</button></div>
         <ProfileSubscriptions
           v-else

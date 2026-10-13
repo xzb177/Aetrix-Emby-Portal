@@ -109,31 +109,6 @@ body.theme-transition *::after {
 }
 
 /* ========================================
-   玻璃态效果（Glassmorphism）
-   ======================================== */
-
-/* 基础玻璃态 / 玻璃态导航（同一套外观，合成一条规则） */
-.glass,
-.glass-nav {
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-}
-
-/* 玻璃态卡片 */
-.glass-card {
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-lg);
-  transition: background-color var(--au-fast) var(--au-ease),
-              border-color var(--au-fast) var(--au-ease);
-}
-
-.glass-card:hover {
-  background: var(--au-surface-2);
-  border-color: var(--au-border-strong);
-}
-
-/* ========================================
    按钮样式
    ======================================== */
 
@@ -171,18 +146,6 @@ body.theme-transition *::after {
   transform: scale(0.98);
 }
 
-/* 次要按钮 - 玻璃态 */
-.btn-secondary {
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  color: var(--au-text);
-}
-
-.btn-secondary:hover {
-  background: var(--au-surface-3);
-  border-color: var(--au-border-strong);
-}
-
 /* 幽灵按钮 */
 .btn-ghost {
   background: transparent;
@@ -192,17 +155,6 @@ body.theme-transition *::after {
 .btn-ghost:hover {
   background: var(--au-surface-2);
   color: var(--au-text);
-}
-
-/* 危险按钮 - 底色 / 文字用同一支语义色，不再出现两套红 */
-.btn-danger {
-  background: var(--au-danger-soft);
-  border: 1px solid var(--au-danger-border);
-  color: var(--au-danger);
-}
-
-.btn-danger:hover {
-  background: var(--au-danger-border);
 }
 
 /* 键盘焦点：统一走品牌色环（鼠标点击不会出现轮廓） */
@@ -220,7 +172,6 @@ body.theme-transition *::after {
 /* 按下时不要在触屏上留下“粘住”的悬停样式 */
 @media (hover: none) {
   .btn-primary:hover,
-  .btn-secondary:hover,
   .btn-ghost:hover {
     transform: none;
   }
@@ -284,95 +235,13 @@ body.theme-transition *::after {
    动画
    ======================================== */
 
-/* 淡入动画 */
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes fadeInUp {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes fadeInDown {
-  from {
-    opacity: 0;
-    transform: translateY(-20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes fadeInLeft {
-  from {
-    opacity: 0;
-    transform: translateX(-20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes fadeInRight {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes scaleIn {
-  from {
-    opacity: 0;
-    transform: scale(0.9);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes slideInUp {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes slideInDown {
-  from {
-    transform: translateY(-100%);
-  }
-  to {
-    transform: translateY(0);
-  }
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
+/* 动画（脉冲 / 抖动 / 骨架屏扫光：CheckinView、SignalView、骨架屏在用，保留） */
 @keyframes pulse {
   0%, 100% {
     opacity: 1;
   }
   50% {
     opacity: 0.5;
-  }
-}
-
-@keyframes bounce {
-  0%, 100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-10px);
   }
 }
 
@@ -397,84 +266,6 @@ body.theme-transition *::after {
   }
 }
 
-/* 动画工具类 */
-.animate-fadeIn { animation: fadeIn 0.3s ease; }
-.animate-fadeInUp { animation: fadeInUp 0.7s ease; }
-.animate-fadeInDown { animation: fadeInDown 0.4s ease; }
-.animate-fadeInLeft { animation: fadeInLeft 0.4s ease; }
-.animate-fadeInRight { animation: fadeInRight 0.4s ease; }
-.animate-scaleIn { animation: scaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
-.animate-slideInUp { animation: slideInUp 0.3s ease-out; }
-.animate-slideInDown { animation: slideInDown 0.3s ease-out; }
-.animate-spin { animation: spin 1s linear infinite; }
-.animate-pulse { animation: pulse 2s ease-in-out infinite; }
-.animate-bounce { animation: bounce 1s ease-in-out infinite; }
-.animate-shake { animation: shake 0.5s ease-in-out; }
-
-/* 列表交错动画类 */
-.stagger-item {
-  opacity: 0;
-  animation: fadeInUp 0.4s ease forwards;
-}
-
-.stagger-item:nth-child(1) { animation-delay: 0ms; }
-.stagger-item:nth-child(2) { animation-delay: 50ms; }
-.stagger-item:nth-child(3) { animation-delay: 100ms; }
-.stagger-item:nth-child(4) { animation-delay: 150ms; }
-.stagger-item:nth-child(5) { animation-delay: 200ms; }
-.stagger-item:nth-child(6) { animation-delay: 250ms; }
-.stagger-item:nth-child(7) { animation-delay: 300ms; }
-.stagger-item:nth-child(8) { animation-delay: 350ms; }
-.stagger-item:nth-child(9) { animation-delay: 400ms; }
-.stagger-item:nth-child(10) { animation-delay: 450ms; }
-
-/* 交错动画容器 */
-.stagger-container > * {
-  opacity: 0;
-  animation: fadeInUp 0.4s ease forwards;
-}
-
-.stagger-container {
-  --stagger-delay: 50ms;
-  --stagger-start: 0ms;
-}
-
-.stagger-container > *:nth-child(1) { animation-delay: var(--stagger-start); }
-.stagger-container > *:nth-child(2) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay)); }
-.stagger-container > *:nth-child(3) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay) * 2); }
-.stagger-container > *:nth-child(4) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay) * 3); }
-.stagger-container > *:nth-child(5) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay) * 4); }
-.stagger-container > *:nth-child(6) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay) * 5); }
-.stagger-container > *:nth-child(7) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay) * 6); }
-.stagger-container > *:nth-child(8) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay) * 7); }
-.stagger-container > *:nth-child(9) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay) * 8); }
-.stagger-container > *:nth-child(10) { animation-delay: calc(var(--stagger-start) + var(--stagger-delay) * 9); }
-
-/* 悬停微交互 */
-.hover-lift {
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-
-.hover-lift:hover {
-  filter: brightness(1.06);
-}
-
-.hover-scale {
-  transition: transform 0.2s ease;
-}
-
-.hover-scale:hover {
-  transform: scale(1.02);
-}
-
-.hover-glow {
-  transition: box-shadow 0.2s ease;
-}
-
-.hover-glow:hover {
-  border-color: var(--au-primary-border);
-}
-
 /* 按压反馈工具类（opt-in）
    只给真实可点、且自身没有任何 :active 反馈的元素挂载。
    已有 :active 的组件（Button / IconButton / MediaCard / ListItem / Chip /
@@ -491,26 +282,7 @@ body.theme-transition *::after {
    加载状态
    ======================================== */
 
-.spinner {
-  display: inline-block;
-  width: 1.25rem;
-  height: 1.25rem;
-  border: 2px solid var(--border-glass);
-  border-top-color: var(--brand-primary);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-.spinner-lg {
-  width: 3rem;
-  height: 3rem;
-  border-width: 3px;
-}
-
-/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
-@media (prefers-reduced-motion: reduce) {
-  .spinner { animation: none; }
-}
+/* R34：全局 .spinner/.spinner-lg 已删（全仓 0 引用；LoginView 转圈是本地 scoped .spinner + au-spin，自包含） */
 
 /* R27：.loading-overlay 死样式已删（全仓 0 引用） */
 
@@ -518,14 +290,7 @@ body.theme-transition *::after {
    工具类
    ======================================== */
 
-/* 文字颜色 */
-.text-primary { color: var(--text-primary); }
-.text-secondary { color: var(--text-secondary); }
-.text-muted { color: var(--text-muted); }
-.text-accent { color: var(--brand-primary); }
-.text-green { color: var(--brand-primary); }
-.text-red { color: var(--color-error); }
-.text-yellow { color: var(--color-warning); }
+/* 文字颜色（R34：旧文本色类全仓 0 引用，已删） */
 
 /* 背景 */
 .bg-glass { background: var(--bg-glass); }
@@ -536,20 +301,7 @@ body.theme-transition *::after {
 .border-glass { border-color: var(--border-glass); }
 .border-glass-light { border-color: var(--border-glass-light); }
 
-/* 玻璃态边框 */
-.glass-border {
-  border: 1px solid var(--border-glass);
-}
-
-/* 隐藏滚动条但保留功能 */
-.hide-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.hide-scrollbar::-webkit-scrollbar {
-  display: none;
-}
+/* 隐藏滚动条但保留功能（R34：全仓 0 引用，已删） */
 
 /* 自定义滚动条（WebKit + Firefox 同一口径） */
 html {
@@ -589,35 +341,11 @@ html {
 
 /* ========================================
    动效降级
-   “减少动态效果”是系统级无障碍开关：轮播/入场动画/悬停位移都得停下来，
-   但信息不能跟着一起消失——这就是 stagger 类必须补 opacity: 1 的原因
-   （它们默认 opacity: 0，靠动画入场；只关动画会让整段内容直接看不见）。
+   “减少动态效果”是系统级无障碍开关：轮播/入场动画/悬停位移都得停下来。
    ======================================== */
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
-  }
-
-  .animate-fadeIn,
-  .animate-fadeInUp,
-  .animate-fadeInDown,
-  .animate-fadeInLeft,
-  .animate-fadeInRight,
-  .animate-scaleIn,
-  .animate-slideInUp,
-  .animate-slideInDown,
-  .animate-bounce,
-  .animate-shake,
-  .stagger-item,
-  .stagger-container > * {
-    animation: none;
-    opacity: 1;
-    transform: none;
-  }
-
-  .hover-lift:hover,
-  .hover-scale:hover {
-    transform: none;
   }
 
   .page-enter-active,

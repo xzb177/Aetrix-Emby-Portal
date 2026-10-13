@@ -259,13 +259,11 @@
 
 /* ==================== 安全区域适配（Neo-Noir 2.0 统一规范） ==================== */
 @supports (padding: max(0px)) {
-  .safe-bottom,
-  .neo-safe-bottom {
+  .safe-bottom {
     padding-bottom: var(--neo-safe-bottom, calc(24px + env(safe-area-inset-bottom, 0px)));
   }
 
-  .safe-top,
-  .neo-safe-top {
+  .safe-top {
     padding-top: max(var(--neo-space-4, 16px), env(safe-area-inset-top, 0px));
   }
 }

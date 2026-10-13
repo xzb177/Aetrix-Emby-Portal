@@ -299,7 +299,6 @@ async function sendSOS() {
   try {
     if (!reducedMotion()) await runMorseAnim()
     await createP
-    morseStatus.value = '滴滴滴… 信号发出中' // 成功文案只留 toast（减弱动效下 1.4s 等待会跳过，toast 是唯一可靠的成功反馈）
     toast.success('求救信号已发出，营地马上派救援队')
     form.value = { title: '', category: 'other', message: '' }
     await fetchTickets()
