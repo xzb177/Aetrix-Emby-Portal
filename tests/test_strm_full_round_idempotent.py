@@ -111,9 +111,14 @@ class TestFullRoundIdempotent:
             assert _fid in (tmp_path / spath).read_text()
 
     def test_full_round_true_collision_still_separated(self, tmp_path, monkeypatch):
-        """真撞名：两盘同一 rel → 同一目标名，后者必须分开（仍走 -2）。"""
+        """真撞名：两盘同一 rel → 同一目标名、大小不同（多版本），后者必须分开（仍走 -2）。
+
+        注：同 stem 同大小如今走去重（用户 2026-10-14 亲定规则，只留一份），
+        见 tests/test_strm_gen_dedupe.py；此处用不同大小覆盖"真撞名仍分离"。
+        """
         def per_drive(drive_id):
-            return [("MoviePilot/剧集/x.mkv", f"fid-{drive_id}", 100)]
+            return [("MoviePilot/剧集/x.mkv", f"fid-{drive_id}",
+                     100 if drive_id == "d1" else 200)]
 
         _patch_all(tmp_path, monkeypatch, per_drive,
                     drives={"d1": ["s"], "d2": ["s"]})

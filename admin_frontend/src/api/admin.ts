@@ -1973,6 +1973,8 @@ export interface StrmGenConfig {
   prune: boolean
   /** 是否解析 Drive 快捷方式（开启后跟随目标内容）；老后端无此键时回显 false */
   resolve_shortcuts?: boolean
+  /** 同名同大小去重（同名且字节大小相同只留一份）；老后端无此键时回显 true */
+  dedupe_same_size?: boolean
   /** 增量间隔分钟数，0=关闭 */
   interval_minutes: number
   /** 运行锁僵死超时（分钟），0=关闭自愈 */
@@ -2030,6 +2032,8 @@ export const saveStrmGenConfig = (data: {
   prune: boolean
   /** 快捷方式解析开关；不传则后端不改 */
   resolve_shortcuts?: boolean
+  /** 同名同大小去重开关；不传则后端不改 */
+  dedupe_same_size?: boolean
   interval_minutes: number
   source_type: string
   local_root: string
