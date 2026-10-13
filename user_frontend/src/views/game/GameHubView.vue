@@ -8,11 +8,9 @@
         <p>{{ hub.subtitle }}</p>
       </header>
 
-      <!-- 体力槽：StaminaBar 不可见（非公益服/未登录）时整个 section 不渲染，
-           不留 20px 幽灵间隙 -->
-      <section v-if="showStamina" class="v4-sec">
-        <StaminaBar ref="staminaBar" />
-      </section>
+      <!-- 体力条：无条件渲染，可见性由 StaminaBar 内部 v-if="visible" 控制；
+           不可见时根节点不渲染，不留幽灵间隙 -->
+      <StaminaBar />
 
       <!-- 设施导航：全部来自 @/config/game，不 hardcode -->
       <section class="v4-sec">
@@ -41,14 +39,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { gameHubConfig as hub, gameFacilities as facilities } from '@/config/game'
 import StaminaBar from '@/components/game/StaminaBar.vue'
-
-const staminaBar = ref<InstanceType<typeof StaminaBar> | null>(null)
-/** 体力条自己不可见时 section 也不渲染；挂载前 ref 为空先不渲染，避免闪一下幽灵间隙 */
-const showStamina = computed(() => staminaBar.value?.isShown() ?? false)
 </script>
 
 <style scoped>

@@ -355,7 +355,17 @@ def panel_letter(
 
 # ==================== 5.5 GET /api/panel/home（perf 优化 2026-10-13） ====================
 # 首页合并接口：一次返回 today/parcels/pulse/letter，把 4 次跨洋 RTT 并成 1 次。
-# 直接调用上方已定义的 4 个函数，不复制逻辑；单个失败不影响其他（各函数内部已有 try/except 兜底）。
+# 直接调用上方已定义的 4 个函数，不复制逻辑；单个失败隔离为 None，不拖垮其他区块。
+
+
+def _section_or_none(fn, db, user):
+    """调单个区块函数；异常则隔离为 None，不拖垮整个 /home。"""
+    try:
+        return fn(db, user)["data"]
+    except Exception:  # noqa: BLE001
+        logger.warning("panel_home 区块 %s 失败，已隔离", fn.__name__, exc_info=True)
+        return None
+
 
 @router.get("/home")
 def panel_home(
@@ -364,10 +374,10 @@ def panel_home(
 ):
     _guard()
     return _ok({
-        "today": panel_today(db, user)["data"],
-        "parcels": panel_parcels(db, user)["data"],
-        "pulse": panel_pulse(db, user)["data"],
-        "letter": panel_letter(db, user)["data"],
+        "today": _section_or_none(panel_today, db, user),
+        "parcels": _section_or_none(panel_parcels, db, user),
+        "pulse": _section_or_none(panel_pulse, db, user),
+        "letter": _section_or_none(panel_letter, db, user),
     })
 
 
