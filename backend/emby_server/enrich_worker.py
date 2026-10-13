@@ -654,8 +654,8 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
             logger.debug("单集剧照预热失败: %s", exc)
 
 
-def _tmdb_plan_for_item(item, nfo_data, douban_first_hit, kind, needs_repair):
-    """根据 item、nfo 与豆瓣命中情况规划 TMDB 操作（纯函数，无网络调用）。
+def _tmdb_plan_for_item(item, nfo_data, kind, needs_repair):
+    """根据 item 与 nfo 规划 TMDB 操作（纯函数，无网络调用）。
 
     返回三种计划之一：
     - {"op": "details", ...}：需要拉取 TMDB 详情
@@ -683,9 +683,9 @@ def _tmdb_plan_for_item(item, nfo_data, douban_first_hit, kind, needs_repair):
             "name": name or "", "year": production_year}
         return {"op": "none"}
 
-    # 2) 影视类且豆瓣未命中：先查别名映射，命中则直接拉详情，否则按名称搜索
-    if (tmdb_client.configured and kind in ("series", "movie")
-            and not douban_first_hit):
+    # 2) 影视类：先查别名映射，命中则直接拉详情，否则按名称搜索
+    # （v2.56.0 起 TMDB 为主：不再跳过豆瓣命中的条目，豆瓣只在 TMDB 未命中时兜底）
+    if tmdb_client.configured and kind in ("series", "movie"):
         alias_id = _alias_tmdb_id(name or "")
         if alias_id:
             return {"op": "details", "tmdb_id": str(alias_id), "why": "alias", "kind": kind,
@@ -839,7 +839,7 @@ def _apply_tmdb_plan_result(result, item, plan, out, kind):
 
 def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
                       inherit_parent: Optional[dict] = None):
-    """IO 阶段前半：side 图片/字幕 → NFO → 豆瓣优先。
+    """IO 阶段前半：side 图片/字幕 → NFO（v2.56.0 起 TMDB 为主，豆瓣只在 TMDB 未命中时兜底）。
 
     返回 (result, tmdb_ctx)：tmdb_ctx 为 None 表示已终态（pure_inherit 或失败），
     无需走 TMDB；否则 tmdb_ctx 含 kind/needs_repair/tmdb_plan，供批量或单条 TMDB 用。
@@ -915,52 +915,10 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
         logger.debug("补全 %s 无 file_path（容器条目），仅走 TMDB：%s",
                      item_type, item.name)
 
-    # 2.5 豆瓣优先（中文标题）：TMDB 对中文剧集/综艺收录偏少，
-    # 短中文剧名 Tier1 LCS>=6 永远达不到。中文标题先走豆瓣，
-    # 搜中则取详情写库；没搜中则回退到 TMDB。非中文标题直接走 TMDB。
-    # 锁定条目不写任何自动结果（见 _enrich_apply），也就不必去打豆瓣。
-    if (kind in ("series", "movie")
-            and not getattr(item, "metadata_locked", False)
-            and not (nfo_data and nfo_data.get("tmdb_id"))
-            and not getattr(item, "tmdb_id", None)):
-        from backend.emby_server import douban as _dbn
-        try:
-            # P2（完美审查 C-P2-5）：豆瓣开关走 60s TTL 进程内缓存，不再逐条目开短会话。
-            # 注意：配置读取必须留在外层 try 里面——旧代码短会话也在 try 内，
-            # 配置读失败（DB 闪断）时走「豆瓣优先搜索失败」静默跳过，不中断整条补全。
-            _dbn_on, _dbn_iv = _cached_douban_cfg()
-            if _dbn_on and _dbn.has_cjk(item.name or ""):
-                _dbn.client._interval = _dbn_iv
-                _dh = _dbn.client.search(
-                    item.name or "", item.production_year, kind)
-                if _dh and _dh.get("id"):
-                    result["douban_first_hit"] = _dh
-                    _dd = _dbn.client.get_details(_dh["id"])
-                    if _dd:
-                        result["douban_details"] = _dd
-                    # 豆瓣优先命中的条目不走 TMDB → 没有 credits → 演员表永远是空的
-                    # （没有 emby_people 行，refresh_person_worker 也补不了头像）。
-                    # 这里顺手取豆瓣演职员表，写库阶段在 TMDB 没给演员时落库。
-                    try:
-                        _dc = _dbn.client.get_celebrities(_dh["id"])
-                    except _dbn.DoubanBannedError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 — 演员表是增强信息
-                        logger.debug("豆瓣演职员表失败 %s: %s", item.name, exc)
-                        _dc = []
-                    if _dc:
-                        result["douban_cast"] = _dc
-                    progress.note_stage("enrich_douban_first")
-                    logger.info("[douban] 优先命中 %r -> %s",
-                                item.name, _dh.get("title"))
-        except _dbn.DoubanBannedError as exc:
-            # 封禁 ≠ 没搜中：不落 TMDB、不终态化，整条留待冷却后重试（不烧重试次数）
-            result["ok"] = False
-            result["douban_banned"] = True
-            result["error"] = f"douban banned: {exc}"[:200]
-            return result, None
-        except Exception as exc:
-            logger.debug("豆瓣优先搜索失败 %s: %s", item.name, exc)
+    # 2.5 优先级（v2.56.0 起）：TMDB 为主、豆瓣兜底。
+    # 中文标题不再先走豆瓣——TMDB 先搜，搜不中才在 _enrich_fetch_tmdb_post
+    # 里走豆瓣 rich 兜底（search + details + cast）。豆瓣反封禁机制保留，
+    # 兜底阶段被封禁同样整条留待冷却后重试。
 
     # 单集 TMDB 数据（v2.55.0）：有自带 NFO 的单集不走纯继承，但父级有 tmdb_id 时
     # 仍应拉取本集标题/简介/剧照——之前只在纯继承分支调 _fetch_episode_tmdb，
@@ -981,13 +939,81 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
         result["tmdb_id"] = str(nfo_data["tmdb_id"])
     needs_repair = bool(getattr(item, "repair_requested_at", None))
     tmdb_plan = _tmdb_plan_for_item(
-        item, nfo_data, result.get("douban_first_hit"), kind, needs_repair)
+        item, nfo_data, kind, needs_repair)
     tmdb_ctx = {
         "kind": kind,
         "needs_repair": needs_repair,
         "tmdb_plan": tmdb_plan,
     }
     return result, tmdb_ctx
+
+
+def _douban_fallback_on_tmdb_miss(item: Any, kind: str, result: dict) -> object:
+    """TMDB 未命中时的豆瓣 rich 兜底（v2.56.0 起：TMDB 为主、豆瓣兜底）。
+
+    只对中文标题的剧/电影触发：TMDB 对中文剧集/综艺收录偏少，豆瓣能补上；
+    非中文标题走 TMDB 已经是最优解，不必再烧豆瓣。
+
+    做 search + get_details + get_celebrities 三件套（与旧"豆瓣优先"同口径），
+    结果存 ``douban_fallback_hit`` / ``douban_details`` / ``douban_cast``，
+    写库阶段只补 TMDB 没给的字段（见 _enrich_apply）。
+
+    豆瓣反封禁机制完整保留：被封禁时返回 "banned"，调用方整条留待冷却后
+    重试（不烧重试次数、不终态化）。
+
+    返回：True=命中 / False=没命中 / "banned"=被封禁。
+    """
+    from backend.emby_server import douban as _dbn
+
+    if kind not in ("series", "movie"):
+        return False
+    if getattr(item, "tmdb_id", None):
+        return False
+    if getattr(item, "metadata_locked", False):
+        return False
+    name = (item.name or "").strip()
+    if not name:
+        return False
+    try:
+        if not _dbn.has_cjk(name):
+            return False
+    except Exception:  # noqa: BLE001 — 判定不了就不走兜底
+        return False
+    try:
+        # P2（完美审查 C-P2-5）：豆瓣开关走 60s TTL 进程内缓存
+        _dbn_on, _dbn_iv = _cached_douban_cfg()
+        if not _dbn_on:
+            return False
+        _dbn.client._interval = _dbn_iv
+        _dh = _dbn.client.search(name, item.production_year, kind)
+        if not (_dh and _dh.get("id")):
+            return False
+        result["douban_fallback_hit"] = _dh
+        result["_douban_fallback_tried"] = True
+        _dd = _dbn.client.get_details(_dh["id"])
+        if _dd:
+            result["douban_details"] = _dd
+        # TMDB 没给演员表时，用豆瓣演职员表兜底（写库阶段 _apply_douban_cast）
+        try:
+            _dc = _dbn.client.get_celebrities(_dh["id"])
+        except _dbn.DoubanBannedError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 演员表是增强信息
+            logger.debug("豆瓣兜底演职员表失败 %s: %s", item.name, exc)
+            _dc = []
+        if _dc:
+            result["douban_cast"] = _dc
+        progress.note_stage("enrich_douban_fallback")
+        logger.info("[douban] 兜底命中 %r -> %s", item.name, _dh.get("title"))
+        return True
+    except _dbn.DoubanBannedError as exc:
+        # 封禁 ≠ 没搜中：整条留待冷却后重试（不烧重试次数）
+        result["_douban_fallback_tried"] = True
+        logger.debug("豆瓣兜底被封禁 %s: %s", item.name, exc)
+        return "banned"
+    except Exception as exc:  # noqa: BLE001 — 兜底失败不影响主流程
+        logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
+        return False
 
 
 def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
@@ -1005,7 +1031,7 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
     needs_repair = tmdb_ctx["needs_repair"]
     nfo_data = result.get("nfo_data")
     # 3. TMDB（NFO 有 tmdb_id 就不搜，只按需取详情补图/补缺；
-    # 豆瓣优先已命中的跳过 TMDB 搜索）
+    # v2.56.0 起 TMDB 为主：不再跳过任何条目，豆瓣只在 TMDB 未命中时兜底）
     # result["tmdb_id"] 已在 pre 阶段赋值（NFO 有 tmdb_id 时）
     try:
         if batch_out is not None:
@@ -1024,8 +1050,7 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                         _hit, details = _sc._tmdb_work(
                             False, "", None, kind, tmdb_id, True)
                         result["tmdb_details"] = details
-                elif (tmdb_client.configured and kind in ("series", "movie")
-                      and not result.get("douban_first_hit")):
+                elif tmdb_client.configured and kind in ("series", "movie"):
                     # 处方 12・零 API 别名匹配：同一部剧已在库里（换文件名/换译名重扫）
                     # 时，1 次 details 请求替代 4~5 次候选搜索——且绝不写错名字
                     # （只补 id/图/别名，名字以库里那份为准）。
@@ -1066,8 +1091,10 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                     result["tmdb_images_lang"] = tmdb_client.images_with_language(_tid, kind)
         except Exception:
             result["tmdb_images_lang"] = None
-        # 豆瓣兜底：TMDB 没配置、或 TMDB 搜不到时才走。
-        # 只补 TMDB 没给的（标题/年份/海报），绝不覆盖已有数据。
+        # 豆瓣兜底（v2.56.0 起：TMDB 为主、豆瓣兜底）。
+        # TMDB 搜过无命中时，中文标题先走豆瓣 rich 兜底（search + details + cast，
+        # 与旧"豆瓣优先"同口径，只是时机从"TMDB 之前"挪到"TMDB 未命中之后"）。
+        # 只补 TMDB 没给的（标题/年份/海报/简介/演员），绝不覆盖已有数据。
         #
         # v2.42.9 父级快速失败（生产实测：第 5 批后 65 条/分 → 0.3 条/分）：
         # 成组抢单让父级先行，而 TMDB 搜不到的父级会串行等豆瓣 + Bangumi
@@ -1083,7 +1110,17 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
         # 外层 try 包住：任何异常都回退到 skip，绝不影响原有终态逻辑。
         if (kind in ("series", "movie") and not getattr(item, "tmdb_id", None)
                 and not result.get("tmdb_hit")):
-            if tmdb_client.configured and not needs_repair:
+            # TMDB 为主、豆瓣兜底：先试豆瓣 rich 兜底（中文标题）
+            _fb = _douban_fallback_on_tmdb_miss(item, kind, result)
+            if _fb == "banned":
+                # 封禁 ≠ 没搜中：整条留待冷却后重试（不烧重试次数、不终态化）
+                result["ok"] = False
+                result["douban_banned"] = True
+                result["error"] = "douban banned on fallback"
+                return result
+            if _fb:
+                pass  # 豆瓣兜底已命中，不再走多源/轻量兜底（避免重复打豆瓣）
+            elif tmdb_client.configured and not needs_repair:
                 try:
                     if _should_multisource_on_tmdb_miss(item, kind):
                         if _collect_multisource_guarded(item, kind, result):
@@ -1108,11 +1145,14 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                     # 之前因此另开短会话，用完即关。）
                     _ok, _interval, _bgm_interval = _cached_altmeta_cfg()
                     if _ok:
-                        try:
-                            result["douban_hit"] = altmeta.search(
-                                item.name or "", item.production_year, kind, _interval)
-                        except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
-                            logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
+                        # v2.56.0：rich 豆瓣兜底已试过豆瓣就不再重复打（省一次请求，
+                        # 且 rich 路径自带反封禁保护）。没试过才走轻量 altmeta.search。
+                        if not result.get("_douban_fallback_tried"):
+                            try:
+                                result["douban_hit"] = altmeta.search(
+                                    item.name or "", item.production_year, kind, _interval)
+                            except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
+                                logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
                         # 豆瓣限流/没命中时再试 Bangumi——它有 name_cn 与封面，
                         # 对 TMDB 收录差的中文剧集特别有用（实测命中 B-PROJECT、落语朱音）。
                         if not result["douban_hit"]:
@@ -1185,7 +1225,7 @@ def _douban_cast_rows(celebs: Optional[list]) -> list[dict]:
 
 
 def _apply_douban_cast(db, item: Any, celebs: Optional[list]) -> None:
-    """写库阶段：豆瓣优先命中、TMDB 没给演员表时，用豆瓣演职员表写 ``emby_people``。
+    """写库阶段：豆瓣兜底命中、TMDB 没给演员表时，用豆瓣演职员表写 ``emby_people``。
 
     幂等：条目已有演员行就不动（TMDB 写过的、或上一轮写过的）。失败只记日志。
     """
@@ -1471,9 +1511,9 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 补全完成，此后 _claim_batch 只捞 pending，永远不会再重试——于是
     # series 3263 条里 464 条永久缺 TMDB，且没有任何重试迹象。
     # 现在：核心元数据缺失就退回 pending（可重试），刮到了才 done。
-    # 豆瓣优先命中落库（中文标题主数据源）：search 给标题/年份/海报，
-    # details 给简介/评分。只补缺项，不覆盖 NFO/TMDB 已有数据。
-    _dbn_first = fetched.get("douban_first_hit")
+    # 豆瓣兜底命中落库（v2.56.0 起：TMDB 为主、豆瓣兜底）：search 给标题/年份/海报，
+    # details 给简介/评分。只补 TMDB 没给的缺项，不覆盖 NFO/TMDB 已有数据。
+    _dbn_first = fetched.get("douban_fallback_hit")
     if _dbn_first:
         try:
             _dbn_details = fetched.get("douban_details") or {}
@@ -1506,7 +1546,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 item.last_scraped_at = datetime.now()
             item.metadata_source = "douban"
         except Exception as exc:
-            logger.debug("豆瓣优先落库失败 %s: %s", getattr(item, "name", ""), exc)
+            logger.debug("豆瓣兜底落库失败 %s: %s", getattr(item, "name", ""), exc)
             _dbn_first = None
 
     # 豆瓣兜底结果落库（只在没有 TMDB 命中时）
@@ -2214,7 +2254,7 @@ def _process_batch(db, batch: list) -> None:
     """批量处理已抢到的条目：pre（逐条）→ TMDB 批量 → post+写库（逐条）。
 
     与逐条 `_process_item` 等价，只是把 TMDB 环节换成批量：
-    1. 逐条跑 `_enrich_fetch_pre`（side/NFO/豆瓣优先），收集 tmdb_plan；
+    1. 逐条跑 `_enrich_fetch_pre`（side/NFO），收集 tmdb_plan；
     2. `_run_tmdb_batch` 一次跑完所有 TMDB 请求；
     3. 逐条跑 `_enrich_fetch_tmdb_post` + 写库（与 `_process_item` 写库段一致）。
 

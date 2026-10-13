@@ -1,6 +1,10 @@
-"""豆瓣优先命中的条目也要有演员表（不走 TMDB → 以前没有 emby_people 行 → 没头像）。
+# -*- coding: utf-8 -*-
+"""豆瓣兜底命中的条目也要有演员表（TMDB 没给演员时用豆瓣的）。
 
-隔离临时 SQLite，豆瓣全部 mock。
+v2.56.0 起 TMDB 为主、豆瓣兜底：豆瓣 cast 在 TMDB 未命中后的兜底阶段获取，
+写库阶段在 TMDB 没给演员表时落库（与旧"豆瓣优先"同口径）。
+
+隔离临时 SQLite，豆瓣与 TMDB 全部 mock。
 """
 import os
 import tempfile
@@ -8,7 +12,7 @@ import tempfile
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 _fd, _tmppath = tempfile.mkstemp(suffix=".db"); os.close(_fd)
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmppath}"
+os.environ["DATABASE_URL"] = "sqlite:///" + _tmppath
 from backend import database as _dbmod
 from sqlalchemy import create_engine as _ce
 from sqlalchemy.orm import sessionmaker as _sm
@@ -54,7 +58,7 @@ def _series(db, **kw):
     return it
 
 
-def _fake_client():
+def _fake_douban():
     fake = mock.MagicMock()
     fake.search.return_value = {"id": "3700001", "title": "沦陷", "year": "2026",
                                 "image": "", "type": "tv"}
@@ -64,23 +68,34 @@ def _fake_client():
     return fake
 
 
-def _run(db, item, fake):
+def _run(db, item, fake_dbn):
+    """完整流程：pre（TMDB 规划）→ post（TMDB 未命中 → 豆瓣兜底）→ apply（写库）"""
     snap = enrich_worker._snapshot_item(item)
-    with mock.patch.object(dbn, "client", fake), \
-            mock.patch.object(dbn, "enabled", return_value=True), \
-            mock.patch.object(dbn, "min_interval", return_value=0.0):
+    fake_tmdb = mock.MagicMock()
+    fake_tmdb.configured = True
+    with mock.patch("backend.emby_server.tmdb.tmdb_client", fake_tmdb), \
+            mock.patch.object(dbn, "client", fake_dbn), \
+            mock.patch.object(enrich_worker, "_cached_douban_cfg",
+                              return_value=(True, 2.5)), \
+            mock.patch.object(enrich_worker, "_cached_altmeta_cfg",
+                              return_value=(True, 2.5, 2.5)), \
+            mock.patch.object(enrich_worker, "_alias_tmdb_id", return_value=None), \
+            mock.patch("backend.emby_server.scanner._tmdb_work",
+                        return_value=(None, None)):
         result, ctx = enrich_worker._enrich_fetch_pre(snap)
-    assert result.get("douban_first_hit")
-    assert ctx["tmdb_plan"]["op"] == "none"   # 豆瓣优先：不搜 TMDB
+        # TMDB 为主：pre 阶段规划 TMDB 搜索，不再被豆瓣跳过
+        assert ctx["tmdb_plan"]["op"] == "search"
+        out = enrich_worker._enrich_fetch_tmdb_post(result, item, ctx)
+    assert out.get("douban_fallback_hit"), "TMDB 未命中时豆瓣兜底必须命中"
     fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
-    enrich_worker._enrich_apply(db, fresh, result)
+    enrich_worker._enrich_apply(db, fresh, out)
     db.commit()
     return fresh
 
 
-def test_douban_first_hit_writes_cast(db):
+def test_douban_fallback_hit_writes_cast(db):
     item = _series(db)
-    fresh = _run(db, item, _fake_client())
+    fresh = _run(db, item, _fake_douban())
     people = (db.query(em.EmbyPerson).filter(em.EmbyPerson.item_id == item.id)
               .order_by(em.EmbyPerson.sort_order).all())
     assert [(p.name, p.role, p.image) for p in people] == [
@@ -96,7 +111,7 @@ def test_douban_cast_does_not_duplicate_existing_people(db):
     db.add(em.EmbyPerson(item_id=item.id, name="唐诚之", role="许愿", image="",
                          sort_order=0, person_tmdb_id=""))
     db.commit()
-    _run(db, item, _fake_client())
+    _run(db, item, _fake_douban())
     names = [p.name for p in db.query(em.EmbyPerson).filter(
         em.EmbyPerson.item_id == item.id).all()]
     assert names == ["唐诚之"]
