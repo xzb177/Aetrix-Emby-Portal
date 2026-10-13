@@ -137,6 +137,7 @@
                     :disabled="replying || !replyMessage.trim()"
                     @click="replyTicket"
                     :title="replying ? '发送中' : '发送回复'"
+                    :aria-label="replying ? '发送中' : '发送回复'"
                   >➤</button>
                 </div>
                 <button class="close-record" @click="closeTicket">🏁 关闭记录</button>

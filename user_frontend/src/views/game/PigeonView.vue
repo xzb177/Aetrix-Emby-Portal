@@ -48,11 +48,12 @@
           </button>
           <button
             class="refresh-btn"
+            :class="{ 'is-loading': loading }"
             :disabled="loading"
             aria-label="刷新信件"
             @click="load(false)"
           >
-            {{ loading ? '…' : '⟳' }}
+            {{ loading ? '刷新中' : '⟳' }}
           </button>
         </div>
         <div v-if="unreadCount > 0" class="markall-row">
@@ -125,11 +126,12 @@
               <template v-if="!msg.is_read">
                 <button
                   class="wax"
+                  :class="{ 'is-unsealing': unsealingId === msg.id }"
                   :disabled="unsealingId === msg.id"
                   aria-label="拆信"
                   @click.stop="unseal(msg)"
                 >
-                  {{ unsealingId === msg.id ? '…' : '封' }}
+                  {{ unsealingId === msg.id ? '拆信中' : '封' }}
                 </button>
                 <div class="seal-hint">火漆封印完好 —— 点一下拆信</div>
               </template>
@@ -201,7 +203,7 @@ const DEEP_LINKS: Record<string, { to: string; label: string }> = {
   ticket: { to: '/game/signal', label: '去看看求救信号 →' },
   media_seek: { to: '/game/wishlist', label: '去看看许愿池 →' },
   subscription: { to: '/shop', label: '去补给站看看 →' },
-  exchange_code: { to: '/shop#redeem', label: '去核销 →' },
+  exchange_code: { to: '/shop#shop-redeem', label: '去核销 →' },
 }
 
 const filtered = computed(() => {
@@ -351,6 +353,10 @@ onMounted(() => { void load(true) })
   color: var(--ink2); font-size: 18px; cursor: pointer;
 }
 .refresh-btn:disabled { opacity: 0.5; cursor: default; }
+/* R28：加载中显示"刷新中"人话文案，按钮自动变宽容纳文字（高度保持 44px） */
+.refresh-btn.is-loading { width: auto; padding: 0 14px; font-size: 14px; }
+/* R28：拆信中显示"拆信中"人话文案，字号缩小以容纳进火漆圆 */
+.wax.is-unsealing { font-size: 13px; }
 .markall-row { margin-bottom: 12px; }
 .markall-btn {
   width: 100%; min-height: 44px; font-size: 13px;
@@ -458,11 +464,12 @@ onMounted(() => { void load(true) })
   outline-offset: 2px;
 }
 
-/* R27：减少动态偏好下装饰动画停掉（本地守卫） */
+/* R27：减少动态偏好下装饰动画停掉（本地守卫）；R28：补 letterbox/pbody 的 fadein（此前靠全局兜底） */
 @media (prefers-reduced-motion: reduce) {
   .perch .birds { animation: none; }
   .unread-toggle.on .red-dot,
   .bird .dot { animation: none; opacity: 1; }
   .wax { animation: none; }
+  .letterbox, .pbody { animation: none; }
 }
 </style>

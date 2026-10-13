@@ -123,6 +123,8 @@ onMounted(() => {
   font-size: 14px;
   font-weight: 800;
   padding: 11px 0;
+  /* R28：引导流程唯二按钮，纵向 padding 提到 12px 保证 ≥44px 触摸高度 */
+  min-height: 44px;
   border-radius: 12px;
   cursor: pointer;
   letter-spacing: 1px;
@@ -136,6 +138,10 @@ onMounted(() => {
 .guide-go:active {
   transform: translateY(2px);
   box-shadow: none;
+}
+/* R28：减少动态偏好下按压缩放停掉（与其他文件惯例一致） */
+@media (prefers-reduced-motion: reduce) {
+  .guide-go:active { transform: none; }
 }
 .guide-skip {
   background: var(--paper-card);

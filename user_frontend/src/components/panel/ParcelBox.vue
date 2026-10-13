@@ -2,9 +2,9 @@
   <div
     class="v4-parcel"
     :class="{ opened: isOpen, 'is-busy': busy }"
-    role="button"
-    tabindex="0"
-    :aria-label="isOpen ? parcel.name : '待拆封存，点击开封'"
+    :role="isOpen ? undefined : 'button'"
+    :tabindex="isOpen ? undefined : '0'"
+    :aria-label="isOpen ? undefined : '待拆封存，点击开封'"
     @click="onTap"
     @keydown="onKey"
   >
@@ -22,27 +22,28 @@
       v-if="isOpen && parcel.deep_link"
       class="v4-parcel-go"
       :href="parcel.deep_link"
+      target="_blank"
+      rel="noopener"
       @click.stop
     >去播放器看 →</a>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import type { ParcelItem } from '@/composables/usePanelApi'
 
-const props = defineProps<{ parcel: ParcelItem }>()
+const props = defineProps<{ parcel: ParcelItem; busy?: boolean }>()
 const emit = defineEmits<{ (e: 'unseal', id: string | number): void }>()
 
-const busy = ref(false)
 const isOpen = computed(() => !!props.parcel.unsealed)
 
-/** 类型标签：电影 / 电视剧 */
+/** 类型标签：白名单映射 series→剧集、movie→电影，其余统一收敛为"影片"（不直接展示后端原文） */
 const typeLabel = computed(() => {
   const t = String(props.parcel.item_type || props.parcel.type || '')
   if (t === 'series') return '剧集'
   if (t === 'movie') return '电影'
-  return props.parcel.media_type || '影片'
+  return '影片'
 })
 /** 未拆时的小字：类型 · 集数/清晰度 */
 const metaLine = computed(() => {
@@ -90,21 +91,16 @@ function onKey(e: KeyboardEvent) {
 }
 
 function onTap() {
-  if (isOpen.value || busy.value) return
-  busy.value = true
-  try {
-    emit('unseal', props.parcel.id)
-  } finally {
-    // optimistic 更新由 store 完成；busy 只防连点，短暂释放
-    window.setTimeout(() => { busy.value = false }, 600)
-  }
+  if (isOpen.value || props.busy) return
+  // busy 由父组件的请求生命周期控制（请求完成前防连点），这里只做事件转发
+  emit('unseal', props.parcel.id)
 }
 </script>
 
 <style scoped>
 /* 取自设计稿 home.html .parcel（PR-3 填实） */
 .v4-parcel {
-  flex: 1;
+  flex: 1 1 150px;
   min-width: 0;
   background: var(--paper2);
   border: 1.5px dashed var(--ink2);

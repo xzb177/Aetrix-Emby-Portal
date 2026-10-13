@@ -375,6 +375,8 @@ onBeforeUnmount(() => {
   font-weight: 800;
   letter-spacing: 4px;
   padding: 10px 0;
+  /* R28：触点提到 44px 高（视觉不变） */
+  min-height: 44px;
   background: var(--paper-card);
   color: var(--ink2);
   border: 1.5px dashed var(--line);
@@ -502,6 +504,9 @@ onBeforeUnmount(() => {
   background: var(--red);
   border-radius: 12px;
   padding: 10px 22px;
+  /* R28：触点提到 44px 高（视觉不变） */
+  min-height: 44px;
+  box-sizing: border-box;
   text-decoration: none;
   box-shadow: 0 3px 0 #a33319;
 }

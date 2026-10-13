@@ -2,7 +2,7 @@
   <div class="v4-sky">
     <h3>成就星图 · {{ unlockedCount }} 颗已点亮</h3>
     <svg ref="svgEl" viewBox="0 0 335 230" role="group" aria-label="成就星图"></svg>
-    <div v-if="tipVisible" class="v4-star-tip" v-html="tipHtml"></div>
+    <div v-if="tipVisible" class="v4-star-tip" role="status" aria-live="polite" v-html="tipHtml"></div>
   </div>
 </template>
 

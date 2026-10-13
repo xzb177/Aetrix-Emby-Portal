@@ -15,12 +15,14 @@
         v-if="statusClickable"
         to="/game/checkin"
         class="status-strip"
-        aria-label="去报到盖章"
+        :aria-label="allFailed ? '数据未更新' : '去报到盖章'"
       >
+        <span v-if="allFailed" class="status-dot stale" aria-hidden="true"></span>
         <span class="status-dot" aria-hidden="true"></span>
         {{ statusText }}
       </router-link>
-      <div v-else class="status-strip static" role="status">
+      <div v-else class="status-strip static" role="status" :aria-label="allFailed ? '数据未更新' : undefined">
+        <span v-if="allFailed" class="status-dot stale" aria-hidden="true"></span>
         <span class="status-dot" aria-hidden="true"></span>
         {{ statusText }}
       </div>
@@ -114,6 +116,9 @@ const statusText = computed(() => {
 /** 没报到（或状态未知）时状态条可点；已报到是纯展示 */
 const statusClickable = computed(() => checkedToday.value !== true)
 
+/** R28：三路 API 全失败标记——状态条前加小琥珀点 + aria-label，文案不动 */
+const allFailed = ref(false)
+
 // ---------- 活卡片徽标：失败全部静默降级为静态卡 ----------
 function liveBadge(f: GameFacility): string {
   if (f.key === 'checkin') {
@@ -135,6 +140,8 @@ onMounted(async () => {
     checkinApi.status().catch((): null => null),
     messageApi.getUnreadCount().catch((): null => null),
   ])
+  // R28：三路全失败时用户要有失败感知（弱提示，不改文案）
+  allFailed.value = !vitalityRes && !checkinRes && !unreadRes
   if (vitalityRes) {
     vitality.value = vitalityRes.vitality
     vitalityMax.value = vitalityRes.max ?? null
@@ -155,7 +162,8 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
   margin: 14px 0 0;
-  padding: 10px 14px;
+  /* R28：纵向 padding 提到 14px，总高 ≥44px 触摸标准 */
+  padding: 14px;
   background: var(--paper-card);
   border: 1.5px dashed var(--line);
   border-radius: 12px;
@@ -171,6 +179,8 @@ onMounted(async () => {
   background: var(--green);
   flex-shrink: 0;
 }
+/* R28：三路 API 全失败时的弱提示——小琥珀点（文案不动，最小侵入） */
+.status-dot.stale { background: var(--gold, #c8862a); }
 .status-strip:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
@@ -193,6 +203,8 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* R28：标题过长时 375px 下不溢出 */
+  max-width: 100%;
   background: #e9d3a3;
   border: 1.5px solid var(--line);
   border-radius: 4px 14px 4px 14px;
@@ -210,6 +222,11 @@ onMounted(async () => {
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 2px;
+  /* R28：配合 .zone-sign 的 max-width，超长标题省略不溢出 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .zone-sub {
   font-size: 11px;

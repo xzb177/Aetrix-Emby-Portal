@@ -12,7 +12,9 @@ let x = 0
 let ctx: CanvasRenderingContext2D | null = null // 缓存：不每帧调 getContext
 const data: number[] = new Array(200).fill(64)
 const STEP_MS = 90 // 与设计稿 setInterval(90ms) 同节奏
-const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+// R28：reduced-motion 改为响应式——页面打开期间用户改系统设置也能即时启停动画
+const motionMq = window.matchMedia('(prefers-reduced-motion: reduce)')
+const reducedMotion = ref(motionMq.matches)
 
 /** 静态心跳波形：一段基线 + 周期性搏动（减少动态偏好时画一帧，不留白） */
 function fillStaticWave() {
@@ -69,15 +71,31 @@ function size() {
 
 function onResize() {
   size()
-  if (reducedMotion) paint() // 静态模式 resize 后重画一帧
+  if (reducedMotion.value) paint() // 静态模式 resize 后重画一帧
 }
 
 function onVis() {
   if (document.hidden) {
     cancelAnimationFrame(raf)
     raf = 0
-  } else if (!raf && !reducedMotion) {
+  } else if (!raf && !reducedMotion.value) {
     last = 0 // 从后台回来时丢弃旧时间戳，避免跳帧
+    raf = requestAnimationFrame(draw)
+  }
+}
+
+/** 用户在页面打开期间切换系统"减少动态"设置：即时启停动画 */
+function onMotionChange(e: { matches: boolean }) {
+  reducedMotion.value = e.matches
+  if (e.matches) {
+    cancelAnimationFrame(raf)
+    raf = 0
+    document.removeEventListener('visibilitychange', onVis)
+    fillStaticWave()
+    paint()
+  } else {
+    document.addEventListener('visibilitychange', onVis)
+    last = 0
     raf = requestAnimationFrame(draw)
   }
 }
@@ -85,8 +103,9 @@ function onVis() {
 onMounted(() => {
   size()
   window.addEventListener('resize', onResize)
+  motionMq.addEventListener('change', onMotionChange)
   // 减少动态偏好：不启动动画，但画一帧静态波形，不留空白
-  if (reducedMotion) {
+  if (reducedMotion.value) {
     fillStaticWave()
     paint()
     return
@@ -96,6 +115,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   cancelAnimationFrame(raf)
+  motionMq.removeEventListener('change', onMotionChange)
   document.removeEventListener('visibilitychange', onVis)
   window.removeEventListener('resize', onResize)
 })

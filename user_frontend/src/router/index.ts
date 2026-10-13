@@ -9,6 +9,15 @@ const panelV4 = isPanelV4Enabled()
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
+  // R28：处理站内 hash 跳转（如信鸽兑换通知 → /shop#shop-redeem 的核销区滚动）
+  scrollBehavior(to, _from, savedPosition) {
+    if (savedPosition) return savedPosition
+    if (to.hash) {
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      return { el: to.hash, behavior: reduce ? 'auto' : 'smooth' }
+    }
+    return undefined
+  },
   routes: [
     {
       path: '/',
@@ -151,6 +160,11 @@ const router = createRouter({
       meta: { title: '绑定 Telegram', requiresAuth: true },
     },
     // 追新日历（2026-10-13 旧页面清理：已删，走 /game/calendar 探险预告）
+    // R28：旧 /calendar 书签重定向到新地址，避免落 404
+    {
+      path: '/calendar',
+      redirect: '/game/calendar',
+    },
     // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删；
     // 2026-10-13 旧页面清理：/profile、/media/:id、/watch/:id 三路由已删） ====================
     // 老地址 /profile、/media/:id、/watch/:id、/media、/library、/search、/favorites、/history

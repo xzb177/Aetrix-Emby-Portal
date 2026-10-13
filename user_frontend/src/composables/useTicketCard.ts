@@ -2,10 +2,15 @@ import { ref, computed } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { homeApi, type HomeSummary } from '@/api/economy'
 import { isExpiringSoon, type MySubscription, type WatchStats } from '@/api'
-import { useToast } from '@/composables/useToast'
-import { toastSystem } from '@/constants/toastMessages'
 import { Crown, Zap, Clapperboard } from 'lucide-vue-next'
 import type { AssetCard } from '@/components/panel/TicketCard.vue'
+
+/** R28：ISO 日期 "2026-11-01" → 人话 "11月1日"；非日期原文原样返回 */
+function fmtMonthDay(isoDate: string): string {
+  const m = isoDate.match(/^\d{4}-(\d{1,2})-(\d{1,2})/)
+  if (!m) return isoDate
+  return `${Number(m[1])}月${Number(m[2])}日`
+}
 
 /**
  * 电影票卡数据（原 HomeView.vue 票根卡逻辑，HomeView 删除后迁至此处）
@@ -17,7 +22,6 @@ import type { AssetCard } from '@/components/panel/TicketCard.vue'
  */
 export function useTicketCard() {
   const userStore = useUserStore()
-  const toast = useToast()
 
   const loading = ref(true)
   const loadError = ref(false)
@@ -85,7 +89,7 @@ export function useTicketCard() {
           value: String(activeSub.value.days_left),
           unit: '天',
           progress: memberProgress.value,
-          desc: `${activeSub.value.plan_name} · ${activeSub.value.end_date?.slice(0, 10) || ''}到期`,
+          desc: `${activeSub.value.plan_name} · ${fmtMonthDay(activeSub.value.end_date?.slice(0, 10) || '')}到期`,
           note: expiringSoon.value ? '续费后新时长在到期日之后叠加' : '会员权益全库通用',
           short: expiringSoon.value ? '即将到期' : '',
           footer: '续费',
@@ -233,12 +237,10 @@ export function useTicketCard() {
       if (Array.isArray(data.subscriptions)) subscriptions.value = data.subscriptions
       loadError.value = memberFailed
       if (userId != null) writeSnapshot(userId, data)
-    } catch (err: unknown) {
+    } catch {
       if (snapshot) return // 有快照可显示时不打扰用户
+      // R28：无快照且请求失败时只留页面错误态 + 重试按钮，不再额外弹 toast（避免双重提示）
       loadError.value = true
-      if ((err as { response?: { status?: number } })?.response?.status !== 401) {
-        toast.error(toastSystem.networkError)
-      }
     } finally {
       loading.value = false
       hasLoaded.value = true

@@ -34,6 +34,7 @@
             v-for="p in parcelList"
             :key="String(p.id)"
             :parcel="p"
+            :busy="unsealingIds.has(String(p.id))"
             @unseal="onUnseal"
           />
         </div>
@@ -47,7 +48,7 @@
       <!-- pulse.error 时整盒不渲染，避免留黑色空矩形（错误态在下面统一渲染） -->
       <div v-if="!pulse.error" class="v4-pulse-box">
         <div class="v4-pulse-row">
-          <span class="v4-pulse-tag">● 实时 · 后台任务</span>
+          <span class="v4-pulse-tag">● 近况 · 后台任务</span>
           <span class="v4-pulse-dot"></span>
         </div>
         <div v-if="pulse.loading" class="v4-skeleton" style="height:98px"></div>
@@ -73,7 +74,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
@@ -150,12 +151,19 @@ const parcelList = computed((): ParcelItem[] => {
   const d = parcels.value.data as ParcelsData | null
   return Array.isArray(d?.parcels) ? d.parcels : []
 })
+/* 拆封中 id 集合：busy 与请求生命周期绑定（请求完成/失败才释放），替代旧的固定 600ms 释放 */
+const unsealingIds = ref(new Set<string>())
 async function onUnseal(id: string | number) {
+  const key = String(id)
+  if (unsealingIds.value.has(key)) return
+  unsealingIds.value.add(key)
   try {
     await panel.unseal(id)
   } catch (e) {
     // 失败不再静默：toast 告诉用户具体原因
     useToast().error(e instanceof Error ? e.message : '拆封失败，稍后再试')
+  } finally {
+    unsealingIds.value.delete(key)
   }
 }
 
@@ -190,9 +198,10 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
 </script>
 
 <style scoped>
-/* 封存包裹行：取自设计稿 .parcels */
+/* 封存包裹行：取自设计稿 .parcels；窄屏自动换行，避免多包裹被等比挤压 */
 .v4-parcels {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
 }
 /* 脉搏黑盒：取自设计稿 .pulse-box */

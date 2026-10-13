@@ -14,6 +14,7 @@ const props = withDefaults(defineProps<{ items?: string[]; intervalMs?: number }
 
 const idx = ref(0)
 let timer = 0
+const motionMq = window.matchMedia('(prefers-reduced-motion: reduce)')
 
 const current = computed(() => {
   if (!props.items.length) return '正在感知服务器…'
@@ -27,11 +28,30 @@ function tick() {
 // 列表变化时回到第一条
 watch(() => props.items, () => { idx.value = 0 }, { deep: true })
 
-onMounted(() => {
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+function startTick() {
+  if (timer) return
   timer = window.setInterval(tick, props.intervalMs)
+}
+function stopTick() {
+  window.clearInterval(timer)
+  timer = 0
+}
+/** R28：用户在页面打开期间切换系统"减少动态"设置时即时启停轮播 */
+function onMotionChange(e: { matches: boolean }) {
+  if (e.matches) stopTick()
+  else startTick()
+}
+
+onMounted(() => {
+  // 减少动态偏好：只显示第一条，不轮播
+  if (motionMq.matches) return
+  startTick()
+  motionMq.addEventListener('change', onMotionChange)
 })
-onUnmounted(() => { window.clearInterval(timer) })
+onUnmounted(() => {
+  stopTick()
+  motionMq.removeEventListener('change', onMotionChange)
+})
 </script>
 
 <style scoped>

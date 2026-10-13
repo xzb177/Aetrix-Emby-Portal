@@ -32,6 +32,8 @@
     radial-gradient(circle at 85% 80%, rgba(46, 95, 163, 0.05), transparent 40%);
   min-height: 100vh;
   min-height: 100dvh;   /* 移动端地址栏收放时高度不跳（App.vue 同款双行写法） */
+  /* R28：PWA standalone 下顶部刘海安全区（普通 Safari 下为 0，无副作用） */
+  padding-top: env(safe-area-inset-top);
   font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
