@@ -1246,6 +1246,8 @@ export interface MetaSourceRow {
 export interface MetaSourcesConfig {
   enabled: boolean
   prefer_chinese: boolean
+  /** TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底（须与总开关同时开） */
+  tmdb_miss_fallback: boolean
   order: string[]
   sources: MetaSourceRow[]
   default_order: string[]
@@ -1265,10 +1267,11 @@ export const fetchDoubanConfig = () => get<DoubanConfig>(`${E}/scrape/douban-con
 export const saveDoubanConfig = (enabled: boolean, min_interval: number) =>
   put<DoubanConfig>(`${E}/scrape/douban-config`, { enabled, min_interval })
 
-/** 保存总开关 / 中文优先 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
+/** 保存总开关 / 中文优先 / TMDB-miss 兜底开关 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
 export const saveMetaSources = (data: {
   enabled: boolean
   prefer_chinese: boolean
+  tmdb_miss_fallback: boolean
   order: string[]
   toggles: Record<string, boolean>
   rates: Record<string, number>
