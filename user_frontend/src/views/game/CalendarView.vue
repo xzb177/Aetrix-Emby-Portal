@@ -15,7 +15,7 @@
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="error" class="v4-err">探险地图加载失败：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
         <div v-else>
-          <div v-if="days.length" class="timeline">
+          <div v-if="days.length || teaserStandalone" class="timeline">
           <div
             v-for="(day, di) in days"
             :key="day.date"
@@ -64,11 +64,12 @@
                 :tabindex="teaserLink ? 0 : undefined"
                 @click="onTeaserClick"
                 @keydown.enter="onTeaserClick"
+                @keydown.space.prevent="onTeaserClick"
               >
                 <div class="map">{{ effectiveTeaser?.status === 'revealed' ? '✨' : '🌫️' }}</div>
                 <div class="info">
                   <b>{{ teaserTitle }}</b>
-                  <span>{{ teaserSubtitle }}</span>
+                  <span v-if="teaserSubtitle">{{ teaserSubtitle }}</span>
                 </div>
               </div>
             </div>
@@ -89,10 +90,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
-import { fetchCalendar, type CalendarDay, type CalendarTeaser } from '@/api/calendar'
+import { fetchCalendar, StaleResponseError, type CalendarDay, type CalendarTeaser } from '@/api/calendar'
 import { humanizeError } from '@/composables/usePanelApi'
 
 const router = useRouter()
@@ -113,6 +114,12 @@ const effectiveTeaser = computed<CalendarTeaser | null>(
 )
 /** 后台关掉这张卡（teaser=null）时整块不渲染 */
 const teaserVisible = computed(() => effectiveTeaser.value !== null)
+/**
+ * P1：后台显式配置了揭晓位（secret/revealed，非 undefined 回退、非 null 关闭）时，
+ * 即使近 7 天无新抵达（days 为空），预告卡也要独立渲染。
+ * undefined = 旧后端回退 → 沿旧行为，只随 days 出现；null = 后台关闭 → 不渲染。
+ */
+const teaserStandalone = computed(() => teaser.value !== undefined && teaser.value !== null)
 /** 倒计时文案：没配日期沿用原来的 ???；揭晓日已过但内容没配（后台误配）时不显示倒计时 */
 const teaserCountdownText = computed(() => {
   const t = effectiveTeaser.value
@@ -198,13 +205,28 @@ async function load() {
     // undefined = 旧后端无此字段 → 回退静态悬念卡；null = 后台关了这张卡
     teaser.value = res.teaser === undefined ? undefined : (res.teaser ?? null)
   } catch (e) {
+    // 新请求已在路上：旧响应直接丢，不报错、不闪错误态
+    if (e instanceof StaleResponseError) return
     error.value = humanizeError(e)
   } finally {
     loading.value = false
   }
 }
 
-onMounted(load)
+/** 跨过揭晓日自动翻牌：对齐到次日 0 点重拉一次，一次性定时器 */
+let midnightTimer = 0
+function scheduleMidnightReload() {
+  const now = new Date()
+  const next = new Date(now)
+  next.setHours(24, 0, 0, 0)
+  const delay = Math.max(1000, next.getTime() - now.getTime())
+  window.clearTimeout(midnightTimer)
+  midnightTimer = window.setTimeout(() => { void load() }, delay)
+}
+
+onMounted(() => { load(); scheduleMidnightReload() })
+
+onUnmounted(() => { window.clearTimeout(midnightTimer) })
 </script>
 
 <style scoped>
@@ -300,7 +322,7 @@ onMounted(load)
 .countdown {
   display: inline-block;
   background: var(--gold);
-  color: #fff;
+  color: var(--ink);
   font-size: 10px;
   font-weight: 800;
   padding: 2px 8px;

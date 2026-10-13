@@ -87,11 +87,21 @@ export interface CalendarQuery {
 }
 
 /**
+ * 请求序号守卫：后发的请求让先发的响应作废。调用方 catch 到 StaleResponseError
+ * 时直接 return（旧响应丢弃，不报错、不闪错误态）。
+ */
+export class StaleResponseError extends Error {
+  constructor() { super('stale calendar response'); this.name = 'StaleResponseError' }
+}
+let fetchSeq = 0
+
+/**
  * 拉一个区间的追新日历。
  *
  * 筛选值会让区间失效，所以不做缓存——上个月翻回去时拿到的必须是当时的库状态。
  */
 export async function fetchCalendar(query: CalendarQuery): Promise<CalendarResponse> {
+  const mySeq = ++fetchSeq
   const params: Record<string, string> = {
     start: query.start,
     end: query.end,
@@ -100,6 +110,8 @@ export async function fetchCalendar(query: CalendarQuery): Promise<CalendarRespo
   if (query.itemTypes?.length) params.item_type = query.itemTypes.join(',')
 
   const res = await api.get<never, Partial<CalendarResponse>>('/api/user/emby/calendar', { params })
+  // 发起之后又有新请求：这个响应已过期，丢弃
+  if (mySeq !== fetchSeq) throw new StaleResponseError()
   return {
     start: res.start || query.start,
     end: res.end || query.end,

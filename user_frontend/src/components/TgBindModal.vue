@@ -212,7 +212,7 @@ onBeforeUnmount(() => {
           <Check :size="30" />
         </div>
         <h3>绑定成功</h3>
-        <p>Telegram 账号已成功绑定，即将关闭…</p>
+        <p>Telegram 账号已成功绑定，3 秒后自动关闭</p>
       </div>
 
       <div v-else-if="alreadyBound" class="tg-success">
@@ -229,8 +229,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-else-if="loading" class="tg-loading">
-        <RefreshCw class="spin" :size="24" />
+      <div v-else-if="loading" class="tg-loading" role="status" aria-label="正在生成绑定码">
+        <div class="au-skeleton tg-code-skeleton"></div>
         <p>正在生成绑定码…</p>
       </div>
 
@@ -434,23 +434,8 @@ onBeforeUnmount(() => {
   color: var(--au-success, #3ddc97);
 }
 
-.spin {
-  animation: tg-spin 1s linear infinite;
-  color: var(--au-primary, #7c5cff);
-}
-
-@keyframes tg-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .spin {
-    animation: none;
-  }
+.tg-code-skeleton {
+  height: 48px;
+  width: 100%;
 }
 </style>

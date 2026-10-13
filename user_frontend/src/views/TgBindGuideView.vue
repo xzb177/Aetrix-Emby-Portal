@@ -161,7 +161,10 @@ onUnmounted(() => {
         <p class="header-sub">管理员要求所有用户绑定 Telegram 后才能使用系统功能，完成绑定后将自动进入面板</p>
       </header>
 
-      <div v-if="loading" class="loading-box">加载中…</div>
+      <div v-if="loading" class="loading-box" role="status" aria-label="正在加载绑定指引">
+        <div class="au-skeleton" style="height:14px;"></div>
+        <div class="au-skeleton" style="height:14px;width:70%;margin:12px auto 0;"></div>
+      </div>
 
       <div v-else-if="notConfigured" class="warn-box">
         站点尚未配置 Telegram Bot，请联系管理员

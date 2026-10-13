@@ -2,11 +2,11 @@
   <div class="au-page tg-login-page">
     <div class="au-card tg-login-card">
       <h1 class="tg-login-title">Telegram 快捷登录</h1>
-      <div v-if="state === 'loading'" class="tg-login-loading">
-        <span class="tg-spinner" aria-hidden="true"></span>
+      <div v-if="state === 'loading'" class="tg-login-loading" role="status" aria-label="正在为您登录">
+        <div class="au-skeleton tg-login-skeleton"></div>
         <p class="tg-login-msg">正在为您登录…</p>
       </div>
-      <p v-else-if="state === 'success'" class="tg-login-msg tg-login-ok">✅ 登录成功，正在跳转…</p>
+      <p v-else-if="state === 'success'" class="tg-login-msg tg-login-ok">✅ 登录成功</p>
       <div v-else>
         <p class="tg-login-msg tg-login-error">登录链接无效或已过期，请在机器人中重新获取</p>
         <button class="au-btn tg-login-home" @click="goHome">返回首页</button>
@@ -90,21 +90,9 @@ function goHome() {
   align-items: center;
   gap: 1rem;
 }
-.tg-spinner {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 3px solid rgba(255, 255, 255, 0.15);
-  border-top-color: var(--au-primary, #f59e0b);
-  animation: tg-spin 0.8s linear infinite;
-}
-@keyframes tg-spin {
-  to { transform: rotate(360deg); }
-}
-
-/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
-@media (prefers-reduced-motion: reduce) {
-  .tg-spinner { animation: none; }
+.tg-login-skeleton {
+  height: 64px;
+  width: 100%;
 }
 .tg-login-home {
   margin-top: 1.25rem;

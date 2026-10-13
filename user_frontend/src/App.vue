@@ -67,7 +67,7 @@ function onTgNotBound(e: Event) {
   if (now - lastTgNotify < 3000) return
   lastTgNotify = now
   const message = (e as CustomEvent)?.detail?.message || '公益服功能需要绑定 Telegram，防小号，1 分钟搞定'
-  warning(message + '，正在前往绑定…')
+  warning(message + '，正在前往绑定')
   setTimeout(() => router.push('/game/account'), 600)
 }
 
