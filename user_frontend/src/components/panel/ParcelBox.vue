@@ -8,24 +8,33 @@
     @click="onTap"
     @keydown="onKey"
   >
-    <div v-if="!isOpen" class="v4-parcel-hideable">
-      <div class="v4-parcel-seal">✦</div>
-      <div class="v4-parcel-lbl">待拆</div>
-      <div class="v4-parcel-meta">{{ metaLine }}</div>
+    <!-- 印章：未拆=封，开封=剧/影 -->
+    <div class="v4-parcel-stamp" aria-hidden="true">{{ stampText }}</div>
+    <div class="v4-parcel-waybill">
+      <template v-if="!isOpen">
+        <div class="v4-parcel-seal">✦</div>
+        <div class="v4-parcel-lbl">待拆</div>
+        <div class="v4-parcel-meta">{{ metaLine }}</div>
+      </template>
+      <template v-else>
+        <b class="v4-parcel-name">{{ parcel.name || '未知条目' }}</b>
+        <div class="v4-parcel-divider" aria-hidden="true"></div>
+        <span class="v4-parcel-sub">{{ bodySub }}</span>
+        <span class="v4-parcel-time">{{ arrivedText }}</span>
+      </template>
     </div>
-    <div v-else class="v4-parcel-reveal">
-      <b>{{ parcel.name || '未知条目' }}</b><br />
-      <span class="v4-parcel-sub">{{ subLine }}</span><br />
-      <span class="v4-parcel-time">{{ arrivedText }}</span>
+    <div class="v4-parcel-foot">
+      <span v-if="!isOpen" class="v4-parcel-hint">点一下开封</span>
+      <a
+        v-else-if="parcel.deep_link"
+        class="v4-parcel-go"
+        :href="parcel.deep_link"
+        target="_blank"
+        rel="noopener"
+        aria-label="去播放器看"
+        @click.stop
+      >去看 →</a>
     </div>
-    <a
-      v-if="isOpen && parcel.deep_link"
-      class="v4-parcel-go"
-      :href="parcel.deep_link"
-      target="_blank"
-      rel="noopener"
-      @click.stop
-    >去播放器看 →</a>
   </div>
 </template>
 
@@ -45,6 +54,14 @@ const typeLabel = computed(() => {
   if (t === 'movie') return '电影'
   return '影片'
 })
+/** 印章字：未拆=封，开封后剧集=剧、电影=影 */
+const stampText = computed(() => {
+  if (!isOpen.value) return '封'
+  const t = String(props.parcel.item_type || props.parcel.type || '')
+  if (t === 'series') return '剧'
+  if (t === 'movie') return '影'
+  return '✦'
+})
 /** 未拆时的小字：类型 · 集数/清晰度 */
 const metaLine = computed(() => {
   const parts = [typeLabel.value]
@@ -55,15 +72,13 @@ const metaLine = computed(() => {
   else if (props.parcel.production_year) parts.push(String(props.parcel.production_year))
   return parts.join(' · ')
 })
-/** 拆开后的副标题行 */
-const subLine = computed(() => {
+/** 开封后的副标题行：类型 · 年份（面单第二行，短） */
+const bodySub = computed(() => {
   const parts = [typeLabel.value]
   const eps = props.parcel.episode_count
-  if (typeof eps === 'number' && eps > 0) parts.push(`全 ${eps} 集`)
-  const res = props.parcel.video_resolution || props.parcel.resolution
-  if (res) parts.push(String(res))
+  if (typeof eps === 'number' && eps > 0) parts.push(`全${eps}集`)
   else if (props.parcel.production_year) parts.push(String(props.parcel.production_year))
-  return parts.join(' · ') + ' · 已入库'
+  return parts.join(' · ')
 })
 /** 到货时间：今天 HH:MM / 昨天 / M-D */
 const arrivedText = computed(() => {
@@ -82,6 +97,11 @@ const arrivedText = computed(() => {
   return `${d.getMonth() + 1}月${d.getDate()}日 ${hm} 到货`
 })
 
+function goPlayer() {
+  const link = props.parcel.deep_link
+  if (typeof link === 'string' && link) window.open(link, '_blank', 'noopener')
+}
+
 function onKey(e: KeyboardEvent) {
   if ((e.target as HTMLElement).closest('a')) return
   if (e.key === 'Enter' || e.key === ' ') {
@@ -91,34 +111,66 @@ function onKey(e: KeyboardEvent) {
 }
 
 function onTap() {
-  if (isOpen.value || props.busy) return
+  if (isOpen.value) {
+    // 已开封：整卡点进播放器（与"去看 →"同一跳转，新开标签页）
+    goPlayer()
+    return
+  }
+  if (props.busy) return
   // busy 由父组件的请求生命周期控制（请求完成前防连点），这里只做事件转发
   emit('unseal', props.parcel.id)
 }
 </script>
 
 <style scoped>
-/* 取自设计稿 home.html .parcel（PR-3 填实） */
+/* 竖版文字面单卡：快递包裹面单气质，不放海报图 */
 .v4-parcel {
-  flex: 1 1 150px;
-  min-width: 0;
+  flex: 0 0 auto;
+  width: 132px;
+  min-height: 216px;
+  scroll-snap-align: start;
   background: var(--paper2);
-  border: 1.5px dashed var(--ink2);
+  border: 1.5px solid var(--ink2);
   border-radius: 10px;
-  padding: 14px 8px;
-  text-align: center;
-  cursor: pointer;
-  transition: transform 0.15s ease, border-color 0.25s ease, background 0.25s ease;
+  padding: 14px 10px 10px;
   position: relative;
-  min-height: 132px;
+  cursor: pointer;
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  transition: transform 0.15s ease, border-color 0.25s ease, background 0.25s ease;
+}
+.v4-parcel:not(.opened) { border-style: dashed; }
+.v4-parcel:active { transform: scale(0.96); }
+.v4-parcel.is-busy { pointer-events: none; opacity: 0.75; }
+/* 印章：右上角旋转小圆章 */
+.v4-parcel-stamp {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1.5px solid var(--red);
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 800;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  transform: rotate(-10deg);
+  opacity: 0.85;
+  pointer-events: none;
 }
-.v4-parcel:active { transform: scale(0.94); }
-.v4-parcel.is-busy { pointer-events: none; opacity: 0.75; }
+.v4-parcel-waybill {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 0;
+}
+/* 未拆态：火漆封印居中 */
+.v4-parcel:not(.opened) .v4-parcel-waybill { align-items: center; text-align: center; }
 .v4-parcel-seal {
   width: 38px;
   height: 38px;
@@ -134,30 +186,35 @@ function onTap() {
 }
 .v4-parcel-lbl { font-size: 12px; font-weight: 700; margin-top: 6px; }
 .v4-parcel-meta { font-size: 11px; color: var(--ink2); }
-/* 开封态：取自设计稿 .parcel.opened */
+/* 开封态：面单排版 */
 .v4-parcel.opened {
-  border-style: solid;
   border-color: var(--green);
   background: #F1F4EC;
-  cursor: default;
   animation: v4-pop 0.35s ease;
 }
-.v4-parcel.opened:active { transform: none; }
-.v4-parcel.opened .v4-parcel-seal { background: var(--green); box-shadow: 0 2px 0 #35593f; }
-.v4-parcel-reveal { font-size: 12px; line-height: 1.7; animation: v4-fadein 0.4s ease; }
-.v4-parcel-reveal b { font-size: 13px; }
+.v4-parcel-name {
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.4;
+  padding-right: 28px; /* 给印章让位 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  animation: v4-fadein 0.4s ease;
+}
+.v4-parcel-divider {
+  border-top: 1px dashed var(--ink2);
+  margin: 8px 0;
+}
 .v4-parcel-sub { color: var(--ink2); font-size: 11px; }
 .v4-parcel-time { color: var(--ink2); font-size: 11px; }
+.v4-parcel-foot { margin-top: auto; min-height: 18px; }
+.v4-parcel-hint { font-size: 11px; color: var(--ink2); }
 .v4-parcel-go {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  margin-top: 6px;
-  background: var(--ink);
-  color: #fff;
-  font-size: 11px;
-  padding: 10px 18px;
-  border-radius: 16px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--red);
   text-decoration: none;
   animation: v4-fadein 0.4s ease 0.1s both;
 }
@@ -178,7 +235,7 @@ function onTap() {
 /* R27：减少动态偏好下装饰动画/过渡停掉（本地守卫） */
 @media (prefers-reduced-motion: reduce) {
   .v4-parcel.opened { animation: none; transition: none; }
-  .v4-parcel-reveal { animation: none; transition: none; }
+  .v4-parcel-name { animation: none; transition: none; }
   .v4-parcel-go { animation: none; transition: none; }
 }
 </style>

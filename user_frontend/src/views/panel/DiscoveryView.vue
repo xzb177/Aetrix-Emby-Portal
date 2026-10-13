@@ -26,7 +26,7 @@
       <section class="v4-sec">
         <div class="v4-sec-title">📦 今日封存</div>
         <div class="v4-sec-sub">新入库的片子，先拆为敬 —— 点一下开封</div>
-        <div v-if="parcels.loading" class="v4-skeleton" style="height:132px"></div>
+        <div v-if="parcels.loading" class="v4-skeleton" style="height:224px"></div>
         <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
         <div v-else-if="parcelList.length === 0" class="v4-empty">今天还没有新封存，明天再来拆 📦</div>
         <div v-else class="v4-parcels">
@@ -198,12 +198,20 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
 </script>
 
 <style scoped>
-/* 封存包裹行：取自设计稿 .parcels；窄屏自动换行，避免多包裹被等比挤压 */
+/* 封存包裹行：横向滑动货架（见下方 .v4-parcels） */
+/* 封存包裹行：横向滑动货架（单行横滑 + scroll-snap，行尾露一截提示可滑） */
 .v4-parcels {
   display: flex;
-  flex-wrap: wrap;
   gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  margin: 0 -20px;
+  padding: 4px 36px 12px 20px;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 44px), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 44px), transparent 100%);
 }
+.v4-parcels::-webkit-scrollbar { display: none; }
 /* 脉搏黑盒：取自设计稿 .pulse-box */
 .v4-pulse-box {
   background: var(--ink);
