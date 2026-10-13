@@ -70,7 +70,7 @@ const watchedText = computed(() => {
 <style scoped>
 /* 取自设计稿 home.html .letter */
 .v4-letter {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
@@ -79,7 +79,6 @@ const watchedText = computed(() => {
 .v4-letter-env {
   padding: 18px;
   text-align: center;
-  transition: opacity 0.3s;
 }
 .v4-letter-wax {
   width: 52px;

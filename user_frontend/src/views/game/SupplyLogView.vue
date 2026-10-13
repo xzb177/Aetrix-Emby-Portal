@@ -66,6 +66,8 @@
               <div class="rc-foot">· 谢谢惠顾 · 欢迎下次再来 ·</div>
             </div>
           </article>
+          <!-- R30：api 暂无分页，limit 50 会静默截断，达到上限时诚实告知 -->
+          <div v-if="orders.length >= 50" class="rc-foot">· 仅显示最近 50 笔 ·</div>
         </div>
       </section>
     </div>
@@ -92,12 +94,12 @@ function kindIcon(kind: OrderRow['kind']): string {
 
 /**
  * 状态章：历史口径（旧 WalletView 的 orderStatusMeta 值域），仅换游戏化展示
- * paid → ✓ 已收货（绿章），pending → 🚚 运输中…（蓝章，呼吸闪烁）
+ * paid → ✓ 已收货（绿章），pending → 🚚 运输中（蓝章，呼吸闪烁）
  * refunded → ↩️ 已退款（灰章），closed → 已关闭（灰章）
  */
 function seal(s: string): { label: string; cls: string } {
   if (s === 'paid') return { label: '✓ 已收货', cls: 'done' }
-  if (s === 'pending') return { label: '🚚 运输中…', cls: 'ship' }
+  if (s === 'pending') return { label: '🚚 运输中', cls: 'ship' }
   if (s === 'refunded') return { label: '↩️ 已退款', cls: 'grey' }
   if (s === 'closed') return { label: '已关闭', cls: 'grey' }
   return { label: '处理中', cls: 'grey' }

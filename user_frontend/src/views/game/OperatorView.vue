@@ -41,7 +41,7 @@
               <div class="op-row">
                 <span class="op-label">服务器</span>
                 <span class="op-value mono">{{ serverUrl }}</span>
-                <button class="copy-btn" title="复制服务器地址" @click="copyText(serverUrl, 'server')">
+                <button class="copy-btn" title="复制服务器地址" aria-label="复制服务器地址" @click="copyText(serverUrl, 'server')">
                   <Check v-if="copiedField === 'server'" :size="14" class="ok" />
                   <Copy v-else :size="14" />
                 </button>
@@ -49,7 +49,7 @@
               <div class="op-row">
                 <span class="op-label">用户名</span>
                 <span class="op-value mono">{{ embyUsername }}</span>
-                <button class="copy-btn" title="复制用户名" @click="copyText(embyUsername, 'user')">
+                <button class="copy-btn" title="复制用户名" aria-label="复制用户名" @click="copyText(embyUsername, 'user')">
                   <Check v-if="copiedField === 'user'" :size="14" class="ok" />
                   <Copy v-else :size="14" />
                 </button>
@@ -64,6 +64,7 @@
                   v-if="hasPlayPassword"
                   class="copy-btn"
                   :title="showPlayPassword ? '隐藏' : '查看'"
+                  :aria-label="showPlayPassword ? '隐藏' : '查看'"
                   @click="showPlayPassword = !showPlayPassword"
                 >
                   <Eye v-if="showPlayPassword" :size="14" />
@@ -89,7 +90,7 @@
                 <div class="realm-head">
                   <strong>{{ r.name }}</strong>
                   <span v-if="r.is_free" class="badge free">公益服</span>
-                  <span v-else-if="r.subscribed" class="badge ok">会员剩 {{ daysLeft(r.end_date) }} 天</span>
+                  <span v-else-if="r.subscribed" class="badge ok">{{ daysLeft(r.end_date) > 0 ? `会员剩 ${daysLeft(r.end_date)} 天` : '会员已到期' }}</span>
                   <span v-else class="badge off">未开通</span>
                 </div>
                 <div v-if="r.view_granted" class="realm-url">
@@ -98,6 +99,7 @@
                     v-if="r.base_url"
                     class="copy-btn"
                     title="复制"
+                    aria-label="复制"
                     @click="copyText(r.base_url, `realm-${r.id}`)"
                   >
                     <Check v-if="copiedField === `realm-${r.id}`" :size="13" class="ok" />
@@ -284,7 +286,7 @@
           <div class="modal-actions">
             <button class="op-btn ghost" @click="showSetPlayPwd = false">取消</button>
             <button class="op-btn primary" :disabled="settingPwd" @click="confirmSetPassword">
-              {{ settingPwd ? '设置中…' : '确认' }}
+              {{ settingPwd ? '设置中' : '确认' }}
             </button>
           </div>
         </div>
@@ -302,7 +304,7 @@
           <div class="modal-actions">
             <button class="op-btn ghost" @click="showUnlockConfirm = false">取消</button>
             <button class="op-btn primary" :disabled="unlocking" @click="confirmUnlock">
-              {{ unlocking ? '解锁中…' : '确认' }}
+              {{ unlocking ? '解锁中' : '确认' }}
             </button>
           </div>
         </div>
@@ -525,9 +527,12 @@ function confirmStopSession(session: MyPlaybackSession) {
   sessionToStop.value = session
 }
 
-/** Esc 关闭结束确认弹窗（照 WishlistView 模式） */
+/** Esc 关闭各确认弹窗（照 WishlistView 模式） */
 function onEsc(e: KeyboardEvent) {
-  if (e.key === 'Escape' && sessionToStop.value) sessionToStop.value = null
+  if (e.key !== 'Escape') return
+  if (showSetPlayPwd.value) showSetPlayPwd.value = false
+  else if (showUnlockConfirm.value) showUnlockConfirm.value = false
+  else if (sessionToStop.value) sessionToStop.value = null
 }
 
 async function doStopSession() {
@@ -596,14 +601,26 @@ watch(viewGranted, (granted) => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  border: 1.5px solid var(--line);
-  background: var(--paper-card);
+  /* 透明 padding + 负 margin：视觉 32×32 不变，点击区 44×44 */
+  width: 44px;
+  height: 44px;
+  padding: 6px;
+  margin: -6px;
+  border: none;
+  background: transparent;
+  position: relative;
   color: var(--ink2);
   cursor: pointer;
 }
+.copy-btn::before {
+  content: '';
+  position: absolute;
+  inset: 6px;
+  border-radius: 10px;
+  border: 1.5px solid var(--line);
+  background: var(--paper-card);
+}
+.copy-btn > * { position: relative; z-index: 1; }
 .copy-btn .ok { color: var(--green); }
 .copy-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 .text-btn {
@@ -614,7 +631,9 @@ watch(viewGranted, (granted) => {
   background: transparent;
   border: none;
   cursor: pointer;
-  padding: 6px 4px;
+  /* 透明 padding + 负 margin：文字视觉不变，点击区纵向扩到 ≥44px */
+  padding: 15px 4px;
+  margin: -9px 0;
 }
 .op-tip {
   font-size: 12px;
@@ -671,7 +690,7 @@ watch(viewGranted, (granted) => {
 .import-pwd-input {
   width: 100%;
   box-sizing: border-box;
-  font-size: 14px;
+  font-size: 16px;
   padding: 10px 14px;
   margin-bottom: 10px;
   border: 1.5px solid var(--line);
@@ -684,7 +703,7 @@ watch(viewGranted, (granted) => {
 .scheme-btn {
   font-size: 14px;
   font-weight: 800;
-  padding: 10px 18px;
+  padding: 12px 20px;
   border-radius: 12px;
   border: 2px solid var(--ink);
   background: var(--paper-card);
@@ -882,7 +901,7 @@ watch(viewGranted, (granted) => {
 .modal-input {
   width: 100%;
   box-sizing: border-box;
-  font-size: 15px;
+  font-size: 16px;
   padding: 12px 14px;
   border: 1.5px solid var(--line);
   border-radius: 10px;

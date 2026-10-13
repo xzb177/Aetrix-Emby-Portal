@@ -8,6 +8,7 @@
         <p v-if="today.data && parcelTotal !== '?'">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
         <div v-else-if="today.loading" class="v4-skeleton" style="height:28px;width:70%;margin-top:10px"></div>
         <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
+        <p v-else-if="today.data">包裹数暂时未知 —— 看看下面的货架上有啥。</p>
         <div v-if="streak != null && streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
       </header>
 
@@ -190,11 +191,15 @@ async function onUnseal(id: string | number) {
  *  此为兜底（处理旧缓存/其他漏网路径）。 */
 function cleanActivityText(t: string): string {
   const s = t.trim()
-  if (s.startsWith('{') && /['"]message['"]/.test(s)) {
-    const m1 = s.match(/'message'\s*:\s*'((?:[^'\\]|\\.)*)'/)
-    if (m1) return m1[1].replace(/\\'/g, "'")
-    const m2 = s.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/)
-    if (m2) return m2[1].replace(/\\"/g, '"')
+  if (s.startsWith('{')) {
+    if (/['"]message['"]/.test(s)) {
+      const m1 = s.match(/'message'\s*:\s*'((?:[^'\\]|\\.)*)'/)
+      if (m1) return m1[1].replace(/\\'/g, "'")
+      const m2 = s.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+      if (m2) return m2[1].replace(/\\"/g, '"')
+    }
+    // 无 message 键的结构化残留：不暴露原始结构
+    return '服务器刚才忙去了，这条动态没写清楚'
   }
   return s
 }
@@ -205,7 +210,7 @@ const activityTexts = computed((): string[] => {
     const texts = acts.map((a) => cleanActivityText(String(a?.text || ''))).filter(Boolean)
     if (texts.length) return texts
   }
-  return ['正在感知服务器…']
+  return ['暂无动态']
 })
 
 /* ---------- 每日一封 ---------- */
@@ -221,6 +226,7 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   display: flex;
   gap: 12px;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   scroll-snap-type: x mandatory;
   margin: 0 -20px;
   padding: 4px 36px 12px 20px;

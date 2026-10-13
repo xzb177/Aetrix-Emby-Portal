@@ -23,11 +23,12 @@ const activeCount = computed(() => tasks.value.filter((t) => t.active).length)
 let raf = 0
 let angle = 0
 let lastTs = 0
+let ctx: CanvasRenderingContext2D | null = null // 缓存：不每帧调 getContext
 /** 角速度：0.045 rad/帧 × 60fps —— 高刷屏也用时间增量，转速一致 */
 const ANGULAR_SPEED = 0.045 * 60
-const reduced = typeof window !== 'undefined'
-  && typeof window.matchMedia === 'function'
-  && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+// R28-4：reduced-motion 改为响应式——页面打开期间用户改系统设置也能即时启停动画
+const motionMq = window.matchMedia('(prefers-reduced-motion: reduce)')
+const reducedMotion = ref(motionMq.matches)
 
 /** 固定角度布局（确定性，不闪烁），按任务数均分 */
 function targetPos(i: number, n: number, cx: number, cy: number, r: number) {
@@ -76,7 +77,7 @@ function drawStatic() {
   const h = 190
   c.width = w * dpr
   c.height = h * dpr
-  const ctx = c.getContext('2d')
+  if (!ctx) ctx = c.getContext('2d')
   if (!ctx) return
   ctx.scale(dpr, dpr)
   const cx = w / 2
@@ -117,7 +118,7 @@ function tick(ts: number) {
     c.width = Math.round(w * dpr)
     c.height = Math.round(h * dpr)
   }
-  const ctx = c.getContext('2d')
+  if (!ctx) ctx = c.getContext('2d')
   if (!ctx) return
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, w, h)
@@ -177,15 +178,32 @@ function onVis() {
   if (document.hidden) {
     cancelAnimationFrame(raf)
     raf = 0
-  } else if (!raf && !reduced) {
+  } else if (!raf && !reducedMotion.value) {
     lastTs = 0 // 从后台回来时丢弃旧时间戳，避免跳帧
+    raf = requestAnimationFrame(tick)
+  }
+}
+
+/** 用户在页面打开期间切换系统"减少动态"设置：即时启停雷达动画（R28-4 模式） */
+function onMotionChange(e: { matches: boolean }) {
+  reducedMotion.value = e.matches
+  if (e.matches) {
+    cancelAnimationFrame(raf)
+    raf = 0
+    document.removeEventListener('visibilitychange', onVis)
+    drawStatic()
+  } else {
+    document.addEventListener('visibilitychange', onVis)
+    lastTs = 0
     raf = requestAnimationFrame(tick)
   }
 }
 
 onMounted(() => {
   window.addEventListener('resize', drawStatic)
-  if (reduced) {
+  motionMq.addEventListener('change', onMotionChange)
+  // 减少动态偏好：不启动动画，但画一帧静态雷达，不留空白
+  if (reducedMotion.value) {
     drawStatic()
     return
   }
@@ -195,6 +213,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   cancelAnimationFrame(raf)
+  motionMq.removeEventListener('change', onMotionChange)
   document.removeEventListener('visibilitychange', onVis)
   window.removeEventListener('resize', drawStatic)
 })

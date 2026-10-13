@@ -75,7 +75,7 @@
             :disabled="loadingMore"
             @click="loadMore"
           >
-            {{ loadingMore ? '翻页中…' : (filter === 'all' ? `加载更多（还剩 ${total - logs.length} 笔）` : '加载更多') }}
+            {{ loadingMore ? '翻页中' : (filter === 'all' ? `加载更多（还剩 ${total - logs.length} 笔）` : '加载更多') }}
           </button>
           <div v-else-if="logs.length" class="v4-sec-sub" style="text-align:center;margin-top:14px">
             —— 账本到这里就记满了 ——
@@ -435,5 +435,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 
 @media (prefers-reduced-motion: reduce) {
   .chip, .load-more { transition: none; }
+  /* R30：按压缩放也关掉 */
+  .chip:active, .load-more:active { transform: none; }
 }
 </style>

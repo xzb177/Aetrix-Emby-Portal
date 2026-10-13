@@ -69,7 +69,7 @@
             </div>
             <div v-if="sending" class="msg guide">
               <div class="who">老陈 · 向导</div>
-              <span class="typing" aria-label="向导正在思考"><i></i><i></i><i></i></span>
+              <span class="typing" role="status" aria-label="向导正在思考"><i></i><i></i><i></i></span>
             </div>
           </div>
         </section>
@@ -84,7 +84,7 @@
             @keyup.enter="ask()"
           >
           <button :disabled="sending || exhausted || !question.trim()" @click="ask()">
-            {{ sending ? '想着…' : '发送' }}
+            {{ sending ? '想着' : '发送' }}
           </button>
         </div>
       </template>

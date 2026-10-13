@@ -77,6 +77,9 @@ const watchLine = computed(() => {
         <span
           v-if="c.progress !== null"
           class="stat-progress"
+          role="progressbar"
+          :aria-valuenow="c.progress"
+          :aria-label="`进度 ${c.progress}%`"
           :title="`套餐周期已过 ${c.progress}%`"
         >
           <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
@@ -299,6 +302,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
 @media (prefers-reduced-motion: reduce) {
   .tp-skeleton { animation-duration: 0.001s !important; }
   .stub-admit { transform: none; }
+  .stub-btn:active { transform: none; }
 }
 
 /* 375px 窄屏：数字收紧、徽标隐藏，保证两行一行内完整显示 */

@@ -43,10 +43,10 @@ function onMotionChange(e: { matches: boolean }) {
 }
 
 onMounted(() => {
-  // 减少动态偏好：只显示第一条，不轮播
+  // 减少动态偏好：只显示第一条，不轮播；监听先注册，避免页内关闭后轮播永不启动
+  motionMq.addEventListener('change', onMotionChange)
   if (motionMq.matches) return
   startTick()
-  motionMq.addEventListener('change', onMotionChange)
 })
 onUnmounted(() => {
   stopTick()

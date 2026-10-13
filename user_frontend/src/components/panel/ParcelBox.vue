@@ -83,9 +83,9 @@ const bodySub = computed(() => {
 /** 到货时间：今天 HH:MM / 昨天 / M-D */
 const arrivedText = computed(() => {
   const raw = props.parcel.arrived_at || props.parcel.added_at
-  if (!raw) return '刚刚到货'
+  if (!raw) return '时间未知'
   const d = new Date(raw)
-  if (Number.isNaN(d.getTime())) return '刚刚到货'
+  if (Number.isNaN(d.getTime())) return '时间未知'
   const now = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
   const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
@@ -140,7 +140,7 @@ function onTap() {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  transition: transform 0.15s ease, border-color 0.25s ease, background 0.25s ease;
+  transition: transform 0.15s ease;
 }
 .v4-parcel:not(.opened) { border-style: dashed; }
 .v4-parcel:active { transform: scale(0.96); }
@@ -216,6 +216,9 @@ function onTap() {
 .v4-parcel-foot { margin-top: auto; min-height: 18px; }
 .v4-parcel-hint { font-size: 11px; color: var(--ink2); }
 .v4-parcel-go {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   font-size: 12px;
   font-weight: 700;
   color: var(--red);

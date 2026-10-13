@@ -109,7 +109,7 @@
         <div class="acct-modal-actions">
           <button type="button" class="acct-btn ghost" @click="showChangePwd = false">取消</button>
           <button type="button" class="acct-btn primary" :disabled="pwdLoading" @click="handleChangePassword">
-            {{ pwdLoading ? '提交中…' : '确认修改' }}
+            {{ pwdLoading ? '提交中' : '确认修改' }}
           </button>
         </div>
       </div>

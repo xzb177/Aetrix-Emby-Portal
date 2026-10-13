@@ -202,26 +202,42 @@ defineExpose({
 
 .neo-input__clear {
   position: absolute;
-  right: 8px;
-  width: 28px;
-  height: 28px;
+  right: 0;
+  width: 44px;
+  height: 44px;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--neo-bg-surface-2);
+  background: transparent;
   border: none;
-  border-radius: 50%;
   cursor: pointer;
   color: var(--neo-text-tertiary);
-  transition: all var(--neo-duration-fast) var(--neo-ease-default);
+  transition: color var(--neo-duration-fast) var(--neo-ease-default);
+}
+
+/* 视觉圆圈保持 28px：hit 区 44px 透明 padding 扩展 */
+.neo-input__clear::before {
+  content: '';
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--neo-bg-surface-2);
+  transition: background var(--neo-duration-fast) var(--neo-ease-default);
 }
 
 .neo-input__clear:hover {
-  background: var(--neo-bg-surface-3);
   color: var(--neo-text-primary);
 }
 
+.neo-input__clear:hover::before {
+  background: var(--neo-bg-surface-3);
+}
+
 .neo-input__clear svg {
+  position: relative;
+  z-index: 1;
   width: 14px;
   height: 14px;
 }

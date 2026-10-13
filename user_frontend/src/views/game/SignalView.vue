@@ -54,7 +54,7 @@
         ></textarea>
 
         <button class="send-btn" :disabled="sending" @click="sendSOS">
-          {{ sending ? '信号发出中…' : '📡 发出求救信号' }}
+          {{ sending ? '信号发出中' : '📡 发出求救信号' }}
         </button>
 
         <!-- 摩斯电码发送动画 -->
@@ -159,7 +159,7 @@
       <template #footer>
         <div class="confirm-row">
           <button class="cbtn ghost" @click="showCloseConfirm = false">再想想</button>
-          <button class="cbtn go" :disabled="closing" @click="doCloseTicket">{{ closing ? '关闭中…' : '确定关闭' }}</button>
+          <button class="cbtn go" :disabled="closing" @click="doCloseTicket">{{ closing ? '关闭中' : '确定关闭' }}</button>
         </div>
       </template>
     </Modal>
@@ -336,7 +336,6 @@ async function fetchMessages(ticketId: number) {
   } catch (e) {
     messages.value = []
     messagesError.value = humanizeError(e)
-    toast.error(messagesError.value)
   } finally {
     messagesLoading.value = false
   }

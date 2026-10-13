@@ -4,7 +4,7 @@
     <h3>{{ statusLine }}</h3>
     <div class="cond">
       <template v-if="backlog > 0">
-        刚吃下 <b>{{ backlog }}</b> 条待消化，正在慢慢消化<br>心跳正常 · 胃口很好
+        刚吃下 <b>{{ backlog }}</b> 条待消化，正在慢慢消化<br>{{ condLine }}
       </template>
       <template v-else>
         肠胃清空，一身轻松<br>心跳正常 · 体温正常 · 随时待命
@@ -53,6 +53,12 @@ const statusLine = computed(() => {
   if (level.value === 'down' || status.value === 'down') return '状态：趴窝了 😴'
   if (backlog.value > 0) return '状态：消化中 😋'
   return '状态：吃饱了，晒太阳 😌'
+})
+
+/** cond 第二行文案：按真实状态，不编造健康——down 时诚实，不再说"心跳正常" */
+const condLine = computed(() => {
+  if (level.value === 'down' || status.value === 'down') return '心跳微弱 · 正在攒劲恢复'
+  return '心跳正常 · 胃口很好'
 })
 
 /** 健康等级人话：后端英文 → 中文，未知兜底原文 */

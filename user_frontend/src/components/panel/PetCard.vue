@@ -59,7 +59,7 @@ const flavorText = computed(() => {
   const h = new Date().getHours()
   const night = h >= 23 || h < 5
   if (props.pet.stage <= 0) return '它刚睁开眼睛，好奇地看着你的片库'
-  if (night) return '它记得你最爱在深夜看悬疑片'
+  if (night) return '夜深了，它陪你守着这盏小灯'
   return '你看的每一分钟，都在喂养它'
 })
 
@@ -69,7 +69,7 @@ const evoScale = computed(() => Math.min(1, Math.max(0, props.pet.progress || 0)
 <style scoped>
 /* 取自设计稿 .pet / .evo / .evo-bar / .evo-steps */
 .v4-pet {
-  background: #fffdf6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 14px;
   padding: 18px;

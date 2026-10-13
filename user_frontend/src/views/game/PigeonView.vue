@@ -58,7 +58,7 @@
         </div>
         <div v-if="unreadCount > 0" class="markall-row">
           <button class="v4-retry markall-btn" :disabled="markingAll" @click="markAllRead">
-            {{ markingAll ? '拆信中…' : `全部拆完（${unreadCount} 封）` }}
+            {{ markingAll ? '拆信中' : `全部拆完（${unreadCount} 封）` }}
           </button>
         </div>
         <div class="filters">
