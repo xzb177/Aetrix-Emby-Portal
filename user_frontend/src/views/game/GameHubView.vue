@@ -129,25 +129,21 @@ function liveBadge(f: GameFacility): string {
 
 onMounted(async () => {
   if (!userStore.isLoggedIn) return
-  // 三个请求互相独立，各自 try/catch，失败只留静态展示
-  try {
-    const st = await vitalityApi.status()
-    vitality.value = st.vitality
-    vitalityMax.value = st.max
-  } catch {
-    /* 静默降级 */
+  // 三个请求互相独立，并发执行，各自 try/catch，失败只留静态展示
+  const [vitalityRes, checkinRes, unreadRes] = await Promise.all([
+    vitalityApi.status().catch((): null => null),
+    checkinApi.status().catch((): null => null),
+    messageApi.getUnreadCount().catch((): null => null),
+  ])
+  if (vitalityRes) {
+    vitality.value = vitalityRes.vitality
+    vitalityMax.value = vitalityRes.max ?? null
   }
-  try {
-    const st = await checkinApi.status()
-    checkedToday.value = st.checked_today
-  } catch {
-    /* 静默降级 */
+  if (checkinRes) {
+    checkedToday.value = checkinRes.checked_today
   }
-  try {
-    const { unread_count } = await messageApi.getUnreadCount()
-    unreadCount.value = Number(unread_count) || 0
-  } catch {
-    /* 静默降级 */
+  if (unreadRes) {
+    unreadCount.value = Number(unreadRes.unread_count) || 0
   }
 })
 </script>
@@ -285,12 +281,12 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--ink2);
   margin-top: 2px;
-  /* R27：单行 nowrap 在窄屏下截断关键信息 → 最多两行（保留省略号） */
+  /* R27：单行 nowrap 在窄屏下截断关键信息 → 最多两行。
+     line-clamp 场景下 text-overflow 不生效，不写无效声明 */
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .map-go {
   font-size: 22px;

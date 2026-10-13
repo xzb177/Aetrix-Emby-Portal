@@ -45,7 +45,7 @@ async function loadVitality() {
   try {
     const st = await vitalityApi.status()
     vitality.value = st.vitality
-    vitalityMax.value = st.max
+    vitalityMax.value = st.max ?? null
   } catch {
     vitality.value = null
     vitalityMax.value = null
@@ -224,7 +224,7 @@ async function loadMsgPreview() {
         key: `m${m.id}`,
         title: m.title,
         meta: `${MSG_LABELS[m.message_type] || '通知'} · ${relTime(m.created_at)}`,
-        to: '/messages',
+        to: '/game/pigeon',
         icon: MSG_ICONS[m.message_type] || Bell,
         unread: true,
         count: 1,
@@ -257,9 +257,8 @@ async function loadMsgPreview() {
         key: `a${a.id}`,
         title: a.title,
         meta: `公告 · ${relTime(a.created_at)}`,
-        // 直接落到消息中心的「公告」分类：此前只丢到消息中心首页，
-        // 用户还得自己在分类里再找一遍这条公告
-        to: '/messages?tab=announcement',
+        // 消息中心已迁到信鸽 /game/pigeon（PigeonView 暂不支持 tab 参数，进首页即可）
+        to: '/game/pigeon',
         icon: Megaphone,
         unread: false,
       })),
@@ -632,7 +631,7 @@ onBeforeUnmount(() => {
                 <RouterLink
                   to="/game"
                   class="dropdown-facility"
-                  role="menuitemlink"
+                  role="menuitem"
                   @click="closeMenus"
                 >
                   <span class="facility-icon" aria-hidden="true">🏕️</span>
@@ -647,7 +646,7 @@ onBeforeUnmount(() => {
                   :key="f.key"
                   :to="f.path"
                   class="dropdown-facility"
-                  role="menuitemlink"
+                  role="menuitem"
                   @click="closeMenus"
                 >
                   <span class="facility-icon" aria-hidden="true">{{ f.icon }}</span>
@@ -658,6 +657,17 @@ onBeforeUnmount(() => {
                   <span class="facility-go" aria-hidden="true">›</span>
                 </RouterLink>
                 </template>
+
+                <!-- 窄屏（≤420px）专用项：顶栏的外观按钮与消息铃铛被 wide-only 隐藏后，
+                     这里是唯一的切换主题 / 进消息中心入口。
+                     （r26 曾恢复、PR #769 误删，本轮恢复；默认隐藏，窄屏才显示） -->
+                <button class="dropdown-item dropdown-narrow-only" role="menuitem" @click="toggleTheme(); closeMenus()">
+                  <component :is="themeCurrent.icon" :size="15" /> 外观：{{ themeCurrent.label }}
+                </button>
+                <RouterLink to="/game/pigeon" class="dropdown-item dropdown-narrow-only" role="menuitem" @click="closeMenus">
+                  <Inbox :size="15" /> 消息中心
+                  <span v-if="unreadCount > 0" class="dropdown-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+                </RouterLink>
 
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
@@ -946,6 +956,23 @@ onBeforeUnmount(() => {
 }
 
 .narrow-only { display: none; }
+
+/* 窄屏（≤420px）菜单专用项：默认隐藏，窄屏才以菜单项形态出现（外观/消息中心入口） */
+.dropdown-narrow-only { display: none; }
+.dropdown-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--au-r-full);
+  background: var(--au-danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 
 .avatar {
   width: 30px;
@@ -1375,6 +1402,7 @@ onBeforeUnmount(() => {
 @media (max-width: 420px) {
   .wide-only { display: none; }
   .narrow-only { display: block; }
+  .dropdown-narrow-only { display: flex; }
   .logo-text { font-size: 0.9375rem; letter-spacing: 0.18em; }
   .logo-mark { width: 26px; height: 26px; }
   .points-pill { padding: 0.3125rem 0.625rem; }

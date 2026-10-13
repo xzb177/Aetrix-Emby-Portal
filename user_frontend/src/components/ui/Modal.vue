@@ -11,7 +11,7 @@
     <Transition name="modal-content">
       <div
         v-if="modelValue"
-        :class="['modal-container', { 'modal-container--centered': centered }]"
+        :class="['modal-container', { 'modal-container--centered': centered }, contentClass]"
         role="dialog"
         aria-modal="true"
       >
@@ -61,6 +61,10 @@ export interface ModalProps {
   closable?: boolean
   closeOnBackdrop?: boolean
   noPadding?: boolean
+  /** 追加到 .modal-container 的类名：Teleport 后 scoped 样式够不到，
+      需要纸色等定制外观时走这个正规入口（class 直接写在 <Modal> 上会被
+      fragment 根 Teleport 丢弃，见 R27 SignalView 教训） */
+  contentClass?: string
 }
 
 const props = withDefaults(defineProps<ModalProps>(), {
@@ -68,7 +72,8 @@ const props = withDefaults(defineProps<ModalProps>(), {
   centered: true,
   closable: true,
   closeOnBackdrop: true,
-  noPadding: false
+  noPadding: false,
+  contentClass: ''
 })
 
 const emit = defineEmits<{

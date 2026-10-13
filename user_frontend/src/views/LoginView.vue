@@ -696,7 +696,7 @@ onUnmounted(() => {
   /* R27：width 是 layout 属性会触发重排 → 改 transform: scaleX（StaminaBar 同款模式） */
   transform: scaleX(0);
   transform-origin: left center;
-  transition: transform 0.3s ease, background 0.3s ease;
+  transition: transform 0.3s ease, background-color 0.3s ease;
 }
 
 .strength-fill.lv-1 { transform: scaleX(0.33); background: var(--au-danger); }

@@ -13,7 +13,10 @@
       <div class="tabs" role="tablist" aria-label="换装" @keydown="onTabKeydown">
         <button
           role="tab"
+          id="tab-outfit"
+          aria-controls="panel-outfit"
           :aria-selected="tab === 'outfit'"
+          :tabindex="tab === 'outfit' ? 0 : -1"
           class="tab"
           :class="{ active: tab === 'outfit' }"
           @click="tab = 'outfit'"
@@ -22,7 +25,10 @@
         </button>
         <button
           role="tab"
+          id="tab-gear"
+          aria-controls="panel-gear"
           :aria-selected="tab === 'gear'"
+          :tabindex="tab === 'gear' ? 0 : -1"
           class="tab"
           :class="{ active: tab === 'gear' }"
           @click="tab = 'gear'"
@@ -34,6 +40,8 @@
       <section
         v-if="tab === 'outfit'"
         role="tabpanel"
+        id="panel-outfit"
+        aria-labelledby="tab-outfit"
         aria-label="穿搭"
       >
       <div class="v4-sec">
@@ -70,6 +78,8 @@
       <section
         v-else
         role="tabpanel"
+        id="panel-gear"
+        aria-labelledby="tab-gear"
         aria-label="装备库"
       >
       <div class="v4-sec">
