@@ -46,7 +46,7 @@ const triggeringFull = ref(false)
 const saving = ref(false)
 
 // 配置表单（与 config 分开，避免未保存就污染展示）
-const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, interval_minutes: 60, source_type: 'drive', local_root: '/media' })
+const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, interval_minutes: 60, lock_timeout_minutes: 180, source_type: 'drive', local_root: '/media' })
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -110,6 +110,7 @@ async function load(silent = false) {
       drive_id: config.value?.drive_id ?? '',
       prune: !!config.value?.prune,
       interval_minutes: config.value?.interval_minutes ?? 60,
+      lock_timeout_minutes: config.value?.lock_timeout_minutes ?? 180,
       source_type: config.value?.source_type ?? 'drive',
       local_root: config.value?.local_root ?? '/media',
     }
@@ -283,6 +284,10 @@ onUnmounted(() => {
         <el-form-item label="增量间隔">
           <el-input-number v-model="form.interval_minutes" :min="0" :max="1440" :step="5" style="max-width: 160px" />
           <span class="hint">分钟，0=关闭。实际间隔加 ±20% 随机抖动防风控</span>
+        </el-form-item>
+        <el-form-item label="运行锁超时">
+          <el-input-number v-model="form.lock_timeout_minutes" :min="0" :max="1440" :step="30" style="max-width: 160px" />
+          <span class="hint">分钟。锁被持有超此时长视为僵死可抢占，0=关闭自愈</span>
         </el-form-item>
         <el-form-item label="数据源类型">
           <el-select v-model="form.source_type" style="max-width: 200px">
