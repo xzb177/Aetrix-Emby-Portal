@@ -37,6 +37,8 @@
 - strm_orphan_check_qps：per-SA QPS 上限，默认 2.0
 - strm_gen_last_run：上次执行完成时间（ISO）
 - strm_gen_last_stats：上次执行统计（JSON，含 tombstone/would-delete/prune_blocked）
+- strm_gen_scan_trigger_failures：扫库触发器失败记录（JSON），供 system_alerts 的
+  strm_scan_trigger_failed 事件读取
 """
 
 from __future__ import annotations
