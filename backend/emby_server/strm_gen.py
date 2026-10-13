@@ -45,6 +45,7 @@ import json
 import logging
 import os
 import random
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -477,6 +478,23 @@ def drive_url(file_id: str) -> str:
     return "https://drive.google.com/uc?export=download&id=%s&confirm=t" % file_id
 
 
+#: .strm 第一行 URL 里的 file_id 提取。本地源 .strm 也是同一格式
+#: （id=local:sha…），数据源无关。
+_STRM_FILE_ID_RE = re.compile(r"id=([^&\s]+)")
+
+
+def _extract_strm_file_id(first_line: str) -> Optional[str]:
+    """从 .strm 文件第一行 URL 提取 file_id。
+
+    纯函数：drive_url() 写出的单行格式 `…?export=download&id=<FILE_ID>&confirm=t`
+    中取 id= 到下一个 & 之间的部分。行里没有 id= 时返回 None。
+    """
+    if not first_line:
+        return None
+    m = _STRM_FILE_ID_RE.search(first_line)
+    return m.group(1) if m else None
+
+
 # ---------------------------------------------------------------------------
 # Drive API 列举（复用 drive_changes 的 SA/凭据能力）
 # ---------------------------------------------------------------------------
@@ -904,6 +922,62 @@ def _delete_state_rows(remote_paths: list[str], db=None):
             sess.close()
 
 
+def _backfill_state_from_disk(all_videos: list[tuple[str, str, int]],
+                              state: dict, strm_root: str) -> dict:
+    """A1：从磁盘 .strm 内容反推，重建状态表缺行（零 API 调用）。
+
+    背景：状态表只有 4.9 万行、实际 8.6 万文件，缺行文件每轮都被当成
+    "新增"逐个调 Drive API 校验，一轮跑 2.5 小时+。而每个 .strm 文件第
+    一行 URL 里本来就带着 `id=<FILE_ID>`，读本地文件就能补全状态表。
+
+    为什么用 file_id 内容匹配、而不用路径反推 rel：strm_relpath 把原扩展名
+    换成 .strm，且撞名时加 -2/-3 后缀（_resolve_collision），路径是不可逆
+    的——从 .strm 路径反推不出唯一的 rel。file_id 是内容级键：每个视频文件
+    恰好对应一个 file_id，碰撞自动对上，不会错配。
+
+    只在增量模式调用（全量模式故意重置状态，不补）。无缺行时直接返回，
+    零开销。补上的行会同步写进内存 state，主流程走已有 skip 路径。
+    返回 {"backfilled": N, "unmatched": M}。
+    """
+    missing = [(rel, fid, size) for rel, fid, size in all_videos
+               if rel not in state]
+    if not missing:
+        return {"backfilled": 0, "unmatched": 0}
+    # 建磁盘索引 {file_id: strm 相对路径}：只读每文件第一行，纯本地 IO。
+    disk_index: dict[str, str] = {}
+    scanned = 0
+    for _root, _dirs, _files in os.walk(strm_root):
+        for _fn in _files:
+            if not _fn.endswith(".strm"):
+                continue
+            scanned += 1
+            _full = os.path.join(_root, _fn)
+            try:
+                with open(_full, "r", encoding="utf-8", errors="replace") as _fh:
+                    _fid = _extract_strm_file_id(_fh.readline())
+            except OSError:
+                continue
+            # 同一 file_id 极端情况下可能写出多份 .strm（历史残留），
+            # 只保留第一份：反推目标是"有状态可跳过"，多一份不影响正确性。
+            if _fid and _fid not in disk_index:
+                disk_index[_fid] = os.path.relpath(_full, strm_root)
+    rows: list[tuple[str, str, int, str]] = []
+    for rel, fid, size in missing:
+        spath = disk_index.get(fid)
+        if spath:
+            rows.append((rel, fid, size, spath))
+    if rows:
+        _save_state_rows(rows)
+        for rel, fid, size, spath in rows:
+            state[rel] = (fid, size, spath)
+    backfilled = len(rows)
+    unmatched = len(missing) - backfilled
+    logger.info("strm_gen: 磁盘反推补全状态 %d 行（扫描 .strm %d 个，"
+                "索引命中 %d 个 file_id），仍有 %d 个缺行反推不到（走 API 校验）",
+                backfilled, scanned, len(disk_index), unmatched)
+    return {"backfilled": backfilled, "unmatched": unmatched}
+
+
 # ---------------------------------------------------------------------------
 # 墓碑消费：Drive 删文件 → 删 .strm → 删状态行（块1+块2）
 #
@@ -1127,6 +1201,102 @@ def _drive_file_id_valid(fid: str) -> bool:
         return True
     except Exception:
         return False
+
+
+#: Drive v3 batch 端点：一次 HTTP 验一批 file_id（multipart/mixed）
+DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3"
+#: 单批子请求数（保守值：出错时整批回退逐个的代价可控）
+DRIVE_BATCH_SIZE = 50
+
+
+def _drive_batch_check(fids: list[str], token: str) -> set[str]:
+    """一次 batch 调用验一批 file_id，返回无效 fid 集合。
+
+    每个 part 为 `GET /drive/v3/files/<fid>?fields=id&supportsAllDrives=true`，
+    用 Content-ID: item-<序号> 把子响应映射回 fid。任一子 part 非 200
+    （404/403 等）→ 该 fid 判无效，与 _drive_file_id_valid"失败一律 False"
+    语义一致。HTTP 层整体异常（非 200、网络错误）直接抛，由调用方回退逐个。
+    """
+    import uuid
+
+    import httpx
+
+    boundary = "batch_strm_%s" % uuid.uuid4().hex
+    lines: list[str] = []
+    for i, fid in enumerate(fids):
+        lines.append("--" + boundary)
+        lines.append("Content-Type: application/http")
+        lines.append("Content-Transfer-Encoding: binary")
+        lines.append("Content-ID: item-%d" % i)
+        lines.append("")
+        lines.append("GET /drive/v3/files/%s?fields=id&supportsAllDrives=true" % fid)
+        lines.append("Authorization: Bearer %s" % token)
+        lines.append("")
+    lines.append("--" + boundary + "--")
+    body = "\r\n".join(lines).encode("utf-8")
+    resp = httpx.post(
+        DRIVE_BATCH_URL, content=body, timeout=60,
+        headers={"Content-Type": "multipart/mixed; boundary=%s" % boundary},
+    )
+    if resp.status_code != 200:
+        raise RuntimeError("batch 整体返回 %d" % resp.status_code)
+    return _parse_drive_batch_response(resp.text, fids)
+
+
+#: batch 子响应解析：Content-ID: item-<序号> + HTTP 状态行
+_BATCH_PART_ID_RE = re.compile(r"Content-ID:\s*item-(\d+)", re.IGNORECASE)
+_BATCH_STATUS_RE = re.compile(r"^HTTP/\d(?:\.\d)?\s+(\d{3})", re.MULTILINE)
+
+
+def _parse_drive_batch_response(text: str, fids: list[str]) -> set[str]:
+    """解析 Drive batch multipart 响应，返回无效 fid 集合（纯函数，可单测）。
+
+    规则：子 part 缺失（Content-ID 对不上）或状态码非 200 → 该 fid 无效。
+    """
+    statuses: dict[int, int] = {}
+    for part in text.split("--"):
+        m_id = _BATCH_PART_ID_RE.search(part)
+        if not m_id:
+            continue
+        m_st = _BATCH_STATUS_RE.search(part)
+        statuses[int(m_id.group(1))] = int(m_st.group(1)) if m_st else 0
+    return {fid for i, fid in enumerate(fids) if statuses.get(i) != 200}
+
+
+def _drive_file_ids_invalid_batch(fids: list[str]) -> set[str]:
+    """批量校验 file_id 有效性，返回无效 fid 集合。
+
+    反风控铁律（与 _drive_file_id_valid 同款，不另起第二套）：
+    - token 复用 drive_changes._get_token()（同一套 SA 轮换）
+    - 发送前按子请求数 acquire 全局限速器（保守，不占便宜）
+    - 任一子 part 非 200 → 该 fid 无效（"失败一律无效"语义一致）
+    - batch 整体异常（网络/401 等）→ 回退逐个 _drive_file_id_valid（只慢不坏）
+    - 拿不到 token → 返回空集（"宁可放行"语义一致）
+    """
+    uniq = list(dict.fromkeys(f for f in fids if f))
+    if not uniq:
+        return set()
+    from backend.emby_server import drive_changes as dc
+    try:
+        token = dc._get_token()
+    except Exception:
+        token = None
+    if not token:
+        return set()
+    invalid: set[str] = set()
+    for start in range(0, len(uniq), DRIVE_BATCH_SIZE):
+        chunk = uniq[start:start + DRIVE_BATCH_SIZE]
+        try:
+            # 保守：子请求数个令牌，一个不少（batch 只是一次 HTTP，
+            # 但配额按子请求计，不占便宜）
+            for _ in chunk:
+                dc._api_limiter.acquire()
+            invalid |= _drive_batch_check(chunk, token)
+        except Exception as exc:
+            logger.warning("strm_gen: 批量校验失败，回退逐个校验（%d 个）: %s",
+                           len(chunk), exc)
+            invalid |= {fid for fid in chunk if not _drive_file_id_valid(fid)}
+    return invalid
 
 
 def _clear_gone_marks(file_ids: list[str]) -> None:
@@ -1377,6 +1547,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                     "retries": dc.get_total_retry_count(),
                     "path_skipped": lister.path_resolve_skipped,
                     "new_token": None,
+                    "incremental_listing": False,
                     "error": str(exc)[:300],
                 }
             return {
@@ -1387,6 +1558,8 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 "path_skipped": lister.path_resolve_skipped,
                 "new_token": lister._new_token,
                 "error": None,
+                # A3：本轮是否走了 Changes 增量（供免验决策）
+                "incremental_listing": bool(lister.used_incremental_path),
             }
 
         import concurrent.futures as _futures
@@ -1463,6 +1636,11 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     # stale 对比需要旧状态做基准（R2：全量 stale 对比路径保留，单盘）
     loaded_state = _load_state()
     state = {} if full else loaded_state
+    if not full:
+        # A1：增量模式下，从磁盘 .strm 内容反推补全状态表缺行（零 API 调用）。
+        # 放在 used 计算之前：补上的行一并进入 used，主循环走已有 skip 路径。
+        # 全量模式故意重置状态，不补。
+        _backfill_state_from_disk(all_videos, state, strm_root)
     used: set[str] = set()
     if full:
         # 全量模式：从磁盘加载已有的 .strm 路径，避免不同源文件撞车时静默覆盖
@@ -1480,6 +1658,33 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     # 块4 §6.3：仅增量中新文件（state 里没有）写盘前验一次 file_id。
     # 全量跳过（数万个逐一 files.get 是配额浪费）；本地源无 Drive id，跳过。
     verify_new = (stype != "local") and (not full) and verify_new_ids(db)
+    if verify_new:
+        # A3：增量文件免验——Changes API 返回的本来就是 Google 刚确认的变化，
+        # 再逐个调 API 验"它存不存在"纯属重复。只有任一成功列举的盘走了
+        # 全量回退（检查点丢失/首次建基线）时才保留校验；保守起见多盘不做
+        # 按盘精细拆分。local 源 verify_new 本来就是 False，不受影响。
+        # （drive_results 只在 drive 分支定义；verify_new 为 True 必然在 drive 模式）
+        _succeeded = [r for r in drive_results if not r["error"]]
+        if _succeeded and all(r.get("incremental_listing") for r in _succeeded):
+            logger.info("strm_gen: 本轮 %d 个盘全部走 Changes 增量，"
+                        "新增文件免 file_id 校验", len(_succeeded))
+            verify_new = False
+        else:
+            _fell_back = [r["did"] for r in _succeeded
+                          if not r.get("incremental_listing")]
+            logger.warning("strm_gen: 本轮有盘走全量回退（%s），"
+                           "保留新增 file_id 校验", _fell_back)
+    # A2：校验改批量——循环前一次 batch 拿到无效集，循环里只查集合。
+    # 无新增或全有效时 verify_new 置 False，循环里零校验开销。
+    invalid_fids: set[str] = set()
+    if verify_new:
+        _new_fids = list(dict.fromkeys(
+            fid for rel, fid, size in all_videos if rel not in state))
+        if _new_fids:
+            invalid_fids = _drive_file_ids_invalid_batch(_new_fids)
+            logger.info("strm_gen: 批量校验 %d 个新增 file_id，无效 %d 个",
+                        len(_new_fids), len(invalid_fids))
+        verify_new = bool(invalid_fids)
     # 本轮实际写入 .strm 的 file_id：生成完清除其 source_invalid_at 标记（块3）
     written_file_ids: list[str] = []
     done = get_progress()["done"]
@@ -1499,8 +1704,8 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         else:
             strm_rel = _resolve_collision(strm_relpath(rel, src_prefix), used)
 
-        if verify_new and old is None and not _drive_file_id_valid(fid):
-            # 校验失败：跳过 + 计数，不重试（下轮增量会重新发现）
+        if verify_new and old is None and fid in invalid_fids:
+            # 批量校验已判无效：跳过 + 计数，不重试（下轮增量会重新发现）
             stats["failed_verify"] = stats.get("failed_verify", 0) + 1
             _add_error(f"file_id 校验失败，跳过: {rel}")
             continue

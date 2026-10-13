@@ -112,6 +112,11 @@ class DriveChangesLister(SourceLister):
         # 可观测性计数器（2026-10-12）：列举完成后调用方可读
         self.yielded_count: int = 0          # 成功 yield 的视频文件数
         self.path_resolve_skipped: int = 0  # _build_relpath 失败跳过的 changes 数
+        # A3（2026-10-13）：本轮是否走了 Changes 增量路径。
+        # True=有检查点、走 changes 拉增量；False=全量回退（incremental=False
+        # 或首次无检查点建基线）。调用方（strm_gen）据此决定增量新文件
+        # 是否免 file_id 校验。
+        self.used_incremental_path: bool = False
 
     def _db(self):
         from backend.database import SessionLocal
@@ -148,6 +153,7 @@ class DriveChangesLister(SourceLister):
     def iter_videos(self, incremental: bool = True) -> Iterator[VideoItem | Tombstone]:
         if not incremental:
             # 全量：回退到现有的 files.list 实现
+            self.used_incremental_path = False
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
                 self.drive_id, self.dir_path, strict=self.strict_dir)
@@ -160,6 +166,7 @@ class DriveChangesLister(SourceLister):
             # 首次增量：拿初始 token，本次按全量跑一遍建立基线
             # （下次增量才有起点；本次不丢数据）
             logger.info("strm_source: drive=%s 首次增量，无检查点，本次全量建立基线", self.drive_id)
+            self.used_incremental_path = False
             token = dc.get_start_page_token(self.drive_id)
             if token:
                 self._new_token = token
@@ -169,6 +176,11 @@ class DriveChangesLister(SourceLister):
             return
 
         # 增量：拉 changes（2026-10-12 起不再吞错：API 失败直接抛，
+        # A3：走到这里说明有检查点、本轮走 Changes 增量路径（即使本轮 0 变化
+        # 也是增量语义：Google 已确认无变化，无需再验）。list_changes 若抛错，
+        # 调用方记 error，该盘不计入"成功"，免验决策自动保守。
+        self.used_incremental_path = True
+
         # 调用方按"列举失败"处理，绝不能当成"本轮无变化"）
         changes, new_token = dc.list_changes(token, self.drive_id)
         if new_token:
