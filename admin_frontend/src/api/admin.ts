@@ -1972,6 +1972,8 @@ export interface StrmGenConfig {
   drive_id: string
   /** 清理 Drive 上已不存在的 .strm 文件及状态行（不可逆） */
   prune: boolean
+  /** 是否解析 Drive 快捷方式（开启后跟随目标内容）；老后端无此键时回显 false */
+  resolve_shortcuts?: boolean
   /** 增量间隔分钟数，0=关闭 */
   interval_minutes: number
   /** 运行锁僵死超时（分钟），0=关闭自愈 */
@@ -2027,6 +2029,8 @@ export const saveStrmGenConfig = (data: {
   source_dir: string
   drive_id: string
   prune: boolean
+  /** 快捷方式解析开关；不传则后端不改 */
+  resolve_shortcuts?: boolean
   interval_minutes: number
   source_type: string
   local_root: string
