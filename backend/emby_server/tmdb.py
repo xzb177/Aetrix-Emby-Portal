@@ -211,6 +211,74 @@ class _RequestLimiter:
                 self._ok_streak = 0
 
 
+class _KeyedLimiter(_RequestLimiter):
+    """按 key 独立的令牌桶（v2.57.0 提速包 item3）。
+
+    背景：4 把 key 共用 1 个 4 req/s 桶时，加 key 只分摊配额、不提速
+    （生产实证：245 次调用四 key 均匀 61/61/61/62，吞吐 6→5 条/分未涨）。
+    每把 key 一个独立桶后，有效上限 = key 数 × TMDB_PER_SEC
+    （4 把 ≈ 16 req/s，远低于 TMDB 非正式上限 ~50 req/s/IP，安全区内，
+    不要再往上加）。
+
+    429 语义：哪把 key 被 429，就只压低那把 key 的桶（note_throttled 走
+    limiter_for(key)），不连累其他 key——配额本来就是按 key 算的。
+
+    测试兼容：测试会整体替换 client._limiter 为普通 _RequestLimiter；
+    _keyed_limiter() 检测到没有 _per_key 属性时直接返回它，测试语义不变。
+    """
+
+    def __init__(self, rate: float = TMDB_PER_SEC, min_rate: float = TMDB_MIN_PER_SEC):
+        super().__init__(rate=rate, min_rate=min_rate)
+        self._per_key: dict = {}
+        self._per_key_lock = threading.Lock()
+
+    def sync_keys(self, keys) -> None:
+        """key 池变化时同步：保留存活 key 的桶（含被 429 压低的速率状态），
+        删掉离场 key 的桶（防无界增长）。"""
+        alive = set(keys or ())
+        with self._per_key_lock:
+            for k in list(self._per_key):
+                if k not in alive:
+                    del self._per_key[k]
+            for k in alive:
+                if k not in self._per_key:
+                    self._per_key[k] = _RequestLimiter()
+
+    def limiter_for(self, key: str) -> "_RequestLimiter":
+        """取某把 key 的独立桶（懒创建，线程安全）。key 为空时返回顶层桶。"""
+        if not key:
+            return self
+        with self._per_key_lock:
+            lim = self._per_key.get(key)
+            if lim is None:
+                lim = _RequestLimiter()
+                self._per_key[key] = lim
+            return lim
+
+    @property
+    def rate(self) -> float:
+        # 观测口径：有 key 桶时报各桶速率之和（= 当前实际总上限）；没有时报顶层
+        with self._per_key_lock:
+            kids = list(self._per_key.values())
+        if not kids:
+            return super().rate
+        return round(sum(k.rate for k in kids), 3)
+
+    @property
+    def ceiling(self) -> float:
+        with self._per_key_lock:
+            kids = list(self._per_key.values())
+        if not kids:
+            return super().ceiling
+        return round(sum(k.ceiling for k in kids), 3)
+
+    @property
+    def throttled_count(self) -> int:
+        with self._per_key_lock:
+            kids = list(self._per_key.values())
+        return super().throttled_count + sum(k.throttled_count for k in kids)
+
+
 def _retry_after_seconds(resp) -> Optional[float]:
     """读 Retry-After（秒数或 HTTP 日期）——旧实现全文未读取该头"""
     try:
@@ -1020,8 +1088,9 @@ class TmdbClient:
         self.session = None
         self._session_proxy_sig: Optional[str] = None
         self._session_lock = threading.Lock()
-        # 请求级限流器：所有 TMDB 调用（扫描 + 补全）共用（v2.42.9）
-        self._limiter = _RequestLimiter()
+        # 请求级限流器：所有 TMDB 调用（扫描 + 补全）共用（v2.42.9）；
+        # v2.57.0 起按 key 独立成桶（_KeyedLimiter），有效上限 = key 数 × TMDB_PER_SEC
+        self._limiter = _KeyedLimiter()
         # 运行观测：短路 / 重试 / 网络失败（429 次数在 _limiter 里，那边是加锁的）
         self._stats = {"short_circuit": 0, "retry": 0, "net_fail": 0}
         self.refresh_keys()  # 环境变量优先，为空则回落 SystemConfig
@@ -1043,6 +1112,11 @@ class TmdbClient:
             # 已被换掉的 key 不再留着冷却记录（它不在池子里了，记着也没用）
             alive = set(self.api_keys)
             self._cooldown = {k: v for k, v in self._cooldown_map().items() if k in alive}
+            # v2.57.0 item3：key 池变化时同步各 key 的独立令牌桶
+            # （getattr 防御：测试可能已把 _limiter 换成普通桶）
+            sync = getattr(getattr(self, "_limiter", None), "sync_keys", None)
+            if callable(sync):
+                sync(self.api_keys)
 
     def refresh_keys(self, db=None) -> dict:
         """重算有效密钥：后台保存与进程启动都走这里，无需重启进程。
@@ -1058,6 +1132,17 @@ class TmdbClient:
         self._set_keys(keys, source)
         self._ensure_session()
         return {"source": self.key_source, "count": len(self.api_keys)}
+
+    def _keyed_limiter(self, key: str) -> "_RequestLimiter":
+        """取某次请求该走的令牌桶：按 key 独立（v2.57.0 item3）。
+
+        测试会整体替换 client._limiter 为普通 _RequestLimiter——此时没有
+        _per_key 属性，直接返回被替换的桶，测试语义不变。
+        """
+        lim = self._limiter
+        if getattr(lim, "_per_key", None) is None:
+            return lim
+        return lim.limiter_for(key)
 
     def masked_keys(self) -> list[str]:
         """界面展示用：只露后 4 位"""
@@ -1213,9 +1298,10 @@ class TmdbClient:
             })
         return rows
 
-    def _throttle(self, retry_after: Optional[float] = None) -> float:
-        """429：速率自适应下调，返回建议退避秒数（睡不睡由调用方决定）"""
-        return self._limiter.note_throttled(retry_after)
+    def _throttle(self, key: str, retry_after: Optional[float] = None) -> float:
+        """429：压低**这把 key**的桶速率（v2.57.0 item3：配额按 key 算，只罚肇事 key），
+        返回建议退避秒数（睡不睡由调用方决定）。"""
+        return self._keyed_limiter(key).note_throttled(retry_after)
 
     def _request(self, path: str, params: dict, key: str = ""):
         """单次 GET：先过**请求级**令牌桶，再按 TMDB_NET_RETRIES 退避重试网络异常
@@ -1232,8 +1318,9 @@ class TmdbClient:
         base = api_base()
         delay = 0.5
         for attempt in range(TMDB_NET_RETRIES + 1):
-            # 重试也要重新取 token：一次重试就是一次真的请求，配额照样要花
-            self._limiter.acquire()
+            # 重试也要重新取 token：一次重试就是一次真的请求，配额照样要花。
+            # v2.57.0 item3：按 key 独立取 token（_keyed_limiter 内部路由）
+            self._keyed_limiter(key).acquire()
             try:
                 # v2.42.9：每一次真实发出的 HTTP 都计进 tmdb_req（含重试与换 key 后的重试）
                 with progress.stage_timer("tmdb_req"):
@@ -1287,7 +1374,7 @@ class TmdbClient:
             status = r.status_code
             if status in (401, 429):
                 if status == 429:
-                    wait = self._throttle(_retry_after_seconds(r))
+                    wait = self._throttle(key, _retry_after_seconds(r))
                     self.note_key_throttled(key, wait)
                     saw_429 = True
                 else:
@@ -1317,7 +1404,7 @@ class TmdbClient:
                 entry = self._cooldown_map().pop(key, None)
             if entry:
                 logger.info("TMDB 密钥 ****%s 恢复正常", key[-4:])
-            self._limiter.note_success()
+            self._keyed_limiter(key).note_success()
             return data
         if last_wait > 0:
             # 全部 key 都撞了限流：先退避一轮再放行后续请求（这段窗口内的条目
@@ -1573,7 +1660,8 @@ class TmdbClient:
         单个任务异常时返回 None，最终返回 {index: hit_or_None}，包含所有下标。
 
         TMDB 没有原生批量接口，这里是"并发 + 共用令牌桶限速"的批量：
-        限速仍走 self._limiter（线程安全），不会突破 4/秒；缓存走
+        限速走 _keyed_limiter（线程安全；v2.57.0 起按 key 独立成桶，有效上限 =
+        key 数 × TMDB_PER_SEC）；缓存走
         search() 内部的两级缓存（L1 内存 + L2 磁盘），命中不发请求。
 
         :param queries: [(name, year, kind), ...] 搜索参数列表

@@ -327,5 +327,7 @@ def test_admin_tmdb_keys_reports_the_effective_rate():
     from backend.api import admin_scrape
     body = admin_scrape.get_tmdb_keys(staff=None, db=None)
     assert 0 < body["rate"] <= body["rate_ceiling"]
-    assert body["rate_ceiling"] == tmdb_mod.TMDB_PER_SEC
+    # v2.57.0 起限流按 key 独立成桶：ceiling = key 数 × 单 key 上限
+    # （无 key 时按 1 把算，与 _KeyedLimiter.ceiling 聚合口径一致）
+    assert body["rate_ceiling"] == round(max(1, body["count"]) * tmdb_mod.TMDB_PER_SEC, 3)
     assert body["throttled"] >= 0

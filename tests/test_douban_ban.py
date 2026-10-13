@@ -174,3 +174,60 @@ def test_rate_limiter_has_jitter():
     waits = intervals[1:]
     assert all(0.04 <= w <= 0.15 for w in waits), waits
     assert len({round(w, 3) for w in waits}) > 1, "限速器没有抖动"
+
+
+# ==================== v2.57.0 提速包 item2：封禁期跳过 TMDB 预搜索 ====================
+
+from types import SimpleNamespace as _SN
+
+
+def _ban_item(name="狂飙", kind="series", tmdb_id=None, locked=False):
+    return _SN(name=name, tmdb_id=tmdb_id, metadata_locked=locked,
+              production_year=2023)
+
+
+def _ban_on(monkeypatch):
+    """模拟豆瓣封禁中：ban_remaining>0，CJK 判定走真实现，兜底开关开着。"""
+    monkeypatch.setattr(dbn, "ban_remaining", lambda: 600.0)
+    monkeypatch.setattr(enrich_worker, "_cached_douban_cfg",
+                        lambda: (True, 2.5))
+
+
+def test_presearch_skip_during_ban_for_cjk_series(monkeypatch):
+    _ban_on(monkeypatch)
+    assert enrich_worker._douban_ban_presearch_skip(
+        _ban_item("狂飙", "series"), "series") is True
+
+
+def test_no_skip_when_not_banned(monkeypatch):
+    monkeypatch.setattr(dbn, "ban_remaining", lambda: 0.0)
+    monkeypatch.setattr(enrich_worker, "_cached_douban_cfg",
+                        lambda: (True, 2.5))
+    assert enrich_worker._douban_ban_presearch_skip(
+        _ban_item("狂飙", "series"), "series") is False
+
+
+def test_no_skip_for_non_cjk_title(monkeypatch):
+    _ban_on(monkeypatch)
+    assert enrich_worker._douban_ban_presearch_skip(
+        _ban_item("Breaking Bad", "series"), "series") is False
+
+
+def test_no_skip_when_item_has_tmdb_id(monkeypatch):
+    _ban_on(monkeypatch)
+    assert enrich_worker._douban_ban_presearch_skip(
+        _ban_item("狂飙", "series", tmdb_id="123"), "series") is False
+
+
+def test_no_skip_for_episode_kind(monkeypatch):
+    _ban_on(monkeypatch)
+    assert enrich_worker._douban_ban_presearch_skip(
+        _ban_item("狂飙", "episode"), "episode") is False
+
+
+def test_no_skip_when_douban_disabled(monkeypatch):
+    monkeypatch.setattr(dbn, "ban_remaining", lambda: 600.0)
+    monkeypatch.setattr(enrich_worker, "_cached_douban_cfg",
+                        lambda: (False, 2.5))
+    assert enrich_worker._douban_ban_presearch_skip(
+        _ban_item("狂飙", "series"), "series") is False

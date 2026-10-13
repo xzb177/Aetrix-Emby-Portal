@@ -539,6 +539,16 @@ def localize(url: Optional[str], allow_download: bool = True,
                 _LOCKS.pop(path, None)
 
 
+def _prewarm_one(url: str) -> bool:
+    """单张图预热（线程工作函数）：成功返回 True，任何异常返回 False。"""
+    try:
+        # 预热是刮削链上的图片下载主战场：带上重试与退避（问题一）。取图时的
+        # 按需自愈（localize 默认 1 次）不加：那里要快，失败了反正还有远程地址
+        return bool(localize(url, attempts=_download_attempts()))
+    except Exception:  # noqa: BLE001 — 预热绝不该影响主流程
+        return False
+
+
 def prewarm(urls) -> int:
     """IO 阶段把一批图先落盘，返回成功缓存的张数（v2.42.9）
 
@@ -547,8 +557,15 @@ def prewarm(urls) -> int:
 
     预热本身就是一次真下载（TMDB 走 image.tmdb.org，不吃 api_key 配额）。预热失败、或
     被并发旋钮挡住（``_STATS["throttled"]``）都只是「这轮不本地化」，不影响刮削。
+
+    v2.57.0 提速包 item4：单批内 4 线程并行下载（生产采样：串行 2.9-4.5s/条
+    → 约 1s，图片占电影条目耗时 ~90%，2026-10-13）。全局 _DL_SEMAPHORE
+    （8 并发、非阻塞）总量不变：抢不到名额的线程直接跳过、不攥着排队。
+    localize 内部按 path 加锁 + 内容寻址去重，线程安全。
     """
-    done = 0
+    import concurrent.futures
+
+    batch: list = []
     seen: set = set()
     for url in urls or ():
         # 同一张图在同一批里出现多次很正常（搜索命中与详情都给同一个 backdrop）：
@@ -556,13 +573,19 @@ def prewarm(urls) -> int:
         if not url or url in seen:
             continue
         seen.add(url)
-        try:
-            # 预热是刮削链上的图片下载主战场：带上重试与退避（问题一）。取图时的
-            # 按需自愈（localize 默认 1 次）不加：那里要快，失败了反正还有远程地址
-            if localize(url, attempts=_download_attempts()):
-                done += 1
-        except Exception:  # noqa: BLE001 — 预热绝不该影响主流程
-            continue
+        batch.append(url)
+    if not batch:
+        return 0
+    done = 0
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="img-prewarm") as ex:
+        for fut in concurrent.futures.as_completed(
+                [ex.submit(_prewarm_one, u) for u in batch]):
+            try:
+                if fut.result():
+                    done += 1
+            except Exception:  # noqa: BLE001 — 预热绝不该影响主流程
+                continue
     return done
 
 

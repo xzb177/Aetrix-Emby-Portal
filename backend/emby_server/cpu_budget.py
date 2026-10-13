@@ -71,14 +71,31 @@ def cpu_count() -> int:
 
 
 def background_workers(env_name: str, *, default_divisor: int = 2,
-                       max_cap: int = 16) -> int:
+                       max_cap: int = 16, io_bound: bool = False) -> int:
     """后台任务并发数。
 
     - 环境变量未设：max(1, cpu_count() // default_divisor)
     - 环境变量已设：min(设置值, cpu_count() - 1)，下限 1
       （永远给前台留一核；单核机器上后台与前台分时，不饿死）
     - 上限 max_cap，防止配了离谱的值
+    - io_bound=True：IO 密集型后台任务（线程 90% 时间等网络，几乎不烧 CPU）：
+      不按 CPU 截断——未配置默认 8，手动配置按 max_cap 截断。
+      后台不抢主链路靠 max_cap + 各子系统的独立限流器（TMDB 令牌桶、图片下载
+      信号量、DB 连接池）保证，而不是靠线程数。
     """
+    if io_bound:
+        # IO 密集型：线程主要在等网络，并发 ≠ CPU 占用。采样实证：enrich 单条
+        # 90% 时间等网络，8 线程 ≈ 8 倍吞吐，CPU 占用几乎不变（2026-10-13）。
+        raw = (os.getenv(env_name) or "").strip()
+        if raw:
+            try:
+                v = int(raw)
+            except ValueError:
+                v = 0
+            if v > 0:
+                return max(1, min(v, max_cap))
+            # 非法值：按未配置处理
+        return max(1, min(8, max_cap))
     cpus = cpu_count()
     reserve = max(1, cpus - 1)  # 给前台留的
     raw = (os.getenv(env_name) or "").strip()
