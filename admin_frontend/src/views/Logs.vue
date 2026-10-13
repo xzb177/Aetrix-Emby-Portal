@@ -75,6 +75,125 @@ const QUICK_ACTIONS = [
   'update_user',
 ]
 
+/** 目标类型中文（user#123 这类裸英文不上界面） */
+const TARGET_TYPE_LABEL: Record<string, string> = {
+  user: '用户',
+  admin: '管理员',
+  subscription: '会员',
+  plan: '套餐',
+  package: '充值包',
+  order: '订单',
+  code: '码',
+  registration_code: '注册码',
+  invitation_code: '邀请码',
+  exchange_code: '兑换码',
+  invitation: '邀请',
+  coupon: '优惠券',
+  announcement: '公告',
+  ticket: '工单',
+  media_seek: '求片',
+  media_item: '媒体条目',
+  media_request: '媒体请求',
+  device: '设备',
+  user_device: '用户设备',
+  realm: '服',
+  server: '服务器',
+  library: '媒体库',
+  member_level: '会员等级',
+  system: '系统',
+  system_config: '系统配置',
+  config: '配置',
+  gdrive_sa: 'Google 子账号',
+  emby: 'Emby',
+  all_users: '全部用户',
+  alert: '告警',
+  alert_rule: '告警规则',
+  api_key: 'API Key',
+  client: '客户端',
+  share_guard_event: '防共享事件',
+  lottery_round: '抽奖轮次',
+  lottery_blacklist: '抽奖黑名单',
+  login_log: '登录日志',
+  capability: '功能开关',
+  self: '自己',
+}
+
+/** 详情字段中文（英文键不上界面，未收录的键原样兜底） */
+const DETAIL_KEY_LABEL: Record<string, string> = {
+  name: '名称',
+  title: '标题',
+  username: '用户名',
+  target_username: '目标用户名',
+  user_id: '用户ID',
+  kind: '类型',
+  type: '类型',
+  code: '码',
+  code_type: '码类型',
+  is_decoy: '诱饵码',
+  order_id: '订单ID',
+  key_id: '密钥ID',
+  days: '天数',
+  add_days: '增加天数',
+  duration_days: '时长（天）',
+  count: '数量',
+  amount: '金额',
+  price: '价格',
+  points_price: '积分价',
+  max_uses: '最大使用次数',
+  affected: '影响条数',
+  ok: '成功',
+  deleted: '已删除',
+  matched: '命中',
+  verified: '已核验',
+  result: '结果',
+  error: '错误',
+  reason: '原因',
+  status: '状态',
+  closed: '已关闭',
+  already_closed: '原本已关闭',
+  enabled: '启用',
+  is_active: '启用',
+  mode: '模式',
+  level: '等级',
+  channel: '渠道',
+  device_id: '设备ID',
+  server: '服务器',
+  target: '目标',
+  realm_id: '服',
+  plan_id: '套餐ID',
+  rule_id: '规则ID',
+  event_type: '事件',
+  scopes: '权限范围',
+  whitelist: '白名单',
+  force: '强制',
+  item_type: '条目类型',
+  sa_file: '账号文件',
+  chat_id: '群ID',
+  winner_count: '中奖人数',
+  lottery_type: '抽奖类型',
+  distributed: '已发放',
+  updated: '已更新',
+  access_mode: '访问模式',
+  mount_health_ok: '挂载健康',
+  play_sign_ttl: '播放签名有效期',
+  strm_sig_ttl: '.strm 签名有效期',
+}
+
+function targetText(row: AdminLogRow): string {
+  if (!row.target_type) return ''
+  const label = TARGET_TYPE_LABEL[row.target_type] ?? row.target_type
+  return row.target_id === null || row.target_id === undefined
+    ? label
+    : `${label} #${row.target_id}`
+}
+
+function detailValue(v: unknown): string {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'boolean') return v ? '是' : '否'
+  if (typeof v === 'object') return JSON.stringify(v)
+  return String(v)
+}
+
 async function load() {
   loading.value = true
   loadError.value = ''
@@ -110,7 +229,7 @@ function detailText(log: AdminLogRow): string {
   if (!log.details) return ''
   const parts: string[] = []
   for (const [k, v] of Object.entries(log.details)) {
-    parts.push(`${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+    parts.push(`${DETAIL_KEY_LABEL[k] ?? k}=${detailValue(v)}`)
   }
   return parts.join(' ')
 }
@@ -176,7 +295,7 @@ function detailText(log: AdminLogRow): string {
         <template #cell-admin_name="{ row }">{{ row.admin_name }}</template>
 
         <template #cell-target_type="{ row }">
-          <span v-if="row.target_type" class="mono">{{ row.target_type }}#{{ row.target_id }}</span>
+          <span v-if="row.target_type" class="mono">{{ targetText(row) }}</span>
           <span v-else class="muted">—</span>
         </template>
 

@@ -128,7 +128,7 @@ async function save() {
         access_note: form.access_note.trim(),
         allow_download: form.download_policy === 'follow' ? null : form.download_policy === 'allow',
       })
-      ElMessage.success('已新建，接下来去「媒体库 / 存储来源 / 商品与套餐」里往里填内容')
+      ElMessage.success('已新建，接下来去「媒体库 / 存储来源 / 订阅套餐」里往里填内容')
     }
     dialogVisible.value = false
     await realm.refresh()
@@ -323,7 +323,7 @@ function shortDate(s: string | null): string {
       <EmptyState
         :icon="loadError ? AlertTriangle : Route"
         :title="loadError ? '服清单加载失败' : '还没有服'"
-        :description="loadError ? '网络或服务暂时不可用，稍后重试。' : '新建一个服，再去媒体库 / 存储来源 / 商品与套餐里往里填内容。'"
+        :description="loadError ? '网络或服务暂时不可用，稍后重试。' : '新建一个服，再去媒体库 / 存储来源 / 订阅套餐里往里填内容。'"
       >
         <template #actions>
           <el-button v-if="loadError" :loading="loading" @click="load">重试</el-button>

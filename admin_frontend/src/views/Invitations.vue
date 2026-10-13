@@ -808,6 +808,7 @@ onMounted(reloadAll)
           <template #actions><el-button size="small" :loading="logsLoading" @click="loadLogs">重试</el-button></template>
         </EmptyState>
         <DataTable v-else class="flush-table" :rows="logs" :columns="logColumns" :loading="logsLoading" empty="暂无积分流水"
+          empty-description="邀请返利、签到、消费等积分变动都会记在这里。"
           :pagination="{ total: logTotal, page: logPage, pageSize: 30 }"
           @page-change="(p: number) => { logPage = p; loadLogs() }">
           <template #cell-username="{ row }">
@@ -851,7 +852,7 @@ onMounted(reloadAll)
           inactive-text="关闭"
           @update:model-value="(v: string | number | boolean) => toggleAudit(v === true)"
         />
-        <span class="faint">审计总开关（points_audit_enabled）</span>
+        <span class="faint">流水防篡改开关（points_audit_enabled）</span>
       </div>
       <div class="audit-verify">
         <el-select
@@ -938,6 +939,7 @@ onMounted(reloadAll)
           :columns="promoColumns"
           :loading="promoLoading"
           empty="还没有推广奖励记录"
+          empty-description="有人通过你的邀请链接下单后，奖励记录会出现在这里。"
         >
           <template #cell-inviter_username="{ row }">
             <span class="user-name">{{ row.inviter_username || '—' }}</span>

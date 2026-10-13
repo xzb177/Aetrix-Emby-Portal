@@ -214,7 +214,7 @@ onMounted(() => { loadLevels() })
         </el-form-item>
         <el-form-item label="订阅折扣%">
           <el-input-number v-model="dlg.form.discount_pct" :min="0" :max="100" />
-          <span class="form-hint">仅付费服生效，公益服不打折</span>
+          <span class="form-hint">填 90 就是九折（100=不打折）；仅付费服生效，公益服不打折</span>
         </el-form-item>
         <el-form-item label="徽章图标">
           <el-input v-model="dlg.form.badge_icon" placeholder="lucide 图标名，如 Crown" />

@@ -675,7 +675,7 @@ onMounted(() => {
         <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
       </EmptyState>
 
-      <DataTable v-else class="flush-table" :rows="coupons" :columns="columns" :loading="loading" empty="还没有优惠券">
+      <DataTable v-else class="flush-table" :rows="coupons" :columns="columns" :loading="loading" empty="还没有优惠券" empty-description="点右上角「新建优惠券」做第一张券。">
         <template #cell-code="{ row }">
           <span class="mono code">{{ row.code }}</span>
         </template>
@@ -899,6 +899,7 @@ onMounted(() => {
         :columns="usagesColumns"
         :loading="usagesLoading"
         empty="还没有核销记录"
+        empty-description="用户下单时用了优惠券，核销记录会出现在这里。"
       >
         <template #cell-code="{ row }"><span class="mono">{{ row.code }}</span></template>
 

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 /**
- * 订阅管理
+ * 会员管理
  *
- * v2.4.0 新增：此前订阅只能靠数据库查看——用户管理页只显示「生效中/未订阅」两态。
- * 本页提供订阅总览：生效中 / 即将到期 / 已过期，支持搜索、状态筛选、延长与授予。
+ * v2.4.0 新增：此前会员只能靠数据库查看——用户管理页只显示「生效中/无会员」两态。
+ * 本页提供会员总览：生效中 / 即将到期 / 已过期，支持搜索、状态筛选、延长与授予。
  *
- * v2.6.20：订阅是**一个服一个**的。默认只看面板当前服（会员开在哪个服、能在哪台 EA 上播
+ * v2.6.20：会员是**一个服一个**的。默认只看面板当前服（会员开在哪个服、能在哪台 EA 上播
  * 都由它决定），顶部可以切到「全部服」做跨服汇总——这时列表会多一列归属服。
  *
  * v2.54（暗房影院）：PageHeader（范围切换 + 刷新）· 四个 StatTile 兼作状态筛选按钮
@@ -35,7 +35,7 @@ const realm = useRealmStore()
 const scope = ref<'realm' | 'all'>('realm')
 const scopeRealmName = ref('')
 
-/** 订阅列表：手机端用户名做标题，「剩余」保留桌面端排序 */
+/** 会员列表：手机端用户名做标题，「剩余」保留桌面端排序 */
 const columns = computed<DataColumn[]>(() => [
   { key: 'username', label: '用户', minWidth: 140, mobile: 'title' },
   { key: 'plan_name', label: '套餐', minWidth: 140 },
@@ -139,12 +139,12 @@ function resetFilters() {
 
 /** 顶部数字块（兼作筛选按钮）：数字走正文色，只有「7 天内到期 > 0」染警示 */
 const statTiles = computed(() => [
-  { key: 'active', label: '生效中', value: summary.value.active, icon: Crown, tone: 'plain' as const, title: '只看生效中的订阅' },
+  { key: 'active', label: '生效中', value: summary.value.active, icon: Crown, tone: 'plain' as const, title: '只看生效中的会员' },
   {
     key: 'expiring', label: '7 天内到期', value: summary.value.expiring_7d, icon: CalendarClock,
-    tone: summary.value.expiring_7d > 0 ? ('warn' as const) : ('plain' as const), title: '只看 7 天内到期的订阅',
+    tone: summary.value.expiring_7d > 0 ? ('warn' as const) : ('plain' as const), title: '只看 7 天内到期的会员',
   },
-  { key: 'expired', label: '已过期', value: summary.value.expired, icon: TimerOff, tone: 'plain' as const, title: '只看已过期的订阅' },
+  { key: 'expired', label: '已过期', value: summary.value.expired, icon: TimerOff, tone: 'plain' as const, title: '只看已过期的会员' },
   { key: '', label: '记录总数', value: summary.value.total, icon: Users, tone: 'plain' as const, title: '取消筛选，看全部记录' },
 ])
 
@@ -281,7 +281,7 @@ async function submit() {
   try {
     if (dialog.mode === 'extend') {
       await extendUserSubscription(row.id, dialog.days)
-      ElMessage.success('订阅已延长并通知用户')
+      ElMessage.success('会员已延长并通知用户')
     } else {
       if (!dialog.planId) {
         ElMessage.warning('请选择套餐')
@@ -294,7 +294,7 @@ async function submit() {
         // 会员开在哪个服：优先跟随所选套餐，避免在多服面板里开错服
         ...(plan?.realm_id ? { realm_id: plan.realm_id } : {}),
       })
-      ElMessage.success('订阅已授予并通知用户')
+      ElMessage.success('会员已授予并通知用户')
     }
     dialog.visible = false
     await load()
@@ -308,9 +308,9 @@ async function submit() {
 
 <template>
   <div class="admin-page subs-page">
-    <PageHeader eyebrow="用户与账号" title="订阅与权益">
+    <PageHeader eyebrow="用户与账号" title="会员与权益">
       <template #description>
-        共 {{ summary.total }} 条订阅记录 · {{ activeCount }} 位用户处于订阅中
+        共 {{ summary.total }} 条订阅记录 · {{ activeCount }} 位会员生效中
         <template v-if="scopeRealmName">· 范围：{{ scopeRealmName }}</template>
       </template>
       <template #actions>
@@ -323,7 +323,7 @@ async function submit() {
     </PageHeader>
 
     <!-- 四个数字块 = 四个筛选入口：点一下把下面的清单筛成这个状态，再点一下取消 -->
-    <section class="stat-row" aria-label="订阅概况（点击筛选）">
+    <section class="stat-row" aria-label="会员概况（点击筛选）">
       <button
         v-for="t in statTiles"
         :key="t.key || 'all'"
@@ -491,7 +491,7 @@ async function submit() {
 
     <el-dialog
       v-model="dialog.visible"
-      :title="dialog.mode === 'extend' ? '延长订阅' : '续订 / 授予订阅'"
+      :title="dialog.mode === 'extend' ? '延长会员' : '续订 / 授予会员'"
       width="min(440px, 92vw)"
     >
       <el-form label-position="top">

@@ -169,7 +169,7 @@ function nodeLabel(n: RemoteServerRow): string {
 // ==================== 媒体库配置：新建与编辑共用一张分组表单 ====================
 // 借鉴 Emby Manager：一个媒体库的全部配置在一张单页表单里改完（分组 + 每项一句人话
 // 说明 + 推荐项标注），而不是「新建一个弹窗 + 设置一个抽屉」两处各改一半：以前
-// 路径在设置里只能看不能改、启用状态和追新监听根本没入口。
+// 路径在设置里只能看不能改、启用状态和自动发现新增文件监听根本没入口。
 // 表单状态只有这一份，所以「浏览」的追加 / 去重口径两边完全一致。
 
 interface LibFormState {
@@ -184,7 +184,7 @@ interface LibFormState {
   account_115_id: number | null
   /** 媒体路径（简化形式）：路径与存储后端分开，不出现 mount:// 前缀 */
   path_entries: LibraryPathEntry[]
-  /** 是否纳入「追新」轮询监听（仅编辑可用；追新本身是全局开关） */
+  /** 是否纳入「自动发现新增文件」轮询监听（仅编辑可用；自动发现新增文件本身是全局开关） */
   chase: boolean
 }
 
@@ -206,7 +206,7 @@ function emptyLibForm(): LibFormState {
 const libForm = reactive<LibFormState>(emptyLibForm())
 const libFormVisible = ref(false)
 const libFormSaving = ref(false)
-/** 追新监听是即时保存的（另一个接口），单独一个 loading，不跟表单保存共用 */
+/** 自动发现新增文件监听是即时保存的（另一个接口），单独一个 loading，不跟表单保存共用 */
 const chaseLibSaving = ref(false)
 /** 编辑中的库对象（封面操作要用）；新建时为 null */
 const libFormTarget = ref<EmbyLibrary | null>(null)
@@ -487,7 +487,7 @@ coverAutoRegen.value = l.cover_auto_regen === true
   libFormFingerprintAtOpen.value = formFingerprint()
 }
 
-/** 还原：回到打开时的样子（追新监听是即时保存的，不在这份还原范围内） */
+/** 还原：回到打开时的样子（自动发现新增文件监听是即时保存的，不在这份还原范围内） */
 function revertForm() {
   if (libFormTarget.value) openSettings(libFormTarget.value)
   else openCreate()
@@ -515,7 +515,7 @@ function cancelForm() {
   })
 }
 
-/** 追新开关：即时代理到全局清单，失败弹回原状态（toggleChase 里处理） */
+/** 自动发现新增文件开关：即时代理到全局清单，失败弹回原状态（toggleChase 里处理） */
 function onChaseSwitch(v: unknown) {
   // 开关现在是「监听 / 排除」，而排除清单是反着存的：开关为真 = 监听 = 不排除
   toggleChase(!v)
@@ -609,9 +609,9 @@ async function saveForm(thenScan = false) {
   }
 }
 
-// ---- 目录变更监听（追新）：全局开关 + 每库一个「纳不纳入」 ----
+// ---- 目录变更监听（自动发现新增文件）：全局开关 + 每库一个「纳不纳入」 ----
 
-/** 追新**排除**清单的库 id（v2.45.0 起）。空 = 全部启用库都监听 */
+/** 自动发现新增文件**排除**清单的库 id（v2.45.0 起）。空 = 全部启用库都监听 */
 function chaseExcludedIds(): number[] {
   return (chaseNew.value?.excluded || '')
     .split(/[,，\n]/)
@@ -619,7 +619,7 @@ function chaseExcludedIds(): number[] {
     .filter((x) => Number.isInteger(x) && x > 0)
 }
 
-/** 这个库是否被排除在追新之外 */
+/** 这个库是否被排除在自动发现新增文件之外 */
 function chaseExcluded(id: number | null): boolean {
   return id != null && chaseExcludedIds().includes(id)
 }
@@ -641,14 +641,14 @@ async function toggleChase(on: boolean) {
     const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','), cfg.strm_enabled)
     chaseNew.value = normalizeChase(res)
     libForm.chase = on
-    // 追新是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
+    // 自动发现新增文件是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
     // 其余字段的改动状态要原样留着
     const before = JSON.parse(libFormFingerprintAtOpen.value || '{}')
     before.chase = on
     libFormFingerprintAtOpen.value = JSON.stringify(before)
     ElMessage.success(on
-      ? `「${libFormTarget.value?.name || '本库'}」已排除追新，不再自动扫描新文件`
-      : `已重新纳入追新监听（每 ${res.interval} 分钟检查一次新文件）`)
+      ? `「${libFormTarget.value?.name || '本库'}」已排除在自动发现新增文件之外，不再自动扫描新文件`
+      : `已重新纳入自动发现新增文件监听（每 ${res.interval} 分钟检查一次新文件）`)
   } catch {
     // 拦截器已提示；开关弹回去，别留一个「看起来生效了」的假状态
     libForm.chase = !on
@@ -663,15 +663,15 @@ function policyLabel(value: string | null | undefined): string {
   return optionOf(POLICIES, value)?.label || '仅缺失时刮削'
 }
 
-/** 这个库在不在追新轮询里；不在也要说清是「追新没开」还是「就它没参与」 */
+/** 这个库在不在自动发现新增文件轮询里；不在也要说清是「自动发现新增文件没开」还是「就它没参与」 */
 function chaseFact(l: EmbyLibrary): string {
   const cfg = chaseNew.value
-  // 配置没读到时不能说「追新关」——那是在编一个结论
-  if (!cfg) return '追新状态未知'
-  if (!cfg.enabled) return '追新关'
+  // 配置没读到时不能说「自动发现新增文件关」——那是在编一个结论
+  if (!cfg) return '自动发现新增文件状态未知'
+  if (!cfg.enabled) return '自动发现新增文件已关闭'
   const covered = !chaseExcluded(l.id)
-  // 措辞跟着新语义走：不在排除清单 = 在听；在清单里 = 已排除追新
-  return covered ? `追新每 ${cfg.interval} 分钟` : '已排除追新'
+  // 措辞跟着新语义走：不在排除清单 = 在听；在清单里 = 已排除自动发现新增文件
+  return covered ? `自动发现新增文件每 ${cfg.interval} 分钟` : '已排除在自动发现新增文件之外'
 }
 
 /** 老库上的库级挂载拼成一句话（卡片与悬停全文共用的口径） */
@@ -705,7 +705,7 @@ function libSummaryTitle(l: EmbyLibrary): string {
   if (l.mount_ids?.length) {
     lines.push(`挂载来源（只读，v2.46.0 起不再能编辑）：${legacyMountNamesFor(l)}`)
   }
-  lines.push(`追新监听：${chaseFact(l)}`)
+  lines.push(`自动发现新增文件监听：${chaseFact(l)}`)
   lines.push(`刮削策略：${policyLabel(l.scrape_policy)}`)
   return lines.join('\n')
 }
@@ -935,9 +935,9 @@ async function loadAutoScanConfig() {
   }
 }
 
-// 追新：开关 + 轮询间隔（分钟），默认关闭
+// 自动发现新增文件：开关 + 轮询间隔（分钟），默认关闭
 const chaseNew = ref<ChaseNewConfig | null>(null)
-/** 追新配置读取失败（区分「读取中」与「读不到」，两者给的提示不一样） */
+/** 自动发现新增文件配置读取失败（区分「读取中」与「读不到」，两者给的提示不一样） */
 const chaseNewError = ref(false)
 
 /** 运行记录里的 ISO 时间 → 「YYYY-MM-DD HH:MM:SS」 */
@@ -981,7 +981,7 @@ async function saveChaseNewAction() {
   try {
     const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded, chaseNew.value.strm_enabled)
     chaseNew.value = normalizeChase(res)
-    ElMessage.success(res.enabled ? '追新已开启（每 ' + res.interval + ' 分钟）' : '追新已关闭')
+    ElMessage.success(res.enabled ? '自动发现新增文件已开启（每 ' + res.interval + ' 分钟）' : '自动发现新增文件已关闭')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
@@ -1155,9 +1155,9 @@ async function saveEnrichEpisodeNightAction() {
   }
 }
 
-// ==================== 刮削性能参数（链路规划 Step 1 / Step 4） ====================
+// ==================== 刮削性能参数 ====================
 
-/** 原 env-only 旋钮搬进后台：线程数 / 批次 / 退避 / 租约 + DB 池 + Step 3 配额制 + Step 4 none 回捞 */
+/** 原 env-only 旋钮搬进后台：线程数 / 批次 / 退避 / 租约 + DB 池 + 单集认领配额 + 搜不到条目回捞 */
 const enrichTuning = ref<EnrichTuningConfig | null>(null)
 const enrichTuningSaving = ref(false)
 const enrichTuningError = ref(false)
@@ -1165,13 +1165,13 @@ const enrichTuningError = ref(false)
 const tuningDraft = ref<Record<string, string>>({})
 const tmdbBatchDraft = ref(true)
 const dbPoolDraft = ref('10')
-// 单集认领配额制（链路规划 Step 3）：开关 + 日配额（专用区块，不进上面的通用表）
+// 单集认领：日配额制：开关 + 日配额（专用区块，不进上面的通用表）
 const quotaModeDraft = ref(false)
 const dayQuotaDraft = ref('2000')
-// none 定时回捞（链路规划 Step 4）：开关 + 回捞周期（专用区块，不进上面的通用表）
+// 搜不到的条目定时回捞：开关 + 回捞周期（专用区块，不进上面的通用表）
 const noneRsEnabledDraft = ref(false)
 const noneRsDaysDraft = ref('30')
-// 字段级完成口径（链路规划 Step 5）：开关（专用区块，不进上面的通用表）
+// 刮削完成口径（按字段判定）：开关（专用区块，不进上面的通用表）
 const fcEnabledDraft = ref(false)
 /** 配额制两个 key 在通用表里不重复展示 */
 const TUNING_QUOTA_KEYS = ['enrich_episode_quota_mode', 'enrich_episode_day_quota']
@@ -1262,7 +1262,7 @@ async function saveEnrichTuningAction() {
   }
 }
 
-// ==================== none 定时回捞（链路规划 Step 4） ====================
+// ==================== 搜不到的条目定时回捞 ====================
 
 /** none 存量只读计数：done+none+无 tmdb_id 按类型分组 + 下一轮可捞回数（只读，不改库） */
 const noneStats = ref<EnrichNoneStats | null>(null)
@@ -1286,7 +1286,7 @@ const noneStockText = computed(() => {
   return parts.length ? parts.join(' · ') : '暂无'
 })
 
-// ==================== 字段级完成口径（链路规划 Step 5） ====================
+// ==================== 刮削完成口径（按字段判定） ====================
 
 /** 字段级缺失率只读统计：已刮完条目的各字段缺失数/缺失率 + 开关状态（只读，不改库） */
 const fieldStats = ref<EnrichFieldStats | null>(null)
@@ -1324,7 +1324,7 @@ const fieldMissingText = computed(() => {
   return `共 ${s.total} 条已刮完：` + parts.join(' · ')
 })
 
-// ==================== 豆瓣封禁降级（链路规划 Step 0.5） ====================
+// ==================== 豆瓣限流降级 ====================
 
 /** 封禁期跳过豆瓣走多源兜底：后台开关，60 秒内热生效 */
 const banDowngrade = ref<DoubanBanDowngradeConfig | null>(null)
@@ -1346,7 +1346,7 @@ async function saveBanDowngradeAction() {
   banDowngradeSaving.value = true
   try {
     banDowngrade.value = await saveDoubanBanDowngrade(banDowngrade.value.enabled)
-    ElMessage.success('豆瓣封禁降级已保存，60 秒内生效')
+    ElMessage.success('豆瓣限流降级已保存，60 秒内生效')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
@@ -1354,7 +1354,7 @@ async function saveBanDowngradeAction() {
   }
 }
 
-// ==================== 兜底链路统一（链路规划 Step 2） ====================
+// ==================== 兜底链路统一 ====================
 
 /** 一个豆瓣入口：豆瓣 rich（CJK 专属）→ 多源引擎（含豆瓣源）。关 = 回滚到原行为 */
 const unifiedFallback = ref<UnifiedFallbackConfig | null>(null)
@@ -1765,7 +1765,7 @@ function typeLabel(t: string): string {
     <PageHeader
       eyebrow="媒体与交付"
       title="媒体库"
-      description="点「新建媒体库」或卡片上的「设置」打开同一张配置表单：分组改完路径、归属、刮削与追新"
+      description="点「新建媒体库」或卡片上的「设置」打开同一张配置表单：分组改完路径、归属、刮削与自动发现新增文件"
     >
       <template #actions>
         <el-button v-if="repairCount > 0" @click="repairNow">
@@ -1843,7 +1843,7 @@ function typeLabel(t: string): string {
 
     <!--
       v2.54：这一页原来是四张卡竖着堆（队列 / 定时刮削 / 一键扫描说明 / 库卡片），
-      真正要找的库卡片被压在一屏以下。拆成三个标签：媒体库（默认）/ 扫描队列 / 定时与追新。
+      真正要找的库卡片被压在一屏以下。拆成三个标签：媒体库（默认）/ 扫描队列 / 定时与自动发现新增文件。
       ?tab= 深链可直达（如 /emby?tab=queue）。
     -->
     <el-tabs v-model="activeTab" class="emby-tabs" @tab-change="onTabChange">
@@ -1957,7 +1957,7 @@ function typeLabel(t: string): string {
       </el-tab-pane>
 
       <el-tab-pane label="定时与刮削" name="schedule">
-        <!-- 元数据与刮削：按库的扫描 / 定时 / 追新收在这里（密钥不在本页填，见页面末尾的说明） -->
+        <!-- 元数据与刮削：按库的扫描 / 定时 / 自动发现新增文件收在这里（密钥不在本页填，见页面末尾的说明） -->
         <SectionCard class="scrape-card" title="元数据与刮削" :icon="CalendarClock">
           <template #actions>
             <div class="queue-facts">
@@ -1999,7 +1999,7 @@ function typeLabel(t: string): string {
               </div>
             </div>
             <div class="scrape-block">
-              <h3>追新</h3>
+              <h3>自动发现新增文件</h3>
               <p class="drawer-hint">
                 每隔 N 分钟检查新文件，发现即自动扫描刮削
               </p>
@@ -2174,7 +2174,7 @@ function typeLabel(t: string): string {
               </div>
             </div>
             <div class="scrape-block">
-              <h3>单集认领配额制（链路规划 Step 3）</h3>
+              <h3>单集认领：日配额制</h3>
               <p class="drawer-hint">
                 打开后，夜间窗口的含义从"白天禁刮单集"改为"白天单集按日配额认领、夜间不限"：窗口内不限量，窗口外每天最多认领日配额条单集，用尽后当天只认领顶层条目（电影 / 剧集）。保存后 60 秒内生效。
               </p>
@@ -2205,12 +2205,12 @@ function typeLabel(t: string): string {
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="enrichTuning?.episode_quota" class="drawer-hint drawer-hint--after">
                 今天已认领单集 {{ enrichTuning.episode_quota.used_today }} / 有效配额 {{ enrichTuning.episode_quota.effective_quota }}
-                （日配额 {{ enrichTuning.episode_quota.day_quota }}<template v-if="enrichTuning.episode_quota.banned">，豆瓣封禁中减半</template>）。
-                豆瓣封禁期有效配额按 0.5 减半（写死）；配额设 0 = 回到夜间禁令制（回滚口径）。
+                （日配额 {{ enrichTuning.episode_quota.day_quota }}<template v-if="enrichTuning.episode_quota.banned">，豆瓣限流中减半</template>）。
+                豆瓣限流期有效配额按 0.5 减半（写死）；配额设 0 = 回到夜间禁令制（回滚口径）。
               </div>
             </div>
             <div class="scrape-block">
-              <h3>none 定时回捞（链路规划 Step 4）</h3>
+              <h3>搜不到的条目：定时回捞</h3>
               <p class="drawer-hint">
                 打开后，「搜过、没有」的条目（done + metadata_source='none'）不再是永久终态：超过回捞周期后由 janitor 按最旧优先、单轮 2000 条翻回 pending 重新补搜（清 TMDB 搜索阴性缓存）；资料不全 5 次后也转 done+none 等回捞，不再进 failed。保存后 60 秒内生效。
               </p>
@@ -2254,7 +2254,7 @@ function typeLabel(t: string): string {
               </div>
             </div>
             <div class="scrape-block">
-              <h3>字段级完成口径（链路规划 Step 5）</h3>
+              <h3>刮削完成口径：按字段判定</h3>
               <p class="drawer-hint">
                 打开后，「标题/年份/海报三者有其二」升级为字段级口径：核心字段齐但缺简介/类型/演员的条目不再直接 done，而是进低优先级队列（priority=-10，主队列优先认领，不饿死主队列）补一轮；每条最多多跑一轮，补完无论拿到与否直接终态化，不反复重刮。保存后 60 秒内生效。
               </p>
@@ -2351,22 +2351,22 @@ function typeLabel(t: string): string {
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
             </div>
             <div class="scrape-block">
-              <h3>豆瓣封禁降级</h3>
+              <h3>豆瓣限流降级</h3>
               <p class="drawer-hint">
-                豆瓣封禁 / 冷却期内，中文条目不再整条延后等解封——跳过豆瓣这一站，照常走 TMDB → 多源兜底；期间命中从严（标题 + 年份都对上才落库，宁可没命中也不乱认）。解封后自动恢复原顺序（保存后 60 秒内生效）
+                豆瓣限流 / 冷却期内，中文条目不再整条延后等解封——跳过豆瓣这一站，照常走 TMDB → 多源兜底；期间命中从严（标题 + 年份都对上才落库，宁可没命中也不乱认）。解封后自动恢复原顺序（保存后 60 秒内生效）
               </p>
               <div v-if="banDowngrade" class="scrape-actions">
                 <el-switch
                   v-model="banDowngrade.enabled"
                   active-text="开启"
                   inactive-text="关闭"
-                  aria-label="豆瓣封禁降级开关"
+                  aria-label="豆瓣限流降级开关"
                 />
                 <el-button type="primary" size="small" :loading="banDowngradeSaving" @click="saveBanDowngradeAction">
                   保存
                 </el-button>
                 <span class="chase-state" :class="{ 'is-on': !banDowngrade.banned }">
-                  {{ banDowngrade.banned ? `豆瓣封禁中（剩余约 ${Math.round(banDowngrade.ban_remaining_sec)} 秒），降级${banDowngrade.enabled ? '生效中' : '未开启'}` : '豆瓣正常' }}
+                  {{ banDowngrade.banned ? `豆瓣限流中（剩余约 ${Math.round(banDowngrade.ban_remaining_sec)} 秒），降级${banDowngrade.enabled ? '生效中' : '未开启'}` : '豆瓣正常' }}
                 </span>
               </div>
               <div v-else-if="banDowngradeError" class="drawer-hint drawer-hint--after">
@@ -2376,7 +2376,7 @@ function typeLabel(t: string): string {
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
             </div>
             <div class="scrape-block">
-              <h3>兜底链路统一（Step 2）</h3>
+              <h3>兜底链路统一</h3>
               <p class="drawer-hint">
                 一个豆瓣入口：TMDB 未命中后，豆瓣 rich 兜底（中文标题专属）→ 多源引擎（含豆瓣源），不再有两套豆瓣打法；多源兜底只看多源总开关（原独立开关降级为子项）。关闭 = 回滚到原来的分支行为（保存后 60 秒内生效）
               </p>
@@ -2399,7 +2399,7 @@ function typeLabel(t: string): string {
             </div>
           </div>
         </SectionCard>
-        <SectionCard class="strm-card" title=".strm 直链" :icon="Link">
+        <SectionCard class="strm-card" title="扫描器：识别 .strm 文件" :icon="Link">
           <template #actions>
             <div class="queue-facts">
               <span class="fact" :class="{ warn: strmConfig && !strmConfig.enabled }">
@@ -2408,7 +2408,10 @@ function typeLabel(t: string): string {
             </div>
           </template>
           <p class="drawer-hint">
-            .strm 是内容为播放直链的纯文本小文件。宿主机目录经 docker-compose（STRM_MOUNT_DIR，默认 /opt/strm）挂到容器内挂载点（STRM_CONTAINER_PATH，默认 /strm，只读）；改这里只改"认哪个目录"，不动容器挂载本身。要换容器内挂载点：先改 .env 的 STRM_CONTAINER_PATH 并 docker compose up -d 重启，再回来保存（容器里不存在的目录会被拒绝）。关闭总开关后扫描不再收录 .strm 文件（已入库的不动），保存即生效。
+            这里只管「扫描器认不认 .strm 文件」：.strm 是内容为播放直链的纯文本小文件。宿主机目录经 docker-compose（STRM_MOUNT_DIR，默认 /opt/strm）挂到容器内挂载点（STRM_CONTAINER_PATH，默认 /strm，只读）；改这里只改"认哪个目录"，不动容器挂载本身。要换容器内挂载点：先改 .env 的 STRM_CONTAINER_PATH 并 docker compose up -d 重启，再回来保存（容器里不存在的目录会被拒绝）。关闭总开关后扫描不再收录 .strm 文件（已入库的不动），保存即生效。
+          </p>
+          <p class="drawer-hint">
+            另一个开关在「.strm 生成器」页：管的是批量生成 .strm 文件，别和这里搞混。
           </p>
           <div v-if="strmConfig" class="scrape-actions">
             <el-switch v-model="strmConfig.enabled" active-text="开启" inactive-text="关闭" />
@@ -2433,7 +2436,7 @@ function typeLabel(t: string): string {
     <!--
       媒体库配置：新建与编辑共用这一张单页表单（借鉴 Emby Manager）。
       以前这里是两个地方——「新建弹窗」管一半、「设置抽屉」管另一半，路径在设置里只能看
-      不能改、启用状态与追新监听干脆没入口。现在一张表单分组改完，每个选项都有一句
+      不能改、启用状态与自动发现新增文件监听干脆没入口。现在一张表单分组改完，每个选项都有一句
       人话说明，推荐项直接标出来。
     -->
     <el-drawer
@@ -2479,7 +2482,7 @@ function typeLabel(t: string): string {
             <el-form-item label="启用状态">
               <el-switch v-model="libForm.is_enabled" active-text="启用" inactive-text="停用" />
               <p class="field-help">
-                停用后客户端看不到这个库，它也不参与定时扫描与追新；已入库的条目留着不删，
+                停用后客户端看不到这个库，它也不参与定时扫描与自动发现新增文件；已入库的条目留着不删，
                 重新启用就回来。
               </p>
             </el-form-item>
@@ -2529,7 +2532,7 @@ function typeLabel(t: string): string {
           <span>虚拟媒体库</span>
           <p>
             按发行平台「{{ libFormTarget.platform || '—' }}」聚合库里已识别到的条目，条目仍归属原媒体库。
-            它没有自己的目录与挂载，所以下面不列「媒体路径」与「追新监听」——要改内容来源，去改原始媒体库。
+            它没有自己的目录与挂载，所以下面不列「媒体路径」与「自动发现新增文件监听」——要改内容来源，去改原始媒体库。
           </p>
         </div>
 
@@ -2607,7 +2610,7 @@ function typeLabel(t: string): string {
               <p v-if="autoScan">
                 {{ autoScan.enabled
                   ? `已开启：每天 ${autoScan.time} 把所有启用库入队扫描（增量，没变化的目录跳过）。`
-                  : '未开启：只在手动点「扫描」、或追新发现新文件时扫。' }}
+                  : '未开启：只在手动点「扫描」、或自动发现新增文件发现新文件时扫。' }}
                 上次执行：{{ autoScan.last_run || '还没有执行过' }}。
               </p>
               <p v-else>读取中…</p>
@@ -2779,7 +2782,7 @@ function typeLabel(t: string): string {
           />
           <!--
             老库的「库级挂载」：v2.46.0 起了独立的下拉框去重，这里只读回显。
-            不删它是因为扫描 / 追新 / 挂载健康都还按 mount_ids 走，写成「已删除」等于
+            不删它是因为扫描 / 自动发现新增文件 / 挂载健康都还按 mount_ids 走，写成「已删除」等于
             骗用户说数据没了 —— 实际它还在生效，只是不能再从这里改。
           -->
           <div v-if="legacyMountIds.length" class="legacy-mount-note">
@@ -2795,11 +2798,11 @@ function typeLabel(t: string): string {
         <div v-if="libFormTarget && !libFormTarget.is_virtual" class="settings-section">
           <div class="settings-section-title">目录变更监听</div>
           <p class="form-hint">
-            「追新」每隔几分钟扫一遍目录，发现新视频文件（.strm 开关开时也含 .strm）就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
+            「自动发现新增文件」每隔几分钟扫一遍目录，发现新视频文件（.strm 开关开时也含 .strm）就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
             不用等手动扫描。开关与间隔是全局的，纳不纳入某个库在这里定。
           </p>
           <el-form label-position="top">
-            <el-form-item label="本库是否监听追新">
+            <el-form-item label="本库是否参与自动发现新增文件">
               <el-switch
                 :model-value="!libForm.chase"
                 :loading="chaseLibSaving"
@@ -2808,7 +2811,7 @@ function typeLabel(t: string): string {
                 @change="onChaseSwitch"
               />
               <p class="field-help">
-                <template v-if="!chaseNew">{{ chaseNewError ? '追新配置读取失败，暂时无法切换（可到「定时与刮削」标签重试）' : '追新配置读取中…' }}</template>
+                <template v-if="!chaseNew">{{ chaseNewError ? '自动发现新增文件配置读取失败，暂时无法切换（可到「定时与刮削」标签重试）' : '自动发现新增文件配置读取中…' }}</template>
                 <template v-else>
                   改动即时生效：开「监听」就是正常扫新片；开「排除」就是把这个库加进
                   <strong>排除清单</strong>（当前已排除 {{ chaseExcludedIds().length }} 个库），
@@ -2817,7 +2820,7 @@ function typeLabel(t: string): string {
               </p>
             </el-form-item>
             <div class="settings-paths">
-              <span>追新总开关（全局）</span>
+              <span>自动发现新增文件总开关（全局）</span>
               <p v-if="chaseNew">
                 {{ chaseNew.enabled
                   ? `已开启 · 每 ${chaseNew.interval} 分钟检查一次`
@@ -3072,7 +3075,7 @@ function typeLabel(t: string): string {
 .scrape-block .drawer-hint { margin-bottom: 10px; }
 .scrape-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .scrape-skeleton { height: 32px; border-radius: var(--au-r-md); }
-/* 刮削性能参数（链路规划 Step 1）：每行 标签 / 输入 / 说明 / 标记 */
+/* 刮削性能参数：每行 标签 / 输入 / 说明 / 标记 */
 .tuning-list { display: flex; flex-direction: column; gap: 10px; }
 .tuning-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tuning-label { min-width: 118px; font-size: var(--font-size-sm); font-weight: 600; color: var(--au-text); }

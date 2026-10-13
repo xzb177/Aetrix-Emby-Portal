@@ -286,7 +286,7 @@ onMounted(load)
       <SectionCard
         title="公益服规则"
         :icon="Settings2"
-        description="到期保留、未活跃禁用、求片额度与抽奖消耗"
+        description="到期保留、未活跃禁用、求片额度"
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
           <el-form-item v-for="f in welfareFields" :key="f.key" :label="f.label">

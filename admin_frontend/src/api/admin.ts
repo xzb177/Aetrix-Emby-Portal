@@ -1212,7 +1212,7 @@ export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, ni
     night_tz,
   })
 
-/** 刮削性能参数（链路规划 Step 1）：env 旋钮搬进 SystemConfig + 后台 UI */
+/** 刮削性能参数：env 旋钮搬进 SystemConfig + 后台 UI */
 export interface EnrichTuningConfig {
   success: boolean
   values: Record<string, number | boolean>
@@ -1223,7 +1223,7 @@ export interface EnrichTuningConfig {
   defaults: Record<string, string>
   descriptions: Record<string, string>
   env_names: Record<string, string | null>
-  /** 单集认领配额制状态（链路规划 Step 3）：只读，当天已用配额等 */
+  /** 单集认领日配额制状态：只读，当天已用配额等 */
   episode_quota?: {
     mode: boolean
     day_quota: number
@@ -1257,7 +1257,7 @@ export const saveEnrichTuning = (values: Record<string, string | number | boolea
     db_pool_size: db_pool_size ?? null,
   })
 
-/** none 存量只读计数（链路规划 Step 4）：done+none+无 tmdb_id 按类型分组 + 下一轮可捞回数 */
+/** 搜不到的条目存量只读计数：done+none+无 tmdb_id 按类型分组 + 下一轮可捞回数 */
 export interface EnrichNoneStats {
   success: boolean
   by_type: Record<string, number>
@@ -1271,7 +1271,7 @@ export interface EnrichNoneStats {
 export const fetchEnrichNoneStats = () =>
   get<EnrichNoneStats>(`${E}/scrape/enrich-none-stats`)
 
-/** 字段级缺失率只读统计（链路规划 Step 5）：已刮完条目的标题/年份/海报/简介/类型/演员缺失数与缺失率 + 开关状态 + 进程内计数 */
+/** 刮削完成口径缺失率只读统计：已刮完条目的标题/年份/海报/简介/类型/演员缺失数与缺失率 + 开关状态 + 进程内计数 */
 export interface EnrichFieldStats {
   success: boolean
   total: number
@@ -1361,7 +1361,7 @@ export const fetchDoubanConfig = () => get<DoubanConfig>(`${E}/scrape/douban-con
 export const saveDoubanConfig = (enabled: boolean, min_interval: number) =>
   put<DoubanConfig>(`${E}/scrape/douban-config`, { enabled, min_interval })
 
-/** 豆瓣封禁降级（链路规划 Step 0.5）：封禁期跳过豆瓣走多源兜底 */
+/** 豆瓣限流降级：限流期跳过豆瓣走多源兜底 */
 export interface DoubanBanDowngradeConfig {
   success: boolean
   enabled: boolean
@@ -1374,7 +1374,7 @@ export const fetchDoubanBanDowngrade = () =>
 export const saveDoubanBanDowngrade = (enabled: boolean) =>
   put<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`, { enabled })
 
-/** 兜底链路统一（链路规划 Step 2）：一个豆瓣入口（豆瓣 rich → 多源引擎含豆瓣源） */
+/** 兜底链路统一：一个豆瓣入口（豆瓣 rich → 多源引擎含豆瓣源） */
 export interface UnifiedFallbackConfig {
   success: boolean
   enabled: boolean
@@ -1676,7 +1676,7 @@ export interface ChaseNewConfig {
     last_changes: number
     last_libs_triggered: number
   }
-  /** 最近 10 轮追新运行历史（poll / drive-changes） */
+  /** 最近 10 轮自动发现新增文件运行历史（poll / drive-changes） */
   recent_runs: Array<{
     id: number
     started_at: string | null

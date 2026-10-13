@@ -53,9 +53,12 @@ const SUBSYSTEMS: SubsystemMeta[] = [
   { key: 'enrich', name: '元数据补全', icon: Sparkles },
   { key: 'scan', name: '媒体扫描', icon: ScanLine },
   { key: 'strm', name: '.strm 生成', icon: FileText },
-  { key: 'sa_quota', name: 'SA 账号', icon: KeyRound },
+  { key: 'sa_quota', name: 'Google 子账号', icon: KeyRound },
   { key: 'api', name: '接口指标', icon: Activity },
 ]
+
+/** 状态 → 中文结论（卡片右上角，原来是裸英文 key） */
+const STATUS_TEXT: Record<string, string> = { ok: '正常', warn: '警告', down: '故障' }
 
 const snapshot = ref<ObservabilitySnapshot | null>(null)
 const loading = ref(false)
@@ -148,9 +151,11 @@ const overallText = computed(() =>
 const cards = computed(() =>
   SUBSYSTEMS.map((meta) => {
     const probe = snapshot.value?.subsystems?.[meta.key]
+    const status = probe?.status || 'warn'
     return {
       ...meta,
-      status: probe?.status || 'warn',
+      status,
+      statusText: STATUS_TEXT[status] ?? status,
       message: probe?.message || '暂无数据',
       metrics: keyMetrics(meta.key),
     }
@@ -225,7 +230,7 @@ onMounted(load)
             <span class="au-health__dot" :class="`is-${card.status}`" />
             <component :is="card.icon" :size="15" class="au-health__card-icon" />
             <span class="au-health__card-name">{{ card.name }}</span>
-            <span class="au-health__card-key">{{ card.key }}</span>
+            <span class="au-health__card-status" :class="`is-${card.status}`">{{ card.statusText }}</span>
           </div>
           <p class="au-health__card-msg">{{ card.message }}</p>
           <div v-if="card.metrics.length" class="au-health__card-metrics">
@@ -238,6 +243,10 @@ onMounted(load)
               <span class="au-health__metric-value">{{ metricValue(card.key, m.field, m.suffix) }}</span>
             </div>
           </div>
+          <details class="au-health__raw">
+            <summary>原始探针输出</summary>
+            <code>{{ card.key }} · {{ card.message }}</code>
+          </details>
         </div>
       </div>
     </template>
@@ -323,11 +332,46 @@ onMounted(load)
   color: var(--au-text);
 }
 
-.au-health__card-key {
+.au-health__card-status {
   margin-left: auto;
   font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-success-border);
+  color: var(--au-success);
+}
+
+.au-health__card-status.is-warn {
+  border-color: var(--au-warning-border);
+  color: var(--au-warning);
+}
+
+.au-health__card-status.is-down {
+  border-color: var(--au-danger-border);
+  color: var(--au-danger);
+}
+
+/** 原始探针输出：英文 key 与探针原文收进折叠，默认不打扰 */
+.au-health__raw {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--au-border);
+  font-size: 11px;
   color: var(--au-text-4);
+}
+
+.au-health__raw summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.au-health__raw code {
+  display: block;
+  margin-top: 6px;
   font-family: ui-monospace, monospace;
+  word-break: break-all;
+  color: var(--au-text-3);
 }
 
 .au-health__card-msg {
