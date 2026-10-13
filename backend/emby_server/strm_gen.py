@@ -37,6 +37,8 @@
 - strm_orphan_check_qps：per-SA QPS 上限，默认 2.0
 - strm_gen_last_run：上次执行完成时间（ISO）
 - strm_gen_last_stats：上次执行统计（JSON，含 tombstone/would-delete/prune_blocked）
+- strm_gen_scan_trigger_failures：扫库触发器失败记录（JSON），供 system_alerts 的
+  strm_scan_trigger_failed 事件读取
 """
 
 from __future__ import annotations
@@ -86,10 +88,6 @@ CONFIG_ORPHAN_NEXT_RUN = "strm_orphan_check_next_run"
 # 增量间隔（分钟）：两次增量生成之间的间隔，用户可在后台自由设置。
 # 0 = 关闭定时增量（只手动触发）。默认 60。
 CONFIG_INTERVAL = "strm_gen_interval_minutes"
-# 运行锁僵死超时（分钟）：锁被持有超过此时长视为僵死（持有者崩溃/卡死），
-# 新轮次可抢占。默认 180；0=关闭自愈（保持旧行为：锁永久有效）。
-CONFIG_LOCK_TIMEOUT_MIN = "strm_gen_lock_timeout_minutes"
-DEFAULT_LOCK_TIMEOUT_MIN = 180
 # 数据源类型：drive=Google Drive，local=本地目录。默认 drive（向后兼容）。
 CONFIG_SOURCE_TYPE = "strm_gen_source_type"
 # 本地数据源的根目录（source_type=local 时有效）
@@ -153,6 +151,9 @@ def drive_id_config(db) -> str:
 # 源失败记录（供 system_alerts 的 strm_source_failed 事件读取）。
 CONFIG_SOURCE_FAILURES = "strm_gen_source_failures"
 
+# 扫库触发器失败记录：_trigger_strm_scan 失败时写入，供 system_alerts 的
+# strm_scan_trigger_failed 事件读取（沿用 strm_source_failed 通道模式）。
+CONFIG_SCAN_TRIGGER_FAILURES = "strm_gen_scan_trigger_failures"
 
 def _record_source_failures(db, failed: list[dict]) -> None:
     """把本轮列举失败的源记入 SystemConfig，供告警系统读取。
@@ -181,6 +182,34 @@ def _record_source_failures(db, failed: list[dict]) -> None:
         # 未预期的中间状态。
     except Exception as exc:
         logger.warning("strm_gen: 记录源失败失败: %s", exc)
+
+
+def _record_scan_trigger_failures(db, failures: list[tuple]) -> None:
+    """把扫库触发器失败记入 SystemConfig，供告警系统读取。
+
+    failures: [(lib_id|"-", error)]，lib_id="-" 表示"还没到逐库阶段"
+    （模块加载/查库失败）。格式：[{"lib":..., "error":..., "at": ISO}]，
+    只保留最近 20 条。写入失败不影响主流程（沿用 _record_source_failures
+    的"不提前 commit"约定）。
+    """
+    try:
+        from backend.integrations import store
+        raw = store.get_value(db, CONFIG_SCAN_TRIGGER_FAILURES, "") or "[]"
+        try:
+            records = json.loads(raw)
+        except Exception:
+            records = []
+        now = datetime.now(timezone.utc).isoformat()
+        for lib_id, err in failures:
+            records.append({
+                "lib": str(lib_id),
+                "error": str(err)[:300],
+                "at": now,
+            })
+        records = records[-20:]
+        store.write_values(db, {CONFIG_SCAN_TRIGGER_FAILURES: json.dumps(records)}, {})
+    except Exception as exc:
+        logger.warning("strm_gen: 记录扫库触发失败失败: %s", exc)
 
 
 def list_drives() -> list[dict]:
@@ -367,32 +396,6 @@ def interval_minutes(db) -> int:
     except (ValueError, TypeError):
         return DEFAULT_INTERVAL_MINUTES
     return max(0, min(1440, v))
-
-
-# 运行锁超时读缓存：try_acquire 可能无 db（如纯内存调用），此时用上次热读到的值。
-_lock_timeout_min_cache = DEFAULT_LOCK_TIMEOUT_MIN
-
-
-def lock_timeout_minutes(db=None) -> int:
-    """运行锁僵死超时（分钟）。0=关闭自愈。
-
-    默认 180：增量轮目标 <2 分钟、全量轮历史约 1–2 小时（8.6 万文件），
-    180 分钟是 90 倍余量；此前曾出现锁死 26 小时的真实故障（2026-10-13）。
-    非法值回退默认，钳制在 [0, 1440]。
-    db=None 时返回上次热读缓存（供无 db 的 try_acquire 调用）。
-    """
-    global _lock_timeout_min_cache
-    if db is None:
-        return _lock_timeout_min_cache
-    raw = _db_config(db, CONFIG_LOCK_TIMEOUT_MIN,
-                     str(DEFAULT_LOCK_TIMEOUT_MIN)).strip()
-    try:
-        v = int(raw)
-    except (ValueError, TypeError):
-        v = DEFAULT_LOCK_TIMEOUT_MIN
-    v = max(0, min(1440, v))
-    _lock_timeout_min_cache = v
-    return v
 
 
 def source_type(db) -> str:
@@ -770,12 +773,6 @@ def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True):
 _lock = threading.Lock()
 _progress: dict[str, Any] = {
     "running": False,
-    # acquired_at：运行锁获取时刻（time.monotonic 秒，防系统时间跳变），
-    # B1 自愈用。release 时清 None。
-    "acquired_at": None,
-    # lock_token：每次获取运行权换一个新的（uuid hex）。B1 抢占后，
-    # 被抢占的旧持有者结束时凭 token 发现锁已易主，不再清除新持有者的 running。
-    "lock_token": None,
     "started_at": None,
     "finished_at": None,
     "phase": "idle",          # idle | listing | generating | verifying | done | error
@@ -1409,88 +1406,32 @@ def _reset_progress():
             "finished_at": None, "total": 0, "done": 0,
             "generated": 0, "skipped": 0, "failed": 0, "pruned": 0,
             "errors": [], "current": "",
-            # B1：直接调 run_owned（管理后台手动触发）不经过 try_acquire，
-            # 这里也刷新获取时刻与 token，保证僵死判定口径一致。
-            "acquired_at": time.monotonic(),
-            "lock_token": uuid.uuid4().hex,
         })
 
 
-def _lock_stale(db=None) -> bool:
-    """运行锁是否处于僵死状态（持有中且超过超时阈值）。
-
-    供"只看不抢"的调用方（如调度循环）用：判断要不要继续等。
-    超时阈值走 lock_timeout_minutes；0=关闭自愈时永远返回 False。
-    调用方必须在判断后经 try_acquire 原子抢占，不可自行置位。
-    """
-    timeout_min = lock_timeout_minutes(db)
-    if timeout_min <= 0:
-        return False
-    with _lock:
-        if not _progress["running"]:
-            return False
-        acquired = _progress.get("acquired_at")
-        if acquired is None:
-            # 老版本/异常路径置 running 但没记时间：按不僵死处理，
-            # 等持有者自己释放，避免误杀正在跑的轮次。
-            return False
-        return (time.monotonic() - acquired) > timeout_min * 60
-
-
-def try_acquire(db=None) -> bool:
+def try_acquire() -> bool:
     """原子尝试获取运行权：成功返回 True（已置 running），失败返回 False。
 
     给管理后台手动触发用——原来是"查 running → 起线程 → 线程里再置 running"，
     锁在起线程前就释放了，快速连点两次都会返回"已开始"，第二次被静默吞掉。
     现在获取与置位在同一把锁内完成，无竞态。
-
-    B1 锁超时自愈：锁被持有超过 strm_gen_lock_timeout_minutes（默认 180 分钟，
-    0=关闭）时视为僵死（持有线程崩溃/卡死但内存锁没释放），新轮次可抢占并记
-    warning。抢占是原子的：并发两个抢占者只有一个能成功。
     """
-    timeout_min = lock_timeout_minutes(db)
     with _lock:
         if _progress["running"]:
-            if timeout_min > 0:
-                acquired = _progress.get("acquired_at")
-                if (acquired is not None
-                        and (time.monotonic() - acquired) > timeout_min * 60):
-                    held_min = (time.monotonic() - acquired) / 60
-                    logger.warning(
-                        "strm_gen: 运行锁疑似僵死（已持有 %.1f 分钟，超阈值 %d 分钟），"
-                        "新轮次抢占", held_min, timeout_min)
-                    _progress["running"] = True
-                    _progress["acquired_at"] = time.monotonic()
-                    _progress["lock_token"] = uuid.uuid4().hex
-                    return True
             return False
         _progress["running"] = True
-        _progress["acquired_at"] = time.monotonic()
-        _progress["lock_token"] = uuid.uuid4().hex
         return True
 
 
-def _release_progress(stats: dict, db, expect_token=None):
-    """释放运行权：phase 复位 + 落盘上次执行统计。
-
-    expect_token：调用方获取运行权时的 lock_token。B1 抢占场景下，被抢占的
-    旧持有者结束时 token 已对不上——此时只落盘统计，不清除新持有者的 running
-    （否则新一轮会被误判为空闲，导致两轮并发）。expect_token=None 时保持旧
-    行为（无条件释放，供测试/兼容调用）。
-    """
+def _release_progress(stats: dict, db):
+    """释放运行权：phase 复位 + 落盘上次执行统计。"""
     with _lock:
         # 非预期异常时 phase 可能卡在 generating：统一收敛到 error，
         # 前端不会一直显示"生成中"但实际已停。
         if _progress.get("phase") not in ("done", "idle"):
             _progress["phase"] = "error"
-        if expect_token is not None and _progress.get("lock_token") != expect_token:
-            logger.warning("strm_gen: 释放运行权时发现锁已被抢占（token 对不上），"
-                           "不清除新持有者的 running，只落盘本轮统计")
-        else:
-            _progress["running"] = False
-            _progress["finished_at"] = datetime.now(timezone.utc).isoformat()
-            _progress["acquired_at"] = None  # B1：释放运行锁时清掉获取时刻
-            _progress["lock_token"] = None
+        _progress["running"] = False
+        _progress["finished_at"] = datetime.now(timezone.utc).isoformat()
     try:
         from backend.integrations import store
         # 注意：store 只有 write_values（批量写），没有 set_value；
@@ -1517,7 +1458,7 @@ def run_generation(db, full: bool = False, drive_id: Optional[str] = None) -> di
     同一时间只允许一个任务运行（原子获取，见 try_acquire）。
     返回统计 dict。
     """
-    if not try_acquire(db):
+    if not try_acquire():
         return {"ok": False, "error": "已有生成任务在运行中"}
     return run_owned(db, full=full, drive_id=drive_id)
 
@@ -1525,8 +1466,6 @@ def run_generation(db, full: bool = False, drive_id: Optional[str] = None) -> di
 def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[str, Any]:
     """已持有运行权时执行一次生成（try_acquire 成功后调用）。"""
     _reset_progress()
-    with _lock:
-        _my_token = _progress.get("lock_token")
     stats = {"generated": 0, "skipped": 0, "failed": 0, "pruned": 0, "total": 0}
     try:
         return _run_generation_inner(db, full, drive_id, stats)
@@ -1538,7 +1477,7 @@ def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[st
         logger.exception("strm_gen: 生成异常")
         return {"ok": False, "error": str(exc)}
     finally:
-        _release_progress(stats, db, expect_token=_my_token)
+        _release_progress(stats, db)
 
 
 def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) -> dict[str, Any]:
@@ -1901,12 +1840,15 @@ def _trigger_strm_scan(db) -> None:
     - 已在队列中的库不会重复入队
     - 不会和用户手动扫描冲突（扫描器有库级互斥 _acquire_scan）
     失败只记 warning（扫库是 best-effort，不能影响生成主流程）。
+    2026-10-13 起：失败同时写入 strm_gen_scan_trigger_failures，供
+    system_alerts 的 strm_scan_trigger_failed 事件告警——不再静默。
     """
     try:
         from backend.emby_server import models as em
         from backend.emby_server import scan_queue_redis
     except Exception as exc:
         logger.warning("strm_gen: 扫库触发器加载失败: %s", exc)
+        _record_scan_trigger_failures(db, [("-", "触发器加载失败: %s" % exc)])
         return
 
     strm_root = _container_strm_root(db)
@@ -1916,6 +1858,7 @@ def _trigger_strm_scan(db) -> None:
         libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
     except Exception as exc:
         logger.warning("strm_gen: 查询媒体库失败: %s", exc)
+        _record_scan_trigger_failures(db, [("-", "查询媒体库失败: %s" % exc)])
         return
 
     triggered = 0
@@ -1934,6 +1877,7 @@ def _trigger_strm_scan(db) -> None:
                 logger.info("strm_gen: 已触发扫库 lib=%s(%s)", lib.id, getattr(lib, "name", ""))
         except Exception as exc:
             logger.warning("strm_gen: 触发扫库失败 lib=%s: %s", lib.id, exc)
+            _record_scan_trigger_failures(db, [(lib.id, "触发扫库失败: %s" % exc)])
     if triggered:
         logger.info("strm_gen: 共触发 %d 个库的增量扫描", triggered)
 
@@ -2326,7 +2270,7 @@ def _scheduler_loop():
                     # 还没到间隔，短睡后继续
                     time.sleep(min(60, wait_sec - elapsed))
                     continue
-                if get_progress()["running"] and not _lock_stale(db):
+                if get_progress()["running"]:
                     time.sleep(60)
                     continue
                 # 首次启动时 last_interval_ts=0，延迟 5 分钟再跑，避免启动即 burst
