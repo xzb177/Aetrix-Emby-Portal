@@ -243,7 +243,7 @@ function riskLevel(row: LoginLogRow): string {
         <RouterLink class="danger-jump" :to="{ name: 'Settings', query: { tab: 'danger', op: 'logs' } }">
           危险操作中心 →
         </RouterLink>
-        <el-button :loading="purgeBusy" @click="purge(data && data.total > 0 ? 90 : 0)" :icon="Trash2">
+        <el-button type="danger" :loading="purgeBusy" @click="purge(data && data.total > 0 ? 90 : 0)" :icon="Trash2">
           清理日志
         </el-button>
         <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>

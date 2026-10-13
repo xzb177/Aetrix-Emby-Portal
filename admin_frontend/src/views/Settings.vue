@@ -1208,6 +1208,22 @@ watch(
               </template>
               。清完之后这些片子要重新回源拉一次，热门时段会变慢。
             </p>
+            <!-- 危险区：清空全部不跟两个轻量清理同排，单独隔离（Batch B；页折叠/全局保存是 Batch C） -->
+            <div class="danger-isolate">
+              <div class="danger-isolate-text">
+                <strong>清空全部</strong>
+                <span>上面的两个按钮只动一部分；这里是整份缓存一次清完。清完之后这些片子要重新回源拉一次，热门时段会变慢。不可恢复，动手前确认已经备份过。</span>
+              </div>
+              <el-button
+                type="danger"
+                :disabled="!canWrite"
+                :loading="dangerBusy === 'cache:all'"
+                :title="canWrite ? '' : WRITE_HINT"
+                @click="doCleanCache('all')"
+              >
+                清空全部
+              </el-button>
+            </div>
             <template #footer>
               <div class="card-footer">
                 <el-button
@@ -1225,16 +1241,6 @@ watch(
                   @click="doCleanCache('failed')"
                 >
                   清理失败记录
-                </el-button>
-                <el-button
-                  type="danger"
-                  plain
-                  :disabled="!canWrite"
-                  :loading="dangerBusy === 'cache:all'"
-                  :title="canWrite ? '' : WRITE_HINT"
-                  @click="doCleanCache('all')"
-                >
-                  清空全部
                 </el-button>
               </div>
             </template>
@@ -1477,6 +1483,15 @@ watch(
   color: var(--au-text-2);
 }
 .danger-effect strong { color: var(--au-text); font-weight: 600; }
+/* 危险区隔离带：整份清空这类动作单独隔离，不跟轻量清理同排（Batch B） */
+.danger-isolate {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 12px 14px; margin-top: 4px;
+  border: 1px solid var(--danger-border); border-left: 3px solid var(--danger-border);
+  border-radius: var(--au-r-md); background: var(--danger-bg);
+}
+.danger-isolate-text strong { display: block; font-size: 13px; color: var(--danger); margin-bottom: 4px; }
+.danger-isolate-text span { font-size: 12px; color: var(--au-text-2); line-height: 1.7; }
 .purge-input { width: 120px; }
 
 /* ==================== 能力卡片 ==================== */

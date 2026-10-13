@@ -258,8 +258,11 @@ async function toggleMount(m: StorageMount) {
 
 async function removeMount(m: StorageMount) {
   try {
-    await ElMessageBox.confirm(`删除挂载「${m.name}」？引用它的媒体库会自动解绑。`, '删除挂载', {
+    await ElMessageBox.confirm(`挂载「${m.name}」删除后，引用它的媒体库会自动解绑（不再从这个挂载读文件）。`, '删除挂载', {
       type: 'warning',
+      confirmButtonText: '删除这个挂载',
+      cancelButtonText: '取消',
+      confirmButtonClass: 'el-button--danger',
     })
   } catch {
     return
@@ -692,9 +695,14 @@ async function runRefreshMounts() {
 async function remove(row: RemoteServerRow) {
   try {
     await ElMessageBox.confirm(
-      `删除「${row.name}」？${row.is_active ? '它是当前的 Emby 服务入口，删除后会切回面板自己出流。' : ''}`,
+      `「${row.name}」将被永久删除，配置与凭证都会被清除，不可恢复。${row.is_active ? '它是当前的 Emby 服务入口，删除后会切回面板自己出流。' : ''}`,
       '删除服务器',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+      {
+        type: 'warning',
+        confirmButtonText: '删除这台服务器',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger',
+      }
     )
   } catch {
     return
@@ -1440,13 +1448,21 @@ const opsLastScan = ref<{
           </template>
           「停用」只是不再使用它，配置与凭证都保留；删除不可恢复。改地址与密钥进「编辑」。
         </p>
+
+        <!-- 危险区：删除不跟日常操作同排，单独隔离（Batch B） -->
+        <div class="mg-danger">
+          <div class="mg-danger-text">
+            <strong>危险区</strong>
+            <p>删除这台服务器不可恢复，配置与凭证都会被清除。日常运维（测试连接、停用 / 启用、改地址）请用页脚的按钮。</p>
+          </div>
+          <el-button type="danger" plain :disabled="!manage.row" @click="manage.row && remove(manage.row)">
+            <Trash2 :size="13" style="margin-right: 3px" />删除这台服务器
+          </el-button>
+        </div>
       </div>
 
       <template #footer>
         <div class="mg-footer">
-          <el-button type="danger" plain :disabled="!manage.row" @click="manage.row && remove(manage.row)">
-            <Trash2 :size="13" style="margin-right: 3px" />删除
-          </el-button>
           <div class="mg-footer-right">
             <el-button @click="manage.visible = false">关闭</el-button>
             <template v-if="manage.row">
@@ -1690,8 +1706,17 @@ const opsLastScan = ref<{
   border-radius: var(--au-r-md);
   padding: 10px 12px;
 }
-.mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.mg-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 .mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 管理弹窗 · 危险区：删除单独隔离，不跟日常操作同排 */
+.mg-danger {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 12px 14px; margin-top: 12px;
+  border: 1px solid var(--danger-border); border-left: 3px solid var(--danger-border);
+  border-radius: var(--au-r-md); background: var(--danger-bg);
+}
+.mg-danger-text strong { font-size: 13px; color: var(--danger); }
+.mg-danger-text p { margin: 4px 0 0; font-size: 12px; color: var(--au-text-2); line-height: 1.6; }
 
 /* ==================== 概况（StatTile + 范围切换） ==================== */
 .ov-grid {

@@ -220,10 +220,11 @@ async function confirmDelete() {
   }
   if (!hasData.value) {
     try {
-      await ElMessageBox.confirm(`确认删除「${row.name}」？`, '删除服', {
+      await ElMessageBox.confirm(`「${row.name}」将被永久删除，无法恢复。`, '删除服', {
         type: 'warning',
-        confirmButtonText: '删除',
+        confirmButtonText: '删除这个服',
         cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger',
       })
     } catch {
       return
@@ -542,7 +543,7 @@ function shortDate(s: string | null): string {
           :disabled="hasData && !moveTo"
           @click="confirmDelete"
         >
-          确认删除
+          删除这个服
         </el-button>
       </template>
     </el-dialog>
