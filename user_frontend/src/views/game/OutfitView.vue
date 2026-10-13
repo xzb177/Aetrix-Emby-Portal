@@ -8,7 +8,34 @@
         <p>探险家的衣帽间 —— 点一套试穿，整个营地跟着换天色。</p>
       </header>
 
-      <section class="v4-sec">
+      <!-- 双 Tab：穿搭｜装备库（/game/outfit 单一入口，页内 state 切换不跳路由） -->
+      <div class="tabs" role="tablist" aria-label="换装">
+        <button
+          role="tab"
+          :aria-selected="tab === 'outfit'"
+          class="tab"
+          :class="{ active: tab === 'outfit' }"
+          @click="tab = 'outfit'"
+        >
+          穿搭
+        </button>
+        <button
+          role="tab"
+          :aria-selected="tab === 'gear'"
+          class="tab"
+          :class="{ active: tab === 'gear' }"
+          @click="tab = 'gear'"
+        >
+          装备库
+        </button>
+      </div>
+
+      <section
+        v-if="tab === 'outfit'"
+        role="tabpanel"
+        aria-label="穿搭"
+      >
+      <div class="v4-sec">
         <div class="v4-sec-title">🎨 营地天色</div>
         <div class="v4-sec-sub">先试穿，满意了再点"就穿这套"</div>
 
@@ -32,11 +59,32 @@
           <div class="desc">{{ o.desc }}</div>
           <span class="tick">✓</span>
         </div>
-      </section>
+      </div>
 
       <div class="note">
         💡 "跟随天色"会跟着手机的白天黑夜自动换，不用你操心。
       </div>
+      </section>
+
+      <section
+        v-else
+        role="tabpanel"
+        aria-label="装备库"
+      >
+      <div class="v4-sec">
+        <div class="v4-sec-title">🎒 装备库</div>
+        <div class="v4-sec-sub">探险攒下的宝贝都在这儿</div>
+        <!-- 纸片空态：首版先占位 -->
+        <div class="gear-empty">
+          <div class="gear-emoji" aria-hidden="true">📦</div>
+          <div class="gear-title">还没有装备</div>
+          <div class="gear-desc">去探险攒一件，回来就能在这儿看到它。</div>
+          <router-link to="/game" class="gear-go" aria-label="去大本营逛逛">
+            去大本营逛逛 →
+          </router-link>
+        </div>
+      </div>
+      </section>
     </div>
 
     <!-- 确认条：试穿中才出现 -->
@@ -49,10 +97,31 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useTheme } from '@/composables/useTheme'
 import { useToast } from '@/composables/useToast'
+
+/** 双 Tab：outfit 穿搭 / gear 装备库（内部 state，不跳路由） */
+type OutfitTab = 'outfit' | 'gear'
+const TAB_KEY = 'aetrix_outfit_tab_v1'
+
+function readTab(): OutfitTab {
+  try {
+    const v = localStorage.getItem(TAB_KEY)
+    return v === 'gear' ? 'gear' : 'outfit'
+  } catch {
+    return 'outfit'
+  }
+}
+const tab = ref<OutfitTab>(readTab())
+watch(tab, (v) => {
+  try {
+    localStorage.setItem(TAB_KEY, v)
+  } catch {
+    /* 记不住就每次默认穿搭，不打扰 */
+  }
+})
 
 type OutfitId = 'light' | 'dark' | 'system'
 
@@ -156,6 +225,79 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* 牛皮纸标签双 Tab */
+.tabs {
+  display: flex;
+  gap: 10px;
+  margin: 14px 0 4px;
+}
+.tab {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  padding: 10px 0;
+  background: var(--paper-card);
+  color: var(--ink2);
+  border: 1.5px dashed var(--line);
+  border-radius: 4px 14px 4px 14px;
+  cursor: pointer;
+}
+.tab.active {
+  background: #e9d3a3;
+  color: var(--ink);
+  border: 2px solid var(--red);
+  border-style: solid;
+  box-shadow: 1px 2px 0 rgba(0, 0, 0, 0.08);
+}
+.tab:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+
+/* 装备库纸片空态 */
+.gear-empty {
+  background: var(--paper-card);
+  border: 2px dashed var(--line);
+  border-radius: 14px;
+  padding: 36px 20px;
+  text-align: center;
+}
+.gear-emoji {
+  font-size: 44px;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+.gear-title {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
+.gear-desc {
+  font-size: 13px;
+  color: var(--ink2);
+  margin: 8px 0 16px;
+}
+.gear-go {
+  display: inline-block;
+  font-size: 14px;
+  font-weight: 800;
+  color: #fff;
+  background: var(--red);
+  border-radius: 12px;
+  padding: 10px 22px;
+  text-decoration: none;
+  box-shadow: 0 3px 0 #a33319;
+}
+.gear-go:active {
+  transform: translateY(2px);
+  box-shadow: none;
+}
+.gear-go:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+
 /* 服装卡：设计稿 game-theme.html 原值 */
 .outfit {
   position: relative;
