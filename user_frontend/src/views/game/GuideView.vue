@@ -10,6 +10,71 @@
         <div v-else-if="loading" class="v4-skeleton" style="height:32px;width:60%;margin-top:10px"></div>
       </header>
 
+      <!-- 装备调试：第三方播放器要的三件套 -->
+      <section class="v4-sec">
+        <div class="v4-sec-title">🧭 装备调试</div>
+        <p class="v4-sec-sub">在第三方播放器里填这三项，就能开始探险</p>
+        <div class="v4-card">
+          <div v-if="equipLoading" class="v4-skeleton" style="height:110px"></div>
+          <div v-else-if="accountError && !account">
+            <div class="v4-err">装备清单拿不到，请检查网络后重试</div>
+            <button class="v4-retry" type="button" @click="refreshEquip">重新加载</button>
+          </div>
+          <template v-else-if="viewGranted">
+            <div class="equip-row">
+              <span class="equip-label">服务器</span>
+              <span class="equip-value mono">{{ serverUrl }}</span>
+              <button class="equip-btn" type="button" title="复制" @click="copyText(serverUrl, 'server')">
+                <Check v-if="copiedField === 'server'" :size="14" class="ok" />
+                <Copy v-else :size="14" />
+              </button>
+            </div>
+            <div class="equip-row">
+              <span class="equip-label">用户名</span>
+              <span class="equip-value mono">{{ embyUsername }}</span>
+              <button class="equip-btn" type="button" title="复制" @click="copyText(embyUsername, 'user')">
+                <Check v-if="copiedField === 'user'" :size="14" class="ok" />
+                <Copy v-else :size="14" />
+              </button>
+            </div>
+            <div class="equip-row">
+              <span class="equip-label">播放密码</span>
+              <span class="equip-value mono">
+                <template v-if="hasPlayPassword">{{ showPlayPassword ? '已设置' : '••••••••' }}</template>
+                <template v-else>未设置</template>
+              </span>
+              <button v-if="hasPlayPassword" class="equip-btn" type="button" :title="showPlayPassword ? '隐藏' : '查看'" @click="showPlayPassword = !showPlayPassword">
+                <EyeOff v-if="showPlayPassword" :size="14" />
+                <Eye v-else :size="14" />
+              </button>
+              <button class="equip-text-btn" type="button" @click="showSetPlayPwd = true">
+                {{ hasPlayPassword ? '修改' : '设置' }}
+              </button>
+            </div>
+            <p class="equip-tip">播放密码只用来在第三方播放器里登录，跟门户登录密码是两回事。</p>
+          </template>
+          <div v-else-if="viewPermission" class="v4-err">
+            <template v-if="viewPermission.realm_free">
+              <b>装备清单被锁起来了。</b><br>
+              花 <b>{{ viewPermission.unlock_points }}</b> 积分解锁查看权限<span v-if="viewPermission.unlock_days > 0">，有效期 {{ viewPermission.unlock_days }} 天</span><span v-else>，永久有效</span>。你现在有 <b>{{ viewPermission.points_balance }}</b> 积分。
+              <br>
+              <button
+                class="v4-retry"
+                type="button"
+                :disabled="unlocking || viewPermission.points_balance < viewPermission.unlock_points"
+                @click="showUnlockConfirm = true"
+              >
+                {{ unlocking ? '解锁中…' : viewPermission.points_balance < viewPermission.unlock_points ? '积分不够' : `花 ${viewPermission.unlock_points} 积分解锁` }}
+              </button>
+            </template>
+            <template v-else>
+              <b>装备清单被锁起来了。</b><br>开通会员后可见。
+            </template>
+          </div>
+          <div v-else class="v4-empty">暂无装备信息</div>
+        </div>
+      </section>
+
       <div v-if="loading" class="v4-sec"><div class="v4-skeleton" style="height:180px"></div></div>
 
       <!-- 向导没在：说清楚是哪种情况 -->
@@ -88,6 +153,36 @@
         </div>
       </template>
     </div>
+
+    <!-- 设置播放密码 -->
+    <div v-if="showSetPlayPwd" class="v4-modal-mask" @click.self="showSetPlayPwd = false">
+      <div class="v4-modal" role="dialog" aria-modal="true" aria-label="设置播放密码">
+        <h3 class="v4-modal-title">设置播放密码</h3>
+        <p class="v4-modal-desc">这个密码填在第三方播放器（Infuse、SenPlayer 等）的登录里</p>
+        <input v-model="playPwd" type="password" class="v4-input" autocomplete="new-password" placeholder="至少 6 位" />
+        <div class="v4-modal-actions">
+          <button class="v4-btn-ghost" type="button" @click="showSetPlayPwd = false">取消</button>
+          <button class="v4-btn-primary" type="button" :disabled="playPwdLoading || !playPwd" @click="handleSetPlayPassword">
+            {{ playPwdLoading ? '提交中…' : '确认设置' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 解锁确认 -->
+    <div v-if="showUnlockConfirm" class="v4-modal-mask" @click.self="showUnlockConfirm = false">
+      <div class="v4-modal" role="dialog" aria-modal="true" aria-label="解锁装备清单">
+        <h3 class="v4-modal-title">解锁装备清单</h3>
+        <p class="v4-modal-desc">花 {{ viewPermission?.unlock_points }} 积分，解锁服务器地址、用户名与播放密码的查看权限。</p>
+        <div class="v4-modal-actions">
+          <button class="v4-btn-ghost" type="button" @click="showUnlockConfirm = false">取消</button>
+          <button class="v4-btn-primary" type="button" :disabled="unlocking" @click="handleUnlockView">
+            {{ unlocking ? '解锁中…' : '确认解锁' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <PanelTabbar />
   </div>
 </template>
@@ -95,9 +190,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
-import { aiApi, type AiStatus } from '@/api'
+import { aiApi, embyApi, type AiStatus, type AccountCard } from '@/api'
+import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
+import { toastCopy } from '@/constants/toastMessages'
+import { toUserMessage } from '@/utils/toUserMessage'
+import { useClipboard } from '@/composables/useClipboard'
+import { Copy, Check, Eye, EyeOff } from 'lucide-vue-next'
 
 interface Bubble {
   role: 'me' | 'guide' | 'error'
@@ -105,6 +205,8 @@ interface Bubble {
 }
 
 const toast = useToast()
+const userStore = useUserStore()
+const { copy } = useClipboard()
 
 const loading = ref(true)
 const status = ref<AiStatus | null>(null)
@@ -112,6 +214,90 @@ const question = ref('')
 const sending = ref(false)
 const bubbles = ref<Bubble[]>([])
 const scroller = ref<HTMLElement | null>(null)
+
+/* ===== 装备调试（Emby 账号三件套，逻辑与 /profile 的 Emby 账号卡一致） ===== */
+const equipLoading = ref(true)
+const account = ref<AccountCard | null>(null)
+const accountError = ref(false)
+const copiedField = ref('')
+const showPlayPassword = ref(false)
+const showSetPlayPwd = ref(false)
+const playPwd = ref('')
+const playPwdLoading = ref(false)
+const unlocking = ref(false)
+const showUnlockConfirm = ref(false)
+
+const embyUsername = computed(
+  () => account.value?.emby_username || (userStore.user as any)?.emby_username || (userStore.user as any)?.username || '—',
+)
+const serverUrl = computed(() => account.value?.base_url || window.location.origin)
+const hasPlayPassword = computed(() => !!account.value?.has_password)
+// 查看权限：服务器地址 / 用户名 / 密码只给有权限的人看，没权限时后端也不下发
+const viewPermission = computed(() => account.value?.view_permission || null)
+const viewGranted = computed(() => !!viewPermission.value?.granted)
+
+async function loadEquip() {
+  equipLoading.value = true
+  accountError.value = false
+  try {
+    account.value = await embyApi.getAccountCard()
+  } catch {
+    if (!account.value) accountError.value = true
+  } finally {
+    equipLoading.value = false
+  }
+}
+function refreshEquip() {
+  loadEquip()
+}
+
+const COPY_LABELS: Record<string, string> = {
+  server: '服务器地址',
+  user: '用户名',
+}
+async function copyText(text: string, field: string) {
+  const ok = await copy(text, COPY_LABELS[field] || '服务器地址')
+  if (!ok) return
+  copiedField.value = field
+  setTimeout(() => {
+    if (copiedField.value === field) copiedField.value = ''
+  }, 1600)
+}
+
+async function handleUnlockView() {
+  const vp = viewPermission.value
+  if (!vp || unlocking.value) return
+  unlocking.value = true
+  try {
+    const res = await embyApi.unlockView(account.value?.realm_id ?? undefined)
+    toast.success(res.already ? '已经解锁过了' : '解锁成功')
+    showUnlockConfirm.value = false
+    account.value = await embyApi.getAccountCard()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'unlockFailed'))
+  } finally {
+    unlocking.value = false
+  }
+}
+
+async function handleSetPlayPassword() {
+  if (playPwd.value.length < 6) {
+    toast.error('播放密码至少 6 位')
+    return
+  }
+  playPwdLoading.value = true
+  try {
+    await embyApi.setPassword(playPwd.value)
+    toast.success(toastCopy.playPasswordSet())
+    showSetPlayPwd.value = false
+    playPwd.value = ''
+    account.value = await embyApi.getAccountCard()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'settingFailed'))
+  } finally {
+    playPwdLoading.value = false
+  }
+}
 
 /** 向导是否在岗（能力来自 aiApi.status，与原 AI 助手页一致） */
 const available = computed(() => status.value?.enabled === true)
@@ -183,6 +369,7 @@ async function ask(text?: string) {
 
 onMounted(() => {
   load()
+  loadEquip()
   bubbles.value.push({
     role: 'guide',
     content: '哟，来了。老陈我在这营地坐了三年，片库里哪部片子后劲大、哪条线路最稳，门儿清。甭客气，随便问。',
@@ -224,6 +411,127 @@ onMounted(() => {
   background: var(--green);
   flex: none;
 }
+
+/* ===== 装备调试 ===== */
+.equip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 13px;
+}
+.equip-row:last-of-type { border-bottom: none; }
+.equip-label {
+  flex: none;
+  width: 64px;
+  color: var(--ink2);
+  font-weight: 700;
+}
+.equip-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.equip-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.equip-btn {
+  flex: none;
+  border: 1px solid var(--line);
+  background: #FFFDF6;
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink2);
+  cursor: pointer;
+  min-height: 32px;
+}
+.equip-btn .ok { color: var(--green); }
+.equip-text-btn {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 44px;
+  padding: 0 4px;
+}
+.equip-tip {
+  font-size: 12px;
+  color: var(--ink2);
+  margin: 10px 0 0;
+  line-height: 1.6;
+}
+
+/* v4 弹窗 */
+.v4-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(42, 38, 32, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.v4-modal {
+  background: #FFFDF6;
+  border: 1.5px solid var(--ink);
+  border-radius: 12px;
+  box-shadow: 4px 4px 0 rgba(42, 38, 32, 0.2);
+  padding: 20px;
+  width: 100%;
+  max-width: 340px;
+}
+.v4-modal-title { font-size: 16px; font-weight: 800; margin: 0 0 6px; color: var(--ink); }
+.v4-modal-desc { font-size: 13px; color: var(--ink2); margin: 0 0 14px; line-height: 1.6; }
+.v4-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 14px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  background: #FFFDF6;
+  color: var(--ink);
+  margin-bottom: 14px;
+}
+.v4-modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.v4-btn-ghost {
+  border: 1.5px solid var(--line);
+  background: #FFFDF6;
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 44px;
+}
+.v4-btn-primary {
+  border: none;
+  background: var(--red);
+  color: #fff;
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 3px 0 #a33319;
+  min-height: 44px;
+}
+.v4-btn-primary:active { transform: translateY(2px); box-shadow: none; }
+.v4-btn-primary:disabled, .v4-btn-ghost:disabled, .v4-retry:disabled { opacity: 0.5; cursor: default; }
 
 /* 快捷问 chips */
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
