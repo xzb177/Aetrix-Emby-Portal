@@ -619,6 +619,7 @@ onMounted(loadItem)
 <style scoped>
 .detail-view {
   min-height: 100vh;
+  min-height: 100dvh; /* R27：移动端地址栏收放高度不跳 */
   background: var(--au-bg);
   color: var(--au-text);
   /* ≤768px 底部坞悬在内容之上：最后一屏让出坞 + iOS 底栏的高度 */

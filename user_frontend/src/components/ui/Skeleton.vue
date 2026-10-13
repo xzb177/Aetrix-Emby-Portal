@@ -32,6 +32,14 @@ withDefaults(defineProps<SkeletonProps>(), {
   animation: shimmer 1.5s ease-in-out infinite;
 }
 
+/* R27：尊重减少动态偏好 —— shimmer 停掉，只保留静态底色 */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .skeleton--pulse {
+    animation: none;
+  }
+}
+
 .skeleton--text {
   height: 1em;
   width: 100%;

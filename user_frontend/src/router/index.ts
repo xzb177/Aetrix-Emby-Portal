@@ -248,10 +248,11 @@ router.afterEach((to) => {
   }
 })
 
-// 关键路由预取：用户登录后大概率会去商店 / 个人中心，空闲时预加载对应 chunk
+// 关键路由预取：用户登录后大概率会去补给站（v4 /shop）/ 个人中心，空闲时预加载对应 chunk
+//（R27：旧 StoreView.vue 是已删的旧商店页，预取改成 v4 补给站 ShopView）
 if (typeof requestIdleCallback !== 'undefined') {
   requestIdleCallback(() => {
-    import('@/views/StoreView.vue')
+    import('@/views/panel/ShopView.vue')
     import('@/views/ProfileView.vue')
   }, { timeout: 3000 })
 }

@@ -218,6 +218,7 @@ onUnmounted(() => {
 <style scoped>
 .tg-guide-page {
   min-height: 100vh;
+  min-height: 100dvh; /* R27：移动端地址栏收放高度不跳 */
   display: flex;
   align-items: center;
   justify-content: center;

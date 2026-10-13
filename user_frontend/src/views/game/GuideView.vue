@@ -434,7 +434,7 @@ onUnmounted(() => window.clearTimeout(copyTimer))
   display: flex;
   align-items: center;
   gap: 12px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 12px;
   padding: 14px 16px;
@@ -469,7 +469,7 @@ onUnmounted(() => window.clearTimeout(copyTimer))
 .equip-import-pwd {
   width: 100%; padding: 8px 12px; margin-bottom: 8px;
   border: 1px solid var(--line, #d8cbaa); border-radius: 8px;
-  background: #fffdf6; font-size: 13px; outline: none;
+  background: var(--paper-card); font-size: 13px; outline: none;
 }
 .equip-import-pwd:focus { border-color: var(--gold, #c8862a); }
 .equip-import-btns { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -503,16 +503,16 @@ onUnmounted(() => window.clearTimeout(copyTimer))
 .equip-btn {
   flex: none;
   border: 1px solid var(--line);
-  background: #FFFDF6;
+  background: var(--paper-card);
   border-radius: 8px;
-  width: 32px;
-  height: 32px;
+  width: 44px;   /* R27：点击区 32px → 44px（移动端拇指可点） */
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--ink2);
   cursor: pointer;
-  min-height: 32px;
+  min-height: 44px;
 }
 .equip-btn .ok { color: var(--green); }
 .equip-text-btn {
@@ -545,7 +545,7 @@ onUnmounted(() => window.clearTimeout(copyTimer))
   padding: 20px;
 }
 .v4-modal {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--ink);
   border-radius: 12px;
   box-shadow: 4px 4px 0 rgba(42, 38, 32, 0.2);
@@ -562,14 +562,14 @@ onUnmounted(() => window.clearTimeout(copyTimer))
   padding: 12px 14px;
   border: 1.5px solid var(--line);
   border-radius: 10px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   color: var(--ink);
   margin-bottom: 14px;
 }
 .v4-modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 .v4-btn-ghost {
   border: 1.5px solid var(--line);
-  background: #FFFDF6;
+  background: var(--paper-card);
   color: var(--ink);
   border-radius: 10px;
   padding: 10px 18px;
@@ -597,7 +597,7 @@ onUnmounted(() => window.clearTimeout(copyTimer))
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   border: 1.5px solid var(--line);
-  background: #FFFDF6;
+  background: var(--paper-card);
   color: var(--ink);
   border-radius: 20px;
   padding: 8px 14px;
@@ -610,7 +610,7 @@ onUnmounted(() => window.clearTimeout(copyTimer))
 
 /* 聊天区 */
 .chat {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 12px;
   padding: 14px;
@@ -676,7 +676,7 @@ onUnmounted(() => window.clearTimeout(copyTimer))
   padding: 12px 14px;
   border: 1.5px solid var(--line);
   border-radius: 10px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   color: var(--ink);
 }
 .inputbar button {

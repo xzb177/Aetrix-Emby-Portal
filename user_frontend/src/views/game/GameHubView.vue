@@ -285,7 +285,10 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--ink2);
   margin-top: 2px;
-  white-space: nowrap;
+  /* R27：单行 nowrap 在窄屏下截断关键信息 → 最多两行（保留省略号） */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -298,5 +301,10 @@ onMounted(async () => {
 .map-card:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
+}
+
+/* R27：减少动态偏好下装饰动画/过渡停掉（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .map-card { animation: none; transition: none; }
 }
 </style>

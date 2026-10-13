@@ -411,9 +411,10 @@ async function focusActiveTab(center: boolean) {
 }
 
 // 商店操作后回到任意页面时，头像菜单里的会员状态、顶栏积分即时刷新
-//（2026-10-13：/wallet、/checkin 旧页面已删，economyPaths 只留 /store）
+//（2026-10-13：/wallet 旧页面已删；/game/checkin 报到后能量/体力变化，
+// 回 /game 时也需要刷新顶栏活力值 —— R27 加入 economyPaths）
 watch(() => route.path, (p, old) => {
-  const economyPaths = ['/store']
+  const economyPaths = ['/store', '/game/checkin']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
     refreshSubscription()
     loadPoints()
@@ -631,7 +632,7 @@ onBeforeUnmount(() => {
                 <RouterLink
                   to="/game"
                   class="dropdown-facility"
-                  role="menuitem"
+                  role="menuitemlink"
                   @click="closeMenus"
                 >
                   <span class="facility-icon" aria-hidden="true">🏕️</span>
@@ -646,7 +647,7 @@ onBeforeUnmount(() => {
                   :key="f.key"
                   :to="f.path"
                   class="dropdown-facility"
-                  role="menuitem"
+                  role="menuitemlink"
                   @click="closeMenus"
                 >
                   <span class="facility-icon" aria-hidden="true">{{ f.icon }}</span>

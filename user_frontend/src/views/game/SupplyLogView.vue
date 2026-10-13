@@ -3,7 +3,7 @@
     <div class="v4-page">
       <!-- 日志头 -->
       <header class="v4-loghead">
-        <span class="v4-stamp">探险日志 · 营地设施</span>
+        <span class="v4-stamp">{{ facilityStamp('supply') }}</span>
         <h1>🧾 补给记录</h1>
         <p>补给站的采购小票，一张张钉在布告栏上 —— 点小票看明细。</p>
       </header>
@@ -76,6 +76,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
+import { facilityStamp } from '@/config/game'
 import { paymentApi, type OrderRow } from '@/api/economy'
 import { humanizeError } from '@/composables/usePanelApi'
 
@@ -90,7 +91,7 @@ function kindIcon(kind: OrderRow['kind']): string {
 }
 
 /**
- * 状态章：值保持 WalletView 的 orderStatusMeta 原样，仅换游戏化展示
+ * 状态章：历史口径（旧 WalletView 的 orderStatusMeta 值域），仅换游戏化展示
  * paid → ✓ 已收货（绿章），pending → 🚚 运输中…（蓝章，呼吸闪烁）
  * refunded → ↩️ 已退款（灰章），closed → 已关闭（灰章）
  */
@@ -102,7 +103,9 @@ function seal(s: string): { label: string; cls: string } {
   return { label: '处理中', cls: 'grey' }
 }
 
-function fmtMoney(n: number): string {
+/** R27：金额可能缺失/非法时显示 '—'，不渲染 ¥NaN */
+function fmtMoney(n: number | null | undefined): string {
+  if (n == null || isNaN(n)) return '—'
   return `¥${n.toFixed(2)}`
 }
 

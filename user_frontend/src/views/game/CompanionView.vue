@@ -70,7 +70,11 @@
         <section v-if="!loading" class="v4-sec">
           <div class="v4-sec-title">🎒 已组队 · {{ records.length }} 人</div>
           <div class="v4-sec-sub">跟着你一起出发的伙伴</div>
-          <div v-if="!records.length" class="v4-empty">
+          <div v-if="recordsErr" class="v4-err">
+            伙伴名单加载失败，可能是网络波动<br>
+            <button class="v4-retry" @click="load">重试</button>
+          </div>
+          <div v-else-if="!records.length" class="v4-empty">
             还没有伙伴同行<br>把暗号喊出去，第一个朋友在等你
           </div>
           <div v-else class="mates">
@@ -89,7 +93,11 @@
         <section v-if="!loading" class="v4-sec">
           <div class="v4-sec-title">💰 带路费账本</div>
           <div class="v4-sec-sub">伙伴充能量，你的回扣自动记在这里 · 累计 +{{ totalRebate }}⚡</div>
-          <div v-if="!rebates.length" class="v4-empty">
+          <div v-if="rebatesErr" class="v4-err">
+            带路费账本加载失败，可能是网络波动<br>
+            <button class="v4-retry" @click="load">重试</button>
+          </div>
+          <div v-else-if="!rebates.length" class="v4-empty">
             账本还是空的<br>伙伴充能量后，回扣会自动记一笔
           </div>
           <div v-else class="mates">
@@ -108,7 +116,11 @@
         <section v-if="!loading" class="v4-sec">
           <div class="v4-sec-title">🎁 见面礼记录</div>
           <div class="v4-sec-sub">每带一位伙伴，营地当场发的谢礼</div>
-          <div v-if="!promotions.length" class="v4-empty">
+          <div v-if="promotionsErr" class="v4-err">
+            见面礼记录加载失败，可能是网络波动<br>
+            <button class="v4-retry" @click="load">重试</button>
+          </div>
+          <div v-else-if="!promotions.length" class="v4-empty">
             {{ promoEnabled ? '带上第一位伙伴，谢礼会记在这里' : '见面礼当前未开启；开启后，带人成功会在这里记一笔' }}
           </div>
           <div v-else class="mates">
@@ -148,6 +160,10 @@ const rebates = ref<RebateRow[]>([])
 const totalRebate = ref(0)
 const promotions = ref<PromotionRewardRow[]>([])
 const promoConfig = ref<MyPromotions['config'] | null>(null)
+/* R27：三小节各自独立失败标记（原 .catch(() => 空数据) 把失败吞成"真空"文案） */
+const recordsErr = ref(false)
+const rebatesErr = ref(false)
+const promotionsErr = ref(false)
 const copiedField = ref('')
 
 const inviteLink = computed(() => {
@@ -191,6 +207,9 @@ onUnmounted(() => window.clearTimeout(copyTimer))
 async function load() {
   loading.value = true
   failed.value = false
+  recordsErr.value = false
+  rebatesErr.value = false
+  promotionsErr.value = false
   try {
     const emptyRecords = { total: 0, records: [] as InvitationRecordRow[] }
     const emptyRebates = { total_rebate: 0, rebates: [] as RebateRow[] }
@@ -204,9 +223,9 @@ async function load() {
     }
     const [my, rec, reb, pro] = await Promise.all([
       inviteApi.myCode(),
-      inviteApi.records({ limit: 50 }).catch(() => emptyRecords),
-      inviteApi.rebates({ limit: 50 }).catch(() => emptyRebates),
-      inviteApi.promotions({ limit: 50 }).catch(() => emptyPromotions),
+      inviteApi.records({ limit: 50 }).catch(() => { recordsErr.value = true; return emptyRecords }),
+      inviteApi.rebates({ limit: 50 }).catch(() => { rebatesErr.value = true; return emptyRebates }),
+      inviteApi.promotions({ limit: 50 }).catch(() => { promotionsErr.value = true; return emptyPromotions }),
     ])
     info.value = my
     records.value = rec.records
@@ -260,7 +279,7 @@ onMounted(load)
   font-size: 32px;
   font-weight: 800;
   letter-spacing: 4px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 2px dashed var(--ink2);
   border-radius: 10px;
   padding: 14px 8px;
@@ -292,7 +311,7 @@ onMounted(load)
   min-width: 0;
   font-size: 12px;
   color: var(--ink2);
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 10px;
   padding: 10px 12px;
@@ -313,7 +332,7 @@ onMounted(load)
 
 /* 规则卡：设计稿原值 */
 .rule {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 10px;
   padding: 14px 16px;
@@ -328,7 +347,7 @@ onMounted(load)
   display: flex;
   align-items: center;
   gap: 12px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 12px 14px;

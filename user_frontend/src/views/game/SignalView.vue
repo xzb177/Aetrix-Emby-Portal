@@ -3,7 +3,7 @@
     <div class="v4-page">
       <!-- 日志头 -->
       <header class="v4-loghead">
-        <span class="v4-stamp">探险日志 · 营地设施</span>
+        <span class="v4-stamp">{{ facilityStamp('signal') }}</span>
         <h1>📡 求救信号</h1>
         <p>探险途中遇险？摇响信号机，营地马上派救援队。</p>
       </header>
@@ -148,6 +148,20 @@
       </section>
     </div>
     <PanelTabbar />
+
+    <!-- R27：关闭记录二次确认（纸色风格，替代原生 confirm） -->
+    <Modal v-model="showCloseConfirm" size="sm" class="paper-confirm">
+      <template #header>
+        <h3 class="modal-title">🏁 关闭记录</h3>
+      </template>
+      <p class="confirm-text">确定要标记脱险并关闭这条事故记录吗？关闭后不能再回复。</p>
+      <template #footer>
+        <div class="confirm-row">
+          <button class="cbtn ghost" @click="showCloseConfirm = false">再想想</button>
+          <button class="cbtn go" :disabled="closing" @click="doCloseTicket">{{ closing ? '关闭中…' : '确定关闭' }}</button>
+        </div>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -158,6 +172,8 @@
  */
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
+import Modal from '@/components/ui/Modal.vue'
+import { facilityStamp } from '@/config/game'
 import { ticketApi, type Ticket, type TicketMessage } from '@/api'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
@@ -349,10 +365,16 @@ async function replyTicket() {
   }
 }
 
-/** 关闭记录（标记脱险）：关闭前 confirm 确认 */
-async function closeTicket() {
+/** 关闭记录（标记脱险）：R27 —— 原生 confirm() 改用纸色 Modal 自定义确认弹窗 */
+const showCloseConfirm = ref(false)
+const closing = ref(false)
+function closeTicket() {
   if (!selectedTicket.value) return
-  if (!confirm('确定要标记脱险并关闭这条事故记录吗？关闭后不能再回复。')) return
+  showCloseConfirm.value = true
+}
+async function doCloseTicket() {
+  if (!selectedTicket.value || closing.value) return
+  closing.value = true
   try {
     await ticketApi.close(selectedTicket.value.id)
     toast.success('已标记脱险，记录关闭')
@@ -361,6 +383,9 @@ async function closeTicket() {
     await fetchTickets()
   } catch (e) {
     toast.error(humanizeError(e))
+  } finally {
+    closing.value = false
+    showCloseConfirm.value = false
   }
 }
 
@@ -423,7 +448,7 @@ onUnmounted(() => {
 /* 遇险类型 5 宫格：设计稿 .type 原值，触达区补到 44px */
 .types { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
 .type {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 12px;
   padding: 14px 8px;
@@ -446,7 +471,7 @@ onUnmounted(() => {
   padding: 12px;
   border: 1.5px solid var(--line);
   border-radius: 10px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   outline: none;
   color: var(--ink);
   font-family: inherit;
@@ -459,7 +484,7 @@ textarea {
   padding: 12px;
   border: 1.5px solid var(--line);
   border-radius: 10px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   min-height: 96px;
   resize: none;
   outline: none;
@@ -477,7 +502,7 @@ textarea:focus { border-color: var(--gold); }
   width: 100%;
   margin-top: 14px;
   background: var(--red);
-  color: #FFFDF6;
+  color: var(--paper-card);
   border: none;
   font-size: 16px;
   font-weight: 800;
@@ -521,7 +546,7 @@ textarea:focus { border-color: var(--gold); }
 /* 事故记录卡：设计稿 .card 原值 + 展开详情 */
 .cards { display: flex; flex-direction: column; gap: 10px; }
 .card {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 12px;
   padding: 13px 14px;
@@ -605,7 +630,7 @@ textarea:focus { border-color: var(--gold); }
   flex: 1;
   min-height: 44px;
   padding: 10px 12px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 10px;
   color: var(--ink);
@@ -620,7 +645,7 @@ textarea:focus { border-color: var(--gold); }
   border-radius: 10px;
   border: none;
   background: var(--red);
-  color: #FFFDF6;
+  color: var(--paper-card);
   font-size: 18px;
   cursor: pointer;
   flex-shrink: 0;
@@ -651,5 +676,68 @@ textarea:focus { border-color: var(--gold); }
 .close-record:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
+}
+
+/* R27：关闭确认弹窗 */
+.confirm-text {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink);
+  margin: 0;
+}
+.confirm-row {
+  display: flex;
+  gap: 10px;
+}
+.cbtn {
+  flex: 1;
+  min-height: 44px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.cbtn.ghost {
+  background: var(--paper-card);
+  border: 1.5px solid var(--line);
+  color: var(--ink2);
+}
+.cbtn.go {
+  background: var(--red);
+  border: none;
+  color: var(--paper-card);
+}
+.cbtn:disabled { opacity: 0.5; cursor: wait; }
+
+/* R27：减少动态偏好下装饰动画停掉（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .tower { animation: none; }
+  .waves span { animation: none; }
+}
+</style>
+
+<style>
+/* R27：Modal.vue 用 Teleport 挂到 body，scoped 样式够不到 —— 纸色覆盖写全局，
+   全部挂在 .paper-confirm 命名空间下，不污染其他弹窗 */
+.paper-confirm .modal-content-wrapper {
+  background: var(--paper-card);
+  border: 1.5px solid var(--ink);
+  border-radius: 14px;
+  color: var(--ink);
+}
+.paper-confirm .modal-header {
+  border-bottom: 1px solid var(--line);
+  padding: 14px 18px;
+}
+.paper-confirm .modal-title {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 800;
+}
+.paper-confirm .modal-close { color: var(--ink2); }
+.paper-confirm .modal-body { padding: 16px 18px; }
+.paper-confirm .modal-footer {
+  border-top: 1px solid var(--line);
+  padding: 12px 18px;
 }
 </style>

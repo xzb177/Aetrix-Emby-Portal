@@ -3,7 +3,7 @@
     <div class="v4-page">
       <!-- 日志头 -->
       <header class="v4-loghead">
-        <span class="v4-stamp">探险日志 · 营地设施</span>
+        <span class="v4-stamp">{{ facilityStamp('ledger') }}</span>
         <h1>📒 能量账本</h1>
         <p>探险家的随身账本 —— 能量从哪来，到哪去。</p>
       </header>
@@ -18,7 +18,8 @@
         <div v-else class="fuel">
           <div class="fuel-lbl">⚡ 当前能量 · 燃料表</div>
           <div class="fuel-num"><small>⚡</small> {{ fmtNum(balance) }}</div>
-          <span v-if="todayIncome > 0" class="fuel-today">今日 +{{ fmtNum(todayIncome) }} ⚡</span>
+          <!-- R27：非「全部」筛选时后端 total 不可信（是未筛选总数），数字去掉，不加后端接口 -->
+          <span v-if="todayIncome > 0" class="fuel-today">{{ filter === 'all' ? `今日 +${fmtNum(todayIncome)} ⚡` : '今日有进账 ⚡' }}</span>
         </div>
       </section>
 
@@ -74,7 +75,7 @@
             :disabled="loadingMore"
             @click="loadMore"
           >
-            {{ loadingMore ? '翻页中…' : `加载更多（还剩 ${total - logs.length} 笔）` }}
+            {{ loadingMore ? '翻页中…' : (filter === 'all' ? `加载更多（还剩 ${total - logs.length} 笔）` : '加载更多') }}
           </button>
           <div v-else-if="logs.length" class="v4-sec-sub" style="text-align:center;margin-top:14px">
             —— 账本到这里就记满了 ——
@@ -89,6 +90,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
+import { facilityStamp } from '@/config/game'
 import { pointsApi, type PointsLogEntry } from '@/api/economy'
 import { humanizeError } from '@/composables/usePanelApi'
 import { useToast } from '@/composables/useToast'
@@ -375,7 +377,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   display: flex;
   align-items: center;
   gap: 12px;
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 13px 14px;
@@ -414,7 +416,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   min-height: 44px;
   border-radius: 12px;
   border: 1.5px solid var(--line);
-  background: #FFFDF6;
+  background: var(--paper-card);
   color: var(--ink);
   font-size: 14px;
   font-weight: 700;

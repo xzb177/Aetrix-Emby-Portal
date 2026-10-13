@@ -960,6 +960,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .watch-view {
   min-height: 100vh;
+  min-height: 100dvh; /* R27：移动端地址栏收放高度不跳 */
   background: var(--au-bg);
   color: var(--au-text);
 }
@@ -973,6 +974,7 @@ onBeforeUnmount(() => {
   width: 100%;
   aspect-ratio: 16 / 9;
   max-height: calc(100vh - 0px);
+  max-height: calc(100dvh - 0px); /* R27：同上 */
   /* 故意不用令牌：视频上下留边必须是纯黑，和画面本身一致，
      跟主题的蓝调背景混在一起反而会看出一条“框” */
   background: var(--au-video-black);
@@ -1318,12 +1320,15 @@ onBeforeUnmount(() => {
   height: 4px;
   background: var(--au-on-image-strong);
   border-radius: 2px;
-  transition: height 0.15s ease;
+  /* R27：height 是 layout 属性会触发重排 → 改 transform: scaleY（只走合成层） */
+  transform: scaleY(1);
+  transform-origin: center;
+  transition: transform 0.15s ease;
 }
 
 .seek:hover::before,
 .seek.dragging::before {
-  height: 6px;
+  transform: scaleY(1.5);   /* 4px → 6px，等效旧 height: 6px */
 }
 
 .seek-buffer {
@@ -1337,17 +1342,19 @@ onBeforeUnmount(() => {
   position: absolute;
   left: 0;
   top: 50%;
-  transform: translateY(-50%);
   height: 4px;
   background: var(--au-primary);
   border-radius: 2px;
   pointer-events: none;
-  transition: height 0.15s ease;
+  /* R27：height → transform: scaleY（只走合成层，60fps） */
+  transform: translateY(-50%) scaleY(1);
+  transform-origin: center;
+  transition: transform 0.15s ease;
 }
 
 .seek:hover .seek-fill,
 .seek.dragging .seek-fill {
-  height: 6px;
+  transform: translateY(-50%) scaleY(1.5);   /* 4px → 6px，等效旧 height: 6px */
 }
 
 .seek-thumb {
@@ -1623,5 +1630,12 @@ onBeforeUnmount(() => {
   color: var(--au-text-2);
   max-width: 720px;
   padding-bottom: 2.5rem;
+}
+
+/* R27：减少动态偏好下加载脉冲/转圈/面板过渡停掉（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .pulse, .sheet-loading { animation: none; }
+  .spin { animation: none; }
+  .sheet-enter-active, .sheet-leave-active { transition: none; }
 }
 </style>

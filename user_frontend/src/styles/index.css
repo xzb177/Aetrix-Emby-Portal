@@ -507,16 +507,12 @@ body.theme-transition *::after {
   border-width: 3px;
 }
 
-.loading-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.8);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 50;
+/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
 }
+
+/* R27：.loading-overlay 死样式已删（全仓 0 引用） */
 
 /* ========================================
    工具类

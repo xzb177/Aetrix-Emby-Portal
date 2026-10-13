@@ -149,4 +149,9 @@ const router = useRouter()
   font-size: 0.8125rem;
   color: var(--au-text-3);
 }
+
+/* R27：减少动态偏好下装饰动画/过渡停掉（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .pane { animation: none; transition: none; }
+}
 </style>
