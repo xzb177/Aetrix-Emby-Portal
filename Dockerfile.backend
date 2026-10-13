@@ -44,7 +44,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg mediainfo ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg mediainfo ca-certificates curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+# pg_dump 供 db_backup 的 PostgreSQL 分支用（E-P1-4）：生产库是 postgres:16，
+# 定时/手动备份在容器内直接调 pg_dump。客户端大版本必须与服务端对齐（16），
+# Debian bookworm 自带的 postgresql-client 是 15，故走 PGDG 官方源取 16。
+RUN install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-16 \
     && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
