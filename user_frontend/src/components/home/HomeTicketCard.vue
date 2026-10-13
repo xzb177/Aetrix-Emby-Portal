@@ -83,7 +83,7 @@ defineProps<{
       <span class="stub-admit" aria-hidden="true">
         ADMIT ONE<span v-if="planName" class="stub-plan"><i> · </i>{{ planName }}</span>
       </span>
-      <RouterLink to="/store" class="stub-btn">
+      <RouterLink to="/shop" class="stub-btn">
         {{ memberFooter }}
       </RouterLink>
     </div>

@@ -54,7 +54,7 @@ const emit = defineEmits<{
 
       <template v-if="!isMember && !isFreeRealm">
         <div class="hero-cta hero-enter d5">
-          <RouterLink to="/store" class="au-btn au-btn-primary">立即开通</RouterLink>
+          <RouterLink to="/shop" class="au-btn au-btn-primary">立即开通</RouterLink>
           <RouterLink to="/profile" class="hero-link">连接教程 <ChevronRight :size="14" /></RouterLink>
         </div>
         <p class="au-eyebrow steps-label hero-enter d6">入场三步</p>

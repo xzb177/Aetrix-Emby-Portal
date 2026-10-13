@@ -56,6 +56,6 @@ export interface NavItem {
  *  不在主导航占位 */
 export const primaryNav: NavItem[] = [
   { name: '首页', path: '/', icon: Clapperboard },
-  { name: '商店', path: '/store', icon: ShoppingBag },
+  { name: '商店', path: '/shop', icon: ShoppingBag },
   { name: '我的', path: '/profile', icon: User },
 ]

@@ -201,7 +201,7 @@ const DEEP_LINKS: Record<string, { to: string; label: string }> = {
   ticket: { to: '/game/signal', label: '去看看求救信号 →' },
   media_seek: { to: '/game/wishlist', label: '去看看许愿池 →' },
   subscription: { to: '/shop', label: '去补给站看看 →' },
-  exchange_code: { to: '/shop', label: '去补给站看看 →' },
+  exchange_code: { to: '/shop#redeem', label: '去核销 →' },
 }
 
 const filtered = computed(() => {
