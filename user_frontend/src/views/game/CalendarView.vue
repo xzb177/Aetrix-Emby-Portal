@@ -48,15 +48,27 @@
             </div>
           </div>
 
-          <!-- 未来：保密新大陆（悬念占位，非虚假数据） -->
-          <div class="tday future">
-            <div class="tdate">未来 · 保密中 <span class="countdown">???</span></div>
+          <!-- 未来：保密新大陆（后台可配的揭晓位，见 backend/emby_server/teaser.py）。
+               未到揭晓日只显示保密文案；到日子自动换成揭晓后内容（可点跳转）。
+               旧后端没有 teaser 字段时回退到原来的静态悬念卡，观感不变。 -->
+          <div v-if="teaserVisible" class="tday future">
+            <div class="tdate">
+              <template v-if="effectiveTeaser?.status === 'revealed'">🎉 已揭晓</template>
+              <template v-else>未来 · 保密中 <span v-if="teaserCountdownText" class="countdown">{{ teaserCountdownText }}</span></template>
+            </div>
             <div class="cards">
-              <div class="treasure mystery">
-                <div class="map">🌫️</div>
+              <div
+                class="treasure mystery"
+                :class="{ clickable: !!teaserLink }"
+                :role="teaserLink ? 'button' : undefined"
+                :tabindex="teaserLink ? 0 : undefined"
+                @click="onTeaserClick"
+                @keydown.enter="onTeaserClick"
+              >
+                <div class="map">{{ effectiveTeaser?.status === 'revealed' ? '✨' : '🌫️' }}</div>
                 <div class="info">
-                  <b>? ? ?</b>
-                  <span>神秘新大陆 · 到日子自动揭晓</span>
+                  <b>{{ teaserTitle }}</b>
+                  <span>{{ teaserSubtitle }}</span>
                 </div>
               </div>
             </div>
@@ -77,14 +89,56 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
-import { fetchCalendar, type CalendarDay } from '@/api/calendar'
+import { fetchCalendar, type CalendarDay, type CalendarTeaser } from '@/api/calendar'
 import { humanizeError } from '@/composables/usePanelApi'
 
+const router = useRouter()
 const days = ref<CalendarDay[]>([])
 const loading = ref(true)
 const error = ref('')
+
+/** 保密新大陆占位卡：undefined = 旧后端（无 teaser 字段），回退静态悬念卡 */
+const teaser = ref<CalendarTeaser | null | undefined>(undefined)
+const FALLBACK_TEASER: CalendarTeaser = {
+  status: 'secret',
+  title: '? ? ?',
+  subtitle: '神秘新大陆 · 到日子自动揭晓',
+  countdown_days: null,
+}
+const effectiveTeaser = computed<CalendarTeaser | null>(
+  () => (teaser.value === undefined ? FALLBACK_TEASER : teaser.value),
+)
+/** 后台关掉这张卡（teaser=null）时整块不渲染 */
+const teaserVisible = computed(() => effectiveTeaser.value !== null)
+/** 倒计时文案：没配日期沿用原来的 ???；揭晓日已过但内容没配（后台误配）时不显示倒计时 */
+const teaserCountdownText = computed(() => {
+  const t = effectiveTeaser.value
+  if (!t || t.status !== 'secret') return ''
+  const d = t.countdown_days
+  if (d == null) return '???'
+  if (d < 0) return ''
+  if (d === 0) return '今天揭晓'
+  return `还有 ${d} 天揭晓`
+})
+const teaserTitle = computed(() => effectiveTeaser.value?.title ?? '')
+const teaserSubtitle = computed(() => {
+  const t = effectiveTeaser.value
+  if (!t) return ''
+  return t.status === 'revealed' ? t.description : t.subtitle
+})
+const teaserLink = computed(() =>
+  effectiveTeaser.value?.status === 'revealed' ? effectiveTeaser.value.link : null,
+)
+function onTeaserClick() {
+  const link = teaserLink.value
+  if (!link) return
+  // / 开头走站内路由，其余（http(s)）新标签页打开
+  if (link.startsWith('/')) void router.push(link)
+  else window.open(link, '_blank', 'noopener')
+}
 /** 探险计划：本地 Set（v1 不落库） */
 const plan = ref<Set<string>>(new Set())
 
@@ -141,6 +195,8 @@ async function load() {
     const res = await fetchCalendar({ start: fmt(start), end: fmt(end) })
     // 最新在前
     days.value = [...res.days].reverse()
+    // undefined = 旧后端无此字段 → 回退静态悬念卡；null = 后台关了这张卡
+    teaser.value = res.teaser === undefined ? undefined : (res.teaser ?? null)
   } catch (e) {
     error.value = humanizeError(e)
   } finally {
@@ -238,6 +294,9 @@ onMounted(load)
 .treasure.mystery { background: var(--paper2); border-style: dashed; }
 .treasure.mystery .map { filter: grayscale(1) blur(1px); }
 .treasure.mystery .info b { letter-spacing: 4px; color: var(--ink2); }
+/* 揭晓后可点的卡：手型 + 去掉虚线灰度，仍是同一张卡的语言 */
+.treasure.mystery.clickable { cursor: pointer; }
+.treasure.mystery.clickable .map { filter: none; }
 .countdown {
   display: inline-block;
   background: var(--gold);

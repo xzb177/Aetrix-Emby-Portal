@@ -891,6 +891,41 @@ def delete_announcement(
     return {"success": True, "message": "公告删除成功"}
 
 
+# ==================== 探险预告 · 保密新大陆（揭晓位配置）====================
+
+class TeaserConfigSaveRequest(BaseModel):
+    values: dict = Field(default_factory=dict,
+                         description="揭晓位配置待保存值（key 必须在白名单内，见 backend/emby_server/teaser.py）")
+
+
+@admin_router.get("/teaser-config")
+def get_teaser_config(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """揭晓位配置：全部字段 + 派生状态（保密中 / 已揭晓 / 已关闭，倒计时天数）"""
+    from backend.emby_server import teaser
+    return teaser.read_admin(db)
+
+
+@admin_router.put("/teaser-config")
+def save_teaser_config(
+    req: TeaserConfigSaveRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """保存揭晓位配置（写 SystemConfig，保存即生效；未知 key / 非法日期 / 非法链接 400）"""
+    from backend.emby_server import teaser
+    try:
+        cfg = teaser.write_admin(db, req.values or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    _audit(db, current_admin, "save_teaser_config", "system_config",
+           0, {"keys": sorted((req.values or {}).keys())})
+    db.commit()
+    return cfg
+
+
 # ==================== 工单管理 API ====================
 
 @admin_router.get("/tickets")

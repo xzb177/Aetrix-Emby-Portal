@@ -47,7 +47,34 @@ export interface CalendarResponse {
   days: CalendarDay[]
   /** 各类型在当前区间 / 筛选下的条数，用于筛选按钮上的角标 */
   types: Partial<Record<CalendarItemType, number>>
+  /**
+   * 保密新大陆占位卡（后台可配的揭晓位，见 backend/emby_server/teaser.py）。
+   * - null = 后台关了这张卡，前端不渲染；
+   * - secret = 未到揭晓日：只有揭晓前文案 + 倒计时，**不含**揭晓后内容；
+   * - revealed = 已到日子：标题 / 描述 / 可选跳转链接。
+   * 状态由服务端时间判定，不信任客户端时区。
+   * undefined = 旧后端（无此字段），视图层回退到静态悬念卡。
+   */
+  teaser?: CalendarTeaser | null
 }
+
+/** 未到揭晓日：只有保密文案。countdown_days 为 null = 没配揭晓时间（一直保密） */
+export interface CalendarTeaserSecret {
+  status: 'secret'
+  title: string
+  subtitle: string
+  countdown_days: number | null
+}
+
+/** 已到日子：揭晓后内容。link 为 null = 卡片不可点 */
+export interface CalendarTeaserRevealed {
+  status: 'revealed'
+  title: string
+  description: string
+  link: string | null
+}
+
+export type CalendarTeaser = CalendarTeaserSecret | CalendarTeaserRevealed
 
 export interface CalendarQuery {
   /** YYYY-MM-DD，含当天 */
@@ -79,5 +106,7 @@ export async function fetchCalendar(query: CalendarQuery): Promise<CalendarRespo
     total: res.total ?? 0,
     days: res.days || [],
     types: res.types || {},
+    // 旧后端没有这个字段时保持 undefined，视图层回退到静态悬念卡
+    teaser: res.teaser,
   }
 }

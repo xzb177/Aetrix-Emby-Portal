@@ -909,12 +909,16 @@ def get_chase_calendar(request: Request,
         for day in sorted(day_ids)
     ]
 
+    # 保密新大陆占位卡（后台可配的揭晓位）：状态由服务端时间判定，
+    # 揭晓前只下发保密文案——揭晓后内容在到日子前永远不出现在这个响应里。
+    from backend.emby_server import teaser as _teaser_mod
     return {
         "start": start.date().isoformat(),
         "end": end.date().isoformat(),
         "total": len(rows),
         "days": days,
         "types": type_counts,
+        "teaser": _teaser_mod.public_view(db),
     }
 
 
