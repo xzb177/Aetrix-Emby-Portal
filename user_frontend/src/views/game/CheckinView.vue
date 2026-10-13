@@ -16,6 +16,9 @@
         <div v-else-if="statusLoading" class="v4-skeleton" style="height:32px;width:60%;margin-top:10px"></div>
       </header>
 
+      <!-- 探险体力 -->
+      <StaminaBar ref="staminaBar" />
+
       <!-- 签到簿 -->
       <section class="v4-sec">
         <div class="v4-sec-title">📖 签到簿 · {{ monthLabel }}</div>
@@ -65,6 +68,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
+import StaminaBar from '@/components/game/StaminaBar.vue'
+import { staminaText } from '@/config/stamina'
 import { checkinApi, pointsApi, type CheckinStatus } from '@/api/economy'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
@@ -79,6 +84,7 @@ const statusLoading = ref(true)
 const statusError = ref('')
 const checking = ref(false)
 const sealPop = ref<HTMLElement | null>(null)
+const staminaBar = ref<InstanceType<typeof StaminaBar> | null>(null)
 
 /** 本月签到过的日期（来自签到流水） */
 const signedDays = ref<Set<number>>(new Set())
@@ -152,6 +158,15 @@ async function doCheckin() {
     }
     // 能量飞入
     flyEnergy(`+${r.points_awarded}⚡`)
+    // 体力恢复提示（仅公益服用户可见体力条时刷新）
+    try {
+      const v = await staminaBar.value?.refresh()
+      if (v !== null && v !== undefined) {
+        useToast().success(staminaText.checkinRecovered)
+      }
+    } catch {
+      /* 体力刷新失败不打扰主流程 */
+    }
   } catch (e) {
     // 提交失败走 toast，不污染签到簿的 statusError
     useToast().error(humanizeError(e))
