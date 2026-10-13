@@ -2030,7 +2030,7 @@ export const saveStrmGenConfig = (data: {
   source_dir: string
   drive_id: string
   prune: boolean
-  /** 快捷方式解析开关；不传则后端不改 */
+  /** 快捷方式解析开关；不传/缺省 false 会把开关置为关（前端恒显式传递，故无实际影响） */
   resolve_shortcuts?: boolean
   /** 同名同大小去重开关；不传则后端不改 */
   dedupe_same_size?: boolean

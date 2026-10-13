@@ -244,7 +244,7 @@ export default {
   border-radius: var(--neo-radius-xs, 8px);
   color: var(--neo-text-tertiary);
   cursor: pointer;
-  transition: background var(--neo-duration-fast, 150ms) var(--neo-ease-default), color var(--neo-duration-fast, 150ms) var(--neo-ease-default);
+  transition: background var(--neo-duration-fast, 150ms) var(--neo-ease-default), color var(--neo-duration-fast, 150ms) var(--neo-ease-default), transform var(--neo-duration-fast, 150ms) var(--neo-ease-default);
   flex-shrink: 0;
 }
 

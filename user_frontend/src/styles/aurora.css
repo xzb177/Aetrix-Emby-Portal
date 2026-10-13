@@ -325,8 +325,8 @@ h3,
   font-weight: 600;
   cursor: pointer;
   text-decoration: none;
-  /* R32：按该类实际 hover/active/disabled 变化列明（background/border-color/filter/transform/opacity/color），禁用 transition:all */
-  transition: background var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease), filter var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease), opacity var(--au-fast) var(--au-ease);
+  /* R32：按该类实际 hover/active/disabled 变化列明（background/border-color/filter/transform/opacity/color/box-shadow），禁用 transition:all；R33：:disabled 加了 inset box-shadow，补进列表 */
+  transition: background var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease), filter var(--au-fast) var(--au-ease), transform var(--au-fast) var(--au-ease), opacity var(--au-fast) var(--au-ease), box-shadow var(--au-fast) var(--au-ease);
   white-space: nowrap;
 }
 
