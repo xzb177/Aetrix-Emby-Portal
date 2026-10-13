@@ -67,6 +67,7 @@ export interface RechargePackage {
   bonus: number
   price: number
   is_popular: boolean
+  icon: string | null
   total_points: number
 }
 
