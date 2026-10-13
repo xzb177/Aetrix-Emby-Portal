@@ -41,7 +41,7 @@ const hideDockForPanel = computed(
 )
 
 /**
- * 两个主 Tab（首页 / 商店 / 我的）常驻缓存：切 tab 不再销毁重建，
+ * 三个主 Tab（首页 / 商店 / 我的）常驻缓存：切 tab 不再销毁重建，
  * 回来秒出上次的数据，各视图在 onActivated 里做静默刷新（不闪骨架屏）。
  *
  * 缓存 key = 路由 path + 用户 id + 登录会话序列：
@@ -49,9 +49,11 @@ const hideDockForPanel = computed(
  * - 登出 / 换号 / 重新登录后旧实例不再复用，不会看到上一个登录态的数据；
  * - 未列入 include 的页面（登录等）不受影响，照常每次重建。
  *
- * 2026-10-13：钱包页已删，WalletView 移出缓存；旧页面清理，ProfileView 移出缓存。
+ * 2026-10-13：钱包页已删，WalletView 移出缓存；旧页面清理，
+ * StoreView（/store 301 到 /shop 补给站）→ ShopView，
+ * ProfileView（/profile 已删）→ AccountSettingsView（/game/account）。
  */
-const KEEP_ALIVE_VIEWS = ['DiscoveryView', 'StoreView']
+const KEEP_ALIVE_VIEWS = ['DiscoveryView', 'ShopView', 'AccountSettingsView']
 const viewCacheKey = computed(
   () => `${route.path}:${userStore.user?.id ?? 'guest'}#${userStore.sessionSeq}`,
 )

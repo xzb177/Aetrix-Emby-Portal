@@ -84,7 +84,7 @@
       >
       <div class="v4-sec">
         <div class="v4-sec-title">🎒 装备库 · 徽章陈列柜</div>
-        <div class="v4-sec-sub">探险攒下的徽章都在这儿 —— 点一枚戴上，去个人页看看效果</div>
+        <div class="v4-sec-sub">探险攒下的徽章都在这儿 —— 点一枚戴上，再点右上角头像就能看到它</div>
         <!-- 加载中 -->
         <div v-if="badgeLoading" class="v4-skeleton" style="height:200px"></div>
         <!-- 加载失败 -->
@@ -157,12 +157,19 @@ import { useTheme } from '@/composables/useTheme'
 import { useToast } from '@/composables/useToast'
 import { panelApi, humanizeError, type Achievement } from '@/composables/usePanelApi'
 
-/** 佩戴中的徽章 key（localStorage，先放前端，以后再进库） */
+/** 佩戴中的徽章 key（localStorage，先放前端，以后再进库）。
+ *  存 JSON {key,name,icon} —— AppHeader 头像菜单会读出来展示佩戴中的徽章。 */
 const WORN_BADGE_KEY = 'aetrix_worn_badge_v1'
+
+interface WornBadgeMeta { key: string; name: string; icon: string }
 
 function readWornBadge(): string | null {
   try {
-    return localStorage.getItem(WORN_BADGE_KEY)
+    const raw = localStorage.getItem(WORN_BADGE_KEY)
+    if (!raw) return null
+    const o = JSON.parse(raw)
+    // 兼容旧版只存 key 字符串的写法
+    return typeof o === 'string' ? o : (o && o.key ? o.key : null)
   } catch {
     return null
   }
@@ -203,7 +210,8 @@ async function loadBadges() {
 function wearBadge(b: Achievement) {
   wornBadgeKey.value = b.key
   try {
-    localStorage.setItem(WORN_BADGE_KEY, b.key)
+    const meta: WornBadgeMeta = { key: b.key, name: b.name, icon: b.icon }
+    localStorage.setItem(WORN_BADGE_KEY, JSON.stringify(meta))
   } catch { /* 记不住就算了 */ }
   toast.success(`戴上了 ${b.icon}${b.name} 徽章`)
 }

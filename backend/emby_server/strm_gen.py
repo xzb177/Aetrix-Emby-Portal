@@ -48,8 +48,11 @@ import random
 import re
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -1217,10 +1220,6 @@ def _drive_batch_check(fids: list[str], token: str) -> set[str]:
     （404/403 等）→ 该 fid 判无效，与 _drive_file_id_valid"失败一律 False"
     语义一致。HTTP 层整体异常（非 200、网络错误）直接抛，由调用方回退逐个。
     """
-    import uuid
-
-    import httpx
-
     boundary = "batch_strm_%s" % uuid.uuid4().hex
     lines: list[str] = []
     for i, fid in enumerate(fids):

@@ -42,7 +42,7 @@ const footText = computed(() => {
 <style scoped>
 .v4-growth {
   background: var(--paper-card);
-  border: 1.5px solid var(--ink);
+  border: 1.5px solid var(--line);
   border-radius: 14px;
   padding: 16px 12px 12px;
 }
@@ -77,7 +77,7 @@ const footText = computed(() => {
 }
 .bar-fill {
   width: 100%;
-  background: linear-gradient(180deg, #7ba889, #5d8a6b);
+  background: linear-gradient(180deg, var(--green), color-mix(in srgb, var(--green) 75%, #000));
   border-radius: 0 0 4px 4px;
   transition: height 0.5s ease;
 }
