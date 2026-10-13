@@ -104,3 +104,37 @@ def test_scope_covered_by():
     assert _scope_covered_by(_FakeSnap(("/a", "/b"), True), _FakeSnap(("/a",), True)) is True
     assert _scope_covered_by(_FakeSnap(("/a",), True), _FakeSnap(("/b",), True)) is False
     assert _scope_covered_by(_FakeSnap(("/a",), True), _FakeSnap((), False)) is False
+
+
+def test_merge_exception_falls_back_to_direct_snapshot():
+    """P2-4 回归：畸形快照导致合并抛错时，QUEUED 任务直接采用新快照，不静默丢范围。"""
+    @dataclasses.dataclass(frozen=True)
+    class _BadSnap:
+        limit_prefixes: object = 123  # 非可迭代，tuple() 必抛 TypeError
+        targeted: bool = True
+        name: str = "坏快照"
+    existing = _task(prefixes=("/a",), targeted=True)
+    assert _try_merge_scan_task(existing, _BadSnap(), "x") is True
+    assert existing.snapshot.limit_prefixes == 123
+
+def test_merge_exception_running_registers_pending():
+    """P2-4 回归：RUNNING 任务合并抛错时，新快照直接登记为补扫。"""
+    @dataclasses.dataclass(frozen=True)
+    class _BadSnap:
+        limit_prefixes: object = 123
+        targeted: bool = True
+        name: str = "坏快照"
+    bad = _BadSnap()
+    existing = _task(prefixes=("/a",), targeted=True, state=STATE_RUNNING)
+    assert _try_merge_scan_task(existing, bad, "x") is True
+    assert existing.pending_rescan_snapshot is bad
+
+def test_scope_covered_by_nested_prefix():
+    """/a 覆盖 /a/b（嵌套），但不覆盖 /ab（边界）。"""
+    assert _scope_covered_by(_FakeSnap(("/a",), True), _FakeSnap(("/a/b",), True)) is True
+    assert _scope_covered_by(_FakeSnap(("/a",), True), _FakeSnap(("/ab",), True)) is False
+
+def test_merge_scope_into_empty_targeted_not_whole():
+    """空前缀 + targeted=True 不是整库，不升级原快照。"""
+    s = _merge_scope_into(_FakeSnap(("/a",), True), _FakeSnap((), True))
+    assert s.limit_prefixes == ("/a",) and s.targeted is True

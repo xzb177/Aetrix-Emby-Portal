@@ -2208,7 +2208,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         # （enrich_priority=-10，_claim_batch 按 priority desc 认领，天然排在
         # 主队列之后；不另起认领通道，不饿死主队列）补一轮。
         # 反风控：补简介只多打 TMDB 详情（约 1 请求/条），每条最多一轮，增量可控。
+        # P1-1(r32)：本轮抓取失败（_incomplete）时不进补队列——失败轮次进队列会
+        # 重置 attempts=0 且尾部跳过失败计次，attempts 在 0/1 振荡永不到 failed
+        # （v2.49.0"队列永远不降"同类 bug），持续烧 TMDB 配额；失败走正常退避
+        # /failed 路径（与 flag 关时逐行一致）。
         if (not _searched_no_hit
+                and not _incomplete
                 and enrich_tuning_value(CFG_ENRICH_FIELD_COMPLETENESS, db)):
             _fc_missing = _field_completeness_missing(db, item)
             _field_completeness_counters["checked"] += 1
@@ -2942,7 +2947,7 @@ def field_missing_stats(db) -> dict:
     + series/movie/season/episode。缺失率 = 缺该字段的条目数 / 口径内总数。
     只读，不改库。
     """
-    from sqlalchemy import func as _safunc, or_ as _or
+    from sqlalchemy import func as _safunc, or_ as _or, and_ as _and
 
     def _blank(col):
         return _or(col.is_(None), _safunc.trim(col) == "")
@@ -2958,8 +2963,10 @@ def field_missing_stats(db) -> dict:
         "title": base.filter(_blank(em.MediaItem.name)).count() if total else 0,
         "year": (base.filter(em.MediaItem.production_year.is_(None)).count()
                  if total else 0),
-        "poster": (base.filter(em.MediaItem.poster_path.is_(None),
-                               em.MediaItem.primary_image_url.is_(None)).count()
+        # P3(r32)：poster 缺失口径与内存判定 `_field_completeness_missing` 统一——
+        # 空字符串也算缺失（此前只用 is_(None)，与 _blank 不一致）。
+        "poster": (base.filter(_and(_blank(em.MediaItem.poster_path),
+                                    _blank(em.MediaItem.primary_image_url))).count()
                    if total else 0),
         "overview": base.filter(_blank(em.MediaItem.overview)).count() if total else 0,
         "genres": base.filter(_blank(em.MediaItem.genres)).count() if total else 0,
@@ -2980,7 +2987,6 @@ def field_missing_stats(db) -> dict:
         "rates": rates,
         "field_completeness_enabled": bool(
             enrich_tuning_value(CFG_ENRICH_FIELD_COMPLETENESS, db)),
-        "process": dict(_field_completeness_counters),
     }
 
 

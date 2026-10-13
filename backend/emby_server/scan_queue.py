@@ -212,7 +212,9 @@ def _merge_scope_into(base_snapshot, new_snapshot):
     base_prefixes = tuple(getattr(base_snapshot, "limit_prefixes", ()) or ())
     new_prefixes = tuple(getattr(new_snapshot, "limit_prefixes", ()) or ())
     base_is_whole = not base_prefixes and not getattr(base_snapshot, "targeted", False)
-    if not new_prefixes:
+    # P3(r32)：空前缀 + targeted=True 不是整库（当前调用方已 guard，此处防御）。
+    new_is_whole = not new_prefixes and not getattr(new_snapshot, "targeted", False)
+    if new_is_whole:
         # 新请求是整库 → 结果整库
         if base_is_whole:
             return base_snapshot
@@ -235,7 +237,11 @@ def _scope_covered_by(cover_snapshot, new_snapshot) -> bool:
     cover_prefixes = tuple(getattr(cover_snapshot, "limit_prefixes", ()) or ())
     if not cover_prefixes and not getattr(cover_snapshot, "targeted", False):
         return True  # 覆盖方是整库
-    return all(p in set(cover_prefixes) for p in new_prefixes)
+    # P3(r32)：边界感知的嵌套前缀判定——/a 覆盖 /a/b，但不覆盖 /ab
+    # （裸 startswith 会误判 /ab，必须带 "/" 边界）。
+    cover_set = set(cover_prefixes)
+    return all(any(p == c or p.startswith(c + "/") for c in cover_set)
+               for p in new_prefixes)
 
 
 def _try_merge_scan_task(existing: "ScanTask", new_snapshot, new_trigger: str = "manual") -> bool:
@@ -266,9 +272,17 @@ def _try_merge_scan_task(existing: "ScanTask", new_snapshot, new_trigger: str = 
                     existing.library_id, existing.pending_rescan_trigger)
         return True
     except Exception:
-        # 合并逻辑本身绝不能丢任务：异常也视为已合并（原行为），保底由整库扫描兜底
-        logger.exception("合并扫描范围异常（库 id=%s），按原逻辑合并",
+        # P2-4(r32)：合并异常不再静默丢弃新范围。QUEUED：新快照直接替换
+        # （不再调可能抛错的 _merge_scope_into）；RUNNING：新快照直接登记补扫。
+        # 直接赋值基本不抛错；异常只应在快照畸形时触发（内部调用方均为合法快照），
+        # 此时日志已记录，可观测。注：此前"整库兜底"注释无对应代码，已修正。
+        logger.exception("合并扫描范围异常（库 id=%s），新范围直接采用",
                          getattr(existing, "library_id", "?"))
+        if existing.state == STATE_QUEUED:
+            existing.snapshot = new_snapshot
+        else:
+            existing.pending_rescan_snapshot = new_snapshot
+            existing.pending_rescan_trigger = str(new_trigger or "manual")
         return True
 
 
@@ -992,7 +1006,7 @@ def _run_task(task: ScanTask) -> None:
         # 放在 _release_locked 之后：此时本库已无在跑任务，补扫按正常路径入队。
         pending_snapshot = task.pending_rescan_snapshot
         pending_trigger = task.pending_rescan_trigger
-        task.pending_rescan_snapshot = None
+        _rescan_ok = True
         if pending_snapshot is not None:
             try:
                 import types
@@ -1001,11 +1015,22 @@ def _run_task(task: ScanTask) -> None:
                     pending_snapshot, trigger=pending_trigger)
                 logger.info("扫描补扫已入队：库 id=%s（触发=%s，运行中被合并的更宽范围）",
                             task.library_id, pending_trigger)
+                # P1-2(r32)：成功后才清快照。失败时快照保留且不 ACK——合并进来的
+                # Redis raw 留给重投（at-least-once），扫描范围不静默丢失。
+                task.pending_rescan_snapshot = None
             except Exception:
-                logger.exception("扫描补扫入队失败（库 id=%s）", task.library_id)
+                _rescan_ok = False
+                logger.exception("扫描补扫入队失败（库 id=%s），快照保留、Redis raw 不确认",
+                                 task.library_id)
         # P0-0c：Redis 桥接的任务在这里才 ACK——扫描真正完成了。
         # 注意在 _COND 锁之外做（Redis I/O 不可预测），_ack_redis_raws 内部清掉已携带的 raw。
-        _ack_redis_raws(task)
+        # P1-2(r32)：补扫入队失败时不 ACK——被合并请求的 raw 由 Redis 重投恢复
+        # （本任务自己的 raw 也会重投，多扫一次，不丢数据）。
+        if _rescan_ok:
+            _ack_redis_raws(task)
+        else:
+            logger.warning("扫描补扫入队失败：%d 个 Redis raw 暂不确认，等待重投（库 id=%s）",
+                           len(task.redis_raws or []), task.library_id)
 
 
 def _flusher_loop() -> None:

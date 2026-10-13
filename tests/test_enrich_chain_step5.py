@@ -340,3 +340,22 @@ def test_sample_overview_missing_rate_flag_off_vs_on(db):
     assert terminal == 20
     print(f"\n[样本对比] 简介缺失率：flag 关直接 done 且缺简介 {off_rate:.0%}；"
           f"flag 开：0 条直接 done，20 条进低优先级补一轮后终态化（不反复）")
+
+
+def test_flag_on_incomplete_round_never_enters_refill(db):
+    """P1-1 回归：本轮抓取失败（_incomplete）时不开补队列——attempts 单调递增，
+    不在 0/1 振荡，超限转 failed，不烧 TMDB 配额。"""
+    _flag_on()
+    it = _make_item(db, name="常失败剧", tmdb_id=None,
+                    production_year=2020, poster_path="/tmp/p.jpg",
+                    overview=None, genres=None)
+    # tmdb 有命中但没落下 tmdb_id → _searched_no_hit=False, _incomplete=True
+    # （核心靠标题/年份/海报三者有其二凑齐，正是旧代码 ping-pong 的前提）
+    fetched = dict(_fetched_minimal(), tmdb_hit={"id": 999, "title": "x"})
+    seen = []
+    for _ in range(4):
+        _apply(db, it, fetched)
+        seen.append(it.enrich_attempts)
+        assert it.enrich_priority == 0, "失败轮次不许进 -10 补队列"
+        assert it.enrich_status == "pending"
+    assert seen == [1, 2, 3, 4], f"attempts 必须单调递增，实际 {seen}"

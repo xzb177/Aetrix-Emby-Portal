@@ -1278,7 +1278,6 @@ export interface EnrichFieldStats {
   missing: Record<string, number>
   rates: Record<string, number>
   field_completeness_enabled: boolean
-  process: Record<string, number>
 }
 
 export const fetchEnrichFieldStats = () =>

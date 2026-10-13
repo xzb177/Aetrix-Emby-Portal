@@ -2279,7 +2279,6 @@ function typeLabel(t: string): string {
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="fieldStats" class="drawer-hint drawer-hint--after">
                 各字段缺失率（已刮完条目，只读）：{{ fieldMissingText }}。
-                <span v-if="fieldStats.process">进程内：已判定 {{ fieldStats.process.checked ?? 0 }} 条，进低优先级 {{ fieldStats.process.refill_enqueued ?? 0 }} 条，补完终态化 {{ fieldStats.process.refill_terminalized ?? 0 }} 条。</span>
               </div>
               <div v-else-if="fieldStatsError" class="drawer-hint drawer-hint--after">
                 缺失率统计读取失败
