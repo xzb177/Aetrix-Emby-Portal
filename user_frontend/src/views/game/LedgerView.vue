@@ -91,6 +91,9 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { pointsApi, type PointsLogEntry } from '@/api/economy'
 import { humanizeError } from '@/composables/usePanelApi'
+import { useToast } from '@/composables/useToast'
+
+const toast = useToast()
 
 /**
  * 类型元数据：与 WalletView.vue 的 TYPE_META 完全一致（值保持原样）。
@@ -110,7 +113,7 @@ const TYPE_META: Record<string, { label: string; income: boolean }> = {
   transfer_fee: { label: '转账手续费', income: false },
 }
 function typeMeta(t: string) {
-  return TYPE_META[t] || { label: t, income: true }
+  return TYPE_META[t] || { label: '其他', income: true }
 }
 
 /** 世界观映射：游戏化标签（值按任务约定） */
@@ -152,7 +155,7 @@ const filter = ref<FilterKey>('all')
 
 function fmtNum(n: number | null | undefined) {
   if (n == null) return '—'
-  return Math.round(n).toLocaleString('en-US')
+  return Math.round(n).toLocaleString()
 }
 
 function fmtTime(iso?: string | null) {
@@ -183,7 +186,12 @@ async function load(reset = true) {
     total.value = res.total ?? 0
     logs.value = reset ? (res.logs || []) : [...logs.value, ...(res.logs || [])]
   } catch (e) {
-    if (reset) error.value = humanizeError(e)
+    if (reset) {
+      error.value = humanizeError(e)
+    } else {
+      // 加载更多失败：静默吞掉会让用户以为到底了，弹人话提示
+      toast.error(humanizeError(e))
+    }
   } finally {
     if (reset) loading.value = false
   }

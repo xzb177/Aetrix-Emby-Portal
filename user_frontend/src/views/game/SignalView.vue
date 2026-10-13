@@ -105,6 +105,7 @@
               <div v-if="messagesLoading">
                 <div v-for="i in 3" :key="i" class="v4-skeleton" style="height:56px;margin-bottom:8px"></div>
               </div>
+              <div v-else-if="messagesError" class="v4-err">对话加载失败：{{ messagesError }}<br><button class="v4-retry" @click="() => selectedTicket && fetchMessages(selectedTicket.id)">重试</button></div>
               <div v-else ref="messagesEl" class="messages-list">
                 <p v-if="!messages.length" class="messages-empty">还没有对话内容，营地马上就来认领</p>
                 <div
@@ -188,6 +189,8 @@ const expandedId = ref<number | null>(null)
 const selectedTicket = ref<Ticket | null>(null)
 const messages = ref<TicketMessage[]>([])
 const messagesLoading = ref(false)
+/** 对话消息拉取失败：和「真的没有对话内容」分开显示 */
+const messagesError = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
 // 发信号表单
@@ -309,12 +312,14 @@ async function toggleDetail(t: Ticket) {
 /** 工单详情 + 对话消息 */
 async function fetchMessages(ticketId: number) {
   messagesLoading.value = true
+  messagesError.value = ''
   try {
     const res = await ticketApi.getMessages(ticketId)
     messages.value = (res as any) || []
   } catch (e) {
-    toast.error(humanizeError(e))
     messages.value = []
+    messagesError.value = humanizeError(e)
+    toast.error(messagesError.value)
   } finally {
     messagesLoading.value = false
   }
@@ -437,7 +442,7 @@ onUnmounted(() => {
 /* 输入框：设计稿 textarea 原值 + 标题输入 */
 .field {
   width: 100%;
-  font-size: 14px;
+  font-size: 16px;
   padding: 12px;
   border: 1.5px solid var(--line);
   border-radius: 10px;
@@ -450,7 +455,7 @@ onUnmounted(() => {
 .field:focus { border-color: var(--gold); }
 textarea {
   width: 100%;
-  font-size: 14px;
+  font-size: 16px;
   padding: 12px;
   border: 1.5px solid var(--line);
   border-radius: 10px;
@@ -604,7 +609,7 @@ textarea:focus { border-color: var(--gold); }
   border: 1.5px solid var(--line);
   border-radius: 10px;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 16px;
   font-family: inherit;
   outline: none;
 }
