@@ -231,6 +231,26 @@
   color: var(--au-text);
 }
 
+/* 二级开关（链路规划 Step 2）：总开关的子项，缩进 + 徽标，不再与总开关平级 */
+.ms-switch-sub {
+  margin-left: 28px;
+  padding-left: 14px;
+  border-left: 2px solid var(--au-border);
+}
+
+.ms-sub-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  color: var(--au-text-2);
+  background: var(--au-fill);
+  border: 1px solid var(--au-border);
+  border-radius: 999px;
+  vertical-align: 1px;
+}
+
 /* 源表：位次、开关、限速、密钥、操作五列 */
 .ms-table-order td {
   vertical-align: middle;
