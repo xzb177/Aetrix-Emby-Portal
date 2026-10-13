@@ -197,3 +197,8 @@
   .v4-scope .meter .fill { transform: scaleX(var(--meter-p, 0)) !important; }
   .v4-scope .evo-bar i { transform: scaleX(var(--evo-p, 0)) !important; }
 }
+
+/* 进度型自定义属性默认值：模板用内联 :style 覆盖；
+   令牌契约检查要求定义必须出现在被引入的样式表里（SFC <style> 块不算） */
+.evo-bar i { --evo-p: 0; }
+.meter .fill { --meter-p: 0; }
