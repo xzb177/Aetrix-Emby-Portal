@@ -26,11 +26,11 @@ const route = useRoute()
  * 页面底部留白用 --au-dock-space 跟着坞的高度走：≥769px 为 0，≤768px 给坞让位。
  */
 const showChrome = computed(
-  () => route.name !== 'login' && !route.path.startsWith('/watch'),
+  () => route.name !== 'login',
 )
 
 /**
- * P1#1 双底部导航：v4 15 个路由（V4_PATHS：4 panel + 11 game）模板末尾自带纸色
+ * P1#1 双底部导航：v4 16 个路由（V4_PATHS：4 panel + 12 game）模板末尾自带纸色
  * PanelTabbar（fixed bottom，z-index 50），会盖住 AppDock（z-index 40）导致
  * 「首页/商店/我的」不可点 —— 这些路由下只渲染 PanelTabbar，隐藏 AppDock。
  * 尾斜杠规范化与 router/index.ts 的 afterEach 保持一致（/game/ 与 /game 同页）。
@@ -47,11 +47,11 @@ const hideDockForPanel = computed(
  * 缓存 key = 路由 path + 用户 id + 登录会话序列：
  * - 同一 tab 内的实例复用，滚动位置、选项卡状态都保留；
  * - 登出 / 换号 / 重新登录后旧实例不再复用，不会看到上一个登录态的数据；
- * - 未列入 include 的页面（详情、播放、登录等）不受影响，照常每次重建。
+ * - 未列入 include 的页面（登录等）不受影响，照常每次重建。
  *
- * 2026-10-13：钱包页已删，WalletView 移出缓存。
+ * 2026-10-13：钱包页已删，WalletView 移出缓存；旧页面清理，ProfileView 移出缓存。
  */
-const KEEP_ALIVE_VIEWS = ['DiscoveryView', 'StoreView', 'ProfileView']
+const KEEP_ALIVE_VIEWS = ['DiscoveryView', 'StoreView']
 const viewCacheKey = computed(
   () => `${route.path}:${userStore.user?.id ?? 'guest'}#${userStore.sessionSeq}`,
 )
@@ -66,7 +66,7 @@ function onTgNotBound(e: Event) {
   lastTgNotify = now
   const message = (e as CustomEvent)?.detail?.message || '公益服功能需要绑定 Telegram，防小号，1 分钟搞定'
   warning(message + '，正在前往绑定…')
-  setTimeout(() => router.push('/profile'), 600)
+  setTimeout(() => router.push('/game/account'), 600)
 }
 
 // ===== 全局 TG 绑定自动弹窗 =====
@@ -79,8 +79,8 @@ const TG_GUIDE_SHOWN_KEY = 'tg_bind_guide_shown'
 async function checkTgBindGuide() {
   // 未登录不查
   if (!userStore.isLoggedIn) return
-  // 登录页、/tg-bind 引导页、播放页不打扰
-  if (route.name === 'login' || route.path === '/tg-bind' || route.path.startsWith('/watch')) return
+  // 登录页、/tg-bind 引导页不打扰（2026-10-13：播放页已删）
+  if (route.name === 'login' || route.path === '/tg-bind') return
   // 每个标签页会话只自动弹一次，避免刷新反复打扰
   if (sessionStorage.getItem(TG_GUIDE_SHOWN_KEY)) return
   try {

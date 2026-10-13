@@ -4,8 +4,10 @@
  * 直接复用后端内置的 Emby 兼容协议端点（/emby/*）：
  * - 浏览：Views / Items / Resume / Latest / NextUp / Favorites
  * - 详情：Items/{id} / Shows/{id}/Seasons / Shows/{id}/Episodes
- * - 互动：Rating（收藏）/ PlayedItems（已看）/ PlaybackInfo
- * - 播放：直连 stream（Range）/ HLS 转码（hls.js）
+ * - 互动：Rating（收藏）/ PlayedItems（已看）
+ *
+ * 2026-10-13 旧页面清理：播放相关 wrapper（getPlaybackInfo / reportPlaying /
+ * reportProgress / reportStopped）随 WatchView 删除；网页播放走第三方客户端。
  *
  * 鉴权：全部携带门户 JWT（后端 /emby/* 已支持 JWT 回退）。
  * 复用 api/index.ts 的 axios 实例：自动附 Authorization 头 + 401 自动刷新。
@@ -407,41 +409,9 @@ export const embyApi = {
     return ud
   },
 
-  /** 播放信息（返回带短期播放签名 uid/exp/sign 的直连 / HLS 地址；JWT 不进 URL） */
-  async getPlaybackInfo(itemId: string): Promise<{ MediaSources: EmbyMediaSource[]; PlaySessionId: string }> {
-    return embyPost<{ MediaSources: EmbyMediaSource[]; PlaySessionId: string }>(
-      `/emby/Items/${itemId}/PlaybackInfo`,
-      {},
-    )
-  },
-
-  /** 播放开始上报 */
-  reportPlaying(itemId: string, positionSeconds: number, playMethod: string): Promise<unknown> {
-    return embyPost('/emby/Sessions/Playing', {
-      ItemId: itemId,
-      PositionTicks: secondsToTicks(positionSeconds),
-      PlayMethod: playMethod,
-    })
-  },
-
-  /** 播放进度上报（节流调用） */
-  reportProgress(itemId: string, positionSeconds: number, paused: boolean, playMethod: string): Promise<unknown> {
-    return embyPost('/emby/Sessions/Playing/Progress', {
-      ItemId: itemId,
-      PositionTicks: secondsToTicks(positionSeconds),
-      IsPaused: paused,
-      PlayMethod: playMethod,
-    })
-  },
-
-  /** 播放停止上报 */
-  reportStopped(itemId: string, positionSeconds: number, playMethod: string): Promise<unknown> {
-    return embyPost('/emby/Sessions/Playing/Stopped', {
-      ItemId: itemId,
-      PositionTicks: secondsToTicks(positionSeconds),
-      PlayMethod: playMethod,
-    })
-  },
+  // 2026-10-13 旧页面清理：getPlaybackInfo / reportPlaying / reportProgress / reportStopped
+  // 是 WatchView 专用 wrapper（全仓唯一调用者），随页面删除一并移除。
+  // 保留 setPlayed / getItem 等（仍有其他调用者）。
 }
 
 function positionTicks() {

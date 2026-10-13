@@ -51,11 +51,12 @@ export interface NavItem {
 
 /** 主导航：全断点共用同一份（宽屏横排、窄屏底部坞）。
  *  三项定稿（2026-10-13 旧页面清理）：钱包（/wallet）已删，资产查看走
- *  /game/ledger 能量账本；商店（/store，只管花钱/花积分）与我的（/profile）保留。
+ *  /game/ledger 能量账本；商店（/store，只管花钱/花积分）保留；
+ *  我的（/profile）已删，改走 /game/account 账号设置设施。
  *  媒体库与搜索仍可从头像菜单 / 首页帮助区 / 顶栏资产 pill 上下文进入，
  *  不在主导航占位 */
 export const primaryNav: NavItem[] = [
   { name: '首页', path: '/', icon: Clapperboard },
   { name: '商店', path: '/shop', icon: ShoppingBag },
-  { name: '我的', path: '/profile', icon: User },
+  { name: '我的', path: '/game/account', icon: User },
 ]
