@@ -598,3 +598,86 @@ def test_collect_result_round_trips_through_dict():
     assert again.external_ids == result.external_ids
     assert again.primary == result.primary == "a"
     assert again.outcomes[0].label == "甲"
+
+# ---------------------------------------------------------------------------
+# 12. TMDB-miss 兜底开关（v2.58.0）：配置读写 + 视图透出 + 密钥操作不动它
+#     这个开关曾经「生产库里没有、页面上也没有」，谁都打不开 ——
+#     这里把「默认关、写了生效、不写不动」三条全部钉住。
+# ---------------------------------------------------------------------------
+
+def test_tmdb_miss_fallback_defaults_off_and_round_trips(db):
+    from backend.emby_server.metasources import config as cfg
+
+    # 没写过 = 关（默认保持原来的链路）
+    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={})
+    assert cfg.read_config(db, ms_sources.SPECS).tmdb_miss_fallback is False
+
+    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={},
+                     tmdb_miss_fallback=True)
+    assert cfg.read_config(db, ms_sources.SPECS).tmdb_miss_fallback is True
+
+    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={},
+                     tmdb_miss_fallback=False)
+    assert cfg.read_config(db, ms_sources.SPECS).tmdb_miss_fallback is False
+
+
+def test_tmdb_miss_fallback_exposed_in_view(db):
+    from backend.emby_server.metasources import config as cfg
+
+    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={},
+                     tmdb_miss_fallback=True)
+    cfg.invalidate()
+    view = _view(db)
+    assert view["tmdb_miss_fallback"] is True
+
+
+def test_tmdb_miss_fallback_survives_key_add_and_delete(db):
+    """逐源增删密钥不能顺手把兜底开关关掉（不传 = 不写，保持原值）"""
+    from backend.api import admin_scrape
+    from backend.emby_server.metasources import config as cfg
+
+    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={},
+                     tmdb_miss_fallback=True)
+    cfg.invalidate()
+
+    admin_scrape.add_meta_source_key(
+        "tvmaze", admin_scrape.MetaSourceKeyAddRequest(key="key123456"), staff=None, db=db)
+    assert _view(db)["tmdb_miss_fallback"] is True
+
+    admin_scrape.delete_meta_source_key("tvmaze", 1, staff=None, db=db)
+    assert _view(db)["tmdb_miss_fallback"] is True
+
+
+def test_save_meta_sources_carries_fallback_flag(db):
+    """前端保存的那张卡把开关传下来、写进库、视图再吐出来 —— 全链路通"""
+    from backend.api import admin_scrape
+
+    view = admin_scrape.save_meta_sources(
+        admin_scrape.MetaSourcesSaveRequest(enabled=True, prefer_chinese=True,
+                                            tmdb_miss_fallback=True,
+                                            order=[], toggles={}, rates={}),
+        staff=None, db=db)
+    assert view["tmdb_miss_fallback"] is True
+
+    view = admin_scrape.save_meta_sources(
+        admin_scrape.MetaSourcesSaveRequest(enabled=True, prefer_chinese=True,
+                                            tmdb_miss_fallback=False,
+                                            order=[], toggles={}, rates={}),
+        staff=None, db=db)
+    assert view["tmdb_miss_fallback"] is False
+
+
+def test_save_without_flag_does_not_clobber_fallback(db):
+    """老前端/脚本保存时没带该字段 → 开着的开关不能被一次保存关掉"""
+    from backend.api import admin_scrape
+    from backend.emby_server.metasources import config as cfg
+
+    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={},
+                     tmdb_miss_fallback=True)
+    cfg.invalidate()
+
+    view = admin_scrape.save_meta_sources(
+        admin_scrape.MetaSourcesSaveRequest(enabled=True, prefer_chinese=True,
+                                            order=[], toggles={}, rates={}),
+        staff=None, db=db)
+    assert view["tmdb_miss_fallback"] is True

@@ -10,6 +10,7 @@
 |---|---|---|
 | ``meta_sources_enabled`` | 总开关（关掉 = 完全走原来的 NFO → TMDB → 豆瓣/Bangumi 链路） | 0 |
 | ``meta_sources_prefer_chinese`` | 中文信息优先 | 1 |
+| ``meta_sources_tmdb_miss_fallback`` | TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底（须与总开关同时开） | 0 |
 | ``meta_sources_order`` | 源顺序（JSON 数组，**只有这里出现的源会被采集**） | DEFAULT_ORDER |
 | ``meta_source_enabled_{id}`` | 单源开关 | 默认见 DEFAULT_ORDER（都开） |
 | ``meta_source_keys_{id}`` | 该源的密钥池（逗号分隔，与 TMDB 那套同一个拆分口径） | 空 |
@@ -29,6 +30,7 @@ from backend.emby_server.tmdb import _split_keys
 CONFIG_ENABLED = "meta_sources_enabled"
 CONFIG_PREFER_CN = "meta_sources_prefer_chinese"
 CONFIG_ORDER = "meta_sources_order"
+CONFIG_TMDB_MISS_FALLBACK = "meta_sources_tmdb_miss_fallback"
 CONFIG_SOURCE_ENABLED = "meta_source_enabled_{id}"
 CONFIG_SOURCE_KEYS = "meta_source_keys_{id}"
 CONFIG_SOURCE_RATE = "meta_source_rate_{id}"
@@ -85,6 +87,9 @@ class Snapshot:
     enabled: bool
     prefer_chinese: bool
     sources: list[SourceConfig]
+    #: TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底（默认关）。
+    #: 须与总开关同时开着才生效；后台「多源元数据补全」卡里有这个开关。
+    tmdb_miss_fallback: bool = False
 
     def ordered(self) -> list[SourceConfig]:
         """这一轮真正要采集的源（开关 + 密钥条件已过滤），保持配置顺序"""
@@ -149,6 +154,7 @@ def read_config(db, specs: list) -> Snapshot:
         enabled=_truthy(cfg(CONFIG_ENABLED, ""), False),
         prefer_chinese=_truthy(cfg(CONFIG_PREFER_CN, ""), True),
         sources=sources,
+        tmdb_miss_fallback=_truthy(cfg(CONFIG_TMDB_MISS_FALLBACK, ""), False),
     )
 
 
@@ -178,11 +184,15 @@ def _rate(raw: str) -> float:
 def write_config(db, *, enabled: bool, prefer_chinese: bool,
                  order: list[str], toggles: dict[str, bool],
                  keys: Optional[dict] = None,
-                 rates: Optional[dict] = None) -> int:
-    """保存配置（总开关 / 中文优先 / 顺序 / 每源开关 / 密钥池 / 限速），立即热生效
+                 rates: Optional[dict] = None,
+                 tmdb_miss_fallback: Optional[bool] = None) -> int:
+    """保存配置（总开关 / 中文优先 / 顺序 / 每源开关 / 密钥池 / 限速 / TMDB-miss 兜底开关），立即热生效
 
     ``keys`` / ``rates`` 是可选的：**只在字典里出现的源才写**，这样「改一下开关」
     不会顺手把密钥池洗掉（密钥原文从不上前端，全靠这一层保留）。
+
+    ``tmdb_miss_fallback`` 同理：**不传时不写该键**（保持库里原值），防止
+    逐源改开关 / 增删密钥这类操作顺手把它关掉；传了就按值写。
     """
     from backend.integrations import store
 
@@ -220,6 +230,12 @@ def write_config(db, *, enabled: bool, prefer_chinese: bool,
         key = CONFIG_SOURCE_RATE.format(id=source_id)
         values[key] = str(_rate(raw_rate))
         descriptions[key] = f"元数据源「{source_id}」请求最小间隔秒数（0 = 不限速）"
+    if tmdb_miss_fallback is not None:
+        values[CONFIG_TMDB_MISS_FALLBACK] = "1" if tmdb_miss_fallback else "0"
+        descriptions[CONFIG_TMDB_MISS_FALLBACK] = (
+            "TMDB 搜过无命中时，中文标题的剧/电影是否走多源兜底"
+            "（独立开关：与总开关同时开着才生效）"
+        )
     count = store.write_values(db, values, descriptions)
     db.commit()
     if any(source_id == "tmdb" for source_id in (keys or {})):
@@ -257,6 +273,7 @@ def snapshot(db, specs: list) -> Snapshot:
 __all__ = [
     "COLLECT_TIMEOUT_SEC", "CONFIG_ENABLED", "CONFIG_ORDER", "CONFIG_PREFER_CN",
     "CONFIG_SOURCE_ENABLED", "CONFIG_SOURCE_KEYS", "CONFIG_SOURCE_RATE",
+    "CONFIG_TMDB_MISS_FALLBACK",
     "DEFAULT_ORDER", "DEFAULT_RATE", "LEGACY_KEY_CONFIG", "MAX_SOURCES",
     "TMDB_KEY_STORAGE", "Snapshot", "SourceConfig",
     "invalidate", "read_config", "snapshot", "write_config",

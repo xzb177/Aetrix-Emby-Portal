@@ -500,6 +500,7 @@ const metaSaving = ref(false)
 const metaDraft = reactive({
   enabled: false,
   prefer_chinese: true,
+  tmdb_miss_fallback: false,
   order: [] as string[],
   toggles: {} as Record<string, boolean>,
   rates: {} as Record<string, number>,
@@ -577,6 +578,7 @@ const metaDirty = computed(() => {
   return (
     cfg.enabled !== metaDraft.enabled ||
     cfg.prefer_chinese !== metaDraft.prefer_chinese ||
+    cfg.tmdb_miss_fallback !== metaDraft.tmdb_miss_fallback ||
     cfg.order.join(',') !== metaDraft.order.join(',') ||
     metaRows.value.some((r) => {
       const on = metaDraft.toggles[r.id] ?? r.enabled
@@ -595,6 +597,7 @@ async function loadMeta() {
     meta.value = cfg
     metaDraft.enabled = cfg.enabled
     metaDraft.prefer_chinese = cfg.prefer_chinese
+    metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
     metaDraft.order = [...cfg.order]
     metaDraft.toggles = {}
     metaDraft.rates = {}
@@ -619,6 +622,7 @@ async function saveMeta() {
     const cfg = await saveMetaSources({
       enabled: metaDraft.enabled,
       prefer_chinese: metaDraft.prefer_chinese,
+      tmdb_miss_fallback: metaDraft.tmdb_miss_fallback,
       order: [...metaDraft.order],
       toggles: Object.fromEntries(
         metaRows.value.map((r) => [r.id, metaDraft.toggles[r.id] ?? r.enabled]),
@@ -630,6 +634,7 @@ async function saveMeta() {
     meta.value = cfg
     metaDraft.enabled = cfg.enabled
     metaDraft.prefer_chinese = cfg.prefer_chinese
+    metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
     metaDraft.order = [...cfg.order]
     metaDraft.toggles = {}
     metaDraft.rates = {}
@@ -651,6 +656,7 @@ function revertMeta() {
   if (!cfg) return
   metaDraft.enabled = cfg.enabled
   metaDraft.prefer_chinese = cfg.prefer_chinese
+  metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
   metaDraft.order = [...cfg.order]
   metaDraft.toggles = {}
   metaDraft.rates = {}
@@ -886,7 +892,8 @@ onMounted(() => {
           </div>
         </template>
         <p class="ms-hint">
-          TMDB 对中文剧集 / 综艺收录偏少。开多源后，TMDB 没搜到的条目会按下面的顺序
+          TMDB 对中文剧集 / 综艺收录偏少。总开关和「TMDB 未命中时走多源兜底」
+          同时开着时，TMDB 没搜到的中文条目会按下面的顺序
           再问一遍其它源：<strong>标题 / 简介 / 类型 / 评分逐个字段按序填充</strong>，
           某个源没有的字段自动让给下一个源；任何一个源失败（限流 / 密钥失效 / 反爬）
           都只影响它自己，不会中断整条刮削。命中的各源外部 ID 会合并存到条目上。
@@ -933,6 +940,17 @@ onMounted(() => {
                 <div class="ms-hint">
                   只影响<strong>标题与简介</strong>：中文源的文案压过优先级更高但给英文的源；
                   类型、评分、海报、外部 ID 仍按顺序取
+                </div>
+              </div>
+            </div>
+            <div class="ms-switch">
+              <el-switch v-model="metaDraft.tmdb_miss_fallback" />
+              <div>
+                <div class="ms-switch-title">TMDB 未命中时走多源兜底</div>
+                <div class="ms-hint">
+                  只对<strong>中文标题的剧 / 电影</strong>生效：TMDB 搜过无命中、豆瓣也没兜上时，
+                  按上面的顺序再问其它源。默认关闭，保持原来的链路；打开后命中率涨、
+                  吞吐会慢一些
                 </div>
               </div>
             </div>
