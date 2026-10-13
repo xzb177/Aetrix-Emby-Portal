@@ -243,7 +243,7 @@ class TestPageFetcher:
     def test_refresh_on_401(self, monkeypatch):
         calls = []
         tokens = ["old", "new"]
-        monkeypatch.setattr(sg, "_get_token", lambda: tokens.pop(0))
+        monkeypatch.setattr(sg, "_get_token", lambda did=None, **k: tokens.pop(0))
         def fake_list_page(token, drive_id, query, page_token):
             calls.append(token)
             if token == "old":
@@ -256,7 +256,7 @@ class TestPageFetcher:
         assert calls == ["old", "new"]
 
     def test_reraise_when_refresh_fails(self, monkeypatch):
-        monkeypatch.setattr(sg, "_get_token", lambda: "same")
+        monkeypatch.setattr(sg, "_get_token", lambda did=None, **k: "same")
         def fake_list_page(token, drive_id, query, page_token):
             raise PermissionError("Drive token 无效或过期")
         monkeypatch.setattr(sg, "_list_files_page", fake_list_page)

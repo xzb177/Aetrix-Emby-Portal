@@ -303,6 +303,114 @@ def _get_token() -> str | None:
     return None
 
 
+class DriveAuthError(Exception):
+    """Drive 凭据失败（个人盘 OAuth 缺配置/刷新失败等）。
+
+    显式错误，禁止静默回退到 SA 池——回退会让 Drive API 用随机 SA 的身份
+    查盘，导致个人盘查成 SA 自己的盘（2026-10-14 根因）。
+    """
+
+
+_oauth_token_cache: dict[str, tuple[str, float]] = {}  # remote -> (access_token, expires_at)
+_oauth_lock = threading.Lock()
+
+#: OAuth access_token 提前多久视为过期（秒）：给长列举留余量
+OAUTH_TOKEN_REFRESH_MARGIN_SEC = 300
+
+
+def _oauth_conf_for_remote(remote: str) -> tuple[str, str, dict] | None:
+    """从 rclone.conf 读 remote 的 OAuth 段 → (client_id, client_secret, token_json)。
+
+    缺文件/缺段/缺字段 → None。凭据值永不进日志。
+    """
+    if not os.path.isfile(RCLONE_CONF):
+        return None
+    try:
+        cp = configparser.ConfigParser(interpolation=None)
+        cp.read(RCLONE_CONF, encoding="utf-8")
+        if not cp.has_section(remote):
+            return None
+        client_id = cp.get(remote, "client_id", fallback="").strip()
+        client_secret = cp.get(remote, "client_secret", fallback="").strip()
+        token_raw = cp.get(remote, "token", fallback="").strip()
+        if not (client_id and client_secret and token_raw):
+            return None
+        return client_id, client_secret, json.loads(token_raw)
+    except Exception:
+        return None
+
+
+def _oauth_token_for_remote(remote: str, force_refresh: bool = False) -> str:
+    """myDrive:<remote> 的 access_token——该账号自己的 OAuth 凭据。
+
+    优先复用 conf 里未过期（留 5 分钟余量）的 access_token；过期则走
+    refresh_token 刷新。刷新结果只做进程内缓存，不写回 rclone.conf
+    （避免与 rclone 自身进程竞态）。
+    任何失败 → 抛 DriveAuthError，不回退 SA 池。
+    """
+    now = time.time()
+    if not force_refresh:
+        with _oauth_lock:
+            cached = _oauth_token_cache.get(remote)
+        if cached and cached[1] > now + OAUTH_TOKEN_REFRESH_MARGIN_SEC:
+            return cached[0]
+    conf = _oauth_conf_for_remote(remote)
+    if conf is None:
+        raise DriveAuthError(
+            f"个人盘 remote '{remote}' 在 rclone.conf 中缺 OAuth 配置"
+            f"(client_id/client_secret/token)")
+    client_id, client_secret, token_json = conf
+    access_token = token_json.get("access_token", "")
+    if not force_refresh and access_token:
+        try:
+            exp = datetime.fromisoformat(
+                str(token_json.get("expiry", "")).replace("Z", "+00:00"))
+            if exp.timestamp() > now + OAUTH_TOKEN_REFRESH_MARGIN_SEC:
+                return access_token
+        except Exception:
+            pass
+    refresh_token = token_json.get("refresh_token", "")
+    if not refresh_token:
+        raise DriveAuthError(
+            f"个人盘 remote '{remote}' 的 OAuth token 缺 refresh_token，无法刷新")
+    try:
+        resp = httpx.post(TOKEN_URL, data={
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+        }, timeout=30)
+        resp.raise_for_status()
+        body = resp.json()
+        new_token = body.get("access_token", "")
+        if not new_token:
+            raise DriveAuthError(
+                f"个人盘 remote '{remote}' OAuth 刷新返回空 access_token")
+        expires_in = int(body.get("expires_in", 3600) or 3600)
+        with _oauth_lock:
+            _oauth_token_cache[remote] = (new_token, now + expires_in)
+        return new_token
+    except DriveAuthError:
+        raise
+    except Exception as exc:
+        raise DriveAuthError(
+            f"个人盘 remote '{remote}' OAuth 刷新失败: {exc}") from exc
+
+
+def get_token_for_drive(drive_id: str, force_refresh: bool = False) -> str | None:
+    """按盘取 Drive API 凭据——全项目唯一入口（横切只许这一套）。
+
+    - ``myDrive:<remote>``：该 remote 自身的 OAuth 凭据（rclone.conf）。
+      失败抛 DriveAuthError，**不**回退 SA 池（回退会查错盘）。
+    - 共享盘 key：现有 SA 轮换（_get_token）原样；force_refresh 对 SA 路径
+      等价于再轮换一次（调用方 401 续跑语义不变）。
+    """
+    if _is_personal_drive_key(drive_id):
+        return _oauth_token_for_remote(drive_id[len("myDrive:"):],
+                                       force_refresh=force_refresh)
+    return _get_token()
+
+
 # ---------------------------------------------------------------------------
 # Changes API
 # ---------------------------------------------------------------------------
@@ -644,10 +752,13 @@ def get_start_page_token(drive_id: str) -> str | None:
     """首次：拿初始 page token（调用方存下来，下次从它开始 poll）。
 
     个人盘不传 driveId（Drive API 会报 400），改传 spaces=drive。
+
+    凭据走 get_token_for_drive(drive_id)：个人盘用该 remote 的 OAuth，
+    失败抛 DriveAuthError（显式，不静默回退 SA）。
     """
-    token = _get_token()
+    token = get_token_for_drive(drive_id)
     if not token:
-        logger.error("Drive Changes: 拿不到 SA token")
+        logger.error("Drive Changes: 拿不到 Drive 凭据")
         return None
     if _is_personal_drive_key(drive_id):
         params = {
@@ -678,11 +789,13 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
     个人盘不传 driveId 和 includeItemsFromAllDrives，改传 spaces=drive。
 
     异常契约（2026-10-12）：API 失败直接抛，不再返回 ([], None)。
+    凭据走 get_token_for_drive(drive_id)：个人盘 OAuth 失败抛 DriveAuthError，
+    同样直接抛（不静默回退 SA 池）。
     调用方必须区分"报错"和"真的无变化"：
     - strm_gen 的 DriveChangesLister：异常向上传播 → per-drive 记 error → 整轮 phase=error
     - drive_changes poller：外层 try/except 记 errors+1，page token 不推进，下轮重放
     """
-    token = _get_token()
+    token = get_token_for_drive(drive_id)
     if not token:
         return [], None
     all_changes: list[dict] = []
@@ -969,11 +1082,11 @@ def map_changes_to_libraries(db, drive_id: str,
     # 这里复用 _library_drive_prefixes 的推导：再算一次带 fs 路径的
     fs_map = _library_fs_prefixes(db)  # {(lib_id, drive子目录): fs路径前缀}
 
-    token = _get_token()
+    token = get_token_for_drive(drive_id)
     if not token and changes:
         # 拿不到 token 就建不了路径：必须让调用方知道，不能静默返回空——
         # 调用方据此不推进 page token，下一轮重放这批 changes。
-        raise RuntimeError("Drive Changes: 拿不到 SA token，无法映射 changes")
+        raise RuntimeError("Drive Changes: 拿不到 Drive 凭据，无法映射 changes")
     affected: dict[int, set[str]] = {}
     for ch in changes:
         f = ch.get("file") or {}
