@@ -11,11 +11,11 @@
     <meta name="description" content="Aetrix —— 自建影音媒体服务平台：在线播放、多服订阅与客户端接入。">
     <link rel="icon" href="/favicon.ico">
     <link rel="manifest" href="/manifest.webmanifest">
-    <!-- 标题衬线字（暗房影院主题）：Noto Serif SC 600/700，display=swap——
-         字体没到之前先用系统宋体/衬线兜底，不阻塞首屏 -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700&display=swap">
+    <!-- 标题衬线字：perf 优化（2026-10-13）移除了 Google Fonts 外链。
+         原因：<link rel="stylesheet"> 是渲染阻塞的，fonts.googleapis.com
+         在国内访问不稳定，会导致整页白屏等它。
+         现在用系统字体栈（Songti SC / STSong / SimSun / serif），
+         与 Noto Serif SC 同为宋体风格，首屏不再被外部字体卡住。 -->
     <title>Aetrix - 影音媒体服务平台</title>
     <style>
       /*

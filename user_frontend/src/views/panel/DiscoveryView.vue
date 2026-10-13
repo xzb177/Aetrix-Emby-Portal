@@ -78,10 +78,8 @@ const user = useUserStore()
 const { today, parcels, pulse, letter } = storeToRefs(panel)
 
 onMounted(() => {
-  void panel.loadToday()
-  void panel.loadParcels()
-  void panel.loadPulse()
-  void panel.loadLetter()
+  // perf 2026-10-13：合并为 1 次请求（4 个 RTT → 1 个 RTT）
+  void panel.loadHome()
 })
 
 /* ---------- 日志头 ---------- */

@@ -49,6 +49,38 @@ export const usePanelStore = defineStore('panel', () => {
   const loadParcels = (force = false) => load(parcels.value, panelApi.parcels, force)
   const loadPulse = (force = false) => load(pulse.value, panelApi.pulse, force)
   const loadLetter = (force = false) => load(letter.value, panelApi.letter, force)
+
+  /**
+   * 首页合并加载（perf 2026-10-13）：一次请求拿回 today/parcels/pulse/letter，
+   * 把 4 次跨洋 RTT 并成 1 次。后端没有 /home 接口（旧版本）时回退到逐个加载。
+   */
+  async function loadHome(force = false) {
+    const now = Date.now()
+    const entries = [today.value, parcels.value, pulse.value, letter.value]
+    if (!force && entries.every((e) => e.data !== null && now - e.at < TTL_MS)) return
+    if (!force && entries.some((e) => e.loading)) return
+    for (const e of entries) { e.loading = true; e.error = null }
+    try {
+      const d = await panelApi.home()
+      const at = Date.now()
+      const parts: Array<[CacheEntry, unknown]> = [
+        [today.value, d.today],
+        [parcels.value, d.parcels],
+        [pulse.value, d.pulse],
+        [letter.value, d.letter],
+      ]
+      for (const [e, data] of parts) {
+        e.data = data
+        e.error = null
+        e.loading = false
+        e.at = at
+      }
+    } catch {
+      // 回退：逐个加载（兼容旧后端）
+      for (const e of entries) { e.loading = false }
+      await Promise.all([loadToday(force), loadParcels(force), loadPulse(force), loadLetter(force)])
+    }
+  }
   const loadCollector = (force = false) => load(collector.value, panelApi.collector, force)
   const loadServer = (force = false) => load(server.value, panelApi.server, force)
 
@@ -85,7 +117,7 @@ export const usePanelStore = defineStore('panel', () => {
 
   return {
     today, parcels, pulse, letter, collector, server,
-    loadToday, loadParcels, loadPulse, loadLetter, loadCollector, loadServer,
+    loadToday, loadParcels, loadPulse, loadLetter, loadHome, loadCollector, loadServer,
     unseal, setServerToggle,
   }
 })
