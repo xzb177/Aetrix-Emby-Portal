@@ -36,6 +36,7 @@
               :class="{ sel: selectedPkg?.id === pkg.id }"
               role="button"
               tabindex="0"
+              :aria-pressed="selectedPkg?.id === pkg.id"
               @click="selectedPkg = pkg"
               @keydown.enter="selectedPkg = pkg"
               @keydown.space.prevent="selectedPkg = pkg"
@@ -77,6 +78,7 @@
             :class="{ hot: plan.is_popular, open: openPlanId === plan.id }"
             role="button"
             tabindex="0"
+            :aria-expanded="openPlanId === plan.id"
             @click="togglePlan(plan.id)"
             @keydown.enter="togglePlan(plan.id)"
             @keydown.space.prevent="togglePlan(plan.id)"
@@ -149,9 +151,12 @@
           <h3>🧭 结伴远行，能量翻倍</h3>
           <p>同伴用你的暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
           <div class="code">
-            <div class="c">{{ inviteCode || '----' }}</div>
-            <button @click="copyInviteCode">复制</button>
+            <!-- R27：code 为空不再显示占位 '----'，给生成中态 + 重试 -->
+            <div v-if="inviteCode" class="c">{{ inviteCode }}</div>
+            <div v-else class="c generating">邀请码生成中…</div>
+            <button @click="copyInviteCode" :disabled="!inviteCode">复制</button>
           </div>
+          <button v-if="!inviteCode" class="v4-retry" style="margin-top:10px" @click="() => loadAll()">重试</button>
         </div>
       </section>
     </div>
@@ -442,7 +447,7 @@ async function copyInviteCode() {
 .purse .coin {
   flex: 1;
   background: var(--ink);
-  color: #f6f1e7;
+  color: var(--paper); /* R27：原 #f6f1e7 = --paper */
   border-radius: 12px;
   padding: 10px 12px;
   display: flex;
@@ -515,7 +520,7 @@ async function copyInviteCode() {
   top: -8px;
   right: 8px;
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark);
   font-size: 10px;
   padding: 2px 8px;
   border-radius: 10px;
@@ -544,7 +549,7 @@ async function copyInviteCode() {
   width: 100%;
   transform: scaleX(var(--meter-p, 0));
   transform-origin: left center;
-  background: linear-gradient(90deg, #ffb25e, var(--red));
+  background: linear-gradient(90deg, var(--ember), var(--red));
   transition: transform 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.2);
 }
 .meter .txt {
@@ -562,14 +567,14 @@ async function copyInviteCode() {
   width: 100%;
   margin-top: 10px;
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark);
   border: none;
   font-size: 15px;
   font-weight: 800;
   padding: 14px;
   border-radius: 12px;
   letter-spacing: 2px;
-  box-shadow: 0 3px 0 #a33319;
+  box-shadow: 0 3px 0 var(--red-deep);
   transition: transform 0.12s;
 }
 .charge:active {
@@ -606,7 +611,7 @@ async function copyInviteCode() {
 }
 .cur-toggle button.on {
   background: var(--ink);
-  color: #f6f1e7;
+  color: var(--paper); /* R27：原 #f6f1e7 = --paper */
 }
 .license {
   background: var(--paper-card);
@@ -633,13 +638,13 @@ async function copyInviteCode() {
   height: 56px;
   border-radius: 50%;
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 13px;
   font-weight: 800;
-  box-shadow: 0 3px 0 #a33319;
+  box-shadow: 0 3px 0 var(--red-deep);
   transform: rotate(-6deg);
   font-family: Georgia, serif;
   line-height: 1.2;
@@ -648,7 +653,7 @@ async function copyInviteCode() {
 }
 .license.hot .wax {
   background: var(--gold);
-  box-shadow: 0 3px 0 #9a7627;
+  box-shadow: 0 3px 0 var(--gold-deep);
 }
 .license .info {
   flex: 1;
@@ -675,7 +680,7 @@ async function copyInviteCode() {
   top: 10px;
   right: -2px;
   background: var(--ink);
-  color: #f6f1e7;
+  color: var(--paper); /* R27：原 #f6f1e7 = --paper */
   font-size: 10px;
   padding: 3px 10px;
   border-radius: 2px;
@@ -712,7 +717,7 @@ async function copyInviteCode() {
   min-height: 44px;
   margin: 10px 0 2px;
   background: var(--ink);
-  color: #f6f1e7;
+  color: var(--paper); /* R27：原 #f6f1e7 = --paper */
   border: none;
   font-size: 14px;
   font-weight: 800;
@@ -762,12 +767,12 @@ async function copyInviteCode() {
 .camp.done .flag {
   background: var(--gold);
   border-color: var(--gold);
-  color: #fff;
+  color: var(--on-dark);
 }
 .camp.now .flag {
   background: var(--red);
   border-color: var(--red);
-  color: #fff;
+  color: var(--on-dark);
   box-shadow: 0 0 0 4px rgba(217, 72, 43, 0.2);
 }
 .camp .card {
@@ -817,7 +822,7 @@ async function copyInviteCode() {
 }
 .invite {
   background: var(--ink);
-  color: #ede6d6;
+  color: var(--paper2); /* R27：原 #ede6d6，近似 --paper2 #EFE7D6，收敛 */
   border-radius: 14px;
   padding: 18px;
   position: relative;
@@ -830,7 +835,7 @@ async function copyInviteCode() {
 }
 .invite p {
   font-size: 12px;
-  color: #c9bfa9;
+  color: var(--line-deep);
   margin-top: 6px;
   line-height: 1.7;
 }
@@ -841,19 +846,28 @@ async function copyInviteCode() {
 }
 .invite .code .c {
   flex: 1;
-  background: #00000040;
-  border: 1px dashed #c9bfa9;
+  background: var(--scrim);
+  border: 1px dashed var(--line-deep);
   border-radius: 8px;
   text-align: center;
   font-size: 18px;
   font-weight: 800;
   letter-spacing: 4px;
   padding: 10px;
-  color: #ffb25e;
+  color: var(--ember);
+}
+/* R27：生成中态，字小一点、颜色淡一点 */
+.invite .code .c.generating {
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--line-deep);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .invite .code button {
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark);
   border: none;
   border-radius: 8px;
   padding: 0 18px;

@@ -3,7 +3,7 @@
     <div class="v4-page">
       <!-- 日志头 -->
       <header class="v4-loghead">
-        <span class="v4-stamp">探险日志 · 营地设施</span>
+        <span class="v4-stamp">{{ facilityStamp('wishlist') }}</span>
         <h1>🏮 许愿池</h1>
         <p>营地中央的古井 —— 把心愿写在纸上，折成小船，投进去。</p>
       </header>
@@ -82,7 +82,7 @@
     <PanelTabbar />
 
     <!-- 许愿弹窗 -->
-    <div class="modal" :class="{ show: modalOpen }" role="dialog" aria-modal="true" aria-label="许愿" @click.self="closeModal">
+    <div class="modal" :class="{ show: modalOpen }" role="dialog" aria-modal="true" aria-label="许愿" @click.self="closeModal" @keydown="onModalKeydown">
       <div class="mcard">
         <h3>✍️ 写下你的心愿</h3>
         <p>写下片名，纸条会折成小船，噗通一声投进池子</p>
@@ -109,6 +109,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
+import { facilityStamp } from '@/config/game'
 import { mediaSeekApi, type MediaSeekRequest, type HotMediaSeekRequest } from '@/api'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
@@ -155,6 +156,25 @@ function shortDate(iso: string): string {
 }
 function onEsc(e: KeyboardEvent) {
   if (e.key === 'Escape' && modalOpen.value) closeModal()
+}
+/** R27：简易 focus trap —— Tab 在对话框内循环，不跑出对话框（已有 Esc + 自动聚焦） */
+function onModalKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Tab' || !modalOpen.value) return
+  const card = (e.currentTarget as HTMLElement).querySelector('.mcard')
+  if (!card) return
+  const els = Array.from(
+    card.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'),
+  ).filter((el) => el.offsetParent !== null)
+  if (els.length === 0) return
+  const first = els[0]
+  const last = els[els.length - 1]
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault()
+    first.focus()
+  }
 }
 function openModal() {
   modalOpen.value = true
@@ -340,7 +360,7 @@ onMounted(() => {
   display: block;
   width: 100%;
   background: var(--red);
-  color: #FFFDF6;
+  color: var(--paper-card);
   border: none;
   font-size: 16px;
   font-weight: 800;
@@ -378,7 +398,7 @@ onMounted(() => {
 
 /* 愿望列表 */
 .wish {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 12px;
   padding: 13px 14px;
@@ -424,7 +444,7 @@ onMounted(() => {
   /* 透明 padding + 负 margin：视觉按钮不变，点击区纵向扩大到 44px */
   background: transparent;
   border: none;
-  color: #FFFDF6;
+  color: var(--paper-card);
   font-size: 13px;
   font-weight: 700;
   padding: 14px 9px;
@@ -455,7 +475,7 @@ onMounted(() => {
 }
 .modal.show { display: flex; }
 .mcard {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 2px solid var(--ink);
   border-radius: 14px;
   padding: 22px 20px;
@@ -491,4 +511,9 @@ onMounted(() => {
 .mbtn.cancel { background: var(--paper2); color: var(--ink2); }
 .mbtn.go { background: var(--red); color: #fff; box-shadow: 0 3px 0 #a33319; }
 .mbtn.go:disabled { background: var(--ink2); box-shadow: none; }
+
+/* R27：减少动态偏好下装饰动画停掉（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .well .boat-float { animation: none; }
+}
 </style>

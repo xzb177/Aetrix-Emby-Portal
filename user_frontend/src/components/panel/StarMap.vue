@@ -201,4 +201,9 @@ onUnmounted(() => {
   outline: 2px solid var(--red);
   outline-offset: 2px;
 }
+
+/* R27：减少动态偏好下装饰动画/过渡停掉（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .v4-star-tip { animation: none; transition: none; }
+}
 </style>

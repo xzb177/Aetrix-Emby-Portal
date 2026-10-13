@@ -230,6 +230,7 @@ body {
   font-family: var(--au-font-sans);
   font-variant-numeric: tabular-nums;
   min-height: 100vh;
+  min-height: 100dvh; /* R27：移动端地址栏收放高度不跳 */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -437,6 +438,11 @@ h3,
   animation: au-spin 0.8s linear infinite;
 }
 @keyframes au-spin { to { transform: rotate(360deg); } }
+
+/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
+@media (prefers-reduced-motion: reduce) {
+  .au-spinner { animation: none; }
+}
 
 /* ==================== 动画 ==================== */
 

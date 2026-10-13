@@ -3,7 +3,7 @@
     <div class="v4-page">
       <!-- 日志头 -->
       <header class="v4-loghead">
-        <span class="v4-stamp">探险日志 · 营地设施</span>
+        <span class="v4-stamp">{{ facilityStamp('pigeon') }}</span>
         <h1>🕊️ 信鸽</h1>
         <p>每天有信鸽飞来，脚上绑着信 —— 点一只鸽子，拆信。</p>
       </header>
@@ -164,6 +164,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
+import { facilityStamp } from '@/config/game'
 import { messageApi, type StationMessage } from '@/api'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
@@ -329,13 +330,13 @@ onMounted(() => { void load(true) })
 .search-input {
   width: 100%; height: 44px; padding: 0 12px 0 36px;
   border: 1.5px solid var(--line); border-radius: 12px;
-  background: #FFFDF6; color: var(--ink); font-size: 16px;
+  background: var(--paper-card); color: var(--ink); font-size: 16px;
 }
 .search-input::placeholder { color: var(--ink2); }
 .unread-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   height: 44px; padding: 0 14px; border-radius: 12px;
-  border: 1.5px solid var(--line); background: #FFFDF6;
+  border: 1.5px solid var(--line); background: var(--paper-card);
   color: var(--ink2); font-size: 12px; font-weight: 700; white-space: nowrap; cursor: pointer;
 }
 .unread-toggle .red-dot {
@@ -346,7 +347,7 @@ onMounted(() => { void load(true) })
 .unread-toggle.on .red-dot { opacity: 1; animation: blink 1.4s infinite; }
 .refresh-btn {
   width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px;
-  border: 1.5px solid var(--line); background: #FFFDF6;
+  border: 1.5px solid var(--line); background: var(--paper-card);
   color: var(--ink2); font-size: 18px; cursor: pointer;
 }
 .refresh-btn:disabled { opacity: 0.5; cursor: default; }
@@ -359,15 +360,15 @@ onMounted(() => { void load(true) })
 .filters { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
 .f {
   font-size: 12px; font-weight: 700; padding: 7px 14px; border-radius: 18px;
-  border: 1.5px solid var(--line); background: #FFFDF6; color: var(--ink2); cursor: pointer;
+  border: 1.5px solid var(--line); background: var(--paper-card); color: var(--ink2); cursor: pointer;
   min-height: 44px;
 }
-.f.on { background: var(--ink); border-color: var(--ink); color: #FFFDF6; }
+.f.on { background: var(--ink); border-color: var(--ink); color: var(--paper-card); }
 .f-count { opacity: 0.65; font-size: 11px; }
 
 /* 鸽子行：设计稿 game-inbox.html 原值 */
 .pigeon {
-  background: #FFFDF6; border: 1.5px solid var(--line); border-radius: 12px;
+  background: var(--paper-card); border: 1.5px solid var(--line); border-radius: 12px;
   margin-bottom: 10px; overflow: hidden;
 }
 .pigeon.unread { border-color: var(--gold); }
@@ -379,7 +380,7 @@ onMounted(() => { void load(true) })
 .bird { position: relative; font-size: 30px; line-height: 1; flex-shrink: 0; }
 .bird .dot {
   position: absolute; top: -2px; right: -4px; width: 11px; height: 11px;
-  border-radius: 50%; background: var(--red); border: 2px solid #FFFDF6;
+  border-radius: 50%; background: var(--red); border: 2px solid var(--paper-card);
   animation: blink 1.4s infinite;
 }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
@@ -455,5 +456,13 @@ onMounted(() => { void load(true) })
 .wax:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
+}
+
+/* R27：减少动态偏好下装饰动画停掉（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .perch .birds { animation: none; }
+  .unread-toggle.on .red-dot,
+  .bird .dot { animation: none; opacity: 1; }
+  .wax { animation: none; }
 }
 </style>

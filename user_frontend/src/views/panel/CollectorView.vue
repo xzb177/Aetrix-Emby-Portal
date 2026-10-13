@@ -28,9 +28,12 @@
         </template>
       </div>
 
-      <!-- 新解锁横幅 -->
-      <div v-if="newUnlockNames.length" class="v4-sec">
-        <div class="v4-fresh">🎉 新成就解锁：{{ newUnlockNames.join('、') }}</div>
+      <!-- 新解锁横幅（R27：可关闭；已读记 sessionStorage，同会话不再弹） -->
+      <div v-if="newUnlockNames.length && !unlockBannerDismissed" class="v4-sec">
+        <div class="v4-fresh">
+          <span>🎉 新成就解锁：{{ newUnlockNames.join('、') }}</span>
+          <button class="v4-fresh-close" aria-label="关闭" @click="dismissUnlockBanner">✕</button>
+        </div>
       </div>
 
       <!-- 口味护照 -->
@@ -64,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
@@ -142,6 +145,16 @@ const newUnlockNames = computed((): string[] => {
   return keys.map((k) => byKey.get(String(k)) || '未知')
 })
 
+/* ---------- 新解锁横幅关闭（R27：已读记 sessionStorage，同会话不再弹） ---------- */
+const UNLOCK_BANNER_KEY = 'aetrix_unlock_banner_dismissed_v1'
+const unlockBannerDismissed = ref(
+  (() => { try { return sessionStorage.getItem(UNLOCK_BANNER_KEY) === '1' } catch { return false } })(),
+)
+function dismissUnlockBanner() {
+  unlockBannerDismissed.value = true
+  try { sessionStorage.setItem(UNLOCK_BANNER_KEY, '1') } catch { /* 记不住就下次还弹，不打扰 */ }
+}
+
 /* ---------- 馆灵 ---------- */
 const pet = computed((): PetData | null => {
   const p = data.value.pet as PetData | undefined
@@ -167,7 +180,7 @@ const pet = computed((): PetData | null => {
 .v4-lv {
   font-size: 11px;
   background: var(--ink);
-  color: #f6f1e7;
+  color: var(--paper); /* R27：原 #f6f1e7 = --paper */
   padding: 5px 12px;
   border-radius: 14px;
   letter-spacing: 1px;
@@ -232,6 +245,22 @@ const pet = computed((): PetData | null => {
   padding: 10px 14px;
   font-size: 12px;
   animation: v4-fadein 0.4s ease;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+/* R27：横幅关闭按钮（44px 点击区内嵌，不破坏纸色风格） */
+.v4-fresh-close {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--ink2);
+  font-size: 14px;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -10px -10px -10px 0;
+  cursor: pointer;
 }
 @keyframes v4-fadein {
   from {
@@ -241,6 +270,13 @@ const pet = computed((): PetData | null => {
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+/* R27：减少动态偏好下横幅直接出现，不淡入（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .v4-fresh {
+    animation: none;
   }
 }
 </style>

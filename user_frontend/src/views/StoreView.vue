@@ -6,8 +6,7 @@ import RechargeCard from '@/components/store/RechargeCard.vue'
  * 布局（极简重做）：顶部状态条 + 充积分/买会员双大卡 + 底部核销折叠入口；
  * 深链 ?tab=plans/?tab=recharge 滚动到对应卡片
  *
- * v2.11.0：从 WalletView 拆分。订单记录、积分流水、余额总览、会员等级
- * 搬去钱包页；本页只留「花钱 / 花积分」的入口。优惠券试算不再跟随分页
+ * v2.11.0（历史口径）：从旧 WalletView 拆分而来；本页只留「花钱 / 花积分」的入口。优惠券试算不再跟随分页
  * （本页无分页），改为两类商品同时试算、数据刷新后静默重算。
  */
 import { ref, computed, watch, onMounted, onActivated, onBeforeUnmount } from 'vue'
@@ -2028,6 +2027,11 @@ button.redeem-clear svg {
 
 @keyframes store-spin {
   to { transform: rotate(360deg); }
+}
+
+/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
+@media (prefers-reduced-motion: reduce) {
+  .store-page .spinner { animation: none; }
 }
 
 /* ===== Mobile ===== */

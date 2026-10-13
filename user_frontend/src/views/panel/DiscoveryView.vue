@@ -33,7 +33,8 @@
         <div class="v4-sec-title">💓 服务器脉搏</div>
         <div class="v4-sec-sub">它现在活着，在干什么 —— 实时</div>
       </section>
-      <div class="v4-pulse-box">
+      <!-- pulse.error 时整盒不渲染，避免留黑色空矩形（错误态在下面统一渲染） -->
+      <div v-if="!pulse.error" class="v4-pulse-box">
         <div v-if="!pulse.error" class="v4-pulse-row">
           <span class="v4-pulse-tag">● 实时 · 后台任务</span>
           <span class="v4-pulse-dot"></span>
@@ -175,7 +176,7 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   border-radius: 14px;
   padding: 16px;
   margin: 0 20px;
-  color: #EDE6D6;
+  color: var(--paper2); /* R27：原 #EDE6D6，近似 --paper2 #EFE7D6，收敛 */
   position: relative;
   overflow: hidden;
 }
@@ -188,17 +189,25 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
 .v4-pulse-tag {
   font-size: 11px;
   letter-spacing: 2px;
-  color: #9BE08A;
+  color: var(--pulse-green);
 }
 .v4-pulse-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #9BE08A;
+  background: var(--pulse-green);
   animation: v4-blink 1.6s infinite;
 }
 @keyframes v4-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.25; }
+}
+
+/* R27：减少动态偏好下常亮不闪 */
+@media (prefers-reduced-motion: reduce) {
+  .v4-pulse-dot {
+    animation: none;
+    opacity: 1;
+  }
 }
 </style>

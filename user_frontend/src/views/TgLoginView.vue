@@ -101,6 +101,11 @@ function goHome() {
 @keyframes tg-spin {
   to { transform: rotate(360deg); }
 }
+
+/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
+@media (prefers-reduced-motion: reduce) {
+  .tg-spinner { animation: none; }
+}
 .tg-login-home {
   margin-top: 1.25rem;
 }

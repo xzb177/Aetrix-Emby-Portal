@@ -9,6 +9,8 @@ import { useToast } from '@/composables/useToast'
 import { useUserStore } from '@/stores/user'
 import { refreshEmbyBaseUrl } from '@/api/emby'
 import { tgApi } from '@/api/tg'
+import { isPanelV4Enabled } from '@/composables/usePanelApi'
+import { V4_PATHS } from '@/router'
 
 const { messages, remove, warning } = useToast()
 const userStore = useUserStore()
@@ -25,6 +27,17 @@ const route = useRoute()
  */
 const showChrome = computed(
   () => route.name !== 'login' && !route.path.startsWith('/watch'),
+)
+
+/**
+ * P1#1 双底部导航：v4 15 个路由（V4_PATHS：4 panel + 11 game）模板末尾自带纸色
+ * PanelTabbar（fixed bottom，z-index 50），会盖住 AppDock（z-index 40）导致
+ * 「首页/商店/我的」不可点 —— 这些路由下只渲染 PanelTabbar，隐藏 AppDock。
+ * 尾斜杠规范化与 router/index.ts 的 afterEach 保持一致（/game/ 与 /game 同页）。
+ */
+const panelV4 = isPanelV4Enabled()
+const hideDockForPanel = computed(
+  () => panelV4 && V4_PATHS.has(route.path.replace(/\/+$/, '') || '/'),
 )
 
 /**
@@ -138,7 +151,7 @@ watch(
         </Transition>
       </KeepAlive>
     </RouterView>
-    <AppDock v-if="showChrome" />
+    <AppDock v-if="showChrome && !hideDockForPanel" />
     <Toast :messages="messages" @remove="remove" />
     <!-- 全局 TG 绑定自动弹窗：新用户注册后自动弹出，已绑定不弹 -->
     <TgBindModal v-model="showGlobalTgBind" @bound="handleGlobalTgBound" />

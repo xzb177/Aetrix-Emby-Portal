@@ -209,7 +209,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 <style scoped>
 /* 签到簿：设计稿 game-checkin.html 原值 */
 .book {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 12px;
   padding: 16px;
@@ -351,5 +351,12 @@ onUnmounted(() => window.clearInterval(dateTimer))
 @keyframes efly {
   0% { opacity: 1; transform: translate(0, 0); }
   100% { opacity: 0; transform: translate(60px, -120px); }
+}
+
+/* R27：减少动态偏好下装饰动画停掉（本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .day.today::after { animation: none; }
+  .seal-pop.go { animation: none; }
+  .energy-fly.go { animation: none; }
 }
 </style>

@@ -691,14 +691,17 @@ onUnmounted(() => {
 
 .strength-fill {
   height: 100%;
+  width: 100%;
   border-radius: var(--au-r-full);
-  transition: width 0.3s ease, background 0.3s ease;
-  width: 0;
+  /* R27：width 是 layout 属性会触发重排 → 改 transform: scaleX（StaminaBar 同款模式） */
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.3s ease, background 0.3s ease;
 }
 
-.strength-fill.lv-1 { width: 33%; background: var(--au-danger); }
-.strength-fill.lv-2 { width: 66%; background: var(--au-warning); }
-.strength-fill.lv-3 { width: 100%; background: var(--au-primary); }
+.strength-fill.lv-1 { transform: scaleX(0.33); background: var(--au-danger); }
+.strength-fill.lv-2 { transform: scaleX(0.66); background: var(--au-warning); }
+.strength-fill.lv-3 { transform: scaleX(1); background: var(--au-primary); }
 
 .strength-text {
   font-size: 0.8125rem;
@@ -780,6 +783,11 @@ onUnmounted(() => {
 @keyframes au-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; }
 }
 
 .auth-footnote {

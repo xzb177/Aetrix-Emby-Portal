@@ -124,7 +124,7 @@ export const gameFacilities: GameFacility[] = [
     path: '/game/ledger',
     icon: '📒',
     desc: '每一笔能量的来龙去脉，都记在这本账上。',
-    stamp: '探险日志 · 营地设施',
+    stamp: '账本 · 笔笔有数',
     group: 'asset',
     order: 5,
     enabled: true,
@@ -135,7 +135,7 @@ export const gameFacilities: GameFacility[] = [
     path: '/game/supply',
     icon: '🧾',
     desc: '在补给站拿过的东西，这里都有小票。',
-    stamp: '探险日志 · 营地设施',
+    stamp: '小票 · 张张在册',
     group: 'asset',
     order: 6,
     enabled: true,
@@ -174,3 +174,11 @@ export const gameFacilities: GameFacility[] = [
     enabled: true,
   },
 ]
+
+/**
+ * 按 key 取设施印章（各游戏页 <span class="v4-stamp"> 模板直接绑定，
+ * 不在组件里 hardcode —— R27 修复：模板硬编码「探险日志 · 营地设施」根本没读这里）
+ */
+export function facilityStamp(key: string): string {
+  return gameFacilities.find((f) => f.key === key)?.stamp ?? '探险日志 · 营地设施'
+}

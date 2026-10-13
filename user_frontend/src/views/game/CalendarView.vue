@@ -14,7 +14,8 @@
         <div class="v4-sec-sub">藏宝图=已确认到货</div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="error" class="v4-err">探险地图加载失败：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
-        <div v-else class="timeline">
+        <div v-else>
+          <div v-if="days.length" class="timeline">
           <div
             v-for="(day, di) in days"
             :key="day.date"
@@ -41,7 +42,8 @@
                   <span class="lbl">{{ plan.has(item.Id) ? '已加入 ✓' : '想去' }}</span>
                 </button>
               </div>
-              <button v-if="day.count > 3" class="more" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + Math.max(0, Math.min(day.count, day.items.length) - 3) + ' 件，点我看全部 →' }}</button>
+              <!-- R27：按实际拿到的条数判断，避免 day.count>3 但只有 3 条时显示「还有 0 件」 -->
+              <button v-if="day.items.length > 3" class="more" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (day.items.length - 3) + ' 件，点我看全部 →' }}</button>
               <div v-if="day.items.length === 0" class="empty-day">这天营地很安静，没有新大陆</div>
             </div>
           </div>
@@ -59,6 +61,9 @@
               </div>
             </div>
           </div>
+          </div>
+          <!-- R27：无报错但一天都没有 → 空态说明（计划不持久化是 v1 设计，不改） -->
+          <div v-if="!days.length" class="v4-empty">最近没有新大陆抵达 —— 探险计划不留档，刷新页面重新看看 🧭</div>
         </div>
       </section>
 
@@ -186,7 +191,7 @@ onMounted(load)
 .tday.hot .tdate { color: var(--red); }
 .cards { display: flex; flex-direction: column; gap: 10px; }
 .treasure {
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 10px;
   padding: 12px 14px;

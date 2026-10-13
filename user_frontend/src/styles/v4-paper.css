@@ -16,6 +16,14 @@
   --gold: #C99B3F;
   --line: #D8CDB8;
   --paper-card: #FFFDF6;
+  /* R27 收敛硬编码色值：以下 token 原值来自各 panel 页 scoped 样式，原值同步注释 */
+  --pulse-green: #9BE08A;   /* 服务器脉搏亮点：原 DiscoveryView #9BE08A */
+  --on-dark: #FFFFFF;       /* 深色/彩色底上的白字：原 ShopView #fff */
+  --ember: #FFB25E;         /* 火光橙：原 ShopView #ffb25e */
+  --red-deep: #A33319;      /* 暗红（按压阴影）：原 ShopView #a33319 */
+  --gold-deep: #9A7627;     /* 暗金（按压阴影）：原 ShopView #9a7627 */
+  --line-deep: #C9BFA9;     /* 深线条/弱文字：原 ShopView #c9bfa9 */
+  --scrim: #00000040;       /* 25% 黑遮罩：原 ShopView #00000040 */
 
   color: var(--ink);
   background: var(--paper);
@@ -23,6 +31,7 @@
     radial-gradient(circle at 20% 10%, rgba(217, 72, 43, 0.05), transparent 40%),
     radial-gradient(circle at 85% 80%, rgba(46, 95, 163, 0.05), transparent 40%);
   min-height: 100vh;
+  min-height: 100dvh;   /* 移动端地址栏收放时高度不跳（App.vue 同款双行写法） */
   font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
@@ -183,10 +192,12 @@
   font-weight: 700;
 }
 
-/* 动效纪律：只用 transform/opacity；尊重减少动态偏好 */
+/* 动效纪律：只用 transform/opacity；尊重减少动态偏好
+   R27：animation-duration: 0.001s → animation: none —— 装饰动画直接停掉，
+   状态型 transform（拨杆/进度条）由下面第二段媒体查询用 !important 保住 */
 @media (prefers-reduced-motion: reduce) {
   .v4-scope *, .v4-scope *::before, .v4-scope *::after {
-    animation-duration: 0.001s !important;
+    animation: none !important;
     transition-duration: 0.001s !important;
   }
 }

@@ -187,6 +187,7 @@ export default {
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 2rem); /* R27：移动端地址栏收放高度不跳 */
 }
 
 /* ==================== 尺寸变体 ==================== */
@@ -198,6 +199,7 @@ export default {
   max-width: 100%;
   height: 100%;
   max-height: 100vh;
+  max-height: 100dvh; /* R27：移动端地址栏收放高度不跳 */
   border-radius: 0;
 }
 

@@ -8,8 +8,9 @@
         <p>探险家的衣帽间 —— 点一套试穿，整个营地跟着换天色。</p>
       </header>
 
-      <!-- 双 Tab：穿搭｜装备库（/game/outfit 单一入口，页内 state 切换不跳路由） -->
-      <div class="tabs" role="tablist" aria-label="换装">
+      <!-- 双 Tab：穿搭｜装备库（/game/outfit 单一入口，页内 state 切换不跳路由）；
+           R27：左右箭头切换并移动焦点（WAI-ARIA tabs 键盘交互） -->
+      <div class="tabs" role="tablist" aria-label="换装" @keydown="onTabKeydown">
         <button
           role="tab"
           :aria-selected="tab === 'outfit'"
@@ -122,6 +123,20 @@ watch(tab, (v) => {
     /* 记不住就每次默认穿搭，不打扰 */
   }
 })
+
+/** R27：Tab 键位导航 —— 左右箭头切换并把焦点跟过去（WAI-ARIA tabs 键盘交互） */
+function onTabKeydown(e: KeyboardEvent) {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+  const tabs = Array.from(
+    (e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]'),
+  )
+  const i = tabs.indexOf(document.activeElement as HTMLElement)
+  if (i < 0) return
+  e.preventDefault()
+  const next = (i + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+  tabs[next].click()
+  tabs[next].focus()
+}
 
 type OutfitId = 'light' | 'dark' | 'system'
 
@@ -301,7 +316,7 @@ onBeforeUnmount(() => {
 /* 服装卡：设计稿 game-theme.html 原值 */
 .outfit {
   position: relative;
-  background: #FFFDF6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 12px;
   padding: 16px;
