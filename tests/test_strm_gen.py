@@ -75,19 +75,19 @@ class TestResolveCollision:
 
 class TestVerifyCompleteness:
     def _videos(self):
-        # (rel, fid, size)
+        # (drive_id, rel, fid, size)
         return [
-            ("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "f1", 100),
-            ("MoviePilot/剧集/A/Season 1/A - S01E02.mkv", "f2", 100),
-            ("MoviePilot/剧集/A/Season 1/A - S01E03.mkv", "f3", 100),
-            ("MoviePilot/剧集/B/Season 1/B - S01E01.mkv", "f4", 100),
+            ("d1", "MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "f1", 100),
+            ("d1", "MoviePilot/剧集/A/Season 1/A - S01E02.mkv", "f2", 100),
+            ("d1", "MoviePilot/剧集/A/Season 1/A - S01E03.mkv", "f3", 100),
+            ("d1", "MoviePilot/剧集/B/Season 1/B - S01E01.mkv", "f4", 100),
         ]
 
     def _make_state_on_disk(self, videos, tmp_path, skip=()):
-        # state: {rel: (fid, size, spath)}，并在 tmp_path 下创建真实 .strm 文件
+        # state: {(drive_id, rel): (fid, size, spath)}，并在 tmp_path 下创建真实 .strm 文件
         import os
         state = {}
-        for rel, fid, size in videos:
+        for did, rel, fid, size in videos:
             if any(s in rel for s in skip):
                 continue
             spath = rel.replace("MoviePilot/", "").replace(".mkv", ".strm")
@@ -95,13 +95,13 @@ class TestVerifyCompleteness:
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w") as f:
                 f.write("x")
-            state[rel] = (fid, size, spath)
+            state[(did, rel)] = (fid, size, spath)
         return state
 
     def test_all_complete(self, tmp_path):
         videos = self._videos()
         state = self._make_state_on_disk(videos, tmp_path)
-        result = sg._verify_completeness(videos, state, "MoviePilot/", str(tmp_path))
+        result = sg._verify_completeness(videos, state, ["MoviePilot/"], str(tmp_path))
         assert result["total_series"] == 2  # A/Season 1, B/Season 1
         assert result["incomplete_series"] == 0
 
@@ -109,10 +109,10 @@ class TestVerifyCompleteness:
         videos = self._videos()
         # state 缺了 A 的 E03
         state = self._make_state_on_disk(videos, tmp_path, skip=("E03",))
-        result = sg._verify_completeness(videos, state, "MoviePilot/", str(tmp_path))
+        result = sg._verify_completeness(videos, state, ["MoviePilot/"], str(tmp_path))
         assert result["incomplete_series"] == 1
         inc = result["incomplete"][0]
-        assert inc["series"] == "剧集/A/Season 1"
+        assert inc["series"] == ("d1", "剧集/A/Season 1")
         assert inc["missing_count"] == 1
         assert any("E03" in m for m in inc["missing_sample"])
 
@@ -125,10 +125,10 @@ class TestVerifyCompleteness:
         import os
         gone = os.path.join(str(tmp_path), "剧集/A/Season 1/A - S01E01.strm")
         os.remove(gone)
-        result = sg._verify_completeness(videos, state, "MoviePilot/", str(tmp_path))
+        result = sg._verify_completeness(videos, state, ["MoviePilot/"], str(tmp_path))
         assert result["incomplete_series"] == 1
         inc = result["incomplete"][0]
-        assert inc["series"] == "剧集/A/Season 1"
+        assert inc["series"] == ("d1", "剧集/A/Season 1")
         assert inc["missing_count"] == 1
 
 
@@ -171,9 +171,10 @@ class TestStrmGenModel:
         assert {"remote_path", "file_id", "size", "strm_path", "updated_at"} <= cols
 
     def test_remote_path_is_pk(self):
+        # 两盘全挂：主键为 (drive_id, remote_path) 复合键（同 rel 可在多盘并存）
         from backend.emby_server.models import StrmGenFile
         pks = [c.key for c in StrmGenFile.__table__.primary_key.columns]
-        assert pks == ["remote_path"]
+        assert pks == ["drive_id", "remote_path"]
 
 
 class TestRoutesRegistered:
@@ -270,23 +271,23 @@ class TestVerifyDisk:
 
     def test_missing_on_disk_counts_as_incomplete(self, tmp_path):
         videos = [
-            ("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "f1", 100),
-            ("MoviePilot/剧集/A/Season 1/A - S01E02.mkv", "f2", 100),
+            ("d1", "MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "f1", 100),
+            ("d1", "MoviePilot/剧集/A/Season 1/A - S01E02.mkv", "f2", 100),
         ]
         # DB 有行，但磁盘上一个文件都没有
-        state = {rel: (fid, size, rel.replace(".mkv", ".strm").replace("MoviePilot/", ""))
-                 for rel, fid, size in videos}
-        result = sg._verify_completeness(videos, state, "MoviePilot/", strm_root=str(tmp_path))
+        state = {("d1", rel): (fid, size, rel.replace(".mkv", ".strm").replace("MoviePilot/", ""))
+                 for _, rel, fid, size in videos}
+        result = sg._verify_completeness(videos, state, ["MoviePilot/"], strm_root=str(tmp_path))
         assert result["incomplete_series"] == 1
         assert result["incomplete"][0]["strm_count"] == 0
 
     def test_present_on_disk_counts_as_complete(self, tmp_path):
-        videos = [("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "f1", 100)]
+        videos = [("d1", "MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "f1", 100)]
         spath = "剧集/A/Season 1/A - S01E01.strm"
         (tmp_path / "剧集/A/Season 1").mkdir(parents=True)
         (tmp_path / spath).write_text("x")
-        state = {videos[0][0]: ("f1", 100, spath)}
-        result = sg._verify_completeness(videos, state, "MoviePilot/", strm_root=str(tmp_path))
+        state = {("d1", videos[0][1]): ("f1", 100, spath)}
+        result = sg._verify_completeness(videos, state, ["MoviePilot/"], strm_root=str(tmp_path))
         assert result["incomplete_series"] == 0
 
 
@@ -311,7 +312,7 @@ class TestRunGenerationMocked:
         monkeypatch.setattr(sg, "_load_state", lambda: dict(state or {}))
         saved: dict = {}
         monkeypatch.setattr(sg, "_save_state_rows",
-                            lambda rows: saved.update({r[0]: r for r in rows}))
+                            lambda rows: saved.update({(r[0], r[1]): r for r in rows}))
         deleted: list = []
         monkeypatch.setattr(sg, "_delete_state_rows",
                             lambda rows, db=None: deleted.extend(rows))
@@ -338,7 +339,7 @@ class TestRunGenerationMocked:
 
     def test_incremental_skips_unchanged(self, tmp_path, monkeypatch):
         videos = [("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "fid1", 100)]
-        state = {"MoviePilot/剧集/A/Season 1/A - S01E01.mkv":
+        state = {("d1", "MoviePilot/剧集/A/Season 1/A - S01E01.mkv"):
                  ("fid1", 100, "剧集/A/Season 1/A - S01E01.strm")}
         (tmp_path / "剧集/A/Season 1").mkdir(parents=True)
         (tmp_path / "剧集/A/Season 1/A - S01E01.strm").write_text("old")
@@ -353,7 +354,7 @@ class TestRunGenerationMocked:
     def test_size_change_rebuilds(self, tmp_path, monkeypatch):
         """P3-9：size 变化也触发重建（原来只比 file_id）。"""
         videos = [("MoviePilot/剧集/A/Season 1/A - S01E01.mkv", "fid1", 999)]
-        state = {"MoviePilot/剧集/A/Season 1/A - S01E01.mkv":
+        state = {("d1", "MoviePilot/剧集/A/Season 1/A - S01E01.mkv"):
                  ("fid1", 100, "剧集/A/Season 1/A - S01E01.strm")}
         (tmp_path / "剧集/A/Season 1").mkdir(parents=True)
         (tmp_path / "剧集/A/Season 1/A - S01E01.strm").write_text("old")
@@ -368,6 +369,8 @@ class TestRunGenerationMocked:
     def test_multi_drive(self, tmp_path, monkeypatch):
         """P1-2：不指定 drive 时遍历所有共享盘（原来只跑第一个）。"""
         def fake_iter(drive_id, dir_path, strict=True, **kwargs):
+            # 真实 iter_drive_videos 只 yield 3 元组；盘标签由合并循环按 r["did"] 打
+            # （**kwargs 吸收 subtree_listing 等新参数）
             return iter([(f"MoviePilot/{drive_id}/a.mkv", f"fid-{drive_id}", 10)])
         monkeypatch.setattr(sg, "iter_drive_videos", fake_iter)
         monkeypatch.setattr(sg, "_discover_drives", lambda: {"d1": ["s"], "d2": ["s"]})
@@ -403,8 +406,8 @@ class TestRunGenerationMocked:
         增量不再做全量 stale 对比（增量列举只有 delta，会误杀；删除信号走墓碑）。"""
         videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
         state = {
-            "MoviePilot/剧集/A/a.mkv": ("fid1", 100, "剧集/A/a.strm"),
-            "MoviePilot/剧集/OLD/old.mkv": ("fidOld", 100, "剧集/OLD/old.strm"),
+            ("d1", "MoviePilot/剧集/A/a.mkv"): ("fid1", 100, "剧集/A/a.strm"),
+            ("d1", "MoviePilot/剧集/OLD/old.mkv"): ("fidOld", 100, "剧集/OLD/old.strm"),
         }
         (tmp_path / "剧集/A").mkdir(parents=True)
         (tmp_path / "剧集/A/a.strm").write_text("x")
@@ -421,12 +424,12 @@ class TestRunGenerationMocked:
         assert res["stats"]["pruned"] == 1
         assert not (tmp_path / "剧集/OLD/old.strm").exists()
         assert (tmp_path / "剧集/A/a.strm").exists()
-        assert deleted == ["MoviePilot/剧集/OLD/old.mkv"]
+        assert deleted == [("d1", "MoviePilot/剧集/OLD/old.mkv")]
 
     def test_prune_dry_run_by_default(self, tmp_path, monkeypatch):
         """默认 dry_run=true：只记 would-delete，不真删。"""
         videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
-        state = {"MoviePilot/剧集/OLD/old.mkv": ("fidOld", 100, "剧集/OLD/old.strm")}
+        state = {("d1", "MoviePilot/剧集/OLD/old.mkv"): ("fidOld", 100, "剧集/OLD/old.strm")}
         (tmp_path / "剧集/OLD").mkdir(parents=True)
         (tmp_path / "剧集/OLD/old.strm").write_text("x")
         _saved, deleted = self._patch_all(tmp_path, monkeypatch, videos, state=state)
@@ -443,7 +446,7 @@ class TestRunGenerationMocked:
     def test_prune_incremental_stale_not_compared(self, tmp_path, monkeypatch):
         """增量不做全量 stale 对比：state 里有但 delta 里没有的条目不动。"""
         videos = [("MoviePilot/剧集/A/a.mkv", "fid1", 100)]
-        state = {"MoviePilot/剧集/OLD/old.mkv": ("fidOld", 100, "剧集/OLD/old.strm")}
+        state = {("d1", "MoviePilot/剧集/OLD/old.mkv"): ("fidOld", 100, "剧集/OLD/old.strm")}
         (tmp_path / "剧集/OLD").mkdir(parents=True)
         (tmp_path / "剧集/OLD/old.strm").write_text("x")
         _saved, deleted = self._patch_all(tmp_path, monkeypatch, videos, state=state)
@@ -871,3 +874,107 @@ class TestPerDriveFailureIsolation:
             sg._set_progress(running=False, phase="idle")
         assert res["ok"] is False
         assert "列举失败" in res["error"]
+
+
+class TestSourceDirs:
+    """两盘全挂：source_dir 支持多目录（逗号分隔），默认保持单目录行为。"""
+
+    def test_default_single_dir(self):
+        assert sg.source_dirs(_FakeDb({})) == ["MoviePilot/"]
+        assert sg.source_dir(_FakeDb({})) == "MoviePilot/"
+
+    def test_multi_dir_parsing(self):
+        db = _FakeDb({"strm_gen_source_dir": "MoviePilot/, nastool/"})
+        assert sg.source_dirs(db) == ["MoviePilot/", "nastool/"]
+        assert sg.source_dir(db) == "MoviePilot/"  # 兼容：取第一项
+
+    def test_normalization(self):
+        db = _FakeDb({"strm_gen_source_dir": " MoviePilot ,/nastool//,,"})
+        assert sg.source_dirs(db) == ["MoviePilot/", "nastool/"]
+
+    def test_empty_means_drive_root(self):
+        # 显式配空 = 网盘根（与旧 source_dir 返回 "" 语义一致）
+        assert sg.source_dirs(_FakeDb({"strm_gen_source_dir": ""})) == []
+        assert sg.source_dir(_FakeDb({"strm_gen_source_dir": ""})) == ""
+
+
+class TestListerMultiDir:
+    """两盘全挂：DriveChangesLister 接受目录列表，全量一次扁平拉取。"""
+
+    def test_full_mode_single_flat_fetch(self, monkeypatch):
+        import backend.emby_server.strm_source as ssrc
+        calls = []
+
+        def fake_iter(drive_id, dir_path, strict=True, **kwargs):
+            calls.append((drive_id, dir_path, strict))
+            yield ("MoviePilot/a.mkv", "F1", 10)
+            yield ("nastool/b.mkv", "F2", 20)
+
+        monkeypatch.setattr(sg, "iter_drive_videos", fake_iter)
+        l = ssrc.DriveChangesLister("d1", ["MoviePilot/", "nastool/"])
+        assert l.dir_paths == ["MoviePilot", "nastool"]  # 归一化去斜杠
+        assert l.dir_path == "MoviePilot"  # 兼容旧属性
+        items = list(l.iter_videos(incremental=False))
+        assert len(calls) == 1  # 不随目录数增加 API 调用
+        assert calls[0][0] == "d1"
+        assert list(calls[0][1]) == ["MoviePilot", "nastool"]
+        assert ("MoviePilot/a.mkv", "F1", 10) in items
+        assert ("nastool/b.mkv", "F2", 20) in items
+
+    def test_single_str_still_works(self, monkeypatch):
+        import backend.emby_server.strm_source as ssrc
+        monkeypatch.setattr(sg, "iter_drive_videos",
+                            lambda drive_id, dir_path, strict=True: iter([]))
+        l = ssrc.DriveChangesLister("d1", "MoviePilot/")
+        assert l.dir_paths == ["MoviePilot"]
+        assert l.dir_path == "MoviePilot"
+
+
+class TestMultiVersionPreserved:
+    """用户硬要求：同集多版本（不同盘/不同清晰度）全部生成独立 .strm，
+    版本间永不互相淘汰。"""
+
+    def test_same_episode_two_versions_both_generated(self, tmp_path, monkeypatch):
+        per_drive = {
+            "d1": [("MoviePilot/剧集/楚乔传 (2017)/Season 1/楚乔传 - S01E01 [2160p].mkv",
+                    "fid-4k", 5000)],
+            "d2": [("nastool/剧集/楚乔传 (2017)/Season 1/楚乔传 - S01E01 [1080p].mkv",
+                    "fid-hd", 2000)],
+        }
+
+        def fake_iter(drive_id, dir_path, strict=True):
+            return iter(per_drive[drive_id])
+
+        monkeypatch.setattr(sg, "iter_drive_videos", fake_iter)
+        import backend.emby_server.strm_source as ssrc
+
+        def fake_lister_iter(self, incremental=True):
+            return sg.iter_drive_videos(self.drive_id, self.dir_paths)
+
+        monkeypatch.setattr(ssrc.DriveChangesLister, "iter_videos", fake_lister_iter)
+        monkeypatch.setattr(ssrc.DriveChangesLister, "save_checkpoint",
+                            lambda self: None)
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: {"d1": ["sa1"], "d2": ["sa2"]})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: str(tmp_path))
+        monkeypatch.setattr(sg, "_load_state", lambda: {})
+        saved = {}
+        monkeypatch.setattr(sg, "_save_state_rows",
+                            lambda rows: saved.update(
+                                {(r[0], r[1]): r for r in rows}))
+        import backend.integrations.store as _store
+        monkeypatch.setattr(_store, "write_values", lambda *a, **k: 0)
+        try:
+            res = sg.run_generation(
+                _FakeDb({"strm_gen_source_dir": "MoviePilot/,nastool/"}),
+                full=False)
+        finally:
+            sg._set_progress(running=False, phase="idle")
+        assert res["ok"] is True
+        assert res["stats"]["generated"] == 2
+        # 两个版本各有独立 .strm（rel 不同 → 输出路径天然区分）
+        assert (tmp_path / "剧集/楚乔传 (2017)/Season 1/楚乔传 - S01E01 [2160p].strm").exists()
+        assert (tmp_path / "剧集/楚乔传 (2017)/Season 1/楚乔传 - S01E01 [1080p].strm").exists()
+        # 状态键按盘区分，互不覆盖
+        assert ("d1", "MoviePilot/剧集/楚乔传 (2017)/Season 1/楚乔传 - S01E01 [2160p].mkv") in saved
+        assert ("d2", "nastool/剧集/楚乔传 (2017)/Season 1/楚乔传 - S01E01 [1080p].mkv") in saved

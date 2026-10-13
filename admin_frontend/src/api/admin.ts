@@ -1949,8 +1949,13 @@ export const saveStrmConfig = (data: { enabled: boolean; host_dir: string; conta
 /** .strm 生成器配置（总开关 / Drive 源目录 / 指定 Drive / 过期清理） */
 export interface StrmGenConfig {
   enabled: boolean
+  /** 主源目录（兼容旧前端，取第一项） */
   source_dir: string
-  /** 指定 Drive ID，空=自动选择 */
+  /** 源目录配置原文（逗号分隔多目录），新前端回显用 */
+  source_dir_raw?: string
+  /** 源目录列表 */
+  source_dirs?: string[]
+  /** 指定 Drive ID，空或 "all"=所有发现的盘 */
   drive_id: string
   /** 清理 Drive 上已不存在的 .strm 文件及状态行（不可逆） */
   prune: boolean

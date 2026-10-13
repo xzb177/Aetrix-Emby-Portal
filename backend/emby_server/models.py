@@ -790,14 +790,19 @@ class ChaseSourceState(Base):
 class StrmGenFile(Base):
     """.strm 生成器增量状态：Drive 文件 -> .strm 文件的去重记录。
 
-    remote_path 为网盘根相对路径（主键）；file_id/size 变化时触发重建
+    主键为 (drive_id, remote_path) 复合键：同一相对路径可能出现在多个盘上
+    （如两盘都有 MoviePilot/ 结构），单列主键在多盘模式下会冲突。
+    drive_id 为 _discover_drives() 的键（共享盘=driveId，个人盘=myDrive:<remote名>，
+    本地模式=listers 的 drive_key）。file_id/size 变化时触发重建
     （Drive 上替换文件会换 file_id，原地覆盖只变 size）。
     状态随 PG 备份走，替代旧独立脚本的 sqlite 状态文件（容器重建即丢）。
-    由 Base.metadata.create_all 自动建表，老库无需 ALTER。
+    由 Base.metadata.create_all 自动建表；老库由 _migrate_strm_gen_files_drive_id
+    补列 + 改主键（见 backend/database.py）。
     """
 
     __tablename__ = "strm_gen_files"
 
+    drive_id = Column(String(128), primary_key=True, default="")
     remote_path = Column(String(1024), primary_key=True)
     # 墓碑消费按 file_id IN 批量回查：加索引（老库由 _LEGACY_INDEXES 补，见 database.py）
     file_id = Column(String(128), nullable=False, index=True)

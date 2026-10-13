@@ -891,6 +891,12 @@ def _auto_migrate():
             ("notified_ok", "BOOLEAN", "0"),
             ("acknowledged_at", "DATETIME", "NULL"),
         ]),
+        # 两盘全挂（2026-10-13）：strm_gen_files 主键扩展为 (drive_id, remote_path)。
+        # 老库补 drive_id 列（默认 ''）；主键切换由 _migrate_strm_gen_files_drive_id
+        # 单独处理（含存量 drive_id 回填），见下。
+        ("strm_gen_files", [
+            ("drive_id", "VARCHAR(128)", "''"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
@@ -928,6 +934,8 @@ def _auto_migrate():
     _fix_station_message_from_user_fk(existing_tables, inspector)
     _widen_stream_title_columns(existing_tables, inspector)
     _backfill_orm_columns(existing_tables)
+    # 两盘全挂（2026-10-13）：strm_gen_files 主键扩展为 (drive_id, remote_path)
+    _migrate_strm_gen_files_drive_id(existing_tables)
     # v2.49.0：本次刚补上 video_resolution 列的老库，用文件名解析回填已有条目
     # （纯字符串解析，零 Drive 调用；只跑一次，下次启动列已存在不会再触发）
     if ("emby_items", "video_resolution") in _newly_added_columns:
@@ -1348,6 +1356,110 @@ def _column_ddl(col) -> str:
     else:
         return ddl
     return f"{ddl} DEFAULT {literal}"
+
+
+def _single_discovered_drive_key() -> str:
+    """rclone.conf 里恰好只有一个 drive remote 时返回它的驱动键。
+
+    键口径与 drive_changes.discover_drives() 一致（共享盘=team_drive，
+    个人盘=myDrive:<remote名>），但这里不 import drive_changes（它反向依赖
+    database，模块级 import 会循环；函数内 import 也可能在迁移时序上踩坑，
+    15 行解析自包含最稳）。
+    多个 drive 时返回 ""（调用方自行决定）。
+    """
+    import configparser
+    import os as _os
+    conf = _os.getenv("MOUNT_RCLONE_CONF", "/config/rclone/rclone.conf")
+    try:
+        cp = configparser.ConfigParser()
+        cp.read(conf, encoding="utf-8")
+    except Exception:
+        return ""
+    keys: list[str] = []
+    for section in cp.sections():
+        try:
+            if cp.get(section, "type", fallback="").strip().lower() != "drive":
+                continue
+            team_drive = cp.get(section, "team_drive", fallback="").strip()
+            keys.append(team_drive if team_drive else f"myDrive:{section}")
+        except Exception:
+            continue
+    return keys[0] if len(keys) == 1 else ""
+
+
+def _migrate_strm_gen_files_drive_id(existing_tables: set) -> None:
+    """两盘全挂（2026-10-13）：strm_gen_files 主键 remote_path → (drive_id, remote_path)。
+
+    同一相对路径可出现在多个盘上（如两盘都有 MoviePilot/ 结构），单列主键在
+    多盘模式下冲突。drive_id 列由 _auto_migrate 的 migrations 清单补齐。
+    幂等：主键已是复合则直接返回；列缺失时也返回（等清单补上后下次启动再跑）。
+
+    存量行 drive_id 回填口径：取 system_configs.strm_gen_drive_id；为空（自动
+    发现模式）且 rclone.conf 恰好只发现一个 drive 时用它的键，否则留 ''——
+    单盘历史下所有行同属一个盘，键一致即可保证新旧行对得上。
+
+    失败记警告不阻止启动：列已存在时新代码按 drive_id 过滤仍可正常工作，
+    复合主键是正确性护栏而非功能前提。
+    """
+    if "strm_gen_files" not in existing_tables:
+        return  # 新表由 create_all 按新模型（含复合主键）直接建
+    from sqlalchemy import inspect, text
+    try:
+        inspector = inspect(engine)
+        cols = {c["name"] for c in inspector.get_columns("strm_gen_files")}
+        if "drive_id" not in cols:
+            return
+        pk = inspector.get_pk_constraint("strm_gen_files") or {}
+        if set(pk.get("constrained_columns") or []) == {"drive_id", "remote_path"}:
+            return  # 已经是复合主键
+        with engine.begin() as conn:
+            # 1. 回填存量 drive_id
+            n = conn.execute(text(
+                "SELECT COUNT(*) FROM strm_gen_files "
+                "WHERE drive_id IS NULL OR drive_id = ''")).scalar() or 0
+            if n:
+                cfg = conn.execute(text(
+                    "SELECT value FROM system_configs "
+                    "WHERE key = 'strm_gen_drive_id'")).scalar() or ""
+                cfg = (cfg or "").strip()
+                if not cfg:
+                    cfg = _single_discovered_drive_key()
+                conn.execute(
+                    text("UPDATE strm_gen_files SET drive_id = :d "
+                         "WHERE drive_id IS NULL OR drive_id = ''"),
+                    {"d": cfg})
+                print(f"  🔧 已迁移: strm_gen_files.drive_id 回填 {n} 行 -> {cfg!r}")
+            # 2. 切主键
+            if engine.dialect.name == "postgresql":
+                conn.execute(text(
+                    "ALTER TABLE strm_gen_files ALTER COLUMN drive_id SET NOT NULL"))
+                old_name = pk.get("name")
+                if old_name:
+                    conn.execute(text(
+                        f"ALTER TABLE strm_gen_files DROP CONSTRAINT {old_name}"))
+                conn.execute(text(
+                    "ALTER TABLE strm_gen_files ADD PRIMARY KEY (drive_id, remote_path)"))
+            else:
+                # SQLite：不支持改主键，重建表（数据量 5 万级，一次性）
+                conn.execute(text("""CREATE TABLE IF NOT EXISTS strm_gen_files_new (
+                    drive_id VARCHAR(128) NOT NULL,
+                    remote_path VARCHAR(1024) NOT NULL,
+                    file_id VARCHAR(128) NOT NULL,
+                    size BIGINT DEFAULT 0,
+                    strm_path VARCHAR(1024) NOT NULL,
+                    updated_at DATETIME,
+                    PRIMARY KEY (drive_id, remote_path))"""))
+                conn.execute(text("""INSERT OR IGNORE INTO strm_gen_files_new
+                    (drive_id, remote_path, file_id, size, strm_path, updated_at)
+                    SELECT drive_id, remote_path, file_id, size, strm_path, updated_at
+                    FROM strm_gen_files"""))
+                conn.execute(text("DROP TABLE strm_gen_files"))
+                conn.execute(text("ALTER TABLE strm_gen_files_new RENAME TO strm_gen_files"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_strm_gen_files_file_id "
+                                  "ON strm_gen_files (file_id)"))
+        print("  🔧 已迁移: strm_gen_files 主键 -> (drive_id, remote_path)")
+    except Exception as exc:  # noqa: BLE001 — 迁移失败不阻止启动，见 docstring
+        print(f"  ⚠️ strm_gen_files 复合主键迁移跳过: {exc}")
 
 
 def _ensure_default_realm() -> None:

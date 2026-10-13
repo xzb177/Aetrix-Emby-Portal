@@ -102,10 +102,18 @@ class DriveChangesLister(SourceLister):
     # SystemConfig key 前缀：增量检查点（changes page token）
     TOKEN_KEY_PREFIX = "strm_gen_changes_token_"
 
-    def __init__(self, drive_id: str, dir_path: str, strict_dir: bool = True,
+    def __init__(self, drive_id: str, dir_path, strict_dir: bool = True,
                  subtree_listing: bool = True):
+        # dir_path: 单个目录（str，向后兼容）或目录列表（list[str]，两盘全挂）。
+        # 归一化为无首尾斜杠的相对路径列表；空列表/[""] 表示网盘根。
         self.drive_id = drive_id
-        self.dir_path = (dir_path or "").strip().strip("/")
+        if isinstance(dir_path, (list, tuple)):
+            parts = dir_path
+        else:
+            parts = [dir_path]
+        self.dir_paths = [p.strip().strip("/") for p in parts if p and p.strip().strip("/")]
+        # 向后兼容：旧调用方/测试按单个目录使用
+        self.dir_path = self.dir_paths[0] if self.dir_paths else ""
         # strict_dir=False：自动发现模式下，源目录不存在时跳过该盘而非报错
         # （不是每个盘都有媒体目录，缺目录是预期情况）
         self.strict_dir = strict_dir
@@ -155,11 +163,11 @@ class DriveChangesLister(SourceLister):
 
     def iter_videos(self, incremental: bool = True) -> Iterator[VideoItem | Tombstone]:
         if not incremental:
-            # 全量：回退到现有的 files.list 实现
+            # 全量：回退到现有的 files.list 实现（多目录：一次扁平拉取 + 本地多前缀过滤）
             self.used_incremental_path = False
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
-                self.drive_id, self.dir_path, strict=self.strict_dir,
+                self.drive_id, self.dir_paths, strict=self.strict_dir,
                 subtree_listing=self.subtree_listing)
             return
 
@@ -176,7 +184,7 @@ class DriveChangesLister(SourceLister):
                 self._new_token = token
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
-                self.drive_id, self.dir_path, strict=self.strict_dir,
+                self.drive_id, self.dir_paths, strict=self.strict_dir,
                 subtree_listing=self.subtree_listing)
             return
 
@@ -238,9 +246,9 @@ class DriveChangesLister(SourceLister):
             if rel is None:
                 self.path_resolve_skipped += 1
                 continue
-            # 过滤到 dir_path 子树
-            prefix = (self.dir_path + "/") if self.dir_path else ""
-            if prefix and not (rel == self.dir_path or rel.startswith(prefix)):
+            # 过滤到 dir_paths 子树（多目录：任一前缀命中即保留）
+            if self.dir_paths and not any(
+                    rel == dp or rel.startswith(dp + "/") for dp in self.dir_paths):
                 continue
             if not sg.is_video_path(rel):
                 continue
