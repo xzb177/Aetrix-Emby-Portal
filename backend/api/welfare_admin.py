@@ -5,18 +5,18 @@
 - POST /welfare/grant              开通/续期公益
 - POST /welfare/revoke             取消公益资格
 - POST /welfare/bulk-extend        批量延期
+- GET/POST /welfare/lottery/prizes 奖品列表/新增
+- PUT/DELETE /welfare/lottery/prizes/{id} 编辑/删除奖品
+- GET  /welfare/lottery/logs       抽奖记录
 - GET/PUT /welfare/config          公益配置读写
 """
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Optional, List
 
 from fastapi import Depends, HTTPException, Query
-
-logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -62,8 +62,7 @@ def welfare_users(
 
 class GrantRequest(BaseModel):
     user_id: int
-    # P2 修复（完美审查 B-P2-1）：负天数会穿透成"永不过期"，必须 ge=0。
-    days: int = Field(30, ge=0, description="天数，0=永不过期")
+    days: int = Field(30, description="天数，0=永不过期")
     channel: str = "admin"
 
 
@@ -108,8 +107,7 @@ def welfare_revoke(
 class BulkExtendRequest(BaseModel):
     min_expired_days: int = Field(0, description="过期天数下限")
     max_expired_days: int = Field(30, description="过期天数上限")
-    # P2 修复（完美审查 B-P2-1）：负天数会穿透成"永不过期"，必须 ge=0。
-    add_days: int = Field(30, ge=0, description="增加天数")
+    add_days: int = Field(30, description="增加天数")
 
 
 @admin_router.post("/welfare/bulk-extend")
@@ -120,36 +118,138 @@ def welfare_bulk_extend(
 ):
     """按过期天数范围批量延期"""
     now = datetime.now()
+    users = db.query(models.WebUser).filter(models.WebUser.is_welfare == True).all()  # noqa: E712
     from backend.emby_server import portal
     affected = 0
-    # P2 修复（完美审查 B-P2-3）：键集分页（id > last_id，每批 500），
-    # 与 welfare_expiry.check_welfare_expiry 同一口径——之前全表 .all()
-    # 无界加载进内存。
-    last_id = 0
-    while True:
-        users = (
-            db.query(models.WebUser)
-            .filter(models.WebUser.is_welfare == True, models.WebUser.id > last_id)  # noqa: E712
-            .order_by(models.WebUser.id)
-            .limit(500)
-            .all()
-        )
-        if not users:
-            break
-        for u in users:
-            last_id = u.id
-            exp = getattr(u, "welfare_expires_at", None)
-            if exp is None:
-                continue  # 永不过期跳过
-            expired_days = (now - exp).days
-            if expired_days < 0:
-                continue  # 未过期跳过
-            if req.min_expired_days <= expired_days <= req.max_expired_days:
-                portal.grant_welfare(db, u, "bulk_extend", req.add_days, granted_by=current_admin.id)
-                affected += 1
+    for u in users:
+        exp = getattr(u, "welfare_expires_at", None)
+        if exp is None:
+            continue  # 永不过期跳过
+        expired_days = (now - exp).days
+        if expired_days < 0:
+            continue  # 未过期跳过
+        if req.min_expired_days <= expired_days <= req.max_expired_days:
+            portal.grant_welfare(db, u, "bulk_extend", req.add_days, granted_by=current_admin.id)
+            affected += 1
     _audit(db, current_admin.id, "welfare_bulk_extend", "system", None, {"affected": affected, "add_days": req.add_days})
     db.commit()
     return {"success": True, "affected": affected}
+
+
+# ==================== 抽奖奖品管理 ====================
+
+def _prize_to_dict(p):
+    return {
+        "id": p.id,
+        "name": p.name,
+        "type": p.type,
+        "value": p.value,
+        "probability": p.probability,
+        "enabled": bool(p.enabled),
+    }
+
+
+@admin_router.get("/welfare/lottery/prizes")
+def lottery_prizes(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """奖品列表"""
+    prizes = db.query(models.LotteryPrize).order_by(models.LotteryPrize.id).all()
+    return [_prize_to_dict(p) for p in prizes]
+
+
+class PrizeRequest(BaseModel):
+    name: str
+    type: str = "days"
+    value: int = 0
+    probability: float = 1.0
+    enabled: bool = True
+
+
+@admin_router.post("/welfare/lottery/prizes")
+def lottery_prize_create(
+    req: PrizeRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """新增奖品"""
+    p = models.LotteryPrize(
+        name=req.name, type=req.type, value=req.value,
+        probability=req.probability, enabled=req.enabled,
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    _audit(db, current_admin.id, "lottery_prize_create", "lottery_prize", p.id, {"name": req.name})
+    db.commit()
+    return _prize_to_dict(p)
+
+
+class PrizeUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    type: Optional[str] = None
+    value: Optional[int] = None
+    probability: Optional[float] = None
+    enabled: Optional[bool] = None
+
+
+@admin_router.put("/welfare/lottery/prizes/{prize_id}")
+def lottery_prize_update(
+    prize_id: int,
+    req: PrizeUpdateRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """编辑奖品"""
+    p = db.query(models.LotteryPrize).filter(models.LotteryPrize.id == prize_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="奖品不存在")
+    for field in ("name", "type", "value", "probability", "enabled"):
+        v = getattr(req, field)
+        if v is not None:
+            setattr(p, field, v)
+    _audit(db, current_admin.id, "lottery_prize_update", "lottery_prize", p.id, {})
+    db.commit()
+    return _prize_to_dict(p)
+
+
+@admin_router.delete("/welfare/lottery/prizes/{prize_id}")
+def lottery_prize_delete(
+    prize_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """删除奖品"""
+    p = db.query(models.LotteryPrize).filter(models.LotteryPrize.id == prize_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="奖品不存在")
+    _audit(db, current_admin.id, "lottery_prize_delete", "lottery_prize", prize_id, {"name": p.name})
+    db.delete(p)
+    db.commit()
+    return {"success": True}
+
+
+@admin_router.get("/welfare/lottery/logs")
+def lottery_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """抽奖记录"""
+    q = db.query(models.LotteryLog).order_by(models.LotteryLog.id.desc())
+    total = q.count()
+    logs = q.offset((page - 1) * page_size).limit(page_size).all()
+    items = []
+    for log in logs:
+        items.append({
+            "id": log.id,
+            "username": log.user.username if log.user else "",
+            "prize_name": log.prize.name if log.prize else "",
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+        })
+    return {"total": total, "items": items}
 
 
 # ==================== 求片审核 ====================
@@ -243,12 +343,16 @@ def welfare_request_done(
 # ==================== 公益配置 ====================
 
 WELFARE_CONFIG_KEYS = {
+    "points_signin_min": "1",
+    "points_signin_max": "3",
+    "points_signin_streak_bonus": "2",
     "points_chat_daily_cap": "20",
     "points_redeem_7d": "100",
     "points_redeem_30d": "300",
     "welfare_grace_days": "7",
     "welfare_inactive_days": "30",
     "welfare_request_monthly": "3",
+    "lottery_cost": "10",
     # P0 统一货币体系：充值比例与红包规则
     "recharge_ratio": "1.2",
     # C4 商店改造：快捷金额
@@ -278,10 +382,6 @@ WELFARE_CONFIG_KEYS = {
     "lottery_auto_draw_enabled": "1",
     "lottery_draw_interval_sec": "60",
     "lottery_notify_winners": "1",
-    # 三重门：身份门（参赛者必须在 TG 群里，默认开）/ 资格门（新号限制天数、每日参加上限，默认 0=不限制）
-    "lottery_require_group_member": "1",
-    "lottery_min_account_age_days": "0",
-    "lottery_max_joins_per_day": "0",
     # 注册后 TG 绑定引导页总开关
     "tg_bind_guide_enabled": "1",
     # 求片 v2：总开关 / 附议 / 附议者入库通知（默认全开）
@@ -324,34 +424,16 @@ def welfare_config_set(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """保存公益配置（数值/开关键按 config_schema 校验，非法 400；空字符串=未设置，回退默认值）"""
-    from backend import config_schema
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=400, detail="配置必须是对象")
-    # 先整体校验再写库：任一非法直接 400，不会写入半截
-    normalized: dict[str, Optional[str]] = {}
+    """保存公益配置"""
+    updated = []
     for key, value in data.items():
         if key not in WELFARE_CONFIG_KEYS:
             continue
-        spec = config_schema.WELFARE_CONFIG_SCHEMA.get(key)
-        if spec is None:
-            normalized[key] = "" if value is None else str(value)
-            continue
-        style = "digit" if WELFARE_CONFIG_KEYS[key] in ("0", "1") else "word"
-        try:
-            normalized[key] = config_schema.normalize(key, spec, value, bool_style=style)
-        except config_schema.ConfigValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-    updated = []
-    for key, value in normalized.items():
         cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if value is None:
-            if cfg:
-                db.delete(cfg)
-        elif cfg:
-            cfg.value = value
+        if cfg:
+            cfg.value = str(value)
         else:
-            db.add(models.SystemConfig(key=key, value=value))
+            db.add(models.SystemConfig(key=key, value=str(value)))
         updated.append(key)
     _audit(db, current_admin.id, "welfare_config_update", "system", None, {"updated": updated})
     db.commit()
@@ -396,8 +478,6 @@ class RoundCreateRequest(BaseModel):
     prizes: List[PrizeItem]
     draw_at: Optional[str] = None
     max_participants: Optional[int] = None
-    lottery_type: str = "button"  # button=按钮抽奖 / password=口令抽奖
-    password_keyword: Optional[str] = None  # 口令抽奖时的关键词
 
 
 @admin_router.get("/welfare/lottery/rounds")
@@ -418,7 +498,7 @@ def list_lottery_rounds(
     rows = db.execute(
         text(
             """
-            SELECT r.id, r.title, r.chat_id, r.status, r.lottery_type, r.draw_at, r.created_at,
+            SELECT r.id, r.title, r.chat_id, r.status, r.draw_at, r.created_at,
                    (SELECT COUNT(*) FROM lottery_round_entries e WHERE e.round_id = r.id) AS participant_count,
                    (SELECT COUNT(*) FROM lottery_round_prizes p WHERE p.round_id = r.id) AS prize_count
             FROM lottery_rounds r
@@ -438,7 +518,6 @@ def list_lottery_rounds(
                 "title": d.get("title"),
                 "chat_id": d.get("chat_id"),
                 "status": d.get("status"),
-                "lottery_type": d.get("lottery_type") or "button",
                 "participant_count": d.get("participant_count"),
                 "prize_count": d.get("prize_count"),
                 "draw_at": d.get("draw_at"),
@@ -477,10 +556,6 @@ def create_lottery_round(
             raise HTTPException(status_code=400, detail="draw_at 时间格式无效")
     if req.max_participants is not None and req.max_participants < 1:
         raise HTTPException(status_code=400, detail="最大参与人数至少为 1")
-    if req.lottery_type not in ("button", "password"):
-        raise HTTPException(status_code=400, detail="抽奖类型只能是 button 或 password")
-    if req.lottery_type == "password" and not (req.password_keyword or "").strip():
-        raise HTTPException(status_code=400, detail="口令抽奖必须设置口令关键词")
     # 总开关：读 SystemConfig，查不到视为开启
     enabled_cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == "lottery_enabled").first()
     enabled_raw = enabled_cfg.value if enabled_cfg else "1"
@@ -512,29 +587,17 @@ def create_lottery_round(
         draw_at=dt,
         max_participants=req.max_participants,
         created_by=current_admin.id,
-        lottery_type=req.lottery_type,
-        password_keyword=req.password_keyword,
     )
-    _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": req.chat_id, "lottery_type": req.lottery_type})
+    _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": req.chat_id})
     db.commit()
-    # 新活动创建后通知到群（之前漏掉了，群里没人知道有新抽奖）。
-    # 通知失败不影响创建结果，只记日志。
-    try:
-        notify_result = lottery_module.notify_new_round(db, result.id)
-    except Exception:
-        notify_result = None
-        logger.exception("群抽奖新活动通知失败 round_id=%s（不影响创建结果）", result.id)
     return {
         "id": result.id,
         "title": result.title,
         "chat_id": result.chat_id,
         "status": result.status,
-        "lottery_type": result.lottery_type,
-        "password_keyword": result.password_keyword,
         "seed_hash": result.seed_hash,
         "draw_at": result.draw_at.isoformat() if result.draw_at else None,
         "created_at": result.created_at.isoformat() if result.created_at else None,
-        "notify": notify_result,
     }
 
 
@@ -599,77 +662,10 @@ def draw_lottery_round(
     row = db.execute(text("SELECT id, status FROM lottery_rounds WHERE id = :id"), {"id": round_id}).first()
     if row is None:
         raise HTTPException(status_code=404, detail="抽奖活动不存在")
-    status = dict(row._mapping).get("status")
-    if status == "done":
-        # 已开奖但有中奖者未发放（上次发奖中途失败）：只重跑发放。
-        # distribute_round 逐条原子认领，已发放的跳过，不会重复发奖。
-        if round_id not in lottery_module.pending_distribution_round_ids(db):
-            raise HTTPException(status_code=400, detail="该活动已开奖且奖品已全部发放")
-        distribute_result = lottery_module.distribute_round(db, round_id)
-        _audit(db, current_admin.id, "lottery_round_redistribute", "lottery_round", round_id, {"distributed": distribute_result.get("distributed", 0)})
-        db.commit()
-        winners = lottery_module.draw_round(db, round_id)
-        return {
-            "success": True,
-            "redistributed": True,
-            "winners": [
-                {"id": w.id, "entry_id": w.entry_id, "prize_id": w.prize_id, "distributed": bool(w.distributed)}
-                for w in (winners if isinstance(winners, list) else [])
-            ],
-            "distribute": distribute_result,
-        }
-    if status != "open":
+    if dict(row._mapping).get("status") != "open":
         raise HTTPException(status_code=400, detail="只能对进行中的活动开奖")
-    # 原子认领（与自动开奖调度 run_due_draws 同一口径）：只看 status 再开奖是读-判-写，
-    # 管理员手动开奖与调度/重复点击并发时会两边都开奖、两边都发奖
-    claimed = db.execute(
-        text("UPDATE lottery_rounds SET status='drawing', drawing_at=:now WHERE id=:id AND status='open'"),
-        {"id": round_id, "now": datetime.now()},
-    ).rowcount
-    db.commit()
-    if not claimed:
-        raise HTTPException(status_code=409, detail="该活动正在开奖或已开奖，请刷新后查看")
-    try:
-        winners = lottery_module.draw_round(db, round_id)
-        distribute_result = lottery_module.distribute_round(db, round_id)
-    except Exception as exc:
-        db.rollback()
-        # 与自动开奖 run_due_draws 同一口径：认领后开奖失败要把状态打回 open，
-        # 否则轮次永久卡死在 drawing（调度只扫 open、管理后台拒绝非 open 重试）。
-        # draw 已提交（status=done）但 distribute 失败时 WHERE drawing 匹配不到行，
-        # 不会误删开奖结果；未发放的中奖者走上面的 done+pending 路径补发。
-        # rowcount 区分三种结局，保证返回给管理员的文案与实际状态一致
-        # （之前三种结局都写"已恢复为可重试状态"，回滚失败/已 done 时与事实不符）。
-        reset_done = False
-        reset_failed = False
-        try:
-            reset_done = (
-                db.execute(
-                    text("UPDATE lottery_rounds SET status='open', drawing_at=NULL WHERE id=:id AND status='drawing'"),
-                    {"id": round_id},
-                ).rowcount
-                > 0
-            )
-            db.commit()
-        except Exception:
-            db.rollback()
-            reset_failed = True
-            logger.exception("群抽奖手动开奖状态回滚失败 round_id=%s", round_id)
-        if reset_failed:
-            detail = f"开奖失败：{exc}，且状态回滚失败（轮次可能卡在 drawing），请人工检查"
-        elif reset_done:
-            detail = f"开奖失败：{exc}，已恢复为可重试状态"
-        else:
-            detail = f"开奖失败：{exc}，开奖结果已保留，未发放的奖品可在轮次页重试补发"
-        raise HTTPException(status_code=500, detail=detail)
-    # 手动开奖也要通知到群（与自动开奖 run_due_draws 同一口径）。
-    # 之前漏掉了 notify 调用，导致管理后台点"开奖"后群里收不到开奖公告。
-    # 通知失败不影响开奖结果，只记日志。
-    try:
-        notify_result = lottery_module.notify_draw_results(db, round_id, winners)
-    except Exception:
-        notify_result = None
-        logger.exception("群抽奖手动开奖通知失败 round_id=%s（不影响开奖结果）", round_id)
+    winners = lottery_module.draw_round(db, round_id)
+    distribute_result = lottery_module.distribute_round(db, round_id)
     _audit(db, current_admin.id, "lottery_round_draw", "lottery_round", round_id, {"winner_count": len(winners) if isinstance(winners, list) else 0})
     db.commit()
     return {
@@ -679,7 +675,6 @@ def draw_lottery_round(
             for w in (winners if isinstance(winners, list) else [])
         ],
         "distribute": distribute_result,
-        "notify": notify_result,
     }
 
 
@@ -691,108 +686,12 @@ def cancel_lottery_round(
 ):
     """取消进行中的群抽奖活动。"""
     _get_lottery()
-    # P2 修复（完美审查 B-P2-2）：条件 UPDATE 原子取消，与调度器 run_due_draws
-    # 的 UPDATE ... WHERE status='open' 原子认领同一口径——否则管理员取消与
-    # 自动开奖竞态时，"奖已发出但轮次显示已取消"。
-    result = db.execute(
-        text("UPDATE lottery_rounds SET status = 'cancelled' "
-             "WHERE id = :id AND status = 'open'"),
-        {"id": round_id},
-    )
-    if result.rowcount == 1:
-        _audit(db, current_admin.id, "lottery_round_cancel", "lottery_round", round_id, {})
-        db.commit()
-        return {"success": True}
-    db.rollback()
-    row = db.execute(
-        text("SELECT id FROM lottery_rounds WHERE id = :id"), {"id": round_id}
-    ).first()
+    row = db.execute(text("SELECT id, status FROM lottery_rounds WHERE id = :id"), {"id": round_id}).first()
     if row is None:
         raise HTTPException(status_code=404, detail="抽奖活动不存在")
-    raise HTTPException(status_code=409, detail="该活动正在开奖或已开奖，无法取消")
-
-
-# ==================== 三重门·资格门：黑名单管理 ====================
-
-class LotteryBlacklistAdd(BaseModel):
-    user_id: int = Field(..., gt=0)
-    reason: str = Field("", max_length=200)
-
-
-@admin_router.get("/welfare/lottery/blacklist")
-def list_lottery_blacklist(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """抽奖黑名单列表（三重门·资格门）。"""
-    total = db.query(models.LotteryBlacklist).count()
-    rows = (
-        db.query(models.LotteryBlacklist)
-        .order_by(models.LotteryBlacklist.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    items = []
-    for r in rows:
-        u = db.query(models.WebUser).filter(models.WebUser.id == r.user_id).first()
-        items.append({
-            "id": r.id,
-            "user_id": r.user_id,
-            "username": getattr(u, "username", None),
-            "reason": r.reason,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        })
-    return {"total": total, "page": page, "page_size": page_size, "items": items}
-
-
-@admin_router.post("/welfare/lottery/blacklist")
-def add_lottery_blacklist(
-    body: LotteryBlacklistAdd,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """把用户加入抽奖黑名单（三重门·资格门）。"""
-    u = db.query(models.WebUser).filter(models.WebUser.id == body.user_id).first()
-    if not u:
-        raise HTTPException(status_code=404, detail="用户不存在")
-    exists = (
-        db.query(models.LotteryBlacklist)
-        .filter(models.LotteryBlacklist.user_id == body.user_id)
-        .first()
-    )
-    if exists:
-        raise HTTPException(status_code=400, detail="该用户已在黑名单中")
-    rec = models.LotteryBlacklist(
-        user_id=body.user_id,
-        reason=body.reason or None,
-        created_by=current_admin.id,
-    )
-    db.add(rec)
-    _audit(db, current_admin.id, "lottery_blacklist_add", "lottery_blacklist", body.user_id,
-           {"reason": body.reason})
-    db.commit()
-    return {"success": True, "id": rec.id}
-
-
-@admin_router.delete("/welfare/lottery/blacklist/{user_id}")
-def remove_lottery_blacklist(
-    user_id: int,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """把用户移出抽奖黑名单（三重门·资格门）。"""
-    rec = (
-        db.query(models.LotteryBlacklist)
-        .filter(models.LotteryBlacklist.user_id == user_id)
-        .first()
-    )
-    if not rec:
-        raise HTTPException(status_code=404, detail="该用户不在黑名单中")
-    db.delete(rec)
-    _audit(db, current_admin.id, "lottery_blacklist_remove", "lottery_blacklist", user_id, {})
+    if dict(row._mapping).get("status") != "open":
+        raise HTTPException(status_code=400, detail="只能取消进行中的活动")
+    db.execute(text("UPDATE lottery_rounds SET status = 'cancelled' WHERE id = :id"), {"id": round_id})
+    _audit(db, current_admin.id, "lottery_round_cancel", "lottery_round", round_id, {})
     db.commit()
     return {"success": True}
-

@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 
@@ -144,6 +145,7 @@ def _acquire_worker_lock(redis_client) -> bool:
 
 def _renew_worker_lock(redis_client):
     """后台线程：定期续期 worker 锁"""
+    global _worker_lock_token
     while not _shutdown_event.is_set():
         try:
             # 只续自己的锁（Lua 脚本保证原子性）
@@ -185,11 +187,6 @@ def _release_worker_lock(redis_client):
 
 _WORKER_STARTED_AT = time.time()
 
-#: 心跳写入间隔（秒）。必须小于心跳键的 TTL（60 秒），否则监控端会误判 stale。
-#: 可配（WORKER_HEARTBEAT_INTERVAL_SEC），但不要配到 >= 60。
-_HEARTBEAT_INTERVAL_SEC = max(5, int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SEC", "30") or 30))
-
-
 def _write_heartbeat(redis_client):
     """写 worker 心跳（供监控/健康检查）"""
     try:
@@ -203,40 +200,6 @@ def _write_heartbeat(redis_client):
         redis_client.setex("aetrix:worker:heartbeat", 60, json.dumps(heartbeat))
     except Exception as e:
         logger.warning(f"写 worker 心跳失败：{e}")
-
-
-def _heartbeat_loop(redis_client, interval_sec: float = _HEARTBEAT_INTERVAL_SEC):
-    """心跳循环（独立线程）：进程存活即心跳不断。
-
-    之所以不用主线程写：主线程要按顺序启动十几个后台任务，任何一步卡死
-    （如 fs_watcher 在超大目录树上建 inotify 监听、某次启动维护耗时过长）
-    都会导致主循环的心跳永远写不出去，而先启动的后台线程仍在正常工作——
-    管理后台就会显示 no_heartbeat，尽管 worker 实际在干活。
-    """
-    while not _shutdown_event.is_set():
-        _write_heartbeat(redis_client)
-        _shutdown_event.wait(interval_sec)
-
-
-_heartbeat_thread: threading.Thread | None = None
-
-
-def _start_heartbeat_thread(redis_client) -> threading.Thread:
-    """启动心跳线程。拿到单实例锁后尽早调用，不依赖后续启动步骤。
-
-    幂等：已有一个存活的心跳线程时直接返回它，避免重复启动。
-    """
-    global _heartbeat_thread
-    alive = _heartbeat_thread
-    if alive is not None and alive.is_alive():
-        return alive
-    t = threading.Thread(
-        target=_heartbeat_loop, args=(redis_client,),
-        daemon=True, name="worker-heartbeat",
-    )
-    t.start()
-    _heartbeat_thread = t
-    return t
 
 
 def main() -> int:
@@ -289,11 +252,6 @@ def main() -> int:
         target=_renew_worker_lock, args=(redis_client,), daemon=True, name="worker-lock-renew"
     )
     _lock_renew_thread.start()
-
-    # 6.5 心跳线程尽早启动：主线程接下来要按顺序启动十几个后台任务，任何一步
-    # 卡死都会导致主循环的心跳写不出去（而先起的后台线程仍在工作），管理后台
-    # 就会显示 no_heartbeat。独立心跳线程保证"进程活着"即可被监控到。
-    _start_heartbeat_thread(redis_client)
 
     # 7. 启动所有后台任务（与 main.py lifespan 的 worker 部分保持一致）
     started = []
@@ -363,18 +321,6 @@ def main() -> int:
                 logger.info("✅ 到期提醒已启动")
         except Exception as e:
             logger.warning(f"启动到期提醒失败（可忽略）: {e}")
-
-        # 系统告警：后台指标越线时通知管理员（R16 P0-1：原来只在 main.py lifespan
-        # 以 `if not _is_api_role` 启动，生产 api 进程 AETRIX_ROLE=api 被跳过、
-        # worker.py 从未调用 → 生产定时检查永不执行）。worker 进程有 Redis 单实例
-        # 锁，无双跑风险；main.py 的调用保留给单体模式。
-        try:
-            from backend import system_alerts
-            if system_alerts.start_alert_scheduler():
-                started.append("system_alerts")
-                logger.info("✅ 系统告警调度已启动")
-        except Exception as e:
-            logger.warning(f"启动系统告警调度失败（可忽略）: {e}")
 
         # C1 活力值：每日 00:00 扣减公益服用户活力值（daemon 线程，失败可忽略）
         try:

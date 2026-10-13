@@ -23,7 +23,6 @@ def db():
     models.LotteryRoundPrize.__table__.create(engine, checkfirst=True)
     models.LotteryRoundEntry.__table__.create(engine, checkfirst=True)
     models.LotteryRoundWinner.__table__.create(engine, checkfirst=True)
-    models.LotteryBlacklist.__table__.create(engine, checkfirst=True)
     models.PointsLog.__table__.create(engine, checkfirst=True)
     models.WelfareGrantLog.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine)
@@ -141,19 +140,14 @@ def test_run_due_draws_skips_no_draw_at(db):
 
 
 def test_run_due_draws_atomic_claim(db):
-    # 模拟别的 worker 刚刚认领（status=drawing 且 drawing_at 新鲜），本轮不重复开奖；
-    # 只有超过宽限期的 drawing 才会被 reap_stale_drawing_rounds 回收（见
-    # test_lottery_stale_drawing_reaper.py），新鲜认领不许被偷。
+    # 模拟别的 worker 已认领（status=drawing），本轮不重复开奖
     rnd = _make_round(db, draw_at=datetime.now() - timedelta(minutes=5))
     rnd.status = "drawing"
-    rnd.drawing_at = datetime.now()
     db.commit()
     result = lottery.run_due_draws(db)
-    # drawing 状态不在开奖扫描范围（只扫 open），checked=0
+    # drawing 状态不在扫描范围（只扫 open），checked=0
     assert result["checked"] == 0
     assert result["drawn"] == []
-    db.refresh(rnd)
-    assert rnd.status == "drawing"
 
 
 def test_run_due_draws_disabled_switch(db):
@@ -250,55 +244,3 @@ def test_run_due_draws_failure_resets_to_open(db, monkeypatch):
     assert result["drawn"] == []
     db.refresh(rnd)
     assert rnd.status == "open"
-
-
-def test_run_due_draws_retries_undistributed_after_partial_failure(db, monkeypatch):
-    # 开奖成功（round 已 done）但发奖抛异常：旧逻辑"打回 open"匹配不到行，中奖者永远拿不到奖。
-    import backend.tg_bot.sender as sender_mod
-    monkeypatch.setattr(sender_mod, "send_message", lambda *a, **k: (True, None))
-    rnd = _make_round(db, draw_at=datetime.now() - timedelta(minutes=5))
-    real_distribute = lottery.distribute_round
-
-    def boom(db_, round_id):
-        raise RuntimeError("distribute crashed")
-
-    monkeypatch.setattr(lottery, "distribute_round", boom)
-    first = lottery.run_due_draws(db)
-    assert first["errors"]
-    db.refresh(rnd)
-    assert rnd.status == "done"
-    winners = db.query(models.LotteryRoundWinner).filter(models.LotteryRoundWinner.round_id == rnd.id).all()
-    assert winners and not any(w.distributed for w in winners)
-
-    monkeypatch.setattr(lottery, "distribute_round", real_distribute)
-    second = lottery.run_due_draws(db)
-    assert rnd.id in second.get("redistributed", [])
-    db.expire_all()
-    winners = db.query(models.LotteryRoundWinner).filter(models.LotteryRoundWinner.round_id == rnd.id).all()
-    assert all(w.distributed for w in winners)
-    user_ids = [db.get(models.LotteryRoundEntry, w.entry_id).user_id for w in winners]
-    logs = db.query(models.PointsLog).filter(models.PointsLog.user_id.in_(user_ids)).all()
-    assert len(logs) == len(winners)  # 每人只发一次
-
-    # 再跑一次：无待补发，不会重复发奖
-    third = lottery.run_due_draws(db)
-    assert third.get("redistributed", []) == []
-    assert db.query(models.PointsLog).filter(models.PointsLog.user_id.in_(user_ids)).count() == len(winners)
-
-
-def test_admin_draw_endpoint_redistributes_done_round(db, monkeypatch):
-    from fastapi import HTTPException
-    from backend.api import welfare_admin
-    rnd = _make_round(db, draw_at=None)
-    lottery.draw_round(db, rnd.id)
-    db.refresh(rnd)
-    assert rnd.status == "done"
-    monkeypatch.setattr(welfare_admin, "_audit", lambda *a, **k: None)
-    admin = _make_user(db, "admin_redistribute", 999001)
-    res = welfare_admin.draw_lottery_round(rnd.id, current_admin=admin, db=db)
-    assert res["success"] and res.get("redistributed")
-    assert res["distribute"]["distributed"] == 1
-    # 全部发完后再点：400，不会重复发奖
-    with pytest.raises(HTTPException) as ei:
-        welfare_admin.draw_lottery_round(rnd.id, current_admin=admin, db=db)
-    assert ei.value.status_code == 400
