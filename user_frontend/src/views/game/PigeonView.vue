@@ -471,5 +471,6 @@ onMounted(() => { void load(true) })
   .bird .dot { animation: none; opacity: 1; }
   .wax { animation: none; }
   .letterbox, .pbody { animation: none; }
+  .deep-link:active { transform: none; }
 }
 </style>

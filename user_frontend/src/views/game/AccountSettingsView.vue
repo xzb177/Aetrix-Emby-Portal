@@ -24,7 +24,9 @@
       <!-- 我的订阅：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
       <section class="v4-sec" aria-label="我的订阅">
         <div class="v4-sec-sub">订阅到期、历史账单、取消续订都在这里</div>
+        <div v-if="subsError" class="v4-err">订阅加载失败：{{ subsError }}<br><button class="v4-retry" @click="loadSubs">重试</button></div>
         <ProfileSubscriptions
+          v-else
           :active-sub="activeSub"
           :subscriptions="subscriptions"
           :expiring-soon="expiringSoon"
@@ -49,6 +51,7 @@
             </button>
           </div>
           <div v-if="deviceLoading && !devices.length" class="v4-skeleton" style="height:120px"></div>
+          <div v-else-if="deviceError" class="v4-err">设备列表加载失败：{{ deviceError }}<br><button class="v4-retry" @click="loadDevices">重试</button></div>
           <div v-else-if="!devices.length" class="v4-empty">
             还没有设备记录 —— 用 Emby 客户端（Infuse / Forward 等）登录后会出现在这里
           </div>
@@ -137,6 +140,7 @@ import { authApi, subscriptionApi, isExpiringSoon, type MySubscription } from '@
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
+import { humanizeError } from '@/composables/usePanelApi'
 import { toastCopy, confirmCopy } from '@/constants/toastMessages'
 import { toUserMessage } from '@/utils/toUserMessage'
 
@@ -179,6 +183,7 @@ async function handleChangePassword() {
 
 // ===== 我的订阅（ProfileView 移植；展示层全在 ProfileSubscriptions.vue） =====
 const subscriptions = ref<MySubscription[]>([])
+const subsError = ref('')
 const cancellingSub = ref<number | null>(null)
 
 const activeSub = computed(
@@ -189,10 +194,12 @@ const isFreeRealm = computed(() => userStore.isFreeRealm)
 const realmNote = computed(() => userStore.realmNote)
 
 async function loadSubs() {
+  subsError.value = ''
   try {
     subscriptions.value = await subscriptionApi.getMine()
-  } catch {
-    // 订阅加载失败不阻塞页面
+  } catch (e) {
+    // 加载失败别装成"没订阅"，留错误态给用户重试
+    subsError.value = humanizeError(e)
   }
 }
 
@@ -214,17 +221,20 @@ async function cancelSubscription(s: MySubscription) {
 const devices = ref<MyDevice[]>([])
 const deviceInfo = ref<MyDevicesResponse | null>(null)
 const deviceLoading = ref(false)
+const deviceError = ref('')
 const removingDevice = ref('')
 const pendingRemove = ref('')
 
 async function loadDevices() {
   deviceLoading.value = true
+  deviceError.value = ''
   try {
     const res = await deviceApi.mine()
     devices.value = res.devices
     deviceInfo.value = res
-  } catch {
-    // 静默：设备卡加载失败不影响页面
+  } catch (e) {
+    // 加载失败别装成"没设备"，留错误态给用户重试
+    deviceError.value = humanizeError(e)
   } finally {
     deviceLoading.value = false
   }
@@ -321,7 +331,9 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 10px;
+  /* 触点扩展到 44px：透明 padding + 负 margin，视觉不变（R22 LeverSwitch 同款手法） */
+  padding: 13px 10px;
+  margin: -8px 0;
   background: var(--paper2);
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -375,7 +387,9 @@ onMounted(() => {
 .dev-badge.off { background: var(--au-danger-soft); color: var(--red); }
 .dev-remove {
   flex-shrink: 0;
-  padding: 6px 10px;
+  /* 触点扩展到 44px：透明 padding + 负 margin，视觉不变（R22 LeverSwitch 同款手法） */
+  padding: 13px 10px;
+  margin: -7px 0;
   background: transparent;
   border: none;
   border-radius: 8px;
@@ -437,7 +451,7 @@ onMounted(() => {
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 16px;
   outline: none;
   box-sizing: border-box;
 }
@@ -457,7 +471,7 @@ onMounted(() => {
   margin-top: 16px;
 }
 .acct-btn {
-  height: 40px;
+  height: 44px;
   padding: 0 16px;
   border-radius: 10px;
   font-size: 14px;

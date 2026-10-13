@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { ref, watch, onBeforeUnmount, onMounted } from 'vue'
 import { Send, RefreshCw, Check, X, Copy } from 'lucide-vue-next'
 import { tgApi } from '@/api/tg'
 import { useToast } from '@/composables/useToast'
@@ -194,15 +194,25 @@ watch(
   }
 )
 
+/** Esc 关闭（与 AppHeader 的 onDocKeydown 同例：弹窗打开时 Esc 触发关闭） */
+function onDocKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.modelValue) close()
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', onDocKeydown)
+})
+
 onBeforeUnmount(() => {
   stopCountdown()
   if (closeTimer) clearTimeout(closeTimer)
+  document.removeEventListener('keydown', onDocKeydown)
 })
 </script>
 
 <template>
   <div v-if="modelValue" class="modal-mask" @click.self="close">
-    <div class="modal-box tg-bind-modal">
+    <div class="modal-box tg-bind-modal" role="dialog" aria-modal="true" aria-label="绑定 Telegram">
       <button class="tg-close" type="button" aria-label="关闭" @click="close">
         <X :size="18" />
       </button>

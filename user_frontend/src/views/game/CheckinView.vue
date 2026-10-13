@@ -358,5 +358,6 @@ onUnmounted(() => window.clearInterval(dateTimer))
   .day.today::after { animation: none; }
   .seal-pop.go { animation: none; }
   .energy-fly.go { animation: none; }
+  .checkin-btn:active { transform: none; }
 }
 </style>

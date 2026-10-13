@@ -102,6 +102,8 @@
             <span class="payways-label">支付方式</span>
             <span class="payway on" aria-current="true"><span class="lbl">{{ methods[0].name || methods[0].id }}</span></span>
           </div>
+          <!-- P3-24：支付方式加载完成但列表为空时给空态（methodsReady 未就绪时不展示，避免加载中闪现） -->
+          <div v-else-if="methodsReady" class="v4-empty">暂无可用支付方式，请联系服主</div>
           <div class="fineprint">能量可用于续命活力值、兑换订阅、发红包 —— 不过期</div>
         </template>
       </section>
@@ -141,7 +143,7 @@
               </div>
               <div class="pr">
                 <div class="p">{{ planPriceText(plan) }}</div>
-                <div v-if="couponApplied && quoteOf('subscription', plan.id)" class="coupon-strip sm">
+                <div v-if="couponApplied && currency === 'y' && quoteOf('subscription', plan.id)" class="coupon-strip sm">
                   🎫 券后 {{ couponPlanPriceText(plan, quoteOf('subscription', plan.id)!) }}
                 </div>
               </div>
@@ -164,6 +166,7 @@
         <div class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
         <div v-else-if="!member" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="!trailLevels.length" class="v4-empty">等级路线尚未配置</div>
         <div v-else class="trail">
           <div
             v-for="lv in trailLevels"
@@ -250,7 +253,7 @@
           </div>
           <div v-else-if="couponApplied" class="redeem-coupon">
             <span>🎫 优惠券 <b>{{ couponApplied }}</b> 已应用，下单自动抵扣</span>
-            <button type="button" class="redeem-clear" @click="clearCoupon">✕</button>
+            <button type="button" class="redeem-clear" aria-label="移除优惠券" @click="clearCoupon">✕</button>
           </div>
           <div v-else-if="couponHint" class="redeem-coupon">
             <span>🎫 这张券可用，点「使用」应用抵扣</span>
@@ -606,7 +609,8 @@ async function loadAll() {
   }
   if (methodsRes.status === 'fulfilled') {
     methods.value = Array.isArray(methodsRes.value) ? methodsRes.value : []
-    methodsReady.value = true
+    // P3-24：空列表不算就绪 —— 下单按钮的 !methodsReady 绑定会自动禁用
+    methodsReady.value = methods.value.length > 0
     if (methods.value.length > 0) {
       payMethod.value = methods.value[0].id
     }
@@ -1276,6 +1280,7 @@ async function copyInviteCode() {
   .can:active,
   .charge:active,
   .buy:active,
+  .license:active,
   .redeem-btn:active {
     transform: none;
   }

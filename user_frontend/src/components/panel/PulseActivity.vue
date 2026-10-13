@@ -17,7 +17,8 @@ let timer = 0
 const motionMq = window.matchMedia('(prefers-reduced-motion: reduce)')
 
 const current = computed(() => {
-  if (!props.items.length) return '正在感知服务器…'
+  // items 为空走不到这里：DiscoveryView 只在非 loading/error 时渲染，
+  // 且 activityTexts 的空兜底是 ['暂无动态']，长度恒 ≥ 1
   return props.items[idx.value % props.items.length]
 })
 

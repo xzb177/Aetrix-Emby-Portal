@@ -1,7 +1,8 @@
 <template>
   <div class="v4-passport" role="list" aria-label="口味护照">
-    <h3>口味护照 · 已集 {{ stampedCount }}/{{ tastes.length }}</h3>
-    <div class="v4-stamps">
+    <h3>口味护照<template v-if="!rawMissing"> · 已集 {{ stampedCount }}/{{ tastes.length }}</template></h3>
+    <div v-if="rawMissing" class="v4-passport-empty">口味数据没拿到，刷新试试</div>
+    <div v-else class="v4-stamps">
       <div
         v-for="t in tastes"
         :key="t.key"
@@ -21,20 +22,21 @@
 import { computed } from 'vue'
 import type { TasteStamp } from '@/composables/usePanelApi'
 
-/** 12 口味固定顺序 + emoji（后端 TASTE_MAP 顺序，不许打乱） */
-const TASTE_ORDER: Array<{ key: string; emoji: string }> = [
-  { key: 'taste_anime', emoji: '🐉' },
-  { key: 'taste_drama_cn', emoji: '📺' },
-  { key: 'taste_drama_us', emoji: '🎞️' },
-  { key: 'taste_drama_jpkr', emoji: '🌸' },
-  { key: 'taste_movie_cn', emoji: '🎬' },
-  { key: 'taste_movie_foreign', emoji: '🌍' },
-  { key: 'taste_movie_anime', emoji: '✨' },
-  { key: 'taste_doc', emoji: '🌊' },
-  { key: 'taste_variety', emoji: '🎤' },
-  { key: 'taste_kids', emoji: '🧒' },
-  { key: 'taste_suspense', emoji: '🔍' },
-  { key: 'taste_scifi', emoji: '🚀' },
+/** 12 口味固定顺序 + emoji + 默认中文名（后端 TASTE_MAP 顺序，不许打乱；
+ *  默认名抄后端 panel_achievements.py 的 TASTE_MAP，s.name 拿不到时兜底） */
+const TASTE_ORDER: Array<{ key: string; emoji: string; name: string }> = [
+  { key: 'taste_anime', emoji: '🐉', name: '国漫' },
+  { key: 'taste_drama_cn', emoji: '📺', name: '国产剧' },
+  { key: 'taste_drama_us', emoji: '🎞️', name: '欧美剧' },
+  { key: 'taste_drama_jpkr', emoji: '🌸', name: '日韩剧' },
+  { key: 'taste_movie_cn', emoji: '🎬', name: '华语电影' },
+  { key: 'taste_movie_foreign', emoji: '🌍', name: '外语电影' },
+  { key: 'taste_movie_anime', emoji: '✨', name: '动画电影' },
+  { key: 'taste_doc', emoji: '🌊', name: '纪录片' },
+  { key: 'taste_variety', emoji: '🎤', name: '综艺' },
+  { key: 'taste_kids', emoji: '🧒', name: '儿童' },
+  { key: 'taste_suspense', emoji: '🔍', name: '悬疑' },
+  { key: 'taste_scifi', emoji: '🚀', name: '科幻' },
 ]
 
 const props = defineProps<{
@@ -42,13 +44,16 @@ const props = defineProps<{
   raw: Record<string, TasteStamp> | undefined
 }>()
 
+/** 整表没拿到：诚实文案（口径与 CollectorView 一致），不画假章 */
+const rawMissing = computed(() => !props.raw)
+
 const tastes = computed(() =>
   TASTE_ORDER.map((o) => {
     const s = props.raw?.[o.key]
     return {
       key: o.key,
       emoji: o.emoji,
-      name: s?.name || '未知',
+      name: s?.name || o.name,
       stamped: !!s?.stamped,
     }
   }),
@@ -80,6 +85,13 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
   font-size: 13px;
   letter-spacing: 2px;
   margin: 0 0 12px;
+}
+/* 整表没拿到时的诚实文案：颜色用文件里已有的白 55% 档，不新增色值 */
+.v4-passport-empty {
+  font-size: 12px;
+  line-height: 1.8;
+  color: rgba(255, 255, 255, 0.55);
+  padding: 8px 0;
 }
 .v4-stamps {
   display: grid;

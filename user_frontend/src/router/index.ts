@@ -4,6 +4,9 @@ import { useUserStore } from '@/stores/user'
 import { pageTitle } from '@/composables/useBranding'
 // v4 面板特性开关（VITE_PANEL_V4_ENABLED=0 时回退老首页）
 import { isPanelV4Enabled } from '@/composables/usePanelApi'
+// chunk 加载失败兜底的提示：useToast 不支持 action/点击回调，
+// 重试按钮用原生 DOM 挂一个小横条（只用 --au-* 现有 token）
+import { useToast } from '@/composables/useToast'
 
 const panelV4 = isPanelV4Enabled()
 
@@ -263,6 +266,41 @@ router.afterEach((to) => {
 // 计数放 sessionStorage（跨 reload 持久）：连续失败最多刷新 2 次就停，
 // 杜绝 index.html 被缓存时的死循环；每次导航成功清零，下次部署有新预算。
 const CHUNK_RELOAD_KEY = 'spa-chunk-reload-count'
+// chunk 加载失败：预算耗尽后用户停在旧页/空白页，挂一个可点的重试横条。
+// 点「重试」清掉重载计数后 location.reload()；toast 负责文案提示。
+const CHUNK_RETRY_BAR_ID = 'spa-chunk-retry'
+function showChunkRetryBar() {
+  if (typeof document === 'undefined' || document.getElementById(CHUNK_RETRY_BAR_ID)) return
+  const bar = document.createElement('div')
+  bar.id = CHUNK_RETRY_BAR_ID
+  bar.setAttribute('role', 'alert')
+  bar.style.cssText = [
+    'position:fixed', 'top:12px', 'left:50%', 'transform:translateX(-50%)',
+    'z-index:99999', 'display:flex', 'align-items:center', 'gap:12px',
+    'padding:10px 14px', 'border-radius:12px',
+    'background:var(--au-bg-soft,#11100e)',
+    'border:1px solid var(--au-danger-border,rgba(217,119,107,.28))',
+    'color:var(--au-text,#f3ede4)', 'font-size:13px',
+    'box-shadow:0 8px 32px rgba(0,0,0,.6)',
+  ].join(';')
+  const tip = document.createElement('span')
+  tip.textContent = '页面没加载出来'
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.textContent = '重试'
+  btn.style.cssText = [
+    'padding:6px 16px', 'border-radius:8px', 'cursor:pointer',
+    'font-size:13px', 'font-weight:700',
+    'border:1px solid var(--au-danger,#d9776b)',
+    'background:var(--au-danger,#d9776b)', 'color:#fff',
+  ].join(';')
+  btn.addEventListener('click', () => {
+    try { sessionStorage.removeItem(CHUNK_RELOAD_KEY) } catch { /* 隐私模式忽略 */ }
+    window.location.reload()
+  })
+  bar.append(tip, btn)
+  document.body.appendChild(bar)
+}
 router.onError((err: unknown) => {
   const msg = String((err as Error)?.message ?? err ?? '')
   if (
@@ -277,6 +315,10 @@ router.onError((err: unknown) => {
         sessionStorage.setItem(CHUNK_RELOAD_KEY, String(n + 1))
       } catch { /* 隐私模式忽略 */ }
       window.location.reload()
+    } else {
+      // 预算耗尽：不再静默停留，给用户一个手动重试的出口
+      useToast().error('页面没加载出来，点重试重新加载', 10000)
+      showChunkRetryBar()
     }
   }
 })
@@ -284,6 +326,8 @@ router.afterEach(() => {
   try {
     sessionStorage.removeItem(CHUNK_RELOAD_KEY)
   } catch { /* 隐私模式忽略 */ }
+  // 导航成功：收掉重试横条
+  document.getElementById(CHUNK_RETRY_BAR_ID)?.remove()
 })
 
 // 关键路由预取：用户登录后大概率会去补给站（v4 /shop）/ 账号设置（/game/account），空闲时预加载对应 chunk

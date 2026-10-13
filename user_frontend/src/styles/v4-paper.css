@@ -160,6 +160,10 @@
   min-height: 44px;
 }
 .v4-retry:active { transform: scale(0.96); }
+/* R33：减少动态偏好下按压缩放停掉（与其他文件惯例一致） */
+@media (prefers-reduced-motion: reduce) {
+  .v4-retry:active { transform: none; }
+}
 
 /* 底部导航 */
 .v4-tabbar {
@@ -183,6 +187,12 @@
   text-decoration: none;
   color: var(--ink2);
   font-size: 11px;
+  /* P2-4 / R33：触点撑到 44px，内容 flex 居中，视觉不变 */
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
 }
 .v4-tabbar a .ic {
   font-size: 20px;

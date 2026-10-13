@@ -267,6 +267,7 @@ onMounted(load)
 /* 减少动态偏好：全局 transform:none 会让杆子右偏 4px，用 margin-left 补回居中 */
 @media (prefers-reduced-motion: reduce) {
   .board .pole { margin-left: -4px; }
+  .copybtn:active, .linkbtn:active { transform: none; }
 }
 .board .shout {
   font-size: 13px;
@@ -309,7 +310,7 @@ onMounted(load)
 .linkinput {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: 16px;
   color: var(--ink2);
   background: var(--paper-card);
   border: 1.5px solid var(--line);

@@ -5,23 +5,14 @@
   /* 所有可交互元素按下态 - 统一缩放比例 */
   button:active,
   a:active,
-  .btn:active,
-  .neo-btn:active,
-  .quick-item:active,
-  .amount-btn:active,
-  .payment-btn:active,
-  .method-card:active,
-  .payment-option:active,
-  .faq-item:active,
-  .neo-card--clickable:active {
+  .btn:active {
     transform: scale(var(--neo-scale-press, 0.98));
     transition: transform var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
   }
 
   /* 禁用态不缩放 */
   button:disabled:active,
-  .btn:disabled:active,
-  .neo-btn--disabled:active {
+  .btn:disabled:active {
     transform: none;
     opacity: 0.5;
   }
@@ -35,12 +26,12 @@
   }
   /* 增大可点击区域 - 使用 Neo-Noir 触控规范
      SYS-2：补上 .au-btn（首页四个关键 CTA 是 au-btn-sm，32px） */
-  button, .btn, .neo-btn, .au-btn, a, .card, .neo-card, .clickable {
+  button, .btn, .au-btn, a, .card, .clickable {
     min-height: var(--neo-touch-min, 44px);
   }
 
-  /* 按钮/卡片文字居中 */
-  .btn, .neo-btn, .card-btn {
+  /* 按钮文字居中 */
+  .btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -104,8 +95,7 @@
 
   input,
   select,
-  textarea,
-  .neo-input__field {
+  textarea {
     font-size: 16px !important; /* 防止 iOS 自动缩放 */
     padding: var(--neo-space-3, 12px);
   }
@@ -216,29 +206,19 @@
   button,
   a,
   .card,
-  .neo-card,
-  .clickable,
-  .glass-card,
-  .quick-item,
-  .action-card {
+  .clickable {
     -webkit-tap-highlight-color: var(--au-primary-mid);
   }
 
   button:active,
   a:active,
-  .card:active,
-  .neo-card:active,
-  .glass-card:active,
-  .quick-item:active,
-  .action-card:active {
+  .card:active {
     opacity: 0.8;
     transform: scale(var(--neo-scale-press, 0.98));
   }
 
   /* 移除悬停效果 */
-  .card:hover,
-  .neo-card:hover,
-  .glass-card:hover {
+  .card:hover {
     transform: none;
   }
 }
@@ -247,9 +227,7 @@
 @media (hover: none) and (pointer: coarse) {
   /* 按钮按下态 */
   .btn:active,
-  .neo-btn:active,
-  .btn-primary:active,
-  .btn-secondary:active {
+  .btn-primary:active {
     transform: scale(var(--neo-scale-press, 0.98));
     opacity: 0.85;
     transition: transform 0.1s ease, opacity 0.1s ease;
@@ -261,16 +239,12 @@
   }
 
   /* 卡片按下态 */
-  .glass-card:active,
-  .card:active,
-  .neo-card--clickable:active {
+  .card:active {
     background: var(--neo-bg-surface-active, rgba(255, 255, 255, 0.12));
   }
 
   /* 图标按钮按下态 */
-  .btn-icon:active,
-  .btn-icon-sm:active,
-  .neo-icon-btn:active {
+  .btn-icon:active {
     transform: scale(0.9);
     background: rgba(255, 255, 255, 0.15);
   }
@@ -278,8 +252,7 @@
   /* 输入框聚焦态 */
   input:focus,
   select:focus,
-  textarea:focus,
-  .neo-input__field:focus {
+  textarea:focus {
     transform: scale(0.99);
   }
 }
@@ -316,21 +289,14 @@
     --border-glass: var(--au-border);
   }
 
-  .card,
-  .neo-card {
-    background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
-    border-color: var(--neo-border-default, rgba(255, 255, 255, 0.08));
-  }
-
-  .glass-card {
+  .card {
     background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
     border-color: var(--neo-border-default, rgba(255, 255, 255, 0.08));
   }
 
   input,
   select,
-  textarea,
-  .neo-input__field {
+  textarea {
     background: var(--neo-bg-surface-1, rgba(255, 255, 255, 0.04));
     border-color: var(--neo-border-default, rgba(255, 255, 255, 0.08));
     color: var(--neo-text-primary, rgba(255, 255, 255, 0.92));
@@ -357,43 +323,26 @@
 
 /* ==================== 高对比度模式 ==================== */
 @media (prefers-contrast: high) {
-  button,
-  .neo-btn {
+  button {
     border: 2px solid currentColor;
   }
 
-  .card,
-  .neo-card {
+  .card {
     border: 2px solid currentColor;
   }
 }
 
 /* ==================== Neo-Noir 2.0 移动端专用样式 ==================== */
 @media (max-width: 768px) {
-  /* 统一页面内边距 */
-  .home-page,
-  .logged-in-view,
-  .request-page,
-  .recharge-page,
-  .subscription-page,
-  .messages-page {
-    padding: var(--neo-space-4, 16px);
-    padding-bottom: var(--neo-safe-bottom, calc(24px + env(safe-area-inset-bottom, 0px)));
-  }
-
   /* 统一卡片内边距 */
   .card,
-  .neo-card,
-  .status-card,
-  .glass-card {
+  .status-card {
     padding: var(--neo-card-padding, 16px);
     border-radius: var(--neo-radius-lg, 18px);
   }
 
   /* 统一按钮高度 */
-  .btn,
-  .neo-btn,
-  .main-cta-button {
+  .btn {
     height: var(--neo-btn-height-lg, 52px);
     border-radius: var(--neo-btn-radius-lg, 18px);
   }
@@ -401,16 +350,13 @@
   /* 统一输入框 */
   input,
   select,
-  textarea,
-  .neo-input__field {
+  textarea {
     height: var(--neo-input-height, 44px);
     border-radius: var(--neo-input-radius, 14px);
   }
 
   /* 统一 Chip/筛选标签 */
-  .chip,
-  .neo-chip,
-  .filter-chip {
+  .chip {
     height: var(--neo-chip-height, 32px);
     border-radius: var(--neo-chip-radius, 9999px);
     padding: 0 var(--neo-chip-padding, 14px);
@@ -418,27 +364,10 @@
   }
 
   /* 统一 Badge */
-  .badge,
-  .neo-badge {
+  .badge {
     height: var(--neo-badge-height, 20px);
     border-radius: var(--neo-badge-radius, 9999px);
     padding: 0 var(--neo-badge-padding, 8px);
     font-size: var(--neo-badge-font-size, 13px);
-  }
-
-  /* 统一 Segmented Control */
-  .segmented-control,
-  .neo-segment {
-    height: var(--neo-segment-height, 36px);
-    border-radius: var(--neo-segment-radius, 10px);
-  }
-
-  /* 统一 Icon Button */
-  .icon-btn,
-  .neo-icon-btn,
-  .btn-icon-sm {
-    width: var(--neo-icon-btn-md, 40px);
-    height: var(--neo-icon-btn-md, 40px);
-    border-radius: var(--neo-icon-btn-radius, 10px);
   }
 }

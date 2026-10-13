@@ -83,18 +83,24 @@ const emit = defineEmits<{
 }>()
 
 // ==================== 滚动锁定 ====================
-// 锁定背景滚动
+// position:fixed 会把页面钉回顶部：lock 时记下 scrollY 并用 top 抵消，
+// unlock 后恢复滚动位置，打开/关闭弹窗前后页面停在原处。
+let lockedScrollY = 0
 const lockScroll = () => {
-  document.body.style.overflow = 'hidden'
+  lockedScrollY = window.scrollY || 0
+  document.body.style.top = `-${lockedScrollY}px`
   document.body.style.position = 'fixed'
   document.body.style.width = '100%'
+  document.body.style.overflow = 'hidden'
 }
 
-// 解锁背景滚动
+// 解锁背景滚动：清掉样式后滚回锁定前的位置
 const unlockScroll = () => {
   document.body.style.overflow = ''
   document.body.style.position = ''
   document.body.style.width = ''
+  document.body.style.top = ''
+  window.scrollTo(0, lockedScrollY)
 }
 
 // 监听 modelValue 变化，控制滚动锁定
