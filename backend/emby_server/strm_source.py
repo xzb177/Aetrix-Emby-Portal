@@ -25,6 +25,8 @@ from typing import Any, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
+from backend.emby_server import disc_filter
+
 
 @dataclass(frozen=True)
 class Tombstone:
@@ -250,6 +252,8 @@ class DriveChangesLister(SourceLister):
             if self.dir_paths and not any(
                     rel == dp or rel.startswith(dp + "/") for dp in self.dir_paths):
                 continue
+            if disc_filter.is_disc_subtree_rel(rel):
+                continue  # 原盘结构内碎片：扫描器不入库，生成器不产 .strm
             if not sg.is_video_path(rel):
                 continue
             try:
@@ -373,7 +377,8 @@ class LocalFsLister(SourceLister):
         for dirpath, dirnames, filenames in os.walk(self.root_path):
             # 跳过系统目录
             dirnames[:] = [d for d in dirnames
-                           if not d.startswith(".") and d not in sg.SKIP_DIR_NAMES]
+                           if not d.startswith(".") and d not in sg.SKIP_DIR_NAMES
+                           and not disc_filter.is_disc_subtree_dir(d)]
             for fn in filenames:
                 n += 1
                 # 防风控：每 1000 个文件加微小抖动，避免 IO burst

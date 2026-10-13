@@ -60,6 +60,8 @@ from typing import Any, Optional
 
 import httpx
 
+from backend.emby_server import disc_filter
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -871,7 +873,10 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
             fid = f.get("id", "")
             if not name or not fid:
                 continue
-            if name.startswith(".") or name in SKIP_DIR_NAMES:
+            if (name.startswith(".") or name in SKIP_DIR_NAMES
+                    or disc_filter.is_disc_subtree_dir(name)):
+                # 原盘结构目录（BDMV/VIDEO_TS 等）整棵跳过：扫描器不入库，
+                # 生成器不产 .strm（与 scanner.py 同一判定，不另起一套）
                 continue
             stack.append((fid, rel_prefix + name + "/", root_prefix))
 
@@ -898,6 +903,8 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
                 for pid in f.get("parents") or []:
                     for rroot, rp in dir_entries.get(pid) or ():
                         rel = rroot + rp + name
+                        if disc_filter.is_disc_subtree_rel(rel):
+                            continue  # 原盘结构内碎片：扫描器不入库，生成器不产 .strm
                         if not is_video_path(rel):
                             continue
                         try:
@@ -982,11 +989,15 @@ def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True)
             if not name or not fid:
                 continue
             if f.get("mimeType") == "application/vnd.google-apps.folder":
-                if name.startswith(".") or name in SKIP_DIR_NAMES:
+                if (name.startswith(".") or name in SKIP_DIR_NAMES
+                        or disc_filter.is_disc_subtree_dir(name)):
+                    # 原盘结构目录整棵跳过（同上）
                     continue
                 stack.append((fid, rel_prefix + name + "/", root_prefix))
             else:
                 rel = root_prefix + rel_prefix + name
+                if disc_filter.is_disc_subtree_rel(rel):
+                    continue  # 原盘结构内碎片：扫描器不入库，生成器不产 .strm
                 if not is_video_path(rel):
                     continue
                 try:
