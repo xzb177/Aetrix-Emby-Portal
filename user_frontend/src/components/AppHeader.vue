@@ -5,7 +5,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
-  ChevronRight, Zap,
+  ChevronRight, Zap, ShieldCheck,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -134,6 +134,10 @@ const displayName = computed(() => {
 })
 
 const userIdLabel = computed(() => (userStore.user?.id ? `@${userStore.user.id}` : ''))
+
+/** 管理员判定：后端 AuthUser.is_staff（注释写明了就是为用户端「管理后台」入口准备的）。
+ *  头像菜单里的管理后台行仅管理员渲染，普通用户看不见。 */
+const isStaff = computed(() => !!userStore.user?.is_staff)
 
 // 顶栏消息入口（v2.10.3 起是全站唯一的消息入口）：既显示「几条未读」，
 // 点开还能先看预览再决定要不要进消息中心
@@ -644,7 +648,9 @@ onBeforeUnmount(() => {
                      原 12 个通用菜单项（追新日历/探险日志/我的订单/积分流水/
                      每日签到/邀请返利/求片中心/AI 助手/工单支持/消息中心/
                      外观/管理后台）已从头像菜单移除，对应页面路由保留；
-                     其中消息中心/外观在 ≤420px 窄屏的补位入口见下面 ②.5 -->
+                     头像菜单不得再出现消息中心/外观行（用户铁律：已删条目不许加回，
+                     scripts/check_avatar_menu_guards.py 在 CI 拦住；窄屏外观切换走后续专项决策）。
+                     管理后台例外：2026-10-13 用户拍板恢复，仅管理员可见（见下面 ②.6） -->
                 <template v-if="menuFacilities.length > 0">
                 <div class="dropdown-sec-title">🏕️ 营地设施 · 点卡片直接进</div>
                 <RouterLink
@@ -677,27 +683,17 @@ onBeforeUnmount(() => {
                 </RouterLink>
                 </template>
 
-                <!-- ②.5 窄屏补位（仅 ≤420px 显示）：顶栏的外观按钮/消息铃铛带 .wide-only，
-                     窄屏下被隐藏 —— 这两项是 ≤420px 时外观切换与消息中心的唯一入口。
-                     r27 恢复过、#780 又删掉（它的注释"主题切换走顶栏按钮"在窄屏不成立：
-                     顶栏按钮同样被 .wide-only 隐藏），r28 再恢复。以后动这里先读这段。 -->
-                <RouterLink
-                  to="/game/pigeon"
-                  class="dropdown-item dropdown-narrow-only"
+                <!-- ②.6 管理后台（2026-10-13 用户拍板恢复）：仅管理员账号（is_staff）渲染，
+                     同源同 JWT 直达 /admin/，免二次登录；普通用户完全看不见。
+                     注意用 <a> 不用 RouterLink：/admin/ 是另一个前端应用。 -->
+                <a
+                  v-if="isStaff"
+                  href="/admin/"
+                  class="dropdown-item"
                   role="menuitem"
-                  @click="closeMenus"
                 >
-                  <Inbox :size="15" /> 消息中心
-                  <span v-if="unreadCount > 0" class="dropdown-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
-                </RouterLink>
-                <button
-                  class="dropdown-item dropdown-narrow-only"
-                  role="menuitem"
-                  :aria-label="themeTitle"
-                  @click="toggleTheme(); closeMenus()"
-                >
-                  <component :is="themeCurrent.icon" :size="15" /> {{ themeTitle }}
-                </button>
+                  <ShieldCheck :size="15" /> 管理后台
+                </a>
 
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
@@ -986,12 +982,6 @@ onBeforeUnmount(() => {
 }
 
 .narrow-only { display: none; }
-
-/* 窄屏补位项（②.5）：桌面/平板隐藏，只在 ≤420px 出现 —— 与 .wide-only 反逻辑。
-   外观按钮与消息铃铛在窄屏被 .wide-only 藏掉后，头像菜单里的这两项是唯一入口。
-   注意：必须写成 .dropdown-item.dropdown-narrow-only（双类），单类会被后面的
-   .dropdown-item{display:flex} 按源码顺序盖掉。 */
-.dropdown-item.dropdown-narrow-only { display: none; }
 
 /* 佩戴中的徽章：昵称下方小红章，读 OutfitView 徽章墙写入的 localStorage */
 .dropdown-worn {
@@ -1448,13 +1438,11 @@ onBeforeUnmount(() => {
 }
 
 /* ≤420px（iPhone 竖屏）：顶栏只留「品牌 · 积分 · 头像」三件事。
-   外观切换按钮与消息铃铛带 .wide-only，在窄屏隐藏；补位入口在头像菜单
-   （②.5 窄屏补位项：外观切换 + 消息中心），窄屏不断功能。 */
+   外观切换按钮与消息铃铛带 .wide-only，在窄屏隐藏
+   （头像菜单里的外观/消息中心行已按用户铁律删除，不再补位） */
 @media (max-width: 420px) {
   .wide-only { display: none; }
   .narrow-only { display: block; }
-  /* 窄屏补位项在这里现身：外观切换 / 消息中心（见 ②.5 注释，双类写法防盖掉） */
-  .dropdown-item.dropdown-narrow-only { display: flex; }
   .logo-text { font-size: 0.9375rem; letter-spacing: 0.18em; }
   .logo-mark { width: 26px; height: 26px; }
   .points-pill { padding: 0.3125rem 0.625rem; }
