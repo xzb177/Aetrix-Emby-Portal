@@ -98,15 +98,12 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { aiApi, type AiStatus } from '@/api'
-import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
 
 interface Bubble {
   role: 'me' | 'guide' | 'error'
   content: string
 }
-
-const toast = useToast()
 
 const loading = ref(true)
 const status = ref<AiStatus | null>(null)
@@ -185,7 +182,6 @@ async function ask(text?: string) {
   } catch (err) {
     bubbles.value.push({ role: 'error', content: humanizeError(err) })
     trimBubbles()
-    toast.error(humanizeError(err))
     // 配额用尽 / 被关闭时刷新一次状态，界面提示随之更新
     load()
   } finally {
@@ -350,5 +346,10 @@ onMounted(() => {
 .inputbar button:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
+}
+
+/* 减弱动效：按下不再位移 */
+@media (prefers-reduced-motion: reduce) {
+  .chip:active, .inputbar button:active { transform: none; }
 }
 </style>

@@ -264,7 +264,10 @@
         </div>
 
         <div v-else class="v4-sec">
-          <div class="v4-skeleton" style="height:120px"></div>
+          <div class="v4-err">
+            接线员没接上，再试一次<br>
+            <button class="v4-retry" @click="refreshAccount">重试</button>
+          </div>
         </div>
       </template>
     </div>
@@ -829,6 +832,8 @@ watch(viewGranted, (granted) => {
   font-size: 13px;
   font-weight: 800;
   padding: 12px 16px;
+  min-height: 44px;
+  box-sizing: border-box;
   border-radius: 10px;
   border: 1.5px solid var(--red);
   background: var(--paper-card);
@@ -915,4 +920,9 @@ watch(viewGranted, (granted) => {
 .modal-actions .op-btn { flex: 1; }
 
 .free-note p { font-size: 13px; color: var(--ink2); line-height: 1.8; margin: 10px 0 0; }
+
+/* 减弱动效：按下不再下沉（照 TicketCard/ParcelBox 模式） */
+@media (prefers-reduced-motion: reduce) {
+  .scheme-btn:active, .op-btn.primary:active { transform: none; }
+}
 </style>

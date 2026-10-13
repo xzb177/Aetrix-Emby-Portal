@@ -515,5 +515,6 @@ onMounted(() => {
 /* R27：减少动态偏好下装饰动画停掉（本地守卫） */
 @media (prefers-reduced-motion: reduce) {
   .well .boat-float { animation: none; }
+  .wish-btn:active { transform: none; }
 }
 </style>

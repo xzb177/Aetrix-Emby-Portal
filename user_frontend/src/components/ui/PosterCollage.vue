@@ -7,7 +7,7 @@
  * - 纯 CSS 动画，只动 transform；prefers-reduced-motion 时关闭
  * - aria-hidden + pointer-events: none，不拦截表单交互
  */
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { LoginPoster } from '@/api/site'
 
 const props = defineProps<{
@@ -16,9 +16,20 @@ const props = defineProps<{
   embyBaseUrl: string
 }>()
 
-const isMobile = computed(() =>
+/** 断点 < 768 为移动：窗口缩放/旋转时更新，海报按新列数重分列 */
+const isMobile = ref(
   typeof window !== 'undefined' ? window.innerWidth < 768 : false,
 )
+function onResize() {
+  isMobile.value = window.innerWidth < 768
+}
+onMounted(() => {
+  onResize()
+  window.addEventListener('resize', onResize)
+})
+onUnmounted(() => {
+  window.removeEventListener('resize', onResize)
+})
 
 /** 列数：桌面 3，移动 2 */
 const columnCount = computed(() => (isMobile.value ? 2 : 3))

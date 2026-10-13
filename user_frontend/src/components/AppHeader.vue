@@ -311,13 +311,17 @@ function toggleUserMenu() {
 interface WornBadge { key: string; name: string; icon: string }
 const wornBadge = ref<WornBadge | null>(null)
 function readWornBadge(): void {
+  let raw: string | null = null
+  try { raw = localStorage.getItem('aetrix_worn_badge_v1') } catch { /* 隐私模式读不到 */ }
+  if (!raw) { wornBadge.value = null; return }
   try {
-    const raw = localStorage.getItem('aetrix_worn_badge_v1')
-    if (!raw) { wornBadge.value = null; return }
     const o = JSON.parse(raw)
-    // 兼容旧版只存 key 字符串的写法
+    // JSON 编码的字符串写法（带引号）兼容
     wornBadge.value = typeof o === 'string' ? { key: o, name: '', icon: '' } : (o && o.key ? o : null)
-  } catch { wornBadge.value = null }
+  } catch {
+    // 最旧版直接存裸 key（不是 JSON，parse 必抛）——裸 key 即 key 本身
+    wornBadge.value = { key: raw, name: '', icon: '' }
+  }
 }
 
 function toggleMsgMenu() {
@@ -562,6 +566,7 @@ onBeforeUnmount(() => {
               class="msg-btn round-btn"
               :class="{ alert: unreadCount > 0, open: msgMenuOpen }"
               :title="unreadCount > 0 ? `${unreadCount} 条未读消息` : '消息中心'"
+              :aria-label="unreadCount > 0 ? `${unreadCount} 条未读消息` : '消息中心'"
               @click="toggleMsgMenu"
             >
               <Inbox :size="18" />
@@ -1012,8 +1017,8 @@ onBeforeUnmount(() => {
   display: inline-block;
   font-size: 10px;
   font-weight: 800;
-  color: var(--red);
-  border: 1px solid var(--red);
+  color: var(--au-danger);
+  border: 1px solid var(--au-danger);
   border-radius: 10px;
   padding: 1px 8px;
   margin-top: 4px;

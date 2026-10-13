@@ -91,7 +91,7 @@ import PulseActivity from '@/components/panel/PulseActivity.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
 import TicketCard from '@/components/panel/TicketCard.vue'
 import { useTicketCard } from '@/composables/useTicketCard'
-import type { ParcelItem, ParcelsData } from '@/composables/usePanelApi'
+import { humanizeError, type ParcelItem, type ParcelsData } from '@/composables/usePanelApi'
 
 const panel = usePanelStore()
 const user = useUserStore()
@@ -179,7 +179,7 @@ async function onUnseal(id: string | number) {
     await panel.unseal(id)
   } catch (e) {
     // 失败不再静默：toast 告诉用户具体原因
-    useToast().error(e instanceof Error ? e.message : '拆封失败，稍后再试')
+    useToast().error(humanizeError(e))
   } finally {
     unsealingIds.value.delete(key)
   }

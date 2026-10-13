@@ -615,11 +615,6 @@ html {
     transform: none;
   }
 
-  .animate-spin,
-  .animate-pulse {
-    animation-duration: 2.4s;   /* 保留最小反馈，同时去掉频闪感 */
-  }
-
   .hover-lift:hover,
   .hover-scale:hover {
     transform: none;

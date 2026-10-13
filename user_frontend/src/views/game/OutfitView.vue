@@ -88,7 +88,7 @@
         <!-- 加载中 -->
         <div v-if="badgeLoading" class="v4-skeleton" style="height:200px"></div>
         <!-- 加载失败 -->
-        <div v-else-if="badgeError" class="v4-empty">
+        <div v-else-if="badgeError" class="v4-err">
           徽章柜没打开：{{ badgeError }}<br>
           <button class="v4-retry" @click="loadBadges">重试</button>
         </div>
@@ -164,14 +164,20 @@ const WORN_BADGE_KEY = 'aetrix_worn_badge_v1'
 interface WornBadgeMeta { key: string; name: string; icon: string }
 
 function readWornBadge(): string | null {
+  let raw: string | null = null
   try {
-    const raw = localStorage.getItem(WORN_BADGE_KEY)
-    if (!raw) return null
-    const o = JSON.parse(raw)
-    // 兼容旧版只存 key 字符串的写法
-    return typeof o === 'string' ? o : (o && o.key ? o.key : null)
+    raw = localStorage.getItem(WORN_BADGE_KEY)
   } catch {
     return null
+  }
+  if (!raw) return null
+  try {
+    const o = JSON.parse(raw)
+    // JSON 字符串 "pioneer" 会解析成 string 分支；对象写法走 o.key
+    return typeof o === 'string' ? o : (o && o.key ? o.key : null)
+  } catch {
+    // JSON.parse 抛错 = 旧版直接存的裸 key 字符串（如 pioneer），裸 key 本身就是 key
+    return raw
   }
 }
 
@@ -584,6 +590,8 @@ onBeforeUnmount(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .confirm { transition: none; }
+  /* 位移类 :active 按压动效在减弱动态下关闭 */
+  .confirm button:active { transform: none; }
 }
 
 .outfit:focus-visible {

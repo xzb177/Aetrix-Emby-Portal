@@ -19,7 +19,7 @@
           <div class="fuel-lbl">⚡ 当前能量 · 燃料表</div>
           <div class="fuel-num"><small>⚡</small> {{ fmtNum(balance) }}</div>
           <!-- R27：非「全部」筛选时后端 total 不可信（是未筛选总数），数字去掉，不加后端接口 -->
-          <span v-if="todayIncome > 0" class="fuel-today">{{ filter === 'all' ? `今日 +${fmtNum(todayIncome)} ⚡` : '今日有进账 ⚡' }}</span>
+          <span v-if="todayIncome > 0" class="fuel-today">{{ !hasMore && filter === 'all' ? `今日 +${fmtNum(todayIncome)} ⚡` : '今日有进账 ⚡' }}</span>
         </div>
       </section>
 
@@ -190,6 +190,10 @@ async function load(reset = true) {
   } catch (e) {
     if (reset) {
       error.value = humanizeError(e)
+      // P2-5：刷新失败但有旧数据时，模板不显示错误态（只在无数据时显示），弹人话提示
+      if (balanceLoaded.value || logs.value.length) {
+        toast.error('刷新失败，显示的是之前的数据')
+      }
     } else {
       // 加载更多失败：静默吞掉会让用户以为到底了，弹人话提示
       toast.error(humanizeError(e))

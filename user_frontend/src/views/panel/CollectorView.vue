@@ -134,7 +134,9 @@ const newUnlockNames = computed((): string[] => {
   const keys = data.value.new_unlocks
   if (!Array.isArray(keys) || keys.length === 0) return []
   const byKey = new Map(achievements.value.map((a) => [a.key, a.name]))
-  return keys.map((k) => byKey.get(String(k)) || '未知')
+  // P3-19：找不到名字的 key 直接过滤，全部找不到时兜底「新成就」
+  const names = keys.map((k) => byKey.get(String(k))).filter((n): n is string => !!n)
+  return names.length ? names : ['新成就']
 })
 
 /* ---------- 新解锁横幅关闭（R27：已读记 sessionStorage，同会话不再弹） ---------- */
@@ -245,6 +247,13 @@ const pet = computed((): PetData | null => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+/* P3-22：长文案 375px 下撑版，文本 span 允许截断 */
+.v4-fresh > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* R27：横幅关闭按钮（44px 点击区内嵌，不破坏纸色风格） */
 .v4-fresh-close {

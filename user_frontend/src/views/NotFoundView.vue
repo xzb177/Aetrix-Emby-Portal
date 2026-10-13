@@ -6,7 +6,7 @@ import { Home, ArrowLeft } from 'lucide-vue-next'
 <template>
   <div class="nf-page">
     <div class="nf-inner">
-      <p class="au-eyebrow nf-eyebrow">FILM NOT FOUND</p>
+      <p class="au-eyebrow nf-eyebrow">胶片未找到</p>
       <h1 class="nf-code">404</h1>
       <h2 class="nf-title">这一卷胶片不在片库里</h2>
       <p class="nf-desc">

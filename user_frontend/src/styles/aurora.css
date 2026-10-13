@@ -430,19 +430,8 @@ h3,
   100% { background-position: -200% 0; }
 }
 
-.au-spinner {
-  width: 22px;
-  height: 22px;
-  border: 2px solid var(--au-border-strong);
-  border-top-color: var(--au-primary);
-  border-radius: 50%;
-  animation: au-spin 0.8s linear infinite;
-}
-@keyframes au-spin { to { transform: rotate(360deg); } }
-
-/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
+/* R27：减少动态偏好下骨架屏动画停掉 */
 @media (prefers-reduced-motion: reduce) {
-  .au-spinner { animation: none; }
   .au-skeleton { animation: none; }
 }
 
@@ -460,12 +449,6 @@ h3,
 @media (prefers-reduced-motion: reduce) {
   .au-anim-up { animation: none; }
 }
-
-@keyframes au-pulse-soft {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
-.au-pulse { animation: au-pulse-soft 1.6s ease-in-out infinite; }
 
 /* 强调文字（原「流光文字」）：纯琥珀 */
 .au-gradient-text {
@@ -782,25 +765,6 @@ h1, h2, .title, .page-title {
 /* 数字等宽对齐 */
 .stat-value, .meta-item, .count, [data-nums] {
   font-variant-numeric: var(--au-nums);
-}
-
-/* ==================== 呼吸式加载（2026-10-10） ==================== */
-/* Wabi 风格：把等待变成体验，opacity 0.4↔1 柔和呼吸，2s 周期 */
-.breathing {
-  animation: breathe 2s ease-in-out infinite;
-}
-
-@keyframes breathe {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
-}
-
-/* 减弱动效偏好：直接显示，不呼吸 */
-@media (prefers-reduced-motion: reduce) {
-  .breathing {
-    animation: none;
-    opacity: 0.7;
-  }
 }
 
 /* ==================== 药丸标签 Morph（2026-10-10） ==================== */
