@@ -47,8 +47,11 @@ logger = logging.getLogger(__name__)
 # 令牌桶。旧实现是在这里按**条目**扣 token，而一个条目背后是 0~6 次 HTTP
 # （中文标题 4~5 个候选搜索最贵），于是「2/秒」实际打出去 4~12 请求/秒，
 # 而且扫描那条路（scanner._tmdb_work）完全没有限速。现在只有一个桶。
-# 并发按 CPU 自适应（cpu_budget）：未配置时按核数一半，永远给前台留一核
-ENRICH_WORKERS = _cpu_workers("ENRICH_WORKERS")
+# 并发按 CPU 自适应（cpu_budget）：CPU 密集型默认按核数一半，永远给前台留一核。
+# enrich 是 IO 密集型（单条 90% 时间等网络，采样实证 2026-10-13）：走 io_bound
+# 模式，不按 CPU 截断——未配置默认 8，ENRICH_WORKERS=8 即 8 线程。
+# 后台不抢主链路由 max_cap(16) + TMDB 令牌桶/图片信号量/DB 池独立限流保证。
+ENRICH_WORKERS = _cpu_workers("ENRICH_WORKERS", io_bound=True)
 ENRICH_BATCH = max(10, int(os.getenv("ENRICH_BATCH", "100") or 100))
 # TMDB 批量开关：1=抢单后批量调 batch_search/batch_details，0=逐条原逻辑
 ENRICH_TMDB_BATCH = os.getenv("ENRICH_TMDB_BATCH", "1") == "1"
@@ -940,12 +943,58 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
     needs_repair = bool(getattr(item, "repair_requested_at", None))
     tmdb_plan = _tmdb_plan_for_item(
         item, nfo_data, kind, needs_repair)
+    # v2.57.0 提速包 item2：豆瓣封禁期内，注定走豆瓣兜底的 CJK 条目不再烧 TMDB
+    # 预搜索（search 计划=6-9 个请求/条，采样 10/10 未命中）。直接标 banned 延后，
+    # Phase 2 批量因 plan=none 跳过它，一个 TMDB 请求都不烧。
+    # needs_repair（用户等着的修复请求）不跳过：宁可多烧几次也不多等一个周期。
+    if (tmdb_plan.get("op") == "search" and not needs_repair
+            and _douban_ban_presearch_skip(item, kind)):
+        result["ok"] = False
+        result["douban_banned"] = True
+        result["error"] = "douban banned; tmdb pre-search skipped during ban"
+        tmdb_plan = {"op": "none"}
     tmdb_ctx = {
         "kind": kind,
         "needs_repair": needs_repair,
         "tmdb_plan": tmdb_plan,
     }
     return result, tmdb_ctx
+
+
+def _douban_ban_presearch_skip(item: Any, kind: str) -> bool:
+    """豆瓣封禁期是否跳过 TMDB 预搜索（v2.57.0 提速包 item2）。
+
+    条件与 _douban_fallback_on_tmdb_miss 的触发条件同口径：
+    封禁中 + 剧/电影 + 无 tmdb_id + 未锁定 + CJK 标题 + 豆瓣兜底开着。
+    这类条目这轮注定走「豆瓣兜底 → banned → 延后」，TMDB 搜索的 6-9 个请求
+    纯属浪费（生产采样：CJK 剧 TMDB 搜索 10/10 未命中；封禁期约 400+ 请求/小时
+    白烧，2026-10-13）。
+
+    tradeoff：封禁期内 TMDB 本可命中的 CJK 条目会被多延后一个封禁周期。
+    判定不了（异常）时保守返回 False，不跳过。
+    """
+    if kind not in ("series", "movie"):
+        return False
+    if getattr(item, "tmdb_id", None):
+        return False
+    if getattr(item, "metadata_locked", False):
+        return False
+    name = (getattr(item, "name", None) or "").strip()
+    if not name:
+        return False
+    from backend.emby_server import douban as _dbn
+    if _dbn.ban_remaining() <= 0:
+        return False
+    try:
+        if not _dbn.has_cjk(name):
+            return False
+    except Exception:  # noqa: BLE001 — 判定不了就不跳过（保守）
+        return False
+    try:
+        on, _iv = _cached_douban_cfg()
+    except Exception:  # noqa: BLE001
+        on = False
+    return bool(on)
 
 
 def _douban_fallback_on_tmdb_miss(item: Any, kind: str, result: dict) -> object:
@@ -1091,6 +1140,11 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                     result["tmdb_images_lang"] = tmdb_client.images_with_language(_tid, kind)
         except Exception:
             result["tmdb_images_lang"] = None
+        # v2.57.0 提速包 item2：pre 阶段已在豆瓣封禁期判定跳过（TMDB 预搜索
+        # 没跑），这里不再试豆瓣兜底——直接返回，调用方走 _requeue_douban_banned
+        # 延后。等价于兜底返回 "banned" 的那条路（ok=False + douban_banned）。
+        if result.get("douban_banned"):
+            return result
         # 豆瓣兜底（v2.56.0 起：TMDB 为主、豆瓣兜底）。
         # TMDB 搜过无命中时，中文标题先走豆瓣 rich 兜底（search + details + cast，
         # 与旧"豆瓣优先"同口径，只是时机从"TMDB 之前"挪到"TMDB 未命中之后"）。

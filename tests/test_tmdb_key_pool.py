@@ -43,7 +43,7 @@ def _no_env(monkeypatch):
     for name in ("TMDB_API_KEYS", "TMDB_API_KEY", "TMDB_API_BASE", "TMDB_IMAGE_BASE",
                  "TMDB_KEY_COOLDOWN_SEC", "TMDB_KEY_INVALID_COOLDOWN_SEC"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(tmdb_mod, "_config_text", lambda key, db=None: "")
+    monkeypatch.setattr(tmdb_mod, "_config_text", lambda key, db=None, **kwargs: "")
     slept: list = []
     monkeypatch.setattr(tmdb_mod.time, "sleep", lambda seconds: slept.append(seconds))
     tmdb_mod.invalidate_settings()
