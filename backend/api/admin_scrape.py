@@ -1187,16 +1187,6 @@ def get_enrich_tuning(
     pool["pending_restart"] = bool(saved_pool) and saved_pool != str(pool["pool_size"])
     return {"success": True, **cfg, "db_pool": pool,
             "episode_quota": enrich_worker.enrich_episode_quota_status(db)}
-    from backend import database as dbmod
-    from backend.emby_server import enrich_worker
-    from backend.integrations import store
-    cfg = enrich_worker.get_enrich_tuning_config(db)
-    pool = dbmod.db_pool_config()
-    # 已保存但待重启的池大小（与当前生效值不同时提示）
-    saved_pool = (store.read_value(db, dbmod.CFG_DB_POOL_SIZE, "") or "").strip()
-    pool["saved_pool_size"] = saved_pool
-    pool["pending_restart"] = bool(saved_pool) and saved_pool != str(pool["pool_size"])
-    return {"success": True, **cfg, "db_pool": pool}
 
 
 @admin_emby_router.put("/scrape/enrich-tuning")
