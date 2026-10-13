@@ -9,15 +9,6 @@
 
 全部不发真实 HTTP：会话用假替身，冷却时长用极小的值。密钥本体只在断言里出现。
 """
-import os
-
-# 先定方言再 import backend：backend.database.DATABASE_TYPE 在 import 时绑定，
-# 默认是 postgresql；若本文件先被导入（如 pytest tests/test_tmdb_key_pool.py
-# tests/test_manual_identify.py），后者模块级的 setdefault("DATABASE_TYPE","sqlite")
-# 来不及生效，init_db() 会走 pg_advisory_lock 在 sqlite 上炸 collection。
-# 与 tests/test_manual_identify.py 同一手笔，保证导入顺序无关。
-os.environ.setdefault("DATABASE_TYPE", "sqlite")
-
 from types import SimpleNamespace
 
 import pytest
@@ -52,13 +43,14 @@ def _no_env(monkeypatch):
     for name in ("TMDB_API_KEYS", "TMDB_API_KEY", "TMDB_API_BASE", "TMDB_IMAGE_BASE",
                  "TMDB_KEY_COOLDOWN_SEC", "TMDB_KEY_INVALID_COOLDOWN_SEC"):
         monkeypatch.delenv(name, raising=False)
+    # 沙箱的 NO_PROXY 含 [::1] 这类括号 IPv6 条目，httpx 解析会炸：剥掉保持测试隔离
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    # _config_text 自带 refresh 关键字参数，假替身必须接住（否则 TypeError）
     monkeypatch.setattr(tmdb_mod, "_config_text", lambda key, db=None, **kwargs: "")
     slept: list = []
     monkeypatch.setattr(tmdb_mod.time, "sleep", lambda seconds: slept.append(seconds))
     tmdb_mod.invalidate_settings()
-    # _LANGUAGE_CACHE 有独立的 30s TTL，invalidate_settings() 清不掉它；
-    # 不清的话用例是否经过 preferred_language() 取决于别的测试文件有没有
-    # 把缓存煨热 → 顺序相关的时绿时红。这里用产品自带的失效入口清掉。
     tmdb_mod.invalidate_language()
     yield slept
     tmdb_mod.invalidate_settings()
