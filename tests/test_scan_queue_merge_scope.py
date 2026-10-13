@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from backend.emby_server import scan_queue
 from backend.emby_server.scan_queue import (
-    ScanTask, STATE_QUEUED, STATE_RUNNING, _try_merge_scan_task,
+    ScanTask, STATE_QUEUED, STATE_RUNNING,
+    _try_merge_scan_task, _merge_scope_into, _scope_covered_by,
 )
 
 
@@ -19,6 +20,9 @@ from backend.emby_server.scan_queue import (
 class _FakeSnap:
     limit_prefixes: tuple = ()
     targeted: bool = False
+    name: str = "测试库"
+    mount_ids: tuple = ()
+    paths: tuple = ("/strm/测试",)
 
 
 def _task(prefixes=(), targeted=False, state=STATE_QUEUED):
@@ -29,56 +33,74 @@ def _task(prefixes=(), targeted=False, state=STATE_QUEUED):
     )
 
 
-def test_whole_library_upgrades_queued_targeted():
-    """整库请求 + 排队中的定向任务 → 升级为整库（不丢范围）。"""
+def test_queued_whole_library_upgrades_targeted():
+    """排队中：整库请求把定向任务升级为整库（不丢范围）。"""
     existing = _task(prefixes=("/strm/剧集/欧美剧/abc",), targeted=True)
     new_snap = _FakeSnap(limit_prefixes=(), targeted=False)
-    assert _try_merge_scan_task(existing, new_snap) is True
+    assert _try_merge_scan_task(existing, new_snap, "strm-gen") is True
     assert existing.snapshot.limit_prefixes == ()
     assert existing.snapshot.targeted is False
+    assert existing.pending_rescan_snapshot is None  # 排队中直接合并，无需补扫
 
 
-def test_targeted_union_prefixes():
-    """定向 + 排队中的定向 → 前缀取并集。"""
+def test_queued_targeted_union_prefixes():
+    """排队中：定向 + 定向 → 前缀取并集。"""
     existing = _task(prefixes=("/a", "/b"), targeted=True)
     new_snap = _FakeSnap(limit_prefixes=("/b", "/c"), targeted=True)
-    assert _try_merge_scan_task(existing, new_snap) is True
+    assert _try_merge_scan_task(existing, new_snap, "chase-new") is True
     assert existing.snapshot.limit_prefixes == ("/a", "/b", "/c")
-    assert existing.snapshot.targeted is True
+    assert existing.pending_rescan_snapshot is None
 
 
-def test_targeted_into_whole_library_noop():
-    """定向请求 + 已有整库任务 → 无需改动（整库是超集），合并成功。"""
+def test_queued_targeted_into_whole_noop():
+    """排队中：定向请求并入整库任务 → 超集，无需改动。"""
     existing = _task(prefixes=(), targeted=False)
     new_snap = _FakeSnap(limit_prefixes=("/a",), targeted=True)
-    assert _try_merge_scan_task(existing, new_snap) is True
+    assert _try_merge_scan_task(existing, new_snap, "chase-new") is True
     assert existing.snapshot.limit_prefixes == ()
-    assert existing.snapshot.targeted is False
+    assert existing.pending_rescan_snapshot is None
 
 
-def test_running_task_not_merged():
-    """已有任务正在跑 → 不合并（调用方应另起排队任务）。"""
+def test_running_wider_scope_registers_rescan():
+    """在跑：新请求范围更宽（整库）→ 登记补扫，快照不动，仍返回合并。"""
     existing = _task(prefixes=("/a",), targeted=True, state=STATE_RUNNING)
     new_snap = _FakeSnap(limit_prefixes=(), targeted=False)
-    assert _try_merge_scan_task(existing, new_snap) is False
-    # 运行中的任务快照不得被改动
+    assert _try_merge_scan_task(existing, new_snap, "strm-gen") is True
+    # 运行中的快照不得改动
     assert existing.snapshot.limit_prefixes == ("/a",)
     assert existing.snapshot.targeted is True
+    # 但补扫已登记为整库
+    assert existing.pending_rescan_snapshot is not None
+    assert existing.pending_rescan_snapshot.limit_prefixes == ()
+    assert existing.pending_rescan_snapshot.targeted is False
+    assert existing.pending_rescan_trigger == "strm-gen"
 
 
-def test_pick_locked_skips_same_library_running():
-    """_pick_locked：同库已有任务在跑时，排队任务不得被派发（防并发扫同库）。"""
-    running = _task(state=STATE_RUNNING)
-    queued = _task(state=STATE_QUEUED)
-    queued2_lib = ScanTask(
-        library_id=47, name="纪录片", trigger="manual",
-        snapshot=_FakeSnap(), state=STATE_QUEUED)
-    scan_queue._RUNNING[46] = running
-    scan_queue._QUEUE.extend([queued, queued2_lib])
-    try:
-        picked = scan_queue._pick_locked()
-        # lib 46 的排队任务必须被跳过，只能选 lib 47 的
-        assert picked is queued2_lib
-    finally:
-        scan_queue._RUNNING.pop(46, None)
-        scan_queue._QUEUE.clear()
+def test_running_covered_scope_no_rescan():
+    """在跑：新请求范围已被当前任务覆盖 → 无需补扫。"""
+    existing = _task(prefixes=("/a", "/b"), targeted=True, state=STATE_RUNNING)
+    new_snap = _FakeSnap(limit_prefixes=("/a",), targeted=True)
+    assert _try_merge_scan_task(existing, new_snap, "chase-new") is True
+    assert existing.pending_rescan_snapshot is None
+
+
+def test_running_pending_scope_merges():
+    """在跑：多次登记补扫时范围合并（整库胜出）。"""
+    existing = _task(prefixes=("/a",), targeted=True, state=STATE_RUNNING)
+    _try_merge_scan_task(existing, _FakeSnap(("/b",), True), "chase-new")
+    assert existing.pending_rescan_snapshot.limit_prefixes == ("/b",)
+    _try_merge_scan_task(existing, _FakeSnap((), False), "strm-gen")
+    assert existing.pending_rescan_snapshot.limit_prefixes == ()
+    assert existing.pending_rescan_snapshot.targeted is False
+
+
+def test_merge_scope_into_whole_wins():
+    s = _merge_scope_into(_FakeSnap(("/a",), True), _FakeSnap((), False))
+    assert s.limit_prefixes == () and s.targeted is False
+
+
+def test_scope_covered_by():
+    assert _scope_covered_by(_FakeSnap((), False), _FakeSnap(("/a",), True)) is True
+    assert _scope_covered_by(_FakeSnap(("/a", "/b"), True), _FakeSnap(("/a",), True)) is True
+    assert _scope_covered_by(_FakeSnap(("/a",), True), _FakeSnap(("/b",), True)) is False
+    assert _scope_covered_by(_FakeSnap(("/a",), True), _FakeSnap((), False)) is False

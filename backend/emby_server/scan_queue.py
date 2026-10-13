@@ -107,6 +107,10 @@ class ScanTask:
     # P0-0c 修复——必须在扫描真正完成后才 ACK，提前确认会导致进程崩溃时任务无声丢失。
     # 单体模式（非 Redis 桥接）下为空列表。
     redis_raws: list = field(default_factory=list)
+    # v2.57.1：运行中被合并了更宽范围的请求时，登记在这里；本任务跑完后按此
+    # 快照自动补扫一轮（见 _try_merge_scan_task / _run_task 收尾）。
+    pending_rescan_snapshot: object = None
+    pending_rescan_trigger: str = "manual"
 
     def as_dict(self, *, position: Optional[int] = None) -> dict:
         data = {
@@ -196,39 +200,76 @@ def enqueue_targeted(library, prefixes: list[str],
     return _enqueue_with_snapshot(library, snapshot, trigger=trigger)
 
 
-def _try_merge_scan_task(existing: "ScanTask", new_snapshot) -> bool:
-    """尝试把新扫描请求的范围并入已有任务。返回 True=已合并，False=调用方应另起任务。
+def _merge_scope_into(base_snapshot, new_snapshot):
+    """把 new_snapshot 的扫描范围并入 base_snapshot（可为 None），返回合并后的快照。
+
+    整库（无 limit_prefixes）是超集；定向取前缀并集。快照是 frozen dataclass，
+    用 dataclasses.replace 产生新的，不改原对象。
+    """
+    import dataclasses
+    if base_snapshot is None:
+        return new_snapshot
+    base_prefixes = tuple(getattr(base_snapshot, "limit_prefixes", ()) or ())
+    new_prefixes = tuple(getattr(new_snapshot, "limit_prefixes", ()) or ())
+    base_is_whole = not base_prefixes and not getattr(base_snapshot, "targeted", False)
+    if not new_prefixes:
+        # 新请求是整库 → 结果整库
+        if base_is_whole:
+            return base_snapshot
+        return dataclasses.replace(base_snapshot, limit_prefixes=(), targeted=False)
+    if base_is_whole:
+        return base_snapshot  # 整库已是超集
+    merged = tuple(sorted(set(base_prefixes) | set(new_prefixes)))
+    if merged == base_prefixes:
+        return base_snapshot
+    return dataclasses.replace(base_snapshot, limit_prefixes=merged)
+
+
+def _scope_covered_by(cover_snapshot, new_snapshot) -> bool:
+    """new_snapshot 的范围是否已被 cover_snapshot 完全覆盖。"""
+    new_prefixes = tuple(getattr(new_snapshot, "limit_prefixes", ()) or ())
+    if not new_prefixes:
+        # 新请求是整库：只有整库能覆盖它
+        cover_prefixes = tuple(getattr(cover_snapshot, "limit_prefixes", ()) or ())
+        return not cover_prefixes and not getattr(cover_snapshot, "targeted", False)
+    cover_prefixes = tuple(getattr(cover_snapshot, "limit_prefixes", ()) or ())
+    if not cover_prefixes and not getattr(cover_snapshot, "targeted", False):
+        return True  # 覆盖方是整库
+    return all(p in set(cover_prefixes) for p in new_prefixes)
+
+
+def _try_merge_scan_task(existing: "ScanTask", new_snapshot, new_trigger: str = "manual") -> bool:
+    """把新扫描请求合并进已有任务（保持「一库一任务」与 created=False 的 UX）。
 
     v2.57.1 修复（2026-10-13 生产实锤）：以前合并时无条件丢弃新请求的扫描范围——
     生成器的整库扫描经常被追新（chase-new）的定向扫描吞掉，新文件目录永不被
     遍历（added 恒 0）。现在：
-    - 已有任务还在排队（QUEUED）：合并范围——新请求是整库则把已有任务升级为
-      整库（超集，不丢信息）；双方定向则前缀取并集；
-    - 已有任务正在跑（RUNNING）：不合并。运行中的任务快照已冻结，改它有竞态；
-      调用方另起一个排队任务，串行执行（见 _pick_locked 的同库互斥）。
-    合并失败（异常）也不丢任务：返回 False 让调用方另起任务。
+    - 已有任务还在排队（QUEUED）：直接把范围并入其快照（整库升级 / 前缀并集）；
+    - 已有任务正在跑（RUNNING）：快照已冻结不能改。若新范围未被当前任务覆盖，
+      登记到 ``pending_rescan_snapshot``，当前任务跑完后自动按该快照补扫一轮。
+    恒返回 True（合并语义与 UX 不变：重复请求不报错、不另起任务）。
     """
-    if existing.state != STATE_QUEUED:
-        return False
     try:
-        import dataclasses
-        old_prefixes = tuple(getattr(existing.snapshot, "limit_prefixes", ()) or ())
-        new_prefixes = tuple(getattr(new_snapshot, "limit_prefixes", ()) or ())
-        if not new_prefixes:
-            # 新请求是整库：把排队中的定向任务升级为整库
-            if getattr(existing.snapshot, "targeted", False) or old_prefixes:
-                existing.snapshot = dataclasses.replace(
-                    existing.snapshot, limit_prefixes=(), targeted=False)
-        elif old_prefixes:
-            # 双方都是定向：前缀取并集
-            merged = tuple(sorted(set(old_prefixes) | set(new_prefixes)))
-            if merged != old_prefixes:
-                existing.snapshot = dataclasses.replace(
-                    existing.snapshot, limit_prefixes=merged)
-        # 新请求定向、已有整库：整库已是超集，无需改动
+        if existing.state == STATE_QUEUED:
+            existing.snapshot = _merge_scope_into(existing.snapshot, new_snapshot)
+            return True
+        # RUNNING：范围已冻结。若新范围已被当前任务覆盖，无需补扫；
+        # 否则登记补扫（与已登记的补扫范围再合并，避免多次登记膨胀）。
+        if _scope_covered_by(existing.snapshot, new_snapshot):
+            return True
+        pending = existing.pending_rescan_snapshot
+        if pending is not None and _scope_covered_by(pending, new_snapshot):
+            return True
+        existing.pending_rescan_snapshot = _merge_scope_into(pending, new_snapshot)
+        existing.pending_rescan_trigger = str(new_trigger or "manual")
+        logger.info("扫描范围补登记：库 id=%s 正在跑，新请求范围更宽，跑完后补扫（触发=%s）",
+                    existing.library_id, existing.pending_rescan_trigger)
         return True
     except Exception:
-        return False
+        # 合并逻辑本身绝不能丢任务：异常也视为已合并（原行为），保底由整库扫描兜底
+        logger.exception("合并扫描范围异常（库 id=%s），按原逻辑合并",
+                         getattr(existing, "library_id", "?"))
+        return True
 
 
 def _enqueue_with_snapshot(library, snapshot, trigger: str = "manual") -> dict:
@@ -238,11 +279,12 @@ def _enqueue_with_snapshot(library, snapshot, trigger: str = "manual") -> dict:
     scan_instrument.install()
     with _LOCK:
         existing = _task_of_locked(library.id)
-        if existing is not None and _try_merge_scan_task(existing, snapshot):
+        if existing is not None:
+            _try_merge_scan_task(existing, snapshot, trigger)
             existing.request_count += 1
             return {"created": False, "task": existing.as_dict(
                 position=_position_locked(existing))}
-        # 无已有任务，或已有任务正在跑无法合并：另起排队任务（串行执行）
+        # 无已有任务：新建排队任务
         task = ScanTask(
             library_id=int(library.id),
             name=str(snapshot.name or ""),
@@ -303,16 +345,15 @@ def enqueue_local(library, *, trigger: str = "manual", redis_raw=None,
         snapshot = dataclasses.replace(snapshot, force_full=True)
     with _LOCK:
         existing = _task_of_locked(library.id)
-        if existing is not None and _try_merge_scan_task(existing, snapshot):
+        if existing is not None:
+            _try_merge_scan_task(existing, snapshot, trigger)
             existing.request_count += 1
             if redis_raw is not None:
                 # 合并进已有任务：这个 Redis 任务同样要等已有任务跑完才 ACK，
                 # 不能在这里提前确认，否则崩溃会丢任务。
                 existing.redis_raws.append(redis_raw)
             return {"created": False, "task": existing.as_dict(position=_position_locked(existing))}
-        # 无已有任务，或已有任务正在跑无法合并：另起排队任务（串行执行）。
-        # 注意：原逻辑在这里无条件合并并丢弃新请求的扫描范围（整库扫描被
-        # 定向扫描吞掉），见 _try_merge_scan_task 的说明。
+        # 无已有任务：新建排队任务
         task = ScanTask(
             library_id=int(library.id),
             name=str(snapshot.name or ""),
@@ -741,12 +782,6 @@ def _pick_locked() -> Optional[ScanTask]:
     """挑下一个可以跑的任务（跳过被挂载挡住的，别让队头阻塞别的挂载）"""
     limit, mount_serial = _limits_locked()
     for task in _QUEUE:
-        # v2.57.1：同一库已有任务在跑时，后到的排队任务必须等它跑完——
-        # 否则两个线程并发扫同一个库会撞上 SQLAlchemy Session 并发限制
-        # （2026-09-29 生产事故）。以前「一库一任务」由合并逻辑隐式保证，
-        # _try_merge_scan_task 允许「排队+在跑」各一个后，这里必须显式互斥。
-        if int(task.library_id) in _RUNNING:
-            continue
         task.waiting_for = _conflicts_locked(task) if mount_serial else ()
         if task.waiting_for:
             continue
@@ -953,6 +988,21 @@ def _run_task(task: ScanTask) -> None:
                     (task.duration_ms or 0) / 1000, task.remote_lists, task.remote_reused)
         with _COND:
             _release_locked(task)
+        # v2.57.1：运行中被合并了更宽范围的请求 → 按登记的快照补扫一轮。
+        # 放在 _release_locked 之后：此时本库已无在跑任务，补扫按正常路径入队。
+        pending_snapshot = task.pending_rescan_snapshot
+        pending_trigger = task.pending_rescan_trigger
+        task.pending_rescan_snapshot = None
+        if pending_snapshot is not None:
+            try:
+                import types
+                _enqueue_with_snapshot(
+                    types.SimpleNamespace(id=int(task.library_id)),
+                    pending_snapshot, trigger=pending_trigger)
+                logger.info("扫描补扫已入队：库 id=%s（触发=%s，运行中被合并的更宽范围）",
+                            task.library_id, pending_trigger)
+            except Exception:
+                logger.exception("扫描补扫入队失败（库 id=%s）", task.library_id)
         # P0-0c：Redis 桥接的任务在这里才 ACK——扫描真正完成了。
         # 注意在 _COND 锁之外做（Redis I/O 不可预测），_ack_redis_raws 内部清掉已携带的 raw。
         _ack_redis_raws(task)
