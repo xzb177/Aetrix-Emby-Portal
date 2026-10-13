@@ -48,6 +48,7 @@ import {
   fetchTmdbLanguage,
   fetchEnrichEpisodeNight,
   fetchEnrichTuning,
+  fetchEnrichNoneStats,
   fetchDoubanBanDowngrade,
   fetchUnifiedFallback,
   generateVirtualLibraries,
@@ -71,7 +72,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, DoubanBanDowngradeConfig, UnifiedFallbackConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, DoubanBanDowngradeConfig, UnifiedFallbackConfig } from '@/api/admin'
 import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
 import type {
   EmbyLibrary,
@@ -1153,9 +1154,9 @@ async function saveEnrichEpisodeNightAction() {
   }
 }
 
-// ==================== 刮削性能参数（链路规划 Step 1） ====================
+// ==================== 刮削性能参数（链路规划 Step 1 / Step 4） ====================
 
-/** 原 env-only 旋钮搬进后台：线程数 / 批次 / 退避 / 租约 + DB 池 + Step 3 配额制（Step 4 仍占坑） */
+/** 原 env-only 旋钮搬进后台：线程数 / 批次 / 退避 / 租约 + DB 池 + Step 3 配额制 + Step 4 none 回捞 */
 const enrichTuning = ref<EnrichTuningConfig | null>(null)
 const enrichTuningSaving = ref(false)
 const enrichTuningError = ref(false)
@@ -1166,10 +1167,15 @@ const dbPoolDraft = ref('10')
 // 单集认领配额制（链路规划 Step 3）：开关 + 日配额（专用区块，不进上面的通用表）
 const quotaModeDraft = ref(false)
 const dayQuotaDraft = ref('2000')
+// none 定时回捞（链路规划 Step 4）：开关 + 回捞周期（专用区块，不进上面的通用表）
+const noneRsEnabledDraft = ref(false)
+const noneRsDaysDraft = ref('30')
 /** 配额制两个 key 在通用表里不重复展示 */
 const TUNING_QUOTA_KEYS = ['enrich_episode_quota_mode', 'enrich_episode_day_quota']
+/** Step 4 两个 key 在通用表里不重复展示（专用区块） */
+const TUNING_STEP4_KEYS = ['enrich_none_auto_reschedule', 'enrich_none_reschedule_days']
 const tuningOrderShown = computed(() =>
-  (enrichTuning.value?.order || []).filter((k) => !TUNING_QUOTA_KEYS.includes(k)))
+  (enrichTuning.value?.order || []).filter((k) => !TUNING_QUOTA_KEYS.includes(k) && !TUNING_STEP4_KEYS.includes(k)))
 /** 配额状态一行提示 */
 const quotaHintText = computed(() => {
   const q = enrichTuning.value?.episode_quota
@@ -1188,11 +1194,9 @@ const TUNING_LABELS: Record<string, string> = {
   enrich_claim_lease_sec: '认领租约（秒）',
   enrich_episode_day_quota: '白天单集日配额',
   enrich_none_reschedule_days: 'none 回捞周期（天）',
+  enrich_none_auto_reschedule: 'none 定时回捞开关',
 }
-// 占坑位：Step 4 接入前，改了不影响实际行为（Step 3 的日配额现已生效，不再是占坑）
-const TUNING_PLACEHOLDER: Record<string, string> = {
-  enrich_none_reschedule_days: 'Step 4 接入前改这里不影响实际行为',
-}
+// Step 1 的占坑位已在 Step 4 接入（回捞周期现在真实生效，不再占坑）
 
 async function loadEnrichTuningConfig() {
   try {
@@ -1205,11 +1209,15 @@ async function loadEnrichTuningConfig() {
     tmdbBatchDraft.value = t.values?.enrich_tmdb_batch !== false
     quotaModeDraft.value = t.values?.enrich_episode_quota_mode === true
     dayQuotaDraft.value = t.raw?.enrich_episode_day_quota ?? t.defaults?.enrich_episode_day_quota ?? '2000'
+    noneRsEnabledDraft.value = t.values?.enrich_none_auto_reschedule === true
+    noneRsDaysDraft.value = t.raw?.enrich_none_reschedule_days ?? t.defaults?.enrich_none_reschedule_days ?? '30'
     dbPoolDraft.value = t.db_pool?.saved_pool_size || String(t.db_pool?.pool_size ?? 10)
   } catch {
     enrichTuning.value = null // 出错不挡页面其它内容
     enrichTuningError.value = true
   }
+  // none 存量只读计数：独立接口，失败不挡上面的参数（只读展示）
+  loadEnrichNoneStats().catch(() => undefined)
 }
 
 async function saveEnrichTuningAction() {
@@ -1220,6 +1228,8 @@ async function saveEnrichTuningAction() {
     values.enrich_tmdb_batch = tmdbBatchDraft.value
     values.enrich_episode_quota_mode = quotaModeDraft.value
     values.enrich_episode_day_quota = dayQuotaDraft.value
+    values.enrich_none_auto_reschedule = noneRsEnabledDraft.value
+    values.enrich_none_reschedule_days = noneRsDaysDraft.value
     const res = await saveEnrichTuning(values, dbPoolDraft.value)
     enrichTuning.value = res
     const d: Record<string, string> = {}
@@ -1228,14 +1238,42 @@ async function saveEnrichTuningAction() {
     tmdbBatchDraft.value = res.values?.enrich_tmdb_batch !== false
     quotaModeDraft.value = res.values?.enrich_episode_quota_mode === true
     dayQuotaDraft.value = res.raw?.enrich_episode_day_quota ?? res.defaults?.enrich_episode_day_quota ?? '2000'
+    noneRsEnabledDraft.value = res.values?.enrich_none_auto_reschedule === true
+    noneRsDaysDraft.value = res.raw?.enrich_none_reschedule_days ?? res.defaults?.enrich_none_reschedule_days ?? '30'
     dbPoolDraft.value = res.db_pool?.saved_pool_size || String(res.db_pool?.pool_size ?? 10)
     ElMessage.success('刮削性能参数已保存（线程数 / DB 池需重启生效，其余 60 秒内热生效）')
+    // 参数变了，存量计数里的周期/可捞回数可能跟着变，刷新一次只读展示
+    loadEnrichNoneStats().catch(() => undefined)
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
     enrichTuningSaving.value = false
   }
 }
+
+// ==================== none 定时回捞（链路规划 Step 4） ====================
+
+/** none 存量只读计数：done+none+无 tmdb_id 按类型分组 + 下一轮可捞回数（只读，不改库） */
+const noneStats = ref<EnrichNoneStats | null>(null)
+const noneStatsError = ref(false)
+
+async function loadEnrichNoneStats() {
+  try {
+    noneStats.value = await fetchEnrichNoneStats()
+    noneStatsError.value = false
+  } catch {
+    noneStats.value = null // 出错不挡页面其它内容
+    noneStatsError.value = true
+  }
+}
+
+/** none 存量一行展示：series/movie/episode… 只读 */
+const noneStockText = computed(() => {
+  const s = noneStats.value
+  if (!s) return ''
+  const parts = Object.entries(s.by_type || {}).map(([t, c]) => `${t} ${c}`)
+  return parts.length ? parts.join(' · ') : '暂无'
+})
 
 // ==================== 豆瓣封禁降级（链路规划 Step 0.5） ====================
 
@@ -2123,6 +2161,50 @@ function typeLabel(t: string): string {
               </div>
             </div>
             <div class="scrape-block">
+              <h3>none 定时回捞（链路规划 Step 4）</h3>
+              <p class="drawer-hint">
+                打开后，「搜过、没有」的条目（done + metadata_source='none'）不再是永久终态：超过回捞周期后由 janitor 按最旧优先、单轮 2000 条翻回 pending 重新补搜（清 TMDB 搜索阴性缓存）；资料不全 5 次后也转 done+none 等回捞，不再进 failed。保存后 60 秒内生效。
+              </p>
+              <div v-if="enrichTuning" class="scrape-actions">
+                <el-switch
+                  v-model="noneRsEnabledDraft"
+                  active-text="回捞开"
+                  inactive-text="回捞关"
+                  aria-label="none 定时回捞开关"
+                />
+                <span class="chase-muted">回捞周期</span>
+                <el-input
+                  v-model="noneRsDaysDraft"
+                  style="width: 130px"
+                  aria-label="none 回捞周期（天）"
+                />
+                <span class="drawer-hint">天</span>
+                <el-button type="primary" size="small" :loading="enrichTuningSaving" @click="saveEnrichTuningAction">
+                  保存
+                </el-button>
+                <span class="chase-state" :class="{ 'is-on': noneRsEnabledDraft }">
+                  {{ noneRsEnabledDraft ? '回捞已开启' : '回捞关闭（行为与 Step 4 前一致）' }}
+                </span>
+              </div>
+              <div v-else-if="enrichTuningError" class="drawer-hint drawer-hint--after">
+                读取失败
+                <el-button size="small" text @click="loadEnrichTuningConfig">重试</el-button>
+              </div>
+              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+              <div v-if="noneStats" class="drawer-hint drawer-hint--after">
+                none 存量（done+none+无 tmdb_id，只读）：{{ noneStockText }}，共 {{ noneStats.total }} 条；
+                按当前 {{ noneStats.cycle_days }} 天周期，下一轮可捞回 {{ noneStats.reschedulable_now }} 条
+                （单轮硬上限 {{ noneStats.batch_limit }} 条）。
+              </div>
+              <div v-else-if="noneStatsError" class="drawer-hint drawer-hint--after">
+                存量计数读取失败
+                <el-button size="small" text @click="loadEnrichNoneStats">重试</el-button>
+              </div>
+              <div class="drawer-hint drawer-hint--after">
+                灰度建议：上线先把回捞周期设 90 天观察，确认 TMDB 429=0 后再调回 30 天。
+              </div>
+            </div>
+            <div class="scrape-block">
               <h3>刮削性能参数</h3>
               <p class="drawer-hint">
                 原来只能改环境变量的旋钮，现在后台可配：线程数 / 批次 / 退避 / 租约。线程数与 DB 池大小改完需重启进程生效，其余保存后 60 秒内热生效。被环境变量接管的项会标出（改这里不生效）。
@@ -2145,7 +2227,6 @@ function typeLabel(t: string): string {
                   />
                   <span class="drawer-hint tuning-desc">
                     {{ enrichTuning.descriptions?.[k] }}（默认 {{ enrichTuning.defaults?.[k] }}）
-                    <template v-if="TUNING_PLACEHOLDER[k]">；{{ TUNING_PLACEHOLDER[k] }}</template>
                   </span>
                   <el-tag v-if="enrichTuning.from_env?.[k]" type="warning" size="small">
                     环境变量 {{ enrichTuning.env_names?.[k] }} 接管中

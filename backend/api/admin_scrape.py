@@ -1089,6 +1089,19 @@ def requeue_inherit_children(
     return {"success": True, "requeued": n}
 
 
+@admin_emby_router.get("/scrape/enrich-none-stats")
+def get_enrich_none_stats(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """none 存量只读计数（链路规划 Step 4）：done + metadata_source='none' +
+    无 tmdb_id 的条目，按 item_type 分组；reschedulable_now 是当前周期下
+    janitor 下一轮可自动捞回的条数（剧/电影 + 超期口径）。只读，不改库。
+    """
+    from backend.emby_server import enrich_worker
+    return {"success": True, **enrich_worker.none_stock_stats(db)}
+
+
 
 
 @admin_emby_router.get("/scrape/enrich-progress")
