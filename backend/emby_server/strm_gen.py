@@ -84,9 +84,6 @@ CONFIG_PRUNE_MAX_RATIO = "strm_gen_prune_max_ratio"
 CONFIG_PRUNE_MAX_ABSOLUTE = "strm_gen_prune_max_absolute"
 # 生成时校验（块4 §6.3）：增量中新文件写盘前验一次 file_id
 CONFIG_VERIFY_NEW_IDS = "strm_gen_verify_new_ids"
-# Drive 快捷方式解析：开启后快捷方式跟随目标（指向目录按快捷方式名展开，
-# 指向视频文件按快捷方式名产出）。默认关=现状行为（不解析，直接跳过）。
-CONFIG_RESOLVE_SHORTCUTS = "strm_gen_resolve_shortcuts"
 # 反向僵尸校验（块4 §6.2）：开关 / 周期天数 / 每轮上限 / per-SA QPS
 CONFIG_ORPHAN_ENABLED = "strm_orphan_check_enabled"
 CONFIG_ORPHAN_INTERVAL_DAYS = "strm_orphan_check_interval_days"
@@ -399,15 +396,6 @@ def verify_new_ids(db) -> bool:
     return _db_config(db, CONFIG_VERIFY_NEW_IDS, "true").strip().lower() in ("1", "true", "yes", "on")
 
 
-def resolve_shortcuts(db) -> bool:
-    """是否解析 Drive 快捷方式（跟随目标内容）。默认 false=现状行为（不解析）。
-
-    开启后：快捷方式→目录，按快捷方式名展开该目录；快捷方式→视频文件，
-    按快捷方式名产出 .strm。只做能力开关，默认关。
-    """
-    return _db_config(db, CONFIG_RESOLVE_SHORTCUTS, "false").strip().lower() in ("1", "true", "yes", "on")
-
-
 def orphan_check_enabled(db) -> bool:
     """反向僵尸校验任务开关。默认 true。"""
     return _db_config(db, CONFIG_ORPHAN_ENABLED, "true").strip().lower() in ("1", "true", "yes", "on")
@@ -640,15 +628,12 @@ def _drive_modules():
     return dc
 
 
-def _get_token(drive_id: str, force_refresh: bool = False) -> Optional[str]:
-    """按盘取 Drive API 凭据。
-
-    复用 drive_changes.get_token_for_drive（全项目唯一入口）：共享盘走 SA
-    轮换；myDrive:<remote> 走该 remote 的 OAuth。个人盘 OAuth 失败时
-    DriveAuthError 直接上抛（显式报错，不静默回退）。
-    """
+def _get_token() -> Optional[str]:
     dc = _drive_modules()
-    return dc.get_token_for_drive(drive_id, force_refresh=force_refresh)
+    try:
+        return dc._get_token()
+    except Exception:
+        return None
 
 
 def _discover_drives() -> dict:
@@ -714,55 +699,22 @@ def _page_fetcher(drive_id: str):
     超过 1 小时。原来 token 只在列举开始取一次，中途 401 整个列举作废；
     现在遇到 PermissionError(401) 时刷新一次 token 续跑，仍失败才抛。
     """
-    box = {"token": _get_token(drive_id)}
+    box = {"token": _get_token()}
     if not box["token"]:
-        raise RuntimeError("无可用 Drive 凭据，无法访问 Drive API")
+        raise RuntimeError("无可用 SA 凭据，无法访问 Drive API")
 
     def fetch(query: str, page_token: Optional[str] = None):
         try:
             return _list_files_page(box["token"], drive_id, query, page_token)
         except PermissionError:
-            fresh = _get_token(drive_id, force_refresh=True)
+            fresh = _get_token()
             if not fresh or fresh == box["token"]:
                 raise
             box["token"] = fresh
             logger.info("strm_gen: Drive token 已刷新，继续列举")
             return _list_files_page(fresh, drive_id, query, page_token)
 
-    fetch.token_box = box  # 快捷方式解析（_resolve_shortcut_target）复用同一凭据
     return fetch
-
-
-#: Drive 快捷方式 MIME。现状（resolve_shortcuts=关）直接跳过。
-SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
-#: Drive 目录 MIME
-FOLDER_MIME = "application/vnd.google-apps.folder"
-
-
-def _resolve_shortcut_target(fetch, item: dict) -> dict | None:
-    """解析 Drive 快捷方式 → 目标元数据（id/name/mimeType/driveId/parents/size）。
-
-    用列举同一凭据（fetch.token_box）调 files.get。失败/目标已删/无目标 →
-    返回 None（调用方跳过，不抛）。
-    """
-    try:
-        details = item.get("shortcutDetails") or {}
-        target_id = details.get("targetId", "")
-        if not target_id:
-            return None
-        token = (getattr(fetch, "token_box", {}) or {}).get("token")
-        if not token:
-            return None
-        dc = _drive_modules()
-        body = dc._api_get(
-            "https://www.googleapis.com/drive/v3/files/" + target_id, token,
-            {"fields": "id,name,mimeType,driveId,parents,trashed,size",
-             "supportsAllDrives": "true"})
-        if not body or body.get("trashed"):
-            return None
-        return body
-    except Exception:
-        return None
 
 
 def _resolve_dir_id(fetch, drive_id: str, dir_path: str) -> Optional[str]:
@@ -803,8 +755,7 @@ def _resolve_dir_id(fetch, drive_id: str, dir_path: str) -> Optional[str]:
 
 
 def iter_drive_videos(drive_id: str, dir_path, strict: bool = True,
-                      subtree_listing: bool = True,
-                      resolve_shortcuts: bool = False):
+                      subtree_listing: bool = True):
     """流式列出源目录下所有视频文件。
 
     dir_path: 单个目录（str，向后兼容）或目录列表（list[str]，两盘全挂）。
@@ -840,11 +791,9 @@ def iter_drive_videos(drive_id: str, dir_path, strict: bool = True,
     else:
         dir_paths = [dir_path.strip().strip("/")] if (dir_path or "").strip().strip("/") else []
     if subtree_listing:
-        yield from _iter_drive_videos_subtree(drive_id, dir_paths, strict=strict,
-                                                  resolve_shortcuts=resolve_shortcuts)
+        yield from _iter_drive_videos_subtree(drive_id, dir_paths, strict=strict)
     else:
-        yield from _iter_drive_videos_flat(drive_id, dir_paths, strict=strict,
-                                               resolve_shortcuts=resolve_shortcuts)
+        yield from _iter_drive_videos_flat(drive_id, dir_paths, strict=strict)
 
 
 #: S1：子树列举阶段二每批 in parents 查询的目录数。
@@ -853,8 +802,7 @@ def iter_drive_videos(drive_id: str, dir_path, strict: bool = True,
 SUBTREE_LIST_BATCH = 30
 
 
-def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = True,
-                                   resolve_shortcuts: bool = False):
+def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = True):
     """S1：两阶段子树限定列举（见 iter_drive_videos 文档）。
 
     多目录版：阶段一的目录树全盘只拉一次（drive 级复用）；阶段一之二从各源
@@ -932,15 +880,11 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
                 continue
             stack.append((fid, rel_prefix + name + "/", root_prefix))
 
-    # 阶段二：按批查文件。快捷方式解析开时，指向目录的快捷方式目标会被
-    # 追加进 dir_ids 继续展开（dir_ids 在循环中可增长，故用 while）。
+    # 阶段二：按批查文件。
     dir_ids = list(dir_entries.keys())
-    seen_ids = set(dir_ids)
     listed_files = 0
-    bi = 0
-    while bi < len(dir_ids):
+    for bi in range(0, len(dir_ids), SUBTREE_LIST_BATCH):
         batch = dir_ids[bi:bi + SUBTREE_LIST_BATCH]
-        bi += SUBTREE_LIST_BATCH
         cond = " or ".join(f"'{d}' in parents" for d in batch)
         q = f"trashed=false and ({cond})"
         page_token = None
@@ -949,36 +893,13 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
             for f in files:
                 if f.get("trashed"):
                     continue
-                mt = f.get("mimeType")
-                if mt == FOLDER_MIME:
+                if f.get("mimeType") == "application/vnd.google-apps.folder":
                     continue  # 目录项只在阶段一处理；这里只收文件（与扁平实现一致：
                 # 扁平实现里目录走 stack 分支，不会当文件 yield）
                 fid = f.get("id", "")
                 name = _safe_name(f.get("name", ""))
                 if not name or not fid:
                     continue
-                emit_fid, emit_size = fid, f.get("size")
-                if mt == SHORTCUT_MIME and resolve_shortcuts:
-                    # 快捷方式解析（默认关）：跟随目标。关时走下面的普通文件
-                    # 路径（与旧实现一致：按快捷方式自己的名字判型）。
-                    target = _resolve_shortcut_target(fetch, f)
-                    if target is None:
-                        continue
-                    if target.get("mimeType") == FOLDER_MIME:
-                        tid = target.get("id", "")
-                        if (tid and not name.startswith(".")
-                                and name not in SKIP_DIR_NAMES
-                                and not disc_filter.is_disc_subtree_dir(name)):
-                            if tid not in seen_ids:
-                                seen_ids.add(tid)
-                                dir_ids.append(tid)
-                            for pid in f.get("parents") or []:
-                                for rroot, rp in dir_entries.get(pid) or ():
-                                    dir_entries.setdefault(tid, []).append(
-                                        (rroot, rp + name + "/"))
-                        continue
-                    emit_fid = target.get("id", "") or fid
-                    emit_size = target.get("size")
                 for pid in f.get("parents") or []:
                     for rroot, rp in dir_entries.get(pid) or ():
                         rel = rroot + rp + name
@@ -987,10 +908,10 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
                         if not is_video_path(rel):
                             continue
                         try:
-                            size = int(emit_size or 0)
+                            size = int(f.get("size") or 0)
                         except (ValueError, TypeError):
                             size = 0
-                        yield rel, emit_fid, size
+                        yield rel, fid, size
             listed_files += len(files)
             _set_progress(total=listed_folders + listed_files,
                           current=f"正在列举 Drive 文件…（已拉取 {listed_files} 个文件）")
@@ -1000,8 +921,7 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
                 drive_id, len(dir_ids), listed_files)
 
 
-def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True,
-                                resolve_shortcuts: bool = False):
+def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True):
     """旧的扁平全量拉取实现（S1 之前的主路径）。
 
     保留作应急回滚（strm_gen_subtree_listing=0 时走这里）。
@@ -1068,41 +988,12 @@ def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True,
             fid = f.get("id", "")
             if not name or not fid:
                 continue
-            mt = f.get("mimeType")
-            if mt == FOLDER_MIME:
+            if f.get("mimeType") == "application/vnd.google-apps.folder":
                 if (name.startswith(".") or name in SKIP_DIR_NAMES
                         or disc_filter.is_disc_subtree_dir(name)):
                     # 原盘结构目录整棵跳过（同上）
                     continue
                 stack.append((fid, rel_prefix + name + "/", root_prefix))
-            elif mt == SHORTCUT_MIME and resolve_shortcuts:
-                # 快捷方式解析（默认关）：跟随目标。关时走 else 分支当普通条目
-                # 处理（快捷方式名无视频扩展名 → 自然跳过 = 现状行为）。
-                target = _resolve_shortcut_target(fetch, f)
-                if target is None:
-                    continue
-                tmt = target.get("mimeType")
-                if tmt == FOLDER_MIME:
-                    tid = target.get("id", "")
-                    if (tid and not name.startswith(".")
-                            and name not in SKIP_DIR_NAMES
-                            and not disc_filter.is_disc_subtree_dir(name)):
-                        stack.append((tid, rel_prefix + name + "/", root_prefix))
-                elif is_video_path(name) or is_video_path(
-                        _safe_name(target.get("name", ""))):
-                    # 指向文件的快捷方式：按快捷方式名产出，取目标的 id/size
-                    # （快捷方式名/目标名任一带视频扩展名即产出）
-                    tid = target.get("id", "")
-                    if not tid:
-                        continue
-                    rel = root_prefix + rel_prefix + name
-                    if disc_filter.is_disc_subtree_rel(rel):
-                        continue
-                    try:
-                        size = int(target.get("size") or 0)
-                    except (ValueError, TypeError):
-                        size = 0
-                    yield rel, tid, size
             else:
                 rel = root_prefix + rel_prefix + name
                 if disc_filter.is_disc_subtree_rel(rel):
@@ -1673,22 +1564,17 @@ def _record_health_unknown(db, file_id: str, drive_id: str, note: str = "") -> N
         logger.warning("strm_gen: 记录疑点 file_id 失败: %s", exc)
 
 
-def _drive_file_id_valid(fid: str, drive_id: str) -> bool:
+def _drive_file_id_valid(fid: str) -> bool:
     """生成前验证新增 file_id 是否有效（files.get，fields=id）。
 
     失败一律返回 False（调用方跳过 + 计数，不重试）。
-    拿不到该盘 token 时返回 True（宁可放行，不可误杀）。
-    反风控：只验增量新增文件（通常 <100/轮），凭据走 get_token_for_drive
-    按盘取（全项目唯一入口，不另起第二套）。
+    拿不到 SA token 时返回 True（宁可放行，不可误杀）。
+    反风控：只验增量新增文件（通常 <100/轮），走现有 _get_token/_api_get
+    （SA 轮换/401 刷新复用，不另起第二套）。
     """
     try:
         from backend.emby_server import drive_changes as dc
-        try:
-            token = dc.get_token_for_drive(drive_id)
-        except dc.DriveAuthError as exc:
-            logger.warning("strm_gen: 盘 %s 凭据失败，跳过 file_id 校验: %s",
-                           drive_id, exc)
-            return True
+        token = dc._get_token()
         if not token:
             return True
         dc._api_get("https://www.googleapis.com/drive/v3/files/%s" % fid, token,
@@ -1754,47 +1640,39 @@ def _parse_drive_batch_response(text: str, fids: list[str]) -> set[str]:
     return {fid for i, fid in enumerate(fids) if statuses.get(i) != 200}
 
 
-def _drive_file_ids_invalid_batch(fids: list[tuple[str, str]]) -> set[str]:
+def _drive_file_ids_invalid_batch(fids: list[str]) -> set[str]:
     """批量校验 file_id 有效性，返回无效 fid 集合。
 
-    fids 为 (fid, drive_id) 列表：按盘分组，每组用该盘凭据
-    （get_token_for_drive，全项目唯一入口）。
-
     反风控铁律（与 _drive_file_id_valid 同款，不另起第二套）：
+    - token 复用 drive_changes._get_token()（同一套 SA 轮换）
     - 发送前按子请求数 acquire 全局限速器（保守，不占便宜）
     - 任一子 part 非 200 → 该 fid 无效（"失败一律无效"语义一致）
     - batch 整体异常（网络/401 等）→ 回退逐个 _drive_file_id_valid（只慢不坏）
     - 拿不到 token → 返回空集（"宁可放行"语义一致）
     """
-    uniq = list(dict.fromkeys((f, d) for f, d in fids if f))
+    uniq = list(dict.fromkeys(f for f in fids if f))
     if not uniq:
         return set()
     from backend.emby_server import drive_changes as dc
-    by_drive: dict[str, list[str]] = {}
-    for fid, did in uniq:
-        by_drive.setdefault(did, []).append(fid)
+    try:
+        token = dc._get_token()
+    except Exception:
+        token = None
+    if not token:
+        return set()
     invalid: set[str] = set()
-    for did, group in by_drive.items():
+    for start in range(0, len(uniq), DRIVE_BATCH_SIZE):
+        chunk = uniq[start:start + DRIVE_BATCH_SIZE]
         try:
-            token = dc.get_token_for_drive(did)
-        except dc.DriveAuthError as exc:
-            logger.warning("strm_gen: 盘 %s 凭据失败，跳过批量校验: %s", did, exc)
-            continue
-        if not token:
-            continue
-        for start in range(0, len(group), DRIVE_BATCH_SIZE):
-            chunk = group[start:start + DRIVE_BATCH_SIZE]
-            try:
-                # 保守：子请求数个令牌，一个不少（batch 只是一次 HTTP，
-                # 但配额按子请求计，不占便宜）
-                for _ in chunk:
-                    dc._api_limiter.acquire()
-                invalid |= _drive_batch_check(chunk, token)
-            except Exception as exc:
-                logger.warning("strm_gen: 批量校验失败，回退逐个校验（%d 个）: %s",
-                               len(chunk), exc)
-                invalid |= {fid for fid in chunk
-                            if not _drive_file_id_valid(fid, did)}
+            # 保守：子请求数个令牌，一个不少（batch 只是一次 HTTP，
+            # 但配额按子请求计，不占便宜）
+            for _ in chunk:
+                dc._api_limiter.acquire()
+            invalid |= _drive_batch_check(chunk, token)
+        except Exception as exc:
+            logger.warning("strm_gen: 批量校验失败，回退逐个校验（%d 个）: %s",
+                           len(chunk), exc)
+            invalid |= {fid for fid in chunk if not _drive_file_id_valid(fid)}
     return invalid
 
 
@@ -2216,6 +2094,9 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         # 全量模式故意重置状态，不补。
         _backfill_state_from_disk(all_videos, state, strm_root)
     used: set[str] = set()
+    # 本轮已分配路径 → (drive_id, rel)：防"登记路径被别的文件先占"的
+    # 极小概率边（见主循环复用分支的 claimed 守卫）
+    claimed: dict[str, tuple[str, str]] = {}
     if full:
         # 全量模式：从磁盘加载已有的 .strm 路径，避免不同源文件撞车时静默覆盖
         for _root, _dirs, _files in os.walk(strm_root):
@@ -2253,8 +2134,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     invalid_fids: set[str] = set()
     if verify_new:
         _new_fids = list(dict.fromkeys(
-            (fid, did) for did, rel, fid, size in all_videos
-            if (did, rel) not in state))
+            fid for did, rel, fid, size in all_videos if (did, rel) not in state))
         if _new_fids:
             invalid_fids = _drive_file_ids_invalid_batch(_new_fids)
             logger.info("strm_gen: 批量校验 %d 个新增 file_id，无效 %d 个",
@@ -2267,6 +2147,12 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         done += 1
         _set_progress(done=done, current=f"[{did}] {rel}")
         old = state.get((did, rel))
+        if old is None and full:
+            # 全量幂等（2026-10-14：82,348 个幽灵的根因）：全量模式 state 被
+            # 故意重置（重建），但 (drive_id, remote_path) 在 DB 里已有登记
+            # 路径时必须复用——不能把磁盘上自己上一轮的文件判成撞名、
+            # 批量改名成 -2/-3 孤立老文件。改名只留给真撞名。
+            old = loaded_state.get((did, rel))
         # file_id 或 size 任一变化都重建（Drive 上替换文件换 file_id，原地覆盖只变 size；
         # 原来只比 file_id，size 字段存而不用）
         if old and old[0] == fid and old[1] == size and not full:
@@ -2276,6 +2162,15 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 _set_progress(skipped=stats["skipped"])
                 continue
             strm_rel = old[2]  # .strm 被删了，按原路径重建
+        elif old is not None and full:
+            # 全量轮：复用登记路径原样重写/校验，绝不改名（即使命名规则
+            # 变化也保持路径稳定——Emby 库条目按路径键，稳定即正确）。
+            strm_rel = old[2]
+            if claimed.get(strm_rel, (did, rel)) != (did, rel):
+                # 极小概率：本轮已有别的文件占了这个路径（登记文件被删、
+                # 撞名新文件先处理）。退回真撞名流程，绝不覆盖别人的文件。
+                matched = next((p for p in src_prefixes if p and rel.startswith(p)), "")
+                strm_rel = _resolve_collision(strm_relpath(rel, matched), used)
         else:
             # 多版本保留（用户硬要求）：同一集的不同版本（不同 rel）各自生成独立 .strm，
             # 输出路径由 rel 派生天然区分；真撞名才加 -2 后缀，版本间永不互相淘汰。
@@ -2292,6 +2187,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         full_path = os.path.join(strm_root, strm_rel)
         if _write_strm_file(full_path, url):
             used.add(strm_rel)
+            claimed[strm_rel] = (did, rel)
             pending_rows.append((did, rel, fid, size, strm_rel))
             state[(did, rel)] = (fid, size, strm_rel)
             written_file_ids.append(fid)
@@ -2695,8 +2591,8 @@ def run_orphan_drive_check(db) -> dict:
     同一预算/同一删除路径（多盘按墓碑自带 drive_id 逐盘消费，state 主键已带
     drive_id，防跨盘误删）——这是 changes 漏事件（token 过期/积压丢事件）的兜底。
 
-    反风控：凭据走 get_token_for_drive 按盘取（全项目唯一入口），API 走 _api_get
-    （共享盘 SA 轮换/401 刷新、个人盘 OAuth 复用现有逻辑，不另起第二套）。
+    反风控：token 走 drive_changes._get_token()，API 走 _api_get
+    （SA 轮换/401 刷新复用现有逻辑，不另起第二套）。
     返回 {ok, checked, gone, alive, error, at}。
     """
     from backend.emby_server import models as em
@@ -2749,27 +2645,10 @@ def run_orphan_drive_check(db) -> dict:
     if not cands:
         return dict(result, ok=True)
 
-    # 凭据按盘取（get_token_for_drive，全项目唯一入口）：共享盘=SA 轮换，
-    # 个人盘=该账号 OAuth。个人盘凭据坏（DriveAuthError）→ 该行记 error
-    # 不记 gone（宁可漏杀，不可误杀）。
-    tok_by_drive: dict[str, str] = {}
-
-    def _tok_for(did: str, force: bool = False) -> str | None:
-        if not force and did in tok_by_drive:
-            return tok_by_drive[did]
-        try:
-            t = dc.get_token_for_drive(did, force_refresh=force)
-        except dc.DriveAuthError as exc:
-            logger.warning("strm_gen: 僵尸校验盘 %s 凭据失败: %s", did, exc)
-            return None
-        if t:
-            tok_by_drive[did] = t
-        return t
-
-    drive_ids = sorted({did for _, did in cands})
-    if not any(_tok_for(did) for did in drive_ids):
-        logger.warning("strm_gen: 僵尸校验无可用 Drive 凭据，本轮跳过")
-        return dict(result, ok=False, error_msg="无可用 Drive 凭据")
+    token = dc._get_token()
+    if not token:
+        logger.warning("strm_gen: 僵尸校验无可用 SA token，本轮跳过")
+        return dict(result, ok=False, error_msg="无可用 SA token")
 
     sleep_base = 1.0 / qps
     now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -2777,49 +2656,44 @@ def run_orphan_drive_check(db) -> dict:
 
     for idx, (fid, did) in enumerate(cands):
         if idx and idx % 20 == 0:
-            # 每 20 个刷新一次该盘凭据：共享盘=再轮换一个 SA（反风控分摊配额），
-            # 个人盘=强制刷新 OAuth（401 续跑语义）。
-            tok_by_drive.pop(did, None)
-        token = _tok_for(did)
+            # 每 20 个换 SA，分摊配额（反风控）
+            token = dc._get_token() or token
         status, note = "error", ""
-        if not token:
-            note = "拿不到该盘凭据"
-        else:
-            for attempt in range(2):
-                try:
-                    body = dc._api_get(
-                        "https://www.googleapis.com/drive/v3/files/%s" % fid, token,
-                        {"fields": "id,trashed", "supportsAllDrives": "true"})
-                    # 200 且 trashed → gone；200 → alive
-                    status = "gone" if body.get("trashed") else "alive"
+        for attempt in range(2):
+            try:
+                body = dc._api_get(
+                    "https://www.googleapis.com/drive/v3/files/%s" % fid, token,
+                    {"fields": "id,trashed", "supportsAllDrives": "true"})
+                # 200 且 trashed → gone；200 → alive
+                status = "gone" if body.get("trashed") else "alive"
+                break
+            except dc.DriveNotFoundError:
+                # 404：可能是真删除，也可能是单个 SA 掉权限（Drive 对掉权限
+                # 的 SA 也回 404 而非 401）——换一个 SA 交叉确认一次，
+                # 两次都 404 才判 gone，避免误杀。
+                if attempt == 1:
+                    status = "gone"
                     break
-                except dc.DriveNotFoundError:
-                    # 404：可能是真删除，也可能是单个 SA 掉权限（Drive 对掉权限
-                    # 的 SA 也回 404 而非 401）——换一个 SA 交叉确认一次，
-                    # 两次都 404 才判 gone，避免误杀。个人盘走 OAuth 强制刷新。
-                    if attempt == 1:
-                        status = "gone"
-                        break
-                    token = _tok_for(did, force=True) or token
-                    if not token:
-                        status = "gone"
-                        break
-                    continue
-                except PermissionError:
-                    # 401：token 失效，换 SA 重试一次
-                    # R18-P3：只在"还要重试"时才取新 token——旧实现 attempt==1 时
-                    # 先取了第三个 SA 的 token 又直接 break，白白烧掉一次 SA 轮换位。
-                    if attempt == 1:
-                        note = "token 失效"
-                        break
-                    token = _tok_for(did, force=True) or token
-                    if not token:
-                        note = "token 失效"
-                        break
-                    continue
-                except Exception as exc:  # noqa: BLE001 — 异常不记 gone，避免误杀
-                    note = str(exc)[:200]
+                token = dc._get_token()
+                if not token:
+                    status = "gone"
                     break
+                continue
+            except PermissionError:
+                # 401：token 失效，换 SA 重试一次
+                # R18-P3：只在"还要重试"时才取新 token——旧实现 attempt==1 时
+                # 先取了第三个 SA 的 token 又直接 break，白白烧掉一次 SA 轮换位。
+                if attempt == 1:
+                    note = "token 失效"
+                    break
+                token = dc._get_token()
+                if not token:
+                    note = "token 失效"
+                    break
+                continue
+            except Exception as exc:  # noqa: BLE001 — 异常不记 gone，避免误杀
+                note = str(exc)[:200]
+                break
         # 落库（upsert）
         try:
             row = db.query(em.StrmFileHealth).filter(
