@@ -1012,6 +1012,19 @@ def _open_upstream_sync(client, api_url: str, forward: dict, dns_pinning: dict,
                 return None, current, forward
             client.close()
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 — 畸形 Location（如 http://[::1）：
+            # _next_redirect 抛非 MountError 的 ValueError；关掉已打开的 resp
+            # （否则慢泄漏共享池），silent 下返回 None，非 silent 下关 client 转 502
+            # ——与原 serve_remote 内联逻辑的外层 except 口径一致。
+            try:
+                resp.close()
+            except Exception:
+                pass
+            logger.warning("重定向目标解析失败 %s: %s", location, exc)
+            if silent:
+                return None, current, forward
+            client.close()
+            raise HTTPException(status_code=502, detail="源站不可达") from exc
         # A-P2-2：把校验时刻的 DNS 快照并入 pin 表，下一跳建连直接走 pin 住的 IP
         dns_pinning.update(_hop_pinning)
         resp.close()  # 确认要跟着走，这一跳的响应就不要再占着连接了
