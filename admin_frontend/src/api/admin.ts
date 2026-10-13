@@ -1271,6 +1271,19 @@ export interface EnrichNoneStats {
 export const fetchEnrichNoneStats = () =>
   get<EnrichNoneStats>(`${E}/scrape/enrich-none-stats`)
 
+/** 字段级缺失率只读统计（链路规划 Step 5）：已刮完条目的标题/年份/海报/简介/类型/演员缺失数与缺失率 + 开关状态 + 进程内计数 */
+export interface EnrichFieldStats {
+  success: boolean
+  total: number
+  missing: Record<string, number>
+  rates: Record<string, number>
+  field_completeness_enabled: boolean
+  process: Record<string, number>
+}
+
+export const fetchEnrichFieldStats = () =>
+  get<EnrichFieldStats>(`${E}/scrape/enrich-field-stats`)
+
 export interface TmdbTestResult {
   index: number
   masked: string
@@ -1949,13 +1962,8 @@ export const saveStrmConfig = (data: { enabled: boolean; host_dir: string; conta
 /** .strm 生成器配置（总开关 / Drive 源目录 / 指定 Drive / 过期清理） */
 export interface StrmGenConfig {
   enabled: boolean
-  /** 主源目录（兼容旧前端，取第一项） */
   source_dir: string
-  /** 源目录配置原文（逗号分隔多目录），新前端回显用 */
-  source_dir_raw?: string
-  /** 源目录列表 */
-  source_dirs?: string[]
-  /** 指定 Drive ID，空或 "all"=所有发现的盘 */
+  /** 指定 Drive ID，空=自动选择 */
   drive_id: string
   /** 清理 Drive 上已不存在的 .strm 文件及状态行（不可逆） */
   prune: boolean
