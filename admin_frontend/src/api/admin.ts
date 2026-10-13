@@ -1267,6 +1267,19 @@ export const fetchDoubanConfig = () => get<DoubanConfig>(`${E}/scrape/douban-con
 export const saveDoubanConfig = (enabled: boolean, min_interval: number) =>
   put<DoubanConfig>(`${E}/scrape/douban-config`, { enabled, min_interval })
 
+/** 豆瓣封禁降级（链路规划 Step 0.5）：封禁期跳过豆瓣走多源兜底 */
+export interface DoubanBanDowngradeConfig {
+  success: boolean
+  enabled: boolean
+  banned: boolean
+  ban_remaining_sec: number
+}
+export const fetchDoubanBanDowngrade = () =>
+  get<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`)
+
+export const saveDoubanBanDowngrade = (enabled: boolean) =>
+  put<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`, { enabled })
+
 /** 保存总开关 / 中文优先 / TMDB-miss 兜底开关 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
 export const saveMetaSources = (data: {
   enabled: boolean

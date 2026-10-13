@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import threading
 import time
 import uuid
@@ -183,6 +184,105 @@ def _cached_altmeta_cfg() -> tuple:
     _altmeta_cfg_cache["cfg"] = (ok, iv, bgm_iv)
     _altmeta_cfg_cache["at"] = now_ts
     return ok, iv, bgm_iv
+
+
+# ---------------------------------------------------------------------------
+# 豆瓣封禁降级（链路规划 Step 0.5）
+#
+# feature flag：enrich_douban_ban_downgrade（SystemConfig，默认 "0"=关）。
+# flag 开 + 豆瓣封禁中（ban_remaining()>0）时：
+#   - 预搜索处不再标 douban_banned 延后，TMDB 照常跑；
+#   - 豆瓣 rich 兜底直接跳过（一次豆瓣请求都不发），走多源兜底分支；
+#   - 多源/TMDB 命中从严（标题+年份都对上才落库，宁可 none 不乱认）。
+# flag 关时行为与现状逐字节一致。解封后自动恢复原顺序（运行时逐条判定，
+# 无状态翻转，无需任何回切动作）。
+# ---------------------------------------------------------------------------
+CFG_DOUBAN_BAN_DOWNGRADE = "enrich_douban_ban_downgrade"
+
+
+def _douban_ban_downgrade_flag_on() -> bool:
+    """Step 0.5 开关：读 SystemConfig。
+
+    读口径走 store.get_value（全项目唯一一套带 60s TTL 热缓存的读法），
+    管理后台保存后最多 60 秒生效。读不到/异常时按关处理（行为=现状）。
+    """
+    from backend.integrations import store
+    _db = SessionLocal()
+    try:
+        return store.get_value(_db, CFG_DOUBAN_BAN_DOWNGRADE, "0") == "1"
+    except Exception:  # noqa: BLE001 — 读不到就当关着，行为与现状一致
+        return False
+    finally:
+        _db.close()
+
+
+def _douban_ban_downgrade_active() -> bool:
+    """Step 0.5 降级是否激活：flag 开 + 豆瓣封禁中（逐条运行时判定）。
+
+    Step 2（兜底链统一）会把这段判断收编进统一兜底链——独立小函数，
+    方便到时整体搬迁，不留两套。
+    """
+    if not _douban_ban_downgrade_flag_on():
+        return False
+    try:
+        from backend.emby_server import douban as _dbn
+        return _dbn.ban_remaining() > 0
+    except Exception:  # noqa: BLE001 — 判定不了就不降级，保守
+        return False
+
+
+def _ban_downgrade_strict_hit_ok(item_name: str, item_year,
+                                 cand_title: str, cand_year) -> bool:
+    """Step 0.5 从严匹配：标题+年份都对上才算命中（宁可 none 不乱认）。
+
+    标题口径照抄 ``altmeta.search``（:189-191）：清洗（去空白与常见标点、
+    转小写）后必须完全一致，或一方是另一方的前缀。
+    年份：条目与候选都有值时必须相等；任一方缺失不否决。
+    标题任一方为空 → 直接否决（没法验证 = 不可信）。
+    """
+    _punct = r"[\s:：·\-—_\.、,，!！?？~～'\"“”‘’()（）\[\]【】]+"
+    got = re.sub(_punct, "", (cand_title or "").lower())
+    want = re.sub(_punct, "", (item_name or "").lower())
+    if not got or not want:
+        return False
+    if got != want and not (got.startswith(want) or want.startswith(got)):
+        return False
+    try:
+        iy = int(item_year) if item_year else None
+    except (TypeError, ValueError):
+        iy = None
+    try:
+        cy = int(str(cand_year)[:4]) if cand_year else None
+    except (TypeError, ValueError):
+        cy = None
+    if iy and cy and iy != cy:
+        return False
+    return True
+
+
+def get_douban_ban_downgrade_config(db) -> dict:
+    """管理后台用：豆瓣封禁降级开关 + 当前封禁状态（只读）。"""
+    from backend.integrations import store
+    from backend.emby_server import douban as _dbn
+    remaining = max(0.0, _dbn.ban_remaining())
+    return {
+        "enabled": store.get_value(db, CFG_DOUBAN_BAN_DOWNGRADE, "0") == "1",
+        "banned": remaining > 0,
+        "ban_remaining_sec": round(remaining, 1),
+    }
+
+
+def save_douban_ban_downgrade_config(db, enabled: bool) -> dict:
+    """管理后台用：保存豆瓣封禁降级开关（写 SystemConfig，60 秒内热生效）。"""
+    from backend.integrations import store
+    store.write_values(
+        db,
+        {CFG_DOUBAN_BAN_DOWNGRADE: "1" if enabled else "0"},
+        {CFG_DOUBAN_BAN_DOWNGRADE:
+         "豆瓣封禁降级开关（链路规划 Step 0.5）：封禁期跳过豆瓣走多源兜底"},
+    )
+    db.commit()
+    return get_douban_ban_downgrade_config(db)
 
 
 def _parse_hhmm(s: Optional[str], default: str) -> str:
@@ -525,6 +625,20 @@ def _collect_multisource(item: Any, kind: str, result: dict) -> bool:
         logger.debug("多源采集失败 %s: %s", getattr(item, "name", ""), exc)
         result["multisource_error"] = str(exc)[:200]
         return True
+    if _douban_ban_downgrade_active():
+        # Step 0.5（链路规划）：降级期间多源归并命中必须标题+年份都对上才落库，
+        # 不满足 → 丢弃并视为未命中（宁可 none 不乱认）。
+        # 返回 False（=没接管）：调用方继续走 Bangumi/终态 none 口径。
+        _ms_fields = (collected.fields or {})
+        if not _ban_downgrade_strict_hit_ok(
+                getattr(item, "name", ""), getattr(item, "production_year", None),
+                _ms_fields.get("title"), _ms_fields.get("year")):
+            logger.info(
+                "豆瓣封禁降级期多源命中从严丢弃：条目=%r 年=%s 归并标题=%r 年=%s",
+                getattr(item, "name", ""), getattr(item, "production_year", None),
+                _ms_fields.get("title"), _ms_fields.get("year"))
+            result["multisource_strict_rejected"] = True
+            return False
     result["multisource"] = collected.as_dict()
     return True
 
@@ -951,12 +1065,20 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
     # 预搜索（search 计划=6-9 个请求/条，采样 10/10 未命中）。直接标 banned 延后，
     # Phase 2 批量因 plan=none 跳过它，一个 TMDB 请求都不烧。
     # needs_repair（用户等着的修复请求）不跳过：宁可多烧几次也不多等一个周期。
+    #
+    # Step 0.5（链路规划）：降级激活时不再整条延后——跳过豆瓣这一站，TMDB 预搜索
+    # 照常跑（"注定延后所以不烧预搜索"的前提已不存在）。flag 关时下面 else 分支
+    # 与现状逐字节一致。
     if (tmdb_plan.get("op") == "search" and not needs_repair
             and _douban_ban_presearch_skip(item, kind)):
-        result["ok"] = False
-        result["douban_banned"] = True
-        result["error"] = "douban banned; tmdb pre-search skipped during ban"
-        tmdb_plan = {"op": "none"}
+        if _douban_ban_downgrade_active():
+            logger.info("豆瓣封禁降级激活：%r 不延后，TMDB 预搜索照常跑",
+                        getattr(item, "name", ""))
+        else:
+            result["ok"] = False
+            result["douban_banned"] = True
+            result["error"] = "douban banned; tmdb pre-search skipped during ban"
+            tmdb_plan = {"op": "none"}
     tmdb_ctx = {
         "kind": kind,
         "needs_repair": needs_repair,
@@ -1132,6 +1254,29 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                             getattr(item, "tmdb_id", None), True)
                         result["tmdb_hit"] = hit
                         result["tmdb_details"] = details
+        # Step 0.5（链路规划）：降级期间 TMDB 命中同样从严——标题+年份都对上
+        # 才算命中，不满足 → 丢弃命中，继续走下面的多源兜底（宁可 none 不乱认）。
+        # 只筛 search 出来的 hit：单条/批量路径里 tmdb_hit 只在 search 分支
+        # （含别名 stale 回退 search）被赋值，NFO/别名按 id 取详情的不受影响。
+        # 标题取 hit 的任一官方变体（TMDB 可能用原名命中中文查询）。
+        if _douban_ban_downgrade_active() and result.get("tmdb_hit"):
+            _th = result.get("tmdb_hit") or {}
+            _t_titles = [_th.get("title"), _th.get("name"),
+                         _th.get("original_title"), _th.get("original_name")]
+            _t_year = ((_th.get("first_air_date") or _th.get("release_date")
+                        or "")[:4])
+            if not any(_ban_downgrade_strict_hit_ok(
+                    getattr(item, "name", ""),
+                    getattr(item, "production_year", None),
+                    _t, _t_year) for _t in _t_titles if _t):
+                logger.info(
+                    "豆瓣封禁降级期 TMDB 命中从严丢弃：条目=%r 年=%s 命中标题=%r 年=%s",
+                    getattr(item, "name", ""),
+                    getattr(item, "production_year", None),
+                    _th.get("title") or _th.get("name"), _t_year or None)
+                result.pop("tmdb_hit", None)
+                result.pop("tmdb_details", None)
+                result["tmdb_strict_rejected"] = True
         # 原语言海报（StrmAssistant #10）：IO 阶段预取语言偏好的海报，
         # 写库阶段直接用（写事务里不碰网络，见模块注释处方 1）。
         # poster_language() == "system" 时 images_with_language 返回 None，不额外请求。
@@ -1168,8 +1313,16 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
         # 外层 try 包住：任何异常都回退到 skip，绝不影响原有终态逻辑。
         if (kind in ("series", "movie") and not getattr(item, "tmdb_id", None)
                 and not result.get("tmdb_hit")):
-            # TMDB 为主、豆瓣兜底：先试豆瓣 rich 兜底（中文标题）
-            _fb = _douban_fallback_on_tmdb_miss(item, kind, result)
+            # Step 0.5（链路规划）：降级激活时跳过豆瓣 rich 兜底——一次豆瓣请求
+            # 都不发，直接走下面的多源兜底分支。flag 关时走原逻辑。
+            if _douban_ban_downgrade_active():
+                logger.info("豆瓣封禁降级激活：%r 跳过豆瓣 rich 兜底，走多源兜底",
+                            getattr(item, "name", ""))
+                result["_ban_downgrade_skipped_douban"] = True
+                _fb = False  # 等价于豆瓣没命中，下游走多源兜底
+            else:
+                # TMDB 为主、豆瓣兜底：先试豆瓣 rich 兜底（中文标题）
+                _fb = _douban_fallback_on_tmdb_miss(item, kind, result)
             if _fb == "banned":
                 # 封禁 ≠ 没搜中：整条留待冷却后重试（不烧重试次数、不终态化）
                 result["ok"] = False
@@ -1205,12 +1358,20 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                     if _ok:
                         # v2.56.0：rich 豆瓣兜底已试过豆瓣就不再重复打（省一次请求，
                         # 且 rich 路径自带反封禁保护）。没试过才走轻量 altmeta.search。
+                        # Step 0.5（链路规划）：降级激活时轻量豆瓣搜索同样跳过
+                        # （封禁期零豆瓣请求），只留 Bangumi。
                         if not result.get("_douban_fallback_tried"):
-                            try:
-                                result["douban_hit"] = altmeta.search(
-                                    item.name or "", item.production_year, kind, _interval)
-                            except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
-                                logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
+                            if _douban_ban_downgrade_active():
+                                logger.info(
+                                    "豆瓣封禁降级激活：%r 跳过轻量豆瓣搜索",
+                                    item.name)
+                                result.setdefault("douban_hit", None)
+                            else:
+                                try:
+                                    result["douban_hit"] = altmeta.search(
+                                        item.name or "", item.production_year, kind, _interval)
+                                except Exception as exc:  # noqa: BLE001 — 兜底源失败不影响主流程
+                                    logger.debug("豆瓣兜底失败 %s: %s", item.name, exc)
                         # 豆瓣限流/没命中时再试 Bangumi——它有 name_cn 与封面，
                         # 对 TMDB 收录差的中文剧集特别有用（实测命中 B-PROJECT、落语朱音）。
                         if not result["douban_hit"]:

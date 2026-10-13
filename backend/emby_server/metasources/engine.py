@@ -103,6 +103,18 @@ class CollectResult:
         return result
 
 
+def _douban_banned_now() -> bool:
+    """豆瓣全局冷却是否生效（封禁中）。
+
+    判定不了（异常）时返回 False：不改变现有行为，保守。
+    """
+    try:
+        from backend.emby_server import douban as _dbn
+        return _dbn.ban_remaining() > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _fetch_one(source_cfg, title: str, year: Optional[int], kind: str) -> Optional[sources.Hit]:
     """问一个源；失败抛 ``SourceError``（由调用方隔离）"""
     spec = sources.SPEC_BY_ID.get(source_cfg.id)
@@ -153,6 +165,13 @@ def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
             if source_cfg.needs_key:
                 result.outcomes.append(SourceOutcome(
                     source_cfg.id, label, False, skipped="需要密钥但一个都没配"))
+                continue
+            # 链路规划 Step 0.5：豆瓣封禁期跳过豆瓣源——search_douban 自己直发
+            # HTTP、不查封禁状态，这里拦下才能保证封禁期零豆瓣请求（反风控红线）。
+            # 只拦自动采集：后台「试采集」（only 指定源）是管理员手动点的，不拦。
+            if source_cfg.id == "douban" and _douban_banned_now():
+                result.outcomes.append(SourceOutcome(
+                    source_cfg.id, label, False, skipped="豆瓣封禁中，已跳过"))
                 continue
             if asked >= MAX_SOURCES:
                 result.outcomes.append(SourceOutcome(
