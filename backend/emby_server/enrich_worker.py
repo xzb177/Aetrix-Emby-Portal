@@ -285,6 +285,58 @@ def save_douban_ban_downgrade_config(db, enabled: bool) -> dict:
     return get_douban_ban_downgrade_config(db)
 
 
+# ---------------------------------------------------------------------------
+# 兜底链路统一（链路规划 Step 2）
+#
+# feature flag：enrich_unified_fallback（SystemConfig，默认 "0"=关）。
+# flag 开时：TMDB 未命中后的兜底只剩两个调用点——豆瓣 rich（CJK 专属）→
+# 多源引擎（含豆瓣源）。轻量 altmeta.search 已并入引擎做"豆瓣源"，不再直调；
+# 原 else 分支（Phase 6b）的 _collect_multisource 调用与轻量直调被统一调用点
+# 取代（flag 包裹，暂不物理删除，下一轮规划确认无回归后再删）；
+# _should_multisource_on_tmdb_miss 里的独立 tmdb_miss_fallback 判断降级为
+# 多源总开关的子项（总开关是唯一的门）。
+# flag 关时行为与 Step 1 部署后逐字节一致（回滚=关 flag）。
+# ---------------------------------------------------------------------------
+CFG_UNIFIED_FALLBACK = "enrich_unified_fallback"
+
+
+def _unified_fallback_flag_on() -> bool:
+    """Step 2 开关：读 SystemConfig。
+
+    读口径走 store.get_value（全项目唯一一套带 60s TTL 热缓存的读法），
+    管理后台保存后最多 60 秒生效。读不到/异常时按关处理（行为=现状）。
+    """
+    from backend.integrations import store
+    _db = SessionLocal()
+    try:
+        return store.get_value(_db, CFG_UNIFIED_FALLBACK, "0") == "1"
+    except Exception:  # noqa: BLE001 — 读不到就当关着，行为与现状一致
+        return False
+    finally:
+        _db.close()
+
+
+def get_unified_fallback_config(db) -> dict:
+    """管理后台用：兜底链路统一开关（只读）。"""
+    from backend.integrations import store
+    return {
+        "enabled": store.get_value(db, CFG_UNIFIED_FALLBACK, "0") == "1",
+    }
+
+
+def save_unified_fallback_config(db, enabled: bool) -> dict:
+    """管理后台用：保存兜底链路统一开关（写 SystemConfig，60 秒内热生效）。"""
+    from backend.integrations import store
+    store.write_values(
+        db,
+        {CFG_UNIFIED_FALLBACK: "1" if enabled else "0"},
+        {CFG_UNIFIED_FALLBACK:
+         "兜底链路统一开关（链路规划 Step 2）：一个豆瓣入口，rich→多源引擎"},
+    )
+    db.commit()
+    return get_unified_fallback_config(db)
+
+
 def _parse_hhmm(s: Optional[str], default: str) -> str:
     """解析 HH:MM，非法则回退到默认值（保证下游比较永不抛异常）"""
     s = (s or "").strip()
@@ -842,6 +894,11 @@ def _should_multisource_on_tmdb_miss(item: Any, kind: str) -> bool:
     只有显式打开时才在 TMDB-miss 路径走多源兜底。避免默认开启改变现有行为。
     v2.58.0 起该开关由配置中心统一管理（``ms_config.Snapshot.tmdb_miss_fallback``），
     后台「多源元数据补全」卡里有这个开关，不再这里直查 SystemConfig。
+
+    链路规划 Step 2：该独立开关降级为多源总开关的子项。统一兜底链
+    （``enrich_unified_fallback=1``）启用时，总开关是唯一的门，不再要求
+    该独立开关也开着；该键保留（回滚/兼容），语义见 ``ms_config``。
+    未启用时保持原语义：须与总开关同时开着才走兜底。
     """
     if kind not in ("series", "movie"):
         return False
@@ -856,7 +913,7 @@ def _should_multisource_on_tmdb_miss(item: Any, kind: str) -> bool:
             return False
     except Exception:  # noqa: BLE001 — 判定不了就不走兜底，不影响主流程
         return False
-    # 前置检查总开关与独立开关：都开着才走兜底
+    # 前置检查总开关；统一兜底链下独立开关不再独立门控（已降级为子项）
     try:
         from backend.emby_server.metasources import config as ms_config
         from backend.emby_server.metasources import sources as ms_sources
@@ -865,9 +922,13 @@ def _should_multisource_on_tmdb_miss(item: Any, kind: str) -> bool:
             snapshot = ms_config.read_config(_db, ms_sources.SPECS)
             if not snapshot.enabled:
                 return False
-            # 独立开关：meta_sources_tmdb_miss_fallback，默认关闭。
+            # 链路规划 Step 2：tmdb_miss_fallback 降级为总开关的子项。
+            # 统一兜底链启用时总开关是唯一的门；未启用时保持原语义
+            # （须与总开关同时开着）。
             # 配置中心统一读写（write_config 同进程即时失效快照，跨进程 30s TTL），
             # 这里不再直查 SystemConfig，避免两套读法打架。
+            if _unified_fallback_flag_on():
+                return True
             if not snapshot.tmdb_miss_fallback:
                 return False
         finally:
@@ -875,6 +936,63 @@ def _should_multisource_on_tmdb_miss(item: Any, kind: str) -> bool:
     except Exception:  # noqa: BLE001 — 读不到配置就不走兜底
         return False
     return True
+
+
+def _multisource_master_on() -> bool:
+    """多源总开关是否开着（Step 2 统一兜底链：原 else 分支的门控口径）。
+
+    原 else 分支（Phase 6b）的 ``_collect_multisource`` 只看总开关、不要求
+    中文标题（TMDB 未配置 / repair 请求时豆瓣是主数据源）。统一兜底链下
+    repair 与 TMDB 未配置仍走这个口径——repair 的行为不变。
+    读不到配置时按关处理（保守，不走兜底）。
+    """
+    try:
+        from backend.emby_server.metasources import config as ms_config
+        from backend.emby_server.metasources import sources as ms_sources
+        _db = SessionLocal()
+        try:
+            return bool(ms_config.read_config(_db, ms_sources.SPECS).enabled)
+        finally:
+            _db.close()
+    except Exception:  # noqa: BLE001 — 读不到配置就不走兜底
+        return False
+
+
+def _fallback_unified(item: Any, kind: str, result: dict,
+                      needs_repair: bool) -> None:
+    """Step 2 统一兜底链：豆瓣 rich（CJK 专属）之后，只剩多源引擎这一个调用点。
+
+    一个豆瓣入口：轻量 ``altmeta.search`` 已并入多源引擎做"豆瓣源"
+    （``metasources/sources.py`` 的 ``search_douban``），这里不再直调
+    ``altmeta.search`` / ``search_bangumi``。
+
+    门控口径与原分支逐一对应（可达性分析，TMDB 配置 × repair）：
+    - TMDB 已配置 & 非 repair：``_should_multisource_on_tmdb_miss``
+      （中文标题 + 总开关；``tmdb_miss_fallback`` 已降级为子项）；
+    - repair / TMDB 未配置：只看多源总开关（原 else 的 ``_collect_multisource``
+      口径，不要求中文标题；repair 仍能走到引擎，行为不变）。
+
+    Step 0.5 收编：降级判断复用 ``_douban_ban_downgrade_active()``（rich 跳过
+    在调用方已处理）；引擎自身的封禁感知（封禁期跳过豆瓣源、零豆瓣请求）保留，
+    不另起一套 flag 或判断。
+
+    反风控：引擎内豆瓣源走 ``altmeta.search``（单条目单次请求），与原轻量直调
+    同口径；引擎自带逐源限速（``meta_source_rate_douban``，默认 1.0s），
+    不改任何限流/超时/退避参数。
+    """
+    from backend.emby_server.tmdb import tmdb_client
+    try:
+        if tmdb_client.configured and not needs_repair:
+            _ms_go = _should_multisource_on_tmdb_miss(item, kind)
+        else:
+            # 原 else 口径：只看多源总开关（不要求中文标题）。
+            _ms_go = _multisource_master_on()
+        if _ms_go and _collect_multisource_guarded(item, kind, result):
+            progress.note_stage("enrich_multisource_fallback")
+        else:
+            progress.note_stage("enrich_fallback_skip")
+    except Exception:  # noqa: BLE001 — 兜底失败不影响主流程
+        progress.note_stage("enrich_fallback_skip")
 
 
 def _collect_multisource_guarded(item: Any, kind: str, result: dict) -> bool:
@@ -1503,6 +1621,12 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                 return result
             if _fb:
                 pass  # 豆瓣兜底已命中，不再走多源/轻量兜底（避免重复打豆瓣）
+            elif _unified_fallback_flag_on():
+                # ★ 链路规划 Step 2：统一兜底链。rich（CJK 专属）之后只剩
+                # 多源引擎（含豆瓣源）这一个调用点——一个豆瓣入口。
+                # 原 elif/else 分支用 flag 包裹保留（暂不物理删除），
+                # 下一轮规划确认无回归后再删。
+                _fallback_unified(item, kind, result, needs_repair)
             elif tmdb_client.configured and not needs_repair:
                 try:
                     if _should_multisource_on_tmdb_miss(item, kind):
@@ -1515,9 +1639,12 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                 except Exception:  # noqa: BLE001 — 兜底失败不影响主流程
                     progress.note_stage("enrich_fallback_skip")
             else:
-                # Phase 6b：多源总开关打开时，这一块交给多源引擎
+                # Phase 6b（Step 2 flag 包裹保留，暂不物理删除）：
+                # 多源总开关打开时，这一块交给多源引擎
                 # （七个源按顺序问、字段按序填充、单源失败隔离）。
                 # 关着时走原来的豆瓣 → Bangumi 兜底，行为与升级前一致。
+                # enrich_unified_fallback=1 时走上面的 _fallback_unified，
+                # 不再进入这里。
                 if _collect_multisource(item, kind, result):
                     progress.note_stage("enrich_multisource")
                 else:

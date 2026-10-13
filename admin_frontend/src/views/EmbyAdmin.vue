@@ -49,6 +49,7 @@ import {
   fetchEnrichEpisodeNight,
   fetchEnrichTuning,
   fetchDoubanBanDowngrade,
+  fetchUnifiedFallback,
   generateVirtualLibraries,
   previewLibraryCover,
   regenerateLibraryCover,
@@ -65,11 +66,12 @@ import {
   saveEnrichEpisodeNight,
   saveEnrichTuning,
   saveDoubanBanDowngrade,
+  saveUnifiedFallback,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, DoubanBanDowngradeConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, DoubanBanDowngradeConfig, UnifiedFallbackConfig } from '@/api/admin'
 import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
 import type {
   EmbyLibrary,
@@ -727,6 +729,7 @@ async function load() {
       loadEnrichEpisodeNightConfig().catch(() => undefined),
       loadEnrichTuningConfig().catch(() => undefined),
       loadBanDowngradeConfig().catch(() => undefined),
+      loadUnifiedFallbackConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
@@ -1241,6 +1244,36 @@ async function saveBanDowngradeAction() {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
     banDowngradeSaving.value = false
+  }
+}
+
+// ==================== 兜底链路统一（链路规划 Step 2） ====================
+
+/** 一个豆瓣入口：豆瓣 rich（CJK 专属）→ 多源引擎（含豆瓣源）。关 = 回滚到原行为 */
+const unifiedFallback = ref<UnifiedFallbackConfig | null>(null)
+const unifiedFallbackSaving = ref(false)
+const unifiedFallbackError = ref(false)
+
+async function loadUnifiedFallbackConfig() {
+  try {
+    unifiedFallback.value = await fetchUnifiedFallback()
+    unifiedFallbackError.value = false
+  } catch {
+    unifiedFallback.value = null // 出错不挡页面其它内容
+    unifiedFallbackError.value = true
+  }
+}
+
+async function saveUnifiedFallbackAction() {
+  if (!unifiedFallback.value) return
+  unifiedFallbackSaving.value = true
+  try {
+    unifiedFallback.value = await saveUnifiedFallback(unifiedFallback.value.enabled)
+    ElMessage.success('兜底链路统一已保存，60 秒内生效')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    unifiedFallbackSaving.value = false
   }
 }
 const rescrapeVisible = ref(false)
@@ -2118,6 +2151,28 @@ function typeLabel(t: string): string {
               <div v-else-if="banDowngradeError" class="drawer-hint drawer-hint--after">
                 读取失败
                 <el-button size="small" text @click="loadBanDowngradeConfig">重试</el-button>
+              </div>
+              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+            </div>
+            <div class="scrape-block">
+              <h3>兜底链路统一（Step 2）</h3>
+              <p class="drawer-hint">
+                一个豆瓣入口：TMDB 未命中后，豆瓣 rich 兜底（中文标题专属）→ 多源引擎（含豆瓣源），不再有两套豆瓣打法；多源兜底只看多源总开关（原独立开关降级为子项）。关闭 = 回滚到原来的分支行为（保存后 60 秒内生效）
+              </p>
+              <div v-if="unifiedFallback" class="scrape-actions">
+                <el-switch
+                  v-model="unifiedFallback.enabled"
+                  active-text="开启"
+                  inactive-text="关闭"
+                  aria-label="兜底链路统一开关"
+                />
+                <el-button type="primary" size="small" :loading="unifiedFallbackSaving" @click="saveUnifiedFallbackAction">
+                  保存
+                </el-button>
+              </div>
+              <div v-else-if="unifiedFallbackError" class="drawer-hint drawer-hint--after">
+                读取失败
+                <el-button size="small" text @click="loadUnifiedFallbackConfig">重试</el-button>
               </div>
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
             </div>
