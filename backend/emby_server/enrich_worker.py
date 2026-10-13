@@ -626,6 +626,9 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
 
     series_tmdb_id = (inherit_parent or {}).get("tmdb_id")
     if not series_tmdb_id:
+        # 标记「因父级无 id 而跳过」：写库阶段据此判定竞态（父级在并发中刚落 id，
+        # v2.58.0 联动兜底）。与「跑过但 TMDB 没这集」（确定性结论，不重跑）严格区分。
+        result["episode_tmdb_skipped_no_parent_id"] = True
         return
     season_no = getattr(item, "season_number", None)
     ep_no = getattr(item, "episode_number", None)
@@ -1408,6 +1411,10 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     from backend.emby_server.tmdb import tmdb_client
     from sqlalchemy import func as _func
 
+    # 联动快照（v2.58.0）：父级剧本轮是否新拿到 tmdb_id。放在所有落库之前，
+    # 写库末尾用它判定要不要翻转名下空壳 inherit 单集。
+    had_tmdb_id = bool(getattr(item, "tmdb_id", None))
+
     # 锁后认领：如果条目在抢单之后被管理员锁定，不再写入任何自动结果，
     # 直接 done 并释放租约（之前这里不检查，锁定形同虚设）。
     # 注意：手动操作（bind-tmdb / rescrape）不走这个函数，不受影响。
@@ -1642,6 +1649,25 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         # 真正的来源标记（nfo/tmdb/douban…）不动。
         if not item.metadata_source or item.metadata_source == "none":
             item.metadata_source = "inherit"
+        # 竞态兜底（v2.58.0）：抓取阶段父级还没有 tmdb_id（_fetch_episode_tmdb 被跳过，
+        # 见 episode_tmdb_skipped_no_parent_id），但写库时父级已经有了（父级在同批/
+        # 并发中刚落 id）→ 打回 pending 短退避，下一轮纯继承会用新 id 拉单集数据。
+        # 只处理「跳过」：抓取跑过但 TMDB 没这集是确定性结论，不重跑（否则死循环）。
+        if fetched.get("episode_tmdb_skipped_no_parent_id") and item.series_id:
+            _p = (db.query(em.MediaItem)
+                  .filter(em.MediaItem.id == item.series_id)
+                  .populate_existing().first())
+            if _p is not None and _p.tmdb_id:
+                logger.info("单集继承竞态：父级已补 tmdb_id，打回 pending 短退避 id=%s",
+                            item.id)
+                item.enrich_status = "pending"
+                item.enrich_attempts = 0
+                item.enrich_next_retry_at = datetime.now() + timedelta(seconds=300)
+                item.enrich_claimed_at = None
+                item.enrich_claim_token = None
+                item.enrich_priority = 0
+                _maybe_queue_probe(db, item)
+                return
     elif kind in ("series", "movie"):
         if (tmdb_client.configured and not item.tmdb_id and not alt_hit
                 and not multi_fields and not _dbn_first):
@@ -1738,6 +1764,14 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 优先级消费完归零（处方 4）：repair 的 100 在上面已随 repair_requested_at
     # 清除；重试未匹配的 50 也一样——残留值会让这个条目在未来的重试里永久插队。
     item.enrich_priority = 0
+
+    # 常态联动（v2.58.0）：series 本轮新拿到 tmdb_id（此前没有）→ 名下空壳
+    # inherit 单集翻回 pending。只对 series：_fetch_episode_tmdb 只认 series 的
+    # tmdb_id（季接口按 series id 拉），season 的 id 不驱动单集抓取。
+    # 翻转放在 commit 之后做（调用方根据 fetched 里的标记执行），避免子集在本事务
+    # 提交前后并发写入 done+inherit 的竞态（窗口从整个抓取阶段缩到一次查询）。
+    if item_type == "series" and item.tmdb_id and not had_tmdb_id:
+        fetched["_parent_tmdb_newly_acquired"] = item.id
 
     # probe 衔接：需要探测的送进 probe 队列（幂等）
     _maybe_queue_probe(db, item)
@@ -2087,6 +2121,118 @@ def retry_unmatched(db) -> int:
     return n
 
 
+def _episode_lacks_own_data(ep: Any, parent: Any) -> bool:
+    """单集是否缺自己的单集级数据（v2.58.0 空壳 inherit 联动谓词）。
+
+    只用现成语义，不新造口径：
+    - 简介：纯继承不拷父级简介（写库只标 inherit）；inherit 行无自带 NFO，
+      非空简介只能来自单集抓取 → 非空即本集数据。
+    - 剧照：图片沿父级回退是「物化拷贝」到条目上；与父级当前值一致/为空 =
+      没有专属剧照，值不同 = 自己的图（含 sidecar 本地图）。
+    - 标题：不作为条件。apply_episode 的覆盖门控是 ^第\\d+集$，生产全库 0 行
+      命中（扫描命名是「X 第 N 集 SxxEyy」），标题不是可区分信号；且各落库
+      路径都是只补缺项，重跑已有标题的集只会补简介/剧照，不会破坏。
+    """
+    if (getattr(ep, "overview", None) or "").strip():
+        return False
+    ep_poster = getattr(ep, "poster_path", None) or ""
+    ep_primary = getattr(ep, "primary_image_url", None) or ""
+    p_poster = getattr(parent, "poster_path", None) or ""
+    p_primary = getattr(parent, "primary_image_url", None) or ""
+    if (ep_poster and ep_poster != p_poster) or (ep_primary and ep_primary != p_primary):
+        return False
+    return True
+
+
+def _requeue_inherit_children_for_parent(db, parent_id: int) -> int:
+    """父级剧新拿到 tmdb_id：名下空壳 inherit 单集翻回 pending（v2.58.0 常态联动）。
+
+    只翻同时满足的：episode + done + metadata_source='inherit' + 未锁定 +
+    未合并 + 缺单集级数据（_episode_lacks_own_data）。已有数据的集不动。
+    翻转时清掉父级物化的图片拷贝（只清与父级当前值一致的），让重跑的单集剧照
+    能落下来；没有专属剧照时写库阶段会重新沿父级回退，展示不断档。
+    无循环：触发条件是父级 None→有 id 的单次跃迁；子集重跑不会让父级再次跃迁。
+    """
+    from sqlalchemy import or_ as _or
+    parent = db.query(em.MediaItem).filter(em.MediaItem.id == parent_id).first()
+    if parent is None or not getattr(parent, "tmdb_id", None):
+        return 0
+    p_poster = getattr(parent, "poster_path", None) or ""
+    p_primary = getattr(parent, "primary_image_url", None) or ""
+    cands = (db.query(em.MediaItem)
+             .filter(em.MediaItem.item_type == "episode",
+                     em.MediaItem.enrich_status == "done",
+                     em.MediaItem.metadata_source == "inherit",
+                     em.MediaItem.metadata_locked.isnot(True),
+                     em.MediaItem.merged_into_id.is_(None),
+                     _or(em.MediaItem.series_id == parent_id,
+                         em.MediaItem.parent_id == parent_id))
+             .all())
+    flipped = 0
+    for ep in cands:
+        if not _episode_lacks_own_data(ep, parent):
+            continue
+        if (getattr(ep, "poster_path", None) or "") == p_poster:
+            ep.poster_path = None
+        if (getattr(ep, "primary_image_url", None) or "") == p_primary:
+            ep.primary_image_url = None
+        ep.enrich_status = "pending"
+        ep.enrich_attempts = 0
+        ep.enrich_next_retry_at = None
+        ep.enrich_claimed_at = None
+        ep.enrich_claim_token = None
+        ep.enrich_priority = ENRICH_PRIORITY_RETRY_UNMATCHED
+        flipped += 1
+    if flipped:
+        logger.info("空壳 inherit 联动：父级剧 id=%s 新拿 tmdb_id，%d 个子集翻回 pending",
+                    parent_id, flipped)
+        try:
+            from backend.emby_server import enrich_flip_monitor as _fm
+            _fm.alert_flip(db, flip_count=flipped, trigger="inherit_requeue",
+                           flips=[{"item_id": None, "item_type": "episode",
+                                   "reason": "inherit_requeue"}])
+        except Exception as exc:  # noqa: BLE001 — 监控不能影响主流程
+            logger.warning("空壳 inherit 联动翻转告警失败: %s", exc)
+    return flipped
+
+
+def requeue_stuck_inherit_children(db) -> int:
+    """存量补排（管理端可触发）：所有已有 tmdb_id 的剧，名下空壳 inherit 单集翻回 pending。
+
+    与常态联动同一谓词、同一动作；返回翻回条数。部署后跑一次即可；
+    日常由 _enrich_apply 的常态联动覆盖，不需要定时跑。
+    """
+    total = 0
+    parent_ids = [r[0] for r in db.query(em.MediaItem.id).filter(
+        em.MediaItem.item_type == "series",
+        em.MediaItem.tmdb_id.isnot(None),
+        em.MediaItem.tmdb_id != "").all()]
+    for pid in parent_ids:
+        total += _requeue_inherit_children_for_parent(db, pid)
+    db.commit()
+    if total:
+        logger.info("空壳 inherit 存量补排：共 %d 个子集翻回 pending", total)
+    return total
+
+
+def _maybe_flip_inherit_children(db, fetched: dict) -> None:
+    """写库 commit 之后执行常态联动（v2.58.0）。
+
+    _enrich_apply 在父级剧新拿 tmdb_id 时置 fetched["_parent_tmdb_newly_acquired"]；
+    这里在父级事务已提交后翻转子集，保证翻转查询能看到所有已提交的子集行。
+    自带异常兜底：翻转失败不影响父级已提交的结果（可管理端补跑）。
+    """
+    pid = (fetched or {}).get("_parent_tmdb_newly_acquired")
+    if not pid:
+        return
+    try:
+        _requeue_inherit_children_for_parent(db, pid)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("空壳 inherit 联动翻转失败 parent_id=%s: %s", pid, exc)
+
+
 def _alias_tmdb_id(name: str) -> Optional[str]:
     """零 API 本地别名匹配（处方 12）：在已入库条目的 aliases / 名字里找同一部剧。
 
@@ -2296,6 +2442,7 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
         _st = (fresh.enrich_status or "")
         outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
         db.commit()
+        _maybe_flip_inherit_children(db, fetched)
         return outcome
     except Exception as exc:  # noqa: BLE001
         logger.warning("补全写库失败 id=%s: %s", item_id, exc)
@@ -2434,6 +2581,7 @@ def _process_batch(db, batch: list) -> None:
                 _st = (fresh.enrich_status or "")
                 outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
                 db.commit()
+                _maybe_flip_inherit_children(db, fetched)
         except Exception as exc:  # noqa: BLE001
             logger.warning("批量补全写库失败 id=%s: %s", item_id, exc)
             db.rollback()
