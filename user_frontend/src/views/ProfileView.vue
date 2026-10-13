@@ -48,6 +48,34 @@ const user = computed(() => userStore.user as AuthUser | null)
 // 身份卡上的首字母头像：比一个通用小人图标更像「我的账号」
 const initial = computed(() => (user.value?.username || 'U').charAt(0).toUpperCase())
 
+/* ---------- 佩戴中的成就徽章（装备库 → 徽章陈列柜，localStorage） ---------- */
+const WORN_BADGE_KEY = 'aetrix_worn_badge_v1'
+const wornBadgeKey = ref<string | null>(null)
+const wornBadgeMeta = ref<{ icon: string; name: string } | null>(null)
+const wornBadge = computed(() => {
+  if (!wornBadgeKey.value || !wornBadgeMeta.value) return null
+  return { key: wornBadgeKey.value, ...wornBadgeMeta.value }
+})
+async function loadWornBadge() {
+  try {
+    const key = localStorage.getItem(WORN_BADGE_KEY)
+    if (!key) return
+    wornBadgeKey.value = key
+    // 从收藏家接口拿徽章元信息（图标+名字），失败就静默不显示
+    const { panelApi } = await import('@/composables/usePanelApi')
+    const data = await panelApi.collector()
+    const found = (data.achievements || []).find((a) => a.key === key && a.unlocked)
+    if (found) {
+      wornBadgeMeta.value = { icon: found.icon, name: found.name }
+    } else {
+      wornBadgeKey.value = null
+      localStorage.removeItem(WORN_BADGE_KEY)
+    }
+  } catch {
+    /* 拿不到就不显示，不打扰 */
+  }
+}
+
 // ===== 数据 =====
 const loading = ref(true)
 const account = ref<AccountCard | null>(null)
@@ -340,6 +368,7 @@ async function loadProfile(silent = false) {
 onMounted(() => {
   loadTgStatus()
   loadProfile()
+  void loadWornBadge()
 })
 
 // 从别的 tab 切回来（KeepAlive 缓存命中）：后台静默刷新，不闪骨架屏
@@ -347,6 +376,7 @@ onActivated(() => {
   if (hasLoaded.value) {
     loadProfile(true)
     loadTgStatus() // Bot 端绑定后切回本页，徽章不再过期
+    void loadWornBadge() // 装备库换了佩戴徽章，切回来同步
   }
 })
 
@@ -382,6 +412,15 @@ function formatDate(iso?: string | null) {
       <p class="hero-sub">
         <span v-if="activeSub" class="ticket"><Crown :size="12" />{{ activeSub.plan_name }} · 剩 {{ activeSub.days_left }} 天</span>
         <span v-else-if="user?.is_vip" class="ticket"><Crown :size="12" />VIP</span>
+        <!-- 佩戴中的成就徽章（装备库 → 徽章陈列柜） -->
+        <router-link
+          v-if="wornBadge"
+          to="/game/outfit"
+          class="ticket badge-ticket"
+          :title="`佩戴中：${wornBadge.name} —— 去装备库更换`"
+        >
+          {{ wornBadge.icon }}{{ wornBadge.name }}
+        </router-link>
       </p>
       <div class="hero-meta">
         <span class="meta-item"><Mail :size="13" />{{ user?.email || '未绑定邮箱' }}</span>
@@ -888,6 +927,14 @@ html[data-theme="light"] .hero-ambiance {
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
+}
+/* 佩戴中的成就徽章：金色描边，点进装备库更换 */
+.ticket.badge-ticket {
+  border-color: var(--gold, #c99b3f);
+  background: rgba(201, 155, 63, 0.12);
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
 }
 
 .hero-meta {

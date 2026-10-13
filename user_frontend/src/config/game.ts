@@ -62,6 +62,18 @@ export const gameHubConfig = {
 /** 全部游戏设施（营地设施）—— order 即数组顺序，0 起 */
 export const gameFacilities: GameFacility[] = [
   {
+    key: 'operator',
+    name: '接线员',
+    path: '/game/operator',
+    icon: '🔌',
+    desc: '买完会员来这儿接线 —— 拿账号密码，去播放器里连上就能看。',
+    stamp: '营地 · 接线处',
+    group: 'daily',
+    order: 0,
+    enabled: true,
+    guideTip: '刚买完会员？先来这儿拿账号密码，再去播放器里登录。',
+  },
+  {
     key: 'checkin',
     name: '每日报到',
     path: '/game/checkin',
@@ -69,7 +81,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '每天到营地报到盖章，领能量，连报有加成。',
     stamp: '营地 · 报到处',
     group: 'daily',
-    order: 0,
+    order: 1,
     enabled: true,
     guideTip: '每天来盖个章，顺手把今天的体力领了。',
   },
@@ -81,7 +93,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '看看接下来有什么探险活动，别错过。',
     stamp: '营地 · 探险地图',
     group: 'daily',
-    order: 1,
+    order: 2,
     enabled: true,
   },
   {
@@ -92,7 +104,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '把心愿投进池子里，说不定哪天就实现了。',
     stamp: '心愿 · 待实现',
     group: 'daily',
-    order: 2,
+    order: 3,
     enabled: true,
   },
   {
@@ -103,7 +115,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '发出求救信号，等好心人来搭把手。',
     stamp: '求救 · 已发出',
     group: 'social',
-    order: 3,
+    order: 4,
     enabled: true,
   },
   {
@@ -114,7 +126,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '信鸽替你送信，看看有没有回音。',
     stamp: '信鸽 · 传书中',
     group: 'social',
-    order: 4,
+    order: 5,
     enabled: true,
     guideTip: '信鸽带回来的信都在这儿，记得查收。',
   },
@@ -126,7 +138,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '每一笔能量的来龙去脉，都记在这本账上。',
     stamp: '账本 · 笔笔有数',
     group: 'asset',
-    order: 5,
+    order: 6,
     enabled: true,
   },
   {
@@ -137,7 +149,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '在补给站拿过的东西，这里都有小票。',
     stamp: '小票 · 张张在册',
     group: 'asset',
-    order: 6,
+    order: 7,
     enabled: true,
   },
   {
@@ -148,7 +160,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '一个人探险太孤单，找个搭子一起走。',
     stamp: '营地门口 · 组队处',
     group: 'social',
-    order: 7,
+    order: 8,
     enabled: true,
   },
   {
@@ -159,7 +171,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '营地一角的老向导，有事就问他。',
     stamp: '营地一角 · 老向导',
     group: 'style',
-    order: 8,
+    order: 9,
     enabled: true,
   },
   {
@@ -170,7 +182,7 @@ export const gameFacilities: GameFacility[] = [
     desc: '换套行头，以全新的面貌出发。',
     stamp: '衣帽间 · 试衣中',
     group: 'style',
-    order: 9,
+    order: 10,
     enabled: true,
   },
 ]

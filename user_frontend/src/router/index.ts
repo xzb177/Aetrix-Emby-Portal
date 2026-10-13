@@ -108,6 +108,12 @@ const router = createRouter({
             component: () => import('@/views/game/OutfitView.vue'),
             meta: { title: '换装', requiresAuth: true },
           },
+          {
+            path: '/game/operator',
+            name: 'game-operator',
+            component: () => import('@/views/game/OperatorView.vue'),
+            meta: { title: '接线员', requiresAuth: true },
+          },
         ]
       : []),
     {

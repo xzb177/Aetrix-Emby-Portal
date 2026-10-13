@@ -89,14 +89,14 @@ def _make_app(db_session, current_user):
 
 # ==================== 1. 成就定义 seed ====================
 
-def test_seed_achievement_defs_12_and_idempotent(db):
+def test_seed_achievement_defs_13_and_idempotent(db):
     added = pa.seed_achievement_defs(db)
-    assert added == 12
+    assert added == 13
     # 重复 seed 不翻倍
     added2 = pa.seed_achievement_defs(db)
     assert added2 == 0
     count = db.query(models.PanelAchievementDef).count()
-    assert count == 12
+    assert count == 13
 
 
 def test_seed_does_not_override_disabled(db):
