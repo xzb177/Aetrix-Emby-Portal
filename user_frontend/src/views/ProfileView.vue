@@ -489,7 +489,7 @@ function formatDate(iso?: string | null) {
           <template v-else>
             <p class="unlock-title">开通会员后可见</p>
             <p class="unlock-desc">服务器地址、Emby 账号与一键导入只向会员开放。</p>
-            <button class="btn primary" @click="router.push('/store')">去开通会员</button>
+            <button class="btn primary" @click="router.push('/shop')">去开通会员</button>
           </template>
         </div>
 

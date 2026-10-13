@@ -413,7 +413,7 @@ async function focusActiveTab(center: boolean) {
 //（2026-10-13：/wallet 旧页面已删；/game/checkin 报到后能量/体力变化，
 // 回 /game 时也需要刷新顶栏活力值 —— R27 加入 economyPaths）
 watch(() => route.path, (p, old) => {
-  const economyPaths = ['/store', '/game/checkin']
+  const economyPaths = ['/shop', '/game/checkin']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
     refreshSubscription()
     loadPoints()

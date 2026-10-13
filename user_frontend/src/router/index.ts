@@ -130,12 +130,10 @@ const router = createRouter({
       component: () => import('@/views/ProfileView.vue'),
       meta: { title: '个人中心', requiresAuth: true },
     },
-    // ==================== 经济系统（v2.3.0；v2.11.0 商店/钱包拆分；2026-10-13 旧页面清理：钱包/消息/工单/求片/AI助手/签到/邀请/日历已删，对应功能走 v4 游戏化设施） ====================
+    // ==================== 经济系统（v2.3.0；v2.11.0 商店/钱包拆分；2026-10-13 商店统一：/store 301 到 /shop 补给站） ====================
     {
       path: '/store',
-      name: 'store',
-      component: () => import('@/views/StoreView.vue'),
-      meta: { title: '商店', requiresAuth: true },
+      redirect: '/shop',
     },
     // 注册后 TG 绑定引导页：仅注册流程进入，未绑定且管理员开启时展示
     {

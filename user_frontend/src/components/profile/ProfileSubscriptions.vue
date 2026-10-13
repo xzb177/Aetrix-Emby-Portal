@@ -64,7 +64,7 @@ const router = useRouter()
       <template #action>
         <!-- P1-2：改用全局 .btn-primary（styles/index.css:160，琥珀实心 + --au-on-primary 文，
              与旧 ProfileView .btn.primary 语义一致；.btn 基类自带 font-weight:600） -->
-        <button class="btn btn-primary" @click="router.push('/store')">查看订阅方案</button>
+        <button class="btn btn-primary" @click="router.push('/shop')">查看订阅方案</button>
       </template>
     </EmptyState>
 

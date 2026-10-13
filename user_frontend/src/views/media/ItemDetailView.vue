@@ -433,7 +433,7 @@ onMounted(loadItem)
             </button>
 
             <!-- 会员提示：付费墙开启且未订阅 -->
-            <RouterLink v-if="needsSubscription" to="/store" class="member-notice">
+            <RouterLink v-if="needsSubscription" to="/shop" class="member-notice">
               <Crown :size="16" class="notice-icon" />
               <span class="notice-body">
                 <strong>会员专享</strong>
