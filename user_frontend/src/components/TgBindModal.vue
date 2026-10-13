@@ -315,6 +315,16 @@ onBeforeUnmount(() => {
   transition: background 0.15s, color 0.15s;
 }
 
+/* R32：触点扩到 44px（视觉 32px 不变，::after 透明扩展——R30 .login-btn 先例） */
+.tg-close::after {
+  content: "";
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  bottom: -6px;
+  left: -6px;
+}
+
 .tg-close:hover {
   background: var(--au-surface-2, rgba(255, 255, 255, 0.06));
   color: var(--text-primary, #ececf1);

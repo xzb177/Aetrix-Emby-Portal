@@ -83,6 +83,8 @@ const router = useRouter()
           @click="emit('cancel', s)"
         >{{ cancellingSub === s.id ? '终止中…' : '终止' }}</button>
       </li>
+      <!-- R32：历史记录只显示最近 4 条，达到上限时诚实告知（SupplyLogView 先例） -->
+      <li v-if="subscriptions.length > 4" class="sub-history-foot">· 仅显示最近 4 条，还有 {{ subscriptions.length - 4 }} 条 ·</li>
     </ul>
   </section>
 </template>
@@ -134,6 +136,8 @@ const router = useRouter()
 .badge.off { background: var(--au-surface-2); color: var(--au-text-3); }
 .sub-history { list-style: none; margin: 12px 0 0; padding: 0; }
 .sub-history-item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--au-border); font-size: 13px; }
+/* R32：历史记录截断脚注（SupplyLogView .rc-foot 先例） */
+.sub-history-foot { padding: 8px 0 0; border-top: 1px solid var(--au-border); text-align: center; font-size: 11px; color: var(--au-text-3); letter-spacing: 1px; }
 .sub-history-date { color: var(--au-text-3); margin-left: auto; }
 .text-btn.danger { color: var(--au-danger); background: none; border: none; cursor: pointer; }
 /* P2-26：公益服状态块三条旧规则全文（ProfileView.vue 第 1087 / 1050 / 1469-1473 行） */
