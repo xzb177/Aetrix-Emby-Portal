@@ -204,18 +204,6 @@
   }
 }
 
-/* ==================== 资产功能色（暗房影院收敛） ====================
-   暗房影院只有一支强调色：数字一律走正文色，只有图标与 CTA 用琥珀。 */
-
-.asset-card {
-  --asset: var(--au-primary);
-  --asset-soft: var(--au-primary-soft);
-  --asset-border: var(--au-primary-border);
-  --asset-mid: var(--au-primary-mid);
-  /* 大数字的颜色：正文色，不染强调色 */
-  --asset-value: var(--au-text);
-}
-
 /* ==================== 基础 ==================== */
 
 body {
