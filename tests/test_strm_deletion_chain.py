@@ -214,8 +214,12 @@ class TestPruneBudget:
         ok, _ = sg._prune_budget_ok(memdb, doomed_count=50, videos_seen=10)
         assert not ok
 
-    def test_multi_disk_skip(self, memdb, cfg, tmp_path):
-        """多盘：全部跳过，只计数上报，一条不删。"""
+    def test_multi_disk_consumes_with_ok_drives(self, memdb, cfg, tmp_path):
+        """多盘（2026-10-13 修）：来源盘本轮列举成功时正常消费，不再整批跳过。
+
+        file_id 全局唯一，按 file_id 回查状态表归属无歧义。
+        """
+        cfg["strm_gen_prune_dry_run"] = "false"
         _add_state_row(memdb, "r1", "fid1")
         sp = tmp_path / "x.strm"
         sp.write_text("u\n")
@@ -223,10 +227,39 @@ class TestPruneBudget:
         state = {"r1": ("fid1", 100, "x.strm")}
         t = Tombstone(file_id="fid1", drive_id="d1", reason="removed", detected_at="x")
         sg._consume_tombstones(memdb, [t], state, str(tmp_path), stats,
-                               ["d1", "d2"], videos_seen=10)
-        assert stats.get("tombstone_skipped_multi") == 1
+                               ["d1", "d2"], videos_seen=10,
+                               ok_drives=frozenset({"d1", "d2"}))
+        assert stats.get("tombstoned") == 1
+        assert not sp.exists()  # 删了
+        assert memdb.query(em.StrmGenFile).count() == 0
+
+    def test_multi_disk_failed_drive_skipped(self, memdb, cfg, tmp_path):
+        """多盘：来源盘本轮列举失败时，其墓碑跳过并计数，不误删。"""
+        _add_state_row(memdb, "r1", "fid1")
+        sp = tmp_path / "x.strm"
+        sp.write_text("u\n")
+        stats: dict = {}
+        state = {"r1": ("fid1", 100, "x.strm")}
+        t = Tombstone(file_id="fid1", drive_id="d2", reason="removed", detected_at="x")
+        sg._consume_tombstones(memdb, [t], state, str(tmp_path), stats,
+                               ["d1", "d2"], videos_seen=10,
+                               ok_drives=frozenset({"d1"}))  # d2 本轮失败
+        assert stats.get("tombstone_skipped_drive_failed") == 1
         assert sp.exists()  # 没删
         assert memdb.query(em.StrmGenFile).count() == 1
+
+    def test_ok_drives_none_means_individually_verified(self, memdb, cfg, tmp_path):
+        """ok_drives=None（orphan_check 逐个复核路径）：不做按盘门控。"""
+        cfg["strm_gen_prune_dry_run"] = "false"
+        _add_state_row(memdb, "r1", "fid1")
+        (tmp_path / "x.strm").write_text("u\n")
+        stats: dict = {}
+        state = {"r1": ("fid1", 100, "x.strm")}
+        t = Tombstone(file_id="fid1", drive_id="unknown", reason="orphan_check",
+                      detected_at="x")
+        sg._consume_tombstones(memdb, [t], state, str(tmp_path), stats,
+                               ["d1", "d2"], videos_seen=10, ok_drives=None)
+        assert stats.get("tombstoned") == 1
 
     def test_dedupe_by_drive_and_file(self, memdb, cfg, tmp_path):
         """同一 (drive_id, file_id) 去重，只删一次。"""
@@ -695,21 +728,25 @@ class TestReview709Fixes:
         assert len(token_calls) == 3
 
     # ---- P2-3：orphan 多盘整批跳过 ----
-    def test_orphan_multi_disk_skips_batch(self, memdb, cfg, kvstore, monkeypatch):
+    def test_orphan_multi_disk_consumes_verified(self, memdb, cfg, kvstore, monkeypatch):
+        # 多盘部署：逐个复核确认 gone 的文件也走删除路径（2026-10-13 修：
+        # 逐个 files.get 复核本身就是信任锚，不再整批跳过）
         from backend.emby_server import drive_changes as dc
         cfg["strm_orphan_check_qps"] = "10"
+        _add_state_row(memdb, "rel0", "fid-gone", strm_path="s0.strm")
         _add_media_item(memdb, "g1", "fid-gone", gone=True)
         monkeypatch.setattr(dc, "_get_token", lambda: "tok")
         monkeypatch.setattr(dc, "_api_get", _raise_404(dc))
-        monkeypatch.setattr(sg, "_load_state", lambda: {"r": ("f", "s", 1)})
+        monkeypatch.setattr(sg, "_load_state",
+                            lambda: {"rel0": ("fid-gone", "s0.strm", 100)})
         monkeypatch.setattr(sg, "_container_strm_root", lambda db: "/tmp")
-        # 多盘部署：drive_id="unknown" 的候选也不能单独成组删
         monkeypatch.setattr(sg, "_discover_drives",
                             lambda: {"d1": ["sa1"], "d2": ["sa2"]})
         result = sg.run_orphan_drive_check(memdb)
         assert result["ok"] is True and result["gone"] == 1
-        assert result["prune_stats"].get("tombstone_skipped_multi") == 1
-        # 只跳过删除：health 的 gone 信号保留
+        # dry_run 默认 true：只记 would-delete，不真删
+        assert result["prune_stats"].get("prune_would_delete", {}).get("count") == 1
+        # health 的 gone 信号保留
         row = memdb.query(em.StrmFileHealth).filter_by(
             file_id="fid-gone").first()
         assert row.status == "gone"
