@@ -15,6 +15,7 @@ from sqlalchemy import func
 
 from backend.database import get_db
 from backend import codes, devices, media_seek, models, realms
+from backend.emby_server.api import season_poster_url
 from backend.db_retry import commit_with_retry
 from backend.notifications import get_notification_service, AdminEvent
 from backend.ratelimit import check_rate_limit
@@ -691,8 +692,8 @@ def lookup_media(
                 "name": i.name,
                 "type": i.item_type,
                 "year": i.production_year,
-                "poster_url": f"/emby/Items/{i.guid}/Images/Primary"
-                if (i.poster_path or i.primary_image_url) else None,
+                # 季无图时回退父剧集海报（season_poster_url），其余类型行为不变
+                "poster_url": season_poster_url(i, db),
             }
             for i in items
         ],

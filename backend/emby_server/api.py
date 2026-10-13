@@ -183,6 +183,33 @@ def _first_image(item: em.MediaItem, kind: str, db: Session) -> str | None:
     return chain[0] if chain else None
 
 
+def season_poster_url(item: em.MediaItem, db: Session) -> str | None:
+    """季条目的海报地址（含父剧集回退），供门户 API 序列化用。
+
+    渲染顺序：季自身图 → 父剧集图 → None（前端显示文字占位）。
+    回退口径与 ``_image_chain`` 一致：parent_id 优先（季的直接父），
+    series_id 兜底；父条目须通过软删除可见性检查。
+    只对 ``season`` 类型做回退——movie / series / episode 原样返回，
+    父剧集也没图时返回 None（保持现有占位，不误伤）。
+    """
+    if item.poster_path or item.primary_image_url:
+        return f"/emby/Items/{item.guid}/Images/Primary"
+    if item.item_type != "season":
+        return None
+    parent = None
+    if item.parent_id:
+        parent = db.get(em.MediaItem, item.parent_id)
+        if parent is not None and not _visible_in_session(parent):
+            parent = None
+    if parent is None and item.series_id:
+        parent = db.get(em.MediaItem, item.series_id)
+        if parent is not None and not _visible_in_session(parent):
+            parent = None
+    if parent is not None and (parent.poster_path or parent.primary_image_url):
+        return f"/emby/Items/{parent.guid}/Images/Primary"
+    return None
+
+
 def _queue_image_repair(db: Session, item: em.MediaItem, stale_src: str) -> None:
     """把“数据库有图、取不到图”的条目排进修复队列
 

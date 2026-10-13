@@ -37,6 +37,7 @@ from backend.emby_server import nodes as node_lib
 from backend.emby_server.api import (
     TICKS, SERVER_ID, item_guid_for,
     _base_url, _item_dto, _library_scope, _prefetch_list_data, _scope_items,
+    season_poster_url,
 )
 from backend.emby_server.auth import (
     ensure_emby_credentials,
@@ -682,8 +683,8 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
             "duration_ticks": duration,
             # 没有时长就不猜百分比（旧实现除以 1，会算出几百万 %）
             "progress": min(100.0, round(pos / duration * 100, 1)) if duration else 0.0,
-            "poster_url": f"/emby/Items/{item.guid}/Images/Primary"
-            if (item.poster_path or item.primary_image_url) else None,
+            # 季无图时回退父剧集海报（season_poster_url），其余类型行为不变
+            "poster_url": season_poster_url(item, db),
             "tmdb_id": item.tmdb_id or None,
             "last_played_at": umd.last_played_at.isoformat() if umd.last_played_at else None,
             "client": (session.client_name or None) if session else None,
@@ -714,9 +715,10 @@ def get_favorite_list(request_user: models.WebUser = Depends(get_admin_or_emby_u
         .all()
     )
     return {"items": [
+        # 季无图时回退父剧集海报（season_poster_url），其余类型行为不变
         {"id": i.guid, "name": i.name, "type": i.item_type, "year": i.production_year,
          "rating": i.community_rating,
-         "poster_url": f"/emby/Items/{i.guid}/Images/Primary" if (i.poster_path or i.primary_image_url) else None}
+         "poster_url": season_poster_url(i, db)}
         for i in rows
     ]}
 
@@ -1176,8 +1178,8 @@ def get_watch_history(request_user: models.WebUser = Depends(get_admin_or_emby_u
             "name": item.name,
             "type": item.item_type,
             "year": item.production_year,
-            "poster_url": f"/emby/Items/{item.guid}/Images/Primary"
-            if (item.poster_path or item.primary_image_url) else None,
+            # 季无图时回退父剧集海报（season_poster_url），其余类型行为不变
+            "poster_url": season_poster_url(item, db),
             "duration_ticks": (ep or item).duration_ticks,
             "position_ticks": _pos,
             "played": bool(umd.played) if umd else False,
