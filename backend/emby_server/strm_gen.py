@@ -1099,26 +1099,40 @@ def _prune_doomed(db, doomed: list[tuple[str, str]], state: dict,
 def _consume_tombstones(db, tombstones: list, state: dict,
                         strm_root: str, stats: dict,
                         drive_ids: list[str], videos_seen: int,
-                        track_backlog: bool = True) -> None:
+                        track_backlog: bool = True,
+                        ok_drives: frozenset | None = None) -> None:
     """消费墓碑：删磁盘 .strm + 删状态行。库条目不动（交扫描器下一轮）。
 
-    - 去重：按 (drive_id, file_id)
-    - 多盘（len(drive_ids) != 1）：全部跳过，只计数上报（state 表主键 remote_path
-      无 drive_id，跨盘无法判定归属——沿用现有 prune 的多盘跳过规则）
-    - 解析：SELECT remote_path, strm_path FROM strm_gen_files
-      WHERE file_id IN (...)（分片 200，需 file_id 索引）
-    - 查不到 file_id → stats["tombstone_unknown"]++，同时记入 strm_file_health
-      （status='unknown'），供反向僵尸校验复核
+    ok_drives：允许消费其墓碑的 drive_id 集合；None=不做按盘门控
+    （调用方已对每个墓碑单独验过 Drive，如 orphan_check 的逐个 files.get
+    复核——逐个复核本身就是信任锚，不需要"本轮列举成功"门控）。
+    传入集合时，只消费来源盘在本轮列举成功（无 error）的墓碑，失败盘的
+    墓碑跳过并计数（tombstone_skipped_drive_failed），不误删。
+
+    file_id 在 Drive 全局唯一，按 file_id 回查状态表做归属判定跨盘无歧义
+    （同一 file_id 不可能同时属于两个盘的有效文件）。
+
+    2026-10-13 修：旧实现多盘（len(drive_ids) != 1）整批跳过
+    （tombstone_skipped_multi），生产多盘部署下墓碑删除路径永久死亡，
+    幽灵 .strm 只增不减。改为按盘成功门控后，多盘也能正常消费。
     """
     if not tombstones:
         return
-    if len(drive_ids) != 1:
-        stats["tombstone_skipped_multi"] = stats.get("tombstone_skipped_multi", 0) + len(tombstones)
-        logger.info("strm_gen: 多盘模式跳过墓碑消费 %d 个（跨盘无法判定归属）", len(tombstones))
+    consumable = []
+    for t in tombstones:
+        if ok_drives is not None and t.drive_id not in ok_drives:
+            stats["tombstone_skipped_drive_failed"] = (
+                stats.get("tombstone_skipped_drive_failed", 0) + 1)
+            continue
+        consumable.append(t)
+    if not consumable:
+        if tombstones:
+            logger.info("strm_gen: %d 个墓碑因来源盘本轮列举失败被跳过（下轮重放）",
+                        len(tombstones))
         return
     # 去重：按 (drive_id, file_id)
     uniq: dict[tuple[str, str], Any] = {}
-    for t in tombstones:
+    for t in consumable:
         uniq[(t.drive_id, t.file_id)] = t
     tombstones = list(uniq.values())
     stats["tombstone_pending"] = stats.get("tombstone_pending", 0) + len(tombstones)
@@ -1745,10 +1759,17 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
 
     # 4. 墓碑消费：Drive/本地源删文件 → 删 .strm + 删状态行（块1+块2）。
     # 库条目不动：下一轮扫描器按已有删除保护自然处理（不造第二套删除语义）。
-    # 多盘跳过、预算、dry_run 都在 _consume_tombstones/_prune_doomed 里。
+    # 按盘成功门控（ok_drives）：只消费本轮列举成功的盘的墓碑——file_id 全局
+    # 唯一，跨盘归属无歧义；失败盘的墓碑跳过（下轮 changes token 重放）。
+    # 预算、dry_run 都在 _consume_tombstones/_prune_doomed 里。
     if prune_enabled(db):
+        if stype == "local":
+            _ok_drives = frozenset(drive_ids)  # 本地分支能走到这里即列举成功
+        else:
+            _ok_drives = frozenset(r["did"] for r in drive_results
+                                   if not r.get("error"))
         _consume_tombstones(db, all_tombstones, state, strm_root, stats,
-                            drive_ids, len(all_videos))
+                            drive_ids, len(all_videos), ok_drives=_ok_drives)
         # 全量 stale 对比保留（单盘）：旧状态有但本轮全量列举没见到。
         # 增量不跑这条：增量列举只有 delta，拿 delta 做全量对比会误杀；
         # 增量的删除信号走墓碑。
@@ -2117,18 +2138,20 @@ def run_orphan_drive_check(db) -> dict:
         # 限速：per-SA QPS ≤ qps，每次 sleep 独立抖动（反风控）
         time.sleep(sleep_base * random.uniform(0.8, 1.2))
 
-    # gone 视同墓碑：传入真实 drive 列表走 _consume_tombstones 同一预算/
-    # 同一删除路径（多盘部署整批跳过）；drive_id 未知的候选不再单独成组，
-    # 避免 "unknown" 分组绕过多盘保护（R1）。
-    # videos_seen 取状态总行数：每个候选都单独对 Drive 验过，
-    # 零结果守卫针对的是 changes token 失效，这里不适用。
+    # gone 视同墓碑：走 _consume_tombstones 同一预算/同一删除路径。
+    # ok_drives=None：每个候选都单独对 Drive 验过（404/trashed），逐个复核
+    # 本身就是信任锚，不需要"本轮列举成功"门控。drive_id 未知的候选不再单独
+    # 成组（R1 保留）：file_id 全局唯一，归属判定不依赖 drive_id。
+    # videos_seen 取状态总行数：零结果守卫针对的是 changes token 失效，
+    # 这里每个文件都单独验过，不适用。
     if gone_tombstones:
         state = _load_state()
         strm_root = _container_strm_root(db)
         stats: dict[str, Any] = {}
         drive_ids = sorted(_discover_drives().keys())
         _consume_tombstones(db, gone_tombstones, state, strm_root, stats,
-                            drive_ids, len(state), track_backlog=False)
+                            drive_ids, len(state), track_backlog=False,
+                            ok_drives=None)
         result["prune_stats"] = stats
 
     try:
