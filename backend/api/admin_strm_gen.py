@@ -44,6 +44,12 @@ class StrmGenConfigSave(BaseModel):
                     "（指向目录按快捷方式名展开、指向视频文件按快捷方式名产出）；"
                     "默认关=现状行为（不解析，直接跳过快捷方式）",
     )
+    dedupe_same_size: bool = Field(
+        default=True,
+        description="同名同大小去重：生成时输出文件名相同且字节大小相同时只留一份、"
+                    "跳过重复生成；大小不同=多版本，照常保留。默认开；"
+                    "关闭则完全回到现状行为（撞名全部走 -2/-3 改名）",
+    )
     interval_minutes: int = Field(
         default=60,
         description="增量间隔分钟数（1-1440），0=关闭",
@@ -122,10 +128,16 @@ def _resolve_shortcuts_enabled(db: Session) -> bool:
     return store.get_value(db, key, "false").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _dedupe_same_size_enabled(db: Session) -> bool:
+    """同名同大小去重开关。默认 true=开（用户 2026-10-14 亲定规则）。"""
+    return bool(_gen.dedupe_same_size_enabled(db))
+
+
 def _read_config(db: Session) -> dict:
     return {
         "enabled": _gen.enabled(db),
         "resolve_shortcuts": _resolve_shortcuts_enabled(db),
+        "dedupe_same_size": _dedupe_same_size_enabled(db),
         # 原文回显：多目录配置不被截断（source_dir 兼容旧前端，取第一项）
         "source_dir": _gen.source_dir(db),
         "source_dir_raw": _gen.source_dir_raw(db),
@@ -217,6 +229,9 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         # 快捷方式解析开关：键名走 _gen（随 #830 落地），getattr 兼容合并顺序
         getattr(_gen, "CONFIG_RESOLVE_SHORTCUTS", "strm_gen_resolve_shortcuts"):
             "true" if body.resolve_shortcuts else "false",
+        # 同名同大小去重开关（本 PR 后端函数与配置同 PR 落地，直接引用）
+        _gen.CONFIG_DEDUPE_SAME_SIZE:
+            "true" if body.dedupe_same_size else "false",
         _gen.CONFIG_INTERVAL: str(iv),
         _gen.CONFIG_SOURCE_TYPE: st,
         _gen.CONFIG_LOCAL_ROOT: (body.local_root or "/media").strip(),
@@ -230,6 +245,8 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_PRUNE: ".strm 生成器是否清理 Drive 已不存在的文件",
         getattr(_gen, "CONFIG_RESOLVE_SHORTCUTS", "strm_gen_resolve_shortcuts"):
             ".strm 生成器 Drive 快捷方式解析（开启后跟随快捷方式目标内容）",
+        _gen.CONFIG_DEDUPE_SAME_SIZE:
+            ".strm 生成器同名同大小去重（开=同名同大小只留一份，默认开）",
         _gen.CONFIG_INTERVAL: ".strm 生成器增量间隔（分钟），0=关闭",
         _gen.CONFIG_SOURCE_TYPE: ".strm 生成器数据源类型",
         _gen.CONFIG_LOCAL_ROOT: ".strm 生成器本地源根目录",

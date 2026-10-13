@@ -47,7 +47,7 @@ const triggeringFull = ref(false)
 const saving = ref(false)
 
 // 配置表单（与 config 分开，避免未保存就污染展示）
-const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, resolve_shortcuts: false, interval_minutes: 60, lock_timeout_minutes: 180, source_type: 'drive', local_root: '/media' })
+const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, resolve_shortcuts: false, dedupe_same_size: true, interval_minutes: 60, lock_timeout_minutes: 180, source_type: 'drive', local_root: '/media' })
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -113,6 +113,8 @@ async function load(silent = false) {
       prune: !!config.value?.prune,
       // 后端无此键（老版本）时回显为关，与默认行为一致
       resolve_shortcuts: !!config.value?.resolve_shortcuts,
+      // 后端无此键（老版本）时回显为开，与默认行为一致
+      dedupe_same_size: config.value?.dedupe_same_size ?? true,
       interval_minutes: config.value?.interval_minutes ?? 60,
       lock_timeout_minutes: config.value?.lock_timeout_minutes ?? 180,
       source_type: config.value?.source_type ?? 'drive',
@@ -325,6 +327,10 @@ onUnmounted(() => {
         <el-form-item label="快捷方式解析">
           <el-switch v-model="form.resolve_shortcuts" />
           <span class="hint">开启后，生成时会跟随网盘里的快捷方式，把它指向的内容（包括别人共享给你的盘）一起生成；关闭则跳过快捷方式</span>
+        </el-form-item>
+        <el-form-item label="同名同大小去重">
+          <el-switch v-model="form.dedupe_same_size" />
+          <span class="hint">开启后，输出文件名相同且文件大小也相同的只生成一份；大小不同的是不同版本，照常保留。关闭则撞名全部改 -2/-3 后缀保留</span>
         </el-form-item>
         <el-form-item label="上次执行">
           <span class="muted">{{ config?.last_run || '—' }}</span>

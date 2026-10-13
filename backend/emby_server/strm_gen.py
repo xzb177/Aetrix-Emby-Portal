@@ -87,6 +87,12 @@ CONFIG_VERIFY_NEW_IDS = "strm_gen_verify_new_ids"
 # Drive 快捷方式解析：开启后快捷方式跟随目标（指向目录按快捷方式名展开，
 # 指向视频文件按快捷方式名产出）。默认关=现状行为（不解析，直接跳过）。
 CONFIG_RESOLVE_SHORTCUTS = "strm_gen_resolve_shortcuts"
+# 同名同大小去重（2026-10-14 用户亲定规则）：待生成文件与已登记/已生成文件
+# 指向同一输出相对路径 stem 且字节大小相同时，视为重复只留一份、跳过生成；
+# 大小不同=合法多版本，走现有 -2 改名逻辑保留。默认开；关掉则完全回到
+# 现状行为（撞名全部走 -2/-3 改名）。判定只依赖 (输出 stem, size)，
+# 不解析标题/集数做语义猜测。
+CONFIG_DEDUPE_SAME_SIZE = "strm_gen_dedupe_same_version_size"
 # 反向僵尸校验（块4 §6.2）：开关 / 周期天数 / 每轮上限 / per-SA QPS
 CONFIG_ORPHAN_ENABLED = "strm_orphan_check_enabled"
 CONFIG_ORPHAN_INTERVAL_DAYS = "strm_orphan_check_interval_days"
@@ -406,6 +412,15 @@ def resolve_shortcuts(db) -> bool:
     按快捷方式名产出 .strm。只做能力开关，默认关。
     """
     return _db_config(db, CONFIG_RESOLVE_SHORTCUTS, "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def dedupe_same_size_enabled(db) -> bool:
+    """同名同大小去重：输出 stem 相同且字节大小相同只留一份。默认 true。
+
+    开启后：待生成文件与已占用输出路径 stem 相同且字节大小相同时跳过生成；
+    大小不同走现有 -2 改名保留多版本。关闭则完全回到现状行为。
+    """
+    return _db_config(db, CONFIG_DEDUPE_SAME_SIZE, "true").strip().lower() in ("1", "true", "yes", "on")
 
 
 def orphan_check_enabled(db) -> bool:
@@ -1991,7 +2006,8 @@ def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[st
     _reset_progress()
     with _lock:
         _my_token = _progress.get("lock_token")
-    stats = {"generated": 0, "skipped": 0, "failed": 0, "pruned": 0, "total": 0}
+    stats = {"generated": 0, "skipped": 0, "failed": 0, "pruned": 0, "total": 0,
+             "deduped": 0}
     try:
         return _run_generation_inner(db, full, drive_id, stats)
     except Exception as exc:
@@ -2229,6 +2245,16 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     else:
         used = {spath for (_fid, _size, spath) in state.values()}
 
+    # 同名同大小去重（2026-10-14 用户规则）：每个已占用输出路径归属文件的
+    # 字节大小。判定只依赖 (输出 stem, size)，不解析标题/集数做语义猜测。
+    # 大小来源：增量→state；全量→磁盘 walk 中有 DB 登记的（loaded_state 反查；
+    # 未登记的磁盘文件大小未知，宁可走改名也不误去重）。本轮新生成的在写盘时同步记入。
+    dedupe_enabled = dedupe_same_size_enabled(db)
+    _size_src = loaded_state if full else state
+    size_by_path: dict[str, int] = {
+        spath: _size for (_fid, _size, spath) in _size_src.values()
+    }
+
     # 2. 增量比对 + 生成
     _set_progress(phase="generating", total=len(all_videos))
     pending_rows: list[tuple[str, str, str, int, str]] = []  # (did, rel, fid, size, spath)
@@ -2298,7 +2324,21 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
             # 多版本保留（用户硬要求）：同一集的不同版本（不同 rel）各自生成独立 .strm，
             # 输出路径由 rel 派生天然区分；真撞名才加 -2 后缀，版本间永不互相淘汰。
             matched = next((p for p in src_prefixes if p and rel.startswith(p)), "")
-            strm_rel = _resolve_collision(strm_relpath(rel, matched), used)
+            desired = strm_relpath(rel, matched)
+            _registered = full and loaded_state.get((did, rel)) is not None
+            if (dedupe_enabled and not _registered
+                    and desired in used and size_by_path.get(desired) == size):
+                # 同名同大小去重（2026-10-14 用户规则）：与已登记/已生成文件
+                # 同输出 stem、同字节大小 → 重复，只留一份，跳过生成。
+                # 不登记状态行：重复项不占 DB，下轮仍靠本判定跳过（纯本地比对，零 API）。
+                # _registered 守卫：全量下已登记的 (did, rel) 走复用路径（见 #834），
+                # 绝不在去重里跳过——合并顺序无论谁先谁后都不引入新行为。
+                stats["deduped"] += 1
+                logger.info("strm_gen: 同名同大小去重跳过 rel=%s fid=%s size=%d 保留=%s",
+                            rel, fid, size, desired)
+                _set_progress(deduped=stats["deduped"])
+                continue
+            strm_rel = _resolve_collision(desired, used)
 
         if verify_new and old is None and fid in invalid_fids:
             # 批量校验已判无效：跳过 + 计数，不重试（下轮增量会重新发现）
@@ -2311,6 +2351,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         if _write_strm_file(full_path, url):
             used.add(strm_rel)
             claimed[strm_rel] = (did, rel)
+            size_by_path[strm_rel] = size
             pending_rows.append((did, rel, fid, size, strm_rel))
             state[(did, rel)] = (fid, size, strm_rel)
             written_file_ids.append(fid)
