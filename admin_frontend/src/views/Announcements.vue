@@ -2,9 +2,10 @@
 /** 公告管理：创建/编辑/置顶/删除，联动全站推送 */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Megaphone, Plus, RefreshCw, Search } from 'lucide-vue-next'
+import { Megaphone, Plus, RefreshCw, Search, Sparkles } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
-import { createAnnouncement, deleteAnnouncement, fetchAnnouncements, updateAnnouncement } from '@/api/admin'
+import { createAnnouncement, deleteAnnouncement, fetchAnnouncements, updateAnnouncement, fetchTeaserConfig, saveTeaserConfig } from '@/api/admin'
+import type { TeaserConfig } from '@/api/admin'
 import type { Announcement } from '@/types'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -59,6 +60,57 @@ async function load() {
 }
 
 onMounted(load)
+
+// ==================== 探险预告 · 保密新大陆（揭晓位配置） ====================
+/** 探险预告页时间线末尾的悬念卡：揭晓前只显示保密文案，到日子自动换成揭晓后内容 */
+const teaser = ref<TeaserConfig | null>(null)
+const teaserLoadError = ref('')
+const teaserSaving = ref(false)
+
+async function loadTeaser() {
+  teaserLoadError.value = ''
+  try {
+    teaser.value = await fetchTeaserConfig()
+  } catch (e) {
+    teaserLoadError.value = e instanceof Error ? e.message : '加载失败'
+  }
+}
+
+/** 当前展示状态（一句话人话，给管理员看的） */
+const teaserStatusText = computed(() => {
+  const t = teaser.value
+  if (!t) return ''
+  if (t.status === 'off') return '已关闭：探险预告页不显示这张卡'
+  if (t.status === 'revealed') return '已揭晓：用户看到的是揭晓后内容'
+  if (!t.reveal_at) return '保密中：未设揭晓时间，一直保密'
+  if (!t.post_title) return '保密中：已到揭晓日但揭晓后标题为空，继续保密（先把揭晓后标题填上）'
+  if (t.countdown_days != null && t.countdown_days <= 0) return '保密中：今天揭晓'
+  return `保密中：还有 ${t.countdown_days} 天揭晓（揭晓内容不会提前下发给前端）`
+})
+
+async function saveTeaser() {
+  const t = teaser.value
+  if (!t || teaserSaving.value) return
+  teaserSaving.value = true
+  try {
+    teaser.value = await saveTeaserConfig({
+      teaser_enabled: t.enabled,
+      teaser_reveal_at: t.reveal_at,
+      teaser_pre_title: t.pre_title,
+      teaser_pre_subtitle: t.pre_subtitle,
+      teaser_post_title: t.post_title,
+      teaser_post_desc: t.post_desc,
+      teaser_post_link: t.post_link,
+    })
+    ElMessage.success('揭晓位配置已保存，立即生效')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+  } finally {
+    teaserSaving.value = false
+  }
+}
+
+onMounted(loadTeaser)
 
 function openCreate() {
   editing.value = null
@@ -175,6 +227,59 @@ function fmtDate(s: string): string {
       show-icon
       title="公告以首页横幅形式展示，并实时推送给所有在线用户；不会进入用户的站内信收件箱。"
     />
+
+    <SectionCard
+      title="探险预告 · 保密新大陆"
+      :icon="Sparkles"
+      :meta="teaser ? (teaser.status === 'off' ? '已关闭' : teaser.status === 'revealed' ? '已揭晓' : '保密中') : ''"
+    >
+      <p class="drawer-hint">
+        探险预告页时间线末尾的悬念卡：揭晓前用户只看到保密文案（揭晓后内容不会提前下发给前端），
+        到设定的日子自动换成揭晓后内容。不设揭晓时间 = 一直保密。保存即生效。
+      </p>
+      <div v-if="teaser" class="teaser-form">
+        <el-form label-position="top">
+          <el-form-item label="显示这张卡">
+            <el-switch v-model="teaser.enabled" active-text="显示" inactive-text="隐藏" />
+          </el-form-item>
+          <el-form-item label="揭晓时间（服务器时间）">
+            <el-date-picker
+              v-model="teaser.reveal_at"
+              type="datetime"
+              value-format="YYYY-MM-DDTHH:mm"
+              placeholder="不设 = 一直保密"
+              clearable
+            />
+          </el-form-item>
+          <el-form-item label="揭晓前标题">
+            <el-input v-model="teaser.pre_title" placeholder="? ? ?" />
+          </el-form-item>
+          <el-form-item label="揭晓前副文案">
+            <el-input v-model="teaser.pre_subtitle" placeholder="神秘新大陆 · 到日子自动揭晓" />
+          </el-form-item>
+          <el-form-item label="揭晓后标题">
+            <el-input v-model="teaser.post_title" placeholder="到日子自动展示；留空则即使到日子也继续保密" />
+          </el-form-item>
+          <el-form-item label="揭晓后描述">
+            <el-input v-model="teaser.post_desc" type="textarea" :rows="3" />
+          </el-form-item>
+          <el-form-item label="揭晓后跳转链接">
+            <el-input v-model="teaser.post_link" placeholder="/ 开头站内路由，或 https:// 外链；留空则卡片不可点" />
+          </el-form-item>
+        </el-form>
+        <div class="teaser-actions">
+          <span v-if="teaserStatusText" class="au-badge" :class="teaser.status === 'revealed' ? 'au-badge-green' : 'au-badge-muted'">
+            {{ teaserStatusText }}
+          </span>
+          <el-button type="primary" size="small" :loading="teaserSaving" @click="saveTeaser">保存</el-button>
+        </div>
+      </div>
+      <div v-else-if="teaserLoadError" class="drawer-hint">
+        读取失败：{{ teaserLoadError }}
+        <el-button size="small" text @click="loadTeaser">重试</el-button>
+      </div>
+      <div v-else class="au-skeleton" style="height: 120px" aria-busy="true" />
+    </SectionCard>
 
     <SectionCard
       title="全部公告"
@@ -356,6 +461,11 @@ function fmtDate(s: string): string {
 .mg-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .mg-footer-right { display: flex; gap: 8px; flex-wrap: wrap; }
 .w-type { width: 160px; }
+
+/* 揭晓位配置：表单两列（宽屏）/ 一列（窄屏），状态行左文案右按钮 */
+.teaser-form .el-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
+.teaser-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+@media (max-width: 640px) { .teaser-form .el-form { grid-template-columns: 1fr; } }
 
 @media (max-width: 768px) {
   .list-bar { padding: 4px 16px 12px; }
