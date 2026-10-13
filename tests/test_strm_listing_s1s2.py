@@ -410,59 +410,62 @@ class TestRoundIsFullyIncremental:
 class TestVerifyCompletenessLight:
     def _make(self, tmp_path):
         # state：3 个目录；A/B 被本轮 touch，C 不被 touch
+        # 多盘多目录合并后口径：videos 为 (drive_id, rel, file_id, size) 四元组，
+        # state 键为 (drive_id, remote_path)，src_prefixes 为目录列表。
         def w(name):
             p = tmp_path / name
             p.write_text("x")
             return name
         videos = [  # 本轮 delta：A 新增 1 个，B 新增 1 个（但 state 缺行 → 缺集）
-            ("MoviePilot/A/a2.mkv", "fa2", 10),
-            ("MoviePilot/B/b2.mkv", "fb2", 20),
+            ("d1", "MoviePilot/A/a2.mkv", "fa2", 10),
+            ("d1", "MoviePilot/B/b2.mkv", "fb2", 20),
         ]
         state = {
-            "MoviePilot/A/a1.mkv": ("fa1", 10, w("a1.strm")),
-            "MoviePilot/A/a2.mkv": ("fa2", 10, w("a2.strm")),
-            "MoviePilot/B/b1.mkv": ("fb1", 20, w("b1.strm")),
+            ("d1", "MoviePilot/A/a1.mkv"): ("fa1", 10, w("a1.strm")),
+            ("d1", "MoviePilot/A/a2.mkv"): ("fa2", 10, w("a2.strm")),
+            ("d1", "MoviePilot/B/b1.mkv"): ("fb1", 20, w("b1.strm")),
             # B/b2 缺行 → not_generated
-            "MoviePilot/C/c1.mkv": ("fc1", 30, "missing.strm"),
+            ("d1", "MoviePilot/C/c1.mkv"): ("fc1", 30, "missing.strm"),
             # C 不被 touch：它的磁盘缺失不应被轻量校验计入
         }
         return videos, state
 
     def test_light_detects_delta_gap(self, tmp_path):
         videos, state = self._make(tmp_path)
-        r = sg._verify_completeness_light(videos, state, "MoviePilot/",
+        r = sg._verify_completeness_light(videos, state, ["MoviePilot/"],
                                           strm_root=str(tmp_path))
         assert r["verify_mode"] == "light"
         assert r["total_series"] == 2  # 只统计 touch 过的目录
         by_series = {i["series"]: i for i in r["incomplete"]}
-        assert set(by_series) == {"B"}
-        assert by_series["B"]["missing_breakdown"]["not_generated"] == 1
+        assert set(by_series) == {("d1", "B")}
+        assert by_series[("d1", "B")]["missing_breakdown"]["not_generated"] == 1
         # C 的僵尸不在轻量范围内
         assert r["orphan_disk"]["count"] == 0
 
     def test_light_scoped_orphan(self, tmp_path):
-        videos = [("MoviePilot/A/a2.mkv", "fa2", 10)]
+        videos = [("d1", "MoviePilot/A/a2.mkv", "fa2", 10)]
         (tmp_path / "a2.strm").write_text("x")
         state = {
-            "MoviePilot/A/a1.mkv": ("fa1", 10, "gone1.strm"),  # touch 目录的僵尸
-            "MoviePilot/A/a2.mkv": ("fa2", 10, "a2.strm"),
-            "MoviePilot/Z/z9.mkv": ("fz9", 90, "gone9.strm"),  # 未 touch，不计
+            ("d1", "MoviePilot/A/a1.mkv"): ("fa1", 10, "gone1.strm"),  # touch 目录的僵尸
+            ("d1", "MoviePilot/A/a2.mkv"): ("fa2", 10, "a2.strm"),
+            ("d1", "MoviePilot/Z/z9.mkv"): ("fz9", 90, "gone9.strm"),  # 未 touch，不计
         }
-        r = sg._verify_completeness_light(videos, state, "MoviePilot/",
+        r = sg._verify_completeness_light(videos, state, ["MoviePilot/"],
                                           strm_root=str(tmp_path))
         assert r["orphan_disk"]["count"] == 1
         assert r["orphan_disk"]["sample"][0]["remote_path"] == "MoviePilot/A/a1.mkv"
+        assert r["orphan_disk"]["sample"][0]["drive_id"] == "d1"
 
     def test_light_empty_delta(self):
-        r = sg._verify_completeness_light([], {}, "MoviePilot/")
+        r = sg._verify_completeness_light([], {}, ["MoviePilot/"])
         assert r["verify_mode"] == "light"
         assert r["total_series"] == 0
         assert r["incomplete"] == []
 
     def test_light_schema_matches_full(self, tmp_path):
         videos, state = self._make(tmp_path)
-        light = sg._verify_completeness_light(videos, state, "MoviePilot/",
+        light = sg._verify_completeness_light(videos, state, ["MoviePilot/"],
                                               strm_root=str(tmp_path))
-        full = sg._verify_completeness(videos, state, "MoviePilot/",
+        full = sg._verify_completeness(videos, state, ["MoviePilot/"],
                                        strm_root=str(tmp_path))
         assert set(light) == set(full)  # 同形：下游消费不 break

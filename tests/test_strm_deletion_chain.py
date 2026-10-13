@@ -64,9 +64,10 @@ def cfg(monkeypatch):
     return values
 
 
-def _add_state_row(db, remote_path, file_id, strm_path="x.strm", size=100):
-    db.add(em.StrmGenFile(remote_path=remote_path, file_id=file_id,
-                          size=size, strm_path=strm_path))
+def _add_state_row(db, remote_path, file_id, strm_path="x.strm", size=100,
+                   drive_id="d1"):
+    db.add(em.StrmGenFile(drive_id=drive_id, remote_path=remote_path,
+                          file_id=file_id, size=size, strm_path=strm_path))
     db.commit()
 
 
@@ -215,7 +216,7 @@ class TestPruneBudget:
         assert not ok
 
     def test_multi_disk_consumes_with_ok_drives(self, memdb, cfg, tmp_path):
-        """多盘（2026-10-13 修）：来源盘本轮列举成功时正常消费，不再整批跳过。
+        """多盘（2026-10-13 修，#809）：来源盘本轮列举成功时正常消费，不再整批跳过。
 
         file_id 全局唯一，按 file_id 回查状态表归属无歧义。
         """
@@ -224,7 +225,7 @@ class TestPruneBudget:
         sp = tmp_path / "x.strm"
         sp.write_text("u\n")
         stats: dict = {}
-        state = {"r1": ("fid1", 100, "x.strm")}
+        state = {("d1", "r1"): ("fid1", 100, "x.strm")}
         t = Tombstone(file_id="fid1", drive_id="d1", reason="removed", detected_at="x")
         sg._consume_tombstones(memdb, [t], state, str(tmp_path), stats,
                                ["d1", "d2"], videos_seen=10,
@@ -234,12 +235,12 @@ class TestPruneBudget:
         assert memdb.query(em.StrmGenFile).count() == 0
 
     def test_multi_disk_failed_drive_skipped(self, memdb, cfg, tmp_path):
-        """多盘：来源盘本轮列举失败时，其墓碑跳过并计数，不误删。"""
+        """多盘（#809）：来源盘本轮列举失败时，其墓碑跳过并计数，不误删。"""
         _add_state_row(memdb, "r1", "fid1")
         sp = tmp_path / "x.strm"
         sp.write_text("u\n")
         stats: dict = {}
-        state = {"r1": ("fid1", 100, "x.strm")}
+        state = {("d1", "r1"): ("fid1", 100, "x.strm")}
         t = Tombstone(file_id="fid1", drive_id="d2", reason="removed", detected_at="x")
         sg._consume_tombstones(memdb, [t], state, str(tmp_path), stats,
                                ["d1", "d2"], videos_seen=10,
@@ -247,6 +248,34 @@ class TestPruneBudget:
         assert stats.get("tombstone_skipped_drive_failed") == 1
         assert sp.exists()  # 没删
         assert memdb.query(em.StrmGenFile).count() == 1
+
+    def test_multi_drive_per_drive_consume(self, memdb, cfg, tmp_path):
+        """多盘（两盘全挂）：按墓碑自带的 drive_id 逐盘消费，不再整批跳过。
+        本轮范围外的盘（d3）的墓碑记疑点，不删。"""
+        cfg["strm_gen_prune_dry_run"] = "false"
+        _add_state_row(memdb, "r1", "fid1", drive_id="d1")
+        _add_state_row(memdb, "r1", "fid1", drive_id="d2")  # 同 rel 不同盘：独立行
+        (tmp_path / "x.strm").write_text("u\n")
+        stats: dict = {}
+        state = {("d1", "r1"): ("fid1", 100, "x.strm"),
+                 ("d2", "r1"): ("fid1", 100, "x.strm")}
+        ts = [Tombstone(file_id="fid1", drive_id="d1", reason="removed", detected_at="x"),
+              Tombstone(file_id="fid9", drive_id="d3", reason="removed", detected_at="x")]
+        sg._consume_tombstones(memdb, ts, state, str(tmp_path), stats,
+                               ["d1", "d2"], videos_seen=10)
+        memdb.commit()
+        # d1 的墓碑被消费（删 .strm + 删 d1 的状态行）；d2 的同 rel 行不动
+        assert stats.get("tombstoned") == 1
+        assert not (tmp_path / "x.strm").exists()
+        remaining = {(r.drive_id, r.remote_path)
+                     for r in memdb.query(em.StrmGenFile).all()}
+        assert remaining == {("d2", "r1")}
+        assert ("d1", "r1") not in state
+        assert ("d2", "r1") in state
+        # d3 不在本轮 drive_ids：记疑点，不删
+        assert stats.get("tombstone_unknown") == 1
+        row = memdb.query(em.StrmFileHealth).filter_by(file_id="fid9").first()
+        assert row is not None and row.status == "unknown"
 
     def test_ok_drives_none_means_individually_verified(self, memdb, cfg, tmp_path):
         """ok_drives=None（orphan_check 逐个复核路径）：不做按盘门控。"""
@@ -267,7 +296,7 @@ class TestPruneBudget:
         _add_state_row(memdb, "r1", "fid1")
         (tmp_path / "x.strm").write_text("u\n")
         stats: dict = {}
-        state = {"r1": ("fid1", 100, "x.strm")}
+        state = {("d1", "r1"): ("fid1", 100, "x.strm")}
         ts = [Tombstone(file_id="fid1", drive_id="d1", reason="removed", detected_at="x")
               for _ in range(3)]
         sg._consume_tombstones(memdb, ts, state, str(tmp_path), stats,
@@ -286,7 +315,8 @@ class TestDryRun:
         for i in range(2):
             _add_state_row(db, f"r{i}", f"fid{i}", strm_path=f"v{i}.strm")
             (root / f"v{i}.strm").write_text("https://x\n")
-        return {"r0": ("fid0", 100, "v0.strm"), "r1": ("fid1", 100, "v1.strm")}
+        return {("d1", "r0"): ("fid0", 100, "v0.strm"),
+                ("d1", "r1"): ("fid1", 100, "v1.strm")}
 
     def test_dry_run_only_records(self, memdb, cfg, tmp_path):
         cfg["strm_gen_prune_dry_run"] = "true"
@@ -316,7 +346,7 @@ class TestDryRun:
         assert not (tmp_path / "v0.strm").exists()
         assert (tmp_path / "v1.strm").exists()  # 没墓碑的不动
         assert memdb.query(em.StrmGenFile).count() == 1
-        assert "r0" not in state
+        assert ("d1", "r0") not in state
 
     def test_unknown_tombstone_recorded(self, memdb, cfg, tmp_path):
         """查不到状态行的墓碑：计数 + 记入 strm_file_health 供复核，不删。"""
@@ -340,7 +370,7 @@ class TestDryRun:
             _add_state_row(memdb, f"r{i}", f"fid{i}", strm_path=f"v{i}.strm")
             (tmp_path / f"v{i}.strm").write_text("u\n")
         stats: dict = {}
-        state = {f"r{i}": (f"fid{i}", 100, f"v{i}.strm") for i in range(100)}
+        state = {("d1", f"r{i}"): (f"fid{i}", 100, f"v{i}.strm") for i in range(100)}
         ts = [Tombstone(file_id=f"fid{i}", drive_id="d1",
                         reason="removed", detected_at="x") for i in range(60)]
         sg._consume_tombstones(memdb, ts, state, str(tmp_path), stats,
@@ -727,10 +757,11 @@ class TestReview709Fixes:
         # 初始 1 次 + 每次 404 轮换 1 次
         assert len(token_calls) == 3
 
-    # ---- P2-3：orphan 多盘整批跳过 ----
+    # ---- P2-3：orphan 多盘按盘消费（#809 + 两盘全挂，不再整批跳过） ----
     def test_orphan_multi_disk_consumes_verified(self, memdb, cfg, kvstore, monkeypatch):
         # 多盘部署：逐个复核确认 gone 的文件也走删除路径（2026-10-13 修：
         # 逐个 files.get 复核本身就是信任锚，不再整批跳过）
+        # 两盘全挂：墓碑 drive_id 为 "unknown" 时按 file_id 反查状态表归一化。
         from backend.emby_server import drive_changes as dc
         cfg["strm_orphan_check_qps"] = "10"
         _add_state_row(memdb, "rel0", "fid-gone", strm_path="s0.strm")
@@ -738,7 +769,7 @@ class TestReview709Fixes:
         monkeypatch.setattr(dc, "_get_token", lambda: "tok")
         monkeypatch.setattr(dc, "_api_get", _raise_404(dc))
         monkeypatch.setattr(sg, "_load_state",
-                            lambda: {"rel0": ("fid-gone", "s0.strm", 100)})
+                            lambda: {("d1", "rel0"): ("fid-gone", 100, "s0.strm")})
         monkeypatch.setattr(sg, "_container_strm_root", lambda db: "/tmp")
         monkeypatch.setattr(sg, "_discover_drives",
                             lambda: {"d1": ["sa1"], "d2": ["sa2"]})
@@ -747,6 +778,54 @@ class TestReview709Fixes:
         # dry_run 默认 true：只记 would-delete，不真删
         assert result["prune_stats"].get("prune_would_delete", {}).get("count") == 1
         # health 的 gone 信号保留
+        row = memdb.query(em.StrmFileHealth).filter_by(
+            file_id="fid-gone").first()
+        assert row.status == "gone"
+
+    def test_orphan_multi_drive_consumes_per_drive(self, memdb, cfg, kvstore,
+                                                   monkeypatch):
+        # 两盘各有一个 gone 候选：各自归一化到本盘，分别消费。
+        from backend.emby_server import drive_changes as dc
+        cfg["strm_orphan_check_qps"] = "10"
+        _add_state_row(memdb, "rel1", "fid-gone-1", strm_path="s1.strm",
+                       drive_id="d1")
+        _add_state_row(memdb, "rel2", "fid-gone-2", strm_path="s2.strm",
+                       drive_id="d2")
+        _add_media_item(memdb, "g1", "fid-gone-1", gone=True)
+        _add_media_item(memdb, "g2", "fid-gone-2", gone=True)
+        monkeypatch.setattr(dc, "_get_token", lambda: "tok")
+        monkeypatch.setattr(dc, "_api_get", _raise_404(dc))
+        monkeypatch.setattr(sg, "_load_state", lambda: {
+            ("d1", "rel1"): ("fid-gone-1", 100, "s1.strm"),
+            ("d2", "rel2"): ("fid-gone-2", 100, "s2.strm")})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: "/tmp")
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: {"d1": ["sa1"], "d2": ["sa2"]})
+        result = sg.run_orphan_drive_check(memdb)
+        assert result["ok"] is True and result["gone"] == 2
+        # 不再整批跳过：两个盘的墓碑各自被消费（dry_run 默认开 → would-delete）
+        assert "tombstone_skipped_multi" not in result["prune_stats"]
+        assert result["prune_stats"]["prune_would_delete"]["count"] == 2
+        assert result["prune_stats"].get("tombstone_unknown", 0) == 0
+
+    def test_orphan_unknown_drive_recorded_not_deleted(self, memdb, cfg,
+                                                       kvstore, monkeypatch):
+        """drive_id 查不到（状态行也没有）：记疑点，不删除。"""
+        from backend.emby_server import drive_changes as dc
+        cfg["strm_orphan_check_qps"] = "10"
+        _add_media_item(memdb, "g1", "fid-gone", gone=True)  # 无状态行
+        monkeypatch.setattr(dc, "_get_token", lambda: "tok")
+        monkeypatch.setattr(dc, "_api_get", _raise_404(dc))
+        monkeypatch.setattr(sg, "_load_state", lambda: {
+            ("d1", "rel1"): ("fid1", 100, "s1.strm")})
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: "/tmp")
+        monkeypatch.setattr(sg, "_discover_drives",
+                            lambda: {"d1": ["sa1"], "d2": ["sa2"]})
+        result = sg.run_orphan_drive_check(memdb)
+        assert result["ok"] is True and result["gone"] == 1
+        assert "tombstone_skipped_multi" not in result["prune_stats"]
+        assert result["prune_stats"].get("tombstone_unknown") == 1
+        # health 的 gone 信号保留，供复核
         row = memdb.query(em.StrmFileHealth).filter_by(
             file_id="fid-gone").first()
         assert row.status == "gone"
@@ -781,7 +860,7 @@ class TestReview709Fixes:
 
     def test_prune_doomed_dry_run_touches_backlog(self, memdb, cfg, kvstore):
         stats: dict = {}
-        sg._prune_doomed(memdb, [("r1", "s1")], {}, "/tmp", stats, 5)
+        sg._prune_doomed(memdb, [("d1", "r1", "s1")], {}, "/tmp", stats, 5)
         assert stats["prune_would_delete"]["count"] == 1
         assert kvstore.get(sg.CONFIG_DRY_RUN_BACKLOG_SINCE, "")
         # R18-P2：_prune_doomed 只负责 touch(True)，空调用不再按"调用"清零；
@@ -916,3 +995,89 @@ def _raise_404(dc):
     def _fake(url, token, params):
         raise dc.DriveNotFoundError("gone")
     return _fake
+
+
+class TestDriveIdMigrationSqlite:
+    """两盘全挂：strm_gen_files 主键 → (drive_id, remote_path)，sqlite 版幂等。"""
+
+    def _legacy_db(self, tmp_path):
+        import sqlite3
+        p = str(tmp_path / "mig.db")
+        con = sqlite3.connect(p)
+        # 旧表：remote_path 单列主键；随后模拟 _auto_migrate 清单补 drive_id 列
+        con.execute("""CREATE TABLE strm_gen_files (
+            remote_path VARCHAR(1024) NOT NULL PRIMARY KEY,
+            file_id VARCHAR(128) NOT NULL,
+            size BIGINT DEFAULT 0,
+            strm_path VARCHAR(1024) NOT NULL,
+            updated_at DATETIME)""")
+        con.execute("""CREATE TABLE system_configs (
+            key VARCHAR(255) PRIMARY KEY, value TEXT)""")
+        con.execute(
+            "INSERT INTO system_configs VALUES ('strm_gen_drive_id', 'cfg-drive')")
+        con.execute("INSERT INTO strm_gen_files VALUES ('r1', 'fid1', 10, 's1.strm', NULL)")
+        con.execute("INSERT INTO strm_gen_files VALUES ('r2', 'fid2', 20, 's2.strm', NULL)")
+        con.execute("ALTER TABLE strm_gen_files ADD COLUMN drive_id VARCHAR(128) DEFAULT ''")
+        con.commit()
+        con.close()
+        return p
+
+    def test_migrate_backfills_and_switches_pk_idempotent(self, tmp_path, monkeypatch):
+        import backend.database as dbm
+        from sqlalchemy import create_engine, inspect, text
+        p = self._legacy_db(tmp_path)
+        eng = create_engine(f"sqlite:///{p}")
+        monkeypatch.setattr(dbm, "engine", eng)
+        try:
+            dbm._migrate_strm_gen_files_drive_id({"strm_gen_files"})
+            pk = inspect(eng).get_pk_constraint("strm_gen_files")
+            assert set(pk["constrained_columns"]) == {"drive_id", "remote_path"}
+            with eng.connect() as c:
+                rows = c.execute(text(
+                    "SELECT drive_id, remote_path FROM strm_gen_files "
+                    "ORDER BY remote_path")).all()
+            # 存量行按 system_configs.strm_gen_drive_id 回填
+            assert rows == [("cfg-drive", "r1"), ("cfg-drive", "r2")]
+            # 同 rel 可在多盘并存（复合主键不再冲突）
+            with eng.begin() as c:
+                c.execute(text(
+                    "INSERT INTO strm_gen_files "
+                    "(drive_id, remote_path, file_id, size, strm_path) "
+                    "VALUES ('other-drive', 'r1', 'fidX', 1, 'sx.strm')"))
+            with eng.connect() as c:
+                n = c.execute(text("SELECT COUNT(*) FROM strm_gen_files")).scalar()
+            assert n == 3
+            # 幂等：第二遍是 no-op，数据不动
+            dbm._migrate_strm_gen_files_drive_id({"strm_gen_files"})
+            pk2 = inspect(eng).get_pk_constraint("strm_gen_files")
+            assert set(pk2["constrained_columns"]) == {"drive_id", "remote_path"}
+            with eng.connect() as c:
+                n2 = c.execute(text("SELECT COUNT(*) FROM strm_gen_files")).scalar()
+            assert n2 == 3
+        finally:
+            eng.dispose()
+
+
+class TestNormalizeTombstoneDrives:
+    """两盘全挂：墓碑 drive_id 归一化（空/"unknown" 按 file_id 反查补齐）。"""
+
+    def test_unknown_resolved_via_db(self, memdb):
+        _add_state_row(memdb, "r1", "fid1", drive_id="d2")
+        ts = [Tombstone(file_id="fid1", drive_id="unknown",
+                        reason="orphan_check", detected_at="x"),
+              Tombstone(file_id="fid2", drive_id="", reason="removed",
+                        detected_at="x")]
+        out = sg._normalize_tombstone_drives(memdb, ts)
+        assert out[0].drive_id == "d2"  # 补齐
+        assert out[1].drive_id == ""  # 查不到，保留原值
+        assert out[0].file_id == "fid1"  # 其他字段不动
+
+    def test_no_unknown_no_query(self, memdb, monkeypatch):
+        # 无需归一化时不查 DB（查了就炸）
+        def _boom(*a, **k):
+            raise AssertionError("不应查 DB")
+        monkeypatch.setattr(memdb, "query", _boom)
+        ts = [Tombstone(file_id="fid1", drive_id="d1", reason="removed",
+                        detected_at="x")]
+        out = sg._normalize_tombstone_drives(memdb, ts)
+        assert out is ts

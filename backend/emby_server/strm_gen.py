@@ -22,7 +22,10 @@
 
 配置项（SystemConfig，全部热读）：
 - strm_gen_enabled：总开关，默认 true
-- strm_gen_source_dir：Drive 上的源目录（相对网盘根，如 "MoviePilot/"），默认 "MoviePilot/"
+- strm_gen_source_dir：Drive 上的源目录，逗号分隔支持多目录
+  （相对网盘根，如 "MoviePilot/,nastool/"），默认 "MoviePilot/"
+- strm_gen_drive_id：指定单个 Drive ID；空或 "all" = 所有发现的盘（含个人盘）。
+  默认空（自动发现）。改动此配置不影响已生成 .strm，只影响后续轮次列举范围。
 - strm_gen_interval_minutes：增量间隔（分钟），默认 60；0 = 关闭定时增量
 - strm_gen_lock_timeout_minutes：运行锁僵死超时（分钟），默认 180；0=关闭自愈
 - strm_gen_prune：是否删除 Drive 上已不存在的 .strm 文件及状态行，默认 true
@@ -146,15 +149,43 @@ def enabled(db) -> bool:
     return _db_config(db, CONFIG_ENABLED, "true").strip().lower() in ("1", "true", "yes", "on")
 
 
+def source_dirs(db) -> list[str]:
+    """Drive 源目录列表，逗号分隔；每个归一化为以 / 结尾的相对路径。
+
+    如 "MoviePilot/,nastool/"。空字符串条目被忽略；全空（显式配空）= 网盘根
+    （[]，与旧 source_dir 返回 "" 的语义一致）。
+    未配置时默认 [DEFAULT_SOURCE_DIR]，保持单目录行为不变。
+    """
+    raw = _db_config(db, CONFIG_SOURCE_DIR, DEFAULT_SOURCE_DIR)
+    if not raw or not raw.strip():
+        return []
+    dirs = []
+    for part in raw.split(","):
+        p = part.strip().replace("\\", "/").strip("/")
+        if p:
+            dirs.append(p + "/")
+    return dirs or [DEFAULT_SOURCE_DIR]
+
+
 def source_dir(db) -> str:
-    """Drive 源目录，归一化为以 / 结尾的相对路径（"" = 网盘根）。"""
-    raw = _db_config(db, CONFIG_SOURCE_DIR, DEFAULT_SOURCE_DIR).strip().replace("\\", "/")
-    raw = raw.strip("/")
-    return (raw + "/") if raw else ""
+    """主源目录（向后兼容）：取 source_dirs 的第一项；空列表时返回 ""（网盘根）。"""
+    dirs = source_dirs(db)
+    return dirs[0] if dirs else ""
+
+
+def source_dir_raw(db) -> str:
+    """源目录配置原文（逗号分隔），供管理后台回显/回写，避免多目录被截断。"""
+    return _db_config(db, CONFIG_SOURCE_DIR, DEFAULT_SOURCE_DIR)
+
+
+# strm_gen_drive_id 取值 "all"（大小写不敏感）：显式选择"所有发现的盘"，
+# 等价于留空（自动发现）。留空与 "all" 的唯一区别是可观测性：
+# 配置成 "all" 时意图明确，不会被误认为"忘配了"。
+DRIVE_ID_ALL = "all"
 
 
 def drive_id_config(db) -> str:
-    """配置指定的 Drive ID（空 = 自动选择）。"""
+    """配置指定的 Drive ID（空或 "all" = 自动选择所有发现的盘）。"""
     return _db_config(db, CONFIG_DRIVE_ID, "").strip()
 
 
@@ -721,11 +752,16 @@ def _resolve_dir_id(fetch, drive_id: str, dir_path: str) -> Optional[str]:
     return parent_id
 
 
-def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True,
+def iter_drive_videos(drive_id: str, dir_path, strict: bool = True,
                       subtree_listing: bool = True):
     """流式列出源目录下所有视频文件。
 
-    yield (root_relpath, file_id, size)。root_relpath 为相对网盘根路径。
+    dir_path: 单个目录（str，向后兼容）或目录列表（list[str]，两盘全挂）。
+    多目录时目录树只拉一次（drive 级复用），各源目录分别展开，API 调用
+    不随目录数线性增加。
+
+    yield (root_relpath, file_id, size)。root_relpath 为相对网盘根路径
+    （含源目录前缀本身，与旧实现一致，状态键保持兼容）。
 
     strict=True（默认）：源目录不存在时抛 RuntimeError（显式配置的盘，
     管理员需要知道配错了）。
@@ -748,10 +784,14 @@ def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True,
     （修 P1-1：旧实现只在开始时取一次 token，8 万级文件的长列举
     会因 SA token 过期而整体作废——_page_fetcher 的 401 自动刷新保留）。
     """
-    if subtree_listing:
-        yield from _iter_drive_videos_subtree(drive_id, dir_path, strict=strict)
+    if isinstance(dir_path, (list, tuple)):
+        dir_paths = [d.strip().strip("/") for d in dir_path if d and d.strip().strip("/")]
     else:
-        yield from _iter_drive_videos_flat(drive_id, dir_path, strict=strict)
+        dir_paths = [dir_path.strip().strip("/")] if (dir_path or "").strip().strip("/") else []
+    if subtree_listing:
+        yield from _iter_drive_videos_subtree(drive_id, dir_paths, strict=strict)
+    else:
+        yield from _iter_drive_videos_flat(drive_id, dir_paths, strict=strict)
 
 
 #: S1：子树列举阶段二每批 in parents 查询的目录数。
@@ -760,40 +800,31 @@ def iter_drive_videos(drive_id: str, dir_path: str, strict: bool = True,
 SUBTREE_LIST_BATCH = 30
 
 
-def _iter_drive_videos_subtree(drive_id: str, dir_path: str, strict: bool = True):
+def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = True):
     """S1：两阶段子树限定列举（见 iter_drive_videos 文档）。
 
-    阶段一：只拉目录项（mimeType=folder），本地按 parents 建树，从源目录
-    BFS 展开，得到子树内每个目录 id → [rel_prefix, ...]（遍历语义与扁平
-    实现完全一致：多 parent 的目录每个 parent 链各展开一次）。
-    阶段二：目录 ID 按 SUBTREE_LIST_BATCH 分组，拼
-    "trashed=false and ('id1' in parents or ...)" 批量查文件；文件的每个
-    子树内 parent、每个 rel_prefix 各产出一条（与扁平实现 yield 语义一致）。
+    多目录版：阶段一的目录树全盘只拉一次（drive 级复用）；阶段一之二从各源
+    目录分别 BFS 展开；阶段二按合并后的目录 ID 分批查文件，产出时带各自的
+    源目录前缀（root_prefix），遍历语义与单目录版完全一致。
     """
     fetch = _page_fetcher(drive_id)  # 内部已做 SA 凭据检查 + 401 自动刷新
-    dir_id = _resolve_dir_id(fetch, drive_id, dir_path)
-    if dir_path and not dir_id:
-        if not strict:
-            logger.warning("strm_gen: drive=%s 上找不到源目录 %r，已跳过该盘",
-                           drive_id, dir_path)
-            return
-        raise RuntimeError(f"Drive 上找不到源目录: {dir_path!r}")
+    # 逐个解析源目录 id（strict 语义按目录独立：自动发现模式缺目录只跳过该目录）
+    resolved: list[tuple[str, str]] = []  # (norm_dir, dir_id)；空列表=网盘根
+    if not dir_paths:
+        resolved = [("", "")]
+    for dp in dir_paths:
+        dir_id = _resolve_dir_id(fetch, drive_id, dp)
+        if dp and not dir_id:
+            if not strict:
+                logger.warning("strm_gen: drive=%s 上找不到源目录 %r，已跳过该目录",
+                               drive_id, dp)
+                continue
+            raise RuntimeError(f"Drive 上找不到源目录: {dp!r}")
+        resolved.append((dp, dir_id))
+    if not resolved:
+        return
 
-    norm = dir_path.strip("/")
-    root_prefix = (norm + "/") if norm else ""
-    if norm:
-        start_id = dir_id
-    else:
-        # 与扁平实现一致：共享盘根目录的顶层 parents 是 drive_id，
-        # 个人盘用 'root' 别名（'root' in parents 是合法查询）。
-        dc = _drive_modules()
-        try:
-            is_personal = dc._is_personal_drive_key(drive_id)
-        except Exception:
-            is_personal = False
-        start_id = "root" if is_personal else drive_id
-
-    # 阶段一：只拉目录项。
+    # 阶段一：只拉目录项（drive 级一次，多目录复用）。
     folder_children: dict[str, list[dict]] = {}
     listed_folders = 0
     page_token: Optional[str] = None
@@ -816,12 +847,25 @@ def _iter_drive_videos_subtree(drive_id: str, dir_path: str, strict: bool = True
     logger.info("strm_gen: drive=%s 子树列举阶段一：拉取 %d 个目录项",
                 drive_id, listed_folders)
 
-    # 阶段一之二：本地 BFS 展开源子树（遍历语义与扁平实现一致）。
-    dir_prefixes: dict[str, list[str]] = {}
-    stack: list[tuple[str, str]] = [(start_id, "")]
+    # 阶段一之二：本地 BFS，从各源目录分别展开（遍历语义与扁平实现一致：
+    # 多 parent 的目录每个 parent 链各展开一次；每个条目记所属源目录前缀）。
+    dir_entries: dict[str, list[tuple[str, str]]] = {}  # folder_id -> [(root_prefix, rel_prefix)]
+    stack: list[tuple[str, str, str]] = []
+    dc = _drive_modules()
+    try:
+        is_personal = dc._is_personal_drive_key(drive_id)
+    except Exception:
+        is_personal = False
+    for norm, dir_id in resolved:
+        if norm:
+            stack.append((dir_id, "", norm + "/"))
+        else:
+            # 与扁平实现一致：共享盘根目录的顶层 parents 是 drive_id，
+            # 个人盘用 'root' 别名（'root' in parents 是合法查询）。
+            stack.append(("root" if is_personal else drive_id, "", ""))
     while stack:
-        folder_id, rel_prefix = stack.pop()
-        dir_prefixes.setdefault(folder_id, []).append(rel_prefix)
+        folder_id, rel_prefix, root_prefix = stack.pop()
+        dir_entries.setdefault(folder_id, []).append((root_prefix, rel_prefix))
         for f in folder_children.get(folder_id, []):
             name = _safe_name(f.get("name", ""))
             fid = f.get("id", "")
@@ -829,10 +873,10 @@ def _iter_drive_videos_subtree(drive_id: str, dir_path: str, strict: bool = True
                 continue
             if name.startswith(".") or name in SKIP_DIR_NAMES:
                 continue
-            stack.append((fid, rel_prefix + name + "/"))
+            stack.append((fid, rel_prefix + name + "/", root_prefix))
 
     # 阶段二：按批查文件。
-    dir_ids = list(dir_prefixes.keys())
+    dir_ids = list(dir_entries.keys())
     listed_files = 0
     for bi in range(0, len(dir_ids), SUBTREE_LIST_BATCH):
         batch = dir_ids[bi:bi + SUBTREE_LIST_BATCH]
@@ -852,8 +896,8 @@ def _iter_drive_videos_subtree(drive_id: str, dir_path: str, strict: bool = True
                 if not name or not fid:
                     continue
                 for pid in f.get("parents") or []:
-                    for rp in dir_prefixes.get(pid) or ():
-                        rel = root_prefix + rp + name
+                    for rroot, rp in dir_entries.get(pid) or ():
+                        rel = rroot + rp + name
                         if not is_video_path(rel):
                             continue
                         try:
@@ -870,21 +914,29 @@ def _iter_drive_videos_subtree(drive_id: str, dir_path: str, strict: bool = True
                 drive_id, len(dir_ids), listed_files)
 
 
-def _iter_drive_videos_flat(drive_id: str, dir_path: str, strict: bool = True):
+def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True):
     """旧的扁平全量拉取实现（S1 之前的主路径）。
 
     保留作应急回滚（strm_gen_subtree_listing=0 时走这里）。
-    实现：一次 files.list（无 parents 限定，pageSize=1000）分页拉完全盘条目，
-    本地按 parents 建树再从源目录 BFS 展开。
+    多目录版：一次 files.list 扁平拉完全盘条目，本地按 parents 建树，
+    再从各源目录分别 BFS 展开（只取源目录子树）。
     """
     fetch = _page_fetcher(drive_id)  # 内部已做 SA 凭据检查 + 401 自动刷新
-    dir_id = _resolve_dir_id(fetch, drive_id, dir_path)
-    if dir_path and not dir_id:
-        if not strict:
-            logger.warning("strm_gen: drive=%s 上找不到源目录 %r，已跳过该盘",
-                           drive_id, dir_path)
-            return
-        raise RuntimeError(f"Drive 上找不到源目录: {dir_path!r}")
+    # 逐个解析目录 id（strict 语义按目录独立：自动发现模式缺目录只跳过该目录）
+    resolved: list[tuple[str, str]] = []  # (norm_dir, dir_id)；网盘根用 ("", "")
+    if not dir_paths:
+        resolved = [("", "")]
+    for dp in dir_paths:
+        dir_id = _resolve_dir_id(fetch, drive_id, dp)
+        if dp and not dir_id:
+            if not strict:
+                logger.warning("strm_gen: drive=%s 上找不到源目录 %r，已跳过该目录",
+                               drive_id, dp)
+                continue
+            raise RuntimeError(f"Drive 上找不到源目录: {dp!r}")
+        resolved.append((dp, dir_id))
+    if not resolved:
+        return
 
     # 1. 扁平拉取：全盘条目（文件+目录）一次拉完，本地按 parents 建树。
     #    只取源目录子树在第 2 步过滤，这里不加 in parents 限定。
@@ -905,26 +957,25 @@ def _iter_drive_videos_flat(drive_id: str, dir_path: str, strict: bool = True):
             break
     logger.info("strm_gen: drive=%s 扁平拉取 %d 个条目", drive_id, listed)
 
-    # 2. 本地 BFS：从源目录（或网盘根）逐层展开，只取源目录子树。
+    # 2. 本地 BFS：从各源目录（或网盘根）逐层展开，只取源目录子树。
     #    网盘根相对路径前缀：dir_path 本身（与旧实现一致，状态键保持兼容）。
-    norm = dir_path.strip("/")
-    if norm:
-        stack: list[tuple[str, str]] = [(dir_id, "")]
-        root_prefix = norm + "/"
-    else:
-        # 共享盘根目录：'root' 别名只对个人盘有效，共享盘顶层用 drive_id。
-        # 原来无条件用 'root' in parents，共享盘配空源目录时列举结果恒为空
-        # （静默丢全部）——这里换成本地建树的等价逻辑。
-        dc = _drive_modules()
-        try:
-            is_personal = dc._is_personal_drive_key(drive_id)
-        except Exception:
-            is_personal = False
-        stack = [("root" if is_personal else drive_id, "")]
-        root_prefix = ""
+    stack: list[tuple[str, str, str]] = []  # (folder_id, rel_prefix, root_prefix)
+    for norm, did in resolved:
+        if norm:
+            stack.append((did, "", norm + "/"))
+        else:
+            # 共享盘根目录：'root' 别名只对个人盘有效，共享盘顶层用 drive_id。
+            # 原来无条件用 'root' in parents，共享盘配空源目录时列举结果恒为空
+            # （静默丢全部）——这里换成本地建树的等价逻辑。
+            dc = _drive_modules()
+            try:
+                is_personal = dc._is_personal_drive_key(drive_id)
+            except Exception:
+                is_personal = False
+            stack.append(("root" if is_personal else drive_id, "", ""))
 
     while stack:
-        folder_id, rel_prefix = stack.pop()
+        folder_id, rel_prefix, root_prefix = stack.pop()
         for f in children.get(folder_id, []):
             name = _safe_name(f.get("name", ""))
             fid = f.get("id", "")
@@ -933,7 +984,7 @@ def _iter_drive_videos_flat(drive_id: str, dir_path: str, strict: bool = True):
             if f.get("mimeType") == "application/vnd.google-apps.folder":
                 if name.startswith(".") or name in SKIP_DIR_NAMES:
                     continue
-                stack.append((fid, rel_prefix + name + "/"))
+                stack.append((fid, rel_prefix + name + "/", root_prefix))
             else:
                 rel = root_prefix + rel_prefix + name
                 if not is_video_path(rel):
@@ -1054,9 +1105,10 @@ def _container_strm_root(db) -> str:
         return "/strm"
 
 
-def _load_state() -> dict[str, tuple[str, int, str]]:
-    """读 strm_gen_files 表：{remote_path: (file_id, size, strm_path)}。
+def _load_state() -> dict[tuple[str, str], tuple[str, int, str]]:
+    """读 strm_gen_files 表：{(drive_id, remote_path): (file_id, size, strm_path)}。
 
+    多盘模式下同一相对路径可出现在多个盘上，键必须带 drive_id。
     用独立短会话（不在生成主事务里，避免长事务占连接）。
     """
     try:
@@ -1067,7 +1119,8 @@ def _load_state() -> dict[str, tuple[str, int, str]]:
     sess = SessionLocal()
     try:
         rows = sess.query(em.StrmGenFile).all()
-        return {r.remote_path: (r.file_id, r.size or 0, r.strm_path) for r in rows}
+        return {(r.drive_id or "", r.remote_path): (r.file_id, r.size or 0, r.strm_path)
+                for r in rows}
     except Exception as exc:
         logger.warning("strm_gen: 读状态表失败: %s", exc)
         return {}
@@ -1075,12 +1128,13 @@ def _load_state() -> dict[str, tuple[str, int, str]]:
         sess.close()
 
 
-def _save_state_rows(rows: list[tuple[str, str, int, str]]):
-    """批量 upsert 状态。rows: [(remote_path, file_id, size, strm_path)]。
+def _save_state_rows(rows: list[tuple[str, str, str, int, str]]):
+    """批量 upsert 状态。rows: [(drive_id, remote_path, file_id, size, strm_path)]。
 
     原来逐行 SELECT+add：8.5 万行 = 8.5 万次 point 查询。现在按批
-    "先删后插"（DELETE WHERE remote_path IN (...) + bulk_insert_mappings），
-    每批 2 条 SQL，与 PG/SQLite 都兼容。批内按 remote_path 去重保留最后一条。
+    "先删后插"（DELETE WHERE (drive_id, remote_path) IN (...) + bulk_insert_mappings），
+    每批 2 条 SQL，与 PG/SQLite 都兼容。批内按 (drive_id, remote_path) 去重保留最后一条。
+    删除必须按盘过滤：同一 rel 在不同盘是不同行，不能误删别的盘。
     """
     if not rows:
         return
@@ -1089,21 +1143,26 @@ def _save_state_rows(rows: list[tuple[str, str, int, str]]):
         from backend.database import SessionLocal
     except Exception:
         return
-    # 批内去重：同 remote_path 保留最后一条（同目录同名文件的极限情况）
-    dedup: dict[str, tuple[str, str, int, str]] = {}
+    # 批内去重：同 (drive_id, remote_path) 保留最后一条（同目录同名文件的极限情况）
+    dedup: dict[tuple[str, str], tuple[str, str, str, int, str]] = {}
     for r in rows:
-        dedup[r[0]] = r
+        dedup[(r[0], r[1])] = r
     rows = list(dedup.values())
     sess = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
-        keys = [r[0] for r in rows]
-        sess.query(em.StrmGenFile).filter(
-            em.StrmGenFile.remote_path.in_(keys)).delete(synchronize_session=False)
+        # 按盘分组删除（SQLite 不支持多列 IN，逐盘删）
+        by_drive: dict[str, list[str]] = {}
+        for did, rp, _fid, _size, _sp in rows:
+            by_drive.setdefault(did, []).append(rp)
+        for did, rps in by_drive.items():
+            sess.query(em.StrmGenFile).filter(
+                em.StrmGenFile.drive_id == did,
+                em.StrmGenFile.remote_path.in_(rps)).delete(synchronize_session=False)
         sess.bulk_insert_mappings(em.StrmGenFile, [
-            {"remote_path": rp, "file_id": fid, "size": size,
+            {"drive_id": did, "remote_path": rp, "file_id": fid, "size": size,
              "strm_path": sp, "updated_at": now}
-            for rp, fid, size, sp in rows
+            for did, rp, fid, size, sp in rows
         ])
         sess.commit()
     except Exception as exc:
@@ -1113,9 +1172,13 @@ def _save_state_rows(rows: list[tuple[str, str, int, str]]):
         sess.close()
 
 
-def _delete_state_rows(remote_paths: list[str], db=None):
-    """删除状态行（给 prune 用）。db 可选：传入则用它，否则开独立短会话。"""
-    if not remote_paths:
+def _delete_state_rows(pairs: list[tuple[str, str]], db=None):
+    """删除状态行（给 prune 用）。pairs: [(drive_id, remote_path)]。
+
+    db 可选：传入则用它，否则开独立短会话。必须按盘过滤，
+    同一 rel 在不同盘是不同行。
+    """
+    if not pairs:
         return
     try:
         from backend.emby_server import models as em
@@ -1128,8 +1191,13 @@ def _delete_state_rows(remote_paths: list[str], db=None):
         sess = SessionLocal()
         own = True
     try:
-        sess.query(em.StrmGenFile).filter(
-            em.StrmGenFile.remote_path.in_(remote_paths)).delete(synchronize_session=False)
+        by_drive: dict[str, list[str]] = {}
+        for did, rp in pairs:
+            by_drive.setdefault(did, []).append(rp)
+        for did, rps in by_drive.items():
+            sess.query(em.StrmGenFile).filter(
+                em.StrmGenFile.drive_id == did,
+                em.StrmGenFile.remote_path.in_(rps)).delete(synchronize_session=False)
         if own:
             sess.commit()
         else:
@@ -1143,7 +1211,7 @@ def _delete_state_rows(remote_paths: list[str], db=None):
             sess.close()
 
 
-def _backfill_state_from_disk(all_videos: list[tuple[str, str, int]],
+def _backfill_state_from_disk(all_videos: list[tuple[str, str, str, int]],
                               state: dict, strm_root: str) -> dict:
     """A1：从磁盘 .strm 内容反推，重建状态表缺行（零 API 调用）。
 
@@ -1160,8 +1228,8 @@ def _backfill_state_from_disk(all_videos: list[tuple[str, str, int]],
     零开销。补上的行会同步写进内存 state，主流程走已有 skip 路径。
     返回 {"backfilled": N, "unmatched": M}。
     """
-    missing = [(rel, fid, size) for rel, fid, size in all_videos
-               if rel not in state]
+    missing = [(did, rel, fid, size) for did, rel, fid, size in all_videos
+               if (did, rel) not in state]
     if not missing:
         return {"backfilled": 0, "unmatched": 0}
     # 建磁盘索引 {file_id: strm 相对路径}：只读每文件第一行，纯本地 IO。
@@ -1182,15 +1250,15 @@ def _backfill_state_from_disk(all_videos: list[tuple[str, str, int]],
             # 只保留第一份：反推目标是"有状态可跳过"，多一份不影响正确性。
             if _fid and _fid not in disk_index:
                 disk_index[_fid] = os.path.relpath(_full, strm_root)
-    rows: list[tuple[str, str, int, str]] = []
-    for rel, fid, size in missing:
+    rows: list[tuple[str, str, str, int, str]] = []
+    for did, rel, fid, size in missing:
         spath = disk_index.get(fid)
         if spath:
-            rows.append((rel, fid, size, spath))
+            rows.append((did, rel, fid, size, spath))
     if rows:
         _save_state_rows(rows)
-        for rel, fid, size, spath in rows:
-            state[rel] = (fid, size, spath)
+        for did, rel, fid, size, spath in rows:
+            state[(did, rel)] = (fid, size, spath)
     backfilled = len(rows)
     unmatched = len(missing) - backfilled
     logger.info("strm_gen: 磁盘反推补全状态 %d 行（扫描 .strm %d 个，"
@@ -1249,14 +1317,14 @@ def _prune_budget_ok(db, doomed_count: int, videos_seen: int) -> tuple[bool, str
     return True, ""
 
 
-def _apply_tombstone_deletions(doomed: list[tuple[str, str]],
+def _apply_tombstone_deletions(doomed: list[tuple[str, str, str]],
                                strm_root: str, stats: dict, db=None) -> None:
     """执行删除：删磁盘 .strm → 删状态行 → stats.tombstoned。
 
-    doomed: [(remote_path, strm_path)]。删文件 OSError 容忍，
+    doomed: [(drive_id, remote_path, strm_path)]。删文件 OSError 容忍，
     记 stats["tombstone_rm_failed"]（状态行照删，下轮不再重试该条）。
     """
-    for remote_path, strm_path in doomed:
+    for drive_id, remote_path, strm_path in doomed:
         spath = os.path.join(strm_root, strm_path)
         try:
             if os.path.exists(spath):
@@ -1264,11 +1332,11 @@ def _apply_tombstone_deletions(doomed: list[tuple[str, str]],
         except OSError as exc:
             logger.warning("strm_gen: 删除过期 .strm 失败 %s: %s", spath, exc)
             stats["tombstone_rm_failed"] = stats.get("tombstone_rm_failed", 0) + 1
-        _delete_state_rows([remote_path], db=db)
+        _delete_state_rows([(drive_id, remote_path)], db=db)
         stats["tombstoned"] = stats.get("tombstoned", 0) + 1
 
 
-def _prune_doomed(db, doomed: list[tuple[str, str]], state: dict,
+def _prune_doomed(db, doomed: list[tuple[str, str, str]], state: dict,
                   strm_root: str, stats: dict, videos_seen: int,
                   reason_kind: str = "tombstone",
                   track_backlog: bool = True) -> None:
@@ -1300,8 +1368,8 @@ def _prune_doomed(db, doomed: list[tuple[str, str]], state: dict,
         stats["prune_would_delete"] = {
             "count": doomed_count,
             "reason_kind": reason_kind,
-            "sample": [{"remote_path": rp, "strm_path": sp}
-                       for rp, sp in doomed[:50]],
+            "sample": [{"drive_id": did, "remote_path": rp, "strm_path": sp}
+                       for did, rp, sp in doomed[:50]],
         }
         if track_backlog:
             _dry_run_backlog_touch(db, True)  # 首次出现积压时记录起始时间（R10）
@@ -1309,9 +1377,42 @@ def _prune_doomed(db, doomed: list[tuple[str, str]], state: dict,
                     doomed_count, reason_kind)
         return
     _apply_tombstone_deletions(doomed, strm_root, stats, db=db)
-    for rp, _sp in doomed:
-        state.pop(rp, None)  # 内存状态同步（只有真删才动；dry_run/拦截不碰）
+    for did, rp, _sp in doomed:
+        state.pop((did, rp), None)  # 内存状态同步（只有真删才动；dry_run/拦截不碰）
     logger.info("strm_gen: 清理过期条目 %d 个（%s）", doomed_count, reason_kind)
+
+
+def _normalize_tombstone_drives(db, tombstones: list) -> list:
+    """补齐墓碑的 drive_id：为空/"unknown" 的按 file_id 批量反查状态表。
+
+    file_id 在 Drive 全局唯一，反查无歧义。查不到的保留原值（调用方走
+    unknown 疑点路径，不删除）。返回新列表（Tombstone 是 frozen dataclass，
+    用 dataclasses.replace 产出补齐后的副本）。
+    """
+    need = [t for t in tombstones if not t.drive_id or t.drive_id == "unknown"]
+    if not need:
+        return tombstones
+    try:
+        from dataclasses import replace as _dc_replace
+        from backend.emby_server import models as em
+        fid_to_did: dict[str, str] = {}
+        fids = [t.file_id for t in need]
+        for i in range(0, len(fids), 200):
+            chunk = fids[i:i + 200]
+            for fid, did in db.query(em.StrmGenFile.file_id,
+                                     em.StrmGenFile.drive_id).filter(
+                    em.StrmGenFile.file_id.in_(chunk)).all():
+                if did:
+                    fid_to_did[fid] = did
+        if not fid_to_did:
+            return tombstones
+        return [_dc_replace(t, drive_id=fid_to_did[t.file_id])
+                if (not t.drive_id or t.drive_id == "unknown")
+                and t.file_id in fid_to_did else t
+                for t in tombstones]
+    except Exception as exc:
+        logger.warning("strm_gen: 墓碑 drive_id 反查失败: %s", exc)
+        return tombstones
 
 
 def _consume_tombstones(db, tombstones: list, state: dict,
@@ -1321,21 +1422,29 @@ def _consume_tombstones(db, tombstones: list, state: dict,
                         ok_drives: frozenset | None = None) -> None:
     """消费墓碑：删磁盘 .strm + 删状态行。库条目不动（交扫描器下一轮）。
 
-    ok_drives：允许消费其墓碑的 drive_id 集合；None=不做按盘门控
-    （调用方已对每个墓碑单独验过 Drive，如 orphan_check 的逐个 files.get
-    复核——逐个复核本身就是信任锚，不需要"本轮列举成功"门控）。
-    传入集合时，只消费来源盘在本轮列举成功（无 error）的墓碑，失败盘的
-    墓碑跳过并计数（tombstone_skipped_drive_failed），不误删。
-
-    file_id 在 Drive 全局唯一，按 file_id 回查状态表做归属判定跨盘无歧义
-    （同一 file_id 不可能同时属于两个盘的有效文件）。
-
-    2026-10-13 修：旧实现多盘（len(drive_ids) != 1）整批跳过
-    （tombstone_skipped_multi），生产多盘部署下墓碑删除路径永久死亡，
-    幽灵 .strm 只增不减。改为按盘成功门控后，多盘也能正常消费。
+    - 去重：按 (drive_id, file_id)
+    - ok_drives（#809）：允许消费其墓碑的 drive_id 集合；None=不做按盘门控
+      （调用方已对每个墓碑单独验过 Drive，如 orphan_check 的逐个 files.get
+      复核——逐个复核本身就是信任锚，不需要"本轮列举成功"门控）。
+      传入集合时，只消费来源盘在本轮列举成功（无 error）的墓碑，失败盘的
+      墓碑跳过并计数（tombstone_skipped_drive_failed），不误删。
+    - 多盘（两盘全挂）：按墓碑自带的 drive_id 逐盘消费（state 主键为
+      (drive_id, remote_path)，跨盘可判定归属——旧的"多盘整批跳过"
+      （tombstone_skipped_multi）已删除，生产多盘部署下墓碑删除路径
+      不再永久死亡）。墓碑的 drive_id 不在本轮 drive_ids 里：不属于本轮
+      管辖范围，记疑点（health unknown）供反向僵尸校验复核，不静默丢弃。
+    - 解析：SELECT drive_id, remote_path, strm_path FROM strm_gen_files
+      WHERE drive_id = :did AND file_id IN (...)（分片 200，需 file_id 索引）；
+      file_id 在 Drive 全局唯一，跨盘归属无歧义，按盘过滤是纵深防御。
+    - 查不到 file_id → stats["tombstone_unknown"]++，同时记入 strm_file_health
+      （status='unknown'），供反向僵尸校验复核
+    - drive_id 归一化（两盘全挂）：drive_id 为空/"unknown" 的墓碑（如 orphan_check
+      的 MediaItem 候选），按 file_id 批量反查状态表补齐真实 drive_id
+      （file_id 全局唯一）；查不到的保留原值，后续走 unknown 疑点路径。
     """
     if not tombstones:
         return
+    tombstones = _normalize_tombstone_drives(db, tombstones)
     consumable = []
     for t in tombstones:
         if ok_drives is not None and t.drive_id not in ok_drives:
@@ -1355,27 +1464,42 @@ def _consume_tombstones(db, tombstones: list, state: dict,
     tombstones = list(uniq.values())
     stats["tombstone_pending"] = stats.get("tombstone_pending", 0) + len(tombstones)
 
-    # file_id IN 回查状态表（分片 200）
-    fid_to_entry: dict[str, tuple[str, str]] = {}
+    # 墓碑按盘分组；不在本轮 drive_ids 的盘不归本轮管辖
+    in_scope: list = []
+    for t in tombstones:
+        if t.drive_id not in drive_ids:
+            stats["tombstone_unknown"] = stats.get("tombstone_unknown", 0) + 1
+            _record_health_unknown(db, t.file_id, t.drive_id,
+                                   note="tombstone %s 的盘不在本轮范围" % t.reason)
+            continue
+        in_scope.append(t)
+
+    # file_id IN 回查状态表（分片 200，按盘过滤）
+    fid_to_entry: dict[tuple[str, str], tuple[str, str, str]] = {}
     try:
         from backend.emby_server import models as em
-        fids = [t.file_id for t in tombstones]
-        for i in range(0, len(fids), 200):
-            chunk = fids[i:i + 200]
-            rows = db.query(em.StrmGenFile.remote_path,
-                            em.StrmGenFile.strm_path,
-                            em.StrmGenFile.file_id).filter(
-                em.StrmGenFile.file_id.in_(chunk)).all()
-            for rp, sp, fid in rows:
-                fid_to_entry[fid] = (rp, sp)
+        by_drive: dict[str, list] = {}
+        for t in in_scope:
+            by_drive.setdefault(t.drive_id, []).append(t)
+        for did, dts in by_drive.items():
+            fids = [t.file_id for t in dts]
+            for i in range(0, len(fids), 200):
+                chunk = fids[i:i + 200]
+                rows = db.query(em.StrmGenFile.remote_path,
+                                em.StrmGenFile.strm_path,
+                                em.StrmGenFile.file_id).filter(
+                    em.StrmGenFile.drive_id == did,
+                    em.StrmGenFile.file_id.in_(chunk)).all()
+                for rp, sp, fid in rows:
+                    fid_to_entry[(did, fid)] = (did, rp, sp)
     except Exception as exc:
         logger.warning("strm_gen: 墓碑回查状态表失败: %s", exc)
         return
 
-    doomed: list[tuple[str, str]] = []
+    doomed: list[tuple[str, str, str]] = []
     doomed_tombstones: list = []  # 与 doomed 逐项对应（带 file_id/drive_id）
-    for t in tombstones:
-        hit = fid_to_entry.get(t.file_id)
+    for t in in_scope:
+        hit = fid_to_entry.get((t.drive_id, t.file_id))
         if not hit:
             # state 里没有：可能 state 已清 / 不在源子树，不管；记疑点供复核
             stats["tombstone_unknown"] = stats.get("tombstone_unknown", 0) + 1
@@ -1709,7 +1833,7 @@ def _release_progress(stats: dict, db, expect_token=None):
 def run_generation(db, full: bool = False, drive_id: Optional[str] = None) -> dict[str, Any]:
     """执行一次生成。full=True 时忽略增量状态全量重建（仍以 file_id 去重）。
 
-    drive_id=None 时遍历所有发现的共享盘；指定则只跑那一个盘。
+    drive_id=None/""/"all" 时遍历所有发现的盘（含个人盘）；指定则只跑那一个盘。
     同一时间只允许一个任务运行（原子获取，见 try_acquire）。
     返回统计 dict。
     """
@@ -1738,14 +1862,17 @@ def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[st
 
 
 def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) -> dict[str, Any]:
-    src_prefix = source_dir(db)
+    # 多盘多目录（2026-10-13 两盘全挂）：源目录支持逗号分隔多目录；
+    # all_videos 统一为 (drive_id, rel, file_id, size) 四元组，rel 为盘根相对路径。
+    src_prefixes = source_dirs(db)
+    src_prefix = src_prefixes[0] if src_prefixes else ""  # 主目录：日志/兼容旧语义用
     strm_root = _container_strm_root(db)
 
     # 确定数据源：通用增量接口（SourceLister），所有挂载方式都能用。
     # drive: 用 Changes API 做增量（只拉变化），全量回退到 files.list
     # local: 用 (mtime_ns, size) 指纹做增量检测
     stype = source_type(db)
-    all_videos: list[tuple[str, str, int]] = []
+    all_videos: list[tuple[str, str, str, int]] = []  # (drive_id, rel, file_id, size)
     all_tombstones: list = []  # 本轮各 lister 产出的删除信号（块1）
     listers: list = []  # 成功列举的检查点：本地模式存 Lister 对象，drive 并行模式存 (did, new_token)
 
@@ -1774,23 +1901,27 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
             return {"ok": False, "error": str(exc)}
         logger.info("strm_gen: local=%s 列举到 %d 个视频文件（墓碑 %d）",
                     root, len(videos), len(tombstones))
-        all_videos.extend(videos)
+        _lid = lister.drive_key
+        all_videos.extend((_lid, rel, fid, size) for rel, fid, size in videos)
         # 本地模式下 rel 已是相对 root 的路径，src_prefix 为空
         src_prefix = ""
+        src_prefixes = [""]
     else:
-        # drive 模式：确定要跑的盘（显式参数 > 配置 > 遍历所有发现的共享盘）
-        drive_id = drive_id or drive_id_config(db)
-        if drive_id:
-            drive_ids = [drive_id]
+        # drive 模式：确定要跑的盘（显式参数 > 配置 > 遍历所有发现的盘）。
+        # 配置为 "all"（DRIVE_ID_ALL）等价于留空：显式声明"全盘"，意图可观测。
+        cfg_drive = (drive_id or drive_id_config(db) or "").strip()
+        pinned = bool(cfg_drive) and cfg_drive.lower() != DRIVE_ID_ALL
+        if pinned:
+            drive_ids = [cfg_drive]
         else:
             drives = _discover_drives()
             if not drives:
                 _set_progress(phase="error")
-                _add_error("未发现可用 Drive（共享盘）")
+                _add_error("未发现可用 Drive")
                 return {"ok": False, "error": "未发现可用 Drive"}
             drive_ids = sorted(drives.keys())
             if len(drive_ids) > 1:
-                logger.info("strm_gen: 发现 %d 个共享盘，并行生成: %s",
+                logger.info("strm_gen: 发现 %d 个盘，并行生成: %s",
                             len(drive_ids), drive_ids)
         from backend.emby_server import strm_source
         from backend.emby_server import drive_changes as dc
@@ -1800,9 +1931,9 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         # 并发数按配置（默认 3，钳制 [1, 10]）
         concurrency = drive_concurrency(db)
 
-        # 自动发现模式（未显式配置 drive_id）时，源目录不存在的盘直接跳过
+        # 自动发现模式（未显式 pin 单个 drive_id）时，源目录不存在的盘直接跳过
         # 而非报错——不是每个盘都有媒体目录。
-        auto_discover = not bool(drive_id)
+        auto_discover = not pinned
 
         def _list_one_drive(did: str) -> dict:
             """单个 drive 的列举 worker（线程池内执行）。
@@ -1817,7 +1948,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
             """
             dc.reset_total_retry_count()
             lister = strm_source.DriveChangesLister(
-                did, src_prefix, strict_dir=not auto_discover,
+                did, src_prefixes, strict_dir=not auto_discover,
                 # S1：子树限定列举开关（热读，默认开；关掉回退扁平全量拉取）
                 subtree_listing=subtree_listing_enabled(db))
             videos: list[tuple[str, str, int]] = []
@@ -1900,7 +2031,15 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 "path_skipped": r["path_skipped"],
                 "error": r["error"],
             }
-            all_videos.extend(r["videos"])
+            # 多盘：给视频打上 drive_id 标签（四元组），下游状态键为 (drive_id, rel)。
+            # 同一盘内去重（源目录重叠配置时同一文件可能被两个前缀同时命中）。
+            seen_v: set[tuple[str, str]] = set()
+            for rel, fid, size in r["videos"]:
+                key = (rel, fid)
+                if key in seen_v:
+                    continue
+                seen_v.add(key)
+                all_videos.append((r["did"], rel, fid, size))
             # 块1：收集各盘的墓碑（删除信号），失败的盘没有墓碑
             all_tombstones.extend(r.get("tombstones", []))
             # 收集增量检查点（成功时才有 new_token）
@@ -1945,7 +2084,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
 
     # 2. 增量比对 + 生成
     _set_progress(phase="generating", total=len(all_videos))
-    pending_rows: list[tuple[str, str, int, str]] = []
+    pending_rows: list[tuple[str, str, str, int, str]] = []  # (did, rel, fid, size, spath)
     # 块4 §6.3：仅增量中新文件（state 里没有）写盘前验一次 file_id。
     # 全量跳过（数万个逐一 files.get 是配额浪费）；本地源无 Drive id，跳过。
     verify_new = (stype != "local") and (not full) and verify_new_ids(db)
@@ -1970,7 +2109,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     invalid_fids: set[str] = set()
     if verify_new:
         _new_fids = list(dict.fromkeys(
-            fid for rel, fid, size in all_videos if rel not in state))
+            fid for did, rel, fid, size in all_videos if (did, rel) not in state))
         if _new_fids:
             invalid_fids = _drive_file_ids_invalid_batch(_new_fids)
             logger.info("strm_gen: 批量校验 %d 个新增 file_id，无效 %d 个",
@@ -1979,10 +2118,10 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     # 本轮实际写入 .strm 的 file_id：生成完清除其 source_invalid_at 标记（块3）
     written_file_ids: list[str] = []
     done = get_progress()["done"]
-    for rel, fid, size in all_videos:
+    for did, rel, fid, size in all_videos:
         done += 1
-        _set_progress(done=done, current=rel)
-        old = state.get(rel)
+        _set_progress(done=done, current=f"[{did}] {rel}")
+        old = state.get((did, rel))
         # file_id 或 size 任一变化都重建（Drive 上替换文件换 file_id，原地覆盖只变 size；
         # 原来只比 file_id，size 字段存而不用）
         if old and old[0] == fid and old[1] == size and not full:
@@ -1993,7 +2132,10 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 continue
             strm_rel = old[2]  # .strm 被删了，按原路径重建
         else:
-            strm_rel = _resolve_collision(strm_relpath(rel, src_prefix), used)
+            # 多版本保留（用户硬要求）：同一集的不同版本（不同 rel）各自生成独立 .strm，
+            # 输出路径由 rel 派生天然区分；真撞名才加 -2 后缀，版本间永不互相淘汰。
+            matched = next((p for p in src_prefixes if p and rel.startswith(p)), "")
+            strm_rel = _resolve_collision(strm_relpath(rel, matched), used)
 
         if verify_new and old is None and fid in invalid_fids:
             # 批量校验已判无效：跳过 + 计数，不重试（下轮增量会重新发现）
@@ -2005,8 +2147,8 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         full_path = os.path.join(strm_root, strm_rel)
         if _write_strm_file(full_path, url):
             used.add(strm_rel)
-            pending_rows.append((rel, fid, size, strm_rel))
-            state[rel] = (fid, size, strm_rel)
+            pending_rows.append((did, rel, fid, size, strm_rel))
+            state[(did, rel)] = (fid, size, strm_rel)
             written_file_ids.append(fid)
             stats["generated"] += 1
         else:
@@ -2037,16 +2179,16 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     _set_progress(phase="verifying", current="正在校验完整性…")
     if _round_is_fully_incremental(stype, full,
                                    drive_results if stype != "local" else []):
-        verify = _verify_completeness_light(all_videos, state, src_prefix,
-                                           strm_root=strm_root)
+        verify = _verify_completeness_light(all_videos, state, src_prefixes,
+                                            strm_root=strm_root)
     else:
-        verify = _verify_completeness(all_videos, state, src_prefix,
+        verify = _verify_completeness(all_videos, state, src_prefixes,
                                       strm_root=strm_root)
     stats["verify"] = verify
 
     # 4. 墓碑消费：Drive/本地源删文件 → 删 .strm + 删状态行（块1+块2）。
     # 库条目不动：下一轮扫描器按已有删除保护自然处理（不造第二套删除语义）。
-    # 按盘成功门控（ok_drives）：只消费本轮列举成功的盘的墓碑——file_id 全局
+    # 按盘成功门控（ok_drives，#809）：只消费本轮列举成功的盘的墓碑——file_id 全局
     # 唯一，跨盘归属无歧义；失败盘的墓碑跳过（下轮 changes token 重放）。
     # 预算、dry_run 都在 _consume_tombstones/_prune_doomed 里。
     if prune_enabled(db):
@@ -2061,9 +2203,9 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         # 增量不跑这条：增量列举只有 delta，拿 delta 做全量对比会误杀；
         # 增量的删除信号走墓碑。
         if full and len(drive_ids) == 1:
-            seen = {rel for rel, _fid, _size in all_videos}
-            stale = [(rel, loaded_state[rel][2])
-                     for rel in loaded_state if rel not in seen]
+            seen = {(did, rel) for did, rel, _fid, _size in all_videos}
+            stale = [(did, rel, loaded_state[(did, rel)][2])
+                     for (did, rel) in loaded_state if (did, rel) not in seen]
             _prune_doomed(db, stale, state, strm_root, stats, len(all_videos),
                           reason_kind="stale_scan")
         # 兼容旧统计口径：pruned = 本轮实际删除数
@@ -2092,7 +2234,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 did, new_token = item
                 if new_token:
                     from backend.emby_server import strm_source as _ss
-                    _lister = _ss.DriveChangesLister(did, src_prefix)
+                    _lister = _ss.DriveChangesLister(did, src_prefixes)
                     _lister._new_token = new_token
                     _lister.save_checkpoint()
             else:
@@ -2169,13 +2311,14 @@ def _round_is_fully_incremental(stype: str, full: bool, drive_results: list) -> 
     return bool(succeeded) and all(r.get("incremental_listing") for r in succeeded)
 
 
-def _verify_completeness(videos: list[tuple[str, str, int]],
-                         state: dict[str, tuple[str, int, str]],
-                         src_prefix: str,
+def _verify_completeness(videos: list[tuple[str, str, str, int]],
+                         state: dict[tuple[str, str], tuple[str, int, str]],
+                         src_prefixes: list[str],
                          strm_root: Optional[str] = None) -> dict[str, Any]:
     """按目录（季级别）比对 Drive 文件数 vs 已生成 .strm 数。
 
-    分组键为视频文件所在的父目录（如 "剧集/动漫/妖神记 (2017)/Season 1"），
+    videos 为 (drive_id, rel, file_id, size) 四元组；分组键为
+    (drive_id, 视频文件所在的父目录)（如 ("did", "剧集/动漫/妖神记 (2017)/Season 1")），
     缺集通常发生在同一季内。返回 {total_series, complete_series,
     incomplete: [{series, drive_count, strm_count, missing}]}。
 
@@ -2186,36 +2329,43 @@ def _verify_completeness(videos: list[tuple[str, str, int]],
     """
     from collections import Counter
 
-    def _group(rel: str) -> str:
-        short = rel[len(src_prefix):] if src_prefix and rel.startswith(src_prefix) else rel
+    def _strip(rel: str) -> str:
+        for p in src_prefixes:
+            if p and rel.startswith(p):
+                return rel[len(p):]
+        return rel
+
+    def _group(did: str, rel: str) -> tuple[str, str]:
+        short = _strip(rel)
         parent = os.path.dirname(short)
-        return parent or short
+        return (did, parent or short)
 
     def _strm_exists(spath: str) -> bool:
         if strm_root is None:
             return True
         return os.path.exists(os.path.join(strm_root, spath))
 
-    drive_counter: Counter[str] = Counter()
-    drive_files: dict[str, set[str]] = {}
-    for rel, _fid, _size in videos:
-        g = _group(rel)
+    drive_counter: Counter[tuple[str, str]] = Counter()
+    drive_files: dict[tuple[str, str], set[str]] = {}
+    for did, rel, _fid, _size in videos:
+        g = _group(did, rel)
         drive_counter[g] += 1
         drive_files.setdefault(g, set()).add(rel)
-    strm_counter: Counter[str] = Counter()
-    strm_files: dict[str, set[str]] = {}
+    strm_counter: Counter[tuple[str, str]] = Counter()
+    strm_files: dict[tuple[str, str], set[str]] = {}
     orphan_disk_count = 0
     orphan_disk_sample: list[dict[str, str]] = []
-    for rel, (_fid, _size, spath) in state.items():
+    for (did, rel), (_fid, _size, spath) in state.items():
         if not _strm_exists(spath):
             # 块4 §6.1 orphan_disk：状态认为有，但磁盘没了
             orphan_disk_count += 1
             if len(orphan_disk_sample) < 50:
                 orphan_disk_sample.append({
-                    "remote_path": rel, "strm_path": spath, "file_id": _fid,
+                    "drive_id": did, "remote_path": rel,
+                    "strm_path": spath, "file_id": _fid,
                 })
             continue
-        g = _group(rel)
+        g = _group(did, rel)
         strm_counter[g] += 1
         strm_files.setdefault(g, set()).add(rel)
 
@@ -2223,17 +2373,19 @@ def _verify_completeness(videos: list[tuple[str, str, int]],
     for group, dcnt in drive_counter.items():
         scnt = strm_counter.get(group, 0)
         if scnt < dcnt:
+            gid = group[0]  # 分组键为 (drive_id, 父目录)
             missing_rels = sorted(drive_files[group] - strm_files.get(group, set()))
             # 缺集归因（2026-10-12）：区分"源上有但没生成"和".strm 文件丢了"
             not_generated = 0  # Drive 上有，state 里没有 → 生成漏了/还没跑到
             strm_lost = 0      # state 里有，但磁盘上 .strm 没了 → 文件丢失
             for rel in missing_rels:
-                if rel not in state:
+                if (gid, rel) not in state:
                     not_generated += 1
-                elif not _strm_exists(state[rel][2]):
+                elif not _strm_exists(state[(gid, rel)][2]):
                     strm_lost += 1
             incomplete.append({
                 "series": group,
+                "drive_id": gid,
                 "drive_count": dcnt,
                 "strm_count": scnt,
                 "missing_count": dcnt - scnt,
@@ -2255,9 +2407,9 @@ def _verify_completeness(videos: list[tuple[str, str, int]],
     }
 
 
-def _verify_completeness_light(videos: list[tuple[str, str, int]],
-                               state: dict[str, tuple[str, int, str]],
-                               src_prefix: str,
+def _verify_completeness_light(videos: list[tuple[str, str, str, int]],
+                               state: dict[tuple[str, str], tuple[str, int, str]],
+                               src_prefixes: list[str],
                                strm_root: Optional[str] = None) -> dict[str, Any]:
     """S2：增量轮轻量校验——只查本轮 touch 过的目录。
 
@@ -2269,11 +2421,20 @@ def _verify_completeness_light(videos: list[tuple[str, str, int]],
     2. 受影响目录的僵尸扫描：touch 过的目录下 state 行的磁盘存在性。
     返回与 _verify_completeness 同形（total_series/complete_series/
     incomplete_series/incomplete/orphan_disk），外加 verify_mode 标记。
+
+    多盘多目录版：videos 为 (drive_id, rel, file_id, size) 四元组，
+    state 键为 (drive_id, remote_path)，分组键为 (drive_id, 父目录)。
     """
-    def _group(rel: str) -> str:
-        short = rel[len(src_prefix):] if src_prefix and rel.startswith(src_prefix) else rel
+    def _strip(rel: str) -> str:
+        for p in src_prefixes:
+            if p and rel.startswith(p):
+                return rel[len(p):]
+        return rel
+
+    def _group(did: str, rel: str) -> tuple[str, str]:
+        short = _strip(rel)
         parent = os.path.dirname(short)
-        return parent or short
+        return (did, parent or short)
 
     def _strm_exists(spath: str) -> bool:
         if strm_root is None:
@@ -2281,38 +2442,40 @@ def _verify_completeness_light(videos: list[tuple[str, str, int]],
         return os.path.exists(os.path.join(strm_root, spath))
 
     # 一遍 videos：touched 目录 + 每目录的 delta rel 集合
-    touched: set[str] = set()
-    delta_rels: dict[str, set[str]] = {}
-    for rel, _fid, _size in videos:
-        g = _group(rel)
+    touched: set[tuple[str, str]] = set()
+    delta_rels: dict[tuple[str, str], set[str]] = {}
+    for did, rel, _fid, _size in videos:
+        g = _group(did, rel)
         touched.add(g)
         delta_rels.setdefault(g, set()).add(rel)
 
     # 一遍 state：只保留 touched 目录的行（僵尸扫描范围限定在此）
-    state_in_touched: dict[str, list[tuple[str, tuple[str, int, str]]]] = {}
-    for rel, val in state.items():
-        g = _group(rel)
+    state_in_touched: dict[tuple[str, str], list] = {}
+    for (did, rel), val in state.items():
+        g = _group(did, rel)
         if g in touched:
-            state_in_touched.setdefault(g, []).append((rel, val))
+            state_in_touched.setdefault(g, []).append(((did, rel), val))
 
     incomplete = []
     orphan_disk_count = 0
     orphan_disk_sample: list[dict[str, str]] = []
     for group in sorted(touched):
         # 僵尸扫描（范围限定在本目录）
-        for rel, (_fid, _size, spath) in state_in_touched.get(group, []):
+        for (did, rel), (_fid, _size, spath) in state_in_touched.get(group, []):
             if not _strm_exists(spath):
                 orphan_disk_count += 1
                 if len(orphan_disk_sample) < 50:
                     orphan_disk_sample.append({
-                        "remote_path": rel, "strm_path": spath, "file_id": _fid,
+                        "drive_id": did, "remote_path": rel,
+                        "strm_path": spath, "file_id": _fid,
                     })
         # delta 闭环
         missing = []
         for rel in sorted(delta_rels.get(group, ())):
-            if rel not in state:
+            key = (group[0], rel)
+            if key not in state:
                 missing.append((rel, "not_generated"))
-            elif not _strm_exists(state[rel][2]):
+            elif not _strm_exists(state[key][2]):
                 missing.append((rel, "strm_lost"))
         if missing:
             not_generated = sum(1 for _, kind in missing if kind == "not_generated")
@@ -2384,8 +2547,8 @@ def run_orphan_drive_check(db) -> dict:
     alive 的同时清掉其 source_invalid_at 播放标记（文件恢复 → 标记清除）。
 
     gone 的 file_id 视同墓碑：传入真实 drive 列表走 _consume_tombstones
-    同一预算/同一删除路径（多盘部署整批跳过，防跨盘误删）——这是 changes 漏事件
-    （token 过期/积压丢事件）的兜底。
+    同一预算/同一删除路径（多盘按墓碑自带 drive_id 逐盘消费，state 主键已带
+    drive_id，防跨盘误删）——这是 changes 漏事件（token 过期/积压丢事件）的兜底。
 
     反风控：token 走 drive_changes._get_token()，API 走 _api_get
     （SA 轮换/401 刷新复用现有逻辑，不另起第二套）。
@@ -2506,6 +2669,8 @@ def run_orphan_drive_check(db) -> dict:
         except Exception as exc:
             logger.warning("strm_gen: 写 file_health 失败 %s: %s", fid, exc)
         result["checked"] += 1
+        # 墓碑 drive_id 归一化由 _consume_tombstones 统一做（按 file_id 反查
+        # 状态表；查不到的记 "unknown"，消费侧记疑点不删除，防跨盘误删）。
         if status == "gone":
             result["gone"] += 1
             gone_tombstones.append(Tombstone(
@@ -2528,9 +2693,10 @@ def run_orphan_drive_check(db) -> dict:
         time.sleep(sleep_base * random.uniform(0.8, 1.2))
 
     # gone 视同墓碑：走 _consume_tombstones 同一预算/同一删除路径。
-    # ok_drives=None：每个候选都单独对 Drive 验过（404/trashed），逐个复核
-    # 本身就是信任锚，不需要"本轮列举成功"门控。drive_id 未知的候选不再单独
-    # 成组（R1 保留）：file_id 全局唯一，归属判定不依赖 drive_id。
+    # ok_drives=None（#809）：每个候选都单独对 Drive 验过（404/trashed），逐个复核
+    # 本身就是信任锚，不需要"本轮列举成功"门控。drive_id 从状态行按 file_id
+    # 反查（两盘全挂；file_id 全局唯一）；查不到的记 "unknown"，消费侧记疑点
+    # 不删除（防跨盘误删）。
     # videos_seen 取状态总行数：零结果守卫针对的是 changes token 失效，
     # 这里每个文件都单独验过，不适用。
     if gone_tombstones:

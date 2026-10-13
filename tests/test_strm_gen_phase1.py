@@ -58,12 +58,12 @@ class TestBackfillStateFromDisk:
         with open(os.path.join(strm_root, "readme.txt"), "w") as fh:
             fh.write("非 strm 文件应被忽略\n")
 
-        state = {"电影/old.mkv": ("FID_OLD", 10, "电影/old.strm")}
+        state = {("d1", "电影/old.mkv"): ("FID_OLD", 10, "电影/old.strm")}
         all_videos = [
-            ("电影/old.mkv", "FID_OLD", 10),   # 已在 state：不缺行
-            ("剧集/xx.mkv", "FID_AAA", 100),   # 缺行，磁盘有
-            ("剧集/xx2.mkv", "FID_BBB", 200),  # 缺行，磁盘有（-2 后缀也对上）
-            ("剧集/new.mkv", "FID_NEW", 300),  # 缺行，磁盘没有
+            ("d1", "电影/old.mkv", "FID_OLD", 10),   # 已在 state：不缺行
+            ("d1", "剧集/xx.mkv", "FID_AAA", 100),   # 缺行，磁盘有
+            ("d1", "剧集/xx2.mkv", "FID_BBB", 200),  # 缺行，磁盘有（-2 后缀也对上）
+            ("d1", "剧集/new.mkv", "FID_NEW", 300),  # 缺行，磁盘没有
         ]
         saved = []
         monkeypatch.setattr(sg, "_save_state_rows", lambda rows: saved.extend(rows))
@@ -73,13 +73,13 @@ class TestBackfillStateFromDisk:
         assert res == {"backfilled": 2, "unmatched": 1}
         # 用 file_id 内容匹配：-2 碰撞后缀自动对上，不靠路径反推
         assert saved == [
-            ("剧集/xx.mkv", "FID_AAA", 100, "剧集/xx.strm"),
-            ("剧集/xx2.mkv", "FID_BBB", 200, "剧集/xx-2.strm"),
+            ("d1", "剧集/xx.mkv", "FID_AAA", 100, "剧集/xx.strm"),
+            ("d1", "剧集/xx2.mkv", "FID_BBB", 200, "剧集/xx-2.strm"),
         ]
         # 内存 state 同步更新，主循环走 skip 路径
-        assert state["剧集/xx.mkv"] == ("FID_AAA", 100, "剧集/xx.strm")
-        assert state["剧集/xx2.mkv"] == ("FID_BBB", 200, "剧集/xx-2.strm")
-        assert "剧集/new.mkv" not in state
+        assert state[("d1", "剧集/xx.mkv")] == ("FID_AAA", 100, "剧集/xx.strm")
+        assert state[("d1", "剧集/xx2.mkv")] == ("FID_BBB", 200, "剧集/xx-2.strm")
+        assert ("d1", "剧集/new.mkv") not in state
 
     def test_no_missing_zero_overhead(self, tmp_path, monkeypatch):
         # 无缺行：直接返回，不扫磁盘（walk 被调就炸）
@@ -89,8 +89,8 @@ class TestBackfillStateFromDisk:
         saved = []
         monkeypatch.setattr(sg, "_save_state_rows", lambda rows: saved.extend(rows))
 
-        state = {"a.mkv": ("FID_A", 1, "a.strm")}
-        res = sg._backfill_state_from_disk([("a.mkv", "FID_A", 1)],
+        state = {("d1", "a.mkv"): ("FID_A", 1, "a.strm")}
+        res = sg._backfill_state_from_disk([("d1", "a.mkv", "FID_A", 1)],
                                            state, str(tmp_path))
         assert res == {"backfilled": 0, "unmatched": 0}
         assert saved == []
@@ -105,10 +105,10 @@ class TestBackfillStateFromDisk:
         saved = []
         monkeypatch.setattr(sg, "_save_state_rows", lambda rows: saved.extend(rows))
 
-        res = sg._backfill_state_from_disk([("ok.mkv", "FID_OK", 5)], {},
+        res = sg._backfill_state_from_disk([("d1", "ok.mkv", "FID_OK", 5)], {},
                                            strm_root)
         assert res == {"backfilled": 1, "unmatched": 0}
-        assert saved == [("ok.mkv", "FID_OK", 5, "ok.strm")]
+        assert saved == [("d1", "ok.mkv", "FID_OK", 5, "ok.strm")]
 
 
 def _mock_batch_text(items):

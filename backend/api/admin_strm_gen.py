@@ -30,8 +30,10 @@ logger = logging.getLogger(__name__)
 
 class StrmGenConfigSave(BaseModel):
     enabled: bool = Field(default=True, description="总开关")
-    source_dir: str = Field(default="MoviePilot/", description="Drive 源目录（相对网盘根）")
-    drive_id: str = Field(default="", description="指定 Drive ID，空=自动选择")
+    source_dir: str = Field(default="MoviePilot/",
+                            description="Drive 源目录（相对网盘根），逗号分隔支持多目录，"
+                                        "如 \"MoviePilot/,nastool/\"")
+    drive_id: str = Field(default="", description="指定 Drive ID；空或 \"all\"=所有发现的盘")
     prune: bool = Field(
         default=False,
         description="清理 Drive 上已不存在的 .strm 文件及状态行（默认开+演习：dry_run=true 时只记 would-delete 不真删）",
@@ -104,7 +106,10 @@ def _last_stats_dict(db: Session) -> dict:
 def _read_config(db: Session) -> dict:
     return {
         "enabled": _gen.enabled(db),
+        # 原文回显：多目录配置不被截断（source_dir 兼容旧前端，取第一项）
         "source_dir": _gen.source_dir(db),
+        "source_dir_raw": _gen.source_dir_raw(db),
+        "source_dirs": _gen.source_dirs(db),
         "drive_id": _gen.drive_id_config(db),
         "prune": _gen.prune_enabled(db),
         "interval_minutes": _gen.interval_minutes(db),
@@ -139,10 +144,17 @@ def strm_gen_config_save(body: StrmGenConfigSave,
                          db: Session = Depends(get_db),
                          _staff=Depends(require_staff)):
     """写 .strm 生成器配置（保存即热生效，无需重启）。"""
-    # 源目录归一化：只允许相对路径，防止写到奇怪的地方
-    src = (body.source_dir or "").strip().replace("\\", "/").strip("/")
-    if ".." in src.split("/"):
-        raise HTTPException(status_code=400, detail="源目录不能包含 ..")
+    # 源目录归一化：逗号分隔多目录；只允许相对路径，防止写到奇怪的地方
+    raw_src = (body.source_dir or "").strip().replace("\\", "/")
+    src_parts = []
+    for part in raw_src.split(","):
+        p = part.strip().strip("/")
+        if not p:
+            continue
+        if ".." in p.split("/"):
+            raise HTTPException(status_code=400, detail="源目录不能包含 ..")
+        src_parts.append(p + "/")
+    src = ",".join(src_parts)
     # 增量间隔：0=关闭，1-1440 分钟
     iv = int(body.interval_minutes or 0)
     if iv < 0 or iv > 1440:
@@ -179,7 +191,7 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     # 且 write_values 不自动提交，提交时机由调用方决定。
     values = {
         _gen.CONFIG_ENABLED: "true" if body.enabled else "false",
-        _gen.CONFIG_SOURCE_DIR: (src + "/") if src else "",
+        _gen.CONFIG_SOURCE_DIR: src,
         _gen.CONFIG_DRIVE_ID: (body.drive_id or "").strip(),
         _gen.CONFIG_PRUNE: "true" if body.prune else "false",
         _gen.CONFIG_INTERVAL: str(iv),

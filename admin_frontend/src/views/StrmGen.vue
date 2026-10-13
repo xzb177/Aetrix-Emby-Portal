@@ -107,7 +107,8 @@ async function load(silent = false) {
     if (progRes.config) config.value = progRes.config
     form.value = {
       enabled: !!config.value?.enabled,
-      source_dir: config.value?.source_dir ?? '',
+      // 用 source_dir_raw 回显：多目录配置不被截断（回退 source_dir 兼容旧后端）
+      source_dir: config.value?.source_dir_raw ?? config.value?.source_dir ?? '',
       drive_id: config.value?.drive_id ?? '',
       prune: !!config.value?.prune,
       interval_minutes: config.value?.interval_minutes ?? 60,
@@ -280,8 +281,8 @@ onUnmounted(() => {
           <span class="hint">关闭后定时任务不再执行</span>
         </el-form-item>
         <el-form-item label="Drive 源目录">
-          <el-input v-model="form.source_dir" placeholder="如 MoviePilot/" clearable style="max-width: 320px" />
-          <span class="hint">相对网盘根的目录</span>
+          <el-input v-model="form.source_dir" placeholder="如 MoviePilot/ 或 MoviePilot/,nastool/" clearable style="max-width: 320px" />
+          <span class="hint">相对网盘根的目录，逗号分隔可配多个</span>
         </el-form-item>
         <el-form-item label="增量间隔">
           <el-input-number v-model="form.interval_minutes" :min="0" :max="1440" :step="5" style="max-width: 160px" />
@@ -305,6 +306,7 @@ onUnmounted(() => {
         <el-form-item label="指定 Drive">
           <el-select v-model="form.drive_id" placeholder="自动选择" clearable style="max-width: 320px">
             <el-option label="自动选择（默认）" value="" />
+            <el-option label="全部发现的盘" value="all" />
             <el-option
               v-for="d in drives"
               :key="d.drive_id"
@@ -312,7 +314,7 @@ onUnmounted(() => {
               :value="d.drive_id"
             />
           </el-select>
-          <span class="hint">多共享盘时可指定只扫某一个</span>
+          <span class="hint">多共享盘时可指定只扫某一个；选"全部发现的盘"则含个人盘</span>
         </el-form-item>
         <el-form-item label="过期清理">
           <el-switch v-model="form.prune" />
