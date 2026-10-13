@@ -527,23 +527,32 @@ def panel_server(
     except Exception:  # noqa: BLE001
         logger.exception("片库生态查询失败")
 
-    # 生长记录：过去 7 天每天新入库数（替换"机关"假开关的实用组件）
+    # 生长记录：过去 7 天每天新入库数（替换"机关"假开关的实用组件）。
+    # r28 打磨：单条 GROUP BY 一次查 7 天 —— 原来 7 次 COUNT 轮询，面板每次打开都打 7 遍。
     growth = []
     try:
-        from datetime import timedelta
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = today - timedelta(days=6)
+        day_col = func.date(em.MediaItem.date_added).label("d")
+        rows = db.query(
+            day_col,
+            func.count(em.MediaItem.id),
+        ).filter(
+            em.MediaItem.date_added >= week_start,
+            em.MediaItem.item_type.in_(["movie", "series"]),
+        ).group_by(day_col).all()
+        by_day = {}
+        for d, cnt in rows:
+            # func.date 在 PG 返回 date、SQLite 返回 'YYYY-MM-DD' 字符串，统一成 date
+            if isinstance(d, str):
+                d = datetime.strptime(d, "%Y-%m-%d").date()
+            by_day[d] = cnt
         for i in range(6, -1, -1):
-            day_start = today - timedelta(days=i)
-            day_end = day_start + timedelta(days=1)
-            cnt = db.query(func.count(em.MediaItem.id)).filter(
-                em.MediaItem.date_added >= day_start,
-                em.MediaItem.date_added < day_end,
-                em.MediaItem.item_type.in_(["movie", "series"]),
-            ).scalar() or 0
+            day = today - timedelta(days=i)
             growth.append({
-                "date": day_start.strftime("%m-%d"),
-                "weekday": ["一", "二", "三", "四", "五", "六", "日"][day_start.weekday()],
-                "count": cnt,
+                "date": day.strftime("%m-%d"),
+                "weekday": ["一", "二", "三", "四", "五", "六", "日"][day.weekday()],
+                "count": by_day.get(day.date(), 0),
             })
     except Exception:  # noqa: BLE001
         logger.exception("生长记录查询失败")
