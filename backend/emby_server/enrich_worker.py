@@ -2944,8 +2944,13 @@ def field_missing_stats(db) -> dict:
 
     口径（实现者定，跨 flag 开关稳定可比）：enrich_status='done' +
     metadata_source 非空且非 'none'（= 实际刮到过数据的条目，不含"搜过没有"）
-    + series/movie/season/episode。缺失率 = 缺该字段的条目数 / 口径内总数。
+    + series/movie。缺失率 = 缺该字段的条目数 / 口径内总数。
     只读，不改库。
+
+    口径说明（r33）：刻意只含 series/movie，与 Step 5 低优先级补简介队列的
+    覆盖范围对齐——季(season)/单集(episode)走单集刮削/父级继承另行处理，
+    refill 不覆盖它们；把它们算进口径会让管理后台的灰度判断（缺失率）
+    永远降不下来。底层行数据不删：SQL 只聚合，season/episode 的行还在库里。
     """
     from sqlalchemy import func as _safunc, or_ as _or, and_ as _and
 
@@ -2956,8 +2961,7 @@ def field_missing_stats(db) -> dict:
             .filter(em.MediaItem.enrich_status == "done",
                     em.MediaItem.metadata_source.isnot(None),
                     em.MediaItem.metadata_source != "none",
-                    em.MediaItem.item_type.in_(["series", "movie", "season",
-                                                "episode"])))
+                    em.MediaItem.item_type.in_(["series", "movie"])))
     total = base.count()
     missing = {
         "title": base.filter(_blank(em.MediaItem.name)).count() if total else 0,

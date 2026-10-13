@@ -297,6 +297,27 @@ def test_field_missing_stats(db):
     assert stats["field_completeness_enabled"] is False
 
 
+def test_field_missing_stats_excludes_season_episode(db):
+    """r33 口径修正：field_missing_stats 只统计 series/movie。
+
+    季(season)/单集(episode)即使已刮完(done + 实际刮到数据)，也不计入口径——
+    它们走单集刮削/父级继承另行处理，refill 不覆盖，算进口径会让后台灰度
+    判断的缺失率永远降不下来。"""
+    _make_item(db, name="剧全齐", tmdb_id="10", production_year=2020,
+               poster_path="/tmp/p.jpg", overview="简介", genres="剧情",
+               enrich_status="done", metadata_source="tmdb")
+    # 口径外：季/集已刮完也不算
+    _make_item(db, name="第 1 季", item_type="season", production_year=2020,
+               poster_path="/tmp/p.jpg", overview="简介", genres="剧情",
+               enrich_status="done", metadata_source="tmdb")
+    _make_item(db, name="S01E01", item_type="episode", overview=None,
+               enrich_status="done", metadata_source="tmdb")
+    stats = ew.field_missing_stats(db)
+    assert stats["total"] == 1
+    assert stats["missing"]["overview"] == 0, "单集的简介缺失不应计入"
+    assert stats["rates"]["overview"] == 0.0
+
+
 def test_sample_overview_missing_rate_flag_off_vs_on(db):
     """样本对比（handoff 数据）：20 条核心齐缺简介的样本。
 
