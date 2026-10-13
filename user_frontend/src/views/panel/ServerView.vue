@@ -86,7 +86,7 @@ function retryServer() {
 
 <style scoped>
 .v4-switches {
-  background: #fffdf6;
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
   border-radius: 14px;
   overflow: hidden;

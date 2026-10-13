@@ -10,7 +10,6 @@ export interface StaminaText {
   empty: string
   emptyHint: string
   checkinRecovered: string
-  notApplicable: string
 }
 
 export const staminaText: StaminaText = {
@@ -21,7 +20,6 @@ export const staminaText: StaminaText = {
   empty: '体力耗尽',
   emptyHint: '今日探险额度已用完，明日报到恢复',
   checkinRecovered: '报到成功，体力已恢复，明日继续探险！',
-  notApplicable: '当前账号无需体力',
 }
 
 /** 体力槽展示阈值：低于此比例显示不足警告样式 */

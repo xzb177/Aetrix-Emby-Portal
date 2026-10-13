@@ -289,7 +289,9 @@ function restoreUserTheme() {
 }
 router.afterEach((to) => {
   if (!panelV4) return
-  if (V4_PATHS.has(to.path)) {
+  // 尾斜杠规范化：/game/ 与 /game 是同一页；根路径 '/' 去掉斜杠会变空串，要兜回 '/'
+  const v4Path = to.path.replace(/\/+$/, '') || '/'
+  if (V4_PATHS.has(v4Path)) {
     document.documentElement.setAttribute('data-theme', 'light')
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f5f1ea')
   } else {

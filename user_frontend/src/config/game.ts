@@ -59,7 +59,7 @@ export const gameFacilities: GameFacility[] = [
     path: '/game/wishlist',
     icon: '🏮',
     desc: '把心愿投进池子里，说不定哪天就实现了。',
-    stamp: '探险日志 · 营地设施',
+    stamp: '心愿 · 待实现',
   },
   {
     key: 'signal',
@@ -67,7 +67,7 @@ export const gameFacilities: GameFacility[] = [
     path: '/game/signal',
     icon: '📡',
     desc: '发出求救信号，等好心人来搭把手。',
-    stamp: '探险日志 · 营地设施',
+    stamp: '求救 · 已发出',
   },
   {
     key: 'pigeon',
@@ -75,7 +75,7 @@ export const gameFacilities: GameFacility[] = [
     path: '/game/pigeon',
     icon: '🕊️',
     desc: '信鸽替你送信，看看有没有回音。',
-    stamp: '探险日志 · 营地设施',
+    stamp: '信鸽 · 传书中',
   },
   {
     key: 'ledger',
