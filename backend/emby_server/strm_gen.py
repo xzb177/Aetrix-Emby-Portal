@@ -913,6 +913,59 @@ def _expand_alias_folders(folder_children: dict, tid: str,
     return alias_map, folders
 
 
+def _expand_alias_folders_cross_drive(fetch, folder_children: dict, tid: str,
+                                      alias_prefixes: list) -> tuple[dict, list]:
+    """别名子树展开：跨盘目标回退（2026-10-14）。
+
+    同盘目标（tid 在 folder_children 里）走 _expand_alias_folders 本地快路径，
+    行为零变化；跨盘目标（快捷方式指向别人盘的目录，阶段一的本地 map 里没有
+    该 tid）走 Drive API BFS 递归展开——把发现的子目录追加回待列目录，跳过
+    规则与本地版一致（隐藏/系统/原盘结构目录整棵跳过）。
+
+    背景：R33 的别名机制只按同盘快捷方式设计——跨盘时本地展开只返回 [tid]
+    本身，list_files 只列目标根的直接子项，子目录在 _process_alias_queue 里
+    被 `if mt == FOLDER_MIME: continue` 丢弃，主循环的 _emit_video_paths 又因
+    dir_entries 里没有外部目录 id 而产出为空 → 跨盘快捷方式零入库。
+
+    返回 ({folder_id: [(root_prefix, rel_prefix)]}, [目录 id（BFS 顺序，含 tid）])。
+    """
+    if tid in folder_children:
+        return _expand_alias_folders(folder_children, tid, alias_prefixes)
+    alias_map: dict[str, list[tuple[str, str]]] = {tid: list(alias_prefixes)}
+    folders = [tid]
+    seen = {tid}  # 多 parent 目录只展开一次（防环）
+    astack = [(tid, list(alias_prefixes))]
+    while astack:
+        afid, aprefixes = astack.pop()
+        q = (f"mimeType='{FOLDER_MIME}' and trashed=false "
+             f"and '{afid}' in parents")
+        page_token = None
+        while True:
+            files, page_token = fetch(q, page_token)
+            for sub in files:
+                if sub.get("trashed"):
+                    continue
+                if sub.get("mimeType") != FOLDER_MIME:
+                    continue  # 防御：查询已限定目录，服务端偶发混入时忽略
+                sname = _safe_name(sub.get("name", ""))
+                sfid = sub.get("id", "")
+                if not sname or not sfid:
+                    continue
+                if (sname.startswith(".") or sname in SKIP_DIR_NAMES
+                        or disc_filter.is_disc_subtree_dir(sname)):
+                    continue
+                if sfid in seen:
+                    continue
+                seen.add(sfid)
+                sprefixes = [(rroot, rp + sname + "/") for rroot, rp in aprefixes]
+                alias_map.setdefault(sfid, []).extend(sprefixes)
+                astack.append((sfid, sprefixes))
+                folders.append(sfid)
+            if not page_token:
+                break
+    return alias_map, folders
+
+
 def _process_alias_queue(fetch, drive_id: str, resolve_shortcuts: bool,
                          queue: list, expand_folders, list_files
                          ) -> Iterator[tuple[str, str, int]]:
@@ -1255,7 +1308,10 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
 
         yield from _process_alias_queue(
             fetch, drive_id, resolve_shortcuts, pending_aliases,
-            lambda tid, prefixes: _expand_alias_folders(folder_children, tid, prefixes),
+            # 跨盘快捷方式目标：本地 folder_children 里没有 tid 时走 API BFS
+            # 回退展开（_expand_alias_folders_cross_drive），否则零入库。
+            lambda tid, prefixes: _expand_alias_folders_cross_drive(
+                fetch, folder_children, tid, prefixes),
             _subtree_list_files)
 
 
