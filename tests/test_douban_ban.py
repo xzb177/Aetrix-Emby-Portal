@@ -132,3 +132,45 @@ def test_locked_item_skips_douban_prephase():
         fake.search.assert_not_called()
     finally:
         db.close()
+
+
+def test_ban_backoff_is_exponential_with_jitter():
+    """连续被封时冷却指数退避（900→1800→3600…封顶7200），且带抖动不固定。"""
+    import time as _time
+    seen = set()
+    for _ in range(5):
+        dbn.reset_ban()
+        dbn._trip_ban("test")
+        r = dbn.ban_remaining()
+        assert 900 <= r <= 960, f"首次冷却应在 [900,960]，实际 {r}"
+        seen.add(round(r, 1))
+    # 抖动：5 次冷却时长不全相同
+    assert len(seen) > 1, "冷却没有随机抖动"
+
+    dbn.reset_ban()
+    dbn._trip_ban("t1")
+    first = dbn.ban_remaining()
+    # 不重置 strikes，直接再封一次 → 退避翻倍
+    dbn._banned_until = 0  # 模拟冷却结束但 strikes 保留
+    dbn._trip_ban("t2")
+    second = dbn.ban_remaining()
+    assert 1800 <= second <= 1860, f"第二次冷却应在 [1800,1860]，实际 {second}"
+    assert second > first
+    assert dbn.ban_strikes() == 2
+    dbn.reset_ban()
+    assert dbn.ban_strikes() == 0
+
+
+def test_rate_limiter_has_jitter():
+    """限速器等待时间带抖动：同样 interval，两次 acquire 的实际间隔不完全相同。"""
+    import time as _time
+    lim = dbn._RateLimiter()
+    intervals = []
+    for _ in range(4):
+        t0 = _time.monotonic()
+        lim.acquire(0.05)
+        intervals.append(_time.monotonic() - t0)
+    # 第一次不限（_last=0），后三次应在 [0.05, 0.08] 附近且不全等
+    waits = intervals[1:]
+    assert all(0.04 <= w <= 0.15 for w in waits), waits
+    assert len({round(w, 3) for w in waits}) > 1, "限速器没有抖动"
