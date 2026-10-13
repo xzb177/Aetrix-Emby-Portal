@@ -38,6 +38,12 @@ class StrmGenConfigSave(BaseModel):
         default=False,
         description="清理 Drive 上已不存在的 .strm 文件及状态行（默认开+演习：dry_run=true 时只记 would-delete 不真删）",
     )
+    resolve_shortcuts: bool = Field(
+        default=False,
+        description="Drive 快捷方式解析：开启后生成时跟随快捷方式目标内容"
+                    "（指向目录按快捷方式名展开、指向视频文件按快捷方式名产出）；"
+                    "默认关=现状行为（不解析，直接跳过快捷方式）",
+    )
     interval_minutes: int = Field(
         default=60,
         description="增量间隔分钟数（1-1440），0=关闭",
@@ -103,9 +109,23 @@ def _last_stats_dict(db: Session) -> dict:
         return {}
 
 
+def _resolve_shortcuts_enabled(db: Session) -> bool:
+    """是否解析 Drive 快捷方式（跟随目标内容）。默认 false=现状行为（不解析）。
+
+    读取走 _gen.resolve_shortcuts（随 #830 落地）；getattr 兼容两个 PR 的合并顺序，
+    先合谁都可：本 PR 先上线时直接读配置键，保证开关在后台立即可用。
+    """
+    fn = getattr(_gen, "resolve_shortcuts", None)
+    if callable(fn):
+        return bool(fn(db))
+    key = getattr(_gen, "CONFIG_RESOLVE_SHORTCUTS", "strm_gen_resolve_shortcuts")
+    return store.get_value(db, key, "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _read_config(db: Session) -> dict:
     return {
         "enabled": _gen.enabled(db),
+        "resolve_shortcuts": _resolve_shortcuts_enabled(db),
         # 原文回显：多目录配置不被截断（source_dir 兼容旧前端，取第一项）
         "source_dir": _gen.source_dir(db),
         "source_dir_raw": _gen.source_dir_raw(db),
@@ -194,6 +214,9 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_SOURCE_DIR: src,
         _gen.CONFIG_DRIVE_ID: (body.drive_id or "").strip(),
         _gen.CONFIG_PRUNE: "true" if body.prune else "false",
+        # 快捷方式解析开关：键名走 _gen（随 #830 落地），getattr 兼容合并顺序
+        getattr(_gen, "CONFIG_RESOLVE_SHORTCUTS", "strm_gen_resolve_shortcuts"):
+            "true" if body.resolve_shortcuts else "false",
         _gen.CONFIG_INTERVAL: str(iv),
         _gen.CONFIG_SOURCE_TYPE: st,
         _gen.CONFIG_LOCAL_ROOT: (body.local_root or "/media").strip(),
@@ -205,6 +228,8 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         _gen.CONFIG_SOURCE_DIR: ".strm 生成器 Drive 源目录",
         _gen.CONFIG_DRIVE_ID: ".strm 生成器指定 Drive ID",
         _gen.CONFIG_PRUNE: ".strm 生成器是否清理 Drive 已不存在的文件",
+        getattr(_gen, "CONFIG_RESOLVE_SHORTCUTS", "strm_gen_resolve_shortcuts"):
+            ".strm 生成器 Drive 快捷方式解析（开启后跟随快捷方式目标内容）",
         _gen.CONFIG_INTERVAL: ".strm 生成器增量间隔（分钟），0=关闭",
         _gen.CONFIG_SOURCE_TYPE: ".strm 生成器数据源类型",
         _gen.CONFIG_LOCAL_ROOT: ".strm 生成器本地源根目录",
