@@ -49,6 +49,7 @@ import {
   fetchEnrichEpisodeNight,
   fetchEnrichTuning,
   fetchEnrichNoneStats,
+  fetchEnrichFieldStats,
   fetchDoubanBanDowngrade,
   fetchUnifiedFallback,
   generateVirtualLibraries,
@@ -72,7 +73,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, DoubanBanDowngradeConfig, UnifiedFallbackConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, DoubanBanDowngradeConfig, UnifiedFallbackConfig } from '@/api/admin'
 import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
 import type {
   EmbyLibrary,
@@ -1170,12 +1171,16 @@ const dayQuotaDraft = ref('2000')
 // none 定时回捞（链路规划 Step 4）：开关 + 回捞周期（专用区块，不进上面的通用表）
 const noneRsEnabledDraft = ref(false)
 const noneRsDaysDraft = ref('30')
+// 字段级完成口径（链路规划 Step 5）：开关（专用区块，不进上面的通用表）
+const fcEnabledDraft = ref(false)
 /** 配额制两个 key 在通用表里不重复展示 */
 const TUNING_QUOTA_KEYS = ['enrich_episode_quota_mode', 'enrich_episode_day_quota']
 /** Step 4 两个 key 在通用表里不重复展示（专用区块） */
 const TUNING_STEP4_KEYS = ['enrich_none_auto_reschedule', 'enrich_none_reschedule_days']
+/** Step 5 的 key 在通用表里不重复展示（专用区块） */
+const TUNING_STEP5_KEYS = ['enrich_field_completeness']
 const tuningOrderShown = computed(() =>
-  (enrichTuning.value?.order || []).filter((k) => !TUNING_QUOTA_KEYS.includes(k) && !TUNING_STEP4_KEYS.includes(k)))
+  (enrichTuning.value?.order || []).filter((k) => !TUNING_QUOTA_KEYS.includes(k) && !TUNING_STEP4_KEYS.includes(k) && !TUNING_STEP5_KEYS.includes(k)))
 /** 配额状态一行提示 */
 const quotaHintText = computed(() => {
   const q = enrichTuning.value?.episode_quota
@@ -1211,6 +1216,7 @@ async function loadEnrichTuningConfig() {
     dayQuotaDraft.value = t.raw?.enrich_episode_day_quota ?? t.defaults?.enrich_episode_day_quota ?? '2000'
     noneRsEnabledDraft.value = t.values?.enrich_none_auto_reschedule === true
     noneRsDaysDraft.value = t.raw?.enrich_none_reschedule_days ?? t.defaults?.enrich_none_reschedule_days ?? '30'
+    fcEnabledDraft.value = t.values?.enrich_field_completeness === true
     dbPoolDraft.value = t.db_pool?.saved_pool_size || String(t.db_pool?.pool_size ?? 10)
   } catch {
     enrichTuning.value = null // 出错不挡页面其它内容
@@ -1218,6 +1224,8 @@ async function loadEnrichTuningConfig() {
   }
   // none 存量只读计数：独立接口，失败不挡上面的参数（只读展示）
   loadEnrichNoneStats().catch(() => undefined)
+  // 字段级缺失率只读统计：独立接口，失败不挡上面的参数（只读展示）
+  loadEnrichFieldStats().catch(() => undefined)
 }
 
 async function saveEnrichTuningAction() {
@@ -1230,6 +1238,7 @@ async function saveEnrichTuningAction() {
     values.enrich_episode_day_quota = dayQuotaDraft.value
     values.enrich_none_auto_reschedule = noneRsEnabledDraft.value
     values.enrich_none_reschedule_days = noneRsDaysDraft.value
+    values.enrich_field_completeness = fcEnabledDraft.value
     const res = await saveEnrichTuning(values, dbPoolDraft.value)
     enrichTuning.value = res
     const d: Record<string, string> = {}
@@ -1240,10 +1249,12 @@ async function saveEnrichTuningAction() {
     dayQuotaDraft.value = res.raw?.enrich_episode_day_quota ?? res.defaults?.enrich_episode_day_quota ?? '2000'
     noneRsEnabledDraft.value = res.values?.enrich_none_auto_reschedule === true
     noneRsDaysDraft.value = res.raw?.enrich_none_reschedule_days ?? res.defaults?.enrich_none_reschedule_days ?? '30'
+    fcEnabledDraft.value = res.values?.enrich_field_completeness === true
     dbPoolDraft.value = res.db_pool?.saved_pool_size || String(res.db_pool?.pool_size ?? 10)
     ElMessage.success('刮削性能参数已保存（线程数 / DB 池需重启生效，其余 60 秒内热生效）')
     // 参数变了，存量计数里的周期/可捞回数可能跟着变，刷新一次只读展示
     loadEnrichNoneStats().catch(() => undefined)
+    loadEnrichFieldStats().catch(() => undefined)
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
@@ -1273,6 +1284,44 @@ const noneStockText = computed(() => {
   if (!s) return ''
   const parts = Object.entries(s.by_type || {}).map(([t, c]) => `${t} ${c}`)
   return parts.length ? parts.join(' · ') : '暂无'
+})
+
+// ==================== 字段级完成口径（链路规划 Step 5） ====================
+
+/** 字段级缺失率只读统计：已刮完条目的各字段缺失数/缺失率 + 开关状态（只读，不改库） */
+const fieldStats = ref<EnrichFieldStats | null>(null)
+const fieldStatsError = ref(false)
+
+async function loadEnrichFieldStats() {
+  try {
+    fieldStats.value = await fetchEnrichFieldStats()
+    fieldStatsError.value = false
+  } catch {
+    fieldStats.value = null // 出错不挡页面其它内容
+    fieldStatsError.value = true
+  }
+}
+
+/** 字段中文名 */
+const FIELD_LABELS: Record<string, string> = {
+  title: '标题',
+  year: '年份',
+  poster: '海报',
+  overview: '简介',
+  genres: '类型',
+  cast: '演员',
+}
+/** 六个字段一行展示：标题 缺失率 12.5%（123 条）… 只读 */
+const FIELD_ORDER = ['title', 'year', 'poster', 'overview', 'genres', 'cast']
+const fieldMissingText = computed(() => {
+  const s = fieldStats.value
+  if (!s) return ''
+  const parts = FIELD_ORDER.map((f) => {
+    const rate = ((s.rates?.[f] ?? 0) * 100).toFixed(1)
+    const n = s.missing?.[f] ?? 0
+    return `${FIELD_LABELS[f]} ${rate}%（${n} 条）`
+  })
+  return `共 ${s.total} 条已刮完：` + parts.join(' · ')
 })
 
 // ==================== 豆瓣封禁降级（链路规划 Step 0.5） ====================
@@ -2202,6 +2251,42 @@ function typeLabel(t: string): string {
               </div>
               <div class="drawer-hint drawer-hint--after">
                 灰度建议：上线先把回捞周期设 90 天观察，确认 TMDB 429=0 后再调回 30 天。
+              </div>
+            </div>
+            <div class="scrape-block">
+              <h3>字段级完成口径（链路规划 Step 5）</h3>
+              <p class="drawer-hint">
+                打开后，「标题/年份/海报三者有其二」升级为字段级口径：核心字段齐但缺简介/类型/演员的条目不再直接 done，而是进低优先级队列（priority=-10，主队列优先认领，不饿死主队列）补一轮；每条最多多跑一轮，补完无论拿到与否直接终态化，不反复重刮。保存后 60 秒内生效。
+              </p>
+              <div v-if="enrichTuning" class="scrape-actions">
+                <el-switch
+                  v-model="fcEnabledDraft"
+                  active-text="字段级开"
+                  inactive-text="字段级关"
+                  aria-label="字段级完成口径开关"
+                />
+                <el-button type="primary" size="small" :loading="enrichTuningSaving" @click="saveEnrichTuningAction">
+                  保存
+                </el-button>
+                <span class="chase-state" :class="{ 'is-on': fcEnabledDraft }">
+                  {{ fcEnabledDraft ? '字段级口径已开启' : '字段级口径关闭（口径=旧"三者有其二"）' }}
+                </span>
+              </div>
+              <div v-else-if="enrichTuningError" class="drawer-hint drawer-hint--after">
+                读取失败
+                <el-button size="small" text @click="loadEnrichTuningConfig">重试</el-button>
+              </div>
+              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+              <div v-if="fieldStats" class="drawer-hint drawer-hint--after">
+                各字段缺失率（已刮完条目，只读）：{{ fieldMissingText }}。
+                <span v-if="fieldStats.process">进程内：已判定 {{ fieldStats.process.checked ?? 0 }} 条，进低优先级 {{ fieldStats.process.refill_enqueued ?? 0 }} 条，补完终态化 {{ fieldStats.process.refill_terminalized ?? 0 }} 条。</span>
+              </div>
+              <div v-else-if="fieldStatsError" class="drawer-hint drawer-hint--after">
+                缺失率统计读取失败
+                <el-button size="small" text @click="loadEnrichFieldStats">重试</el-button>
+              </div>
+              <div class="drawer-hint drawer-hint--after">
+                灰度建议：先在小库打开，确认简介缺失率下降且 TMDB 429=0 后再全开。补简介只多打 TMDB 详情（约 1 请求/条），每条最多一轮。
               </div>
             </div>
             <div class="scrape-block">

@@ -76,6 +76,15 @@ ENRICH_JANITOR_INTERVAL_SEC = max(10, int(os.getenv("ENRICH_JANITOR_INTERVAL_SEC
 #     0 = 默认（沿用旧口径：新入库优先）
 ENRICH_PRIORITY_REPAIR = 100
 ENRICH_PRIORITY_RETRY_UNMATCHED = 50
+# Step 5（链路规划）：字段级完成口径的低优先级补字段优先级。
+# 低于默认 0：_claim_batch 按 enrich_priority desc 认领，天然排在主队列之后；
+# 不另起认领通道、不饿死主队列。补简介只多打 TMDB 详情（约 1 请求/条），
+# 每条最多一轮（见 _enrich_apply 的 Step 5 注释），反风控增量可控。
+ENRICH_PRIORITY_FIELD_REFILL = -10
+# Step 5 缺失字段分组：core=核心字段（标题/年份/海报，旧"三者有其二"口径），
+# minor=次要字段（简介/类型/演员）。核心齐但缺次要字段 → 低优先级补一轮。
+ENRICH_COMPLETENESS_CORE_FIELDS = ("title", "year", "poster")
+ENRICH_COMPLETENESS_MINOR_FIELDS = ("overview", "genres", "cast")
 # Step 4（链路规划）：none 定时回捞单轮硬上限——写死 2000，不许可配放大。
 # 反风控：单轮最多 2000 条重走 TMDB search（6-9 请求/条），分散在 janitor
 # 周期里；上限放大只会线性增加 TMDB 请求量，故不开放配置。
@@ -509,6 +518,8 @@ CFG_ENRICH_EPISODE_QUOTA_MODE = "enrich_episode_quota_mode"
 CFG_ENRICH_NONE_RESCHEDULE_DAYS = "enrich_none_reschedule_days"
 # Step 4 的 feature flag：none 定时自动回捞开关（默认 0=关，关时行为与 Step 4 前一致）
 CFG_ENRICH_NONE_AUTO_RESCHEDULE = "enrich_none_auto_reschedule"
+# Step 5 的 feature flag：字段级完成口径开关（默认 0=关，关时口径=旧"三者有其二"）
+CFG_ENRICH_FIELD_COMPLETENESS = "enrich_field_completeness"
 
 # (config_key, env_name, 默认值str, 类型, 下限钳制, 中文说明, 是否重启生效)
 # 类型：workers=io_bound 线程口径（正整数→max(1,min(v,16))，缺省 8）；
@@ -538,6 +549,11 @@ _ENRICH_TUNING_SPECS = [
      "【Step 4】none 条目定时自动回捞开关：1=开（超周期的 done+none 剧/电影由 "
      "janitor 按最旧优先、单轮 2000 条翻回 pending；资料不全 5 次后转 done+none "
      "而非 failed），0=关（默认，行为与 Step 4 前完全一致）", False),
+    (CFG_ENRICH_FIELD_COMPLETENESS, None, "0", "flag1", None,
+     "【Step 5】完成口径字段级开关：1=开（核心字段齐但缺简介/类型/演员的条目"
+     "进低优先级队列补一轮，priority=-10，天然排后；每条最多多跑一轮，补完"
+     "无论拿到与否直接终态化，不反复重刮），0=关（默认，口径=旧的"
+     "「标题/年份/海报三者有其二」）", False),
 ]
 # 快速查表：key → spec
 _ENRICH_TUNING_BY_KEY = {spec[0]: spec for spec in _ENRICH_TUNING_SPECS}
@@ -2129,6 +2145,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
 
     _incomplete = False
     _searched_no_hit = False  # Step 4：TMDB 搜过无高置信命中（终态 none 口径）
+    _fc_refill_enqueued = False  # Step 5：低优先级补次要字段已入队（跳过尾部判定）
     if fetched.get("pure_inherit"):
         # 纯继承（处方 3）：本集的数据来自父级剧（图片回退在上面已完成），
         # 不是「跑过没拿到」——单独标 inherit，避免落进无望队列的口径。
@@ -2184,6 +2201,48 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 _incomplete = True
         else:
             _searched_no_hit = False
+        # ★ Step 5（链路规划）：字段级完成口径（feature flag，默认关）。
+        # 关时下面整块不执行，行为与 Step 5 前逐行一致。
+        # 开时：核心字段齐（tmdb_id，或标题/年份/海报三者有其二）但缺次要字段
+        # （简介/类型/演员）的条目不直接 done，而是 pending + 低优先级
+        # （enrich_priority=-10，_claim_batch 按 priority desc 认领，天然排在
+        # 主队列之后；不另起认领通道，不饿死主队列）补一轮。
+        # 反风控：补简介只多打 TMDB 详情（约 1 请求/条），每条最多一轮，增量可控。
+        if (not _searched_no_hit
+                and enrich_tuning_value(CFG_ENRICH_FIELD_COMPLETENESS, db)):
+            _fc_missing = _field_completeness_missing(db, item)
+            _field_completeness_counters["checked"] += 1
+            if _fc_missing:
+                # 缺失字段记录：逐字段记有无（日志 + 进程内计数，不加 migration；
+                # 只读缺失率见 field_missing_stats() 的 SQL 口径）。
+                logger.info("字段级口径：缺失字段=%s id=%s name=%r",
+                            ",".join(_fc_missing), item.id, item.name)
+            _fc_has_core = bool(item.tmdb_id) or sum(
+                1 for f in ENRICH_COMPLETENESS_CORE_FIELDS
+                if f not in _fc_missing) >= 2
+            _fc_minor = [f for f in ENRICH_COMPLETENESS_MINOR_FIELDS
+                         if f in _fc_missing]
+            if _fc_has_core and _fc_minor:
+                if item.enrich_priority == ENRICH_PRIORITY_FIELD_REFILL:
+                    # ★ 防反复重刮（v2.49.0 教训）：这条已经为"补次要字段"多跑过
+                    # 一轮（本轮就是那一轮：认领时 priority=-10 的就是它）——无论
+                    # 这一轮拿到与否，直接按新口径终态化，不再为简介/类型/演员
+                    # 反复进队列。每条目为"补次要字段"最多多跑一轮。
+                    # 标记就是 priority 本身：_reclaim_stale 回收僵尸租约时不动
+                    # priority，崩溃重认领回来仍然是 -10，照样终态化，不会多跑。
+                    _field_completeness_counters["refill_terminalized"] += 1
+                    logger.info("字段级口径：补次要字段已跑过一轮，直接终态化 "
+                                "(仍缺=%s) id=%s", ",".join(_fc_minor), item.id)
+                else:
+                    item.enrich_status = "pending"
+                    item.enrich_priority = ENRICH_PRIORITY_FIELD_REFILL
+                    item.enrich_attempts = 0
+                    item.enrich_next_retry_at = None
+                    _fc_refill_enqueued = True
+                    _field_completeness_counters["refill_enqueued"] += 1
+                    logger.info("字段级口径：核心齐缺次要字段=%s，进低优先级补一轮 "
+                                "id=%s name=%r", ",".join(_fc_minor), item.id,
+                                item.name)
         if not _searched_no_hit and not (item.overview or "").strip():
             # 豆瓣 subject_suggest 不提供简介：补到标题/年份/海报就算完成，
             # 否则这批条目会永远停在 pending 反复重试。
@@ -2225,7 +2284,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。
     if not item.metadata_source and kind in ("series", "movie", "season", "episode"):
         item.metadata_source = "none"
-    if _incomplete:
+    if _fc_refill_enqueued:
+        # Step 5：低优先级补一轮——保持上面设置的 pending + priority=-10，
+        # 跳过下面的 done/_incomplete 判定与优先级清零（-10 由补完那一轮的
+        # _enrich_apply 消费并清零，见上面的防反复重刮注释）。
+        pass
+    elif _incomplete:
         # 资料不全：按失败计次 + 指数退避，超限转 failed。
         # 之前这里 attempts 清零且 next_retry_at 置空 → 下一轮抢单立刻重新领取 →
         # 无限空转：队列永远不降，还白烧 TMDB 配额。
@@ -2269,7 +2333,11 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     item.enrich_claim_token = None
     # 优先级消费完归零（处方 4）：repair 的 100 在上面已随 repair_requested_at
     # 清除；重试未匹配的 50 也一样——残留值会让这个条目在未来的重试里永久插队。
-    item.enrich_priority = 0
+    # Step 5 例外：低优先级补一轮的 -10 不能在这里清零——它是"已跑过一轮"的
+    # 标记，留给补完那一轮的 _enrich_apply 识别并终态化（不清零就终态不了，
+    # 会反复进低优先级队列）。
+    if not _fc_refill_enqueued:
+        item.enrich_priority = 0
 
     # 常态联动（v2.58.0）：series 本轮新拿到 tmdb_id（此前没有）→ 名下空壳
     # inherit 单集翻回 pending。只对 series：_fetch_episode_tmdb 只认 series 的
@@ -2828,6 +2896,91 @@ def none_stock_stats(db) -> dict:
         "auto_reschedule_enabled": bool(
             enrich_tuning_value(CFG_ENRICH_NONE_AUTO_RESCHEDULE, db)),
         "batch_limit": ENRICH_NONE_AUTO_RESCHEDULE_BATCH,
+    }
+
+
+# Step 5（链路规划）：字段级完成口径的进程内计数。缺失字段"各记有无"走
+# 日志 + 这里的进程内计数，**不加 DB migration**（简报口径）；跨进程一致的
+# 只读缺失率走下面的 field_missing_stats()（SQL 口径）。
+_field_completeness_counters = {
+    "checked": 0,            # flag 开时走过字段级判定的条目数
+    "refill_enqueued": 0,    # 进低优先级补一轮的条目数
+    "refill_terminalized": 0,  # 补过一轮后直接终态化的条目数（不再反复）
+}
+
+
+def _field_completeness_missing(db, item) -> list:
+    """Step 5：逐字段查缺失。返回缺失字段名列表（固定顺序：
+    title/year/poster=核心，overview/genres/cast=次要）。
+
+    演员口径：emby_people 有无该条目的行（v2.51.0 起 credits 落库即写行）。
+    """
+    missing = []
+    if not (item.name or "").strip():
+        missing.append("title")
+    if item.production_year is None:
+        missing.append("year")
+    if not (item.poster_path or item.primary_image_url):
+        missing.append("poster")
+    if not (item.overview or "").strip():
+        missing.append("overview")
+    if not (item.genres or "").strip():
+        missing.append("genres")
+    has_cast = (db.query(em.EmbyPerson.id)
+                .filter(em.EmbyPerson.item_id == item.id)
+                .first() is not None)
+    if not has_cast:
+        missing.append("cast")
+    return missing
+
+
+def field_missing_stats(db) -> dict:
+    """Step 5 只读：已刮完条目的各字段缺失率（管理后台「定时与刮削」只读展示）。
+
+    口径（实现者定，跨 flag 开关稳定可比）：enrich_status='done' +
+    metadata_source 非空且非 'none'（= 实际刮到过数据的条目，不含"搜过没有"）
+    + series/movie/season/episode。缺失率 = 缺该字段的条目数 / 口径内总数。
+    只读，不改库。
+    """
+    from sqlalchemy import func as _safunc, or_ as _or
+
+    def _blank(col):
+        return _or(col.is_(None), _safunc.trim(col) == "")
+
+    base = (db.query(em.MediaItem)
+            .filter(em.MediaItem.enrich_status == "done",
+                    em.MediaItem.metadata_source.isnot(None),
+                    em.MediaItem.metadata_source != "none",
+                    em.MediaItem.item_type.in_(["series", "movie", "season",
+                                                "episode"])))
+    total = base.count()
+    missing = {
+        "title": base.filter(_blank(em.MediaItem.name)).count() if total else 0,
+        "year": (base.filter(em.MediaItem.production_year.is_(None)).count()
+                 if total else 0),
+        "poster": (base.filter(em.MediaItem.poster_path.is_(None),
+                               em.MediaItem.primary_image_url.is_(None)).count()
+                   if total else 0),
+        "overview": base.filter(_blank(em.MediaItem.overview)).count() if total else 0,
+        "genres": base.filter(_blank(em.MediaItem.genres)).count() if total else 0,
+    }
+    if total:
+        cast_missing = (base.filter(
+            ~db.query(em.EmbyPerson.id)
+            .filter(em.EmbyPerson.item_id == em.MediaItem.id)
+            .exists()).count())
+    else:
+        cast_missing = 0
+    missing["cast"] = cast_missing
+    rates = {k: (round(v / total, 4) if total else 0.0)
+             for k, v in missing.items()}
+    return {
+        "total": total,
+        "missing": missing,
+        "rates": rates,
+        "field_completeness_enabled": bool(
+            enrich_tuning_value(CFG_ENRICH_FIELD_COMPLETENESS, db)),
+        "process": dict(_field_completeness_counters),
     }
 
 

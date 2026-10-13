@@ -1102,6 +1102,17 @@ def get_enrich_none_stats(
     return {"success": True, **enrich_worker.none_stock_stats(db)}
 
 
+@admin_emby_router.get("/scrape/enrich-field-stats")
+def get_enrich_field_stats(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """字段级缺失率只读统计（链路规划 Step 5）：已刮完条目（done + 实际刮到过
+    数据）的标题/年份/海报/简介/类型/演员缺失数与缺失率 + 开关状态 + 进程内
+    计数。只读，不改库。
+    """
+    from backend.emby_server import enrich_worker
+    return {"success": True, **enrich_worker.field_missing_stats(db)}
 
 
 @admin_emby_router.get("/scrape/enrich-progress")

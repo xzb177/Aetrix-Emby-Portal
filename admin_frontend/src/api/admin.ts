@@ -1271,6 +1271,19 @@ export interface EnrichNoneStats {
 export const fetchEnrichNoneStats = () =>
   get<EnrichNoneStats>(`${E}/scrape/enrich-none-stats`)
 
+/** 字段级缺失率只读统计（链路规划 Step 5）：已刮完条目的标题/年份/海报/简介/类型/演员缺失数与缺失率 + 开关状态 + 进程内计数 */
+export interface EnrichFieldStats {
+  success: boolean
+  total: number
+  missing: Record<string, number>
+  rates: Record<string, number>
+  field_completeness_enabled: boolean
+  process: Record<string, number>
+}
+
+export const fetchEnrichFieldStats = () =>
+  get<EnrichFieldStats>(`${E}/scrape/enrich-field-stats`)
+
 export interface TmdbTestResult {
   index: number
   masked: string
