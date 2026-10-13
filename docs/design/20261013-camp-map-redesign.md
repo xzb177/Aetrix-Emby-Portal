@@ -134,7 +134,26 @@
 
 ---
 
-## 五、文件清单（预估）
+---
+
+## 七、附：首页评估（团队意见，用户拍板"按团队意见来"）
+
+**事实**：首页是"仪表盘+服务台"口径——资产、事项、进度齐全，但缺"家的温度"：
+全站"探险营地"世界观在首页零体现。
+
+**加（2 项，零请求、<50 行）：**
+1. **营地晨间便签**：Hero 下方一张小纸片条，每天一句随机营地文案
+   （本地静态数组 + 日期种子，零请求）。每天打开"今天不一样"，配合"常来"目标。
+2. **时段问候升级**：Hero 问候改为营地味时段语（"夜深了，营地篝火还亮着"），
+   改 greeting 计算逻辑，一行代码的事。
+
+**不加**：设施入口（三处重复；首页"功能入口统一由顶栏承担"已有定论）、
+带请求的新数据卡（零新请求纪律）、积分卡/继续观看二度扩展。
+
+**验收**：便签每天文案不同（按日期种子可验证）；问候文案有时段+营地味；
+无新增 API 请求；v4 纸片风格一致。
+
+## 八、文件清单（更新）
 
 | 文件 | 改动 |
 |---|---|
@@ -143,8 +162,10 @@
 | `user_frontend/src/config/game.ts` | 注册表加 `group/order/enabled/guideTip` |
 | `user_frontend/src/components/AppHeader.vue` | 徽章格式 `x/14`、跳转目标 |
 | `user_frontend/src/components/game/CampGuide.vue` | 新建：新手引导卡组件（向导纸片人） |
+| `user_frontend/src/views/HomeView.vue` | 营地晨间便签 + 时段问候营地味文案 |
+| `user_frontend/src/config/campNotes.ts` | 新建：每日便签静态文案数组 |
 | `docs/design/20261013-camp-map-redesign.md` | 本文档 |
 
-## 六、风险
+## 九、风险
 - 活卡片多 3 个 API（checkin/vitality/unread），全部静默降级，不影响首屏。
 - localStorage 键命名：`aetrix_camp_onboarded_v1`，带版本号方便以后重置。
