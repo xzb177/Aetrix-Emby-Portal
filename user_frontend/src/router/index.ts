@@ -41,6 +41,13 @@ const router = createRouter({
             component: () => import('@/views/panel/ShopView.vue'),
             meta: { title: '补给站', requiresAuth: true },
           },
+          // v4 游戏化 Hub：探险日志统一入口（需要登录）
+          {
+            path: '/game',
+            name: 'game-hub',
+            component: () => import('@/views/game/GameHubView.vue'),
+            meta: { title: '探险日志', requiresAuth: true },
+          },
           // v4 游戏化第一批：营地设施（需要登录）
           {
             path: '/game/checkin',
