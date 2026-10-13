@@ -11,6 +11,17 @@
         <div v-if="streak != null && streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
       </header>
 
+      <!-- 电影票卡：积分 / 订阅 / 观影数据（发现页最显眼的位置） -->
+      <div v-if="ticketLoadError && !ticketLoading" class="v4-sec">
+        <div class="v4-err">资产信息加载失败：<br><button class="v4-retry" @click="() => loadTicket()">重试</button></div>
+      </div>
+      <TicketCard
+        :loading="ticketLoading"
+        :asset-cards="ticketCards"
+        :member-footer="ticketFooter"
+        :plan-name="ticketPlan"
+      />
+
       <!-- 今日封存：盲盒 -->
       <section class="v4-sec">
         <div class="v4-sec-title">📦 今日封存</div>
@@ -72,15 +83,29 @@ import ParcelBox from '@/components/panel/ParcelBox.vue'
 import EcgCanvas from '@/components/panel/EcgCanvas.vue'
 import PulseActivity from '@/components/panel/PulseActivity.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
+import TicketCard from '@/components/panel/TicketCard.vue'
+import { useTicketCard } from '@/composables/useTicketCard'
 import type { ParcelItem, ParcelsData } from '@/composables/usePanelApi'
 
 const panel = usePanelStore()
 const user = useUserStore()
 const { today, parcels, pulse, letter } = storeToRefs(panel)
+// 电影票卡：积分 / 订阅 / 观影数据（原旧首页 HomeView，已删除，逻辑见 useTicketCard）
+const ticket = useTicketCard()
+// 顶层解构：模板里直接用，ref 自动解包
+const {
+  loading: ticketLoading,
+  loadError: ticketLoadError,
+  assetCards: ticketCards,
+  memberFooter: ticketFooter,
+  planName: ticketPlan,
+  load: loadTicket,
+} = ticket
 
 onMounted(() => {
   // perf 2026-10-13：合并为 1 次请求（4 个 RTT → 1 个 RTT）
   void panel.loadHome()
+  void loadTicket()
 })
 
 /* ---------- 日志头 ---------- */

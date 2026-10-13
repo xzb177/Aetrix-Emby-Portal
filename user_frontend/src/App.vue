@@ -51,7 +51,7 @@ const hideDockForPanel = computed(
  *
  * 2026-10-13：钱包页已删，WalletView 移出缓存。
  */
-const KEEP_ALIVE_VIEWS = ['HomeView', 'StoreView', 'ProfileView']
+const KEEP_ALIVE_VIEWS = ['DiscoveryView', 'StoreView', 'ProfileView']
 const viewCacheKey = computed(
   () => `${route.path}:${userStore.user?.id ?? 'guest'}#${userStore.sessionSeq}`,
 )

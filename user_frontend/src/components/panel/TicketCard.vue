@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { RouterLink } from 'vue-router'
 import type { Component } from 'vue'
-import './home-ticket.css' // 纸色 token：独立样式表，供 CI 令牌契约检查识别
+import './ticket-card.css' // 纸色 token：独立样式表，供 CI 令牌契约检查识别
 
 export interface AssetCard {
   key: string
@@ -91,8 +91,8 @@ defineProps<{
 </template>
 
 <style scoped>
-/* v4 纸片风电影票：token 定义在同目录 home-ticket.css（见顶部 import），
-   首页不在 .v4-scope 内，用不了 v4-paper.css 的变量 */
+/* v4 纸片风电影票：token 定义在同目录 ticket-card.css（见顶部 import），
+   自包含一套纸色 token，不依赖 v4-paper.css 的变量 */
 .ticket {
   display: grid;
   grid-template-columns: 1fr auto;
