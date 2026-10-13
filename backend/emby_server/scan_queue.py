@@ -196,6 +196,41 @@ def enqueue_targeted(library, prefixes: list[str],
     return _enqueue_with_snapshot(library, snapshot, trigger=trigger)
 
 
+def _try_merge_scan_task(existing: "ScanTask", new_snapshot) -> bool:
+    """尝试把新扫描请求的范围并入已有任务。返回 True=已合并，False=调用方应另起任务。
+
+    v2.57.1 修复（2026-10-13 生产实锤）：以前合并时无条件丢弃新请求的扫描范围——
+    生成器的整库扫描经常被追新（chase-new）的定向扫描吞掉，新文件目录永不被
+    遍历（added 恒 0）。现在：
+    - 已有任务还在排队（QUEUED）：合并范围——新请求是整库则把已有任务升级为
+      整库（超集，不丢信息）；双方定向则前缀取并集；
+    - 已有任务正在跑（RUNNING）：不合并。运行中的任务快照已冻结，改它有竞态；
+      调用方另起一个排队任务，串行执行（见 _pick_locked 的同库互斥）。
+    合并失败（异常）也不丢任务：返回 False 让调用方另起任务。
+    """
+    if existing.state != STATE_QUEUED:
+        return False
+    try:
+        import dataclasses
+        old_prefixes = tuple(getattr(existing.snapshot, "limit_prefixes", ()) or ())
+        new_prefixes = tuple(getattr(new_snapshot, "limit_prefixes", ()) or ())
+        if not new_prefixes:
+            # 新请求是整库：把排队中的定向任务升级为整库
+            if getattr(existing.snapshot, "targeted", False) or old_prefixes:
+                existing.snapshot = dataclasses.replace(
+                    existing.snapshot, limit_prefixes=(), targeted=False)
+        elif old_prefixes:
+            # 双方都是定向：前缀取并集
+            merged = tuple(sorted(set(old_prefixes) | set(new_prefixes)))
+            if merged != old_prefixes:
+                existing.snapshot = dataclasses.replace(
+                    existing.snapshot, limit_prefixes=merged)
+        # 新请求定向、已有整库：整库已是超集，无需改动
+        return True
+    except Exception:
+        return False
+
+
 def _enqueue_with_snapshot(library, snapshot, trigger: str = "manual") -> dict:
     """用外部给定的快照入队（enqueue_local 的快照可替换版）。"""
     from backend.emby_server import scan_instrument  # 延迟导入
@@ -203,10 +238,11 @@ def _enqueue_with_snapshot(library, snapshot, trigger: str = "manual") -> dict:
     scan_instrument.install()
     with _LOCK:
         existing = _task_of_locked(library.id)
-        if existing is not None:
+        if existing is not None and _try_merge_scan_task(existing, snapshot):
             existing.request_count += 1
             return {"created": False, "task": existing.as_dict(
                 position=_position_locked(existing))}
+        # 无已有任务，或已有任务正在跑无法合并：另起排队任务（串行执行）
         task = ScanTask(
             library_id=int(library.id),
             name=str(snapshot.name or ""),
@@ -267,13 +303,16 @@ def enqueue_local(library, *, trigger: str = "manual", redis_raw=None,
         snapshot = dataclasses.replace(snapshot, force_full=True)
     with _LOCK:
         existing = _task_of_locked(library.id)
-        if existing is not None:
+        if existing is not None and _try_merge_scan_task(existing, snapshot):
             existing.request_count += 1
             if redis_raw is not None:
                 # 合并进已有任务：这个 Redis 任务同样要等已有任务跑完才 ACK，
                 # 不能在这里提前确认，否则崩溃会丢任务。
                 existing.redis_raws.append(redis_raw)
             return {"created": False, "task": existing.as_dict(position=_position_locked(existing))}
+        # 无已有任务，或已有任务正在跑无法合并：另起排队任务（串行执行）。
+        # 注意：原逻辑在这里无条件合并并丢弃新请求的扫描范围（整库扫描被
+        # 定向扫描吞掉），见 _try_merge_scan_task 的说明。
         task = ScanTask(
             library_id=int(library.id),
             name=str(snapshot.name or ""),
@@ -702,6 +741,12 @@ def _pick_locked() -> Optional[ScanTask]:
     """挑下一个可以跑的任务（跳过被挂载挡住的，别让队头阻塞别的挂载）"""
     limit, mount_serial = _limits_locked()
     for task in _QUEUE:
+        # v2.57.1：同一库已有任务在跑时，后到的排队任务必须等它跑完——
+        # 否则两个线程并发扫同一个库会撞上 SQLAlchemy Session 并发限制
+        # （2026-09-29 生产事故）。以前「一库一任务」由合并逻辑隐式保证，
+        # _try_merge_scan_task 允许「排队+在跑」各一个后，这里必须显式互斥。
+        if int(task.library_id) in _RUNNING:
+            continue
         task.waiting_for = _conflicts_locked(task) if mount_serial else ()
         if task.waiting_for:
             continue
