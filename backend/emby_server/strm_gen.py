@@ -2216,6 +2216,9 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         # 全量模式故意重置状态，不补。
         _backfill_state_from_disk(all_videos, state, strm_root)
     used: set[str] = set()
+    # 本轮已分配路径 → (drive_id, rel)：防"登记路径被别的文件先占"的
+    # 极小概率边（见主循环复用分支的 claimed 守卫）
+    claimed: dict[str, tuple[str, str]] = {}
     if full:
         # 全量模式：从磁盘加载已有的 .strm 路径，避免不同源文件撞车时静默覆盖
         for _root, _dirs, _files in os.walk(strm_root):
@@ -2267,6 +2270,12 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         done += 1
         _set_progress(done=done, current=f"[{did}] {rel}")
         old = state.get((did, rel))
+        if old is None and full:
+            # 全量幂等（2026-10-14：82,348 个幽灵的根因）：全量模式 state 被
+            # 故意重置（重建），但 (drive_id, remote_path) 在 DB 里已有登记
+            # 路径时必须复用——不能把磁盘上自己上一轮的文件判成撞名、
+            # 批量改名成 -2/-3 孤立老文件。改名只留给真撞名。
+            old = loaded_state.get((did, rel))
         # file_id 或 size 任一变化都重建（Drive 上替换文件换 file_id，原地覆盖只变 size；
         # 原来只比 file_id，size 字段存而不用）
         if old and old[0] == fid and old[1] == size and not full:
@@ -2276,6 +2285,15 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 _set_progress(skipped=stats["skipped"])
                 continue
             strm_rel = old[2]  # .strm 被删了，按原路径重建
+        elif old is not None and full:
+            # 全量轮：复用登记路径原样重写/校验，绝不改名（即使命名规则
+            # 变化也保持路径稳定——Emby 库条目按路径键，稳定即正确）。
+            strm_rel = old[2]
+            if claimed.get(strm_rel, (did, rel)) != (did, rel):
+                # 极小概率：本轮已有别的文件占了这个路径（登记文件被删、
+                # 撞名新文件先处理）。退回真撞名流程，绝不覆盖别人的文件。
+                matched = next((p for p in src_prefixes if p and rel.startswith(p)), "")
+                strm_rel = _resolve_collision(strm_relpath(rel, matched), used)
         else:
             # 多版本保留（用户硬要求）：同一集的不同版本（不同 rel）各自生成独立 .strm，
             # 输出路径由 rel 派生天然区分；真撞名才加 -2 后缀，版本间永不互相淘汰。
@@ -2292,6 +2310,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         full_path = os.path.join(strm_root, strm_rel)
         if _write_strm_file(full_path, url):
             used.add(strm_rel)
+            claimed[strm_rel] = (did, rel)
             pending_rows.append((did, rel, fid, size, strm_rel))
             state[(did, rel)] = (fid, size, strm_rel)
             written_file_ids.append(fid)
