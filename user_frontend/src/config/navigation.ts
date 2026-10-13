@@ -60,6 +60,8 @@ export interface NavGroup {
  *  不在主导航占位 */
 export const primaryNav: NavItem[] = [
   { name: '首页', path: '/', icon: Clapperboard },
+  // v4 游戏化统一入口：探险日志 Hub（/game），直接放主导航（用户要求，不再收进头像菜单）
+  { name: '探险日志', path: '/game', icon: Tent },
   { name: '商店', path: '/store', icon: ShoppingBag },
   { name: '钱包', path: '/wallet', icon: Wallet },
   { name: '我的', path: '/profile', icon: User },
@@ -77,14 +79,6 @@ export const menuSections: NavGroup[] = [
       // v2.42.8：站内不再提供媒体浏览（统一走第三方客户端），
       // 但「最近入了什么新」是门户自己能给的，所以单独做了日历页
       { name: '追新日历', path: '/calendar', icon: CalendarDays },
-    ],
-  },
-  {
-    // v4 游戏化统一入口：探险日志 Hub（/game），全部游戏设施从这里进。
-    // 设施清单由 @/config/game.ts 驱动，这里只保留入口本身。
-    title: '探险',
-    items: [
-      { name: '探险日志', path: '/game', icon: Tent },
     ],
   },
   {
