@@ -14,6 +14,16 @@ import os
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_db_throttle(monkeypatch):
+    # 同 test_strm_refresh_cadence.py：节流时间戳改走 DB（全局 SessionLocal）
+    # 后成了跨用例共享状态，CI 共享 sqlite 里上一个用例写的时间戳会把本文件的
+    # tick 在 throttle 处提前跳过（reason=interval），到不了 read_only 检查。
+    # 本文件只测只读探针行为，隔离掉 DB 会话、走 /tmp 回落路径。
+    from backend.emby_server import maintenance
+    monkeypatch.setattr(maintenance, "_refresh_ts_session", lambda: None)
+
+
 def test_readonly_strm_dir_skips_early(tmp_path, monkeypatch):
     from backend.emby_server import maintenance
 

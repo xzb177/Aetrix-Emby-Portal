@@ -15,11 +15,19 @@ import pytest
 
 
 @pytest.fixture()
-def db():
+def db(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from backend import models
     from backend.integrations import store
+    from backend.emby_server import maintenance
+    # 节流时间戳改走 DB（_refresh_ts_session → 全局 SessionLocal）后，
+    # 时间戳成了跨用例/跨文件的共享状态：CI 里 DATABASE_URL 指向整个 job
+    # 共享的 sqlite 文件，一个用例写的时间戳会把后面的 tick 全节流掉
+    # （interval skip → result 里没有 errors/refreshed，KeyError）。
+    # 本文件各用例只测签名行为，时间戳存储不是测试对象：把会话工厂 mock
+    # 掉，让 tick 回落到 /tmp 文件路径（各用例已按用例 mock 该路径隔离）。
+    monkeypatch.setattr(maintenance, "_refresh_ts_session", lambda: None)
     store.invalidate()
     engine = create_engine("sqlite://")
     models.Base.metadata.create_all(engine)
