@@ -53,7 +53,6 @@ def _install_fakes(monkeypatch, libs, src_dirs, drive_cfg="all",
 
     fake_models.Library = Library
     monkeypatch.setitem(sys.modules, "backend.emby_server.models", fake_models)
-
     fake_sg = types.ModuleType("backend.emby_server.strm_gen")
     fake_sg.CONFIG_DRIVE_ID = "strm_gen_drive_id"
     fake_sg._container_strm_root = lambda db: strm_root
@@ -61,6 +60,17 @@ def _install_fakes(monkeypatch, libs, src_dirs, drive_cfg="all",
     fake_sg.source_dir_raw = lambda db: raw
     fake_sg._db_config = lambda db, k, default="": drive_cfg if k == "strm_gen_drive_id" else default
     monkeypatch.setitem(sys.modules, "backend.emby_server.strm_gen", fake_sg)
+    # 测试隔离补丁（CI 曾因此红 4 个用例）：
+    # 全量跑时收集阶段会先 import 其他测试模块（如 test_strm_gen.py），真
+    # strm_gen/models 随之成为 backend.emby_server 包的属性；函数内的
+    # `from backend.emby_server import strm_gen` 会优先命中包属性，
+    # 从而架空上面的 sys.modules 补丁（Python from-import 语义：先取包属性，
+    # 失败才回退查 sys.modules）。包属性也要一并 patch，否则 CI 里实际跑的
+    # 是真模块（真 source_dirs 在假 db 上回退到 DEFAULT_SOURCE_DIR）。
+    import backend.emby_server as _pkg
+    for _name, _fake in (("models", fake_models), ("strm_gen", fake_sg)):
+        if hasattr(_pkg, _name):
+            monkeypatch.setattr(_pkg, _name, _fake)
 
     monkeypatch.setattr(dc, "discover_drives", lambda: drives)
     return _FakeDB(libs)
