@@ -1,6 +1,6 @@
 <template>
   <div class="v4-radar-box">
-    <h3>后台任务 · {{ activeCount }} 个任务在线</h3>
+    <h3>服务器在忙 · {{ activeCount }} 个任务在线</h3>
     <canvas ref="cv" class="v4-radar-cv" aria-label="任务雷达扫描图"></canvas>
     <div class="blips">
       <div v-for="t in tasks" :key="t.key" class="blip">

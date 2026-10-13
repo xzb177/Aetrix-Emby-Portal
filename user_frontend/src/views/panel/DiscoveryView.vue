@@ -14,7 +14,7 @@
 
       <!-- 电影票卡：积分 / 订阅 / 观影数据（发现页最显眼的位置） -->
       <div v-if="ticketLoadError && !ticketLoading" class="v4-sec">
-        <div class="v4-err">资产信息加载失败：<br><button class="v4-retry" @click="() => loadTicket()">重试</button></div>
+        <div class="v4-err">票卡信息没加载出来，点下面重试<br><button class="v4-retry" @click="() => loadTicket()">重试</button></div>
       </div>
       <TicketCard
         :loading="ticketLoading"
@@ -53,7 +53,7 @@
       <!-- pulse.error 时整盒不渲染，避免留黑色空矩形（错误态在下面统一渲染） -->
       <div v-if="!pulse.error" class="v4-pulse-box">
         <div class="v4-pulse-row">
-          <span class="v4-pulse-tag">● 近况 · 后台任务</span>
+          <span class="v4-pulse-tag">● 近况 · 服务器在忙什么</span>
           <span class="v4-pulse-dot"></span>
         </div>
         <div v-if="pulse.loading" class="v4-skeleton" style="height:98px"></div>
@@ -227,7 +227,7 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   gap: 12px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-  scroll-snap-type: x mandatory;
+  scroll-snap-type: x proximity;
   margin: 0 -20px;
   padding: 4px 36px 12px 20px;
   scrollbar-width: none;

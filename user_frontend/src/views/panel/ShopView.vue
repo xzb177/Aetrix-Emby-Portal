@@ -48,7 +48,7 @@
               <div v-if="pkg.bonus > 0" class="per">多送 {{ fmtNum(pkg.bonus) }}</div>
             </div>
           </div>
-          <div class="meter">
+          <div class="meter" role="progressbar" :aria-valuenow="Math.round(meterScale * 100)" aria-valuemin="0" aria-valuemax="100" :aria-label="meterText">
             <div class="fill" :style="{ '--meter-p': meterScale }"></div>
             <div class="txt">{{ meterText }}</div>
           </div>
