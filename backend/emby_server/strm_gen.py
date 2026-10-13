@@ -701,7 +701,11 @@ def _list_files_page(token: str, drive_id: str, query: str,
     params = {
         "q": query,
         "pageSize": PAGE_SIZE,
-        "fields": "nextPageToken,files(id,name,mimeType,size,parents,trashed)",
+        "fields": ("nextPageToken,files(id,name,mimeType,size,parents,trashed,"
+                   "shortcutDetails"),  # 2026-10-14：快捷方式解析需要该字段
+        # （_resolve_shortcut_target 取 item["shortcutDetails"]["targetId"]；
+        # 缺字段时列举到的快捷方式会被静默跳过，对非快捷方式文件返回空，
+        # API 成本可忽略）。
         "supportsAllDrives": "true",
         "includeItemsFromAllDrives": "true",
     }
@@ -773,6 +777,18 @@ def _resolve_shortcut_target(fetch, item: dict, drive_id: str = "") -> dict | No
         details = item.get("shortcutDetails") or {}
         target_id = details.get("targetId", "")
         if not target_id:
+            # 2026-10-14：列举 fields 漏 shortcutDetails 时这里恒为 None，
+            # 快捷方式会被静默跳过（问题曾导致个人盘两快捷方式零解析）。
+            # 明确记日志，免得下次再静默。
+            if not item.get("shortcutDetails"):
+                logger.warning(
+                    "strm_gen: 快捷方式无 shortcutDetails 字段（drive=%s id=%s），"
+                    "列举 fields 缺字段导致无法解析 target_id",
+                    drive_id, item.get("id", ""))
+            else:
+                logger.debug(
+                    "strm_gen: 快捷方式 targetId 为空，跳过（drive=%s id=%s）",
+                    drive_id, item.get("id", ""))
             return None
         box = getattr(fetch, "token_box", None) or {}
         token = box.get("token")
@@ -2556,6 +2572,9 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
         verify_new = bool(invalid_fids)
     # 本轮实际写入 .strm 的 file_id：生成完清除其 source_invalid_at 标记（块3）
     written_file_ids: list[str] = []
+    # 2026-10-14：本轮被去重跳过的 (drive_id, rel) —— verify 的"缺失"判定
+    # 要把它们豁免（它们故意不登记状态行，不是生成漏了）。见 fix2。
+    deduped_rels: set[tuple[str, str]] = set()
     done = get_progress()["done"]
     for did, rel, fid, size in all_videos:
         done += 1
@@ -2599,6 +2618,7 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 # _registered 守卫：全量下已登记的 (did, rel) 走复用路径（见 #834），
                 # 绝不在去重里跳过——合并顺序无论谁先谁后都不引入新行为。
                 stats["deduped"] += 1
+                deduped_rels.add((did, rel))  # fix2：verify 豁免用
                 logger.info("strm_gen: 同名同大小去重跳过 rel=%s fid=%s size=%d 保留=%s",
                             rel, fid, size, desired)
                 _set_progress(deduped=stats["deduped"])
@@ -2650,10 +2670,12 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
     if _round_is_fully_incremental(stype, full,
                                    drive_results if stype != "local" else []):
         verify = _verify_completeness_light(all_videos, state, src_prefixes,
-                                            strm_root=strm_root)
+                                            strm_root=strm_root,
+                                            deduped_rels=deduped_rels)
     else:
         verify = _verify_completeness(all_videos, state, src_prefixes,
-                                      strm_root=strm_root)
+                                      strm_root=strm_root,
+                                      deduped_rels=deduped_rels)
     stats["verify"] = verify
 
     # 4. 墓碑消费：Drive/本地源删文件 → 删 .strm + 删状态行（块1+块2）。
@@ -2784,7 +2806,8 @@ def _round_is_fully_incremental(stype: str, full: bool, drive_results: list) -> 
 def _verify_completeness(videos: list[tuple[str, str, str, int]],
                          state: dict[tuple[str, str], tuple[str, int, str]],
                          src_prefixes: list[str],
-                         strm_root: Optional[str] = None) -> dict[str, Any]:
+                         strm_root: Optional[str] = None,
+                         deduped_rels: Optional[set] = None) -> dict[str, Any]:
     """按目录（季级别）比对 Drive 文件数 vs 已生成 .strm 数。
 
     videos 为 (drive_id, rel, file_id, size) 四元组；分组键为
@@ -2796,6 +2819,10 @@ def _verify_completeness(videos: list[tuple[str, str, str, int]],
     "Drive 枚举 vs DB"，DB 有行但文件被删会误报完整）；磁盘缺失的条目
     同时收集为 orphan_disk（块4 §6.1：零 API 成本，纯 os.path.exists，
     下次生成即重建自愈，报告只用于观察）。
+
+    deduped_rels（2026-10-14 fix2）：本轮被同名同大小去重跳过的
+    (drive_id, rel) 集合——它们故意不登记状态行（不占 DB），但有代表文件
+    在册，视为已满足，豁免记 missing_breakdown["dedup_satisfied"]，不算缺失。
     """
     from collections import Counter
 
@@ -2840,29 +2867,42 @@ def _verify_completeness(videos: list[tuple[str, str, str, int]],
         strm_files.setdefault(g, set()).add(rel)
 
     incomplete = []
-    for group, dcnt in drive_counter.items():
-        scnt = strm_counter.get(group, 0)
-        if scnt < dcnt:
-            gid = group[0]  # 分组键为 (drive_id, 父目录)
-            missing_rels = sorted(drive_files[group] - strm_files.get(group, set()))
-            # 缺集归因（2026-10-12）：区分"源上有但没生成"和".strm 文件丢了"
-            not_generated = 0  # Drive 上有，state 里没有 → 生成漏了/还没跑到
-            strm_lost = 0      # state 里有，但磁盘上 .strm 没了 → 文件丢失
-            for rel in missing_rels:
-                if (gid, rel) not in state:
-                    not_generated += 1
-                elif not _strm_exists(state[(gid, rel)][2]):
-                    strm_lost += 1
+    # fix2：本轮去重跳过的 (drive_id, rel)——视为已满足，不算缺失
+    _deduped: set = deduped_rels or set()
+    for group in drive_counter:
+        gid = group[0]  # 分组键为 (drive_id, 父目录)
+        missing_rels = sorted(drive_files[group] - strm_files.get(group, set()))
+        # 缺集归因（2026-10-12）：区分"源上有但没生成"和".strm 文件丢了"
+        not_generated = 0  # Drive 上有，state 里没有 → 生成漏了/还没跑到
+        strm_lost = 0      # state 里有，但磁盘上 .strm 没了 → 文件丢失
+        dedup_satisfied = 0  # fix2：去重豁免 → 有代表文件在册
+        missing_sample = []
+        for rel in missing_rels:
+            if (gid, rel) in _deduped:
+                dedup_satisfied += 1
+            elif (gid, rel) not in state:
+                not_generated += 1
+                missing_sample.append(rel)
+            elif not _strm_exists(state[(gid, rel)][2]):
+                strm_lost += 1
+                missing_sample.append(rel)
+        # fix3：missing_count 与 breakdown 同源（未满足项数）。
+        # 以前是"原始条目数 - state 行数"：同名文件夹产出重复 rel 时虚增
+        # （如"郎君不如意"：60 条条目 / 30 个唯一 rel / 30 行 → missing 30
+        # 而 breakdown 双 0）。去重豁免不计入缺失。
+        if not_generated or strm_lost:
             incomplete.append({
                 "series": group,
                 "drive_id": gid,
-                "drive_count": dcnt,
-                "strm_count": scnt,
-                "missing_count": dcnt - scnt,
-                "missing_sample": missing_rels[:50],
+                # fix3：drive_count 取去重口径（唯一 rel 数），否则榜单误导
+                "drive_count": len(drive_files[group]),
+                "strm_count": strm_counter.get(group, 0),
+                "missing_count": not_generated + strm_lost,
+                "missing_sample": missing_sample[:50],
                 "missing_breakdown": {
                     "not_generated": not_generated,
                     "strm_lost": strm_lost,
+                    "dedup_satisfied": dedup_satisfied,
                 },
             })
     incomplete.sort(key=lambda x: -x["missing_count"])
@@ -2880,7 +2920,8 @@ def _verify_completeness(videos: list[tuple[str, str, str, int]],
 def _verify_completeness_light(videos: list[tuple[str, str, str, int]],
                                state: dict[tuple[str, str], tuple[str, int, str]],
                                src_prefixes: list[str],
-                               strm_root: Optional[str] = None) -> dict[str, Any]:
+                               strm_root: Optional[str] = None,
+                               deduped_rels: Optional[set] = None) -> dict[str, Any]:
     """S2：增量轮轻量校验——只查本轮 touch 过的目录。
 
     增量轮的 videos 只是 delta（拿 delta 做全量对比会误杀，见
@@ -2940,10 +2981,16 @@ def _verify_completeness_light(videos: list[tuple[str, str, str, int]],
                         "strm_path": spath, "file_id": _fid,
                     })
         # delta 闭环
+        # 2026-10-14 fix2：本轮去重跳过的 rel 豁免（故意无 state 行，
+        # 有代表文件在册，视为已满足）
+        _deduped: set = deduped_rels or set()
         missing = []
+        dedup_satisfied = 0
         for rel in sorted(delta_rels.get(group, ())):
             key = (group[0], rel)
-            if key not in state:
+            if key in _deduped:
+                dedup_satisfied += 1
+            elif key not in state:
                 missing.append((rel, "not_generated"))
             elif not _strm_exists(state[key][2]):
                 missing.append((rel, "strm_lost"))
@@ -2959,8 +3006,10 @@ def _verify_completeness_light(videos: list[tuple[str, str, str, int]],
                 "missing_breakdown": {
                     "not_generated": not_generated,
                     "strm_lost": strm_lost,
+                    "dedup_satisfied": dedup_satisfied,
                 },
             })
+        # 全是去重豁免 → 缺失为空，不进榜单（完全满足）
     incomplete.sort(key=lambda x: -x["missing_count"])
     return {
         "verify_mode": "light",
