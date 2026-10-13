@@ -623,14 +623,34 @@ def _strip_platform_tags(name: str) -> str:
     return " ".join(p for idx, p in enumerate(parts) if idx == 0 or not _PLATFORM_TOKEN_RE.fullmatch(p))
 
 
+def _strip_year(name: str, year) -> str:
+    """从片名里去掉年份（含括号），避免留下空括号 `()`。
+
+    直接 `name.replace(str(year), "")` 会把 `母亲往事 (2025)` 变成 `母亲往事 ()`，
+    而 `.strip(" .-_()")` 只剥字符串两端、剥不掉中间的 `()`——这就是生产库
+    115 条 `XXX () 3` 乱码的根因（见 fix/scrape-title-garbled-parens）。
+    """
+    if not year:
+        return name
+    out = re.sub(r"[\(\[【]\s*" + str(year) + r"\s*[\)\]】]", " ", name)
+    if str(year) in out:
+        out = out.replace(str(year), "")
+    return re.sub(r"\s+", " ", out).strip(" .-_()")
+
+
 def clean_name(raw: str) -> str:
-    name = CLEAN_RE.sub(" ", raw)
+    name = raw or ""
+    # 去掉发行版本号后缀：`WEB-DL-3` / `BluRay-2` 末尾的 `-N`（多版本/重复标记，非片名）。
+    # 必须在 CLEAN_RE 把 `-` 换成空格之前处理，否则 `-3` 会变成孤立的 `3` 留下来。
+    # 只处理末尾的 `-N`，片名内部的数字（如 `比佛利拜金狗2` 的 `2`）不受影响。
+    name = re.sub(r"-\s*\d{1,2}\s*$", "", name)
+    name = CLEAN_RE.sub(" ", name)
     # 去掉质量标签。注意 CLEAN_RE 已经把 `.` `_` `-` 换成了空格，所以这里的分隔符
     # 必须容得下空格：否则 "WEB-DL" 变成 "WEB DL" 后不再被识别。
     name = re.sub(
-        r"\b(2160p|1080p|720p|480p|4k|uhd|hdr10\+?|hdr|dolby|dv|hevc|h\.?264|x264|h\.?265|x265|"
+        r"\b(2160p|1440p|1080p|1080i|720p|480p|\d{3,4}[pi]|4k|8k|uhd|hdr10\+?|hdr|dolby|dv|hevc|h\.?264|x264|h\.?265|x265|"
         r"aac|ac3|eac3|dts|flac|truehd|atmos|web[\s\-]?dl|webrip|web|remux|blu[\s\-]?ray|bluray|"
-        r"bdrip|brrip|hdtv|dvdrip|repack|proper|multi|internal|chs&eng|chs|cht|eng|gb|big5)\b",
+        r"bdrip|brrip|hdtv|dvdrip|diy|repack|proper|multi|internal|chs&eng|chs|cht|eng|gb|big5)\b",
         " ",
         name,
         flags=re.IGNORECASE,
@@ -739,8 +759,8 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     year_spans = [s for s in (match_span if not matched_in_folder else None,
                              abs_ep_span) if s]
     year = _extract_year(stem, folder, exclude_spans=year_spans)
-    if year and str(year) in name_part:
-        name_part = name_part.replace(str(year), "").strip(" .-_()")
+    if year:
+        name_part = _strip_year(name_part, year)
 
     return {"name": name_part or stem, "year": year, "season": season, "episode": episode}
 
@@ -2235,8 +2255,7 @@ def _series_name_of(scan_file: "ScanFile", parsed: dict) -> str:
 
     name = _tidy_name(directory_name)
     year = parsed.get("year")
-    if year and str(year) in name:
-        name = name.replace(str(year), "").strip(" .-_()")
+    name = _strip_year(name, year) if year and str(year) in name else name
     return name or _tidy_name(parsed.get("name") or "") or (parsed.get("name") or "未知剧集")
 
 
