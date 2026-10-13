@@ -49,7 +49,7 @@
       </button>
 
       <!-- 奖励说明 -->
-      <div class="reward" v-if="status">
+      <div class="reward" v-if="status && status.enabled">
         🎁 <b>报到奖励</b>：能量 +{{ status.base_points }}⚡<br>
         🔥 <b>连报奖励</b>：每天多 +{{ status.streak_bonus }}⚡（上限 +{{ status.streak_max_bonus }}⚡）
       </div>

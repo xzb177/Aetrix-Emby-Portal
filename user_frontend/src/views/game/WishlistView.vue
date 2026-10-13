@@ -129,7 +129,13 @@ const justAddedId = ref<number | null>(null)
 const wellRef = ref<HTMLElement | null>(null)
 const wishInput = ref<HTMLInputElement | null>(null)
 
-const totalWishes = computed(() => myWishes.value.length + hotWishes.value.length)
+// hot 接口返回"所有人 pending（含自己）"，与 myWishes 按 id 去重，避免自己的心愿被算两次
+const totalWishes = computed(() => {
+  const ids = new Set<string | number>()
+  myWishes.value.forEach((w) => ids.add(w.id))
+  hotWishes.value.forEach((w) => ids.add(w.id))
+  return ids.size
+})
 
 function statusText(s: string): string {
   if (s === 'completed') return '已捞起'
@@ -286,8 +292,10 @@ onMounted(() => {
 .moon {
   position: absolute;
   top: 34px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: fit-content;
   font-size: 26px;
   opacity: 0.85;
   filter: drop-shadow(0 0 8px #FFE9A8);

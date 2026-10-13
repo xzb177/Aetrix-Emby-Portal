@@ -48,7 +48,7 @@
             </div>
           </div>
           <div class="meter">
-            <div class="fill" :style="{ width: meterWidth }"></div>
+            <div class="fill" :style="{ '--meter-p': meterScale }"></div>
             <div class="txt">{{ meterText }}</div>
           </div>
           <button class="charge" :disabled="orderBusy" @click="doRecharge">⚡ 充能</button>
@@ -62,7 +62,7 @@
         <div class="v4-sec-sub">买会员 = 领取执照 —— 凭执照解锁全片库，点开看细则</div>
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
-        <div v-else-if="isFreeRealm" class="v4-err">当前为公益服，全片库免费开放，无需领取执照 🎉<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
+        <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照 🎉<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
         <div v-else-if="!plansEnabled" class="v4-err">执照领取暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <div v-else-if="plans.length === 0" class="v4-err">补给站暂未上架执照<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <template v-else>
@@ -97,7 +97,7 @@
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ memberDiscountPct }}% off</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
-              <button class="buy" :disabled="orderBusy" @click.stop="doBuyPlan(plan)">领取执照 →</button>
+              <button class="buy" :disabled="orderBusy" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>领取执照 →</button>
             </div>
           </div>
           <div class="fineprint">人民币 / 能量二选一，价格由服主在后台配置</div>
@@ -266,11 +266,11 @@ const ratioText = computed(() =>
   rechargeRatio.value == null ? '充值比例加载中' : `1 元 = ${rechargeRatio.value} 能量`,
 )
 
-/* 能量条：按最大一罐做满格 */
-const meterWidth = computed(() => {
-  if (!selectedPkg.value || packages.value.length === 0) return '0'
+/* 能量条：按最大一罐做满格（0~1 进度，供 scaleX 动画） */
+const meterScale = computed(() => {
+  if (!selectedPkg.value || packages.value.length === 0) return 0
   const max = Math.max(...packages.value.map((p) => p.total_points))
-  return Math.min(100, (selectedPkg.value.total_points / max) * 100) + '%'
+  return Math.min(1, selectedPkg.value.total_points / max)
 })
 const meterText = computed(() => {
   const p = selectedPkg.value
@@ -532,9 +532,11 @@ async function copyInviteCode() {
   left: 0;
   top: 0;
   bottom: 0;
-  width: 0;
+  width: 100%;
+  transform: scaleX(var(--meter-p, 0));
+  transform-origin: left center;
   background: linear-gradient(90deg, #ffb25e, var(--red));
-  transition: width 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  transition: transform 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.2);
 }
 .meter .txt {
   position: absolute;
@@ -588,6 +590,7 @@ async function copyInviteCode() {
   font-size: 13px;
   font-weight: 700;
   padding: 8px;
+  min-height: 44px;
   border-radius: 16px;
   color: var(--ink2);
   cursor: pointer;

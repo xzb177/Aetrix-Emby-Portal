@@ -41,7 +41,7 @@
                   <span class="lbl">{{ plan.has(item.Id) ? '已加入 ✓' : '想去' }}</span>
                 </button>
               </div>
-              <button v-if="day.count > 3" class="more" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (day.count - 3) + ' 件，点我看全部 →' }}</button>
+              <button v-if="day.count > 3" class="more" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (Math.min(day.count, day.items.length) - 3) + ' 件，点我看全部 →' }}</button>
               <div v-if="day.items.length === 0" class="empty-day">这天营地很安静，没有新大陆</div>
             </div>
           </div>
@@ -65,7 +65,6 @@
       <!-- 探险计划条 -->
       <div v-if="plan.size > 0" class="plan-bar">
         <span>🎒 探险计划 <b>{{ plan.size }}</b> 个目的地</span>
-        <span class="go">去第三方播放器出发 →</span>
       </div>
     </div>
     <PanelTabbar />
@@ -267,5 +266,4 @@ onMounted(load)
   box-shadow: 0 4px 14px rgba(42, 38, 32, 0.25);
 }
 .plan-bar b { color: #FFB25E; }
-.plan-bar .go { font-size: 12px; }
 </style>

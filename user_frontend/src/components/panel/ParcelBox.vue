@@ -152,7 +152,9 @@ function onTap() {
 .v4-parcel-sub { color: var(--ink2); font-size: 11px; }
 .v4-parcel-time { color: var(--ink2); font-size: 11px; }
 .v4-parcel-go {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   margin-top: 6px;
   background: var(--ink);
   color: #fff;
