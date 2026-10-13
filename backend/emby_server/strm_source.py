@@ -163,6 +163,18 @@ class DriveChangesLister(SourceLister):
             self._save_token(self._new_token)
             self._new_token = None
 
+    def _resolve_shortcuts_cfg(self) -> bool:
+        """读生成器快捷方式解析开关（默认关）。"""
+        try:
+            from backend.emby_server import strm_gen as sg
+            db = self._db()
+            try:
+                return sg.resolve_shortcuts(db)
+            finally:
+                db.close()
+        except Exception:
+            return False
+
     def iter_videos(self, incremental: bool = True) -> Iterator[VideoItem | Tombstone]:
         if not incremental:
             # 全量：回退到现有的 files.list 实现（多目录：一次扁平拉取 + 本地多前缀过滤）
@@ -170,7 +182,8 @@ class DriveChangesLister(SourceLister):
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
                 self.drive_id, self.dir_paths, strict=self.strict_dir,
-                subtree_listing=self.subtree_listing)
+                subtree_listing=self.subtree_listing,
+                resolve_shortcuts=self._resolve_shortcuts_cfg())
             return
 
         from backend.emby_server import drive_changes as dc
@@ -187,7 +200,8 @@ class DriveChangesLister(SourceLister):
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
                 self.drive_id, self.dir_paths, strict=self.strict_dir,
-                subtree_listing=self.subtree_listing)
+                subtree_listing=self.subtree_listing,
+                resolve_shortcuts=self._resolve_shortcuts_cfg())
             return
 
         # 增量：拉 changes（2026-10-12 起不再吞错：API 失败直接抛，
@@ -209,7 +223,14 @@ class DriveChangesLister(SourceLister):
         # changes 只给 fileId，需要解析出完整路径并过滤到 dir_path 子树
         # 用 drive_changes._file_meta 建路径（有内存缓存）
         from backend.emby_server import strm_gen as sg
-        access_token = dc._get_token()
+        try:
+            access_token = dc.get_token_for_drive(self.drive_id)
+        except dc.DriveAuthError as exc:
+            # 个人盘凭据坏：本轮依赖 meta 补查的条目会被跳过（沿用无凭据的
+            # 降级语义），但不静默回退 SA 池查错盘。
+            logger.warning("strm_source: drive=%s 凭据失败，meta 补查降级: %s",
+                           self.drive_id, exc)
+            access_token = None
         count = 0
         now = datetime.now(timezone.utc).isoformat()
         for ch in changes:

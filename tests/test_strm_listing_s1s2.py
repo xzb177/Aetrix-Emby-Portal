@@ -272,7 +272,7 @@ class FakeDrive:
 def drive_env(monkeypatch):
     entries = build_dataset()
     fake = FakeDrive(entries)
-    monkeypatch.setattr(sg, "_get_token", lambda: "tok")
+    monkeypatch.setattr(sg, "_get_token", lambda did=None, **k: "tok")
     monkeypatch.setattr(sg, "_list_files_page", fake.list_page)
     monkeypatch.setattr(
         sg, "_drive_modules",

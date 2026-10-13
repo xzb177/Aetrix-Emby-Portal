@@ -486,9 +486,11 @@ def test_personal_drive_start_token_no_drive_id():
         captured.append(params)
         return {"startPageToken": "tok123"}
 
-    with mock.patch.object(drive_changes, "_get_token", return_value="t"), \
+    with mock.patch.object(drive_changes, "get_token_for_drive",
+                               return_value="t") as m_tok, \
          mock.patch.object(drive_changes, "_api_get", side_effect=fake_api):
         assert drive_changes.get_start_page_token("myDrive:PAUL") == "tok123"
+    m_tok.assert_called_with("myDrive:PAUL")
     assert len(captured) == 1
     assert "driveId" not in captured[0], "个人盘不能传 driveId（Drive API 报 400）"
     assert captured[0].get("spaces") == "drive"
@@ -501,9 +503,11 @@ def test_personal_drive_list_changes_no_drive_id():
         captured.append(params)
         return {"changes": [], "newStartPageToken": None}
 
-    with mock.patch.object(drive_changes, "_get_token", return_value="t"), \
+    with mock.patch.object(drive_changes, "get_token_for_drive",
+                               return_value="t") as m_tok, \
          mock.patch.object(drive_changes, "_api_get", side_effect=fake_api):
         changes, _ = drive_changes.list_changes("pt", "myDrive:PAUL")
+    m_tok.assert_called_with("myDrive:PAUL")
     assert changes == []
     assert len(captured) == 1
     assert "driveId" not in captured[0]
