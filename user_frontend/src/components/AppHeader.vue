@@ -5,7 +5,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
-  ChevronRight, Zap,
+  ChevronRight, Zap, ShieldCheck,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -134,6 +134,10 @@ const displayName = computed(() => {
 })
 
 const userIdLabel = computed(() => (userStore.user?.id ? `@${userStore.user.id}` : ''))
+
+/** 管理员判定：后端 AuthUser.is_staff（注释写明了就是为用户端「管理后台」入口准备的）。
+ *  头像菜单里的管理后台行仅管理员渲染，普通用户看不见。 */
+const isStaff = computed(() => !!userStore.user?.is_staff)
 
 // 顶栏消息入口（v2.10.3 起是全站唯一的消息入口）：既显示「几条未读」，
 // 点开还能先看预览再决定要不要进消息中心
@@ -645,7 +649,8 @@ onBeforeUnmount(() => {
                      每日签到/邀请返利/求片中心/AI 助手/工单支持/消息中心/
                      外观/管理后台）已从头像菜单移除，对应页面路由保留；
                      头像菜单不得再出现消息中心/外观行（用户铁律：已删条目不许加回，
-                     scripts/check_avatar_menu_guards.py 在 CI 拦住；窄屏外观切换走后续专项决策） -->
+                     scripts/check_avatar_menu_guards.py 在 CI 拦住；窄屏外观切换走后续专项决策）。
+                     管理后台例外：2026-10-13 用户拍板恢复，仅管理员可见（见下面 ②.6） -->
                 <template v-if="menuFacilities.length > 0">
                 <div class="dropdown-sec-title">🏕️ 营地设施 · 点卡片直接进</div>
                 <RouterLink
@@ -677,6 +682,18 @@ onBeforeUnmount(() => {
                   <span class="facility-go" aria-hidden="true">›</span>
                 </RouterLink>
                 </template>
+
+                <!-- ②.6 管理后台（2026-10-13 用户拍板恢复）：仅管理员账号（is_staff）渲染，
+                     同源同 JWT 直达 /admin/，免二次登录；普通用户完全看不见。
+                     注意用 <a> 不用 RouterLink：/admin/ 是另一个前端应用。 -->
+                <a
+                  v-if="isStaff"
+                  href="/admin/"
+                  class="dropdown-item"
+                  role="menuitem"
+                >
+                  <ShieldCheck :size="15" /> 管理后台
+                </a>
 
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
