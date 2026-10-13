@@ -636,4 +636,15 @@ textarea:focus { border-color: var(--gold); }
 }
 .close-record:active { transform: scale(.98); }
 .closed-hint { font-size: 12px; color: var(--ink2); margin: 10px 0 0; text-align: center; }
+
+/* 键盘可达性：按钮获得焦点时给出可见轮廓 */
+.type:focus-visible,
+.send-btn:focus-visible,
+.v4-retry:focus-visible,
+.card-head:focus-visible,
+.btn-send:focus-visible,
+.close-record:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
 </style>
