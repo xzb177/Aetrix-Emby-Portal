@@ -24,9 +24,9 @@
         <div class="v4-sec-title">⚡ 能量补给</div>
         <div class="v4-sec-sub">充积分 = 补充能量 · {{ ratioText }} —— 点一罐看看</div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
-        <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
-        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
-        <div v-else-if="packages.length === 0" class="v4-empty">补给站暂未上架能量罐<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="packages.length === 0" class="v4-empty">补给站暂未上架能量罐<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <template v-else>
           <div class="shelf">
             <div
@@ -62,10 +62,10 @@
         <div class="v4-sec-title">📜 探险执照</div>
         <div class="v4-sec-sub">买会员 = 领取执照 —— 凭执照解锁全片库，点开看细则</div>
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
-        <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照 🎉<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
-        <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
-        <div v-else-if="plans.length === 0" class="v4-empty">补给站暂未上架执照<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="plans.length === 0" class="v4-empty">补给站暂未上架执照<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <template v-else>
           <div class="cur-toggle">
             <button :class="{ on: currency === 'y' }" @click="currency = 'y'">¥ 人民币</button>
@@ -111,7 +111,7 @@
         <div class="v4-sec-title">⛰️ 探险家等级</div>
         <div class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
-        <div v-else-if="!member" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="!member" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else class="trail">
           <div
             v-for="lv in trailLevels"
@@ -146,7 +146,7 @@
         <div class="v4-sec-title">🤝 带上同伴</div>
         <div class="v4-sec-sub">邀请一位探险家，双方都得能量</div>
         <div v-if="loading" class="v4-skeleton" style="height:120px"></div>
-        <div v-else-if="inviteFailed" class="v4-err">邀请码加载失败{{ inviteErrMsg ? '：' + inviteErrMsg : '' }}<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="inviteFailed" class="v4-err">邀请码加载失败{{ inviteErrMsg ? '：' + inviteErrMsg : '' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="inviteEnabled" class="invite">
           <h3>🧭 结伴远行，能量翻倍</h3>
           <p>同伴用你的暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
@@ -156,7 +156,7 @@
             <div v-else class="c generating">邀请码生成中…</div>
             <button @click="copyInviteCode" :disabled="!inviteCode">复制</button>
           </div>
-          <button v-if="!inviteCode" class="v4-retry" style="margin-top:10px" @click="() => loadAll()">重试</button>
+          <button v-if="!inviteCode" class="v4-retry" style="margin-top:10px" @click="loadAll">重试</button>
         </div>
       </section>
     </div>

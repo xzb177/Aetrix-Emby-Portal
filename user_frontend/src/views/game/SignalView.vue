@@ -150,7 +150,7 @@
     <PanelTabbar />
 
     <!-- R27：关闭记录二次确认（纸色风格，替代原生 confirm） -->
-    <Modal v-model="showCloseConfirm" size="sm" class="paper-confirm">
+    <Modal v-model="showCloseConfirm" size="sm" content-class="paper-confirm">
       <template #header>
         <h3 class="modal-title">🏁 关闭记录</h3>
       </template>
@@ -383,10 +383,12 @@ async function doCloseTicket() {
     await fetchTickets()
   } catch (e) {
     toast.error(humanizeError(e))
-  } finally {
+    // 失败时保持确认弹窗打开，用户可直接重试，不丢失上下文
     closing.value = false
-    showCloseConfirm.value = false
+    return
   }
+  closing.value = false
+  showCloseConfirm.value = false
 }
 
 /** 相对时间（与 TicketsView 同逻辑：服务器时钟超前时不显示负数） */
@@ -720,7 +722,9 @@ textarea:focus { border-color: var(--gold); }
 <style>
 /* R27：Modal.vue 用 Teleport 挂到 body，scoped 样式够不到 —— 纸色覆盖写全局，
    全部挂在 .paper-confirm 命名空间下，不污染其他弹窗。
-   注意：Teleport 后脱离 .v4-scope，纸色 token 解析不到，全部带字面量 fallback
+   注意：Modal 根是 fragment（两个 Teleport），class 写在 <Modal> 上会被 Vue 丢弃，
+   必须走 contentClass prop 落到 .modal-container 上，本选择器才能命中。
+   Teleport 后脱离 .v4-scope，纸色 token 解析不到，全部带字面量 fallback
    （值与 v4-paper.css .v4-scope 同步：--paper-card #FFFDF6 / --ink #2A2620 /
    --ink2 #6B6257 / --line #D8CDB8） */
 .paper-confirm .modal-content-wrapper {

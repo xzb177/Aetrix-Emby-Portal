@@ -46,7 +46,7 @@
       </section>
       <!-- pulse.error 时整盒不渲染，避免留黑色空矩形（错误态在下面统一渲染） -->
       <div v-if="!pulse.error" class="v4-pulse-box">
-        <div v-if="!pulse.error" class="v4-pulse-row">
+        <div class="v4-pulse-row">
           <span class="v4-pulse-tag">● 实时 · 后台任务</span>
           <span class="v4-pulse-dot"></span>
         </div>
