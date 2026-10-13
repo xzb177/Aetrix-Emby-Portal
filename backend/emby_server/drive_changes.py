@@ -535,15 +535,14 @@ def _api_get(url: str, token: str, params: dict) -> dict:
         if resp.status_code == 403 and _is_rate_limit_403(resp):
             # 403 配额类（rateLimitExceeded 等）：Google 有时以 403 而非 429
             # 返回配额耗尽，按 429 同款退避重试（更保守：2 倍退避）。
-            # 其他 403（无权访问等）仍走下面的快速失败。
             last_exc = httpx.HTTPStatusError(
                 "Drive API 403 配额类错误，准备重试",
                 request=resp.request,
                 response=resp,
             )
             if attempt >= API_MAX_RETRIES:
-                logger.error("Drive API 403 配额类错误，重试 %d 次后放弃: %s",
-                             API_MAX_RETRIES, url[:80])
+                logger.error("Drive API 403 配额类错误，重试 %d 次后放弃: %s | body=%s",
+                             API_MAX_RETRIES, url[:80], resp.text[:300])
                 raise last_exc
             sleep_s = _retry_sleep_sec(attempt, is_rate_limited=True)
             _retry_state.retry_count = get_last_retry_count() + 1
@@ -554,11 +553,56 @@ def _api_get(url: str, token: str, params: dict) -> dict:
             )
             time.sleep(sleep_s)
             continue
+        if resp.status_code == 403:
+            # 403 非配额类：先看能不能解析出 reason
+            # - 明确权限类（driveNotFound/forbidden 等）：快速失败，不重试
+            # - 无法解析 body（网络抖动/空 body）：可能是瞬时问题，给 2 次重试机会
+            # 2026-10-13 strm_gen 403 事件：production 的 403 error body 被截断，
+            # 无法判断是配额还是权限，直接放弃太脆弱。加日志 + 有限重试。
+            body_preview = resp.text[:300] if resp.text else "<empty>"
+            reason = _extract_403_reason(resp)
+            if reason is None:
+                # 无法解析：给有限重试（最多 2 次），用较长退避
+                last_exc = httpx.HTTPStatusError(
+                    f"Drive API 403 未知原因（body 无法解析），准备重试: {body_preview}",
+                    request=resp.request,
+                    response=resp,
+                )
+                if attempt >= 2:
+                    logger.error("Drive API 403 未知原因，重试 2 次后放弃: %s | body=%s",
+                                 url[:80], body_preview)
+                    raise last_exc
+                sleep_s = _retry_sleep_sec(attempt, is_rate_limited=True)
+                logger.warning(
+                    "Drive API 403 未知原因（第 %d/3 次），%.1f 秒后重试: %s | body=%s",
+                    attempt + 1, sleep_s, url[:80], body_preview,
+                )
+                time.sleep(sleep_s)
+                continue
+            # 明确权限类：快速失败，但日志带上完整 reason 便于诊断
+            logger.error("Drive API 403 权限类错误（不重试）: %s | reason=%s | body=%s",
+                         url[:80], reason, body_preview)
         resp.raise_for_status()
         return resp.json()
     # 理论上到不了这里（循环内要么 return 要么 raise），防御性兜底
     assert last_exc is not None
     raise last_exc
+
+
+def _extract_403_reason(resp) -> str | None:
+    """从 403 响应体提取第一个 error reason，解析失败返回 None。
+
+    返回 None 的情况：body 为空、非 JSON、或没有 errors 数组。
+    调用方对 None 应视为"未知原因"，给有限重试而非直接放弃。
+    """
+    try:
+        body = resp.json()
+    except Exception:
+        return None
+    errors = (body.get("error") or {}).get("errors") or []
+    if not errors:
+        return None
+    return errors[0].get("reason")
 
 
 def _is_rate_limit_403(resp) -> bool:
