@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import threading
 import time
 import uuid
@@ -2093,11 +2094,14 @@ def _requeue_douban_banned(db, item_id: int,
                            claim_token: Optional[str] = None) -> str:
     """豆瓣封禁冷却中：打回 pending，冷却结束后再补；attempts 不涨。单条短事务。
 
+    反惊群（2026-10-13）：原来所有条目都是 ban_remaining()+5s 醒来，冷却一结束
+    几千条同时抢单、瞬间再封。现在加 0~10 分钟随机散开，让重试错峰。
+
     claim_token：同 _mark_failed，僵尸 worker 不许覆盖行的新状态。
     """
     try:
         from backend.emby_server import douban as _dbn
-        wait = max(60, int(_dbn.ban_remaining()) + 5)
+        wait = max(60, int(_dbn.ban_remaining()) + random.uniform(5, 605))
         item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
         if item is None:
             return "skip"

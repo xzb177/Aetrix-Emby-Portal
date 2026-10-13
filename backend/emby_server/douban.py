@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import threading
 import time
@@ -27,7 +28,9 @@ SUGGEST_URL = "https://movie.douban.com/j/subject_suggest"
 # 管理后台配置键
 DOUBAN_ENABLED_KEY = "douban_enabled"
 DOUBAN_RATE_KEY = "douban_min_interval"
-DEFAULT_MIN_INTERVAL = 1.0
+# 默认 2.5s：豆瓣反爬激进，1.0s 持续请求会被封 IP（2026-10-13 生产事故）。
+# 可在管理后台「刮削设置」调大，0 = 不限速（不推荐）。
+DEFAULT_MIN_INTERVAL = 2.5
 REQUEST_TIMEOUT = 15
 
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -54,10 +57,17 @@ _lock = threading.Lock()
 # 封禁检测：豆瓣封 IP 时返回 403/429，或 200 + 跳 sec.douban.com 的验证码/禁止访问页。
 # 以前这些都被当成「没搜中」→ 中文条目落到 TMDB / metadata_source='none'。
 # 现在抛 DoubanBannedError（瞬态），并进入全局冷却：冷却期内不再发任何豆瓣请求。
-BAN_COOLDOWN_SECONDS = 900
+#
+# 反风控设计（2026-10-13 生产封禁事故后）：
+# - 冷却指数退避：连续被封次数越多，冷却越长（15min → 30min → 1h → 2h 封顶），
+#   避免固定 900s 到点后惊群重试瞬间再封。
+# - 冷却本身加随机抖动，不让重试节奏可预测。
+BAN_BASE_COOLDOWN_SECONDS = 900
+BAN_MAX_COOLDOWN_SECONDS = 7200
 _BAN_HTTP_CODES = (403, 418, 429)
 _BAN_MARKERS = ("sec.douban.com", "检测到有异常请求", "<title>禁止访问</title>")
 _banned_until: float = 0.0
+_ban_strikes: int = 0  # 连续被封次数；成功请求一次清零
 
 
 class DoubanBannedError(RuntimeError):
@@ -70,22 +80,46 @@ def ban_remaining() -> float:
 
 
 def reset_ban() -> None:
-    global _banned_until
+    global _banned_until, _ban_strikes
     with _lock:
         _banned_until = 0.0
+        _ban_strikes = 0
+
+
+def ban_strikes() -> int:
+    """连续被封次数（测试/观测用）。"""
+    with _lock:
+        return _ban_strikes
 
 
 def _trip_ban(reason: str) -> None:
-    global _banned_until
+    global _banned_until, _ban_strikes
     with _lock:
         fresh = _banned_until <= time.time()
-        _banned_until = time.time() + BAN_COOLDOWN_SECONDS
+        _ban_strikes += 1
+        # 指数退避：900 * 2^(n-1)，封顶 7200s；再加 0~60s 随机抖动
+        backoff = min(BAN_BASE_COOLDOWN_SECONDS * (2 ** (_ban_strikes - 1)),
+                      BAN_MAX_COOLDOWN_SECONDS)
+        cooldown = backoff + random.uniform(0, 60)
+        _banned_until = time.time() + cooldown
     if fresh:
-        logger.warning("[douban] 疑似被封禁（%s），全局冷却 %ss", reason, BAN_COOLDOWN_SECONDS)
+        logger.warning("[douban] 疑似被封禁（%s），第 %d 次，冷却 %ds",
+                       reason, _ban_strikes, int(cooldown))
+
+
+def _note_success() -> None:
+    """一次成功请求：连续被封计数清零。"""
+    global _ban_strikes
+    with _lock:
+        _ban_strikes = 0
 
 
 class _RateLimiter:
-    """线程安全限速器：两次请求之间的最小间隔秒数。"""
+    """线程安全限速器：两次请求之间的最小间隔秒数。
+
+    反风控：固定间隔是典型的机器人签名。实际等待 = 间隔 * [1.0, 1.6) 随机，
+    让请求节奏不可预测。interval=0 时不限速（测试用）。
+    """
 
     def __init__(self) -> None:
         self._last: float = 0.0
@@ -95,10 +129,12 @@ class _RateLimiter:
             with _lock:
                 self._last = time.time()
             return
+        # 每次取号时现算抖动，避免所有线程同相位
+        effective = min_interval * random.uniform(1.0, 1.6)
         while True:
             with _lock:
                 now = time.time()
-                wait = self._last + min_interval - now if self._last else 0.0
+                wait = self._last + effective - now if self._last else 0.0
                 if wait <= 0:
                     self._last = now
                     return
@@ -176,6 +212,7 @@ class DoubanClient:
         if "sec.douban.com" in final_url or any(m in body[:4096] for m in _BAN_MARKERS):
             _trip_ban("验证码/禁止访问页")
             raise DoubanBannedError("captcha page")
+        _note_success()
         return body
 
     def search(self, title: str, year: Optional[int] = None,
