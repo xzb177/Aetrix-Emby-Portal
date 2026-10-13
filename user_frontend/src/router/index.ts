@@ -259,18 +259,31 @@ router.afterEach((to) => {
 
 // SPA 部署竞态兜底（2026-10-13 实锤：#788 部署把全部 chunk 换了新哈希，
 // 用户旧构建点 /game 时懒加载 GameHubView 旧 chunk → 404 → 页面打不开）。
-// 动态 import 失败（chunk 已被新部署替换）时自动刷新一次，
-// 拿到新版 index.html 后路由自然恢复；只 reload 一次，避免极端情况死循环。
-let chunkReloadArmed = true
+// 动态 import 失败（chunk 已被新部署替换）时自动刷新拿新版 index.html 后恢复。
+// 计数放 sessionStorage（跨 reload 持久）：连续失败最多刷新 2 次就停，
+// 杜绝 index.html 被缓存时的死循环；每次导航成功清零，下次部署有新预算。
+const CHUNK_RELOAD_KEY = 'spa-chunk-reload-count'
 router.onError((err: unknown) => {
   const msg = String((err as Error)?.message ?? err ?? '')
   if (
-    chunkReloadArmed &&
     /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk [\w-]+ failed|ChunkLoadError/i.test(msg)
   ) {
-    chunkReloadArmed = false
-    window.location.reload()
+    let n = 0
+    try {
+      n = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) ?? 0) || 0
+    } catch { /* 隐私模式忽略 */ }
+    if (n < 2) {
+      try {
+        sessionStorage.setItem(CHUNK_RELOAD_KEY, String(n + 1))
+      } catch { /* 隐私模式忽略 */ }
+      window.location.reload()
+    }
   }
+})
+router.afterEach(() => {
+  try {
+    sessionStorage.removeItem(CHUNK_RELOAD_KEY)
+  } catch { /* 隐私模式忽略 */ }
 })
 
 // 关键路由预取：用户登录后大概率会去补给站（v4 /shop）/ 账号设置（/game/account），空闲时预加载对应 chunk
