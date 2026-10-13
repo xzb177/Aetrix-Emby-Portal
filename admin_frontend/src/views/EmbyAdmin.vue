@@ -47,6 +47,7 @@ import {
   fetchTmdbKeys,
   fetchTmdbLanguage,
   fetchEnrichEpisodeNight,
+  fetchEnrichTuning,
   fetchDoubanBanDowngrade,
   generateVirtualLibraries,
   previewLibraryCover,
@@ -62,12 +63,13 @@ import {
   saveStrmConfig,
   saveTmdbLanguage,
   saveEnrichEpisodeNight,
+  saveEnrichTuning,
   saveDoubanBanDowngrade,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, DoubanBanDowngradeConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, DoubanBanDowngradeConfig } from '@/api/admin'
 import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
 import type {
   EmbyLibrary,
@@ -723,6 +725,7 @@ async function load() {
       loadStrmConfig().catch(() => undefined),
       loadTmdbLanguageConfig().catch(() => undefined),
       loadEnrichEpisodeNightConfig().catch(() => undefined),
+      loadEnrichTuningConfig().catch(() => undefined),
       loadBanDowngradeConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
@@ -1144,6 +1147,70 @@ async function saveEnrichEpisodeNightAction() {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
     episodeNightSaving.value = false
+  }
+}
+
+// ==================== 刮削性能参数（链路规划 Step 1） ====================
+
+/** 原 env-only 旋钮搬进后台：线程数 / 批次 / 退避 / 租约 + Step 3/4 占坑位 + DB 池 */
+const enrichTuning = ref<EnrichTuningConfig | null>(null)
+const enrichTuningSaving = ref(false)
+const enrichTuningError = ref(false)
+// 本地编辑态：整数项用字符串（原样展示库里存的值），开关项用布尔
+const tuningDraft = ref<Record<string, string>>({})
+const tmdbBatchDraft = ref(true)
+const dbPoolDraft = ref('10')
+
+const TUNING_LABELS: Record<string, string> = {
+  enrich_workers: '线程数',
+  enrich_batch: '每批认领条数',
+  enrich_tmdb_batch: 'TMDB 批量开关',
+  enrich_max_attempts: '异常重试上限',
+  enrich_retry_base_sec: '退避基数（秒）',
+  enrich_claim_lease_sec: '认领租约（秒）',
+  enrich_episode_day_quota: '白天单集日配额',
+  enrich_none_reschedule_days: 'none 回捞周期（天）',
+}
+// 占坑位：Step 3/4 接入前，改了不影响实际行为
+const TUNING_PLACEHOLDER: Record<string, string> = {
+  enrich_episode_day_quota: 'Step 3 接入前改这里不影响实际行为',
+  enrich_none_reschedule_days: 'Step 4 接入前改这里不影响实际行为',
+}
+
+async function loadEnrichTuningConfig() {
+  try {
+    enrichTuning.value = await fetchEnrichTuning()
+    enrichTuningError.value = false
+    const t = enrichTuning.value
+    const d: Record<string, string> = {}
+    for (const k of t.order || []) d[k] = t.raw?.[k] ?? t.defaults?.[k] ?? ''
+    tuningDraft.value = d
+    tmdbBatchDraft.value = t.values?.enrich_tmdb_batch !== false
+    dbPoolDraft.value = t.db_pool?.saved_pool_size || String(t.db_pool?.pool_size ?? 10)
+  } catch {
+    enrichTuning.value = null // 出错不挡页面其它内容
+    enrichTuningError.value = true
+  }
+}
+
+async function saveEnrichTuningAction() {
+  if (!enrichTuning.value) return
+  enrichTuningSaving.value = true
+  try {
+    const values: Record<string, string | boolean> = { ...tuningDraft.value }
+    values.enrich_tmdb_batch = tmdbBatchDraft.value
+    const res = await saveEnrichTuning(values, dbPoolDraft.value)
+    enrichTuning.value = res
+    const d: Record<string, string> = {}
+    for (const k of res.order || []) d[k] = res.raw?.[k] ?? res.defaults?.[k] ?? ''
+    tuningDraft.value = d
+    tmdbBatchDraft.value = res.values?.enrich_tmdb_batch !== false
+    dbPoolDraft.value = res.db_pool?.saved_pool_size || String(res.db_pool?.pool_size ?? 10)
+    ElMessage.success('刮削性能参数已保存（线程数 / DB 池需重启生效，其余 60 秒内热生效）')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    enrichTuningSaving.value = false
   }
 }
 
@@ -1967,6 +2034,69 @@ function typeLabel(t: string): string {
               </div>
             </div>
             <div class="scrape-block">
+              <h3>刮削性能参数</h3>
+              <p class="drawer-hint">
+                原来只能改环境变量的旋钮，现在后台可配：线程数 / 批次 / 退避 / 租约。线程数与 DB 池大小改完需重启进程生效，其余保存后 60 秒内热生效。被环境变量接管的项会标出（改这里不生效）。
+              </p>
+              <div v-if="enrichTuning" class="tuning-list">
+                <div v-for="k in (enrichTuning.order || [])" :key="k" class="tuning-row">
+                  <span class="tuning-label">{{ TUNING_LABELS[k] || k }}</span>
+                  <el-switch
+                    v-if="k === 'enrich_tmdb_batch'"
+                    v-model="tmdbBatchDraft"
+                    active-text="批量"
+                    inactive-text="逐条"
+                    :aria-label="TUNING_LABELS[k]"
+                  />
+                  <el-input
+                    v-else
+                    v-model="tuningDraft[k]"
+                    style="width: 130px"
+                    :aria-label="TUNING_LABELS[k]"
+                  />
+                  <span class="drawer-hint tuning-desc">
+                    {{ enrichTuning.descriptions?.[k] }}（默认 {{ enrichTuning.defaults?.[k] }}）
+                    <template v-if="TUNING_PLACEHOLDER[k]">；{{ TUNING_PLACEHOLDER[k] }}</template>
+                  </span>
+                  <el-tag v-if="enrichTuning.from_env?.[k]" type="warning" size="small">
+                    环境变量 {{ enrichTuning.env_names?.[k] }} 接管中
+                  </el-tag>
+                  <el-tag v-if="(enrichTuning.restart_required || []).includes(k)" type="info" size="small">
+                    重启 worker 生效
+                  </el-tag>
+                </div>
+                <div class="tuning-row">
+                  <span class="tuning-label">DB 连接池大小</span>
+                  <el-input
+                    v-model="dbPoolDraft"
+                    style="width: 130px"
+                    aria-label="DB 连接池大小"
+                  />
+                  <span class="drawer-hint tuning-desc">
+                    当前生效 {{ enrichTuning.db_pool?.pool_size }}（{{ enrichTuning.db_pool?.database_type }}；默认 {{ enrichTuning.db_pool?.default }}）。
+                    红线：线程数 × 单线程 DB 连接 ≤ 池子 80%，改完需重启进程。
+                    <template v-if="enrichTuning.db_pool?.pending_restart">
+                      已保存 {{ enrichTuning.db_pool.saved_pool_size }}，重启后生效。
+                    </template>
+                  </span>
+                  <el-tag v-if="enrichTuning.db_pool?.from_env" type="warning" size="small">
+                    环境变量 {{ enrichTuning.db_pool?.env_name }} 接管中
+                  </el-tag>
+                  <el-tag type="info" size="small">重启生效</el-tag>
+                </div>
+                <div class="scrape-actions">
+                  <el-button type="primary" size="small" :loading="enrichTuningSaving" @click="saveEnrichTuningAction">
+                    保存
+                  </el-button>
+                </div>
+              </div>
+              <div v-else-if="enrichTuningError" class="drawer-hint drawer-hint--after">
+                读取失败
+                <el-button size="small" text @click="loadEnrichTuningConfig">重试</el-button>
+              </div>
+              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+            </div>
+            <div class="scrape-block">
               <h3>豆瓣封禁降级</h3>
               <p class="drawer-hint">
                 豆瓣封禁 / 冷却期内，中文条目不再整条延后等解封——跳过豆瓣这一站，照常走 TMDB → 多源兜底；期间命中从严（标题 + 年份都对上才落库，宁可没命中也不乱认）。解封后自动恢复原顺序（保存后 60 秒内生效）
@@ -2666,6 +2796,11 @@ function typeLabel(t: string): string {
 .scrape-block .drawer-hint { margin-bottom: 10px; }
 .scrape-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .scrape-skeleton { height: 32px; border-radius: var(--au-r-md); }
+/* 刮削性能参数（链路规划 Step 1）：每行 标签 / 输入 / 说明 / 标记 */
+.tuning-list { display: flex; flex-direction: column; gap: 10px; }
+.tuning-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tuning-label { min-width: 118px; font-size: var(--font-size-sm); font-weight: 600; color: var(--au-text); }
+.tuning-row .tuning-desc { margin-bottom: 0; flex: 1 1 220px; }
 
 /* ==================== 扫描状态（卡片 + 记录抽屉） ==================== */
 .scan-dot { width: 6px; height: 6px; border-radius: var(--au-r-full); background: var(--au-text-4); flex-shrink: 0; }

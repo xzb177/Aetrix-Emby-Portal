@@ -1189,6 +1189,40 @@ export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, ni
     night_tz,
   })
 
+/** 刮削性能参数（链路规划 Step 1）：env 旋钮搬进 SystemConfig + 后台 UI */
+export interface EnrichTuningConfig {
+  success: boolean
+  values: Record<string, number | boolean>
+  raw: Record<string, string>
+  from_env: Record<string, boolean>
+  restart_required: string[]
+  order: string[]
+  defaults: Record<string, string>
+  descriptions: Record<string, string>
+  env_names: Record<string, string | null>
+  db_pool: {
+    pool_size: number
+    max_overflow: number
+    from_env: boolean
+    env_name: string
+    default: number
+    database_type: string
+    restart_required: boolean
+    saved_pool_size: string
+    pending_restart: boolean
+  }
+}
+
+/** 刮削性能参数：当前生效值 + 默认值 + env 接管状态 */
+export const fetchEnrichTuning = () =>
+  get<EnrichTuningConfig>(`${E}/scrape/enrich-tuning`)
+
+export const saveEnrichTuning = (values: Record<string, string | number | boolean>, db_pool_size?: string) =>
+  put<EnrichTuningConfig>(`${E}/scrape/enrich-tuning`, {
+    values,
+    db_pool_size: db_pool_size ?? null,
+  })
+
 export interface TmdbTestResult {
   index: number
   masked: string
