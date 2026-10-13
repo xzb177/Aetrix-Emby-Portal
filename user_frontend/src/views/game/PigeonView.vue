@@ -322,10 +322,14 @@ onMounted(() => { void load(true) })
   position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
   font-size: 14px; pointer-events: none;
 }
+/* 减少动态偏好：全局 transform:none 会杀掉 translateY(-50%)，用静态 top 补回垂直居中（输入框 44px / 图标 14px） */
+@media (prefers-reduced-motion: reduce) {
+  .search-icon { top: 15px; }
+}
 .search-input {
   width: 100%; height: 44px; padding: 0 12px 0 36px;
   border: 1.5px solid var(--line); border-radius: 12px;
-  background: #FFFDF6; color: var(--ink); font-size: 13px;
+  background: #FFFDF6; color: var(--ink); font-size: 16px;
 }
 .search-input::placeholder { color: var(--ink2); }
 .unread-toggle {
@@ -356,7 +360,7 @@ onMounted(() => { void load(true) })
 .f {
   font-size: 12px; font-weight: 700; padding: 7px 14px; border-radius: 18px;
   border: 1.5px solid var(--line); background: #FFFDF6; color: var(--ink2); cursor: pointer;
-  min-height: 32px;
+  min-height: 44px;
 }
 .f.on { background: var(--ink); border-color: var(--ink); color: #FFFDF6; }
 .f-count { opacity: 0.65; font-size: 11px; }

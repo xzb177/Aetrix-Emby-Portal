@@ -87,7 +87,8 @@
           </div>
         </div>
         <div class="v4-err" style="margin-top:12px">
-          {{ status?.reason || '管理员还没请向导来坐镇。' }}<br>
+          <template v-if="netError">网络开小差了，请检查网络后重试。</template>
+          <template v-else>{{ status?.reason || '管理员还没请向导来坐镇。' }}</template><br>
           <span class="tip">着急的话可以去 <b>求救信号</b> 发封求救信，会有人回你。</span>
         </div>
         <button class="v4-retry" style="margin-top:12px" :disabled="loading" @click="load">再去看看</button>
@@ -214,6 +215,8 @@ const question = ref('')
 const sending = ref(false)
 const bubbles = ref<Bubble[]>([])
 const scroller = ref<HTMLElement | null>(null)
+/** true=请求抛错（网络开小差）；false=明确未启用（管理员还没请向导） */
+const netError = ref(false)
 
 /* ===== 装备调试（Emby 账号三件套，逻辑与 /profile 的 Emby 账号卡一致） ===== */
 const equipLoading = ref(true)
@@ -312,16 +315,18 @@ const exhausted = computed(() => available.value && status.value?.remaining === 
 /** 设计稿 game-guide.html 的快捷问 */
 const SUGGESTIONS = [
   '今天有啥新片？',
-  '我的能量够买季卡吗？',
+  '我的能量够换执照吗？',
   '许愿池里我的愿望咋样了？',
 ]
 
 async function load() {
   loading.value = true
+  netError.value = false
   try {
     status.value = await aiApi.status()
   } catch {
     status.value = null
+    netError.value = true
   } finally {
     loading.value = false
   }
@@ -542,6 +547,7 @@ onMounted(() => {
   border-radius: 20px;
   padding: 8px 14px;
   font-size: 13px;
+  min-height: 44px;
   cursor: pointer;
 }
 .chip:active { transform: scale(0.96); border-color: var(--red); }
@@ -611,7 +617,7 @@ onMounted(() => {
 .inputbar input {
   flex: 1;
   min-width: 0;
-  font-size: 14px;
+  font-size: 16px;
   padding: 12px 14px;
   border: 1.5px solid var(--line);
   border-radius: 10px;

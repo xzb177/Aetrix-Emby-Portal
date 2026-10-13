@@ -25,8 +25,8 @@
         <div class="v4-sec-sub">充积分 = 补充能量 · {{ ratioText }} —— 点一罐看看</div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
-        <div v-else-if="!rechargeEnabled" class="v4-err">能量充值暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
-        <div v-else-if="packages.length === 0" class="v4-err">补给站暂未上架能量罐<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="packages.length === 0" class="v4-empty">补给站暂未上架能量罐<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <template v-else>
           <div class="shelf">
             <div
@@ -63,8 +63,8 @@
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照 🎉<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
-        <div v-else-if="!plansEnabled" class="v4-err">执照领取暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
-        <div v-else-if="plans.length === 0" class="v4-err">补给站暂未上架执照<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
+        <div v-else-if="plans.length === 0" class="v4-empty">补给站暂未上架执照<br><button class="v4-retry" @click="() => loadAll()">重试</button></div>
         <template v-else>
           <div class="cur-toggle">
             <button :class="{ on: currency === 'y' }" @click="currency = 'y'">¥ 人民币</button>
@@ -95,7 +95,7 @@
             <div class="detail">
               <div class="kv"><span>有效期</span><b>{{ plan.duration_days }} 天</b></div>
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
-              <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ memberDiscountPct }}% off</b></div>
+              <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ memberDiscountPct }} 折</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
               <button class="buy" :disabled="orderBusy" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>领取执照 →</button>
             </div>
@@ -256,11 +256,11 @@ async function loadAll() {
 /* ---------- 展示 ---------- */
 function fmtNum(n: number | null | undefined): string {
   if (n == null) return '–'
-  return String(n).replace(/\.0+$/, '')
+  return n.toLocaleString()
 }
 const pointsText = computed(() => (points.value == null ? '–' : fmtNum(points.value)))
 const memberLevelText = computed(() => (member.value ? `Lv.${member.value.level}` : '–'))
-const memberLevelName = computed(() => member.value?.level_name || '见习探险家')
+const memberLevelName = computed(() => member.value?.level_name || '–')
 const memberDiscountPct = computed(() => member.value?.discount_pct ?? 0)
 const ratioText = computed(() =>
   rechargeRatio.value == null ? '充值比例加载中' : `1 元 = ${rechargeRatio.value} 能量`,
@@ -700,6 +700,7 @@ async function copyInviteCode() {
 .buy {
   display: block;
   width: 100%;
+  min-height: 44px;
   margin: 10px 0 2px;
   background: var(--ink);
   color: #f6f1e7;
@@ -847,6 +848,7 @@ async function copyInviteCode() {
   border: none;
   border-radius: 8px;
   padding: 0 18px;
+  min-height: 44px;
   font-size: 13px;
   font-weight: 700;
 }

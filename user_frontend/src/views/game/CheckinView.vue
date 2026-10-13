@@ -7,9 +7,11 @@
         <h1>📋 每日报到</h1>
         <p>探险家每天到营地报到，盖章打卡，领能量。</p>
         <div v-if="status" class="v4-fire">
-          🔥 已连报 <b>{{ status.streak }}</b> 天
-          <span v-if="status.streak >= 7"> · 🏅 金章达成</span>
-          <span v-else-if="!status.checked_today"> · 今天还没报到</span>
+          <template v-if="status.streak > 0">🔥 已连报 <b>{{ status.streak }}</b> 天
+            <span v-if="status.streak >= 7"> · 🏅 金章达成</span>
+            <span v-else-if="!status.checked_today"> · 今天还没报到</span>
+          </template>
+          <template v-else>还没开始连报，今天是第一天</template>
         </div>
         <div v-else-if="statusLoading" class="v4-skeleton" style="height:32px;width:60%;margin-top:10px"></div>
       </header>

@@ -82,6 +82,7 @@ const arrivedText = computed(() => {
 })
 
 function onKey(e: KeyboardEvent) {
+  if ((e.target as HTMLElement).closest('a')) return
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
     onTap()

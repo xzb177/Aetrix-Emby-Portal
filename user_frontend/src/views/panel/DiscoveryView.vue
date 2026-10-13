@@ -34,12 +34,12 @@
         <div class="v4-sec-sub">它现在活着，在干什么 —— 实时</div>
       </section>
       <div class="v4-pulse-box">
-        <div class="v4-pulse-row">
+        <div v-if="!pulse.error" class="v4-pulse-row">
           <span class="v4-pulse-tag">● LIVE · 后台任务</span>
           <span class="v4-pulse-dot"></span>
         </div>
         <div v-if="pulse.loading" class="v4-skeleton" style="height:98px"></div>
-        <template v-else>
+        <template v-else-if="!pulse.error">
           <EcgCanvas />
           <PulseActivity :items="activityTexts" />
         </template>

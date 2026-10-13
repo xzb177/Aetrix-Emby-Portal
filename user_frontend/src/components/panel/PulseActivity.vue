@@ -39,7 +39,7 @@ onUnmounted(() => { window.clearInterval(timer) })
   font-size: 12px;
   color: #C9BFA9;
   margin-top: 8px;
-  min-height: 34px;
+  min-height: 40px;
   line-height: 1.6;
 }
 .v4-activity-line {

@@ -99,7 +99,7 @@ function seal(s: string): { label: string; cls: string } {
   if (s === 'pending') return { label: '🚚 运输中…', cls: 'ship' }
   if (s === 'refunded') return { label: '↩️ 已退款', cls: 'grey' }
   if (s === 'closed') return { label: '已关闭', cls: 'grey' }
-  return { label: s, cls: 'grey' }
+  return { label: '处理中', cls: 'grey' }
 }
 
 function fmtMoney(n: number): string {
@@ -172,7 +172,8 @@ onMounted(load)
   align-items: flex-start;
   gap: 10px;
 }
-.rc-item { font-size: 16px; font-weight: 800; }
+.rc-top > div:first-child { min-width: 0; flex: 1; }
+.rc-item { font-size: 16px; font-weight: 800; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rc-date { font-size: 11px; color: var(--ink2); margin-top: 4px; }
 .rc-price { font-size: 18px; font-weight: 800; white-space: nowrap; }
 .rc-status {
@@ -244,9 +245,11 @@ onMounted(load)
   outline-offset: 2px;
 }
 
-/* 减少动态偏好：停掉运输中呼吸闪烁和展开渐显 */
+/* 减少动态偏好：停掉运输中呼吸闪烁和展开渐显；装饰性 pin/锯齿边用静态定位（transform 会被全局置空） */
 @media (prefers-reduced-motion: reduce) {
   .seal.ship { animation: none; }
   .receipt.open .rc-detail { animation: none; }
+  .pin { margin-left: -9px; }
+  .receipt::before { transform: none; }
 }
 </style>
