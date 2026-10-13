@@ -773,6 +773,9 @@ _progress: dict[str, Any] = {
     # acquired_at：运行锁获取时刻（time.monotonic 秒，防系统时间跳变），
     # B1 自愈用。release 时清 None。
     "acquired_at": None,
+    # lock_token：每次获取运行权换一个新的（uuid hex）。B1 抢占后，
+    # 被抢占的旧持有者结束时凭 token 发现锁已易主，不再清除新持有者的 running。
+    "lock_token": None,
     "started_at": None,
     "finished_at": None,
     "phase": "idle",          # idle | listing | generating | verifying | done | error
@@ -1407,8 +1410,9 @@ def _reset_progress():
             "generated": 0, "skipped": 0, "failed": 0, "pruned": 0,
             "errors": [], "current": "",
             # B1：直接调 run_owned（管理后台手动触发）不经过 try_acquire，
-            # 这里也刷新获取时刻，保证僵死判定口径一致。
+            # 这里也刷新获取时刻与 token，保证僵死判定口径一致。
             "acquired_at": time.monotonic(),
+            "lock_token": uuid.uuid4().hex,
         })
 
 
@@ -1457,23 +1461,36 @@ def try_acquire(db=None) -> bool:
                         "新轮次抢占", held_min, timeout_min)
                     _progress["running"] = True
                     _progress["acquired_at"] = time.monotonic()
+                    _progress["lock_token"] = uuid.uuid4().hex
                     return True
             return False
         _progress["running"] = True
         _progress["acquired_at"] = time.monotonic()
+        _progress["lock_token"] = uuid.uuid4().hex
         return True
 
 
-def _release_progress(stats: dict, db):
-    """释放运行权：phase 复位 + 落盘上次执行统计。"""
+def _release_progress(stats: dict, db, expect_token=None):
+    """释放运行权：phase 复位 + 落盘上次执行统计。
+
+    expect_token：调用方获取运行权时的 lock_token。B1 抢占场景下，被抢占的
+    旧持有者结束时 token 已对不上——此时只落盘统计，不清除新持有者的 running
+    （否则新一轮会被误判为空闲，导致两轮并发）。expect_token=None 时保持旧
+    行为（无条件释放，供测试/兼容调用）。
+    """
     with _lock:
         # 非预期异常时 phase 可能卡在 generating：统一收敛到 error，
         # 前端不会一直显示"生成中"但实际已停。
         if _progress.get("phase") not in ("done", "idle"):
             _progress["phase"] = "error"
-        _progress["running"] = False
-        _progress["finished_at"] = datetime.now(timezone.utc).isoformat()
-        _progress["acquired_at"] = None  # B1：释放运行锁时清掉获取时刻
+        if expect_token is not None and _progress.get("lock_token") != expect_token:
+            logger.warning("strm_gen: 释放运行权时发现锁已被抢占（token 对不上），"
+                           "不清除新持有者的 running，只落盘本轮统计")
+        else:
+            _progress["running"] = False
+            _progress["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _progress["acquired_at"] = None  # B1：释放运行锁时清掉获取时刻
+            _progress["lock_token"] = None
     try:
         from backend.integrations import store
         # 注意：store 只有 write_values（批量写），没有 set_value；
@@ -1508,6 +1525,8 @@ def run_generation(db, full: bool = False, drive_id: Optional[str] = None) -> di
 def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[str, Any]:
     """已持有运行权时执行一次生成（try_acquire 成功后调用）。"""
     _reset_progress()
+    with _lock:
+        _my_token = _progress.get("lock_token")
     stats = {"generated": 0, "skipped": 0, "failed": 0, "pruned": 0, "total": 0}
     try:
         return _run_generation_inner(db, full, drive_id, stats)
@@ -1519,7 +1538,7 @@ def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[st
         logger.exception("strm_gen: 生成异常")
         return {"ok": False, "error": str(exc)}
     finally:
-        _release_progress(stats, db)
+        _release_progress(stats, db, expect_token=_my_token)
 
 
 def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) -> dict[str, Any]:

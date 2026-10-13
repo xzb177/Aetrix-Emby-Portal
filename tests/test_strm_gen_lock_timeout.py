@@ -134,6 +134,45 @@ class TestConcurrentSteal:
         assert results.count(False) == 7
 
 
+class TestTokenGuard:
+    def test_stolen_release_does_not_clear_new_holder(self):
+        # A 获取锁，B 抢占，A 结束时用旧 token 释放 → B 的 running 不受影响
+        assert sg.try_acquire() is True
+        with sg._lock:
+            token_a = sg._progress["lock_token"]
+        _force_stale(minutes_ago=200.0)
+        assert sg.try_acquire() is True  # B 抢占
+        with sg._lock:
+            token_b = sg._progress["lock_token"]
+        assert token_a != token_b
+        sg._release_progress({}, db=None, expect_token=token_a)
+        with sg._lock:
+            assert sg._progress["running"] is True  # B 还在跑
+            assert sg._progress["lock_token"] == token_b
+        # B 正常结束：token 对得上，释放成功
+        sg._release_progress({}, db=None, expect_token=token_b)
+        assert sg._progress["running"] is False
+
+    def test_matching_token_releases(self):
+        assert sg.try_acquire() is True
+        with sg._lock:
+            token = sg._progress["lock_token"]
+        assert token  # 每次获取换新 token
+        sg._release_progress({}, db=None, expect_token=token)
+        assert sg._progress["running"] is False
+        assert sg._progress["lock_token"] is None
+
+    def test_token_refreshes_each_acquire(self):
+        assert sg.try_acquire() is True
+        with sg._lock:
+            t1 = sg._progress["lock_token"]
+        sg._release_progress({}, db=None)
+        assert sg.try_acquire() is True
+        with sg._lock:
+            t2 = sg._progress["lock_token"]
+        assert t1 != t2
+
+
 class TestTimeoutConfig:
     def test_default(self, monkeypatch):
         monkeypatch.setattr(sg, "_db_config", lambda db, key, default="": default)
