@@ -322,6 +322,8 @@ def _rex_import_link(url: str, username: str, password: str | None = None) -> st
         f"{REX_IMPORT_URL}?type=emby&scheme={scheme}"
         f"&host={host}&port={port}&username={quote(username or '', safe='')}"
     )
+    # password 预留：后端当前不拼密码（_account_card 未传），密码由前端在内存中拼接；
+    # 保留参数供未来服务端直拼场景。
     if password:
         link += f"&password={quote(password, safe='')}"
     return link
@@ -335,9 +337,11 @@ def _senplayer_import_link(url: str, username: str, password: str | None = None)
     """
     link = (
         f"senplayer://importserver?type=emby&name=Aetrix"
-        f"&address={quote(url or '', safe='')}"
+        f"&address={quote(url or '', safe=':/')}"
         f"&username={quote(username or '', safe='')}"
     )
+    # password 预留：后端当前不拼密码（_account_card 未传），密码由前端在内存中拼接；
+    # 保留参数供未来服务端直拼场景。
     if password:
         link += f"&password={quote(password, safe='')}"
     return link

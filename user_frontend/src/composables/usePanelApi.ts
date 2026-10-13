@@ -163,12 +163,12 @@ export const panelApi = {
   pulse: () => get<Record<string, unknown>>('/api/panel/pulse'),
   /** 每日一封 */
   letter: () => get<Record<string, unknown>>('/api/panel/letter'),
-  /** 首页合并（perf 2026-10-13）：一次返回 today/parcels/pulse/letter */
+  /** 首页合并（perf 2026-10-13）：一次返回 today/parcels/pulse/letter；单区块失败时该字段为 null */
   home: () => get<{
-    today: TodayData
-    parcels: ParcelsData
-    pulse: Record<string, unknown>
-    letter: Record<string, unknown>
+    today: TodayData | null
+    parcels: ParcelsData | null
+    pulse: Record<string, unknown> | null
+    letter: Record<string, unknown> | null
   }>('/api/panel/home'),
   /** 收藏家数据 */
   collector: () => get<CollectorData>('/api/panel/collector'),

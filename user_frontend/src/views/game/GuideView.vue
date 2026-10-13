@@ -340,6 +340,8 @@ function openScheme(url: string) {
   const pwd = importPassword.value.trim()
   const finalUrl = pwd ? `${url}&password=${encodeURIComponent(pwd)}` : url
   window.location.href = finalUrl
+  // 密码只活在内存里：跳转后立刻清空，避免停留时被下一次误用/被读到
+  importPassword.value = ''
 }
 
 /** 向导是否在岗（能力来自 aiApi.status，与原 AI 助手页一致） */

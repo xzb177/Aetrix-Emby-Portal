@@ -1,11 +1,11 @@
 <template>
   <!-- 探险体力条：仅公益服用户可见（vitality !== null），v4 纸色风格 -->
-  <div v-if="visible" class="stamina-bar" :class="{ 'is-low': isLow, 'is-empty': isEmpty }" role="status" :aria-label="`${text.title}${vitality}${text.unit}`">
+  <div v-if="visible" class="stamina-bar" :class="{ 'is-low': isLow, 'is-empty': isEmpty }" role="status" :aria-label="`${text.title} ${vitality}${text.unit}`">
     <span class="v4-stamp stamina-stamp">{{ text.title }}</span>
     <div class="stamina-track">
       <div class="stamina-fill" :style="{ transform: `scaleX(${pct / 100})` }"></div>
       <div class="stamina-hearts" aria-hidden="true">
-        <span v-for="i in maxHearts" :key="i" class="heart" :class="{ lit: i <= vitality }">❤️</span>
+        <span v-for="i in maxHearts" :key="i" class="heart" :class="{ lit: i <= litHearts }">❤️</span>
       </div>
     </div>
     <div class="stamina-meta">
@@ -32,6 +32,8 @@ const max = ref(0)
 const visible = computed(() => userStore.isLoggedIn && vitality.value !== null)
 const pct = computed(() => (max.value > 0 && vitality.value !== null ? Math.min(100, Math.round((vitality.value / max.value) * 100)) : 0))
 const maxHearts = computed(() => Math.min(10, Math.max(1, max.value || 1)))
+/** 点亮的心数按体力比例折算（max>10 时心数封顶 10，直接按 vitality 点亮会全亮失真） */
+const litHearts = computed(() => (max.value > 0 && vitality.value !== null ? Math.round((vitality.value / max.value) * maxHearts.value) : 0))
 const isEmpty = computed(() => vitality.value === 0)
 const isLow = computed(() => !isEmpty.value && vitality.value !== null && max.value > 0 && vitality.value / max.value < STAMINA_LOW_RATIO)
 
@@ -43,7 +45,8 @@ async function load() {
   try {
     const st: VitalityStatus = await vitalityApi.status()
     vitality.value = st.vitality
-    max.value = st.max || st.vitality
+    const m = Number(st.max)
+    max.value = Number.isFinite(m) && m > 0 ? m : 0
   } catch {
     // 非公益服用户（403）或拿不到就不显示，不打扰
     vitality.value = null

@@ -14,7 +14,7 @@ import api, {
 import type { MySubscription } from '@/api'
 import { primaryNav } from '@/config/navigation'
 /** v4.1：头像菜单改为「探险设施直达」，设施清单唯一数据源 */
-import { gameFacilities } from '@/config/game'
+import { gameFacilities, gameHubConfig } from '@/config/game'
 import { checkinApi, vitalityApi } from '@/api/economy'
 // 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
 import { branding } from '@/composables/useBranding'
@@ -432,6 +432,9 @@ watch(() => userStore.isLoggedIn, (loggedIn) => {
 // 换页后把当前选项卡滑到中间（宽屏下是空操作）
 watch(() => route.path, () => focusActiveTab(true))
 
+/** 未读轮询定时器句柄：SPA 内组件反复挂载时不清会累积泄漏，卸载时统一清掉 */
+let pollTimer = 0
+
 onMounted(() => {
   document.addEventListener('click', onDocClick)
   document.addEventListener('keydown', onDocKeydown)
@@ -440,7 +443,7 @@ onMounted(() => {
   poll()
   loadPoints()
   loadVitality()
-  window.setInterval(poll, 60_000)
+  pollTimer = window.setInterval(poll, 60_000)
   focusActiveTab(false)
 })
 onBeforeUnmount(() => {
@@ -448,6 +451,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocKeydown)
   window.removeEventListener('resize', onViewportChange)
   window.removeEventListener('orientationchange', onViewportChange)
+  window.clearInterval(pollTimer)
 })
 </script>
 
@@ -606,7 +610,7 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
 
-                <!-- ② 探险设施直达（v4.1）：10 个游戏设施，图标+名称+描述，点卡片直达。
+                <!-- ② 探险设施直达（v4.1）：大本营 + 10 个游戏设施，图标+名称+描述，点卡片直达。
                      设施清单来自 @/config/game.ts，这里不 hardcode。
                      设施为空时整个分区（含标题）不渲染，不留裸奔标题。
                      原 12 个通用菜单项（追新日历/探险日志/我的订单/积分流水/
@@ -615,11 +619,24 @@ onBeforeUnmount(() => {
                 <template v-if="menuFacilities.length > 0">
                 <div class="dropdown-sec-title">🏕️ 营地设施 · 点卡片直接进</div>
                 <RouterLink
+                  to="/game"
+                  class="dropdown-facility"
+                  role="menuitem"
+                  @click="closeMenus"
+                >
+                  <span class="facility-icon" aria-hidden="true">🏕️</span>
+                  <span class="facility-body">
+                    <span class="facility-name">{{ gameHubConfig.navName }} · 大本营</span>
+                    <span class="facility-desc">{{ gameHubConfig.subtitle }}</span>
+                  </span>
+                  <span class="facility-go" aria-hidden="true">›</span>
+                </RouterLink>
+                <RouterLink
                   v-for="f in menuFacilities"
                   :key="f.key"
                   :to="f.path"
                   class="dropdown-facility"
-                  role="menuitemlink"
+                  role="menuitem"
                   @click="closeMenus"
                 >
                   <span class="facility-icon" aria-hidden="true">{{ f.icon }}</span>
@@ -630,6 +647,27 @@ onBeforeUnmount(() => {
                   <span class="facility-go" aria-hidden="true">›</span>
                 </RouterLink>
                 </template>
+
+                <!-- ≤420px：顶栏只留品牌/积分/头像，外观切换与消息中心收进菜单 -->
+                <button
+                  type="button"
+                  class="dropdown-item dropdown-narrow-only"
+                  role="menuitem"
+                  :title="themeTitle"
+                  @click="toggleTheme"
+                >
+                  <component :is="themeCurrent.icon" :size="15" /> 外观
+                  <span class="dropdown-meta">{{ themeCurrent.label }}</span>
+                </button>
+                <RouterLink
+                  to="/messages"
+                  class="dropdown-item dropdown-narrow-only"
+                  role="menuitem"
+                  @click="closeMenus"
+                >
+                  <Inbox :size="15" /> 消息中心
+                  <span v-if="unreadCount > 0" class="dropdown-badge">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+                </RouterLink>
 
                 <!-- ③ 退出登录：独立红色分区（border-t 分隔） -->
                 <button class="dropdown-item dropdown-logout" role="menuitem" @click="handleLogout">
@@ -1239,6 +1277,15 @@ onBeforeUnmount(() => {
   font-size: 0.8125rem;
   font-weight: 700;
   border-radius: var(--au-r-full);
+}
+.dropdown-meta {
+  margin-left: auto;
+  font-size: 0.8125rem;
+  color: var(--au-text-3);
+}
+.dropdown-narrow-only { display: none; }
+@media (max-width: 420px) {
+  .dropdown-narrow-only { display: flex; }
 }
 /* 探险设施直达（v4.1）：头像菜单里的 10 个游戏设施，纸色迷你卡片风。
    菜单 Teleport 到 body、不在 .v4-scope 内，v4 token 取不到，就地定义。
