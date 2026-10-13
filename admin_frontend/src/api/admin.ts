@@ -549,6 +549,29 @@ export const updateAnnouncement = (id: number, data: Partial<{ title: string; co
 
 export const deleteAnnouncement = (id: number) => del<{ success: boolean }>(`/announcements/${id}`)
 
+// ==================== 探险预告 · 保密新大陆（揭晓位配置） ====================
+
+/** 揭晓位配置（后端 GET/PUT /api/admin/teaser-config；字段见 backend/emby_server/teaser.py） */
+export interface TeaserConfig {
+  enabled: boolean
+  /** 揭晓时间 ISO（服务器本地）；空串 = 一直保密 */
+  reveal_at: string
+  pre_title: string
+  pre_subtitle: string
+  post_title: string
+  post_desc: string
+  post_link: string
+  /** 派生状态：off=已关闭 secret=保密中 revealed=已揭晓 */
+  status: 'off' | 'secret' | 'revealed'
+  countdown_days: number | null
+}
+
+export const fetchTeaserConfig = () =>
+  get<TeaserConfig>('/teaser-config')
+
+export const saveTeaserConfig = (values: Record<string, string | boolean>) =>
+  put<TeaserConfig>('/teaser-config', { values })
+
 // ==================== 工单 ====================
 
 export const fetchTickets = (params: { status_filter?: string } = {}) =>
@@ -1313,6 +1336,17 @@ export const fetchDoubanBanDowngrade = () =>
 
 export const saveDoubanBanDowngrade = (enabled: boolean) =>
   put<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`, { enabled })
+
+/** 兜底链路统一（链路规划 Step 2）：一个豆瓣入口（豆瓣 rich → 多源引擎含豆瓣源） */
+export interface UnifiedFallbackConfig {
+  success: boolean
+  enabled: boolean
+}
+export const fetchUnifiedFallback = () =>
+  get<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`)
+
+export const saveUnifiedFallback = (enabled: boolean) =>
+  put<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`, { enabled })
 
 /** 保存总开关 / 中文优先 / TMDB-miss 兜底开关 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
 export const saveMetaSources = (data: {
