@@ -41,7 +41,7 @@ const hideDockForPanel = computed(
 )
 
 /**
- * 三个主 Tab（首页 / 商店 / 我的）常驻缓存：切 tab 不再销毁重建，
+ * 三个常驻缓存视图（发现页 DiscoveryView / 补给站 ShopView / 账号设置 AccountSettingsView）常驻缓存：切 tab 不再销毁重建，
  * 回来秒出上次的数据，各视图在 onActivated 里做静默刷新（不闪骨架屏）。
  *
  * 缓存 key = 路由 path + 用户 id + 登录会话序列：
