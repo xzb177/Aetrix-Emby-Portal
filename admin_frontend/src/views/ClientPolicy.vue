@@ -14,6 +14,7 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import {
   Activity, AlertTriangle, Clock, Cloud, Cpu, Database, Download, Gauge, HardDrive, Info, RefreshCw, Save,
   Server, ShieldBan, Smartphone, Target, Trash2, Tv,
@@ -158,7 +159,7 @@ async function savePolicy() {
     policy.value = res.policy
     ElMessage.success('播放策略已保存（出流的节点下次判定即生效）')
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     savingPolicy.value = false
   }
@@ -171,7 +172,7 @@ async function saveOps() {
     await updateEconomySettings({ ...ops.value })
     ElMessage.success('下载与设备策略已保存')
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     savingOps.value = false
   }
@@ -189,7 +190,7 @@ async function saveCdn() {
       ? 'CDN 预留已启用：播放 URL 走该域名，热门分片由边缘缓存'
       : 'CDN 预留已保存（未启用，播放 URL 与升级前逐字节一致）')
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     savingCdn.value = false
   }
@@ -231,7 +232,7 @@ async function saveLocalCache() {
       ? '本地缓存已启用：热门片会限速拉到本机，用户侧新增「本地缓存」线路'
       : '本地缓存配置已保存（未启用，播放行为与升级前一致）')
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     savingCache.value = false
   }

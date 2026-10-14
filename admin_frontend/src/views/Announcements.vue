@@ -2,6 +2,7 @@
 /** 公告管理：创建/编辑/置顶/删除，联动全站推送 */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import { Megaphone, Plus, RefreshCw, Search, Sparkles } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import { createAnnouncement, deleteAnnouncement, fetchAnnouncements, updateAnnouncement, fetchTeaserConfig, saveTeaserConfig } from '@/api/admin'
@@ -104,7 +105,7 @@ async function saveTeaser() {
     })
     ElMessage.success('揭晓位配置已保存，立即生效')
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     teaserSaving.value = false
   }

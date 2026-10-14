@@ -15,6 +15,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import {
   ArrowDown,
   ArrowUp,
@@ -117,7 +118,7 @@ async function doSearchBindItems() {
     bindSearchResults.value = res.items
     if (!res.items.length) ElMessage.info('没搜到匹配的条目，换个关键字试试')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '搜索失败')
+    ElMessage.error(toAdminError(e, '搜索失败'))
   } finally {
     bindSearchLoading.value = false
   }
@@ -160,7 +161,7 @@ async function toggleItemLock(item: ItemSearchResult) {
         : `「${item.name}」已解锁：恢复自动补全`,
     )
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '操作失败')
+    ElMessage.error(toAdminError(e, '操作失败'))
   } finally {
     lockLoadingId.value = null
   }
@@ -197,7 +198,7 @@ async function doSearchTmdbCandidates() {
     tmdbSearched.value = true
     if (!res.candidates.length) ElMessage.info('TMDB 没找到匹配的候选，换个剧名或年份试试')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '搜索 TMDB 失败')
+    ElMessage.error(toAdminError(e, '搜索 TMDB 失败'))
   } finally {
     tmdbSearchLoading.value = false
   }
@@ -221,7 +222,7 @@ async function doBindCandidate(c: TmdbCandidate) {
     if (res.item.tmdb_id != null) item.tmdb_id = res.item.tmdb_id
     ElMessage.success('已绑定并补全元数据')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '绑定失败')
+    ElMessage.error(toAdminError(e, '绑定失败'))
   } finally {
     tmdbBindLoading.value = null
   }
@@ -245,7 +246,7 @@ async function doPreviewTmdb() {
   try {
     bindPreview.value = await previewTmdb(id, tid)
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '预览失败')
+    ElMessage.error(toAdminError(e, '预览失败'))
   } finally {
     bindPreviewLoading.value = false
   }
@@ -263,7 +264,7 @@ async function doBindTmdb() {
     bindPreview.value = null
     ElMessage.success('已绑定并补全元数据')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '绑定失败')
+    ElMessage.error(toAdminError(e, '绑定失败'))
   } finally {
     bindLoading.value = false
   }
@@ -312,7 +313,7 @@ async function doUnbindTmdb() {
     bindPreview.value = null
     ElMessage.success('已解绑')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '解绑失败')
+    ElMessage.error(toAdminError(e, '解绑失败'))
   } finally {
     bindLoading.value = false
   }
@@ -582,7 +583,7 @@ async function saveBanDowngradeAction() {
     banDowngrade.value = await saveDoubanBanDowngrade(banDowngrade.value.enabled)
     ElMessage.success('豆瓣限流降级已保存，60 秒内生效')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     banDowngradeSaving.value = false
   }
@@ -612,7 +613,7 @@ async function saveTmdbLanguageAction() {
     tmdbLang.value.language = res.language
     ElMessage.success('TMDB 首选语言已保存，立即生效')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     tmdbLangSaving.value = false
   }

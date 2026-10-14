@@ -20,6 +20,7 @@ import LibraryCard from '@/components/emby/LibraryCard.vue'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import type { UploadRequestOptions } from 'element-plus'
 import {
   Film, FolderPlus, History, ImagePlus, RefreshCw, ScanSearch,
@@ -296,7 +297,7 @@ async function saveCoverConfig() {
     await load()
     await loadCoverPreview()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '封面生成失败')
+    ElMessage.error(toAdminError(e, '封面生成失败'))
   } finally {
     coverSaving.value = false
   }
@@ -312,7 +313,7 @@ async function regenerateCover() {
     await load()
     await loadCoverPreview()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '重新生成失败')
+    ElMessage.error(toAdminError(e, '重新生成失败'))
   } finally {
     coverRegenerating.value = false
   }
@@ -903,7 +904,7 @@ async function scanAll() {
     if (res.skipped_count > 0) parts.push(`${res.skipped_count} 个已停用/虚拟（已跳过）`)
     ElMessage.success(parts.join('，'))
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '一键扫描失败')
+    ElMessage.error(toAdminError(e, '一键扫描失败'))
   }
   await pollQueue()
   reloadSoon(1500)
@@ -976,7 +977,7 @@ async function saveChaseNewAction() {
     chaseNew.value = normalizeChase(res)
     ElMessage.success(res.enabled ? '自动发现新增文件已开启（每 ' + res.interval + ' 分钟）' : '自动发现新增文件已关闭')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     chaseNewSaving.value = false
   }
@@ -990,7 +991,7 @@ async function saveAutoScanAction() {
     autoScan.value = { enabled: res.enabled, time: res.time, last_run: res.last_run }
     ElMessage.success(`定时扫描已${res.enabled ? `开启（每天 ${res.time}）` : '关闭'}`)
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     autoScanSaving.value = false
   }
@@ -1024,7 +1025,7 @@ async function saveStrmConfigAction() {
     strmConfig.value = { ...res.strm }
     ElMessage.success(`.strm 直链已${res.strm.enabled ? '开启' : '关闭'}`)
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     strmConfigSaving.value = false
   }
@@ -1108,7 +1109,7 @@ async function saveEnrichEpisodeNightAction() {
     episodeNight.value = res
     ElMessage.success('单集夜间刮削已保存，60 秒内生效')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     episodeNightSaving.value = false
   }
@@ -1215,7 +1216,7 @@ async function saveEnrichTuningAction() {
     loadEnrichNoneStats().catch(() => undefined)
     loadEnrichFieldStats().catch(() => undefined)
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     enrichTuningSaving.value = false
   }
@@ -1307,7 +1308,7 @@ async function saveUnifiedFallbackAction() {
     unifiedFallback.value = await saveUnifiedFallback(unifiedFallback.value.enabled)
     ElMessage.success('兜底链路统一已保存，60 秒内生效')
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     unifiedFallbackSaving.value = false
   }

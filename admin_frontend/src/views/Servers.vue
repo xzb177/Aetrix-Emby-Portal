@@ -22,6 +22,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import {
   AlertTriangle, CheckCircle2, ChevronDown, CloudDownload, Download, FolderOpen, HardDrive,
   Info, Library, Pencil, Plus, RefreshCw, Route as RealmIcon, Server, Trash2, Wifi,
@@ -238,7 +239,7 @@ async function addMount() {
     }
     loadServerMounts()
   } catch (e) {
-    ElMessage.error(String((e as Error)?.message || e))
+    ElMessage.error(toAdminError(e, '请求失败，请稍后重试'))
   }
 }
 

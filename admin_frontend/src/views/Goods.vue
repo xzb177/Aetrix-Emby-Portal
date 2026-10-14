@@ -7,6 +7,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Coins, Crown, Plus, RefreshCw } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
@@ -156,7 +157,7 @@ async function savePlan() {
     planVisible.value = false
     load()
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   }
 }
 
@@ -171,7 +172,7 @@ async function removePlan(row: PlanRowFull) {
     ElMessage.success(res.message || '已删除')
     load()
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '删除失败')
+    ElMessage.error(toAdminError(e, '删除失败'))
   }
 }
 
@@ -232,7 +233,7 @@ async function savePkg() {
     pkgVisible.value = false
     load()
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   }
 }
 
@@ -247,7 +248,7 @@ async function removePkg(row: PackageRow) {
     ElMessage.success(res.message || '已删除')
     load()
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '删除失败')
+    ElMessage.error(toAdminError(e, '删除失败'))
   }
 }
 

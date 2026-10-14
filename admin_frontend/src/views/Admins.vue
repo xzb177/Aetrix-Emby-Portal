@@ -14,6 +14,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import {
   AlertTriangle, CheckCircle2, Mail, RefreshCw, ShieldCheck, ShieldHalf, UserPlus, Eye, UserCog, UserX,
 } from 'lucide-vue-next'
@@ -124,7 +125,7 @@ async function submitGrant() {
     grantVisible.value = false
     await load()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '授权失败')
+    ElMessage.error(toAdminError(e, '授权失败'))
   } finally {
     saving.value = false
   }
@@ -150,7 +151,7 @@ async function saveManage() {
     manage.value.visible = false
     await load()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '修改失败')
+    ElMessage.error(toAdminError(e, '修改失败'))
   } finally {
     saving.value = false
   }
@@ -175,7 +176,7 @@ async function revokeFromDialog() {
     manage.value.visible = false
     await load()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '撤销失败')
+    ElMessage.error(toAdminError(e, '撤销失败'))
   } finally {
     saving.value = false
   }

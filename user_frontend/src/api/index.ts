@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { toUserMessage } from '@/utils/toUserMessage'
 
 // 使用空 baseURL，让请求自动适配当前域名（前后端同源部署）
 const api = axios.create({
@@ -90,6 +91,12 @@ api.interceptors.response.use(
   },
   async (error) => {
     const originalRequest = error?.config
+    // Batch G：拦截器即翻译点 —— 把人话文案挂到 error.userMessage 上，供调用方
+    // `toast.error(err.userMessage ?? toUserMessage(err))` 使用；不新增任何全局提示，
+    // 不改变原有 reject 行为（保持调用方原有静默/日志/弹窗逻辑）。
+    if (error && !(error as { userMessage?: string }).userMessage) {
+      ;(error as { userMessage?: string }).userMessage = toUserMessage(error)
+    }
     if (!originalRequest) {
       return Promise.reject(error)
     }
@@ -144,6 +151,10 @@ api.interceptors.response.use(
       } catch (refreshError) {
         onRefreshFailed(refreshError)
         forceLogout()
+        // Batch G：刷新失败的错误同样带上人话文案（此时登录页会接管展示）
+        if (refreshError && !(refreshError as { userMessage?: string }).userMessage) {
+          ;(refreshError as { userMessage?: string }).userMessage = toUserMessage(refreshError)
+        }
         return Promise.reject(refreshError)
       } finally {
         isRefreshing = false

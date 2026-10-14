@@ -9,6 +9,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import { KeyRound, Plus, RefreshCw, Copy, Trash2, Pencil } from 'lucide-vue-next'
 import { EmptyState, PageHeader } from '@/components/ui'
 import {
@@ -113,7 +114,7 @@ async function doCreate() {
     showPlaintext.value = true
     await load()
   } catch (e: any) {
-    ElMessage.error(e?.message || '创建失败')
+    ElMessage.error(toAdminError(e, '创建失败'))
   } finally {
     creating.value = false
   }
@@ -152,7 +153,7 @@ async function doEdit() {
     showEdit.value = false
     await load()
   } catch (e: any) {
-    ElMessage.error(e?.message || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   }
 }
 
@@ -171,7 +172,7 @@ async function doRevoke(k: ApiKeyRow) {
     ElMessage.success('已吊销')
     await load()
   } catch (e: any) {
-    ElMessage.error(e?.message || '吊销失败')
+    ElMessage.error(toAdminError(e, '吊销失败'))
   }
 }
 
