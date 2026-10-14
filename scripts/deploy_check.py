@@ -310,6 +310,20 @@ def run_checks(base: str, username: str, password: str, media_dir: str,
             break
     check("扫描把挂载里的媒体入库", ingested > 0, f"入库 {ingested} 条 {item_path}")
 
+    # R41：item_count 是扫描结束时才回写的计数 —— 必须等扫描跑完再断言，
+    # 否则慢 runner 上扫描还在 processing 阶段就查列表，item_count 仍为 0 误判失败。
+    # （2026-10-14 PR #866 实证：items 接口已入库 1 条，但 is_scanning=True 时该断言翻红；
+    #  同名检查在 1 小时前的主干 63a84fd5 上是绿的，纯时序 flake）
+    scan_done = False
+    for _ in range(60):
+        time.sleep(1)
+        status, text, _ = request("GET", f"{base}/api/admin/emby/libraries", token=token)
+        libs = [l for l in (as_json(text) or {}).get("libraries") or [] if l.get("id") == lib_id]
+        if libs and not libs[0].get("is_scanning"):
+            scan_done = True
+            break
+    check("扫描任务结束后再查计数", scan_done, "" if scan_done else "60s 内扫描未结束")
+
     status, text, _ = request("GET", f"{base}/api/admin/emby/libraries", token=token)
     rows = [l for l in (as_json(text) or {}).get("libraries") or [] if l.get("id") == lib_id]
     check("媒体库列表回传条目数与挂载绑定",
