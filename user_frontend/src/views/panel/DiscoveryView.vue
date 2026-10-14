@@ -13,15 +13,18 @@
       </header>
 
       <!-- 首页服务器卡片：服清单数据驱动（发现页最显眼的位置） -->
-      <div v-if="ticketLoadError && !ticketLoading" class="v4-sec">
-        <div class="v4-err">票卡信息没加载出来，点下面重试<br><button class="v4-retry" @click="() => loadTicket()">重试</button></div>
+      <div v-if="visibleCount === 0 && !serversLoading && !serversLoadError" class="v4-sec">
+        <div class="v4-empty">暂无可见服务器，去<RouterLink to="/game/settings">设置</RouterLink>恢复显示</div>
       </div>
       <TicketCard
         v-else
-        :loading="ticketLoading"
+        :loading="serversLoading"
         :servers="visibleServers"
         :mode="cardMode"
         :watch-strip="watchStrip"
+        :error="serversLoadError"
+        :skeleton-count="lastServerCount"
+        @retry="loadServers"
       />
 
       <!-- 今日封存：盲盒 -->
@@ -92,6 +95,7 @@ import EcgCanvas from '@/components/panel/EcgCanvas.vue'
 import PulseActivity from '@/components/panel/PulseActivity.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
 import TicketCard from '@/components/panel/TicketCard.vue'
+import { RouterLink } from 'vue-router'
 import { useServerCards } from '@/composables/useServerCards'
 import { useServerCardPrefs } from '@/composables/useServerCardPrefs'
 import { humanizeError, type ParcelItem, type ParcelsData } from '@/composables/usePanelApi'
@@ -100,30 +104,36 @@ const panel = usePanelStore()
 const user = useUserStore()
 const { today, parcels, pulse, letter } = storeToRefs(panel)
 // 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
-const ticket = useServerCards()
+const serverCards = useServerCards()
 const cardPrefs = useServerCardPrefs()
+const { mode, isVisible } = cardPrefs
 // 顶层解构：模板里直接用，ref 自动解包
 const {
-  loading: ticketLoading,
-  loadError: ticketLoadError,
+  loading: serversLoading,
+  loadError: serversLoadError,
   servers: serverList,
   watchStrip,
-  load: loadTicket,
-} = ticket
+  load: loadServers,
+} = serverCards
 // 用户关掉显示的服不进清单
-const visibleServers = computed(() =>
-  serverList.value.filter((s) => !cardPrefs.hiddenIds.value.includes(s.id)),
-)
+const visibleServers = computed(() => serverList.value.filter((s) => isVisible(s.id)))
+// 可见服数量（0 服时首页走空态，见模板）
+const visibleCount = computed(() => visibleServers.value.length)
+// 上一轮非空服数量：骨架屏按此渲染，避免数据到达后高度跳动
+const lastServerCount = ref(2)
+watch(serverList, (v) => {
+  if (v.length > 0) lastServerCount.value = v.length
+})
 // 展示形态：用户自选优先；自动档按可见服数量切换（1 个=大卡，多个=总览）
 const cardMode = computed<'cards' | 'overview'>(() => {
-  if (cardPrefs.mode.value !== 'auto') return cardPrefs.mode.value
-  return visibleServers.value.length <= 1 ? 'cards' : 'overview'
+  if (mode.value !== 'auto') return mode.value
+  return visibleCount.value === 1 ? 'cards' : 'overview'
 })
 
 onMounted(() => {
   // perf 2026-10-13：合并为 1 次请求（4 个 RTT → 1 个 RTT）
   void panel.loadHome()
-  void loadTicket()
+  void loadServers()
   updateScrollHint()
   window.addEventListener('resize', updateScrollHint)
 })
