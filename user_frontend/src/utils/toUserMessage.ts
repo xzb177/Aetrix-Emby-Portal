@@ -16,6 +16,10 @@
  * - 后端 detail 本来就是中文人话（如"用户不存在"），透传不改写
  * - 已知英文技术信息（"Request failed with status code 500"、"panel api error" 等）
  *   按场景映射，永不直接上屏
+ * - R42 架构师拍板（r40 遗留"是否与管理端统一为 detail 优先"的结论）：
+ *   用户端保持"状态码优先于 detail"，与管理端 toAdminError（detail 优先）有意不一致 ——
+ *   401/429/500 语义确定，curated 文案带行动指引（重新登录/慢一点/稍后重试），
+ *   用户不需要 500 的诊断细节；两端受众不同，不一致是设计不是漂移。
  */
 import { toastFallback, toastSystem, type ToastFallbackKey } from '@/constants/toastMessages'
 
@@ -38,7 +42,15 @@ const CODE_MAP: Record<string, string> = {
 }
 
 /** R41：中文技术细节关键词——命中即不透传，落到兜底（不把技术细节甩给用户） */
-const TECH_LEAK_KEYWORDS = ['数据库', 'sql', '连接失败', '超时', '异常', '堆栈', 'traceback', '500']
+const TECH_LEAK_KEYWORDS = ['数据库', 'sql', '连接失败', '超时', '异常', '堆栈', 'traceback']
+
+/** R42：5xx 只认"技术语境"才算泄漏 —— "Internal Server Error / 服务器内部错误 /
+ *  status 5xx / 5xx error" 这类才吞掉；"积分数必须是 500 的整数倍"这类正常数字不误杀。
+ *  （R41 的裸 '500' 子串会误杀所有含 500/1500/5000 的数字：实证 backend/api/economy.py:556
+ *  vitality_point_cost 可配置，取 500 时人话指引被吞成通用兜底；且裸子串拦不住真正的泄漏形态
+ *  "Internal Server Error"（无数字），已收紧） */
+const SERVER_ERROR_LEAK_RE =
+  /internal server error|服务器内部错误|\bstatus\b.{0,12}\b5\d\d\b|\b5\d\d\b.{0,12}(错误|error|失败|exception)/i
 
 /** 全大写下划线风格的机器码，如 RATE_LIMITED / SOME_ERROR_2 */
 const MACHINE_CODE_RE = /^[A-Z][A-Z0-9_]{2,}$/
@@ -88,7 +100,11 @@ export function toUserMessage(err: unknown, fallbackKey: ToastFallbackKey = 'sav
       return mapCode(text) ?? fallback
     }
     // R41：中文里夹带技术细节（数据库/SQL/超时/堆栈…）时不透传，落到兜底
-    if (TECH_LEAK_KEYWORDS.some((k) => text.toLowerCase().includes(k))) {
+    // R42：5xx 另走 SERVER_ERROR_LEAK_RE（技术语境才算泄漏），裸数字不误杀
+    if (
+      TECH_LEAK_KEYWORDS.some((k) => text.toLowerCase().includes(k)) ||
+      SERVER_ERROR_LEAK_RE.test(text)
+    ) {
       return fallback
     }
     // 后端返回的人话（如"用户不存在"）直接透传
