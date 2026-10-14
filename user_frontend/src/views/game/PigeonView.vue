@@ -49,7 +49,7 @@
           <button
             class="refresh-btn"
             :class="{ 'is-loading': refreshing }"
-            :disabled="refreshing"
+            :disabled="refreshing || loading"
             :aria-label="refreshing ? '刷新中' : '刷新信件'"
             @click="onManualRefresh"
           >
