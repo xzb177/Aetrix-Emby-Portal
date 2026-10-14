@@ -18,7 +18,8 @@
         <div v-if="collector.loading" class="v4-skeleton" style="height:110px"></div>
         <template v-else>
           <div class="v4-id-name">{{ nickname }}</div>
-          <div class="v4-id-title">{{ tasteTitle }}</div>
+          <!-- R41：口味数据没拿到（非加载态的静默失败）时给重试入口，调 loadCollector(true) 强制刷新 -->
+          <div class="v4-id-title">{{ tasteTitle }}<button v-if="!tastesRaw" class="v4-retry" @click="retryCollector">重试</button></div>
           <div class="v4-id-stats">
             <div><b>{{ points }}</b><span>能量</span></div>
             <div><b>{{ watchHoursText }}</b><span>累计观影</span></div>

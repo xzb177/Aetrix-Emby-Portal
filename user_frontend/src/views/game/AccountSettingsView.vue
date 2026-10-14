@@ -23,8 +23,12 @@
 
       <!-- 我的会员：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
       <section class="v4-sec" aria-label="我的会员">
+        <!-- R41：补上标题行，与其他两节结构对齐（标题+副标题） -->
+        <div class="v4-sec-title">🏷️ 我的会员</div>
         <div class="v4-sec-sub">会员到期、历史账单、取消续订都在这里</div>
         <div v-if="subsError" class="v4-err">订阅加载失败：{{ subsError }}<br><button class="v4-retry" @click="loadSubs">重试</button></div>
+        <!-- R41：在途显示骨架屏 —— 请求还没回来时别闪现"还没有会员"（ProfileSubscriptions 的空数据文案） -->
+        <div v-else-if="subsLoading" class="v4-skeleton" style="height:180px"></div>
         <ProfileSubscriptions
           v-else
           :active-sub="activeSub"
@@ -203,15 +207,25 @@ function openChangePwd() {
   // R38 P2-2：记住触发按钮，关闭后焦点回到它
   lastTrigger.value = document.activeElement as HTMLElement | null
   showChangePwd.value = true
+  // R41：弹窗打开时锁住背后页面滚动（照抄 WishlistView R38 P3-11 模式）
+  document.body.style.overflow = 'hidden'
   window.addEventListener('keydown', onPwdEsc)
   nextTick(() => oldPwdInput.value?.focus())
 }
 function closeChangePwd() {
   showChangePwd.value = false
+  // R41：弹窗关闭时释放 body 滚动锁（照抄 WishlistView R38 P3-11 模式）
+  document.body.style.overflow = ''
+  // R41：关闭时同步清空表单 —— 取消后重开，旧密码不再残留（pwdError 的清理保留在 openChangePwd）
+  pwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
   window.removeEventListener('keydown', onPwdEsc)
   lastTrigger.value?.focus?.()
 }
-onUnmounted(() => window.removeEventListener('keydown', onPwdEsc))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onPwdEsc)
+  // R41：组件卸载时兜底释放 body 滚动锁，避免锁死
+  document.body.style.overflow = ''
+})
 
 async function handleChangePassword() {
   const { oldPassword, newPassword, confirmPassword } = pwdForm.value
@@ -244,6 +258,8 @@ async function handleChangePassword() {
 // ===== 我的会员（ProfileView 移植；展示层全在 ProfileSubscriptions.vue） =====
 const subscriptions = ref<MySubscription[]>([])
 const subsError = ref('')
+// R41：在途标记 —— loadSubs 全程置位，在途显示 .v4-skeleton，不闪现"还没有会员"
+const subsLoading = ref(false)
 const cancellingSub = ref<number | null>(null)
 
 const activeSub = computed(
@@ -254,12 +270,15 @@ const isFreeRealm = computed(() => userStore.isFreeRealm)
 const realmNote = computed(() => userStore.realmNote)
 
 async function loadSubs() {
+  subsLoading.value = true
   subsError.value = ''
   try {
     subscriptions.value = await subscriptionApi.getMine()
   } catch (e) {
     // 加载失败别装成"没订阅"，留错误态给用户重试
     subsError.value = humanizeError(e)
+  } finally {
+    subsLoading.value = false
   }
 }
 
@@ -406,8 +425,8 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  /* 触点扩展到 44px：透明 padding + 负 margin，视觉不变（R22 LeverSwitch 同款手法） */
-  padding: 13px 10px;
+  /* R41：纵向 padding 13px→15px —— 原注释声称 44px，实算约 40px，提到 15px 才诚实达标（视觉不变） */
+  padding: 15px 10px;
   margin: -8px 0;
   background: var(--paper2);
   border: 1px solid var(--line);
@@ -461,8 +480,8 @@ onMounted(() => {
 .dev-badge.off { background: var(--au-danger-soft); color: var(--red); }
 .dev-remove {
   flex-shrink: 0;
-  /* 触点扩展到 44px：透明 padding + 负 margin，视觉不变（R22 LeverSwitch 同款手法） */
-  padding: 13px 10px;
+  /* R41：纵向 padding 13px→15px —— 原注释声称 44px，实算约 40px，提到 15px 才诚实达标（视觉不变） */
+  padding: 15px 10px;
   margin: -7px 0;
   background: transparent;
   border: none;

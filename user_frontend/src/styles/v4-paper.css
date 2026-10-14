@@ -154,17 +154,27 @@
   box-shadow: 3px 3px 0 rgba(42, 38, 32, 0.12);
 }
 
-/* 占位（接口失败/加载中：纸色 shimmer，不许转圈圈） */
+/* 占位（接口失败/加载中：纸色 shimmer，不许转圈圈）
+   R41：改成 transform 方案——伪元素承载渐变条左右滑动，动画只做 translateX（合成器线程），
+   不再每帧改 background-position 触发布局/重绘。颜色与周期（1.4s）与旧版一致，视觉等价 */
 .v4-skeleton {
+  position: relative;
+  overflow: hidden;
   border-radius: var(--paper-r-sm, 8px);
-  background: linear-gradient(90deg, var(--paper2) 25%, #f7f2e6 50%, var(--paper2) 75%);
-  background-size: 200% 100%;
-  animation: v4-shimmer 1.4s infinite linear;
+  background: var(--paper2);
   min-height: 14px;
 }
-@keyframes v4-shimmer {
-  from { background-position: 200% 0; }
-  to { background-position: -200% 0; }
+.v4-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, #f7f2e6 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: v4-shimmer-slide 1.4s infinite linear;
+}
+@keyframes v4-shimmer-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
 }
 .v4-err {
   font-size: 12px;
@@ -262,3 +272,18 @@
 .evo-bar i { --evo-p: 0; }
 .meter .fill { --meter-p: 0; }
 .v4-growth .bar-fill { --bar-p: 0; }
+
+/* R41：体力条配色变量 —— v4 永远浅色，值与设计稿一致；变量化只为将来主题覆盖时改这一处。
+   令牌契约检查要求定义必须出现在被引入的样式表里（SFC <style> 块不算），故集中声明于此。 */
+.stamina-bar {
+  --stb-unit: #8a7a5c;
+  --stb-warn: #b3402a;
+  --stb-ok: #6b7f3e;
+  --stb-empty-border: #c96a5a;
+  --stb-empty-bg: #f9ece6;
+  --stb-fill-from: #e8a33d;
+  --stb-fill-to: #d97b2b;
+  --stb-fill-low-from: #d98a2b;
+  --stb-fill-low-to: #c25e1e;
+  --stb-fill-empty: #b9b0a0;
+}

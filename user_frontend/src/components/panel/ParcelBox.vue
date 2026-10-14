@@ -195,7 +195,8 @@ function onTap() {
 /* 开封态：面单排版 */
 .v4-parcel.opened {
   border-color: var(--green);
-  background: #F1F4EC;
+  /* R39-04：原硬编码 #F1F4EC 与 --paper(#F6F1E7) 均为暖白，收敛到 token */
+  background: var(--paper);
   animation: v4-pop 0.35s ease;
 }
 .v4-parcel-name {

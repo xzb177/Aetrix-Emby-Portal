@@ -242,8 +242,10 @@ function statusLabel(status: string) {
 }
 
 /** 求救信号列表 */
-async function fetchTickets() {
-  loading.value = true
+// R41：静默模式 —— replyTicket / doCloseTicket / sendSOS 尾部刷新时 silent=true，不置 loading，
+// 已展开的对话卡不再被 skeleton 卸载闪一次
+async function fetchTickets(silent = false) {
+  if (!silent) loading.value = true
   loadError.value = ''
   try {
     const res = await ticketApi.getMyTickets()
@@ -252,7 +254,7 @@ async function fetchTickets() {
     if (!tickets.value.length) loadError.value = humanizeError(e)
     else toast.error(humanizeError(e))
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -317,7 +319,7 @@ async function sendSOS() {
     await createP
     toast.success('求救信号已发出，营地马上派救援队')
     form.value = { title: '', category: 'other', message: '' }
-    await fetchTickets()
+    await fetchTickets(true)
     if (!reduce) {
       await new Promise(r => morseTimers.push(window.setTimeout(r, 1400)))
     }
@@ -372,7 +374,7 @@ async function replyTicket() {
     await ticketApi.reply(selectedTicket.value.id, replyMessage.value.trim())
     replyMessage.value = ''
     await fetchMessages(selectedTicket.value.id)
-    await fetchTickets()
+    await fetchTickets(true)
   } catch (e) {
     toast.error(humanizeError(e))
   } finally {
@@ -395,7 +397,7 @@ async function doCloseTicket() {
     toast.success('已标记脱险，记录关闭')
     expandedId.value = null
     selectedTicket.value = null
-    await fetchTickets()
+    await fetchTickets(true)
   } catch (e) {
     toast.error(humanizeError(e))
     // 失败时保持确认弹窗打开，用户可直接重试，不丢失上下文
@@ -410,7 +412,8 @@ async function doCloseTicket() {
 function formatDate(dateStr: string) {
   if (!dateStr) return ''
   const date = new Date(dateStr)
-  if (isNaN(date.getTime())) return dateStr
+  // R41：非法日期不再原样吐 ISO 字符串 —— "时间未知"比 2026-13-99T99:99 像人话
+  if (isNaN(date.getTime())) return '时间未知'
   const now = new Date()
   const diff = Math.max(0, now.getTime() - date.getTime())
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
@@ -432,6 +435,9 @@ onMounted(() => {
 })
 onUnmounted(() => {
   morseTimers.forEach(t => window.clearTimeout(t))
+  // R41：卸载时也终结摩斯动画 Promise，避免清掉 timer 后 Promise 永远不 settle（R38 P2-1 句柄）
+  morseAnimResolve?.()
+  morseAnimResolve = null
 })
 </script>
 

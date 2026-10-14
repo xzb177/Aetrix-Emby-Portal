@@ -307,13 +307,19 @@ async function onManualRefresh() {
 }
 
 function fmtFull(iso: string) {
-  return new Date(iso).toLocaleString('zh-CN', {
+  // R41：非法日期回退原串（照抄 CompanionView R38 P3-10 的 isNaN 回退）
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  return d.toLocaleString('zh-CN', {
     month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
   })
 }
 
 function fmtRelative(iso: string) {
-  const diff = Date.now() - new Date(iso).getTime()
+  // R41：非法日期直接回退原串 —— NaN 差值不再一路漏到 fmtFull
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const diff = Date.now() - d.getTime()
   const minutes = Math.floor(diff / 60000)
   if (minutes < 1) return '刚刚'
   if (minutes < 60) return `${minutes} 分钟前`

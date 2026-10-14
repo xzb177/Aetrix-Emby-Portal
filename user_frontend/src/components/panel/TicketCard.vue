@@ -36,6 +36,11 @@ const watchLine = computed(() => {
   if (!w || w.value === '—') return w?.short || ''
   return `${w.value}${w.unit} · ${w.short}`
 })
+
+/** R41：进度钳位到 0~100——后端脏数据（负数/超 100）不让进度条翻出轨道，也让读屏拿到合法值 */
+function clampProgress(p: number): number {
+  return Math.min(100, Math.max(0, p))
+}
 </script>
 
 <template>
@@ -78,12 +83,12 @@ const watchLine = computed(() => {
           v-if="c.progress !== null"
           class="stat-progress"
           role="progressbar"
-          :aria-valuenow="c.progress"
-          :aria-label="`进度 ${c.progress}%`"
-          :title="`套餐周期已过 ${c.progress}%`"
+          :aria-valuenow="clampProgress(c.progress)"
+          :aria-label="`进度 ${clampProgress(c.progress)}%`"
+          :title="`套餐周期已过 ${clampProgress(c.progress)}%`"
         >
           <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
-          <span class="stat-progress-fill" :style="{ transform: `scaleX(${c.progress / 100})` }"></span>
+          <span class="stat-progress-fill" :style="{ transform: `scaleX(${clampProgress(c.progress) / 100})` }"></span>
         </span>
         <span v-else-if="c.short" class="stat-short">{{ c.short }}</span>
         <!-- 订阅：套餐名 + 到期日一行小字 -->
@@ -92,6 +97,7 @@ const watchLine = computed(() => {
     </div>
     <!-- 票根行：顶部打孔虚线 + 左右半圆缺口；印章 / 观影小字 / 续费按钮一排 -->
     <div class="ticket-stub">
+      <!-- R41：ADMIT ONE 是电影票的装饰印章（motif），刻意保留英文原样、不做本地化 -->
       <span class="stub-admit" aria-hidden="true">
         ADMIT ONE<span v-if="planName" class="stub-plan"><i> · </i>{{ planName }}</span>
       </span>
@@ -280,17 +286,27 @@ a.ticket-stat:active { background: var(--tp-paper2); }
 }
 .stub-btn:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 rgba(42, 38, 32, 0.2); }
 
-/* 骨架：纸色 shimmer */
+/* 骨架：纸色 shimmer
+   R41：改成 transform 方案——伪元素承载渐变条左右滑动，动画只做 translateX（合成器线程），
+   不再每帧改 background-position 触发布局/重绘。颜色与周期（1.4s）与旧版一致，视觉等价 */
 .tp-skeleton {
+  position: relative;
+  overflow: hidden;
   border-radius: var(--paper-r-sm, 8px);
-  background: linear-gradient(90deg, var(--tp-paper2) 25%, #f7f2e6 50%, var(--tp-paper2) 75%);
-  background-size: 200% 100%;
-  animation: tp-shimmer 1.4s infinite linear;
+  background: var(--tp-paper2);
   min-height: 14px;
 }
-@keyframes tp-shimmer {
-  from { background-position: 200% 0; }
-  to { background-position: -200% 0; }
+.tp-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, #f7f2e6 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: tp-shimmer-slide 1.4s infinite linear;
+}
+@keyframes tp-shimmer-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
 }
 .sk-stat-label { display: block; width: 4rem; height: 14px; }
 .sk-stat-value { display: block; width: 5.5rem; height: 34px; margin: 0.25rem 0; }
@@ -300,7 +316,8 @@ a.ticket-stat:active { background: var(--tp-paper2); }
 .sk-stub-btn { display: block; width: 5rem; height: 44px; flex-shrink: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .tp-skeleton { animation: none !important; }
+  /* R41：动画已搬到伪元素，这里跟到 ::after 才管用 */
+  .tp-skeleton::after { animation: none !important; }
   .stub-admit { transform: none; }
   .stub-btn:active { transform: none; }
 }

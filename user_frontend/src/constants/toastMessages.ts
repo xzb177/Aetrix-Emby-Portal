@@ -62,6 +62,8 @@ export const toastFallback = {
   settingFailed: '设置没能保存，请稍后重试',
   /** 数据加载类兜底（Batch G：humanizeError 统一收敛到 toUserMessage 时用） */
   loadFailed: '加载失败，稍后再试',
+  /** 结束播放兜底（R41：结束播放失败不再借用"保存失败"文案，动作对不上） */
+  stopFailed: '没能结束这次播放，请稍后重试',
 } as const
 
 export type ToastFallbackKey = keyof typeof toastFallback

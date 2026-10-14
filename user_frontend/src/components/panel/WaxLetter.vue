@@ -14,11 +14,12 @@
       <p>来自昨日 {{ letterTime }} 的你<br /><span class="v4-letter-hint">点一下，拆信</span></p>
     </div>
     <div v-else class="v4-letter-content">
-      <div class="v4-kv"><span>昨日观影</span><b>{{ String(letter.watch_duration ?? '—') }}</b></div>
+      <div class="v4-kv"><span>昨日观影</span><b>{{ watchDurationText }}</b></div>
       <div class="v4-kv"><span>看完</span><b>{{ watchedText }}</b></div>
       <div class="v4-kv" v-if="letter.taste_shift"><span>最近偏爱</span><span>{{ letter.taste_shift }}</span></div>
-      <div class="v4-kv"><span>今日推荐</span><span>每日零点更新</span></div>
-      <p v-if="letter.teaser" class="v4-letter-ps">P.S. {{ letter.teaser }}</p>
+      <!-- R41：「今日推荐」后端暂无 recommendation 字段时隐藏，不放静态占位 -->
+      <div class="v4-kv" v-if="letter.recommendation"><span>今日推荐</span><span>{{ letter.recommendation }}</span></div>
+      <p v-if="letter.teaser" class="v4-letter-ps">附言：{{ letter.teaser }}</p>
     </div>
   </div>
 </template>
@@ -53,6 +54,19 @@ const letterTime = computed(() => {
   const y = new Date()
   y.setDate(y.getDate() - 1)
   return `${y.getMonth() + 1}.${y.getDate()}`
+})
+
+/** R41：昨日观影时长——后端已拼好"X小时Y分"字符串时原样展示；
+    拿到数字（分钟）时防御性换算成"X小时Y分" / "X分" */
+const watchDurationText = computed(() => {
+  const v = props.letter.watch_duration
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    const h = Math.floor(v / 60)
+    const m = Math.round(v % 60)
+    if (h > 0) return m > 0 ? `${h}小时${m}分` : `${h}小时`
+    return `${m}分`
+  }
+  return String(v ?? '—')
 })
 
 /** 看完的条目：数组取前 3，否则按数量兜底 */

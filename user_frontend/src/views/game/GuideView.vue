@@ -60,9 +60,7 @@
         <!-- 聊天 -->
         <section class="v4-sec">
           <div ref="scroller" class="chat" tabindex="0" aria-label="聊天记录" aria-live="polite">
-            <div v-if="!bubbles.length" class="chat-empty">
-              <p>老陈刚沏上茶，坐下聊两句？</p>
-            </div>
+            <!-- R41：.chat-empty 已删 —— onMounted 同步 push 欢迎气泡，bubbles 永不为空，空态死代码 -->
             <div v-for="(b, i) in bubbles" :key="i" class="msg" :class="b.role">
               <div v-if="b.role === 'guide'" class="who">老陈 · 向导</div>
               <p>{{ b.content }}</p>
@@ -271,8 +269,7 @@ onMounted(() => {
   max-height: 52vh;
   overflow-y: auto;
 }
-.chat-empty { color: var(--ink2); font-size: 13px; text-align: center; padding: 30px 0; }
-.chat-empty p { margin: 0; }
+/* R41：.chat-empty 已删（onMounted 同步 push 欢迎气泡，空态永不可达），样式一并清掉 */
 .msg { max-width: 82%; }
 .msg p { margin: 0; font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; }
 .msg.guide {
@@ -337,6 +334,8 @@ onMounted(() => {
   font-size: 14px;
   font-weight: 800;
   padding: 0 18px;
+  /* R41：补上 min-height:44px —— 原只有 padding，瘦机型上高度差一截 */
+  min-height: 44px;
   border-radius: var(--paper-r-md, 10px);
   box-shadow: 0 3px 0 var(--red-deep, #a33319);
   cursor: pointer;
@@ -358,5 +357,7 @@ onMounted(() => {
 /* 减弱动效：按下不再位移 */
 @media (prefers-reduced-motion: reduce) {
   .chip:active, .inputbar button:active { transform: none; }
+  /* R41：打字省略号呼吸动画在减弱动态下关闭，留半透明静态点 */
+  .typing i { animation: none; opacity: 0.6; }
 }
 </style>
