@@ -73,11 +73,12 @@ const routes: RouteRecordRaw[] = [
       { path: 'admins', name: 'Admins', component: () => import('@/views/Admins.vue'), meta: { title: '管理员与权限' } },
       { path: 'client-policy', name: 'ClientPolicy', component: () => import('@/views/ClientPolicy.vue'), meta: { title: '客户端策略' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '操作日志' } },
-      { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '服务健康' } },
+      { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '系统健康' } },
       // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
       { path: 'tasks', name: 'TaskOverview', component: () => import('@/views/TaskOverview.vue'), meta: { title: '任务总览' } },
-      // v2.56.0 健康一页：可观测底座的上层 UI，十个子系统红黄绿灯同屏
-      { path: 'health-board', name: 'Health', component: () => import('@/views/Health.vue'), meta: { title: '健康总览' } },
+      // v2.56.0 健康一页：十个子系统红黄绿灯同屏（原 Health.vue 已并入「系统健康」）
+      // Batch E（健康体系合并）：旧「健康总览」地址保留为跳转，收藏与外部链接不会落到 404
+      { path: 'health-board', redirect: '/health' },
       // v2.57.0 一键体检：只读诊断规则引擎，大白话结论 + 检查步骤
       { path: 'diagnosis', name: 'Diagnosis', component: () => import('@/views/Diagnosis.vue'), meta: { title: '一键体检' } },
       // v2.58.0 API Key 管理：第三方 Service Token（创建/列表/吊销）
