@@ -114,7 +114,7 @@ export const gameFacilities: GameFacility[] = [
     path: '/game/signal',
     icon: '📡',
     desc: '发出求救信号，等好心人来搭把手。',
-    stamp: '求救 · 已发出',
+    stamp: '营地 · 信号机',
     group: 'social',
     order: 4,
     enabled: true,

@@ -46,7 +46,9 @@
               <b>《{{ w.movie_name }}》</b>
               <div class="wmeta">
                 {{ shortDate(w.created_at) }} 投下
-                <span v-if="w.status === 'completed' && w.emby_item_id"> · 营地已上架，去播放器看</span>
+                <span v-if="w.status === 'completed' && w.emby_item_id">
+                  · 营地已上架，<button type="button" class="goto-player" @click="goOperator">去播放器看</button>
+                </span>
                 <span v-else-if="w.vote_count"> · 已有 {{ w.vote_count }} 人附议</span>
               </div>
             </div>
@@ -110,6 +112,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { facilityStamp } from '@/config/game'
 import { mediaSeekApi, type MediaSeekRequest, type HotMediaSeekRequest } from '@/api'
@@ -131,6 +134,12 @@ const voting = ref<number | null>(null)
 const justAddedId = ref<number | null>(null)
 const wellRef = ref<HTMLElement | null>(null)
 const wishInput = ref<HTMLInputElement | null>(null)
+
+const router = useRouter()
+/** R45：营地已上架的心愿 → 去接线员页（播放器接线入口） */
+function goOperator() {
+  router.push('/game/operator')
+}
 
 // hot 接口返回"所有人 pending（含自己）"，与 myWishes 按 id 去重，避免自己的心愿被算两次
 const totalWishes = computed(() => {
@@ -428,6 +437,19 @@ onMounted(() => {
 .wish > div:first-child { min-width: 0; flex: 1; }
 .wish b { font-size: 14px; display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wmeta { font-size: 11px; color: var(--ink2); margin-top: 4px; }
+/* R45：营地已上架 → 文字按钮（接线员页接线入口）；透明 padding + 负 margin 扩大点击区，视觉行高不变 */
+.goto-player {
+  background: none;
+  border: none;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  padding: 8px 6px;
+  margin: -8px -6px;
+}
 .chip {
   font-size: 11px;
   font-weight: 700;

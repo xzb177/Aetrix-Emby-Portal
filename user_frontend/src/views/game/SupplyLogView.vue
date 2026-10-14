@@ -45,7 +45,7 @@
                 <span class="rc-hint">{{ openId === o.order_id ? '点小票收起 ▴' : '点小票展开明细 ▾' }}</span>
               </div>
               <div v-if="o.status === 'refunded' && o.refund_reason" class="rc-refund-reason">
-                ↩️ {{ o.refund_reason }}
+                ↩️ 原因：{{ o.refund_reason }}
               </div>
               <div v-if="(o.discount_amount || 0) > 0" class="rc-coupon">
                 🎟️ 优惠码 {{ o.coupon_code || '已用券' }} 已减 {{ fmtMoney(o.discount_amount || 0) }}
@@ -87,9 +87,12 @@ const loading = ref(true)
 const error = ref('')
 const openId = ref<string | null>(null)
 
-/** kind 游戏化图标：recharge → ⚡ 能量补给，subscription → 📜 远征执照 */
+/** kind 游戏化图标：recharge → ⚡ 能量补给，subscription → 📜 远征执照，
+ *  未知 kind 不再误标"远征执照"，用 📦 通用包裹（aria-label 同步走这里） */
 function kindIcon(kind: OrderRow['kind']): string {
-  return kind === 'recharge' ? '⚡' : '📜'
+  if (kind === 'recharge') return '⚡'
+  if (kind === 'subscription') return '📜'
+  return '📦'
 }
 
 /**
@@ -236,7 +239,7 @@ onMounted(load)
 }
 .kv:last-child { border-bottom: none; }
 .kv span:first-child { color: var(--ink2); flex-shrink: 0; }
-.kv b { font-weight: 700; text-align: right; }
+.kv b { font-weight: 700; text-align: right; min-width: 0; word-break: break-all; }
 .kv .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
 .price-was { color: var(--ink2); text-decoration: line-through; font-weight: 400; margin-right: 4px; }
 .rc-foot {

@@ -103,6 +103,8 @@ const checkedToday = ref<boolean | null>(null)
 const unreadCount = ref(0)
 
 const statusText = computed(() => {
+  // R45：三路 API 全失败——诚实文案，不说"元气满满"（状态条本身即报到页可点入口）
+  if (allFailed.value) return '营地信号不太好，数据没拉到，点我去报到 →'
   const vit = vitality.value
   const checked = checkedToday.value
   if (vit !== null && checked !== null) {

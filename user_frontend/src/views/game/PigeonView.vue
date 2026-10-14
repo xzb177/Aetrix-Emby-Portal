@@ -115,7 +115,7 @@
               </span>
               <span class="pinfo">
                 <span class="ptitle">{{ msg.title }}</span>
-                <span class="ptime">{{ fmtRelative(msg.created_at) }} · {{ TYPE_LABELS[msg.message_type] || msg.message_type }}</span>
+                <span class="ptime">{{ fmtRelative(msg.created_at) }} · {{ TYPE_LABELS[msg.message_type] || '📮 其他来信' }}</span>
               </span>
               <span class="parrow" aria-hidden="true">›</span>
             </button>
@@ -140,7 +140,7 @@
               <template v-else>
                 <div class="pbody">
                   <div class="pbody-head">
-                    <span class="ptag">{{ TYPE_LABELS[msg.message_type] || msg.message_type }}</span>
+                    <span class="ptag">{{ TYPE_LABELS[msg.message_type] || '📮 其他来信' }}</span>
                     <span class="pbody-time">{{ fmtFull(msg.created_at) }}</span>
                   </div>
                   <div class="pbody-text">{{ msg.content }}</div>
@@ -421,7 +421,7 @@ onMounted(() => { void load(true) })
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .pigeon.unread .ptitle { font-weight: 800; }
-.ptime { font-size: 11px; color: var(--ink2); }
+.ptime { font-size: 11px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .parrow {
   color: var(--ink2); font-size: 18px; flex-shrink: 0;
   transition: transform 0.2s;

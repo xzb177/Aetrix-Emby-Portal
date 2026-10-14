@@ -165,7 +165,7 @@ const vitalCells = computed(() => {
   text-overflow: ellipsis;
 }
 .vitals span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--ink2);
 }
 .vitals div + div {

@@ -106,7 +106,7 @@ watch(plants, () => {
   margin-bottom: -4px;
 }
 .plant .nm {
-  font-size: 10px;
+  font-size: 11px;
   margin-top: 6px;
   color: var(--ink2);
   line-height: 1.4;
@@ -115,7 +115,7 @@ watch(plants, () => {
   text-overflow: ellipsis;
 }
 .plant .ct {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 .eco-foot {

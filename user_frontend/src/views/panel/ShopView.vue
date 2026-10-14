@@ -431,7 +431,9 @@ async function applyCoupon(code: string) {
     )
     const ok = rows.filter((r): r is { key: string; quote: CouponQuote } => !!r && r.quote.valid)
     if (ok.length === 0) {
-      couponError.value = '这张券用不上，换一张试试'
+      // R45A-1：全部请求都抛异常 = 网络/验券服务挂了，说"验券失败"；否则才是券本身用不上
+      const allFailed = rows.length > 0 && rows.every((r) => r === null)
+      couponError.value = allFailed ? '验券失败，稍后再试' : '这张券用不上，换一张试试'
       return
     }
     const quotes: Record<string, CouponQuote> = {}
@@ -441,7 +443,6 @@ async function applyCoupon(code: string) {
     toast.success('优惠券已应用，下单自动抵扣')
   } catch {
     couponError.value = '验券失败，稍后再试'
-  } finally {
   }
 }
 
@@ -913,13 +914,13 @@ async function copyInviteCode() {
   right: 8px;
   background: var(--red);
   color: var(--on-dark);
-  font-size: 10px;
+  font-size: 11px;
   padding: 2px 8px;
   border-radius: var(--paper-r-md, 10px);
   transform: rotate(3deg);
 }
 .can .per {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--green);
   margin-top: 4px;
   font-weight: 700;
@@ -1076,7 +1077,7 @@ async function copyInviteCode() {
   right: -2px;
   background: var(--ink);
   color: var(--paper); /* R27：原 #f6f1e7 = --paper */
-  font-size: 10px;
+  font-size: 11px;
   padding: 3px 10px;
   border-radius: 2px;
   transform: rotate(2deg);
@@ -1157,7 +1158,7 @@ async function copyInviteCode() {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 11px;
 }
 .camp.done .flag {
   background: var(--gold);

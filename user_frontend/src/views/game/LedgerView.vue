@@ -56,14 +56,14 @@
               v-for="l in g.rows"
               :key="l.id"
               class="row"
-              :class="isIncome(l) ? 'in' : 'out'"
+              :class="rowTone(l)"
             >
               <div class="ic" aria-hidden="true">{{ gameMeta(l.type).icon }}</div>
               <div class="mid">
                 <div class="t">{{ l.description || gameMeta(l.type).title }}</div>
                 <div class="d">{{ fmtTime(l.created_at) }}</div>
               </div>
-              <div class="amt">{{ isIncome(l) ? '+' : '−' }}{{ fmtNum(Math.abs(l.amount)) }} ⚡</div>
+              <div class="amt">{{ rowSign(l) }}{{ fmtNum(Math.abs(l.amount)) }} ⚡</div>
             </div>
           </div>
 
@@ -99,9 +99,10 @@ const toast = useToast()
 
 /**
  * 类型元数据：与 WalletView.vue 的 TYPE_META 完全一致（值保持原样）。
- * income 为准判断进/出账；未知 type 兜底显示原值、按进账处理。
+ * income 为准判断进/出账；未知 type 兜底 income=null 走中性展示（R45C-3：
+ * 不渲染 +/- 号、灰色、进账/出账筛选都不收录，钱的事不许猜方向）。
  */
-const TYPE_META: Record<string, { label: string; income: boolean }> = {
+const TYPE_META: Record<string, { label: string; income: boolean | null }> = {
   checkin: { label: '报到', income: true },
   invite: { label: '邀请奖励', income: true },
   invitee: { label: '受邀奖励', income: true },
@@ -115,7 +116,7 @@ const TYPE_META: Record<string, { label: string; income: boolean }> = {
   transfer_fee: { label: '转账手续费', income: false },
 }
 function typeMeta(t: string) {
-  return TYPE_META[t] || { label: '其他', income: true }
+  return TYPE_META[t] || { label: '其他', income: null }
 }
 
 /** 世界观映射：游戏化标签（值按任务约定） */
@@ -137,6 +138,19 @@ function gameMeta(t: string) {
 }
 
 const isIncome = (l: PointsLogEntry) => typeMeta(l.type).income
+
+/**
+ * R45C-3：账本行色调/符号三态。未知类型不进绿也不进红——
+ * 配色中性灰、不渲染 +/- 号，避免把未知流水误标成进账。
+ */
+const rowTone = (l: PointsLogEntry): 'in' | 'out' | 'unknown' => {
+  const v = isIncome(l)
+  return v === true ? 'in' : v === false ? 'out' : 'unknown'
+}
+const rowSign = (l: PointsLogEntry): string => {
+  const t = rowTone(l)
+  return t === 'in' ? '+' : t === 'out' ? '−' : ''
+}
 
 const PAGE_SIZE = 30
 type FilterKey = 'all' | 'in' | 'out'
@@ -243,8 +257,9 @@ interface DayGroup {
 /** 按本地日期分组：今天 / 昨天 / 更早（数据驱动） */
 const filteredGroups = computed<DayGroup[]>(() => {
   const rows = logs.value.filter((l) => {
-    if (filter.value === 'in') return isIncome(l)
-    if (filter.value === 'out') return !isIncome(l)
+    // R45C-3：未知类型两边都不收，只在"全部"里看
+    if (filter.value === 'in') return isIncome(l) === true
+    if (filter.value === 'out') return isIncome(l) === false
     return true
   })
   if (!rows.length) return []
@@ -325,7 +340,8 @@ onUnmounted(() => window.clearInterval(dateTimer))
   position: relative;
 }
 .fuel-num {
-  font-size: 52px;
+  /* R45C-2：超大余额在小屏上按视口收缩，不再被 .fuel 的 overflow:hidden 裁掉 */
+  font-size: clamp(36px, 14vw, 52px);
   font-weight: 800;
   margin: 6px 0 2px;
   position: relative;
@@ -401,6 +417,8 @@ onUnmounted(() => window.clearInterval(dateTimer))
 }
 .row.in .ic { background: #E9F1E6; color: var(--green); }
 .row.out .ic { background: #F9E7E1; color: var(--red); }
+/* R45C-3：未知类型中性展示——图标底与金额都走灰色 */
+.row.unknown .ic { background: var(--paper2); color: var(--ink2); }
 .row .mid { flex: 1; min-width: 0; }
 .row .t {
   font-size: 13.5px;
@@ -413,6 +431,8 @@ onUnmounted(() => window.clearInterval(dateTimer))
 .row .amt { font-size: 16px; font-weight: 800; white-space: nowrap; }
 .row.in .amt { color: var(--green); }
 .row.out .amt { color: var(--red); }
+/* R45C-3：未知类型金额中性灰 */
+.row.unknown .amt { color: var(--ink2); }
 
 /* 加载更多：触达区 ≥44px */
 .load-more {

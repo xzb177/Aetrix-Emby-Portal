@@ -157,7 +157,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   margin-left: auto;
   padding: 1px 8px;
   border-radius: var(--paper-r-full, 999px);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   background: var(--tp-paper2);
   color: var(--tp-ink2);
@@ -251,7 +251,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   text-overflow: ellipsis;
   max-width: 4.5rem;
   letter-spacing: 0.1em;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--tp-ink2);
 }
 .stub-plan i { font-style: normal; }
@@ -328,9 +328,9 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   .stat-label svg { display: none; }
   .stat-value { font-size: 23px; }
   .stat-badge { display: none; }
-  .stub-admit { font-size: 10px; letter-spacing: 0.12em; }
+  .stub-admit { font-size: 11px; letter-spacing: 0.12em; }
   .stub-plan { max-width: 3.5rem; }
-  .stub-watch { font-size: 10px; }
+  .stub-watch { font-size: 11px; }
   .stub-btn { min-width: 4.25rem; min-height: 44px; padding: 0 0.75rem; }
 }
 </style>
