@@ -22,7 +22,7 @@ from backend.ratelimit import get_client_ip
 from sqlalchemy import text
 
 from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYPE
-from backend.security import validate_secret_key
+from backend.security import validate_secret_key, resolve_jwt_user_id
 from backend.version import app_version
 from backend import models  # 导入所有模型
 from backend.download_guard import DownloadGuardMiddleware
@@ -397,10 +397,29 @@ def _get_client_ip(request) -> str:
     return get_client_ip(request)
 
 def _is_authenticated(request) -> bool:
-    """检查是否有认证头（简单判断，不验证有效性）"""
-    auth = request.headers.get("authorization", "")
-    token = request.headers.get("x-emby-token", "") or request.headers.get("x-mediabrowser-token", "")
-    return bool(auth or token)
+    """是否认证用户：只认合法的 access JWT（验签），不只看头在不在。
+
+    旧实现只看 Authorization 头有没有，攻击者发任意伪造头就能拿到认证档
+    限额。现用 resolve_jwt_user_id 纯验签（无 DB 查询，内部吞异常），
+    验签失败一律 False（fail-closed 降档）。
+    X-Emby-Token / X-MediaBrowser-Token 是 Emby 凭据，门户 /api/ 鉴权不用它，
+    不再计入认证档（/emby/ 路径的认证/匿名限额本就相同，无影响）。
+    """
+    auth = request.headers.get("Authorization")
+    if not auth:
+        return False
+
+    parts = auth.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        token = parts[1].strip()
+    else:
+        # 无 scheme 时把整个头当 token；空头返回 False
+        token = auth.strip()
+
+    if not token:
+        return False
+
+    return resolve_jwt_user_id(token) is not None
 
 def _check_rate_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, str]:
     """返回 (是否允许, 原因)"""
