@@ -77,6 +77,9 @@ function friendlyError(err: any, fallback: string): string {
 }
 
 async function handleLogin() {
+  // R44 P2：回车双提交防护 —— 表单 @submit 与 input @keyup.enter 会各触发一次，
+  // 此处做 loading 守卫兜底（@keyup.enter 冗余绑定已删除，双保险）
+  if (loading.value) return
   if (!loginForm.username || !loginForm.password) {
     error.value = '请输入用户名和密码'
     return
@@ -97,6 +100,8 @@ async function handleLogin() {
 }
 
 async function handleRegister() {
+  // R44 P2：回车双提交防护（同 handleLogin）
+  if (loading.value) return
   if (registrationClosed.value) {
     error.value = '当前未开放注册'
     return
@@ -259,7 +264,6 @@ onUnmounted(() => {
               name="username"
               autocomplete="username"
               placeholder="输入用户名"
-              @keyup.enter="handleLogin"
             />
           </div>
         </label>
@@ -274,7 +278,6 @@ onUnmounted(() => {
               name="password"
               autocomplete="current-password"
               placeholder="输入密码"
-              @keyup.enter="handleLogin"
             />
             <button type="button" class="eye-btn" :aria-label="showLoginPassword ? '隐藏密码' : '显示密码'" @click="showLoginPassword = !showLoginPassword">
               <EyeOff v-if="showLoginPassword" :size="15" />
@@ -306,7 +309,6 @@ onUnmounted(() => {
               name="username"
               autocomplete="username"
               placeholder="3-32 位字母、数字、下划线"
-              @keyup.enter="handleRegister"
             />
           </div>
         </label>
@@ -321,7 +323,6 @@ onUnmounted(() => {
               name="new-password"
               autocomplete="new-password"
               placeholder="至少 6 位"
-              @keyup.enter="handleRegister"
             />
             <button type="button" class="eye-btn" :aria-label="showRegisterPassword ? '隐藏密码' : '显示密码'" @click="showRegisterPassword = !showRegisterPassword">
               <EyeOff v-if="showRegisterPassword" :size="15" />
@@ -332,7 +333,10 @@ onUnmounted(() => {
             <div class="strength-track">
               <div class="strength-fill" :class="`lv-${passwordStrength}`"></div>
             </div>
-            <span class="strength-text">{{ ['弱', '中', '强'][passwordStrength - 1] || '' }}</span>
+            <span class="strength-text">{{
+              // R44 P3：score=0（1–5 位密码）时原 ['弱','中','强'][score-1] 取到 undefined 显示空文案
+              ['弱', '弱', '中', '强'][passwordStrength]
+            }}</span>
           </div>
         </label>
 
@@ -346,7 +350,6 @@ onUnmounted(() => {
               name="confirm-password"
               autocomplete="new-password"
               placeholder="再次输入密码"
-              @keyup.enter="handleRegister"
             />
           </div>
         </label>
@@ -361,7 +364,6 @@ onUnmounted(() => {
               name="email"
               autocomplete="email"
               placeholder="用于找回密码"
-              @keyup.enter="handleRegister"
             />
           </div>
         </label>
@@ -375,7 +377,6 @@ onUnmounted(() => {
               type="text"
               name="invite-code"
               placeholder="好友的邀请码"
-              @keyup.enter="handleRegister"
             />
           </div>
         </label>
