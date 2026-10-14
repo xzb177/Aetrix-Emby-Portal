@@ -90,6 +90,8 @@
   --paper-med: 0.26s;
   --paper-font-serif: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
   --paper-dock-space: 0px;
+  /* 底部导航栏内容高度（.v4-tabbar 同文件约 56px，padding 另算；CalendarView 的 plan-bar 避让用） */
+  --tabbar-h: 56px;
 }
 
 @media (max-width: 768px) {
