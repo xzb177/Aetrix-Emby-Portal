@@ -17,7 +17,7 @@
       <section class="v4-sec">
         <div class="v4-sec-title">🟢 生命体</div>
         <div class="v4-sec-sub">呼吸的健康球 —— 活着，而且很忙</div>
-        <div v-if="server.loading" class="v4-skeleton" style="height: 260px"></div>
+        <div v-if="server.loading" class="v4-skeleton" style="height: 290px"></div>
         <LifeOrb v-else-if="data?.vitals" :vitals="data.vitals" />
         <div v-else class="v4-empty">生命体还没有苏醒<br><span class="v4-empty-hint">连上服务器后这里会亮起来，一直这样请检查网络</span></div>
       </section>
@@ -26,7 +26,7 @@
       <section class="v4-sec">
         <div class="v4-sec-title">📡 任务雷达</div>
         <div class="v4-sec-sub">服务器里的小家伙们正在哪忙活</div>
-        <div v-if="server.loading" class="v4-skeleton" style="height: 280px"></div>
+        <div v-if="server.loading" class="v4-skeleton" style="height: 275px"></div>
         <RadarCanvas v-else-if="data?.radar_tasks?.length" :tasks="data.radar_tasks" />
         <div v-else class="v4-empty">雷达上空空如也<br><span class="v4-empty-hint">服务器里有任务在跑就会出现在这里，现在没有就是真没任务</span></div>
       </section>

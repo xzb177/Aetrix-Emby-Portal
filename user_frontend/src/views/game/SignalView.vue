@@ -737,6 +737,8 @@ textarea:focus { border-color: var(--gold); }
 @media (prefers-reduced-motion: reduce) {
   .tower { animation: none; }
   .waves span { animation: none; }
+  /* R45：摩斯面板 up .3s 入场动画也在减弱动态下关掉 */
+  .morse-panel { animation: none; }
   .type:active, .send-btn:active:not(:disabled),
   .btn-send:active:not(:disabled), .close-record:active { transform: none; }
 }

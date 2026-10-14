@@ -24,7 +24,7 @@
         <div class="v4-err" style="margin-top:12px">
           <template v-if="netError">网络开小差了，请检查网络后重试。</template>
           <template v-else>{{ status?.reason || '管理员还没请向导来坐镇。' }}</template><br>
-          <span class="tip">着急的话可以去 <b>求救信号</b> 发封求救信，会有人回你。</span>
+          <span class="tip">着急的话可以去 <button type="button" class="signal-link" @click="goSignal">求救信号</button> 发封求救信，会有人回你。</span>
         </div>
         <button class="v4-retry" style="margin-top:12px" :disabled="loading" @click="load">再去看看</button>
       </section>
@@ -94,9 +94,16 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { aiApi, type AiStatus } from '@/api'
 import { humanizeError } from '@/composables/usePanelApi'
+
+const router = useRouter()
+/** R45：「向导不在」时求救信号文字按钮 → 跳求救信号页（router 里已声明 /game/signal） */
+function goSignal() {
+  router.push('/game/signal')
+}
 
 interface Bubble {
   role: 'me' | 'guide' | 'error'
@@ -344,7 +351,19 @@ onMounted(() => {
 .inputbar button:disabled { background: var(--ink2); box-shadow: none; cursor: default; }
 
 .tip { font-size: 12px; color: var(--ink2); }
-.tip b { color: var(--gold); }
+/* R45：求救信号文字按钮（跳 /game/signal）；透明 padding + 负 margin 扩大点击区，视觉行高不变 */
+.tip .signal-link {
+  background: none;
+  border: none;
+  color: var(--gold);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  padding: 8px 6px;
+  margin: -8px -6px;
+}
 
 .chip:focus-visible,
 .v4-retry:focus-visible,

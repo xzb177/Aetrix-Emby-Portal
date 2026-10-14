@@ -151,7 +151,8 @@
  * 2. 我的会员（复用 components/profile/ProfileSubscriptions.vue：到期 / 历史 / 取消）
  * 3. 我的设备（deviceApi：设备列表 / 移除，顶上限自救通道）
  *
- * 明确暂无承接（随旧页删除暂时失去）：Emby 多服列表、正在播放远程终止。
+ * 后续已承接（R45）：Emby 多服列表、正在播放远程终止已由接线员页
+ * （/game/operator）承接 —— realmCards 多服列表 + 正在播放一键远程结束。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { Lock, ChevronRight, RefreshCw } from 'lucide-vue-next'

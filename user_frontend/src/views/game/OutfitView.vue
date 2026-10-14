@@ -228,6 +228,8 @@ function unwearBadge() {
   try {
     localStorage.removeItem(WORN_BADGE_KEY)
   } catch { /* 忽略 */ }
+  // R45：取下徽章也要给反馈（wearBadge 有 toast.success，这里对齐用 toast.info）
+  toast.info('已取下徽章')
 }
 
 function onBadgeClick(b: Achievement) {
@@ -449,7 +451,7 @@ onBeforeUnmount(() => {
   letter-spacing: 1px;
 }
 .badge-desc {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--ink2);
   margin-top: 4px;
   line-height: 1.5;
@@ -459,7 +461,7 @@ onBeforeUnmount(() => {
   position: absolute;
   top: -8px;
   right: 8px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 800;
   color: var(--on-dark, #fff);
   background: var(--red);
