@@ -526,5 +526,7 @@ onMounted(() => {
 @media (prefers-reduced-motion: reduce) {
   .well .boat-float { animation: none; }
   .wish-btn:active { transform: none; }
+  /* R41：新愿望 glow + 弹窗入场动画在减弱动态下关闭 */
+  .wish.new, .mcard { animation: none; }
 }
 </style>

@@ -5,7 +5,8 @@
       <header class="v4-loghead">
         <span class="v4-stamp">衣帽间 · 试衣中</span>
         <h1>👕 换装</h1>
-        <p>探险家的衣帽间 —— 点一套试穿，整个营地跟着换天色。</p>
+        <p>探险家的衣帽间 —— 点一套看看配色，满意了再点"就穿这套"。</p>
+        <!-- R41：原"整个营地跟着换天色"是虚假承诺 —— v4 纸色浅色是既定硬约束（路由强制 light），试穿暗色在 v4 页不可见 -->
       </header>
 
       <!-- 双 Tab：穿搭｜装备库（/game/outfit 单一入口，页内 state 切换不跳路由）；
@@ -94,17 +95,15 @@
         </div>
         <!-- 徽章墙 -->
         <div v-else-if="badges.length > 0" class="badge-wall">
+          <!-- R41：外层不再扮 button —— 内层原生 <button>（戴上/取下）已承接键盘路径，
+               外层只留 @click 供鼠标/触屏点整张卡。locked 卡无内层按钮，仅损失键盘触发"还没解锁"toast（文案已在卡面可见）。 -->
           <div
             v-for="b in badges"
             :key="b.key"
             class="badge"
             :class="{ locked: !b.unlocked, worn: wornBadgeKey === b.key }"
-            role="button"
-            tabindex="0"
             :aria-label="`${b.name}：${b.unlocked ? b.desc + '，已解锁' : '未解锁，' + b.desc}`"
             @click="onBadgeClick(b)"
-            @keyup.enter="onBadgeClick(b)"
-            @keyup.space.prevent="onBadgeClick(b)"
           >
             <span v-if="wornBadgeKey === b.key" class="worn-tag">佩戴中</span>
             <div class="badge-icon" aria-hidden="true">{{ b.unlocked ? b.icon : '🌫️' }}</div>

@@ -23,7 +23,9 @@ const LEAVES = ['🌿', '🌱', '🌿', '🌷', '🌿', '🍀', '🌾', '🌵', 
 const leafOf = (i: number) => LEAVES[i % LEAVES.length]
 
 /** 数量格式化：万 */
+// R41：脏数据（NaN / Infinity）不展示，兜底 '0'
 function fmtCount(n: number): string {
+  if (!Number.isFinite(n)) return '0'
   if (n >= 10000) {
     const w = n / 10000
     return w >= 100 ? `${Math.round(w)}万` : `${w.toFixed(1)}万`
@@ -72,7 +74,9 @@ watch(plants, () => {
 .plants {
   display: flex;
   align-items: flex-end;
-  justify-content: space-around;
+  /* R41：溢出横滑时 space-around 会把最左的内容推出可达区；flex-start 兜底（老浏览器也保证滑得到） */
+  justify-content: flex-start;
+  justify-content: safe space-around;
   min-height: 130px;
   border-bottom: 2px solid var(--ink);
   padding-bottom: 0;

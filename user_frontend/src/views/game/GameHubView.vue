@@ -80,6 +80,7 @@ import {
 import { checkinApi, vitalityApi } from '@/api/economy'
 import { messageApi } from '@/api'
 import { useUserStore } from '@/stores/user'
+import { DEFAULT_STAMINA_MAX } from '@/config/stamina'
 
 const userStore = useUserStore()
 
@@ -105,10 +106,11 @@ const statusText = computed(() => {
   const vit = vitality.value
   const checked = checkedToday.value
   if (vit !== null && checked !== null) {
-    const base = `今日体力 ${vit}/${vitalityMax.value ?? 14}`
+    // R41：体力上限兜底 14 收进 config/stamina.ts 的 DEFAULT_STAMINA_MAX，不再裸魔法数字
+    const base = `今日体力 ${vit}/${vitalityMax.value ?? DEFAULT_STAMINA_MAX}`
     return checked ? `${base} · 已报到✓，出发吧！` : `${base} · 还没报到，点我去盖章 →`
   }
-  if (vit !== null) return `今日体力 ${vit}/${vitalityMax.value ?? 14}`
+  if (vit !== null) return `今日体力 ${vit}/${vitalityMax.value ?? DEFAULT_STAMINA_MAX}`
   if (checked !== null) return checked ? '今日已报到✓，出发吧！' : '还没报到，点我去盖章 →'
   // 两个都没拿到：静态文案，照样能点去报到
   return '营地今天又是元气满满的一天，点我去报到 →'
@@ -320,5 +322,7 @@ onMounted(async () => {
 /* R27：减少动态偏好下装饰动画/过渡停掉（本地守卫） */
 @media (prefers-reduced-motion: reduce) {
   .map-card { animation: none; transition: none; }
+  /* R41：按压缩放的 :active 动效在减弱动态下也关闭 */
+  .map-card:active { transform: none; }
 }
 </style>

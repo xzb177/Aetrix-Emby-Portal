@@ -17,6 +17,8 @@ let timer = 0
 const motionMq = window.matchMedia('(prefers-reduced-motion: reduce)')
 
 const current = computed(() => {
+  // R41：空数组时 idx % 0 得 NaN——守卫返回空串，不渲染 undefined
+  if (!props.items.length) return ''
   // items 为空走不到这里：DiscoveryView 只在非 loading/error 时渲染，
   // 且 activityTexts 的空兜底是 ['暂无动态']，长度恒 ≥ 1
   return props.items[idx.value % props.items.length]
@@ -70,5 +72,10 @@ onUnmounted(() => {
 @keyframes v4-fadein {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
+}
+
+/* R41：减少动态偏好下轮播行装饰动画停掉（组件本地守卫） */
+@media (prefers-reduced-motion: reduce) {
+  .v4-activity-line { animation: none; }
 }
 </style>

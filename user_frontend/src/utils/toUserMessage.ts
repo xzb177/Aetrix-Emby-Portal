@@ -37,6 +37,9 @@ const CODE_MAP: Record<string, string> = {
   PAYMENT_PENDING: toastSystem.payUnknown,
 }
 
+/** R41：中文技术细节关键词——命中即不透传，落到兜底（不把技术细节甩给用户） */
+const TECH_LEAK_KEYWORDS = ['数据库', 'sql', '连接失败', '超时', '异常', '堆栈', 'traceback', '500']
+
 /** 全大写下划线风格的机器码，如 RATE_LIMITED / SOME_ERROR_2 */
 const MACHINE_CODE_RE = /^[A-Z][A-Z0-9_]{2,}$/
 
@@ -83,6 +86,10 @@ export function toUserMessage(err: unknown, fallbackKey: ToastFallbackKey = 'sav
     // 机器码 → 查表；查不到按兜底（不把码直接展示给用户）
     if (MACHINE_CODE_RE.test(text)) {
       return mapCode(text) ?? fallback
+    }
+    // R41：中文里夹带技术细节（数据库/SQL/超时/堆栈…）时不透传，落到兜底
+    if (TECH_LEAK_KEYWORDS.some((k) => text.toLowerCase().includes(k))) {
+      return fallback
     }
     // 后端返回的人话（如"用户不存在"）直接透传
     return text

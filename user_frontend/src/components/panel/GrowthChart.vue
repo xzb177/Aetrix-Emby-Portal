@@ -29,7 +29,8 @@ const days = computed(() => {
   }))
 })
 
-const total = computed(() => (props.growth || []).reduce((s, d) => s + (d.count || 0), 0))
+// R41：total 与柱子对同一批数据（后 7 天）求和——之前对整个 growth 求和，脚标数字和柱子对不上
+const total = computed(() => days.value.reduce((s, d) => s + (d.count || 0), 0))
 
 /** 全部来自真实数据，不许造假 */
 const footText = computed(() => {
@@ -78,6 +79,8 @@ const footText = computed(() => {
 .bar-fill {
   width: 100%;
   height: 100%;
+  /* R39-03：color-mix 老浏览器不支持，先铺纯色兜底 */
+  background: var(--green);
   background: linear-gradient(180deg, var(--green), color-mix(in srgb, var(--green) 75%, #000));
   border-radius: 0 0 4px 4px;
   transform: scaleY(var(--bar-p, 0));
@@ -90,7 +93,7 @@ const footText = computed(() => {
   margin-top: 6px;
 }
 .bar-date {
-  font-size: 10px;
+  font-size: 11px; /* R41：10px 低于可读下限，提到 11px */
   color: var(--ink2);
   opacity: 0.7;
 }

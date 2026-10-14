@@ -109,7 +109,8 @@
             <span class="payway on" aria-current="true"><span class="lbl">{{ methods[0].name || methods[0].id }}</span></span>
           </div>
           <!-- P3-24：支付方式加载完成但列表为空时给空态（methodsReady 未就绪时不展示，避免加载中闪现） -->
-          <div v-else-if="methodsReady" class="v4-empty">暂无可用支付方式，请联系服主</div>
+          <!-- R41：补重试按钮，调 loadAll（与本页其他空态一致） -->
+          <div v-else-if="methodsReady" class="v4-empty">暂无可用支付方式，请联系服主<br><button class="v4-retry" @click="loadAll">重试</button></div>
           <div class="fineprint">能量可用于续命体力、兑换会员、发红包 —— 不过期</div>
         </template>
       </section>
@@ -172,7 +173,8 @@
         <div class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
         <div v-else-if="!member" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="!trailLevels.length" class="v4-empty">等级路线尚未配置</div>
+        <!-- R41：等级路线空态补重试按钮，调 loadAll（与本页其他空态一致） -->
+        <div v-else-if="!trailLevels.length" class="v4-empty">等级路线尚未配置<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else class="trail">
           <div
             v-for="lv in trailLevels"
@@ -653,7 +655,8 @@ const memberLevelText = computed(() => (member.value ? `Lv.${member.value.level}
 const memberLevelName = computed(() => member.value?.level_name || '–')
 const memberDiscountPct = computed(() => member.value?.discount_pct ?? 0)
 const ratioText = computed(() =>
-  rechargeRatio.value == null ? '充值比例加载中' : `1 元 = ${rechargeRatio.value} 能量`,
+  // R41：rechargeRatio 为 null 时不显示"充值比例加载中"假加载态——与 custom-note 的"比例待确认"口径一致
+  rechargeRatio.value == null ? '比例待确认' : `1 元 = ${rechargeRatio.value} 能量`,
 )
 
 /* 能量条：按最大一罐做满格（0~1 进度，供 scaleX 动画） */

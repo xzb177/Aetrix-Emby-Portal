@@ -84,6 +84,8 @@
       <!-- 探险计划条 -->
       <div v-if="plan.size > 0" class="plan-bar">
         <span>🎒 探险计划 <b>{{ plan.size }}</b> 个目的地</span>
+        <!-- R41：误点"想去"只能再点一次取消 —— 加清空按钮一键清零（v1 计划不落库，清掉不影响后端） -->
+        <button type="button" class="plan-clear" @click="clearPlan">清空</button>
       </div>
     </div>
     <PanelTabbar />
@@ -182,6 +184,11 @@ function togglePlan(id: string) {
   if (next.has(id)) next.delete(id)
   else next.add(id)
   plan.value = next
+}
+
+/** R41：探险计划一键清空（v1 不落库，只清本地 Set） */
+function clearPlan() {
+  plan.value = new Set()
 }
 
 /** 展开某天全部藏宝（"还有 N 件"按钮用） */
@@ -292,21 +299,21 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
 .treasure .want {
   flex-shrink: 0;
   position: relative;
-  /* 透明 padding + 负 margin：视觉药丸不变，点击区纵向扩大到 44px（R22 LeverSwitch 同款手法） */
+  /* R41：纵向 padding 13px→15px —— 原注释声称 44px，实算约 40px，提到 15px 才诚实达标 */
   background: transparent;
   border: none;
   font-size: 12px;
   font-weight: 700;
-  padding: 13px 12px;
+  padding: 15px 12px;
   margin: -6px 0;
   cursor: pointer;
   color: var(--ink);
 }
-/* 视觉药丸画在 ::before 上，随 padding 偏移（上下各 6px），与原来像素一致 */
+/* 视觉药丸画在 ::before 上，随 padding 偏移（上下各 8px，药丸高度与原来像素一致） */
 .treasure .want::before {
   content: "";
   position: absolute;
-  top: 6px; right: 0; bottom: 6px; left: 0;
+  top: 8px; right: 0; bottom: 8px; left: 0;
   background: var(--paper2);
   border: 1.5px solid var(--ink);
   border-radius: var(--paper-r-xl, 16px);
@@ -334,8 +341,8 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
 .more {
   font-size: 11px; color: var(--ink2);
   background: none; border: none; cursor: pointer; text-align: left;
-  /* 透明 padding + 负 margin：文案行视觉不变，点击区纵向 44px */
-  padding: 14px 0; margin: -12px 0;
+  /* R41：纵向 padding 14px→16px —— 15px 实算 43.2px 仍差一截，16px 才诚实达标 44px（文案行视觉不变） */
+  padding: 16px 0; margin: -12px 0;
 }
 .empty-day { font-size: 11px; color: var(--ink2); padding: 2px 0; }
 .plan-bar {
@@ -353,4 +360,17 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   box-shadow: 0 4px 14px rgba(42, 38, 32, 0.25);
 }
 .plan-bar b { color: var(--ember, #FFB25E); }
+/* R41：清空按钮 —— 文字按钮，触点纵向 44px（透明 padding + 负 margin，条的高度不变） */
+.plan-bar .plan-clear {
+  background: none;
+  border: none;
+  color: var(--ember, #FFB25E);
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  padding: 15px 8px;
+  margin: -15px -8px -15px 0;
+  cursor: pointer;
+}
+.plan-bar .plan-clear:focus-visible { outline: 2px solid var(--ember, #FFB25E); outline-offset: -4px; }
 </style>

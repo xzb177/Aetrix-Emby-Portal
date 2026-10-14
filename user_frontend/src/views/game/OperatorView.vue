@@ -129,7 +129,7 @@
                 v-for="(url, name) in importSchemes"
                 :key="name"
                 class="scheme-btn"
-                @click="openScheme(url)"
+                @click="openScheme(url, name)"
               >
                 {{ name }}
               </button>
@@ -343,6 +343,7 @@ import { useRouter } from 'vue-router'
 import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useToast } from '@/composables/useToast'
+import { useClipboard } from '@/composables/useClipboard'
 import { humanizeError } from '@/composables/usePanelApi'
 import { toUserMessage } from '@/utils/toUserMessage'
 import {
@@ -353,6 +354,8 @@ import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
 const toast = useToast()
+// R41：复制走全站唯一切口（照抄 CompanionView 同一模式）
+const { copy } = useClipboard()
 const userStore = useUserStore()
 
 const loading = ref(true)
@@ -416,16 +419,18 @@ async function refreshAccount() {
   }
 }
 
-function copyText(text: string, field: string) {
+/** R41：裸调 navigator.clipboard?.writeText 在 HTTP 自建部署下是 undefined，
+ *  点复制毫无反应还不告诉用户 —— 改用 useClipboard（Clipboard API + execCommand 兜底，
+ *  成功失败都给人话反馈；照抄 CompanionView 同一切口） */
+let copyTimer: number | undefined
+async function copyText(text: string, field: string) {
   if (!text || text === '—') return
-  navigator.clipboard?.writeText(text).then(
-    () => {
-      copiedField.value = field
-      toast.success('已复制')
-      setTimeout(() => { copiedField.value = '' }, 1500)
-    },
-    () => toast.error('复制失败，长按手动复制'),
-  )
+  const label = field === 'server' ? '服务器地址' : field === 'user' ? '用户名' : '地址'
+  const ok = await copy(text, label)
+  if (!ok) return
+  copiedField.value = field
+  window.clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1800)
 }
 
 async function confirmSetPassword() {
@@ -464,7 +469,7 @@ async function confirmUnlock() {
   }
 }
 
-function openScheme(url: string) {
+function openScheme(url: string, appName = '播放器') {
   let finalUrl = url
   // #758：一键导入时可临时带上播放密码（只放内存，不存）
   if (importPassword.value) {
@@ -479,6 +484,8 @@ function openScheme(url: string) {
       finalUrl = url
     }
   }
+  // R41：没装 App 时 iOS 跳转是死路 —— 跳转前先说一声，提醒没装的去应用商店
+  toast.info(`正在打开${appName}，没装的话请先去应用商店安装`)
   window.location.href = finalUrl
 }
 
@@ -498,7 +505,8 @@ const stopping = ref<string | null>(null)
 const sessionToStop = ref<MyPlaybackSession | null>(null)
 
 function typeLabel(t?: string | null) {
-  return ({ Movie: '电影', Series: '剧集', Episode: '剧集' } as Record<string, string>)[t || ''] || '影片'
+  // R41：Episode 标"单集" —— 之前错标成"剧集"，跟 Series 重了；与 CalendarView 同名函数对齐
+  return ({ Movie: '电影', Series: '剧集', Episode: '单集' } as Record<string, string>)[t || ''] || '影片'
 }
 
 function fmtTime(iso?: string | null) {
@@ -577,6 +585,16 @@ function restoreTriggerFocus() { lastTrigger.value?.focus?.() }
 function closeSetPlayPwd() { showSetPlayPwd.value = false; restoreTriggerFocus() }
 function closeUnlockConfirm() { showUnlockConfirm.value = false; restoreTriggerFocus() }
 function closeStopSession() { sessionToStop.value = null; restoreTriggerFocus() }
+
+/** R41：三个 Teleport 弹窗（设置密码 / 解锁确认 / 结束播放确认）—— 任一打开都锁住背后页面滚动。
+ *  代码路径上三者互斥（解锁弹窗只在没权限分支，另两个只在有权限分支；弹窗打开时页面被遮罩盖住点不到别的），
+ *  但用 anyModalOpen 统一 watch 而不是各写一遍，万一叠加也锁不死：三个全关才释放。 */
+const anyModalOpen = computed(
+  () => showSetPlayPwd.value || showUnlockConfirm.value || sessionToStop.value !== null,
+)
+watch(anyModalOpen, (open) => {
+  document.body.style.overflow = open ? 'hidden' : ''
+})
 function openSetPlayPwd() {
   // R37 P3-9：重开弹窗清掉旧错误文案
   pwdError.value = ''
@@ -596,7 +614,8 @@ async function doStopSession() {
     sessions.value = sessions.value.filter((s) => s.session_key !== session.session_key)
   } catch (err: any) {
     // Batch G：中文判断逻辑已收敛进 toUserMessage（中文 detail 透传），不再内联
-    toast.error(toUserMessage(err, 'saveFailed'))
+    // R41：结束播放失败走 stopFailed —— "暂时没能保存"跟"结束播放"动作对不上
+    toast.error(toUserMessage(err, 'stopFailed'))
   } finally {
     stopping.value = null
     closeStopSession()
@@ -607,7 +626,13 @@ onMounted(() => {
   void refreshAccount()
   window.addEventListener('keydown', onEsc)
 })
-onUnmounted(() => window.removeEventListener('keydown', onEsc))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onEsc)
+  // R41：清掉复制提示的定时器（照抄 CompanionView 模式）
+  window.clearTimeout(copyTimer)
+  // R41：卸载时释放 body 滚动锁，避免锁死
+  document.body.style.overflow = ''
+})
 
 // 有查看权限才拉正在播放（解锁后翻成 granted 也会触发一次）
 watch(viewGranted, (granted) => {
@@ -743,6 +768,8 @@ watch(viewGranted, (granted) => {
   box-sizing: border-box;
   font-size: 16px;
   padding: 10px 14px;
+  /* R41：补上 min-height:44px —— 原约 42px 差一截（16px 字 + 上下 10px padding） */
+  min-height: 44px;
   margin-bottom: 10px;
   border: 1.5px solid var(--line);
   border-radius: var(--paper-r-md, 10px);

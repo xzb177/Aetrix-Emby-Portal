@@ -24,3 +24,6 @@ export const staminaText: StaminaText = {
 
 /** 体力槽展示阈值：低于此比例显示不足警告样式 */
 export const STAMINA_LOW_RATIO = 0.3
+
+/** 体力上限兜底：后端没给 max 时的显示值（R41：GameHub 状态条魔法数字 `?? 14` 收敛到此） */
+export const DEFAULT_STAMINA_MAX = 14

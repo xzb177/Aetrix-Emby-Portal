@@ -162,7 +162,9 @@ function fmtNum(n: number | null | undefined) {
 
 function fmtTime(iso?: string | null) {
   if (!iso) return '—'
+  // R41：new Date 解析失败（非法日期）回退原串（照抄 CompanionView R38 P3-10 的 isNaN 回退）
   const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
   const m = d.getMonth() + 1
   const day = d.getDate()
   const hh = String(d.getHours()).padStart(2, '0')

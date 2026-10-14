@@ -47,7 +47,9 @@ async function load() {
     vitality.value = st.vitality
     const m = Number(st.max)
     max.value = Number.isFinite(m) && m > 0 ? m : 0
-  } catch {
+  } catch (err) {
+    // R41：catch 不再静默吞错 —— warn 留痕方便排查；行为不变（仍置 null 隐藏整条）
+    console.warn('[stamina] 加载失败', err)
     // 非公益服用户（403）或拿不到就不显示，不打扰
     vitality.value = null
   }
@@ -76,6 +78,8 @@ onMounted(load)
 
 <style scoped>
 .stamina-bar {
+  /* R41：配色变量定义已收敛到 styles/v4-paper.css（令牌契约要求定义出现在被引入的样式表里），
+     这里只引用变量；v4 永远浅色，值与原来一字不差，视觉零变化 */
   display: flex;
   align-items: center;
   gap: 10px;
@@ -104,7 +108,7 @@ onMounted(load)
   /* 用 transform 做填充动画：width 是 layout 属性会触发重排，掉帧；
      scaleX 只走合成层，60fps。JS 里按比例设 scaleX(0~1) 代替 width。 */
   transform-origin: left center;
-  background: linear-gradient(90deg, #e8a33d, #d97b2b);
+  background: linear-gradient(90deg, var(--stb-fill-from), var(--stb-fill-to));
   border-radius: 11px;
   transition: transform 0.4s ease;
 }
@@ -114,10 +118,10 @@ onMounted(load)
   }
 }
 .stamina-bar.is-low .stamina-fill {
-  background: linear-gradient(90deg, #d98a2b, #c25e1e);
+  background: linear-gradient(90deg, var(--stb-fill-low-from), var(--stb-fill-low-to));
 }
 .stamina-bar.is-empty .stamina-fill {
-  background: #b9b0a0;
+  background: var(--stb-fill-empty);
 }
 .stamina-hearts {
   position: absolute;
@@ -145,17 +149,17 @@ onMounted(load)
   gap: 4px;
 }
 .stamina-meta .unit {
-  color: #8a7a5c;
+  color: var(--stb-unit);
 }
 .stamina-warn {
-  color: #b3402a;
+  color: var(--stb-warn);
   font-weight: 600;
 }
 .stamina-ok {
-  color: #6b7f3e;
+  color: var(--stb-ok);
 }
 .stamina-bar.is-empty {
-  border-color: #c96a5a;
-  background: #f9ece6;
+  border-color: var(--stb-empty-border);
+  background: var(--stb-empty-bg);
 }
 </style>
