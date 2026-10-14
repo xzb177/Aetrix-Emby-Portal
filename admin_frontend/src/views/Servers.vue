@@ -39,7 +39,6 @@ import {
   fetchServerRcloneConf,
   probeMountsHealth,
   refreshServerMounts,
-  runServerOpsScan,
   saveServerRcloneConf,
   testServer,
   testServerConfig,
@@ -727,7 +726,6 @@ async function remove(row: RemoteServerRow) {
  */
 const opsVisible = ref(false)
 const opsLoading = ref(false)
-const opsScanning = ref(false)
 const opsRow = ref<ServerOverviewRow | null>(null)
 const ops = ref<ServerOpsSnapshot | null>(null)
 /** 把同服里还没分配节点的库也算进来（那些库由面板扫，不属于这台节点） */
@@ -736,7 +734,6 @@ const opsIncludeUnassigned = ref(false)
 function openOps(row: ServerOverviewRow) {
   opsRow.value = row
   ops.value = null
-  opsLastScan.value = null
   opsVisible.value = true
   loadOps()
 }
@@ -761,31 +758,6 @@ function onOpsScopeChange() {
 }
 
 /** 一键扫描：入队结果逐类回报（入队 / 已在队列 / 转发 / 跳过），不只弹一句「已触发」 */
-async function runOpsScan() {
-  const row = opsRow.value
-  if (!row) return
-  opsScanning.value = true
-  try {
-    const res = await runServerOpsScan(row.id, {
-      include_unassigned: opsIncludeUnassigned.value,
-    })
-    if (res.failed.length) {
-      ElMessage.warning(`${res.message}（失败明细在下方）`)
-    } else {
-      ElMessage.success(res.message)
-    }
-    opsLastScan.value = {
-      queued: res.queued, already: res.already, forwarded: res.forwarded,
-      skipped: res.skipped, failed: res.failed, message: res.message,
-    }
-    await loadOps()
-  } catch {
-    /* 拦截器已提示 */
-  } finally {
-    opsScanning.value = false
-  }
-}
-
 /** 队列状态 → 一句人话（而不是把 state 原词丢给用户） */
 function opsStateText(state: string): string {
   switch (state) {
@@ -855,15 +827,6 @@ function opsStateLabel(status: string): string {
   }
 }
 
-/** 一键扫描后的结果明细（入库 / 已在队列 / 转发 / 跳过） */
-const opsLastScan = ref<{
-  queued: { id: number; name: string }[]
-  already: { id: number; name: string }[]
-  forwarded: { id: number; name: string; node_name: string }[]
-  skipped: { id: number; name: string; reason: string }[]
-  failed: { id: number; name: string; node_name: string; error: string }[]
-  message: string
-} | null>(null)
 </script>
 
 <template>
@@ -1517,38 +1480,15 @@ const opsLastScan = ref<{
           </div>
         </div>
 
-        <SectionCard class="ops-card" title="一键扫描 + 刮削" :icon="ScanSearch">
+        <!-- 扫描与刮削：控制台只在「媒体库」页，这里只留跳转（Batch D 入口收敛） -->
+        <SectionCard class="ops-card" title="扫描与刮削" :icon="ScanSearch">
           <p class="ops-hint">
-            把归这台节点的启用库推入扫描队列：面板碰得到的本地入队，归这台节点的转发给它
-            （只有那台机器能读到那些目录），已在队列 / 正在扫的不重复推。扫完自动接刮削流水线
-            （NFO → TMDB → 豆瓣）。
+            发起扫描、看扫描队列与历史，请去「媒体库」页的扫描控制台。
+            这里只回答"这台节点管哪些库、转发状态如何"。
           </p>
-          <el-button
-            type="primary"
-            :loading="opsScanning"
-            :disabled="!ops || !ops.scope.enabled"
-            @click="runOpsScan"
-          >
-            <RefreshCw :size="14" style="margin-right: 4px" />扫描并刮削 {{ ops?.scope.enabled ?? 0 }} 个库
-          </el-button>
-          <div v-if="opsLastScan" class="ops-result">
-            <div class="ops-result-line">{{ opsLastScan.message }}</div>
-            <div v-if="opsLastScan.queued.length" class="ops-result-line ok">
-              已入队：{{ opsLastScan.queued.map((r) => r.name).join('、') }}
-            </div>
-            <div v-if="opsLastScan.already.length" class="ops-result-line">
-              已在队列 / 正在扫：{{ opsLastScan.already.map((r) => r.name).join('、') }}
-            </div>
-            <div v-if="opsLastScan.forwarded.length" class="ops-result-line ok">
-              已转发给归属节点：{{ opsLastScan.forwarded.map((r) => r.name).join('、') }}
-            </div>
-            <div v-for="row in opsLastScan.failed" :key="`f${row.id}`" class="ops-result-line bad">
-              转发失败 · {{ row.name }}：{{ row.error }}
-            </div>
-            <div v-for="row in opsLastScan.skipped" :key="`s${row.id}`" class="ops-result-line muted">
-              跳过 · {{ row.name }}：{{ row.reason }}
-            </div>
-          </div>
+          <router-link :to="{ name: 'EmbyAdmin' }" class="ops-jump">
+            去「媒体库」页发起扫描 →
+          </router-link>
         </SectionCard>
 
         <!-- 任务：扫描队列 + 刮削补全 / 修复 + 内容转交 -->
@@ -1611,6 +1551,7 @@ const opsLastScan = ref<{
               <span class="muted">{{ fmtDate(item.pushed_at) }}</span>
             </div>
           </div>
+          <router-link :to="{ name: 'EmbyAdmin' }" class="ops-jump">去「媒体库」页看完整扫描队列 →</router-link>
         </SectionCard>
 
         <!-- 整服视角扫描历史 -->
@@ -1636,6 +1577,7 @@ const opsLastScan = ref<{
               </tr>
             </tbody>
           </table>
+          <router-link :to="{ name: 'EmbyAdmin' }" class="ops-jump">去「媒体库」页看全部扫描历史 →</router-link>
         </SectionCard>
 
         <!-- 归这台节点的库（只读：配置在媒体库页改） -->
@@ -1868,6 +1810,13 @@ const opsLastScan = ref<{
   font-size: var(--font-size-xs);
 }
 .ops-task-name { color: var(--au-text); font-weight: var(--font-weight-medium); }
+/* Batch D 入口收敛：抽屉内扫描控制台入口统一链回「媒体库」页 */
+.ops-jump {
+  display: inline-block; margin-top: 10px;
+  color: var(--au-accent, #b45309); font-weight: 700; text-decoration: none;
+  font-size: var(--font-size-sm);
+}
+.ops-jump:hover { text-decoration: underline; }
 .ops-result {
   display: flex; flex-direction: column; gap: 4px;
   padding: 10px 12px; border-radius: var(--au-r-md); background: var(--au-bg-soft);

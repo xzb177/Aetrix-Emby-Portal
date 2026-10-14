@@ -90,6 +90,12 @@ interface Group {
   desc: string
   icon: unknown
   fields: Field[]
+  /**
+   * 只读卡：同一批配置键的唯一写入口在别的页面。
+   * 这里只回显当前值＋放跳转链接；脏检查与保存逻辑都跳过它。
+   * （2026-10-14 Batch D 入口收敛）
+   */
+  readonly?: boolean
 }
 
 const GROUPS: Group[] = [
@@ -180,8 +186,10 @@ const GROUPS: Group[] = [
   {
     id: 'risk',
     title: '下载与设备风控',
-    desc: '下载开关、设备上限与安全日志保留策略',
+    // 2026-10-14 Batch D：只读回显。唯一可写入口在「安全与准入 → 客户端策略 → 下载与设备」。
+    desc: '只读回显——下载开关、设备上限与安全日志保留策略。',
     icon: ShieldAlert,
+    readonly: true,
     fields: [
       {
         key: 'allow_download',
@@ -602,6 +610,11 @@ onMounted(async () => {
   // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
   if (tab.value === 'danger') loadDanger()
   await Promise.all([load(), loadCapabilities(), loadHotlink()])
+  // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
+  if (route.hash) {
+    await nextTick()
+    document.querySelector(route.hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 })
 
 /** ==================== 防盗链卡片（独立 endpoint，非通用分组） ==================== */
@@ -689,9 +702,21 @@ async function reloadAll() {
 }
 
 function isDirty(group: Group): boolean {
+  // Batch D 入口收敛：只读卡永远不脏，不参与全局保存条与脏检查计数
+  if (group.readonly) return false
   return group.fields.some(
     (f) => isSupported(f.key) && String(settings[f.key] ?? '') !== String(original.value[f.key] ?? ''),
   )
+}
+
+/**
+ * Batch D 入口收敛：只读卡的值回显。bool 显示 开启/关闭，其余原样；
+ * 没读到时显示"—"。
+ */
+function roValue(f: Field): string {
+  const raw = String(settings[f.key] ?? '')
+  if (f.type === 'bool') return raw === 'true' ? '开启' : '关闭'
+  return raw === '' ? '—' : raw
 }
 
 /** 高级折叠：每卡默认收起。el-collapse 的 v-model，按卡 id 存展开态。 */
@@ -718,6 +743,8 @@ const savingAll = ref(false)
 
 /** 经济分组保存核心：返回是否成功，失败时拦截器已提示。 */
 async function saveGroupCore(group: Group): Promise<boolean> {
+  // Batch D 入口收敛：只读卡不许发出任何保存请求（防御性守卫，正常流程里它根本不会脏）
+  if (group.readonly) return true
   const payload: EconomySettings = {}
   for (const f of group.fields) {
     if (!isSupported(f.key)) continue
@@ -1120,7 +1147,7 @@ watch(
             :key="g.id"
             :title="g.title"
             :icon="g.icon"
-            :description="g.desc"
+            :description="g.readonly ? '只读回显——这张卡只能看，改配置请去「安全与准入 → 客户端策略」' : g.desc"
             :tone="isDirty(g) ? 'accent' : 'default'"
             class="group-card"
           >
@@ -1128,6 +1155,22 @@ watch(
               <span class="au-badge au-badge-amber">未保存</span>
             </template>
 
+            <!-- Batch D 入口收敛：只读卡回显当前值＋跳转，不再渲染可写表单 -->
+            <template v-if="g.readonly">
+              <dl class="ro-list">
+                <div v-for="f in g.fields" :key="f.key" class="ro-row">
+                  <dt>
+                    {{ f.label }}<span v-if="f.suffix" class="ro-suffix">（{{ f.suffix }}）</span>
+                    <span v-if="f.hint" class="ro-hint">{{ f.hint }}</span>
+                  </dt>
+                  <dd>{{ roValue(f) }}</dd>
+                </div>
+              </dl>
+              <div class="ro-jump">
+                <router-link :to="{ name: 'ClientPolicy' }" class="ro-link">去「客户端策略」修改 →</router-link>
+              </div>
+            </template>
+            <template v-else>
             <el-form label-position="top" class="field-form field-grid">
               <el-form-item
                 v-for="f in commonFields(g)"
@@ -1245,6 +1288,7 @@ watch(
                 </el-form>
               </el-collapse-item>
             </el-collapse>
+            </template>
           </SectionCard>
 
           <!-- 防盗链：独立卡片（TTL 需要范围校验，走独立 endpoint），归在「播放与风控」段末 -->
@@ -1787,4 +1831,20 @@ watch(
   .cap-drawer-footer :deep(.el-button) { flex: 1; margin-left: 0; }
   .danger-guard :deep(.au-section__head) { flex-wrap: wrap; }
 }
+
+/* ============ Batch D 入口收敛：只读回显卡 ============ */
+.ro-list { margin: 0; display: grid; gap: 2px; }
+.ro-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
+  padding: 10px 2px; border-bottom: 1px dashed var(--au-border, #e5e0d5);
+  font-size: var(--font-size-sm, 14px);
+}
+.ro-row:last-child { border-bottom: 0; }
+.ro-row dt { color: var(--au-text-2, #6b6257); line-height: 1.6; }
+.ro-row dd { margin: 0; font-weight: 700; color: var(--au-text, #2b2620); white-space: nowrap; }
+.ro-suffix { color: var(--au-text-3, #8a8177); font-weight: 400; }
+.ro-hint { display: block; font-size: var(--font-size-xs, 12px); color: var(--au-text-3, #8a8177); font-weight: 400; margin-top: 2px; }
+.ro-jump { margin-top: 12px; }
+.ro-link { color: var(--au-accent, #b45309); font-weight: 700; text-decoration: none; font-size: var(--font-size-sm, 14px); }
+.ro-link:hover { text-decoration: underline; }
 </style>

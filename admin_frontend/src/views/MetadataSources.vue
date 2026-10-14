@@ -12,7 +12,7 @@
  * 按库的东西仍在「媒体库」页：整库重刮、定时扫描、目录变更监听。
  * **TMDB 密钥也只在这里填**（媒体库页的填写框已移除）：一把钥匙只该有一个地方能改。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -41,6 +41,8 @@ import {
   fetchMetaSources,
   fetchTmdbKeys,
   fetchTmdbMirror,
+  fetchDoubanBanDowngrade,
+  fetchTmdbLanguage,
   lockItemMetadata,
   previewTmdb,
   probeMetaSources,
@@ -51,9 +53,12 @@ import {
   saveDoubanConfig,
   saveMetaSources,
   saveTmdbMirror,
+  saveDoubanBanDowngrade,
+  saveTmdbLanguage,
   testMetaSourceKeys,
   testTmdbKeys,
   unlockItemMetadata,
+  TMDB_LANGUAGE_LABELS,
 } from '@/api/admin'
 import type {
   ItemSearchResult,
@@ -71,6 +76,8 @@ import type {
   TmdbPreview,
   TmdbTestResult,
   DoubanConfig,
+  DoubanBanDowngradeConfig,
+  TmdbLanguageStatus,
 } from '@/api/admin'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import './MetadataSources.css'
@@ -553,6 +560,64 @@ async function saveDouban() {
   }
 }
 
+// ==================== 豆瓣限流降级（Batch D 入口收敛：从「媒体库 → 定时与刮削」收拢到此） ====================
+const banDowngrade = ref<DoubanBanDowngradeConfig | null>(null)
+const banDowngradeSaving = ref(false)
+const banDowngradeError = ref(false)
+
+async function loadBanDowngrade() {
+  banDowngradeError.value = false
+  try {
+    banDowngrade.value = await fetchDoubanBanDowngrade()
+  } catch {
+    banDowngrade.value = null
+    banDowngradeError.value = true
+  }
+}
+
+async function saveBanDowngradeAction() {
+  if (!banDowngrade.value) return
+  banDowngradeSaving.value = true
+  try {
+    banDowngrade.value = await saveDoubanBanDowngrade(banDowngrade.value.enabled)
+    ElMessage.success('豆瓣限流降级已保存，60 秒内生效')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    banDowngradeSaving.value = false
+  }
+}
+
+// ==================== TMDB 首选语言（Batch D 入口收敛：从「媒体库 → 定时与刮削」收拢到此） ====================
+const tmdbLang = ref<TmdbLanguageStatus | null>(null)
+const tmdbLangSaving = ref(false)
+const tmdbLangError = ref(false)
+const tmdbLangLabel = (v: string) => TMDB_LANGUAGE_LABELS[v] || v
+
+async function loadTmdbLanguage() {
+  tmdbLangError.value = false
+  try {
+    tmdbLang.value = await fetchTmdbLanguage()
+  } catch {
+    tmdbLang.value = null
+    tmdbLangError.value = true
+  }
+}
+
+async function saveTmdbLanguageAction() {
+  if (!tmdbLang.value) return
+  tmdbLangSaving.value = true
+  try {
+    const res = await saveTmdbLanguage(tmdbLang.value.language)
+    tmdbLang.value.language = res.language
+    ElMessage.success('TMDB 首选语言已保存，立即生效')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    tmdbLangSaving.value = false
+  }
+}
+
 const probe = reactive({ title: '', year: '', kind: 'series' as 'series' | 'movie' })
 const probeResult = ref<MetaSourceProbe | null>(null)
 const probeOnly = ref('')
@@ -840,6 +905,14 @@ onMounted(() => {
   loadMirror().catch(() => undefined)
   loadMeta().catch(() => undefined)
   loadDouban().catch(() => undefined)
+  loadBanDowngrade().catch(() => undefined)
+  loadTmdbLanguage().catch(() => undefined)
+  // Batch D 入口收敛：媒体库页用 hash 深链跳进来（#card-douban / #card-tmdb）
+  if (route.hash) {
+    nextTick(() => {
+      document.querySelector(route.hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
   // P1 入口前移：媒体库列表的「识别」按钮跳过来时带 ?item_id=xxx，
   // 直接填入条目 ID 并选中，跳过「搜条目」一步（深链刷新页面也要生效）
   const deepItemId = Number(route.query.item_id)
@@ -1205,8 +1278,8 @@ onMounted(() => {
         </template>
       </SectionCard>
 
-      <!-- 0.5 豆瓣优先：中文标题先走豆瓣（TMDB 中文收录差） -->
-      <SectionCard class="ms-card" title="豆瓣优先" :icon="BookOpen">
+      <!-- 0.5 豆瓣优先：中文标题先走豆瓣（TMDB 中文收录差）。Batch D：限流降级从媒体库页收拢到此 -->
+      <SectionCard id="card-douban" class="ms-card" title="豆瓣优先" :icon="BookOpen">
         <template #actions>
           <div class="ms-facts">
             <span v-if="doubanCfg" class="fact" :class="doubanCfg.enabled ? 'ok' : 'muted'">
@@ -1219,6 +1292,7 @@ onMounted(() => {
           TMDB 对中文剧集 / 综艺收录偏少。开启后，<strong>含中文的标题优先走豆瓣搜索</strong>：
           搜中则取详情（标题 / 简介 / 评分 / 海报）写库；没搜中则回退到 TMDB。
           非中文标题不受影响，直接走 TMDB。
+          定时扫描、单集刮削等仍在「<router-link :to="{ name: 'EmbyAdmin' }" class="ms-link">媒体库 → 定时与刮削</router-link>」。
         </p>
         <div v-if="doubanLoading && !doubanCfg" class="ms-skeleton" aria-busy="true">
           <div class="au-skeleton" /><div class="au-skeleton" />
@@ -1265,11 +1339,30 @@ onMounted(() => {
               @click="saveDouban"
             >保存</el-button>
           </div>
+
+          <!-- Batch D 入口收敛：豆瓣限流降级从「媒体库 → 定时与刮削」收拢到此，唯一写入口 -->
+          <div class="ms-sub">豆瓣限流降级</div>
+          <p class="ms-hint">
+            豆瓣限流 / 冷却期内，中文条目不再整条延后等解封——跳过豆瓣这一站，照常走 TMDB → 多源兜底；
+            期间命中从严（标题 + 年份都对上才落库，宁可没命中也不乱认）。解封后自动恢复原顺序（保存后 60 秒内生效）。
+          </p>
+          <div v-if="banDowngrade" class="ms-actions">
+            <el-switch v-model="banDowngrade.enabled" active-text="开启" inactive-text="关闭" aria-label="豆瓣限流降级开关" />
+            <el-button type="primary" size="small" :loading="banDowngradeSaving" @click="saveBanDowngradeAction">保存</el-button>
+            <span class="mini-badge" :class="banDowngrade.banned ? 'warn' : 'ok'">
+              {{ banDowngrade.banned ? `限流中（剩余约 ${Math.round(banDowngrade.ban_remaining_sec)} 秒），降级${banDowngrade.enabled ? '生效中' : '未开启'}` : '豆瓣正常' }}
+            </span>
+          </div>
+          <div v-else-if="banDowngradeError" class="ms-hint">
+            读取失败 <el-button size="small" text @click="loadBanDowngrade">重试</el-button>
+          </div>
+          <div v-else class="ms-skeleton" aria-busy="true"><div class="au-skeleton" /></div>
         </template>
       </SectionCard>
 
       <!-- 1. TMDB 密钥池与镜像（Phase 6a）：多把轮换、逐把增删、失效/限流自动冷却 -->
-      <div ref="tmdbPoolRef" class="ms-card-wide">
+      <!-- Batch D：首选语言从「媒体库 → 定时与刮削」收拢到此 -->
+      <div id="card-tmdb" ref="tmdbPoolRef" class="ms-card-wide">
       <SectionCard class="ms-card" title="TMDB 密钥池与镜像" :icon="KeyRound">
         <template #actions>
           <div class="ms-facts">
@@ -1390,6 +1483,30 @@ onMounted(() => {
           ｜图片 <code class="mono">{{ mirror.image_base }}</code>
           {{ mirror.image_base_from_env ? '（来自环境变量）' : '' }}
         </p>
+
+        <!-- Batch D 入口收敛：TMDB 首选语言从「媒体库 → 定时与刮削」收拢到此，唯一写入口 -->
+        <div class="ms-sub">TMDB 首选语言</div>
+        <p class="ms-hint">TMDB 返回的简介 / 标题 / 别名用哪种语言（保存后立即生效）</p>
+        <div v-if="tmdbLang" class="ms-actions">
+          <el-select v-model="tmdbLang.language" style="width: 160px" aria-label="TMDB 首选语言">
+            <el-option
+              v-for="v in tmdbLang.options"
+              :key="v"
+              :label="tmdbLangLabel(v)"
+              :value="v"
+            />
+          </el-select>
+          <el-button type="primary" size="small" :loading="tmdbLangSaving" @click="saveTmdbLanguageAction">
+            保存
+          </el-button>
+        </div>
+        <div v-else-if="tmdbLangError" class="ms-hint">
+          读取失败 <el-button size="small" text @click="loadTmdbLanguage">重试</el-button>
+        </div>
+        <div v-else class="ms-skeleton" aria-busy="true"><div class="au-skeleton" /></div>
+        <div v-if="tmdbLang?.from_env" class="ms-hint">
+          环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
+        </div>
       </SectionCard>
       </div>
       <!-- 2. 手动绑定 TMDB（默认折叠） -->

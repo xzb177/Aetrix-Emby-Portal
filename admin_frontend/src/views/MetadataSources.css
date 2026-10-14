@@ -645,3 +645,7 @@
 
   }
 }
+
+/* Batch D 入口收敛：卡片内互链 */
+.ms-link { color: var(--au-accent, #b45309); font-weight: 700; text-decoration: none; }
+.ms-link:hover { text-decoration: underline; }

@@ -314,6 +314,10 @@ const testSummary = computed(() => {
             <strong>白名单有风险：</strong>白名单没包含你自己浏览器的 UA 时，你会被关在门外。
             同一台服务器 / 同一局域网的访问始终放行，可以从那里改回来。
           </p>
+          <p class="ag-hint">
+            另一处在「安全与准入 → <router-link :to="{ name: 'ClientPolicy' }" class="ag-link">客户端策略 → 客户端准入</router-link>」：
+            区别是那里只管<strong>播放准入</strong>（播不播得），这里是<strong>全站访问</strong>（连面板登录都会拦）。
+          </p>
           <div class="ag-fields">
             <el-form-item label="黑名单（命中即拦，如 Googlebot、SemrushBot）">
               <el-input
@@ -502,6 +506,9 @@ const testSummary = computed(() => {
   color: var(--au-text-2);
   line-height: 1.8;
 }
+/* Batch D 入口收敛：UA 互链（与客户端策略页的播放准入区分） */
+.ag-link { color: var(--au-accent, #b45309); font-weight: 700; text-decoration: none; }
+.ag-link:hover { text-decoration: underline; }
 .ag-hint code {
   font-family: var(--font-mono);
   padding: 0 4px;
