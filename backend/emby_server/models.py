@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    text,
 )
 
 from backend.database import Base
@@ -128,6 +129,11 @@ class MediaItem(Base):
         # （可见性由全局过滤器拼上）。把 deleted_at 跟在 library_id 后面，已下架的
         # 行能在索引里就被跳过，不用先回表再过滤。
         Index("idx_item_lib_deleted", "library_id", "deleted_at"),
+        # /emby/Items 默认浏览：WHERE is_hidden=false AND deleted_at IS NULL
+        # （deleted_at 由全局 ORM 钩子自动拼上）+ item_type 等值/IN
+        # + ORDER BY sort_name, id。部分索引只含可见行，翻页与 COUNT 不再全表扫。
+        Index("idx_item_browse_sort", "item_type", "sort_name", "id",
+              postgresql_where=text("is_hidden = false AND deleted_at IS NULL")),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
