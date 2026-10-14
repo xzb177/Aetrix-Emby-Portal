@@ -46,9 +46,9 @@
             <span v-if="deviceInfo && deviceInfo.limit" class="dev-count">
               {{ deviceInfo.active_count }} / {{ deviceInfo.limit }} 台
             </span>
-            <!-- R37 P3-8：忙碌时禁用防连点（照 R36 PigeonView 修法） -->
-            <button type="button" class="v4-mini-btn" title="刷新" :disabled="deviceLoading" @click="loadDevices">
-              <RefreshCw :size="13" :class="{ spinning: deviceLoading }" /> 刷新
+            <!-- R38 P3-2：忙碌时文案「刷新中」替代旋转图标（旋转+reduce 伪守卫已删） -->
+            <button type="button" class="v4-mini-btn" title="刷新" :disabled="deviceLoading" :aria-busy="deviceLoading" @click="loadDevices">
+              <RefreshCw :size="13" /> {{ deviceLoading ? '刷新中' : '刷新' }}
             </button>
           </div>
           <div v-if="deviceLoading && !devices.length" class="v4-skeleton" style="height:120px"></div>
@@ -192,12 +192,16 @@ function onPwdModalKeydown(e: KeyboardEvent) {
     first.focus()
   }
 }
+/** R38 P2-2：弹窗关闭后焦点回到触发按钮（改密码 / 终止订阅共用） */
+const lastTrigger = ref<HTMLElement | null>(null)
 function onPwdEsc(e: KeyboardEvent) {
   if (e.key === 'Escape' && showChangePwd.value) closeChangePwd()
 }
 function openChangePwd() {
   // R37 P3-9：重开弹窗清掉旧错误文案
   pwdError.value = ''
+  // R38 P2-2：记住触发按钮，关闭后焦点回到它
+  lastTrigger.value = document.activeElement as HTMLElement | null
   showChangePwd.value = true
   window.addEventListener('keydown', onPwdEsc)
   nextTick(() => oldPwdInput.value?.focus())
@@ -205,6 +209,7 @@ function openChangePwd() {
 function closeChangePwd() {
   showChangePwd.value = false
   window.removeEventListener('keydown', onPwdEsc)
+  lastTrigger.value?.focus?.()
 }
 onUnmounted(() => window.removeEventListener('keydown', onPwdEsc))
 
@@ -263,9 +268,11 @@ async function loadSubs() {
 const pendingCancel = ref<MySubscription | null>(null)
 const cancelConfirmOpen = computed({
   get: () => pendingCancel.value !== null,
-  set: (v: boolean) => { if (!v) pendingCancel.value = null },
+  // R38 P2-2：任何关闭路径（"再想想"、Modal 内部关闭按钮/Esc）都把焦点还给触发按钮
+  set: (v: boolean) => { if (!v) { pendingCancel.value = null; lastTrigger.value?.focus?.() } },
 })
 function cancelSubscription(s: MySubscription) {
+  lastTrigger.value = document.activeElement as HTMLElement | null
   pendingCancel.value = s
 }
 async function doCancelSubscription() {
@@ -275,7 +282,7 @@ async function doCancelSubscription() {
   try {
     const res = await subscriptionApi.cancel(s.id)
     toast.success(res.message || toastCopy.subscriptionCancelled())
-    pendingCancel.value = null
+    cancelConfirmOpen.value = false
     await loadSubs()
   } catch (err: any) {
     toast.error(toUserMessage(err, 'cancelFailed'))
@@ -409,8 +416,7 @@ onMounted(() => {
   font-size: 12px;
   cursor: pointer;
 }
-.spinning { animation: v4-spin 0.9s linear infinite; }
-@keyframes v4-spin { to { transform: rotate(360deg); } }
+/* R38 P3-2：.spinning 旋转动画已删（忙碌改走文案「刷新中」）；reduce 伪守卫一并删 */
 
 .dev-row {
   display: flex;
@@ -513,7 +519,7 @@ onMounted(() => {
 }
 .acct-field input {
   width: 100%;
-  height: 42px;
+  height: 44px;
   padding: 0 12px;
   background: var(--paper);
   border: 1px solid var(--line);
@@ -562,7 +568,6 @@ onMounted(() => {
 .acct-confirm-text { font-size: 14px; line-height: 1.9; color: var(--ink); margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .spinning { animation-duration: 2.4s; }
   .acct-row:active, .dev-remove:active:not(:disabled) { background: transparent; }
 }
 </style>

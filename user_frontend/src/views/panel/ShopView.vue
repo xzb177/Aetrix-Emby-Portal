@@ -60,7 +60,7 @@
             🎫 券后 ¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.paid_amount) }}
             <s>¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.list_price) }}</s>
           </div>
-          <button class="charge" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" @click="doRecharge">⚡ 充能</button>
+          <button class="charge" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" :aria-busy="orderBusy && orderBusyTag === 'recharge'" @click="doRecharge">{{ orderBusy && orderBusyTag === 'recharge' ? '支付中…' : '⚡ 充能' }}</button>
           <!-- 自定义金额 -->
           <div class="custom">
             <div class="custom-row">
@@ -159,7 +159,7 @@
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ (100 - memberDiscountPct) / 10 }} 折</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
-              <button class="buy" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>领取执照 →</button>
+              <button class="buy" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" :aria-busy="orderBusy && orderBusyTag === 'buy'" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>{{ orderBusy && orderBusyTag === 'buy' ? '领取中…' : '领取执照 →' }}</button>
             </div>
           </div>
           <div class="fineprint">人民币 / 能量二选一，价格由服主在后台配置</div>
@@ -239,8 +239,8 @@
               class="redeem-input"
               @input="resetCodeFeedback"
             />
-            <button type="submit" class="redeem-btn" :class="{ 'is-loading': redeemLoading }" :disabled="redeemLoading || !redeemCode.trim()">
-              <span class="lbl">使用</span>
+            <button type="submit" class="redeem-btn" :class="{ 'is-loading': redeemLoading }" :disabled="redeemLoading || !redeemCode.trim()" :aria-busy="redeemLoading">
+              <span class="lbl">{{ redeemLoading ? '核销中…' : '使用' }}</span>
             </button>
           </form>
           <div v-if="codePreview" class="redeem-preview">
@@ -325,6 +325,9 @@ const currency = ref<'y' | 'e'>('y')
 const openPlanId = ref<number | null>(null)
 const openCampLevel = ref<number | null>(null)
 const orderBusy = ref(false)
+/** R38 P3-3：orderBusy 被三个下单动作共用 —— 用 tag 区分当前是哪一个在忙，
+ *  忙碌文案只出现在真正动作的按钮上，不串到别的按钮 */
+const orderBusyTag = ref<'recharge' | 'custom' | 'buy' | null>(null)
 
 /* ---------- 支付方式 ---------- */
 const methods = ref<PaymentMethod[]>([])
@@ -349,7 +352,6 @@ const codeNotice = ref('')
 const exchangeEnabled = ref(true)
 const couponEnabled = ref(true)
 const couponApplied = ref('')
-const couponLoading = ref(false)
 const couponError = ref('')
 const couponQuotes = ref<Record<string, CouponQuote>>({})
 /* R28：静默预检只做"检测"，不自动应用改价；用户点「使用」才真正验券应用 */
@@ -414,7 +416,6 @@ function couponTargets(kind: 'recharge' | 'subscription') {
 /** 应用优惠券：用户主动点「使用」时调用（R28：静默预检不再自动应用） */
 async function applyCoupon(code: string) {
   couponError.value = ''
-  couponLoading.value = true
   try {
     const rows = await Promise.all(
       [...couponTargets('recharge'), ...couponTargets('subscription')].map(async (t) => {
@@ -439,7 +440,6 @@ async function applyCoupon(code: string) {
   } catch {
     couponError.value = '验券失败，稍后再试'
   } finally {
-    couponLoading.value = false
   }
 }
 
@@ -538,6 +538,7 @@ async function handleCustomRecharge() {
   const amt = customAmount.value ?? 0
   if (amt < 1 || orderBusy.value || !methodsReady.value) return
   orderBusy.value = true
+  orderBusyTag.value = 'custom'
   try {
     const res = await paymentApi.createOrder({
       kind: 'recharge',
@@ -554,6 +555,7 @@ async function handleCustomRecharge() {
     toast.error(humanizeError(err))
   } finally {
     orderBusy.value = false
+    orderBusyTag.value = null
   }
 }
 
@@ -724,6 +726,7 @@ async function doRecharge() {
   const pkg = selectedPkg.value
   if (!pkg || orderBusy.value || !methodsReady.value) return
   orderBusy.value = true
+  orderBusyTag.value = 'recharge'
   try {
     // 优惠码在试算通过的商品上才带：后端会按同一套口径再算一遍并占额度
     const quote = quoteOf('recharge', pkg.id)
@@ -743,6 +746,7 @@ async function doRecharge() {
     toast.error(humanizeError(err))
   } finally {
     orderBusy.value = false
+    orderBusyTag.value = null
   }
 }
 
@@ -753,6 +757,7 @@ async function doBuyPlan(plan: SubscriptionPlan) {
     return
   }
   orderBusy.value = true
+  orderBusyTag.value = 'buy'
   try {
     const quote = quoteOf('subscription', plan.id)
     const res = await paymentApi.createOrder({
@@ -775,6 +780,7 @@ async function doBuyPlan(plan: SubscriptionPlan) {
     toast.error(humanizeError(err))
   } finally {
     orderBusy.value = false
+    orderBusyTag.value = null
   }
 }
 

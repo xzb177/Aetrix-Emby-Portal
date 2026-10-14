@@ -8,7 +8,7 @@
         <p v-if="today.data && parcelTotal !== '?'">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
         <div v-else-if="today.loading" class="v4-skeleton" style="height:28px;width:70%;margin-top:10px"></div>
         <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
-        <p v-else-if="today.data">包裹数暂时未知 —— 看看下面的货架上有啥。</p>
+        <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
         <div v-if="streak != null && streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
       </header>
 
@@ -17,6 +17,7 @@
         <div class="v4-err">票卡信息没加载出来，点下面重试<br><button class="v4-retry" @click="() => loadTicket()">重试</button></div>
       </div>
       <TicketCard
+        v-else
         :loading="ticketLoading"
         :asset-cards="ticketCards"
         :member-footer="ticketFooter"
@@ -56,7 +57,8 @@
           <span class="v4-pulse-tag">● 近况 · 服务器在忙什么</span>
           <span class="v4-pulse-dot"></span>
         </div>
-        <div v-if="pulse.loading" class="v4-skeleton" style="height:98px"></div>
+        <!-- R38 P3-13：骨架 112px 与真实内容（EcgCanvas 64px + PulseActivity min-height:40px + margin-top:8px）同高，避免切屏跳动 -->
+        <div v-if="pulse.loading" class="v4-skeleton" style="height:112px"></div>
         <template v-else-if="!pulse.error">
           <EcgCanvas />
           <PulseActivity :items="activityTexts" />

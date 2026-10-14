@@ -186,12 +186,18 @@ function avatarOf(name?: string | null): string {
 
 function fmtDate(iso?: string | null): string {
   if (!iso) return '—'
-  // "2026-10-10T…" → "10-10"
-  return iso.slice(5, 10)
+  // R38 P3-10：不再硬切片 ISO —— new Date 解析 + NaN 回退原串
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const pad = (n: number) => (n < 10 ? '0' + n : String(n))
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 function fmtTime(iso?: string | null): string {
   if (!iso) return '—'
-  return iso.slice(0, 16).replace('T', ' ')
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const pad = (n: number) => (n < 10 ? '0' + n : String(n))
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 let copyTimer: number | undefined

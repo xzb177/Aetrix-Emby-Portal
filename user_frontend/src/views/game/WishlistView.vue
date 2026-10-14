@@ -176,8 +176,13 @@ function onModalKeydown(e: KeyboardEvent) {
     first.focus()
   }
 }
+/** R38 P2-2：弹窗打开前记住触发按钮，关闭后焦点回到它 */
+const lastTrigger = ref<HTMLElement | null>(null)
 function openModal() {
+  lastTrigger.value = document.activeElement as HTMLElement | null
   modalOpen.value = true
+  // R38 P3-11：弹窗打开时锁住背后页面滚动
+  document.body.style.overflow = 'hidden'
   window.addEventListener('keydown', onEsc)
   nextTick(() => wishInput.value?.focus())
 }
@@ -185,9 +190,14 @@ function closeModal() {
   modalOpen.value = false
   wishText.value = ''
   emptyWarn.value = false
+  document.body.style.overflow = ''
   window.removeEventListener('keydown', onEsc)
+  lastTrigger.value?.focus?.()
 }
-onUnmounted(() => window.removeEventListener('keydown', onEsc))
+onUnmounted(() => {
+  document.body.style.overflow = ''
+  window.removeEventListener('keydown', onEsc)
+})
 
 async function loadMine() {
   myLoading.value = true

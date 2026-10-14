@@ -107,7 +107,7 @@
                 <div v-for="i in 3" :key="i" class="v4-skeleton" style="height:56px;margin-bottom:8px"></div>
               </div>
               <div v-else-if="messagesError" class="v4-err">对话加载失败：{{ messagesError }}<br><button class="v4-retry" @click="() => selectedTicket && fetchMessages(selectedTicket.id)">重试</button></div>
-              <div v-else ref="messagesEl" class="messages-list">
+              <div v-else ref="messagesEl" class="messages-list" tabindex="0" aria-label="对话记录">
                 <p v-if="!messages.length" class="messages-empty">还没有对话内容，营地马上就来认领</p>
                 <div
                   v-for="msg in messages"
@@ -220,6 +220,9 @@ const morseShow = ref(false)
 const morseStatus = ref('')
 const morseSyms = ref<{ ch: string; gap: boolean; lit: boolean }[]>([])
 const morseTimers: number[] = []
+/** R38 P2-1：摩斯动画的 resolve 句柄 —— 接口先失败时直接终结动画 Promise，
+ *  避免清掉 timer 后 Promise 永远不 settle 导致 await 挂死 */
+let morseAnimResolve: (() => void) | null = null
 
 // 回复
 const replyMessage = ref('')
@@ -266,6 +269,7 @@ const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)'
 
 function runMorseAnim(): Promise<void> {
   return new Promise((resolve) => {
+    morseAnimResolve = resolve
     morseSyms.value = MORSE_SEQ.map(([ch]) => ({
       ch: ch === 'gap' ? '' : ch,
       gap: ch === 'gap',
@@ -275,7 +279,7 @@ function runMorseAnim(): Promise<void> {
     let i = 0
     const step = () => {
       if (i > 0) morseSyms.value[i - 1].lit = false
-      if (i >= MORSE_SEQ.length) { resolve(); return }
+      if (i >= MORSE_SEQ.length) { morseAnimResolve = null; resolve(); return }
       const [ch, dur] = MORSE_SEQ[i]
       if (ch !== 'gap') morseSyms.value[i].lit = true
       i++
@@ -285,7 +289,7 @@ function runMorseAnim(): Promise<void> {
   })
 }
 
-/** 发出求救信号：先跑摩斯动画（约 4 秒），动画与接口并发，动画播完且接口成功才显示"已发出" */
+/** 发出求救信号：摩斯动画（约 4 秒）与接口并发；接口先失败则立刻停动画弹错（R38 P2-1），成功才等动画播完显示"已发出" */
 async function sendSOS() {
   const title = form.value.title.trim()
   const message = form.value.message.trim()
@@ -299,7 +303,15 @@ async function sendSOS() {
   // 按钮「信号发出中」忙碌态已告知进度，不展示空面板
   const reduce = reducedMotion()
   if (!reduce) morseShow.value = true
-  const createP = ticketApi.create({ title, category: form.value.category, message })
+  // R38 P2-1：接口先失败时立即停动画、清面板，错误不躲在 4 秒动画后面
+  const createP = ticketApi.create({ title, category: form.value.category, message }).catch((e) => {
+    morseTimers.forEach(clearTimeout)
+    morseTimers.length = 0
+    morseAnimResolve?.()
+    morseAnimResolve = null
+    morseShow.value = false
+    throw e
+  })
   try {
     if (!reduce) await runMorseAnim()
     await createP

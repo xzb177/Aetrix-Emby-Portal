@@ -30,9 +30,9 @@
 
       <!-- 新解锁横幅（R27：可关闭；已读记 sessionStorage，同会话不再弹；R28：加载失败时不展示，避免旧数据误导） -->
       <div v-if="newUnlockNames.length && !unlockBannerDismissed && !collector.error" class="v4-sec">
-        <div class="v4-fresh">
+        <div class="v4-fresh" role="status">
           <span>🎉 新成就解锁：{{ newUnlockNames.join('、') }}</span>
-          <button class="v4-fresh-close" aria-label="关闭" @click="dismissUnlockBanner">✕</button>
+          <button class="v4-fresh-close" aria-label="关闭新成就横幅" @click="dismissUnlockBanner">✕</button>
         </div>
       </div>
 
