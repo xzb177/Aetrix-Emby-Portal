@@ -468,11 +468,11 @@ export interface PromotionResponse {
 export const fetchPromotion = (params: { limit?: number; offset?: number } = {}) =>
   get<PromotionResponse>('/promotion', params)
 
-/** 键是 SystemConfig 的键名（promotion_reward_*），不是 policy_payload 的读模型 */
-export const savePromotionPolicy = (policy: Record<string, string>) =>
-  put<{ success: boolean; applied: Record<string, string>; policy: PromotionPolicy }>(
-    '/promotion/policy', { policy },
-  )
+/**
+ * Batch D 入口收敛（2026-10-14）：推广奖励的写入口收拢到「系统设置 → 邀请返利」
+ * （走 updateEconomySettings / PUT /economy/settings），PUT /promotion/policy 的
+ * 直写辅助已无人调用，随入口一起移除。
+ */
 
 // ==================== 媒体库可见范围：服务器默认 + 指定用户覆盖 ====================
 

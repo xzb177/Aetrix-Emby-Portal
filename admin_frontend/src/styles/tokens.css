@@ -100,6 +100,8 @@
   --text-inverse: var(--au-on-primary);
 
   /* ==================== 主色：放映机琥珀 ==================== */
+  /* Batch D 深链色：各页「去唯一写入口」的跳转链接统一用色（与各处 fallback #b45309 同值，定义后契约检查通过） */
+  --au-accent: #b45309;
   --primary: var(--au-primary);
   --primary-hover: var(--au-primary-strong);
   --primary-active: var(--au-primary-deep);

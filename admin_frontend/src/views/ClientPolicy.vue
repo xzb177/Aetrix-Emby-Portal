@@ -6,8 +6,8 @@
  *
  * - **转码**：允不允许服务端转码、同时几路、码率上限（省 CPU / 省上行）；
  * - **客户端准入**：哪些 UA 不许进（老版本、盗版客户端），或反过来只允许白名单；
- * - **下载与设备**：是否允许下载、每人几台设备、超限是拒绝还是自动踢最久未用的
- *   （这一组原来在「系统设置」里，属于「客户端能做什么」，搬到这里）。
+ * - **下载与设备**：是否允许下载、每人几台设备、超限是拒绝还是自动踢最久未用的、
+ *   安全日志保留多久（这组 SystemConfig 键的唯一写入口，「系统设置」只读回显）。
  *
  * 策略落在 SystemConfig 里，EM 与 EA 共用同一个库 → 面板上改完，出流的 EA 立刻生效。
  * 判定口径：**管理员不受限**（排障时不能被自己的策略挡住）；所有开关缺省 = 与升级前一致。
@@ -24,7 +24,7 @@ import {
   updateCdnConfig, updateLocalCacheConfig, updatePlaybackPolicy,
 } from '@/api/admin'
 import { useDangerOps, fmtBytes } from '@/composables/useDangerOps'
-// 下载与设备风控落在经济设置里（同一批 SystemConfig 键），这里只是换个更顺手的入口
+// 下载与设备风控落在经济设置里：这批 SystemConfig 键的唯一写入口（系统设置页只读回显）
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type {
   CdnConfig, LocalCacheConfig, LocalCacheEntryInfo, LocalCacheStats, PlaybackPolicy, PlaybackRuntime,
@@ -57,8 +57,8 @@ const policy = ref<PlaybackPolicy>({
 })
 const runtime = ref<PlaybackRuntime | null>(null)
 
-/** 下载与设备风控（与「系统设置」共用同一批键，这里只是换个更顺手的入口） */
-const ops = ref({ allow_download: 'true', device_limit_per_user: '0', device_limit_auto_evict: 'false' })
+/** 下载与设备风控：这批 SystemConfig 键的唯一写入口（系统设置页只读回显） */
+const ops = ref({ allow_download: 'true', device_limit_per_user: '0', device_limit_auto_evict: 'false', login_log_retention_days: '' })
 /** 下载与设备配置没读到：表单里不是生效值，禁止保存（否则会用空值覆盖线上配置） */
 const opsError = ref(false)
 
@@ -129,6 +129,7 @@ async function load() {
         allow_download: s.settings.allow_download ?? '',
         device_limit_per_user: s.settings.device_limit_per_user ?? '',
         device_limit_auto_evict: s.settings.device_limit_auto_evict ?? '',
+        login_log_retention_days: s.settings.login_log_retention_days ?? '',
       }
     }
   } catch {
@@ -374,7 +375,7 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
     <!-- 客户端准入 -->
     <SectionCard title="客户端准入" :icon="ShieldBan" :meta="`${blockedCount} 条黑名单规则`">
       <div class="cp-field is-column">
-        <label class="cp-label">客户端黑名单（UA 子串，逗号分隔）</label>
+        <label class="cp-label">客户端黑名单（UA 关键词，逗号分隔）</label>
         <el-input
           v-model="policy.blocked_agents"
           type="textarea"
@@ -385,6 +386,8 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
         <p class="cp-hint">
           按子串匹配（不区分大小写）：命中就拒绝，连播放信息都拿不到。
           <strong>管理员不受限</strong>，排障时不会被自己的规则挡住。
+          另一处在「安全与准入 → <router-link :to="{ name: 'AccessGuard' }" class="cp-link">访问拦截</router-link>」：
+          区别是这里只管<strong>播放准入</strong>，那里是全站访问（连面板登录都会拦）。
         </p>
       </div>
 
@@ -412,8 +415,8 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
       </template>
     </SectionCard>
 
-    <!-- 下载与设备（原来在系统设置里） -->
-    <SectionCard title="下载与设备" :icon="Download" description="与「系统设置」共用同一批配置，这里只是更顺手的入口。">
+    <!-- 下载与设备：这批配置键的唯一写入口（系统设置页只读回显） -->
+    <SectionCard title="下载与设备" :icon="Download" description="下载与设备风控的唯一配置入口，在本页直接修改并保存。">
       <el-alert
         v-if="opsError"
         type="error"
@@ -457,6 +460,14 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
           :disabled="!isSuper"
           @update:model-value="(v: string | number | boolean) => (ops.device_limit_auto_evict = v ? 'true' : 'false')"
         />
+      </div>
+
+      <div class="cp-field">
+        <div class="cp-field-main">
+          <label class="cp-label">日志保留（天）</label>
+          <p class="cp-hint">登录与安全日志的保留期，未设置时默认 90 天。</p>
+        </div>
+        <el-input v-model="ops.login_log_retention_days" class="cp-num" :disabled="!isSuper" />
       </div>
 
       <template #footer>
@@ -846,6 +857,9 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
   flex-wrap: wrap;
 }
 .cp-save-hint { flex: 1 1 240px; }
+/* Batch D 入口收敛：页内互链（UA 两处 / 下载与设备只读提示） */
+.cp-link { color: var(--au-accent, #b45309); font-weight: 700; text-decoration: none; }
+.cp-link:hover { text-decoration: underline; }
 .cp-inline-icon { display: inline-flex; align-items: center; gap: 6px; }
 .cp-save-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .danger-jump {

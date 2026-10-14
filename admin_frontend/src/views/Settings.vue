@@ -24,7 +24,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   CalendarCheck, Coins, Flame, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
-  ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, ShieldAlert, Lock, Zap,
+  ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, Lock, Zap,
   DatabaseBackup, HardDrive, History, TriangleAlert, Eraser, SlidersHorizontal, PlugZap, Rocket,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
@@ -178,40 +178,6 @@ const GROUPS: Group[] = [
     ],
   },
   {
-    id: 'risk',
-    title: '下载与设备风控',
-    desc: '下载开关、设备上限与安全日志保留策略',
-    icon: ShieldAlert,
-    fields: [
-      {
-        key: 'allow_download',
-        label: '允许下载',
-        type: 'bool',
-        hint: '关闭后客户端下载（含 /Items/{id}/File）一并拦截，管理员不受限',
-      },
-      {
-        key: 'device_limit_per_user',
-        label: '设备上限',
-        type: 'int',
-        suffix: '台/人',
-        hint: '0 或不填表示不限；只统计近 30 天活跃设备',
-      },
-      {
-        key: 'device_limit_auto_evict',
-        label: '超限自动踢人',
-        type: 'bool',
-        hint: '开启则自动移除最久未使用的设备；关闭则直接拒绝新设备',
-      },
-      {
-        key: 'login_log_retention_days',
-        label: '日志保留',
-        type: 'int',
-        suffix: '天',
-        hint: '登录与安全日志的保留期，未设置时默认 90 天',
-      },
-    ],
-  },
-  {
     id: 'invitation',
     title: '邀请返利',
     desc: '邀请奖励与下级消费返利比例',
@@ -316,7 +282,7 @@ interface GroupSection {
 const SECTION_DEFS: Array<{ id: string; title: string; groups: string[] }> = [
   { id: 'growth', title: '注册与福利', groups: ['checkin', 'vitality', 'invitation', 'exchange'] },
   { id: 'commerce', title: '付费与支付', groups: ['payment', 'paywall'] },
-  { id: 'playback', title: '播放与风控', groups: ['risk', 'prewarm', 'stream_accel'] },
+  { id: 'playback', title: '播放与风控', groups: ['prewarm', 'stream_accel'] },
 ]
 const SECTIONS: GroupSection[] = (() => {
   const used = new Set<string>()
@@ -602,6 +568,11 @@ onMounted(async () => {
   // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
   if (tab.value === 'danger') loadDanger()
   await Promise.all([load(), loadCapabilities(), loadHotlink()])
+  // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
+  if (route.hash) {
+    await nextTick()
+    document.querySelector(route.hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 })
 
 /** ==================== 防盗链卡片（独立 endpoint，非通用分组） ==================== */
@@ -1424,7 +1395,7 @@ watch(
             </template>
             <p class="danger-effect">
               保留 <strong>0</strong> 天 = 清空全部。删掉之后，风控与安全审计就查不到那段历史了。
-              想让它自然收敛，应该去「系统设置 → 运营参数 → 下载与设备风控」改日志保留天数。
+              想让它自然收敛，应该去「安全与准入 → 客户端策略 → 下载与设备」改日志保留天数。
             </p>
             <template #footer>
               <div class="card-footer">
@@ -1787,4 +1758,5 @@ watch(
   .cap-drawer-footer :deep(.el-button) { flex: 1; margin-left: 0; }
   .danger-guard :deep(.au-section__head) { flex-wrap: wrap; }
 }
+
 </style>

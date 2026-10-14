@@ -23,8 +23,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, CloudDownload, Download, FolderOpen, HardDrive, History,
-  Info, Library, ListChecks, Pencil, Plus, RefreshCw, Route as RealmIcon, ScanSearch, Server, Trash2, Wifi,
+  AlertTriangle, CheckCircle2, ChevronDown, CloudDownload, Download, FolderOpen, HardDrive,
+  Info, Library, Pencil, Plus, RefreshCw, Route as RealmIcon, Server, Trash2, Wifi,
 } from 'lucide-vue-next'
 import {
   activateServer,
@@ -39,7 +39,6 @@ import {
   fetchServerRcloneConf,
   probeMountsHealth,
   refreshServerMounts,
-  runServerOpsScan,
   saveServerRcloneConf,
   testServer,
   testServerConfig,
@@ -727,7 +726,6 @@ async function remove(row: RemoteServerRow) {
  */
 const opsVisible = ref(false)
 const opsLoading = ref(false)
-const opsScanning = ref(false)
 const opsRow = ref<ServerOverviewRow | null>(null)
 const ops = ref<ServerOpsSnapshot | null>(null)
 /** 把同服里还没分配节点的库也算进来（那些库由面板扫，不属于这台节点） */
@@ -736,7 +734,6 @@ const opsIncludeUnassigned = ref(false)
 function openOps(row: ServerOverviewRow) {
   opsRow.value = row
   ops.value = null
-  opsLastScan.value = null
   opsVisible.value = true
   loadOps()
 }
@@ -761,31 +758,6 @@ function onOpsScopeChange() {
 }
 
 /** 一键扫描：入队结果逐类回报（入队 / 已在队列 / 转发 / 跳过），不只弹一句「已触发」 */
-async function runOpsScan() {
-  const row = opsRow.value
-  if (!row) return
-  opsScanning.value = true
-  try {
-    const res = await runServerOpsScan(row.id, {
-      include_unassigned: opsIncludeUnassigned.value,
-    })
-    if (res.failed.length) {
-      ElMessage.warning(`${res.message}（失败明细在下方）`)
-    } else {
-      ElMessage.success(res.message)
-    }
-    opsLastScan.value = {
-      queued: res.queued, already: res.already, forwarded: res.forwarded,
-      skipped: res.skipped, failed: res.failed, message: res.message,
-    }
-    await loadOps()
-  } catch {
-    /* 拦截器已提示 */
-  } finally {
-    opsScanning.value = false
-  }
-}
-
 /** 队列状态 → 一句人话（而不是把 state 原词丢给用户） */
 function opsStateText(state: string): string {
   switch (state) {
@@ -798,72 +770,8 @@ function opsStateText(state: string): string {
   }
 }
 
-function opsRunBadge(status: string): string {
-  if (status === 'success') return 'ok'
-  if (status === 'partial') return 'warn'
-  if (status === 'failed') return 'danger'
-  return 'muted'
-}
-
-function opsRunText(status: string): string {
-  switch (status) {
-    case 'success': return '成功'
-    case 'partial': return '部分成功'
-    case 'failed': return '失败'
-    case 'running': return '扫描中'
-    default: return status || '—'
-  }
-}
-
 /** 耗时：毫秒 → 人话；没跑完（null）不要报 0ms */
-function opsDuration(ms: number | null | undefined): string {
-  if (ms == null) return '—'
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
-  return `${Math.round(ms / 60000)}min`
-}
-
 /** 谁触发的（后端给的是机器可读的口径） */
-function opsTriggerText(trigger: string | null): string {
-  switch (trigger) {
-    case 'manual': return '面板触发'
-    case 'client': return '客户端'
-    case 'node': return '节点'
-    case 'repair': return '修复队列'
-    default: return trigger || '—'
-  }
-}
-
-/** enrich / probe 状态分布 → 一行摘要（顺序固定，不按数量跳） */
-function opsCountsText(counts: Record<string, number>): string {
-  const order = ['pending', 'enriching', 'done', 'failed', 'retrying']
-  const keys = order.filter((k) => k in counts)
-  const rest = Object.keys(counts).filter((k) => !order.includes(k))
-  return [...keys, ...rest]
-    .map((k) => `${opsStateLabel(k)} ${counts[k]}`)
-    .join(' · ')
-}
-
-function opsStateLabel(status: string): string {
-  switch (status) {
-    case 'pending': return '待处理'
-    case 'enriching': return '补全中'
-    case 'done': return '已完成'
-    case 'failed': return '失败'
-    case 'retrying': return '重试中'
-    default: return status
-  }
-}
-
-/** 一键扫描后的结果明细（入库 / 已在队列 / 转发 / 跳过） */
-const opsLastScan = ref<{
-  queued: { id: number; name: string }[]
-  already: { id: number; name: string }[]
-  forwarded: { id: number; name: string; node_name: string }[]
-  skipped: { id: number; name: string; reason: string }[]
-  failed: { id: number; name: string; node_name: string; error: string }[]
-  message: string
-} | null>(null)
 </script>
 
 <template>
@@ -1500,8 +1408,8 @@ const opsLastScan = ref<{
       <div v-loading="opsLoading" class="ops">
         <div class="ops-head">
           <p class="ops-hint">
-            执行视角：扫描、刮削补全与任务流水都以这台机器为单位。
-            <strong>配置不动</strong>——路径、刮削策略、存储挂载仍在「媒体库」页按库改。
+            节点视角：这台机器管哪些库、各自状态如何。
+            <strong>配置不动</strong>——路径、刮削策略、存储挂载仍在「媒体库」页按库改；扫描控制台也在「媒体库」页。
           </p>
           <div class="ops-scope">
             <el-checkbox v-model="opsIncludeUnassigned" @change="onOpsScopeChange">
@@ -1517,126 +1425,8 @@ const opsLastScan = ref<{
           </div>
         </div>
 
-        <SectionCard class="ops-card" title="一键扫描 + 刮削" :icon="ScanSearch">
-          <p class="ops-hint">
-            把归这台节点的启用库推入扫描队列：面板碰得到的本地入队，归这台节点的转发给它
-            （只有那台机器能读到那些目录），已在队列 / 正在扫的不重复推。扫完自动接刮削流水线
-            （NFO → TMDB → 豆瓣）。
-          </p>
-          <el-button
-            type="primary"
-            :loading="opsScanning"
-            :disabled="!ops || !ops.scope.enabled"
-            @click="runOpsScan"
-          >
-            <RefreshCw :size="14" style="margin-right: 4px" />扫描并刮削 {{ ops?.scope.enabled ?? 0 }} 个库
-          </el-button>
-          <div v-if="opsLastScan" class="ops-result">
-            <div class="ops-result-line">{{ opsLastScan.message }}</div>
-            <div v-if="opsLastScan.queued.length" class="ops-result-line ok">
-              已入队：{{ opsLastScan.queued.map((r) => r.name).join('、') }}
-            </div>
-            <div v-if="opsLastScan.already.length" class="ops-result-line">
-              已在队列 / 正在扫：{{ opsLastScan.already.map((r) => r.name).join('、') }}
-            </div>
-            <div v-if="opsLastScan.forwarded.length" class="ops-result-line ok">
-              已转发给归属节点：{{ opsLastScan.forwarded.map((r) => r.name).join('、') }}
-            </div>
-            <div v-for="row in opsLastScan.failed" :key="`f${row.id}`" class="ops-result-line bad">
-              转发失败 · {{ row.name }}：{{ row.error }}
-            </div>
-            <div v-for="row in opsLastScan.skipped" :key="`s${row.id}`" class="ops-result-line muted">
-              跳过 · {{ row.name }}：{{ row.reason }}
-            </div>
-          </div>
-        </SectionCard>
 
-        <!-- 任务：扫描队列 + 刮削补全 / 修复 + 内容转交 -->
-        <SectionCard class="ops-card" title="任务" :icon="ListChecks">
 
-          <div class="ops-sub">扫描队列（{{ ops?.queue.view === 'db' ? '由执行节点写回库里的状态' : '本进程队列' }}）</div>
-          <p v-if="!ops?.queue.running.length && !ops?.queue.waiting.length" class="ops-hint">
-            此刻没有扫描任务在跑。队列{{ ops?.queue.enabled === false ? '已关闭（并发上限与挂载串行化不生效）' : '正常' }}，
-            同时最多 {{ ops?.queue.max_parallel ?? '—' }} 个{{ ops?.queue.mount_serial ? ' · 同一远程挂载串行' : '' }}。
-          </p>
-          <div v-else class="ops-tasks">
-            <div v-for="task in [...ops!.queue.running, ...ops!.queue.waiting]" :key="`${task.library_id}-${task.state}`" class="ops-task">
-              <span class="mini-badge" :class="task.state === 'running' ? 'local' : 'muted'">
-                {{ opsStateText(task.state) }}
-              </span>
-              <span class="ops-task-name">{{ task.name }}</span>
-              <span class="muted">
-                {{ task.state === 'queued' ? `第 ${task.position ?? '-'} 位` : opsTriggerText(task.trigger) }}
-                <template v-if="task.waiting_for?.length && ops?.queue.mount_names[String(task.waiting_for[0])]">
-                  · 在等挂载 {{ ops.queue.mount_names[String(task.waiting_for[0])] }}
-                </template>
-              </span>
-            </div>
-          </div>
-          <div v-if="ops?.queue.history.length" class="ops-sub">最近完成</div>
-          <div v-if="ops?.queue.history.length" class="ops-tasks">
-            <div v-for="task in ops!.queue.history.slice(0, 5)" :key="`h${task.library_id}`" class="ops-task">
-              <span class="mini-badge" :class="task.result === 'failed' ? 'off' : 'muted'">
-                {{ task.result || opsStateText(task.state) }}
-              </span>
-              <span class="ops-task-name">{{ task.name }}</span>
-              <span class="muted">{{ opsTriggerText(task.trigger) }} · 耗时 {{ opsDuration(task.duration_ms) }}</span>
-            </div>
-          </div>
-
-          <div class="ops-sub">刮削补全 / 探测（范围共 {{ ops?.pipeline.items ?? 0 }} 个条目）</div>
-          <p class="ops-hint">{{ opsCountsText(ops?.pipeline.enrich || {}) || '还没有条目' }}</p>
-
-          <div class="ops-sub">待修复条目（{{ ops?.pipeline.repair.total ?? 0 }}）</div>
-          <p v-if="!ops?.pipeline.repair.total" class="ops-hint">没有待修复的条目。</p>
-          <div v-else class="ops-tasks">
-            <div v-for="item in ops!.pipeline.repair.items.slice(0, 5)" :key="item.id" class="ops-task">
-              <span class="mini-badge" :class="item.file_exists ? 'muted' : 'off'">
-                {{ item.file_exists ? '待重刮' : '源文件已丢失' }}
-              </span>
-              <span class="ops-task-name">{{ item.name }}</span>
-              <span class="muted">{{ fmtDate(item.requested_at) }}</span>
-            </div>
-          </div>
-
-          <div class="ops-sub">内容转交（求片 → 下载整理）</div>
-          <p class="ops-hint">{{ ops?.handoff.note || '内容转交由外部服务完成' }}</p>
-          <p v-if="!ops?.handoff.total" class="ops-hint">还没有转交记录。</p>
-          <div v-else class="ops-tasks">
-            <div v-for="item in ops!.handoff.items.slice(0, 5)" :key="item.id" class="ops-task">
-              <span class="mini-badge" :class="item.push_status === 'ok' ? 'local' : 'off'">
-                {{ item.push_target }} {{ item.push_status === 'ok' ? '已提交' : '失败' }}
-              </span>
-              <span class="ops-task-name">{{ item.movie_name }}</span>
-              <span class="muted">{{ fmtDate(item.pushed_at) }}</span>
-            </div>
-          </div>
-        </SectionCard>
-
-        <!-- 整服视角扫描历史 -->
-        <SectionCard class="ops-card" title="扫描历史" :meta="`最近 ${ops?.runs.length ?? 0} 轮`" :icon="History">
-          <EmptyState v-if="!ops?.runs.length" compact :icon="History" title="还没有扫描流水" />
-          <table v-else class="ops-table">
-            <thead>
-              <tr>
-                <th>时间</th><th>媒体库</th><th>状态</th><th>触发</th><th>耗时</th><th>变化</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="run in ops!.runs" :key="run.id">
-                <td class="muted">{{ fmtDate(run.finished_at || run.started_at) }}</td>
-                <td>{{ run.library_name }}</td>
-                <td>
-                  <span class="mini-badge" :class="opsRunBadge(run.status)">{{ opsRunText(run.status) }}</span>
-                  <div v-if="run.error" class="ops-err">{{ run.error }}</div>
-                </td>
-                <td class="muted">{{ opsTriggerText(run.trigger) }}</td>
-                <td class="muted">{{ opsDuration(run.duration_ms) }}</td>
-                <td class="muted">+{{ run.added }} / ~{{ run.updated }} / -{{ run.removed }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </SectionCard>
 
         <!-- 归这台节点的库（只读：配置在媒体库页改） -->
         <SectionCard
@@ -1674,7 +1464,7 @@ const opsLastScan = ref<{
 
       <template #footer>
         <div class="ops-foot">
-          <span class="muted">数据来自既有的扫描流水与队列，不新建状态；点「刷新」重新读一次。</span>
+          <span class="muted">数据来自既有快照，不新建状态；点「刷新」重新读一次。</span>
           <el-button @click="opsVisible = false">关闭</el-button>
         </div>
       </template>
@@ -1862,21 +1652,6 @@ const opsLastScan = ref<{
   font-size: var(--font-size-xs); color: var(--au-text-2); font-weight: var(--font-weight-medium);
   margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--au-border);
 }
-.ops-tasks { display: flex; flex-direction: column; gap: 6px; }
-.ops-task {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  font-size: var(--font-size-xs);
-}
-.ops-task-name { color: var(--au-text); font-weight: var(--font-weight-medium); }
-.ops-result {
-  display: flex; flex-direction: column; gap: 4px;
-  padding: 10px 12px; border-radius: var(--au-r-md); background: var(--au-bg-soft);
-  font-size: var(--font-size-xs); line-height: 1.7;
-}
-.ops-result-line { color: var(--au-text-2); }
-.ops-result-line.ok { color: var(--au-success); }
-.ops-result-line.bad { color: var(--au-danger); }
-.ops-result-line.muted { color: var(--au-text-3); }
 .ops-table { width: 100%; border-collapse: collapse; font-size: var(--font-size-xs); }
 .ops-table th {
   text-align: left; font-weight: var(--font-weight-medium); color: var(--au-text-3); letter-spacing: 0.04em;

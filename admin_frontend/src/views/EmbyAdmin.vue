@@ -45,12 +45,10 @@ import {
   fetchChaseNew,
   fetchStrmConfig,
   fetchTmdbKeys,
-  fetchTmdbLanguage,
   fetchEnrichEpisodeNight,
   fetchEnrichTuning,
   fetchEnrichNoneStats,
   fetchEnrichFieldStats,
-  fetchDoubanBanDowngrade,
   fetchUnifiedFallback,
   generateVirtualLibraries,
   previewLibraryCover,
@@ -64,17 +62,14 @@ import {
   saveAutoScan,
   saveChaseNew,
   saveStrmConfig,
-  saveTmdbLanguage,
   saveEnrichEpisodeNight,
   saveEnrichTuning,
-  saveDoubanBanDowngrade,
   saveUnifiedFallback,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, DoubanBanDowngradeConfig, UnifiedFallbackConfig } from '@/api/admin'
-import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -727,10 +722,8 @@ async function load() {
       loadAutoScanConfig(),
       loadChaseNewConfig().catch(() => undefined),
       loadStrmConfig().catch(() => undefined),
-      loadTmdbLanguageConfig().catch(() => undefined),
       loadEnrichEpisodeNightConfig().catch(() => undefined),
       loadEnrichTuningConfig().catch(() => undefined),
-      loadBanDowngradeConfig().catch(() => undefined),
       loadUnifiedFallbackConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
@@ -1066,40 +1059,6 @@ function goIdentify(l: EmbyLibrary) {
   router.push({ name: 'MetadataSources', query: { item_id: String(l.id) } })
 }
 
-// ==================== TMDB 首选语言（P2c） ====================
-
-/** TMDB 返回的简介/标题/别名用哪种语言：后台配置，保存即热生效 */
-const tmdbLang = ref<TmdbLanguageStatus | null>(null)
-const tmdbLangSaving = ref(false)
-
-const tmdbLangLabel = (v: string) => TMDB_LANGUAGE_LABELS[v] || v
-
-const tmdbLangError = ref(false)
-
-async function loadTmdbLanguageConfig() {
-  try {
-    tmdbLang.value = await fetchTmdbLanguage()
-    tmdbLangError.value = false
-  } catch {
-    tmdbLang.value = null // 出错不挡页面其它内容
-    tmdbLangError.value = true
-  }
-}
-
-async function saveTmdbLanguageAction() {
-  if (!tmdbLang.value) return
-  tmdbLangSaving.value = true
-  try {
-    const res = await saveTmdbLanguage(tmdbLang.value.language)
-    tmdbLang.value.language = res.language
-    ElMessage.success('TMDB 首选语言已保存，立即生效')
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
-  } finally {
-    tmdbLangSaving.value = false
-  }
-}
-
 // ==================== 单集夜间刮削 ====================
 
 /** 白天只刮顶层条目（电影/剧集），单集留到夜间窗口刮：后台配置，60 秒内热生效 */
@@ -1323,36 +1282,6 @@ const fieldMissingText = computed(() => {
   })
   return `共 ${s.total} 条已刮完：` + parts.join(' · ')
 })
-
-// ==================== 豆瓣限流降级 ====================
-
-/** 封禁期跳过豆瓣走多源兜底：后台开关，60 秒内热生效 */
-const banDowngrade = ref<DoubanBanDowngradeConfig | null>(null)
-const banDowngradeSaving = ref(false)
-const banDowngradeError = ref(false)
-
-async function loadBanDowngradeConfig() {
-  try {
-    banDowngrade.value = await fetchDoubanBanDowngrade()
-    banDowngradeError.value = false
-  } catch {
-    banDowngrade.value = null // 出错不挡页面其它内容
-    banDowngradeError.value = true
-  }
-}
-
-async function saveBanDowngradeAction() {
-  if (!banDowngrade.value) return
-  banDowngradeSaving.value = true
-  try {
-    banDowngrade.value = await saveDoubanBanDowngrade(banDowngrade.value.enabled)
-    ElMessage.success('豆瓣限流降级已保存，60 秒内生效')
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '保存失败')
-  } finally {
-    banDowngradeSaving.value = false
-  }
-}
 
 // ==================== 兜底链路统一 ====================
 
@@ -2093,33 +2022,6 @@ function typeLabel(t: string): string {
               </template>
             </div>
             <div class="scrape-block">
-              <h3>TMDB 首选语言</h3>
-              <p class="drawer-hint">
-                TMDB 返回的简介 / 标题 / 别名用哪种语言（保存后立即生效）
-              </p>
-              <div v-if="tmdbLang" class="scrape-actions">
-                <el-select v-model="tmdbLang.language" style="width: 160px" aria-label="TMDB 首选语言">
-                  <el-option
-                    v-for="v in tmdbLang.options"
-                    :key="v"
-                    :label="tmdbLangLabel(v)"
-                    :value="v"
-                  />
-                </el-select>
-                <el-button type="primary" size="small" :loading="tmdbLangSaving" @click="saveTmdbLanguageAction">
-                  保存
-                </el-button>
-              </div>
-              <div v-else-if="tmdbLangError" class="drawer-hint drawer-hint--after">
-                读取失败
-                <el-button size="small" text @click="loadTmdbLanguageConfig">重试</el-button>
-              </div>
-              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
-              <div v-if="tmdbLang?.from_env" class="drawer-hint drawer-hint--after">
-                环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
-              </div>
-            </div>
-            <div class="scrape-block">
               <h3>单集夜间刮削</h3>
               <p class="drawer-hint">
                 打开后，白天只刮顶层条目（电影 / 剧集），单集留到夜间窗口再刮，避免单集挤占白天的刮削资源（保存后 60 秒内生效；时间按所选时区解释，窗口支持跨午夜）
@@ -2357,31 +2259,6 @@ function typeLabel(t: string): string {
               <div v-else-if="enrichTuningError" class="drawer-hint drawer-hint--after">
                 读取失败
                 <el-button size="small" text @click="loadEnrichTuningConfig">重试</el-button>
-              </div>
-              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
-            </div>
-            <div class="scrape-block">
-              <h3>豆瓣限流降级</h3>
-              <p class="drawer-hint">
-                豆瓣限流 / 冷却期内，中文条目不再整条延后等解封——跳过豆瓣这一站，照常走 TMDB → 多源兜底；期间命中从严（标题 + 年份都对上才落库，宁可没命中也不乱认）。解封后自动恢复原顺序（保存后 60 秒内生效）
-              </p>
-              <div v-if="banDowngrade" class="scrape-actions">
-                <el-switch
-                  v-model="banDowngrade.enabled"
-                  active-text="开启"
-                  inactive-text="关闭"
-                  aria-label="豆瓣限流降级开关"
-                />
-                <el-button type="primary" size="small" :loading="banDowngradeSaving" @click="saveBanDowngradeAction">
-                  保存
-                </el-button>
-                <span class="chase-state" :class="{ 'is-on': !banDowngrade.banned }">
-                  {{ banDowngrade.banned ? `豆瓣限流中（剩余约 ${Math.round(banDowngrade.ban_remaining_sec)} 秒），降级${banDowngrade.enabled ? '生效中' : '未开启'}` : '豆瓣正常' }}
-                </span>
-              </div>
-              <div v-else-if="banDowngradeError" class="drawer-hint drawer-hint--after">
-                读取失败
-                <el-button size="small" text @click="loadBanDowngradeConfig">重试</el-button>
               </div>
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
             </div>
