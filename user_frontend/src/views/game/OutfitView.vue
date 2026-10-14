@@ -114,6 +114,7 @@
               v-if="b.unlocked && wornBadgeKey !== b.key"
               class="wear-btn"
               @click.stop="wearBadge(b)"
+              @keyup.stop
               :aria-label="`佩戴${b.name}徽章`"
             >
               戴上
@@ -122,6 +123,7 @@
               v-if="wornBadgeKey === b.key"
               class="wear-btn off"
               @click.stop="unwearBadge()"
+              @keyup.stop
               aria-label="取下徽章"
             >
               取下
@@ -191,7 +193,7 @@ const wornBadgeKey = ref<string | null>(readWornBadge())
 const newUnlockNames = computed(() => {
   if (newUnlockKeys.value.length === 0) return []
   const byKey = new Map(badges.value.map((b) => [b.key, b.name]))
-  return newUnlockKeys.value.map((k) => byKey.get(k) || '未知')
+  return newUnlockKeys.value.map((k) => byKey.get(k) || '新成就')
 })
 
 async function loadBadges() {

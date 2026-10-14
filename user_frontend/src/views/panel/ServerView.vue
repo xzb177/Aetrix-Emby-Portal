@@ -25,7 +25,7 @@
       <!-- 任务雷达 -->
       <section class="v4-sec">
         <div class="v4-sec-title">📡 任务雷达</div>
-        <div class="v4-sec-sub">后台的小家伙们正在哪忙活 —— 此刻快照</div>
+        <div class="v4-sec-sub">服务器里的小家伙们正在哪忙活</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 280px"></div>
         <RadarCanvas v-else-if="data?.radar_tasks?.length" :tasks="data.radar_tasks" />
         <div v-else class="v4-empty">雷达上空空如也</div>

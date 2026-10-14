@@ -243,8 +243,7 @@ h3,
 .pane-title,
 .modal-title,
 .empty-state__title,
-.brand-title,
-.item-title {
+.brand-title {
   font-family: var(--au-font-serif);
   letter-spacing: 0.01em;
 }

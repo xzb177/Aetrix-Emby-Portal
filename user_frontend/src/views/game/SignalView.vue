@@ -27,7 +27,8 @@
             :key="c.value"
             class="type"
             :class="{ on: form.category === c.value }"
-            :aria-pressed="form.category === c.value"
+            role="radio"
+            :aria-checked="form.category === c.value"
             @click="form.category = c.value"
           >
             <span class="ic">{{ c.icon }}</span>
@@ -234,7 +235,7 @@ function statusChip(status: string) {
   return statusConfig[status]?.chip ?? 'gray'
 }
 function statusLabel(status: string) {
-  return statusConfig[status]?.label ?? '未知'
+  return statusConfig[status]?.label ?? '新状态'
 }
 
 /** 求救信号列表 */

@@ -15,7 +15,7 @@
         v-if="statusClickable"
         to="/game/checkin"
         class="status-strip"
-        :aria-label="allFailed ? '数据未更新' : '去报到盖章'"
+        :aria-label="allFailed ? '数据未更新，去报到盖章' : '去报到盖章'"
       >
         <span v-if="allFailed" class="status-dot stale" aria-hidden="true"></span>
         <span class="status-dot" aria-hidden="true"></span>
