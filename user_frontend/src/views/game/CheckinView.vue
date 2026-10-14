@@ -8,7 +8,8 @@
         <p>探险家每天到营地报到，盖章打卡，领能量。</p>
         <div v-if="status" class="v4-fire">
           <template v-if="status.streak > 0">🔥 已连报 <b>{{ status.streak }}</b> 天
-            <span v-if="status.streak >= 7"> · 🏅 金章达成</span>
+            <!-- R43：后端成就名叫"连击"（panel_achievements.py streak7），不叫"金章"，文案跟后端对齐，不许发明 -->
+            <span v-if="status.streak >= 7"> · 🔥 连击达成</span>
             <span v-else-if="!status.checked_today"> · 今天还没报到</span>
           </template>
           <template v-else>还没开始连报，今天是第一天</template>
@@ -22,7 +23,8 @@
       <!-- 报到簿 -->
       <section class="v4-sec">
         <div class="v4-sec-title">📖 报到簿 · {{ monthLabel }}</div>
-        <div class="v4-sec-sub">红章=已到 · 今天那格闪烁，点"报到"盖章</div>
+        <!-- R43：报到后今天那格变红章不再闪烁，子文案跟着状态走，不说过期的话 -->
+        <div class="v4-sec-sub">{{ status?.checked_today ? '红章=已到 · 今日已盖章 ✅' : '红章=已到 · 今天那格闪烁，点"报到"盖章' }}</div>
         <div v-if="statusLoading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="statusError" class="v4-err">报到簿加载失败：{{ statusError }}<br><button class="v4-retry" @click="load">重试</button></div>
         <div v-else class="book">
@@ -156,19 +158,23 @@ async function doCheckin() {
       void pop.offsetWidth
       pop.classList.add('go')
     }
-    // 能量飞入
-    flyEnergy(`+${r.points_awarded}⚡`)
-    // 体力恢复提示（仅公益服用户可见体力条时刷新）：
-    // 只有体力数值真的涨了才说"体力已恢复"，体力已满时只说"报到成功"
+    // 能量飞入（R43：付费用户无积分奖励，points_awarded=0 时不飞"+0⚡"，免得误导）
+    if (r.points_awarded > 0) flyEnergy(`+${r.points_awarded}⚡`)
+    // 报到成功的反馈不许被体力刷新绑架：先定文案、只弹一次。
+    // 体力条对付费用户不可见、刷新失败时 vitality 回 null，
+    // 旧代码此时直接不弹 toast，用户以为报到没成功（静默成功）。
+    const before = staminaBar.value?.current() ?? null
+    let doneMsg = '报到成功'
     try {
-      const before = staminaBar.value?.current() ?? null
       const v = await staminaBar.value?.refresh()
-      if (v !== null && v !== undefined) {
-        useToast().success(before !== null && v > before ? staminaText.checkinRecovered : '报到成功')
+      // 只有体力数值真的涨了才说"体力已恢复"，体力已满/不可见时只说"报到成功"
+      if (before !== null && v !== null && v !== undefined && v > before) {
+        doneMsg = staminaText.checkinRecovered
       }
     } catch {
       /* 体力刷新失败不打扰主流程 */
     }
+    useToast().success(doneMsg)
   } catch (e) {
     // 提交失败走 toast，不污染报到簿的 statusError
     useToast().error(humanizeError(e))

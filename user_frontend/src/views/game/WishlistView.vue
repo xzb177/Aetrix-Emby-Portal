@@ -20,7 +20,9 @@
             <div class="boat-float" style="left:130px;top:120px;animation-delay:1.3s;font-size:20px">⛵</div>
           </div>
           <div class="well-note">
-            池里已有 <b>{{ totalWishes }}</b> 条心愿在漂流
+            <!-- R43：加载中不写"0 条"（列表还没回来，0 是假的），等数出来了再报数 -->
+            <template v-if="myLoading || hotLoading">池里有几条心愿在漂流，正在数…</template>
+            <template v-else>池里已有 <b>{{ totalWishes }}</b> 条心愿在漂流</template>
           </div>
         </div>
         <button class="wish-btn" @click="openModal">🏮 投下心愿</button>
