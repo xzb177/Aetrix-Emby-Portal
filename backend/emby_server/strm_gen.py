@@ -889,7 +889,7 @@ def _expand_alias_folders(folder_children: dict, tid: str,
     """R33 P2-1：本地展开别名子树（subtree 用阶段一 folder_children，flat 用 children）。
 
     跳过规则与阶段一之二 / flat BFS 一致（隐藏/系统/原盘结构目录整棵跳过）。
-    返回 ({folder_id: [(root_prefix, rel_prefix)]}, [目录 id（BFS 顺序，含 tid）])。
+    返回 ({folder_id: [(root_prefix, rel_prefix)]}, [目录 id（DFS 栈顺序，含 tid）])。
     """
     alias_map: dict[str, list[tuple[str, str]]] = {tid: list(alias_prefixes)}
     folders = [tid]
@@ -927,7 +927,7 @@ def _expand_alias_folders_cross_drive(fetch, folder_children: dict, tid: str,
     被 `if mt == FOLDER_MIME: continue` 丢弃，主循环的 _emit_video_paths 又因
     dir_entries 里没有外部目录 id 而产出为空 → 跨盘快捷方式零入库。
 
-    返回 ({folder_id: [(root_prefix, rel_prefix)]}, [目录 id（BFS 顺序，含 tid）])。
+    返回 ({folder_id: [(root_prefix, rel_prefix)]}, [目录 id（DFS 栈顺序，含 tid）])。
     """
     if tid in folder_children:
         return _expand_alias_folders(folder_children, tid, alias_prefixes)
@@ -937,6 +937,7 @@ def _expand_alias_folders_cross_drive(fetch, folder_children: dict, tid: str,
     astack = [(tid, list(alias_prefixes))]
     while astack:
         afid, aprefixes = astack.pop()
+        _set_progress(current=f"正在展开跨盘别名子树…（已发现 {len(folders)} 个目录）")
         q = (f"mimeType='{FOLDER_MIME}' and trashed=false "
              f"and '{afid}' in parents")
         page_token = None
@@ -963,6 +964,7 @@ def _expand_alias_folders_cross_drive(fetch, folder_children: dict, tid: str,
                 folders.append(sfid)
             if not page_token:
                 break
+    logger.info("strm_gen: 跨盘别名展开完成：tid=%s 共 %d 个目录", tid, len(folders))
     return alias_map, folders
 
 
