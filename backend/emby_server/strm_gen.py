@@ -1767,6 +1767,57 @@ def _clear_gone_marks(file_ids: list[str]) -> None:
         logger.warning("strm_gen: 清除 gone 标记跳过: %s", exc)
 
 
+#: P0（2026-10-14）：全量轮复用分支跳过重写的签名剩余有效期阈值（秒）。
+#: 旧行为——全量轮对每个已登记文件无脑调 _write_strm_file（drive_url 每次
+#: 都是无签名的 URL，字节与磁盘上已签名的版本不同）→ 约 20 万文件
+#: mtime+size 齐变 → 扫描器判 size_changed → enrich done→pending 大翻转。
+#: 现有文件签名仍有效且剩余有效期 > 30 分钟时跳过重写；文件缺失、
+#: 签名过期/将过期/file_id 不一致才重写（"文件必存在且可用"不变式不打破）。
+_FULL_REUSE_SIG_MIN_REMAINING_S = 1800
+
+
+def _existing_strm_sig_remaining(full_path: str, fid: str) -> Optional[float]:
+    """已存在 .strm 文件的签名剩余有效期（秒）。
+
+    返回 None 表示"不能跳过重写"：文件不存在/不可读、无有效签名
+    （legacy 无签名 / bad 被篡改 / 已过期）、或文件内 file_id 与本轮
+    fid 不一致（Drive 上已替换文件，必须重写）。
+    只在 verify_strm_url 判为 ok 且 file_id 一致时返回剩余秒数
+    （调用方与 _FULL_REUSE_SIG_MIN_REMAINING_S 比较）。
+    纯读文件，不写盘，永不抛异常。
+    """
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read(4096)
+    except OSError:
+        return None
+    if not content.strip():
+        return None
+    try:
+        # 延迟导入：strm_sign 内部再延迟导入 mounts/play_sign，
+        # 与 maintenance.py 的 strm-sig-refresh 线程同模式，避免循环导入。
+        from urllib.parse import parse_qs, unquote, urlsplit
+
+        from backend.emby_server import strm_sign
+        from backend.emby_server.mounts import strm_url
+
+        url = strm_url(content)
+        if not url:
+            return None
+        # 同一 Drive 文件才可复用：file_id 变了（替换上传）必须重写。
+        # sign_strm_url 会对 query 做 urlencode（如 local: → local%3A），
+        # 比较前先解码，否则本地源的合法复用会被误判为 file_id 不一致。
+        if unquote(_extract_strm_file_id(url) or "") != (fid or ""):
+            return None
+        if strm_sign.verify_strm_url(content)[1] != "ok":
+            return None
+        exp = int(parse_qs(urlsplit(url).query, keep_blank_values=True)
+                  [strm_sign.SIG_PARAM_EXP][0])
+    except Exception:
+        return None
+    return exp - time.time()
+
+
 def _write_strm_file(full_path: str, url: str) -> bool:
     """原子写入 .strm 文件。"""
     tmp = None
@@ -2246,6 +2297,25 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                 # 撞名新文件先处理）。退回真撞名流程，绝不覆盖别人的文件。
                 matched = next((p for p in src_prefixes if p and rel.startswith(p)), "")
                 strm_rel = _resolve_collision(strm_relpath(rel, matched), used)
+            else:
+                # P0（2026-10-14）：现有文件签名仍有效且剩余 > 30 分钟 →
+                # 跳过重写。旧行为无脑重写全部文件（drive_url 每次都是无签名
+                # 的新 URL，字节与已签名版本不同）→ mtime+size 齐变 → 扫描器
+                # 判 size_changed → enrich done→pending 大翻转。
+                # 文件缺失/签名过期/将过期/file_id 不一致 → 照常重写
+                # （"文件必存在且可用"的不变式不打破）。
+                # state 仍登记（verify 按 state 计完整性），只跳过写盘与
+                # 状态行重存（行内容无变化，upsert 是空操作）。
+                _sig_left = _existing_strm_sig_remaining(
+                    os.path.join(strm_root, strm_rel), fid)
+                if (_sig_left is not None
+                        and _sig_left > _FULL_REUSE_SIG_MIN_REMAINING_S):
+                    stats["skipped"] += 1
+                    _set_progress(skipped=stats["skipped"])
+                    used.add(strm_rel)
+                    claimed[strm_rel] = (did, rel)
+                    state[(did, rel)] = (fid, size, strm_rel)
+                    continue
         else:
             # 多版本保留（用户硬要求）：同一集的不同版本（不同 rel）各自生成独立 .strm，
             # 输出路径由 rel 派生天然区分；真撞名才加 -2 后缀，版本间永不互相淘汰。
