@@ -53,10 +53,10 @@ function isActive(path: string) {
   justify-content: space-around;
   padding: 0 0.5rem env(safe-area-inset-bottom);
   /* 暗房影院：页面底色 0.96 + 模糊 + 发丝线（与顶栏同一配方），滚过去的字不再透出来 */
-  background: var(--au-chrome);
+  background: var(--paper-chrome);
   -webkit-backdrop-filter: saturate(1.4) blur(16px);
   backdrop-filter: saturate(1.4) blur(16px);
-  border-top: 1px solid var(--au-border);
+  border-top: 1px solid var(--paper-line);
 }
 
 .dock-item {
@@ -71,11 +71,11 @@ function isActive(path: string) {
   gap: 2px;
   padding: 0.375rem 0 0.25rem;
   text-decoration: none;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   /* 按压反馈：纯 CSS :active 缩放，零 JS、零布局抖动。
      reduced-motion 下 --neo-scale-press=1、--neo-duration-fast=0ms，自动无缩放 */
   transition:
-    color var(--au-fast) var(--au-ease),
+    color var(--paper-fast) var(--paper-ease),
     transform var(--neo-duration-fast, 150ms) var(--neo-ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
@@ -91,8 +91,8 @@ function isActive(path: string) {
   justify-content: center;
   width: 44px;
   height: 26px;
-  border-radius: var(--au-r-full);
-  transition: background var(--au-fast) var(--au-ease);
+  border-radius: var(--paper-r-full);
+  transition: background var(--paper-fast) var(--paper-ease);
 }
 
 .dock-label {
@@ -101,8 +101,8 @@ function isActive(path: string) {
   letter-spacing: 0.02em;
 }
 
-.dock-item-active { color: var(--au-text); }
-.dock-item-active .dock-ic { color: var(--au-primary); }
+.dock-item-active { color: var(--paper-ink); }
+.dock-item-active .dock-ic { color: var(--paper-primary); }
 
 /* 当前页：图标下方一颗琥珀指示点（与顶栏导航同一语言），不再铺色块 */
 .dock-ic { position: relative; }
@@ -115,7 +115,7 @@ function isActive(path: string) {
   height: 4px;
   margin-left: -2px;
   border-radius: 50%;
-  background: var(--au-primary);
+  background: var(--paper-primary);
 }
 
 @media (max-width: 768px) {

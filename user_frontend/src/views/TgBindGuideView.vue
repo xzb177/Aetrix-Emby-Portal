@@ -235,7 +235,7 @@ onUnmounted(() => {
   width: 100%;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--au-r-lg);
+  border-radius: var(--paper-radius-lg);
   padding: 32px;
   display: flex;
   flex-direction: column;
@@ -262,7 +262,7 @@ onUnmounted(() => {
 }
 
 .guide-header h1 {
-  font-family: var(--au-font-serif);
+  font-family: var(--paper-font-serif);
   font-size: 24px;
   margin: 0;
 }
@@ -281,11 +281,11 @@ onUnmounted(() => {
 }
 
 .warn-box {
-  background: var(--au-danger-soft);
-  border: 1px solid var(--au-danger);
-  border-radius: var(--au-r-md);
+  background: var(--paper-danger-soft);
+  border: 1px solid var(--paper-danger);
+  border-radius: var(--paper-r-md);
   padding: 16px;
-  color: var(--au-danger);
+  color: var(--paper-danger);
   font-size: 14px;
 }
 
@@ -298,8 +298,8 @@ onUnmounted(() => {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: var(--au-primary);
-  color: var(--au-on-primary);
+  background: var(--paper-primary);
+  color: var(--paper-on-primary);
   font-weight: 700;
   font-size: 14px;
   display: flex;
@@ -343,7 +343,7 @@ onUnmounted(() => {
 
 .btn {
   min-height: 44px;
-  border-radius: var(--au-r-md);
+  border-radius: var(--paper-r-md);
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
@@ -360,8 +360,8 @@ onUnmounted(() => {
 
 .btn-primary {
   width: 100%;
-  background: var(--au-primary);
-  color: var(--au-on-primary);
+  background: var(--paper-primary);
+  color: var(--paper-on-primary);
   border: none;
 }
 
@@ -381,7 +381,7 @@ onUnmounted(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 18px;
   padding: 12px 16px;
-  border-radius: var(--au-r-md);
+  border-radius: var(--paper-r-md);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -390,7 +390,7 @@ onUnmounted(() => {
 .copy-hint {
   margin: 0;
   font-size: 13px;
-  color: var(--au-success);
+  color: var(--paper-success);
 }
 
 .code-panel {
@@ -401,7 +401,7 @@ onUnmounted(() => {
   padding: 24px;
   background: var(--bg-surface-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--au-r-md);
+  border-radius: var(--paper-r-md);
 }
 
 .code-label {
@@ -410,7 +410,7 @@ onUnmounted(() => {
 }
 
 .code-big {
-  font-family: var(--au-font-serif);
+  font-family: var(--paper-font-serif);
   font-size: 40px;
   letter-spacing: 12px;
   padding-left: 12px;
@@ -429,7 +429,7 @@ onUnmounted(() => {
 }
 
 .expired-text {
-  color: var(--au-danger);
+  color: var(--paper-danger);
   white-space: nowrap;
 }
 
@@ -462,7 +462,7 @@ onUnmounted(() => {
 }
 
 .check-icon {
-  color: var(--au-success);
+  color: var(--paper-success);
   flex-shrink: 0;
 }
 

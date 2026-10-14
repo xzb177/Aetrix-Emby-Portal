@@ -487,64 +487,66 @@ a:active {
 html[data-theme='light'] {
   color-scheme: light;
 
-  --au-bg: #f5f1ea;
-  --au-bg-soft: #efe9df;
-  --au-input-bg: #fffdf9;
+  /* ==================== 别名层（UI 统一 U2） ====================
+     浅色主题下 --au-* 映射到 --paper* 语义令牌 */
+  --au-bg: var(--paper-bg);
+  --au-bg-soft: var(--paper-bg-soft);
+  --au-input-bg: var(--paper-input-bg);
   --au-input-bg-focus: #ffffff;
-  --au-input-border: rgba(28, 25, 21, 0.16);
-  --au-surface: #fffdf9;
-  --au-surface-2: #f7f2ea;
-  --au-surface-3: #efe8dd;
-  --au-overlay: rgba(245, 241, 234, 0.9);
+  --au-input-border: var(--paper-line);
+  --au-surface: var(--paper-card);
+  --au-surface-2: var(--paper-card-2);
+  --au-surface-3: var(--paper-card-3);
+  --au-overlay: var(--paper-overlay);
   --au-overlay-soft: rgba(28, 25, 21, 0.16);
   --au-overlay-mid: rgba(28, 25, 21, 0.3);
   --au-overlay-strong: rgba(28, 25, 21, 0.55);
-  --au-overlay-menu: rgba(255, 253, 249, 0.98);
-  --au-chrome: rgba(245, 241, 234, 0.96);
-  --au-scrim: rgba(28, 25, 21, 0.42);
+  --au-overlay-menu: var(--paper-overlay-menu);
+  --au-chrome: var(--paper-chrome);
+  --au-scrim: var(--paper-scrim);
   --au-grid-line: rgba(28, 25, 21, 0.05);
   --au-track: rgba(28, 25, 21, 0.1);
 
-  --au-text: #1c1915;
-  --au-text-2: rgba(28, 25, 21, 0.74);
-  --au-text-3: rgba(28, 25, 21, 0.6);
+  --au-text: var(--paper-ink);
+  --au-text-2: var(--paper-ink-2);
+  --au-text-3: var(--paper-ink-3);
   --au-text-4: rgba(28, 25, 21, 0.42);
 
-  --au-border: rgba(28, 25, 21, 0.1);
-  --au-border-strong: rgba(28, 25, 21, 0.18);
-  --au-border-focus: rgba(185, 128, 47, 0.55);
+  --au-border: var(--paper-line);
+  --au-border-strong: var(--paper-line-strong);
+  --au-border-focus: var(--paper-border-focus);
 
-  --au-primary: #b9802f;
-  --au-primary-strong: #a06c24;
+  --au-primary: var(--paper-primary);
+  --au-primary-strong: var(--paper-primary-strong);
   --au-primary-deep: #7f541b;
-  --au-primary-soft: rgba(185, 128, 47, 0.1);
+  --au-primary-soft: var(--paper-primary-soft);
   --au-primary-mid: rgba(185, 128, 47, 0.16);
-  --au-primary-border: rgba(185, 128, 47, 0.3);
+  --au-primary-border: var(--paper-primary-border);
   --au-primary-glow: transparent;
-  --au-on-primary: #ffffff;
+  --au-on-primary: var(--paper-on-primary);
 
   --au-violet: rgba(28, 25, 21, 0.72);
   --au-violet-soft: rgba(28, 25, 21, 0.05);
 
-  --au-success: #4f7f4a;
-  --au-success-soft: rgba(79, 127, 74, 0.1);
-  --au-success-border: rgba(79, 127, 74, 0.26);
-  --au-warning: #b9802f;
-  --au-warning-soft: rgba(185, 128, 47, 0.1);
-  --au-warning-border: rgba(185, 128, 47, 0.28);
-  --au-on-warning: #ffffff;
+  --au-success: var(--paper-success);
+  --au-success-soft: var(--paper-success-soft);
+  --au-success-border: var(--paper-success-border);
+  --au-warning: var(--paper-warning);
+  --au-warning-soft: var(--paper-warning-soft);
+  --au-warning-border: var(--paper-warning-border);
+  --au-on-warning: var(--paper-on-warning);
   --au-gold-a: #c58a36;
   --au-gold-b: #b9802f;
   --au-gold-edge: #8a5c1f;
-  --au-danger: #b4493c;
-  --au-danger-soft: rgba(180, 73, 60, 0.09);
-  --au-danger-border: rgba(180, 73, 60, 0.26);
-  --au-info: #4f6f8a;
-  --au-info-soft: rgba(79, 111, 138, 0.09);
-  --au-info-border: rgba(79, 111, 138, 0.24);
+  --au-danger: var(--paper-danger);
+  --au-danger-soft: var(--paper-danger-soft);
+  --au-danger-border: var(--paper-danger-border);
+  --au-info: var(--paper-info);
+  --au-info-soft: var(--paper-info-soft);
+  --au-info-border: var(--paper-info-border);
 
   --au-shadow-1: 0 1px 2px rgba(28, 25, 21, 0.06);
-  --au-shadow-2: 0 12px 32px rgba(28, 25, 21, 0.12);
+  --au-shadow-2: var(--paper-shadow-2);
   --au-shadow-color: rgba(28, 25, 21, 0.14);
   --au-shadow-text: 0 2px 12px rgba(28, 25, 21, 0.35);
 

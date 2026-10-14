@@ -736,11 +736,11 @@ onBeforeUnmount(() => {
   padding-top: env(safe-area-inset-top, 0px);
   z-index: 50;
   /* 暗房影院：顶栏 = 页面底色 0.96 + 模糊（滚过去的内容不再透出字形）+ 一根发丝线。
-     两套主题都是同一个配方（--au-chrome 在浅色下是奶油纸色） */
-  background: var(--au-chrome);
+     两套主题都是同一个配方（--paper-chrome 在浅色下是奶油纸色） */
+  background: var(--paper-chrome);
   -webkit-backdrop-filter: saturate(1.4) blur(16px);
   backdrop-filter: saturate(1.4) blur(16px);
-  border-bottom: 1px solid var(--au-border);
+  border-bottom: 1px solid var(--paper-line);
   overflow: hidden;
 }
 
@@ -775,8 +775,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--au-r-sm);
-  color: var(--au-primary);
+  border-radius: var(--paper-r-sm);
+  color: var(--paper-primary);
 }
 
 .logo-mark img {
@@ -788,12 +788,12 @@ onBeforeUnmount(() => {
 
 /* 品牌字：衬线 + 大写 + 拉开字距（片头字幕的气质） */
 .logo-text {
-  font-family: var(--au-font-serif);
+  font-family: var(--paper-font-serif);
   font-size: 1.0625rem;
   font-weight: 700;
   letter-spacing: 0.28em;
   text-transform: uppercase;
-  color: var(--au-text);
+  color: var(--paper-ink);
 }
 
 .main-nav {
@@ -812,14 +812,14 @@ onBeforeUnmount(() => {
   gap: 0.375rem;
   padding: 0.4375rem 0.75rem;
   border: none;
-  border-radius: var(--au-r-sm);
+  border-radius: var(--paper-r-sm);
   font-size: 0.875rem;
   font-weight: 500;
   letter-spacing: 0.04em;
   white-space: nowrap;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   text-decoration: none;
-  transition: color var(--au-fast) var(--au-ease);
+  transition: color var(--paper-fast) var(--paper-ease);
 }
 
 /* 触点 44px：::before 透明扩展，安静纯文字导航视觉不变（::after 留给当前页圆点） */
@@ -828,14 +828,14 @@ onBeforeUnmount(() => {
 .nav-link svg { display: none; }
 
 .nav-link:hover {
-  color: var(--au-text);
+  color: var(--paper-ink);
 }
 
 .nav-link:active { transform: scale(0.98); }
 
 .nav-link-active,
 .nav-link-active:hover {
-  color: var(--au-text);
+  color: var(--paper-ink);
   font-weight: 600;
 }
 
@@ -848,12 +848,12 @@ onBeforeUnmount(() => {
   height: 4px;
   margin-left: -2px;
   border-radius: 50%;
-  background: var(--au-primary);
+  background: var(--paper-primary);
 }
 
 /* 键盘焦点环：与全站其余可聚焦元素同一配方（替代掉的 .theme-opt:focus-visible 同源） */
 .nav-link:focus-visible {
-  outline: 2px solid var(--au-border-focus);
+  outline: 2px solid var(--paper-border-focus);
   outline-offset: 2px;
 }
 
@@ -878,26 +878,26 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
-  background: var(--au-surface);
-  color: var(--au-text-2);
+  border: 1px solid var(--paper-line);
+  border-radius: var(--paper-r-full);
+  background: var(--paper-card);
+  color: var(--paper-ink-2);
   cursor: pointer;
-  transition: background var(--au-fast) var(--au-ease),
-    border-color var(--au-fast) var(--au-ease),
-    color var(--au-fast) var(--au-ease);
+  transition: background var(--paper-fast) var(--paper-ease),
+    border-color var(--paper-fast) var(--paper-ease),
+    color var(--paper-fast) var(--paper-ease);
 }
 
 .round-btn:hover {
-  color: var(--au-text);
-  background: var(--au-surface-2);
-  border-color: var(--au-border-strong);
+  color: var(--paper-ink);
+  background: var(--paper-card-2);
+  border-color: var(--paper-line-strong);
 }
 
 .round-btn:active { transform: scale(0.96); }
 
 .round-btn:focus-visible {
-  outline: 2px solid var(--au-border-focus);
+  outline: 2px solid var(--paper-border-focus);
   outline-offset: 2px;
 }
 
@@ -912,19 +912,19 @@ onBeforeUnmount(() => {
      而不是「哪一个都没选」。 */
 .theme-menu { position: relative; }
 
-.theme-btn.auto { border-color: var(--au-primary-border); }
-.theme-btn.auto:hover { border-color: var(--au-primary); }
+.theme-btn.auto { border-color: var(--paper-primary-border); }
+.theme-btn.auto:hover { border-color: var(--paper-primary); }
 
 .theme-btn:not(.auto) {
-  background: var(--au-primary);
-  border-color: var(--au-primary);
-  color: var(--au-on-primary);
+  background: var(--paper-primary);
+  border-color: var(--paper-primary);
+  color: var(--paper-on-primary);
 }
 
 .theme-btn:not(.auto):hover {
-  background: var(--au-primary-strong);
-  border-color: var(--au-primary-strong);
-  color: var(--au-on-primary);
+  background: var(--paper-primary-strong);
+  border-color: var(--paper-primary-strong);
+  color: var(--paper-on-primary);
 }
 
 /* 能量徽章：顶栏常驻小 pill，显示当前能量，点击进能量账本 */
@@ -934,42 +934,42 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.375rem;
   padding: 0.375rem 0.75rem;
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
-  background: var(--au-surface-2);
-  color: var(--au-text-2);
+  border: 1px solid var(--paper-line);
+  border-radius: var(--paper-r-full);
+  background: var(--paper-card-2);
+  color: var(--paper-ink-2);
   font-size: 0.8125rem;
   font-weight: 700;
   text-decoration: none;
   white-space: nowrap;
-  transition: border-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
+  transition: border-color var(--paper-fast) var(--paper-ease), color var(--paper-fast) var(--paper-ease);
 }
 
 /* 触点 44px：::after 透明扩展，胶囊视觉不变（R30 先例） */
 .points-pill::after { content: ""; position: absolute; top: -9px; right: 0; bottom: -9px; left: 0; }
 
 .points-pill:hover {
-  border-color: var(--au-primary);
-  color: var(--au-text);
+  border-color: var(--paper-primary);
+  color: var(--paper-ink);
 }
 .points-pill svg {
-  color: var(--au-primary);
+  color: var(--paper-primary);
   flex-shrink: 0;
 }
 /* 体力徽章：图标用红色（红心），与能量徽章的琥珀闪电区分 */
 .vitality-pill svg {
-  color: var(--au-danger, #ff5c6c); /* 体力=红心（与报到页 ❤️ 体力条统一）；闪电的琥珀色只留给能量 */
+  color: var(--paper-danger, #ff5c6c); /* 体力=红心（与报到页 ❤️ 体力条统一）；闪电的琥珀色只留给能量 */
 }
 
 /* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
 .msg-menu { position: relative; }
 
 .msg-btn.open {
-  color: var(--au-text);
-  background: var(--au-surface-3);
-  border-color: var(--au-border-strong);
+  color: var(--paper-ink);
+  background: var(--paper-card-3);
+  border-color: var(--paper-line-strong);
 }
-.msg-btn.alert { color: var(--au-warning); border-color: var(--au-warning-border); }
+.msg-btn.alert { color: var(--paper-warning); border-color: var(--paper-warning-border); }
 
 .msg-badge {
   position: absolute;
@@ -981,13 +981,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--au-warning);
-  color: var(--au-on-warning);
+  background: var(--paper-warning);
+  color: var(--paper-on-warning);
   font-size: 0.8125rem;
   font-weight: 800;
-  border-radius: var(--au-r-full);
+  border-radius: var(--paper-r-full);
   /* 与页面底色同色的描边环，把徽章从任何背景上“抠”出来 */
-  box-shadow: 0 0 0 2px var(--au-overlay);
+  box-shadow: 0 0 0 2px var(--paper-overlay);
 }
 
 /* msg-dropdown / user-dropdown 及其内部样式已移至下方全局块（Teleport 到 body 后 scoped 不生效） */
@@ -1006,8 +1006,8 @@ onBeforeUnmount(() => {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--au-warning);
-  box-shadow: 0 0 0 2px var(--au-bg);
+  background: var(--paper-warning);
+  box-shadow: 0 0 0 2px var(--paper-bg);
 }
 
 .narrow-only { display: none; }
@@ -1017,8 +1017,8 @@ onBeforeUnmount(() => {
   display: inline-block;
   font-size: 10px;
   font-weight: 800;
-  color: var(--au-danger);
-  border: 1px solid var(--au-danger);
+  color: var(--paper-danger);
+  border: 1px solid var(--paper-danger);
   border-radius: 10px;
   padding: 1px 8px;
   margin-top: 4px;
@@ -1036,8 +1036,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: var(--au-primary);
-  color: var(--au-on-primary);
+  background: var(--paper-primary);
+  color: var(--paper-on-primary);
   font-size: 0.8125rem;
   font-weight: 800;
 }
@@ -1050,13 +1050,13 @@ onBeforeUnmount(() => {
   align-items: center;
   height: 36px;
   padding: 0 1.125rem;
-  background: var(--au-primary);
-  color: var(--au-on-primary);
-  border-radius: var(--au-r-md);
+  background: var(--paper-primary);
+  color: var(--paper-on-primary);
+  border-radius: var(--paper-r-md);
   font-size: 0.8125rem;
   font-weight: 700;
   text-decoration: none;
-  transition: transform var(--au-fast);
+  transition: transform var(--paper-fast);
 }
 
 /* 触点 44px：::after 透明扩展，琥珀按钮视觉尺寸不变（R30 先例） */
@@ -1065,7 +1065,7 @@ onBeforeUnmount(() => {
 .login-btn:hover { filter: brightness(1.08); }
 
 /* 过渡：柔和上浮淡入（opacity+transform，合成器友好） */
-.dd-enter-active, .dd-leave-active { transition: opacity var(--au-med) var(--au-ease), transform var(--au-med) var(--au-ease); }
+.dd-enter-active, .dd-leave-active { transition: opacity var(--paper-med) var(--paper-ease), transform var(--paper-med) var(--paper-ease); }
 .dd-enter-from, .dd-leave-to { opacity: 0; transform: translateY(-6px) scale(0.98); }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1099,7 +1099,7 @@ onBeforeUnmount(() => {
     flex: 1 1 100%;
     margin-top: 0.125rem;
     padding: 0.5rem 0 0.5625rem;
-    border-top: 1px solid var(--au-border);
+    border-top: 1px solid var(--paper-line);
     overflow-x: auto;
     overscroll-behavior-x: contain;
     scrollbar-width: none;
@@ -1115,7 +1115,7 @@ onBeforeUnmount(() => {
   .nav-link {
     flex: 0 0 auto;
     padding: 0.4375rem 0.6875rem;
-    border-radius: var(--au-r-full);
+    border-radius: var(--paper-r-full);
     font-size: 0.8125rem;
   }
 
@@ -1132,10 +1132,10 @@ onBeforeUnmount(() => {
   right: 0;
   top: calc(100% + 8px);
   width: 292px;
-  background: var(--au-overlay-menu);
-  border: 1px solid var(--au-border-strong);
-  border-radius: var(--au-r-lg);
-  box-shadow: var(--au-shadow-2);
+  background: var(--paper-overlay-menu);
+  border: 1px solid var(--paper-line-strong);
+  border-radius: var(--paper-radius-lg);
+  box-shadow: var(--paper-shadow-2);
   overflow: hidden;
   z-index: 60;
 }
@@ -1145,10 +1145,10 @@ onBeforeUnmount(() => {
   right: 0;
   top: calc(100% + 8px);
   width: 236px;
-  background: var(--au-overlay-menu);
-  border: 1px solid var(--au-border-strong);
-  border-radius: var(--au-r-lg);
-  box-shadow: var(--au-shadow-2);
+  background: var(--paper-overlay-menu);
+  border: 1px solid var(--paper-line-strong);
+  border-radius: var(--paper-radius-lg);
+  box-shadow: var(--paper-shadow-2);
   overflow-y: auto;
   overscroll-behavior: contain;
   max-height: min(70vh, 480px);
@@ -1161,14 +1161,14 @@ onBeforeUnmount(() => {
   .theme-dropdown, .msg-dropdown, .user-dropdown {
     max-width: calc(100vw - 32px);
   }
-  /* 挂到 body 后 fixed 终于是真视口定位：底边锚在拇指区之上（--au-dock-space
+  /* 挂到 body 后 fixed 终于是真视口定位：底边锚在拇指区之上（--paper-dock-space
      由 aurora.css 按断点定义），宽度留 12px 呼吸边，高过视口时内部滚 */
   .user-dropdown,
   .msg-dropdown {
     position: fixed;
     top: auto;
     right: 12px;
-    bottom: calc(var(--au-dock-space) + 12px);
+    bottom: calc(var(--paper-dock-space) + 12px);
     width: min(320px, calc(100vw - 24px));
     max-height: calc(100dvh - 140px);
     overflow-y: auto;
@@ -1181,28 +1181,28 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   padding: 0.8125rem 1rem;
-  border-bottom: 1px solid var(--au-border);
+  border-bottom: 1px solid var(--paper-line);
 }
-.msg-drop-title { font-size: 0.875rem; font-weight: 700; color: var(--au-text); }
+.msg-drop-title { font-size: 0.875rem; font-weight: 700; color: var(--paper-ink); }
 .msg-drop-unread {
   padding: 0.125rem 0.5rem;
-  background: var(--au-warning-soft);
-  border-radius: var(--au-r-full);
-  color: var(--au-warning);
+  background: var(--paper-warning-soft);
+  border-radius: var(--paper-r-full);
+  color: var(--paper-warning);
   font-size: 0.8125rem;
   font-weight: 700;
 }
-.msg-drop-clear { font-size: 0.8125rem; color: var(--au-text-3); }
+.msg-drop-clear { font-size: 0.8125rem; color: var(--paper-ink-3); }
 .msg-drop-item {
   display: flex;
   align-items: flex-start;
   gap: 0.625rem;
   padding: 0.6875rem 1rem;
   text-decoration: none;
-  border-bottom: 1px solid var(--au-border);
-  transition: background var(--au-fast) var(--au-ease);
+  border-bottom: 1px solid var(--paper-line);
+  transition: background var(--paper-fast) var(--paper-ease);
 }
-.msg-drop-item:hover { background: var(--au-surface-2); }
+.msg-drop-item:hover { background: var(--paper-card-2); }
 .msg-drop-ic {
   width: 26px;
   height: 26px;
@@ -1211,10 +1211,10 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background: var(--au-surface-2);
-  color: var(--au-text-3);
+  background: var(--paper-card-2);
+  color: var(--paper-ink-3);
 }
-.msg-drop-ic.hot { background: var(--au-warning-soft); color: var(--au-warning); }
+.msg-drop-ic.hot { background: var(--paper-warning-soft); color: var(--paper-warning); }
 .msg-drop-body {
   display: flex;
   flex-direction: column;
@@ -1225,34 +1225,34 @@ onBeforeUnmount(() => {
 .msg-drop-item-title {
   font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--au-text);
+  color: var(--paper-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.msg-drop-meta { font-size: 0.8125rem; color: var(--au-text-3); }
+.msg-drop-meta { font-size: 0.8125rem; color: var(--paper-ink-3); }
 .msg-drop-dot {
   width: 6px;
   height: 6px;
   margin-top: 0.5rem;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--au-warning);
+  background: var(--paper-warning);
 }
 .msg-drop-hint {
   margin: 0;
   padding: 1.125rem 1rem;
   text-align: center;
   font-size: 0.8125rem;
-  color: var(--au-text-3);
-  border-bottom: 1px solid var(--au-border);
+  color: var(--paper-ink-3);
+  border-bottom: 1px solid var(--paper-line);
 }
 .msg-drop-loading {
   padding: 0.75rem 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.625rem;
-  border-bottom: 1px solid var(--au-border);
+  border-bottom: 1px solid var(--paper-line);
 }
 .msg-drop-loading .au-skeleton { height: 44px; }
 .msg-drop-foot {
@@ -1263,11 +1263,11 @@ onBeforeUnmount(() => {
   padding: 0.875rem 1rem;
   font-size: 0.8125rem;
   font-weight: 600;
-  color: var(--au-primary);
+  color: var(--paper-primary);
   text-decoration: none;
-  transition: background var(--au-fast) var(--au-ease);
+  transition: background var(--paper-fast) var(--paper-ease);
 }
-.msg-drop-foot:hover { background: var(--au-surface-2); }
+.msg-drop-foot:hover { background: var(--paper-card-2); }
 
 /* user-dropdown 内部 */
 .dropdown-head {
@@ -1275,14 +1275,14 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.625rem;
   padding: 0.875rem 1rem;
-  border-bottom: 1px solid var(--au-border);
+  border-bottom: 1px solid var(--paper-line);
 }
 .dropdown-avatar {
   width: 38px;
   height: 38px;
   flex-shrink: 0;
   font-size: 0.9375rem;
-  box-shadow: 0 0 0 2px var(--au-primary-soft);
+  box-shadow: 0 0 0 2px var(--paper-primary-soft);
 }
 .dropdown-id {
   display: flex;
@@ -1294,14 +1294,14 @@ onBeforeUnmount(() => {
 .dropdown-username {
   font-size: 0.875rem;
   font-weight: 700;
-  color: var(--au-text);
+  color: var(--paper-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .dropdown-uid {
   font-size: 0.8125rem;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   font-variant-numeric: tabular-nums;
 }
 .dropdown-status {
@@ -1310,24 +1310,24 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.1875rem;
   padding: 0.1875rem 0.5rem;
-  border-radius: var(--au-r-full);
+  border-radius: var(--paper-r-full);
   font-size: 0.8125rem;
   font-weight: 700;
 }
 .dropdown-status.gold {
-  background: var(--au-warning-soft);
-  border: 1px solid var(--au-warning-border);
-  color: var(--au-warning);
+  background: var(--paper-warning-soft);
+  border: 1px solid var(--paper-warning-border);
+  color: var(--paper-warning);
 }
 .dropdown-status.cyan {
-  background: var(--au-primary-soft);
-  border: 1px solid var(--au-primary-border);
-  color: var(--au-primary);
+  background: var(--paper-primary-soft);
+  border: 1px solid var(--paper-primary-border);
+  color: var(--paper-primary);
 }
 .dropdown-status.muted {
-  background: var(--au-surface-2);
-  border: 1px solid var(--au-border);
-  color: var(--au-text-3);
+  background: var(--paper-card-2);
+  border: 1px solid var(--paper-line);
+  color: var(--paper-ink-3);
 }
 /* 外观三段切换器（.theme-seg / .theme-opt）与它的分组标题（.dropdown-group-title）
    已在 v2.42.9 删除：外观改由顶栏那枚圆形图标按钮承担（.theme-btn） */
@@ -1340,17 +1340,17 @@ onBeforeUnmount(() => {
   padding: 0.625rem 1rem;
   background: none;
   border: none;
-  color: var(--au-text-2);
+  color: var(--paper-ink-2);
   font-size: 0.8125rem;
   text-decoration: none;
   cursor: pointer;
-  transition: background-color var(--au-fast) var(--au-ease), color var(--au-fast) var(--au-ease);
+  transition: background-color var(--paper-fast) var(--paper-ease), color var(--paper-fast) var(--paper-ease);
   text-align: left;
 }
-.dropdown-item:hover { background: var(--au-surface-2); color: var(--au-text); }
-.dropdown-item:active { background: var(--au-surface-3); }
-.dropdown-item svg { color: var(--au-text-3); transition: color var(--au-fast) var(--au-ease); }
-.dropdown-item:hover svg { color: var(--au-primary); }
+.dropdown-item:hover { background: var(--paper-card-2); color: var(--paper-ink); }
+.dropdown-item:active { background: var(--paper-card-3); }
+.dropdown-item svg { color: var(--paper-ink-3); transition: color var(--paper-fast) var(--paper-ease); }
+.dropdown-item:hover svg { color: var(--paper-primary); }
 /* 探险设施直达（v4.1）：头像菜单里的 10 个游戏设施，纸色迷你卡片风。
    菜单 Teleport 到 body、不在 .v4-scope 内，v4 token 取不到，就地定义。
    卡片自带纸底色，深浅主题下都可读 */
@@ -1359,7 +1359,7 @@ onBeforeUnmount(() => {
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 1px;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
 }
 .dropdown-facility {
   /* 纸色 token 与 v4-paper.css .v4-scope 同步，改值只改那边，这里不许私自改 */
@@ -1378,7 +1378,7 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   text-decoration: none;
   color: var(--ink);
-  transition: transform 0.12s ease, border-color var(--au-fast);
+  transition: transform 0.12s ease, border-color var(--paper-fast);
 }
 .dropdown-facility:hover { border-color: var(--ink); }
 .dropdown-facility:active { transform: scale(0.98); }
@@ -1428,12 +1428,12 @@ onBeforeUnmount(() => {
   color: var(--ink2);
 }
 .dropdown-logout {
-  color: var(--au-danger);
-  border-top: 1px solid var(--au-border);
+  color: var(--paper-danger);
+  border-top: 1px solid var(--paper-line);
 }
-.dropdown-logout svg { color: var(--au-danger); }
-.dropdown-logout:hover { background: var(--au-danger-soft); color: var(--au-danger); }
-.dropdown-logout:hover svg { color: var(--au-danger); }
+.dropdown-logout svg { color: var(--paper-danger); }
+.dropdown-logout:hover { background: var(--paper-danger-soft); color: var(--paper-danger); }
+.dropdown-logout:hover svg { color: var(--paper-danger); }
 </style>
 
 <style scoped>

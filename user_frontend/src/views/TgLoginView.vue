@@ -76,13 +76,13 @@ function goHome() {
   margin-bottom: 1rem;
 }
 .tg-login-msg {
-  color: var(--au-text-2, #9aa0a6);
+  color: var(--paper-ink-2, #9aa0a6);
 }
 .tg-login-ok {
-  color: var(--au-success);
+  color: var(--paper-success);
 }
 .tg-login-error {
-  color: var(--au-danger);
+  color: var(--paper-danger);
 }
 .tg-login-loading {
   display: flex;

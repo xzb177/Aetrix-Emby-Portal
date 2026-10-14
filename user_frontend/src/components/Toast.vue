@@ -105,10 +105,10 @@ const getToastClass = (type: string) => {
   min-width: 280px;
   max-width: 90vw;
   /* 暗房影院：实色表面 + 强边框 + 克制阴影，不再有毛玻璃 */
-  background: var(--au-surface-3);
-  border: 1px solid var(--au-border-strong);
-  border-radius: var(--au-r-md);
-  box-shadow: var(--au-shadow-2);
+  background: var(--paper-card-3);
+  border: 1px solid var(--paper-line-strong);
+  border-radius: var(--paper-r-md);
+  box-shadow: var(--paper-shadow-2);
 }
 
 .toast-icon {
@@ -125,7 +125,7 @@ const getToastClass = (type: string) => {
   flex: 1;
   font-size: 0.875rem;
   line-height: 1.5;
-  color: var(--au-text);
+  color: var(--paper-ink);
   word-break: break-word;
 }
 
@@ -139,18 +139,18 @@ const getToastClass = (type: string) => {
   justify-content: center;
   border: none;
   background: transparent;
-  color: var(--au-text-3);
-  border-radius: var(--au-r-sm);
+  color: var(--paper-ink-3);
+  border-radius: var(--paper-r-sm);
   cursor: pointer;
-  transition: background-color var(--au-fast) var(--au-ease),
-              color var(--au-fast) var(--au-ease),
-              transform var(--au-fast) var(--au-ease);
+  transition: background-color var(--paper-fast) var(--paper-ease),
+              color var(--paper-fast) var(--paper-ease),
+              transform var(--paper-fast) var(--paper-ease);
   flex-shrink: 0;
 }
 
 .toast-close:hover {
-  background: var(--au-surface-2);
-  color: var(--au-text);
+  background: var(--paper-card-2);
+  color: var(--paper-ink);
 }
 
 .toast-close:active {
@@ -158,50 +158,50 @@ const getToastClass = (type: string) => {
 }
 
 .toast-close:focus-visible {
-  outline: 2px solid var(--au-primary);
+  outline: 2px solid var(--paper-primary);
   outline-offset: 1px;
 }
 
 /* 四种状态 = 四支语义色（底色与图标取同一支，不再手写 rgba） */
-.toast-success { border-color: var(--au-success-border); }
+.toast-success { border-color: var(--paper-success-border); }
 
 .toast-success .toast-icon {
-  background: var(--au-success-soft);
-  color: var(--au-success);
+  background: var(--paper-success-soft);
+  color: var(--paper-success);
 }
 
-.toast-error { border-color: var(--au-danger-border); }
+.toast-error { border-color: var(--paper-danger-border); }
 
 .toast-error .toast-icon {
-  background: var(--au-danger-soft);
-  color: var(--au-danger);
+  background: var(--paper-danger-soft);
+  color: var(--paper-danger);
 }
 
-.toast-warning { border-color: var(--au-warning-border); }
+.toast-warning { border-color: var(--paper-warning-border); }
 
 .toast-warning .toast-icon {
-  background: var(--au-warning-soft);
-  color: var(--au-warning);
+  background: var(--paper-warning-soft);
+  color: var(--paper-warning);
 }
 
-.toast-info { border-color: var(--au-info-border); }
+.toast-info { border-color: var(--paper-info-border); }
 
 .toast-info .toast-icon {
-  background: var(--au-info-soft);
-  color: var(--au-info);
+  background: var(--paper-info-soft);
+  color: var(--paper-info);
 }
 
 /* 过渡动画
    只做「淡入 + 轻微下移」，不碰水平位移：容器靠 margin: 0 auto + width: max-content
    居中，子项再写水平位移会让每条通知先从一侧滑回来。 */
 .toast-enter-active {
-  transition: opacity var(--au-med) var(--au-ease),
-              transform var(--au-med) var(--au-ease);
+  transition: opacity var(--paper-med) var(--paper-ease),
+              transform var(--paper-med) var(--paper-ease);
 }
 
 .toast-leave-active {
-  transition: opacity var(--au-fast) var(--au-ease),
-              transform var(--au-fast) var(--au-ease);
+  transition: opacity var(--paper-fast) var(--paper-ease),
+              transform var(--paper-fast) var(--paper-ease);
 }
 
 .toast-enter-from {
@@ -215,7 +215,7 @@ const getToastClass = (type: string) => {
 }
 
 .toast-move {
-  transition: transform var(--au-med) var(--au-ease);
+  transition: transform var(--paper-med) var(--paper-ease);
 }
 
 /* 移动端适配 */
