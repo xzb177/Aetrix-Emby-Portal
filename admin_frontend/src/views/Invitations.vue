@@ -16,7 +16,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
-  AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Search, Settings, ShieldCheck, UserPlus,
+  AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Search, ShieldCheck, UserPlus,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
@@ -124,8 +124,6 @@ async function handleVerify() {
   }
 }
 
-// ===== 邀请规则设置（Batch D 入口收敛）：唯一可写入口在「系统设置 → 邀请返利」，
-// 本页只保留跳转链接，弹窗与保存逻辑已删除 =====
 // ===== 手动调整 =====
 const adjustVisible = ref(false)
 const adjustFormRef = ref<FormInstance>()
@@ -465,20 +463,9 @@ async function handleRevoke(rows: InvitationCodeRow[]) {
   await loadCodes()
 }
 
-// ===== 推广奖励（只读回显，Batch D 入口收敛）：唯一可写入口在「系统设置 → 邀请返利」 =====
+// ===== 推广奖励：发放记录台账（开关与数值统一在「系统设置 → 邀请返利」里改） =====
 const promo = ref<PromotionResponse | null>(null)
 const promoLoading = ref(false)
-
-const promoHint = computed(() => {
-  const p = promo.value?.policy
-  if (!p) return ''
-  if (!p.enabled) return '当前关闭：邀请成功只发原有的双向积分，不发推广奖励。'
-  const value = p.reward_type === 'days' ? p.days : p.amount
-  if (value <= 0) return '开关已开但数值为 0，等同没发——去「系统设置 → 邀请返利」填一个大于 0 的数才会真的发。'
-  return p.reward_type === 'days'
-    ? `开启中：每邀请成功 1 人，给邀请人加 ${p.days} 天会员有效期。`
-    : `开启中：每邀请成功 1 人，给邀请人加 ${p.amount} 积分。`
-})
 
 async function loadPromotion() {
   promoLoading.value = true
@@ -532,7 +519,6 @@ onMounted(reloadAll)
       <template #actions>
         <el-button :icon="RefreshCw" :loading="loading" @click="reloadAll">刷新</el-button>
         <el-button :icon="Plus" @click="openAdjust">调整积分</el-button>
-        <el-button type="primary" :icon="Settings" @click="$router.push({ path: '/settings', hash: '#group-invitation' })">去系统设置改规则</el-button>
       </template>
     </PageHeader>
 
@@ -745,7 +731,7 @@ onMounted(reloadAll)
       </div>
     </SectionCard>
 
-    <!-- 推广奖励：只读回显。唯一可写入口在「系统设置 → 邀请返利」（Batch D 入口收敛） -->
+    <!-- 推广奖励发放记录：台账。开关与数值统一在「系统设置 → 邀请返利」里改 -->
     <SectionCard
       id="invite-promo"
       :icon="Megaphone"
@@ -766,22 +752,6 @@ onMounted(reloadAll)
       </EmptyState>
 
       <template v-else>
-        <div v-if="promo" class="promo-readonly">
-          <span class="promo-state" :class="{ 'is-off': !promo.policy.enabled }">
-            推广奖励：{{ promo.policy.enabled ? '已开启' : '已关闭' }}
-          </span>
-          <span class="promo-state">
-            类型：{{ promo.policy.reward_type_labels?.[promo.policy.reward_type] ?? promo.policy.reward_type }}
-          </span>
-          <span class="promo-state">
-            {{ promo.policy.reward_type === 'days' ? `有效期 ${promo.policy.days} 天` : `余额 ${promo.policy.amount} 积分` }}
-          </span>
-          <span class="promo-state" :class="{ 'is-off': !promo.policy.enabled }">{{ promoHint }}</span>
-          <router-link :to="{ path: '/settings', hash: '#group-invitation' }" class="promo-link">
-            去「系统设置 → 邀请返利」修改 →
-          </router-link>
-        </div>
-
         <DataTable
           class="flush-table"
           :rows="promo?.rewards || []"
@@ -1000,20 +970,7 @@ onMounted(reloadAll)
 .row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .badge-warn { background: var(--au-warning-soft); color: var(--au-warning); border-color: var(--au-warning-border); }
 
-/* ---------- 推广奖励只读行（Batch D 入口收敛：唯一可写入口在系统设置） ---------- */
-.promo-readonly {
-  display: flex;
-  align-items: center;
-  gap: 10px 16px;
-  flex-wrap: wrap;
-  padding: 4px 20px 14px;
-  border-bottom: 1px solid var(--au-border);
-}
-.promo-link { color: var(--au-accent, #b45309); font-weight: 700; text-decoration: none; font-size: 12px; white-space: nowrap; }
-.promo-link:hover { text-decoration: underline; }
 .field-suffix { font-size: 12px; color: var(--au-text-3); }
-.promo-state { flex: 1 1 220px; font-size: 12px; line-height: 1.7; color: var(--au-success); }
-.promo-state.is-off { color: var(--au-text-3); }
 
 /* ---------- 对话框 ---------- */
 .adjust-preview {
@@ -1044,6 +1001,5 @@ onMounted(reloadAll)
   .view-toolbar__actions { width: 100%; }
   .view-toolbar__actions > .el-button { flex: 1; }
   .card-pager { justify-content: center; }
-  .promo-readonly { flex-direction: column; align-items: stretch; padding: 2px 16px 12px; }
 }
 </style>

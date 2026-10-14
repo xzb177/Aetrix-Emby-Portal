@@ -2022,15 +2022,6 @@ function typeLabel(t: string): string {
               </template>
             </div>
             <div class="scrape-block">
-              <h3>TMDB 首选语言</h3>
-              <p class="drawer-hint">
-                已收拢到「元数据来源」页统一配置——这里只留入口。
-              </p>
-              <div class="scrape-actions">
-                <router-link :to="{ name: 'MetadataSources', hash: '#card-tmdb' }" class="scrape-link">去「元数据来源 → TMDB」修改 →</router-link>
-              </div>
-            </div>
-            <div class="scrape-block">
               <h3>单集夜间刮削</h3>
               <p class="drawer-hint">
                 打开后，白天只刮顶层条目（电影 / 剧集），单集留到夜间窗口再刮，避免单集挤占白天的刮削资源（保存后 60 秒内生效；时间按所选时区解释，窗口支持跨午夜）
@@ -2270,15 +2261,6 @@ function typeLabel(t: string): string {
                 <el-button size="small" text @click="loadEnrichTuningConfig">重试</el-button>
               </div>
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
-            </div>
-            <div class="scrape-block">
-              <h3>豆瓣限流降级</h3>
-              <p class="drawer-hint">
-                已收拢到「元数据来源 → 豆瓣」卡统一配置——这里只留入口。
-              </p>
-              <div class="scrape-actions">
-                <router-link :to="{ name: 'MetadataSources', hash: '#card-douban' }" class="scrape-link">去「元数据来源 → 豆瓣」修改 →</router-link>
-              </div>
             </div>
             <div class="scrape-block">
               <h3>兜底链路统一</h3>
@@ -2978,9 +2960,6 @@ function typeLabel(t: string): string {
 }
 .scrape-block h3 { margin: 0 0 6px; font-size: var(--font-size-sm); font-weight: 700; color: var(--au-text); }
 .scrape-block .drawer-hint { margin-bottom: 10px; }
-/* Batch D 入口收敛：配置收拢后的跳转链接 */
-.scrape-link { color: var(--au-accent, #b45309); font-weight: 700; text-decoration: none; font-size: var(--font-size-sm); }
-.scrape-link:hover { text-decoration: underline; }
 .scrape-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .scrape-skeleton { height: 32px; border-radius: var(--au-r-md); }
 /* 刮削性能参数：每行 标签 / 输入 / 说明 / 标记 */
