@@ -243,13 +243,13 @@ export interface UsersResponse {
 
 export type CodeType = 1 | 2 | 3
 
-/** 卡码状态：可用 / 已停用 / 已过期 / 已用尽 */
+/** 会员卡码状态：可用 / 已停用 / 已过期 / 已用尽 */
 export type CodeState = 'active' | 'disabled' | 'expired' | 'used_up'
 
 export interface RegistrationCode {
   id: number
   code: string
-  /** 这张卡码开通哪个服的会员（一个服一个） */
+  /** 这张会员卡码开通哪个服的会员（一个服一个） */
   realm_id?: number | null
   realm_name?: string
   code_type: CodeType

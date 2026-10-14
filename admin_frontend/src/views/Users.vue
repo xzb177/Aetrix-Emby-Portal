@@ -1010,7 +1010,7 @@ function fmtCount(n: number | null | undefined): string {
                       <Waypoints :size="12" />{{ card.access_note }}
                     </p>
                     <p v-else-if="!card.can_play" class="grant-note muted">
-                      <CircleSlash :size="12" />到「订阅套餐」授予该服会员，或用该服的卡码开通
+                      <CircleSlash :size="12" />到「订阅套餐」授予该服会员，或用该服的会员卡码开通
                     </p>
                     <p v-else-if="card.is_free && !card.unlock?.unlocked" class="grant-note">
                       <MonitorSmartphone :size="12" />能看全库，但客户端需在个人中心花积分解锁账号地址

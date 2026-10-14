@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 卡码管理（v2.6.0 / v2.6.11 改版）
+ * 会员卡码管理（v2.6.0 / v2.6.11 改版；Batch F 码体系正名：卡码 → 会员卡码）
  *
  * 借鉴 twilight-kotomi 的 RegCode 体系：一套入口生成并管理
  * 注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码，并给出运营总览。
@@ -9,29 +9,31 @@
  * `#737373`、`#a3a3a3` 之类的硬编码灰色换成主题令牌——这些写死的颜色既不符合
  * 后台主题，对比度也不达标（#737373 在深色上只有 3.4:1）。
  *
- * v2.6.24：卡码是**一个服一个**的——一张卡码开的是它所属服的会员（乙服的注册码
+ * v2.6.24：会员卡码是**一个服一个**的——一张会员卡码开的是它所属服的会员（乙服的注册码
  * 在乙服的 EA 上才生效）。默认只看当前服，可切「全部服」汇总；生成时可以指定归属服。
  *
  * v2.54（暗房影院）：PageHeader（范围切换 + 生成入口）· StatTile 总览（诱饵命中才染危险色）·
- * 「注册模式」与「按类型」两张 SectionCard 并排 · 码表 flush + 统一工具条（筛选左、计数与查询右）；
+ * 「按类型」SectionCard · 码表 flush + 统一工具条（筛选左、计数与查询右）；
  * 加载失败给可重试的错误态。
+ *
+ * Batch F：「注册模式」卡片已删——该设置早已在「系统设置 → 注册策略」有完整入口
+ * （模式＋关闭提示＋注册限流），同一配置键只留一处写入口；本页只留一行跳转提示。
+ * 生成弹窗改为两步向导：「你想送什么」→「码的用途」，机械项收进「高级」折叠。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  AlertTriangle, CalendarPlus, Copy, DoorOpen, KeySquare, Layers, Plus, RefreshCw, Search, ShieldAlert, TimerOff, Trash2,
+  AlertTriangle, CalendarPlus, Copy, KeySquare, Layers, Plus, RefreshCw, Search, ShieldAlert, TimerOff, Trash2,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   deleteRegistrationCode,
   fetchCodeList,
   fetchCodeStats,
-  fetchRegistrationSettings,
   generateCodes,
   patchRegistrationCode,
-  updateRegistrationSettings,
 } from '@/api/admin'
-import type { CodeStats, RegistrationCode, RegistrationSettings } from '@/types'
+import type { CodeStats, RegistrationCode } from '@/types'
 import { useRealmStore } from '@/stores/realm'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -44,10 +46,9 @@ const realmOptions = ref<{ id: number; name: string }[]>([])
 
 const codes = ref<RegistrationCode[]>([])
 const stats = ref<CodeStats | null>(null)
-const settings = ref<RegistrationSettings>({ mode: 'open', message: '' })
 const loading = ref(false)
 const total = ref(0)
-/** 码表加载失败（区别于「还没有生成过卡码」） */
+/** 码表加载失败（区别于「还没有生成过会员卡码」） */
 const loadError = ref(false)
 
 const filters = ref({ code_type: 0, state: '', keyword: '' })
@@ -55,10 +56,11 @@ const filters = ref({ code_type: 0, state: '', keyword: '' })
 let lastKeyword = ''
 
 const genVisible = ref(false)
-/** 生成 / 行内动作 / 模式保存进行中（按钮 loading，防重复点击） */
+/** 生成向导当前步：0 你想送什么 / 1 码的用途 */
+const genStep = ref(0)
+/** 生成 / 行内动作进行中（按钮 loading，防重复点击） */
 const genBusy = ref(false)
 const rowBusyId = ref<number | null>(null)
-const modeBusy = ref(false)
 const genForm = ref({
   code_type: 1 as 1 | 2 | 3,
   count: 5,
@@ -94,9 +96,9 @@ const TYPE_META: Record<number, { label: string; desc: string }> = {
 
 /** 表格列定义：手机端只保留最关键的几列，其余（用量 / 指名 / 备注 / 使用者）收进详情，避免卡片过长 */
 const columns = computed<DataColumn[]>(() => [
-  { key: 'code', label: '卡码', minWidth: 210, mobile: 'title' },
+  { key: 'code', label: '会员卡码', minWidth: 210, mobile: 'title' },
   { key: 'code_type', label: '类型', width: 96 },
-  // 卡码开哪个服的会员：跨服汇总时才需要这一列
+  // 会员卡码开哪个服的会员：跨服汇总时才需要这一列
   ...(scope.value === 'all'
     ? [{ key: 'realm', label: '归属服', minWidth: 120 } as DataColumn]
     : []),
@@ -110,7 +112,7 @@ const columns = computed<DataColumn[]>(() => [
   { key: 'actions', label: '操作', width: 150, fixed: 'right', align: 'right' },
 ])
 
-/** 归属服展示名（未标注 = 升级前的老卡码，按当前服算） */
+/** 归属服展示名（未标注 = 升级前的老会员卡码，按当前服算） */
 function realmLabel(row: RegistrationCode): string {
   if (!row.realm_id) return '未标注'
   return row.realm_name || realmOptions.value.find((r) => r.id === row.realm_id)?.name || `#${row.realm_id}`
@@ -155,28 +157,8 @@ async function load() {
   }
 }
 
-/**
- * 注册模式是全站级设置，和筛选 / 范围无关：只在进页时拉一次。
- * 以前它跟着码表一起 Promise.all——每次切筛选都重拉一遍，而且它失败会把整张码表打成错误态。
- */
-async function loadSettings() {
-  try {
-    const setting = await fetchRegistrationSettings()
-    // 注册码门禁（'code'）已下线：DB 残留值按开放注册展示
-    settings.value = setting.mode === 'code'
-      ? { ...setting, mode: 'open' as const }
-      : setting
-    savedMode.value = settings.value.mode
-  } catch {
-    /* GET 静默：拿不到就保持默认展示，不挡码表 */
-  }
-}
-/** 最近一次保存成功的模式：保存失败时把单选按钮拨回去，别让界面显示一个没生效的模式 */
-const savedMode = ref<RegistrationSettings['mode']>('open')
-
 onMounted(() => {
   load()
-  loadSettings()
 })
 
 // 关键字搜索防抖：输入停 400ms 自动查询（回车 / 「查询」按钮仍然立即查）
@@ -214,6 +196,7 @@ function openGenerate(codeType: 1 | 2 | 3) {
   genForm.value.days = codeType === 2 ? 7 : 30
   genForm.value.is_decoy = false
   genForm.value.target_username = ''
+  genStep.value = 0
   // 默认开当前服的会员（就是列表正在看的这个服）
   genForm.value.realm_id = realm.activeId ?? null
   genVisible.value = true
@@ -265,7 +248,7 @@ async function toggle(row: RegistrationCode) {
 
 async function remove(row: RegistrationCode) {
   try {
-    await ElMessageBox.confirm(`确认删除卡码 ${row.code}？`, '删除卡码', {
+    await ElMessageBox.confirm(`确认删除会员卡码 ${row.code}？`, '删除会员卡码', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
@@ -282,21 +265,6 @@ async function remove(row: RegistrationCode) {
     /* 写操作失败由请求拦截器统一弹错 */
   } finally {
     rowBusyId.value = null
-  }
-}
-
-async function saveMode() {
-  if (modeBusy.value) return
-  modeBusy.value = true
-  try {
-    await updateRegistrationSettings({ mode: settings.value.mode, message: settings.value.message })
-    savedMode.value = settings.value.mode
-    ElMessage.success('注册模式已更新')
-  } catch {
-    // 拦截器已弹错；单选按钮拨回服务端实际生效的模式
-    settings.value.mode = savedMode.value
-  } finally {
-    modeBusy.value = false
   }
 }
 
@@ -342,11 +310,6 @@ function fmtDateTime(s: string | null): string {
   return s ? fmtDate(s) : '—'
 }
 
-function modeDesc(mode: string): string {
-  if (mode === 'open') return '开放注册：任何人可注册'
-  return '关闭注册：暂停新用户加入'
-}
-
 function usedByNames(row: RegistrationCode): string {
   return row.used_by.map((u) => u.username).join('、')
 }
@@ -356,8 +319,8 @@ function usedByNames(row: RegistrationCode): string {
   <div class="admin-page codes-page">
     <PageHeader
       eyebrow="运营中心"
-      title="卡码管理"
-      description="注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码——生成、审计与注册模式管控。卡码开的是它所属服的会员。"
+      title="会员卡码管理"
+      description="注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码——生成与审计。会员卡码开的是它所属服的会员。"
     >
       <template #actions>
         <el-radio-group v-model="scope" @change="load">
@@ -366,19 +329,19 @@ function usedByNames(row: RegistrationCode): string {
         </el-radio-group>
         <el-button :icon="RefreshCw" :loading="loading" aria-label="刷新" @click="load">刷新</el-button>
         <el-button :icon="Plus" :loading="quickBusy" @click="quickGenerate">快捷生成 5 个注册码</el-button>
-        <el-button type="primary" :icon="Plus" @click="openGenerate(1)">类型化生成</el-button>
+        <el-button type="primary" :icon="Plus" @click="openGenerate(1)">生成会员卡码</el-button>
       </template>
     </PageHeader>
 
     <!-- 运营总览：数字走正文色，只有诱饵码被命中才染危险色 -->
-    <section v-if="stats" class="stat-row" aria-label="卡码总览">
-      <StatTile label="卡码总数" :value="stats.total" :icon="KeySquare" :hint="`可用 ${stats.active} · 停用 ${stats.disabled}`" />
+    <section v-if="stats" class="stat-row" aria-label="会员卡码总览">
+      <StatTile label="会员卡码总数" :value="stats.total" :icon="KeySquare" :hint="`可用 ${stats.active} · 停用 ${stats.disabled}`" />
       <StatTile
         label="已过期 / 已用尽"
         :value="stats.expired"
         :suffix="`/ ${stats.used_up}`"
         :icon="TimerOff"
-        hint="到期与次数用尽的卡码"
+        hint="到期与次数用尽的会员卡码"
       />
       <StatTile
         label="累计授予"
@@ -397,65 +360,39 @@ function usedByNames(row: RegistrationCode): string {
       />
     </section>
 
-    <div class="split">
-      <!-- 注册模式：全站级开关，切换即保存 -->
-      <SectionCard title="注册模式" :icon="DoorOpen" :description="modeDesc(settings.mode)">
-        <div class="mode-body">
-          <el-radio-group v-model="settings.mode" :disabled="modeBusy" @change="saveMode">
-            <el-radio-button value="open">开放注册</el-radio-button>
-            <el-radio-button value="closed">关闭注册</el-radio-button>
-          </el-radio-group>
-          <div v-if="settings.mode === 'closed'" class="mode-msg">
-            <label class="mode-label" for="close-msg">关闭提示</label>
-            <div class="mode-msg-row">
-              <el-input id="close-msg" v-model="settings.message" placeholder="关闭注册时展示给用户的消息" />
-              <el-button :loading="modeBusy" @click="saveMode">保存</el-button>
-            </div>
-          </div>
-        </div>
-      </SectionCard>
+    <!-- 注册模式已搬家：同一配置键全站只留一处写入口（系统设置 → 注册策略，含模式＋关闭提示＋注册限流），这里只留跳转提示 -->
+    <p class="moved-hint">
+      「注册模式」设置已收敛到 <router-link to="/settings">系统设置 → 注册策略</router-link>，本页只管理会员卡码。
+    </p>
 
-      <!-- 按类型统计 -->
-      <SectionCard title="按类型" :icon="Layers" flush>
-        <ul v-if="stats?.by_type.length" class="type-list">
-          <li v-for="t in stats.by_type" :key="t.code_type" class="type-row">
-            <span class="au-badge" :class="TYPE_BADGE[t.code_type] || 'au-badge-muted'">{{ t.code_type_name }}</span>
-            <span class="type-num"><strong>{{ t.available }}</strong> 可用 / {{ t.total }} 总计</span>
-            <span class="type-used">已核销 {{ t.used }} 次</span>
-          </li>
-        </ul>
-        <EmptyState v-else compact title="还没有按类型的统计" description="生成第一批卡码后这里会分类统计。" />
-      </SectionCard>
-    </div>
+    <!-- 按类型统计 -->
+    <SectionCard title="按类型" :icon="Layers" flush>
+      <ul v-if="stats?.by_type.length" class="type-list">
+        <li v-for="t in stats.by_type" :key="t.code_type" class="type-row">
+          <span class="au-badge" :class="TYPE_BADGE[t.code_type] || 'au-badge-muted'">{{ t.code_type_name }}</span>
+          <span class="type-num"><strong>{{ t.available }}</strong> 可用 / {{ t.total }} 总计</span>
+          <span class="type-used">已核销 {{ t.used }} 次</span>
+        </li>
+      </ul>
+      <EmptyState v-else compact title="还没有按类型的统计" description="生成第一批会员卡码后这里会分类统计。" />
+    </SectionCard>
 
-    <!-- 生成弹窗 -->
-    <el-dialog v-model="genVisible" title="生成卡码" width="min(520px, 92vw)">
-      <el-form label-position="top">
-        <el-form-item label="卡码类型">
-          <el-radio-group v-model="genForm.code_type">
-            <el-radio-button :value="1">注册码</el-radio-button>
-            <el-radio-button :value="2">续期码</el-radio-button>
-            <el-radio-button :value="3">白名单码</el-radio-button>
-          </el-radio-group>
-          <div class="form-hint">{{ TYPE_META[genForm.code_type].desc }}</div>
-        </el-form-item>
-        <!-- 卡码开哪个服的会员：注册码决定新用户拿到哪个服的会员 -->
-        <el-form-item label="归属服">
-          <el-select v-model="genForm.realm_id" placeholder="选择归属服" class="realm-select">
-            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
-          </el-select>
-          <div class="form-hint">核销后开通的是该服的会员，也只在该服的播放节点上生效。</div>
-        </el-form-item>
-        <el-form-item label="数量">
-          <el-input-number v-model="genForm.count" :min="1" :max="200" />
-        </el-form-item>
+    <!-- 生成弹窗：两步向导——①你想送什么 ②码的用途；机械项收进「高级」折叠 -->
+    <el-dialog v-model="genVisible" title="生成会员卡码" width="min(520px, 92vw)">
+      <el-steps :active="genStep" simple class="gen-steps">
+        <el-step title="你想送什么" />
+        <el-step title="码的用途" />
+      </el-steps>
+
+      <!-- ① 你想送什么：奖励内容 -->
+      <el-form v-show="genStep === 0" label-position="top" class="gen-step">
         <el-form-item label="奖励类型">
           <el-radio-group v-model="genForm.reward_type">
             <el-radio-button value="subscription">会员天数</el-radio-button>
             <el-radio-button value="points">积分</el-radio-button>
             <el-radio-button value="discount">折扣券</el-radio-button>
           </el-radio-group>
-          <div class="form-hint">M1 统一码系统：卡码也可发放积分或折扣</div>
+          <div class="form-hint">这批码送出去，对方能拿到什么</div>
         </el-form-item>
         <el-form-item v-if="genForm.reward_type === 'subscription'" label="会员天数">
           <el-input-number
@@ -473,34 +410,63 @@ function usedByNames(row: RegistrationCode): string {
           <el-input-number v-model="genForm.discount_pct" :min="1" :max="99" />
           <span class="form-hint inline-hint">如 85 = 八五折</span>
         </el-form-item>
-        <el-form-item label="每码次数">
-          <el-input-number v-model="genForm.max_uses" :min="1" :max="1000" />
+        <el-form-item label="数量">
+          <el-input-number v-model="genForm.count" :min="1" :max="200" />
         </el-form-item>
-        <el-form-item label="有效天数">
-          <el-input-number v-model="genForm.expires_days" :min="1" :max="3650" />
-          <div class="form-hint">卡码自身的兑换期限，过期作废</div>
-        </el-form-item>
-        <el-form-item label="随机算法">
-          <el-select v-model="genForm.algorithm" style="width: 100%">
-            <el-option v-for="a in ALGORITHMS" :key="a.value" :value="a.value" :label="a.label" />
+        <!-- 会员卡码开哪个服的会员：注册码决定新用户拿到哪个服的会员 -->
+        <el-form-item label="归属服">
+          <el-select v-model="genForm.realm_id" placeholder="选择归属服" class="realm-select">
+            <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
-        </el-form-item>
-        <el-form-item label="指名账号">
-          <el-input v-model="genForm.target_username" placeholder="留空表示不限；填写后仅该账号可用" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="genForm.note" placeholder="可选，如：2026 秋季活动" />
-        </el-form-item>
-        <el-form-item label="诱饵码">
-          <el-switch v-model="genForm.is_decoy" />
-          <div class="form-hint decoy-hint">
-            <ShieldAlert :size="12" /> 蜜罐：在盗版渠道流通，使用即自动封禁账号
-          </div>
+          <div class="form-hint">核销后开通的是该服的会员，也只在该服的播放节点上生效。</div>
         </el-form-item>
       </el-form>
+
+      <!-- ② 码的用途 -->
+      <el-form v-show="genStep === 1" label-position="top" class="gen-step">
+        <el-form-item label="码的用途">
+          <el-radio-group v-model="genForm.code_type">
+            <el-radio-button :value="1">注册码</el-radio-button>
+            <el-radio-button :value="2">续期码</el-radio-button>
+            <el-radio-button :value="3">白名单码</el-radio-button>
+          </el-radio-group>
+          <div class="form-hint">{{ TYPE_META[genForm.code_type].desc }}</div>
+        </el-form-item>
+        <el-collapse class="gen-advanced">
+          <el-collapse-item title="高级：次数 / 有效期 / 算法 / 指名 / 备注 / 诱饵码" name="advanced">
+            <el-form-item label="每码次数">
+              <el-input-number v-model="genForm.max_uses" :min="1" :max="1000" />
+            </el-form-item>
+            <el-form-item label="有效天数">
+              <el-input-number v-model="genForm.expires_days" :min="1" :max="3650" />
+              <div class="form-hint">会员卡码自身的兑换期限，过期作废</div>
+            </el-form-item>
+            <el-form-item label="随机算法">
+              <el-select v-model="genForm.algorithm" style="width: 100%">
+                <el-option v-for="a in ALGORITHMS" :key="a.value" :value="a.value" :label="a.label" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="指名账号">
+              <el-input v-model="genForm.target_username" placeholder="留空表示不限；填写后仅该账号可用" />
+            </el-form-item>
+            <el-form-item label="备注">
+              <el-input v-model="genForm.note" placeholder="可选，如：2026 秋季活动" />
+            </el-form-item>
+            <el-form-item label="诱饵码">
+              <el-switch v-model="genForm.is_decoy" />
+              <div class="form-hint decoy-hint">
+                <ShieldAlert :size="12" /> 蜜罐：在盗版渠道流通，使用即自动封禁账号
+              </div>
+            </el-form-item>
+          </el-collapse-item>
+        </el-collapse>
+      </el-form>
+
       <template #footer>
+        <el-button v-if="genStep === 1" @click="genStep = 0">上一步</el-button>
         <el-button @click="genVisible = false">取消</el-button>
-        <el-button type="primary" :loading="genBusy" @click="generate">生成</el-button>
+        <el-button v-if="genStep === 0" type="primary" @click="genStep = 1">下一步</el-button>
+        <el-button v-else type="primary" :loading="genBusy" @click="generate">生成</el-button>
       </template>
     </el-dialog>
 
@@ -519,7 +485,7 @@ function usedByNames(row: RegistrationCode): string {
 
     <!-- 码表：筛选在左、计数与查询在右；桌面表格 / 手机卡片 -->
     <SectionCard
-      title="全部卡码"
+      title="全部会员卡码"
       :icon="KeySquare"
       :meta="`共 ${total} 条${scope === 'realm' ? '（当前服）' : '（全部服）'}`"
       flush
@@ -529,7 +495,7 @@ function usedByNames(row: RegistrationCode): string {
           <el-input
             v-model="filters.keyword"
             class="f-search"
-            placeholder="搜索卡码 / 备注 / 指名账号"
+            placeholder="搜索会员卡码 / 备注 / 指名账号"
             clearable
             @keyup.enter="searchNow"
             @clear="searchNow"
@@ -556,11 +522,11 @@ function usedByNames(row: RegistrationCode): string {
         </div>
       </div>
 
-      <EmptyState v-if="loadError && !codes.length" :icon="AlertTriangle" title="卡码加载失败" description="网络或服务暂时不可用，稍后重试。">
+      <EmptyState v-if="loadError && !codes.length" :icon="AlertTriangle" title="会员卡码加载失败" description="网络或服务暂时不可用，稍后重试。">
         <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
       </EmptyState>
 
-      <DataTable v-else class="flush-table" :rows="codes" :columns="columns" :loading="loading" empty="还没有生成过卡码">
+      <DataTable v-else class="flush-table" :rows="codes" :columns="columns" :loading="loading" empty="还没有生成过会员卡码">
         <template #cell-code="{ row }">
           <div class="code-cell">
             <button type="button" class="code-chip" title="点击复制" @click.stop="copyText(row.code)">
@@ -624,12 +590,12 @@ function usedByNames(row: RegistrationCode): string {
           <EmptyState
             compact
             :icon="KeySquare"
-            :title="hasFilter ? '没有符合条件的卡码' : '还没有生成过卡码'"
-            :description="hasFilter ? '换个条件，或清空筛选看全部。' : '用右上角「类型化生成」发一批注册码 / 续期码。'"
+            :title="hasFilter ? '没有符合条件的会员卡码' : '还没有生成过会员卡码'"
+            :description="hasFilter ? '换个条件，或清空筛选看全部。' : '用右上角「生成会员卡码」发一批注册码 / 续期码。'"
           >
             <template #actions>
               <el-button v-if="hasFilter" size="small" @click="resetFilters">清空筛选</el-button>
-              <el-button v-else size="small" type="primary" :icon="Plus" @click="openGenerate(1)">类型化生成</el-button>
+              <el-button v-else size="small" type="primary" :icon="Plus" @click="openGenerate(1)">生成会员卡码</el-button>
             </template>
           </EmptyState>
         </template>
@@ -645,18 +611,18 @@ function usedByNames(row: RegistrationCode): string {
   gap: 12px;
 }
 
-/* 注册模式 + 按类型：并排，窄屏叠起来 */
-.split {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
+/* 注册模式搬家提示：只留一行跳转，不留第二处写入口 */
+.moved-hint {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  color: var(--au-text-3);
 }
+.moved-hint a { color: var(--au-primary); }
 
-.mode-body { display: flex; flex-direction: column; gap: 14px; }
-.mode-msg { display: flex; flex-direction: column; gap: 6px; }
-.mode-label { font-size: 12px; color: var(--au-text-3); }
-.mode-msg-row { display: flex; gap: 8px; }
+/* 生成向导：两步 */
+.gen-steps { margin-bottom: 18px; }
+.gen-step { min-height: 280px; }
+.gen-advanced { margin-top: 8px; }
 
 .type-list { list-style: none; margin: 0; padding: 0; }
 .type-row {
@@ -738,18 +704,11 @@ function usedByNames(row: RegistrationCode): string {
 .gen-code:hover { border-color: var(--au-primary-border); background: var(--au-primary-soft); }
 .gen-days { font-size: 12px; color: var(--au-text-3); white-space: nowrap; }
 
-@media (max-width: 1000px) {
-  .split { grid-template-columns: minmax(0, 1fr); }
-}
-
 @media (max-width: 768px) {
   .view-toolbar { padding: 2px 16px 12px; }
   .view-toolbar__filters > .f-search { flex: 1 1 100%; width: auto; }
   .view-toolbar__filters > .f-select { flex: 1 1 120px; width: auto; }
   .view-toolbar__actions { width: 100%; justify-content: flex-end; }
   .type-row { padding: 10px 16px; }
-  .mode-body :deep(.el-radio-group) { display: flex; width: 100%; }
-  .mode-body :deep(.el-radio-button) { flex: 1; }
-  .mode-body :deep(.el-radio-button__inner) { width: 100%; }
 }
 </style>

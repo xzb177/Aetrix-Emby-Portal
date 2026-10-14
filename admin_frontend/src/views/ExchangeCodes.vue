@@ -1,10 +1,14 @@
 <script setup lang="ts">
 /**
- * 兑换码管理：批量生成（积分/订阅/折扣型）、停用/启用、使用审计
+ * 旧版兑换码管理（Batch F 码体系正名）
+ *
+ * 老系统遗留的码：只查旧码，不再新发（新发放统一走「会员卡码」）。
+ * 功能：停用 / 启用、使用审计。
+ * 「兑换码」名称保留（抵钱的码叫兑换码是拍板口径），但页内一律标「旧版」以和会员卡码区分。
  */
 import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Gift, Plus, RefreshCw, CheckCircle2, Ticket } from 'lucide-vue-next'
+import { Gift, RefreshCw, CheckCircle2, Ticket } from 'lucide-vue-next'
 import { PageHeader, SectionCard, StatTile } from '@/components/ui'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
@@ -28,80 +32,24 @@ const columns: DataColumn[] = [
 ]
 import {
   fetchExchangeCodes,
-  createExchangeCodes,
   updateExchangeCode,
-  fetchEconomyPlans,
   type ExchangeCodeRow,
-  type PlanRowFull,
 } from '@/api/economy'
 
 const loading = ref(false)
 const loadError = ref('')
 const codes = ref<ExchangeCodeRow[]>([])
-const plans = ref<PlanRowFull[]>([])
-
-// 生成表单
-const genVisible = ref(false)
-const genForm = ref({
-  count: 10,
-  type: 'points' as 'points' | 'subscription' | 'discount',
-  points_value: 50,
-  plan_id: undefined as number | undefined,
-  duration_days: 30,
-  discount_pct: 85,
-  max_uses: 1,
-  expires_days: 30,
-  note: '',
-})
-const genLoading = ref(false)
-const genResult = ref<string[]>([])
-const resultVisible = ref(false)
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const [c, p] = await Promise.all([
-      fetchExchangeCodes({ limit: 200 }),
-      fetchEconomyPlans().catch(() => ({ plans: [] })),
-    ])
+    const c = await fetchExchangeCodes({ limit: 200 })
     codes.value = c.codes
-    plans.value = (p as { plans: PlanRowFull[] }).plans
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
-  }
-}
-
-async function handleGenerate() {
-  if (genLoading.value) return
-  if (genForm.value.type === 'subscription' && !genForm.value.plan_id) {
-    ElMessage.warning('订阅型兑换码要先选择套餐')
-    return
-  }
-  genLoading.value = true
-  try {
-    const res = await createExchangeCodes({
-      count: genForm.value.count,
-      type: genForm.value.type,
-      points_value: genForm.value.type === 'points' ? genForm.value.points_value : undefined,
-      plan_id: genForm.value.type === 'subscription' ? genForm.value.plan_id : undefined,
-      duration_days: genForm.value.type === 'subscription' ? genForm.value.duration_days : undefined,
-      discount_pct: genForm.value.type === 'discount' ? genForm.value.discount_pct : undefined,
-      max_uses: genForm.value.max_uses,
-      expires_days: genForm.value.expires_days,
-      note: genForm.value.note || undefined,
-    })
-    genResult.value = res.codes.map(c => c.code)
-    resultVisible.value = true
-    genVisible.value = false
-    ElMessage.success(`成功生成 ${genResult.value.length} 个兑换码`)
-    load()
-  } catch {
-    /* 写操作失败由请求拦截器统一弹错，这里不再重复提示 */
-  } finally {
-    genLoading.value = false
   }
 }
 
@@ -173,16 +121,6 @@ const rewardText = (row: ExchangeCodeRow) =>
     : row.type === 'subscription'
       ? `${row.plan_name || '套餐'} × ${row.duration_days} 天`
       : `${row.discount_pct / 10} 折`
-
-/** 剪贴板只在安全上下文（https / localhost）可用：http 部署下 writeText 会直接 reject */
-async function copyAll() {
-  try {
-    await navigator.clipboard.writeText(genResult.value.join('\n'))
-    ElMessage.success('已复制全部')
-  } catch {
-    ElMessage.warning('浏览器不允许写入剪贴板，请在文本框里全选后手动复制')
-  }
-}
 
 function usedNames(row: ExchangeCodeRow): string {
   return (row.used_by || []).map(u => u.username).join('、')
@@ -326,29 +264,21 @@ onMounted(load)
   <div class="admin-page">
     <PageHeader
       eyebrow="运营中心"
-      title="兑换码"
-      description="批量生成积分 / 订阅兑换码，停用或启用单个码，并查看谁核销了它。列表为最近 200 个。"
+      title="旧版兑换码"
+      description="老系统遗留的码：只查旧码，不再新发。用户兑换后直接生成奖励（积分 / 订阅时长 / 抵扣额度），并查看谁核销了它。新发放统一走「会员卡码」。列表为最近 200 个。"
     >
       <template #actions>
         <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
-        <el-button type="primary" @click="genVisible = true" :icon="Plus">批量生成</el-button>
       </template>
     </PageHeader>
 
-    <el-alert
-      type="info"
-      :closable="false"
-      show-icon
-      title="分工说明：兑换码兑换后生成奖励（积分 / 订阅时长 / 抵扣额度）；和「优惠券」不同——优惠券是在下单支付那一刻直接抵扣的。"
-    />
-
     <div class="stat-row">
-      <StatTile label="兑换码" :value="codes.length" :icon="Ticket" hint="最近 200 个以内" />
+      <StatTile label="旧版兑换码" :value="codes.length" :icon="Ticket" hint="最近 200 个以内" />
       <StatTile label="启用中" :value="activeCount" :suffix="`/ ${codes.length}`" :icon="CheckCircle2" hint="停用的码不能再核销" />
       <StatTile label="累计核销" :value="usedSummary" suffix="次" :icon="Gift" hint="按每码使用次数求和" />
     </div>
 
-    <SectionCard title="全部兑换码" :icon="Gift" :meta="hasFilter ? `筛出 ${visibleCodes.length} / ${codes.length}` : ''" flush>
+    <SectionCard title="全部旧版兑换码" :icon="Gift" :meta="hasFilter ? `筛出 ${visibleCodes.length} / ${codes.length}` : ''" flush>
       <div class="list-bar">
         <FilterBar
           class="fb-grow"
@@ -372,8 +302,8 @@ onMounted(load)
         :columns="columns"
         :loading="loading"
         :error="loadError"
-        empty="暂无兑换码"
-        empty-description="点右上角「批量生成」做第一批。"
+        empty="暂无旧版兑换码"
+        empty-description="老系统的码只剩历史数据；新发放统一走「会员卡码」。"
         :has-active-filters="hasFilter"
         selectable
         v-model:selectedKeys="selectedKeys"
@@ -424,68 +354,6 @@ onMounted(load)
       </DataTable>
     </SectionCard>
 
-    <!-- 生成对话框 -->
-    <el-dialog v-model="genVisible" title="批量生成兑换码" width="min(480px, 92vw)">
-      <el-form label-position="top">
-        <el-form-item label="类型">
-          <el-radio-group v-model="genForm.type">
-            <el-radio-button value="points">积分</el-radio-button>
-            <el-radio-button value="subscription">订阅</el-radio-button>
-            <el-radio-button value="discount">折扣</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="genForm.type === 'points'" label="积分数">
-          <el-input-number v-model="genForm.points_value" :min="1" :max="100000" style="width: 100%" />
-        </el-form-item>
-        <el-form-item v-else-if="genForm.type === 'discount'" label="折扣（实付百分比）">
-          <el-input-number v-model="genForm.discount_pct" :min="1" :max="99" style="width: 100%" />
-          <div class="form-hint">85 = 八五折，用户下次购买订阅实付 85%</div>
-        </el-form-item>
-        <template v-else>
-          <el-form-item label="套餐">
-            <el-select v-model="genForm.plan_id" placeholder="选择订阅套餐" style="width: 100%">
-              <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
-              <template #empty>
-                <div class="select-empty">还没有订阅套餐，先去「订阅套餐」建一个</div>
-              </template>
-            </el-select>
-          </el-form-item>
-          <el-form-item label="时长（天）">
-            <el-input-number v-model="genForm.duration_days" :min="1" :max="3650" style="width: 100%" />
-          </el-form-item>
-        </template>
-        <el-form-item label="数量">
-          <el-input-number v-model="genForm.count" :min="1" :max="100" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="每码次数">
-          <el-input-number v-model="genForm.max_uses" :min="1" :max="1000" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="有效天数">
-          <el-input-number v-model="genForm.expires_days" :min="1" :max="3650" style="width: 100%" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="genForm.note" placeholder="活动名称等（选填）" maxlength="60" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="genVisible = false">取消</el-button>
-        <el-button type="primary" :loading="genLoading" @click="handleGenerate">生成</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 生成结果 -->
-    <el-dialog v-model="resultVisible" title="生成结果（请保存）" width="min(420px, 92vw)">
-      <el-input
-        :model-value="genResult.join('\n')"
-        type="textarea"
-        :rows="10"
-        readonly
-        class="mono"
-      />
-      <template #footer>
-        <el-button type="primary" @click="copyAll">复制全部</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -510,7 +378,6 @@ onMounted(load)
 
 .code { letter-spacing: 0.06em; font-weight: 600; color: var(--au-text); }
 .muted { color: var(--au-text-3); font-size: 12px; }
-.select-empty { padding: 10px 12px; color: var(--au-text-3); font-size: 12px; }
 
 @media (max-width: 768px) {
   .list-bar { padding: 4px 16px 12px; }

@@ -4,7 +4,7 @@
  *
  * 「管什么」这个项目里最容易被混淆的一件事，先在这里说清：
  *
- * - **服（realm）**＝一套可以独立运营的播放服务：自己的媒体库、存储挂载、套餐、订阅、卡码、求片；
+ * - **服（realm）**＝一套可以独立运营的播放服务：自己的媒体库、存储挂载、套餐、订阅、会员卡码、求片；
  * - **一个服可以有多台播放节点（EA）**：同一套服务部署到多台机器上，各放自己碰得到的内容；
  * - **面板顶部切的是「当前服」**：切过去之后，订阅、套餐、媒体库、挂载、服务器都只看这个服。
  *
@@ -274,7 +274,7 @@ function shortDate(s: string | null): string {
     <PageHeader
       eyebrow="媒体与交付"
       title="服管理"
-      description="一个面板可以同时运营多个服。一个服＝一套独立的播放服务：自己的媒体库、存储来源、套餐、订阅、卡码与求片；同一个服可以部署到多台机器，每台机器就是一台播放节点。"
+      description="一个面板可以同时运营多个服。一个服＝一套独立的播放服务：自己的媒体库、存储来源、套餐、订阅、会员卡码与求片；同一个服可以部署到多台机器，每台机器就是一台播放节点。"
     >
       <template #actions>
         <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
@@ -303,12 +303,12 @@ function shortDate(s: string | null): string {
 
     <NoticePanel
       title="「一个服一个」的东西有哪些"
-      summary="套餐、订阅、媒体库、存储与卡码都按当前服隔离"
+      summary="套餐、订阅、媒体库、存储与会员卡码都按当前服隔离"
       :icon="Info"
       storage-key="realms-scope"
     >
       <div class="guide">
-        套餐、订阅、媒体库、存储来源、服务器与线路、卡码、求片 —— 这些都属于某一个服，
+        套餐、订阅、媒体库、存储来源、服务器与线路、会员卡码、求片 —— 这些都属于某一个服，
         面板顶部切换「当前服」之后，各页默认只显示那个服的数据。
         <b>会员按服计算</b>：用户可以在 A 服和 B 服各有一份会员，互不影响，哪台节点能播也按服判定。
         默认服沿用历史配置，不能删除，但可以改名。
@@ -532,7 +532,7 @@ function shortDate(s: string | null): string {
           <el-option v-for="r in otherRealms" :key="r.id" :label="r.name" :value="r.id" />
         </el-select>
         <p class="field-help">
-          媒体库、存储来源、套餐、订阅、卡码、求片与播放节点会一起移过去；对应用户的会员继续有效。
+          媒体库、存储来源、套餐、订阅、会员卡码、求片与播放节点会一起移过去；对应用户的会员继续有效。
         </p>
       </template>
       <template #footer>
