@@ -19,7 +19,7 @@ const LEGACY_DEFAULT_THEME_COLORS = new Set(['#22d3ee', DEFAULT_THEME_COLOR])
 // VERSION —— 所以必须与 VERSION 保持一致，由 scripts/check_version.py 门禁守着：
 // 它曾停在 v2.33.0 而 VERSION 已到 2.42.6，导致「看界面版本判断线上跑的是哪个构建」
 // 变成一个假信号（页脚永远显示同一个值）。
-export const APP_VERSION = 'v2.53.0'
+export const APP_VERSION = 'v2.54.0'
 
 export const branding = reactive<Branding>({
   site_name: DEFAULT_SITE_NAME,
