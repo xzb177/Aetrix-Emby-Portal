@@ -107,7 +107,7 @@
                   </button>
                 </div>
                 <div v-else class="realm-url muted">
-                  <span>{{ r.is_free ? '花积分解锁后可见' : '开通会员后可见' }}</span>
+                  <span>{{ r.is_free ? '花能量解锁后可见' : '开通会员后可见' }}</span>
                 </div>
               </div>
             </div>
@@ -244,18 +244,18 @@
           <div class="v4-sec-title">🔒 接线需要解锁</div>
           <template v-if="viewPermission.realm_free">
             <p class="unlock-desc">
-              花 <strong>{{ viewPermission.unlock_points }}</strong> 积分解锁查看权限，
+              花 <strong>{{ viewPermission.unlock_points }}</strong> 能量解锁查看权限，
               有效期 {{ viewPermission.unlock_days > 0 ? viewPermission.unlock_days + ' 天' : '永久' }}。
-              你当前有 <strong>{{ viewPermission.points_balance }}</strong> 积分。
+              你当前有 <strong>{{ viewPermission.points_balance }}</strong> 能量。
             </p>
             <button
               class="op-btn primary"
               :disabled="unlocking || viewPermission.points_balance < viewPermission.unlock_points"
               @click="openUnlockConfirm"
             >
-              {{ viewPermission.points_balance < viewPermission.unlock_points ? '积分不足' : `花 ${viewPermission.unlock_points} 积分解锁` }}
+              {{ viewPermission.points_balance < viewPermission.unlock_points ? '能量不足' : `花 ${viewPermission.unlock_points} 能量解锁` }}
             </button>
-            <p class="op-tip">积分可通过每日报到、邀请好友等方式获得。</p>
+            <p class="op-tip">能量可通过每日报到、邀请好友等方式获得。</p>
           </template>
           <template v-else>
             <p class="unlock-desc">服务器地址和账号只向会员开放，开通后回来这儿接线。</p>
@@ -302,7 +302,7 @@
         <div class="modal-card" role="dialog" aria-modal="true" aria-label="确认解锁">
           <h3 class="modal-title">确认解锁？</h3>
           <p class="modal-desc">
-            将花费 <strong>{{ viewPermission?.unlock_points }}</strong> 积分解锁查看权限。
+            将花费 <strong>{{ viewPermission?.unlock_points }}</strong> 能量解锁查看权限。
           </p>
           <div class="modal-actions">
             <button class="op-btn ghost" @click="closeUnlockConfirm()">取消</button>

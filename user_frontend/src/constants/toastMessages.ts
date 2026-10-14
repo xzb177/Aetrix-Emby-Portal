@@ -34,7 +34,7 @@ export const toastSystem = {
   /** 401：token 刷新也失败后 */
   sessionExpired: '登录已过期，请重新登录后继续',
   /** 403 */
-  permissionDenied: '当前账号没有执行此操作的权限',
+  permissionDenied: '这个操作需要更高权限，换个账号试试或找管理员',
   /** 429 */
   rateLimited: '请求有些频繁，请稍后再试',
   /** 余额不足 */
@@ -68,8 +68,8 @@ export type ToastFallbackKey = keyof typeof toastFallback
 
 /** 删除 / 关闭类确认弹窗文案：标题 + 后果说明（是否可恢复） */
 export const confirmCopy = {
-  /** 关闭工单：可重新打开 */
-  closeTicket: '关闭这条工单？\n关闭后如有需要可以重新打开。',
+  /** 关闭求救信号：可重新打开 */
+  closeTicket: '关闭这条求救信号？\n关闭后如有需要可以重新打开。',
   /** 终止订阅：不可恢复（ProfileView 已有等效文案，此处统一收口） */
   cancelSubscription: (planName: string) =>
     `确定要终止「${planName}」订阅吗？终止后立即失效，不可恢复。`,

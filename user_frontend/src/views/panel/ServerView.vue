@@ -19,7 +19,7 @@
         <div class="v4-sec-sub">呼吸的健康球 —— 活着，而且很忙</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 260px"></div>
         <LifeOrb v-else-if="data?.vitals" :vitals="data.vitals" />
-        <div v-else class="v4-empty">生命体还没有苏醒</div>
+        <div v-else class="v4-empty">生命体还没有苏醒<br><span class="v4-empty-hint">连上服务器后这里会亮起来，一直这样请检查网络</span></div>
       </section>
 
       <!-- 任务雷达 -->
@@ -28,7 +28,7 @@
         <div class="v4-sec-sub">服务器里的小家伙们正在哪忙活</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 280px"></div>
         <RadarCanvas v-else-if="data?.radar_tasks?.length" :tasks="data.radar_tasks" />
-        <div v-else class="v4-empty">雷达上空空如也</div>
+        <div v-else class="v4-empty">雷达上空空如也<br><span class="v4-empty-hint">服务器里有任务在跑就会出现在这里，现在没有就是真没任务</span></div>
       </section>
 
       <!-- 片库生态 -->
@@ -37,7 +37,7 @@
         <div class="v4-sec-sub">每个库都是一株植物，长得越高内容越多</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 190px"></div>
         <EcoGarden v-else-if="data?.eco?.length" :eco="data.eco" />
-        <div v-else class="v4-empty">花园里还没有植物</div>
+        <div v-else class="v4-empty">花园里还没有植物<br><span class="v4-empty-hint">媒体库建好后会一株一株长出来，等不及就去催服主</span></div>
       </section>
 
       <!-- 生长记录 -->
@@ -46,7 +46,7 @@
         <div class="v4-sec-sub">过去 7 天，片库每天新长了多少</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 190px"></div>
         <GrowthChart v-else-if="data?.growth?.length" :growth="data.growth" />
-        <div v-else class="v4-empty">还没有生长记录</div>
+        <div v-else class="v4-empty">还没有生长记录<br><span class="v4-empty-hint">片库有新片入库后这里会画出来，空着就是还没长</span></div>
       </section>
       </div>
     </div>
@@ -81,4 +81,11 @@ function retryServer() {
 
 <style scoped>
 /* 生长记录区无额外样式，复用 v4-sec */
+/* 空态第二行指引：小一号、弱化，告诉用户"正常还是故障" */
+.v4-empty-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.72;
+}
 </style>

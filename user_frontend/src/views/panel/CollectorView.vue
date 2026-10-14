@@ -20,7 +20,7 @@
           <div class="v4-id-name">{{ nickname }}</div>
           <div class="v4-id-title">{{ tasteTitle }}</div>
           <div class="v4-id-stats">
-            <div><b>{{ points }}</b><span>积分</span></div>
+            <div><b>{{ points }}</b><span>能量</span></div>
             <div><b>{{ watchHoursText }}</b><span>累计观影</span></div>
             <div><b>{{ streakText }}</b><span>连签天数</span></div>
             <div><b>{{ achievementCount }}</b><span>成就</span></div>

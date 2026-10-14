@@ -32,7 +32,7 @@ const showChrome = computed(
 /**
  * P1#1 双底部导航：v4 16 个路由（V4_PATHS：4 panel + 12 game）模板末尾自带纸色
  * PanelTabbar（fixed bottom，z-index 50），会盖住 AppDock（z-index 40）导致
- * 「首页/商店/我的」不可点 —— 这些路由下只渲染 PanelTabbar，隐藏 AppDock。
+ * 「首页/补给站/我的」不可点 —— 这些路由下只渲染 PanelTabbar，隐藏 AppDock。
  * 尾斜杠规范化与 router/index.ts 的 afterEach 保持一致（/game/ 与 /game 同页）。
  */
 const panelV4 = isPanelV4Enabled()
@@ -66,7 +66,7 @@ function onTgNotBound(e: Event) {
   const now = Date.now()
   if (now - lastTgNotify < 3000) return
   lastTgNotify = now
-  const message = (e as CustomEvent)?.detail?.message || '公益服功能需要绑定 Telegram，防小号，1 分钟搞定'
+  const message = (e as CustomEvent)?.detail?.message || '公益服要绑定 Telegram 才能用，正在带你去绑定'
   warning(message + '，正在前往绑定')
   setTimeout(() => router.push('/game/account'), 600)
 }
