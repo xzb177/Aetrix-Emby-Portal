@@ -61,8 +61,10 @@ const letterTime = computed(() => {
 const watchDurationText = computed(() => {
   const v = props.letter.watch_duration
   if (typeof v === 'number' && Number.isFinite(v)) {
-    const h = Math.floor(v / 60)
-    const m = Math.round(v % 60)
+    // R42：先 round 总分钟再拆分 —— 直接 Math.round(v % 60) 在小数输入（如 59.6）下会产出"60分"
+    const total = Math.round(v)
+    const h = Math.floor(total / 60)
+    const m = total % 60
     if (h > 0) return m > 0 ? `${h}小时${m}分` : `${h}小时`
     return `${m}分`
   }
