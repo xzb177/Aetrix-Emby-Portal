@@ -356,8 +356,8 @@
     font-size: var(--neo-font-size-sm, 13px);
   }
 
-  /* 统一 Badge */
-  .badge {
+  /* 统一 Badge —— 仅限小芯片（span），不波及同名的业务大卡（如 OutfitView 的徽章墙卡片 div.badge） */
+  span.badge {
     height: var(--neo-badge-height, 20px);
     border-radius: var(--neo-badge-radius, 9999px);
     padding: 0 var(--neo-badge-padding, 8px);
