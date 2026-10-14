@@ -19,6 +19,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import {
   LayoutDashboard, Users, Package, Ticket, Settings, Server,
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Clapperboard,
@@ -398,7 +399,7 @@ async function submitPwd() {
     auth.logout()
     router.push('/login')
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : '修改失败')
+    ElMessage.error(toAdminError(e, '修改失败'))
   } finally {
     pwdLoading.value = false
   }

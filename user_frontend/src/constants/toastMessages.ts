@@ -43,6 +43,10 @@ export const toastSystem = {
   payFailed: '这次支付未成功，请查看订单状态后再试',
   /** 支付结果未知（轮询超时等，不鼓励重复支付） */
   payUnknown: '暂时无法确认支付结果，请先查看订单状态',
+  /** 500：服务端故障（Batch G：拦截器四场景之一） */
+  serverError: '服务器开小差了，请稍后重试',
+  /** 422：请求参数校验失败（Batch G：拦截器四场景之一） */
+  validationError: '提交的内容有误，请检查后重试',
 } as const
 
 /**
@@ -56,6 +60,8 @@ export const toastFallback = {
   cancelFailed: '终止没能完成，请稍后重试',
   removeFailed: '移除没能完成，请稍后重试',
   settingFailed: '设置没能保存，请稍后重试',
+  /** 数据加载类兜底（Batch G：humanizeError 统一收敛到 toUserMessage 时用） */
+  loadFailed: '加载失败，稍后再试',
 } as const
 
 export type ToastFallbackKey = keyof typeof toastFallback

@@ -13,6 +13,7 @@
 import axios from 'axios'
 import type { AxiosError, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
+import { toAdminError } from './errorMessage'
 
 export const TOKEN_KEY = 'admin_access_token'
 export const ADMIN_KEY = 'admin_info'
@@ -50,19 +51,6 @@ function withResponse(err: Error, source: AxiosError): Error {
   return err
 }
 
-/** 从各形态的 error 里抠出人话（后端 detail / 校验数组 / 网络错误） */
-function extractMessage(error: AxiosError): string {
-  const data = error.response?.data as { detail?: unknown } | undefined
-  const detail = data?.detail
-  if (typeof detail === 'string' && detail) return detail
-  // FastAPI 422 校验错误是数组
-  if (Array.isArray(detail) && detail.length) {
-    const first = detail[0] as { msg?: string }
-    if (first?.msg) return first.msg
-  }
-  return error.message || '请求失败'
-}
-
 request.interceptors.response.use(
   onResponse,
   onError,
@@ -81,10 +69,15 @@ function onResponse(response: AxiosResponse): any {
   return response.data
 }
 
-/** 失败响应：401 自愈 + 全局错误提示。同样抽出来给两个实例共用。 */
+/**
+ * 失败响应：401 自愈 + 全局错误提示。同样抽出来给两个实例共用。
+ *
+ * Batch G：错误文案统一走 toAdminError —— 无响应（断网）/ 超时 / 422 / 500
+ * 各有明确人话文案（与 user 端 toUserMessage 同口径），英文技术信息不再上屏。
+ * 401 自愈逻辑、silent 标记、withResponse 挂载行为保持不变。
+ */
 function onError(error: AxiosError<{ detail?: string }>): Promise<never> {
   const status = error.response?.status
-  const detail = error.response?.data?.detail
   const cfg = error.config as AdminRequestConfig | undefined
   const silent = cfg?.silent === true
 
@@ -96,7 +89,7 @@ function onError(error: AxiosError<{ detail?: string }>): Promise<never> {
     // 的 401（密码输错）或业务接口的鉴权 401，都不该触发重载。
     const sentAuth = Boolean(error.config?.headers?.Authorization)
     const isSession401 = sentAuth
-    const message = detail || '登录状态已失效'
+    const message = toAdminError(error, '登录状态已失效')
 
     if (isSession401) {
       localStorage.removeItem(TOKEN_KEY)
@@ -121,7 +114,8 @@ function onError(error: AxiosError<{ detail?: string }>): Promise<never> {
     return Promise.reject(withResponse(new Error(message), error))
   }
 
-  const message = extractMessage(error)
+  // Batch G：全局失败提示的文案统一经 toAdminError 翻译
+  const message = toAdminError(error, '请求失败，请稍后重试')
   // 全局失败提示：红色、带具体原因。silent 的调用方自己处理错误展示。
   if (!silent) ElMessage.error(message)
   return Promise.reject(withResponse(new Error(message), error))

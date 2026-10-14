@@ -7,6 +7,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import {
   RefreshCw, Search, CircleCheck, Wallet, Ban, Undo2, ReceiptText, Coins, CalendarCheck, Clock3,
   Gift, UserPlus, AlertTriangle,
@@ -102,7 +103,7 @@ async function load() {
     total.value = o.total
   } catch (e: unknown) {
     if (seq !== loadSeq) return
-    loadError.value = (e as Error)?.message || '加载失败'
+    loadError.value = toAdminError(e, '加载失败')
     ElMessage.error(loadError.value)
   } finally {
     if (seq === loadSeq) loading.value = false
@@ -326,7 +327,7 @@ async function handleClose(row: OrderRow) {
     ElMessage.success('订单已关闭')
     await afterAction(row.order_id)
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '关单失败')
+    ElMessage.error(toAdminError(e, '关单失败'))
   }
 }
 
@@ -380,7 +381,7 @@ async function submitRefund() {
     await afterAction(row.order_id)
   } catch (e: unknown) {
     // 余额不足时后端给出可读原因，原样展示（引导勾选「允许余额为负」）
-    ElMessage.error((e as Error)?.message || '退款失败')
+    ElMessage.error(toAdminError(e, '退款失败'))
   } finally {
     refundSaving.value = false
   }
@@ -401,7 +402,7 @@ async function handleMarkPaid(row: OrderRow) {
     ElMessage.success('补单成功，已发货')
     await afterAction(row.order_id)
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '补单失败')
+    ElMessage.error(toAdminError(e, '补单失败'))
   }
 }
 

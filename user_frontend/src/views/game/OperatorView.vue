@@ -344,6 +344,7 @@ import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'l
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
+import { toUserMessage } from '@/utils/toUserMessage'
 import {
   embyApi,
   type AccountCard, type AccountRealmCard, type MyPlaybackSession, type ViewPermission,
@@ -594,8 +595,8 @@ async function doStopSession() {
     toast.success(`已结束「${session.device || '未知设备'}」上的播放`)
     sessions.value = sessions.value.filter((s) => s.session_key !== session.session_key)
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    toast.error(typeof detail === 'string' && /[\u4e00-\u9fff]/.test(detail) ? detail : humanizeError(err))
+    // Batch G：中文判断逻辑已收敛进 toUserMessage（中文 detail 透传），不再内联
+    toast.error(toUserMessage(err, 'saveFailed'))
   } finally {
     stopping.value = null
     closeStopSession()

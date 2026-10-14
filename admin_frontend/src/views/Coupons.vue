@@ -16,6 +16,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   AlertTriangle, CircleCheck, Clock3, Plus, RefreshCw, Search, Settings2, TicketPercent, Tickets,
@@ -330,7 +331,7 @@ async function handleCreate() {
     resetCreateForm()
     load()
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '创建失败')
+    ElMessage.error(toAdminError(e, '创建失败'))
   } finally {
     creating.value = false
   }
@@ -460,7 +461,7 @@ async function handleUpdate() {
     editVisible.value = false
     load()
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     editing.value = false
   }
@@ -523,7 +524,7 @@ async function toggleCoupon(row: CouponRow) {
     ElMessage.success(row.is_active ? '已启用' : '已停用')
     await refreshManage(row.id)
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '操作失败')
+    ElMessage.error(toAdminError(e, '操作失败'))
   }
 }
 
@@ -547,7 +548,7 @@ async function handleDelete(row: CouponRow) {
     ElMessage.success(res.message || '已删除')
     await refreshManage(row.id)
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '删除失败')
+    ElMessage.error(toAdminError(e, '删除失败'))
   }
 }
 
@@ -588,7 +589,7 @@ async function saveSettings() {
     ElMessage.success(enabled.value ? '优惠券已开启' : '优惠券已关闭（用户端不再显示优惠码入口）')
     reserveHours.value = res.reserve_hours
   } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '保存失败')
+    ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     settingsSaving.value = false
   }

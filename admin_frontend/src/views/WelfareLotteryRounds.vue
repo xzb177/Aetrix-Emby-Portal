@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import { Gift, History, Plus, RefreshCw, Trophy, Settings2, Delete } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -24,7 +25,8 @@ const statusTagType = (s?: string): 'success' | 'warning' | 'info' | 'danger' =>
   (({ open: 'success', drawing: 'warning', done: 'info', cancelled: 'danger' } as Record<string, 'success' | 'warning' | 'info' | 'danger'>)[s ?? ''] ?? 'info')
 
 const fmtTime = (v?: string | null) => (v ? String(v).replace('T', ' ').slice(0, 19) : '—')
-const errDetail = (e: any) => e?.response?.data?.detail ?? e?.message ?? '操作失败'
+/** Batch G：本地 errDetail 收敛为 toAdminError（同口径错误翻译） */
+const errDetail = (e: unknown) => toAdminError(e, '操作失败')
 
 const { isPhone } = useBreakpoint()
 
@@ -58,7 +60,7 @@ const load = async () => {
     total.value = res.total ?? 0
   } catch (e) {
     // 错误态交给表格（带「重试」），不再只弹一条转瞬即逝的提示
-    loadError.value = String(errDetail(e))
+    loadError.value = errDetail(e)
   } finally {
     loading.value = false
   }
@@ -147,7 +149,7 @@ const loadDetail = async (id: number) => {
       prizes: res.prizes, entries: res.entries, winners: res.winners, verify: res.verify,
     }
   } catch (e) {
-    detailError.value = String(errDetail(e))
+    detailError.value = errDetail(e)
   } finally {
     detailLoading.value = false
   }

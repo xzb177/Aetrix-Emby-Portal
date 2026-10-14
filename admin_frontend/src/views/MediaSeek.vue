@@ -2,6 +2,7 @@
 /** 求片管理：审核批准/拒绝/标记完成，联动用户通知 */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { toAdminError } from '@/utils/errorMessage'
 import { Check, CloudDownload, Download, MessageSquareDashed, RefreshCw, X } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import {
@@ -245,8 +246,7 @@ async function markInLibrary() {
     }
     await afterAction(r.id)
   } catch (err: any) {
-    const detail = err?.response?.data?.detail
-    ElMessage.error(typeof detail === 'string' ? detail : '标记失败，请稍后重试')
+    ElMessage.error(toAdminError(err, '标记失败，请稍后重试'))
   } finally {
     busyId.value = null
   }

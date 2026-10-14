@@ -4,7 +4,7 @@ import { Send, RefreshCw, Check, X, Copy } from 'lucide-vue-next'
 import Modal from '@/components/ui/Modal.vue'
 import { tgApi } from '@/api/tg'
 import { useToast } from '@/composables/useToast'
-import { humanizeError } from '@/composables/usePanelApi'
+import { toUserMessage } from '@/utils/toUserMessage'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{
@@ -33,25 +33,7 @@ const unbindConfirmOpen = ref(false)
 let timer: ReturnType<typeof setInterval> | null = null
 let closeTimer: ReturnType<typeof setTimeout> | null = null
 
-function rawErrMsg(e: unknown): string {
-  const anyErr = e as { response?: { data?: unknown }; message?: string }
-  const data = anyErr?.response?.data
-  if (data && typeof data === 'object') {
-    // FastAPI HTTPException → { detail }；业务返回 → { message }
-    const d = data as { message?: unknown; detail?: unknown }
-    if (typeof d.message === 'string') return d.message
-    if (typeof d.detail === 'string') return d.detail
-  }
-  if (typeof data === 'string') return data
-  return anyErr?.message || '网络错误，请稍后重试'
-}
-
-/** 后端原文含中文保留原文，否则人话化 */
-function errMsg(e: unknown): string {
-  const msg = rawErrMsg(e)
-  return /[\u4e00-\u9fff]/.test(msg) ? msg : humanizeError(e)
-}
-
+/** Batch G 收敛：本地 errMsg / rawErrMsg 删除，错误翻译统一走 toUserMessage */
 function stopCountdown() {
   if (timer) {
     clearInterval(timer)
@@ -83,7 +65,7 @@ async function loadCode() {
     startCountdown(res.expires_in)
   } catch (e) {
     code.value = ''
-    toast.error(errMsg(e))
+    toast.error(toUserMessage(e, 'saveFailed'))
   } finally {
     loading.value = false
   }
@@ -110,7 +92,7 @@ async function onVerify() {
       if (res.code_expired) countdown.value = 0
     }
   } catch (e) {
-    verifyError.value = errMsg(e)
+    verifyError.value = toUserMessage(e, 'saveFailed')
   } finally {
     verifying.value = false
   }
@@ -146,7 +128,7 @@ async function onUnbind() {
       toast.error('解绑失败，请稍后重试')
     }
   } catch (e) {
-    toast.error(errMsg(e))
+    toast.error(toUserMessage(e, 'saveFailed'))
   } finally {
     unbinding.value = false
   }
