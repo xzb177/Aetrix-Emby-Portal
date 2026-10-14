@@ -131,13 +131,19 @@ function lampMetricValue(key: string, field: string, suffix: string): string {
     const m = observability.value?.subsystems?.api?.metrics || {}
     const v = m['global_error_ratio']
     if (v === null || v === undefined || v === '') return '—'
-    return `${(Number(v) * 100).toFixed(2)}${suffix}`
+    // R40：后端给非数字（如 "N/A"）时不显示 NaN%
+    const pct = Number(v) * 100
+    if (!Number.isFinite(pct)) return '—'
+    return `${pct.toFixed(2)}${suffix}`
   }
   if (key === 'strm' && field === 'lag_hours') {
     const m = observability.value?.subsystems?.strm?.metrics || {}
     const v = m['lag_hours']
     if (v === null || v === undefined || v === '') return '—'
-    return `${Number(v).toFixed(1)}${suffix}`
+    // R40：非数字时不显示 NaN 小时
+    const lag = Number(v)
+    if (!Number.isFinite(lag)) return '—'
+    return `${lag.toFixed(1)}${suffix}`
   }
   return `${lampMetricOf(key, field)}${suffix}`
 }

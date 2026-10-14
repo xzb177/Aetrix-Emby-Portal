@@ -43,7 +43,7 @@ const footText = computed(() => {
 .v4-growth {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 16px 12px 12px;
 }
 .bars {
@@ -70,7 +70,7 @@ const footText = computed(() => {
   height: 80px;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: var(--paper-r-sm, 6px);
+  border-radius: 6px;
   display: flex;
   align-items: flex-end;
   overflow: hidden;

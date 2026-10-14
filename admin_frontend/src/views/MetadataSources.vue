@@ -909,9 +909,11 @@ onMounted(() => {
   loadBanDowngrade().catch(() => undefined)
   loadTmdbLanguage().catch(() => undefined)
   // Batch D 入口收敛：媒体库页用 hash 深链跳进来（#card-douban / #card-tmdb）
+  // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
     nextTick(() => {
-      document.querySelector(route.hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      const el = document.getElementById(route.hash.slice(1))
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
   }
   // P1 入口前移：媒体库列表的「识别」按钮跳过来时带 ?item_id=xxx，

@@ -501,7 +501,7 @@ onMounted(() => {
   padding: 20px;
   background: var(--paper-card);
   border: 1.5px solid var(--ink);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   box-shadow: 4px 4px 0 rgba(42, 38, 32, 0.15);
 }
 .acct-modal-title {

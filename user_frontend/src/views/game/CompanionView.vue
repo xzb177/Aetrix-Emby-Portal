@@ -255,7 +255,7 @@ onMounted(load)
   margin: 4px 0 0;
   background: var(--paper2);
   border: 2px solid var(--ink);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 20px;
   text-align: center;
   position: relative;

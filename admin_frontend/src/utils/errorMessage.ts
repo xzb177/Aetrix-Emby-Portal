@@ -9,11 +9,14 @@
  *
  * 解析优先级（与 user 端一致）：
  * 1. 无响应（断网 / 超时）→ "网络暂时连不上，请检查连接后重试"
- * 2. HTTP 状态码：401 → 登录过期；403 → 无权限；429 → 太频繁；
- *    422 → 参数有误；500 → 服务器开小差
- * 3. 后端 detail：中文人话直接透传；FastAPI 422 数组取首条人话；
- *    全大写错误码走 CODE_MAP；未知码走兜底
- * 4. 兜底：调用方传入的 fallback 字符串（默认 "请求失败，请稍后重试"）
+ * 2. 后端 detail：字符串机器码走 CODE_MAP、中文人话透传（纯英文不透传）；
+ *    FastAPI 422 数组取首条人话（纯英文走校验文案）；
+ *    对象 detail：机器码走 CODE_MAP；非标准码含中文透传、纯英文走兜底
+ * 3. HTTP 状态码兜底（仅 detail 没给出可用信息时）：
+ *    401 → 登录过期；403 → 无权限；429 → 太频繁；422 → 参数有误；500 → 服务器开小差
+ * 4. 非 axios Error 的 message 场景映射（已知英文技术信息按场景映射，
+ *    中文人话透传，纯英文走兜底）
+ * 5. 兜底：调用方传入的 fallback 字符串（默认 "请求失败，请稍后重试"）
  *
  * 配套铁律：
  * - 禁用原始错误码 / 英文技术信息上屏（"Request failed with status code 500"、
@@ -47,8 +50,13 @@ const RATE_LIMITED_COPY = '请求有些频繁，请稍后再试'
 /** 全大写下划线风格的机器码，如 RATE_LIMITED / SOME_ERROR_2 */
 const MACHINE_CODE_RE = /^[A-Z][A-Z0-9_]{2,}$/
 
-/** 纯英文技术信息（无中文），用于判定是否该走场景映射而非透传 */
+/** 纯英文技术信息（无中文），用于判定是否该走场景映射/兜底而非透传 */
 const ENGLISH_ONLY_RE = /^[\w\s.,:'"()[\]-]+$/
+
+/** 纯英文无中文 → 不可透传上屏（SOME ENGLISH ERROR 之类不能给用户看） */
+function isEnglishOnly(text: string): boolean {
+  return ENGLISH_ONLY_RE.test(text) && !/[\u4e00-\u9fff]/.test(text)
+}
 
 function isNetworkError(err: any): boolean {
   if (!err || err.response) return false
@@ -83,18 +91,15 @@ export function toAdminError(err: unknown, fallback = '请求失败，请稍后�
   const status: number | undefined = e?.response?.status
   const detail: unknown = e?.response?.data?.detail
 
-  // 2. 状态码映射（优先于 detail，401/403/429/500 的语义是确定的）
-  if (status === 401) return SESSION_EXPIRED_COPY
-  if (status === 403) return PERMISSION_DENIED_COPY
-  if (status === 429) return RATE_LIMITED_COPY
-  if (status === 500) return SERVER_ERROR_COPY
-
-  // 3. detail 解析
+  // 2. detail 解析（优先于状态码：带 detail 的业务错误语义更精确，
+  //    比如 401 + "RC 密码错误" 必须显示密码错，而不是"登录已过期"）
   if (typeof detail === 'string' && detail.trim()) {
     const text = detail.trim()
     if (MACHINE_CODE_RE.test(text)) {
       return mapCode(text) ?? fallback
     }
+    // P3-1：纯英文技术信息不透传（"SOME ENGLISH ERROR" 不能上屏）
+    if (isEnglishOnly(text)) return fallback
     return text
   }
   if (Array.isArray(detail) && detail.length) {
@@ -107,9 +112,7 @@ export function toAdminError(err: unknown, fallback = '请求失败，请稍后�
           ? first.message
           : ''
     if (msg.trim()) {
-      return ENGLISH_ONLY_RE.test(msg.trim()) && !/[\u4e00-\u9fff]/.test(msg)
-        ? VALIDATION_ERROR_COPY
-        : msg.trim()
+      return isEnglishOnly(msg.trim()) ? VALIDATION_ERROR_COPY : msg.trim()
     }
     return VALIDATION_ERROR_COPY
   }
@@ -120,16 +123,26 @@ export function toAdminError(err: unknown, fallback = '请求失败，请稍后�
       const hit = mapCode(code)
       if (hit) return hit
       if (MACHINE_CODE_RE.test(code)) return fallback
-      return code
+      // P3-2：非标准机器码（如小写 user_not_found）→ 含中文透传、纯英文走兜底
+      const c = code.trim()
+      if (!c || isEnglishOnly(c)) return fallback
+      return c
     }
     if (typeof message === 'string' && message.trim()) {
-      return message.trim()
+      const msg = message.trim()
+      if (isEnglishOnly(msg)) return fallback
+      return msg
     }
   }
-  // 422：detail 没给出可用信息时，用通用校验文案
-  if (status === 422) return VALIDATION_ERROR_COPY
 
-  // 非 axios 错误兜底：Error message 若是人话可透传，机器味则按场景映射
+  // 3. 状态码兜底：仅当 detail 没给出可用信息时
+  if (status === 401) return SESSION_EXPIRED_COPY
+  if (status === 403) return PERMISSION_DENIED_COPY
+  if (status === 429) return RATE_LIMITED_COPY
+  if (status === 422) return VALIDATION_ERROR_COPY
+  if (status === 500) return SERVER_ERROR_COPY
+
+  // 4. 非 axios 错误兜底：Error message 若是人话可透传，机器味则按场景映射
   if (e instanceof Error && e.message && !MACHINE_CODE_RE.test(e.message.trim())) {
     const text = e.message.trim()
     if (/^network error$/i.test(text)) return NETWORK_ERROR_COPY
@@ -144,9 +157,11 @@ export function toAdminError(err: unknown, fallback = '请求失败，请稍后�
       if (code >= 500) return SERVER_ERROR_COPY
       return fallback
     }
+    // P3-3：纯英文技术信息走兜底，中文人话才透传
+    if (isEnglishOnly(text)) return fallback
     return text
   }
 
-  // 4. 兜底
+  // 5. 兜底
   return fallback
 }

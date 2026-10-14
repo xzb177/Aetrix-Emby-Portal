@@ -195,7 +195,7 @@
             <div class="perks" v-if="openCampLevel === lv.level">
               <template v-for="(b, i) in lv.benefits" :key="i"><i>★</i> {{ b }}<br /></template>
               <span style="font-size:11px">经验 {{ lv.xp_threshold }}<span v-if="lv.level === member.level && member.next_level"> → 下一级 Lv.{{ member.next_level }} 还差 {{ member.xp_to_next }}</span></span>
-              <div v-if="lv.level === member.level && member.progress_pct != null" style="background:var(--paper2);border-radius:var(--paper-r-sm, 6px);height:8px;margin-top:6px;overflow:hidden">
+              <div v-if="lv.level === member.level && member.progress_pct != null" style="background:var(--paper2);border-radius:6px;height:8px;margin-top:6px;overflow:hidden">
                 <div :style="{ width: member.progress_pct + '%', height: '100%', background: 'var(--red)' }"></div>
               </div>
             </div>
@@ -1215,7 +1215,7 @@ async function copyInviteCode() {
 .invite {
   background: var(--ink);
   color: var(--paper2); /* R27：原 #ede6d6，近似 --paper2 #EFE7D6，收敛 */
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 18px;
   position: relative;
   overflow: hidden;
@@ -1406,7 +1406,7 @@ async function copyInviteCode() {
   position: absolute;
   top: 9px; right: 0; bottom: 9px; left: 0;
   background: var(--red);
-  border-radius: var(--paper-r-sm, 6px);
+  border-radius: 6px;
 }
 .redeem-confirm .lbl { position: relative; }
 .redeem-clear {
@@ -1499,7 +1499,7 @@ async function copyInviteCode() {
   top: 11px; right: 0; bottom: 11px; left: 0;
   background: var(--paper2);
   border: 1px solid var(--line);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
 }
 .quick-btn .lbl { position: relative; }
 .custom-note {
@@ -1537,7 +1537,7 @@ async function copyInviteCode() {
   top: 8.5px; right: 0; bottom: 8.5px; left: 0;
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
 }
 .payway .lbl { position: relative; }
 .payway.on {

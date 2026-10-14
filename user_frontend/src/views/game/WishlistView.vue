@@ -376,7 +376,7 @@ onMounted(() => {
   font-weight: 800;
   letter-spacing: 3px;
   padding: 15px;
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   cursor: pointer;
   box-shadow: 0 4px 0 var(--red-deep, #a33319);
   transition: transform 0.12s;
@@ -487,7 +487,7 @@ onMounted(() => {
 .mcard {
   background: var(--paper-card);
   border: 2px solid var(--ink);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 22px 20px;
   width: 100%;
   animation: up 0.25s;

@@ -331,7 +331,7 @@ onMounted(() => { void load(true) })
 .perch .birds { font-size: 44px; letter-spacing: 6px; animation: coo 3s ease-in-out infinite; }
 @keyframes coo { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 .perch .bar {
-  width: 240px; height: 10px; background: #8A6F4D; border-radius: var(--paper-r-sm, 6px);
+  width: 240px; height: 10px; background: #8A6F4D; border-radius: 6px;
   margin: 2px auto 0; box-shadow: 0 3px 6px rgba(0, 0, 0, 0.2);
 }
 .perch-tip { font-size: 12px; color: var(--ink2); margin-top: 10px; }

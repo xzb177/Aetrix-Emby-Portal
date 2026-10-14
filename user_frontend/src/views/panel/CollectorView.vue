@@ -198,7 +198,7 @@ const pet = computed((): PetData | null => {
   background: var(--ink);
   color: var(--paper); /* R27：原 #f6f1e7 = --paper */
   padding: 5px 12px;
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   letter-spacing: 1px;
   white-space: nowrap;
 }
@@ -206,7 +206,7 @@ const pet = computed((): PetData | null => {
   margin: 12px 20px 0;
   background: var(--paper-card);
   border: 1.5px solid var(--ink);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 18px;
   position: relative;
   overflow: hidden;

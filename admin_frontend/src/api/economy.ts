@@ -159,17 +159,7 @@ export const deleteEconomyPackage = (id: number) =>
 export const fetchExchangeCodes = (params: { limit?: number } = {}) =>
   get<{ codes: ExchangeCodeRow[] }>('/economy/exchange-codes', params)
 
-export const createExchangeCodes = (data: {
-  count: number
-  type: 'points' | 'subscription' | 'discount'
-  points_value?: number
-  plan_id?: number
-  duration_days?: number
-  discount_pct?: number
-  max_uses?: number
-  expires_days?: number
-  note?: string
-}) => post<{ success: boolean; codes: { id: number; code: string; type: string }[] }>('/economy/exchange-codes', data)
+// R40：删除死导出 createExchangeCodes——调用方 ExchangeCodes.vue 已删除，全仓零引用
 
 export const updateExchangeCode = (id: number, is_active: boolean) =>
   put<{ success: boolean }>(`/economy/exchange-codes/${id}`, { is_active })

@@ -114,7 +114,8 @@ def migrate_file(path: Path) -> None:
         def hex_sub(m: re.Match) -> str:
             nonlocal changed
             h = m.group(0)
-            if h.lower() in ("fff", "ffffff"):
+            # R40：HEX_RE.group(0) 含 # 前缀，原写法恒 False，跳过分支从未生效
+            if h.lower() in ("#fff", "#ffffff"):
                 skipped.append(f"{rel}:{i}: 跳过（#fff 非 color 用法，留给 U2 语义判断）")
                 return h
             if h.lower() not in HEX_MAP:
@@ -149,9 +150,13 @@ def migrate_file(path: Path) -> None:
             if v not in RADIUS_MAP:
                 skipped.append(f"{rel}:{i}: 跳过（圆角无对应阶梯/异形值 {v}）")
                 return m.group(0)
-            token, ladder_val = RADIUS_MAP[v]
-            if LADDER_VALUES[token] != ladder_val:
-                raise AssertionError(f"阶梯值断言失败 {rel}:{i} {v} → {token}")
+            token = RADIUS_MAP[v][0]
+            # R40：真断言——替换后的 var() 实际渲染值（token 定义值）必须等于原文值，
+            # 非等值替换（如 14px → --paper-r-xl/16px）是视觉 bug，必须人眼复核确认。
+            # 原写法 LADDER_VALUES[token] != ladder_val 同源比较永真，断言空转。
+            assert LADDER_VALUES[token] == v, (
+                f"圆角非等值替换需人眼复核 {rel}:{i} {v} → --{token}（定义 {LADDER_VALUES[token]}）"
+            )
             if not has_v4:
                 skipped.append(f"{rel}:{i}: 跳过（文件无 v4 token 引用，继承链未证）")
                 return m.group(0)
