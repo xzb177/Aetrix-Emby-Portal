@@ -416,7 +416,7 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
     </SectionCard>
 
     <!-- 下载与设备：这批配置键的唯一写入口（系统设置页只读回显） -->
-    <SectionCard title="下载与设备" :icon="Download" description="下载与设备风控的唯一写入口；「系统设置 → 下载与设备风控」只读回显。">
+    <SectionCard title="下载与设备" :icon="Download" description="下载与设备风控的唯一配置入口，在本页直接修改并保存。">
       <el-alert
         v-if="opsError"
         type="error"
