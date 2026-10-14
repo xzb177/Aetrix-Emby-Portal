@@ -275,7 +275,8 @@ html[data-theme='light'] {
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 2px;
-  margin-bottom: 4px;
+  /* h2 元素自带 UA 默认 margin，显式归零，只保留下方间距 */
+  margin: 0 0 4px;
 }
 .v4-sec-title::after {
   content: "";

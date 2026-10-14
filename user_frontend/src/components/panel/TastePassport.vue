@@ -53,8 +53,9 @@ const props = defineProps<{
 /** R48A-10：重试事件，父组件接上后触发重载 */
 const emit = defineEmits<{ (e: 'retry'): void }>()
 
-/** 整表没拿到（含空对象）：诚实文案（口径与 CollectorView 一致），不画假章 */
-const rawMissing = computed(() => !props.raw || Object.keys(props.raw).length === 0)
+/** 只有 raw 为 null/undefined（整表没拿到）才算缺失；
+ *  合法空对象 {} 表示零集章用户，正常渲染空护照（已集 0/12），口径与 CollectorView 一致 */
+const rawMissing = computed(() => props.raw == null)
 
 const tastes = computed(() =>
   TASTE_ORDER.map((o) => {

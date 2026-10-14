@@ -57,7 +57,7 @@
         ref="checkinBtn"
         type="button"
         class="checkin-btn"
-        :disabled="!(statusError && !status) && (!canCheckin || checking)"
+        :disabled="(!(statusError && !status) && (!canCheckin || checking)) || statusLoading"
         @click="onMainBtnClick"
       >
         <span v-if="checkinBtnIcon" aria-hidden="true">{{ checkinBtnIcon }}</span>{{ checkinBtnText }}
@@ -156,15 +156,18 @@ async function load() {
 
     // R48A-4：流水失败只降级，不清空旧 signedDays（区分"成功返回空"与"请求失败"）
     let log: Awaited<ReturnType<typeof pointsApi.log>> | null = null
+    let logFailed = false
     try {
       log = await pointsApi.log({ limit: 100, type_filter: 'checkin' })
     } catch (e) {
+      logFailed = true
       console.error('[checkin] 报到流水加载失败，已保留旧数据', e)
     }
     if (seq !== loadSeq) return
 
     status.value = st
-    statusStale.value = false
+    // 流水没拿到时日历可能缺红章：复用「数据可能过期」提示，不再无声
+    statusStale.value = logFailed
     if (log) {
       const days = new Set<number>()
       for (const l of log.logs) {
@@ -230,7 +233,7 @@ async function doCheckin() {
   }
 }
 
-let flyTimer = 0
+let flyTimers = new Set<number>()
 
 function flyEnergy(text: string, fromEl?: HTMLElement | null) {
   // 减少动态偏好：跳过飞行动画
@@ -247,8 +250,12 @@ function flyEnergy(text: string, fromEl?: HTMLElement | null) {
     fly.style.top = '55%'
   }
   document.body.appendChild(fly)
-  // R48A-46：记下定时器 id，卸载时清理
-  flyTimer = window.setTimeout(() => fly.remove(), 1300)
+  // R48A-46：每次触发独立记 id，回调里自清，避免早先的节点残留
+  const id = window.setTimeout(() => {
+    fly.remove()
+    flyTimers.delete(id)
+  }, 1300)
+  flyTimers.add(id)
 }
 
 /** 跨午夜日期刷新：每分钟核对一次，翻天了就更新今天并重载 */
@@ -267,7 +274,10 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.clearInterval(dateTimer)
-  window.clearTimeout(flyTimer)
+  for (const id of flyTimers) window.clearTimeout(id)
+  flyTimers.clear()
+  // 兜底：清掉已挂载但定时器尚未触发的飞字节点
+  document.querySelectorAll('.energy-fly').forEach((el) => el.remove())
 })
 </script>
 
@@ -309,6 +319,8 @@ onUnmounted(() => {
 .day .n { font-weight: 700; font-size: 12px; }
 .day.done {
   /* R48：原值 #F1F4EC，改用主题变量拼出近似纸绿色 */
+  /* 旧 WebKit 不识别 color-mix，先给纯色回退，保证已报到格仍有底色 */
+  background: var(--paper-card);
   background: color-mix(in srgb, var(--green) 8%, var(--paper-card));
   border-color: var(--green);
 }

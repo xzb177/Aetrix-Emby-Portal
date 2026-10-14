@@ -141,6 +141,24 @@ class TestWritePhaseZombieGuard:
         assert calls == [it.id]
         assert _read_status(it.id) == "done"
 
+    def test_batch_phase3_zombie_skips_write(self, db, monkeypatch):
+        """批量路径 Phase 3 的迟到写库同样不许覆盖 B 的 done。"""
+        item_id, snap_a = _zombie_stage(db)
+        calls = []
+        # Phase 1 走 pre 直出 ok、tmdb_ctx=None：跳过 Phase 2，直达 Phase 3 写库点
+        monkeypatch.setattr(
+            enrich_worker, "_enrich_fetch_pre",
+            lambda snapshot, holder=None, inherit_parent=None: ({"ok": True}, None),
+        )
+        monkeypatch.setattr(
+            enrich_worker, "_enrich_apply",
+            lambda d, fresh, fetched: calls.append(fresh.id),
+        )
+        db.rollback()
+        enrich_worker._process_batch(db, [snap_a])
+        assert calls == [], "批量 Phase 3 僵尸写库必须被拦下"
+        assert _read_status(item_id) == "done"
+
 
 class TestSilentFailureLogging:
     """R4-3：记失败/重排队自身异常必须打日志"""
