@@ -3590,8 +3590,17 @@ SCAN_STATUS_PARTIAL = "partial"   # 有来源读不到：本轮已跳过清理
 SCAN_STATUS_FAILED = "failed"
 
 # 谁触发的扫描（写进流水：回答「半夜三点是谁在扫」）：
-# manual = 面板按钮 · client = Emby 客户端刷新 · node = 归属节点 · repair = 面板修复队列
-SCAN_TRIGGERS = ("manual", "client", "node", "repair")
+# manual = 面板按钮/一键扫描 · client = Emby 客户端刷新 · node = 归属节点转发 ·
+# repair = 面板修复端点 · auto = 定时扫描守护 · fs-event = 文件系统监听 ·
+# drive-changes = Drive 变更守护 · chase-new = 追新守护 · strm-gen = 生成器收尾触发 ·
+# rescrape = 面板重刮任务（api/admin_scrape.py）。
+# 注意：新增触发值必须同步加到这个元组里——2026-10-14 的 enrich 大翻转事故里，
+# chase-new/drive-changes/strm-gen 等 6 个值因为不在白名单里被 normalize 成 manual，
+# 14 天 222 个 run 全标 manual，复盘时误读为"有人在点扫描"。
+SCAN_TRIGGERS = (
+    "manual", "client", "node", "repair",
+    "auto", "fs-event", "drive-changes", "chase-new", "strm-gen", "rescrape",
+)
 
 # 每个媒体库保留多少轮扫描流水（0 = 不记流水）。一轮一行，超过就按库回收最旧的行——
 # 量很小，但没人清就会随「建库→删库」和长期运行一直涨。
@@ -3610,7 +3619,11 @@ SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scr
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
-    """把触发方收敛到枚举内（未知值当作 manual，不因为调用方写错就丢记录）"""
+    """把触发方收敛到枚举内。
+
+    已知触发值（SCAN_TRIGGERS）原样保留落库；未知值当作 manual——
+    调用方写错触发名也不能因此丢一条扫描流水（原设计意图，保留）。
+    """
     value = (trigger or "").strip().lower()
     return value if value in SCAN_TRIGGERS else "manual"
 
@@ -3971,7 +3984,7 @@ def _maybe_alert_enrich_flip(db: Session, library: emby_models.Library,
         from backend.emby_server import enrich_flip_monitor as _fm
         if not _fm.should_alert(flip_count):
             return
-        # 触发源：从扫描流水取（manual/client/node/repair），取不到就记 scan
+        # 触发源：从扫描流水取（见 SCAN_TRIGGERS），取不到就记 scan
         trigger = "scan"
         if run_id:
             try:
