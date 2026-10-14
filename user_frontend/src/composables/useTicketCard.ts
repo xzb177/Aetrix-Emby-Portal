@@ -1,9 +1,65 @@
 import { ref, computed } from 'vue'
 import { useUserStore } from '@/stores/user'
-import { homeApi, type HomeSummary } from '@/api/economy'
+import { homeApi, type HomeSummary, vitalityApi, type VitalityStatus } from '@/api/economy'
 import { isExpiringSoon, type MySubscription, type WatchStats } from '@/api'
 import { Crown, Zap, Clapperboard } from 'lucide-vue-next'
-import type { AssetCard } from '@/components/panel/TicketCard.vue'
+
+export interface MemberCardInfo {
+  value: string
+  unit: string
+  progress: number | null
+  planName: string
+  expiryDate: string
+  desc: string
+  badge: string | null
+  hot: boolean
+  expiringSoon: boolean
+  footer: string
+  to: string
+  state: 'active' | 'expiring' | 'free_realm' | 'unsubscribed'
+}
+
+export interface EnergyCardInfo {
+  balance: string
+  vitality: number | null
+  vitalityMax: number | null
+  vitalityText: string
+  vitalityPct: number
+  isVitalityLow: boolean
+  hasVitality: boolean
+  badge: string | null
+  hot: boolean
+  checkinEnabled: boolean
+  checkedToday: boolean
+  streak: number | null
+  cardTo: string
+  buttonText: string
+  buttonTo: string
+}
+
+export interface WatchStripInfo {
+  watchValue: string
+  watchUnit: string
+  watchTime: string
+  totalPlays: string
+  watchedItems: string
+}
+
+export interface AssetCard {
+  key: string
+  to: string
+  icon: unknown
+  title: string
+  value: string
+  unit: string
+  progress: number | null
+  desc: string
+  note: string
+  short: string
+  footer: string
+  badge: string | null
+  hot: boolean
+}
 
 /** R28：ISO 日期 "2026-11-01" → 人话 "11月1日"；非日期原文原样返回 */
 function fmtMonthDay(isoDate: string): string {
@@ -13,12 +69,12 @@ function fmtMonthDay(isoDate: string): string {
 }
 
 /**
- * 电影票卡数据（原 HomeView.vue 票根卡逻辑，HomeView 删除后迁至此处）
+ * 首页两张卡（会员卡 + 能量卡）与一条观影数据小条的数据逻辑
  *
- * 两行布局：第一行能量 + 会员并排（能量 / 会员），第二行票根行里带一行观影小字。
- * 数据源是首页聚合接口 /api/user/home/summary。
- * 快照沿用 'aetrix:home-summary:v1'（与旧首页同一份），老用户切到发现页后
- * 首屏直接用缓存渲染，不闪骨架。
+ * 数据源：
+ * - 首页聚合接口 /api/user/home/summary（能量 / 报到 / 会员 / 观影统计）
+ * - 体力接口 /api/user/economy/vitality（vitalityApi.status()，失败容错占位）
+ * 快照沿用 'aetrix:home-summary:v1'，回访用户首屏直接用缓存渲染，不闪骨架。
  */
 export function useTicketCard() {
   const userStore = useUserStore()
@@ -27,6 +83,7 @@ export function useTicketCard() {
   const loadError = ref(false)
   const subscriptions = ref<MySubscription[]>([])
   const stats = ref<WatchStats | null>(null)
+  const vitalityStatus = ref<VitalityStatus | null>(null)
 
   // 经济速览（账号速览条数据）
   const quickStats = ref({
@@ -66,11 +123,131 @@ export function useTicketCard() {
     return Math.max(1, Math.min(100, Math.round((used / total) * 100)))
   })
 
-  // 票根卡的三格：能量 / 会员 / 观影数据
-  const assetCards = computed((): AssetCard[] => {
-    const st = stats.value
+  // 1. 会员卡结构化数据
+  const memberCard = computed((): MemberCardInfo => {
+    if (isMember.value && activeSub.value) {
+      const sub = activeSub.value
+      const expiry = sub.end_date?.slice(0, 10) || ''
+      const expiryHuman = expiry ? fmtMonthDay(expiry) : ''
+      return {
+        value: String(sub.days_left),
+        unit: '天',
+        progress: memberProgress.value,
+        planName: sub.plan_name,
+        expiryDate: expiryHuman,
+        desc: `${sub.plan_name}${expiryHuman ? ` · ${expiryHuman}到期` : ''}`,
+        badge: expiringSoon.value ? '临期' : '生效中',
+        hot: expiringSoon.value,
+        expiringSoon: expiringSoon.value,
+        footer: '续费',
+        to: '/store',
+        state: expiringSoon.value ? 'expiring' : 'active',
+      }
+    }
 
-    // 观影数据的大数字：≥1 小时按小时、不足 1 小时按分钟（别让新用户一上来就看到「0」）
+    if (isFreeRealm.value) {
+      return {
+        value: '免费',
+        unit: '',
+        progress: null,
+        planName: '',
+        expiryDate: '',
+        desc: userStore.realmNote || '公益服开放中，无需订阅即可观看全库内容',
+        badge: '公益服',
+        hot: false,
+        expiringSoon: false,
+        footer: '查看套餐',
+        to: '/store',
+        state: 'free_realm',
+      }
+    }
+
+    return {
+      value: '未开通',
+      unit: '',
+      progress: null,
+      planName: '',
+      expiryDate: '',
+      desc: gateMessage.value || '开通会员后可无限观看全部影视内容',
+      badge: null,
+      hot: false,
+      expiringSoon: false,
+      footer: '立即开通',
+      to: '/store',
+      state: 'unsubscribed',
+    }
+  })
+
+  // 体力数据与状态判定
+  const vitality = computed(() => vitalityStatus.value?.vitality ?? null)
+  const vitalityMax = computed(() => {
+    const m = vitalityStatus.value?.max
+    return typeof m === 'number' && m > 0 ? m : null
+  })
+  const isVitalityLow = computed(() => {
+    if (!vitalityStatus.value) return false
+    const v = vitalityStatus.value.vitality
+    const threshold = vitalityStatus.value.limit_threshold
+    return typeof threshold === 'number' && v <= threshold
+  })
+  const vitalityPct = computed(() => {
+    const v = vitality.value
+    const m = vitalityMax.value
+    if (v === null || m === null || m <= 0) return 0
+    return Math.min(100, Math.max(0, Math.round((v / m) * 100)))
+  })
+  const vitalityText = computed(() => {
+    if (vitality.value !== null && vitalityMax.value !== null) {
+      return `${vitality.value}/${vitalityMax.value}`
+    }
+    if (vitality.value !== null) {
+      return String(vitality.value)
+    }
+    return '—'
+  })
+
+  // 2. 能量卡结构化数据
+  const energyCard = computed((): EnergyCardInfo => {
+    const qs = quickStats.value
+    const balanceStr = qs.balance !== null ? qs.balance.toLocaleString() : '—'
+
+    let badge: string | null = null
+    let hot = false
+    if (qs.checkinEnabled) {
+      if (!qs.checkedToday) {
+        badge = '今日未报到'
+        hot = true
+      } else if (qs.streak && qs.streak > 0) {
+        badge = `连签 ${qs.streak} 天`
+        hot = false
+      } else {
+        badge = '今日已报到'
+        hot = false
+      }
+    }
+
+    return {
+      balance: balanceStr,
+      vitality: vitality.value,
+      vitalityMax: vitalityMax.value,
+      vitalityText: vitalityText.value,
+      vitalityPct: vitalityPct.value,
+      isVitalityLow: isVitalityLow.value,
+      hasVitality: vitalityStatus.value !== null,
+      badge,
+      hot,
+      checkinEnabled: qs.checkinEnabled,
+      checkedToday: qs.checkedToday,
+      streak: qs.streak,
+      cardTo: '/game/ledger',
+      buttonText: '去补给站',
+      buttonTo: '/shop',
+    }
+  })
+
+  // 3. 观影数据小条结构化数据
+  const watchStrip = computed((): WatchStripInfo => {
+    const st = stats.value
     let watchValue = '—'
     let watchUnit = ''
     if (st && st.total_seconds > 0) {
@@ -83,87 +260,70 @@ export function useTicketCard() {
         watchUnit = '分钟'
       }
     }
+    const watchTime = watchValue !== '—' ? `${watchValue}${watchUnit}` : '—'
+    const totalPlays = st && typeof st.total_plays === 'number' ? String(st.total_plays) : '—'
+    const watchedItems = st && typeof st.watched_items === 'number' ? String(st.watched_items) : '—'
 
-    const memberCard = isMember.value && activeSub.value
-      ? {
-          value: String(activeSub.value.days_left),
-          unit: '天',
-          progress: memberProgress.value,
-          desc: `${activeSub.value.plan_name} · ${fmtMonthDay(activeSub.value.end_date?.slice(0, 10) || '')}到期`,
-          note: expiringSoon.value ? '续费后新时长在到期日之后叠加' : '会员权益全库通用',
-          short: expiringSoon.value ? '即将到期' : '',
-          footer: '续费',
-          badge: expiringSoon.value ? '临期' : '生效中',
-          hot: expiringSoon.value,
-        }
-      : isFreeRealm.value
-        ? {
-            value: '免费',
-            unit: '',
-            progress: null,
-            desc: userStore.realmNote || '公益服开放中，无需订阅即可观看全库内容',
-            note: '本服不需要会员',
-            short: '公益服',
-            footer: '查看套餐',
-            badge: null,
-            hot: false,
-          }
-        : {
-            value: '未开通',
-            unit: '',
-            progress: null,
-            desc: gateMessage.value || '开通会员后可无限观看全部影视内容',
-            note: '开通后解锁全库',
-            short: '未开通',
-            footer: '立即开通',
-            badge: null,
-            hot: false,
-          }
+    return {
+      watchValue,
+      watchUnit,
+      watchTime,
+      totalPlays,
+      watchedItems,
+    }
+  })
 
+  // 兼容老调用方（assetCards）
+  const assetCards = computed((): AssetCard[] => {
+    const mc = memberCard.value
+    const ec = energyCard.value
+    const ws = watchStrip.value
     return [
       {
         key: 'points',
-        to: '/game/ledger',
+        to: ec.cardTo,
         icon: Zap,
         title: '能量',
-        value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
+        value: ec.balance,
         unit: '',
         progress: null,
-        desc: quickStats.value.checkinEnabled ? '报到、邀请与核销都能攒能量' : '邀请与核销都能攒能量',
-        note: !quickStats.value.checkinEnabled
+        desc: ec.checkinEnabled ? '报到、邀请与核销都能攒能量' : '邀请与核销都能攒能量',
+        note: !ec.checkinEnabled
           ? ''
-          : quickStats.value.checkedToday
-            ? (quickStats.value.streak ? `今日已报到 · 连续 ${quickStats.value.streak} 天` : '今日已报到 · 明天再来')
+          : ec.checkedToday
+            ? (ec.streak ? `今日已报到 · 连续 ${ec.streak} 天` : '今日已报到 · 明天再来')
             : '今天还没报到',
-        // 窄屏票面只留一行 ≤6 字的状态（长说明在宽屏才显示）
-        short: !quickStats.value.checkinEnabled
-          ? ''
-          : quickStats.value.checkedToday
-            ? (quickStats.value.streak ? `连报 ${quickStats.value.streak} 天` : '今日已报到')
-            : '今日未报到',
+        short: ec.badge || '',
         footer: '查看明细',
-        badge: !quickStats.value.checkinEnabled ? null : (quickStats.value.checkedToday ? null : '今日未报到'),
-        // 未签时徽章走警示色（hot），与会员临期同一套提醒语言
-        hot: quickStats.value.checkinEnabled && !quickStats.value.checkedToday,
+        badge: ec.badge,
+        hot: ec.hot,
       },
       {
         key: 'member',
-        to: '/store',
+        to: mc.to,
         icon: Crown,
         title: '会员',
-        ...memberCard,
+        value: mc.value,
+        unit: mc.unit,
+        progress: mc.progress,
+        desc: mc.desc,
+        note: mc.expiringSoon ? '续费后新时长在到期日之后叠加' : '会员权益全库通用',
+        short: mc.expiringSoon ? '即将到期' : mc.badge || '',
+        footer: mc.footer,
+        badge: mc.badge,
+        hot: mc.hot,
       },
       {
         key: 'watch',
         to: '',
         icon: Clapperboard,
         title: '观影数据',
-        value: watchValue,
-        unit: watchUnit,
+        value: ws.watchValue,
+        unit: ws.watchUnit,
         progress: null,
-        desc: `播放 ${st ? st.total_plays : '—'} 次 · 看过 ${st ? st.watched_items : '—'} 部`,
+        desc: `播放 ${ws.totalPlays} 次 · 看过 ${ws.watchedItems} 部`,
         note: '在 Infuse 等客户端继续观影',
-        short: st ? `播放 ${st.total_plays} 次` : '',
+        short: ws.totalPlays !== '—' ? `播放 ${ws.totalPlays} 次` : '',
         footer: '',
         badge: null,
         hot: false,
@@ -171,9 +331,8 @@ export function useTicketCard() {
     ]
   })
 
-  const memberStat = computed(() => assetCards.value.find((c) => c.key === 'member') || null)
-  const memberFooter = computed(() => memberStat.value?.footer || '查看套餐')
-  const planName = computed(() => activeSub.value?.plan_name || '')
+  const memberFooter = computed(() => memberCard.value.footer)
+  const planName = computed(() => memberCard.value.planName)
 
   // ---- 数据快照：变化以天为单位，快照让回访用户首屏 0 骨架 ----
   const SNAPSHOT_KEY = 'aetrix:home-summary:v1'
@@ -230,10 +389,20 @@ export function useTicketCard() {
       loading.value = true
     }
     try {
-      // 能量 / 报到 / 会员 / 观影统计一次取回
-      const data = await homeApi.summary()
+      // 能量 / 报到 / 会员 / 观影统计一次取回；体力接口并发拉取，失败静默降级不阻断整卡渲染
+      const [summaryRes, vitalityRes] = await Promise.all([
+        homeApi.summary(),
+        vitalityApi.status().catch((err): null => {
+          console.warn('[useTicketCard] vitality load failed', err)
+          return null
+        }),
+      ])
+      const data = summaryRes
       const memberFailed = data.subscriptions === null
       applySummary(data)
+      if (vitalityRes) {
+        vitalityStatus.value = vitalityRes
+      }
       if (Array.isArray(data.subscriptions)) subscriptions.value = data.subscriptions
       loadError.value = memberFailed
       if (userId != null) writeSnapshot(userId, data)
@@ -250,10 +419,14 @@ export function useTicketCard() {
   return {
     loading,
     loadError,
+    memberCard,
+    energyCard,
+    watchStrip,
+    load,
+    hasLoaded,
+    // 兼容原字段
     assetCards,
     memberFooter,
     planName,
-    load,
-    hasLoaded,
   }
 }

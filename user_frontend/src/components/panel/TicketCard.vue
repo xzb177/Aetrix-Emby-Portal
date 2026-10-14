@@ -1,336 +1,214 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import type { Component } from 'vue'
-import './ticket-card.css' // 纸色 token：独立样式表，供 CI 令牌契约检查识别
-
-export interface AssetCard {
-  key: string
-  to: string
-  icon: Component
-  title: string
-  value: string
-  unit: string
-  progress: number | null
-  desc: string
-  note: string
-  short: string
-  footer: string
-  badge: string | null
-  hot: boolean
-}
+import { Crown, Zap, Clapperboard } from 'lucide-vue-next'
+import type { MemberCardInfo, EnergyCardInfo, WatchStripInfo, AssetCard } from '@/composables/useTicketCard'
+import './ticket-card.css'
 
 const props = defineProps<{
   loading: boolean
-  assetCards: AssetCard[]
-  memberFooter: string
-  planName: string
+  memberCard?: MemberCardInfo
+  energyCard?: EnergyCardInfo
+  watchStrip?: WatchStripInfo
+  // 兼容老调用方字段
+  assetCards?: AssetCard[]
+  memberFooter?: string
+  planName?: string
 }>()
 
-// 两行布局：第一行积分 + 订阅并排（观影数据不单独占一段），
-// 观影数据缩成票根行中间的一行小字
-const mainCards = computed(() => props.assetCards.filter((c) => c.key !== 'watch'))
-const watchCard = computed(() => props.assetCards.find((c) => c.key === 'watch') || null)
-const watchLine = computed(() => {
-  const w = watchCard.value
-  if (!w || w.value === '—') return w?.short || ''
-  return `${w.value}${w.unit} · ${w.short}`
-})
+const defaultMemberCard: MemberCardInfo = {
+  value: '—',
+  unit: '',
+  progress: null,
+  planName: '',
+  expiryDate: '',
+  desc: '—',
+  badge: null,
+  hot: false,
+  expiringSoon: false,
+  footer: '查看套餐',
+  to: '/store',
+  state: 'unsubscribed',
+}
 
-/** R41：进度钳位到 0~100——后端脏数据（负数/超 100）不让进度条翻出轨道，也让读屏拿到合法值 */
-function clampProgress(p: number): number {
+const defaultEnergyCard: EnergyCardInfo = {
+  balance: '—',
+  vitality: null,
+  vitalityMax: null,
+  vitalityText: '—',
+  vitalityPct: 0,
+  isVitalityLow: false,
+  hasVitality: false,
+  badge: null,
+  hot: false,
+  checkinEnabled: true,
+  checkedToday: false,
+  streak: null,
+  cardTo: '/game/ledger',
+  buttonText: '去补给站',
+  buttonTo: '/shop',
+}
+
+const defaultWatchStrip: WatchStripInfo = {
+  watchValue: '—',
+  watchUnit: '',
+  watchTime: '—',
+  totalPlays: '—',
+  watchedItems: '—',
+}
+
+const mc = computed(() => props.memberCard ?? defaultMemberCard)
+const ec = computed(() => props.energyCard ?? defaultEnergyCard)
+const ws = computed(() => props.watchStrip ?? defaultWatchStrip)
+
+/** 进度钳位到 0~100 */
+function clampProgress(p: number | null): number {
+  if (p === null || !Number.isFinite(p)) return 0
   return Math.min(100, Math.max(0, p))
 }
 </script>
 
 <template>
-  <!-- v4 纸片风电影票：两行布局（积分|订阅 / 票根行），纸面 + 墨线 + 打孔虚线 + ADMIT ONE 红印章 -->
-  <section v-if="loading" class="ticket" aria-hidden="true">
-    <div class="ticket-main">
-      <div v-for="i in 2" :key="i" class="ticket-stat">
-        <span class="tp-skeleton sk-stat-label"></span>
-        <span class="tp-skeleton sk-stat-value"></span>
-        <span class="tp-skeleton sk-stat-desc"></span>
+  <!-- 加载中：纸色骨架屏 -->
+  <section v-if="loading" class="hc-wrap" aria-hidden="true">
+    <!-- 会员卡骨架 -->
+    <div class="hc-card hc-sk-card">
+      <div class="hc-header">
+        <span class="v4-skeleton hc-sk-title"></span>
+        <span class="v4-skeleton hc-sk-badge"></span>
+      </div>
+      <div class="hc-main-row">
+        <span class="v4-skeleton hc-sk-val"></span>
+        <span class="v4-skeleton hc-sk-btn"></span>
+      </div>
+      <span class="v4-skeleton hc-sk-progress"></span>
+      <span class="v4-skeleton hc-sk-desc"></span>
+    </div>
+
+    <!-- 能量卡骨架 -->
+    <div class="hc-card hc-sk-card">
+      <div class="hc-header">
+        <span class="v4-skeleton hc-sk-title"></span>
+        <span class="v4-skeleton hc-sk-badge"></span>
+      </div>
+      <div class="hc-main-row">
+        <span class="v4-skeleton hc-sk-val"></span>
+        <span class="v4-skeleton hc-sk-btn"></span>
+      </div>
+      <div class="hc-vitality">
+        <span class="v4-skeleton hc-sk-vit-head"></span>
+        <span class="v4-skeleton hc-sk-progress"></span>
       </div>
     </div>
-    <div class="ticket-stub">
-      <span class="tp-skeleton sk-stub-stamp"></span>
-      <span class="tp-skeleton sk-stub-watch"></span>
-      <span class="tp-skeleton sk-stub-btn"></span>
+
+    <!-- 观影数据小条骨架 -->
+    <div class="hc-watch-strip">
+      <span class="v4-skeleton hc-sk-watch-line"></span>
     </div>
   </section>
-  <section v-else class="ticket" aria-label="我的票卡">
-    <div class="ticket-main">
-      <component
-        :is="c.to ? RouterLink : 'div'"
-        v-for="c in mainCards"
-        :key="c.key"
-        :to="c.to || undefined"
-        class="ticket-stat"
-        :class="{ 'is-static': !c.to }"
-      >
-        <span class="stat-label">
-          <component :is="c.icon" :size="14" class="stat-icon" />
-          {{ c.title }}
-          <span v-if="c.badge" class="stat-badge" :class="{ hot: c.hot }">{{ c.badge }}</span>
-        </span>
-        <span class="stat-value-row">
-          <span class="stat-value">{{ c.value }}</span>
-          <span v-if="c.unit" class="stat-unit">{{ c.unit }}</span>
-        </span>
-        <!-- 进度条直接挂在订阅数字下面 -->
+
+  <!-- 真实内容：两张独立卡片 + 观影数据小条 -->
+  <section v-else class="hc-wrap" aria-label="首页概览卡片">
+    <!-- 1. 会员卡 -->
+    <div class="hc-card" :class="{ 'is-warning': mc.expiringSoon }">
+      <div class="hc-header">
+        <div class="hc-title">
+          <Crown :size="15" class="hc-title-icon" />
+          <span>会员</span>
+        </div>
         <span
-          v-if="c.progress !== null"
-          class="stat-progress"
-          role="progressbar"
-          :aria-valuenow="clampProgress(c.progress)"
-          :aria-label="`进度 ${clampProgress(c.progress)}%`"
-          :title="`套餐周期已过 ${clampProgress(c.progress)}%`"
+          v-if="mc.badge"
+          class="hc-badge"
+          :class="{ 'is-warning': mc.expiringSoon }"
         >
-          <!-- 进度条用 scaleX 而不是改 width：合成器线程就能跑，不触发布局 -->
-          <span class="stat-progress-fill" :style="{ transform: `scaleX(${clampProgress(c.progress) / 100})` }"></span>
+          {{ mc.badge }}
         </span>
-        <span v-else-if="c.short" class="stat-short">{{ c.short }}</span>
-        <!-- 订阅：套餐名 + 到期日一行小字 -->
-        <span v-if="c.key === 'member'" class="stat-desc">{{ c.desc }}</span>
-      </component>
+      </div>
+
+      <div class="hc-main-row">
+        <div class="hc-val-group">
+          <span class="hc-val">{{ mc.value }}</span>
+          <span v-if="mc.unit" class="hc-unit">{{ mc.unit }}</span>
+        </div>
+        <RouterLink :to="mc.to" class="hc-btn">
+          {{ mc.footer }}
+        </RouterLink>
+      </div>
+
+      <!-- 会员周期进度条（仅会员有效且有进度时展示） -->
+      <div
+        v-if="mc.progress !== null"
+        class="hc-progress-track"
+        role="progressbar"
+        :aria-valuenow="clampProgress(mc.progress)"
+        :aria-label="`会员周期已过 ${clampProgress(mc.progress)}%`"
+      >
+        <span
+          class="hc-progress-bar"
+          :class="{ 'is-warning': mc.expiringSoon }"
+          :style="{ transform: `scaleX(${clampProgress(mc.progress) / 100})` }"
+        ></span>
+      </div>
+
+      <!-- 套餐描述 / 到期日 / 公益服文案 / 未开通引导 -->
+      <div class="hc-desc">{{ mc.desc }}</div>
     </div>
-    <!-- 票根行：顶部打孔虚线 + 左右半圆缺口；印章 / 观影小字 / 续费按钮一排 -->
-    <div class="ticket-stub">
-      <!-- R41：ADMIT ONE 是电影票的装饰印章（motif），刻意保留英文原样、不做本地化 -->
-      <span class="stub-admit" aria-hidden="true">
-        ADMIT ONE<span v-if="planName" class="stub-plan"><i> · </i>{{ planName }}</span>
+
+    <!-- 2. 能量卡 -->
+    <div class="hc-card">
+      <div class="hc-header">
+        <RouterLink :to="ec.cardTo" class="hc-title hc-title-link">
+          <Zap :size="15" class="hc-title-icon" />
+          <span>能量</span>
+        </RouterLink>
+        <span
+          v-if="ec.badge"
+          class="hc-badge"
+          :class="{ hot: ec.hot }"
+        >
+          {{ ec.badge }}
+        </span>
+      </div>
+
+      <div class="hc-main-row">
+        <RouterLink :to="ec.cardTo" class="hc-val-group hc-val-link">
+          <span class="hc-val">{{ ec.balance }}</span>
+        </RouterLink>
+        <RouterLink :to="ec.buttonTo" class="hc-btn">
+          {{ ec.buttonText }}
+        </RouterLink>
+      </div>
+
+      <!-- 体力模块：体力值 + 体力条 -->
+      <div class="hc-vitality">
+        <div class="hc-vit-meta" :class="{ 'is-low': ec.isVitalityLow }">
+          <span>体力</span>
+          <span class="hc-vit-val-wrap">
+            <span class="hc-vit-nums">{{ ec.vitalityText }}</span>
+            <span v-if="ec.isVitalityLow" class="hc-vit-warn">体力低</span>
+          </span>
+        </div>
+        <div
+          class="hc-progress-track"
+          role="progressbar"
+          :aria-valuenow="clampProgress(ec.vitalityPct)"
+          :aria-label="`体力 ${clampProgress(ec.vitalityPct)}%`"
+        >
+          <span
+            class="hc-progress-bar"
+            :class="{ 'is-warning': ec.isVitalityLow }"
+            :style="{ transform: `scaleX(${clampProgress(ec.vitalityPct) / 100})` }"
+          ></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 观影数据小条（独立虚线边框小条） -->
+    <div class="hc-watch-strip">
+      <Clapperboard :size="13" class="hc-watch-icon" />
+      <span class="hc-watch-text">
+        累计观影 <b>{{ ws.watchTime }}</b> · 播放 <b>{{ ws.totalPlays }}</b> 次 · 看过 <b>{{ ws.watchedItems }}</b> 部
       </span>
-      <span v-if="watchLine" class="stub-watch">{{ watchLine }}</span>
-      <RouterLink to="/shop" class="stub-btn">
-        {{ memberFooter }}
-      </RouterLink>
     </div>
   </section>
 </template>
-
-<style scoped>
-/* v4 纸片风电影票：token 定义在同目录 ticket-card.css（见顶部 import），
-   自包含一套纸色 token，不依赖 v4-paper.css 的变量 */
-.ticket {
-  display: flex;
-  flex-direction: column;
-  background: var(--tp-paper);
-  border: 1.5px solid var(--tp-ink);
-  border-radius: var(--paper-r-lg, 12px);
-  box-shadow: 3px 3px 0 rgba(42, 38, 32, 0.12);
-  overflow: hidden;
-  color: var(--tp-ink);
-}
-
-/* 第一行：积分 | 订阅 */
-.ticket-main {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-}
-.ticket-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px 16px 12px;
-  min-width: 0;
-  color: inherit;
-  text-decoration: none;
-}
-.ticket-stat + .ticket-stat {
-  border-left: 1px dashed var(--tp-line);
-}
-.ticket-stat.is-static { cursor: default; }
-a.ticket-stat:active { background: var(--tp-paper2); }
-.stat-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--tp-ink2);
-  letter-spacing: 1px;
-  white-space: nowrap;
-}
-.stat-icon { flex-shrink: 0; }
-.stat-badge {
-  margin-left: auto;
-  padding: 1px 8px;
-  border-radius: var(--paper-r-full, 999px);
-  font-size: 11px;
-  font-weight: 700;
-  background: var(--tp-paper2);
-  color: var(--tp-ink2);
-  border: 1px solid var(--tp-line);
-  white-space: nowrap;
-}
-.stat-badge.hot {
-  background: rgba(217, 72, 43, 0.12);
-  color: var(--tp-red);
-  border-color: var(--tp-red);
-}
-.stat-value-row { display: flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; }
-.stat-value {
-  font-size: 26px; font-weight: 800; line-height: 1.1; color: var(--tp-ink);
-  /* 长数字防溢出：375px 两列下超长则省略 */
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
-}
-.stat-unit { font-size: 13px; color: var(--tp-ink2); }
-.stat-short { font-size: 12px; font-weight: 700; color: var(--tp-ink2); white-space: nowrap; }
-.stat-progress {
-  height: 6px;
-  background: var(--tp-paper2);
-  border: 1px solid var(--tp-line);
-  border-radius: 3px;
-  overflow: hidden;
-  margin-top: 2px;
-}
-.stat-progress-fill {
-  display: block;
-  height: 100%;
-  width: 100%;
-  background: var(--tp-gold);
-  transform-origin: left;
-}
-.stat-desc {
-  font-size: 11px;
-  color: var(--tp-ink2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 第二行票根：顶部一条打孔虚线，左右各一个半圆缺口（填充页底色 --paper）。
-   缺口圆用页面底色填充——v4 纸色页底为 var(--paper, #F6F1E7)（.v4-scope 的 --paper） */
-.ticket-stub {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-top: 2px dashed var(--tp-line);
-  background: var(--tp-paper2);
-}
-.ticket-stub::before,
-.ticket-stub::after {
-  content: '';
-  position: absolute;
-  top: -12px;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--paper-r-full, 50%);
-  background: var(--paper, #F6F1E7);
-  border: 1.5px solid var(--tp-ink);
-}
-.ticket-stub::before {
-  left: -13px;
-  clip-path: inset(0 0 0 50%);
-}
-.ticket-stub::after {
-  right: -13px;
-  clip-path: inset(0 50% 0 0);
-}
-/* ADMIT ONE 做成红色印章：描边 + 微转 + 宽松字距 */
-.stub-admit {
-  display: inline-flex;
-  align-items: baseline;
-  flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.18em;
-  color: var(--tp-red);
-  border: 1.5px solid var(--tp-red);
-  border-radius: 4px;
-  padding: 4px 9px 4px 11px;
-  transform: rotate(-2deg);
-  white-space: nowrap;
-  background: rgba(217, 72, 43, 0.05);
-}
-.stub-plan {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 4.5rem;
-  letter-spacing: 0.1em;
-  font-size: 11px;
-  color: var(--tp-ink2);
-}
-.stub-plan i { font-style: normal; }
-/* 观影数据：一行小字，居中 */
-.stub-watch {
-  flex: 1;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--tp-ink2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-align: center;
-}
-/* 票根按钮：v4 墨色纸片钮 */
-.stub-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  min-width: 5rem;
-  min-height: 44px;
-  padding: 0 1.25rem;
-  background: var(--tp-ink);
-  color: var(--paper, #F6F1E7);
-  font-size: 13px;
-  font-weight: 700;
-  border-radius: var(--paper-r-md, 10px);
-  text-decoration: none;
-  white-space: nowrap;
-  box-shadow: 2px 2px 0 rgba(42, 38, 32, 0.2);
-}
-.stub-btn:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 rgba(42, 38, 32, 0.2); }
-
-/* 骨架：纸色 shimmer
-   R41：改成 transform 方案——伪元素承载渐变条左右滑动，动画只做 translateX（合成器线程），
-   不再每帧改 background-position 触发布局/重绘。颜色与周期（1.4s）与旧版一致，视觉等价 */
-.tp-skeleton {
-  position: relative;
-  overflow: hidden;
-  border-radius: var(--paper-r-sm, 8px);
-  background: var(--tp-paper2);
-  min-height: 14px;
-}
-.tp-skeleton::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent 0%, #f7f2e6 50%, transparent 100%);
-  transform: translateX(-100%);
-  animation: tp-shimmer-slide 1.4s infinite linear;
-}
-@keyframes tp-shimmer-slide {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(100%); }
-}
-.sk-stat-label { display: block; width: 4rem; height: 14px; }
-.sk-stat-value { display: block; width: 5.5rem; height: 34px; margin: 0.25rem 0; }
-.sk-stat-desc { display: block; width: 80%; height: 13px; }
-.sk-stub-stamp { display: block; width: 7rem; height: 26px; flex-shrink: 0; }
-.sk-stub-watch { display: block; flex: 1; height: 13px; }
-.sk-stub-btn { display: block; width: 5rem; height: 44px; flex-shrink: 0; }
-
-@media (prefers-reduced-motion: reduce) {
-  /* R41：动画已搬到伪元素，这里跟到 ::after 才管用 */
-  .tp-skeleton::after { animation: none !important; }
-  .stub-admit { transform: none; }
-  .stub-btn:active { transform: none; }
-}
-
-/* 375px 窄屏：数字收紧、徽标隐藏，保证两行一行内完整显示 */
-@media (max-width: 640px) {
-  .ticket-stat { padding: 12px 14px 10px; }
-  .stat-label svg { display: none; }
-  .stat-value { font-size: 23px; }
-  .stat-badge { display: none; }
-  .stub-admit { font-size: 11px; letter-spacing: 0.12em; }
-  .stub-plan { max-width: 3.5rem; }
-  .stub-watch { font-size: 11px; }
-  .stub-btn { min-width: 4.25rem; min-height: 44px; padding: 0 0.75rem; }
-}
-</style>

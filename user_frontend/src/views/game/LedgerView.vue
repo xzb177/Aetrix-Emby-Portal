@@ -98,8 +98,9 @@ import { useToast } from '@/composables/useToast'
 const toast = useToast()
 
 /**
- * 类型元数据：income 为准判断进/出账；未知 type 兜底 income=null 走中性展示
- * （R45C-3：不渲染 +/- 号、灰色、进账/出账筛选都不收录，钱的事不许猜方向）。
+ * 类型元数据：与 WalletView.vue 的 TYPE_META 完全一致（值保持原样）。
+ * income 为准判断进/出账；未知 type 兜底 income=null 走中性展示（R45C-3：
+ * 不渲染 +/- 号、灰色、进账/出账筛选都不收录，钱的事不许猜方向）。
  */
 const TYPE_META: Record<string, { label: string; income: boolean | null }> = {
   checkin: { label: '报到', income: true },
