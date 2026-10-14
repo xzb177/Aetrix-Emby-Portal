@@ -30,6 +30,20 @@
 .hc-watch-title{font-weight:700;color:var(--paper-ink)}
 .hc-watch-data{color:var(--paper-ink-2)}
 
+/* 服务器类型小字（付费服/公益服） */
+.hc-tag{font-size:11px;font-weight:400;color:var(--paper-ink-2);margin-left:6px}
+/* 数字等宽，避免跳动 */
+.hc-val{font-variant-numeric:tabular-nums}
+
+/* 总览卡：一服一行，行与行虚线分隔（不嵌套卡片） */
+.hc-ov{padding:6px 16px}
+.hc-ov>.hc-header{padding:10px 0 4px}
+.hc-row{padding:10px 0;border-top:1px dashed var(--paper-line)}
+.hc-row>.hc-header{margin-bottom:4px}
+.hc-row .hc-title{font-size:14px}
+.hc-row-info{font-size:var(--paper-f-xs);color:var(--paper-ink-2)}
+.hc-row .hc-link{flex:none}
+
 /* 骨架屏尺寸 */
 .hc-sk-card{pointer-events:none}
 .hc-sk-title{width:4rem;height:14px}
