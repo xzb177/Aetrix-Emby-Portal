@@ -8,7 +8,7 @@
  *
  * 登录成功后自动跳转 ?redirect= 指定的受保护页面。
  */
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
@@ -154,7 +154,8 @@ async function handleRegister() {
   }
 }
 
-let restoreLoginTheme: (() => void) | null = null
+// 登录页跟随用户主题（用户决策 2026-10-14 21:14，取代 2026-10-11 的强制深色口径）：
+// 不再自己动 data-theme，路由守卫 afterEach 已按 localStorage 'aetrix-theme' 恢复用户偏好。
 
 // 海报拼贴背景：延迟到浏览器空闲时拉取，不阻塞表单首屏渲染
 const loginPosters = ref<LoginPoster[]>([])
@@ -162,21 +163,7 @@ const loginPosters = ref<LoginPoster[]>([])
 const loginPostersBaseUrl = ref('')
 
 onMounted(() => {
-  // 修复1：登录页强制深色（品牌第一屏不跟随系统，用户决策 2026-10-11）。
-  // 只动 DOM，不写 localStorage；离开时恢复进入前的主题，不影响用户偏好。
-  const htmlEl = document.documentElement
-  const hadLight = htmlEl.getAttribute('data-theme') === 'light'
-  const metaEl = document.querySelector('meta[name="theme-color"]')
-  const prevMeta = metaEl?.getAttribute('content') ?? null
-  if (hadLight) {
-    htmlEl.removeAttribute('data-theme')
-    // 深色暗房工具栏色（与 useTheme.ts applyTheme 口径一致）
-    metaEl?.setAttribute('content', '#0c0a09')
-  }
-  restoreLoginTheme = () => {
-    if (hadLight) htmlEl.setAttribute('data-theme', 'light')
-    if (metaEl && prevMeta !== null) metaEl.setAttribute('content', prevMeta)
-  }
+  // 登录页不再强制深色：跟随用户偏好（见文件顶部注释）。
 
   // 拉取注册页开关（公开接口）：按管理端配置显示/隐藏邀请码输入框、是否关闭注册
   getRegisterConfig().then((cfg) => {
@@ -205,12 +192,6 @@ onMounted(() => {
   const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback
   if (typeof ric === 'function') ric(loadPosters)
   else setTimeout(loadPosters, 800)
-})
-
-onUnmounted(() => {
-  // 恢复进入登录页前的主题（修复1 的收尾）
-  restoreLoginTheme?.()
-  restoreLoginTheme = null
 })
 </script>
 
