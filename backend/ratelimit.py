@@ -75,13 +75,26 @@ def check_rate_limit(key: str, max_events: int, window_seconds: float) -> tuple[
     return _limiter.check(key, max_events, window_seconds)
 
 
+# R4-2：TRUSTED_PROXIES 解析结果缓存——只在环境变量原始值变化时重解析。
+# _trusted_proxies() 被每个请求的 get_client_ip 调用，解析本身（逐个构建
+# ip_network）是纯开销。os.getenv 是廉价字典查找，逐请求调用无妨。
+# 缓存键用原始值：测试用 monkeypatch.setenv 逐测改值时自动失效重算，
+# 行为与不缓存完全一致。线程安全：值是原始值的纯函数，竞态最多多算一次。
+_trusted_proxies_cache = None  # (raw_env, list[ip_network])，单进程内共享
+
+
 def _trusted_proxies() -> list:
     """从环境变量 TRUSTED_PROXIES 解析可信代理列表。
 
     格式：逗号分隔的 IP 或 CIDR，如 "127.0.0.1,172.18.0.0/16"
     默认信任本地回环（127.0.0.0/8, ::1）。
     """
-    raw = os.getenv("TRUSTED_PROXIES", "").strip()
+    global _trusted_proxies_cache
+    raw_env = os.getenv("TRUSTED_PROXIES", "")
+    cached = _trusted_proxies_cache
+    if cached is not None and cached[0] == raw_env:
+        return list(cached[1])
+    raw = raw_env.strip()
     nets = []
     # 默认始终信任回环地址
     for default in ("127.0.0.0/8", "::1/128"):
@@ -103,7 +116,8 @@ def _trusted_proxies() -> list:
             except ValueError:
                 # 配置写错了就忽略，不让服务起不来
                 continue
-    return nets
+    _trusted_proxies_cache = (raw_env, nets)
+    return list(nets)
 
 
 def _is_trusted_proxy(ip: str) -> bool:
@@ -156,7 +170,11 @@ def get_client_ip(request) -> str:
     if fwd:
         hops = [part.strip() for part in fwd.split(",") if part.strip()]
         if hops:
-            return hops[-1]
+            # R4-1 修复：某些代理会写 "unknown" 等非 IP 值；不校验会被当限流键，
+            # 导致不同客户端归入同一桶。非法值直接回落到直连 IP（与 X-Real-IP
+            # 分支的回落语义一致）。
+            if is_valid_ip(hops[-1]):
+                return hops[-1]
     return direct_ip
 
 

@@ -2661,7 +2661,10 @@ def _mark_failed(db, item_id: int, attempts: int, error: str,
             outcome = "retry"
         db.commit()
         return outcome
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # R4-3：不许静默失败——记失败本身抛异常时也要留痕，否则调用方只看到
+        # "skip"，生产日志无迹可查。
+        logger.warning("补全记失败异常 id=%s: %s", item_id, exc)
         db.rollback()
         return "skip"
 
@@ -3198,7 +3201,9 @@ def _requeue_mount_unavailable(db, item_id: int, mount_id: Optional[int] = None,
         logger.info("补全跳过（存储不可用）id=%s mount=%s %ss后重试",
                     item_id, mount_id, retry_sec)
         return "mount_unavailable"
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # R4-3：同上，不许静默失败。
+        logger.warning("补全存储不可用重排异常 id=%s: %s", item_id, exc)
         db.rollback()
         return "skip"
 
@@ -3229,7 +3234,9 @@ def _requeue_douban_banned(db, item_id: int,
         db.commit()
         logger.info("补全延后（豆瓣封禁冷却）id=%s %ss后重试", item_id, wait)
         return "retry"
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # R4-3：同上，不许静默失败。
+        logger.warning("补全豆瓣封禁重排异常 id=%s: %s", item_id, exc)
         db.rollback()
         return "skip"
 
@@ -3309,6 +3316,13 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
         fresh = db.query(em.MediaItem).filter(
             em.MediaItem.id == item_id).first()
         if fresh is None:
+            db.rollback()
+            return "skip"
+        if not _claim_still_ours(fresh, snapshot.enrich_claim_token):
+            # R4-4：僵尸 worker 防护——慢 IO 期间认领已失效（janitor 回收/别人
+            # 接手），迟到的写库不许覆盖行的新状态（曾把 done 翻成 failed）。
+            # 行已是 pending，下轮抢单自然捞回。
+            logger.debug("补全写库跳过（认领已失效）id=%s", item_id)
             db.rollback()
             return "skip"
         _enrich_apply(db, fresh, fetched)
@@ -3447,6 +3461,11 @@ def _process_batch(db, batch: list) -> None:
             fresh = db.query(em.MediaItem).filter(
                 em.MediaItem.id == item_id).first()
             if fresh is None:
+                db.rollback()
+                outcome = "skip"
+            elif not _claim_still_ours(fresh, snapshot.enrich_claim_token):
+                # R4-4：同上，僵尸 worker 迟到写库不许覆盖行的新状态。
+                logger.debug("批量补全写库跳过（认领已失效）id=%s", item_id)
                 db.rollback()
                 outcome = "skip"
             else:
