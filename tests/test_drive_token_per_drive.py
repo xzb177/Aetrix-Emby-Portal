@@ -182,20 +182,3 @@ def test_strm_gen_get_token_delegates_per_drive(monkeypatch):
     assert seen == {"did": PERSONAL_KEY, "force": False}
     assert sg._get_token(SHARED_KEY, force_refresh=True) == "T-" + SHARED_KEY
     assert seen == {"did": SHARED_KEY, "force": True}
-
-
-def test_resolve_shortcuts_default_off():
-    """快捷方式开关默认关（现状=不解析）。"""
-    from backend.emby_server import strm_gen as sg
-
-    class _Q:
-        def scalar(self):
-            return None
-
-    class _DB:
-        def query(self, *a, **k):
-            raise AssertionError("no SystemConfig row")
-
-    # _db_config 吞异常回 default；无行 → default "false"
-    assert sg.resolve_shortcuts(_DB()) is False
-    assert sg.CONFIG_RESOLVE_SHORTCUTS == "strm_gen_resolve_shortcuts"

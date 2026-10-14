@@ -1,12 +1,10 @@
 """第 33 轮完美主义迭代回归测试（R33）。
 
-覆盖：
-- P1-1：flat 列举快捷方式 A↔B 成环 → 有限步终止；快捷方式多层跟随（≤4 层）+ 环检测
-- P1-2：resolve_shortcuts 开时，增量降级为全量（used_incremental_path=False）
-- P2-1/P2-2/P2-3：subtree 与 flat 对同一盘、同一开关产出相同的 .strm 集合
-  （子目录递归、别名两份、文件型快捷方式判型统一）
+覆盖（2026-10-14 08:28 快捷方式解析功能整体取消后，快捷方式相关
+P1-1/P1-2/P2-1/P2-2/P2-3/P2-5 的实现与回归测试已同步删除；列举遇到
+快捷方式条目时当普通条目处理——无视频扩展名则自然跳过）：
+- 快捷方式跳过：开关删除后，快捷方式不再展开/跟随，不产出别名路径
 - P2-4：token=null 的 rclone.conf → DriveAuthError（不是 AttributeError）
-- P2-5：_resolve_shortcut_target 401 时刷新凭据重试一次；仍失败记 warning 返回 None
 - P2-6：DB 键空 + /tmp 有值 → 读到 /tmp 的值
 - P2-7：last 为未来时间戳 → 被 clamp 为 0（不跳过）
 
@@ -82,14 +80,6 @@ class FakeDrive:
         return meta
 
 
-def _file_meta(fid, name, parents, size=100, mime=None):
-    m = {"id": fid, "name": name, "parents": list(parents),
-         "trashed": False, "size": str(size)}
-    if mime:
-        m["mimeType"] = mime
-    return m
-
-
 @pytest.fixture()
 def drive_env(monkeypatch):
     entries = []
@@ -124,14 +114,7 @@ def drive_env(monkeypatch):
     # 自环
     add(_sc("sc_self", "self", ["fld_cycA"], "fld_cycA"))
 
-    for tid, name, parents, size, mime in [
-            ("fld_mv", "电影", ["fld_mp"], 0, FOLDER_MIME),
-            ("fld_cycA", "CycA", ["fld_mp"], 0, FOLDER_MIME),
-            ("fld_cycB", "CycB", ["fld_mp"], 0, FOLDER_MIME),
-            ("f3", "m1.mkv", ["fld_mv"], 333, None)]:
-        api_map[tid] = _file_meta(tid, name, parents, size, mime)
-
-    fake = FakeDrive(entries, api_map)
+    fake = FakeDrive(entries)
     monkeypatch.setattr(sg, "_page_fetcher", lambda drive_id: _wrap_fetch(fake))
     monkeypatch.setattr(sg, "_get_token", lambda did=None, **k: "tok")
     from types import SimpleNamespace
@@ -155,213 +138,23 @@ def _bounded(gen, limit=5000):
     return list(itertools.islice(gen, limit))
 
 
-EXPECTED = {
-    # 原生路径
-    ("MoviePilot/root.mkv", "f_root", 111),
-    ("MoviePilot/剧集/国产剧/s1e1.mkv", "f1", 101),
-    ("MoviePilot/电影/m1.mkv", "f3", 333),
-    ("MoviePilot/电影/子目录/m2.mkv", "f4", 444),
-    ("MoviePilot/CycA/ca.mkv", "fca", 501),
-    ("MoviePilot/CycB/cb.mkv", "fcb", 502),
-    # 别名两份（P2-1）：快捷方式→目录，含子目录递归（P2-2）
-    ("MoviePilot/剧集/国产剧/合集/m1.mkv", "f3", 333),
-    ("MoviePilot/剧集/国产剧/合集/子目录/m2.mkv", "f4", 444),
-    # 文件型快捷方式（P2-3：快捷方式名/目标名任一带视频扩展名即产出）
-    ("MoviePilot/剧集/link", "f3", 333),
-    ("MoviePilot/剧集/link2.mkv", "f3", 333),
-    # A↔B 成环：有限展开（P1-1）
-    ("MoviePilot/CycA/toB/cb.mkv", "fcb", 502),
-    ("MoviePilot/CycA/toB/toA/ca.mkv", "fca", 501),
-    ("MoviePilot/CycB/toA/ca.mkv", "fca", 501),
-    ("MoviePilot/CycB/toA/toB/cb.mkv", "fcb", 502),
-    # 自环：展开一层即止
-    ("MoviePilot/CycA/self/ca.mkv", "fca", 501),
-    ("MoviePilot/CycA/self/toB/cb.mkv", "fcb", 502),
-}
-
-
-class TestR33P1P2Listing:
-    def test_flat_shortcut_cycle_terminates(self, drive_env):
-        items = _bounded(sg.iter_drive_videos(
-            D, "", strict=True, subtree_listing=False, resolve_shortcuts=True))
-        assert len(items) == len(EXPECTED), \
-            f"数量不符（成环会导致无限产出）：{len(items)}"
-        assert set(items) == EXPECTED
-        # 每轮 1 次 files.get 烧配额的旧行为已消除：api_get 调用有界
-        assert drive_env.api_calls < 100, drive_env.api_calls
-
-    def test_subtree_flat_same_set(self, drive_env, monkeypatch):
-        flat = set(_bounded(sg.iter_drive_videos(
-            D, "", strict=True, subtree_listing=False, resolve_shortcuts=True)))
-        sub = set(_bounded(sg.iter_drive_videos(
-            D, "", strict=True, subtree_listing=True, resolve_shortcuts=True)))
-        assert flat == sub == EXPECTED
-
-    def test_shortcuts_off_unchanged(self, drive_env):
-        # 开关默认关：快捷方式不当目录/文件展开（现状行为无回归）
+class TestR33ShortcutSkipped:
+    def test_shortcuts_are_skipped_no_alias_output(self, drive_env):
+        # 快捷方式解析功能已取消：快捷方式条目当普通条目处理——
+        # · 指向目录的快捷方式不展开（无别名路径、目标不再入库）；
+        # · 名无视频扩展名的快捷方式（剧集/link）自然跳过；
+        # · 名带视频扩展名的快捷方式（link2.mkv）按旧默认行为当普通文件产出
+        #   （用快捷方式自己的 id/size，不跟随目标）。
         items = set(_bounded(sg.iter_drive_videos(
-            D, "", strict=True, subtree_listing=True, resolve_shortcuts=False)))
+            D, "", strict=True, subtree_listing=True)))
         rels = {r for r, _, _ in items}
         assert "MoviePilot/剧集/国产剧/合集/m1.mkv" not in rels
         assert "MoviePilot/剧集/link" not in rels
+        assert ("MoviePilot/剧集/link2.mkv", "sc_link2", 0) in items
         assert ("MoviePilot/电影/m1.mkv", "f3", 333) in items
-
-
-class TestR33ShortcutResolve:
-    def _fetch(self):
-        def fetch(query, page_token=None):
-            raise AssertionError("不应走到 files.list")
-        fetch.token_box = {"token": "tok"}
-        return fetch
-
-    def test_multilayer_follow(self, monkeypatch):
-        # 快捷方式→快捷方式→文件：有界多层跟随解析到最终目标
-        from types import SimpleNamespace
-        api_map = {
-            "sc2": {"id": "sc2", "name": "c2", "mimeType": SHORTCUT_MIME,
-                    "shortcutDetails": {"targetId": "fT"}, "trashed": False},
-            "fT": {"id": "fT", "name": "t.mkv", "mimeType": None,
-                   "trashed": False, "size": "7"},
-        }
-        monkeypatch.setattr(
-            sg, "_drive_modules",
-            lambda: SimpleNamespace(_api_get=lambda u, t, p: api_map[u.rsplit("/", 1)[-1]],
-                                    _is_personal_drive_key=lambda did: False))
-        item = {"id": "sc1", "shortcutDetails": {"targetId": "sc2"}}
-        body = sg._resolve_shortcut_target(self._fetch(), item, D)
-        assert body and body["id"] == "fT"
-
-    def test_shortcut_cycle_returns_none(self, monkeypatch):
-        # 快捷方式互指成环 → 环检测返回 None（不抛、不死循环）
-        from types import SimpleNamespace
-        api_map = {
-            "scY": {"id": "scY", "mimeType": SHORTCUT_MIME,
-                    "shortcutDetails": {"targetId": "scX"}, "trashed": False},
-            "scX": {"id": "scX", "mimeType": SHORTCUT_MIME,
-                    "shortcutDetails": {"targetId": "scY"}, "trashed": False},
-        }
-        monkeypatch.setattr(
-            sg, "_drive_modules",
-            lambda: SimpleNamespace(_api_get=lambda u, t, p: api_map[u.rsplit("/", 1)[-1]],
-                                    _is_personal_drive_key=lambda did: False))
-        item = {"id": "scX", "shortcutDetails": {"targetId": "scY"}}
-        assert sg._resolve_shortcut_target(self._fetch(), item, D) is None
-
-    def test_too_deep_returns_none(self, monkeypatch):
-        # 链长超过上限（4 跳）→ 放弃解析返回 None；刚好 4 跳 → 正常解析
-        from types import SimpleNamespace
-
-        def chain_map(n_hops, prefix):
-            # n_hops 次 shortcut→shortcut 跳，最后落到文件
-            m = {}
-            for i in range(1, n_hops + 1):
-                nxt = f"{prefix}{i + 1}" if i < n_hops else f"{prefix}End"
-                m[f"{prefix}{i}"] = {"id": f"{prefix}{i}", "mimeType": SHORTCUT_MIME,
-                                     "shortcutDetails": {"targetId": nxt},
-                                     "trashed": False}
-            m[f"{prefix}End"] = {"id": f"{prefix}End", "mimeType": None,
-                                 "trashed": False}
-            return m
-
-        api_map = chain_map(4, "a")
-        api_map.update(chain_map(5, "b"))
-        monkeypatch.setattr(
-            sg, "_drive_modules",
-            lambda: SimpleNamespace(_api_get=lambda u, t, p: api_map[u.rsplit("/", 1)[-1]],
-                                    _is_personal_drive_key=lambda did: False))
-        # 4 跳：a1→a2→a3→a4→aEnd（上限内）→ 解析成功
-        item = {"id": "sx", "shortcutDetails": {"targetId": "a1"}}
-        body = sg._resolve_shortcut_target(self._fetch(), item, D)
-        assert body and body["id"] == "aEnd"
-        # 5 跳：b1→…→b5→bEnd（超上限）→ 放弃解析返回 None
-        item5 = {"id": "sy", "shortcutDetails": {"targetId": "b1"}}
-        assert sg._resolve_shortcut_target(self._fetch(), item5, D) is None
-        # 自环：首层即成环 → None
-        assert sg._resolve_shortcut_target(
-            self._fetch(), {"id": "sc0", "shortcutDetails": {"targetId": "sc0"}}, D) is None
-
-    def test_401_refresh_then_retry(self, monkeypatch):
-        # P2-5：401 → _get_token(force_refresh=True) 刷新一次后重试
-        from types import SimpleNamespace
-        calls = {"n": 0}
-        target = {"id": "fT", "name": "t.mkv", "mimeType": None, "trashed": False}
-
-        def api_get(url, token, params):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                raise PermissionError("401")
-            assert token == "fresh_tok"
-            return target
-
-        got = {}
-
-        def fake_get_token(drive_id, force_refresh=False):
-            got["drive_id"] = drive_id
-            got["force"] = force_refresh
-            return "fresh_tok"
-
-        monkeypatch.setattr(
-            sg, "_drive_modules",
-            lambda: SimpleNamespace(_api_get=api_get,
-                                    _is_personal_drive_key=lambda did: False))
-        monkeypatch.setattr(sg, "_get_token", fake_get_token)
-        fetch = self._fetch()
-        item = {"id": "sc1", "shortcutDetails": {"targetId": "fT"}}
-        body = sg._resolve_shortcut_target(fetch, item, "mydrive")
-        assert body and body["id"] == "fT"
-        assert got == {"drive_id": "mydrive", "force": True}
-        assert fetch.token_box["token"] == "fresh_tok"
-        assert calls["n"] == 2
-
-    def test_401_refresh_fails_warns_and_none(self, monkeypatch, caplog):
-        # P2-5：刷新仍失败 → warning 日志 + None（不再静默）
-        import logging
-        from types import SimpleNamespace
-
-        def api_get(url, token, params):
-            raise PermissionError("401")
-
-        monkeypatch.setattr(
-            sg, "_drive_modules",
-            lambda: SimpleNamespace(_api_get=api_get,
-                                    _is_personal_drive_key=lambda did: False))
-        monkeypatch.setattr(sg, "_get_token",
-                            lambda drive_id, force_refresh=False: None)
-        with caplog.at_level(logging.WARNING, logger="backend.emby_server.strm_gen"):
-            body = sg._resolve_shortcut_target(
-                self._fetch(), {"id": "sc1", "shortcutDetails": {"targetId": "fT"}},
-                "mydrive")
-        assert body is None
-        assert any("401" in r.getMessage() for r in caplog.records)
-
-
-class TestR33P12IncrementalDowngrade:
-    def test_incremental_downgrades_to_full_when_shortcuts_on(self, monkeypatch):
-        from backend.emby_server import strm_source
-        lister = strm_source.DriveChangesLister("did1", "SomeDir")
-        monkeypatch.setattr(lister, "_resolve_shortcuts_cfg", lambda: True)
-        calls = {}
-
-        def fake_iter_drive_videos(drive_id, dir_paths, strict=True,
-                                   subtree_listing=True, resolve_shortcuts=False):
-            calls["resolve_shortcuts"] = resolve_shortcuts
-            if False:
-                yield
-
-        monkeypatch.setattr(sg, "iter_drive_videos", fake_iter_drive_videos)
-        assert list(lister.iter_videos(incremental=True)) == []
-        assert lister.used_incremental_path is False
-        assert calls["resolve_shortcuts"] is True
-
-    def test_incremental_still_works_when_shortcuts_off(self, monkeypatch):
-        from backend.emby_server import drive_changes as dc
-        from backend.emby_server import strm_source
-        lister = strm_source.DriveChangesLister("did1", "SomeDir")
-        monkeypatch.setattr(lister, "_resolve_shortcuts_cfg", lambda: False)
-        monkeypatch.setattr(lister, "_get_saved_token", lambda: "tok123")
-        monkeypatch.setattr(dc, "list_changes", lambda token, drive_id: ([], "newtok"))
-        assert list(lister.iter_videos(incremental=True)) == []
-        assert lister.used_incremental_path is True
+        flat_items = set(_bounded(sg.iter_drive_videos(
+            D, "", strict=True, subtree_listing=False)))
+        assert flat_items == items
 
 
 class TestR33P24NonDictToken:
