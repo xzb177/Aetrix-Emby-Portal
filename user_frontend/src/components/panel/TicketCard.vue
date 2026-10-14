@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Crown, Zap, Clapperboard } from 'lucide-vue-next'
 import type { MemberCardInfo, EnergyCardInfo, WatchStripInfo, AssetCard } from '@/composables/useTicketCard'
 import './ticket-card.css'
 
@@ -71,144 +70,122 @@ function clampProgress(p: number | null): number {
 <template>
   <!-- 加载中：纸色骨架屏 -->
   <section v-if="loading" class="hc-wrap" aria-hidden="true">
-    <!-- 会员卡骨架 -->
+    <!-- 付费服卡骨架 -->
     <div class="hc-card hc-sk-card">
       <div class="hc-header">
-        <span class="v4-skeleton hc-sk-title"></span>
-        <span class="v4-skeleton hc-sk-badge"></span>
+        <div class="v4-skeleton hc-sk-title"></div>
+        <div class="v4-skeleton hc-sk-badge"></div>
       </div>
       <div class="hc-main-row">
-        <span class="v4-skeleton hc-sk-val"></span>
-        <span class="v4-skeleton hc-sk-btn"></span>
+        <div class="v4-skeleton hc-sk-val"></div>
       </div>
-      <span class="v4-skeleton hc-sk-progress"></span>
-      <span class="v4-skeleton hc-sk-desc"></span>
+      <div class="v4-skeleton hc-sk-progress"></div>
+      <div class="v4-skeleton hc-sk-desc"></div>
     </div>
 
-    <!-- 能量卡骨架 -->
+    <!-- 公益服卡骨架 -->
     <div class="hc-card hc-sk-card">
       <div class="hc-header">
-        <span class="v4-skeleton hc-sk-title"></span>
-        <span class="v4-skeleton hc-sk-badge"></span>
+        <span class="hc-sk-title v4-skeleton"></span>
+        <span class="hc-sk-badge v4-skeleton"></span>
       </div>
       <div class="hc-main-row">
-        <span class="v4-skeleton hc-sk-val"></span>
-        <span class="v4-skeleton hc-sk-btn"></span>
+        <span class="hc-sk-val v4-skeleton"></span>
       </div>
-      <div class="hc-vitality">
-        <span class="v4-skeleton hc-sk-vit-head"></span>
-        <span class="v4-skeleton hc-sk-progress"></span>
+      <div class="hc-chips">
+        <span class="hc-sk-desc v4-skeleton"></span>
+        <span class="hc-sk-desc v4-skeleton"></span>
+        <span class="hc-sk-desc v4-skeleton"></span>
       </div>
     </div>
 
     <!-- 观影数据小条骨架 -->
     <div class="hc-watch-strip">
-      <span class="v4-skeleton hc-sk-watch-line"></span>
+      <span class="hc-sk-watch-line v4-skeleton"></span>
     </div>
   </section>
 
-  <!-- 真实内容：两张独立卡片 + 观影数据小条 -->
+  <!-- 真实内容：付费服卡 + 公益服卡 + 观影数据小条（效果图定案版一比一） -->
   <section v-else class="hc-wrap" aria-label="首页概览卡片">
-    <!-- 1. 会员卡 -->
+    <!-- 1. 付费服卡 -->
     <div class="hc-card" :class="{ 'is-warning': mc.expiringSoon }">
       <div class="hc-header">
-        <div class="hc-title">
-          <Crown :size="15" class="hc-title-icon" />
-          <span>会员</span>
-        </div>
+        <span class="hc-title">付费服</span>
         <span
-          v-if="mc.badge"
           class="hc-badge"
-          :class="{ 'is-warning': mc.expiringSoon }"
-        >
-          {{ mc.badge }}
-        </span>
+          :class="{
+            'is-amber': mc.badge === '生效中',
+            'is-warning': mc.badge === '临期' || mc.badge === '今日未报到'
+          }"
+        >{{ mc.badge ?? '未开通' }}</span>
       </div>
 
       <div class="hc-main-row">
         <div class="hc-val-group">
           <span class="hc-val">{{ mc.value }}</span>
-          <span v-if="mc.unit" class="hc-unit">{{ mc.unit }}</span>
+          <span class="hc-unit">{{ (mc.state === 'active' || mc.state === 'expiring') ? '天剩余' : mc.unit }}</span>
         </div>
-        <RouterLink :to="mc.to" class="hc-btn">
-          {{ mc.footer }}
-        </RouterLink>
+        <span
+          v-if="(mc.state === 'active' || mc.state === 'expiring') && mc.planName && mc.expiryDate"
+          class="hc-plan"
+        >{{ mc.planName }} · {{ mc.expiryDate }}到期</span>
       </div>
 
-      <!-- 会员周期进度条（仅会员有效且有进度时展示） -->
+      <!-- 剩余天数占比进度条（仅有进度时展示） -->
       <div
         v-if="mc.progress !== null"
         class="hc-progress-track"
         role="progressbar"
-        :aria-valuenow="clampProgress(mc.progress)"
-        :aria-label="`会员周期已过 ${clampProgress(mc.progress)}%`"
+        :aria-valuenow="100 - clampProgress(mc.progress)"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-label="`会员剩余 ${100 - clampProgress(mc.progress)}%`"
       >
-        <span
+        <div
           class="hc-progress-bar"
-          :class="{ 'is-warning': mc.expiringSoon }"
-          :style="{ transform: `scaleX(${clampProgress(mc.progress) / 100})` }"
-        ></span>
+          :style="{ width: (100 - clampProgress(mc.progress)) + '%' }"
+        ></div>
       </div>
 
-      <!-- 套餐描述 / 到期日 / 公益服文案 / 未开通引导 -->
-      <div class="hc-desc">{{ mc.desc }}</div>
+      <div class="hc-footer">
+        <span class="hc-desc">{{ mc.desc }}</span>
+        <RouterLink :to="mc.to" class="hc-link">{{ mc.footer }} ›</RouterLink>
+      </div>
     </div>
 
-    <!-- 2. 能量卡 -->
+    <!-- 2. 公益服卡 -->
     <div class="hc-card">
       <div class="hc-header">
-        <RouterLink :to="ec.cardTo" class="hc-title hc-title-link">
-          <Zap :size="15" class="hc-title-icon" />
-          <span>能量</span>
-        </RouterLink>
-        <span
-          v-if="ec.badge"
-          class="hc-badge"
-          :class="{ hot: ec.hot }"
-        >
-          {{ ec.badge }}
-        </span>
+        <span class="hc-title">公益服</span>
+        <span class="hc-badge">免费开放</span>
       </div>
-
       <div class="hc-main-row">
-        <RouterLink :to="ec.cardTo" class="hc-val-group hc-val-link">
+        <span class="hc-val-group">
           <span class="hc-val">{{ ec.balance }}</span>
-        </RouterLink>
-        <RouterLink :to="ec.buttonTo" class="hc-btn">
-          {{ ec.buttonText }}
-        </RouterLink>
+          <span class="hc-unit">能量</span>
+        </span>
+        <span v-if="ec.hasVitality" :class="['hc-vit', { 'hc-vit-low': ec.isVitalityLow }]">
+          体力 {{ ec.vitalityText }} · {{ ec.isVitalityLow ? '体力偏低' : '还能稳住' }}
+        </span>
+        <span v-else class="hc-vit">体力 —</span>
       </div>
-
-      <!-- 体力模块：体力值 + 体力条 -->
-      <div class="hc-vitality">
-        <div class="hc-vit-meta" :class="{ 'is-low': ec.isVitalityLow }">
-          <span>体力</span>
-          <span class="hc-vit-val-wrap">
-            <span class="hc-vit-nums">{{ ec.vitalityText }}</span>
-            <span v-if="ec.isVitalityLow" class="hc-vit-warn">体力低</span>
-          </span>
-        </div>
-        <div
-          class="hc-progress-track"
-          role="progressbar"
-          :aria-valuenow="clampProgress(ec.vitalityPct)"
-          :aria-label="`体力 ${clampProgress(ec.vitalityPct)}%`"
-        >
-          <span
-            class="hc-progress-bar"
-            :class="{ 'is-warning': ec.isVitalityLow }"
-            :style="{ transform: `scaleX(${clampProgress(ec.vitalityPct) / 100})` }"
-          ></span>
-        </div>
+      <div v-if="ec.checkinEnabled" class="hc-chips">
+        <span :class="['hc-chip', { 'hc-chip-danger': !ec.checkedToday }]">
+          {{ ec.checkedToday ? '今日已报到' : '今日未报到' }}
+        </span>
+        <span v-if="ec.streak !== null" class="hc-chip">连签 {{ ec.streak }} 天</span>
+        <span class="hc-chip">无需会员看全库</span>
+      </div>
+      <div class="hc-footer">
+        <span class="hc-desc">能量在补给站和账本里用</span>
+        <RouterLink :to="ec.buttonTo" class="hc-link">去补给站 ›</RouterLink>
       </div>
     </div>
 
-    <!-- 3. 观影数据小条（独立虚线边框小条） -->
+    <!-- 3. 观影数据小条 -->
     <div class="hc-watch-strip">
-      <Clapperboard :size="13" class="hc-watch-icon" />
-      <span class="hc-watch-text">
-        累计观影 <b>{{ ws.watchTime }}</b> · 播放 <b>{{ ws.totalPlays }}</b> 次 · 看过 <b>{{ ws.watchedItems }}</b> 部
-      </span>
+      <span class="hc-watch-title">观影数据</span>
+      <span class="hc-watch-data">{{ ws.watchTime }} · 播放 {{ ws.totalPlays }} 次 · 看过 {{ ws.watchedItems }} 部</span>
     </div>
   </section>
 </template>
