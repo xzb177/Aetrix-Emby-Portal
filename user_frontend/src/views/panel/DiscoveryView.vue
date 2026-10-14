@@ -12,16 +12,16 @@
         <div v-if="streak != null && streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
       </header>
 
-      <!-- 电影票卡：积分 / 订阅 / 观影数据（发现页最显眼的位置） -->
+      <!-- 首页卡片：会员卡 / 能量卡 + 观影数据小条（发现页最显眼的位置） -->
       <div v-if="ticketLoadError && !ticketLoading" class="v4-sec">
         <div class="v4-err">票卡信息没加载出来，点下面重试<br><button class="v4-retry" @click="() => loadTicket()">重试</button></div>
       </div>
       <TicketCard
         v-else
         :loading="ticketLoading"
-        :asset-cards="ticketCards"
-        :member-footer="ticketFooter"
-        :plan-name="ticketPlan"
+        :member-card="memberCard"
+        :energy-card="energyCard"
+        :watch-strip="watchStrip"
       />
 
       <!-- 今日封存：盲盒 -->
@@ -98,15 +98,15 @@ import { humanizeError, type ParcelItem, type ParcelsData } from '@/composables/
 const panel = usePanelStore()
 const user = useUserStore()
 const { today, parcels, pulse, letter } = storeToRefs(panel)
-// 电影票卡：积分 / 订阅 / 观影数据（原旧首页 HomeView，已删除，逻辑见 useTicketCard）
+// 首页卡片：会员卡 / 能量卡 / 观影数据小条（逻辑见 useTicketCard）
 const ticket = useTicketCard()
 // 顶层解构：模板里直接用，ref 自动解包
 const {
   loading: ticketLoading,
   loadError: ticketLoadError,
-  assetCards: ticketCards,
-  memberFooter: ticketFooter,
-  planName: ticketPlan,
+  memberCard,
+  energyCard,
+  watchStrip,
   load: loadTicket,
 } = ticket
 
