@@ -78,6 +78,8 @@ const footText = computed(() => {
 .bar-fill {
   width: 100%;
   height: 100%;
+  /* R39-03：color-mix 老机型不认（iOS 16.2-/Chrome 111-），先写纯色回退再写渐变 */
+  background: var(--green);
   background: linear-gradient(180deg, var(--green), color-mix(in srgb, var(--green) 75%, #000));
   border-radius: 0 0 4px 4px;
   transform: scaleY(var(--bar-p, 0));

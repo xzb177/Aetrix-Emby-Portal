@@ -1,7 +1,9 @@
 <template>
   <div class="v4-radar-box">
-    <h3>服务器在忙 · {{ activeCount }} 个任务在线</h3>
-    <canvas ref="cv" class="v4-radar-cv" aria-label="任务雷达扫描图"></canvas>
+    <!-- R39-11：无在线任务时不说"在忙"，避免自相矛盾 -->
+    <h3>{{ activeCount > 0 ? `服务器在忙 · ${activeCount} 个任务在线` : '服务器待命 · 全部任务歇着' }}</h3>
+    <!-- R39-10：canvas 无隐式 ARIA role，补 role="img" 让 aria-label 被读屏播报 -->
+    <canvas ref="cv" class="v4-radar-cv" role="img" aria-label="任务雷达扫描图"></canvas>
     <div class="blips">
       <div v-for="t in tasks" :key="t.key" class="blip">
         <i :class="{ idle: !t.active }"></i>{{ t.name }} · {{ t.active ? '进行中' : '待命' }}

@@ -203,15 +203,21 @@ function openChangePwd() {
   // R38 P2-2：记住触发按钮，关闭后焦点回到它
   lastTrigger.value = document.activeElement as HTMLElement | null
   showChangePwd.value = true
+  // R39-05：弹窗打开时锁住背后页面滚动（照 WishlistView R38 P3-11）
+  document.body.style.overflow = 'hidden'
   window.addEventListener('keydown', onPwdEsc)
   nextTick(() => oldPwdInput.value?.focus())
 }
 function closeChangePwd() {
   showChangePwd.value = false
+  document.body.style.overflow = ''
   window.removeEventListener('keydown', onPwdEsc)
   lastTrigger.value?.focus?.()
 }
-onUnmounted(() => window.removeEventListener('keydown', onPwdEsc))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onPwdEsc)
+  document.body.style.overflow = ''
+})
 
 async function handleChangePassword() {
   const { oldPassword, newPassword, confirmPassword } = pwdForm.value

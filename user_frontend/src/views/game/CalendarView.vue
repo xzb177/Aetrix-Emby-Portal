@@ -297,7 +297,8 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   border: none;
   font-size: 12px;
   font-weight: 700;
-  padding: 13px 12px;
+  /* R39-07：padding 纵向 13→15px，点击区 15×2+~14.4 ≈ 44.4px；::before 同步 6→8px，视觉药丸位置/大小不变 */
+  padding: 15px 12px;
   margin: -6px 0;
   cursor: pointer;
   color: var(--ink);
@@ -306,7 +307,7 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
 .treasure .want::before {
   content: "";
   position: absolute;
-  top: 6px; right: 0; bottom: 6px; left: 0;
+  top: 8px; right: 0; bottom: 8px; left: 0;
   background: var(--paper2);
   border: 1.5px solid var(--ink);
   border-radius: var(--paper-r-xl, 16px);
@@ -334,8 +335,8 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
 .more {
   font-size: 11px; color: var(--ink2);
   background: none; border: none; cursor: pointer; text-align: left;
-  /* 透明 padding + 负 margin：文案行视觉不变，点击区纵向 44px */
-  padding: 14px 0; margin: -12px 0;
+  /* 透明 padding + 负 margin：文案行视觉不变，点击区纵向 44px（R39-08：14→15px，约 43.2px） */
+  padding: 15px 0; margin: -12px 0;
 }
 .empty-day { font-size: 11px; color: var(--ink2); padding: 2px 0; }
 .plan-bar {

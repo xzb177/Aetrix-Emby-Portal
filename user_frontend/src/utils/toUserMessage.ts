@@ -13,7 +13,8 @@
  *
  * 配套铁律：
  * - 禁用原始错误码进 Toast；一次失败只弹一条（去重由 useToast 的 800ms 去重保证）
- * - 后端 detail 本来就是中文人话（如"用户不存在"），透传不改写
+ * - 后端 detail 本来就是中文人话（如"用户不存在"），透传不改写；
+ *   但中文技术信息（如"数据库连接失败""Traceback ..."）按服务器错误映射，不透传（R39-21）
  * - 已知英文技术信息（"Request failed with status code 500"、"panel api error" 等）
  *   按场景映射，永不直接上屏
  */
@@ -39,6 +40,17 @@ const CODE_MAP: Record<string, string> = {
 
 /** 全大写下划线风格的机器码，如 RATE_LIMITED / SOME_ERROR_2 */
 const MACHINE_CODE_RE = /^[A-Z][A-Z0-9_]{2,}$/
+
+/**
+ * 中文技术错误（R39-21 并入 Batch G：横切能力只许一套实现）
+ *
+ * 中文不等于人话："数据库连接失败""内部错误""Traceback ..." 这类是技术信息，
+ * 必须按服务器错误映射，永不透传上屏；其余中文（后端已写好的用户文案）仍保留原文。
+ */
+const CN_TECH_RE = /数据库|连接(失败|超时|被拒)|内部错误|服务(不可用|器错误|异常)|未知错误|堆栈|Traceback|Exception|Error:/i
+function isCnTechText(text: string): boolean {
+  return CN_TECH_RE.test(text)
+}
 
 function isNetworkError(err: any): boolean {
   if (!err || err.response) return false
@@ -84,6 +96,8 @@ export function toUserMessage(err: unknown, fallbackKey: ToastFallbackKey = 'sav
     if (MACHINE_CODE_RE.test(text)) {
       return mapCode(text) ?? fallback
     }
+    // 中文技术错误（如"数据库连接失败"）不是人话 → 服务器文案
+    if (isCnTechText(text)) return toastSystem.serverError
     // 后端返回的人话（如"用户不存在"）直接透传
     return text
   }
@@ -122,6 +136,8 @@ export function toUserMessage(err: unknown, fallbackKey: ToastFallbackKey = 'sav
     // 已知英文技术信息 → 按场景映射，永不直接上屏（Batch G）
     if (/^network error$/i.test(text)) return toastSystem.networkError
     if (/panel api error/i.test(text)) return toastSystem.serverError
+    // 中文技术错误（如"数据库连接失败"）→ 服务器文案（R39-21）
+    if (isCnTechText(text)) return toastSystem.serverError
     const statusMatch = /^request failed with status code (\d+)$/i.exec(text)
     if (statusMatch) {
       const code = Number(statusMatch[1])

@@ -60,9 +60,7 @@
         <!-- 聊天 -->
         <section class="v4-sec">
           <div ref="scroller" class="chat" tabindex="0" aria-label="聊天记录" aria-live="polite">
-            <div v-if="!bubbles.length" class="chat-empty">
-              <p>老陈刚沏上茶，坐下聊两句？</p>
-            </div>
+            <!-- R39-16：欢迎气泡在 onMounted 同步推入，空态永远不可达，已删除 -->
             <div v-for="(b, i) in bubbles" :key="i" class="msg" :class="b.role">
               <div v-if="b.role === 'guide'" class="who">老陈 · 向导</div>
               <p>{{ b.content }}</p>
@@ -225,7 +223,8 @@ onMounted(() => {
   font-size: 11px;
   font-weight: 400;
   color: var(--green);
-  background: #F1F4EC;
+  /* R39-04 连带：同值硬编码 → 语义 token */
+  background: var(--green-soft, #F1F4EC);
   border: 1px solid var(--green);
   border-radius: var(--paper-r-2xl, 20px);
   padding: 2px 8px;
@@ -271,8 +270,7 @@ onMounted(() => {
   max-height: 52vh;
   overflow-y: auto;
 }
-.chat-empty { color: var(--ink2); font-size: 13px; text-align: center; padding: 30px 0; }
-.chat-empty p { margin: 0; }
+/* R39-16：.chat-empty 样式随死代码一并删除 */
 .msg { max-width: 82%; }
 .msg p { margin: 0; font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; }
 .msg.guide {
@@ -331,6 +329,8 @@ onMounted(() => {
 }
 .inputbar button {
   flex-shrink: 0;
+  /* R39-13：补 min-height，保证 44px 触摸目标（此前靠 stretch 跟随输入框 ≈43px） */
+  min-height: 44px;
   background: var(--red);
   color: var(--on-dark, #fff);
   border: none;

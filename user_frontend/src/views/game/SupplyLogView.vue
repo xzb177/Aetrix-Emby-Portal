@@ -113,7 +113,11 @@ function fmtMoney(n: number | null | undefined): string {
 
 function fmtTime(iso?: string | null): string {
   if (!iso) return '—'
-  return iso.slice(0, 16).replace('T', ' ')
+  // R39-14：不再硬切片 ISO —— new Date 解析 + NaN 回退原串（照 CompanionView R38 P3-10）
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const pad = (n: number) => (n < 10 ? '0' + n : String(n))
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function toggle(orderId: string) {

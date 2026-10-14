@@ -432,6 +432,9 @@ onMounted(() => {
 })
 onUnmounted(() => {
   morseTimers.forEach(t => window.clearTimeout(t))
+  // R39-17：发送中途切走页面时，timer 被清但 promise 永不 settle，sendSOS 的 finally 跑不到 —— 这里补一次 resolve
+  morseAnimResolve?.()
+  morseAnimResolve = null
 })
 </script>
 

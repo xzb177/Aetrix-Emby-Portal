@@ -129,7 +129,7 @@
                 v-for="(url, name) in importSchemes"
                 :key="name"
                 class="scheme-btn"
-                @click="openScheme(url)"
+                @click="openScheme(url, name)"
               >
                 {{ name }}
               </button>
@@ -343,6 +343,7 @@ import { useRouter } from 'vue-router'
 import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useToast } from '@/composables/useToast'
+import { useClipboard } from '@/composables/useClipboard'
 import { humanizeError } from '@/composables/usePanelApi'
 import { toUserMessage } from '@/utils/toUserMessage'
 import {
@@ -353,6 +354,8 @@ import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
 const toast = useToast()
+// R39-02：HTTP 自建部署下 navigator.clipboard 不存在，用带 execCommand 降级的 useClipboard（与 CompanionView 同一切口）
+const { copy } = useClipboard()
 const userStore = useUserStore()
 
 const loading = ref(true)
@@ -416,16 +419,17 @@ async function refreshAccount() {
   }
 }
 
-function copyText(text: string, field: string) {
+/** 复制字段 → 人话标签（失败提示里告诉用户复制的是哪样） */
+const COPY_LABELS: Record<string, string> = { server: '服务器地址', user: '用户名' }
+let copyTimer: number | undefined
+async function copyText(text: string, field: string) {
   if (!text || text === '—') return
-  navigator.clipboard?.writeText(text).then(
-    () => {
-      copiedField.value = field
-      toast.success('已复制')
-      setTimeout(() => { copiedField.value = '' }, 1500)
-    },
-    () => toast.error('复制失败，长按手动复制'),
-  )
+  // R39-02：走 useClipboard 降级链（HTTP 下 execCommand 兜底），失败也有可操作的提示
+  const ok = await copy(text, COPY_LABELS[field] || '服务器地址')
+  if (!ok) return
+  copiedField.value = field
+  window.clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1500)
 }
 
 async function confirmSetPassword() {
@@ -464,7 +468,7 @@ async function confirmUnlock() {
   }
 }
 
-function openScheme(url: string) {
+function openScheme(url: string, name: string) {
   let finalUrl = url
   // #758：一键导入时可临时带上播放密码（只放内存，不存）
   if (importPassword.value) {
@@ -479,6 +483,8 @@ function openScheme(url: string) {
       finalUrl = url
     }
   }
+  // R39-18：没装对应播放器 App 时 scheme 无人认领（iOS 上死路一条），先给一句可操作的提示
+  toast.info(`正在打开${name}，没装的话先去应用商店装一个再来`, 4000)
   window.location.href = finalUrl
 }
 
@@ -530,6 +536,7 @@ async function loadSessions() {
 function confirmStopSession(session: MyPlaybackSession) {
   recordTrigger()
   sessionToStop.value = session
+  lockBodyScroll()
   focusOpenModalCard()
 }
 
@@ -574,17 +581,21 @@ function focusOpenModalCard() {
 const lastTrigger = ref<HTMLElement | null>(null)
 function recordTrigger() { lastTrigger.value = document.activeElement as HTMLElement | null }
 function restoreTriggerFocus() { lastTrigger.value?.focus?.() }
-function closeSetPlayPwd() { showSetPlayPwd.value = false; restoreTriggerFocus() }
-function closeUnlockConfirm() { showUnlockConfirm.value = false; restoreTriggerFocus() }
-function closeStopSession() { sessionToStop.value = null; restoreTriggerFocus() }
+/** R39-06：弹窗打开时锁住背后页面滚动（照 WishlistView R38 P3-11），关闭/卸载时释放 */
+function lockBodyScroll() { document.body.style.overflow = 'hidden' }
+function unlockBodyScroll() { document.body.style.overflow = '' }
+function closeSetPlayPwd() { showSetPlayPwd.value = false; unlockBodyScroll(); restoreTriggerFocus() }
+function closeUnlockConfirm() { showUnlockConfirm.value = false; unlockBodyScroll(); restoreTriggerFocus() }
+function closeStopSession() { sessionToStop.value = null; unlockBodyScroll(); restoreTriggerFocus() }
 function openSetPlayPwd() {
   // R37 P3-9：重开弹窗清掉旧错误文案
   pwdError.value = ''
   recordTrigger()
   showSetPlayPwd.value = true
+  lockBodyScroll()
   focusOpenModalCard()
 }
-function openUnlockConfirm() { recordTrigger(); showUnlockConfirm.value = true; focusOpenModalCard() }
+function openUnlockConfirm() { recordTrigger(); showUnlockConfirm.value = true; lockBodyScroll(); focusOpenModalCard() }
 
 async function doStopSession() {
   const session = sessionToStop.value
@@ -607,7 +618,11 @@ onMounted(() => {
   void refreshAccount()
   window.addEventListener('keydown', onEsc)
 })
-onUnmounted(() => window.removeEventListener('keydown', onEsc))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onEsc)
+  unlockBodyScroll()
+  window.clearTimeout(copyTimer)
+})
 
 // 有查看权限才拉正在播放（解锁后翻成 granted 也会触发一次）
 watch(viewGranted, (granted) => {
@@ -743,6 +758,8 @@ watch(viewGranted, (granted) => {
   box-sizing: border-box;
   font-size: 16px;
   padding: 10px 14px;
+  /* R39-09：min-height 补齐 44px 触摸目标（原 10×2+~19+3边框 ≈ 42px） */
+  min-height: 44px;
   margin-bottom: 10px;
   border: 1.5px solid var(--line);
   border-radius: var(--paper-r-md, 10px);

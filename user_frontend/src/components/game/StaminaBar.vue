@@ -104,7 +104,8 @@ onMounted(load)
   /* 用 transform 做填充动画：width 是 layout 属性会触发重排，掉帧；
      scaleX 只走合成层，60fps。JS 里按比例设 scaleX(0~1) 代替 width。 */
   transform-origin: left center;
-  background: linear-gradient(90deg, #e8a33d, #d97b2b);
+  /* R39-15：琥珀渐变硬编码 → token（带 fallback，零视觉差；暗夜营地主题下可跟随） */
+  background: linear-gradient(90deg, var(--gold, #e8a33d), var(--gold-deep, #d97b2b));
   border-radius: 11px;
   transition: transform 0.4s ease;
 }
@@ -114,10 +115,10 @@ onMounted(load)
   }
 }
 .stamina-bar.is-low .stamina-fill {
-  background: linear-gradient(90deg, #d98a2b, #c25e1e);
+  background: linear-gradient(90deg, var(--gold, #d98a2b), var(--gold-deep, #c25e1e));
 }
 .stamina-bar.is-empty .stamina-fill {
-  background: #b9b0a0;
+  background: var(--line-deep, #b9b0a0);
 }
 .stamina-hearts {
   position: absolute;
@@ -145,17 +146,18 @@ onMounted(load)
   gap: 4px;
 }
 .stamina-meta .unit {
-  color: #8a7a5c;
+  /* R39-15：硬编码 → token（fallback 保零视觉差） */
+  color: var(--ink2, #8a7a5c);
 }
 .stamina-warn {
-  color: #b3402a;
+  color: var(--red, #b3402a);
   font-weight: 600;
 }
 .stamina-ok {
-  color: #6b7f3e;
+  color: var(--green, #6b7f3e);
 }
 .stamina-bar.is-empty {
-  border-color: #c96a5a;
-  background: #f9ece6;
+  border-color: var(--red, #c96a5a);
+  background: var(--paper2, #f9ece6);
 }
 </style>

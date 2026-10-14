@@ -114,8 +114,10 @@ def migrate_file(path: Path) -> None:
         def hex_sub(m: re.Match) -> str:
             nonlocal changed
             h = m.group(0)
-            if h.lower() in ("fff", "ffffff"):
-                skipped.append(f"{rel}:{i}: 跳过（#fff 非 color 用法，留给 U2 语义判断）")
+            # R39-20：h 带 '#' 前缀，旧元组 ("fff", "ffffff") 永远不命中 —— 白字
+            # 只允许 color: 声明（white_sub 已处理），其余（background/边框等）留给 U2 语义判断
+            if h.lower() in ("#fff", "#ffffff"):
+                skipped.append(f"{rel}:{i}: 跳过（#fff 非 color 用法，留给 U2 语义判断；color: 由 white_sub 处理）")
                 return h
             if h.lower() not in HEX_MAP:
                 skipped.append(f"{rel}:{i}: 跳过（非色板 hex {h}）")

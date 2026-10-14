@@ -243,7 +243,8 @@ onUnmounted(() => window.clearInterval(dateTimer))
 }
 .day .n { font-weight: 700; font-size: 12px; }
 .day.done {
-  background: #F1F4EC;
+  /* R39-04 连带：同值硬编码 → 语义 token（报告只列了 ParcelBox，这两处同类顺手收敛） */
+  background: var(--green-soft, #F1F4EC);
   border-color: var(--green);
 }
 .day.done .n { color: var(--green); }

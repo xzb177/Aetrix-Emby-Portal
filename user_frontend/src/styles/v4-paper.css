@@ -24,6 +24,7 @@
   --gold-deep: #9A7627;     /* 暗金（按压阴影）：原 ShopView #9a7627 */
   --line-deep: #C9BFA9;     /* 深线条/弱文字：原 ShopView #c9bfa9 */
   --scrim: #00000040;       /* 25% 黑遮罩：原 ShopView #00000040 */
+  --green-soft: #F1F4EC;   /* 浅绿底（签到已到章/绿色 tag/开封态）：原 ParcelBox/CheckinView/GuideView #F1F4EC，R39-04 */
 
   /* ============ U0 统一规范（LC-09/LC-10）：圆角/间距/字号阶梯 ============
      两端共用；值与 v4 设计稿实测节奏对齐，新增零视觉差。 */

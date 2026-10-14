@@ -10,6 +10,9 @@ let raf = 0
 let last = 0
 let x = 0
 let ctx: CanvasRenderingContext2D | null = null // 缓存：不每帧调 getContext
+// R39-01：Canvas 2D 颜色解析器不认 CSS var()，非法赋值会被静默丢弃。
+// getComputedStyle 一次性解析 --pulse-green，再赋给 strokeStyle（回退 #9BE08A）。
+let pulseGreen = '#9BE08A'
 const data: number[] = new Array(200).fill(64)
 const STEP_MS = 90 // 与设计稿 setInterval(90ms) 同节奏
 // R28：reduced-motion 改为响应式——页面打开期间用户改系统设置也能即时启停动画
@@ -33,7 +36,7 @@ function paint() {
   const w = el.width
   const h = el.height
   ctx.clearRect(0, 0, w, h)
-  ctx.strokeStyle = 'var(--pulse-green, #9BE08A)'
+  ctx.strokeStyle = pulseGreen
   ctx.lineWidth = 3 * (w / (el.clientWidth || w)) // 按 DPR 换算回 CSS 像素观感
   ctx.lineJoin = 'round'
   ctx.beginPath()
@@ -102,6 +105,9 @@ function onMotionChange(e: { matches: boolean }) {
 
 onMounted(() => {
   size()
+  // R39-01：解析 --pulse-green 的真实色值（canvas 元素在 .v4-scope 内，token 可继承）
+  const raw = getComputedStyle(cv.value!).getPropertyValue('--pulse-green').trim()
+  if (raw) pulseGreen = raw
   window.addEventListener('resize', onResize)
   motionMq.addEventListener('change', onMotionChange)
   // 减少动态偏好：不启动动画，但画一帧静态波形，不留空白
