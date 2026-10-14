@@ -204,3 +204,69 @@ class TestFullRoundReuseSkip:
         assert result["stats"]["generated"] == 1, result["stats"]
         assert result["stats"]["skipped"] == 0, result["stats"]
         assert os.path.exists(os.path.join(strm_root, "a.strm"))
+
+
+class TestFullReuseSkipSizeByPath:
+    """P3（2026-10-14 r37）：复用分支 skip 时必须同步 size_by_path。
+
+    回归场景：全量轮里 Drive 原地覆盖（fid 不变、size 100→200）且磁盘 .strm
+    签名仍有效（>30min）→ 走 skip 分支。若 size_by_path 停留在旧值 100，
+    后继撞名新文件（a.mp4，200 字节，期望输出同样是 a.strm）的同名同大小
+    去重会误判——旧代码多出一个 a-2.strm 副本（反向 size 组合则会误删去重
+    导致缺文件）。修复：skip 分支与写路径一样同步 size_by_path。
+
+    注：os.walk 顺序不可控，包一层 iter_videos 保证 a.mkv（复用分支）先于
+    a.mp4（去重分支）处理，确定性复现。
+    """
+
+    def test_size_change_syncs_size_by_path(self, tmp_path, monkeypatch):
+        from backend.emby_server import strm_source as ssrc
+
+        media_root = str(tmp_path / "media")
+        strm_root = str(tmp_path / "strm")
+        os.makedirs(media_root)
+        os.makedirs(strm_root)
+        did = "local:" + hashlib.sha256(
+            os.path.abspath(media_root).encode()).hexdigest()[:16]
+        fid_a = _local_fid("a.mkv")
+        # a.mkv：登记 size=100（旧），磁盘实际 200 字节；签名有效 → skip
+        with open(os.path.join(media_root, "a.mkv"), "wb") as f:
+            f.write(b"\x00" * 200)
+        signed = strm_sign.sign_strm_url(sg.drive_url(fid_a), ttl_seconds=7200)
+        with open(os.path.join(strm_root, "a.strm"), "w",
+                  encoding="utf-8") as f:
+            f.write(signed + "\n")
+        # a.mp4：新文件，200 字节；strm_relpath 同样映射到 a.strm（撞名）
+        with open(os.path.join(media_root, "a.mp4"), "wb") as f:
+            f.write(b"\x00" * 200)
+        loaded_state = {(did, "a.mkv"): (fid_a, 100, "a.strm")}
+
+        real_iter = ssrc.LocalFsLister.iter_videos
+
+        def ordered_iter(self, incremental=True):
+            items = list(real_iter(self, incremental))
+            vids = [it for it in items if isinstance(it, tuple)]
+            tombs = [it for it in items if not isinstance(it, tuple)]
+            vids.sort(key=lambda it: (it[0] != "a.mkv", it[0]))
+            return iter(vids + tombs)
+
+        monkeypatch.setattr(ssrc.LocalFsLister, "iter_videos", ordered_iter)
+        monkeypatch.setattr(sg, "_load_state", lambda: dict(loaded_state))
+        monkeypatch.setattr(sg, "_save_state_rows", lambda rows: None)
+        monkeypatch.setattr(sg, "_clear_gone_marks", lambda fids: None)
+        monkeypatch.setattr(sg, "source_dirs", lambda db: [""])
+        monkeypatch.setattr(sg, "source_type", lambda db: "local")
+        monkeypatch.setattr(sg, "local_root", lambda db: media_root)
+        monkeypatch.setattr(sg, "_container_strm_root", lambda db: strm_root)
+        monkeypatch.setattr(sg, "dedupe_same_size_enabled", lambda db: True)
+        monkeypatch.setattr(sg, "prune_enabled", lambda db: False)
+
+        result = sg.run_owned(None, full=True)
+        assert result["ok"] is True
+        stats = result["stats"]
+        # a.mkv 签名有效 → skip；a.mp4 与 a 的新大小同名同大小 → 去重
+        assert stats["skipped"] == 1, stats
+        assert stats["deduped"] == 1, stats
+        assert stats["generated"] == 0, stats
+        assert not os.path.exists(os.path.join(strm_root, "a-2.strm")), \
+            "size_by_path 未同步：a.mp4 未被去重，多出了 a-2.strm"
