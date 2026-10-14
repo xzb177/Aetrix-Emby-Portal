@@ -20,7 +20,7 @@
  */
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
   CalendarCheck, Coins, Flame, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
@@ -76,6 +76,12 @@ interface Field {
   suffix?: string
   /** 有值时渲染成下拉（type 仍是 str，保存走同一串行化分支） */
   choices?: Array<{ value: string; label: string }>
+  /**
+   * 高级调优项：收进卡内「高级调优」折叠区，默认收起。
+   * 只放"调了也不影响主流程"的参数（窗口/超时/分块大小/惩罚幅度等），
+   * 总开关与日常要改的核心值永远留在外面。
+   */
+  advanced?: boolean
 }
 
 interface Group {
@@ -93,15 +99,15 @@ const GROUPS: Group[] = [
     desc: '签到基础积分与连签加成规则（积分仅限公益服用户）',
     icon: CalendarCheck,
     fields: [
-      { key: 'checkin_enabled', label: '启用签到', type: 'bool' },
+      { key: 'checkin_enabled', label: '启用签到', type: 'bool', hint: '关闭后用户端签到入口隐藏，已发放的积分不受影响' },
       { key: 'checkin_base_points', label: '基础积分', type: 'int', suffix: '积分/次', hint: '未设置随机范围时的默认值' },
       { key: 'checkin_base_min', label: '基础积分下限', type: 'int', suffix: '积分/次', hint: '随机范围下限，默认跟随基础积分' },
       { key: 'checkin_base_max', label: '基础积分上限', type: 'int', suffix: '积分/次', hint: '随机范围上限，与下限相同=固定值' },
       { key: 'checkin_streak_bonus', label: '连签加成', type: 'int', suffix: '积分/天', hint: '每多连签一天额外增加的积分' },
       { key: 'checkin_streak_max_bonus', label: '加成上限', type: 'int', suffix: '积分', hint: '连签加成的封顶值' },
-      { key: 'checkin_penalty_pct', label: '惩罚概率', type: 'int', suffix: '%', hint: '0=关闭惩罚' },
-      { key: 'checkin_penalty_min', label: '惩罚下限', type: 'int', suffix: '积分' },
-      { key: 'checkin_penalty_max', label: '惩罚上限', type: 'int', suffix: '积分' },
+      { key: 'checkin_penalty_pct', label: '惩罚概率', type: 'int', suffix: '%', hint: '0=关闭惩罚', advanced: true },
+      { key: 'checkin_penalty_min', label: '惩罚下限', type: 'int', suffix: '积分', hint: '单次惩罚最少扣多少积分。推荐值：1', advanced: true },
+      { key: 'checkin_penalty_max', label: '惩罚上限', type: 'int', suffix: '积分', hint: '单次惩罚最多扣多少积分。推荐值：3', advanced: true },
     ],
   },
   {
@@ -110,14 +116,14 @@ const GROUPS: Group[] = [
     desc: '公益服活力值：每日 00:00 自动扣减，低于阈值限制观影，签到/积分可恢复',
     icon: Zap,
     fields: [
-      { key: 'vitality_enabled', label: '启用活力值', type: 'bool' },
+      { key: 'vitality_enabled', label: '启用活力值', type: 'bool', hint: '关闭后不再每日扣减，公益服账号不会因此被限制' },
       { key: 'vitality_max', label: '活力上限', type: 'int', suffix: '点', hint: '活力值上限，默认 14' },
       { key: 'vitality_daily_cost', label: '每日扣减', type: 'int', suffix: '点/天', hint: '每天 00:00 自动扣除' },
       { key: 'vitality_limit_threshold', label: '观影阈值', type: 'int', suffix: '点', hint: '低于此值限制观影' },
       { key: 'vitality_point_cost', label: '续活兑换率', type: 'int', suffix: '积分/点', hint: '1 点活力需要的积分数' },
       { key: 'vitality_watch_reward', label: '观影奖励', type: 'int', suffix: '点', hint: '每次有效观影奖励的活力值' },
       { key: 'vitality_daily_gain_limit', label: '每日获取上限', type: 'int', suffix: '点/天', hint: '每日通过签到/观影免费获取的上限（0=不限）' },
-      { key: 'vitality_archive_clamp', label: '归档钳制', type: 'int', suffix: '点', hint: '归档/退群时活力值钳制上限' },
+      { key: 'vitality_archive_clamp', label: '归档钳制', type: 'int', suffix: '点', hint: '归档/退群时活力值钳制上限', advanced: true },
     ],
   },
   {
@@ -126,7 +132,7 @@ const GROUPS: Group[] = [
     desc: '兑换开关与用户每日求片上限',
     icon: TicketCheck,
     fields: [
-      { key: 'exchange_enabled', label: '启用兑换', type: 'bool' },
+      { key: 'exchange_enabled', label: '启用兑换', type: 'bool', hint: '关闭后兑换码无法使用，求片功能一并关闭' },
       {
         key: 'media_seek_daily_limit',
         label: '每日求片上限',
@@ -142,12 +148,12 @@ const GROUPS: Group[] = [
     desc: '易支付兼容网关；留空的密钥项表示保持不变',
     icon: Wallet,
     fields: [
-      { key: 'recharge_enabled', label: '启用充值', type: 'bool' },
-      { key: 'subscription_purchase_enabled', label: '启用订阅购买', type: 'bool' },
+      { key: 'recharge_enabled', label: '启用充值', type: 'bool', hint: '关闭后用户端充值入口隐藏，已有余额不受影响' },
+      { key: 'subscription_purchase_enabled', label: '启用订阅购买', type: 'bool', hint: '关闭后用户买不了新订阅，已有的订阅继续有效' },
       { key: 'payment_gateway_url', label: '网关地址', type: 'str', hint: '例如 https://pay.example.com/' },
-      { key: 'payment_partner_id', label: '商户 ID', type: 'str' },
+      { key: 'payment_partner_id', label: '商户 ID', type: 'str', hint: '易支付后台「商户信息」里的商户号' },
       { key: 'payment_partner_key', label: '商户密钥', type: 'secret', hint: '已配置时显示为 ******，留空不修改' },
-      { key: 'payment_qqpay_enabled', label: '启用 QQ 钱包', type: 'bool' },
+      { key: 'payment_qqpay_enabled', label: '启用 QQ 钱包', type: 'bool', hint: '网关配好后才生效：多一种收款方式' },
       { key: 'site_url', label: '站点地址', type: 'str', hint: '用于支付回调，必须是外网可访问地址' },
     ],
   },
@@ -211,9 +217,9 @@ const GROUPS: Group[] = [
     desc: '邀请奖励与下级消费返利比例',
     icon: UserPlus,
     fields: [
-      { key: 'invitation_enabled', label: '启用邀请', type: 'bool' },
-      { key: 'invitation_reward_points', label: '邀请人奖励', type: 'int', suffix: '积分' },
-      { key: 'invitation_invitee_reward_points', label: '被邀请人奖励', type: 'int', suffix: '积分' },
+      { key: 'invitation_enabled', label: '启用邀请', type: 'bool', hint: '关闭后邀请链接失效，不再产生新的奖励和返利' },
+      { key: 'invitation_reward_points', label: '邀请人奖励', type: 'int', suffix: '积分', hint: '每成功邀请一人，邀请人拿到的积分。推荐值：100' },
+      { key: 'invitation_invitee_reward_points', label: '被邀请人奖励', type: 'int', suffix: '积分', hint: '新人用邀请链接注册时多拿的积分。推荐值：50' },
       { key: 'invitation_rebate_percent', label: '消费返利', type: 'int', suffix: '%', hint: '下级充值/消费时邀请人可得的比例' },
       {
         key: 'promotion_reward_enabled',
@@ -231,8 +237,8 @@ const GROUPS: Group[] = [
         ],
         hint: '选「有效期」时给邀请人叠加会员天数，归属当前服',
       },
-      { key: 'promotion_reward_amount', label: '推广奖励·余额数值', type: 'int', suffix: '积分', hint: '类型为「余额」时生效；0 = 不发' },
-      { key: 'promotion_reward_days', label: '推广奖励·有效期天数', type: 'int', suffix: '天', hint: '类型为「有效期」时生效；0 = 不发' },
+      { key: 'promotion_reward_amount', label: '推广奖励·余额数值', type: 'int', suffix: '积分', hint: '类型为「余额」时生效；0 = 不发', advanced: true },
+      { key: 'promotion_reward_days', label: '推广奖励·有效期天数', type: 'int', suffix: '天', hint: '类型为「有效期」时生效；0 = 不发', advanced: true },
     ],
   },
   {
@@ -241,7 +247,7 @@ const GROUPS: Group[] = [
     desc: 'PlaybackInfo 请求时预读文件头（默认 10MB），让起播更快；并发超限直接跳过不排队、不抢播放链路',
     icon: Flame,
     fields: [
-      { key: 'playback_prewarm_enabled', label: '启用预热', type: 'bool' },
+      { key: 'playback_prewarm_enabled', label: '启用预热', type: 'bool', hint: '打开后起播更快；并发超限会自动跳过，不影响正常播放' },
       {
         key: 'playback_prewarm_bytes',
         label: '预热大小',
@@ -261,6 +267,7 @@ const GROUPS: Group[] = [
         type: 'int',
         suffix: '秒',
         hint: '同一文件在此时间内只预热一次，默认 300；填 0 关闭去重',
+        advanced: true,
       },
       {
         key: 'playback_prewarm_timeout_seconds',
@@ -268,6 +275,7 @@ const GROUPS: Group[] = [
         type: 'int',
         suffix: '秒',
         hint: '单次预热超过此时长自动放弃，默认 30',
+        advanced: true,
       },
       {
         key: 'playback_prewarm_chunk_bytes',
@@ -275,6 +283,7 @@ const GROUPS: Group[] = [
         type: 'int',
         suffix: '字节',
         hint: '单次读取块大小，越小对播放链路越温和，默认 262144（256KB）',
+        advanced: true,
       },
     ],
   },
@@ -284,7 +293,7 @@ const GROUPS: Group[] = [
     desc: '一键开启：强制域名访问（防 IP 直连） + 自动信任 CF 真实 IP + 播放地址统一用加速域名',
     icon: Rocket,
     fields: [
-      { key: 'stream_accel_enabled', label: '启用加速', type: 'bool' },
+      { key: 'stream_accel_enabled', label: '启用加速', type: 'bool', hint: '打开后只能用加速域名访问，IP 直连会被拒绝' },
       {
         key: 'stream_accel_domain',
         label: '加速域名',
@@ -335,7 +344,6 @@ const groupNavRef = ref<HTMLElement | null>(null)
 function resetGroupNavScroll() {
   nextTick(() => { if (groupNavRef.value) groupNavRef.value.scrollLeft = 0 })
 }
-const savingGroup = ref('')
 const settings = reactive<EconomySettings>({})
 const original = ref<EconomySettings>({})
 
@@ -348,8 +356,34 @@ const reg = reactive({
   ratelimitMax: 5,
   ratelimitWindow: 3600,
 })
-const regSaving = ref(false)
 const regFormRef = ref<FormInstance>()
+/**
+ * 注册策略的"干净"快照：load() 成功后同步，用于全局脏检查。
+ * legacyCode 是展示态（DB 残留 code 的提示），不参与脏比较。
+ */
+const regOriginal = ref({
+  mode: 'open',
+  message: '',
+  ratelimitEnabled: true,
+  ratelimitMax: 5,
+  ratelimitWindow: 3600,
+})
+const regDirty = computed(() =>
+  reg.mode !== regOriginal.value.mode
+  || reg.message !== regOriginal.value.message
+  || reg.ratelimitEnabled !== regOriginal.value.ratelimitEnabled
+  || reg.ratelimitMax !== regOriginal.value.ratelimitMax
+  || reg.ratelimitWindow !== regOriginal.value.ratelimitWindow,
+)
+function snapshotReg() {
+  regOriginal.value = {
+    mode: reg.mode,
+    message: reg.message,
+    ratelimitEnabled: reg.ratelimitEnabled,
+    ratelimitMax: reg.ratelimitMax,
+    ratelimitWindow: reg.ratelimitWindow,
+  }
+}
 const regRules: FormRules = {
   ratelimitMax: [
     { type: 'number', min: 1, max: 10000, message: '次数需在 1–10000 之间', trigger: 'blur' },
@@ -553,6 +587,7 @@ async function load() {
     reg.ratelimitWindow = typeof registration.ratelimit_window === 'number' && Number.isFinite(registration.ratelimit_window)
       ? Math.floor(registration.ratelimit_window)
       : 3600
+    snapshotReg()
   } catch {
     // 错误提示由 HTTP 拦截器统一处理
     paramsError.value = true
@@ -575,7 +610,6 @@ onMounted(async () => {
 const hotlink = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
 const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
 const hotlinkLoading = ref(false)
-const hotlinkSaving = ref(false)
 
 function applyHotlink(data: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number }) {
   hotlink.enabled = !!data.enabled
@@ -601,29 +635,28 @@ const hotlinkDirty = computed(() =>
   || hotlink.strm_sig_ttl !== hotlinkOriginal.strm_sig_ttl,
 )
 
-async function saveHotlink() {
+/** 防盗链保存核心：返回是否成功，失败时拦截器/校验已提示。 */
+async function saveHotlinkCore(): Promise<boolean> {
   // 前端先行校验：与后端 play_sign.write_config 的范围保持一致
   if (!Number.isInteger(hotlink.play_sign_ttl) || hotlink.play_sign_ttl < 60 || hotlink.play_sign_ttl > 86400) {
     ElMessage.error('播放签名有效期需在 60~86400 秒之间')
-    return
+    return false
   }
   if (!Number.isInteger(hotlink.strm_sig_ttl) || hotlink.strm_sig_ttl < 300 || hotlink.strm_sig_ttl > 86400) {
     ElMessage.error('.strm 签名有效期需在 300~86400 秒之间')
-    return
+    return false
   }
   const payload: HotlinkConfigPayload = {
     enabled: hotlink.enabled,
     play_sign_ttl: hotlink.play_sign_ttl,
     strm_sig_ttl: hotlink.strm_sig_ttl,
   }
-  hotlinkSaving.value = true
   try {
     applyHotlink(await updateHotlinkConfig(payload))
-    ElMessage.success('「防盗链」已保存')
+    return true
   } catch {
     // 拦截器已提示
-  } finally {
-    hotlinkSaving.value = false
+    return false
   }
 }
 
@@ -632,8 +665,23 @@ function scrollToGroup(id: string) {
   document.getElementById(`group-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-/** 「重新载入」：当前页签用得上的都重拉一遍 */
-function reloadAll() {
+/**
+ * 「重新载入」：当前页签用得上的都重拉一遍。
+ * 有未保存的改动时先弹确认——以前这里是静默丢弃：改了东西点一下重载，
+ * 别的卡片里刚改的内容就被 load() 的 Object.assign 悄悄冲掉了。
+ */
+async function reloadAll() {
+  if (anyDirty.value) {
+    try {
+      await ElMessageBox.confirm(
+        `有 ${dirtyCount.value} 处改动还没保存，重新载入会把它们丢掉。`,
+        '重新载入会丢弃未保存的改动',
+        { type: 'warning', confirmButtonText: '继续载入', cancelButtonText: '再想想' },
+      )
+    } catch {
+      return
+    }
+  }
   loadCapabilities()
   load()
   loadHotlink()
@@ -646,7 +694,30 @@ function isDirty(group: Group): boolean {
   )
 }
 
-async function saveGroup(group: Group) {
+/** 高级折叠：每卡默认收起。el-collapse 的 v-model，按卡 id 存展开态。 */
+const advancedOpen = reactive<Record<string, string[]>>({})
+// 预置空数组：v-model 拿到 undefined 时 el-collapse 展开会异常，默认收起即 []
+for (const g of GROUPS) {
+  if (g.fields.some((f) => f.advanced)) advancedOpen[g.id] = []
+}
+const commonFields = (g: Group): Field[] => g.fields.filter((f) => !f.advanced)
+const advancedFields = (g: Group): Field[] => g.fields.filter((f) => f.advanced)
+const hasAdvanced = (g: Group): boolean => g.fields.some((f) => f.advanced)
+
+/**
+ * 全局脏检查：运营参数页签里"改了没存"的地方总数。
+ * 经济分组 / 注册策略 / 防盗链三处各自独立 endpoint，这里只计数，
+ * 保存时 saveAll 按顺序逐个调。
+ */
+const dirtyGroups = computed(() => GROUPS.filter((g) => isDirty(g)))
+const dirtyCount = computed(() =>
+  dirtyGroups.value.length + (regDirty.value ? 1 : 0) + (hotlinkDirty.value ? 1 : 0),
+)
+const anyDirty = computed(() => dirtyCount.value > 0)
+const savingAll = ref(false)
+
+/** 经济分组保存核心：返回是否成功，失败时拦截器已提示。 */
+async function saveGroupCore(group: Group): Promise<boolean> {
   const payload: EconomySettings = {}
   for (const f of group.fields) {
     if (!isSupported(f.key)) continue
@@ -660,15 +731,13 @@ async function saveGroup(group: Group) {
       payload[f.key] = raw
     }
   }
-  savingGroup.value = group.id
   try {
     await updateEconomySettings(payload)
-    ElMessage.success(`「${group.title}」已保存`)
     await refreshEconomy(Object.keys(payload))
+    return true
   } catch {
     // 拦截器已提示
-  } finally {
-    savingGroup.value = ''
+    return false
   }
 }
 
@@ -679,24 +748,24 @@ const paymentReady = computed(() => {
   return Boolean(url && pid && keySet)
 })
 
-async function saveRegistration() {
+/** 注册策略保存核心：返回是否成功，校验失败/接口失败时已提示。 */
+async function saveRegistrationCore(): Promise<boolean> {
   try {
     await regFormRef.value?.validate()
   } catch {
-    return
+    return false
   }
   // 注册限流前端校验（C5）——保留作为双保险
   const rlMax = Number.parseInt(String(reg.ratelimitMax), 10)
   const rlWindow = Number.parseInt(String(reg.ratelimitWindow), 10)
   if (!Number.isFinite(rlMax) || rlMax < 1) {
     ElMessage.error('窗口内最大注册次数必须大于等于 1')
-    return
+    return false
   }
   if (!Number.isFinite(rlWindow) || rlWindow < 60) {
     ElMessage.error('限流窗口必须大于等于 60 秒')
-    return
+    return false
   }
-  regSaving.value = true
   try {
     await updateRegistrationSettings({
       mode: reg.mode,
@@ -705,13 +774,65 @@ async function saveRegistration() {
       ratelimit_max: rlMax,
       ratelimit_window: rlWindow,
     })
-    ElMessage.success('注册策略已保存')
     reg.legacyCode = false
+    snapshotReg()
+    return true
   } catch {
     // 拦截器已提示
-  } finally {
-    regSaving.value = false
+    return false
   }
+}
+
+/**
+ * 全局保存：把运营参数页签里所有"改了没存"的地方一次存完。
+ * 三处走各自的独立 endpoint（注册策略带表单校验 → 经济分组 → 防盗链带范围校验），
+ * 某处失败不影响其它继续存，最后汇总报一次，不再逐个弹成功提示。
+ */
+async function saveAll() {
+  if (!anyDirty.value || savingAll.value) return
+  savingAll.value = true
+  const failed: string[] = []
+  let saved = 0
+  try {
+    if (regDirty.value) {
+      if (await saveRegistrationCore()) saved += 1
+      else failed.push('注册策略')
+    }
+    for (const g of dirtyGroups.value) {
+      if (await saveGroupCore(g)) saved += 1
+      else failed.push(g.title)
+    }
+    if (hotlinkDirty.value) {
+      if (await saveHotlinkCore()) saved += 1
+      else failed.push('防盗链')
+    }
+  } finally {
+    savingAll.value = false
+  }
+  if (failed.length) {
+    ElMessage.error(`「${failed.join('、')}」没存上，其他 ${saved} 处已保存，可再点一次全部保存重试`)
+  } else {
+    ElMessage.success(`已全部保存（${saved} 处）`)
+  }
+}
+
+/**
+ * 放弃：把运营参数页签里所有未保存的改动丢掉，回到服务端当前值。
+ * load() 会同时重置经济分组与注册策略，loadHotlink() 重置防盗链。
+ */
+async function discardAll() {
+  if (!anyDirty.value) return
+  try {
+    await ElMessageBox.confirm(
+      '放弃后，你刚才改的、还没保存的内容都会丢掉，页面回到服务端当前的值。',
+      '放弃未保存的改动？',
+      { type: 'warning', confirmButtonText: '放弃改动', cancelButtonText: '再想想' },
+    )
+  } catch {
+    return
+  }
+  load()
+  loadHotlink()
 }
 
 // ==================== 危险操作（Phase 5） ====================
@@ -876,6 +997,16 @@ watch(
           <!-- 分组目录：按三段归类一眼看全，带未保存标记，点击跳转；滚动时吸顶 -->
           <!-- 吸顶层与横向滚动层分离：sticky 元素自身不再是滚动容器，避免移动端吸顶态滚动原点偏移 -->
           <div class="group-nav-sticky">
+          <!-- 全局保存条：运营参数页签里改了任何一处，只在这里点一次就全存（注册策略/经济分组/防盗链各自独立 endpoint，按顺序逐个存） -->
+          <div v-if="anyDirty" class="savebar" role="status">
+            <span class="savebar-text">有 <strong>{{ dirtyCount }}</strong> 处改动还没保存</span>
+            <span class="savebar-actions">
+              <el-button size="small" @click="discardAll">放弃</el-button>
+              <el-button size="small" type="primary" :loading="savingAll" @click="saveAll">
+                <Save :size="14" class="btn-ico" />全部保存
+              </el-button>
+            </span>
+          </div>
           <nav ref="groupNavRef" class="group-nav" aria-label="运营参数分组">
             <div v-for="sec in SECTIONS" :key="sec.id" class="group-nav-sec">
               <span class="group-nav-label">{{ sec.title }}</span>
@@ -896,6 +1027,7 @@ watch(
                 @click="scrollToGroup(g.id)"
               >
                 <component :is="g.icon" :size="13" />{{ g.title }}
+                <span v-if="hasAdvanced(g)" class="chip-adv" title="含高级调优项，默认收起">高级</span>
                 <span v-if="isDirty(g)" class="chip-dot" aria-label="有未保存的改动" />
               </button>
               <button
@@ -924,6 +1056,9 @@ watch(
             description="决定新用户如何进入站点"
             class="group-card"
           >
+            <template v-if="regDirty" #actions>
+              <span class="au-badge au-badge-amber">未保存</span>
+            </template>
             <el-form ref="regFormRef" :model="reg" :rules="regRules" label-position="top" class="field-form">
               <el-form-item label="注册模式">
                 <div class="field-stack">
@@ -965,14 +1100,6 @@ watch(
                 </div>
               </el-form-item>
             </el-form>
-
-            <template #footer>
-              <div class="card-footer">
-                <el-button type="primary" :loading="regSaving" @click="saveRegistration">
-                  <Save :size="14" class="btn-ico" />保存注册策略
-                </el-button>
-              </div>
-            </template>
           </SectionCard>
 
           <!-- 支付状态提示：放在「付费与支付」段首，紧挨着要配的网关字段 -->
@@ -1003,7 +1130,7 @@ watch(
 
             <el-form label-position="top" class="field-form field-grid">
               <el-form-item
-                v-for="f in g.fields"
+                v-for="f in commonFields(g)"
                 :key="f.key"
                 :label="f.label"
                 :class="{ 'is-wide': f.type === 'str' || f.type === 'secret', 'is-unsupported': !isSupported(f.key) }"
@@ -1056,18 +1183,68 @@ watch(
               </el-form-item>
             </el-form>
 
-            <template #footer>
-              <div class="card-footer">
-                <el-button
-                  type="primary"
-                  :disabled="!isDirty(g)"
-                  :loading="savingGroup === g.id"
-                  @click="saveGroup(g)"
-                >
-                  <Save :size="14" class="btn-ico" />保存{{ g.title }}
-                </el-button>
-              </div>
-            </template>
+            <!-- 高级调优：默认收起。收的是"调了也不影响主流程"的参数（去重窗口/超时/分块大小/惩罚幅度等），总开关与日常要改的核心值永远留在外面 -->
+            <el-collapse v-if="hasAdvanced(g)" v-model="advancedOpen[g.id]" class="advanced-collapse">
+              <el-collapse-item name="adv">
+                <template #title>
+                  <span class="advanced-title">高级调优<span class="advanced-sub">（一般不用动）</span></span>
+                </template>
+                <el-form label-position="top" class="field-form field-grid">
+                  <el-form-item
+                    v-for="f in advancedFields(g)"
+                    :key="f.key"
+                    :label="f.label"
+                    :class="{ 'is-wide': f.type === 'str' || f.type === 'secret', 'is-unsupported': !isSupported(f.key) }"
+                  >
+                    <div class="field-stack">
+                      <div class="field-control">
+                        <el-switch
+                          v-if="f.type === 'bool'"
+                          v-model="settings[f.key]"
+                          active-value="true"
+                          inactive-value="false"
+                          :disabled="!isSupported(f.key)"
+                        />
+                        <el-input
+                          v-else-if="f.type === 'int'"
+                          v-model="settings[f.key]"
+                          type="number"
+                          min="0"
+                          class="num-input"
+                          :disabled="!isSupported(f.key)"
+                        />
+                        <el-select
+                          v-else-if="f.choices"
+                          v-model="settings[f.key]"
+                          class="w-full"
+                          :disabled="!isSupported(f.key)"
+                        >
+                          <el-option
+                            v-for="c in f.choices"
+                            :key="c.value"
+                            :label="c.label"
+                            :value="c.value"
+                          />
+                        </el-select>
+                        <el-input
+                          v-else
+                          v-model="settings[f.key]"
+                          :type="f.type === 'secret' ? 'password' : 'text'"
+                          :show-password="f.type === 'secret'"
+                          :placeholder="f.type === 'secret' ? '留空表示不修改' : ''"
+                          :disabled="!isSupported(f.key)"
+                        />
+                        <span v-if="f.suffix" class="field-suffix">{{ f.suffix }}</span>
+                      </div>
+                      <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
+                      <span v-if="!isSupported(f.key)" class="field-hint warn">
+                        当前后端未开放此项的写入（不在 /economy/settings 返回里），保存会被忽略，已置灰。
+                      </span>
+                    </div>
+                  </el-form-item>
+                </el-form>
+              </el-collapse-item>
+            </el-collapse>
           </SectionCard>
 
           <!-- 防盗链：独立卡片（TTL 需要范围校验，走独立 endpoint），归在「播放与风控」段末 -->
@@ -1126,19 +1303,6 @@ watch(
                 </div>
               </el-form-item>
             </el-form>
-
-            <template #footer>
-              <div class="card-footer">
-                <el-button
-                  type="primary"
-                  :disabled="!hotlinkDirty"
-                  :loading="hotlinkSaving"
-                  @click="saveHotlink"
-                >
-                  <Save :size="14" class="btn-ico" />保存防盗链
-                </el-button>
-              </div>
-            </template>
           </SectionCard>
           </template>
 
@@ -1426,6 +1590,36 @@ watch(
   border-radius: var(--au-r-full);
   background: var(--au-primary);
 }
+/* 分组 chip 上的"高级"角标：这张卡里有默认收起的高级调优项 */
+.chip-adv {
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-border);
+  background: var(--au-surface-2);
+  color: var(--au-text-3);
+}
+/* 全局保存条：吸顶容器内，有未保存改动时才出现；改了任何一处只在这里点一次 */
+.savebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border: 1px solid var(--au-primary-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-primary-soft);
+}
+.savebar-text { font-size: 13px; color: var(--au-text-2); }
+.savebar-text strong { color: var(--au-primary); }
+.savebar-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+/* 高级调优折叠：默认收起，收的是"调了也不影响主流程"的参数 */
+.advanced-collapse { margin-top: 2px; border-top: 1px dashed var(--au-border); }
+.advanced-collapse :deep(.el-collapse-item__header) { border-bottom: none; }
+.advanced-title { font-size: 13px; font-weight: 600; color: var(--au-text-2); }
+.advanced-sub { font-weight: 400; font-size: 12px; color: var(--au-text-3); margin-left: 4px; }
 /* 跳转落点别被顶栏压住 */
 .group-card { scroll-margin-top: 140px; }
 
