@@ -9,20 +9,20 @@
       </header>
 
       <!-- 时间线 -->
-      <section class="v4-sec">
+      <section class="v4-sec" :aria-busy="loading">
         <div class="v4-sec-title">🧭 最近抵达</div>
-        <div class="v4-sec-sub">打了 √ 的日期表示已确认到货</div>
+        <div class="v4-sec-sub">红点是今天，圆圈是近几天的日子</div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
-        <div v-else-if="error" class="v4-err">探险地图加载失败：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
+        <div v-else-if="error" class="v4-err" role="alert">探险地图加载失败：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
         <div v-else>
           <div v-if="days.length || teaserStandalone" class="timeline">
           <div
-            v-for="(day, di) in days"
+            v-for="day in days"
             :key="day.date"
             class="tday"
-            :class="{ hot: di === 0 }"
+            :class="{ hot: isToday(day.date) }"
           >
-            <div class="tdate">{{ dayLabel(day.date, di) }}</div>
+            <div class="tdate">{{ dayLabel(day.date) }}</div>
             <div class="cards">
               <div
                 v-for="item in day.items.slice(0, expanded.has(day.date) ? day.items.length : 3)"
@@ -38,6 +38,7 @@
                   class="want"
                   :class="{ on: plan.has(item.Id) }"
                   :aria-pressed="plan.has(item.Id)"
+                  :aria-label="item.Name + ' 加入计划'"
                   @click="togglePlan(item.Id)"
                 >
                   <span class="lbl">{{ plan.has(item.Id) ? '已加入 ✓' : '想去' }}</span>
@@ -87,6 +88,8 @@
         <!-- R41：误点"想去"只能再点一次取消 —— 加清空按钮一键清零（v1 计划不落库，清掉不影响后端） -->
         <button type="button" class="plan-clear" @click="clearPlan">清空</button>
       </div>
+      <!-- R48B-14：清空后的读屏播报（常驻，不随 plan-bar 移除） -->
+      <div class="sr-only" role="status">{{ planLiveMsg }}</div>
     </div>
     <PanelTabbar />
   </div>
@@ -103,6 +106,8 @@ const router = useRouter()
 const days = ref<CalendarDay[]>([])
 const loading = ref(true)
 const error = ref('')
+/* R48B-10：请求序号——只有最新请求能改 loading/状态 */
+let loadSeq = 0
 
 /** 保密新大陆占位卡：undefined = 旧后端（无 teaser 字段），回退静态悬念卡 */
 const teaser = ref<CalendarTeaser | null | undefined>(undefined)
@@ -158,11 +163,21 @@ function fmt(d: Date): string {
   return `${d.getFullYear()}-${m}-${day}`
 }
 
-function dayLabel(date: string, idx: number): string {
+function dayLabel(date: string): string {
   const [, m, d] = date.split('-').map(Number)
-  if (idx === 0) return `今天 · ${m}月${d}日`
-  if (idx === 1) return `昨天 · ${m}月${d}日`
+  if (isToday(date)) return `今天 · ${m}月${d}日`
+  if (isYesterday(date)) return `昨天 · ${m}月${d}日`
   return `${m}月${d}日`
+}
+
+/* R48B-12：用日期本身判定今天/昨天，不用数组下标（后端顺序变化时下标不可靠） */
+function isToday(date: string): boolean {
+  return date === fmt(new Date())
+}
+function isYesterday(date: string): boolean {
+  const y = new Date()
+  y.setDate(y.getDate() - 1)
+  return date === fmt(y)
 }
 
 function typeIcon(t?: string | null): string {
@@ -186,9 +201,16 @@ function togglePlan(id: string) {
   plan.value = next
 }
 
+/** R48B-14：清空计划后的读屏播报（role=status，不抢焦点） */
+const planLiveMsg = ref('')
+let planLiveTimer: number | undefined
+
 /** R41：探险计划一键清空（v1 不落库，只清本地 Set） */
 function clearPlan() {
   plan.value = new Set()
+  planLiveMsg.value = '已清空计划'
+  window.clearTimeout(planLiveTimer)
+  planLiveTimer = window.setTimeout(() => { planLiveMsg.value = '' }, 1500)
 }
 
 /** 展开某天全部藏宝（"还有 N 件"按钮用） */
@@ -201,6 +223,7 @@ function toggleExpand(date: string) {
 }
 
 async function load() {
+  const mySeq = ++loadSeq
   loading.value = true
   error.value = ''
   try {
@@ -217,24 +240,50 @@ async function load() {
     if (e instanceof StaleResponseError) return
     error.value = humanizeError(e)
   } finally {
-    loading.value = false
+    // R48B-10：旧请求不许碰 loading——只有最新请求能关闭它
+    // （catch 里的 return 仍会执行 finally，所以必须用序号守卫）
+    if (mySeq === loadSeq) loading.value = false
   }
 }
 
-/** 跨过揭晓日自动翻牌：对齐到次日 0 点重拉一次，一次性定时器 */
+/** 跨过揭晓日自动翻牌：对齐到次日 0 点重拉，自续期定时器 */
 let midnightTimer = 0
+/* R48B-11：上次成功发起 load() 时的本地日期（visibilitychange 跨天判定用） */
+let lastLoadDay = ''
 function scheduleMidnightReload() {
   const now = new Date()
   const next = new Date(now)
   next.setHours(24, 0, 0, 0)
   const delay = Math.max(1000, next.getTime() - now.getTime())
   window.clearTimeout(midnightTimer)
-  midnightTimer = window.setTimeout(() => { void load() }, delay)
+  midnightTimer = window.setTimeout(() => {
+    lastLoadDay = fmt(new Date())
+    void load()
+    scheduleMidnightReload()
+  }, delay)
 }
 
-onMounted(() => { load(); scheduleMidnightReload() })
+/* R48B-11：从后台切回可见时，若已跨天则重拉（"今天/昨天"标签不错位） */
+function onVisibilityChange() {
+  if (document.visibilityState !== 'visible') return
+  const today = fmt(new Date())
+  if (today === lastLoadDay) return
+  lastLoadDay = today
+  void load()
+}
 
-onUnmounted(() => { window.clearTimeout(midnightTimer) })
+onMounted(() => {
+  lastLoadDay = fmt(new Date())
+  load()
+  scheduleMidnightReload()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
+onUnmounted(() => {
+  window.clearTimeout(midnightTimer)
+  window.clearTimeout(planLiveTimer)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
 </script>
 
 <style scoped>
@@ -347,7 +396,8 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
 .empty-day { font-size: 11px; color: var(--ink2); padding: 2px 0; }
 .plan-bar {
   position: sticky;
-  bottom: 90px;
+  /* R48B-13：跟随 tabbar 高度 + iOS 安全区，不再写死 90px */
+  bottom: calc(var(--tabbar-h, 56px) + env(safe-area-inset-bottom, 0px) + 12px);
   margin: 16px 20px 0;
   background: var(--ink);
   color: var(--paper, #F6F1E7);
@@ -360,7 +410,7 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   box-shadow: 0 4px 14px rgba(42, 38, 32, 0.25);
 }
 .plan-bar b { color: var(--ember, #FFB25E); }
-/* R41：清空按钮 —— 文字按钮，触点纵向 44px（透明 padding + 负 margin，条的高度不变） */
+/* R41：清空按钮 —— 文字按钮，触点纵向 44px、横向触点 ≥44px（透明 padding + 负 margin，条的高度不变） */
 .plan-bar .plan-clear {
   background: none;
   border: none;
@@ -368,9 +418,22 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   font-size: 13px;
   font-weight: 700;
   font-family: inherit;
-  padding: 15px 8px;
-  margin: -15px -8px -15px 0;
+  padding: 15px 10px;
+  margin: -15px -10px -15px 0;
   cursor: pointer;
 }
 .plan-bar .plan-clear:focus-visible { outline: 2px solid var(--ember, #FFB25E); outline-offset: -4px; }
+
+/* R48B-14：读屏播报节点（视觉隐藏） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 </style>

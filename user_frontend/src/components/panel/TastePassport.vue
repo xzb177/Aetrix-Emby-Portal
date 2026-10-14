@@ -1,8 +1,10 @@
 <template>
-  <div class="v4-passport" role="list" aria-label="口味护照">
-    <h3>口味护照<template v-if="!rawMissing"> · 已集 {{ stampedCount }}/{{ tastes.length }}</template></h3>
-    <div v-if="rawMissing" class="v4-passport-empty">口味数据没拿到，刷新试试</div>
-    <div v-else class="v4-stamps">
+  <section class="v4-passport" aria-labelledby="taste-passport-title">
+    <h3 id="taste-passport-title">口味护照<template v-if="!rawMissing"><span aria-live="polite"> · 已集 {{ stampedCount }}/{{ tastes.length }}</span></template></h3>
+    <div v-if="loading" class="v4-skeleton" style="height:120px" aria-hidden="true"></div>
+    <div v-else-if="error" class="v4-passport-empty" role="alert">{{ error }}<button type="button" class="v4-retry" @click="emit('retry')">重试</button></div>
+    <div v-else-if="rawMissing" class="v4-passport-empty" role="status">口味数据没拿到，刷新试试</div>
+    <div v-else class="v4-stamps" role="list">
       <div
         v-for="t in tastes"
         :key="t.key"
@@ -15,7 +17,7 @@
         <span class="nm">{{ t.name }}</span>
       </div>
     </div>
-  </div>
+  </section>
 </template>
 
 <script setup lang="ts">
@@ -42,10 +44,17 @@ const TASTE_ORDER: Array<{ key: string; emoji: string; name: string }> = [
 const props = defineProps<{
   /** 后端 tastes：{taste_key: {name, stamped, count}} */
   raw: Record<string, TasteStamp> | undefined
+  /** 加载中：显示骨架 */
+  loading?: boolean
+  /** 加载失败文案：显示错误+重试 */
+  error?: string
 }>()
 
-/** 整表没拿到：诚实文案（口径与 CollectorView 一致），不画假章 */
-const rawMissing = computed(() => !props.raw)
+/** R48A-10：重试事件，父组件接上后触发重载 */
+const emit = defineEmits<{ (e: 'retry'): void }>()
+
+/** 整表没拿到（含空对象）：诚实文案（口径与 CollectorView 一致），不画假章 */
+const rawMissing = computed(() => !props.raw || Object.keys(props.raw).length === 0)
 
 const tastes = computed(() =>
   TASTE_ORDER.map((o) => {
@@ -73,7 +82,7 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
   overflow: hidden;
 }
 .v4-passport::after {
-  content: "口味护照";
+  content: "口味护照" / "";
   position: absolute;
   bottom: 6px;
   right: 10px;
@@ -97,6 +106,8 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 10px;
+  /* R48A-27：底部留白，避开右下角水印 */
+  padding-bottom: 18px;
 }
 .v4-stampbox {
   aspect-ratio: 1;
@@ -108,7 +119,7 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
   justify-content: center;
   font-size: 11px;
   gap: 4px;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.75);
 }
 .v4-stampbox .em {
   font-size: 20px;
@@ -117,6 +128,13 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
 }
 .v4-stampbox .nm {
   font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v4-stampbox.got {
+  position: relative;
 }
 .v4-stampbox.got {
   border-style: solid;
@@ -129,8 +147,14 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
   opacity: 1;
 }
 .v4-stampbox.got::after {
-  content: "✓ 已集";
-  font-size: 9px;
+  /* R48A-23：替代文本置空，读屏器不再重复朗读（aria-label 已说明） */
+  content: "✓ 已集" / "";
+  font-size: 12px;
   color: var(--pulse-green, #9be08a);
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  text-align: center;
 }
 </style>

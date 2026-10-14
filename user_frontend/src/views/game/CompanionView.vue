@@ -1,6 +1,7 @@
 <template>
   <div class="v4-scope">
     <div class="v4-page">
+      <div class="sr-only" aria-live="polite">{{ liveMsg }}</div>
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">营地门口 · 组队处</span>
@@ -10,7 +11,7 @@
           🎒 已组队 <b>{{ info.invited_count ?? 0 }}</b> 人
           <span v-if="totalRebate > 0"> · 累计带路费 +{{ totalRebate }}⚡</span>
         </div>
-        <div v-else-if="loading" class="v4-skeleton" style="height:32px;width:60%;margin-top:10px"></div>
+        <div v-else-if="loading" class="v4-skeleton" aria-hidden="true" style="height:32px;width:60%;margin-top:10px"></div>
       </header>
 
       <!-- 加载失败 -->
@@ -23,8 +24,8 @@
 
       <template v-if="!failed">
         <!-- 举牌子：组队暗号 -->
-        <section class="v4-sec">
-          <div v-if="loading" class="v4-skeleton" style="height:190px"></div>
+        <section class="v4-sec" :aria-busy="loading">
+          <div v-if="loading" class="v4-skeleton" aria-hidden="true" style="height:190px"></div>
           <template v-else-if="disabled">
             <div class="board off">
               <div class="shout">📣 组 队 暗 号</div>
@@ -67,19 +68,20 @@
         </section>
 
         <!-- 已组队的伙伴 -->
-        <section v-if="!loading" class="v4-sec">
-          <div class="v4-sec-title">🎒 已组队 · {{ records.length }} 人</div>
+        <section v-if="!loading" class="v4-sec" :aria-busy="recordsLoading">
+          <h2 class="v4-sec-title">🎒 已组队 · {{ recordsErr ? '—' : recordsTotal + ' 人' }}</h2>
           <div class="v4-sec-sub">跟着你一起出发的伙伴</div>
           <div v-if="recordsErr" class="v4-err">
             伙伴名单加载失败，可能是网络波动<br>
-            <button class="v4-retry" @click="load">重试</button>
+            <button class="v4-retry" @click="loadRecords" :disabled="recordsLoading">{{ recordsLoading ? '重试中…' : '重试' }}</button>
           </div>
+          <div v-else-if="recordsLoading" class="v4-skeleton" aria-hidden="true" style="height:120px"></div>
           <div v-else-if="!records.length" class="v4-empty">
-            还没有伙伴同行<br>把组队暗号喊出去，第一个朋友在等你
+            {{ disabled ? '结伴同行当前未开启，开启后组队的伙伴会出现在这里' : '还没有伙伴同行' }}<template v-if="!disabled"><br>把组队暗号喊出去，第一个朋友在等你</template>
           </div>
           <div v-else class="mates">
             <div v-for="r in records" :key="r.id" class="mate">
-              <div class="av">{{ avatarOf(r.invitee_username) }}</div>
+              <div class="av" aria-hidden="true">{{ avatarOf(r.invitee_username) }}</div>
               <div class="mid">
                 <div class="nm">{{ r.invitee_username }}</div>
                 <div class="dt">{{ fmtDate(r.created_at) }} 加入营地</div>
@@ -87,22 +89,24 @@
               <div class="rw">+{{ r.reward_points }} ⚡</div>
             </div>
           </div>
+          <div v-if="!recordsErr && recordsTotal > 50" class="v4-sec-sub">仅显示最近 50 条</div>
         </section>
 
         <!-- 带路费账本 -->
-        <section v-if="!loading" class="v4-sec">
-          <div class="v4-sec-title">💰 带路费账本</div>
-          <div class="v4-sec-sub">伙伴充能量，你的回扣自动记在这里 · 累计 +{{ totalRebate }}⚡</div>
+        <section v-if="!loading" class="v4-sec" :aria-busy="rebatesLoading">
+          <h2 class="v4-sec-title">💰 带路费账本</h2>
+          <div class="v4-sec-sub">伙伴充能量，你的回扣自动记在这里 · {{ rebatesErr ? '累计带路费 数据获取失败' : '累计 +' + totalRebate + '⚡' }}</div>
           <div v-if="rebatesErr" class="v4-err">
             带路费账本加载失败，可能是网络波动<br>
-            <button class="v4-retry" @click="load">重试</button>
+            <button class="v4-retry" @click="loadRebates" :disabled="rebatesLoading">{{ rebatesLoading ? '重试中…' : '重试' }}</button>
           </div>
+          <div v-else-if="rebatesLoading" class="v4-skeleton" aria-hidden="true" style="height:120px"></div>
           <div v-else-if="!rebates.length" class="v4-empty">
-            账本还是空的<br>伙伴充能量后，回扣会自动记一笔
+            {{ disabled ? '结伴同行当前未开启，开启后伙伴充能量的回扣会记在这里' : '账本还是空的' }}<template v-if="!disabled"><br>伙伴充能量后，回扣会自动记一笔</template>
           </div>
           <div v-else class="mates">
             <div v-for="r in rebates" :key="r.id" class="mate">
-              <div class="av dot"></div>
+              <div class="av dot" aria-hidden="true"></div>
               <div class="mid">
                 <div class="nm">{{ r.description || '充能量回扣' }}</div>
                 <div class="dt">{{ fmtTime(r.created_at) }}</div>
@@ -113,19 +117,20 @@
         </section>
 
         <!-- 见面礼记录 -->
-        <section v-if="!loading" class="v4-sec">
-          <div class="v4-sec-title">🎁 见面礼记录</div>
+        <section v-if="!loading" class="v4-sec" :aria-busy="promotionsLoading">
+          <h2 class="v4-sec-title">🎁 见面礼记录</h2>
           <div class="v4-sec-sub">每带一位伙伴，营地当场发的谢礼</div>
           <div v-if="promotionsErr" class="v4-err">
             见面礼记录加载失败，可能是网络波动<br>
-            <button class="v4-retry" @click="load">重试</button>
+            <button class="v4-retry" @click="loadPromotions" :disabled="promotionsLoading">{{ promotionsLoading ? '重试中…' : '重试' }}</button>
           </div>
+          <div v-else-if="promotionsLoading" class="v4-skeleton" aria-hidden="true" style="height:120px"></div>
           <div v-else-if="!promotions.length" class="v4-empty">
-            {{ promoEnabled ? '带上第一位伙伴，谢礼会记在这里' : '见面礼当前未开启；开启后，带人成功会在这里记一笔' }}
+            {{ disabled ? '结伴同行当前未开启，开启后带人成功的谢礼会记在这里' : promoEnabled ? '带上第一位伙伴，谢礼会记在这里' : '见面礼当前未开启；开启后，带人成功会在这里记一笔' }}
           </div>
           <div v-else class="mates">
             <div v-for="r in promotions" :key="r.id" class="mate">
-              <div class="av dot gold"></div>
+              <div class="av dot gold" aria-hidden="true"></div>
               <div class="mid">
                 <div class="nm">带上了 {{ r.invitee_username }}</div>
                 <div class="dt">{{ r.reward_type_label }} · {{ fmtTime(r.created_at) }}</div>
@@ -156,6 +161,7 @@ const loading = ref(true)
 const failed = ref(false)
 const info = ref<MyInviteInfo | null>(null)
 const records = ref<InvitationRecordRow[]>([])
+const recordsTotal = ref(0)
 const rebates = ref<RebateRow[]>([])
 const totalRebate = ref(0)
 const promotions = ref<PromotionRewardRow[]>([])
@@ -164,7 +170,13 @@ const promoConfig = ref<MyPromotions['config'] | null>(null)
 const recordsErr = ref(false)
 const rebatesErr = ref(false)
 const promotionsErr = ref(false)
+/* R48B-4：各路独立小 loading（重试只重拉自己那一路，不整页塌骨架） */
+const recordsLoading = ref(false)
+const rebatesLoading = ref(false)
+const promotionsLoading = ref(false)
 const copiedField = ref('')
+/* R48B-5：复制成功的读屏播报 */
+const liveMsg = ref('')
 
 const inviteLink = computed(() => {
   if (!info.value?.code) return ''
@@ -201,49 +213,102 @@ function fmtTime(iso?: string | null): string {
 }
 
 let copyTimer: number | undefined
+let liveTimer: number | undefined
 async function copyText(text: string, field: string) {
   const ok = await copy(text, field === 'link' ? '组队链接' : '组队暗号')
   if (!ok) return
   copiedField.value = field
+  liveMsg.value = field === 'link' ? '组队链接已复制' : '组队暗号已复制'
+  window.clearTimeout(liveTimer)
+  liveTimer = window.setTimeout(() => { liveMsg.value = '' }, 1800)
   window.clearTimeout(copyTimer)
   copyTimer = window.setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1800)
 }
-onUnmounted(() => window.clearTimeout(copyTimer))
+onUnmounted(() => {
+  window.clearTimeout(copyTimer)
+  window.clearTimeout(liveTimer)
+})
 
-async function load() {
+/* R48B-4：空数据回退（失败时不吞成"真空"文案，由各自 Err 标记驱动错误态） */
+const emptyRecords = { total: 0, records: [] as InvitationRecordRow[] }
+const emptyRebates = { total_rebate: 0, rebates: [] as RebateRow[] }
+const emptyPromotions: MyPromotions = {
+  total: 0,
+  config: {
+    enabled: false, reward_type: 'balance', amount: 0, days: 0,
+    reward_types: [], reward_type_labels: {},
+  },
+  rewards: [],
+}
+
+/** R48B-4：只拉组队暗号一路；首屏骨架由它关闭 */
+async function loadMy() {
   loading.value = true
   failed.value = false
-  recordsErr.value = false
-  rebatesErr.value = false
-  promotionsErr.value = false
   try {
-    const emptyRecords = { total: 0, records: [] as InvitationRecordRow[] }
-    const emptyRebates = { total_rebate: 0, rebates: [] as RebateRow[] }
-    const emptyPromotions: MyPromotions = {
-      total: 0,
-      config: {
-        enabled: false, reward_type: 'balance', amount: 0, days: 0,
-        reward_types: [], reward_type_labels: {},
-      },
-      rewards: [],
-    }
-    const [my, rec, reb, pro] = await Promise.all([
-      inviteApi.myCode(),
-      inviteApi.records({ limit: 50 }).catch(() => { recordsErr.value = true; return emptyRecords }),
-      inviteApi.rebates({ limit: 50 }).catch(() => { rebatesErr.value = true; return emptyRebates }),
-      inviteApi.promotions({ limit: 50 }).catch(() => { promotionsErr.value = true; return emptyPromotions }),
-    ])
-    info.value = my
-    records.value = rec.records
-    rebates.value = reb.rebates
-    totalRebate.value = reb.total_rebate
-    promotions.value = pro.rewards
-    promoConfig.value = pro.config
+    info.value = await inviteApi.myCode()
   } catch {
     failed.value = true
   } finally {
     loading.value = false
   }
+}
+
+/** R48B-4：只拉伙伴名单一路（带本区块小 loading，重试不塌整页） */
+async function loadRecords() {
+  recordsLoading.value = true
+  try {
+    const rec = await inviteApi.records({ limit: 50 })
+    records.value = rec.records
+    recordsTotal.value = rec.total
+    recordsErr.value = false
+  } catch {
+    recordsErr.value = true
+    records.value = emptyRecords.records
+  } finally {
+    recordsLoading.value = false
+  }
+}
+
+/** R48B-4：只拉带路费账本一路 */
+async function loadRebates() {
+  rebatesLoading.value = true
+  try {
+    const reb = await inviteApi.rebates({ limit: 50 })
+    rebates.value = reb.rebates
+    totalRebate.value = reb.total_rebate
+    rebatesErr.value = false
+  } catch {
+    rebatesErr.value = true
+    rebates.value = emptyRebates.rebates
+    totalRebate.value = emptyRebates.total_rebate
+  } finally {
+    rebatesLoading.value = false
+  }
+}
+
+/** R48B-4：只拉见面礼记录一路 */
+async function loadPromotions() {
+  promotionsLoading.value = true
+  try {
+    const pro = await inviteApi.promotions({ limit: 50 })
+    promotions.value = pro.rewards
+    promoConfig.value = pro.config
+    promotionsErr.value = false
+  } catch {
+    promotionsErr.value = true
+    promotions.value = emptyPromotions.rewards
+    promoConfig.value = emptyPromotions.config
+  } finally {
+    promotionsLoading.value = false
+  }
+}
+
+/** R48B-4：首屏仍全量拉；各区块"重试"只走自己那一路 */
+async function load() {
+  loading.value = true
+  failed.value = false
+  await Promise.allSettled([loadMy(), loadRecords(), loadRebates(), loadPromotions()])
 }
 
 onMounted(load)
@@ -326,6 +391,9 @@ onMounted(load)
 .linkbtn {
   flex-shrink: 0;
   min-height: 44px;
+  /* R48B-8：固定最小宽度，文案"复制链接"/"✓ 已复制"切换时不抖动 */
+  min-width: 84px;
+  text-align: center;
   background: var(--paper2);
   border: 1.5px solid var(--ink);
   border-radius: var(--paper-r-md, 10px);
@@ -382,5 +450,18 @@ onMounted(load)
 .linkbtn:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
+}
+
+/* R48B-5：读屏播报节点（视觉隐藏） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>
