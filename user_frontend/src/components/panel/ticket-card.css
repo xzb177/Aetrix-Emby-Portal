@@ -1,314 +1,47 @@
-/* v4 纸片风首页卡片与观影数据小条样式表
- * 严格遵循 v4-paper 设计规范，只使用 --paper-* 令牌
- */
+/* 效果图定案版样式，只用 --paper-* token（首页两张卡 + 观影数据条） */
 
-.hc-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px 20px 0;
-}
+.hc-wrap{display:flex;flex-direction:column;gap:14px;padding:16px 20px 0}
+.hc-card{background:var(--paper-card);border:1.5px solid var(--paper-ink);border-radius:var(--paper-r-lg);padding:14px 16px;box-shadow:3px 3px 0 var(--paper-ink);display:flex;flex-direction:column;gap:10px}
+.hc-header{display:flex;justify-content:space-between;align-items:center}
+.hc-title{font-size:15px;font-weight:700;color:var(--paper-ink)}
+.hc-badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:var(--paper-r-full);border:1px solid var(--paper-ink);background:var(--paper-bg-soft);color:var(--paper-ink);line-height:1.4;white-space:nowrap}
+.hc-badge.is-amber{background:var(--paper-primary);color:var(--paper-ink)}
+.hc-badge.is-warning{background:transparent;color:var(--paper-danger);border-color:var(--paper-danger)}
+.hc-main-row{display:flex;align-items:baseline;justify-content:space-between;gap:6px}
+.hc-val-group{display:flex;align-items:baseline;gap:6px}
+.hc-val{font-size:32px;font-weight:800;line-height:1;color:var(--paper-ink)}
+.hc-unit{font-size:var(--paper-f-sm);color:var(--paper-ink-2);line-height:var(--paper-lh-base)}
+.hc-plan{margin-left:auto;font-size:var(--paper-f-xs);color:var(--paper-ink-2)}
+.hc-progress-track{height:8px;border:1.5px solid var(--paper-ink);border-radius:var(--paper-r-full);overflow:hidden}
+.hc-progress-bar{height:100%;background:var(--paper-primary)}
+.hc-footer{display:flex;justify-content:space-between;align-items:center;font-size:var(--paper-f-xs);color:var(--paper-ink-2)}
+.hc-desc{color:var(--paper-ink-2)}
+.hc-link{color:var(--paper-ink);font-weight:700;text-decoration:none}
 
-/* 独立卡片：纸面 + 边框 + 圆角 + 纸卡阴影 */
-.hc-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: var(--paper-card);
-  border: 1.5px solid var(--paper-line);
-  border-radius: var(--paper-r-lg, 12px);
-  padding: 14px 16px 12px;
-  box-shadow: 2px 2px 0 var(--paper-line);
-  color: var(--paper-ink);
-}
+/* 标签行 / 体力文字 */
+.hc-chips{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px;font-size:var(--paper-f-xs);line-height:var(--paper-lh-base)}
+.hc-chip{display:inline-flex;align-items:center;padding:4px 8px;border:1px solid var(--paper-line);border-radius:8px;font-size:var(--paper-f-xs);line-height:var(--paper-lh-base);color:var(--paper-ink-2);background:transparent;white-space:nowrap;transition:color var(--paper-med),border-color var(--paper-med),background-color var(--paper-med)}
+.hc-chip-danger{color:var(--paper-danger);border-color:var(--paper-danger);background:color-mix(in srgb, var(--paper-danger) 10%, transparent)}
+.hc-vit{margin-left:auto;font-size:var(--paper-f-xs);line-height:var(--paper-lh-base);color:var(--paper-ink-2);white-space:nowrap}
+.hc-vit-low{color:var(--paper-danger);font-weight:700}
 
-/* 临期提醒：--paper-warning 系 token */
-.hc-card.is-warning {
-  border-color: var(--paper-warning-border);
-  box-shadow: 2px 2px 0 var(--paper-warning-soft);
-}
-
-/* 卡片头部 */
-.hc-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 20px;
-}
-
-.hc-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--paper-f-xs, 12px);
-  font-weight: 700;
-  color: var(--paper-ink-2);
-  letter-spacing: 0.5px;
-}
-
-.hc-title-link {
-  color: inherit;
-  text-decoration: none;
-}
-.hc-title-link:active {
-  opacity: 0.8;
-}
-
-.hc-title-icon {
-  flex-shrink: 0;
-  color: var(--paper-primary);
-}
-
-/* 状态徽章 */
-.hc-badge {
-  padding: 1px 8px;
-  border-radius: var(--paper-r-full, 999px);
-  font-size: 11px;
-  font-weight: 700;
-  background: var(--paper-bg-soft);
-  color: var(--paper-ink-2);
-  border: 1px solid var(--paper-line);
-  white-space: nowrap;
-}
-
-/* 临期徽章：--paper-warning 系 token */
-.hc-badge.is-warning {
-  background: var(--paper-warning-soft);
-  color: var(--paper-warning);
-  border-color: var(--paper-warning-border);
-}
-
-/* 今日未报到 hot 警示徽章：--paper-danger 系 token */
-.hc-badge.hot {
-  background: var(--paper-danger-soft);
-  color: var(--paper-danger);
-  border-color: var(--paper-danger-border);
-}
-
-/* 主数据行：大数字与按钮 */
-.hc-main-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.hc-val-group {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  min-width: 0;
-}
-
-.hc-val-link {
-  color: inherit;
-  text-decoration: none;
-}
-.hc-val-link:active {
-  opacity: 0.8;
-}
-
-.hc-val {
-  font-size: 26px;
-  font-weight: 800;
-  line-height: 1.1;
-  color: var(--paper-ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.hc-unit {
-  font-size: var(--paper-f-sm, 13px);
-  color: var(--paper-ink-2);
-  font-weight: 700;
-}
-
-/* 入口操作按钮 */
-.hc-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  min-width: 4.75rem;
-  min-height: 38px;
-  padding: 0 14px;
-  background: var(--paper-ink);
-  color: var(--paper-card);
-  font-size: var(--paper-f-sm, 13px);
-  font-weight: 700;
-  border-radius: var(--paper-r-md, 10px);
-  text-decoration: none;
-  white-space: nowrap;
-  box-shadow: 2px 2px 0 var(--paper-line-strong);
-  border: 1px solid var(--paper-ink);
-  cursor: pointer;
-  transition: transform var(--paper-fast, 0.16s) ease;
-}
-
-.hc-btn:active {
-  transform: translate(1px, 1px);
-  box-shadow: 1px 1px 0 var(--paper-line-strong);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hc-btn:active {
-    transform: none;
-  }
-}
-
-/* 进度条 */
-.hc-progress-track {
-  height: 6px;
-  background: var(--paper-bg-soft);
-  border: 1px solid var(--paper-line);
-  border-radius: 3px;
-  overflow: hidden;
-  margin-top: 2px;
-}
-
-.hc-progress-bar {
-  display: block;
-  height: 100%;
-  width: 100%;
-  background: var(--paper-primary);
-  transform-origin: left;
-  border-radius: 2px;
-  transition: transform var(--paper-med, 0.26s) ease;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .hc-progress-bar {
-    transition: none;
-  }
-}
-
-.hc-progress-bar.is-warning {
-  background: var(--paper-warning);
-}
-
-/* 说明文字 */
-.hc-desc {
-  font-size: 11px;
-  color: var(--paper-ink-2);
-  line-height: var(--paper-lh-base, 1.55);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 体力模块 */
-.hc-vitality {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 2px;
-}
-
-.hc-vit-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--paper-ink-2);
-}
-
-.hc-vit-meta.is-low .hc-vit-nums {
-  color: var(--paper-warning);
-  font-weight: 700;
-}
-
-.hc-vit-val-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.hc-vit-warn {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 0 4px;
-  border-radius: var(--paper-r-sm, 8px);
-  background: var(--paper-warning-soft);
-  color: var(--paper-warning);
-  border: 1px solid var(--paper-warning-border);
-}
-
-/* 观影数据小条（独立虚线边框小条） */
-.hc-watch-strip {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border: 1px dashed var(--paper-line);
-  border-radius: var(--paper-r-md, 10px);
-  background: var(--paper-card);
-  color: var(--paper-ink-2);
-  font-size: var(--paper-f-xs, 12px);
-  box-shadow: 1px 1px 0 var(--paper-line);
-}
-
-.hc-watch-icon {
-  flex-shrink: 0;
-  color: var(--paper-primary);
-}
-
-.hc-watch-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.hc-watch-text b {
-  color: var(--paper-ink);
-  font-weight: 700;
-}
+/* 观影数据条 */
+.hc-watch-strip{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border:1.5px dashed var(--paper-ink-2);border-radius:var(--paper-r-lg);font-size:12.5px;line-height:var(--paper-lh-base);transition:border-color var(--paper-med)}
+.hc-watch-title{font-weight:700;color:var(--paper-ink)}
+.hc-watch-data{color:var(--paper-ink-2)}
 
 /* 骨架屏尺寸 */
-.hc-sk-card {
-  pointer-events: none;
-}
-.hc-sk-title {
-  width: 4rem;
-  height: 14px;
-}
-.hc-sk-badge {
-  width: 3.5rem;
-  height: 14px;
-}
-.hc-sk-val {
-  width: 5.5rem;
-  height: 30px;
-}
-.hc-sk-btn {
-  width: 4.75rem;
-  height: 38px;
-}
-.hc-sk-progress {
-  width: 100%;
-  height: 6px;
-}
-.hc-sk-desc {
-  width: 75%;
-  height: 12px;
-}
-.hc-sk-vit-head {
-  width: 60%;
-  height: 12px;
-}
-.hc-sk-watch-line {
-  width: 70%;
-  height: 14px;
-}
+.hc-sk-card{pointer-events:none}
+.hc-sk-title{width:4rem;height:14px}
+.hc-sk-badge{width:3.5rem;height:14px}
+.hc-sk-val{width:5.5rem;height:32px}
+.hc-sk-progress{width:100%;height:8px}
+.hc-sk-desc{width:75%;height:12px}
+.hc-sk-watch-line{width:70%;height:14px}
 
-@media (max-width: 640px) {
-  .hc-val {
-    font-size: 24px;
-  }
-  .hc-btn {
-    min-width: 4.25rem;
-    padding: 0 12px;
-  }
+@media (prefers-reduced-motion: reduce){
+  .hc-chip,.hc-watch-strip{transition:none}
+}
+@media (max-width:640px){
+  .hc-val{font-size:24px}
 }
