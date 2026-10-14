@@ -2315,6 +2315,11 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                     used.add(strm_rel)
                     claimed[strm_rel] = (did, rel)
                     state[(did, rel)] = (fid, size, strm_rel)
+                    # P3（2026-10-14 r37）：与写路径保持一致——size 可能已变
+                    # （Drive 原地覆盖只变 size 不换 fid），size_by_path 必须同步，
+                    # 否则后继撞名新文件的同名同大小去重会拿旧 size 误判
+                    # （多出 -2 副本，或误删去重导致缺文件）。
+                    size_by_path[strm_rel] = size
                     continue
         else:
             # 多版本保留（用户硬要求）：同一集的不同版本（不同 rel）各自生成独立 .strm，
