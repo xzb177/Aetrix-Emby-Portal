@@ -70,7 +70,7 @@
                   <Eye v-if="showPlayPassword" :size="14" />
                   <EyeOff v-else :size="14" />
                 </button>
-                <button class="text-btn" @click="showSetPlayPwd = true">
+                <button class="text-btn" @click="openSetPlayPwd">
                   {{ hasPlayPassword ? '修改' : '设置' }}
                 </button>
               </div>
@@ -251,7 +251,7 @@
             <button
               class="op-btn primary"
               :disabled="unlocking || viewPermission.points_balance < viewPermission.unlock_points"
-              @click="showUnlockConfirm = true"
+              @click="openUnlockConfirm"
             >
               {{ viewPermission.points_balance < viewPermission.unlock_points ? '积分不足' : `花 ${viewPermission.unlock_points} 积分解锁` }}
             </button>
@@ -259,7 +259,7 @@
           </template>
           <template v-else>
             <p class="unlock-desc">服务器地址和账号只向会员开放，开通后回来这儿接线。</p>
-            <button class="op-btn primary" @click="router.push('/store')">去开通会员</button>
+            <button class="op-btn primary" @click="router.push('/shop')">去开通会员</button>
           </template>
         </div>
 
@@ -274,7 +274,7 @@
 
     <!-- 设置播放密码弹窗 -->
     <Teleport to="body">
-      <div v-if="showSetPlayPwd" class="modal-mask" @click.self="showSetPlayPwd = false">
+      <div v-if="showSetPlayPwd" class="modal-mask" @click.self="showSetPlayPwd = false" @keydown="onModalKeydown">
         <div class="modal-card" role="dialog" aria-modal="true" aria-label="设置播放密码">
           <h3 class="modal-title">设置 Emby 播放密码</h3>
           <p class="modal-desc">这个密码用在 Emby 客户端（Infuse、Forward 等）里登录，至少 6 位。</p>
@@ -298,7 +298,7 @@
 
     <!-- 解锁确认弹窗 -->
     <Teleport to="body">
-      <div v-if="showUnlockConfirm" class="modal-mask" @click.self="showUnlockConfirm = false">
+      <div v-if="showUnlockConfirm" class="modal-mask" @click.self="showUnlockConfirm = false" @keydown="onModalKeydown">
         <div class="modal-card" role="dialog" aria-modal="true" aria-label="确认解锁">
           <h3 class="modal-title">确认解锁？</h3>
           <p class="modal-desc">
@@ -316,7 +316,7 @@
 
     <!-- 结束播放确认弹窗（二次确认，防手滑） -->
     <Teleport to="body">
-      <div v-if="sessionToStop" class="modal-mask" @click.self="sessionToStop = null">
+      <div v-if="sessionToStop" class="modal-mask" @click.self="sessionToStop = null" @keydown="onModalKeydown">
         <div class="modal-card" role="dialog" aria-modal="true" aria-label="确认结束播放">
           <h3 class="modal-title">结束这次播放？</h3>
           <p class="modal-desc">
@@ -338,7 +338,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
@@ -528,6 +528,7 @@ async function loadSessions() {
 
 function confirmStopSession(session: MyPlaybackSession) {
   sessionToStop.value = session
+  focusOpenModalCard()
 }
 
 /** Esc 关闭各确认弹窗（照 WishlistView 模式） */
@@ -537,6 +538,38 @@ function onEsc(e: KeyboardEvent) {
   else if (showUnlockConfirm.value) showUnlockConfirm.value = false
   else if (sessionToStop.value) sessionToStop.value = null
 }
+
+/** R36：简易 focus trap —— Tab 在对话框内循环，不跑出对话框（照抄 WishlistView R27 标杆） */
+function onModalKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Tab') return
+  const card = (e.currentTarget as HTMLElement).querySelector('.modal-card')
+  if (!card) return
+  const els = Array.from(
+    card.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'),
+  ).filter((el) => el.offsetParent !== null)
+  if (els.length === 0) return
+  const first = els[0]
+  const last = els[els.length - 1]
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
+
+/** R36：弹窗打开初始聚焦 —— 焦点放进对话框首个可聚焦元素（Teleport 到 body 后用 query 定位） */
+function focusOpenModalCard() {
+  nextTick(() => {
+    const el = document.querySelector<HTMLElement>(
+      '.modal-mask .modal-card button:not([disabled]), .modal-mask .modal-card input:not([disabled])',
+    )
+    el?.focus()
+  })
+}
+function openSetPlayPwd() { showSetPlayPwd.value = true; focusOpenModalCard() }
+function openUnlockConfirm() { showUnlockConfirm.value = true; focusOpenModalCard() }
 
 async function doStopSession() {
   const session = sessionToStop.value
@@ -707,6 +740,7 @@ watch(viewGranted, (granted) => {
   font-size: 14px;
   font-weight: 800;
   padding: 12px 20px;
+  min-height: 44px;
   border-radius: 12px;
   border: 2px solid var(--ink);
   background: var(--paper-card);
@@ -865,6 +899,7 @@ watch(viewGranted, (granted) => {
   font-weight: 800;
   letter-spacing: 2px;
   padding: 12px 28px;
+  min-height: 44px;
   border-radius: 12px;
   cursor: pointer;
   border: 2px solid var(--ink);

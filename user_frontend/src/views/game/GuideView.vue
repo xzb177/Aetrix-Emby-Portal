@@ -51,7 +51,7 @@
               :key="s"
               class="chip"
               type="button"
-              :disabled="sending"
+              :disabled="sending || exhausted"
               @click="ask(s)"
             >{{ s }}</button>
           </div>

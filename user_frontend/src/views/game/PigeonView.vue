@@ -48,12 +48,12 @@
           </button>
           <button
             class="refresh-btn"
-            :class="{ 'is-loading': loading }"
-            :disabled="loading"
-            aria-label="刷新信件"
-            @click="load(false)"
+            :class="{ 'is-loading': refreshing }"
+            :disabled="refreshing"
+            :aria-label="refreshing ? '刷新中' : '刷新信件'"
+            @click="onManualRefresh"
           >
-            {{ loading ? '刷新中' : '⟳' }}
+            {{ refreshing ? '刷新中' : '⟳' }}
           </button>
         </div>
         <div v-if="unreadCount > 0" class="markall-row">
@@ -177,6 +177,9 @@ const messages = ref<StationMessage[]>([])
 const loading = ref(true)
 const loadError = ref('')
 const markingAll = ref(false)
+/** R36：手动刷新按钮专属忙碌态 —— load(false) 永远不置位 loading，
+ *  按钮另绑 refreshing，busy 时禁用防连点；finally 里复位（含错误路径） */
+const refreshing = ref(false)
 
 const keyword = ref('')
 const unreadOnly = ref(false)
@@ -284,6 +287,18 @@ async function load(showSpinner = true) {
     }
   } finally {
     loading.value = false
+  }
+}
+
+/** 手动刷新按钮：专属 busy 态，忙时禁用防连点（竞态写回）。
+ *  R36：finally 里必复位 —— 成功/失败路径都不会卡死按钮。 */
+async function onManualRefresh() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await load(false)
+  } finally {
+    refreshing.value = false
   }
 }
 

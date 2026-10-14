@@ -13,7 +13,7 @@
         <div class="v4-sec-title">🔐 安全设置</div>
         <div class="v4-sec-sub">登录密码是进营地的钥匙，定期换一把更安心</div>
         <div class="v4-card acct-card">
-          <button type="button" class="acct-row" @click="showChangePwd = true">
+          <button type="button" class="acct-row" @click="openChangePwd">
             <span class="acct-row-ic" aria-hidden="true"><Lock :size="16" /></span>
             <span class="acct-row-text">修改登录密码</span>
             <ChevronRight :size="15" class="acct-row-arrow" />
@@ -93,12 +93,12 @@
     <PanelTabbar />
 
     <!-- 修改登录密码弹窗（由 ProfileView 移植） -->
-    <div v-if="showChangePwd" class="acct-mask" @click.self="showChangePwd = false">
+    <div v-if="showChangePwd" class="acct-mask" @click.self="closeChangePwd" @keydown="onPwdModalKeydown">
       <div class="acct-modal" role="dialog" aria-modal="true" aria-label="修改登录密码">
         <h3 class="acct-modal-title">修改登录密码</h3>
         <div class="acct-field">
           <label class="acct-label">当前密码</label>
-          <input v-model="pwdForm.oldPassword" type="password" autocomplete="current-password" />
+          <input ref="oldPwdInput" v-model="pwdForm.oldPassword" type="password" autocomplete="current-password" />
         </div>
         <div class="acct-field">
           <label class="acct-label">新密码</label>
@@ -110,13 +110,29 @@
         </div>
         <p v-if="pwdError" class="acct-error">{{ pwdError }}</p>
         <div class="acct-modal-actions">
-          <button type="button" class="acct-btn ghost" @click="showChangePwd = false">取消</button>
+          <button type="button" class="acct-btn ghost" @click="closeChangePwd">取消</button>
           <button type="button" class="acct-btn primary" :disabled="pwdLoading" @click="handleChangePassword">
             {{ pwdLoading ? '提交中' : '确认修改' }}
           </button>
         </div>
       </div>
     </div>
+
+    <!-- R36：终止订阅二次确认（纸色风格，替代原生 confirm；照抄 SignalView R27） -->
+    <Modal v-model="cancelConfirmOpen" size="sm" content-class="paper-confirm">
+      <template #header>
+        <h3 class="modal-title">终止订阅</h3>
+      </template>
+      <p class="acct-confirm-text">{{ pendingCancel ? confirmCopy.cancelSubscription(pendingCancel.plan_name) : '' }}</p>
+      <template #footer>
+        <div class="acct-modal-actions">
+          <button type="button" class="acct-btn ghost" @click="cancelConfirmOpen = false">再想想</button>
+          <button type="button" class="acct-btn primary" :disabled="cancellingSub !== null" @click="doCancelSubscription">
+            {{ cancellingSub !== null ? '终止中' : '确定终止' }}
+          </button>
+        </div>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -131,9 +147,10 @@
  *
  * 明确暂无承接（随旧页删除暂时失去）：Emby 多服列表、正在播放远程终止。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { Lock, ChevronRight, RefreshCw } from 'lucide-vue-next'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
+import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 import { facilityStamp } from '@/config/game'
 import { authApi, subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
@@ -152,6 +169,40 @@ const showChangePwd = ref(false)
 const pwdForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
 const pwdLoading = ref(false)
 const pwdError = ref('')
+const oldPwdInput = ref<HTMLInputElement | null>(null)
+
+/** R36：改密码弹窗键盘闭环（照抄 WishlistView R27 标杆：focus trap + 自动聚焦 + Esc） */
+function onPwdModalKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Tab' || !showChangePwd.value) return
+  const card = (e.currentTarget as HTMLElement).querySelector('.acct-modal')
+  if (!card) return
+  const els = Array.from(
+    card.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'),
+  ).filter((el) => el.offsetParent !== null)
+  if (els.length === 0) return
+  const first = els[0]
+  const last = els[els.length - 1]
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
+function onPwdEsc(e: KeyboardEvent) {
+  if (e.key === 'Escape' && showChangePwd.value) closeChangePwd()
+}
+function openChangePwd() {
+  showChangePwd.value = true
+  window.addEventListener('keydown', onPwdEsc)
+  nextTick(() => oldPwdInput.value?.focus())
+}
+function closeChangePwd() {
+  showChangePwd.value = false
+  window.removeEventListener('keydown', onPwdEsc)
+}
+onUnmounted(() => window.removeEventListener('keydown', onPwdEsc))
 
 async function handleChangePassword() {
   const { oldPassword, newPassword, confirmPassword } = pwdForm.value
@@ -172,7 +223,7 @@ async function handleChangePassword() {
   try {
     await authApi.changePassword({ old_password: oldPassword, new_password: newPassword })
     toast.success(toastCopy.passwordChanged())
-    showChangePwd.value = false
+    closeChangePwd()
     pwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
   } catch (err: any) {
     pwdError.value = toUserMessage(err, 'settingFailed')
@@ -203,15 +254,28 @@ async function loadSubs() {
   }
 }
 
-async function cancelSubscription(s: MySubscription) {
-  if (!confirm(confirmCopy.cancelSubscription(s.plan_name))) return
+/** R36：终止订阅二次确认 —— 原生 confirm() 改用纸色 Modal（照抄 SignalView R27 先例）。
+ *  文案继续走 confirmCopy.cancelSubscription，不改文案。 */
+const pendingCancel = ref<MySubscription | null>(null)
+const cancelConfirmOpen = computed({
+  get: () => pendingCancel.value !== null,
+  set: (v: boolean) => { if (!v) pendingCancel.value = null },
+})
+function cancelSubscription(s: MySubscription) {
+  pendingCancel.value = s
+}
+async function doCancelSubscription() {
+  const s = pendingCancel.value
+  if (!s || cancellingSub.value !== null) return
   cancellingSub.value = s.id
   try {
     const res = await subscriptionApi.cancel(s.id)
     toast.success(res.message || toastCopy.subscriptionCancelled())
+    pendingCancel.value = null
     await loadSubs()
   } catch (err: any) {
     toast.error(toUserMessage(err, 'cancelFailed'))
+    // 失败时保持确认弹窗打开，用户可直接重试，不丢失上下文（照抄 SignalView R27）
   } finally {
     cancellingSub.value = null
   }
@@ -490,6 +554,8 @@ onMounted(() => {
   font-weight: 600;
 }
 .acct-btn.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+/* R36：终止订阅确认弹窗的正文（走 .paper-confirm 纸色弹窗，文字排版本地样式） */
+.acct-confirm-text { font-size: 14px; line-height: 1.9; color: var(--ink); margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .spinning { animation-duration: 2.4s; }
