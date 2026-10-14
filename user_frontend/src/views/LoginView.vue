@@ -410,7 +410,7 @@ onUnmounted(() => {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background: var(--au-bg);
+  background: var(--paper-bg);
 }
 
 /* 氛围光已移除：海报拼贴本身提供视觉丰富度（2026-10-11，品牌收敛到琥珀）。 */
@@ -432,8 +432,8 @@ onUnmounted(() => {
 @supports (color: color-mix(in srgb, black 70%, transparent)) {
   .auth-grid {
     background-image:
-      linear-gradient(to right, color-mix(in srgb, var(--au-border) 70%, transparent) 1px, transparent 1px),
-      linear-gradient(to bottom, color-mix(in srgb, var(--au-border) 70%, transparent) 1px, transparent 1px);
+      linear-gradient(to right, color-mix(in srgb, var(--paper-line) 70%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in srgb, var(--paper-line) 70%, transparent) 1px, transparent 1px);
   }
 }
 
@@ -461,11 +461,11 @@ onUnmounted(() => {
   width: 46px;
   height: 46px;
   margin: 0 auto 1rem;
-  border-radius: var(--au-r-md);
+  border-radius: var(--paper-r-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--au-text-2);
+  color: var(--paper-ink-2);
 }
 
 .brand-mark img {
@@ -480,7 +480,7 @@ onUnmounted(() => {
   font-weight: 700;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--au-text);
+  color: var(--paper-ink);
   margin: 0 0 0.625rem;
   line-height: 1.3;
   overflow-wrap: anywhere;
@@ -488,7 +488,7 @@ onUnmounted(() => {
 
 .brand-subtitle {
   font-size: 0.8125rem;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   margin: 0;
   line-height: 1.6;
 }
@@ -500,9 +500,9 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   height: 44px;
-  background: var(--au-surface);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
+  background: var(--paper-card);
+  border: 1px solid var(--paper-line);
+  border-radius: var(--paper-r-full);
   padding: 4px;
   margin-bottom: 1.5rem;
 }
@@ -514,12 +514,12 @@ onUnmounted(() => {
   padding: 0 0.75rem;
   border: none;
   background: transparent;
-  border-radius: var(--au-r-full);
+  border-radius: var(--paper-r-full);
   font: inherit;
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   cursor: pointer;
   transition: color 0.2s ease;
   /* 修复3：文字在胶囊内严格水平垂直居中（移动端 UA 默认样式可能偏） */
@@ -536,7 +536,7 @@ onUnmounted(() => {
 }
 
 .mode-btn.active {
-  color: var(--au-on-primary);
+  color: var(--paper-on-primary);
   font-weight: 600;
 }
 
@@ -546,8 +546,8 @@ onUnmounted(() => {
   left: 4px;
   width: calc(50% - 4px);
   height: calc(100% - 8px);
-  border-radius: var(--au-r-full);
-  background: var(--au-primary);
+  border-radius: var(--paper-r-full);
+  background: var(--paper-primary);
   pointer-events: none;
   transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -575,7 +575,7 @@ onUnmounted(() => {
   font-size: 0.8125rem;
   font-weight: 500;
   line-height: 1.5;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
 }
 
 .optional {
@@ -583,7 +583,7 @@ onUnmounted(() => {
   font-size: 0.75rem;
   font-style: normal;
   font-weight: 400;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
 }
 
 .field-box {
@@ -591,27 +591,27 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   height: 52px;
-  background: var(--au-input-bg);
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-full);
+  background: var(--paper-input-bg);
+  border: 1px solid var(--paper-line);
+  border-radius: var(--paper-r-full);
   padding: 0 20px;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .field-box:focus-within {
-  border-color: var(--au-border-focus);
-  box-shadow: 0 0 0 3px var(--au-primary-soft);
+  border-color: var(--paper-border-focus);
+  box-shadow: 0 0 0 3px var(--paper-primary-soft);
 }
 
 .field-icon {
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   margin-right: 0.625rem;
   flex-shrink: 0;
   transition: color 0.2s ease;
 }
 
 .field-box:focus-within .field-icon {
-  color: var(--au-primary);
+  color: var(--paper-primary);
 }
 
 .field-box input {
@@ -623,13 +623,13 @@ onUnmounted(() => {
   background: transparent;
   border: none;
   outline: none;
-  color: var(--au-text);
+  color: var(--paper-ink);
   font: inherit;
   font-size: 0.9375rem;
 }
 
 .field-box input::placeholder {
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   opacity: 1;
 }
 
@@ -638,8 +638,8 @@ onUnmounted(() => {
 .field-box input:-webkit-autofill:hover,
 .field-box input:-webkit-autofill:focus,
 .field-box input:-webkit-autofill:active {
-  -webkit-text-fill-color: var(--au-text);
-  -webkit-box-shadow: 0 0 0 1000px var(--au-input-bg) inset;
+  -webkit-text-fill-color: var(--paper-ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--paper-input-bg) inset;
   transition: background-color 5000s ease-in-out 0s;
 }
 
@@ -656,7 +656,7 @@ onUnmounted(() => {
   margin-left: 0.375rem;
   background: transparent;
   border: none;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   cursor: pointer;
   border-radius: 50%;
   transition: color 0.2s ease, background-color 0.2s ease;
@@ -670,14 +670,14 @@ onUnmounted(() => {
 }
 
 .eye-btn:hover {
-  color: var(--au-text-2);
-  background: var(--au-surface);
+  color: var(--paper-ink-2);
+  background: var(--paper-card);
 }
 
 .mode-btn:focus-visible,
 .eye-btn:focus-visible,
 .submit-btn:focus-visible {
-  outline: 2px solid var(--au-border-focus);
+  outline: 2px solid var(--paper-border-focus);
   outline-offset: 3px;
 }
 
@@ -693,28 +693,28 @@ onUnmounted(() => {
 .strength-track {
   flex: 1;
   height: 3px;
-  background: var(--au-surface-2);
-  border-radius: var(--au-r-full);
+  background: var(--paper-card-2);
+  border-radius: var(--paper-r-full);
   overflow: hidden;
 }
 
 .strength-fill {
   height: 100%;
   width: 100%;
-  border-radius: var(--au-r-full);
+  border-radius: var(--paper-r-full);
   /* R27：width 是 layout 属性会触发重排 → 改 transform: scaleX（StaminaBar 同款模式） */
   transform: scaleX(0);
   transform-origin: left center;
   transition: transform 0.3s ease, background-color 0.3s ease;
 }
 
-.strength-fill.lv-1 { transform: scaleX(0.33); background: var(--au-danger); }
-.strength-fill.lv-2 { transform: scaleX(0.66); background: var(--au-warning); }
-.strength-fill.lv-3 { transform: scaleX(1); background: var(--au-primary); }
+.strength-fill.lv-1 { transform: scaleX(0.33); background: var(--paper-danger); }
+.strength-fill.lv-2 { transform: scaleX(0.66); background: var(--paper-warning); }
+.strength-fill.lv-3 { transform: scaleX(1); background: var(--paper-primary); }
 
 .strength-text {
   font-size: 0.8125rem;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   min-width: 16px;
 }
 
@@ -723,9 +723,9 @@ onUnmounted(() => {
   margin: 0;
   padding: 0.75rem 20px;
   border-radius: 26px;
-  background: var(--au-danger-soft);
-  border: 1px solid var(--au-danger-border);
-  color: var(--au-danger);
+  background: var(--paper-danger-soft);
+  border: 1px solid var(--paper-danger-border);
+  color: var(--paper-danger);
   font-size: 0.8125rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -735,9 +735,9 @@ onUnmounted(() => {
   margin: 0;
   padding: 0.75rem 20px;
   border-radius: 26px;
-  background: var(--au-warning-soft, var(--au-danger-soft));
-  border: 1px solid var(--au-warning-border, var(--au-danger-border));
-  color: var(--au-warning, var(--au-danger));
+  background: var(--paper-warning-soft, var(--paper-danger-soft));
+  border: 1px solid var(--paper-warning-border, var(--paper-danger-border));
+  color: var(--paper-warning, var(--paper-danger));
   font-size: 0.875rem;
   line-height: 1.5;
   text-align: center;
@@ -755,10 +755,10 @@ onUnmounted(() => {
   flex-shrink: 0;
   margin-top: 0.25rem;
   padding: 0 20px;
-  background: var(--au-gradient);
+  background: var(--paper-gradient);
   border: none;
-  border-radius: var(--au-r-full);
-  color: var(--au-on-primary);
+  border-radius: var(--paper-r-full);
+  color: var(--paper-on-primary);
   font: inherit;
   font-size: 0.9375rem;
   font-weight: 600;
@@ -775,16 +775,16 @@ onUnmounted(() => {
 }
 
 .submit-btn:disabled {
-  background: var(--au-surface-3);
-  color: var(--au-text-3);
+  background: var(--paper-card-3);
+  color: var(--paper-ink-3);
   cursor: not-allowed;
 }
 
 .spinner {
   width: 15px;
   height: 15px;
-  border: 2px solid var(--au-on-image-strong);
-  border-top-color: var(--au-text);
+  border: 2px solid var(--paper-on-image-strong);
+  border-top-color: var(--paper-ink);
   border-radius: 50%;
   animation: au-spin 0.8s linear infinite;
 }
@@ -803,7 +803,7 @@ onUnmounted(() => {
   margin: 1.5rem 0 0;
   text-align: center;
   font-size: 0.8125rem;
-  color: var(--au-text-3);
+  color: var(--paper-ink-3);
   line-height: 1.6;
 }
 
