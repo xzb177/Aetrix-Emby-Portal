@@ -303,7 +303,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 /* 燃料表：设计稿 game-ledger.html 的深色卡片原值 */
 .fuel {
   background: var(--ink);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 20px;
   color: #EDE6D6;
   position: relative;

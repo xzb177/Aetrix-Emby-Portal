@@ -184,9 +184,11 @@ def check_frontend(frontend: str) -> None:
 # U0 冻结（UI 统一 LC-09/LC-10）：main.ts 全量引入的主题 CSS 不许新增；
 # --neo-* 体系只许退场（U3/A5），不许在新文件里出现。
 # neo-noir-tokens.css 被删除（A5）时，记得同步从 NEO_FREEZE 里删掉它这一行。
+# U0 冻结（UI 统一 LC-09/LC-10）：main.ts 全量引入的主题 CSS 不许新增；
+# R40：用相对 src 的相对路径登记+比对（原来只比文件名，同名 CSS 可绕过冻结）。
 MAIN_CSS_ALLOWLIST = {
-    "user_frontend": {"aurora.css", "neo-noir-tokens.css", "index.css", "mobile.css", "calendar.css", "v4-paper.css"},
-    "admin_frontend": {"aurora.css", "tokens.css", "base.css", "index.css", "element-plus-theme.css", "responsive.css"},
+    "user_frontend": {"styles/aurora.css", "styles/neo-noir-tokens.css", "styles/index.css", "styles/mobile.css", "styles/calendar.css", "styles/v4-paper.css"},
+    "admin_frontend": {"styles/aurora.css", "styles/tokens.css", "styles/base.css", "styles/index.css", "styles/element-plus-theme.css", "styles/responsive.css"},
 }
 NEO_FREEZE = {
     "user_frontend": {
@@ -209,7 +211,12 @@ def check_freeze(frontend: str) -> None:
     for m in TS_IMPORT_RE.finditer(main_ts.read_text(encoding="utf-8")):
         found = resolve(main_ts, m.group(1))
         if found:
-            imported.add(found.name)
+            # R40：比对相对 src 的相对路径，不只比文件名（同名 CSS 绕过冻结）；
+            # 解析到 src 之外（../ 之类）时回退到文件名，保证不抛错
+            try:
+                imported.add(str(found.relative_to(src)))
+            except ValueError:
+                imported.add(found.name)
     extra = sorted(imported - MAIN_CSS_ALLOWLIST[frontend])
     if extra:
         failures.append(

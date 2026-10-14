@@ -89,8 +89,14 @@ export function toUserMessage(err: unknown, fallbackKey: ToastFallbackKey = 'sav
   }
   if (Array.isArray(detail) && detail.length) {
     // FastAPI 422 校验错误是数组：取首条的人话 msg
+    // R40：detail=[null] 之类畸形数组里 first 为空时给 ''，防止 msg.trim() 抛错
     const first = detail[0] as { msg?: unknown; message?: unknown } | undefined
-    const msg = first && (typeof first.msg === 'string' ? first.msg : typeof first.message === 'string' ? first.message : '')
+    const msg: string =
+      first && typeof first.msg === 'string'
+        ? first.msg
+        : first && typeof first.message === 'string'
+          ? first.message
+          : ''
     if (msg.trim()) {
       return /^[\w\s.,:'"()[\]-]+$/.test(msg.trim()) && !/[\u4e00-\u9fff]/.test(msg)
         ? toastSystem.validationError

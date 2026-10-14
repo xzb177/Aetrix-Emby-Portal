@@ -12,6 +12,8 @@ let x = 0
 let ctx: CanvasRenderingContext2D | null = null // 缓存：不每帧调 getContext
 const data: number[] = new Array(200).fill(64)
 const STEP_MS = 90 // 与设计稿 setInterval(90ms) 同节奏
+// R40：canvas 的 strokeStyle 不解析 var()，必须运行时从计算样式取值
+let pulseGreen = '#9BE08A'
 // R28：reduced-motion 改为响应式——页面打开期间用户改系统设置也能即时启停动画
 const motionMq = window.matchMedia('(prefers-reduced-motion: reduce)')
 const reducedMotion = ref(motionMq.matches)
@@ -33,7 +35,7 @@ function paint() {
   const w = el.width
   const h = el.height
   ctx.clearRect(0, 0, w, h)
-  ctx.strokeStyle = 'var(--pulse-green, #9BE08A)'
+  ctx.strokeStyle = pulseGreen
   ctx.lineWidth = 3 * (w / (el.clientWidth || w)) // 按 DPR 换算回 CSS 像素观感
   ctx.lineJoin = 'round'
   ctx.beginPath()
@@ -102,6 +104,12 @@ function onMotionChange(e: { matches: boolean }) {
 
 onMounted(() => {
   size()
+  // R40：解析 --pulse-green 的实际值（canvas 不认识 var()）；取不到用默认
+  const mountEl = cv.value
+  if (mountEl) {
+    const cssGreen = getComputedStyle(mountEl).getPropertyValue('--pulse-green').trim()
+    if (cssGreen) pulseGreen = cssGreen
+  }
   window.addEventListener('resize', onResize)
   motionMq.addEventListener('change', onMotionChange)
   // 减少动态偏好：不启动动画，但画一帧静态波形，不留空白

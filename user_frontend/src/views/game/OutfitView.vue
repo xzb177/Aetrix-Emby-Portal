@@ -530,7 +530,7 @@ onBeforeUnmount(() => {
 .outfit .pv {
   width: 34px;
   height: 22px;
-  border-radius: var(--paper-r-sm, 6px);
+  border-radius: 6px;
   border: 1px solid var(--line);
 }
 .outfit .nm { font-size: 15px; font-weight: 800; }

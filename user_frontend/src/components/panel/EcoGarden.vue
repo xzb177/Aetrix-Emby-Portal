@@ -66,7 +66,7 @@ watch(plants, () => {
 .v4-eco {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 16px;
 }
 .plants {

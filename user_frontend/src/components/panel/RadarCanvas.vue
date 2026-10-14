@@ -223,7 +223,7 @@ onBeforeUnmount(() => {
 /* 取自设计稿 .radar-box / .blips */
 .v4-radar-box {
   background: var(--ink);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 14px;
   position: relative;
 }

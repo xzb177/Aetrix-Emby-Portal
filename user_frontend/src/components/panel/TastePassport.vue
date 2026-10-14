@@ -66,7 +66,7 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
 /* 取自设计稿 .passport / .stamps / .stampbox */
 .v4-passport {
   background: var(--blue);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 16px;
   color: #eaf0fa;
   position: relative;

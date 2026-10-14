@@ -526,7 +526,7 @@ textarea:focus { border-color: var(--gold); }
   letter-spacing: 3px;
   padding: 15px;
   min-height: 44px;
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   cursor: pointer;
   box-shadow: 0 4px 0 var(--red-deep, #a33319);
   transition: transform .12s ease;
@@ -537,7 +537,7 @@ textarea:focus { border-color: var(--gold); }
 /* 摩斯电码发送动画：设计稿 .morse-panel 原值 */
 .morse-panel {
   background: var(--ink);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   padding: 20px;
   margin-top: 16px;
   color: #EDE6D6;
@@ -747,7 +747,7 @@ textarea:focus { border-color: var(--gold); }
 .paper-confirm .modal-content-wrapper {
   background: var(--paper-card, #FFFDF6);
   border: 1.5px solid var(--ink, #2A2620);
-  border-radius: var(--paper-r-xl, 14px);
+  border-radius: 14px;
   color: var(--ink, #2A2620);
 }
 .paper-confirm .modal-header {

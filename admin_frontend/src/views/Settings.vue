@@ -569,9 +569,11 @@ onMounted(async () => {
   if (tab.value === 'danger') loadDanger()
   await Promise.all([load(), loadCapabilities(), loadHotlink()])
   // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
+  // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
     await nextTick()
-    document.querySelector(route.hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const el = document.getElementById(route.hash.slice(1))
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 })
 
