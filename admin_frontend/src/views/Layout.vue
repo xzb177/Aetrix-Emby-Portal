@@ -26,7 +26,7 @@ import {
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Heart, Medal, HardDrive,
-  Sun, Moon, MonitorSmartphone, Gauge, Stethoscope, ListChecks,
+  Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -195,10 +195,10 @@ const navGroups: NavGroup[] = [
       { path: '/admins', label: '管理员与权限', icon: UserCog, superOnly: true },
       { path: '/settings', label: '系统设置', icon: Settings, superOnly: true },
       { path: '/logs', label: '操作日志', icon: ScrollText },
-      { path: '/health', label: '服务健康', icon: Activity },
+      // Batch E（健康体系合并）：「服务健康」＋「健康总览」合并为一页「系统健康」，导航只留一个入口
+      { path: '/health', label: '系统健康', icon: Activity },
       // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
       { path: '/tasks', label: '任务总览', icon: ListChecks },
-      { path: '/health-board', label: '健康总览', icon: Gauge },
       { path: '/diagnosis', label: '一键体检', icon: Stethoscope },
       { path: '/api-keys', label: 'API Key', icon: KeyRound, superOnly: true },
     ],

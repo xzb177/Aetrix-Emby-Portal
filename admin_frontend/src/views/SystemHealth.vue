@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Activity, AlertTriangle, Bell, Database, Film, HardDrive, RefreshCw, Radio, Users } from 'lucide-vue-next'
+import { Activity, AlertTriangle, Bell, Cpu, Database, FileText, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, Sparkles, Users, Zap } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
 import { fetchBackupConfig, saveBackupConfig, runBackupNow } from '@/api/admin'
@@ -38,6 +38,133 @@ const loadError = ref('')
 const backup = ref<BackupConfig | null>(null)
 const backupSaving = ref(false)
 const backupRunning = ref(false)
+
+// ---------- 健康灯（原「健康总览」页并入，Batch E：健康体系合并） ----------
+// 数据源与本页共用一次 GET /api/health：observability 字段由后端开关 OBSERVABILITY_ENABLED 控制。
+interface LampMeta {
+  key: string
+  name: string
+  icon: unknown
+}
+const LAMPS: LampMeta[] = [
+  { key: 'database', name: '数据库', icon: Database },
+  { key: 'redis', name: '缓存', icon: Zap },
+  { key: 'disk', name: '磁盘', icon: HardDrive },
+  { key: 'workers', name: '后台线程', icon: Cpu },
+  // 三套词汇统一（任务 / 健康灯 / 体检）：与「任务总览」任务卡标题对齐
+  { key: 'probe', name: '媒体探测', icon: Radar },
+  { key: 'enrich', name: '元数据刮削', icon: Sparkles },
+  { key: 'scan', name: '媒体库扫描', icon: ScanLine },
+  { key: 'strm', name: '.strm 生成器', icon: FileText },
+  { key: 'sa_quota', name: 'Google 子账号', icon: KeyRound },
+  { key: 'api', name: '接口指标', icon: Activity },
+]
+/** 状态 → 中文结论（卡片右上角，原来是裸英文 key） */
+const LAMP_STATUS_TEXT: Record<string, string> = { ok: '正常', warn: '警告', down: '故障' }
+
+const observability = computed(() => health.value?.observability ?? null)
+
+function lampFmtNum(n: unknown): string {
+  if (n === null || n === undefined || n === '') return '—'
+  const v = Number(n)
+  if (Number.isNaN(v)) return '—'
+  return v.toLocaleString('en-US')
+}
+
+function lampMetricOf(key: string, name: string): string {
+  const m = observability.value?.subsystems?.[key]?.metrics || {}
+  const v = m[name]
+  if (v === null || v === undefined || v === '') return '—'
+  if (Array.isArray(v)) return lampFmtNum(v.length)
+  if (typeof v === 'boolean') return v ? '是' : '否'
+  return lampFmtNum(v)
+}
+
+/** 每个子系统展示 2 个关键指标（label, metrics 字段名，单位后缀） */
+function lampKeyMetrics(key: string): Array<{ label: string; field: string; suffix: string }> {
+  switch (key) {
+    case 'disk':
+      return [
+        { label: '磁盘剩余', field: 'disk_free_percent', suffix: '%' },
+        { label: '转码中', field: 'transcode_sessions', suffix: '' },
+      ]
+    case 'workers':
+      return [
+        { label: '存活', field: 'total', suffix: '' },
+        { label: '死亡', field: 'dead', suffix: '' },
+      ]
+    case 'probe':
+      return [
+        { label: '待探测', field: 'pending_ready', suffix: '' },
+        { label: '重试中', field: 'retrying', suffix: '' },
+      ]
+    case 'enrich':
+      return [
+        { label: '积压', field: 'backlog', suffix: '' },
+        { label: '已完成', field: 'done', suffix: '' },
+      ]
+    case 'scan':
+      return [
+        { label: '扫描中', field: 'scanning', suffix: '' },
+        { label: '失败', field: 'failed', suffix: '' },
+      ]
+    case 'strm':
+      return [
+        { label: '距上次', field: 'lag_hours', suffix: ' 小时' },
+        { label: '上次生成', field: 'last_generated', suffix: '' },
+      ]
+    case 'sa_quota':
+      return [{ label: 'SA 数量', field: 'sa_count', suffix: '' }]
+    case 'api':
+      return [
+        { label: 'P99', field: 'global_p99_ms', suffix: 'ms' },
+        { label: '错误率', field: 'error_ratio_pct', suffix: '%' },
+      ]
+    default:
+      return []
+  }
+}
+
+/** api 的错误率是小数，转成百分比展示 */
+function lampMetricValue(key: string, field: string, suffix: string): string {
+  if (key === 'api' && field === 'error_ratio_pct') {
+    const m = observability.value?.subsystems?.api?.metrics || {}
+    const v = m['global_error_ratio']
+    if (v === null || v === undefined || v === '') return '—'
+    return `${(Number(v) * 100).toFixed(2)}${suffix}`
+  }
+  if (key === 'strm' && field === 'lag_hours') {
+    const m = observability.value?.subsystems?.strm?.metrics || {}
+    const v = m['lag_hours']
+    if (v === null || v === undefined || v === '') return '—'
+    return `${Number(v).toFixed(1)}${suffix}`
+  }
+  return `${lampMetricOf(key, field)}${suffix}`
+}
+
+const lampOverallLevel = computed(() => observability.value?.level || 'ok')
+const lampOverallText = computed(() =>
+  lampOverallLevel.value === 'down' ? '有故障' : lampOverallLevel.value === 'warn' ? '有警告' : '正常',
+)
+
+const lampCards = computed(() =>
+  LAMPS.map((meta) => {
+    const probe = observability.value?.subsystems?.[meta.key]
+    const status = probe?.status || 'warn'
+    return {
+      ...meta,
+      status,
+      statusText: LAMP_STATUS_TEXT[status] ?? status,
+      message: probe?.message || '暂无数据',
+      metrics: lampKeyMetrics(meta.key),
+    }
+  }),
+)
+
+/** 「看告警」：同页滚动到下方的告警通知区块 */
+function scrollToAlerts() {
+  document.getElementById('alerts')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 // ---------- 告警通知 ----------
 const alertSettings = ref<AlertSettings | null>(null)
@@ -354,8 +481,8 @@ onMounted(() => {
   <div class="admin-page">
     <PageHeader
       eyebrow="系统与审计"
-      title="服务健康"
-      description="从媒体服务运维角度查看 EM、媒体库、在线会话与存储来源，而不是只看业务统计。"
+      title="系统健康"
+      description="十个子系统的实时状态灯（绿灯正常、黄灯警告、红灯故障，只展示不诊断），以及服务运行态、实时会话、数据库备份与告警通知。"
     >
       <template #actions>
         <span class="checked-at">最近检查 {{ lastChecked || '—' }}</span>
@@ -364,6 +491,68 @@ onMounted(() => {
         </el-button>
       </template>
     </PageHeader>
+
+    <!-- 健康灯：十个子系统同屏（原「健康总览」页并入 Batch E，黄/红灯直接挂深链） -->
+    <SectionCard
+      v-if="observability?.enabled"
+      title="健康灯"
+      :icon="Activity"
+      :meta="lastChecked ? `最后刷新 ${lastChecked}` : ''"
+      class="lamp-card"
+    >
+      <div class="lamp-overall" :class="`is-${lampOverallLevel}`">
+        <span class="lamp-dot" :class="`is-${lampOverallLevel}`" />
+        <span class="lamp-overall-text">整体：{{ lampOverallText }}</span>
+      </div>
+      <div class="lamp-grid">
+        <div
+          v-for="card in lampCards"
+          :key="card.key"
+          class="lamp"
+          :class="`is-${card.status}`"
+        >
+          <div class="lamp-head">
+            <span class="lamp-dot" :class="`is-${card.status}`" />
+            <component :is="card.icon" :size="15" class="lamp-icon" />
+            <span class="lamp-name">{{ card.name }}</span>
+            <span class="lamp-status" :class="`is-${card.status}`">{{ card.statusText }}</span>
+          </div>
+          <p class="lamp-msg">{{ card.message }}</p>
+          <div v-if="card.metrics.length" class="lamp-metrics">
+            <div
+              v-for="m in card.metrics"
+              :key="m.field"
+              class="lamp-metric"
+            >
+              <span class="lamp-metric-label">{{ m.label }}</span>
+              <span class="lamp-metric-value">{{ lampMetricValue(card.key, m.field, m.suffix) }}</span>
+            </div>
+          </div>
+          <!-- 黄/红灯深链：去体检找原因、看任务看进度、看告警看记录 -->
+          <div v-if="card.status !== 'ok'" class="lamp-links">
+            <router-link :to="{ name: 'Diagnosis' }" class="lamp-link">去体检</router-link>
+            <router-link :to="{ name: 'TaskOverview' }" class="lamp-link">看任务</router-link>
+            <button type="button" class="lamp-link is-btn" @click="scrollToAlerts">看告警</button>
+          </div>
+          <details class="lamp-raw">
+            <summary>原始探针输出</summary>
+            <code>{{ card.key }} · {{ card.message }}</code>
+          </details>
+        </div>
+      </div>
+    </SectionCard>
+    <SectionCard
+      v-else-if="health && !observability?.enabled"
+      title="健康灯"
+      :icon="Activity"
+      class="lamp-card"
+    >
+      <EmptyState
+        compact
+        title="可观测未启用"
+        description="后端开关 OBSERVABILITY_ENABLED 未开启，暂无子系统状态灯。开启后这里会显示十个子系统的实时状态灯。"
+      />
+    </SectionCard>
 
     <SectionCard v-if="loadError && !health" tone="accent">
       <EmptyState
@@ -454,7 +643,7 @@ onMounted(() => {
     </div>
 
     <!-- 告警通知 -->
-    <SectionCard title="告警通知" :icon="Bell" :meta="alertEnabled ? '已启用' : '已关闭'" class="alert-card">
+    <SectionCard id="alerts" title="告警通知" :icon="Bell" :meta="alertEnabled ? '已启用' : '已关闭'" class="alert-card">
       <!-- 设置 -->
       <div class="alert-block">
         <div class="alert-block-title">设置</div>
@@ -669,6 +858,196 @@ onMounted(() => {
   .status-row { flex-direction: column; gap: 2px; }
   .backup-actions { justify-content: stretch; }
   .backup-actions :deep(.el-button) { flex: 1; margin-left: 0; }
+}
+
+/* ---------- 健康灯（原「健康总览」页并入，Batch E） ---------- */
+.lamp-card { margin-bottom: 16px; }
+
+.lamp-overall {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: var(--au-surface-2);
+  border: 1px solid var(--au-border);
+  border-left: 3px solid var(--au-success);
+  border-radius: var(--au-r-md);
+}
+
+.lamp-overall.is-warn { border-left-color: var(--au-warning); }
+.lamp-overall.is-down { border-left-color: var(--au-danger); }
+
+.lamp-dot {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border-radius: 50%;
+  background: var(--au-success);
+}
+
+.lamp-dot.is-warn { background: var(--au-warning); }
+.lamp-dot.is-down { background: var(--au-danger); }
+
+.lamp-overall-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.lamp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.lamp {
+  padding: 14px 16px;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-left: 3px solid var(--au-success);
+  border-radius: var(--au-r-md);
+  min-width: 0;
+}
+
+.lamp.is-warn { border-left-color: var(--au-warning); }
+.lamp.is-down { border-left-color: var(--au-danger); }
+
+.lamp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.lamp-icon {
+  color: var(--au-text-3);
+  flex-shrink: 0;
+}
+
+.lamp-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.lamp-status {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: var(--au-r-full);
+  border: 1px solid var(--au-success-border);
+  color: var(--au-success);
+  white-space: nowrap;
+}
+
+.lamp-status.is-warn {
+  border-color: var(--au-warning-border);
+  color: var(--au-warning);
+}
+
+.lamp-status.is-down {
+  border-color: var(--au-danger-border);
+  color: var(--au-danger);
+}
+
+.lamp-msg {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--au-text-2);
+}
+
+.lamp-metrics {
+  display: flex;
+  gap: 20px;
+  padding-top: 10px;
+  border-top: 1px solid var(--au-border);
+}
+
+.lamp-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.lamp-metric-label {
+  font-size: 11px;
+  color: var(--au-text-3);
+  letter-spacing: 0.04em;
+}
+
+.lamp-metric-value {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--au-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/** 黄/红灯深链：去体检找原因、看任务看进度、看告警看记录 */
+.lamp-links {
+  display: flex;
+  gap: 8px;
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px dashed var(--au-border);
+}
+
+.lamp-link {
+  font-size: 12px;
+  padding: 4px 12px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-full);
+  color: var(--au-primary);
+  background: transparent;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.lamp-link:hover {
+  border-color: var(--au-primary);
+}
+
+.lamp-link.is-btn {
+  font-family: inherit;
+}
+
+/** 原始探针输出：英文 key 与探针原文收进折叠，默认不打扰 */
+.lamp-raw {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--au-border);
+  font-size: 11px;
+  color: var(--au-text-4);
+}
+
+.lamp-raw summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.lamp-raw code {
+  display: block;
+  margin-top: 6px;
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+  color: var(--au-text-3);
+}
+
+@media (max-width: 1024px) {
+  .lamp-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .lamp-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ---------- 告警通知 ---------- */
