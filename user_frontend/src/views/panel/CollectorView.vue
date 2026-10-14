@@ -42,7 +42,7 @@
         <div class="v4-sec-title">🛂 口味护照</div>
         <div class="v4-sec-sub">看够一个类型，就盖一个章 —— 集满 12 枚有惊喜</div>
         <div v-if="collector.loading" class="v4-skeleton" style="height:200px"></div>
-        <TastePassport v-else :raw="tastesRaw" />
+        <TastePassport v-else :raw="tastesRaw" :loading="collector.loading" @retry="retryCollector" />
       </section>
 
       <!-- 馆灵养成 -->

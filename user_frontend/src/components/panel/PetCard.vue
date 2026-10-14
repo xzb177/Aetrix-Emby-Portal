@@ -1,5 +1,5 @@
 <template>
-  <div class="v4-pet">
+  <div v-if="pet" class="v4-pet">
     <div class="evo" role="img" :aria-label="`馆灵：${pet.name}`">{{ pet.icon }}</div>
     <h3>{{ pet.name }} · {{ stageLabel }}</h3>
     <p>
@@ -9,10 +9,10 @@
     <div
       class="evo-bar"
       role="progressbar"
-      :aria-valuenow="Math.round(pet.progress * 100)"
+      :aria-valuenow="progressPct"
       aria-valuemin="0"
       aria-valuemax="100"
-      :aria-label="`进化进度 ${Math.round(pet.progress * 100)}%`"
+      :aria-label="`进化进度 ${progressPct}%`"
     >
       <i :style="{ '--evo-p': evoScale }"></i>
     </div>
@@ -25,6 +25,9 @@
       >{{ s.icon }} {{ s.name }}</span>
     </div>
   </div>
+  <div v-else class="v4-pet">
+    <div class="v4-skeleton" style="height:200px" aria-hidden="true"></div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -33,23 +36,30 @@ import type { PetData } from '@/composables/usePanelApi'
 
 const props = defineProps<{ pet: PetData }>()
 
-/** 阶段文案：按索引给中文阶段名 */
+/** 阶段文案：优先用后端给的阶段名，拿不到再按索引给中文阶段名 */
 const STAGE_LABELS = ['雏形', '成长期', '成熟期', '蜕变期', '完全体']
 
-const stageLabel = computed(() => STAGE_LABELS[Math.min(props.pet.stage, STAGE_LABELS.length - 1)] || '成长期')
+const stageLabel = computed(() => props.pet.stages?.[props.pet.stage]?.name || STAGE_LABELS[Math.min(props.pet.stage, STAGE_LABELS.length - 1)] || '成长期')
 
-const hoursText = computed(() => {
-  const h = props.pet.hours || 0
-  return h >= 1 ? `${Math.round(h)} 小时` : `${Math.round(h * 60)} 分钟`
-})
+/** 时长文案：已看时长用 round，剩余用 ceil（避免"0 分钟"） */
+function formatDuration(hours: number, mode: 'round' | 'ceil' = 'round'): string {
+  const v = Number.isFinite(hours) ? Math.max(0, hours) : 0
+  const r = mode === 'ceil' ? Math.ceil : Math.round
+  if (v >= 1) return `${r(v)} 小时`
+  return `${Math.max(1, r(v * 60))} 分钟`
+}
+
+const hoursText = computed(() => formatDuration(props.pet.hours))
 
 /** 文案：下一阶段还差多少 */
 const nextText = computed(() => {
   const p = props.pet
-  if (p.next_name && p.next_hours != null) {
+  // R48A-5：hours 非法时降级不展示剩余量
+  if (p.next_name && p.next_hours != null && Number.isFinite(p.hours)) {
     const remain = Math.max(0, p.next_hours - p.hours)
-    const remainText = remain >= 1 ? `${Math.ceil(remain)} 小时` : `${Math.ceil(remain * 60)} 分钟`
-    return `再看 ${remainText}，进化为「${p.next_name}」`
+    // R48A-53：差值已归零说明马上进化，不说"再看 0 分钟"
+    if (remain <= 0) return '马上就能进化啦'
+    return `再看 ${formatDuration(remain, 'ceil')}，进化为「${p.next_name}」`
   }
   return '已达最高形态 · 它是你的了 🐉'
 })
@@ -63,7 +73,13 @@ const flavorText = computed(() => {
   return '你看的每一分钟，都在喂养它'
 })
 
-const evoScale = computed(() => Math.min(1, Math.max(0, props.pet.progress || 0)))
+/** 进化进度百分比：钳制 0–100，NaN→0；aria 与刻度共用 */
+const progressPct = computed(() => {
+  const v = Number.isFinite(props.pet.progress) ? props.pet.progress : 0
+  return Math.min(100, Math.max(0, Math.round(v * 100)))
+})
+
+const evoScale = computed(() => progressPct.value / 100)
 </script>
 
 <style scoped>
@@ -83,6 +99,10 @@ const evoScale = computed(() => Math.min(1, Math.max(0, props.pet.progress || 0)
 @media (prefers-reduced-motion: reduce) {
   .v4-pet .evo {
     animation: none;
+  }
+  /* R48A-30：减少动态偏好下进度条过渡也停掉 */
+  .evo-bar i {
+    transition: none;
   }
 }
 @keyframes v4-bob {
@@ -122,14 +142,16 @@ const evoScale = computed(() => Math.min(1, Math.max(0, props.pet.progress || 0)
   transition: transform 1s ease;
 }
 .v4-pet .next {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ink2);
 }
 .evo-steps {
   display: flex;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 12px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ink2);
 }
 .evo-steps .on {
