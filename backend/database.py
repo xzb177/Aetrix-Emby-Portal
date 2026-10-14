@@ -1039,7 +1039,7 @@ def _hash_plain_emby_tokens(existing_tables: set) -> None:
 # 这里按 inspector 显式补上。每条：(表, 索引名, 列, 需要先存在的列 or None, 迁移日志)。
 # 顺序即执行顺序（与拆分前各 _ensure_*_index 的调用顺序一致）。
 # **可回滚**：任一索引 ``DROP INDEX <name>`` 即可，无数据影响。
-_LEGACY_INDEXES: tuple[tuple[str, str, str, Optional[str], str], ...] = (
+_LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     # 两阶段扫描（v2.39.0）：worker 取待探测条目时走索引
     ("emby_items", "idx_item_probe", "probe_status, probe_priority, id", None,
      "  🔧 已迁移: emby_items.idx_item_probe（探测队列索引）"),
@@ -1077,6 +1077,15 @@ _LEGACY_INDEXES: tuple[tuple[str, str, str, Optional[str], str], ...] = (
     # index=True（新库 create_all 自带），这里给升级上来的老库补上。
     ("strm_gen_files", "idx_strm_gen_files_file_id", "file_id", None,
      "  已迁移: strm_gen_files.idx_strm_gen_files_file_id（墓碑回查索引）"),
+    # /emby/Items 默认浏览部分索引：item_type 等值/IN + ORDER BY (sort_name, id)。
+    # 22 万行生产实测：翻页与 COUNT 都是 Parallel Seq Scan + Sort。
+    # 部分谓词 WHERE is_hidden=false AND deleted_at IS NULL 与查询条件一致
+    # （deleted_at 由全局 ORM 钩子 _hide_soft_deleted 自动拼上），规划器可用。
+    # models.py 的 MediaItem.__table_args__ 已声明同名索引（新库 create_all 自带），
+    # 这里给升级上来的老库补上。回滚：DROP INDEX idx_item_browse_sort。
+    ("emby_items", "idx_item_browse_sort", "item_type, sort_name, id", None,
+     "  已迁移: emby_items.idx_item_browse_sort（/emby/Items 默认浏览部分索引）",
+     "is_hidden = false AND deleted_at IS NULL"),
 )
 
 
@@ -1139,8 +1148,12 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
 
 
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
-                  required_column: Optional[str], message: str) -> None:
-    """给老库补一条索引（幂等）：表不存在 / 依赖列不存在 / 索引已在 → 什么都不做"""
+                  required_column: Optional[str], message: str,
+                  where: Optional[str] = None) -> None:
+    """给老库补一条索引（幂等）：表不存在 / 依赖列不存在 / 索引已在 → 什么都不做
+
+    ``where`` 为 None 时 DDL 与以前逐字节一致；给出时建部分索引
+    （``CREATE INDEX ... WHERE <where>``）。"""
     from sqlalchemy import inspect, text
 
     if table not in existing_tables:
@@ -1154,7 +1167,10 @@ def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
     if name in names:
         return
     with engine.begin() as conn:
-        conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
+        if where is None:
+            conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
+        else:
+            conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns}) WHERE {where}"))
         print(message)
 
 

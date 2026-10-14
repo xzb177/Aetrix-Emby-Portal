@@ -23,6 +23,8 @@ _ITEM_INDEXES = {
     "idx_item_added": ["date_added", "item_type"],
     "idx_item_lib_deleted": ["library_id", "deleted_at"],
     "idx_item_drive_file_id": ["drive_file_id"],
+    # R2（/emby/Items 默认浏览部分索引）：WHERE is_hidden=false AND deleted_at IS NULL
+    "idx_item_browse_sort": ["item_type", "sort_name", "id"],
 }
 
 
@@ -33,7 +35,8 @@ def _engine(tmp_path):
             "CREATE TABLE emby_items (id INTEGER PRIMARY KEY, probe_status TEXT, "
             "probe_priority INTEGER, probe_next_retry_at TEXT, enrich_status TEXT, enrich_next_retry_at TEXT, "
             "enrich_priority INTEGER, merged_into_id INTEGER, date_added TEXT, "
-            "item_type TEXT, library_id INTEGER, deleted_at TEXT, drive_file_id TEXT)"
+            "item_type TEXT, library_id INTEGER, deleted_at TEXT, drive_file_id TEXT, "
+            "sort_name TEXT, is_hidden BOOLEAN)"
         ))
         conn.execute(text("CREATE TABLE emby_people (id INTEGER PRIMARY KEY, name TEXT)"))
         conn.execute(text(
@@ -55,6 +58,8 @@ def test_spec_table_covers_all_seven_in_restored_order():
         "idx_item_merged_into_id", "idx_person_item_tmdb",
         # .strm 删除链路：墓碑按 file_id IN 批量回查状态表
         "idx_strm_gen_files_file_id",
+        # R2：/emby/Items 默认浏览部分索引（spec 表末尾追加）
+        "idx_item_browse_sort",
     ]
 
 
@@ -70,7 +75,7 @@ def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys
     # person_tmdb_id 列不存在 → 静默跳过
     assert _indexes(eng, "emby_people") == {}
     first = capsys.readouterr().out
-    assert first.count("已迁移") == 8
+    assert first.count("已迁移") == 9
 
     # 第二次：全部已存在，不再建、不再打日志
     database._ensure_legacy_indexes(tables)
