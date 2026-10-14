@@ -22,7 +22,11 @@
       <!-- ⚡ 能量补给 -->
       <section class="shop-sec">
         <div class="v4-sec-title">⚡ 能量补给</div>
-        <div class="v4-sec-sub">充积分 = 补充能量 · {{ ratioText }} —— 点一罐看看</div>
+        <!-- R37 P3-1：比例接口失败时副标题诚实兜底，不再假装「加载中」 -->
+        <div class="v4-sec-sub">
+          <template v-if="ratioFailed">充积分 = 补充能量 —— 点一罐看看</template>
+          <template v-else>充积分 = 补充能量 · {{ ratioText }} —— 点一罐看看</template>
+        </div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启<br><button class="v4-retry" @click="loadAll">重试</button></div>
@@ -81,8 +85,10 @@
                 @click="customAmount = q"
               ><span class="lbl">¥{{ q }}</span></button>
             </div>
+            <!-- R37 P3-1：比例未知时不静默错算，标注「比例待确认」 -->
             <small v-if="customAmount && customAmount >= 1" class="custom-note">
-              ≈ {{ fmtNum(customPointsPreview) }} 能量
+              <template v-if="rechargeRatio == null">≈ 比例待确认</template>
+              <template v-else>≈ {{ fmtNum(customPointsPreview) }} 能量</template>
             </small>
           </div>
           <!-- 支付方式 -->
@@ -308,6 +314,8 @@ const inviteReward = ref(0)
 const inviteeReward = ref(0)
 const points = ref<number | null>(null)
 const rechargeRatio = ref<number | null>(null)
+/** R37 P3-1：充值比例接口失败标记 —— 失败时副标题走诚实兜底，不再永久「加载中」 */
+const ratioFailed = ref(false)
 const payMethod = ref('alipay')
 /* R28：支付方式接口就绪标记——未就绪时禁用下单按钮，避免用默认值 'alipay' 下单 */
 const methodsReady = ref(false)
@@ -606,6 +614,9 @@ async function loadAll() {
   if (cur.status === 'fulfilled') {
     rechargeRatio.value = cur.value.recharge_ratio ?? null
     quickAmounts.value = cur.value.quick_amounts || []
+  } else {
+    // R37 P3-1：充值比例失败置标记，副标题诚实兜底、预估标注「比例待确认」
+    ratioFailed.value = true
   }
   if (methodsRes.status === 'fulfilled') {
     methods.value = Array.isArray(methodsRes.value) ? methodsRes.value : []

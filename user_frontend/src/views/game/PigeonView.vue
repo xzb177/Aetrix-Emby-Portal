@@ -128,7 +128,7 @@
                   class="wax"
                   :class="{ 'is-unsealing': unsealingId === msg.id }"
                   :disabled="unsealingId === msg.id"
-                  aria-label="拆信"
+                  :aria-label="unsealingId === msg.id ? '拆信中' : '拆信'"
                   @click.stop="unseal(msg)"
                 >
                   {{ unsealingId === msg.id ? '拆信中' : '封' }}
@@ -266,7 +266,7 @@ async function markAllRead() {
   }
 }
 
-async function load(showSpinner = true) {
+async function load(showSpinner = true): Promise<boolean> {
   if (showSpinner) loading.value = true
   loadError.value = ''
   try {
@@ -279,24 +279,28 @@ async function load(showSpinner = true) {
     // 掉出当前筛选的已展开行，保持展开状态但跟随 is_read 变化
     const alive = new Set(messages.value.map((m) => m.id))
     openIds.value = new Set([...openIds.value].filter((id) => alive.has(id)))
+    return true
   } catch (e) {
     // 静默刷新失败保留已有列表；首屏失败才进错误态
     if (showSpinner || !messages.value.length) {
       messages.value = []
       loadError.value = humanizeError(e)
     }
+    return false
   } finally {
     loading.value = false
   }
 }
 
 /** 手动刷新按钮：专属 busy 态，忙时禁用防连点（竞态写回）。
- *  R36：finally 里必复位 —— 成功/失败路径都不会卡死按钮。 */
+ *  R36：finally 里必复位 —— 成功/失败路径都不会卡死按钮。
+ *  R37 P3-4：手动刷新失败给人话 toast，列表保留已有数据不碰。 */
 async function onManualRefresh() {
   if (refreshing.value) return
   refreshing.value = true
   try {
-    await load(false)
+    const ok = await load(false)
+    if (!ok) toast.error('刷新失败，信鸽可能迷路了')
   } finally {
     refreshing.value = false
   }

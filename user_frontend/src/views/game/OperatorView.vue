@@ -568,7 +568,12 @@ function focusOpenModalCard() {
     el?.focus()
   })
 }
-function openSetPlayPwd() { showSetPlayPwd.value = true; focusOpenModalCard() }
+function openSetPlayPwd() {
+  // R37 P3-9：重开弹窗清掉旧错误文案
+  pwdError.value = ''
+  showSetPlayPwd.value = true
+  focusOpenModalCard()
+}
 function openUnlockConfirm() { showUnlockConfirm.value = true; focusOpenModalCard() }
 
 async function doStopSession() {

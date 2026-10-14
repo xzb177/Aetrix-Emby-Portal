@@ -46,7 +46,8 @@
             <span v-if="deviceInfo && deviceInfo.limit" class="dev-count">
               {{ deviceInfo.active_count }} / {{ deviceInfo.limit }} 台
             </span>
-            <button type="button" class="v4-mini-btn" title="刷新" @click="loadDevices">
+            <!-- R37 P3-8：忙碌时禁用防连点（照 R36 PigeonView 修法） -->
+            <button type="button" class="v4-mini-btn" title="刷新" :disabled="deviceLoading" @click="loadDevices">
               <RefreshCw :size="13" :class="{ spinning: deviceLoading }" /> 刷新
             </button>
           </div>
@@ -76,7 +77,8 @@
                 :disabled="removingDevice === d.device_id"
                 @click="handleRemoveDevice(d)"
               >
-                {{ pendingRemove === d.device_id ? '确认移除' : '移除' }}
+                <!-- R37 P3-8：移除忙碌态给人话文案「移除中」，不再只有变暗 -->
+                {{ removingDevice === d.device_id ? '移除中' : (pendingRemove === d.device_id ? '确认移除' : '移除') }}
               </button>
             </div>
           </template>
@@ -194,6 +196,8 @@ function onPwdEsc(e: KeyboardEvent) {
   if (e.key === 'Escape' && showChangePwd.value) closeChangePwd()
 }
 function openChangePwd() {
+  // R37 P3-9：重开弹窗清掉旧错误文案
+  pwdError.value = ''
   showChangePwd.value = true
   window.addEventListener('keydown', onPwdEsc)
   nextTick(() => oldPwdInput.value?.focus())

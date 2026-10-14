@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount, onMounted } from 'vue'
 import { Send, RefreshCw, Check, X, Copy } from 'lucide-vue-next'
+import Modal from '@/components/ui/Modal.vue'
 import { tgApi } from '@/api/tg'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
@@ -26,6 +27,8 @@ const copied = ref(false)
 // 已绑定状态：弹窗打开时先查 /status，避免已绑定用户仍看到绑定码对话框
 const alreadyBound = ref(false)
 const boundTelegramId = ref<number | null>(null)
+/** R37 P3-C1：解绑二次确认弹窗（纸色 Modal，替代 window.confirm） */
+const unbindConfirmOpen = ref(false)
 
 let timer: ReturnType<typeof setInterval> | null = null
 let closeTimer: ReturnType<typeof setTimeout> | null = null
@@ -129,7 +132,6 @@ async function copyCode() {
 
 async function onUnbind() {
   if (unbinding.value) return
-  if (!window.confirm('确定要解绑 Telegram 吗？解绑后公益服功能（签到/积分/红包/抽奖）将受限。')) return
   unbinding.value = true
   try {
     const res = await tgApi.unbind()
@@ -148,6 +150,12 @@ async function onUnbind() {
   } finally {
     unbinding.value = false
   }
+}
+
+/** R37 P3-C1：确认层点「确定解绑」—— 关确认层后走原解绑流程 */
+async function confirmUnbind() {
+  unbindConfirmOpen.value = false
+  await onUnbind()
 }
 
 function close() {
@@ -186,6 +194,7 @@ watch(
       stopCountdown()
       alreadyBound.value = false
       boundTelegramId.value = null
+      unbindConfirmOpen.value = false
       if (closeTimer) {
         clearTimeout(closeTimer)
         closeTimer = null
@@ -194,9 +203,10 @@ watch(
   }
 )
 
-/** Esc 关闭（与 AppHeader 的 onDocKeydown 同例：弹窗打开时 Esc 触发关闭） */
+/** Esc 关闭（与 AppHeader 的 onDocKeydown 同例：弹窗打开时 Esc 触发关闭）
+ *  R37 P3-C1：二次确认打开时 Esc 只关确认层（它自己管 Esc），不关外层对话框 */
 function onDocKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.modelValue) close()
+  if (e.key === 'Escape' && props.modelValue && !unbindConfirmOpen.value) close()
 }
 
 onMounted(() => {
@@ -233,8 +243,9 @@ onBeforeUnmount(() => {
         <p>Telegram ID：{{ boundTelegramId }}</p>
         <p class="tg-hint">如需更换账号，可先解绑再重新绑定。</p>
         <div class="tg-actions">
-          <button class="au-btn" type="button" :disabled="unbinding" @click="onUnbind">
-            {{ unbinding ? '解绑中…' : '解绑' }}
+          <!-- R37 P3-C1：解绑走纸色二次确认，不再用 window.confirm -->
+          <button class="au-btn" type="button" :disabled="unbinding" @click="unbindConfirmOpen = true">
+            解绑
           </button>
         </div>
       </div>
@@ -281,6 +292,20 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
+
+      <!-- R37 P3-C1：解绑二次确认（纸色 Modal，走 .paper-confirm 全局纸色覆盖） -->
+      <Modal v-model="unbindConfirmOpen" size="sm" content-class="paper-confirm">
+        <template #header>
+          <h3 class="modal-title">解绑 Telegram</h3>
+        </template>
+        <p class="tg-confirm-text">确定要解绑 Telegram 吗？解绑后公益服功能（签到/积分/红包/抽奖）将受限。</p>
+        <template #footer>
+          <button class="au-btn" type="button" @click="unbindConfirmOpen = false">再想想</button>
+          <button class="au-btn au-btn-primary" type="button" :disabled="unbinding" @click="confirmUnbind">
+            {{ unbinding ? '解绑中…' : '确定解绑' }}
+          </button>
+        </template>
+      </Modal>
     </div>
   </div>
 </template>
@@ -457,5 +482,13 @@ onBeforeUnmount(() => {
 .tg-code-skeleton {
   height: 48px;
   width: 100%;
+}
+
+/* R37 P3-C1：纸色确认层正文（Modal Teleport 到 body，纸色 token 走字面量 fallback） */
+.tg-confirm-text {
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--ink, #2A2620);
+  margin: 0;
 }
 </style>
