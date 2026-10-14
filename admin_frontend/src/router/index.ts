@@ -30,7 +30,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'subscriptions', name: 'Subscriptions', component: () => import('@/views/Subscriptions.vue'), meta: { title: '订阅与权益' } },
       { path: 'goods', name: 'Goods', component: () => import('@/views/Goods.vue'), meta: { title: '商品管理' } },
       { path: 'orders', name: 'Orders', component: () => import('@/views/Orders.vue'), meta: { title: '运营·订单' } },
-      // 卡码 / 兑换码已并入「码管理」（Codes.vue 两个标签页）：旧地址跳到对应标签，收藏不会落到仪表盘
+      // 会员卡码 / 兑换码已并入「码管理」（Codes.vue 两个标签页）：旧地址跳到对应标签，收藏不会落到仪表盘
       { path: 'exchange-codes', redirect: { path: '/codes', query: { tab: 'exchange' } } },
       { path: 'registration-codes', redirect: { path: '/codes', query: { tab: 'reg' } } },
       // 优惠券（v2.10.0）：与兑换码分工不同——兑换码不花钱拿东西，优惠券是付费时抵扣

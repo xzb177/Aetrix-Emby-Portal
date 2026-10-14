@@ -156,7 +156,7 @@ export const sendUserMessage = (id: number, data: { title: string; content: stri
 export const broadcastMessage = (data: { title: string; content: string }) =>
   post<{ success: boolean }>('/messages/broadcast', data)
 
-// ==================== 卡码体系 ====================
+// ==================== 会员卡码体系 ====================
 
 /** 注册码门禁设置 */
 export const fetchRegistrationSettings = () => get<RegistrationSettings>('/settings/registration')
@@ -169,7 +169,7 @@ export const updateRegistrationSettings = (data: {
   ratelimit_window?: number
 }) => put<{ success: boolean }>('/settings/registration', data)
 
-/** 类型化卡码生成（注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码） */
+/** 类型化会员卡码生成（注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码） */
 export const generateCodes = (data: {
   code_type: number
   count: number
@@ -195,7 +195,7 @@ export const generateCodes = (data: {
 }>(
   '/registration-codes/generate', data)
 
-/** 卡码清单（按服；`realm_id=0` = 全部服，不传 = 当前服） */
+/** 会员卡码清单（按服；`realm_id=0` = 全部服，不传 = 当前服） */
 export const fetchCodeList = (params: {
   code_type?: number
   state?: string

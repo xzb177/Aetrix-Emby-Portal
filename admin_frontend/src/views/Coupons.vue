@@ -4,6 +4,7 @@
  *
  * 与兑换码的区别要一眼看得出：兑换码是「不花钱直接拿东西」，优惠券是「付费时打折」，
  * 钱照旧走支付网关，只是单价变了。所以这张表讲的全是「折扣与额度」。
+ * （四种码的完整分工说明见 Codes.vue 页顶，本页不再重复。）
  *
  * 额度是**预订制**的：下单就占（reserved），付款转已用（consumed），关单/退款释放（released）。
  * 面板上必须能看见「占用中」这一档——它可能随时变成已用，也可能超时被自动清理，
@@ -618,13 +619,8 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <el-alert
-      class="mb-4"
-      type="info"
-      :closable="false"
-      show-icon
-      title="分工说明：优惠券在下单支付时直接抵扣（钱仍走支付网关）；兑换码（discount 型）是用户兑换后生成一笔抵扣额度，存在钱包里慢慢用。"
-    />
+    <!-- 四种码的分工说明已收敛到「码管理」页顶（Batch F）；这里只留跳转，不再各写一遍 -->
+    <p class="division-pointer">四种码的分工说明见「<router-link to="/codes">码管理</router-link>」页顶。</p>
 
     <section class="stat-row" aria-label="优惠券概况">
       <StatTile label="优惠券" :value="summary.total" suffix="张" :icon="Tickets" hint="当前筛选范围内" />
@@ -1012,6 +1008,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* 四种码分工说明已收敛到「码管理」页顶；这里只留一行跳转提示 */
+.division-pointer { margin: 0 0 12px; font-size: 12.5px; color: var(--au-text-3); }
+.division-pointer a { color: var(--au-primary); }
 .stat-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
