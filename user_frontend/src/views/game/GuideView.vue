@@ -214,7 +214,7 @@ onMounted(() => {
   gap: 12px;
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 14px 16px;
   position: relative;
 }
@@ -227,7 +227,7 @@ onMounted(() => {
   color: var(--green);
   background: #F1F4EC;
   border: 1px solid var(--green);
-  border-radius: 20px;
+  border-radius: var(--paper-r-2xl, 20px);
   padding: 2px 8px;
   margin-left: 6px;
   white-space: nowrap;
@@ -236,7 +236,7 @@ onMounted(() => {
 .guide-card .dot {
   width: 10px;
   height: 10px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--green);
   flex: none;
 }
@@ -249,7 +249,7 @@ onMounted(() => {
   border: 1.5px solid var(--line);
   background: var(--paper-card);
   color: var(--ink);
-  border-radius: 20px;
+  border-radius: var(--paper-r-2xl, 20px);
   padding: 8px 14px;
   font-size: 13px;
   min-height: 44px;
@@ -262,7 +262,7 @@ onMounted(() => {
 .chat {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 14px;
   display: flex;
   flex-direction: column;
@@ -293,7 +293,7 @@ onMounted(() => {
   align-self: stretch;
   background: #FBE9E2;
   border: 1px dashed var(--red);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 10px 13px;
   color: var(--red);
   font-size: 13px;
@@ -305,7 +305,7 @@ onMounted(() => {
 .typing i {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--ink2);
   animation: blink 1.2s infinite;
 }
@@ -325,20 +325,20 @@ onMounted(() => {
   font-size: 16px;
   padding: 12px 14px;
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: var(--paper-card);
   color: var(--ink);
 }
 .inputbar button {
   flex-shrink: 0;
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   border: none;
   font-size: 14px;
   font-weight: 800;
   padding: 0 18px;
-  border-radius: 10px;
-  box-shadow: 0 3px 0 #a33319;
+  border-radius: var(--paper-r-md, 10px);
+  box-shadow: 0 3px 0 var(--red-deep, #a33319);
   cursor: pointer;
 }
 .inputbar button:active { transform: translateY(2px); box-shadow: none; }

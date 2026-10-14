@@ -33,7 +33,7 @@ function paint() {
   const w = el.width
   const h = el.height
   ctx.clearRect(0, 0, w, h)
-  ctx.strokeStyle = '#9BE08A'
+  ctx.strokeStyle = 'var(--pulse-green, #9BE08A)'
   ctx.lineWidth = 3 * (w / (el.clientWidth || w)) // 按 DPR 换算回 CSS 像素观感
   ctx.lineJoin = 'round'
   ctx.beginPath()

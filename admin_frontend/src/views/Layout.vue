@@ -983,7 +983,7 @@ onUnmounted(() => {
 .cmd-btn-kbd {
   padding: 0 6px;
   border: 1px solid var(--au-border);
-  border-radius: 6px;
+  border-radius: var(--radius-xs, 6px);
   background: var(--au-surface);
   color: var(--au-text-3);
   font-family: var(--font-mono);

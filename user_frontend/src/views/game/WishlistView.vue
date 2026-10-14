@@ -305,7 +305,7 @@ onMounted(() => {
   height: 220px;
   margin: 0 auto;
   position: relative;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: radial-gradient(circle, #7FA8C9 0%, #4A7CA8 55%, #2C5378 100%);
   border: 14px solid #B9A87E;
   outline: 3px solid var(--ink);
@@ -316,7 +316,7 @@ onMounted(() => {
   content: "";
   position: absolute;
   inset: 0;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.35), transparent 45%);
 }
 .moon {
@@ -337,7 +337,7 @@ onMounted(() => {
   width: 200px;
   height: 200px;
   border: 2px solid rgba(255, 255, 255, 0.55);
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   transform: translate(-50%, -50%) scale(0.2);
   animation: rip 3.2s infinite;
   pointer-events: none;
@@ -376,12 +376,12 @@ onMounted(() => {
   font-weight: 800;
   letter-spacing: 3px;
   padding: 15px;
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   cursor: pointer;
-  box-shadow: 0 4px 0 #a33319;
+  box-shadow: 0 4px 0 var(--red-deep, #a33319);
   transition: transform 0.12s;
 }
-.wish-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 #a33319; }
+.wish-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--red-deep, #a33319); }
 
 /* 纸船飞 + 噗通 */
 .flyboat {
@@ -410,7 +410,7 @@ onMounted(() => {
 .wish {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 13px 14px;
   margin-bottom: 10px;
   display: flex;
@@ -430,7 +430,7 @@ onMounted(() => {
   font-size: 11px;
   font-weight: 700;
   padding: 4px 10px;
-  border-radius: 20px;
+  border-radius: var(--paper-r-2xl, 20px);
   white-space: nowrap;
 }
 .chip.blue { background: #E3ECF8; color: var(--blue); border: 1px solid var(--blue); }
@@ -439,7 +439,7 @@ onMounted(() => {
 .crowd {
   background: var(--paper2);
   border: 1.5px dashed var(--ink2);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 13px 14px;
   margin-bottom: 10px;
 }
@@ -466,7 +466,7 @@ onMounted(() => {
   position: absolute;
   top: 5px; right: 0; bottom: 5px; left: 0;
   background: var(--ink);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
 }
 .upvote .lbl { position: relative; }
 .upvote.done::before { background: var(--green); }
@@ -487,7 +487,7 @@ onMounted(() => {
 .mcard {
   background: var(--paper-card);
   border: 2px solid var(--ink);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 22px 20px;
   width: 100%;
   animation: up 0.25s;
@@ -500,7 +500,7 @@ onMounted(() => {
   font-size: 16px;
   padding: 12px;
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: var(--paper);
   outline: none;
   color: var(--ink);
@@ -512,14 +512,14 @@ onMounted(() => {
   flex: 1;
   min-height: 44px;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   font-size: 14px;
   font-weight: 800;
   cursor: pointer;
   border: none;
 }
 .mbtn.cancel { background: var(--paper2); color: var(--ink2); }
-.mbtn.go { background: var(--red); color: #fff; box-shadow: 0 3px 0 #a33319; }
+.mbtn.go { background: var(--red); color: var(--on-dark, #fff); box-shadow: 0 3px 0 var(--red-deep, #a33319); }
 .mbtn.go:disabled { background: var(--ink2); box-shadow: none; }
 
 /* R27：减少动态偏好下装饰动画停掉（本地守卫） */

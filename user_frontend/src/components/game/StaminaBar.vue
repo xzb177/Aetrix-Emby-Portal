@@ -83,7 +83,7 @@ onMounted(load)
   margin-bottom: 12px;
   background: var(--paper, #f7f1e3);
   border: 1px solid var(--line, #e2d6b8);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
 }
 .stamina-stamp {

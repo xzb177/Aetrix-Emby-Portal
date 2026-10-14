@@ -295,21 +295,21 @@ const outfits: Outfit[] = [
     icon: '☀️',
     label: '白昼纸色',
     desc: '经典纸色，护眼耐看 —— 营地的老样子。',
-    swatches: ['#F6F1E7', '#EFE7D6', '#2A2620', '#D9482B', '#C99B3F'],
+    swatches: ['var(--paper, #F6F1E7)', 'var(--paper2, #EFE7D6)', 'var(--ink, #2A2620)', 'var(--red, #D9482B)', 'var(--gold, #C99B3F)'],
   },
   {
     id: 'dark',
     icon: '🌙',
     label: '暗夜营地',
     desc: '油灯下的营地，夜猫子探险家专属。',
-    swatches: ['#0C0A09', '#161310', '#EFE6D2', '#E2603F', '#C99B3F'],
+    swatches: ['#0C0A09', '#161310', '#EFE6D2', '#E2603F', 'var(--gold, #C99B3F)'],
   },
   {
     id: 'system',
     icon: '🌤️',
     label: '跟随天色',
     desc: '跟着手机的白天黑夜自动换，省心。',
-    swatches: ['#F6F1E7', '#0C0A09', '#2A2620', '#D9482B', '#7FA6D9'],
+    swatches: ['var(--paper, #F6F1E7)', '#0C0A09', 'var(--ink, #2A2620)', 'var(--red, #D9482B)', '#7FA6D9'],
   },
 ]
 
@@ -421,7 +421,7 @@ onBeforeUnmount(() => {
   position: relative;
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 14px 8px 12px;
   text-align: center;
   cursor: pointer;
@@ -462,9 +462,9 @@ onBeforeUnmount(() => {
   right: 8px;
   font-size: 10px;
   font-weight: 800;
-  color: #fff;
+  color: var(--on-dark, #fff);
   background: var(--red);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 2px 8px;
   letter-spacing: 1px;
 }
@@ -477,7 +477,7 @@ onBeforeUnmount(() => {
   color: var(--red);
   background: transparent;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   /* 透明 padding + 负 margin：视觉药丸不变，触点纵向扩大到 44px（R23 .upvote 同款） */
   padding: 16px 14px;
   cursor: pointer;
@@ -491,7 +491,7 @@ onBeforeUnmount(() => {
   bottom: 10.5px;
   left: 0;
   border: 1.5px solid var(--red);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
 }
 .wear-btn.off {
   color: var(--ink2);
@@ -509,7 +509,7 @@ onBeforeUnmount(() => {
   position: relative;
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 16px;
   margin-bottom: 12px;
   cursor: pointer;
@@ -521,16 +521,16 @@ onBeforeUnmount(() => {
   right: 14px;
   font-size: 11px;
   font-weight: 800;
-  color: #fff;
+  color: var(--on-dark, #fff);
   background: var(--green);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 2px 10px;
 }
 .outfit .prev { display: flex; gap: 6px; margin-bottom: 10px; }
 .outfit .pv {
   width: 34px;
   height: 22px;
-  border-radius: 6px;
+  border-radius: var(--paper-r-sm, 6px);
   border: 1px solid var(--line);
 }
 .outfit .nm { font-size: 15px; font-weight: 800; }
@@ -542,9 +542,9 @@ onBeforeUnmount(() => {
   top: 16px;
   width: 24px;
   height: 24px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   font-size: 14px;
   font-weight: 800;
   display: none;
@@ -580,14 +580,14 @@ onBeforeUnmount(() => {
 .confirm button {
   width: 100%;
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   border: none;
   font-size: 16px;
   font-weight: 800;
   padding: 14px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   letter-spacing: 2px;
-  box-shadow: 0 3px 0 #a33319;
+  box-shadow: 0 3px 0 var(--red-deep, #a33319);
   cursor: pointer;
 }
 .confirm button:active { transform: translateY(2px); box-shadow: none; }

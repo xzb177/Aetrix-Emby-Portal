@@ -195,7 +195,7 @@
             <div class="perks" v-if="openCampLevel === lv.level">
               <template v-for="(b, i) in lv.benefits" :key="i"><i>★</i> {{ b }}<br /></template>
               <span style="font-size:11px">经验 {{ lv.xp_threshold }}<span v-if="lv.level === member.level && member.next_level"> → 下一级 Lv.{{ member.next_level }} 还差 {{ member.xp_to_next }}</span></span>
-              <div v-if="lv.level === member.level && member.progress_pct != null" style="background:var(--paper2);border-radius:6px;height:8px;margin-top:6px;overflow:hidden">
+              <div v-if="lv.level === member.level && member.progress_pct != null" style="background:var(--paper2);border-radius:var(--paper-r-sm, 6px);height:8px;margin-top:6px;overflow:hidden">
                 <div :style="{ width: member.progress_pct + '%', height: '100%', background: 'var(--red)' }"></div>
               </div>
             </div>
@@ -837,7 +837,7 @@ async function copyInviteCode() {
   flex: 1;
   background: var(--ink);
   color: var(--paper); /* R27：原 #f6f1e7 = --paper */
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 10px 12px;
   display: flex;
   align-items: center;
@@ -865,7 +865,7 @@ async function copyInviteCode() {
 .can {
   background: var(--paper-card);
   border: 1.5px dashed var(--ink2);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 16px 10px;
   text-align: center;
   cursor: pointer;
@@ -912,7 +912,7 @@ async function copyInviteCode() {
   color: var(--on-dark);
   font-size: 10px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   transform: rotate(3deg);
 }
 .can .per {
@@ -925,7 +925,7 @@ async function copyInviteCode() {
   margin: 14px 0 4px;
   background: var(--paper2);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   height: 34px;
   position: relative;
   overflow: hidden;
@@ -951,7 +951,7 @@ async function copyInviteCode() {
   font-weight: 700;
   z-index: 1;
   /* R30：压在红渐变 fill 上，加白色 + 阴影保证对比度 */
-  color: #fff;
+  color: var(--on-dark, #fff);
   text-shadow: 0 1px 2px rgba(0,0,0,.35);
 }
 .charge {
@@ -964,7 +964,7 @@ async function copyInviteCode() {
   font-size: 15px;
   font-weight: 800;
   padding: 14px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   letter-spacing: 2px;
   box-shadow: 0 3px 0 var(--red-deep);
   transition: transform 0.12s;
@@ -985,7 +985,7 @@ async function copyInviteCode() {
   display: flex;
   background: var(--paper2);
   border: 1.5px solid var(--line);
-  border-radius: 20px;
+  border-radius: var(--paper-r-2xl, 20px);
   padding: 3px;
   margin-bottom: 12px;
 }
@@ -997,7 +997,7 @@ async function copyInviteCode() {
   font-weight: 700;
   padding: 8px;
   min-height: 44px;
-  border-radius: 16px;
+  border-radius: var(--paper-r-xl, 16px);
   color: var(--ink2);
   cursor: pointer;
 }
@@ -1008,7 +1008,7 @@ async function copyInviteCode() {
 .license {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   margin-bottom: 12px;
   overflow: hidden;
   cursor: pointer;
@@ -1028,7 +1028,7 @@ async function copyInviteCode() {
   flex: none;
   width: 56px;
   height: 56px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--red);
   color: var(--on-dark);
   display: flex;
@@ -1114,7 +1114,7 @@ async function copyInviteCode() {
   font-size: 14px;
   font-weight: 800;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   letter-spacing: 1px;
 }
 .buy:active {
@@ -1148,7 +1148,7 @@ async function copyInviteCode() {
   top: 12px;
   width: 20px;
   height: 20px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--paper2);
   border: 2px solid var(--line);
   display: flex;
@@ -1170,7 +1170,7 @@ async function copyInviteCode() {
 .camp .card {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 10px 12px;
   display: flex;
   justify-content: space-between;
@@ -1215,7 +1215,7 @@ async function copyInviteCode() {
 .invite {
   background: var(--ink);
   color: var(--paper2); /* R27：原 #ede6d6，近似 --paper2 #EFE7D6，收敛 */
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 18px;
   position: relative;
   overflow: hidden;
@@ -1240,7 +1240,7 @@ async function copyInviteCode() {
   flex: 1;
   background: var(--scrim);
   border: 1px dashed var(--line-deep);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   text-align: center;
   font-size: 18px;
   font-weight: 800;
@@ -1261,7 +1261,7 @@ async function copyInviteCode() {
   background: var(--red);
   color: var(--on-dark);
   border: none;
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   padding: 0 18px;
   min-height: 44px;
   font-size: 13px;
@@ -1308,7 +1308,7 @@ async function copyInviteCode() {
 .redeem {
   background: var(--paper-card);
   border: 1.5px solid var(--ink);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 14px;
 }
 .redeem-form {
@@ -1318,7 +1318,7 @@ async function copyInviteCode() {
 .redeem-input {
   flex: 1;
   border: 1.5px solid var(--ink);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   padding: 8px 12px;
   /* R28：iOS 输入框 <16px 聚焦会自动放大页面，提到 16px，padding 收紧补偿视觉高度 */
   font-size: 16px;
@@ -1348,7 +1348,7 @@ async function copyInviteCode() {
   position: absolute;
   top: 5px; right: 0; bottom: 5px; left: 0;
   background: var(--ink);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
 }
 .redeem-btn .lbl { position: relative; }
 .redeem-btn:disabled {
@@ -1387,7 +1387,7 @@ async function copyInviteCode() {
   padding: 10px 12px;
   background: rgba(255, 217, 138, 0.25);
   border: 1.5px solid var(--gold);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   font-size: 13px;
 }
 .redeem-confirm {
@@ -1395,7 +1395,7 @@ async function copyInviteCode() {
   /* R30：透明 padding + 负 margin——视觉按钮不变，点击区纵向扩到 ≥44px（R22 LeverSwitch 同款手法） */
   background: transparent;
   border: none;
-  color: #fff;
+  color: var(--on-dark, #fff);
   padding: 15px 14px;
   margin: -9px 0 -9px auto;
   font-size: 13px;
@@ -1406,7 +1406,7 @@ async function copyInviteCode() {
   position: absolute;
   top: 9px; right: 0; bottom: 9px; left: 0;
   background: var(--red);
-  border-radius: 6px;
+  border-radius: var(--paper-r-sm, 6px);
 }
 .redeem-confirm .lbl { position: relative; }
 .redeem-clear {
@@ -1446,7 +1446,7 @@ async function copyInviteCode() {
 .custom-input {
   flex: 1;
   border: 1.5px solid var(--ink);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   padding: 6px 10px;
   /* R28：iOS 输入框 <16px 聚焦会自动放大页面，提到 16px，padding 收紧补偿视觉高度 */
   font-size: 16px;
@@ -1471,7 +1471,7 @@ async function copyInviteCode() {
   top: 5.5px; right: 0; bottom: 5.5px; left: 0;
   background: var(--paper-card);
   border: 1.5px solid var(--ink);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
 }
 .custom-btn .lbl { position: relative; }
 .custom-btn:disabled {
@@ -1499,7 +1499,7 @@ async function copyInviteCode() {
   top: 11px; right: 0; bottom: 11px; left: 0;
   background: var(--paper2);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
 }
 .quick-btn .lbl { position: relative; }
 .custom-note {
@@ -1537,7 +1537,7 @@ async function copyInviteCode() {
   top: 8.5px; right: 0; bottom: 8.5px; left: 0;
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
 }
 .payway .lbl { position: relative; }
 .payway.on {

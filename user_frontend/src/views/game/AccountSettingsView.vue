@@ -368,7 +368,7 @@ onMounted(() => {
   padding: 10px 12px;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   cursor: pointer;
   color: var(--ink);
   font-size: 15px;
@@ -383,7 +383,7 @@ onMounted(() => {
   width: 32px;
   height: 32px;
   flex-shrink: 0;
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   background: var(--paper2);
   color: var(--ink2);
 }
@@ -411,7 +411,7 @@ onMounted(() => {
   margin: -8px 0;
   background: var(--paper2);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--paper-r-full, 999px);
   color: var(--ink2);
   font-size: 12px;
   cursor: pointer;
@@ -451,7 +451,7 @@ onMounted(() => {
 .dev-badge {
   flex-shrink: 0;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--paper-r-full, 999px);
   font-size: 12px;
   white-space: nowrap;
   background: var(--paper2);
@@ -466,7 +466,7 @@ onMounted(() => {
   margin: -7px 0;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   color: var(--ink2);
   font-size: 13px;
   white-space: nowrap;
@@ -501,7 +501,7 @@ onMounted(() => {
   padding: 20px;
   background: var(--paper-card);
   border: 1.5px solid var(--ink);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   box-shadow: 4px 4px 0 rgba(42, 38, 32, 0.15);
 }
 .acct-modal-title {
@@ -523,7 +523,7 @@ onMounted(() => {
   padding: 0 12px;
   background: var(--paper);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   color: var(--ink);
   font-size: 16px;
   outline: none;
@@ -534,7 +534,7 @@ onMounted(() => {
   margin: 0 0 10px;
   padding: 8px 12px;
   background: var(--au-danger-soft);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   color: var(--red);
   font-size: 13px;
 }
@@ -547,7 +547,7 @@ onMounted(() => {
 .acct-btn {
   height: 44px;
   padding: 0 16px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;

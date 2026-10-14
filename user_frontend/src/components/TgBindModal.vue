@@ -326,7 +326,7 @@ onBeforeUnmount(() => {
   position: relative;
   width: min(420px, calc(100vw - 32px));
   padding: 28px 24px 24px;
-  border-radius: 16px;
+  border-radius: var(--paper-r-xl, 16px);
   background: var(--au-surface, #1a1a22);
   border: 1px solid var(--au-border, rgba(255, 255, 255, 0.08));
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
@@ -343,7 +343,7 @@ onBeforeUnmount(() => {
   width: 32px;
   height: 32px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   background: transparent;
   color: var(--text-secondary, #9a9ab0);
   cursor: pointer;
@@ -394,7 +394,7 @@ onBeforeUnmount(() => {
 .tg-code {
   flex: 1;
   padding: 14px 16px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   background: var(--au-bg, rgba(0, 0, 0, 0.3));
   border: 1px dashed var(--au-border, rgba(255, 255, 255, 0.12));
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -411,7 +411,7 @@ onBeforeUnmount(() => {
   gap: 6px;
   padding: 10px 12px;
   border: 1px solid var(--au-border, rgba(255, 255, 255, 0.1));
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: transparent;
   color: var(--text-secondary, #9a9ab0);
   font-size: 13px;
@@ -437,7 +437,7 @@ onBeforeUnmount(() => {
 .tg-error {
   margin-bottom: 16px;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: rgba(255, 92, 108, 0.1);
   border: 1px solid rgba(255, 92, 108, 0.3);
   font-size: 13px;
@@ -474,7 +474,7 @@ onBeforeUnmount(() => {
   justify-content: center;
   width: 64px;
   height: 64px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: rgba(61, 220, 151, 0.12);
   color: var(--au-success, #3ddc97);
 }

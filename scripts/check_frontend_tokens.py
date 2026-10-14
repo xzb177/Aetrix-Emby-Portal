@@ -181,12 +181,64 @@ def check_frontend(frontend: str) -> None:
             failures.append(f"    {path}")
 
 
+# U0 冻结（UI 统一 LC-09/LC-10）：main.ts 全量引入的主题 CSS 不许新增；
+# --neo-* 体系只许退场（U3/A5），不许在新文件里出现。
+# neo-noir-tokens.css 被删除（A5）时，记得同步从 NEO_FREEZE 里删掉它这一行。
+MAIN_CSS_ALLOWLIST = {
+    "user_frontend": {"aurora.css", "neo-noir-tokens.css", "index.css", "mobile.css", "calendar.css", "v4-paper.css"},
+    "admin_frontend": {"aurora.css", "tokens.css", "base.css", "index.css", "element-plus-theme.css", "responsive.css"},
+}
+NEO_FREEZE = {
+    "user_frontend": {
+        "components/AppDock.vue", "components/ui/Modal.vue",
+        "styles/aurora.css", "styles/index.css", "styles/mobile.css",
+        "styles/neo-noir-tokens.css",
+    },
+    "admin_frontend": set(),
+}
+NEO_TOKEN_RE = re.compile(r"--neo-[A-Za-z0-9_-]+")
+
+
+def check_freeze(frontend: str) -> None:
+    global checks
+    src = ROOT / frontend / "src"
+    main_ts = src / "main.ts"
+
+    checks += 1
+    imported = set()
+    for m in TS_IMPORT_RE.finditer(main_ts.read_text(encoding="utf-8")):
+        found = resolve(main_ts, m.group(1))
+        if found:
+            imported.add(found.name)
+    extra = sorted(imported - MAIN_CSS_ALLOWLIST[frontend])
+    if extra:
+        failures.append(
+            f"{frontend}: main.ts 新增了未登记的主题 CSS 全量引入（UI 统一 U0 冻结）："
+            + ", ".join(extra)
+        )
+
+    checks += 1
+    neo_files = set()
+    for path in list(src.rglob("*.vue")) + list(src.rglob("*.css")) + list(src.rglob("*.ts")):
+        if NEO_TOKEN_RE.search(path.read_text(encoding="utf-8")):
+            neo_files.add(str(path.relative_to(src)))
+    new_neo = sorted(neo_files - NEO_FREEZE[frontend])
+    if new_neo:
+        failures.append(
+            f"{frontend}: {len(new_neo)} 个文件新增了 --neo-* 引用"
+            "（UI 统一 U0 冻结：neo 体系只许退场、不许扩张）"
+        )
+        for f in new_neo:
+            failures.append(f"    {f}")
+
+
 for frontend in FRONTENDS:
     check_frontend(frontend)
+    check_freeze(frontend)
 
 print(f"设计令牌契约检查：{checks} 项")
 if failures:
     print("\n".join(failures))
     print("❌ 设计令牌契约检查失败")
     sys.exit(1)
-print("✅ 设计令牌契约检查通过（引用的令牌都有定义 · 无循环引用 · 没有孤立样式表）")
+print("✅ 设计令牌契约检查通过（引用的令牌都有定义 · 无循环引用 · 没有孤立样式表 · 主题引入冻结 · neo 冻结）")

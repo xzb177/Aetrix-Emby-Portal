@@ -165,9 +165,9 @@ onMounted(load)
   transform: translateX(-50%);
   width: 18px;
   height: 18px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--red);
-  box-shadow: 0 2px 0 #a33319, inset 0 2px 3px rgba(255, 255, 255, 0.4);
+  box-shadow: 0 2px 0 var(--red-deep, #a33319), inset 0 2px 3px rgba(255, 255, 255, 0.4);
   z-index: 2;
 }
 .rc-body { padding: 24px 18px 16px; }

@@ -12,6 +12,8 @@ import router from './router'
 // 先挂载再拉取，不让一次额外请求把首屏拖住；拉到后主题色与文档标题会自己更新。
 import { initBranding } from './composables/branding'
 
+// 【UI 统一 U0】主题 CSS 引入已冻结：新增全量引入必须经设计审查，并同步更新
+// scripts/check_frontend_tokens.py 的 MAIN_CSS_ALLOWLIST，否则 CI 直接失败。
 // 暗房影院令牌（与用户端同名同值）必须最先引入：tokens.css 只是它的别名层
 import './styles/aurora.css'
 import './styles/tokens.css'

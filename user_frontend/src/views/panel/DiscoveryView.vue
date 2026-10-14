@@ -245,7 +245,7 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
 /* 脉搏黑盒：取自设计稿 .pulse-box */
 .v4-pulse-box {
   background: var(--ink);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 16px;
   margin: 0 20px;
   color: var(--paper2); /* R27：原 #EDE6D6，近似 --paper2 #EFE7D6，收敛 */
@@ -266,7 +266,7 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
 .v4-pulse-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--pulse-green);
   animation: v4-blink 1.6s infinite;
 }

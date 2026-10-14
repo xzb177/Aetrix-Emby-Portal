@@ -128,7 +128,7 @@ const emit = defineEmits<{
   display: flex;
   flex-direction: column;
   border: 1px solid var(--el-border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 8px);
   overflow: hidden;
   background: var(--el-bg-color);
 }

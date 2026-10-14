@@ -73,7 +73,7 @@ const watchedText = computed(() => {
 .v4-letter {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   overflow: hidden;
   cursor: pointer;
 }
@@ -84,16 +84,16 @@ const watchedText = computed(() => {
 .v4-letter-wax {
   width: 52px;
   height: 52px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   margin: 0 auto 10px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 22px;
   font-weight: 800;
-  box-shadow: 0 3px 0 #a33319;
+  box-shadow: 0 3px 0 var(--red-deep, #a33319);
   font-family: Georgia, serif;
 }
 .v4-letter-env p { font-size: 13px; color: var(--ink2); margin: 0; }

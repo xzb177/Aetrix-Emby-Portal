@@ -211,7 +211,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 .book {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 16px;
   box-shadow: 0 2px 8px rgba(42, 38, 32, 0.06);
 }
@@ -230,7 +230,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 }
 .day {
   aspect-ratio: 1;
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   background: var(--paper2);
   display: flex;
   flex-direction: column;
@@ -260,7 +260,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   opacity: 0.28;
   transform: rotate(-12deg);
   border: 2px solid var(--red);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   margin: 2px;
 }
 .day.today {
@@ -273,7 +273,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   position: absolute;
   inset: -2px;
   border: 2px solid rgba(217, 72, 43, 0.35);
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   animation: pulse 1.6s infinite;
   pointer-events: none;
 }
@@ -289,14 +289,14 @@ onUnmounted(() => window.clearInterval(dateTimer))
   width: calc(100% - 40px);
   margin: 18px 20px 0;
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   border: none;
   font-size: 16px;
   font-weight: 800;
   padding: 14px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   letter-spacing: 2px;
-  box-shadow: 0 3px 0 #a33319;
+  box-shadow: 0 3px 0 var(--red-deep, #a33319);
   cursor: pointer;
 }
 .checkin-btn:active { transform: translateY(2px); box-shadow: none; }
@@ -307,7 +307,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   margin: 14px 20px 0;
   background: var(--paper2);
   border: 1px dashed var(--gold);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 12px 14px;
   font-size: 12px;
   line-height: 1.9;
@@ -327,7 +327,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   pointer-events: none;
   z-index: 99;
   border: 6px solid var(--red);
-  border-radius: 16px;
+  border-radius: var(--paper-r-xl, 16px);
   padding: 10px 26px;
   background: rgba(246, 241, 231, 0.92);
 }
