@@ -54,12 +54,17 @@ const hoursText = computed(() => formatDuration(props.pet.hours))
 /** 文案：下一阶段还差多少 */
 const nextText = computed(() => {
   const p = props.pet
-  // R48A-5：hours 非法时降级不展示剩余量
-  if (p.next_name && p.next_hours != null && Number.isFinite(p.hours)) {
-    const remain = Math.max(0, p.next_hours - p.hours)
-    // R48A-53：差值已归零说明马上进化，不说"再看 0 分钟"
-    if (remain <= 0) return '马上就能进化啦'
-    return `再看 ${formatDuration(remain, 'ceil')}，进化为「${p.next_name}」`
+  // 有下一形态：再分「进度可算」与「进度算不出来」两路，不谎称已满级
+  if (p.next_name) {
+    // R48A-5：hours 非法时降级不展示剩余量
+    if (p.next_hours != null && Number.isFinite(p.hours)) {
+      const remain = Math.max(0, p.next_hours - p.hours)
+      // R48A-53：差值已归零说明马上进化，不说"再看 0 分钟"
+      if (remain <= 0) return '马上就能进化啦'
+      return `再看 ${formatDuration(remain, 'ceil')}，进化为「${p.next_name}」`
+    }
+    // next_name 存在但 hours/next_hours 脏数据或未下发：如实说明进度暂不可算
+    return `进化为「${p.next_name}」（进度计算中）`
   }
   return '已达最高形态 · 它是你的了 🐉'
 })

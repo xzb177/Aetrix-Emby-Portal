@@ -3322,7 +3322,7 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
             # R4-4：僵尸 worker 防护——慢 IO 期间认领已失效（janitor 回收/别人
             # 接手），迟到的写库不许覆盖行的新状态（曾把 done 翻成 failed）。
             # 行已是 pending，下轮抢单自然捞回。
-            logger.debug("补全写库跳过（认领已失效）id=%s", item_id)
+            logger.info("补全写库跳过（认领已失效）id=%s", item_id)
             db.rollback()
             return "skip"
         _enrich_apply(db, fresh, fetched)
@@ -3465,7 +3465,7 @@ def _process_batch(db, batch: list) -> None:
                 outcome = "skip"
             elif not _claim_still_ours(fresh, snapshot.enrich_claim_token):
                 # R4-4：同上，僵尸 worker 迟到写库不许覆盖行的新状态。
-                logger.debug("批量补全写库跳过（认领已失效）id=%s", item_id)
+                logger.info("批量补全写库跳过（认领已失效）id=%s", item_id)
                 db.rollback()
                 outcome = "skip"
             else:

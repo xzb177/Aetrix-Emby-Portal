@@ -260,7 +260,8 @@ async function loadRecords() {
   try {
     const rec = await inviteApi.records({ limit: 50 })
     records.value = rec.records
-    recordsTotal.value = rec.total
+    // total 缺失时退回本次条数，避免模板出现 "undefined 人"
+    recordsTotal.value = rec.total ?? rec.records?.length ?? 0
     recordsErr.value = false
   } catch {
     recordsErr.value = true
