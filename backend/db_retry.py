@@ -30,6 +30,8 @@ from typing import Any, Callable, TypeVar
 
 from sqlalchemy.exc import OperationalError
 
+import random
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -37,6 +39,29 @@ T = TypeVar("T")
 # 写锁错误的判定关键字：SQLite 的原文是 "database is locked"，
 # 表级锁（同一连接里跨表写）是 "database table is locked"，模式锁是 "database schema is locked"。
 _LOCK_MARKERS = ("database is locked", "database table is locked", "database schema is locked")
+
+
+def is_deadlock(exc: BaseException) -> bool:
+    """这个异常是不是 PG 死锁（``DeadlockDetected`` / 40P01）
+
+    PG 检测到事务间循环等待会 abort 其中一个并抛死锁，SQLAlchemy 把它包成
+    ``OperationalError``，``orig`` 是 ``psycopg2.errors.DeadlockDetected``。
+    不硬依赖 psycopg2：类名 + 消息双重判定，SQLite 上永远 False。
+    """
+    raw = getattr(exc, "orig", None) or exc
+    if raw.__class__.__name__ == "DeadlockDetected":
+        return True
+    return "deadlock detected" in str(raw).lower()
+
+
+def deadlock_backoff(attempt: int) -> None:
+    """死锁重试前的抖动退避
+
+    死锁是两个事务互相等对方手里的行锁：立刻重试大概率撞上对方还没提交的
+    同一批行。随机抖动（0.1~0.5s × 次数）让两边错开，比固定间隔更不容易
+    再次互锁。
+    """
+    time.sleep(random.uniform(0.1, 0.5) * attempt)
 
 
 def is_write_lock(exc: BaseException) -> bool:
@@ -76,4 +101,4 @@ def commit_with_retry(db: Any, *, attempts: int = 3, base_delay: float = 0.25,
     retry_write(db.commit, attempts=attempts, base_delay=base_delay, label=label)
 
 
-__all__ = ["commit_with_retry", "is_write_lock", "retry_write"]
+__all__ = ["commit_with_retry", "deadlock_backoff", "is_deadlock", "is_write_lock", "retry_write"]

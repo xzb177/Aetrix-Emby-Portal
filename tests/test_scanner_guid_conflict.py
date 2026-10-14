@@ -16,6 +16,8 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
+from types import SimpleNamespace
+
 from backend.emby_server import scanner
 from backend.emby_server import models as emby_models
 
@@ -220,12 +222,14 @@ def test_batch_conflict_rewinds_seen_guids_so_retry_actually_reruns(monkeypatch)
     monkeypatch.setattr(scanner, "SCAN_BATCH", 1)
 
     consumed = []
-    def _run():
-        yield from scanner._iter_prepared(ctx, files, None, db)
 
-    # 第一次：整批抛 IntegrityError 是**不允许**的——必须被兜住
+    def _process_one(scan_file, pending):
+        consumed.append(scan_file)
+
+    # 新签名：回调驱动，不再是生成器（2026-10-14 死锁重试重构）
     try:
-        list(_run())
+        scanner._iter_prepared(ctx, files, None, db, _process_one,
+                               "test", SimpleNamespace(total=0), {}, [])
         raised = None
     except scanner.IntegrityError as exc:
         raised = exc

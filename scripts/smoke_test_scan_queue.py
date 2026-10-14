@@ -341,16 +341,18 @@ class _FakeFile:
     stored_path = "/media/电影/Some.Movie.2024.mkv"
 
 
-def fake_iter_prepared(ctx, files, pool, db):
-    yield _FakeFile(), None
-    yield _FakeFile(), None
+def fake_iter_prepared(ctx, files, pool, db, process_one, label, counted, stats, failed_roots):
+    # 与 scanner._iter_prepared 新签名一致：回调驱动，不再 yield
+    for _ in range(2):
+        process_one(_FakeFile(), None)
 
 
 wrapped = scan_instrument._wrap_iter_prepared(fake_iter_prepared)
-generated = list(wrapped({}, None, None, None))
+driven = []
+wrapped({}, None, None, None, lambda sf, pending: driven.append(sf), "口径库", None, {}, [])
 progress_now = scan_progress.progress_of(999) or {}
 check("处理计数与阶段随写库循环推进（原样透传，不改扫描主体）",
-      len(generated) == 2 and progress_now.get("processed") == 2
+      len(driven) == 2 and progress_now.get("processed") == 2
       and progress_now.get("phase") == "processing", str(progress_now))
 check("「当前目录」跟着写库循环走",
       progress_now.get("current") == "/media/电影", f"current={progress_now.get('current')!r}")

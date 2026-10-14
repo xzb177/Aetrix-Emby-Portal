@@ -78,16 +78,22 @@ def _wrap_iter_prepared(fn):
         return fn
 
     @functools.wraps(fn)
-    def wrapper(ctx, files, pool, db):
+    def wrapper(ctx, files, pool, db, process_one, label, counted, stats, failed_roots):
         library_id = progress.current_library_id()
         first = True
-        for scan_file, pending in fn(ctx, files, pool, db):
+
+        def _wrapped_process(scan_file, pending):
+            nonlocal first
             if library_id is not None:
                 if first:
                     progress.set_phase(library_id, "processing")
                     first = False
+                # 死锁重试会把同一批重走一遍：进度上报是近似值，重复上报无害
                 progress.note_processed(library_id, current=_label(scan_file))
-            yield scan_file, pending
+            return process_one(scan_file, pending)
+
+        return fn(ctx, files, pool, db, _wrapped_process,
+                  label, counted, stats, failed_roots)
 
     wrapper._rb_progress_wrapped = True  # type: ignore[attr-defined]
     return wrapper
