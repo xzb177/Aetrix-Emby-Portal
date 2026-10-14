@@ -17,10 +17,12 @@
         <div class="v4-parcel-meta">{{ metaLine }}</div>
       </template>
       <template v-else>
-        <b class="v4-parcel-name">{{ parcel.name || '未知条目' }}</b>
+        <!-- R37 P3-C2：名缺省说人话「神秘包裹」，不甩「未知」 -->
+        <b class="v4-parcel-name">{{ parcel.name || '神秘包裹' }}</b>
         <div class="v4-parcel-divider" aria-hidden="true"></div>
         <span class="v4-parcel-sub">{{ bodySub }}</span>
-        <span class="v4-parcel-time">{{ arrivedText }}</span>
+        <!-- R37 P3-C3：时间缺省直接隐藏时间行，不甩「时间未知」 -->
+        <span v-if="arrivedText" class="v4-parcel-time">{{ arrivedText }}</span>
       </template>
     </div>
     <div class="v4-parcel-foot">
@@ -80,12 +82,12 @@ const bodySub = computed(() => {
   else if (props.parcel.production_year) parts.push(String(props.parcel.production_year))
   return parts.join(' · ')
 })
-/** 到货时间：今天 HH:MM / 昨天 / M-D */
+/** 到货时间：今天 HH:MM / 昨天 / M-D；缺省返回空串，由模板隐藏时间行（R37 P3-C3） */
 const arrivedText = computed(() => {
   const raw = props.parcel.arrived_at || props.parcel.added_at
-  if (!raw) return '时间未知'
+  if (!raw) return ''
   const d = new Date(raw)
-  if (Number.isNaN(d.getTime())) return '时间未知'
+  if (Number.isNaN(d.getTime())) return ''
   const now = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
   const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`

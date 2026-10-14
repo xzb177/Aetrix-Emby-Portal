@@ -11,9 +11,11 @@
     <Transition name="modal-content">
       <div
         v-if="modelValue"
+        ref="containerRef"
         :class="['modal-container', { 'modal-container--centered': centered }, contentClass]"
         role="dialog"
         aria-modal="true"
+        @keydown="handleTrapKeydown"
       >
         <div
           :class="['modal-content-wrapper', `modal--${size}`]"
@@ -51,6 +53,8 @@
 </template>
 
 <script setup lang="ts">
+import { nextTick, ref } from 'vue'
+
 export type ModalSize = 'sm' | 'md' | 'lg' | 'xl' | 'full'
 
 export interface ModalProps {
@@ -108,6 +112,7 @@ watch(() => props.modelValue, (isOpen) => {
   if (isOpen) {
     lockScroll()
     emit('open')
+    focusFirstButton() // R37 P3-3：打开时聚焦首个按钮
   } else {
     unlockScroll()
   }
@@ -123,6 +128,47 @@ const handleBackdropClick = () => {
   if (props.closeOnBackdrop) {
     handleClose()
   }
+}
+
+// ==================== 焦点管理：Tab 循环 + 打开初始聚焦 ====================
+// R37 P3-3：照抄 WishlistView R27 onModalKeydown 标杆 —— Tab 在对话框内循环，
+// 不跑进背后内容；打开时聚焦首个按钮（无按钮则聚焦首个可聚焦元素）。
+const containerRef = ref<HTMLElement | null>(null)
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+
+function focusables(): HTMLElement[] {
+  const root = containerRef.value
+  if (!root) return []
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    .filter((el) => el.offsetParent !== null)
+}
+
+function handleTrapKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Tab') return
+  const els = focusables()
+  if (els.length === 0) {
+    e.preventDefault()
+    return
+  }
+  const first = els[0]
+  const last = els[els.length - 1]
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
+
+function focusFirstButton() {
+  nextTick(() => {
+    const els = focusables()
+    if (!els.length) return
+    const btn = els.find((el) => el.tagName === 'BUTTON')
+    ;(btn ?? els[0]).focus()
+  })
 }
 
 // ==================== ESC 键关闭 ====================

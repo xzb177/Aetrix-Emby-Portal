@@ -17,13 +17,14 @@
         class="status-strip"
         :aria-label="allFailed ? '数据未更新，去报到盖章' : '去报到盖章'"
       >
+        <!-- R37 P3-7：全失败时只留琥珀点，绿色「一切正常」点不再并列 -->
         <span v-if="allFailed" class="status-dot stale" aria-hidden="true"></span>
-        <span class="status-dot" aria-hidden="true"></span>
+        <span v-else class="status-dot" aria-hidden="true"></span>
         {{ statusText }}
       </router-link>
       <div v-else class="status-strip static" role="status" :aria-label="allFailed ? '数据未更新' : undefined">
         <span v-if="allFailed" class="status-dot stale" aria-hidden="true"></span>
-        <span class="status-dot" aria-hidden="true"></span>
+        <span v-else class="status-dot" aria-hidden="true"></span>
         {{ statusText }}
       </div>
 

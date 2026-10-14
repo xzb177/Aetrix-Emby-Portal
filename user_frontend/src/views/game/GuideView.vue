@@ -138,13 +138,19 @@ const SUGGESTIONS = [
 async function load() {
   loading.value = true
   netError.value = false
+  await refreshStatus()
+  loading.value = false
+}
+
+/** R37 P2-1：只刷新向导状态，不碰页面级 loading —— ask() 错误路径
+ *  （配额用尽/被关闭）用这个刷新，聊天 UI 不卸载重挂、错误气泡可见、滚动不归零 */
+async function refreshStatus() {
   try {
     status.value = await aiApi.status()
+    netError.value = false
   } catch {
     status.value = null
     netError.value = true
-  } finally {
-    loading.value = false
   }
 }
 
@@ -183,7 +189,8 @@ async function ask(text?: string) {
     bubbles.value.push({ role: 'error', content: humanizeError(err) })
     trimBubbles()
     // 配额用尽 / 被关闭时刷新一次状态，界面提示随之更新
-    load()
+    // R37 P2-1：只刷新 status，不调 load() —— 全页 skeleton 不闪，聊天停留在原位置
+    void refreshStatus()
   } finally {
     sending.value = false
     scrollToEnd()

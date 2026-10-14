@@ -561,6 +561,7 @@ onBeforeUnmount(() => {
 }
 
 /* 底部确认条：设计稿原值 */
+/* R37 P3-6：隐藏态加 visibility:hidden —— opacity:0 的按钮仍在 Tab 顺序里、读屏仍朗读 */
 .confirm {
   position: fixed;
   bottom: calc(76px + env(safe-area-inset-bottom));
@@ -570,11 +571,12 @@ onBeforeUnmount(() => {
   width: calc(100% - 40px);
   max-width: 335px;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity 0.25s;
+  transition: opacity 0.25s, visibility 0.25s;
   z-index: 50;
 }
-.confirm.show { opacity: 1; pointer-events: auto; }
+.confirm.show { opacity: 1; visibility: visible; pointer-events: auto; }
 .confirm button {
   width: 100%;
   background: var(--red);

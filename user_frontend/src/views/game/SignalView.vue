@@ -295,15 +295,18 @@ async function sendSOS() {
   }
   if (sending.value) return
   sending.value = true
-  morseShow.value = true
+  // R37 P3-2：减少动态偏好下跳过摩斯动画面板 —— reduce 用户看到的是 44px 空盒 + 空状态行，
+  // 按钮「信号发出中」忙碌态已告知进度，不展示空面板
+  const reduce = reducedMotion()
+  if (!reduce) morseShow.value = true
   const createP = ticketApi.create({ title, category: form.value.category, message })
   try {
-    if (!reducedMotion()) await runMorseAnim()
+    if (!reduce) await runMorseAnim()
     await createP
     toast.success('求救信号已发出，营地马上派救援队')
     form.value = { title: '', category: 'other', message: '' }
     await fetchTickets()
-    if (!reducedMotion()) {
+    if (!reduce) {
       await new Promise(r => morseTimers.push(window.setTimeout(r, 1400)))
     }
   } catch (e) {

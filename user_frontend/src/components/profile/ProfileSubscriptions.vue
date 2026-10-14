@@ -34,7 +34,8 @@ const router = useRouter()
     <header class="pane-head">
       <h2 class="pane-title">
         <Crown :size="17" />
-        我的订阅
+        <!-- R37 P3-C4：标题口径「我的会员」，与账号设置「我的会员」统一 -->
+        我的会员
       </h2>
     </header>
 
