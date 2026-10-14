@@ -41,6 +41,47 @@
         />
       </section>
 
+      <!-- 首页卡片展示：服务器卡片怎么摆，用户自选（模式 + 每服显隐，存 localStorage） -->
+      <section class="v4-sec" aria-label="首页卡片展示">
+        <div class="v4-sec-title">首页卡片展示</div>
+        <div class="v4-sec-sub">首页服务器卡片怎么摆，你说了算</div>
+        <div class="v4-card">
+          <div class="mode-seg" role="group" aria-label="首页卡片展示模式">
+            <button
+              v-for="opt in modeOptions"
+              :key="opt.v"
+              type="button"
+              :class="{ 'is-on': mode === opt.v }"
+              :aria-pressed="mode === opt.v"
+              @click="setMode(opt.v)"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+          <p class="mode-hint">自动 = 一个服大卡、多个服总览</p>
+
+          <div v-if="serversLoading && !servers.length" class="srv-empty">正在加载…</div>
+          <div v-else-if="!servers.length" class="srv-empty">还没有可展示的服务器</div>
+          <div v-else>
+            <div v-for="s in servers" :key="s.id" class="srv-row">
+              <div class="srv-info">
+                <div class="srv-name">{{ s.name }}</div>
+                <div class="srv-tag">{{ serverTagText(s) }}</div>
+              </div>
+              <button
+                type="button"
+                class="srv-switch"
+                :class="{ 'is-on': cardPrefs.isVisible(s.id) }"
+                role="switch"
+                :aria-checked="cardPrefs.isVisible(s.id)"
+                :aria-label="s.name"
+                @click="toggleServer(s.id)"
+              ></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- 我的设备：第三方播放器登录设备列表 / 移除（顶上限自救通道，deviceApi） -->
       <section class="v4-sec" aria-label="我的设备">
         <div class="v4-sec-title">📱 我的设备</div>
@@ -164,6 +205,8 @@ import { authApi, subscriptionApi, isExpiringSoon, type MySubscription } from '@
 import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
+import { useServerCards, type ServerCardItem } from '@/composables/useServerCards'
+import { useServerCardPrefs, type ServerCardMode } from '@/composables/useServerCardPrefs'
 import { humanizeError } from '@/composables/usePanelApi'
 import { toastCopy, confirmCopy } from '@/constants/toastMessages'
 import { toUserMessage } from '@/utils/toUserMessage'
@@ -368,9 +411,25 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
   return `${Math.floor(hours / 24)} 天前`
 }
 
+// ===== 首页卡片展示（模式 + 每服显隐，偏好存 localStorage） =====
+const cardPrefs = useServerCardPrefs()
+const { mode, setMode, toggleServer } = cardPrefs
+const { servers, load: loadServers, loading: serversLoading } = useServerCards()
+
+const modeOptions: { v: ServerCardMode; label: string }[] = [
+  { v: 'auto', label: '自动' },
+  { v: 'cards', label: '大卡' },
+  { v: 'overview', label: '总览' },
+]
+
+function serverTagText(s: ServerCardItem): string {
+  return s.accessMode === 'paid' ? '付费服' : '公益服'
+}
+
 onMounted(() => {
   loadSubs()
   loadDevices()
+  if (!servers.value.length) void loadServers()
 })
 </script>
 
@@ -589,5 +648,87 @@ onMounted(() => {
 
 @media (prefers-reduced-motion: reduce) {
   .acct-row:active, .dev-remove:active:not(:disabled) { background: transparent; }
+}
+
+/* 首页卡片展示：模式三段选择 + 每服显隐开关（只用 --paper-* token） */
+.mode-seg {
+  display: flex;
+  border: 1.5px solid var(--paper-ink);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.mode-seg button {
+  flex: 1;
+  background: none;
+  border: 0;
+  font-size: 12px;
+  padding: 8px 0;
+  color: var(--paper-ink);
+  cursor: pointer;
+}
+.mode-seg button + button {
+  border-left: 1px solid var(--paper-line);
+}
+.mode-seg button.is-on {
+  background: var(--paper-primary);
+  font-weight: 700;
+}
+.mode-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--paper-ink-2);
+}
+.srv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+}
+.srv-row + .srv-row {
+  border-top: 1px dashed var(--paper-line);
+}
+.srv-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--paper-ink);
+}
+.srv-tag {
+  font-size: 11px;
+  color: var(--paper-ink-2);
+}
+.srv-switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--paper-ink);
+  background: var(--paper-card);
+  cursor: pointer;
+}
+.srv-switch.is-on {
+  background: var(--paper-primary);
+}
+.srv-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--paper-card);
+  border: 1.5px solid var(--paper-ink);
+}
+.srv-switch.is-on::after {
+  left: auto;
+  right: 2px;
+  background: var(--paper-ink);
+}
+.srv-empty {
+  padding: 10px 0;
+  font-size: 12px;
+  color: var(--paper-ink-2);
 }
 </style>

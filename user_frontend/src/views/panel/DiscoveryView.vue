@@ -12,15 +12,15 @@
         <div v-if="streak != null && streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
       </header>
 
-      <!-- 首页卡片：会员卡 / 能量卡 + 观影数据小条（发现页最显眼的位置） -->
+      <!-- 首页服务器卡片：服清单数据驱动（发现页最显眼的位置） -->
       <div v-if="ticketLoadError && !ticketLoading" class="v4-sec">
         <div class="v4-err">票卡信息没加载出来，点下面重试<br><button class="v4-retry" @click="() => loadTicket()">重试</button></div>
       </div>
       <TicketCard
         v-else
         :loading="ticketLoading"
-        :member-card="memberCard"
-        :energy-card="energyCard"
+        :servers="visibleServers"
+        :mode="cardMode"
         :watch-strip="watchStrip"
       />
 
@@ -92,23 +92,33 @@ import EcgCanvas from '@/components/panel/EcgCanvas.vue'
 import PulseActivity from '@/components/panel/PulseActivity.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
 import TicketCard from '@/components/panel/TicketCard.vue'
-import { useTicketCard } from '@/composables/useTicketCard'
+import { useServerCards } from '@/composables/useServerCards'
+import { useServerCardPrefs } from '@/composables/useServerCardPrefs'
 import { humanizeError, type ParcelItem, type ParcelsData } from '@/composables/usePanelApi'
 
 const panel = usePanelStore()
 const user = useUserStore()
 const { today, parcels, pulse, letter } = storeToRefs(panel)
-// 首页卡片：会员卡 / 能量卡 / 观影数据小条（逻辑见 useTicketCard）
-const ticket = useTicketCard()
+// 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
+const ticket = useServerCards()
+const cardPrefs = useServerCardPrefs()
 // 顶层解构：模板里直接用，ref 自动解包
 const {
   loading: ticketLoading,
   loadError: ticketLoadError,
-  memberCard,
-  energyCard,
+  servers: serverList,
   watchStrip,
   load: loadTicket,
 } = ticket
+// 用户关掉显示的服不进清单
+const visibleServers = computed(() =>
+  serverList.value.filter((s) => !cardPrefs.hiddenIds.value.includes(s.id)),
+)
+// 展示形态：用户自选优先；自动档按可见服数量切换（1 个=大卡，多个=总览）
+const cardMode = computed<'cards' | 'overview'>(() => {
+  if (cardPrefs.mode.value !== 'auto') return cardPrefs.mode.value
+  return visibleServers.value.length <= 1 ? 'cards' : 'overview'
+})
 
 onMounted(() => {
   // perf 2026-10-13：合并为 1 次请求（4 个 RTT → 1 个 RTT）
