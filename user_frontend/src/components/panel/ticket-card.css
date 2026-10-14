@@ -31,7 +31,7 @@
 .hc-watch-data{color:var(--paper-ink-2)}
 
 /* 服务器类型小字（付费服/公益服） */
-.hc-tag{font-size:11px;font-weight:400;color:var(--paper-ink-2);margin-left:6px}
+.hc-tag{font-size:var(--paper-f-xs);font-weight:400;color:var(--paper-ink-2);margin-left:6px}
 /* 数字等宽，避免跳动 */
 .hc-val{font-variant-numeric:tabular-nums}
 

@@ -61,6 +61,7 @@
           <p class="mode-hint">自动 = 一个服大卡、多个服总览</p>
 
           <div v-if="serversLoading && !servers.length" class="srv-empty">正在加载…</div>
+          <div v-else-if="serversLoadError" class="srv-empty">服务器清单加载失败<button class="v4-retry" @click="() => loadServers()">重试</button></div>
           <div v-else-if="!servers.length" class="srv-empty">还没有可展示的服务器</div>
           <div v-else>
             <div v-for="s in servers" :key="s.id" class="srv-row">
@@ -74,7 +75,7 @@
                 :class="{ 'is-on': cardPrefs.isVisible(s.id) }"
                 role="switch"
                 :aria-checked="cardPrefs.isVisible(s.id)"
-                :aria-label="s.name"
+                :aria-label="`${s.name}：在首页显示`"
                 @click="toggleServer(s.id)"
               ></button>
             </div>
@@ -414,7 +415,7 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
 // ===== 首页卡片展示（模式 + 每服显隐，偏好存 localStorage） =====
 const cardPrefs = useServerCardPrefs()
 const { mode, setMode, toggleServer } = cardPrefs
-const { servers, load: loadServers, loading: serversLoading } = useServerCards()
+const { servers, load: loadServers, loading: serversLoading, loadError: serversLoadError } = useServerCards()
 
 const modeOptions: { v: ServerCardMode; label: string }[] = [
   { v: 'auto', label: '自动' },
@@ -422,14 +423,19 @@ const modeOptions: { v: ServerCardMode; label: string }[] = [
   { v: 'overview', label: '总览' },
 ]
 
+const ACCESS_LABEL: Record<ServerCardItem['accessMode'], string> = {
+  paid: '付费服',
+  free: '公益服',
+}
+
 function serverTagText(s: ServerCardItem): string {
-  return s.accessMode === 'paid' ? '付费服' : '公益服'
+  return ACCESS_LABEL[s.accessMode]
 }
 
 onMounted(() => {
   loadSubs()
   loadDevices()
-  if (!servers.value.length) void loadServers()
+  if (!serversLoading.value && !servers.value.length) void loadServers()
 })
 </script>
 
@@ -671,6 +677,7 @@ onMounted(() => {
 }
 .mode-seg button.is-on {
   background: var(--paper-primary);
+  color: #2A2620;
   font-weight: 700;
 }
 .mode-hint {
@@ -706,6 +713,11 @@ onMounted(() => {
   border: 1.5px solid var(--paper-ink);
   background: var(--paper-card);
   cursor: pointer;
+}
+.srv-switch::before {
+  content: '';
+  position: absolute;
+  inset: -6px;
 }
 .srv-switch.is-on {
   background: var(--paper-primary);
