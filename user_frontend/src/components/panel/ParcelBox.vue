@@ -135,7 +135,7 @@ function onTap() {
   scroll-snap-align: start;
   background: var(--paper2);
   border: 1.5px solid var(--ink2);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 14px 10px 10px;
   position: relative;
   cursor: pointer;
@@ -156,7 +156,7 @@ function onTap() {
   right: 8px;
   width: 30px;
   height: 30px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   border: 1.5px solid var(--red);
   color: var(--red);
   font-size: 13px;
@@ -180,14 +180,14 @@ function onTap() {
 .v4-parcel-seal {
   width: 38px;
   height: 38px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 20px;
-  box-shadow: 0 2px 0 #a33319;
+  box-shadow: 0 2px 0 var(--red-deep, #a33319);
   margin: 0 auto;
 }
 .v4-parcel-lbl { font-size: 12px; font-weight: 700; margin-top: 6px; }

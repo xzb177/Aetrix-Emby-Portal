@@ -58,7 +58,7 @@ onUnmounted(() => {
 <style scoped>
 .v4-activity {
   font-size: 12px;
-  color: #C9BFA9;
+  color: var(--line-deep, #C9BFA9);
   margin-top: 8px;
   min-height: 40px;
   line-height: 1.6;

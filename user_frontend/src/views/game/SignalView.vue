@@ -450,7 +450,7 @@ onUnmounted(() => {
 .waves span {
   position: absolute; left: 50%; top: 0;
   width: 14px; height: 14px; margin-left: -7px;
-  border: 2px solid var(--red); border-radius: 50%;
+  border: 2px solid var(--red); border-radius: var(--paper-r-full, 50%);
   opacity: 0; animation: wave 2.4s infinite;
 }
 .waves span:nth-child(2) { animation-delay: .4s; }
@@ -467,7 +467,7 @@ onUnmounted(() => {
 .type {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 14px 8px;
   min-height: 88px;
   text-align: center;
@@ -487,7 +487,7 @@ onUnmounted(() => {
   font-size: 16px;
   padding: 12px;
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: var(--paper-card);
   outline: none;
   color: var(--ink);
@@ -500,7 +500,7 @@ textarea {
   font-size: 16px;
   padding: 12px;
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: var(--paper-card);
   min-height: 96px;
   resize: none;
@@ -526,18 +526,18 @@ textarea:focus { border-color: var(--gold); }
   letter-spacing: 3px;
   padding: 15px;
   min-height: 44px;
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   cursor: pointer;
-  box-shadow: 0 4px 0 #a33319;
+  box-shadow: 0 4px 0 var(--red-deep, #a33319);
   transition: transform .12s ease;
 }
-.send-btn:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 1px 0 #a33319; }
+.send-btn:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 1px 0 var(--red-deep, #a33319); }
 .send-btn:disabled { background: var(--ink2); box-shadow: none; cursor: default; }
 
 /* 摩斯电码发送动画：设计稿 .morse-panel 原值 */
 .morse-panel {
   background: var(--ink);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 20px;
   margin-top: 16px;
   color: #EDE6D6;
@@ -549,7 +549,7 @@ textarea:focus { border-color: var(--gold); }
 .morse-code { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; min-height: 44px; }
 .sym {
   width: 38px; height: 38px;
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   border: 1.5px solid #5a544a;
   display: flex; align-items: center; justify-content: center;
   font-size: 20px; font-weight: 800;
@@ -558,14 +558,14 @@ textarea:focus { border-color: var(--gold); }
 }
 .sym.lit { background: var(--gold); border-color: var(--gold); color: var(--ink); box-shadow: 0 0 14px var(--gold); }
 .sym.gap { border: none; width: 14px; }
-.morse-status { font-size: 12px; color: #9BE08A; letter-spacing: 1px; }
+.morse-status { font-size: 12px; color: var(--pulse-green, #9BE08A); letter-spacing: 1px; }
 
 /* 事故记录卡：设计稿 .card 原值 + 展开详情 */
 .cards { display: flex; flex-direction: column; gap: 10px; }
 .card {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 13px 14px;
 }
 .card-head {
@@ -593,7 +593,7 @@ textarea:focus { border-color: var(--gold); }
 .chip {
   font-size: 11px; font-weight: 700;
   padding: 4px 10px;
-  border-radius: 20px;
+  border-radius: var(--paper-r-2xl, 20px);
   white-space: nowrap;
 }
 .chip.blue { background: #E3ECF8; color: var(--blue); border: 1px solid var(--blue); }
@@ -624,7 +624,7 @@ textarea:focus { border-color: var(--gold); }
 }
 .message-item {
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: var(--paper2);
 }
 .message-item.message-camp { background: #E3ECF8; }
@@ -649,7 +649,7 @@ textarea:focus { border-color: var(--gold); }
   padding: 10px 12px;
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   color: var(--ink);
   font-size: 16px;
   font-family: inherit;
@@ -659,7 +659,7 @@ textarea:focus { border-color: var(--gold); }
 .btn-send {
   display: flex; align-items: center; justify-content: center;
   width: 44px; height: 44px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   border: none;
   background: var(--red);
   color: var(--paper-card);
@@ -672,7 +672,7 @@ textarea:focus { border-color: var(--gold); }
 .btn-send:disabled { opacity: .45; cursor: not-allowed; }
 .close-record {
   min-height: 44px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   border: 1.5px solid var(--line);
   background: var(--paper2);
   color: var(--ink2);
@@ -710,7 +710,7 @@ textarea:focus { border-color: var(--gold); }
 .cbtn {
   flex: 1;
   min-height: 44px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
@@ -742,12 +742,12 @@ textarea:focus { border-color: var(--gold); }
    注意：Modal 根是 fragment（两个 Teleport），class 写在 <Modal> 上会被 Vue 丢弃，
    必须走 contentClass prop 落到 .modal-container 上，本选择器才能命中。
    Teleport 后脱离 .v4-scope，纸色 token 解析不到，全部带字面量 fallback
-   （值与 v4-paper.css .v4-scope 同步：--paper-card #FFFDF6 / --ink #2A2620 /
-   --ink2 #6B6257 / --line #D8CDB8） */
+   （值与 v4-paper.css .v4-scope 同步：--paper-card var(--paper-card, #FFFDF6) / --ink var(--ink, #2A2620) /
+   --ink2 var(--ink2, #6B6257) / --line var(--line, #D8CDB8)） */
 .paper-confirm .modal-content-wrapper {
   background: var(--paper-card, #FFFDF6);
   border: 1.5px solid var(--ink, #2A2620);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   color: var(--ink, #2A2620);
 }
 .paper-confirm .modal-header {

@@ -91,7 +91,7 @@ const vitalCells = computed(() => {
   margin: 14px 0 0;
   background: var(--paper-card);
   border: 1.5px solid var(--ink);
-  border-radius: 16px;
+  border-radius: var(--paper-r-xl, 16px);
   padding: 20px;
   text-align: center;
   position: relative;
@@ -101,14 +101,14 @@ const vitalCells = computed(() => {
   width: 110px;
   height: 110px;
   margin: 6px auto;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #b8e0a8, #4a7c59 70%);
+  border-radius: var(--paper-r-full, 50%);
+  background: radial-gradient(circle at 35% 30%, #b8e0a8, var(--green, #4a7c59) 70%);
   animation: v4-breathe 4s ease-in-out infinite;
   position: relative;
   box-shadow: 0 0 40px rgba(74, 124, 89, 0.35);
 }
 .orb.busy {
-  background: radial-gradient(circle at 35% 30%, #f5dfa0, #c99b3f 70%);
+  background: radial-gradient(circle at 35% 30%, #f5dfa0, var(--gold, #c99b3f) 70%);
   box-shadow: 0 0 40px rgba(201, 155, 63, 0.35);
 }
 .orb.tired {
@@ -134,7 +134,7 @@ const vitalCells = computed(() => {
   content: "";
   position: absolute;
   inset: 18px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: radial-gradient(circle at 40% 35%, rgba(255, 255, 255, 0.7), transparent 60%);
 }
 .v4-organism h3 {

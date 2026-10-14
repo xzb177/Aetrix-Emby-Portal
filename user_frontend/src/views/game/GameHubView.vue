@@ -167,7 +167,7 @@ onMounted(async () => {
   padding: 14px;
   background: var(--paper-card);
   border: 1.5px dashed var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   font-size: 13px;
   font-weight: 700;
   color: var(--ink);
@@ -176,7 +176,7 @@ onMounted(async () => {
 .status-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--green);
   flex-shrink: 0;
 }
@@ -291,7 +291,7 @@ onMounted(async () => {
   color: var(--red);
   background: #fdf3e7;
   border: 1px dashed var(--red);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 1px 8px;
   white-space: nowrap;
 }

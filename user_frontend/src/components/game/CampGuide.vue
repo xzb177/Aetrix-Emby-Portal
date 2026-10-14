@@ -125,15 +125,15 @@ onMounted(() => {
   padding: 11px 0;
   /* R28：引导流程唯二按钮，纵向 padding 提到 12px 保证 ≥44px 触摸高度 */
   min-height: 44px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   cursor: pointer;
   letter-spacing: 1px;
 }
 .guide-go {
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   border: none;
-  box-shadow: 0 3px 0 #a33319;
+  box-shadow: 0 3px 0 var(--red-deep, #a33319);
 }
 .guide-go:active {
   transform: translateY(2px);

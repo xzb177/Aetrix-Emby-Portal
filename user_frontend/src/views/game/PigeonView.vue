@@ -331,7 +331,7 @@ onMounted(() => { void load(true) })
 .perch .birds { font-size: 44px; letter-spacing: 6px; animation: coo 3s ease-in-out infinite; }
 @keyframes coo { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 .perch .bar {
-  width: 240px; height: 10px; background: #8A6F4D; border-radius: 6px;
+  width: 240px; height: 10px; background: #8A6F4D; border-radius: var(--paper-r-sm, 6px);
   margin: 2px auto 0; box-shadow: 0 3px 6px rgba(0, 0, 0, 0.2);
 }
 .perch-tip { font-size: 12px; color: var(--ink2); margin-top: 10px; }
@@ -350,24 +350,24 @@ onMounted(() => { void load(true) })
 }
 .search-input {
   width: 100%; height: 44px; padding: 0 12px 0 36px;
-  border: 1.5px solid var(--line); border-radius: 12px;
+  border: 1.5px solid var(--line); border-radius: var(--paper-r-lg, 12px);
   background: var(--paper-card); color: var(--ink); font-size: 16px;
 }
 .search-input::placeholder { color: var(--ink2); }
 .unread-toggle {
   display: inline-flex; align-items: center; gap: 6px;
-  height: 44px; padding: 0 14px; border-radius: 12px;
+  height: 44px; padding: 0 14px; border-radius: var(--paper-r-lg, 12px);
   border: 1.5px solid var(--line); background: var(--paper-card);
   color: var(--ink2); font-size: 12px; font-weight: 700; white-space: nowrap; cursor: pointer;
 }
 .unread-toggle .red-dot {
-  width: 9px; height: 9px; border-radius: 50%; background: var(--red);
+  width: 9px; height: 9px; border-radius: var(--paper-r-full, 50%); background: var(--red);
   opacity: 0.35;
 }
 .unread-toggle.on { border-color: var(--red); color: var(--red); }
 .unread-toggle.on .red-dot { opacity: 1; animation: blink 1.4s infinite; }
 .refresh-btn {
-  width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px;
+  width: 44px; height: 44px; flex-shrink: 0; border-radius: var(--paper-r-lg, 12px);
   border: 1.5px solid var(--line); background: var(--paper-card);
   color: var(--ink2); font-size: 18px; cursor: pointer;
 }
@@ -393,7 +393,7 @@ onMounted(() => { void load(true) })
 
 /* 鸽子行：设计稿 game-inbox.html 原值 */
 .pigeon {
-  background: var(--paper-card); border: 1.5px solid var(--line); border-radius: 12px;
+  background: var(--paper-card); border: 1.5px solid var(--line); border-radius: var(--paper-r-lg, 12px);
   margin-bottom: 10px; overflow: hidden;
 }
 .pigeon.unread { border-color: var(--gold); }
@@ -405,7 +405,7 @@ onMounted(() => { void load(true) })
 .bird { position: relative; font-size: 30px; line-height: 1; flex-shrink: 0; }
 .bird .dot {
   position: absolute; top: -2px; right: -4px; width: 11px; height: 11px;
-  border-radius: 50%; background: var(--red); border: 2px solid var(--paper-card);
+  border-radius: var(--paper-r-full, 50%); background: var(--red); border: 2px solid var(--paper-card);
   animation: blink 1.4s infinite;
 }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
@@ -431,11 +431,11 @@ onMounted(() => { void load(true) })
 
 /* 火漆封印：设计稿 game-inbox.html 原值 */
 .wax {
-  width: 54px; height: 54px; border-radius: 50%; border: none;
-  background: var(--red); color: #fff; margin: 0 auto 10px;
+  width: 54px; height: 54px; border-radius: var(--paper-r-full, 50%); border: none;
+  background: var(--red); color: var(--on-dark, #fff); margin: 0 auto 10px;
   display: flex; align-items: center; justify-content: center;
   font-size: 22px; font-weight: 800; font-family: Georgia, serif;
-  box-shadow: 0 3px 0 #a33319; cursor: pointer;
+  box-shadow: 0 3px 0 var(--red-deep, #a33319); cursor: pointer;
   animation: sealpulse 1.8s infinite;
 }
 .wax:disabled { cursor: wait; }
@@ -446,7 +446,7 @@ onMounted(() => { void load(true) })
 .pbody {
   text-align: left; font-size: 13px; line-height: 2;
   background: var(--paper); border: 1px solid var(--line);
-  border-radius: 10px; padding: 14px;
+  border-radius: var(--paper-r-md, 10px); padding: 14px;
   animation: fadein 0.4s;
 }
 .pbody-head {
@@ -455,15 +455,15 @@ onMounted(() => { void load(true) })
 }
 .ptag {
   font-size: 11px; font-weight: 700; color: var(--red);
-  border: 1px solid var(--red); border-radius: 10px; padding: 2px 10px;
+  border: 1px solid var(--red); border-radius: var(--paper-r-md, 10px); padding: 2px 10px;
 }
 .pbody-time { font-size: 11px; color: var(--ink2); }
 .pbody-text { white-space: pre-wrap; word-break: break-word; color: var(--ink); }
 .deep-link {
   display: inline-block; margin-top: 12px; min-height: 44px; line-height: 44px;
-  padding: 0 18px; border-radius: 12px; background: var(--red); color: #fff;
+  padding: 0 18px; border-radius: var(--paper-r-lg, 12px); background: var(--red); color: var(--on-dark, #fff);
   font-size: 13px; font-weight: 700; text-decoration: none;
-  box-shadow: 0 3px 0 #a33319;
+  box-shadow: 0 3px 0 var(--red-deep, #a33319);
 }
 .deep-link:active { transform: translateY(2px); box-shadow: none; }
 

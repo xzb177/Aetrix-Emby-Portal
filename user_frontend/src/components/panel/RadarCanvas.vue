@@ -223,7 +223,7 @@ onBeforeUnmount(() => {
 /* 取自设计稿 .radar-box / .blips */
 .v4-radar-box {
   background: var(--ink);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 14px;
   position: relative;
 }
@@ -247,17 +247,17 @@ onBeforeUnmount(() => {
 .blip {
   font-size: 11px;
   background: rgba(255, 255, 255, 0.08);
-  color: #c9bfa9;
+  color: var(--line-deep, #c9bfa9);
   padding: 5px 10px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   border: 1px solid rgba(255, 255, 255, 0.15);
 }
 .blip i {
   display: inline-block;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
-  background: #9be08a;
+  border-radius: var(--paper-r-full, 50%);
+  background: var(--pulse-green, #9be08a);
   margin-right: 5px;
 }
 .blip i.idle {

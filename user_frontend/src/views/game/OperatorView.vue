@@ -619,7 +619,7 @@ watch(viewGranted, (granted) => {
 .op-rows {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   overflow: hidden;
 }
 .op-rows.loading { opacity: 0.6; pointer-events: none; }
@@ -666,7 +666,7 @@ watch(viewGranted, (granted) => {
   content: '';
   position: absolute;
   inset: 6px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   border: 1.5px solid var(--line);
   background: var(--paper-card);
 }
@@ -699,7 +699,7 @@ watch(viewGranted, (granted) => {
 .realm-item {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   padding: 12px 14px;
 }
 .realm-head {
@@ -712,7 +712,7 @@ watch(viewGranted, (granted) => {
 .badge {
   font-size: 11px;
   font-weight: 800;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 2px 10px;
   letter-spacing: 1px;
   white-space: nowrap;
@@ -744,7 +744,7 @@ watch(viewGranted, (granted) => {
   padding: 10px 14px;
   margin-bottom: 10px;
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: var(--paper-card);
   color: var(--ink);
 }
@@ -755,7 +755,7 @@ watch(viewGranted, (granted) => {
   font-weight: 800;
   padding: 12px 20px;
   min-height: 44px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   border: 2px solid var(--ink);
   background: var(--paper-card);
   color: var(--ink);
@@ -772,9 +772,9 @@ watch(viewGranted, (granted) => {
   flex: none;
   width: 28px;
   height: 28px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   font-size: 14px;
   font-weight: 800;
   display: flex;
@@ -793,7 +793,7 @@ watch(viewGranted, (granted) => {
   padding: 12px 14px;
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
 }
 .op-session-icon {
   flex: none;
@@ -802,7 +802,7 @@ watch(viewGranted, (granted) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: rgba(217, 72, 43, 0.1);
   color: var(--red);
 }
@@ -825,7 +825,7 @@ watch(viewGranted, (granted) => {
 .op-session-title .badge.type {
   font-size: 11px;
   font-weight: 800;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 2px 10px;
   letter-spacing: 1px;
   white-space: nowrap;
@@ -836,7 +836,7 @@ watch(viewGranted, (granted) => {
 .op-session-title .badge.paused {
   font-size: 11px;
   font-weight: 800;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 2px 10px;
   letter-spacing: 1px;
   white-space: nowrap;
@@ -882,7 +882,7 @@ watch(viewGranted, (granted) => {
   padding: 12px 16px;
   min-height: 44px;
   box-sizing: border-box;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   border: 1.5px solid var(--red);
   background: var(--paper-card);
   color: var(--red);
@@ -892,7 +892,7 @@ watch(viewGranted, (granted) => {
 .op-stop-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 /* 正在播放标题旁刷新按钮（复用 PigeonView 样式，44px 触摸目标） */
 .refresh-btn {
-  width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px;
+  width: 44px; height: 44px; flex-shrink: 0; border-radius: var(--paper-r-lg, 12px);
   border: 1.5px solid var(--line); background: var(--paper-card);
   color: var(--ink2); font-size: 18px; cursor: pointer;
 }
@@ -914,15 +914,15 @@ watch(viewGranted, (granted) => {
   letter-spacing: 2px;
   padding: 12px 28px;
   min-height: 44px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   cursor: pointer;
   border: 2px solid var(--ink);
 }
 .op-btn.primary {
   background: var(--red);
   border-color: var(--red);
-  color: #fff;
-  box-shadow: 0 3px 0 #a33319;
+  color: var(--on-dark, #fff);
+  box-shadow: 0 3px 0 var(--red-deep, #a33319);
 }
 .op-btn.primary:active { transform: translateY(2px); box-shadow: none; }
 .op-btn.primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
@@ -945,7 +945,7 @@ watch(viewGranted, (granted) => {
   max-width: 340px;
   background: var(--paper-card);
   border: 2px solid var(--ink);
-  border-radius: 16px;
+  border-radius: var(--paper-r-xl, 16px);
   padding: 22px 20px;
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.15);
 }
@@ -958,7 +958,7 @@ watch(viewGranted, (granted) => {
   font-size: 16px;
   padding: 12px 14px;
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   background: #fff;
   color: var(--ink);
   margin-bottom: 6px;

@@ -411,7 +411,7 @@ onMounted(load)
   padding: 12px;
   margin-bottom: 12px;
   background: var(--au-surface);
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 8px);
   color: var(--au-text);
   user-select: all;
 }

@@ -71,7 +71,7 @@ const evoScale = computed(() => Math.min(1, Math.max(0, props.pet.progress || 0)
 .v4-pet {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 18px;
   text-align: center;
 }
@@ -107,7 +107,7 @@ const evoScale = computed(() => Math.min(1, Math.max(0, props.pet.progress || 0)
 .evo-bar {
   height: 10px;
   background: var(--paper2);
-  border-radius: 6px;
+  border-radius: var(--paper-r-sm, 6px);
   margin: 14px 4px 6px;
   overflow: hidden;
 }
@@ -115,7 +115,7 @@ const evoScale = computed(() => Math.min(1, Math.max(0, props.pet.progress || 0)
   display: block;
   height: 100%;
   background: linear-gradient(90deg, var(--gold), var(--red));
-  border-radius: 6px;
+  border-radius: var(--paper-r-sm, 6px);
   width: 100%;
   transform: scaleX(var(--evo-p, 0));
   transform-origin: left center;

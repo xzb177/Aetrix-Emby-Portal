@@ -1,3 +1,5 @@
+// 【UI 统一 U0】主题 CSS 引入已冻结：新增全量引入必须经设计审查，并同步更新
+// scripts/check_frontend_tokens.py 的 MAIN_CSS_ALLOWLIST，否则 CI 直接失败。
 import './styles/aurora.css'
 import './styles/neo-noir-tokens.css'
 import './styles/index.css'

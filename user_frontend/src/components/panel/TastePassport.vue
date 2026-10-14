@@ -66,7 +66,7 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
 /* 取自设计稿 .passport / .stamps / .stampbox */
 .v4-passport {
   background: var(--blue);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 16px;
   color: #eaf0fa;
   position: relative;
@@ -101,7 +101,7 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
 .v4-stampbox {
   aspect-ratio: 1;
   border: 1.5px dashed rgba(255, 255, 255, 0.45);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -131,6 +131,6 @@ const stampedCount = computed(() => tastes.value.filter((t) => t.stamped).length
 .v4-stampbox.got::after {
   content: "✓ 已集";
   font-size: 9px;
-  color: #9be08a;
+  color: var(--pulse-green, #9be08a);
 }
 </style>

@@ -303,7 +303,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 /* 燃料表：设计稿 game-ledger.html 的深色卡片原值 */
 .fuel {
   background: var(--ink);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 20px;
   color: #EDE6D6;
   position: relative;
@@ -319,7 +319,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 .fuel-lbl {
   font-size: 11px;
   letter-spacing: 3px;
-  color: #9BE08A;
+  color: var(--pulse-green, #9BE08A);
   position: relative;
 }
 .fuel-num {
@@ -333,17 +333,17 @@ onUnmounted(() => window.clearInterval(dateTimer))
 .fuel-num small {
   font-size: 22px;
   font-weight: 700;
-  color: #FFB25E;
+  color: var(--ember, #FFB25E);
 }
 .fuel-today {
   display: inline-block;
   background: rgba(155, 224, 138, 0.15);
   border: 1px solid rgba(155, 224, 138, 0.5);
-  color: #9BE08A;
+  color: var(--pulse-green, #9BE08A);
   font-size: 12px;
   font-weight: 700;
   padding: 4px 12px;
-  border-radius: 16px;
+  border-radius: var(--paper-r-xl, 16px);
   margin-top: 8px;
   position: relative;
 }
@@ -359,7 +359,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   font-size: 13px;
   font-weight: 700;
   min-height: 44px;
-  border-radius: 20px;
+  border-radius: var(--paper-r-2xl, 20px);
   border: 1.5px solid var(--ink2);
   color: var(--ink2);
   background: transparent;
@@ -369,7 +369,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 .chip.on {
   background: var(--ink);
   border-color: var(--ink);
-  color: #F6F1E7;
+  color: var(--paper, #F6F1E7);
 }
 .chip:active { transform: scale(0.95); }
 
@@ -383,7 +383,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   gap: 12px;
   background: var(--paper-card);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 13px 14px;
   margin-bottom: 10px;
 }
@@ -391,7 +391,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   width: 38px;
   height: 38px;
   flex: none;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -418,7 +418,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
   width: calc(100% - 40px);
   margin: 16px 20px 0;
   min-height: 44px;
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   border: 1.5px solid var(--line);
   background: var(--paper-card);
   color: var(--ink);

@@ -111,7 +111,7 @@ const watchLine = computed(() => {
   flex-direction: column;
   background: var(--tp-paper);
   border: 1.5px solid var(--tp-ink);
-  border-radius: 12px;
+  border-radius: var(--paper-r-lg, 12px);
   box-shadow: 3px 3px 0 rgba(42, 38, 32, 0.12);
   overflow: hidden;
   color: var(--tp-ink);
@@ -150,7 +150,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
 .stat-badge {
   margin-left: auto;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--paper-r-full, 999px);
   font-size: 10px;
   font-weight: 700;
   background: var(--tp-paper2);
@@ -195,7 +195,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
 }
 
 /* 第二行票根：顶部一条打孔虚线，左右各一个半圆缺口（填充页底色 --paper）。
-   缺口圆用页面底色填充——v4 纸色页底为 #F6F1E7（.v4-scope 的 --paper） */
+   缺口圆用页面底色填充——v4 纸色页底为 var(--paper, #F6F1E7)（.v4-scope 的 --paper） */
 .ticket-stub {
   position: relative;
   display: flex;
@@ -212,7 +212,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   top: -12px;
   width: 22px;
   height: 22px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--paper, #F6F1E7);
   border: 1.5px solid var(--tp-ink);
 }
@@ -270,10 +270,10 @@ a.ticket-stat:active { background: var(--tp-paper2); }
   min-height: 44px;
   padding: 0 1.25rem;
   background: var(--tp-ink);
-  color: #F6F1E7;
+  color: var(--paper, #F6F1E7);
   font-size: 13px;
   font-weight: 700;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   text-decoration: none;
   white-space: nowrap;
   box-shadow: 2px 2px 0 rgba(42, 38, 32, 0.2);
@@ -282,7 +282,7 @@ a.ticket-stat:active { background: var(--tp-paper2); }
 
 /* 骨架：纸色 shimmer */
 .tp-skeleton {
-  border-radius: 8px;
+  border-radius: var(--paper-r-sm, 8px);
   background: linear-gradient(90deg, var(--tp-paper2) 25%, #f7f2e6 50%, var(--tp-paper2) 75%);
   background-size: 200% 100%;
   animation: tp-shimmer 1.4s infinite linear;

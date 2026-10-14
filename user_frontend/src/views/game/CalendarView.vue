@@ -250,7 +250,7 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   top: 4px;
   width: 12px;
   height: 12px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--paper);
   border: 2.5px solid var(--ink2);
 }
@@ -272,7 +272,7 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
 .treasure {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 12px 14px;
   display: flex;
   gap: 12px;
@@ -309,10 +309,10 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   top: 6px; right: 0; bottom: 6px; left: 0;
   background: var(--paper2);
   border: 1.5px solid var(--ink);
-  border-radius: 16px;
+  border-radius: var(--paper-r-xl, 16px);
 }
 .treasure .want .lbl { position: relative; }
-.treasure .want.on { color: #fff; }
+.treasure .want.on { color: var(--on-dark, #fff); }
 .treasure .want.on::before { background: var(--ink); }
 .treasure.mystery { background: var(--paper2); border-style: dashed; }
 .treasure.mystery .map { filter: grayscale(1) blur(1px); }
@@ -327,7 +327,7 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   font-size: 10px;
   font-weight: 800;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   margin-left: 6px;
   vertical-align: middle;
 }
@@ -343,8 +343,8 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   bottom: 90px;
   margin: 16px 20px 0;
   background: var(--ink);
-  color: #F6F1E7;
-  border-radius: 12px;
+  color: var(--paper, #F6F1E7);
+  border-radius: var(--paper-r-lg, 12px);
   padding: 12px 16px;
   font-size: 13px;
   display: flex;
@@ -352,5 +352,5 @@ onUnmounted(() => { window.clearTimeout(midnightTimer) })
   align-items: center;
   box-shadow: 0 4px 14px rgba(42, 38, 32, 0.25);
 }
-.plan-bar b { color: #FFB25E; }
+.plan-bar b { color: var(--ember, #FFB25E); }
 </style>

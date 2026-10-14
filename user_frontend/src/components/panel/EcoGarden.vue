@@ -66,7 +66,7 @@ watch(plants, () => {
 .v4-eco {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 16px;
 }
 .plants {
@@ -95,7 +95,7 @@ watch(plants, () => {
   width: 10px;
   margin: 0 auto;
   border-radius: 5px 5px 0 0;
-  background: linear-gradient(180deg, #7cb87c, #4a7c59);
+  background: linear-gradient(180deg, #7cb87c, var(--green, #4a7c59));
 }
 .plant .leaf {
   font-size: 14px;

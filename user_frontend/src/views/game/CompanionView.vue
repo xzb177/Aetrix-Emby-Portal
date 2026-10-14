@@ -255,7 +255,7 @@ onMounted(load)
   margin: 4px 0 0;
   background: var(--paper2);
   border: 2px solid var(--ink);
-  border-radius: 14px;
+  border-radius: var(--paper-r-xl, 14px);
   padding: 20px;
   text-align: center;
   position: relative;
@@ -288,7 +288,7 @@ onMounted(load)
   letter-spacing: 4px;
   background: var(--paper-card);
   border: 2px dashed var(--ink2);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 14px 8px;
   margin: 10px 0;
   font-family: "Courier New", monospace;
@@ -297,14 +297,14 @@ onMounted(load)
 .copybtn {
   width: 100%;
   background: var(--red);
-  color: #fff;
+  color: var(--on-dark, #fff);
   border: none;
   font-size: 15px;
   font-weight: 800;
   padding: 13px;
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   cursor: pointer;
-  box-shadow: 0 3px 0 #a33319;
+  box-shadow: 0 3px 0 var(--red-deep, #a33319);
 }
 .copybtn:active { transform: scale(0.96); }
 .copybtn.done { background: var(--green); box-shadow: 0 3px 0 #35593f; }
@@ -320,7 +320,7 @@ onMounted(load)
   color: var(--ink2);
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 10px 12px;
 }
 .linkbtn {
@@ -328,7 +328,7 @@ onMounted(load)
   min-height: 44px;
   background: var(--paper2);
   border: 1.5px solid var(--ink);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 10px 14px;
   font-size: 13px;
   font-weight: 700;
@@ -341,7 +341,7 @@ onMounted(load)
 .rule {
   background: var(--paper-card);
   border: 1.5px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 14px 16px;
   font-size: 13px;
   line-height: 1.9;
@@ -356,13 +356,13 @@ onMounted(load)
   gap: 12px;
   background: var(--paper-card);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--paper-r-md, 10px);
   padding: 12px 14px;
 }
 .mate .av {
   width: 42px;
   height: 42px;
-  border-radius: 50%;
+  border-radius: var(--paper-r-full, 50%);
   background: var(--paper2);
   display: flex;
   align-items: center;

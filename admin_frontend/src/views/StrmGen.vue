@@ -370,7 +370,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 8px);
   margin-bottom: 16px;
   font-size: 13px;
 }
@@ -423,7 +423,7 @@ onUnmounted(() => {
 .error-list {
   margin-top: 12px;
   padding: 10px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm, 8px);
   background: color-mix(in srgb, var(--au-danger) 6%, transparent);
   border: 1px solid color-mix(in srgb, var(--au-danger) 20%, transparent);
 }

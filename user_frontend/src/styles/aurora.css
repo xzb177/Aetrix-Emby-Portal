@@ -121,7 +121,9 @@
   --au-r-sm: 8px;
   --au-r-md: 10px;
   --au-r-lg: 14px;
-  --au-r-xl: 14px;
+  /* U0 阶梯缺陷修复：xl 与 lg 重值 14px → 20px（对齐 --paper-r-2xl；
+     实测 --au-r-xl/--neo-radius-xl 当前零引用，零视觉差） */
+  --au-r-xl: 20px;
   --au-r-full: 999px;
 
   /* 阴影：克制，无发光 */
