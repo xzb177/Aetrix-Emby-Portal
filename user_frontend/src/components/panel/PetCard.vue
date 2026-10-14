@@ -1,6 +1,6 @@
 <template>
   <div class="v4-pet">
-    <div class="evo" :aria-label="`馆灵：${pet.name}`">{{ pet.icon }}</div>
+    <div class="evo" role="img" :aria-label="`馆灵：${pet.name}`">{{ pet.icon }}</div>
     <h3>{{ pet.name }} · {{ stageLabel }}</h3>
     <p>
       已经陪你看了 {{ hoursText }}<br />

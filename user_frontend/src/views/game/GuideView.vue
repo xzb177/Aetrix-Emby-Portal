@@ -59,7 +59,7 @@
 
         <!-- 聊天 -->
         <section class="v4-sec">
-          <div ref="scroller" class="chat">
+          <div ref="scroller" class="chat" tabindex="0" aria-label="聊天记录" aria-live="polite">
             <div v-if="!bubbles.length" class="chat-empty">
               <p>老陈刚沏上茶，坐下聊两句？</p>
             </div>

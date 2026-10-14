@@ -55,7 +55,7 @@
           :class="{ sel: picked === o.id }"
           role="button"
           tabindex="0"
-          :aria-label="`试穿${o.label}${storedPref === o.id ? '（当前穿着）' : ''}`"
+          :aria-label="`试穿${o.label}${storedPref === o.id ? '（当前穿着）' : ''}${picked === o.id ? '（试穿中）' : ''}`"
           @click="tryOn(o.id)"
           @keyup.enter="tryOn(o.id)"
           @keyup.space.prevent="tryOn(o.id)"

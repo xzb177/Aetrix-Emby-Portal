@@ -5,6 +5,7 @@
     role="button"
     tabindex="0"
     :aria-label="isOpen ? '昨日回顾信件，点击合上' : '每日一封，点击拆信'"
+    :aria-expanded="isOpen"
     @click="toggle"
     @keydown="onKey"
   >
@@ -13,7 +14,7 @@
       <p>来自昨日 {{ letterTime }} 的你<br /><span class="v4-letter-hint">点一下，拆信</span></p>
     </div>
     <div v-else class="v4-letter-content">
-      <div class="v4-kv"><span>昨日观影</span><b>{{ letter.watch_duration || '—' }}</b></div>
+      <div class="v4-kv"><span>昨日观影</span><b>{{ String(letter.watch_duration ?? '—') }}</b></div>
       <div class="v4-kv"><span>看完</span><b>{{ watchedText }}</b></div>
       <div class="v4-kv" v-if="letter.taste_shift"><span>最近偏爱</span><span>{{ letter.taste_shift }}</span></div>
       <div class="v4-kv"><span>今日推荐位</span><span>每日零点更新</span></div>

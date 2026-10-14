@@ -37,6 +37,7 @@
                 <button
                   class="want"
                   :class="{ on: plan.has(item.Id) }"
+                  :aria-pressed="plan.has(item.Id)"
                   @click="togglePlan(item.Id)"
                 >
                   <span class="lbl">{{ plan.has(item.Id) ? '已加入 ✓' : '想去' }}</span>

@@ -145,7 +145,7 @@
                 class="refresh-btn"
                 :class="{ 'is-loading': sessionsLoading }"
                 :disabled="sessionsLoading"
-                aria-label="刷新正在播放"
+                :aria-label="sessionsLoading ? '正在刷新播放列表' : '刷新正在播放'"
                 @click="loadSessions"
               >
                 {{ sessionsLoading ? '刷新中' : '⟳' }}
@@ -274,7 +274,7 @@
 
     <!-- 设置播放密码弹窗 -->
     <Teleport to="body">
-      <div v-if="showSetPlayPwd" class="modal-mask" @click.self="showSetPlayPwd = false" @keydown="onModalKeydown">
+      <div v-if="showSetPlayPwd" class="modal-mask" @click.self="closeSetPlayPwd()" @keydown="onModalKeydown">
         <div class="modal-card" role="dialog" aria-modal="true" aria-label="设置播放密码">
           <h3 class="modal-title">设置 Emby 播放密码</h3>
           <p class="modal-desc">这个密码用在 Emby 客户端（Infuse、Forward 等）里登录，至少 6 位。</p>
@@ -287,7 +287,7 @@
           />
           <p v-if="pwdError" class="modal-error">{{ pwdError }}</p>
           <div class="modal-actions">
-            <button class="op-btn ghost" @click="showSetPlayPwd = false">取消</button>
+            <button class="op-btn ghost" @click="closeSetPlayPwd()">取消</button>
             <button class="op-btn primary" :disabled="settingPwd" @click="confirmSetPassword">
               {{ settingPwd ? '设置中' : '确认' }}
             </button>
@@ -298,14 +298,14 @@
 
     <!-- 解锁确认弹窗 -->
     <Teleport to="body">
-      <div v-if="showUnlockConfirm" class="modal-mask" @click.self="showUnlockConfirm = false" @keydown="onModalKeydown">
+      <div v-if="showUnlockConfirm" class="modal-mask" @click.self="closeUnlockConfirm()" @keydown="onModalKeydown">
         <div class="modal-card" role="dialog" aria-modal="true" aria-label="确认解锁">
           <h3 class="modal-title">确认解锁？</h3>
           <p class="modal-desc">
             将花费 <strong>{{ viewPermission?.unlock_points }}</strong> 积分解锁查看权限。
           </p>
           <div class="modal-actions">
-            <button class="op-btn ghost" @click="showUnlockConfirm = false">取消</button>
+            <button class="op-btn ghost" @click="closeUnlockConfirm()">取消</button>
             <button class="op-btn primary" :disabled="unlocking" @click="confirmUnlock">
               {{ unlocking ? '解锁中' : '确认' }}
             </button>
@@ -316,7 +316,7 @@
 
     <!-- 结束播放确认弹窗（二次确认，防手滑） -->
     <Teleport to="body">
-      <div v-if="sessionToStop" class="modal-mask" @click.self="sessionToStop = null" @keydown="onModalKeydown">
+      <div v-if="sessionToStop" class="modal-mask" @click.self="closeStopSession()" @keydown="onModalKeydown">
         <div class="modal-card" role="dialog" aria-modal="true" aria-label="确认结束播放">
           <h3 class="modal-title">结束这次播放？</h3>
           <p class="modal-desc">
@@ -324,7 +324,7 @@
             「<strong>{{ sessionToStop.item }}</strong>」的播放。
           </p>
           <div class="modal-actions">
-            <button class="op-btn ghost" @click="sessionToStop = null">取消</button>
+            <button class="op-btn ghost" @click="closeStopSession()">取消</button>
             <button class="op-btn primary" :disabled="!!stopping" @click="doStopSession">
               {{ stopping ? '结束中' : '确认结束' }}
             </button>
@@ -437,7 +437,7 @@ async function confirmSetPassword() {
   try {
     await embyApi.setPassword(playPwd.value)
     toast.success('播放密码已设置')
-    showSetPlayPwd.value = false
+    closeSetPlayPwd()
     playPwd.value = ''
     showPlayPassword.value = false
     await refreshAccount()
@@ -454,7 +454,7 @@ async function confirmUnlock() {
     const realmId = (account.value as any)?.realm_id ?? (viewPermission.value as any)?.realm_id
     await embyApi.unlockView(realmId)
     toast.success('解锁成功')
-    showUnlockConfirm.value = false
+    closeUnlockConfirm()
     await refreshAccount()
   } catch (e) {
     toast.error(humanizeError(e))
@@ -527,6 +527,7 @@ async function loadSessions() {
 }
 
 function confirmStopSession(session: MyPlaybackSession) {
+  recordTrigger()
   sessionToStop.value = session
   focusOpenModalCard()
 }
@@ -534,9 +535,9 @@ function confirmStopSession(session: MyPlaybackSession) {
 /** Esc 关闭各确认弹窗（照 WishlistView 模式） */
 function onEsc(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
-  if (showSetPlayPwd.value) showSetPlayPwd.value = false
-  else if (showUnlockConfirm.value) showUnlockConfirm.value = false
-  else if (sessionToStop.value) sessionToStop.value = null
+  if (showSetPlayPwd.value) closeSetPlayPwd()
+  else if (showUnlockConfirm.value) closeUnlockConfirm()
+  else if (sessionToStop.value) closeStopSession()
 }
 
 /** R36：简易 focus trap —— Tab 在对话框内循环，不跑出对话框（照抄 WishlistView R27 标杆） */
@@ -568,13 +569,21 @@ function focusOpenModalCard() {
     el?.focus()
   })
 }
+/** R38 P2-2：弹窗关闭后焦点回到触发按钮（setPlayPwd / unlock / stopSession 三处共用） */
+const lastTrigger = ref<HTMLElement | null>(null)
+function recordTrigger() { lastTrigger.value = document.activeElement as HTMLElement | null }
+function restoreTriggerFocus() { lastTrigger.value?.focus?.() }
+function closeSetPlayPwd() { showSetPlayPwd.value = false; restoreTriggerFocus() }
+function closeUnlockConfirm() { showUnlockConfirm.value = false; restoreTriggerFocus() }
+function closeStopSession() { sessionToStop.value = null; restoreTriggerFocus() }
 function openSetPlayPwd() {
   // R37 P3-9：重开弹窗清掉旧错误文案
   pwdError.value = ''
+  recordTrigger()
   showSetPlayPwd.value = true
   focusOpenModalCard()
 }
-function openUnlockConfirm() { showUnlockConfirm.value = true; focusOpenModalCard() }
+function openUnlockConfirm() { recordTrigger(); showUnlockConfirm.value = true; focusOpenModalCard() }
 
 async function doStopSession() {
   const session = sessionToStop.value
@@ -589,7 +598,7 @@ async function doStopSession() {
     toast.error(typeof detail === 'string' && /[\u4e00-\u9fff]/.test(detail) ? detail : humanizeError(err))
   } finally {
     stopping.value = null
-    sessionToStop.value = null
+    closeStopSession()
   }
 }
 
