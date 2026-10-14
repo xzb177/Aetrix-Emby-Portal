@@ -2,7 +2,6 @@ import { ref, computed } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { homeApi, type HomeSummary, vitalityApi, type VitalityStatus } from '@/api/economy'
 import { isExpiringSoon, type MySubscription, type WatchStats } from '@/api'
-import { Crown, Zap, Clapperboard } from 'lucide-vue-next'
 
 export interface MemberCardInfo {
   value: string
@@ -43,22 +42,6 @@ export interface WatchStripInfo {
   watchTime: string
   totalPlays: string
   watchedItems: string
-}
-
-export interface AssetCard {
-  key: string
-  to: string
-  icon: unknown
-  title: string
-  value: string
-  unit: string
-  progress: number | null
-  desc: string
-  note: string
-  short: string
-  footer: string
-  badge: string | null
-  hot: boolean
 }
 
 /** R28：ISO 日期 "2026-11-01" → 人话 "11月1日"；非日期原文原样返回 */
@@ -273,67 +256,6 @@ export function useTicketCard() {
     }
   })
 
-  // 兼容老调用方（assetCards）
-  const assetCards = computed((): AssetCard[] => {
-    const mc = memberCard.value
-    const ec = energyCard.value
-    const ws = watchStrip.value
-    return [
-      {
-        key: 'points',
-        to: ec.cardTo,
-        icon: Zap,
-        title: '能量',
-        value: ec.balance,
-        unit: '',
-        progress: null,
-        desc: ec.checkinEnabled ? '报到、邀请与核销都能攒能量' : '邀请与核销都能攒能量',
-        note: !ec.checkinEnabled
-          ? ''
-          : ec.checkedToday
-            ? (ec.streak ? `今日已报到 · 连续 ${ec.streak} 天` : '今日已报到 · 明天再来')
-            : '今天还没报到',
-        short: ec.badge || '',
-        footer: '查看明细',
-        badge: ec.badge,
-        hot: ec.hot,
-      },
-      {
-        key: 'member',
-        to: mc.to,
-        icon: Crown,
-        title: '会员',
-        value: mc.value,
-        unit: mc.unit,
-        progress: mc.progress,
-        desc: mc.desc,
-        note: mc.expiringSoon ? '续费后新时长在到期日之后叠加' : '会员权益全库通用',
-        short: mc.expiringSoon ? '即将到期' : mc.badge || '',
-        footer: mc.footer,
-        badge: mc.badge,
-        hot: mc.hot,
-      },
-      {
-        key: 'watch',
-        to: '',
-        icon: Clapperboard,
-        title: '观影数据',
-        value: ws.watchValue,
-        unit: ws.watchUnit,
-        progress: null,
-        desc: `播放 ${ws.totalPlays} 次 · 看过 ${ws.watchedItems} 部`,
-        note: '在 Infuse 等客户端继续观影',
-        short: ws.totalPlays !== '—' ? `播放 ${ws.totalPlays} 次` : '',
-        footer: '',
-        badge: null,
-        hot: false,
-      },
-    ]
-  })
-
-  const memberFooter = computed(() => memberCard.value.footer)
-  const planName = computed(() => memberCard.value.planName)
-
   // ---- 数据快照：变化以天为单位，快照让回访用户首屏 0 骨架 ----
   const SNAPSHOT_KEY = 'aetrix:home-summary:v1'
   const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -424,9 +346,5 @@ export function useTicketCard() {
     watchStrip,
     load,
     hasLoaded,
-    // 兼容原字段
-    assetCards,
-    memberFooter,
-    planName,
   }
 }

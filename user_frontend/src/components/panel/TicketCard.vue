@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import type { MemberCardInfo, EnergyCardInfo, WatchStripInfo, AssetCard } from '@/composables/useTicketCard'
+import type { MemberCardInfo, EnergyCardInfo, WatchStripInfo } from '@/composables/useTicketCard'
 import './ticket-card.css'
 
 const props = defineProps<{
@@ -9,10 +9,6 @@ const props = defineProps<{
   memberCard?: MemberCardInfo
   energyCard?: EnergyCardInfo
   watchStrip?: WatchStripInfo
-  // 兼容老调用方字段
-  assetCards?: AssetCard[]
-  memberFooter?: string
-  planName?: string
 }>()
 
 const defaultMemberCard: MemberCardInfo = {
