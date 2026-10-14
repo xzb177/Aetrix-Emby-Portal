@@ -15,7 +15,7 @@ function fmtMonthDay(isoDate: string): string {
 /**
  * 电影票卡数据（原 HomeView.vue 票根卡逻辑，HomeView 删除后迁至此处）
  *
- * 两行布局：第一行积分 + 会员并排（积分 / 会员），第二行票根行里带一行观影小字。
+ * 两行布局：第一行能量 + 会员并排（能量 / 会员），第二行票根行里带一行观影小字。
  * 数据源是首页聚合接口 /api/user/home/summary。
  * 快照沿用 'aetrix:home-summary:v1'（与旧首页同一份），老用户切到发现页后
  * 首屏直接用缓存渲染，不闪骨架。
@@ -34,7 +34,7 @@ export function useTicketCard() {
     streak: null as number | null,
     checkedToday: false,
     invited: null as number | null,
-    // 签到功能开关（管理端可配）：关闭时隐藏签到相关文案
+    // 报到功能开关（管理端可配）：关闭时隐藏报到相关文案
     checkinEnabled: true,
   })
 
@@ -66,7 +66,7 @@ export function useTicketCard() {
     return Math.max(1, Math.min(100, Math.round((used / total) * 100)))
   })
 
-  // 票根卡的三格：积分 / 会员 / 观影数据
+  // 票根卡的三格：能量 / 会员 / 观影数据
   const assetCards = computed((): AssetCard[] => {
     const st = stats.value
 
@@ -125,24 +125,24 @@ export function useTicketCard() {
         key: 'points',
         to: '/game/ledger',
         icon: Zap,
-        title: '积分',
+        title: '能量',
         value: quickStats.value.balance !== null ? quickStats.value.balance.toLocaleString() : '—',
         unit: '',
         progress: null,
-        desc: quickStats.value.checkinEnabled ? '签到、邀请与兑换都能攒积分' : '邀请与兑换都能攒积分',
+        desc: quickStats.value.checkinEnabled ? '报到、邀请与核销都能攒能量' : '邀请与核销都能攒能量',
         note: !quickStats.value.checkinEnabled
           ? ''
           : quickStats.value.checkedToday
-            ? (quickStats.value.streak ? `今日已签 · 连续 ${quickStats.value.streak} 天` : '今日已签 · 明天再来')
-            : '今天还没签到',
+            ? (quickStats.value.streak ? `今日已报到 · 连续 ${quickStats.value.streak} 天` : '今日已报到 · 明天再来')
+            : '今天还没报到',
         // 窄屏票面只留一行 ≤6 字的状态（长说明在宽屏才显示）
         short: !quickStats.value.checkinEnabled
           ? ''
           : quickStats.value.checkedToday
-            ? (quickStats.value.streak ? `连签 ${quickStats.value.streak} 天` : '今日已签')
-            : '今日未签',
-        footer: '去账本',
-        badge: !quickStats.value.checkinEnabled ? null : (quickStats.value.checkedToday ? null : '今日未签'),
+            ? (quickStats.value.streak ? `连报 ${quickStats.value.streak} 天` : '今日已报到')
+            : '今日未报到',
+        footer: '查看明细',
+        badge: !quickStats.value.checkinEnabled ? null : (quickStats.value.checkedToday ? null : '今日未报到'),
         // 未签时徽章走警示色（hot），与会员临期同一套提醒语言
         hot: quickStats.value.checkinEnabled && !quickStats.value.checkedToday,
       },
@@ -230,7 +230,7 @@ export function useTicketCard() {
       loading.value = true
     }
     try {
-      // 积分 / 签到 / 会员 / 观影统计一次取回
+      // 能量 / 报到 / 会员 / 观影统计一次取回
       const data = await homeApi.summary()
       const memberFailed = data.subscriptions === null
       applySummary(data)

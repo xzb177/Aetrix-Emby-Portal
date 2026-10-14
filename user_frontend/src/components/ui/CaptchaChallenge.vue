@@ -143,7 +143,7 @@ onBeforeUnmount(() => {
     </p>
     <p v-else class="captcha-hint">
       <ShieldCheck :size="13" />
-      本站开启了人机验证（{{ info.label }}）
+      点一下证明你不是机器人
     </p>
   </div>
 </template>

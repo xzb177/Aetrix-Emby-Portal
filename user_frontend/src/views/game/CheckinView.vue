@@ -19,12 +19,12 @@
       <!-- 探险体力 -->
       <StaminaBar ref="staminaBar" />
 
-      <!-- 签到簿 -->
+      <!-- 报到簿 -->
       <section class="v4-sec">
-        <div class="v4-sec-title">📖 签到簿 · {{ monthLabel }}</div>
+        <div class="v4-sec-title">📖 报到簿 · {{ monthLabel }}</div>
         <div class="v4-sec-sub">红章=已到 · 今天那格闪烁，点"报到"盖章</div>
         <div v-if="statusLoading" class="v4-skeleton" style="height:220px"></div>
-        <div v-else-if="statusError" class="v4-err">签到簿加载失败：{{ statusError }}<br><button class="v4-retry" @click="load">重试</button></div>
+        <div v-else-if="statusError" class="v4-err">报到簿加载失败：{{ statusError }}<br><button class="v4-retry" @click="load">重试</button></div>
         <div v-else class="book">
           <div class="book-head">
             <b>{{ year }}年{{ month + 1 }}月</b>
@@ -86,7 +86,7 @@ const checking = ref(false)
 const sealPop = ref<HTMLElement | null>(null)
 const staminaBar = ref<InstanceType<typeof StaminaBar> | null>(null)
 
-/** 本月签到过的日期（来自签到流水） */
+/** 本月报到过的日期（来自报到流水） */
 const signedDays = ref<Set<number>>(new Set())
 
 const daysInMonth = computed(() => new Date(year.value, month.value + 1, 0).getDate())
@@ -128,7 +128,7 @@ async function load() {
         days.add(d.getDate())
       }
     }
-    // 今天已签到时，确保今天也在集合里（流水可能有延迟）
+    // 今天已报到时，确保今天也在集合里（流水可能有延迟）
     if (st.checked_today) days.add(todayNum.value)
     signedDays.value = days
   } catch (e) {
@@ -170,7 +170,7 @@ async function doCheckin() {
       /* 体力刷新失败不打扰主流程 */
     }
   } catch (e) {
-    // 提交失败走 toast，不污染签到簿的 statusError
+    // 提交失败走 toast，不污染报到簿的 statusError
     useToast().error(humanizeError(e))
   } finally {
     checking.value = false
@@ -207,7 +207,7 @@ onUnmounted(() => window.clearInterval(dateTimer))
 </script>
 
 <style scoped>
-/* 签到簿：设计稿 game-checkin.html 原值 */
+/* 报到簿：设计稿 game-checkin.html 原值 */
 .book {
   background: var(--paper-card);
   border: 1.5px solid var(--line);

@@ -184,7 +184,7 @@ onMounted(() => {
   if (route.query.invite) {
     mode.value = 'register'
     registerForm.inviteCode = String(route.query.invite)
-    toast.info(`已收到好友邀请码，注册成功后双方都得积分奖励`, 5000)
+    toast.info(`已收到好友邀请码，注册成功后双方都得能量奖励`, 5000)
   }
 
   // 海报拼贴背景：requestIdleCallback 延迟拉取（降级 setTimeout 800ms），
@@ -221,7 +221,7 @@ onUnmounted(() => {
           <Clapperboard v-else :size="22" />
         </div>
         <h1 class="brand-title">{{ branding.site_name }}</h1>
-        <p class="brand-subtitle">自建 Emby 影视服务 · 一个账号畅享所有设备</p>
+        <p class="brand-subtitle">自建 Emby 影视服务 · 一个账号，手机/电视/电脑都能看</p>
       </div>
 
       <!-- 模式切换 -->
@@ -367,7 +367,7 @@ onUnmounted(() => {
         </label>
 
         <label v-if="showInviteField" class="field">
-          <span class="field-label">邀请码 <em class="optional">选填，双方得积分</em></span>
+          <span class="field-label">邀请码 <em class="optional">选填，双方得能量</em></span>
           <div class="field-box">
             <Gift :size="16" class="field-icon" />
             <input
@@ -391,7 +391,7 @@ onUnmounted(() => {
       </form>
 
       <p class="auth-footnote">
-        注册即代表同意服务条款 · 密码经 bcrypt 加密存储
+        注册即代表同意服务条款 · 密码加密存储
       </p>
     </div>
   </div>

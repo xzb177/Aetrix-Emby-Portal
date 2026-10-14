@@ -102,7 +102,7 @@ const toast = useToast()
  * income 为准判断进/出账；未知 type 兜底显示原值、按进账处理。
  */
 const TYPE_META: Record<string, { label: string; income: boolean }> = {
-  checkin: { label: '签到', income: true },
+  checkin: { label: '报到', income: true },
   invite: { label: '邀请奖励', income: true },
   invitee: { label: '受邀奖励', income: true },
   rebate: { label: '充值返利', income: true },

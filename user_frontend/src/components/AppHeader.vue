@@ -94,8 +94,8 @@ const navRef = ref<HTMLElement | null>(null)
 const unreadCount = ref(0)
 
 /**
- * 会员状态（v2.42.8 起只留在头像菜单里）：顶栏那两颗常驻 pill（积分 / 会员生效中）
- * 已按设计稿删除——积分由首页「我的资产」与钱包承接，会员状态由菜单头部承接。
+ * 会员状态（v2.42.8 起只留在头像菜单里）：顶栏那两颗常驻 pill（能量 / 会员生效中）
+ * 已按设计稿删除——能量由首页「我的资产」与钱包承接，会员状态由菜单头部承接。
  * 与轮询同频刷新：购买 / 续费后回到任何页面都能立刻看到新状态。
  */
 const activeSub = ref<MySubscription | null>(null)
@@ -140,7 +140,7 @@ const userIdLabel = computed(() => (userStore.user?.id ? `@${userStore.user.id}`
 const isStaff = computed(() => !!userStore.user?.is_staff)
 
 // 顶栏消息入口（v2.10.3 起是全站唯一的消息入口）：既显示「几条未读」，
-// 点开还能先看预览再决定要不要进消息中心
+// 点开还能先看预览再决定要不要进信鸽
 const msgMenuOpen = ref(false)
 const msgMenuRef = ref<HTMLElement | null>(null)
 const msgPreview = ref<MsgPreviewItem[]>([])
@@ -164,7 +164,7 @@ interface MsgPreviewItem {
 /** 未读预览一次拉多少条：要够把「同名通知有几条」数准（消息很小，50 条约几十 KB） */
 const UNREAD_WINDOW = 50
 
-// 消息类型 → 图标（与消息中心的分类保持一致；只取预览需要的几种）
+// 消息类型 → 图标（与信鸽的分类保持一致；只取预览需要的几种）
 const MSG_ICONS: Record<string, unknown> = {
   system: AlertCircle,
   ticket: Ticket,
@@ -176,11 +176,11 @@ const MSG_ICONS: Record<string, unknown> = {
 
 const MSG_LABELS: Record<string, string> = {
   system: '系统',
-  ticket: '工单',
+  ticket: '求救信号',
   announcement: '公告',
-  subscription: '订阅',
-  media_seek: '求片',
-  exchange_code: '兑换',
+  subscription: '会员',
+  media_seek: '许愿池',
+  exchange_code: '兑换码',
 }
 
 function relTime(iso?: string): string {
@@ -239,7 +239,7 @@ async function loadMsgPreview() {
         unread: true,
         count: 1,
         countExact: true,
-        // related_id 只有公告广播那条才指回公告（求片/工单的 related_id 是各自的业务 id，
+        // related_id 只有公告广播那条才指回公告（许愿池/求救信号的 related_id 是各自的业务 id，
         // 拿来跟公告 id 比会误伤）
         announcementId: m.message_type === 'announcement' ? (m.related_id ?? null) : null,
       }
@@ -441,9 +441,9 @@ async function focusActiveTab(center: boolean) {
   }
 }
 
-// 商店操作后回到任意页面时，头像菜单里的会员状态、顶栏积分即时刷新
+// 补给站操作后回到任意页面时，头像菜单里的会员状态、顶栏能量即时刷新
 //（2026-10-13：/wallet 旧页面已删；/game/checkin 报到后能量/体力变化，
-// 回 /game 时也需要刷新顶栏活力值 —— R27 加入 economyPaths）
+// 回 /game 时也需要刷新顶栏体力值 —— R27 加入 economyPaths）
 watch(() => route.path, (p, old) => {
   const economyPaths = ['/shop', '/game/checkin']
   if (userStore.isLoggedIn && (economyPaths.includes(old || '') || economyPaths.includes(p))) {
@@ -532,8 +532,8 @@ onBeforeUnmount(() => {
           v-if="userStore.isLoggedIn && pointsBalance !== null"
           to="/game/ledger"
           class="points-pill"
-          title="我的积分，点击查看能量账本"
-          aria-label="我的积分，点击查看能量账本"
+          title="我的能量，点击查看能量账本"
+          aria-label="我的能量，点击查看能量账本"
         >
           <Sparkles :size="13" />
           <span>{{ pointsBalance }}</span>
@@ -546,7 +546,7 @@ onBeforeUnmount(() => {
           :title="`我的体力 ${vitality}/${vitalityMax}，点击去报到`"
           :aria-label="`我的体力 ${vitality}/${vitalityMax}，点击去报到`"
         >
-          <Heart :size="13" /><!-- 活力值用红心（与报到页 StaminaBar 的 ❤️ 统一）；闪电只给能量/积分 -->
+          <Heart :size="13" /><!-- 体力用红心（与报到页 StaminaBar 的 ❤️ 统一）；闪电只给能量 -->
           <span>{{ vitality }}/{{ vitalityMax }}</span>
         </RouterLink>
         <button
@@ -565,8 +565,8 @@ onBeforeUnmount(() => {
             <button
               class="msg-btn round-btn"
               :class="{ alert: unreadCount > 0, open: msgMenuOpen }"
-              :title="unreadCount > 0 ? `${unreadCount} 条未读消息` : '消息中心'"
-              :aria-label="unreadCount > 0 ? `${unreadCount} 条未读消息` : '消息中心'"
+              :title="unreadCount > 0 ? `${unreadCount} 条未读消息` : '信鸽'"
+              :aria-label="unreadCount > 0 ? `${unreadCount} 条未读消息` : '信鸽'"
               @click="toggleMsgMenu"
             >
               <Inbox :size="18" />
@@ -581,7 +581,7 @@ onBeforeUnmount(() => {
             <Transition name="dd">
               <div v-if="msgMenuOpen" class="msg-dropdown" :style="dropStyle">
                 <div class="msg-drop-head">
-                  <span class="msg-drop-title">消息中心</span>
+                  <span class="msg-drop-title">信鸽</span>
                   <span v-if="unreadCount > 0" class="msg-drop-unread">{{ unreadCount > 99 ? '99+' : unreadCount }} 条未读</span>
                   <span v-else class="msg-drop-clear">已全部读完</span>
                 </div>
@@ -660,10 +660,10 @@ onBeforeUnmount(() => {
                 <!-- ② 探险设施直达（v4.1）：大本营 + 10 个游戏设施，图标+名称+描述，点卡片直达。
                      设施清单来自 @/config/game.ts，这里不 hardcode。
                      设施为空时整个分区（含标题）不渲染，不留裸奔标题。
-                     原 12 个通用菜单项（追新日历/探险日志/我的订单/积分流水/
-                     每日签到/邀请返利/求片中心/AI 助手/工单支持/消息中心/
+                     原 12 个通用菜单项（探险预告/探险日志/我的订单/能量账本/
+                     每日报到/邀请返利/许愿池中心/AI 助手/求救信号支持/信鸽/
                      外观/管理后台）已从头像菜单移除，对应页面路由保留；
-                     头像菜单不得再出现消息中心/外观行（用户铁律：已删条目不许加回，
+                     头像菜单不得再出现信鸽/外观行（用户铁律：已删条目不许加回，
                      scripts/check_avatar_menu_guards.py 在 CI 拦住；窄屏外观切换走后续专项决策）。
                      管理后台例外：2026-10-13 用户拍板恢复，仅管理员可见（见下面 ②.6） -->
                 <template v-if="menuFacilities.length > 0">
@@ -867,8 +867,8 @@ onBeforeUnmount(() => {
 /* ==================== 右侧圆形图标按钮（v2.42.8） ====================
    与管理后台顶栏同一形态：一枚圆形按钮（浅色表面 + 1px 描边 + 居中的图标），
    hover 时描边与底色各抬一档。顶栏因此只剩「品牌 · 消息 · 头像」三件事——
-   原常驻的积分 pill 与「会员生效中」pill 已删（图 4 圈出的两颗），
-   积分仍在首页「我的资产」/ 钱包、会员状态仍在头像菜单头部各有入口。 */
+   原常驻的能量 pill 与「会员生效中」pill 已删（图 4 圈出的两颗），
+   能量仍在首页「我的资产」/ 钱包、会员状态仍在头像菜单头部各有入口。 */
 .round-btn {
   position: relative;
   width: 44px;
@@ -927,7 +927,7 @@ onBeforeUnmount(() => {
   color: var(--au-on-primary);
 }
 
-/* 积分徽章：顶栏常驻小 pill，显示当前积分，点击进钱包 */
+/* 能量徽章：顶栏常驻小 pill，显示当前能量，点击进能量账本 */
 .points-pill {
   position: relative;
   display: inline-flex;
@@ -956,9 +956,9 @@ onBeforeUnmount(() => {
   color: var(--au-primary);
   flex-shrink: 0;
 }
-/* 活力值徽章：图标用红色（红心），与能量徽章的琥珀闪电区分 */
+/* 体力徽章：图标用红色（红心），与能量徽章的琥珀闪电区分 */
 .vitality-pill svg {
-  color: var(--au-danger, #ff5c6c); /* 活力值=红心（与报到页 ❤️ 体力条统一）；闪电的琥珀色只留给能量 */
+  color: var(--au-danger, #ff5c6c); /* 体力=红心（与报到页 ❤️ 体力条统一）；闪电的琥珀色只留给能量 */
 }
 
 /* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
@@ -1466,9 +1466,9 @@ onBeforeUnmount(() => {
   .header-container { padding: 0 0.75rem; gap: 0.5rem; }
 }
 
-/* ≤420px（iPhone 竖屏）：顶栏只留「品牌 · 积分 · 头像」三件事。
+/* ≤420px（iPhone 竖屏）：顶栏只留「品牌 · 能量 · 头像」三件事。
    外观切换按钮与消息铃铛带 .wide-only，在窄屏隐藏
-   （头像菜单里的外观/消息中心行已按用户铁律删除，不再补位） */
+   （头像菜单里的外观/信鸽行已按用户铁律删除，不再补位） */
 @media (max-width: 420px) {
   .wide-only { display: none; }
   .narrow-only { display: block; }

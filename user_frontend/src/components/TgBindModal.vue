@@ -280,7 +280,7 @@ onBeforeUnmount(() => {
         <template #header>
           <h3 class="modal-title">解绑 Telegram</h3>
         </template>
-        <p class="tg-confirm-text">确定要解绑 Telegram 吗？解绑后公益服功能（签到/积分/红包/抽奖）将受限。</p>
+        <p class="tg-confirm-text">确定要解绑 Telegram 吗？解绑后公益服功能（报到/能量/红包/抽奖）将受限。</p>
         <template #footer>
           <button class="au-btn" type="button" @click="unbindConfirmOpen = false">再想想</button>
           <button class="au-btn au-btn-primary" type="button" :disabled="unbinding" @click="confirmUnbind">

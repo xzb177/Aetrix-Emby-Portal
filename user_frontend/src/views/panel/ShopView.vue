@@ -5,12 +5,12 @@
       <div class="shop-head">
         <span class="shop-stamp">补给站 · 今日开张</span>
         <h1>🎒 探险补给站</h1>
-        <p>出发前，先备好干粮 —— 积分是路上的能量，会员是手里的执照。</p>
+        <p>出发前，先备好干粮 —— 能量是路上的盘缠，会员是手里的通行证。</p>
         <div v-if="loading" class="v4-skeleton" style="height:64px;margin-top:12px"></div>
         <div v-else class="purse">
           <div class="coin">
             <span class="ic">⚡</span>
-            <div><div class="n">{{ pointsText }}</div><div class="t">能量（积分）</div></div>
+            <div><div class="n">{{ pointsText }}</div><div class="t">能量</div></div>
           </div>
           <div class="coin">
             <span class="ic">📜</span>
@@ -24,12 +24,12 @@
         <div class="v4-sec-title">⚡ 能量补给</div>
         <!-- R37 P3-1：比例接口失败时副标题诚实兜底，不再假装「加载中」 -->
         <div class="v4-sec-sub">
-          <template v-if="ratioFailed">充积分 = 补充能量 —— 点一罐看看</template>
-          <template v-else>充积分 = 补充能量 · {{ ratioText }} —— 点一罐看看</template>
+          <template v-if="ratioFailed">充能量 = 补充能量 —— 点一罐看看</template>
+          <template v-else>充能量 = 补充能量 · {{ ratioText }} —— 点一罐看看</template>
         </div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看</div>
         <div v-else-if="packages.length === 0" class="v4-empty">补给站暂未上架能量罐<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <template v-else>
           <div class="shelf">
@@ -74,7 +74,7 @@
                 class="custom-input"
               />
               <button class="custom-btn" :disabled="!canCustomRecharge || orderBusy || !methodsReady" @click="handleCustomRecharge">
-                <span class="lbl">充这个数</span>
+                <span class="lbl">按这个金额充</span>
               </button>
             </div>
             <div v-if="quickAmounts.length" class="quick">
@@ -110,7 +110,7 @@
           </div>
           <!-- P3-24：支付方式加载完成但列表为空时给空态（methodsReady 未就绪时不展示，避免加载中闪现） -->
           <div v-else-if="methodsReady" class="v4-empty">暂无可用支付方式，请联系服主</div>
-          <div class="fineprint">能量可用于续命活力值、兑换订阅、发红包 —— 不过期</div>
+          <div class="fineprint">能量可用于续命体力、兑换会员、发红包 —— 不过期</div>
         </template>
       </section>
 
@@ -162,7 +162,7 @@
               <button class="buy" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" :aria-busy="orderBusy && orderBusyTag === 'buy'" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>{{ orderBusy && orderBusyTag === 'buy' ? '领取中…' : '领取执照 →' }}</button>
             </div>
           </div>
-          <div class="fineprint">人民币 / 能量二选一，价格由服主在后台配置</div>
+          <div class="fineprint">人民币 / 能量二选一，价格以页面显示为准</div>
         </template>
       </section>
 
@@ -208,16 +208,16 @@
         <div class="v4-sec-title">🤝 带上同伴</div>
         <div class="v4-sec-sub">邀请一位探险家，双方都得能量</div>
         <div v-if="loading" class="v4-skeleton" style="height:120px"></div>
-        <div v-else-if="inviteFailed" class="v4-err">邀请码加载失败{{ inviteErrMsg ? '：' + inviteErrMsg : '' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="inviteFailed" class="v4-err">组队暗号加载失败{{ inviteErrMsg ? '：' + inviteErrMsg : '' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="inviteEnabled" class="invite">
-          <h3>🧭 结伴远行，能量翻倍</h3>
-          <p v-if="inviteReward > 0 || inviteeReward > 0">同伴用你的暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
+          <h3>🧭 结伴远行，都有能量拿</h3>
+          <p v-if="inviteReward > 0 || inviteeReward > 0">同伴用你的组队暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
           <!-- R30：奖励为 0 时"上不封顶"自相矛盾，改诚实文案 -->
           <p v-else>当前邀请奖励未开启。</p>
           <div class="code">
             <!-- R27：code 为空不再显示占位 '----'，给生成中态 + 重试 -->
             <div v-if="inviteCode" class="c">{{ inviteCode }}</div>
-            <div v-else class="c generating">邀请码生成中</div>
+            <div v-else class="c generating">组队暗号生成中</div>
             <button @click="copyInviteCode" :disabled="!inviteCode">复制</button>
           </div>
           <button v-if="!inviteCode" class="v4-retry" style="margin-top:10px" @click="loadAll">重试</button>
@@ -227,13 +227,13 @@
       <!-- 🎟️ 核销中心 -->
       <section id="shop-redeem" class="shop-sec" style="padding-bottom:24px">
         <div class="v4-sec-title">🎟️ 核销中心</div>
-        <div class="v4-sec-sub">卡码 / 兑换码 / 优惠券 —— 自动识别，输完点"使用"</div>
+        <div class="v4-sec-sub">会员卡码 / 兑换码 / 优惠券 —— 自动识别，输完点"使用"</div>
         <div v-if="loading" class="v4-skeleton" style="height:140px"></div>
         <div v-else class="redeem">
           <form class="redeem-form" @submit.prevent="handleRedeem">
             <input
               v-model="redeemCode"
-              placeholder="输入卡码 / 兑换码 / 优惠券"
+              placeholder="输入会员卡码 / 兑换码 / 优惠券"
               maxlength="64"
               autocomplete="off"
               class="redeem-input"
@@ -264,7 +264,7 @@
           <div v-else-if="couponHint" class="redeem-coupon">
             <span>🎫 这张券可用，点「使用」应用抵扣</span>
           </div>
-          <p class="redeem-note" :class="{ warn: !!redeemNotice }">{{ redeemNotice || '会员时长 · 积分 · 订阅 · 优惠券，自动识别' }}</p>
+          <p class="redeem-note" :class="{ warn: !!redeemNotice }">{{ redeemNotice || '会员时长 · 能量 · 会员 · 优惠券，自动识别' }}</p>
         </div>
       </section>
     </div>
@@ -455,7 +455,7 @@ const quoteOf = (kind: 'recharge' | 'subscription', id: number) =>
 async function handleRedeem() {
   const code = redeemCode.value.trim()
   if (!code) {
-    toast.error('请输入卡码、兑换码或优惠券')
+    toast.error('请输入会员卡码、兑换码或优惠券')
     return
   }
   redeemLoading.value = true
@@ -471,7 +471,7 @@ async function handleRedeem() {
         return
       }
       if (!couponEnabled.value) {
-        codeNotice.value = '管理员已关闭优惠券，如有券请稍后再试'
+        codeNotice.value = '优惠券功能暂未开放，有券先收好'
         return
       }
       await applyCoupon(code)
@@ -480,7 +480,7 @@ async function handleRedeem() {
     }
     if (preview.kind === 'exchange') {
       if (!exchangeEnabled.value) {
-        codeNotice.value = '管理员已关闭兑换，如有兑换码请稍后再试'
+        codeNotice.value = '兑换功能暂未开放，有码先收好'
         return
       }
       // R28：兑换码不可逆，统一走两步确认（先预览兑换内容，再点确认兑换）
@@ -491,7 +491,7 @@ async function handleRedeem() {
       codePreview.value = preview
       return
     }
-    codeNotice.value = preview.message || '卡码或兑换码不存在'
+    codeNotice.value = preview.message || '会员卡码或兑换码不存在'
   } catch (err: unknown) {
     toast.error(humanizeError(err))
   } finally {
@@ -506,7 +506,7 @@ async function confirmExchangeRedeem() {
   redeemLoading.value = true
   try {
     const res = await exchangeApi.redeem(code)
-    toast.success(res.message || '兑换成功')
+    toast.success(res.message || '兑换成功，能量已到账')
     redeemCode.value = ''
     exchangePreview.value = null
     await loadAll()
@@ -523,7 +523,7 @@ async function confirmCodeRedeem() {
   redeemLoading.value = true
   try {
     const res = await membershipApi.redeem(code)
-    toast.success(res.message || '开通成功')
+    toast.success(res.message || '开通成功，会员已生效')
     redeemCode.value = ''
     codePreview.value = null
     await loadAll()
@@ -784,18 +784,18 @@ async function doBuyPlan(plan: SubscriptionPlan) {
   }
 }
 
-/* ---------- 邀请码 ---------- */
+/* ---------- 组队暗号 ---------- */
 async function copyInviteCode() {
   const code = inviteCode.value
   if (!code) {
-    toast.error('邀请码加载中，稍后再试')
+    toast.error('组队暗号加载中，稍后再试')
     return
   }
   try {
     await navigator.clipboard.writeText(code)
-    toast.success('暗号已复制：' + code)
+    toast.success('组队暗号已复制：' + code)
   } catch {
-    toast.info('暗号：' + code + '（请手动复制）')
+    toast.info('组队暗号：' + code + '（请手动复制）')
   }
 }
 </script>

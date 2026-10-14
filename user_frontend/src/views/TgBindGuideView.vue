@@ -167,7 +167,7 @@ onUnmounted(() => {
       </div>
 
       <div v-else-if="notConfigured" class="warn-box">
-        站点尚未配置 Telegram Bot，请联系管理员
+        还没准备好，请联系管理员
       </div>
 
       <template v-else>

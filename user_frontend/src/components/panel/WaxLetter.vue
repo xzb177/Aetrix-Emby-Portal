@@ -17,7 +17,7 @@
       <div class="v4-kv"><span>昨日观影</span><b>{{ String(letter.watch_duration ?? '—') }}</b></div>
       <div class="v4-kv"><span>看完</span><b>{{ watchedText }}</b></div>
       <div class="v4-kv" v-if="letter.taste_shift"><span>最近偏爱</span><span>{{ letter.taste_shift }}</span></div>
-      <div class="v4-kv"><span>今日推荐位</span><span>每日零点更新</span></div>
+      <div class="v4-kv"><span>今日推荐</span><span>每日零点更新</span></div>
       <p v-if="letter.teaser" class="v4-letter-ps">P.S. {{ letter.teaser }}</p>
     </div>
   </div>

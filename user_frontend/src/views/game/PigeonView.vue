@@ -195,10 +195,10 @@ const TYPE_LABELS: Record<string, string> = {
   all: '全部',
   system: '📢 营地广播',
   announcement: '📣 营地公告',
-  ticket: '🎫 工单信件',
+  ticket: '🆘 求救信号',
   subscription: '⚡ 能量到账',
-  media_seek: '🏮 求片进度',
-  exchange_code: '🎟️ 兑换通知',
+  media_seek: '🏮 许愿进度',
+  exchange_code: '🎟️ 兑换码通知',
 }
 
 /** 消息类型 → 站内跳转（v4 路径） */

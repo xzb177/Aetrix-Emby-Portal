@@ -42,7 +42,7 @@
                 :class="{ done: copiedField === 'code' }"
                 :disabled="!info?.code"
                 @click="copyText(info?.code || '', 'code')"
-              >{{ copiedField === 'code' ? '✓ 已复制！' : '📋 一键复制暗号' }}</button>
+              >{{ copiedField === 'code' ? '✓ 已复制！' : '📋 一键复制组队暗号' }}</button>
               <div class="pole"></div>
             </div>
             <div style="height:34px"></div>
@@ -59,10 +59,10 @@
         <section v-if="!loading && info?.config && !disabled" class="v4-sec">
           <div class="rule">
             📜 <b>组队规则</b><br>
-            朋友用你的暗号加入营地 —— 他得 <b>+{{ info.config.invitee_reward_points }}⚡</b> 见面礼，
+            朋友用你的组队暗号加入营地 —— 他得 <b>+{{ info.config.invitee_reward_points }}⚡</b> 见面礼，
             你得 <b>+{{ info.config.reward_points }}⚡</b> 带路费；
             他每次充能量，你再拿 <b>{{ info.config.rebate_percent }}%</b> 回扣。<br>
-            暗号终身有效，多带多得。
+            组队暗号终身有效，多带多得。
           </div>
         </section>
 
@@ -75,7 +75,7 @@
             <button class="v4-retry" @click="load">重试</button>
           </div>
           <div v-else-if="!records.length" class="v4-empty">
-            还没有伙伴同行<br>把暗号喊出去，第一个朋友在等你
+            还没有伙伴同行<br>把组队暗号喊出去，第一个朋友在等你
           </div>
           <div v-else class="mates">
             <div v-for="r in records" :key="r.id" class="mate">
