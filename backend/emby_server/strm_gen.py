@@ -84,9 +84,6 @@ CONFIG_PRUNE_MAX_RATIO = "strm_gen_prune_max_ratio"
 CONFIG_PRUNE_MAX_ABSOLUTE = "strm_gen_prune_max_absolute"
 # 生成时校验（块4 §6.3）：增量中新文件写盘前验一次 file_id
 CONFIG_VERIFY_NEW_IDS = "strm_gen_verify_new_ids"
-# Drive 快捷方式解析：开启后快捷方式跟随目标（指向目录按快捷方式名展开，
-# 指向视频文件按快捷方式名产出）。默认关=现状行为（不解析，直接跳过）。
-CONFIG_RESOLVE_SHORTCUTS = "strm_gen_resolve_shortcuts"
 # 同名同大小去重（2026-10-14 用户亲定规则）：待生成文件与已登记/已生成文件
 # 指向同一输出相对路径 stem 且字节大小相同时，视为重复只留一份、跳过生成；
 # 大小不同=合法多版本，走现有 -2 改名逻辑保留。默认开；关掉则完全回到
@@ -405,15 +402,6 @@ def verify_new_ids(db) -> bool:
     return _db_config(db, CONFIG_VERIFY_NEW_IDS, "true").strip().lower() in ("1", "true", "yes", "on")
 
 
-def resolve_shortcuts(db) -> bool:
-    """是否解析 Drive 快捷方式（跟随目标内容）。默认 false=现状行为（不解析）。
-
-    开启后：快捷方式→目录，按快捷方式名展开该目录；快捷方式→视频文件，
-    按快捷方式名产出 .strm。只做能力开关，默认关。
-    """
-    return _db_config(db, CONFIG_RESOLVE_SHORTCUTS, "false").strip().lower() in ("1", "true", "yes", "on")
-
-
 def dedupe_same_size_enabled(db) -> bool:
     """同名同大小去重：输出 stem 相同且字节大小相同只留一份。默认 true。
 
@@ -701,11 +689,7 @@ def _list_files_page(token: str, drive_id: str, query: str,
     params = {
         "q": query,
         "pageSize": PAGE_SIZE,
-        "fields": ("nextPageToken,files(id,name,mimeType,size,parents,trashed,"
-                   "shortcutDetails)"),  # 2026-10-14：快捷方式解析需要该字段
-        # （_resolve_shortcut_target 取 item["shortcutDetails"]["targetId"]；
-        # 缺字段时列举到的快捷方式会被静默跳过，对非快捷方式文件返回空，
-        # API 成本可忽略）。
+        "fields": "nextPageToken,files(id,name,mimeType,size,parents,trashed)",
         "supportsAllDrives": "true",
         "includeItemsFromAllDrives": "true",
     }
@@ -748,127 +732,20 @@ def _page_fetcher(drive_id: str):
             logger.info("strm_gen: Drive token 已刷新，继续列举")
             return _list_files_page(fresh, drive_id, query, page_token)
 
-    fetch.token_box = box  # 快捷方式解析（_resolve_shortcut_target）复用同一凭据
     return fetch
 
 
-#: Drive 快捷方式 MIME。现状（resolve_shortcuts=关）直接跳过。
-SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 #: Drive 目录 MIME
 FOLDER_MIME = "application/vnd.google-apps.folder"
-
-
-#: 快捷方式→快捷方式链最多跟随层数（R33 P1-1：有界跟随，防长链烧配额）
-SHORTCUT_MAX_DEPTH = 4
-
-
-def _resolve_shortcut_target(fetch, item: dict, drive_id: str = "") -> dict | None:
-    """解析 Drive 快捷方式 → 目标元数据（id/name/mimeType/driveId/parents/size）。
-
-    用列举同一凭据（fetch.token_box）调 files.get。有界多层跟随（最多
-    SHORTCUT_MAX_DEPTH 层）+ 环检测：快捷方式→快捷方式链一路跟到最终的
-    非快捷方式目标；成环/超深/失败/目标已删/无目标 → 返回 None（调用方
-    跳过，不抛）。
-
-    401（PermissionError）：用 _get_token(drive_id, force_refresh=True)
-    刷新一次凭据后重试；仍失败 → 记 warning 后返回 None（R33 P2-5：不再静默吞）。
-    """
-    try:
-        details = item.get("shortcutDetails") or {}
-        target_id = details.get("targetId", "")
-        if not target_id:
-            # 2026-10-14：列举 fields 漏 shortcutDetails 时这里恒为 None，
-            # 快捷方式会被静默跳过（问题曾导致个人盘两快捷方式零解析）。
-            # 明确记日志，免得下次再静默。
-            if not item.get("shortcutDetails"):
-                logger.warning(
-                    "strm_gen: 快捷方式无 shortcutDetails 字段（drive=%s id=%s），"
-                    "列举 fields 缺字段导致无法解析 target_id",
-                    drive_id, item.get("id", ""))
-            else:
-                logger.debug(
-                    "strm_gen: 快捷方式 targetId 为空，跳过（drive=%s id=%s）",
-                    drive_id, item.get("id", ""))
-            return None
-        box = getattr(fetch, "token_box", None) or {}
-        token = box.get("token")
-        if not token:
-            return None
-        dc = _drive_modules()
-
-        def _files_get(tid: str, tok: str) -> dict | None:
-            return dc._api_get(
-                "https://www.googleapis.com/drive/v3/files/" + tid, tok,
-                {"fields": "id,name,mimeType,driveId,parents,trashed,size,"
-                           "shortcutDetails",
-                 "supportsAllDrives": "true"})
-
-        seen = set()
-        sid = item.get("id", "")
-        if sid:
-            seen.add(sid)
-        cur = target_id
-        # 最多 SHORTCUT_MAX_DEPTH 次"跟随"（即 shortcut→shortcut 跳），对应
-        # 至多 SHORTCUT_MAX_DEPTH + 1 次 files.get。
-        for _ in range(SHORTCUT_MAX_DEPTH + 1):
-            if cur in seen:
-                logger.warning("strm_gen: 快捷方式链成环（drive=%s），放弃解析", drive_id)
-                return None
-            seen.add(cur)
-            try:
-                body = _files_get(cur, token)
-            except PermissionError:
-                # R33 P2-5：401 刷新一次凭据后重试一次
-                fresh = _get_token(drive_id, force_refresh=True) if drive_id else None
-                if not fresh:
-                    logger.warning("strm_gen: 快捷方式目标 401 且凭据刷新失败（drive=%s），跳过",
-                                   drive_id)
-                    return None
-                token = fresh
-                try:
-                    box["token"] = fresh  # 同步回 token_box，后续解析复用新凭据
-                except Exception:
-                    pass
-                try:
-                    body = _files_get(cur, token)
-                except Exception as exc:
-                    logger.warning("strm_gen: 快捷方式目标刷新后重试仍失败（drive=%s）：%s",
-                                   drive_id, exc)
-                    return None
-            if not body or body.get("trashed"):
-                return None
-            if body.get("mimeType") == SHORTCUT_MIME:
-                nxt = (body.get("shortcutDetails") or {}).get("targetId", "")
-                if not nxt:
-                    return None
-                cur = nxt
-                continue
-            return body
-        logger.warning("strm_gen: 快捷方式链超过 %d 层（drive=%s），放弃解析",
-                       SHORTCUT_MAX_DEPTH, drive_id)
-        return None
-    except Exception as exc:
-        # R33 P2-5：未知异常记 warning 后返回 None，不再静默
-        logger.warning("strm_gen: 快捷方式解析异常（drive=%s）：%s", drive_id, exc)
-        return None
-
-
-def _shortcut_file_matches(shortcut_name: str, target_name: str) -> bool:
-    """R33 P2-3：文件型快捷方式判型（subtree/flat 共用，与 flat 原口径统一）。
-
-    快捷方式名 / 目标名任一带视频扩展名即产出。
-    """
-    return is_video_path(shortcut_name) or is_video_path(_safe_name(target_name or ""))
 
 
 def _emit_video_paths(f: dict, emit_fid: str, emit_size, name: str,
                       dir_entries: dict, check_video_ext: bool = True
                       ) -> Iterator[tuple[str, str, int]]:
-    """R33 P2-1：共用文件产出逻辑（subtree 阶段二主循环 / 别名延迟列举引擎复用同一套）。
+    """共用文件产出逻辑（subtree 阶段二主循环用）。
 
     按 dir_entries 把一个文件条目展开成 (rel, fid, size)：原盘结构内碎片跳过；
-    check_video_ext=True 时非视频扩展名跳过（原生文件路径用；文件型快捷方式
-    已用 _shortcut_file_matches 判过型，传 False 避免对快捷方式名二次判型）。
+    check_video_ext=True 时非视频扩展名跳过。
     """
     for pid in f.get("parents") or []:
         for rroot, rp in dir_entries.get(pid) or ():
@@ -882,150 +759,6 @@ def _emit_video_paths(f: dict, emit_fid: str, emit_size, name: str,
             except (ValueError, TypeError):
                 size = 0
             yield rel, emit_fid, size
-
-
-def _expand_alias_folders(folder_children: dict, tid: str,
-                          alias_prefixes: list) -> tuple[dict, list]:
-    """R33 P2-1：本地展开别名子树（subtree 用阶段一 folder_children，flat 用 children）。
-
-    跳过规则与阶段一之二 / flat BFS 一致（隐藏/系统/原盘结构目录整棵跳过）。
-    返回 ({folder_id: [(root_prefix, rel_prefix)]}, [目录 id（BFS 顺序，含 tid）])。
-    """
-    alias_map: dict[str, list[tuple[str, str]]] = {tid: list(alias_prefixes)}
-    folders = [tid]
-    astack = [(tid, list(alias_prefixes))]
-    while astack:
-        afid, aprefixes = astack.pop()
-        for sub in folder_children.get(afid, []):
-            if sub.get("mimeType") != FOLDER_MIME:
-                continue
-            sname = _safe_name(sub.get("name", ""))
-            sfid = sub.get("id", "")
-            if not sname or not sfid:
-                continue
-            if (sname.startswith(".") or sname in SKIP_DIR_NAMES
-                    or disc_filter.is_disc_subtree_dir(sname)):
-                continue
-            sprefixes = [(rroot, rp + sname + "/") for rroot, rp in aprefixes]
-            alias_map.setdefault(sfid, []).extend(sprefixes)
-            astack.append((sfid, sprefixes))
-            folders.append(sfid)
-    return alias_map, folders
-
-
-def _expand_alias_folders_cross_drive(fetch, folder_children: dict, tid: str,
-                                      alias_prefixes: list) -> tuple[dict, list]:
-    """别名子树展开：跨盘目标回退（2026-10-14）。
-
-    同盘目标（tid 在 folder_children 里）走 _expand_alias_folders 本地快路径，
-    行为零变化；跨盘目标（快捷方式指向别人盘的目录，阶段一的本地 map 里没有
-    该 tid）走 Drive API BFS 递归展开——把发现的子目录追加回待列目录，跳过
-    规则与本地版一致（隐藏/系统/原盘结构目录整棵跳过）。
-
-    背景：R33 的别名机制只按同盘快捷方式设计——跨盘时本地展开只返回 [tid]
-    本身，list_files 只列目标根的直接子项，子目录在 _process_alias_queue 里
-    被 `if mt == FOLDER_MIME: continue` 丢弃，主循环的 _emit_video_paths 又因
-    dir_entries 里没有外部目录 id 而产出为空 → 跨盘快捷方式零入库。
-
-    返回 ({folder_id: [(root_prefix, rel_prefix)]}, [目录 id（BFS 顺序，含 tid）])。
-    """
-    if tid in folder_children:
-        return _expand_alias_folders(folder_children, tid, alias_prefixes)
-    alias_map: dict[str, list[tuple[str, str]]] = {tid: list(alias_prefixes)}
-    folders = [tid]
-    seen = {tid}  # 多 parent 目录只展开一次（防环）
-    astack = [(tid, list(alias_prefixes))]
-    while astack:
-        afid, aprefixes = astack.pop()
-        q = (f"mimeType='{FOLDER_MIME}' and trashed=false "
-             f"and '{afid}' in parents")
-        page_token = None
-        while True:
-            files, page_token = fetch(q, page_token)
-            for sub in files:
-                if sub.get("trashed"):
-                    continue
-                if sub.get("mimeType") != FOLDER_MIME:
-                    continue  # 防御：查询已限定目录，服务端偶发混入时忽略
-                sname = _safe_name(sub.get("name", ""))
-                sfid = sub.get("id", "")
-                if not sname or not sfid:
-                    continue
-                if (sname.startswith(".") or sname in SKIP_DIR_NAMES
-                        or disc_filter.is_disc_subtree_dir(sname)):
-                    continue
-                if sfid in seen:
-                    continue
-                seen.add(sfid)
-                sprefixes = [(rroot, rp + sname + "/") for rroot, rp in aprefixes]
-                alias_map.setdefault(sfid, []).extend(sprefixes)
-                astack.append((sfid, sprefixes))
-                folders.append(sfid)
-            if not page_token:
-                break
-    return alias_map, folders
-
-
-def _process_alias_queue(fetch, drive_id: str, resolve_shortcuts: bool,
-                         queue: list, expand_folders, list_files
-                         ) -> Iterator[tuple[str, str, int]]:
-    """R33 P2-1：别名延迟列举通用引擎（subtree/flat 共用）。
-
-    queue: [(tid, 别名前缀 [(root_prefix, rel_prefix)], 别名链)]，处理中可增长
-    （嵌套的快捷方式→目录按组合前缀入队，chain 做环检测）。
-    expand_folders(tid, alias_prefixes) -> (alias_map, folder_ids)：本地展开
-    别名子树；list_files(folder_ids) -> 条目迭代器：列出这些目录下的直接条目。
-    只产出别名前缀路径（原生路径已由主循环产出，互补无重复）；输出与 API
-    返回顺序无关（确定性）。
-    """
-    done: set[tuple] = set()
-    qi = 0
-    while qi < len(queue):
-        tid, alias_prefixes, chain = queue[qi]
-        qi += 1
-        key = (tid, tuple(alias_prefixes))
-        if key in done:
-            continue
-        done.add(key)
-        alias_map, folders = expand_folders(tid, alias_prefixes)
-        for f in list_files(folders):
-            if f.get("trashed"):
-                continue
-            mt = f.get("mimeType")
-            fid = f.get("id", "")
-            name = _safe_name(f.get("name", ""))
-            if not name or not fid:
-                continue
-            if mt == FOLDER_MIME:
-                continue
-            emit_fid, emit_size = fid, f.get("size")
-            is_shortcut_file = False
-            if mt == SHORTCUT_MIME and resolve_shortcuts:
-                target = _resolve_shortcut_target(fetch, f, drive_id)
-                if target is None:
-                    continue
-                if target.get("mimeType") == FOLDER_MIME:
-                    ntid = target.get("id", "")
-                    if (ntid and ntid not in chain
-                            and not name.startswith(".")
-                            and name not in SKIP_DIR_NAMES
-                            and not disc_filter.is_disc_subtree_dir(name)):
-                        nprefixes = []
-                        for pid in f.get("parents") or []:
-                            for rroot, rp in alias_map.get(pid) or ():
-                                nprefixes.append((rroot, rp + name + "/"))
-                        if nprefixes:
-                            queue.append((ntid, nprefixes, chain | {ntid}))
-                    continue
-                if not _shortcut_file_matches(name, target.get("name", "")):
-                    continue
-                emit_fid = target.get("id", "") or fid
-                emit_size = target.get("size")
-                is_shortcut_file = True
-            yield from _emit_video_paths(f, emit_fid, emit_size, name, alias_map,
-                                         check_video_ext=not is_shortcut_file)
-    if queue:
-        logger.info("strm_gen: drive=%s 别名延迟列举完成：%d 个别名", drive_id, len(queue))
 
 
 def _resolve_dir_id(fetch, drive_id: str, dir_path: str) -> Optional[str]:
@@ -1066,8 +799,7 @@ def _resolve_dir_id(fetch, drive_id: str, dir_path: str) -> Optional[str]:
 
 
 def iter_drive_videos(drive_id: str, dir_path, strict: bool = True,
-                      subtree_listing: bool = True,
-                      resolve_shortcuts: bool = False):
+                      subtree_listing: bool = True):
     """流式列出源目录下所有视频文件。
 
     dir_path: 单个目录（str，向后兼容）或目录列表（list[str]，两盘全挂）。
@@ -1103,11 +835,9 @@ def iter_drive_videos(drive_id: str, dir_path, strict: bool = True,
     else:
         dir_paths = [dir_path.strip().strip("/")] if (dir_path or "").strip().strip("/") else []
     if subtree_listing:
-        yield from _iter_drive_videos_subtree(drive_id, dir_paths, strict=strict,
-                                                  resolve_shortcuts=resolve_shortcuts)
+        yield from _iter_drive_videos_subtree(drive_id, dir_paths, strict=strict)
     else:
-        yield from _iter_drive_videos_flat(drive_id, dir_paths, strict=strict,
-                                               resolve_shortcuts=resolve_shortcuts)
+        yield from _iter_drive_videos_flat(drive_id, dir_paths, strict=strict)
 
 
 #: S1：子树列举阶段二每批 in parents 查询的目录数。
@@ -1116,8 +846,7 @@ def iter_drive_videos(drive_id: str, dir_path, strict: bool = True,
 SUBTREE_LIST_BATCH = 30
 
 
-def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = True,
-                                   resolve_shortcuts: bool = False):
+def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = True):
     """S1：两阶段子树限定列举（见 iter_drive_videos 文档）。
 
     多目录版：阶段一的目录树全盘只拉一次（drive 级复用）；阶段一之二从各源
@@ -1195,20 +924,9 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
                 continue
             stack.append((fid, rel_prefix + name + "/", root_prefix))
 
-    # 阶段二：按批查文件。快捷方式解析开时，指向目录的快捷方式目标会被
-    # 追加进 dir_ids 继续展开（dir_ids 在循环中可增长，故用 while）。
-    #
-    # R33 P2-1：别名映射不再"遇到就追加进 dir_entries"——旧逻辑的输出随 API
-    # 返回顺序漂移（先遇到快捷方式还是先列举目标目录，结果不一样）。阶段二
-    # 只把 (tid, 别名前缀, 别名链) 记入 pending_aliases；主循环结束后再统一
-    # 做一次追加的批量列举（_process_alias_queue），输出与 API 返回顺序无关。
-    # R33 P2-2：阶段二里遇到的目录项，若其任一 parent 是快捷方式展开中的目标，
-    # 则加入 dir_ids 继续展开（否则目标的子目录永不被列举）。
+    # 阶段二：按批查文件（目录项本身不产出，只收文件）。
     dir_ids = list(dir_entries.keys())
     seen_ids = set(dir_ids)
-    native_dir_ids = set(dir_ids)  # R33：阶段一结束时的原生目录快照（别名归属判定用）
-    shortcut_expanded_tids: set[str] = set()  # R33 P2-2：快捷方式目标展开中的目录
-    pending_aliases: list[tuple[str, list[tuple[str, str]], frozenset]] = []
     listed_files = 0
     bi = 0
     while bi < len(dir_ids):
@@ -1228,57 +946,8 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
                 if not name or not fid:
                     continue
                 if mt == FOLDER_MIME:
-                    # R33 P2-2：快捷方式目标的子目录继续展开（跳过规则与
-                    # 阶段一之二一致；目录项本身不产出，只收文件）
-                    if (fid not in seen_ids
-                            and any(p in shortcut_expanded_tids
-                                    for p in f.get("parents") or [])
-                            and not name.startswith(".")
-                            and name not in SKIP_DIR_NAMES
-                            and not disc_filter.is_disc_subtree_dir(name)):
-                        seen_ids.add(fid)
-                        dir_ids.append(fid)
-                        shortcut_expanded_tids.add(fid)
-                    continue
-                emit_fid, emit_size = fid, f.get("size")
-                is_shortcut_file = False
-                if mt == SHORTCUT_MIME and resolve_shortcuts:
-                    # 快捷方式解析（默认关）：跟随目标。关时走下面的普通文件
-                    # 路径（与旧实现一致：按快捷方式自己的名字判型）。
-                    target = _resolve_shortcut_target(fetch, f, drive_id)
-                    if target is None:
-                        continue
-                    if target.get("mimeType") == FOLDER_MIME:
-                        tid = target.get("id", "")
-                        if (tid and not name.startswith(".")
-                                and name not in SKIP_DIR_NAMES
-                                and not disc_filter.is_disc_subtree_dir(name)):
-                            # 别名前缀只从原生目录算（阶段一结束时 dir_entries
-                            # 已定，与 API 返回顺序无关）；别名展开中目录下的
-                            # 嵌套快捷方式由延迟列举按组合前缀处理，这里跳过。
-                            if any(p in native_dir_ids
-                                   for p in f.get("parents") or []):
-                                alias_entries = []
-                                for pid in f.get("parents") or []:
-                                    for rroot, rp in dir_entries.get(pid) or ():
-                                        alias_entries.append((rroot, rp + name + "/"))
-                                if alias_entries:
-                                    pending_aliases.append(
-                                        (tid, alias_entries, frozenset({tid})))
-                            if tid not in seen_ids:
-                                seen_ids.add(tid)
-                                dir_ids.append(tid)
-                                shortcut_expanded_tids.add(tid)
-                        continue
-                    # R33 P2-3：判型与 flat 统一——快捷方式名/目标名任一带
-                    # 视频扩展名即产出（旧 subtree 只看快捷方式名）。
-                    if not _shortcut_file_matches(name, target.get("name", "")):
-                        continue
-                    emit_fid = target.get("id", "") or fid
-                    emit_size = target.get("size")
-                    is_shortcut_file = True
-                yield from _emit_video_paths(f, emit_fid, emit_size, name, dir_entries,
-                                             check_video_ext=not is_shortcut_file)
+                    continue  # 目录项本身不产出，只收文件
+                yield from _emit_video_paths(f, fid, f.get("size"), name, dir_entries)
             listed_files += len(files)
             _set_progress(total=listed_folders + listed_files,
                           current=f"正在列举 Drive 文件…（已拉取 {listed_files} 个文件）")
@@ -1287,36 +956,8 @@ def _iter_drive_videos_subtree(drive_id: str, dir_paths: list, strict: bool = Tr
     logger.info("strm_gen: drive=%s 子树列举完成：%d 个目录、%d 个文件条目",
                 drive_id, len(dir_ids), listed_files)
 
-    # R33 P2-1：别名延迟列举。主循环结束后，对每个 pending 别名做一次追加的
-    # 批量列举（复用同一套文件处理逻辑），只产出别名前缀路径（原生路径已由
-    # 主循环产出，互补无重复），输出与 API 返回顺序无关（确定性）。
-    if pending_aliases and resolve_shortcuts:
-        def _subtree_list_files(folder_ids):
-            bi2 = 0
-            while bi2 < len(folder_ids):
-                batch2 = folder_ids[bi2:bi2 + SUBTREE_LIST_BATCH]
-                bi2 += SUBTREE_LIST_BATCH
-                cond2 = " or ".join(f"'{d}' in parents" for d in batch2)
-                q2 = f"trashed=false and ({cond2})"
-                page_token2 = None
-                while True:
-                    files2, page_token2 = fetch(q2, page_token2)
-                    for f2 in files2:
-                        yield f2
-                    if not page_token2:
-                        break
 
-        yield from _process_alias_queue(
-            fetch, drive_id, resolve_shortcuts, pending_aliases,
-            # 跨盘快捷方式目标：本地 folder_children 里没有 tid 时走 API BFS
-            # 回退展开（_expand_alias_folders_cross_drive），否则零入库。
-            lambda tid, prefixes: _expand_alias_folders_cross_drive(
-                fetch, folder_children, tid, prefixes),
-            _subtree_list_files)
-
-
-def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True,
-                                resolve_shortcuts: bool = False):
+def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True):
     """旧的扁平全量拉取实现（S1 之前的主路径）。
 
     保留作应急回滚（strm_gen_subtree_listing=0 时走这里）。
@@ -1362,21 +1003,13 @@ def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True,
     # 2. 本地 BFS：从各源目录（或网盘根）逐层展开，只取源目录子树。
     #    网盘根相对路径前缀：dir_path 本身（与旧实现一致，状态键保持兼容）。
     #
-    #    R33 P1-1：seen_ids 防快捷方式成环。快捷方式 A↔B 互指或指向祖先目录
-    #    时，旧代码无 seen 集合会在 while 里无限打转、每轮还烧 1 次 files.get
-    #    配额。原生目录与快捷方式目标共用同一个 seen_ids（id 全局唯一）：
-    #    原生目录推送时标记（不查——Drive 原生父子关系是 DAG，无环；且多 parent
-    #    目录按"每个 parent 链各展开一次"语义需要重复展开），快捷方式目标
-    #    push 前查 seen（`if tid in seen_ids: 跳过`，与 subtree 的 seen 语义同构）。
-    #    R33 P2-1：快捷方式→目录已展开过时不再 push（防环），而是记入
-    #    pending_aliases，主循环结束后用本地 children 树延迟补别名路径——
-    #    与 subtree 的别名延迟列举同构，两条路径产出相同的 .strm 集合。
-    #    栈帧：(folder_id, rel_prefix, root_prefix, alias_chain)，alias_chain
-    #    为该路径上经由快捷方式展开过的目标 id 集合（环检测）。
-    stack: list[tuple[str, str, str, frozenset]] = []
+    #    栈帧：(folder_id, rel_prefix, root_prefix)。
+    #    seen_ids：原生目录推送时标记（Drive 原生父子关系是 DAG，无环；
+    #    多 parent 目录按"每个 parent 链各展开一次"语义需要重复展开）。
+    stack: list[tuple[str, str, str]] = []
     for norm, did in resolved:
         if norm:
-            stack.append((did, "", norm + "/", frozenset()))
+            stack.append((did, "", norm + "/"))
         else:
             # 共享盘根目录：'root' 别名只对个人盘有效，共享盘顶层用 drive_id。
             # 原来无条件用 'root' in parents，共享盘配空源目录时列举结果恒为空
@@ -1386,12 +1019,11 @@ def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True,
                 is_personal = dc._is_personal_drive_key(drive_id)
             except Exception:
                 is_personal = False
-            stack.append(("root" if is_personal else drive_id, "", "", frozenset()))
-    seen_ids: set[str] = {fid for fid, _, _, _ in stack}
-    pending_aliases: list[tuple[str, list[tuple[str, str]], frozenset]] = []
+            stack.append(("root" if is_personal else drive_id, "", ""))
+    seen_ids: set[str] = {fid for fid, _, _ in stack}
 
     while stack:
-        folder_id, rel_prefix, root_prefix, chain = stack.pop()
+        folder_id, rel_prefix, root_prefix = stack.pop()
         for f in children.get(folder_id, []):
             name = _safe_name(f.get("name", ""))
             fid = f.get("id", "")
@@ -1404,49 +1036,10 @@ def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True,
                     # 原盘结构目录整棵跳过（同上）
                     continue
                 seen_ids.add(fid)
-                stack.append((fid, rel_prefix + name + "/", root_prefix, chain))
-            elif mt == SHORTCUT_MIME and resolve_shortcuts:
-                # 快捷方式解析（默认关）：跟随目标。关时走 else 分支当普通条目
-                # 处理（快捷方式名无视频扩展名 → 自然跳过 = 现状行为）。
-                target = _resolve_shortcut_target(fetch, f, drive_id)
-                if target is None:
-                    continue
-                tmt = target.get("mimeType")
-                if tmt == FOLDER_MIME:
-                    tid = target.get("id", "")
-                    if (tid and tid not in chain
-                            and not name.startswith(".")
-                            and name not in SKIP_DIR_NAMES
-                            and not disc_filter.is_disc_subtree_dir(name)):
-                        if tid in seen_ids:
-                            # 目标已展开过（原生或别的别名）：延迟补一份别名路径，
-                            # 不再 push（防环；输出与 API 返回顺序无关）。
-                            pending_aliases.append(
-                                (tid, [(root_prefix, rel_prefix + name + "/")],
-                                 chain | {tid}))
-                        else:
-                            seen_ids.add(tid)
-                            stack.append((tid, rel_prefix + name + "/", root_prefix,
-                                          chain | {tid}))
-                    elif tid and tid in chain:
-                        logger.debug("strm_gen: 快捷方式成环已跳过（drive=%s）：%r",
-                                     drive_id, name)
-                elif _shortcut_file_matches(name, target.get("name", "")):
-                    # 指向文件的快捷方式：按快捷方式名产出，取目标的 id/size
-                    #（R33 P2-3：快捷方式名/目标名任一带视频扩展名即产出，
-                    # 与 subtree 统一；旧 flat 已是该口径）
-                    tid = target.get("id", "")
-                    if not tid:
-                        continue
-                    rel = root_prefix + rel_prefix + name
-                    if disc_filter.is_disc_subtree_rel(rel):
-                        continue
-                    try:
-                        size = int(target.get("size") or 0)
-                    except (ValueError, TypeError):
-                        size = 0
-                    yield rel, tid, size
+                stack.append((fid, rel_prefix + name + "/", root_prefix))
             else:
+                # 快捷方式条目：当普通条目处理——无视频扩展名则自然跳过
+                #（功能已取消，不跟随目标）。
                 rel = root_prefix + rel_prefix + name
                 if disc_filter.is_disc_subtree_rel(rel):
                     continue  # 原盘结构内碎片：扫描器不入库，生成器不产 .strm
@@ -1457,15 +1050,6 @@ def _iter_drive_videos_flat(drive_id: str, dir_paths: list, strict: bool = True,
                 except (ValueError, TypeError):
                     size = 0
                 yield rel, fid, size
-
-    # R33 P2-1：延迟别名展开（本地 children 树，零新增 API 调用；嵌套快捷方式
-    # 由引擎按组合前缀继续入队，chain 环检测）。只产出别名前缀路径。
-    if pending_aliases and resolve_shortcuts:
-        yield from _process_alias_queue(
-            fetch, drive_id, resolve_shortcuts, pending_aliases,
-            lambda tid, prefixes: _expand_alias_folders(children, tid, prefixes),
-            lambda folder_ids: (
-                f for ffid in folder_ids for f in children.get(ffid, [])))
 
 
 # ---------------------------------------------------------------------------

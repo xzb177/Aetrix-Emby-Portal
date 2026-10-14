@@ -1,8 +1,7 @@
-"""2026-10-14 补跑收尾三修复的回归测试。
+"""2026-10-14 补跑收尾三修复的回归测试（fix1 的快捷方式解析功能
+2026-10-14 08:28 经用户拍板整体取消，相关代码与测试已删除；本文件保留
+fix2/fix3 的 verify 口径回归测试，以及 fields 选择器的精确值断言）。
 
-fix1（P0）：_list_files_page 的 files.list 必须带 shortcutDetails 字段，
-            否则 _resolve_shortcut_target 永远拿到空、快捷方式被静默跳过
-            （个人盘两快捷方式零解析的根因）。
 fix2（P1）：verify 的"缺失"判定豁免本轮去重跳过的文件
             （deduped 故意不登记状态行，不是生成漏了）。
 fix3（P1）：verify 的 missing_count 与 breakdown 同源
@@ -10,7 +9,6 @@ fix3（P1）：verify 的 missing_count 与 breakdown 同源
 
 不碰网络：Drive API 部分全部 monkeypatch 隔离。
 """
-import logging
 import os
 import sys
 
@@ -19,72 +17,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from backend.emby_server import strm_gen as sg
 
 
-class TestShortcutFieldsPresent:
-    def _fetch(self):
-        def fetch(query, page_token=None):
-            raise AssertionError("不应走到 files.list")
-        fetch.token_box = {"token": "tok"}
-        return fetch
-
-    def test_list_fields_include_shortcut_details(self, monkeypatch):
-        # files.list 必须带 shortcutDetails：否则列举到的快捷方式解析恒为 None
-        captured = {}
-
-        def fake_api_get(url, token, params):
-            captured["params"] = params
-            return {"files": [], "nextPageToken": None}
-
-        from types import SimpleNamespace
-        monkeypatch.setattr(
-            sg, "_drive_modules",
-            lambda: SimpleNamespace(_api_get=fake_api_get,
-                                    _is_personal_drive_key=lambda did: False))
-        sg._list_files_page("tok", "drv", "q")
-        fields = captured["params"]["fields"]
-        assert "shortcutDetails" in fields
-
-    def test_missing_shortcut_details_warns_and_none(self, monkeypatch, caplog):
-        # 列举 item 没有 shortcutDetails（旧 fields 的病症）→ None + warning
-        from types import SimpleNamespace
-
-        def no_api(u, t, p):
-            raise AssertionError("target 未知，不应调 files.get")
-
-        monkeypatch.setattr(
-            sg, "_drive_modules",
-            lambda: SimpleNamespace(_api_get=no_api,
-                                    _is_personal_drive_key=lambda did: False))
-        item = {"id": "scX", "mimeType": sg.SHORTCUT_MIME, "name": "剧集"}
-        with caplog.at_level(logging.WARNING):
-            assert sg._resolve_shortcut_target(self._fetch(), item, "did") is None
-        assert any("shortcutDetails" in r.message for r in caplog.records), \
-            [r.message for r in caplog.records]
-
-    def test_shortcut_details_present_resolves(self, monkeypatch):
-        # 有 shortcutDetails → 解析出 target_id（不受 warning 逻辑影响）
-        from types import SimpleNamespace
-        api_map = {
-            "fT": {"id": "fT", "name": "t.mkv", "mimeType": None,
-                   "trashed": False, "size": "7"},
-        }
-        monkeypatch.setattr(
-            sg, "_drive_modules",
-            lambda: SimpleNamespace(_api_get=lambda u, t, p: api_map[u.rsplit("/", 1)[-1]],
-                                    _is_personal_drive_key=lambda did: False))
-        item = {"id": "sc1", "shortcutDetails": {"targetId": "fT"}}
-        body = sg._resolve_shortcut_target(self._fetch(), item, "did")
-        assert body and body["id"] == "fT"
-
-
 class TestShortcutFieldsSelectorExact:
     """2026-10-14 hotfix：#841 把 fields 选择器的 files( 右括号弄丢了，
     拼出的 fields 值以未闭合的 `files(` 结尾，Drive API 对不平衡选择器
     直接 400 Bad Request —— 所有生成轮次全坏。#841 的 8 个测试只断言了
     `"shortcutDetails" in fields`（包含即过），从没断言过选择器本身的语法。
-    本测试断言发出参数的 fields 字符串精确值。"""
+    本测试断言发出参数的 fields 字符串精确值。2026-10-14 08:28 快捷方式解析
+    功能整体取消后，fields 恢复 #841 之前的确切值（不带 shortcutDetails）。"""
 
-    EXPECTED = ("nextPageToken,"
-                "files(id,name,mimeType,size,parents,trashed,shortcutDetails)")
+    EXPECTED = "nextPageToken,files(id,name,mimeType,size,parents,trashed)"
 
     def test_fields_selector_is_balanced_drive_selector(self, monkeypatch):
         from types import SimpleNamespace

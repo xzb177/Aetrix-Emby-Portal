@@ -163,36 +163,14 @@ class DriveChangesLister(SourceLister):
             self._save_token(self._new_token)
             self._new_token = None
 
-    def _resolve_shortcuts_cfg(self) -> bool:
-        """读生成器快捷方式解析开关（默认关）。"""
-        try:
-            from backend.emby_server import strm_gen as sg
-            db = self._db()
-            try:
-                return sg.resolve_shortcuts(db)
-            finally:
-                db.close()
-        except Exception:
-            return False
-
     def iter_videos(self, incremental: bool = True) -> Iterator[VideoItem | Tombstone]:
-        # R33 P1-2：增量路径不感知 resolve_shortcuts 开关——开关开后全量产出
-        # 别名 .strm，但增量轮次对快捷方式零处理，会静默漏掉目标下新增内容。
-        # 开关开时直接降级走全量分支（与 not incremental 同路），保证别名不丢。
-        # 开关默认关，无回归。
-        if self._resolve_shortcuts_cfg():
-            if incremental:
-                logger.info("strm_source: drive=%s 快捷方式解析开，增量降级为全量列举",
-                            self.drive_id)
-            incremental = False
         if not incremental:
             # 全量：回退到现有的 files.list 实现（多目录：一次扁平拉取 + 本地多前缀过滤）
             self.used_incremental_path = False
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
                 self.drive_id, self.dir_paths, strict=self.strict_dir,
-                subtree_listing=self.subtree_listing,
-                resolve_shortcuts=self._resolve_shortcuts_cfg())
+                subtree_listing=self.subtree_listing)
             return
 
         from backend.emby_server import drive_changes as dc
@@ -209,8 +187,7 @@ class DriveChangesLister(SourceLister):
             from backend.emby_server import strm_gen
             yield from strm_gen.iter_drive_videos(
                 self.drive_id, self.dir_paths, strict=self.strict_dir,
-                subtree_listing=self.subtree_listing,
-                resolve_shortcuts=self._resolve_shortcuts_cfg())
+                subtree_listing=self.subtree_listing)
             return
 
         # 增量：拉 changes（2026-10-12 起不再吞错：API 失败直接抛，
