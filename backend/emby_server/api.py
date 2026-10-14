@@ -2432,12 +2432,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
 @json_route(emby_router, "/emby/Users/{user_id}/Items/Resume", "/Users/{user_id}/Items/Resume")
 def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
-    """继续观看：只看电影/剧集，单集不单独出现在首页。
-
-    Emby 客户端首页的「继续观看」按电影/剧集聚合续播；单集属于剧集详情页的内容。
-    这里原先只看「有进度且未播完」，没按 item_type 过滤——于是**任何一条**有
-    播放进度的单集都会作为一个独立条目混进首页，主人那边就看到了「第 1 集」这种卡片。
-    与 ``/Items/Latest`` 同一口径：只保留 movie / series。
+    """继续观看：进度只写在单集行上，剧集行永远没有进度；如果直接过滤掉
+    episode，剧集的续看永远为空（功能性 bug）。但用户要求 Resume 不出现
+    单集卡片（iOS 首页「第 1 集」投诉），所以这里把单集按 series_id 折叠成
+    所属剧集返回——官方 Resume 返回的是单集，这是刻意的产品折中。
     """
     # G1-P1-2：Limit 钳制 200（原无上界）
     limit = qlimit(request.query_params, default=12)
@@ -2449,7 +2447,7 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                 em.UserMediaData.user_id == user.id,
                 em.UserMediaData.playback_position_ticks > 0,
                 em.UserMediaData.played == False,  # noqa: E712
-                em.MediaItem.item_type.in_(["movie", "series"]),
+                em.MediaItem.item_type.in_(["movie", "series", "episode"]),
                 em.MediaItem.is_hidden == False,  # noqa: E712
             ),
             _library_scope(db, user),
@@ -2459,7 +2457,40 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
         .all()
     )
     base = _base_url(request)
-    items = [i for _umd, i in rows]
+
+    # 单集折叠成剧集：进度只在单集行上，series 行永远没有进度；
+    # 直接返回单集会在首页出现「第 1 集」卡片（用户投诉），故按 series_id
+    # 折叠成所属剧集。同一部剧只保留最近一次播放的（rows 已按 last_played_at 倒序）。
+    sids = {i.series_id for _umd, i in rows if i.item_type == "episode" and i.series_id}
+    series_map = {}
+    if sids:
+        series_items = _scope_items(
+            db.query(em.MediaItem).filter(
+                em.MediaItem.id.in_(sids),
+                em.MediaItem.is_hidden == False,  # noqa: E712
+            ),
+            _library_scope(db, user),
+        ).all()
+        series_map = {s.id: s for s in series_items}
+
+    items = []
+    seen_series = set()
+    for _umd, i in rows:
+        if i.item_type == "episode":
+            sid = i.series_id
+            if not sid or sid in seen_series:
+                continue
+            series_item = series_map.get(sid)
+            if series_item is None:
+                continue
+            seen_series.add(sid)
+            items.append(series_item)
+        else:
+            if i.item_type == "series":
+                if i.id in seen_series:
+                    continue
+                seen_series.add(i.id)
+            items.append(i)
     # 去重：同一部剧/电影（同 tmdb_id）在不同路径有多条记录时只保留一条
     items = dedup_lib.deduplicate_items(items)
     _prefetch_list_data(db, user.id, items)
@@ -2525,7 +2556,9 @@ def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = De
         "SeriesCount": int(by_type.get("series", 0)),
         "EpisodeCount": int(by_type.get("episode", 0)),
         "ItemCount": int(_scope_items(
-            db.query(func.count()).select_from(em.MediaItem), allowed
+            db.query(func.count()).select_from(em.MediaItem)
+            .filter(em.MediaItem.is_hidden == False),  # noqa: E712
+            allowed,
         ).scalar() or 0),
         "AlbumCount": 0, "SongCount": 0, "ArtistCount": 0, "AlbumArtistCount": 0,
         "MusicVideoCount": 0, "TrailerCount": 0, "BoxSetCount": 0, "BookCount": 0,
