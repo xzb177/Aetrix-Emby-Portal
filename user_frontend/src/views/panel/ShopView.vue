@@ -564,6 +564,7 @@ onMounted(() => {
 async function loadAll() {
   loading.value = true
   pkgsFailed.value = false
+  ratioFailed.value = false
   plansFailed.value = false
   inviteFailed.value = false
   inviteErrMsg.value = ''
