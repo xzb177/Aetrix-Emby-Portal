@@ -1873,6 +1873,16 @@ def init_db():
     from backend import models  # 导入所有模型
     from backend.emby_server import models as emby_models  # 自建 Emby 服务器模型
     with _acquire_migrate_lock():
+        # trigram GIN 索引（r7）依赖 pg_trgm 扩展：create_all 会直接建模型里声明的
+        # 四个 gin_trgm_ops 索引，扩展没装就报 UndefinedObject（CI 干净库实锤）。
+        # IF NOT EXISTS 幂等；pg_trgm 自 PG13 起是 trusted 扩展，库属主有 CREATE
+        # 权限就能装。装不上也不拦启动（与 _ensure_legacy_indexes 同一口径）。
+        if engine.dialect.name == "postgresql":
+            try:
+                with engine.begin() as _conn:
+                    _conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            except Exception as _exc:  # noqa: BLE001
+                print(f"  ⚠️ pg_trgm 扩展安装跳过: {_exc}")
         Base.metadata.create_all(bind=engine)
         _auto_migrate()
         _ensure_admin_roles()
