@@ -993,6 +993,168 @@ def get_watch_stats(request_user: models.WebUser = Depends(get_admin_or_emby_use
     }
 
 
+@user_emby_router.get("/leaderboard")
+def get_leaderboard(
+    board: str,
+    period: str = "day",
+    request_user: models.WebUser = Depends(get_admin_or_emby_user),
+    db: Session = Depends(get_db),
+):
+    """探险世界 · 观影碑榜单。
+
+    口径：hot=热播榜（窗口内开播次数，剧集按整剧聚合）；duration=观影时长榜
+    （窗口内每用户观影总时长秒数，只统计允许上榜的用户）。
+    period：day=日榜（今天自然日），week=周榜（本周自然周，周一起算），按 Asia/Shanghai。
+    """
+    if board not in ("hot", "duration"):
+        raise HTTPException(status_code=400, detail="board 只能是 hot 或 duration")
+    if period not in ("day", "week"):
+        raise HTTPException(status_code=400, detail="period 只能是 day 或 week")
+
+    # 时区口径与 #910 问候语保持一致，统一按 Asia/Shanghai 计算自然日 / 自然周
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Asia/Shanghai")
+    now = datetime.now(tz)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "week":
+        # 本周一 0 点（weekday()：周一 = 0）
+        window_start = today_start - timedelta(days=today_start.weekday())
+    else:
+        window_start = today_start
+
+    # 服务器存的是 naive 时间，假定其本身就是 Asia/Shanghai 本地时间，直接与窗口起点比较
+    window_start_naive = window_start.replace(tzinfo=None)
+
+    if board == "hot":
+        # 热播榜：一次取出窗口内的 (user_id, item_id)，Python 侧聚合（表不大，不写复杂 SQL）
+        rows = (
+            db.query(em.PlaybackSession.user_id, em.PlaybackSession.item_id)
+            .filter(em.PlaybackSession.start_time >= window_start_naive)
+            .all()
+        )
+
+        raw_item_ids = {iid for _, iid in rows if iid is not None}
+
+        # 被播放的条目本身必须未删除、未合并，并映射到聚合键（剧集 → series_id，电影/剧本体 → 自身 id）
+        key_by_item: dict[int, int] = {}
+        if raw_item_ids:
+            key_by_item = {
+                mid: (sid or mid)
+                for mid, sid in db.query(em.MediaItem.id, em.MediaItem.series_id)
+                .filter(
+                    em.MediaItem.id.in_(list(raw_item_ids)),
+                    em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None),
+                )
+                .all()
+            }
+
+        # 聚合键对应的剧 / 片实体同样必须未删除、未合并
+        agg_keys = set(key_by_item.values())
+        info_map: dict[int, tuple] = {}
+        if agg_keys:
+            info_map = {
+                mid: (name, item_type)
+                for mid, name, item_type in db.query(
+                    em.MediaItem.id, em.MediaItem.name, em.MediaItem.item_type
+                )
+                .filter(
+                    em.MediaItem.id.in_(list(agg_keys)),
+                    em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None),
+                )
+                .all()
+            }
+
+        # 榜 + 每用户总播放次数（算我自己的排名用）
+        counts: dict[int, int] = {}
+        user_totals: dict[int, int] = {}
+        for uid, iid in rows:
+            key = key_by_item.get(iid)
+            if key is None or key not in info_map:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+            if uid is not None:
+                user_totals[uid] = user_totals.get(uid, 0) + 1
+
+        top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
+        items = [
+            {
+                "item_id": key,
+                "name": info_map[key][0],
+                "item_type": info_map[key][1],
+                "count": cnt,
+            }
+            for key, cnt in top
+        ]
+        my_total = user_totals.get(request_user.id, 0)
+        my_rank = 1 + sum(1 for t in user_totals.values() if t > my_total) if my_total else None
+    else:
+        # 观影时长榜：时长 = (ended_at or last_update_at) − start_time；复播虚增已在
+        # compat_routes 复活分支重置 start_time 处修掉（复播即新一轮）。
+        sessions = (
+            db.query(em.PlaybackSession)
+            .filter(em.PlaybackSession.start_time >= window_start_naive)
+            .all()
+        )
+        totals: dict[int, float] = {}
+        for s in sessions:
+            if s.user_id is None or not s.start_time:
+                continue
+            end = s.ended_at or s.last_update_at or s.start_time
+            secs = (end - s.start_time).total_seconds()
+            if secs < 0:
+                continue  # 脏数据（时钟回拨等）不计入
+            totals[s.user_id] = totals.get(s.user_id, 0.0) + secs
+
+        # 只统计允许上榜的用户；isnot(False) 让 NULL 也视为允许（老库补列前兼容）
+        shown: set[int] = set()
+        names: dict[int, str] = {}
+        if totals:
+            uids = list(totals.keys())
+            shown = {
+                uid
+                for (uid,) in db.query(models.WebUser.id)
+                .filter(
+                    models.WebUser.id.in_(uids),
+                    models.WebUser.show_on_leaderboard.isnot(False),
+                )
+                .all()
+            }
+            names = {
+                uid: name
+                for uid, name in db.query(models.WebUser.id, models.WebUser.username)
+                .filter(models.WebUser.id.in_(uids))
+                .all()
+            }
+
+        ranked = sorted(
+            ((uid, sec) for uid, sec in totals.items() if uid in shown),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        items = [
+            {"user_id": uid, "nickname": names.get(uid, ""), "seconds": int(sec)}
+            for uid, sec in ranked[:20]
+        ]
+        # 我自己即使关了上榜，也返回真实排名（只给自己看）
+        my_total = totals.get(request_user.id, 0)
+        my_rank = (
+            1 + sum(1 for _uid, sec in ranked if sec > my_total)
+            if my_total
+            else None
+        )
+
+    return {
+        "board": board,
+        "period": period,
+        "window_start": window_start_naive.isoformat(),
+        "items": items,
+        "my_rank": my_rank,
+    }
+
+
 @user_emby_router.get("/sessions")
 def get_my_sessions(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):

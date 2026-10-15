@@ -26,7 +26,7 @@ import {
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
-  UserCog, Activity, Heart, Medal, HardDrive,
+  UserCog, Activity, Heart, Medal, HardDrive, MessageSquareText,
   Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
@@ -164,6 +164,7 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/media-seek', label: '求片管理', icon: MessageSquareDashed },
       { path: '/announcements', label: '公告管理', icon: Megaphone },
+      { path: '/wall-posts', label: '留言墙管理', icon: MessageSquareText },
       { path: '/tickets', label: '工单', icon: Ticket },
     ],
   },

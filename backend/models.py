@@ -275,6 +275,8 @@ class WebUser(Base):
     welfare_expires_at = Column(DateTime, nullable=True)
     welfare_grant_channel = Column(String(20), nullable=True)
     welfare_granted_at = Column(DateTime, nullable=True)
+    # 观影碑时长榜隐私：True=允许上榜（默认），False=不上榜
+    show_on_leaderboard = Column(Boolean, default=True, nullable=False, server_default="1")
     last_login_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
