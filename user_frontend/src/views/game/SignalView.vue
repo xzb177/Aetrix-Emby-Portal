@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('signal') }}</span>
-        <h1>📡 求救信号</h1>
+        <h1><span aria-hidden="true">📡</span> 求救信号</h1>
         <p>探险途中遇险？摇响信号机，营地马上派救援队。</p>
       </header>
 
@@ -19,9 +19,24 @@
 
       <!-- 发信号 -->
       <section class="v4-sec">
-        <div class="v4-sec-title">⚠️ 遇险类型</div>
+        <div class="v4-sec-title"><span aria-hidden="true">⚠️</span> 遇险类型</div>
         <div class="v4-sec-sub">先选一种，救援队好带对工具</div>
-        <div class="types" role="radiogroup" aria-label="遇险类型">
+        <div
+          class="types"
+          role="radiogroup"
+          aria-label="遇险类型"
+          @keydown="(e) => {
+            const keys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+            if (!keys.includes(e.key)) return;
+            e.preventDefault();
+            const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1;
+            const items = Array.from((e.currentTarget as HTMLElement).children) as HTMLButtonElement[];
+            const i = items.indexOf(e.target as HTMLButtonElement);
+            const n = (i + step + items.length) % items.length;
+            form.category = categoryOptions[n].value;
+            items[n]?.focus();
+          }"
+        >
           <button
             v-for="c in categoryOptions"
             :key="c.value"
@@ -29,38 +44,41 @@
             :class="{ on: form.category === c.value }"
             role="radio"
             :aria-checked="form.category === c.value"
+            :tabindex="(form.category || categoryOptions[0]?.value) === c.value ? 0 : -1"
             @click="form.category = c.value"
           >
-            <span class="ic">{{ c.icon }}</span>
+            <span class="ic" aria-hidden="true">{{ c.icon }}</span>
             <span class="lbl">{{ c.label }}</span>
           </button>
         </div>
 
-        <div class="v4-sec-title">✉️ 一句话说清险情</div>
+        <div class="v4-sec-title"><span aria-hidden="true">✉️</span> 一句话说清险情</div>
         <div class="v4-sec-sub">让救援队一眼看懂哪里遇了险</div>
         <input
           v-model="form.title"
           class="field"
           type="text"
           placeholder="比如：《一念永恒》第 3 集播放卡住"
+          aria-label="一句话说清险情"
           maxlength="100"
         />
 
-        <div class="v4-sec-title">✉️ 求救信</div>
+        <div class="v4-sec-title"><span aria-hidden="true">✉️</span> 求救信</div>
         <div class="v4-sec-sub">写清楚在哪儿遇的险，发生了什么</div>
         <textarea
           v-model="form.message"
           placeholder="比如：《一念永恒》看到第 3 集，转圈半天出不来…"
+          aria-label="求救信"
           maxlength="1000"
         ></textarea>
 
         <button class="send-btn" :disabled="sending" @click="sendSOS">
-          {{ sending ? '信号发出中' : '📡 发出求救信号' }}
+          <span v-if="!sending" aria-hidden="true">📡</span>{{ sending ? '信号发出中' : ' 发出求救信号' }}
         </button>
 
         <!-- 摩斯电码发送动画 -->
         <div v-if="morseShow" class="morse-panel" role="status" aria-live="polite">
-          <div class="morse-title">📡 正在发送摩斯电码…</div>
+          <div class="morse-title"><span aria-hidden="true">📡</span> 正在发送摩斯电码…</div>
           <div class="morse-code">
             <div
               v-for="(s, i) in morseSyms"
@@ -75,7 +93,7 @@
 
       <!-- 事故记录 -->
       <section class="v4-sec">
-        <div class="v4-sec-title">📋 探险事故记录</div>
+        <div class="v4-sec-title"><span aria-hidden="true">📋</span> 探险事故记录</div>
         <div class="v4-sec-sub">你发过的求救信号，点开看救援进度</div>
 
         <div v-if="loading">
@@ -97,17 +115,17 @@
             :class="{ open: expandedId === t.id }"
           >
             <button class="card-head" @click="toggleDetail(t)" :aria-expanded="expandedId === t.id">
-              <span class="card-title">{{ categoryIcon(t.category) }} {{ t.title }}</span>
-              <span class="chip" :class="statusChip(t.status)">{{ statusLabel(t.status) }}</span>
+              <span class="card-title"><span aria-hidden="true">{{ categoryIcon(t.category) }}</span> {{ t.title }}</span>
+              <span class="chip" :class="statusChip(t.status)"><span v-if="statusIcon(t.status)" aria-hidden="true">{{ statusIcon(t.status) }} </span>{{ statusLabel(t.status) }}</span>
             </button>
-            <div class="card-meta">{{ categoryLabel(t.category) }} · {{ formatDate(t.updated_at) }} 发出</div>
+            <div class="card-meta">{{ categoryLabel(t.category) }} · 最近更新 {{ formatDate(t.updated_at) }}</div>
 
             <div v-if="expandedId === t.id" class="card-detail">
               <div v-if="messagesLoading">
                 <div v-for="i in 3" :key="i" class="v4-skeleton" style="height:56px;margin-bottom:8px"></div>
               </div>
-              <div v-else-if="messagesError" class="v4-err">对话加载失败：{{ messagesError }}<br><button class="v4-retry" @click="() => selectedTicket && fetchMessages(selectedTicket.id)">重试</button></div>
-              <div v-else ref="messagesEl" class="messages-list" tabindex="0" aria-label="对话记录">
+              <div v-else-if="messagesError" class="v4-err">对话加载失败：{{ /network|failed to fetch|fetch failed|offline|断网/i.test(String(messagesError)) ? '网络好像断了，检查一下再重试' : /timeout|timed out|超时/i.test(String(messagesError)) ? '营地那边没回应，稍后再试' : '营地那边出了点状况，稍后再试' }}<br><button class="v4-retry" @click="() => selectedTicket && fetchMessages(selectedTicket.id)">重试</button></div>
+              <div v-else ref="messagesEl" class="messages-list" tabindex="0" role="log" aria-label="对话记录">
                 <p v-if="!messages.length" class="messages-empty">还没有对话内容，营地马上就来认领</p>
                 <div
                   v-for="msg in messages"
@@ -124,14 +142,15 @@
                 </div>
               </div>
 
-              <div v-if="selectedTicket?.status !== 'closed'" class="card-actions">
+              <div v-if="t.status !== 'closed'" class="card-actions">
                 <div class="reply-box">
                   <input
                     v-model="replyMessage"
                     type="text"
                     maxlength="2000"
                     placeholder="给营地回句话…"
-                    @keyup.enter="replyTicket"
+                    aria-label="回复营地"
+                    @keyup.enter="(e) => !e.isComposing && replyTicket()"
                   />
                   <button
                     class="btn-send"
@@ -141,7 +160,7 @@
                     :aria-label="replying ? '发送中' : '发送回复'"
                   >➤</button>
                 </div>
-                <button class="close-record" @click="closeTicket">🏁 关闭记录</button>
+                <button class="close-record" @click="closeTicket"><span aria-hidden="true">🏁</span> 关闭记录</button>
               </div>
               <p v-else class="closed-hint">这条记录已关闭 · 感谢你的信任，继续探险吧 🧭</p>
             </div>
@@ -191,11 +210,14 @@ const categoryOptions = [
   { value: 'other', icon: '❓', label: '其他险情' },
 ]
 
-const statusConfig: Record<string, { chip: string; label: string }> = {
-  open: { chip: 'blue', label: '📡 已发出' },
-  pending: { chip: 'gold', label: '🛟 救援中' },
-  resolved: { chip: 'green', label: '✅ 已脱险' },
-  closed: { chip: 'gray', label: '已关闭' },
+const statusConfig: Record<string, { chip: string; icon: string; label: string }> = {
+  open: { chip: 'blue', icon: '📡', label: '已发出' },
+  pending: { chip: 'gold', icon: '🛟', label: '救援中' },
+  resolved: { chip: 'green', icon: '✅', label: '已脱险' },
+  closed: { chip: 'gray', icon: '', label: '已关闭' },
+}
+function statusIcon(status: string) {
+  return statusConfig[status]?.icon ?? ''
 }
 
 // 状态
@@ -210,6 +232,8 @@ const messagesLoading = ref(false)
 /** 对话消息拉取失败：和「真的没有对话内容」分开显示 */
 const messagesError = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
+/** R53A-35：组件卸载标记 —— 卸载后迟到的列表响应不再写回状态 */
+let ticketsViewAlive = true
 
 // 发信号表单
 const form = ref({ title: '', category: 'other', message: '' })
@@ -238,7 +262,9 @@ function statusChip(status: string) {
   return statusConfig[status]?.chip ?? 'gray'
 }
 function statusLabel(status: string) {
-  return statusConfig[status]?.label ?? '新状态'
+  const cfg = statusConfig[status]
+  if (!cfg && import.meta.env.DEV) console.warn('[SignalView] 未识别的工单状态：', status)
+  return cfg?.label ?? '处理中，稍后刷新查看'
 }
 
 /** 求救信号列表 */
@@ -249,8 +275,10 @@ async function fetchTickets(silent = false) {
   loadError.value = ''
   try {
     const res = await ticketApi.getMyTickets()
+    if (!ticketsViewAlive) return
     tickets.value = (res as any) || []
   } catch (e) {
+    if (!ticketsViewAlive) return
     if (!tickets.value.length) loadError.value = humanizeError(e)
     else toast.error(humanizeError(e))
   } finally {
@@ -332,6 +360,7 @@ async function sendSOS() {
 }
 
 /** 事故记录卡展开/收起 */
+let messagesSeq = 0
 async function toggleDetail(t: Ticket) {
   if (expandedId.value === t.id) {
     expandedId.value = null
@@ -340,23 +369,30 @@ async function toggleDetail(t: Ticket) {
   }
   expandedId.value = t.id
   selectedTicket.value = t
+  messages.value = []
+  messagesError.value = ''
   await fetchMessages(t.id)
 }
 
 /** 工单详情 + 对话消息 */
 async function fetchMessages(ticketId: number) {
+  const seq = ++messagesSeq
   messagesLoading.value = true
   messagesError.value = ''
   try {
     const res = await ticketApi.getMessages(ticketId)
+    if (seq !== messagesSeq || expandedId.value !== ticketId) return
     messages.value = (res as any) || []
   } catch (e) {
+    if (seq !== messagesSeq || expandedId.value !== ticketId) return
     messages.value = []
     messagesError.value = humanizeError(e)
   } finally {
-    messagesLoading.value = false
+    if (seq === messagesSeq) messagesLoading.value = false
   }
-  await scrollMessagesToBottom()
+  if (seq === messagesSeq && expandedId.value === ticketId) {
+    await scrollMessagesToBottom()
+  }
 }
 
 /** 新消息滚到底部 */
@@ -374,7 +410,13 @@ async function replyTicket() {
     await ticketApi.reply(selectedTicket.value.id, replyMessage.value.trim())
     replyMessage.value = ''
     await fetchMessages(selectedTicket.value.id)
-    await fetchTickets(true)
+    // R53A-34：回复已成功，列表刷新失败不能再弹通用错误（会被误解成「没发出去」）
+    try {
+      const res = await ticketApi.getMyTickets()
+      tickets.value = (res as any) || []
+    } catch {
+      toast.error('消息已发出，列表刷新失败，下拉重试')
+    }
   } catch (e) {
     toast.error(humanizeError(e))
   } finally {
@@ -434,6 +476,8 @@ onMounted(() => {
   fetchTickets()
 })
 onUnmounted(() => {
+  // R53A-35：置失效标记，卸载后迟到的列表响应不再写回状态
+  ticketsViewAlive = false
   morseTimers.forEach(t => window.clearTimeout(t))
   // R41：卸载时也终结摩斯动画 Promise，避免清掉 timer 后 Promise 永远不 settle（R38 P2-1 句柄）
   morseAnimResolve?.()
@@ -603,7 +647,7 @@ textarea:focus { border-color: var(--gold); }
   white-space: nowrap;
 }
 .chip.blue { background: #E3ECF8; color: var(--blue); border: 1px solid var(--blue); }
-.chip.gold { background: #F7EEDB; color: #9A7422; border: 1px solid var(--gold); }
+.chip.gold { background: #F7EEDB; color: #7A5A18; border: 1px solid var(--gold); }
 .chip.green { background: #E8F0E9; color: var(--green); border: 1px solid var(--green); }
 .chip.gray { background: var(--paper2); color: var(--ink2); border: 1px solid var(--line); }
 .card-meta { font-size: 11px; color: var(--ink2); margin-top: 4px; }
@@ -662,6 +706,7 @@ textarea:focus { border-color: var(--gold); }
   outline: none;
 }
 .reply-box input:focus { border-color: var(--gold); }
+.reply-box input:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 .btn-send {
   display: flex; align-items: center; justify-content: center;
   width: 44px; height: 44px;

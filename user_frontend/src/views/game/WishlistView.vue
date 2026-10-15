@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('wishlist') }}</span>
-        <h1>🏮 许愿池</h1>
+        <h1><span aria-hidden="true">🏮</span> 许愿池</h1>
         <p>营地中央的古井 —— 把心愿写在纸上，折成小船，投进去。</p>
       </header>
 
@@ -30,7 +30,7 @@
 
       <!-- 我的许愿 -->
       <section class="v4-sec">
-        <div class="v4-sec-title">📜 我的许愿</div>
+        <div class="v4-sec-title"><span aria-hidden="true">📜</span> 我的许愿</div>
         <div class="v4-sec-sub">漂流中的心愿，营地正在想办法捞起来</div>
         <div v-if="myLoading" class="v4-skeleton" style="height:80px"></div>
         <div v-else-if="myError" class="v4-err">许愿加载失败：{{ myError }}<br><button class="v4-retry" @click="loadMine">重试</button></div>
@@ -59,7 +59,7 @@
 
       <!-- 众人许愿 -->
       <section class="v4-sec" style="padding-bottom:20px">
-        <div class="v4-sec-title">👥 众人许愿</div>
+        <div class="v4-sec-title"><span aria-hidden="true">👥</span> 众人许愿</div>
         <div class="v4-sec-sub">附议多的心愿，优先被捞起来</div>
         <div v-if="hotLoading" class="v4-skeleton" style="height:80px"></div>
         <div v-else-if="hotError" class="v4-err">众人许愿加载失败：{{ hotError }}<br><button class="v4-retry" @click="loadHot">重试</button></div>
@@ -86,9 +86,9 @@
     <PanelTabbar />
 
     <!-- 许愿弹窗 -->
-    <div class="modal" :class="{ show: modalOpen }" role="dialog" aria-modal="true" aria-label="许愿" @click.self="closeModal" @keydown="onModalKeydown">
+    <div class="modal" :class="{ show: modalOpen }" role="dialog" aria-modal="true" aria-label="许愿" tabindex="-1" @click.self="closeModal" @keydown="onModalKeydown">
       <div class="mcard">
-        <h3>✍️ 写下你的心愿</h3>
+        <h3><span aria-hidden="true">✍️</span> 写下你的心愿</h3>
         <p>写下片名，纸条会折成小船，噗通一声投进池子</p>
         <input
           ref="wishInput"
@@ -98,13 +98,17 @@
           @keyup.enter="throwWish"
           @input="onWishInput"
         >
-        <div v-if="emptyWarn" class="wish-warn">先写下心愿，再投进池子吧 ✍️</div>
+        <div v-if="emptyWarn" class="wish-warn">先写下心愿，再投进池子吧 <span aria-hidden="true">✍️</span></div>
 
         <div v-if="showCandidates" class="seek-cands">
-          <div v-if="searching" class="seek-status">正在池子里捞片名…🎣</div>
-          <div v-else-if="searchError" class="seek-error">{{ searchError }}</div>
+          <div v-if="searching" class="seek-status">正在池子里捞片名…<span aria-hidden="true">🎣</span></div>
+          <div v-else-if="searchError" class="seek-error">
+            <span>{{ searchError }}</span>
+            <button type="button" class="seek-retry" @click="retrySearch">重试搜索</button>
+          </div>
           <template v-else>
             <div v-if="searchDegraded" class="seek-degraded">搜索结果可能不全</div>
+            <div v-if="!candidates.length" class="seek-empty">没找到，换个片名试试</div>
             <div class="cand-list">
               <button
                 v-for="c in candidates"
@@ -114,7 +118,7 @@
                 @click="selectCandidate(c)"
               >
                 <img v-if="c.poster_url" :src="c.poster_url" :alt="c.name" class="cand-poster">
-                <span v-else class="cand-ph">🎬</span>
+                <span v-else class="cand-ph" aria-hidden="true">🎬</span>
                 <span class="cand-main">
                   <b>{{ c.name }}</b>
                   <span class="cand-meta">{{ c.year }} · {{ c.kind === 'movie' ? '电影' : '剧集' }}</span>
@@ -130,7 +134,7 @@
 
         <div v-if="picked" class="picked-card">
           <img v-if="picked.poster_url" :src="picked.poster_url" :alt="picked.name" class="picked-poster">
-          <span v-else class="picked-ph">🎬</span>
+          <span v-else class="picked-ph" aria-hidden="true">🎬</span>
           <div class="picked-info">
             <b>{{ picked.name }}</b>
             <span class="picked-meta">{{ picked.year }} · {{ picked.kind === 'movie' ? '电影' : '剧集' }}</span>
@@ -138,9 +142,9 @@
           <button type="button" class="picked-change" @click="clearPick">换一部</button>
         </div>
 
-        <div v-if="picked && picked.kind === 'series' && !picked.in_library && seasons.length > 0" class="sels-box">
-          <div class="sels-label">选季（可多选）</div>
-          <div class="sels-row">
+        <div v-if="picked && picked.kind === 'series' && !picked.in_library && (seasons.length > 0 || loadingSeasons || seasonsError !== '')" class="sels-box">
+          <div v-if="seasons.length > 0" class="sels-label">选季（可多选）</div>
+          <div v-if="seasons.length > 0" class="sels-row">
             <button
               type="button"
               class="sels-chip"
@@ -157,6 +161,11 @@
             >第{{ s.season_number }}季（共{{ s.episode_count }}集）</button>
           </div>
           <div v-if="loadingSeasons" class="sels-loading">正在数有几季…</div>
+          <div v-else-if="seasonsError !== ''" class="sels-error">
+            <span>季列表没取到：{{ seasonsError }}</span>
+            <button type="button" class="sels-chip" @click="retrySeasons">重试</button>
+          </div>
+          <div v-else-if="seasons.length === 0" class="sels-empty">这部剧没有季数据，将按全季投放</div>
         </div>
 
         <div v-if="hasTypedName" class="seek-fallback">没找到？就按「{{ wishText.trim() }}」这个名字投</div>
@@ -266,6 +275,7 @@ const candidates = ref<MediaSeekCandidate[]>([])
 const picked = ref<MediaSeekCandidate | null>(null)
 const seasons = ref<TvSeason[]>([])
 const loadingSeasons = ref<boolean>(false)
+const seasonsError = ref<string>('')
 const seasonAll = ref<boolean>(true)
 const chosenSeasons = ref<number[]>([])
 
@@ -282,8 +292,9 @@ const hasTypedName = computed<boolean>(() => !picked.value && wishText.value.tri
 
 const primaryBtnText = computed<string>(() => {
   if (throwing.value) return '投放中'
-  if (picked.value && picked.value.in_library) return '🎬 已在库，去播放器看'
-  return '⛵ 投进池子'
+  // R53A-39：装饰 emoji 不进按钮可访问名，避免读屏念成「电影摄影机／帆船」
+  if (picked.value && picked.value.in_library) return '已在库，去播放器看'
+  return '投进池子'
 })
 
 const seasonParam = computed<string | undefined>(() => {
@@ -299,6 +310,7 @@ function onWishInput(): void {
   emptyWarn.value = false
   picked.value = null
   seasons.value = []
+  invalidateSeasons()
   chosenSeasons.value = []
   seasonAll.value = true
   if (searchTimer !== undefined) {
@@ -307,6 +319,8 @@ function onWishInput(): void {
   }
   const q = wishText.value.trim()
   if (!q) {
+    // R53A-40：清空输入时一并让在途搜索作废，避免旧候选落到新输入上
+    searchSeq++
     candidates.value = []
     searching.value = false
     searchError.value = ''
@@ -322,16 +336,24 @@ async function runSearch(q: string): Promise<void> {
   try {
     const r = await mediaSeekApi.search(q)
     if (seq !== searchSeq) return
+    // R53A-40：响应回来时输入已变，丢弃过期候选，避免旧结果落到新输入上
+    if (q !== wishText.value.trim()) return
     searchReady.value = r.configured
     // degraded：TMDB 搜索中途失败时为 true（后端 media_seek.search_candidates 每条返回路径都带）
     searchDegraded.value = r.degraded === true
     candidates.value = r.configured ? (r.results || []) : []
-  } catch {
+  } catch (e) {
     if (seq !== searchSeq) return
-    searchError.value = '没捞到候选，再输一个字试试'
+    searchError.value = humanizeError(e)
   } finally {
     if (seq === searchSeq) searching.value = false
   }
+}
+
+/** 重试上一次关键词的搜索（错误态入口） */
+function retrySearch(): void {
+  const q = wishText.value.trim()
+  if (q) void runSearch(q)
 }
 
 function selectCandidate(c: MediaSeekCandidate): void {
@@ -343,26 +365,48 @@ function selectCandidate(c: MediaSeekCandidate): void {
   candidates.value = []
   searching.value = false
   searchError.value = ''
+  invalidateSeasons()
   if (c.kind === 'series' && !c.in_library) {
     void loadSeasons(c.tmdb_id)
   }
 }
 
+let seasonsSeq = 0
+
 async function loadSeasons(tmdbId: string): Promise<void> {
+  const seq = ++seasonsSeq
   loadingSeasons.value = true
+  seasonsError.value = ''
   try {
     const r = await mediaSeekApi.seasons(tmdbId)
+    if (seq !== seasonsSeq) return
     seasons.value = r.seasons || []
-  } catch {
+  } catch (e) {
+    if (seq !== seasonsSeq) return
     seasons.value = []
+    seasonsError.value = humanizeError(e)
   } finally {
-    loadingSeasons.value = false
+    if (seq === seasonsSeq) loadingSeasons.value = false
   }
+}
+
+/** 季列表拉取失败时重试当前选中剧集（错误态入口） */
+function retrySeasons(): void {
+  const p = picked.value
+  if (p && p.kind === 'series' && !p.in_library) void loadSeasons(p.tmdb_id)
+}
+
+/** 作废在途的季列表请求，避免旧响应覆盖新选中剧集 */
+function invalidateSeasons(): void {
+  seasonsSeq++
+  loadingSeasons.value = false
+  seasonsError.value = ''
 }
 
 function clearPick(): void {
   picked.value = null
   seasons.value = []
+  invalidateSeasons()
   chosenSeasons.value = []
   seasonAll.value = true
   const q = wishText.value.trim()
@@ -409,33 +453,56 @@ function closeModal() {
   searchReady.value = true
   searchDegraded.value = false
 }
+// R53A-44：飞行动画定时器与卸载标记，供 onUnmounted 统一清理
+let flyTimerA: number | undefined
+let flyTimerB: number | undefined
+let flyBoatEl: HTMLElement | null = null
+let flySplashEl: HTMLElement | null = null
+let flyUnmounted = false
 onUnmounted(() => {
   document.body.style.overflow = ''
   window.removeEventListener('keydown', onEsc)
+  // R53A-44：卸载时清掉飞行动画定时器，避免 done() 触发已卸载组件的 loadMine
+  flyUnmounted = true
+  if (flyTimerA !== undefined) { clearTimeout(flyTimerA); flyTimerA = undefined }
+  if (flyTimerB !== undefined) { clearTimeout(flyTimerB); flyTimerB = undefined }
+  flyBoatEl?.remove()
+  flySplashEl?.remove()
+  flyBoatEl = null
+  flySplashEl = null
 })
 
+let mineSeq = 0
+let hotSeq = 0
+
 async function loadMine() {
+  const seq = ++mineSeq
   myLoading.value = true
   myError.value = ''
   try {
     const r = await mediaSeekApi.getMyRequests()
+    if (seq !== mineSeq) return
     myWishes.value = r.requests || []
   } catch (e) {
+    if (seq !== mineSeq) return
     myError.value = humanizeError(e)
   } finally {
-    myLoading.value = false
+    if (seq === mineSeq) myLoading.value = false
   }
 }
 async function loadHot() {
+  const seq = ++hotSeq
   hotLoading.value = true
   hotError.value = ''
   try {
     const r = await mediaSeekApi.hot()
+    if (seq !== hotSeq) return
     hotWishes.value = r.requests || []
   } catch (e) {
+    if (seq !== hotSeq) return
     hotError.value = humanizeError(e)
   } finally {
-    hotLoading.value = false
+    if (seq === hotSeq) hotLoading.value = false
   }
 }
 
@@ -465,9 +532,11 @@ async function throwWish() {
     closeModal()
     flyBoat(() => {
       // 动画结束后刷新列表并高亮新愿望
-      justAddedId.value = r.request_id
-      loadMine()
-      window.setTimeout(() => { justAddedId.value = null }, 1700)
+      // R53A-42：等列表真的刷到这条新愿望后再起高亮计时，慢网下才看得到「刚投进井里」
+      void loadMine().then(() => {
+        justAddedId.value = r.request_id
+        window.setTimeout(() => { justAddedId.value = null }, 1700)
+      })
     })
   } catch (e) {
     // 投放失败走 toast，不污染"我的心愿"列表的 myError
@@ -487,23 +556,34 @@ function flyBoat(done: () => void) {
   const boat = document.createElement('div')
   boat.className = 'flyboat'
   boat.textContent = '⛵'
+  boat.setAttribute('aria-hidden', 'true')
   boat.style.left = `${wr.left + wr.width / 2 - 17}px`
   boat.style.top = `${wr.top - 70}px`
   document.body.appendChild(boat)
+  flyBoatEl = boat
   requestAnimationFrame(() => {
     boat.style.transition = 'transform .85s cubic-bezier(.5,-.1,.7,.5)'
     boat.style.transform = `translateY(${wr.height / 2 + 53}px)`
   })
-  window.setTimeout(() => {
+  flyTimerA = window.setTimeout(() => {
     boat.style.transition = 'opacity .25s'
     boat.style.opacity = '0'
     const sp = document.createElement('div')
     sp.className = 'splash'
     sp.textContent = '噗通！'
+    sp.setAttribute('aria-hidden', 'true')
     sp.style.left = `${wr.left + wr.width / 2 - 22}px`
     sp.style.top = `${wr.top + wr.height / 2 - 40}px`
     document.body.appendChild(sp)
-    window.setTimeout(() => { sp.remove(); boat.remove(); done() }, 1150)
+    flySplashEl = sp
+    flyTimerB = window.setTimeout(() => {
+      sp.remove()
+      boat.remove()
+      flyBoatEl = null
+      flySplashEl = null
+      // R53A-44：组件已卸载就不再回调，避免对已卸载组件 loadMine
+      if (!flyUnmounted) done()
+    }, 1150)
   }, 900)
 }
 
@@ -529,6 +609,22 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 搜索错误态：重试入口 / 无结果提示 */
+.seek-retry {
+  margin-top: 6px;
+  padding: 3px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: var(--paper-r-full, 999px);
+  cursor: pointer;
+  opacity: 0.8;
+}
+.seek-retry:hover { opacity: 1; }
+.seek-empty { padding: 6px 0; font-size: 13px; opacity: 0.75; }
+
 /* 古井：设计稿 game-wishlist.html 原值 */
 .well-wrap { text-align: center; margin-bottom: 14px; }
 .well {
@@ -657,7 +753,7 @@ onMounted(() => {
 .wish > div:first-child { min-width: 0; flex: 1; }
 .wish b { font-size: 14px; display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wmeta { font-size: 11px; color: var(--ink2); margin-top: 4px; }
-/* R45：营地已上架 → 文字按钮（接线员页接线入口）；透明 padding + 负 margin 扩大点击区，视觉行高不变 */
+/* R45/R53：营地已上架 → 文字按钮（接线员页接线入口）；透明 padding + 负 margin 扩大点击区，视觉行高不变，纵向命中区 ≥44px */
 .goto-player {
   background: none;
   border: none;
@@ -667,8 +763,8 @@ onMounted(() => {
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
-  padding: 8px 6px;
-  margin: -8px -6px;
+  padding: 16px 6px;
+  margin: -16px -6px;
 }
 .chip {
   font-size: 11px;
@@ -692,7 +788,6 @@ onMounted(() => {
 .crowd b { font-size: 14px; display: block; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .crowd .want { font-size: 11px; color: var(--ink2); margin-top: 6px; }
 .upvote {
-  margin-top: 10px;
   width: 100%;
   position: relative;
   /* 透明 padding + 负 margin：视觉按钮不变，点击区纵向扩大到 44px */
@@ -722,10 +817,11 @@ onMounted(() => {
   inset: 0;
   z-index: 100;
   display: none;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   background: rgba(42, 38, 32, 0.45);
-  padding: 0 24px;
+  padding: 24px 24px max(24px, env(safe-area-inset-bottom));
+  overflow-y: auto;
 }
 .modal.show { display: flex; }
 .mcard {
@@ -862,6 +958,7 @@ onMounted(() => {
 }
 .picked-meta { font-size: 11px; color: var(--ink2); margin-top: 2px; display: block; }
 .picked-change {
+  position: relative;
   font-size: 12px;
   color: var(--blue);
   background: transparent;
@@ -871,10 +968,21 @@ onMounted(() => {
   cursor: pointer;
   white-space: nowrap;
 }
+/* 命中区纵向扩到 44px，视觉尺寸保持不变 */
+.picked-change::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 44px;
+  transform: translateY(-50%);
+}
 .sels-box { margin-top: 10px; }
 .sels-label { font-size: 12px; color: var(--ink2); margin-bottom: 6px; }
-.sels-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.sels-row { display: flex; flex-wrap: wrap; column-gap: 6px; row-gap: 22px; }
 .sels-chip {
+  position: relative;
   font-size: 11px;
   font-weight: 700;
   padding: 4px 10px;
@@ -883,6 +991,16 @@ onMounted(() => {
   color: var(--ink2);
   border: 1px solid var(--line);
   cursor: pointer;
+}
+/* 命中区纵向扩到 44px，视觉尺寸保持不变 */
+.sels-chip::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 44px;
+  transform: translateY(-50%);
 }
 .sels-chip.on { background: var(--ink); color: var(--paper-card); border-color: var(--ink); }
 .sels-loading { font-size: 11px; color: var(--ink2); margin-top: 6px; }

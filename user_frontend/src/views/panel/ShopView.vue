@@ -4,16 +4,16 @@
       <!-- 日志头 -->
       <div class="shop-head">
         <span class="shop-stamp">补给站 · 今日开张</span>
-        <h1>🎒 探险补给站</h1>
+        <h1><span aria-hidden="true">🎒</span> 探险补给站</h1>
         <p>出发前，先备好干粮 —— 能量是路上的盘缠，会员是手里的通行证。</p>
         <div v-if="loading" class="v4-skeleton" style="height:64px;margin-top:12px"></div>
         <div v-else class="purse">
           <div class="coin">
-            <span class="ic">⚡</span>
+            <span class="ic" aria-hidden="true">⚡</span>
             <div><div class="n">{{ pointsText }}</div><div class="t">能量</div></div>
           </div>
           <div class="coin">
-            <span class="ic">📜</span>
+            <span class="ic" aria-hidden="true">📜</span>
             <div><div class="n">{{ memberLevelText }}</div><div class="t">{{ memberLevelName }} · 探险家</div></div>
           </div>
         </div>
@@ -21,7 +21,7 @@
 
       <!-- ⚡ 能量补给 -->
       <section class="shop-sec">
-        <div class="v4-sec-title">⚡ 能量补给</div>
+        <div class="v4-sec-title"><span aria-hidden="true">⚡</span> 能量补给</div>
         <!-- R37 P3-1：比例接口失败时副标题诚实兜底，不再假装「加载中」 -->
         <div class="v4-sec-sub">
           <template v-if="ratioFailed">充能量 = 补充能量 —— 点一罐看看</template>
@@ -29,9 +29,12 @@
         </div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看</div>
+        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="packages.length === 0" class="v4-empty">补给站暂未上架能量罐<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <template v-else>
+          <!-- R53B-1：支付方式未就绪（本分支只在整页 loading 结束后进入，此时未就绪=请求失败或列表为空）只渲染空态，不再与可点击的充能按钮同屏出现 -->
+          <div v-if="!methodsReady" class="v4-empty">{{ methodsFailed ? '支付方式加载失败，请检查网络后重试' : '暂无可用支付方式，请联系服主' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
+          <template v-else>
           <div class="shelf">
             <div
               v-for="pkg in packages"
@@ -46,7 +49,7 @@
               @keydown.space.prevent="selectedPkg = pkg"
             >
               <span v-if="pkg.is_popular" class="tag">最划算</span>
-              <span class="bolt">{{ pkg.icon || (pkg.total_points >= 60 ? '🛢️' : '🔋') }}</span>
+              <span class="bolt" aria-hidden="true">{{ pkg.icon || (pkg.total_points >= 60 ? '🛢️' : '🔋') }}</span>
               <div class="amt">{{ fmtNum(pkg.total_points) }} <small>能量</small></div>
               <div class="price">¥ {{ fmtNum(pkg.price) }}</div>
               <div v-if="pkg.bonus > 0" class="per">多送 {{ fmtNum(pkg.bonus) }}</div>
@@ -57,10 +60,10 @@
             <div class="txt">{{ meterText }}</div>
           </div>
           <div v-if="couponApplied && quoteOf('recharge', selectedPkg?.id || 0)" class="coupon-strip">
-            🎫 券后 ¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.paid_amount) }}
+            <span aria-hidden="true">🎫</span> 券后 ¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.paid_amount) }}
             <s>¥ {{ fmtNum(quoteOf('recharge', selectedPkg?.id || 0)!.list_price) }}</s>
           </div>
-          <button class="charge" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" :aria-busy="orderBusy && orderBusyTag === 'recharge'" @click="doRecharge">{{ orderBusy && orderBusyTag === 'recharge' ? '支付中…' : '⚡ 充能' }}</button>
+          <button class="charge" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" :aria-busy="orderBusy && orderBusyTag === 'recharge'" @click="doRecharge"><span v-if="!(orderBusy && orderBusyTag === 'recharge')" aria-hidden="true">⚡ </span>{{ orderBusy && orderBusyTag === 'recharge' ? '支付中…' : '充能' }}</button>
           <!-- 自定义金额 -->
           <div class="custom">
             <div class="custom-row">
@@ -108,10 +111,8 @@
             <span class="payways-label">支付方式</span>
             <span class="payway on" aria-current="true"><span class="lbl">{{ methods[0].name || methods[0].id }}</span></span>
           </div>
-          <!-- P3-24：支付方式加载完成但列表为空时给空态（methodsReady 未就绪时不展示，避免加载中闪现） -->
-          <!-- R41：补重试按钮，调 loadAll（与本页其他空态一致） -->
-          <div v-else-if="methodsReady" class="v4-empty">暂无可用支付方式，请联系服主<br><button class="v4-retry" @click="loadAll">重试</button></div>
           <div class="fineprint">能量可用于续命体力、兑换会员、发红包 —— 不过期</div>
+          </template>
         </template>
       </section>
 
@@ -121,42 +122,45 @@
         <div class="v4-sec-sub">买会员 = 领取执照 —— 凭执照解锁全片库，点开看细则</div>
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照 🎉<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
+        <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照 <span aria-hidden="true">🎉</span><br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
         <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="plans.length === 0" class="v4-empty">补给站暂未上架执照<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <template v-else>
           <div class="cur-toggle">
             <button :class="{ on: currency === 'y' }" :aria-pressed="currency === 'y'" @click="currency = 'y'">¥ 人民币</button>
-            <button :class="{ on: currency === 'e' }" :aria-pressed="currency === 'e'" @click="currency = 'e'">⚡ 能量抵扣</button>
+            <button :class="{ on: currency === 'e' }" :aria-pressed="currency === 'e'" @click="currency = 'e'"><span aria-hidden="true">⚡</span> 能量抵扣</button>
           </div>
           <div
             v-for="plan in sortedPlans"
             :key="plan.id"
             class="license"
             :class="{ hot: plan.is_popular, open: openPlanId === plan.id }"
-            role="button"
-            tabindex="0"
-            :aria-expanded="openPlanId === plan.id"
-            @click="togglePlan(plan.id)"
-            @keydown.enter="togglePlan(plan.id)"
-            @keydown.space.prevent="togglePlan(plan.id)"
           >
             <div class="ribbon" v-if="plan.is_popular"><span>最多人拿</span></div>
-            <div class="face">
+            <div
+              class="face"
+              role="button"
+              tabindex="0"
+              :aria-expanded="openPlanId === plan.id"
+              :aria-controls="`plan-detail-${plan.id}`"
+              @click="togglePlan(plan.id)"
+              @keydown.enter="togglePlan(plan.id)"
+              @keydown.space.prevent="togglePlan(plan.id)"
+            >
               <div class="wax">{{ waxText(plan) }}</div>
               <div class="info">
                 <div class="nm">{{ licenseName(plan) }}</div>
-                <div class="ds">{{ plan.description || `${plan.duration_days} 天全片库通行` }}</div>
+                <div class="ds">{{ plan.description || (plan.duration_days != null ? `${plan.duration_days} 天全片库通行` : '时长以购买页为准') }}</div>
               </div>
               <div class="pr">
                 <div class="p">{{ planPriceText(plan) }}</div>
                 <div v-if="couponApplied && currency === 'y' && quoteOf('subscription', plan.id)" class="coupon-strip sm">
-                  🎫 券后 {{ couponPlanPriceText(plan, quoteOf('subscription', plan.id)!) }}
+                  <span aria-hidden="true">🎫</span> 券后 {{ couponPlanPriceText(plan, quoteOf('subscription', plan.id)!) }}
                 </div>
               </div>
             </div>
-            <div class="detail">
-              <div class="kv"><span>有效期</span><b>{{ plan.duration_days }} 天</b></div>
+            <div class="detail" :id="`plan-detail-${plan.id}`">
+              <div class="kv"><span>有效期</span><b>{{ plan.duration_days != null ? `${plan.duration_days} 天` : '以购买页为准' }}</b></div>
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ (100 - memberDiscountPct) / 10 }} 折</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
@@ -169,10 +173,11 @@
 
       <!-- ⛰️ 探险家等级 -->
       <section class="shop-sec">
-        <div class="v4-sec-title">⛰️ 探险家等级</div>
+        <div class="v4-sec-title"><span aria-hidden="true">⛰️</span> 探险家等级</div>
         <div class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
-        <div v-else-if="!member" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="memberFailed" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="!member" class="v4-empty">暂无等级记录，默认从 Lv.1 开始</div>
         <!-- R41：等级路线空态补重试按钮，调 loadAll（与本页其他空态一致） -->
         <div v-else-if="!trailLevels.length" class="v4-empty">等级路线尚未配置<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else class="trail">
@@ -188,15 +193,15 @@
             @keydown.enter="toggleCamp(lv.level)"
             @keydown.space.prevent="toggleCamp(lv.level)"
           >
-            <span class="flag">{{ campFlag(lv) }}</span>
+            <span class="flag" aria-hidden="true">{{ campFlag(lv) }}</span>
             <div class="card">
               <div class="lv">Lv.{{ lv.level }} <small>{{ lv.name }}{{ lv.level === member.level ? ' · 你在这里' : '' }}</small></div>
               <div v-if="lv.discount_pct > 0" class="off">执照 {{ (100 - lv.discount_pct) / 10 }} 折</div>
               <div v-else class="xp">经验 {{ lv.xp_threshold }}</div>
             </div>
             <div class="perks" v-if="openCampLevel === lv.level">
-              <template v-for="(b, i) in lv.benefits" :key="i"><i>★</i> {{ b }}<br /></template>
-              <span style="font-size:11px">经验 {{ lv.xp_threshold }}<span v-if="lv.level === member.level && member.next_level"> → 下一级 Lv.{{ member.next_level }} 还差 {{ member.xp_to_next }}</span></span>
+              <template v-for="(b, i) in lv.benefits" :key="i"><i aria-hidden="true">★</i> {{ b }}<br /></template>
+              <span style="font-size:12px">经验 {{ lv.xp_threshold }}<span v-if="lv.level === member.level && member.next_level && member.xp_to_next != null"> → 下一级 Lv.{{ member.next_level }} 还差 {{ member.xp_to_next }}</span></span>
               <div v-if="lv.level === member.level && member.progress_pct != null" style="background:var(--paper2);border-radius:6px;height:8px;margin-top:6px;overflow:hidden">
                 <div :style="{ width: member.progress_pct + '%', height: '100%', background: 'var(--red)' }"></div>
               </div>
@@ -207,12 +212,12 @@
 
       <!-- 🤝 带上同伴 -->
       <section v-if="loading || inviteEnabled || inviteFailed" class="shop-sec" style="padding-bottom:24px">
-        <div class="v4-sec-title">🤝 带上同伴</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🤝</span> 带上同伴</div>
         <div class="v4-sec-sub">邀请一位探险家，双方都得能量</div>
         <div v-if="loading" class="v4-skeleton" style="height:120px"></div>
         <div v-else-if="inviteFailed" class="v4-err">组队暗号加载失败{{ inviteErrMsg ? '：' + inviteErrMsg : '' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="inviteEnabled" class="invite">
-          <h3>🧭 结伴远行，都有能量拿</h3>
+          <h3><span aria-hidden="true">🧭</span> 结伴远行，都有能量拿</h3>
           <p v-if="inviteReward > 0 || inviteeReward > 0">同伴用你的组队暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
           <!-- R30：奖励为 0 时"上不封顶"自相矛盾，改诚实文案 -->
           <p v-else>当前邀请奖励未开启。</p>
@@ -228,7 +233,7 @@
 
       <!-- 🎟️ 核销中心 -->
       <section id="shop-redeem" class="shop-sec" style="padding-bottom:24px">
-        <div class="v4-sec-title">🎟️ 核销中心</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🎟️</span> 核销中心</div>
         <div class="v4-sec-sub">会员卡码 / 兑换码 / 优惠券 —— 自动识别，输完点"使用"</div>
         <div v-if="loading" class="v4-skeleton" style="height:140px"></div>
         <div v-else class="redeem">
@@ -236,35 +241,39 @@
             <input
               v-model="redeemCode"
               placeholder="输入会员卡码 / 兑换码 / 优惠券"
+              aria-label="会员卡码 / 兑换码 / 优惠券"
               maxlength="64"
               autocomplete="off"
+              :readonly="!!(codePreview || exchangePreview)"
               class="redeem-input"
               @input="resetCodeFeedback"
             />
-            <button type="submit" class="redeem-btn" :class="{ 'is-loading': redeemLoading }" :disabled="redeemLoading || !redeemCode.trim()" :aria-busy="redeemLoading">
-              <span class="lbl">{{ redeemLoading ? '核销中…' : '使用' }}</span>
+            <button type="submit" class="redeem-btn" :class="{ 'is-loading': redeemLoading || couponApplying }" :disabled="redeemLoading || couponApplying || !redeemCode.trim()" :aria-busy="redeemLoading || couponApplying">
+              <span class="lbl">{{ redeemLoading ? '核销中…' : couponApplying ? '验券中…' : '使用' }}</span>
             </button>
           </form>
           <div v-if="codePreview" class="redeem-preview">
-            <span>✅ {{ codePreview.type_name }} · <b>{{ codePreview.days_text }}</b></span>
+            <span><span aria-hidden="true">✅</span> {{ codePreview.type_name }} · <b>{{ codePreview.days_text }}</b></span>
             <span v-if="codePreview.realm_name"> · 开「{{ codePreview.realm_name }}」的会员</span>
             <span v-if="codePreview.is_named"> · 限指定账号</span>
             <button type="button" class="redeem-confirm" :disabled="redeemLoading" @click="confirmCodeRedeem">
               <span class="lbl">确认开通</span>
             </button>
+            <button type="button" class="redeem-clear" aria-label="取消，重新输入" @click="resetCodeFeedback">✕</button>
           </div>
           <div v-else-if="exchangePreview" class="redeem-preview">
-            <span>✅ {{ exchangePreview.type_name || '兑换码' }} · <b>{{ exchangePreview.days_text || exchangePreview.message || '确认后立即兑换' }}</b></span>
+            <span><span aria-hidden="true">✅</span> {{ exchangePreview.type_name || '兑换码' }} · <b>{{ exchangePreview.days_text || exchangePreview.message || '确认后立即兑换' }}</b></span>
             <button type="button" class="redeem-confirm" :disabled="redeemLoading" @click="confirmExchangeRedeem">
               <span class="lbl">确认兑换</span>
             </button>
+            <button type="button" class="redeem-clear" aria-label="取消，重新输入" @click="resetCodeFeedback">✕</button>
           </div>
           <div v-else-if="couponApplied" class="redeem-coupon">
-            <span>🎫 优惠券 <b>{{ couponApplied }}</b> 已应用，下单自动抵扣</span>
+            <span><span aria-hidden="true">🎫</span> 优惠券 <b>{{ couponApplied }}</b> 已应用，下单自动抵扣</span>
             <button type="button" class="redeem-clear" aria-label="移除优惠券" @click="clearCoupon">✕</button>
           </div>
           <div v-else-if="couponHint" class="redeem-coupon">
-            <span>🎫 这张券可用，点「使用」应用抵扣</span>
+            <span><span aria-hidden="true">🎫</span> 这张券可用，点「使用」应用抵扣</span>
           </div>
           <p class="redeem-note" :class="{ warn: !!redeemNotice }">{{ redeemNotice || '会员时长 · 能量 · 会员 · 优惠券，自动识别' }}</p>
         </div>
@@ -301,6 +310,7 @@ const toast = useToast()
 const loading = ref(true)
 const pkgsFailed = ref(false)
 const plansFailed = ref(false)
+const methodsFailed = ref(false)
 const packages = ref<RechargePackage[]>([])
 const plans = ref<SubscriptionPlan[]>([])
 const plansEnabled = ref(true)
@@ -311,6 +321,7 @@ const inviteEnabled = ref(true)
 const inviteFailed = ref(false)
 const inviteErrMsg = ref('')
 const member = ref<MyMemberInfo | null>(null)
+const memberFailed = ref(false)
 const inviteCode = ref('')
 const inviteReward = ref(0)
 const inviteeReward = ref(0)
@@ -340,7 +351,9 @@ const quickAmounts = ref<number[]>([])
 const canCustomRecharge = computed(() => (customAmount.value ?? 0) >= 1)
 const customPointsPreview = computed(() => {
   const amt = customAmount.value ?? 0
-  const ratio = rechargeRatio.value ?? 1
+  const ratio = rechargeRatio.value
+  // R53B-12：比例未拿到时不要用 1 兜底算出一个假数字，返回 null 让 fmtNum 显示占位
+  if (ratio == null) return null
   return Math.floor(amt * ratio)
 })
 
@@ -350,6 +363,8 @@ const redeemLoading = ref(false)
 const codePreview = ref<CodePreview | null>(null)
 /* R28：兑换码也走两步确认（预览兑换内容 → 确认兑换），与会员卡码交互一致 */
 const exchangePreview = ref<CodePreview | null>(null)
+/* R53B-19：记录预览时的兑换码，确认时校验输入未被改动 */
+const previewedCode = ref('')
 const codeNotice = ref('')
 const exchangeEnabled = ref(true)
 const couponEnabled = ref(true)
@@ -363,6 +378,7 @@ const redeemNotice = computed(() => couponError.value || codeNotice.value)
 function resetCodeFeedback() {
   codePreview.value = null
   exchangePreview.value = null
+  previewedCode.value = ''
   couponHint.value = ''
   codeNotice.value = ''
 }
@@ -370,6 +386,9 @@ function resetCodeFeedback() {
 // 优惠券即时验券：防抖定时器句柄与预检竞态序号
 let couponPreviewTimer: ReturnType<typeof setTimeout> | null = null
 let couponPreviewToken = 0
+// R53B-10：应用优惠券的竞态序号与忙标记（与预检同款，防止旧响应覆盖新结果）
+let couponApplyToken = 0
+const couponApplying = ref(false)
 
 async function previewCoupon(code: string) {
   if (code === couponApplied.value) return
@@ -417,6 +436,9 @@ function couponTargets(kind: 'recharge' | 'subscription') {
 
 /** 应用优惠券：用户主动点「使用」时调用（R28：静默预检不再自动应用） */
 async function applyCoupon(code: string) {
+  // R53B-10：只允许最新一次验券写入 couponApplied/couponQuotes/couponError
+  const token = ++couponApplyToken
+  couponApplying.value = true
   couponError.value = ''
   try {
     const rows = await Promise.all(
@@ -429,11 +451,15 @@ async function applyCoupon(code: string) {
         }
       }),
     )
+    if (token !== couponApplyToken) return
     const ok = rows.filter((r): r is { key: string; quote: CouponQuote } => !!r && r.quote.valid)
     if (ok.length === 0) {
       // R45A-1：全部请求都抛异常 = 网络/验券服务挂了，说"验券失败"；否则才是券本身用不上
       const allFailed = rows.length > 0 && rows.every((r) => r === null)
-      couponError.value = allFailed ? '验券失败，稍后再试' : '这张券用不上，换一张试试'
+      // R53B-11：packages/plans 都为空（加载失败/无在售项）时没有可下单条目，不能归因到券上
+      if (rows.length === 0) couponError.value = '暂时没有可用的充值/订阅项，请稍后重试'
+      else if (allFailed) couponError.value = '验券失败，稍后再试'
+      else couponError.value = '这张券用不上，换一张试试'
       return
     }
     const quotes: Record<string, CouponQuote> = {}
@@ -442,7 +468,9 @@ async function applyCoupon(code: string) {
     couponApplied.value = code
     toast.success('优惠券已应用，下单自动抵扣')
   } catch {
-    couponError.value = '验券失败，稍后再试'
+    if (token === couponApplyToken) couponError.value = '验券失败，稍后再试'
+  } finally {
+    if (token === couponApplyToken) couponApplying.value = false
   }
 }
 
@@ -461,6 +489,7 @@ async function handleRedeem() {
     toast.error('请输入会员卡码、兑换码或优惠券')
     return
   }
+  previewedCode.value = code
   redeemLoading.value = true
   codePreview.value = null
   exchangePreview.value = null
@@ -506,6 +535,11 @@ async function handleRedeem() {
 async function confirmExchangeRedeem() {
   const code = redeemCode.value.trim()
   if (!code) return
+  if (redeemLoading.value) return
+  if (code !== previewedCode.value) {
+    toast.error('兑换码已变更，请重新预览后再确认')
+    return
+  }
   redeemLoading.value = true
   try {
     const res = await exchangeApi.redeem(code)
@@ -523,6 +557,11 @@ async function confirmExchangeRedeem() {
 async function confirmCodeRedeem() {
   const code = redeemCode.value.trim()
   if (!code) return
+  if (redeemLoading.value) return
+  if (code !== previewedCode.value) {
+    toast.error('兑换码已变更，请重新预览后再确认')
+    return
+  }
   redeemLoading.value = true
   try {
     const res = await membershipApi.redeem(code)
@@ -566,13 +605,26 @@ onMounted(() => {
   void loadAll()
 })
 
-async function loadAll() {
+let loadAllPromise: Promise<void> | null = null
+function loadAll(): Promise<void> {
+  if (!loadAllPromise) {
+    loadAllPromise = doLoadAll().finally(() => {
+      loadAllPromise = null
+    })
+  }
+  return loadAllPromise
+}
+
+async function doLoadAll() {
   loading.value = true
   pkgsFailed.value = false
   ratioFailed.value = false
   plansFailed.value = false
   inviteFailed.value = false
   inviteErrMsg.value = ''
+  memberFailed.value = false
+  methodsFailed.value = false
+  try {
   const [pkgs, pls, mem, inv, pts, cur, methodsRes, exCfg, cpCfg] = await Promise.allSettled([
     paymentApi.packages(),
     paymentApi.plans(),
@@ -589,9 +641,9 @@ async function loadAll() {
     rechargeEnabled.value = pkgs.value.enabled !== false
     // 默认选中 is_popular 的那一罐，没有就选中间那罐
     selectedPkg.value =
-      pkgs.value.packages.find((p) => p.is_popular) ||
-      pkgs.value.packages[Math.floor(pkgs.value.packages.length / 2)] ||
-      pkgs.value.packages[0] ||
+      packages.value.find((p) => p.is_popular) ||
+      packages.value[Math.floor(packages.value.length / 2)] ||
+      packages.value[0] ||
       null
   } else {
     pkgsFailed.value = true
@@ -606,6 +658,7 @@ async function loadAll() {
     plansFailed.value = true
   }
   if (mem.status === 'fulfilled') member.value = mem.value
+  else memberFailed.value = true
   if (inv.status === 'fulfilled') {
     inviteCode.value = inv.value.code || ''
     inviteEnabled.value = inv.value.config?.enabled !== false
@@ -625,12 +678,15 @@ async function loadAll() {
     ratioFailed.value = true
   }
   if (methodsRes.status === 'fulfilled') {
+    methodsFailed.value = false
     methods.value = Array.isArray(methodsRes.value) ? methodsRes.value : []
     // P3-24：空列表不算就绪 —— 下单按钮的 !methodsReady 绑定会自动禁用
     methodsReady.value = methods.value.length > 0
     if (methods.value.length > 0) {
       payMethod.value = methods.value[0].id
     }
+  } else {
+    methodsFailed.value = true
   }
   if (exCfg.status === 'fulfilled') exchangeEnabled.value = exCfg.value.enabled !== false
   if (cpCfg.status === 'fulfilled') couponEnabled.value = cpCfg.value.enabled !== false
@@ -643,7 +699,12 @@ async function loadAll() {
       setTimeout(() => el.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' }), 300)
     }
   }
-  loading.value = false
+  } catch {
+    // R53B-13：兜底 —— 任何意外异常都落到错误态并解除骨架，避免 loading 永久为 true
+    pkgsFailed.value = true
+  } finally {
+    loading.value = false
+  }
 }
 
 /* ---------- 展示 ---------- */
@@ -652,7 +713,7 @@ function fmtNum(n: number | null | undefined): string {
   return n.toLocaleString()
 }
 const pointsText = computed(() => (points.value == null ? '–' : fmtNum(points.value)))
-const memberLevelText = computed(() => (member.value ? `Lv.${member.value.level}` : '–'))
+const memberLevelText = computed(() => (member.value?.level != null ? `Lv.${member.value.level}` : '–'))
 const memberLevelName = computed(() => member.value?.level_name || '–')
 const memberDiscountPct = computed(() => member.value?.discount_pct ?? 0)
 const ratioText = computed(() =>
@@ -663,8 +724,10 @@ const ratioText = computed(() =>
 /* 能量条：按最大一罐做满格（0~1 进度，供 scaleX 动画） */
 const meterScale = computed(() => {
   if (!selectedPkg.value || packages.value.length === 0) return 0
-  const max = Math.max(...packages.value.map((p) => p.total_points))
-  return Math.min(1, selectedPkg.value.total_points / max)
+  const max = Math.max(...packages.value.map((p) => Number(p.total_points) || 0))
+  if (!Number.isFinite(max) || max <= 0) return 0
+  const scale = (Number(selectedPkg.value.total_points) || 0) / max
+  return Number.isFinite(scale) ? Math.min(1, Math.max(0, scale)) : 0
 })
 const meterText = computed(() => {
   const p = selectedPkg.value
@@ -980,8 +1043,8 @@ async function copyInviteCode() {
   opacity: 0.6;
 }
 .fineprint {
-  font-size: 11px;
-  color: var(--ink2);
+  font-size: 12px;
+  color: var(--ink);
   text-align: center;
   margin-top: 8px;
 }
@@ -1074,7 +1137,7 @@ async function copyInviteCode() {
 .license .ribbon span {
   position: absolute;
   top: 10px;
-  right: -2px;
+  right: 0;
   background: var(--ink);
   color: var(--paper); /* R27：原 #f6f1e7 = --paper */
   font-size: 11px;
@@ -1185,7 +1248,7 @@ async function copyInviteCode() {
   border-style: solid;
 }
 .camp.locked {
-  opacity: 0.55;
+  box-shadow: inset 3px 0 0 var(--ink2);
 }
 .camp .lv {
   font-weight: 800;
@@ -1214,7 +1277,7 @@ async function copyInviteCode() {
 }
 .camp .perks i {
   font-style: normal;
-  color: var(--gold);
+  color: var(--ink);
 }
 .invite {
   background: var(--ink);
@@ -1362,7 +1425,7 @@ async function copyInviteCode() {
   transform: scale(0.97);
 }
 /* R28：加载态不用 CSS 旋转圈（标准3），改用纸片风呼吸脉冲 */
-.redeem-btn.is-loading {
+.redeem-btn.is-loading:not(:disabled) {
   animation: redeem-pulse 1.2s ease-in-out infinite;
 }
 @keyframes redeem-pulse {
@@ -1370,16 +1433,17 @@ async function copyInviteCode() {
   50% { opacity: 0.55; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .redeem-btn.is-loading { animation: none; opacity: 0.65; }
+  .redeem-btn.is-loading:not(:disabled) { animation: none; opacity: 0.65; }
 }
 /* R30：下单忙碌态复用 R28 呼吸脉冲，不只变灰 */
-.charge.is-busy,
-.buy.is-busy {
+/* R53B-26 扩展：busy 时按钮同样带 disabled，脉冲不能盖掉禁用透明度 */
+.charge.is-busy:not(:disabled),
+.buy.is-busy:not(:disabled) {
   animation: redeem-pulse 1.2s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .charge.is-busy,
-  .buy.is-busy { animation: none; opacity: 0.65; }
+  .charge.is-busy:not(:disabled),
+  .buy.is-busy:not(:disabled) { animation: none; opacity: 0.65; }
 }
 .redeem-preview,
 .redeem-coupon {
@@ -1484,6 +1548,7 @@ async function copyInviteCode() {
 .quick {
   display: flex;
   gap: 6px;
+  row-gap: 22px;
   margin-top: 8px;
   flex-wrap: wrap;
 }
@@ -1518,6 +1583,7 @@ async function copyInviteCode() {
   display: flex;
   align-items: center;
   gap: 8px;
+  row-gap: 22px;
   margin-top: 12px;
   flex-wrap: wrap;
 }

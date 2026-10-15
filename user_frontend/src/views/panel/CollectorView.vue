@@ -3,18 +3,19 @@
     <div class="v4-page">
       <!-- 顶栏 -->
       <div class="v4-col-top">
-        <h1>🏅 收藏家</h1>
+        <h1><span aria-hidden="true">🏅</span> 收藏家</h1>
         <span v-if="collector.loading" class="v4-skeleton" style="height:24px;width:110px;border-radius:14px"></span>
         <span v-else-if="!collector.error" class="v4-lv">{{ levelText }}</span>
       </div>
 
       <!-- 顶层错误卡：失败时各区收起，只留这一张 -->
       <div v-if="collector.error" class="v4-sec">
-        <div class="v4-err">收藏家没加载出来：{{ collector.error }}<br><button class="v4-retry" @click="retryCollector">重试</button></div>
+        <div class="v4-err" role="alert">收藏家没加载出来：{{ collector.error }}<br><button class="v4-retry" :disabled="collector.loading" @click="retryCollector">{{ collector.loading ? '正在重试…' : '重试' }}</button></div>
       </div>
 
       <!-- 收藏家卡 -->
       <div v-if="!collector.error" class="v4-idcard">
+        <span class="v4-idcard-mark" aria-hidden="true">收藏家</span>
         <div v-if="collector.loading" class="v4-skeleton" style="height:110px"></div>
         <template v-else>
           <div class="v4-id-name">{{ nickname }}</div>
@@ -30,16 +31,16 @@
       </div>
 
       <!-- 新解锁横幅（R27：可关闭；已读记 sessionStorage，同会话不再弹；R28：加载失败时不展示，避免旧数据误导） -->
-      <div v-if="newUnlockNames.length && !unlockBannerDismissed && !collector.error" class="v4-sec">
+      <div v-if="hasNewUnlock && !unlockBannerDismissed && !collector.error" class="v4-sec">
         <div class="v4-fresh" role="status">
-          <span>🎉 新成就解锁：{{ newUnlockNames.join('、') }}</span>
+          <span><span aria-hidden="true">🎉</span> {{ newUnlockNames.length ? '新成就解锁：' + newUnlockNames.join('、') : '有新成就解锁，去看看吧' }}</span>
           <button class="v4-fresh-close" aria-label="关闭新成就横幅" @click="dismissUnlockBanner">✕</button>
         </div>
       </div>
 
       <!-- 口味护照 -->
       <section v-if="!collector.error" class="v4-sec">
-        <div class="v4-sec-title">🛂 口味护照</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🛂</span> 口味护照</div>
         <div class="v4-sec-sub">看够一个类型，就盖一个章 —— 集满 12 枚有惊喜</div>
         <!-- loading 契约直通子组件，父级不再用 v-else 抢占骨架分支 -->
         <TastePassport :raw="tastesRaw" :loading="collector.loading" @retry="retryCollector" />
@@ -47,7 +48,7 @@
 
       <!-- 馆灵养成 -->
       <section v-if="!collector.error" class="v4-sec" style="padding-bottom:20px">
-        <div class="v4-sec-title">🥚 馆灵养成</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🥚</span> 馆灵养成</div>
         <div class="v4-sec-sub">你看的每一分钟，都在喂养它</div>
         <div v-if="collector.loading" class="v4-skeleton" style="height:220px"></div>
         <PetCard v-else-if="pet" :pet="pet" />
@@ -130,7 +131,8 @@ const levelText = computed(() => {
   const c = data.value.achievement_count
   const tiers = levelTiers.value
   for (let i = 0; i < tiers.length; i++) {
-    if (c >= tiers[i].min) return `Lv.${tiers.length - i + 1} · ${tiers[i].title}`
+    // R53B-31：等级号走固定映射（第 1 档 → Lv.6，逐档递减），不再依赖 tiers.length
+    if (c >= tiers[i].min) return `Lv.${Math.max(1, 6 - i)} · ${tiers[i].title}`
   }
   return `Lv.1 · ${BASE_TITLE}`
 })
@@ -142,7 +144,7 @@ const tastesRaw = computed((): Record<string, TasteStamp> | undefined => {
 })
 const tasteTitle = computed(() => {
   const t = tastesRaw.value
-  if (!t) return '口味数据没拿到，刷新试试'
+  if (!t) return '口味数据没拿到'
   const got = Object.values(t).filter((s) => s?.stamped).map((s) => s.name)
   if (got.length === 0) return '还没有集到口味章，去看片吧'
   return `口味：${got.slice(0, 2).join(' / ')}${got.length > 2 ? ` 等 ${got.length} 种` : ''}`
@@ -157,9 +159,14 @@ const newUnlockNames = computed((): string[] => {
   const keys = data.value.new_unlocks
   if (!Array.isArray(keys) || keys.length === 0) return []
   const byKey = new Map(achievements.value.map((a) => [a.key, a.name]))
-  // P3-19：找不到名字的 key 直接过滤，全部找不到时兜底「新成就」
-  const names = keys.map((k) => byKey.get(String(k))).filter((n): n is string => !!n)
-  return names.length ? names : ['新成就']
+  // P3-19：找不到名字的 key 直接过滤；全部找不到时由模板走整句兜底文案
+  return keys.map((k) => byKey.get(String(k))).filter((n): n is string => !!n)
+})
+
+/** 有 new_unlocks 就展示横幅（即使名字一个都没匹配上） */
+const hasNewUnlock = computed((): boolean => {
+  const keys = data.value.new_unlocks
+  return Array.isArray(keys) && keys.length > 0
 })
 
 /* ---------- 新解锁横幅关闭（R27：已读记 sessionStorage，同会话不再弹） ---------- */
@@ -212,8 +219,7 @@ const pet = computed((): PetData | null => {
   position: relative;
   overflow: hidden;
 }
-.v4-idcard::before {
-  content: "收藏家";
+.v4-idcard-mark {
   position: absolute;
   right: -8px;
   top: 8px;
@@ -275,8 +281,9 @@ const pet = computed((): PetData | null => {
 .v4-fresh > span {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 /* R27：横幅关闭按钮（44px 点击区内嵌，不破坏纸色风格） */
 .v4-fresh-close {

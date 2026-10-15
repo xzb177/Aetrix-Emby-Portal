@@ -4,13 +4,13 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('pigeon') }}</span>
-        <h1>🕊️ 信鸽</h1>
+        <h1><span aria-hidden="true">🕊️</span> 信鸽</h1>
         <p>每天有信鸽飞来，脚上绑着信 —— 点一只鸽子，拆信。</p>
       </header>
 
       <!-- 栖木 -->
       <section class="v4-sec">
-        <div class="v4-sec-title">🪵 鸽子栖木</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🪵</span> 鸽子栖木</div>
         <div class="v4-sec-sub">头上有红点的鸽子，信还没拆</div>
         <div class="perch">
           <div class="birds" aria-hidden="true">🕊️🕊️🕊️</div>
@@ -24,7 +24,7 @@
 
       <!-- 工具条 -->
       <section class="v4-sec">
-        <div class="v4-sec-title">📬 今日来信</div>
+        <div class="v4-sec-title"><span aria-hidden="true">📬</span> 今日来信</div>
         <div class="v4-sec-sub">点开鸽子 → 火漆拆信</div>
         <div class="toolbar">
           <div class="search-wrap">
@@ -88,9 +88,10 @@
         </div>
 
         <div v-else-if="!filtered.length" class="v4-empty">
-          <div class="v4-empty-emoji">🕊️</div>
-          <p v-if="unreadOnly">未拆的信都拆完啦，鸽子们去歇着了</p>
-          <p v-else-if="keyword || selectedType !== 'all'">这类信鸽还没飞来，换个分类或关键词看看</p>
+          <div class="v4-empty-emoji"><span aria-hidden="true">🕊️</span></div>
+          <!-- R53A-4：先判「有筛选条件但无命中」，避免与上方「全部拆完（N 封）」自相矛盾 -->
+          <p v-if="keyword || selectedType !== 'all'">这类信鸽还没飞来，换个分类或关键词看看</p>
+          <p v-else-if="unreadOnly">未拆的信都拆完啦，鸽子们去歇着了</p>
           <p v-else>栖木上暂时没有鸽子，信鸽明天还会再来</p>
           <button
             v-if="keyword || selectedType !== 'all' || unreadOnly"
@@ -109,7 +110,12 @@
             :class="{ unread: !msg.is_read, open: openIds.has(msg.id) }"
           >
             <!-- 鸽子行 -->
-            <button class="head" :aria-expanded="openIds.has(msg.id)" @click="toggleOpen(msg)">
+            <button
+              class="head"
+              :aria-expanded="openIds.has(msg.id)"
+              :aria-label="`${msg.is_read ? '' : '未读：'}${msg.title}，${fmtRelative(msg.created_at)} · ${TYPE_LABELS[msg.message_type] || '其他来信'}`"
+              @click="toggleOpen(msg)"
+            >
               <span class="bird" aria-hidden="true">
                 <span v-if="!msg.is_read" class="dot"></span>🕊️
               </span>
@@ -126,12 +132,12 @@
               <template v-if="!msg.is_read">
                 <button
                   class="wax"
-                  :class="{ 'is-unsealing': unsealingId === msg.id }"
-                  :disabled="unsealingId === msg.id"
-                  :aria-label="unsealingId === msg.id ? '拆信中' : '拆信'"
+                  :class="{ 'is-unsealing': unsealingIds.has(msg.id) }"
+                  :disabled="unsealingIds.has(msg.id)"
+                  :aria-label="unsealingIds.has(msg.id) ? '拆信中' : '拆信'"
                   @click.stop="unseal(msg)"
                 >
-                  {{ unsealingId === msg.id ? '拆信中' : '封' }}
+                  {{ unsealingIds.has(msg.id) ? '拆信中' : '封' }}
                 </button>
                 <div class="seal-hint">火漆封印完好 —— 点一下拆信</div>
               </template>
@@ -185,7 +191,7 @@ const keyword = ref('')
 const unreadOnly = ref(false)
 const selectedType = ref<string>('all')
 const openIds = ref<Set<number>>(new Set())
-const unsealingId = ref<number | null>(null)
+const unsealingIds = ref<Set<number>>(new Set())
 
 /** 服务器返回的真实未读数（首屏拉取，后续随本地标记同步） */
 const unreadCount = ref(0)
@@ -206,7 +212,7 @@ const DEEP_LINKS: Record<string, { to: string; label: string }> = {
   ticket: { to: '/game/signal', label: '去看看求救信号 →' },
   media_seek: { to: '/game/wishlist', label: '去看看许愿池 →' },
   subscription: { to: '/shop', label: '去补给站看看 →' },
-  exchange_code: { to: '/shop#shop-redeem', label: '去核销 →' },
+  exchange_code: { to: '/shop#shop-redeem', label: '去兑换 →' },
 }
 
 const filtered = computed(() => {
@@ -237,8 +243,10 @@ function toggleOpen(msg: StationMessage) {
 
 /** 火漆拆信：点一下 → 标记已读 → 正文展开 */
 async function unseal(msg: StationMessage) {
-  if (msg.is_read || unsealingId.value === msg.id) return
-  unsealingId.value = msg.id
+  if (msg.is_read || unsealingIds.value.has(msg.id)) return
+  const pending = new Set(unsealingIds.value)
+  pending.add(msg.id)
+  unsealingIds.value = pending
   try {
     await messageApi.markAsRead(msg.id)
     msg.is_read = true
@@ -247,7 +255,9 @@ async function unseal(msg: StationMessage) {
   } catch (e) {
     toast.error(humanizeError(e))
   } finally {
-    unsealingId.value = null
+    const done = new Set(unsealingIds.value)
+    done.delete(msg.id)
+    unsealingIds.value = done
   }
 }
 
@@ -266,14 +276,22 @@ async function markAllRead() {
   }
 }
 
+/** R53A-2：请求序号，只有最新一次 load 的响应才写回状态（防并发互相覆盖） */
+let loadRequestId = 0
+
 async function load(showSpinner = true): Promise<boolean> {
+  const requestId = ++loadRequestId
   if (showSpinner) loading.value = true
-  loadError.value = ''
+  // R53A-23：手动刷新（showSpinner=false）期间保留错误态，避免错误态先闪成空态，成功后再清
+  if (showSpinner) loadError.value = ''
   try {
     const [list, count] = await Promise.all([
       messageApi.getMessages({ unread_only: false, limit: 100 }),
       messageApi.getUnreadCount(),
     ])
+    // R53A-2：过期响应直接丢弃，不覆盖更新的数据
+    if (requestId !== loadRequestId) return true
+    loadError.value = ''
     messages.value = list || []
     unreadCount.value = count?.unread_count ?? messages.value.filter((m) => !m.is_read).length
     // 掉出当前筛选的已展开行，保持展开状态但跟随 is_read 变化
@@ -282,13 +300,15 @@ async function load(showSpinner = true): Promise<boolean> {
     return true
   } catch (e) {
     // 静默刷新失败保留已有列表；首屏失败才进错误态
+    if (requestId !== loadRequestId) return true // 过期请求的失败不再提示，以最新请求为准
     if (showSpinner || !messages.value.length) {
       messages.value = []
       loadError.value = humanizeError(e)
     }
     return false
   } finally {
-    loading.value = false
+    // R53A-2：只有最新请求能复位 loading，避免首屏骨架被旧请求提前关掉
+    if (requestId === loadRequestId) loading.value = false
   }
 }
 
@@ -395,7 +415,7 @@ onMounted(() => { void load(true) })
   min-height: 44px;
 }
 .f.on { background: var(--ink); border-color: var(--ink); color: var(--paper-card); }
-.f-count { opacity: 0.65; font-size: 11px; }
+.f-count { opacity: 0.85; font-size: 12px; }
 
 /* 鸽子行：设计稿 game-inbox.html 原值 */
 .pigeon {
@@ -444,7 +464,21 @@ onMounted(() => { void load(true) })
   box-shadow: 0 3px 0 var(--red-deep, #a33319); cursor: pointer;
   animation: sealpulse 1.8s infinite;
 }
-.wax:disabled { cursor: wait; }
+.wax:disabled {
+  cursor: wait;
+  opacity: 0.85;
+  background-image: linear-gradient(100deg, rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, 0.4) 50%, rgba(255, 255, 255, 0) 70%);
+  background-size: 220% 100%;
+  animation: wax-shimmer 1.2s linear infinite;
+}
+/* R53A-26：触屏没有 cursor:wait，用高光扫过给出可见的进行中反馈；减少动态偏好下退化为静态终态 */
+@keyframes wax-shimmer {
+  from { background-position: 140% 0; }
+  to { background-position: -60% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wax:disabled { animation: none; background-image: none; opacity: 0.7; }
+}
 @keyframes sealpulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
 .seal-hint { font-size: 12px; color: var(--ink2); }
 
@@ -488,6 +522,9 @@ onMounted(() => { void load(true) })
   outline: 2px solid var(--red);
   outline-offset: 2px;
 }
+
+/* R53A-3：.pigeon 的 overflow:hidden 会裁掉外扩轮廓，改用内嵌轮廓让键盘焦点可见 */
+.head:focus-visible { outline-offset: -2px; }
 
 /* R27：减少动态偏好下装饰动画停掉（本地守卫）；R28：补 letterbox/pbody 的 fadein（此前靠全局兜底） */
 @media (prefers-reduced-motion: reduce) {
