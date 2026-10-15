@@ -70,7 +70,9 @@ let storageHooked = false
 if (!storageHooked) {
   storageHooked = true
   window.addEventListener('storage', (e) => {
-    if (e.key && e.key.startsWith(STORAGE_PREFIX) && e.newValue) {
+    // 只响应当前登录用户自己的键：其他用户标签页的写入不该翻转本页（精确比对，不是前缀匹配）
+    if (e.key !== storageKey(useUserStore().user?.id)) return
+    if (e.newValue) {
       try {
         const p = JSON.parse(e.newValue) as Partial<ServerCardPrefs>
         if (p.mode) mode.value = p.mode

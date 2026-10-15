@@ -36,7 +36,9 @@ if (!storageHooked && typeof window !== 'undefined') {
   storageHooked = true
   window.addEventListener('storage', (e) => {
     try {
-      if (!e.key || !e.key.startsWith(STORAGE_PREFIX)) return
+      // 只响应当前登录用户自己的键：storage 事件只在其他标签页触发，
+      // 其他用户标签页的写入不该翻转本页（按用户键精确比对，不是前缀匹配）
+      if (e.key !== storageKey(useUserStore().user?.id)) return
       if (e.newValue == null) return
       const parsed = JSON.parse(e.newValue) as Partial<HomeViewPrefs>
       if (parsed.mode === 'world' || parsed.mode === 'classic') mode.value = parsed.mode
@@ -63,10 +65,18 @@ if (!mqlHooked && typeof window !== 'undefined' && typeof window.matchMedia === 
   mql.addEventListener('change', (e) => { isDesktop.value = e.matches })
 }
 
+// user.id 变更监听只注册一次（app 生命周期常驻；composable 多次调用不再重复注册）
+let idWatcherStarted = false
+function startIdWatcherOnce() {
+  if (idWatcherStarted) return
+  idWatcherStarted = true
+  watch(() => useUserStore().user?.id, (id) => ensureLoaded(id))
+}
+
 export function useHomeViewMode() {
   const userStore = useUserStore()
   ensureLoaded(userStore.user?.id)
-  watch(() => userStore.user?.id, (id) => ensureLoaded(id))
+  startIdWatcherOnce()
   const worldActive = computed(() => mode.value === 'world' && isDesktop.value && userStore.isLoggedIn)
   return { mode, setMode, isDesktop, worldActive }
 }

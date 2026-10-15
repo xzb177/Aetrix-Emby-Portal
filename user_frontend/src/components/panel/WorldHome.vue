@@ -78,7 +78,7 @@
         <span class="sub">{{ cinemaSub }}</span>
       </button>
 
-      <button type="button" class="mark" :style="{ left: '20.83%', top: '46.67%' }" @click="openParcels" aria-label="封存驿站">
+      <button type="button" class="mark" :style="{ left: '20.83%', top: '46.67%' }" @click="openParcels" :aria-label="remaining > 0 ? `封存驿站，有 ${remaining} 个包裹待拆` : '封存驿站'">
         <span class="dot" v-if="remaining > 0">{{ remaining }}</span>
         <div class="pin">📦</div>
         <span class="name">封存驿站</span>
@@ -103,7 +103,7 @@
         <span class="sub">{{ collectorSub }}</span>
       </button>
 
-      <button type="button" class="mark" :style="{ left: '33.33%', top: '33.89%' }" @click="openLetter" aria-label="邮局">
+      <button type="button" class="mark" :style="{ left: '33.33%', top: '33.89%' }" @click="openLetter" :aria-label="hasLetter && !letterRead ? '邮局，有一封未读来信' : '邮局'">
         <span class="dot" v-if="hasLetter && !letterRead">1</span>
         <div class="pin">✉️</div>
         <span class="name">邮局</span>
@@ -143,7 +143,7 @@
     </div>
 
     <div class="w-overlay" v-if="overlay !== 'none'" @click.self="closeOverlay">
-      <div class="w-sheet" role="dialog" aria-modal="true">
+      <div class="w-sheet" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl">
         <div class="w-sheet-head">
           <span class="w-sheet-title">{{ overlay === 'parcels' ? '📦 今日封存' : '✉️ 每日一封' }}</span>
           <button type="button" class="w-sheet-close" @click="closeOverlay" aria-label="关闭">✕</button>
@@ -170,7 +170,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { usePanelStore } from '@/stores/panel'
@@ -207,6 +207,8 @@ const memberRaw = ref<Record<string, unknown> | null>(null)
 
 const overlay = ref<'none' | 'parcels' | 'letter'>('none')
 const unsealingIds = ref(new Set<string>())
+const sheetEl = ref<HTMLElement | null>(null)
+let lastTrigger: HTMLElement | null = null
 
 /* ---------- 基础数据 ---------- */
 const todayD = computed<Record<string, unknown>>(
@@ -475,17 +477,31 @@ const questPercent = computed(() => {
 
 /* ---------- 弹层 ---------- */
 function openParcels() {
+  lastTrigger = document.activeElement as HTMLElement | null
   overlay.value = 'parcels'
+  nextTick(() => {
+    try { sheetEl.value?.focus() } catch { /* 静默 */ }
+  })
 }
 
 function openLetter() {
   if (!hasLetter.value) return
   markLetterRead()
+  lastTrigger = document.activeElement as HTMLElement | null
   overlay.value = 'letter'
+  nextTick(() => {
+    try { sheetEl.value?.focus() } catch { /* 静默 */ }
+  })
 }
 
 function closeOverlay() {
   overlay.value = 'none'
+  nextTick(() => {
+    if (lastTrigger && document.contains(lastTrigger)) {
+      lastTrigger.focus()
+    }
+    lastTrigger = null
+  })
 }
 
 function onQuest(key: string) {
@@ -530,15 +546,23 @@ function goGame() {
 }
 
 async function openCinema() {
+  // 用户手势内同步占位新窗口，避免 await 后被弹窗拦截
+  const placeholder = window.open('about:blank', '_blank')
+  if (!placeholder) {
+    useToast().warning('浏览器拦截了新标签页，请允许本站弹窗后重试')
+    void router.push('/game/operator')
+    return
+  }
   try {
     const base = await ensureEmbyBase()
     if (base) {
-      window.open(base.replace(/\/+$/, '') + '/web/index.html', '_blank')
+      placeholder.location.href = base.replace(/\/+$/, '') + '/web/index.html'
       return
     }
   } catch {
     /* 落到兜底 */
   }
+  placeholder.close()
   void router.push('/game/operator')
 }
 
