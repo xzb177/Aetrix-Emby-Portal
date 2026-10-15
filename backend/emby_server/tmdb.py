@@ -1054,6 +1054,25 @@ def _fill_air_dates(item, data: dict) -> None:
         item.premiere_date = premiere
 
 
+def _is_placeholder_episode_title(name):
+    """单集占位标题判定（严格：宁可漏判不许误伤真实标题）。
+
+    占位名来源：扫描器命名（「剧名 第 N 集 S01E01」「第N集」等），
+    与生产实测（2026-10-15：12.6 万集中约 11 万占位）一致。
+    注意：NFO 从不给 episode 写标题（nfo.py apply_nfo 只处理 movie/series
+    的 title），所以这里不会误判 NFO 标题为占位。
+    """
+    n = (name or "").strip()
+    if not n:
+        return True
+    if re.match(r"^第\s*\d+\s*集$", n):
+        return True
+    # 「剧名 第 N 集 S01E01」类（含版本 tag 如 PTerWEB）
+    if re.match(r"^.+ 第\s*\d+\s*集( .+)? S\d{1,2}E\d{1,3}$", n):
+        return True
+    return False
+
+
 class TmdbClient:
     """轻量 TMDB 客户端（未配置 key 时静默跳过）
 
@@ -1868,13 +1887,14 @@ class TmdbClient:
             return result
 
         tmdb_name = (episode_data.get("name") or "").strip()
-        # TMDB 占位标题（"Episode 1" / "第 1 集"英文版）不算真实标题
+        # TMDB 占位标题（"Episode 1" / 中文"第 1 集"）不算真实标题
         is_placeholder = (
             not tmdb_name
             or tmdb_name.lower().startswith("episode ")
+            or bool(re.match(r"^第\s*\d+\s*集$", tmdb_name))
         )
         current = (getattr(episode_item, "name", "") or "").strip()
-        is_generic = bool(re.match(r"^第\d+集$", current))
+        is_generic = _is_placeholder_episode_title(current)
 
         if not is_placeholder and is_generic:
             # 当前是"第X集"占位，TMDB 有真实标题 → 覆盖。先过统一标题清洗
@@ -1882,6 +1902,9 @@ class TmdbClient:
             cleaned = clean_title(tmdb_name)
             if cleaned:
                 episode_item.name = cleaned
+                # 与 nfo.py:202 同口径：改名同步 sort_name
+                from backend.emby_server.pinyin_sort import make_sort_name
+                episode_item.sort_name = make_sort_name(cleaned)
                 result["updated"] = True
         # 简介：当前为空时才补（不覆盖 NFO/已有的）
         tmdb_overview = (episode_data.get("overview") or "").strip()
