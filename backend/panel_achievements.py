@@ -289,7 +289,31 @@ def evaluate(user_id: int, db: Session) -> list:
     return new_unlocks
 
 
+def worn_badge_payload(db: Session, user_id: int) -> dict | None:
+    """当前佩戴徽章的展示信息 {key, name, icon}；没戴/已下架/未解锁一律 None。
+
+    双校验：定义必须存在且 enabled，且该用户确有解锁记录——
+    账号里残留的脏 key（管理员下架、数据异常）不会被展示出来。
+    纯读不写库；异常一律回 None（展示功能绝不能拖垮调用方）。
+    """
+    try:
+        user = db.query(models.WebUser).filter_by(id=user_id).first()
+        key = getattr(user, "worn_badge_key", None) if user else None
+        if not key:
+            return None
+        d = db.query(models.PanelAchievementDef).filter_by(key=key, enabled=True).first()
+        if not d:
+            return None
+        unlocked = db.query(models.PanelAchievementUnlock).filter_by(
+            user_id=user_id, ach_key=key).first()
+        if not unlocked:
+            return None
+        return {"key": d.key, "name": d.name, "icon": d.icon}
+    except Exception:
+        return None
+
+
 __all__ = [
     "ACHIEVEMENT_DEFS", "TASTE_MAP",
-    "seed_achievement_defs", "evaluate", "user_tastes",
+    "seed_achievement_defs", "evaluate", "user_tastes", "worn_badge_payload",
 ]

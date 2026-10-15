@@ -181,6 +181,13 @@ export default api
 
 // ==================== 认证 API（backend/api/emby_portal.py） ====================
 
+/** 佩戴中的成就徽章（后端存账号：换设备也在、换账号不串）；没戴为 null */
+export interface WornBadge {
+  key: string
+  name: string
+  icon: string
+}
+
 export interface AuthUser {
   id: number
   username: string
@@ -197,6 +204,8 @@ export interface AuthUser {
   is_free_realm?: boolean
   /** 公益服规则文案（付费服为空串） */
   realm_access_note?: string
+  /** 佩戴中的成就徽章；没戴为 null */
+  worn_badge?: WornBadge | null
   created_at?: string | null
 }
 
