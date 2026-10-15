@@ -615,7 +615,7 @@ export const mediaSeekApi = {
 
   /** TMDB 候选搜索：列条目并标出哪些已在库（configured=false 时前端回退本地查库） */
   search: (query: string, type?: string) =>
-    api.get<never, { configured: boolean; results: MediaSeekCandidate[] }>('/api/user/media-seek/search', {
+    api.get<never, { configured: boolean; degraded: boolean; results: MediaSeekCandidate[] }>('/api/user/media-seek/search', {
       params: { query, ...(type ? { type } : {}) },
     }),
 

@@ -323,8 +323,8 @@ async function runSearch(q: string): Promise<void> {
     const r = await mediaSeekApi.search(q)
     if (seq !== searchSeq) return
     searchReady.value = r.configured
-    // 后端暂不返回 degraded，运行时兼容读取：以后加了才生效
-    searchDegraded.value = (r as { degraded?: boolean }).degraded === true
+    // degraded：TMDB 搜索中途失败时为 true（后端 media_seek.search_candidates 每条返回路径都带）
+    searchDegraded.value = r.degraded === true
     candidates.value = r.configured ? (r.results || []) : []
   } catch {
     if (seq !== searchSeq) return
