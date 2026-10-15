@@ -1105,6 +1105,24 @@ def _synthetic_streams(item: em.MediaItem, existing: list) -> list[dict]:
     return out
 
 
+def _effective_bitrate(item) -> int | None:
+    """Bitrate 发给客户端的值：探测值优先（真实容器总码率），缺失时用 size×8÷时长推导。
+
+    推导值是算术估计（假定恒定码率），不是真实探测值——只能用于播放决策
+    （SupportsDirectStream 直放门限）与客户端展示，不能用作精确计量。
+    size 或 duration_ticks 任缺一个都不推导，返回 None（会被 _strip_nulls
+    整个去掉，绝不编造数字）。真实探测写入 item.bitrate 的路径不受影响。
+    """
+    bitrate = getattr(item, "bitrate", 0) or 0
+    if bitrate:
+        return int(bitrate)
+    size = getattr(item, "size", 0) or 0
+    ticks = getattr(item, "duration_ticks", 0) or 0
+    if size and ticks:
+        return size * 8 * 10_000_000 // ticks
+    return None
+
+
 def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
                   auth_qs: str = "", synthesize: bool = False) -> dict:
     dto = {
@@ -1119,7 +1137,9 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         # 兼容修复：RunTimeTicks 必须始终存在（0 = 未知），缺字段时三方客户端
         # 会显示默认的 1 分钟。之前 or None 会被 _strip_nulls 删掉字段。
         "RunTimeTicks": _run_time_ticks(item),
-        "Bitrate": item.bitrate or None,
+        # 未探测条目的 Bitrate 兜底：size×8÷duration_ticks 推导（见 _effective_bitrate）。
+        # 真实 Emby 扫描后恒有 Bitrate；推导让缺探测条目的直放/展示语义与之对齐。
+        "Bitrate": _effective_bitrate(item) or None,
         "SupportsDirectPlay": True,
         "SupportsDirectStream": True,
         "SupportsTranscoding": True,
@@ -3283,7 +3303,10 @@ async def playback_info(
     if hide_media_path():
         # 升级前写进缓存的 media_source 可能还带着 Path（TTL 内），这里兜底去掉
         media_source.pop("Path", None)
-    direct = item.bitrate and item.bitrate <= max_bitrate
+    # 与真实 Emby 对齐：直放门限用 Bitrate 实际下发值判定（探测值优先、推导兜底），
+    # 缺码率条目不再被误判为 SupportsDirectStream=false。
+    _eff_bitrate = _effective_bitrate(item)
+    direct = _eff_bitrate and _eff_bitrate <= max_bitrate
     # api_key：只回显 Emby 客户端 token（第三方客户端兼容）。
     # 安全修复 H2：门户 / 管理员 JWT 不再进 URL——网页端只拿短期播放签名（uid/exp/sign）。
     api_key = _api_key_for(db, request)

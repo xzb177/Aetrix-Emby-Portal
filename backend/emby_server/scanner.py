@@ -4218,6 +4218,33 @@ def _compute_size_change(item, scan_file):
     return old_size, new_size, size_changed
 
 
+def _sync_video_size_from_ledger(db, item) -> bool:
+    """扫描增量：.strm 条目的 item.size 若仍是纸条口径（<= _STRM_STUB_MAX），
+    从 strm_gen_files 账本取视频口径 size 回填（同一事务、无新增 IO/配额成本）。
+
+    只在账本有该 strm_path 且账本 size 为视频口径（> _STRM_STUB_MAX）时写；
+    账本无此文件、或账本 size 仍是纸条口径 → 保持现状，不乱填。
+    只碰 movie/episode 的 .strm 行；series/season 容器行 size=0 是设计，不碰。
+    """
+    if getattr(item, "item_type", "") not in ("movie", "episode"):
+        return False
+    file_path = str(getattr(item, "file_path", "") or "")
+    if not file_path.lower().endswith(".strm"):
+        return False
+    if (getattr(item, "size", 0) or 0) > _STRM_STUB_MAX:
+        return False  # 已经是视频口径
+    rel = file_path[6:] if file_path.startswith("/strm/") else file_path
+    row = (db.query(emby_models.StrmGenFile.size)
+             .filter(emby_models.StrmGenFile.strm_path == rel)
+             .order_by(emby_models.StrmGenFile.size.desc())
+             .first())
+    video_size = (row[0] if row else 0) or 0
+    if video_size > _STRM_STUB_MAX:
+        item.size = video_size
+        return True
+    return False
+
+
 def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
                          flip_tracker=None):
     """Decide and write enrich_status. Max nesting depth: 2.
@@ -4444,6 +4471,11 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     item_type=_pending.item_type,
                     flip_tracker=ctx.enrich_flips,
                 )
+                # Rex 兼容：.strm 条目 size 顺带对齐账本视频口径（本机扫描永远
+                # 学不到视频口径，见 _sync_video_size_from_ledger）。纸条口径时
+                # 触发一次按 strm_path 的索引查询（idx_strm_gen_files_strm_path）。
+                if _sync_video_size_from_ledger(db, item):
+                    stats["size_ledger_synced"] = stats.get("size_ledger_synced", 0) + 1
                 platforms = detect_platforms(full_path)  # 发行平台标签（虚拟媒体库用）
                 if platforms:
                     item.platforms = ",".join(platforms)

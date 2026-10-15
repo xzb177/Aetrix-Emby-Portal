@@ -58,6 +58,8 @@ def test_spec_table_covers_all_seven_in_restored_order():
         "idx_item_merged_into_id", "idx_person_item_tmdb",
         # .strm 删除链路：墓碑按 file_id IN 批量回查状态表
         "idx_strm_gen_files_file_id",
+        # Rex 兼容：扫描增量按 strm_path 查账本回填视频口径 size
+        "idx_strm_gen_files_strm_path",
         # R2：/emby/Items 默认浏览部分索引（spec 表末尾追加）
         "idx_item_browse_sort",
         # R7：搜索 trigram GIN 索引（PG 专属，SQLite/MySQL 跳过）
@@ -109,11 +111,12 @@ def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys
     database._ensure_legacy_indexes(tables)
     assert _indexes(eng, "emby_items") == _ITEM_INDEXES
     assert _indexes(eng, "strm_gen_files") == {
-        "idx_strm_gen_files_file_id": ["file_id"]}
+        "idx_strm_gen_files_file_id": ["file_id"],
+        "idx_strm_gen_files_strm_path": ["strm_path"]}
     # person_tmdb_id 列不存在 → 静默跳过
     assert _indexes(eng, "emby_people") == {}
     first = capsys.readouterr().out
-    assert first.count("已迁移") == 9
+    assert first.count("已迁移") == 10
 
     # 第二次：全部已存在，不再建、不再打日志
     database._ensure_legacy_indexes(tables)
