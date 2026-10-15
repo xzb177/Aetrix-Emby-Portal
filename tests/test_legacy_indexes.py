@@ -60,7 +60,45 @@ def test_spec_table_covers_all_seven_in_restored_order():
         "idx_strm_gen_files_file_id",
         # R2：/emby/Items 默认浏览部分索引（spec 表末尾追加）
         "idx_item_browse_sort",
+        # R7：搜索 trigram GIN 索引（PG 专属，SQLite/MySQL 跳过）
+        "idx_item_name_trgm",
+        "idx_item_original_title_trgm",
+        "idx_item_sort_name_trgm",
+        "idx_item_aliases_trgm",
     ]
+
+
+def test_trgm_specs_are_pg_only_and_render_gin_ddl():
+    """R7：trigram 条目带 using="gin"，在 SQLite 下被跳过；
+    PG 方言下渲染出 USING gin (col gin_trgm_ops)。"""
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    trgm_specs = [s for s in database._LEGACY_INDEXES if s[1].endswith("_trgm")]
+    assert len(trgm_specs) == 4
+    for spec in trgm_specs:
+        table, name, columns, required_column, message, where, using = spec
+        assert table == "emby_items"
+        assert using == "gin" and where is None
+        assert "gin_trgm_ops" in columns
+        # 模拟 PG 渲染：列字符串里自带 opclass
+        col = columns.split()[0]
+        ddl = (
+            f"CREATE INDEX {name} ON {table} USING {using} ({columns})"
+        )
+        assert ddl == (
+            f"CREATE INDEX {name} ON emby_items USING gin ({col} gin_trgm_ops)"
+        )
+    # models.py 新库声明与迁移同名（幂等检查按名跳过，两边对不上会重复建）
+    from backend.emby_server import models as em
+    model_names = {ix.name for ix in em.MediaItem.__table__.indexes
+                   if ix.name.endswith("_trgm")}
+    assert model_names == {s[1] for s in trgm_specs}
+    # PG 编译器真实渲染一次（不用连服务器）
+    for ix in em.MediaItem.__table__.indexes:
+        if ix.name.endswith("_trgm"):
+            ddl = str(CreateIndex(ix).compile(dialect=postgresql.dialect()))
+            assert "USING gin" in ddl and "gin_trgm_ops" in ddl
 
 
 def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys):

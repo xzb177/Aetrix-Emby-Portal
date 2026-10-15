@@ -1086,6 +1086,25 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     ("emby_items", "idx_item_browse_sort", "item_type, sort_name, id", None,
      "  已迁移: emby_items.idx_item_browse_sort（/emby/Items 默认浏览部分索引）",
      "is_hidden = false AND deleted_at IS NULL"),
+    # 搜索 trigram GIN 索引（r7）：/emby/Items?SearchTerm=、/emby/Search/Hints、
+    # 求片中心的 ILIKE 预筛都走这四列。生产实测搜索是 Parallel Seq Scan（cost≈3万，
+    # '%a%' 命中 3.6 万行），pg_trgm 扩展可用且应用用户为 superuser。
+    # 全索引而非部分索引：三处调用的谓词各不相同，全索引复用度最高。
+    # GIN 构建用普通 CREATE INDEX（CONCURRENTLY 不能在事务块里跑），
+    # 24 万行一次性构建在启动迁移时完成。
+    ("emby_items", "idx_item_name_trgm", "name gin_trgm_ops", "name",
+     "  已迁移: emby_items.idx_item_name_trgm（搜索 trigram GIN 索引）",
+     None, "gin"),
+    ("emby_items", "idx_item_original_title_trgm", "original_title gin_trgm_ops",
+     "original_title",
+     "  已迁移: emby_items.idx_item_original_title_trgm（搜索 trigram GIN 索引）",
+     None, "gin"),
+    ("emby_items", "idx_item_sort_name_trgm", "sort_name gin_trgm_ops", "sort_name",
+     "  已迁移: emby_items.idx_item_sort_name_trgm（搜索 trigram GIN 索引）",
+     None, "gin"),
+    ("emby_items", "idx_item_aliases_trgm", "aliases gin_trgm_ops", "aliases",
+     "  已迁移: emby_items.idx_item_aliases_trgm（搜索 trigram GIN 索引）",
+     None, "gin"),
 )
 
 
@@ -1149,13 +1168,19 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
 
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
                   required_column: Optional[str], message: str,
-                  where: Optional[str] = None) -> None:
+                  where: Optional[str] = None,
+                  using: Optional[str] = None) -> None:
     """给老库补一条索引（幂等）：表不存在 / 依赖列不存在 / 索引已在 → 什么都不做
 
     ``where`` 为 None 时 DDL 与以前逐字节一致；给出时建部分索引
-    （``CREATE INDEX ... WHERE <where>``）。"""
+    （``CREATE INDEX ... WHERE <where>``）。
+
+    ``using`` 为 None 时行为不变；给出时建 ``USING <using>`` 索引，
+    且仅 PostgreSQL 支持，非 PostgreSQL 方言直接返回。"""
     from sqlalchemy import inspect, text
 
+    if using is not None and engine.dialect.name != "postgresql":
+        return
     if table not in existing_tables:
         return
     inspector = inspect(engine)
@@ -1167,15 +1192,32 @@ def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
     if name in names:
         return
     with engine.begin() as conn:
-        if where is None:
-            conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
+        if using is None:
+            if where is None:
+                conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
+            else:
+                conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns}) WHERE {where}"))
         else:
-            conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns}) WHERE {where}"))
+            if where is None:
+                conn.execute(text(f"CREATE INDEX {name} ON {table} USING {using} ({columns})"))
+            else:
+                conn.execute(text(f"CREATE INDEX {name} ON {table} USING {using} ({columns}) WHERE {where}"))
         print(message)
 
 
 def _ensure_legacy_indexes(existing_tables: set) -> None:
     """按 :data:`_LEGACY_INDEXES` 逐条补索引（含 idx_item_merged_into_id、idx_person_item_tmdb 等）"""
+    from sqlalchemy import text
+    if engine.dialect.name == "postgresql":
+        # trigram GIN 索引依赖 pg_trgm 扩展；IF NOT EXISTS 幂等。
+        # 生产库应用用户为 superuser（已验证）；pg_trgm 自 PG13 起是 trusted 扩展，
+        # 普通库属主有 CREATE 权限也能装。装不上也不拦启动（搜索回退全表扫，
+        # 与没加索引时行为一致），只打警告。
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ pg_trgm 扩展安装跳过: {exc}")
     for spec in _LEGACY_INDEXES:
         _ensure_index(existing_tables, *spec)
 
@@ -1831,6 +1873,16 @@ def init_db():
     from backend import models  # 导入所有模型
     from backend.emby_server import models as emby_models  # 自建 Emby 服务器模型
     with _acquire_migrate_lock():
+        # trigram GIN 索引（r7）依赖 pg_trgm 扩展：create_all 会直接建模型里声明的
+        # 四个 gin_trgm_ops 索引，扩展没装就报 UndefinedObject（CI 干净库实锤）。
+        # IF NOT EXISTS 幂等；pg_trgm 自 PG13 起是 trusted 扩展，库属主有 CREATE
+        # 权限就能装。装不上也不拦启动（与 _ensure_legacy_indexes 同一口径）。
+        if engine.dialect.name == "postgresql":
+            try:
+                with engine.begin() as _conn:
+                    _conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            except Exception as _exc:  # noqa: BLE001
+                print(f"  ⚠️ pg_trgm 扩展安装跳过: {_exc}")
         Base.metadata.create_all(bind=engine)
         _auto_migrate()
         _ensure_admin_roles()

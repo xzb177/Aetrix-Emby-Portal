@@ -134,6 +134,19 @@ class MediaItem(Base):
         # + ORDER BY sort_name, id。部分索引只含可见行，翻页与 COUNT 不再全表扫。
         Index("idx_item_browse_sort", "item_type", "sort_name", "id",
               postgresql_where=text("is_hidden = false AND deleted_at IS NULL")),
+        # 搜索 trigram GIN 索引（r7）：/emby/Items?SearchTerm=、/emby/Search/Hints、
+        # 求片中心的 ILIKE 预筛都走这四列。postgresql_using / postgresql_ops
+        # 是 PG 专属参数，SQLite 下 create_all 会忽略它们、退化为普通 btree 索引。
+        # 索引名必须与 _LEGACY_INDEXES 老库迁移同名（幂等检查按名跳过）。
+        Index("idx_item_name_trgm", "name",
+              postgresql_using="gin", postgresql_ops={"name": "gin_trgm_ops"}),
+        Index("idx_item_original_title_trgm", "original_title",
+              postgresql_using="gin",
+              postgresql_ops={"original_title": "gin_trgm_ops"}),
+        Index("idx_item_sort_name_trgm", "sort_name",
+              postgresql_using="gin", postgresql_ops={"sort_name": "gin_trgm_ops"}),
+        Index("idx_item_aliases_trgm", "aliases",
+              postgresql_using="gin", postgresql_ops={"aliases": "gin_trgm_ops"}),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
