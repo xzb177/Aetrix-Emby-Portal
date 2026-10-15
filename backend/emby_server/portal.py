@@ -330,6 +330,34 @@ def _rex_import_link(url: str, username: str, password: str | None = None) -> st
     return link
 
 
+# VidHub 播放器一键导入的基础 URL（不含查询参数）。
+# 参数格式由用户 2026-10-15 分享，与 Rex 同款口径：
+# vidhub://import?type=emby&scheme=&host=&port=&username=&password=
+VIDHUB_IMPORT_URL = "vidhub://import"
+
+
+def _vidhub_import_link(url: str, username: str, password: str | None = None) -> str:
+    """Build VidHub player one-click import deep link.
+
+    host/port parsed from server address; default 80/443 by scheme when missing.
+    password is optional: appended only when the user typed it in the frontend
+    (handled in frontend memory only, never stored server-side, never logged).
+    """
+    scheme = os.getenv("EMBY_URL_SCHEME", "") or urlsplit(url).scheme or "http"
+    parsed = urlsplit(url if "://" in url else f"{scheme}://{url}")
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    link = (
+        f"{VIDHUB_IMPORT_URL}?type=emby&scheme={scheme}"
+        f"&host={host}&port={port}&username={quote(username or '', safe='')}"
+    )
+    # password 预留：后端当前不拼密码（_account_card 未传），密码由前端在内存中拼接；
+    # 保留参数供未来服务端直拼场景。
+    if password:
+        link += f"&password={quote(password, safe='')}"
+    return link
+
+
 def _senplayer_import_link(url: str, username: str, password: str | None = None) -> str:
     """Build SenPlayer one-click import deep link.
 
@@ -394,6 +422,8 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
             # Rex 播放器一键导入（2026-10-10 用户要求替换 forward）。
             "Rex": _rex_import_link(url, user.emby_username),
             "senplayer": _senplayer_import_link(url, user.emby_username),
+            # VidHub 播放器一键导入（2026-10-15 用户要求新增，参数格式与 Rex 同）。
+            "VidHub": _vidhub_import_link(url, user.emby_username),
         },
         "view_permission": {
             "granted": granted,
