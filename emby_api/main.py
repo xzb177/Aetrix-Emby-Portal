@@ -322,19 +322,9 @@ def _debug_tracemalloc_diff():
 # 安全：CORS_ORIGINS 为空时不添加中间件（同源请求不需要 CORS），绝不回退到 ["*"]
 _cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
 _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
-if _cors_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_cors_origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-        allow_headers=[
-            "Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
-            "X-MediaBrowser-Token", "X-Device-Id", "Range",
-        ],
-        # 直连流与 HLS 依赖这些响应头能被前端读取
-        expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
-    )
+# CORS 放最后注册 = 最外层（Starlette 逆序执行）：守卫中间件拦下的 403/429
+# 拦截响应也要带 CORS 头，否则网页播放器只报笼统 CORS 错误、读不到真实状态码
+# （与 backend/main.py r9 同口径；白名单解析逻辑不动）
 
 
 # 纯 ASGI 中间件（中转零拷贝）：只改 http.response.start 的头，body 原样透传。
@@ -377,10 +367,32 @@ app.add_middleware(DownloadGuardMiddleware)
 app.add_middleware(DomainGuardMiddleware)
 app.add_middleware(CloudflareIPMiddleware)
 
+# CORS 最后注册 = 最外层（见上文注释）
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=[
+            "Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
+            "X-MediaBrowser-Token", "X-Device-Id", "Range",
+        ],
+        # 直连流与 HLS 依赖这些响应头能被前端读取
+        expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
+    )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error("未处理的异常: %s", exc, exc_info=True)
+    # 带上方法与路径才可定位是哪个接口 500；不记 query（可能含 api_key）
+    logger.error(
+        "未处理的异常: %s %s - %s",
+        request.method,
+        request.url.path,
+        exc,
+        exc_info=True,
+    )
     return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
 

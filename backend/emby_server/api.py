@@ -734,7 +734,9 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                 if getattr(item, "merged_into_id", None):
                     primary_id = item.merged_into_id
                 merged = _mvw.get_alternate_versions(db, primary_id)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("合并版本查询失败 item=%s: %s",
+                               getattr(item, "id", "?"), exc)
                 merged = []
             # 合并两个来源，按 id 去重（sibs 已按 id 排序，merged 首个是主记录）
             seen_ids = set()
@@ -1979,7 +1981,8 @@ def get_suggestions(user_id: str,
                     base_q.filter(em.MediaItem.id.in_(top_ids)).all(),
                     key=lambda it: id_order.get(it.id, 9999),
                 )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("热门播放排行聚合查询失败，降级 popular 为空列表: %s", exc)
         popular = []
     seen = set()
     items = []
@@ -2879,8 +2882,9 @@ def get_item_detail(
                         pass
 
             background_tasks.add_task(_warm_and_close)
-    except Exception:  # noqa: BLE001 — 预热失败不影响详情页
-        pass
+    except Exception as exc:  # noqa: BLE001 — 预热失败不影响详情页
+        logger.warning("strm 预热失败（get_item_detail），guid=%s: %s",
+                       getattr(item, "guid", "?"), exc)
     return _item_dto(item, _base_url(request), user.id, db, full=True,
                      auth_qs=_url_auth_qs(db, request, user, item.guid))
 
@@ -3306,8 +3310,9 @@ async def playback_info(
     try:
         from backend.emby_server import probe_worker
         await run_db(probe_worker.maybe_enqueue, db, item)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # 入队失败不影响本次播放；记日志——探测停摆会导致码率/时长长期缺失
+        logger.warning("媒体探测入队失败 item=%s: %s", getattr(item, "id", "?"), exc)
     if not item.file_path:
         # 没有媒体路径（虚拟库聚合条目 / 容器 / 源文件已丢失）：
         # 不要发放指向不存在目标的播放地址，否则客户端拿到一个必 404 的 URL。
@@ -3433,7 +3438,7 @@ async def playback_info(
         # 参数（客户端实际不带该参数，门控导致预热从未生效）。只是
         # Range: bytes=0-1 探路，成本 1KB。PlaybackInfo 和 /stream 之间有
         # 0.3~2 秒窗口，提前把 Drive 连接暖好。
-        # 后台协程，不阻塞 PlaybackInfo 返回；失败静默。
+        # 后台协程，不阻塞 PlaybackInfo 返回；失败只记日志不影响主流程。
         # session 说明（P3-3）：_warm_db 是给后台任务新建的独立 session（不是请求的 db——
         # 请求的 session 在请求结束时关闭，不能跨协程用）。warm 经 run_db 在线程池
         # 顺序复用该 session（await 期间不另碰，符合 async_db 纪律）；请求结束前
@@ -3459,12 +3464,23 @@ async def playback_info(
                         except Exception:
                             pass
 
-                asyncio.create_task(_warm_and_close())
+                def _log_warm_error(t: asyncio.Task) -> None:
+                    if t.cancelled():
+                        return
+                    exc = t.exception()
+                    if exc is not None:
+                        logger.warning("strm 预热任务异常 guid=%s: %r",
+                                       getattr(item, "guid", "?"), exc)
+
+                task = asyncio.create_task(_warm_and_close())
+                task.add_done_callback(_log_warm_error)
                 _pt.mark("prewarm_trigger")
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as exc:
+                logger.warning("strm 预热触发失败 guid=%s: %r",
+                               getattr(item, "guid", "?"), exc)
+    except Exception as exc:
+        logger.warning("strm 预热外层异常 guid=%s: %r",
+                       getattr(item, "guid", "?"), exc)
 
     _pt.done()
     return _strip_nulls({
