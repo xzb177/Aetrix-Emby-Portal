@@ -1,8 +1,13 @@
-"""外部服务能力中心冒烟测试（v2.19.0 起，v2.20.0 扩展）
+"""外部服务能力中心冒烟测试（v2.19.0 起，v2.20.0 扩展，探险世界批新增两卡片）
 
 覆盖后台「系统设置」里新增的六个能力：网络代理 / 人机验证 / 邮件与模板 /
 Telegram 通知 / AI 模型设置 / IP 与地理位置。口径是**只提供能力、凭据自己填**，
 所以重点验证四件事：
+
+探险世界批新增两张纯本地设置卡：服主告示牌 / 每日抽一签签文池。它们没有外部
+凭据、开箱默认可用（告示牌留空即不显示、签文池自带 30 条默认签文），因此总览
+口径里单独与需要外部凭据的六个能力区分：未配置时六个「未启用 / 未配置」，
+三张本地设置卡默认「已配置且生效」。
 
 1. **鉴权与阀门**：普通用户进不去；没配置的能力一律「放行 / 不显示」，不能把站点锁在门外；
 2. **密钥不外泄**：接口只回 ******，提交 ****** 不覆盖原值，审计日志只记字段名；
@@ -205,17 +210,27 @@ check("普通用户访问能力中心被拒", r.status_code in (401, 403), f"HTT
 r = client.get("/api/admin/capabilities", headers=ADMIN_H)
 check("管理员可读能力总览", r.status_code == 200, f"HTTP {r.status_code}")
 caps = {c["slug"]: c for c in r.json().get("capabilities", [])}
-expected = {"proxy", "captcha", "mail", "telegram", "ai", "geoip"}
-check("六个能力都在总览里", expected <= set(caps), f"实际 {sorted(caps)}")
+expected = {"proxy", "captcha", "mail", "telegram", "ai", "geoip", "branding",
+            "world_board", "world_fortune"}
+check("九个能力都在总览里", expected == set(caps), f"实际 {sorted(caps)}")
 check("总览带标题/说明/分组", all(c.get("title") and c.get("desc") and c.get("group")
                                   for c in caps.values()))
 check("总览带测试按钮文案", all(c.get("test_label") for c in caps.values()))
-# 站点与品牌有默认值（站名/主题色），所以它始终「已配置且生效」；其余六个未填就必须是未启用
+# 纯本地设置卡（站点与品牌 / 服主告示牌 / 签文池）有内置默认值，所以未配置时始终
+# 「已配置且生效」：branding 回落站名「Aetrix」；告示牌的显示语义由
+# world_board.public_info 的 visible 控制（留言留空则世界地图上不显示），与能力
+# 开关无关；签文池自带 30 条默认签文，默认即可抽。它们是纯本地设置，没有外部
+# 凭据、没有出站请求，语义不同于需要外部凭据的六个外部服务能力。
+_ALWAYS_ON = {"branding", "world_board", "world_fortune"}
 check("未配置时外部服务能力都是「未启用 / 未配置」",
       all(not c["configured"] and not c["enabled"]
-          for s, c in caps.items() if s != "branding"),
+          for s, c in caps.items() if s not in _ALWAYS_ON),
       str({s: (caps[s]["enabled"], caps[s]["configured"]) for s in caps}))
-check("共有七个能力卡片（含站点与品牌）", len(caps) == 7, str(sorted(caps)))
+check("纯本地设置卡未配置时默认「已配置且生效」",
+      all(c["configured"] and c["enabled"]
+          for s, c in caps.items() if s in _ALWAYS_ON),
+      str({s: (caps[s]["enabled"], caps[s]["configured"]) for s in caps}))
+check("共有九个能力卡片（含站点与品牌、服主告示牌、签文池）", len(caps) == 9, str(sorted(caps)))
 
 r = client.get("/api/admin/capabilities/not-a-capability", headers=ADMIN_H)
 check("未知能力返回 404", r.status_code == 404, f"HTTP {r.status_code}")
