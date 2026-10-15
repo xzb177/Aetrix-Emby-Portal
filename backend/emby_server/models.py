@@ -859,7 +859,7 @@ class StrmGenFile(Base):
     file_id = Column(String(128), nullable=False, index=True)
     size = Column(BigInteger, default=0)
     # 相对 /strm 容器的输出路径（如 "剧集/国产剧/xx.strm"）
-    strm_path = Column(String(1024), nullable=False)
+    strm_path = Column(String(1024), nullable=False, index=True)
     updated_at = Column(DateTime, default=datetime.now)
 
 

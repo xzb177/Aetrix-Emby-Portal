@@ -1079,6 +1079,11 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     # index=True（新库 create_all 自带），这里给升级上来的老库补上。
     ("strm_gen_files", "idx_strm_gen_files_file_id", "file_id", None,
      "  已迁移: strm_gen_files.idx_strm_gen_files_file_id（墓碑回查索引）"),
+    # Rex 兼容：扫描增量按 strm_path 查账本回填视频口径 size（_sync_video_size_from_ledger）。
+    # strm_path 无索引时每条 .strm 都是一次全表扫（19 万行）。models.py 的
+    # StrmGenFile.strm_path 已声明 index=True（新库 create_all 自带），这里给老库补上。
+    ("strm_gen_files", "idx_strm_gen_files_strm_path", "strm_path", None,
+     "  已迁移: strm_gen_files.idx_strm_gen_files_strm_path（size 账本回填索引）"),
     # /emby/Items 默认浏览部分索引：item_type 等值/IN + ORDER BY (sort_name, id)。
     # 22 万行生产实测：翻页与 COUNT 都是 Parallel Seq Scan + Sort。
     # 部分谓词 WHERE is_hidden=false AND deleted_at IS NULL 与查询条件一致
