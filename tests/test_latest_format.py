@@ -160,3 +160,61 @@ def test_latest_keeps_type_scope(scene):
     res = _call_latest(db, scene.user)
     types = {i["Type"] for i in res}
     assert types <= {"movie", "series"}, f"混入了非法类型: {types}"
+
+
+def test_latest_all_newest_are_merged_copies_returns_masters(scene):
+    """复刻生产事故：库里最新 16 条全是合并副本时，Latest 不能回空数组。
+
+    事故现场：外语电影/演唱会两库最新 16 条恰好全是 10-14 多版本合并产生的
+    副本（副本入库比主记录新），get_latest 先查 16 条、再用
+    deduplicate_items 把副本全扔掉且不回填 → 接口回 []，Reflix 整行空白。
+    修复后：查询层直接排除副本（merged_into_id IS NULL），主记录顶上来。
+    """
+    db = scene.db
+    now = datetime.now()
+    masters = []
+    for i in range(4):
+        m = _mk(db, scene.lib_a, "movie", f"主{i}", date_added=now - timedelta(days=5))
+        m.tmdb_id = f"tm{i}"
+        db.flush()
+        masters.append(m)
+    # 16 个副本全部比主记录新，模拟"最新 16 条全是副本"
+    for j in range(16):
+        target = masters[j % 4]
+        c = _mk(db, scene.lib_a, "movie", f"副本{j}",
+                date_added=now - timedelta(hours=1) + timedelta(minutes=10 * j))
+        c.tmdb_id = target.tmdb_id
+        c.merged_into_id = target.id
+        db.flush()
+    db.commit()
+
+    res = _call_latest(db, scene.user, parent_id=scene.lib_a.guid, limit=16)
+    names = {i["Name"] for i in res}
+    assert res != [], "事故重现：最新 16 条全是副本时 Latest 回了空数组"
+    assert {"主0", "主1", "主2", "主3"} <= names, f"4 个主记录应全部返回，实际: {names}"
+    assert not any("副本" in n for n in names), f"结果里混入了副本: {names}"
+
+
+def test_latest_copies_do_not_crowd_out_masters(scene):
+    """副本不能挤占 Latest 的 limit 名额：6 个最新是副本时仍应回满 8 条主记录。"""
+    db = scene.db
+    now = datetime.now()
+    masters = []
+    for i in range(10):
+        m = _mk(db, scene.lib_b, "series", f"剧{i}",
+                date_added=now - timedelta(days=10 - i))
+        m.tmdb_id = f"tv{i}"
+        db.flush()
+        masters.append(m)
+    for j in range(6):
+        target = masters[j]
+        c = _mk(db, scene.lib_b, "series", f"剧副本{j}",
+                date_added=now - timedelta(hours=2) + timedelta(minutes=20 * j))
+        c.tmdb_id = target.tmdb_id
+        c.merged_into_id = target.id
+        db.flush()
+    db.commit()
+
+    res = _call_latest(db, scene.user, parent_id=scene.lib_b.guid, limit=8)
+    assert len(res) == 8, f"应回满 8 条主记录，实际 {len(res)} 条"
+    assert all("副本" not in i["Name"] for i in res), "返回结果里混入了副本"

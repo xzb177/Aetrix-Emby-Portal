@@ -2589,6 +2589,9 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                 em.UserMediaData.played == False,  # noqa: E712
                 em.MediaItem.item_type.in_(["movie", "series", "episode"]),
                 em.MediaItem.is_hidden == False,  # noqa: E712
+                # 副本绝不能占 Resume 的 limit 名额：合并 worker 不搬运播放记录，
+                # 副本的播放行会先占名额、再被 deduplicate_items 扔掉，导致列表缩水。
+                em.MediaItem.merged_into_id.is_(None),
             ),
             _library_scope(db, user),
         )
@@ -2608,6 +2611,8 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
             db.query(em.MediaItem).filter(
                 em.MediaItem.id.in_(sids),
                 em.MediaItem.is_hidden == False,  # noqa: E712
+                # 被合并的 series 不能当展示条目（会被 deduplicate_items 扔掉致缺行）
+                em.MediaItem.merged_into_id.is_(None),
             ),
             _library_scope(db, user),
         ).all()
@@ -2652,6 +2657,9 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
     q = db.query(em.MediaItem).filter(
         em.MediaItem.item_type.in_(["movie", "series"]),
         em.MediaItem.is_hidden == False,  # noqa: E712
+        # 副本（merged_into_id 非空）绝不能占掉 Latest 的 limit 名额：
+        # 先查 16 条再内存去重时，若最新 16 条全是副本会返回空数组。
+        em.MediaItem.merged_into_id.is_(None),
     )
     parent_id = request.query_params.get("ParentId")
     if parent_id:
