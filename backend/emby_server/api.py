@@ -1772,6 +1772,11 @@ def _scope_items(query, allowed: "set[int] | None"):
     return library_scope.scope_query(query, allowed)
 
 
+# Views 的 DateCreated 固定回退值：created_at 为 NULL 且库内没有任何条目时使用。
+# 恒为 naive datetime，_iso() 输出 "2020-01-01T00:00:00Z"。
+_LIB_CREATED_AT_FALLBACK = datetime(2020, 1, 1)
+
+
 @emby_router.get("/emby/Users/{user_id}/Views")
 @emby_router.get("/Users/{user_id}/Views")
 def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
@@ -1779,6 +1784,25 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
     libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
     virtual_on = _virtual_libraries_enabled()
     allowed = _library_scope(db, user)
+    # DateCreated 恒发（官方 dto.DateCreated 全字段默认下发；缺失会让严格的
+    # 三方客户端整条解析失败，ddPlayer 即为其一）。历史迁移库的 created_at
+    # 可能为 NULL：先回退该库内最早入库条目的 date_added（与条目数同一口径），
+    # 空库再回退固定常量——保证每个条目恒带 DateCreated。
+    need_earliest = [lib.id for lib in libs if not lib.created_at]
+    _lib_earliest_added: dict = {}
+    if need_earliest:
+        rows = (
+            db.query(em.MediaItem.library_id, func.min(em.MediaItem.date_added))
+            .filter(
+                em.MediaItem.library_id.in_(need_earliest),
+                em.MediaItem.item_type.in_(["movie", "series"]),
+            )
+            .group_by(em.MediaItem.library_id)
+            .all()
+        )
+        # 软删除可见性由全局事件钩子（soft_delete._hide_soft_deleted）作用于
+        # MediaItem 查询自动生效，无需额外条件。
+        _lib_earliest_added = {lid: dt for lid, dt in rows if dt is not None}
     items = []
     for lib in libs:
         # 服务器默认范围 / 个人覆盖：不在名单里的库不出现在客户端的媒体库列表里
@@ -1836,9 +1860,12 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
         if cover_path:
             # 官方 Views 显式带 PrimaryImageAspectRatio；无 Primary 图时官方为 null 不发
             entry["PrimaryImageAspectRatio"] = 0.6666667
-        if lib.created_at:
-            # 官方 dto.DateCreated = item.DateCreated（全字段默认下发）
-            entry["DateCreated"] = _iso(lib.created_at)
+        # 官方 dto.DateCreated = item.DateCreated（全字段默认下发）：恒发；
+        # created_at 为空的库回退库内最早入库时间，空库回退固定常量。
+        entry["DateCreated"] = _iso(
+            lib.created_at or _lib_earliest_added.get(lib.id)
+            or _LIB_CREATED_AT_FALLBACK
+        )
         items.append(entry)
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
