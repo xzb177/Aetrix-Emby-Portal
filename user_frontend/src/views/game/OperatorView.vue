@@ -391,7 +391,10 @@ interface ViewPermissionExtra {
   realm_id?: number | null
   realm_note?: string
 }
-const accountExtra = computed((): AccountCardExtra => account.value ?? {})
+/** R52-CI：AccountCardExtra 是弱类型（全可选字段），直接把 AccountCard 往它上面靠
+    会触发"无公共属性"报错；与 AccountCard 取交集才是卡的完整形态 */
+type AccountCardFull = AccountCard & AccountCardExtra
+const accountExtra = computed((): AccountCardFull => (account.value ?? {}) as AccountCardFull)
 /** R50：账号已就绪时的刷新（重试按钮场景）——op-rows 显示骨架而不是整块变暗 */
 const accountReloading = computed(() => loading.value && !!account.value)
 /** R50：embyApi 类型尚未收录 getPlayPassword（后端有该端点），此处收窄 any */
