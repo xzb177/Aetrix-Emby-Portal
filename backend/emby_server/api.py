@@ -116,10 +116,21 @@ def item_guid_for(db: Session, item_id) -> Optional[str]:
 
 def _iso(dt) -> str:
     """ISO8601 with timezone suffix for iOS strict parsing.
-    iOS JSONDecoder requires 'Z' or offset; naive datetime gets 'Z'."""
+    iOS JSONDecoder requires 'Z' or offset; naive datetime gets 'Z'.
+    Emby/.NET 小数秒恒为 7 位 tick 精度，6 位会被严格客户端拒收。"""
     if not dt:
         return None
     s = dt.isoformat()
+    # Emby/.NET 小数秒恒为 7 位 tick 精度；6 位会被严格客户端拒收。
+    t = s.find("T")
+    if t != -1:
+        dot = s.find(".", t)
+        if dot != -1:
+            end = dot + 1
+            while end < len(s) and s[end].isdigit():
+                end += 1
+            if end - dot - 1 == 6:
+                s = s[:end] + "0" + s[end:]
     # 如果没有时区信息，补 Z（按 UTC 处理）
     if s[-1] not in ("Z", "+", "-") or (s[-1] in ("+", "-") and "T" not in s):
         # 检查是否已有时区偏移（如 +08:00）
@@ -130,6 +141,28 @@ def _iso(dt) -> str:
 
 def _base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
+
+
+def _public_base_url(request: Request) -> str:
+    """System/Info 专用的对外地址：干净的公开地址，不带反代内部痕迹。
+
+    优先 EMBY_PUBLIC_URL 环境变量（部署方明确配的对外地址）；没配时按反代头
+    还原：协议取 X-Forwarded-Proto、主机取 X-Forwarded-Host/Host，并去掉与
+    协议对应的默认端口（https:443 / http:80，非默认端口保留）。
+    以前这里直接回显 request.base_url：TLS 在反代终结时 scheme 变 http、
+    客户端 Host 带 :443 时端口也被原样带回，严格客户端（ddPlayer 等）
+    会因为地址对不上而拒收整份服务器信息。
+    """
+    env = os.getenv("EMBY_PUBLIC_URL", "").rstrip("/")
+    if env.startswith(("http://", "https://")):
+        return env
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    if not host:
+        return str(request.base_url).rstrip("/")
+    if (proto == "https" and host.endswith(":443")) or (proto == "http" and host.endswith(":80")):
+        host = host.rsplit(":", 1)[0]
+    return f"{proto}://{host}"
 
 
 def _visible_in_session(it: em.MediaItem) -> bool:
@@ -1217,8 +1250,8 @@ def system_info(request: Request):
         "ProductName": "Emby Server",
         "OperatingSystem": "Linux",
         "TranscodingJobs": 0,
-        "LocalAddress": _base_url(request),
-        "WanAddress": _base_url(request),
+        "LocalAddress": _public_base_url(request),
+        "WanAddress": _public_base_url(request),
         "SupportsLibraryMonitor": False,
         # 未实现 /Sync/* 离线同步接口，如实上报 False，避免客户端尝试无法完成的离线同步
         "SupportsSynchronization": False,
