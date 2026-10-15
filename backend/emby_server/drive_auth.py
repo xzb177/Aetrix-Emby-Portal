@@ -87,6 +87,17 @@ _sa_dicts_cache: tuple[dict[str, Any], ...] | None = None
 # 导致 100 个 SA 的轮询形同虚设、流量全压在单个 SA 上把配额干爆（probe 403）。
 _token_cache: dict[str, tuple[str, float]] = {}
 
+# R12（2026-10-16）：按 SA 分账号的换取串行锁。旧实现"查缓存→换 token→写缓存"
+# 全程持模块全局 _cache_lock，而换 token 是 RSA 签名 + HTTPS POST（最长 30 秒）——
+# 任一 SA 换取期间，所有其他 SA 的取 token（含缓存命中）都被串行阻塞
+# （复现：T2 缓存命中本应毫秒返回，实际被 T1 的 2 秒换取阻塞 1.80 秒）。
+# 现改为：缓存查/写仍用 _cache_lock 做短临界区；换取本身在 per-SA 锁内无锁执行，
+# 同一 SA 不并发重复换取，不同 SA 互不阻塞。锁对象永不删除（SA 数 ≤ 数百，有界）。
+# 锁顺序纪律：只在已持有 _cache_lock 的短临界区内查/建锁对象，绝不在持
+# _cache_lock 时 acquire 它；acquire 期间再取 _cache_lock 的都是短临界区，
+# 不存在逆序嵌套，无死锁。
+_sa_mint_locks: dict[str, threading.Lock] = {}
+
 # SA 轮换：复用 drive_changes._sa_rotation_start（带随机抖动的统一实现），
 # 本模块不再维护独立计数器（横切能力只许一套）。
 
@@ -102,8 +113,21 @@ def _reset_state() -> None:
     with _cache_lock:
         _token_cache.clear()
         _sa_affinity.clear()
+        _sa_mint_locks.clear()
     with _sa_dicts_lock:
         _sa_dicts_cache = None
+
+
+def _sa_mint_lock_locked(email: str) -> threading.Lock:
+    """取该 SA 的换取串行锁（调用方必须已持有 _cache_lock）。
+
+    锁对象按 email 建一次、永不删除；SA 数量有界（数百），内存无泄漏。
+    """
+    lock = _sa_mint_locks.get(email)
+    if lock is None:
+        lock = threading.Lock()
+        _sa_mint_locks[email] = lock
+    return lock
 
 
 def _load_drive_changes() -> ModuleType:
@@ -269,11 +293,22 @@ def get_drive_bearer_token(affinity_key: str | None = None) -> str | None:
         logger.debug("drive_auth: SA 缺少 client_email，无法建立分账号缓存")
         return None
     now = time.monotonic()
-    # 查缓存 → 换 token → 写缓存 全程持锁：同一 SA 不会并发重复换取
+    # 快路径：短锁查缓存。R12：此前"查缓存→换 token→写缓存"全程持 _cache_lock，
+    # 换 token 的网络 I/O（RSA 签名 + HTTPS POST，最长 30 秒）会串行阻塞所有
+    # 其他 SA 的取 token（含缓存命中）。现拆成短临界区 + per-SA 锁。
     with _cache_lock:
         cached = _token_cache.get(email)
         if cached and now + _TOKEN_MIN_REMAIN_SECONDS < cached[1]:
             return cached[0]
+        mint_lock = _sa_mint_lock_locked(email)
+    # per-SA 串行换取：同一 SA 不会并发重复换取；不同 SA 的换取互不阻塞。
+    # 网络 I/O 在所有锁之外执行。锁顺序 mint_lock → _cache_lock（短临界区），
+    # 无逆序嵌套。
+    with mint_lock:
+        with _cache_lock:
+            cached = _token_cache.get(email)
+            if cached and time.monotonic() + _TOKEN_MIN_REMAIN_SECONDS < cached[1]:
+                return cached[0]
         try:
             # 要求内层返回剩余寿命 ≥ 外层缓存时长 + 余量，保证外层缓存不超真实寿命
             token = drive_changes._sa_access_token(
@@ -288,9 +323,16 @@ def get_drive_bearer_token(affinity_key: str | None = None) -> str | None:
         if not token:
             # 空值不入缓存，下次调用重新尝试换取
             return None
-        latency_ms = int((time.monotonic() - now) * 1000)
+        minted_at = time.monotonic()
+        latency_ms = int((minted_at - now) * 1000)
         logger.info("drive_token_mint sa=%s latency_ms=%d", email, latency_ms)
-        _token_cache[email] = (token, now + _TOKEN_TTL_SECONDS)
+        with _cache_lock:
+            # 写回前复查：等待期间若已有线程换好并写入有效缓存，丢弃本次结果，
+            # 不用稍旧的 token 覆盖更新的。
+            cached = _token_cache.get(email)
+            if cached and minted_at + _TOKEN_MIN_REMAIN_SECONDS < cached[1]:
+                return cached[0]
+            _token_cache[email] = (token, minted_at + _TOKEN_TTL_SECONDS)
         return token
 
 
