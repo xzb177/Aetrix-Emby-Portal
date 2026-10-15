@@ -167,17 +167,17 @@ import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useTheme } from '@/composables/useTheme'
 import { useToast } from '@/composables/useToast'
 import { panelApi, humanizeError, type Achievement } from '@/composables/usePanelApi'
+import { useUserStore } from '@/stores/user'
+import type { WornBadge } from '@/api'
 
-/** 佩戴中的徽章 key（localStorage，先放前端，以后再进库）。
- *  存 JSON {key,name,icon} —— AppHeader 头像菜单会读出来展示佩戴中的徽章。 */
-const WORN_BADGE_KEY = 'aetrix_worn_badge_v1'
+/** 旧版佩戴只存浏览器本地（键 aetrix_worn_badge_v1），会串号——已改存账号。
+ *  这个键仅供一次性迁移与清理：把老用户本地戴着的徽章搬进账号后即删除。 */
+const LEGACY_WORN_BADGE_KEY = 'aetrix_worn_badge_v1'
 
-interface WornBadgeMeta { key: string; name: string; icon: string }
-
-function readWornBadge(): string | null {
+function readLegacyWornBadgeKey(): string | null {
   let raw: string | null = null
   try {
-    raw = localStorage.getItem(WORN_BADGE_KEY)
+    raw = localStorage.getItem(LEGACY_WORN_BADGE_KEY)
   } catch {
     return null
   }
@@ -192,12 +192,18 @@ function readWornBadge(): string | null {
   }
 }
 
+function clearLegacyWornBadgeKey(): void {
+  try {
+    localStorage.removeItem(LEGACY_WORN_BADGE_KEY)
+  } catch { /* 忽略 */ }
+}
+
 /* ---------- 徽章墙（装备库） ---------- */
 const badges = ref<Achievement[]>([])
 const badgeLoading = ref(true)
 const badgeError = ref('')
 const newUnlockKeys = ref<string[]>([])
-const wornBadgeKey = ref<string | null>(readWornBadge())
+const wornBadgeKey = ref<string | null>(null)
 
 const newUnlockNames = computed(() => {
   if (newUnlockKeys.value.length === 0) return []
@@ -217,12 +223,9 @@ async function loadBadges() {
     if (seq !== badgesReqSeq) return
     badges.value = Array.isArray(data.achievements) ? data.achievements : []
     newUnlockKeys.value = Array.isArray(data.new_unlocks) ? data.new_unlocks.map(String) : []
-    // 佩戴的徽章如果已不在列表里（被管理员下架），自动取下
-    // R54-53：空列表分不清「被下架」与「接口异常返回空」，此时保留佩戴、不删本地记录
-    if (badges.value.length > 0 && wornBadgeKey.value && !badges.value.some((b) => b.key === wornBadgeKey.value && b.unlocked)) {
-      wornBadgeKey.value = null
-      try { localStorage.removeItem(WORN_BADGE_KEY) } catch { /* 忽略 */ }
-    }
+    // 佩戴状态以账号为准（后端已校验解锁/上架：下架或未解锁的不会下发）
+    wornBadgeKey.value = data.worn_badge?.key ?? null
+    await migrateLegacyWornBadge(data.worn_badge)
   } catch (e) {
     if (seq !== badgesReqSeq) return
     badgeError.value = humanizeError(e)
@@ -231,22 +234,54 @@ async function loadBadges() {
   }
 }
 
-function wearBadge(b: Achievement) {
-  wornBadgeKey.value = b.key
+/** 旧版本地佩戴键一次性迁移：账号里还没有佩戴记录、且本地这枚是本账号
+ *  已解锁的，才搬进账号；搬完（或确认无需搬）清掉本地键。迁移失败不清键，
+ *  下次进装备库再试。 */
+async function migrateLegacyWornBadge(serverWorn: WornBadge | null | undefined) {
+  const legacyKey = readLegacyWornBadgeKey()
+  if (!legacyKey) return
+  if (serverWorn) {
+    clearLegacyWornBadgeKey()
+    return
+  }
+  const target = badges.value.find((b) => b.key === legacyKey && b.unlocked)
+  if (!target) {
+    clearLegacyWornBadgeKey()
+    return
+  }
   try {
-    const meta: WornBadgeMeta = { key: b.key, name: b.name, icon: b.icon }
-    localStorage.setItem(WORN_BADGE_KEY, JSON.stringify(meta))
-  } catch { /* 记不住就算了 */ }
-  toast.success(`戴上了 ${b.icon}${b.name} 徽章`)
+    const res = await panelApi.setWornBadge(legacyKey)
+    wornBadgeKey.value = res.worn_badge?.key ?? legacyKey
+    useUserStore().updateUser({
+      worn_badge: res.worn_badge ?? { key: target.key, name: target.name, icon: target.icon },
+    })
+    clearLegacyWornBadgeKey()
+  } catch { /* 迁移失败静默，下次再试 */ }
 }
 
-function unwearBadge() {
-  wornBadgeKey.value = null
+async function wearBadge(b: Achievement) {
   try {
-    localStorage.removeItem(WORN_BADGE_KEY)
-  } catch { /* 忽略 */ }
-  // R45：取下徽章也要给反馈（wearBadge 有 toast.success，这里对齐用 toast.info）
-  toast.info('已取下徽章')
+    const res = await panelApi.setWornBadge(b.key)
+    wornBadgeKey.value = res.worn_badge?.key ?? b.key
+    useUserStore().updateUser({
+      worn_badge: res.worn_badge ?? { key: b.key, name: b.name, icon: b.icon },
+    })
+    toast.success(`戴上了 ${b.icon}${b.name} 徽章`)
+  } catch (e) {
+    toast.error(humanizeError(e))
+  }
+}
+
+async function unwearBadge() {
+  try {
+    await panelApi.setWornBadge(null)
+    wornBadgeKey.value = null
+    useUserStore().updateUser({ worn_badge: null })
+    // R45：取下徽章也要给反馈（wearBadge 有 toast.success，这里对齐用 toast.info）
+    toast.info('已取下徽章')
+  } catch (e) {
+    toast.error(humanizeError(e))
+  }
 }
 
 function onBadgeClick(b: Achievement) {

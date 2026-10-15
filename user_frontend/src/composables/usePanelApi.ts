@@ -1,4 +1,5 @@
 import api from '@/api/index'
+import type { WornBadge } from '@/api/index'
 import { toUserMessage } from '@/utils/toUserMessage'
 
 /**
@@ -97,6 +98,8 @@ export interface CollectorData {
   achievement_count?: number
   tastes?: Record<string, TasteStamp>
   achievements?: Achievement[]
+  /** 佩戴中的成就徽章（存账号，后端已校验解锁/上架）；没戴为 null */
+  worn_badge?: WornBadge | null
   new_unlocks?: string[]
   pet?: PetData
   [k: string]: unknown
@@ -181,6 +184,8 @@ export const panelApi = {
   }>('/api/panel/home'),
   /** 收藏家数据 */
   collector: () => get<CollectorData>('/api/panel/collector'),
+  /** 佩戴/摘下徽章（存账号）；key=null 为摘下 */
+  setWornBadge: (key: string | null) => post<{ worn_badge: WornBadge | null }>('/api/panel/worn-badge', { key }),
   /** 服务器状态 */
   server: () => get<ServerData>('/api/panel/server'),
   /** 机关拨杆（仅管理员） */

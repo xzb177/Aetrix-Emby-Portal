@@ -122,6 +122,8 @@ export const useUserStore = defineStore('user', () => {
     tokenStore.clear()
     // 缓存的 EA 地址属于上一个登录态，不清的话同浏览器换号会拿到别人的服地址
     resetEmbyBaseUrl()
+    // 旧版佩戴徽章的本地键：已改存账号，清掉防残留串号
+    try { localStorage.removeItem('aetrix_worn_badge_v1') } catch { /* 隐私模式忽略 */ }
   }
 
   function updateUser(userData: Partial<AuthUser>) {

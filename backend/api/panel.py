@@ -16,6 +16,7 @@ import threading
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -446,6 +447,13 @@ def panel_collector(
     else:
         progress = 1.0
 
+    # 佩戴中的徽章（存账号，见 POST /worn-badge）；纯展示，异常兜底 None
+    try:
+        from backend.panel_achievements import worn_badge_payload
+        worn_badge = worn_badge_payload(db, user.id)
+    except Exception:  # noqa: BLE001
+        worn_badge = None
+
     points = getattr(user, "points", 0) or 0
     return _ok({
         "nickname": getattr(user, "nickname", None) or user.username,
@@ -455,6 +463,7 @@ def panel_collector(
         "achievement_count": len(unlocked),
         "tastes": tastes,
         "achievements": achievements,
+        "worn_badge": worn_badge,
         "new_unlocks": new_unlocks,
         "pet": {
             "stage": cur_idx,
@@ -468,6 +477,38 @@ def panel_collector(
             "stages": [{"name": s["name"], "icon": s["icon"]} for s in stages],
         },
     })
+
+
+# ==================== 6.5 POST /api/panel/worn-badge ====================
+
+class WornBadgeIn(BaseModel):
+    key: str | None = None
+
+
+@router.post("/worn-badge")
+def set_worn_badge(
+    req: WornBadgeIn,
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """佩戴/摘下成就徽章。佩戴状态存账号（web_users.worn_badge_key），
+    不再存浏览器本地——换账号不串号、换设备跟着走。"""
+    _guard()
+    key = (req.key or "").strip()
+    if not key:
+        user.worn_badge_key = None
+        db.commit()
+        return _ok({"worn_badge": None})
+    d = db.query(models.PanelAchievementDef).filter_by(key=key, enabled=True).first()
+    if not d:
+        raise HTTPException(status_code=400, detail="这枚徽章不存在或已下架")
+    unlocked = db.query(models.PanelAchievementUnlock).filter_by(
+        user_id=user.id, ach_key=key).first()
+    if not unlocked:
+        raise HTTPException(status_code=400, detail="你还没有解锁这枚徽章")
+    user.worn_badge_key = key
+    db.commit()
+    return _ok({"worn_badge": {"key": d.key, "name": d.name, "icon": d.icon}})
 
 
 # ==================== 7. GET /api/panel/server ====================
