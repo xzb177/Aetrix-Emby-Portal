@@ -469,3 +469,81 @@ def test_display_preferences_folder_roundtrip(client, token, seed):
     # /users 作用域保持原样，不被 {pref_id} 路由抢走
     r = client.get("/emby/DisplayPreferences/users", headers=_h(token))
     assert r.status_code == 200 and r.json()["Id"] == "users"
+
+
+# ---------- 8. DateCreated 恒发：created_at 为 NULL 的历史迁移库 ----------
+
+def _views_item_by_guid(client, token, seed, guid):
+    r = client.get(f"/emby/Users/{seed['user_id']}/Views", headers=_h(token))
+    assert r.status_code == 200, r.text
+    hit = [i for i in r.json()["Items"] if i["Id"] == guid]
+    assert hit, f"库 {guid} 不在 Views 里"
+    return hit[0]
+
+
+def _seed_null_created_lib(dates):
+    """created_at=None（复现生产迁移库状态）的库 + 指定 date_added 的条目。
+
+    注意：Library.created_at 列有 ORM default=datetime.now，构造时传 None
+    会被 default 覆盖成 now——必须走 Core UPDATE 显式写 NULL，才能复现
+    生产里 11 个库 created_at 全 NULL 的状态。
+    """
+    db = SessionLocal()
+    lib = em.Library(guid=_guid(), name="兼容DateCreated库", collection_type="movies",
+                     is_enabled=True)
+    db.add(lib)
+    db.flush()
+    for i, dt in enumerate(dates):
+        db.add(em.MediaItem(guid=_guid(), library_id=lib.id, item_type="movie",
+                            name=f"兼容DC条目{i}", date_added=dt))
+    db.commit()
+    db.execute(
+        em.Library.__table__.update()
+        .where(em.Library.__table__.c.id == lib.id)
+        .values(created_at=None)
+    )
+    db.commit()
+    data = {"id": lib.id, "guid": lib.guid}
+    db.close()
+    return data
+
+
+def _drop_lib(lib):
+    db = SessionLocal()
+    try:
+        ids = [r[0] for r in db.query(em.MediaItem.id)
+               .filter(em.MediaItem.library_id == lib["id"]).all()]
+        if ids:
+            db.query(em.ItemFacet).filter(
+                em.ItemFacet.item_id.in_(ids)).delete(synchronize_session=False)
+            db.query(em.MediaItem).filter(em.MediaItem.id.in_(ids)).delete(
+                synchronize_session=False)
+        db.query(em.Library).filter(em.Library.id == lib["id"]).delete()
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_views_datecreated_falls_back_to_earliest_item(client, token, seed):
+    """生产 11 个库的 created_at 全为 NULL（2026-10-15 实测），此前字段整缺，
+    ddPlayer 严格解析整条失败。修复后：DateCreated 恒发，回退为库内最早入库时间。"""
+    dates = [datetime(2024, 1, 1, 12, 0, 0), datetime(2023, 6, 6, 6, 30, 0),
+             datetime(2022, 5, 4, 3, 2, 1)]
+    lib = _seed_null_created_lib(dates)
+    try:
+        item = _views_item_by_guid(client, token, seed, lib["guid"])
+        assert "DateCreated" in item, "created_at 为空时 Views 必须恒发 DateCreated"
+        assert item["DateCreated"] == emby_api._iso(min(dates))
+        assert item["DateCreated"].endswith("Z")
+    finally:
+        _drop_lib(lib)
+
+
+def test_views_datecreated_empty_lib_uses_constant(client, token, seed):
+    """created_at 为空且库内没有任何条目 → 回退固定常量。"""
+    lib = _seed_null_created_lib([])
+    try:
+        item = _views_item_by_guid(client, token, seed, lib["guid"])
+        assert item["DateCreated"] == emby_api._iso(emby_api._LIB_CREATED_AT_FALLBACK)
+    finally:
+        _drop_lib(lib)
