@@ -561,7 +561,7 @@ onBeforeUnmount(() => {
 
         <template v-if="userStore.isLoggedIn">
           <!-- 消息：保持一个安静的音铃（不在顶栏抢文案），点开先给预览 -->
-          <div ref="msgMenuRef" class="msg-menu wide-only">
+          <div ref="msgMenuRef" class="msg-menu wide-only" :class="{ 'has-unread': unreadCount > 0 }">
             <button
               class="msg-btn round-btn"
               :class="{ alert: unreadCount > 0, open: msgMenuOpen }"
@@ -1471,6 +1471,8 @@ onBeforeUnmount(() => {
    （头像菜单里的外观/信鸽行已按用户铁律删除，不再补位） */
 @media (max-width: 420px) {
   .wide-only { display: none; }
+  /* 有未读消息时窄屏也显示信鸽铃铛（权重 0,3,0 压过 .wide-only 0,1,0） */
+  .msg-menu.wide-only.has-unread { display: block; }
   .narrow-only { display: block; }
   .logo-text { font-size: 0.9375rem; letter-spacing: 0.18em; }
   .logo-mark { width: 26px; height: 26px; }
