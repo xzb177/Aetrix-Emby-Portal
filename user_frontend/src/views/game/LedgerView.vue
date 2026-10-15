@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('ledger') }}</span>
-        <h1>📒 能量账本</h1>
+        <h1><span aria-hidden="true">📒</span> 能量账本</h1>
         <p>探险家的随身账本 —— 能量从哪来，到哪去。</p>
       </header>
 
@@ -16,8 +16,8 @@
           <button class="v4-retry" @click="reload">重试</button>
         </div>
         <div v-else class="fuel">
-          <div class="fuel-lbl">⚡ 当前能量 · 燃料表</div>
-          <div class="fuel-num"><small>⚡</small> {{ fmtNum(balance) }}</div>
+          <div class="fuel-lbl"><span aria-hidden="true">⚡</span> 当前能量 · 燃料表</div>
+          <div class="fuel-num"><small aria-hidden="true">⚡</small> {{ fmtNum(balance) }}</div>
           <!-- R27：非「全部」筛选时后端 total 不可信（是未筛选总数），数字去掉，不加后端接口 -->
           <span v-if="todayIncome > 0" class="fuel-today">{{ !hasMore && filter === 'all' ? `今日 +${fmtNum(todayIncome)} ⚡` : '今日有进账 ⚡' }}</span>
         </div>
@@ -46,11 +46,12 @@
           <button class="v4-retry" @click="reload">重试</button>
         </div>
         <div v-else-if="!filteredGroups.length" class="v4-empty">
-          这一栏空空的 —— 去探索片库大陆，赚点能量回来吧 🧭
+          <template v-if="filter === 'all'">这一栏空空的 —— 去探索片库大陆，赚点能量回来吧 <span aria-hidden="true">🧭</span></template>
+          <template v-else>当前筛选下没有记录，换个筛选看看 <span aria-hidden="true">👀</span></template>
         </div>
         <template v-else>
           <div v-for="g in filteredGroups" :key="g.key" class="day-group">
-            <div class="v4-sec-title">{{ g.title }}</div>
+            <div class="v4-sec-title"><span aria-hidden="true">📅</span> {{ g.title }}</div>
             <div class="v4-sec-sub">{{ g.sub }}</div>
             <div
               v-for="l in g.rows"
@@ -75,7 +76,7 @@
             :disabled="loadingMore"
             @click="loadMore"
           >
-            {{ loadingMore ? '翻页中' : (filter === 'all' ? `加载更多（还剩 ${total - logs.length} 笔）` : '加载更多') }}
+            {{ loadingMore ? '翻页中' : (filter === 'all' && Number.isFinite(total) ? `加载更多（还剩 ${total - logs.length} 笔）` : '加载更多') }}
           </button>
           <div v-else-if="logs.length" class="v4-sec-sub" style="text-align:center;margin-top:14px">
             —— 账本到这里就记满了 ——
@@ -169,15 +170,16 @@ const error = ref('')
 const filter = ref<FilterKey>('all')
 
 function fmtNum(n: number | null | undefined) {
-  if (n == null) return '—'
+  // R54-33：Math.abs(undefined) 得到 NaN 会绕过 null 兜底，非有限数一律回退
+  if (n == null || !Number.isFinite(n)) return '—'
   return Math.round(n).toLocaleString()
 }
 
 function fmtTime(iso?: string | null) {
   if (!iso) return '—'
-  // R41：new Date 解析失败（非法日期）回退原串（照抄 CompanionView R38 P3-10 的 isNaN 回退）
+  // R54-42：new Date 解析失败（非法日期）不再回退原始 ISO 串，改人话占位
   const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
+  if (isNaN(d.getTime())) return '时间未知'
   const m = d.getMonth() + 1
   const day = d.getDate()
   const hh = String(d.getHours()).padStart(2, '0')
@@ -190,7 +192,11 @@ function dayKey(d: Date) {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
+/** R54-36：请求序号，用于丢弃过期的并发响应 */
+let loadToken = 0
+
 async function load(reset = true) {
+  const token = ++loadToken
   if (reset) {
     loading.value = true
     error.value = ''
@@ -198,11 +204,14 @@ async function load(reset = true) {
   try {
     const offset = reset ? 0 : logs.value.length
     const res = await pointsApi.log({ limit: PAGE_SIZE, offset })
+    // R54-36：响应回来先比对 token，过期请求直接丢弃，避免旧分页追加进新列表
+    if (token !== loadToken) return
     balance.value = res.balance ?? 0
     balanceLoaded.value = true
     total.value = res.total ?? 0
     logs.value = reset ? (res.logs || []) : [...logs.value, ...(res.logs || [])]
   } catch (e) {
+    if (token !== loadToken) return
     if (reset) {
       error.value = humanizeError(e)
       // P2-5：刷新失败但有旧数据时，模板不显示错误态（只在无数据时显示），弹人话提示
@@ -214,7 +223,7 @@ async function load(reset = true) {
       toast.error(humanizeError(e))
     }
   } finally {
-    if (reset) loading.value = false
+    if (reset && token === loadToken) loading.value = false
   }
 }
 
@@ -223,7 +232,7 @@ async function reload() {
 }
 
 async function loadMore() {
-  if (loadingMore.value) return
+  if (loadingMore.value || loading.value) return
   loadingMore.value = true
   try {
     await load(false)
@@ -241,7 +250,11 @@ const todayIncome = computed(() => {
   let sum = 0
   for (const l of logs.value) {
     if (!l.created_at || !isIncome(l)) continue
-    if (dayKey(new Date(l.created_at)) === key) sum += Math.abs(l.amount)
+    if (dayKey(new Date(l.created_at)) === key) {
+      // R54-38：amount 缺失/非数值时 Math.abs 会得到 NaN，先做数值兜底再累加
+      const amt = Math.abs(Number(l.amount))
+      if (Number.isFinite(amt)) sum += amt
+    }
   }
   return Math.round(sum)
 })
@@ -279,14 +292,14 @@ const filteredGroups = computed<DayGroup[]>(() => {
       const k = dayKey(d)
       const md = `${d.getMonth() + 1}.${d.getDate()}`
       if (k === todayK) {
-        key = 'today'; title = `📅 今天 · ${md}`; sub = '账本上还热乎的墨迹'
+        key = 'today'; title = `今天 · ${md}`; sub = '账本上还热乎的墨迹'
       } else if (k === yesK) {
-        key = 'yesterday'; title = `📅 昨天 · ${md}`; sub = '昨天走过的路'
+        key = 'yesterday'; title = `昨天 · ${md}`; sub = '昨天走过的路'
       } else {
-        key = 'older'; title = '📅 更早'; sub = '更早的足迹'
+        key = 'older'; title = '更早'; sub = '更早的足迹'
       }
     } else {
-      key = 'older'; title = '📅 更早'; sub = '更早的足迹'
+      key = 'older'; title = '更早'; sub = '更早的足迹'
     }
     if (!groups.has(key)) groups.set(key, { key, title, sub, rows: [] })
     groups.get(key)!.rows.push(l)
@@ -340,12 +353,15 @@ onUnmounted(() => window.clearInterval(dateTimer))
 }
 .fuel-num {
   /* R45C-2：超大余额在小屏上按视口收缩，不再被 .fuel 的 overflow:hidden 裁掉 */
-  font-size: clamp(36px, 14vw, 52px);
+  /* R54-41：375px 下 14vw 已被 52px 上限截断、实际不收缩；降低系数并允许折行，不靠 overflow 裁切 */
+  font-size: clamp(28px, 12vw, 52px);
   font-weight: 800;
   margin: 6px 0 2px;
   position: relative;
   letter-spacing: 1px;
   line-height: 1.1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .fuel-num small {
   font-size: 22px;
@@ -389,6 +405,12 @@ onUnmounted(() => window.clearInterval(dateTimer))
   color: var(--paper, #F6F1E7);
 }
 .chip:active { transform: scale(0.95); }
+
+/* R54-39：动效敏感用户关闭过渡与按压缩放 */
+@media (prefers-reduced-motion: reduce) {
+  .chip { transition: none; }
+  .chip:active { transform: none; }
+}
 
 /* 分组 */
 .day-group { margin-bottom: 6px; }
@@ -439,6 +461,9 @@ onUnmounted(() => window.clearInterval(dateTimer))
   width: calc(100% - 40px);
   margin: 16px 20px 0;
   min-height: 44px;
+  /* R54-44：显式 border-box + 内边距，避免 content-box 下边框与 UA 内边距把按钮撑出父容器 */
+  box-sizing: border-box;
+  padding: 0 16px;
   border-radius: var(--paper-r-lg, 12px);
   border: 1.5px solid var(--line);
   background: var(--paper-card);

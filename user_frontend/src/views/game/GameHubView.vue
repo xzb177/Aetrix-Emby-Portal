@@ -114,8 +114,12 @@ const statusText = computed(() => {
   }
   if (vit !== null) return `今日体力 ${vit}/${vitalityMax.value ?? DEFAULT_STAMINA_MAX}`
   if (checked !== null) return checked ? '今日已报到✓，出发吧！' : '还没报到，点我去盖章 →'
+  // R54-14：状态未知（未登录 / 首屏加载中 / 请求失败）时不臆断「元气满满」
+  if (!userStore.isLoggedIn) return '登录后查看今日营地情况'
+  if (!statusLoaded.value) return '正在看营地情况…'
+  if (allFailed.value) return '营地数据没加载出来，稍后刷新看看'
   // 两个都没拿到：静态文案，照样能点去报到
-  return '营地今天又是元气满满的一天，点我去报到 →'
+  return '营地情况待确认，点我去报到 →'
 })
 
 /** 没报到（或状态未知）时状态条可点；已报到是纯展示 */
@@ -123,6 +127,26 @@ const statusClickable = computed(() => checkedToday.value !== true)
 
 /** R28：三路 API 全失败标记——状态条前加小琥珀点 + aria-label，文案不动 */
 const allFailed = ref(false)
+
+/** R54-15：首屏三路请求是否已落定——用于区分「加载中」与「真实结果」 */
+const statusLoaded = ref(false)
+
+/** R54-15：给单个请求加超时，避免后端不响应时永久挂起 */
+function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms)
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e) => { clearTimeout(timer); reject(e) },
+    )
+  })
+}
+
+/** R54-16：字段缺省 / 非数时归一成 number | null，避免渲染 undefined */
+function toNumberOrNull(v: unknown): number | null {
+  const n = Number(v)
+  return v == null || !Number.isFinite(n) ? null : n
+}
 
 // ---------- 活卡片徽标：失败全部静默降级为静态卡 ----------
 function liveBadge(f: GameFacility): string {
@@ -139,24 +163,28 @@ function liveBadge(f: GameFacility): string {
 
 onMounted(async () => {
   if (!userStore.isLoggedIn) return
-  // 三个请求互相独立，并发执行，各自 try/catch，失败只留静态展示
+  // R54-15：三个请求互相独立，并发执行，各自 try/catch + 超时，失败只留静态展示
   const [vitalityRes, checkinRes, unreadRes] = await Promise.all([
-    vitalityApi.status().catch((): null => null),
-    checkinApi.status().catch((): null => null),
-    messageApi.getUnreadCount().catch((): null => null),
+    withTimeout(vitalityApi.status()).catch((): null => null),
+    withTimeout(checkinApi.status()).catch((): null => null),
+    withTimeout(messageApi.getUnreadCount()).catch((): null => null),
   ])
   // R28：三路全失败时用户要有失败感知（弱提示，不改文案）
   allFailed.value = !vitalityRes && !checkinRes && !unreadRes
+  // R54-16：字段缺省时归一化，报到状态未知保持 null（走中性文案）
   if (vitalityRes) {
-    vitality.value = vitalityRes.vitality
-    vitalityMax.value = vitalityRes.max ?? null
+    vitality.value = toNumberOrNull(vitalityRes.vitality)
+    vitalityMax.value = toNumberOrNull(vitalityRes.max)
   }
   if (checkinRes) {
-    checkedToday.value = checkinRes.checked_today
+    const checked = checkinRes.checked_today
+    checkedToday.value = typeof checked === 'boolean' ? checked : null
   }
   if (unreadRes) {
     unreadCount.value = Number(unreadRes.unread_count) || 0
   }
+  // R54-15：首屏请求已落定，状态条从「正在看营地情况…」切到真实结果
+  statusLoaded.value = true
 })
 </script>
 
@@ -209,7 +237,8 @@ onMounted(async () => {
   align-items: center;
   gap: 6px;
   /* R28：标题过长时 375px 下不溢出 */
-  max-width: 100%;
+  /* R54-18：再扣掉 margin-left 4px，避免 margin box 超出 .map-board */
+  max-width: calc(100% - 4px);
   background: #e9d3a3;
   border: 1.5px solid var(--line);
   border-radius: 4px 14px 4px 14px;
@@ -235,7 +264,7 @@ onMounted(async () => {
 }
 .zone-sub {
   font-size: 11px;
-  color: var(--ink2);
+  color: var(--paper-ink);
   border-left: 1px solid var(--line);
   padding-left: 6px;
   margin-left: 2px;

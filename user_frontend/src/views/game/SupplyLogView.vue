@@ -4,18 +4,18 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('supply') }}</span>
-        <h1>🧾 补给记录</h1>
+        <h1><span aria-hidden="true">🧾</span> 补给记录</h1>
         <p>补给站的采购小票，一张张钉在布告栏上 —— 点小票看明细。</p>
       </header>
 
       <!-- 布告栏 -->
       <section class="v4-sec">
-        <div class="v4-sec-title">📌 布告栏</div>
+        <div class="v4-sec-title"><span aria-hidden="true">📌</span> 布告栏</div>
         <div class="v4-sec-sub">在补给站买过的东西</div>
 
         <div v-if="loading" class="v4-skeleton" style="height:180px;margin-bottom:20px"></div>
         <div v-else-if="error" class="v4-err">布告栏的小票拿不到：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
-        <div v-else-if="!orders.length" class="v4-empty">🧾<br>布告栏空空的 —— 去补给站备点干粮吧 🎒</div>
+        <div v-else-if="!orders.length" class="v4-empty"><span aria-hidden="true">🧾</span><br>布告栏空空的 —— 去补给站备点干粮吧 <span aria-hidden="true">🎒</span></div>
 
         <div v-else class="board">
           <article
@@ -26,7 +26,7 @@
             role="button"
             tabindex="0"
             :aria-expanded="openId === o.order_id"
-            :aria-label="`补给小票：${kindIcon(o.kind)}${o.item_name}，实付${fmtMoney(o.amount)}，${seal(o.status).label}。点击${openId === o.order_id ? '收起' : '展开'}明细`"
+            :aria-label="`补给小票：${plainText(kindIcon(o.kind))}${o.item_name}，实付${fmtMoney(o.amount)}，${plainText(seal(o.status).label)}。点击${openId === o.order_id ? '收起' : '展开'}明细`"
             @click="toggle(o.order_id)"
             @keydown.enter="toggle(o.order_id)"
             @keydown.space.prevent="toggle(o.order_id)"
@@ -56,7 +56,7 @@
                 <div class="kv"><span>实付</span><b>{{ fmtMoney(o.amount) }}</b></div>
                 <div v-if="(o.discount_amount || 0) > 0" class="kv">
                   <span>原价 / 已减</span>
-                  <b><s class="price-was">{{ fmtMoney(o.list_price || 0) }}</s> −{{ fmtMoney(o.discount_amount || 0) }}（{{ o.coupon_code || '已用券' }}）</b>
+                  <b><s class="price-was">{{ fmtMoney(o.list_price) }}</s> −{{ fmtMoney(o.discount_amount || 0) }}（{{ o.coupon_code || '已用券' }}）</b>
                 </div>
                 <div class="kv"><span>下单时间</span><b>{{ fmtTime(o.created_at) }}</b></div>
                 <div v-if="o.paid_at" class="kv"><span>支付时间</span><b>{{ fmtTime(o.paid_at) }}</b></div>
@@ -127,16 +127,27 @@ function toggle(orderId: string) {
   openId.value = openId.value === orderId ? null : orderId
 }
 
+// 可访问名只保留文字：读屏会把 ⚡/🚚/✓ 念成「high voltage」「truck」「check mark」
+function plainText(text: string) {
+  return String(text ?? '').replace(/^[^0-9A-Za-z\u4e00-\u9fff]+/, '').trim()
+}
+
+// 连点重试时只有最新一次请求能写回，避免旧响应覆盖新数据、提前关掉 loading
+let reqSeq = 0
+
 async function load() {
+  const seq = ++reqSeq
   loading.value = true
   error.value = ''
   try {
     const res = await paymentApi.orders({ limit: 50 })
+    if (seq !== reqSeq) return
     orders.value = res.orders || []
   } catch (e) {
+    if (seq !== reqSeq) return
     error.value = humanizeError(e)
   } finally {
-    loading.value = false
+    if (seq === reqSeq) loading.value = false
   }
 }
 
@@ -186,7 +197,7 @@ onMounted(load)
 }
 .rc-top > div:first-child { min-width: 0; flex: 1; }
 .rc-item { font-size: 16px; font-weight: 800; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rc-date { font-size: 11px; color: var(--ink2); margin-top: 4px; }
+.rc-date { font-size: 12px; color: var(--ink); margin-top: 4px; }
 .rc-price { font-size: 18px; font-weight: 800; white-space: nowrap; }
 .rc-status {
   margin-top: 12px;
@@ -205,12 +216,12 @@ onMounted(load)
 }
 .seal.done { border: 2px solid var(--green); color: var(--green); }
 .seal.ship { border: 2px solid var(--blue); color: var(--blue); animation: blink 1.4s infinite; }
-.seal.grey { border: 2px solid var(--ink2); color: var(--ink2); }
+.seal.grey { border: 2px solid var(--ink); color: var(--ink); }
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
-.rc-hint { font-size: 11px; color: var(--ink2); }
+.rc-hint { font-size: 12px; color: var(--ink); }
 .rc-refund-reason,
 .rc-coupon {
   margin-top: 8px;
@@ -238,15 +249,15 @@ onMounted(load)
   border-bottom: 1px dotted var(--line);
 }
 .kv:last-child { border-bottom: none; }
-.kv span:first-child { color: var(--ink2); flex-shrink: 0; }
+.kv span:first-child { color: var(--ink); flex-shrink: 0; }
 .kv b { font-weight: 700; text-align: right; min-width: 0; word-break: break-all; }
 .kv .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
-.price-was { color: var(--ink2); text-decoration: line-through; font-weight: 400; margin-right: 4px; }
+.price-was { color: var(--ink); text-decoration: line-through; font-weight: 400; margin-right: 4px; }
 .rc-foot {
   margin-top: 12px;
   text-align: center;
   font-size: 11px;
-  color: var(--ink2);
+  color: var(--ink);
   letter-spacing: 1px;
 }
 
@@ -257,11 +268,9 @@ onMounted(load)
   outline-offset: 2px;
 }
 
-/* 减少动态偏好：停掉运输中呼吸闪烁和展开渐显；装饰性 pin/锯齿边用静态定位（transform 会被全局置空） */
+/* 减少动态偏好：停掉运输中呼吸闪烁和展开渐显；静态造型（pin 居中、锯齿边）保持原样 */
 @media (prefers-reduced-motion: reduce) {
   .seal.ship { animation: none; }
   .receipt.open .rc-detail { animation: none; }
-  .pin { margin-left: -9px; }
-  .receipt::before { transform: none; }
 }
 </style>

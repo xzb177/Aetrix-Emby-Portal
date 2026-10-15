@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">衣帽间 · 试衣中</span>
-        <h1>👕 换装</h1>
+        <h1><span aria-hidden="true">👕</span> 换装</h1>
         <p>探险家的衣帽间 —— 点一套看看配色，满意了再点"就穿这套"。</p>
         <!-- R41：原"整个营地跟着换天色"是虚假承诺 —— v4 纸色浅色是既定硬约束（路由强制 light），试穿暗色在 v4 页不可见 -->
       </header>
@@ -46,9 +46,10 @@
         aria-label="穿搭"
       >
       <div class="v4-sec">
-        <div class="v4-sec-title">🎨 营地天色</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🎨</span> 营地天色</div>
         <div class="v4-sec-sub">先试穿，满意了再点"就穿这套"</div>
 
+        <template v-if="outfits.length > 0">
         <div
           v-for="o in outfits"
           :key="o.id"
@@ -59,7 +60,7 @@
           :aria-label="`试穿${o.label}${storedPref === o.id ? '（当前穿着）' : ''}${picked === o.id ? '（试穿中）' : ''}`"
           @click="tryOn(o.id)"
           @keyup.enter="tryOn(o.id)"
-          @keyup.space.prevent="tryOn(o.id)"
+          @keydown.space.prevent="tryOn(o.id)"
         >
           <span v-if="storedPref === o.id" class="now">当前</span>
           <div class="prev" aria-hidden="true">
@@ -69,10 +70,12 @@
           <div class="desc">{{ o.desc }}</div>
           <span class="tick">✓</span>
         </div>
+        </template>
+        <div v-else class="v4-empty">暂时没有可换的配色，稍后再来看看 <span aria-hidden="true">✨</span></div>
       </div>
 
       <div class="note">
-        💡 "跟随天色"会跟着手机的白天黑夜自动换，不用你操心。
+        <span aria-hidden="true">💡</span> "跟随天色"会跟着手机的白天黑夜自动换，不用你操心。
       </div>
       </section>
 
@@ -87,7 +90,10 @@
         <div class="v4-sec-title">🎒 装备库 · 徽章陈列柜</div>
         <div class="v4-sec-sub">探险攒下的徽章都在这儿 —— 点一枚戴上，再点右上角头像就能看到它</div>
         <!-- 加载中 -->
-        <div v-if="badgeLoading" class="v4-skeleton" style="height:200px"></div>
+        <div v-if="badgeLoading" class="badge-wall" role="status" aria-live="polite">
+          <span style="position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0">正在取回徽章…</span>
+          <div v-for="i in 4" :key="i" class="v4-skeleton badge-skel" aria-hidden="true"></div>
+        </div>
         <!-- 加载失败 -->
         <div v-else-if="badgeError" class="v4-err">
           徽章柜没打开：{{ badgeError }}<br>
@@ -95,15 +101,19 @@
         </div>
         <!-- 徽章墙 -->
         <div v-else-if="badges.length > 0" class="badge-wall">
-          <!-- R41：外层不再扮 button —— 内层原生 <button>（戴上/取下）已承接键盘路径，
-               外层只留 @click 供鼠标/触屏点整张卡。locked 卡无内层按钮，仅损失键盘触发"还没解锁"toast（文案已在卡面可见）。 -->
+          <!-- R41/R54：外层是真正的 button（role+tabindex+键盘），未解锁卡的 aria-label 不带真实名/des（防泄底）；
+               内层原生 <button>（戴上/取下）用 @click.stop 承接，键盘两条路径不打架。 -->
           <div
             v-for="b in badges"
             :key="b.key"
             class="badge"
             :class="{ locked: !b.unlocked, worn: wornBadgeKey === b.key }"
-            :aria-label="`${b.name}：${b.unlocked ? b.desc + '，已解锁' : '未解锁，' + b.desc}`"
+            role="button"
+            tabindex="0"
+            :aria-label="b.unlocked ? `${b.name}：${b.desc}，已解锁` : '未解锁的徽章，还没发生的事'"
             @click="onBadgeClick(b)"
+            @keydown.enter.self.prevent="onBadgeClick(b)"
+            @keydown.space.self.prevent="onBadgeClick(b)"
           >
             <span v-if="wornBadgeKey === b.key" class="worn-tag">佩戴中</span>
             <div class="badge-icon" aria-hidden="true">{{ b.unlocked ? b.icon : '🌫️' }}</div>
@@ -132,8 +142,8 @@
         <!-- 空 -->
         <div v-else class="v4-empty">还没有徽章，去探险攒一枚 ✨</div>
         <!-- 新解锁提示 -->
-        <div v-if="newUnlockNames.length > 0" class="v4-fresh" style="margin-top:12px">
-          🎉 新徽章解锁：{{ newUnlockNames.join('、') }}
+        <div v-if="newUnlockNames.length > 0" class="v4-fresh" style="margin-top:12px" role="status" aria-live="polite">
+          <span aria-hidden="true">🎉</span> 新徽章解锁：{{ newUnlockNames.join('、') }}
         </div>
       </div>
       <div class="note">
@@ -195,22 +205,29 @@ const newUnlockNames = computed(() => {
   return newUnlockKeys.value.map((k) => byKey.get(k) || '新成就')
 })
 
+// 并发防护：只让最新一次请求写 badges / newUnlockKeys / badgeError 与 loading（R54-52）
+let badgesReqSeq = 0
+
 async function loadBadges() {
+  const seq = ++badgesReqSeq
   badgeLoading.value = true
   badgeError.value = ''
   try {
     const data = await panelApi.collector()
+    if (seq !== badgesReqSeq) return
     badges.value = Array.isArray(data.achievements) ? data.achievements : []
     newUnlockKeys.value = Array.isArray(data.new_unlocks) ? data.new_unlocks.map(String) : []
     // 佩戴的徽章如果已不在列表里（被管理员下架），自动取下
-    if (wornBadgeKey.value && !badges.value.some((b) => b.key === wornBadgeKey.value && b.unlocked)) {
+    // R54-53：空列表分不清「被下架」与「接口异常返回空」，此时保留佩戴、不删本地记录
+    if (badges.value.length > 0 && wornBadgeKey.value && !badges.value.some((b) => b.key === wornBadgeKey.value && b.unlocked)) {
       wornBadgeKey.value = null
       try { localStorage.removeItem(WORN_BADGE_KEY) } catch { /* 忽略 */ }
     }
   } catch (e) {
+    if (seq !== badgesReqSeq) return
     badgeError.value = humanizeError(e)
   } finally {
-    badgeLoading.value = false
+    if (seq === badgesReqSeq) badgeLoading.value = false
   }
 }
 
@@ -418,6 +435,10 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
 }
+/* R54-55：窄屏 3 列会把正文挤到折行、同行按钮错位，降到 2 列 */
+@media (max-width: 399px) {
+  .badge-wall { grid-template-columns: repeat(2, 1fr); }
+}
 .badge {
   position: relative;
   background: var(--paper-card);
@@ -432,8 +453,16 @@ onBeforeUnmount(() => {
   outline-offset: 2px;
 }
 .badge.locked {
-  opacity: 0.55;
   border-style: dashed;
+  border-color: var(--line);
+}
+/* 骨架占位卡：复用 .badge-wall 栅格，占位高度贴近真实徽章卡，避免数据到达时跳动 */
+.badge-skel {
+  min-height: 132px;
+  border-radius: var(--paper-r-md, 10px);
+}
+.badge.locked .badge-icon {
+  opacity: 0.55;
 }
 .badge.worn {
   border-color: var(--red);
@@ -455,7 +484,7 @@ onBeforeUnmount(() => {
   color: var(--ink2);
   margin-top: 4px;
   line-height: 1.5;
-  min-height: 30px;
+  min-height: 33px;
 }
 .worn-tag {
   position: absolute;
@@ -471,33 +500,21 @@ onBeforeUnmount(() => {
 }
 .wear-btn {
   position: relative;
-  /* 触点 44px+：padding 16px 纵向；负 margin 抵消增量，布局占位与原来一致 */
-  margin: -8px 0 -5px;
+  /* 触点 44px+：药丸由按钮自身边框绘制，触点边界与可见药丸一致，不再用负 margin 侵入上方描述文字 */
+  margin: 0;
+  min-height: 44px;
   font-size: 11px;
   font-weight: 800;
   color: var(--red);
   background: transparent;
-  border: none;
+  border: 1.5px solid var(--red);
   border-radius: var(--paper-r-md, 10px);
-  /* 透明 padding + 负 margin：视觉药丸不变，触点纵向扩大到 44px（R23 .upvote 同款） */
-  padding: 16px 14px;
+  padding: 0 14px;
   cursor: pointer;
   letter-spacing: 1px;
 }
-.wear-btn::before {
-  content: '';
-  position: absolute;
-  top: 10.5px;
-  right: 0;
-  bottom: 10.5px;
-  left: 0;
-  border: 1.5px solid var(--red);
-  border-radius: var(--paper-r-md, 10px);
-}
 .wear-btn.off {
   color: var(--ink2);
-}
-.wear-btn.off::before {
   border-color: var(--line);
 }
 .wear-btn:focus-visible {
@@ -590,6 +607,10 @@ onBeforeUnmount(() => {
   letter-spacing: 2px;
   box-shadow: 0 3px 0 var(--red-deep, #a33319);
   cursor: pointer;
+}
+.confirm button:focus-visible {
+  outline: 2px solid var(--red-deep, #a33319);
+  outline-offset: 2px;
 }
 .confirm button:active { transform: translateY(2px); box-shadow: none; }
 
