@@ -14,6 +14,7 @@ import logging
 import os
 import threading
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -44,9 +45,15 @@ def _ok(data) -> dict:
 
 
 def _greeting() -> str:
-    # 口径：全项目统一用服务器本地 naive 时间（签到"今天"边界 backend/api/economy.py:96
-    # 同口径），不另造时区框架。问候语纯展示，跨时区错位影响极小。
-    h = datetime.now().hour
+    # 生产服务器本地时间为 UTC，直接用 datetime.now() 会把北京时间错位 8 小时
+    # （2026-10-15 生产验收实证：北京时间 19 点显示"上午好"）。
+    # 问候语纯展示，按 Asia/Shanghai 取小时；zoneinfo 不可用时回退旧行为。
+    # 注意：签到"今天"边界（backend/api/economy.py:96）等涉账口径不在此改，
+    # 如需一并对齐需用户拍板。
+    try:
+        h = datetime.now(ZoneInfo("Asia/Shanghai")).hour
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
+        h = datetime.now().hour
     if h < 5:
         return "夜深了"
     if h < 9:

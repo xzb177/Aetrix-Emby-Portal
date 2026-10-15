@@ -369,3 +369,31 @@ def test_today_unsealed_count_contract(db, user):
     assert d["unsealed_count"] == 1
     assert d["streak_days"] == 0
     assert d["letter_readable"] is True
+
+
+# ---------- 问候语时区回归（2026-10-15 生产验收） ----------
+#
+# 根因：生产服务器本地时间为 UTC，_greeting() 用 naive datetime.now().hour，
+# 北京时间 19 点（= UTC 11 点）会显示"上午好"。修复：按 Asia/Shanghai 取小时。
+def _fixed_datetime_at(utc_dt):
+    from datetime import timezone
+
+    class _FixedDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            aware = utc_dt.replace(tzinfo=timezone.utc)
+            return aware.astimezone(tz) if tz is not None else aware.replace(tzinfo=None)
+
+    return _FixedDT
+
+
+def test_greeting_uses_shanghai_not_server_utc(monkeypatch):
+    # UTC 11:00 = 上海 19:00 → 期望"晚上好"；旧代码 naive 取 11 点会给出"上午好"
+    monkeypatch.setattr(panel_api, "datetime", _fixed_datetime_at(datetime(2026, 10, 15, 11, 0, 0)))
+    assert panel_api._greeting() == "晚上好"
+
+
+def test_greeting_morning_boundary_shanghai(monkeypatch):
+    # UTC 00:30 = 上海 08:30 → 期望"早上好"；旧代码 naive 取 0 点会给出"夜深了"
+    monkeypatch.setattr(panel_api, "datetime", _fixed_datetime_at(datetime(2026, 10, 15, 0, 30, 0)))
+    assert panel_api._greeting() == "早上好"
