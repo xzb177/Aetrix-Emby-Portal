@@ -912,29 +912,30 @@ onBeforeUnmount(() => {
   color: var(--paper-on-primary);
 }
 
-/* 能量徽章：顶栏常驻小 pill，显示当前能量，点击进能量账本 */
+/* 能量徽章：顶栏常驻小 pill，显示当前能量，点击进能量账本。
+   2026-10-15 顶栏去圈（方案 A）：去掉胶囊边框和底色，只留图标+数字裸排；
+   边框透明化而非删除，盒子尺寸与 ::after 44px 触点保持不变。 */
 .points-pill {
   position: relative;
   display: inline-flex;
   align-items: center;
   gap: 0.375rem;
   padding: 0.375rem 0.75rem;
-  border: 1px solid var(--paper-line);
+  border: 1px solid transparent;
   border-radius: var(--paper-r-full);
-  background: var(--paper-card-2);
+  background: transparent;
   color: var(--paper-ink-2);
   font-size: 0.8125rem;
   font-weight: 700;
   text-decoration: none;
   white-space: nowrap;
-  transition: border-color var(--paper-fast) var(--paper-ease), color var(--paper-fast) var(--paper-ease);
+  transition: color var(--paper-fast) var(--paper-ease);
 }
 
 /* 触点 44px：::after 透明扩展，胶囊视觉不变（R30 先例） */
 .points-pill::after { content: ""; position: absolute; top: -9px; right: 0; bottom: -9px; left: 0; }
 
 .points-pill:hover {
-  border-color: var(--paper-primary);
   color: var(--paper-ink);
 }
 .points-pill svg {
@@ -946,15 +947,25 @@ onBeforeUnmount(() => {
   color: var(--paper-danger, #ff5c6c); /* 体力=红心（与报到页 ❤️ 体力条统一）；闪电的琥珀色只留给能量 */
 }
 
-/* 消息入口：圆形图标按钮（配方见 .round-btn），有未读时才点一颗小数字 */
+/* 消息入口：2026-10-15 顶栏去圈（方案 A）——去掉圆形边框和底色，只留图标；
+   44px 盒子、点击区域与 .msg-badge 角标位置不变。打开态/未读态只用图标颜色表达，
+   不再引入背景色或边框（.round-btn 基类与 .theme-btn 不动）。 */
 .msg-menu { position: relative; }
 
+.msg-btn {
+  border-color: transparent;
+  background: transparent;
+}
+.msg-btn:hover {
+  border-color: transparent;
+  background: transparent;
+}
 .msg-btn.open {
   color: var(--paper-ink);
-  background: var(--paper-card-3);
-  border-color: var(--paper-line-strong);
+  background: transparent;
+  border-color: transparent;
 }
-.msg-btn.alert { color: var(--paper-warning); border-color: var(--paper-warning-border); }
+.msg-btn.alert { color: var(--paper-warning); border-color: transparent; background: transparent; }
 
 .msg-badge {
   position: absolute;
@@ -979,9 +990,21 @@ onBeforeUnmount(() => {
 
 .user-menu { position: relative; }
 
-/* 头像按钮：与消息按钮同一配方（.round-btn），里面正好嵌一颗 30px 头像
-   （昵称不再出现在顶栏 → 菜单头部那一行仍是完整身份展示） */
-.user-btn { padding: 6px; }
+/* 头像按钮：2026-10-15 顶栏去圈（方案 A）——去掉圆形边框和底色；
+   里面 30px 头像由圆形改圆角方（限定 .user-btn 内，下拉菜单头部的
+   .dropdown-avatar 保持圆形）；金色底、白色字母、右上小圆点保留。 */
+.user-btn {
+  padding: 6px;
+  border-color: transparent;
+  background: transparent;
+}
+.user-btn:hover {
+  border-color: transparent;
+  background: transparent;
+}
+.user-btn .avatar {
+  border-radius: 10px;
+}
 
 /* 头像右上角的未读点（只在 ≤420px 消息铃铛隐藏时出现） */
 .avatar-dot {
