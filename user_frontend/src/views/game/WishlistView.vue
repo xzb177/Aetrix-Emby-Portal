@@ -96,14 +96,74 @@
           placeholder="比如：《深海之间》"
           maxlength="30"
           @keyup.enter="throwWish"
-          @input="emptyWarn = false"
+          @input="onWishInput"
         >
         <div v-if="emptyWarn" class="wish-warn">先写下心愿，再投进池子吧 ✍️</div>
+
+        <div v-if="showCandidates" class="seek-cands">
+          <div v-if="searching" class="seek-status">正在池子里捞片名…🎣</div>
+          <div v-else-if="searchError" class="seek-error">{{ searchError }}</div>
+          <template v-else>
+            <div v-if="searchDegraded" class="seek-degraded">搜索结果可能不全</div>
+            <div class="cand-list">
+              <button
+                v-for="c in candidates"
+                :key="c.kind + ':' + c.tmdb_id"
+                type="button"
+                class="cand"
+                @click="selectCandidate(c)"
+              >
+                <img v-if="c.poster_url" :src="c.poster_url" :alt="c.name" class="cand-poster">
+                <span v-else class="cand-ph">🎬</span>
+                <span class="cand-main">
+                  <b>{{ c.name }}</b>
+                  <span class="cand-meta">{{ c.year }} · {{ c.kind === 'movie' ? '电影' : '剧集' }}</span>
+                </span>
+                <span class="cand-badges">
+                  <span v-if="c.rating" class="chip gray">★ {{ c.rating }}</span>
+                  <span v-if="c.in_library" class="chip green">已在库</span>
+                </span>
+              </button>
+            </div>
+          </template>
+        </div>
+
+        <div v-if="picked" class="picked-card">
+          <img v-if="picked.poster_url" :src="picked.poster_url" :alt="picked.name" class="picked-poster">
+          <span v-else class="picked-ph">🎬</span>
+          <div class="picked-info">
+            <b>{{ picked.name }}</b>
+            <span class="picked-meta">{{ picked.year }} · {{ picked.kind === 'movie' ? '电影' : '剧集' }}</span>
+          </div>
+          <button type="button" class="picked-change" @click="clearPick">换一部</button>
+        </div>
+
+        <div v-if="picked && picked.kind === 'series' && !picked.in_library && seasons.length > 0" class="sels-box">
+          <div class="sels-label">选季（可多选）</div>
+          <div class="sels-row">
+            <button
+              type="button"
+              class="sels-chip"
+              :class="{ on: seasonAll }"
+              @click="toggleSeasonAll"
+            >全季</button>
+            <button
+              v-for="s in seasons"
+              :key="s.season_number"
+              type="button"
+              class="sels-chip"
+              :class="{ on: chosenSeasons.includes(s.season_number) }"
+              @click="toggleSeason(s.season_number)"
+            >第{{ s.season_number }}季（共{{ s.episode_count }}集）</button>
+          </div>
+          <div v-if="loadingSeasons" class="sels-loading">正在数有几季…</div>
+        </div>
+
+        <div v-if="hasTypedName" class="seek-fallback">没找到？就按「{{ wishText.trim() }}」这个名字投</div>
+
         <div class="mrow">
           <button class="mbtn cancel" @click="closeModal">再想想</button>
-          <button class="mbtn go" :disabled="throwing" @click="throwWish">
-            {{ throwing ? '投放中' : '⛵ 投进池子' }}
-          </button>
+          <button class="mbtn go" :disabled="throwing" @click="throwWish">{{ primaryBtnText }}</button>
         </div>
       </div>
     </div>
@@ -115,7 +175,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { facilityStamp } from '@/config/game'
-import { mediaSeekApi, type MediaSeekRequest, type HotMediaSeekRequest } from '@/api'
+import { mediaSeekApi, type MediaSeekCandidate, type TvSeason, type MediaSeekRequest, type HotMediaSeekRequest } from '@/api'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
 
@@ -197,6 +257,134 @@ function openModal() {
   window.addEventListener('keydown', onEsc)
   nextTick(() => wishInput.value?.focus())
 }
+/* 智能选片：输入防抖搜 TMDB 候选，选中后带 tmdb_id/year/type/season 提交 */
+const searching = ref<boolean>(false)
+const searchError = ref<string>('')
+const searchReady = ref<boolean>(true)
+const searchDegraded = ref<boolean>(false)
+const candidates = ref<MediaSeekCandidate[]>([])
+const picked = ref<MediaSeekCandidate | null>(null)
+const seasons = ref<TvSeason[]>([])
+const loadingSeasons = ref<boolean>(false)
+const seasonAll = ref<boolean>(true)
+const chosenSeasons = ref<number[]>([])
+
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+let searchSeq = 0
+
+const showCandidates = computed<boolean>(() => (
+  !picked.value
+  && searchReady.value
+  && (searching.value || searchError.value !== '' || candidates.value.length > 0)
+))
+
+const hasTypedName = computed<boolean>(() => !picked.value && wishText.value.trim() !== '')
+
+const primaryBtnText = computed<string>(() => {
+  if (throwing.value) return '投放中'
+  if (picked.value && picked.value.in_library) return '🎬 已在库，去播放器看'
+  return '⛵ 投进池子'
+})
+
+const seasonParam = computed<string | undefined>(() => {
+  const p = picked.value
+  if (!p || p.kind !== 'series' || p.in_library) return undefined
+  if (seasons.value.length === 0) return undefined
+  if (seasonAll.value) return 'all'
+  if (chosenSeasons.value.length === 0) return undefined
+  return [...chosenSeasons.value].sort((a, b) => a - b).join(',')
+})
+
+function onWishInput(): void {
+  emptyWarn.value = false
+  picked.value = null
+  seasons.value = []
+  chosenSeasons.value = []
+  seasonAll.value = true
+  if (searchTimer !== undefined) {
+    clearTimeout(searchTimer)
+    searchTimer = undefined
+  }
+  const q = wishText.value.trim()
+  if (!q) {
+    candidates.value = []
+    searching.value = false
+    searchError.value = ''
+    return
+  }
+  searchTimer = setTimeout(() => { void runSearch(q) }, 350)
+}
+
+async function runSearch(q: string): Promise<void> {
+  const seq = ++searchSeq
+  searching.value = true
+  searchError.value = ''
+  try {
+    const r = await mediaSeekApi.search(q)
+    if (seq !== searchSeq) return
+    searchReady.value = r.configured
+    // 后端暂不返回 degraded，运行时兼容读取：以后加了才生效
+    searchDegraded.value = (r as { degraded?: boolean }).degraded === true
+    candidates.value = r.configured ? (r.results || []) : []
+  } catch {
+    if (seq !== searchSeq) return
+    searchError.value = '没捞到候选，再输一个字试试'
+  } finally {
+    if (seq === searchSeq) searching.value = false
+  }
+}
+
+function selectCandidate(c: MediaSeekCandidate): void {
+  if (searchTimer !== undefined) {
+    clearTimeout(searchTimer)
+    searchTimer = undefined
+  }
+  picked.value = c
+  candidates.value = []
+  searching.value = false
+  searchError.value = ''
+  if (c.kind === 'series' && !c.in_library) {
+    void loadSeasons(c.tmdb_id)
+  }
+}
+
+async function loadSeasons(tmdbId: string): Promise<void> {
+  loadingSeasons.value = true
+  try {
+    const r = await mediaSeekApi.seasons(tmdbId)
+    seasons.value = r.seasons || []
+  } catch {
+    seasons.value = []
+  } finally {
+    loadingSeasons.value = false
+  }
+}
+
+function clearPick(): void {
+  picked.value = null
+  seasons.value = []
+  chosenSeasons.value = []
+  seasonAll.value = true
+  const q = wishText.value.trim()
+  if (q) void runSearch(q)
+}
+
+function toggleSeasonAll(): void {
+  seasonAll.value = true
+  chosenSeasons.value = []
+}
+
+function toggleSeason(n: number): void {
+  seasonAll.value = false
+  const i = chosenSeasons.value.indexOf(n)
+  if (i >= 0) {
+    chosenSeasons.value.splice(i, 1)
+  } else {
+    chosenSeasons.value.push(n)
+  }
+  if (chosenSeasons.value.length === 0) seasonAll.value = true
+}
+
 function closeModal() {
   modalOpen.value = false
   wishText.value = ''
@@ -204,6 +392,22 @@ function closeModal() {
   document.body.style.overflow = ''
   window.removeEventListener('keydown', onEsc)
   lastTrigger.value?.focus?.()
+  // 智能选片状态复位：作废在飞行请求
+  searchSeq++
+  if (searchTimer !== undefined) {
+    clearTimeout(searchTimer)
+    searchTimer = undefined
+  }
+  searching.value = false
+  searchError.value = ''
+  candidates.value = []
+  picked.value = null
+  seasons.value = []
+  loadingSeasons.value = false
+  seasonAll.value = true
+  chosenSeasons.value = []
+  searchReady.value = true
+  searchDegraded.value = false
 }
 onUnmounted(() => {
   document.body.style.overflow = ''
@@ -236,12 +440,28 @@ async function loadHot() {
 }
 
 async function throwWish() {
-  const name = wishText.value.trim()
+  // 选中已在库候选：不占求片额度，直接引导去播放器
+  if (picked.value && picked.value.in_library) {
+    closeModal()
+    goOperator()
+    return
+  }
+  const name = picked.value ? picked.value.name : wishText.value.trim()
   if (!name) { emptyWarn.value = true; return }
   if (throwing.value) return
   throwing.value = true
   try {
-    const r = await mediaSeekApi.create({ movie_name: name })
+    const p = picked.value
+    const payload = p
+      ? {
+          movie_name: p.name,
+          year: p.year,
+          type: p.kind,
+          tmdb_id: p.tmdb_id,
+          ...(seasonParam.value ? { season: seasonParam.value } : {}),
+        }
+      : { movie_name: name }
+    const r = await mediaSeekApi.create(payload)
     closeModal()
     flyBoat(() => {
       // 动画结束后刷新列表并高亮新愿望
@@ -545,6 +765,127 @@ onMounted(() => {
 .mbtn.cancel { background: var(--paper2); color: var(--ink2); }
 .mbtn.go { background: var(--red); color: var(--on-dark, #fff); box-shadow: 0 3px 0 var(--red-deep, #a33319); }
 .mbtn.go:disabled { background: var(--ink2); box-shadow: none; }
+
+/* 智能选片：候选/已选/季选择（纸色风格，scoped） */
+.seek-cands { margin-top: 10px; }
+.seek-status { font-size: 12px; color: var(--ink2); }
+.seek-error { font-size: 12px; color: var(--red); }
+.seek-degraded { font-size: 11px; color: var(--ink2); margin-bottom: 6px; }
+.seek-fallback { font-size: 11px; color: var(--ink2); margin-top: 10px; }
+.cand-list {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  background: var(--paper);
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+  width: 100%;
+}
+.cand:active { transform: scale(0.98); }
+.cand-poster {
+  width: 40px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+}
+.cand-ph {
+  width: 40px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  background: var(--paper2);
+  border-radius: 8px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+}
+.cand-main { flex: 1; min-width: 0; }
+.cand-main b {
+  display: block;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cand-meta { font-size: 11px; color: var(--ink2); margin-top: 2px; display: block; }
+.cand-badges { display: flex; gap: 4px; flex-shrink: 0; }
+.picked-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  background: var(--paper2);
+  border: 1.5px solid var(--gold);
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+.picked-poster {
+  width: 40px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 8px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+}
+.picked-ph {
+  width: 40px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  background: var(--paper2);
+  border-radius: 8px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+}
+.picked-info { flex: 1; min-width: 0; }
+.picked-info b {
+  display: block;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.picked-meta { font-size: 11px; color: var(--ink2); margin-top: 2px; display: block; }
+.picked-change {
+  font-size: 12px;
+  color: var(--blue);
+  background: transparent;
+  border: 1px solid var(--blue);
+  border-radius: 20px;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sels-box { margin-top: 10px; }
+.sels-label { font-size: 12px; color: var(--ink2); margin-bottom: 6px; }
+.sels-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.sels-chip {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: var(--paper);
+  color: var(--ink2);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.sels-chip.on { background: var(--ink); color: var(--paper-card); border-color: var(--ink); }
+.sels-loading { font-size: 11px; color: var(--ink2); margin-top: 6px; }
 
 /* R27：减少动态偏好下装饰动画停掉（本地守卫） */
 @media (prefers-reduced-motion: reduce) {
