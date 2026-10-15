@@ -249,6 +249,9 @@ class WebUser(Base):
     # 会员等级（P1 统一货币体系）：经验值只来自真实充值/有效邀请，等级由阈值推导并缓存
     member_xp = Column(Integer, default=0, nullable=False, server_default="0")  # 会员经验值
     member_level = Column(Integer, default=1, nullable=False, server_default="1")  # 缓存的当前等级（1-6）
+    # 佩戴中的成就徽章 key（panel_achievement_defs.key）；空 = 没戴。
+    # 佩戴状态属于账号不属于浏览器：换设备跟着账号走，换账号不串号。
+    worn_badge_key = Column(String(64), nullable=True)
     # 活力值（C1 竞品借鉴）：公益服用户每日 00:00 扣 1，上限/阈值/兑换率全部可配；
     # 低于阈值限制观影，耗尽（0）即休眠，签到/续活力后自动恢复。老库补列默认满值。
     vitality = Column(Integer, default=14, nullable=False, server_default="14")

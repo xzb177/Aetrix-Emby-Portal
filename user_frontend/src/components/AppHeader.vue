@@ -301,28 +301,13 @@ function toggleUserMenu() {
   msgMenuOpen.value = false
   userMenuOpen.value = !userMenuOpen.value
   if (userMenuOpen.value) {
-    readWornBadge()
     anchorDropdown(userMenuRef.value)
   }
 }
 
-/** 佩戴中的徽章（OutfitView 装备库徽章墙写入 localStorage，键 aetrix_worn_badge_v1）。
- *  每次打开头像菜单时重读 —— 用户可能刚在换装页戴上/取下。 */
-interface WornBadge { key: string; name: string; icon: string }
-const wornBadge = ref<WornBadge | null>(null)
-function readWornBadge(): void {
-  let raw: string | null = null
-  try { raw = localStorage.getItem('aetrix_worn_badge_v1') } catch { /* 隐私模式读不到 */ }
-  if (!raw) { wornBadge.value = null; return }
-  try {
-    const o = JSON.parse(raw)
-    // JSON 编码的字符串写法（带引号）兼容
-    wornBadge.value = typeof o === 'string' ? { key: o, name: '', icon: '' } : (o && o.key ? o : null)
-  } catch {
-    // 最旧版直接存裸 key（不是 JSON，parse 必抛）——裸 key 即 key 本身
-    wornBadge.value = { key: raw, name: '', icon: '' }
-  }
-}
+/** 佩戴中的徽章（后端存账号，随登录出参进 store；换账号天然不串、
+ *  换设备也在。旧版只存浏览器本地的写法已废弃，见 OutfitView 的一次性迁移） */
+const wornBadge = computed(() => userStore.user?.worn_badge ?? null)
 
 function toggleMsgMenu() {
   userMenuOpen.value = false
