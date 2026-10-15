@@ -1870,7 +1870,7 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
     return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
 
-@json_route(emby_router, "/emby/Users/{user_id}/Items", "/Users/{user_id}/Items")
+@json_route(emby_router, "/emby/Users/{user_id}/Items", "/Users/{user_id}/Items", "/emby/Items", "/Items")
 def get_items(
     request: Request,
     user: models.WebUser = Depends(get_emby_user),
