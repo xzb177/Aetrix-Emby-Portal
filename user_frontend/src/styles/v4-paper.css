@@ -252,6 +252,7 @@ html[data-theme='light'] {
 .v4-loghead p {
   color: var(--ink2);
   font-size: 13px;
+  line-height: 1.6;
   margin: 6px 0 0;
 }
 .v4-fire {
