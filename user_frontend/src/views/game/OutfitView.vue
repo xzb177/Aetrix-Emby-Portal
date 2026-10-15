@@ -204,6 +204,7 @@ const badgeLoading = ref(true)
 const badgeError = ref('')
 const newUnlockKeys = ref<string[]>([])
 const wornBadgeKey = ref<string | null>(null)
+const badgeOpPending = ref(false)
 
 const newUnlockNames = computed(() => {
   if (newUnlockKeys.value.length === 0) return []
@@ -252,6 +253,8 @@ async function migrateLegacyWornBadge(serverWorn: WornBadge | null | undefined) 
     clearLegacyWornBadgeKey()
     return
   }
+  if (badgeOpPending.value) return
+  badgeOpPending.value = true
   try {
     const res = await panelApi.setWornBadge(legacyKey)
     wornBadgeKey.value = res.worn_badge?.key ?? legacyKey
@@ -260,9 +263,12 @@ async function migrateLegacyWornBadge(serverWorn: WornBadge | null | undefined) 
     })
     clearLegacyWornBadgeKey()
   } catch { /* 迁移失败静默，下次再试 */ }
+  finally { badgeOpPending.value = false }
 }
 
 async function wearBadge(b: Achievement) {
+  if (badgeOpPending.value) return
+  badgeOpPending.value = true
   try {
     const res = await panelApi.setWornBadge(b.key)
     wornBadgeKey.value = res.worn_badge?.key ?? b.key
@@ -272,10 +278,14 @@ async function wearBadge(b: Achievement) {
     toast.success(`戴上了 ${b.icon}${b.name} 徽章`)
   } catch (e) {
     toast.error(humanizeError(e))
+  } finally {
+    badgeOpPending.value = false
   }
 }
 
 async function unwearBadge() {
+  if (badgeOpPending.value) return
+  badgeOpPending.value = true
   try {
     await panelApi.setWornBadge(null)
     wornBadgeKey.value = null
@@ -284,6 +294,8 @@ async function unwearBadge() {
     toast.info('已取下徽章')
   } catch (e) {
     toast.error(humanizeError(e))
+  } finally {
+    badgeOpPending.value = false
   }
 }
 
@@ -558,6 +570,10 @@ onBeforeUnmount(() => {
 .wear-btn:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
+}
+.wear-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* 服装卡：设计稿 game-theme.html 原值 */
