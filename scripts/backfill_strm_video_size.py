@@ -13,7 +13,7 @@
 - 只碰 item_type in (movie, episode) 且 file_path 以 .strm 结尾的行；
   series/season 容器行 size=0 是设计，不碰。
 - join 键：strm_gen_files.strm_path = substring(emby_items.file_path from 7)
- （去掉 "/strm/" 前缀），与诊断报告生产验证的口径一致。
+ （去掉 "/strm/" 前缀）；非 /strm/ 路径用原路径，与诊断报告生产验证的口径一致。
 - 只在账本 size > 64KB（视频口径）时写；账本无此文件、或账本 size 仍是纸条
   口径 → 保持现状，不乱填。纸条大小以外的东西绝不反写。
 
@@ -34,7 +34,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import func, or_  # noqa: E402
+from sqlalchemy import case, func, or_  # noqa: E402
 
 from backend.database import SessionLocal  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
@@ -48,8 +48,11 @@ def _stub_caliber():
 
 
 def _rel_path():
-    """去掉 "/strm/" 前缀的相对路径（与 strm_gen_files.strm_path 对齐）"""
-    return func.substring(em.MediaItem.file_path, 7)
+    """去掉 "/strm/" 前缀的相对路径（与 strm_gen_files.strm_path 对齐；非 /strm/ 路径用原路径）"""
+    return case(
+        (em.MediaItem.file_path.startswith("/strm/"), func.substring(em.MediaItem.file_path, 7)),
+        else_=em.MediaItem.file_path,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,18 +94,15 @@ def main() -> int:
             db.query(func.count(em.MediaItem.id))
             .filter(em.MediaItem.item_type.in_(["movie", "episode"]))
             .filter(em.MediaItem.merged_into_id.is_(None))
-            .filter(em.MediaItem.file_path.like("%.strm"))
+            .filter(func.lower(em.MediaItem.file_path).like("%.strm"))
             .filter(_stub_caliber())
             .filter(ledger_exists)
             .scalar()
         ) or 0
     finally:
         db.close()
-    if args.limit:
-        total = min(total, args.limit)
-
     mode = "APPLY" if args.apply else "DRY-RUN"
-    print(f"[{mode}] 待回填 size 的 .strm 条目：{total} 条（纸条口径且账本有视频口径）")
+    print(f"[{mode}] 开始扫描纸条口径 .strm 条目（其中账本有视频口径约 {total} 条）")
     if not total:
         return 0
 
@@ -113,12 +113,12 @@ def main() -> int:
     db = SessionLocal()
     t0 = time.time()
     try:
-        while done < total:
+        while True:
             batch = (
                 db.query(em.MediaItem.id, _rel_path().label("rel"))
                 .filter(em.MediaItem.item_type.in_(["movie", "episode"]))
                 .filter(em.MediaItem.merged_into_id.is_(None))
-                .filter(em.MediaItem.file_path.like("%.strm"))
+                .filter(func.lower(em.MediaItem.file_path).like("%.strm"))
                 .filter(_stub_caliber())
                 .filter(em.MediaItem.id > last_id)
                 .order_by(em.MediaItem.id)
@@ -146,7 +146,7 @@ def main() -> int:
             if args.apply:
                 db.commit()
             el = time.time() - t0
-            print(f"  …{done}/{total}  可回填 {fixed}  无账本 {skipped}  "
+            print(f"  …已扫描 {done}  可回填 {fixed}  无账本 {skipped}  "
                   f"本批写入 {n_batch}  用时 {el:.0f}s")
             if args.limit and done >= args.limit:
                 break

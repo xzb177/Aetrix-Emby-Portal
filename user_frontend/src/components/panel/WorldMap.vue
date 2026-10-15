@@ -722,11 +722,6 @@ const lbMyRank = computed(() => lbData.value?.my_rank ?? null)
 const lbScopeText = computed(() =>
   lbPeriod.value === 'day' ? '今日（自然日）· 全服' : '本周（自然周）· 全服',
 )
-const lbUnitText = computed(() =>
-  lbBoard.value === 'hot'
-    ? (lbPeriod.value === 'day' ? '今日播放' : '本周播放')
-    : (lbPeriod.value === 'day' ? '今日观影' : '本周观影'),
-)
 
 const steleSub = computed(() => {
   if (!steleLoaded.value) return '观影碑'
