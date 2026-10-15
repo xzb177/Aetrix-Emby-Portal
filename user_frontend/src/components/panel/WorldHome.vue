@@ -596,19 +596,14 @@ onUnmounted(() => {
 
 <style scoped>
 .world-root {
-  --bg: #F6F1E7;
-  --card: #FFFDF6;
-  --paper2: #FBF7EC;
+  /* 世界根不在 .v4-scope 内，纸色 token 取不到，就地同步定义（与 v4-paper.css .v4-scope 同值，改值只改那边）；无全局同名的色值/阴影直接写字面值 */
+  --paper-card: #FFFDF6;
   --ink: #2A2620;
   --ink2: #6B6257;
   --line: #D8CDB8;
-  --amber: #e8a84a;
-  --amber-strong: #a06c24;
-  --amber-soft: rgba(185, 128, 47, .12);
+  --paper-primary: #e8a84a;
   --red: #D9482B;
-  --blue: #2E5FA3;
   --green: #4A7C59;
-  --shadow: 0 2px 4px rgba(42, 38, 32, .08), 0 12px 32px rgba(42, 38, 32, .13);
 
   height: 100dvh;
   display: flex;
@@ -656,7 +651,7 @@ onUnmounted(() => {
 }
 
 .hud .brand b {
-  color: var(--amber-strong);
+  color: #a06c24;
 }
 
 .hud .worldname {
@@ -693,13 +688,13 @@ button.pill {
 }
 
 .pill.amber {
-  background: var(--amber-soft);
+  background: rgba(185, 128, 47, .12);
   border-color: rgba(185, 128, 47, .35);
-  color: var(--amber-strong);
+  color: #a06c24;
 }
 
 .pill .lv {
-  color: var(--amber-strong);
+  color: #a06c24;
 }
 
 .avatar {
@@ -715,7 +710,7 @@ button.pill {
   font-size: 0.94cqw;
   font-family: inherit;
   border: 2px solid #FFFDF6;
-  box-shadow: var(--shadow);
+  box-shadow: 0 2px 4px rgba(42, 38, 32, .08), 0 12px 32px rgba(42, 38, 32, .13);
   cursor: pointer;
   padding: 0;
 }
@@ -738,9 +733,9 @@ button.pill {
   height: 4.31cqw;
   margin: 0 auto;
   border-radius: 1.39cqw;
-  background: var(--card);
+  background: var(--paper-card);
   border: 1.5px solid var(--line);
-  box-shadow: var(--shadow);
+  box-shadow: 0 2px 4px rgba(42, 38, 32, .08), 0 12px 32px rgba(42, 38, 32, .13);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -757,7 +752,7 @@ button.pill {
   transform: translateX(-50%) rotate(45deg);
   width: 0.90cqw;
   height: 0.90cqw;
-  background: var(--card);
+  background: var(--paper-card);
   border-right: 1.5px solid var(--line);
   border-bottom: 1.5px solid var(--line);
 }
@@ -813,7 +808,7 @@ button.pill {
 .classic:focus-visible,
 .quest .q:focus-visible,
 .w-sheet-close:focus-visible {
-  outline: 2px solid var(--amber-strong);
+  outline: 2px solid #a06c24;
   outline-offset: 2px;
 }
 
@@ -859,7 +854,7 @@ button.pill {
   background: rgba(255, 253, 246, .94);
   border: 1px solid var(--line);
   border-radius: 1.11cqw;
-  box-shadow: var(--shadow);
+  box-shadow: 0 2px 4px rgba(42, 38, 32, .08), 0 12px 32px rgba(42, 38, 32, .13);
   padding: 0.97cqw 1.11cqw;
   z-index: 30;
 }
@@ -906,7 +901,7 @@ button.pill {
   background: rgba(255, 253, 246, .94);
   border: 1px solid var(--line);
   border-radius: 1.11cqw;
-  box-shadow: var(--shadow);
+  box-shadow: 0 2px 4px rgba(42, 38, 32, .08), 0 12px 32px rgba(42, 38, 32, .13);
   padding: 0.97cqw 1.11cqw;
   z-index: 30;
 }
@@ -963,7 +958,7 @@ button.pill {
 .quest .q .rw {
   margin-left: auto;
   font-size: 0.83cqw;
-  color: var(--amber-strong);
+  color: #a06c24;
   font-weight: 700;
 }
 
@@ -978,7 +973,7 @@ button.pill {
 .quest .bar i {
   display: block;
   height: 100%;
-  background: var(--amber);
+  background: var(--paper-primary);
   border-radius: 99px;
   transition: width .3s ease;
 }
@@ -991,7 +986,7 @@ button.pill {
   background: rgba(255, 253, 246, .94);
   border: 1px solid var(--line);
   border-radius: 1.11cqw;
-  box-shadow: var(--shadow);
+  box-shadow: 0 2px 4px rgba(42, 38, 32, .08), 0 12px 32px rgba(42, 38, 32, .13);
   padding: 0.97cqw 1.25cqw;
   max-width: 22.92cqw;
 }
