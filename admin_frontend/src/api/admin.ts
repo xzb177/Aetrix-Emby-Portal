@@ -549,6 +549,23 @@ export const updateAnnouncement = (id: number, data: Partial<{ title: string; co
 
 export const deleteAnnouncement = (id: number) => del<{ success: boolean }>(`/announcements/${id}`)
 
+// ==================== 探险世界 · 到此一游留言墙 ====================
+
+export interface WallPost {
+  id: number
+  user_id: number
+  nickname: string
+  content: string
+  is_hidden: boolean
+  created_at: string | null
+}
+
+export const fetchWallPosts = (limit = 50) =>
+  get<{ posts: WallPost[] }>('/wall-posts', { limit }).then((d) => d.posts)
+
+export const deleteWallPost = (id: number) =>
+  del<{ success: boolean; message: string }>(`/wall-posts/${id}`)
+
 // ==================== 探险预告 · 保密新大陆（揭晓位配置） ====================
 
 /** 揭晓位配置（后端 GET/PUT /api/admin/teaser-config；字段见 backend/emby_server/teaser.py） */

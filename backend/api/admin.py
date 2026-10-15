@@ -891,6 +891,56 @@ def delete_announcement(
     return {"success": True, "message": "公告删除成功"}
 
 
+# ==================== 探险世界 · 到此一游留言墙管理 ====================
+
+@admin_router.get("/wall-posts")
+def list_wall_posts(
+    limit: int = 50,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """留言墙管理：最新留言列表（含已隐藏）"""
+    from backend.emby_server import models as em
+    rows = (
+        db.query(em.WorldWallPost)
+        .order_by(em.WorldWallPost.created_at.desc())
+        .limit(max(1, min(limit, 200)))
+        .all()
+    )
+    return {
+        "posts": [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "nickname": r.nickname,
+                "content": r.content,
+                "is_hidden": bool(r.is_hidden),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@admin_router.delete("/wall-posts/{post_id}")
+def delete_wall_post(
+    post_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """留言墙管理：删除留言（软删除=隐藏，不物理删）"""
+    from backend.emby_server import models as em
+    post = db.query(em.WorldWallPost).filter(em.WorldWallPost.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="留言不存在")
+    post.is_hidden = True
+    db.commit()
+    _audit(db, current_admin, "delete_wall_post", "wall_post",
+           post_id, {"nickname": post.nickname})
+    db.commit()
+    return {"success": True, "message": "留言已删除"}
+
+
 # ==================== 探险预告 · 保密新大陆（揭晓位配置）====================
 
 class TeaserConfigSaveRequest(BaseModel):

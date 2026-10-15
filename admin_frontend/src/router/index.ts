@@ -44,6 +44,8 @@ const routes: RouteRecordRaw[] = [
       // 访问拦截：UA 关键词 + IP 归属地。全站级开关，默认全关，仅超管可改。
       { path: 'access-guard', name: 'AccessGuard', component: () => import('@/views/AccessGuard.vue'), meta: { title: '访问拦截' } },
       { path: 'announcements', name: 'Announcements', component: () => import('@/views/Announcements.vue'), meta: { title: '公告管理' } },
+      // 探险世界 · 到此一游留言墙管理
+      { path: 'wall-posts', name: 'WallPosts', component: () => import('@/views/WallPosts.vue'), meta: { title: '留言墙管理' } },
       { path: 'tickets', name: 'Tickets', component: () => import('@/views/Tickets.vue'), meta: { title: '工单' } },
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
       // 公益服：抽奖配置 / 积分配置（v2.55 公益用户页已并入用户管理，求片审核页已合并）

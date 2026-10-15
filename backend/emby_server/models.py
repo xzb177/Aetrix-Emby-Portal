@@ -5,6 +5,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -462,6 +463,37 @@ class PlaybackSession(Base):
     position_ticks = Column(BigInteger, default=0)
     is_paused = Column(Boolean, default=False)
     ended_at = Column(DateTime)
+
+
+class WorldWallPost(Base):
+    """探险世界 · 到此一游留言墙"""
+    __tablename__ = "world_wall_posts"
+    __table_args__ = (Index("ix_world_wall_posts_created", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("web_users.id"), nullable=False, index=True)
+    nickname = Column(String(50))  # 留言时的用户名快照（展示用）
+    content = Column(String(200), nullable=False)
+    is_hidden = Column(Boolean, default=False, nullable=False, server_default="0")  # 后台删除=隐藏
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class WorldFortuneDraw(Base):
+    """探险世界 · 每日抽一签记录"""
+    __tablename__ = "world_fortune_draws"
+    __table_args__ = (
+        Index("idx_fortune_user_date", "user_id", "draw_date", unique=True),
+        Index("idx_fortune_date", "draw_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("web_users.id"), nullable=False, index=True)
+    draw_date = Column(Date, nullable=False)  # 抽签日期（自然日，Asia/Shanghai）
+    level = Column(String(20))  # 等级：上上签/上签/中签/下签
+    text = Column(String(200))  # 签文
+    yi = Column(String(100))  # 宜
+    ji = Column(String(100))  # 忌
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class ItemFacet(Base):

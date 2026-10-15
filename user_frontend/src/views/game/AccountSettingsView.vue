@@ -83,6 +83,31 @@
         </div>
       </section>
 
+      <!-- 隐私设置：观影碑时长榜上榜开关（存账号） -->
+      <section class="v4-sec" aria-label="隐私设置">
+        <div class="v4-sec-title"><span aria-hidden="true">🙈</span> 隐私设置</div>
+        <div class="v4-sec-sub">谁能在榜单上看到你，你说了算</div>
+        <div class="v4-card">
+          <div class="srv-row">
+            <div class="srv-info">
+              <div class="srv-name">观影碑时长榜上榜</div>
+              <div class="srv-tag">打开后，你的观影时长会出现在世界观影碑的时长榜上（只显示昵称）；关掉则不上榜，但你自己仍能看到自己的排名</div>
+            </div>
+            <button
+              type="button"
+              class="srv-switch"
+              :class="{ 'is-on': showOnLeaderboard }"
+              :disabled="privacyLoading"
+              role="switch"
+              :aria-checked="showOnLeaderboard"
+              aria-label="观影碑时长榜上榜"
+              @click="toggleLeaderboard"
+            ></button>
+          </div>
+          <p v-if="privacyError" class="srv-empty">{{ privacyError }}<button class="v4-retry" @click="loadPrivacy">重试</button></p>
+        </div>
+      </section>
+
       <!-- 我的设备：第三方播放器登录设备列表 / 移除（顶上限自救通道，deviceApi） -->
       <section class="v4-sec" aria-label="我的设备">
         <div class="v4-sec-title"><span aria-hidden="true">📱</span> 我的设备</div>
@@ -209,6 +234,7 @@ import { useToast } from '@/composables/useToast'
 import { useServerCards, type ServerCardItem } from '@/composables/useServerCards'
 import { useServerCardPrefs, type ServerCardMode } from '@/composables/useServerCardPrefs'
 import { humanizeError } from '@/composables/usePanelApi'
+import { panelApi } from '@/composables/usePanelApi'
 import { toastCopy, confirmCopy } from '@/constants/toastMessages'
 import { toUserMessage } from '@/utils/toUserMessage'
 
@@ -438,9 +464,43 @@ function serverTagText(s: ServerCardItem): string {
   return ACCESS_LABEL[s.accessMode]
 }
 
+/* ---------- 隐私：观影碑时长榜上榜（存账号） ---------- */
+const showOnLeaderboard = ref(true)
+const privacyLoading = ref(false)
+const privacyError = ref('')
+
+async function loadPrivacy() {
+  privacyLoading.value = true
+  privacyError.value = ''
+  try {
+    const d = await panelApi.privacyGet()
+    showOnLeaderboard.value = d.show_on_leaderboard !== false
+  } catch (e) {
+    privacyError.value = humanizeError(e)
+  } finally {
+    privacyLoading.value = false
+  }
+}
+
+async function toggleLeaderboard() {
+  if (privacyLoading.value) return
+  const next = !showOnLeaderboard.value
+  privacyLoading.value = true
+  try {
+    const d = await panelApi.privacySet(next)
+    showOnLeaderboard.value = d.show_on_leaderboard !== false
+    toast.success(next ? '已允许上榜' : '已关掉上榜')
+  } catch (e) {
+    toast.error(humanizeError(e))
+  } finally {
+    privacyLoading.value = false
+  }
+}
+
 onMounted(() => {
   loadSubs()
   loadDevices()
+  loadPrivacy()
   if (!serversLoading.value && !servers.value.length) void loadServers()
 })
 </script>

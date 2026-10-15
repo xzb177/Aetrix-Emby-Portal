@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { panelApi, humanizeError } from '@/composables/usePanelApi'
+import type { BoardData } from '@/composables/usePanelApi'
 
 /**
  * v4 面板数据 store（PR-2 地基）
@@ -26,6 +27,7 @@ export const usePanelStore = defineStore('panel', () => {
   const parcels = ref<CacheEntry>(freshEntry())
   const pulse = ref<CacheEntry>(freshEntry())
   const letter = ref<CacheEntry>(freshEntry())
+  const board = ref<CacheEntry<BoardData>>(freshEntry())
   const collector = ref<CacheEntry>(freshEntry())
   const server = ref<CacheEntry>(freshEntry())
 
@@ -56,7 +58,7 @@ export const usePanelStore = defineStore('panel', () => {
    */
   async function loadHome(force = false) {
     const now = Date.now()
-    const entries = [today.value, parcels.value, pulse.value, letter.value]
+    const entries = [today.value, parcels.value, pulse.value, letter.value, board.value]
     if (!force && entries.every((e) => e.data !== null && now - e.at < TTL_MS)) return
     if (!force && entries.some((e) => e.loading)) return
     for (const e of entries) { e.loading = true; e.error = null }
@@ -68,6 +70,7 @@ export const usePanelStore = defineStore('panel', () => {
         [parcels.value, d.parcels],
         [pulse.value, d.pulse],
         [letter.value, d.letter],
+        [board.value, d.board],
       ]
       for (const [e, data] of parts) {
         e.data = data
@@ -101,7 +104,7 @@ export const usePanelStore = defineStore('panel', () => {
   }
 
   return {
-    today, parcels, pulse, letter, collector, server,
+    today, parcels, pulse, letter, board, collector, server,
     loadToday, loadParcels, loadPulse, loadLetter, loadHome, loadCollector, loadServer,
     unseal,
   }

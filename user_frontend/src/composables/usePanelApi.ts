@@ -36,6 +36,14 @@ export interface TodayData {
   [k: string]: unknown
 }
 
+/** 服主告示牌（/api/panel/home 的 board 区块） */
+export interface BoardData {
+  text?: string
+  signature?: string
+  visible?: boolean
+  [k: string]: unknown
+}
+
 export interface ParcelItem {
   id: string | number
   title?: string
@@ -164,6 +172,11 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
   return unwrap<T>(res)
 }
 
+async function put<T>(url: string, body?: unknown): Promise<T> {
+  const res = await api.put(url, body)
+  return unwrap<T>(res)
+}
+
 export const panelApi = {
   /** 问候 / 今日封存件数 / 连签 */
   today: () => get<TodayData>('/api/panel/today'),
@@ -181,9 +194,31 @@ export const panelApi = {
     parcels: ParcelsData | null
     pulse: Record<string, unknown> | null
     letter: Record<string, unknown> | null
+    board: BoardData | null
   }>('/api/panel/home'),
   /** 收藏家数据 */
   collector: () => get<CollectorData>('/api/panel/collector'),
+  /** 观影碑榜单：board=hot/duration，period=day/week */
+  leaderboard: (board: 'hot' | 'duration', period: 'day' | 'week') =>
+    get<{
+      board: string
+      period: string
+      window_start: string
+      items: Array<Record<string, unknown>>
+      my_rank: number | null
+    }>(`/api/user/emby/leaderboard?board=${board}&period=${period}`),
+  /** 留言墙：最新 20 条 */
+  wallList: () => get<{ posts: Array<Record<string, unknown>> }>('/api/panel/wall'),
+  /** 留言墙：发布 */
+  wallPost: (content: string) => post<{ id: number }>('/api/panel/wall', { content }),
+  /** 抽一签：今日结果 */
+  fortuneToday: () => get<Record<string, unknown>>('/api/panel/fortune'),
+  /** 抽一签：抽取（每天一次，幂等） */
+  fortuneDraw: () => post<Record<string, unknown>>('/api/panel/fortune'),
+  /** 隐私：是否允许上榜 */
+  privacyGet: () => get<{ show_on_leaderboard: boolean }>('/api/panel/privacy'),
+  /** 隐私：设置是否允许上榜 */
+  privacySet: (show: boolean) => put<{ show_on_leaderboard: boolean }>('/api/panel/privacy', { show_on_leaderboard: show }),
   /** 佩戴/摘下徽章（存账号）；key=null 为摘下 */
   setWornBadge: (key: string | null) => post<{ worn_badge: WornBadge | null }>('/api/panel/worn-badge', { key }),
   /** 服务器状态 */

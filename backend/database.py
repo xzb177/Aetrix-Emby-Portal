@@ -669,6 +669,8 @@ def _auto_migrate():
             ("token_version", "INTEGER", "0"),
             # C1 活力值（竞品借鉴）：老库补列默认满值 14，升级后无人被误拦观影。
             ("vitality", "INTEGER", "14"),
+            # 探险世界 · 时长榜隐私开关：老库补列默认上榜，与升级前行为一致。
+            ("show_on_leaderboard", "BOOLEAN", "1"),
         ]),
         # v2.44.0 邀请码白名单（内测码 / 渠道码）：NULL / 空串都按「不限」处理，
         # 所以存量邀请码行为升级前后完全一致（见 backend/api/invitation.py）

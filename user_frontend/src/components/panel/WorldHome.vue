@@ -1,5 +1,5 @@
 <template>
-  <div class="world-root">
+  <div class="world-root" :class="`dp-${daypart}`">
     <div class="world">
       <svg class="scene" viewBox="0 0 1440 900" fill="none" preserveAspectRatio="xMidYMid slice">
         <g stroke="#d9cba6" stroke-width="1.4" opacity=".55">
@@ -85,7 +85,7 @@
         <span class="sub">{{ remaining > 0 ? `${remaining} 个包裹待拆` : '今天的包裹都拆完啦' }}</span>
       </button>
 
-      <button type="button" class="mark" :style="{ left: '80.21%', top: '50%' }" @click="goServer" aria-label="传送灯塔">
+      <button type="button" class="mark lighthouse" :style="{ left: '80.21%', top: '50%' }" @click="goServer" aria-label="传送灯塔">
         <div class="pin">🗼</div>
         <span class="name">传送灯塔</span>
         <span class="sub">{{ lighthouseSub }}</span>
@@ -114,6 +114,30 @@
         <div class="pin">🎪</div>
         <span class="name">游戏大厅</span>
         <span class="sub">签到 · 许愿池 · 追新历</span>
+      </button>
+
+      <button type="button" class="mark" :style="{ left: '15.28%', top: '33.33%' }" @click="openStele" aria-label="观影碑">
+        <div class="pin">🏆</div>
+        <span class="name">观影碑</span>
+        <span class="sub">{{ steleSub }}</span>
+      </button>
+
+      <button type="button" class="mark" :style="{ left: '25%', top: '17%' }" @click="openBoard" aria-label="服主告示牌">
+        <div class="pin">📢</div>
+        <span class="name">告示牌</span>
+        <span class="sub">{{ boardSub }}</span>
+      </button>
+
+      <button type="button" class="mark" :style="{ left: '58%', top: '77%' }" @click="openWall" aria-label="到此一游留言墙">
+        <div class="pin">💬</div>
+        <span class="name">留言墙</span>
+        <span class="sub">{{ wallSub }}</span>
+      </button>
+
+      <button type="button" class="mark" :style="{ left: '79%', top: '74%' }" @click="openFortune" aria-label="每日抽一签">
+        <div class="pin">🎋</div>
+        <span class="name">抽签亭</span>
+        <span class="sub">{{ fortuneSub }}</span>
       </button>
 
       <div class="player" :style="{ left: '50%', top: '73.33%' }">
@@ -145,7 +169,7 @@
     <div class="w-overlay" v-if="overlay !== 'none'" @click.self="closeOverlay">
       <div class="w-sheet" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl">
         <div class="w-sheet-head">
-          <span class="w-sheet-title">{{ overlay === 'parcels' ? '📦 今日封存' : '✉️ 每日一封' }}</span>
+          <span class="w-sheet-title">{{ sheetTitle }}</span>
           <button type="button" class="w-sheet-close" @click="closeOverlay" aria-label="关闭">✕</button>
         </div>
         <template v-if="overlay === 'parcels'">
@@ -164,6 +188,71 @@
         <template v-else-if="overlay === 'letter'">
           <WaxLetter :letter="letterData" />
         </template>
+        <template v-else-if="overlay === 'stele'">
+          <div class="w-tabs">
+            <button type="button" class="w-tab" :class="{ on: lbBoard === 'hot' }" @click="lbBoard = 'hot'">热播榜</button>
+            <button type="button" class="w-tab" :class="{ on: lbBoard === 'duration' }" @click="lbBoard = 'duration'">观影时长榜</button>
+          </div>
+          <div class="w-subtabs">
+            <button type="button" class="w-subtab" :class="{ on: lbPeriod === 'day' }" @click="lbPeriod = 'day'">日榜</button>
+            <button type="button" class="w-subtab" :class="{ on: lbPeriod === 'week' }" @click="lbPeriod = 'week'">周榜</button>
+          </div>
+          <p class="w-sheet-empty" v-if="lbLoading && lbRows.length === 0">正在抄榜…</p>
+          <p class="w-sheet-empty" v-else-if="lbRows.length === 0">还没有人上榜，快去看片抢头名 🏆</p>
+          <ul class="w-lb-list" v-else>
+            <li v-for="(r, i) in lbRows" :key="String(r.item_id ?? r.user_id ?? i)" class="w-lb-row" :class="{ me: lbBoard === 'duration' && String(r.nickname) === nickname }">
+              <span class="w-lb-rank" :class="{ top: i < 3 }">{{ i + 1 }}</span>
+              <span class="w-lb-main">
+                <b>{{ lbBoard === 'hot' ? String(r.name ?? '') : String(r.nickname ?? '') }}</b>
+                <small v-if="lbBoard === 'hot'">{{ String(r.item_type ?? '') }}</small>
+              </span>
+              <span class="w-lb-num">{{ lbBoard === 'hot' ? `${Number(r.count ?? 0)} 次` : `${fmtHours(r.seconds)}` }}</span>
+            </li>
+          </ul>
+          <p class="w-sheet-foot" v-if="lbMyRank">我的排名：第 {{ lbMyRank }} 名</p>
+          <p class="w-sheet-foot">{{ lbScopeText }} · 时长榜只显示昵称，可在「我的账号 → 设置」里关掉自己上榜</p>
+        </template>
+        <template v-else-if="overlay === 'board'">
+          <div v-if="boardData.visible === true" class="w-board">
+            <p class="w-board-text">{{ String(boardData.text ?? '') }}</p>
+            <p class="w-board-sig">—— {{ String(boardData.signature ?? '服主') }}</p>
+          </div>
+          <p class="w-sheet-empty" v-else>服主还没留言，改天再来看看 📢</p>
+        </template>
+        <template v-else-if="overlay === 'wall'">
+          <p class="w-sheet-empty" v-if="wallLoading && wallPosts.length === 0">正在翻墙…</p>
+          <ul class="w-wall-list" v-else-if="wallPosts.length > 0">
+            <li v-for="p in wallPosts" :key="String(p.id)" class="w-wall-row">
+              <span class="w-wall-nick">{{ String(p.nickname ?? '') }}</span>
+              <span class="w-wall-time">{{ fmtWallTime(p.created_at) }}</span>
+              <p class="w-wall-text">{{ String(p.content ?? '') }}</p>
+            </li>
+          </ul>
+          <p class="w-sheet-empty" v-else>墙上还空着，来留下第一句话吧 💬</p>
+          <div class="w-wall-form">
+            <input v-model="wallInput" maxlength="60" placeholder="到此一游，留句话吧（60字内）" @keyup.enter="submitWall" aria-label="留言内容" />
+            <button type="button" class="w-wall-btn" :disabled="wallPosting || !wallInput.trim()" @click="submitWall">
+              {{ wallPosting ? '贴上…' : '贴上墙' }}
+            </button>
+          </div>
+          <p class="w-sheet-foot">每人每 10 分钟可留 1 条</p>
+        </template>
+        <template v-else-if="overlay === 'fortune'">
+          <div v-if="fortuneLoading && !fortune" class="w-sheet-empty">正在摇签筒…</div>
+          <div v-else-if="fortuneDrew" class="w-fortune">
+            <div class="w-fortune-level">{{ String(fortune?.level ?? '') }}</div>
+            <p class="w-fortune-text">{{ String(fortune?.text ?? '') }}</p>
+            <p class="w-fortune-yiji"><b>宜</b> {{ String(fortune?.yi ?? '') }}　<b>忌</b> {{ String(fortune?.ji ?? '') }}</p>
+            <p class="w-sheet-foot">每天 1 次 · 0 点刷新</p>
+          </div>
+          <div v-else class="w-fortune-draw">
+            <div class="w-fortune-pot">🎋</div>
+            <p class="w-sheet-empty">心诚则灵，点一下抽今日运势</p>
+            <button type="button" class="w-fortune-btn" :disabled="fortuneDrawing" @click="drawFortune">
+              {{ fortuneDrawing ? '摇签中…' : '抽一签' }}
+            </button>
+          </div>
+        </template>
       </div>
     </div>
   </div>
@@ -175,7 +264,7 @@ import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
-import { humanizeError } from '@/composables/usePanelApi'
+import { humanizeError, panelApi } from '@/composables/usePanelApi'
 import type { ParcelItem, ParcelsData } from '@/composables/usePanelApi'
 import { checkinApi, memberApi } from '@/api/economy'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
@@ -189,7 +278,7 @@ const panel = usePanelStore()
 const user = useUserStore()
 const { setMode } = useHomeViewMode()
 
-const { today, parcels, pulse, letter, collector } = storeToRefs(panel)
+const { today, parcels, pulse, letter, board, collector } = storeToRefs(panel)
 
 /* ---------- 本地状态 ---------- */
 type CheckinStatus = {
@@ -205,7 +294,7 @@ type CheckinStatus = {
 const checkin = ref<CheckinStatus | null>(null)
 const memberRaw = ref<Record<string, unknown> | null>(null)
 
-const overlay = ref<'none' | 'parcels' | 'letter'>('none')
+const overlay = ref<'none' | 'parcels' | 'letter' | 'stele' | 'board' | 'wall' | 'fortune'>('none')
 const unsealingIds = ref(new Set<string>())
 const sheetEl = ref<HTMLElement | null>(null)
 let lastTrigger: HTMLElement | null = null
@@ -504,6 +593,204 @@ function closeOverlay() {
   })
 }
 
+function openOverlaySheet(kind: 'stele' | 'board' | 'wall' | 'fortune') {
+  lastTrigger = document.activeElement as HTMLElement | null
+  overlay.value = kind
+  nextTick(() => {
+    try { sheetEl.value?.focus() } catch { /* 静默 */ }
+  })
+}
+
+/* ---------- 观影碑 · 排行榜 ---------- */
+const lbBoard = ref<'hot' | 'duration'>('hot')
+const lbPeriod = ref<'day' | 'week'>('day')
+const lbData = ref<{ items: Array<Record<string, unknown>>; my_rank: number | null } | null>(null)
+const lbLoading = ref(false)
+
+async function loadLeaderboard() {
+  lbLoading.value = true
+  try {
+    const d = await panelApi.leaderboard(lbBoard.value, lbPeriod.value)
+    lbData.value = { items: d.items ?? [], my_rank: d.my_rank ?? null }
+  } catch {
+    lbData.value = null
+  } finally {
+    lbLoading.value = false
+  }
+}
+
+function openStele() {
+  void loadLeaderboard()
+  openOverlaySheet('stele')
+}
+
+watch([lbBoard, lbPeriod], () => { void loadLeaderboard() })
+
+const lbRows = computed(() => lbData.value?.items ?? [])
+const lbMyRank = computed(() => lbData.value?.my_rank ?? null)
+const lbScopeText = computed(() =>
+  lbPeriod.value === 'day' ? '今日（自然日）· 全服' : '本周（自然周）· 全服',
+)
+const lbUnitText = computed(() =>
+  lbBoard.value === 'hot'
+    ? (lbPeriod.value === 'day' ? '今日播放' : '本周播放')
+    : (lbPeriod.value === 'day' ? '今日观影' : '本周观影'),
+)
+
+const steleSub = computed(() => {
+  const first = lbRows.value[0] as Record<string, unknown> | undefined
+  if (!first) return '虚位以待，等你开播'
+  const name = String(first.name ?? first.nickname ?? '')
+  const n = lbBoard.value === 'hot' ? Number(first.count ?? 0) : Math.round(Number(first.seconds ?? 0) / 3600 * 10) / 10
+  const unit = lbBoard.value === 'hot' ? '次' : '小时'
+  const when = lbPeriod.value === 'day' ? '今日' : '本周'
+  return `${when}最热 · ${name} ${n}${unit}`
+})
+
+/* ---------- 服主告示牌 ---------- */
+const boardData = computed<Record<string, unknown>>(
+  () => (board.value.data ?? {}) as Record<string, unknown>,
+)
+
+const boardSub = computed(() => {
+  if (boardData.value.visible === true) {
+    const sig = String(boardData.value.signature ?? '服主')
+    return `服主留言 · ${sig}`
+  }
+  return '等服主留言'
+})
+
+function openBoard() {
+  openOverlaySheet('board')
+}
+
+/* ---------- 到此一游 · 留言墙 ---------- */
+const wallPosts = ref<Array<Record<string, unknown>>>([])
+const wallLoading = ref(false)
+const wallInput = ref('')
+const wallPosting = ref(false)
+
+async function loadWall() {
+  wallLoading.value = true
+  try {
+    const d = await panelApi.wallList()
+    wallPosts.value = Array.isArray(d.posts) ? d.posts : []
+  } catch {
+    wallPosts.value = []
+  } finally {
+    wallLoading.value = false
+  }
+}
+
+async function submitWall() {
+  const c = wallInput.value.trim()
+  if (!c || wallPosting.value) return
+  if (c.length > 60) {
+    useToast().warning('留言最多 60 字')
+    return
+  }
+  wallPosting.value = true
+  try {
+    await panelApi.wallPost(c)
+    wallInput.value = ''
+    await loadWall()
+  } catch (e) {
+    useToast().error(humanizeError(e))
+  } finally {
+    wallPosting.value = false
+  }
+}
+
+const wallSub = computed(() =>
+  wallPosts.value.length > 0 ? `已有 ${wallPosts.value.length} 条足迹` : '来留下第一句话吧',
+)
+
+function openWall() {
+  void loadWall()
+  openOverlaySheet('wall')
+}
+
+/* ---------- 每日抽一签 ---------- */
+const fortune = ref<Record<string, unknown> | null>(null)
+const fortuneLoading = ref(false)
+const fortuneDrawing = ref(false)
+
+async function loadFortune() {
+  fortuneLoading.value = true
+  try {
+    fortune.value = await panelApi.fortuneToday()
+  } catch {
+    fortune.value = null
+  } finally {
+    fortuneLoading.value = false
+  }
+}
+
+async function drawFortune() {
+  if (fortuneDrawing.value) return
+  fortuneDrawing.value = true
+  try {
+    fortune.value = await panelApi.fortuneDraw()
+  } catch (e) {
+    useToast().error(humanizeError(e))
+  } finally {
+    fortuneDrawing.value = false
+  }
+}
+
+const fortuneDrew = computed(() => fortune.value?.drew === true)
+
+const fortuneSub = computed(() =>
+  fortuneDrew.value ? `今日：${String(fortune.value?.level ?? '')}` : '每日一签，试试手气',
+)
+
+function openFortune() {
+  void loadFortune()
+  openOverlaySheet('fortune')
+}
+
+/* ---------- 昼夜 ---------- */
+const daypart = computed(() => {
+  const h = new Date().getHours()
+  if (h >= 5 && h < 9) return 'dawn'
+  if (h >= 9 && h < 17) return 'day'
+  if (h >= 17 && h < 19) return 'dusk'
+  return 'night'
+})
+
+/* ---------- 弹层小工具 ---------- */
+const sheetTitle = computed(() => {
+  switch (overlay.value) {
+    case 'parcels': return '📦 今日封存'
+    case 'letter': return '✉️ 每日一封'
+    case 'stele': return '🏆 观影碑'
+    case 'board': return '📢 服主告示牌'
+    case 'wall': return '💬 到此一游'
+    case 'fortune': return '🎋 每日一签'
+    default: return ''
+  }
+})
+
+function fmtHours(v: unknown): string {
+  const s = Number(v ?? 0)
+  if (!Number.isFinite(s) || s <= 0) return '0 小时'
+  const h = Math.round((s / 3600) * 10) / 10
+  return `${h} 小时`
+}
+
+function fmtWallTime(v: unknown): string {
+  if (typeof v !== 'string' || !v) return ''
+  const dt = new Date(v)
+  if (Number.isNaN(dt.getTime())) return ''
+  const now = new Date()
+  const sameDay = dt.toDateString() === now.toDateString()
+  const mm = String(dt.getMonth() + 1).padStart(2, '0')
+  const dd = String(dt.getDate()).padStart(2, '0')
+  const hh = String(dt.getHours()).padStart(2, '0')
+  const mi = String(dt.getMinutes()).padStart(2, '0')
+  return sameDay ? `${hh}:${mi}` : `${mm}-${dd} ${hh}:${mi}`
+}
+
 function onQuest(key: string) {
   if (key === 'checkin') {
     void router.push('/game/checkin')
@@ -609,6 +896,9 @@ onMounted(() => {
   void panel.loadCollector()
   void loadCheckin()
   void loadMember()
+  void loadLeaderboard()
+  void loadWall()
+  void loadFortune()
   refreshLetterRead()
   window.addEventListener('keydown', onKeydown)
 })
@@ -1111,6 +1401,263 @@ button.pill {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+/* ---------- 昼夜天色 ---------- */
+.dp-dawn .world {
+  background: linear-gradient(180deg, #f8e2bd 0%, #F6F1E7 55%, #f2e0bd 100%);
+}
+.dp-dusk .world {
+  background: linear-gradient(180deg, #f3cf9e 0%, #efdfc2 55%, #e9d0a8 100%);
+}
+.dp-night .world {
+  background: linear-gradient(180deg, #2e3a5c 0%, #3d4a68 55%, #333a52 100%);
+}
+.dp-night .world::after {
+  /* 星空点缀（纯 CSS，不新增图片） */
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 12% 14%, rgba(255, 246, 220, .95) 0 2px, transparent 3px),
+    radial-gradient(circle at 28% 8%, rgba(255, 246, 220, .8) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 45% 18%, rgba(255, 246, 220, .9) 0 2px, transparent 3px),
+    radial-gradient(circle at 62% 10%, rgba(255, 246, 220, .7) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 78% 22%, rgba(255, 246, 220, .85) 0 2px, transparent 3px),
+    radial-gradient(circle at 92% 8%, rgba(255, 246, 220, .9) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 8% 32%, rgba(255, 246, 220, .6) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 55% 30%, rgba(255, 246, 220, .55) 0 1.5px, transparent 2.5px);
+}
+.dp-night .world::before {
+  /* 夜色罩：地图整体压暗，纸色建筑依然可辨 */
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  background: rgba(20, 28, 52, .28);
+}
+.dp-night .lighthouse .pin {
+  /* 夜晚灯塔亮灯 */
+  box-shadow: 0 0 22px 8px rgba(255, 214, 120, .8);
+  border-color: #f2c063;
+}
+
+/* ---------- 新弹层内容：排行榜 / 告示牌 / 留言墙 / 抽签 ---------- */
+.w-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.w-tab {
+  flex: 1;
+  padding: 8px 0;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--paper-card);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink2);
+  cursor: pointer;
+}
+.w-tab.on {
+  background: #a06c24;
+  border-color: #a06c24;
+  color: #FFFDF6;
+}
+.w-subtabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.w-subtab {
+  padding: 5px 14px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--ink2);
+  cursor: pointer;
+}
+.w-subtab.on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #FFFDF6;
+}
+.w-lb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.w-lb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper-card);
+}
+.w-lb-row.me {
+  border-color: #a06c24;
+  box-shadow: 0 0 0 1px #a06c24;
+}
+.w-lb-rank {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #efe7d6;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink2);
+}
+.w-lb-rank.top {
+  background: #a06c24;
+  color: #FFFDF6;
+}
+.w-lb-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.w-lb-main b {
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.w-lb-main small {
+  font-size: 11.5px;
+  color: var(--ink2);
+}
+.w-lb-num {
+  font-size: 13px;
+  font-weight: 700;
+  color: #a06c24;
+  white-space: nowrap;
+}
+.w-sheet-foot {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--ink2);
+  text-align: center;
+  line-height: 1.7;
+}
+.w-board-text {
+  font-size: 15px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  margin: 4px 0 10px;
+}
+.w-board-sig {
+  text-align: right;
+  font-size: 13px;
+  color: var(--ink2);
+}
+.w-wall-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 40dvh;
+  overflow-y: auto;
+}
+.w-wall-row {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 12px;
+  background: var(--paper-card);
+}
+.w-wall-nick {
+  font-size: 13px;
+  font-weight: 800;
+  color: #a06c24;
+}
+.w-wall-time {
+  font-size: 11px;
+  color: var(--ink2);
+  margin-left: 8px;
+}
+.w-wall-text {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.w-wall-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.w-wall-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #FFFDF6;
+  font-size: 14px;
+  color: var(--ink);
+}
+.w-wall-btn, .w-fortune-btn {
+  padding: 9px 18px;
+  border-radius: 10px;
+  border: none;
+  background: #a06c24;
+  color: #FFFDF6;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.w-wall-btn:disabled, .w-fortune-btn:disabled {
+  opacity: .5;
+  cursor: default;
+}
+.w-fortune {
+  text-align: center;
+  padding: 10px 0 4px;
+}
+.w-fortune-level {
+  display: inline-block;
+  font-size: 22px;
+  font-weight: 900;
+  color: #D9482B;
+  border: 2px solid #D9482B;
+  border-radius: 12px;
+  padding: 6px 22px;
+  margin-bottom: 12px;
+  transform: rotate(-3deg);
+}
+.w-fortune-text {
+  font-size: 16px;
+  line-height: 1.9;
+  margin: 0 0 10px;
+}
+.w-fortune-yiji {
+  font-size: 14px;
+  color: var(--ink2);
+}
+.w-fortune-yiji b {
+  color: var(--green);
+}
+.w-fortune-draw {
+  text-align: center;
+  padding: 16px 0 6px;
+}
+.w-fortune-pot {
+  font-size: 52px;
+  margin-bottom: 6px;
 }
 
 @media (prefers-reduced-motion: reduce) {

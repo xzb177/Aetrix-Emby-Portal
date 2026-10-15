@@ -96,6 +96,9 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
         # 复活该行并重新走一次判定。否则这次播放既不会被计入并发、也不会被
         # 同播/跨城市检查看到，还会被「已结束会话裁剪」在播放中途删掉。
         session.ended_at = None
+        # 复活即新一轮播放：start_time 必须重置为现在，否则时长榜口径
+        # （ended_at − start_time）会把两次播放之间的间隔也虚增进去。
+        session.start_time = datetime.now()
         new_session = True
     if new_session:
         # 防共享两件套（默认全部 off，不判定也不写库）：

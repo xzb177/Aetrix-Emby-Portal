@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -25,6 +26,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import get_db
 from backend.api.user import get_current_user
+from backend.ratelimit import check_rate_limit
 
 logger = logging.getLogger("aetrix.panel")
 
@@ -386,6 +388,7 @@ def panel_home(
         "parcels": _section_or_none(panel_parcels, db, user),
         "pulse": _section_or_none(panel_pulse, db, user),
         "letter": _section_or_none(panel_letter, db, user),
+        "board": _section_or_none(panel_board, db, user),
     })
 
 
@@ -516,6 +519,178 @@ def set_worn_badge(
     user.worn_badge_key = key
     db.commit()
     return _ok({"worn_badge": {"key": d.key, "name": d.name, "icon": d.icon}})
+
+
+# ==================== 6.6 探险世界：告示牌 / 留言墙 / 抽一签 / 隐私 ====================
+
+def panel_board(db, user):
+    """世界入口告示牌：服主留言（后台可配），异常隔离为 None 不拖垮 /home。"""
+    _guard()
+    from backend.integrations import world_board
+    return _ok(world_board.public_info(db))
+
+
+class WallPostIn(BaseModel):
+    content: str
+
+
+@router.get("/wall")
+def wall_list(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """留言墙：最新 20 条未隐藏留言"""
+    _guard()
+    from backend.emby_server import models as em
+    rows = (
+        db.query(em.WorldWallPost)
+        .filter(em.WorldWallPost.is_hidden == False)  # noqa: E712
+        .order_by(em.WorldWallPost.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    return _ok({
+        "posts": [
+            {
+                "id": r.id,
+                "nickname": r.nickname,
+                "content": r.content,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "mine": r.user_id == user.id,
+            }
+            for r in rows
+        ]
+    })
+
+
+@router.post("/wall")
+def wall_post(
+    payload: WallPostIn,
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """发布留言：限 60 字，10 分钟 1 条"""
+    _guard()
+    from backend.emby_server import models as em
+    content = (payload.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="留言内容不能为空")
+    if len(content) > 60:
+        raise HTTPException(status_code=400, detail="留言最多 60 字")
+    allowed, _ = check_rate_limit(f"wall:{user.id}", 1, 600)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="留言太频繁，10 分钟后再试")
+    post = em.WorldWallPost(user_id=user.id, nickname=user.username, content=content)
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+    return _ok({"id": post.id})
+
+
+def _fortune_today():
+    """抽签自然日（Asia/Shanghai）"""
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+
+@router.get("/fortune")
+def fortune_today(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """今日抽签结果（未抽返回 drew=False）"""
+    _guard()
+    from backend.emby_server import models as em
+    rec = (
+        db.query(em.WorldFortuneDraw)
+        .filter(
+            em.WorldFortuneDraw.user_id == user.id,
+            em.WorldFortuneDraw.draw_date == _fortune_today(),
+        )
+        .first()
+    )
+    if not rec:
+        return _ok({"drew": False})
+    return _ok({"drew": True, "level": rec.level, "text": rec.text,
+                "yi": rec.yi, "ji": rec.ji})
+
+
+@router.post("/fortune")
+def fortune_draw(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """抽一签：每天一次。当日首次随机抽一条落库；并发冲突走唯一索引兜底重查。不挂积分。"""
+    _guard()
+    from backend.emby_server import models as em
+    from backend.integrations import world_fortune
+    today = _fortune_today()
+    rec = (
+        db.query(em.WorldFortuneDraw)
+        .filter(
+            em.WorldFortuneDraw.user_id == user.id,
+            em.WorldFortuneDraw.draw_date == today,
+        )
+        .first()
+    )
+    if rec:
+        return _ok({"drew": True, "level": rec.level, "text": rec.text,
+                    "yi": rec.yi, "ji": rec.ji})
+    pool = world_fortune.parse_pool(world_fortune.read(db).get("fortune_pool", ""))
+    if not pool:
+        raise HTTPException(status_code=500, detail="签文池未配置，请联系管理员")
+    pick = random.choice(pool)
+    rec = em.WorldFortuneDraw(
+        user_id=user.id, draw_date=today,
+        level=pick["level"], text=pick["text"], yi=pick["yi"], ji=pick["ji"],
+    )
+    db.add(rec)
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发同时抽：唯一索引兜底，重查已落库的那条
+        db.rollback()
+        rec = (
+            db.query(em.WorldFortuneDraw)
+            .filter(
+                em.WorldFortuneDraw.user_id == user.id,
+                em.WorldFortuneDraw.draw_date == today,
+            )
+            .first()
+        )
+        if not rec:
+            raise
+    db.refresh(rec)
+    return _ok({"drew": True, "level": rec.level, "text": rec.text,
+                "yi": rec.yi, "ji": rec.ji})
+
+
+class PrivacyIn(BaseModel):
+    show_on_leaderboard: bool
+
+
+@router.get("/privacy")
+def get_privacy(
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """我的隐私设置：是否允许上榜（观影碑时长榜）"""
+    _guard()
+    db.refresh(user)
+    return _ok({"show_on_leaderboard": bool(getattr(user, "show_on_leaderboard", True))})
+
+
+@router.put("/privacy")
+def set_privacy(
+    payload: PrivacyIn,
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    """设置是否允许上榜（观影碑时长榜）"""
+    _guard()
+    user.show_on_leaderboard = bool(payload.show_on_leaderboard)
+    db.commit()
+    return _ok({"show_on_leaderboard": bool(user.show_on_leaderboard)})
 
 
 # ==================== 7. GET /api/panel/server ====================
