@@ -1,8 +1,12 @@
 <template>
   <div class="world-root" :class="[`dp-${daypart}`, { 'is-game': variant === 'game' }]">
+    <div class="game-goalbar" v-if="variant === 'game'">
+      <div class="m-goal-text">今日探险 <b>{{ questDoneCount }}/{{ quests.length }}</b><template v-if="questNextLabel"> · 还差：{{ questNextLabel }}</template><template v-else> · 全部完成 ✓</template></div>
+      <div class="m-goal-bar"><i :style="{ width: questPercent + '%' }"></i></div>
+    </div>
     <div class="world">
       <svg class="scene" viewBox="0 0 1440 900" fill="none" preserveAspectRatio="xMidYMid slice">
-        <g stroke="#d9cba6" stroke-width="1.4" opacity=".55">
+        <g class="scene-roads" stroke="#d9cba6" stroke-width="1.4" opacity=".55">
           <path d="M-20 210 Q 300 130 620 190 T 1460 170"/>
           <path d="M-20 250 Q 320 175 640 232 T 1460 214"/>
           <path d="M-20 660 Q 380 590 760 650 T 1460 620"/>
@@ -22,7 +26,7 @@
         <path d="M1180 -10 Q 1120 220 1210 420 Q 1280 580 1190 760 Q 1150 840 1180 910" stroke="#c3d9ea" stroke-width="10" stroke-linecap="round" opacity=".8"/>
         <ellipse cx="305" cy="655" rx="105" ry="34" fill="#b9d2e4" opacity=".85"/>
         <ellipse cx="305" cy="650" rx="80" ry="24" fill="#c9deed" opacity=".9"/>
-        <g stroke="#a06c24" stroke-width="2.6" stroke-dasharray="2 9" stroke-linecap="round" opacity=".75">
+        <g class="scene-trails" stroke="#a06c24" stroke-width="2.6" stroke-dasharray="2 9" stroke-linecap="round" opacity=".75">
           <path d="M720 640 Q 640 520 505 470 Q 380 425 300 400"/>
           <path d="M720 640 Q 830 540 985 505 Q 1090 482 1155 430"/>
           <path d="M720 640 Q 700 470 660 380 Q 640 330 700 265"/>
@@ -66,7 +70,6 @@
         <div class="m-hello">{{ greetingText }}，{{ nickname }}</div>
         <div class="m-stats">
           <template v-if="streak > 0">连签 <b>{{ streak }}</b> 天 · </template>
-          <template v-if="pointsText"><b>{{ pointsText }}</b> 积分 · </template>
           <template v-if="memberInfo"><b>Lv.{{ memberInfo.level }}</b> {{ memberInfo.level_name }}</template>
         </div>
       </div>
@@ -121,7 +124,7 @@
         <span class="dot" v-if="hasLetter && !letterRead">1</span>
         <div class="pin">✉️</div>
         <span class="name">邮局</span>
-        <span class="sub">{{ hasLetter ? '昨天的信到了' : '暂无新信' }}</span>
+        <span class="sub">{{ postSub }}</span>
       </button>
 
       <button type="button" class="mark m-gamehall" :style="{ left: '68.4%', top: '36.67%' }" @click="goGame" aria-label="游戏大厅">
@@ -136,7 +139,7 @@
         <span class="sub">{{ steleSub }}</span>
       </button>
 
-      <button type="button" class="mark m-board" :style="{ left: '25%', top: '17%' }" @click="openBoard" aria-label="服主告示牌">
+      <button type="button" class="mark m-board" :style="{ left: '28%', top: '25%' }" @click="openBoard" aria-label="服主告示牌">
         <div class="pin">📢</div>
         <span class="name">告示牌</span>
         <span class="sub">{{ boardSub }}</span>
@@ -148,7 +151,7 @@
         <span class="sub">{{ wallSub }}</span>
       </button>
 
-      <button type="button" class="mark m-fortune" :style="{ left: '79%', top: '74%' }" @click="openFortune" aria-label="每日抽一签">
+      <button type="button" class="mark m-fortune" :class="{ 'fortune-pending': !fortuneDrew }" :style="{ left: '79%', top: '74%' }" @click="openFortune" aria-label="每日抽一签">
         <div class="pin">🎋</div>
         <span class="name">抽签亭</span>
         <span class="sub">{{ fortuneSub }}</span>
@@ -158,6 +161,8 @@
         <div class="tok">{{ avatarChar }}</div>
         <span class="who">你在这里</span>
       </div>
+
+      <div class="m-feed" v-if="feedItems.length > 0" aria-hidden="true"><i>●</i> {{ feedItems[0].time }} {{ feedItems[0].text }}</div>
 
       <div class="feed">
         <h4><i>●</i> 世界动态 · 服务器在忙什么</h4>
@@ -173,6 +178,7 @@
 
       <div class="quest">
         <h4>📋 今日任务</h4>
+        <span class="stamp-done" v-if="questPercent >= 100">今日探险完成 ✓</span>
         <button type="button" class="q" :class="{ done: q.done }" v-for="q in quests" :key="q.key" @click="onQuest(q.key)">
           <span class="box">{{ q.done ? '✓' : '' }}</span>{{ q.label }}<span class="rw" v-if="q.rw">{{ q.rw }}</span>
         </button>
@@ -480,9 +486,33 @@ const streak = computed(() => {
   return 0
 })
 
-const cinemaSub = computed(() =>
-  parcelCount.value > 0 ? `片库 · 今日新到 ${parcelCount.value} 部` : '片库 · 随时开场',
-)
+const cinemaSub = computed(() => {
+  if (parcelCount.value <= 0) return '片库 · 随时开场'
+  let base = `片库 · 今日新到 ${parcelCount.value} 部`
+  const first = parcelList.value[0]
+  const raw = String(first?.title || first?.name || '').trim()
+  if (raw) {
+    const name = raw.length > 7 ? `${raw.slice(0, 7)}…` : raw
+    base += `，含《${name}》`
+  }
+  return base
+})
+
+const postSub = computed(() => {
+  if (!hasLetter.value) return '暂无新信'
+  if (letterRead.value) return '昨天的信到了'
+  const teaser = typeof letterData.value.teaser === 'string' ? letterData.value.teaser.trim() : ''
+  if (teaser) {
+    const t = teaser.length > 12 ? `${teaser.slice(0, 12)}…` : teaser
+    return `信里说：『${t}』`
+  }
+  const rec = typeof letterData.value.recommendation === 'string' ? letterData.value.recommendation.trim() : ''
+  if (rec) {
+    const r = rec.length > 12 ? `${rec.slice(0, 12)}…` : rec
+    return `今日推荐：『${r}』`
+  }
+  return '昨天的信到了'
+})
 
 const lighthouseSub = computed(() => {
   const d = pulse.value.data
@@ -498,7 +528,18 @@ const lighthouseSub = computed(() => {
 const collectorSub = computed(() => {
   const d = collector.value.data
   if (d && typeof d === 'object' && !Array.isArray(d)) {
-    const n = (d as Record<string, unknown>).achievement_count
+    const rec = d as Record<string, unknown>
+    const list = rec.achievements
+    if (Array.isArray(list) && list.length > 0) {
+      const lit = list.filter(
+        (a) => a && typeof a === 'object' && (a as Record<string, unknown>).unlocked === true,
+      ).length
+      if (list.length > lit) {
+        if (list.length - lit === 1) return `徽章墙 · ${lit}/${list.length} 枚 · 还差 1 枚`
+        return `徽章墙 · 已点亮 ${lit}/${list.length} 枚`
+      }
+    }
+    const n = rec.achievement_count
     if (typeof n === 'number') return `徽章墙 · 已点亮 ${n} 枚`
   }
   return '徽章墙'
@@ -582,6 +623,9 @@ const questPercent = computed(() => {
   const done = quests.value.filter((q) => q.done).length
   return (done / 3) * 100
 })
+
+const questDoneCount = computed(() => quests.value.filter((q) => q.done).length)
+const questNextLabel = computed(() => quests.value.find((q) => !q.done)?.label ?? '')
 
 /* ---------- 弹层 ---------- */
 function openParcels() {
@@ -686,7 +730,10 @@ const boardData = computed<Record<string, unknown>>(
 const boardSub = computed(() => {
   if (boardData.value.visible === true) {
     const sig = String(boardData.value.signature ?? '服主')
-    return `服主留言 · ${sig}`
+    const text = typeof boardData.value.text === 'string' ? boardData.value.text.trim() : ''
+    if (!text) return `服主留言 · ${sig}`
+    const hook = text.length <= 12 ? text : `${text.slice(0, 12)}…`
+    return `『${hook}』——${sig}`
   }
   return '等服主留言'
 })
@@ -732,9 +779,36 @@ async function submitWall() {
   }
 }
 
-const wallSub = computed(() =>
-  wallPosts.value.length > 0 ? `已有 ${wallPosts.value.length} 条足迹` : '来留下第一句话吧',
-)
+function parseWallTime(v: unknown): number {
+  if (v === null || v === undefined || v === '') return NaN
+  if (typeof v === 'number') return v < 1e12 ? v * 1000 : v
+  if (typeof v === 'string') {
+    const t = Date.parse(v)
+    return Number.isNaN(t) ? NaN : t
+  }
+  return NaN
+}
+
+const wallSub = computed(() => {
+  const posts = wallPosts.value
+  if (posts.length === 0) return '来留下第一句话吧'
+  let sub = `已有 ${posts.length} 条足迹`
+  let latest = -Infinity
+  for (const p of posts) {
+    const t = parseWallTime(p?.created_at)
+    if (!Number.isNaN(t) && t > latest) latest = t
+  }
+  if (latest !== -Infinity) {
+    const diff = Date.now() - latest
+    if (diff >= 0) {
+      const MIN = 60 * 1000
+      const HOUR = 60 * MIN
+      if (diff < HOUR) sub += ` · 最新 ${Math.max(1, Math.floor(diff / MIN))} 分钟前`
+      else if (diff < 24 * HOUR) sub += ` · 最新 ${Math.floor(diff / HOUR)} 小时前`
+    }
+  }
+  return sub
+})
 
 function openWall() {
   void loadWall()
@@ -1251,6 +1325,12 @@ button.pill {
   z-index: 30;
 }
 
+.quest .stamp-done { position: absolute; top: -11px; right: 12px; transform: rotate(-6deg); border: 2px solid var(--red); color: var(--red); background: rgba(255,253,246,.92); border-radius: 6px; padding: 2px 9px; font-size: 11px; font-weight: 800; letter-spacing: 1px; }
+.mark.fortune-pending .pin { animation: fortunePulse 2.2s ease-in-out infinite; }
+@keyframes fortunePulse { 0% { box-shadow: 0 0 0 0 rgba(242,192,99,.55); } 70% { box-shadow: 0 0 0 14px rgba(242,192,99,0); } 100% { box-shadow: 0 0 0 0 rgba(242,192,99,0); } }
+.m-feed { background: rgba(255,253,246,.94); border: 1px solid var(--line); border-radius: 99px; padding: 7px 14px; font-size: 12px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-feed i { color: var(--green); font-style: normal; margin-right: 4px; }
+
 .quest h4 {
   font-size: 0.90cqw;
   letter-spacing: 0.10cqw;
@@ -1444,6 +1524,10 @@ button.pill {
 .dp-night .world {
   background: linear-gradient(180deg, #2e3a5c 0%, #3d4a68 55%, #333a52 100%);
 }
+.dp-dawn .scene { filter: brightness(.97) sepia(.14); }
+.dp-day .scene { filter: none; }
+.dp-dusk .scene { filter: brightness(.9) sepia(.22); }
+.dp-night .scene { filter: brightness(.58) saturate(.82); }
 .dp-night .world::after {
   /* 星空点缀（纯 CSS，不新增图片） */
   content: "";
@@ -1467,7 +1551,7 @@ button.pill {
   inset: 0;
   z-index: 20;
   pointer-events: none;
-  background: rgba(20, 28, 52, .28);
+  background: rgba(20, 28, 52, .12);
 }
 .dp-night .lighthouse .pin {
   /* 夜晚灯塔亮灯 */
@@ -1702,11 +1786,13 @@ button.pill {
     aspect-ratio: 390 / 1560;
     overflow: hidden;
   }
+  /* 竖图切片后桌面道路/小径与手机地标坐标对不上，手机端不画这两组线 */
+  .world-root.is-game .scene .scene-roads, .world-root.is-game .scene .scene-trails { display: none; }
   /* 地标放大：64px 图标 + 名牌 + 状态小字（照手机图纸） */
   .world-root.is-game .mark .pin { width: 64px; height: 64px; font-size: 30px; border-radius: 20px; }
   .world-root.is-game .mark .pin::after { width: 13px; height: 13px; bottom: -7px; }
   .world-root.is-game .mark .name { font-size: 13.5px; padding: 4px 11px; border-radius: 8px; margin-top: 13px; }
-  .world-root.is-game .mark .sub { font-size: 11.5px; padding: 2px 8px; border-radius: 6px; margin-top: 4px; }
+  .world-root.is-game .mark .sub { font-size: 11px; padding: 2px 8px; border-radius: 6px; margin-top: 4px; width: max-content; max-width: 56vw; margin-left: auto; margin-right: auto; }
   .world-root.is-game .mark .dot { min-width: 22px; height: 22px; font-size: 12px; top: -7px; right: calc(50% - 40px); padding: 0 6px; }
   .world-root.is-game .mark:hover .pin { transform: none; }
   /* 手机坐标（!important 覆盖行内桌面坐标；照手机图纸百分比） */
@@ -1725,15 +1811,21 @@ button.pill {
   .world-root.is-game .m-player .tok { width: 44px; height: 44px; font-size: 16px; border-width: 3px; }
   .world-root.is-game .m-player .who { font-size: 12px; padding: 2px 10px; }
   /* 分区牌 */
-  .world-root.is-game .m-zone { position: absolute; z-index: 5; font-size: 13px; font-weight: 800; color: #a06c24; background: rgba(255,253,246,.9); border: 1.5px dashed #a06c24; border-radius: 10px; padding: 4px 12px; letter-spacing: 1px; left: 16px; top: 84px; }
-  .world-root.is-game .m-zone-2 { top: 57%; }
+  .world-root.is-game .m-zone { position: absolute; z-index: 26; font-size: 13px; font-weight: 800; color: #a06c24; background: rgba(255,253,246,.9); border: 1.5px dashed #a06c24; border-radius: 10px; padding: 4px 12px; letter-spacing: 1px; left: 10px; top: 118px; }
+  .world-root.is-game .m-zone-2 { top: 52.5%; }
   .world-root.is-game .m-zone-line { position: absolute; z-index: 4; left: 14px; right: 14px; top: 56.4%; border-top: 2px dashed rgba(160,108,36,.5); }
   /* 滑动提示 */
-  .world-root.is-game .m-scroll-hint { position: absolute; left: 0; right: 0; bottom: 0; z-index: 35; pointer-events: none; background: linear-gradient(180deg, transparent, rgba(246,241,231,.92) 60%); padding: 30px 0 12px; text-align: center; }
+  .world-root.is-game .m-scroll-hint { position: absolute; left: 0; right: 0; top: 49.5%; bottom: auto; z-index: 35; pointer-events: none; background: none; padding: 10px 0; text-align: center; }
   .world-root.is-game .m-scroll-hint span { display: inline-block; background: #2A2620; color: #FFFDF6; border-radius: 999px; padding: 7px 18px; font-size: 13px; font-weight: 700; }
   /* 紧凑 HUD：问候 + 连签/积分/Lv 两行；桌面 hello 卡与 hud 在手机端隐藏 */
   .world-root.is-game .hello, .world-root.is-game .hud { display: none; }
   .world-root.is-game .m-hud { display: block; position: absolute; top: 0; left: 0; right: 0; z-index: 40; padding: 12px 14px 18px; background: linear-gradient(180deg, rgba(246,241,231,.97), rgba(246,241,231,.7) 70%, transparent); }
+  .world-root.is-game .game-goalbar { margin: 0 0 10px; background: rgba(255,253,246,.96); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; box-shadow: 0 2px 4px rgba(42,38,32,.08); }
+  .world-root.is-game .m-goal-text { font-size: 12px; font-weight: 700; }
+  .world-root.is-game .m-goal-text b { color: #a06c24; }
+  .world-root.is-game .m-goal-bar { height: 6px; background: #EFE7D6; border-radius: 99px; margin-top: 6px; overflow: hidden; }
+  .world-root.is-game .m-goal-bar i { display: block; height: 100%; background: var(--paper-primary); border-radius: 99px; transition: width .3s ease; }
+  .world-root.is-game .m-feed { position: absolute; left: 14px; right: 14px; top: 85.5%; z-index: 30; }
   .world-root.is-game .m-hello { font-size: 14px; font-weight: 800; }
   .world-root.is-game .m-stats { font-size: 11.5px; color: #6B6257; margin-top: 2px; }
   .world-root.is-game .m-stats b { color: #a06c24; }
@@ -1746,16 +1838,20 @@ button.pill {
   .world-root.is-game .w-sheet-head { margin-bottom: 10px; }
 }
 /* 桌面端隐藏手机专用元素 */
-.m-zone, .m-zone-line, .m-scroll-hint, .w-grip, .m-hud { display: none; }
+.m-zone, .m-zone-line, .m-scroll-hint, .w-grip, .m-hud, .game-goalbar, .m-feed { display: none; }
 @media (max-width: 1023px) {
   .world-root.is-game .m-zone, .world-root.is-game .m-zone-line,
   .world-root.is-game .m-scroll-hint, .world-root.is-game .w-grip,
-  .world-root.is-game .m-hud { display: block; }
+  .world-root.is-game .m-hud, .world-root.is-game .game-goalbar,
+  .world-root.is-game .m-feed { display: block; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .mark .pin {
     transition: none;
+  }
+  .mark.fortune-pending .pin {
+    animation: none;
   }
   .mark:hover .pin {
     transform: none;
