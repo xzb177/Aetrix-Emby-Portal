@@ -122,6 +122,7 @@
             <button
               v-if="b.unlocked && wornBadgeKey !== b.key"
               class="wear-btn"
+              :disabled="badgeOpPending"
               @click.stop="wearBadge(b)"
               @keyup.stop
               :aria-label="`佩戴${b.name}徽章`"
