@@ -126,15 +126,18 @@
               @click.stop="wearBadge(b)"
               @keyup.stop
               :aria-label="`佩戴${b.name}徽章`"
+              :aria-busy="badgeOpPending"
             >
               戴上
             </button>
             <button
               v-if="wornBadgeKey === b.key"
               class="wear-btn off"
+              :disabled="badgeOpPending"
               @click.stop="unwearBadge()"
               @keyup.stop
               aria-label="取下徽章"
+              :aria-busy="badgeOpPending"
             >
               取下
             </button>
@@ -216,8 +219,14 @@ const newUnlockNames = computed(() => {
 // 并发防护：只让最新一次请求写 badges / newUnlockKeys / badgeError 与 loading（R54-52）
 let badgesReqSeq = 0
 
+// R63A2-1：佩戴写入代次。wearBadge / unwearBadge / migrateLegacyWornBadge
+// 成功写入佩戴态后自增，用于让在途的 loadBadges 旧快照跳过佩戴态同步
+let wornWriteSeq = 0
+
 async function loadBadges() {
   const seq = ++badgesReqSeq
+  // R63A2-1：记下发请求时的佩戴写入代次
+  const wornSeqAtIssue = wornWriteSeq
   badgeLoading.value = true
   badgeError.value = ''
   try {
@@ -225,6 +234,8 @@ async function loadBadges() {
     if (seq !== badgesReqSeq) return
     badges.value = Array.isArray(data.achievements) ? data.achievements : []
     newUnlockKeys.value = Array.isArray(data.new_unlocks) ? data.new_unlocks.map(String) : []
+    // R63A2-1：期间发生过佩戴写入，不拿旧快照覆盖用户的佩戴选择（列表已更新，直接收尾）
+    if (wornWriteSeq !== wornSeqAtIssue) return
     // 佩戴状态以账号为准（后端已校验解锁/上架：下架或未解锁的不会下发）
     wornBadgeKey.value = data.worn_badge?.key ?? null
     // R58-F2：账号里佩戴态变化（如管理员下架徽章）时同步 store，
@@ -237,6 +248,18 @@ async function loadBadges() {
   } finally {
     if (seq === badgesReqSeq) badgeLoading.value = false
   }
+}
+
+// R63A2-3：佩戴操作 10s 超时兜底。setWornBadge 不接受 AbortSignal，
+// 故在调用处用 Promise.race 包 10s 超时；超时按失败走，finally 照常复位 pending。
+function withBadgeOpTimeout<T>(p: Promise<T>, ms = 10000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('佩戴操作超时，请重试')), ms)
+    }),
+  ]).finally(() => clearTimeout(timer))
 }
 
 /** 旧版本地佩戴键一次性迁移：账号里还没有佩戴记录、且本地这枚是本账号
@@ -257,13 +280,17 @@ async function migrateLegacyWornBadge(serverWorn: WornBadge | null | undefined) 
   if (badgeOpPending.value) return
   badgeOpPending.value = true
   try {
-    const res = await panelApi.setWornBadge(legacyKey)
+    const res = await withBadgeOpTimeout(panelApi.setWornBadge(legacyKey))
     wornBadgeKey.value = res.worn_badge?.key ?? legacyKey
     useUserStore().updateUser({
       worn_badge: res.worn_badge ?? { key: target.key, name: target.name, icon: target.icon },
     })
+    wornWriteSeq++ // R63A2-1：佩戴写入成功，通知在途的 loadBadges 跳过旧快照
     clearLegacyWornBadgeKey()
-  } catch { /* 迁移失败静默，下次再试 */ }
+  } catch (e) {
+    // R63A2-2：迁移失败不再静默，保留"不清本地键、下次再试"的现有逻辑
+    console.warn('[outfit] 迁移本地佩戴徽章失败', legacyKey, e)
+  }
   finally { badgeOpPending.value = false }
 }
 
@@ -271,11 +298,12 @@ async function wearBadge(b: Achievement) {
   if (badgeOpPending.value) return
   badgeOpPending.value = true
   try {
-    const res = await panelApi.setWornBadge(b.key)
+    const res = await withBadgeOpTimeout(panelApi.setWornBadge(b.key))
     wornBadgeKey.value = res.worn_badge?.key ?? b.key
     useUserStore().updateUser({
       worn_badge: res.worn_badge ?? { key: b.key, name: b.name, icon: b.icon },
     })
+    wornWriteSeq++ // R63A2-1：佩戴写入成功，通知在途的 loadBadges 跳过旧快照
     toast.success(`戴上了 ${b.icon}${b.name} 徽章`)
   } catch (e) {
     toast.error(humanizeError(e))
@@ -288,9 +316,10 @@ async function unwearBadge() {
   if (badgeOpPending.value) return
   badgeOpPending.value = true
   try {
-    await panelApi.setWornBadge(null)
+    await withBadgeOpTimeout(panelApi.setWornBadge(null))
     wornBadgeKey.value = null
     useUserStore().updateUser({ worn_badge: null })
+    wornWriteSeq++ // R63A2-1：佩戴写入成功，通知在途的 loadBadges 跳过旧快照
     // R45：取下徽章也要给反馈（wearBadge 有 toast.success，这里对齐用 toast.info）
     toast.info('已取下徽章')
   } catch (e) {
