@@ -164,12 +164,13 @@ onMounted(async () => {
   margin-top: 16px;
 }
 
-/* 桌面 /game：地图脱离 375px 窄栏全宽展开（日志头/状态条仍居中栏宽） */
+/* 桌面 /game：地图脱离 375px 窄栏全宽展开（日志头/状态条仍居中栏宽）
+   居中用负 margin 而非 transform：transform 会成为内部 position:fixed 弹层的定位基准，导致弹层错位 */
 @media (min-width: 1024px) {
   .game-world {
     position: relative;
     left: 50%;
-    transform: translateX(-50%);
+    margin-left: calc(min(1500px, 94vw) * -0.5);
     width: min(1500px, 94vw);
   }
 }

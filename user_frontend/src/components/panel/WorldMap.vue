@@ -1471,8 +1471,10 @@ button.pill {
   border-radius: 16px;
   box-shadow: 0 2px 4px rgba(42, 38, 32, .08), 0 12px 32px rgba(42, 38, 32, .13);
   width: min(560px, calc(100vw - 48px));
+  max-height: 84vh;
   max-height: 84dvh;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 20px;
   color: #2A2620;
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
@@ -1513,6 +1515,11 @@ button.pill {
   flex-wrap: wrap;
   gap: 12px;
 }
+
+/* 面单卡原为横滑条设计、定高 216px，在弹层里内容稀疏显空 → 弹层内改自然高度紧凑排布 */
+.w-parcel-grid { align-items: flex-start; }
+.w-parcel-grid .v4-parcel { min-height: 0; }
+.w-parcel-grid .v4-parcel-waybill { flex: 0 1 auto; justify-content: flex-start; }
 
 /* ---------- 昼夜天色 ---------- */
 .dp-dawn .world {
@@ -1833,9 +1840,11 @@ button.pill {
   .world-root.is-game .feed, .world-root.is-game .quest { display: none; }
   /* 底部抽屉：占屏高约 70%，顶部圆角+下拉把手 */
   .world-root.is-game .w-overlay { align-items: flex-end; padding: 0; }
-  .world-root.is-game .w-sheet { width: 100%; max-height: 72dvh; border-radius: 24px 24px 0 0; border-bottom: none; padding: 8px 20px 24px; }
+  .world-root.is-game .w-sheet { width: 100%; max-height: 72vh; max-height: 72dvh; border-radius: 24px 24px 0 0; border-bottom: none; padding: 8px 20px calc(24px + env(safe-area-inset-bottom)); overscroll-behavior: contain; }
   .world-root.is-game .w-grip { width: 44px; height: 5px; border-radius: 99px; background: #D8CDB8; margin: 6px auto 8px; }
   .world-root.is-game .w-sheet-head { margin-bottom: 10px; }
+  /* 手机弹层里封存卡两列等宽铺满（网格 gap 12px） */
+  .world-root.is-game .w-parcel-grid .v4-parcel { width: calc(50% - 6px); }
 }
 /* 桌面端隐藏手机专用元素 */
 .m-zone, .m-zone-line, .m-scroll-hint, .w-grip, .m-hud, .game-goalbar, .m-feed { display: none; }
