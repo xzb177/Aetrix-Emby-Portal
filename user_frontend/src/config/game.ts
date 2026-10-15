@@ -56,8 +56,8 @@ export const gameHubConfig = {
   stamp: '探险家 · 大本营',
   /** Hub 页标题 */
   title: '🏕️ 探险日志',
-  /** Hub 页副标题 */
-  subtitle: '营地的每一处设施都在这里了，挨个逛逛吧。',
+  /** Hub 页副标题（/game 已换成世界地图本体） */
+  subtitle: '世界地图：建筑、观影碑、留言墙、抽签亭都在这里，挨个逛逛吧。',
 } as const
 
 /** 全部游戏设施（营地设施）—— order 即数组顺序，0 起 */
