@@ -264,6 +264,26 @@ def test_views_aliases_share_identical_shape(client, token, seed):
         assert alias["ServerId"] == emby_api.SERVER_ID
 
 
+def test_root_items_route_matches_user_items(client, token, seed):
+    """官方 /Items（不带用户前缀）与 /Users/{id}/Items 是同一出口。
+
+    Reflix 等客户端的媒体库页直接调根级 /Items（带 ParentId/Recursive/
+    SortBy=DateLastContentAdded,SortName），缺这条路由时整页 404 加载失败
+    （2026-10-15 生产日志实证）。用户由 token 解析，路径里本来就没有用户 id。
+    """
+    qs = (f"ParentId={seed['lib']}&Recursive=true&IncludeItemTypes=Movie"
+          f"&SortBy=DateLastContentAdded,SortName&SortOrder=Descending"
+          f"&StartIndex=0&Limit=40"
+          f"&Fields=PrimaryImageAspectRatio,ProviderIds,Overview,PremiereDate")
+    for path in ("/Items", "/emby/Items"):
+        r = client.get(f"{path}?{qs}", headers=_h(token))
+        assert r.status_code == 200, f"{path}: {r.text}"
+        ids = {i["Id"] for i in r.json()["Items"]}
+        assert seed["movie"] in ids, f"{path} 未返回种子电影: {sorted(ids)}"
+    r = client.get(f"/Items?{qs}")
+    assert r.status_code in (401, 403), f"无 token 应拒绝: {r.status_code}"
+
+
 # ---------- 2. /Users/{id}/Items 与详情 ----------
 
 def test_items_list_and_detail_have_sortname_etag_and_userdata_ids(client, token, seed):
