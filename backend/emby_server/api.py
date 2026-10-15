@@ -27,7 +27,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
-from sqlalchemy import false, func, or_, select
+from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session, aliased, joinedload
 
 from backend import library_scope, models, playback_policy
@@ -2244,7 +2244,20 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         if _col is not None and _pid.strip():
             _prov_conds.append(_col == _pid.strip())
     if _prov_conds:
-        query = query.filter(or_(*_prov_conds))
+        # 单集按所属剧编号也可查到（与 DTO 层 _provider_ids 继承口径一致）
+        _hit_series = [r[0] for r in db.query(em.MediaItem.id).filter(
+            em.MediaItem.item_type == "series", or_(*_prov_conds)).all()]
+        _all_conds = list(_prov_conds)
+        if _hit_series:
+            _all_conds.append(and_(
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.series_id.in_(_hit_series)))
+        query = query.filter(or_(*_all_conds))
+
+    # HasAnyProviderId：Emby 标准「有任意编号」筛选（与 merge_versions_worker 的注释口径一致）
+    if (q.get("HasAnyProviderId") or "").lower() == "true":
+        query = query.filter(or_(em.MediaItem.tmdb_id.isnot(None),
+                                 em.MediaItem.imdb_id.isnot(None)))
 
     if not ids:
         # 单集多版本：被合并的版本不独立出现在列表里（与 get_episodes 同口径）。
