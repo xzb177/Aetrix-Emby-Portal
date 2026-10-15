@@ -434,3 +434,10 @@ html[data-theme='light'] {
   --stb-fill-low-to: #c25e1e;
   --stb-fill-empty: #b9b0a0;
 }
+
+/* 手机日志头：印章与大标题间距加大，避免旋转印章视觉上压字 */
+@media (max-width: 767px) {
+  .v4-loghead .v4-stamp {
+    margin-bottom: 16px;
+  }
+}
