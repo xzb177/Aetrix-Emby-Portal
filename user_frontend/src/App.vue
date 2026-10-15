@@ -10,6 +10,7 @@ import { useUserStore } from '@/stores/user'
 import { refreshEmbyBaseUrl } from '@/api/emby'
 import { tgApi } from '@/api/tg'
 import { isPanelV4Enabled } from '@/composables/usePanelApi'
+import { useHomeViewMode } from '@/composables/useHomeViewMode'
 import { V4_PATHS } from '@/router'
 
 const { messages, remove, warning } = useToast()
@@ -27,6 +28,15 @@ const route = useRoute()
  */
 const showChrome = computed(
   () => route.name !== 'login',
+)
+
+/**
+ * 桌面「探险世界」激活且在首页时，世界自带 HUD（品牌/积分/等级/头像），
+ * 隐藏全局顶栏避免双层导航；其他页面顶栏照常。
+ */
+const { worldActive: homeWorldActive } = useHomeViewMode()
+const hideHeaderForWorld = computed(
+  () => homeWorldActive.value && (route.path.replace(/\/+$/, '') || '/') === '/',
 )
 
 /**
@@ -144,7 +154,7 @@ watch(
 
 <template>
   <div class="app-shell">
-    <AppHeader v-if="showChrome" />
+    <AppHeader v-if="showChrome && !hideHeaderForWorld" />
     <RouterView v-slot="{ Component }">
       <!-- max=12：key 按登录会话隔离，登出/换号后旧实例不再命中，攒多了自动淘汰最旧的 -->
       <KeepAlive :include="KEEP_ALIVE_VIEWS" :max="12">

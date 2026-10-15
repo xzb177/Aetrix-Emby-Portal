@@ -1,5 +1,8 @@
 <template>
   <div class="v4-scope">
+    <!-- 桌面「探险世界」：≥1024px + 已登录 + 用户选了世界视图时，首页整屏变探险地图；其余情况（手机/经典视图）走下面原有版式，一行不改 -->
+    <WorldHome v-if="homeWorldActive" />
+    <template v-else>
     <div class="v4-page">
       <!-- 日志头：问候 + 封存件数 + 连签 -->
       <header class="v4-loghead" aria-live="polite">
@@ -11,6 +14,13 @@
         <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
         <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
         <div v-if="streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
+        <!-- 经典视图回世界入口：仅桌面已登录且当前是经典视图时出现（手机端不显示） -->
+        <button
+          v-if="homeIsDesktop && user.isLoggedIn && homeMode === 'classic'"
+          type="button"
+          class="v4-world-switch"
+          @click="setHomeMode('world')"
+        >🗺 探险世界</button>
       </header>
 
       <!-- 首页服务器卡片：服清单数据驱动（发现页最显眼的位置） -->
@@ -81,6 +91,7 @@
       </section>
     </div>
     <PanelTabbar />
+    </template>
   </div>
 </template>
 
@@ -96,6 +107,8 @@ import EcgCanvas from '@/components/panel/EcgCanvas.vue'
 import PulseActivity from '@/components/panel/PulseActivity.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
 import TicketCard from '@/components/panel/TicketCard.vue'
+import WorldHome from '@/components/panel/WorldHome.vue'
+import { useHomeViewMode } from '@/composables/useHomeViewMode'
 import { RouterLink } from 'vue-router'
 import { useServerCards } from '@/composables/useServerCards'
 import { useServerCardPrefs } from '@/composables/useServerCardPrefs'
@@ -103,6 +116,13 @@ import { humanizeError, type ParcelItem, type ParcelsData } from '@/composables/
 
 const panel = usePanelStore()
 const user = useUserStore()
+// 首页形态：桌面世界视图（探险地图）/ 经典视图切换（偏好按用户存 localStorage）
+const {
+  worldActive: homeWorldActive,
+  isDesktop: homeIsDesktop,
+  mode: homeMode,
+  setMode: setHomeMode,
+} = useHomeViewMode()
 const { today, parcels, pulse, letter } = storeToRefs(panel)
 // 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
 const serverCards = useServerCards()
@@ -354,5 +374,21 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
     animation: none;
     opacity: 1;
   }
+}
+
+/* 经典视图 → 探险世界入口（仅桌面渲染，显隐由模板 v-if 控制） */
+.v4-world-switch {
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--ink);
+  color: var(--paper2);
+  border: none;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
 }
 </style>
