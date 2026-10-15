@@ -123,6 +123,27 @@ def test_find_library_match_passes_year(db):
     assert match is not None and match.guid == "g2-new"
 
 
+def test_search_candidates_passes_year_to_library_hit(db, monkeypatch):
+    from backend.emby_server import tmdb
+    # 注意插入顺序：2024 版先入库，1995 版后入库——不用年份过滤时
+    # "最近入库优先" 会误命中 1995 版，年份过滤必须纠正为 2024 版
+    _item(db, name="重拍剧", item_type="series", year=2024, tmdb_id="222",
+          guid="g-s2024")
+    _item(db, name="重拍剧", item_type="series", year=1995, tmdb_id="111",
+          guid="g-s1995")
+    monkeypatch.setattr(tmdb, "tmdb_client", FakeTmdb(hits={
+        # TMDB 命中 2024 版，但给一个库里没有的 tmdb_id，逼进片名回退分支
+        "series": [{"id": 999, "name": "重拍剧", "first_air_date": "2024-05-01",
+                    "vote_average": 8.0, "poster_path": None}],
+        "movie": [],
+    }))
+    result = media_seek.search_candidates(db, "重拍剧")
+    assert len(result["results"]) == 1
+    cand = result["results"][0]
+    assert cand["in_library"] is True
+    assert cand["library_item_id"] == "g-s2024", "应命中 2024 版而非 1995 版"
+
+
 # ==================== F3：脏数据容错 ====================
 
 def test_safe_float_and_int():
