@@ -17,7 +17,7 @@
       <div v-else-if="accountError && !account" class="v4-sec">
         <div class="v4-err">
           接线员没接上：{{ accountError }}<br>
-          <button class="v4-retry" @click="refreshAccount">重试</button>
+          <button class="v4-retry" @click="refreshAccount()">重试</button>
         </div>
       </div>
 
@@ -38,6 +38,12 @@
             <div class="v4-sec-sub">拿着这三样，去播放器里登录</div>
 
             <div class="op-rows" :class="{ loading }">
+              <template v-if="accountReloading">
+                <div class="v4-skeleton" style="height:54px" role="status" aria-label="正在刷新账号信息"></div>
+                <div class="v4-skeleton" style="height:54px" aria-hidden="true"></div>
+                <div class="v4-skeleton" style="height:54px" aria-hidden="true"></div>
+              </template>
+              <template v-else>
               <div class="op-row">
                 <span class="op-label">服务器</span>
                 <span class="op-value mono">{{ serverUrl }}</span>
@@ -57,7 +63,7 @@
               <div class="op-row">
                 <span class="op-label">播放密码</span>
                 <span class="op-value mono">
-                  <template v-if="hasPlayPassword">{{ showPlayPassword ? playPasswordText : '••••••••' }}</template>
+                  <template v-if="hasPlayPassword">{{ showPlayPassword && playPwdLoaded ? playPasswordText : '••••••••' }}</template>
                   <template v-else>未设置</template>
                 </span>
                 <button
@@ -74,6 +80,7 @@
                   {{ hasPlayPassword ? '修改' : '设置' }}
                 </button>
               </div>
+              </template>
             </div>
 
             <p class="op-tip">
@@ -90,7 +97,7 @@
                 <div class="realm-head">
                   <strong>{{ r.name }}</strong>
                   <span v-if="r.is_free" class="badge free">公益服</span>
-                  <span v-else-if="r.subscribed" class="badge ok">{{ daysLeft(r.end_date) > 0 ? `会员剩 ${daysLeft(r.end_date)} 天` : '会员已到期' }}</span>
+                  <span v-else-if="r.subscribed" class="badge ok">{{ daysLeftText(r.end_date) }}</span>
                   <span v-else class="badge off">未开通</span>
                 </div>
                 <div v-if="r.view_granted" class="realm-url">
@@ -98,8 +105,8 @@
                   <button
                     v-if="r.base_url"
                     class="copy-btn"
-                    title="复制"
-                    aria-label="复制"
+                    :title="'复制服务器地址：' + r.name"
+                    :aria-label="'复制服务器地址：' + r.name"
                     @click="copyText(r.base_url, `realm-${r.id}`)"
                   >
                     <Check v-if="copiedField === `realm-${r.id}`" :size="13" class="ok" />
@@ -122,6 +129,7 @@
               type="password"
               class="import-pwd-input"
               placeholder="输入播放密码一起导入（可选）"
+              aria-label="播放密码（可选）"
               autocomplete="off"
             />
             <div class="scheme-btns">
@@ -153,7 +161,7 @@
             </div>
             <div class="v4-sec-sub">这个账号正在哪台设备上播放，一键远程停掉</div>
 
-            <div v-if="sessionsLoading" class="op-session-list">
+            <div v-if="sessionsLoading" class="op-session-list" role="status" aria-label="正在加载播放列表">
               <div class="v4-skeleton" style="height:64px"></div>
               <div class="v4-skeleton" style="height:64px"></div>
             </div>
@@ -166,7 +174,7 @@
             </div>
 
             <div v-else-if="sessions.length === 0" class="op-empty">
-              <MonitorSmartphone :size="26" />
+              <MonitorSmartphone :size="26" aria-hidden="true" />
               <p>现在没有正在播放的</p>
               <p class="op-empty-sub">在任意设备上开始播放后，会在这里显示并可远程结束</p>
             </div>
@@ -174,12 +182,12 @@
             <div v-else class="op-session-list">
               <div v-for="s in sessions" :key="s.session_key" class="op-session-row">
                 <div class="op-session-icon">
-                  <MonitorSmartphone :size="17" />
+                  <MonitorSmartphone :size="17" aria-hidden="true" />
                 </div>
 
                 <div class="op-session-main">
                   <div class="op-session-title">
-                    <span class="op-session-name">{{ s.item }}</span>
+                    <span class="op-session-name" :title="s.item">{{ s.item }}</span>
                     <span class="badge type">{{ typeLabel(s.item_type) }}</span>
                     <span v-if="s.is_paused" class="badge paused">已暂停</span>
                   </div>
@@ -190,20 +198,21 @@
                     <span v-if="s.play_method" class="meta-sep">·</span>
                     <span v-if="s.play_method" class="method">{{ s.play_method === 'Transcode' ? '转码' : '直连' }}</span>
                     <span v-if="s.remote_addr" class="meta-sep">·</span>
-                    <span v-if="s.remote_addr" class="addr"><Wifi :size="11" />{{ s.remote_addr }}</span>
+                    <span v-if="s.remote_addr" class="addr"><Wifi :size="11" aria-hidden="true" />{{ s.remote_addr }}</span>
                   </div>
                   <div class="op-session-progress">
-                    <div class="bar" role="progressbar" :aria-valuenow="Math.round(s.progress)" aria-valuemin="0" aria-valuemax="100" :aria-label="'播放进度 ' + Math.round(s.progress) + '%'"><div class="bar-fill" :style="{ width: s.progress + '%' }" /></div>
-                    <span class="bar-text">{{ s.progress }}%<template v-if="s.updated_at"> · {{ fmtTime(s.updated_at) }}</template></span>
+                    <div class="bar" role="progressbar" :aria-valuenow="Math.round(s.progress)" aria-valuemin="0" aria-valuemax="100" :aria-label="'播放进度 ' + Math.round(s.progress) + '%'"><div class="bar-fill" :style="{ transform: 'scaleX(' + Math.min(100, Math.max(0, s.progress)) / 100 + ')' }" /></div>
+                    <span class="bar-text">{{ Math.round(s.progress) }}%<template v-if="s.updated_at"> · {{ fmtTime(s.updated_at) }}</template></span>
                   </div>
                 </div>
 
                 <button
                   class="op-stop-btn"
                   :disabled="stopping === s.session_key"
+                  :aria-label="'结束播放：' + (s.item || s.session_key)"
                   @click="confirmStopSession(s)"
                 >
-                  <CircleStop :size="13" />
+                  <CircleStop :size="13" aria-hidden="true" />
                   {{ stopping === s.session_key ? '结束中' : '结束' }}
                 </button>
               </div>
@@ -253,7 +262,7 @@
               :disabled="unlocking || viewPermission.points_balance < viewPermission.unlock_points"
               @click="openUnlockConfirm"
             >
-              {{ viewPermission.points_balance < viewPermission.unlock_points ? '能量不足' : `花 ${viewPermission.unlock_points} 能量解锁` }}
+              {{ unlocking ? '解锁中…' : (viewPermission.points_balance < viewPermission.unlock_points ? '能量不足' : `花 ${viewPermission.unlock_points} 能量解锁`) }}
             </button>
             <p class="op-tip">能量可通过每日报到、邀请好友等方式获得。</p>
           </template>
@@ -266,7 +275,7 @@
         <div v-else class="v4-sec">
           <div class="v4-err">
             接线员没接上，再试一次<br>
-            <button class="v4-retry" @click="refreshAccount">重试</button>
+            <button class="v4-retry" @click="refreshAccount()">重试</button>
           </div>
         </div>
       </template>
@@ -283,9 +292,10 @@
             type="password"
             class="modal-input"
             placeholder="输入新密码（至少 6 位）"
+            aria-label="设置播放密码"
             autocomplete="new-password"
           />
-          <p v-if="pwdError" class="modal-error">{{ pwdError }}</p>
+          <p v-if="pwdError" class="modal-error" role="alert">{{ pwdError }}</p>
           <div class="modal-actions">
             <button class="op-btn ghost" @click="closeSetPlayPwd()">取消</button>
             <button class="op-btn primary" :disabled="settingPwd" @click="confirmSetPassword">
@@ -323,10 +333,11 @@
             将在「<strong>{{ sessionToStop.device || '未知设备' }}</strong>」上停掉
             「<strong>{{ sessionToStop.item }}</strong>」的播放。
           </p>
+          <p v-if="stopError" class="modal-error" role="alert">{{ stopError }}</p>
           <div class="modal-actions">
-            <button class="op-btn ghost" @click="closeStopSession()">取消</button>
+            <button class="op-btn ghost" :disabled="!!stopping" @click="closeStopSession()">取消</button>
             <button class="op-btn primary" :disabled="!!stopping" @click="doStopSession">
-              {{ stopping ? '结束中' : '确认结束' }}
+              {{ stopping ? '结束中' : (stopError ? '重试' : '确认结束') }}
             </button>
           </div>
         </div>
@@ -361,15 +372,44 @@ const userStore = useUserStore()
 const loading = ref(true)
 const account = ref<AccountCard | null>(null)
 const accountError = ref('')
+/** R50：空占位符（与 copyText 的空值判定共用一处，改一处不漏另一处） */
+const EMPTY_DASH = '—'
+
+/** R50：后端账号卡实际下发、但 AccountCard 类型尚未收录的字段（渐进补齐，避免满屏 as any） */
+interface AccountCardExtra {
+  /** 兼容字段：部分部署 server_url 与 base_url 并存 */
+  server_url?: string
+  /** 是否已设置播放密码 */
+  has_play_password?: boolean
+  /** 公益服标记（顶层兼容字段） */
+  realm_free?: boolean
+  /** 公益服说明（顶层兼容字段） */
+  realm_note?: string
+}
+/** R50：view_permission 里后端可能多带的字段 */
+interface ViewPermissionExtra {
+  realm_id?: number | null
+  realm_note?: string
+}
+/** R52-CI：AccountCardExtra 是弱类型（全可选字段），直接把 AccountCard 往它上面靠
+    会触发"无公共属性"报错；与 AccountCard 取交集才是卡的完整形态 */
+type AccountCardFull = AccountCard & AccountCardExtra
+const accountExtra = computed((): AccountCardFull => (account.value ?? {}) as AccountCardFull)
+/** R50：账号已就绪时的刷新（重试按钮场景）——op-rows 显示骨架而不是整块变暗 */
+const accountReloading = computed(() => loading.value && !!account.value)
+/** R50：embyApi 类型尚未收录 getPlayPassword（后端有该端点），此处收窄 any */
+const embyApiExtra = embyApi as unknown as { getPlayPassword?: () => Promise<unknown> }
 // 查看权限：后端账号卡自带 view_permission（没权限时 200 返回卡，granted=false，只给解锁信息不下发地址）
 // 和 ProfileView 同一口径：从卡里派生，不单独调接口（后端没有 /view-permission 这类端点）
-const viewPermission = computed(() => ((account.value as any)?.view_permission as ViewPermission | null) || null)
+const viewPermission = computed(() => (account.value?.view_permission || null) as ((ViewPermission & ViewPermissionExtra) | null))
 const unlocking = ref(false)
 const showUnlockConfirm = ref(false)
 
 const copiedField = ref('')
 const showPlayPassword = ref(false)
 const playPasswordText = ref('')
+/** R50：播放密码明文是否懒加载成功（失败时模板继续显示 ••••••••） */
+const playPwdLoaded = ref(false)
 const showSetPlayPwd = ref(false)
 const playPwd = ref('')
 const pwdError = ref('')
@@ -378,37 +418,38 @@ const importPassword = ref('')
 
 /** 是否有查看权限：以卡里 view_permission.granted 为准（和 ProfileView 同一口径） */
 const viewGranted = computed(() => !!viewPermission.value?.granted)
-const hasPlayPassword = computed(() => !!(account.value as any)?.has_play_password)
+const hasPlayPassword = computed(() => !!accountExtra.value.has_play_password)
 
-const serverUrl = computed(() => (account.value as any)?.server_url || (account.value as any)?.base_url || '—')
-const embyUsername = computed(() => {
-  const a = account.value as any
-  return a?.emby_username || userStore.user?.username || '—'
-})
-const isFreeRealm = computed(() => !!(account.value as any)?.realm_free || !!(viewPermission.value as any)?.realm_free)
-const realmNote = computed(() => (account.value as any)?.realm_note || (viewPermission.value as any)?.realm_note || '')
+const serverUrl = computed(() => accountExtra.value.server_url || account.value?.base_url || EMPTY_DASH)
+const embyUsername = computed(() => account.value?.emby_username || userStore.user?.username || EMPTY_DASH)
+const isFreeRealm = computed(() => !!accountExtra.value.realm_free || !!viewPermission.value?.realm_free)
+const realmNote = computed(() => accountExtra.value.realm_note || viewPermission.value?.realm_note || '')
 const realmCards = computed((): AccountRealmCard[] => {
-  const r = (account.value as any)?.realms
+  const r = account.value?.realms
   return Array.isArray(r) ? r : []
 })
 const importSchemes = computed((): Record<string, string> => {
-  const s = (account.value as any)?.import_schemes
+  const s = account.value?.import_schemes
   return s && typeof s === 'object' ? s : {}
 })
 const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
 
-async function refreshAccount() {
-  loading.value = true
+async function refreshAccount(quiet = false) {
+  if (!quiet) loading.value = true
   accountError.value = ''
+  playPwdLoaded.value = false
   try {
     const res = await embyApi.getAccountCard()
     account.value = res as AccountCard
     // 播放密码明文：后端只在已设置且用户主动查看时下发，这里按需懒加载
     if (hasPlayPassword.value) {
       try {
-        const pwd = await (embyApi as any).getPlayPassword?.()
-        if (typeof pwd === 'string') playPasswordText.value = pwd
-      } catch { /* 看不到就显示已设置 */ }
+        const pwd = await embyApiExtra.getPlayPassword?.()
+        if (typeof pwd === 'string') {
+          playPasswordText.value = pwd
+          playPwdLoaded.value = true
+        }
+      } catch { /* R50：懒加载失败保持"未获取"态，模板继续显示 ••••••••，不露空字符串 */ playPwdLoaded.value = false }
     }
   } catch (e: any) {
     // 没权限时后端直接 200 返回带 view_permission 的卡（granted=false），不会 403；
@@ -424,7 +465,10 @@ async function refreshAccount() {
  *  成功失败都给人话反馈；照抄 CompanionView 同一切口） */
 let copyTimer: number | undefined
 async function copyText(text: string, field: string) {
-  if (!text || text === '—') return
+  if (!text || text === EMPTY_DASH) {
+    toast.info('没有可复制的内容')
+    return
+  }
   const label = field === 'server' ? '服务器地址' : field === 'user' ? '用户名' : '地址'
   const ok = await copy(text, label)
   if (!ok) return
@@ -446,7 +490,7 @@ async function confirmSetPassword() {
     closeSetPlayPwd()
     playPwd.value = ''
     showPlayPassword.value = false
-    await refreshAccount()
+    await refreshAccount(true)
   } catch (e) {
     pwdError.value = humanizeError(e)
   } finally {
@@ -457,8 +501,10 @@ async function confirmSetPassword() {
 async function confirmUnlock() {
   unlocking.value = true
   try {
-    const realmId = (account.value as any)?.realm_id ?? (viewPermission.value as any)?.realm_id
-    await embyApi.unlockView(realmId)
+    const realmId = account.value?.realm_id ?? viewPermission.value?.realm_id ?? null
+    // R50：realmId 取不到时不带该字段，不发 realm_id: null
+    if (realmId != null) await embyApi.unlockView(realmId)
+    else await embyApi.unlockView()
     toast.success('解锁成功')
     closeUnlockConfirm()
     await refreshAccount()
@@ -469,7 +515,12 @@ async function confirmUnlock() {
   }
 }
 
-function openScheme(url: string, appName = '播放器') {
+async function openScheme(url: string, appName = '播放器') {
+  // R50：空地址直接提示，不跳转（空串 location.href 会刷新当前页）
+  if (!url) {
+    toast.info('播放地址无效')
+    return
+  }
   let finalUrl = url
   // #758：一键导入时可临时带上播放密码（只放内存，不存）
   if (importPassword.value) {
@@ -486,13 +537,25 @@ function openScheme(url: string, appName = '播放器') {
   }
   // R41：没装 App 时 iOS 跳转是死路 —— 跳转前先说一声，提醒没装的去应用商店
   toast.info(`正在打开${appName}，没装的话请先去应用商店安装`)
+  // R50：给 toast 一点展示时间再跳转，否则提示来不及被看到
+  await nextTick()
+  await new Promise((resolve) => setTimeout(resolve, 600))
   window.location.href = finalUrl
 }
 
-function daysLeft(endDate?: string | null): number {
+function daysLeft(endDate?: string | null): number | null {
   if (!endDate) return 0
-  const diff = new Date(endDate).getTime() - Date.now()
-  return Math.max(0, Math.ceil(diff / 86400000))
+  const t = new Date(endDate).getTime()
+  // R50：非法日期返回 null（模板显示"—"），不再渲染 NaN
+  if (!isFinite(t)) return null
+  return Math.max(0, Math.ceil((t - Date.now()) / 86400000))
+}
+
+/** R50：会员剩余天数文案（daysLeft 只调一次；null → "—" 不显示"会员已到期"） */
+function daysLeftText(endDate?: string | null): string {
+  const d = daysLeft(endDate)
+  if (d === null) return EMPTY_DASH
+  return d > 0 ? `会员剩 ${d} 天` : '会员已到期'
 }
 
 // ===== 正在播放（旧 PlaybackSessions.vue 一比一恢复，放接线员页） =====
@@ -503,6 +566,8 @@ const sessionsLoading = ref(true)
 const sessionsError = ref(false)
 const stopping = ref<string | null>(null)
 const sessionToStop = ref<MyPlaybackSession | null>(null)
+/** R50：结束播放失败时的弹窗内错误（失败不自动关弹窗，展示错误+重试） */
+const stopError = ref('')
 
 function typeLabel(t?: string | null) {
   // R41：Episode 标"单集" —— 之前错标成"剧集"，跟 Series 重了；与 CalendarView 同名函数对齐
@@ -510,8 +575,10 @@ function typeLabel(t?: string | null) {
 }
 
 function fmtTime(iso?: string | null) {
-  if (!iso) return '—'
+  if (!iso) return EMPTY_DASH
   const date = new Date(iso)
+  // R50：非法日期直接返回占位，不渲染 NaN
+  if (!isFinite(date.getTime())) return EMPTY_DASH
   const diff = Date.now() - date.getTime()
   const minutes = Math.floor(diff / 60000)
   if (minutes < 1) return '刚刚'
@@ -537,6 +604,7 @@ async function loadSessions() {
 
 function confirmStopSession(session: MyPlaybackSession) {
   recordTrigger()
+  stopError.value = ''
   sessionToStop.value = session
   focusOpenModalCard()
 }
@@ -581,10 +649,28 @@ function focusOpenModalCard() {
 /** R38 P2-2：弹窗关闭后焦点回到触发按钮（setPlayPwd / unlock / stopSession 三处共用） */
 const lastTrigger = ref<HTMLElement | null>(null)
 function recordTrigger() { lastTrigger.value = document.activeElement as HTMLElement | null }
-function restoreTriggerFocus() { lastTrigger.value?.focus?.() }
+function restoreTriggerFocus() {
+  const t = lastTrigger.value
+  // R50：触发按钮仍在 DOM 才还回去（会话行被移除后 focus 会静默掉回 body）
+  if (t && document.contains(t)) {
+    t.focus?.()
+    return
+  }
+  // 触发按钮不在了：焦点落到仍打开的弹窗内关闭按钮/标题（标题补 tabindex="-1" 使其可聚焦）
+  const card = document.querySelector<HTMLElement>('.modal-mask .modal-card')
+  const target = card?.querySelector<HTMLElement>('.op-btn.ghost') || card?.querySelector<HTMLElement>('.modal-title')
+  if (target) {
+    if (target.tagName === 'H3') target.setAttribute('tabindex', '-1')
+    target.focus?.()
+  }
+}
 function closeSetPlayPwd() { showSetPlayPwd.value = false; restoreTriggerFocus() }
 function closeUnlockConfirm() { showUnlockConfirm.value = false; restoreTriggerFocus() }
-function closeStopSession() { sessionToStop.value = null; restoreTriggerFocus() }
+function closeStopSession() {
+  // R50：先落焦点再关弹窗——此时弹窗仍在 DOM，触发按钮若已被移除可落到弹窗关闭按钮/标题
+  restoreTriggerFocus()
+  sessionToStop.value = null
+}
 
 /** R41：三个 Teleport 弹窗（设置密码 / 解锁确认 / 结束播放确认）—— 任一打开都锁住背后页面滚动。
  *  代码路径上三者互斥（解锁弹窗只在没权限分支，另两个只在有权限分支；弹窗打开时页面被遮罩盖住点不到别的），
@@ -592,8 +678,15 @@ function closeStopSession() { sessionToStop.value = null; restoreTriggerFocus() 
 const anyModalOpen = computed(
   () => showSetPlayPwd.value || showUnlockConfirm.value || sessionToStop.value !== null,
 )
+/** R50：body 滚动锁——保存打开前的值，关闭时恢复（避免与其他锁滚动逻辑互相覆盖） */
+let savedBodyOverflow = ''
 watch(anyModalOpen, (open) => {
-  document.body.style.overflow = open ? 'hidden' : ''
+  if (open) {
+    savedBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+  } else {
+    document.body.style.overflow = savedBodyOverflow
+  }
 })
 function openSetPlayPwd() {
   // R37 P3-9：重开弹窗清掉旧错误文案
@@ -608,17 +701,20 @@ async function doStopSession() {
   const session = sessionToStop.value
   if (!session) return
   stopping.value = session.session_key
+  stopError.value = ''
   try {
     await embyApi.stopSession(session.session_key)
     toast.success(`已结束「${session.device || '未知设备'}」上的播放`)
     sessions.value = sessions.value.filter((s) => s.session_key !== session.session_key)
-  } catch (err: any) {
+    // R50：成功才关弹窗
+    closeStopSession()
+  } catch (err: unknown) {
     // Batch G：中文判断逻辑已收敛进 toUserMessage（中文 detail 透传），不再内联
     // R41：结束播放失败走 stopFailed —— "暂时没能保存"跟"结束播放"动作对不上
-    toast.error(toUserMessage(err, 'stopFailed'))
+    // R50：失败不自动关弹窗，错误留在弹窗内展示并可重试（不再 toast）
+    stopError.value = toUserMessage(err, 'stopFailed')
   } finally {
     stopping.value = null
-    closeStopSession()
   }
 }
 
@@ -631,7 +727,7 @@ onUnmounted(() => {
   // R41：清掉复制提示的定时器（照抄 CompanionView 模式）
   window.clearTimeout(copyTimer)
   // R41：卸载时释放 body 滚动锁，避免锁死
-  document.body.style.overflow = ''
+  document.body.style.overflow = savedBodyOverflow
 })
 
 // 有查看权限才拉正在播放（解锁后翻成 granted 也会触发一次）
@@ -707,9 +803,9 @@ watch(viewGranted, (granted) => {
   background: transparent;
   border: none;
   cursor: pointer;
-  /* 透明 padding + 负 margin：文字视觉不变，点击区纵向扩到 ≥44px */
-  padding: 15px 4px;
-  margin: -9px 0;
+  /* 透明 padding + 负 margin：文字视觉不变，点击区扩到 ≥44px（R50：横向 4px→12px） */
+  padding: 15px 12px;
+  margin: -9px -8px;
 }
 .op-tip {
   font-size: 12px;
@@ -734,7 +830,7 @@ watch(viewGranted, (granted) => {
   gap: 8px;
   font-size: 14px;
 }
-.realm-head strong { flex: 1; }
+.realm-head strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge {
   font-size: 11px;
   font-weight: 800;
@@ -810,7 +906,7 @@ watch(viewGranted, (granted) => {
   justify-content: center;
 }
 .guide-step b { font-size: 14px; }
-.guide-step p { font-size: 12px; color: var(--ink2); margin: 4px 0 0; line-height: 1.7; }
+.guide-step p { font-size: 13px; color: var(--ink2); margin: 4px 0 0; line-height: 1.7; }
 
 /* 正在播放（旧 PlaybackSessions 纸片风重写） */
 .op-session-list { display: flex; flex-direction: column; gap: 10px; }
@@ -898,7 +994,7 @@ watch(viewGranted, (granted) => {
   background: var(--paper2);
   overflow: hidden;
 }
-.op-session-progress .bar-fill { height: 100%; background: var(--red); }
+.op-session-progress .bar-fill { height: 100%; background: var(--red); transform-origin: left center; transition: transform .3s ease; }
 .op-session-progress .bar-text { font-size: 12px; color: var(--ink2); white-space: nowrap; }
 .op-stop-btn {
   flex: none;
@@ -910,6 +1006,8 @@ watch(viewGranted, (granted) => {
   padding: 12px 16px;
   min-height: 44px;
   box-sizing: border-box;
+  min-width: 92px;
+  white-space: nowrap;
   border-radius: var(--paper-r-md, 10px);
   border: 1.5px solid var(--red);
   background: var(--paper-card);
@@ -925,7 +1023,7 @@ watch(viewGranted, (granted) => {
   color: var(--ink2); font-size: 18px; cursor: pointer;
 }
 .refresh-btn:disabled { opacity: 0.5; cursor: default; }
-.refresh-btn.is-loading { width: auto; padding: 0 14px; font-size: 14px; }
+.refresh-btn.is-loading { width: 76px; padding: 0 14px; font-size: 14px; white-space: nowrap; }
 .refresh-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 .op-empty {
   text-align: center;
@@ -933,7 +1031,7 @@ watch(viewGranted, (granted) => {
   color: var(--ink2);
 }
 .op-empty p { font-size: 14px; margin: 8px 0 0; }
-.op-empty .op-empty-sub { font-size: 12px; margin-top: 4px; }
+.op-empty .op-empty-sub { font-size: 13px; margin-top: 4px; }
 
 /* 按钮 */
 .op-btn {
@@ -976,10 +1074,12 @@ watch(viewGranted, (granted) => {
   border-radius: var(--paper-r-xl, 16px);
   padding: 22px 20px;
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.15);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
 }
 .modal-title { font-size: 17px; font-weight: 800; margin: 0 0 8px; letter-spacing: 1px; }
 .modal-desc { font-size: 13px; color: var(--ink2); line-height: 1.7; margin: 0 0 14px; }
-.modal-desc strong { color: var(--red); }
+.modal-desc strong { color: var(--red-ink); }
 .modal-input {
   width: 100%;
   box-sizing: border-box;
@@ -987,13 +1087,13 @@ watch(viewGranted, (granted) => {
   padding: 12px 14px;
   border: 1.5px solid var(--line);
   border-radius: var(--paper-r-md, 10px);
-  background: #fff;
+  background: var(--paper-card);
   color: var(--ink);
   margin-bottom: 6px;
 }
 .modal-input:focus-visible { outline: 2px solid var(--red); outline-offset: 1px; }
-.modal-error { font-size: 12px; color: var(--red); margin: 4px 0 0; }
-.modal-actions { display: flex; gap: 10px; margin-top: 14px; }
+.modal-error { font-size: 12px; color: var(--red-ink); margin: 4px 0 0; }
+.modal-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .modal-actions .op-btn { flex: 1; }
 
 .free-note p { font-size: 13px; color: var(--ink2); line-height: 1.8; margin: 10px 0 0; }
@@ -1001,5 +1101,6 @@ watch(viewGranted, (granted) => {
 /* 减弱动效：按下不再下沉（照 TicketCard/ParcelBox 模式） */
 @media (prefers-reduced-motion: reduce) {
   .scheme-btn:active, .op-btn.primary:active { transform: none; }
+  .op-session-progress .bar-fill { transition: none; }
 }
 </style>

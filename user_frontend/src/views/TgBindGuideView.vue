@@ -10,12 +10,21 @@ import { useRoute, useRouter } from 'vue-router'
 import { Send, Check } from 'lucide-vue-next'
 import { tgApi, type TgBindStatus } from '@/api/tg'
 import { useUserStore } from '@/stores/user'
+import { useToast } from '@/composables/useToast'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const toast = useToast()
 
-const redirect = (route.query.redirect as string) || '/'
+/** redirect 白名单：只允许站内路径，防止开放重定向 */
+function safeRedirect(v: unknown): string {
+  const s = Array.isArray(v) ? String(v[0] ?? '') : String(v ?? '')
+  if (s.startsWith('/') && !s.startsWith('//') && !s.includes('://')) return s
+  return '/'
+}
+
+const redirect = safeRedirect(route.query.redirect)
 
 const loading = ref(true)          // 初始加载
 const notConfigured = ref(false)   // bot_username 为空
@@ -24,9 +33,12 @@ const bindCode = ref('')
 const expiresIn = ref(0)           // 剩余秒数
 const refreshing = ref(false)
 const copyHint = ref('')           // 行内复制提示
+const loadError = ref(false)    // 初始状态拉取失败：给错误态+重试，不渲染空白 bot 名/码
+const loggingOut = ref(false)   // 退出登录进行中
 let copyHintTimer: ReturnType<typeof setTimeout> | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let tickTimer: ReturnType<typeof setInterval> | null = null
+let codeDeadline = 0               // 绑定码过期时间戳（Date.now 基准）
 
 const codeExpired = computed(() => expiresIn.value <= 0)
 const countdownText = computed(() => {
@@ -45,30 +57,58 @@ function clearTimers() {
 
 function startTick() {
   if (tickTimer) clearInterval(tickTimer)
-  tickTimer = setInterval(() => {
-    if (expiresIn.value > 0) expiresIn.value -= 1
-  }, 1000)
+  const update = () => {
+    const left = Math.max(0, Math.round((codeDeadline - Date.now()) / 1000))
+    expiresIn.value = left
+    if (left <= 0 && tickTimer) {
+      // 归零后停掉计时器，不再空转
+      clearInterval(tickTimer)
+      tickTimer = null
+    }
+  }
+  update()
+  tickTimer = setInterval(update, 1000)
 }
+
+const POLL_INTERVAL = 3000
+const MAX_POLLS = 100 // 100 次 × 3 秒 ≈ 5 分钟
+let pollCount = 0
+let pollStart = 0
+let pollInFlight = false
 
 function startPoll() {
   if (pollTimer) clearInterval(pollTimer)
+  pollCount = 0
+  pollStart = Date.now()
   pollTimer = setInterval(async () => {
+    if (pollInFlight) return
+    pollInFlight = true
     try {
       const st: TgBindStatus = await tgApi.status()
       if (st.bound) {
         clearTimers()
         router.replace(redirect)
+        return
       }
     } catch {
       // 轮询失败不抛错、不锁死
+    } finally {
+      pollInFlight = false
     }
-  }, 3000)
+    pollCount += 1
+    if (pollCount >= MAX_POLLS || Date.now() - pollStart > MAX_POLLS * POLL_INTERVAL) {
+      clearTimers()
+      toast.info('长时间没扫上，点"重新获取"换个码再试')
+    }
+  }, POLL_INTERVAL)
 }
 
 async function fetchBindCode() {
   const res = await tgApi.bindCode()
   bindCode.value = res.code
-  expiresIn.value = res.expires_in
+  // 时间戳差值倒计时：切后台/休眠回来不漂移；后端没给时兜底 0
+  codeDeadline = Date.now() + (res.expires_in || 0) * 1000
+  expiresIn.value = Math.max(0, res.expires_in || 0)
   if (res.bot_username) botUsername.value = res.bot_username
 }
 
@@ -78,6 +118,8 @@ async function refreshCode() {
   try {
     await fetchBindCode()
     startTick()
+  } catch {
+    toast.error('刷新失败，点"重新获取"再试一次')
   } finally {
     refreshing.value = false
   }
@@ -92,6 +134,7 @@ async function copyCommand() {
     try {
       const ta = document.createElement('textarea')
       ta.value = text
+      ta.readOnly = true
       ta.style.position = 'fixed'
       ta.style.opacity = '0'
       document.body.appendChild(ta)
@@ -112,15 +155,27 @@ function showCopyHint(msg: string) {
 }
 
 function openBot() {
-  window.open('https://t.me/' + botUsername.value, '_blank')
+  window.open('https://t.me/' + botUsername.value, '_blank', 'noopener,noreferrer')
 }
 
 async function logout() {
-  await userStore.logout()
-  router.push('/login')
+  if (loggingOut.value) return
+  loggingOut.value = true
+  try {
+    await userStore.logout()
+    router.push('/login')
+  } catch {
+    toast.error('退出失败，请重试')
+  } finally {
+    loggingOut.value = false
+  }
 }
 
-onMounted(async () => {
+async function init() {
+  loadError.value = false
+  notConfigured.value = false
+  loading.value = true
+  clearTimers()
   try {
     const st = await tgApi.status()
     if (st.bound || !st.required || !st.guide_enabled) {
@@ -129,18 +184,22 @@ onMounted(async () => {
     }
     if (!st.bot_username) {
       notConfigured.value = true
-      loading.value = false
       return
     }
     botUsername.value = st.bot_username
     await fetchBindCode()
-    loading.value = false
     startTick()
     startPoll()
   } catch {
-    // 初始状态拉取失败：不锁死用户，停掉加载态展示页头与退出登录入口
+    // 初始状态拉取失败：给错误态 + 重试按钮，不再渲染空白 bot 名/码
+    loadError.value = true
+  } finally {
     loading.value = false
   }
+}
+
+onMounted(() => {
+  init()
 })
 
 onUnmounted(() => {
@@ -155,7 +214,7 @@ onUnmounted(() => {
     <div class="tg-guide-card">
       <header class="guide-header">
         <div class="header-icon">
-          <Send :size="32" />
+          <Send :size="32" aria-hidden="true" />
         </div>
         <h1>请先绑定 Telegram</h1>
         <p class="header-sub">管理员要求所有用户绑定 Telegram 后才能使用系统功能，完成绑定后将自动进入面板</p>
@@ -166,8 +225,14 @@ onUnmounted(() => {
         <div class="au-skeleton" style="height:14px;width:70%;margin:12px auto 0;"></div>
       </div>
 
+      <div v-else-if="loadError" class="warn-box" role="alert">
+        <p>没连上服务器，请检查网络后重试</p>
+        <button class="btn btn-primary" @click="init">重试</button>
+      </div>
+
       <div v-else-if="notConfigured" class="warn-box">
-        还没准备好，请联系管理员
+        <p>Telegram 绑定功能还没开启，请联系服主开启后再试</p>
+        <button class="btn btn-ghost" @click="init">重新检查</button>
       </div>
 
       <template v-else>
@@ -189,30 +254,28 @@ onUnmounted(() => {
             <h2 class="step-title">发送绑定指令</h2>
             <div class="command-box">{{ commandText }}</div>
             <button class="btn btn-ghost" :disabled="codeExpired" @click="copyCommand">复制指令</button>
-            <p v-if="copyHint" class="copy-hint">{{ copyHint }}</p>
+            <p v-if="copyHint" class="copy-hint" aria-live="polite">{{ copyHint }}</p>
           </div>
         </section>
 
         <section class="code-panel">
           <span class="code-label">绑定码</span>
           <div class="code-big">{{ bindCode }}</div>
-          <div v-if="!codeExpired" class="countdown-row">
-            <span class="countdown-text"><span class="nowrap">{{ countdownText }}</span> 后过期</span>
+          <div class="countdown-row">
+            <span v-if="!codeExpired" class="countdown-text">{{ countdownText }} 后过期</span>
+            <span v-else class="expired-text">绑定码已过期，请刷新</span>
           </div>
-          <div v-else class="countdown-row">
-            <span class="expired-text">绑定码已过期，请刷新</span>
-          </div>
-          <button class="link-btn refresh-btn" :disabled="refreshing" @click="refreshCode">重新获取</button>
+          <button class="link-btn refresh-btn" :disabled="refreshing" @click="refreshCode">{{ refreshing ? '刷新中…' : '重新获取' }}</button>
         </section>
 
         <div class="auto-hint">
-          <Check :size="16" class="check-icon" />
+          <Check :size="16" class="check-icon" aria-hidden="true" />
           <span>发送指令后，将自动进入面板</span>
         </div>
       </template>
 
       <div class="logout-row">
-        <button class="link-btn" @click="logout">退出登录</button>
+        <button class="link-btn" :disabled="loggingOut" @click="logout">{{ loggingOut ? '退出中…' : '退出登录' }}</button>
       </div>
     </div>
   </div>
@@ -289,6 +352,14 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
+.warn-box p {
+  margin: 0 0 12px;
+}
+
+.warn-box .btn {
+  width: 100%;
+}
+
 .step {
   display: flex;
   gap: 16px;
@@ -328,9 +399,6 @@ onUnmounted(() => {
   color: var(--text-muted);
   display: flex;
   align-items: center;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .mono-ellipsis {
@@ -348,7 +416,7 @@ onUnmounted(() => {
   font-weight: 700;
   cursor: pointer;
   padding: 0 16px;
-  border: 1px solid transparent;
+  border: none;
   transition: opacity 0.15s ease;
 }
 
@@ -362,7 +430,6 @@ onUnmounted(() => {
   width: 100%;
   background: var(--paper-primary);
   color: var(--paper-on-primary);
-  border: none;
 }
 
 .btn-ghost {
@@ -382,8 +449,8 @@ onUnmounted(() => {
   font-size: 18px;
   padding: 12px 16px;
   border-radius: var(--paper-r-md);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 长指令允许横向滚动看全，不截断 */
+  overflow-x: auto;
   white-space: nowrap;
 }
 
@@ -404,8 +471,14 @@ onUnmounted(() => {
   border-radius: var(--paper-r-md);
 }
 
+@media (max-width: 480px) {
+  .code-panel {
+    padding: 16px;
+  }
+}
+
 .code-label {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -416,15 +489,13 @@ onUnmounted(() => {
   padding-left: 12px;
   text-align: center;
   white-space: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .countdown-row {
   font-size: 14px;
   color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.countdown-text .nowrap {
   white-space: nowrap;
 }
 
@@ -476,6 +547,11 @@ onUnmounted(() => {
 
 .logout-row .link-btn:hover {
   text-decoration: underline;
+}
+
+html[data-theme='light'] .warn-box {
+  /* 浅色下加深文字色使对比度达到 4.9:1（≥4.5），不动 token */
+  color: #B93A22;
 }
 
 @media (max-width: 768px) {
