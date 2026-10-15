@@ -110,7 +110,7 @@
             :class="{ locked: !b.unlocked, worn: wornBadgeKey === b.key }"
             role="button"
             tabindex="0"
-            :aria-label="b.unlocked ? `${b.name}：${b.desc}，已解锁` : '未解锁的徽章，还没发生的事'"
+            :aria-label="b.unlocked ? `${b.name}：${b.desc}，${wornBadgeKey === b.key ? '佩戴中' : '已解锁'}` : '未解锁的徽章，还没发生的事'"
             @click="onBadgeClick(b)"
             @keydown.enter.self.prevent="onBadgeClick(b)"
             @keydown.space.self.prevent="onBadgeClick(b)"
@@ -225,6 +225,9 @@ async function loadBadges() {
     newUnlockKeys.value = Array.isArray(data.new_unlocks) ? data.new_unlocks.map(String) : []
     // 佩戴状态以账号为准（后端已校验解锁/上架：下架或未解锁的不会下发）
     wornBadgeKey.value = data.worn_badge?.key ?? null
+    // R58-F2：账号里佩戴态变化（如管理员下架徽章）时同步 store，
+    // 头像菜单（读 store）才不会继续显示已下架的徽章
+    useUserStore().updateUser({ worn_badge: data.worn_badge ?? null })
     await migrateLegacyWornBadge(data.worn_badge)
   } catch (e) {
     if (seq !== badgesReqSeq) return
