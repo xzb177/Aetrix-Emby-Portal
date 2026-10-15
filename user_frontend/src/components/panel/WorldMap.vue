@@ -354,7 +354,7 @@ const avatarChar = computed(() => Array.from(nickname.value)[0] ?? '探')
 const greetingText = computed(() => {
   const g = todayD.value.greeting
   if (typeof g === 'string' && g.trim()) return g
-  const h = new Date().getHours()
+  const h = new Date(nowTick.value).getHours()
   if (h < 5) return '夜深了'
   if (h < 9) return '早上好'
   if (h < 12) return '上午好'
@@ -855,8 +855,12 @@ function openFortune() {
 }
 
 /* ---------- 昼夜 ---------- */
+/* 响应式分钟时钟：daypart/greetingText 靠它建立依赖，页面开着跨时段也能刷新天色与问候 */
+const nowTick = ref<number>(Date.now())
+let clockTimer: ReturnType<typeof setInterval> | undefined
+
 const daypart = computed(() => {
-  const h = new Date().getHours()
+  const h = new Date(nowTick.value).getHours()
   if (h >= 5 && h < 9) return 'dawn'
   if (h >= 9 && h < 17) return 'day'
   if (h >= 17 && h < 19) return 'dusk'
@@ -1006,10 +1010,17 @@ onMounted(() => {
   void loadFortune()
   refreshLetterRead()
   window.addEventListener('keydown', onKeydown)
+  clockTimer = setInterval(() => {
+    nowTick.value = Date.now()
+  }, 60_000)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
+  if (clockTimer !== undefined) {
+    clearInterval(clockTimer)
+    clockTimer = undefined
+  }
 })
 </script>
 
