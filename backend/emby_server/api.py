@@ -637,13 +637,16 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         # 官方 AttachBasicFields 无条件置空字典（有模糊图时才填）；三方客户端裸读
         "ImageBlurHashes": {},
         "ProviderIds": _provider_ids(item),
-        "UserData": _user_data_dto(umd, item.guid),
+        "UserData": _user_data_dto(umd, item.guid, _run_time_ticks(item)),
         "MediaSources": [],
         # 三方客户端 Fields 参数常要的字段
-        "Status": "Continuing",
         "PrimaryImageAspectRatio": 0.6666667,
         "SyncStatus": "Synced",
     }
+    # 真实 Emby 的 Status 是剧集专属字段（SeriesStatus）；电影/季/集不发（null 省略）。
+    # 以前全类型硬编码 "Continuing"，与官方口径对齐：只给 series 发。
+    if item.item_type == "series":
+        dto["Status"] = "Continuing"
     # 可选字段：有值才加
     if item.production_year:
         dto["ProductionYear"] = item.production_year
@@ -845,19 +848,28 @@ def _person_item_dto(person: em.EmbyPerson, db: Session) -> dict:
     }
 
 
-def _user_data_dto(umd, item_id: str = "") -> dict:
+def _user_data_dto(umd, item_id: str = "", runtime_ticks: int | None = None) -> dict:
     # 对标 FakEmby：UserData 永不为 null，必填字段全给默认值
+    # PlayedPercentage 口径对标真实 Emby/Jellyfin：position_ticks / run_time_ticks * 100。
+    # 证据：Jellyfin 真实响应 PlaybackPositionTicks=5918547800 / RunTimeTicks=56177598464
+    # → PlayedPercentage=10.535423303637（watchstate#459 实测 dump，公式逐位复算吻合）。
+    # 三方客户端用该字段画"继续观看"进度条；恒 0.0 会让看到一半的片子进度条显示 0%。
+    # 代码来源（明报）：DeepSeek 本主题 3 种形态全灭（2 次病态 reasoning 空返回 +
+    # 1 次网关 RemoteDisconnected），由协调员按已验证逻辑机械落地，待用户裁决是否重做。
+    pos = (umd.playback_position_ticks or 0) if umd else 0
+    pct = (min(100.0, max(0.0, pos / runtime_ticks * 100.0))
+           if (pos > 0 and runtime_ticks) else 0.0)
     base = {"PlaybackPositionTicks": 0, "PlayCount": 0, "Played": False,
             "IsFavorite": False, "PlayedPercentage": 0.0}
     if not umd:
         d = dict(base)
     else:
         d = {
-            "PlaybackPositionTicks": umd.playback_position_ticks or 0,
+            "PlaybackPositionTicks": pos,
             "PlayCount": umd.play_count or 0,
             "Played": bool(umd.played),
             "IsFavorite": bool(umd.is_favorite),
-            "PlayedPercentage": 0.0,
+            "PlayedPercentage": pct,
         }
         if umd.last_played_at:
             d["LastPlayedDate"] = _iso(umd.last_played_at)
@@ -3195,7 +3207,7 @@ async def rate_item(
                 umd.play_count = (umd.play_count or 0) + 1
                 umd.last_played_at = datetime.now()
         db.commit()
-        return _user_data_dto(umd, item.guid)
+        return _user_data_dto(umd, item.guid, _run_time_ticks(item))
 
     return await run_in_threadpool(_rate)
 
@@ -3217,7 +3229,7 @@ def mark_played(item_id: str, user_id: str,
     umd.last_played_at = datetime.now()
     umd.playback_position_ticks = 0
     db.commit()
-    return _user_data_dto(umd, item.guid)
+    return _user_data_dto(umd, item.guid, _run_time_ticks(item))
 
 
 @emby_router.delete("/emby/Users/{user_id}/PlayedItems/{item_id}")
@@ -3234,7 +3246,7 @@ def mark_unplayed(item_id: str, user_id: str,
         umd.play_count = 0
         umd.playback_position_ticks = 0
         db.commit()
-    return _user_data_dto(umd, item.guid)
+    return _user_data_dto(umd, item.guid, _run_time_ticks(item))
 
 
 # ==================== 播放 ====================
