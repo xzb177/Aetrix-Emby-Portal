@@ -97,7 +97,10 @@ def _session(db, user, item_id, start, dur_min=30, ended=True):
 
 
 def _today(hour=10):
-    return datetime.now().replace(hour=hour, minute=0, second=0, microsecond=0)
+    # 生产 get_leaderboard 按 Asia/Shanghai 自然日划窗口，且假定 naive 时间即上海本地时间；
+    # 测试桩也必须按上海时间打桩，否则在 UTC 机器上会跨日界导致榜单为空（2026-10-16 #922 CI 实锤）。
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("Asia/Shanghai")).replace(hour=hour, minute=0, second=0, microsecond=0).replace(tzinfo=None)
 
 
 def test_hot_board_aggregates_series_and_filters_dead(db):
