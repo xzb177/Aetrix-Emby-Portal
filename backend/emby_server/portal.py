@@ -287,6 +287,36 @@ def _view_unlock_pricing(db: Session) -> tuple[int, int]:
     return max(points, 0), max(days, 0)
 
 
+class ViewUnlockSettingsIn(BaseModel):
+    points: int
+    days: int
+
+
+@admin_emby_router.get("/view-unlock")
+def admin_view_unlock_get(db: Session = Depends(get_db)):
+    """管理后台：读公益服查看权限的积分价格与有效期。"""
+    points, days = _view_unlock_pricing(db)
+    return {"points": points, "days": days}
+
+
+@admin_emby_router.put("/view-unlock")
+def admin_view_unlock_put(body: ViewUnlockSettingsIn, db: Session = Depends(get_db)):
+    """管理后台：改公益服查看权限的积分价格与有效期（days=0 为永久）。"""
+    if body.points < 0 or body.days < 0:
+        raise HTTPException(status_code=400, detail="points/days 不能为负")
+    for key, value in (
+        (VIEW_UNLOCK_POINTS_KEY, body.points),
+        (VIEW_UNLOCK_DAYS_KEY, body.days),
+    ):
+        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+        if row:
+            row.value = str(value)
+        else:
+            db.add(models.SystemConfig(key=key, value=str(value)))
+    db.commit()
+    return {"points": body.points, "days": body.days}
+
+
 def _realm_view_granted(db: Session, user: models.WebUser, realm_id: int | None
                         ) -> tuple[bool, models.EmbyViewUnlock | None]:
     """用户是否有权查看某服的 Emby 账号/线路（口径见 ``subscriptions.view_grant``）。

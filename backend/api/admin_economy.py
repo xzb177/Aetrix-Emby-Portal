@@ -200,6 +200,7 @@ ECONOMY_CONFIG_KEYS = {
     "allow_download": "bool",
     "device_limit_per_user": "int", "device_limit_auto_evict": "bool",
     "login_log_retention_days": "int",
+    "max_pending_orders_per_user": "int",
     "invitation_enabled": "bool", "invitation_reward_points": "int",
     "invitation_invitee_reward_points": "int", "invitation_rebate_percent": "int",
     # 推广奖励（v2.44.0）：默认全关/全 0，管理员不手动开就不发
