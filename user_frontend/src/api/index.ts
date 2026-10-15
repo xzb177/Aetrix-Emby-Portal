@@ -71,6 +71,10 @@ function onRefreshFailed(error: unknown) {
 
 function forceLogout() {
   tokenStore.clear()
+  // 旧版佩戴徽章只存浏览器本地（键 aetrix_worn_badge_v1）：会话被踢/过期换号时不清掉，
+  // 下一个登录的账号进装备库会把上一个账号的佩戴记录迁移进自己账号（#900 一次性迁移逻辑）。
+  // logout() 已清，这里对齐——#900「换号不串」才算闭环。
+  try { localStorage.removeItem('aetrix_worn_badge_v1') } catch { /* 隐私模式忽略 */ }
   // 用户端只有 /login 一个登录页（没有 /m/* 这套移动端路由），
   // 所以已过期会话必须送到 /login，否则会落到 catch-all 的 404 页
   const currentPath = window.location.pathname
