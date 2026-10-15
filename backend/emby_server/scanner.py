@@ -4172,11 +4172,18 @@ def _write_enrich_status(
     return was_done and status == _ENRICH_PENDING
 
 
+_STRM_STUB_MAX = 64 * 1024
+
+
 def _compute_size_change(item, scan_file):
     """Return (old_size, new_size, size_changed), keep item.size in sync.
 
     修复隐藏 bug：原代码 size 变化时未回写 item.size，导致下次扫描
     看到旧 size 又判定 size_changed=True，无限重排。
+
+    strm 双口径规则：对 .strm 条目，本机扫描的文本文件大小（纸条口径）
+    与网盘扫描的目标视频大小（视频口径）不互相判为变化，item.size 优先
+    保持/同步为视频口径。
     """
     old_size = getattr(item, "size", 0) or 0
     new_size = getattr(scan_file, "size", 0) or 0
@@ -4185,6 +4192,23 @@ def _compute_size_change(item, scan_file):
         # 首次得知大小：记下，本轮不视为"变化"。
         item.size = new_size
         return old_size, new_size, False
+
+    file_path = str(getattr(item, "file_path", "") or "")
+    stored_path = str(getattr(scan_file, "stored_path", "") or "")
+    is_strm = file_path.lower().endswith(".strm") or stored_path.lower().endswith(".strm")
+
+    if is_strm:
+        old_is_stub = old_size <= _STRM_STUB_MAX
+        new_is_stub = new_size <= _STRM_STUB_MAX
+
+        if old_is_stub != new_is_stub:
+            # 一边纸条、一边视频：不视为变化，item.size 同步为视频口径。
+            item.size = max(old_size, new_size)
+            return old_size, new_size, False
+
+        if old_is_stub and new_is_stub:
+            # 两边都是纸条：不相等也不视为变化，item.size 保持 old。
+            return old_size, new_size, False
 
     size_changed = bool(old_size and new_size and old_size != new_size)
     if size_changed:

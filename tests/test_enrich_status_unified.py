@@ -63,6 +63,73 @@ class TestComputeSizeChange:
         assert item.size == 100
 
 
+class TestComputeSizeChangeStrm:
+    """strm 双口径：纸条大小（.strm 文本）与视频大小（网盘）不得互判变化。
+
+    生产事故（2026-10-15）：两种扫描交替回写 item.size，同一批 episode
+    被 size_changed 无限翻转（24h 约 10 万次），enrich 队列常驻 7 万。
+    """
+
+    def _sitem(self, size, path="/strm/show/ep.strm"):
+        return _item(size=size, file_path=path)
+
+    def _sscan(self, size, path="/strm/show/ep.strm"):
+        return SimpleNamespace(size=size, stored_path=path)
+
+    def test_stub_then_video_adopts_video_no_flip(self):
+        item = self._sitem(145)
+        old, new, changed = _compute_size_change(item, self._sscan(262089236))
+        assert changed is False
+        assert item.size == 262089236
+
+    def test_video_then_stub_keeps_video_no_flip(self):
+        item = self._sitem(262089236)
+        old, new, changed = _compute_size_change(item, self._sscan(145))
+        assert changed is False
+        assert item.size == 262089236
+
+    def test_stub_vs_stub_no_flip_no_writeback(self):
+        item = self._sitem(145)
+        old, new, changed = _compute_size_change(item, self._sscan(150))
+        assert changed is False
+        assert item.size == 145
+
+    def test_video_vs_video_still_flips(self):
+        item = self._sitem(2000000000)
+        old, new, changed = _compute_size_change(item, self._sscan(8000000000))
+        assert changed is True
+        assert item.size == 8000000000
+
+    def test_first_learn_stub_then_video(self):
+        item = self._sitem(0)
+        old, new, changed = _compute_size_change(item, self._sscan(145))
+        assert changed is False
+        assert item.size == 145
+        old, new, changed = _compute_size_change(item, self._sscan(262089236))
+        assert changed is False
+        assert item.size == 262089236
+
+    def test_strm_detected_via_stored_path_only(self):
+        item = _item(size=145)  # 无 file_path
+        old, new, changed = _compute_size_change(item, self._sscan(262089236))
+        assert changed is False
+        assert item.size == 262089236
+
+    def test_strm_extension_case_insensitive(self):
+        item = self._sitem(145, path="/strm/show/EP.STRM")
+        old, new, changed = _compute_size_change(item, self._sscan(262089236))
+        assert changed is False
+        assert item.size == 262089236
+
+    def test_non_strm_small_sizes_still_flip(self):
+        """回归保护：普通文件的小大小变化仍按变化处理。"""
+        item = _item(size=145, file_path="/media/movie.mkv")
+        scan = SimpleNamespace(size=150, stored_path="/media/movie.mkv")
+        old, new, changed = _compute_size_change(item, scan)
+        assert changed is True
+        assert item.size == 150
+
+
 class TestApplyEnrichStatus:
     def test_layered_new_item_pending(self, _capture_logs):
         item = _item(enrich_status=None, size=0)
