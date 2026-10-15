@@ -26,11 +26,85 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.database import get_db
 from backend.api.user import get_current_user
+from backend.api.admin_core import get_current_admin
 from backend.ratelimit import check_rate_limit
 
 logger = logging.getLogger("aetrix.panel")
 
 router = APIRouter(prefix="/api/panel", tags=["面板-v4"])
+
+PET_STAGES_KEY = "panel_pet_stages"
+
+# 馆灵阶段出厂默认（与 GET 回退口径一致；用户端回退处复用此常量）
+PET_STAGES_DEFAULT = [
+    {"name": "蛋", "icon": "🥚", "hours": 0},
+    {"name": "夜枭", "icon": "🦉", "hours": 50},
+    {"name": "守夜者", "icon": "🦅", "hours": 200},
+    {"name": "星语者", "icon": "🦄", "hours": 500},
+    {"name": "馆灵", "icon": "🐉", "hours": 1000},
+]
+
+
+def _read_pet_stages(db: Session) -> list:
+    """读馆灵阶段配置；未配置/非法时回退到出厂默认。"""
+    try:
+        from backend.servers import config_value
+        raw = config_value(db, PET_STAGES_KEY, "")
+        stages = json.loads(raw) if raw else []
+    except Exception:  # noqa: BLE001
+        stages = []
+    return stages if stages else [dict(s) for s in PET_STAGES_DEFAULT]
+
+
+def _validate_pet_stages(stages) -> list:
+    """校验管理员提交的阶段配置，返回规范化后的 list；非法抛 HTTPException(400)。"""
+    if not isinstance(stages, list) or not stages:
+        raise HTTPException(status_code=400, detail="stages 必须是非空数组")
+    norm = []
+    for i, st in enumerate(stages):
+        if not isinstance(st, dict):
+            raise HTTPException(status_code=400, detail=f"stages[{i}] 必须是对象")
+        name = st.get("name")
+        icon = st.get("icon", "")
+        hours = st.get("hours")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(status_code=400, detail=f"stages[{i}].name 必须是非空字符串")
+        if not isinstance(icon, str):
+            raise HTTPException(status_code=400, detail=f"stages[{i}].icon 必须是字符串")
+        if isinstance(hours, bool) or not isinstance(hours, (int, float)) or hours < 0:
+            raise HTTPException(status_code=400, detail=f"stages[{i}].hours 必须是非负数")
+        norm.append({"name": name.strip(), "icon": icon, "hours": hours})
+    return norm
+
+
+admin_router = APIRouter(prefix="/api/admin/panel", tags=["管理后台-面板v4"])
+
+
+class PetStagesIn(BaseModel):
+    stages: list
+
+
+@admin_router.get("/pet-stages")
+def admin_pet_stages_get(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """管理后台：读馆灵阶段配置（未配置时返回出厂默认）。"""
+    return {"stages": _read_pet_stages(db)}
+
+
+@admin_router.put("/pet-stages")
+def admin_pet_stages_put(
+    body: PetStagesIn,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """管理后台：写馆灵阶段配置（JSON 数组，hours 为累计观影小时阈值）。"""
+    from backend.servers import set_config
+    stages = _validate_pet_stages(body.stages)
+    set_config(db, PET_STAGES_KEY, json.dumps(stages, ensure_ascii=False), "馆灵阶段配置（管理后台）")
+    db.commit()
+    return {"stages": stages}
 
 
 def _panel_enabled() -> bool:
@@ -451,13 +525,7 @@ def panel_collector(
     except Exception:  # noqa: BLE001
         stages = []
     if not stages:
-        stages = [
-            {"name": "蛋", "icon": "🥚", "hours": 0},
-            {"name": "夜枭", "icon": "🦉", "hours": 50},
-            {"name": "守夜者", "icon": "🦅", "hours": 200},
-            {"name": "星语者", "icon": "🦄", "hours": 500},
-            {"name": "馆灵", "icon": "🐉", "hours": 1000},
-        ]
+        stages = [dict(s) for s in PET_STAGES_DEFAULT]
     cur_idx = 0
     for i, st in enumerate(stages):
         if total_hours >= st["hours"]:
