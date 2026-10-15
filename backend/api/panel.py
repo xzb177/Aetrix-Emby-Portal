@@ -69,6 +69,19 @@ def _greeting() -> str:
     return "晚上好"
 
 
+def _now_local_naive() -> datetime:
+    """返回 Asia/Shanghai 的 naive 本地时间，作为自然日窗口基准。
+
+    与观影碑榜单口径对齐（#911）：服务器存的是 naive 时间，假定其本身
+    就是 Asia/Shanghai 本地时间；生产容器系统时区为 UTC，直接用
+    datetime.now() 会让「今日/昨日」窗口慢 8 小时。
+    """
+    try:
+        return datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
+        return datetime.now()
+
+
 def _streak(db: Session, user_id: int) -> int:
     rec = db.query(models.CheckinRecord).filter_by(user_id=user_id).order_by(
         models.CheckinRecord.checkin_date.desc()).first()
@@ -99,7 +112,7 @@ def panel_today(
     user: models.WebUser = Depends(get_current_user),
 ):
     _guard()
-    now = datetime.now()
+    now = _now_local_naive()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     from backend.emby_server import models as em
@@ -148,7 +161,7 @@ def panel_parcels(
     user: models.WebUser = Depends(get_current_user),
 ):
     _guard()
-    now = datetime.now()
+    now = _now_local_naive()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     from backend.emby_server import models as em
@@ -285,7 +298,7 @@ def _derive_activity(db: Session, health: dict | None = None) -> list:
     if not lines:
         lines.append("服务器运行中，一切正常")
     # 凌晨单集刮削预告
-    now = datetime.now()
+    now = _now_local_naive()
     if now.hour < 2:
         lines.append("02:00 将开始刮削单集")
     return [{"text": t, "at": now.isoformat()} for t in lines[:2]]
@@ -313,7 +326,7 @@ def panel_pulse(
     return _ok({
         "health": health,
         "activities": _derive_activity(db, health_raw),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": _now_local_naive().isoformat(),
     })
 
 
@@ -325,7 +338,7 @@ def panel_letter(
     user: models.WebUser = Depends(get_current_user),
 ):
     _guard()
-    now = datetime.now()
+    now = _now_local_naive()
     yesterday_start = (now - timedelta(days=1)).replace(
         hour=0, minute=0, second=0, microsecond=0)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -754,7 +767,7 @@ def panel_server(
     # r28 打磨：单条 GROUP BY 一次查 7 天 —— 原来 7 次 COUNT 轮询，面板每次打开都打 7 遍。
     growth = []
     try:
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today = _now_local_naive().replace(hour=0, minute=0, second=0, microsecond=0)
         week_start = today - timedelta(days=6)
         day_col = func.date(em.MediaItem.date_added).label("d")
         rows = db.query(

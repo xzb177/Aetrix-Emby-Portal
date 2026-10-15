@@ -103,9 +103,20 @@ export const usePanelStore = defineStore('panel', () => {
     void loadToday(true) // 拆封成功后刷新 today 计数，不再等 60s TTL
   }
 
+  /** 账号切换时清空全部面板缓存：防止新账号看到上一个账号的数据（TTL 内的串号问题） */
+  function reset() {
+    today.value = freshEntry()
+    parcels.value = freshEntry()
+    pulse.value = freshEntry()
+    letter.value = freshEntry()
+    board.value = freshEntry()
+    collector.value = freshEntry()
+    server.value = freshEntry()
+  }
+
   return {
     today, parcels, pulse, letter, board, collector, server,
     loadToday, loadParcels, loadPulse, loadLetter, loadHome, loadCollector, loadServer,
-    unseal,
+    unseal, reset,
   }
 })

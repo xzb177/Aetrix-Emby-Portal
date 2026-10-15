@@ -7,6 +7,7 @@ import AppDock from '@/components/AppDock.vue'
 import TgBindModal from '@/components/TgBindModal.vue'
 import { useToast } from '@/composables/useToast'
 import { useUserStore } from '@/stores/user'
+import { usePanelStore } from '@/stores/panel'
 import { refreshEmbyBaseUrl } from '@/api/emby'
 import { tgApi } from '@/api/tg'
 import { isPanelV4Enabled } from '@/composables/usePanelApi'
@@ -15,6 +16,17 @@ import { V4_PATHS } from '@/router'
 
 const { messages, remove, warning } = useToast()
 const userStore = useUserStore()
+const panelStore = usePanelStore()
+
+/* 账号切换（含退出变 null）时清空面板缓存：新账号不许看到上一个账号的面板数据。
+   watch 默认非 immediate，挂载时不触发；id 未变时回调内再跳过一次，双保险。 */
+watch(
+  () => userStore.user?.id ?? null,
+  (id, prevId) => {
+    if (id === prevId) return
+    panelStore.reset()
+  },
+)
 const route = useRoute()
 
 /**

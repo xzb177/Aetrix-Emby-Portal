@@ -694,6 +694,22 @@ async function loadLeaderboard() {
   }
 }
 
+/* 观影碑副标题独立数据源：固定口径「今日热播第一名」，不受排行榜弹层浏览状态影响 */
+const steleTop = ref<Record<string, unknown> | null>(null)
+const steleLoaded = ref(false)
+
+async function loadSteleTop() {
+  try {
+    const res = await panelApi.leaderboard('hot', 'day')
+    const items = ((res as { items?: Record<string, unknown>[] } | null)?.items ?? []) as Record<string, unknown>[]
+    steleTop.value = items.length ? items[0] : null
+    steleLoaded.value = true
+  } catch {
+    /* 静默失败：不影响地图其他加载；loaded 保持 false，副标题回落中性标签 */
+    steleTop.value = null
+  }
+}
+
 function openStele() {
   void loadLeaderboard()
   openOverlaySheet('stele')
@@ -713,13 +729,12 @@ const lbUnitText = computed(() =>
 )
 
 const steleSub = computed(() => {
-  const first = lbRows.value[0] as Record<string, unknown> | undefined
+  if (!steleLoaded.value) return '观影碑'
+  const first = steleTop.value
   if (!first) return '虚位以待，等你开播'
   const name = String(first.name ?? first.nickname ?? '')
-  const n = lbBoard.value === 'hot' ? Number(first.count ?? 0) : Math.round(Number(first.seconds ?? 0) / 3600 * 10) / 10
-  const unit = lbBoard.value === 'hot' ? '次' : '小时'
-  const when = lbPeriod.value === 'day' ? '今日' : '本周'
-  return `${when}最热 · ${name} ${n}${unit}`
+  const count = Number(first.count ?? 0)
+  return `今日最热 · ${name} ${count}次`
 })
 
 /* ---------- 服主告示牌 ---------- */
@@ -1006,6 +1021,7 @@ onMounted(() => {
   void loadCheckin()
   void loadMember()
   void loadLeaderboard()
+  void loadSteleTop()
   void loadWall()
   void loadFortune()
   refreshLetterRead()
