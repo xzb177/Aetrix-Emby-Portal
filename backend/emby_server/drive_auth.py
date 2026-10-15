@@ -215,6 +215,28 @@ def _affinity_pick(affinity_key: str | None) -> dict[str, Any] | None:
     return sa
 
 
+def drop_sa_affinity(affinity_key: str | None) -> bool:
+    """删除指定 key 的 SA 亲和缓存条目。
+
+    - key 为空或非字符串：返回 False，不做任何事。
+    - 否则在锁内删除该条目（存在与否都算处理成功），返回 True。
+    - 永不抛异常，异常内部吞掉并返回 False。
+
+    用途：Drive 下载 403 瞬时限流时，打破"同 URL 90-120s 亲和同一 SA"的绑定，
+    让下一次取 token 经抖动轮换换到别的 SA，而不是拿同一个被限流的 SA 硬撞。
+    """
+    if not isinstance(affinity_key, str) or not affinity_key:
+        return False
+    try:
+        with _cache_lock:
+            _sa_affinity.pop(affinity_key, None)
+        logger.debug("drop_sa_affinity: dropped affinity_key=%.64s", affinity_key)
+        return True
+    except Exception:
+        logger.debug("drop_sa_affinity failed", exc_info=True)
+        return False
+
+
 def get_drive_bearer_token(affinity_key: str | None = None) -> str | None:
     """获取 Drive 访问用的 Bearer access_token；失败返回 None，永不抛异常。
 
