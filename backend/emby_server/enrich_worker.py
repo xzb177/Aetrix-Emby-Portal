@@ -81,6 +81,11 @@ ENRICH_PRIORITY_RETRY_UNMATCHED = 50
 # 不另起认领通道、不饿死主队列。补简介只多打 TMDB 详情（约 1 请求/条），
 # 每条最多一轮（见 _enrich_apply 的 Step 5 注释），反风控增量可控。
 ENRICH_PRIORITY_FIELD_REFILL = -10
+# 豆瓣封禁补刮（2026-10-15 用户口径：豆瓣被封就跳过、解封后补刮）：封禁期因
+# 跳过豆瓣而没刮全的条目进这个最低优先级安静等候——_claim_batch 在封禁未
+# 解除时根本不认领它们（零空转、不烧配额），解封后自动被轮到补跑一轮。
+# 低于字段补全的 -10：补刮是「欠账」，排在所有正常工作之后。
+ENRICH_PRIORITY_DOUBAN_BACKFILL = -20
 # Step 5 缺失字段分组：core=核心字段（标题/年份/海报，旧"三者有其二"口径），
 # minor=次要字段（简介/类型/演员）。核心齐但缺次要字段 → 低优先级补一轮。
 ENRICH_COMPLETENESS_CORE_FIELDS = ("title", "year", "poster")
@@ -202,7 +207,9 @@ def _cached_altmeta_cfg() -> tuple:
 # ---------------------------------------------------------------------------
 # 豆瓣封禁降级（链路规划 Step 0.5）
 #
-# feature flag：enrich_douban_ban_downgrade（SystemConfig，默认 "0"=关）。
+# feature flag：enrich_douban_ban_downgrade（SystemConfig，默认 "1"=开；
+# 2026-10-15 起默认开——用户明令「豆瓣被封就跳过」，默认行为必须符合该
+# 口径；管理员显式设 "0" 是紧急回退到旧行为的逃生口）。
 # flag 开 + 豆瓣封禁中（ban_remaining()>0）时：
 #   - 预搜索处不再标 douban_banned 延后，TMDB 照常跑；
 #   - 豆瓣 rich 兜底直接跳过（一次豆瓣请求都不发），走多源兜底分支；
@@ -217,12 +224,13 @@ def _douban_ban_downgrade_flag_on() -> bool:
     """Step 0.5 开关：读 SystemConfig。
 
     读口径走 store.get_value（全项目唯一一套带 60s TTL 热缓存的读法），
-    管理后台保存后最多 60 秒生效。读不到/异常时按关处理（行为=现状）。
+    管理后台保存后最多 60 秒生效。key 缺失按开（默认口径，见上方注释）；
+    读异常时按关处理（无法确认配置面貌时的保守回退）。
     """
     from backend.integrations import store
     _db = SessionLocal()
     try:
-        return store.get_value(_db, CFG_DOUBAN_BAN_DOWNGRADE, "0") == "1"
+        return store.get_value(_db, CFG_DOUBAN_BAN_DOWNGRADE, "1") == "1"
     except Exception:  # noqa: BLE001 — 读不到就当关着，行为与现状一致
         return False
     finally:
@@ -279,7 +287,7 @@ def get_douban_ban_downgrade_config(db) -> dict:
     from backend.emby_server import douban as _dbn
     remaining = max(0.0, _dbn.ban_remaining())
     return {
-        "enabled": store.get_value(db, CFG_DOUBAN_BAN_DOWNGRADE, "0") == "1",
+        "enabled": store.get_value(db, CFG_DOUBAN_BAN_DOWNGRADE, "1") == "1",
         "banned": remaining > 0,
         "ban_remaining_sec": round(remaining, 1),
     }
@@ -1454,6 +1462,34 @@ def _douban_ban_presearch_skip(item: Any, kind: str) -> bool:
     return bool(on)
 
 
+def _douban_backfill_candidate(item: Any, kind: str) -> bool:
+    """该条目是否「欠一次豆瓣」：条件与 _douban_fallback_on_tmdb_miss 的触发
+    口径一致（剧/电影 + 无 tmdb_id + 未锁定 + CJK 标题 + 豆瓣兜底开着），但
+    不看封禁状态——调用方正是因为本轮豆瓣被跳过/不可用才来判定要不要给它
+    留补刮记号。判定不了（异常）时保守返回 False，不留记号。
+    """
+    if kind not in ("series", "movie"):
+        return False
+    if getattr(item, "tmdb_id", None):
+        return False
+    if getattr(item, "metadata_locked", False):
+        return False
+    name = (getattr(item, "name", None) or "").strip()
+    if not name:
+        return False
+    from backend.emby_server import douban as _dbn
+    try:
+        if not _dbn.has_cjk(name):
+            return False
+    except Exception:  # noqa: BLE001 — 判定不了就不留记号（保守）
+        return False
+    try:
+        on, _iv = _cached_douban_cfg()
+    except Exception:  # noqa: BLE001
+        on = False
+    return bool(on)
+
+
 def _douban_fallback_on_tmdb_miss(item: Any, kind: str, result: dict) -> object:
     """TMDB 未命中时的豆瓣 rich 兜底（v2.56.0 起：TMDB 为主、豆瓣兜底）。
 
@@ -2146,6 +2182,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     _incomplete = False
     _searched_no_hit = False  # Step 4：TMDB 搜过无高置信命中（终态 none 口径）
     _fc_refill_enqueued = False  # Step 5：低优先级补次要字段已入队（跳过尾部判定）
+    _douban_backfill_enqueued = False  # 豆瓣封禁补刮已入队（跳过尾部判定，同上）
     if fetched.get("pure_inherit"):
         # 纯继承（处方 3）：本集的数据来自父级剧（图片回退在上面已完成），
         # 不是「跑过没拿到」——单独标 inherit，避免落进无望队列的口径。
@@ -2190,13 +2227,30 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 and not fetched.get("tmdb_hit")
             )
             if _searched_no_hit:
-                # 豆瓣/Bangumi 也没兜到（alt_hit 为空才会进到这里）：
-                # 显式记 none，与「从未标记过」区分开。
-                item.metadata_source = "none"
-                # 「跑过但没拿到」必须可见：以前这条是静默写入，
-                # 网络抖动被吞成搜不到时根本查不出（问题一的可见性缺口）
-                logger.info("TMDB 搜过无高置信命中（终态 none）id=%s name=%r year=%s",
-                            item.id, item.name, item.production_year)
+                if (fetched.get("_ban_downgrade_skipped_douban")
+                        and item.enrich_priority != ENRICH_PRIORITY_DOUBAN_BACKFILL
+                        and _douban_backfill_candidate(item, kind)):
+                    # 豆瓣封禁期被跳过、本轮没刮到 ≠「搜过没有」：这条只是
+                    # 没轮到用豆瓣，不许判 none 终态（用户 2026-10-15 明令）。
+                    # 进最低优先级安静补刮队列，解封后自动补跑一轮豆瓣；
+                    # 不烧 attempts、无定时重试。本轮若已是补刮轮（priority
+                    # 已是 -20）则不再进队列，往下走正常 none 终态——那一轮
+                    # 豆瓣是可用的，真搜不到就是真没有。
+                    _douban_backfill_enqueued = True
+                    item.enrich_status = "pending"
+                    item.enrich_priority = ENRICH_PRIORITY_DOUBAN_BACKFILL
+                    item.enrich_attempts = 0
+                    item.enrich_next_retry_at = None
+                    logger.info("豆瓣封禁期跳过豆瓣未命中，进安静补刮队列"
+                                "（解封后补）id=%s name=%r", item.id, item.name)
+                else:
+                    # 豆瓣/Bangumi 也没兜到（alt_hit 为空才会进到这里）：
+                    # 显式记 none，与「从未标记过」区分开。
+                    item.metadata_source = "none"
+                    # 「跑过但没拿到」必须可见：以前这条是静默写入，
+                    # 网络抖动被吞成搜不到时根本查不出（问题一的可见性缺口）
+                    logger.info("TMDB 搜过无高置信命中（终态 none）id=%s name=%r year=%s",
+                                item.id, item.name, item.production_year)
             else:
                 _incomplete = True
         else:
@@ -2287,12 +2341,14 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             return
     # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。
     # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。
-    if not item.metadata_source and kind in ("series", "movie", "season", "episode"):
+    if (not _douban_backfill_enqueued and not item.metadata_source
+            and kind in ("series", "movie", "season", "episode")):
         item.metadata_source = "none"
-    if _fc_refill_enqueued:
-        # Step 5：低优先级补一轮——保持上面设置的 pending + priority=-10，
-        # 跳过下面的 done/_incomplete 判定与优先级清零（-10 由补完那一轮的
-        # _enrich_apply 消费并清零，见上面的防反复重刮注释）。
+    if _fc_refill_enqueued or _douban_backfill_enqueued:
+        # Step 5 / 豆瓣补刮：低优先级补一轮——保持上面设置的 pending +
+        # priority（-10 / -20），跳过下面的 done/_incomplete 判定与优先级
+        # 清零（优先级由补完那一轮的 _enrich_apply 消费并清零，见上面的
+        # 防反复重刮注释）。
         pass
     elif _incomplete:
         # 资料不全：按失败计次 + 指数退避，超限转 failed。
@@ -2341,7 +2397,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # Step 5 例外：低优先级补一轮的 -10 不能在这里清零——它是"已跑过一轮"的
     # 标记，留给补完那一轮的 _enrich_apply 识别并终态化（不清零就终态不了，
     # 会反复进低优先级队列）。
-    if not _fc_refill_enqueued:
+    if not _fc_refill_enqueued and not _douban_backfill_enqueued:
         item.enrich_priority = 0
 
     # 常态联动（v2.58.0）：series 本轮新拿到 tmdb_id（此前没有）→ 名下空壳
@@ -2540,6 +2596,17 @@ def _claim_batch(db, limit: int) -> list:
                          datetime.now().strftime("%H:%M"),
                          _night_cfg["night_start"], _night_cfg["night_end"])
     not_episode = True if not _skip_episode else (em.MediaItem.item_type != "episode")
+    # 豆瓣封禁补刮队列（priority=-20）：封禁没解除时不认领——认领了也用不上
+    # 豆瓣，只会空转。解封后 ban_remaining()==0 自动放行，-20 排在队末安静
+    # 轮到。判定不了（异常）时不拦，保守不饿死队列。
+    _ban_backfill_hold = False
+    try:
+        from backend.emby_server import douban as _dbn_hold
+        _ban_backfill_hold = _dbn_hold.ban_remaining() > 0
+    except Exception:  # noqa: BLE001
+        _ban_backfill_hold = False
+    not_ban_backfill = True if not _ban_backfill_hold else (
+        em.MediaItem.enrich_priority != ENRICH_PRIORITY_DOUBAN_BACKFILL)
     group_key = _func.coalesce(em.MediaItem.series_id, em.MediaItem.id)
 
     base_order = (
@@ -2568,7 +2635,7 @@ def _claim_batch(db, limit: int) -> list:
                          _func.max(em.MediaItem.date_added).label("latest"),
                          em.MediaItem.library_id.label("lib"))
                 .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
-                        not_episode, not_merged)
+                        not_episode, not_merged, not_ban_backfill)
                 # library_id 必须显式入组（PG 要求）：组键是全局 id，
                 # 同一组恒在同一库内，(group_key, library_id) 与 group_key 等价。
                 .group_by(group_key, em.MediaItem.library_id))
@@ -2580,7 +2647,7 @@ def _claim_batch(db, limit: int) -> list:
             break
         q = (db.query(em.MediaItem)
              .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
-                     not_episode, not_merged, group_key == gid)
+                     not_episode, not_merged, not_ban_backfill, group_key == gid)
              .order_by(
                  # 父级（剧/电影）先于子级：父级先落 done，子集才能纯继承
                  _case((em.MediaItem.item_type.in_(["series", "movie"]), 0), else_=1),
@@ -3241,6 +3308,46 @@ def _requeue_douban_banned(db, item_id: int,
         return "skip"
 
 
+def _requeue_for_douban_ban(db, item_id: int,
+                            claim_token: Optional[str] = None) -> str:
+    """豆瓣封禁导致本轮没法用豆瓣时的统一打回口（_process_item / _process_batch
+    的 douban_banned 汇点都走这里）。
+
+    用户口径（2026-10-15）：豆瓣被封就跳过、等解封再补刮——不许再走
+    _requeue_douban_banned 的 900 秒冷却热重试（封禁期反复抢单空转、还把
+    队列顶部的名额占死，生产实测同一对条目反复 churn、42 条新条目两天没
+    被认领）。降级开关开（默认开）时：打回 pending + 最低优先级 -20 安静
+    补刮队列——attempts 不涨、无定时重试；_claim_batch 在封禁未解除时不
+    认领 -20，解封后自动轮到、补跑一轮豆瓣。开关被管理员显式关掉（紧急
+    回退）时：沿用旧的冷却延后，行为与旧版一致。
+
+    claim_token：同 _requeue_douban_banned，僵尸 worker 不许覆盖行的新状态。
+    返回值沿用进度计数口径："retry"=本轮未完成（条目已安静入队，不是失败）。
+    """
+    if not _douban_ban_downgrade_flag_on():
+        return _requeue_douban_banned(db, item_id, claim_token=claim_token)
+    try:
+        item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+        if item is None:
+            return "skip"
+        if not _claim_still_ours(item, claim_token):
+            logger.debug("补全豆瓣补刮入队跳过（认领已失效）id=%s", item_id)
+            db.rollback()
+            return "skip"
+        item.enrich_status = "pending"
+        item.enrich_claimed_at = None
+        item.enrich_claim_token = None
+        item.enrich_priority = ENRICH_PRIORITY_DOUBAN_BACKFILL
+        item.enrich_next_retry_at = None
+        db.commit()
+        logger.info("补全延后（豆瓣封禁，进安静补刮队列）id=%s", item_id)
+        return "retry"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("补全豆瓣补刮入队异常 id=%s: %s", item_id, exc)
+        db.rollback()
+        return "skip"
+
+
 def _inherit_parent_info(db, item: Any) -> Optional[dict]:
     """纯继承（处方 3）的前提：剧已 done 且有图/tmdb_id，本集无待修复标记。
 
@@ -3304,7 +3411,7 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
     if not fetched.get("ok"):
         db.rollback()
         if fetched.get("douban_banned"):
-            return _requeue_douban_banned(
+            return _requeue_for_douban_ban(
                 db, item_id, claim_token=snapshot.enrich_claim_token)
         return _mark_failed(db, item_id, attempts,
                             fetched.get("error") or "fetch failed",
@@ -3446,7 +3553,7 @@ def _process_batch(db, batch: list) -> None:
         if not fetched.get("ok"):
             db.rollback()
             if fetched.get("douban_banned"):
-                outcome = _requeue_douban_banned(
+                outcome = _requeue_for_douban_ban(
                     db, item_id, claim_token=snapshot.enrich_claim_token)
             else:
                 outcome = _mark_failed(db, item_id, attempts,

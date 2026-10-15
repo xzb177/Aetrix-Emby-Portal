@@ -98,7 +98,10 @@ def _series(db, **kw):
     return it
 
 
-def test_banned_item_requeued_not_none():
+def test_banned_item_goes_to_quiet_backfill_not_hot_retry():
+    """豆瓣中途撞封（兜底返回 banned）：用户口径（2026-10-15）——不许再走
+    900 秒冷却热重试，进 -20 安静补刮队列：pending、无定时重试、attempts
+    不涨、不判 none；解封后由 _claim_batch 放行补刮（见下面两个测试）。"""
     db = SessionLocal()
     try:
         item = _series(db)
@@ -111,10 +114,53 @@ def test_banned_item_requeued_not_none():
         db.expire_all()
         fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
         assert fresh.enrich_status == "pending"
+        assert fresh.enrich_priority == enrich_worker.ENRICH_PRIORITY_DOUBAN_BACKFILL
+        assert fresh.enrich_next_retry_at is None, "安静补刮队列不许带热重试定时"
         assert fresh.metadata_source in (None, "")
         assert (fresh.enrich_attempts or 0) == 0, "封禁不是条目失败，不能烧重试次数"
-        assert fresh.enrich_next_retry_at is not None
         assert outcome == "retry"
+    finally:
+        db.close()
+
+
+def test_banned_item_flag_off_keeps_legacy_cooldown_requeue():
+    """降级开关被管理员显式关掉（紧急回退）：沿用旧的冷却延后行为
+    （带 next_retry_at 定时、不进 -20 队列），保证回退口可用。"""
+    db = SessionLocal()
+    try:
+        item = _series(db)
+        fake = mock.MagicMock()
+        fake.search.side_effect = dbn.DoubanBannedError("403")
+        with mock.patch.object(dbn, "client", fake), \
+                mock.patch.object(dbn, "enabled", return_value=True), \
+                mock.patch.object(dbn, "min_interval", return_value=0.0), \
+                mock.patch.object(enrich_worker, "_douban_ban_downgrade_flag_on",
+                                  return_value=False):
+            outcome = enrich_worker._process_item(db, item, {})
+        db.expire_all()
+        fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
+        assert fresh.enrich_status == "pending"
+        assert fresh.enrich_next_retry_at is not None
+        assert fresh.enrich_priority != enrich_worker.ENRICH_PRIORITY_DOUBAN_BACKFILL
+        assert outcome == "retry"
+    finally:
+        db.close()
+
+
+def test_ban_downgrade_flag_defaults_on():
+    """用户明令「豆瓣被封就跳过」：配置从未写过时默认开（不是默认关）。"""
+    from backend import models as _models
+    from backend.integrations import store
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == enrich_worker.CFG_DOUBAN_BAN_DOWNGRADE
+        ).delete()
+        db.commit()
+        store.invalidate(enrich_worker.CFG_DOUBAN_BAN_DOWNGRADE)
+        assert enrich_worker._douban_ban_downgrade_flag_on() is True
+        cfg = enrich_worker.get_douban_ban_downgrade_config(db)
+        assert cfg["enabled"] is True
     finally:
         db.close()
 
@@ -231,3 +277,137 @@ def test_no_skip_when_douban_disabled(monkeypatch):
                         lambda: (False, 2.5))
     assert enrich_worker._douban_ban_presearch_skip(
         _ban_item("狂飙", "series"), "series") is False
+
+
+# ---------------------------------------------------------------------------
+# 豆瓣封禁安静补刮队列（2026-10-15 用户口径：被封就跳过、解封后补刮）
+# ---------------------------------------------------------------------------
+
+def _movie(db, **kw):
+    it = em.MediaItem(guid=uuid.uuid4().hex, library_id=1, item_type="movie",
+                      name=kw.pop("name", "补刮电影"), production_year=2024,
+                      enrich_status=kw.pop("enrich_status", "pending"),
+                      enrich_attempts=0, **kw)
+    db.add(it)
+    db.commit()
+    return it
+
+
+def test_claim_batch_holds_backfill_while_banned(monkeypatch):
+    """封禁未解除时 _claim_batch 不认领 -20 补刮条目（认领了也用不上豆瓣，
+    只会空转）；解封后自动放行。普通条目不受影响。"""
+    db = SessionLocal()
+    try:
+        normal = _movie(db, name="正常条目", enrich_priority=0)
+        backfill = _movie(
+            db, name="补刮条目",
+            enrich_priority=enrich_worker.ENRICH_PRIORITY_DOUBAN_BACKFILL)
+        monkeypatch.setattr(dbn, "ban_remaining", lambda: 600.0)
+        batch = enrich_worker._claim_batch(db, 500)
+        ids = [b.id for b in batch]
+        assert normal.id in ids
+        assert backfill.id not in ids, "封禁期认领补刮条目 = 空转，不许认领"
+        monkeypatch.setattr(dbn, "ban_remaining", lambda: 0.0)
+        batch2 = enrich_worker._claim_batch(db, 500)
+        assert backfill.id in [b.id for b in batch2], "解封后补刮条目必须被放行"
+    finally:
+        db.close()
+
+
+def _no_hit_fetched(**extra):
+    base = {"ok": True, "poster": None, "fanart": None, "external_subs": [],
+            "nfo_data": None, "tmdb_id": None, "tmdb_hit": None,
+            "tmdb_details": None, "error": None}
+    base.update(extra)
+    return base
+
+
+def test_apply_ban_skipped_no_hit_goes_backfill_not_none(monkeypatch):
+    """封禁期豆瓣被跳过、本轮各源都没刮到：不许判 none 终态，进 -20 补刮
+    队列等解封后补跑豆瓣（metadata_source 不许写 none、attempts 不涨）。"""
+    db = SessionLocal()
+    try:
+        it = _movie(db, name="封禁期未命中", enrich_status="enriching")
+        monkeypatch.setattr(enrich_worker, "_cached_douban_cfg",
+                            lambda: (True, 2.5))
+        with mock.patch("backend.emby_server.tmdb.tmdb_client") as fake_client:
+            fake_client.configured = True
+            enrich_worker._enrich_apply(
+                db, it, _no_hit_fetched(_ban_downgrade_skipped_douban=True))
+        db.commit()
+        db.expire_all()
+        fresh = db.query(em.MediaItem).filter(em.MediaItem.id == it.id).first()
+        assert fresh.enrich_status == "pending"
+        assert fresh.enrich_priority == enrich_worker.ENRICH_PRIORITY_DOUBAN_BACKFILL
+        assert fresh.metadata_source in (None, ""), "封禁期没刮到不许判 none 终态"
+        assert (fresh.enrich_attempts or 0) == 0
+        assert fresh.enrich_next_retry_at is None
+    finally:
+        db.close()
+
+
+def test_apply_backfill_round_no_hit_goes_none(monkeypatch):
+    """补刮轮（priority 已是 -20）豆瓣可用、仍没刮到 → 这次是真没有：
+    正常 none 终态收尾、优先级清零，不许无限留在补刮队列。"""
+    db = SessionLocal()
+    try:
+        it = _movie(db, name="补刮轮真没有", enrich_status="enriching",
+                    enrich_priority=enrich_worker.ENRICH_PRIORITY_DOUBAN_BACKFILL)
+        monkeypatch.setattr(enrich_worker, "_cached_douban_cfg",
+                            lambda: (True, 2.5))
+        with mock.patch("backend.emby_server.tmdb.tmdb_client") as fake_client:
+            fake_client.configured = True
+            enrich_worker._enrich_apply(
+                db, it, _no_hit_fetched(_ban_downgrade_skipped_douban=True))
+        db.commit()
+        db.expire_all()
+        fresh = db.query(em.MediaItem).filter(em.MediaItem.id == it.id).first()
+        assert fresh.enrich_status == "done"
+        assert fresh.metadata_source == "none"
+        assert fresh.enrich_priority == 0
+    finally:
+        db.close()
+
+
+def test_backfill_round_uses_douban_after_unban():
+    """解封后补刮轮真的会跑豆瓣兜底：-20 条目经 pre→post→apply，豆瓣命中
+    落库、状态 done、优先级清零。"""
+    db = SessionLocal()
+    try:
+        item = _series(
+            db, name="解封补刮",
+            enrich_priority=enrich_worker.ENRICH_PRIORITY_DOUBAN_BACKFILL)
+        snap = enrich_worker._snapshot_item(item)
+        fake_dbn = mock.MagicMock()
+        fake_dbn.search.return_value = {"id": "3700002", "title": "解封补刮",
+                                        "year": "2026", "image": "",
+                                        "type": "tv"}
+        fake_dbn.get_details.return_value = {"title": "解封补刮",
+                                             "overview": "简介",
+                                             "runtime_ticks": 0}
+        fake_dbn.get_celebrities.return_value = []
+        fake_tmdb = mock.MagicMock()
+        fake_tmdb.configured = True
+        with mock.patch("backend.emby_server.tmdb.tmdb_client", fake_tmdb), \
+                mock.patch.object(dbn, "client", fake_dbn), \
+                mock.patch.object(enrich_worker, "_cached_douban_cfg",
+                                  return_value=(True, 2.5)), \
+                mock.patch.object(enrich_worker, "_cached_altmeta_cfg",
+                                  return_value=(True, 2.5, 2.5)), \
+                mock.patch.object(enrich_worker, "_alias_tmdb_id",
+                                  return_value=None), \
+                mock.patch("backend.emby_server.scanner._tmdb_work",
+                           return_value=(None, None)):
+            result, ctx = enrich_worker._enrich_fetch_pre(snap)
+            out = enrich_worker._enrich_fetch_tmdb_post(result, item, ctx)
+        assert out.get("douban_fallback_hit"), "解封后补刮轮必须真跑豆瓣兜底"
+        fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
+        enrich_worker._enrich_apply(db, fresh, out)
+        db.commit()
+        db.expire_all()
+        fresh = db.query(em.MediaItem).filter(em.MediaItem.id == item.id).first()
+        assert fresh.enrich_status == "done"
+        assert fresh.enrich_priority == 0
+        assert fresh.metadata_source != "none"
+    finally:
+        db.close()
