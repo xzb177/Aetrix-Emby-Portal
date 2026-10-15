@@ -553,6 +553,28 @@ def _display_name(item: em.MediaItem, series_names: dict | None = None) -> str:
     return item.name or ""
 
 
+def _provider_ids(item):
+    # 单集编号下放：episode 自身无 tmdb/imdb 时继承所属剧的（供 IntroDB 查片头、
+    # 第三方客户端跨服匹配按「剧编号+季集号」定位）。
+    # 注意语义：这是「所属剧的编号」，不是单集专属编号；剧也没有则不编造。
+    tmdb = getattr(item, "tmdb_id", None)
+    imdb = getattr(item, "imdb_id", None)
+    # 按字段独立继承：自身缺哪个补哪个（自身有 imdb 不影响继承 tmdb）
+    if getattr(item, "item_type", "") == "episode" and not (tmdb and imdb):
+        series = getattr(item, "series", None)  # 列表页已由 _prefetch_list_data 批量预取
+        if series is not None:
+            tmdb = tmdb or getattr(series, "tmdb_id", None)
+            imdb = imdb or getattr(series, "imdb_id", None)
+    return {
+        k: v for k, v in (
+            ("Tmdb", tmdb),
+            ("Imdb", imdb),
+            ("Douban", getattr(item, "douban_id", None)),
+            ("Bangumi", getattr(item, "bangumi_id", None)),
+        ) if v
+    }
+
+
 def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bool = False,
               api_key: str = "", auth_qs: str = "",
               series_names: dict | None = None) -> dict:
@@ -614,14 +636,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                    and _first_image(item, "Primary", db))) else {},
         # 官方 AttachBasicFields 无条件置空字典（有模糊图时才填）；三方客户端裸读
         "ImageBlurHashes": {},
-        "ProviderIds": {
-            k: v for k, v in (
-                ("Tmdb", item.tmdb_id),
-                ("Imdb", item.imdb_id),
-                ("Douban", getattr(item, "douban_id", None)),
-                ("Bangumi", getattr(item, "bangumi_id", None)),
-            ) if v
-        },
+        "ProviderIds": _provider_ids(item),
         "UserData": _user_data_dto(umd, item.guid),
         "MediaSources": [],
         # 三方客户端 Fields 参数常要的字段
@@ -2210,6 +2225,26 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
 
     if ids:
         query = query.filter(em.MediaItem.guid.in_(ids))
+
+    # AnyProviderIdEquals：Emby 标准按编号筛选（Reflix 跨服/版本匹配用）。
+    # 格式 "Tmdb.519182,Imdb.tt7510222"，逗号分隔任一命中；非法条目忽略。
+    # 注意：douban_id/bangumi_id 不是 MediaItem 的列（DTO 里用 getattr 兜底），
+    # 这里只支持真实列 tmdb/imdb；其他 provider 前缀忽略。
+    _prov_map = {
+        "tmdb": em.MediaItem.tmdb_id,
+        "imdb": em.MediaItem.imdb_id,
+    }
+    _prov_conds = []
+    for _raw in (q.get("AnyProviderIdEquals") or "").split(","):
+        _raw = _raw.strip()
+        if "." not in _raw:
+            continue
+        _p, _pid = _raw.split(".", 1)
+        _col = _prov_map.get(_p.strip().lower())
+        if _col is not None and _pid.strip():
+            _prov_conds.append(_col == _pid.strip())
+    if _prov_conds:
+        query = query.filter(or_(*_prov_conds))
 
     if not ids:
         # 单集多版本：被合并的版本不独立出现在列表里（与 get_episodes 同口径）。
