@@ -72,6 +72,48 @@ def note_drive_file_gone(file_id: str) -> None:
         logger.warning("streaming: 提交 gone 标记失败: %s", exc)
 
 
+# 这些 403 reason 属于文件级永久限制，换 Service Account 重试也无用，命中时直接失败、不重试
+_DRIVE_403_NON_RETRYABLE: frozenset[str] = frozenset({
+    "cannotDownloadAbusiveFile",
+    "fileNotDownloadable",
+})
+
+
+def _drive_403_error_reason(body: bytes) -> tuple[str, str]:
+    """解析 Google Drive API 403 错误体，返回 (reason, message)；解析失败返回 ("", "")，永不抛异常。"""
+    try:
+        import json  # 局部导入，兼容文件内既有风格
+
+        if not body:
+            return ("", "")
+        data = json.loads(body)
+        if not isinstance(data, dict):
+            return ("", "")
+        err = data.get("error")
+        if not isinstance(err, dict):
+            return ("", "")
+
+        errors = err.get("errors")
+        first = {}
+        if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+            first = errors[0]
+
+        reason = first.get("reason", "")
+        if not isinstance(reason, str):
+            reason = str(reason) if reason is not None else ""
+
+        message = err.get("message")
+        if not message:
+            message = first.get("message", "")
+        if not isinstance(message, str):
+            message = str(message) if message is not None else ""
+        message = message[:200]
+
+        return (reason, message)
+    except Exception:
+        return ("", "")
+
+
 def _mark_source_gone_sync(file_id: str) -> None:
     """线程池内执行：幂等 UPDATE emby_items.source_invalid_at。
 
@@ -358,6 +400,9 @@ def serve_remote(
     # 若第一跳 send 就抛异常则 resp 尚未绑定；与异步版（#584）保持同口径。
     resp = None
     try:
+        # _pre_convert_url：drive_auth_headers 建 SA 亲和用的 key（转换前的原始 URL）；
+        # 403 换 SA 重试时要打破的正是这个 key 的亲和。
+        _pre_convert_url = url
         # Drive 私有化修复（2026-10-10）：uc?export=download&id= 直链即使带 SA
         # Bearer token 也只返回登录页；转成 Drive API alt=media 端点才能用 token
         # 下载私有文件。www.googleapis.com 已在 DRIVE_HOSTS 白名单内，重定向/
@@ -376,6 +421,12 @@ def serve_remote(
         forward_orig = dict(forward)
         resp, current, forward = _open_upstream_sync(
             client, api_url, forward, _dns_pinning, silent=False)
+        # Drive alt=media 403：记 Google 侧 reason，可重试类换 SA 重试（与异步版同口径）。
+        # 传 forward_orig（剥凭据之前的原始头，含 Authorization），而不是跳转后被剥过的 forward。
+        if resp is not None and resp.status_code == 403 and _drive_alt_media_file_id(current):
+            resp, current, forward = _drive_403_retry_sync(
+                client, api_url, forward_orig, resp, current,
+                affinity_key=_pre_convert_url, dns_pinning=_dns_pinning)
         # 115 直链过期检测：403/404/410 时清 115 缓存，
         # 客户端重试将拿到新直链（2026-10-09）。与异步版 serve_remote_async 同口径。
         if resp.status_code in (403, 404, 410):
@@ -860,6 +911,150 @@ def _fresh_sa_token(old_authorization: str, api_url: str) -> str | None:
         return None
 
 
+async def _drive_403_retry_async(client, api_url: str, forward: dict, resp, current: str,
+                                 affinity_key: str | None):
+    """Drive alt=media 终态 403：记 Google 侧 reason；可重试类换 SA 重试（有界+抖动）。
+
+    affinity_key：转换前的原始 URL（drive_auth_headers 建 SA 亲和时用的 key）；
+    打破的正是这个 key 的亲和，drop api_url 是无用功。
+
+    返回 (resp, current)。调用方原有 >=400 分支继续处理最终 resp。
+    本函数永不抛异常：内部异常一律吞掉并返回最新的 (resp, current)。
+    """
+    # 用局部变量跟踪"最新"的 resp/current，保证异常兜底时不会返回最初的旧 resp
+    _last_resp, _last_current = resp, current
+    try:
+        max_retry = _env_number("DRIVE_403_SA_RETRY_MAX", 2, 0, 5, cast=int)
+        jitter_ms = _env_number("DRIVE_403_SA_RETRY_JITTER_MS", 800, 0, 10000)
+        fid = _drive_alt_media_file_id(_last_current) or ""
+
+        for attempt in range(max_retry + 1):
+            # 读取响应体，仅取前 4096 字节用于解析 reason
+            try:
+                body = await _last_resp.aread()
+            except Exception:
+                body = b""
+
+            reason, message = _drive_403_error_reason(body[:4096])
+
+            # 只记 file_id / reason / message，绝不记 token 或完整 headers
+            logger.warning(
+                "Drive 下载 403 file_id=%s reason=%s msg=%.120s attempt=%d",
+                fid, reason or "-", message or "-", attempt)
+
+            # 不可重试类，或已达重试上限：交给调用方处理
+            if reason in _DRIVE_403_NON_RETRYABLE or attempt >= max_retry:
+                break
+
+            # 换 SA：先丢弃转换前原始 URL 的 SA 亲和，再取一个与旧 token 不同的新 token
+            try:
+                from backend.emby_server import drive_auth
+                drive_auth.drop_sa_affinity(affinity_key)
+            except Exception:
+                pass
+
+            new_token = _fresh_sa_token(_old_auth_token(forward), api_url)
+
+            try:
+                await _last_resp.aclose()
+            except Exception:
+                pass
+
+            if not new_token:
+                break
+
+            # 反风控抖动
+            await asyncio.sleep(random.uniform(0, jitter_ms / 1000.0))
+
+            new_forward = dict(forward)
+            new_forward["Authorization"] = "Bearer " + new_token
+
+            try:
+                resp, current, _hops = await _follow_redirects(
+                    client, api_url, new_forward, silent=False)
+            except Exception:
+                break
+
+            _last_resp, _last_current = resp, current
+
+            # 仍是 403 且仍是 Drive alt=media 才继续重试
+            if (resp is None or resp.status_code != 403
+                    or not _drive_alt_media_file_id(current)):
+                break
+    except Exception:
+        logger.debug("Drive 403 换 SA 重试过程异常，返回当前响应", exc_info=True)
+
+    return _last_resp, _last_current
+
+
+def _drive_403_retry_sync(client, api_url: str, forward: dict, resp, current: str,
+                          affinity_key: str | None, dns_pinning: dict):
+    """同步版：Drive alt=media 终态 403，记 reason、可重试类换 SA 重试（有界+抖动）。
+
+    与 `_drive_403_retry_async` 逐行对应（供 serve_remote / 下载与拉文件路径用）。
+
+    返回 (resp, current, forward)：forward 为最后一次实际建连用的头
+    （未重试时原样返回传入的 forward）。永不抛异常。
+    """
+    _last_resp, _last_current, _last_forward = resp, current, forward
+    try:
+        max_retry = _env_number("DRIVE_403_SA_RETRY_MAX", 2, 0, 5, cast=int)
+        jitter_ms = _env_number("DRIVE_403_SA_RETRY_JITTER_MS", 800, 0, 10000)
+        fid = _drive_alt_media_file_id(_last_current) or ""
+
+        for attempt in range(max_retry + 1):
+            try:
+                body = _last_resp.read()
+            except Exception:
+                body = b""
+
+            reason, message = _drive_403_error_reason(body[:4096])
+
+            logger.warning(
+                "Drive 下载 403 file_id=%s reason=%s msg=%.120s attempt=%d",
+                fid, reason or "-", message or "-", attempt)
+
+            if reason in _DRIVE_403_NON_RETRYABLE or attempt >= max_retry:
+                break
+
+            try:
+                from backend.emby_server import drive_auth
+                drive_auth.drop_sa_affinity(affinity_key)
+            except Exception:
+                pass
+
+            new_token = _fresh_sa_token(_old_auth_token(_last_forward), api_url)
+
+            try:
+                _last_resp.close()
+            except Exception:
+                pass
+
+            if not new_token:
+                break
+
+            time.sleep(random.uniform(0, jitter_ms / 1000.0))
+
+            new_forward = dict(_last_forward)
+            new_forward["Authorization"] = "Bearer " + new_token
+
+            try:
+                resp, current, _h = _open_upstream_sync(
+                    client, api_url, new_forward, dns_pinning, silent=False)
+            except Exception:
+                break
+
+            _last_resp, _last_current, _last_forward = resp, current, new_forward
+
+            if (resp is None or resp.status_code != 403
+                    or not _drive_alt_media_file_id(current)):
+                break
+    except Exception:
+        logger.debug("Drive 403 换 SA 重试过程异常，返回当前响应", exc_info=True)
+
+    return _last_resp, _last_current, _last_forward
+
+
 async def _follow_redirects(
     client,
     start_url: str,
@@ -1262,6 +1457,9 @@ async def serve_remote_async(
     # 否则这条连接永远不会归还给进程共享的连接池，反复命中会耗尽 RELAY_MAX_CONNECTIONS。
     resp = None
     try:
+        # _pre_convert_url：drive_auth_headers 建 SA 亲和用的 key（转换前的原始 URL）；
+        # 403 换 SA 重试时要打破的正是这个 key 的亲和。
+        _pre_convert_url = url
         # Drive 私有化修复（2026-10-10）：同同步版，uc 直链转 API alt=media。
         try:
             from backend.emby_server.drive_auth import drive_api_media_url
@@ -1278,6 +1476,11 @@ async def serve_remote_async(
         # 保持"剥凭据之前"的原始头——重连建连直接复用它（与初始请求一致）。
         resp, current, _redirect_hops = await _follow_redirects(
             client, api_url, forward, silent=False)
+        # Drive alt=media 403：记 Google 侧 reason，可重试类换 SA 重试（2026-10-15 实测：
+        # 403 为 SA 级瞬时限流，换 SA 即恢复；同 URL 亲和 90-120s 会让客户端重试撞同一 SA）
+        if resp is not None and resp.status_code == 403 and _drive_alt_media_file_id(current):
+            resp, current = await _drive_403_retry_async(
+                client, api_url, forward, resp, current, affinity_key=_pre_convert_url)
         # ttfb：_follow_redirects 返回时已收到源站响应头（首字节就绪）。
         if pt is not None:
             pt.mark("ttfb")
@@ -1471,6 +1674,15 @@ async def resolve_drive_final_url(
         try:
             terminal_status = resp.status_code
             if terminal_status in (403, 404, 410):
+                if terminal_status == 403 and _drive_alt_media_file_id(current):
+                    try:
+                        _pbody = await resp.aread()
+                    except Exception:
+                        _pbody = b""
+                    _preason, _pmsg = _drive_403_error_reason(_pbody[:4096])
+                    logger.warning("Drive 预热 403 file_id=%s reason=%s msg=%.120s",
+                                   _drive_alt_media_file_id(current),
+                                   _preason or "-", _pmsg or "-")
                 return None
             return current
         finally:
