@@ -8,10 +8,12 @@
  *
  * 登录成功后自动跳转 ?redirect= 指定的受保护页面。
  */
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
+import { toUserMessage } from '@/utils/toUserMessage'
+import { toastFallback } from '@/constants/toastMessages'
 import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Gift } from 'lucide-vue-next'
 // 人机验证挂件（能力：人机验证）：管理员未开启时该组件自己什么都不渲染
 import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
@@ -31,8 +33,9 @@ const toast = useToast()
 // registration_mode: open=开放注册 / closed=关闭注册（code 模式已下线）
 const registrationMode = ref<'open' | 'closed'>('open')
 const invitationEnabled = ref(true)
-const showInviteField = computed(() => invitationEnabled.value)
 const registrationClosed = computed(() => registrationMode.value === 'closed')
+ // 注册配置拉取失败标记：失败时注册区显示错误态+重试，不让用户填完表才被拒
+ const configError = ref(false)
 
 const mode = ref<'login' | 'register'>('login')
 
@@ -46,13 +49,15 @@ const registerForm = reactive({
 
 const showLoginPassword = ref(false)
 const showRegisterPassword = ref(false)
-const loading = ref(false)
+const loginLoading = ref(false)
+const registerLoading = ref(false)
 const error = ref('')
 
 // 人机验证令牌：由挂件回调写入；未开启保护时一直是空串（后端也不校验）
 const captchaToken = ref('')
 const captchaRef = ref<InstanceType<typeof CaptchaChallenge> | null>(null)
 
+// 强度文案映射 ['弱','弱','中','强'][score]：score=0（1–5 位密码）时旧写法 ['弱','中','强'][score-1] 会取到 undefined 显示空文案
 const passwordStrength = computed(() => {
   const pwd = registerForm.password
   if (!pwd) return 0
@@ -65,43 +70,65 @@ const passwordStrength = computed(() => {
   return Math.min(score, 3)
 })
 
-function toggleMode() {
-  mode.value = mode.value === 'login' ? 'register' : 'login'
+function toggleMode(next: 'login' | 'register') {
+  mode.value = next
   error.value = ''
+  // 人机验证令牌显式清空：即使挂件会随表单重建，也防止时序上复用旧令牌
+  captchaToken.value = ''
+}
+
+function onTabKey(e: KeyboardEvent, current: 'login' | 'register') {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+  e.preventDefault()
+  const next = current === 'login' ? 'register' : 'login'
+  toggleMode(next)
+  document.getElementById(next === 'login' ? 'tab-login' : 'tab-register')?.focus()
 }
 
 function friendlyError(err: any, fallback: string): string {
-  const detail = err?.response?.data?.detail || err?.message || ''
-  if (typeof detail === 'string' && detail) return detail
-  return fallback
+  // 统一走 toUserMessage 解析；只有落到通用兜底时才用调用方的场景文案
+  const msg = toUserMessage(err, 'saveFailed')
+  return msg === toastFallback.saveFailed ? fallback : msg
+}
+
+/** query 参数取首个字符串值（多值 query 取第一个，防止数组被直接提交） */
+function firstQueryValue(v: unknown): string {
+  if (Array.isArray(v)) return String(v[0] ?? '')
+  return String(v ?? '')
+}
+
+/** redirect 白名单：只允许站内路径，防止开放重定向 */
+function safeRedirect(v: unknown): string {
+  const s = firstQueryValue(v)
+  if (s.startsWith('/') && !s.startsWith('//') && !s.includes('://')) return s
+  return '/'
 }
 
 async function handleLogin() {
-  // R44 P2：回车双提交防护 —— 表单 @submit 与 input @keyup.enter 会各触发一次，
-  // 此处做 loading 守卫兜底（@keyup.enter 冗余绑定已删除，双保险）
-  if (loading.value) return
+  // 回车双提交防护：表单 @submit 与输入框回车各触发一次，此处用 loading 状态做守卫兜底
+  if (loginLoading.value) return
   if (!loginForm.username || !loginForm.password) {
     error.value = '请输入用户名和密码'
     return
   }
   error.value = ''
-  loading.value = true
+  loginLoading.value = true
   try {
     await userStore.login(loginForm.username.trim(), loginForm.password, captchaToken.value)
     toast.success('登录成功')
-    router.push((route.query.redirect as string) || '/')
+    router.push(safeRedirect(route.query.redirect))
   } catch (err) {
     error.value = friendlyError(err, '登录失败，请稍后重试')
     // 令牌是一次性的：失败后换一个新的，否则第二次点击会因「已使用」而失败
     captchaRef.value?.reset()
   } finally {
-    loading.value = false
+    loginLoading.value = false
   }
 }
 
 async function handleRegister() {
-  // R44 P2：回车双提交防护（同 handleLogin）
-  if (loading.value) return
+  // 回车双提交防护（同 handleLogin）
+  if (registerLoading.value) return
   if (registrationClosed.value) {
     error.value = '当前未开放注册'
     return
@@ -124,10 +151,10 @@ async function handleRegister() {
     return
   }
   error.value = ''
-  loading.value = true
+  registerLoading.value = true
   try {
-    // 表单里填的优先；没填时沿用链接带来的
-    const inviteCode = f.inviteCode.trim() || (route.query.invite as string) || ''
+    // 表单里填的优先；没填时沿用链接带来的（多值 query 取第一个）
+    const inviteCode = f.inviteCode.trim() || firstQueryValue(route.query.invite)
     await userStore.register(
       f.username.trim(), f.password, f.email || undefined,
       inviteCode || undefined, captchaToken.value,
@@ -135,11 +162,11 @@ async function handleRegister() {
     toast.success('注册成功，已自动开通观影账号')
     // 注册后 TG 绑定引导：仅注册流程触发，普通登录不动。
     // 状态接口失败时按默认放行进首页，绝不锁死用户。
-    const redirect = (route.query.redirect as string) || '/'
+    const redirect = safeRedirect(route.query.redirect)
     try {
       const st = await tgApi.status()
       if (st.required && !st.bound && st.guide_enabled) {
-        router.push({ path: '/tg-bind', query: route.query.redirect ? { redirect: route.query.redirect as string } : {} })
+        router.push({ path: '/tg-bind', query: route.query.redirect ? { redirect: safeRedirect(route.query.redirect) } : {} })
         return
       }
     } catch {
@@ -150,7 +177,7 @@ async function handleRegister() {
     error.value = friendlyError(err, '注册失败，请稍后重试')
     captchaRef.value?.reset()
   } finally {
-    loading.value = false
+    registerLoading.value = false
   }
 }
 
@@ -162,21 +189,31 @@ const loginPosters = ref<LoginPoster[]>([])
 // EA 海报直链基地址（后端下发；为空则不渲染拼贴，避免相对路径被反代到错误后端）
 const loginPostersBaseUrl = ref('')
 
-onMounted(() => {
-  // 登录页不再强制深色：跟随用户偏好（见文件顶部注释）。
+let postersIdleHandle: number | null = null
+let postersTimeout: ReturnType<typeof setTimeout> | null = null
 
+function loadRegisterConfig() {
+  configError.value = false
   // 拉取注册页开关（公开接口）：按管理端配置显示/隐藏邀请码输入框、是否关闭注册
   getRegisterConfig().then((cfg) => {
     // code 模式已下线：后端/此处统一归一为 open
     registrationMode.value = cfg.registration_mode === 'closed' ? 'closed' : 'open'
     invitationEnabled.value = cfg.invitation_enabled
-  }).catch(() => { /* 拿不到时按默认值显示，不锁死 */ })
+    // 注册已关闭时忽略 ?mode=register / ?invite= 参数，强制留在登录页
+    if (registrationMode.value === 'closed') mode.value = 'login'
+  }).catch(() => { configError.value = true /* 拉取失败时注册区显示错误态+重试，不锁死 */ })
+}
+
+onMounted(() => {
+  // 登录页不再强制深色：跟随用户偏好（见文件顶部注释）。
+
+  loadRegisterConfig()
   if (route.query.mode === 'register') mode.value = 'register'
-  // 邀请链接 ?invite=CODE：自动切到注册页、预填邀请码并提示
+  // 邀请链接 ?invite=CODE（多值 query 取第一个）：自动切到注册页、预填邀请码并提示
   if (route.query.invite) {
     mode.value = 'register'
-    registerForm.inviteCode = String(route.query.invite)
-    toast.info(`已收到好友邀请码，注册成功后双方都得能量奖励`, 5000)
+    registerForm.inviteCode = firstQueryValue(route.query.invite)
+    toast.info(`已收到好友邀请码，注册成功后双方都可获得积分奖励`, 5000)
   }
 
   // 海报拼贴背景：requestIdleCallback 延迟拉取（降级 setTimeout 800ms），
@@ -189,9 +226,15 @@ onMounted(() => {
       }
     }).catch(() => { /* 静默降级 */ })
   }
-  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback
-  if (typeof ric === 'function') ric(loadPosters)
-  else setTimeout(loadPosters, 800)
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback
+  if (typeof ric === 'function') postersIdleHandle = ric(loadPosters)
+  else postersTimeout = setTimeout(loadPosters, 800)
+})
+
+onUnmounted(() => {
+  // 页面卸载时取消海报延迟拉取，避免回调里写已卸载组件的状态
+  if (postersIdleHandle !== null) (window as unknown as { cancelIdleCallback?: (h: number) => void }).cancelIdleCallback?.(postersIdleHandle)
+  if (postersTimeout !== null) clearTimeout(postersTimeout)
 })
 </script>
 
@@ -204,29 +247,35 @@ onMounted(() => {
       <div class="auth-brand">
         <div class="brand-mark">
           <img decoding="async" loading="lazy" v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
-          <Clapperboard v-else :size="22" />
+          <Clapperboard v-else :size="22" aria-hidden="true" />
         </div>
         <h1 class="brand-title">{{ branding.site_name }}</h1>
         <p class="brand-subtitle">自建 Emby 影视服务 · 一个账号，手机/电视/电脑都能看</p>
       </div>
 
       <!-- 模式切换 -->
-      <div class="mode-switch" role="tablist">
+      <div class="mode-switch" role="tablist" aria-label="登录或注册">
         <button
+          id="tab-login"
           class="mode-btn"
           :class="{ active: mode === 'login' }"
           role="tab"
           :aria-selected="mode === 'login'"
-          @click="mode = 'login'"
+          aria-controls="panel-login"
+          @click="toggleMode('login')"
+          @keydown="onTabKey($event, 'login')"
         >
           <span class="mode-btn-label">登录</span>
         </button>
         <button
+          id="tab-register"
           class="mode-btn"
           :class="{ active: mode === 'register' }"
           role="tab"
           :aria-selected="mode === 'register'"
-          @click="mode = 'register'"
+          aria-controls="panel-register"
+          @click="toggleMode('register')"
+          @keydown="onTabKey($event, 'register')"
         >
           <span class="mode-btn-label">注册</span>
         </button>
@@ -234,17 +283,19 @@ onMounted(() => {
       </div>
 
       <!-- 登录表单 -->
-      <form v-if="mode === 'login'" class="auth-form" @submit.prevent="handleLogin">
+      <form v-if="mode === 'login'" id="panel-login" class="auth-form" role="tabpanel" aria-labelledby="tab-login" tabindex="0" @submit.prevent="handleLogin">
         <label class="field">
           <span class="field-label">用户名</span>
           <div class="field-box">
-            <User :size="16" class="field-icon" />
+            <User :size="16" class="field-icon" aria-hidden="true" />
             <input
               v-model="loginForm.username"
               type="text"
               name="username"
               autocomplete="username"
               placeholder="输入用户名"
+              :aria-invalid="!!error"
+              aria-describedby="login-form-error"
             />
           </div>
         </label>
@@ -252,44 +303,46 @@ onMounted(() => {
         <label class="field">
           <span class="field-label">密码</span>
           <div class="field-box">
-            <Lock :size="16" class="field-icon" />
+            <Lock :size="16" class="field-icon" aria-hidden="true" />
             <input
               v-model="loginForm.password"
               :type="showLoginPassword ? 'text' : 'password'"
               name="password"
               autocomplete="current-password"
               placeholder="输入密码"
+              :aria-invalid="!!error"
+              aria-describedby="login-form-error"
             />
-            <button type="button" class="eye-btn" :aria-label="showLoginPassword ? '隐藏密码' : '显示密码'" @click="showLoginPassword = !showLoginPassword">
-              <EyeOff v-if="showLoginPassword" :size="15" />
-              <Eye v-else :size="15" />
+            <button type="button" class="eye-btn" :aria-label="showLoginPassword ? '隐藏密码' : '显示密码'" :aria-pressed="showLoginPassword" @click="showLoginPassword = !showLoginPassword">
+              <EyeOff v-if="showLoginPassword" :size="15" aria-hidden="true" />
+              <Eye v-else :size="15" aria-hidden="true" />
             </button>
           </div>
         </label>
 
-        <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+        <p v-if="error" id="login-form-error" class="form-error" role="alert">{{ error }}</p>
 
         <CaptchaChallenge ref="captchaRef" action="login" @update:token="captchaToken = $event" />
 
-        <button type="submit" class="submit-btn" :disabled="loading || !loginForm.username || !loginForm.password">
-          <span v-if="loading" class="spinner"></span>
-          {{ loading ? '登录中…' : '登 录' }}
+        <button type="submit" class="submit-btn" :disabled="loginLoading || !loginForm.username.trim() || !loginForm.password">
+          {{ loginLoading ? '登录中…' : '登 录' }}
         </button>
       </form>
 
       <!-- 注册表单 -->
-      <form v-else class="auth-form" @submit.prevent="handleRegister">
-        <p v-if="registrationClosed" class="closed-notice">当前未开放注册</p>
+      <form v-else id="panel-register" class="auth-form" role="tabpanel" aria-labelledby="tab-register" tabindex="0" @submit.prevent="handleRegister">
         <label class="field">
           <span class="field-label">用户名</span>
           <div class="field-box">
-            <User :size="16" class="field-icon" />
+            <User :size="16" class="field-icon" aria-hidden="true" />
             <input
               v-model="registerForm.username"
               type="text"
               name="username"
               autocomplete="username"
               placeholder="3-32 位字母、数字、下划线"
+              :aria-invalid="!!error"
+              aria-describedby="register-form-error"
             />
           </div>
         </label>
@@ -297,25 +350,26 @@ onMounted(() => {
         <label class="field">
           <span class="field-label">密码</span>
           <div class="field-box">
-            <Lock :size="16" class="field-icon" />
+            <Lock :size="16" class="field-icon" aria-hidden="true" />
             <input
               v-model="registerForm.password"
               :type="showRegisterPassword ? 'text' : 'password'"
               name="new-password"
               autocomplete="new-password"
               placeholder="至少 6 位"
+              :aria-invalid="!!error"
+              aria-describedby="register-form-error"
             />
-            <button type="button" class="eye-btn" :aria-label="showRegisterPassword ? '隐藏密码' : '显示密码'" @click="showRegisterPassword = !showRegisterPassword">
-              <EyeOff v-if="showRegisterPassword" :size="15" />
-              <Eye v-else :size="15" />
+            <button type="button" class="eye-btn" :aria-label="showRegisterPassword ? '隐藏密码' : '显示密码'" :aria-pressed="showRegisterPassword" @click="showRegisterPassword = !showRegisterPassword">
+              <EyeOff v-if="showRegisterPassword" :size="15" aria-hidden="true" />
+              <Eye v-else :size="15" aria-hidden="true" />
             </button>
           </div>
           <div v-if="registerForm.password" class="strength">
             <div class="strength-track">
               <div class="strength-fill" :class="`lv-${passwordStrength}`"></div>
             </div>
-            <span class="strength-text">{{
-              // R44 P3：score=0（1–5 位密码）时原 ['弱','中','强'][score-1] 取到 undefined 显示空文案
+            <span class="strength-text" aria-live="polite">{{
               ['弱', '弱', '中', '强'][passwordStrength]
             }}</span>
           </div>
@@ -324,13 +378,15 @@ onMounted(() => {
         <label class="field">
           <span class="field-label">确认密码</span>
           <div class="field-box">
-            <Lock :size="16" class="field-icon" />
+            <Lock :size="16" class="field-icon" aria-hidden="true" />
             <input
               v-model="registerForm.confirmPassword"
               type="password"
               name="confirm-password"
               autocomplete="new-password"
               placeholder="再次输入密码"
+              :aria-invalid="!!error"
+              aria-describedby="register-form-error"
             />
           </div>
         </label>
@@ -338,42 +394,47 @@ onMounted(() => {
         <label class="field">
           <span class="field-label">邮箱 <em class="optional">选填</em></span>
           <div class="field-box">
-            <Mail :size="16" class="field-icon" />
+            <Mail :size="16" class="field-icon" aria-hidden="true" />
             <input
               v-model="registerForm.email"
               type="email"
               name="email"
               autocomplete="email"
               placeholder="用于找回密码"
+              :aria-invalid="!!error"
+              aria-describedby="register-form-error"
             />
           </div>
         </label>
 
-        <label v-if="showInviteField" class="field">
+        <label v-if="invitationEnabled" class="field">
           <span class="field-label">邀请码 <em class="optional">选填，双方得能量</em></span>
           <div class="field-box">
-            <Gift :size="16" class="field-icon" />
+            <Gift :size="16" class="field-icon" aria-hidden="true" />
             <input
               v-model="registerForm.inviteCode"
               type="text"
               name="invite-code"
               placeholder="好友的邀请码"
+              :aria-invalid="!!error"
+              aria-describedby="register-form-error"
             />
           </div>
         </label>
 
-        <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+        <p v-if="registrationClosed" class="closed-notice">当前未开放注册</p>
+        <p v-if="configError" class="closed-notice">注册配置拉取失败，<button type="button" class="retry-link" @click="loadRegisterConfig">点重试</button></p>
+        <p v-if="error" id="register-form-error" class="form-error" role="alert">{{ error }}</p>
 
         <CaptchaChallenge ref="captchaRef" action="register" @update:token="captchaToken = $event" />
 
-        <button type="submit" class="submit-btn" :disabled="loading || registrationClosed || !registerForm.username || !registerForm.password || !registerForm.confirmPassword">
-          <span v-if="loading" class="spinner"></span>
-          {{ loading ? '注册中…' : '注 册' }}
+        <button type="submit" class="submit-btn" :disabled="registerLoading || registrationClosed || !registerForm.username.trim() || !registerForm.password || !registerForm.confirmPassword">
+          {{ registerLoading ? '注册中…' : '注 册' }}
         </button>
       </form>
 
       <p class="auth-footnote">
-        注册即代表同意服务条款 · 密码加密存储
+        {{ mode === 'login' ? '密码加密存储' : '密码加密存储 · 注册成功自动开通观影账号' }}
       </p>
     </div>
   </div>
@@ -460,6 +521,7 @@ onMounted(() => {
   font-size: 1.75rem;
   font-weight: 700;
   letter-spacing: 0.2em;
+  text-indent: 0.2em; /* 补偿末字符后的字距，居中标题视觉不偏左 */
   text-transform: uppercase;
   color: var(--paper-ink);
   margin: 0 0 0.625rem;
@@ -480,7 +542,7 @@ onMounted(() => {
   position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  height: 44px;
+  height: auto;
   background: var(--paper-card);
   border: 1px solid var(--paper-line);
   border-radius: var(--paper-r-full);
@@ -492,6 +554,7 @@ onMounted(() => {
   position: relative;
   z-index: 1;
   min-width: 0;
+  min-height: 44px;
   padding: 0 0.75rem;
   border: none;
   background: transparent;
@@ -503,7 +566,7 @@ onMounted(() => {
   color: var(--paper-ink-3);
   cursor: pointer;
   transition: color 0.2s ease;
-  /* 修复3：文字在胶囊内严格水平垂直居中（移动端 UA 默认样式可能偏） */
+  /* 文字在胶囊内严格水平垂直居中（移动端浏览器默认样式可能偏） */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -523,6 +586,7 @@ onMounted(() => {
 
 .mode-indicator {
   position: absolute;
+  /* 4px 与 .mode-switch 的 padding: 4px 对应，改一处需同步 */
   top: 4px;
   left: 4px;
   width: calc(50% - 4px);
@@ -552,7 +616,7 @@ onMounted(() => {
 }
 
 .field-label {
-  padding: 0 20px;
+  padding: 0 24px;
   font-size: 0.8125rem;
   font-weight: 500;
   line-height: 1.5;
@@ -571,12 +635,12 @@ onMounted(() => {
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  height: 52px;
+  min-height: 52px;
   background: var(--paper-input-bg);
   border: 1px solid var(--paper-line);
   border-radius: var(--paper-r-full);
-  padding: 0 20px;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  padding: 0 24px;
+  transition: box-shadow 0.2s ease;
 }
 
 .field-box:focus-within {
@@ -643,16 +707,18 @@ onMounted(() => {
   transition: color 0.2s ease, background-color 0.2s ease;
 }
 
-/* R35：触点扩到 44px（视觉 32px 不变，::after 透明扩展——R32 .tg-close 先例） */
+/* 点击区扩到 44px：视觉保持 32px，用 ::after 透明层扩展 */
 .eye-btn::after {
   content: "";
   position: absolute;
   inset: -6px;
 }
 
-.eye-btn:hover {
-  color: var(--paper-ink-2);
-  background: var(--paper-card);
+@media (hover: hover) {
+  .eye-btn:hover {
+    color: var(--paper-ink-2);
+    background: var(--paper-card);
+  }
 }
 
 .mode-btn:focus-visible,
@@ -668,7 +734,7 @@ onMounted(() => {
   align-items: center;
   gap: 0.625rem;
   margin-top: 0.125rem;
-  padding: 0 20px;
+  padding: 0 24px;
 }
 
 .strength-track {
@@ -683,7 +749,7 @@ onMounted(() => {
   height: 100%;
   width: 100%;
   border-radius: var(--paper-r-full);
-  /* R27：width 是 layout 属性会触发重排 → 改 transform: scaleX（StaminaBar 同款模式） */
+  /* 用 transform: scaleX 代替 width 做进度动画，避免触发布局重排 */
   transform: scaleX(0);
   transform-origin: left center;
   transition: transform 0.3s ease, background-color 0.3s ease;
@@ -702,7 +768,7 @@ onMounted(() => {
 /* 错误与注册关闭提示保留独立语义色。 */
 .form-error {
   margin: 0;
-  padding: 0.75rem 20px;
+  padding: 0.75rem 24px;
   border-radius: 26px;
   background: var(--paper-danger-soft);
   border: 1px solid var(--paper-danger-border);
@@ -714,7 +780,7 @@ onMounted(() => {
 
 .closed-notice {
   margin: 0;
-  padding: 0.75rem 20px;
+  padding: 0.75rem 24px;
   border-radius: 26px;
   background: var(--paper-warning-soft, var(--paper-danger-soft));
   border: 1px solid var(--paper-warning-border, var(--paper-danger-border));
@@ -722,6 +788,17 @@ onMounted(() => {
   font-size: 0.875rem;
   line-height: 1.5;
   text-align: center;
+}
+
+.retry-link {
+  background: none;
+  border: none;
+  padding: 0 8px;
+  min-height: 44px;
+  color: var(--paper-primary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 /* 渐变胶囊提交按钮 */
@@ -735,7 +812,7 @@ onMounted(() => {
   height: 52px;
   flex-shrink: 0;
   margin-top: 0.25rem;
-  padding: 0 20px;
+  padding: 0 24px;
   background: var(--paper-gradient);
   border: none;
   border-radius: var(--paper-r-full);
@@ -761,25 +838,6 @@ onMounted(() => {
   cursor: not-allowed;
 }
 
-.spinner {
-  width: 15px;
-  height: 15px;
-  border: 2px solid var(--paper-on-image-strong);
-  border-top-color: var(--paper-ink);
-  border-radius: 50%;
-  animation: au-spin 0.8s linear infinite;
-}
-
-@keyframes au-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-/* R27：减少动态偏好下转圈停掉，保留静态圆环 */
-@media (prefers-reduced-motion: reduce) {
-  .spinner { animation: none; }
-}
-
 .auth-footnote {
   margin: 1.5rem 0 0;
   text-align: center;
@@ -800,7 +858,10 @@ onMounted(() => {
     max-width: 100%;
   }
 
-  .field-box,
+  .field-box {
+    min-height: 52px;
+  }
+
   .submit-btn {
     height: 52px;
   }
@@ -815,7 +876,8 @@ onMounted(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * {
+  /* 自动填充的 5000s 背景过渡是防黄色底色的 hack，不是可见动画，排除在外 */
+  *:not(:-webkit-autofill) {
     animation: none !important;
     transition: none !important;
   }

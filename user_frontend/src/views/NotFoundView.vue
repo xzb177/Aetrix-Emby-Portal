@@ -1,29 +1,36 @@
 <script setup lang="ts">
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { Home, ArrowLeft } from 'lucide-vue-next'
+
+const router = useRouter()
+
+function goBack() {
+  if (window.history.length > 1) router.back()
+  else router.push('/')
+}
 </script>
 
 <template>
-  <div class="nf-page">
+  <main class="nf-page">
     <div class="nf-inner">
       <p class="au-eyebrow nf-eyebrow">胶片未找到</p>
-      <h1 class="nf-code">404</h1>
-      <h2 class="nf-title">这一卷胶片不在片库里</h2>
+      <p class="nf-code" aria-hidden="true">404</p>
+      <h1 class="nf-title">这一卷胶片不在片库里</h1>
       <p class="nf-desc">
         抱歉，您访问的页面不存在或已被移除
       </p>
       <div class="nf-actions">
-        <button class="au-btn au-btn-ghost" @click="$router.back()">
-          <ArrowLeft :size="16" />
+        <button class="au-btn au-btn-ghost" @click="goBack">
+          <ArrowLeft :size="16" aria-hidden="true" />
           <span>返回</span>
         </button>
         <RouterLink to="/" class="au-btn au-btn-primary">
-          <Home :size="16" />
+          <Home :size="16" aria-hidden="true" />
           <span>首页</span>
         </RouterLink>
       </div>
     </div>
-  </div>
+  </main>
 </template>
 
 <style scoped>
@@ -50,7 +57,6 @@ import { Home, ArrowLeft } from 'lucide-vue-next'
   font-size: clamp(4.5rem, 16vw, 8rem);
   font-weight: 700;
   line-height: 1;
-  font-variant-numeric: tabular-nums;
   color: var(--au-text);
 }
 
@@ -70,6 +76,7 @@ import { Home, ArrowLeft } from 'lucide-vue-next'
 
 .nf-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 0.75rem;
 }

@@ -165,6 +165,7 @@ html[data-theme='light'] {
   --on-dark: #FFFFFF;       /* 深色/彩色底上的白字：原 ShopView #fff */
   --ember: #FFB25E;         /* 火光橙：原 ShopView #ffb25e */
   --red-deep: #A33319;      /* 暗红（按压阴影）：原 ShopView #a33319 */
+  --red-ink: #B93A22;       /* R50：小字号无障碍加深变体（纸色底对比度 5.59:1）；--red-deep 已被按压阴影占用，不复用该名 */
   --gold-deep: #9A7627;     /* 暗金（按压阴影）：原 ShopView #9a7627 */
   --line-deep: #C9BFA9;     /* 深线条/弱文字：原 ShopView #c9bfa9 */
   --scrim: #00000040;       /* 25% 黑遮罩：原 ShopView #00000040 */

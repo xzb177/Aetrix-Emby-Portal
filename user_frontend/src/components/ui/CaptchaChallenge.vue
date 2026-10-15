@@ -21,6 +21,7 @@ const emit = defineEmits<{ (e: 'update:token', token: string): void }>()
 const info = ref<CaptchaInfo | null>(null)
 const boxRef = ref<HTMLElement | null>(null)
 const failed = ref(false)
+const ready = ref(false) // 挂件渲染完成（加载中的占位骨架依据）
 const widgetId = ref<string | number | null>(null)
 let scriptEl: HTMLScriptElement | null = null
 
@@ -92,6 +93,7 @@ async function render() {
       await new Promise<void>((resolve) => global.ready(() => resolve()))
     }
     widgetId.value = global.render(boxRef.value, options)
+    ready.value = true
   } catch {
     failed.value = true
   }
@@ -136,6 +138,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="info?.enabled && info.actions[action]" class="captcha-block">
+    <div v-if="!ready && !failed" class="au-skeleton" style="height:48px" aria-hidden="true"></div>
     <div ref="boxRef" class="captcha-box"></div>
     <p v-if="failed" class="captcha-error">
       <AlertTriangle :size="13" />
