@@ -67,7 +67,7 @@
                   <template v-else>未设置</template>
                 </span>
                 <button
-                  v-if="hasPlayPassword"
+                  v-if="playPwdLoaded"
                   class="copy-btn"
                   :title="showPlayPassword ? '隐藏' : '查看'"
                   :aria-label="showPlayPassword ? '隐藏' : '查看'"
@@ -124,14 +124,6 @@
           <section v-if="hasSchemes" class="v4-sec">
             <div class="v4-sec-title">📲 一键导入到客户端</div>
             <div class="v4-sec-sub">点一下，直接跳到播放器里填好</div>
-            <input
-              v-model="importPassword"
-              type="password"
-              class="import-pwd-input"
-              placeholder="输入播放密码一起导入（可选）"
-              aria-label="播放密码（可选）"
-              autocomplete="off"
-            />
             <div class="scheme-btns">
               <button
                 v-for="(url, name) in importSchemes"
@@ -142,7 +134,7 @@
                 {{ name }}
               </button>
             </div>
-            <p class="op-tip">密码只放在这一次跳转里，不会存下来，关掉页面就没了。</p>
+            <p class="op-tip">{{ importTip }}</p>
           </section>
 
           <!-- 正在播放：旧 PlaybackSessions 一比一恢复（#783 删页面时丢了入口） -->
@@ -379,8 +371,6 @@ const EMPTY_DASH = '—'
 interface AccountCardExtra {
   /** 兼容字段：部分部署 server_url 与 base_url 并存 */
   server_url?: string
-  /** 是否已设置播放密码 */
-  has_play_password?: boolean
   /** 公益服标记（顶层兼容字段） */
   realm_free?: boolean
   /** 公益服说明（顶层兼容字段） */
@@ -397,8 +387,6 @@ type AccountCardFull = AccountCard & AccountCardExtra
 const accountExtra = computed((): AccountCardFull => (account.value ?? {}) as AccountCardFull)
 /** R50：账号已就绪时的刷新（重试按钮场景）——op-rows 显示骨架而不是整块变暗 */
 const accountReloading = computed(() => loading.value && !!account.value)
-/** R50：embyApi 类型尚未收录 getPlayPassword（后端有该端点），此处收窄 any */
-const embyApiExtra = embyApi as unknown as { getPlayPassword?: () => Promise<unknown> }
 // 查看权限：后端账号卡自带 view_permission（没权限时 200 返回卡，granted=false，只给解锁信息不下发地址）
 // 和 ProfileView 同一口径：从卡里派生，不单独调接口（后端没有 /view-permission 这类端点）
 const viewPermission = computed(() => (account.value?.view_permission || null) as ((ViewPermission & ViewPermissionExtra) | null))
@@ -414,11 +402,16 @@ const showSetPlayPwd = ref(false)
 const playPwd = ref('')
 const pwdError = ref('')
 const settingPwd = ref(false)
-const importPassword = ref('')
+/** R53：一键导入提示文案随密码状态走（三态） */
+const importTip = computed(() => {
+  if (playPwdLoaded.value) return '点一下直接导入，密码一起带过去，只用在这次跳转里，不会存'
+  if (hasPlayPassword.value) return '密码已设置，这次没法自动带过去，导入后在播放器里输一次就行'
+  return '还没设播放密码，导入后在播放器里也能补'
+})
 
 /** 是否有查看权限：以卡里 view_permission.granted 为准（和 ProfileView 同一口径） */
 const viewGranted = computed(() => !!viewPermission.value?.granted)
-const hasPlayPassword = computed(() => !!accountExtra.value.has_play_password)
+const hasPlayPassword = computed(() => !!account.value?.has_password)
 
 const serverUrl = computed(() => accountExtra.value.server_url || account.value?.base_url || EMPTY_DASH)
 const embyUsername = computed(() => account.value?.emby_username || userStore.user?.username || EMPTY_DASH)
@@ -437,20 +430,9 @@ const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
 async function refreshAccount(quiet = false) {
   if (!quiet) loading.value = true
   accountError.value = ''
-  playPwdLoaded.value = false
   try {
     const res = await embyApi.getAccountCard()
     account.value = res as AccountCard
-    // 播放密码明文：后端只在已设置且用户主动查看时下发，这里按需懒加载
-    if (hasPlayPassword.value) {
-      try {
-        const pwd = await embyApiExtra.getPlayPassword?.()
-        if (typeof pwd === 'string') {
-          playPasswordText.value = pwd
-          playPwdLoaded.value = true
-        }
-      } catch { /* R50：懒加载失败保持"未获取"态，模板继续显示 ••••••••，不露空字符串 */ playPwdLoaded.value = false }
-    }
   } catch (e: any) {
     // 没权限时后端直接 200 返回带 view_permission 的卡（granted=false），不会 403；
     // 这里只处理真正的加载失败（网络/鉴权），和 ProfileView 同一口径
@@ -487,8 +469,11 @@ async function confirmSetPassword() {
   try {
     await embyApi.setPassword(playPwd.value)
     toast.success('播放密码已设置')
-    closeSetPlayPwd()
+    // R53：本会话内记住明文（后端 bcrypt 存的、取不回来）——密码行查看按钮与一键导入都用它
+    playPasswordText.value = playPwd.value
+    playPwdLoaded.value = true
     playPwd.value = ''
+    closeSetPlayPwd()
     showPlayPassword.value = false
     await refreshAccount(true)
   } catch (e) {
@@ -522,13 +507,13 @@ async function openScheme(url: string, appName = '播放器') {
     return
   }
   let finalUrl = url
-  // #758：一键导入时可临时带上播放密码（只放内存，不存）
-  if (importPassword.value) {
+  // R53：一键导入只用本会话已知密码（hasPlayPassword 但本会话未知时带不过去——明文取不回）
+  if (playPwdLoaded.value) {
     try {
       const u = new URL(url)
       // 常见 scheme 参数名兼容：password / pwd
       if (!u.searchParams.has('password') && !u.searchParams.has('pwd')) {
-        u.searchParams.set('password', importPassword.value)
+        u.searchParams.set('password', playPasswordText.value)
       }
       finalUrl = u.toString()
     } catch {
@@ -858,21 +843,6 @@ watch(viewGranted, (granted) => {
 }
 .realm-url.muted { color: var(--ink2); }
 
-/* 一键导入 */
-.import-pwd-input {
-  width: 100%;
-  box-sizing: border-box;
-  font-size: 16px;
-  padding: 10px 14px;
-  /* R41：补上 min-height:44px —— 原约 42px 差一截（16px 字 + 上下 10px padding） */
-  min-height: 44px;
-  margin-bottom: 10px;
-  border: 1.5px solid var(--line);
-  border-radius: var(--paper-r-md, 10px);
-  background: var(--paper-card);
-  color: var(--ink);
-}
-.import-pwd-input:focus-visible { outline: 2px solid var(--red); outline-offset: 1px; }
 .scheme-btns { display: flex; flex-wrap: wrap; gap: 10px; }
 .scheme-btn {
   font-size: 14px;
@@ -1057,6 +1027,18 @@ watch(viewGranted, (granted) => {
 
 /* 弹窗 */
 .modal-mask {
+  /* Teleport 到 body 后会脱离 .v4-scope，导致纸色变量继承被切断，故在此补齐弹窗子树用到的变量；值逐字抄自 v4-paper.css 的 .v4-scope 块 */
+  --paper-card: #FFFDF6;
+  --ink: #2A2620;
+  --ink2: #6B6257;
+  --red: #D9482B;
+  --red-deep: #A33319;
+  --red-ink: #B93A22;
+  --on-dark: #FFFFFF;
+  --line: #D8CDB8;
+  --paper-r-md: 10px;
+  --paper-r-lg: 12px;
+  --paper-r-xl: 16px;
   position: fixed;
   inset: 0;
   background: rgba(20, 16, 12, 0.45);
