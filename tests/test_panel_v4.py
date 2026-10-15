@@ -17,6 +17,7 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 
 import pytest
@@ -353,7 +354,7 @@ def test_today_unsealed_count_contract(db, user):
         pytest.skip("EmbyItem 模型不可用")
     item = em.MediaItem(
         guid="contract-today-1", library_id=1, item_type="movie",
-        name="契约电影", date_added=datetime.now(),
+        name="契约电影", date_added=datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None),
     )
     db.add(item)
     db.commit()
