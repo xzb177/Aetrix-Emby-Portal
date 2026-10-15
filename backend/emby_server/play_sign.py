@@ -218,7 +218,7 @@ def verify_play_sign(user_id: int, item_id: str, exp: int, sign: str) -> bool:
         return False
     if exp <= int(time.time()):
         return False
-    if not sign or len(sign) != 32:
+    if not isinstance(sign, str) or len(sign) != 32 or not sign.isascii():
         return False
     expected = _sign_payload(user_id, str(item_id), exp)
     return hmac.compare_digest(expected, sign)
