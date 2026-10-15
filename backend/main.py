@@ -359,18 +359,9 @@ app = FastAPI(
 # ==================== 中间件配置 ====================
 
 # CORS 中间件：CORS_ORIGINS 为空时不添加（同源不需要），绝不回退到 ["*"]
+# 白名单解析保留在此处；注册挪到所有守卫之后（最外层），见文件下方。
 _cors_origins_env = os.getenv("CORS_ORIGINS", "").strip()
 _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
-if _cors_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_cors_origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
-                       "X-MediaBrowser-Token", "X-Device-Id"],
-        expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
-    )
 
 
 # ============ API 限流（Redis 固定窗口）============
@@ -584,6 +575,20 @@ app.add_middleware(AccessGuardMiddleware)
 # 都查不到是谁干的。做成中间件而不是逐端点调用，是因为端点会新增，
 # 而「记得补审计」不是一种机制（详见 backend/emby_server/audit.py）。
 app.add_middleware(AdminWriteAuditMiddleware)
+
+# CORS 最后注册 = 最外层（Starlette 逆序执行中间件）：外层守卫拦截返回的 403
+# 也要带 CORS 头，否则浏览器只报笼统 CORS 错误、前端读不到真实状态码。
+# 白名单解析见上方 _cors_origins，为空时不注册（同源不需要）。
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-Emby-Authorization", "X-Emby-Token",
+                       "X-MediaBrowser-Token", "X-Device-Id"],
+        expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
+    )
 
 
 # ==================== 异常处理 ====================
