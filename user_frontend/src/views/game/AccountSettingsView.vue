@@ -4,13 +4,13 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('account') }}</span>
-        <h1>⚙️ 账号设置</h1>
+        <h1><span aria-hidden="true">⚙️</span> 账号设置</h1>
         <p>改登录密码、看我的会员、管我的设备 —— 账号自己的事都在这儿。</p>
       </header>
 
       <!-- 安全设置：修改登录密码（逻辑由 ProfileView 移植，authApi.changePassword） -->
       <section class="v4-sec" aria-label="安全设置">
-        <div class="v4-sec-title">🔐 安全设置</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🔐</span> 安全设置</div>
         <div class="v4-sec-sub">登录密码是进营地的钥匙，定期换一把更安心</div>
         <div class="v4-card acct-card">
           <button type="button" class="acct-row" @click="openChangePwd">
@@ -24,9 +24,9 @@
       <!-- 我的会员：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
       <section class="v4-sec" aria-label="我的会员">
         <!-- R41：补上标题行，与其他两节结构对齐（标题+副标题） -->
-        <div class="v4-sec-title">🏷️ 我的会员</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🏷️</span> 我的会员</div>
         <div class="v4-sec-sub">会员到期、历史账单、取消续订都在这里</div>
-        <div v-if="subsError" class="v4-err">订阅加载失败：{{ subsError }}<br><button class="v4-retry" @click="loadSubs">重试</button></div>
+        <div v-if="subsError" class="v4-err">订阅加载失败，请稍后重试<br><button class="v4-retry" @click="loadSubs">重试</button></div>
         <!-- R41：在途显示骨架屏 —— 请求还没回来时别闪现"还没有会员"（ProfileSubscriptions 的空数据文案） -->
         <div v-else-if="subsLoading" class="v4-skeleton" style="height:180px"></div>
         <ProfileSubscriptions
@@ -85,12 +85,12 @@
 
       <!-- 我的设备：第三方播放器登录设备列表 / 移除（顶上限自救通道，deviceApi） -->
       <section class="v4-sec" aria-label="我的设备">
-        <div class="v4-sec-title">📱 我的设备</div>
+        <div class="v4-sec-title"><span aria-hidden="true">📱</span> 我的设备</div>
         <div class="v4-sec-sub">用第三方播放器登录过的设备都在这里，顶到上限自己动手清</div>
         <div class="v4-card">
           <div class="dev-head">
             <span v-if="deviceInfo && deviceInfo.limit" class="dev-count">
-              {{ deviceInfo.active_count }} / {{ deviceInfo.limit }} 台
+              {{ deviceInfo.active_count ?? 0 }} / {{ deviceInfo.limit }} 台
             </span>
             <!-- R38 P3-2：忙碌时文案「刷新中」替代旋转图标（旋转+reduce 伪守卫已删） -->
             <button type="button" class="v4-mini-btn" title="刷新" :disabled="deviceLoading" :aria-busy="deviceLoading" @click="loadDevices">
@@ -98,7 +98,7 @@
             </button>
           </div>
           <div v-if="deviceLoading && !devices.length" class="v4-skeleton" style="height:120px"></div>
-          <div v-else-if="deviceError" class="v4-err">设备列表加载失败：{{ deviceError }}<br><button class="v4-retry" @click="loadDevices">重试</button></div>
+          <div v-else-if="deviceError" class="v4-err">设备列表加载失败，请稍后重试<br><button class="v4-retry" @click="loadDevices">重试</button></div>
           <div v-else-if="!devices.length" class="v4-empty">
             还没有设备记录 —— 用 Emby 客户端（Infuse / Forward 等）登录后会出现在这里
           </div>
@@ -145,20 +145,20 @@
       <div class="acct-modal" role="dialog" aria-modal="true" aria-label="修改登录密码">
         <h3 class="acct-modal-title">修改登录密码</h3>
         <div class="acct-field">
-          <label class="acct-label">当前密码</label>
-          <input ref="oldPwdInput" v-model="pwdForm.oldPassword" type="password" autocomplete="current-password" />
+          <label class="acct-label" for="pwd-old">当前密码</label>
+          <input id="pwd-old" ref="oldPwdInput" v-model="pwdForm.oldPassword" type="password" autocomplete="current-password" />
         </div>
         <div class="acct-field">
-          <label class="acct-label">新密码</label>
-          <input v-model="pwdForm.newPassword" type="password" autocomplete="new-password" />
+          <label class="acct-label" for="pwd-new">新密码</label>
+          <input id="pwd-new" v-model="pwdForm.newPassword" type="password" autocomplete="new-password" />
         </div>
         <div class="acct-field">
-          <label class="acct-label">确认新密码</label>
-          <input v-model="pwdForm.confirmPassword" type="password" autocomplete="new-password" />
+          <label class="acct-label" for="pwd-confirm">确认新密码</label>
+          <input id="pwd-confirm" v-model="pwdForm.confirmPassword" type="password" autocomplete="new-password" />
         </div>
-        <p v-if="pwdError" class="acct-error">{{ pwdError }}</p>
+        <p v-if="pwdError" class="acct-error" role="alert">{{ pwdError }}</p>
         <div class="acct-modal-actions">
-          <button type="button" class="acct-btn ghost" @click="closeChangePwd">取消</button>
+          <button type="button" class="acct-btn ghost" :disabled="pwdLoading" @click="closeChangePwd">取消</button>
           <button type="button" class="acct-btn primary" :disabled="pwdLoading" @click="handleChangePassword">
             {{ pwdLoading ? '提交中' : '确认修改' }}
           </button>
@@ -258,6 +258,8 @@ function openChangePwd() {
   nextTick(() => oldPwdInput.value?.focus())
 }
 function closeChangePwd() {
+  // R54-10：提交在途时不允许关闭，否则在途请求的失败原因会被清空后静默丢失
+  if (pwdLoading.value) return
   showChangePwd.value = false
   // R41：弹窗关闭时释放 body 滚动锁（照抄 WishlistView R38 P3-11 模式）
   document.body.style.overflow = ''
@@ -380,6 +382,8 @@ async function loadDevices() {
 }
 
 async function handleRemoveDevice(device: MyDevice) {
+  // R54-12：移除请求在途时直接短路，避免并发删除同一设备
+  if (removingDevice.value) return
   if (pendingRemove.value !== device.device_id) {
     pendingRemove.value = device.device_id
     window.setTimeout(() => {
@@ -404,8 +408,10 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
   if (isBlocked) return '已禁用'
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()
-  if (Number.isNaN(diff) || diff < 0) return '刚刚'
+  if (Number.isNaN(diff)) return '—'
+  if (diff < 0) return '刚刚'
   const mins = Math.floor(diff / 60000)
+  if (mins < 1) return '刚刚'
   if (mins < 60) return `${mins} 分钟前`
   const hours = Math.floor(mins / 60)
   if (hours < 24) return `${hours} 小时前`
@@ -574,15 +580,21 @@ onMounted(() => {
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   padding: 24px;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  overflow-y: auto;
   background: var(--scrim);
   z-index: 100;
 }
 .acct-modal {
   width: 100%;
   max-width: 340px;
+  margin: auto;
+  max-height: calc(100% - 48px);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
   padding: 20px;
   background: var(--paper-card);
   border: 1.5px solid var(--ink);
@@ -615,6 +627,7 @@ onMounted(() => {
   box-sizing: border-box;
 }
 .acct-field input:focus { border-color: var(--ink); }
+.acct-field input:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 .acct-error {
   margin: 0 0 10px;
   padding: 8px 12px;
@@ -648,13 +661,9 @@ onMounted(() => {
   color: var(--on-dark);
   font-weight: 600;
 }
-.acct-btn.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.acct-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 /* R36：终止订阅确认弹窗的正文（走 .paper-confirm 纸色弹窗，文字排版本地样式） */
 .acct-confirm-text { font-size: 14px; line-height: 1.9; color: var(--ink); margin: 0; }
-
-@media (prefers-reduced-motion: reduce) {
-  .acct-row:active, .dev-remove:active:not(:disabled) { background: transparent; }
-}
 
 /* 首页卡片展示：模式三段选择 + 每服显隐开关（只用 --paper-* token） */
 .mode-seg {
@@ -665,10 +674,13 @@ onMounted(() => {
 }
 .mode-seg button {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
   background: none;
   border: 0;
   font-size: 12px;
-  padding: 8px 0;
   color: var(--paper-ink);
   cursor: pointer;
 }
@@ -706,27 +718,33 @@ onMounted(() => {
 .srv-switch {
   position: relative;
   flex: none;
-  width: 36px;
-  height: 20px;
+  width: 48px;
+  height: 44px;
   padding: 0;
   border-radius: 999px;
-  border: 1.5px solid var(--paper-ink);
-  background: var(--paper-card);
+  border: 0;
+  background: none;
   cursor: pointer;
 }
 .srv-switch::before {
   content: '';
   position: absolute;
-  inset: -6px;
+  left: 6px;
+  top: 12px;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1.5px solid var(--paper-ink);
+  background: var(--paper-card);
 }
-.srv-switch.is-on {
+.srv-switch.is-on::before {
   background: var(--paper-primary);
 }
 .srv-switch::after {
   content: '';
   position: absolute;
-  top: 2px;
-  left: 2px;
+  top: 14px;
+  left: 8px;
   width: 14px;
   height: 14px;
   border-radius: 50%;
@@ -735,7 +753,7 @@ onMounted(() => {
 }
 .srv-switch.is-on::after {
   left: auto;
-  right: 2px;
+  right: 8px;
   background: var(--paper-ink);
 }
 .srv-empty {

@@ -4,9 +4,9 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">营地一角 · 老向导</span>
-        <h1>🧭 向导</h1>
+        <h1><span aria-hidden="true">🧭</span> 向导</h1>
         <p>营地里坐着位老向导，片库的事，问他准没错。</p>
-        <div v-if="available" class="v4-fire">🟢 {{ quotaText }}</div>
+        <div v-if="available" id="guide-quota" class="v4-fire"><span aria-hidden="true">🟢</span> {{ quotaText }}</div>
         <div v-else-if="loading" class="v4-skeleton" style="height:32px;width:60%;margin-top:10px"></div>
       </header>
 
@@ -15,16 +15,17 @@
       <!-- 向导没在：说清楚是哪种情况 -->
       <section v-else-if="!available" class="v4-sec">
         <div class="guide-card">
-          <div class="avatar">🧙‍♂️</div>
+          <div class="avatar" aria-hidden="true">🧙‍♂️</div>
           <div class="who">
-            <div class="nm">老陈 <span class="tag">今天没出摊</span></div>
-            <div class="motto">向导暂时不在营地。</div>
+            <div class="nm">老陈 <span class="tag">{{ netError ? '状态未知' : '今天没出摊' }}</span></div>
+            <div class="motto">{{ netError ? '没连上营地，暂时问不到他的情况。' : '向导暂时不在营地。' }}</div>
           </div>
         </div>
         <div class="v4-err" style="margin-top:12px">
           <template v-if="netError">网络开小差了，请检查网络后重试。</template>
           <template v-else>{{ status?.reason || '管理员还没请向导来坐镇。' }}</template><br>
-          <span class="tip">着急的话可以去 <button type="button" class="signal-link" @click="goSignal">求救信号</button> 发封求救信，会有人回你。</span>
+          <span class="tip">着急的话，可以发封求救信，会有人回你。</span>
+          <button type="button" class="signal-link" @click="goSignal">去发求救信号</button>
         </div>
         <button class="v4-retry" style="margin-top:12px" :disabled="loading" @click="load">再去看看</button>
       </section>
@@ -33,7 +34,7 @@
         <!-- 向导名片 -->
         <section class="v4-sec">
           <div class="guide-card">
-            <div class="avatar">🧙‍♂️</div>
+            <div class="avatar" aria-hidden="true">🧙‍♂️</div>
             <div class="who">
               <div class="nm">老陈 <span class="tag">营地向导 · 在线</span></div>
               <div class="motto">"问我，包打听。"</div>
@@ -44,7 +45,7 @@
 
         <!-- 快捷问 -->
         <section class="v4-sec">
-          <div class="v4-sec-title">💬 直接问他</div>
+          <div class="v4-sec-title"><span aria-hidden="true">💬</span> 直接问他</div>
           <div class="chips">
             <button
               v-for="s in SUGGESTIONS"
@@ -59,7 +60,7 @@
 
         <!-- 聊天 -->
         <section class="v4-sec">
-          <div ref="scroller" class="chat" tabindex="0" aria-label="聊天记录" aria-live="polite">
+          <div ref="scroller" class="chat" role="log" tabindex="0" aria-label="聊天记录">
             <!-- R41：.chat-empty 已删 —— onMounted 同步 push 欢迎气泡，bubbles 永不为空，空态死代码 -->
             <div v-for="(b, i) in bubbles" :key="i" class="msg" :class="b.role">
               <div v-if="b.role === 'guide'" class="who">老陈 · 向导</div>
@@ -67,7 +68,7 @@
             </div>
             <div v-if="sending" class="msg guide">
               <div class="who">老陈 · 向导</div>
-              <span class="typing" role="status" aria-label="向导正在思考"><i></i><i></i><i></i></span>
+              <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
             </div>
           </div>
         </section>
@@ -77,12 +78,14 @@
           <input
             v-model="question"
             type="text"
-            :disabled="sending || exhausted"
+            :disabled="exhausted"
             :placeholder="exhausted ? '今天问够了，明天再来' : '问问老陈…'"
+            aria-label="向向导提问"
+            aria-describedby="guide-quota"
             @keyup.enter="ask()"
           >
           <button :disabled="sending || exhausted || !question.trim()" @click="ask()">
-            {{ sending ? '想着' : '发送' }}
+            {{ sending ? '等回话' : '发送' }}
           </button>
         </div>
       </template>
@@ -128,7 +131,7 @@ const available = computed(() => status.value?.enabled === true)
 const quotaText = computed(() => {
   const s = status.value
   if (!s?.enabled) return ''
-  if (!s.daily_limit || s.remaining === null) return '随便问，不限次数'
+  if (!s.daily_limit || typeof s.remaining !== 'number') return '随便问，不限次数'
   return `今天还能问 ${s.remaining} 次`
 })
 const exhausted = computed(() => available.value && status.value?.remaining === 0)
@@ -178,13 +181,14 @@ async function ask(text?: string) {
   sending.value = true
   scrollToEnd()
   try {
-    // 只把 me / guide 轮次交给后端（它也会再过滤一次）
+    // 只把 me / guide 轮次交给后端（它也会再过滤一次）；当前提问已作为 content 单独传，历史里去掉刚 push 的那条
     const history = bubbles.value
       .filter((b) => b.role !== 'error')
       .map((b): { role: 'user' | 'assistant'; content: string } => ({
         role: b.role === 'me' ? 'user' : 'assistant',
         content: b.content,
       }))
+      .slice(0, -1)
       .slice(-8)
     const res = await aiApi.ask(content, history)
     bubbles.value.push({ role: 'guide', content: res.answer })
@@ -278,7 +282,7 @@ onMounted(() => {
 }
 /* R41：.chat-empty 已删（onMounted 同步 push 欢迎气泡，空态永不可达），样式一并清掉 */
 .msg { max-width: 82%; }
-.msg p { margin: 0; font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; }
+.msg p { margin: 0; font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: break-word; }
 .msg.guide {
   align-self: flex-start;
   background: var(--paper2);
@@ -351,22 +355,27 @@ onMounted(() => {
 .inputbar button:disabled { background: var(--ink2); box-shadow: none; cursor: default; }
 
 .tip { font-size: 12px; color: var(--ink2); }
-/* R45：求救信号文字按钮（跳 /game/signal）；透明 padding + 负 margin 扩大点击区，视觉行高不变 */
-.tip .signal-link {
+/* R45/R54：求救信号入口（跳 /game/signal）；独立整行按钮块 + 44px 触控高度，不再用负 margin 挤压相邻文案 */
+.signal-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 6px;
   background: none;
   border: none;
   color: var(--gold);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
-  padding: 8px 6px;
-  margin: -8px -6px;
 }
 
 .chip:focus-visible,
 .v4-retry:focus-visible,
+.signal-link:focus-visible,
 .inputbar input:focus-visible,
 .inputbar button:focus-visible {
   outline: 2px solid var(--red);
