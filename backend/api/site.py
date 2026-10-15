@@ -22,6 +22,7 @@ from backend.database import get_db
 from backend.emby_server.models import MediaItem
 from backend.emby_server.portal import resolve_emby_base_url
 from backend.integrations import branding as branding_capability
+from backend.tg_bind import get_bot_username
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,24 @@ site_router = APIRouter(prefix="/api/site", tags=["站点信息"])
 def get_branding(db: Session = Depends(get_db)):
     """站点名称 / Logo / 主题色 / SEO（公开）"""
     return branding_capability.public_info(db)
+
+
+@site_router.get("/tg-login-entry")
+def get_tg_login_entry(db: Session = Depends(get_db)) -> dict:
+    """登录页「用 Telegram 登录」入口所需的机器人公开用户名（公开）
+
+    登录页据此决定是否渲染 TG 登录入口：点入口跳到机器人私聊，
+    在主菜单点「一键免密进入控制面板」即可免密登录。这里只暴露
+    机器人的公开用户名（本来就印在机器人主页上，任何人可见），
+    不含 token 等任何凭据。未配置机器人时返回空串，前端不渲染入口；
+    读取异常同样回落空串——公开端点绝不能 500 拖垮登录页。
+    """
+    try:
+        bot_username = get_bot_username(db)
+    except Exception:
+        logger.warning("获取 Telegram 机器人用户名失败，登录入口将不展示", exc_info=True)
+        bot_username = ""
+    return {"bot_username": bot_username or ""}
 
 
 # 登录页海报拼贴（公开）：服务端缓存 10 分钟，海报不常变

@@ -44,3 +44,26 @@ export async function fetchLoginPosters(): Promise<LoginPostersResponse> {
     return empty
   }
 }
+
+/**
+ * 获取登录页 TG 登录入口的机器人用户名（公开接口）。
+ * 5s 超时，失败/未配置一律静默返回空串：登录页据此不渲染入口，不阻塞表单。
+ */
+export async function fetchTgBotUsername(): Promise<string> {
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 5000)
+    try {
+      const res = await api.get<never, { bot_username?: string }>(
+        '/api/site/tg-login-entry',
+        { signal: controller.signal },
+      )
+      const name = res?.bot_username
+      return typeof name === 'string' ? name.trim() : ''
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch {
+    return ''
+  }
+}

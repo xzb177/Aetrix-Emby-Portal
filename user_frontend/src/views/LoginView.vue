@@ -14,14 +14,14 @@ import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import { toUserMessage } from '@/utils/toUserMessage'
 import { toastFallback } from '@/constants/toastMessages'
-import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Gift } from 'lucide-vue-next'
+import { User, Lock, Mail, Eye, EyeOff, Clapperboard, Gift, Send } from 'lucide-vue-next'
 // 人机验证挂件（能力：人机验证）：管理员未开启时该组件自己什么都不渲染
 import CaptchaChallenge from '@/components/ui/CaptchaChallenge.vue'
 // 站名来自「站点与品牌」能力（未配置时用默认值）
 import { branding } from '@/composables/useBranding'
 import { getRegisterConfig } from '@/api/user'
 import { tgApi } from '@/api/tg'
-import { fetchLoginPosters, type LoginPoster } from '@/api/site'
+import { fetchLoginPosters, fetchTgBotUsername, type LoginPoster } from '@/api/site'
 import PosterCollage from '@/components/ui/PosterCollage.vue'
 
 const router = useRouter()
@@ -189,6 +189,9 @@ const loginPosters = ref<LoginPoster[]>([])
 // EA 海报直链基地址（后端下发；为空则不渲染拼贴，避免相对路径被反代到错误后端）
 const loginPostersBaseUrl = ref('')
 
+// TG 登录入口：站点机器人用户名（公开接口下发）；为空=未配置机器人，不渲染入口
+const tgBotUsername = ref('')
+
 let postersIdleHandle: number | null = null
 let postersTimeout: ReturnType<typeof setTimeout> | null = null
 
@@ -208,6 +211,8 @@ onMounted(() => {
   // 登录页不再强制深色：跟随用户偏好（见文件顶部注释）。
 
   loadRegisterConfig()
+  // TG 登录入口与注册配置并行拉取，失败保持空串（不渲染入口、不阻塞页面）
+  fetchTgBotUsername().then(name => { tgBotUsername.value = name }).catch(() => { tgBotUsername.value = '' })
   if (route.query.mode === 'register') mode.value = 'register'
   // 邀请链接 ?invite=CODE（多值 query 取第一个）：自动切到注册页、预填邀请码并提示
   if (route.query.invite) {
@@ -327,6 +332,15 @@ onUnmounted(() => {
         <button type="submit" class="submit-btn" :disabled="loginLoading || !loginForm.username.trim() || !loginForm.password">
           {{ loginLoading ? '登录中…' : '登 录' }}
         </button>
+
+        <!-- TG 一键登录入口：跳到站点机器人私聊，菜单首项即免密登录（后端未配置机器人时不渲染） -->
+        <div v-if="tgBotUsername" class="tg-login">
+          <div class="tg-login-divider" aria-hidden="true"><span>或</span></div>
+          <a class="tg-login-btn" :href="`https://t.me/${tgBotUsername}`" target="_blank" rel="noopener noreferrer">
+            <Send :size="16" aria-hidden="true" /> 用 Telegram 登录
+          </a>
+          <p class="tg-login-hint">在机器人私聊里点「一键免密进入控制面板」即可免密登录（需先绑定过 Telegram）</p>
+        </div>
       </form>
 
       <!-- 注册表单 -->
@@ -873,6 +887,66 @@ onUnmounted(() => {
   .auth-footnote {
     margin-bottom: 24px;
   }
+}
+
+/* TG 一键登录入口（描边次级按钮风，与主提交按钮区分主次） */
+.tg-login {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tg-login-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--paper-ink-3);
+  font-size: 0.8125rem;
+}
+
+.tg-login-divider::before,
+.tg-login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--paper-line);
+}
+
+.tg-login-btn {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 52px;
+  padding: 0 24px;
+  background: transparent;
+  border: 1.5px solid var(--paper-line-strong);
+  border-radius: var(--paper-r-full);
+  color: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: filter 0.2s ease, border-color 0.2s ease;
+}
+
+.tg-login-btn:hover {
+  filter: brightness(1.06);
+}
+
+.tg-login-btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.tg-login-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--paper-ink-3);
+  text-align: center;
 }
 
 @media (prefers-reduced-motion: reduce) {
