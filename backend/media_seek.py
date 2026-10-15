@@ -338,7 +338,8 @@ def search_candidates(db: Session, query: str, kind: Optional[str] = None) -> di
             name = str(hit.get("title") or hit.get("name") or "").strip()
             if not tmdb_id or not name:
                 continue
-            match = library_hit(db, tmdb_id=tmdb_id, name=name, item_type=one_kind)
+            match = library_hit(db, tmdb_id=tmdb_id, name=name, item_type=one_kind,
+                                year=_year_of(hit, one_kind))
             results.append({
                 "tmdb_id": tmdb_id,
                 "kind": one_kind,               # movie / series（前端用来选「季」）
