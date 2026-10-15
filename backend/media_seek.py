@@ -22,6 +22,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -59,7 +60,7 @@ def daily_limit(db: Session) -> int:
         models.SystemConfig.key == CONFIG_DAILY_LIMIT
     ).first()
     raw = str(cfg.value).strip() if cfg and cfg.value is not None else ""
-    if not raw.isdigit():
+    if not (raw.isascii() and raw.isdigit()):
         return DEFAULT_DAILY_LIMIT
     return max(1, int(raw))
 
@@ -110,7 +111,7 @@ def _monthly_limit_value(db: Session, key: str, default: int) -> int:
         models.SystemConfig.key == key
     ).first()
     raw = str(cfg.value).strip() if cfg and cfg.value is not None else ""
-    if not raw.isdigit():
+    if not (raw.isascii() and raw.isdigit()):
         return default
     return max(1, int(raw))
 
@@ -164,10 +165,10 @@ def normalize_season(raw, *, series: bool) -> str:
     for part in _SEASON_SPLIT_RE.split(text):
         if not part:
             continue
-        if not part.isdigit():
+        if not (part.isascii() and part.isdigit()):
             raise ValueError("季要填数字，例如 1 或 1,2；不指定就留空表示全部季")
         num = int(part)
-        if num < 0 or num > MAX_SEASON_NUMBER:
+        if num > MAX_SEASON_NUMBER:
             raise ValueError(f"季号要在 0 ~ {MAX_SEASON_NUMBER} 之间（0 = 特别篇）")
         if num not in nums:
             nums.append(num)
@@ -179,19 +180,22 @@ def normalize_season(raw, *, series: bool) -> str:
 
 
 def season_label(season) -> str:
-    """界面文案：``"all"`` → 全季；``"1,3"`` → 第 1、3 季；空 → 空串"""
+    """界面文案：``"all"`` → 全季；``"1,3"`` → 第 1、3 季；``"0"`` → 特别篇；空 → 空串"""
     text = str(season or "").strip()
     if not text:
         return ""
     if text == SEASON_ALL:
         return "全季"
-    return "第 " + "、".join(text.split(",")) + " 季"
+    if text == "0":
+        return "特别篇"
+    parts = ["特别篇" if item == "0" else item for item in text.split(",")]
+    return "第 " + "、".join(parts) + " 季"
 
 
 def normalize_tmdb_id(raw) -> str:
     """TMDB id：只接受纯数字（搜索候选带过来的值），其它一律丢弃为空"""
     text = str(raw or "").strip()
-    if not text or not text.isdigit() or len(text) > 12:
+    if not text or not (text.isascii() and text.isdigit()) or len(text) > 12:
         return ""
     return text
 
@@ -206,33 +210,54 @@ _TYPE_MATCH = {
 }
 
 
+def _escape_like(s: str) -> str:
+    """转义 LIKE 通配符：先反斜杠，再 % 和 _（调用方配 escape='\\'）"""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def library_hit(db: Session, *, tmdb_id: Optional[str] = None,
-                name: str = "", item_type: Optional[str] = None):
+                name: str = "", item_type: Optional[str] = None,
+                year: Optional[str] = None):
     """在自建媒体库里找一条匹配的条目（找到返回 MediaItem，否则 None）
 
     先按 ``tmdb_id`` 精确匹配（刮削过的条目都有，最可靠），没有再退回片名包含匹配
     （老条目可能还没补全 tmdb_id）。片名匹配时尽量按类型过滤，避免
     「电影《某某》」被同名的剧集顶掉。
+    ``year`` 为求片年份（字符串），片名回退时用于避免同名不同年的条目误匹配；
+    解析失败则忽略，不按年份过滤。
     """
     from backend.emby_server import models as em
 
     if tmdb_id:
-        hit = (
+        query = (
             db.query(em.MediaItem)
             .filter(em.MediaItem.tmdb_id == str(tmdb_id))
-            .order_by(em.MediaItem.date_added.desc())
-            .first()
         )
+        allowed = _TYPE_MATCH.get(str(item_type or ""))
+        if allowed:
+            query = query.filter(em.MediaItem.item_type.in_(allowed))
+        hit = query.order_by(em.MediaItem.date_added.desc()).first()
         if hit is not None:
             return hit
 
     keyword = (name or "").strip()
-    if len(keyword) < 2:
+    if not keyword or (len(keyword) < 2 and keyword.isascii()):
         return None
-    query = db.query(em.MediaItem).filter(em.MediaItem.name.ilike(f"%{keyword}%"))
+    query = db.query(em.MediaItem).filter(
+        em.MediaItem.name.ilike(f"%{_escape_like(keyword)}%", escape="\\")
+    )
     allowed = _TYPE_MATCH.get(str(item_type or ""))
     if allowed:
         query = query.filter(em.MediaItem.item_type.in_(allowed))
+    try:
+        year_value = int(str(year).strip())
+    except (TypeError, ValueError):
+        year_value = None
+    if year_value is not None:
+        query = query.filter(or_(
+            em.MediaItem.production_year.is_(None),
+            em.MediaItem.production_year == year_value,
+        ))
     return query.order_by(em.MediaItem.date_added.desc()).first()
 
 
@@ -243,6 +268,7 @@ def find_library_match(db: Session, request: models.MovieRequest):
         tmdb_id=getattr(request, "tmdb_id", None),
         name=getattr(request, "movie_name", "") or "",
         item_type=getattr(request, "type", None),
+        year=getattr(request, "year", None),
     )
 
 
@@ -257,6 +283,22 @@ def _poster_url(path: Optional[str]) -> Optional[str]:
     return f"{tmdb.image_base()}/w300{path}"
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    """脏数据容错：非数字（None / "N/A" 等）回 default，不抛 500"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default: int = 0) -> int:
+    """脏数据容错：非数字回 default，不抛 500"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _year_of(hit: dict, kind: str) -> str:
     raw = hit.get("first_air_date") if kind == "series" else hit.get("release_date")
     text = str(raw or "")
@@ -268,25 +310,28 @@ def search_candidates(db: Session, query: str, kind: Optional[str] = None) -> di
 
     与刮削用的 ``TmdbClient.search`` 不同：这里**不做置信度裁剪**——用户搜什么就列什么，
     让他自己认片（刮削要的是唯一正确答案，求片要的是候选列表）。
-    返回 ``{"configured": bool, "results": [...]}``；TMDB 未配置时 ``configured=False``，
+    返回 ``{"configured": bool, "degraded": bool, "results": [...]}``；TMDB 未配置时 ``configured=False``，
     前端据此回退到「按片名查本地库」的旧路径，而不是给一个永远搜不出东西的框。
+    degraded=True 表示 TMDB 搜索中途失败、结果可能不全。
     """
     from backend.emby_server import tmdb
 
     client = tmdb.tmdb_client
     keyword = (query or "").strip()
     if len(keyword) < 1:
-        return {"configured": bool(client.configured), "results": []}
+        return {"configured": bool(client.configured), "degraded": False, "results": []}
     if not client.configured:
-        return {"configured": False, "results": []}
+        return {"configured": False, "degraded": False, "results": []}
 
     kinds = [kind] if kind in ("movie", "series") else ["movie", "series"]
     results: list[dict] = []
+    degraded = False
     for one_kind in kinds:
         try:
             hits = client.search_candidates(keyword, one_kind)
         except Exception as exc:  # noqa: BLE001 — 搜索失败只影响这次候选列表
             logger.warning("TMDB 求片搜索失败（%s / %s）: %s", keyword, one_kind, exc)
+            degraded = True
             continue
         for hit in hits:
             tmdb_id = str(hit.get("id") or "").strip()
@@ -301,13 +346,13 @@ def search_candidates(db: Session, query: str, kind: Optional[str] = None) -> di
                 "year": _year_of(hit, one_kind),
                 "overview": str(hit.get("overview") or "")[:300],
                 "poster_url": _poster_url(hit.get("poster_path")),
-                "rating": round(float(hit.get("vote_average") or 0), 1) or None,
+                "rating": round(_safe_float(hit.get("vote_average"), 0.0), 1) or None,
                 "in_library": match is not None,
                 "library_item_id": str(getattr(match, "guid", "") or "") or None,
             })
     # 已在库的沉到下面：用户要的是「还没入库、可以求」的候选
     results.sort(key=lambda r: (r["in_library"], -float(r.get("rating") or 0)))
-    return {"configured": True, "results": results[:12]}
+    return {"configured": True, "degraded": degraded, "results": results[:12]}
 
 
 def seasons_for(tmdb_id: str) -> list[dict]:
@@ -335,7 +380,7 @@ def seasons_for(tmdb_id: str) -> list[dict]:
         seasons.append({
             "season_number": number,
             "name": str(row.get("name") or f"第 {number} 季"),
-            "episode_count": int(row.get("episode_count") or 0),
+            "episode_count": _safe_int(row.get("episode_count"), 0),
             "air_date": str(row.get("air_date") or ""),
         })
     seasons.sort(key=lambda s: s["season_number"])

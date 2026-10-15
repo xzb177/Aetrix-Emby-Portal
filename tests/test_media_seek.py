@@ -302,7 +302,7 @@ def test_search_candidates_unconfigured_is_honest(db, monkeypatch):
 
     monkeypatch.setattr(tmdb, "tmdb_client", FakeTmdb(configured=False))
     result = media_seek.search_candidates(db, "任何")
-    assert result == {"configured": False, "results": []}
+    assert result == {"configured": False, "degraded": False, "results": []}
 
 
 def test_search_candidates_empty_query(db, monkeypatch):
