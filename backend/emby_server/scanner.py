@@ -795,6 +795,15 @@ try:
 except ValueError:
     PROBE_REMOTE_RANGE_BYTES = 1 << 20
 
+# 第三跳（去掉 Range 让 ffprobe 自己 seek）的流量闸：moov 在文件尾部时
+# 这一跳等于把整个文件下载下来，一个大文件就能烧掉一份单文件下载配额。
+# 已知大小超过此阈值的远程文件跳过第三跳、记 degraded（信息不完整但
+# 可播放），不拿配额换探测完整度。<=0 表示不设闸（回到旧行为）。
+try:
+    PROBE_WHOLE_FILE_MAX_BYTES = int(os.getenv("PROBE_WHOLE_FILE_MAX_BYTES", str(1 << 30)))
+except ValueError:
+    PROBE_WHOLE_FILE_MAX_BYTES = 1 << 30
+
 
 # 第二跳（双 Range）的**尾部**窗口。moov 原子在文件尾的 MP4/MOV，头部窗口读不到时长，
 # 这时才并行再取一段尾巴——只对下面这些容器开，其它封装（MKV 的时长在 EBML 头部）
@@ -1332,6 +1341,11 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
         if tail_first and tail_first.get("format"):
             _moov_via_dual_range = True
             data = tail_first
+        elif size > 0 and 0 < PROBE_WHOLE_FILE_MAX_BYTES < size:
+            # 第三跳会把整个文件拉下来：已知大文件直接跳过（见常量注释），
+            # data 保持无 format，下面统一记 degraded。
+            logger.info("远程探测跳过整文件兜底：size=%d 超过上限 %d",
+                        size, PROBE_WHOLE_FILE_MAX_BYTES)
         else:
             seekable = _ffprobe(path, headers, size=size, ranged=False)
             if seekable and seekable.get("format"):
