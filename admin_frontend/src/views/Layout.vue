@@ -27,7 +27,7 @@ import {
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Heart, Medal, HardDrive, MessageSquareText,
-  Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks, MonitorPlay,
+  Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -155,8 +155,6 @@ const navGroups: NavGroup[] = [
       { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
       // Drive 视频批量生成 .strm：定时/手动、缺集报告
       { path: '/strm-gen', label: '.strm 生成器', icon: Clapperboard },
-      // 播放字节走中继还是对象存储直链：策略/直链源/直链名单
-      { path: '/playback', label: '播放策略', icon: MonitorPlay },
     ],
   },
   {

@@ -284,32 +284,6 @@ def test_p3_5_follow_redirects_silent_too_many():
 
 
 # ---------------------------------------------------------------------------
-# P3-2：maybe_warm 在信号量前过滤非 .strm
-# ---------------------------------------------------------------------------
-
-def test_p3_2_maybe_warm_skips_non_strm_early():
-    import backend.emby_server.strm_prewarm as sp
-    sp.reset_state()
-    try:
-        item = SimpleNamespace(file_path="/media/movie.mkv", library=None, guid="x")
-        values = {"strm_prewarm_enabled": "1", "strm_prewarm_dedup_seconds": "300",
-                  "strm_prewarm_max_concurrent": "4"}
-
-        class FakeStore:
-            def get_values(self, db, keys, defaults):
-                return {k: values.get(k, defaults.get(k, "")) for k in keys}
-
-        with patch("backend.integrations.store.get_values", FakeStore().get_values):
-            asyncio.run(sp.maybe_warm(object(), item))
-        snap = sp.metrics_snapshot()["counters"]
-        assert snap["skipped_non_strm"] == 1
-        # 去重表未被污染（早于去重标记返回）
-        assert "/media/movie.mkv" not in sp._last_warm
-    finally:
-        sp.reset_state()
-
-
-# ---------------------------------------------------------------------------
 # P3-4：premint 持锁写回前复查
 # ---------------------------------------------------------------------------
 

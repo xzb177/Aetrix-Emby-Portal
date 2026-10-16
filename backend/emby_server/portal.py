@@ -31,7 +31,6 @@ from sqlalchemy.orm import Session, aliased
 from backend import models, realms, subscriptions
 from backend.database import get_db, SessionLocal
 from backend.emby_server import cdn
-from backend.emby_server import local_cache
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
 from backend.emby_server.api import (
@@ -629,12 +628,10 @@ def get_play_line_pref(request_user: models.WebUser = Depends(get_admin_or_emby_
                        db: Session = Depends(get_db)):
     """播放路径（2026-10 简化后）：只有一条——中转。
 
-    保留此接口仅为兼容老客户端：永远返回 relay。本地缓存是中转下的自动层
-    （管理员开关），不再是用户可选线路。
+    保留此接口仅为兼容老客户端：永远返回 relay。
     """
     return {"line": "relay",
-            "cdn_enabled": cdn.enabled(db),
-            "cache_enabled": local_cache.enabled(db)}
+            "cdn_enabled": cdn.enabled(db)}
 
 
 @user_emby_router.put("/play-line")
@@ -2062,9 +2059,8 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
     # 分批删除：老实现把整库条目一次载入内存再逐条删（十万级库会直接把面板拖死）
     # 删除顺序铁律：所有外键指向 emby_items 的子表（且无 ON DELETE CASCADE）
     # 都必须先于条目本身删除，漏掉任何一张都会 500
-    # （2026-10-02：ItemFacet / PlaybackSession / LocalCacheEntry 漏删致删库 500）。
+    # （2026-10-02：ItemFacet / PlaybackSession 漏删致删库 500；LocalCacheEntry 已随本地缓存全删移除）。
     removed = 0
-    cache_files: list = []
     # include_deleted（v2.48.0 软删除）：删库是物理删除，必须把**已下架**的行也算进来，
     # 否则它们会被可见性过滤挡在分批循环外，变成一批指向已删媒体的孤儿行。
     with soft_delete.include_deleted():
@@ -2089,25 +2085,11 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
             db.query(em.PlaybackSession).filter(
                 em.PlaybackSession.item_id.in_(chunk)
             ).delete(synchronize_session=False)
-            cache_files.extend(
-                row[0] for row in db.query(em.LocalCacheEntry.file_path)
-                .filter(em.LocalCacheEntry.item_id.in_(chunk))
-                .all() if row[0]
-            )
-            db.query(em.LocalCacheEntry).filter(
-                em.LocalCacheEntry.item_id.in_(chunk)
-            ).delete(synchronize_session=False)
             db.query(em.MediaItem).filter(
                 em.MediaItem.id.in_(chunk)
             ).delete(synchronize_session=False)
             db.commit()
             removed += len(chunk)
-    # 本地缓存文件随记录一起清理（best-effort，避免磁盘泄漏）
-    for _f in cache_files:
-        try:
-            os.unlink(_f)
-        except OSError:
-            pass
     old_cover = lib.cover_path
     db.delete(lib)
     db.commit()

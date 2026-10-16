@@ -700,64 +700,6 @@ class EmbyApiToken(Base):
     expires_at = Column(DateTime, nullable=True)
 
 
-class LocalCacheEntry(Base):
-    """VPS 本地缓存条目（热门片自动落本机，播放线路「本地缓存」的数据面）
-
-    一条 = 一个远程挂载媒体文件在本机的副本：
-
-    - ``state``：pending（排队）/ downloading（下载中）/ ready（可用）/ failed（失败告终）；
-    - ``source_size`` / ``source_path``：**源快照**。换源（大小变了）或路径变了，
-      本机的副本立刻失去意义——命中判定会按它比对，不等同就当未缓存；
-    - ``hits`` / ``last_accessed_at``：命中统计与 LRU 淘汰依据；
-    - 只缓存 ``mount://`` 的远程条目：本机文件无需副本。
-
-    淘汰按 ``last_accessed_at`` 从旧到新删（LRU），见 ``local_cache.evict``。
-    """
-
-    __tablename__ = "emby_local_cache"
-
-    __table_args__ = (
-        UniqueConstraint("item_guid", name="uq_local_cache_guid"),
-        Index("idx_local_cache_state_access", "state", "last_accessed_at"),
-        Index("idx_local_cache_state_priority", "state", "priority"),
-    )
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    item_guid = Column(String(64), nullable=False, index=True)
-    item_id = Column(Integer, ForeignKey("emby_items.id"))
-    source_path = Column(String(1000))              # mount://<id>/<rel> 快照
-    source_size = Column(BigInteger, default=0)     # 下载时的源大小
-    file_path = Column(String(1000))                # 本机副本的绝对路径
-    file_size = Column(BigInteger, default=0)
-    state = Column(String(20), default="pending")   # pending/downloading/ready/failed
-    priority = Column(Integer, default=0)           # 越大越先下载（用户点播 = 高优先）
-    attempts = Column(Integer, default=0)
-    hits = Column(Integer, default=0)
-    last_error = Column(String(500))
-    cached_at = Column(DateTime)
-    last_accessed_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-
-class LocalCacheStat(Base):
-    """本地缓存的累计计数（单行，name='global'）
-
-    命中率 = hits / (hits + misses)，只能在播放时累加——**必须跨重启与淘汰存活**，
-    否则「删了旧片之后命中率归零」看不出真实水位（条目行上的 ``hits`` 会随淘汰消失）。
-    单行表 + ``SET hits = hits + 1`` 的原子自增：EM / EA 两个进程同时写也不会丢计数
-    （读改写会）。
-    """
-
-    __tablename__ = "emby_local_cache_stats"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(20), unique=True, nullable=False)
-    hits = Column(BigInteger, default=0)
-    misses = Column(BigInteger, default=0)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-
 # 软删除的全局可见性过滤器（v2.48.0）在这里装上：它注册在 sqlalchemy.orm.Session
 # 类上，所以只要 MediaItem 这个模型被导入过，它就生效——也就是说，本仓库里任何
 # 会查条目的代码（不只 emby_server 下的）都自动看不到已下架的条目。
@@ -893,8 +835,6 @@ __all__ = [
     "StorageMount",
     "Pan115Account",
     "EmbyApiToken",
-    "LocalCacheEntry",
-    "LocalCacheStat",
     "IntroMarker",
     "ChaseFileSnapshot",
     "ChaseRun",

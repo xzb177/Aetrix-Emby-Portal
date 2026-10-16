@@ -1,14 +1,11 @@
 import { ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  cleanLocalCache,
   fetchBackupConfig,
-  fetchLocalCacheConfig,
   purgeLoginLogs,
   runBackupNow,
   type BackupConfig,
 } from '@/api/admin'
-import type { LocalCacheStats } from '@/types'
 
 /**
  * 危险操作（Phase 5）：**不可撤销 / 跨对象**的那几项操作，收在一处实现
@@ -25,8 +22,6 @@ import type { LocalCacheStats } from '@/types'
  * 写权限仍由服务端 `get_current_admin` + `admin_roles` 把关（只读审计角色会被 403），
  * 前端的置灰只是提前告知。
  */
-export type CacheCleanMode = 'ready' | 'failed' | 'all'
-
 export function fmtBytes(n: number): string {
   if (!n) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -56,7 +51,6 @@ export async function confirmIrreversible(message: string, word: string, title: 
 }
 
 export function useDangerOps() {
-  const cacheStats = ref<LocalCacheStats | null>(null)
   const backup = ref<BackupConfig | null>(null)
   const loading = ref(false)
   /** 当前正在执行的动作（'' = 无）：按钮据此显示 loading，避免重复点击 */
@@ -65,14 +59,7 @@ export function useDangerOps() {
   async function loadState() {
     loading.value = true
     try {
-      // 三个接口互不依赖，一起打；任何一个失败都只让**它自己**那一块显示为未知，
-      // 不让「备份读不到」变成「缓存状态也读不到」
-      const [cacheRes, backupRes] = await Promise.all([
-        fetchLocalCacheConfig().catch(() => null),
-        fetchBackupConfig().catch(() => null),
-      ])
-      cacheStats.value = cacheRes?.stats ?? null
-      backup.value = backupRes ?? null
+      backup.value = await fetchBackupConfig().catch(() => null)
     } finally {
       loading.value = false
     }
@@ -94,42 +81,6 @@ export function useDangerOps() {
     }
   }
 
-
-  /** 清理 / 清空本地播放缓存。清空全部不可恢复，要求手打「清空」。 */
-  async function cleanCache(mode: CacheCleanMode): Promise<boolean> {
-    const used = fmtBytes(cacheStats.value?.bytes_used || 0)
-    const what = mode === 'all'
-      ? '清空**全部**缓存记录与本机副本（正在下载的那条会等下载完再清）'
-      : mode === 'failed' ? '清理下载失败的记录（不动已缓存的副本）'
-      : '清理已缓存的副本与对应记录，下次播放会重新回源拉取'
-    if (mode === 'all') {
-      const ok = await confirmIrreversible(
-        `${what}。当前占用 ${used}，清完热门片要重新回源。`,
-        '清空',
-        '清空本地播放缓存',
-      )
-      if (!ok) return false
-    } else {
-      try {
-        await ElMessageBox.confirm(`${what}。当前占用 ${used}。`, '清理本地播放缓存', {
-          type: 'warning', confirmButtonText: '确认清理', cancelButtonText: '取消',
-        })
-      } catch {
-        return false
-      }
-    }
-    busy.value = `cache:${mode}`
-    try {
-      const res = await cleanLocalCache(mode)
-      cacheStats.value = res.stats
-      ElMessage.success(`已清理 ${res.cleaned.removed} 条，释放 ${fmtBytes(res.cleaned.freed_bytes)}`)
-      return true
-    } catch {
-      return false
-    } finally {
-      busy.value = ''
-    }
-  }
 
   /** 清理登录与安全日志：days=0 表示清空全部。删掉就查不到了，手打「清理」确认。 */
   async function purgeLogs(days: number): Promise<boolean> {
@@ -156,8 +107,6 @@ export function useDangerOps() {
   return {
     backup,
     busy,
-    cacheStats,
-    cleanCache,
     loadState,
     loading,
     purgeLogs,

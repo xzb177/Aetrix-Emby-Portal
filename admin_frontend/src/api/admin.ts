@@ -18,9 +18,6 @@ import type {
   EmbyScanRun,
   EmbyScanTask,
   EmbySessionRow,
-  LocalCacheConfig,
-  LocalCacheEntryInfo,
-  LocalCacheStats,
   LibraryPathInput,
   StorageBackend,
   Pan115Account,
@@ -1819,36 +1816,6 @@ export const fetchCdnConfig = () =>
 export const updateCdnConfig = (payload: { domain: string; enabled: boolean }) =>
   put<{ success: boolean; cdn: CdnConfig }>('/playback/cdn', payload)
 
-// ==================== VPS 本地缓存（播放线路「本地缓存」，/api/admin/playback/local-cache） ====================
-
-/** 本地缓存：配置 + 占用/命中率统计 + 条目列表（只读） */
-export const fetchLocalCacheConfig = () =>
-  get<{
-    success: boolean
-    local_cache: LocalCacheConfig
-    stats: LocalCacheStats
-    entries: LocalCacheEntryInfo[]
-    play_lines: string[]
-  }>('/playback/local-cache')
-
-/** 写回本地缓存配置（开关 / 目录 / 配额 / 热门规则 / 限速），参数非法由后端 400 拒绝 */
-export const updateLocalCacheConfig = (payload: {
-  enabled: boolean
-  dir: string
-  max_gb: number
-  hot_days: number
-  hot_plays: number
-  rate_mbps: number
-}) => put<{ success: boolean; local_cache: LocalCacheConfig; stats: LocalCacheStats }>(
-  '/playback/local-cache', payload,
-)
-
-/** 手动清理：ready = 清本机副本，failed = 清失败记录，all = 全部（不含下载中的） */
-export const cleanLocalCache = (mode: 'ready' | 'failed' | 'all') =>
-  post<{ success: boolean; cleaned: { mode: string; removed: number; freed_bytes: number }; stats: LocalCacheStats }>(
-    '/playback/local-cache/clean', { mode },
-  )
-
 // ==================== 存储挂载（/api/admin/emby/mounts） ====================
 // 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone 是远程来源。
 // 类型只由路径前缀决定（115:/ / rclone: / 绝对路径），没有第四种类型。
@@ -2073,28 +2040,6 @@ export interface PlaybackDirectSource {
   path_style: boolean
   enabled: boolean
 }
-
-export interface PlaybackConfig {
-  /** relay=中继（默认） | direct=对象存储直链优先，名单外回落中继 */
-  strategy: string
-  sources: PlaybackDirectSource[]
-  /** 已在直链源备有副本的 drive_file_id 名单 */
-  hotlist: string[]
-  key_template: string
-  url_ttl_sec: number
-}
-
-export const fetchPlaybackConfig = () =>
-  get<{ success: boolean; config: PlaybackConfig }>(`${E}/playback/config`)
-
-/** 写播放策略配置（保存即热生效）；格式非法时后端 400 */
-export const savePlaybackConfig = (data: {
-  strategy: string
-  sources: PlaybackDirectSource[]
-  hotlist: string[]
-  key_template: string
-  url_ttl_sec: number
-}) => put<{ success: boolean; config: PlaybackConfig }>(`${E}/playback/config`, data)
 
 /** 手动触发一次生成（full=false 增量，true 全量）；已有任务在跑时后端返回 success=false */
 export const triggerStrmGen = (full = false) =>

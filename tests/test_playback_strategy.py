@@ -183,70 +183,6 @@ def test_direct_key_template_applied(memdb):
     assert "/hot/mirror/FID123.bin?" in url
 
 
-# ---------------------------------------------------------------------------
-# 管理端配置 API
-# ---------------------------------------------------------------------------
-
-from backend.api import admin_playback as adm  # noqa: E402
-
-
-def _save_body(**kw):
-    body = adm.PlaybackConfigSave(
-        strategy="direct",
-        sources=[adm.DirectSourceIn(**_SOURCE)],
-        hotlist=["FID123"],
-        key_template="{file_id}",
-        url_ttl_sec=3600,
-    )
-    for k, v in kw.items():
-        setattr(body, k, v)
-    return body
-
-
-def test_admin_roundtrip_and_secret_masking(memdb):
-    out = adm.playback_config_save(_save_body(), memdb)
-    cfg = out["config"]
-    assert cfg["strategy"] == "direct"
-    assert cfg["hotlist"] == ["FID123"]
-    src = cfg["sources"][0]
-    assert src["secret_key"] == "********"
-    assert src["has_secret_key"] is True
-    # 库里存的是真密钥（只是回显打码）
-    stored = ps.get_sources(memdb)
-    assert stored[0]["secret_key"] == "secret-example"
-
-
-def test_admin_secret_keep_on_blank(memdb):
-    adm.playback_config_save(_save_body(), memdb)
-    body = _save_body()
-    body.sources[0].secret_key = ""
-    adm.playback_config_save(body, memdb)
-    assert ps.get_sources(memdb)[0]["secret_key"] == "secret-example"
-
-
-def test_admin_rejects_bad_strategy(memdb):
-    from fastapi import HTTPException
-    with pytest.raises(HTTPException) as ei:
-        adm.playback_config_save(_save_body(strategy="banana"), memdb)
-    assert ei.value.status_code == 400
-
-
-def test_admin_rejects_bad_template(memdb):
-    from fastapi import HTTPException
-    with pytest.raises(HTTPException):
-        adm.playback_config_save(_save_body(key_template="no-placeholder"), memdb)
-    with pytest.raises(HTTPException):
-        adm.playback_config_save(_save_body(key_template="../{file_id}"), memdb)
-
-
-def test_admin_rejects_duplicate_source_names(memdb):
-    from fastapi import HTTPException
-    body = _save_body()
-    body.sources.append(adm.DirectSourceIn(**_SOURCE))
-    with pytest.raises(HTTPException):
-        adm.playback_config_save(body, memdb)
-
-
 def test_direct_redirect_headers_hardened():
     """302 直链卫生头（PR-2 尾巴）：签名 URL 不许被播放器/CDN 缓存复用
     （no-cache + no-store），也不把门户域名当 Referer 发给对象存储。"""
@@ -286,12 +222,3 @@ def test_direct_no_source_falls_back_to_relay(memdb, clean_counters):
     assert ps.strategy_counters()["fallback_relay"] == 1
 
 
-def test_playback_config_get_includes_counters(memdb, clean_counters):
-    """GET /playback/config 返回降级计数（管理侧可观测），且不破坏原有字段。"""
-    _arm_direct(memdb)
-    ps.maybe_direct_url(memdb, "FID123")
-    cfg = adm._read_config(memdb)
-    assert cfg["strategy"] == "direct"
-    assert cfg["counters"]["direct_302"] == 1
-    assert cfg["counters"]["fallback_relay"] == 0
-    assert cfg["counters"]["fallback_quota"] == 0

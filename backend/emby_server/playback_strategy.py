@@ -129,8 +129,6 @@ def drive_direct_play_enabled(db: Session) -> bool:
         logger.warning("drive_direct_play_enabled 读取失败，回默认开", exc_info=True)
         return True
     return raw not in ("0", "false", "no", "off")
-
-
 # ---------------------------------------------------------------------------
 # 可观测：直链/回落计数（进程内，重启清零；与 prewarm 计数同口径）
 # ---------------------------------------------------------------------------

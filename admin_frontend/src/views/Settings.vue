@@ -9,10 +9,10 @@
  *
  * v2.42.10（Phase 5·危险操作独立 tab）：页面改成三个页签——「能力与服务」「运营参数」
  * 「**危险操作**」。前两个装的都是日常要改的东西，第三个装的是**会立刻改变线上数据、
- * 且大多不能撤销**的操作（手动恢复配额熔断器 / 清空本地缓存 / 清理登录与安全日志）。
- * 把它们从仪表盘、客户端策略、登录日志三个页面里搬到这里，是为了让「不可撤销」这件事
- * 在**一个地方**说清楚：先备份、再确认、再执行。原来三处的按钮改成深链指过来
- * （如 `/settings?tab=danger&op=cache`），**执行逻辑只在这里一份**。
+ * 且大多不能撤销**的操作（手动恢复配额熔断器 / 清理登录与安全日志）。
+ * 把它们从仪表盘、登录日志页面里搬到这里，是为了让「不可撤销」这件事
+ * 在**一个地方**说清楚：先备份、再确认、再执行。原来两处的按钮改成深链指过来
+ * （如 `/settings?tab=danger&op=logs`），**执行逻辑只在这里一份**。
  *
  * 能力中心的口径：**项目只提供能力，凭据一律由管理员自己填**。字段表由后端下发，
  * 这里只按类型渲染控件，所以后端加字段不需要改这个页面，也不会出现「界面漏了字段」。
@@ -23,9 +23,9 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
-  CalendarCheck, Coins, Flame, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
+  CalendarCheck, Coins, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, Lock, Zap,
-  DatabaseBackup, HardDrive, History, TriangleAlert, Eraser, SlidersHorizontal, PlugZap, Rocket,
+  DatabaseBackup, History, TriangleAlert, SlidersHorizontal, PlugZap, Rocket,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -34,7 +34,7 @@ import {
 } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 import { useQueryFilter } from '@/composables/useQueryFilter'
-import { useDangerOps, fmtBytes } from '@/composables/useDangerOps'
+import { useDangerOps } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
 import {
   fetchHotlinkConfig, updateHotlinkConfig, type HotlinkConfigPayload,
@@ -208,58 +208,6 @@ const GROUPS: Group[] = [
     ],
   },
   {
-    id: 'prewarm',
-    title: '播放预热',
-    desc: 'PlaybackInfo 请求时预读文件头（默认 10MB），让起播更快；并发超限直接跳过不排队、不抢播放链路',
-    icon: Flame,
-    fields: [
-      { key: 'playback_prewarm_enabled', label: '启用预热', type: 'bool', hint: '打开后起播更快；并发超限会自动跳过，不影响正常播放' },
-      {
-        key: 'prewarm_next_episode_enabled',
-        label: '播到 85% 预热下一集',
-        type: 'bool',
-        hint: '独立开关，默认关；打开后单集播到 85% 时提前暖好下一集的播放链路，配额负缓存期的文件自动跳过',
-      },
-      {
-        key: 'playback_prewarm_bytes',
-        label: '预热大小',
-        type: 'int',
-        suffix: '字节',
-        hint: '每次预读的字节数，默认 10485760（10MB）',
-      },
-      {
-        key: 'playback_prewarm_max_concurrent',
-        label: '最大并发',
-        type: 'int',
-        hint: '同时预热的线程上限，超限直接跳过、不排队，默认 4',
-      },
-      {
-        key: 'playback_prewarm_dedup_seconds',
-        label: '去重窗口',
-        type: 'int',
-        suffix: '秒',
-        hint: '同一文件在此时间内只预热一次，默认 300；填 0 关闭去重',
-        advanced: true,
-      },
-      {
-        key: 'playback_prewarm_timeout_seconds',
-        label: '超时',
-        type: 'int',
-        suffix: '秒',
-        hint: '单次预热超过此时长自动放弃，默认 30',
-        advanced: true,
-      },
-      {
-        key: 'playback_prewarm_chunk_bytes',
-        label: '分块大小',
-        type: 'int',
-        suffix: '字节',
-        hint: '单次读取块大小，越小对播放链路越温和，默认 262144（256KB）',
-        advanced: true,
-      },
-    ],
-  },
-  {
     id: 'stream_accel',
     title: '流媒体加速',
     desc: '一键开启：强制域名访问（防 IP 直连） + 自动信任 CF 真实 IP + 播放地址统一用加速域名',
@@ -288,7 +236,7 @@ interface GroupSection {
 const SECTION_DEFS: Array<{ id: string; title: string; groups: string[] }> = [
   { id: 'growth', title: '注册与福利', groups: ['checkin', 'vitality', 'invitation', 'exchange'] },
   { id: 'commerce', title: '付费与支付', groups: ['payment', 'paywall'] },
-  { id: 'playback', title: '播放与风控', groups: ['prewarm', 'stream_accel'] },
+  { id: 'playback', title: '播放与风控', groups: ['stream_accel'] },
 ]
 const SECTIONS: GroupSection[] = (() => {
   const used = new Set<string>()
@@ -825,25 +773,23 @@ const dangerOps = useDangerOps()
 const {
   backup: backupInfo,
   busy: dangerBusy,
-  cacheStats,
   loadState: loadDanger,
   loading: dangerLoading,
 } = dangerOps
 const {
   backupNow: doBackup,
-  cleanCache: doCleanCache,
   purgeLogs: doPurgeLogs,
 } = dangerOps
 
 /** 保留天数：0 = 清空全部登录与安全日志 */
 const purgeDays = ref(90)
-/** 从别的页面深链过来时高亮对应卡片（?op=cache|logs） */
-const TAB_OPS = ['cache', 'logs']
+/** 从别的页面深链过来时高亮对应卡片（?op=logs） */
+const TAB_OPS = ['logs']
 const target = ref('')
 
-// 切到危险操作页签时才拉数据：这三个接口在另外两个页签里用不上
+// 切到危险操作页签时才拉数据
 watch(tab, (value) => {
-  if (value === 'danger' && !cacheStats.value) loadDanger()
+  if (value === 'danger') loadDanger()
 })
 
 /** 深链定位：?op=xxx → 高亮对应卡片并滚过去（其它页面「去危险操作」的落点） */
@@ -1330,64 +1276,6 @@ watch(
             :closable="false"
             :title="`${WRITE_HINT}。下面的按钮已置灰，但内容仍然可读。`"
           />
-
-          <!-- 1. 本地播放缓存 -->
-          <SectionCard
-            id="danger-cache"
-            title="清空本地播放缓存"
-            :icon="HardDrive"
-            description="清的是 VPS 本机副本（热门片提前拉到本机的那份），不是媒体库里的文件"
-            class="danger-card"
-            :class="{ 'is-target': target === 'cache' }"
-          >
-            <template #actions>
-              <span class="au-badge au-badge-amber">清掉不可恢复</span>
-            </template>
-            <p class="danger-effect">
-              当前占用 <strong>{{ fmtBytes(cacheStats?.bytes_used || 0) }}</strong>
-              （上限 {{ fmtBytes(cacheStats?.max_bytes || 0) }}）
-              <template v-if="cacheStats?.hit_rate != null">
-                · 命中率 {{ Math.round(cacheStats.hit_rate * 100) }}%
-              </template>
-              。清完之后这些片子要重新回源拉一次，热门时段会变慢。
-            </p>
-            <!-- 危险区：清空全部不跟两个轻量清理同排，单独隔离（Batch B；页折叠/全局保存是 Batch C） -->
-            <div class="danger-isolate">
-              <div class="danger-isolate-text">
-                <strong>清空全部</strong>
-                <span>上面的两个按钮只动一部分；这里是整份缓存一次清完。清完之后这些片子要重新回源拉一次，热门时段会变慢。不可恢复，动手前确认已经备份过。</span>
-              </div>
-              <el-button
-                type="danger"
-                :disabled="!canWrite"
-                :loading="dangerBusy === 'cache:all'"
-                :title="canWrite ? '' : WRITE_HINT"
-                @click="doCleanCache('all')"
-              >
-                清空全部
-              </el-button>
-            </div>
-            <template #footer>
-              <div class="card-footer">
-                <el-button
-                  :disabled="!canWrite"
-                  :loading="dangerBusy === 'cache:ready'"
-                  :title="canWrite ? '' : WRITE_HINT"
-                  @click="doCleanCache('ready')"
-                >
-                  <Eraser :size="14" class="btn-ico" />清理已缓存副本
-                </el-button>
-                <el-button
-                  :disabled="!canWrite"
-                  :loading="dangerBusy === 'cache:failed'"
-                  :title="canWrite ? '' : WRITE_HINT"
-                  @click="doCleanCache('failed')"
-                >
-                  清理失败记录
-                </el-button>
-              </div>
-            </template>
-          </SectionCard>
 
           <!-- 2. 登录与安全日志 -->
           <SectionCard

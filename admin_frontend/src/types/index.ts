@@ -65,66 +65,6 @@ export interface CdnConfig {
   segment_cache_header: string
 }
 
-/** VPS 本地缓存配置（/api/admin/playback/local-cache）：默认关闭 */
-export interface LocalCacheConfig {
-  enabled: boolean
-  /** 缓存目录（留空时后端回默认目录：转码目录下的 media_cache） */
-  dir: string
-  default_dir: string
-  /** 最大占用（GB，0 = 不限） */
-  max_gb: number
-  max_bytes: number
-  /** 热门判定窗口（天）与播放次数阈值 */
-  hot_days: number
-  hot_plays: number
-  /** 下载限速（MB/s，0 = 不限；有播放时自动降到 busy_rate_mbps） */
-  rate_mbps: number
-  busy_rate_mbps: number
-  play_line: string
-  max_attempts: number
-  active_playback_window_sec: number
-}
-
-/** 本地缓存统计：占用 / 命中率 / 条目数（管理后台展示口径） */
-export interface LocalCacheStats {
-  enabled: boolean
-  dir: string
-  dir_exists: boolean
-  bytes_used: number
-  part_bytes: number
-  max_bytes: number
-  used_ratio: number
-  entries: Record<string, number>
-  entries_total: number
-  hits: number
-  misses: number
-  /** 命中率（0~1）；还没有任何取用时为 null */
-  hit_rate: number | null
-  disk_total_bytes: number
-  disk_free_bytes: number
-  hot_days: number
-  hot_plays: number
-  rate_mbps: number
-}
-
-/** 一条缓存条目（管理后台列表展示） */
-export interface LocalCacheEntryInfo {
-  item_guid: string
-  item_id: number | null
-  name: string
-  source_path: string
-  /** pending / downloading / ready / failed */
-  state: string
-  file_size: number
-  source_size: number
-  hits: number
-  priority: number
-  attempts: number
-  last_error: string
-  cached_at: string | null
-  last_accessed_at: string | null
-}
-
 /** 策略的运行态：只反映**本进程**（分离部署时转码跑在 EA 上） */
 export interface PlaybackRuntime {
   active_transcodes: number

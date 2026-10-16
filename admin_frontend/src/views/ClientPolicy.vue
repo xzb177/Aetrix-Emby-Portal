@@ -12,31 +12,29 @@
  * 策略落在 SystemConfig 里，EM 与 EA 共用同一个库 → 面板上改完，出流的 EA 立刻生效。
  * 判定口径：**管理员不受限**（排障时不能被自己的策略挡住）；所有开关缺省 = 与升级前一致。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import {
-  Activity, AlertTriangle, Clock, Cloud, Cpu, Database, Download, Gauge, HardDrive, Info, RefreshCw, Save,
-  Server, ShieldBan, Smartphone, Target, Trash2, Tv,
+  Activity, AlertTriangle, Clock, Cloud, Cpu, Download, Gauge, Info, RefreshCw, Save,
+  Server, ShieldBan, Smartphone, Target, Tv,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
-  fetchCdnConfig, fetchLocalCacheConfig, fetchPlayLines, fetchPlaybackPolicy,
-  updateCdnConfig, updateLocalCacheConfig, updatePlaybackPolicy,
+  fetchCdnConfig, fetchPlayLines, fetchPlaybackPolicy,
+  updateCdnConfig, updatePlaybackPolicy,
 } from '@/api/admin'
-import { useDangerOps, fmtBytes } from '@/composables/useDangerOps'
+import { fmtBytes } from '@/composables/useDangerOps'
 // 下载与设备风控落在经济设置里：这批 SystemConfig 键的唯一写入口（系统设置页只读回显）
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type {
-  CdnConfig, LocalCacheConfig, LocalCacheEntryInfo, LocalCacheStats, PlaybackPolicy, PlaybackRuntime,
+  CdnConfig, PlaybackPolicy, PlaybackRuntime,
   PlayLinesSnapshot,
 } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import NoticePanel from '@/components/NoticePanel.vue'
 
 const auth = useAuthStore()
-/** 危险操作共用实现（与「系统设置 → 危险操作」页签同一份） */
-const dangerOps = useDangerOps()
 // 这两组策略都由服务端限定为超级管理员（见 backend/admin_roles.py 的前缀规则），
 // 所以只有一个口径：不是 super 就只读
 const isSuper = computed(() => auth.admin?.is_super !== false)
@@ -47,8 +45,6 @@ const loadError = ref(false)
 const savingPolicy = ref(false)
 const savingOps = ref(false)
 const savingCdn = ref(false)
-const savingCache = ref(false)
-const cleaningCache = ref(false)
 
 const policy = ref<PlaybackPolicy>({
   transcode_enabled: true,
@@ -67,31 +63,8 @@ const opsError = ref(false)
 const cdnConfig = ref<CdnConfig>({
   domain: '', normalized: '', enabled: false, segment_cache_header: '',
 })
-/** 服务端注册的线路清单（relay / cdn / cache）——展示用，不在这里改 */
+/** 服务端注册的线路清单（relay / cdn）——展示用，不在这里改 */
 const cdnPlayLines = ref<string[]>([])
-
-/**
- * VPS 本地缓存（播放线路「本地缓存」）：默认关闭，开启后热门片自动拉到本机。
- *
- * 用 `reactive` 而不是 `ref`：这一整个对象都是表单字段，模板里到处是 `localCache.xxx` 的
- * v-model 与回显，`reactive` 的对象语义最直白，也不依赖 ref 在模板里的解包行为。
- */
-const localCache = reactive<LocalCacheConfig>({
-  enabled: false, dir: '', default_dir: '', max_gb: 500, max_bytes: 0,
-  hot_days: 7, hot_plays: 3, rate_mbps: 20, busy_rate_mbps: 2, play_line: 'cache',
-  max_attempts: 3, active_playback_window_sec: 300,
-})
-const cacheStats = ref<LocalCacheStats | null>(null)
-const cacheEntries = ref<LocalCacheEntryInfo[]>([])
-
-// fmtBytes 用 composable 里的那份（与危险操作文案同一个函数，避免两处实现漂移）
-function fmtRate(r: number | null): string {
-  return r === null || r === undefined ? '—' : `${(r * 100).toFixed(1)}%`
-}
-
-const cacheStateLabel: Record<string, string> = {
-  pending: '排队中', downloading: '下载中', ready: '已缓存', failed: '已失败',
-}
 
 const PLAYBACK_NODE_LABEL: Record<string, string> = {
   ea: '分离部署的 EA 节点',
@@ -103,12 +76,10 @@ async function load() {
   loading.value = true
   loadError.value = false
   try {
-    const [p, s, c, lc, ln] = await Promise.all([
+    const [p, s, c, ln] = await Promise.all([
       fetchPlaybackPolicy(),
       fetchEconomySettings().catch(() => null),
       fetchCdnConfig().catch(() => null),
-      fetchLocalCacheConfig().catch(() => null),
-      // 线路可观测读不到不影响本页其它卡片（CDN / 本地缓存配置）
       fetchPlayLines().catch(() => null),
     ])
     policy.value = p.policy
@@ -117,12 +88,6 @@ async function load() {
     if (c) {
       cdnConfig.value = c.cdn
       cdnPlayLines.value = c.play_lines
-    }
-    if (lc) {
-      // Object.assign 而不是整体替换：reactive 对象保持同一个引用，模板绑定不会断
-      Object.assign(localCache, lc.local_cache)
-      cacheStats.value = lc.stats
-      cacheEntries.value = lc.entries
     }
     opsError.value = !s
     if (s) {
@@ -201,60 +166,6 @@ const blockedCount = computed(
 )
 const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_seconds ?? 0))
 
-/**
- * 数字框写回兜底：el-input-number 自身会钳制，这里再做一次「取整 + 范围」写回，
- * 保证提交的永远是合法整数；清空 / 非法输入回落到下限，不会把 undefined 留在表单里。
- */
-function clampCacheNumber(
-  field: 'max_gb' | 'hot_days' | 'hot_plays' | 'rate_mbps',
-  lo: number,
-  hi: number,
-  raw: unknown,
-) {
-  const num = Math.trunc(Number(raw))
-  localCache[field] = Number.isFinite(num) ? Math.min(hi, Math.max(lo, num)) : lo
-}
-
-async function saveLocalCache() {
-  savingCache.value = true
-  try {
-    const res = await updateLocalCacheConfig({
-      enabled: localCache.enabled,
-      dir: localCache.dir,
-      max_gb: Number(localCache.max_gb) || 0,
-      hot_days: Number(localCache.hot_days) || 1,
-      hot_plays: Number(localCache.hot_plays) || 1,
-      rate_mbps: Number(localCache.rate_mbps) || 0,
-    })
-    Object.assign(localCache, res.local_cache)
-    cacheStats.value = res.stats
-    ElMessage.success(localCache.enabled
-      ? '本地缓存已启用：热门片会限速拉到本机，用户侧新增「本地缓存」线路'
-      : '本地缓存配置已保存（未启用，播放行为与升级前一致）')
-  } catch (e) {
-    ElMessage.error(toAdminError(e, '保存失败'))
-  } finally {
-    savingCache.value = false
-  }
-}
-
-async function cleanLocalCacheMode(mode: 'ready' | 'all') {
-  // 危险操作（清空本地缓存）的确认与执行在 useDangerOps——与「系统设置 → 危险操作」同一份实现，
-  // 这里只负责清完之后刷新本页的缓存读数
-  cleaningCache.value = true
-  try {
-    const ok = await dangerOps.cleanCache(mode)
-    if (!ok) return
-    cacheStats.value = dangerOps.cacheStats.value
-    const fresh = await fetchLocalCacheConfig().catch(() => null)
-    if (fresh) {
-      cacheEntries.value = fresh.entries
-      cacheStats.value = fresh.stats
-    }
-  } finally {
-    cleaningCache.value = false
-  }
-}
 </script>
 
 <template>
@@ -589,194 +500,6 @@ async function cleanLocalCacheMode(mode: 'ready' | 'all') {
           <span class="cp-save-hint">保存后新的播放 URL 立即按此生成。</span>
           <el-button type="primary" :loading="savingCdn" :disabled="!isSuper" @click="saveCdn">
             <Save :size="14" class="btn-ico" />保存 CDN 预留
-          </el-button>
-        </div>
-      </template>
-    </SectionCard>
-
-    <!-- VPS 本地缓存（播放线路「本地缓存」，默认关闭） -->
-    <SectionCard title="VPS 本地缓存" :icon="HardDrive">
-      <template #actions>
-        <span class="au-badge" :class="localCache.enabled ? 'au-badge-green' : 'au-badge-muted'">
-          {{ localCache.enabled ? '已启用' : '未启用（默认）' }}
-        </span>
-      </template>
-
-      <p class="cp-hint cp-lead">
-        把热门的远程挂载片提前拉到 VPS 本机磁盘：用户切到「本地缓存」线路时优先读本机，
-        没有才回源并触发缓存。下载<strong>单线程 + 限速</strong>，有人在播放时自动降到
-        {{ localCache.busy_rate_mbps }}MB/s 让路，不碰 cdn / relay 两条现有线路；
-        超配额按 LRU 删最久未访问的副本。只缓存远程挂载来源的条目（本机文件不需要副本）。
-      </p>
-
-      <template v-if="cacheStats">
-        <div class="tile-grid">
-          <StatTile
-            label="已占用"
-            :icon="Database"
-            :value="fmtBytes(cacheStats.bytes_used)"
-            :suffix="`/ ${cacheStats.max_bytes ? fmtBytes(cacheStats.max_bytes) : '不限'}`"
-          />
-          <StatTile
-            label="命中率"
-            :icon="Target"
-            :value="fmtRate(cacheStats.hit_rate)"
-            :hint="`命中 ${cacheStats.hits} / 未命中 ${cacheStats.misses}`"
-          />
-          <StatTile
-            label="已缓存"
-            :icon="HardDrive"
-            :value="cacheStats.entries.ready || 0"
-            :suffix="`/ 共 ${cacheStats.entries_total} 条`"
-          />
-          <StatTile
-            label="磁盘剩余"
-            :icon="Database"
-            :value="cacheStats.dir_exists ? fmtBytes(cacheStats.disk_free_bytes) : '目录不存在'"
-            :tone="cacheStats.dir_exists ? 'plain' : 'warn'"
-          />
-          <StatTile
-            label="下载中 / 排队"
-            :icon="Download"
-            :value="`${cacheStats.entries.downloading || 0} / ${cacheStats.entries.pending || 0}`"
-          />
-        </div>
-        <p class="cp-hint cp-stats-foot">
-          目录 <code>{{ cacheStats.dir }}</code>；热门规则：近 {{ localCache.hot_days }} 天播放
-          ≥ {{ localCache.hot_plays }} 次即自动缓存；下载限速
-          {{ localCache.rate_mbps ? `${localCache.rate_mbps} MB/s` : '不限速' }}。
-          <template v-if="cacheStats.entries.failed">失败 {{ cacheStats.entries.failed }} 条（可在下方清理）。</template>
-        </p>
-      </template>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">启用本地缓存（总开关）</label>
-          <p class="cp-hint">
-            关闭时（默认）播放行为与升级前一致；开启后用户侧「线路选择」才会出现 cache 线路，
-            后台 worker 开始按热门规则拉片。
-          </p>
-        </div>
-        <el-switch v-model="localCache.enabled" :disabled="!isSuper" />
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">缓存目录</label>
-          <p class="cp-hint">
-            绝对路径，留空用默认目录 <code>{{ localCache.default_dir }}</code>。
-            目录所在磁盘要装得下配额，建议指向数据盘。
-          </p>
-        </div>
-        <el-input
-          v-model="localCache.dir"
-          class="cp-input"
-          :disabled="!isSuper"
-          :placeholder="localCache.default_dir"
-          clearable
-        />
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">最大占用（GB）</label>
-          <p class="cp-hint">超过配额时按 LRU 删除最久未访问的副本；0 = 不限制。</p>
-        </div>
-        <el-input-number
-          v-model="localCache.max_gb"
-          :min="0" :max="100000" :step="50"
-          :disabled="!isSuper"
-          controls-position="right"
-          class="cp-num"
-          @change="clampCacheNumber('max_gb', 0, 100000, $event)"
-        />
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">热门判定规则</label>
-          <p class="cp-hint">近 N 天内播放达到 M 次的片子自动入队下载（按播放次数从多到少排队）。</p>
-        </div>
-        <!--
-          两个数字框放在 .num-pair 里：桌面并排；窄屏（响应式层会把 .el-input-number 拉成 100%）
-          允许换行、并保留可读宽度——之前挤在一行里时数字会被两侧按钮盖住、看着像空框。
-        -->
-        <div class="num-pair">
-          <el-input-number
-            v-model="localCache.hot_days"
-            :min="1" :max="90" :step="1"
-            :disabled="!isSuper"
-            controls-position="right"
-            @change="clampCacheNumber('hot_days', 1, 90, $event)"
-          />
-          <span class="cp-unit">天内 ≥</span>
-          <el-input-number
-            v-model="localCache.hot_plays"
-            :min="1" :max="1000" :step="1"
-            :disabled="!isSuper"
-            controls-position="right"
-            @change="clampCacheNumber('hot_plays', 1, 1000, $event)"
-          />
-          <span class="cp-unit">次</span>
-        </div>
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">下载限速（MB/s）</label>
-          <p class="cp-hint">
-            缓存下载占用的带宽上限，0 = 不限速；检测到有人在播放时自动降到
-            {{ localCache.busy_rate_mbps }}MB/s 给播放让路，绝不抢当前播放的带宽。
-          </p>
-        </div>
-        <el-input-number
-          v-model="localCache.rate_mbps"
-          :min="0" :max="10000" :step="5"
-          :disabled="!isSuper"
-          controls-position="right"
-          class="cp-num"
-          @change="clampCacheNumber('rate_mbps', 0, 10000, $event)"
-        />
-      </div>
-
-      <div v-if="cacheEntries.length" class="cache-list">
-        <div class="cache-list-head">最近条目（前 6 条）</div>
-        <div v-for="e in cacheEntries.slice(0, 6)" :key="e.item_guid" class="cache-item">
-          <span class="ci-name">{{ e.name || e.source_path }}</span>
-          <span class="ci-meta">
-            <span
-              class="au-badge"
-              :class="e.state === 'failed' ? 'au-badge-rose' : e.state === 'ready' ? 'au-badge-green' : 'au-badge-muted'"
-            >{{ cacheStateLabel[e.state] || e.state }}</span>
-            {{ fmtBytes(e.file_size) }} · 命中 {{ e.hits }}
-            <template v-if="e.last_accessed_at"> · 最近访问 {{ e.last_accessed_at.slice(0, 16).replace('T', ' ') }}</template>
-          </span>
-        </div>
-      </div>
-
-      <template #footer>
-        <div class="cp-save cp-save-split">
-          <div class="cp-save-left">
-            <el-button
-              type="danger" plain
-              :loading="cleaningCache" :disabled="!isSuper || !cacheEntries.length"
-              @click="cleanLocalCacheMode('ready')"
-            >
-              <Trash2 :size="14" class="btn-ico" />清理缓存副本
-            </el-button>
-            <el-button
-              type="danger" plain
-              :loading="cleaningCache" :disabled="!isSuper"
-              @click="cleanLocalCacheMode('all')"
-            >
-              <Trash2 :size="14" class="btn-ico" />清空全部
-            </el-button>
-            <RouterLink class="danger-jump" :to="{ name: 'Settings', query: { tab: 'danger', op: 'cache' } }">
-              危险操作中心 →
-            </RouterLink>
-          </div>
-          <el-button type="primary" :loading="savingCache" :disabled="!isSuper" @click="saveLocalCache">
-            <Save :size="14" class="btn-ico" />保存本地缓存
           </el-button>
         </div>
       </template>
