@@ -400,3 +400,112 @@ def test_greeting_morning_boundary_shanghai(monkeypatch):
     # UTC 00:30 = 上海 08:30 → 期望"早上好"；旧代码 naive 取 0 点会给出"夜深了"
     monkeypatch.setattr(panel_api, "datetime", _fixed_datetime_at(datetime(2026, 10, 15, 0, 30, 0)))
     assert panel_api._greeting() == "早上好"
+
+
+# ==================== 8. 今日封存口径（2026-10-16） ====================
+#
+# 诊断结论（生产实证）：
+# ① panel_parcels 只统计整部新入库的 movie/series，单集永不算——日常入库
+#    绝大多数是已有剧的新单集，故发现页常年显示"今天还没有新封存"。
+# ② 帧错位：date_added 由 scanner 以容器本地时间（UTC）naive 写入，
+#    而 panel 用 Shanghai-naive 的 00:00 去比较——每天 00:00–08:00（CST）
+#    入库的条目被算成"昨天"（如 2026-10-16 02:06 CST 入库的《明天》）。
+# 修复口径：今日整部新入库 movie/series ＋ 今日有新 episode 入库的 series
+# （同一部剧只出现一次），按今日最新动态时间倒序，上限 5；
+# /today 的 parcel_count 与 /parcels 同口径。
+
+def _mk_media(db, item_type, name, date_added, **kw):
+    from backend.emby_server import models as em
+    kw.setdefault("guid", f"guid-{name}-{item_type}")
+    kw.setdefault("library_id", 1)
+    item = em.MediaItem(item_type=item_type, name=name, date_added=date_added, **kw)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def _parcel_ids(client):
+    r = client.get("/api/panel/parcels")
+    assert r.status_code == 200
+    return [p["id"] for p in r.json()["data"]["parcels"]]
+
+
+def test_parcels_includes_series_with_new_episodes_today(db, user):
+    """老剧今日有新单集 → 该剧作为一件封存出现。"""
+    from backend.emby_server import models as em  # noqa: F401
+    start_utc = panel_api._today_start_utc_naive()
+    series = _mk_media(db, "series", "老剧", start_utc - timedelta(days=30))
+    _mk_media(db, "episode", "老剧 E99", start_utc + timedelta(hours=10),
+              series_id=series.id, season_number=1, episode_number=99)
+    app = _make_app(db, user)
+    assert series.id in _parcel_ids(TestClient(app))
+
+
+def test_parcels_dedupe_whole_and_episode_series(db, user):
+    """同一部剧今日既是整部新入库、又有新单集 → 只出现一次。"""
+    from backend.emby_server import models as em  # noqa: F401
+    start_utc = panel_api._today_start_utc_naive()
+    series = _mk_media(db, "series", "新剧", start_utc + timedelta(hours=9))
+    _mk_media(db, "episode", "新剧 E01", start_utc + timedelta(hours=10),
+              series_id=series.id, season_number=1, episode_number=1)
+    app = _make_app(db, user)
+    ids = _parcel_ids(TestClient(app))
+    assert ids.count(series.id) == 1
+
+
+def test_parcels_limit_five_ordered_by_latest_activity(db, user):
+    """候选超 5 件 → 只取 5，按今日最新动态时间倒序。"""
+    from backend.emby_server import models as em  # noqa: F401
+    start_utc = panel_api._today_start_utc_naive()
+    made = []
+    for i in range(7):
+        s = _mk_media(db, "series", f"剧{i}", start_utc - timedelta(days=30))
+        _mk_media(db, "episode", f"剧{i} E1", start_utc + timedelta(hours=9 + i),
+                  series_id=s.id, season_number=1, episode_number=1)
+        made.append(s.id)
+    app = _make_app(db, user)
+    ids = _parcel_ids(TestClient(app))
+    assert len(ids) == 5
+    # 最新动态的是剧6（+15h），应排第一
+    assert ids[0] == made[6]
+
+
+def test_parcels_utc_frame_includes_early_morning_items(db, user):
+    """帧回归：CST 凌晨 2 点入库（存为 UTC 前一天 18:00）必须算"今日"。
+
+    旧代码用 Shanghai-naive 00:00 比较，会把它排除（2026-10-16 生产实证）。
+    """
+    from backend.emby_server import models as em  # noqa: F401
+    start_utc = panel_api._today_start_utc_naive()
+    movie = _mk_media(db, "movie", "凌晨电影", start_utc + timedelta(hours=2))
+    app = _make_app(db, user)
+    assert movie.id in _parcel_ids(TestClient(app))
+
+
+def test_parcels_excludes_merged_copies(db, user):
+    """合并副本不单独占一件封存（与 #920 列表口径一致）。"""
+    from backend.emby_server import models as em  # noqa: F401
+    start_utc = panel_api._today_start_utc_naive()
+    canon = _mk_media(db, "movie", "正片", start_utc + timedelta(hours=9))
+    dup = _mk_media(db, "movie", "正片副本", start_utc + timedelta(hours=10),
+                    merged_into_id=canon.id)
+    app = _make_app(db, user)
+    ids = _parcel_ids(TestClient(app))
+    assert canon.id in ids
+    assert dup.id not in ids
+
+
+def test_today_parcel_count_same_caliber_as_parcels(db, user):
+    """/today 的 parcel_count 与 /parcels 同口径（含单集驱动的剧）。"""
+    from backend.emby_server import models as em  # noqa: F401
+    start_utc = panel_api._today_start_utc_naive()
+    series = _mk_media(db, "series", "追更剧", start_utc - timedelta(days=30))
+    _mk_media(db, "episode", "追更剧 E50", start_utc + timedelta(hours=10),
+              series_id=series.id, season_number=1, episode_number=50)
+    app = _make_app(db, user)
+    client = TestClient(app)
+    parcels = client.get("/api/panel/parcels").json()["data"]["parcels"]
+    today = client.get("/api/panel/today").json()["data"]
+    assert today["parcel_count"] == len(parcels) >= 1
+    assert {p["id"] for p in parcels} == {series.id}

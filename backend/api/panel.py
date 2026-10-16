@@ -14,7 +14,7 @@ import logging
 import os
 import random
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -144,16 +144,85 @@ def _greeting() -> str:
 
 
 def _now_local_naive() -> datetime:
-    """返回 Asia/Shanghai 的 naive 本地时间，作为自然日窗口基准。
+    """返回 Asia/Shanghai 的 naive 本地时间，仅作展示用（问候语/日期标签）。
 
-    与观影碑榜单口径对齐（#911）：服务器存的是 naive 时间，假定其本身
-    就是 Asia/Shanghai 本地时间；生产容器系统时区为 UTC，直接用
-    datetime.now() 会让「今日/昨日」窗口慢 8 小时。
+    注意：不要拿它直接去比较 date_added 等入库时间列——那些列由 scanner
+    以容器本地时间（UTC）naive 写入；做"今日"窗口比较请用
+    _today_start_utc_naive()，否则每天 00:00–08:00（CST）入库的条目会被
+    算成"昨天"（2026-10-16 生产实证）。
     """
     try:
         return datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
     except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
         return datetime.now()
+
+
+def _today_start_utc_naive() -> datetime:
+    """上海自然日 00:00，换算成 UTC naive——与入库时间存储帧对齐。
+
+    MediaItem.date_added 由 scanner 以容器本地时间（UTC）naive 写入；
+    直接用 Shanghai-naive 的 00:00 去比较，会把每天 00:00–08:00（CST）
+    入库的条目排除在"今日"之外。返回的起点已是 UTC 帧，可直接与
+    date_added 比较。
+    """
+    try:
+        now_sh = datetime.now(ZoneInfo("Asia/Shanghai"))
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
+        now_sh = datetime.now().astimezone()
+    start_sh = now_sh.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_sh.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _today_parcel_items(db: Session, limit: int = 5) -> list:
+    """今日封存候选（/parcels 与 /today 的 parcel_count 同口径）。
+
+    口径：今日整部新入库的 movie/series ＋ 今日有新 episode 入库的 series
+    （同一部剧只出现一次）；按"今日最新动态时间"倒序；上限 limit。
+    合并副本（merged_into_id 非空）不计入；软删除行由 ORM 全局钩子过滤。
+    """
+    from backend.emby_server import models as em
+
+    start = _today_start_utc_naive()
+    try:
+        whole = db.query(em.MediaItem).filter(
+            em.MediaItem.date_added >= start,
+            em.MediaItem.item_type.in_(["movie", "series"]),
+            em.MediaItem.merged_into_id.is_(None),
+        ).all()
+        ep_rows = (
+            db.query(em.MediaItem.series_id, func.max(em.MediaItem.date_added))
+            .filter(
+                em.MediaItem.date_added >= start,
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.series_id.isnot(None),
+            )
+            .group_by(em.MediaItem.series_id)
+            .all()
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("parcels 候选查询失败")
+        return []
+    ep_latest = {sid: mx for sid, mx in ep_rows if sid is not None}
+    series_by_id: dict = {}
+    if ep_latest:
+        try:
+            for s in db.query(em.MediaItem).filter(
+                em.MediaItem.id.in_(list(ep_latest.keys())),
+                em.MediaItem.merged_into_id.is_(None),
+            ).all():
+                series_by_id[s.id] = s
+        except Exception:  # noqa: BLE001
+            logger.exception("parcels 剧集回查失败")
+    merged: dict = {}
+    for it in whole:
+        merged[it.id] = (it.date_added or start, it)
+    for sid, s in series_by_id.items():
+        key = ep_latest.get(sid) or start
+        prev = merged.get(sid)
+        if prev is None or key > prev[0]:
+            merged[sid] = (key, s)
+    ordered = sorted(merged.values(), key=lambda t: t[0], reverse=True)
+    return [it for _, it in ordered[:limit]]
 
 
 def _streak(db: Session, user_id: int) -> int:
@@ -189,24 +258,12 @@ def panel_today(
     now = _now_local_naive()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    from backend.emby_server import models as em
-    # 今日新入库件数（按 date_added）
+    # 今日封存候选（与 /parcels 同口径：整部新入库 + 今日有新集的剧）
     try:
-        new_count = db.query(func.count(em.MediaItem.id)).filter(
-            em.MediaItem.date_added >= today_start,
-            em.MediaItem.item_type.in_(["movie", "series"]),
-        ).scalar() or 0
+        parcel_items = _today_parcel_items(db, limit=5)
+        parcel_ids = [it.id for it in parcel_items]
     except Exception:  # noqa: BLE001
-        logger.warning("today 新入库计数查询失败", exc_info=True)
-        new_count = 0
-
-    # 今日已拆 / 总数
-    try:
-        parcel_ids = [r[0] for r in db.query(em.MediaItem.id).filter(
-            em.MediaItem.date_added >= today_start,
-            em.MediaItem.item_type.in_(["movie", "series"]),
-        ).order_by(em.MediaItem.date_added.desc()).limit(5).all()]
-    except Exception:  # noqa: BLE001
+        logger.warning("today 封存候选查询失败", exc_info=True)
         parcel_ids = []
     unsealed = 0
     if parcel_ids:
@@ -291,18 +348,7 @@ def panel_parcels(
     user: models.WebUser = Depends(get_current_user),
 ):
     _guard()
-    now = _now_local_naive()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    from backend.emby_server import models as em
-    try:
-        items = db.query(em.MediaItem).filter(
-            em.MediaItem.date_added >= today_start,
-            em.MediaItem.item_type.in_(["movie", "series"]),
-        ).order_by(em.MediaItem.date_added.desc()).limit(5).all()
-    except Exception:  # noqa: BLE001
-        logger.exception("parcels 查询失败")
-        return _ok({"parcels": []})
+    items = _today_parcel_items(db, limit=5)
 
     parcel_id_list = [it.id for it in items]
     unsealed_ids = {r[0] for r in db.query(models.PanelUnseal.item_id).filter(

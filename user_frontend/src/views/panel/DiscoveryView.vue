@@ -213,7 +213,7 @@ const nickname = computed(() => {
   return (u?.nickname as string) || (u?.username as string) || '探险家'
 })
 const parcelTotal = computed(() => {
-  const v = todayData.value.parcels_total
+  const v = todayData.value.parcel_count
   return typeof v === 'number' ? v : null
 })
 const streak = computed(() => {
