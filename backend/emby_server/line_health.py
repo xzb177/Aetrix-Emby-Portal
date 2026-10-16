@@ -53,10 +53,10 @@ def snapshot(db: Session) -> dict:
         },
         "scope_note": "流量计数只统计本进程（302 直链时代播放字节不经本机，"
                       "出流量恒接近 0；不含转码时 ffmpeg 的拉流）。",
-        # 兼容老前端：lines 保留单元素，label 与原来一致
+        # 兼容老前端：lines 保留单元素（label 与顶层快照一致）
         "lines": [{
             "line": "relay",
-            "label": "代理中转",
+            "label": "302 直链",
             "requests": int(counter.get("requests") or 0),
             "bytes_out": int(counter.get("bytes_out") or 0),
             "idle_seconds": counter.get("idle_seconds"),
