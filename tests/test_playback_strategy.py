@@ -36,6 +36,24 @@ def memdb():
     session.close()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_process_global_state():
+    """进程级全局状态隔离（每个用例进出各清一次，与执行顺序无关）。
+
+    两处全局状态会跨用例串扰：①配置 TTL 热缓存（store）按配置键缓存、
+    与具体 DB 无关，前一用例缓存的键模板等值会漏进下一用例；
+    ②配额负缓存（streaming）按 file_id 记，其他测试文件留下的
+    FID123 残留会让本文件的直链用例恒回落中继（CI 实测 3 例全红）。
+    """
+    from backend.emby_server import streaming as _streaming
+
+    store.invalidate()
+    _streaming._QUOTA_NEGATIVE_CACHE.clear()
+    yield
+    store.invalidate()
+    _streaming._QUOTA_NEGATIVE_CACHE.clear()
+
+
 def _set(db, key, value):
     store.write_values(db, {key: value})
     db.commit()
