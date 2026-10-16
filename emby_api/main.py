@@ -18,6 +18,7 @@ import inspect as _inspect
 import logging
 import os
 import threading
+import time
 import tracemalloc as _tracemalloc
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -187,12 +188,26 @@ async def lifespan(app: FastAPI):
 
     # P0-1（2026-10-12）：/stream 起播加速——EA 启动后在后台线程预铸全部 SA 的 access_token。
     # 冷启动时每次 /stream 都要现做 JWT→token 交换（300–600ms），预铸后直接命中缓存。
-    # 反风控：打的是 oauth2 token endpoint（不计 Drive API 配额），premint 内部已有
-    # 4 并发上限 + 0–0.5s 随机抖动；失败只记日志，不影响出流。
+    # 反风控：打的是 oauth2 token endpoint（不计 Drive API 配额）；失败只记日志，不影响出流。
+    # 错峰（2026-10-16，与 backend/main.py 同口径）：EA 才是播放前台进程，启动期
+    # 100 个 RSA 签名+HTTPS POST 集中爆发会和详情页请求抢 CPU——先延迟 60s、
+    # 再用 180s 抖动摊薄、并发降为 2。延迟/抖动均可经环境变量调整。
     def _premint_sa_tokens() -> None:
+        def _env_float(name: str, default: float) -> float:
+            raw = os.environ.get(name)
+            if raw is None:
+                return default
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                return default
+
         try:
             from backend.emby_server import drive_auth
-            result = drive_auth.premint_tokens(max_workers=4)
+            _delay = _env_float("SA_PREMINT_STARTUP_DELAY_SECONDS", 60.0)
+            _stagger = _env_float("SA_PREMINT_STAGGER_SECONDS", 180.0)
+            time.sleep(_delay)
+            result = drive_auth.premint_tokens(max_workers=2, stagger_seconds=_stagger)
             logger.info(
                 "SA token 预铸完成: total=%s ok=%s failed=%s",
                 result.get("total"),

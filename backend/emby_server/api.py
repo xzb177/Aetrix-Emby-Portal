@@ -941,10 +941,13 @@ def _external_urls(item: em.MediaItem) -> list:
         })
     douban = getattr(item, "douban_id", None)
     if douban:
-        kind = "tv" if is_series else "movie"
+        # 名字必须与 ProviderIds 的键 "Douban" 一致：SenPlayer 按 ProviderIds
+        # 自己拼一份链接、再追加 ExternalUrls，靠名字去重；中文名对不上会
+        # 在详情页出现两个豆瓣。URL 用 canonical /subject/ 形，按 URL 去重
+        # 的客户端也能对上。
         urls.append({
-            "Name": "豆瓣",
-            "Url": f"https://movie.douban.com/{kind}/{douban}/",
+            "Name": "Douban",
+            "Url": f"https://movie.douban.com/subject/{douban}/",
         })
     bangumi = getattr(item, "bangumi_id", None)
     if bangumi:
@@ -955,7 +958,7 @@ def _external_urls(item: em.MediaItem) -> list:
     # 豆瓣/Bangumi 没有内建 id 时，按片名给出搜索入口——比什么都没有好
     if not douban and name and (is_series or item.metadata_source == "douban"):
         urls.append({
-            "Name": "豆瓣",
+            "Name": "Douban",
             "Url": "https://search.douban.com/movie/subject_search?search_text="
                     + _url_quote(name),
         })
