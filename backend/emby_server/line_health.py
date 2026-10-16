@@ -1,8 +1,9 @@
-"""播放可观测（2026-10 简化）：单路径快照组装
+"""播放可观测（2026-10-17 起 302 直链时代）：单路径快照组装
 
-只有一条播放路径（中转），面板展示：
-- 播放流量（本进程）：请求数 / 出流量字节
-- 本地缓存层状态：启用/命中率/占用
+Drive 文件 302 到谷歌直链（播放器自拉，字节不经本机）；
+115/WebDAV/AList/rclone 挂载源暂不支持（410）；转码走 ffmpeg 自拉。
+面板展示：
+- 播放流量（本进程）：请求数 / 出流量字节（302 时代恒接近 0）
 - CDN 域名状态：启用/域名
 """
 from __future__ import annotations
@@ -33,9 +34,9 @@ def snapshot(db: Session) -> dict:
 
     return {
         "path": "relay",
-        "label": "代理中转",
-        "summary": "本服务代理转发（流量过 VPS）；CF 在域名前挡一层，"
-                   "热门分片由边缘缓存",
+        "label": "302 直链",
+        "summary": "Drive 文件 302 到谷歌直链（播放器自拉，字节不经本机）；"
+                   "115 等挂载源暂不支持；转码走 ffmpeg 自拉，不受影响。",
         "requests": int(counter.get("requests") or 0),
         "bytes_out": int(counter.get("bytes_out") or 0),
         "idle_seconds": counter.get("idle_seconds"),
@@ -50,10 +51,8 @@ def snapshot(db: Session) -> dict:
                 else "已启用但域名未填（或不合法）"
             ),
         },
-        "scope_note": "流量计数只统计本进程（流量确实只从本机出去，"
-                      "跨节点合并会重复计算）。"
-                      "流量指本服务响应体实际吐出的字节（Range 分片与远程代理），"
-                      "不含转码时 ffmpeg 的拉流与整文件直发。",
+        "scope_note": "流量计数只统计本进程（302 直链时代播放字节不经本机，"
+                      "出流量恒接近 0；不含转码时 ffmpeg 的拉流）。",
         # 兼容老前端：lines 保留单元素，label 与原来一致
         "lines": [{
             "line": "relay",

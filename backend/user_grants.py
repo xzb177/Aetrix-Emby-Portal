@@ -237,7 +237,7 @@ def summary(db: Session, user: models.WebUser, cards: list[dict]) -> dict:
         "devices_used": used,
         "device_limit": limit,
         "play_line": "relay",
-        "play_line_label": "代理中转",
+        "play_line_label": "302 直链",
         "scope_note": "授权与到期按当下现算（订阅行的 status 字段不会随时间自动过期）；"
                       "停用的服同样列出来并标注，它不改变播放判定，只是提醒管理员该清理了。",
     }
