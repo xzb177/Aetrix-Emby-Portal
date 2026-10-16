@@ -60,6 +60,10 @@ def _read_config(db: Session) -> dict:
         "hotlist": sorted(_ps.get_hotlist(db)),
         "key_template": _ps.get_key_template(db),
         "url_ttl_sec": _ps.get_ttl_sec(db),
+        # 降级计数可观测（进程内计数，重启清零；与 prewarm 计数同口径）：
+        # direct_302=已发 302 / fallback_relay=回落中继 / fallback_quota=
+        # 配额负缓存命中直接回落（PR-2 尾巴：配额感知降级）。
+        "counters": _ps.strategy_counters(),
     }
 
 

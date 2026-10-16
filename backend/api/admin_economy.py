@@ -231,6 +231,9 @@ ECONOMY_CONFIG_KEYS = {
     "strm_prewarm_enabled": "bool",
     "strm_prewarm_dedup_seconds": "int",
     "strm_prewarm_max_concurrent": "int",
+    # 进度>85% 预热下一集：独立开关，默认关（backend/emby_server/playback_strategy.py
+    # 读键；backend/emby_server/compat_routes.py 进度上报钩子）
+    "prewarm_next_episode_enabled": "bool",
 }
 
 

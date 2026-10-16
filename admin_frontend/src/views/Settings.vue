@@ -215,6 +215,12 @@ const GROUPS: Group[] = [
     fields: [
       { key: 'playback_prewarm_enabled', label: '启用预热', type: 'bool', hint: '打开后起播更快；并发超限会自动跳过，不影响正常播放' },
       {
+        key: 'prewarm_next_episode_enabled',
+        label: '播到 85% 预热下一集',
+        type: 'bool',
+        hint: '独立开关，默认关；打开后单集播到 85% 时提前暖好下一集的播放链路，配额负缓存期的文件自动跳过',
+      },
+      {
         key: 'playback_prewarm_bytes',
         label: '预热大小',
         type: 'int',

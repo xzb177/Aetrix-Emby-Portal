@@ -235,6 +235,80 @@ def test_admin_rejects_duplicate_source_names(memdb):
         adm.playback_config_save(body, memdb)
 
 
-def test_direct_redirect_headers_no_store():
-    """302 直链必须带 no-store：签名 URL 不许被播放器/CDN 缓存复用。"""
-    assert ps.DIRECT_REDIRECT_HEADERS.get("Cache-Control") == "no-store"
+def test_direct_redirect_headers_hardened():
+    """302 直链卫生头（PR-2 尾巴）：签名 URL 不许被播放器/CDN 缓存复用
+    （no-cache + no-store），也不把门户域名当 Referer 发给对象存储。"""
+    headers = ps.DIRECT_REDIRECT_HEADERS
+    cc = headers.get("Cache-Control", "")
+    assert "no-store" in cc and "no-cache" in cc
+    assert headers.get("Referrer-Policy") == "no-referrer"
+
+
+# ---------------------------------------------------------------------------
+# PR-2 尾巴：配额感知降级 + 计数可观测
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def clean_counters():
+    ps.strategy_counters_reset()
+    yield
+    ps.strategy_counters_reset()
+
+
+def test_direct_happy_path_302_counts(memdb, clean_counters):
+    _arm_direct(memdb)
+    url = ps.maybe_direct_url(memdb, "FID123")
+    assert url is not None
+    assert url.startswith("https://acct123.r2.cloudflarestorage.com/hot/FID123?")
+    c = ps.strategy_counters()
+    assert c["direct_302"] == 1
+    assert c["fallback_relay"] == 0 and c["fallback_quota"] == 0
+
+
+def test_direct_quota_negative_falls_back_to_relay(memdb, clean_counters):
+    """direct + 文件命中 #940 配额负缓存 → 连直链都不试，直接回落中继。"""
+    from backend.emby_server import streaming as st
+
+    _arm_direct(memdb)
+    st._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
+    st.note_drive_quota_exceeded("FID123")
+    try:
+        assert ps.maybe_direct_url(memdb, "FID123") is None
+        c = ps.strategy_counters()
+        assert c["fallback_quota"] == 1
+        assert c["direct_302"] == 0
+    finally:
+        st._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
+
+
+def test_direct_no_source_falls_back_to_relay(memdb, clean_counters):
+    """direct + 无可用直链源 → 回落中继并计数。"""
+    _set(memdb, ps.KEY_STRATEGY, "direct")
+    _set(memdb, ps.KEY_SOURCES, json.dumps([]))
+    _set(memdb, ps.KEY_HOTLIST, json.dumps(["FID123"]))
+    assert ps.maybe_direct_url(memdb, "FID123") is None
+    assert ps.strategy_counters()["fallback_relay"] == 1
+
+
+def test_prewarm_next_episode_switch_default_off(memdb):
+    assert ps.prewarm_next_episode_enabled(memdb) is False
+
+
+def test_prewarm_next_episode_switch_can_enable(memdb):
+    _set(memdb, ps.KEY_PREWARM_NEXT_EPISODE, "1")
+    assert ps.prewarm_next_episode_enabled(memdb) is True
+    _set(memdb, ps.KEY_PREWARM_NEXT_EPISODE, "true")
+    assert ps.prewarm_next_episode_enabled(memdb) is True
+    _set(memdb, ps.KEY_PREWARM_NEXT_EPISODE, "false")
+    assert ps.prewarm_next_episode_enabled(memdb) is False
+
+
+def test_playback_config_get_includes_counters(memdb, clean_counters):
+    """GET /playback/config 返回降级计数（管理侧可观测），且不破坏原有字段。"""
+    _arm_direct(memdb)
+    ps.maybe_direct_url(memdb, "FID123")
+    cfg = adm._read_config(memdb)
+    assert cfg["strategy"] == "direct"
+    assert cfg["counters"]["direct_302"] == 1
+    assert cfg["counters"]["fallback_relay"] == 0
+    assert cfg["counters"]["fallback_quota"] == 0
