@@ -26,7 +26,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session, aliased, joinedload
 
@@ -3550,6 +3550,17 @@ async def video_stream(
     target = await run_db(_play_target, db, item)
     _pt.mark("play_target")
     if target.kind == "url":
+        # 播放策略能力（默认 relay=现状中继）：策略为 direct、条目文件在
+        # 直链名单内且直链源可用时，302 让播放器直接从对象存储取流，
+        # 字节不经本机；其余情况原样走中继。判定逻辑见 playback_strategy。
+        from backend.emby_server import playback_strategy as _strategy
+        direct_url = await run_db(
+            _strategy.maybe_direct_url, db, getattr(item, "drive_file_id", None))
+        if direct_url:
+            _pt.mark("direct_302")
+            _pt.done()
+            return _observe_traffic(
+                RedirectResponse(direct_url, status_code=302))
         # 单一播放路径（2026-10 简化）：中转 + 本地缓存自动层。
         # 分片缓存头：让 CF 边缘能缓存回源结果。
         seg_cache = cdn.cache_control_for(str(request.url.path))
