@@ -68,6 +68,7 @@ def library_scan_summary(db) -> dict:
         "libraries_total": 0,
         "scanning": 0,
         "failed": 0,
+        "interrupted": 0,
         "never_scanned": 0,
         "last_failed": [],
     }
@@ -92,6 +93,10 @@ def library_scan_summary(db) -> dict:
                     "hint": _translate_error(err),
                     "at": str(lib.last_scan_at or ""),
                 })
+        elif status == "interrupted":
+            # 被进程重启打断：不是失败，不计 failed、不出告警；
+            # 启动维护会自动续扫，这里只留一个计数供观察。
+            out["interrupted"] += 1
         elif not lib.last_scan_at:
             out["never_scanned"] += 1
     return out

@@ -1243,7 +1243,7 @@ export interface EmbyScanMetrics {
 }
 
 /** 扫描状态：running = 正在跑；success = 跑完且来源都正常；partial = 有来源读不到（已跳过清理）；failed = 异常中断 */
-export type EmbyScanStatus = 'running' | 'success' | 'partial' | 'failed'
+export type EmbyScanStatus = 'running' | 'success' | 'partial' | 'failed' | 'interrupted'
 
 /** 媒体库最近一次扫描的结果：管理端刷新后仍然可查（不用去翻服务器日志） */
 export interface EmbyScanResult extends EmbyScanMetrics {

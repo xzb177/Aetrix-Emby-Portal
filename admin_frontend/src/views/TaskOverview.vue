@@ -56,6 +56,7 @@ function libChip(status: string | null): { text: string; cls: string } {
     case 'success': return { text: '成功', cls: 'lib-chip--ok' }
     case 'partial': return { text: '部分成功', cls: 'lib-chip--warn' }
     case 'failed': return { text: '失败', cls: 'lib-chip--bad' }
+    case 'interrupted': return { text: '已中断', cls: 'lib-chip--warn' }
     default: return { text: '没跑过', cls: '' }
   }
 }

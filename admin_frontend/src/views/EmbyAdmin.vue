@@ -1410,6 +1410,7 @@ function scanBadge(l: EmbyLibrary): { text: string; cls: string } | null {
   if (!s) return null
   if (s.status === 'running') return { text: '上次扫描未完成', cls: 'scanning' }
   if (s.status === 'failed') return { text: '扫描失败', cls: 'danger' }
+  if (s.status === 'interrupted') return { text: '上次扫描被中断', cls: 'warn' }
   if (s.status === 'partial') return { text: '来源不完整', cls: 'warn' }
   return { text: '扫描正常', cls: 'ok' }
 }
@@ -1423,7 +1424,7 @@ function fmtDuration(ms: number): string {
 /** 部分失败 / 异常的原因（来源读不到时的 path + 原因） */
 function scanError(l: EmbyLibrary): string {
   const s = l.last_scan
-  if (!s || (s.status !== 'failed' && s.status !== 'partial')) return ''
+  if (!s || (s.status !== 'failed' && s.status !== 'partial' && s.status !== 'interrupted')) return ''
   return s.error || (s.failed_roots || []).join('；')
 }
 
@@ -1432,6 +1433,7 @@ const SCAN_STATUS_META: Record<EmbyScanStatus, { text: string; cls: string }> = 
   success: { text: '正常', cls: 'ok' },
   partial: { text: '来源不完整', cls: 'warn' },
   failed: { text: '失败', cls: 'danger' },
+  interrupted: { text: '已中断', cls: 'warn' },
 }
 
 const SCAN_TRIGGER_LABELS: Record<string, string> = {
@@ -1550,6 +1552,7 @@ function taskBadge(t: EmbyScanTask): { text: string; cls: string } {
   if (t.state === 'running') return { text: `扫描中 · ${t.progress?.phase_label || '准备中'}`, cls: 'scanning' }
   if (t.state === 'canceled') return { text: '已取消', cls: 'muted' }
   if (t.state === 'failed' || t.result === 'failed') return { text: '失败', cls: 'danger' }
+  if (t.result === 'interrupted') return { text: '被中断', cls: 'warn' }
   if (t.result === 'partial') return { text: '完成（来源不完整）', cls: 'warn' }
   return { text: '完成', cls: 'ok' }
 }

@@ -83,10 +83,11 @@ class Library(Base):
     # 最近一次扫描的结果（v2.22.0）：只靠 is_scanning + last_scan_at 看不出「扫得怎么样」——
     # 新增/更新/删除多少、哪些来源读不到、有没有异常都只留在日志里，扫描结束就查不到了。
     # 这里把结果落库，管理端列表直接带回（见 scanner.begin_scan / finish_scan / scan_result_payload）。
-    # scan_status: running / success / partial / failed（partial = 有来源不可用、已跳过清理）
+    # scan_status: running / success / partial / failed / interrupted
+    # （partial = 有来源不可用、已跳过清理；interrupted = 被进程重启打断，启动时自动续扫）
     scan_status = Column(String(20))
     scan_stats = Column(Text)          # JSON：added/updated/removed/probed/scraped/unchanged…
-    scan_error = Column(String(500))   # 异常摘要（仅 failed 时写入），来源失败原因进 stats.failed_roots
+    scan_error = Column(String(500))   # 异常摘要（failed / interrupted 时写入），来源失败原因进 stats.failed_roots
     # 扫描进行中的进度快照（v2.27.0）：只有 running 时有值，结束时清空。
     # 只靠 scan_status=running 看不出「扫到哪了」——四库同点扫描时 item_count 长时间是 0，
     # 面板只能显示「扫描中」；这里带上阶段 / 已发现 / 已处理 / 当前目录 / 本轮远程请求数，
@@ -565,7 +566,7 @@ class ScanRun(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     # 不加外键：媒体库删除后这些行要能被维护周期清掉（而不是阻断删除）
     library_id = Column(Integer, nullable=False, index=True)
-    # running / success / partial / failed（与 Library.scan_status 同一套取值）
+    # running / success / partial / failed / interrupted（与 Library.scan_status 同一套取值）
     status = Column(String(20), nullable=False)
     # 谁触发的：manual（面板按钮）/ client（Emby 客户端刷新）/ node（归属节点）/ repair（修复队列）。
     # 列名不叫 trigger：它在 MySQL / PG 里是保留字，裸写要处处加引号（属性名照旧叫 trigger）
