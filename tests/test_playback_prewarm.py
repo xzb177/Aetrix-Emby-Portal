@@ -293,7 +293,8 @@ def test_metrics_snapshot_shape():
     snap = pw.metrics_snapshot()
     assert set(snap["counters"]) == {
         "triggered", "started", "skipped_disabled", "skipped_dedup",
-        "skipped_busy", "success", "timeout", "failed", "cancelled",
+        "skipped_busy", "skipped_quota", "success", "timeout", "failed",
+        "cancelled",
     }
     assert snap["total_bytes_read"] == 100
     assert snap["avg_elapsed_ms"] >= 0
@@ -302,11 +303,17 @@ def test_metrics_snapshot_shape():
 
 
 def test_maybe_prewarm_never_raises(db):
+    from backend import models
     from backend.emby_server import playback_prewarm
+    from backend.integrations import store
+
+    # 预热默认关（2026-10-16 口径）：本测试验开启后的容错，先显式打开开关
+    db.add(models.SystemConfig(key="playback_prewarm_enabled", value="true"))
+    db.commit()
+    store.invalidate()
 
     pw = _new_pw()
     pw._open = lambda path, mode: _FailFile()
-    # DB 为空 → 默认配置（enabled=true）
     assert pw.maybe_prewarm(db, "/x.mp4") == "started"
     _wait_idle(pw)
     assert pw.metrics_snapshot()["counters"]["failed"] == 1
@@ -322,7 +329,7 @@ def test_read_config_defaults(db):
 
     cfg = playback_prewarm.read_config(db)
     assert cfg == {
-        "enabled": True,
+        "enabled": False,
         "bytes": 10485760,
         "max_concurrent": 4,
         "dedup_seconds": 300,
@@ -375,3 +382,15 @@ def test_singleton_accessors():
     assert playback_prewarm.get_prewarmer() is playback_prewarm.get_prewarmer()
     snap = playback_prewarm.metrics_snapshot()
     assert "counters" in snap and "avg_elapsed_ms" in snap
+
+
+def test_maybe_prewarm_skips_quota_blocked(db):
+    """配额负缓存期内的文件：预热直接跳过（返回 quota），不起线程读文件头。"""
+    from backend.emby_server import playback_prewarm, streaming
+
+    streaming.note_drive_quota_exceeded("fid-quota-test-pw")
+    pw = _new_pw()
+    assert pw.maybe_prewarm(db, "/x.mp4", "fid-quota-test-pw") == "quota"
+    snap = pw.metrics_snapshot()["counters"]
+    assert snap["skipped_quota"] == 1
+    assert snap["started"] == 0

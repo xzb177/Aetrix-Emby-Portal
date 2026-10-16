@@ -45,6 +45,11 @@ DEFAULT_TTL_SEC = 3600
 MIN_TTL_SEC = 60
 MAX_TTL_SEC = 86400
 
+#: 302 直链响应的固定卫生头：签名 URL 短时有效且个人化，绝不能被播放器、
+#: 浏览器或中间 CDN 缓存复用（缓存了轻则过期播不了、重则串给别人）。
+#: 调用方（api.video_stream）下发 302 时必须带上，不要裸 RedirectResponse。
+DIRECT_REDIRECT_HEADERS = {"Cache-Control": "no-store"}
+
 
 # ---------------------------------------------------------------------------
 # 配置读取

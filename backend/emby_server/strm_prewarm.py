@@ -20,7 +20,9 @@
 
 所有阈值可配置（SystemConfig，修改后 60 秒内生效）：
 
-- ``strm_prewarm_enabled``（bool，默认 true）：总开关，关掉即回滚。
+- ``strm_prewarm_enabled``（bool，默认 false）：总开关。默认关——预热会
+  真实消耗 Drive 请求与单文件配额（2026-10-16 口径：预热全改可配开关、
+  默认关），服主在管理后台开启后才生效。
 - ``strm_prewarm_dedup_seconds``（int，默认 300）：同文件去重窗口。
 - ``strm_prewarm_max_concurrent``（int，默认 4，范围 1~16）：并发上限。
 """
@@ -46,7 +48,7 @@ KEY_MAX_CONCURRENT = "strm_prewarm_max_concurrent"
 CONFIG_KEYS = (KEY_ENABLED, KEY_DEDUP_SECONDS, KEY_MAX_CONCURRENT)
 
 DEFAULTS: dict[str, str] = {
-    KEY_ENABLED: "true",
+    KEY_ENABLED: "false",
     KEY_DEDUP_SECONDS: "300",
     KEY_MAX_CONCURRENT: "4",
 }
@@ -82,10 +84,27 @@ def read_config(db) -> dict[str, Any]:
 
     raw = store.get_values(db, CONFIG_KEYS, DEFAULTS)
     return {
-        "enabled": _parse_bool(raw[KEY_ENABLED], True),
+        "enabled": _parse_bool(raw[KEY_ENABLED], False),
         "dedup_seconds": _parse_int(raw[KEY_DEDUP_SECONDS], KEY_DEDUP_SECONDS),
         "max_concurrent": _parse_int(raw[KEY_MAX_CONCURRENT], KEY_MAX_CONCURRENT),
     }
+
+
+def _quota_blocked(item) -> bool:
+    """条目文件是否处于 Drive 单文件配额负缓存期（只读 #940 的护盾信号）。
+
+    预热请求同样打 Drive：文件已确认配额超限时再预热纯属撞墙白烧请求量，
+    一律跳过。信号不可用（非 Drive 条目/异常）时按未拦截处理，永不抛错。
+    """
+    fid = getattr(item, "drive_file_id", None)
+    if not fid:
+        return False
+    try:
+        from backend.emby_server.streaming import drive_quota_blocked_retry_after
+
+        return drive_quota_blocked_retry_after(str(fid)) > 0
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +122,7 @@ _counters: dict[str, int] = {
     "skipped_busy": 0,
     "skipped_disabled": 0,
     "skipped_non_strm": 0,
+    "skipped_quota": 0,
     "failed": 0,
 }
 
@@ -157,6 +177,10 @@ async def warm(db, item) -> None:
 
         file_path = getattr(item, "file_path", None)
         if not file_path or not str(file_path).lower().endswith(".strm"):
+            return
+
+        if _quota_blocked(item):
+            _bump("skipped_quota")
             return
 
         def _resolve(db, item):
@@ -216,6 +240,11 @@ async def maybe_warm(db, item) -> None:
         # 放行到信号量会挤掉真正的 .strm 预热（skipped_busy）。
         if not path.lower().endswith(".strm"):
             _bump("skipped_non_strm")
+            return
+
+        # 配额护盾：负缓存期内的文件跳过预热（不占去重窗口，配额恢复后可正常预热）
+        if _quota_blocked(item):
+            _bump("skipped_quota")
             return
 
         # 去重：窗口内同一文件只预热一次

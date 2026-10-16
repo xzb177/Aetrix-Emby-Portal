@@ -2868,6 +2868,7 @@ def get_item_detail(
                 file_path=item.file_path,
                 library=getattr(item, "library", None),
                 guid=getattr(item, "guid", None),
+                drive_file_id=getattr(item, "drive_file_id", None),
             )
 
             async def _warm_and_close():
@@ -3433,7 +3434,8 @@ async def playback_info(
             # 点播即预热（默认 10MB，可配）：并发上限/去重/超时/指标全在
             # playback_prewarm 里；DB 读走 run_db（async 纪律），线程只读文件。
             # 保留 IsPlayback 门控：读 10MB 成本高，只在真点播时触发。
-            await run_db(playback_prewarm.maybe_prewarm, db, item.file_path)
+            await run_db(playback_prewarm.maybe_prewarm, db, item.file_path,
+                         getattr(item, "drive_file_id", None))
         # .strm 链路预热（P0-1）：每次 PlaybackInfo 都触发，不依赖 IsPlayback
         # 参数（客户端实际不带该参数，门控导致预热从未生效）。只是
         # Range: bytes=0-1 探路，成本 1KB。PlaybackInfo 和 /stream 之间有
@@ -3452,6 +3454,7 @@ async def playback_info(
                     file_path=item.file_path,
                     library=getattr(item, "library", None),
                     guid=getattr(item, "guid", None),
+                    drive_file_id=getattr(item, "drive_file_id", None),
                 )
                 _warm_db = SessionLocal()
 
@@ -3560,7 +3563,8 @@ async def video_stream(
             _pt.mark("direct_302")
             _pt.done()
             return _observe_traffic(
-                RedirectResponse(direct_url, status_code=302))
+                RedirectResponse(direct_url, status_code=302,
+                                 headers=_strategy.DIRECT_REDIRECT_HEADERS))
         # 单一播放路径（2026-10 简化）：中转 + 本地缓存自动层。
         # 分片缓存头：让 CF 边缘能缓存回源结果。
         seg_cache = cdn.cache_control_for(str(request.url.path))

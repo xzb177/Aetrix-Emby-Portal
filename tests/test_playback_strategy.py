@@ -233,3 +233,8 @@ def test_admin_rejects_duplicate_source_names(memdb):
     body.sources.append(adm.DirectSourceIn(**_SOURCE))
     with pytest.raises(HTTPException):
         adm.playback_config_save(body, memdb)
+
+
+def test_direct_redirect_headers_no_store():
+    """302 直链必须带 no-store：签名 URL 不许被播放器/CDN 缓存复用。"""
+    assert ps.DIRECT_REDIRECT_HEADERS.get("Cache-Control") == "no-store"
