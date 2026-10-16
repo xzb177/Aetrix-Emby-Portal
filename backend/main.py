@@ -438,6 +438,16 @@ def _check_rate_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, st
                 from backend import database as db
                 import time
 
+                # 前台活跃打点（扫描等后台重活让路用，见 foreground_activity）：
+                # 复用本次线程池调用顺手写 Redis，不新增请求路径；健康检查
+                # （limit==0）在上面已提前返回，不会打点。
+                try:
+                    from backend.emby_server import foreground_activity as _fg
+
+                    _fg.note_redis(db.redis_client)
+                except Exception:
+                    pass
+
                 window = int(time.time() // 60)
                 # 区分认证/未认证的 key，避免互相影响
                 auth_tag = "auth" if authenticated else "anon"

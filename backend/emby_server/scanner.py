@@ -3310,6 +3310,29 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     return prepared
 
 
+def _maybe_yield_for_foreground() -> None:
+    """扫描批次边界的前台让路（2026-10-16 网页加速批）。
+
+    用户在刷网页/后台时，aetrix-api 的限流中间件会往 Redis 打点；
+    这里读到近期有前台活跃就小睡几轮，把 CPU 让出来。只延迟、不丢活；
+    Redis 不可用或开关关闭时行为与旧版完全一致。永不抛异常。
+    """
+    try:
+        from backend.emby_server import foreground_activity as _fg
+
+        _fg.maybe_yield_for_foreground(tag="scan")
+    except Exception:
+        pass
+
+
+def _yield_safely() -> None:
+    """批次边界让路的安全包装：钩子任何情况下都不许打断扫描主循环。"""
+    try:
+        _maybe_yield_for_foreground()
+    except Exception:
+        pass
+
+
 def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session, process_one,
                    label: str, counted: "_FileCounter", stats: dict, failed_roots: list) -> None:
     """按批次把文件流变成待写库的任务，并直接驱动写库回调。
@@ -3415,9 +3438,13 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session, process_one,
             if not _library_exists(db, ctx.lib_id):
                 logger.warning("媒体库 %s 在扫描期间被删除，扫描提前结束", ctx.lib_id)
                 return
+            # 前台让路（2026-10-16 网页加速批）：批次边界事务是干净的
+            # （上一批已提交，本批文件还只是内存对象），此时睡眠不持有 DB 锁。
+            _yield_safely()
             emit_batch(batch)
             batch = []
         if batch:
+            _yield_safely()
             emit_batch(batch)
     finally:
         # 正常结束、中途报错都要恢复真实提交
