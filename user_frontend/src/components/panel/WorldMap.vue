@@ -918,7 +918,7 @@
     </g>
   </g></svg></div>
         <span class="name">封存驿站</span>
-        <span class="sub">{{ remaining > 0 ? `${remaining} 个包裹待拆` : '今天的包裹都拆完啦' }}</span>
+        <span class="sub">{{ parcelsSub }}</span>
       </button>
 
       <button type="button" class="mark lighthouse m-lighthouse" :style="{ left: '82.3%', top: '62.5%' }" @click="goServer" aria-label="传送灯塔">
@@ -1525,6 +1525,11 @@ const unsealedCount = computed(() => {
 
 const remaining = computed(() => parcelList.value.filter((p) => !p.unsealed).length)
 
+const parcelsSub = computed(() => {
+  if (parcels.value.data === null && !parcels.value.error) return '今日包裹'
+  return remaining.value > 0 ? `${remaining.value} 个包裹待拆` : '今天的包裹都拆完啦'
+})
+
 /* ---------- 信件 ---------- */
 const letterData = computed<Record<string, unknown>>(() => {
   const d = letter.value.data
@@ -1616,6 +1621,7 @@ const cinemaSub = computed(() => {
 })
 
 const postSub = computed(() => {
+  if (letter.value.data === null && !letter.value.error) return '邮局'
   if (!hasLetter.value) return '暂无新信'
   if (letterRead.value) return '昨天的信到了'
   const teaser = typeof letterData.value.teaser === 'string' ? letterData.value.teaser.trim() : ''
@@ -1922,6 +1928,7 @@ const boardData = computed<Record<string, unknown>>(
 )
 
 const boardSub = computed(() => {
+  if (board.value.data === null && !board.value.error) return '告示牌'
   if (boardData.value.visible === true) {
     const sig = String(boardData.value.signature ?? '服主')
     const text = typeof boardData.value.text === 'string' ? boardData.value.text.trim() : ''
@@ -1938,6 +1945,7 @@ function openBoard() {
 
 /* ---------- 到此一游 · 留言墙 ---------- */
 const wallPosts = ref<Array<Record<string, unknown>>>([])
+const wallLoaded = ref(false)
 const wallLoading = ref(false)
 const wallInput = ref('')
 const wallPosting = ref(false)
@@ -1951,6 +1959,7 @@ async function loadWall() {
     wallPosts.value = []
   } finally {
     wallLoading.value = false
+    wallLoaded.value = true
   }
 }
 
@@ -1984,6 +1993,7 @@ function parseWallTime(v: unknown): number {
 }
 
 const wallSub = computed(() => {
+  if (!wallLoaded.value) return '留言墙'
   const posts = wallPosts.value
   if (posts.length === 0) return '来留下第一句话吧'
   let sub = `已有 ${posts.length} 条足迹`
@@ -2039,9 +2049,10 @@ async function drawFortune() {
 
 const fortuneDrew = computed(() => fortune.value?.drew === true)
 
-const fortuneSub = computed(() =>
-  fortuneDrew.value ? `今日：${String(fortune.value?.level ?? '')}` : '每日一签，试试手气',
-)
+const fortuneSub = computed(() => {
+  if (fortune.value === null) return '抽签亭'
+  return fortuneDrew.value ? `今日：${String(fortune.value?.level ?? '')}` : '每日一签，试试手气'
+})
 
 function openFortune() {
   void loadFortune()
