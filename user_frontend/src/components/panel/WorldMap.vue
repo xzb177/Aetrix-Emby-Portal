@@ -799,7 +799,7 @@
         <span class="brand">Aetrix<b>.</b></span>
         <span class="worldname">🗺 探险世界</span>
         <div class="right">
-          <span class="pill" v-if="streak > 0">🔥 连签 {{ streak }} 天</span>
+          <span class="pill" v-if="streak > 0">🔥 连签 {{ streak }} 天<template v-if="streakHint"> · {{ streakHint }}</template></span>
           <button type="button" class="pill amber" v-if="pointsText" @click="goLedger">🪙 {{ pointsText }} 积分</button>
           <span class="pill" v-if="memberInfo"><span class="lv">Lv.{{ memberInfo.level }}</span> {{ memberInfo.level_name }}</span>
           <button type="button" class="avatar" @click="goAccount" aria-label="我的账号">{{ avatarChar }}</button>
@@ -809,7 +809,7 @@
       <div class="m-hud" aria-label="今日状态">
         <div class="m-hello">{{ greetingText }}，{{ nickname }}</div>
         <div class="m-stats">
-          <template v-if="streak > 0">连签 <b>{{ streak }}</b> 天 · </template>
+          <template v-if="streak > 0">连签 <b>{{ streak }}</b> 天<template v-if="streakHint"> · {{ streakHint }}</template> · </template>
           <template v-if="memberInfo"><b>Lv.{{ memberInfo.level }}</b> {{ memberInfo.level_name }}</template>
         </div>
       </div>
@@ -820,6 +820,7 @@
         <p v-if="remaining > 0">世界里有 <b>{{ remaining }} 个包裹</b> 等你拆<template v-if="hasLetter">，邮局里有一封昨天的信。</template><template v-else>。</template></p>
         <p v-else-if="hasLetter">邮局里有一封昨天的信，点邮局拆开看看。</p>
         <p v-else>今天片库有更新，去影院看看新到的片子。</p>
+        <p class="hello-line" v-if="daypartLine">{{ daypartLine }}</p>
       </div>
 
       <button type="button" class="classic" v-if="variant === 'home'" @click="toClassic">经典视图 ⇄</button>
@@ -1915,12 +1916,32 @@ const lbScopeLine = computed(() =>
 
 const steleSub = computed(() => {
   if (!steleLoaded.value) return '观影碑'
+  const viewers = Number(todayD.value.today_viewers ?? 0)
   const first = steleTop.value
+  if (!first && viewers > 0) return `今日已有 ${viewers} 人观影`
   if (!first) return '虚位以待，等你开播'
   const name = String(first.name ?? first.nickname ?? '')
   const count = Number(first.count ?? 0)
   return `今日最热 · ${name} ${count}次`
 })
+
+/* ---------- 心理学接线：连签临界提示 + 每日新鲜感文案 ---------- */
+const streakHint = computed(() => {
+  const m = todayD.value.streak_milestone as
+    | { next?: unknown; remaining?: unknown; warn_within?: unknown }
+    | null
+    | undefined
+  if (!m) return ''
+  const next = Number(m.next ?? 0)
+  const remaining = Number(m.remaining ?? 0)
+  const warnWithin = Number(m.warn_within ?? 0)
+  if (remaining >= 1 && remaining <= warnWithin) {
+    return remaining === 1 ? `明天满 ${next} 天` : `差 ${remaining} 天满 ${next} 天`
+  }
+  return ''
+})
+
+const daypartLine = computed(() => String(todayD.value.daypart_line ?? '').trim())
 
 /* ---------- 服主告示牌 ---------- */
 const boardData = computed<Record<string, unknown>>(
@@ -2664,6 +2685,12 @@ button.pill {
   font-size: 0.90cqw;
   color: var(--ink2);
   line-height: 1.55;
+}
+.hello-line {
+  font-size: 12px;
+  color: var(--ink2, #6b6257);
+  letter-spacing: 1px;
+  margin-top: 4px;
 }
 
 .hello p b {
