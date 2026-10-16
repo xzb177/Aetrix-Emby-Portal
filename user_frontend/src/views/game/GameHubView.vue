@@ -162,6 +162,9 @@ onMounted(async () => {
 /* 世界地图本体：内嵌 WorldMap（/game 永远显示地图） */
 .game-world {
   margin-top: 16px;
+  /* 底部避让固定底栏（总高 = 内容高 var(--tabbar-h) + 上下 padding 20px + 安全区）：
+     滚到底时画布底边停在底栏上方，画布下部地标（留言墙/抽签亭）不再被拦截点击 */
+  padding-bottom: calc(var(--tabbar-h, 56px) + 20px + env(safe-area-inset-bottom));
 }
 
 /* 桌面 /game：地图脱离 375px 窄栏全宽展开（日志头/状态条仍居中栏宽）
