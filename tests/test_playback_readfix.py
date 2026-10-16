@@ -2,8 +2,9 @@
 """播放读法修复回归测试（2026-10-16）。
 
 覆盖三处：
-- streaming：downloadQuotaExceeded 是文件级配额，换 SA 无用 → 不可重试，
-  且记入跨请求负缓存；负缓存的记/查/过期/禁用语义。
+- streaming：downloadQuotaExceeded 是文件级配额，换 SA 无用 → 不换 SA 重试；
+  先走零空间救援（换 usercontent 入口 / 短冷却重试原入口），全失败才记入
+  跨请求负缓存；负缓存的记/查/过期/禁用语义。
 - streaming：远程代理响应在上游没给 Accept-Ranges 时也要补上（本地路径
   一直有），否则播放器以为不可分段、大文件只能顺序硬下。
 - scanner.probe_metadata：远程探测第三跳（整文件兜底）对已知大文件跳过。
@@ -92,44 +93,151 @@ def test_negative_cache_disabled_by_env(monkeypatch):
     assert streaming.drive_quota_blocked_retry_after(fid) == 0
 
 
-def test_async_no_retry_on_quota_and_negative_cached(monkeypatch):
+def _uc_url():
+    from backend.emby_server import drive_auth
+    return drive_auth.drive_usercontent_download_url("FID123")
+
+
+def test_usercontent_download_url_shape():
+    from backend.emby_server import drive_auth
+    url = drive_auth.drive_usercontent_download_url("FID123")
+    assert url.startswith("https://drive.usercontent.google.com/download?")
+    assert "id=FID123" in url and "export=download" in url
+    assert drive_auth.drive_usercontent_download_url("") == ""
+
+
+def test_async_quota_rescue_entry_success(monkeypatch):
+    # 配额 403 → 先换入口：备用入口拿到真媒体就不记负缓存、不回 403
     monkeypatch.setenv("DRIVE_403_SA_RETRY_MAX", "2")
     monkeypatch.setenv("DRIVE_403_SA_RETRY_JITTER_MS", "1")
+    monkeypatch.setenv("DRIVE_QUOTA_RESCUE_WAIT_SEC", "0")
     monkeypatch.delenv("DRIVE_QUOTA_NEGATIVE_CACHE_SEC", raising=False)
     streaming._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
     followed = []
 
     async def _fake_follow(client, url, fwd, silent=False):
         followed.append(url)
-        return _FakeResp(206, b"data"), url, 0
+        return _FakeResp(206, b"data", {"content-type": "video/x-matroska"}), url, 0
+
+    monkeypatch.setattr(streaming, "_follow_redirects", _fake_follow)
+    before = streaming.quota_rescue_counters()
+    resp = _FakeResp(403, _ERR_QUOTA)
+    out_resp, out_current = asyncio.run(
+        streaming._drive_403_retry_async(None, API_URL, {}, resp, API_URL, UC_URL))
+    assert followed == [_uc_url()]  # 只试了备用入口，没换 SA、没等冷却
+    assert out_resp.status_code == 206 and out_resp is not resp
+    assert out_current == _uc_url()
+    assert streaming.drive_quota_blocked_retry_after("FID123") == 0
+    after = streaming.quota_rescue_counters()
+    assert after["entry_attempt"] == before["entry_attempt"] + 1
+    assert after["entry_success"] == before["entry_success"] + 1
+
+
+def test_async_quota_rescue_all_fail_negative_cached(monkeypatch):
+    # 换入口也 403、冷却关闭 → 回到旧口径：记负缓存、原样回 403、不换 SA
+    monkeypatch.setenv("DRIVE_403_SA_RETRY_MAX", "2")
+    monkeypatch.setenv("DRIVE_403_SA_RETRY_JITTER_MS", "1")
+    monkeypatch.setenv("DRIVE_QUOTA_RESCUE_WAIT_SEC", "0")
+    monkeypatch.delenv("DRIVE_QUOTA_NEGATIVE_CACHE_SEC", raising=False)
+    streaming._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
+    followed = []
+
+    async def _fake_follow(client, url, fwd, silent=False):
+        followed.append(url)
+        return _FakeResp(403, _ERR_QUOTA), url, 0
 
     monkeypatch.setattr(streaming, "_follow_redirects", _fake_follow)
     resp = _FakeResp(403, _ERR_QUOTA)
     out_resp, _ = asyncio.run(
         streaming._drive_403_retry_async(None, API_URL, {}, resp, API_URL, UC_URL))
     assert out_resp is resp
-    assert followed == []  # 配额墙：一次 SA 重放都不许有
-    # 且已记入负缓存：后续同文件请求会被入口护盾本地拒绝
+    assert followed == [_uc_url()]  # 只有备用入口一次：没有 SA 重放
+    # 已记入负缓存：后续同文件请求会被入口护盾本地拒绝
     assert streaming.drive_quota_blocked_retry_after("FID123") > 0
     streaming._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
 
 
-def test_sync_no_retry_on_quota(monkeypatch):
-    monkeypatch.setenv("DRIVE_403_SA_RETRY_MAX", "2")
-    monkeypatch.setenv("DRIVE_403_SA_RETRY_JITTER_MS", "1")
+def test_async_quota_rescue_confirm_page_rejected(monkeypatch):
+    # 备用入口回「病毒扫描确认页」（200 text/html）不算成功，不许交付播放器
+    monkeypatch.setenv("DRIVE_QUOTA_RESCUE_WAIT_SEC", "0")
+    monkeypatch.delenv("DRIVE_QUOTA_NEGATIVE_CACHE_SEC", raising=False)
+    streaming._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
+
+    async def _fake_follow(client, url, fwd, silent=False):
+        return (_FakeResp(200, b"<html>scan confirm</html>",
+                          {"content-type": "text/html; charset=utf-8"}), url, 0)
+
+    monkeypatch.setattr(streaming, "_follow_redirects", _fake_follow)
+    resp = _FakeResp(403, _ERR_QUOTA)
+    out_resp, _ = asyncio.run(
+        streaming._drive_403_retry_async(None, API_URL, {}, resp, API_URL, UC_URL))
+    assert out_resp is resp
+    assert streaming.drive_quota_blocked_retry_after("FID123") > 0
+    streaming._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
+
+
+def test_async_quota_rescue_wait_retry_success(monkeypatch):
+    # 换入口关、短冷却开：等一小会儿后原入口恢复 → 直接拿到媒体，不记负缓存
+    monkeypatch.setenv("DRIVE_QUOTA_RESCUE_ENTRY", "0")
+    monkeypatch.setenv("DRIVE_QUOTA_RESCUE_WAIT_SEC", "0.01")
+    monkeypatch.delenv("DRIVE_QUOTA_NEGATIVE_CACHE_SEC", raising=False)
+    streaming._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
+    followed = []
+
+    async def _fake_follow(client, url, fwd, silent=False):
+        followed.append(url)
+        return _FakeResp(206, b"data", {"content-type": "video/mp4"}), url, 0
+
+    monkeypatch.setattr(streaming, "_follow_redirects", _fake_follow)
+    before = streaming.quota_rescue_counters()
+    resp = _FakeResp(403, _ERR_QUOTA)
+    out_resp, _ = asyncio.run(
+        streaming._drive_403_retry_async(None, API_URL, {}, resp, API_URL, UC_URL))
+    assert followed == [API_URL]  # 等待后试的是原入口（不换 SA 不换入口）
+    assert out_resp.status_code == 206 and out_resp is not resp
+    assert streaming.drive_quota_blocked_retry_after("FID123") == 0
+    after = streaming.quota_rescue_counters()
+    assert after["wait_attempt"] == before["wait_attempt"] + 1
+    assert after["wait_success"] == before["wait_success"] + 1
+
+
+def test_sync_quota_rescue_entry_success(monkeypatch):
+    monkeypatch.setenv("DRIVE_QUOTA_RESCUE_WAIT_SEC", "0")
+    monkeypatch.delenv("DRIVE_QUOTA_NEGATIVE_CACHE_SEC", raising=False)
+    streaming._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
     opened = []
 
     def _fake_open(client, url, fwd, pinning, silent=False):
         opened.append(url)
-        return _FakeResp(206, b"data"), url, fwd
+        return _FakeResp(206, b"data", {"content-type": "video/x-matroska"}), url, fwd
+
+    monkeypatch.setattr(streaming, "_open_upstream_sync", _fake_open)
+    resp = _FakeResp(403, _ERR_QUOTA)
+    out_resp, out_current, _ = streaming._drive_403_retry_sync(
+        None, API_URL, {}, resp, API_URL, UC_URL, {})
+    assert opened == [_uc_url()]
+    assert out_resp.status_code == 206 and out_resp is not resp
+    assert out_current == _uc_url()
+    assert streaming.drive_quota_blocked_retry_after("FID123") == 0
+
+
+def test_sync_quota_rescue_all_fail_negative_cached(monkeypatch):
+    monkeypatch.setenv("DRIVE_403_SA_RETRY_MAX", "2")
+    monkeypatch.setenv("DRIVE_403_SA_RETRY_JITTER_MS", "1")
+    monkeypatch.setenv("DRIVE_QUOTA_RESCUE_WAIT_SEC", "0")
+    opened = []
+
+    def _fake_open(client, url, fwd, pinning, silent=False):
+        opened.append(url)
+        return _FakeResp(403, _ERR_QUOTA), url, fwd
 
     monkeypatch.setattr(streaming, "_open_upstream_sync", _fake_open)
     resp = _FakeResp(403, _ERR_QUOTA)
     out_resp, _, _ = streaming._drive_403_retry_sync(
         None, API_URL, {}, resp, API_URL, UC_URL, {})
     assert out_resp is resp
-    assert opened == []
-    # 同步路径与 async 版同口径：配额 403 会把文件记入跨请求负缓存。
+    assert opened == [_uc_url()]
+    # 同步路径与 async 版同口径：救援全失败才把文件记入跨请求负缓存。
     # 负缓存是进程级全局状态，验完必须清掉——不清会串进后续测试文件
     # （CI 实测：本条残留令 test_playback_strategy 的直链用例恒回落中继）。
     assert streaming.drive_quota_blocked_retry_after("FID123") > 0

@@ -469,6 +469,24 @@ def drive_api_media_url(url: str) -> str:
         return url
 
 
+def drive_usercontent_download_url(file_id: str) -> str:
+    """备用下载入口：drive.usercontent.google.com 的 直接下载地址。
+
+    与 Drive API 的 alt=media 是两个不同入口：alt=media 撞单文件配额
+    （downloadQuotaExceeded）时，配额救援会改走这里再取一次（额度是否
+    按入口分开算未经证实，靠救援计数实测）。该域名在 DRIVE_HOSTS
+    白名单内，跳转时 Bearer 凭据保留；支持 Range。file_id 为空返回空串，
+    永不抛异常。
+    """
+    try:
+        if not file_id:
+            return ""
+        return ("https://drive.usercontent.google.com/download?id=" + file_id
+                + "&export=download&confirm=t")
+    except Exception:
+        return ""
+
+
 def sa_count() -> int:
     """返回发现的 SA 数量（预铸进度/指标用；异常时返回 0）。"""
     try:
