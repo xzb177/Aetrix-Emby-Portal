@@ -185,13 +185,13 @@ onMounted(load)
 .pb-page { display: flex; flex-direction: column; gap: 16px; }
 .pb-ico { width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px; }
 .pb-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-.pb-label { width: 130px; flex: none; color: var(--au-text-2, #666); }
+.pb-label { width: 130px; flex: none; color: var(--au-text-2); }
 .pb-wide { max-width: 420px; }
-.pb-hint { color: var(--au-text-3, #999); font-size: 12px; }
-.pb-source { border: 1px solid var(--au-line, #e5e0d5); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.pb-hint { color: var(--au-text-3); font-size: 12px; }
+.pb-source { border: 1px solid var(--au-border); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
 .pb-source-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .pb-name { max-width: 260px; }
 .pb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
-.pb-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--au-text-2, #666); }
+.pb-grid label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--au-text-2); }
 .pb-check { justify-content: flex-start; }
 </style>
