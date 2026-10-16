@@ -118,7 +118,7 @@ def test_observe_traffic_still_counts_bytes_when_client_aborts_midway():
 def test_snapshot_has_single_path_shape(db):
     snap = line_health.snapshot(db)
     assert snap["path"] == "relay"
-    assert snap["label"] == "代理中转"
+    assert snap["label"] == "302 直链"
     # 删除后口径：cache 路随本地缓存整删（PR-B 删了 line_health._cache_state）；
     # cdn 段与中继无关，保留。
     assert "cdn" in snap

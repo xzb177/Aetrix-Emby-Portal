@@ -315,9 +315,9 @@ def test_summary_reports_devices_and_play_line(db):
     summary = user_grants.cards(db, user)["summary"]
     assert summary["device_limit"] == 2
     assert summary["devices_used"] == 1
-    # 没有偏好记录就是默认中转（前端据此显示线路名而不是空白）
+    # 没有偏好记录就是默认 302 直链（前端据此显示线路名而不是空白）
     assert summary["play_line"] == "relay"
-    assert summary["play_line_label"] == "代理中转"
+    assert summary["play_line_label"] == "302 直链"
 
 
 def test_disabled_realm_is_listed_and_marked(db):

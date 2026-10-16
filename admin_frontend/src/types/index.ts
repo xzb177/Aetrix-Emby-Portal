@@ -134,7 +134,8 @@ export interface PlayLinesSnapshot {
   idle_seconds: number | null
   uptime_seconds: number
   cdn: PlayPathCdnState
-  cache: PlayPathCacheState
+  /** 本地缓存段已随 #959 整删（后端不再下发），留可选键防旧快照 */
+  cache?: PlayPathCacheState
   /** 口径说明 */
   scope_note: string
   /** 兼容字段 */

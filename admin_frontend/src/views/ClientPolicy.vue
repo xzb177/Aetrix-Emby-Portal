@@ -404,17 +404,17 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
     <SectionCard
       title="播放路径"
       :icon="Activity"
-      :meta="playLines ? '中转（单路径）' : (loading ? '加载中…' : '')"
+      :meta="playLines ? '302 直链' : (loading ? '加载中…' : '')"
       :description="playLines?.scope_note || lineBytesHint"
     >
       <p class="cp-hint cp-lead">
-        只有一条播放路径：<strong>中转</strong>（视频经服务器转发）。热门内容自动走本地缓存
-        与 CF 边缘缓存，无需用户选择。
+        Drive 文件直接 302 到谷歌直链，播放器自拉，字节不经服务器；
+        115 等挂载源暂不支持（410）。转码不受影响。
       </p>
 
       <div v-if="playLines" class="line-card">
         <div class="line-head">
-          <span class="au-badge au-badge-amber">代理中转</span>
+          <span class="au-badge au-badge-amber">302 直链</span>
           <p class="line-summary">{{ playLines.summary }}</p>
         </div>
         <div class="tile-grid">
@@ -423,12 +423,6 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
         </div>
         <ul class="line-ready">
           <li><span class="line-key">CDN</span>{{ playLines.cdn.ready_note }}</li>
-          <li>
-            <span class="line-key">本地缓存</span>{{ playLines.cache.ready_note }}
-            <template v-if="playLines.cache.hit_rate !== null && playLines.cache.hit_rate !== undefined">
-              （命中率 {{ (playLines.cache.hit_rate * 100).toFixed(1) }}%）
-            </template>
-          </li>
         </ul>
       </div>
       <EmptyState
