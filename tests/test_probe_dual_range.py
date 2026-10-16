@@ -333,6 +333,9 @@ def test_mkv_never_takes_second_hop(monkeypatch):
     monkeypatch.setattr(scanner, "_ffprobe", fake_ffprobe)
     monkeypatch.setattr(scanner, "_http_fetch_range",
                         lambda *a, **k: pytest.fail("MKV 不该发尾部请求"))
+    # 本例验的是回退机制本身：关掉整文件流量闸（TOTAL=8GiB 默认会被闸拦下，
+    # 闸的行为由 test_playback_readfix 单独覆盖）
+    monkeypatch.setattr(scanner, "PROBE_WHOLE_FILE_MAX_BYTES", 0)
     info = scanner.probe_metadata("http://x/a.mkv", size=TOTAL)
     assert calls == [True, False]
     assert info["duration_ticks"] == 1800 * 10_000_000
@@ -352,6 +355,8 @@ def test_falls_back_to_slow_seek_when_dual_range_fails(monkeypatch):
 
     monkeypatch.setattr(scanner, "_ffprobe", fake_ffprobe)
     monkeypatch.setattr(scanner, "_http_fetch_range", lambda *a, **k: None)
+    # 同上：关掉整文件流量闸，只验双 Range 落空后的回退
+    monkeypatch.setattr(scanner, "PROBE_WHOLE_FILE_MAX_BYTES", 0)
     info = scanner.probe_metadata(MP4_URL, size=TOTAL)
     assert calls == [True, False], "双 Range 落空后仍要试一次自由 seek"
     assert info["duration_ticks"] == 600 * 10_000_000

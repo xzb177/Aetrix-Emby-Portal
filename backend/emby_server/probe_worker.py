@@ -442,6 +442,14 @@ def maybe_enqueue(db, item) -> bool:
         if status == "pending":
             if prio >= ONDEMAND_PRIORITY:
                 return False
+            # 配额退避中的行不许插队：清掉退避等于绕过 24h 配额保护，
+            # 用户点一次详情页，探测就再去撞一次配额墙（还连累播放）。
+            # 等退避自然到期再探；普通失败的退避不受此限，照旧可插队。
+            _next_retry = getattr(item, "probe_next_retry_at", None)
+            _last_err = getattr(item, "probe_last_error", "") or ""
+            if (_next_retry is not None and _next_retry > datetime.now()
+                    and _last_err.startswith("[quota]")):
+                return False
             item.probe_priority = ONDEMAND_PRIORITY
             item.probe_next_retry_at = None  # 用户在等：退避中的也立刻可抢
             db.commit()

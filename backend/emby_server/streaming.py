@@ -72,11 +72,61 @@ def note_drive_file_gone(file_id: str) -> None:
         logger.warning("streaming: 提交 gone 标记失败: %s", exc)
 
 
-# 这些 403 reason 属于文件级永久限制，换 Service Account 重试也无用，命中时直接失败、不重试
+# 这些 403 reason 属于文件级永久限制，换 Service Account 重试也无用，命中时直接失败、不重试。
+# downloadQuotaExceeded 是单文件下载配额：全网共用一份的文件级上限，换哪个 SA 都一样超，
+# 与 rateLimitExceeded（SA 级限流、换 SA 有效，见 #915 实测）是两回事，必须分开对待。
 _DRIVE_403_NON_RETRYABLE: frozenset[str] = frozenset({
     "cannotDownloadAbusiveFile",
     "fileNotDownloadable",
+    "downloadQuotaExceeded",
 })
+
+
+# ---- Drive 单文件配额负缓存（跨请求护盾）----
+#
+# 文件配额超限后，播放器遇到 403 会自己反复重试（拖动、重连、换集回来再点），
+# 每次重试都是一轮新的上游请求——等于拿我们的请求量去撞一面注定撞不开的墙，
+# 还会把同一 SA 的其它请求拖下水。这里记一个进程内负缓存：某 file_id 一旦
+# 确认 downloadQuotaExceeded，TTL 内同一文件的播放/下载请求本地直接回
+# 403 + Retry-After，不再碰 Drive；TTL 到期放行一次真实请求探活（配额按日
+# 重置，文件也可能被替换而提前恢复）。仅进程内、尽力而为，不追求跨进程一致。
+_QUOTA_NEGATIVE_CACHE: dict[str, float] = {}
+_QUOTA_NEGATIVE_CACHE_LOCK = threading.Lock()
+_QUOTA_NEGATIVE_CACHE_MAX = 10000
+
+
+def _quota_negative_ttl() -> float:
+    return _env_number("DRIVE_QUOTA_NEGATIVE_CACHE_SEC", 900, 0, 86400)
+
+
+def note_drive_quota_exceeded(file_id: str) -> None:
+    """记录某文件已确认单文件配额超限（TTL 内同文件请求不再打 Drive）。"""
+    if not file_id:
+        return
+    ttl = _quota_negative_ttl()
+    if ttl <= 0:
+        return
+    now = time.monotonic()
+    with _QUOTA_NEGATIVE_CACHE_LOCK:
+        if len(_QUOTA_NEGATIVE_CACHE) >= _QUOTA_NEGATIVE_CACHE_MAX:
+            for k in [k for k, v in _QUOTA_NEGATIVE_CACHE.items() if v <= now]:
+                _QUOTA_NEGATIVE_CACHE.pop(k, None)
+        _QUOTA_NEGATIVE_CACHE[file_id] = now + ttl
+
+
+def drive_quota_blocked_retry_after(file_id: str) -> int:
+    """file_id 在配额负缓存期内时返回剩余秒数（用作 Retry-After），否则返回 0。"""
+    if not file_id:
+        return 0
+    now = time.monotonic()
+    with _QUOTA_NEGATIVE_CACHE_LOCK:
+        until = _QUOTA_NEGATIVE_CACHE.get(file_id)
+        if until is None:
+            return 0
+        if until <= now:
+            _QUOTA_NEGATIVE_CACHE.pop(file_id, None)
+            return 0
+        return max(1, int(until - now))
 
 
 def _drive_403_error_reason(body: bytes) -> tuple[str, str]:
@@ -419,6 +469,19 @@ def serve_remote(
         # forward_orig：重连建连的起点必须是"剥凭据之前"的原始头（与初始请求一致），
         # 不能用跳转后被剥过的 forward，否则 115 这类源站重连会丢 Cookie。
         forward_orig = dict(forward)
+        # 单文件配额负缓存（与异步版同口径）：命中时本地直接回 403，不碰 Drive
+        _quota_fid = _drive_alt_media_file_id(api_url)
+        if _quota_fid:
+            _retry_after = drive_quota_blocked_retry_after(_quota_fid)
+            if _retry_after:
+                logger.warning(
+                    "Drive 单文件配额负缓存命中 file_id=%s，本地拒绝（约 %ds 后可重试）",
+                    _quota_fid, _retry_after)
+                client.close()
+                raise HTTPException(
+                    status_code=403,
+                    detail="该文件今日下载次数已达网盘上限，请稍后再试",
+                    headers={"Retry-After": str(_retry_after)})
         resp, current, forward = _open_upstream_sync(
             client, api_url, forward, _dns_pinning, silent=False)
         # Drive alt=media 403：记 Google 侧 reason，可重试类换 SA 重试（与异步版同口径）。
@@ -474,6 +537,10 @@ def serve_remote(
         value = resp.headers.get(name)
         if value:
             passthrough[name.title()] = value
+    # 与本地路径（serve_file）同口径：远程源本身支持 Range，即使上游 200
+    # 没给这个头也要补上——否则播放器以为不可分段，对大文件只能顺序硬下，
+    # 读不到片尾的索引（moov）就一直没画面、进度不动。
+    passthrough.setdefault("Accept-Ranges", "bytes")
     # 边缘缓存调试头（通用能力，与异步版同口径）
     try:
         from backend.emby_server import edge_cache
@@ -942,6 +1009,10 @@ async def _drive_403_retry_async(client, api_url: str, forward: dict, resp, curr
                 "Drive 下载 403 file_id=%s reason=%s msg=%.120s attempt=%d",
                 fid, reason or "-", message or "-", attempt)
 
+            # 单文件配额超限：记入跨请求负缓存，后续同文件请求本地直接拒绝
+            if reason == "downloadQuotaExceeded":
+                note_drive_quota_exceeded(fid)
+
             # 不可重试类，或已达重试上限：交给调用方处理
             if reason in _DRIVE_403_NON_RETRYABLE or attempt >= max_retry:
                 break
@@ -1013,6 +1084,10 @@ def _drive_403_retry_sync(client, api_url: str, forward: dict, resp, current: st
             logger.warning(
                 "Drive 下载 403 file_id=%s reason=%s msg=%.120s attempt=%d",
                 fid, reason or "-", message or "-", attempt)
+
+            # 单文件配额超限：记入跨请求负缓存（与异步版同口径）
+            if reason == "downloadQuotaExceeded":
+                note_drive_quota_exceeded(fid)
 
             if reason in _DRIVE_403_NON_RETRYABLE or attempt >= max_retry:
                 break
@@ -1470,6 +1545,19 @@ async def serve_remote_async(
             pt.mark("url_convert")
         # api_url：重连建连的起点（drive_api_media_url 已转好，幂等，可复用）
         api_url = url
+        # 单文件配额负缓存：该文件近期已确认配额超限时本地直接回 403，
+        # 不再拿上游请求撞墙（播放器重试风暴的主要放大点）。
+        _quota_fid = _drive_alt_media_file_id(api_url)
+        if _quota_fid:
+            _retry_after = drive_quota_blocked_retry_after(_quota_fid)
+            if _retry_after:
+                logger.warning(
+                    "Drive 单文件配额负缓存命中 file_id=%s，本地拒绝（约 %ds 后可重试）",
+                    _quota_fid, _retry_after)
+                raise HTTPException(
+                    status_code=403,
+                    detail="该文件今日下载次数已达网盘上限，请稍后再试",
+                    headers={"Retry-After": str(_retry_after)})
         # 跳转跟随走共用 helper（P3-5：与 resolve_drive_final_url 同逻辑，
         # 逐跳内网校验 + 跨主机剥凭据）；终态 resp 不关，由下面消费/关闭。
         # 注意：_follow_redirects 只 rebind 自己的 forward 形参，调用方的 forward
@@ -1553,6 +1641,8 @@ async def serve_remote_async(
         value = resp.headers.get(name)
         if value:
             passthrough[name.title()] = value
+    # 与本地路径同口径：远程源支持 Range，上游没给也要补（理由见同步版）
+    passthrough.setdefault("Accept-Ranges", "bytes")
     if cache_control and "Cache-Control" not in passthrough:
         passthrough["Cache-Control"] = cache_control
     passthrough["X-Accel-Buffering"] = "no"
