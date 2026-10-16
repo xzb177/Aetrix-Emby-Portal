@@ -130,6 +130,187 @@ def drive_quota_blocked_retry_after(file_id: str) -> int:
         return max(1, int(until - now))
 
 
+# ---- Drive 单文件配额救援（零空间：换入口 + 短冷却重试，2026-10-16）----
+#
+# 实测（2026-10-16 晚）：文件撞 downloadQuotaExceeded 后并非死一整天，
+# 《消防员》21:03 实锤 403、21:15 同入口复测已 206 恢复——死亡窗口是
+# 分钟级的短封。此前口径是撞一次就把 403 甩给播放器、播放当场断
+# （拖进度条最常见）。救援在「首次确认配额 403、记入负缓存之前」插入
+# 两步（每请求至多各一次，新增上游请求 ≤2，不放大请求量）：
+#   1) 换入口：改走 drive.usercontent.google.com 再取一次——额度是否按
+#      入口分开算未经证实，靠下面计数实测，通了就是当场复活；
+#   2) 短冷却：等 DRIVE_QUOTA_RESCUE_WAIT_SEC 秒后用原入口重试一次，
+#      等的是分钟级恢复窗口；仍死才记入负缓存、按旧口径回 403。
+# 换 SA 对文件级配额无效（见 _DRIVE_403_NON_RETRYABLE 注释），救援不换 SA。
+# 旋钮沿用本模块环境变量风格：DRIVE_QUOTA_RESCUE_ENTRY（默认开）、
+# DRIVE_QUOTA_RESCUE_WAIT_SEC（默认 90，0=关等待重试）。
+_QUOTA_RESCUE_COUNTERS: dict[str, int] = {
+    "entry_attempt": 0, "entry_success": 0,
+    "wait_attempt": 0, "wait_success": 0,
+}
+
+
+def quota_rescue_counters() -> dict[str, int]:
+    """配额救援计数快照（进程内、尽力而为；备用入口是否独立靠它判读）。"""
+    return dict(_QUOTA_RESCUE_COUNTERS)
+
+
+def _quota_rescue_count(key: str) -> None:
+    try:
+        _QUOTA_RESCUE_COUNTERS[key] = _QUOTA_RESCUE_COUNTERS.get(key, 0) + 1
+    except Exception:
+        pass
+
+
+def _drive_resp_is_media(resp, forward) -> bool:
+    """判断上游响应是不是真媒体数据（备用入口救援的成功标准），永不抛异常。
+
+    usercontent 对大文件可能先回「无法病毒扫描」确认页（200 + text/html，
+    2026-10-16 实测 2040 字节），确认页一律不算成功；带 Range 的请求
+    必须是 206 + Content-Range，防整文件/HTML 被当分片交付给播放器。
+    """
+    try:
+        if resp is None or resp.status_code not in (200, 206):
+            return False
+        ctype = ""
+        try:
+            ctype = str(resp.headers.get("content-type") or "").lower()
+        except Exception:
+            ctype = ""
+        if "text/html" in ctype:
+            return False
+        range_hdr = ""
+        for k, v in (forward or {}).items():
+            if str(k).lower() == "range":
+                range_hdr = str(v or "")
+                break
+        if range_hdr:
+            if resp.status_code != 206:
+                return False
+            try:
+                if not resp.headers.get("content-range"):
+                    return False
+            except Exception:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+async def _quota_rescue_async(client, api_url: str, forward: dict, fid: str):
+    """配额救援（异步）：换入口 → 短冷却重试原入口，各至多一次。
+
+    成功返回 (resp, current)（真媒体响应，调用方照常交付）；
+    全部失败返回 None（调用方记入负缓存、按旧口径回 403）。永不抛异常。
+    """
+    try:
+        from backend.emby_server import drive_auth
+
+        # 1) 换入口（立即，不等待）
+        if _env_flag("DRIVE_QUOTA_RESCUE_ENTRY", True) and fid:
+            uc_url = drive_auth.drive_usercontent_download_url(fid)
+            if uc_url:
+                _quota_rescue_count("entry_attempt")
+                try:
+                    resp, current, _hops = await _follow_redirects(
+                        client, uc_url, forward, silent=False)
+                except Exception:
+                    resp, current = None, uc_url
+                if _drive_resp_is_media(resp, forward):
+                    _quota_rescue_count("entry_success")
+                    logger.warning(
+                        "配额救援：换入口成功 file_id=%s（备用入口可独立取流）", fid)
+                    return resp, current
+                if resp is not None:
+                    try:
+                        await resp.aclose()
+                    except Exception:
+                        pass
+                logger.warning("配额救援：换入口未成功 file_id=%s，转短冷却重试", fid)
+
+        # 2) 短冷却后重试原入口（同一 SA，配额是文件级、换 SA 无意义）
+        wait_sec = _env_number("DRIVE_QUOTA_RESCUE_WAIT_SEC", 90, 0, 600)
+        if wait_sec > 0:
+            _quota_rescue_count("wait_attempt")
+            await asyncio.sleep(wait_sec)
+            try:
+                resp, current, _hops = await _follow_redirects(
+                    client, api_url, forward, silent=False)
+            except Exception:
+                resp, current = None, api_url
+            if _drive_resp_is_media(resp, forward):
+                _quota_rescue_count("wait_success")
+                logger.warning(
+                    "配额救援：短冷却 %.0fs 后原入口恢复 file_id=%s", wait_sec, fid)
+                return resp, current
+            if resp is not None:
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+            logger.warning(
+                "配额救援：短冷却 %.0fs 后原入口仍未恢复 file_id=%s", wait_sec, fid)
+    except Exception:
+        logger.debug("配额救援（异步）异常，按未救援处理", exc_info=True)
+    return None
+
+
+def _quota_rescue_sync(client, api_url: str, forward: dict, fid: str,
+                       dns_pinning: dict):
+    """配额救援（同步版，与 _quota_rescue_async 同口径）。
+
+    成功返回 (resp, current, forward)，失败返回 None。永不抛异常。
+    """
+    try:
+        from backend.emby_server import drive_auth
+
+        if _env_flag("DRIVE_QUOTA_RESCUE_ENTRY", True) and fid:
+            uc_url = drive_auth.drive_usercontent_download_url(fid)
+            if uc_url:
+                _quota_rescue_count("entry_attempt")
+                try:
+                    resp, current, out_forward = _open_upstream_sync(
+                        client, uc_url, forward, dns_pinning, silent=False)
+                except Exception:
+                    resp, current, out_forward = None, uc_url, forward
+                if _drive_resp_is_media(resp, forward):
+                    _quota_rescue_count("entry_success")
+                    logger.warning(
+                        "配额救援：换入口成功 file_id=%s（备用入口可独立取流）", fid)
+                    return resp, current, out_forward
+                if resp is not None:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+                logger.warning("配额救援：换入口未成功 file_id=%s，转短冷却重试", fid)
+
+        wait_sec = _env_number("DRIVE_QUOTA_RESCUE_WAIT_SEC", 90, 0, 600)
+        if wait_sec > 0:
+            _quota_rescue_count("wait_attempt")
+            time.sleep(wait_sec)
+            try:
+                resp, current, out_forward = _open_upstream_sync(
+                    client, api_url, forward, dns_pinning, silent=False)
+            except Exception:
+                resp, current, out_forward = None, api_url, forward
+            if _drive_resp_is_media(resp, forward):
+                _quota_rescue_count("wait_success")
+                logger.warning(
+                    "配额救援：短冷却 %.0fs 后原入口恢复 file_id=%s", wait_sec, fid)
+                return resp, current, out_forward
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+            logger.warning(
+                "配额救援：短冷却 %.0fs 后原入口仍未恢复 file_id=%s", wait_sec, fid)
+    except Exception:
+        logger.debug("配额救援（同步）异常，按未救援处理", exc_info=True)
+    return None
+
+
 def _drive_403_error_reason(body: bytes) -> tuple[str, str]:
     """解析 Google Drive API 403 错误体，返回 (reason, message)；解析失败返回 ("", "")，永不抛异常。"""
     try:
@@ -995,6 +1176,7 @@ async def _drive_403_retry_async(client, api_url: str, forward: dict, resp, curr
         max_retry = _env_number("DRIVE_403_SA_RETRY_MAX", 2, 0, 5, cast=int)
         jitter_ms = _env_number("DRIVE_403_SA_RETRY_JITTER_MS", 800, 0, 10000)
         fid = _drive_alt_media_file_id(_last_current) or ""
+        rescue_attempted = False
 
         for attempt in range(max_retry + 1):
             # 读取响应体，仅取前 4096 字节用于解析 reason
@@ -1010,8 +1192,20 @@ async def _drive_403_retry_async(client, api_url: str, forward: dict, resp, curr
                 "Drive 下载 403 file_id=%s reason=%s msg=%.120s attempt=%d",
                 fid, reason or "-", message or "-", attempt)
 
-            # 单文件配额超限：记入跨请求负缓存，后续同文件请求本地直接拒绝
+            # 单文件配额超限：先救援（换入口/短冷却，本请求内至多一次），
+            # 救援全失败才记入跨请求负缓存，后续同文件请求本地直接拒绝
             if reason == "downloadQuotaExceeded":
+                if not rescue_attempted:
+                    rescue_attempted = True
+                    rescued = await _quota_rescue_async(
+                        client, api_url, forward, fid)
+                    if rescued is not None:
+                        try:
+                            await _last_resp.aclose()
+                        except Exception:
+                            pass
+                        _last_resp, _last_current = rescued
+                        break
                 note_drive_quota_exceeded(fid)
 
             # 不可重试类，或已达重试上限：交给调用方处理
@@ -1073,6 +1267,7 @@ def _drive_403_retry_sync(client, api_url: str, forward: dict, resp, current: st
         max_retry = _env_number("DRIVE_403_SA_RETRY_MAX", 2, 0, 5, cast=int)
         jitter_ms = _env_number("DRIVE_403_SA_RETRY_JITTER_MS", 800, 0, 10000)
         fid = _drive_alt_media_file_id(_last_current) or ""
+        rescue_attempted = False
 
         for attempt in range(max_retry + 1):
             try:
@@ -1086,8 +1281,19 @@ def _drive_403_retry_sync(client, api_url: str, forward: dict, resp, current: st
                 "Drive 下载 403 file_id=%s reason=%s msg=%.120s attempt=%d",
                 fid, reason or "-", message or "-", attempt)
 
-            # 单文件配额超限：记入跨请求负缓存（与异步版同口径）
+            # 单文件配额超限：先救援（与异步版同口径），全失败才记入负缓存
             if reason == "downloadQuotaExceeded":
+                if not rescue_attempted:
+                    rescue_attempted = True
+                    rescued = _quota_rescue_sync(
+                        client, api_url, _last_forward, fid, dns_pinning)
+                    if rescued is not None:
+                        try:
+                            _last_resp.close()
+                        except Exception:
+                            pass
+                        _last_resp, _last_current, _last_forward = rescued
+                        break
                 note_drive_quota_exceeded(fid)
 
             if reason in _DRIVE_403_NON_RETRYABLE or attempt >= max_retry:
