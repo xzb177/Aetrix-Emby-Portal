@@ -1,7 +1,7 @@
 <template>
   <div
     class="v4-parcel"
-    :class="{ opened: isOpen, 'is-busy': busy, 'no-link': isOpen && !parcel.deep_link }"
+    :class="{ opened: isOpen, 'is-busy': busy, 'no-link': isOpen && !parcel.deep_link, 'just-opened': justOpened }"
     :role="isOpen ? undefined : 'button'"
     :tabindex="isOpen ? undefined : '0'"
     :aria-label="isOpen ? undefined : '待拆封存，点击开封'"
@@ -9,7 +9,7 @@
     @keydown="onKey"
   >
     <!-- 印章：未拆=封，开封=剧/影 -->
-    <div class="v4-parcel-stamp" aria-hidden="true">{{ stampText }}</div>
+    <div class="v4-parcel-stamp" aria-hidden="true" @animationend="justOpened = false">{{ stampText }}</div>
     <div class="v4-parcel-waybill">
       <template v-if="!isOpen">
         <div class="v4-parcel-seal">✦</div>
@@ -41,13 +41,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ParcelItem } from '@/composables/usePanelApi'
 
 const props = defineProps<{ parcel: ParcelItem; busy?: boolean }>()
 const emit = defineEmits<{ (e: 'unseal', id: string | number): void }>()
 
 const isOpen = computed(() => !!props.parcel.unsealed)
+
+/* P-3 拆封仪式感：开封瞬间给印章一个「盖下去」的动效（一次性，动画结束自清） */
+const justOpened = ref(false)
+watch(isOpen, (now, before) => {
+  if (now && !before) justOpened.value = true
+})
 
 /** 类型标签：白名单映射 series→剧集、movie→电影，其余统一收敛为"影片"（不直接展示后端原文） */
 const typeLabel = computed(() => {
@@ -228,6 +234,27 @@ function onTap() {
   text-decoration: none;
   animation: v4-fadein 0.4s ease 0.1s both;
 }
+.v4-parcel.just-opened .v4-parcel-stamp {
+  animation: stamp-slam .45s cubic-bezier(.2, 1.6, .4, 1) both;
+}
+@keyframes stamp-slam {
+  0% { transform: rotate(6deg) scale(2.1); opacity: 0; }
+  60% { transform: rotate(-13deg) scale(.94); opacity: 1; }
+  100% { transform: rotate(-10deg) scale(1); opacity: 1; }
+}
+.v4-parcel.just-opened {
+  animation: parcel-nudge .3s ease-out;
+}
+@keyframes parcel-nudge {
+  0% { transform: translateY(0); }
+  40% { transform: translateY(-2px); }
+  100% { transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .v4-parcel.just-opened,
+  .v4-parcel.just-opened .v4-parcel-stamp { animation: none; }
+}
+
 @keyframes v4-pop {
   0% { transform: scale(0.92); }
   60% { transform: scale(1.03); }
