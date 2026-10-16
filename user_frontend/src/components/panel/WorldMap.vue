@@ -5,55 +5,795 @@
       <div class="m-goal-bar"><i :style="{ width: questPercent + '%' }"></i></div>
     </div>
     <div class="world">
-      <svg class="scene" viewBox="0 0 1440 900" fill="none" preserveAspectRatio="xMidYMid slice">
-        <g class="scene-roads" stroke="#d9cba6" stroke-width="1.4" opacity=".55">
-          <path d="M-20 210 Q 300 130 620 190 T 1460 170"/>
-          <path d="M-20 250 Q 320 175 640 232 T 1460 214"/>
-          <path d="M-20 660 Q 380 590 760 650 T 1460 620"/>
-          <path d="M-20 706 Q 400 636 780 696 T 1460 668"/>
-          <path d="M1050 -20 Q 1010 300 1090 560"/>
-          <path d="M1105 -20 Q 1068 300 1148 560"/>
-        </g>
-        <g>
-          <path d="M0 240 L130 130 L230 215 L330 105 L470 240 Z" fill="#e7dcc0"/>
-          <path d="M330 105 L368 148 L330 168 L296 146 Z" fill="#fbf7ec"/>
-          <path d="M1120 235 L1260 120 L1360 200 L1440 140 L1440 245 Z" fill="#e7dcc0"/>
-          <path d="M1260 120 L1292 152 L1260 170 L1232 150 Z" fill="#fbf7ec"/>
-        </g>
-        <path d="M0 900 L0 560 Q 260 470 520 560 Q 700 620 900 560 Q 1200 480 1440 570 L1440 900 Z" fill="#e9dfc6"/>
-        <path d="M0 900 L0 700 Q 330 620 700 700 Q 1080 780 1440 690 L1440 900 Z" fill="#e2d3ae"/>
-        <path d="M1180 -10 Q 1120 220 1210 420 Q 1280 580 1190 760 Q 1150 840 1180 910" stroke="#a8c6dd" stroke-width="26" stroke-linecap="round" opacity=".8"/>
-        <path d="M1180 -10 Q 1120 220 1210 420 Q 1280 580 1190 760 Q 1150 840 1180 910" stroke="#c3d9ea" stroke-width="10" stroke-linecap="round" opacity=".8"/>
-        <ellipse cx="305" cy="655" rx="105" ry="34" fill="#b9d2e4" opacity=".85"/>
-        <ellipse cx="305" cy="650" rx="80" ry="24" fill="#c9deed" opacity=".9"/>
-        <g class="scene-trails" stroke="#a06c24" stroke-width="2.6" stroke-dasharray="2 9" stroke-linecap="round" opacity=".75">
-          <path d="M720 640 Q 640 520 505 470 Q 380 425 300 400"/>
-          <path d="M720 640 Q 830 540 985 505 Q 1090 482 1155 430"/>
-          <path d="M720 640 Q 700 470 660 380 Q 640 330 700 265"/>
-          <path d="M505 470 Q 560 380 700 265"/>
-          <path d="M985 505 Q 900 400 700 265"/>
-          <path d="M300 400 Q 380 320 480 285"/>
-        </g>
-        <g fill="#7d9b76">
-          <circle cx="180" cy="480" r="17"/><circle cx="215" cy="462" r="13"/><circle cx="150" cy="455" r="12"/>
-          <circle cx="420" cy="600" r="15"/><circle cx="452" cy="582" r="11"/><circle cx="395" cy="578" r="10"/>
-          <circle cx="1010" cy="640" r="16"/><circle cx="1045" cy="620" r="12"/><circle cx="985" cy="615" r="10"/>
-          <circle cx="880" cy="300" r="14"/><circle cx="912" cy="282" r="10"/>
-          <circle cx="240" cy="300" r="13"/><circle cx="268" cy="284" r="9"/>
-        </g>
-        <g fill="#93ad8b">
-          <circle cx="196" cy="492" r="12"/><circle cx="436" cy="610" r="10"/><circle cx="1026" cy="650" r="11"/><circle cx="894" cy="310" r="9"/>
-        </g>
-        <g stroke="#8a6d3b" stroke-width="4"><path d="M1152 428 L1236 452"/><path d="M1156 416 L1240 440"/></g>
-        <g transform="translate(1330,790)" opacity=".8">
-          <circle r="34" fill="#FBF7EC" stroke="#c9b98f" stroke-width="1.5"/>
-          <path d="M0 -26 L7 0 L0 26 L-7 0 Z" fill="#D9482B"/>
-          <path d="M-26 0 L0 -7 L26 0 L0 7 Z" fill="#a06c24"/>
-          <text y="-42" text-anchor="middle" font-size="14" font-weight="700" fill="#6B6257">N</text>
-        </g>
-        <circle cx="90" cy="120" r="30" fill="#f2c063" opacity=".85"/>
-        <circle cx="90" cy="120" r="42" fill="#f2c063" opacity=".25"/>
+      <svg class="scene scene-desktop" viewBox="0 0 1568 882" fill="none" preserveAspectRatio="xMidYMid slice">
+<defs><linearGradient id="paper" x1="0" y1="0" x2=".15" y2="1"><stop offset="0" stop-color="#f3ead3"/><stop offset=".46" stop-color="#F6F1E7"/><stop offset="1" stop-color="#efe4cb"/></linearGradient><filter id="soft" x="-40%" y="-60%" width="180%" height="220%"><feGaussianBlur stdDeviation="2.6"/></filter><filter id="bloom" x="-90%" y="-90%" width="280%" height="280%"><feGaussianBlur stdDeviation="7"/></filter></defs><g class="scene-terrain"><rect width="1568" height="882" fill="url(#paper)"/><circle cx="125.44" cy="88.2" r="30" fill="#f2c063" class="scene-sun" opacity=".85"/><circle cx="125.44" cy="88.2" r="44" fill="#f2c063" class="scene-sun" opacity=".22"/><g fill="#FFFDF6" opacity=".85"><ellipse cx="722" cy="56" rx="52" ry="17"/><ellipse cx="750" cy="46" rx="32" ry="14"/><ellipse cx="692" cy="51" rx="26" ry="12"/></g><g fill="#FFFDF6" opacity=".85"><ellipse cx="1055" cy="50" rx="52" ry="17"/><ellipse cx="1083" cy="40" rx="32" ry="14"/><ellipse cx="1025" cy="45" rx="26" ry="12"/></g><g fill="#FFFDF6" opacity=".85"><ellipse cx="938" cy="73" rx="52" ry="17"/><ellipse cx="966" cy="63" rx="32" ry="14"/><ellipse cx="908" cy="68" rx="26" ry="12"/></g><path d="M-20 459 Q 392 388 862 459 T 1588 423 L1588 902 L-20 902 Z" fill="#e9dfc6" opacity=".8"/><path d="M-20 582 Q 470 512 941 582 T 1588 547 L1588 902 L-20 902 Z" fill="#e2d3ae" opacity=".75"/><path d="M125 892 Q 470 617 815 688 T 1490 547" fill="none" stroke="#a8c6dd" stroke-width="24" stroke-linecap="round" opacity=".8"/><path d="M125 892 Q 470 617 815 688 T 1490 547" fill="none" stroke="#c3d9ea" stroke-width="9" stroke-linecap="round" opacity=".8"/></g><g class="scene-trails"><path d="M272,414 Q806,360 1011,374 Q1216,388 1239,463 Q1262,538 1157,559 Q1052,580 966,650 Q880,720 723,724 Q566,728 433,735 Q300,742 248,671 Q196,600 324,586 Q452,572 576,586 T700,600" fill="none" stroke="#c97e2c" stroke-width="5" stroke-linecap="round" opacity=".45"/><path d="M272,414 Q806,360 1011,374 Q1216,388 1239,463 Q1262,538 1157,559 Q1052,580 966,650 Q880,720 723,724 Q566,728 433,735 Q300,742 248,671 Q196,600 324,586 Q452,572 576,586 T700,600" fill="none" stroke="#a06c24" stroke-width="2.6" stroke-dasharray="2 9" stroke-linecap="round" opacity=".9"/><circle cx="272" cy="414" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="806" cy="360" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="1216" cy="388" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="1262" cy="538" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="1052" cy="580" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="880" cy="720" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="566" cy="728" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="300" cy="742" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="196" cy="600" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="452" cy="572" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="700" cy="600" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/></g><g class="scene-veg"><g transform="translate(1416,793) scale(1.10)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(702,388) scale(0.90)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(77,312) scale(1.02)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1133,465) scale(0.73)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1205,593) scale(1.00)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(964,806) scale(0.86)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1171,470) scale(0.96)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1023,440) scale(0.74)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(745,665) scale(0.97)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(187,286) scale(0.82)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(532,471) scale(0.83)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(857,409) scale(0.75)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1206,659) scale(1.07)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1407,595) scale(1.13)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(289,808) scale(0.73)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(659,278) scale(1.06)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1063,807) scale(1.06)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1452,565) scale(1.14)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1155,458) scale(1.14)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(601,372) scale(0.73)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(733,374) scale(1.12)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1454,385) scale(0.75)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1380,512) scale(0.85)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1368,718) scale(1.10)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1071,727) scale(0.99)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(395,429) scale(0.88)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(1194,606) scale(1.02)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(1276,367) scale(1.05)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(531,607) scale(1.13)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(405,816) scale(0.83)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(878,598) scale(0.89)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(876,560) scale(0.98)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(1113,311) scale(0.95)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(1338,417) scale(1.07)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(291,548) scale(0.97)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(153,682) scale(0.99)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(1069,596) scale(1.02)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(823,468) scale(1.16)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(160,776) scale(1.15)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(781,723) scale(1.07)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(942,464) scale(0.93)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(557,470) scale(1.18)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(545,515) scale(0.97)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(1261,563) scale(1.02)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(415,457) scale(0.84)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(358,449) scale(1.14)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(728,373) scale(1.03)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(697,766) scale(0.90)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(1313,441) scale(1.19)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(986,331) scale(1.12)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(251,755) scale(0.84)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(1143,520) scale(1.07)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g></g><g class="scene-dress"><g transform="translate(1330,150)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-40 -145 80 165" width="160" height="330">
+  <g transform="translate(0,0)">
+    <!-- 气球主体 -->
+    <path d="M0,-132 C-22,-132 -28,-112 -28,-98 C-28,-82 -14,-70 0,-68 C14,-70 28,-82 28,-98 C28,-112 22,-132 0,-132 Z"
+          fill="#FFFDF6" stroke="#c9b98f" stroke-width="2" stroke-linejoin="round"/>
+    <!-- 土色竖纹 3 条 -->
+    <path d="M0,-131 Q2,-100 0,-68" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M-14,-123 Q-12,-96 -7,-70" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M14,-123 Q12,-96 7,-70" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- 小金星 -->
+    <path d="M0,-113.5 L1.6,-109.8 L5.5,-109.4 L2.6,-106.7 L3.4,-102.9 L0,-105 L-3.4,-102.9 L-2.6,-106.7 L-5.5,-109.4 L-1.6,-109.8 Z"
+          fill="#e8a84a" stroke="#c97e2c" stroke-width="0.8" stroke-linejoin="round"/>
+    <!-- 4 根墨色细绳 -->
+    <path d="M-13,-72 L-9,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M-5,-68 L-4,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M5,-68 L4,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M13,-72 L9,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- 土色小吊篮 -->
+    <rect x="-11" y="-40" width="22" height="15" rx="3" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+    <path d="M-11,-34 L11,-34" fill="none" stroke="#8a6d3b" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+</svg></g><g transform="translate(120,780)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="0" rx="16" ry="3.5" fill="#c9b98f" opacity="0.55"/>
+  <circle cx="0" cy="-26" r="26" fill="none" stroke="#c97e2c" stroke-width="1.5"/>
+  <circle cx="0" cy="-26" r="22" fill="#FFFDF6" stroke="#c9b98f" stroke-width="2"/>
+  <circle cx="0" cy="-26" r="13" fill="none" stroke="#d9cba6" stroke-width="1.2"/>
+  <path d="M16 -26 L20 -26 M11.31 -14.69 L14.14 -11.86 M0 -10 L0 -6 M-11.31 -14.69 L-14.14 -11.86 M-16 -26 L-20 -26 M-11.31 -37.31 L-14.14 -40.14 M0 -42 L0 -46 M11.31 -37.31 L14.14 -40.14" fill="none" stroke="#2A2620" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M0 -40 L3.5 -26 L0 -12 L-3.5 -26 Z" fill="#D9482B"/>
+  <circle cx="0" cy="-26" r="2.6" fill="#2A2620"/>
+  <circle cx="0" cy="-41.5" r="2" fill="#FFD27A"/>
+</g></g><g transform="translate(950,770)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="33" ry="5" fill="#6B6257" opacity="0.18"/>
+  <rect x="-32" y="-42" width="64" height="42" rx="7" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+  <path d="M-30,-39 H30" stroke="#8a6d3b" stroke-width="1.5" opacity="0.45" fill="none"/>
+  <path d="M-11,-35 V-6 M11,-35 V-6" stroke="#8a6d3b" stroke-width="1.5" opacity="0.38" fill="none"/>
+  <rect x="-6.5" y="-27" width="13" height="15" rx="3" fill="#e8a84a" stroke="#c97e2c" stroke-width="1.5"/>
+  <circle cx="0" cy="-20" r="2.2" fill="#a06c24"/>
+  <rect x="-30" y="-45.5" width="60" height="3.5" rx="1.7" fill="#FFFDF6" opacity="0.8"/>
+  <circle cx="-6" cy="-48" r="1.4" fill="#FFD27A" opacity="0.8"/>
+  <circle cx="9" cy="-49" r="1.1" fill="#FFD27A" opacity="0.7"/>
+  <g transform="rotate(-25 -28 -40)">
+    <rect x="-30" y="-53" width="60" height="13" rx="6" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+    <rect x="-25" y="-50" width="50" height="7" rx="3.5" fill="#c9b98f"/>
+  </g>
+</g></g><g transform="translate(950,180)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-60 -110 120 130" width="120" height="130">
+  <g transform="translate(0,0)">
+    <ellipse cx="0" cy="-8" rx="27" ry="8" fill="#FFFDF6" opacity="0.5"/>
+    <path d="M0 -74 L21 -44 L0 -14 L-21 -44 Z" fill="#a8c6dd" stroke="#2e3a5c" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M-7 -48 L-1 -66" stroke="#FFFDF6" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+    <path d="M4 -52 L7 -58" stroke="#FFFDF6" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+    <circle cx="23" cy="-72" r="2.5" fill="#a8c6dd"/>
+    <g class="nl" display="none">
+      <circle cx="0" cy="-44" r="40" fill="#a8c6dd" opacity="0.4"/>
+    </g>
+  </g>
+</svg></g><g transform="translate(150,250)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="0" rx="9" ry="2.5" fill="#d9cba6" opacity="0.7"/>
+  <path d="M0,0 L0,-70" stroke="#2A2620" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="0" cy="-70" r="2.4" fill="#2A2620"/>
+  <path d="M0,-70 Q32,-52 64,-44" fill="none" stroke="#6B6257" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M16,-61.6 L29,-55.7 L22.5,-46 Z" fill="#e8a84a" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M32,-54.5 L45,-49.6 L38.5,-40 Z" fill="#D9482B" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M48,-48.6 L61,-44.8 L54.5,-35 Z" fill="#a8c6dd" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <g class="nl" display="none">
+    <path d="M54.5,-35 L56,-28" stroke="#6B6257" stroke-width="1.5" stroke-linecap="round"/>
+    <circle cx="56" cy="-24" r="8" fill="#FFD27A" opacity="0.28"/>
+    <circle cx="56" cy="-24" r="3.4" fill="#FFD27A" stroke="#a06c24" stroke-width="1.4"/>
+  </g>
+</g></g></g><g class="scene-ff"><g transform="translate(1150,420)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g><g transform="translate(1290,560)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g><g transform="translate(700,640)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g></g>
       </svg>
+      <svg class="scene scene-mobile" viewBox="0 0 780 1400" fill="none" preserveAspectRatio="xMidYMid slice">
+<defs><linearGradient id="paper" x1="0" y1="0" x2=".15" y2="1"><stop offset="0" stop-color="#f3ead3"/><stop offset=".46" stop-color="#F6F1E7"/><stop offset="1" stop-color="#efe4cb"/></linearGradient><filter id="soft" x="-40%" y="-60%" width="180%" height="220%"><feGaussianBlur stdDeviation="2.6"/></filter><filter id="bloom" x="-90%" y="-90%" width="280%" height="280%"><feGaussianBlur stdDeviation="7"/></filter></defs><g class="scene-terrain"><rect width="780" height="1400" fill="url(#paper)"/><circle cx="62.4" cy="140.0" r="30" fill="#f2c063" class="scene-sun" opacity=".85"/><circle cx="62.4" cy="140.0" r="44" fill="#f2c063" class="scene-sun" opacity=".22"/><g fill="#FFFDF6" opacity=".85"><ellipse cx="359" cy="89" rx="52" ry="17"/><ellipse cx="387" cy="79" rx="32" ry="14"/><ellipse cx="329" cy="84" rx="26" ry="12"/></g><g fill="#FFFDF6" opacity=".85"><ellipse cx="525" cy="79" rx="52" ry="17"/><ellipse cx="553" cy="69" rx="32" ry="14"/><ellipse cx="495" cy="74" rx="26" ry="12"/></g><g fill="#FFFDF6" opacity=".85"><ellipse cx="467" cy="116" rx="52" ry="17"/><ellipse cx="495" cy="106" rx="32" ry="14"/><ellipse cx="437" cy="111" rx="26" ry="12"/></g><path d="M-20 728 Q 195 616 429 728 T 800 672 L800 1420 L-20 1420 Z" fill="#e9dfc6" opacity=".8"/><path d="M-20 924 Q 234 812 468 924 T 800 868 L800 1420 L-20 1420 Z" fill="#e2d3ae" opacity=".75"/><path d="M62 1410 Q 234 980 406 1092 T 741 868" fill="none" stroke="#a8c6dd" stroke-width="24" stroke-linecap="round" opacity=".8"/><path d="M62 1410 Q 234 980 406 1092 T 741 868" fill="none" stroke="#c3d9ea" stroke-width="9" stroke-linecap="round" opacity=".8"/></g><g class="scene-trails"><path d="M390,320 Q596,494 594,647 Q592,800 596,953 Q600,1106 599,1208 Q598,1310 497,1265 Q396,1220 286,1274 Q176,1328 186,1216 Q196,1104 189,997 Q182,890 286,794 Q390,698 283,601 T176,504" fill="none" stroke="#c97e2c" stroke-width="5" stroke-linecap="round" opacity=".45"/><path d="M390,320 Q596,494 594,647 Q592,800 596,953 Q600,1106 599,1208 Q598,1310 497,1265 Q396,1220 286,1274 Q176,1328 186,1216 Q196,1104 189,997 Q182,890 286,794 Q390,698 283,601 T176,504" fill="none" stroke="#a06c24" stroke-width="2.6" stroke-dasharray="2 9" stroke-linecap="round" opacity=".9"/><circle cx="390" cy="320" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="596" cy="494" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="592" cy="800" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="600" cy="1106" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="598" cy="1310" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="396" cy="1220" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="176" cy="1328" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="196" cy="1104" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="182" cy="890" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="390" cy="698" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/><circle cx="176" cy="504" r="7" fill="#FFFDF6" stroke="#a06c24" stroke-width="2.4"/></g><g class="scene-veg"><g transform="translate(307,632) scale(0.77)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(680,952) scale(1.01)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(427,773) scale(1.03)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(503,1192) scale(0.90)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(149,558) scale(1.03)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(475,475) scale(1.05)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(63,1218) scale(1.08)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(553,535) scale(1.00)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(522,1322) scale(0.72)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(262,990) scale(0.97)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(325,1030) scale(0.92)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(316,440) scale(0.76)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(361,1090) scale(0.89)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(561,917) scale(1.10)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(499,716) scale(0.76)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(86,456) scale(1.09)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(117,1028) scale(0.76)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(565,980) scale(0.89)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(327,834) scale(1.14)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(233,615) scale(1.01)"><g id="tree-sage">
+    <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#soft)"/>
+    <circle cx="-7.5" cy="-10" r="11"   fill="#7d9b76"/>
+    <circle cx="7"    cy="-8"  r="9"    fill="#93ad8b"/>
+    <circle cx="-1"   cy="-19" r="9.5"  fill="#93ad8b"/>
+    <circle cx="-2.5" cy="-6"  r="8"    fill="#7d9b76" opacity=".92"/>
+  </g></g><g transform="translate(265,1294) scale(0.95)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(667,1143) scale(1.09)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(184,633) scale(0.81)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(76,696) scale(1.03)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(142,776) scale(0.89)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(517,593) scale(1.20)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(461,1110) scale(1.02)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(388,1334) scale(1.16)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(622,516) scale(1.04)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(708,1045) scale(1.01)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(498,644) scale(1.09)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(594,552) scale(1.00)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(459,796) scale(1.07)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(694,1278) scale(0.92)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(471,1212) scale(1.15)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(248,1184) scale(1.08)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(202,925) scale(1.04)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(198,649) scale(0.99)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(82,921) scale(1.18)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g><g transform="translate(625,537) scale(1.13)"><g id="grass-tuft">
+    <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#soft)"/>
+    <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9"
+          fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+    <circle cx="3"    cy="-3"   r="3"   fill="#7d9b76"/>
+    <circle cx="0"    cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+  </g></g></g><g class="scene-dress"><g transform="translate(640,140)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-40 -145 80 165" width="160" height="330">
+  <g transform="translate(0,0)">
+    <!-- 气球主体 -->
+    <path d="M0,-132 C-22,-132 -28,-112 -28,-98 C-28,-82 -14,-70 0,-68 C14,-70 28,-82 28,-98 C28,-112 22,-132 0,-132 Z"
+          fill="#FFFDF6" stroke="#c9b98f" stroke-width="2" stroke-linejoin="round"/>
+    <!-- 土色竖纹 3 条 -->
+    <path d="M0,-131 Q2,-100 0,-68" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M-14,-123 Q-12,-96 -7,-70" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M14,-123 Q12,-96 7,-70" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- 小金星 -->
+    <path d="M0,-113.5 L1.6,-109.8 L5.5,-109.4 L2.6,-106.7 L3.4,-102.9 L0,-105 L-3.4,-102.9 L-2.6,-106.7 L-5.5,-109.4 L-1.6,-109.8 Z"
+          fill="#e8a84a" stroke="#c97e2c" stroke-width="0.8" stroke-linejoin="round"/>
+    <!-- 4 根墨色细绳 -->
+    <path d="M-13,-72 L-9,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M-5,-68 L-4,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M5,-68 L4,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M13,-72 L9,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- 土色小吊篮 -->
+    <rect x="-11" y="-40" width="22" height="15" rx="3" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+    <path d="M-11,-34 L11,-34" fill="none" stroke="#8a6d3b" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+</svg></g><g transform="translate(90,1330)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="0" rx="16" ry="3.5" fill="#c9b98f" opacity="0.55"/>
+  <circle cx="0" cy="-26" r="26" fill="none" stroke="#c97e2c" stroke-width="1.5"/>
+  <circle cx="0" cy="-26" r="22" fill="#FFFDF6" stroke="#c9b98f" stroke-width="2"/>
+  <circle cx="0" cy="-26" r="13" fill="none" stroke="#d9cba6" stroke-width="1.2"/>
+  <path d="M16 -26 L20 -26 M11.31 -14.69 L14.14 -11.86 M0 -10 L0 -6 M-11.31 -14.69 L-14.14 -11.86 M-16 -26 L-20 -26 M-11.31 -37.31 L-14.14 -40.14 M0 -42 L0 -46 M11.31 -37.31 L14.14 -40.14" fill="none" stroke="#2A2620" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M0 -40 L3.5 -26 L0 -12 L-3.5 -26 Z" fill="#D9482B"/>
+  <circle cx="0" cy="-26" r="2.6" fill="#2A2620"/>
+  <circle cx="0" cy="-41.5" r="2" fill="#FFD27A"/>
+</g></g><g transform="translate(640,1340)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="33" ry="5" fill="#6B6257" opacity="0.18"/>
+  <rect x="-32" y="-42" width="64" height="42" rx="7" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+  <path d="M-30,-39 H30" stroke="#8a6d3b" stroke-width="1.5" opacity="0.45" fill="none"/>
+  <path d="M-11,-35 V-6 M11,-35 V-6" stroke="#8a6d3b" stroke-width="1.5" opacity="0.38" fill="none"/>
+  <rect x="-6.5" y="-27" width="13" height="15" rx="3" fill="#e8a84a" stroke="#c97e2c" stroke-width="1.5"/>
+  <circle cx="0" cy="-20" r="2.2" fill="#a06c24"/>
+  <rect x="-30" y="-45.5" width="60" height="3.5" rx="1.7" fill="#FFFDF6" opacity="0.8"/>
+  <circle cx="-6" cy="-48" r="1.4" fill="#FFD27A" opacity="0.8"/>
+  <circle cx="9" cy="-49" r="1.1" fill="#FFD27A" opacity="0.7"/>
+  <g transform="rotate(-25 -28 -40)">
+    <rect x="-30" y="-53" width="60" height="13" rx="6" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+    <rect x="-25" y="-50" width="50" height="7" rx="3.5" fill="#c9b98f"/>
+  </g>
+</g></g><g transform="translate(530,190)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-60 -110 120 130" width="120" height="130">
+  <g transform="translate(0,0)">
+    <ellipse cx="0" cy="-8" rx="27" ry="8" fill="#FFFDF6" opacity="0.5"/>
+    <path d="M0 -74 L21 -44 L0 -14 L-21 -44 Z" fill="#a8c6dd" stroke="#2e3a5c" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M-7 -48 L-1 -66" stroke="#FFFDF6" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+    <path d="M4 -52 L7 -58" stroke="#FFFDF6" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+    <circle cx="23" cy="-72" r="2.5" fill="#a8c6dd"/>
+    <g class="nl" display="none">
+      <circle cx="0" cy="-44" r="40" fill="#a8c6dd" opacity="0.4"/>
+    </g>
+  </g>
+</svg></g><g transform="translate(90,700)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="0" rx="9" ry="2.5" fill="#d9cba6" opacity="0.7"/>
+  <path d="M0,0 L0,-70" stroke="#2A2620" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="0" cy="-70" r="2.4" fill="#2A2620"/>
+  <path d="M0,-70 Q32,-52 64,-44" fill="none" stroke="#6B6257" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M16,-61.6 L29,-55.7 L22.5,-46 Z" fill="#e8a84a" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M32,-54.5 L45,-49.6 L38.5,-40 Z" fill="#D9482B" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M48,-48.6 L61,-44.8 L54.5,-35 Z" fill="#a8c6dd" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <g class="nl" display="none">
+    <path d="M54.5,-35 L56,-28" stroke="#6B6257" stroke-width="1.5" stroke-linecap="round"/>
+    <circle cx="56" cy="-24" r="8" fill="#FFD27A" opacity="0.28"/>
+    <circle cx="56" cy="-24" r="3.4" fill="#FFD27A" stroke="#a06c24" stroke-width="1.4"/>
+  </g>
+</g></g></g><g class="scene-ff"><g transform="translate(540,520)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g><g transform="translate(660,1120)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g><g transform="translate(240,900)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g></g>
+      </svg>
+      <div class="night-veil" aria-hidden="true"><svg class="veil-moon moon-d" viewBox="-34 -34 68 68" aria-hidden="true"><path d="M15.5 -26.8 A31 31 0 1 0 15.5 26.8 A28 28 0 1 1 15.5 -26.8 Z" fill="#f7f0cf" stroke="#a06c24" stroke-width="1.6" stroke-linejoin="round" transform="rotate(-18)"/></svg><svg class="veil-moon moon-m" viewBox="-34 -34 68 68" aria-hidden="true"><path d="M15.5 -26.8 A31 31 0 1 0 15.5 26.8 A28 28 0 1 1 15.5 -26.8 Z" fill="#f7f0cf" stroke="#a06c24" stroke-width="1.6" stroke-linejoin="round" transform="rotate(-18)"/></svg></div>
 
       <div class="hud">
         <span class="brand">Aetrix<b>.</b></span>
@@ -89,75 +829,431 @@
       <div class="m-zone m-zone-2" aria-hidden="true">⛲ 中央广场</div>
       <div class="m-scroll-hint" aria-hidden="true"><span>↓ 上滑继续逛 · 中央广场在下面</span></div>
 
-      <button type="button" class="mark m-cinema" :style="{ left: '48.61%', top: '31.67%' }" @click="openCinema" aria-label="梦幻影院">
-        <div class="pin">🎬</div>
+      <button type="button" class="mark m-cinema" :style="{ left: '28.83%', top: '65.46%' }" @click="openCinema" aria-label="梦幻影院">
+        <div class="pin art art-cinema"><svg class="art-svg" viewBox="-78 -164 156 184" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="70" ry="12" fill="#2A2620" opacity="0.13"/>
+
+  <!-- 坡屋顶 -->
+  <path d="M-64 -108 L0 -156 L64 -108 Z" fill="#D9482B" stroke="#a06c24" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M-54 -108 L0 -149 L0 -122 Z" fill="#FFFDF6" opacity="0.15"/>
+
+  <!-- 墙体 -->
+  <rect x="-50" y="-110" width="100" height="110" fill="#FFFDF6" stroke="#c9b98f" stroke-width="2.2"/>
+
+  <!-- 圆形胶片窗 -->
+  <circle cx="0" cy="-72" r="24" fill="#2e3a5c" stroke="#c9b98f" stroke-width="2.2"/>
+  <circle cx="12" cy="-72" r="3.4" fill="#e8a84a" stroke="#a06c24" stroke-width="1.5"/>
+  <circle cx="6" cy="-61.6" r="3.4" fill="#e8a84a" stroke="#a06c24" stroke-width="1.5"/>
+  <circle cx="-6" cy="-61.6" r="3.4" fill="#e8a84a" stroke="#a06c24" stroke-width="1.5"/>
+  <circle cx="-12" cy="-72" r="3.4" fill="#e8a84a" stroke="#a06c24" stroke-width="1.5"/>
+  <circle cx="-6" cy="-82.4" r="3.4" fill="#e8a84a" stroke="#a06c24" stroke-width="1.5"/>
+  <circle cx="6" cy="-82.4" r="3.4" fill="#e8a84a" stroke="#a06c24" stroke-width="1.5"/>
+
+  <!-- 纸色小门 -->
+  <rect x="-15" y="-38" width="30" height="38" fill="#F6F1E7" stroke="#c9b98f" stroke-width="2.2"/>
+  <circle cx="9" cy="-19" r="2.2" fill="#8a6d3b"/>
+
+  <!-- 门槛 -->
+  <rect x="-22" y="-3" width="44" height="6" rx="1.5" fill="#d9cba6" stroke="#c9b98f" stroke-width="1.5"/>
+
+  <!-- 夜景 -->
+  <g class="nl" display="none">
+    <circle cx="0" cy="-72" r="60" fill="#FFD27A" opacity="0.3"/>
+    <circle cx="0" cy="-72" r="24" fill="#FFD27A" stroke="#e8a84a" stroke-width="2.2"/>
+    <rect x="-1.8" y="-38" width="3.6" height="38" fill="#FFD27A" opacity="0.85"/>
+    <rect x="-22" y="-3" width="44" height="6" rx="1.5" fill="#FFD27A" opacity="0.35"/>
+  </g>
+</g></svg></div>
         <span class="name">梦幻影院</span>
         <span class="sub">{{ cinemaSub }}</span>
       </button>
 
-      <button type="button" class="mark m-parcels" :style="{ left: '20.83%', top: '46.67%' }" @click="openParcels" :aria-label="remaining > 0 ? `封存驿站，有 ${remaining} 个包裹待拆` : '封存驿站'">
+      <button type="button" class="mark m-parcels" :style="{ left: '44.64%', top: '68.63%' }" @click="openParcels" :aria-label="remaining > 0 ? `封存驿站，有 ${remaining} 个包裹待拆` : '封存驿站'">
         <span class="dot" v-if="remaining > 0">{{ remaining }}</span>
-        <div class="pin">📦</div>
+        <div class="pin art art-archive"><svg class="art-svg" viewBox="-72 -138 144 158" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+    <ellipse cx="0" cy="2" rx="52" ry="12" fill="#2A2620" opacity="0.13"/>
+
+    <!-- 墙体 -->
+    <rect x="-52" y="-78" width="104" height="78" fill="#D8CDB8" stroke="#8a6d3b" stroke-width="2.2"/>
+
+    <!-- 烟囱 -->
+    <rect x="22" y="-124" width="13" height="26" fill="#c9b98f" stroke="#8a6d3b" stroke-width="2.2"/>
+
+    <!-- 屋顶 -->
+    <polygon points="-64,-78 64,-78 0,-130" fill="#c9b98f" stroke="#8a6d3b" stroke-width="2.2" stroke-linejoin="round"/>
+    <polygon points="-58,-80 0,-124 -9,-124 -58,-88" fill="#FFFDF6" opacity="0.15"/>
+
+    <!-- 门 -->
+    <rect x="-44" y="-48" width="26" height="48" fill="#c9b98f" stroke="#8a6d3b" stroke-width="2.2"/>
+    <circle cx="-38" cy="-24" r="1.8" fill="#8a6d3b"/>
+
+    <!-- 窗 -->
+    <rect x="18" y="-66" width="26" height="22" rx="2" fill="#FFD27A" stroke="#8a6d3b" stroke-width="2.2"/>
+    <line x1="31" y1="-66" x2="31" y2="-44" stroke="#8a6d3b" stroke-width="1.5"/>
+    <line x1="18" y1="-55" x2="44" y2="-55" stroke="#8a6d3b" stroke-width="1.5"/>
+
+    <!-- 纸箱 A -->
+    <rect x="-50" y="-22" width="28" height="22" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.8"/>
+    <line x1="-36" y1="-22" x2="-36" y2="0" stroke="#6B6257" stroke-width="1.6"/>
+    <line x1="-50" y1="-11" x2="-22" y2="-11" stroke="#6B6257" stroke-width="1.6"/>
+
+    <!-- 纸箱 B -->
+    <rect x="-22" y="-20" width="26" height="20" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.8"/>
+    <line x1="-9" y1="-20" x2="-9" y2="0" stroke="#6B6257" stroke-width="1.6"/>
+    <line x1="-22" y1="-10" x2="4" y2="-10" stroke="#6B6257" stroke-width="1.6"/>
+
+    <!-- 纸箱 C -->
+    <rect x="-42" y="-44" width="26" height="22" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.8"/>
+    <line x1="-29" y1="-44" x2="-29" y2="-22" stroke="#6B6257" stroke-width="1.6"/>
+    <line x1="-42" y1="-33" x2="-16" y2="-33" stroke="#6B6257" stroke-width="1.6"/>
+
+    <!-- 火漆章 -->
+    <circle cx="-29" cy="-33" r="5.5" fill="#D9482B" stroke="#a06c24" stroke-width="1"/>
+    <polygon points="-29,-36.4 -28.12,-34.21 -25.77,-34.05 -27.57,-32.54 -27,-30.25 -29,-31.5 -31,-30.25 -30.43,-32.54 -32.23,-34.05 -29.88,-34.21" fill="#e8a84a"/>
+
+    <g class="nl" display="none">
+      <circle cx="31" cy="-55" r="26" fill="#FFD27A" opacity="0.28"/>
+      <circle cx="-29" cy="-33" r="13" fill="#D9482B" opacity="0.16"/>
+      <circle cx="-29" cy="-33" r="6" fill="#FFD27A" opacity="0.32"/>
+    </g>
+  </g></svg></div>
         <span class="name">封存驿站</span>
         <span class="sub">{{ parcelsSub }}</span>
       </button>
 
-      <button type="button" class="mark lighthouse m-lighthouse" :style="{ left: '80.21%', top: '50%' }" @click="goServer" aria-label="传送灯塔">
-        <div class="pin">🗼</div>
+      <button type="button" class="mark lighthouse m-lighthouse" :style="{ left: '82.3%', top: '62.5%' }" @click="goServer" aria-label="传送灯塔">
+        <div class="pin art art-lighthouse"><svg class="art-svg" viewBox="-52 -238 104 258" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="44" ry="12" fill="#2A2620" opacity="0.13"/>
+
+  <!-- 塔身 -->
+  <path d="M -30 0 L -13 -190 L 13 -190 L 30 0 Z" fill="#FFFDF6" stroke="#c9b98f" stroke-width="2.2" stroke-linejoin="round"/>
+
+  <!-- 两道朱红横纹 -->
+  <path d="M -26.4 -40 L 26.4 -40 L 25.1 -55 L -25.1 -55 Z" fill="#D9482B"/>
+  <path d="M -22 -90 L 22 -90 L 20.6 -105 L -20.6 -105 Z" fill="#D9482B"/>
+
+  <!-- 塔身左上高光细线 -->
+  <line x1="-24" y1="-14" x2="-10.5" y2="-178" stroke="#d9cba6" stroke-width="1.6" opacity="0.85"/>
+
+  <!-- 灯室 -->
+  <rect x="-16" y="-212" width="32" height="28" rx="3" fill="#2e3a5c" stroke="#c9b98f" stroke-width="2"/>
+  <circle cx="0" cy="-198" r="5" fill="#a8c6dd"/>
+  <path d="M -20 -212 L 20 -212 L 0 -221 Z" fill="#2e3a5c" stroke="#c9b98f" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="0" cy="-225" r="4.5" fill="#e8a84a" stroke="#a06c24" stroke-width="1.6"/>
+
+  <g class="nl" display="none">
+    <!-- 暖金光束 -->
+    <path d="M -16 -198 L -80 -236 L -80 -212 Z" fill="#FFD27A" opacity="0.25"/>
+    <!-- 塔身暖窗 -->
+    <rect x="-6.5" y="-142" width="13" height="17" rx="2" fill="#FFD27A"/>
+  </g>
+</g></svg></div>
         <span class="name">传送灯塔</span>
         <span class="sub">{{ lighthouseSub }}</span>
       </button>
 
-      <button type="button" class="mark m-shop" :style="{ left: '35.07%', top: '54.44%' }" @click="goShop" aria-label="补给站">
-        <div class="pin">🧰</div>
+      <button type="button" class="mark m-shop" :style="{ left: '36.10%', top: '83.14%' }" @click="goShop" aria-label="补给站">
+        <div class="pin art art-supply"><svg class="art-svg" viewBox="-56 -106 112 126" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="48" ry="12" fill="#2A2620" opacity="0.13"/>
+  <rect x="-32" y="-52" width="64" height="52" fill="#93ad8b" stroke="#4A7C59" stroke-width="2.2"/>
+  <path d="M -38 -52 L 0 -78 L 38 -52 Z" fill="#F6F1E7" stroke="#4A7C59" stroke-width="2.2" stroke-linejoin="round"/>
+  <path d="M -35 -53.5 L -1 -76.5 L -1 -53.5 Z" fill="#FFFDF6" opacity="0.15"/>
+  <rect x="-9" y="-34" width="18" height="34" fill="#d9cba6" stroke="#6B6257" stroke-width="2"/>
+  <circle cx="4" cy="-17" r="1.6" fill="#6B6257"/>
+  <rect x="-24" y="-42" width="12" height="12" fill="#a8c6dd" stroke="#2e3a5c" stroke-width="1.8"/>
+  <rect x="16" y="-18" width="14" height="18" rx="2" fill="#d9cba6" stroke="#8a6d3b" stroke-width="1.8"/>
+  <line x1="16" y1="-13" x2="30" y2="-13" stroke="#2A2620" stroke-width="1.4"/>
+  <line x1="16" y1="-6" x2="30" y2="-6" stroke="#2A2620" stroke-width="1.4"/>
+  <line x1="0" y1="-78" x2="0" y2="-98" stroke="#2A2620" stroke-width="1.8"/>
+  <path d="M 0 -98 L 16 -92 L 0 -86 Z" fill="#e8a84a" stroke="#a06c24" stroke-width="1.5" stroke-linejoin="round"/>
+  <g class="nl" display="none">
+    <circle cx="-18" cy="-36" r="11" fill="#FFD27A" opacity="0.55"/>
+    <circle cx="7" cy="-84" r="9" fill="#FFD27A" opacity="0.3"/>
+    <circle cx="7" cy="-84" r="4" fill="#FFD27A" opacity="0.9"/>
+  </g>
+</g></svg></div>
         <span class="name">补给站</span>
         <span class="sub">商店 · 充积分买会员</span>
       </button>
 
-      <button type="button" class="mark m-collector" :style="{ left: '68.4%', top: '58.33%' }" @click="goCollector" aria-label="收藏家小屋">
-        <div class="pin">🏅</div>
+      <button type="button" class="mark m-collector" :style="{ left: '12.50%', top: '68.63%' }" @click="goCollector" aria-label="收藏家小屋">
+        <div class="pin art art-collector"><svg class="art-svg" viewBox="-60 -103 138 122" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="52" ry="11" fill="#2A2620" opacity="0.13"/>
+
+  <!-- 屋身 -->
+  <path d="M -23 -56 L -23 -7 Q -23 0 -16 0 L 16 0 Q 23 0 23 -7 L 23 -56 Z"
+        fill="#FFFDF6" stroke="#c9b98f" stroke-width="2.2"/>
+
+  <!-- 小圆拱门 -->
+  <path d="M -10 0 L -10 -15 A 10 10 0 0 1 10 -15 L 10 0 Z" fill="#8a6d3b"/>
+
+  <!-- 蘑菇盖 -->
+  <path d="M -42 -56 A 42 36 0 0 1 42 -56 Z"
+        fill="#D9482B" stroke="#8f2f1f" stroke-width="2.2"/>
+  <circle cx="-19" cy="-74" r="3.6" fill="#FFFDF6"/>
+  <circle cx="0" cy="-83" r="3.6" fill="#FFFDF6"/>
+  <circle cx="19" cy="-74" r="3.6" fill="#FFFDF6"/>
+  <ellipse cx="-10" cy="-84" rx="15" ry="6.5" fill="#FFFDF6" opacity="0.15"
+           transform="rotate(-20 -10 -84)"/>
+
+  <!-- 小金徽章 -->
+  <circle cx="56" cy="-18" r="14" fill="#e8a84a" stroke="#a06c24" stroke-width="2"/>
+  <path d="M56,-24.5 L57.65,-20.27 L62.18,-20.01 L58.66,-17.13 L59.82,-12.74 L56,-15.2 L52.18,-12.74 L53.34,-17.13 L49.82,-20.01 L54.35,-20.27 Z"
+        fill="#2A2620"/>
+
+  <!-- 门缝暖光 -->
+  <g class="nl" display="none">
+    <ellipse cx="0" cy="-1" rx="15" ry="6" fill="#FFD27A" opacity="0.3"/>
+    <rect x="-9" y="-3" width="18" height="3" rx="1.5" fill="#FFD27A"/>
+  </g>
+</g>
+</svg></div>
         <span class="name">收藏家小屋</span>
         <span class="sub">{{ collectorSub }}</span>
       </button>
 
-      <button type="button" class="mark m-post" :style="{ left: '33.33%', top: '33.89%' }" @click="openLetter" :aria-label="hasLetter && !letterRead ? '邮局，有一封未读来信' : '邮局'">
+      <button type="button" class="mark m-post" :style="{ left: '17.35%', top: '47.54%' }" @click="openLetter" :aria-label="hasLetter && !letterRead ? '邮局，有一封未读来信' : '邮局'">
         <span class="dot" v-if="hasLetter && !letterRead">1</span>
-        <div class="pin">✉️</div>
+        <div class="pin art art-post"><svg class="art-svg" viewBox="-60 -124 120 144" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="44" ry="12" fill="#2A2620" opacity="0.13"/>
+
+  <!-- 小木屋墙体 -->
+  <rect x="-40" y="-60" width="80" height="60" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2.2" stroke-linejoin="round"/>
+
+  <!-- 坡屋顶 -->
+  <polygon points="-52,-56 0,-88 52,-56" fill="#F6F1E7" stroke="#8a6d3b" stroke-width="2.2" stroke-linejoin="round"/>
+  <polygon points="-36.4,-65.6 -10.4,-81.6 -7.8,-77.3 -33.8,-61.3" fill="#FFFDF6" opacity="0.15"/>
+
+  <!-- 门 -->
+  <rect x="-18" y="-36" width="20" height="36" fill="#c9b98f" stroke="#8a6d3b" stroke-width="1.8" stroke-linejoin="round"/>
+  <circle cx="0" cy="-19" r="1.8" fill="#e8a84a"/>
+
+  <!-- 纸窗 -->
+  <rect x="12" y="-46" width="20" height="18" fill="#FFFDF6" stroke="#8a6d3b" stroke-width="1.8" stroke-linejoin="round"/>
+  <line x1="22" y1="-46" x2="22" y2="-28" stroke="#8a6d3b" stroke-width="1.5"/>
+  <line x1="12" y1="-37" x2="32" y2="-37" stroke="#8a6d3b" stroke-width="1.5"/>
+
+  <!-- 门旁小信封 -->
+  <rect x="-34" y="-32" width="12" height="9" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.5" stroke-linejoin="round"/>
+  <polyline points="-34,-32 -28,-27 -22,-32" fill="none" stroke="#2A2620" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 屋顶猫头鹰 -->
+  <circle cx="0" cy="-100" r="12" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2.2"/>
+  <polygon points="-7,-108.5 -5,-116 -2,-110.5" fill="#d9cba6" stroke="#8a6d3b" stroke-width="1.8" stroke-linejoin="round"/>
+  <polygon points="7,-108.5 5,-116 2,-110.5" fill="#d9cba6" stroke="#8a6d3b" stroke-width="1.8" stroke-linejoin="round"/>
+  <circle cx="-4.5" cy="-103" r="4.2" fill="#FFFDF6" stroke="#8a6d3b" stroke-width="1.5"/>
+  <circle cx="4.5" cy="-103" r="4.2" fill="#FFFDF6" stroke="#8a6d3b" stroke-width="1.5"/>
+  <circle cx="-4.5" cy="-103" r="1.7" fill="#2A2620"/>
+  <circle cx="4.5" cy="-103" r="1.7" fill="#2A2620"/>
+  <polygon points="0,-97.5 -2.5,-94.5 2.5,-94.5" fill="#e8a84a"/>
+
+  <g class="nl" display="none">
+    <circle cx="22" cy="-37" r="20" fill="#FFD27A" opacity="0.18"/>
+    <circle cx="22" cy="-37" r="14" fill="#FFD27A" opacity="0.24"/>
+    <rect x="12" y="-46" width="20" height="18" fill="#FFD27A" stroke="#8a6d3b" stroke-width="1.8" stroke-linejoin="round"/>
+    <line x1="22" y1="-46" x2="22" y2="-28" stroke="#c97e2c" stroke-width="1.5"/>
+    <line x1="12" y1="-37" x2="32" y2="-37" stroke="#c97e2c" stroke-width="1.5"/>
+  </g>
+</g></svg></div>
         <span class="name">邮局</span>
         <span class="sub">{{ postSub }}</span>
       </button>
 
-      <button type="button" class="mark m-gamehall" :style="{ left: '68.4%', top: '36.67%' }" @click="goGame" aria-label="游戏大厅">
-        <div class="pin">🎪</div>
+      <button type="button" class="mark m-gamehall" :style="{ left: '56.12%', top: '82.24%' }" @click="goGame" aria-label="游戏大厅">
+        <div class="pin art art-hall"><svg class="art-svg" viewBox="-60 -133 120 153" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <!-- 接地阴影 -->
+  <ellipse cx="0" cy="2" rx="52" ry="12" fill="#2A2620" opacity="0.13"/>
+  
+  <!-- 建筑主体 -->
+  <rect x="-40" y="-100" width="80" height="100" rx="4" fill="#FFFDF6" stroke="#c9b98f" stroke-width="2.2"/>
+  
+  <!-- 屋顶 -->
+  <path d="M -52,-100 Q 0,-135 52,-100 Z" fill="#a8c6dd" stroke="#2e3a5c" stroke-width="2" stroke-linejoin="round"/>
+  <!-- 屋顶提亮 -->
+  <path d="M -48,-100 Q -20,-112 0,-125 L 0,-100 Z" fill="#FFFDF6" opacity="0.4"/>
+  
+  <!-- 门 -->
+  <rect x="-15" y="-50" width="30" height="50" rx="3" fill="#6B6257" stroke="#2A2620" stroke-width="1.8"/>
+  <!-- 门把手 -->
+  <circle cx="8" cy="-25" r="2" fill="#e8a84a"/>
+  
+  <!-- 门徽记（金色圆 + 墨色骰子） -->
+  <circle cx="0" cy="-30" r="7" fill="#e8a84a" stroke="#a06c24" stroke-width="1.5"/>
+  <rect x="-3" y="-33" width="6" height="6" rx="1.5" fill="#2A2620"/>
+  <circle cx="-1" cy="-31" r="0.8" fill="#e8a84a"/>
+  <circle cx="1" cy="-31" r="0.8" fill="#e8a84a"/>
+  <circle cx="0" cy="-30" r="0.8" fill="#e8a84a"/>
+  <circle cx="-1" cy="-29" r="0.8" fill="#e8a84a"/>
+  <circle cx="1" cy="-29" r="0.8" fill="#e8a84a"/>
+  
+  <!-- 窗户 -->
+  <rect x="-28" y="-80" width="12" height="14" rx="2" fill="#FFFDF6" stroke="#2A2620" stroke-width="1.5"/>
+  <line x1="-22" y1="-80" x2="-22" y2="-66" stroke="#2A2620" stroke-width="1"/>
+  <line x1="-28" y1="-73" x2="-16" y2="-73" stroke="#2A2620" stroke-width="1"/>
+  <rect x="16" y="-80" width="12" height="14" rx="2" fill="#FFFDF6" stroke="#2A2620" stroke-width="1.5"/>
+</g>
+<g class="nl" display="none">
+  <ellipse cx="-28" cy="-80" rx="11" ry="12.5" fill="#FFD27A" opacity=".3"/>
+  <ellipse cx="16" cy="-80" rx="11" ry="12.5" fill="#FFD27A" opacity=".3"/>
+  <rect x="-34" y="-87" width="12" height="14" rx="2.5" fill="#FFD27A"/>
+  <rect x="10" y="-87" width="12" height="14" rx="2.5" fill="#FFD27A"/>
+  <circle cx="-44" cy="-96" r="10" fill="#FFD27A" opacity=".3"/>
+  <circle cx="44" cy="-96" r="10" fill="#FFD27A" opacity=".3"/>
+  <circle cx="-44" cy="-96" r="4" fill="#FFD27A"/>
+  <circle cx="44" cy="-96" r="4" fill="#FFD27A"/>
+</g></svg></div>
         <span class="name">游戏大厅</span>
         <span class="sub">签到 · 许愿池 · 追新历</span>
       </button>
 
-      <button type="button" class="mark m-stele" :style="{ left: '15.28%', top: '33.33%' }" @click="openStele" aria-label="观影碑">
-        <div class="pin">🏆</div>
+      <button type="button" class="mark m-stele" :style="{ left: '51.40%', top: '41.42%' }" @click="openStele" aria-label="观影碑">
+        <div class="pin art art-stele"><svg class="art-svg" viewBox="-48 -204 96 222" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="40" ry="10" fill="#2A2620" opacity="0.13"/>
+  <rect x="-35" y="-170" width="70" height="170" rx="10" fill="#2e3a5c" stroke="#c97e2c" stroke-width="2"/>
+  <rect x="-29" y="-156" width="8" height="112" rx="4" fill="#FFFDF6" opacity="0.12"/>
+  <path fill="#e8a84a" d="M-24.5 -120a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0M-10.5 -120a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0M3.5 -120a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0M17.5 -120a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0M-24.5 -100a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0M-10.5 -100a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0M3.5 -100a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0M17.5 -100a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0"/>
+  <ellipse cx="0" cy="-170" rx="16" ry="6" fill="#FFFDF6" opacity="0.35"/>
+  <polygon points="0,-196 14,-186 0,-176 -14,-186" fill="#a8c6dd" stroke="#2e3a5c" stroke-width="1.5"/>
+  <g class="nl" display="none">
+    <circle cx="0" cy="-186" r="16" fill="#a8c6dd" opacity="0.4"/>
+    <circle cx="-21" cy="-120" r="2" fill="#FFD27A" opacity="0.5"/>
+    <circle cx="-7" cy="-120" r="2" fill="#FFD27A" opacity="0.5"/>
+    <circle cx="7" cy="-120" r="2" fill="#FFD27A" opacity="0.5"/>
+    <circle cx="21" cy="-120" r="2" fill="#FFD27A" opacity="0.5"/>
+    <circle cx="-21" cy="-100" r="2" fill="#FFD27A" opacity="0.5"/>
+    <circle cx="-7" cy="-100" r="2" fill="#FFD27A" opacity="0.5"/>
+    <circle cx="7" cy="-100" r="2" fill="#FFD27A" opacity="0.5"/>
+    <circle cx="21" cy="-100" r="2" fill="#FFD27A" opacity="0.5"/>
+  </g>
+</g>
+</svg></div>
         <span class="name">观影碑</span>
         <span class="sub">{{ steleSub }}</span>
       </button>
 
-      <button type="button" class="mark m-board" :style="{ left: '28%', top: '25%' }" @click="openBoard" aria-label="服主告示牌">
-        <div class="pin">📢</div>
+      <button type="button" class="mark m-board" :style="{ left: '22%', top: '82.5%' }" @click="openBoard" aria-label="服主告示牌">
+        <div class="pin art art-board"><svg class="art-svg" viewBox="-52 -108 104 128" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="44" ry="12" fill="#2A2620" opacity="0.13"/>
+
+  <rect x="-31" y="-88" width="10" height="88" rx="3" fill="#c9b98f" stroke="#8a6d3b" stroke-width="2.2"/>
+  <rect x="21" y="-88" width="10" height="88" rx="3" fill="#c9b98f" stroke="#8a6d3b" stroke-width="2.2"/>
+
+  <rect x="-44" y="-76" width="88" height="46" rx="5" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2.2"/>
+
+  <line x1="-32" y1="-61" x2="18" y2="-61" stroke="#2A2620" stroke-width="2" stroke-linecap="round" opacity="0.72"/>
+  <line x1="-32" y1="-49" x2="4" y2="-49" stroke="#2A2620" stroke-width="2" stroke-linecap="round" opacity="0.72"/>
+
+  <line x1="-37" y1="-69" x2="-10" y2="-69" stroke="#FFFDF6" stroke-width="2" stroke-linecap="round" opacity="0.2"/>
+
+  <g>
+    <path d="M0 -76 L0 -100" stroke="#a06c24" stroke-width="2" stroke-linecap="round"/>
+    <ellipse cx="-3" cy="-93" rx="3" ry="5" fill="#e8a84a" transform="rotate(-25 -3 -93)"/>
+    <ellipse cx="3" cy="-93" rx="3" ry="5" fill="#c97e2c" transform="rotate(25 3 -93)"/>
+    <ellipse cx="-3" cy="-87" rx="3" ry="5" fill="#c97e2c" transform="rotate(-25 -3 -87)"/>
+    <ellipse cx="3" cy="-87" rx="3" ry="5" fill="#e8a84a" transform="rotate(25 3 -87)"/>
+</g>
+</g>
+<g class="nl" display="none">
+  <ellipse cx="0" cy="-52" rx="46" ry="30" fill="#FFD27A" opacity=".22"/>
+  <path d="M-30 -104l16 8-16 8z" fill="#e8a84a"/>
+  <path d="M30 -104l-16 8 16 8z" fill="#c97e2c"/>
+  <circle cx="-38" cy="-102" r="6" fill="#FFD27A" opacity=".3"/>
+  <circle cx="38" cy="-102" r="6" fill="#FFD27A" opacity=".3"/>
+  <circle cx="-38" cy="-102" r="3" fill="#FFD27A"/>
+  <circle cx="38" cy="-102" r="3" fill="#FFD27A"/>
+</g></svg></div>
         <span class="name">告示牌</span>
         <span class="sub">{{ boardSub }}</span>
       </button>
 
-      <button type="button" class="mark m-wall" :style="{ left: '58%', top: '77%' }" @click="openWall" aria-label="到此一游留言墙">
-        <div class="pin">💬</div>
+      <button type="button" class="mark m-wall" :style="{ left: '76.8%', top: '44%' }" @click="openWall" aria-label="到此一游留言墙">
+        <div class="pin art art-walltree"><svg class="art-svg" viewBox="-76 -170 148 190" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="56" ry="12" fill="#2A2620" opacity="0.13"/>
+  <path d="M-9 0 C-7 -24 -6 -46 -5 -70 L5 -70 C6 -46 7 -24 9 0 Z" fill="#8a6d3b"/>
+  <path d="M-4 -6 C-3 -28 -3 -48 -3 -66" stroke="#c9b98f" stroke-width="1.5" fill="none" opacity="0.7"/>
+  <circle cx="-34" cy="-94" r="34" fill="#7d9b76"/>
+  <circle cx="32" cy="-98" r="32" fill="#7d9b76"/>
+  <circle cx="4" cy="-90" r="30" fill="#93ad8b"/>
+  <circle cx="-4" cy="-126" r="36" fill="#93ad8b"/>
+  <ellipse cx="-10" cy="-150" rx="20" ry="9" fill="#FFFDF6" opacity="0.12"/>
+</g>
+<g class="nl" display="none">
+  <circle cx="-30" cy="-70" r="2.5" fill="#FFD27A"/>
+  <circle cx="-30" cy="-70" r="7" fill="#FFD27A" opacity=".35"/>
+  <circle cx="28" cy="-74" r="2.5" fill="#FFD27A"/>
+  <circle cx="28" cy="-74" r="7" fill="#FFD27A" opacity=".35"/>
+</g></svg></div>
         <span class="name">留言墙</span>
         <span class="sub">{{ wallSub }}</span>
       </button>
 
-      <button type="button" class="mark m-fortune" :class="{ 'fortune-pending': !fortuneDrew }" :style="{ left: '79%', top: '74%' }" @click="openFortune" aria-label="每日抽一签">
-        <div class="pin">🎋</div>
+      <button type="button" class="mark m-fortune" :class="{ 'fortune-pending': !fortuneDrew }" :style="{ left: '67.09%', top: '66.36%' }" @click="openFortune" aria-label="每日抽一签">
+        <div class="pin art art-fortune"><svg class="art-svg" viewBox="-70 -168 140 188" fill="none" aria-hidden="true"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="46" ry="12" fill="#2A2620" opacity="0.13"/>
+
+  <!-- 小圆地台 -->
+  <ellipse cx="0" cy="-1" rx="56" ry="13" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+  <ellipse cx="0" cy="-3" rx="45" ry="9.5" fill="#c9b98f" opacity="0.45"/>
+
+  <!-- 后柱 -->
+  <rect x="-26.5" y="-100" width="5" height="92" rx="1.5" fill="#F6F1E7" stroke="#6B6257" stroke-width="1.8"/>
+  <rect x="21.5" y="-100" width="5" height="92" rx="1.5" fill="#F6F1E7" stroke="#6B6257" stroke-width="1.8"/>
+
+  <!-- 签筒 -->
+  <rect x="-14" y="-54" width="28" height="46" rx="3" fill="#c9b98f" stroke="#8a6d3b" stroke-width="2.2"/>
+  <path d="M-13 -36 h26" stroke="#8a6d3b" stroke-width="1.5" opacity="0.45"/>
+  <ellipse cx="0" cy="-54" rx="14" ry="5" fill="#d9cba6"/>
+
+  <!-- 五支签 -->
+  <g transform="translate(-9,-52) rotate(-13)">
+    <rect x="-1.7" y="-25" width="3.4" height="25" rx="1.2" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.5"/>
+    <rect x="-1.7" y="-25" width="3.4" height="4.6" rx="1.2" fill="#D9482B"/>
+  </g>
+  <g transform="translate(-4.5,-52) rotate(-6)">
+    <rect x="-1.7" y="-28" width="3.4" height="28" rx="1.2" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.5"/>
+    <rect x="-1.7" y="-28" width="3.4" height="4.6" rx="1.2" fill="#D9482B"/>
+  </g>
+  <g transform="translate(0,-52) rotate(1)">
+    <rect x="-1.7" y="-31" width="3.4" height="31" rx="1.2" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.5"/>
+    <rect x="-1.7" y="-31" width="3.4" height="4.6" rx="1.2" fill="#D9482B"/>
+  </g>
+  <g transform="translate(4.5,-52) rotate(7)">
+    <rect x="-1.7" y="-27" width="3.4" height="27" rx="1.2" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.5"/>
+    <rect x="-1.7" y="-27" width="3.4" height="4.6" rx="1.2" fill="#D9482B"/>
+  </g>
+  <g transform="translate(9,-52) rotate(14)">
+    <rect x="-1.7" y="-24" width="3.4" height="24" rx="1.2" fill="#FFFDF6" stroke="#6B6257" stroke-width="1.5"/>
+    <rect x="-1.7" y="-24" width="3.4" height="4.6" rx="1.2" fill="#D9482B"/>
+  </g>
+
+  <ellipse cx="0" cy="-54" rx="14" ry="5" fill="none" stroke="#8a6d3b" stroke-width="2.2"/>
+
+  <!-- 前柱 -->
+  <rect x="-49" y="-100" width="6" height="97" rx="2" fill="#FFFDF6" stroke="#6B6257" stroke-width="2"/>
+  <rect x="43" y="-100" width="6" height="97" rx="2" fill="#FFFDF6" stroke="#6B6257" stroke-width="2"/>
+
+  <!-- 檐口 -->
+  <rect x="-62" y="-103" width="124" height="8" rx="2" fill="#FFFDF6" stroke="#a06c24" stroke-width="2"/>
+
+  <!-- 金色小尖顶 -->
+  <path d="M0 -156 L60 -103 L-60 -103 Z" fill="#e8a84a" stroke="#a06c24" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M0 -156 L60 -103 L0 -103 Z" fill="#c97e2c" opacity="0.4"/>
+  <path d="M0 -152 L-52 -105" stroke="#FFD27A" stroke-width="2.5" stroke-linecap="round" opacity="0.85"/>
+  <circle cx="0" cy="-156" r="4.5" fill="#FFD27A" stroke="#a06c24" stroke-width="1.8"/>
+
+  <!-- 夜间暖光灯笼 -->
+  <g class="nl" display="none">
+    <line x1="30" y1="-103" x2="30" y2="-88" stroke="#6B6257" stroke-width="1.5"/>
+    <circle cx="30" cy="-78" r="17" fill="#FFD27A" opacity="0.22"/>
+    <circle cx="30" cy="-78" r="9" fill="#FFD27A" stroke="#c97e2c" stroke-width="1.8"/>
+</g>
+</g>
+</svg></div>
         <span class="name">抽签亭</span>
         <span class="sub">{{ fortuneSub }}</span>
       </button>
 
-      <div class="player m-player" :style="{ left: '50%', top: '73.33%' }">
+      <div class="player m-player" :style="{ left: '49%', top: '88%' }">
         <div class="tok">{{ avatarChar }}</div>
         <span class="who">你在这里</span>
       </div>
@@ -187,10 +1283,10 @@
     </div>
 
     <div class="w-overlay" v-if="overlay !== 'none'" @click.self="closeOverlay">
-      <div class="w-sheet" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl"
+      <div class="w-sheet" :class="{ 'is-stele': overlay === 'stele' }" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl"
            @touchstart="onSheetTouchStart" @touchend="onSheetTouchEnd">
         <div class="w-grip" aria-hidden="true"></div>
-        <div class="w-sheet-head">
+        <div class="w-sheet-head" v-if="overlay !== 'stele'">
           <span class="w-sheet-title">{{ sheetTitle }}</span>
           <button type="button" class="w-sheet-close" @click="closeOverlay" aria-label="关闭">✕</button>
         </div>
@@ -211,28 +1307,49 @@
           <WaxLetter :letter="letterData" />
         </template>
         <template v-else-if="overlay === 'stele'">
-          <div class="w-tabs">
-            <button type="button" class="w-tab" :class="{ on: lbBoard === 'hot' }" @click="lbBoard = 'hot'">热播榜</button>
-            <button type="button" class="w-tab" :class="{ on: lbBoard === 'duration' }" @click="lbBoard = 'duration'">观影时长榜</button>
+          <div class="lb-head">
+            <div class="lb-arch"><svg width="150" height="30" viewBox="0 0 150 30" fill="none" aria-hidden="true"><path d="M6 27 Q75 -14 144 27" stroke="#c97e2c" stroke-width="1.6"/><path d="M24 27 Q75 2 126 27" stroke="#d9cba6" stroke-width="1.3"/><circle cx="75" cy="7" r="10.5" fill="#FCF8EC"/><path d="M75 3 l2.5 5.4 5.9.7 -4.4 4 1.2 5.8 -5.2-3 -5.2 3 1.2-5.8 -4.4-4 5.9-.7 z" fill="#e8a84a" stroke="#c97e2c" stroke-width="1.1" stroke-linejoin="round"/></svg></div>
+            <div class="lb-title">观影碑</div>
+            <div class="lb-sub">排行榜 · <b>{{ lbPeriod === 'day' ? '今日' : '本周' }}</b> {{ lbPeriod === 'day' ? '00:00 起' : '周一 00:00 起' }}</div>
+            <button type="button" class="w-sheet-close lb-close" @click="closeOverlay" aria-label="关闭">✕</button>
           </div>
-          <div class="w-subtabs">
-            <button type="button" class="w-subtab" :class="{ on: lbPeriod === 'day' }" @click="lbPeriod = 'day'">日榜</button>
-            <button type="button" class="w-subtab" :class="{ on: lbPeriod === 'week' }" @click="lbPeriod = 'week'">周榜</button>
+          <div class="lb-tabs">
+            <button type="button" class="lb-tab" :class="{ on: lbBoard === 'hot' }" @click="lbBoard = 'hot'"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.6" stroke="currentColor" stroke-width="1.5"/><path d="M6.4 5.2 L11 8 L6.4 10.8 Z" fill="currentColor"/></svg>热播榜</button>
+            <button type="button" class="lb-tab" :class="{ on: lbBoard === 'duration' }" @click="lbBoard = 'duration'"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 2.5 h7 M4.5 13.5 h7 M5.5 2.5 c0 3.4 5 3.4 5 5.5 c0 2.1 -5 2.1 -5 5.5 M10.5 2.5 c0 3.4 -5 3.4 -5 5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>观影时长榜</button>
+          </div>
+          <div class="lb-periods">
+            <span class="lb-plabel">碑刻周期</span>
+            <button type="button" class="lb-period" :class="{ on: lbPeriod === 'day' }" @click="lbPeriod = 'day'">日榜</button>
+            <button type="button" class="lb-period" :class="{ on: lbPeriod === 'week' }" @click="lbPeriod = 'week'">周榜</button>
           </div>
           <p class="w-sheet-empty" v-if="lbLoading && lbRows.length === 0">正在抄榜…</p>
           <p class="w-sheet-empty" v-else-if="lbRows.length === 0">还没有人上榜，快去看片抢头名 🏆</p>
-          <ul class="w-lb-list" v-else>
-            <li v-for="(r, i) in lbRows" :key="String(r.item_id ?? r.user_id ?? i)" class="w-lb-row" :class="{ me: lbBoard === 'duration' && String(r.nickname) === nickname }">
-              <span class="w-lb-rank" :class="{ top: i < 3 }">{{ i + 1 }}</span>
-              <span class="w-lb-main">
-                <b>{{ lbBoard === 'hot' ? String(r.name ?? '') : String(r.nickname ?? '') }}</b>
-                <small v-if="lbBoard === 'hot'">{{ String(r.item_type ?? '') }}</small>
-              </span>
-              <span class="w-lb-num">{{ lbBoard === 'hot' ? `${Number(r.count ?? 0)} 次` : `${fmtHours(r.seconds)}` }}</span>
-            </li>
-          </ul>
-          <p class="w-sheet-foot" v-if="lbMyRank">我的排名：第 {{ lbMyRank }} 名</p>
-          <p class="w-sheet-foot">{{ lbScopeText }} · 时长榜只显示昵称，可在「我的账号 → 设置」里关掉自己上榜</p>
+          <template v-else>
+            <div class="lb-podium">
+              <div v-for="slot in lbPodium" :key="slot.rank" class="lb-pod" :class="`r${slot.rank}`">
+                <div class="lb-medal"><svg class="lb-crown" v-if="slot.rank === 1" width="26" height="16" viewBox="0 0 26 16" fill="none" aria-hidden="true"><path d="M2 14 L4 4 L9.5 9 L13 2.5 L16.5 9 L22 4 L24 14 Z" fill="#e8a84a" stroke="#c97e2c" stroke-width="1.3" stroke-linejoin="round"/></svg>{{ slot.rank }}<span class="lb-sealdot" v-if="slot.rank === 1">冠</span></div>
+                <div class="lb-pname">{{ slot.title }}</div>
+                <div class="lb-ptype" v-if="lbBoard === 'hot'">{{ slot.type }}</div>
+                <div class="lb-pnum">{{ slot.num }} <small>{{ slot.unit }}</small></div>
+                <div class="lb-plinth"></div>
+              </div>
+            </div>
+            <div class="lb-divider"><i></i></div>
+            <ul class="lb-rows">
+              <li v-for="(r, i) in lbRest" :key="String(r.item_id ?? r.user_id ?? i)" class="lb-row" :class="{ me: lbIsMe(r) }">
+                <span class="lb-rk">{{ i + 4 }}</span>
+                <span class="lb-rname">{{ lbTitle(r) }}</span>
+                <span class="lb-tag" v-if="lbBoard === 'hot'">{{ String(r.item_type ?? '') }}</span>
+                <span class="lb-metag" v-if="lbIsMe(r)">我</span>
+                <span class="lb-rnum">{{ lbNumText(r) }} <small>{{ lbUnitText() }}</small></span>
+              </li>
+            </ul>
+          </template>
+          <div class="lb-myrank">
+            <div class="lb-stamp"><b>{{ lbStampTop }}</b><span>{{ lbStampBottom }}</span></div>
+            <div class="lb-mtxt">{{ lbMyLead }}<b v-if="lbMyStrong">{{ lbMyStrong }}</b><template v-if="lbMyGap">，距上一名只差 <span class="gap">{{ lbMyGap }}</span></template>{{ lbMyTail }}</div>
+          </div>
+          <p class="lb-scope">{{ lbScopeLine }}</p>
         </template>
         <template v-else-if="overlay === 'board'">
           <div v-if="boardData.visible === true" class="w-board">
@@ -729,6 +1846,73 @@ const lbScopeText = computed(() =>
   lbPeriod.value === 'day' ? '今日（自然日）· 全服' : '本周（自然周）· 全服',
 )
 
+/* 排行榜新版式（碑座 + 刻字行 + 我的排名印章条） */
+function lbTitle(r: Record<string, unknown>): string {
+  return lbBoard.value === 'hot' ? String(r.name ?? '') : String(r.nickname ?? '')
+}
+function lbNumText(r: Record<string, unknown>): string {
+  return lbBoard.value === 'hot' ? String(Number(r.count ?? 0)) : fmtHours(r.seconds).replace(/\s*小时$/, '')
+}
+function lbUnitText(): string {
+  return lbBoard.value === 'hot' ? '次' : '小时'
+}
+function lbIsMe(r: Record<string, unknown>): boolean {
+  return lbBoard.value === 'duration' && String(r.nickname ?? '') === nickname.value
+}
+const lbPodium = computed(() => {
+  const top = lbRows.value.slice(0, 3).map((r, i) => ({
+    rank: i + 1,
+    title: lbTitle(r),
+    type: String(r.item_type ?? ''),
+    num: lbNumText(r),
+    unit: lbBoard.value === 'hot' ? (i === 0 && lbBoard.value === 'hot' ? '次播放' : '次') : '小时',
+  }))
+  /* 视觉顺序：亚军左、冠军中、季军右 */
+  const order = [top[1], top[0], top[2]]
+  return order.filter((s) => s !== undefined)
+})
+const lbRest = computed(() => lbRows.value.slice(3))
+const lbMyRow = computed(() =>
+  lbBoard.value === 'duration' ? lbRows.value.find((r) => lbIsMe(r)) ?? null : null,
+)
+const lbMyGap = computed<string | null>(() => {
+  const rank = lbMyRank.value
+  if (lbBoard.value !== 'duration' || !rank || rank <= 1 || !lbMyRow.value) return null
+  const prev = lbRows.value[rank - 2]
+  if (!prev) return null
+  const gapSec = Number(prev.seconds ?? 0) - Number(lbMyRow.value.seconds ?? 0)
+  if (!Number.isFinite(gapSec) || gapSec <= 0) return null
+  const g = fmtHours(gapSec)
+  return g === '0 小时' ? null : g
+})
+const lbStampTop = computed(() =>
+  lbBoard.value === 'duration' && lbMyRank.value ? String(lbMyRank.value) : '榜',
+)
+const lbStampBottom = computed(() =>
+  lbBoard.value === 'duration' && lbMyRank.value ? '名' : '外',
+)
+const lbMyLead = computed(() => {
+  if (lbBoard.value === 'hot') return '热播榜是全服的榜，你的口味在'
+  if (!lbMyRank.value) return '你还没上榜——去看一部片子，把名字刻上碑。'
+  return `你${lbPeriod.value === 'day' ? '今天' : '本周'}排在`
+})
+const lbMyStrong = computed(() => {
+  if (lbBoard.value === 'hot') return '时长榜'
+  if (!lbMyRank.value) return ''
+  return `第 ${lbMyRank.value} 名`
+})
+const lbMyTail = computed(() => {
+  if (lbBoard.value === 'hot') return '见分晓——去看看你排第几。'
+  if (!lbMyRank.value) return ''
+  if (lbMyRank.value === 1) return '，碑顶就是你，守住它。'
+  return lbMyGap.value ? '——再看一部就追上了。' : '。'
+})
+const lbScopeLine = computed(() =>
+  lbBoard.value === 'hot'
+    ? `${lbScopeText.value} · 按全服播放次数统计`
+    : `${lbScopeText.value} · 时长榜只显示昵称，可在「我的账号 → 设置」里关掉自己上榜`,
+)
+
 const steleSub = computed(() => {
   if (!steleLoaded.value) return '观影碑'
   const first = steleTop.value
@@ -1069,7 +2253,7 @@ onUnmounted(() => {
 .world {
   position: relative;
   width: min(100%, 160dvh);
-  aspect-ratio: 1440 / 900;
+  aspect-ratio: 1568 / 882;
   overflow: hidden;
   background: linear-gradient(180deg, #f3ead3 0%, #F6F1E7 55%, #efe4cb 100%);
   container-type: inline-size;
@@ -1181,44 +2365,60 @@ button.pill {
 }
 
 .mark .pin {
-  width: 4.31cqw;
-  height: 4.31cqw;
   margin: 0 auto;
-  border-radius: 1.39cqw;
-  background: var(--paper-card);
-  border: 1.5px solid var(--line);
-  box-shadow: 0 2px 4px rgba(42, 38, 32, .08), 0 12px 32px rgba(42, 38, 32, .13);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 2.01cqw;
   position: relative;
   transition: transform .15s ease;
 }
+/* 纸痕测绘：地标本体是手绘 SVG（宽按画布 1568 等比，1 单位 = 100/1568 cqw） */
+.mark .pin .art-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.mark .art-cinema { width: 9.95cqw; }
+.mark .art-post { width: 7.65cqw; }
+.mark .art-archive { width: 9.18cqw; }
+.mark .art-supply { width: 7.14cqw; }
+.mark .art-fortune { width: 8.93cqw; }
+.mark .art-walltree { width: 9.44cqw; }
+.mark .art-board { width: 6.63cqw; }
+.mark .art-stele { width: 6.12cqw; }
+.mark .art-collector { width: 8.80cqw; }
+.mark .art-lighthouse { width: 6.63cqw; }
+.mark .art-hall { width: 7.65cqw; }
+/* 夜灯层：部件自带 .nl（暖窗光/光晕），只在夜里显形 */
+.mark .art-svg .nl { display: none; }
+.world-root.dp-night .mark .art-svg .nl { display: inline; }
+/* 场景昼夜小部件：弯月与萤火虫只在夜里，太阳夜里收起 */
+.scene .scene-moon, .scene .scene-ff { display: none; }
+.world-root.dp-night .scene .scene-moon,
+.world-root.dp-night .scene .scene-ff { display: inline; }
+.world-root.dp-night .scene .scene-sun { display: none; }
+.scene-mobile { display: none; }
 
 .mark .pin::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -0.49cqw;
-  transform: translateX(-50%) rotate(45deg);
-  width: 0.90cqw;
-  height: 0.90cqw;
-  background: var(--paper-card);
-  border-right: 1.5px solid var(--line);
-  border-bottom: 1.5px solid var(--line);
+  content: none;
 }
 
 .mark .name {
-  margin-top: 0.90cqw;
+  margin-top: 0.55cqw;
   display: inline-block;
-  background: rgba(42, 38, 32, .88);
-  color: #FFFDF6;
+  background: rgba(255, 253, 246, .92);
+  color: #5b4632;
+  border: 1px solid rgba(42, 38, 32, .10);
+  box-shadow: 0 1px 3px rgba(42, 38, 32, .08);
   font-size: 0.94cqw;
   font-weight: 700;
   border-radius: 0.56cqw;
   padding: 0.21cqw 0.69cqw;
   letter-spacing: 0.03cqw;
+  white-space: nowrap;
+}
+.world-root.dp-night .mark .name {
+  background: rgba(42, 38, 32, .88);
+  color: #F6F1E7;
+  border-color: rgba(246, 241, 231, .16);
 }
 
 .mark .sub {
@@ -1233,8 +2433,8 @@ button.pill {
 
 .mark .dot {
   position: absolute;
-  top: -0.42cqw;
-  right: calc(50% - 2.64cqw);
+  top: -0.30cqw;
+  right: calc(50% - 4.60cqw);
   min-width: 1.46cqw;
   height: 1.46cqw;
   border-radius: 99px;
@@ -1360,7 +2560,7 @@ button.pill {
 
 .quest .stamp-done { position: absolute; top: -11px; right: 12px; transform: rotate(-6deg); border: 2px solid var(--red); color: var(--red); background: rgba(255,253,246,.92); border-radius: 6px; padding: 2px 9px; font-size: 11px; font-weight: 800; letter-spacing: 1px; }
 .mark.fortune-pending .pin { animation: fortunePulse 2.2s ease-in-out infinite; }
-@keyframes fortunePulse { 0% { box-shadow: 0 0 0 0 rgba(242,192,99,.55); } 70% { box-shadow: 0 0 0 14px rgba(242,192,99,0); } 100% { box-shadow: 0 0 0 0 rgba(242,192,99,0); } }
+@keyframes fortunePulse { 0% { filter: drop-shadow(0 0 2px rgba(242,192,99,.0)); } 50% { filter: drop-shadow(0 0 9px rgba(242,192,99,.75)); } 100% { filter: drop-shadow(0 0 2px rgba(242,192,99,0)); } }
 .m-feed { background: rgba(255,253,246,.94); border: 1px solid var(--line); border-radius: 99px; padding: 7px 14px; font-size: 12px; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .m-feed i { color: var(--green); font-style: normal; margin-right: 4px; }
 
@@ -1567,7 +2767,25 @@ button.pill {
 .dp-dawn .scene { filter: brightness(.97) sepia(.14); }
 .dp-day .scene { filter: none; }
 .dp-dusk .scene { filter: brightness(.9) sepia(.22); }
-.dp-night .scene { filter: brightness(.58) saturate(.82); }
+.dp-night .scene { filter: brightness(.45) saturate(.95); }
+.night-veil { display: none; }
+.dp-night .night-veil {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(26, 38, 92, .72) 0%, rgba(26, 38, 92, .66) 60%, rgba(26, 38, 92, .70) 100%);
+}
+.veil-moon { position: absolute; overflow: visible; filter: drop-shadow(0 0 9px rgba(247, 240, 207, .55)); }
+.veil-moon.moon-d { left: 27.4%; top: 7%; width: 46px; height: 46px; }
+.veil-moon.moon-m { display: none; }
+@media (max-width: 1023px) {
+  .veil-moon.moon-d { display: none; }
+  .veil-moon.moon-m { display: block; left: 9%; top: 8.6%; width: 38px; height: 38px; }
+}
+.world-root.dp-night .mark .art-svg { filter: brightness(.86) saturate(.92);
+}
 .dp-night .world::after {
   /* 星空点缀（纯 CSS，不新增图片） */
   content: "";
@@ -1595,118 +2813,131 @@ button.pill {
 }
 .dp-night .lighthouse .pin {
   /* 夜晚灯塔亮灯 */
-  box-shadow: 0 0 22px 8px rgba(255, 214, 120, .8);
-  border-color: #f2c063;
+  filter: drop-shadow(0 0 10px rgba(255, 214, 120, .85));
 }
 
 /* ---------- 新弹层内容：排行榜 / 告示牌 / 留言墙 / 抽签 ---------- */
-.w-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
+.w-sheet.is-stele {
+  background: radial-gradient(120% 90% at 50% 0%, #FFFDF6 0%, #FCF8EC 70%, #FAF3DF 100%);
+  position: relative;
 }
-.w-tab {
-  flex: 1;
-  padding: 8px 0;
-  border-radius: 10px;
-  border: 1px solid var(--line);
-  background: var(--paper-card);
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--ink2);
-  cursor: pointer;
+.lb-head { text-align: center; margin-bottom: 14px; position: relative; }
+.lb-arch { display: flex; justify-content: center; margin-bottom: 4px; }
+.lb-title {
+  font-family: "Songti SC", "STSong", "SimSun", serif;
+  font-size: 25px; font-weight: 700; letter-spacing: .34em; text-indent: .34em; color: #2A2620;
 }
-.w-tab.on {
-  background: #a06c24;
-  border-color: #a06c24;
-  color: #FFFDF6;
+.lb-sub { margin-top: 4px; font-size: 12px; color: #6B6257; letter-spacing: .22em; }
+.lb-sub b { color: #a06c24; font-weight: 600; }
+.lb-close { position: absolute; top: -4px; right: -2px; display: flex; align-items: center; justify-content: center; }
+.lb-tabs { display: flex; gap: 10px; justify-content: center; margin-bottom: 10px; }
+.lb-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 18px; border-radius: 999px;
+  border: 1.4px solid #DCCFA9; background: #FFFDF6;
+  font-size: 14.5px; color: #6B6257; letter-spacing: .06em;
+  font-family: inherit; cursor: pointer;
 }
-.w-subtabs {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
+.lb-tab.on {
+  background: linear-gradient(180deg, #FDF3D8, #FBEECB);
+  border-color: #e8a84a; color: #a06c24; font-weight: 700;
+  box-shadow: 0 2px 8px rgba(201, 126, 44, .18);
 }
-.w-subtab {
-  padding: 5px 14px;
-  border-radius: 99px;
-  border: 1px solid var(--line);
-  background: transparent;
-  font-size: 12.5px;
-  color: var(--ink2);
-  cursor: pointer;
+.lb-periods { display: flex; justify-content: flex-end; align-items: center; margin: -2px 2px 4px; }
+.lb-plabel { font-size: 11.5px; color: #9A9184; letter-spacing: .18em; margin-right: 8px; }
+.lb-period {
+  font-size: 12.5px; padding: 4px 13px; color: #6B6257;
+  border: 1.2px solid #DCCFA9; background: #FFFDF6;
+  font-family: inherit; cursor: pointer;
 }
-.w-subtab.on {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: #FFFDF6;
+.lb-period:first-of-type { border-radius: 8px 0 0 8px; border-right: none; }
+.lb-period:last-of-type { border-radius: 0 8px 8px 0; }
+.lb-period.on { background: #2e3a5c; border-color: #2e3a5c; color: #F3EDD9; font-weight: 600; }
+.lb-podium { display: flex; gap: 12px; align-items: flex-end; margin: 8px 0 2px; }
+.lb-pod { flex: 1; text-align: center; min-width: 0; }
+.lb-pod.r1 { order: 2; }
+.lb-pod.r2 { order: 1; }
+.lb-pod.r3 { order: 3; }
+.lb-medal {
+  position: relative; width: 52px; height: 52px; margin: 0 auto 6px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: "Songti SC", "STSong", serif; font-size: 21px; font-weight: 700;
+  background: radial-gradient(circle at 34% 30%, #FFFDF6, #F7EFDA);
 }
-.w-lb-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.lb-pod.r1 .lb-medal {
+  width: 62px; height: 62px; font-size: 26px; color: #a06c24;
+  border: 2.2px solid #e8a84a;
+  box-shadow: 0 0 0 3px #FDF3D8, 0 4px 12px rgba(201, 126, 44, .25);
 }
-.w-lb-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--paper-card);
+.lb-pod.r2 .lb-medal { color: #5F7A8C; border: 2px solid #a8c6dd; box-shadow: 0 0 0 3px #EFF5FA; }
+.lb-pod.r3 .lb-medal { color: #A05C2C; border: 2px solid #D29A63; box-shadow: 0 0 0 3px #FAEEE1; }
+.lb-crown { position: absolute; top: -16px; left: 50%; transform: translateX(-50%); }
+.lb-sealdot {
+  position: absolute; right: -4px; bottom: -2px; width: 17px; height: 17px; border-radius: 5px;
+  background: #D9482B; color: #FFF6E8; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; transform: rotate(-8deg);
+  box-shadow: 0 2px 5px rgba(217, 72, 43, .35);
 }
-.w-lb-row.me {
-  border-color: #a06c24;
-  box-shadow: 0 0 0 1px #a06c24;
+.lb-pname {
+  font-size: 15px; font-weight: 700; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.w-lb-rank {
-  width: 26px;
-  height: 26px;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: #efe7d6;
-  font-size: 13px;
-  font-weight: 800;
-  color: var(--ink2);
+.lb-pod.r1 .lb-pname { font-size: 16.5px; }
+.lb-ptype { font-size: 11px; color: #9A9184; margin-top: 2px; letter-spacing: .14em; }
+.lb-pnum { margin-top: 3px; font-size: 13.5px; font-weight: 700; color: #a06c24; }
+.lb-pnum small { font-size: 11px; font-weight: 500; color: #6B6257; }
+.lb-plinth {
+  margin: 9px auto 0; height: 8px; border-radius: 5px 5px 2px 2px;
+  background: linear-gradient(180deg, #d9cba6, #CBBd97);
+  box-shadow: 0 1px 0 #fff inset; width: 76%;
 }
-.w-lb-rank.top {
-  background: #a06c24;
-  color: #FFFDF6;
+.lb-pod.r1 .lb-plinth { width: 86%; height: 11px; }
+.lb-divider { display: flex; align-items: center; gap: 10px; margin: 14px 4px 4px; }
+.lb-divider::before, .lb-divider::after { content: ""; flex: 1; border-top: 1.4px dashed #DCCFA9; }
+.lb-divider i { width: 7px; height: 7px; background: #e8a84a; transform: rotate(45deg); display: block; }
+.lb-rows { list-style: none; margin: 0; padding: 0; }
+.lb-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 10px; border-bottom: 1px solid #E7DCC3;
 }
-.w-lb-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+.lb-row:last-child { border-bottom: none; }
+.lb-rk {
+  width: 26px; text-align: center; flex: none;
+  font-family: "Songti SC", "STSong", serif; font-size: 16px; color: #9A9184; font-weight: 700;
 }
-.w-lb-main b {
-  font-size: 14px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.lb-rname { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lb-tag {
+  flex: none; font-size: 10.5px; color: #6B6257; letter-spacing: .1em;
+  border: 1.1px solid #DCCFA9; border-radius: 999px; padding: 2px 8px; background: #FFFDF6;
 }
-.w-lb-main small {
-  font-size: 11.5px;
-  color: var(--ink2);
+.lb-metag {
+  flex: none; font-size: 10.5px; font-weight: 700; color: #fff; background: #7d9b76;
+  border-radius: 5px; padding: 2px 6px; transform: rotate(-3deg);
 }
-.w-lb-num {
-  font-size: 13px;
-  font-weight: 700;
-  color: #a06c24;
-  white-space: nowrap;
+.lb-rnum { flex: none; font-size: 14px; font-weight: 700; color: #a06c24; }
+.lb-rnum small { font-size: 11px; font-weight: 500; color: #6B6257; }
+.lb-row.me {
+  background: linear-gradient(90deg, rgba(147, 173, 139, .20), rgba(147, 173, 139, .07));
+  border-radius: 10px; border-bottom-color: transparent;
+  box-shadow: inset 3px 0 0 #7d9b76;
 }
-.w-sheet-foot {
-  margin: 12px 0 0;
-  font-size: 12px;
-  color: var(--ink2);
-  text-align: center;
-  line-height: 1.7;
+.lb-myrank {
+  margin-top: 14px; border: 1.4px dashed #c97e2c; border-radius: 14px;
+  background: linear-gradient(180deg, #FFFDF6, #FBF3DC);
+  padding: 11px 16px; display: flex; align-items: center; gap: 13px;
 }
+.lb-stamp {
+  flex: none; width: 46px; height: 46px; border-radius: 50%;
+  border: 1.8px solid #D9482B; color: #D9482B;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  transform: rotate(-7deg); background: rgba(217, 72, 43, .05);
+}
+.lb-stamp b { font-family: "Songti SC", "STSong", serif; font-size: 16px; line-height: 1; }
+.lb-stamp span { font-size: 8.5px; letter-spacing: .2em; margin-top: 2px; }
+.lb-mtxt { flex: 1; font-size: 13.5px; color: #6B6257; line-height: 1.55; }
+.lb-mtxt b { color: #2A2620; font-size: 15px; }
+.lb-mtxt .gap { color: #a06c24; font-weight: 700; }
+.lb-scope { margin-top: 10px; text-align: center; font-size: 11px; color: #9A9184; letter-spacing: .05em; }
 .w-board-text {
   font-size: 15px;
   line-height: 1.9;
@@ -1823,39 +3054,49 @@ button.pill {
   .world-root.is-game { display: block; height: auto; }
   .world-root.is-game .world {
     width: 100%;
-    aspect-ratio: 390 / 1560;
+    aspect-ratio: 390 / 700;
     overflow: hidden;
   }
-  /* 竖图切片后桌面道路/小径与手机地标坐标对不上，手机端不画这两组线 */
-  .world-root.is-game .scene .scene-roads, .world-root.is-game .scene .scene-trails { display: none; }
-  /* 地标放大：64px 图标 + 名牌 + 状态小字（照手机图纸） */
-  .world-root.is-game .mark .pin { width: 64px; height: 64px; font-size: 30px; border-radius: 20px; }
-  .world-root.is-game .mark .pin::after { width: 13px; height: 13px; bottom: -7px; }
-  .world-root.is-game .mark .name { font-size: 13.5px; padding: 4px 11px; border-radius: 8px; margin-top: 13px; }
+  /* 手机端用竖版场景（780×1400），与手机地标坐标同属一套图纸 */
+  .world-root.is-game .scene-desktop { display: none; }
+  .world-root.is-game .scene-mobile { display: block; }
+  /* 地标按竖版画布 780 等比（1 单位 = 0.5px）：宽随各地标 viewBox */
+  .world-root.is-game .mark .art-cinema { width: 78px; }
+  .world-root.is-game .mark .art-post { width: 60px; }
+  .world-root.is-game .mark .art-archive { width: 72px; }
+  .world-root.is-game .mark .art-supply { width: 56px; }
+  .world-root.is-game .mark .art-fortune { width: 70px; }
+  .world-root.is-game .mark .art-walltree { width: 74px; }
+  .world-root.is-game .mark .art-board { width: 52px; }
+  .world-root.is-game .mark .art-stele { width: 48px; }
+  .world-root.is-game .mark .art-collector { width: 69px; }
+  .world-root.is-game .mark .art-lighthouse { width: 52px; }
+  .world-root.is-game .mark .art-hall { width: 60px; }
+  .world-root.is-game .mark .name { font-size: 13.5px; padding: 4px 11px; border-radius: 8px; margin-top: 7px; }
   .world-root.is-game .mark .sub { font-size: 11px; padding: 2px 8px; border-radius: 6px; margin-top: 4px; width: max-content; max-width: 56vw; margin-left: auto; margin-right: auto; }
-  .world-root.is-game .mark .dot { min-width: 22px; height: 22px; font-size: 12px; top: -7px; right: calc(50% - 40px); padding: 0 6px; }
+  .world-root.is-game .mark .dot { min-width: 22px; height: 22px; font-size: 12px; top: -6px; right: calc(50% - 44px); padding: 0 6px; }
   .world-root.is-game .mark:hover .pin { transform: none; }
   /* 手机坐标（!important 覆盖行内桌面坐标；照手机图纸百分比） */
-  .world-root.is-game .m-lighthouse { left: 72% !important; top: 11% !important; }
-  .world-root.is-game .m-cinema { left: 38% !important; top: 15% !important; }
-  .world-root.is-game .m-gamehall { left: 70% !important; top: 24% !important; }
-  .world-root.is-game .m-post { left: 30% !important; top: 27% !important; }
-  .world-root.is-game .m-parcels { left: 62% !important; top: 35% !important; }
-  .world-root.is-game .m-shop { left: 26% !important; top: 42% !important; }
-  .world-root.is-game .m-collector { left: 68% !important; top: 46% !important; }
-  .world-root.is-game .m-board { left: 26% !important; top: 64% !important; }
-  .world-root.is-game .m-stele { left: 72% !important; top: 66% !important; }
-  .world-root.is-game .m-wall { left: 30% !important; top: 79% !important; }
-  .world-root.is-game .m-fortune { left: 68% !important; top: 81% !important; }
-  .world-root.is-game .m-player { left: 50% !important; top: 93% !important; }
+  .world-root.is-game .m-lighthouse { left: 77.5% !important; top: 82.3% !important; }
+  .world-root.is-game .m-cinema { left: 50% !important; top: 53% !important; }
+  .world-root.is-game .m-gamehall { left: 50.8% !important; top: 90.3% !important; }
+  .world-root.is-game .m-post { left: 22.6% !important; top: 39.2% !important; }
+  .world-root.is-game .m-parcels { left: 23.3% !important; top: 66.8% !important; }
+  .world-root.is-game .m-shop { left: 25.1% !important; top: 82.6% !important; }
+  .world-root.is-game .m-collector { left: 76.7% !important; top: 99.2% !important; }
+  .world-root.is-game .m-board { left: 22.6% !important; top: 99% !important; }
+  .world-root.is-game .m-stele { left: 50% !important; top: 26% !important; }
+  .world-root.is-game .m-wall { left: 76.4% !important; top: 38.5% !important; }
+  .world-root.is-game .m-fortune { left: 75.9% !important; top: 60.3% !important; }
+  .world-root.is-game .m-player { left: 50% !important; top: 68% !important; }
   .world-root.is-game .m-player .tok { width: 44px; height: 44px; font-size: 16px; border-width: 3px; }
   .world-root.is-game .m-player .who { font-size: 12px; padding: 2px 10px; }
   /* 分区牌 */
   .world-root.is-game .m-zone { position: absolute; z-index: 26; font-size: 13px; font-weight: 800; color: #a06c24; background: rgba(255,253,246,.9); border: 1.5px dashed #a06c24; border-radius: 10px; padding: 4px 12px; letter-spacing: 1px; left: 10px; top: 118px; }
-  .world-root.is-game .m-zone-2 { top: 52.5%; }
-  .world-root.is-game .m-zone-line { position: absolute; z-index: 4; left: 14px; right: 14px; top: 56.4%; border-top: 2px dashed rgba(160,108,36,.5); }
+  .world-root.is-game .m-zone-2 { top: 57%; left: 50%; transform: translate(-50%, -50%); }
+  .world-root.is-game .m-zone-line { position: absolute; z-index: 4; left: 14px; right: 14px; top: 57%; border-top: 2px dashed rgba(160,108,36,.5); }
   /* 滑动提示 */
-  .world-root.is-game .m-scroll-hint { position: absolute; left: 0; right: 0; top: 49.5%; bottom: auto; z-index: 35; pointer-events: none; background: none; padding: 10px 0; text-align: center; }
+  .world-root.is-game .m-scroll-hint { display: none; }
   .world-root.is-game .m-scroll-hint span { display: inline-block; background: #2A2620; color: #FFFDF6; border-radius: 999px; padding: 7px 18px; font-size: 13px; font-weight: 700; }
   /* 紧凑 HUD：问候 + 连签/积分/Lv 两行；桌面 hello 卡与 hud 在手机端隐藏 */
   .world-root.is-game .hello, .world-root.is-game .hud { display: none; }
@@ -1865,7 +3106,7 @@ button.pill {
   .world-root.is-game .m-goal-text b { color: #a06c24; }
   .world-root.is-game .m-goal-bar { height: 6px; background: #EFE7D6; border-radius: 99px; margin-top: 6px; overflow: hidden; }
   .world-root.is-game .m-goal-bar i { display: block; height: 100%; background: var(--paper-primary); border-radius: 99px; transition: width .3s ease; }
-  .world-root.is-game .m-feed { position: absolute; left: 14px; right: 14px; top: 85.5%; z-index: 30; }
+  .world-root.is-game .m-feed { display: none; }
   .world-root.is-game .m-hello { font-size: 14px; font-weight: 800; }
   .world-root.is-game .m-stats { font-size: 11.5px; color: #6B6257; margin-top: 2px; }
   .world-root.is-game .m-stats b { color: #a06c24; }
@@ -1883,9 +3124,8 @@ button.pill {
 .m-zone, .m-zone-line, .m-scroll-hint, .w-grip, .m-hud, .game-goalbar, .m-feed { display: none; }
 @media (max-width: 1023px) {
   .world-root.is-game .m-zone, .world-root.is-game .m-zone-line,
-  .world-root.is-game .m-scroll-hint, .world-root.is-game .w-grip,
-  .world-root.is-game .m-hud, .world-root.is-game .game-goalbar,
-  .world-root.is-game .m-feed { display: block; }
+  .world-root.is-game .w-grip,
+  .world-root.is-game .m-hud, .world-root.is-game .game-goalbar { display: block; }
 }
 
 @media (prefers-reduced-motion: reduce) {
