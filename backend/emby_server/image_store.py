@@ -590,7 +590,7 @@ def prewarm(urls) -> int:
 
 
 def referenced_basenames(db) -> set:
-    """所有条目引用到的**本地图片文件名**（分批查，避免整库读进内存）"""
+    """所有条目引用到的**本地图片文件名**（分批查，避免整库读进内存）；包含人物头像 URL 经 local_path 映射出的本地文件名"""
     from sqlalchemy import select
 
     from backend.emby_server import models as em
@@ -611,6 +611,21 @@ def referenced_basenames(db) -> set:
             for path in (poster, backdrop):
                 if is_cached_path(path):
                     found.add(os.path.basename(path))
+
+    last_id = 0
+    while True:
+        rows = db.execute(
+            select(em.EmbyPerson.id, em.EmbyPerson.image)
+            .where(em.EmbyPerson.id > last_id)
+            .order_by(em.EmbyPerson.id)
+            .limit(5000)
+        ).all()
+        if not rows:
+            break
+        last_id = rows[-1][0]
+        for _id, image_url in rows:
+            if image_url and image_url.lower().startswith(("http://", "https://")):
+                found.add(os.path.basename(local_path(image_url)))
     return found
 
 
@@ -729,12 +744,16 @@ def prune(db) -> dict:
 
     total = sum(size for _n, size, _m in kept)
     cap = _env_int("EMBY_IMAGE_CACHE_MB", 2048, 0) * 1024 * 1024
+    attempted = set()
     if cap and total > cap:
         for name, size, _mtime in sorted(kept, key=lambda item: item[2]):
             if total <= cap:
                 break
             if name in protected:
                 continue            # 正在用的封面（含它的缩略图）不淘汰
+            if name in attempted:
+                continue
+            attempted.add(name)
             try:
                 os.remove(os.path.join(root, name))
                 thumb_mem_drop(name)  # 内存里那份也得清，否则白占 LRU 配额再也发不出去
@@ -743,6 +762,24 @@ def prune(db) -> dict:
             total -= size
             result["removed"] += 1
             result["freed_bytes"] += size
+        if total > cap:
+            # 第二遍：仍超限时淘汰可再生的缩略图变体（即使被引用保护）
+            for name, size, _mtime in sorted(kept, key=lambda item: item[2]):
+                if total <= cap:
+                    break
+                if name in attempted:
+                    continue
+                if _thumb_digest(name) is None:
+                    continue        # 原图非缩略图，第二轮绝不淘汰
+                attempted.add(name)
+                try:
+                    os.remove(os.path.join(root, name))
+                    thumb_mem_drop(name)
+                except OSError:
+                    continue
+                total -= size
+                result["removed"] += 1
+                result["freed_bytes"] += size
         result["over_limit"] = total > cap
         if result["over_limit"]:
             logger.info("图片缓存仍超出上限（被引用的图不淘汰）：%.0f MB",

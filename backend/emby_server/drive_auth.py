@@ -530,14 +530,15 @@ def _all_sa_dicts() -> list[dict[str, Any]]:
         return [dict(sa) for sa in result]
 
 
-def premint_tokens(max_workers: int = 4) -> dict[str, int]:
+def premint_tokens(max_workers: int = 4, stagger_seconds: float = 0.0) -> dict[str, int]:
     """为所有 SA 预铸 access_token 并写入分账号缓存。
 
     P0-3（2026-10-12）：起播加速。部署后/空闲后第一次播放要现做
     JWT→token 交换（约 300~600ms），预铸后冷启动直接命中缓存。
 
     - 线程池有界并发（默认 4），每个 SA 独立换 token，互不阻塞。
-    - 每个任务前随机抖动 0~0.5 秒，反风控（避免 100 个并发打到 Google）。
+    - 抖动：打散 100 个 SA 的换 token 请求；stagger_seconds > 0 时用其作为抖动上限，
+      否则保持默认 0~0.5 秒。启动期用大的 stagger 把 RSA 签名+POST 摊薄，避免打满 CPU。
     - 单个 SA 失败不影响其他（try/except 包住）。
     - token endpoint 不是 Drive API 配额，零风控风险。
     - 永不抛异常，返回 {"total": N, "ok": M, "failed": K}。
@@ -558,7 +559,7 @@ def premint_tokens(max_workers: int = 4) -> dict[str, int]:
         def _mint_one(sa: dict[str, Any]) -> bool:
             try:
                 # 抖动：打散 100 个 SA 的换 token 请求
-                time.sleep(random.uniform(0, 0.5))
+                time.sleep(random.uniform(0, stagger_seconds if stagger_seconds > 0 else 0.5))
                 email = sa.get("client_email")
                 if not email:
                     return False

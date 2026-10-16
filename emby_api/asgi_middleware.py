@@ -69,6 +69,27 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+class ForegroundActivityMiddleware:
+    """前台活跃打点中间件——/emby/ 用户路径经过即记录，供 maintenance 重活让路；纯 ASGI，只读 scope[path]，不包 send，零拷贝零开销；任何异常永不影响主链路。"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path.startswith("/emby/"):
+            try:
+                from backend.emby_server import foreground_activity as _fa
+
+                _fa.note()
+            except Exception:
+                pass
+        await self.app(scope, receive, send)
+
+
 class EaBodyLimitMiddleware:
     """请求体大小上限：只看请求头做廉价拒绝，放行时零开销（不包 send）。"""
 

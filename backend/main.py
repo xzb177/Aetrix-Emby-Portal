@@ -179,9 +179,22 @@ async def lifespan(app: FastAPI):
             import threading
 
             def _premint_in_bg():
+                def _env_float(name: str, default: float) -> float:
+                    raw = os.environ.get(name)
+                    if raw is None:
+                        return default
+                    try:
+                        return max(0.0, float(raw))
+                    except ValueError:
+                        return default
+
                 try:
                     from backend.emby_server import drive_auth
-                    drive_auth.premint_tokens(max_workers=4)
+                    # 启动期错峰，避免 100 个 RSA 签名+HTTPS POST 集中打满 CPU 与刚启动的维护任务抢资源
+                    _delay = _env_float("SA_PREMINT_STARTUP_DELAY_SECONDS", 60.0)
+                    _stagger = _env_float("SA_PREMINT_STAGGER_SECONDS", 180.0)
+                    time.sleep(_delay)
+                    drive_auth.premint_tokens(max_workers=2, stagger_seconds=_stagger)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"SA token 预铸失败（可忽略）: {e}")
 
