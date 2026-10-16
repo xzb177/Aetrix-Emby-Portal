@@ -1407,7 +1407,6 @@ import { humanizeError, panelApi } from '@/composables/usePanelApi'
 import type { ParcelItem, ParcelsData } from '@/composables/usePanelApi'
 import { checkinApi, memberApi } from '@/api/economy'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
-import { ensureEmbyBase } from '@/api/emby'
 import { useToast } from '@/composables/useToast'
 import ParcelBox from '@/components/panel/ParcelBox.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
@@ -2143,28 +2142,21 @@ function goCollector() {
 }
 
 function goGame() {
+  // 已在 /game 页内时再 push('/game') 等于死按钮，改开签到页（用户拍板 2026-10-16）
+  if (router.currentRoute.value.path === '/game') {
+    void router.push('/game/checkin')
+    return
+  }
   void router.push('/game')
 }
 
-async function openCinema() {
-  // 用户手势内同步占位新窗口，避免 await 后被弹窗拦截
-  const placeholder = window.open('about:blank', '_blank')
-  if (!placeholder) {
-    useToast().warning('浏览器拦截了新标签页，请允许本站弹窗后重试')
-    void router.push('/game/operator')
-    return
+function openCinema() {
+  // 用户拍板（2026-10-16）：梦幻影院改去站内经典发现页，不再新开 Emby 网页版
+  setMode('classic')
+  // 在 /game 页时需要回首页；在首页则原地切视图即可
+  if (router.currentRoute.value.path !== '/') {
+    void router.push('/')
   }
-  try {
-    const base = await ensureEmbyBase()
-    if (base) {
-      placeholder.location.href = base.replace(/\/+$/, '') + '/web/index.html'
-      return
-    }
-  } catch {
-    /* 落到兜底 */
-  }
-  placeholder.close()
-  void router.push('/game/operator')
 }
 
 /* ---------- 拆包裹 ---------- */
