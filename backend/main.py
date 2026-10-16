@@ -348,14 +348,6 @@ async def lifespan(app: FastAPI):
         stop_cover_worker(timeout=5.0)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"停止封面 worker 失败（可忽略）: {e}")
-    # 关掉中转代理的共享连接池（秒播那套）。不关的话 httpx 会报未关闭的
-    # 客户端；而且它绑定在创建它的事件循环上，换循环后复用会直接炸。
-    try:
-        from backend.emby_server.streaming import close_relay_client
-
-        await close_relay_client()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"关闭中转连接池失败（可忽略）: {e}")
 
 
 # 创建 FastAPI 应用
