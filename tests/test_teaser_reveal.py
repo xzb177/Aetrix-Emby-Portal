@@ -168,7 +168,7 @@ def test_write_round_trip(db):
     """管理端写 → 读：值一致，派生状态正确"""
     cfg = teaser.write_admin(db, {
         "teaser_enabled": "1",
-        "teaser_reveal_at": (_NOW + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M"),
+        "teaser_reveal_at": (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M"),
         "teaser_post_title": "三天后见",
     })
     assert cfg["enabled"] is True
