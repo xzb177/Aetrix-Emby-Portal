@@ -25,7 +25,9 @@
 所有阈值都可配置（SystemConfig，管理后台「系统设置 → 播放预热」，
 修改后 60 秒内生效——读走 ``integrations.store`` 的热缓存）：
 
-- ``playback_prewarm_enabled``（bool，默认 true）：总开关。
+- ``playback_prewarm_enabled``（bool，默认 false）：总开关。默认关——
+  预热读文件头会与真实播放争同一文件的网盘配额（2026-10-16 口径：
+  预热全改可配开关、默认关），服主在管理后台开启后才生效。
 - ``playback_prewarm_bytes``（int，默认 10485760）：每次预读字节数。
 - ``playback_prewarm_max_concurrent``（int，默认 4）：并发上限。
 - ``playback_prewarm_dedup_seconds``（int，默认 300）：同文件去重窗口。
@@ -70,7 +72,7 @@ CONFIG_KEYS = (
 
 #: 默认值（DB 里没有对应行时用这些）
 DEFAULTS: dict[str, str] = {
-    KEY_ENABLED: "true",
+    KEY_ENABLED: "false",
     KEY_BYTES: "10485760",          # 10MB
     KEY_MAX_CONCURRENT: "4",
     KEY_DEDUP_SECONDS: "300",       # 5 分钟
@@ -121,7 +123,7 @@ def read_config(db) -> dict[str, Any]:
     raw = store.get_values(db, CONFIG_KEYS, DEFAULTS)
     timeout = _parse_int(raw[KEY_TIMEOUT_SECONDS], KEY_TIMEOUT_SECONDS)
     return {
-        "enabled": _parse_bool(raw[KEY_ENABLED], True),
+        "enabled": _parse_bool(raw[KEY_ENABLED], False),
         "bytes": _parse_int(raw[KEY_BYTES], KEY_BYTES),
         "max_concurrent": _parse_int(raw[KEY_MAX_CONCURRENT], KEY_MAX_CONCURRENT),
         "dedup_seconds": _parse_int(raw[KEY_DEDUP_SECONDS], KEY_DEDUP_SECONDS),
@@ -139,6 +141,7 @@ RESULT_STARTED = "started"          # 已起线程
 RESULT_DISABLED = "disabled"        # 总开关关
 RESULT_DEDUP = "dedup"              # 去重窗口内命中，跳过
 RESULT_BUSY = "busy"                # 并发已满，跳过（不排队）
+RESULT_QUOTA = "quota"              # 文件处 Drive 配额负缓存期，跳过（不撞墙）
 
 
 def _lower_thread_priority() -> None:
@@ -182,6 +185,7 @@ class PlaybackPrewarmer:
             "skipped_disabled": 0, # 总开关关
             "skipped_dedup": 0,    # 去重窗口命中
             "skipped_busy": 0,     # 并发已满（不排队，直接跳过）
+            "skipped_quota": 0,    # 配额负缓存期跳过
             "success": 0,          # 读完目标字节数
             "timeout": 0,          # 超时放弃
             "failed": 0,            # 读异常（文件消失/权限等）
@@ -219,15 +223,28 @@ class PlaybackPrewarmer:
 
     # -- 主入口 ----------------------------------------------------------
 
-    def maybe_prewarm(self, db, path: Optional[str]) -> str:
-        """读配置 → 尝试预热。返回 started/disabled/dedup/busy 之一。
+    def maybe_prewarm(self, db, path: Optional[str],
+                      drive_file_id: Optional[str] = None) -> str:
+        """读配置 → 尝试预热。返回 started/disabled/dedup/busy/quota 之一。
 
         本身不抛异常：任何意外都静默返回 disabled（调用方外层还有
         try/except，这里是第二道保险——预热绝不能影响 PlaybackInfo）。
+
+        ``drive_file_id`` 给了且文件正处 Drive 单文件配额负缓存期时直接
+        跳过：预热读的正是同一文件的字节，与真实播放争配额毫无意义。
         """
         try:
             if not path:
                 return RESULT_DISABLED
+            if drive_file_id:
+                try:
+                    from backend.emby_server.streaming import (
+                        drive_quota_blocked_retry_after)
+                    if drive_quota_blocked_retry_after(str(drive_file_id)) > 0:
+                        self._bump("skipped_quota")
+                        return RESULT_QUOTA
+                except Exception:
+                    pass
             cfg = read_config(db)
             return self.submit(path, cfg)
         except Exception as e:  # noqa: BLE001
@@ -400,9 +417,10 @@ def get_prewarmer() -> PlaybackPrewarmer:
     return _instance
 
 
-def maybe_prewarm(db, path: Optional[str]) -> str:
+def maybe_prewarm(db, path: Optional[str],
+                  drive_file_id: Optional[str] = None) -> str:
     """生产入口：读配置并尝试预热（api.py 的 PlaybackInfo 里调用）。"""
-    return get_prewarmer().maybe_prewarm(db, path)
+    return get_prewarmer().maybe_prewarm(db, path, drive_file_id)
 
 
 def metrics_snapshot() -> dict[str, Any]:

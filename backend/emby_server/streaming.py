@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import random
@@ -19,7 +20,7 @@ from email.utils import formatdate
 from typing import TYPE_CHECKING, Optional
 
 from fastapi import HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from backend.emby_server import hwaccel as _hwaccel
 
 # 开箱即用播放优化：单文件并发 Range 限流（只此一处实现）
@@ -1493,7 +1494,146 @@ def _try_reconnect_upstream_sync(client, api_url: str, forward: dict,
     return True, (new_resp, new_iter)
 
 
+# ---- Singleflight：同文件同 Range 的并发请求合并 ----
+#
+# 播放器起播/拖动时会并发打出多个相同的 Range 探测请求（同一个文件、
+# 同一段字节），旧实现每个请求都独立建连打源站：浪费连接与 SA 请求量，
+# 配额紧张时还会放大撞墙（2026-10-16 北斗事件：36 秒内同文件被打 12 次）。
+# 这里做请求合并：key = (URL, Range, 鉴权摘要)，同 key 的并发请求只真正
+# 取流一次，其余共享同一份结果（状态码/响应头/正文字节）。只合并「小而
+# 有界」的 Range（起止明确且长度 ≤ 上限）——整文件/开放 Range 的大流量
+# 走原路径逐字节流式转发、不进内存。合并只发生在同进程同一瞬间；领队
+# 失败时等待者共享同一异常（与它自己此刻去打源站的结果一致），正文超限
+# 等情况一律回落各自独立取流，语义与未合并时一致。
+#
+# 上限走环境变量 DRIVE_SINGLEFLIGHT_MAX_RANGE_BYTES（默认 8MiB，0=关闭合并）。
+_SF_INFLIGHT: dict = {}
+_SF_COUNTERS: dict[str, int] = {"leader": 0, "joined": 0, "fallback": 0}
+
+
+def _sf_max_range_bytes() -> int:
+    return int(_env_number(
+        "DRIVE_SINGLEFLIGHT_MAX_RANGE_BYTES",
+        8 * 1024 * 1024, 0, 256 * 1024 * 1024))
+
+
+def _sf_range_length(range_header) -> Optional[int]:
+    """单段 bytes=start-end 的长度；开放/多段/非法一律 None（不合并）。"""
+    if not range_header:
+        return None
+    m = re.fullmatch(r"bytes=(\d+)-(\d+)", str(range_header).strip())
+    if not m:
+        return None
+    start, end = int(m.group(1)), int(m.group(2))
+    if end < start:
+        return None
+    return end - start + 1
+
+
+def _sf_key(url: str, range_header: str, headers: Optional[dict]) -> tuple:
+    """合并键：URL + Range + 鉴权头摘要（不同凭据绝不合并，防串流）。"""
+    auth = ""
+    for k, v in (headers or {}).items():
+        if str(k).lower() == "authorization":
+            auth = str(v or "")
+            break
+    digest = hashlib.sha256(
+        auth.encode("utf-8", "ignore")).hexdigest()[:16] if auth else ""
+    return (url, range_header, digest)
+
+
+async def _sf_collect(url, request, headers, media_type, cache_control,
+                      drain_cap):
+    """Singleflight 领队：走原取流实现并把正文收齐（只对小 Range 调用）。
+
+    返回 (status, headers, media_type, body)；正文超过 drain_cap（多半是
+    上游无视 Range 回了整文件）返回 None，调用方回落独立取流。
+    异常（配额 403/源站 502 等）照常向上抛，由所有等待者共享。
+    """
+    resp = await _serve_remote_async_impl(
+        url, request, headers, media_type, cache_control=cache_control,
+        pt=None)
+    body = bytearray()
+    try:
+        async for chunk in resp.body_iterator:
+            body += chunk
+            if len(body) > drain_cap:
+                return None
+    finally:
+        aclose = getattr(resp.body_iterator, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                pass
+    hdrs = {k: v for k, v in resp.headers.items()
+            if k.lower() != "content-length"}
+    return (resp.status_code, hdrs, resp.media_type, bytes(body))
+
+
 async def serve_remote_async(
+    url: str,
+    request: Request,
+    headers: Optional[dict] = None,
+    media_type: str = "video/mp4",
+    cache_control: Optional[str] = None,
+    pt=None,
+) -> StreamingResponse:
+    """远程媒体代理（异步版）：完整语义见 ``_serve_remote_async_impl``。
+
+    本包装层只多一件事：同文件同 Range 的并发小请求做 Singleflight 合并
+    （见上方注释）；不合资格的请求原样直达实现、行为零变化。
+    """
+    _key = None
+    _drain_cap = 0
+    try:
+        _max = _sf_max_range_bytes()
+        _rh = request.headers.get("range")
+        _rlen = _sf_range_length(_rh) if _max > 0 else None
+        if (_rlen is not None and _rlen <= _max
+                and getattr(request, "method", "GET") == "GET"):
+            _key = _sf_key(url, _rh, headers)
+            _drain_cap = _max + 65536
+    except Exception:
+        _key = None
+    if _key is None:
+        return await _serve_remote_async_impl(
+            url, request, headers, media_type,
+            cache_control=cache_control, pt=pt)
+
+    task = _SF_INFLIGHT.get(_key)
+    if task is None:
+        _SF_COUNTERS["leader"] += 1
+        task = asyncio.ensure_future(_sf_collect(
+            url, request, headers, media_type, cache_control, _drain_cap))
+        _SF_INFLIGHT[_key] = task
+        task.add_done_callback(lambda _t, k=_key: _SF_INFLIGHT.pop(k, None))
+    else:
+        _SF_COUNTERS["joined"] += 1
+        if pt is not None:
+            pt.mark("singleflight_join")
+    try:
+        outcome = await asyncio.shield(task)
+    except HTTPException:
+        if pt is not None:
+            pt.done()
+        raise
+    except Exception:
+        outcome = None
+    if outcome is None:
+        # 领队正文超限/异常：回落各自独立取流（语义与未合并一致）
+        _SF_COUNTERS["fallback"] += 1
+        return await _serve_remote_async_impl(
+            url, request, headers, media_type,
+            cache_control=cache_control, pt=pt)
+    _status, _hdrs, _ctype, _body = outcome
+    if pt is not None:
+        pt.done()
+    return Response(content=_body, status_code=_status,
+                    headers=_hdrs, media_type=_ctype)
+
+
+async def _serve_remote_async_impl(
     url: str,
     request: Request,
     headers: Optional[dict] = None,

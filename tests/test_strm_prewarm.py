@@ -48,7 +48,8 @@ def test_prewarm_read_config_defaults(clean_prewarm):
     sp = clean_prewarm
     with _patch_store(sp, {}):
         cfg = sp.read_config(object())
-    assert cfg["enabled"] is True
+    # 2026-10-16 口径：预热默认关（服主在管理后台开启后才生效）
+    assert cfg["enabled"] is False
     assert cfg["dedup_seconds"] == 300
     assert cfg["max_concurrent"] == 4
 
@@ -94,11 +95,45 @@ def test_prewarm_dedup(clean_prewarm):
     async def fake_warm(db, item):
         pass
 
-    with _patch_store(sp, {}), patch.object(sp, "warm", fake_warm):
+    with _patch_store(sp, {"strm_prewarm_enabled": "true"}), \
+            patch.object(sp, "warm", fake_warm):
         asyncio.run(sp.maybe_warm(object(), item))
         asyncio.run(sp.maybe_warm(object(), item))  # 第二次命中去重
     snap = sp.metrics_snapshot()["counters"]
     assert snap["skipped_dedup"] >= 1
+
+
+def test_prewarm_maybe_warm_skips_quota_blocked(clean_prewarm):
+    """配额负缓存期内的文件：预热直接跳过，不许再打 Drive 撞墙。"""
+    sp = clean_prewarm
+    from backend.emby_server import streaming
+
+    streaming.note_drive_quota_exceeded("fid-quota-test-mw")
+    item = SimpleNamespace(file_path="/strm/q.strm", library=None, guid="q",
+                           drive_file_id="fid-quota-test-mw")
+
+    async def fake_warm(db, item):
+        raise AssertionError("配额期不应真正预热")
+
+    with _patch_store(sp, {"strm_prewarm_enabled": "true"}), \
+            patch.object(sp, "warm", fake_warm):
+        asyncio.run(sp.maybe_warm(object(), item))
+    snap = sp.metrics_snapshot()["counters"]
+    assert snap["skipped_quota"] >= 1
+
+
+def test_prewarm_warm_skips_quota_blocked(clean_prewarm):
+    """warm() 直调也要守配额护盾（防未来新增调用方绕过 maybe_warm）。"""
+    sp = clean_prewarm
+    from backend.emby_server import streaming
+
+    streaming.note_drive_quota_exceeded("fid-quota-test-w")
+    item = SimpleNamespace(file_path="/strm/q2.strm", library=None, guid="q2",
+                           drive_file_id="fid-quota-test-w")
+    asyncio.run(sp.warm(object(), item))
+    snap = sp.metrics_snapshot()["counters"]
+    assert snap["skipped_quota"] >= 1
+    assert snap["warmed"] == 0
 
 
 def test_prewarm_metrics_never_throws(clean_prewarm):
