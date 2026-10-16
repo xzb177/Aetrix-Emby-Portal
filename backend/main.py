@@ -643,12 +643,18 @@ app.mount("/metrics", MetricsGuard(metrics_app))
 # ==================== 健康检查 ====================
 
 def _collect_health() -> dict:
-    """跑一次健康聚合；任何异常都退化成 warn，绝不让健康检查 500"""
+    """跑一次健康聚合；任何异常都退化成 warn，绝不让健康检查 500
+
+    2026-10-16 网页加载二轮优化：走 collect_cached() 的短 TTL 缓存入口。
+    collect() 在扫描打满 2 核生产机时约 5–10 秒，「服务器」页的生命体区与
+    /api/health 都曾因此每次全量重跑；TTL 经 HEALTH_REPORT_TTL_SECONDS 可配。
+    panel.py 的 pulse/vitals 经此处 import，自动同口径。
+    """
     from backend import health_report
     try:
         db = SessionLocal()
         try:
-            return health_report.collect(db)
+            return health_report.collect_cached(db)
         finally:
             db.close()
     except Exception as e:  # noqa: BLE001
