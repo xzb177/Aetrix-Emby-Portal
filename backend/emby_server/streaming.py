@@ -1736,16 +1736,23 @@ def _sf_range_length(range_header) -> Optional[int]:
     return end - start + 1
 
 
-def _sf_key(url: str, range_header: str, headers: Optional[dict]) -> tuple:
-    """合并键：URL + Range + 鉴权头摘要（不同凭据绝不合并，防串流）。"""
+def _auth_digest(headers: Optional[dict]) -> str:
+    """鉴权头摘要（Authorization Bearer <redacted> 的 sha256 前 16 字符）。
+
+    招1/招4 与 singleflight 共用：不同凭据绝不共享块/合并请求，防串流。
+    """
     auth = ""
     for k, v in (headers or {}).items():
         if str(k).lower() == "authorization":
             auth = str(v or "")
             break
-    digest = hashlib.sha256(
+    return hashlib.sha256(
         auth.encode("utf-8", "ignore")).hexdigest()[:16] if auth else ""
-    return (url, range_header, digest)
+
+
+def _sf_key(url: str, range_header: str, headers: Optional[dict]) -> tuple:
+    """合并键：URL + Range + 鉴权头摘要（不同凭据绝不合并，防串流）。"""
+    return (url, range_header, _auth_digest(headers))
 
 
 async def _sf_collect(url, request, headers, media_type, cache_control,
@@ -1777,6 +1784,295 @@ async def _sf_collect(url, request, headers, media_type, cache_control,
     return (resp.status_code, hdrs, resp.media_type, bytes(body))
 
 
+# ---------------------------------------------------------------------------
+# 招1「分块共享」+ 招4「请求捏合整形」（2026-10-16 用户定版：几百人同时播
+# **不同**资源时，把通往谷歌的上行请求压少、压平；零采购、纯中继层）
+#
+# 背景：#942 singleflight 只合并「字节级完全相同」的 Range——不同会话拖
+# 不同进度、要不同区间时命中率≈0；且服务端原样透传播放器 Range，块大小
+# 完全由播放器说了算，上行没有任何业务级并发上限/整形。
+#
+# 招1：有界单段 Range 先按固定块（默认 4MiB）对齐分解；同一块只向谷歌取
+# 一次（领队），并发等待者共享字节，取过的块进进程内 LRU 内存缓存（默认
+# 上限约 2GiB，块 0＝文件头优先保留）。文件头/尾块是每次起播、探测、seek
+# 预览的公共部分，跨会话复用率最高，是本层的主要收益来源。
+# 招4：领队取块要过两道闸——全局上行并发门（默认 64）与单 SA 并发门
+# （默认 8，以鉴权摘要代 SA 身份：token 按 SA 缓存，摘要≈SA）；取块启动
+# 加随机抖动（默认 0–50ms），把突发请求捏成平稳细流。闸超时不堵播放：
+# 整请求回落原路径（连接池 200 仍是总上限）。
+#
+# 安全与语义红线：
+# - 块键含鉴权摘要（与 singleflight 共用 _auth_digest），不同凭据绝不共享。
+# - 配额负缓存命中的文件不进本层，仍由 impl 走本地 403 的既有口径。
+# - 本层任何异常/不合资格一律回落原 serve 流程，绝不因新层让播放失败；
+#   总开关 PLAYBACK_CHUNK_SHARE_ENABLED=0 时行为与升级前一致。
+# - v1 只覆盖有界单段 Range；开放区间（bytes=X-）与多段仍走原路径
+#   （原路径有 #942 合并与连接池上限兜底）。
+_CS_COUNTERS: dict[str, int] = {
+    "hit": 0, "miss": 0, "join": 0, "fetch": 0, "fetch_error": 0,
+    "gate_timeout": 0, "fallback": 0, "bytes_from_cache": 0,
+}
+_CS_CACHE: dict = {}          # key -> (bytes, total)（插入序即 LRU 序）
+_CS_CACHE_BYTES = 0
+_CS_CACHE_LOCK = threading.Lock()
+_CS_INFLIGHT: dict = {}       # key -> asyncio.Task
+_CS_GATES: dict = {}          # loop id -> asyncio.Semaphore（全局上行门）
+_CS_SA_GATES: dict = {}       # (loop id, auth digest) -> asyncio.Semaphore
+
+
+def _cs_enabled() -> bool:
+    return _env_flag("PLAYBACK_CHUNK_SHARE_ENABLED", True)
+
+
+def _cs_block_size() -> int:
+    return int(_env_number(
+        "PLAYBACK_CHUNK_SIZE_BYTES", 4 * 1024 * 1024,
+        256 * 1024, 32 * 1024 * 1024))
+
+
+def _cs_max_range_bytes() -> int:
+    return int(_env_number(
+        "PLAYBACK_CHUNK_MAX_RANGE_BYTES", 32 * 1024 * 1024,
+        0, 256 * 1024 * 1024))
+
+
+def _cs_cache_cap_bytes() -> int:
+    return int(_env_number(
+        "PLAYBACK_CHUNK_CACHE_MB", 2048, 0, 16384)) * 1024 * 1024
+
+
+def chunk_share_counters() -> dict:
+    """招1/招4 计数快照（进程内；供健康/管理端读取）。"""
+    with _CS_CACHE_LOCK:
+        entries, nbytes = len(_CS_CACHE), _CS_CACHE_BYTES
+    out = dict(_CS_COUNTERS)
+    out["cache_entries"] = entries
+    out["cache_bytes"] = nbytes
+    out["inflight"] = len(_CS_INFLIGHT)
+    return out
+
+
+def _cs_cache_get(key):
+    """命中返回 (body, total_or_None) 并把条目移到队尾（最近使用）。"""
+    with _CS_CACHE_LOCK:
+        entry = _CS_CACHE.pop(key, None)
+        if entry is not None:
+            _CS_CACHE[key] = entry
+        return entry
+
+
+def _cs_cache_put(key, body: bytes, total=None) -> None:
+    global _CS_CACHE_BYTES
+    cap = _cs_cache_cap_bytes()
+    if cap <= 0 or len(body) > cap:
+        return
+    with _CS_CACHE_LOCK:
+        old = _CS_CACHE.pop(key, None)
+        if old is not None:
+            _CS_CACHE_BYTES -= len(old[0])
+        # 先赶最久未用的非 0 号块；只剩 0 号块时才动 0 号块（硬上限优先）
+        while _CS_CACHE_BYTES + len(body) > cap and _CS_CACHE:
+            victim = next((k for k in _CS_CACHE if k[1] != 0), None)
+            if victim is None:
+                victim = next(iter(_CS_CACHE))
+            _CS_CACHE_BYTES -= len(_CS_CACHE.pop(victim)[0])
+        _CS_CACHE[key] = (body, total)
+        _CS_CACHE_BYTES += len(body)
+
+
+def _cs_gate(sem_map: dict, map_key, limit: int) -> asyncio.Semaphore:
+    sem = sem_map.get(map_key)
+    if sem is None:
+        sem = asyncio.Semaphore(limit)
+        sem_map[map_key] = sem
+    return sem
+
+
+class _RangeShim:
+    """只带 Range 头的假请求：impl 对 request 的唯一读取是 headers.range。"""
+    __slots__ = ("headers", "method")
+
+    def __init__(self, range_header: str):
+        self.headers = {"range": range_header}
+        self.method = "GET"
+
+
+async def _cs_fetch_block(url, headers, media_type, cache_control,
+                          key, bstart: int, bend: int):
+    """领队取一块：过闸（全局+单 SA）→ 抖动 → 复用 _sf_collect 收齐正文。
+
+    返回 (body, total_or_None, first_headers)；失败抛异常/返回 None，
+    由调用方整请求回落原路径。
+    """
+    digest = key[2]
+    loop_id = id(asyncio.get_running_loop())
+    timeout = float(_env_number(
+        "PLAYBACK_UPSTREAM_GATE_TIMEOUT_SEC", 10.0, 0.5, 120.0))
+    gmax = int(_env_number(
+        "PLAYBACK_UPSTREAM_MAX_CONCURRENCY", 64, 0, 1000))
+    smax = int(_env_number(
+        "PLAYBACK_UPSTREAM_PER_SA_CONCURRENCY", 8, 0, 1000))
+    acquired = []
+    try:
+        if gmax > 0:
+            sem = _cs_gate(_CS_GATES, loop_id, gmax)
+            await asyncio.wait_for(sem.acquire(), timeout)
+            acquired.append(sem)
+        if smax > 0 and digest:
+            sem = _cs_gate(_CS_SA_GATES, (loop_id, digest), smax)
+            await asyncio.wait_for(sem.acquire(), timeout)
+            acquired.append(sem)
+    except asyncio.TimeoutError:
+        for sem in acquired:
+            sem.release()
+        _CS_COUNTERS["gate_timeout"] += 1
+        return None
+    try:
+        jitter_ms = float(_env_number(
+            "PLAYBACK_UPSTREAM_JITTER_MS", 50, 0, 1000))
+        if jitter_ms > 0:
+            await asyncio.sleep(random.uniform(0, jitter_ms) / 1000.0)
+        _CS_COUNTERS["fetch"] += 1
+        outcome = await _sf_collect(
+            url, _RangeShim(f"bytes={bstart}-{bend}"), headers,
+            media_type, cache_control, _cs_block_size() + 65536)
+        if outcome is None:
+            return None
+        status, hdrs, _ctype, body = outcome
+        if status == 200:
+            # 上游无视 Range 回了整文件：仅当正文就是一块以内才可用，
+            # 按整文件切片出本块，并顺手把其余对齐块也入缓存（免费的午餐）
+            if bstart > 0 and len(body) <= bstart:
+                return None
+            total = len(body)
+            piece = body[bstart:bend + 1]
+            bs = _cs_block_size()
+            pos = 0
+            while pos < total:
+                _cs_cache_put((url, pos // bs, digest),
+                              body[pos:pos + bs], total)
+                pos += bs
+            return (piece, total, hdrs)
+        if status != 206:
+            return None
+        total = None
+        crange = ""
+        for k, v in hdrs.items():
+            if k.lower() == "content-range":
+                crange = str(v)
+                break
+        m = re.search(r"/(\d+)\s*$", crange)
+        if m:
+            total = int(m.group(1))
+        return (body, total, hdrs)
+    finally:
+        for sem in acquired:
+            sem.release()
+
+
+async def _cs_get_block(url, headers, media_type, cache_control,
+                        key, bstart: int, bend: int):
+    """取一块（永远取整块 [bstart, bend]，不按调用方的子区间截断取，
+
+    否则缓存里会留下半块，后来者拿到短块误判文件结尾）。
+    缓存命中→共享在飞→领队取（同 _SF_INFLIGHT 的骨架）。
+    """
+    cached = _cs_cache_get(key)
+    if cached is not None:
+        _CS_COUNTERS["hit"] += 1
+        _CS_COUNTERS["bytes_from_cache"] += len(cached[0])
+        return (cached[0], cached[1], None)
+    task = _CS_INFLIGHT.get(key)
+    if task is None:
+        _CS_COUNTERS["miss"] += 1
+        task = asyncio.ensure_future(_cs_fetch_block(
+            url, headers, media_type, cache_control, key, bstart, bend))
+        _CS_INFLIGHT[key] = task
+        task.add_done_callback(lambda _t, k=key: _CS_INFLIGHT.pop(k, None))
+    else:
+        _CS_COUNTERS["join"] += 1
+    try:
+        outcome = await asyncio.shield(task)
+    except Exception:
+        _CS_COUNTERS["fetch_error"] += 1
+        return None
+    if outcome is None:
+        return None
+    body, total, hdrs = outcome
+    if _cs_cache_get(key) is None:
+        _cs_cache_put(key, body, total)
+    return (body, total, hdrs)
+
+
+async def _cs_try_serve(url, request, headers, media_type, cache_control,
+                        pt):
+    """招1/招4 入口：合资格返回组装好的 206 Response，否则 None（回落）。"""
+    if not _cs_enabled():
+        return None
+    if getattr(request, "method", "GET") != "GET":
+        return None
+    if request.headers.get("if-range") or request.headers.get("if-match"):
+        return None
+    rlen = _sf_range_length(request.headers.get("range"))
+    max_range = _cs_max_range_bytes()
+    if rlen is None or max_range <= 0 or rlen > max_range:
+        return None
+    # 只做 Drive 文件：转 API 形态后能提出 file_id 才合资格
+    try:
+        from backend.emby_server.drive_auth import drive_api_media_url
+        fid = _drive_alt_media_file_id(drive_api_media_url(url))
+    except Exception:
+        fid = None
+    if not fid:
+        return None
+    # 配额负缓存命中：不进本层，留给 impl 的本地 403 既有口径
+    if drive_quota_blocked_retry_after(fid):
+        return None
+    m = re.fullmatch(r"bytes=(\d+)-(\d+)",
+                     str(request.headers.get("range")).strip())
+    start, end = int(m.group(1)), int(m.group(2))
+    bs = _cs_block_size()
+    digest = _auth_digest(headers)
+    first_idx, last_idx = start // bs, end // bs
+    parts = []
+    total = None
+    resp_hdrs = None
+    for idx in range(first_idx, last_idx + 1):
+        bstart, bend_full = idx * bs, (idx + 1) * bs - 1
+        got = await _cs_get_block(
+            url, headers, media_type, cache_control,
+            (url, idx, digest), bstart, bend_full)
+        if got is None:
+            _CS_COUNTERS["fallback"] += 1
+            return None
+        body, btotal, hdrs = got
+        if btotal is not None:
+            total = btotal
+        if resp_hdrs is None and hdrs is not None:
+            resp_hdrs = hdrs
+        # 本块要覆盖到客户端区间在本块内的末端；短了只有一种合法情形：
+        # 这就是文件的真尾巴（total 已知且块内实际字节正好接到 total）
+        want = min(bend_full, end) - bstart + 1
+        if len(body) < want and not (
+                total is not None and bstart + len(body) >= total):
+            _CS_COUNTERS["fallback"] += 1
+            return None
+        parts.append(body[:want])
+    data = b"".join(parts)
+    off = start - first_idx * bs
+    data = data[off:off + rlen]
+    if len(data) < rlen:
+        end = start + len(data) - 1  # 与上游截断口径一致：实际给多少算多少
+    hdrs = {k: v for k, v in (resp_hdrs or {}).items()
+            if k.lower() not in ("content-length", "content-range")}
+    hdrs["Content-Range"] = f"bytes {start}-{end}/{total if total else '*'}"
+    hdrs["Content-Length"] = str(len(data))
+    if pt is not None:
+        pt.done()
+    return Response(content=data, status_code=206, headers=hdrs,
+                    media_type=media_type)
+
+
 async def serve_remote_async(
     url: str,
     request: Request,
@@ -1790,6 +2086,15 @@ async def serve_remote_async(
     本包装层只多一件事：同文件同 Range 的并发小请求做 Singleflight 合并
     （见上方注释）；不合资格的请求原样直达实现、行为零变化。
     """
+    # 招1/招4 分块共享层：合资格（Drive 文件 + 有界单段 Range）先走块层，
+    # 任何失败/不合资格返回 None，原样落回下面的 singleflight/原路径。
+    try:
+        _cs_resp = await _cs_try_serve(
+            url, request, headers, media_type, cache_control, pt)
+    except Exception:
+        _cs_resp = None
+    if _cs_resp is not None:
+        return _cs_resp
     _key = None
     _drain_cap = 0
     try:

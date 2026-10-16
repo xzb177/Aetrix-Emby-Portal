@@ -25,6 +25,16 @@ def _cdn_state(db: Session) -> dict:
         return {"enabled": False, "domain": "", "normalized": None}
 
 
+def _chunk_share_state() -> dict:
+    """招1/招4 分块共享计数（进程内；读不到按空计，不拖垮快照）。"""
+    try:
+        from backend.emby_server import streaming
+        return streaming.chunk_share_counters()
+    except Exception:  # noqa: BLE001
+        logger.debug("读取分块共享计数失败（按空计）", exc_info=True)
+        return {}
+
+
 def _cache_state(db: Session) -> dict:
     try:
         return local_cache.stats(db)
@@ -79,6 +89,7 @@ def snapshot(db: Session) -> dict:
             "max_bytes": int(cache_state.get("max_bytes") or 0),
             "entries_total": int(cache_state.get("entries_total") or 0),
         },
+        "chunk_share": _chunk_share_state(),
         "scope_note": "流量计数只统计本进程（流量确实只从本机出去，"
                       "跨节点合并会重复计算）。"
                       "流量指本服务响应体实际吐出的字节（Range 分片与远程代理），"
