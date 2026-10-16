@@ -8,9 +8,10 @@
       <header class="v4-loghead" aria-live="polite">
         <span class="v4-stamp">探险日志 · {{ dateLabel }}</span>
         <h1>{{ greeting }}，{{ nickname }}</h1>
-        <p v-if="today.data && parcelTotal !== null">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
+        <p v-if="today.data && parcelTotal !== null && parcelTotal > 0">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
+        <p v-else-if="today.data && parcelTotal === 0">今天暂时没有新封存，明天再来看看。</p>
         <div v-else-if="today.loading" class="v4-skeleton" aria-hidden="true" style="height:28px;width:70%;margin-top:10px"></div>
-        <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
+        <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
         <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
         <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
         <div v-if="streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
@@ -39,7 +40,7 @@
       />
 
       <!-- 今日封存：盲盒 -->
-      <section class="v4-sec" aria-live="polite">
+      <section class="v4-sec">
         <div class="v4-sec-title">📦 今日封存</div>
         <div class="v4-sec-sub">新入库的片子，点一下开封看看</div>
         <div v-if="parcels.loading" class="v4-skel-row">
@@ -47,7 +48,7 @@
           <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
           <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
         </div>
-        <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
+        <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
         <div v-else-if="parcelList.length === 0" class="v4-empty">今天还没有新封存，明天再来拆 📦</div>
         <div v-else ref="parcelsEl" class="v4-parcels">
           <ParcelBox
@@ -66,7 +67,7 @@
         <div class="v4-sec-sub">服务器实时动态</div>
       </section>
       <!-- pulse.error 时整盒不渲染，避免留黑色空矩形（错误态在下面统一渲染） -->
-      <div v-if="!pulse.error" class="v4-pulse-box" aria-live="polite">
+      <div v-if="!pulse.error" class="v4-pulse-box">
         <div class="v4-pulse-row">
           <span class="v4-pulse-tag">● 近况 · 服务器在忙什么</span>
           <span class="v4-pulse-dot"></span>
@@ -78,14 +79,14 @@
           <PulseActivity :items="activityTexts" />
         </template>
       </div>
-      <div v-if="pulse.error" class="v4-sec"><div class="v4-err">脉搏加载失败：{{ pulse.error }}<br><button class="v4-retry" @click="() => panel.loadPulse(true)">重试</button></div></div>
+      <div v-if="pulse.error" class="v4-sec"><div class="v4-err">脉搏加载失败：{{ pulse.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadPulse(true)">重试</button></div></div>
 
       <!-- 每日一封 -->
-      <section class="v4-sec v4-sec-letter" aria-live="polite">
+      <section class="v4-sec v4-sec-letter">
         <div class="v4-sec-title">✉️ 每日一封</div>
         <div class="v4-sec-sub">昨天的你，留了一封信 —— 点开看看</div>
         <div v-if="letter.loading" class="v4-skeleton" aria-hidden="true" style="height:120px"></div>
-        <div v-else-if="letter.error" class="v4-err">信件加载失败：{{ letter.error }}<br><button class="v4-retry" @click="() => panel.loadLetter(true)">重试</button></div>
+        <div v-else-if="letter.error" class="v4-err">信件加载失败：{{ letter.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadLetter(true)">重试</button></div>
         <WaxLetter v-else-if="hasLetterData" :letter="letterData" />
         <div v-else class="v4-empty">昨天的信还在路上，先去看片吧</div>
       </section>
@@ -249,7 +250,7 @@ function bindParcelsScroll() {
 watch(parcelList, () => requestAnimationFrame(() => {
   updateScrollHint()
   bindParcelsScroll()
-}))
+}), { immediate: true, flush: 'post' })
 /* 拆封中 id 集合：busy 与请求生命周期绑定（请求完成/失败才释放），替代旧的固定 600ms 释放 */
 const unsealingIds = ref(new Set<string>())
 async function onUnseal(id: string | number) {
@@ -333,7 +334,7 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
 }
 .v4-parcels::-webkit-scrollbar { display: none; }
 /* R29：封存骨架屏与横滑货架同形态（3 个 132×216 卡形横排） */
-.v4-skel-row { display: flex; gap: 12px; overflow: hidden; }
+.v4-skel-row { display: flex; gap: 12px; overflow: hidden; margin: 0 -20px; padding: 4px 36px 12px 20px; }
 .v4-sec-letter { padding-bottom: 20px; }
 /* 脉搏黑盒：取自设计稿 .pulse-box */
 .v4-pulse-box {
@@ -386,7 +387,8 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   color: var(--paper2);
   border: none;
   border-radius: 999px;
-  padding: 7px 14px;
+  padding: 12px 18px;
+  min-height: 44px;
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
