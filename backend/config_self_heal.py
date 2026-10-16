@@ -330,20 +330,6 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
         (cdn.CONFIG_CDN_ENABLED, "false", "CDN 域名预留开关（默认关闭）"),
     ])
 
-    # 7.6 VPS 本地缓存（播放线路 cache）：默认关闭 = 与升级前一致
-    from backend.emby_server import local_cache
-    items.extend([
-        (local_cache.CONFIG_ENABLED, "false", "本地缓存开关（默认关闭）"),
-        (local_cache.CONFIG_DIR, "", "本地缓存目录（留空 = 转码目录下的 media_cache）"),
-        (local_cache.CONFIG_MAX_GB, str(local_cache.DEFAULT_MAX_GB),
-         "本地缓存最大占用（GB，0=不限）"),
-        (local_cache.CONFIG_HOT_DAYS, str(local_cache.DEFAULT_HOT_DAYS),
-         "热门判定窗口（天）"),
-        (local_cache.CONFIG_HOT_PLAYS, str(local_cache.DEFAULT_HOT_PLAYS),
-         "热门判定播放次数阈值（窗口内达到即视为热门）"),
-        (local_cache.CONFIG_RATE_MBPS, str(local_cache.DEFAULT_RATE_MBPS),
-         "本地缓存下载限速（MB/s，0=不限；播放中自动降到 2MB/s）"),
-    ])
 
     # 7.7 求片中心：每日额度（规则与默认值都在 backend/media_seek.py）
     from backend import media_seek

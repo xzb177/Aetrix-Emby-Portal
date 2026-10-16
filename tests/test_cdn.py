@@ -179,21 +179,12 @@ def test_play_line_pref_payload_exposes_cdn_flag(db):
 
     user = SimpleNamespace(id=42)
     assert portal.get_play_line_pref(user, db) == {
-        "line": "relay", "cdn_enabled": False, "cache_enabled": False,
+        "line": "relay", "cdn_enabled": False,
     }
     _enable(db)
     payload = portal.get_play_line_pref(user, db)
     assert payload["line"] == "relay"
     assert payload["cdn_enabled"] is True
-    assert payload["cache_enabled"] is False  # 本地缓存默认关闭，同样不给死选项
-    # 后台开本地缓存后，用户端才能看到 cache 线路
-    from backend.emby_server import local_cache
-    local_cache.write_config(db, enabled=True, dir="", max_gb_value=10,
-                             hot_days_value=7, hot_plays_value=3, rate_mbps_value=5)
-    assert portal.get_play_line_pref(user, db)["cache_enabled"] is True
-    # 写配置会进进程级热缓存（key 不带库名）：清掉，避免污染其它用内存库的测试
-    from backend.integrations import store
-    store.invalidate()
 
 
 def test_subtitle_delivery_url_rewritten_only_when_enabled(db):

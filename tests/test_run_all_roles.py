@@ -38,7 +38,6 @@ _SRC_WORKER = _ROOT / "backend" / "worker.py"
 _ROLE_GATED_TASKS = (
     "maintenance", "enrich_worker", "probe_worker",
     "reminders", "auto_scan", "db_backup", "change_watcher",
-    "local_cache_worker",
 )
 
 

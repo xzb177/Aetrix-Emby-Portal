@@ -87,8 +87,6 @@ from backend.emby_server import portal_mount_routes  # noqa: F401
 # .strm 生成器管理端点：导入即把 5 个路由（config/trigger/progress/missing）注册到
 # 同一个 admin_emby_router 上，必须放在 app.include_router(admin_emby_router) 之前。
 from backend.api import admin_strm_gen  # noqa: F401
-# 播放策略能力管理端点（/playback/config）：同样注册到 admin_emby_router。
-from backend.api import admin_playback  # noqa: F401
 from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
@@ -285,18 +283,8 @@ async def lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"启动目录监听失败（已降级为定时扫描）: {e}")
 
-        # VPS 本地缓存（播放线路 cache）：默认关闭；开启后把热门片串行、限速地
-        # 拉到本机（播放中自动让路），超配额按 LRU 淘汰。失败不影响启动。
-    if not _is_api_role:
-        try:
-            from backend.emby_server import local_cache_worker
-            local_cache_worker.start_local_cache_worker()
-            logger.info("本地缓存 worker 已启动（默认关闭，后台可开）")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"启动本地缓存 worker 失败（可忽略）: {e}")
-
-        # 外部服务能力落地：管理员配过的出站代理要写回进程环境变量（否则重启后失效），
-        # 邮件 / Telegram 通知渠道也在这里按最新配置重建。没配过的能力什么都不做。
+    # 外部服务能力落地：管理员配过的出站代理要写回进程环境变量（否则重启后失效），
+    # 邮件 / Telegram 通知渠道也在这里按最新配置重建。没配过的能力什么都不做。
     try:
         with SessionLocal() as db:
             integrations.apply_all(db)
@@ -694,18 +682,11 @@ async def health_check():
             _obs_snapshot = {"enabled": False}
     except Exception:  # noqa: BLE001
         _obs_snapshot = {"enabled": False, "error": "snapshot_failed"}
-    # 播放预热指标（并发/去重/超时计数 + 平均耗时；模块内部永不抛异常）
-    try:
-        from backend.emby_server import playback_prewarm as _pb_prewarm
-        _prewarm_metrics = _pb_prewarm.metrics_snapshot()
-    except Exception:  # noqa: BLE001
-        _prewarm_metrics = {}
     return {
         "status": health["status"],
         "health_level": health["level"],
         "health_issues": health["issues"],
         "health_metrics": health["metrics"],
-        "playback_prewarm": _prewarm_metrics,
         "observability": _obs_snapshot,
         "timestamp": datetime.now().isoformat(),
         "database": DATABASE_TYPE,
