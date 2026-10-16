@@ -3415,13 +3415,21 @@ async def playback_info(
     )
     # 统一播放 URL 改写（横切能力只许一套）：流节点 > 加速域名 > 原样。
     # 签名查询串原样保留，流节点用同一 SECRET_KEY 验签。
-    from backend.emby_server import stream_accel
-    stream_url, transcoding_url, _rewrite_src = stream_accel.rewrite_playback_urls_unified(
-        db, stream_url, transcoding_url, base)
-    # CDN 改写是另一套（老功能）：流节点/加速域名命中时跳过——它们本身就是边缘入口。
-    if use_cdn and _rewrite_src is None:
-        stream_url = cdn.rewrite_url(db, stream_url, base)
-        transcoding_url = cdn.rewrite_url(db, transcoding_url, base)
+    # 最简播放（2026-10-16 用户拍板）：Drive 条目且直链开关开启时，跳过
+    # 流节点/加速域名/CDN 改写——DirectStreamUrl 保持本机 /stream，
+    # 由 video_stream 直接 302 到谷歌直链，字节不经任何中间层。
+    from backend.emby_server import playback_strategy as _ps2
+    _dd_fid = (getattr(item, "drive_file_id", "") or "").strip()
+    if _dd_fid and _ps2.drive_direct_play_enabled(db):
+        _rewrite_src = None
+    else:
+        from backend.emby_server import stream_accel
+        stream_url, transcoding_url, _rewrite_src = stream_accel.rewrite_playback_urls_unified(
+            db, stream_url, transcoding_url, base)
+        # CDN 改写是另一套（老功能）：流节点/加速域名命中时跳过——它们本身就是边缘入口。
+        if use_cdn and _rewrite_src is None:
+            stream_url = cdn.rewrite_url(db, stream_url, base)
+            transcoding_url = cdn.rewrite_url(db, transcoding_url, base)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
@@ -3560,6 +3568,18 @@ async def video_stream(
         # 直链名单内且直链源可用时，302 让播放器直接从对象存储取流，
         # 字节不经本机；其余情况原样走中继。判定逻辑见 playback_strategy。
         from backend.emby_server import playback_strategy as _strategy
+        # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有
+        # drive_file_id）且 drive_direct_play_enabled 开关开启时，直接 302
+        # 到谷歌 usercontent 直链，播放器自拉；服务器退出字节通道。
+        # 开关关闭 / 非 Drive 条目（115/WebDAV/本地）一律走原路径。
+        _fid = (getattr(item, "drive_file_id", "") or "").strip()
+        if _fid and await run_db(_strategy.drive_direct_play_enabled, db):
+            from backend.emby_server.drive_auth import drive_usercontent_download_url
+            _pt.mark("drive_direct_302")
+            _pt.done()
+            return _observe_traffic(
+                RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
+                                 headers=_strategy.DIRECT_REDIRECT_HEADERS))
         direct_url = await run_db(
             _strategy.maybe_direct_url, db, getattr(item, "drive_file_id", None))
         if direct_url:
