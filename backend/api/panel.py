@@ -258,6 +258,8 @@ def panel_today(
     now = _now_local_naive()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    from backend.emby_server import models as em
+
     # 今日封存候选（与 /parcels 同口径：整部新入库 + 今日有新集的剧）
     try:
         parcel_items = _today_parcel_items(db, limit=5)
