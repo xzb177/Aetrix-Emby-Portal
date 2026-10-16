@@ -915,18 +915,19 @@ def _strip_nulls(obj):
     return obj
 
 
-def _url_quote(text: str) -> str:
-    return urllib.parse.quote(text or "", safe="")
-
-
 def _external_urls(item: em.MediaItem) -> list:
-    """按条目已有的 TMDB/IMDb/豆瓣 等 id 生成外部链接（客户端详情页「链接」区）
+    """按条目已有的 TMDB/IMDb/Bangumi 等 id 生成外部链接（客户端详情页「链接」区）
 
     以前这里写死 ``[]``，客户端拿不到任何链接来源，只能自己按 ProviderIds 猜一个
     （于是详情页常常只剩一个来源）。Emby 协议里这组字段就是给客户端展示用的。
+
+    豆瓣刻意不发（2026-10-16 用户拍板）：SenPlayer 自带一个豆瓣入口（固定排在
+    链接区第一位，与服务端下发无关——无 douban_id 的条目亲验同样出现），服务端
+    再发一条必然在它页面上重复。改名对齐（#949）实测仍重复，故按用户决定整条
+    不发，SenPlayer 只留它自己的那个。ProviderIds 里的 Douban 键是编号元数据、
+    不是展示链接，照常保留（跨服匹配等用途）。
     """
     urls = []
-    name = (item.name or "").strip()
     is_series = item.item_type in ("series", "season", "episode")
     if item.tmdb_id:
         path = "tv" if is_series else "movie"
@@ -939,28 +940,11 @@ def _external_urls(item: em.MediaItem) -> list:
             "Name": "IMDb",
             "Url": f"https://www.imdb.com/title/{item.imdb_id}/",
         })
-    douban = getattr(item, "douban_id", None)
-    if douban:
-        # 名字必须与 ProviderIds 的键 "Douban" 一致：SenPlayer 按 ProviderIds
-        # 自己拼一份链接、再追加 ExternalUrls，靠名字去重；中文名对不上会
-        # 在详情页出现两个豆瓣。URL 用 canonical /subject/ 形，按 URL 去重
-        # 的客户端也能对上。
-        urls.append({
-            "Name": "Douban",
-            "Url": f"https://movie.douban.com/subject/{douban}/",
-        })
     bangumi = getattr(item, "bangumi_id", None)
     if bangumi:
         urls.append({
             "Name": "Bangumi",
             "Url": f"https://bgm.tv/subject/{bangumi}",
-        })
-    # 豆瓣/Bangumi 没有内建 id 时，按片名给出搜索入口——比什么都没有好
-    if not douban and name and (is_series or item.metadata_source == "douban"):
-        urls.append({
-            "Name": "Douban",
-            "Url": "https://search.douban.com/movie/subject_search?search_text="
-                    + _url_quote(name),
         })
     return urls
 
