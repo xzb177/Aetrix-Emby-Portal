@@ -166,9 +166,12 @@ def test_write_accepts_good_links(db):
 
 def test_write_round_trip(db):
     """管理端写 → 读：值一致，派生状态正确"""
+    # 定时炸弹修复（2026-10-17）：reveal_at 必须相对真实 now 取未来，
+    # write_admin/read_admin 的 status 按 datetime.now() 派生；此前用硬编码
+    # _NOW+3 天，真实时间超过它后 status 恒为 revealed，CI 永久红。
     cfg = teaser.write_admin(db, {
         "teaser_enabled": "1",
-        "teaser_reveal_at": (_NOW + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M"),
+        "teaser_reveal_at": (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M"),
         "teaser_post_title": "三天后见",
     })
     assert cfg["enabled"] is True
