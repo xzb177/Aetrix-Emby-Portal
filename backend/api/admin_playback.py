@@ -40,6 +40,8 @@ class PlaybackConfigSave(BaseModel):
     hotlist: list[str] = Field(default_factory=list)
     key_template: str = _ps.DEFAULT_KEY_TEMPLATE
     url_ttl_sec: int = _ps.DEFAULT_TTL_SEC
+    # Drive 直链播放（最简模式，默认开；关=回滚到旧中继路径）
+    drive_direct_play: bool = True
 
 
 def _mask_sources(sources: list[dict]) -> list[dict]:
@@ -60,6 +62,8 @@ def _read_config(db: Session) -> dict:
         "hotlist": sorted(_ps.get_hotlist(db)),
         "key_template": _ps.get_key_template(db),
         "url_ttl_sec": _ps.get_ttl_sec(db),
+        # Drive 直链播放开关（最简模式；默认开）
+        "drive_direct_play": _ps.drive_direct_play_enabled(db),
         # 降级计数可观测（进程内计数，重启清零；与 prewarm 计数同口径）：
         # direct_302=已发 302 / fallback_relay=回落中继 / fallback_quota=
         # 配额负缓存命中直接回落（PR-2 尾巴：配额感知降级）。
@@ -138,6 +142,7 @@ def playback_config_save(body: PlaybackConfigSave,
         _ps.KEY_HOTLIST: json.dumps(hotlist, ensure_ascii=False),
         _ps.KEY_KEY_TEMPLATE: template,
         _ps.KEY_TTL: str(ttl),
+        _ps.KEY_DRIVE_DIRECT_PLAY: "true" if body.drive_direct_play else "false",
     }
     descriptions = {
         _ps.KEY_STRATEGY: "播放策略（relay=中继 / direct=对象存储直链优先，名单外回落中继）",
@@ -145,6 +150,7 @@ def playback_config_save(body: PlaybackConfigSave,
         _ps.KEY_HOTLIST: "播放直链名单（已在直链源备有副本的 drive_file_id）",
         _ps.KEY_KEY_TEMPLATE: "播放直链对象键模板（{file_id} 占位）",
         _ps.KEY_TTL: "播放直链签名有效期（秒）",
+        _ps.KEY_DRIVE_DIRECT_PLAY: "Drive 直链播放（最简模式：有 drive_file_id 即 302 谷歌直链；关=回滚旧中继路径）",
     }
     store.write_values(db, values, descriptions)
     db.commit()

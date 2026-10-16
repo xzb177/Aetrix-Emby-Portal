@@ -40,6 +40,11 @@ KEY_KEY_TEMPLATE = "playback_direct_key_template"
 KEY_TTL = "playback_direct_url_ttl_sec"
 #: 进度>85% 预热下一集（独立开关，默认关；PR-2 尾巴 2026-10-16）
 KEY_PREWARM_NEXT_EPISODE = "prewarm_next_episode_enabled"
+#: Drive 文件直链播放（最简模式，2026-10-16 用户拍板学 raisemby）：
+#: 开启时条目有 drive_file_id 即 302 到谷歌 usercontent 直链，播放器自拉，
+#: 服务器退出字节通道；关闭时行为与旧中继路径完全一致（回滚兜底）。
+#: 默认开。
+KEY_DRIVE_DIRECT_PLAY = "drive_direct_play_enabled"
 
 STRATEGY_RELAY = "relay"
 STRATEGY_DIRECT = "direct"
@@ -117,6 +122,21 @@ def prewarm_next_episode_enabled(db: Session) -> bool:
     """进度>85% 预热下一集（独立开关，默认关）。"""
     raw = (store.get_value(db, KEY_PREWARM_NEXT_EPISODE, "false") or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def drive_direct_play_enabled(db: Session) -> bool:
+    """Drive 文件直链播放开关（最简模式，默认开）。
+
+    开启时 video_stream 对有 drive_file_id 的条目直接 302 到谷歌
+    usercontent 直链；关闭时走原路径（对象存储直链/中继）。读失败
+    fail-safe 回默认开并记日志——开关读不到时不该把播放打回旧路。
+    """
+    try:
+        raw = (store.get_value(db, KEY_DRIVE_DIRECT_PLAY, "true") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB 场景下保默认
+        logger.warning("drive_direct_play_enabled 读取失败，回默认开", exc_info=True)
+        return True
+    return raw not in ("0", "false", "no", "off")
 
 
 # ---------------------------------------------------------------------------
