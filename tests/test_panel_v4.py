@@ -327,6 +327,8 @@ def test_today_field_contract(db, user):
     assert set(data.keys()) == {
         "greeting", "date_label", "weekday", "parcel_count",
         "unsealed_count", "streak_days", "letter_readable", "nickname",
+        # 心理学批（2026-10-16）：今日观影人数 / 连签里程碑临界 / 今日一句话
+        "today_viewers", "streak_milestone", "daypart_line",
     }
 
 
