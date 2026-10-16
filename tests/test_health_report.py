@@ -184,3 +184,24 @@ def test_stalled_down_when_had_activity_but_stalled(db, monkeypatch):
         progress.reset()
     assert res["level"] == "down", res
     assert any(i["key"] == "enrich_stalled" for i in res["issues"]), res
+
+
+def test_enrich_count_excludes_merged_copies(db):
+    """合并副本不计入补全统计：副本按设计不参与补全（母条目补完即可），
+    算进来会让积压虚高几万条、健康灯长红（2026-10-16 生产实测：
+    真实 pending 2 条、副本 pending 72167 条）。"""
+    lib = em.Library(guid="M" * 32, name="库", collection_type="movies", paths="")
+    db.add(lib)
+    db.flush()
+    master = em.MediaItem(guid=f"{1:032d}", library_id=lib.id, item_type="movie",
+                          name="母条目", enrich_status="done")
+    db.add(master)
+    db.flush()
+    db.add(em.MediaItem(guid=f"{2:032d}", library_id=lib.id, item_type="movie",
+                        name="副本", enrich_status="pending",
+                        merged_into_id=master.id))
+    db.add(em.MediaItem(guid=f"{3:032d}", library_id=lib.id, item_type="movie",
+                        name="真实待补", enrich_status="pending"))
+    db.flush()
+    assert health_report._enrich_count(db, "pending") == 1
+    assert health_report._enrich_count(db, "done") == 1

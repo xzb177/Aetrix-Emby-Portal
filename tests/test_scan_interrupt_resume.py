@@ -150,3 +150,55 @@ def test_reset_then_resume_chain(db, monkeypatch, queue_spy):
     assert mt.resume_interrupted_scans(db) == 1
     assert calls[0]["library_id"] == lib.id
     assert calls[0]["trigger"] == "resume"
+
+
+# ---------- close_stale_scan_runs：刚被打断的流水不受 6 小时阈值限制 ----------
+
+from datetime import datetime, timedelta  # noqa: E402
+
+
+def _run(db, lib, started_ago_hours=0.02):
+    run = em.ScanRun(library_id=lib.id, status="running", trigger="manual",
+                     started_at=datetime.now() - timedelta(hours=started_ago_hours))
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def test_close_stale_keeps_fresh_run_by_default(db):
+    """没有坐实打断时，新鲜的 running 流水受阈值保护，不许误杀。"""
+    mt = _mt()
+    lib = _lib(db, "F", "running")
+    run = _run(db, lib)
+    assert mt.close_stale_scan_runs(db) == 0
+    db.refresh(run)
+    assert run.status == "running"
+
+
+def test_close_stale_closes_fresh_run_of_interrupted_library(db):
+    """库已被坐实打断（library_ids 传入）时，再新鲜的流水也要收尾成 interrupted。"""
+    mt = _mt()
+    from backend.emby_server import scanner
+    lib = _lib(db, "G", "running")
+    run = _run(db, lib)
+    assert mt.close_stale_scan_runs(db, library_ids=[lib.id]) == 1
+    db.refresh(run)
+    assert run.status == scanner.SCAN_STATUS_INTERRUPTED
+    assert run.finished_at is not None
+
+
+def test_startup_chain_closes_interrupted_run(db):
+    """启动维护的实际链路：复位坐实打断 → 按 interrupted 库收尾流水。"""
+    mt = _mt()
+    from backend.emby_server import scanner
+    lib = _lib(db, "S", "running", is_scanning=True)
+    run = _run(db, lib)
+    assert mt.reset_stale_scan_flags(db) == 1
+    ids = [l.id for l in db.query(em.Library).filter(
+        em.Library.scan_status == scanner.SCAN_STATUS_INTERRUPTED,
+        em.Library.is_scanning == False).all()]  # noqa: E712
+    assert lib.id in ids
+    assert mt.close_stale_scan_runs(db, library_ids=ids) == 1
+    db.refresh(run)
+    assert run.status == scanner.SCAN_STATUS_INTERRUPTED

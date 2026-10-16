@@ -23,7 +23,7 @@ import shutil
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -89,7 +89,8 @@ def reset_stale_scan_flags(db, stale_hours=None) -> int:
     return len(reset)
 
 
-def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None) -> int:
+def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None,
+                          library_ids: Optional[Iterable[int]] = None) -> int:
     """把崩溃残留的「还在跑」扫描流水收尾成 interrupted（被重启打断，不是失败）
 
     先跳过本进程真的在扫的库，再看开始时间是否超过阈值。
@@ -97,17 +98,24 @@ def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None) -> i
     因为流水行没有 scan_started_at 这样的权威字段。）
     只是对象换成流水行：进程被强杀时那行会永远停在 ``running``——历史里挂着一条“扫描中”，
     而且永远没有结果。
+
+    ``library_ids``：启动维护刚被 ``reset_stale_scan_flags`` 坐实打断的库。
+    这些库的 running 流水就是被打断的那一轮，不受阈值限制直接收尾——
+    否则刚开扫几分钟就被重启的流水太「新」，会被阈值跳过，继续挂着
+    “运行中”直到下一次重启（2026-10-16 活体实证）。单节点部署下这些库
+    不存在「别处在扫」的可能；本进程真在扫的仍由 is_scan_active 挡住。
     """
     from backend.emby_server import scanner
 
     hours = STALE_SCAN_HOURS if stale_hours is None else stale_hours
     cutoff = datetime.now() - timedelta(hours=hours)
+    forced = set(library_ids or ())
     now = datetime.now()
     stuck: list = []
     for run in db.query(em.ScanRun).filter(em.ScanRun.status == scanner.SCAN_STATUS_RUNNING).all():
         if run.library_id is not None and scanner.is_scan_active(run.library_id):
             continue  # 本进程真的在扫：绝不碰
-        if run.started_at is not None and run.started_at >= cutoff:
+        if run.library_id not in forced and run.started_at is not None and run.started_at >= cutoff:
             continue  # 刚开始不久：可能正在另一台机器上扫
         run.status = scanner.SCAN_STATUS_INTERRUPTED
         run.finished_at = now
@@ -408,7 +416,17 @@ def run_startup_maintenance() -> dict:
     db = SessionLocal()
     try:
         result["scan_flags_reset"] = reset_stale_scan_flags(db)
-        result["scan_runs_closed"] = close_stale_scan_runs(db)
+        # 刚被复位坐实打断的库（状态已记 interrupted 且不在扫）：它们的
+        # running 流水就是被打断的那一轮，收尾时不受 6 小时阈值限制。
+        from backend.emby_server import scanner as _scanner
+        _interrupted_lib_ids = [
+            lib.id for lib in db.query(em.Library).filter(
+                em.Library.scan_status == _scanner.SCAN_STATUS_INTERRUPTED,
+                em.Library.is_scanning == False,  # noqa: E712
+            ).all()
+        ]
+        result["scan_runs_closed"] = close_stale_scan_runs(
+            db, library_ids=_interrupted_lib_ids)
         # 复位刚把被重启打断的库收尾成 interrupted：紧接着自动续扫，
         # 不等管理员发现失败牌再手动点（续扫失败不影响其余维护项）。
         try:

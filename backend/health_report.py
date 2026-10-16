@@ -54,8 +54,12 @@ def _count(db, item_type: str, status: str) -> int:
 def _enrich_count(db, status: str) -> int:
     from backend.emby_server import models as em
     try:
+        # 只数真实条目：合并副本（merged_into_id 非空）按设计不参与补全
+        # （母条目补完即可），把它们算进来会让积压常年虚高几万条、
+        # 健康灯长红（2026-10-16 实测：真实 pending 2 条、副本 pending 72167 条）。
         return db.query(func.count(em.MediaItem.id)).filter(
-            em.MediaItem.enrich_status == status).scalar() or 0
+            em.MediaItem.enrich_status == status,
+            em.MediaItem.merged_into_id.is_(None)).scalar() or 0
     except Exception as exc:  # noqa: BLE001
         logger.debug("统计 enrich %s 失败: %s", status, exc)
         return 0
