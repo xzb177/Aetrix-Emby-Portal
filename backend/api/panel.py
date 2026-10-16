@@ -215,15 +215,71 @@ def panel_today(
             models.PanelUnseal.item_id.in_(parcel_ids),
         ).scalar() or 0
 
+    streak_days = _streak(db, user.id)
+
+    # 今日观影人数（P-6 社交证明：只报聚合数，不露个人）
+    try:
+        today_viewers = (
+            db.query(em.PlaybackSession.user_id)
+            .filter(
+                em.PlaybackSession.start_time >= today_start,
+                em.PlaybackSession.user_id.isnot(None),
+            )
+            .distinct()
+            .count()
+        ) or 0
+    except Exception:  # noqa: BLE001
+        logger.warning("panel_today today_viewers failed", exc_info=True)
+        today_viewers = 0
+
+    # 连签里程碑临界（P-2：里程碑与提醒窗口均走后台配置）
+    try:
+        from backend.integrations import world_streak
+
+        _scfg = world_streak.read(db)
+        _nm = world_streak.next_milestone(
+            streak_days, world_streak.parse_milestones(_scfg.get("streak_milestones", ""))
+        )
+        streak_milestone = (
+            {
+                "next": _nm[0],
+                "remaining": _nm[1],
+                "warn_within": int(_scfg.get("streak_warn_within") or 1),
+            }
+            if _nm
+            else None
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("panel_today streak_milestone failed", exc_info=True)
+        streak_milestone = None
+
+    # 今日一句话（P-7：时段文案池按日轮换，同日稳定）
+    try:
+        from backend.integrations import world_copy
+
+        _h = now.hour
+        _daypart = (
+            "dawn" if 5 <= _h < 9 else "day" if 9 <= _h < 17 else "dusk" if 17 <= _h < 19 else "night"
+        )
+        daypart_line = world_copy.pick_line(
+            world_copy.read(db).get("daypart_lines", ""), _daypart, now.toordinal()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("panel_today daypart_line failed", exc_info=True)
+        daypart_line = None
+
     return _ok({
         "greeting": _greeting(),
         "date_label": now.strftime("%Y-%m-%d"),
         "weekday": ["一", "二", "三", "四", "五", "六", "日"][now.weekday()],
         "parcel_count": len(parcel_ids),
         "unsealed_count": unsealed,
-        "streak_days": _streak(db, user.id),
+        "streak_days": streak_days,
         "letter_readable": True,  # 每日一封每天都可读
         "nickname": getattr(user, "nickname", None) or user.username,
+        "today_viewers": today_viewers,
+        "streak_milestone": streak_milestone,
+        "daypart_line": daypart_line,
     })
 
 
