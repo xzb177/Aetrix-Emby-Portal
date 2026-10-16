@@ -205,3 +205,55 @@ def test_enrich_count_excludes_merged_copies(db):
     db.flush()
     assert health_report._enrich_count(db, "pending") == 1
     assert health_report._enrich_count(db, "done") == 1
+
+
+def _lib_with_scan_status(db, name, status, error=None, guid_ch="Q"):
+    """scan_status 指定的库（直接写真实行，不走猴子补丁）
+
+    必须 commit：health_report.collect() 里 probe_worker.status_snapshot
+    做完纯 SELECT 后会 db.rollback()（清 idle 事务，生产习惯），
+    只 flush 不 commit 的行会被撤销。
+    """
+    lib = em.Library(guid=guid_ch * 32, name=name, collection_type="movies", paths="")
+    lib.scan_status = status
+    lib.is_scanning = False
+    if error:
+        lib.scan_error = error
+    db.add(lib)
+    db.commit()
+    return lib
+
+
+def test_scan_summary_counts_interrupted_not_failed(db):
+    """「已中断」不是失败：记 interrupted 计数、不进 failed、不进 last_failed
+    （GLM-5.3 复核 #938 指出 health_report 对 interrupted 零直接断言）"""
+    _lib_with_scan_status(db, "中断库", "interrupted")
+    s = health_report.library_scan_summary(db)
+    assert s["interrupted"] == 1, s
+    assert s["failed"] == 0, s
+    assert s["last_failed"] == [], s
+
+
+def test_scan_summary_failed_still_recorded(db):
+    """对照：真失败的库仍正常记 failed 并进 last_failed"""
+    _lib_with_scan_status(db, "失败库", "failed", error="boom", guid_ch="W")
+    s = health_report.library_scan_summary(db)
+    assert s["failed"] == 1, s
+    assert s["interrupted"] == 0, s
+    assert any(x["name"] == "失败库" for x in s["last_failed"]), s
+
+
+def test_collect_no_scan_issue_for_interrupted(db, monkeypatch):
+    """已中断的库在健康检查里不出告警；真失败的库出 warn"""
+    monkeypatch.setattr(health_report, "_count", lambda db, t, s: 20 if s == "done" else 0)
+    monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: 20 if s == "done" else 0)
+    monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
+                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+    _lib_with_scan_status(db, "中断库", "interrupted")
+    res = health_report.collect(db)
+    assert not any(i["key"] == "scan" for i in res["issues"]), res
+
+    _lib_with_scan_status(db, "失败库", "failed", error="boom", guid_ch="W")
+    res = health_report.collect(db)
+    assert any(i["key"] == "scan" and i["level"] == "warn" for i in res["issues"]), res
+    assert any("失败库" in i["message"] for i in res["issues"] if i["key"] == "scan"), res
