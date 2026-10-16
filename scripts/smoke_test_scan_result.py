@@ -476,13 +476,13 @@ with Session() as db:
 with Session() as db:
     crash_lib = db.query(em.Library).filter(em.Library.id == crashed_id).first()
     crash_run = db.query(em.ScanRun).filter(em.ScanRun.id == open_run_crash).first()
-check("崩溃残留：is_scanning 复位、最近一次状态收尾成 failed",
-      reset >= 1 and crash_lib.is_scanning is False and crash_lib.scan_status == "failed",
+check("崩溃残留：is_scanning 复位、最近一次状态收尾成 interrupted（已中断，不是失败）",
+      reset >= 1 and crash_lib.is_scanning is False and crash_lib.scan_status == "interrupted",
       f"reset={reset} is_scanning={crash_lib.is_scanning} status={crash_lib.scan_status}")
 check("崩溃残留：原因写明是进程重启（不是含糊的“失败”）",
       "进程重启" in (crash_lib.scan_error or ""), repr(crash_lib.scan_error))
-check("崩溃残留：流水里那条「还在跑」被收尾成 failed 且有结束时间",
-      closed >= 1 and crash_run.status == "failed" and crash_run.finished_at is not None,
+check("崩溃残留：流水里那条「还在跑」被收尾成 interrupted 且有结束时间",
+      closed >= 1 and crash_run.status == "interrupted" and crash_run.finished_at is not None,
       f"closed={closed} status={crash_run.status} finished={crash_run.finished_at}")
 # 阈值内的「正在跑」不能动：多机部署时另一个节点可能正在扫这个库
 with Session() as db:

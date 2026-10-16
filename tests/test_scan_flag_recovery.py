@@ -96,7 +96,8 @@ def test_resets_recent_scan_too(db, monkeypatch):
     assert mt.reset_stale_scan_flags(db, stale_hours=6) == 1
     db.commit()
     assert lib.is_scanning is False
-    assert lib.scan_status == "failed"
+    # 被重启打断记「已中断」，不是失败（失败牌误报的根源）
+    assert lib.scan_status == "interrupted"
 
 
 def test_skip_active_scan_in_this_process(db, monkeypatch):
@@ -122,4 +123,4 @@ def test_legacy_row_without_started_at(db, monkeypatch):
     assert mt.reset_stale_scan_flags(db, stale_hours=6) == 1
     db.commit()
     assert lib.is_scanning is False
-    assert lib.scan_status == "failed"
+    assert lib.scan_status == "interrupted"

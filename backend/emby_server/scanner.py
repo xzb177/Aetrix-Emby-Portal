@@ -3624,18 +3624,21 @@ SCAN_STATUS_RUNNING = "running"
 SCAN_STATUS_SUCCESS = "success"
 SCAN_STATUS_PARTIAL = "partial"   # 有来源读不到：本轮已跳过清理
 SCAN_STATUS_FAILED = "failed"
+SCAN_STATUS_INTERRUPTED = "interrupted"   # 被进程重启打断（不是失败）：启动维护会收尾成这个状态并自动续扫
 
 # 谁触发的扫描（写进流水：回答「半夜三点是谁在扫」）：
 # manual = 面板按钮/一键扫描 · client = Emby 客户端刷新 · node = 归属节点转发 ·
 # repair = 面板修复端点 · auto = 定时扫描守护 · fs-event = 文件系统监听 ·
 # drive-changes = Drive 变更守护 · chase-new = 追新守护 · strm-gen = 生成器收尾触发 ·
-# rescrape = 面板重刮任务（api/admin_scrape.py）。
+# rescrape = 面板重刮任务（api/admin_scrape.py）·
+# resume = 启动维护自动续扫被进程重启打断的那一轮（maintenance.resume_interrupted_scans）。
 # 注意：新增触发值必须同步加到这个元组里——2026-10-14 的 enrich 大翻转事故里，
 # chase-new/drive-changes/strm-gen 等 6 个值因为不在白名单里被 normalize 成 manual，
 # 14 天 222 个 run 全标 manual，复盘时误读为"有人在点扫描"。
 SCAN_TRIGGERS = (
     "manual", "client", "node", "repair",
     "auto", "fs-event", "drive-changes", "chase-new", "strm-gen", "rescrape",
+    "resume",
 )
 
 # 每个媒体库保留多少轮扫描流水（0 = 不记流水）。一轮一行，超过就按库回收最旧的行——

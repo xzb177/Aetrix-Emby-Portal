@@ -63,6 +63,10 @@ def reset_stale_scan_flags(db, stale_hours=None) -> int:
     前提：worker 启动时调用，那时本进程内存里不可能有正在跑的扫描。
     库里还标着 is_scanning=True 的，就是上一个进程被 SIGTERM 杀掉的残留。
     单节点部署：不需要「别处可能在扫」的阈值判断，全部复位。
+
+    收尾状态记 interrupted（已中断）而不是 failed：被重启打断不是扫描失败，
+    记 failed 会在健康快照里冒充失败告警；随后 resume_interrupted_scans 会
+    把这些库自动重新入队续扫。
     """
     from backend.emby_server import scanner
 
@@ -75,7 +79,7 @@ def reset_stale_scan_flags(db, stale_hours=None) -> int:
         lib.scan_started_at = None
         lib.scan_progress = None
         if lib.scan_status == scanner.SCAN_STATUS_RUNNING:
-            lib.scan_status = scanner.SCAN_STATUS_FAILED
+            lib.scan_status = scanner.SCAN_STATUS_INTERRUPTED
             lib.scan_error = "进程重启，本轮扫描未完成"
         reset.append(lib.id)
     if reset:
@@ -86,7 +90,7 @@ def reset_stale_scan_flags(db, stale_hours=None) -> int:
 
 
 def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None) -> int:
-    """把崩溃残留的「还在跑」扫描流水收尾成 failed
+    """把崩溃残留的「还在跑」扫描流水收尾成 interrupted（被重启打断，不是失败）
 
     先跳过本进程真的在扫的库，再看开始时间是否超过阈值。
     （``reset_stale_scan_flags`` 已改为启动即全量复位；这里保留阈值，
@@ -105,7 +109,7 @@ def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None) -> i
             continue  # 本进程真的在扫：绝不碰
         if run.started_at is not None and run.started_at >= cutoff:
             continue  # 刚开始不久：可能正在另一台机器上扫
-        run.status = scanner.SCAN_STATUS_FAILED
+        run.status = scanner.SCAN_STATUS_INTERRUPTED
         run.finished_at = now
         run.error = (run.error or "进程重启，本轮扫描未完成")[:500]
         stuck.append(run)
@@ -114,6 +118,40 @@ def close_stale_scan_runs(db: Session, stale_hours: Optional[float] = None) -> i
         logger.warning("收尾 %d 条中断的扫描流水（崩溃/强杀遗留）: %s",
                        len(stuck), ", ".join(str(run.id) for run in stuck))
     return len(stuck)
+
+
+def resume_interrupted_scans(db) -> int:
+    """把「已中断」的库重新入队续扫（启动维护在复位/收尾之后调用）
+
+    被进程重启打断的扫描数据没坏、任务也没错，缺的只是一次重新执行：
+    逐库增量入队（trigger=resume），让它自己接着跑完，管理员不用再手动点。
+    已在本进程队列里 / 已推入 Redis 队列的库跳过——队列本身有去重，
+    这里再挡一道，避免 API 与 worker 两个进程启动时各入一次。
+    单库入队失败只记日志，不拖累其他库，也不阻塞启动。
+    """
+    from backend.emby_server import scan_queue, scanner
+
+    rows = (
+        db.query(em.Library)
+        .filter(
+            em.Library.scan_status == scanner.SCAN_STATUS_INTERRUPTED,
+            em.Library.is_scanning == False,  # noqa: E712
+        )
+        .all()
+    )
+    resumed: list[int] = []
+    for lib in rows:
+        try:
+            if scan_queue.is_busy(lib.id):
+                continue
+            scan_queue.enqueue(lib, trigger="resume", force_full=False)
+            resumed.append(lib.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("自动续扫入队失败：库 id=%s: %s", lib.id, exc)
+    if resumed:
+        logger.info("自动续扫 %d 个被重启打断的媒体库: %s",
+                    len(resumed), ", ".join(str(i) for i in resumed))
+    return len(resumed)
 
 
 def reap_stale_playback_sessions(db: Session, stale_minutes: Optional[int] = None) -> int:
@@ -361,7 +399,8 @@ def run_startup_maintenance() -> dict:
     """
     from backend.database import SessionLocal
 
-    result = {"scan_flags_reset": 0, "scan_runs_closed": 0, "sessions_reaped": 0,
+    result = {"scan_flags_reset": 0, "scan_runs_closed": 0, "scan_resumed": 0,
+              "sessions_reaped": 0,
               "transcode_orphans": 0, "subtitle_cache_pruned": 0,
               "tmdb_cache_pruned": 0, "mount_file_ids_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_pruned": 0,
@@ -370,6 +409,12 @@ def run_startup_maintenance() -> dict:
     try:
         result["scan_flags_reset"] = reset_stale_scan_flags(db)
         result["scan_runs_closed"] = close_stale_scan_runs(db)
+        # 复位刚把被重启打断的库收尾成 interrupted：紧接着自动续扫，
+        # 不等管理员发现失败牌再手动点（续扫失败不影响其余维护项）。
+        try:
+            result["scan_resumed"] = resume_interrupted_scans(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("启动维护（自动续扫）失败: %s", exc)
         result["sessions_reaped"] = reap_stale_playback_sessions(db, stale_minutes=1)
         # 升级上来的老库：分类关联表刚建出来时是空的，这里补上（按 id 水位增量）。
         # 补不完也不影响启动：筛选路径会退回旧的全表匹配并接着补。
