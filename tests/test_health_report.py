@@ -243,6 +243,66 @@ def test_scan_summary_failed_still_recorded(db):
     assert any(x["name"] == "失败库" for x in s["last_failed"]), s
 
 
+@pytest.fixture()
+def clean_cache():
+    """collect_cached 进程内缓存的测试隔离：用完还原"""
+    health_report._reset_health_cache()
+    try:
+        yield
+    finally:
+        health_report._reset_health_cache()
+
+
+def test_collect_cached_hits_cache_within_ttl(db, monkeypatch, clean_cache):
+    """TTL 窗口内第二次调用直接命中缓存，不再重跑聚合"""
+    monkeypatch.setenv("HEALTH_REPORT_TTL_SECONDS", "600")
+    r1 = health_report.collect_cached(db)
+    r2 = health_report.collect_cached(db)
+    assert r1 is r2
+
+
+def test_collect_cached_disabled_when_ttl_zero(db, monkeypatch, clean_cache):
+    """TTL<=0 时关闭缓存：每次调用都重新聚合"""
+    monkeypatch.setenv("HEALTH_REPORT_TTL_SECONDS", "0")
+    r1 = health_report.collect_cached(db)
+    r2 = health_report.collect_cached(db)
+    assert r1 is not r2
+
+
+def test_collect_cached_refreshes_after_ttl(db, monkeypatch, clean_cache):
+    """TTL 过期后重新聚合"""
+    monkeypatch.setenv("HEALTH_REPORT_TTL_SECONDS", "600")
+    r1 = health_report.collect_cached(db)
+    health_report._HEALTH_CACHE["at"] -= 601
+    r2 = health_report.collect_cached(db)
+    assert r2 is not r1
+
+
+def test_collect_cached_serves_stale_on_refresh_error(db, monkeypatch, clean_cache):
+    """刷新失败时返回旧快照，健康检查不 500"""
+    monkeypatch.setenv("HEALTH_REPORT_TTL_SECONDS", "600")
+    primed = health_report.collect_cached(db)
+    health_report._HEALTH_CACHE["at"] -= 601
+
+    def _boom(db):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(health_report, "collect", _boom)
+    assert health_report.collect_cached(db) is primed
+
+
+def test_collect_cached_raises_without_stale_on_error(db, monkeypatch, clean_cache):
+    """无旧快照且聚合失败时，异常照常抛出（由调用方退化处理）"""
+    monkeypatch.setenv("HEALTH_REPORT_TTL_SECONDS", "600")
+
+    def _boom(db):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(health_report, "collect", _boom)
+    with pytest.raises(RuntimeError):
+        health_report.collect_cached(db)
+
+
 def test_collect_no_scan_issue_for_interrupted(db, monkeypatch):
     """已中断的库在健康检查里不出告警；真失败的库出 warn"""
     monkeypatch.setattr(health_report, "_count", lambda db, t, s: 20 if s == "done" else 0)

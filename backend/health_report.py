@@ -24,6 +24,9 @@ worker 刷几千条探测失败、扫描队列堆积，前台「服务健康」�
 from __future__ import annotations
 
 import logging
+import os
+import threading
+import time
 from typing import Any
 
 from sqlalchemy import func
@@ -349,3 +352,55 @@ def collect(db) -> dict:
         "issues": issues,
         "metrics": metrics,
     }
+
+
+# ---- collect() 的短 TTL 缓存入口（2026-10-16 网页加载二轮优化）----
+# 实测：扫描打满 2 核生产机时 collect() 一次约 5–10 秒（约 20 个 SQL +
+# 目录 walk + Redis ping）；每次打开「服务器」页与每次健康探针都全量重跑，
+# 是「服务器」页 5 秒空白的最大头。健康快照 60 秒级延迟可接受，故加进程内
+# 短 TTL 缓存：/api/health、业务健康端点、面板 pulse/vitals 全部经此入口。
+# collect() 本体保持无缓存——测试与需要实时口径的调用方不受影响。
+# TTL 经环境变量 HEALTH_REPORT_TTL_SECONDS 可配（默认 60；<=0 关闭缓存）。
+_HEALTH_CACHE = {"at": 0.0, "result": None}
+_HEALTH_CACHE_LOCK = threading.Lock()
+DEFAULT_HEALTH_TTL_SECONDS = 60.0
+
+
+def _health_ttl_seconds() -> float:
+    try:
+        return float(os.environ.get("HEALTH_REPORT_TTL_SECONDS",
+                                    str(DEFAULT_HEALTH_TTL_SECONDS)))
+    except (TypeError, ValueError):
+        return DEFAULT_HEALTH_TTL_SECONDS
+
+
+def collect_cached(db, ttl_seconds: float | None = None) -> dict:
+    """collect() 的短 TTL 缓存版：同一进程内 TTL 窗口内只聚合一次。
+
+    刷新失败（理论上 collect() 内部已吞掉一切异常）时返回旧快照，
+    绝不让健康检查 500。
+    """
+    ttl = _health_ttl_seconds() if ttl_seconds is None else float(ttl_seconds)
+    if ttl <= 0:
+        return collect(db)
+    now = time.monotonic()
+    with _HEALTH_CACHE_LOCK:
+        entry = _HEALTH_CACHE
+        if entry["result"] is not None and (now - entry["at"]) < ttl:
+            return entry["result"]
+        try:
+            result = collect(db)
+        except Exception:  # noqa: BLE001 — 刷新失败时退回旧快照
+            if entry["result"] is not None:
+                return entry["result"]
+            raise
+        entry["at"] = now
+        entry["result"] = result
+        return result
+
+
+def _reset_health_cache() -> None:
+    """测试隔离用：清空进程内健康缓存。生产代码不调用。"""
+    with _HEALTH_CACHE_LOCK:
+        _HEALTH_CACHE["at"] = 0.0
+        _HEALTH_CACHE["result"] = None

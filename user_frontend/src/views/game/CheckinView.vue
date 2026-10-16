@@ -9,10 +9,11 @@
         <div v-if="status" class="v4-fire">
           <template v-if="status.streak > 0"><span aria-hidden="true">🔥</span> 已连报 <b>{{ status.streak }}</b> 天
             <!-- R43：后端成就名叫"连击"（panel_achievements.py streak7），不叫"金章"，文案跟后端对齐，不许发明 -->
-            <span v-if="!status.checked_today"> · 今天还没报到</span>
+            <!-- 2026-10-16 用户拍板：checkin_enabled=false 时不催报到（仅加 enabled 门，enabled=true 时全部状态保持原样） -->
+            <span v-if="status.enabled && !status.checked_today"> · 今天还没报到</span>
             <span v-if="status.streak >= 7"> · <span aria-hidden="true">🔥</span> 连击达成</span>
           </template>
-          <template v-else>今天开始，连续报到第 1 天</template>
+          <template v-else-if="status.enabled">今天开始，连续报到第 1 天</template>
           <span v-if="statusStale" class="v4-stale">（数据可能过期）</span>
         </div>
         <div v-else-if="statusLoading" class="v4-skeleton sk-fire" aria-hidden="true"></div>
@@ -26,7 +27,8 @@
       <section class="v4-sec" :aria-busy="statusLoading">
         <div class="v4-sec-title"><span aria-hidden="true">📖</span> 报到簿 · {{ monthLabel }}</div>
         <!-- R48：子文案跟着状态走，加载/失败时不显示行动文案 -->
-        <div v-if="!statusLoading && !statusError" class="v4-sec-sub">
+        <!-- 2026-10-16 用户拍板：checkin_enabled=false 时不催报到（整行不渲染，避免空 div 占位） -->
+        <div v-if="!statusLoading && !statusError && (status?.checked_today || status?.enabled)" class="v4-sec-sub">
           <template v-if="status?.checked_today">今日已盖章 <span aria-hidden="true">✅</span></template>
           <template v-else>点击下方"报到"按钮盖章</template>
         </div>
