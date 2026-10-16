@@ -86,6 +86,21 @@ function onTabKey(e: KeyboardEvent, current: 'login' | 'register') {
 }
 
 function friendlyError(err: any, fallback: string): string {
+  // 认证表单（登录/注册）中 401/403 表示的是凭据错误（如密码错误），
+  // 而不是已登录后接口调用时的“会话过期”。因此这里必须先于 toUserMessage 的
+  // 全局“状态码优先”规则单独处理，避免把“密码错了”误报成“登录已过期”。
+  const status = err?.response?.status
+  const detail = err?.response?.data?.detail
+  if ((status === 401 || status === 403) && typeof detail === 'string' && detail.trim() !== '') {
+    const trimmed = detail.trim()
+    const isMachineCode = /^[A-Z][A-Z0-9_]{2,}$/.test(trimmed)
+    const hasLeakKeyword = /数据库|sql|连接失败|超时|异常|堆栈|traceback/i.test(trimmed)
+    const isServerErrorLeak = /internal server error|服务器内部错误/i.test(trimmed)
+    if (!isMachineCode && !hasLeakKeyword && !isServerErrorLeak) {
+      return trimmed
+    }
+  }
+
   // 统一走 toUserMessage 解析；只有落到通用兜底时才用调用方的场景文案
   const msg = toUserMessage(err, 'saveFailed')
   return msg === toastFallback.saveFailed ? fallback : msg
