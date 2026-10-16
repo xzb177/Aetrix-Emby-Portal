@@ -1441,6 +1441,13 @@ const SCAN_TRIGGER_LABELS: Record<string, string> = {
   client: '客户端',
   node: '归属节点',
   repair: '修复队列',
+  auto: '定时',
+  'fs-event': '文件变化',
+  'drive-changes': 'Drive 变更',
+  'chase-new': '追新',
+  'strm-gen': '纸条生成',
+  rescrape: '重新刮削',
+  resume: '自动续扫',
 }
 
 function statusMeta(status: EmbyScanStatus): { text: string; cls: string } {
