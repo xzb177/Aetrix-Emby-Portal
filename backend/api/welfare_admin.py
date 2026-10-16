@@ -392,7 +392,7 @@ class PrizeItem(BaseModel):
 class RoundCreateRequest(BaseModel):
     """创建群抽奖活动请求体。"""
     title: str
-    chat_id: int  # Telegram 群组 chat_id（整数，可为负数）
+    chat_id: Optional[int] = None  # 可选；不传则从 lottery_group_ids 自动解析
     prizes: List[PrizeItem]
     draw_at: Optional[str] = None
     max_participants: Optional[int] = None
@@ -458,7 +458,16 @@ def create_lottery_round(
     lottery_module = _get_lottery()
     if not req.title or not req.title.strip():
         raise HTTPException(status_code=400, detail="活动标题不能为空")
-    if not req.chat_id:
+    effective_chat_id = req.chat_id
+    if effective_chat_id is None:
+        # 未显式传群 ID：从允许群名单自动解析。名单恰好一个群才敢替用户做主，
+        # 否则必须先到功能开关里把允许群 ID 设成一个群。
+        allowed_from_cfg = lottery_module.allowed_group_ids(db)
+        if len(allowed_from_cfg) == 1:
+            effective_chat_id = next(iter(allowed_from_cfg))
+        else:
+            raise HTTPException(status_code=400, detail="请先在功能开关里把允许群ID设置为一个群，再来新建活动")
+    if not effective_chat_id:
         raise HTTPException(status_code=400, detail="群 ID 不能为空")
     if not req.prizes:
         raise HTTPException(status_code=400, detail="至少需要配置 1 个奖品")
@@ -498,16 +507,16 @@ def create_lottery_round(
                     allowed_ids.add(int(x))
                 except ValueError:
                     pass
-        if allowed_ids and req.chat_id not in allowed_ids:
+        if allowed_ids and effective_chat_id not in allowed_ids:
             raise HTTPException(status_code=403, detail="该群未被允许")
     # 同群已有进行中的活动则拒绝
-    active = lottery_module.get_active_round(db, req.chat_id)
+    active = lottery_module.get_active_round(db, effective_chat_id)
     if active:
         raise HTTPException(status_code=400, detail="该群已有进行中的抽奖活动")
     result = lottery_module.create_round(
         db=db,
         title=req.title,
-        chat_id=req.chat_id,
+        chat_id=effective_chat_id,
         prizes=[item.model_dump() for item in req.prizes],
         draw_at=dt,
         max_participants=req.max_participants,
@@ -515,7 +524,7 @@ def create_lottery_round(
         lottery_type=req.lottery_type,
         password_keyword=req.password_keyword,
     )
-    _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": req.chat_id, "lottery_type": req.lottery_type})
+    _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": effective_chat_id, "lottery_type": req.lottery_type})
     db.commit()
     # 新活动创建后通知到群（之前漏掉了，群里没人知道有新抽奖）。
     # 通知失败不影响创建结果，只记日志。
@@ -527,7 +536,7 @@ def create_lottery_round(
     return {
         "id": result.id,
         "title": result.title,
-        "chat_id": result.chat_id,
+        "chat_id": effective_chat_id,
         "status": result.status,
         "lottery_type": result.lottery_type,
         "password_keyword": result.password_keyword,

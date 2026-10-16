@@ -68,11 +68,11 @@ const load = async () => {
 
 // 新建活动
 const dlgVisible = ref(false)
-const form = ref({ title: '', chat_id: '', draw_at: null as string | Date | null, max_participants: 0, lottery_type: 'button', password_keyword: '' })
+const form = ref({ title: '', draw_at: null as string | Date | null, max_participants: 0, lottery_type: 'button', password_keyword: '' })
 const prizes = ref<{ name: string; type: string; value: number; quantity: number }[]>([])
 
 const openCreate = () => {
-  form.value = { title: '', chat_id: '', draw_at: null, max_participants: 0, lottery_type: 'button', password_keyword: '' }
+  form.value = { title: '', draw_at: null, max_participants: 0, lottery_type: 'button', password_keyword: '' }
   prizes.value = [{ name: '', type: 'days', value: 0, quantity: 1 }]
   dlgVisible.value = true
 }
@@ -83,14 +83,11 @@ const creating = ref(false)
 const submitCreate = async () => {
   if (creating.value) return
   if (!form.value.title.trim()) { ElMessage.warning('请填写活动标题'); return }
-  const chatId = Number(form.value.chat_id.trim())
-  if (!form.value.chat_id.trim() || !Number.isInteger(chatId) || chatId === 0) { ElMessage.warning('请填写有效的群ID（整数）'); return }
   if (prizes.value.length < 1) { ElMessage.warning('至少添加 1 个奖品'); return }
   if (prizes.value.some(p => !p.name.trim())) { ElMessage.warning('每个奖品名称不能为空'); return }
   if (form.value.lottery_type === 'password' && !form.value.password_keyword.trim()) { ElMessage.warning('口令抽奖必须填写口令'); return }
   const payload: any = {
     title: form.value.title.trim(),
-    chat_id: chatId,
     draw_at: form.value.draw_at instanceof Date ? form.value.draw_at.toISOString() : (form.value.draw_at || null),
     max_participants: form.value.max_participants > 0 ? form.value.max_participants : null,
     lottery_type: form.value.lottery_type,
@@ -350,9 +347,6 @@ onMounted(() => {
         </el-form-item>
         <el-form-item v-if="form.lottery_type === 'password'" label="口令">
           <el-input v-model="form.password_keyword" placeholder="用户在群里发送此口令参加，如：我要抽奖" />
-        </el-form-item>
-        <el-form-item label="群ID">
-          <el-input v-model="form.chat_id" placeholder="群 chat_id，如 -1001234567890" />
         </el-form-item>
         <el-form-item label="开奖时间">
           <el-date-picker v-model="form.draw_at" type="datetime" placeholder="可选，不填表示手动开奖" style="width: 100%" />
