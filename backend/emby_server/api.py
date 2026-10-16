@@ -3493,18 +3493,6 @@ async def video_stream(
             return _observe_traffic(
                 RedirectResponse(direct_url, status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
-        # 最简播放（2026-10-17 中继全删）：Drive 条目直接 302 到谷歌
-        # usercontent 直链，播放器自拉；服务器退出字节通道。
-        # SEAM-2：rebase 到 #957（drive_direct_play_enabled 开关）后，以其
-        # 开关 early-return 分支为准，本段回落逻辑随之删除。
-        _fid = (getattr(item, "drive_file_id", "") or "").strip()
-        if _fid:
-            from backend.emby_server.drive_auth import drive_usercontent_download_url
-            _pt.mark("drive_direct_302")
-            _pt.done()
-            return _observe_traffic(
-                RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
-                                 headers=_strategy.DIRECT_REDIRECT_HEADERS))
         raise HTTPException(status_code=410, detail="relay removed")
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
     _pt.mark("serve_file")
