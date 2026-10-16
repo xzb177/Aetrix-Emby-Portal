@@ -214,7 +214,7 @@ async def warm(db, item) -> None:
         _bump("failed")
 
 
-async def maybe_warm(db, item) -> None:
+async def maybe_warm(db, item, force: bool = False) -> None:
     """生产入口：读配置 → 去重/并发判断 → 起预热协程。永不抛异常。
 
     由 api.py 的 playback_info 在后台调用：
@@ -222,11 +222,15 @@ async def maybe_warm(db, item) -> None:
     注意：传入的是给后台任务新建的独立 session（不是请求的 db）。
     maybe_warm 内同步读配置；warm 经 run_db 在线程池顺序复用该 session
     （await 期间不另碰，符合 async_db 纪律）。
+
+    ``force=True``：跳过 ``strm_prewarm_enabled`` 总开关（去重/并发/配额
+    护盾等安全闸全部保留）。用于带独立开关的预热场景（如「进度>85%
+    预热下一集」），避免开关叠加造成「两处都开了才生效」的暗坑。
     """
     try:
         _bump("triggered")
         cfg = read_config(db)
-        if not cfg["enabled"]:
+        if not cfg["enabled"] and not force:
             _bump("skipped_disabled")
             return
 

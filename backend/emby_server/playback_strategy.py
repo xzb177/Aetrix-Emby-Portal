@@ -6,6 +6,8 @@
 drive_file_id 在服主登记的直链名单（热门副本）内、且至少有一个完整
 可用的 S3 兼容直链源（R2 / B2 / Bunny 等）时，才给播放器发 302 签名
 直链，字节不经本机；其余情况一律回落中继，能力故障永不打断播放。
+配额感知降级（2026-10-16 PR-2 尾巴）：direct 下文件命中 #940 配额
+负缓存时，连直链都不试、直接回落中继（日志 + 计数可观测）。
 
 实测依据（reports/playback-302-recon-20261016.md）：网盘 uc 直链无鉴权
 不可用（登录墙/病毒扫描确认页），302 的合法载体只有自有对象存储的
@@ -20,6 +22,7 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote, urlsplit
@@ -35,6 +38,8 @@ KEY_SOURCES = "playback_direct_sources"
 KEY_HOTLIST = "playback_direct_hotlist"
 KEY_KEY_TEMPLATE = "playback_direct_key_template"
 KEY_TTL = "playback_direct_url_ttl_sec"
+#: 进度>85% 预热下一集（独立开关，默认关；PR-2 尾巴 2026-10-16）
+KEY_PREWARM_NEXT_EPISODE = "prewarm_next_episode_enabled"
 
 STRATEGY_RELAY = "relay"
 STRATEGY_DIRECT = "direct"
@@ -46,9 +51,13 @@ MIN_TTL_SEC = 60
 MAX_TTL_SEC = 86400
 
 #: 302 直链响应的固定卫生头：签名 URL 短时有效且个人化，绝不能被播放器、
-#: 浏览器或中间 CDN 缓存复用（缓存了轻则过期播不了、重则串给别人）。
+#: 浏览器或中间 CDN 缓存复用（缓存了轻则过期播不了、重则串给别人）；
+#: 不把门户域名当 Referer 发给对象存储（防存储端防盗链误杀）。
 #: 调用方（api.video_stream）下发 302 时必须带上，不要裸 RedirectResponse。
-DIRECT_REDIRECT_HEADERS = {"Cache-Control": "no-store"}
+DIRECT_REDIRECT_HEADERS = {
+    "Cache-Control": "no-cache, no-store",
+    "Referrer-Policy": "no-referrer",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +111,39 @@ def get_ttl_sec(db: Session) -> int:
     except (TypeError, ValueError):
         return DEFAULT_TTL_SEC
     return max(MIN_TTL_SEC, min(MAX_TTL_SEC, ttl))
+
+
+def prewarm_next_episode_enabled(db: Session) -> bool:
+    """进度>85% 预热下一集（独立开关，默认关）。"""
+    raw = (store.get_value(db, KEY_PREWARM_NEXT_EPISODE, "false") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+# ---------------------------------------------------------------------------
+# 可观测：直链/回落计数（进程内，重启清零；与 prewarm 计数同口径）
+# ---------------------------------------------------------------------------
+
+_COUNTERS = {"direct_302": 0, "fallback_relay": 0, "fallback_quota": 0}
+_COUNTERS_LOCK = threading.Lock()
+
+
+def _bump_counter(name: str) -> None:
+    with _COUNTERS_LOCK:
+        _COUNTERS[name] = _COUNTERS.get(name, 0) + 1
+
+
+def strategy_counters() -> dict:
+    """策略判定计数快照（direct_302=发过 302 / fallback_relay=回落中继 /
+    fallback_quota=配额负缓存命中直接回落）。"""
+    with _COUNTERS_LOCK:
+        return dict(_COUNTERS)
+
+
+def strategy_counters_reset() -> None:
+    """计数清零（单元测试隔离用）。"""
+    with _COUNTERS_LOCK:
+        for k in _COUNTERS:
+            _COUNTERS[k] = 0
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +241,25 @@ def _source_ready(src: dict) -> bool:
     return endpoint.startswith("https://") or endpoint.startswith("http://")
 
 
+def _quota_blocked(file_id: str) -> bool:
+    """该 file_id 是否处于 #940 的 Drive 配额负缓存期内（本地 403 护盾）。
+
+    配额已超限的文件再签直链也只是浪费：名单条目仍在 Drive 上取不到字节，
+    且 302 会把客户端推到一条死链上。"""
+    try:
+        from backend.emby_server import streaming as _st
+
+        return _st.drive_quota_blocked_retry_after(file_id) > 0
+    except Exception:
+        return False
+
+
 def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]:
     """策略为 direct 且该文件在直链名单内时返回签名直链，否则 None（回落中继）。
 
     任何配置缺失/损坏/签名异常都返回 None——能力故障永不打断播放。
+    配额感知降级：文件处于 #940 配额负缓存期时，连直链都不试、直接回落
+    中继（计数 fallback_quota，管理端 /playback/config 可见）。
     """
     try:
         if get_strategy(db) != STRATEGY_DIRECT:
@@ -212,13 +269,21 @@ def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]
             return None
         if fid not in get_hotlist(db):
             return None
+        # 配额感知降级：只对「本可直链」的文件生效——名单外文件本来就走
+        # 中继，不计入降级计数，避免计数失真。
+        if _quota_blocked(fid):
+            _bump_counter("fallback_quota")
+            logger.info("playback direct: file_id=%s 处于配额负缓存期，直接回落中继", fid)
+            return None
         template = get_key_template(db)
         try:
             object_key = template.format(file_id=fid)
         except (KeyError, IndexError, ValueError):
             logger.warning("playback_direct_key_template 模板非法: %r", template)
+            _bump_counter("fallback_relay")
             return None
         if not object_key or ".." in object_key.split("/"):
+            _bump_counter("fallback_relay")
             return None
         ttl = get_ttl_sec(db)
         for src in get_sources(db):
@@ -234,12 +299,16 @@ def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]
                 expires_sec=ttl,
                 path_style=bool(src.get("path_style", True)),
             )
+            _bump_counter("direct_302")
             logger.info(
                 "playback direct 302: source=%s bucket=%s key=%s",
                 src.get("name") or "-", src.get("bucket"), object_key,
             )
             return url
+        _bump_counter("fallback_relay")
+        logger.info("playback direct: 无可用直链源 file_id=%s，回落中继", fid)
         return None
     except Exception:  # noqa: BLE001 - 能力层兜底：异常一律回落中继
+        _bump_counter("fallback_relay")
         logger.exception("maybe_direct_url 异常，回落中继")
         return None

@@ -129,6 +129,11 @@ def test_sync_no_retry_on_quota(monkeypatch):
         None, API_URL, {}, resp, API_URL, UC_URL, {})
     assert out_resp is resp
     assert opened == []
+    # 同步路径与 async 版同口径：配额 403 会把文件记入跨请求负缓存。
+    # 负缓存是进程级全局状态，验完必须清掉——不清会串进后续测试文件
+    # （CI 实测：本条残留令 test_playback_strategy 的直链用例恒回落中继）。
+    assert streaming.drive_quota_blocked_retry_after("FID123") > 0
+    streaming._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
 
 
 # ---------- Accept-Ranges 补齐（同步 serve_remote） ----------
