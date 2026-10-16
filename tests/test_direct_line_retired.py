@@ -18,6 +18,14 @@
 - ``direct_link`` 连同直链生成逻辑**已彻底删除**（代码不再读取它）；库里已存的配置值
   原样留着，不读、不报错、不报错迁移；
 - 用户端类型与面板里不再出现 direct 选项。
+
+## 2026-10-16 补充（方向变更，范围仅限对象存储）
+
+用户拍板播放策略能力化：302 只允许作为「能力开关后、指向服主自有
+对象存储（S3 兼容，SigV4 预签名）」的跳转出现，URL 唯一来源是
+``playback_strategy.maybe_direct_url``。302 到 Google Drive 仍在禁区：
+本文件对 Drive 直链的全部禁令（try_google_direct_url / target.direct /
+play_line 的 direct 折叠）继续有效。
 """
 # 必须**在任何业务模块之前**设好：backend.database 在 import 期就按
 # DATABASE_TYPE 建好 engine（本机没有 PG 服务）。与仓库其它需要库的测试一致。
@@ -100,15 +108,21 @@ def test_direct_is_not_a_selectable_line():
 
 
 def test_video_stream_source_has_no_google_direct_call():
-    """结构性护栏：video_stream 里不能再出现直链入口，也不再有 302 响应
+    """结构性护栏：video_stream 里不能再出现 Drive 直链入口。
 
-    用 AST 取**真实代码**（注释里可以继续解释为什么下线）。
+    302 的唯一合法出现方式（2026-10-16 能力化）：由能力判定
+    ``maybe_direct_url`` 给出对象存储签名直链后发 ``RedirectResponse``，
+    且全局只许这一处。用 AST 取**真实代码**（注释里可以继续解释）。
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(api.video_stream)))
     code = ast.unparse(ast.Module(body=tree.body, type_ignores=[]))
     assert "try_google_direct_url" not in code
     assert "target.direct" not in code
-    assert "status_code=302" not in code, "播放路径不再对客户端 302"
+    if "status_code=302" in code:
+        assert "maybe_direct_url" in code, "302 必须经播放策略能力判定"
+        assert code.count("RedirectResponse(") == 1, "播放路径只许一处 302"
+        assert "RedirectResponse(direct_url" in code, (
+            "302 的 URL 只能来自 maybe_direct_url 的返回值")
 
 
 def test_module_no_longer_imports_direct_url():

@@ -2058,6 +2058,44 @@ export const saveStrmGenConfig = (data: {
   api_qps?: number
 }) => put<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`, data)
 
+// ==================== 播放策略（/api/admin/emby/playback） ====================
+
+export interface PlaybackDirectSource {
+  name: string
+  type: string
+  endpoint: string
+  bucket: string
+  region: string
+  access_key_id: string
+  /** 回显打码为 ********；保存时留空或原样回传都表示不改 */
+  secret_key: string
+  has_secret_key?: boolean
+  path_style: boolean
+  enabled: boolean
+}
+
+export interface PlaybackConfig {
+  /** relay=中继（默认） | direct=对象存储直链优先，名单外回落中继 */
+  strategy: string
+  sources: PlaybackDirectSource[]
+  /** 已在直链源备有副本的 drive_file_id 名单 */
+  hotlist: string[]
+  key_template: string
+  url_ttl_sec: number
+}
+
+export const fetchPlaybackConfig = () =>
+  get<{ success: boolean; config: PlaybackConfig }>(`${E}/playback/config`)
+
+/** 写播放策略配置（保存即热生效）；格式非法时后端 400 */
+export const savePlaybackConfig = (data: {
+  strategy: string
+  sources: PlaybackDirectSource[]
+  hotlist: string[]
+  key_template: string
+  url_ttl_sec: number
+}) => put<{ success: boolean; config: PlaybackConfig }>(`${E}/playback/config`, data)
+
 /** 手动触发一次生成（full=false 增量，true 全量）；已有任务在跑时后端返回 success=false */
 export const triggerStrmGen = (full = false) =>
   post<{ success: boolean; message?: string; error?: string; progress?: StrmGenProgress }>(

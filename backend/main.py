@@ -87,6 +87,8 @@ from backend.emby_server import portal_mount_routes  # noqa: F401
 # .strm 生成器管理端点：导入即把 5 个路由（config/trigger/progress/missing）注册到
 # 同一个 admin_emby_router 上，必须放在 app.include_router(admin_emby_router) 之前。
 from backend.api import admin_strm_gen  # noqa: F401
+# 播放策略能力管理端点（/playback/config）：同样注册到 admin_emby_router。
+from backend.api import admin_playback  # noqa: F401
 from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
