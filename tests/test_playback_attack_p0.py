@@ -62,70 +62,9 @@ def test_get_episodes_fields_mediasources(seeded):
         api._library_scope = orig_scope
 
 
-# ---------------------------------------------------------------------------
-# P1：详情页预热 .strm 链路（BackgroundTasks，同步端点保持同步）
-# ---------------------------------------------------------------------------
-
-class _FakeBackgroundTasks:
-    """只收任务不执行，断言调度行为用。"""
-    def __init__(self):
-        self.tasks = []
-
-    def add_task(self, func, *args, **kwargs):
-        self.tasks.append((func, args, kwargs))
-
-
 def _first_movie(seeded):
     db = seeded.db
     return db.query(em.MediaItem).filter(em.MediaItem.item_type == "movie").first()
-
-
-def test_detail_page_schedules_strm_prewarm(seeded, monkeypatch):
-    """before：get_item_detail 没有 background_tasks 参数，详情页从不触发预热。
-    after：.strm 详情页调度一个后台任务；运行它会调到 strm_prewarm.maybe_warm。"""
-    db, user = seeded.db, seeded.user
-    movie = _first_movie(seeded)
-    movie.file_path = "/media/t.strm"
-    db.commit()
-    orig_scope = api._library_scope
-    api._library_scope = lambda db, user: None  # noqa: E731
-    calls = []
-
-    async def _fake_maybe_warm(_db, item):
-        calls.append((getattr(item, "file_path", None),
-                      getattr(item, "guid", None)))
-
-    monkeypatch.setattr("backend.emby_server.strm_prewarm.maybe_warm",
-                        _fake_maybe_warm)
-    try:
-        bg = _FakeBackgroundTasks()
-        payload = api.get_item_detail(item_id=movie.guid, request=_req({}),
-                                      user=user, db=db, background_tasks=bg)
-        assert payload["Id"] == movie.guid  # 详情页正常返回
-        assert len(bg.tasks) == 1, "before: 0 个任务（无预热）；after: 1 个"
-        # 运行后台任务：应调到 maybe_warm，并关闭独立 session
-        asyncio.run(bg.tasks[0][0]())
-        assert calls == [("/media/t.strm", movie.guid)], calls
-    finally:
-        api._library_scope = orig_scope
-        movie.file_path = "/m/1.mkv"
-        db.commit()
-
-
-def test_detail_page_no_prewarm_for_non_strm(seeded):
-    """非 .strm 详情页不调度预热（端点侧先过滤，避免无谓的后台任务+读配置）。"""
-    db, user = seeded.db, seeded.user
-    movie = _first_movie(seeded)
-    assert movie.file_path.endswith(".mkv")
-    orig_scope = api._library_scope
-    api._library_scope = lambda db, user: None  # noqa: E731
-    try:
-        bg = _FakeBackgroundTasks()
-        api.get_item_detail(item_id=movie.guid, request=_req({}),
-                            user=user, db=db, background_tasks=bg)
-        assert bg.tasks == [], "非 .strm 不应调度预热任务"
-    finally:
-        api._library_scope = orig_scope
 
 
 def test_detail_page_works_without_background_tasks(seeded):

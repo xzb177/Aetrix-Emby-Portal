@@ -40,18 +40,12 @@ def memdb():
 def _isolate_process_global_state():
     """进程级全局状态隔离（每个用例进出各清一次，与执行顺序无关）。
 
-    两处全局状态会跨用例串扰：①配置 TTL 热缓存（store）按配置键缓存、
-    与具体 DB 无关，前一用例缓存的键模板等值会漏进下一用例；
-    ②配额负缓存（streaming）按 file_id 记，其他测试文件留下的
-    FID123 残留会让本文件的直链用例恒回落中继（CI 实测 3 例全红）。
+    配置 TTL 热缓存（store）按配置键缓存、与具体 DB 无关，前一用例缓存的
+    键模板等值会漏进下一用例。配额负缓存已随中继全删移除。
     """
-    from backend.emby_server import streaming as _streaming
-
     store.invalidate()
-    _streaming._QUOTA_NEGATIVE_CACHE.clear()
     yield
     store.invalidate()
-    _streaming._QUOTA_NEGATIVE_CACHE.clear()
 
 
 def _set(db, key, value):
@@ -283,22 +277,6 @@ def test_direct_happy_path_302_counts(memdb, clean_counters):
     assert c["fallback_relay"] == 0 and c["fallback_quota"] == 0
 
 
-def test_direct_quota_negative_falls_back_to_relay(memdb, clean_counters):
-    """direct + 文件命中 #940 配额负缓存 → 连直链都不试，直接回落中继。"""
-    from backend.emby_server import streaming as st
-
-    _arm_direct(memdb)
-    st._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
-    st.note_drive_quota_exceeded("FID123")
-    try:
-        assert ps.maybe_direct_url(memdb, "FID123") is None
-        c = ps.strategy_counters()
-        assert c["fallback_quota"] == 1
-        assert c["direct_302"] == 0
-    finally:
-        st._QUOTA_NEGATIVE_CACHE.pop("FID123", None)
-
-
 def test_direct_no_source_falls_back_to_relay(memdb, clean_counters):
     """direct + 无可用直链源 → 回落中继并计数。"""
     _set(memdb, ps.KEY_STRATEGY, "direct")
@@ -306,19 +284,6 @@ def test_direct_no_source_falls_back_to_relay(memdb, clean_counters):
     _set(memdb, ps.KEY_HOTLIST, json.dumps(["FID123"]))
     assert ps.maybe_direct_url(memdb, "FID123") is None
     assert ps.strategy_counters()["fallback_relay"] == 1
-
-
-def test_prewarm_next_episode_switch_default_off(memdb):
-    assert ps.prewarm_next_episode_enabled(memdb) is False
-
-
-def test_prewarm_next_episode_switch_can_enable(memdb):
-    _set(memdb, ps.KEY_PREWARM_NEXT_EPISODE, "1")
-    assert ps.prewarm_next_episode_enabled(memdb) is True
-    _set(memdb, ps.KEY_PREWARM_NEXT_EPISODE, "true")
-    assert ps.prewarm_next_episode_enabled(memdb) is True
-    _set(memdb, ps.KEY_PREWARM_NEXT_EPISODE, "false")
-    assert ps.prewarm_next_episode_enabled(memdb) is False
 
 
 def test_playback_config_get_includes_counters(memdb, clean_counters):

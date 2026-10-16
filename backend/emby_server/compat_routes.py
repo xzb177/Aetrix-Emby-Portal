@@ -31,8 +31,6 @@ from backend.emby_server.streaming import (
     get_transcode,
     serve_file,
     serve_image,
-    serve_remote,
-    serve_remote_async,
     start_transcode,
     stop_all_transcodes,
     stop_transcodes_for,
@@ -263,123 +261,7 @@ async def session_progress(request: Request, user: models.WebUser = Depends(get_
                            db: Session = Depends(get_db)):
     body = await request.json()
     await run_in_threadpool(_record_progress, request, user, db, body)
-    # PR-2：进度>85% 预热下一集（独立开关，默认关；永不抛异常打断上报）
-    try:
-        await _maybe_prewarm_next_episode(user, db, body)
-    except Exception:
-        logger.debug("next-episode prewarm 跳过", exc_info=True)
     return {"success": True}
-
-
-# ---------------------------------------------------------------------------
-# PR-2：进度 >85% 预热下一集（独立开关，默认关）
-# ---------------------------------------------------------------------------
-
-def _find_next_episode(db: Session, item):
-    """找同一部剧的下一集。
-
-    季号/集号升序；无集号时按 id 取当前条目之后的第一集。
-    只看可见行口径（deleted_at/merged_into_id/隐藏）。
-    """
-    if getattr(item, "item_type", None) != "episode":
-        return None
-    if getattr(item, "series_id", None) is None:
-        return None
-    sn = getattr(item, "season_number", None)
-    en = getattr(item, "episode_number", None)
-    q = (
-        db.query(em.MediaItem)
-        .filter(
-            em.MediaItem.item_type == "episode",
-            em.MediaItem.series_id == item.series_id,
-            em.MediaItem.is_hidden == False,  # noqa: E712
-            em.MediaItem.merged_into_id.is_(None),
-            em.MediaItem.deleted_at.is_(None),
-        )
-    )
-    if sn is not None and en is not None:
-        q = q.filter(
-            (em.MediaItem.season_number > sn)
-            | ((em.MediaItem.season_number == sn) & (em.MediaItem.episode_number > en))
-        )
-        q = q.order_by(
-            em.MediaItem.season_number.asc().nullslast(),
-            em.MediaItem.episode_number.asc().nullslast(),
-            em.MediaItem.id.asc(),
-        )
-    else:
-        q = q.filter(em.MediaItem.id > item.id).order_by(em.MediaItem.id.asc())
-    return q.first()
-
-
-def _sync_find_next_for_prewarm(db: Session, user, body):
-    """线程池内：进度>85% 时算出需要预热的下一集（返回纯数据 dict 或 None）。
-
-    属性在线程池内一次取完，避免事件循环线程上触发 SQLAlchemy 懒加载。
-    """
-    try:
-        item = _require_visible_item(db, user, body.get("ItemId") or "")
-    except Exception:
-        return None
-    pos = int(body.get("PositionTicks") or 0)
-    runtime = getattr(item, "duration_ticks", 0) or 0
-    if pos <= 0 or not runtime or pos < runtime * 0.85:
-        return None
-    nxt = _find_next_episode(db, item)
-    if nxt is None:
-        return None
-    return {
-        "file_path": getattr(nxt, "file_path", "") or "",
-        "drive_file_id": (getattr(nxt, "drive_file_id", None) or "").strip(),
-        "guid": getattr(nxt, "guid", None),
-        "library": getattr(nxt, "library", None),
-    }
-
-
-async def _maybe_prewarm_next_episode(user, db: Session, body: dict) -> None:
-    """进度>85% 时预热下一集的 .strm 链路。独立开关默认关；永不抛异常。
-
-    开启时也必须跳过处于 #940 配额负缓存期的 Drive 文件（撞墙不预热）。
-    """
-    from backend.emby_server import playback_strategy as _ps
-    from backend.emby_server.streaming import drive_quota_blocked_retry_after
-
-    enabled = await run_in_threadpool(_ps.prewarm_next_episode_enabled, db)
-    if not enabled:
-        return
-    nxt = await run_in_threadpool(_sync_find_next_for_prewarm, db, user, body)
-    if not nxt:
-        return
-    fid = nxt.get("drive_file_id") or ""
-    if fid and drive_quota_blocked_retry_after(fid) > 0:
-        logger.info("next-episode prewarm 跳过：file_id=%s 处于配额负缓存期", fid)
-        return
-    path = nxt.get("file_path") or ""
-    if not path.lower().endswith(".strm"):
-        return
-    # 独立 session + 与 api.py 预热点同一口径（后台任务式调用）。
-    # drive_file_id 透传进 target：strm_prewarm 内部的配额护盾读它跳过
-    # （计数 skipped_quota）。force=True 跳过 strm_prewarm_enabled 总开关
-    # （去重/并发/配额护盾等安全闸全部保留）：本功能由独立开关
-    # prewarm_next_episode_enabled 门控，不叠加另一个开关。
-    from types import SimpleNamespace
-
-    from backend.emby_server import strm_prewarm
-
-    _ndb = SessionLocal()
-    try:
-        target = SimpleNamespace(
-            file_path=path,
-            library=nxt.get("library"),
-            guid=nxt.get("guid"),
-            drive_file_id=fid,
-        )
-        await strm_prewarm.maybe_warm(_ndb, target, force=True)
-    finally:
-        try:
-            _ndb.close()
-        except Exception:
-            pass
 
 
 @emby_router.post("/emby/Sessions/Playing/Stopped")

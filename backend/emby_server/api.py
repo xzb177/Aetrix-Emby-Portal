@@ -42,7 +42,6 @@ from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_sign
-from backend.emby_server import playback_prewarm
 from backend.emby_server.query_params import qlimit, qstart
 from backend.emby_server import soft_delete
 from backend.emby_server import title_beautify
@@ -73,8 +72,6 @@ from backend.emby_server.streaming import (
     serve_file,
     touch_transcode,
     serve_image,
-    serve_remote,
-    serve_remote_async,
     start_transcode,
     find_transcodes,
     stop_all_transcodes,
@@ -2855,40 +2852,6 @@ def get_item_detail(
         probe_worker.maybe_enqueue(db, item)
     except Exception:  # noqa: BLE001 — 入队失败不影响详情页
         pass
-    # P1：详情页预热 .strm 链路 —— 用户在详情页停留 3~10s，足够把 1.9s 的
-    # Drive 跳转走完并写入 P0-2 跳转缓存；点播放时直接命中缓存。
-    # 只预热 .strm（maybe_warm 本来也会跳过非 .strm，这里先过滤，避免每次
-    # 详情页都起后台任务+读配置）。BackgroundTasks 在响应发出后执行，
-    # 不阻塞详情页；与 PlaybackInfo 的预热共用同一事件循环，信号量(4)/
-    # 去重(300s)/抖动控制不变，不会放大 Google API 请求（同一文件 300s 内只预热一次）。
-    try:
-        if (background_tasks is not None and item.file_path
-                and str(item.file_path).lower().endswith(".strm")):
-            from types import SimpleNamespace
-            from backend.emby_server import strm_prewarm
-
-            _warm_item = SimpleNamespace(
-                file_path=item.file_path,
-                library=getattr(item, "library", None),
-                guid=getattr(item, "guid", None),
-                drive_file_id=getattr(item, "drive_file_id", None),
-            )
-
-            async def _warm_and_close():
-                from backend.database import SessionLocal
-                _warm_db = SessionLocal()
-                try:
-                    await strm_prewarm.maybe_warm(_warm_db, _warm_item)
-                finally:
-                    try:
-                        _warm_db.close()
-                    except Exception:
-                        pass
-
-            background_tasks.add_task(_warm_and_close)
-    except Exception as exc:  # noqa: BLE001 — 预热失败不影响详情页
-        logger.warning("strm 预热失败（get_item_detail），guid=%s: %s",
-                       getattr(item, "guid", "?"), exc)
     return _item_dto(item, _base_url(request), user.id, db, full=True,
                      auth_qs=_url_auth_qs(db, request, user, item.guid))
 
@@ -3439,63 +3402,6 @@ async def playback_info(
     if allow_transcode:
         media_source["TranscodingUrl"] = transcoding_url
 
-    try:
-        is_pb = request.query_params.get("IsPlayback", "false").lower() == "true"
-        if is_pb and item.file_path:
-            # 点播即预热（默认 10MB，可配）：并发上限/去重/超时/指标全在
-            # playback_prewarm 里；DB 读走 run_db（async 纪律），线程只读文件。
-            # 保留 IsPlayback 门控：读 10MB 成本高，只在真点播时触发。
-            await run_db(playback_prewarm.maybe_prewarm, db, item.file_path,
-                         getattr(item, "drive_file_id", None))
-        # .strm 链路预热（P0-1）：每次 PlaybackInfo 都触发，不依赖 IsPlayback
-        # 参数（客户端实际不带该参数，门控导致预热从未生效）。只是
-        # Range: bytes=0-1 探路，成本 1KB。PlaybackInfo 和 /stream 之间有
-        # 0.3~2 秒窗口，提前把 Drive 连接暖好。
-        # 后台协程，不阻塞 PlaybackInfo 返回；失败只记日志不影响主流程。
-        # session 说明（P3-3）：_warm_db 是给后台任务新建的独立 session（不是请求的 db——
-        # 请求的 session 在请求结束时关闭，不能跨协程用）。warm 经 run_db 在线程池
-        # 顺序复用该 session（await 期间不另碰，符合 async_db 纪律）；请求结束前
-        # 后台任务持有该 session，_warm_and_close 的 finally 负责关闭。
-        if item.file_path:
-            try:
-                from types import SimpleNamespace
-                from backend.emby_server import strm_prewarm
-                from backend.database import SessionLocal
-                _warm_item = SimpleNamespace(
-                    file_path=item.file_path,
-                    library=getattr(item, "library", None),
-                    guid=getattr(item, "guid", None),
-                    drive_file_id=getattr(item, "drive_file_id", None),
-                )
-                _warm_db = SessionLocal()
-
-                async def _warm_and_close():
-                    try:
-                        await strm_prewarm.maybe_warm(_warm_db, _warm_item)
-                    finally:
-                        try:
-                            _warm_db.close()
-                        except Exception:
-                            pass
-
-                def _log_warm_error(t: asyncio.Task) -> None:
-                    if t.cancelled():
-                        return
-                    exc = t.exception()
-                    if exc is not None:
-                        logger.warning("strm 预热任务异常 guid=%s: %r",
-                                       getattr(item, "guid", "?"), exc)
-
-                task = asyncio.create_task(_warm_and_close())
-                task.add_done_callback(_log_warm_error)
-                _pt.mark("prewarm_trigger")
-            except Exception as exc:
-                logger.warning("strm 预热触发失败 guid=%s: %r",
-                               getattr(item, "guid", "?"), exc)
-    except Exception as exc:
-        logger.warning("strm 预热外层异常 guid=%s: %r",
-                       getattr(item, "guid", "?"), exc)
-
     _pt.done()
     return _strip_nulls({
         "MediaSources": [media_source],
@@ -3564,9 +3470,8 @@ async def video_stream(
     target = await run_db(_play_target, db, item)
     _pt.mark("play_target")
     if target.kind == "url":
-        # 播放策略能力（默认 relay=现状中继）：策略为 direct、条目文件在
-        # 直链名单内且直链源可用时，302 让播放器直接从对象存储取流，
-        # 字节不经本机；其余情况原样走中继。判定逻辑见 playback_strategy。
+        # 播放策略能力：对象存储直链名单命中时 302 到对象存储；Drive 条目
+        # 直接 302 到谷歌 usercontent 直链（中继已删）。判定逻辑见 playback_strategy。
         from backend.emby_server import playback_strategy as _strategy
         # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有
         # drive_file_id）且 drive_direct_play_enabled 开关开启时，直接 302
@@ -3588,17 +3493,7 @@ async def video_stream(
             return _observe_traffic(
                 RedirectResponse(direct_url, status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
-        # 单一播放路径（2026-10 简化）：中转 + 本地缓存自动层。
-        # 分片缓存头：让 CF 边缘能缓存回源结果。
-        seg_cache = cdn.cache_control_for(str(request.url.path))
-        # 中转：本服务代理转发。Range 与状态码透传，凭据不下发。
-        #
-        # 远程代理用异步客户端：连源站与等首字节都在等待 I/O，
-        # 不能让一个用户的拖动进度条把整个事件循环卡住。
-        # 计时器传给 serve_remote_async：它在返回前打 ttfb 等 mark 并 done()。
-        return _observe_traffic(
-            await serve_remote_async(target.value, request, target.headers, media_type,
-                                     cache_control=seg_cache, pt=_pt))
+        raise HTTPException(status_code=410, detail="relay removed")
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
     _pt.mark("serve_file")
     _pt.done()

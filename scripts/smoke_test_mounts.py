@@ -8,7 +8,7 @@
 - **本机挂载**（local / strm）：目录可读、只枚举媒体、STRM 读文件内容取直链
 - **远程挂载**（115 / rclone）：目录枚举、鉴权头、凭据失效可识别
 - **扫描集成**：媒体库绑定挂载后条目入库（远程为 `mount://` 路径）、来源不可用时禁止清理
-- **播放 / 文件 / 字幕**：解析成直链、Range 代理转发、字幕解析钩子
+- **播放 / 文件 / 字幕**：解析成直链、302/410（中继已删）、字幕解析钩子
 - **管理端 API**：CRUD、必填校验、脱敏、测试连接、目录浏览、媒体库绑定与解绑
 
 网络层整体被替换（`httpx.Client` → 假服务），因此本测试不依赖真实网盘 / rclone 账号。
@@ -30,8 +30,9 @@ os.environ.pop("PAN115_COOKIE", None)
 
 import httpx
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from starlette.requests import Request
-from starlette.responses import FileResponse, PlainTextResponse
+from starlette.responses import FileResponse, RedirectResponse
 
 from backend import models
 from backend.database import SessionLocal, init_db
@@ -722,16 +723,6 @@ file_endpoints = [
 check("协议面里 /Items/{id}/File 已被挂载感知实现替换",
       file_endpoints == ["mounted_item_file", "mounted_item_file"], str(file_endpoints))
 
-recorded: dict = {}
-
-
-def _fake_serve_remote(url, request, headers=None, media_type="video/mp4"):
-    recorded.update(url=url, headers=headers or {})
-    return PlainTextResponse("proxied")
-
-
-_original_serve_remote = mount_routes.serve_remote
-mount_routes.serve_remote = _fake_serve_remote
 req = Request({"type": "http", "method": "GET", "path": "/Items/x/File", "headers": []})
 
 
@@ -741,47 +732,31 @@ def call_endpoint(value):
     return asyncio.run(value) if inspect.isawaitable(value) else value
 
 
-resp = call_endpoint(mount_routes.mounted_item_file(alpha.guid, req, staff, db))
-check("挂载条目走代理转发",
-      resp.status_code == 200 and str(recorded.get("url", "")).endswith("pc-alpha"),
-      str(recorded.get("url")))
-check("代理时带上挂载鉴权头（不下发客户端）",
-      bool(recorded.get("headers", {}).get("Cookie")),
-      str(sorted(recorded.get("headers", {}))))
+# 中继已删（SEAM-3）：挂载远端 URL 条目不再走服务器代理转发。
+# 无 drive_file_id 的挂载 URL 条目 -> 410；有 drive_file_id 的 Drive 条目 -> 302 usercontent 直链。
+try:
+    call_endpoint(mount_routes.mounted_item_file(alpha.guid, req, staff, db))
+    check("中继已删：挂载远端 URL 不再走代理（410）", False)
+except HTTPException as exc:
+    check("中继已删：挂载远端 URL 不再走代理（410）", exc.status_code == 410, str(exc.status_code))
+
+alpha.drive_file_id = "smoke-fid-302"
+# 注意：mounted_item_file 的 @release_db_before_response 装饰器每次调用后会关闭 session、
+# 把 alpha 逐出；直接赋值 + flush 发不出 UPDATE，必须先 db.add 重新挂回。
+db.add(alpha)
+db.flush()
+fid_resp = call_endpoint(mount_routes.mounted_item_file(alpha.guid, req, staff, db))
+fid_loc = fid_resp.headers.get("location", "") if isinstance(fid_resp, RedirectResponse) else ""
+check("Drive 条目 302 到 usercontent 直链",
+      isinstance(fid_resp, RedirectResponse) and fid_resp.status_code == 302
+      and "smoke-fid-302" in fid_loc, fid_loc or type(fid_resp).__name__)
+alpha.drive_file_id = None
+db.add(alpha)
+db.flush()
 
 local_only = next(i for i in local_files if (i[1] or "").endswith("Local.Movie.2024.1080p.mkv"))
 local_resp = call_endpoint(mount_routes.mounted_item_file(local_only[0], req, staff, db))
 check("本机条目仍直接返回文件", isinstance(local_resp, FileResponse), type(local_resp).__name__)
-mount_routes.serve_remote = _original_serve_remote
-
-# Range 代理：状态码、Content-Range 与字节都要透传
-range_req = Request({"type": "http", "method": "GET", "path": "/v",
-                     "headers": [(b"range", b"bytes=0-9")]})
-proxied = st.serve_remote("https://cdn.example.com/115/pc-alpha", range_req,
-                          {"Cookie": PAN_COOKIE}, "video/x-matroska")
-
-
-async def _collect(response) -> bytes:
-    chunks = []
-    async for chunk in response.body_iterator:
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-proxied_body = asyncio.run(_collect(proxied))
-check("远程代理透传 206 与 Content-Range",
-      proxied.status_code == 206
-      and proxied.headers.get("content-range") == f"bytes 0-9/{len(MEDIA_BYTES)}",
-      f"{proxied.status_code} {proxied.headers.get('content-range')}")
-check("远程代理返回源站字节", proxied_body == MEDIA_BYTES[:10], f"{len(proxied_body)} 字节")
-
-from fastapi import HTTPException  # noqa: E402
-
-try:
-    st.serve_remote("https://unknown.example.com/missing.mkv", req, {}, "video/mp4")
-    check("源站不可用时返回明确错误", False)
-except HTTPException as exc:
-    check("源站不可用时返回明确错误", exc.status_code >= 400, str(exc.status_code))
 
 sub_source = subs.resolve_mount_source(alpha.file_path)
 check("字幕模块通过钩子解析挂载路径",

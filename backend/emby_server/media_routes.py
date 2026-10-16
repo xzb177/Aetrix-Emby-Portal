@@ -21,8 +21,6 @@ from backend.emby_server.streaming import (
     get_transcode,
     serve_file,
     serve_image,
-    serve_remote,
-    serve_remote_async,
     start_transcode,
     stop_all_transcodes,
     stop_transcode,
@@ -32,7 +30,7 @@ from backend.emby_server.streaming import (
 )
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 import os
 
@@ -88,12 +86,13 @@ def download_item(item_id: str, request: Request,
     ensure_download_allowed(db, user, request=request)
     target = _play_target(db, item)
     if target.kind == "url":
-        # 一律代理转发：不再对任何来源 302（Drive 的 alt=media 带不过
-        # Authorization 头，token 放 URL 又会被限流）。凭据不下发到客户端。
-        return serve_remote(
-            target.value, request, target.headers,
-            media_type="application/octet-stream",
-        )
+        # 最简播放（SEAM-3，中继已删）：Drive 条目 302 到谷歌 usercontent
+        # 直链下载；rebase 到世界窗口定稿后按其处置更新。
+        _fid = (getattr(item, "drive_file_id", "") or "").strip()
+        if _fid:
+            from backend.emby_server.drive_auth import drive_usercontent_download_url
+            return RedirectResponse(drive_usercontent_download_url(_fid), status_code=302)
+        raise HTTPException(status_code=410, detail="relay removed")
     return FileResponse(target.value, filename=os.path.basename(target.value))
 
 

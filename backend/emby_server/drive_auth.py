@@ -11,8 +11,7 @@
   剩余有效期大于 120 秒直接命中；由 threading.Lock 保护，减少重复换 token 的开销。
 - 任何失败（无可用 SA、换 token 异常等）均返回 None，由调用方降级处理，
   本模块永不抛出异常。
-- 401 失效机制：播放 relay 层（streaming.py 的 serve_remote / serve_remote_async）
-  在 Drive 源站返回 401 时，经 note_drive_unauthorized 按 token 值失效该坏 token，
+- 401 失效机制：调用方在 Drive 源站返回 401 时，经 note_drive_unauthorized 按 token 值失效该坏 token，
   drive_auth 外层缓存与 drive_changes 内层缓存会被同时清除，下次请求重新换取新 token。
   按值而非按 email 清除，避免误删并发场景下刚重换出来的新 token。
 """
@@ -405,8 +404,7 @@ def invalidate_drive_bearer_token(token: str) -> bool:
 def note_drive_unauthorized(url: str, auth_header: str) -> bool:
     """记录一次 Drive 源站 401 未授权，并按 token 值失效缓存。
 
-    供播放 relay 层（streaming.py 的 serve_remote / serve_remote_async）
-    在源站返回 401 时调用。
+    供调用方在源站返回 401 时调用（原播放中继层已删除）。
 
     参数:
         url: 触发 401 的请求 URL，仅当指向 Drive 相关域名时才处理。

@@ -169,10 +169,14 @@ def test_body_limit_middleware_in_both_apps():
     assert "MAX_REQUEST_BODY_MB" in body_src
 
 
-# ---------- 4. Download/File 一律代理（不再 302） ----------
+# ---------- 4. Download/File：中继已删，Drive 条目 302 直链 ----------
 
-def test_download_paths_never_redirect_the_client():
-    """下载 / 拉文件两个端点都不再对客户端 302，只做服务端代理转发。"""
+def test_download_paths_redirect_drive_to_usercontent():
+    """下载 / 拉文件两个端点：中继删除后不再做服务端代理转发。
+
+    Drive 条目 302 到谷歌 usercontent 直链（凭据不再经服务器）；
+    结构性护栏：两个文件里不许再出现 serve_remote 调用。
+    """
     import ast
     for path in [
         REPO_ROOT / "backend/emby_server/media_routes.py",
@@ -180,13 +184,14 @@ def test_download_paths_never_redirect_the_client():
     ]:
         src = open(path).read()
         assert "can_redirect_direct" not in src, path
-        assert "status_code=302" not in src, path
+        assert "status_code=302" in src, path
+        assert "drive_usercontent_download_url" in src, path
         tree = ast.parse(src)
         calls = [
             n.func.id for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
         ]
-        assert "serve_remote" in calls, path
+        assert "serve_remote" not in calls, path
 
 
 

@@ -38,8 +38,6 @@ KEY_SOURCES = "playback_direct_sources"
 KEY_HOTLIST = "playback_direct_hotlist"
 KEY_KEY_TEMPLATE = "playback_direct_key_template"
 KEY_TTL = "playback_direct_url_ttl_sec"
-#: 进度>85% 预热下一集（独立开关，默认关；PR-2 尾巴 2026-10-16）
-KEY_PREWARM_NEXT_EPISODE = "prewarm_next_episode_enabled"
 #: Drive 文件直链播放（最简模式，2026-10-16 用户拍板学 raisemby）：
 #: 开启时条目有 drive_file_id 即 302 到谷歌 usercontent 直链，播放器自拉，
 #: 服务器退出字节通道；关闭时行为与旧中继路径完全一致（回滚兜底）。
@@ -116,12 +114,6 @@ def get_ttl_sec(db: Session) -> int:
     except (TypeError, ValueError):
         return DEFAULT_TTL_SEC
     return max(MIN_TTL_SEC, min(MAX_TTL_SEC, ttl))
-
-
-def prewarm_next_episode_enabled(db: Session) -> bool:
-    """进度>85% 预热下一集（独立开关，默认关）。"""
-    raw = (store.get_value(db, KEY_PREWARM_NEXT_EPISODE, "false") or "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
 
 
 def drive_direct_play_enabled(db: Session) -> bool:

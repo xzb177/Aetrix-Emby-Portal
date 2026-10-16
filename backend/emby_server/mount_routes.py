@@ -19,7 +19,7 @@ import logging
 import os
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -28,7 +28,6 @@ from backend.database import get_db
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server.api import _play_target, _require_visible_item
 from backend.emby_server.auth import get_emby_user
-from backend.emby_server.streaming import serve_remote
 from backend.subscriptions import ensure_playback_allowed
 
 logger = logging.getLogger(__name__)
@@ -51,9 +50,13 @@ def mounted_item_file(
     # 复用 api 的目标解析与错误映射，保证两条端点对同一份数据行为一致
     target = _play_target(db, item)
     if target.kind == "url":
-        # 一律代理转发：不对任何来源 302（Drive 带不过 Authorization 头，
-        # token 放 URL 会被限流），凭据不下发到客户端
-        return serve_remote(target.value, request, target.headers)
+        # 最简播放（SEAM-3，中继已删）：Drive 条目 302 到谷歌 usercontent
+        # 直链；rebase 到世界窗口定稿后按其处置更新。
+        _fid = (getattr(item, "drive_file_id", "") or "").strip()
+        if _fid:
+            from backend.emby_server.drive_auth import drive_usercontent_download_url
+            return RedirectResponse(drive_usercontent_download_url(_fid), status_code=302)
+        raise HTTPException(status_code=410, detail="relay removed")
     if not target.value or not os.path.isfile(target.value):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(target.value, filename=os.path.basename(target.value))
