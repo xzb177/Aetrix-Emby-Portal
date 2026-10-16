@@ -35,6 +35,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from emby_api.asgi_middleware import (
     EaBodyLimitMiddleware,
     EaRateLimitMiddleware,
+    ForegroundActivityMiddleware,
     SecurityHeadersMiddleware,
 )
 
@@ -331,6 +332,10 @@ _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 # 原来这里是 @app.middleware("http")（BaseHTTPMiddleware），每个响应分块都要经过
 # 它的 task group + 内存流中转。行为与原来逐项对齐，注册顺序不变。
 app.add_middleware(SecurityHeadersMiddleware)
+
+# 前台活跃打点：/emby/ 用户请求经过即记录，供 maintenance 重活（缩略图补生成）让路。
+# 纯 ASGI，不包 send，零开销；健康检查路径不在 /emby/ 下，不会被误记。
+app.add_middleware(ForegroundActivityMiddleware)
 
 
 # GZip 压缩：接口 JSON / 播放列表走压缩，已压缩或大块二进制内容不再压缩。

@@ -86,3 +86,47 @@ def test_premint_discover_raises_silent(monkeypatch):
     finally:
         drive_auth._reset_state()
     assert result == {"total": 0, "ok": 0, "failed": 0}
+
+
+def test_premint_stagger_uses_window(monkeypatch):
+    """stagger_seconds>0 时抖动窗口按其打散，而非固定 0~0.5s。"""
+    sleeps = []
+    monkeypatch.setattr(drive_auth.time, "sleep", lambda s: sleeps.append(s))
+    fake = mock.MagicMock()
+    fake._discover_sa_files.return_value = [_make_sa(f"sa{i}@x") for i in range(6)]
+    fake._sa_access_token.side_effect = (
+        lambda sa, min_remaining=60: "token-for-" + sa["client_email"]
+    )
+    monkeypatch.setattr(drive_auth, "_load_drive_changes", lambda: fake)
+    monkeypatch.setattr(drive_auth, "_all_sa_dicts",
+                        lambda: [_make_sa(f"sa{i}@x") for i in range(6)])
+    drive_auth._reset_state()
+    try:
+        result = drive_auth.premint_tokens(max_workers=2, stagger_seconds=10)
+    finally:
+        drive_auth._reset_state()
+    assert result["ok"] == 6
+    assert len(sleeps) == 6
+    assert all(0 <= s <= 10 for s in sleeps)
+    assert max(sleeps) > 0.5, "stagger 窗口未生效：仍是旧的 0~0.5s 抖动"
+
+
+def test_premint_default_jitter_unchanged(monkeypatch):
+    """stagger_seconds 缺省时保持旧的 0~0.5s 抖动。"""
+    sleeps = []
+    monkeypatch.setattr(drive_auth.time, "sleep", lambda s: sleeps.append(s))
+    fake = mock.MagicMock()
+    fake._discover_sa_files.return_value = [_make_sa(f"sa{i}@x") for i in range(4)]
+    fake._sa_access_token.side_effect = (
+        lambda sa, min_remaining=60: "token-for-" + sa["client_email"]
+    )
+    monkeypatch.setattr(drive_auth, "_load_drive_changes", lambda: fake)
+    monkeypatch.setattr(drive_auth, "_all_sa_dicts",
+                        lambda: [_make_sa(f"sa{i}@x") for i in range(4)])
+    drive_auth._reset_state()
+    try:
+        result = drive_auth.premint_tokens(max_workers=2)
+    finally:
+        drive_auth._reset_state()
+    assert result["ok"] == 4
+    assert all(0 <= s <= 0.5 for s in sleeps)

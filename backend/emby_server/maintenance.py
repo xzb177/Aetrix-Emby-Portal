@@ -920,13 +920,25 @@ def janitor_tick() -> dict:
         if scanning:
             logger.info("缩略图补生成：有扫描在跑，本轮跳过")
         else:
-            thumb_result = image_store.backfill_thumbnails(db)
-            result["thumbs_backfilled"] = thumb_result["generated"]
-            result["thumbs_backfill_done"] = thumb_result["done"]
-            if thumb_result["generated"]:
-                logger.info("缩略图补生成：本轮 %d 张，水位 id=%d%s",
-                            thumb_result["generated"], thumb_result["last_id"],
-                            "（已补完）" if thumb_result["done"] else "")
+            # 前台活跃让路：最近有用户在看/刷，本轮重活跳过（任务留到下个周期，不丢）
+            try:
+                from backend.emby_server import foreground_activity as _fa
+                _window = max(0.0, float(os.getenv("FOREGROUND_ACTIVE_SECONDS", "60") or 60))
+            except (TypeError, ValueError):
+                _window = 60.0
+            if _window > 0 and _fa.active(_window):
+                _ago = _fa.last_seen_ago()
+                logger.info("缩略图补生成：前台 %d 秒前有用户请求，本轮跳过",
+                            int(_ago) if _ago is not None else 0)
+                result["thumbs_backfill_skipped_active"] = True
+            else:
+                thumb_result = image_store.backfill_thumbnails(db)
+                result["thumbs_backfilled"] = thumb_result["generated"]
+                result["thumbs_backfill_done"] = thumb_result["done"]
+                if thumb_result["generated"]:
+                    logger.info("缩略图补生成：本轮 %d 张，水位 id=%d%s",
+                                thumb_result["generated"], thumb_result["last_id"],
+                                "（已补完）" if thumb_result["done"] else "")
     except Exception as exc:  # noqa: BLE001
         logger.warning("缩略图补生成失败: %s", exc)
         db.rollback()
