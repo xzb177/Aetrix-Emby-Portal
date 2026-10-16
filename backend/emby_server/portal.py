@@ -1737,7 +1737,8 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
                 state["denied"].append(f"{raw}（{exc.strerror or exc}）")
             else:
                 state["ok"] = True
-        if state["missing"]:
+        # 口径：任一本机路径读不到即 False——missing / denied 谁非空都算，哪怕别的路径可读
+        if state["missing"] or state["denied"]:
             state["ok"] = False
         return state
     # 路径回显要靠挂载表把 ``mount://<id>/…`` 还原成「挂载内路径 + 后端标签」（挂载数很少，一次查完）
@@ -1764,7 +1765,8 @@ def list_libraries(staff: models.WebUser = Depends(require_staff), db: Session =
             # 简化路径条目：界面用它渲染列表（不带 mount:// 前缀，带存储后端标签）
             "path_entries": mount_lib.library_path_entries(lib, mounts_by_id),
             # 本机目录可读性（v2.46.0）：ok=可列举 / False=有路径读不到 / null=没有本机路径
-            "local_dirs_readable": local_readable.get(lib.id),
+            # 注意：下发的是布尔/None（前端用 === true/=== false 比较），不能把整个 state 字典塞进去
+            "local_dirs_readable": local_readable.get(lib.id, {}).get("ok"),
             "mount_ids": mount_lib.parse_mount_ids(lib),
             "is_enabled": lib.is_enabled,
             # 正在扫描以进程内任务为准：数据库标志在进程崩溃后会残留为真
