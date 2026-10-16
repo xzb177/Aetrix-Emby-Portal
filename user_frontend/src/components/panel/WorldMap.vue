@@ -812,6 +812,7 @@
           <template v-if="streak > 0">连签 <b>{{ streak }}</b> 天<template v-if="streakHint"> · {{ streakHint }}</template> · </template>
           <template v-if="memberInfo"><b>Lv.{{ memberInfo.level }}</b> {{ memberInfo.level_name }}</template>
         </div>
+        <div class="m-line" v-if="daypartLine">{{ daypartLine }}</div>
       </div>
 
       <div class="hello">
@@ -3093,6 +3094,7 @@ button.pill {
   .world-root.is-game .mark .art-hall { width: 60px; }
   .world-root.is-game .mark .name { font-size: 13.5px; padding: 4px 11px; border-radius: 8px; margin-top: 7px; }
   .world-root.is-game .mark .sub { font-size: 11px; padding: 2px 8px; border-radius: 6px; margin-top: 4px; width: max-content; max-width: 56vw; margin-left: auto; margin-right: auto; }
+  .world-root.is-game .m-wall .sub { transform: translateX(-8px); }
   .world-root.is-game .mark .dot { min-width: 22px; height: 22px; font-size: 12px; top: -6px; right: calc(50% - 44px); padding: 0 6px; }
   .world-root.is-game .mark:hover .pin { transform: none; }
   /* 手机坐标（!important 覆盖行内桌面坐标；照手机图纸百分比） */
@@ -3100,12 +3102,12 @@ button.pill {
   .world-root.is-game .m-cinema { left: 50% !important; top: 53% !important; }
   .world-root.is-game .m-gamehall { left: 50.8% !important; top: 90.3% !important; }
   .world-root.is-game .m-post { left: 22.6% !important; top: 39.2% !important; }
-  .world-root.is-game .m-parcels { left: 23.3% !important; top: 66.8% !important; }
+  .world-root.is-game .m-parcels { left: 23.3% !important; top: 64.6% !important; }
   .world-root.is-game .m-shop { left: 25.1% !important; top: 82.6% !important; }
   .world-root.is-game .m-collector { left: 76.7% !important; top: 99.2% !important; }
   .world-root.is-game .m-board { left: 22.6% !important; top: 99% !important; }
   .world-root.is-game .m-stele { left: 50% !important; top: 26% !important; }
-  .world-root.is-game .m-wall { left: 76.4% !important; top: 38.5% !important; }
+  .world-root.is-game .m-wall { left: 75% !important; top: 38.5% !important; }
   .world-root.is-game .m-fortune { left: 75.9% !important; top: 60.3% !important; }
   .world-root.is-game .m-player { left: 50% !important; top: 68% !important; }
   .world-root.is-game .m-player .tok { width: 44px; height: 44px; font-size: 16px; border-width: 3px; }
@@ -3129,6 +3131,7 @@ button.pill {
   .world-root.is-game .m-hello { font-size: 14px; font-weight: 800; }
   .world-root.is-game .m-stats { font-size: 11.5px; color: #6B6257; margin-top: 2px; }
   .world-root.is-game .m-stats b { color: #a06c24; }
+  .world-root.is-game .m-line { font-size: 11.5px; color: #6B6257; margin-top: 2px; }
   /* 世界动态/今日任务两块浮动卡：手机端不占地图，隐藏（数据不变，只是排版） */
   .world-root.is-game .feed, .world-root.is-game .quest { display: none; }
   /* 底部抽屉：占屏高约 70%，顶部圆角+下拉把手 */
