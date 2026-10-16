@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from datetime import datetime, timedelta
 from typing import Any, Iterator, Optional
+from urllib.parse import parse_qs, urlparse
 
 from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from backend.emby_server.env_util import env_float, env_int
@@ -1625,6 +1626,38 @@ def _safe_size(path: str) -> int:
         return 0
 
 
+def _drive_file_id_from_url(url: str) -> str:
+    """从 .strm 直链解析 Google Drive 文件 ID；拿不到/非法返回 ""（不抛异常）。
+
+    v2.55.x A'：只认 Google Drive 域名（netloc 以 drive.google.com /
+    docs.google.com 结尾），支持 /uc?id=<ID> 查询参数式和 /file/d/<ID>/
+    路径式；ID 必须匹配 [A-Za-z0-9_-]{10,64}。非 Drive 直链/异常一律返回 ""，
+    保持现状行为（写库循环的 ``if _fid:`` 会跳过，不清已有值）。
+    """
+    try:
+        if not url:
+            return ""
+        parsed = urlparse(url)
+        netloc = (parsed.netloc or "").lower()
+        if not (netloc.endswith("drive.google.com")
+                or netloc.endswith("docs.google.com")):
+            return ""
+        candidate = ""
+        query = parse_qs(parsed.query)
+        ids = query.get("id")
+        if ids:
+            candidate = ids[0]
+        else:
+            m = re.search(r"/file/d/([^/]+)", parsed.path or "")
+            if m:
+                candidate = m.group(1)
+        if candidate and re.match(r"^[A-Za-z0-9_-]{10,64}$", candidate):
+            return candidate
+        return ""
+    except Exception:  # noqa: BLE001 - 解析失败 = 当没有 ID，不阻断扫描
+        return ""
+
+
 def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
     """本机目录：与历史行为一致，直接 os.walk 真实文件"""
     for dirpath, _dirnames, filenames in os.walk(
@@ -1660,6 +1693,8 @@ def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
                 stored_path=full_path, name=fname, local_dir=dirpath,
                 size=_safe_size(full_path), container=container, local_target=target,
                 mtime_ns=_mtime_ns,
+                # v2.55.x A'：纸条直链里的 Drive ID 原地落库（target 已在内存，无新增 IO）
+                file_id=_drive_file_id_from_url(target.value),
             )
 
 
@@ -1704,7 +1739,8 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
                 local_dir=os.path.dirname(full_path), dir_rel=dir_rel,
                 size=mount_file.size, container=container,
                 mount_id=mount_id, rel=rel, provider=provider, local_target=target,
-                file_id=getattr(mount_file, "file_id", "") or "",
+                # v2.55.x A'：本机可读挂载的 .strm，挂载层没给 ID 时从直链解析兜底
+                file_id=getattr(mount_file, "file_id", "") or _drive_file_id_from_url(target.value),
             )
             continue
         container = os.path.splitext(mount_file.name)[1].lstrip(".").lower()
