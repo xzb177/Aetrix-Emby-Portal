@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import logging
 import threading
 from datetime import datetime, timezone
@@ -36,11 +35,11 @@ from backend.integrations import store
 
 logger = logging.getLogger(__name__)
 
-KEY_STRATEGY = "playback_strategy"
-KEY_SOURCES = "playback_direct_sources"
-KEY_HOTLIST = "playback_direct_hotlist"
-KEY_KEY_TEMPLATE = "playback_direct_key_template"
-KEY_TTL = "playback_direct_url_ttl_sec"
+#: （配置瘦身第 1 批，2026-10-17：以下 5 个死键已从配置面删除——写入端
+#: 随 admin_playback.py 删除而消失，读侧恒为默认值。行为与删除前逐字一致：
+#: get_strategy 永为 relay、get_sources 永为空、get_hotlist 永为空、
+#: get_key_template 永为 DEFAULT_KEY_TEMPLATE、get_ttl_sec 永为 DEFAULT_TTL_SEC。
+#: maybe_direct_url 因此恒返回 None（与今天完全一致）。）
 #: Drive 文件直链播放（最简模式，2026-10-16 用户拍板学 raisemby）：
 #: 开启时条目有 drive_file_id 即 302 到谷歌 usercontent 直链，播放器自拉，
 #: 服务器退出字节通道；关闭时行为与旧中继路径完全一致（回滚兜底）。
@@ -87,52 +86,28 @@ DIRECT_REDIRECT_HEADERS = {
 # ---------------------------------------------------------------------------
 
 def get_strategy(db: Session) -> str:
-    raw = (store.get_value(db, KEY_STRATEGY, STRATEGY_RELAY) or "").strip().lower()
-    return raw if raw in STRATEGIES else STRATEGY_RELAY
+    """播放策略：恒为 relay（配置瘦身第 1 批：死键删除，行为与删除前一致）。"""
+    return STRATEGY_RELAY
 
 
 def get_sources(db: Session) -> list[dict]:
-    """直链源清单（JSON 数组）；配置损坏一律回空，永不抛错打断播放。"""
-    raw = store.get_value(db, KEY_SOURCES, "")
-    if not raw:
-        return []
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        logger.warning("playback_direct_sources 不是合法 JSON，忽略")
-        return []
-    if not isinstance(data, list):
-        return []
-    return [s for s in data if isinstance(s, dict)]
+    """直链源清单：恒为空（配置瘦身第 1 批：死键删除，行为与删除前一致）。"""
+    return []
 
 
 def get_hotlist(db: Session) -> set[str]:
-    """已在直链源备有副本的 drive_file_id 集合（JSON 数组）。"""
-    raw = store.get_value(db, KEY_HOTLIST, "")
-    if not raw:
-        return set()
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        logger.warning("playback_direct_hotlist 不是合法 JSON，忽略")
-        return set()
-    if not isinstance(data, list):
-        return set()
-    return {str(x).strip() for x in data if str(x).strip()}
+    """已在直链源备有副本的 drive_file_id 集合：恒为空（配置瘦身第 1 批）。"""
+    return set()
 
 
 def get_key_template(db: Session) -> str:
-    raw = (store.get_value(db, KEY_KEY_TEMPLATE, DEFAULT_KEY_TEMPLATE) or "").strip()
-    return raw or DEFAULT_KEY_TEMPLATE
+    """播放直链对象键模板：恒为 DEFAULT_KEY_TEMPLATE（配置瘦身第 1 批）。"""
+    return DEFAULT_KEY_TEMPLATE
 
 
 def get_ttl_sec(db: Session) -> int:
-    raw = store.get_value(db, KEY_TTL, str(DEFAULT_TTL_SEC))
-    try:
-        ttl = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return DEFAULT_TTL_SEC
-    return max(MIN_TTL_SEC, min(MAX_TTL_SEC, ttl))
+    """播放直链签名有效期：恒为 DEFAULT_TTL_SEC（配置瘦身第 1 批）。"""
+    return DEFAULT_TTL_SEC
 
 
 def drive_direct_play_enabled(db: Session) -> bool:
@@ -286,7 +261,7 @@ def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]
         try:
             object_key = template.format(file_id=fid)
         except (KeyError, IndexError, ValueError):
-            logger.warning("playback_direct_key_template 模板非法: %r", template)
+            logger.warning("直链对象键模板非法: %r", template)
             _bump_counter("fallback_relay")
             return None
         if not object_key or ".." in object_key.split("/"):

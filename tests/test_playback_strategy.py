@@ -13,7 +13,6 @@ import os
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 
-import json
 from datetime import datetime, timezone
 
 import pytest
@@ -53,23 +52,9 @@ def _set(db, key, value):
     db.commit()
 
 
-_SOURCE = {
-    "name": "r2-hot",
-    "type": "s3",
-    "endpoint": "https://acct123.r2.cloudflarestorage.com",
-    "bucket": "hot",
-    "region": "auto",
-    "access_key_id": "AKIDEXAMPLE",
-    "secret_key": "secret-example",
-    "path_style": True,
-    "enabled": True,
-}
-
-
-def _arm_direct(db, fid="FID123", source=None):
-    _set(db, ps.KEY_STRATEGY, "direct")
-    _set(db, ps.KEY_SOURCES, json.dumps([source if source is not None else _SOURCE]))
-    _set(db, ps.KEY_HOTLIST, json.dumps([fid]))
+#: （配置瘦身第 1 批，2026-10-17：KEY_STRATEGY/KEY_SOURCES/KEY_HOTLIST/
+#: KEY_KEY_TEMPLATE/KEY_TTL 五个死键已删，get_* 恒返回默认值。）
+#: 曾用于构造"direct 可配"场景的 _SOURCE/_arm_direct 已随之移除。
 
 
 # ---------------------------------------------------------------------------
@@ -124,63 +109,41 @@ def test_presign_key_encoding():
 
 
 # ---------------------------------------------------------------------------
-# 策略判定
+# 策略判定（配置瘦身第 1 批，2026-10-17）：以下 5 个键已从配置面删除——
+# KEY_STRATEGY / KEY_SOURCES / KEY_HOTLIST / KEY_KEY_TEMPLATE / KEY_TTL。
+# get_* 函数恒返回默认值，库里即使残留旧行，行为也不变；maybe_direct_url
+# 恒返回 None（与删除前完全一致：策略恒为 relay，relay 直接 return None）。
 # ---------------------------------------------------------------------------
 
-def test_default_relay_never_direct(memdb):
-    _arm_direct(memdb)
-    _set(memdb, ps.KEY_STRATEGY, "relay")
+def test_dead_config_keys_removed():
+    for const in ("KEY_STRATEGY", "KEY_SOURCES", "KEY_HOTLIST",
+                  "KEY_KEY_TEMPLATE", "KEY_TTL"):
+        assert not hasattr(ps, const), f"{const} 应已从配置面删除"
+
+
+def test_stale_config_rows_have_no_effect(memdb):
+    # 库里残留旧行也不影响：get_* 恒返回默认值
+    for key, value in (("playback_strategy", "direct"),
+                       ("playback_direct_sources", '[{"name": "x"}]'),
+                       ("playback_direct_hotlist", '["FID123"]'),
+                       ("playback_direct_key_template", "mirror/{file_id}.bin"),
+                       ("playback_direct_url_ttl_sec", "60")):
+        _set(memdb, key, value)
+    assert ps.get_strategy(memdb) == ps.STRATEGY_RELAY
+    assert ps.get_sources(memdb) == []
+    assert ps.get_hotlist(memdb) == set()
+    assert ps.get_key_template(memdb) == ps.DEFAULT_KEY_TEMPLATE
+    assert ps.get_ttl_sec(memdb) == ps.DEFAULT_TTL_SEC
+
+
+def test_maybe_direct_url_always_none(memdb, clean_counters):
+    _set(memdb, "playback_strategy", "direct")  # 残留行也不影响
     assert ps.maybe_direct_url(memdb, "FID123") is None
-
-
-def test_direct_requires_hotlist(memdb):
-    _set(memdb, ps.KEY_STRATEGY, "direct")
-    _set(memdb, ps.KEY_SOURCES, json.dumps([_SOURCE]))
-    assert ps.maybe_direct_url(memdb, "FID123") is None
-
-
-def test_direct_happy_path(memdb):
-    _arm_direct(memdb)
-    url = ps.maybe_direct_url(memdb, "FID123")
-    assert url is not None
-    assert url.startswith("https://acct123.r2.cloudflarestorage.com/hot/FID123?")
-    assert "X-Amz-Signature=" in url
-
-
-def test_direct_missing_file_id(memdb):
-    _arm_direct(memdb)
     assert ps.maybe_direct_url(memdb, None) is None
     assert ps.maybe_direct_url(memdb, "") is None
-
-
-def test_direct_corrupt_config_falls_back(memdb):
-    _set(memdb, ps.KEY_STRATEGY, "direct")
-    _set(memdb, ps.KEY_SOURCES, "{not json")
-    _set(memdb, ps.KEY_HOTLIST, json.dumps(["FID123"]))
-    assert ps.maybe_direct_url(memdb, "FID123") is None
-
-
-def test_direct_incomplete_source_skipped(memdb):
-    broken = dict(_SOURCE, secret_key="")
-    _arm_direct(memdb, source=broken)
-    assert ps.maybe_direct_url(memdb, "FID123") is None
-    disabled = dict(_SOURCE, enabled=False)
-    _arm_direct(memdb, source=disabled)
-    assert ps.maybe_direct_url(memdb, "FID123") is None
-
-
-def test_direct_bad_strategy_value_treated_as_relay(memdb):
-    _arm_direct(memdb)
-    _set(memdb, ps.KEY_STRATEGY, "banana")
-    assert ps.get_strategy(memdb) == "relay"
-    assert ps.maybe_direct_url(memdb, "FID123") is None
-
-
-def test_direct_key_template_applied(memdb):
-    _arm_direct(memdb)
-    _set(memdb, ps.KEY_KEY_TEMPLATE, "mirror/{file_id}.bin")
-    url = ps.maybe_direct_url(memdb, "FID123")
-    assert "/hot/mirror/FID123.bin?" in url
+    # relay 在第一道检查直接 return None，不产生回落计数
+    assert ps.strategy_counters()["direct_302"] == 0
+    assert ps.strategy_counters()["fallback_relay"] == 0
 
 
 def test_direct_redirect_headers_hardened():
@@ -203,22 +166,13 @@ def clean_counters():
     ps.strategy_counters_reset()
 
 
-def test_direct_happy_path_302_counts(memdb, clean_counters):
-    _arm_direct(memdb)
-    url = ps.maybe_direct_url(memdb, "FID123")
-    assert url is not None
-    assert url.startswith("https://acct123.r2.cloudflarestorage.com/hot/FID123?")
-    c = ps.strategy_counters()
-    assert c["direct_302"] == 1
-    assert c["fallback_relay"] == 0  # fallback_quota 计数器已随 #958 中继删除移除
-
-
-def test_direct_no_source_falls_back_to_relay(memdb, clean_counters):
-    """direct + 无可用直链源 → 回落中继并计数。"""
-    _set(memdb, ps.KEY_STRATEGY, "direct")
-    _set(memdb, ps.KEY_SOURCES, json.dumps([]))
-    _set(memdb, ps.KEY_HOTLIST, json.dumps(["FID123"]))
+def test_relay_path_emits_no_counters(memdb, clean_counters):
+    """relay 在第一道检查直接 return None，不产生任何计数（配置瘦身第 1 批后
+    的恒定行为：direct 路径已不可达）。"""
+    _set(memdb, "playback_strategy", "direct")  # 残留行也不影响
     assert ps.maybe_direct_url(memdb, "FID123") is None
-    assert ps.strategy_counters()["fallback_relay"] == 1
+    c = ps.strategy_counters()
+    assert c["direct_302"] == 0
+    assert c["fallback_relay"] == 0
 
 
