@@ -365,7 +365,7 @@ const parcelTotal = computed(() => {
   return typeof v === 'number' ? v : null
 })
 const streak = computed(() => {
-  const v = todayData.value.streak
+  const v = todayData.value.streak_days
   return typeof v === 'number' ? v : null
 })
 
