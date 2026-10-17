@@ -417,6 +417,8 @@ export const generateInvitationCodes = (data: {
   max_uses: number
   expires_days: number
   whitelist?: string
+  /** 本批码专属奖励（积分）；0/不填 = 跟随全局配置 */
+  reward_points?: number
 }) =>
   post<{ success: boolean; message: string; codes: InvitationCodeRow[] }>(
     '/invitation-codes', data,
@@ -424,7 +426,7 @@ export const generateInvitationCodes = (data: {
 
 export const updateInvitationCode = (
   id: number,
-  data: { max_uses?: number; expires_days?: number; whitelist?: string; is_active?: boolean },
+  data: { max_uses?: number; expires_days?: number; whitelist?: string; is_active?: boolean; reward_points?: number },
 ) => put<{ success: boolean; code: InvitationCodeRow }>(`/invitation-codes/${id}`, data)
 
 export const revokeInvitationCodes = (ids: number[]) =>
