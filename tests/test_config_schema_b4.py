@@ -43,8 +43,9 @@ class TestFamilySchemas:
         s = config_schema.REMINDERS_CONFIG_SCHEMA
         assert normalize("expiry_reminder_enabled", s["expiry_reminder_enabled"], True) == "true"
         assert normalize("expiry_reminder_days", s["expiry_reminder_days"], "7,3,1") == "7,3,1"
-        with pytest.raises(ConfigValueError):
-            normalize("expiry_reminder_days", s["expiry_reminder_days"], "7,0")
+        # 2026-10-17 第 4 批 4-4 裁决：days 今天端点原文存储、从不拒绝（读侧宽容），
+        # 注册为 ("str",) 与今天逐字一致，非法档位不再整批拒绝。
+        assert normalize("expiry_reminder_days", s["expiry_reminder_days"], "7,0") == "7,0"
 
     def test_coupons_schema(self):
         s = config_schema.COUPONS_CONFIG_SCHEMA

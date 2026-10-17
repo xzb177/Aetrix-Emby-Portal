@@ -32,8 +32,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend import coupons, models
-from backend.integrations import store
+from backend import config_service, coupons, models
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
@@ -204,20 +203,13 @@ def update_coupon_settings(
     db: Session = Depends(get_db),
 ):
     """总开关（关闭后不能再填码，已下的单不受影响）与预订超时清理时限"""
-    def _set(key: str, value: str) -> None:
-        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if row:
-            row.value = value
-        else:
-            db.add(models.SystemConfig(key=key, value=value))
-
-    _set(coupons.CONFIG_ENABLED, "true" if request.enabled else "false")
+    values = {coupons.CONFIG_ENABLED: "true" if request.enabled else "false"}
     if request.reserve_hours is not None:
-        _set(coupons.CONFIG_RESERVE_HOURS, str(int(request.reserve_hours)))
+        values[coupons.CONFIG_RESERVE_HOURS] = str(int(request.reserve_hours))
+    # 配置瘦身第 4 批 4-4：走统一写入通道（校验→落库→写时失效）；
+    # store.write_values 内部已按 store 纪律失效，4-1 的失效覆盖由正统通道承接。
+    config_service.save_config(db, values, schema="coupons")
     db.commit()
-
-    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
-    store.invalidate(coupons.CONFIG_ENABLED, coupons.CONFIG_RESERVE_HOURS)
 
     _audit(db, current_admin, "economy_coupon_settings", "system", None,
            {"enabled": request.enabled, "reserve_hours": request.reserve_hours})

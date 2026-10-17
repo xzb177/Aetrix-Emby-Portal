@@ -119,17 +119,21 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "redpacket_recv_limit_7d": ("int", 0, 100000),
     "redpacket_refund_enabled": ("bool",),
     "redpacket_refund_interval_sec": ("int", 60, 86400),
-    "welfare_require_tg_bind": ("bool",),
-    "lottery_enabled": ("bool",),
-    "lottery_auto_draw_enabled": ("bool",),
+    # 2026-10-17 第 4 批 4-4：以下 9 键在 WELFARE_CONFIG_KEYS 里的默认值是 "1"/"0"，
+    # 端点现行的 normalize 按 ("bool", "digit") 存 "1"/"0"。风格必须跟键走，
+    # 注册为 digit 才能与今天逐字一致（读侧 lottery.py 等是宽容口径，本应无感，
+    # 但存字节必须相同）。
+    "welfare_require_tg_bind": ("bool", "digit"),
+    "lottery_enabled": ("bool", "digit"),
+    "lottery_auto_draw_enabled": ("bool", "digit"),
     "lottery_draw_interval_sec": ("int", 30, 86400),
-    "lottery_notify_winners": ("bool",),
-    "tg_bind_guide_enabled": ("bool",),
-    "media_seek_enabled": ("bool",),
-    "media_seek_vote_enabled": ("bool",),
-    "media_seek_notify_voters": ("bool",),
+    "lottery_notify_winners": ("bool", "digit"),
+    "tg_bind_guide_enabled": ("bool", "digit"),
+    "media_seek_enabled": ("bool", "digit"),
+    "media_seek_vote_enabled": ("bool", "digit"),
+    "media_seek_notify_voters": ("bool", "digit"),
     "chat_points_enabled": ("bool",),
-    "points_transfer_enabled": ("bool",),
+    "points_transfer_enabled": ("bool", "digit"),
     "points_transfer_fee_pct": ("int", 0, 100),
     "points_transfer_min": ("int", 1, _BIG),
     "points_transfer_max": ("int", 0, _BIG),
@@ -144,6 +148,12 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "lottery_require_group_member": ("bool", "digit"),
     "lottery_min_account_age_days": ("int", 0, _BIG),
     "lottery_max_joins_per_day": ("int", 0, _BIG),
+    # 2026-10-17 第 4 批 4-4：白名单里但此前无 spec 的群 id 列表键（端点现行按原文
+    # 存字符串）。注册为 ("str",) 与今天逐字一致：原文直存，None/空串→删行
+    # （读侧 _get_str_config 缺行/空行都回默认 ""，等价）。
+    "bot_group_ids": ("str",),
+    "chat_points_group_ids": ("str",),
+    "lottery_group_ids": ("str",),
 }
 
 # 告警设置（admin_alerts.update_alert_settings 的 4 个写键）。
@@ -157,12 +167,13 @@ ALERTS_CONFIG_SCHEMA: dict[str, tuple] = {
 }
 
 # 到期提醒（reminders_admin.REMINDER_CONFIG_KEYS）。
-# 注意：expiry_reminder_days 的读侧容忍坏档位（逐个跳过、空则回落默认 7/3/1），
-# 而 ("int_list", 1, 365) 在写侧更严（任一坏项整批 400）。4-4 迁移时再裁决
-# 是收紧写侧还是加宽容 kind，这里如实登记「意图形态」。
+# 2026-10-17 第 4 批 4-4 裁决：expiry_reminder_days 今天的端点**原文存储、从不拒绝**
+# （非法档位靠读侧 reminders.py 逐个跳过、空则回落默认 7/3/1）。严格的
+# ("int_list", 1, 365) 会把今天能存的值变成 400，是行为变化；宽容归一又会改动
+# 存值。零行为变化要求原文直存，故注册为 ("str",)。
 REMINDERS_CONFIG_SCHEMA: dict[str, tuple] = {
     "expiry_reminder_enabled": ("bool", "word"),
-    "expiry_reminder_days": ("int_list", 1, 365),
+    "expiry_reminder_days": ("str",),
 }
 
 # 优惠券（coupons_admin.update_coupon_settings；reserve_hours 端点层已有

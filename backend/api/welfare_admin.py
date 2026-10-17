@@ -21,10 +21,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import config_service, models
 from backend.api.admin_core import admin_router, get_current_admin, _audit
 from backend.database import get_db
-from backend.integrations import store
 
 
 # ==================== 公益用户管理 ====================
@@ -329,35 +328,18 @@ def welfare_config_set(
     from backend import config_schema
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="配置必须是对象")
-    # 先整体校验再写库：任一非法直接 400，不会写入半截
-    normalized: dict[str, Optional[str]] = {}
-    for key, value in data.items():
-        if key not in WELFARE_CONFIG_KEYS:
-            continue
-        spec = config_schema.WELFARE_CONFIG_SCHEMA.get(key)
-        if spec is None:
-            normalized[key] = "" if value is None else str(value)
-            continue
-        style = "digit" if WELFARE_CONFIG_KEYS[key] in ("0", "1") else "word"
+    # 配置瘦身第 4 批 4-4：白名单过滤保留在端点层（未知键静默忽略，行为不变），
+    # 校验→落库→写时失效收敛到 config_service。bool 风格（digit/word）已登记
+    # 进 WELFARE_CONFIG_SCHEMA 的 spec，normalize 口径与今天逐字一致。
+    values = {key: value for key, value in data.items() if key in WELFARE_CONFIG_KEYS}
+    if values:
         try:
-            normalized[key] = config_schema.normalize(key, spec, value, bool_style=style)
+            config_service.save_config(db, values, schema="welfare")
         except config_schema.ConfigValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-    updated = []
-    for key, value in normalized.items():
-        cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if value is None:
-            if cfg:
-                db.delete(cfg)
-        elif cfg:
-            cfg.value = value
-        else:
-            db.add(models.SystemConfig(key=key, value=value))
-        updated.append(key)
+    updated = list(values)
     _audit(db, current_admin.id, "welfare_config_update", "system", None, {"updated": updated})
     db.commit()
-    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
-    store.invalidate(*updated)
     return {"success": True, "updated": updated}
 
 
