@@ -5,8 +5,10 @@
 「客户端这边到底允许做什么」——一句话能回答的问题：
 
 - **允许转码吗**（关掉只放直连/直接播放：省 CPU，代价是客户端兼容性变差）；
-- **同时几路转码**（超了直接拒绝新的，而不是把正在看的人挤掉）；
-- **哪些客户端不许进**（老版本 / 盗版客户端的 UA 子串黑名单，也支持白名单模式）。
+- **同时几路转码**（超了直接拒绝新的，而不是把正在看的人挤掉）。
+
+（2026-10-17 瘦身：客户端黑白名单 ``client_allowed_agents`` / ``client_blocked_agents``
+已随用户拍板删除，不再做 UA 准入。）
 
 2026-10 删除服务端码率钳制：客户端要多少码率给多少（学 Linger 薄服务器思路）。
 
@@ -18,7 +20,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -29,27 +30,21 @@ from backend.integrations import store
 
 CONFIG_TRANSCODE_ENABLED = "playback_transcode_enabled"
 CONFIG_MAX_TRANSCODES = "playback_max_concurrent_transcodes"
-CONFIG_BLOCKED_AGENTS = "client_blocked_agents"
-CONFIG_ALLOWED_AGENTS = "client_allowed_agents"
 
 # 键 → 类型（设置页与 PUT 接口共用一份，避免两边各写一套白名单）
 POLICY_KEYS = {
     CONFIG_TRANSCODE_ENABLED: "bool",
     CONFIG_MAX_TRANSCODES: "int",
-    CONFIG_BLOCKED_AGENTS: "str",
-    CONFIG_ALLOWED_AGENTS: "str",
     # Drive 302 直链总开关（#957，playback_strategy.KEY_DRIVE_DIRECT_PLAY 定义，
     # video_stream 读它决定 302/410；键名本身就是页面字段名，无需短名映射）
     KEY_DRIVE_DIRECT_PLAY: "bool",
 }
 
-# 各键的出厂默认值（字符串形态，与 _config_bool / _config_int / _agent_list 的缺省语义一致）。
+# 各键的出厂默认值（字符串形态，与 _config_bool / _config_int 的缺省语义一致）。
 # 配置自愈（backend/config_self_heal.py）引用这份表补缺失行 —— 默认值只许在这里定义一次。
 POLICY_DEFAULTS = {
     CONFIG_TRANSCODE_ENABLED: "true",
     CONFIG_MAX_TRANSCODES: "0",
-    CONFIG_BLOCKED_AGENTS: "",
-    CONFIG_ALLOWED_AGENTS: "",
     KEY_DRIVE_DIRECT_PLAY: "true",  # 与 playback_strategy.drive_direct_play_enabled 缺省一致
 }
 
@@ -58,8 +53,6 @@ POLICY_DEFAULTS = {
 FIELD_TO_KEY = {
     "transcode_enabled": CONFIG_TRANSCODE_ENABLED,
     "max_concurrent_transcodes": CONFIG_MAX_TRANSCODES,
-    "blocked_agents": CONFIG_BLOCKED_AGENTS,
-    "allowed_agents": CONFIG_ALLOWED_AGENTS,
     "drive_direct_play_enabled": KEY_DRIVE_DIRECT_PLAY,
 }
 
@@ -98,43 +91,6 @@ def max_transcodes(db: Session) -> int:
                         int(POLICY_DEFAULTS[CONFIG_MAX_TRANSCODES])))
 
 
-def _agent_list(db: Session, key: str) -> list[str]:
-    raw = (_raw(db, key) or "").strip()
-    if not raw:
-        return []
-    parts = raw.replace("，", ",").replace("\n", ",").split(",")
-    return [p.strip().lower() for p in parts if p.strip()]
-
-
-def client_denied_reason(db: Session, user_agent: Optional[str], *, is_staff: bool = False) -> Optional[str]:
-    """这个客户端能不能进（None = 放行）
-
-    白名单优先于黑名单（都配了就按白名单放行，与运维直觉一致）；
-    UA 为空的行（脚本 / 测试）只在白名单模式下被拦，黑名单不误伤。
-    """
-    if is_staff:
-        return None
-    ua = (user_agent or "").strip().lower()
-    allowed = _agent_list(db, CONFIG_ALLOWED_AGENTS)
-    if allowed:
-        if not ua:
-            return "本站只允许指定客户端播放，请使用官方客户端"
-        if not any(rule in ua for rule in allowed):
-            return "当前客户端不在允许列表内，请联系管理员"
-        return None
-    blocked = _agent_list(db, CONFIG_BLOCKED_AGENTS)
-    if blocked and ua and any(rule in ua for rule in blocked):
-        return "当前客户端已被停用（版本过旧或不受支持），请升级后再试"
-    return None
-
-
-def ensure_client_allowed(db: Session, user, user_agent: Optional[str]) -> None:
-    """播放入口统一调用：被策略拦下的客户端直接 403，并说清原因"""
-    reason = client_denied_reason(db, user_agent, is_staff=bool(getattr(user, "is_staff", False)))
-    if reason:
-        raise HTTPException(status_code=403, detail=reason)
-
-
 def ensure_transcode_allowed(db: Session, user, *, running: int, capacity: int) -> None:
     """建立转码会话前校验：关掉转码 / 并发已满都直接拒绝
 
@@ -159,8 +115,6 @@ def policy_payload(db: Session) -> dict:
     return {
         "transcode_enabled": transcode_enabled(db),
         "max_concurrent_transcodes": max_transcodes(db),
-        "blocked_agents": _raw(db, CONFIG_BLOCKED_AGENTS) or "",
-        "allowed_agents": _raw(db, CONFIG_ALLOWED_AGENTS) or "",
         # Drive 302 直链总开关（#957 的回滚闸；缺省开）
         "drive_direct_play_enabled": _config_bool(db, KEY_DRIVE_DIRECT_PLAY, True),
     }

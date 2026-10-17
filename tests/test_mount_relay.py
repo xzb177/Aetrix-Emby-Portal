@@ -122,8 +122,6 @@ def _request(range_header=None):
 def _stub_common(monkeypatch, item, target):
     monkeypatch.setattr(api, "_require_visible_item", lambda db, user, item_id: item)
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
-    monkeypatch.setattr(api.playback_policy, "ensure_client_allowed",
-                        lambda db, user, ua: None)
     monkeypatch.setattr(api.play_sign, "check_referer", lambda *a, **k: None)
     monkeypatch.setattr(api, "_play_target", lambda db, it: target)
     monkeypatch.setattr(_strategy, "maybe_direct_url", lambda db, fid: None)

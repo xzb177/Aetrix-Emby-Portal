@@ -120,10 +120,9 @@ def test_snapshot_has_single_path_shape(db):
     assert snap["path"] == "relay"
     assert snap["label"] == "302 直链"
     # 删除后口径：cache 路随本地缓存整删（PR-B 删了 line_health._cache_state）；
-    # cdn 段与中继无关，保留。
-    assert "cdn" in snap
+    # cdn 段随 CDN 配置能力整删（删除提交删了 line_health._cdn_state 与快照 "cdn" 键），故不在。
+    assert "cdn" not in snap
     assert "cache" not in snap
-    assert snap["cdn"]["enabled"] is False
 
 
 def test_snapshot_counts_traffic(db):
