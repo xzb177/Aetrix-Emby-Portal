@@ -99,7 +99,7 @@ FILES_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
 # 视频扩展名（本地判型用，不额外 import scanner）
 _VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts",
-    ".ts", ".mpg", ".mpeg", ".rmvb", ".rm", ".asf", ".3gp", ".f4v",
+    ".ts", ".mpg", ".mpeg", ".rmvb", ".rm", ".asf", ".3gp", ".f4v", ".iso",
 }
 
 # ---------------------------------------------------------------------------
