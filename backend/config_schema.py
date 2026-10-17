@@ -188,6 +188,48 @@ VIEW_UNLOCK_CONFIG_SCHEMA: dict[str, tuple] = {
     "emby_view_unlock_days": ("int", 0, _BIG),
 }
 
+# 播放客户端策略（playback_policy.write_policy；短名→键映射 + 类型钳制保留在
+# 模块端点层，这里只登记「落库形态」做纵深防御：bool 存 true/false；int 存
+# max(0, n)；str 键经 [:500] 截断，空串=未设置删行，读侧 _raw/_agent_list 与
+# 缺行口径一致）
+PLAYBACK_POLICY_CONFIG_SCHEMA: dict[str, tuple] = {
+    "playback_transcode_enabled": ("bool", "word"),
+    "playback_max_concurrent_transcodes": ("int", 0, _BIG),
+    "client_blocked_agents": ("str",),
+    "client_allowed_agents": ("str",),
+    # drive 302 直链总开关（playback_strategy.KEY_DRIVE_DIRECT_PLAY，键名即字段名）
+    "drive_direct_play_enabled": ("bool", "word"),
+}
+
+# 访问拦截（access_guard.write_policy；关键词逗号规范化 + 模式白名单 + 未知键
+# 跳过保留在模块端点层。注册表只做纵深防御：region_mode 枚举对齐 MODES）
+ACCESS_GUARD_CONFIG_SCHEMA: dict[str, tuple] = {
+    "access_guard_ua_enabled": ("bool", "word"),
+    "access_guard_ua_allow": ("str",),
+    "access_guard_ua_deny": ("str",),
+    "access_guard_region_enabled": ("bool", "word"),
+    # 与 access_guard.MODES ("block", "allow") 对齐
+    "access_guard_region_mode": ("enum", ("block", "allow")),
+    "access_guard_region_countries": ("str",),
+    "access_guard_region_keywords": ("str",),
+}
+
+# 防盗链签名（play_sign.write_config；范围校验与「strm TTL 下限 ≥ 2×janitor 拍」
+# 联动校验保留在模块端点层。这里的 strm_sig_ttl 范围是静态外层防御（下限 300
+# = STRM_TTL_MIN；动态下限 max(300, 2×tick) ≥ 300，端点层已强制）
+PLAY_SIGN_CONFIG_SCHEMA: dict[str, tuple] = {
+    "hotlink_protection_enabled": ("bool", "word"),
+    "play_sign_ttl_seconds": ("int", 60, 86400),
+    "strm_sig_ttl_seconds": ("int", 300, 86400),
+}
+
+# CDN 预留（cdn.write_config；域名归一化（禁路径）保留在模块端点层。
+# enabled=false 时域名可为空串=未配置，落库形态与 configured_domain 的 "" 口径一致）
+CDN_CONFIG_SCHEMA: dict[str, tuple] = {
+    "cdn_domain": ("str",),
+    "cdn_enabled": ("bool", "word"),
+}
+
 # 经济系统设置（admin_economy.ECONOMY_CONFIG_KEYS）里 int 键的范围；未列出的 int 键默认 0~10^9
 ECONOMY_INT_RANGES: dict[str, tuple[int, int]] = {
     "invitation_rebate_percent": (0, 100),

@@ -58,7 +58,7 @@ from backend.ratelimit import client_ip
 
 logger = logging.getLogger(__name__)
 
-from backend import models  # noqa: E402  - models 依赖较重，放最后避免循环导入
+from backend import config_service  # noqa: E402  - 与 models 同理，放最后避免循环导入
 
 # ==================== 配置键与默认值（默认值只在这里定义一次） ====================
 
@@ -699,6 +699,10 @@ def write_policy(db, values: dict) -> dict:
 
     非法值**不写**（宁可保持原值，也不存半个坏配置）。关键词存成规范化后的
     逗号分隔形式，免得后台读回来是一长段带换行的原文。
+
+    配置瘦身第 4 批 4-5：落库动作收敛到 ``config_service.save_config``。
+    关键词逗号规范化（业务语义，影响拦截判定）、模式白名单、未知键跳过保留
+    在端点层，行为与收敛前逐字一致。
     """
     applied: dict[str, str] = {}
     for field, value in (values or {}).items():
@@ -717,19 +721,12 @@ def write_policy(db, values: dict) -> dict:
 
     if not applied:
         return {}
-    for key, value in applied.items():
-        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if row:
-            row.value = value
-        else:
-            db.add(models.SystemConfig(key=key, value=value, description=DESCRIPTIONS.get(key)))
+    # 统一写入通道：校验（纵深防御，本函数已做业务校验）→ 批量落库 → 写时失效
+    # （承接原 store.invalidate(*keys) 的失效覆盖）。
+    # 两层缓存都要清：模块自身的热缓存 invalidate() 保留在端点层。
+    config_service.save_config(db, applied, schema="access_guard",
+                               descriptions=DESCRIPTIONS)
     db.flush()
-    # 两层缓存都要清：本模块的热缓存，以及 ``integrations.store`` 的短 TTL 缓存。
-    # 漏掉后者的话，「保存成功」之后 policy_payload 仍会读回写入前的旧值，
-    # 页面看起来就像保存没生效——与不写 store 的区别只在于是否额外踩这一脚。
-    from backend.integrations import store
-
-    store.invalidate(*applied.keys())
     invalidate()
     return applied
 

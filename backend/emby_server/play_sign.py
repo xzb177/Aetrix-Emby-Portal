@@ -32,7 +32,6 @@ from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from backend.integrations import store
-from backend.models import SystemConfig
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +154,14 @@ def config_payload(db: Session | None = None) -> dict:
 
 def write_config(db: Session, *, enabled: bool, play_sign_ttl: int,
                  strm_sig_ttl: int) -> dict:
-    """管理后台写入：校验范围 → 逐键 upsert SystemConfig（含 description）→ 失效热缓存。"""
+    """管理后台写入：校验范围 → 统一写入通道落库（含 description）→ 失效热缓存。
+
+    范围校验与「.strm TTL 下限 ≥ 2×janitor 拍」联动校验是业务不变量，保留在
+    本函数（端点层）；落库+失效收敛到 ``config_service.save_config``。
+
+    配置瘦身第 4 批 4-5：行为与收敛前一致——非法值抛 ValueError（整批不落库）、
+    db.commit() 仍在本函数内部（调用方依赖它提交）、回包 config_payload 不变。
+    """
     try:
         play_sign_ttl = int(play_sign_ttl)
         strm_sig_ttl = int(strm_sig_ttl)
@@ -169,21 +175,21 @@ def write_config(db: Session, *, enabled: bool, play_sign_ttl: int,
                          f"（签名刷新每 {strm_min // 2} 秒一拍，短于两拍会在两次刷新之间过期）")
 
     enabled = bool(enabled)
-    values = (
-        (CONFIG_HOTLINK_ENABLED, "true" if enabled else "false"),
-        (CONFIG_PLAY_SIGN_TTL, str(play_sign_ttl)),
-        (CONFIG_STRM_SIG_TTL, str(strm_sig_ttl)),
+    # 统一写入通道：落库（批量 + 写时失效，承接原逐键 invalidate）→ 本函数提交。
+    # 注册表是纵深防御：端点层已做范围校验，传进来的值一定在范围内。
+    from backend import config_service
+
+    config_service.save_config(
+        db,
+        {
+            CONFIG_HOTLINK_ENABLED: "true" if enabled else "false",
+            CONFIG_PLAY_SIGN_TTL: str(play_sign_ttl),
+            CONFIG_STRM_SIG_TTL: str(strm_sig_ttl),
+        },
+        schema="play_sign",
+        descriptions=DESCRIPTIONS,
     )
-    for key, value in values:
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        if row is None:
-            db.add(SystemConfig(key=key, value=value, description=DESCRIPTIONS[key]))
-        else:
-            row.value = value
-            row.description = DESCRIPTIONS[key]
     db.commit()
-    for key, _ in values:
-        store.invalidate(key)
     return config_payload(db)
 
 

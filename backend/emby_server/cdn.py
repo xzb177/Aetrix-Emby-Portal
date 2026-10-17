@@ -28,8 +28,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy.orm import Session
 
+from backend import config_service
 from backend.integrations import store
-from backend.models import SystemConfig
 
 # SystemConfig 键（与播放策略键同一命名域）
 CONFIG_CDN_DOMAIN = "cdn_domain"
@@ -166,6 +166,9 @@ def write_config(db: Session, domain: str, enabled_flag: bool) -> dict:
 
     校验失败抛 ``ValueError``（路由转 400 并说清怎么改）；
     域名与开关一起写，保存即失效热缓存（EM/EA 同库，两边同时生效）。
+
+    配置瘦身第 4 批 4-5：落库动作收敛到 ``config_service.save_config``。
+    域名归一化（禁路径）保留在端点层，行为与收敛前逐字一致。
     """
     domain_text = (domain or "").strip()[:255]
     if enabled_flag:
@@ -176,13 +179,16 @@ def write_config(db: Session, domain: str, enabled_flag: bool) -> dict:
                 "不能带路径；启用开关打开时域名必填"
             )
         domain_text = normalized
-    for key, value in ((CONFIG_CDN_DOMAIN, domain_text),
-                       (CONFIG_CDN_ENABLED, "true" if enabled_flag else "false")):
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        if row:
-            row.value = value
-        else:
-            db.add(SystemConfig(key=key, value=value))
+    # 统一写入通道：校验（纵深防御，端点层已归一化）→ 批量落库 → 写时失效
+    # （承接原 store.invalidate() 全清：只动了这两个键，读侧等价）。
+    # db.commit() 保留在本函数内部（调用方依赖它提交）。
+    config_service.save_config(
+        db,
+        {
+            CONFIG_CDN_DOMAIN: domain_text,
+            CONFIG_CDN_ENABLED: "true" if enabled_flag else "false",
+        },
+        schema="cdn",
+    )
     db.commit()
-    store.invalidate()
     return config_payload(db)

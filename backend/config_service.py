@@ -38,6 +38,12 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     "registration": config_schema.REGISTRATION_CONFIG_SCHEMA,
     "view_unlock": config_schema.VIEW_UNLOCK_CONFIG_SCHEMA,
     "welfare": config_schema.WELFARE_CONFIG_SCHEMA,
+    # 配置瘦身第 4 批 4-5：收敛的四个家族（strm_config 按任务口径跳过，与主线删
+    # strm_gen 强相关；share_guard、economy、ms_config、realm 不在收敛范围）
+    "playback_policy": config_schema.PLAYBACK_POLICY_CONFIG_SCHEMA,
+    "access_guard": config_schema.ACCESS_GUARD_CONFIG_SCHEMA,
+    "play_sign": config_schema.PLAY_SIGN_CONFIG_SCHEMA,
+    "cdn": config_schema.CDN_CONFIG_SCHEMA,
 }
 
 

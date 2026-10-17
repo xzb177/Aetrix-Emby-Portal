@@ -23,7 +23,7 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import config_service
 from backend.emby_server.playback_strategy import KEY_DRIVE_DIRECT_PLAY
 from backend.integrations import store
 
@@ -167,7 +167,12 @@ def policy_payload(db: Session) -> dict:
 
 
 def write_policy(db: Session, values: dict) -> dict:
-    """写回策略（只认白名单里的键；非法值保持原值不动）"""
+    """写回策略（只认白名单里的键；非法值保持原值不动）。
+
+    配置瘦身第 4 批 4-5：落库动作收敛到 ``config_service.save_config``。
+    校验/归一保留在本函数（短名→键翻译、白名单、类型钳制、未知键与非法值
+    跳过），行为与收敛前逐字一致；落库+失效走正统通道。
+    """
     applied: dict = {}
     for field, value in (values or {}).items():
         # 页面送的是短名（policy_payload 的字段名），先翻译成 SystemConfig 键；
@@ -185,11 +190,10 @@ def write_policy(db: Session, values: dict) -> dict:
             text = "true" if str(value).strip().lower() in ("true", "1", "yes", "on") else "false"
         else:
             text = str(value or "").strip()[:500]
-        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if row:
-            row.value = text
-        else:
-            db.add(models.SystemConfig(key=key, value=text))
         applied[key] = text
-    store.invalidate()  # 写时失效：同一进程内保存即生效
+    if applied:
+        # 统一写入通道：校验（纵深防御，非法值本函数已过滤）→ 批量落库 → 写时失效。
+        # 原来这里的 store.invalidate() 全清由正统通道的按键失效承接（只动了
+        # applied 里的键，读侧等价；提交仍由调用方按现有事务边界决定）。
+        config_service.save_config(db, applied, schema="playback_policy")
     return applied
