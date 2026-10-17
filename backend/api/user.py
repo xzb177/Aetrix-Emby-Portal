@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from datetime import datetime, timedelta
 import logging
@@ -413,7 +413,11 @@ def get_ticket_messages(
             detail="工单不存在"
         )
 
-    messages = db.query(models.TicketMessage).filter(
+    # R32-F3：admin_name 逐条懒加载是 N+1（一条工单 N 条消息 → N+1 次查询），
+    # 一次 join 预加载（joinedload 只在 is_admin 行上真正用，行为不变）。
+    messages = db.query(models.TicketMessage).options(
+        joinedload(models.TicketMessage.admin)
+    ).filter(
         models.TicketMessage.ticket_id == ticket_id
     ).order_by(models.TicketMessage.created_at.asc()).all()
 
@@ -1050,6 +1054,9 @@ def get_subscription_plans(
     plans = query.filter(
         models.SubscriptionPlan.is_active == True
     ).order_by(models.SubscriptionPlan.sort_order).all()
+    # R32-F3：p.realm 逐套餐懒加载是 N+1。跟 get_my_subscriptions 同一口径：
+    # 一次拿全服名映射（realm_id 无对应服时 ""，与 p.realm 为空的行为一致）。
+    realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
     return [
         {
@@ -1061,7 +1068,7 @@ def get_subscription_plans(
             "features": p.features,
             "is_popular": p.is_popular,
             "realm_id": p.realm_id,
-            "realm_name": (p.realm.name if p.realm else ""),
+            "realm_name": realm_names.get(p.realm_id, ""),
         }
         for p in plans
     ]

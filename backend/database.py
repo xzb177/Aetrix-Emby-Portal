@@ -952,6 +952,7 @@ def _auto_migrate():
     _migrate_redpacket_claim_unique(existing_tables)
     _migrate_redpacket_idempotency_unique(existing_tables)
     _migrate_panel_unseal_fk(existing_tables)
+    _migrate_exchange_discount_credit_fk(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -1339,6 +1340,53 @@ def _migrate_panel_unseal_fk(existing_tables: set) -> None:
             "FOREIGN KEY (item_id) REFERENCES emby_items(id) ON DELETE CASCADE"
         ))
     print("  🔧 已迁移: panel_unseals 外键 item_id → emby_items.id (CASCADE)")
+
+
+def _migrate_exchange_discount_credit_fk(existing_tables: set) -> None:
+    """R32-F1：exchange_discount_credits.exchange_code_id 去外键化。
+
+    统一码系统（M1）的 discount 型卡码核销（codes.redeem_code）写
+    ``exchange_code_id=0``（来源是 registration_codes，不是 exchange_codes）；
+    PG 强校验外键 → flush 时 IntegrityError → 核销接口 500（本地 SQLite
+    不强制 FK，测不出来）。该列全仓只写不读（消费端只按 user_id/status/
+    expires_at 查，不读 .exchange_code_id），去外键 + 放宽 NOT NULL 无语义影响。
+    生产 PG 实查 FK 名：exchange_discount_credits_exchange_code_id_fkey。
+
+    幂等：指向 exchange_codes 的 FK 已不存在且列已可空时直接返回；
+    SQLite 跳过（不强制 FK，0 本来就能写；NOT NULL 由 0 满足）。
+    """
+    from sqlalchemy import text
+
+    if "exchange_discount_credits" not in existing_tables:
+        return
+    if engine.dialect.name != "postgresql":
+        return
+
+    with engine.begin() as conn:
+        fks = conn.execute(text(
+            "SELECT conname FROM pg_constraint "
+            "WHERE conrelid='exchange_discount_credits'::regclass AND contype='f' "
+            "AND confrelid='exchange_codes'::regclass "
+            "AND 'exchange_code_id' = ANY (SELECT attname FROM pg_attribute "
+            "WHERE attrelid=conrelid AND attnum = ANY (conkey))"
+        )).fetchall()
+        for (conname,) in fks:
+            safe = conname.replace('"', '""')
+            conn.execute(text(
+                f'ALTER TABLE exchange_discount_credits DROP CONSTRAINT "{safe}"'
+            ))
+            print(f"  🔧 已迁移: exchange_discount_credits 去外键 {safe}")
+        is_nullable = conn.execute(text(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name='exchange_discount_credits' "
+            "AND column_name='exchange_code_id'"
+        )).scalar()
+        if is_nullable == "NO":
+            conn.execute(text(
+                "ALTER TABLE exchange_discount_credits "
+                "ALTER COLUMN exchange_code_id DROP NOT NULL"
+            ))
+            print("  🔧 已迁移: exchange_discount_credits.exchange_code_id 放宽为可空")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:
