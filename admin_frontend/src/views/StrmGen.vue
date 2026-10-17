@@ -14,7 +14,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Clapperboard, Film, Play, RefreshCw, RotateCcw, Trash2, TriangleAlert } from 'lucide-vue-next'
-import { PageHeader, SectionCard, StatTile, EmptyState } from '@/components/ui'
+import { AdvancedSettings, PageHeader, SectionCard, StatTile, EmptyState } from '@/components/ui'
 import {
   fetchStrmGenConfig,
   saveStrmGenConfig,
@@ -47,7 +47,7 @@ const triggeringFull = ref(false)
 const saving = ref(false)
 
 // 配置表单（与 config 分开，避免未保存就污染展示）
-const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, dedupe_same_size: true, interval_minutes: 60, lock_timeout_minutes: 180, source_type: 'drive', local_root: '/media' })
+const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, dedupe_same_size: true, interval_minutes: 60, lock_timeout_minutes: 180, source_type: 'drive', local_root: '/media', jitter_ratio: 0.2, subtree_listing: true })
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -117,6 +117,9 @@ async function load(silent = false) {
       lock_timeout_minutes: config.value?.lock_timeout_minutes ?? 180,
       source_type: config.value?.source_type ?? 'drive',
       local_root: config.value?.local_root ?? '/media',
+      // 后端无此键（老版本）时回显为默认行为
+      jitter_ratio: config.value?.jitter_ratio ?? 0.2,
+      subtree_listing: config.value?.subtree_listing ?? true,
     }
     const ds = (drivesRes as { success: boolean; drives?: StrmGenDrive[] }).drives
     drives.value = Array.isArray(ds) ? ds : []
@@ -329,6 +332,20 @@ onUnmounted(() => {
         <el-form-item label="上次执行">
           <span class="muted">{{ config?.last_run || '—' }}</span>
         </el-form-item>
+        <!-- 配置瘦身第 3 批：低频调优项收进高级折叠（默认收起） -->
+        <AdvancedSettings
+          count="2 项"
+          description="调度节拍与列举策略的微调：一般不用动，默认即可。"
+        >
+          <el-form-item label="调度抖动比例">
+            <el-input-number v-model="form.jitter_ratio" :min="0" :max="0.5" :step="0.05" style="max-width: 160px" />
+            <span class="hint">增量等待按 ± 该比例随机化，防机械节拍（范围 0–0.5，默认 0.2；0=关闭）</span>
+          </el-form-item>
+          <el-form-item label="子树限定列举">
+            <el-switch v-model="form.subtree_listing" />
+            <span class="hint">开 = 全量回退时只拉源目录子树的条目；关 = 回退旧扁平全量拉取（应急回滚口）</span>
+          </el-form-item>
+        </AdvancedSettings>
         <el-form-item>
           <el-button type="primary" :loading="saving" @click="onSave">保存配置</el-button>
         </el-form-item>

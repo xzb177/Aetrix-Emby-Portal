@@ -4,7 +4,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import { Megaphone, Plus, RefreshCw, Search, Sparkles } from 'lucide-vue-next'
-import { PageHeader, SectionCard } from '@/components/ui'
+import { AdvancedSettings, PageHeader, SectionCard } from '@/components/ui'
 import { createAnnouncement, deleteAnnouncement, fetchAnnouncements, updateAnnouncement, fetchTeaserConfig, saveTeaserConfig } from '@/api/admin'
 import type { TeaserConfig } from '@/api/admin'
 import type { Announcement } from '@/types'
@@ -252,21 +252,27 @@ function fmtDate(s: string): string {
               clearable
             />
           </el-form-item>
-          <el-form-item label="揭晓前标题">
-            <el-input v-model="teaser.pre_title" placeholder="? ? ?" />
-          </el-form-item>
-          <el-form-item label="揭晓前副文案">
-            <el-input v-model="teaser.pre_subtitle" placeholder="神秘新大陆 · 到日子自动揭晓" />
-          </el-form-item>
-          <el-form-item label="揭晓后标题">
-            <el-input v-model="teaser.post_title" placeholder="到日子自动展示；留空则即使到日子也继续保密" />
-          </el-form-item>
-          <el-form-item label="揭晓后描述">
-            <el-input v-model="teaser.post_desc" type="textarea" :rows="3" />
-          </el-form-item>
-          <el-form-item label="揭晓后跳转链接">
-            <el-input v-model="teaser.post_link" placeholder="/ 开头站内路由，或 https:// 外链；留空则卡片不可点" />
-          </el-form-item>
+          <!-- 配置瘦身第 3 批：低频文案收进高级折叠（默认收起），开关与揭晓时间留在外面 -->
+          <AdvancedSettings
+            count="5 项"
+            description="悬念卡上的文案：揭晓前看到什么、揭晓后看到什么、点卡片跳去哪里。"
+          >
+            <el-form-item label="揭晓前标题">
+              <el-input v-model="teaser.pre_title" placeholder="? ? ?" />
+            </el-form-item>
+            <el-form-item label="揭晓前副文案">
+              <el-input v-model="teaser.pre_subtitle" placeholder="神秘新大陆 · 到日子自动揭晓" />
+            </el-form-item>
+            <el-form-item label="揭晓后标题">
+              <el-input v-model="teaser.post_title" placeholder="到日子自动展示；留空则即使到日子也继续保密" />
+            </el-form-item>
+            <el-form-item label="揭晓后描述">
+              <el-input v-model="teaser.post_desc" type="textarea" :rows="3" />
+            </el-form-item>
+            <el-form-item label="揭晓后跳转链接">
+              <el-input v-model="teaser.post_link" placeholder="/ 开头站内路由，或 https:// 外链；留空则卡片不可点" />
+            </el-form-item>
+          </AdvancedSettings>
         </el-form>
         <div class="teaser-actions">
           <span v-if="teaserStatusText" class="au-badge" :class="teaser.status === 'revealed' ? 'au-badge-green' : 'au-badge-muted'">

@@ -20,6 +20,7 @@ import {
   ArrowDown,
   ArrowUp,
   ChevronDown,
+  Gauge,
   KeyRound,
   Layers,
   ListOrdered,
@@ -37,6 +38,7 @@ import {
   bindTmdb,
   deleteMetaSourceKey,
   deleteTmdbKey,
+  fetchAltmetaRates,
   fetchDoubanConfig,
   fetchEnrichProgress,
   fetchMetaSources,
@@ -51,6 +53,7 @@ import {
   searchTmdbCandidates,
   resetMetaSourceCooldown,
   resetTmdbKeyCooldown,
+  saveAltmetaRates,
   saveDoubanConfig,
   saveMetaSources,
   saveTmdbMirror,
@@ -76,11 +79,12 @@ import type {
   TmdbMirror,
   TmdbPreview,
   TmdbTestResult,
+  AltmetaRates,
   DoubanConfig,
   DoubanBanDowngradeConfig,
   TmdbLanguageStatus,
 } from '@/api/admin'
-import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
+import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import './MetadataSources.css'
 
 // ==================== 手动绑定 TMDB ====================
@@ -589,6 +593,54 @@ async function saveBanDowngradeAction() {
   }
 }
 
+// ==================== 备用链路限速（配置瘦身第 3 批） ====================
+// altmeta 是豆瓣主链路封禁/降级后的备用链路（豆瓣 subject_suggest + Bangumi 兜底）。
+// 两个最小间隔秒数之前没有后台入口，这里补上，收进高级折叠（默认收起）。
+const amRates = ref<AltmetaRates | null>(null)
+const amLoading = ref(false)
+const amSaving = ref(false)
+const amDraft = reactive({ douban_rate: 1.0, bangumi_rate: 1.0 })
+
+const amDirty = computed(() => {
+  if (!amRates.value) return false
+  return (
+    Number(amRates.value.douban_rate) !== Number(amDraft.douban_rate) ||
+    Number(amRates.value.bangumi_rate) !== Number(amDraft.bangumi_rate)
+  )
+})
+
+async function loadAmRates() {
+  amLoading.value = true
+  try {
+    const cfg = await fetchAltmetaRates()
+    amRates.value = cfg
+    amDraft.douban_rate = Number(cfg.douban_rate) || 0
+    amDraft.bangumi_rate = Number(cfg.bangumi_rate) || 0
+  } catch {
+    amRates.value = null
+  } finally {
+    amLoading.value = false
+  }
+}
+
+async function saveAmRates() {
+  amSaving.value = true
+  try {
+    const cfg = await saveAltmetaRates({
+      douban_rate: Math.max(0, Number(amDraft.douban_rate) || 0),
+      bangumi_rate: Math.max(0, Number(amDraft.bangumi_rate) || 0),
+    })
+    amRates.value = { douban_rate: cfg.douban_rate, bangumi_rate: cfg.bangumi_rate }
+    amDraft.douban_rate = cfg.douban_rate
+    amDraft.bangumi_rate = cfg.bangumi_rate
+    ElMessage.success('备用链路限速已保存，立即生效')
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '保存失败，请重试'))
+  } finally {
+    amSaving.value = false
+  }
+}
+
 // ==================== TMDB 首选语言（Batch D 入口收敛：从「媒体库 → 定时与刮削」收拢到此） ====================
 const tmdbLang = ref<TmdbLanguageStatus | null>(null)
 const tmdbLangSaving = ref(false)
@@ -907,6 +959,7 @@ onMounted(() => {
   loadMeta().catch(() => undefined)
   loadDouban().catch(() => undefined)
   loadBanDowngrade().catch(() => undefined)
+  loadAmRates().catch(() => undefined)
   loadTmdbLanguage().catch(() => undefined)
   // Batch D 入口收敛：媒体库页用 hash 深链跳进来（#card-douban / #card-tmdb）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
@@ -1361,6 +1414,73 @@ onMounted(() => {
           </div>
           <div v-else class="ms-skeleton" aria-busy="true"><div class="au-skeleton" /></div>
         </template>
+      </SectionCard>
+
+      <!-- 0.6 备用链路限速（配置瘦身第 3 批）：altmeta 豆瓣备用 + Bangumi 兜底的请求间隔 -->
+      <SectionCard id="card-altmeta" class="ms-card" title="备用链路限速" :icon="Gauge">
+        <template #actions>
+          <div class="ms-facts">
+            <span v-if="amDirty" class="fact warn">有未保存的改动</span>
+          </div>
+        </template>
+        <p class="ms-hint">
+          豆瓣主链路被封禁/降级时，刮削走备用链路：豆瓣 subject_suggest + Bangumi 兜底。
+          这里是备用链路自己的请求间隔，<strong>不是</strong>上面「豆瓣优先」卡里的间隔——
+          两个链路各限各的。0 = 不限速（默认 1.0 秒）。
+        </p>
+        <div v-if="amLoading && !amRates" class="ms-skeleton" aria-busy="true">
+          <div class="au-skeleton" /><div class="au-skeleton" />
+        </div>
+        <EmptyState
+          v-else-if="!amRates"
+          compact
+          :icon="Gauge"
+          title="读取备用链路配置失败"
+          description="可能是网络或后端暂时不可用。"
+        >
+          <template #actions>
+            <el-button size="small" :loading="amLoading" @click="loadAmRates">重试</el-button>
+          </template>
+        </EmptyState>
+        <AdvancedSettings
+          v-else
+          count="2 项"
+          description="备用链路的请求间隔：太大刮得慢，太小容易被封 IP。"
+        >
+          <div class="ms-field">
+            <span class="ms-field-label">豆瓣备用间隔（秒）</span>
+            <el-input-number
+              v-model="amDraft.douban_rate"
+              :min="0"
+              :max="60"
+              :step="0.5"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">备用链路豆瓣请求的最小间隔（默认 1.0，0=不限速）</span>
+          </div>
+          <div class="ms-field">
+            <span class="ms-field-label">Bangumi 兜底间隔（秒）</span>
+            <el-input-number
+              v-model="amDraft.bangumi_rate"
+              :min="0"
+              :max="60"
+              :step="0.5"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">Bangumi 兜底请求的最小间隔（默认 1.0，0=不限速）</span>
+          </div>
+          <div class="ms-actions">
+            <el-button
+              type="primary"
+              size="small"
+              :loading="amSaving"
+              :disabled="!amDirty"
+              @click="saveAmRates"
+            >保存</el-button>
+          </div>
+        </AdvancedSettings>
       </SectionCard>
 
       <!-- 1. TMDB 密钥池与镜像（Phase 6a）：多把轮换、逐把增删、失效/限流自动冷却 -->
