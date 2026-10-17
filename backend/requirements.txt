@@ -24,6 +24,7 @@ pydantic>=2.0.0
 python-dotenv>=1.0.0
 httpx>=0.25.0
 Pillow>=10.4.0
+pyvips>=2.2  # 缩略图引擎优先用 libvips（容器内需 apt 装 libvips42）；缺席时静默退回 Pillow
 
 # 转码（外部二进制，需系统安装 ffmpeg）
 # ffmpeg 由宿主系统/Docker 镜像提供
