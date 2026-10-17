@@ -153,8 +153,8 @@ services:
       FRONTEND_DIST: /nonexistent-frontend
       MOUNT_RCLONE_BIN: ${MOUNT_RCLONE_BIN:-rclone}
       MOUNT_RCLONE_CONF: /config/rclone/rclone.conf
+      # 后端只读 MOUNT_RCLONE_RC_URL（裸 RCLONE_RC_URL 无人读取，不要加回）
       MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
-      RCLONE_RC_URL: http://172.18.0.1:5572
       RCLONE_SA_DIR: /sa-accounts
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
