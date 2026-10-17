@@ -1107,6 +1107,15 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     ("emby_items", "idx_item_browse_sort", "item_type, sort_name, id", None,
      "  已迁移: emby_items.idx_item_browse_sort（/emby/Items 默认浏览部分索引）",
      "is_hidden = false AND deleted_at IS NULL"),
+    # P0 修复（2026-10-17 压测实锤）：Recursive=true 无类型过滤时，翻页 ORDER BY
+    # (sort_name, id) 与 COUNT 都是 Parallel Seq Scan。部分索引去掉 item_type 首列，
+    # 专供该形状。models.py 的 MediaItem.__table_args__ 已声明同名索引（新库自带），
+    # 这里给升级上来的老库补上。回滚：DROP INDEX idx_item_browse_sort_all。
+    # 注意：生产库用 CREATE INDEX CONCURRENTLY 手工建（见 PR 描述），避免阻塞去纸条化写负载；
+    # 本条只给未来新库/老库兜底（幂等按名跳过）。
+    ("emby_items", "idx_item_browse_sort_all", "sort_name, id", None,
+     "  已迁移: emby_items.idx_item_browse_sort_all（/emby/Items 无类型过滤浏览排序部分索引）",
+     "is_hidden = false AND deleted_at IS NULL"),
     # 搜索 trigram GIN 索引（r7）：/emby/Items?SearchTerm=、/emby/Search/Hints、
     # 求片中心的 ILIKE 预筛都走这四列。生产实测搜索是 Parallel Seq Scan（cost≈3万，
     # '%a%' 命中 3.6 万行），pg_trgm 扩展可用且应用用户为 superuser。
