@@ -583,6 +583,11 @@ if tg_user_exists:
     # TelegramUser.id 就是 Telegram 侧的 chat/id，web_user_id 才是门户账号关联
     db.add(models.TelegramUser(id=987654321, web_user_id=mail_user.id, username="smoke_tg"))
     db.commit()
+# 新旧绑定体系两边都配：旧实现查 TelegramUser 表，新实现查 WebUser.telegram_id；
+# 两种实现都能走到投递失败路径，冒烟脚本对两边都有效
+if not mail_user.telegram_id:
+    mail_user.telegram_id = 987654321
+    db.commit()
 tg_ok = asyncio.get_event_loop().run_until_complete(
     tg_channel.send(mail_user.id, "TG 失败用例", "正文", db=db))
 httpx.AsyncClient = real_client
@@ -599,6 +604,7 @@ db.query(models.NotificationHistory).filter(
 ).delete(synchronize_session=False)
 db.query(models.TelegramUser).filter(models.TelegramUser.web_user_id == mail_user.id).delete()
 mail_user.email = None
+mail_user.telegram_id = None
 db.commit()
 db.close()
 
