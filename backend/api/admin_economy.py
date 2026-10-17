@@ -351,7 +351,7 @@ def economy_update_settings(
     # - 复合校验（stream_accel 联动、签到、活力值）仍在端点层、落库前 400。
     # 失效缺口补齐：旧代码只手动失效 stream_accel_*/vitality_*，其余键保存后
     # 60 秒内可能读到旧值；统一通道对全部落库键 + 删行键写时失效。
-    from backend import config_schema, config_service
+    from backend import config_service
 
     values: dict = {}
     is_secret: dict = {}
@@ -370,11 +370,9 @@ def economy_update_settings(
 
     saved: list = []
     if values:
-        try:
-            saved = config_service.save_config(
-                db, values, schema="economy", audit=_capture)
-        except config_schema.ConfigValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        # 校验失败抛 ConfigValueError，由 main.py 的统一 handler 转 400
+        saved = config_service.save_config(
+            db, values, schema="economy", audit=_capture)
 
     db.commit()
     # （写时失效已由 store.write_values 承接，失效时机从提交后移到写时，

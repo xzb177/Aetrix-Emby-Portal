@@ -25,6 +25,7 @@ from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYP
 from backend.security import validate_secret_key, resolve_jwt_user_id
 from backend.version import app_version
 from backend import models  # 导入所有模型
+from backend.config_schema import ConfigValueError
 from backend.download_guard import DownloadGuardMiddleware
 from backend.access_guard import AccessGuardMiddleware
 from backend.emby_server.audit import AdminWriteAuditMiddleware
@@ -597,6 +598,20 @@ if _cors_origins:
 
 
 # ==================== 异常处理 ====================
+
+@app.exception_handler(ConfigValueError)
+async def config_value_error_handler(request: Request, exc: ConfigValueError):
+    """配置校验失败 → 400（config_schema 的约定：非法值由调用方转成 400）。
+
+    横切能力只许一套：管理端保存接口经 config_service.save_config 抛出的所有
+    校验错误统一在这里转 400，各端点不再各自 try/except。返回体沿用 FastAPI
+    标准 {"detail"} 形状，管理后台按 detail 透传中文人话。
+    """
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": str(exc)},
+    )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

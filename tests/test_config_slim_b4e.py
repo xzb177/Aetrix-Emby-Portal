@@ -155,10 +155,11 @@ def test_empty_int_deletes_row(db):
 
 def test_invalid_rejected_atomically(db):
     s, admin = db
-    with pytest.raises(HTTPException) as ei:
+    # schema 层校验失败在直接调用层面抛 ConfigValueError；HTTP 400 的转换由
+    # main.py 的统一 handler 承接（端到端见 test_config_value_error_400.py）。
+    with pytest.raises(config_schema.ConfigValueError):
         _save(s, admin, {"invitation_reward_points": "5",
                          "invitation_rebate_percent": "101"})  # 超范围
-    assert ei.value.status_code == 400
     # 整批不落库：合法的那个也没写进去
     assert _row(s, "invitation_reward_points") is None
     assert _row(s, "invitation_rebate_percent") is None

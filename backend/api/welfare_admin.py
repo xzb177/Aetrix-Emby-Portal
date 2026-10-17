@@ -325,7 +325,6 @@ def welfare_config_set(
     db: Session = Depends(get_db),
 ):
     """保存公益配置（数值/开关键按 config_schema 校验，非法 400；空字符串=未设置，回退默认值）"""
-    from backend import config_schema
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="配置必须是对象")
     # 配置瘦身第 4 批 4-4：白名单过滤保留在端点层（未知键静默忽略，行为不变），
@@ -333,10 +332,8 @@ def welfare_config_set(
     # 进 WELFARE_CONFIG_SCHEMA 的 spec，normalize 口径与今天逐字一致。
     values = {key: value for key, value in data.items() if key in WELFARE_CONFIG_KEYS}
     if values:
-        try:
-            config_service.save_config(db, values, schema="welfare")
-        except config_schema.ConfigValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        # 校验失败抛 ConfigValueError，由 main.py 的统一 handler 转 400
+        config_service.save_config(db, values, schema="welfare")
     updated = list(values)
     _audit(db, current_admin.id, "welfare_config_update", "system", None, {"updated": updated})
     db.commit()
