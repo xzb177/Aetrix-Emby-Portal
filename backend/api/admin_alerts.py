@@ -22,10 +22,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 
-from backend import models, system_alerts
+from backend import config_service, models, system_alerts
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
-from backend.integrations import store
 
 logger = logging.getLogger(__name__)
 
@@ -144,18 +143,6 @@ def update_alert_rule(
     return _rule_to_dict(rule)
 
 
-def _upsert_config(db: Session, key: str, value: str,
-                   description: str = "") -> None:
-    """SystemConfig 有则改、无则增（不 commit，由调用方统一提交）。"""
-    row = db.query(models.SystemConfig).filter(
-        models.SystemConfig.key == key).first()
-    if row:
-        row.value = value
-    else:
-        db.add(models.SystemConfig(key=key, value=value,
-                                    description=description))
-
-
 def _get_config_value(db: Session, key: str) -> Optional[str]:
     row = db.query(models.SystemConfig).filter(
         models.SystemConfig.key == key).first()
@@ -203,43 +190,44 @@ def update_alert_settings(
     DB 开关不生效）。只应用请求里非 None 的字段——部分更新不会误关总开关
     （R16 P1-1）。"""
     changed: dict = {}
-    written_keys: list = []  # 实际落库的 SystemConfig 键（用于缓存失效）
+    values: dict = {}  # 实际落库的 {SystemConfig 键: 待校验值}（走 config_service 统一通道）
 
     if req.enabled is not None:
-        val = "1" if req.enabled else "0"
-        _upsert_config(db, system_alerts.MASTER_SWITCH_KEY, val,
-                       description="系统告警总开关（1=开，0=关）")
-        changed["system_alerts_enabled"] = val
-        written_keys.append(system_alerts.MASTER_SWITCH_KEY)
+        values[system_alerts.MASTER_SWITCH_KEY] = req.enabled
+        changed["system_alerts_enabled"] = "1" if req.enabled else "0"
 
     if req.check_interval_sec is not None:
-        # R16 P1-1：钳制 60~86400，持久化到 SystemConfig；调度器每轮重读，热更新
+        # R16 P1-1：钳制 60~86400 保留在端点层（业务行为不变）；注册表范围与钳制边界对齐
         iv = max(60, min(86400, int(req.check_interval_sec)))
-        _upsert_config(db, system_alerts.INTERVAL_KEY, str(iv),
-                       description="系统告警检查间隔（秒），60~86400")
+        values[system_alerts.INTERVAL_KEY] = iv
         changed["alert_check_interval_sec"] = iv
-        written_keys.append(system_alerts.INTERVAL_KEY)
 
     if req.webhook_url is not None:
         url = (req.webhook_url or "").strip()
-        _upsert_config(db, "webhook_alert_url", url,
-                       description="告警 webhook 通知 URL（可选）")
+        values["webhook_alert_url"] = url
         changed["webhook_alert_url"] = url
-        written_keys.append("webhook_alert_url")
 
     secret_changed = False
     if req.webhook_secret is not None:
-        _upsert_config(db, "webhook_alert_secret", req.webhook_secret or "",
-                       description="告警 webhook HMAC 签名密钥（可选）")
-        written_keys.append("webhook_alert_secret")
+        # 空串走统一通道的「未设置」语义（删行）；读侧 bool() 口径与空行一致，行为不变
+        values["webhook_alert_secret"] = req.webhook_secret or ""
         # 注意：secret 本身不进审计日志，只记"改了"
         changed["webhook_secret_set"] = bool(req.webhook_secret)
         secret_changed = True
 
     if changed:
+        # 配置瘦身第 4 批 4-3：走统一写入通道（校验→落库→写时失效）。
+        # store.write_values 内部已按 store 纪律失效，4-1 的失效覆盖由正统通道承接。
+        config_service.save_config(
+            db, values, schema="alerts",
+            descriptions={
+                system_alerts.MASTER_SWITCH_KEY: "系统告警总开关（1=开，0=关）",
+                system_alerts.INTERVAL_KEY: "系统告警检查间隔（秒），60~86400",
+                "webhook_alert_url": "告警 webhook 通知 URL（可选）",
+                "webhook_alert_secret": "告警 webhook HMAC 签名密钥（可选）",
+            },
+        )
         db.commit()
-        # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
-        store.invalidate(*written_keys)
         # R16 P3-11：webhook 后配也要 refresh_channels()，否则单例缓存里
         # 的渠道还是旧配置（邮件/Telegram 保存时已经是这个口径）
         if "webhook_alert_url" in changed or secret_changed:
