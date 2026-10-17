@@ -193,7 +193,7 @@ def test_direct_redirect_headers_hardened():
 
 
 # ---------------------------------------------------------------------------
-# PR-2 尾巴：配额感知降级 + 计数可观测
+# 计数可观测（配额感知降级已随中继全删移除，2026-10-17）
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
@@ -210,7 +210,7 @@ def test_direct_happy_path_302_counts(memdb, clean_counters):
     assert url.startswith("https://acct123.r2.cloudflarestorage.com/hot/FID123?")
     c = ps.strategy_counters()
     assert c["direct_302"] == 1
-    assert c["fallback_relay"] == 0 and c["fallback_quota"] == 0
+    assert c["fallback_relay"] == 0
 
 
 def test_direct_no_source_falls_back_to_relay(memdb, clean_counters):

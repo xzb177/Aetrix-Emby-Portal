@@ -1,13 +1,16 @@
-"""播放策略能力：中继（relay）/ 对象存储直链（direct）可配。
+"""播放策略能力：对象存储直链（direct）可配 + Drive 302 直链 + 远程挂载专用中继。
 
 设计口径（2026-10-16 用户拍板）：只做通用能力、不做死业务逻辑——
 策略与直链源全部走 SystemConfig + 管理后台，用哪种由服主决定。
-默认 ``relay`` = 现行中继路径，行为零变化；``direct`` 时，仅当条目的
-drive_file_id 在服主登记的直链名单（热门副本）内、且至少有一个完整
-可用的 S3 兼容直链源（R2 / B2 / Bunny 等）时，才给播放器发 302 签名
-直链，字节不经本机；其余情况一律回落中继，能力故障永不打断播放。
-配额感知降级（2026-10-16 PR-2 尾巴）：direct 下文件命中 #940 配额
-负缓存时，连直链都不试、直接回落中继（日志 + 计数可观测）。
+``direct`` 时，仅当条目的 drive_file_id 在服主登记的直链名单（热门副本）
+内、且至少有一个完整可用的 S3 兼容直链源（R2 / B2 / Bunny 等）时，才给
+播放器发 302 签名直链，字节不经本机；Drive 条目默认 302 到谷歌 usercontent
+直链（``drive_direct_play_enabled`` 开关）；115 等远程挂载（``mount://``）
+走服务端专用中继代理（``streaming.serve_mount_relay_async``），凭据不下发。
+
+中继已按用户要求全删（2026-10-17），只剩远程挂载专用中继；原配额感知
+降级（``_quota_blocked`` 调用的 ``streaming.drive_quota_blocked_retry_after``
+已随中继删除）已于 2026-10-17 同步清理。
 
 实测依据（reports/playback-302-recon-20261016.md）：网盘 uc 直链无鉴权
 不可用（登录墙/病毒扫描确认页），302 的合法载体只有自有对象存储的
@@ -133,7 +136,7 @@ def drive_direct_play_enabled(db: Session) -> bool:
 # 可观测：直链/回落计数（进程内，重启清零；与 prewarm 计数同口径）
 # ---------------------------------------------------------------------------
 
-_COUNTERS = {"direct_302": 0, "fallback_relay": 0, "fallback_quota": 0}
+_COUNTERS = {"direct_302": 0, "fallback_relay": 0}
 _COUNTERS_LOCK = threading.Lock()
 
 
@@ -143,8 +146,7 @@ def _bump_counter(name: str) -> None:
 
 
 def strategy_counters() -> dict:
-    """策略判定计数快照（direct_302=发过 302 / fallback_relay=回落中继 /
-    fallback_quota=配额负缓存命中直接回落）。"""
+    """策略判定计数快照（direct_302=发过 302 / fallback_relay=未命中直链）。"""
     with _COUNTERS_LOCK:
         return dict(_COUNTERS)
 
@@ -251,25 +253,10 @@ def _source_ready(src: dict) -> bool:
     return endpoint.startswith("https://") or endpoint.startswith("http://")
 
 
-def _quota_blocked(file_id: str) -> bool:
-    """该 file_id 是否处于 #940 的 Drive 配额负缓存期内（本地 403 护盾）。
-
-    配额已超限的文件再签直链也只是浪费：名单条目仍在 Drive 上取不到字节，
-    且 302 会把客户端推到一条死链上。"""
-    try:
-        from backend.emby_server import streaming as _st
-
-        return _st.drive_quota_blocked_retry_after(file_id) > 0
-    except Exception:
-        return False
-
-
 def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]:
-    """策略为 direct 且该文件在直链名单内时返回签名直链，否则 None（回落中继）。
+    """策略为 direct 且该文件在直链名单内时返回签名直链，否则 None。
 
     任何配置缺失/损坏/签名异常都返回 None——能力故障永不打断播放。
-    配额感知降级：文件处于 #940 配额负缓存期时，连直链都不试、直接回落
-    中继（计数 fallback_quota，管理端 /playback/config 可见）。
     """
     try:
         if get_strategy(db) != STRATEGY_DIRECT:
@@ -278,12 +265,6 @@ def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]
         if not fid:
             return None
         if fid not in get_hotlist(db):
-            return None
-        # 配额感知降级：只对「本可直链」的文件生效——名单外文件本来就走
-        # 中继，不计入降级计数，避免计数失真。
-        if _quota_blocked(fid):
-            _bump_counter("fallback_quota")
-            logger.info("playback direct: file_id=%s 处于配额负缓存期，直接回落中继", fid)
             return None
         template = get_key_template(db)
         try:

@@ -3,9 +3,10 @@
 
 - 开关开（默认）+ 条目有 drive_file_id → video_stream 直接 302 到谷歌
   usercontent 直链（Location 含 file_id），不经过对象存储直链/中继。
-- 开关关 → 走原路径（对象存储直链判定；中继已删，不命中则 410）。
-- 非 Drive 条目（无 drive_file_id，如 115/WebDAV）→ 不受影响，走原路径
-  （中继已删，不命中则 410）。
+- 开关关 → 走原路径（对象存储直链判定；不命中则 410）。
+- 非 Drive 条目（无 drive_file_id，如本地 .strm 里一条普通 http 直链）→
+  不受影响，不命中则 410；但 mount:// 路径的远程挂载条目（115 等）→
+  走专用中继 serve_mount_relay_async（2026-10-17 用户拍板）。
 - 302 响应带卫生头：Cache-Control: no-store（直链个人化/短时，不可缓存复用）、
   Referrer-Policy: no-referrer。
 
@@ -44,8 +45,9 @@ def _stub_common(monkeypatch, item, target):
     monkeypatch.setattr(api.playback_policy, "ensure_client_allowed",
                         lambda db, user, ua: None)
     monkeypatch.setattr(api, "_play_target", lambda db, it: target)
-    # 中继已删（2026-10-17 用户拍板全删）：serve_remote_async 不复存在，
-    # 无需再桩中继代理；未命中直链时 video_stream 直接 410。
+    # 通用中继已删（2026-10-17 用户拍板全删）：serve_remote_async 不复存在；
+    # 未命中直链时 video_stream 直接 410——mount:// 的远程挂载条目除外，
+    # 它们走专用中继 serve_mount_relay_async（见 test_mount_relay.py）。
 
 
 def _stub_switch(monkeypatch, value):
@@ -102,8 +104,10 @@ def test_switch_off_drive_item_falls_back_to_relay(monkeypatch):
 
 
 def test_switch_on_non_drive_item_unaffected(monkeypatch):
-    """非 Drive 条目（无 drive_file_id）→ 开关开也不 302，走原路径（中继已删，不命中则 410）。"""
-    item = SimpleNamespace(container="mkv", drive_file_id="")
+    """非 Drive、非挂载条目（本地 .strm 里一条普通 http 直链）→ 开关开也不 302，
+    无直链命中时仍 410（mount:// 条目走专用中继，见 test_mount_relay.py）。"""
+    item = SimpleNamespace(container="mkv", drive_file_id="",
+                           file_path="/strm/Movies/x.strm")
     target = PlayTarget("url", "https://115.example.com/direct/abc.mkv", {})
     _stub_common(monkeypatch, item, target)
     _stub_switch(monkeypatch, "true")
@@ -112,7 +116,7 @@ def test_switch_on_non_drive_item_unaffected(monkeypatch):
         asyncio.run(api.video_stream("item", _request(), object(), object()))
 
     assert getattr(exc_info.value, "status_code", None) == 410, \
-        "非 Drive 条目无直链命中时，中继已删，应 410"
+        "非 Drive 非挂载条目无直链命中时，应 410"
 
 
 def test_drive_direct_play_enabled_defaults_on(monkeypatch):

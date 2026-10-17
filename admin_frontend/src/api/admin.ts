@@ -1796,8 +1796,8 @@ export const fetchPlaybackPolicy = () =>
   )
 
 // ==================== 播放线路可观测（Phase 3，/api/admin/playback/lines） ====================
-// 四条线路各一张卡片：能不能用 / 是不是在降级 / 有多少人多少流量 / 效果如何。
-// **只读**：线路配置在 CDN / 本地缓存两个卡片里改，这里不改。
+// 线路可观测卡片：能不能用 / 是不是在降级 / 有多少人多少流量 / 效果如何。
+// **只读**：线路配置在 CDN 卡片里改（本地缓存卡片已随中继全删下线），这里不改。
 // 灰度发布（0% 流量影子评估）本期不做，所以也没有对应的开关。
 
 export const fetchPlayLines = () => get<PlayLinesSnapshot>('/playback/lines')
@@ -1819,7 +1819,8 @@ export const updateCdnConfig = (payload: { domain: string; enabled: boolean }) =
 // ==================== 存储挂载（/api/admin/emby/mounts） ====================
 // 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone 是远程来源。
 // 类型只由路径前缀决定（115:/ / rclone: / 绝对路径），没有第四种类型。
-// 远程挂载的条目在库里存 mount:// 路径，播放时由 EA 代理转发（凭据不下发）。
+// 远程挂载的条目在库里存 mount:// 路径，播放时由服务端专用中继转发
+// （streaming.serve_mount_relay_async，凭据不下发）。
 
 /** 挂载清单；`realm_id=0` = 全部服，不传 = 当前服（挂载是一个服一个的） */
 export const fetchMounts = (realm_id?: number) =>

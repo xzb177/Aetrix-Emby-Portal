@@ -524,6 +524,177 @@ async def resolve_drive_final_url(
         return None
 
 
+# ---------------------------------------------------------------------------
+# 远程挂载专用中继（2026-10-17：中继全删 P1 回归修复，用户拍板）
+# ---------------------------------------------------------------------------
+# 只服务远程挂载条目（115 / rclone 等 ``mount://`` 路径解析出的
+# ``kind="url"`` 目标）：这类直链依赖挂载凭据（Cookie/令牌）与特定 UA，
+# 下发给客户端即死，必须由服务端带头代理转发。调用方（api.video_stream）
+# 保证：Drive 条目一律先走 302，**不许**经由这里。
+#
+# 与已删除的 ``serve_remote_async`` 的区别（刻意不带回来）：
+# - 无共享中继连接池（``RELAY_*`` 已删）：每请求一个独立小客户端，用完即关；
+#   远程挂载并发量小，这点开销可接受。
+# - 无塌速重连 / Singleflight / 分块共享：用户要求全删，不复活。
+# - 无 Drive 特有逻辑：uc→alt=media 转换、配额负缓存、403 换 SA 重试、
+#   401 失效标记——这些是 Drive 链路的，远程挂载用不上。
+# - 保留：凭据头转发（``X-Pickcode`` 是内部头，不转发给上游）、Range 透传、
+#   手动跟随跳转（``_follow_redirects``：逐跳内网校验 + 跨主机剥凭据 +
+#   DNS pinning）、115 直链过期清缓存（403/404/410 + X-Pickcode）、
+#   响应头透传、流式转发。
+
+_MOUNT_RELAY_TIMEOUT_CONNECT = 10.0
+_MOUNT_RELAY_TIMEOUT_READ = 30.0
+
+
+def _mount_relay_client() -> "httpx.AsyncClient":
+    """远程挂载中继的独立小客户端：按次创建、用完关闭。
+
+    口径照抄 ``_drive_redirect_client``（中继全删后不再有共享 relay 池）：
+    DNS pinning 防 rebinding、跳转由 ``_follow_redirects`` 逐跳校验后手动跟。
+    """
+    import httpx
+
+    from backend.emby_server.dns_pinning import PinnedAsyncHTTPTransport
+
+    return httpx.AsyncClient(
+        transport=PinnedAsyncHTTPTransport(
+            _PINNING_CACHE.lookup,
+            limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+        ),
+        timeout=httpx.Timeout(
+            connect=_MOUNT_RELAY_TIMEOUT_CONNECT,
+            read=_MOUNT_RELAY_TIMEOUT_READ,
+            write=30.0,
+            pool=10.0,
+        ),
+        follow_redirects=False,
+    )
+
+
+async def serve_mount_relay_async(
+    url: str,
+    request: Request,
+    headers: Optional[dict] = None,
+    media_type: str = "video/mp4",
+    pt=None,
+):
+    """远程挂载专用中继：服务端带挂载凭据取流、流式转发给播放器。
+
+    - ``headers``：挂载解析出的鉴权头（UA/Referer/Cookie），只在本机使用、
+      不下发给客户端；``X-Pickcode`` 是 115 缓存失效用的内部头，不转发。
+    - Range 透传：客户端的 ``Range`` 原样发给上游，上游的 200/206 与
+      ``Content-Range``/``Accept-Ranges`` 等头原样透回。
+    - ``pt``（可选）：播放链路计时器，只加日志不改逻辑。
+    """
+    import httpx
+
+    forward = {k: v for k, v in (headers or {}).items()}
+    # X-Pickcode 是内部头（115 直链缓存失效用），不转发给上游
+    forward.pop("X-Pickcode", None)
+    forward.setdefault("User-Agent", REMOTE_UA)
+    range_header = request.headers.get("range")
+    if range_header:
+        forward["Range"] = range_header
+
+    client = _mount_relay_client()
+    resp = None
+    try:
+        try:
+            # 跳转自己逐跳校验后跟随（内网目标拒绝、跨主机剥凭据），终态
+            # 响应不关，由下面的流消费/关闭；silent=False 口径：非法重定向
+            # 目标抛 403、跳转超限抛 502。
+            resp, _current, _hops = await _follow_redirects(
+                client, url, forward, silent=False)
+        except HTTPException:
+            raise
+        except httpx.PoolTimeout as exc:
+            raise HTTPException(
+                status_code=503, detail="远程挂载代理繁忙，请稍后重试",
+                headers={"Retry-After": "2"}) from exc
+        except Exception as exc:  # noqa: BLE001 — 源站不可达：给干净的 502
+            logger.warning("远程挂载代理失败 %s: %s", url.split("?")[0], exc)
+            raise HTTPException(status_code=502, detail="源站不可达") from exc
+        if pt is not None:
+            pt.mark("ttfb")
+        # 115 直链过期检测：403/404/410 时清 pickcode 缓存，客户端重试时
+        # 挂载解析会拿到新直链（沿用删除前的口径）。
+        if resp.status_code in (403, 404, 410):
+            _pickcode = (headers or {}).get("X-Pickcode")
+            if _pickcode:
+                try:
+                    from backend.emby_server.mounts import _invalidate_115_url
+                    _invalidate_115_url(_pickcode)
+                except Exception:
+                    pass
+        if resp.status_code >= 400:
+            status = resp.status_code
+            await resp.aclose()
+            resp = None
+            logger.warning("远程挂载源站返回 %s: %s", status, url.split("?")[0])
+            raise HTTPException(
+                status_code=502 if status >= 500 else status,
+                detail=f"源站返回 {status}")
+
+        passthrough = {}
+        for name in ("content-range", "accept-ranges", "content-length",
+                     "last-modified", "etag"):
+            value = resp.headers.get(name)
+            if value:
+                passthrough[name.title()] = value
+        # 与本地路径同口径：远程源支持 Range，上游没给也要补
+        passthrough.setdefault("Accept-Ranges", "bytes")
+        passthrough["X-Accel-Buffering"] = "no"
+        # 边缘缓存调试头（通用能力）：EDGE_CACHE_MODE=query_ignore 时声明
+        try:
+            from backend.emby_server import edge_cache
+            _edge_dbg = edge_cache.debug_header_value()
+            if _edge_dbg:
+                passthrough[edge_cache.DEBUG_HEADER] = _edge_dbg
+        except Exception:
+            pass
+        content_type = resp.headers.get("content-type") or media_type
+
+        async def iter_mount():
+            try:
+                async for chunk in resp.aiter_bytes(READ_CHUNK):
+                    yield chunk
+            except httpx.TransportError as exc:
+                # 源站中途断开：结束这条流、归还连接；响应头已发出，
+                # 播放器会对剩余区间重新发 Range。
+                logger.warning("远程挂载流中断 %s: %s",
+                               url.split("?")[0], type(exc).__name__)
+            finally:
+                # 只关响应和本请求的独立客户端——client 不是共享的，
+                # 关掉不影响其他请求。
+                try:
+                    await resp.aclose()
+                except Exception:
+                    pass
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+
+        if pt is not None:
+            pt.done()
+        return StreamingResponse(
+            iter_mount(), status_code=resp.status_code,
+            media_type=content_type, headers=passthrough,
+        )
+    except HTTPException:
+        if resp is not None:
+            try:
+                await resp.aclose()
+            except Exception:
+                pass
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+        raise
+
+
 def _file_validators(stat: os.stat_result) -> tuple[str, str]:
     """按「mtime + 大小」生成 ETag 与 Last-Modified（内容一变校验器就变）"""
     return f'"{int(stat.st_mtime)}-{stat.st_size}"', formatdate(stat.st_mtime, usegmt=True)
