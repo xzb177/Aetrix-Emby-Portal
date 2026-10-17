@@ -423,6 +423,27 @@ def get_token_for_drive(drive_id: str, force_refresh: bool = False) -> str | Non
     return _get_token()
 
 
+def next_shared_sa() -> dict | None:
+    """共享盘：从 SA 池轮换出一个 SA（推进一次轮换），供单次列举钉住用。
+
+    不改全局轮换策略——调用一次只推进一次；钉住后同一次列举不再轮换。
+    """
+    return _next_sa()
+
+
+def refresh_sa_token(sa: dict, min_remaining: float = 1800.0) -> str | None:
+    """对指定 SA 强制换新 token（清掉该 SA 的缓存再换，不推进轮换）。
+
+    供「单次列举内钉住同一 SA」的 401 续跑语义用：分页 pageToken 与请求身份
+    绑定，换 SA 会 400，只能对同一 SA 刷新。min_remaining 沿用 _sa_access_token
+    语义（默认 1800：索取剩余寿命足够长的 token，防超大目录枚举中途过期）。
+    """
+    cache_key = sa.get("client_email", "") or sa.get("private_key_id", "")
+    if cache_key:
+        _token_cache.pop(cache_key, None)
+    return _sa_access_token(sa, min_remaining=min_remaining)
+
+
 # ---------------------------------------------------------------------------
 # Changes API
 # ---------------------------------------------------------------------------

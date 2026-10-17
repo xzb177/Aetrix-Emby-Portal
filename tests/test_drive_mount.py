@@ -68,10 +68,16 @@ TREE = {
 FAIL_FOLDERS: set[str] = set()
 API_CALLS: list[dict] = []
 TOKEN_CALLS: list[tuple[str, bool]] = []
+PIN_SA_CALLS: list[str] = []  # next_shared_sa 返回的 SA email
+USED_TOKENS: list[str] = []  # 每次 _api_get 实际收到的 token（验分页钉住）
+
+PINNED_SA = {"client_email": "sa-pin@example.iam.gserviceaccount.com",
+             "private_key_id": "pin-key-1"}
 
 
 def _fake_api_get(url, token, params):
     API_CALLS.append(dict(params))
+    USED_TOKENS.append(token)
     match = re.search(r"'([^']+)' in parents", params.get("q", ""))
     folder_id = match.group(1) if match else ""
     if folder_id in FAIL_FOLDERS:
@@ -89,14 +95,35 @@ def _fake_token(drive_id, force_refresh=False):
     return "tok-fresh" if force_refresh else "tok-1"
 
 
+def _fake_next_sa():
+    PIN_SA_CALLS.append(PINNED_SA["client_email"])
+    return PINNED_SA
+
+
+SA_ACCESS_CALLS: list[tuple[str, float]] = []  # (SA email, min_remaining)
+
+
+def _fake_sa_access_token(sa, min_remaining=60):
+    # 按调用次序返回不同 token：钉住取 "tok-pin-1"，401 刷新取 "tok-pin-2"……
+    SA_ACCESS_CALLS.append((sa.get("client_email", ""), min_remaining))
+    return f"tok-pin-{len(SA_ACCESS_CALLS)}"
+
+
 @pytest.fixture(autouse=True)
 def _fake_drive(monkeypatch):
     FAIL_FOLDERS.clear()
     API_CALLS.clear()
     TOKEN_CALLS.clear()
+    PIN_SA_CALLS.clear()
+    SA_ACCESS_CALLS.clear()
+    USED_TOKENS.clear()
     mnt.invalidate_list_cache()
     monkeypatch.setattr(drive_changes, "_api_get", _fake_api_get)
     monkeypatch.setattr(drive_changes, "get_token_for_drive", _fake_token)
+    monkeypatch.setattr(drive_changes, "next_shared_sa", _fake_next_sa)
+    monkeypatch.setattr(drive_changes, "_sa_access_token", _fake_sa_access_token)
+    # refresh_sa_token 故意走真实实现：弹缓存 + 调 _sa_access_token（已垫），
+    # 401 续跑的真实逻辑完整跑一遍。
     yield
     mnt.invalidate_list_cache()
 
@@ -146,8 +173,10 @@ def test_list_root_entries_and_params():
     params = API_CALLS[0]
     assert params["driveId"] == DRIVE_ID and params["corpora"] == "drive"
     assert "spaces" not in params
-    # 凭据按盘取
-    assert TOKEN_CALLS and TOKEN_CALLS[0][0] == DRIVE_ID
+    # 共享盘凭据：一次列举只轮换出一个 SA，并索取长寿 token（钉住）
+    assert PIN_SA_CALLS == ["sa-pin@example.iam.gserviceaccount.com"]
+    assert SA_ACCESS_CALLS == [("sa-pin@example.iam.gserviceaccount.com", 1800.0)]
+    assert TOKEN_CALLS == []  # 共享盘列举不再走逐页的 get_token_for_drive
 
 
 def test_list_subpath_by_name_with_pagination():
@@ -223,11 +252,14 @@ def test_personal_drive_uses_spaces_and_root():
     params = API_CALLS[0]
     assert params["spaces"] == "drive" and "driveId" not in params
     assert TOKEN_CALLS[0][0] == "myDrive:paul_emby"
+    # 个人盘固定 OAuth，不碰 SA 池
+    assert PIN_SA_CALLS == [] and SA_ACCESS_CALLS == []
 
 
 # ---------- 401 刷新续跑 ----------
 
-def test_401_refreshes_token_once(monkeypatch):
+def test_401_refreshes_same_sa_once(monkeypatch):
+    """共享盘 401：钉住模式下对同一 SA 刷新续跑（不推进轮换、不换 SA）"""
     state = {"calls": 0}
 
     def flaky_api_get(url, token, params):
@@ -240,4 +272,99 @@ def test_401_refreshes_token_once(monkeypatch):
     provider = DriveMount(_mount())
     entries = provider.list_dir("/")
     assert len(entries) == 3
-    assert (DRIVE_ID, True) in TOKEN_CALLS  # 刷新过一次
+    # 只轮换出一个 SA：钉住取一次 + 401 同 SA 刷新一次
+    assert PIN_SA_CALLS == ["sa-pin@example.iam.gserviceaccount.com"]
+    assert SA_ACCESS_CALLS == [
+        ("sa-pin@example.iam.gserviceaccount.com", 1800.0),
+        ("sa-pin@example.iam.gserviceaccount.com", 1800.0),
+    ]
+    assert USED_TOKENS == ["tok-pin-2"]  # 重试页用了刷新后的新 token
+    assert TOKEN_CALLS == []  # 共享盘不走 get_token_for_drive(force_refresh)
+
+
+def test_401_personal_drive_keeps_legacy_semantics(monkeypatch):
+    """个人盘 401：沿用旧语义——get_token_for_drive(force_refresh=True)"""
+    state = {"calls": 0}
+
+    def flaky_api_get(url, token, params):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise PermissionError("Drive token 无效或过期")
+        return _fake_api_get(url, token, params)
+
+    monkeypatch.setattr(drive_changes, "_api_get", flaky_api_get)
+    provider = DriveMount(_mount(path="drive:myDrive:paul_emby"))
+    entries = provider.list_dir("/")
+    assert {e.name for e in entries} == {"我的电影"}
+    assert ("myDrive:paul_emby", True) in TOKEN_CALLS  # OAuth 刷新过一次
+    assert PIN_SA_CALLS == []  # 不碰 SA 池
+
+
+# ---------- 单次列举钉住同一 SA（分页 400 回归） ----------
+
+PIN_EMAIL = "sa-pin@example.iam.gserviceaccount.com"
+
+
+def _big_items(n=1001):
+    return [
+        {"id": f"W{i:05d}", "name": f"大目录视频{i:05d}.mkv",
+         "mimeType": "video/x-matroska", "size": "1000",
+         "modifiedTime": "2026-10-17T00:48:49.000Z"}
+        for i in range(n)
+    ]
+
+
+def _big_api_get(items):
+    """两页列举假实现：第 1 页 1000 项 + nextPageToken，第 2 页收尾"""
+    def api_get(url, token, params):
+        USED_TOKENS.append(token)
+        match = re.search(r"'([^']+)' in parents", params.get("q", ""))
+        folder_id = match.group(1) if match else ""
+        if folder_id == "F_BIG" and not params.get("pageToken"):
+            return {"files": items[:1000], "nextPageToken": "BIG-p2"}
+        if folder_id == "F_BIG" and params.get("pageToken") == "BIG-p2":
+            return {"files": items[1000:]}
+        return {"files": []}
+    return api_get
+
+
+def test_multi_page_listing_pins_single_sa(monkeypatch):
+    """>1000 项的两页列举：两页用同一 SA 的同一 token 完整翻完"""
+    items = _big_items()
+    monkeypatch.setattr(drive_changes, "_api_get", _big_api_get(items))
+    provider = DriveMount(_mount(config={"root_id": "F_BIG"}))
+    entries = provider.list_dir("/")
+    assert len(entries) == 1001
+    # 一次列举只轮换出一个 SA、索取一次长寿 token
+    assert PIN_SA_CALLS == [PIN_EMAIL]
+    assert SA_ACCESS_CALLS == [(PIN_EMAIL, 1800.0)]
+    # 两页请求都带同一个 token（换 SA 翻第 2 页会被 Google 回 400）
+    assert USED_TOKENS == ["tok-pin-1", "tok-pin-1"]
+
+
+def test_401_mid_pagination_refreshes_same_sa_and_continues(monkeypatch):
+    """钉住 SA 后中途 401：第 2 页首攻被拒 → 同 SA 刷新 → 续跑成功，条目齐全"""
+    items = _big_items()
+    state = {"big_page2_hits": 0}
+
+    def api_get(url, token, params):
+        match = re.search(r"'([^']+)' in parents", params.get("q", ""))
+        folder_id = match.group(1) if match else ""
+        USED_TOKENS.append(token)
+        if folder_id == "F_BIG" and not params.get("pageToken"):
+            return {"files": items[:1000], "nextPageToken": "BIG-p2"}
+        if folder_id == "F_BIG" and params.get("pageToken") == "BIG-p2":
+            state["big_page2_hits"] += 1
+            if state["big_page2_hits"] == 1:
+                raise PermissionError("Drive token 无效或过期")
+            return {"files": items[1000:]}
+        return {"files": []}
+
+    monkeypatch.setattr(drive_changes, "_api_get", api_get)
+    provider = DriveMount(_mount(config={"root_id": "F_BIG"}))
+    entries = provider.list_dir("/")
+    assert len(entries) == 1001  # 完整翻完，一条不丢
+    assert PIN_SA_CALLS == [PIN_EMAIL]  # 整个枚举只轮换一次
+    # 第 1 页 + 第 2 页首攻用钉住 token；重试用同 SA 刷新后的新 token
+    assert USED_TOKENS == ["tok-pin-1", "tok-pin-1", "tok-pin-2"]
+    assert SA_ACCESS_CALLS == [(PIN_EMAIL, 1800.0), (PIN_EMAIL, 1800.0)]
