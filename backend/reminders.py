@@ -370,8 +370,10 @@ def start_reminder_scheduler(interval_seconds: Optional[int] = None) -> bool:
         from backend import coupons
         from backend.database import SessionLocal
 
+        # 复用同一个 Event：每轮 new 一个 Event().wait() 没有意义
+        wake = threading.Event()
         while True:
-            threading.Event().wait(interval)
+            wake.wait(interval)
             db = SessionLocal()
             try:
                 summary = asyncio.run(run_expiry_reminders(db))

@@ -73,17 +73,6 @@ function planLine(item: ServerCardItem): string {
   return item.planName && end ? `${item.planName} · ${end}到期` : ''
 }
 
-const planTextCache = new Map<number, string>()
-
-function planText(s: ServerCardItem): string {
-  let v = planTextCache.get(s.id)
-  if (v === undefined) {
-    v = planLine(s)
-    planTextCache.set(s.id, v)
-  }
-  return v
-}
-
 function vitalityLine(item: ServerCardItem): string {
   if (!item.hasVitality) return COPY.vitalityNone
   return `体力 ${item.vitalityText} · ${item.isVitalityLow ? COPY.vitalityLow : COPY.vitalityOk}`
@@ -104,6 +93,11 @@ function badgeClass(item: ServerCardItem): string {
 
 function tagText(item: ServerCardItem): string {
   return item.accessMode === 'paid' ? COPY.tagPaid : COPY.tagFree
+}
+
+/** 标签与服务器名相同时隐藏，避免「付费服 付费服」叠字 */
+function showTag(item: ServerCardItem): boolean {
+  return tagText(item) !== item.name
 }
 
 function overviewInfo(item: ServerCardItem): string {
@@ -158,7 +152,7 @@ function overviewInfo(item: ServerCardItem): string {
           <article v-for="s in servers" :key="s.id" class="hc-card">
             <template v-if="s.accessMode === 'paid'">
               <div class="hc-header">
-                <span class="hc-title">{{ s.name }}<span class="hc-tag">{{ tagText(s) }}</span></span>
+                <span class="hc-title">{{ s.name }}<span v-if="showTag(s)" class="hc-tag">{{ tagText(s) }}</span></span>
                 <span :class="badgeClass(s)">{{ badgeText(s) }}</span>
               </div>
               <div class="hc-main-row">
@@ -170,7 +164,6 @@ function overviewInfo(item: ServerCardItem): string {
                     <span class="hc-unit">天剩余</span>
                   </template>
                 </div>
-                <span v-if="planText(s)" class="hc-plan">{{ planText(s) }}</span>
               </div>
               <div
                 v-if="s.progress !== null"
@@ -226,7 +219,7 @@ function overviewInfo(item: ServerCardItem): string {
           </div>
           <div v-for="s in servers" :key="s.id" class="hc-row">
             <div class="hc-header">
-              <span class="hc-title">{{ s.name }}<span class="hc-tag">{{ tagText(s) }}</span></span>
+              <span class="hc-title">{{ s.name }}<span v-if="showTag(s)" class="hc-tag">{{ tagText(s) }}</span></span>
               <span :class="badgeClass(s)">{{ badgeText(s) }}</span>
             </div>
             <div class="hc-footer">

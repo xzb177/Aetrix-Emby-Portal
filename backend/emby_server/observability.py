@@ -3,7 +3,7 @@
 ## 为什么要做
 
 ``/api/health`` 已经能回答「系统好不好」，但回答不了「哪里不好、不好到什么
-程度」——probe 队列多深、enrich 卡在哪、SA 配额还剩多少、.strm 落后几小时，
+程度」——probe 队列多深、enrich 卡在哪、SA 配额还剩多少，
 全要翻日志或连 DB 查。这是「健康一页」「一键体检」「可观测看板」的前置：
 先把各子系统的状态**采集**起来，后面的 UI 才有东西可画。
 
@@ -33,7 +33,6 @@
 | probe      | 队列深度/速率/失败率/熔断             | probe_worker.status_snapshot|
 | enrich     | 积压/速率/失败率                      | DB 聚合 + scan_progress     |
 | scan       | 各库扫描状态                          | library_scan_summary        |
-| strm       | 生成器滞后（上次运行距今）            | store.get_value（DB 配置）  |
 | sa_quota   | SA 数量（不打 API）                   | drive_auth.sa_count（文件清单缓存）|
 | workers    | 后台线程存活                          | worker_registry.snapshot    |
 | api        | P50/P99/错误率（进程内）              | 本模块环形缓冲              |
@@ -80,8 +79,6 @@ THRESHOLDS = {
     "probe_queue_warn": lambda: _env_int("OBS_PROBE_QUEUE_WARN", 1000),
     # enrich 积压多少条算 warn（health_report 的 down 线是 500，这里只做展示分级）
     "enrich_backlog_warn": lambda: _env_int("OBS_ENRICH_BACKLOG_WARN", 500),
-    # .strm 上次运行距今多少小时算 warn（0=不检查）
-    "strm_lag_hours_warn": lambda: _env_float("OBS_STRM_LAG_HOURS_WARN", 6.0),
     # API P99 超过多少毫秒算 warn
     "api_p99_ms_warn": lambda: _env_float("OBS_API_P99_MS_WARN", 2000.0),
     # API 错误率超过多少算 warn
@@ -352,44 +349,6 @@ def _probe_scan(db) -> dict:
         return _warn("scan", "扫描状态读取失败")
 
 
-def _probe_strm(db) -> dict:
-    """strm 生成器滞后：只读 DB 配置（上次运行时间），不扫盘、不打 API。"""
-    try:
-        from backend.integrations import store
-        from backend.emby_server import strm_gen as _sg
-        last_run = store.get_value(db, _sg.CONFIG_LAST_RUN, "", ttl=60)
-        raw_stats = store.get_value(db, _sg.CONFIG_LAST_STATS, "", ttl=60)
-        m: dict[str, Any] = {"last_run": last_run or None}
-        lag_hours: float | None = None
-        if last_run:
-            try:
-                from datetime import datetime, timezone
-                dt = datetime.fromisoformat(last_run)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                lag_hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-                m["lag_hours"] = round(lag_hours, 2)
-            except Exception:  # noqa: BLE001
-                pass
-        if raw_stats:
-            try:
-                import json
-                stats = json.loads(raw_stats)
-                m["last_generated"] = stats.get("generated")
-                m["last_skipped"] = stats.get("skipped")
-            except Exception:  # noqa: BLE001
-                pass
-        warn_h = THRESHOLDS["strm_lag_hours_warn"]()
-        if warn_h > 0 and lag_hours is not None and lag_hours >= warn_h:
-            return _warn("strm", f".strm 生成器已 {lag_hours:.1f} 小时未运行", m)
-        if not last_run:
-            return _ok("strm", m, ".strm 生成器暂无运行记录")
-        return _ok("strm", m, ".strm 生成器正常")
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("strm 探针失败: %s", exc)
-        return _warn("strm", "生成器状态读取失败")
-
-
 def _probe_sa_quota() -> dict:
     """SA 配额水位：读 SA 文件清单缓存（``_discover_sa_files`` 的 ``_sa_files``
     全局缓存），绝不调用 Drive API 查配额。
@@ -440,7 +399,6 @@ _PROBES = [
     ("probe", _probe_queue),
     ("enrich", _probe_enrich),
     ("scan", _probe_scan),
-    ("strm", _probe_strm),
     ("sa_quota", _probe_sa_quota),
     ("api", _probe_api),
 ]
@@ -453,7 +411,7 @@ def probe_subsystems(db) -> dict[str, dict]:
         try:
             if key == "database":
                 out[key] = fn(db)
-            elif key in ("probe", "enrich", "scan", "strm"):
+            elif key in ("probe", "enrich", "scan"):
                 out[key] = fn(db)
             else:
                 out[key] = fn()

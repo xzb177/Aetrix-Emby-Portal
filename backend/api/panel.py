@@ -17,7 +17,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -256,7 +256,11 @@ def panel_today(
 ):
     _guard()
     now = _now_local_naive()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # r35：PlaybackSession.start_time 是 UTC-naive 入库（compat_routes._upsert_session
+    # 以容器本地时间写入），此前拿上海-naive 的 00:00 去比 → 每天 00:00–08:00（CST）
+    # 「今日观影人数」漏计（窗口超前 8 小时），08:00 之后又把昨天 08:00–24:00 的
+    # 观看者算进来（窗口滞后 8 小时）。改走上海自然日→UTC 帧的起点。
+    today_start = _today_start_utc_naive()
 
     from backend.emby_server import models as em
 
@@ -554,7 +558,31 @@ def panel_letter(
     })
 
 
-# ==================== 5.5 GET /api/panel/home（perf 优化 2026-10-13） ====================
+# ==================== 5.6 GET /api/panel/feed ====================
+# 发现页「实时动态流」：按时间倒序的事件数组，语义=跟随当前服。
+# realm_id 不传时用面板当前服（realms.active_realm_id）；传了则只返回该服可见
+# 的事件（realm 匹配，或 realm_id 为 NULL 的全局事件）。不聚合、不加页签。
+
+@router.get("/feed")
+def panel_feed(
+    realm_id: int | None = Query(None, description="服 id，不传=面板当前服"),
+    limit: int = Query(12, ge=1, le=50, description="返回条数，默认 12，上限 50"),
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    try:
+        from backend import realms as _realms
+        rid = realm_id if realm_id is not None else _realms.active_realm_id(db)
+    except Exception:  # noqa: BLE001 — 服解析失败时退化为全局视图
+        logger.warning("feed 服解析失败", exc_info=True)
+        rid = realm_id
+    from backend.panel_feed import read_feed
+    items = read_feed(db, rid, limit)
+    return _ok({"items": items, "realm_id": rid, "limit": limit})
+
+
+# ==================== 5.7 GET /api/panel/home（perf 优化 2026-10-13） ====================
 # 首页合并接口：一次返回 today/parcels/pulse/letter，把 4 次跨洋 RTT 并成 1 次。
 # 直接调用上方已定义的 4 个函数，不复制逻辑；单个失败隔离为 None，不拖垮其他区块。
 
@@ -880,22 +908,12 @@ def set_privacy(
 
 # ==================== 7. GET /api/panel/server ====================
 
-# 机关拨杆定义（key, 名称, 描述）
-TOGGLES = [
-    ("panel_night_scrape", "凌晨刮单集", "02:00–06:00 刮削单集元数据"),
-    ("panel_auto_scan", "定时扫描", "每天定时增量扫描媒体库"),
-    ("panel_douban_first", "豆瓣优先", "中文标题优先走豆瓣刮削"),
-    ("panel_vitality_guard", "活力值守护", "公益服活力值归零自动封禁"),
-]
-
-
 @router.get("/server")
 def panel_server(
     db: Session = Depends(get_db),
     user: models.WebUser = Depends(get_current_user),
 ):
     _guard()
-    from backend.servers import config_value
     from backend.emby_server import models as em
 
     # vitals：四格（尽量从 health 取，失败则占位）
@@ -937,24 +955,26 @@ def panel_server(
 
     # 生长记录：过去 7 天每天新入库数（替换"机关"假开关的实用组件）。
     # r28 打磨：单条 GROUP BY 一次查 7 天 —— 原来 7 次 COUNT 轮询，面板每次打开都打 7 遍。
+    # r35：date_added 是 UTC-naive 入库，此前按 func.date 的 UTC 日分组、标签却按
+    # 上海自然日画 → 每天 00:00–08:00（CST）入库的条目被算到前一天。改为取原始
+    # 时间戳、Python 侧 +8h 按上海自然日归桶（方言无关，与 r34 F8 同口径）。
     growth = []
     try:
         today = _now_local_naive().replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start = today - timedelta(days=6)
-        day_col = func.date(em.MediaItem.date_added).label("d")
+        week_start = _today_start_utc_naive() - timedelta(days=6)
         rows = db.query(
-            day_col,
+            em.MediaItem.date_added,
             func.count(em.MediaItem.id),
         ).filter(
             em.MediaItem.date_added >= week_start,
             em.MediaItem.item_type.in_(["movie", "series"]),
-        ).group_by(day_col).all()
+        ).group_by(em.MediaItem.date_added).all()
         by_day = {}
-        for d, cnt in rows:
-            # func.date 在 PG 返回 date、SQLite 返回 'YYYY-MM-DD' 字符串，统一成 date
-            if isinstance(d, str):
-                d = datetime.strptime(d, "%Y-%m-%d").date()
-            by_day[d] = cnt
+        for ts, cnt in rows:
+            if ts is None:
+                continue
+            day = (ts + timedelta(hours=8)).date()
+            by_day[day] = by_day.get(day, 0) + (cnt or 0)
         for i in range(6, -1, -1):
             day = today - timedelta(days=i)
             growth.append({
@@ -973,62 +993,28 @@ def panel_server(
         {"key": "night", "name": "单集", "active": False},
     ]
 
-    # 机关开关状态（读 SystemConfig，默认开）
-    toggles = []
+    # 面板是否可写（管理员）
     is_admin = bool(getattr(user, "is_staff", False))
-    for key, name, desc in TOGGLES:
-        val = config_value(db, key, "1")
-        toggles.append({
-            "key": key, "name": name, "desc": desc,
-            "on": val != "0", "writable": is_admin,
-        })
 
     return _ok({
         "vitals": vitals,
         "eco": eco,
         "radar_tasks": radar_tasks,
         "growth": growth,
-        "toggles": toggles,
         "is_admin": is_admin,
     })
 
 
-# ==================== 8. POST /api/panel/server/toggles ====================
-
-@router.post("/server/toggles")
-def panel_toggle(
-    payload: dict,
-    db: Session = Depends(get_db),
-    user: models.WebUser = Depends(get_current_user),
-):
-    _guard()
-    if not bool(getattr(user, "is_staff", False)):
-        raise HTTPException(status_code=403, detail="仅管理员可操作机关")
-    from backend.servers import set_config
-    key = (payload or {}).get("key", "")
-    on = (payload or {}).get("on", True)
-    allowed = {t[0] for t in TOGGLES}
-    if key not in allowed:
-        raise HTTPException(status_code=400, detail="未知的机关")
-    set_config(db, key, "1" if on else "0", f"面板机关：{key}")
-    db.commit()
-    return _ok({"key": key, "on": bool(on)})
-
-
 # ==================== 活动埋点（供 worker 调用） ====================
 
-def push_activity(db: Session, text: str) -> None:
-    """写入一条后台活动（环形保留 50 条）"""
-    try:
-        db.add(models.PanelActivity(text=text[:300]))
-        db.commit()
-        # 裁剪：只留最近 50 条
-        cutoff_id = db.query(models.PanelActivity.id).order_by(
-            models.PanelActivity.id.desc()).offset(50).limit(1).scalar()
-        if cutoff_id:
-            db.query(models.PanelActivity).filter(
-                models.PanelActivity.id <= cutoff_id).delete()
-            db.commit()
-    except Exception:  # noqa: BLE001
-        db.rollback()
-        logger.exception("panel activity 写入失败")
+def push_activity(db: Session, text: str, event_type: str = "system",
+                  library: str | None = None,
+                  realm_id: int | None = None) -> None:
+    """写入一条后台活动（每服分区环形保留最近 500 条，见 backend/panel_feed）
+
+    event_type ∈ {scan, enrich, play, system}；library=库名标签；
+    realm_id=None=全局事件（所有服可见）。
+    """
+    from backend.panel_feed import note_feed
+    note_feed(db, text, event_type=event_type, library_name=library,
+              realm_id=realm_id)

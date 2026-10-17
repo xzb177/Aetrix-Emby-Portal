@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import (authlog, codes, devices, library_scope, models, promotion,
@@ -960,9 +961,9 @@ def delete_library_scope_user(
 # 这里是**管理员维度**的批量生成 / 改配 / 作废，回答的是
 # 「我发出去的那一堆渠道码现在用到哪一步了」。
 #
-# 次数、有效天数、白名单都是每码一份，不写死：0 次数 = 不限，0 天 = 永不过期，
-# 白名单空 = 不限（与升级前行为一致）。判定逻辑在 ``apply_invitation``，
-# 这里只管生与改，两处口径必须一致。
+# 次数、有效天数、白名单、奖励都是每码一份，不写死：0 次数 = 不限，0 天 = 永不过期，
+# 白名单空 = 不限，奖励 0 = 跟随全局配置（与升级前行为一致）。判定逻辑在
+# ``apply_invitation``，这里只管生与改，两处口径必须一致。
 
 
 def _inv_code_state(code: models.InvitationCode, now: datetime) -> str:
@@ -1005,6 +1006,7 @@ def _inv_code_dto(code: models.InvitationCode, owner: str, now: datetime) -> dic
         "state_label": INV_CODE_STATE_LABELS.get(state, state),
         "expires_at": code.expires_at.isoformat() if code.expires_at else None,
         "expires_days_left": days_left,
+        # 本码专属奖励（0 = 跟随全局配置）：apply_invitation 以它优先发奖
         "reward_points": int(code.reward_points or 0),
         "created_at": code.created_at.isoformat() if code.created_at else None,
     }
@@ -1026,6 +1028,8 @@ class InvitationCodeGenerateRequest(BaseModel):
     max_uses: int = Field(default=100, ge=0, le=100000)
     expires_days: int = Field(default=0, ge=0, le=3650)
     whitelist: str = ""
+    # 本批码的专属奖励（积分）：0/不填 = 跟随全局 invitation_reward_points（r31 起接通）
+    reward_points: Optional[int] = Field(default=None, ge=0, le=1000000)
 
 
 @admin_ops_router.post("/invitation-codes")
@@ -1044,6 +1048,7 @@ def generate_invitation_codes(
     expires_at = (datetime.now() + timedelta(days=request.expires_days)
                   if request.expires_days > 0 else None)
     whitelist = _normalize_whitelist(request.whitelist)
+    batch_reward = int(request.reward_points or 0)
 
     created = []
     for _ in range(request.count):
@@ -1054,13 +1059,24 @@ def generate_invitation_codes(
             user_id=owner.id,
             max_uses=request.max_uses,
             use_count=0,
-            reward_points=0,
+            reward_points=batch_reward,
             expires_at=expires_at,
             is_active=True,
             whitelist=whitelist,
         ))
-    db.add_all(created)
-    db.commit()
+    # 并发撞号重试：两批请求同时生成同码时，唯一索引拦下其中一批；回滚后重生成
+    # 本批码号再试一次（同会话撞号 _generate_invite_code 已防住，防的是跨会话）
+    for _attempt in range(2):
+        try:
+            db.add_all(created)
+            db.commit()
+            break
+        except IntegrityError:
+            db.rollback()
+            for row in created:
+                row.code = _generate_invite_code(db)
+    else:
+        raise HTTPException(status_code=500, detail="邀请码生成失败，请重试")
     for row in created:
         db.refresh(row)
 
@@ -1068,6 +1084,7 @@ def generate_invitation_codes(
            created[0].id if created else None,
            {"count": len(created), "owner_user_id": owner.id,
             "max_uses": request.max_uses, "expires_days": request.expires_days,
+            "reward_points": batch_reward,
             "whitelist": whitelist or None})
     db.commit()
 
@@ -1085,6 +1102,8 @@ class InvitationCodeUpdateRequest(BaseModel):
     expires_days: Optional[int] = Field(default=None, ge=0, le=3650)
     whitelist: Optional[str] = None
     is_active: Optional[bool] = None
+    # None = 不改；0 = 改回跟随全局配置；>0 = 本码专属奖励
+    reward_points: Optional[int] = Field(default=None, ge=0, le=1000000)
 
 
 @admin_ops_router.put("/invitation-codes/{code_id}")
@@ -1103,6 +1122,7 @@ def update_invitation_code(
 
     before = {"max_uses": int(code.max_uses or 0), "is_active": bool(code.is_active),
               "expires_at": code.expires_at.isoformat() if code.expires_at else None,
+              "reward_points": int(code.reward_points or 0),
               "whitelist": code.whitelist or ""}
 
     if request.max_uses is not None:
@@ -1114,6 +1134,8 @@ def update_invitation_code(
         code.whitelist = _normalize_whitelist(request.whitelist)
     if request.is_active is not None:
         code.is_active = request.is_active
+    if request.reward_points is not None:
+        code.reward_points = int(request.reward_points)
     db.commit()
 
     _audit(db, current_admin, "update_invitation_code", "invitation_code", code.id,
@@ -1121,6 +1143,7 @@ def update_invitation_code(
             "after": {"max_uses": int(code.max_uses or 0),
                       "is_active": bool(code.is_active),
                       "expires_at": code.expires_at.isoformat() if code.expires_at else None,
+                      "reward_points": int(code.reward_points or 0),
                       "whitelist": code.whitelist or ""}})
     db.commit()
     owner = db.query(models.WebUser).filter(models.WebUser.id == code.user_id).first()

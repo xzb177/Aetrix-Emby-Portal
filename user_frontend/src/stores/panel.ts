@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { panelApi, humanizeError } from '@/composables/usePanelApi'
-import type { BoardData } from '@/composables/usePanelApi'
+import type { BoardData, FeedData } from '@/composables/usePanelApi'
 
 /**
  * v4 面板数据 store（PR-2 地基）
@@ -30,6 +30,8 @@ export const usePanelStore = defineStore('panel', () => {
   const board = ref<CacheEntry<BoardData>>(freshEntry())
   const collector = ref<CacheEntry>(freshEntry())
   const server = ref<CacheEntry>(freshEntry())
+  /** 实时动态流（C档第3批）：独立于 /home 合并接口，单独加载 */
+  const feed = ref<CacheEntry<FeedData>>(freshEntry())
 
   async function load<T>(entry: CacheEntry<T>, fetcher: () => Promise<T>, force = false) {
     const now = Date.now()
@@ -86,6 +88,7 @@ export const usePanelStore = defineStore('panel', () => {
   }
   const loadCollector = (force = false) => load(collector.value, panelApi.collector, force)
   const loadServer = (force = false) => load(server.value, panelApi.server, force)
+  const loadFeed = (force = false) => load(feed.value, panelApi.feed, force)
 
   /** 拆封：即时写后端（换设备同步），本地 optimistic 更新；失败抛错（携带人话原因），调用方 toast 提示 */
   async function unseal(itemId: string | number): Promise<void> {
@@ -112,11 +115,12 @@ export const usePanelStore = defineStore('panel', () => {
     board.value = freshEntry()
     collector.value = freshEntry()
     server.value = freshEntry()
+    feed.value = freshEntry()
   }
 
   return {
-    today, parcels, pulse, letter, board, collector, server,
-    loadToday, loadParcels, loadPulse, loadLetter, loadHome, loadCollector, loadServer,
+    today, parcels, pulse, letter, board, collector, server, feed,
+    loadToday, loadParcels, loadPulse, loadLetter, loadHome, loadCollector, loadServer, loadFeed,
     unseal, reset,
   }
 })

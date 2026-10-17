@@ -92,6 +92,9 @@ def _dates(payload):
 
 
 def test_groups_items_by_date_added(db):
+    # r35：分组按 Asia/Shanghai 自然日（date_added 是 UTC-naive 入库）。
+    # 甲 09:30 UTC=17:30 CST→10-01；乙 22:15 UTC=次日 06:15 CST→10-02；
+    # 丙 07:00 UTC=15:00 CST→10-03。
     lib = _library(db, "电影")
     user = _user(db)
     _item(db, lib, "甲", added=datetime(2026, 10, 1, 9, 30))
@@ -100,11 +103,12 @@ def test_groups_items_by_date_added(db):
 
     payload = _call(db, user, start="2026-10-01", end="2026-10-31")
 
-    assert _dates(payload) == ["2026-10-01", "2026-10-03"]
-    assert payload["days"][0]["count"] == 2
+    assert _dates(payload) == ["2026-10-01", "2026-10-02", "2026-10-03"]
+    assert payload["days"][0]["count"] == 1
     assert payload["days"][1]["count"] == 1
     assert payload["total"] == 3
-    assert [i["Name"] for i in payload["days"][1]["items"]] == ["丙"]
+    assert [i["Name"] for i in payload["days"][1]["items"]] == ["乙"]
+    assert [i["Name"] for i in payload["days"][2]["items"]] == ["丙"]
 
 
 def test_uses_date_added_not_date_modified(db):
@@ -136,11 +140,13 @@ def test_hidden_items_are_excluded(db):
 
 
 def test_range_end_is_exclusive(db):
-    """end 当天 00:00:00 的条目属于「下个月」，不能出现在本月最后一格"""
+    """end 当天 00:00:00（上海）的条目属于「下个月」，不能出现在本月最后一格"""
+    # r35：边界按上海自然日。月末 15:59:59 UTC=23:59:59 CST→10-31；
+    # 下月初 16:00 UTC=11-01 00:00 CST→11-01，不进 10 月区间。
     lib = _library(db, "电影")
     user = _user(db)
-    _item(db, lib, "月末", added=datetime(2026, 10, 31, 23, 59, 59))
-    _item(db, lib, "下月初", added=datetime(2026, 11, 1, 0, 0, 0))
+    _item(db, lib, "月末", added=datetime(2026, 10, 31, 15, 59, 59))
+    _item(db, lib, "下月初", added=datetime(2026, 10, 31, 16, 0, 0))
 
     payload = _call(db, user, start="2026-10-01", end="2026-10-31")
 

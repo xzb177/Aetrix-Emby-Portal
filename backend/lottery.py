@@ -653,7 +653,6 @@ def verify_round(db: Session, round_id: int) -> dict[str, Any]:
         for p in db.query(models.LotteryRoundPrize).filter(models.LotteryRoundPrize.round_id == round_id).all()
     }
 
-    # r30 L5：打码逻辑与模块级 _mask_telegram 同一实现，删内嵌版改调模块级
     entries_out = [
         {
             "entry_id": e.id,
@@ -741,22 +740,19 @@ def draw_interval_sec(db: Session) -> int:
 
 
 def _mask_telegram(telegram_id: int) -> str:
-    """TG id 打码：只保留后四位（与 verify_round 保持一致）。"""
+    """TG id 打码：只保留后四位。"""
     s = str(telegram_id)
     if len(s) <= 4:
         return "*" * len(s)
     return "****" + s[-4:]
 
 
-def notify_draw_results(db: Session, round_id: int, winners: list,
-                        distribute_errors: list | None = None) -> dict:
+def notify_draw_results(db: Session, round_id: int, winners: list, distribute_errors: list | None = None) -> dict:
     """开奖后通知：群公告 + 中奖者私聊。
 
     TG 发送走函数内懒导入（避免循环依赖），任何发送失败只记日志不抛异常。
-
-    r30 L2：``distribute_errors`` 为 distribute_round 返回的 errors 列表；
-    有失败时群公告如实写「部分奖品发放失败（N 笔），系统将自动补发」，
-    不许把「未完成」写成「已完成」。私聊文案不动。
+    distribute_errors：发奖失败明细（distribute_round 返回的 errors）；非空时群公告
+    如实提示部分奖品发放失败，不把原始 error 文案拼进公告（可能含内部信息）。
     """
     result: dict[str, Any] = {"sent": False, "group": False, "dm_sent": 0, "dm_failed": 0}
     if not notify_winners_enabled(db):
@@ -791,19 +787,15 @@ def notify_draw_results(db: Session, round_id: int, winners: list,
 
     round_title = html.escape(str(round.title or ""))
     if distribute_errors:
-        # r30 L2：发奖有失败时如实告知，不宣称「已自动发放」
-        group_text = (
-            f"🎉 <b>群抽奖开奖啦！</b>\n\n「{round_title}」\n"
-            + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
-            + f"\n\n部分奖品发放失败（{len(distribute_errors)} 笔），系统将自动补发。"
-              "seed 公示可在管理后台核验。"
-        )
+        # 发奖有失败：群公告如实口径，不宣称"已自动发放"
+        draw_tail = f"⚠️ 部分奖品发放失败（{len(distribute_errors)} 笔），系统将自动补发，seed 公示可在管理后台核验。"
     else:
-        group_text = (
-            f"🎉 <b>群抽奖开奖啦！</b>\n\n「{round_title}」\n"
-            + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
-            + "\n\n奖励已自动发放。seed 公示可在管理后台核验。"
-        )
+        draw_tail = "奖励已自动发放。seed 公示可在管理后台核验。"
+    group_text = (
+        f"🎉 <b>群抽奖开奖啦！</b>\n\n「{round_title}」\n"
+        + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
+        + f"\n\n{draw_tail}"
+    )
     try:
         ok, err = sender.send_message(db, round.chat_id, group_text)
         result["group"] = bool(ok)
@@ -958,7 +950,7 @@ def reap_stale_drawing_rounds(db: Session, summary: dict | None = None) -> list[
 def run_due_draws(db: Session) -> dict:
     """扫描并自动开奖所有到期的轮次。
 
-    到期条件：status='open' 且 draw_at 不为空且 draw_at <= now。
+    到期条件：status='open' 且 draw_at 不为空且 draw_at <= now（按上海时间比较）。
     原子认领（UPDATE ... WHERE status='open'）防止多 worker 重复开奖；
     单个轮次失败回滚并记入 errors，不中断整批。
     """
@@ -969,7 +961,6 @@ def run_due_draws(db: Session) -> dict:
     reap_stale_drawing_rounds(db, summary)
     if not auto_draw_enabled(db):
         return summary
-    # r30 L1：draw_at 按上海 naive 入库，比较也用上海 now（生产容器为 UTC）。
     now = shanghai_now_naive()
     due_ids = [
         row.id
@@ -995,11 +986,9 @@ def run_due_draws(db: Session) -> dict:
                 continue
             # 此时 status 已为 drawing，走 draw_round 的重入路径正常开奖
             winners = draw_round(db, round_id)
-            # r30 L2：发放结果透传给群公告，有失败如实写、不宣称已发放
-            distribute_result = distribute_round(db, round_id)
+            dist_result = distribute_round(db, round_id)
             try:
-                notify_draw_results(db, round_id, winners,
-                                    distribute_errors=distribute_result.get("errors"))
+                notify_draw_results(db, round_id, winners, distribute_errors=dist_result.get("errors"))
             except Exception:
                 logger.exception("群抽奖开奖通知失败 round_id=%s（不影响开奖结果）", round_id)
             summary["drawn"].append(round_id)
@@ -1102,7 +1091,7 @@ def start_lottery_auto_draw_scheduler() -> bool:
             logger.exception("lottery auto draw scheduler tick failed")
 
     def _loop():
-        # 复用同一个 Event：每轮 new 一个 Event().wait() 没有意义（db_backup 同款）
+        # 复用同一个 Event：每轮 new 一个 Event().wait() 没有意义
         wake = threading.Event()
         while True:
             try:
@@ -1115,7 +1104,6 @@ def start_lottery_auto_draw_scheduler() -> bool:
             except Exception:
                 logger.exception("lottery auto draw scheduler interval read failed")
                 interval = DRAW_INTERVAL_DEFAULT_SEC
-            # 复用同一个 Event：每轮 new 一个 Event().wait() 没有意义（db_backup 同款）
             wake.wait(interval)
             _tick()
 

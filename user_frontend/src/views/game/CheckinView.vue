@@ -69,7 +69,6 @@
         <span aria-hidden="true">🔥</span> <b>连报奖励</b>：每天多 +{{ status.streak_bonus }}<span aria-hidden="true">⚡</span>（上限 +{{ status.streak_max_bonus }}<span aria-hidden="true">⚡</span>）
       </div>
     </div>
-    <PanelTabbar />
     <!-- 盖章动画 -->
     <div ref="sealPop" class="seal-pop" aria-hidden="true">到</div>
   </div>
@@ -77,7 +76,6 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import StaminaBar from '@/components/game/StaminaBar.vue'
 import { staminaText } from '@/config/stamina'
 import { checkinApi, pointsApi, type CheckinStatus } from '@/api/economy'

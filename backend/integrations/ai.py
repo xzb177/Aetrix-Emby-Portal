@@ -18,6 +18,7 @@ import logging
 import threading
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -217,7 +218,15 @@ def ask(db: Session, question: str, history: Optional[list[dict]] = None) -> dic
 
 
 def _today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    """自然日口径：Asia/Shanghai（与面板问候语/每日一签同口径）。
+
+    生产容器系统时区为 UTC：直接用 ``datetime.now()`` 会让用户北京时间
+    00:00–08:00 的提问记到「昨天」，配额要到次日 08:00 才重置。
+    """
+    try:
+        return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
+        return datetime.now().strftime("%Y-%m-%d")
 
 
 def daily_limit(db: Session) -> int:
@@ -312,7 +321,12 @@ def safe_consume(db: Session, user_id: int, limit: Optional[int] = None) -> tupl
         return consume(db, user_id, limit)
     except SQLAlchemyError as exc:
         logger.warning("AI 配额计数失败，本次放行: %s", exc)
-        return True, used_today(db, user_id)
+        try:
+            return True, used_today(db, user_id)
+        except SQLAlchemyError:
+            # 写失败的场景（连接池耗尽等）读大概率也失败：used 置 0，
+            # 「不带病拦人」的放行承诺不变（r30 F2）。
+            return True, 0
 
 
 def is_configured(values: dict) -> bool:

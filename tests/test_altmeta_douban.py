@@ -10,9 +10,35 @@
    否则这批条目会永远停在 pending 反复重试。
 """
 import json
+import os
 from types import SimpleNamespace
 
+# 本文件直调 enrich_worker（会 import backend.database）：先钉死 sqlite，
+# 否则当本文件是进程内第一个 import backend 的模块时，
+# DATABASE_TYPE 会按默认冻成 postgresql，后续模块的 init_db() 全炸
+#（其它 DB 相关测试文件都有这一 guard，本文件此前漏了）。
+os.environ.setdefault("DATABASE_TYPE", "sqlite")
+os.environ.setdefault("REDIS_ENABLED", "false")
+
+import pytest
+
 from backend.emby_server import altmeta
+from backend.emby_server import douban as dbn
+from backend.emby_server import enrich_worker as ew
+from backend.integrations import store
+
+
+@pytest.fixture(autouse=True)
+def _env():
+    # 批 1：豆瓣开关 60s 进程缓存 + store 热缓存跨测试污染——每测重置。
+    ew._douban_cfg_cache["at"] = 0.0
+    ew._douban_cfg_cache["cfg"] = None
+    ew._altmeta_cfg_cache["at"] = 0.0
+    ew._altmeta_cfg_cache["cfg"] = None
+    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
+    yield
+    ew._douban_cfg_cache["at"] = 0.0
+    ew._douban_cfg_cache["cfg"] = None
 
 
 def _item(**kw):
@@ -140,7 +166,15 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
 
     monkeypatch.setattr(enrich_worker, "SessionLocal", lambda: _CfgDB())
     monkeypatch.setattr("backend.emby_server.altmeta.enabled", lambda db: True)
-    monkeypatch.setattr("backend.emby_server.altmeta.warn_dead_keys_once", lambda db: None)
+    # 批 1：豆瓣降为可选开关——本用例钉住「豆瓣开」时的保留分支。
+    # 注意：只 mock douban.enabled 不够，_cached_douban_cfg 还会调真实的
+    # min_interval（在 _CfgDB 假会话上抛 AttributeError），所以直接 mock
+    # _cached_douban_cfg（与 test_douban_ban.py 等文件的既有做法一致）。
+    monkeypatch.setattr(enrich_worker, "_cached_douban_cfg", lambda: (True, 0.0))
+    # rich 兜底直接判没命中：本用例只钉轻量 altmeta.search，不依赖真实豆瓣 HTTP
+    #（真实请求偶发 403 会触发进程级封禁冷却，导致用例抖动）。
+    monkeypatch.setattr(enrich_worker, "_douban_fallback_on_tmdb_miss",
+                        lambda *a, **k: False)
     monkeypatch.setattr("backend.emby_server.altmeta.min_interval", lambda db: 0.0)
     monkeypatch.setattr("backend.emby_server.altmeta.search",
                         lambda *a, **k: {"title": "兜底名", "year": "2020",
@@ -197,7 +231,15 @@ def test_fetch_fallback_runs_when_tmdb_unconfigured(monkeypatch):
 
     monkeypatch.setattr(enrich_worker, "SessionLocal", lambda: _CfgDB())
     monkeypatch.setattr("backend.emby_server.altmeta.enabled", lambda db: True)
-    monkeypatch.setattr("backend.emby_server.altmeta.warn_dead_keys_once", lambda db: None)
+    # 批 1：豆瓣降为可选开关——本用例钉住「豆瓣开」时的保留分支。
+    # 注意：只 mock douban.enabled 不够，_cached_douban_cfg 还会调真实的
+    # min_interval（在 _CfgDB 假会话上抛 AttributeError），所以直接 mock
+    # _cached_douban_cfg（与 test_douban_ban.py 等文件的既有做法一致）。
+    monkeypatch.setattr(enrich_worker, "_cached_douban_cfg", lambda: (True, 0.0))
+    # rich 兜底直接判没命中：本用例只钉轻量 altmeta.search，不依赖真实豆瓣 HTTP
+    #（真实请求偶发 403 会触发进程级封禁冷却，导致用例抖动）。
+    monkeypatch.setattr(enrich_worker, "_douban_fallback_on_tmdb_miss",
+                        lambda *a, **k: False)
     monkeypatch.setattr("backend.emby_server.altmeta.min_interval", lambda db: 0.0)
     douban_calls = []
     monkeypatch.setattr("backend.emby_server.altmeta.search",

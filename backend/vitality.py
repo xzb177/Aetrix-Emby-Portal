@@ -206,7 +206,11 @@ def _add_vitality(db: Session, user_id: int, delta: int, reason: str) -> int:
 
 def get_today_free_gain(db: Session, user_id: int) -> int:
     """今天通过免费途径（签到/观影奖励）已获得的活力值。"""
-    today_start = datetime.combine(date.today(), datetime.min.time())
+    # r34 口径收口：VitalityLog.created_at 以 UTC naive 入库（容器时区 UTC），
+    # 此前用服务器本地日界，上限在北京时间 08:00 才重置。函数内导入 economy
+    # 是为了避开循环导入（economy.py 顶层导入了本模块）。
+    from backend.api.economy import _today_start_utc_naive
+    today_start = _today_start_utc_naive()
     total = (
         db.query(func.coalesce(func.sum(models.VitalityLog.delta), 0))
         .filter(
@@ -343,7 +347,17 @@ _SCHEDULER_LOCK = threading.Lock()
 CONFIG_LAST_DEDUCT_DATE = "vitality_last_deduct_date"
 
 def _today_str() -> str:
-    return date.today().isoformat()
+    """「今天」的日期字符串（Asia/Shanghai 自然日），用于每日扣减认领标记。
+
+    r34 口径收口：此前是服务器本地日期，生产容器为 UTC，「每日 00:00 扣减」
+    实际在北京时间 08:00 才触发。认领标记只做「今天是否已扣」的幂等判断，
+    改为上海日期后扣减在北京时间 00:00 过后 60 秒内触发。
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
+        return date.today().isoformat()
 
 def claim_daily_deduct(db: Session, today: str) -> bool:
     """原子认领「今天的活力值扣减」：认领成功返回 True（本进程负责扣减），否则 False。

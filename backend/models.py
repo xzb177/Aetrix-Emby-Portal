@@ -872,7 +872,11 @@ class ExchangeDiscountCredit(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
-    exchange_code_id = Column(Integer, ForeignKey('exchange_codes.id'), nullable=False)
+    # R32-F1：来源可能是统一码系统的 registration_codes（此时记 0，不是
+    # exchange_codes 的行），去掉外键与 NOT NULL。SQLite 本就不强制 FK，
+    # PG 老库由 backend/database.py 的 _migrate_exchange_discount_credit_fk 迁移。
+    # 该列全仓只写不读（消费端只按 user_id/status 查），无语义影响。
+    exchange_code_id = Column(Integer, nullable=True)
     discount_pct = Column(Integer, default=0)  # 实付百分比，85=八五折
     status = Column(String(20), default='unused')  # unused 未用 / used 已用
     used_order_id = Column(String(64))
@@ -1633,7 +1637,7 @@ class MemberXpLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
-    xp_delta = Column(Integer, nullable=False)  # 经验变动（正数）
+    xp_delta = Column(Integer, nullable=False)  # 经验变动（正数=发放，负数=退款回滚）
     xp_after = Column(Integer, nullable=False)  # 变动后经验
     source = Column(String(20), nullable=False)  # recharge=充值 / invite=有效邀请 / subscription=订阅购买
     ref_id = Column(String(64), nullable=True)  # 关联订单号等
@@ -1781,13 +1785,23 @@ class PanelAchievementUnlock(Base):
 
 
 class PanelActivity(Base):
-    """后台活动 feed（环形保留最近 50 条，供面板脉搏文案）"""
+    """后台活动 feed（供面板脉搏文案 + 发现页实时动态流）。
+
+    保留策略见 backend/panel_feed.py：每服分区最新 500 条，写入时裁剪。
+    """
     __tablename__ = 'panel_activity'
 
     __table_args__ = (
         Index('idx_panel_activity_time', 'created_at'),
+        Index('idx_panel_activity_realm_time', 'realm_id', 'created_at'),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     text = Column(String(300), nullable=False)
     created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    # 事件类型：scan / enrich / play / system（GET /api/panel/feed 的 type 字段）
+    event_type = Column(String(20), default='system', nullable=False)
+    # 库名标签（系统事件可为 NULL）
+    library = Column(String(200))
+    # 归属服（NULL = 全局事件，所有服可见）
+    realm_id = Column(Integer)

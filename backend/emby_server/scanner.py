@@ -33,7 +33,6 @@ from backend.emby_server import disc_filter
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import nfo as nfo_lib
-from backend.emby_server import strm_config as _strm_config
 # 软删除（v2.48.0）：清理阶段默认只标记 deleted_at，物理删除留给过期回收
 from backend.emby_server import soft_delete as _soft_delete
 # 实时进度与远程 IO 计数（v2.27.0）：只依赖标准库，不会与 scanner / mounts 形成循环
@@ -210,7 +209,8 @@ def _chunks(seq, size: int):
         yield seq[i:i + size]
 
 # `.strm` 不是视频文件，而是「内容为播放直链的文本文件」；是否把 strm 当媒体由调用方决定
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", ".ts", ".m4v", ".strm"}
+# `.iso` 是光盘镜像文件：部分客户端（Infuse / VLC 等）可直接播放整盘 ISO
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", ".ts", ".m4v", ".strm", ".iso"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # 集号解析: S01E02 / 1x02 / 第1集 / EP03 / E03
@@ -1784,24 +1784,6 @@ def _prefix_filter(files, prefixes: tuple) -> "Iterator":
                 break
 
 
-def _strm_filter(files, include_strm: bool) -> "Iterator":
-    """strm_enabled=false 时跳过 .strm 文件（.strm 功能总开关的语义）。
-
-    按文件名后缀判断：.strm 条目的 container 会被改写成直链里的真实容器
-    （见 _local_dir_files / _mount_files），后缀是最可靠的判据。
-    注意这是生成器：include_strm 在调用方（iter_scan_sources）每轮扫描只读一次
-    配置（热读短 TTL），同一轮内保持一致。
-    """
-    if include_strm:
-        yield from files
-        return
-    for sf in files:
-        name = getattr(sf, "name", "") or ""
-        if name.lower().endswith(".strm"):
-            continue
-        yield sf
-
-
 def _source_path_prefix(src) -> str:
     """该来源的入库路径前缀（用于判断库里是否已有该来源的条目）。
 
@@ -1901,17 +1883,13 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
 
     try:
         prefixes = getattr(snap, "limit_prefixes", ()) or ()
-        # .strm 总开关：每轮扫描读一次（热读，管理后台改完最多 60 秒生效，无需重启）
-        include_strm = _strm_config.enabled(db)
         for src in sources:
             # 定向扫描只扫部分目录：来源 0 产出是正常的，不做空来源判定
             check_empty = not prefixes
             if src.kind == "local":
                 yield src.label, _watch_empty_source(
                     src.label, src,
-                    _strm_filter(
-                        _prefix_filter(_local_dir_files(src.path, failed_roots), prefixes),
-                        include_strm),
+                    _prefix_filter(_local_dir_files(src.path, failed_roots), prefixes),
                     db, library.id, failed_roots, check_empty)
                 continue
 
@@ -1919,10 +1897,8 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
                 try:
                     yield from _watch_empty_source(
                         src.label, src,
-                        _strm_filter(
-                            _prefix_filter(_mount_files(src, src.provider, failed_roots),
+                        _prefix_filter(_mount_files(src, src.provider, failed_roots),
                                            prefixes),
-                            include_strm),
                         db, library.id, failed_roots, check_empty)
                 except mount_lib.MountError as exc:
                     logger.warning("媒体库「%s」的挂载「%s」不可用：%s", snap.name, src.label, exc)
@@ -4155,6 +4131,34 @@ def _maybe_alert_enrich_flip(db: Session, library: emby_models.Library,
         logger.warning("enrich 翻转告警检查失败: %s", exc)
 
 
+def _note_scan_feed(db: Session, library: emby_models.Library, stats: dict,
+                    status: str) -> None:
+    """扫描完成 → 发现页实时动态流埋点（真实触发：本轮扫描确实跑完）。
+
+    - 有新增/更新 → 一条 scan 事件「扫描完成 · 《库名》新增 X · 更新 Y」
+    - 清掉失效条目 → 一条 system 事件「死链清理 · 《库名》清理了 N 条失效条目」
+    - 本轮零变化且成功 → 不写（避免定时空扫刷屏）
+    """
+    try:
+        from backend.panel_feed import note_feed
+        added = int(stats.get("added") or 0)
+        updated = int(stats.get("updated") or 0)
+        removed = int(stats.get("removed") or 0)
+        lib_id = getattr(library, "id", None)
+        if added or updated:
+            note_feed(db, f"扫描完成 · 新增 {added} · 更新 {updated}",
+                      event_type="scan", library_id=lib_id)
+        elif status != SCAN_STATUS_SUCCESS:
+            note_feed(db, f"扫描完成（{status}）", event_type="scan",
+                      library_id=lib_id)
+        if removed:
+            note_feed(db, f"死链清理 · 清理了 {removed} 条失效条目",
+                      event_type="system", library_id=lib_id)
+    except Exception:  # noqa: BLE001 — 埋点失败绝不能影响扫描结果落库
+        logger.warning("扫描 feed 埋点失败 library_id=%s",
+                       getattr(library, "id", "?"), exc_info=True)
+
+
 def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict],
                 run_id: Optional[int] = None) -> str:
     """写入一轮扫描的结果，返回归类后的状态
@@ -4189,6 +4193,8 @@ def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]
     _maybe_alert_enrich_flip(db, library, stats, run_id)
     # 结果已经落库了，封面重生成即使失败也不影响上面那两条状态
     _cover_autogen_after_scan(db, library, stats)
+    # 发现页实时动态流埋点（只加写入调用，不改扫描行为）
+    _note_scan_feed(db, library, stats, status)
     return status
 
 
@@ -4284,6 +4290,8 @@ def _write_enrich_status(
     Contract:
       * layered=True  -> PENDING means "enrich_worker will fill the rest"
       * layered=False -> DONE means "this scan finalizes the item"
+        （第 0 批起：只有真拿到元数据的行才 done；无 NFO、无 TMDB 命中、
+        无有效文本的三无行同样走 PENDING，见 _apply_enrich_status）
     `reason` is mandatory so every transition is auditable in logs.
 
     Returns True when this write was a done→pending flip (v2.55.x 翻转监控：
@@ -4364,40 +4372,62 @@ def _compute_size_change(item, scan_file):
     return old_size, new_size, size_changed
 
 
-def _sync_video_size_from_ledger(db, item) -> bool:
-    """扫描增量：.strm 条目的 item.size 若仍是纸条口径（<= _STRM_STUB_MAX），
-    从 strm_gen_files 账本取视频口径 size 回填（同一事务、无新增 IO/配额成本）。
+# 已落定为权威元数据的来源标记：行上带这些标记说明身份/文本已齐，
+# 非分层扫描可直接终结（done），不需要 enrich_worker 再跑一轮。
+# 注意 'none' 不在里面：它表示"搜过、没有"，需要重新排队再试。
+_ENRICH_AUTHORITATIVE_SOURCES = frozenset({
+    "nfo", "tmdb", "tmdb_img", "douban", "bangumi", "multisource", "inherit",
+})
 
-    只在账本有该 strm_path 且账本 size 为视频口径（> _STRM_STUB_MAX）时写；
-    账本无此文件、或账本 size 仍是纸条口径 → 保持现状，不乱填。
-    只碰 movie/episode 的 .strm 行；series/season 容器行 size=0 是设计，不碰。
+
+def _nfo_has_content(nfo_data) -> bool:
+    """NFO 是否带了实质内容（B 方案：NFO 文本权威，TMDB 只补图）。"""
+    if not isinstance(nfo_data, dict):
+        return False
+    return bool(
+        nfo_data.get("tmdb_id")
+        or (nfo_data.get("title") or "").strip()
+        or (nfo_data.get("overview") or "").strip()
+    )
+
+
+def _scan_has_metadata(item, pending) -> bool:
+    """本轮（非分层）扫描是否已拿到足以终结的元数据。
+
+    供 ``_apply_enrich_status`` 的 flat 分支判定 done/pending（第 0 批修复，
+    2026-10-17）：旧实现无条件 done，无 NFO、无 TMDB 命中的新行也被标 done，
+    永不进补全队列（假完成）。现在只有真拿到元数据的行才终结：
+    - 本轮 TMDB 搜索命中（pending.tmdb_hit，写库后段会 apply，
+      metadata_source='tmdb' + last_scraped_at）；
+    - 本轮 NFO 有实质内容（title/overview/tmdb_id）：NFO 权威，B 方案本意；
+    - 行上已有权威元数据（tmdb_id / 真实 metadata_source / 有效简介）：
+      更新扫描/重刮，worker 不需要再跑一轮。
+    三者皆无（无 NFO 且无 TMDB 命中且无有效文本）→ False，行走 pending，
+    与分层远程文件用同一个待刮状态值，等 enrich_worker 后台补。
     """
-    if getattr(item, "item_type", "") not in ("movie", "episode"):
-        return False
-    file_path = str(getattr(item, "file_path", "") or "")
-    if not file_path.lower().endswith(".strm"):
-        return False
-    if (getattr(item, "size", 0) or 0) > _STRM_STUB_MAX:
-        return False  # 已经是视频口径
-    rel = file_path[6:] if file_path.startswith("/strm/") else file_path
-    row = (db.query(emby_models.StrmGenFile.size)
-             .filter(emby_models.StrmGenFile.strm_path == rel)
-             .order_by(emby_models.StrmGenFile.size.desc())
-             .first())
-    video_size = (row[0] if row else 0) or 0
-    if video_size > _STRM_STUB_MAX:
-        item.size = video_size
+    if getattr(pending, "tmdb_hit", None):
         return True
-    return False
+    if _nfo_has_content(getattr(pending, "nfo_data", None)):
+        return True
+    if getattr(item, "tmdb_id", None):
+        return True
+    if getattr(item, "metadata_source", None) in _ENRICH_AUTHORITATIVE_SOURCES:
+        return True
+    return bool((getattr(item, "overview", None) or "").strip())
 
 
 def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
-                         flip_tracker=None):
+                         flip_tracker=None, has_metadata=True):
     """Decide and write enrich_status. Max nesting depth: 2.
 
     flip_tracker（v2.55.x 翻转监控）：可选的 list，done→pending 翻转时
     追加 {"item_id", "item_type", "reason", "old_size", "new_size"}。
     调用方（扫描写库循环）传 ctx.enrich_flips。
+
+    has_metadata（第 0 批，2026-10-17）：仅 flat（非分层）分支使用。
+    调用方用 _scan_has_metadata(item, pending) 计算：本轮真拿到元数据的行
+    才终结为 done；三无行走 pending（与分层远程文件相同的待刮状态值）。
+    默认 True 保持旧调用方行为不变。
     """
     old_status = getattr(item, "enrich_status", None)
     old_size, new_size, size_changed = _compute_size_change(item, scan_file)
@@ -4413,20 +4443,33 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
             })
 
     if not layered:
-        # 非分层：本轮已做完补全，直接终结。
+        # 非分层：本轮已做完补全——但只在真拿到元数据时才终结（第 0 批修复，
+        # 2026-10-17）：无 NFO、无 TMDB 命中、无有效文本的三无行走 pending，
+        # 用与分层远程文件相同的待刮状态值，等 enrich_worker 后台补；
+        # NFO 真填满的行标 done 是 B 方案本意，保留。
         # 注意：series/season 骨架行由 episode 分支创建，走 L2 补全，这里不抢标。
         if (
             item_type in _ENRICH_SUPPORTED_TYPES
             and (old_status or _ENRICH_PENDING) == _ENRICH_PENDING
         ):
-            _write_enrich_status(
-                item,
-                _ENRICH_DONE,
-                reason="flat_scan_finalized",
-                old_status=old_status,
-                old_size=old_size,
-                new_size=new_size,
-            )
+            if has_metadata:
+                _write_enrich_status(
+                    item,
+                    _ENRICH_DONE,
+                    reason="flat_scan_finalized",
+                    old_status=old_status,
+                    old_size=old_size,
+                    new_size=new_size,
+                )
+            else:
+                _write_enrich_status(
+                    item,
+                    _ENRICH_PENDING,
+                    reason="flat_scan_no_metadata",
+                    old_status=old_status,
+                    old_size=old_size,
+                    new_size=new_size,
+                )
         return
 
     # 分层扫描 enrich_status 状态机
@@ -4602,7 +4645,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                 item.container = scan_file.container or os.path.splitext(fname)[1].lstrip(".")
                 # 分层扫描：文件指纹落库（下次秒跳的依据）；补全状态标记。
                 # layered=本轮只做 L1 极简入库 → pending，等后台 enrich_worker；
-                # 非 layered=旧行为（本轮已做完所有补全）→ done。
+                # 非 layered=本轮已做完所有补全 → 有元数据才 done，三无行同样
+                # pending（第 0 批，_scan_has_metadata 判定）。
                 if _pending.file_fingerprint:
                     item.file_fingerprint = _pending.file_fingerprint
                 # enrich_status 统一走 _apply_enrich_status（P2-1/P2-3/P3-1 重构，
@@ -4616,12 +4660,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     layered=_pending.layered,
                     item_type=_pending.item_type,
                     flip_tracker=ctx.enrich_flips,
+                    has_metadata=_scan_has_metadata(item, _pending),
                 )
-                # Rex 兼容：.strm 条目 size 顺带对齐账本视频口径（本机扫描永远
-                # 学不到视频口径，见 _sync_video_size_from_ledger）。纸条口径时
-                # 触发一次按 strm_path 的索引查询（idx_strm_gen_files_strm_path）。
-                if _sync_video_size_from_ledger(db, item):
-                    stats["size_ledger_synced"] = stats.get("size_ledger_synced", 0) + 1
                 platforms = detect_platforms(full_path)  # 发行平台标签（虚拟媒体库用）
                 if platforms:
                     item.platforms = ",".join(platforms)

@@ -15,8 +15,8 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { FolderOpen, HardDrive, HardDriveDownload, Plus } from 'lucide-vue-next'
-import { browseLocalDirs, browseMountDirs, fetchStrmConfig } from '@/api/admin'
-import type { MountPickerCrumb, MountPickerDir, StrmConfig } from '@/api/admin'
+import { browseLocalDirs, browseMountDirs } from '@/api/admin'
+import type { MountPickerCrumb, MountPickerDir } from '@/api/admin'
 import type { LibraryPathEntry, StorageBackend, StorageMount } from '@/types'
 
 const props = withDefaults(defineProps<{
@@ -61,16 +61,6 @@ const crumbs = ref<MountPickerCrumb[]>([])
 const dirs = ref<MountPickerDir[]>([])
 const loading = ref(false)
 const loadError = ref('')
-/** 后台配的 .strm 容器内挂载点（本地后端时给快捷入口；读不到就不显示，不挡正常流程） */
-const strmContainerPath = ref('')
-async function loadStrmHint() {
-  // 每次打开都重新读：配置可能刚在「媒体库」页改过，缓存会撒谎（一次 GET，开销可忽略）
-  try {
-    const res = await fetchStrmConfig()
-    const cfg: StrmConfig | undefined = res.strm
-    strmContainerPath.value = (cfg?.enabled && cfg.container_path) ? cfg.container_path : ''
-  } catch { strmContainerPath.value = '' }
-}
 const truncated = ref(false)
 
 /** 本机来源才需要挂载下拉；远程来源按类型过滤出可用的挂载 */
@@ -129,7 +119,6 @@ function resetTo(entry: LibraryPathEntry | null) {
 watch(() => props.modelValue, (open) => {
   if (!open) return
   resetTo(props.preset)
-  void loadStrmHint()
   multi.value = false
   // 默认把第一个可浏览的挂载选上，省掉一次点击（只有一个挂载时直接就能浏览）
   if (backend.value !== BACKEND_LOCAL && mountId.value == null) {
@@ -325,11 +314,6 @@ function confirmChecked() {
         </el-input>
         <el-checkbox v-model="multi" class="lpd-multi">多选</el-checkbox>
       </div>
-      <p v-if="backend === BACKEND_LOCAL && strmContainerPath" class="lpd-hint">
-        .strm 直链目录：{{ strmContainerPath }}
-        <a @click.prevent="go(strmContainerPath)">去看看</a>
-        （后台「媒体库」页「.strm 直链」卡片可改）
-      </p>
 
       <div v-if="canBrowse && crumbs.length" class="lpd-crumbs">
         <el-breadcrumb separator="/">

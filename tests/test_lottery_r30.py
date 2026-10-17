@@ -152,7 +152,7 @@ def test_create_rejects_zero_value_points_days(db, client):
             "prizes": [{"name": "零奖", "type": ptype, "value": 0, "quantity": 1}],
         })
         assert r.status_code == 400, (ptype, r.text)
-        assert "必须为正数" in r.json()["detail"]
+        assert "必须大于 0" in r.json()["detail"]
     # whitelist 的 0 是合法语义（永久），保持可建
     r = client.post("/api/admin/welfare/lottery/rounds", json={
         "title": "白名单零值", "chat_id": -100777,

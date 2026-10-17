@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import config_service, models
 from backend.api.admin_core import admin_router, get_current_admin, _audit
 from backend.database import get_db
 
@@ -325,34 +325,16 @@ def welfare_config_set(
     db: Session = Depends(get_db),
 ):
     """保存公益配置（数值/开关键按 config_schema 校验，非法 400；空字符串=未设置，回退默认值）"""
-    from backend import config_schema
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="配置必须是对象")
-    # 先整体校验再写库：任一非法直接 400，不会写入半截
-    normalized: dict[str, Optional[str]] = {}
-    for key, value in data.items():
-        if key not in WELFARE_CONFIG_KEYS:
-            continue
-        spec = config_schema.WELFARE_CONFIG_SCHEMA.get(key)
-        if spec is None:
-            normalized[key] = "" if value is None else str(value)
-            continue
-        style = "digit" if WELFARE_CONFIG_KEYS[key] in ("0", "1") else "word"
-        try:
-            normalized[key] = config_schema.normalize(key, spec, value, bool_style=style)
-        except config_schema.ConfigValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-    updated = []
-    for key, value in normalized.items():
-        cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if value is None:
-            if cfg:
-                db.delete(cfg)
-        elif cfg:
-            cfg.value = value
-        else:
-            db.add(models.SystemConfig(key=key, value=value))
-        updated.append(key)
+    # 配置瘦身第 4 批 4-4：白名单过滤保留在端点层（未知键静默忽略，行为不变），
+    # 校验→落库→写时失效收敛到 config_service。bool 风格（digit/word）已登记
+    # 进 WELFARE_CONFIG_SCHEMA 的 spec，normalize 口径与今天逐字一致。
+    values = {key: value for key, value in data.items() if key in WELFARE_CONFIG_KEYS}
+    if values:
+        # 校验失败抛 ConfigValueError，由 main.py 的统一 handler 转 400
+        config_service.save_config(db, values, schema="welfare")
+    updated = list(values)
     _audit(db, current_admin.id, "welfare_config_update", "system", None, {"updated": updated})
     db.commit()
     return {"success": True, "updated": updated}
@@ -474,11 +456,11 @@ def create_lottery_round(
     for item in req.prizes:
         if item.type not in ("days", "points", "whitelist"):
             raise HTTPException(status_code=400, detail="奖品类型只能是 days/points/whitelist")
-        # r30 L3：points/days 的 value=0 建得出来、开奖时必失败（distribute 记 errors，
-        # 中奖者 7 天补发窗口内永远拿不到奖）；创建时直接拒绝。whitelist 保持只拦负数。
-        if item.type in ("days", "points"):
+        if item.type in ("points", "days"):
+            # 积分/天数奖品 value=0 发奖时必失败（distribute 记 errors），创建时直接拦截
             if item.value <= 0:
-                raise HTTPException(status_code=400, detail="积分/天数奖品价值必须为正数")
+                label = "积分" if item.type == "points" else "天数"
+                raise HTTPException(status_code=400, detail=f"{label}奖品的价值必须大于 0")
         elif item.value < 0:
             raise HTTPException(status_code=400, detail="奖品价值不能为负数")
         if item.quantity < 1:
@@ -486,9 +468,10 @@ def create_lottery_round(
     dt = None
     if req.draw_at:
         try:
-            # r30 L1：前端发 UTC（toISOString），入库统一转上海 naive，
-            # 展示侧（str/strftime/前端 fmtTime）直接读即为北京时间。
-            dt = lottery_module.to_shanghai_naive(datetime.fromisoformat(req.draw_at))
+            dt = datetime.fromisoformat(req.draw_at)
+            # 用户侧时间口径：按 Asia/Shanghai naive 入库（前端 toISOString 发的是 UTC，
+            # aware 转上海去 tzinfo；naive 按上海理解原样入库）
+            dt = lottery_module.to_shanghai_naive(dt)
         except ValueError:
             raise HTTPException(status_code=400, detail="draw_at 时间格式无效")
     if req.max_participants is not None and req.max_participants < 1:
@@ -682,10 +665,9 @@ def draw_lottery_round(
     # 之前漏掉了 notify 调用，导致管理后台点"开奖"后群里收不到开奖公告。
     # 通知失败不影响开奖结果，只记日志。
     try:
-        # r30 L2：发放有失败时群公告如实写（不宣称「已自动发放」）
         notify_result = lottery_module.notify_draw_results(
-            db, round_id, winners,
-            distribute_errors=distribute_result.get("errors"))
+            db, round_id, winners, distribute_errors=distribute_result.get("errors")
+        )
     except Exception:
         notify_result = None
         logger.exception("群抽奖手动开奖通知失败 round_id=%s（不影响开奖结果）", round_id)

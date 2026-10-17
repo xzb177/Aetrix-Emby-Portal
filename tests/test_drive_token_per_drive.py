@@ -7,14 +7,12 @@
 - OAuth 过期 → refresh_token 刷新；失败抛 DriveAuthError（不静默回退 SA）
 - 缺配置 → DriveAuthError，且错误信息不含凭据值
 - drive_changes 个人盘轮询（get_start_page_token / list_changes）走 OAuth 路径
-- strm_gen._get_token(drive_id) 透传
 
 凭据安全：测试只用伪造配置，永不使用真实 rclone.conf。
 """
 import json
 import os
 import sys
-import types
 
 import pytest
 
@@ -165,20 +163,3 @@ def test_list_changes_personal_uses_oauth(monkeypatch):
     monkeypatch.setattr(dc, "_api_get", _fake_api)
     changes, new_token = dc.list_changes("PT-1", PERSONAL_KEY)
     assert changes == [] and new_token == "PT-2"
-
-
-def test_strm_gen_get_token_delegates_per_drive(monkeypatch):
-    """strm_gen._get_token(drive_id) 透传到 get_token_for_drive。"""
-    from backend.emby_server import strm_gen as sg
-    seen = {}
-
-    def _fake(did, force_refresh=False):
-        seen["did"] = did
-        seen["force"] = force_refresh
-        return "T-" + did
-
-    monkeypatch.setattr(dc, "get_token_for_drive", _fake)
-    assert sg._get_token(PERSONAL_KEY) == "T-" + PERSONAL_KEY
-    assert seen == {"did": PERSONAL_KEY, "force": False}
-    assert sg._get_token(SHARED_KEY, force_refresh=True) == "T-" + SHARED_KEY
-    assert seen == {"did": SHARED_KEY, "force": True}

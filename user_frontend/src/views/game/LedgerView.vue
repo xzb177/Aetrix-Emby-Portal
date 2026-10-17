@@ -84,13 +84,11 @@
         </template>
       </section>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { facilityStamp } from '@/config/game'
 import { pointsApi, type PointsLogEntry } from '@/api/economy'
 import { humanizeError } from '@/composables/usePanelApi'

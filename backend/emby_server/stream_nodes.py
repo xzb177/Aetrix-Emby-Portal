@@ -114,8 +114,22 @@ def rewrite_playback_urls(
     base = (base or "").rstrip("/")
     if not base or _same_origin(node_base, base):
         return stream_url, transcoding_url, False
-    new_stream = stream_url.replace(base, node_base, 1) if stream_url.startswith(base) else stream_url
-    new_trans = transcoding_url.replace(base, node_base, 1) if transcoding_url.startswith(base) else transcoding_url
+    def _boundary_match(url: str) -> bool:
+        # base 耗尽处必须是路径/查询/片段边界，否则按未命中处理
+        # （r30 F1：base 落在路径段中间时 startswith 命中会造出坏 URL）
+        if not url.startswith(base):
+            return False
+        rest = url[len(base):]
+        return rest == "" or rest[0] in ("/", "?", "#")
+
+    new_stream = (
+        stream_url.replace(base, node_base, 1)
+        if _boundary_match(stream_url) else stream_url
+    )
+    new_trans = (
+        transcoding_url.replace(base, node_base, 1)
+        if _boundary_match(transcoding_url) else transcoding_url
+    )
     # 两个都没换上说明 base 对不上：宁可不改写，也不能给客户端一个坏 URL
     if new_stream == stream_url and new_trans == transcoding_url:
         return stream_url, transcoding_url, False
@@ -147,6 +161,9 @@ def register_node(db: Session, url: str, name: str = "", weight: int = 100) -> d
     url = (url or "").strip().rstrip("/")
     if not url:
         raise ValueError("节点 URL 不能为空")
+    scheme = urlsplit(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("节点 URL 必须以 http:// 或 https:// 开头")
     if not _is_public_node_url(url):
         raise ValueError("节点 URL 必须是公网地址（不能是内网/回环）")
     try:

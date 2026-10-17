@@ -355,6 +355,18 @@ def probe_one(db, item) -> str:
         logger.debug("媒体信息 JSON 恢复异常 item=%s，走 ffprobe: %s",
                      getattr(item, "id", "?"), exc)
 
+    # .iso 是光盘镜像（UDF/ISO9660 文件系统）：ffprobe 没有 ISO 解复用器，
+    # 怎么探都拿不到流信息。直接记 degraded 终态，不发起任何网络探测
+    # （93GB 级文件一次 ffprobe 会烧掉大量 Drive 配额），客户端照常可播。
+    if (getattr(item, "container", "") or "").lower() == "iso":
+        item.probe_status = "degraded"
+        item.probe_next_retry_at = None
+        _clear_claim(item, error="iso 光盘镜像：ffprobe 无 ISO 解复用器，不探测流信息")
+        db.commit()
+        logger.info("探测跳过 iso 镜像 item=%s：直接记 degraded",
+                    getattr(item, "id", "?"))
+        return "degraded"
+
     resolved, resolve_kind = resolve_probe_input(db, item)
     if not resolved:
         # 解析阶段透出原始错误类型：限流 / 服务端抖动类走 24h 长退避，

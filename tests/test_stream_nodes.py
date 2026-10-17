@@ -126,3 +126,43 @@ def test_unregister(db):
     # 移除后恢复默认行为
     s, t, hit = stream_nodes.rewrite_playback_urls(db, STREAM, TRANSCODE, BASE)
     assert hit is False
+
+
+# ---------- r30 F1：路径边界匹配 ----------
+
+def test_rewrite_rejects_non_boundary_prefix(db):
+    """base 落在路径段中间（/emby vs /embyfoo）时按未命中处理，不造坏 URL。"""
+    from backend.emby_server import stream_nodes
+    _register(db)
+    bad_stream = "https://portal.example.com/embyfoo/x"
+    bad_trans = "https://portal.example.com/embyfoo/y"
+    base = "https://portal.example.com/emby"
+    s, t, hit = stream_nodes.rewrite_playback_urls(db, bad_stream, bad_trans, base)
+    assert (s, t, hit) == (bad_stream, bad_trans, False)
+
+
+def test_rewrite_boundary_match_regression(db):
+    """真实调用方形态（base=纯主机，URL 后紧跟路径/查询）改写行为逐字节不变。"""
+    from backend.emby_server import stream_nodes
+    _register(db)
+    s, t, hit = stream_nodes.rewrite_playback_urls(db, STREAM, TRANSCODE, BASE)
+    assert hit is True
+    assert s == STREAM.replace(BASE, NODE, 1)
+    assert t == TRANSCODE.replace(BASE, NODE, 1)
+
+
+# ---------- r30 F2：注册 scheme 白名单 ----------
+
+def test_register_rejects_non_http_scheme(db):
+    """ftp 等非 http(s) scheme 即使通过公网判定也不得注册。"""
+    from backend.emby_server import stream_nodes
+    for bad in ("ftp://a.b/c", "FTP://A.B/C", "gopher://x.y/"):
+        with pytest.raises(ValueError, match="http"):
+            stream_nodes.register_node(db, bad)
+
+
+def test_register_accepts_uppercase_https(db):
+    """scheme 大小写不敏感：HTTPS 开头照常注册。"""
+    from backend.emby_server import stream_nodes
+    node = stream_nodes.register_node(db, "HTTPS://upper.example.com:8443/x")
+    assert node["url"] == "HTTPS://upper.example.com:8443/x"

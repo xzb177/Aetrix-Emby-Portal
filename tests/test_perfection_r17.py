@@ -455,7 +455,6 @@ def test_c_p2_5_altmeta_cfg_cached_60s(monkeypatch):
     monkeypatch.setattr(altmeta, "enabled", _enabled)
     monkeypatch.setattr(altmeta, "min_interval", lambda db: 2.0)
     monkeypatch.setattr(altmeta, "min_interval_bangumi", lambda db: 3.0)
-    monkeypatch.setattr(altmeta, "warn_dead_keys_once", lambda db: None)
     monkeypatch.setattr(ew, "SessionLocal", lambda: SimpleNamespace(close=lambda: None))
     ew._altmeta_cfg_cache.update({"at": 0.0, "cfg": None})
 

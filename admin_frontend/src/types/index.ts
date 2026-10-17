@@ -1027,7 +1027,7 @@ export interface EmbyLibrary {
    * 纯远程时读不到是正常的，所以置 null 而不是 false。
    */
   local_dirs_readable?: boolean | null
-  /** 绑定的存储挂载（storage_mounts.id）：本机目录 / STRM / 115 / WebDAV / AList */
+  /** 绑定的存储挂载（storage_mounts.id）：本机目录 / 115 / rclone / Drive */
   mount_ids: number[]
   /**
    * 封面自动生成：样式 + 标题文字。为 null/空表示仍在用直传的 cover_path。

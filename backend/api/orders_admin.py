@@ -35,6 +35,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend import coupons, models
@@ -157,6 +158,9 @@ def close_order(
     order.closed_at = datetime.now()
     # 优惠券用的是预订制额度：订单作废了，把占用的次数还回去（不还就等于把码烧了）
     coupons.release(db, order.coupon_usage_id)
+    # 兑换码折扣权益同样是「下单即占」：订单作废后还回未用（与上面优惠券同一道理，
+    # 否则用户一次没付成的下单会永久烧掉这张权益）
+    _restore_discount_credit(db, order_id)
     db.commit()
 
     _audit(db, current_admin, "economy_close_order", "order", None,
@@ -202,6 +206,7 @@ async def refund_order(
         result = {
             "success": True, "order_id": order_id, "kind": kind,
             "status": "refunded", "revoked_points": 0, "revoked_days": 0,
+            "revoked_xp": 0,
             "rebate_reversed": 0, "cancelled": False, "coupon_released": False,
         }
 
@@ -256,6 +261,10 @@ async def refund_order(
                                     f"refund:{order_id}")
                         result["revoked_points"] = -refund_pts
 
+            # 履约时按实付发的会员经验也要撤回（两种 kind 都发），否则「买→退」
+            # 可以刷经验升等级。revoke_entitlement=False（只退钱不撤权益）时不撤。
+            result["revoked_xp"] = _reverse_xp(db, user, order_id, kind)
+
         # 状态与时间已由上面那次条件 UPDATE 原子写入，这里让当前事务里的 ORM 对象跟上
         order.status = "refunded"
         order.refunded_at = now
@@ -265,12 +274,15 @@ async def refund_order(
         # 退款同样释放优惠券额度（用户没付钱买成这笔，次数不该算用掉）
         coupons.release(db, order.coupon_usage_id)
         result["coupon_released"] = bool(order.coupon_usage_id)
+        # 兑换码折扣权益同样还回未用（与优惠券同一道理；是否过期由下次选用时判定）
+        result["credit_restored"] = _restore_discount_credit(db, order_id)
         commit_with_retry(db, label="订单退款")
 
         _audit(db, admin_id, "economy_refund_order", "order", None,
                {"order_id": order_id, "kind": kind, "reason": order.refund_reason,
                 "revoked_points": result["revoked_points"],
                 "revoked_days": result["revoked_days"],
+                "revoked_xp": result["revoked_xp"],
                 "rebate_reversed": result["rebate_reversed"],
                 "coupon_released": result.get("coupon_released", False),
                 "allow_negative": request.allow_negative})
@@ -308,6 +320,62 @@ async def refund_order(
         logger.warning("退款通知发送失败（订单 %s）: %s", order_id, exc)
 
     return info
+
+
+def _restore_discount_credit(db: Session, order_id: str) -> bool:
+    """把这笔订单占用的兑换码折扣权益还回未用（关单/退款时调用）
+
+    兑换码折扣权益是「下单即占」（``create_payment_order`` 里条件 UPDATE 置 used），
+    与优惠券预订同一道理：订单没付成（关单）或钱退了（退款），权益不该被烧掉。
+    是否过期由下次选用时按 ``expires_at`` 判定，这里只管还。
+    """
+    restored = (
+        db.query(models.ExchangeDiscountCredit)
+        .filter(
+            models.ExchangeDiscountCredit.used_order_id == order_id,
+            models.ExchangeDiscountCredit.status == "used",
+        )
+        .update({"status": "unused", "used_order_id": None},
+                synchronize_session=False)
+    )
+    return bool(restored)
+
+
+def _reverse_xp(db: Session, user: models.WebUser, order_id: str, kind: str) -> int:
+    """撤回这笔订单履约时发放的会员经验（按账本精确找，不重算）
+
+    充值/订阅履约成功时会按实付金额 1 元 = 1 经验发放（``member_level.add_xp``，
+    ref_id = ``recharge:{order_id}`` / ``subscription:{order_id}``）。退款只回滚
+    积分/天数而不撤经验，用户就能「买→退→买→退」刷经验升等级、永久拿折扣特权。
+    经验钳制在 0，不扣成负数；等级按阈值重算，够格降级就降。
+    """
+    from backend import member_level as _ml
+
+    prefix = "recharge" if kind == "recharge" else "subscription"
+    granted = (
+        db.query(func.coalesce(func.sum(models.MemberXpLog.xp_delta), 0))
+        .filter(
+            models.MemberXpLog.user_id == user.id,
+            models.MemberXpLog.ref_id == f"{prefix}:{order_id}",
+            models.MemberXpLog.xp_delta > 0,
+        )
+        .scalar()
+    ) or 0
+    already = (
+        db.query(func.coalesce(func.sum(-models.MemberXpLog.xp_delta), 0))
+        .filter(
+            models.MemberXpLog.user_id == user.id,
+            models.MemberXpLog.ref_id == f"refund:{order_id}",
+            models.MemberXpLog.xp_delta < 0,
+        )
+        .scalar()
+    ) or 0
+    to_reverse = int(granted) - int(already)
+    if to_reverse <= 0:
+        return 0
+    _ml.add_xp(db, user, -to_reverse, "refund", f"refund:{order_id}")
+    logger.info("订单 %s 撤回会员经验 %d", order_id, to_reverse)
+    return to_reverse
 
 
 def _reverse_rebate(db: Session, order_id: str, allow_negative: bool) -> int:

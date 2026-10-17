@@ -157,3 +157,26 @@ def test_health_loop_skips_nodes_without_url():
         assert _nh._node_health['http://ok:8000']['healthy'] is True
     finally:
         _nh._node_health.pop('http://ok:8000', None)
+
+
+def test_start_health_daemon_idempotent_under_concurrency():
+    """r30 B1：8 线程并发调用 start_health_daemon 只新增一个 node-health 线程。
+
+    （同文件既有 test_daemon_idempotent 会先起一个同名线程，故用增量断言。）"""
+    import threading
+    nh = _load()
+    before = sum(1 for t in threading.enumerate() if t.name == "node-health")
+    barrier = threading.Barrier(8)
+
+    def _call():
+        barrier.wait(timeout=10)
+        nh.start_health_daemon(lambda: None)
+
+    workers = [threading.Thread(target=_call) for _ in range(8)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(timeout=30)
+    assert not any(w.is_alive() for w in workers)
+    after = sum(1 for t in threading.enumerate() if t.name == "node-health")
+    assert after == before + 1

@@ -38,6 +38,7 @@ import { useDangerOps } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
 import {
   fetchHotlinkConfig, updateHotlinkConfig, type HotlinkConfigPayload,
+  type HotlinkConfigGet,
 } from '@/api/economy'
 import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
@@ -101,10 +102,10 @@ const GROUPS: Group[] = [
     fields: [
       { key: 'checkin_enabled', label: '启用签到', type: 'bool', hint: '关闭后用户端签到入口隐藏，已发放的积分不受影响' },
       { key: 'checkin_base_points', label: '基础积分', type: 'int', suffix: '积分/次', hint: '未设置随机范围时的默认值' },
-      { key: 'checkin_base_min', label: '基础积分下限', type: 'int', suffix: '积分/次', hint: '随机范围下限，默认跟随基础积分' },
-      { key: 'checkin_base_max', label: '基础积分上限', type: 'int', suffix: '积分/次', hint: '随机范围上限，与下限相同=固定值' },
-      { key: 'checkin_streak_bonus', label: '连签加成', type: 'int', suffix: '积分/天', hint: '每多连签一天额外增加的积分' },
-      { key: 'checkin_streak_max_bonus', label: '加成上限', type: 'int', suffix: '积分', hint: '连签加成的封顶值' },
+      { key: 'checkin_base_min', label: '基础积分下限', type: 'int', suffix: '积分/次', hint: '随机范围下限，默认跟随基础积分', advanced: true },
+      { key: 'checkin_base_max', label: '基础积分上限', type: 'int', suffix: '积分/次', hint: '随机范围上限，与下限相同=固定值', advanced: true },
+      { key: 'checkin_streak_bonus', label: '连签加成', type: 'int', suffix: '积分/天', hint: '每多连签一天额外增加的积分', advanced: true },
+      { key: 'checkin_streak_max_bonus', label: '加成上限', type: 'int', suffix: '积分', hint: '连签加成的封顶值', advanced: true },
       { key: 'checkin_penalty_pct', label: '惩罚概率', type: 'int', suffix: '%', hint: '0=关闭惩罚', advanced: true },
       { key: 'checkin_penalty_min', label: '惩罚下限', type: 'int', suffix: '积分', hint: '单次惩罚最少扣多少积分。推荐值：1', advanced: true },
       { key: 'checkin_penalty_max', label: '惩罚上限', type: 'int', suffix: '积分', hint: '单次惩罚最多扣多少积分。推荐值：3', advanced: true },
@@ -122,7 +123,7 @@ const GROUPS: Group[] = [
       { key: 'vitality_limit_threshold', label: '观影阈值', type: 'int', suffix: '点', hint: '低于此值限制观影' },
       { key: 'vitality_point_cost', label: '续活兑换率', type: 'int', suffix: '积分/点', hint: '1 点活力需要的积分数' },
       { key: 'vitality_watch_reward', label: '观影奖励', type: 'int', suffix: '点', hint: '每次有效观影奖励的活力值' },
-      { key: 'vitality_daily_gain_limit', label: '每日获取上限', type: 'int', suffix: '点/天', hint: '每日通过签到/观影免费获取的上限（0=不限）' },
+      { key: 'vitality_daily_gain_limit', label: '每日获取上限', type: 'int', suffix: '点/天', hint: '每日通过签到/观影免费获取的上限（0=不限）', advanced: true },
       { key: 'vitality_archive_clamp', label: '归档钳制', type: 'int', suffix: '点', hint: '归档/退群时活力值钳制上限', advanced: true },
     ],
   },
@@ -185,8 +186,8 @@ const GROUPS: Group[] = [
     fields: [
       { key: 'invitation_enabled', label: '启用邀请', type: 'bool', hint: '关闭后邀请链接失效，不再产生新的奖励和返利' },
       { key: 'invitation_reward_points', label: '邀请人奖励', type: 'int', suffix: '积分', hint: '每成功邀请一人，邀请人拿到的积分。推荐值：100' },
-      { key: 'invitation_invitee_reward_points', label: '被邀请人奖励', type: 'int', suffix: '积分', hint: '新人用邀请链接注册时多拿的积分。推荐值：50' },
-      { key: 'invitation_rebate_percent', label: '消费返利', type: 'int', suffix: '%', hint: '下级充值/消费时邀请人可得的比例' },
+      { key: 'invitation_invitee_reward_points', label: '被邀请人奖励', type: 'int', suffix: '积分', hint: '新人用邀请链接注册时多拿的积分。推荐值：50', advanced: true },
+      { key: 'invitation_rebate_percent', label: '消费返利', type: 'int', suffix: '%', hint: '下级充值/消费时邀请人可得的比例', advanced: true },
       {
         key: 'promotion_reward_enabled',
         label: '推广奖励',
@@ -546,16 +547,19 @@ onMounted(async () => {
 })
 
 /** ==================== 防盗链卡片（独立 endpoint，非通用分组） ==================== */
-/** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400 / 300~86400），
+/** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400），
  * 通用分组的 int 字段只有 min=0 的粗校验，装不下。 */
-const hotlink = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
-const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
+const hotlink = reactive({ enabled: true, play_sign_ttl: 900, allowed_referers: '' })
+const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, allowed_referers: '' })
 const hotlinkLoading = ref(false)
 
-function applyHotlink(data: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number }) {
+function applyHotlink(data: HotlinkConfigGet) {
   hotlink.enabled = !!data.enabled
   hotlink.play_sign_ttl = Number(data.play_sign_ttl) || 900
-  hotlink.strm_sig_ttl = Number(data.strm_sig_ttl) || 3600
+  // 后端回包是归一化后的域名数组；编辑态存逗号分隔串
+  hotlink.allowed_referers = Array.isArray(data.allowed_referers)
+    ? data.allowed_referers.join(', ')
+    : String(data.allowed_referers ?? '')
   Object.assign(hotlinkOriginal, hotlink)
 }
 
@@ -573,7 +577,7 @@ async function loadHotlink() {
 const hotlinkDirty = computed(() =>
   hotlink.enabled !== hotlinkOriginal.enabled
   || hotlink.play_sign_ttl !== hotlinkOriginal.play_sign_ttl
-  || hotlink.strm_sig_ttl !== hotlinkOriginal.strm_sig_ttl,
+  || hotlink.allowed_referers !== hotlinkOriginal.allowed_referers,
 )
 
 /** 防盗链保存核心：返回是否成功，失败时拦截器/校验已提示。 */
@@ -583,14 +587,10 @@ async function saveHotlinkCore(): Promise<boolean> {
     ElMessage.error('播放签名有效期需在 60~86400 秒之间')
     return false
   }
-  if (!Number.isInteger(hotlink.strm_sig_ttl) || hotlink.strm_sig_ttl < 300 || hotlink.strm_sig_ttl > 86400) {
-    ElMessage.error('.strm 签名有效期需在 300~86400 秒之间')
-    return false
-  }
   const payload: HotlinkConfigPayload = {
     enabled: hotlink.enabled,
     play_sign_ttl: hotlink.play_sign_ttl,
-    strm_sig_ttl: hotlink.strm_sig_ttl,
+    allowed_referers: hotlink.allowed_referers,
   }
   try {
     applyHotlink(await updateHotlinkConfig(payload))
@@ -1192,7 +1192,7 @@ watch(
             id="group-hotlink"
             title="防盗链"
             :icon="ShieldCheck"
-            description="播放签名校验总开关 + 签名有效期。.strm 文件内容带签名（1 小时过期、定时任务自动刷新），Drive 文件保持私有、服务端用 Google 子账号凭据中转拉流。"
+            description="播放签名校验总开关 + 签名有效期。播放链接带 15 分钟签名与来路检查，防止盗链。"
             :tone="hotlinkDirty ? 'accent' : 'default'"
             class="group-card"
           >
@@ -1225,20 +1225,18 @@ watch(
                   <span class="field-hint">uid/exp/sign 签名有效期，默认 900（15 分钟），范围 60~86400</span>
                 </div>
               </el-form-item>
-              <el-form-item label=".strm 签名有效期">
+              <el-form-item label="Referer 白名单">
                 <div class="field-stack">
                   <div class="field-control">
-                    <el-input-number
-                      v-model="hotlink.strm_sig_ttl"
-                      :min="300"
-                      :max="86400"
-                      :step="60"
-                      controls-position="right"
-                      class="num-input"
+                    <el-input
+                      v-model="hotlink.allowed_referers"
+                      type="textarea"
+                      :rows="2"
+                      placeholder="如：cdn.example.com, player.example.com"
+                      style="max-width: 420px"
                     />
-                    <span class="field-suffix">秒</span>
                   </div>
-                  <span class="field-hint">.strm 内容签名有效期，默认 3600（1 小时），范围 300~86400；定时任务每 50 分钟自动刷新</span>
+                  <span class="field-hint">逗号分隔的域名；只有带 Referer 且主机不在名单里才会被 403。留空 = 不检查（放行所有）</span>
                 </div>
               </el-form-item>
             </el-form>

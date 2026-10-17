@@ -6,7 +6,7 @@
 
 只读聚合，不重复造轮子：复用各模块现有的状态函数
 （task_scheduler.get_unified_status、probe_worker.status_snapshot、
-enrich_worker.get_progress、strm_gen.get_progress、image_store.backfill_status、
+enrich_worker.get_progress、image_store.backfill_status、
 change_watcher.get_config，以及 ScanRun 流水）。
 
 单个子系统采集失败不影响整体：每个任务独立 try/except，
@@ -267,80 +267,6 @@ def _task_enrich(db: Session) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 4. .strm 生成器
-# ---------------------------------------------------------------------------
-
-def _task_strm(db: Session) -> dict:
-    from backend.emby_server import strm_gen
-    from backend.integrations import store
-
-    prog = strm_gen.get_progress(db)
-    running = bool(prog.get("running"))
-    phase = prog.get("phase") or "idle"
-    last_run = store.get_value(db, strm_gen.CONFIG_LAST_RUN, "") or None
-    raw_stats = store.get_value(db, strm_gen.CONFIG_LAST_STATS, "") or ""
-    try:
-        stats = json.loads(raw_stats) if raw_stats else {}
-    except Exception:  # noqa: BLE001
-        stats = {}
-    enabled = strm_gen.enabled(db)
-    try:
-        interval = int(strm_gen.interval_minutes(db))
-    except Exception:  # noqa: BLE001
-        interval = 0
-
-    # 签名刷新：janitor 每轮把时间写到 /tmp/strm_sig_refresh.last
-    sig_last: str | None = None
-    try:
-        from backend.emby_server import maintenance as _m
-        p = _m.STRM_REFRESH_LAST_FILE
-        if os.path.isfile(p):
-            sig_last = datetime.fromtimestamp(os.path.getmtime(p)).isoformat(timespec="seconds")
-    except Exception:  # noqa: BLE001
-        sig_last = None
-
-    metrics = [
-        {"label": "增量间隔", "value": f"每 {interval} 分钟" if interval else "没开定时"},
-        {"label": "上次生成", "value": f"{stats.get('generated', 0)} 个文件" if stats else "—"},
-        {"label": "上次失败", "value": f"{stats.get('failed', 0)} 个" if stats else "—"},
-        {"label": "签名刷新", "value": f"上次 {sig_last}" if sig_last else "还没跑过"},
-    ]
-
-    if running:
-        status, status_text = "running", "运行中"
-        summary = f"正在生成（{phase} 阶段），已处理 {prog.get('done', 0)}/{prog.get('total', 0)}"
-    elif phase == "error" or int(prog.get("failed") or 0) > 0:
-        status, status_text = "warning", "留意"
-        summary = f"上次生成有 {prog.get('failed', 0)} 个失败，点「.strm 生成器」看详情"
-    elif not enabled:
-        status, status_text = "disabled", "已关闭"
-        summary = "生成器总开关关了，不会自动增量"
-    elif not last_run:
-        status, status_text = "idle", "没跑过"
-        summary = "还从来没跑过，可以点「.strm 生成器」手动来一次"
-    else:
-        status, status_text = "ok", "正常"
-        summary = f"上次 {last_run} 跑完，生成了 {stats.get('generated', 0)} 个文件"
-
-    return _card(
-        "strm", ".strm 生成器", status, status_text, summary,
-        metrics=metrics, last_run=last_run,
-        switch={"label": "生成器总开关", "enabled": enabled,
-                "keep": {
-                    "source_dir": strm_gen.source_dir(db),
-                    "drive_id": strm_gen.drive_id_config(db),
-                    "prune": strm_gen.prune_enabled(db),
-                    "interval_minutes": interval,
-                    "source_type": strm_gen.source_type(db),
-                    "local_root": strm_gen.local_root(db),
-                    "drive_concurrency": strm_gen.drive_concurrency(db),
-                    "api_qps": strm_gen.api_qps(db),
-                }},
-        link="/strm-gen",
-    )
-
-
-# ---------------------------------------------------------------------------
 # 5. 缩略图补生成
 # ---------------------------------------------------------------------------
 
@@ -434,8 +360,7 @@ def _task_chase_new(db: Session) -> dict:
         last_run_label="最近一次检查",
         switch={"label": "追新开关", "enabled": enabled,
                 "keep": {"interval": interval,
-                         "excluded": cfg.get("excluded") or "",
-                         "strm_enabled": bool(cfg.get("strm_enabled"))}},
+                         "excluded": cfg.get("excluded") or ""}},
         link="/emby",
     )
 
@@ -448,7 +373,6 @@ _BUILDERS = (
     ("scan", "媒体库扫描", "_task_scan"),
     ("probe", "媒体探测", "_task_probe"),
     ("enrich", "元数据刮削", "_task_enrich"),
-    ("strm", ".strm 生成器", "_task_strm"),
     ("thumbnail", "缩略图补生成", "_task_thumbnail"),
     ("chase_new", "追新（新资源监听）", "_task_chase_new"),
 )

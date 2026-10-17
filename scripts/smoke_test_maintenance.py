@@ -270,15 +270,12 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     # 「干净时什么都不做」的全零断言：SQLite 上跑了就是 True，非 SQLite 是 False。
                     "query_plans_optimized",
                     # perf/server-resource：空闲 GC 是否执行（布尔标记，非计数，同样不参与全零断言）
-                    "idle_gc_done",
-                    # v2.52.0 防盗链：.strm 签名刷新汇总（dict，非纯计数，同样不参与全零断言；
-                    # 干净时为 {"skipped": True, "reason": "interval"/"no_dir"}）
-                    "strm_sig_refresh"},
+                    "idle_gc_done"},
+      # 注 2026-10-17：strm_sig_refresh 已随 strm_gen/strm_sign 删除
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()
 check(all(v == 0 for key, v in second.items()
-          if key not in ("query_plans_optimized", "thumbs_backfill_done", "idle_gc_done",
-                         "strm_sig_refresh")),
+          if key not in ("query_plans_optimized", "thumbs_backfill_done", "idle_gc_done")),
       "维护周期可反复执行（干净时什么都不做）", f"{second}")
 
 

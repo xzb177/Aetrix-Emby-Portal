@@ -20,6 +20,7 @@ import {
   ArrowDown,
   ArrowUp,
   ChevronDown,
+  Gauge,
   KeyRound,
   Layers,
   ListOrdered,
@@ -37,6 +38,7 @@ import {
   bindTmdb,
   deleteMetaSourceKey,
   deleteTmdbKey,
+  fetchAltmetaRates,
   fetchDoubanConfig,
   fetchEnrichProgress,
   fetchMetaSources,
@@ -44,6 +46,8 @@ import {
   fetchTmdbMirror,
   fetchDoubanBanDowngrade,
   fetchTmdbLanguage,
+  fetchTmdbPosterLanguage,
+  fetchTmdbKeyCooldowns,
   lockItemMetadata,
   previewTmdb,
   probeMetaSources,
@@ -51,11 +55,14 @@ import {
   searchTmdbCandidates,
   resetMetaSourceCooldown,
   resetTmdbKeyCooldown,
+  saveAltmetaRates,
   saveDoubanConfig,
   saveMetaSources,
   saveTmdbMirror,
   saveDoubanBanDowngrade,
   saveTmdbLanguage,
+  saveTmdbPosterLanguage,
+  saveTmdbKeyCooldowns,
   testMetaSourceKeys,
   testTmdbKeys,
   unlockItemMetadata,
@@ -76,11 +83,14 @@ import type {
   TmdbMirror,
   TmdbPreview,
   TmdbTestResult,
+  AltmetaRates,
   DoubanConfig,
   DoubanBanDowngradeConfig,
   TmdbLanguageStatus,
+  TmdbPosterLanguageStatus,
+  TmdbKeyCooldowns,
 } from '@/api/admin'
-import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
+import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import './MetadataSources.css'
 
 // ==================== 手动绑定 TMDB ====================
@@ -518,11 +528,11 @@ const keyPanelOpen = ref('')
 const keyInput = ref('')
 const keyBusy = ref('')
 const sourceKeyTests = ref<Record<string, Array<{ index: number; masked: string; ok: boolean; message: string }>>>({})
-// ==================== 豆瓣优先 ====================
+// ==================== 豆瓣（可选） ====================
 const doubanCfg = ref<DoubanConfig | null>(null)
 const doubanLoading = ref(false)
 const doubanSaving = ref(false)
-const doubanDraft = reactive({ enabled: true, min_interval: 1.0 })
+const doubanDraft = reactive({ enabled: false, min_interval: 1.0 })
 
 const doubanDirty = computed(() => {
   if (!doubanCfg.value) return false
@@ -553,7 +563,7 @@ async function saveDouban() {
     doubanCfg.value = cfg
     doubanDraft.enabled = cfg.enabled
     doubanDraft.min_interval = Number(cfg.min_interval) || 1.0
-    ElMessage.success('豆瓣优先配置已保存')
+    ElMessage.success('豆瓣配置已保存')
   } catch {
     ElMessage.error('保存失败，请重试')
   } finally {
@@ -589,6 +599,54 @@ async function saveBanDowngradeAction() {
   }
 }
 
+// ==================== 备用链路限速（配置瘦身第 3 批） ====================
+// altmeta 是豆瓣主链路封禁/降级后的备用链路（豆瓣 subject_suggest + Bangumi 兜底）。
+// 两个最小间隔秒数之前没有后台入口，这里补上，收进高级折叠（默认收起）。
+const amRates = ref<AltmetaRates | null>(null)
+const amLoading = ref(false)
+const amSaving = ref(false)
+const amDraft = reactive({ douban_rate: 1.0, bangumi_rate: 1.0 })
+
+const amDirty = computed(() => {
+  if (!amRates.value) return false
+  return (
+    Number(amRates.value.douban_rate) !== Number(amDraft.douban_rate) ||
+    Number(amRates.value.bangumi_rate) !== Number(amDraft.bangumi_rate)
+  )
+})
+
+async function loadAmRates() {
+  amLoading.value = true
+  try {
+    const cfg = await fetchAltmetaRates()
+    amRates.value = cfg
+    amDraft.douban_rate = Number(cfg.douban_rate) || 0
+    amDraft.bangumi_rate = Number(cfg.bangumi_rate) || 0
+  } catch {
+    amRates.value = null
+  } finally {
+    amLoading.value = false
+  }
+}
+
+async function saveAmRates() {
+  amSaving.value = true
+  try {
+    const cfg = await saveAltmetaRates({
+      douban_rate: Math.max(0, Number(amDraft.douban_rate) || 0),
+      bangumi_rate: Math.max(0, Number(amDraft.bangumi_rate) || 0),
+    })
+    amRates.value = { douban_rate: cfg.douban_rate, bangumi_rate: cfg.bangumi_rate }
+    amDraft.douban_rate = cfg.douban_rate
+    amDraft.bangumi_rate = cfg.bangumi_rate
+    ElMessage.success('备用链路限速已保存，立即生效')
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '保存失败，请重试'))
+  } finally {
+    amSaving.value = false
+  }
+}
+
 // ==================== TMDB 首选语言（Batch D 入口收敛：从「媒体库 → 定时与刮削」收拢到此） ====================
 const tmdbLang = ref<TmdbLanguageStatus | null>(null)
 const tmdbLangSaving = ref(false)
@@ -616,6 +674,70 @@ async function saveTmdbLanguageAction() {
     ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     tmdbLangSaving.value = false
+  }
+}
+
+// ==================== TMDB 微调（配置瘦身第 3c 批：海报语言偏好 + 密钥冷却时长） ====================
+const tmdbPosterLang = ref<TmdbPosterLanguageStatus | null>(null)
+const tmdbPosterLangSaving = ref(false)
+const tmdbPosterLangError = ref(false)
+const TMDB_POSTER_LANG_LABELS: Record<string, string> = {
+  system: '跟随系统', original: '原语言', 'zh-CN': '简体中文',
+}
+const tmdbPosterLangLabel = (v: string) => TMDB_POSTER_LANG_LABELS[v] || v
+
+async function loadTmdbPosterLanguage() {
+  tmdbPosterLangError.value = false
+  try {
+    tmdbPosterLang.value = await fetchTmdbPosterLanguage()
+  } catch {
+    tmdbPosterLang.value = null
+    tmdbPosterLangError.value = true
+  }
+}
+
+async function saveTmdbPosterLanguageAction() {
+  if (!tmdbPosterLang.value) return
+  tmdbPosterLangSaving.value = true
+  try {
+    const res = await saveTmdbPosterLanguage(tmdbPosterLang.value.language)
+    tmdbPosterLang.value.language = res.language
+    ElMessage.success('TMDB 海报语言偏好已保存，立即生效')
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '保存失败'))
+  } finally {
+    tmdbPosterLangSaving.value = false
+  }
+}
+
+const tmdbCooldowns = ref<TmdbKeyCooldowns | null>(null)
+const tmdbCooldownsSaving = ref(false)
+const tmdbCooldownsError = ref(false)
+const tmdbCooldownDraft = reactive({ cooldown_sec: 900, invalid_cooldown_sec: 21600 })
+
+async function loadTmdbKeyCooldowns() {
+  tmdbCooldownsError.value = false
+  try {
+    tmdbCooldowns.value = await fetchTmdbKeyCooldowns()
+    tmdbCooldownDraft.cooldown_sec = Number(tmdbCooldowns.value.cooldown_sec) || 900
+    tmdbCooldownDraft.invalid_cooldown_sec = Number(tmdbCooldowns.value.invalid_cooldown_sec) || 21600
+  } catch {
+    tmdbCooldowns.value = null
+    tmdbCooldownsError.value = true
+  }
+}
+
+async function saveTmdbKeyCooldownsAction() {
+  tmdbCooldownsSaving.value = true
+  try {
+    const res = await saveTmdbKeyCooldowns(
+      Number(tmdbCooldownDraft.cooldown_sec), Number(tmdbCooldownDraft.invalid_cooldown_sec))
+    tmdbCooldowns.value = { ...(tmdbCooldowns.value as TmdbKeyCooldowns), ...res }
+    ElMessage.success('TMDB 密钥冷却时长已保存，立即生效')
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '保存失败'))
+  } finally {
+    tmdbCooldownsSaving.value = false
   }
 }
 
@@ -907,7 +1029,10 @@ onMounted(() => {
   loadMeta().catch(() => undefined)
   loadDouban().catch(() => undefined)
   loadBanDowngrade().catch(() => undefined)
+  loadAmRates().catch(() => undefined)
   loadTmdbLanguage().catch(() => undefined)
+  loadTmdbPosterLanguage().catch(() => undefined)
+  loadTmdbKeyCooldowns().catch(() => undefined)
   // Batch D 入口收敛：媒体库页用 hash 深链跳进来（#card-douban / #card-tmdb）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
@@ -1281,8 +1406,8 @@ onMounted(() => {
         </template>
       </SectionCard>
 
-      <!-- 0.5 豆瓣优先：中文标题先走豆瓣（TMDB 中文收录差）。Batch D：限流降级从媒体库页收拢到此 -->
-      <SectionCard id="card-douban" class="ms-card" title="豆瓣优先" :icon="BookOpen">
+      <!-- 0.5 豆瓣（可选）：中文兜底源，默认关闭。Batch D：限流降级从媒体库页收拢到此 -->
+      <SectionCard id="card-douban" class="ms-card" title="豆瓣（可选）" :icon="BookOpen">
         <template #actions>
           <div class="ms-facts">
             <span v-if="doubanCfg" class="fact" :class="doubanCfg.enabled ? 'ok' : 'muted'">
@@ -1292,9 +1417,11 @@ onMounted(() => {
           </div>
         </template>
         <p class="ms-hint">
-          TMDB 对中文剧集 / 综艺收录偏少。开启后，<strong>含中文的标题优先走豆瓣搜索</strong>：
-          搜中则取详情（标题 / 简介 / 评分 / 海报）写库；没搜中则回退到 TMDB。
-          非中文标题不受影响，直接走 TMDB。
+          豆瓣是<strong>可选</strong>的中文兜底源，<strong>默认关闭</strong>。
+          开启后，<strong>仅在 TMDB 未命中时</strong>对含中文的标题走豆瓣搜索：
+          搜中则取详情（标题 / 简介 / 评分 / 海报）写库，没搜中则保持原状。
+          关闭时不发出任何豆瓣请求，中文标题也直接走 TMDB。
+          豆瓣限流 / 封禁期内自动跳过（零豆瓣请求），解封后由后台补刮。
           定时扫描、单集刮削等仍在「<router-link :to="{ name: 'EmbyAdmin' }" class="ms-link">媒体库 → 定时与刮削</router-link>」。
         </p>
         <div v-if="doubanLoading && !doubanCfg" class="ms-skeleton" aria-busy="true">
@@ -1304,7 +1431,7 @@ onMounted(() => {
           v-else-if="!doubanCfg"
           compact
           :icon="BookOpen"
-          title="读取豆瓣优先配置失败"
+          title="读取豆瓣配置失败"
           description="可能是网络或后端暂时不可用。"
         >
           <template #actions>
@@ -1316,8 +1443,8 @@ onMounted(() => {
             <div class="ms-switch">
               <el-switch v-model="doubanDraft.enabled" />
               <div>
-                <div class="ms-switch-title">中文优先走豆瓣</div>
-                <div class="ms-hint">关 = 中文标题也直接走 TMDB（原行为）</div>
+                <div class="ms-switch-title">启用豆瓣中文兜底</div>
+                <div class="ms-hint">关 = 不打任何豆瓣请求，中文标题也直接走 TMDB（默认）</div>
               </div>
             </div>
           </div>
@@ -1361,6 +1488,74 @@ onMounted(() => {
           </div>
           <div v-else class="ms-skeleton" aria-busy="true"><div class="au-skeleton" /></div>
         </template>
+      </SectionCard>
+
+      <!-- 0.6 备用链路限速（配置瘦身第 3 批）：altmeta 豆瓣备用 + Bangumi 兜底的请求间隔 -->
+      <SectionCard id="card-altmeta" class="ms-card" title="备用链路限速" :icon="Gauge">
+        <template #actions>
+          <div class="ms-facts">
+            <span v-if="amDirty" class="fact warn">有未保存的改动</span>
+          </div>
+        </template>
+        <p class="ms-hint">
+          豆瓣主链路被封禁/降级时，刮削走备用链路：豆瓣 subject_suggest + Bangumi 兜底。
+          这里是备用链路自己的请求间隔，<strong>不是</strong>上面「豆瓣（可选）」卡里的间隔——
+          两个链路各限各的。0 = 不限速（默认 1.0 秒）。
+          注意：上面「豆瓣（可选）」开关关闭时，备用链路里的豆瓣请求同样不发出（只走 Bangumi）。
+        </p>
+        <div v-if="amLoading && !amRates" class="ms-skeleton" aria-busy="true">
+          <div class="au-skeleton" /><div class="au-skeleton" />
+        </div>
+        <EmptyState
+          v-else-if="!amRates"
+          compact
+          :icon="Gauge"
+          title="读取备用链路配置失败"
+          description="可能是网络或后端暂时不可用。"
+        >
+          <template #actions>
+            <el-button size="small" :loading="amLoading" @click="loadAmRates">重试</el-button>
+          </template>
+        </EmptyState>
+        <AdvancedSettings
+          v-else
+          count="2 项"
+          description="备用链路的请求间隔：太大刮得慢，太小容易被封 IP。"
+        >
+          <div class="ms-field">
+            <span class="ms-field-label">豆瓣备用间隔（秒）</span>
+            <el-input-number
+              v-model="amDraft.douban_rate"
+              :min="0"
+              :max="60"
+              :step="0.5"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">备用链路豆瓣请求的最小间隔（默认 1.0，0=不限速）</span>
+          </div>
+          <div class="ms-field">
+            <span class="ms-field-label">Bangumi 兜底间隔（秒）</span>
+            <el-input-number
+              v-model="amDraft.bangumi_rate"
+              :min="0"
+              :max="60"
+              :step="0.5"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">Bangumi 兜底请求的最小间隔（默认 1.0，0=不限速）</span>
+          </div>
+          <div class="ms-actions">
+            <el-button
+              type="primary"
+              size="small"
+              :loading="amSaving"
+              :disabled="!amDirty"
+              @click="saveAmRates"
+            >保存</el-button>
+          </div>
+        </AdvancedSettings>
       </SectionCard>
 
       <!-- 1. TMDB 密钥池与镜像（Phase 6a）：多把轮换、逐把增删、失效/限流自动冷却 -->
@@ -1510,6 +1705,73 @@ onMounted(() => {
         <div v-if="tmdbLang?.from_env" class="ms-hint">
           环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
         </div>
+
+        <!-- 配置瘦身第 3c 批：TMDB 微调（海报语言偏好 + 密钥冷却时长）收进高级折叠 -->
+        <AdvancedSettings
+          count="3 项"
+          description="海报图语言与密钥冷却策略：一般不用动，默认即可。"
+        >
+          <div class="ms-sub">TMDB 海报语言偏好</div>
+          <p class="ms-hint">海报图请求哪种语言的版本（保存后立即生效）</p>
+          <div v-if="tmdbPosterLang" class="ms-actions">
+            <el-select v-model="tmdbPosterLang.language" style="width: 160px" aria-label="TMDB 海报语言偏好">
+              <el-option
+                v-for="v in tmdbPosterLang.options"
+                :key="v"
+                :label="tmdbPosterLangLabel(v)"
+                :value="v"
+              />
+            </el-select>
+            <el-button type="primary" size="small" :loading="tmdbPosterLangSaving" @click="saveTmdbPosterLanguageAction">
+              保存
+            </el-button>
+          </div>
+          <div v-else-if="tmdbPosterLangError" class="ms-hint">
+            读取失败 <el-button size="small" text @click="loadTmdbPosterLanguage">重试</el-button>
+          </div>
+          <div v-else class="ms-skeleton" aria-busy="true"><div class="au-skeleton" /></div>
+
+          <div class="ms-sub">TMDB 密钥冷却时长</div>
+          <p class="ms-hint">
+            密钥被限流（429）或失效（401）后冷却多久再试。环境变量
+            <code>TMDB_KEY_COOLDOWN_SEC</code> / <code>TMDB_KEY_INVALID_COOLDOWN_SEC</code>
+            优先于这里的设置。
+          </p>
+          <div v-if="tmdbCooldowns" class="ms-field">
+            <span class="ms-field-label">限流冷却（秒）</span>
+            <el-input-number
+              v-model="tmdbCooldownDraft.cooldown_sec"
+              :min="1"
+              :step="60"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">默认 {{ tmdbCooldowns.defaults.cooldown_sec }} 秒</span>
+          </div>
+          <div v-if="tmdbCooldowns" class="ms-field">
+            <span class="ms-field-label">失效冷却（秒）</span>
+            <el-input-number
+              v-model="tmdbCooldownDraft.invalid_cooldown_sec"
+              :min="1"
+              :step="600"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">默认 {{ tmdbCooldowns.defaults.invalid_cooldown_sec }} 秒（约 6 小时）</span>
+          </div>
+          <div v-if="tmdbCooldowns?.from_env.cooldown_sec || tmdbCooldowns?.from_env.invalid_cooldown_sec" class="ms-hint">
+            环境变量覆盖了这里的设置（改这里不会生效）
+          </div>
+          <div v-if="tmdbCooldowns" class="ms-actions">
+            <el-button type="primary" size="small" :loading="tmdbCooldownsSaving" @click="saveTmdbKeyCooldownsAction">
+              保存
+            </el-button>
+          </div>
+          <div v-else-if="tmdbCooldownsError" class="ms-hint">
+            读取失败 <el-button size="small" text @click="loadTmdbKeyCooldowns">重试</el-button>
+          </div>
+          <div v-else class="ms-skeleton" aria-busy="true"><div class="au-skeleton" /></div>
+        </AdvancedSettings>
       </SectionCard>
       </div>
       <!-- 2. 手动绑定 TMDB（默认折叠） -->

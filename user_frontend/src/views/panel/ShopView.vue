@@ -29,8 +29,8 @@
         </div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="packages.length === 0" class="v4-empty">补给站暂未上架能量罐<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看</div>
+        <div v-else-if="packages.length === 0" class="v4-empty">能量罐暂未上架，稍后再来看看</div>
         <template v-else>
           <!-- R53B-1：支付方式未就绪（本分支只在整页 loading 结束后进入，此时未就绪=请求失败或列表为空）只渲染空态，不再与可点击的充能按钮同屏出现 -->
           <div v-if="!methodsReady" class="v4-empty">{{ methodsFailed ? '支付方式加载失败，请检查网络后重试' : '暂无可用支付方式，请联系服主' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
@@ -123,8 +123,8 @@
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照 <span aria-hidden="true">🎉</span><br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
-        <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="plans.length === 0" class="v4-empty">补给站暂未上架执照<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启，稍后再来看看</div>
+        <div v-else-if="plans.length === 0" class="v4-empty">执照暂未上架，稍后再来看看</div>
         <template v-else>
           <div class="cur-toggle">
             <button :class="{ on: currency === 'y' }" :aria-pressed="currency === 'y'" @click="currency = 'y'">¥ 人民币</button>
@@ -178,8 +178,8 @@
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
         <div v-else-if="memberFailed" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="!member" class="v4-empty">暂无等级记录，默认从 Lv.1 开始</div>
-        <!-- R41：等级路线空态补重试按钮，调 loadAll（与本页其他空态一致） -->
-        <div v-else-if="!trailLevels.length" class="v4-empty">等级路线尚未配置<br><button class="v4-retry" @click="loadAll">重试</button></div>
+        <!-- 「暂未开启/暂未上架」是配置态（非故障），不挂重试按钮，重试按钮只给加载失败类错误态 -->
+        <div v-else-if="!trailLevels.length" class="v4-empty">等级路线暂未开启，稍后再来看看</div>
         <div v-else class="trail">
           <div
             v-for="lv in trailLevels"
@@ -195,7 +195,7 @@
           >
             <span class="flag" aria-hidden="true">{{ campFlag(lv) }}</span>
             <div class="card">
-              <div class="lv">Lv.{{ lv.level }} <small>{{ lv.name }}{{ lv.level === member.level ? ' · 你在这里' : '' }}</small></div>
+              <div class="lv">Lv.{{ lv.level }} <small>{{ lv.name }}</small></div>
               <div v-if="lv.discount_pct > 0" class="off">执照 {{ (100 - lv.discount_pct) / 10 }} 折</div>
               <div v-else class="xp">经验 {{ lv.xp_threshold }}</div>
             </div>
@@ -279,13 +279,11 @@
         </div>
       </section>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
 import {

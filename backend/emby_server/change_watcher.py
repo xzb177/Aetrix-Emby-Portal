@@ -8,9 +8,6 @@
 - 发现新视频文件 → 整库入 scan_queue（trigger="chase-new"）
   → 扫描器增量秒跳，只处理新文件
 - 新入库条目自动进 enrich 队列刮削（NFO→TMDB→豆瓣）
-- **.strm 增量**：库路径现在是 /strm/...（.strm 通用化之后），strm_gen 产出的新
-  .strm 文件同样走 mtime 检测（独立开关 ``chase_new_strm_enabled``，默认开），
-  发现即定向扫描 → 扫描器把 .strm 当媒体入库 → 自动刮削
 
 v1 范围：
 - 本机目录：文件 mtime 检测（``find -newermt``）
@@ -45,11 +42,6 @@ logger = logging.getLogger(__name__)
 
 CONFIG_ENABLED = "chase_new_enabled"
 CONFIG_INTERVAL = "chase_new_interval"
-#: **.strm 监听独立开关**（"1"/"0"，默认 "1" 开）。库路径是 /strm/... 时，
-#: strm_gen 产出的新 .strm 就是「新资源」——关掉它等于追新对新分集睁眼瞎。
-#: 与 VIDEO_EXTS 分开：VIDEO_EXTS 是「视频文件」的口径（扫描器/播放链路多处
-#: 引用），追新要的是「发现即扫」的口径，两边语义不同，不混用一套常量。
-CONFIG_STRM_ENABLED = "chase_new_strm_enabled"
 #: v2.45.0：**排除清单**（逗号分隔的库 id）。空 = 全部启用库都监听。
 #:
 #: 为什么从「包含清单」改成「排除清单」：包含清单空 = 全部，于是想关掉 A 库就必须先去
@@ -74,21 +66,12 @@ MAX_INTERVAL = 120
 #: 早降级早拿到结果。
 _FIND_TIMEOUT_SEC = max(10, int(os.getenv("CHASE_NEW_FIND_TIMEOUT", "60") or 60))
 
-# 视频扩展名白名单
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm"}
-
-#: .strm 扩展名（独立开关 ``CONFIG_STRM_ENABLED`` 控制是否纳入检测）。
-#: 不直接并进 VIDEO_EXTS——那是「视频文件」口径，追新用 ``_tracked_exts()``
-#: 按开关动态拼，开关关了也不影响别处对 VIDEO_EXTS 的引用。
-STRM_EXTS = {".strm"}
-
+# 视频扩展名白名单（.iso 光盘镜像：部分客户端可直接播放整盘）
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm", ".iso"}
 
 def _tracked_exts(db: Session) -> set[str]:
-    """本轮要监听的扩展名：视频扩展名 +（.strm 开关开时）.strm。"""
-    exts = set(VIDEO_EXTS)
-    if _get_config(db, CONFIG_STRM_ENABLED, "1") == "1":
-        exts |= STRM_EXTS
-    return exts
+    """本轮要监听的扩展名：视频扩展名（.strm 纸条时代已结束，不再监听）。"""
+    return set(VIDEO_EXTS)
 
 # 追新在一个季目录里最多往下钻几层。rclone 的一次递归列举会把整个子树拍平返回，
 # 国产剧 1.4 万个文件时生产实测要几分钟、远超任何合理超时。改成逐层走公共通道后
@@ -788,7 +771,6 @@ def get_config(db: Session) -> dict:
     return {
         "enabled": _get_config(db, CONFIG_ENABLED, "0") == "1",
         "interval": _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL))),
-        "strm_enabled": _get_config(db, CONFIG_STRM_ENABLED, "1") == "1",
         "excluded": ",".join(str(i) for i in resolve_excluded(db)),
         "libraries": "",
         "last_check": _get_config(db, CONFIG_LAST_CHECK, ""),
@@ -797,25 +779,17 @@ def get_config(db: Session) -> dict:
 
 
 def save_config(db: Session, enabled: bool, interval: int,
-                excluded: str = "", libraries: Optional[str] = None,
-                strm_enabled: Optional[bool] = None) -> dict:
+                excluded: str = "", libraries: Optional[str] = None) -> dict:
     """保存追新配置，立即生效
 
     ``excluded`` 是排除清单。``libraries`` 是**旧字段**（包含清单），只为老调用方保留：
     传了它就按老语义换算成排除清单（启用库 − 包含清单），而不是直接当排除清单存——
     否则一个还在用老前端的部署会把清单含义整个反过来。
 
-    ``strm_enabled``：是否同时监听 .strm 文件（默认开）。库路径是 /strm/... 时，
-    strm_gen 产出的新 .strm 就是新资源；关掉后追新只看视频扩展名。
-    传 ``None``（老前端没这个字段时）= 保持现有值，不会被默认 True 悄悄改掉——
-    和 ``libraries`` 的「没传就不碰」是同一个纪律。
     """
     minutes = _parse_interval(str(interval))
     _set_config(db, CONFIG_ENABLED, "1" if enabled else "0")
     _set_config(db, CONFIG_INTERVAL, str(minutes))
-    if strm_enabled is None:
-        strm_enabled = _get_config(db, CONFIG_STRM_ENABLED, "1") == "1"
-    _set_config(db, CONFIG_STRM_ENABLED, "1" if strm_enabled else "0")
     if libraries is not None and not excluded:
         included = set(_parse_ids(libraries))
         ids = sorted(i for i in _enabled_library_ids(db) if i not in included)
@@ -825,8 +799,8 @@ def save_config(db: Session, enabled: bool, interval: int,
     # 旧键清空：万一还有进程在按老口径读，它看到的是「空 = 全部监听」，
     # 与新语义下的“排除为空”一致，不会出现两边理解打架。
     _set_config(db, CONFIG_LIBRARIES, "")
-    logger.info("[chase-new] 配置已保存: enabled=%s interval=%d strm_enabled=%s excluded=%s",
-                enabled, minutes, strm_enabled, ",".join(str(i) for i in ids))
+    logger.info("[chase-new] 配置已保存: enabled=%s interval=%d excluded=%s",
+                enabled, minutes, ",".join(str(i) for i in ids))
     # 排除清单同时管着 inotify（v2.46.0 起两边同语义），所以改完要立即重建监听，
     # 否则被排除的库还要等容器重启才真的停下来。重建走 sync_from_db() 内部幂等：
     # 差异对比 + unschedule/schedule，不会因为反复调而叠出第二个 observer。
