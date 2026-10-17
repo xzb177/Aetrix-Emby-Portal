@@ -38,6 +38,10 @@ SCHEMAS: dict[str, dict[str, tuple]] = {
     "registration": config_schema.REGISTRATION_CONFIG_SCHEMA,
     "view_unlock": config_schema.VIEW_UNLOCK_CONFIG_SCHEMA,
     "welfare": config_schema.WELFARE_CONFIG_SCHEMA,
+    # 4-6：economy 家族（设计报告说的 44 键，实查 49 键；校验语义与迁移前
+    # economy_spec 的历史行为逐字一致，str/secret 用 ("raw",) 原样存库；
+    # 复合校验保留在端点层）
+    "economy": config_schema.ECONOMY_CONFIG_SCHEMA,
 }
 
 
