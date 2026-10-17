@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.api.admin_core import admin_router, get_current_admin, _audit
 from backend.database import get_db
+from backend.integrations import store
 
 
 # ==================== 公益用户管理 ====================
@@ -355,6 +356,8 @@ def welfare_config_set(
         updated.append(key)
     _audit(db, current_admin.id, "welfare_config_update", "system", None, {"updated": updated})
     db.commit()
+    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
+    store.invalidate(*updated)
     return {"success": True, "updated": updated}
 
 

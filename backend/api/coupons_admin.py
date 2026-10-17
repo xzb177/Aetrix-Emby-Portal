@@ -33,6 +33,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend import coupons, models
+from backend.integrations import store
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
@@ -214,6 +215,9 @@ def update_coupon_settings(
     if request.reserve_hours is not None:
         _set(coupons.CONFIG_RESERVE_HOURS, str(int(request.reserve_hours)))
     db.commit()
+
+    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
+    store.invalidate(coupons.CONFIG_ENABLED, coupons.CONFIG_RESERVE_HOURS)
 
     _audit(db, current_admin, "economy_coupon_settings", "system", None,
            {"enabled": request.enabled, "reserve_hours": request.reserve_hours})

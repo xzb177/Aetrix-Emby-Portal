@@ -36,6 +36,7 @@ from backend import qbittorrent
 from backend import servers
 from backend.database import get_db
 from backend.error_lexicon import translate as _translate_error
+from backend.integrations import store
 from backend.notifications import (
     AdminEvent,
     notify_admin_event,
@@ -687,6 +688,8 @@ def set_registration_mode(
             db.add(models.SystemConfig(key=key, value=value))
 
     db.commit()
+    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
+    store.invalidate(*[key for key, _ in updates])
     audit_details = {"mode": request.mode}
     if request.ratelimit_enabled is not None:
         audit_details["ratelimit_enabled"] = request.ratelimit_enabled

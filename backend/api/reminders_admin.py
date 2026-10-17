@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from backend import models, reminders
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
+from backend.integrations import store
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,9 @@ def update_expiry_reminder_settings(
             _upsert_config(db, key, text)
             changed[key] = text
     db.commit()
+
+    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
+    store.invalidate(*changed.keys())
 
     status = reminders.reminder_status(db)
     _audit(db, current_admin, "update_expiry_reminder_settings", "system_config", None, changed)
