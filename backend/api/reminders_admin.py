@@ -19,10 +19,9 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend import models, reminders
+from backend import config_service, models, reminders
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
-from backend.integrations import store
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +33,6 @@ REMINDER_CONFIG_KEYS = (reminders.CONFIG_ENABLED, reminders.CONFIG_DAYS)
 
 class ReminderSettingsRequest(BaseModel):
     settings: dict
-
-
-def _upsert_config(db: Session, key: str, value: str) -> None:
-    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-    if row:
-        row.value = value
-    else:
-        db.add(models.SystemConfig(key=key, value=value))
 
 
 @admin_reminders_router.get("/economy/expiry-reminders")
@@ -65,20 +56,23 @@ def update_expiry_reminder_settings(
     不会让后台任务因为一段写错的配置整体失效。
     """
     changed = {}
+    values = {}
     for key, value in request.settings.items():
         if key not in REMINDER_CONFIG_KEYS:
             continue
         if key == reminders.CONFIG_ENABLED:
-            _upsert_config(db, key, "true" if bool(value) else "false")
+            # 保留今天口径：bool(value) 强转（字符串 "false" 也是 truthy → 存 "true"）
+            values[key] = "true" if bool(value) else "false"
             changed[key] = bool(value)
         else:
             text = "" if value is None else str(value).strip()
-            _upsert_config(db, key, text)
+            values[key] = text
             changed[key] = text
+    if values:
+        # 配置瘦身第 4 批 4-4：走统一写入通道（校验→落库→写时失效）；
+        # store.write_values 内部已按 store 纪律失效，4-1 的失效覆盖由正统通道承接。
+        config_service.save_config(db, values, schema="reminders")
     db.commit()
-
-    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
-    store.invalidate(*changed.keys())
 
     status = reminders.reminder_status(db)
     _audit(db, current_admin, "update_expiry_reminder_settings", "system_config", None, changed)
