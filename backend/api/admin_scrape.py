@@ -938,6 +938,16 @@ def _run_library_rescrape(library_id: int, policy: str) -> None:
     )
 
     db = SessionLocal()
+    # 与 scan_queue._run_task 同口径：扫描是"一批一提交"的长事务，ctx 里缓存着
+    # series/season 的 ORM 对象。默认 expire_on_commit=True 会在每次批次提交后
+    # 把它们全部标过期；进程级 _SCAN_POOL 的 IO 线程若此时碰到这些对象或 Session，
+    # 就会撞上 "provisioning a new connection; concurrent operations are not
+    # permitted" / "This session is in 'committed' state"（2026-10-17 rescrape
+    # 生产事故 run 4811/4814）。关掉过期后对象保持内存值，扫描只读写自己刚写
+    # 的数据，不依赖提交后重读，因此安全。
+    # （用属性赋值而非 SessionLocal(expire_on_commit=False)，兼容测试里的
+    # SessionLocal 打桩。）
+    db.expire_on_commit = False
     try:
         lib = db.query(em.Library).filter(em.Library.id == library_id).first()
         if not lib:
