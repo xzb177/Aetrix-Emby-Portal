@@ -25,6 +25,7 @@ CPU 打满而进度一动不动。
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 
@@ -886,6 +887,51 @@ def _release_locked(task: ScanTask) -> None:
             _MOUNT_OWNER.pop(int(mount_id), None)
     _push_history_locked(task)
     _COND.notify_all()
+
+
+@contextlib.contextmanager
+def mount_serial_guard(library_id: int, mount_ids):
+    """队列外扫描与排队扫描共用同一套挂载串行化（上下文管理器）。
+
+    rescrape（``api/admin_scrape._run_library_rescrape``）不走 enqueue：它在
+    API 进程里直接起线程跑扫描，过去不登记 ``_MOUNT_OWNER``——两个用同一
+    挂载的库同时重刮就会并发打远端，正是本队列串行化要防的事（2026-10-17
+    生产 run 4811/4814 就是两条 rescrape 同进程并发跑了十几分钟）。
+
+    语义与排队任务一致：挂载被占用时**阻塞等待**（排队而不是报错），全部
+    空闲后一次性登记占用（多挂载不会拿一半等一半，不存在交叉死锁）；退出
+    时只释放登记在自己名下的，并唤醒等待者。与 ``_limits_locked`` 同口径：
+    队列关（``SCAN_QUEUE_ENABLED=0``）或挂载串行关（``SCAN_MOUNT_SERIAL=0``）
+    时不限制、直接放行；没有远程挂载的库也直接放行。
+
+    占用是进程内状态：它串行化本进程内的扫描（rescrape 之间；单体模式下
+    还有 rescrape 与排队扫描之间）。拆分模式下 worker 进程的排队扫描有它
+    自己进程内的占用表，两边互不可见——那是队列既有的进程内语义，本函数
+    不改变它。
+    """
+    ids = tuple(sorted({int(m) for m in (mount_ids or ())}))
+    if not ids or not SCAN_QUEUE_ENABLED or not SCAN_MOUNT_SERIAL:
+        yield
+        return
+    owner = int(library_id)
+    with _COND:
+        while any(_MOUNT_OWNER.get(m) is not None for m in ids):
+            _COND.wait(timeout=0.25)
+        for m in ids:
+            _MOUNT_OWNER[m] = owner
+    logger.info("队列外扫描占用挂载 %s（库 id=%s）", _mounts_text(ids), owner)
+    try:
+        yield
+    finally:
+        with _COND:
+            # 同库的排队任务若在本守卫持有期间被派发（``_conflicts_locked``
+            # 不把本库自己的占用算冲突），占用已归它管，释放交给它的
+            # ``_release_locked``；这里再 pop 会把正在跑的任务的占用提前清掉。
+            if owner not in _RUNNING:
+                for m in ids:
+                    if _MOUNT_OWNER.get(m) == owner:
+                        _MOUNT_OWNER.pop(m, None)
+            _COND.notify_all()
 
 
 def _mounts_text(mount_ids) -> str:
