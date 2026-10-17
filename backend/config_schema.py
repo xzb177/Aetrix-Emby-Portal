@@ -22,16 +22,22 @@ class ConfigValueError(ValueError):
 def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Optional[str]:
     """按 spec 校验并返回要落库的字符串；None 表示「未设置」。
 
-    spec: ("int", lo, hi) | ("float", lo, hi) | ("bool",) | ("int_list", lo, hi)
+    spec: ("int", lo, hi) | ("float", lo, hi) | ("bool",) | ("bool", "digit"|"word")
+        | ("int_list", lo, hi) | ("str",) | ("enum", (allowed...))
     bool_style: "word" → true/false，"digit" → 1/0（仅在传入 Python bool 时决定写法；
     字符串原样保留大小写外的写法，避免改变读取侧既有判断口径）。
+    spec 里显式带风格位（("bool", "digit")）时，spec 优先于 bool_style 参数——
+    同一个家族里不同键可能用不同存储风格（如告警总开关存 1/0），风格必须跟键走。
+    ("str",): 自由字符串，不做类型校验（空串/None → None = 未设置）；
+    ("enum", allowed): 白名单枚举，命中才收。
     """
     if value is None or (isinstance(value, str) and value.strip() == ""):
         return None
     kind = spec[0]
     if kind == "bool":
+        _style = spec[1] if len(spec) > 1 else bool_style
         if isinstance(value, bool):
-            if bool_style == "digit":
+            if _style == "digit":
                 return "1" if value else "0"
             return "true" if value else "false"
         if isinstance(value, int) and value in (0, 1):
@@ -40,6 +46,14 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
         if s in _BOOL_TRUE or s in _BOOL_FALSE:
             return s
         raise ConfigValueError(f"{key} 必须是开关值（true/false 或 1/0）")
+    if kind == "str":
+        return str(value)
+    if kind == "enum":
+        allowed = spec[1]
+        s = str(value).strip()
+        if s in allowed:
+            return s
+        raise ConfigValueError(f"{key} 必须是 {allowed} 之一")
     lo, hi = spec[1], spec[2]
     if kind == "int":
         if isinstance(value, bool):
@@ -105,17 +119,21 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "redpacket_recv_limit_7d": ("int", 0, 100000),
     "redpacket_refund_enabled": ("bool",),
     "redpacket_refund_interval_sec": ("int", 60, 86400),
-    "welfare_require_tg_bind": ("bool",),
-    "lottery_enabled": ("bool",),
-    "lottery_auto_draw_enabled": ("bool",),
+    # 2026-10-17 第 4 批 4-4：以下 9 键在 WELFARE_CONFIG_KEYS 里的默认值是 "1"/"0"，
+    # 端点现行的 normalize 按 ("bool", "digit") 存 "1"/"0"。风格必须跟键走，
+    # 注册为 digit 才能与今天逐字一致（读侧 lottery.py 等是宽容口径，本应无感，
+    # 但存字节必须相同）。
+    "welfare_require_tg_bind": ("bool", "digit"),
+    "lottery_enabled": ("bool", "digit"),
+    "lottery_auto_draw_enabled": ("bool", "digit"),
     "lottery_draw_interval_sec": ("int", 30, 86400),
-    "lottery_notify_winners": ("bool",),
-    "tg_bind_guide_enabled": ("bool",),
-    "media_seek_enabled": ("bool",),
-    "media_seek_vote_enabled": ("bool",),
-    "media_seek_notify_voters": ("bool",),
+    "lottery_notify_winners": ("bool", "digit"),
+    "tg_bind_guide_enabled": ("bool", "digit"),
+    "media_seek_enabled": ("bool", "digit"),
+    "media_seek_vote_enabled": ("bool", "digit"),
+    "media_seek_notify_voters": ("bool", "digit"),
     "chat_points_enabled": ("bool",),
-    "points_transfer_enabled": ("bool",),
+    "points_transfer_enabled": ("bool", "digit"),
     "points_transfer_fee_pct": ("int", 0, 100),
     "points_transfer_min": ("int", 1, _BIG),
     "points_transfer_max": ("int", 0, _BIG),
@@ -125,6 +143,60 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "chat_points_minute_window": ("int", 0, 86400),
     "chat_points_daily_cap": ("int", 0, _BIG),
     "chat_points_points_per_day": ("int", 0, _BIG),
+    # 2026-10-17 第 4 批 4-2：补上 WELFARE_CONFIG_KEYS 里漏登记的 3 个
+    # （读侧 lottery.py 有明确口径：bool 默认开、int max(0,·) 钳制）
+    "lottery_require_group_member": ("bool", "digit"),
+    "lottery_min_account_age_days": ("int", 0, _BIG),
+    "lottery_max_joins_per_day": ("int", 0, _BIG),
+    # 2026-10-17 第 4 批 4-4：白名单里但此前无 spec 的群 id 列表键（端点现行按原文
+    # 存字符串）。注册为 ("str",) 与今天逐字一致：原文直存，None/空串→删行
+    # （读侧 _get_str_config 缺行/空行都回默认 ""，等价）。
+    "bot_group_ids": ("str",),
+    "chat_points_group_ids": ("str",),
+    "lottery_group_ids": ("str",),
+}
+
+# 告警设置（admin_alerts.update_alert_settings 的 4 个写键）。
+# 注意：alert_check_interval_sec 的钳制（60~86400）保留在端点层（业务行为不变），
+# 注册表范围与钳制边界对齐；save_config 只是纵深防御。
+ALERTS_CONFIG_SCHEMA: dict[str, tuple] = {
+    "system_alerts_enabled": ("bool", "digit"),
+    "alert_check_interval_sec": ("int", 60, 86400),
+    "webhook_alert_url": ("str",),
+    "webhook_alert_secret": ("str",),
+}
+
+# 到期提醒（reminders_admin.REMINDER_CONFIG_KEYS）。
+# 2026-10-17 第 4 批 4-4 裁决：expiry_reminder_days 今天的端点**原文存储、从不拒绝**
+# （非法档位靠读侧 reminders.py 逐个跳过、空则回落默认 7/3/1）。严格的
+# ("int_list", 1, 365) 会把今天能存的值变成 400，是行为变化；宽容归一又会改动
+# 存值。零行为变化要求原文直存，故注册为 ("str",)。
+REMINDERS_CONFIG_SCHEMA: dict[str, tuple] = {
+    "expiry_reminder_enabled": ("bool", "word"),
+    "expiry_reminder_days": ("str",),
+}
+
+# 优惠券（coupons_admin.update_coupon_settings；reserve_hours 端点层已有
+# Pydantic Field(ge=0, le=720)，注册表范围与之一致；0=不自动清理）
+COUPONS_CONFIG_SCHEMA: dict[str, tuple] = {
+    "coupon_enabled": ("bool", "word"),
+    "coupon_reserve_hours": ("int", 0, 720),
+}
+
+# 注册模式（admin.set_registration_mode；mode 端点层只认 open/closed；
+# ratelimit_max≥1、ratelimit_window≥60 是端点现有校验，上限沿用 _BIG 口径）
+REGISTRATION_CONFIG_SCHEMA: dict[str, tuple] = {
+    "registration_mode": ("enum", ("open", "closed")),
+    "registration_closed_message": ("str",),
+    "register_ratelimit_enabled": ("bool", "word"),
+    "register_ratelimit_max": ("int", 1, _BIG),
+    "register_ratelimit_window": ("int", 60, _BIG),
+}
+
+# 查看解锁（portal.admin_view_unlock_put；points/days≥0，days=0=永久）
+VIEW_UNLOCK_CONFIG_SCHEMA: dict[str, tuple] = {
+    "emby_view_unlock_points": ("int", 0, _BIG),
+    "emby_view_unlock_days": ("int", 0, _BIG),
 }
 
 # 经济系统设置（admin_economy.ECONOMY_CONFIG_KEYS）里 int 键的范围；未列出的 int 键默认 0~10^9

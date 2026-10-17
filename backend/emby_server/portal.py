@@ -28,9 +28,9 @@ from sqlalchemy import and_, case, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
-from backend import models, realms, subscriptions
+from backend import config_service, models, realms, subscriptions
 from backend.database import get_db, SessionLocal
-from backend.integrations import store
+
 from backend.emby_server import cdn
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
@@ -304,18 +304,14 @@ def admin_view_unlock_put(body: ViewUnlockSettingsIn, db: Session = Depends(get_
     """管理后台：改公益服查看权限的积分价格与有效期（days=0 为永久）。"""
     if body.points < 0 or body.days < 0:
         raise HTTPException(status_code=400, detail="points/days 不能为负")
-    for key, value in (
-        (VIEW_UNLOCK_POINTS_KEY, body.points),
-        (VIEW_UNLOCK_DAYS_KEY, body.days),
-    ):
-        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if row:
-            row.value = str(value)
-        else:
-            db.add(models.SystemConfig(key=key, value=str(value)))
+    # 配置瘦身第 4 批 4-4：走统一写入通道（校验→落库→写时失效）；
+    # store.write_values 内部已按 store 纪律失效，4-1 的失效覆盖由正统通道承接。
+    config_service.save_config(
+        db,
+        {VIEW_UNLOCK_POINTS_KEY: body.points, VIEW_UNLOCK_DAYS_KEY: body.days},
+        schema="view_unlock",
+    )
     db.commit()
-    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
-    store.invalidate(VIEW_UNLOCK_POINTS_KEY, VIEW_UNLOCK_DAYS_KEY)
     return {"points": body.points, "days": body.days}
 
 

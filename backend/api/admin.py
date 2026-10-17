@@ -31,12 +31,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from backend import media_seek, models, realms, register_channel
+from backend import config_service, media_seek, models, realms, register_channel
 from backend import qbittorrent
 from backend import servers
 from backend.database import get_db
 from backend.error_lexicon import translate as _translate_error
-from backend.integrations import store
 from backend.notifications import (
     AdminEvent,
     notify_admin_event,
@@ -660,36 +659,25 @@ def set_registration_mode(
     if request.ratelimit_window is not None and request.ratelimit_window < 60:
         raise HTTPException(status_code=400, detail="ratelimit_window 必须大于等于 60")
 
-    # 注册限流：仅当字段提供（非 None）时写入；与模式配置合并为一次批量 upsert
-    updates = [
-        ("registration_mode", request.mode),
-        ("registration_closed_message", request.message),
-    ]
-    if request.ratelimit_enabled is not None:
-        updates.append(
-            ("register_ratelimit_enabled",
-             "true" if request.ratelimit_enabled else "false"))
-    if request.ratelimit_max is not None:
-        updates.append(("register_ratelimit_max", str(request.ratelimit_max)))
-    if request.ratelimit_window is not None:
-        updates.append(("register_ratelimit_window", str(request.ratelimit_window)))
-
-    # 一次查询取回已存在的键，避免逐 key 查询
-    existing = {
-        r.key: r
-        for r in db.query(models.SystemConfig)
-        .filter(models.SystemConfig.key.in_([k for k, _ in updates]))
-        .all()
+    # 注册限流：仅当字段提供（非 None）时写入；与模式配置合并为一次批量写入
+    values = {
+        "registration_mode": request.mode,
+        "registration_closed_message": request.message,
     }
-    for key, value in updates:
-        if key in existing:
-            existing[key].value = value
-        else:
-            db.add(models.SystemConfig(key=key, value=value))
+    if request.ratelimit_enabled is not None:
+        values["register_ratelimit_enabled"] = (
+            "true" if request.ratelimit_enabled else "false")
+    if request.ratelimit_max is not None:
+        values["register_ratelimit_max"] = str(request.ratelimit_max)
+    if request.ratelimit_window is not None:
+        values["register_ratelimit_window"] = str(request.ratelimit_window)
 
+    # 配置瘦身第 4 批 4-4：走统一写入通道（校验→落库→写时失效）；
+    # store.write_values 内部已按 store 纪律失效，4-1 的失效覆盖由正统通道承接。
+    # registration_closed_message="" 走统一「未设置」语义删行，读侧
+    # (closed_msg_config.value if ... and ... else 默认文案) 与空行等价。
+    config_service.save_config(db, values, schema="registration")
     db.commit()
-    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
-    store.invalidate(*[key for key, _ in updates])
     audit_details = {"mode": request.mode}
     if request.ratelimit_enabled is not None:
         audit_details["ratelimit_enabled"] = request.ratelimit_enabled
