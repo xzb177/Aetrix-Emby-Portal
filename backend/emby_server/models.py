@@ -136,6 +136,12 @@ class MediaItem(Base):
         # + ORDER BY sort_name, id。部分索引只含可见行，翻页与 COUNT 不再全表扫。
         Index("idx_item_browse_sort", "item_type", "sort_name", "id",
               postgresql_where=text("is_hidden = false AND deleted_at IS NULL")),
+        # P0 修复（2026-10-17 压测实锤）：Recursive=true（不带 ParentId）时没有
+        # item_type 等值过滤，idx_item_browse_sort 的首列用不上，ORDER BY sort_name, id
+        # 只能全表扫 + 排序。这个索引去掉首列，专供无类型过滤的浏览排序与 COUNT。
+        # 部分谓词与查询条件一致，规划器可用。
+        Index("idx_item_browse_sort_all", "sort_name", "id",
+              postgresql_where=text("is_hidden = false AND deleted_at IS NULL")),
         # 搜索 trigram GIN 索引（r7）：/emby/Items?SearchTerm=、/emby/Search/Hints、
         # 求片中心的 ILIKE 预筛都走这四列。postgresql_using / postgresql_ops
         # 是 PG 专属参数，SQLite 下 create_all 会忽略它们、退化为普通 btree 索引。

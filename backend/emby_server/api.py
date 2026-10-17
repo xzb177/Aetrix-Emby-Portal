@@ -2102,10 +2102,13 @@ def _dedup_primary_ids(cand_rows, db) -> list[int]:
     return [row[0] for row in cand_rows if row[0] in keep]
 
 
-#: P2：重复候选 / 被去掉的 id 超过这些量就回退全量实现（避免巨型 IN / CASE）
-_DEDUP_MAX_SUSPECTS = int(os.getenv("ITEMS_DEDUP_MAX_SUSPECTS", "20000") or 20000)
-_DEDUP_MAX_DROPPED = int(os.getenv("ITEMS_DEDUP_MAX_DROPPED", "5000") or 5000)
-_DEDUP_MAX_DUP_SERIES = 2000
+#: P2：重复候选 / 被去掉的 id 超过这些量就回退全量实现（避免巨型 IN）。
+#: 注意：_DEDUP_MAX_DUP_SERIES 已废除——原来它是为保护 case(rep, ...) 巨型 CASE 而设的，
+#: rep 条目一多（去纸条化后 merged 行成千上万）CASE 直接让 PG 跑 100 秒+。
+#: P0 修复改用 VALUES 映射表 JOIN，rep 再大也只是数据行，不再是表达式分支，
+#: 因此不再需要这个上限（2026-10-17 压测实锤）。
+_DEDUP_MAX_SUSPECTS = int(os.getenv("ITEMS_DEDUP_MAX_SUSPECTS", "100000") or 100000)
+_DEDUP_MAX_DROPPED = int(os.getenv("ITEMS_DEDUP_MAX_DROPPED", "50000") or 50000)
 
 
 def _chunks(seq, n=900):
@@ -2130,7 +2133,7 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
 
     返回被去掉的 id 集合；圈出来的行太多（几乎全库都是重复）时返回 None，调用方回退全量实现。
     """
-    from sqlalchemy import String, case, cast, literal
+    from sqlalchemy import String, case, cast, column, Integer, literal, values
 
     MI = em.MediaItem
     # --- 剧的去重组（episode 桶要用）---
@@ -2138,6 +2141,7 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     ep_series = (query.filter(MI.item_type == "episode", MI.series_id.isnot(None))
                  .with_entities(MI.series_id).order_by(None).distinct().subquery())
     series_group_expr = func.coalesce(MI.series_id, 0)
+    rep_join = None
     srows = db.query(MI.id, MI.library_id, MI.tmdb_id, MI.name, MI.production_year).filter(
         MI.item_type == "series", MI.id.in_(select(ep_series.c.series_id))).all()
     if srows:
@@ -2152,10 +2156,18 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
                 head = min(members)
                 for sid in members:
                     rep[sid] = head
-        if len(rep) > _DEDUP_MAX_DUP_SERIES:
-            return None
         if rep:
-            series_group_expr = case(rep, value=MI.series_id, else_=func.coalesce(MI.series_id, 0))
+            # P0 修复（2026-10-17 压测实锤）：原来用 case(rep, value=series_id, ...)
+            # 把去重组写成 SQL 表达式，rep 条目一多（merged 行成千上万）就是几千个
+            # WHEN 分支，PG 实测 105 秒。改成 VALUES CTE 映射表 LEFT JOIN，
+            # 同样语义（左连接未命中时回退 series_id 自身），PG 实测 0.5 秒；
+            # 用 CTE 而不用别名 JOIN 是为了兼容 SQLite（测试库不支持
+            # AS rep_map (sid, grp) 的列别名语法）。
+            rep_map = values(
+                column("sid", Integer), column("grp", Integer),
+            ).data([(sid, grp) for sid, grp in rep.items()]).cte("rep_map")
+            rep_join = (rep_map, rep_map.c.sid == MI.series_id)
+            series_group_expr = func.coalesce(rep_map.c.grp, MI.series_id, 0)
 
     tmdb_clean = func.trim(func.replace(func.replace(func.replace(
         func.coalesce(MI.tmdb_id, ""), "\t", ""), "\n", ""), "\r", ""))
@@ -2171,7 +2183,8 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
          + "|" + s(func.coalesce(MI.episode_number, 0))),
         else_=literal("R|") + s(MI.id),
     )
-    cand = query.with_entities(
+    cand_q = query.outerjoin(*rep_join) if rep_join is not None else query
+    cand = cand_q.with_entities(
         MI.id.label("cid"),
         func.count().over(partition_by=bucket).label("bucket_n"),
     ).order_by(None).subquery()
