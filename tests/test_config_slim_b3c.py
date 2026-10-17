@@ -85,10 +85,22 @@ class _FakeDB:
 
 
 @pytest.fixture()
-def memstore(monkeypatch):
+def memstore(monkeypatch, fakedb):
     ms = _MemStore()
+    # r36：写入统一通道 store.write_values 落库到同一 session；fake 世界里把
+    # 内存桩的写入同步回 fakedb 的行，保持 db.query 直查口径与真实环境一致
+    # （play_sign.get_allowed_referers 等读路径直接查 DB，不走 store 缓存）。
+    _orig_write = ms.write_values
+
+    def _write(db, values, descriptions=None):
+        _orig_write(db, values, descriptions)
+        for _k, _v in (values or {}).items():
+            fakedb._rows[_k] = SimpleNamespace(
+                key=_k, value=_v,
+                description=((descriptions or {}).get(_k) or ""))
+
     monkeypatch.setattr(_store, "get_value", ms.get_value)
-    monkeypatch.setattr(_store, "write_values", ms.write_values)
+    monkeypatch.setattr(_store, "write_values", _write)
     monkeypatch.setattr(_store, "invalidate", ms.invalidate)
     return ms
 
@@ -106,13 +118,13 @@ def _staff():
 
 
 class TestAllowedReferers:
-    def test_write_normalizes_and_dedups(self, fakedb):
+    def test_write_normalizes_and_dedups(self, fakedb, memstore):
         hosts = play_sign.write_allowed_referers(
             fakedb, "https://CDN.Example.com/x, example.com , example.com, ,")
         assert hosts == ["cdn.example.com", "example.com"]
         assert fakedb.config_rows[play_sign.CONFIG_ALLOWED_REFERERS] == "cdn.example.com,example.com"
 
-    def test_write_empty_clears(self, fakedb):
+    def test_write_empty_clears(self, fakedb, memstore):
         fakedb.config_rows = {play_sign.CONFIG_ALLOWED_REFERERS: "a.com"}
         hosts = play_sign.write_allowed_referers(fakedb, "  , ")
         assert hosts == []

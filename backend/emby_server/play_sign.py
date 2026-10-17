@@ -32,7 +32,6 @@ from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from backend.integrations import store
-from backend.models import SystemConfig
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +49,7 @@ CONFIG_PLAY_SIGN_TTL = "play_sign_ttl_seconds"
 DESCRIPTIONS = {
     CONFIG_HOTLINK_ENABLED: "防盗链总开关：关闭后播放端点跳过播放签名校验（兼容老客户端）",
     CONFIG_PLAY_SIGN_TTL: "播放签名有效期（秒），范围 60~86400",
+    CONFIG_ALLOWED_REFERERS: "播放防盗链 Referer 白名单（逗号分隔域名），空=不检查",
 }
 
 HOTLINK_DEFAULT = True
@@ -119,29 +119,24 @@ def config_payload(db: Session | None = None) -> dict:
 
 
 def write_config(db: Session, *, enabled: bool, play_sign_ttl: int) -> dict:
-    """管理后台写入：校验范围 → 逐键 upsert SystemConfig（含 description）→ 失效热缓存。"""
-    try:
-        play_sign_ttl = int(play_sign_ttl)
-    except (TypeError, ValueError):
-        raise ValueError("播放签名有效期必须为整数秒")
-    if not (PLAY_TTL_MIN <= play_sign_ttl <= PLAY_TTL_MAX):
-        raise ValueError(f"播放签名有效期需在 {PLAY_TTL_MIN}~{PLAY_TTL_MAX} 秒之间")
+    """管理后台写入：校验范围 → 落库 → 失效热缓存。
 
-    enabled = bool(enabled)
-    values = (
-        (CONFIG_HOTLINK_ENABLED, "true" if enabled else "false"),
-        (CONFIG_PLAY_SIGN_TTL, str(play_sign_ttl)),
-    )
-    for key, value in values:
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        if row is None:
-            db.add(SystemConfig(key=key, value=value, description=DESCRIPTIONS[key]))
-        else:
-            row.value = value
-            row.description = DESCRIPTIONS[key]
-    db.commit()
-    for key, _ in values:
-        store.invalidate(key)
+    r36 起走 ``config_service`` 统一编排层（校验→批量落库→写时失效），
+    行为与旧手写实现逐字一致：TTL 非法（非整数/60~86400 越界）抛
+    ValueError（ConfigValueError 是 ValueError 子类，端点 400 文案不变）；
+    开关落库 "true"/"false"；返回 ``config_payload`` 即时生效。
+
+    提交由调用方决定（``admin_economy.hotlink_update_config`` 已在审计后统一
+    commit；旧实现自带 commit，端点逻辑不变）。
+    """
+    from backend import config_service
+
+    values = {
+        CONFIG_HOTLINK_ENABLED: "true" if bool(enabled) else "false",
+        CONFIG_PLAY_SIGN_TTL: play_sign_ttl,
+    }
+    config_service.save_config(db, values, schema="hotlink",
+                               descriptions=DESCRIPTIONS)
     return config_payload(db)
 
 
@@ -256,23 +251,21 @@ def get_allowed_referers(db: Session) -> list:
 
 
 def write_allowed_referers(db: Session, raw: str) -> list:
-    """写防盗链白名单（管理后台用）：做一遍域名归一化后落库，返回生效列表。"""
-    from backend.models import SystemConfig
+    """写防盗链白名单（管理后台用）：做一遍域名归一化后落库，返回生效列表。
+
+    r36 起走 ``config_service``（schema="hotlink" 的 play_allowed_referers 键，
+    ("raw",) 口径：归一化后的逗号串原样存，空名单落库 ""、读侧空=不检查，
+    与旧实现同口径；提交由调用方决定）。
+    """
+    from backend import config_service
 
     hosts = []
     for part in (raw or "").split(","):
         host = _normalize_host(part)
         if host and host not in hosts:
             hosts.append(host)
-    value = ",".join(hosts)
-    row = db.query(SystemConfig).filter(
-        SystemConfig.key == CONFIG_ALLOWED_REFERERS).first()
-    if row:
-        row.value = value
-    else:
-        db.add(SystemConfig(key=CONFIG_ALLOWED_REFERERS, value=value,
-                            description="播放防盗链 Referer 白名单（逗号分隔域名），空=不检查"))
-    db.commit()
+    config_service.save_config(db, {CONFIG_ALLOWED_REFERERS: ",".join(hosts)},
+                               schema="hotlink", descriptions=DESCRIPTIONS)
     return hosts
 
 
