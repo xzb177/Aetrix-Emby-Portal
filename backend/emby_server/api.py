@@ -2147,6 +2147,11 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
 
     MI = em.MediaItem
     is_pg = bool(db.bind and db.bind.dialect.name == "postgresql")
+    # P3.1 修复（2026-10-18）：函数内部用子查询包 ROW_NUMBER，ORM 全局软删除
+    # 钩子（_hide_soft_deleted）看不到子查询里的 emby_items（get_final_froms
+    # 只认最外层 FROM），已删除行会漏进分区导致误杀可见行。必须显式带
+    # deleted_at IS NULL（与钩子重复也无害）。
+    query = query.filter(MI.deleted_at.is_(None))
     # --- 剧的去重组（episode 分支要用）---
     # srows 必须是「候选集引用的剧」（与旧实现完全相同的语义）：不能直接取全量
     # series——软删除/已合并的剧会把 rep_map 撑到上万行，TEMP TABLE 插入从 ~5ms
