@@ -2684,7 +2684,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                 page_ids = page_ids[:limit]
                 total = len(page_ids)
             else:
-                total = kept.order_by(None).count()
+                # R4（2026-10-18）：dropped 恒为 query 的子集（T/E/N 分支都从 query
+                # 里圈出），故 count(kept) = count(query) - len(dropped)，数学精确
+                # 相等。省掉 16k NOT IN 的 COUNT（生产实测 ~100ms）。
+                total = query.order_by(None).count() - (len(dropped) if dropped else 0)
         if not page_ids:
             items = []
         else:
