@@ -1,13 +1,16 @@
-"""播放策略能力：中继（relay）/ 对象存储直链（direct）可配。
+"""播放策略能力：对象存储直链（direct）可配 + Drive 302 直链 + 远程挂载专用中继。
 
 设计口径（2026-10-16 用户拍板）：只做通用能力、不做死业务逻辑——
 策略与直链源全部走 SystemConfig + 管理后台，用哪种由服主决定。
-默认 ``relay`` = 现行中继路径，行为零变化；``direct`` 时，仅当条目的
-drive_file_id 在服主登记的直链名单（热门副本）内、且至少有一个完整
-可用的 S3 兼容直链源（R2 / B2 / Bunny 等）时，才给播放器发 302 签名
-直链，字节不经本机；其余情况一律回落中继，能力故障永不打断播放。
-（2026-10-17 注：PR-2 尾巴的配额感知降级已随 #958/#959 中继删除一并删除；
-本模块只剩直链/回落两条路。）
+``direct`` 时，仅当条目的 drive_file_id 在服主登记的直链名单（热门副本）
+内、且至少有一个完整可用的 S3 兼容直链源（R2 / B2 / Bunny 等）时，才给
+播放器发 302 签名直链，字节不经本机；Drive 条目默认 302 到谷歌 usercontent
+直链（``drive_direct_play_enabled`` 开关）；115 等远程挂载（``mount://``）
+走服务端专用中继代理（``streaming.serve_mount_relay_async``），凭据不下发。
+
+中继已按用户要求全删（2026-10-17），只剩远程挂载专用中继；原配额感知
+降级（``_quota_blocked`` 调用的 ``streaming.drive_quota_blocked_retry_after``
+已随 #958/#959 中继删除）已同步清理；本模块只剩直链/回落两条路。
 
 实测依据（reports/playback-302-recon-20261016.md）：网盘 uc 直链无鉴权
 不可用（登录墙/病毒扫描确认页），302 的合法载体只有自有对象存储的
@@ -143,7 +146,7 @@ def _bump_counter(name: str) -> None:
 
 
 def strategy_counters() -> dict:
-    """策略判定计数快照（direct_302=发过 302 / fallback_relay=回落中继）。"""
+    """策略判定计数快照（direct_302=发过 302 / fallback_relay=未命中直链）。"""
     with _COUNTERS_LOCK:
         return dict(_COUNTERS)
 
@@ -251,7 +254,7 @@ def _source_ready(src: dict) -> bool:
 
 
 def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]:
-    """策略为 direct 且该文件在直链名单内时返回签名直链，否则 None（回落中继）。
+    """策略为 direct 且该文件在直链名单内时返回签名直链，否则 None。
 
     任何配置缺失/损坏/签名异常都返回 None——能力故障永不打断播放。
     """

@@ -626,9 +626,9 @@ async def set_emby_password(
 @user_emby_router.get("/play-line")
 def get_play_line_pref(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                        db: Session = Depends(get_db)):
-    """播放路径（2026-10 简化后）：只有一条——中转。
+    """播放路径（2026-10 简化后）：Drive 302 直链 + 远程挂载专用中继。
 
-    保留此接口仅为兼容老客户端：永远返回 relay。
+    保留此接口仅为兼容老客户端：永远返回 relay（值保留，语义已随中继全删变更）。
     """
     return {"line": "relay",
             "cdn_enabled": cdn.enabled(db)}
@@ -638,7 +638,7 @@ def get_play_line_pref(request_user: models.WebUser = Depends(get_admin_or_emby_
 def set_play_line_pref(req: dict,
                        request_user: models.WebUser = Depends(get_admin_or_emby_user),
                        db: Session = Depends(get_db)):
-    """设置播放线路偏好（2026-10 已废弃）：只有中转一条路径，任何值都返回 relay。"""
+    """设置播放线路偏好（2026-10 已废弃）：任何值都返回 relay（兼容老客户端，值保留）。"""
     return {"line": "relay"}
 
 

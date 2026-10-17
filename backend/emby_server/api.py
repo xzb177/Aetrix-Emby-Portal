@@ -3471,12 +3471,11 @@ async def video_stream(
     _pt.mark("play_target")
     if target.kind == "url":
         # 播放策略能力：对象存储直链名单命中时 302 到对象存储；Drive 条目
-        # 直接 302 到谷歌 usercontent 直链（中继已删）。判定逻辑见 playback_strategy。
+        # 直接 302 到谷歌 usercontent 直链。判定逻辑见 playback_strategy。
         from backend.emby_server import playback_strategy as _strategy
         # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有
         # drive_file_id）且 drive_direct_play_enabled 开关开启时，直接 302
         # 到谷歌 usercontent 直链，播放器自拉；服务器退出字节通道。
-        # 开关关闭 / 非 Drive 条目（115/WebDAV/本地）一律走原路径。
         _fid = (getattr(item, "drive_file_id", "") or "").strip()
         if _fid and await run_db(_strategy.drive_direct_play_enabled, db):
             from backend.emby_server.drive_auth import drive_usercontent_download_url
@@ -3493,6 +3492,16 @@ async def video_stream(
             return _observe_traffic(
                 RedirectResponse(direct_url, status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
+        # 远程挂载专用中继（2026-10-17 用户拍板：给 115 留一条专用中继，
+        # 其他照删）：mount:// 路径解析出的 kind="url" 目标（直链依赖挂载
+        # 凭据 Cookie/令牌/UA，下发给客户端即死），由服务端带头代理转发；
+        # Drive 条目一律走上面的 302，不许回中继。
+        if mount_lib.is_mount_path(getattr(item, "file_path", "")):
+            _pt.mark("mount_relay")
+            from backend.emby_server.streaming import serve_mount_relay_async
+            return _observe_traffic(
+                await serve_mount_relay_async(
+                    target.value, request, target.headers, media_type, pt=_pt))
         raise HTTPException(status_code=410, detail="relay removed")
     # 本机文件：直接流形态，分片可被 CDN/浏览器缓存（第 2/3 层预留的另一半）
     _pt.mark("serve_file")
