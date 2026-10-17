@@ -17,7 +17,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -554,7 +554,31 @@ def panel_letter(
     })
 
 
-# ==================== 5.5 GET /api/panel/home（perf 优化 2026-10-13） ====================
+# ==================== 5.6 GET /api/panel/feed ====================
+# 发现页「实时动态流」：按时间倒序的事件数组，语义=跟随当前服。
+# realm_id 不传时用面板当前服（realms.active_realm_id）；传了则只返回该服可见
+# 的事件（realm 匹配，或 realm_id 为 NULL 的全局事件）。不聚合、不加页签。
+
+@router.get("/feed")
+def panel_feed(
+    realm_id: int | None = Query(None, description="服 id，不传=面板当前服"),
+    limit: int = Query(12, ge=1, le=50, description="返回条数，默认 12，上限 50"),
+    db: Session = Depends(get_db),
+    user: models.WebUser = Depends(get_current_user),
+):
+    _guard()
+    try:
+        from backend import realms as _realms
+        rid = realm_id if realm_id is not None else _realms.active_realm_id(db)
+    except Exception:  # noqa: BLE001 — 服解析失败时退化为全局视图
+        logger.warning("feed 服解析失败", exc_info=True)
+        rid = realm_id
+    from backend.panel_feed import read_feed
+    items = read_feed(db, rid, limit)
+    return _ok({"items": items, "realm_id": rid, "limit": limit})
+
+
+# ==================== 5.7 GET /api/panel/home（perf 优化 2026-10-13） ====================
 # 首页合并接口：一次返回 today/parcels/pulse/letter，把 4 次跨洋 RTT 并成 1 次。
 # 直接调用上方已定义的 4 个函数，不复制逻辑；单个失败隔离为 None，不拖垮其他区块。
 
@@ -1017,18 +1041,14 @@ def panel_toggle(
 
 # ==================== 活动埋点（供 worker 调用） ====================
 
-def push_activity(db: Session, text: str) -> None:
-    """写入一条后台活动（环形保留 50 条）"""
-    try:
-        db.add(models.PanelActivity(text=text[:300]))
-        db.commit()
-        # 裁剪：只留最近 50 条
-        cutoff_id = db.query(models.PanelActivity.id).order_by(
-            models.PanelActivity.id.desc()).offset(50).limit(1).scalar()
-        if cutoff_id:
-            db.query(models.PanelActivity).filter(
-                models.PanelActivity.id <= cutoff_id).delete()
-            db.commit()
-    except Exception:  # noqa: BLE001
-        db.rollback()
-        logger.exception("panel activity 写入失败")
+def push_activity(db: Session, text: str, event_type: str = "system",
+                  library: str | None = None,
+                  realm_id: int | None = None) -> None:
+    """写入一条后台活动（每服分区环形保留最近 500 条，见 backend/panel_feed）
+
+    event_type ∈ {scan, enrich, play, system}；library=库名标签；
+    realm_id=None=全局事件（所有服可见）。
+    """
+    from backend.panel_feed import note_feed
+    note_feed(db, text, event_type=event_type, library_name=library,
+              realm_id=realm_id)

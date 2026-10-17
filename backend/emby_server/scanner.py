@@ -4155,6 +4155,34 @@ def _maybe_alert_enrich_flip(db: Session, library: emby_models.Library,
         logger.warning("enrich 翻转告警检查失败: %s", exc)
 
 
+def _note_scan_feed(db: Session, library: emby_models.Library, stats: dict,
+                    status: str) -> None:
+    """扫描完成 → 发现页实时动态流埋点（真实触发：本轮扫描确实跑完）。
+
+    - 有新增/更新 → 一条 scan 事件「扫描完成 · 《库名》新增 X · 更新 Y」
+    - 清掉失效条目 → 一条 system 事件「死链清理 · 《库名》清理了 N 条失效条目」
+    - 本轮零变化且成功 → 不写（避免定时空扫刷屏）
+    """
+    try:
+        from backend.panel_feed import note_feed
+        added = int(stats.get("added") or 0)
+        updated = int(stats.get("updated") or 0)
+        removed = int(stats.get("removed") or 0)
+        lib_id = getattr(library, "id", None)
+        if added or updated:
+            note_feed(db, f"扫描完成 · 新增 {added} · 更新 {updated}",
+                      event_type="scan", library_id=lib_id)
+        elif status != SCAN_STATUS_SUCCESS:
+            note_feed(db, f"扫描完成（{status}）", event_type="scan",
+                      library_id=lib_id)
+        if removed:
+            note_feed(db, f"死链清理 · 清理了 {removed} 条失效条目",
+                      event_type="system", library_id=lib_id)
+    except Exception:  # noqa: BLE001 — 埋点失败绝不能影响扫描结果落库
+        logger.warning("扫描 feed 埋点失败 library_id=%s",
+                       getattr(library, "id", "?"), exc_info=True)
+
+
 def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict],
                 run_id: Optional[int] = None) -> str:
     """写入一轮扫描的结果，返回归类后的状态
@@ -4189,6 +4217,8 @@ def finish_scan(db: Session, library: emby_models.Library, stats: Optional[dict]
     _maybe_alert_enrich_flip(db, library, stats, run_id)
     # 结果已经落库了，封面重生成即使失败也不影响上面那两条状态
     _cover_autogen_after_scan(db, library, stats)
+    # 发现页实时动态流埋点（只加写入调用，不改扫描行为）
+    _note_scan_feed(db, library, stats, status)
     return status
 
 

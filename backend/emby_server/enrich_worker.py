@@ -712,6 +712,51 @@ def save_enrich_tuning_config(db, values: dict) -> dict:
 _worker_threads: list = []
 _effective_workers: int | None = None  # start() 时解析的实际线程数（供进度上报）
 _stop_event = threading.Event()
+
+# 发现页实时动态流：刮削批次埋点的进程内节流（补全 worker 是常驻循环，
+# 不节流会把 feed 刷满）。同一进程内两次埋点至少间隔 10 分钟。
+_ENRICH_FEED_MIN_INTERVAL_SEC = 600
+_enrich_feed_last_ts = 0.0
+_enrich_feed_lock = threading.Lock()
+
+
+def _note_enrich_batch_feed(db, batch: list) -> None:
+    """一批刮削认领处理完后 → 发现页 feed 埋点（真实触发：本轮确实补全了条目）。
+
+    文案「刮削更新 · 《X》等 N 部资料已补全」，type=enrich。
+    库名取首条已补全条目的库。10 分钟节流：高频追赶期不刷屏。
+    """
+    global _enrich_feed_last_ts
+    try:
+        with _enrich_feed_lock:
+            now = time.monotonic()
+            if now - _enrich_feed_last_ts < _ENRICH_FEED_MIN_INTERVAL_SEC:
+                return
+            _enrich_feed_last_ts = now
+        from backend.emby_server import models as _em
+        from backend.panel_feed import note_feed
+
+        batch_ids = [getattr(it, "id", None) for it in (batch or [])]
+        batch_ids = [i for i in batch_ids if i]
+        if not batch_ids:
+            return
+        # 只统计本轮从 pending → done 的条目（_claim_batch 只认领待补全条目）
+        done_rows = (db.query(_em.MediaItem.id, _em.MediaItem.name,
+                             _em.MediaItem.library_id)
+                     .filter(_em.MediaItem.id.in_(batch_ids),
+                             _em.MediaItem.enrich_status == "done")
+                     .all())
+        if not done_rows:
+            return
+        first = done_rows[0]
+        lib_id = first[2]
+        if len(done_rows) == 1:
+            text = f"刮削更新 · 《{first[1] or '未知'}》资料已补全"
+        else:
+            text = f"刮削更新 · 《{first[1] or '未知'}》等 {len(done_rows)} 部资料已补全"
+        note_feed(db, text, event_type="enrich", library_id=lib_id)
+    except Exception:  # noqa: BLE001 — 埋点失败绝不能影响补全循环
+        logger.warning("刮削 feed 埋点失败", exc_info=True)
 _worker_lock = threading.Lock()
 
 
@@ -3674,6 +3719,8 @@ def _worker_loop(worker_id: int) -> None:
                         progress.note_stage(
                             "enrich_item", (time.monotonic() - started) * 1000.0)
                         progress.note_completed(outcome)
+                # 发现页实时动态流埋点：本轮批次确实补全条目时写一条（只加写入调用）
+                _note_enrich_batch_feed(db, batch)
                 # 批次之间释放 session 身份映射，避免长连接内存膨胀
                 db.expire_all()
             finally:
