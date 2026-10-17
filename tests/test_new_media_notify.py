@@ -434,7 +434,8 @@ def test_send_to_staff_uses_rich_for_telegram(db, monkeypatch):
 
     staff = _add_staff(db)
     staff_id = staff.id
-    db.add(base_models.TelegramUser(web_user_id=staff_id, id=777001))
+    # r30 N1：旧 telegram_users 表已废弃，绑定走 WebUser.telegram_id
+    staff.telegram_id = 777001
     db.commit()
 
     rich_calls = []

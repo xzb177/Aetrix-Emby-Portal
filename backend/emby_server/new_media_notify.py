@@ -359,10 +359,11 @@ def _staff_ids(db: Session) -> list[int]:
 
 
 def _staff_chat_ids(db: Session, staff_ids: list[int]) -> dict[int, int]:
-    """管理员 id → TG chat_id（TelegramUser.id 即 chat_id）。"""
+    """管理员 id → TG chat_id（r30 N1：旧 telegram_users 表已废弃，改查 WebUser.telegram_id）。"""
     rows = (
-        db.query(models.TelegramUser.web_user_id, models.TelegramUser.id)
-        .filter(models.TelegramUser.web_user_id.in_(staff_ids))
+        db.query(models.WebUser.id, models.WebUser.telegram_id)
+        .filter(models.WebUser.id.in_(staff_ids))
+        .filter(models.WebUser.telegram_id.isnot(None))
         .all()
     )
     return {web_id: chat_id for web_id, chat_id in rows}

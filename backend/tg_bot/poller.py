@@ -5,13 +5,11 @@ import logging
 import queue
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
 # update 分发队列（poller 线程只做 IO，业务在工作线程执行）
 _UPDATE_QUEUE: queue.Queue = queue.Queue(maxsize=1000)
-_EXECUTOR: ThreadPoolExecutor | None = None
 
 # getUpdates offset 持久化键（SystemConfig）
 _OFFSET_KEY = "tg_bot_update_offset"
@@ -129,10 +127,7 @@ def poll_forever() -> None:
     from backend.integrations.telegram import token as get_token
     from backend.integrations import store
 
-    global _EXECUTOR
-
-    # 启动工作线程池
-    _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tg-bot-worker")
+    # 分发由下面 4 个手写 _worker_loop 线程承担（r30 N6：删掉建而未用的线程池）
     for _ in range(4):
         t = threading.Thread(target=_worker_loop, daemon=True, name="tg-bot-worker")
         t.start()
