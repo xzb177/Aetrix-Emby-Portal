@@ -319,6 +319,22 @@ html[data-theme='light'] {
   transform: translateX(-100%);
   animation: v4-shimmer-slide 1.4s infinite linear;
 }
+/* 骨架占位格（报到簿日历）：与 .day 同尺寸的 shimmer 格，复用 v4-shimmer-slide */
+.sk-day {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 1;
+  border-radius: var(--paper-r-sm, 8px);
+  background: var(--paper2);
+}
+.sk-day::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, #f7f2e6 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: v4-shimmer-slide 1.4s infinite linear;
+}
 @keyframes v4-shimmer-slide {
   from { transform: translateX(-100%); }
   to { transform: translateX(100%); }
