@@ -15,6 +15,7 @@ from backend.emby_server import scanner
 from backend.emby_server.scanner import (
     _apply_enrich_status,
     _compute_size_change,
+    _scan_has_metadata,
     _write_enrich_status,
 )
 
@@ -176,8 +177,39 @@ class TestApplyEnrichStatus:
     def test_flat_pending_finalizes_to_done(self, _capture_logs):
         item = _item(enrich_status="pending", size=100)
         _apply_enrich_status(item, _scanfile(100), is_new=False,
+                             layered=False, item_type="movie",
+                             has_metadata=True)
+        assert item.enrich_status == "done"
+        assert any(r[0] == "debug" and "flat_scan_finalized" in r[1]
+                   for r in _capture_logs)
+
+    def test_flat_pending_defaults_to_done_backward_compat(self, _capture_logs):
+        """老调用方不传 has_metadata 时保持旧行为（done），不静默改口径。"""
+        item = _item(enrich_status="pending", size=100)
+        _apply_enrich_status(item, _scanfile(100), is_new=False,
                              layered=False, item_type="movie")
         assert item.enrich_status == "done"
+
+    def test_flat_no_metadata_goes_pending(self, _capture_logs):
+        """第 0 批：无 NFO、无 TMDB 命中、无有效文本 → pending（假完成修复）。
+
+        用与分层远程文件相同的待刮状态值，等 enrich_worker 后台补。
+        """
+        item = _item(enrich_status="pending", size=100)
+        _apply_enrich_status(item, _scanfile(100), is_new=False,
+                             layered=False, item_type="movie",
+                             has_metadata=False)
+        assert item.enrich_status == "pending"
+        assert any(r[0] == "info" and "flat_scan_no_metadata" in r[1]
+                   for r in _capture_logs)
+
+    def test_flat_new_item_no_metadata_pending(self):
+        """第 0 批：新行（old_status None）在非分层下无元数据同样 pending。"""
+        item = _item(enrich_status=None, size=0)
+        _apply_enrich_status(item, _scanfile(50), is_new=True,
+                             layered=False, item_type="movie",
+                             has_metadata=False)
+        assert item.enrich_status == "pending"
 
     def test_flat_non_movie_episode_untouched(self, _capture_logs):
         """Non movie/episode types are not finalized by flat scan (legacy)."""
@@ -191,3 +223,52 @@ class TestApplyEnrichStatus:
         item = _item()
         with pytest.raises(TypeError):
             _write_enrich_status(item, "pending")  # missing keyword-only reason
+
+
+class TestScanHasMetadata:
+    """第 0 批：_scan_has_metadata 判定口径。"""
+
+    def test_tmdb_hit_counts(self):
+        pending = SimpleNamespace(tmdb_hit={"id": 123}, nfo_data=None)
+        assert _scan_has_metadata(_item(), pending) is True
+
+    def test_nfo_with_title_counts(self):
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data={"title": "赛博浪客"})
+        assert _scan_has_metadata(_item(), pending) is True
+
+    def test_nfo_with_overview_counts(self):
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data={"overview": "简介"})
+        assert _scan_has_metadata(_item(), pending) is True
+
+    def test_nfo_with_tmdb_id_counts(self):
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data={"tmdb_id": 12345})
+        assert _scan_has_metadata(_item(), pending) is True
+
+    def test_empty_nfo_does_not_count(self):
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data={})
+        assert _scan_has_metadata(_item(), pending) is False
+
+    def test_existing_tmdb_id_counts(self):
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data=None)
+        assert _scan_has_metadata(_item(tmdb_id="123"), pending) is True
+
+    def test_authoritative_source_counts(self):
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data=None)
+        for src in ("nfo", "tmdb", "tmdb_img", "douban", "bangumi",
+                    "multisource", "inherit"):
+            assert _scan_has_metadata(_item(metadata_source=src), pending) is True
+
+    def test_none_source_does_not_count(self):
+        """metadata_source='none'（搜过、没有）不算有元数据 → 重新排队。"""
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data=None)
+        assert _scan_has_metadata(_item(metadata_source="none"), pending) is False
+
+    def test_overview_counts_as_effective_text(self):
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data=None)
+        assert _scan_has_metadata(_item(overview="  有简介  "), pending) is True
+
+    def test_bare_row_is_pending(self):
+        """三无行（无 NFO、无 TMDB 命中、无有效文本）→ False。"""
+        pending = SimpleNamespace(tmdb_hit=None, nfo_data=None)
+        assert _scan_has_metadata(_item(name="xxx.mkv", overview="  "),
+                                  pending) is False
