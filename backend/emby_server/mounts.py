@@ -1859,7 +1859,11 @@ def mount_source_resolver(path: str):
 subtitles.register_mount_resolver(mount_source_resolver)
 
 
-# ==================== rclone 挂载类型 ====================
-# rclone 的实现单独放在 mount_rclone.py（依赖 rclone 命令 / RC，不适合塞进本文件）。
-# 它导入时调用 register_providers，因此提供者在本模块定义完 _PROVIDERS 之后就已经可用了。
+# ==================== rclone / drive 挂载类型 ====================
+# rclone 的实现单独放在 mount_rclone.py（依赖 rclone 命令 / RC，不适合塞进本文件）；
+# drive 的实现单独放在 mount_drive.py（Drive API 直调，凭据层走 drive_changes 横切能力）。
+# 两者导入时调用 register_providers，因此提供者在本模块定义完 _PROVIDERS 之后就已经可用了。
+# 注意：这里必须显式自导入——EA 进程（aetrix-ea）只导入本模块，不走
+# backend.api.servers / change_watcher 的导入副作用，不自导入会导致 drive 在其进程里未注册。
 from backend.emby_server import mount_rclone  # noqa: E402,F401  (导入即注册)
+from backend.emby_server import mount_drive  # noqa: E402,F401  (导入即注册)
