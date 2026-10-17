@@ -3382,7 +3382,7 @@ async def playback_info(
     from backend.emby_server import playback_strategy as _ps2
     _dd_fid = (getattr(item, "drive_file_id", "") or "").strip()
     if _dd_fid and _ps2.drive_direct_play_enabled(db):
-        _rewrite_src = None
+        pass  # 直链播放：跳过改写即可（本分支 _rewrite_src 已无其他消费方）
     else:
         from backend.emby_server import stream_accel
         stream_url, transcoding_url, _rewrite_src = stream_accel.rewrite_playback_urls_unified(
