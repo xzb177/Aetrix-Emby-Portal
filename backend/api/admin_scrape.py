@@ -928,6 +928,8 @@ def _run_library_rescrape(library_id: int, policy: str) -> None:
     """后台线程跑 scan_library_sync（与 scan_queue 工作线程同构：独立 Session）。
 
     不走 scan_queue.enqueue：policy 覆盖是本轮快照的一次性行为，不改库配置。
+    但挂载串行化与队列共用一套（scan_queue.mount_serial_guard）：不登记占用
+    的话，同挂载的库并发重刮会同时打远端（2026-10-17 run 4811/4814）。
     """
     from backend.emby_server import scan_instrument
     from backend.emby_server.scanner import (
@@ -959,7 +961,12 @@ def _run_library_rescrape(library_id: int, policy: str) -> None:
         # 时仍按 all 执行，与管理员当轮选择相悖。
         snap = replace(snap, scrape_policy=normalize_scrape_policy(policy))
         scan_instrument.install()  # 幂等：进度上报点
-        scan_library_sync(db, lib, snap, trigger="rescrape")
+        # 与排队扫描共用挂载串行化：rescrape 不走 enqueue，过去不登记占用，
+        # 同挂载的另一库同时重刮（或单体模式下排队扫描）会与它并发打远端
+        # ——2026-10-17 run 4811/4814 的并发正是这么来的。挂载忙时在本后台
+        # 线程里等，接口早已返回，不阻塞管理员操作。
+        with scan_queue.mount_serial_guard(library_id, snap.mount_ids):
+            scan_library_sync(db, lib, snap, trigger="rescrape")
     except ScanInProgress:
         logger.info("重新刮削：媒体库 %s 正在扫描中，本次触发跳过", library_id)
     except Exception:  # noqa: BLE001 — 后台线程异常只记日志，不影响接口已返回
