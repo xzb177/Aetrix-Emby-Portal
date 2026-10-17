@@ -4,32 +4,38 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">营地 · 探险地图</span>
-        <h1>🗺️ 探险预告</h1>
+        <h1><span aria-hidden="true">🗺️</span> 探险预告</h1>
         <p>新抵达的大陆，先睹为快。点"想去"加入探险计划。</p>
       </header>
 
       <!-- 时间线 -->
-      <section class="v4-sec" :aria-busy="loading">
-        <div class="v4-sec-title">🧭 最近抵达</div>
+      <section class="v4-sec" :aria-busy="loading" aria-label="最近抵达">
+        <h2 class="v4-sec-title"><span aria-hidden="true">🧭</span> 最近抵达</h2>
         <div class="v4-sec-sub">红点是今天，圆圈是近几天的日子</div>
-        <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
+        <div v-if="loading" class="sk-timeline" aria-hidden="true">
+          <div class="v4-skeleton sk-tdate"></div>
+          <div class="v4-skeleton sk-card"></div>
+          <div class="v4-skeleton sk-card"></div>
+          <div class="v4-skeleton sk-teaser"></div>
+        </div>
         <div v-else-if="error" class="v4-err" role="alert">探险地图加载失败：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
         <div v-else>
           <div v-if="days.length || teaserStandalone" class="timeline">
-          <div
+          <section
             v-for="day in days"
             :key="day.date"
             class="tday"
             :class="{ hot: isToday(day.date) }"
+            :aria-label="dayLabel(day.date) + '的新东西'"
           >
-            <div class="tdate">{{ dayLabel(day.date) }}</div>
+            <h3 class="tdate">{{ dayLabel(day.date) }}</h3>
             <div class="cards">
               <div
                 v-for="item in day.items.slice(0, expanded.has(day.date) ? day.items.length : 3)"
                 :key="item.Id"
                 class="treasure"
               >
-                <div class="map">{{ typeIcon(item.Type) }}</div>
+                <div class="map" aria-hidden="true">{{ typeIcon(item.Type) }}</div>
                 <div class="info">
                   <b>{{ item.Name }}</b>
                   <span><template v-if="item.LibraryName">{{ item.LibraryName }} · </template>{{ typeLabel(item.Type) }}</span>
@@ -38,26 +44,26 @@
                   class="want"
                   :class="{ on: plan.has(item.Id) }"
                   :aria-pressed="plan.has(item.Id)"
-                  :aria-label="item.Name + ' 加入计划'"
+                  :aria-label="item.Name + '，想去' + (plan.has(item.Id) ? '，已加入' : '')"
                   @click="togglePlan(item.Id)"
                 >
                   <span class="lbl">{{ plan.has(item.Id) ? '已加入 ✓' : '想去' }}</span>
                 </button>
               </div>
               <!-- R27：按实际拿到的条数判断，避免 day.count>3 但只有 3 条时显示「还有 0 件」 -->
-              <button v-if="day.items.length > 3" class="more" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (day.items.length - 3) + ' 件，点我看全部 →' }}</button>
+              <button v-if="day.items.length > 3" class="more" :aria-expanded="expanded.has(day.date)" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (day.items.length - 3) + ' 件，点我看全部 →' }}</button>
               <div v-if="day.items.length === 0" class="empty-day">这天营地很安静，没有新大陆</div>
             </div>
-          </div>
+          </section>
 
           <!-- 未来：保密新大陆（后台可配的揭晓位，见 backend/emby_server/teaser.py）。
                未到揭晓日只显示保密文案；到日子自动换成揭晓后内容（可点跳转）。
                旧后端没有 teaser 字段时回退到原来的静态悬念卡，观感不变。 -->
-          <div v-if="teaserVisible" class="tday future">
-            <div class="tdate">
+          <section v-if="teaserVisible" class="tday future" :aria-label="effectiveTeaser?.status === 'revealed' ? '已揭晓的新大陆' : '未来保密中的新大陆'">
+            <h3 class="tdate">
               <template v-if="effectiveTeaser?.status === 'revealed'">🎉 已揭晓</template>
               <template v-else>未来 · 保密中 <span v-if="teaserCountdownText" class="countdown">{{ teaserCountdownText }}</span></template>
-            </div>
+            </h3>
             <div class="cards">
               <div
                 class="treasure mystery"
@@ -68,23 +74,23 @@
                 @keydown.enter="onTeaserClick"
                 @keydown.space.prevent="onTeaserClick"
               >
-                <div class="map">{{ effectiveTeaser?.status === 'revealed' ? '✨' : '🌫️' }}</div>
+                <div class="map" aria-hidden="true">{{ effectiveTeaser?.status === 'revealed' ? '✨' : '🌫️' }}</div>
                 <div class="info">
                   <b>{{ teaserTitle }}</b>
                   <span v-if="teaserSubtitle">{{ teaserSubtitle }}</span>
                 </div>
               </div>
             </div>
-          </div>
+          </section>
           </div>
           <!-- R27：无报错但一天都没有 → 空态说明（计划不持久化是 v1 设计，不改） -->
-          <div v-if="!days.length && !teaserStandalone" class="v4-empty">最近没有新大陆抵达 —— 探险计划不留档，刷新页面重新看看 🧭</div>
+          <div v-if="!days.length && !teaserStandalone" class="v4-empty">这几天营地里还没有新大陆，过几天再来看看 🧭</div>
         </div>
       </section>
 
       <!-- 探险计划条 -->
       <div v-if="plan.size > 0" class="plan-bar">
-        <span>🎒 探险计划 <b>{{ plan.size }}</b> 个目的地</span>
+        <span><span aria-hidden="true">🎒</span> 探险计划 <b>{{ plan.size }}</b> 个目的地</span>
         <!-- R41：误点"想去"只能再点一次取消 —— 加清空按钮一键清零（v1 计划不落库，清掉不影响后端） -->
         <button type="button" class="plan-clear" @click="clearPlan">清空</button>
       </div>
@@ -224,7 +230,8 @@ function toggleExpand(date: string) {
 
 async function load() {
   const mySeq = ++loadSeq
-  loading.value = true
+  // 已有数据时的刷新（跨天定时器/回前台）静默替换，不闪骨架；首次加载才 show 骨架
+  if (days.value.length === 0) loading.value = true
   error.value = ''
   try {
     const end = new Date()
@@ -238,6 +245,8 @@ async function load() {
   } catch (e) {
     // 新请求已在路上：旧响应直接丢，不报错、不闪错误态
     if (e instanceof StaleResponseError) return
+    // 旧请求的失败不许覆盖新请求：只有最新请求能写 error（成功路径已在 fetchCalendar 内守卫）
+    if (mySeq !== loadSeq) return
     error.value = humanizeError(e)
   } finally {
     // R48B-10：旧请求不许碰 loading——只有最新请求能关闭它
@@ -353,6 +362,7 @@ onUnmounted(() => {
   border: none;
   font-size: 12px;
   font-weight: 700;
+  font-family: inherit;
   padding: 15px 12px;
   margin: -6px 0;
   cursor: pointer;
@@ -392,6 +402,7 @@ onUnmounted(() => {
   background: none; border: none; cursor: pointer; text-align: left;
   /* R41：纵向 padding 14px→16px —— 15px 实算 43.2px 仍差一截，16px 才诚实达标 44px（文案行视觉不变） */
   padding: 16px 0; margin: -12px 0;
+  font-family: inherit;
 }
 .empty-day { font-size: 11px; color: var(--ink2); padding: 2px 0; }
 .plan-bar {
@@ -408,6 +419,8 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   box-shadow: 0 4px 14px rgba(42, 38, 32, 0.25);
+  /* F10：显式层级——低于 tabbar 的 50、高于内容区 relative 元素，不依赖 DOM 顺序 */
+  z-index: 10;
 }
 .plan-bar b { color: var(--ember, #FFB25E); }
 /* R41：清空按钮 —— 文字按钮，触点纵向 44px、横向触点 ≥44px（透明 padding + 负 margin，条的高度不变） */
@@ -436,4 +449,10 @@ onUnmounted(() => {
   white-space: nowrap;
   border: 0;
 }
+.tdate { margin: 0; } /* F1：h3 默认 margin 归零，观感不变 */
+/* F6：探险预告骨架——贴近真实结构，避免 220px 单块造成的布局跳动 */
+.sk-timeline { display: flex; flex-direction: column; gap: 10px; padding-left: 26px; }
+.sk-tdate { height: 18px; width: 40%; }
+.sk-card { height: 60px; }
+.sk-teaser { height: 64px; }
 </style>
