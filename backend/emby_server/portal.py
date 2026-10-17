@@ -31,7 +31,6 @@ from sqlalchemy.orm import Session, aliased
 from backend import models, realms, subscriptions
 from backend.database import get_db, SessionLocal
 from backend.integrations import store
-from backend.emby_server import cdn
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
 from backend.emby_server.api import (
@@ -633,8 +632,7 @@ def get_play_line_pref(request_user: models.WebUser = Depends(get_admin_or_emby_
 
     保留此接口仅为兼容老客户端：永远返回 relay（值保留，语义已随中继全删变更）。
     """
-    return {"line": "relay",
-            "cdn_enabled": cdn.enabled(db)}
+    return {"line": "relay"}
 
 
 @user_emby_router.put("/play-line")

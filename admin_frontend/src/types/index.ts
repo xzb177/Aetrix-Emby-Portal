@@ -48,23 +48,9 @@ export interface PlaybackPolicy {
   /** 并发转码上限；0 = 用进程内置上限（EMBY_MAX_TRANSCODES / CPU 核数） */
   max_concurrent_transcodes: number
   /** 客户端 UA 黑名单（子串，逗号分隔） */
-  blocked_agents: string
   /** 客户端 UA 白名单（填了就只放列表内的客户端） */
-  allowed_agents: string
   /** Drive 302 直链总开关（#957 的回滚闸；关掉后 Drive 文件播放返回 410） */
   drive_direct_play_enabled: boolean
-}
-
-/** CDN 域名预留（播放三层第 2/3 层极简预留版，/api/admin/playback/cdn） */
-export interface CdnConfig {
-  /** 管理员填的原始域名（可能带 scheme/尾斜杠） */
-  domain: string
-  /** 归一化后的 scheme://host（非法输入时为空串） */
-  normalized: string
-  /** 是否生效（开关打开且域名合法，缺省关闭） */
-  enabled: boolean
-  /** 分片响应的缓存头口径（回显给管理员看） */
-  segment_cache_header: string
 }
 
 /** 策略的运行态：只反映**本进程**（分离部署时转码跑在 EA 上） */
@@ -135,7 +121,8 @@ export interface PlayLinesSnapshot {
   bytes_out: number
   idle_seconds: number | null
   uptime_seconds: number
-  cdn: PlayPathCdnState
+  /** cdn 已随 2026-10-17 删除（后端不再下发），留可选键防旧快照 */
+  cdn?: PlayPathCdnState
   /** 本地缓存段已随 #959 整删（后端不再下发），留可选键防旧快照 */
   cache?: PlayPathCacheState
   /** 口径说明 */
