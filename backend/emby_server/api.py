@@ -2148,8 +2148,20 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     MI = em.MediaItem
     is_pg = bool(db.bind and db.bind.dialect.name == "postgresql")
     # --- 剧的去重组（episode 分支要用）---
-    srows = db.query(MI.id, MI.library_id, MI.tmdb_id, MI.name, MI.production_year).filter(
-        MI.item_type == "series").all()
+    # srows 必须是「候选集引用的剧」（与旧实现完全相同的语义）：不能直接取全量
+    # series——软删除/已合并的剧会把 rep_map 撑到上万行，TEMP TABLE 插入从 ~5ms
+    # 涨到 ~800ms（2026-10-18 生产实测），反而比旧实现慢。
+    ep_series = (
+        query.with_entities(MI.series_id)
+        .filter(MI.item_type == "episode")
+        .distinct()
+        .subquery()
+    )
+    srows = (
+        db.query(MI.id, MI.library_id, MI.tmdb_id, MI.name, MI.production_year)
+        .filter(MI.item_type == "series", MI.id.in_(select(ep_series.c.series_id)))
+        .all()
+    )
     rep_join = None
     series_group_expr = func.coalesce(MI.series_id, 0)
     if srows:
