@@ -75,6 +75,45 @@ PROGRESS_SEEK_TICKS = int(os.getenv("EMBY_PROGRESS_SEEK_TICKS", "300000000") or 
 
 # ==================== 会话上报 ====================
 
+def _note_play_feed(db: Session, item: em.MediaItem, started: bool,
+                    finished: bool) -> None:
+    """播放事件 → 发现页实时动态流埋点（**匿名**：文案一律「一位影迷」，绝不出现
+    用户昵称/ID）。
+
+    - 新会话（非 ended）→「一位影迷开始看《X》第 N 集」/「一位影迷开始看《X》」
+    - ended 上报 →「一位影迷看完《X》」
+    """
+    if not started and not finished:
+        return
+    try:
+        from backend.panel_feed import note_feed
+
+        name = (getattr(item, "name", "") or "").strip() or "未知影片"
+        ep = getattr(item, "episode_number", None)
+        series_id = getattr(item, "series_id", None)
+        if getattr(item, "item_type", "") == "episode" and series_id:
+            try:
+                sname = db.query(em.MediaItem.name).filter(
+                    em.MediaItem.id == series_id).scalar()
+                if sname:
+                    name = sname
+            except Exception:  # noqa: BLE001 — 剧名查不到就用条目名
+                pass
+        if ep:
+            title = f"《{name}》第 {ep} 集"
+        else:
+            title = f"《{name}》"
+        if started:
+            text = f"一位影迷开始看{title}"
+        else:
+            text = f"一位影迷看完{title}"
+        note_feed(db, text, event_type="play",
+                  library_id=getattr(item, "library_id", None))
+    except Exception:  # noqa: BLE001 — 埋点失败绝不能影响播放上报
+        logger.warning("播放 feed 埋点失败 item_id=%s",
+                       getattr(item, "id", "?"), exc_info=True)
+
+
 def _upsert_session(db: Session, request: Request, user: models.WebUser,
                     item: em.MediaItem, body: dict,
                     ended: bool = False) -> tuple[em.PlaybackSession, bool]:
@@ -181,6 +220,9 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
     if ended:
         session.ended_at = datetime.now()
     db.commit()
+    # 发现页实时动态流埋点：新会话=开始看，ended=看完（只加写入调用，不改上报行为）
+    _note_play_feed(db, item, started=(new_session and not ended),
+                    finished=bool(ended))
     return session, True
 
 

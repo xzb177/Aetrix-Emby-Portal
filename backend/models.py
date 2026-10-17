@@ -1785,13 +1785,23 @@ class PanelAchievementUnlock(Base):
 
 
 class PanelActivity(Base):
-    """后台活动 feed（环形保留最近 50 条，供面板脉搏文案）"""
+    """后台活动 feed（供面板脉搏文案 + 发现页实时动态流）。
+
+    保留策略见 backend/panel_feed.py：每服分区最新 500 条，写入时裁剪。
+    """
     __tablename__ = 'panel_activity'
 
     __table_args__ = (
         Index('idx_panel_activity_time', 'created_at'),
+        Index('idx_panel_activity_realm_time', 'realm_id', 'created_at'),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     text = Column(String(300), nullable=False)
     created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    # 事件类型：scan / enrich / play / system（GET /api/panel/feed 的 type 字段）
+    event_type = Column(String(20), default='system', nullable=False)
+    # 库名标签（系统事件可为 NULL）
+    library = Column(String(200))
+    # 归属服（NULL = 全局事件，所有服可见）
+    realm_id = Column(Integer)

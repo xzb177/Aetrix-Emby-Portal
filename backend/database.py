@@ -904,6 +904,14 @@ def _auto_migrate():
         ("emby_items", [
             ("tmdb_loose_repair_at", "DATETIME", "NULL"),
         ]),
+        # 发现页实时动态流（2026-10-17）：panel_activity 加事件类型/库名/归属服。
+        # 老库补列后 event_type='system'、realm_id=NULL（= 全局事件，所有服可见），
+        # 行为与升级前（纯文案 feed）一致。
+        ("panel_activity", [
+            ("event_type", "VARCHAR(20)", "'system'"),
+            ("library", "VARCHAR(200)", "NULL"),
+            ("realm_id", "INTEGER", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
