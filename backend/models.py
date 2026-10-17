@@ -300,70 +300,6 @@ class UserPlayLine(Base):
     user = relationship("WebUser", backref="play_line_pref")
 
 
-class TelegramUser(Base):
-    """Telegram 用户表（从主项目迁移）"""
-    __tablename__ = 'telegram_users'
-
-    __table_args__ = (
-        Index('idx_tg_id', 'id'),
-        Index('idx_tg_username', 'username'),
-    )
-
-    id = Column(BigInteger, primary_key=True)  # Telegram ID
-    username = Column(String(100))
-    first_name = Column(String(100))
-    last_name = Column(String(100))
-    language_code = Column(String(10))
-    is_bot = Column(Boolean, default=False)
-    is_premium = Column(Boolean, default=False)
-
-    # Emby 相关
-    emby_account = Column(String)  # Emby 账号
-    emby_password = Column(String)  # Emby 密码
-    emby_url = Column(String)  # Emby 服务器地址
-    is_vip = Column(Boolean, default=False)
-    vip_expiry = Column(DateTime)
-
-    # 积分系统
-    points = Column(Integer, default=0)
-    bank_points = Column(Integer, default=0)
-    total_earned = Column(Integer, default=0)
-    total_spent = Column(Integer, default=0)
-
-    # 签到相关
-    last_checkin = Column(DateTime)
-    last_checkin_date = Column(DateTime)
-    total_checkin_days = Column(Integer, default=0)
-    consecutive_checkin = Column(Integer, default=0)
-
-    # 观影相关
-    daily_watch_minutes = Column(Integer, default=0)
-    total_watch_minutes = Column(Integer, default=0)
-    last_watch_claimed = Column(DateTime)
-    watch_streak = Column(Integer, default=0)
-    last_watch_checkin_date = Column(DateTime)
-    total_watch_checkin_days = Column(Integer, default=0)
-    watch_checkin_today = Column(Boolean, default=False)
-
-    # 游戏数据（兼容原有功能）
-    win = Column(Integer, default=0)
-    lost = Column(Integer, default=0)
-    weapon = Column(String)
-    attack = Column(Integer, default=0)
-    intimacy = Column(Integer, default=0)
-    resonance_count = Column(Integer, default=0)
-
-    # 时间相关
-    last_active_time = Column(DateTime)
-    last_chat_time = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-    # 关联
-    web_user_id = Column(Integer, ForeignKey('web_users.id'))
-    web_user = relationship("WebUser", backref="telegram_accounts")
-
-
 # ==================== 订阅和支付相关 ====================
 
 class SubscriptionPlan(Base):
@@ -1393,7 +1329,7 @@ __all__ = [
     # 多服运营
     "ServerRealm",
     # 用户
-    "WebUser", "TelegramUser",
+    "WebUser",
     # 订阅和支付
     "SubscriptionPlan", "UserSubscription", "SubscriptionReminder",
     "RechargePackage", "RechargeOrder", "SubscriptionOrder",
