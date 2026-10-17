@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import quote, urlsplit
 
@@ -825,8 +825,15 @@ def _calendar_day(raw: str | None) -> datetime | None:
 
 
 def _calendar_month_bounds() -> tuple[datetime, datetime]:
-    """没有给区间时看当月（两端都是**含当天**的日历日）"""
-    first = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    """没有给区间时看当月（两端都是**含当天**的日历日，Asia/Shanghai）"""
+    # r35："当月"按上海自然月；此前用服务器本地（生产 UTC），每月 1 日 00:00–08:00
+    # （CST）会显示上个月。
+    from zoneinfo import ZoneInfo
+    try:
+        _now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001 — 缺 tzdata 回退旧行为
+        _now = datetime.now()
+    first = _now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     next_month = datetime(first.year + (first.month == 12), first.month % 12 + 1, 1)
     return first, next_month - timedelta(days=1)
 
@@ -861,8 +868,10 @@ def get_chase_calendar(request: Request,
     「2026-10-01 ~ 2026-10-31」理应包含 10 月 31 日晚上入库的东西）。
     落到 SQL 上是 ``>= start 00:00`` 且 ``< end+1 天 00:00``。
 
-    **分组时区**：``date_added`` 存的是服务器本地时间（naive），按它 ``.date()``
-    分组即服务器本地日历日，与用户端日历格子的本地日期一一对应，不做二次转换。
+    **分组时区**：``date_added`` 是 UTC-naive 入库（scanner 以容器本地时间写入），
+    分组时 +8h 换算成 Asia/Shanghai 自然日再分格；起止参数是上海日历日，过滤界
+    同样换算成 UTC 帧。r35 之前这里按 UTC 日分组，每天 00:00–08:00（CST）入库
+    的条目会落在前一天格子。
 
     **可见范围**：与媒体库列表、条目浏览同一个口径（``_library_scope``），
     否则会出现「客户端里看不到的库，日历里却有新片」。
@@ -885,6 +894,10 @@ def get_chase_calendar(request: Request,
         end = start + timedelta(days=CALENDAR_MAX_DAYS - 1)
     # 闭区间 → SQL 的左闭右开
     end_exclusive = end + timedelta(days=1)
+    # r35：入参起止是上海日历日，date_added 是 UTC-naive 入库 —— 过滤界换算成
+    # UTC 帧（否则每月首尾 00:00–08:00 CST 入库的条目在边界月里丢失）。
+    start_utc = start - timedelta(hours=8)
+    end_exclusive_utc = end_exclusive - timedelta(hours=8)
 
     types = [
         t for t in (q.get("item_type") or "").split(",")
@@ -902,8 +915,8 @@ def get_chase_calendar(request: Request,
                  em.MediaItem.item_type, em.MediaItem.library_id)
         .filter(
             em.MediaItem.is_hidden == False,  # noqa: E712
-            em.MediaItem.date_added >= start,
-            em.MediaItem.date_added < end_exclusive,
+            em.MediaItem.date_added >= start_utc,
+            em.MediaItem.date_added < end_exclusive_utc,
         ),
         allowed,
     )
@@ -930,7 +943,10 @@ def get_chase_calendar(request: Request,
     day_ids: dict[str, list[int]] = {}
     day_counts: dict[str, int] = {}
     for item_id, date_added, _type, _lib in rows:
-        day = (date_added.date() if date_added else start.date()).isoformat()
+        # r35：按上海自然日分格（date_added 是 UTC-naive）；此前按 UTC 日分组，
+        # 每天 00:00–08:00（CST）入库的条目落在前一天格子。
+        day = ((date_added + timedelta(hours=8)).date()
+               if date_added else start.date()).isoformat()
         day_counts[day] = day_counts.get(day, 0) + 1
         bucket = day_ids.setdefault(day, [])
         # rows 已按 date_added DESC 排序，先到先得 —— 留下的是当天最新入库的那批
@@ -1040,8 +1056,11 @@ def get_leaderboard(
     # 时区口径与 #910 问候语保持一致，统一按 Asia/Shanghai 计算自然日 / 自然周
     from zoneinfo import ZoneInfo
 
-    tz = ZoneInfo("Asia/Shanghai")
-    now = datetime.now(tz)
+    try:
+        tz = ZoneInfo("Asia/Shanghai")
+    except Exception:  # noqa: BLE001 — 缺 tzdata 时回退（与 panel.py 同口径）
+        tz = None
+    now = datetime.now(tz) if tz is not None else datetime.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     if period == "week":
         # 本周一 0 点（weekday()：周一 = 0）
@@ -1049,14 +1068,21 @@ def get_leaderboard(
     else:
         window_start = today_start
 
-    # 服务器存的是 naive 时间，假定其本身就是 Asia/Shanghai 本地时间，直接与窗口起点比较
+    # 对外展示的窗口起点（上海口径，前端照此画榜单日期）
     window_start_naive = window_start.replace(tzinfo=None)
+    # r35：PlaybackSession.start_time 是 UTC-naive 入库（容器本地时间写入），
+    # 此前的注释"假定其本身就是上海本地时间"不成立 —— 每天 00:00–08:00（CST）
+    # 的播放会被排除在榜外（窗口起点超前 8 小时）。比较用 UTC 帧换算值。
+    if tz is not None:
+        window_start_utc = window_start.astimezone(timezone.utc).replace(tzinfo=None)
+    else:
+        window_start_utc = window_start_naive
 
     if board == "hot":
         # 热播榜：一次取出窗口内的 (user_id, item_id)，Python 侧聚合（表不大，不写复杂 SQL）
         rows = (
             db.query(em.PlaybackSession.user_id, em.PlaybackSession.item_id)
-            .filter(em.PlaybackSession.start_time >= window_start_naive)
+            .filter(em.PlaybackSession.start_time >= window_start_utc)
             .all()
         )
 
@@ -1121,7 +1147,7 @@ def get_leaderboard(
         # compat_routes 复活分支重置 start_time 处修掉（复播即新一轮）。
         sessions = (
             db.query(em.PlaybackSession)
-            .filter(em.PlaybackSession.start_time >= window_start_naive)
+            .filter(em.PlaybackSession.start_time >= window_start_utc)
             .all()
         )
         totals: dict[int, float] = {}
