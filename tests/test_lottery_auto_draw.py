@@ -123,7 +123,9 @@ def test_run_due_draws_draws_expired(db, monkeypatch):
 
 
 def test_run_due_draws_skips_future(db):
-    rnd = _make_round(db, draw_at=datetime.now() + timedelta(hours=1))
+    # draw_at 按上海 naive 口径比较："未来"必须按上海时间表达，
+    # 机器本地 now()+1h 在上海口径下已是过去（L1 口径变更后调整）
+    rnd = _make_round(db, draw_at=lottery.shanghai_now_naive() + timedelta(hours=1))
     result = lottery.run_due_draws(db)
     assert result["checked"] == 0
     assert result["drawn"] == []

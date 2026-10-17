@@ -456,7 +456,12 @@ def create_lottery_round(
     for item in req.prizes:
         if item.type not in ("days", "points", "whitelist"):
             raise HTTPException(status_code=400, detail="奖品类型只能是 days/points/whitelist")
-        if item.value < 0:
+        if item.type in ("points", "days"):
+            # 积分/天数奖品 value=0 发奖时必失败（distribute 记 errors），创建时直接拦截
+            if item.value <= 0:
+                label = "积分" if item.type == "points" else "天数"
+                raise HTTPException(status_code=400, detail=f"{label}奖品的价值必须大于 0")
+        elif item.value < 0:
             raise HTTPException(status_code=400, detail="奖品价值不能为负数")
         if item.quantity < 1:
             raise HTTPException(status_code=400, detail="奖品数量至少为 1")
@@ -464,6 +469,9 @@ def create_lottery_round(
     if req.draw_at:
         try:
             dt = datetime.fromisoformat(req.draw_at)
+            # 用户侧时间口径：按 Asia/Shanghai naive 入库（前端 toISOString 发的是 UTC，
+            # aware 转上海去 tzinfo；naive 按上海理解原样入库）
+            dt = lottery_module.to_shanghai_naive(dt)
         except ValueError:
             raise HTTPException(status_code=400, detail="draw_at 时间格式无效")
     if req.max_participants is not None and req.max_participants < 1:
@@ -657,7 +665,9 @@ def draw_lottery_round(
     # 之前漏掉了 notify 调用，导致管理后台点"开奖"后群里收不到开奖公告。
     # 通知失败不影响开奖结果，只记日志。
     try:
-        notify_result = lottery_module.notify_draw_results(db, round_id, winners)
+        notify_result = lottery_module.notify_draw_results(
+            db, round_id, winners, distribute_errors=distribute_result.get("errors")
+        )
     except Exception:
         notify_result = None
         logger.exception("群抽奖手动开奖通知失败 round_id=%s（不影响开奖结果）", round_id)

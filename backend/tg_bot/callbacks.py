@@ -214,7 +214,8 @@ def _handle_lottery_join(db, callback_query: dict) -> None:
         if draw_at is not None:
             from datetime import datetime
 
-            if isinstance(draw_at, datetime) and draw_at <= datetime.now():
+            # draw_at 按上海 naive 入库，比较用同一口径
+            if isinstance(draw_at, datetime) and draw_at <= lot.shanghai_now_naive():
                 _answer_callback(db, cb_id, "本轮抽奖已结束")
                 return
 
