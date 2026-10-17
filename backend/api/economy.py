@@ -93,7 +93,14 @@ def _get_bool_config(db: Session, key: str, default: bool) -> bool:
 # ==================== 签到 ====================
 
 def _today_start() -> datetime:
-    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    """「今日」起点：Asia/Shanghai 自然日 00:00（UTC naive 存储帧）。
+
+    r34 口径收口：此前是服务器本地 00:00，生产容器为 UTC，签到/连签的
+    「今日」实际在北京时间 08:00 才翻天（r18 F1、r30 L1、r33 F3 同类）。
+    直接委托给 _today_start_utc_naive()，与 CheckinRecord.checkin_date 的
+    写入帧保持一致（写入点唯一：_do_checkin_core）。
+    """
+    return _today_start_utc_naive()
 
 
 def _today_start_utc_naive() -> datetime:
@@ -109,6 +116,22 @@ def _today_start_utc_naive() -> datetime:
     except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
         now_sh = datetime.now().astimezone()
     start_sh = now_sh.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_sh.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _month_start_utc_naive() -> datetime:
+    """上海自然月 1 日 00:00，换算成 UTC naive——与入库时间列的存储帧对齐。
+
+    求片月度额度（media_seek.used_this_month、welfare_requests._month_start）
+    此前用服务器本地月界，生产 UTC 下每月 1 日 08:00（北京时间）才重置。
+    与 _today_start_utc_naive() 同一写法。
+    """
+    from zoneinfo import ZoneInfo
+    try:
+        now_sh = datetime.now(ZoneInfo("Asia/Shanghai"))
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
+        now_sh = datetime.now().astimezone()
+    start_sh = now_sh.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     return start_sh.astimezone(timezone.utc).replace(tzinfo=None)
 
 
