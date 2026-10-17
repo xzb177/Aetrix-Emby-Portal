@@ -51,6 +51,8 @@ export interface PlaybackPolicy {
   blocked_agents: string
   /** 客户端 UA 白名单（填了就只放列表内的客户端） */
   allowed_agents: string
+  /** Drive 302 直链总开关（#957 的回滚闸；关掉后 Drive 文件播放返回 410） */
+  drive_direct_play_enabled: boolean
 }
 
 /** CDN 域名预留（播放三层第 2/3 层极简预留版，/api/admin/playback/cdn） */
