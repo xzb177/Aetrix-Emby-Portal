@@ -66,8 +66,8 @@ MAX_INTERVAL = 120
 #: 早降级早拿到结果。
 _FIND_TIMEOUT_SEC = max(10, int(os.getenv("CHASE_NEW_FIND_TIMEOUT", "60") or 60))
 
-# 视频扩展名白名单
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm"}
+# 视频扩展名白名单（.iso 光盘镜像：部分客户端可直接播放整盘）
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm", ".iso"}
 
 def _tracked_exts(db: Session) -> set[str]:
     """本轮要监听的扩展名：视频扩展名（.strm 纸条时代已结束，不再监听）。"""

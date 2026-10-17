@@ -242,6 +242,7 @@ def secret_config_keys() -> set[str]:
 # 远程挂载识别到的媒体扩展名（与 scanner.VIDEO_EXTS 对齐，外加 strm）
 REMOTE_MEDIA_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", ".ts", ".m4v", ".strm",
+    ".iso",
 }
 STRM_EXT = ".strm"
 

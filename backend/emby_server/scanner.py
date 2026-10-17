@@ -209,7 +209,8 @@ def _chunks(seq, size: int):
         yield seq[i:i + size]
 
 # `.strm` 不是视频文件，而是「内容为播放直链的文本文件」；是否把 strm 当媒体由调用方决定
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", ".ts", ".m4v", ".strm"}
+# `.iso` 是光盘镜像文件：部分客户端（Infuse / VLC 等）可直接播放整盘 ISO
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", ".ts", ".m4v", ".strm", ".iso"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # 集号解析: S01E02 / 1x02 / 第1集 / EP03 / E03
