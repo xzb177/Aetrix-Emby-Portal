@@ -126,12 +126,21 @@ def _mk_session(db, user, name, start, duration):
     return s
 
 
+def _bj_to_storage(bj_hour, bj_minute=0, days_ago=0):
+    """北京时间墙钟 → 入库存储帧（UTC naive）：成就会话时间按此换算构造。"""
+    bj = datetime.now() + timedelta(hours=8)
+    t = bj.replace(hour=bj_hour, minute=bj_minute, second=0, microsecond=0)
+    if days_ago:
+        t -= timedelta(days=days_ago)
+    return t - timedelta(hours=8)
+
+
 def test_evaluate_first_night_and_early_bird(db, user):
     pa.seed_achievement_defs(db)
-    # 深夜 23:30 开始
-    _mk_session(db, user, "深夜电影", datetime.now().replace(hour=23, minute=30), 3600)
-    # 清晨 6:30 开始
-    _mk_session(db, user, "清晨电影", datetime.now().replace(hour=6, minute=30), 3600)
+    # 深夜 23:30（北京时间）开始
+    _mk_session(db, user, "深夜电影", _bj_to_storage(23, 30), 3600)
+    # 清晨 6:30（北京时间）开始
+    _mk_session(db, user, "清晨电影", _bj_to_storage(6, 30), 3600)
     new = pa.evaluate(user.id, db)
     assert "first_night" in new
     assert "early_bird" in new
@@ -143,9 +152,9 @@ def test_evaluate_first_night_and_early_bird(db, user):
 
 def test_evaluate_night_owl(db, user):
     pa.seed_achievement_defs(db)
-    base = datetime.now().replace(hour=14, minute=0)
-    _mk_session(db, user, "马拉松1", base, 3 * 3600 + 100)
-    _mk_session(db, user, "马拉松2", base + timedelta(hours=4), 3 * 3600 + 100)
+    # 北京时间 14:00 与 18:00（同北京时间自然日）
+    _mk_session(db, user, "马拉松1", _bj_to_storage(14, 0), 3 * 3600 + 100)
+    _mk_session(db, user, "马拉松2", _bj_to_storage(18, 0), 3 * 3600 + 100)
     new = pa.evaluate(user.id, db)
     assert "night_owl" in new  # 单日超 6h
 
@@ -178,7 +187,7 @@ def test_evaluate_disabled_rule_not_granted(db, user):
     row = db.query(models.PanelAchievementDef).filter_by(key="first_night").first()
     row.enabled = False
     db.commit()
-    _mk_session(db, user, "深夜电影", datetime.now().replace(hour=23, minute=30), 3600)
+    _mk_session(db, user, "深夜电影", _bj_to_storage(23, 30), 3600)
     new = pa.evaluate(user.id, db)
     assert "first_night" not in new
 
