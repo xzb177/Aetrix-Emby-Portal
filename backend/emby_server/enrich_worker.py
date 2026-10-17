@@ -206,7 +206,6 @@ def _cached_altmeta_cfg() -> tuple:
     try:
         ok = altmeta.enabled(_db)
         if ok:
-            altmeta.warn_dead_keys_once(_db)
             iv = altmeta.min_interval(_db)
             bgm_iv = altmeta.min_interval_bangumi(_db)
         else:

@@ -904,22 +904,12 @@ def set_privacy(
 
 # ==================== 7. GET /api/panel/server ====================
 
-# 机关拨杆定义（key, 名称, 描述）
-TOGGLES = [
-    ("panel_night_scrape", "凌晨刮单集", "02:00–06:00 刮削单集元数据"),
-    ("panel_auto_scan", "定时扫描", "每天定时增量扫描媒体库"),
-    ("panel_douban_first", "豆瓣优先", "中文标题优先走豆瓣刮削"),
-    ("panel_vitality_guard", "活力值守护", "公益服活力值归零自动封禁"),
-]
-
-
 @router.get("/server")
 def panel_server(
     db: Session = Depends(get_db),
     user: models.WebUser = Depends(get_current_user),
 ):
     _guard()
-    from backend.servers import config_value
     from backend.emby_server import models as em
 
     # vitals：四格（尽量从 health 取，失败则占位）
@@ -997,46 +987,16 @@ def panel_server(
         {"key": "night", "name": "单集", "active": False},
     ]
 
-    # 机关开关状态（读 SystemConfig，默认开）
-    toggles = []
+    # 面板是否可写（管理员）
     is_admin = bool(getattr(user, "is_staff", False))
-    for key, name, desc in TOGGLES:
-        val = config_value(db, key, "1")
-        toggles.append({
-            "key": key, "name": name, "desc": desc,
-            "on": val != "0", "writable": is_admin,
-        })
 
     return _ok({
         "vitals": vitals,
         "eco": eco,
         "radar_tasks": radar_tasks,
         "growth": growth,
-        "toggles": toggles,
         "is_admin": is_admin,
     })
-
-
-# ==================== 8. POST /api/panel/server/toggles ====================
-
-@router.post("/server/toggles")
-def panel_toggle(
-    payload: dict,
-    db: Session = Depends(get_db),
-    user: models.WebUser = Depends(get_current_user),
-):
-    _guard()
-    if not bool(getattr(user, "is_staff", False)):
-        raise HTTPException(status_code=403, detail="仅管理员可操作机关")
-    from backend.servers import set_config
-    key = (payload or {}).get("key", "")
-    on = (payload or {}).get("on", True)
-    allowed = {t[0] for t in TOGGLES}
-    if key not in allowed:
-        raise HTTPException(status_code=400, detail="未知的机关")
-    set_config(db, key, "1" if on else "0", f"面板机关：{key}")
-    db.commit()
-    return _ok({"key": key, "on": bool(on)})
 
 
 # ==================== 活动埋点（供 worker 调用） ====================

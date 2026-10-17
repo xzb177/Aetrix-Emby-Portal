@@ -136,15 +136,6 @@ export interface RadarTask {
   [k: string]: unknown
 }
 
-export interface ServerToggle {
-  key: string
-  name: string
-  desc: string
-  on: boolean
-  writable: boolean
-  [k: string]: unknown
-}
-
 export interface GrowthDay {
   date: string
   weekday: string
@@ -157,7 +148,6 @@ export interface ServerData {
   eco?: EcoItem[]
   radar_tasks?: RadarTask[]
   growth?: GrowthDay[]
-  toggles?: ServerToggle[]
   is_admin?: boolean
   [k: string]: unknown
 }
@@ -223,8 +213,6 @@ export const panelApi = {
   setWornBadge: (key: string | null) => post<{ worn_badge: WornBadge | null }>('/api/panel/worn-badge', { key }),
   /** 服务器状态 */
   server: () => get<ServerData>('/api/panel/server'),
-  /** 机关拨杆（仅管理员） */
-  toggles: (payload: Record<string, unknown>) => post('/api/panel/server/toggles', payload),
 }
 
 /**

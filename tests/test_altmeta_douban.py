@@ -175,7 +175,6 @@ def test_fetch_uses_own_session_not_write_session(monkeypatch):
     #（真实请求偶发 403 会触发进程级封禁冷却，导致用例抖动）。
     monkeypatch.setattr(enrich_worker, "_douban_fallback_on_tmdb_miss",
                         lambda *a, **k: False)
-    monkeypatch.setattr("backend.emby_server.altmeta.warn_dead_keys_once", lambda db: None)
     monkeypatch.setattr("backend.emby_server.altmeta.min_interval", lambda db: 0.0)
     monkeypatch.setattr("backend.emby_server.altmeta.search",
                         lambda *a, **k: {"title": "兜底名", "year": "2020",
@@ -241,7 +240,6 @@ def test_fetch_fallback_runs_when_tmdb_unconfigured(monkeypatch):
     #（真实请求偶发 403 会触发进程级封禁冷却，导致用例抖动）。
     monkeypatch.setattr(enrich_worker, "_douban_fallback_on_tmdb_miss",
                         lambda *a, **k: False)
-    monkeypatch.setattr("backend.emby_server.altmeta.warn_dead_keys_once", lambda db: None)
     monkeypatch.setattr("backend.emby_server.altmeta.min_interval", lambda db: 0.0)
     douban_calls = []
     monkeypatch.setattr("backend.emby_server.altmeta.search",
