@@ -1226,6 +1226,50 @@ def save_enrich_episode_night(
     return {"success": True, **cfg}
 
 
+# ==================== 单集分项开关（批3：刮削瘦身收官）====================
+
+class EnrichEpisodeFieldsSaveRequest(BaseModel):
+    title: bool = Field(default=True, description="单集标题开关（默认开）")
+    overview: bool = Field(default=True, description="单集简介开关（默认开）")
+    still: bool = Field(default=True, description="单集剧照开关（默认开）")
+
+
+@admin_emby_router.get("/scrape/enrich-episode-fields")
+def get_enrich_episode_fields(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """单集分项开关：当前生效值 + 默认值。
+
+    from_env 为真时环境变量覆盖了后台配置（改这里不生效）。
+    三项默认全开 = 与现状行为完全一致。
+    """
+    from backend.emby_server import enrich_worker
+    cfg = enrich_worker.get_episode_field_config(db)
+    return {
+        "success": True,
+        **cfg,
+        "defaults": {
+            "title": True,
+            "overview": True,
+            "still": True,
+        },
+    }
+
+
+@admin_emby_router.put("/scrape/enrich-episode-fields")
+def save_enrich_episode_fields(
+    req: EnrichEpisodeFieldsSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存单集分项开关（写 SystemConfig，60 秒内热生效，无需重启）"""
+    from backend.emby_server import enrich_worker
+    cfg = enrich_worker.save_episode_field_config(
+        db, req.title, req.overview, req.still)
+    return {"success": True, **cfg}
+
+
 # ==================== 刮削性能参数（链路规划 Step 1：配置面收口）====================
 
 class EnrichTuningSaveRequest(BaseModel):

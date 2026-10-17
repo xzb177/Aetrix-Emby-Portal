@@ -1256,6 +1256,25 @@ export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, ni
     night_tz,
   })
 
+/** 单集分项开关（批3）：单集下沉时标题 / 简介 / 剧照各自可开可关，默认全开 */
+export interface EnrichEpisodeFieldsConfig {
+  title: boolean
+  overview: boolean
+  still: boolean
+  from_env: boolean
+  defaults: { title: boolean; overview: boolean; still: boolean }
+}
+
+export const fetchEnrichEpisodeFields = () =>
+  get<EnrichEpisodeFieldsConfig>(`${E}/scrape/enrich-episode-fields`)
+
+export const saveEnrichEpisodeFields = (title: boolean, overview: boolean, still: boolean) =>
+  put<EnrichEpisodeFieldsConfig>(`${E}/scrape/enrich-episode-fields`, {
+    title,
+    overview,
+    still,
+  })
+
 /** 刮削性能参数：env 旋钮搬进 SystemConfig + 后台 UI */
 export interface EnrichTuningConfig {
   success: boolean

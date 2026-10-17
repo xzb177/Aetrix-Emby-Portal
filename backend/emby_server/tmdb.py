@@ -1937,8 +1937,13 @@ class TmdbClient:
         return None
 
     @staticmethod
-    def apply_episode(episode_item, episode_data: dict) -> dict:
+    def apply_episode(episode_item, episode_data: dict,
+                      fields: Optional[dict] = None) -> dict:
         """把单集 TMDB 数据落到条目上（纯内存操作，不碰 DB/网络）。
+
+        fields: {"title": bool, "overview": bool, "still": bool}，None 表示
+        全部开（与分项开关未配置/默认一致，行为与旧调用完全相同）。
+        批3（分项开关）：被关的项跳过写入。
 
         返回 {"updated": bool, "still_path": Optional[str]}：
         - updated=True 表示 name/overview 有变化，调用方需要写库
@@ -1954,6 +1959,13 @@ class TmdbClient:
         if not episode_data:
             return result
 
+        # 批3：分项开关门控（None = 全部开，与旧行为一致）
+        enabled = {"title": True, "overview": True, "still": True}
+        if fields:
+            for _k in enabled:
+                if _k in fields:
+                    enabled[_k] = bool(fields[_k])
+
         tmdb_name = (episode_data.get("name") or "").strip()
         # TMDB 占位标题（"Episode 1" / 中文"第 1 集"）不算真实标题
         is_placeholder = (
@@ -1964,7 +1976,7 @@ class TmdbClient:
         current = (getattr(episode_item, "name", "") or "").strip()
         is_generic = _is_placeholder_episode_title(current)
 
-        if not is_placeholder and is_generic:
+        if enabled["title"] and not is_placeholder and is_generic:
             # 当前是"第X集"占位，TMDB 有真实标题 → 覆盖。先过统一标题清洗
             # （冒号副标题/控制符不进标题）；清空了就不覆盖，保住现有真实名
             cleaned = clean_title(tmdb_name)
@@ -1974,17 +1986,18 @@ class TmdbClient:
                 from backend.emby_server.pinyin_sort import make_sort_name
                 episode_item.sort_name = make_sort_name(cleaned)
                 result["updated"] = True
-        # 简介：当前为空时才补（不覆盖 NFO/已有的）
+        # 简介：当前为空时才补（不覆盖 NFO/已有的）；批3：简介分项关时跳过
         tmdb_overview = (episode_data.get("overview") or "").strip()
-        if tmdb_overview and not (getattr(episode_item, "overview", "") or "").strip():
+        if (enabled["overview"] and tmdb_overview
+                and not (getattr(episode_item, "overview", "") or "").strip()):
             episode_item.overview = tmdb_overview
             result["updated"] = True
         # 单集片长（元数据口径，探测拿到真实时长前用）
         if apply_runtime(episode_item, episode_data):
             result["updated"] = True
-        # 剧照路径（调用方拼 URL + 预热）
+        # 剧照路径（调用方拼 URL + 预热）；批3：剧照分项关时不返回路径
         still = episode_data.get("still_path")
-        if still:
+        if enabled["still"] and still:
             result["still_path"] = still
         return result
 
