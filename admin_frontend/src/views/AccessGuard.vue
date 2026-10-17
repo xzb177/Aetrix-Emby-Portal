@@ -315,8 +315,8 @@ const testSummary = computed(() => {
             同一台服务器 / 同一局域网的访问始终放行，可以从那里改回来。
           </p>
           <p class="ag-hint">
-            另一处在「安全与准入 → <router-link :to="{ name: 'ClientPolicy' }" class="ag-link">客户端策略 → 客户端准入</router-link>」：
-            区别是那里只管<strong>播放准入</strong>（播不播得），这里是<strong>全站访问</strong>（连面板登录都会拦）。
+            另一处在「安全与准入 → <router-link :to="{ name: 'ClientPolicy' }" class="ag-link">客户端策略（转码、下载与设备）</router-link>」：
+            区别是那里只管<strong>客户端能做什么</strong>（转码、下载、几台设备），这里是<strong>全站访问</strong>（连面板登录都会拦）。
           </p>
           <div class="ag-fields">
             <el-form-item label="黑名单（命中即拦，如 Googlebot、SemrushBot）">

@@ -107,6 +107,49 @@ def test_trgm_specs_are_pg_only_and_render_gin_ddl():
             assert "USING gin" in ddl and "gin_trgm_ops" in ddl
 
 
+def test_browse_sort_partial_predicate_and_model_spec_cross_check(tmp_path, monkeypatch):
+    """R2/P0 部分索引：_LEGACY_INDEXES 的 where 谓词 == models.py 声明的
+    postgresql_where，列顺序也一致。两边对不上时生产（PG）与老库迁移建出的
+    索引语义不一致（规划器可能用不上部分索引），且 SQLite 下实际建出的索引
+    必须带上 WHERE 谓词。
+    """
+    from backend.emby_server import models as em
+
+    specs = {s[1]: s for s in database._LEGACY_INDEXES
+             if s[1] in ("idx_item_browse_sort", "idx_item_browse_sort_all")}
+    assert set(specs) == {"idx_item_browse_sort", "idx_item_browse_sort_all"}
+    model_ixs = {ix.name: ix for ix in em.MediaItem.__table__.indexes if ix.name in specs}
+    assert set(model_ixs) == set(specs)
+    for name, spec in specs.items():
+        where = spec[5] if len(spec) > 5 else None
+        assert where == "is_hidden = false AND deleted_at IS NULL", name
+        ix = model_ixs[name]
+        pg_where = ix.dialect_options.get("postgresql", {}).get("where")
+        assert pg_where is not None, name
+        assert str(pg_where).strip() == where, name
+        # 列顺序一致（首列不同是刻意设计：browse_sort 带 item_type，_all 去掉首列）
+        model_cols = [c.name for c in ix.columns]
+        spec_cols = [c.strip() for c in spec[2].split(",")]
+        assert model_cols == spec_cols, name
+        # _ensure_index 实际拼出的 DDL 带 WHERE（与 models 声明同谓词）
+        ddl = f"CREATE INDEX {name} ON {spec[0]} ({spec[2]}) WHERE {where}"
+        assert ddl.endswith("WHERE is_hidden = false AND deleted_at IS NULL"), name
+    # SQLite 真建一次：sqlite_master 里看到部分谓词
+    eng = _engine(tmp_path)
+    monkeypatch.setattr(database, "engine", eng)
+    database._ensure_legacy_indexes({"emby_items"})
+    with eng.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type='index' AND name LIKE 'idx_item_browse_sort%'"
+        )).all()
+    sqls = {r[0]: r[1] for r in rows}
+    assert set(sqls) == {"idx_item_browse_sort", "idx_item_browse_sort_all"}
+    for name, sql in sqls.items():
+        assert "WHERE is_hidden = false AND deleted_at IS NULL" in sql, (name, sql)
+    eng.dispose()
+
+
 def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys):
     eng = _engine(tmp_path)
     monkeypatch.setattr(database, "engine", eng)

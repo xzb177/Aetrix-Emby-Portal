@@ -2125,7 +2125,7 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
        - movie/series 有 tmdb：库 + 类型 + tmdb_id（去掉空白）
        - movie/series 无 tmdb：库 + 类型 + 年份（归一化标题在 Python 里算）
        - episode：剧的去重组 + 季号 + 集号（剧的去重组由全部 series 行在 Python 里算，
-         只把真正重复的剧写进 CASE）
+         只把真正重复的剧写进临时映射表：PG 走 TEMP TABLE，SQLite 测试库走 VALUES CTE）
        - 其它类型：不参与去重
     2. 只对圈出来的行取字段、跑与旧实现**同一个**分组选主函数（:func:`_dedup_keep_ids`）。
 
@@ -3424,7 +3424,7 @@ async def playback_info(
         pass  # 直链播放：跳过改写即可（本分支 _rewrite_src 已无其他消费方）
     else:
         from backend.emby_server import stream_accel
-        stream_url, transcoding_url, _rewrite_src = stream_accel.rewrite_playback_urls_unified(
+        stream_url, transcoding_url, _ = stream_accel.rewrite_playback_urls_unified(
             db, stream_url, transcoding_url, base)
     media_source.update({
         "SupportsDirectPlay": True,

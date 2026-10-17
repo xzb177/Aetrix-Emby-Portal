@@ -470,7 +470,7 @@ def create_lottery_round(
         try:
             dt = datetime.fromisoformat(req.draw_at)
             # 用户侧时间口径：按 Asia/Shanghai naive 入库（前端 toISOString 发的是 UTC，
-            # aware 转上海去 tzinfo；naive 按上海理解原样入库）
+            # aware 转上海去 tzinfo；naive 按 UTC 理解再转上海，见 lottery.to_shanghai_naive）
             dt = lottery_module.to_shanghai_naive(dt)
         except ValueError:
             raise HTTPException(status_code=400, detail="draw_at 时间格式无效")
