@@ -61,19 +61,23 @@ def _env():
     ms_config.invalidate()
     db = SessionLocal()
     try:
-        store.write_values(db, {FLAG: "0", BAN_FLAG: "0"},
+        store.write_values(db, {FLAG: "0", BAN_FLAG: "0",
+                                dbn.DOUBAN_ENABLED_KEY: "0"},
                            {FLAG: "Step 2 测试开关",
-                            BAN_FLAG: "Step 0.5 测试开关"})
+                            BAN_FLAG: "Step 0.5 测试开关",
+                            dbn.DOUBAN_ENABLED_KEY: "批1测试：豆瓣开关默认关"})
         db.commit()
     finally:
         db.close()
     store.invalidate(FLAG)
     store.invalidate(BAN_FLAG)
+    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
     yield
     dbn.reset_ban()
     ms_config.invalidate()
     store.invalidate(FLAG)
     store.invalidate(BAN_FLAG)
+    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
 
 
 def _flag_on():
@@ -94,6 +98,21 @@ def _ban_flag_on():
     finally:
         db.close()
     store.invalidate(BAN_FLAG)
+
+
+def _douban_switch(on: bool):
+    """批 1（刮削瘦身）：豆瓣降为可选开关——引擎的豆瓣源只在开关开启时
+    才被问。需要豆瓣方向发请求的测试先把开关写开。"""
+    db = SessionLocal()
+    try:
+        store.write_values(db, {dbn.DOUBAN_ENABLED_KEY: "1" if on else "0"},
+                           {dbn.DOUBAN_ENABLED_KEY: "批1测试：豆瓣开关"})
+        db.commit()
+    finally:
+        db.close()
+    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
+    ew._douban_cfg_cache["at"] = 0.0
+    ew._douban_cfg_cache["cfg"] = None
 
 
 def _ban():
@@ -176,6 +195,8 @@ def _run_post_old_branch(result, item, tmdb_ctx, calls):
                                   "altmeta_bangumi", []).append(1) or None), \
             mock.patch.object(ew, "_cached_altmeta_cfg",
                               return_value=(True, 1.0, 1.0)), \
+            mock.patch.object(ew, "_cached_douban_cfg",
+                              return_value=(True, 1.0)), \
             mock.patch.object(tmdb_mod, "prewarm_images", return_value=[]), \
             mock.patch.object(tmdb_mod, "cast_list", return_value=[]):
         return ew._enrich_fetch_tmdb_post(
@@ -385,12 +406,20 @@ class TestDocumentedDeltas:
 
 class TestDoubanRequestCount:
     def _engine_douban_requests(self, snapshot):
-        """真实引擎 collect（只开豆瓣源），数 altmeta.search 调用次数。"""
+        """真实引擎 collect（只开豆瓣源），数 altmeta.search 调用次数。
+
+        批 1：豆瓣降为可选开关，引擎的豆瓣源只在开关开启时才被问，
+        这里先把开关写开、传真实会话。"""
+        _douban_switch(True)
         calls = []
-        with mock.patch.object(altmeta, "search",
-                               side_effect=lambda *a, **k: calls.append(1) or None):
-            ms_engine.collect(None, "测试剧集", 2024, "series",
-                              snapshot=snapshot)
+        db = SessionLocal()
+        try:
+            with mock.patch.object(altmeta, "search",
+                                   side_effect=lambda *a, **k: calls.append(1) or None):
+                ms_engine.collect(db, "测试剧集", 2024, "series",
+                                  snapshot=snapshot)
+        finally:
+            db.close()
         return len(calls)
 
     def test_engine_douban_source_single_request(self):
@@ -435,6 +464,7 @@ class TestStep05Absorbed:
         _flag_on()
         _ban_flag_on()
         _ban()
+        _douban_switch(True)
         assert ew._douban_ban_downgrade_active() is True
         calls = []
         snap = ms_config.Snapshot(
@@ -445,10 +475,14 @@ class TestStep05Absorbed:
                 ms_config.SourceConfig(
                     id="bangumi", label="Bangumi", enabled=True,
                     requires_key=False, lang="zh", keys=[], rate=0.0)])
-        with mock.patch.object(altmeta, "search",
-                               side_effect=lambda *a, **k: calls.append(1) or None):
-            res = ms_engine.collect(None, "测试剧集", 2024, "series",
-                                    snapshot=snap)
+        db = SessionLocal()
+        try:
+            with mock.patch.object(altmeta, "search",
+                                   side_effect=lambda *a, **k: calls.append(1) or None):
+                res = ms_engine.collect(db, "测试剧集", 2024, "series",
+                                        snapshot=snap)
+        finally:
+            db.close()
         assert calls == [], "封禁期引擎必须零豆瓣请求"
         outcomes = {o.source: o for o in res.outcomes}
         assert outcomes["douban"].skipped == "豆瓣封禁中，已跳过"

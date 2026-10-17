@@ -50,15 +50,18 @@ def _env():
     ew._douban_cfg_cache["cfg"] = None
     db = SessionLocal()
     try:
-        store.write_values(db, {FLAG: "0"},
-                           {FLAG: "Step 0.5 测试开关"})
+        store.write_values(db, {FLAG: "0", dbn.DOUBAN_ENABLED_KEY: "0"},
+                           {FLAG: "Step 0.5 测试开关",
+                            dbn.DOUBAN_ENABLED_KEY: "批1测试：豆瓣开关默认关"})
         db.commit()
     finally:
         db.close()
     store.invalidate(FLAG)
+    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
     yield
     dbn.reset_ban()
     store.invalidate(FLAG)
+    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
 
 
 def _flag_on():
@@ -74,6 +77,21 @@ def _flag_on():
 
 def _ban():
     dbn._trip_ban("step05-test")
+
+
+def _douban_switch(on: bool):
+    """批 1（刮削瘦身）：豆瓣降为可选开关——引擎的豆瓣源与轻量豆瓣入口
+    只在开关开启时真正发请求。需要豆瓣方向发请求的测试先把开关写开。"""
+    db = SessionLocal()
+    try:
+        store.write_values(db, {dbn.DOUBAN_ENABLED_KEY: "1" if on else "0"},
+                           {dbn.DOUBAN_ENABLED_KEY: "批1测试：豆瓣开关"})
+        db.commit()
+    finally:
+        db.close()
+    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
+    ew._douban_cfg_cache["at"] = 0.0
+    ew._douban_cfg_cache["cfg"] = None
 
 
 def _series_item(**kw):
@@ -125,7 +143,11 @@ class TestDowngradeActive:
 
 class TestPresearchSkip:
     def test_flag_off_ban_still_delays(self):
-        """flag 关：封禁期行为与现状一致——标 douban_banned、TMDB 预搜索跳过。"""
+        """flag 关：封禁期行为与现状一致——标 douban_banned、TMDB 预搜索跳过。
+
+        批 1：预搜索跳过的条件与豆瓣 rich 兜底触发口径一致（含"豆瓣兜底开着"），
+        开关关闭时封禁机制自然休眠；本用例钉住"豆瓣开"时的行为，显式写开。"""
+        _douban_switch(True)
         _ban()
         item = _series_item()
         with _tmdb_configured():
@@ -133,6 +155,17 @@ class TestPresearchSkip:
         assert result.get("douban_banned") is True
         assert result.get("ok") is False
         assert tmdb_ctx["tmdb_plan"] == {"op": "none"}
+
+    def test_switch_off_ban_no_delay_tmdb_runs(self):
+        """批 1：豆瓣开关关闭时，封禁期也不整条延后——TMDB 预搜索照常跑
+        （封禁机制随开关关闭自然休眠，条目不再"注定走豆瓣兜底→banned→延后"）。"""
+        _ban()
+        item = _series_item()
+        with _tmdb_configured():
+            result, tmdb_ctx = ew._enrich_fetch_pre(item)
+        assert not result.get("douban_banned")
+        assert result.get("ok") is not False
+        assert tmdb_ctx["tmdb_plan"].get("op") == "search"
 
     def test_flag_on_ban_no_delay_tmdb_runs(self):
         """flag 开 + 封禁：不再延后，TMDB 预搜索照常跑。"""
@@ -242,11 +275,16 @@ class TestEngineBanAware:
     def test_banned_skips_douban_source_zero_requests(self):
         """封禁期：collect 跳过豆瓣源，outcome 记 skipped，零豆瓣请求。"""
         _ban()
-        calls = []
-        with mock.patch.object(altmeta, "search",
-                               side_effect=lambda *a, **k: calls.append(1)):
-            res = ms_engine.collect(None, "测试剧集", 2024, "series",
-                                    snapshot=_douban_only_snapshot())
+        _douban_switch(True)
+        db = SessionLocal()
+        try:
+            calls = []
+            with mock.patch.object(altmeta, "search",
+                                   side_effect=lambda *a, **k: calls.append(1)):
+                res = ms_engine.collect(db, "测试剧集", 2024, "series",
+                                        snapshot=_douban_only_snapshot())
+        finally:
+            db.close()
         assert calls == [], "封禁期多源引擎必须零豆瓣请求"
         outcomes = {o.source: o for o in res.outcomes}
         assert "douban" in outcomes
@@ -256,18 +294,49 @@ class TestEngineBanAware:
 
     def test_not_banned_douban_source_runs(self):
         """未封禁：豆瓣源正常被问（行为=现状）。"""
-        calls = []
-        with mock.patch.object(altmeta, "search",
-                               side_effect=lambda *a, **k: calls.append(1) or None):
-            res = ms_engine.collect(None, "测试剧集", 2024, "series",
-                                    snapshot=_douban_only_snapshot())
+        _douban_switch(True)
+        db = SessionLocal()
+        try:
+            calls = []
+            with mock.patch.object(altmeta, "search",
+                                   side_effect=lambda *a, **k: calls.append(1) or None):
+                res = ms_engine.collect(db, "测试剧集", 2024, "series",
+                                        snapshot=_douban_only_snapshot())
+        finally:
+            db.close()
         assert len(calls) == 1
         outcomes = {o.source: o for o in res.outcomes}
         assert outcomes["douban"].skipped == ""
 
+    def test_switch_off_engine_skips_douban_source(self):
+        """批 1：豆瓣开关关闭时，引擎内豆瓣源直接跳过，零豆瓣请求。"""
+        calls = []
+        db = SessionLocal()
+        try:
+            with mock.patch.object(altmeta, "search",
+                                   side_effect=lambda *a, **k: calls.append(1) or None):
+                res = ms_engine.collect(db, "测试剧集", 2024, "series",
+                                        snapshot=_douban_only_snapshot())
+        finally:
+            db.close()
+        assert calls == [], "开关关闭时引擎必须零豆瓣请求"
+        outcomes = {o.source: o for o in res.outcomes}
+        assert outcomes["douban"].skipped == "豆瓣开关已关闭，已跳过"
+        assert outcomes["douban"].hit is False
+
     def test_manual_probe_only_bypasses_ban_skip(self):
         """后台手动试采集（only=douban）不拦——那是管理员手动点的。"""
         _ban()
+        calls = []
+        with mock.patch.object(altmeta, "search",
+                               side_effect=lambda *a, **k: calls.append(1) or None):
+            ms_engine.collect(None, "测试剧集", 2024, "series", only="douban",
+                              ignore_switch=True,
+                              snapshot=_douban_only_snapshot())
+        assert len(calls) == 1
+
+    def test_manual_probe_only_bypasses_switch_off(self):
+        """后台手动试采集（only=douban）在豆瓣开关关闭时也不拦——管理员手动点的。"""
         calls = []
         with mock.patch.object(altmeta, "search",
                                side_effect=lambda *a, **k: calls.append(1) or None):

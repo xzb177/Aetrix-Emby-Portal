@@ -158,12 +158,12 @@ def _clean(title: str) -> str:
 
 
 def enabled(db: Any) -> bool:
-    """豆瓣总开关（默认开）。"""
+    """豆瓣总开关（默认关；读不到配置时 fail-closed，不打豆瓣）。"""
     from backend.integrations import store
     try:
-        v = store.get_value(db, DOUBAN_ENABLED_KEY, "1")
+        v = store.get_value(db, DOUBAN_ENABLED_KEY, "0")
     except Exception:
-        return True
+        return False
     if isinstance(v, str):
         return v.strip().lower() in ("1", "true", "yes", "on")
     return bool(v)

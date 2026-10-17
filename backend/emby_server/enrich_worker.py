@@ -181,6 +181,20 @@ def _cached_douban_cfg() -> tuple:
     return on, iv
 
 
+def _douban_switch_on() -> bool:
+    """豆瓣可选开关（走 60s TTL 进程内缓存的 ``_cached_douban_cfg``）。
+
+    批 1（刮削瘦身）：轻量豆瓣入口（altmeta.search）在开关关闭时短路，
+    避免「只开 altmeta 不开豆瓣」时打出绕过开关的豆瓣请求。
+    读不到配置时按关处理（fail-closed）。
+    """
+    try:
+        on, _iv = _cached_douban_cfg()
+        return bool(on)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _cached_altmeta_cfg() -> tuple:
     """altmeta 开关 (enabled, min_interval, min_interval_bangumi)，60s TTL 进程内缓存。"""
     from backend.emby_server import altmeta
@@ -1741,6 +1755,12 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
                                 logger.info(
                                     "豆瓣封禁降级激活：%r 跳过轻量豆瓣搜索",
                                     item.name)
+                                result.setdefault("douban_hit", None)
+                            elif not _douban_switch_on():
+                                # 批 1：豆瓣降为可选开关。只开 altmeta 不开豆瓣时，
+                                # 轻量豆瓣搜索同样不打（避免绕过开关的豆瓣请求）。
+                                logger.info("豆瓣开关已关闭：%r 跳过轻量豆瓣搜索",
+                                            item.name)
                                 result.setdefault("douban_hit", None)
                             else:
                                 try:
