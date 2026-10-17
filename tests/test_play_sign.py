@@ -162,11 +162,27 @@ class TestReferer:
         play_sign.check_referer(_FakeRequest("https://evil.com/x"), object())
 
     def test_write_normalizes_hosts(self):
-        db = _FakeDB(None)
-        hosts = play_sign.write_allowed_referers(
-            db, "https://CDN.Example.com/x, b.com, b.com, not a url??")
-        assert hosts == ["cdn.example.com", "b.com"]
-        assert db.committed
+        # r36：写入走 config_service 统一通道，需要真实 session；
+        # 提交由调用方决定，这里断言写后同会话立即可见（统一通道写时失效）。
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from backend import models
+        from backend.database import Base
+        from backend.emby_server import models as _em  # noqa: F401 注册模型
+
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        db = sessionmaker(bind=engine)()
+        try:
+            hosts = play_sign.write_allowed_referers(
+                db, "https://CDN.Example.com/x, b.com, b.com, not a url??")
+            assert hosts == ["cdn.example.com", "b.com"]
+            row = db.query(models.SystemConfig).filter(
+                models.SystemConfig.key == play_sign.CONFIG_ALLOWED_REFERERS
+            ).first()
+            assert row is not None and row.value == "cdn.example.com,b.com"
+        finally:
+            db.close()
 
     def test_get_parses_comma_list(self):
         db = _FakeDB(" a.com ,, b.com ")

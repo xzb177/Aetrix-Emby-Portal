@@ -205,6 +205,19 @@ VIEW_UNLOCK_CONFIG_SCHEMA: dict[str, tuple] = {
     "emby_view_unlock_days": ("int", 0, _BIG),
 }
 
+# 防盗链（r36：play_sign.write_config / write_allowed_referers 迁移到
+# config_service 统一编排层。用户 2026-10-17 18:29 拍板：防盗链保留，
+# 此前搁置的 play_sign config_service 迁移恢复排期。）
+# - play_sign_ttl_seconds 范围 60~86400 与 play_sign.PLAY_TTL_MIN/MAX 同口径；
+# - hotlink_protection_enabled 存 "true"/"false"（word 风格，旧 write_config 同口径）；
+# - play_allowed_referers 用 ("raw",)：逗号拼接的归一化域名串，空串也存行
+#   （旧 write_allowed_referers 同口径：空白名单落库 ""，读侧空=不检查）。
+HOTLINK_CONFIG_SCHEMA: dict[str, tuple] = {
+    "hotlink_protection_enabled": ("bool",),
+    "play_sign_ttl_seconds": ("int", 60, 86400),
+    "play_allowed_referers": ("raw",),
+}
+
 # （原 ECONOMY_INT_RANGES / economy_spec 已并入下面的 ECONOMY_CONFIG_SCHEMA，
 # 4-6 迁移后不再有任何调用方，此处删除。）
 
