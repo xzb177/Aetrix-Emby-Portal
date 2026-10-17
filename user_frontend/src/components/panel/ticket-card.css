@@ -11,7 +11,6 @@
 .hc-val-group{display:flex;align-items:baseline;gap:6px}
 .hc-val{font-size:32px;font-weight:800;line-height:1;color:var(--paper-ink)}
 .hc-unit{font-size:var(--paper-f-sm);color:var(--paper-ink-2);line-height:var(--paper-lh-base)}
-.hc-plan{margin-left:auto;font-size:var(--paper-f-xs);color:var(--paper-ink-2)}
 .hc-progress-track{height:8px;border:1.5px solid var(--paper-ink);border-radius:var(--paper-r-full);overflow:hidden}
 .hc-progress-bar{height:100%;background:var(--paper-primary)}
 .hc-footer{display:flex;justify-content:space-between;align-items:center;font-size:var(--paper-f-xs);color:var(--paper-ink-2)}
@@ -85,7 +84,7 @@
   .hc-badge.is-amber { background: #faf8f5; color: #016a71; }
   .hc-badge.is-warning { color: #b3402a; border-color: #b3402a; background: transparent; }
   .hc-val { font-size: 26px; font-weight: 500; color: #27251e; }
-  .hc-unit, .hc-plan { font-size: 12px; color: #6d675c; }
+  .hc-unit { font-size: 12px; color: #6d675c; }
   .hc-progress-track { height: 6px; border: 1px solid #d1d1cd; border-radius: 9999px; }
   .hc-progress-bar { background: #016a71; }
   .hc-footer { font-size: 12px; color: #6d675c; }

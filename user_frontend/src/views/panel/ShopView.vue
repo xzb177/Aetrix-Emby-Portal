@@ -29,11 +29,12 @@
         </div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看</div>
-        <div v-else-if="packages.length === 0" class="v4-empty">能量罐暂未上架，稍后再来看看</div>
+        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
+        <div v-else-if="packages.length === 0" class="v4-empty">能量罐暂未上架，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <template v-else>
           <!-- R53B-1：支付方式未就绪（本分支只在整页 loading 结束后进入，此时未就绪=请求失败或列表为空）只渲染空态，不再与可点击的充能按钮同屏出现 -->
-          <div v-if="!methodsReady" class="v4-empty">{{ methodsFailed ? '支付方式加载失败，请检查网络后重试' : '暂无可用支付方式，请联系服主' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
+          <!-- 口径：重试只给加载失败态，"暂无可用支付方式"属配置态，不给重试按钮 -->
+          <div v-if="!methodsReady" class="v4-empty"><template v-if="methodsFailed">支付方式加载失败，请检查网络后重试<br><button class="v4-retry" @click="loadAll">重试</button></template><template v-else>暂无可用支付方式，请联系服主</template></div>
           <template v-else>
           <div class="shelf">
             <div
@@ -123,8 +124,8 @@
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照 <span aria-hidden="true">🎉</span><br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
-        <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启，稍后再来看看</div>
-        <div v-else-if="plans.length === 0" class="v4-empty">执照暂未上架，稍后再来看看</div>
+        <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
+        <div v-else-if="plans.length === 0" class="v4-empty">执照暂未上架，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <template v-else>
           <div class="cur-toggle">
             <button :class="{ on: currency === 'y' }" :aria-pressed="currency === 'y'" @click="currency = 'y'">¥ 人民币</button>
@@ -178,8 +179,9 @@
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
         <div v-else-if="memberFailed" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="!member" class="v4-empty">暂无等级记录，默认从 Lv.1 开始</div>
-        <!-- 「暂未开启/暂未上架」是配置态（非故障），不挂重试按钮，重试按钮只给加载失败类错误态 -->
-        <div v-else-if="!trailLevels.length" class="v4-empty">等级路线暂未开启，稍后再来看看</div>
+        <!-- 「暂未开启/暂未上架」是配置态（非故障），不挂"重试"按钮（重试只给加载失败类错误态）；
+             但页面被 KeepAlive 缓存、无其他站内刷新入口，所以配置态给一个叫"刷新看看"的按钮，与错误态区分 -->
+        <div v-else-if="!trailLevels.length" class="v4-empty">等级路线暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <div v-else class="trail">
           <div
             v-for="lv in trailLevels"

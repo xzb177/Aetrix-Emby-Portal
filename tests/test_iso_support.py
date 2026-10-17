@@ -11,7 +11,7 @@ from unittest import mock
 from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
 from backend.emby_server import media_probe
-from backend.emby_server.scanner import VIDEO_EXTS
+from backend.emby_server.scanner import VIDEO_EXTS, needs_probe
 from backend.emby_server.mounts import REMOTE_MEDIA_EXTS
 from backend.emby_server import drive_changes, change_watcher
 
@@ -106,6 +106,35 @@ class TestIsoProbeDegradation:
                 # 关键是 .iso 短路没有误伤 mkv
                 result = media_probe.probe_one(db, item)
             assert result in ("pending", "retry", "failed", item.probe_status)
+        finally:
+            db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).delete(synchronize_session=False)
+            db.query(em.Library).filter(em.Library.id == lib.id).delete()
+            db.commit()
+            db.close()
+
+
+class TestIsoDegradedIsTerminal:
+    """P2 回归：iso 短路记 degraded 后必须被 needs_probe 认定为终态。
+
+    若短路不写 last_probed_at，needs_probe 的终态豁免（要求
+    last_probed_at 非空）落空，每次刮削/详情页都会把条目翻回 pending，
+    探测 worker 抢单后又记回 degraded，无限空转。"""
+
+    def test_probe_one_iso_then_needs_probe_is_false(self):
+        db = SessionLocal()
+        lib, item = _make_iso_item(db)
+        try:
+            with mock.patch.object(media_probe, "probe_metadata",
+                                   side_effect=AssertionError("ffprobe must not run for iso")), \
+                 mock.patch.object(media_probe, "resolve_probe_input",
+                                   side_effect=AssertionError("no network resolve for iso")):
+                result = media_probe.probe_one(db, item)
+            assert result == "degraded"
+            db.refresh(item)
+            # 短路必须写 last_probed_at，否则终态豁免不成立
+            assert item.last_probed_at is not None
+            # 大小不变时，终态条目不再被推进探测队列
+            assert needs_probe(item, item.file_path, size=item.size or 100) is False
         finally:
             db.query(em.MediaItem).filter(em.MediaItem.library_id == lib.id).delete(synchronize_session=False)
             db.query(em.Library).filter(em.Library.id == lib.id).delete()
