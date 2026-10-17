@@ -25,6 +25,8 @@ _ITEM_INDEXES = {
     "idx_item_drive_file_id": ["drive_file_id"],
     # R2（/emby/Items 默认浏览部分索引）：WHERE is_hidden=false AND deleted_at IS NULL
     "idx_item_browse_sort": ["item_type", "sort_name", "id"],
+    # P0（2026-10-17）：Recursive=true 无类型过滤时首列用不上，补 (sort_name, id) 部分索引
+    "idx_item_browse_sort_all": ["sort_name", "id"],
 }
 
 
@@ -62,6 +64,8 @@ def test_spec_table_covers_all_seven_in_restored_order():
         "idx_strm_gen_files_strm_path",
         # R2：/emby/Items 默认浏览部分索引（spec 表末尾追加）
         "idx_item_browse_sort",
+        # P0（2026-10-17）：无类型过滤浏览排序部分索引（spec 表末尾追加）
+        "idx_item_browse_sort_all",
         # R7：搜索 trigram GIN 索引（PG 专属，SQLite/MySQL 跳过）
         "idx_item_name_trgm",
         "idx_item_original_title_trgm",
@@ -116,7 +120,7 @@ def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys
     # person_tmdb_id 列不存在 → 静默跳过
     assert _indexes(eng, "emby_people") == {}
     first = capsys.readouterr().out
-    assert first.count("已迁移") == 10
+    assert first.count("已迁移") == 11
 
     # 第二次：全部已存在，不再建、不再打日志
     database._ensure_legacy_indexes(tables)
