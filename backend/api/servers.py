@@ -187,6 +187,27 @@ def _library_counts(db: Session, realm_id: Optional[int]) -> dict:
     }
 
 
+def _node_key_claim_warnings(*, reported_key: str, claimed: bool, registered_key: str) -> list:
+    """NODE_KEY 认领一致性判定（纯函数）。
+
+    ``registered_key`` 必须是库里的登记原值（``RemoteServer.node_key``），**不许**
+    拿 ``servers.serialize()`` 打码后的 ``"已配置"``/``""`` 来比对——打码是 P2 安全修复的
+    有意为之（对外不暴露凭证明文），但用它比对会让「ea-01 vs 已配置」永远误报不一致。
+    """
+    warnings: list = []
+    if reported_key and not claimed:
+        warnings.append(
+            f"EA 上报的 NODE_KEY「{reported_key}」在面板的服务器清单里认领不到对应记录"
+        )
+    elif reported_key and registered_key and reported_key != registered_key:
+        warnings.append(
+            f"EA 上报的 NODE_KEY「{reported_key}」与面板登记的「{registered_key}」不一致"
+        )
+    elif not reported_key and registered_key:
+        warnings.append("面板给这台入口登记了 NODE_KEY，但它自己没配——请核对 EA 的 NODE_KEY")
+    return warnings
+
+
 @router.get("/overview")
 async def emby_overview(
     _: models.WebUser = Depends(get_current_admin),
@@ -274,6 +295,9 @@ async def emby_overview(
             for server in realm_nodes:
                 data = registry.serialize(db, server)
                 warnings: list[str] = []
+                # 登记原值（打码前的 node_key）：identity 比对与多 EA 检查都用它，
+                # 不许拿 data["node_key"]（serialize() 打码后的「已配置」/"")。
+                registered_key = (server.node_key or "").strip()
 
                 identity: dict = {}
                 probe = identities.get(server.id)
@@ -299,24 +323,22 @@ async def emby_overview(
                                 f"但面板把它登记在「{realm.name}」——两边不一致，请核对 EA 的 REALM 或面板的归属服"
                             )
                         # 认领关系两边都要能对上：一边有一边没有，说明是「换了一台机器」或「忘了配」
+                        # data["node_key"] 是 serialize() 打码后的「已配置」/""，比对必须用登记原值。
                         reported_key = (identity["node_key"] or "").strip()
-                        if reported_key and not identity["claimed"]:
-                            warnings.append(
-                                f"EA 上报的 NODE_KEY「{reported_key}」在面板的服务器清单里认领不到对应记录"
+                        warnings.extend(
+                            _node_key_claim_warnings(
+                                reported_key=reported_key,
+                                claimed=identity["claimed"],
+                                registered_key=registered_key,
                             )
-                        elif reported_key and data["node_key"] and reported_key != data["node_key"]:
-                            warnings.append(
-                                f"EA 上报的 NODE_KEY「{reported_key}」与面板登记的「{data['node_key']}」不一致"
-                            )
-                        elif not reported_key and data["node_key"]:
-                            warnings.append("面板给这台入口登记了 NODE_KEY，但它自己没配——请核对 EA 的 NODE_KEY")
+                        )
                     else:
                         identity = {"ok": False, "error": str(probe.get("error") or "节点身份探测失败")}
                         warnings.append(f"节点身份探测失败：{identity['error']}")
 
                 if server.kind == "ea":
                     # 单台 EA 不需要 NODE_KEY（面板自己扫就行）；多台才必须认得出来谁是谁
-                    if not data["node_key"] and realm_ea_count > 1:
+                    if not registered_key and realm_ea_count > 1:
                         warnings.append("这个服有多台 EA，但这台没配 NODE_KEY：面板无法把媒体库分配给它")
                     assigned = realm_libraries["by_node"].get(server.id, 0)
                     if realm_mounts["never_checked"]:
