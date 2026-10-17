@@ -6,8 +6,8 @@
 drive_file_id 在服主登记的直链名单（热门副本）内、且至少有一个完整
 可用的 S3 兼容直链源（R2 / B2 / Bunny 等）时，才给播放器发 302 签名
 直链，字节不经本机；其余情况一律回落中继，能力故障永不打断播放。
-配额感知降级（2026-10-16 PR-2 尾巴）：direct 下文件命中 #940 配额
-负缓存时，连直链都不试、直接回落中继（日志 + 计数可观测）。
+（2026-10-17 注：PR-2 尾巴的配额感知降级已随 #958/#959 中继删除一并删除；
+本模块只剩直链/回落两条路。）
 
 实测依据（reports/playback-302-recon-20261016.md）：网盘 uc 直链无鉴权
 不可用（登录墙/病毒扫描确认页），302 的合法载体只有自有对象存储的
@@ -133,7 +133,7 @@ def drive_direct_play_enabled(db: Session) -> bool:
 # 可观测：直链/回落计数（进程内，重启清零；与 prewarm 计数同口径）
 # ---------------------------------------------------------------------------
 
-_COUNTERS = {"direct_302": 0, "fallback_relay": 0, "fallback_quota": 0}
+_COUNTERS = {"direct_302": 0, "fallback_relay": 0}
 _COUNTERS_LOCK = threading.Lock()
 
 
@@ -143,8 +143,7 @@ def _bump_counter(name: str) -> None:
 
 
 def strategy_counters() -> dict:
-    """策略判定计数快照（direct_302=发过 302 / fallback_relay=回落中继 /
-    fallback_quota=配额负缓存命中直接回落）。"""
+    """策略判定计数快照（direct_302=发过 302 / fallback_relay=回落中继）。"""
     with _COUNTERS_LOCK:
         return dict(_COUNTERS)
 
@@ -251,25 +250,10 @@ def _source_ready(src: dict) -> bool:
     return endpoint.startswith("https://") or endpoint.startswith("http://")
 
 
-def _quota_blocked(file_id: str) -> bool:
-    """该 file_id 是否处于 #940 的 Drive 配额负缓存期内（本地 403 护盾）。
-
-    配额已超限的文件再签直链也只是浪费：名单条目仍在 Drive 上取不到字节，
-    且 302 会把客户端推到一条死链上。"""
-    try:
-        from backend.emby_server import streaming as _st
-
-        return _st.drive_quota_blocked_retry_after(file_id) > 0
-    except Exception:
-        return False
-
-
 def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]:
     """策略为 direct 且该文件在直链名单内时返回签名直链，否则 None（回落中继）。
 
     任何配置缺失/损坏/签名异常都返回 None——能力故障永不打断播放。
-    配额感知降级：文件处于 #940 配额负缓存期时，连直链都不试、直接回落
-    中继（计数 fallback_quota，管理端 /playback/config 可见）。
     """
     try:
         if get_strategy(db) != STRATEGY_DIRECT:
@@ -278,12 +262,6 @@ def maybe_direct_url(db: Session, drive_file_id: Optional[str]) -> Optional[str]
         if not fid:
             return None
         if fid not in get_hotlist(db):
-            return None
-        # 配额感知降级：只对「本可直链」的文件生效——名单外文件本来就走
-        # 中继，不计入降级计数，避免计数失真。
-        if _quota_blocked(fid):
-            _bump_counter("fallback_quota")
-            logger.info("playback direct: file_id=%s 处于配额负缓存期，直接回落中继", fid)
             return None
         template = get_key_template(db)
         try:

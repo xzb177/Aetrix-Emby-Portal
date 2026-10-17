@@ -24,6 +24,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.emby_server.playback_strategy import KEY_DRIVE_DIRECT_PLAY
 from backend.integrations import store
 
 CONFIG_TRANSCODE_ENABLED = "playback_transcode_enabled"
@@ -37,6 +38,9 @@ POLICY_KEYS = {
     CONFIG_MAX_TRANSCODES: "int",
     CONFIG_BLOCKED_AGENTS: "str",
     CONFIG_ALLOWED_AGENTS: "str",
+    # Drive 302 直链总开关（#957，playback_strategy.KEY_DRIVE_DIRECT_PLAY 定义，
+    # video_stream 读它决定 302/410；键名本身就是页面字段名，无需短名映射）
+    KEY_DRIVE_DIRECT_PLAY: "bool",
 }
 
 # 各键的出厂默认值（字符串形态，与 _config_bool / _config_int / _agent_list 的缺省语义一致）。
@@ -46,6 +50,17 @@ POLICY_DEFAULTS = {
     CONFIG_MAX_TRANSCODES: "0",
     CONFIG_BLOCKED_AGENTS: "",
     CONFIG_ALLOWED_AGENTS: "",
+    KEY_DRIVE_DIRECT_PLAY: "true",  # 与 playback_strategy.drive_direct_play_enabled 缺省一致
+}
+
+# 页面字段短名 → SystemConfig 键（GET policy_payload 返回短名，PUT 必须认短名；
+# 2026-10-17 实锤：前端一直送短名，write_policy 只认长键名导致保存静默失效）
+FIELD_TO_KEY = {
+    "transcode_enabled": CONFIG_TRANSCODE_ENABLED,
+    "max_concurrent_transcodes": CONFIG_MAX_TRANSCODES,
+    "blocked_agents": CONFIG_BLOCKED_AGENTS,
+    "allowed_agents": CONFIG_ALLOWED_AGENTS,
+    "drive_direct_play_enabled": KEY_DRIVE_DIRECT_PLAY,
 }
 
 
@@ -146,13 +161,18 @@ def policy_payload(db: Session) -> dict:
         "max_concurrent_transcodes": max_transcodes(db),
         "blocked_agents": _raw(db, CONFIG_BLOCKED_AGENTS) or "",
         "allowed_agents": _raw(db, CONFIG_ALLOWED_AGENTS) or "",
+        # Drive 302 直链总开关（#957 的回滚闸；缺省开）
+        "drive_direct_play_enabled": _config_bool(db, KEY_DRIVE_DIRECT_PLAY, True),
     }
 
 
 def write_policy(db: Session, values: dict) -> dict:
     """写回策略（只认白名单里的键；非法值保持原值不动）"""
     applied: dict = {}
-    for key, value in (values or {}).items():
+    for field, value in (values or {}).items():
+        # 页面送的是短名（policy_payload 的字段名），先翻译成 SystemConfig 键；
+        # 直接送长键名也兼容（FIELD_TO_KEY.get 缺省回退自身）
+        key = FIELD_TO_KEY.get(field, field)
         if key not in POLICY_KEYS:
             continue
         if POLICY_KEYS[key] == "int":
