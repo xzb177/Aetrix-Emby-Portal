@@ -75,6 +75,53 @@ def check_rate_limit(key: str, max_events: int, window_seconds: float) -> tuple[
     return _limiter.check(key, max_events, window_seconds)
 
 
+# ============ 网关限流规则表（横切能力只许一套）============
+# backend/main.py（EM）与 emby_api/asgi_middleware.py（EA）的限流中间件共用此表，
+# 不许各自手写一份——否则一处改了限额另一处会静默漂移（r38 实证：EA 侧曾漏跟进）。
+# (路径前缀, 未认证限额/分钟, 认证用户限额/分钟)；(0, 0) = 不限流。
+API_RATE_LIMITS = [
+    ("/api/health", 0, 0),              # 健康检查：不限流
+    ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
+    ("/api/admin/emby/login", 10, 10),  # 登录：每分钟 10 次（防暴力破解）
+    ("/api/user/login", 10, 10),
+    ("/api/admin/", 60, 300),           # 管理接口：未认证 60，认证 300
+    ("/api/", 120, 600),               # 普通 API：未认证 120，认证 600
+]
+
+
+def is_authenticated_request(request) -> bool:
+    """限流档判定：该请求是否算「认证用户」。
+
+    横切能力只许一套：backend/main.py 的 rate_limit_middleware 与
+    emby_api 的 EaRateLimitMiddleware 都调这里，不许各自手写判定。
+    只认合法的 access JWT（验签），不只看头在不在——旧实现只看
+    Authorization 头有没有，攻击者发任意伪造头就能拿到认证档限额
+    （r38 实证：EA 侧 _ea_is_auth 就是旧实现）。
+
+    纯验签（无 DB 查询，内部吞异常），验签失败一律 False（fail-closed 降档）。
+    X-Emby-Token / X-MediaBrowser-Token 是 Emby 凭据，门户 /api/ 鉴权不用它，
+    不再计入认证档（/emby/ 路径的认证/匿名限额本就相同，无影响）。
+    """
+    # 函数内导入：backend.security 较重，避免模块级循环导入风险。
+    from backend.security import resolve_jwt_user_id
+
+    auth = request.headers.get("Authorization")
+    if not auth:
+        return False
+
+    parts = auth.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        token = parts[1].strip()
+    else:
+        # 无 scheme 时把整个头当 token；空头返回 False
+        token = auth.strip()
+
+    if not token:
+        return False
+
+    return resolve_jwt_user_id(token) is not None
+
+
 # R4-2：TRUSTED_PROXIES 解析结果缓存——只在环境变量原始值变化时重解析。
 # _trusted_proxies() 被每个请求的 get_client_ip 调用，解析本身（逐个构建
 # ip_network）是纯开销。os.getenv 是廉价字典查找，逐请求调用无妨。

@@ -18,11 +18,11 @@ from datetime import datetime
 from prometheus_client import make_asgi_app
 
 from backend.metrics_guard import MetricsGuard
-from backend.ratelimit import get_client_ip
+from backend.ratelimit import get_client_ip, is_authenticated_request
 from sqlalchemy import text
 
 from backend.database import SessionLocal, engine, get_db, init_db, DATABASE_TYPE
-from backend.security import validate_secret_key, resolve_jwt_user_id
+from backend.security import validate_secret_key
 from backend.version import app_version
 from backend import models  # 导入所有模型
 from backend.config_schema import ConfigValueError
@@ -345,15 +345,9 @@ _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 # ============ API 限流（Redis 固定窗口）============
 # 保护 API 不被滥用；健康检查不限流；认证用户限额更高
 # 注意：这是固定窗口（每分钟重置），不是滑动窗口
-RATE_LIMITS = [
-    # (路径前缀, 未认证限额/分钟, 认证用户限额/分钟)
-    ("/api/health", 0, 0),              # 健康检查：不限流
-    ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
-    ("/api/admin/emby/login", 10, 10),  # 登录：每分钟 10 次（防暴力破解）
-    ("/api/user/login", 10, 10),
-    ("/api/admin/", 60, 300),           # 管理接口：未认证 60，认证 300
-    ("/api/", 120, 600),               # 普通 API：未认证 120，认证 600
-]
+# 规则表收敛到 backend.ratelimit.API_RATE_LIMITS（横切能力只许一套）：
+# EM 与 EA 共用，改限额只改一处。
+from backend.ratelimit import API_RATE_LIMITS as RATE_LIMITS  # noqa: E402
 
 def _get_client_ip(request) -> str:
     """获取真实客户端 IP（防伪造）。
@@ -368,27 +362,12 @@ def _get_client_ip(request) -> str:
 def _is_authenticated(request) -> bool:
     """是否认证用户：只认合法的 access JWT（验签），不只看头在不在。
 
-    旧实现只看 Authorization 头有没有，攻击者发任意伪造头就能拿到认证档
-    限额。现用 resolve_jwt_user_id 纯验签（无 DB 查询，内部吞异常），
-    验签失败一律 False（fail-closed 降档）。
-    X-Emby-Token / X-MediaBrowser-Token 是 Emby 凭据，门户 /api/ 鉴权不用它，
-    不再计入认证档（/emby/ 路径的认证/匿名限额本就相同，无影响）。
+    判定逻辑收敛到 backend.ratelimit.is_authenticated_request（横切能力只许一套）：
+    EM 限流中间件与 EA 限流中间件共用同一实现。旧实现只看 Authorization 头有没有，
+    攻击者发任意伪造头就能拿到认证档限额；现纯验签，验签失败一律 False（fail-closed）。
+    保留本函数名做兼容（tests/test_ratelimit_auth.py 直接引用）。
     """
-    auth = request.headers.get("Authorization")
-    if not auth:
-        return False
-
-    parts = auth.split(None, 1)
-    if len(parts) == 2 and parts[0].lower() == "bearer":
-        token = parts[1].strip()
-    else:
-        # 无 scheme 时把整个头当 token；空头返回 False
-        token = auth.strip()
-
-    if not token:
-        return False
-
-    return resolve_jwt_user_id(token) is not None
+    return is_authenticated_request(request)
 
 def _check_rate_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, str]:
     """返回 (是否允许, 原因)"""
