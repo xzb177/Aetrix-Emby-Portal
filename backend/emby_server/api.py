@@ -2131,7 +2131,7 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
 
     返回被去掉的 id 集合；圈出来的行太多（几乎全库都是重复）时返回 None，调用方回退全量实现。
     """
-    from sqlalchemy import String, case, cast, column, Integer, literal, values
+    from sqlalchemy import String, case, cast, column, Integer, literal, table, text
 
     MI = em.MediaItem
     # --- 剧的去重组（episode 桶要用）---
@@ -2157,15 +2157,31 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
         if rep:
             # P0 修复（2026-10-17 压测实锤）：原来用 case(rep, value=series_id, ...)
             # 把去重组写成 SQL 表达式，rep 条目一多（merged 行成千上万）就是几千个
-            # WHEN 分支，PG 实测 105 秒。改成 VALUES CTE 映射表 LEFT JOIN，
-            # 同样语义（左连接未命中时回退 series_id 自身），PG 实测 0.5 秒；
-            # 用 CTE 而不用别名 JOIN 是为了兼容 SQLite（测试库不支持
-            # AS rep_map (sid, grp) 的列别名语法）。
-            rep_map = values(
-                column("sid", Integer), column("grp", Integer),
-            ).data([(sid, grp) for sid, grp in rep.items()]).cte("rep_map")
-            rep_join = (rep_map, rep_map.c.sid == MI.series_id)
-            series_group_expr = func.coalesce(rep_map.c.grp, MI.series_id, 0)
+            # WHEN 分支，PG 实测 105 秒。
+            #
+            # v2（2026-10-18）：VALUES CTE 写法在 SQLAlchemy 侧编译 250KB SQL 要 321ms/
+            # 请求（8.7k 行内联参数）。改成 TEMP TABLE：SQL 静态（编译 ~5ms），
+            # 8.7k 行用 executemany 批量插入（~20ms）。同样语义（左连接未命中时回退
+            # series_id 自身）。SQLite 测试库不支持 TEMP TABLE ON COMMIT DROP 语法，
+            # 走 VALUES CTE 回退路径（测试数据量小，无性能问题）。
+            if db.bind and db.bind.dialect.name == "postgresql":
+                db.execute(text("CREATE TEMP TABLE IF NOT EXISTS _dedup_rep_map (sid INTEGER PRIMARY KEY, grp INTEGER) ON COMMIT DROP"))
+                db.execute(text("TRUNCATE _dedup_rep_map"))
+                db.execute(
+                    text("INSERT INTO _dedup_rep_map (sid, grp) VALUES (:sid, :grp)"),
+                    [{"sid": sid, "grp": grp} for sid, grp in rep.items()],
+                )
+                rep_tbl = table("_dedup_rep_map", column("sid", Integer), column("grp", Integer))
+                rep_join = (rep_tbl, rep_tbl.c.sid == MI.series_id)
+                series_group_expr = func.coalesce(rep_tbl.c.grp, MI.series_id, 0)
+            else:
+                # SQLite（测试）：数据量小，VALUES CTE 足够
+                from sqlalchemy import values
+                rep_map = values(
+                    column("sid", Integer), column("grp", Integer),
+                ).data([(sid, grp) for sid, grp in rep.items()]).cte("rep_map")
+                rep_join = (rep_map, rep_map.c.sid == MI.series_id)
+                series_group_expr = func.coalesce(rep_map.c.grp, MI.series_id, 0)
 
     tmdb_clean = func.trim(func.replace(func.replace(func.replace(
         func.coalesce(MI.tmdb_id, ""), "\t", ""), "\n", ""), "\r", ""))
@@ -2193,9 +2209,18 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     if not suspect_ids:
         return set()
     unique_ids = list(dict.fromkeys(suspect_ids))
-    rows = []
-    for chunk in _chunks(unique_ids):
-        rows.extend(db.query(*_DEDUP_FIELDS).filter(MI.id.in_(chunk)).all())
+    # P0（2026-10-18）：3.3 万 suspects 原来按 900 切块查 37 次（37 次往返）。
+    # PG 下改成单条 unnest 查询（静态 SQL + 数组参数），一次往返。
+    if db.bind and db.bind.dialect.name == "postgresql":
+        from sqlalchemy import text as _text
+        id_list = _text("SELECT * FROM unnest(CAST(:ids AS INTEGER[])) AS t(id)").columns(
+            column("id", Integer)).cte("suspect_ids")
+        rows = db.query(*_DEDUP_FIELDS).join(
+            id_list, id_list.c.id == MI.id).params(ids=unique_ids).all()
+    else:
+        rows = []
+        for chunk in _chunks(unique_ids):
+            rows.extend(db.query(*_DEDUP_FIELDS).filter(MI.id.in_(chunk)).all())
     series_ids_needed = {r[9] for r in rows if r[1] == "episode" and r[9]}
     keep = _dedup_keep_ids(rows, _series_key_map(db, series_ids_needed))
     dropped = set(unique_ids) - keep
