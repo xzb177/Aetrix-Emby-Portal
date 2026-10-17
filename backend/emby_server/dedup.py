@@ -11,6 +11,7 @@ Emby 官方的多版本机制：
 3. 存量清理：一次性脚本合并已有重复
 """
 
+import os
 import re
 import unicodedata
 from typing import Any, Iterable, Optional
@@ -34,6 +35,26 @@ def normalize_name(name: Optional[str]) -> str:
     # 去掉所有空白和标点，只保留字母数字（中日韩字符属于字母，保留）
     s = "".join(ch for ch in s if ch.isalnum())
     return s
+
+
+# 宽松归一化用的虚词字符集。
+# 可用环境变量 SERIES_LOOSE_PARTICLES 追加虚词：
+# extra = os.getenv("SERIES_LOOSE_PARTICLES", "")
+SERIES_LOOSE_PARTICLES = "的之和与特·-＆&・･•"
+
+
+def normalize_name_loose(name: Optional[str]) -> str:
+    """宽松归一化：normalize_name() 基础上再剥虚词与尾部年份数字。
+
+    只用于同剧识别（扫描防重/自动合并），不许替代 normalize_name() 现有调用点。
+    """
+    s = normalize_name(name)
+    s = re.sub(r"(19|20)\d{2}$", "", s)
+    # 环境变量追加的虚词同样转小写：normalize_name 已把输入转小写，
+    # 大写追加进来永远匹配不上（r29 测试抓到）。
+    extra = (os.getenv("SERIES_LOOSE_PARTICLES", "") or "").lower()
+    particles = SERIES_LOOSE_PARTICLES + extra
+    return "".join(ch for ch in s if ch not in particles)
 
 
 def dedup_key(item: Any) -> Optional[tuple]:

@@ -899,6 +899,11 @@ def _auto_migrate():
         ("strm_gen_files", [
             ("drive_id", "VARCHAR(128)", "''"),
         ]),
+        # Q3 同剧治理：emby_items 加 tmdb_loose_repair_at（宽松重识别只跑一次，
+        # 防无限重试）。老库补列后为 NULL（= 还没跑过），行为与升级前一致。
+        ("emby_items", [
+            ("tmdb_loose_repair_at", "DATETIME", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

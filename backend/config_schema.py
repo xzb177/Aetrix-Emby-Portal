@@ -131,6 +131,9 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
 ECONOMY_INT_RANGES: dict[str, tuple[int, int]] = {
     "invitation_rebate_percent": (0, 100),
     "checkin_penalty_pct": (0, 100),
+    # Q3 同剧合并：与 merge_versions_worker.series_merge_config 的钳制一致
+    "series_merge_interval_sec": (3600, 604800),
+    "series_merge_batch_limit": (10, 100000),
 }
 
 

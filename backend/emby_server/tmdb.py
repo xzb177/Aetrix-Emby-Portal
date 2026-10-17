@@ -1542,11 +1542,16 @@ class TmdbClient:
             self._cache_put(key, results)
             return results
 
-    def search(self, name: str, year: Optional[int], kind: str) -> Optional[dict]:
+    def search(self, name: str, year: Optional[int], kind: str,
+               loose_ok: bool = False) -> Optional[dict]:
         """智能搜索：清洗查询 → 多候选 → 置信度校验，只返回高置信命中。
 
         无高置信命中时返回 None（调用方按既有口径记 last_scraped_at，
         条目名字保持原样，绝不写错）。
+
+        loose_ok=True（Q3）在候选末尾追加宽松归一化候选（去虚词/尾部年份），
+        仅接受"宽松归一化后完全相等"的 Tier 2 命中，绝不接受模糊。
+        默认 False，现有调用零影响。
 
         瞬态失败（网络/5xx/全 key 429）在**没有任何命中**时上抛
         ``TmdbTransientError``——那不是「搜过了没有」，是「没搜成」，
@@ -1555,13 +1560,24 @@ class TmdbClient:
         语言 fallback（对标 StrmAssistant）：首选语言无高置信命中时，
         按 ``language_fallback_chain()`` 逐个语言重试。
         """
+        from backend.emby_server import dedup as _dedup_lib
+
+        loose_query = None
+        if loose_ok:
+            loose_query = _dedup_lib.normalize_name_loose(name) or None
+
+        def _cands(nm, yr):
+            cs = list(_search_candidates(nm, yr))
+            if loose_query and all(q != loose_query for q, _ in cs):
+                cs.append((loose_query, False))
+            return cs
         # 外层：语言 fallback 链；内层：查询候选
         # 首选语言先走完所有候选，无命中才换语言（省请求）
         for lang in language_fallback_chain():
             best = None  # (tier, rank, hit)：跨候选、跨结果取全局最可信
             transient: Optional[Exception] = None
             saw_results = False
-            for query, fuzzy_ok in _search_candidates(name, year):
+            for query, fuzzy_ok in _cands(name, year):
                 # 短路（v2.42.9）：已有 Tier 2（归一化后**精确相等**）就收手。
                 # Tier 2 永远压过 Tier 1（元组比较先看 tier），后续候选最多只能换来
                 # 「更长的精确变体」这一个 rank 的差别，不值得再打 1~4 次 HTTP。
@@ -1583,6 +1599,19 @@ class TmdbClient:
                     saw_results = True
                 for hit in results[:10]:
                     sc = _hit_score(name, query, hit, fuzzy_ok, year=year)
+                    if sc is None and loose_query and query == loose_query:
+                        # Q3 宽松精确：仅当宽松归一化后与 hit 任一标题完全相等
+                        # 才接受为 Tier 2 命中；绝不接受模糊（保持"绝不写错"）。
+                        _hit_names = [
+                            str(hit.get(k) or "") for k in
+                            ("name", "title", "original_name", "original_title")
+                        ]
+                        if any(
+                            _dedup_lib.normalize_name_loose(hn) == loose_query
+                            for hn in _hit_names if hn
+                        ):
+                            sc = _confirm_year(
+                                (2, len(loose_query)), year, hit)
                     if sc and (best is None or sc > best[:2]):
                         best = (sc[0], sc[1], hit)
             if best:
@@ -1594,7 +1623,7 @@ class TmdbClient:
                 # 注意回退后不再做年份二次确认（年份已知不可靠），
                 # 但候选仍保留"清洗名 YYYY"（年份可能是标题的一部分）。
                 # 缓存键年份维度不同（year or 0），不会污染带年份的缓存。
-                for query, fuzzy_ok in _search_candidates(name, year):
+                for query, fuzzy_ok in _cands(name, year):
                     try:
                         results = self._search_raw(query, None, kind, lang=lang)
                     except TmdbTransientError as exc:

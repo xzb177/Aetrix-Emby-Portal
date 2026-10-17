@@ -179,6 +179,9 @@ class MediaItem(Base):
     platforms = Column(Text, default="")
     tmdb_id = Column(String(20), index=True)
     imdb_id = Column(String(20))
+    # Q3 同剧治理：宽松重识别只跑一次（无论命中与否），打时间戳防无限重试。
+    # NULL = 还没跑过宽松重识别。老库由 database._auto_migrate 补列。
+    tmdb_loose_repair_at = Column(DateTime, default=None)
     # 多别名（逗号分隔）：TMDB 的 also known as / 原名等，供中英文与繁简搜索命中
     aliases = Column(Text, default="")
     # v2.51.0 演员刮削：TMDB details 的 origin_country / spoken_languages，
