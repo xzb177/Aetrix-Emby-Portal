@@ -5,9 +5,9 @@
  * 条目（名字、顺序都不同），顶栏还另有一个 ☰ 抽屉，合起来就是「一个像 App 的
  * 底部栏 + 一个像网页的顶栏」，看着像两个导航、两套产品。这里收敛成一份：
  *
- *   primaryNav    主导航：全断点在顶栏渲染——
- *                 ≥900px 横排，≤900px 是第二行的横向滑动选项卡。
- *                 顶栏不再有第二个抽屉，也不再有底部导航坞。
+ *   primaryNav    主导航：全断点同一份定义 —— 桌面在顶栏渲染（≥900px 横排，
+ *                 769~900px 顶栏第二行滑动选项卡），手机在底部坞渲染。
+ *                 顶栏不再有第二个抽屉；手机不再有第二套底部坞。
  *
  * v2.10.0（方案 A）：收藏与观看记录原本是两个一级入口，占掉主导航 3/5 个位置，
  * 而它们本质是**媒体库的两种视图**（本站自己也保留了一份历史数据，但播放器
@@ -38,7 +38,7 @@
 
 import type { Component } from 'vue'
 import {
-  Clapperboard, ShoppingBag, User,
+  Clapperboard, Globe, Server, ShoppingBag, User,
 } from 'lucide-vue-next'
 
 export interface NavItem {
@@ -49,14 +49,36 @@ export interface NavItem {
   icon: Component
 }
 
-/** 主导航：全断点共用同一份（宽屏横排、窄屏底部坞）。
- *  三项定稿（2026-10-13 旧页面清理）：钱包（/wallet）已删，资产查看走
- *  /game/ledger 能量账本；补给站（/store，只管花钱/花能量）保留；
- *  我的（/profile）已删，改走 /game/account 账号设置设施。
+/** 主导航：全断点共用同一份（桌面顶栏横排、手机底部坞）。
+ *  五项定稿（2026-10-17 用户拍板，DESIGN.md v1.1）：
+ *  发现（/） / 世界（/game，含全部 /game/** 设施） / 服务器（/server） /
+ *  补给站（/shop） / 我的（/game/account 账号设置）。
+ *  叫法统一「发现」（废「首页」）；收藏家（/collector）页面保留，
+ *  但退出主导航、入口收进发现页。
  *  媒体库与搜索仍可从头像菜单 / 首页帮助区 / 顶栏资产 pill 上下文进入，
  *  不在主导航占位 */
 export const primaryNav: NavItem[] = [
-  { name: '首页', path: '/', icon: Clapperboard },
+  { name: '发现', path: '/', icon: Clapperboard },
+  { name: '世界', path: '/game', icon: Globe },
+  { name: '服务器', path: '/server', icon: Server },
   { name: '补给站', path: '/shop', icon: ShoppingBag },
   { name: '我的', path: '/game/account', icon: User },
 ]
+
+/**
+ * 判定当前路由命中的主导航项（最长前缀匹配）：
+ * '/' 只精确命中；其余项 path 相等或 routePath 以 "path/" 开头即命中，
+ * 取命中项中 path 最长的 —— 解决 /game 与 /game/account 的包含关系
+ *（/game/account 命中「我的」而不是「世界」）。
+ * 无命中返回 ''（如 /tg-bind、404 等非导航路由）。
+ */
+export function resolveActiveNavPath(routePath: string): string {
+  let best = ''
+  for (const item of primaryNav) {
+    const p = item.path
+    const matched =
+      p === '/' ? routePath === '/' : routePath === p || routePath.startsWith(`${p}/`)
+    if (matched && p.length > best.length) best = p
+  }
+  return best
+}

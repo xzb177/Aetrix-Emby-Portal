@@ -336,7 +336,6 @@
       </div>
     </Teleport>
 
-    <PanelTabbar />
   </div>
 </template>
 
@@ -344,7 +343,6 @@
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
 import { humanizeError } from '@/composables/usePanelApi'

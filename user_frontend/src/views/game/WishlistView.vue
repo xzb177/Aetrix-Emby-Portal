@@ -83,7 +83,6 @@
         </div>
       </section>
     </div>
-    <PanelTabbar />
 
     <!-- 许愿弹窗 -->
     <div class="modal" :class="{ show: modalOpen }" role="dialog" aria-modal="true" aria-label="许愿" tabindex="-1" @click.self="closeModal" @keydown="onModalKeydown">
@@ -182,7 +181,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { facilityStamp } from '@/config/game'
 import { mediaSeekApi, type MediaSeekCandidate, type TvSeason, type MediaSeekRequest, type HotMediaSeekRequest } from '@/api'
 import { useToast } from '@/composables/useToast'

@@ -27,7 +27,7 @@ const router = createRouter({
       name: 'home',
       // 首页即发现页（旧 HomeView 已删除，不再回退）
       component: () => import('@/views/panel/DiscoveryView.vue'),
-      meta: { title: '首页' },
+      meta: { title: '发现' },
     },
     // v4 面板：收藏家 / 服务器（需要登录，panel 接口全部要鉴权）
     ...(panelV4
@@ -226,8 +226,8 @@ router.beforeEach(async (to) => {
 // v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
 export const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit', '/game/account'])
-// R27 打磨：导出给 App.vue 用 —— 凡渲染 PanelTabbar 的 v4 路由（15 个，
-// 4 panel + 11 game），移动端都只留纸色 tabbar，隐藏 AppDock（防双底部导航）
+// 底部坞由 App.vue 全局常驻渲染（PanelTabbar，≤768px 唯一一套，
+// 桌面 ≥769px 由 CSS 隐藏）；各视图模板不再自带 <PanelTabbar/>。
 function restoreUserTheme() {
   // 从 useTheme.ts 同 key 读用户偏好（默认 dark），恢复 data-theme
   let pref = 'dark'

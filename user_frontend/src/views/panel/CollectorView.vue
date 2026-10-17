@@ -55,7 +55,6 @@
         <div v-else class="v4-empty">馆灵还在路上，多看片把它养出来</div>
       </section>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
@@ -64,7 +63,6 @@ import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import TastePassport from '@/components/panel/TastePassport.vue'
 import PetCard from '@/components/panel/PetCard.vue'
 import type { Achievement, CollectorData, PetData, TasteStamp } from '@/composables/usePanelApi'

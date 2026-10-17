@@ -164,14 +164,12 @@
         </template>
       </section>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { facilityStamp } from '@/config/game'
 import { messageApi, type StationMessage } from '@/api'
 import { useToast } from '@/composables/useToast'

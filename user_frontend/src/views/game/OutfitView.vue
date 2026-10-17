@@ -161,13 +161,11 @@
       <button @click="confirmWear">就穿这套</button>
     </div>
 
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch, computed } from 'vue'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useTheme } from '@/composables/useTheme'
 import { useToast } from '@/composables/useToast'
 import { panelApi, humanizeError, type Achievement } from '@/composables/usePanelApi'

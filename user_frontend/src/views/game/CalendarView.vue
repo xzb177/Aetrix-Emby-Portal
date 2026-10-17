@@ -97,14 +97,12 @@
       <!-- R48B-14：清空后的读屏播报（常驻，不随 plan-bar 移除） -->
       <div class="sr-only" role="status">{{ planLiveMsg }}</div>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { fetchCalendar, StaleResponseError, type CalendarDay, type CalendarTeaser } from '@/api/calendar'
 import { humanizeError } from '@/composables/usePanelApi'
 

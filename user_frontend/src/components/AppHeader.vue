@@ -12,7 +12,7 @@ import api, {
   type StationMessage, type Announcement,
 } from '@/api'
 import type { MySubscription } from '@/api'
-import { primaryNav } from '@/config/navigation'
+import { primaryNav, resolveActiveNavPath } from '@/config/navigation'
 /** v4.1：头像菜单改为「探险设施直达」，设施清单唯一数据源 */
 import { gameFacilities, gameHubConfig } from '@/config/game'
 import { checkinApi, vitalityApi } from '@/api/economy'
@@ -326,8 +326,8 @@ function toggleMsgMenu() {
  */
 
 function isActive(path: string) {
-  if (path === '/') return route.path === '/'
-  return route.path.startsWith(path)
+  // 最长前缀匹配：/game/account 命中「我的」而不是「世界」
+  return resolveActiveNavPath(route.path) === path
 }
 
 function closeMenus() {
@@ -460,11 +460,19 @@ watch(() => route.path, () => focusActiveTab(true))
 /** 未读轮询定时器句柄：SPA 内组件反复挂载时不清会累积泄漏，卸载时统一清掉 */
 let pollTimer = 0
 
+/** 顶栏滚动态（DESIGN.md §5-7）：未滚过时融入纸面，滚过才加 blur(12px)+1px 边框 */
+const headerScrolled = ref(false)
+function onPageScroll() {
+  headerScrolled.value = window.scrollY > 8
+}
+
 onMounted(() => {
   document.addEventListener('click', onDocClick)
   document.addEventListener('keydown', onDocKeydown)
   window.addEventListener('resize', onViewportChange)
   window.addEventListener('orientationchange', onViewportChange)
+  window.addEventListener('scroll', onPageScroll, { passive: true })
+  onPageScroll()
   poll()
   loadPoints()
   loadVitality()
@@ -476,12 +484,13 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onDocKeydown)
   window.removeEventListener('resize', onViewportChange)
   window.removeEventListener('orientationchange', onViewportChange)
+  window.removeEventListener('scroll', onPageScroll)
   window.clearInterval(pollTimer)
 })
 </script>
 
 <template>
-  <header class="app-header">
+  <header class="app-header" :class="{ 'is-scrolled': headerScrolled }">
     <div class="header-container">
       <RouterLink to="/" class="header-logo" @click="closeMenus">
         <span class="logo-mark">
@@ -493,7 +502,7 @@ onBeforeUnmount(() => {
 
       <!-- 主导航（全断点唯一一套）：≥900px 横排在品牌与账号操作之间，
            769~900px 落到第二行、变成可横向滑动的选项卡，
-           ≤768px 整条让位给底部导航坞（AppDock） -->
+           ≤768px 整条让位给底部导航坞（PanelTabbar） -->
       <nav ref="navRef" class="main-nav" aria-label="主导航">
         <RouterLink
           v-for="item in primaryNav"
@@ -720,13 +729,19 @@ onBeforeUnmount(() => {
   /* PWA 刘海屏：顶栏垫进状态栏安全区（非刘海机 env 为 0，无副作用） */
   padding-top: env(safe-area-inset-top, 0px);
   z-index: 50;
-  /* 暗房影院：顶栏 = 页面底色 0.96 + 模糊（滚过去的内容不再透出字形）+ 一根发丝线。
-     两套主题都是同一个配方（--paper-chrome 在浅色下是奶油纸色） */
-  background: var(--paper-chrome);
-  -webkit-backdrop-filter: saturate(1.4) blur(16px);
-  backdrop-filter: saturate(1.4) blur(16px);
-  border-bottom: 1px solid var(--paper-line);
+  /* DESIGN.md §5-7：内容未滚过时顶栏融入纸面（透明、无模糊、无边框）；
+     内容滚动到顶栏下方时才加 blur(12px) + 1px #e3e3e2 下边框 */
+  background: transparent;
+  border-bottom: 1px solid transparent;
   overflow: hidden;
+  transition: background-color var(--paper-fast, 0.16s) var(--paper-ease, ease),
+    border-color var(--paper-fast, 0.16s) var(--paper-ease, ease);
+}
+.app-header.is-scrolled {
+  background: var(--paper-chrome);
+  -webkit-backdrop-filter: saturate(1.4) blur(12px);
+  backdrop-filter: saturate(1.4) blur(12px);
+  border-bottom: 1px solid #e3e3e2;
 }
 
 .header-container {
@@ -788,8 +803,8 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-/* 导航（暗房影院）：安静的纯文字，不再有胶囊底与图标；
-   当前页 = 正文色 + 下方一颗琥珀小圆点（像放映厅里那盏指示灯） */
+/* 导航（DESIGN.md）：安静的纯文字，不再有胶囊底与图标；
+   当前页 = 深青文字 + 下方一颗深青小圆点（#016a71，全站唯一彩色） */
 .nav-link {
   position: relative;
   display: inline-flex;
@@ -820,7 +835,7 @@ onBeforeUnmount(() => {
 
 .nav-link-active,
 .nav-link-active:hover {
-  color: var(--paper-ink);
+  color: #016a71;
   font-weight: 600;
 }
 
@@ -833,7 +848,7 @@ onBeforeUnmount(() => {
   height: 4px;
   margin-left: -2px;
   border-radius: 50%;
-  background: var(--paper-primary);
+  background: #016a71;
 }
 
 /* 键盘焦点环：与全站其余可聚焦元素同一配方（替代掉的 .theme-opt:focus-visible 同源） */
@@ -1445,22 +1460,23 @@ onBeforeUnmount(() => {
 </style>
 
 <style scoped>
-/* ≤768px：顶栏退成单行（品牌 + 消息 + 头像），主导航交给底部坞（AppDock）。
-   两个下拉都改成 fixed 面板：① 挂在 header 的堆叠上下文里但 z 高于坞的绘制顺序问题
-   已不存在——fixed 仍受 header 的 z-index:50 上下文约束，因此坞提到 40、
-   下拉保持 60（见 AppDock 同步调整），同一上下文内 60 > 50 稳赢；
+/* ≤768px：顶栏退成单行（品牌 + 消息 + 头像），主导航交给底部坞（PanelTabbar）。
+   两个下拉都改成 fixed 面板：① 挂在 header 的堆叠上下文里但 z 高于坞——
+   底部坞是 fixed z-50（根级），下拉挂 body z-60，同视口层级 60 > 50 稳赢；
    ② max-height + 内部滚动保证菜单永不伸进底部坞的拇指区 */
 @media (max-width: 768px) {
   .header-container {
     flex-wrap: nowrap;
     padding: 0 1rem;
     min-height: 54px;
+    /* 手机顶栏与内容同宽（min(430px,100vw) 居中），消灭「头宽身窄」 */
+    max-width: min(430px, 100vw);
     /* 手机顶栏是「品牌 + 外观 + 消息 + 头像」四件事（v2.42.9 起外观也常驻顶栏），
        间距用正常口径；双 pill 时代为塞下胶囊才把它压到 0.25rem */
     gap: 0.625rem;
   }
 
-  /* 主导航整条让位给底部坞（AppDock）；圆形按钮保持桌面口径不缩水 */
+  /* 主导航整条让位给底部坞（PanelTabbar）；圆形按钮保持桌面口径不缩水 */
   .main-nav { display: none; }
 
   .header-logo { gap: 0.375rem; }

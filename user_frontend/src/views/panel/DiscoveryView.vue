@@ -24,6 +24,16 @@
         >🗺 探险世界</button>
       </header>
 
+      <!-- 收藏家入口：退出底栏后收进发现页（DESIGN.md v1.1）；页面本身保留在 /collector -->
+      <RouterLink to="/collector" class="v4-collector-entry" aria-label="收藏家">
+        <span class="v4-collector-ic" aria-hidden="true">🏅</span>
+        <span class="v4-collector-body">
+          <span class="v4-collector-title">收藏家</span>
+          <span class="v4-collector-sub">你的成就与收藏，一览无余</span>
+        </span>
+        <span class="v4-collector-go" aria-hidden="true">›</span>
+      </RouterLink>
+
       <!-- 首页服务器卡片：服清单数据驱动（发现页最显眼的位置） -->
       <div v-if="visibleCount === 0 && !serversLoading && !serversLoadError" class="v4-sec">
         <div class="v4-empty">暂无可见服务器，去<RouterLink to="/game/settings">设置</RouterLink>恢复显示</div>
@@ -91,7 +101,6 @@
         <div v-else class="v4-empty">昨天的信还在路上，先去看片吧</div>
       </section>
     </div>
-    <PanelTabbar />
     </template>
   </div>
 </template>
@@ -102,7 +111,6 @@ import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import ParcelBox from '@/components/panel/ParcelBox.vue'
 import EcgCanvas from '@/components/panel/EcgCanvas.vue'
 import PulseActivity from '@/components/panel/PulseActivity.vue'
@@ -375,6 +383,46 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
     animation: none;
     opacity: 1;
   }
+}
+
+/* 收藏家入口卡（DESIGN.md v1.1：退出底栏后收进发现页）—— 纸面语言：浅卡 + 1px 发丝边 + 16px 圆角，零投影 */
+.v4-collector-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 16px 0;
+  padding: 12px 14px;
+  min-height: 44px;
+  background: var(--paper-card, #FFFDF6);
+  border: 1px solid #d1d1cd;
+  border-radius: 16px;
+  text-decoration: none;
+  color: var(--ink, #2A2620);
+}
+.v4-collector-ic {
+  font-size: 24px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.v4-collector-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.v4-collector-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+.v4-collector-sub {
+  font-size: 12px;
+  color: var(--ink2, #6B6257);
+}
+.v4-collector-go {
+  font-size: 20px;
+  color: var(--ink2, #6B6257);
+  flex-shrink: 0;
 }
 
 /* 经典视图 → 探险世界入口（仅桌面渲染，显隐由模板 v-if 控制） */
