@@ -430,12 +430,24 @@ class DriveMount(RemoteMount):
 
         覆盖基类实现：基类只查首个匹配的文件夹，同名文件夹下的文件会被
         误判为不存在（扫描器清理阶段据此标记删除活文件）。
+
+        首候选走缓存路径（``_fid_of`` + ``list_dir``，与缓存韧性同口径）：
+        瞬时列举失败（400/限流）时缓存热仍返回 True，活文件不会被判删除。
+        只有回溯找后续同名候选时才走未缓存的 ``_list_by_id``。
         """
         parent, _, name = (rel or "").rstrip("/").rpartition("/")
         if not name:
             return False  # 与基类一致：空名按不存在
         try:
-            excluded: set[str] = set()
+            # 首候选：走缓存（零 API 命中；_resolve_folder_id 自带 _fid_cache）
+            try:
+                first_id = self._resolve_folder_id(parent or "/", frozenset())
+            except _PathDeadEnd:
+                return False
+            if any(e.name == name for e in self.list_dir(parent or "/")):
+                return True
+            # 首个候选无此名：逐个排除已查候选，回溯找后续同名文件夹
+            excluded: set[str] = {first_id}
             while True:
                 try:
                     folder_id = self._resolve_folder_id(

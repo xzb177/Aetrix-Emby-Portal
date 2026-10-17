@@ -900,7 +900,11 @@ def mount_serial_guard(library_id: int, mount_ids):
 
     语义与排队任务一致：挂载被占用时**阻塞等待**（排队而不是报错），全部
     空闲后一次性登记占用（多挂载不会拿一半等一半，不存在交叉死锁）；退出
-    时只释放登记在自己名下的，并唤醒等待者。与 ``_limits_locked`` 同口径：
+    时只释放登记在自己名下的，并唤醒等待者。边界语义：同库排队任务被派发时
+    它的 ``_release_locked`` 只释放 ``task.mount_ids`` 里的挂载；若守卫的 ids
+    与任务的 mount_ids 不一致（并发窗口内改了库挂载配置），多出的挂载不交
+    给它，守卫自己收回——否则多余挂载在 ``_MOUNT_OWNER`` 里永久残留、
+    等待者挂起。与 ``_limits_locked`` 同口径：
     队列关（``SCAN_QUEUE_ENABLED=0``）或挂载串行关（``SCAN_MOUNT_SERIAL=0``）
     时不限制、直接放行；没有远程挂载的库也直接放行。
 
@@ -908,6 +912,11 @@ def mount_serial_guard(library_id: int, mount_ids):
     还有 rescrape 与排队扫描之间）。拆分模式下 worker 进程的排队扫描有它
     自己进程内的占用表，两边互不可见——那是队列既有的进程内语义，本函数
     不改变它。
+
+    嵌套说明：同库嵌套 guard 允许进入（等待条件自排除，不自死锁），但内层
+    退出会收回它名下的挂载（外层若仍持有同挂载会被提前释放）——当前生产
+    只有一个调用点（admin_scrape rescrape），无嵌套路径；需要嵌套的调用方
+    先来对齐语义再动手。
     """
     ids = tuple(sorted({int(m) for m in (mount_ids or ())}))
     if not ids or not SCAN_QUEUE_ENABLED or not SCAN_MOUNT_SERIAL:
@@ -915,7 +924,7 @@ def mount_serial_guard(library_id: int, mount_ids):
         return
     owner = int(library_id)
     with _COND:
-        while any(_MOUNT_OWNER.get(m) is not None for m in ids):
+        while any(_MOUNT_OWNER.get(m) not in (None, owner) for m in ids):
             _COND.wait(timeout=0.25)
         for m in ids:
             _MOUNT_OWNER[m] = owner
@@ -925,12 +934,20 @@ def mount_serial_guard(library_id: int, mount_ids):
     finally:
         with _COND:
             # 同库的排队任务若在本守卫持有期间被派发（``_conflicts_locked``
-            # 不把本库自己的占用算冲突），占用已归它管，释放交给它的
-            # ``_release_locked``；这里再 pop 会把正在跑的任务的占用提前清掉。
-            if owner not in _RUNNING:
-                for m in ids:
-                    if _MOUNT_OWNER.get(m) == owner:
-                        _MOUNT_OWNER.pop(m, None)
+            # 不把本库自己的占用算冲突），它覆盖到的挂载已归它管，释放
+            # 交给它的 ``_release_locked``；守卫只收回「任务 mount_ids 没覆盖」
+            # 的那些挂载（并发窗口内改了库挂载配置时 guard 的 ids 与任务
+            # mount_ids 不一致，多出的挂载不许让给 _release_locked——它只
+            # pop task.mount_ids 里的，多余的会永久泄漏挂起等待者）。
+            covered: set = set()
+            running = _RUNNING.get(owner)
+            if running is not None:
+                covered = {int(m) for m in (running.mount_ids or ())}
+            for m in ids:
+                if m in covered:
+                    continue
+                if _MOUNT_OWNER.get(m) == owner:
+                    _MOUNT_OWNER.pop(m, None)
             _COND.notify_all()
 
 

@@ -530,6 +530,24 @@ def test_exists_dir_name_still_works(_dup2_drive):
     assert provider.exists("") is False
 
 
+def test_exists_first_candidate_uses_cache_no_new_api_calls(_fake_drive):
+    """F3 回归：exists 首候选走缓存路径，缓存命中时零新增 API 调用。
+
+    瞬时 400（列举失败）而缓存热时，活文件必须判存在（True），
+    不能像旧实现那样直接 False（扫描器会据此标记删除活文件）。
+    """
+    provider = DriveMount(_mount())
+    rel = "/MoviePilot/演唱会/演唱会A.mkv"
+    assert provider.exists(rel) is True  # 热缓存
+    calls_after_warm = len(API_CALLS)
+    assert calls_after_warm > 0, "热缓存阶段应已打过 API"
+    FAIL_FOLDERS.add("F_CONCERT")  # 瞬时列举失败
+    assert provider.exists(rel) is True, \
+        "缓存热时列举瞬时失败，活文件不许被判不存在"
+    assert len(API_CALLS) == calls_after_warm, \
+        "缓存命中时 exists 不许再打 API"
+
+
 def test_resolve_second_duplicate_file(_dup2_drive, monkeypatch):
     """resolve：第二个同名文件夹里的文件能拿到直链"""
     monkeypatch.setattr(

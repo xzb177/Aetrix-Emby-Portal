@@ -85,3 +85,46 @@ def test_temp_table_ddl_statements_name_the_table():
     # 同一张表名在三条语句里完全一致（大小写/拼写漂移能红）
     names = [part for s in stmts for part in s.split() if "dedup_rep_map" in part]
     assert names and all(n.strip("(),") == "_dedup_rep_map" for n in names)
+
+
+def test_dropped_by_rn_shape_locked_in_source():
+    """源码锁定：``_dropped_by_rn`` 的分区/排序形状必须原样存在。
+
+    分区表达式丢一个（比如漏了 item_type），PG 下同键不同类型的行会
+    被误判重复；order_by(None) 是 ep_series 的 PG DISTINCT+ORDER BY 防护。
+    """
+    src = inspect.getsource(api._dedup_dropped_ids)
+    assert "def _dropped_by_rn(base_q, partition_exprs)" in src
+    assert "partition_by=tuple(partition_exprs)" in src
+    assert "order_by=_keeper_order()" in src
+    assert ".order_by(None)" in src  # ep_series 的 DISTINCT 排序防护（F8）
+    assert ".limit(_DEDUP_MAX_SUSPECTS + 1)" in src  # N 分支 DB 侧上限（F7）
+
+
+def test_row_number_down_push_renders_correctly_under_pg_dialect():
+    """PG 下 T/E 分支：ROW_NUMBER 下推（分区+排序）+ 外层 rn>1 的渲染形状。
+
+    断言当前生产实现的 SQL 形状在 postgresql 方言下真实编译通过。
+    """
+    MI = em.MediaItem
+    sub = (
+        select(
+            MI.id,
+            func.row_number()
+            .over(
+                partition_by=(MI.library_id, MI.item_type),
+                order_by=(MI.id.asc(),),
+            )
+            .label("rn"),
+        )
+        .select_from(MI)
+        .subquery()
+    )
+    stmt = select(sub.c.id).where(sub.c.rn > 1)
+    sql = _compile(stmt)
+    lowered = sql.lower()
+    assert "row_number()" in lowered
+    assert "partition by" in lowered
+    assert "emby_items.library_id" in sql
+    assert "ORDER BY emby_items.id ASC" in sql
+    assert "WHERE anon_1.rn > 1" in sql or "WHERE anon_1.rn > " in sql

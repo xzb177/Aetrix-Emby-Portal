@@ -107,6 +107,97 @@ def test_guard_no_mounts_is_noop():
             assert scan_queue._MOUNT_OWNER == {}
 
 
+# ==================== F1：让渡只针对任务 mount_ids 覆盖的 ids ====================
+
+def test_guard_releases_extra_mounts_when_task_mount_ids_shrink():
+    """F1 回归：守卫 ids=(3,4)、同库排队任务 mount_ids=(3,)——
+
+    守卫退出时只把 (3,) 的释放让给任务的 ``_release_locked``，
+    多出的 (4,) 必须自己收回，不能泄漏进 ``_MOUNT_OWNER``。
+    """
+    _clear_owners()
+    with mock.patch.object(scan_queue, "SCAN_QUEUE_ENABLED", True), \
+            mock.patch.object(scan_queue, "SCAN_MOUNT_SERIAL", True):
+        gen = scan_queue.mount_serial_guard(11, (3, 4))
+        gen.__enter__()
+        try:
+            with scan_queue._LOCK:
+                assert scan_queue._MOUNT_OWNER == {3: 11, 4: 11}
+            # 模拟：守卫持有期间同库排队任务被派发（只拿走挂载 3）
+            task = scan_queue.ScanTask(library_id=11, name="L", trigger="manual",
+                                       mount_ids=(3,))
+            with scan_queue._LOCK:
+                scan_queue._RUNNING[11] = task
+                scan_queue._MOUNT_OWNER[3] = 11  # _dispatch_locked 语义：归它管
+            gen.__exit__(None, None, None)
+            with scan_queue._LOCK:
+                assert scan_queue._MOUNT_OWNER == {3: 11}, \
+                    "守卫多余的挂载 4 必须自己收回；挂载 3 交给任务的 _release_locked"
+            # 任务跑完按 _release_locked 释放 → 必须清干净
+            with scan_queue._LOCK:
+                scan_queue._release_locked(task)
+            with scan_queue._LOCK:
+                assert scan_queue._MOUNT_OWNER == {}
+                assert 11 not in scan_queue._RUNNING
+        finally:
+            with scan_queue._LOCK:
+                scan_queue._RUNNING.pop(11, None)
+
+
+def test_guard_same_ids_as_task_handover_unchanged():
+    """F1 正常路径：守卫 ids == 任务 mount_ids 时行为不变（全部让渡）。"""
+    _clear_owners()
+    with mock.patch.object(scan_queue, "SCAN_QUEUE_ENABLED", True), \
+            mock.patch.object(scan_queue, "SCAN_MOUNT_SERIAL", True):
+        gen = scan_queue.mount_serial_guard(11, (3,))
+        gen.__enter__()
+        try:
+            task = scan_queue.ScanTask(library_id=11, name="L", trigger="manual",
+                                       mount_ids=(3,))
+            with scan_queue._LOCK:
+                scan_queue._RUNNING[11] = task
+                scan_queue._MOUNT_OWNER[3] = 11
+            gen.__exit__(None, None, None)
+            with scan_queue._LOCK:
+                # 集合一致：守卫一个不 pop，全部交给 _release_locked
+                assert scan_queue._MOUNT_OWNER == {3: 11}
+            with scan_queue._LOCK:
+                scan_queue._release_locked(task)
+            with scan_queue._LOCK:
+                assert scan_queue._MOUNT_OWNER == {}
+        finally:
+            with scan_queue._LOCK:
+                scan_queue._RUNNING.pop(11, None)
+
+
+# ==================== F2：等待条件自排除，嵌套 guard 不自死锁 ====================
+
+def test_nested_guard_same_library_no_self_deadlock():
+    """F2 回归：同库嵌套 guard（外 (3,4)、内 (3,)）不自死锁、顺序执行。"""
+    _clear_owners()
+    with mock.patch.object(scan_queue, "SCAN_QUEUE_ENABLED", True), \
+            mock.patch.object(scan_queue, "SCAN_MOUNT_SERIAL", True):
+        entered_inner = threading.Event()
+        done = threading.Event()
+
+        def _nested():
+            with scan_queue.mount_serial_guard(11, (3, 4)):
+                with scan_queue.mount_serial_guard(11, (3,)):
+                    entered_inner.set()
+                    with scan_queue._LOCK:
+                        # 嵌套期间两个挂载都登记在自己名下
+                        assert scan_queue._MOUNT_OWNER == {3: 11, 4: 11}
+            done.set()
+
+        t = threading.Thread(target=_nested)
+        t.start()
+        assert entered_inner.wait(timeout=5), "内层守卫必须能进入（自排除），不能自死锁"
+        t.join(timeout=10)
+        assert done.wait(timeout=5)
+        with scan_queue._LOCK:
+            assert scan_queue._MOUNT_OWNER == {}
+
+
 # ==================== rescrape 接线 ====================
 
 def test_concurrent_rescrapes_same_mount_serialize():

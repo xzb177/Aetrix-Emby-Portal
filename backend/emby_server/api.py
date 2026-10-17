@@ -2116,7 +2116,7 @@ def _chunks(seq, n=900):
 
 
 def _dedup_dropped_ids(query, db) -> Optional[set]:
-    """P3：按去重分支分别圈出候选重复行（替代全候选集上的窗口函数）。
+    """P3：PG 下按去重分支分别跑 ``ROW_NUMBER`` 下推，直接算出被去掉的 id。
 
     背景：P2 在全部候选行上跑 ``COUNT(*) OVER (PARTITION BY 粗桶)``，
     实测 18.7 万候选里 99.7% 的行桶内只有自己（T 桶零重复、R 桶恒唯一），
@@ -2124,9 +2124,11 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
 
     新实现利用各分支去重键的精确度差异，分别圈出**可能是重复**的行：
     - T 分支（movie/series 有 tmdb_id）：SQL 桶 == 精确去重键
-      ``(库, 类型, 清洗后 tmdb_id)``，``GROUP BY … HAVING count(*)>1``
-      直接圈出重复组（PG 下 ``array_agg`` 一次往返把组员 id 带回）；
-    - E 分支（episode）：SQL 桶 == 精确键 ``(剧去重组, 季, 集)``，同理 GROUP BY；
+      ``(库, 类型, 清洗后 tmdb_id)``，``ROW_NUMBER() OVER (PARTITION BY
+      精确键 ORDER BY 选主优先级)`` 下推到 DB，``rn > 1`` 即被去掉的 id，
+      一次往返、无回表；
+    - E 分支（episode）：SQL 桶 == 精确键 ``(剧去重组, 季, 集)``，同理
+      ROW_NUMBER 下推；
     - N 分支（movie/series 无 tmdb_id）：SQL 桶是超集（标题归一化在 Python 里算），
       但行数极少（全库约 381 行），全部取出来当候选；
     - R 分支（其它类型）：键恒为 ``("__raw__", id)`` 唯一，不参与去重，直接跳过。
@@ -2137,9 +2139,11 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     逐行一致（tests/test_items_dedup_sql.py 对照）。
 
     剧去重组：与旧实现同一语义（同去重键的剧映射到最小 sid）。旧实现只看
-    候选集引用的剧（要对 16 万单集做 DISTINCT）；改成全量 series（5 千行级）——
-    未被候选引用的剧在 LEFT JOIN 里永远匹配不上，分组等价性已在 PR 描述中证明，
-    对结果无影响，但省掉一次大 DISTINCT。
+    候选集引用的剧；当前实现仍只看候选集引用的剧（``ep_series`` DISTINCT
+    子查询）——不能直接取全量 series：软删除/已合并的剧会把 rep_map 撑到
+    上万行，TEMP TABLE 插入从 ~5ms 涨到 ~800ms（2026-10-18 生产实测）。
+    未被候选引用的剧在 LEFT JOIN 里永远匹配不上，分组等价性已在 PR 描述中
+    证明，对结果无影响。
 
     返回被去掉的 id 集合；候选太多时返回 None，调用方回退全量实现。
     """
@@ -2159,7 +2163,8 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     ep_series = (
         query.with_entities(MI.series_id)
         .filter(MI.item_type == "episode")
-        .distinct()
+        .order_by(None)  # 函数可能被带排序的 query 复用：PG 下 SELECT DISTINCT
+        .distinct()      # 遇 ORDER BY 非输出列会报错，这里不需要排序语义
         .subquery()
     )
     srows = (
@@ -2258,7 +2263,9 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     # N 分支：无 tmdb 的 movie/series（标题归一化在 Python 里算，SQL 做不了），
     # 行数极少（全库约 400），走 Python 精确判定。
     n_ids = [r[0] for r in query.filter(in_dedup_types, ~has_tmdb)
-             .with_entities(MI.id).all()]
+             .with_entities(MI.id)
+             .limit(_DEDUP_MAX_SUSPECTS + 1)  # DB 侧上限：超限即回退，防病态 case 拉爆内存
+             .all()]
     n_dropped: set = set()
     if n_ids:
         if len(n_ids) > _DEDUP_MAX_SUSPECTS:
