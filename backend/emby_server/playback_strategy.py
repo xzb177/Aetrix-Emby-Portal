@@ -46,6 +46,22 @@ KEY_TTL = "playback_direct_url_ttl_sec"
 #: 服务器退出字节通道；关闭时行为与旧中继路径完全一致（回滚兜底）。
 #: 默认开。
 KEY_DRIVE_DIRECT_PLAY = "drive_direct_play_enabled"
+#: IntroDB 自动片头片尾（2026-10-17 用户拍板学 raisemby）：开启时播放信息
+#: 组装 Chapters 会把众包库 api.introdb.app 的分段并入手打标记。默认开。
+KEY_INTRODB_ENABLED = "introdb_enabled"
+
+
+def introdb_enabled(db: Session) -> bool:
+    """IntroDB 自动片头片尾开关（默认开）。
+
+    读失败 fail-safe 回默认开并记日志——开关读不到时不该悄悄关掉功能。
+    """
+    try:
+        raw = (store.get_value(db, KEY_INTRODB_ENABLED, "true") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB 场景下保默认
+        logger.warning("introdb_enabled 读取失败，回默认开", exc_info=True)
+        return True
+    return raw not in ("0", "false", "no", "off")
 
 STRATEGY_RELAY = "relay"
 STRATEGY_DIRECT = "direct"

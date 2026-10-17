@@ -734,6 +734,29 @@ class IntroMarker(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+
+class IntroSegment(Base):
+    """IntroDB 自动片头片尾分段缓存（2026-10-17 学 raisemby 接入）。
+
+    segment_type: intro（片头）/ recap（前情提要）/ outro（片尾）/
+    credits（字幕）/ post-credits（片尾彩蛋）；segment_type='none' 是
+    负缓存哨兵行（拉过但上游没分段）。
+    时间单位：毫秒（与 IntroMarker 对齐，直接进 to_chapters 下发）。
+    缓存 TTL：正缓存 30 天、负缓存 7 天（见 introdb.py），按 fetched_at 判。
+    新表由 Base.metadata.create_all 自动建。
+    """
+    __tablename__ = "emby_intro_segments"
+    __table_args__ = ()
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, ForeignKey("emby_items.id"), nullable=False, index=True)
+    segment_type = Column(String(20), nullable=False)  # intro/recap/outro/credits/post-credits/none
+    start_ms = Column(BigInteger, nullable=False, default=0)
+    end_ms = Column(BigInteger, nullable=False, default=0)
+    source = Column(String(20), default="introdb")  # introdb
+    fetched_at = Column(DateTime, default=datetime.now)
+
+
 class ChaseFileSnapshot(Base):
     """追新文件指纹快照（P0-2）：文件级 diff 取代目录 mtime 过滤。
 
@@ -844,6 +867,7 @@ __all__ = [
     "Pan115Account",
     "EmbyApiToken",
     "IntroMarker",
+    "IntroSegment",
     "ChaseFileSnapshot",
     "ChaseRun",
     "ChaseSourceState",

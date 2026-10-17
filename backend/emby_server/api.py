@@ -712,9 +712,16 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                                              synthesize=True)]
         dto["MediaSourceCount"] = 1
         # 片头片尾标记 → Chapters（对标 StrmAssistant #3：播放器显示"跳过片头"按钮）
+        # IntroDB 自动分段（2026-10-17 学 raisemby）：按需拉取+缓存后汇入现成
+        # to_chapters 管道，手动标记优先；introdb 模块全程 fail-safe，上游故障
+        # 时这里只剩手动标记，播放信息照常返回。
         try:
             from backend.emby_server import intro_marker as _im
-            dto["Chapters"] = _im.to_chapters(_im.get_markers(db, item.id))
+            from backend.emby_server import introdb as _idb
+            manual = _im.get_markers(db, item.id)
+            extra = _idb.get_segments_for_item(db, item)
+            dto["Chapters"] = _im.to_chapters(
+                _idb.merge_segments(manual, extra, getattr(item, "item_type", None)))
         except Exception as exc:
             logger.debug("Chapters 加载失败 item=%s: %s", getattr(item, "id", "?"), exc)
             dto["Chapters"] = []
