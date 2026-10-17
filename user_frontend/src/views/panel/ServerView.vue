@@ -50,7 +50,6 @@
       </section>
       </div>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
@@ -59,7 +58,6 @@ import { computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import type { ServerData } from '@/composables/usePanelApi'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import LifeOrb from '@/components/panel/LifeOrb.vue'
 import RadarCanvas from '@/components/panel/RadarCanvas.vue'
 import EcoGarden from '@/components/panel/EcoGarden.vue'

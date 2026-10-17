@@ -141,13 +141,11 @@
         </section>
       </template>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import {
   inviteApi,
   type MyInviteInfo, type InvitationRecordRow, type RebateRow,

@@ -11,7 +11,7 @@
         <p class="tg-login-msg tg-login-error" role="alert">{{ errorMsg }}</p>
         <div class="tg-login-actions">
           <button type="button" class="au-btn au-btn-primary" @click="doLogin">重试</button>
-          <button type="button" class="au-btn" @click="goHome">返回首页</button>
+          <button type="button" class="au-btn" @click="goHome">回发现页</button>
         </div>
       </div>
     </div>
