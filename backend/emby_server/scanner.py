@@ -4284,6 +4284,8 @@ def _write_enrich_status(
     Contract:
       * layered=True  -> PENDING means "enrich_worker will fill the rest"
       * layered=False -> DONE means "this scan finalizes the item"
+        （第 0 批起：只有真拿到元数据的行才 done；无 NFO、无 TMDB 命中、
+        无有效文本的三无行同样走 PENDING，见 _apply_enrich_status）
     `reason` is mandatory so every transition is auditable in logs.
 
     Returns True when this write was a done→pending flip (v2.55.x 翻转监控：
@@ -4391,13 +4393,62 @@ def _sync_video_size_from_ledger(db, item) -> bool:
     return False
 
 
+# 已落定为权威元数据的来源标记：行上带这些标记说明身份/文本已齐，
+# 非分层扫描可直接终结（done），不需要 enrich_worker 再跑一轮。
+# 注意 'none' 不在里面：它表示"搜过、没有"，需要重新排队再试。
+_ENRICH_AUTHORITATIVE_SOURCES = frozenset({
+    "nfo", "tmdb", "tmdb_img", "douban", "bangumi", "multisource", "inherit",
+})
+
+
+def _nfo_has_content(nfo_data) -> bool:
+    """NFO 是否带了实质内容（B 方案：NFO 文本权威，TMDB 只补图）。"""
+    if not isinstance(nfo_data, dict):
+        return False
+    return bool(
+        nfo_data.get("tmdb_id")
+        or (nfo_data.get("title") or "").strip()
+        or (nfo_data.get("overview") or "").strip()
+    )
+
+
+def _scan_has_metadata(item, pending) -> bool:
+    """本轮（非分层）扫描是否已拿到足以终结的元数据。
+
+    供 ``_apply_enrich_status`` 的 flat 分支判定 done/pending（第 0 批修复，
+    2026-10-17）：旧实现无条件 done，无 NFO、无 TMDB 命中的新行也被标 done，
+    永不进补全队列（假完成）。现在只有真拿到元数据的行才终结：
+    - 本轮 TMDB 搜索命中（pending.tmdb_hit，写库后段会 apply，
+      metadata_source='tmdb' + last_scraped_at）；
+    - 本轮 NFO 有实质内容（title/overview/tmdb_id）：NFO 权威，B 方案本意；
+    - 行上已有权威元数据（tmdb_id / 真实 metadata_source / 有效简介）：
+      更新扫描/重刮，worker 不需要再跑一轮。
+    三者皆无（无 NFO 且无 TMDB 命中且无有效文本）→ False，行走 pending，
+    与分层远程文件用同一个待刮状态值，等 enrich_worker 后台补。
+    """
+    if getattr(pending, "tmdb_hit", None):
+        return True
+    if _nfo_has_content(getattr(pending, "nfo_data", None)):
+        return True
+    if getattr(item, "tmdb_id", None):
+        return True
+    if getattr(item, "metadata_source", None) in _ENRICH_AUTHORITATIVE_SOURCES:
+        return True
+    return bool((getattr(item, "overview", None) or "").strip())
+
+
 def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
-                         flip_tracker=None):
+                         flip_tracker=None, has_metadata=True):
     """Decide and write enrich_status. Max nesting depth: 2.
 
     flip_tracker（v2.55.x 翻转监控）：可选的 list，done→pending 翻转时
     追加 {"item_id", "item_type", "reason", "old_size", "new_size"}。
     调用方（扫描写库循环）传 ctx.enrich_flips。
+
+    has_metadata（第 0 批，2026-10-17）：仅 flat（非分层）分支使用。
+    调用方用 _scan_has_metadata(item, pending) 计算：本轮真拿到元数据的行
+    才终结为 done；三无行走 pending（与分层远程文件相同的待刮状态值）。
+    默认 True 保持旧调用方行为不变。
     """
     old_status = getattr(item, "enrich_status", None)
     old_size, new_size, size_changed = _compute_size_change(item, scan_file)
@@ -4413,20 +4464,33 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
             })
 
     if not layered:
-        # 非分层：本轮已做完补全，直接终结。
+        # 非分层：本轮已做完补全——但只在真拿到元数据时才终结（第 0 批修复，
+        # 2026-10-17）：无 NFO、无 TMDB 命中、无有效文本的三无行走 pending，
+        # 用与分层远程文件相同的待刮状态值，等 enrich_worker 后台补；
+        # NFO 真填满的行标 done 是 B 方案本意，保留。
         # 注意：series/season 骨架行由 episode 分支创建，走 L2 补全，这里不抢标。
         if (
             item_type in _ENRICH_SUPPORTED_TYPES
             and (old_status or _ENRICH_PENDING) == _ENRICH_PENDING
         ):
-            _write_enrich_status(
-                item,
-                _ENRICH_DONE,
-                reason="flat_scan_finalized",
-                old_status=old_status,
-                old_size=old_size,
-                new_size=new_size,
-            )
+            if has_metadata:
+                _write_enrich_status(
+                    item,
+                    _ENRICH_DONE,
+                    reason="flat_scan_finalized",
+                    old_status=old_status,
+                    old_size=old_size,
+                    new_size=new_size,
+                )
+            else:
+                _write_enrich_status(
+                    item,
+                    _ENRICH_PENDING,
+                    reason="flat_scan_no_metadata",
+                    old_status=old_status,
+                    old_size=old_size,
+                    new_size=new_size,
+                )
         return
 
     # 分层扫描 enrich_status 状态机
@@ -4602,7 +4666,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                 item.container = scan_file.container or os.path.splitext(fname)[1].lstrip(".")
                 # 分层扫描：文件指纹落库（下次秒跳的依据）；补全状态标记。
                 # layered=本轮只做 L1 极简入库 → pending，等后台 enrich_worker；
-                # 非 layered=旧行为（本轮已做完所有补全）→ done。
+                # 非 layered=本轮已做完所有补全 → 有元数据才 done，三无行同样
+                # pending（第 0 批，_scan_has_metadata 判定）。
                 if _pending.file_fingerprint:
                     item.file_fingerprint = _pending.file_fingerprint
                 # enrich_status 统一走 _apply_enrich_status（P2-1/P2-3/P3-1 重构，
@@ -4616,6 +4681,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     layered=_pending.layered,
                     item_type=_pending.item_type,
                     flip_tracker=ctx.enrich_flips,
+                    has_metadata=_scan_has_metadata(item, _pending),
                 )
                 # Rex 兼容：.strm 条目 size 顺带对齐账本视频口径（本机扫描永远
                 # 学不到视频口径，见 _sync_video_size_from_ledger）。纸条口径时
