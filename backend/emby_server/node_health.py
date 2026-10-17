@@ -27,6 +27,7 @@ HEALTH_TIMEOUT = 5
 _node_health: dict = {}
 _lock = threading.Lock()
 _daemon_started = False
+_daemon_lock = threading.Lock()
 
 
 def get_nodes(db: Session) -> list:
@@ -104,9 +105,10 @@ def _health_loop(get_db):
 def start_health_daemon(get_db) -> None:
     """启动健康检查后台线程（幂等）"""
     global _daemon_started
-    if _daemon_started:
-        return
-    _daemon_started = True
+    with _daemon_lock:
+        if _daemon_started:
+            return
+        _daemon_started = True
     threading.Thread(target=_health_loop, args=(get_db,), daemon=True, name="node-health").start()
     logger.info("节点健康检查已启动")
 
