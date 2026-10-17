@@ -1187,16 +1187,15 @@ def _tmdb_plan_for_item(item, nfo_data, kind, needs_repair):
     production_year = getattr(item, "production_year", None)
     poster_path = getattr(item, "poster_path", None)
     primary_image_url = getattr(item, "primary_image_url", None)
-    imdb_id = getattr(item, "imdb_id", None)
-    aliases = getattr(item, "aliases", None)
 
     # 1) NFO 中已有 tmdb_id：仅在需要补详情且客户端已配置时拉取
+    # 批2（刮削瘦身）：拉详情的理由收窄——缺 imdb_id/别名不再是理由
+    # （那是文字字段，TMDB 按新口径不再负责补）；只留缺图与修图请求。
     if nfo_data and nfo_data.get("tmdb_id"):
         tmdb_id = str(nfo_data["tmdb_id"])
         want_details = bool(
             needs_repair
-            or not (poster_path or primary_image_url)
-            or not (imdb_id and aliases))
+            or not (poster_path or primary_image_url))
         if want_details and tmdb_client.configured:
             return {"op": "details", "tmdb_id": tmdb_id, "why": "nfo", "kind": kind,
             "name": name or "", "year": production_year}
@@ -2071,14 +2070,13 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         item.tmdb_id = item.tmdb_id or fetched["tmdb_id"]
         details = fetched.get("tmdb_details")
         if details:
-            # 简介/评分/类型门控（v2.55.0）：apply_details 是"只补缺项"，但原门控
-            # "已有 imdb_id+aliases 就跳过"把简介/评分/类型也挡住了——生产实证
-            # 126 个有 tmdb_id 的剧集因此缺简介。简介/类型缺失也要跑 apply_details。
+            # 批2（刮削瘦身）：apply_details 门控收窄。apply_details 现在是
+            # 「只填空不覆盖」，简介/类型不再是拉详情的理由——只留：
+            # 修图请求、缺图、缺身份标识（imdb_id）。缺别名也不再是理由。
             _needs_details = (
                 needs_repair
-                or not (item.imdb_id and item.aliases)
-                or not (item.overview or "").strip()
-                or not (item.genres or "").strip()
+                or not (item.poster_path or item.primary_image_url)
+                or not item.imdb_id
             )
             if not (nfo_data or {}).get("imdb_id") and _needs_details:
                 tmdb_client.apply_details(item, details)
@@ -2090,10 +2088,11 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     elif fetched.get("tmdb_hit"):
         tmdb_client.apply(item, fetched["tmdb_hit"], kind)
         details = fetched.get("tmdb_details")
+        # 批2：与上面同口径（缺简介/缺类型不再是理由）
         _needs_details_b = (
-            not (item.imdb_id and item.aliases)
-            or not (item.overview or "").strip()
-            or not (item.genres or "").strip()
+            needs_repair
+            or not (item.poster_path or item.primary_image_url)
+            or not item.imdb_id
         )
         if details and _needs_details_b:
             tmdb_client.apply_details(item, details)
@@ -2433,6 +2432,10 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 item.enrich_attempts = 0
                 # 记本次终态化时间：回捞周期后 janitor 按最旧优先自动捞回
                 item.enrich_next_retry_at = datetime.now()
+                # 批2小修：none 诚实终态写 last_scraped_at——「跑过、搜过无命中」
+                # 与「从未跑过」必须能一条 SQL 区分开（第 0 批假完成事故的教训）。
+                # 回捞仍只看 enrich_next_retry_at，这里不破坏 janitor 语义。
+                item.last_scraped_at = datetime.now()
                 logger.warning("补全资料不全超限转 none（数据性缺失，等自动回捞）"
                                "id=%s attempts=%s", item.id, attempts)
             else:
@@ -2455,6 +2458,11 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             item.enrich_next_retry_at = datetime.now()
         else:
             item.enrich_next_retry_at = None
+        # 批2小修：none 诚实终态写 last_scraped_at（同上：与「从未跑过」区分，
+        # 口径自明）。非 none 的 done 项不受影响（apply 已写过）。
+        # getattr 兜底：调用方（含测试里的轻量替身）未必带这个字段。
+        if item.metadata_source == "none" and not getattr(item, "last_scraped_at", None):
+            item.last_scraped_at = datetime.now()
     item.enrich_claimed_at = None  # 处理完毕，释放 claim 租约（v2.42.9）
     item.enrich_claim_token = None
     # 优先级消费完归零（处方 4）：repair 的 100 在上面已随 repair_requested_at
