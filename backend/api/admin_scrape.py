@@ -1775,7 +1775,7 @@ def save_douban_config(
             _dbn.DOUBAN_RATE_KEY: str(iv),
         },
         {
-            _dbn.DOUBAN_ENABLED_KEY: "豆瓣（可选）总开关（中文标题先走豆瓣兜底）",
+            _dbn.DOUBAN_ENABLED_KEY: "豆瓣（可选）总开关（中文标题 TMDB 未命中时走豆瓣兜底）",
             _dbn.DOUBAN_RATE_KEY: "豆瓣请求最小间隔秒数",
         },
     )

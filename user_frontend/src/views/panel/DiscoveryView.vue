@@ -18,7 +18,9 @@
           <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
           <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
           <div v-if="streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
-          <!-- 经典视图回世界入口：仅桌面已登录且当前是经典视图时出现（手机端不显示） -->
+          <!-- 经典视图回世界入口：视口 1024–1279px + 已登录 + 经典视图时出现；
+               ≥1280px 时本 header（m-only）display:none 不渲染，桌面世界入口
+               由右栏「世界」卡片承担 -->
           <button
             v-if="homeIsDesktop && user.isLoggedIn && homeMode === 'classic'"
             type="button"
@@ -105,7 +107,7 @@
           <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
           <div v-else-if="parcelList.length === 0" class="v4-empty">今天还没有新封存，明天再来拆 📦</div>
           <div v-else class="d3-shelf-wrap">
-            <button v-if="isWide" type="button" class="d3-arrow l" aria-label="货架向左滚动" @click="scrollShelf(-1)">‹</button>
+            <button v-if="isWide && shelfHasOverflow" type="button" class="d3-arrow l" aria-label="货架向左滚动" @click="scrollShelf(-1)">‹</button>
             <div ref="parcelsEl" class="v4-parcels">
               <ParcelBox
                 v-for="p in parcelList"
@@ -116,7 +118,7 @@
                 @unseal="onUnseal"
               />
             </div>
-            <button v-if="isWide" type="button" class="d3-arrow r" aria-label="货架向右滚动" @click="scrollShelf(1)">›</button>
+            <button v-if="isWide && shelfHasOverflow" type="button" class="d3-arrow r" aria-label="货架向右滚动" @click="scrollShelf(1)">›</button>
           </div>
         </section>
 
@@ -396,10 +398,14 @@ const parcelList = computed((): ParcelItem[] => {
 })
 /* R29：货架右侧渐隐只在有溢出可滑时显示（照 EcoGarden can-scroll 模式） */
 const parcelsEl = ref<HTMLElement | null>(null)
+/* r43 P3：货架箭头也只在有溢出时显示（封存只有 1 件时箭头不再空转摆设） */
+const shelfHasOverflow = ref(false)
 function updateScrollHint() {
   const el = parcelsEl.value
-  if (!el) return
-  el.classList.toggle('can-scroll', el.scrollWidth > el.clientWidth + 1)
+  if (!el) { shelfHasOverflow.value = false; return }
+  const overflow = el.scrollWidth > el.clientWidth + 1
+  el.classList.toggle('can-scroll', overflow)
+  shelfHasOverflow.value = overflow
   updateScrollEnd()
 }
 /** 滚到末尾时去掉右侧渐隐，避免用户误以为后面还有内容 */

@@ -703,39 +703,57 @@ def get_stats_trend(
     from backend.emby_server import models as em
 
     days = max(1, min(days, 90))
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    start = today - timedelta(days=days - 1)
+    # r43：label 轴按上海自然日。入库时间戳是 UTC-naive，此前用服务器本地
+    # （生产 UTC）的 today 生成 UTC 日期序列，签到系列经 _checkin_day_key
+    # +8h 还原为上海日期 → 每天 00:00–08:00 CST 的签到在图上消失。
+    # tzdata 由镜像显式安装（Dockerfile.backend），这里仍 try/except 回退。
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    try:
+        _now = datetime.now(_ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001
+        _now = datetime.now()
+    today = _now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_day = today - timedelta(days=days - 1)
+    # 过滤起点再往前推 8h，覆盖上海窗口左边界（D 日 00:00 CST = D-1 日 16:00 UTC）。
+    start = start_day - timedelta(hours=8)
 
     def _series(rows) -> dict:
+        # r43：SQL 只按原始 UTC-naive 时间戳分组取值，Python 侧逐行 +8h 再按
+        # 上海自然日聚合（此前用 func.date 按 UTC 切日、bucket 午夜 +8h 仍是同一天，
+        # 属 no-op：每天 00:00–08:00 CST 的事件被算到前一天 label。方言无关，
+        # SQLite/PG 的 interval 写法不同，不在 SQL 里做时区换算）。
         out: dict = {}
-        for day, value in rows:
-            key = str(day)[:10]
+        for ts, value in rows:
+            try:
+                key = (ts + timedelta(hours=8)).strftime("%Y-%m-%d")
+            except Exception:  # noqa: BLE001
+                key = str(ts)[:10]
             out[key] = out.get(key, 0) + (value or 0)
         return out
 
     user_rows = db.query(
-        func.date(models.WebUser.created_at), func.count(models.WebUser.id)
+        models.WebUser.created_at, func.count(models.WebUser.id)
     ).filter(models.WebUser.created_at >= start).group_by(
-        func.date(models.WebUser.created_at)
+        models.WebUser.created_at
     ).all()
 
     play_rows = db.query(
-        func.date(em.PlaybackSession.start_time), func.count(em.PlaybackSession.id)
+        em.PlaybackSession.start_time, func.count(em.PlaybackSession.id)
     ).filter(em.PlaybackSession.start_time >= start).group_by(
-        func.date(em.PlaybackSession.start_time)
+        em.PlaybackSession.start_time
     ).all()
 
     recharge_rows = db.query(
-        func.date(models.RechargeOrder.paid_at), func.coalesce(func.sum(models.RechargeOrder.price), 0)
+        models.RechargeOrder.paid_at, func.coalesce(func.sum(models.RechargeOrder.price), 0)
     ).filter(
         models.RechargeOrder.status == "paid", models.RechargeOrder.paid_at >= start
-    ).group_by(func.date(models.RechargeOrder.paid_at)).all()
+    ).group_by(models.RechargeOrder.paid_at).all()
 
     sub_rows = db.query(
-        func.date(models.SubscriptionOrder.paid_at), func.coalesce(func.sum(models.SubscriptionOrder.amount), 0)
+        models.SubscriptionOrder.paid_at, func.coalesce(func.sum(models.SubscriptionOrder.amount), 0)
     ).filter(
         models.SubscriptionOrder.status == "paid", models.SubscriptionOrder.paid_at >= start
-    ).group_by(func.date(models.SubscriptionOrder.paid_at)).all()
+    ).group_by(models.SubscriptionOrder.paid_at).all()
 
     # r34：checkin_date 是「上海自然日 00:00」的 UTC-naive 标记（见 economy._today_start），
     # 不是事件时间——按 func.date(checkin_date) 分组会把每天的签到算到前一天。
@@ -758,7 +776,7 @@ def get_stats_trend(
 
     series = []
     for i in range(days):
-        day = start + timedelta(days=i)
+        day = start_day + timedelta(days=i)
         key = day.strftime("%Y-%m-%d")
         series.append({
             "date": key,

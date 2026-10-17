@@ -40,7 +40,7 @@
       <div v-if="lbLoading && lbRows.length === 0" class="d3-empty">正在抄榜…</div>
       <div v-else-if="lbRows.length === 0" class="d3-empty">还没有人上榜，快去看片抢头名</div>
       <div v-else>
-        <div v-for="(r, i) in lbRows.slice(0, 5)" :key="String(r.name ?? i)" class="d3-rk">
+        <div v-for="(r, i) in lbRows.slice(0, 5)" :key="i + '-' + (r.name ?? '')" class="d3-rk">
           <i :class="{ top: i < 3 }">{{ i + 1 }}</i>
           {{ String(r.name ?? '') }}
           <span>热度 {{ Number(r.count ?? 0).toLocaleString('zh-CN') }}</span>

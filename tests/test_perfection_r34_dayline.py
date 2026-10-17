@@ -26,6 +26,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend import media_seek, models, points, vitality, welfare_requests
 from backend.api import admin_economy, economy
+from backend.emby_server import models as em_models
 
 
 @pytest.fixture()
@@ -189,3 +190,42 @@ def test_checkin_day_key_maps_to_shanghai_date():
     assert admin_economy._checkin_day_key(val) == "2026-10-18"
     # 脏数据防御：非 datetime 不抛异常
     assert admin_economy._checkin_day_key(None) == "None"
+
+
+# ---------------- r43 P3-2：趋势图上海自然日口径 ----------------
+
+def test_trend_checkin_0030_cst_lands_on_shanghai_label(db, monkeypatch):
+    """00:30 CST 的签到/播放必须落在当天上海 label 上，不能在图上消失。
+
+    时钟冻结在上海 00:30：真实 now 下若落在 00:00–08:00 窗口外，旧代码
+    也是绿的（绿对绿），冻结后才构成真正的回归守卫。签到走已验证正确的
+    _checkin_day_key；播放走 _series（r43 P2 修复），冻结下 revert 即变红。
+    """
+    # 把趋势函数看到的 now 钉在上海时间 00:30（只影响 admin_economy 模块内
+    # 的 datetime.now；timedelta 等不受影响）
+    frozen_sh = datetime(2026, 10, 18, 0, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+    frozen_utc_naive = frozen_sh.astimezone(timezone.utc).replace(tzinfo=None)
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_sh if tz is not None else frozen_utc_naive
+
+    monkeypatch.setattr(admin_economy, "datetime", _FrozenDateTime)
+
+    u = _make_user(db, username="u9")
+    # 00:30 CST 的签到：入库标记是「上海自然日 00:00」的 UTC-naive（r34 F1 口径）
+    marker = (frozen_sh.replace(hour=0, minute=0, second=0, microsecond=0)
+              .astimezone(timezone.utc).replace(tzinfo=None))
+    db.add(models.CheckinRecord(user_id=u.id, checkin_date=marker,
+                                points_awarded=0))
+    # 00:30 CST 的播放：入库时间戳是 UTC-naive（事件真实时间）
+    db.add(em_models.PlaybackSession(user_id=u.id, start_time=frozen_utc_naive))
+    db.commit()
+    resp = admin_economy.get_stats_trend(days=7, current_admin=None, db=db)
+    sh_today = "2026-10-18"
+    labels = [p["date"] for p in resp["series"]]
+    assert labels[-1] == sh_today, f"label 轴应以今天（上海）结尾，实际 {labels}"
+    today_row = resp["series"][-1]
+    assert today_row["checkins"] == 1, f"00:30 CST 签到在图上消失了：{today_row}"
+    assert today_row["plays"] == 1, f"00:30 CST 播放被算到前一天 label：{today_row}"
