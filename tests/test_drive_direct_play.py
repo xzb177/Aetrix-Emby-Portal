@@ -42,8 +42,6 @@ def _stub_common(monkeypatch, item, target):
     monkeypatch.setattr(api, "_require_item", lambda db, item_id: item)
     monkeypatch.setattr(api, "_library_scope", lambda db_, user_: None)
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
-    monkeypatch.setattr(api.playback_policy, "ensure_client_allowed",
-                        lambda db, user, ua: None)
     monkeypatch.setattr(api, "_play_target", lambda db, it: target)
     # 通用中继已删（2026-10-17 用户拍板全删）：serve_remote_async 不复存在；
     # 未命中直链时 video_stream 直接 410——mount:// 的远程挂载条目除外，

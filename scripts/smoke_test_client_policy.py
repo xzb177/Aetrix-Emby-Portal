@@ -7,10 +7,8 @@
 1. 默认 = 与升级前完全一致（允许转码、不限并发、不拦客户端）；
 2. 关掉转码 → 播放信息不再给「可转码」与转码地址，直接请求 master.m3u8 得到 403；
 3. 并发上限 → 满了拒绝**新的**转码请求（503），不影响已经在看的人；
-4. 客户端准入 → 黑名单 UA 连播放信息都拿不到（403），白名单模式下未列入的客户端同样被拦；
-   **管理员不受限**（排障时不能被自己的策略挡住）；
-5. 写策略只认白名单键（未知键 / 非法值不影响原值），并且只有超级管理员能写；
-6. 每次写入都留审计日志。
+4. 写策略只认白名单键（未知键 / 非法值不影响原值），并且只有超级管理员能写；
+5. 每次写入都留审计日志。
 
 2026-10：删除服务端码率钳制，客户端要多少码率给多少。
 
@@ -111,11 +109,10 @@ def playback(headers=H_USER, ua="Emby/4.9.0.30 Android", body=None):
 print("=== 1. 默认（与升级前一致）===")
 r = client.get("/api/admin/playback/policy", headers=H_STAFF)
 policy = r.json() if r.status_code == 200 else {}
-check("策略端点 200 且返回默认值（允许转码 / 不限并发 / 不拦客户端）",
+check("策略端点 200 且返回默认值（允许转码 / 不限并发）",
       r.status_code == 200
       and policy["policy"]["transcode_enabled"] is True
-      and policy["policy"]["max_concurrent_transcodes"] == 0
-      and policy["policy"]["blocked_agents"] == "",
+      and policy["policy"]["max_concurrent_transcodes"] == 0,
       str(policy.get("policy")))
 check("策略端点带回运行态（本机并发 / 上限 / 谁在出流 / ffmpeg）",
       {"active_transcodes", "capacity", "playback_node", "ffmpeg_available"} <= set(policy["runtime"]),
@@ -169,25 +166,6 @@ check("上限归零（= 用进程内置上限）：不再按策略拒绝",
       not (r.status_code == 503 and "上限" in detail and "已达上限（" in detail),
       f"HTTP {r.status_code} {detail[:80]}")
 
-# ==================== 4. 客户端准入 ====================
-print("\n=== 4. 客户端准入 ===")
-set_config("client_blocked_agents", "old-tv, v2.0")
-r = playback(ua="Emby/Old-TV 2.0")
-check("黑名单命中：连播放信息都拿不到（403）",
-      r.status_code == 403 and "客户端" in str(r.json().get("detail", "")), f"HTTP {r.status_code}")
-check("黑名单不误伤正常客户端", playback(ua="Emby/4.9.0 Android").status_code == 200)
-check("黑名单只按子串匹配，大小写不敏感", playback(ua="EMBY/OLD-TV/3").status_code == 403)
-check("管理员不受客户端黑名单限制", playback(headers=H_STAFF, ua="Emby/Old-TV 2.0").status_code == 200)
-r = client.get(f"/emby/Videos/{item_id}/stream", headers={**H_USER, "User-Agent": "Emby/Old-TV 2.0"})
-check("直连流同样按策略拦截（不能只拦播放信息）", r.status_code == 403, f"HTTP {r.status_code}")
-
-set_config("client_blocked_agents", None)
-set_config("client_allowed_agents", "emby,infuse")
-check("白名单模式：不在列表里的客户端被拦",
-      playback(ua="Chrome/120").status_code == 403)
-check("白名单模式：列表内的客户端放行", playback(ua="Infuse/7.6").status_code == 200)
-set_config("client_allowed_agents", None)
-
 # ==================== 6. 写策略：白名单键与权限 ====================
 print("\n=== 5. 写策略 ===")
 r = client.put("/api/admin/playback/policy", headers=H_STAFF,
@@ -200,11 +178,6 @@ check("写策略 200 且只应用白名单里的键",
 with SessionLocal() as db:
     check("回读一致",
           playback_policy.policy_payload(db)["max_concurrent_transcodes"] == 3)
-r = client.put("/api/admin/playback/policy", headers=H_STAFF,
-               json={"policy": {"client_blocked_agents": "x" * 900}})
-with SessionLocal() as db:
-    stored = playback_policy.policy_payload(db)["blocked_agents"]
-check("超长文本被截断（库里的值不该无限长）", len(stored) == 500, f"len={len(stored)}")
 with SessionLocal() as db:
     actions = [row.action for row in db.query(models.AdminLog).all()]
 check("策略变更留了审计日志", "playback_policy_update" in actions, str(sorted(set(actions))))
@@ -213,7 +186,7 @@ clear_policy()
 with SessionLocal() as db:
     final = playback_policy.policy_payload(db)
 check("清空后回到与升级前一致的口径",
-      final["transcode_enabled"] is True and final["blocked_agents"] == ""
+      final["transcode_enabled"] is True
       and final["max_concurrent_transcodes"] == 0,
       str(final))
 

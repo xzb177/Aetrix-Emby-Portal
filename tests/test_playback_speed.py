@@ -96,9 +96,8 @@ class TestPlaybackInfoCache:
         cache_branch = src.index("media_source = cached_source")
         update_pos = src.index('"DirectStreamUrl": stream_url', cache_branch)
         assert update_pos > cache_branch
-        # URL 按当前请求拼装（api_key 在查询串里），CDN 域名改写也在缓存分支之后
+        # URL 按当前请求拼装（api_key 在查询串里）
         assert "api_key={api_key}" in src
-        assert src.index("cdn.rewrite_url(db, stream_url, base)", cache_branch) > cache_branch
 
     def test_cache_failure_falls_back(self):
         src = self._src()

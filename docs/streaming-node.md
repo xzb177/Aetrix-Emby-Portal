@@ -97,5 +97,3 @@ STREAM_NODE_PUBLIC_URL=https://stream.example.com
 - **流节点需要 Redis 吗？** 不需要。播放验签只依赖 `SECRET_KEY` + 主库只读。
 - **主服务挂了流节点还能播吗？** 不能——鉴权 URL 是主服务签发的，
   且流节点要读主库验用户。这是设计取舍：无状态可扩展，但鉴权中心化。
-- **和 CDN 域名（`cdn_domain`）同时开？** 流节点命中时优先，`cdn_domain`
-  改写跳过——流节点域名本身就是边缘入口（CF 在前）。
