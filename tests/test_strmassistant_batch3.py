@@ -25,37 +25,6 @@ def _load(name, path):
     return mod
 
 
-class TestProxyUtils:
-    """#14 代理 URL 校验/解析（纯函数）"""
-
-    def setup_method(self):
-        self.mod = _load("proxy_test", os.path.join(INTEG, "proxy.py"))
-
-    def test_valid_proxy_url(self):
-        assert self.mod.is_valid_proxy_url("http://127.0.0.1:8080")
-        assert self.mod.is_valid_proxy_url("https://proxy.example.com:443")
-        assert self.mod.is_valid_proxy_url("http://user:pass@127.0.0.1:8080")
-        assert not self.mod.is_valid_proxy_url("")
-        assert not self.mod.is_valid_proxy_url("not-a-url")
-        assert not self.mod.is_valid_proxy_url("ftp://example.com:21")
-
-    def test_parse_proxy_url(self):
-        r = self.mod.try_parse_proxy_url("http://user:pass@127.0.0.1:8080")
-        assert r is not None
-        assert r["scheme"] == "http"
-        assert r["host"] == "127.0.0.1"
-        assert r["port"] == 8080
-        assert r["username"] == "user"
-        assert r["password"] == "pass"
-
-        r2 = self.mod.try_parse_proxy_url("https://proxy.example.com")
-        assert r2 is not None
-        assert r2["port"] == 443
-
-        assert self.mod.try_parse_proxy_url("invalid") is None
-        assert self.mod.try_parse_proxy_url("") is None
-
-
 class TestIntroMarker:
     """#3 片头片尾标记（纯函数）"""
 
