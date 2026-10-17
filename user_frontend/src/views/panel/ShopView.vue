@@ -33,7 +33,7 @@
         <div v-else-if="packages.length === 0" class="v4-empty">能量罐暂未上架，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <template v-else>
           <!-- R53B-1：支付方式未就绪（本分支只在整页 loading 结束后进入，此时未就绪=请求失败或列表为空）只渲染空态，不再与可点击的充能按钮同屏出现 -->
-          <!-- 口径：重试只给加载失败态，"暂无可用支付方式"属配置态，不给重试按钮 -->
+          <!-- 口径：错误态给"重试"，配置态给"刷新看看"（页面被 KeepAlive 缓存，配置态也需要站内刷新入口） -->
           <div v-if="!methodsReady" class="v4-empty"><template v-if="methodsFailed">支付方式加载失败，请检查网络后重试<br><button class="v4-retry" @click="loadAll">重试</button></template><template v-else>暂无可用支付方式，请联系服主<br><button class="v4-retry" @click="loadAll">刷新看看</button></template></div>
           <template v-else>
           <div class="shelf">
