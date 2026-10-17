@@ -603,6 +603,17 @@ html[data-theme='light'] {
   .d3-pulse-one { font-size: 13px; color: #6d675c; }
   .d3-pulse-one b { color: #27251e; font-weight: 500; font-variant-numeric: tabular-nums; }
 
+  /* 实时动态流（图纸 .feed-row 数值移植；C档第3批） */
+  .d3-feed-row { display: flex; gap: 12px; align-items: baseline; font-size: 13.5px; padding: 9px 0; border-bottom: 1px solid #ece8e0; }
+  .d3-feed-row:last-child { border-bottom: none; }
+  .d3-feed-row .ft { color: #a8a194; font-size: 12px; font-variant-numeric: tabular-nums; flex: none; min-width: 44px; white-space: nowrap; }
+  /* 当天事件只显示 HH:MM（44px 对齐）；跨天事件带日期，时间列按需加宽 */
+  .d3-feed-row .fx { flex: 1; min-width: 0; color: #27251e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .d3-feed-row .fk {
+    font-size: 11px; font-weight: 500; color: #6d675c; border: 1px solid #d1d1cd;
+    border-radius: 9999px; padding: 2px 10px; background: #faf8f5; flex: none; white-space: nowrap;
+  }
+
   /* 货架箭头（桌面专属） */
   .d3-shelf-wrap { position: relative; }
   .d3-arrow {
