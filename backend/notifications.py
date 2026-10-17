@@ -222,7 +222,6 @@ class EmailChannel(NotificationChannel):
 
 class TelegramChannel(NotificationChannel):
     """Telegram Bot API 渠道：文本 + 富媒体（sendPhoto / sendMediaGroup）"""
-    """Telegram 通知渠道"""
 
     def __init__(self, bot_token: str = None):
         self.name = "telegram"
@@ -243,21 +242,23 @@ class TelegramChannel(NotificationChannel):
             if db is None:
                 db = next(get_db())
 
-            # 查找关联的 Telegram 账号
-            tg_user = db.query(models.TelegramUser).filter(
-                models.TelegramUser.web_user_id == user_id
+            # 查找用户的 Telegram ID（r30 N1：旧 telegram_users 表已废弃、
+            # 全仓零写入点；绑定统一走 WebUser.telegram_id）
+            wu = db.query(models.WebUser).filter(
+                models.WebUser.id == user_id
             ).first()
+            tg_chat_id = wu.telegram_id if wu else None
 
-            if not tg_user:
+            if not tg_chat_id:
                 logger.warning(f"用户 {user_id} 没有关联 Telegram 账号")
                 return False
 
             # 真正投递：此前只有一条 status="sent" 的历史记录，消息从未发出
-            ok, error = await self._deliver(tg_user.id, title, content)
+            ok, error = await self._deliver(tg_chat_id, title, content)
 
             history = models.NotificationHistory(
                 notification_type="telegram",
-                target=str(tg_user.id),
+                target=str(tg_chat_id),
                 title=title,
                 content=content,
                 status="sent" if ok else "failed",
@@ -667,31 +668,6 @@ class NotificationService:
                     pass
 
         return results
-
-    async def broadcast(self, title: str, content: str,
-                        channels: Optional[List[str]] = None,
-                        data: Optional[dict] = None) -> int:
-        """
-        广播通知给所有在线用户
-
-        Returns:
-            接收到的用户数量
-        """
-        online_users = manager.get_online_users()
-        count = 0
-
-        for user_id in online_users:
-            results = await self.send(
-                user_id=user_id,
-                title=title,
-                content=content,
-                channels=channels or ["in_app"],
-                data=data
-            )
-            if any(results.values()):
-                count += 1
-
-        return count
 
     async def get_unread_count(self, user_id: int, db: Optional[Session] = None) -> int:
         """获取用户未读消息数量"""

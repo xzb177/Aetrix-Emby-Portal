@@ -146,13 +146,19 @@ def dispatch(db, update: dict) -> None:
         # 注意：此处不消耗群级限流预算（普通聊天不计入），防刷由 handler 内部的
         # 幂等逻辑保证（重复口令静默，已参加/资格不符均不刷屏）。
         if in_group and not text.startswith("/"):
-            from backend.tg_bot import callbacks
+            from backend.tg_bot import callbacks, chat_points
 
             try:
                 if callbacks.handle_lottery_password(db, chat_id, tg_user, text):
                     return
             except Exception:
                 logger.exception("lottery password dispatch failed")
+                return
+            try:
+                # r30 N2：口令未命中时接群发言积分（开关/群白名单在内部判断）
+                chat_points.handle_group_message(db, update)
+            except Exception:
+                logger.exception("chat points dispatch failed")
             return
 
         # 非命令文本忽略
