@@ -468,3 +468,73 @@ def test_unambiguous_path_caching_unchanged(_dup_drive):
     assert provider._fid_cache["/综艺"] == "F_DUP"
     assert provider._fid_cache["/综艺/脱口秀大会 (2017)"] == "F_SHOW_A"
     assert provider._fid_cache["/综艺/脱口秀大会 (2017)/Season 6"] == "F_S6"
+
+
+# ---------- 同名文件夹的文件级回溯（第二形态） ----------
+# 生产实证（黑白密码案）：两个同名 "黑白密码 (2023)" 文件夹**都有** Season 1
+# 子目录，但目标文件只在第二个里。旧实现（及只有目录级回溯）按首个匹配
+# 走通目录、却在文件名处报"找不到文件"。
+DUP2_TREE = {
+    DRIVE_ID: [_folder("F_G", "剧集")],
+    "F_G": [
+        _folder("F_DRA_A", "黑白密码 (2023)"),  # 第一个：有 Season 1，但无目标文件
+        _folder("F_DRA_B", "黑白密码 (2023)"),  # 第二个：目标文件真身
+    ],
+    "F_DRA_A": [_folder("F_S1A", "Season 1")],
+    "F_S1A": [_file("V_OTHER", "别的剧集 - S01E01.mkv")],
+    "F_DRA_B": [_folder("F_S1B", "Season 1")],
+    "F_S1B": [_file("V_TGT", "黑白密码 - S01E16.mkv")],
+}
+
+
+def _dup2_api_get(url, token, params):
+    match = re.search(r"'([^']+)' in parents", params.get("q", ""))
+    folder_id = match.group(1) if match else ""
+    return {"files": DUP2_TREE.get(folder_id, [])}
+
+
+@pytest.fixture()
+def _dup2_drive(monkeypatch):
+    monkeypatch.setattr(drive_changes, "_api_get", _dup2_api_get)
+    yield
+
+
+DUP2_FILE_REL = "/剧集/黑白密码 (2023)/Season 1/黑白密码 - S01E16.mkv"
+
+
+def test_locate_backtracks_when_file_missing_in_first_duplicate(_dup2_drive):
+    """首个同名文件夹有子目录但无目标文件：_locate 换候选找到真身"""
+    provider = DriveMount(_mount())
+    entry = provider._locate(DUP2_FILE_REL)
+    assert entry.file_id == "V_TGT" and not entry.is_dir
+
+
+def test_locate_all_duplicates_exhausted_raises(_dup2_drive):
+    """所有同名候选都没有该文件：明确报"找不到文件\""""
+    provider = DriveMount(_mount())
+    with pytest.raises(mnt.MountError, match="找不到文件"):
+        provider._locate("/剧集/黑白密码 (2023)/Season 1/根本不存在.mkv")
+
+
+def test_exists_file_in_second_duplicate(_dup2_drive):
+    """exists：同名文件夹下的文件判存在（清理阶段不再误删活文件）"""
+    provider = DriveMount(_mount())
+    assert provider.exists(DUP2_FILE_REL) is True
+    assert provider.exists("/剧集/黑白密码 (2023)/Season 1/根本不存在.mkv") is False
+
+
+def test_exists_dir_name_still_works(_dup2_drive):
+    """exists：目录名仍按名匹配（与基类一致，不分文件/目录）"""
+    provider = DriveMount(_mount())
+    assert provider.exists("/剧集/黑白密码 (2023)/Season 1") is True
+    assert provider.exists("") is False
+
+
+def test_resolve_second_duplicate_file(_dup2_drive, monkeypatch):
+    """resolve：第二个同名文件夹里的文件能拿到直链"""
+    monkeypatch.setattr(
+        drive_auth, "drive_auth_headers",
+        lambda url, key=None: {"Authorization": "Bearer T"})
+    provider = DriveMount(_mount())
+    target = provider.resolve(DUP2_FILE_REL)
+    assert target.kind == "url" and "id=V_TGT" in target.value
