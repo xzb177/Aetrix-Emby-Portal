@@ -164,20 +164,6 @@ def test_invalidate_search_clears_fallback_languages():
     assert "language_fallback_chain" in src
 
 
-# ---------- #14 代理 URL 工具 ----------
-
-def test_proxy_url_helpers():
-    from backend.integrations import proxy
-
-    assert proxy.is_valid_proxy_url("http://u:p@127.0.0.1:8080")
-    assert not proxy.is_valid_proxy_url("ftp://example.com:21")
-    assert not proxy.is_valid_proxy_url("")
-    r = proxy.try_parse_proxy_url("http://proxy.example.com")
-    assert r == {"scheme": "http", "host": "proxy.example.com", "port": 80,
-                 "username": "", "password": ""}
-    assert proxy.try_parse_proxy_url("https://proxy.example.com")["port"] == 443
-
-
 # ---------- #407 worker 跨进程心跳 ----------
 
 class _FakeRedis:

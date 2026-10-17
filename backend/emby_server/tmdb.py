@@ -1168,7 +1168,14 @@ class TmdbClient:
         return [f"****{k[-4:]}" if len(k) > 4 else "****" for k in self.api_keys]
 
     def _ensure_session(self) -> None:
-        """按需创建 / 重建 HTTP 会话——让后台改完「网络代理」立刻对刮削生效
+        """按需创建 / 重建 HTTP 会话——让后台改完「网络代理」对刮削生效
+
+        进程范围注意（r30 F4）：``proxy.apply()`` 只改**本进程**的环境变量，
+        而保存动作发生在 API 进程，enrich_worker 跑在 worker 进程
+        （main.py ``if not _is_api_role`` 分支）。worker 进程只在启动时
+        ``apply_all()`` 一次，运行时改代理不会更新它的环境，所以指纹在
+        worker 进程里永远比不出变化——「改完立刻生效」只对 API 进程内的
+        刮削调用成立，worker/EA 进程需要重启才生效。
 
         httpx 只在**构造 client 时**读一遍代理环境变量（``trust_env``），建好之后改环境不再
         有效；而刮削客户端是进程级单例、活得比一次扫描久得多。不重建的话，管理员填完代理
