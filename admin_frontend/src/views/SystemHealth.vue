@@ -177,6 +177,8 @@ const alertSettings = ref<AlertSettings | null>(null)
 const alertSettingsSaving = ref(false)
 /** 设置表单（与展示分离，避免未保存污染） */
 const alertForm = ref({ enabled: false, check_interval_sec: 600, webhook_url: '' })
+/** 高级设置折叠：默认收起（el-collapse v-model 为空数组即全收；配置瘦身第 3b 批） */
+const alertAdvOpen = ref<string[]>([])
 /** webhook 密钥：只用于提交，后端不回显 */
 const alertWebhookSecret = ref('')
 const alertTestChannel = ref<AlertChannel>('in_app')
@@ -655,13 +657,20 @@ onMounted(() => {
         <div class="alert-block-title">设置</div>
         <div class="alert-settings-row">
           <el-switch v-model="alertForm.enabled" active-text="总开关" />
-          <span class="alert-field">
-            <span class="muted">检查间隔</span>
-            <el-input-number v-model="alertForm.check_interval_sec" :min="60" :max="86400" :controls="false" class="w-seconds" />
-            <span class="muted">秒</span>
-          </span>
-          <span class="hint">60~86400，保存后立即生效</span>
         </div>
+        <!-- 高级设置：检查间隔（一辈子不用碰的低频项，默认收起；配置瘦身第 3b 批） -->
+        <el-collapse v-model="alertAdvOpen" class="alert-advanced">
+          <el-collapse-item name="advanced" title="高级设置（1）">
+            <div class="alert-settings-row">
+              <span class="alert-field">
+                <span class="muted">检查间隔</span>
+                <el-input-number v-model="alertForm.check_interval_sec" :min="60" :max="86400" :controls="false" class="w-seconds" />
+                <span class="muted">秒</span>
+              </span>
+              <span class="hint">60~86400，默认 600，保存后立即生效</span>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
         <div class="alert-settings-row">
           <el-input v-model="alertForm.webhook_url" placeholder="Webhook 通知 URL（可选）" clearable class="w-webhook" />
           <el-input v-model="alertWebhookSecret" type="password" show-password placeholder="签名密钥（为空则不修改）" class="w-webhook" />
@@ -1061,6 +1070,9 @@ onMounted(() => {
 .alert-block { margin-bottom: 20px; }
 .alert-block:last-child { margin-bottom: 0; }
 .alert-block-title { font-size: 14px; font-weight: 600; color: var(--au-text); margin-bottom: 10px; }
+/* 高级设置折叠：与 RegistrationCodes 的 gen-advanced 同口径（默认收起） */
+.alert-advanced { margin-top: 2px; }
+.alert-advanced .el-collapse-item__header { font-size: var(--font-size-xs, 12px); color: var(--au-text-3); border-bottom: none; }
 .alert-settings-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .alert-field { display: inline-flex; align-items: center; gap: 6px; }
 .alert-secret-hint { font-size: 12px; margin-bottom: 10px; }
