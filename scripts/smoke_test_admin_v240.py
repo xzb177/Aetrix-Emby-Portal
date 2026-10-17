@@ -19,7 +19,6 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 
 from fastapi.testclient import TestClient
 
-from backend.api.economy import _today_start_utc_naive
 from backend import models
 from backend.database import SessionLocal, init_db
 from backend.main import app
@@ -63,10 +62,7 @@ db.add_all([
     models.PointsLog(user_id=target.id, amount=200, balance_after=200, type="checkin", description="签到"),
     models.PointsLog(user_id=target.id, amount=150, balance_after=350, type="rebate", description="充值返利"),
     models.PointsLog(user_id=target.id, amount=-30, balance_after=320, type="exchange", description="兑换消费"),
-    # checkin_date 口径 = 生产写入点口径：上海自然日 00:00 的 UTC-naive 标记
-    # （economy._today_start_utc_naive，与趋势接口 _checkin_day_key 的 +8h 还原配对；
-    # r34 用户拍板口径。此前用服务器本地 00:00，北京时间 00:00–08:00 签到会落在"昨天"）
-    models.CheckinRecord(user_id=target.id, checkin_date=_today_start_utc_naive(), points_awarded=15, streak=4),
+    models.CheckinRecord(user_id=target.id, checkin_date=now.replace(hour=0, minute=0, second=0, microsecond=0), points_awarded=15, streak=4),
     models.InvitationRecord(inviter_id=target.id, invitee_id=invitee.id, code_id=1, reward_points=50),
     models.RechargeOrder(
         order_id=f"SMOKE{suf}", user_id=target.id, package_id=1, amount=500,
