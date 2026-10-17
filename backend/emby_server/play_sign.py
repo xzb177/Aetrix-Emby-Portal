@@ -121,9 +121,11 @@ def config_payload(db: Session | None = None) -> dict:
 def write_config(db: Session, *, enabled: bool, play_sign_ttl: int) -> dict:
     """管理后台写入：校验范围 → 落库 → 失效热缓存。
 
-    r36 起走 ``config_service`` 统一编排层（校验→批量落库→写时失效），
-    行为与旧手写实现逐字一致：TTL 非法（非整数/60~86400 越界）抛
-    ValueError（ConfigValueError 是 ValueError 子类，端点 400 文案不变）；
+    r36 起走 ``config_service`` 统一编排层（校验→批量落库→写时失效）。
+    TTL 非法（非整数/60~86400 越界）抛 ConfigValueError（ValueError 子类，
+    main.py 统一 handler 转端点 400：状态码与旧实现一致，但文案变了——
+    旧实现是"播放签名有效期必须为整数秒"/"需在 60~86400 秒之间"，
+    现在是"play_sign_ttl_seconds 必须是整数"/"需在 60~86400 之间"）；
     开关落库 "true"/"false"；返回 ``config_payload`` 即时生效。
 
     提交由调用方决定（``admin_economy.hotlink_update_config`` 已在审计后统一

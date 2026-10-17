@@ -1834,7 +1834,7 @@ export const revokeAdmin = (userId: number) =>
   del<{ success: boolean }>(`/admins/${userId}`)
 
 // ==================== 播放与客户端策略（v2.26.0，/api/admin/playback） ====================
-// 转码开关 / 并发上限 / 码率上限 / 客户端准入：改完对 EM 与 EA 同时生效（同一个库）。
+// 转码开关 / 并发上限 / 码率上限：改完对 EM 与 EA 同时生效（同一个库）。
 
 export const fetchPlaybackPolicy = () =>
   get<{ policy: PlaybackPolicy; keys: Record<string, string>; runtime: PlaybackRuntime }>(
