@@ -577,14 +577,7 @@ class _FakeClient:
 real_client = httpx.AsyncClient
 httpx.AsyncClient = _FakeClient  # 拦下真实请求，只验证失败路径的状态码判定
 tg_channel = notif.TelegramChannel(bot_token="123:FAKE")
-tg_user_exists = db.query(models.TelegramUser).filter(
-    models.TelegramUser.web_user_id == mail_user.id).first() is None
-if tg_user_exists:
-    # TelegramUser.id 就是 Telegram 侧的 chat/id，web_user_id 才是门户账号关联
-    db.add(models.TelegramUser(id=987654321, web_user_id=mail_user.id, username="smoke_tg"))
-    db.commit()
-# 新旧绑定体系两边都配：旧实现查 TelegramUser 表，新实现查 WebUser.telegram_id；
-# 两种实现都能走到投递失败路径，冒烟脚本对两边都有效
+# 绑定走 WebUser.telegram_id（旧 telegram_users 表已删除）
 if not mail_user.telegram_id:
     mail_user.telegram_id = 987654321
     db.commit()
@@ -602,7 +595,6 @@ check("Telegram 失败记 failed + 原因，而不是记 sent",
 db.query(models.NotificationHistory).filter(
     models.NotificationHistory.target.in_([mail_user.email, "987654321"])
 ).delete(synchronize_session=False)
-db.query(models.TelegramUser).filter(models.TelegramUser.web_user_id == mail_user.id).delete()
 mail_user.email = None
 mail_user.telegram_id = None
 db.commit()
