@@ -125,13 +125,16 @@ def split_fields(raw: Optional[str]) -> list[str]:
 
 # ==================== 候选生成（用于 SQL 预筛）====================
 
+#: 拼音首字母搜索的输入形态：纯 ASCII 字母（可含空格，如手机键盘常输入的 "c j h"）
+_PINYIN_INPUT_RE = re.compile(r"[A-Za-z ]+")
+
 
 def search_variants(term: str) -> list[str]:
     """把查询词扩成多个候选形式，供 SQL LIKE 预筛使用
 
-    覆盖：原样、繁→简、简→繁、去掉发布标签后的核心词。
-    这样「输入简体命中繁体标题」「输入带标签的完整文件名」都能捞到候选，
-    再交给 rank_items 精排。
+    覆盖：原样、繁→简、简→繁、去掉发布标签后的核心词、拼音首字母去空格小写。
+    这样「输入简体命中繁体标题」「输入带标签的完整文件名」「输入拼音首字母
+    （带空格也行）命中中文标题」都能捞到候选，再交给 rank_items 精排。
     """
     term = (term or "").strip()
     if not term:
@@ -140,6 +143,14 @@ def search_variants(term: str) -> list[str]:
     core = strip_noise(term).strip()
     if core and core != term:
         variants.extend([core, to_simplified(core), to_traditional(core)])
+    # 拼音首字母搜索（2026-10-17，对标 raisemby）：
+    # sort_name 存的是无空格拼音首字母串（"长津湖"→"cjh"），纯 ASCII 字母
+    # （可含空格）输入时追加去空格小写变体，让 sort_name.ilike("%cjh%")
+    # 捞到候选；中文/混合输入维持原逻辑、零变化。单字母不追加（太泛）。
+    if _PINYIN_INPUT_RE.fullmatch(term):
+        compact = re.sub(r"\s+", "", term).lower()
+        if len(compact) >= 2 and all(compact != v.lower() for v in variants):
+            variants.append(compact)
 
     out: list[str] = []
     for v in variants:
