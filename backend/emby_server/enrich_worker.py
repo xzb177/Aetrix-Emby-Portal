@@ -139,6 +139,22 @@ NIGHT_TZ_OPTIONS = [
 _NIGHT_CFG_TTL_SEC = 60.0
 _night_cfg_cache: dict = {"at": 0.0, "cfg": None}
 
+# ---- 单集分项开关（批3：刮削瘦身收官）----
+# 单集（episode）下沉时，「标题 / 简介 / 剧照」三项各自可开可关。
+# 口径：环境变量优先；未设置时读 SystemConfig（管理后台可配，60 秒缓存热生效，
+# 无需重启）。默认值全部开 = 与现状行为完全一致（升级零行为变化）。
+# 关掉某一项后，工人下沉到单集时跳过该项的写入（TMDB 与 NFO 都不写该项），
+# 但夜间窗口 / 认领门控 / repair 语义一字不动（分项开关只管「写什么」，不管「何时抢单」）。
+ENRICH_EPISODE_TITLE_ENV = "ENRICH_EPISODE_TITLE"
+ENRICH_EPISODE_OVERVIEW_ENV = "ENRICH_EPISODE_OVERVIEW"
+ENRICH_EPISODE_STILL_ENV = "ENRICH_EPISODE_STILL"
+CFG_EPISODE_TITLE = "enrich_episode_title"
+CFG_EPISODE_OVERVIEW = "enrich_episode_overview"
+CFG_EPISODE_STILL = "enrich_episode_still"
+EPISODE_FIELD_DEFAULTS = {"title": True, "overview": True, "still": True}
+_EP_FIELDS_CFG_TTL_SEC = 60.0
+_ep_fields_cfg_cache: dict = {"at": 0.0, "cfg": None}
+
 # 单集等父级 ping-pong 上限（P2 修复，完美审查 C-P2-4）：父级长期 pending
 #（如长退避链）时，单集每 300s 被抢单打回一次、"不计失败次数"→无限循环，
 # 每次消耗抢单与写库。进程内计连续等待次数：指数退避 300s→600s…（上限 2h），
@@ -508,6 +524,78 @@ def save_episode_night_config(db, enabled: bool, start: str, end: str,
     logger.info("单集夜间刮削配置已保存: enabled=%s window=%s-%s tz=%s",
                 enabled, start, end, tz)
     return get_episode_night_config(db)
+
+
+def _episode_field_config(db=None) -> dict:
+    """单集分项开关的有效配置（环境变量优先，否则读 SystemConfig）。
+
+    db 可空：传了 db 才读库；60 秒 TTL 缓存，管理后台保存后最多 60 秒生效。
+    返回 {"title": bool, "overview": bool, "still": bool, "from_env": bool}
+    （字段名与管理后台前端 EnrichEpisodeFieldsConfig 接口保持一致）。
+    默认值全部 True = 与现状行为完全一致。
+    """
+    now_ts = time.monotonic()
+    cached = _ep_fields_cfg_cache["cfg"]
+    if cached is not None and now_ts - _ep_fields_cfg_cache["at"] < _EP_FIELDS_CFG_TTL_SEC:
+        return dict(cached)
+    env_title = (os.getenv(ENRICH_EPISODE_TITLE_ENV) or "").strip().lower()
+    env_overview = (os.getenv(ENRICH_EPISODE_OVERVIEW_ENV) or "").strip().lower()
+    env_still = (os.getenv(ENRICH_EPISODE_STILL_ENV) or "").strip().lower()
+    # 任一环境变量被设置（含显式 "0"）即视为 env 接管：后台改了也不生效，
+    # from_env=True 让管理后台显示提示，避免用户困惑。
+    from_env = bool(env_title) or bool(env_overview) or bool(env_still)
+
+    def _resolve(env_val: str, cfg_key: str, db) -> bool:
+        if env_val not in {"", "0", "false", "no", "off"} and env_val:
+            return True
+        if env_val in {"0", "false", "no", "off"}:
+            return False
+        default = EPISODE_FIELD_DEFAULTS[cfg_key.rsplit("_", 1)[-1]]
+        if db is not None:
+            try:
+                from backend.integrations import store
+                return store.read_value(
+                    db, cfg_key, "1" if default else "0") == "1"
+            except Exception:  # noqa: BLE001 — 读库失败就按默认（全开），不挡刮削
+                logger.warning("单集分项开关读库失败，按默认全开", exc_info=True)
+        return default
+
+    cfg = {
+        "title": _resolve(env_title, CFG_EPISODE_TITLE, db),
+        "overview": _resolve(env_overview, CFG_EPISODE_OVERVIEW, db),
+        "still": _resolve(env_still, CFG_EPISODE_STILL, db),
+        "from_env": from_env,
+    }
+    _ep_fields_cfg_cache["at"] = now_ts
+    _ep_fields_cfg_cache["cfg"] = dict(cfg)
+    return cfg
+
+
+def get_episode_field_config(db) -> dict:
+    """管理后台用：当前生效的单集分项开关"""
+    return _episode_field_config(db)
+
+
+def save_episode_field_config(db, title: bool, overview: bool, still: bool) -> dict:
+    """管理后台用：保存单集分项开关（写 SystemConfig，60 秒内热生效）"""
+    from backend.integrations import store
+    store.write_values(
+        db,
+        {CFG_EPISODE_TITLE: "1" if title else "0",
+         CFG_EPISODE_OVERVIEW: "1" if overview else "0",
+         CFG_EPISODE_STILL: "1" if still else "0"},
+        {CFG_EPISODE_TITLE: "单集刮削：是否写入单集标题（默认开）",
+         CFG_EPISODE_OVERVIEW: "单集刮削：是否写入单集简介（默认开）",
+         CFG_EPISODE_STILL: "单集刮削：是否写入单集剧照（默认开）"},
+    )
+    db.commit()
+    db.expire_all()
+    # 立即清缓存：保存后下一次刮削就用新值，不用等 60 秒 TTL
+    _ep_fields_cfg_cache["at"] = 0.0
+    _ep_fields_cfg_cache["cfg"] = None
+    logger.info("单集分项开关已保存: title=%s overview=%s still=%s",
+                title, overview, still)
+    return get_episode_field_config(db)
 
 # ---------------------------------------------------------------------------
 # 刮削性能参数（链路规划 Step 1：配置面收口）
@@ -1124,6 +1212,10 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
     只打 1 次 TMDB。结果存入 result["episode_tmdb"]，写库阶段由
     `_enrich_apply` 落库。
 
+    批3（分项开关）：标题 / 简介 / 剧照三项全关时，本函数直接返回，
+    一个 TMDB 请求都不打（与「单集下沉总开关关」同效）；只关剧照时，
+    跳过剧照预热（不写 episode_still_url）。
+
     「TMDB 没这集」才静默（不影响 pure_inherit 的主流程）：只是本集拿不到标题/剧照，
     图片仍沿父级回退。瞬态失败（网络/限流，``TmdbTransientError``）**上抛**：
     整条进补全重试队列，下一轮把本集标题/剧照补上——吞掉它就是静默写 done
@@ -1135,6 +1227,11 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
         tmdb_client,
         TmdbTransientError,
     )
+
+    # 批3：分项开关（IO 阶段无 db，用环境变量/缓存口径，与夜间配置同理）
+    ep_fields = _episode_field_config()
+    if not (ep_fields["title"] or ep_fields["overview"] or ep_fields["still"]):
+        return
 
     series_tmdb_id = (inherit_parent or {}).get("tmdb_id")
     if not series_tmdb_id:
@@ -1160,8 +1257,9 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
         return
     result["episode_tmdb"] = ep_data
     # 剧照预热（IO 阶段下载，写库阶段只落字段，与海报同一口径）
+    # 批3：剧照分项关时跳过预热（不写 episode_still_url，写库阶段也就无从落图）
     still_path = ep_data.get("still_path")
-    if still_path:
+    if still_path and ep_fields["still"]:
         try:
             base = image_base()
             # 剧照 16:9，用 w500（与海报同尺寸口径）
@@ -2065,6 +2163,11 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 3. NFO + TMDB
     nfo_data = fetched.get("nfo_data")
     needs_repair = bool(getattr(item, "repair_requested_at", None))
+    # 批3：单集分项开关（只读一次，供下面 NFO/TMDB 单集写入门控用；
+    # 非 episode 条目不走分项门控，读了也不用）
+    _ep_fields = _episode_field_config(db) if item_type == "episode" else None
+    _ep_skip_overview = bool(
+        _ep_fields is not None and not _ep_fields["overview"])
     if fetched.get("tmdb_id"):
         item.tmdb_id = item.tmdb_id or fetched["tmdb_id"]
         details = fetched.get("tmdb_details")
@@ -2083,7 +2186,8 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 tmdb_client.apply_images(item, details,
                                          images_lang=fetched.get("tmdb_images_lang"))
         if nfo_data:
-            nfo_lib.apply_nfo(item, nfo_data, kind)
+            nfo_lib.apply_nfo(item, nfo_data, kind,
+                                          skip_overview=_ep_skip_overview)
     elif fetched.get("tmdb_hit"):
         tmdb_client.apply(item, fetched["tmdb_hit"], kind)
         details = fetched.get("tmdb_details")
@@ -2096,9 +2200,11 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         if details and _needs_details_b:
             tmdb_client.apply_details(item, details)
         if nfo_data:
-            nfo_lib.apply_nfo(item, nfo_data, kind)
+            nfo_lib.apply_nfo(item, nfo_data, kind,
+                                          skip_overview=_ep_skip_overview)
     elif nfo_data and not item.overview:
-        nfo_lib.apply_nfo(item, nfo_data, kind)
+        nfo_lib.apply_nfo(item, nfo_data, kind,
+                                          skip_overview=_ep_skip_overview)
 
     # 3.5 演员表（v2.51.0）：details 自带 credits；幂等，只在没有演员行时写。
     _apply_cast(db, item, fetched.get("tmdb_details"))
@@ -2114,12 +2220,14 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
 
     # 单集 TMDB 数据（v2.50.0）：标题/简介/剧照
     # 在父级图片回退之前应用——有专属剧照的集用自己的，没有的才回退
+    # 批3：按分项开关裁剪（_ep_fields 在上面「3. NFO + TMDB」开头已读；默认全开 = 现状行为）
     episode_tmdb = fetched.get("episode_tmdb")
     if item_type == "episode" and episode_tmdb:
         from backend.emby_server.tmdb import TmdbClient
-        TmdbClient.apply_episode(item, episode_tmdb)
+        TmdbClient.apply_episode(item, episode_tmdb, fields=_ep_fields)
         # 剧照：IO 阶段已预热，写库阶段只落字段（与海报同一口径）
-        still_url = fetched.get("episode_still_url")
+        # 批3：剧照分项关时跳过（双保险：IO 阶段已不预热，这里也不落字段）
+        still_url = fetched.get("episode_still_url") if _ep_fields["still"] else None
         if still_url and not (item.poster_path or item.primary_image_url):
             from backend.emby_server import image_store
             item.primary_image_url = still_url

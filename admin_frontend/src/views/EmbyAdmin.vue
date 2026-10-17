@@ -46,6 +46,7 @@ import {
   fetchChaseNew,
   fetchTmdbKeys,
   fetchEnrichEpisodeNight,
+  fetchEnrichEpisodeFields,
   fetchEnrichTuning,
   fetchEnrichNoneStats,
   fetchEnrichFieldStats,
@@ -62,13 +63,14 @@ import {
   saveAutoScan,
   saveChaseNew,
   saveEnrichEpisodeNight,
+  saveEnrichEpisodeFields,
   saveEnrichTuning,
   saveUnifiedFallback,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichEpisodeFieldsConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -721,6 +723,7 @@ async function load() {
       loadAutoScanConfig(),
       loadChaseNewConfig().catch(() => undefined),
       loadEnrichEpisodeNightConfig().catch(() => undefined),
+      loadEnrichEpisodeFieldsConfig().catch(() => undefined),
       loadEnrichTuningConfig().catch(() => undefined),
       loadUnifiedFallbackConfig().catch(() => undefined),
     ])
@@ -1073,6 +1076,41 @@ async function saveEnrichEpisodeNightAction() {
     ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     episodeNightSaving.value = false
+  }
+}
+
+// ==================== 单集分项开关（批3） ====================
+
+/** 单集下沉时标题 / 简介 / 剧照各自可开可关：后台配置，60 秒内热生效；默认全开 = 现状行为 */
+const episodeFields = ref<EnrichEpisodeFieldsConfig | null>(null)
+const episodeFieldsSaving = ref(false)
+const episodeFieldsError = ref(false)
+
+async function loadEnrichEpisodeFieldsConfig() {
+  try {
+    episodeFields.value = await fetchEnrichEpisodeFields()
+    episodeFieldsError.value = false
+  } catch {
+    episodeFields.value = null // 出错不挡页面其它内容
+    episodeFieldsError.value = true
+  }
+}
+
+async function saveEnrichEpisodeFieldsAction() {
+  if (!episodeFields.value) return
+  episodeFieldsSaving.value = true
+  try {
+    const res = await saveEnrichEpisodeFields(
+      episodeFields.value.title,
+      episodeFields.value.overview,
+      episodeFields.value.still,
+    )
+    episodeFields.value = res
+    ElMessage.success('单集分项开关已保存，60 秒内生效')
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '保存失败'))
+  } finally {
+    episodeFieldsSaving.value = false
   }
 }
 
@@ -2051,6 +2089,43 @@ function typeLabel(t: string): string {
               <div v-if="episodeNight?.from_env" class="drawer-hint drawer-hint--after">
                 环境变量（ENRICH_EPISODE_NIGHT_ONLY / ENRICH_NIGHT_START / ENRICH_NIGHT_END / ENRICH_NIGHT_TZ）覆盖了这里的设置（改这里不会生效）
               </div>
+              <div class="scrape-subblock">
+                <h4>单集分项开关</h4>
+                <p class="drawer-hint">
+                  单集刮削时，「标题 / 简介 / 剧照」三项各自可开可关。关掉后，单集不再写入该项（TMDB 和 NFO 都不写）；默认三项全开 = 和现在一模一样。保存后 60 秒内生效，只影响之后新刮的单集，已刮好的不动。
+                </p>
+                <div v-if="episodeFields" class="scrape-actions">
+                  <el-switch
+                    v-model="episodeFields.title"
+                    active-text="标题"
+                    inactive-text="标题"
+                    aria-label="单集标题开关"
+                  />
+                  <el-switch
+                    v-model="episodeFields.overview"
+                    active-text="简介"
+                    inactive-text="简介"
+                    aria-label="单集简介开关"
+                  />
+                  <el-switch
+                    v-model="episodeFields.still"
+                    active-text="剧照"
+                    inactive-text="剧照"
+                    aria-label="单集剧照开关"
+                  />
+                  <el-button type="primary" size="small" :loading="episodeFieldsSaving" @click="saveEnrichEpisodeFieldsAction">
+                    保存
+                  </el-button>
+                </div>
+                <div v-else-if="episodeFieldsError" class="drawer-hint drawer-hint--after">
+                  读取失败
+                  <el-button size="small" text @click="loadEnrichEpisodeFieldsConfig">重试</el-button>
+                </div>
+                <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+                <div v-if="episodeFields?.from_env" class="drawer-hint drawer-hint--after">
+                  环境变量（ENRICH_EPISODE_TITLE / ENRICH_EPISODE_OVERVIEW / ENRICH_EPISODE_STILL）覆盖了这里的设置（改这里不会生效）
+                </div>
+              </div>
             </div>
             <div class="scrape-block">
               <h3>单集认领：日配额制</h3>
@@ -2897,6 +2972,9 @@ function typeLabel(t: string): string {
 }
 .scrape-block h3 { margin: 0 0 6px; font-size: var(--font-size-sm); font-weight: 700; color: var(--au-text); }
 .scrape-block .drawer-hint { margin-bottom: 10px; }
+.scrape-subblock { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--au-border); }
+.scrape-subblock h4 { margin: 0 0 6px; font-size: var(--font-size-sm); font-weight: 600; color: var(--au-text); }
+.scrape-subblock .drawer-hint { margin-bottom: 10px; }
 .scrape-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .scrape-skeleton { height: 32px; border-radius: var(--au-r-md); }
 /* 刮削性能参数：每行 标签 / 输入 / 说明 / 标记 */
