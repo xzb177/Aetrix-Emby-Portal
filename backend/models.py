@@ -1637,7 +1637,7 @@ class MemberXpLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
-    xp_delta = Column(Integer, nullable=False)  # 经验变动（正数）
+    xp_delta = Column(Integer, nullable=False)  # 经验变动（正数=发放，负数=退款回滚）
     xp_after = Column(Integer, nullable=False)  # 变动后经验
     source = Column(String(20), nullable=False)  # recharge=充值 / invite=有效邀请 / subscription=订阅购买
     ref_id = Column(String(64), nullable=True)  # 关联订单号等
