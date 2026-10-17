@@ -1,5 +1,29 @@
 <template>
+  <!-- 桌面三栏货架：字排封面变体（C档第2批；移动端与世界地图仍用默认盲盒变体） -->
   <div
+    v-if="props.variant === 'cover'"
+    class="d3-parcel d3-hover"
+    :class="{ 'is-busy': busy, 'no-link': isOpen && !parcel.deep_link }"
+    :role="isOpen ? undefined : 'button'"
+    :tabindex="isOpen ? undefined : '0'"
+    :aria-label="isOpen ? undefined : '待拆封存，点击开封'"
+    @click="onTap"
+    @keydown="onKey"
+  >
+    <div class="d3-cover" :class="coverTone">
+      <div class="d3-cov-k">{{ coverKicker }}</div>
+      <div class="d3-cov-t">{{ parcel.name || '神秘包裹' }}</div>
+    </div>
+    <div class="d3-parcel-body">
+      <div style="min-width:0">
+        <div class="d3-parcel-name">{{ parcel.name || '神秘包裹' }}</div>
+        <div class="d3-parcel-meta">{{ coverMeta }}</div>
+      </div>
+      <span class="d3-tag-sealed" :class="{ 'is-open': isOpen }">{{ isOpen ? '已拆封' : '待拆' }}</span>
+    </div>
+  </div>
+  <div
+    v-else
     class="v4-parcel"
     :class="{ opened: isOpen, 'is-busy': busy, 'no-link': isOpen && !parcel.deep_link, 'just-opened': justOpened }"
     :role="isOpen ? undefined : 'button'"
@@ -44,7 +68,10 @@
 import { computed, ref, watch } from 'vue'
 import type { ParcelItem } from '@/composables/usePanelApi'
 
-const props = defineProps<{ parcel: ParcelItem; busy?: boolean }>()
+const props = withDefaults(
+  defineProps<{ parcel: ParcelItem; busy?: boolean; variant?: 'parcel' | 'cover' }>(),
+  { variant: 'parcel' },
+)
 const emit = defineEmits<{ (e: 'unseal', id: string | number): void }>()
 
 const isOpen = computed(() => !!props.parcel.unsealed)
@@ -78,6 +105,31 @@ const metaLine = computed(() => {
   const res = props.parcel.video_resolution || props.parcel.resolution
   if (res) parts.push(String(res))
   else if (props.parcel.production_year) parts.push(String(props.parcel.production_year))
+  return parts.join(' · ')
+})
+/* ---------- cover 变体（桌面三栏字排封面） ---------- */
+/** 双色调按 id 稳定散列，保证同一包裹每次色调一致 */
+const coverTone = computed(() => {
+  const s = String(props.parcel.id ?? '')
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+  return `d3-tone-${'abcd'[h % 4]}`
+})
+/** 封面英文 kicker：只映射后端真实给出的类型，不编造细分 */
+const coverKicker = computed(() => {
+  const t = String(props.parcel.item_type || props.parcel.type || '')
+  if (t === 'series') return 'TV SERIES'
+  if (t === 'movie') return 'FILM'
+  return 'FEATURE'
+})
+/** cover 卡副标题行：类型 · 集数/年份（复用面单口径，不编新字段） */
+const coverMeta = computed(() => {
+  const parts = [typeLabel.value]
+  const eps = props.parcel.episode_count
+  if (typeof eps === 'number' && eps > 0) parts.push(`${eps}集`)
+  const y = props.parcel.production_year
+  if (y) parts.push(String(y))
+  if (arrivedText.value) parts.push(arrivedText.value)
   return parts.join(' · ')
 })
 /** 开封后的副标题行：类型 · 年份（面单第二行，短） */
