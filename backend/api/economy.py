@@ -24,7 +24,7 @@ import math
 import random
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Optional
 from urllib.parse import urlencode
@@ -94,6 +94,22 @@ def _get_bool_config(db: Session, key: str, default: bool) -> bool:
 
 def _today_start() -> datetime:
     return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _today_start_utc_naive() -> datetime:
+    """上海自然日 00:00，换算成 UTC naive——与入库时间列的存储帧对齐。
+
+    生产容器系统时区为 UTC，``PointsLog.created_at`` 等列以 UTC naive 入库；
+    直接用服务器本地 00:00 当「今日」起点，会让日限额在北京时间 08:00 才重置
+    （r18 F1、r30 L1 同类问题）。返回的起点已是 UTC 帧，可直接与入库列比较。
+    """
+    from zoneinfo import ZoneInfo
+    try:
+        now_sh = datetime.now(ZoneInfo("Asia/Shanghai"))
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退
+        now_sh = datetime.now().astimezone()
+    start_sh = now_sh.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start_sh.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def _points_record_hash(
@@ -1207,6 +1223,10 @@ def create_payment_order(
     credit = None
     # P2：自定义金额充值暂不支持优惠券（无套餐可供优惠券校验）；积分支付已直接返回，不会到这里
     is_custom_recharge = req.kind == "recharge" and req.custom_amount is not None
+    if is_custom_recharge and coupon_code:
+        # 自定义金额没有套餐可供优惠券校验（coupons.resolve_item 按套餐查），
+        # 静默忽略会让用户「填了码却按全价付」还无从察觉；直接拒绝，让前端藏起输入框。
+        raise HTTPException(status_code=400, detail="自定义金额充值暂不支持使用优惠券")
     if coupon_code and not is_custom_recharge:
         preview = coupons.quote(db, user=current_user, code=coupon_code,
                                 kind=req.kind, item_id=req.item_id)
@@ -1701,7 +1721,9 @@ def transfer_points_core(db: Session, sender: models.WebUser, recipient_username
     if daily_cap > 0:
         # 先锁转出方用户行再统计今日已转出，避免并发多笔都读到旧用量绕过上限
         lock_user_row(db, sender.id)
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        # 日界线按北京时间（上海自然日），与 created_at 的 UTC 入库帧对齐；
+        # 服务器本地 00:00 在生产（UTC）是北京时间 08:00，会让限额晚 8 小时重置。
+        today_start = _today_start_utc_naive()
         used_today = (
             db.query(func.coalesce(func.sum(-models.PointsLog.amount), 0))
             .filter(
