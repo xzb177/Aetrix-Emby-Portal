@@ -143,6 +143,8 @@ def config_payload(db: Session | None = None) -> dict:
         "play_sign_ttl": play_sign_ttl_seconds(db),
         "strm_sig_ttl": strm_sig_ttl_seconds(db),
         "strm_sig_ttl_min": strm_ttl_write_min(),
+        # 配置瘦身第 3c 批：防盗链 Referer 白名单回显（归一化后域名列表，空=不检查）
+        "allowed_referers": get_allowed_referers(db),
         "defaults": {
             "enabled": HOTLINK_DEFAULT,
             "play_sign_ttl": PLAY_TTL_DEFAULT,

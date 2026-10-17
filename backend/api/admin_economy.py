@@ -395,6 +395,8 @@ class HotlinkConfigRequest(BaseModel):
     enabled: bool = True
     play_sign_ttl: int = 900
     strm_sig_ttl: int = 3600
+    # 配置瘦身第 3c 批：Referer 白名单（逗号分隔域名）；None=老前端没传=不改
+    allowed_referers: Optional[str] = None
 
 
 @admin_router.get("/hotlink-config")
@@ -418,6 +420,11 @@ def hotlink_update_config(
     from backend.emby_server import play_sign
 
     try:
+        # 配置瘦身第 3c 批：白名单走同一张卡的既有保存通道（归一化+落库在
+        # write_allowed_referers 里），None=前端没传=不碰原值；先写它，
+        # 随后的 write_config 回包 config_payload 才能带上最新白名单
+        if request.allowed_referers is not None:
+            play_sign.write_allowed_referers(db, request.allowed_referers)
         result = play_sign.write_config(
             db,
             enabled=request.enabled,
@@ -428,7 +435,8 @@ def hotlink_update_config(
         raise HTTPException(status_code=400, detail=str(exc))
     _audit(db, current_admin, "hotlink_update_config", "system", None,
            {"enabled": request.enabled, "play_sign_ttl": request.play_sign_ttl,
-            "strm_sig_ttl": request.strm_sig_ttl})
+            "strm_sig_ttl": request.strm_sig_ttl,
+            "allowed_referers": request.allowed_referers})
     db.commit()
     return result
 

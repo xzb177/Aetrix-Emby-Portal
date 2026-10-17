@@ -38,6 +38,7 @@ import { useDangerOps } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
 import {
   fetchHotlinkConfig, updateHotlinkConfig, type HotlinkConfigPayload,
+  type HotlinkConfigGet,
 } from '@/api/economy'
 import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
@@ -548,14 +549,18 @@ onMounted(async () => {
 /** ==================== 防盗链卡片（独立 endpoint，非通用分组） ==================== */
 /** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400 / 300~86400），
  * 通用分组的 int 字段只有 min=0 的粗校验，装不下。 */
-const hotlink = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
-const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
+const hotlink = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600, allowed_referers: '' })
+const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600, allowed_referers: '' })
 const hotlinkLoading = ref(false)
 
-function applyHotlink(data: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number }) {
+function applyHotlink(data: HotlinkConfigGet) {
   hotlink.enabled = !!data.enabled
   hotlink.play_sign_ttl = Number(data.play_sign_ttl) || 900
   hotlink.strm_sig_ttl = Number(data.strm_sig_ttl) || 3600
+  // 后端回包是归一化后的域名数组；编辑态存逗号分隔串
+  hotlink.allowed_referers = Array.isArray(data.allowed_referers)
+    ? data.allowed_referers.join(', ')
+    : String(data.allowed_referers ?? '')
   Object.assign(hotlinkOriginal, hotlink)
 }
 
@@ -573,7 +578,8 @@ async function loadHotlink() {
 const hotlinkDirty = computed(() =>
   hotlink.enabled !== hotlinkOriginal.enabled
   || hotlink.play_sign_ttl !== hotlinkOriginal.play_sign_ttl
-  || hotlink.strm_sig_ttl !== hotlinkOriginal.strm_sig_ttl,
+  || hotlink.strm_sig_ttl !== hotlinkOriginal.strm_sig_ttl
+  || hotlink.allowed_referers !== hotlinkOriginal.allowed_referers,
 )
 
 /** 防盗链保存核心：返回是否成功，失败时拦截器/校验已提示。 */
@@ -591,6 +597,7 @@ async function saveHotlinkCore(): Promise<boolean> {
     enabled: hotlink.enabled,
     play_sign_ttl: hotlink.play_sign_ttl,
     strm_sig_ttl: hotlink.strm_sig_ttl,
+    allowed_referers: hotlink.allowed_referers,
   }
   try {
     applyHotlink(await updateHotlinkConfig(payload))
@@ -1239,6 +1246,20 @@ watch(
                     <span class="field-suffix">秒</span>
                   </div>
                   <span class="field-hint">.strm 内容签名有效期，默认 3600（1 小时），范围 300~86400；定时任务每 50 分钟自动刷新</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="Referer 白名单">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input
+                      v-model="hotlink.allowed_referers"
+                      type="textarea"
+                      :rows="2"
+                      placeholder="如：cdn.example.com, player.example.com"
+                      style="max-width: 420px"
+                    />
+                  </div>
+                  <span class="field-hint">逗号分隔的域名；只有带 Referer 且主机不在名单里才会被 403。留空 = 不检查（放行所有）</span>
                 </div>
               </el-form-item>
             </el-form>

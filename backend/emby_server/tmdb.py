@@ -743,9 +743,14 @@ def settings(db=None, *, refresh: bool = False) -> dict:
                                    TMDB_API_DEFAULT),
         "image_base": normalize_base(env_image or _config_text(TMDB_IMAGE_BASE_CONFIG_KEY, db),
                                      TMDB_IMAGE_DEFAULT),
-        "cooldown_sec": _positive_float(env_cooldown, DEFAULT_KEY_COOLDOWN_SEC, 1.0),
+        # 配置瘦身第 3c 批：env > DB > 默认（此前只读了 env，DB 键 unreachable，
+        # 与本函数 docstring 的口径不符；补上 DB 一层后冷却时长才真正可配）
+        "cooldown_sec": _positive_float(
+            env_cooldown or _config_text(TMDB_KEY_COOLDOWN_CONFIG_KEY, db, refresh=refresh),
+            DEFAULT_KEY_COOLDOWN_SEC, 1.0),
         "invalid_cooldown_sec": _positive_float(
-            env_invalid, DEFAULT_KEY_INVALID_COOLDOWN_SEC, 1.0),
+            env_invalid or _config_text(TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY, db, refresh=refresh),
+            DEFAULT_KEY_INVALID_COOLDOWN_SEC, 1.0),
         "api_base_from_env": bool(env_api),
         "image_base_from_env": bool(env_image),
     }

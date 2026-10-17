@@ -50,6 +50,8 @@ from backend.emby_server.tmdb import (
     TMDB_POSTER_LANGUAGE_OPTIONS,
     TMDB_PREFERRED_LANGUAGE_CONFIG_KEY,
     TMDB_PREFERRED_LANGUAGE_DEFAULT,
+    DEFAULT_KEY_COOLDOWN_SEC,
+    DEFAULT_KEY_INVALID_COOLDOWN_SEC,
     TmdbTransientError,
     _db_keys,
     _env_keys,
@@ -453,6 +455,65 @@ def save_tmdb_poster_language(
     db.commit()
     db.expire_all()
     return {"success": True, "language": lang}
+
+
+class TmdbKeyCooldownsSaveRequest(BaseModel):
+    cooldown_sec: float = Field(default=DEFAULT_KEY_COOLDOWN_SEC,
+                                description="密钥限流冷却（秒），≥1，默认 900")
+    invalid_cooldown_sec: float = Field(default=DEFAULT_KEY_INVALID_COOLDOWN_SEC,
+                                        description="密钥 401 失效冷却（秒），≥1，默认 21600")
+
+
+@admin_emby_router.get("/scrape/tmdb-key-cooldowns")
+def get_tmdb_key_cooldowns(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """TMDB 密钥冷却时长：当前生效值 + 默认值 + 环境变量覆盖标记。
+
+    配置瘦身第 3c 批：429 限流冷却与 401 失效冷却此前无后台写入口。
+    TMDB_KEY_COOLDOWN_SEC / TMDB_KEY_INVALID_COOLDOWN_SEC 环境变量优先。
+    """
+    cfg = tmdb_settings(db, refresh=True)
+    return {
+        "cooldown_sec": cfg["cooldown_sec"],
+        "invalid_cooldown_sec": cfg["invalid_cooldown_sec"],
+        "from_env": {
+            "cooldown_sec": bool((os.getenv("TMDB_KEY_COOLDOWN_SEC") or "").strip()),
+            "invalid_cooldown_sec": bool((os.getenv("TMDB_KEY_INVALID_COOLDOWN_SEC") or "").strip()),
+        },
+        "defaults": {
+            "cooldown_sec": float(DEFAULT_KEY_COOLDOWN_SEC),
+            "invalid_cooldown_sec": float(DEFAULT_KEY_INVALID_COOLDOWN_SEC),
+        },
+    }
+
+
+@admin_emby_router.put("/scrape/tmdb-key-cooldowns")
+def save_tmdb_key_cooldowns(
+    req: TmdbKeyCooldownsSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存 TMDB 密钥冷却时长（写 SystemConfig，保存即热生效，无需重启）。"""
+    try:
+        cd = float(req.cooldown_sec)
+        icd = float(req.invalid_cooldown_sec)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="冷却时长必须是数字")
+    if cd < 1 or icd < 1:
+        raise HTTPException(status_code=400, detail="冷却时长需 ≥ 1 秒")
+    store.write_values(
+        db,
+        {TMDB_KEY_COOLDOWN_CONFIG_KEY: str(cd),
+         TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY: str(icd)},
+        {TMDB_KEY_COOLDOWN_CONFIG_KEY: "TMDB 密钥限流（429）冷却秒数，默认 900",
+         TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY: "TMDB 密钥 401 失效冷却秒数，默认 21600"},
+    )
+    db.commit()
+    db.expire_all()
+    invalidate_settings()
+    return {"success": True, "cooldown_sec": cd, "invalid_cooldown_sec": icd}
 
 
 # ==================== 条目级重刮 ====================
