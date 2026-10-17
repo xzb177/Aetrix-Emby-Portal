@@ -449,7 +449,7 @@ onUnmounted(() => {
   white-space: nowrap;
   border: 0;
 }
-.tdate { margin: 0; } /* F1：h3 默认 margin 归零，观感不变 */
+.tdate { margin: 0 0 8px; } /* F1：h3 默认 margin 归零但保留设计稿的 8px 下间距，观感不变 */
 /* F6：探险预告骨架——贴近真实结构，避免 220px 单块造成的布局跳动 */
 .sk-timeline { display: flex; flex-direction: column; gap: 10px; padding-left: 26px; }
 .sk-tdate { height: 18px; width: 40%; }
