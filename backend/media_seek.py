@@ -70,8 +70,13 @@ def used_today(db: Session, user_id: int) -> int:
 
     撤回不退还额度——否则「提交 → 撤回 → 再提交」可以无限刷新额度，
     同时每次提交都会给全体管理员推一条站内消息，那就成了通知刷屏器。
+
+    r34 口径收口：MovieRequest.created_at 以 UTC naive 入库，此前用服务器
+    本地日界，每日额度在北京时间 08:00 才重置。函数内导入 economy 是为了
+    避开循环导入（economy → api.user → media_seek）。
     """
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    from backend.api.economy import _today_start_utc_naive
+    today_start = _today_start_utc_naive()
     return db.query(models.MovieRequest).filter(
         models.MovieRequest.user_id == user_id,
         models.MovieRequest.created_at >= today_start,
@@ -124,8 +129,13 @@ def monthly_limit(db: Session, user) -> int:
 
 
 def used_this_month(db: Session, user_id: int) -> int:
-    """本月提交过多少条（含后来撤回的，与 used_today 同一口径）"""
-    month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    """本月提交过多少条（含后来撤回的，与 used_today 同一口径）
+
+    r34 口径收口：与 used_today 同理，月界按上海自然月（UTC 入库帧对齐），
+    此前服务器本地月界在每月 1 日 08:00（北京时间）才重置。
+    """
+    from backend.api.economy import _month_start_utc_naive
+    month_start = _month_start_utc_naive()
     return db.query(models.MovieRequest).filter(
         models.MovieRequest.user_id == user_id,
         models.MovieRequest.created_at >= month_start,

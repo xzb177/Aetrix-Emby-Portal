@@ -147,7 +147,6 @@ def evaluate(user_id: int, db: Session) -> list:
         return []
     unlocked = _unlocked_keys(db, user_id)
     now = datetime.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     new_unlocks = []
 

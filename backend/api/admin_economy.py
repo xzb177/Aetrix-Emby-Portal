@@ -442,6 +442,18 @@ def hotlink_update_config(
 
 # ---------- 经济统计 ----------
 
+def _checkin_day_key(day_val) -> str:
+    """签到趋势图：把 checkin_date 标记值映射为上海自然日字符串。
+
+    r34：checkin_date 是「上海自然日 00:00」的 UTC-naive 标记（见
+    economy._today_start），+8h 即其代表的上海日期。防御性处理脏数据。
+    """
+    try:
+        return (day_val + timedelta(hours=8)).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001
+        return str(day_val)[:10]
+
+
 @admin_router.get("/economy/stats")
 def economy_stats(
     current_admin: models.WebUser = Depends(get_current_admin),
@@ -449,6 +461,9 @@ def economy_stats(
 ):
     """经济系统概览：用户/积分/订单/兑换/邀请"""
     from sqlalchemy import func as _func
+    # r34：与签到写入帧同口径（上海自然日，UTC naive）。此前服务器本地口径，
+    # 签到帧改为上海日界后这里若不跟进会恒为 0。
+    from backend.api.economy import _today_start_utc_naive as _day_start_sh
 
     total_points = db.query(_func.coalesce(_func.sum(models.WebUser.points), 0)).scalar() or 0
     pending_recharge = db.query(models.RechargeOrder).filter(
@@ -461,8 +476,7 @@ def economy_stats(
     return {
         "total_points": int(total_points),
         "checkins_today": db.query(models.CheckinRecord).filter(
-            models.CheckinRecord.checkin_date >= datetime.now().replace(
-                hour=0, minute=0, second=0, microsecond=0)).count(),
+            models.CheckinRecord.checkin_date >= _day_start_sh()).count(),
         "orders": {"pending": pending_recharge,
                    "revenue": round(float(paid_recharge) + float(paid_sub), 2)},
         "exchange_codes": {
@@ -726,17 +740,24 @@ def get_stats_trend(
         models.SubscriptionOrder.status == "paid", models.SubscriptionOrder.paid_at >= start
     ).group_by(func.date(models.SubscriptionOrder.paid_at)).all()
 
+    # r34：checkin_date 是「上海自然日 00:00」的 UTC-naive 标记（见 economy._today_start），
+    # 不是事件时间——按 func.date(checkin_date) 分组会把每天的签到算到前一天。
+    # 这里按原始标记值分组，在 Python 侧 +8h 还原上海日期（方言无关，
+    # SQLite/PG 的 interval 写法不同，不在 SQL 里做）。
     checkin_rows = db.query(
-        func.date(models.CheckinRecord.checkin_date), func.count(models.CheckinRecord.id)
+        models.CheckinRecord.checkin_date, func.count(models.CheckinRecord.id)
     ).filter(models.CheckinRecord.checkin_date >= start).group_by(
-        func.date(models.CheckinRecord.checkin_date)
+        models.CheckinRecord.checkin_date
     ).all()
+    checkin_map = {}
+    for _day_val, _cnt in checkin_rows:
+        _key = _checkin_day_key(_day_val)
+        checkin_map[_key] = checkin_map.get(_key, 0) + (_cnt or 0)
 
     users_map = _series(user_rows)
     plays_map = _series(play_rows)
     recharge_map = _series(recharge_rows)
     sub_map = _series(sub_rows)
-    checkin_map = _series(checkin_rows)
 
     series = []
     for i in range(days):
