@@ -32,15 +32,16 @@
 
 注意：Drive 允许同一目录下有同名文件/文件夹。列举展示时同名文件夹只认
 第一个（与 rclone 按名寻址的行为一致）；但路径解析（``_fid_of`` 经由的
-``_locate``/``resolve``/``exists``）在按首个匹配走入死胡同时，会回溯尝试
-其它同名文件夹——合法路径一定能定位到。产出的 ``rel`` 若重名会撞同一条
-路径，扫描器侧有 guid 去重兜底。
+``_locate``/``resolve``/``exists``）在按首个匹配走入死胡同时（子目录名
+不存在、或目标文件名不在该文件夹中），会回溯尝试其它同名文件夹——
+合法路径一定能定位到。产出的 ``rel`` 若重名会撞同一条路径，扫描器侧
+有 guid 去重兜底。
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import FrozenSet, Optional
 
 from backend.emby_server import drive_auth, drive_changes
 from backend.emby_server import mounts as mount_lib
@@ -235,7 +236,7 @@ class DriveMount(RemoteMount):
             if not page_token:
                 return items
 
-    def _fid_of(self, rel: str) -> str:
+    def _fid_of(self, rel: str, exclude: FrozenSet[str] = frozenset()) -> str:
         """把挂载内相对路径逐级解析成 folder id（仿 115 的 _cid_of）。
 
         同名文件夹回溯：Drive 允许同级目录下出现同名文件夹。逐级按名
@@ -244,24 +245,35 @@ class DriveMount(RemoteMount):
         最近的有多个同名候选的层级换下一个候选再试——合法路径一定能
         定位到。无歧义路径的行为、报错与缓存和旧实现完全一致；只有歧义
         路径才付出额外的列举开销。
+
+        ``exclude``：调用方已排除的文件夹 id 集合（_locate 在文件名不
+        匹配时逐个排除候选文件夹）；非空时跳过快速路径与 _fid_cache，
+        直接走带排除的回溯解析。
         """
-        rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
-        if rel in self._fid_cache:
-            return self._fid_cache[rel]
-        parts = [p for p in rel.split("/") if p]
         try:
-            return self._fid_of_fast(parts, rel)
-        except _PathDeadEnd:
-            pass  # 死胡同：改用回溯解析
-        trail: list[tuple[str, str, bool]] = []
-        try:
-            fid = self._walk_parts(parts, 0, self.root_id, rel, trail)
+            return self._resolve_folder_id(rel, exclude)
         except _PathDeadEnd as exc:
             raise MountError(f"Google 云盘上找不到目录: {rel}") from exc
+
+    def _resolve_folder_id(self, rel: str,
+                           exclude: FrozenSet[str] = frozenset()) -> str:
+        """原始解析：死胡同抛 _PathDeadEnd（供 _find_file 回溯/排除用）；
+        列举 API 失败抛普通 MountError，直接上抛。"""
+        rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
+        if not exclude and rel in self._fid_cache:
+            return self._fid_cache[rel]
+        parts = [p for p in rel.split("/") if p]
+        if not exclude:
+            try:
+                return self._fid_of_fast(parts, rel)
+            except _PathDeadEnd:
+                pass  # 死胡同：改用回溯解析
+        trail: list[tuple[str, str, bool]] = []
+        fid = self._walk_parts(parts, 0, self.root_id, rel, trail, exclude)
         # 只有整条路径各级都无歧义（每级恰一个同名候选）才缓存各级 rel，
         # 与旧实现一致；歧义路径不缓存，避免把某次回溯选中的文件夹钉死
         # 成该 rel 的"标准答案"。
-        if trail and all(unambiguous for _, _, unambiguous in trail):
+        if not exclude and trail and all(unambiguous for _, _, unambiguous in trail):
             for level_rel, level_fid, _ in trail:
                 self._fid_cache[level_rel] = level_fid
         return fid
@@ -289,11 +301,13 @@ class DriveMount(RemoteMount):
 
     def _walk_parts(self, parts: list[str], idx: int, folder_id: str,
                     full_rel: str,
-                    trail: list[tuple[str, str, bool]]) -> str:
+                    trail: list[tuple[str, str, bool]],
+                    exclude: FrozenSet[str] = frozenset()) -> str:
         """带同名回溯的逐级解析；死胡同抛 _PathDeadEnd 由上层换候选。
 
         列举 API 本身失败抛普通 MountError，直接上抛不回溯（那不是
-        "名不存在"，换候选也救不了）。
+        "名不存在"，换候选也救不了）。``exclude`` 里的文件夹 id 永不
+        入选（_locate 逐个排除已查无文件的候选文件夹时用）。
         """
         if idx >= len(parts):
             return folder_id
@@ -301,7 +315,8 @@ class DriveMount(RemoteMount):
         level_rel = "/" + "/".join(parts[: idx + 1])
         entries = self._list_by_id(folder_id)  # MountError 上抛：列举失败不回溯
         cands = [e for e in entries
-                 if e.is_dir and e.name == part and e.entry_id]
+                 if e.is_dir and e.name == part and e.entry_id
+                 and e.entry_id not in exclude]
         if not cands:
             raise _PathDeadEnd(full_rel)
         last_dead: Optional[_PathDeadEnd] = None
@@ -309,7 +324,7 @@ class DriveMount(RemoteMount):
             trail.append((level_rel, cand.entry_id, len(cands) == 1))
             try:
                 return self._walk_parts(parts, idx + 1, cand.entry_id,
-                                        full_rel, trail)
+                                        full_rel, trail, exclude)
             except _PathDeadEnd as exc:
                 trail.pop()
                 last_dead = exc
@@ -376,12 +391,65 @@ class DriveMount(RemoteMount):
         return 4
 
     def _locate(self, rel: str) -> MountEntry:
-        """按 rel 定位文件条目（resolve 用）"""
+        """按 rel 定位文件条目（resolve 用）。
+
+        同名文件夹的文件级回溯：父目录解析到首个候选文件夹后，若目标
+        文件名不在其中，把该文件夹加入排除集、换下一个同名候选再试——
+        合法路径一定能定位到；全部候选查完仍无文件才报"找不到文件"。
+        """
         parent, _, name = (rel or "").rstrip("/").rpartition("/")
-        for entry in self.list_dir(parent or "/"):
-            if entry.name == name and not entry.is_dir:
-                return entry
-        raise MountError(f"Google 云盘上找不到文件: {rel}")
+        entry = self._find_file(parent or "/", name)
+        if entry is None:
+            raise MountError(f"Google 云盘上找不到文件: {rel}")
+        return entry
+
+    def _find_file(self, parent: str, name: str) -> Optional[MountEntry]:
+        """在 parent 下找文件；同名文件夹歧义时逐个候选文件夹试。
+
+        找到返回条目；全部候选查完无文件返回 None（_locate 转报错、
+        exists 转 False）。列举 API 失败抛 MountError 上抛，不吞。
+        """
+        if not name:
+            return None
+        excluded: set[str] = set()
+        while True:
+            try:
+                folder_id = self._resolve_folder_id(
+                    parent, frozenset(excluded))
+            except _PathDeadEnd:
+                return None
+            for entry in self._list_by_id(folder_id):  # MountError 上抛：列举失败不吞
+                if entry.name == name and not entry.is_dir:
+                    return entry
+            if folder_id in excluded:
+                return None  # 防御：候选已穷尽仍无文件
+            excluded.add(folder_id)
+
+    def exists(self, rel: str) -> bool:
+        """文件/目录是否存在；同名文件夹歧义时逐个候选找，直到命中为止。
+
+        覆盖基类实现：基类只查首个匹配的文件夹，同名文件夹下的文件会被
+        误判为不存在（扫描器清理阶段据此标记删除活文件）。
+        """
+        parent, _, name = (rel or "").rstrip("/").rpartition("/")
+        if not name:
+            return False  # 与基类一致：空名按不存在
+        try:
+            excluded: set[str] = set()
+            while True:
+                try:
+                    folder_id = self._resolve_folder_id(
+                        parent or "/", frozenset(excluded))
+                except _PathDeadEnd:
+                    return False
+                # 基类按名匹配不分文件/目录，这里保持一致
+                if any(e.name == name for e in self._list_by_id(folder_id)):
+                    return True
+                if folder_id in excluded:
+                    return False  # 防御：候选已穷尽
+                excluded.add(folder_id)
+        except MountError:
+            return False  # 与基类一致：列举失败按不存在
 
     def resolve(self, rel: str) -> PlayTarget:
         """探测/.strm 读取用的解析：usercontent 直链 + Bearer 头（不下发客户端）。
