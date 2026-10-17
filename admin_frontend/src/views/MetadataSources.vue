@@ -46,6 +46,8 @@ import {
   fetchTmdbMirror,
   fetchDoubanBanDowngrade,
   fetchTmdbLanguage,
+  fetchTmdbPosterLanguage,
+  fetchTmdbKeyCooldowns,
   lockItemMetadata,
   previewTmdb,
   probeMetaSources,
@@ -59,6 +61,8 @@ import {
   saveTmdbMirror,
   saveDoubanBanDowngrade,
   saveTmdbLanguage,
+  saveTmdbPosterLanguage,
+  saveTmdbKeyCooldowns,
   testMetaSourceKeys,
   testTmdbKeys,
   unlockItemMetadata,
@@ -83,6 +87,8 @@ import type {
   DoubanConfig,
   DoubanBanDowngradeConfig,
   TmdbLanguageStatus,
+  TmdbPosterLanguageStatus,
+  TmdbKeyCooldowns,
 } from '@/api/admin'
 import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import './MetadataSources.css'
@@ -671,6 +677,70 @@ async function saveTmdbLanguageAction() {
   }
 }
 
+// ==================== TMDB 微调（配置瘦身第 3c 批：海报语言偏好 + 密钥冷却时长） ====================
+const tmdbPosterLang = ref<TmdbPosterLanguageStatus | null>(null)
+const tmdbPosterLangSaving = ref(false)
+const tmdbPosterLangError = ref(false)
+const TMDB_POSTER_LANG_LABELS: Record<string, string> = {
+  system: '跟随系统', original: '原语言', 'zh-CN': '简体中文',
+}
+const tmdbPosterLangLabel = (v: string) => TMDB_POSTER_LANG_LABELS[v] || v
+
+async function loadTmdbPosterLanguage() {
+  tmdbPosterLangError.value = false
+  try {
+    tmdbPosterLang.value = await fetchTmdbPosterLanguage()
+  } catch {
+    tmdbPosterLang.value = null
+    tmdbPosterLangError.value = true
+  }
+}
+
+async function saveTmdbPosterLanguageAction() {
+  if (!tmdbPosterLang.value) return
+  tmdbPosterLangSaving.value = true
+  try {
+    const res = await saveTmdbPosterLanguage(tmdbPosterLang.value.language)
+    tmdbPosterLang.value.language = res.language
+    ElMessage.success('TMDB 海报语言偏好已保存，立即生效')
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '保存失败'))
+  } finally {
+    tmdbPosterLangSaving.value = false
+  }
+}
+
+const tmdbCooldowns = ref<TmdbKeyCooldowns | null>(null)
+const tmdbCooldownsSaving = ref(false)
+const tmdbCooldownsError = ref(false)
+const tmdbCooldownDraft = reactive({ cooldown_sec: 900, invalid_cooldown_sec: 21600 })
+
+async function loadTmdbKeyCooldowns() {
+  tmdbCooldownsError.value = false
+  try {
+    tmdbCooldowns.value = await fetchTmdbKeyCooldowns()
+    tmdbCooldownDraft.cooldown_sec = Number(tmdbCooldowns.value.cooldown_sec) || 900
+    tmdbCooldownDraft.invalid_cooldown_sec = Number(tmdbCooldowns.value.invalid_cooldown_sec) || 21600
+  } catch {
+    tmdbCooldowns.value = null
+    tmdbCooldownsError.value = true
+  }
+}
+
+async function saveTmdbKeyCooldownsAction() {
+  tmdbCooldownsSaving.value = true
+  try {
+    const res = await saveTmdbKeyCooldowns(
+      Number(tmdbCooldownDraft.cooldown_sec), Number(tmdbCooldownDraft.invalid_cooldown_sec))
+    tmdbCooldowns.value = { ...(tmdbCooldowns.value as TmdbKeyCooldowns), ...res }
+    ElMessage.success('TMDB 密钥冷却时长已保存，立即生效')
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '保存失败'))
+  } finally {
+    tmdbCooldownsSaving.value = false
+  }
+}
+
 const probe = reactive({ title: '', year: '', kind: 'series' as 'series' | 'movie' })
 const probeResult = ref<MetaSourceProbe | null>(null)
 const probeOnly = ref('')
@@ -961,6 +1031,8 @@ onMounted(() => {
   loadBanDowngrade().catch(() => undefined)
   loadAmRates().catch(() => undefined)
   loadTmdbLanguage().catch(() => undefined)
+  loadTmdbPosterLanguage().catch(() => undefined)
+  loadTmdbKeyCooldowns().catch(() => undefined)
   // Batch D 入口收敛：媒体库页用 hash 深链跳进来（#card-douban / #card-tmdb）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
@@ -1630,6 +1702,73 @@ onMounted(() => {
         <div v-if="tmdbLang?.from_env" class="ms-hint">
           环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
         </div>
+
+        <!-- 配置瘦身第 3c 批：TMDB 微调（海报语言偏好 + 密钥冷却时长）收进高级折叠 -->
+        <AdvancedSettings
+          count="3 项"
+          description="海报图语言与密钥冷却策略：一般不用动，默认即可。"
+        >
+          <div class="ms-sub">TMDB 海报语言偏好</div>
+          <p class="ms-hint">海报图请求哪种语言的版本（保存后立即生效）</p>
+          <div v-if="tmdbPosterLang" class="ms-actions">
+            <el-select v-model="tmdbPosterLang.language" style="width: 160px" aria-label="TMDB 海报语言偏好">
+              <el-option
+                v-for="v in tmdbPosterLang.options"
+                :key="v"
+                :label="tmdbPosterLangLabel(v)"
+                :value="v"
+              />
+            </el-select>
+            <el-button type="primary" size="small" :loading="tmdbPosterLangSaving" @click="saveTmdbPosterLanguageAction">
+              保存
+            </el-button>
+          </div>
+          <div v-else-if="tmdbPosterLangError" class="ms-hint">
+            读取失败 <el-button size="small" text @click="loadTmdbPosterLanguage">重试</el-button>
+          </div>
+          <div v-else class="ms-skeleton" aria-busy="true"><div class="au-skeleton" /></div>
+
+          <div class="ms-sub">TMDB 密钥冷却时长</div>
+          <p class="ms-hint">
+            密钥被限流（429）或失效（401）后冷却多久再试。环境变量
+            <code>TMDB_KEY_COOLDOWN_SEC</code> / <code>TMDB_KEY_INVALID_COOLDOWN_SEC</code>
+            优先于这里的设置。
+          </p>
+          <div v-if="tmdbCooldowns" class="ms-field">
+            <span class="ms-field-label">限流冷却（秒）</span>
+            <el-input-number
+              v-model="tmdbCooldownDraft.cooldown_sec"
+              :min="1"
+              :step="60"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">默认 {{ tmdbCooldowns.defaults.cooldown_sec }} 秒</span>
+          </div>
+          <div v-if="tmdbCooldowns" class="ms-field">
+            <span class="ms-field-label">失效冷却（秒）</span>
+            <el-input-number
+              v-model="tmdbCooldownDraft.invalid_cooldown_sec"
+              :min="1"
+              :step="600"
+              size="small"
+              style="width: 140px"
+            />
+            <span class="ms-hint">默认 {{ tmdbCooldowns.defaults.invalid_cooldown_sec }} 秒（约 6 小时）</span>
+          </div>
+          <div v-if="tmdbCooldowns?.from_env.cooldown_sec || tmdbCooldowns?.from_env.invalid_cooldown_sec" class="ms-hint">
+            环境变量覆盖了这里的设置（改这里不会生效）
+          </div>
+          <div v-if="tmdbCooldowns" class="ms-actions">
+            <el-button type="primary" size="small" :loading="tmdbCooldownsSaving" @click="saveTmdbKeyCooldownsAction">
+              保存
+            </el-button>
+          </div>
+          <div v-else-if="tmdbCooldownsError" class="ms-hint">
+            读取失败 <el-button size="small" text @click="loadTmdbKeyCooldowns">重试</el-button>
+          </div>
+          <div v-else class="ms-skeleton" aria-busy="true"><div class="au-skeleton" /></div>
+        </AdvancedSettings>
       </SectionCard>
       </div>
       <!-- 2. 手动绑定 TMDB（默认折叠） -->

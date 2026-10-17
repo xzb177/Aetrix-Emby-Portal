@@ -1202,6 +1202,34 @@ export const fetchTmdbLanguage = () => get<TmdbLanguageStatus>(`${E}/scrape/tmdb
 export const saveTmdbLanguage = (language: string) =>
   put<{ success: boolean; language: string }>(`${E}/scrape/tmdb-language`, { language })
 
+/** TMDB 海报语言偏好：海报图请求哪种语言（system 跟随系统 / original 原语言 / zh-CN） */
+export interface TmdbPosterLanguageStatus {
+  language: string
+  options: string[]
+  default: string
+}
+
+export const fetchTmdbPosterLanguage = () =>
+  get<TmdbPosterLanguageStatus>(`${E}/scrape/tmdb-poster-language`)
+
+export const saveTmdbPosterLanguage = (language: string) =>
+  put<{ success: boolean; language: string }>(`${E}/scrape/tmdb-poster-language`, { language })
+
+/** TMDB 密钥冷却时长：429 限流冷却 / 401 失效冷却（秒） */
+export interface TmdbKeyCooldowns {
+  cooldown_sec: number
+  invalid_cooldown_sec: number
+  from_env: { cooldown_sec: boolean; invalid_cooldown_sec: boolean }
+  defaults: { cooldown_sec: number; invalid_cooldown_sec: number }
+}
+
+export const fetchTmdbKeyCooldowns = () =>
+  get<TmdbKeyCooldowns>(`${E}/scrape/tmdb-key-cooldowns`)
+
+export const saveTmdbKeyCooldowns = (cooldown_sec: number, invalid_cooldown_sec: number) =>
+  put<{ success: boolean; cooldown_sec: number; invalid_cooldown_sec: number }>(
+    `${E}/scrape/tmdb-key-cooldowns`, { cooldown_sec, invalid_cooldown_sec })
+
 export interface EnrichEpisodeNightConfig {
   success: boolean
   enabled: boolean
@@ -1971,6 +1999,26 @@ export interface StrmGenConfig {
   jitter_ratio: number
   /** 子树限定列举开关（默认开） */
   subtree_listing: boolean
+  /** 多盘并行列举并发数（1-10），老后端无此键时回显默认 3 */
+  drive_concurrency?: number
+  /** Drive API 全局速率上限 QPS（1.0-20.0），默认 8.0 */
+  api_qps?: number
+  /** 删除保护：演习开关，true=只记 would-delete 不真删 */
+  prune_dry_run?: boolean
+  /** 删除保护：单轮删除比例上限 (0, 1]，默认 0.2 */
+  prune_max_ratio?: number
+  /** 删除保护：单轮删除绝对上限 ≥1，默认 50 */
+  prune_max_absolute?: number
+  /** 增量中新文件写盘前是否验一次 file_id */
+  verify_new_ids?: boolean
+  /** 反向僵尸校验任务开关 */
+  orphan_check_enabled?: boolean
+  /** 反向僵尸校验周期（天）≥1，默认 7 */
+  orphan_check_interval_days?: number
+  /** 反向校验每轮最多校验数 100-10000，默认 2000 */
+  orphan_check_batch?: number
+  /** 反向校验 per-SA QPS 上限 0.5-10，默认 2.0 */
+  orphan_check_qps?: number
   /** 上次执行时间（ISO 字符串），可能为空 */
   last_run: string
 }
@@ -2029,6 +2077,22 @@ export const saveStrmGenConfig = (data: {
   drive_concurrency?: number
   /** Drive API 全局速率上限 QPS（不传则后端回落默认 8.0） */
   api_qps?: number
+  /** 删除保护：演习开关（不传则后端不改） */
+  prune_dry_run?: boolean
+  /** 删除保护：单轮删除比例上限 (0,1]（不传则后端不改） */
+  prune_max_ratio?: number
+  /** 删除保护：单轮删除绝对上限（不传则后端不改） */
+  prune_max_absolute?: number
+  /** 增量中新文件写盘前是否验一次 file_id（不传则后端不改） */
+  verify_new_ids?: boolean
+  /** 反向僵尸校验任务开关（不传则后端不改） */
+  orphan_check_enabled?: boolean
+  /** 反向僵尸校验周期（天）（不传则后端不改） */
+  orphan_check_interval_days?: number
+  /** 反向校验每轮最多校验数（不传则后端不改） */
+  orphan_check_batch?: number
+  /** 反向校验 per-SA QPS 上限（不传则后端不改） */
+  orphan_check_qps?: number
   /** 调度抖动比例 [0, 0.5]（不传则后端不改） */
   jitter_ratio?: number
   /** 子树限定列举开关（不传则后端不改） */

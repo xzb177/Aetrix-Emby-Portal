@@ -47,7 +47,8 @@ const triggeringFull = ref(false)
 const saving = ref(false)
 
 // 配置表单（与 config 分开，避免未保存就污染展示）
-const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, dedupe_same_size: true, interval_minutes: 60, lock_timeout_minutes: 180, source_type: 'drive', local_root: '/media', jitter_ratio: 0.2, subtree_listing: true })
+// 配置瘦身第 3c 批：调优项全部给入口（值走 _read_config 回显，默认与后端一致）
+const form = ref({ enabled: true, source_dir: '', drive_id: '', prune: false, dedupe_same_size: true, interval_minutes: 60, lock_timeout_minutes: 180, source_type: 'drive', local_root: '/media', jitter_ratio: 0.2, subtree_listing: true, drive_concurrency: 3, api_qps: 8.0, prune_dry_run: true, prune_max_ratio: 0.2, prune_max_absolute: 50, verify_new_ids: true, orphan_check_enabled: true, orphan_check_interval_days: 7, orphan_check_batch: 2000, orphan_check_qps: 2.0 })
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -120,6 +121,17 @@ async function load(silent = false) {
       // 后端无此键（老版本）时回显为默认行为
       jitter_ratio: config.value?.jitter_ratio ?? 0.2,
       subtree_listing: config.value?.subtree_listing ?? true,
+      // 配置瘦身第 3c 批：调优项回显（老后端无此键时回显后端默认值）
+      drive_concurrency: config.value?.drive_concurrency ?? 3,
+      api_qps: config.value?.api_qps ?? 8.0,
+      prune_dry_run: config.value?.prune_dry_run ?? true,
+      prune_max_ratio: config.value?.prune_max_ratio ?? 0.2,
+      prune_max_absolute: config.value?.prune_max_absolute ?? 50,
+      verify_new_ids: config.value?.verify_new_ids ?? true,
+      orphan_check_enabled: config.value?.orphan_check_enabled ?? true,
+      orphan_check_interval_days: config.value?.orphan_check_interval_days ?? 7,
+      orphan_check_batch: config.value?.orphan_check_batch ?? 2000,
+      orphan_check_qps: config.value?.orphan_check_qps ?? 2.0,
     }
     const ds = (drivesRes as { success: boolean; drives?: StrmGenDrive[] }).drives
     drives.value = Array.isArray(ds) ? ds : []
@@ -334,8 +346,8 @@ onUnmounted(() => {
         </el-form-item>
         <!-- 配置瘦身第 3 批：低频调优项收进高级折叠（默认收起） -->
         <AdvancedSettings
-          count="2 项"
-          description="调度节拍与列举策略的微调：一般不用动，默认即可。"
+          count="12 项"
+          description="并发 / 限速 / 删除保护 / 反向校验的微调：一般不用动，默认即可。"
         >
           <el-form-item label="调度抖动比例">
             <el-input-number v-model="form.jitter_ratio" :min="0" :max="0.5" :step="0.05" style="max-width: 160px" />
@@ -344,6 +356,47 @@ onUnmounted(() => {
           <el-form-item label="子树限定列举">
             <el-switch v-model="form.subtree_listing" />
             <span class="hint">开 = 全量回退时只拉源目录子树的条目；关 = 回退旧扁平全量拉取（应急回滚口）</span>
+          </el-form-item>
+          <!-- 配置瘦身第 3c 批：并发 / 限速 / 删除保护 / 反向校验调优项补入口 -->
+          <el-form-item label="多盘并行列举并发数">
+            <el-input-number v-model="form.drive_concurrency" :min="1" :max="10" :step="1" style="max-width: 160px" />
+            <span class="hint">ThreadPoolExecutor 并发数，范围 1–10，默认 3（保守防风控）</span>
+          </el-form-item>
+          <el-form-item label="Drive API 速率上限">
+            <el-input-number v-model="form.api_qps" :min="1.0" :max="20.0" :step="0.5" style="max-width: 160px" />
+            <span class="hint">QPS，范围 1.0–20.0，默认 8.0（Drive per-user 配额约 10）</span>
+          </el-form-item>
+          <el-form-item label="删除保护演习">
+            <el-switch v-model="form.prune_dry_run" />
+            <span class="hint">开 = 只记 would-delete 不真删；确认清单无误后关闭才真正 armed</span>
+          </el-form-item>
+          <el-form-item label="删除比例上限">
+            <el-input-number v-model="form.prune_max_ratio" :min="0.01" :max="1" :step="0.05" style="max-width: 160px" />
+            <span class="hint">单轮删除比例上限，范围 (0, 1]，默认 0.2</span>
+          </el-form-item>
+          <el-form-item label="删除绝对上限">
+            <el-input-number v-model="form.prune_max_absolute" :min="1" :step="10" style="max-width: 160px" />
+            <span class="hint">单轮删除绝对上限，≥1，默认 50</span>
+          </el-form-item>
+          <el-form-item label="写盘前验 file_id">
+            <el-switch v-model="form.verify_new_ids" />
+            <span class="hint">增量中新文件写盘前校验一次 file_id（默认开）</span>
+          </el-form-item>
+          <el-form-item label="反向僵尸校验">
+            <el-switch v-model="form.orphan_check_enabled" />
+            <span class="hint">反向僵尸校验任务开关（默认开）</span>
+          </el-form-item>
+          <el-form-item label="僵尸校验周期">
+            <el-input-number v-model="form.orphan_check_interval_days" :min="1" :step="1" style="max-width: 160px" />
+            <span class="hint">反向僵尸校验周期（天），≥1，默认 7</span>
+          </el-form-item>
+          <el-form-item label="僵尸校验批量">
+            <el-input-number v-model="form.orphan_check_batch" :min="100" :max="10000" :step="100" style="max-width: 160px" />
+            <span class="hint">每轮最多校验数，范围 100–10000，默认 2000</span>
+          </el-form-item>
+          <el-form-item label="僵尸校验 QPS">
+            <el-input-number v-model="form.orphan_check_qps" :min="0.5" :max="10" :step="0.5" style="max-width: 160px" />
+            <span class="hint">反向校验 per-SA QPS 上限，范围 0.5–10，默认 2.0</span>
           </el-form-item>
         </AdvancedSettings>
         <el-form-item>
