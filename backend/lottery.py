@@ -13,7 +13,7 @@ import html
 import secrets
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -26,25 +26,6 @@ from backend import models
 logger = logging.getLogger(__name__)
 
 _PRIZE_TYPES = ("days", "points", "whitelist")
-
-
-def shanghai_now_naive() -> datetime:
-    """Asia/Shanghai naive 当前时间（用户侧口径）；缺 tzdata 时回退机器本地。"""
-    try:
-        return datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
-    except Exception:
-        return datetime.now()
-
-
-def to_shanghai_naive(dt: datetime) -> datetime:
-    """把 fromisoformat 解析出的时间统一成上海 naive：
-    aware（前端 toISOString 的 UTC）→ 转上海去 tzinfo；naive → 按上海理解原样返回。"""
-    if dt.tzinfo is not None:
-        try:
-            return dt.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
-        except Exception:
-            return dt.replace(tzinfo=None)
-    return dt
 
 
 def _get_str_config(db: Session, key: str, default: str) -> str:
@@ -73,6 +54,35 @@ def allowed_group_ids(db: Session) -> set[int]:
             # 非法片段跳过
             continue
     return ids
+
+
+# ==================== 时间口径：用户侧一律 Asia/Shanghai ====================
+# （r30 L1：与 #922/#923、ai._today 同口径。draw_at 入库为上海 naive；
+# 生产容器系统时区为 UTC，直接用 datetime.now() 比较会让展示与比较错位 8 小时。）
+
+
+def shanghai_now_naive() -> datetime:
+    """当前 Asia/Shanghai 的 naive 时间（panel._now_local_naive 同款写法）。"""
+    try:
+        return datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退（中国无夏令时）
+        return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=8)
+
+
+def to_shanghai_naive(dt: datetime) -> datetime:
+    """把用户提交的开奖时间统一成 Asia/Shanghai naive 入库。
+
+    前端用 toISOString() 发 UTC aware；naive 输入按 UTC 理解（与前端同口径）。
+    """
+    try:
+        sh = ZoneInfo("Asia/Shanghai")
+    except Exception:  # noqa: BLE001 — 缺 tzdata 时退化为固定 +8 偏移
+        sh = None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if sh is not None:
+        return dt.astimezone(sh).replace(tzinfo=None)
+    return (dt.astimezone(timezone.utc) + timedelta(hours=8)).replace(tzinfo=None)
 
 
 # ==================== 三重门：抽奖守卫体系 ====================
