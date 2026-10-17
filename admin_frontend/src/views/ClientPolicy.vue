@@ -17,7 +17,7 @@ import { ElMessage } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import {
   Activity, AlertTriangle, Clock, Cloud, Cpu, Download, Gauge, Info, RefreshCw, Save,
-  Server, ShieldBan, Smartphone, Target, Tv,
+  Server, ShieldBan, Smartphone, Target, Tv, Zap,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
@@ -51,6 +51,7 @@ const policy = ref<PlaybackPolicy>({
   max_concurrent_transcodes: 0,
   blocked_agents: '',
   allowed_agents: '',
+  drive_direct_play_enabled: true,
 })
 const runtime = ref<PlaybackRuntime | null>(null)
 
@@ -276,7 +277,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
 
       <template #footer>
         <div class="cp-save">
-          <span class="cp-save-hint">与「客户端准入」同属播放策略，保存任一处都会一起提交。</span>
+          <span class="cp-save-hint">与「客户端准入」「Drive 302 直链」同属播放策略，保存任一处都会一起提交。</span>
           <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
             <Save :size="14" class="btn-ico" />保存
           </el-button>
@@ -432,6 +433,36 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
         title="播放路径数据读取失败"
         description="下方策略与配置不受影响；点右上角「刷新」重试。"
       />
+    </SectionCard>
+
+    <!-- Drive 302 直链总开关（#957 的回滚闸） -->
+    <SectionCard title="Drive 302 直链" :icon="Zap">
+      <template #actions>
+        <span class="au-badge" :class="policy.drive_direct_play_enabled ? 'au-badge-green' : 'au-badge-muted'">
+          {{ policy.drive_direct_play_enabled ? '已开启' : '已关闭' }}
+        </span>
+      </template>
+
+      <div class="cp-field">
+        <div class="cp-field-main">
+          <label class="cp-label" for="cp-drive-direct">Drive 文件 302 直链</label>
+          <p class="cp-hint">
+            打开（默认）：Drive 文件直接 302 到谷歌直链，播放器自拉，字节不经服务器。
+            关闭：Drive 文件播放返回 410。这是 302 上线期的回滚闸——如果大量用户
+            报播放 403（分享权限还没开完），可临时关闭止血。
+          </p>
+        </div>
+        <el-switch id="cp-drive-direct" v-model="policy.drive_direct_play_enabled" :disabled="!isSuper" />
+      </div>
+
+      <template #footer>
+        <div class="cp-save">
+          <span class="cp-save-hint">与「转码与清晰度」「客户端准入」同属播放策略，保存任一处都会一起提交。</span>
+          <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
+            <Save :size="14" class="btn-ico" />保存
+          </el-button>
+        </div>
+      </template>
     </SectionCard>
 
     <SectionCard title="CDN 域名预留" :icon="Cloud">
