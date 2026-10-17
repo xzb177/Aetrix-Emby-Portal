@@ -73,8 +73,12 @@ def test_chinese_term_unchanged():
 
 
 def test_mixed_term_unchanged():
-    # 中英混合输入不追加（维持原逻辑零变化）
-    assert search_variants("长津湖 cjh") == ["长津湖 cjh"]
+    # 中英混合输入不追加拼音紧凑变体（维持原逻辑零变化）。
+    # 不断言完整列表：繁简变体取决于环境里繁简转换库是否可用（CI 有、本地无），
+    # 与本功能无关；只断言本功能的不变量——不出现 "cjh" 紧凑变体、原样居首。
+    variants = search_variants("长津湖 cjh")
+    assert variants[0] == "长津湖 cjh"
+    assert "cjh" not in variants
 
 
 def test_single_letter_not_added():
