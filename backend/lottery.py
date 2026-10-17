@@ -13,8 +13,9 @@ import html
 import secrets
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -53,6 +54,35 @@ def allowed_group_ids(db: Session) -> set[int]:
             # 非法片段跳过
             continue
     return ids
+
+
+# ==================== 时间口径：用户侧一律 Asia/Shanghai ====================
+# （r30 L1：与 #922/#923、ai._today 同口径。draw_at 入库为上海 naive；
+# 生产容器系统时区为 UTC，直接用 datetime.now() 比较会让展示与比较错位 8 小时。）
+
+
+def shanghai_now_naive() -> datetime:
+    """当前 Asia/Shanghai 的 naive 时间（panel._now_local_naive 同款写法）。"""
+    try:
+        return datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001 — 缺 tzdata 等极端情况回退（中国无夏令时）
+        return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=8)
+
+
+def to_shanghai_naive(dt: datetime) -> datetime:
+    """把用户提交的开奖时间统一成 Asia/Shanghai naive 入库。
+
+    前端用 toISOString() 发 UTC aware；naive 输入按 UTC 理解（与前端同口径）。
+    """
+    try:
+        sh = ZoneInfo("Asia/Shanghai")
+    except Exception:  # noqa: BLE001 — 缺 tzdata 时退化为固定 +8 偏移
+        sh = None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if sh is not None:
+        return dt.astimezone(sh).replace(tzinfo=None)
+    return (dt.astimezone(timezone.utc) + timedelta(hours=8)).replace(tzinfo=None)
 
 
 # ==================== 三重门：抽奖守卫体系 ====================
@@ -623,17 +653,12 @@ def verify_round(db: Session, round_id: int) -> dict[str, Any]:
         for p in db.query(models.LotteryRoundPrize).filter(models.LotteryRoundPrize.round_id == round_id).all()
     }
 
-    def mask_telegram(telegram_id: int) -> str:
-        s = str(telegram_id)
-        if len(s) <= 4:
-            return "*" * len(s)
-        return "****" + s[-4:]
-
+    # r30 L5：打码逻辑与模块级 _mask_telegram 同一实现，删内嵌版改调模块级
     entries_out = [
         {
             "entry_id": e.id,
             "user_id": e.user_id,
-            "telegram_id_masked": mask_telegram(e.telegram_id),
+            "telegram_id_masked": _mask_telegram(e.telegram_id),
         }
         for e in entries
     ]
@@ -723,10 +748,15 @@ def _mask_telegram(telegram_id: int) -> str:
     return "****" + s[-4:]
 
 
-def notify_draw_results(db: Session, round_id: int, winners: list) -> dict:
+def notify_draw_results(db: Session, round_id: int, winners: list,
+                        distribute_errors: list | None = None) -> dict:
     """开奖后通知：群公告 + 中奖者私聊。
 
     TG 发送走函数内懒导入（避免循环依赖），任何发送失败只记日志不抛异常。
+
+    r30 L2：``distribute_errors`` 为 distribute_round 返回的 errors 列表；
+    有失败时群公告如实写「部分奖品发放失败（N 笔），系统将自动补发」，
+    不许把「未完成」写成「已完成」。私聊文案不动。
     """
     result: dict[str, Any] = {"sent": False, "group": False, "dm_sent": 0, "dm_failed": 0}
     if not notify_winners_enabled(db):
@@ -760,11 +790,20 @@ def notify_draw_results(db: Session, round_id: int, winners: list) -> dict:
         dm_targets.append((entry.telegram_id, str(prize.name)))
 
     round_title = html.escape(str(round.title or ""))
-    group_text = (
-        f"🎉 <b>群抽奖开奖啦！</b>\n\n「{round_title}」\n"
-        + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
-        + "\n\n奖励已自动发放。seed 公示可在管理后台核验。"
-    )
+    if distribute_errors:
+        # r30 L2：发奖有失败时如实告知，不宣称「已自动发放」
+        group_text = (
+            f"🎉 <b>群抽奖开奖啦！</b>\n\n「{round_title}」\n"
+            + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
+            + f"\n\n部分奖品发放失败（{len(distribute_errors)} 笔），系统将自动补发。"
+              "seed 公示可在管理后台核验。"
+        )
+    else:
+        group_text = (
+            f"🎉 <b>群抽奖开奖啦！</b>\n\n「{round_title}」\n"
+            + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
+            + "\n\n奖励已自动发放。seed 公示可在管理后台核验。"
+        )
     try:
         ok, err = sender.send_message(db, round.chat_id, group_text)
         result["group"] = bool(ok)
@@ -930,7 +969,8 @@ def run_due_draws(db: Session) -> dict:
     reap_stale_drawing_rounds(db, summary)
     if not auto_draw_enabled(db):
         return summary
-    now = datetime.now()
+    # r30 L1：draw_at 按上海 naive 入库，比较也用上海 now（生产容器为 UTC）。
+    now = shanghai_now_naive()
     due_ids = [
         row.id
         for row in db.query(models.LotteryRound.id)
@@ -955,9 +995,11 @@ def run_due_draws(db: Session) -> dict:
                 continue
             # 此时 status 已为 drawing，走 draw_round 的重入路径正常开奖
             winners = draw_round(db, round_id)
-            distribute_round(db, round_id)
+            # r30 L2：发放结果透传给群公告，有失败如实写、不宣称已发放
+            distribute_result = distribute_round(db, round_id)
             try:
-                notify_draw_results(db, round_id, winners)
+                notify_draw_results(db, round_id, winners,
+                                    distribute_errors=distribute_result.get("errors"))
             except Exception:
                 logger.exception("群抽奖开奖通知失败 round_id=%s（不影响开奖结果）", round_id)
             summary["drawn"].append(round_id)
@@ -1060,6 +1102,8 @@ def start_lottery_auto_draw_scheduler() -> bool:
             logger.exception("lottery auto draw scheduler tick failed")
 
     def _loop():
+        # 复用同一个 Event：每轮 new 一个 Event().wait() 没有意义（db_backup 同款）
+        wake = threading.Event()
         while True:
             try:
                 from backend.database import SessionLocal
@@ -1071,7 +1115,8 @@ def start_lottery_auto_draw_scheduler() -> bool:
             except Exception:
                 logger.exception("lottery auto draw scheduler interval read failed")
                 interval = DRAW_INTERVAL_DEFAULT_SEC
-            threading.Event().wait(interval)
+            # 复用同一个 Event：每轮 new 一个 Event().wait() 没有意义（db_backup 同款）
+            wake.wait(interval)
             _tick()
 
     threading.Thread(target=_loop, daemon=True, name="lottery-auto-draw-scheduler").start()
