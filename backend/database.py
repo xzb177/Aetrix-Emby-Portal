@@ -839,10 +839,6 @@ def _auto_migrate():
             # 老库补列后为空串 = 以前的 []，行为与升级前一致。
             ("countries", "TEXT", "''"),
             ("languages", "TEXT", "''"),
-            # .strm 删除链路（块3）：播放时 Drive alt=media 返回 404 的 advisory 标记。
-            # 老库补列后为 NULL = 未标记，行为与升级前一致；文件恢复后由
-            # 注：strm_gen 已删除，其 _clear_gone_marks 清除循环不再运行。
-            ("source_invalid_at", "DATETIME", "NULL"),
         ]),
         # 媒体流逐流细节：客户端「媒体信息」页要显示帧率/动态范围/位深/采样率等，
         # 缺了详情页只剩编码与码率几行（对比其它 Emby 服务端就很空）。

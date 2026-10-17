@@ -201,10 +201,6 @@ class MediaItem(Base):
     # Scanner matches existing items by it: rename/move only updates
     # path, never deletes the record or loses metadata.
     drive_file_id = Column(String(64), index=True)
-    # 播放兜底 advisory 标记：Drive alt=media 返回 404 时打标，只做"建议性"标记，
-    # 不触发任何删除。strm_gen 已删除，清除循环不再运行，存量标记为历史数据。
-    # 老库由 database._auto_migrate 补列（NULL = 未标记，行为与升级前一致）。
-    source_invalid_at = Column(DateTime, default=None)
     container = Column(String(20))
     size = Column(BigInteger, default=0)
     # 增量扫描（v2.50.0）：文件修改时间戳，用于 mtime 比对跳过未变更文件。
