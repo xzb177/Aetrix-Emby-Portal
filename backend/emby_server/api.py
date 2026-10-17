@@ -2116,32 +2116,42 @@ def _chunks(seq, n=900):
 
 
 def _dedup_dropped_ids(query, db) -> Optional[set]:
-    """P2：只找出候选集里**会被去重去掉**的 id（SQL 里先圈出可能重复的行）。
+    """P3：按去重分支分别圈出候选重复行（替代全候选集上的窗口函数）。
 
-    旧实现每页都把全部候选拉回 Python 去重（O(全库)/请求，与页码无关）。现在：
+    背景：P2 在全部候选行上跑 ``COUNT(*) OVER (PARTITION BY 粗桶)``，
+    实测 18.7 万候选里 99.7% 的行桶内只有自己（T 桶零重复、R 桶恒唯一），
+    这一步占单次列表请求约 1.9s（2026-10-18 生产实测）。
 
-    1. 在候选集上用窗口函数 ``COUNT(*) OVER (PARTITION BY 粗桶)`` 圈出「同桶不止一条」的行。
-       粗桶是精确去重键的**超集**（键相同 ⇒ 桶相同），所以桶里只有一条的行一定不会被去掉：
-       - movie/series 有 tmdb：库 + 类型 + tmdb_id（去掉空白）
-       - movie/series 无 tmdb：库 + 类型 + 年份（归一化标题在 Python 里算）
-       - episode：剧的去重组 + 季号 + 集号（剧的去重组由全部 series 行在 Python 里算，
-         只把真正重复的剧写进临时映射表：PG 走 TEMP TABLE，SQLite 测试库走 VALUES CTE）
-       - 其它类型：不参与去重
-    2. 只对圈出来的行取字段、跑与旧实现**同一个**分组选主函数（:func:`_dedup_keep_ids`）。
+    新实现利用各分支去重键的精确度差异，分别圈出**可能是重复**的行：
+    - T 分支（movie/series 有 tmdb_id）：SQL 桶 == 精确去重键
+      ``(库, 类型, 清洗后 tmdb_id)``，``GROUP BY … HAVING count(*)>1``
+      直接圈出重复组（PG 下 ``array_agg`` 一次往返把组员 id 带回）；
+    - E 分支（episode）：SQL 桶 == 精确键 ``(剧去重组, 季, 集)``，同理 GROUP BY；
+    - N 分支（movie/series 无 tmdb_id）：SQL 桶是超集（标题归一化在 Python 里算），
+      但行数极少（全库约 381 行），全部取出来当候选；
+    - R 分支（其它类型）：键恒为 ``("__raw__", id)`` 唯一，不参与去重，直接跳过。
 
-    返回被去掉的 id 集合；圈出来的行太多（几乎全库都是重复）时返回 None，调用方回退全量实现。
+    圈出的候选集与旧窗口实现圈出集的关系：T/E 精确相等、N 为超集、R 同为空
+    （旧实现 R 桶 ``'R|' + id`` 恒唯一，永不进候选）。下游仍走同一个
+    :func:`_dedup_keep_ids` 精确判定，因此返回的「被去掉的 id 集合」与旧实现
+    逐行一致（tests/test_items_dedup_sql.py 对照）。
+
+    剧去重组：与旧实现同一语义（同去重键的剧映射到最小 sid）。旧实现只看
+    候选集引用的剧（要对 16 万单集做 DISTINCT）；改成全量 series（5 千行级）——
+    未被候选引用的剧在 LEFT JOIN 里永远匹配不上，分组等价性已在 PR 描述中证明，
+    对结果无影响，但省掉一次大 DISTINCT。
+
+    返回被去掉的 id 集合；候选太多时返回 None，调用方回退全量实现。
     """
-    from sqlalchemy import String, case, cast, column, Integer, literal, table, text
+    from sqlalchemy import column, Integer, table, text
 
     MI = em.MediaItem
-    # --- 剧的去重组（episode 桶要用）---
-    # 能跨剧合并的集，其所属剧必然被某条候选集引用：只看这些剧（不是全部 series）
-    ep_series = (query.filter(MI.item_type == "episode", MI.series_id.isnot(None))
-                 .with_entities(MI.series_id).order_by(None).distinct().subquery())
-    series_group_expr = func.coalesce(MI.series_id, 0)
-    rep_join = None
+    is_pg = bool(db.bind and db.bind.dialect.name == "postgresql")
+    # --- 剧的去重组（episode 分支要用）---
     srows = db.query(MI.id, MI.library_id, MI.tmdb_id, MI.name, MI.production_year).filter(
-        MI.item_type == "series", MI.id.in_(select(ep_series.c.series_id))).all()
+        MI.item_type == "series").all()
+    rep_join = None
+    series_group_expr = func.coalesce(MI.series_id, 0)
     if srows:
         by_key: dict = {}
         for sid, lib_id, tmdb_id, name, year in srows:
@@ -2164,7 +2174,7 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
             # 8.7k 行用 executemany 批量插入（~20ms）。同样语义（左连接未命中时回退
             # series_id 自身）。SQLite 测试库不支持 TEMP TABLE ON COMMIT DROP 语法，
             # 走 VALUES CTE 回退路径（测试数据量小，无性能问题）。
-            if db.bind and db.bind.dialect.name == "postgresql":
+            if is_pg:
                 db.execute(text("CREATE TEMP TABLE IF NOT EXISTS _dedup_rep_map (sid INTEGER PRIMARY KEY, grp INTEGER) ON COMMIT DROP"))
                 db.execute(text("TRUNCATE _dedup_rep_map"))
                 db.execute(
@@ -2185,25 +2195,39 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
 
     tmdb_clean = func.trim(func.replace(func.replace(func.replace(
         func.coalesce(MI.tmdb_id, ""), "\t", ""), "\n", ""), "\r", ""))
-    s = lambda x: cast(x, String)  # noqa: E731
-    bucket = case(
-        (MI.item_type.in_(dedup_lib.DEDUP_TYPES) & (func.length(tmdb_clean) > 0),
-         literal("T|") + s(MI.library_id) + "|" + MI.item_type + "|" + tmdb_clean),
-        (MI.item_type.in_(dedup_lib.DEDUP_TYPES),
-         literal("N|") + s(func.coalesce(MI.library_id, 0)) + "|" + MI.item_type + "|"
-         + s(func.coalesce(MI.production_year, 0))),
-        (MI.item_type == "episode",
-         literal("E|") + s(series_group_expr) + "|" + s(func.coalesce(MI.season_number, 0))
-         + "|" + s(func.coalesce(MI.episode_number, 0))),
-        else_=literal("R|") + s(MI.id),
-    )
-    cand_q = query.outerjoin(*rep_join) if rep_join is not None else query
-    cand = cand_q.with_entities(
-        MI.id.label("cid"),
-        func.count().over(partition_by=bucket).label("bucket_n"),
-    ).order_by(None).subquery()
-    suspect_ids = [r[0] for r in db.query(cand.c.cid).filter(cand.c.bucket_n > 1).limit(
-        _DEDUP_MAX_SUSPECTS + 1).all()]
+    in_dedup_types = MI.item_type.in_(dedup_lib.DEDUP_TYPES)
+    has_tmdb = func.length(tmdb_clean) > 0
+
+    def _dup_member_ids(base_q, group_exprs):
+        """按各分支精确键 GROUP BY，HAVING count(*)>1 的组的全部成员 id。"""
+        if is_pg:
+            # 单次往返：array_agg 把组员 id 直接带回
+            rows = (base_q.with_entities(func.array_agg(MI.id))
+                    .group_by(*group_exprs).having(func.count() > 1).all())
+            return [i for row in rows for i in (row[0] or [])]
+        # SQLite（测试）：可移植的二次连接写法
+        labels = [e.label(f"dg{i}") for i, e in enumerate(group_exprs)]
+        keys = (base_q.with_entities(*labels)
+                .group_by(*group_exprs).having(func.count() > 1).subquery())
+        conds = [keys.c[f"dg{i}"] == e for i, e in enumerate(group_exprs)]
+        return [r[0] for r in base_q.with_entities(MI.id)
+                .join(keys, and_(*conds)).all()]
+
+    # T 分支：(库, 类型, 清洗后 tmdb_id) 精确键
+    t_ids = _dup_member_ids(query.filter(in_dedup_types, has_tmdb),
+                            [MI.library_id, MI.item_type, tmdb_clean])
+    # E 分支：(剧去重组, 季, 集) 精确键
+    e_base = (query.outerjoin(*rep_join).filter(MI.item_type == "episode")
+              if rep_join is not None
+              else query.filter(MI.item_type == "episode"))
+    e_ids = _dup_member_ids(e_base, [series_group_expr,
+                                     func.coalesce(MI.season_number, 0),
+                                     func.coalesce(MI.episode_number, 0)])
+    # N 分支：无 tmdb 的 movie/series，SQL 桶是超集，行数极少，全取当候选
+    n_ids = [r[0] for r in query.filter(in_dedup_types, ~has_tmdb)
+             .with_entities(MI.id).all()]
+
+    suspect_ids = t_ids + e_ids + n_ids
     if len(suspect_ids) > _DEDUP_MAX_SUSPECTS:
         return None
     if not suspect_ids:
@@ -2211,7 +2235,7 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     unique_ids = list(dict.fromkeys(suspect_ids))
     # P0（2026-10-18）：3.3 万 suspects 原来按 900 切块查 37 次（37 次往返）。
     # PG 下改成单条 unnest 查询（静态 SQL + 数组参数），一次往返。
-    if db.bind and db.bind.dialect.name == "postgresql":
+    if is_pg:
         from sqlalchemy import text as _text
         id_list = _text("SELECT * FROM unnest(CAST(:ids AS INTEGER[])) AS t(id)").columns(
             column("id", Integer)).cte("suspect_ids")
