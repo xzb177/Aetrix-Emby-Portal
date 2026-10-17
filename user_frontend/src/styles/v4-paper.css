@@ -360,11 +360,11 @@ html[data-theme='light'] {
 .v4-retry {
   display: inline-block;
   margin-top: 8px;
-  background: var(--ink);
-  color: var(--paper, #F6F1E7);
+  background: #016a71;
+  color: #fff;
   border: none;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 500;
   padding: 8px 18px;
   border-radius: var(--paper-r-lg, 12px);
   cursor: pointer;
