@@ -3,7 +3,9 @@
 一个**挂载**就是一种「把内容接进媒体库」的方式。挂载本身不拥有条目，媒体库通过
 ``Library.mount_ids`` 引用它，所以同一个挂载可以被多个库共用。
 
-**只支持三种来源**（v2.42.12 起，其余类型连同代码一并删除，不再维护）：
+**只支持四种来源**（v2.42.12 起，其余类型连同代码一并删除，不再维护；
+``drive`` 是之后按同一套提供者接口新加的 API 直调实现，不是恢复当年下线的
+Google Drive 原生类型）：
 
 ============================  ====================================================
 ``local``                     本机硬盘。路径以 ``/media`` 开头（本机真实目录）。
@@ -13,10 +15,14 @@
                               ``rclone:gdrive/Movies``；rclone.conf 由用户自己粘贴，
                               落盘到 ``data/rclone/rclone.conf``，调用时 ``--config``
                               指过去。
+``drive``                     Google 云盘 API 直读。路径以 ``drive:`` 开头，后接
+                              共享盘 ID（个人盘 ``drive:myDrive:<remote 名>``）；
+                              列目录走 drive_changes 的服务账号轮换 + 全局限流，
+                              不经 rclone、不绑单个账号。实现在 ``mount_drive.py``。
 ============================  ====================================================
 
 **路径前缀即类型**（``detect_mount_type``）：表单只填一条路径，前缀决定它是哪种来源，
-和「先选类型再填一堆字段」是两种交互。这样做是因为这三种来源的配置本来就只有一条路径
+和「先选类型再填一堆字段」是两种交互。这样做是因为这几种来源的配置本来就只有一条路径
 外加少量可选项，多一套类型下拉只会让人有机会选出不匹配的组合。
 
 类型元数据是**唯一事实来源**：后台下拉、表单字段、必填校验、密钥脱敏都读同一份
@@ -26,9 +32,10 @@
 
 - **本机可读的挂载**（``local``）条目仍然存真实文件路径，探测、图片、外挂字幕都走本机。
   目录里的 ``.strm`` 小文件照样认（内容是播放直链），不需要单独的 STRM 类型。
-- **远程挂载**（``115`` / ``rclone``）的条目路径形如 ``mount://<挂载 id>/<相对路径>``，
+- **远程挂载**（``115`` / ``rclone`` / ``drive``）的条目路径形如 ``mount://<挂载 id>/<相对路径>``，
   播放时由提供者解析成真实 URL，再由 EA 按 Range **代理转发**：Cookie / 令牌不出服务器，
-  客户端拿到的仍然是本服务器的地址。
+  客户端拿到的仍然是本服务器的地址。带 ``drive_file_id`` 的条目（``drive`` 挂载全部、
+  rclone 的 Drive 后端）例外：api 层直接 302 到 Drive 直链，不经代理转发。
 - 解析结果同时用于**扫描探测**（ffprobe 直接读 URL）与**播放**，不会出现「能扫到但播不了」。
 """
 from __future__ import annotations
@@ -64,11 +71,13 @@ logger = logging.getLogger(__name__)
 MOUNT_LOCAL = "local"
 MOUNT_PAN115 = "115"
 MOUNT_RCLONE = "rclone"
+MOUNT_DRIVE = "drive"
 
 #: 路径前缀 → 挂载类型。表单只填一条路径，类型由前缀决定（``detect_mount_type``）。
 PATH_TYPE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("115:/", MOUNT_PAN115),
     ("rclone:", MOUNT_RCLONE),
+    ("drive:", MOUNT_DRIVE),
     ("/media", MOUNT_LOCAL),
 )
 
@@ -142,6 +151,22 @@ MOUNT_TYPES: list[dict] = [
             {"key": "rclone_bin", "label": "rclone 路径（可选）", "placeholder": "默认从 PATH 找 rclone"},
             {"key": "rclone_config", "label": "rclone.conf 路径（可选）",
              "placeholder": "默认 data/rclone/rclone.conf"},
+        ],
+    },
+    {
+        "value": MOUNT_DRIVE,
+        "label": "Google 云盘",
+        "kind": "remote",
+        "group": "cloud",
+        "hint": "Drive API 直读，不经 rclone、不绑单个账号。路径以 drive: 开头，后接"
+                "共享盘 ID，例如 drive:0AER…；个人盘写 drive:myDrive:<rclone remote 名>。"
+                "列目录走 100 个服务账号轮换 + 全局限流（个人盘用它自己的 OAuth）。",
+        "needs_path": False,
+        "browse": True,
+        "root_key": "",
+        "fields": [
+            {"key": "root_id", "label": "根目录 ID（可选）",
+             "placeholder": "留空 = 盘根目录；填了就把挂载根钉在这个文件夹"},
         ],
     },
 ]
@@ -1407,8 +1432,9 @@ def build_provider(mount, db: Optional[Session] = None, library=None) -> MountPr
         supported = "、".join(f"{t['value']}" for t in MOUNT_TYPES)
         raise MountError(
             f"不支持的挂载类型：{mount_type or '(空)'}（这类型已在 v2.42.12 下线，"
-            f"数据仍然保留）。请在服务器管理里改成这三种之一：{supported}。"
-            "这些后端 rclone 都支持，粘一份 rclone.conf 就能接上。")
+            f"数据仍然保留）。请在服务器管理里改成受支持的类型之一：{supported}。"
+            "Google 云盘选 drive 类型（API 直读）；其余后端 rclone 都支持，"
+            "粘一份 rclone.conf 就能接上。")
     return provider_cls(mount, db, library)
 
 

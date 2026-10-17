@@ -179,7 +179,7 @@ function openMountsForServer() {
 function startEditMount(m: StorageMount) {
   editingMountId.value = m.id
   mountForm.name = m.name
-  mountForm.type = (['local', '115', 'rclone'].includes(m.mount_type)
+  mountForm.type = (['local', '115', 'rclone', 'drive'].includes(m.mount_type)
     ? m.mount_type : 'local') as MountTypeValue
   mountForm.path = m.path
 }

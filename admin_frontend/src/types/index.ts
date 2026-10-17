@@ -1362,7 +1362,7 @@ export interface RcloneConfStatus {
   total: number
 }
 
-/** 存储挂载：媒体库的内容来源（local / 115 / rclone，类型由路径前缀决定） */
+/** 存储挂载：媒体库的内容来源（local / 115 / rclone / drive，类型由路径前缀决定） */
 export interface StorageMount {
   id: number
   name: string

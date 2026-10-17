@@ -38,6 +38,7 @@ from backend.database import SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import mount_rclone
+from backend.emby_server import mount_drive  # noqa: F401 — 导入即注册 drive 提供者
 from backend.emby_server import scan_queue
 
 logger = logging.getLogger(__name__)
