@@ -41,6 +41,7 @@ from backend.emby_server import mount_health
 from backend.emby_server import nodes as node_lib
 from backend.emby_server import server_ops
 from backend.emby_server import mount_rclone
+from backend.emby_server import mount_drive  # noqa: F401 — 导入即注册 drive 提供者
 
 logger = logging.getLogger(__name__)
 

@@ -1,11 +1,12 @@
 """管理后台 · 存储挂载端点（从 portal.py 拆出）
 
-挂载 = 媒体库的内容来源，只有三种（v2.42.12）：**本地硬盘**（/media 开头）、**115 网盘**
-（115:/ 开头）、**rclone**（rclone: 开头）。远程来源的条目入库为 mount://<id>/<rel>，
-播放时由 EA 按 Range 代理转发，凭据不下发。
+挂载 = 媒体库的内容来源，只有四种：**本地硬盘**（/media 开头）、**115 网盘**
+（115:/ 开头）、**rclone**（rclone: 开头）、**Google 云盘**（drive: 开头，API 直读）。
+远程来源的条目入库为 mount://<id>/<rel>，播放时由 EA 按 Range 代理转发，凭据不下发
+（带 drive_file_id 的条目例外，api 层直接 302）。
 
 类型由**路径前缀**决定（``mounts.detect_mount_type``），表单不另给一个类型下拉——
-三种来源的配置本来就只有一条路径加少量可选项，多一个下拉只会让人选出不匹配的组合。
+这几种来源的配置本来就只有一条路径加少量可选项，多一个下拉只会让人选出不匹配的组合。
 
 类型元数据与脱敏规则都来自 ``backend/emby_server/mounts.py`` 的 ``MOUNT_TYPES``。
 
@@ -92,7 +93,7 @@ def _resolve_mount_type(path: str) -> str:
     raise HTTPException(
         status_code=400,
         detail=("路径要带上来源前缀：本机目录（约定 /media）填绝对路径，"
-                "115 以 115:/ 开头，rclone 以 rclone: 开头"),
+                "115 以 115:/ 开头，rclone 以 rclone: 开头，Google 云盘以 drive: 开头"),
     )
 
 
@@ -149,9 +150,10 @@ def _legacy_note(mount_type: str) -> str:
     if mount_type in mount_lib.MOUNT_TYPE_MAP:
         return ""
     return (f"「{mount_type or '(空)'}」是 v2.42.12 已下线的挂载类型，数据仍然保留，"
-            "但不再可用。请在服务器管理里把它改成下面三种之一："
-            "本地硬盘（绝对路径）/ 115 网盘（115:/ 开头）/ rclone（rclone: 开头）。"
-            "这些后端 rclone 都支持，粘一份 rclone.conf 即可接上。")
+            "但不再可用。请在服务器管理里把它改成下面几种之一："
+            "本地硬盘（绝对路径）/ 115 网盘（115:/ 开头）/ rclone（rclone: 开头）/ "
+            "Google 云盘（drive: 开头，API 直读）。"
+            "除 Google 云盘外，这些后端 rclone 都支持，粘一份 rclone.conf 即可接上。")
 
 
 def _serialize_mount(db: Session, mount: em.StorageMount, ea_map: dict | None = None,

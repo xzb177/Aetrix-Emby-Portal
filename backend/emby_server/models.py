@@ -611,14 +611,18 @@ class StorageMount(Base):
     一个挂载 = 一种「把内容接到媒体库上」的方式。挂载本身不拥有条目，
     媒体库通过 `Library.mount_ids` 引用它，因此同一个挂载可以被多个库共用。
 
-    支持的类型（见 ``mounts.MOUNT_TYPES``，v2.42.12 起只剩这三种）：
+    支持的类型（见 ``mounts.MOUNT_TYPES``，v2.42.12 起砍到三种，``drive`` 是之后
+    按同一套提供者接口新加的第四种）：
 
     - ``local``：本地硬盘。路径以 ``/media`` 开头；目录里的 ``.strm`` 文件照样扫描成直链；
     - ``115``：115 网盘。路径以 ``115:/`` 开头，Cookie 型 API 直接读网盘目录，
       **不需要本地挂载**；
     - ``rclone``：rclone 任意后端。路径以 ``rclone:`` 开头，rclone.conf 由用户自己粘贴。
+    - ``drive``：Google 云盘。路径以 ``drive:`` 开头（后接共享盘 ID），Drive API
+      直读、凭据走服务账号轮换，实现在 ``mount_drive.py``。
 
-    远程挂载的媒体由 EA 按 Range 代理转发，播放地址不落到客户端，Cookie / 令牌不下发。
+    远程挂载的媒体由 EA 按 Range 代理转发，播放地址不落到客户端，Cookie / 令牌不下发
+    （带 drive_file_id 的条目例外，api 层直接 302 到 Drive 直链）。
     """
 
     __tablename__ = "storage_mounts"
@@ -631,12 +635,13 @@ class StorageMount(Base):
     # 空 = 老数据，回退到该服已激活的 EA，再不济用共享的那份 rclone.conf。
     # 有了它，「每台 EA 一份 rclone.conf」才有地方挂：配置跟着跑它的那台机器走。
     server_id = Column(Integer, index=True)
-    # local / 115 / rclone。**由 path 的前缀决定**（mounts.detect_mount_type），
+    # local / 115 / rclone / drive。**由 path 的前缀决定**（mounts.detect_mount_type），
     # 保留这一列是因为已有数据与大量查询按它分组，不再允许手工改。
     mount_type = Column(String(20), nullable=False, default="local")
-    # local：/media 下的本机目录；115：115:/…；rclone：rclone:remote/路径
+    # local：/media 下的本机目录；115：115:/…；rclone：rclone:remote/路径；
+    # drive：drive:<共享盘 ID>（个人盘 drive:myDrive:<remote 名>）
     path = Column(String(1024), default="")
-    # 类型相关配置（JSON 文本）：115 的 cid/账号、rclone 的调用方式等
+    # 类型相关配置（JSON 文本）：115 的 cid/账号、rclone 的调用方式、drive 的 root_id 等
     config = Column(Text, default="{}")
     is_enabled = Column(Boolean, default=True)
     remark = Column(String(300), default="")

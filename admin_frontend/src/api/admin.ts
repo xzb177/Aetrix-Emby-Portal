@@ -1817,10 +1817,11 @@ export const updateCdnConfig = (payload: { domain: string; enabled: boolean }) =
   put<{ success: boolean; cdn: CdnConfig }>('/playback/cdn', payload)
 
 // ==================== 存储挂载（/api/admin/emby/mounts） ====================
-// 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone 是远程来源。
-// 类型只由路径前缀决定（115:/ / rclone: / 绝对路径），没有第四种类型。
-// 远程挂载的条目在库里存 mount:// 路径，播放时由服务端专用中继转发
-// （streaming.serve_mount_relay_async，凭据不下发）。
+// 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone / drive 是远程来源。
+// 类型只由路径前缀决定（115:/ / rclone: / drive: / 绝对路径）。
+// 远程挂载的条目在库里存 mount:// 路径；无 drive_file_id 的走服务端专用中继
+// 转发（streaming.serve_mount_relay_async，凭据不下发），带 drive_file_id 的
+// 条目（drive 挂载全部、rclone 的 Drive 后端）由 api 层直接 302 到 Drive 直链。
 
 /** 挂载清单；`realm_id=0` = 全部服，不传 = 当前服（挂载是一个服一个的） */
 export const fetchMounts = (realm_id?: number) =>
