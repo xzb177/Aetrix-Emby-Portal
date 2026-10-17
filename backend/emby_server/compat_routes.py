@@ -218,11 +218,16 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
     session.is_paused = paused
     session.play_method = body.get("PlayMethod") or session.play_method
     if ended:
+        # r43：重复 Stopped 上报的幂等——第一次看完已写过 feed 埋点时不再重复写。
+        # 复活分支已把 ended_at 置 None，不受影响；只改埋点条件，不改会话写入行为。
+        was_ended = session.ended_at is not None
         session.ended_at = datetime.now()
+    else:
+        was_ended = False
     db.commit()
     # 发现页实时动态流埋点：新会话=开始看，ended=看完（只加写入调用，不改上报行为）
     _note_play_feed(db, item, started=(new_session and not ended),
-                    finished=bool(ended))
+                    finished=bool(ended and not was_ended))
     return session, True
 
 
