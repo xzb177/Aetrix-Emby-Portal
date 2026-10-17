@@ -3,110 +3,158 @@
     <!-- 桌面「探险世界」：≥1024px + 已登录 + 用户选了世界视图时，首页整屏变探险地图；其余情况（手机/经典视图）走下面原有版式，一行不改 -->
     <WorldHome v-if="homeWorldActive" />
     <template v-else>
-    <div class="v4-page">
-      <!-- 日志头：问候 + 封存件数 + 连签 -->
-      <header class="v4-loghead" aria-live="polite">
-        <span class="v4-stamp">探险日志 · {{ dateLabel }}</span>
-        <h1>{{ greeting }}，{{ nickname }}</h1>
-        <p v-if="today.data && parcelTotal !== null && parcelTotal > 0">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
-        <p v-else-if="today.data && parcelTotal === 0">今天暂时没有新封存，明天再来看看。</p>
-        <div v-else-if="today.loading" class="v4-skeleton" aria-hidden="true" style="height:28px;width:70%;margin-top:10px"></div>
-        <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
-        <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
-        <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
-        <div v-if="streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
-        <!-- 经典视图回世界入口：仅桌面已登录且当前是经典视图时出现（手机端不显示） -->
-        <button
-          v-if="homeIsDesktop && user.isLoggedIn && homeMode === 'classic'"
-          type="button"
-          class="v4-world-switch"
-          @click="setHomeMode('world')"
-        >🗺 探险世界</button>
-      </header>
+    <!-- C档第2批：≥1280px 三栏仪表盘（d3-root 网格）；<1280px 保持现行单栏，移动端零变化 -->
+    <div class="v4-page d3-root">
+      <!-- 左栏：问候 / 锚点 / 服务器卡 / 收藏家入口 / 脉搏摘要 / 每日一封 -->
+      <div class="d3-left">
+        <!-- 日志头：问候 + 封存件数 + 连签（移动端专属；桌面由问候卡接管） -->
+        <header class="v4-loghead m-only d3-ord-loghead" aria-live="polite">
+          <span class="v4-stamp">探险日志 · {{ dateLabel }}</span>
+          <h1>{{ greeting }}，{{ nickname }}</h1>
+          <p v-if="today.data && parcelTotal !== null && parcelTotal > 0">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
+          <p v-else-if="today.data && parcelTotal === 0">今天暂时没有新封存，明天再来看看。</p>
+          <div v-else-if="today.loading" class="v4-skeleton" aria-hidden="true" style="height:28px;width:70%;margin-top:10px"></div>
+          <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
+          <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
+          <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
+          <div v-if="streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
+          <!-- 经典视图回世界入口：仅桌面已登录且当前是经典视图时出现（手机端不显示） -->
+          <button
+            v-if="homeIsDesktop && user.isLoggedIn && homeMode === 'classic'"
+            type="button"
+            class="v4-world-switch"
+            @click="setHomeMode('world')"
+          >🗺 探险世界</button>
+        </header>
 
-      <!-- 收藏家入口：退出底栏后收进发现页（DESIGN.md v1.1）；页面本身保留在 /collector -->
-      <RouterLink to="/collector" class="v4-collector-entry" aria-label="收藏家">
-        <span class="v4-collector-ic" aria-hidden="true">🏅</span>
-        <span class="v4-collector-body">
-          <span class="v4-collector-title">收藏家</span>
-          <span class="v4-collector-sub">你的成就与收藏，一览无余</span>
-        </span>
-        <span class="v4-collector-go" aria-hidden="true">›</span>
-      </RouterLink>
+        <!-- 个人问候卡（桌面专属） -->
+        <GreetingCard v-if="isWide" class="d-only" />
 
-      <!-- 首页服务器卡片：服清单数据驱动（发现页最显眼的位置） -->
-      <div v-if="visibleCount === 0 && !serversLoading && !serversLoadError" class="v4-sec">
-        <div class="v4-empty">暂无可见服务器，去<RouterLink to="/game/settings">设置</RouterLink>恢复显示</div>
+        <!-- 区块锚点导航（桌面专属）：纯文字，激活态只许深青淡底 -->
+        <nav v-if="isWide" class="d3-card d3-anchor d-only" aria-label="区块导航">
+          <a
+            v-for="a in anchors"
+            :key="a.id"
+            :href="'#' + a.id"
+            :class="{ on: activeAnchor === a.id }"
+            @click.prevent="jumpTo(a.id)"
+          >{{ a.label }}</a>
+        </nav>
+
+        <!-- 首页服务器卡片：服清单数据驱动（发现页最显眼的位置） -->
+        <div v-if="visibleCount === 0 && !serversLoading && !serversLoadError" class="v4-sec d3-ord-ticket">
+          <div class="v4-empty">暂无可见服务器，去<RouterLink to="/game/settings">设置</RouterLink>恢复显示</div>
+        </div>
+        <TicketCard
+          v-else
+          class="d3-ord-ticket"
+          :loading="serversLoading"
+          :servers="visibleServers"
+          :mode="cardMode"
+          :watch-strip="watchStrip"
+          :error="serversLoadError"
+          :skeleton-count="lastServerCount"
+          @retry="loadServers"
+        />
+
+        <!-- 收藏家入口：退出底栏后收进发现页（DESIGN.md v1.1）；页面本身保留在 /collector -->
+        <RouterLink to="/collector" class="v4-collector-entry d3-ord-collector" aria-label="收藏家">
+          <span class="v4-collector-ic" aria-hidden="true">🏅</span>
+          <span class="v4-collector-body">
+            <span class="v4-collector-title">收藏家</span>
+            <span class="v4-collector-sub">你的成就与收藏，一览无余</span>
+          </span>
+          <span class="v4-collector-go" aria-hidden="true">›</span>
+        </RouterLink>
+
+        <!-- 脉搏一行摘要（桌面专属） -->
+        <PulseLine v-if="isWide" class="d-only" />
+
+        <!-- 每日一封 -->
+        <section class="v4-sec v4-sec-letter d3-ord-letter" id="disc-letter">
+          <div class="m-only">
+            <div class="v4-sec-title">✉️ 每日一封</div>
+            <div class="v4-sec-sub">昨天的你，留了一封信 —— 点开看看</div>
+          </div>
+          <div class="d3-sec-head d-only" style="margin-bottom:10px">
+            <div><span class="d3-k">LETTER</span><div class="d3-sec-title">每日一封</div><div class="d3-sec-sub">昨天的你，留了一封信 —— 点开看看</div></div>
+          </div>
+          <div v-if="letter.loading" class="v4-skeleton" aria-hidden="true" style="height:120px"></div>
+          <div v-else-if="letter.error" class="v4-err">信件加载失败：{{ letter.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadLetter(true)">重试</button></div>
+          <WaxLetter v-else-if="hasLetterData" :letter="letterData" />
+          <div v-else class="v4-empty">昨天的信还在路上，先去看片吧</div>
+        </section>
       </div>
-      <TicketCard
-        v-else
-        :loading="serversLoading"
-        :servers="visibleServers"
-        :mode="cardMode"
-        :watch-strip="watchStrip"
-        :error="serversLoadError"
-        :skeleton-count="lastServerCount"
-        @retry="loadServers"
-      />
 
-      <!-- 今日封存：盲盒 -->
-      <section class="v4-sec">
-        <div class="v4-sec-title">📦 今日封存</div>
-        <div class="v4-sec-sub">新入库的片子，点一下开封看看</div>
-        <div v-if="parcels.loading" class="v4-skel-row">
-          <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
-          <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
-          <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
-        </div>
-        <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
-        <div v-else-if="parcelList.length === 0" class="v4-empty">今天还没有新封存，明天再来拆 📦</div>
-        <div v-else ref="parcelsEl" class="v4-parcels">
-          <ParcelBox
-            v-for="p in parcelList"
-            :key="String(p.id)"
-            :parcel="p"
-            :busy="unsealingIds.has(String(p.id))"
-            @unseal="onUnseal"
-          />
-        </div>
-      </section>
+      <!-- 中栏：今日封存 / 继续观看 /（移动端）服务器脉搏 -->
+      <div class="d3-mid">
+        <!-- 今日封存：盲盒 -->
+        <section class="v4-sec d3-ord-shelf" id="disc-shelf">
+          <div class="m-only">
+            <div class="v4-sec-title">📦 今日封存</div>
+            <div class="v4-sec-sub">新入库的片子，点一下开封看看</div>
+          </div>
+          <div class="d3-sec-head d-only">
+            <div><span class="d3-k">FRESH IN</span><div class="d3-sec-title">今日封存</div><div class="d3-sec-sub">新入库的片子，点一下开封看看</div></div>
+          </div>
+          <div v-if="parcels.loading" class="v4-skel-row">
+            <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
+            <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
+            <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
+          </div>
+          <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
+          <div v-else-if="parcelList.length === 0" class="v4-empty">今天还没有新封存，明天再来拆 📦</div>
+          <div v-else class="d3-shelf-wrap">
+            <button v-if="isWide" type="button" class="d3-arrow l" aria-label="货架向左滚动" @click="scrollShelf(-1)">‹</button>
+            <div ref="parcelsEl" class="v4-parcels">
+              <ParcelBox
+                v-for="p in parcelList"
+                :key="String(p.id)"
+                :parcel="p"
+                :busy="unsealingIds.has(String(p.id))"
+                :variant="isWide ? 'cover' : 'parcel'"
+                @unseal="onUnseal"
+              />
+            </div>
+            <button v-if="isWide" type="button" class="d3-arrow r" aria-label="货架向右滚动" @click="scrollShelf(1)">›</button>
+          </div>
+        </section>
 
-      <!-- 服务器脉搏 -->
-      <section class="v4-sec">
-        <div class="v4-sec-title">💓 服务器脉搏</div>
-        <div class="v4-sec-sub">服务器实时动态</div>
-      </section>
-      <!-- pulse.error 时整盒不渲染，避免留黑色空矩形（错误态在下面统一渲染） -->
-      <div v-if="!pulse.error" class="v4-pulse-box">
-        <div class="v4-pulse-row">
-          <span class="v4-pulse-tag">● 近况 · 服务器在忙什么</span>
-          <span class="v4-pulse-dot"></span>
+        <!-- 继续观看（桌面专属；数据源见组件注释） -->
+        <ContinueWatch v-if="isWide" />
+
+        <!-- 服务器脉搏（移动端专属；桌面由左栏脉搏摘要 + 服务器页接管） -->
+        <section class="v4-sec m-only d3-ord-pulse">
+          <div class="v4-sec-title">💓 服务器脉搏</div>
+          <div class="v4-sec-sub">服务器实时动态</div>
+        </section>
+        <!-- pulse.error 时整盒不渲染，避免留黑色空矩形（错误态在下面统一渲染） -->
+        <div v-if="!pulse.error" class="v4-pulse-box m-only d3-ord-pulse">
+          <div class="v4-pulse-row">
+            <span class="v4-pulse-tag">● 近况 · 服务器在忙什么</span>
+            <span class="v4-pulse-dot"></span>
+          </div>
+          <!-- R38 P3-13：骨架 112px 与真实内容（EcgCanvas 64px + PulseActivity min-height:40px + margin-top:8px）同高，避免切屏跳动 -->
+          <div v-if="pulse.loading" class="v4-skeleton" aria-hidden="true" style="height:112px"></div>
+          <template v-else>
+            <EcgCanvas />
+            <PulseActivity :items="activityTexts" />
+          </template>
         </div>
-        <!-- R38 P3-13：骨架 112px 与真实内容（EcgCanvas 64px + PulseActivity min-height:40px + margin-top:8px）同高，避免切屏跳动 -->
-        <div v-if="pulse.loading" class="v4-skeleton" aria-hidden="true" style="height:112px"></div>
-        <template v-else>
-          <EcgCanvas />
-          <PulseActivity :items="activityTexts" />
-        </template>
+        <div v-if="pulse.error" class="v4-sec m-only d3-ord-pulse"><div class="v4-err">脉搏加载失败：{{ pulse.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadPulse(true)">重试</button></div></div>
       </div>
-      <div v-if="pulse.error" class="v4-sec"><div class="v4-err">脉搏加载失败：{{ pulse.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadPulse(true)">重试</button></div></div>
 
-      <!-- 每日一封 -->
-      <section class="v4-sec v4-sec-letter">
-        <div class="v4-sec-title">✉️ 每日一封</div>
-        <div class="v4-sec-sub">昨天的你，留了一封信 —— 点开看看</div>
-        <div v-if="letter.loading" class="v4-skeleton" aria-hidden="true" style="height:120px"></div>
-        <div v-else-if="letter.error" class="v4-err">信件加载失败：{{ letter.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadLetter(true)">重试</button></div>
-        <WaxLetter v-else-if="hasLetterData" :letter="letterData" />
-        <div v-else class="v4-empty">昨天的信还在路上，先去看片吧</div>
-      </section>
+      <!-- 右栏：世界入口 / 观影碑 / 告示牌 / 抽签 / 留言墙（桌面专属） -->
+      <DiscoveryRightRail v-if="isWide" />
+      <!-- 底部全宽：媒体库速览带（桌面专属） -->
+      <LibraryBand v-if="isWide" />
     </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
@@ -117,6 +165,11 @@ import PulseActivity from '@/components/panel/PulseActivity.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
 import TicketCard from '@/components/panel/TicketCard.vue'
 import WorldHome from '@/components/panel/WorldHome.vue'
+import GreetingCard from '@/components/panel/GreetingCard.vue'
+import PulseLine from '@/components/panel/PulseLine.vue'
+import ContinueWatch from '@/components/panel/ContinueWatch.vue'
+import DiscoveryRightRail from '@/components/panel/DiscoveryRightRail.vue'
+import LibraryBand from '@/components/panel/LibraryBand.vue'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
 import { RouterLink } from 'vue-router'
 import { useServerCards } from '@/composables/useServerCards'
@@ -168,6 +221,87 @@ const cardMode = computed<'cards' | 'overview'>(() => {
   return visibleCount.value === 1 ? 'cards' : 'overview'
 })
 
+/* ---------- 桌面三栏断点（C档第2批：≥1280px 三栏，<1280px 现行单栏） ---------- */
+const isWide = ref(false)
+let wideMq: MediaQueryList | null = null
+function syncWide() {
+  isWide.value = !!wideMq?.matches
+}
+
+/* ---------- 区块锚点导航（桌面专属）：滚动联动高亮 ---------- */
+const anchors = [
+  { id: 'disc-shelf', label: '今日封存' },
+  { id: 'disc-watch', label: '继续观看' },
+  { id: 'disc-letter', label: '每日一封' },
+  { id: 'disc-libs', label: '媒体库' },
+  { id: 'disc-world', label: '世界' },
+]
+const activeAnchor = ref('disc-shelf')
+let spy: IntersectionObserver | null = null
+function setupSpy() {
+  if (!isWide.value || spy || typeof IntersectionObserver === 'undefined') return
+  spy = new IntersectionObserver(
+    (entries) => {
+      for (const en of entries) {
+        if (en.isIntersecting) activeAnchor.value = en.target.id
+      }
+    },
+    { rootMargin: '-30% 0px -60% 0px' },
+  )
+  for (const a of anchors) {
+    const el = document.getElementById(a.id)
+    if (el) spy.observe(el)
+  }
+}
+function teardownSpy() {
+  spy?.disconnect()
+  spy = null
+}
+function jumpTo(id: string) {
+  activeAnchor.value = id
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+watch(isWide, (v) => {
+  if (v) void nextTick(() => setupSpy())
+  else teardownSpy()
+})
+
+/* ---------- 货架桌面交互：左右箭头 + 鼠标拖拽（手机触屏横滑不动） ---------- */
+function scrollShelf(dir: 1 | -1) {
+  const el = parcelsEl.value
+  if (!el) return
+  el.scrollBy({ left: dir * Math.max(240, el.clientWidth * 0.8), behavior: 'smooth' })
+}
+let shelfDrag: { startX: number; startScroll: number; moved: boolean } | null = null
+function onShelfPointerDown(e: PointerEvent) {
+  if (!isWide.value || e.pointerType !== 'mouse' || e.button !== 0) return
+  const el = parcelsEl.value
+  if (!el) return
+  shelfDrag = { startX: e.clientX, startScroll: el.scrollLeft, moved: false }
+  const onMove = (ev: PointerEvent) => {
+    if (!shelfDrag) return
+    const dx = ev.clientX - shelfDrag.startX
+    if (Math.abs(dx) > 6) shelfDrag.moved = true
+    if (shelfDrag.moved) el.scrollLeft = shelfDrag.startScroll - dx
+  }
+  const onUp = () => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    if (shelfDrag?.moved) {
+      // 吞掉拖拽松手后的那次 click，避免误触开封
+      const swallow = (ce: Event) => {
+        ce.stopPropagation()
+        ce.preventDefault()
+      }
+      el.addEventListener('click', swallow, { capture: true, once: true })
+      setTimeout(() => el.removeEventListener('click', swallow, { capture: true }), 0)
+    }
+    shelfDrag = null
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+}
+
 let resizeRaf = 0
 /** resize 高频触发时用 rAF 合并滚动提示重算 */
 function onResize() {
@@ -183,9 +317,15 @@ onMounted(() => {
   void panel.loadHome()
   void loadServers()
   window.addEventListener('resize', onResize)
+  wideMq = window.matchMedia('(min-width: 1280px)')
+  syncWide()
+  wideMq.addEventListener('change', syncWide)
+  requestAnimationFrame(() => setupSpy())
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
+  wideMq?.removeEventListener('change', syncWide)
+  teardownSpy()
   if (resizeRaf) cancelAnimationFrame(resizeRaf)
 })
 
@@ -253,6 +393,7 @@ function bindParcelsScroll() {
   if (el && !el.dataset.scrollBound) {
     el.dataset.scrollBound = '1'
     el.addEventListener('scroll', updateScrollEnd, { passive: true })
+    el.addEventListener('pointerdown', onShelfPointerDown)
   }
 }
 watch(parcelList, () => requestAnimationFrame(() => {

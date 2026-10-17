@@ -59,3 +59,59 @@
 @media (max-width:640px){
   .hc-val{font-size:24px}
 }
+
+/* ===== 桌面发现页三栏（C档第2批，2026-10-17）：272px 左栏纵向形态 =====
+   只改 CSS，不改数据驱动逻辑。图纸数值：卡片 16px / 发丝边 1px / 零投影 /
+   唯一彩色 #016a71 / 字重封顶 500（小标签 600）。<1280px 保持现行样式。 */
+@media (min-width: 1280px) {
+  .hc-wrap { padding: 0; gap: 12px; }
+  .hc-card {
+    background: #fdfbfa;
+    border: 1px solid #d1d1cd;
+    border-radius: 16px;
+    box-shadow: none;
+    padding: 18px;
+    gap: 12px;
+    transition: transform .18s ease;
+  }
+  .hc-card:hover { transform: translateY(-2px); }
+  .hc-title { font-size: 15px; font-weight: 500; color: #27251e; }
+  .hc-tag { color: #6d675c; }
+  .hc-badge {
+    font-size: 11px; font-weight: 600; color: #016a71;
+    border: 1px solid #016a71; border-radius: 9999px;
+    padding: 2px 10px; background: #faf8f5; line-height: 1.5; white-space: nowrap;
+  }
+  .hc-badge.is-amber { background: #faf8f5; color: #016a71; }
+  .hc-badge.is-warning { color: #b3402a; border-color: #b3402a; background: transparent; }
+  .hc-val { font-size: 26px; font-weight: 500; color: #27251e; }
+  .hc-unit, .hc-plan { font-size: 12px; color: #6d675c; }
+  .hc-progress-track { height: 6px; border: 1px solid #d1d1cd; border-radius: 9999px; }
+  .hc-progress-bar { background: #016a71; }
+  .hc-footer { font-size: 12px; color: #6d675c; }
+  .hc-desc { color: #6d675c; }
+  .hc-link { color: #016a71; font-weight: 500; text-decoration: none; white-space: nowrap; }
+  .hc-chips { margin-top: 8px; }
+  .hc-chip {
+    font-size: 11px; font-weight: 500; color: #6d675c;
+    border: 1px solid #d1d1cd; border-radius: 9999px; padding: 3px 10px;
+  }
+  .hc-vit { font-size: 12px; color: #6d675c; }
+  .hc-watch-strip {
+    padding: 10px 14px; border: 1px dashed #d1d1cd; border-radius: 12px; font-size: 12px;
+  }
+  .hc-watch-title { font-weight: 500; color: #27251e; }
+  .hc-watch-data { color: #6d675c; }
+  /* 总览形态（一服一行，图纸 srv-row） */
+  .hc-ov { padding: 6px 18px 12px; }
+  .hc-ov > .hc-header { padding: 12px 0 6px; }
+  .hc-row { padding: 12px 0; border-top: 1px solid #ece8e0; }
+  .hc-row .hc-title { font-size: 14px; }
+  .hc-row-info { font-size: 12px; color: #6d675c; }
+  .hc-err { font-size: 13px; color: #6d675c; }
+  .hc-retry {
+    margin-left: 8px; background: transparent; border: 1px solid #d1d1cd; border-radius: 6px;
+    font-size: 12px; color: #27251e; padding: 4px 12px; cursor: pointer;
+  }
+  .hc-empty { font-size: 13px; color: #a8a194; }
+}
