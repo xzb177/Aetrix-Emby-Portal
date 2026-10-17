@@ -1,8 +1,7 @@
 <!-- 桌面发现页左栏 · 脉搏一行摘要（C档第2批）
      数据源：/api/panel/server（与服务器页同口径）——今日入库取生长记录
      当天条数，待刮取 vitals.backlog。配额无用户端数据源，不展示。
-     中栏实时动态流因缺数据源（无服维度/无库名标签）本批未建，
-     摘要卡链接到服务器页看完整生命体征。 -->
+     中栏实时动态流已随第3批上线（/api/panel/feed），摘要卡链接指回页内锚点 #feed。 -->
 <template>
   <section v-if="!failed" class="d3-card d3-pulse-line" aria-label="服务器脉搏摘要">
     <div v-if="loading" class="d3-skel" style="height:20px;width:100%" aria-hidden="true"></div>
@@ -10,7 +9,7 @@
       <div class="d3-pulse-one">
         服务器脉搏 · 今日入库 <b>{{ inboundToday }}</b> · 待刮 <b>{{ backlog }}</b>
       </div>
-      <RouterLink to="/server" class="d3-sec-link">服务器 <span aria-hidden="true">→</span></RouterLink>
+      <a href="#feed" class="d3-sec-link">实时动态 <span aria-hidden="true">↓</span></a>
     </template>
   </section>
 </template>
@@ -20,7 +19,6 @@ import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
-import { RouterLink } from 'vue-router'
 
 const panel = usePanelStore()
 const user = useUserStore()

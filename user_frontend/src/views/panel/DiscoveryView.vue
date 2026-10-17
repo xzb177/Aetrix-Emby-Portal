@@ -123,6 +123,24 @@
         <!-- 继续观看（桌面专属；数据源见组件注释） -->
         <ContinueWatch v-if="isWide" />
 
+        <!-- 实时动态流（桌面专属；C档第3批：后端 /api/panel/feed 已随 PR #1003 上线；
+             无全量页面，故不设「查看全部」；realm_id 不传=跟随当前服） -->
+        <section v-if="isWide" id="feed" class="d3-card" aria-label="实时动态">
+          <div class="d3-sec-head">
+            <div><span class="d3-k">LIVE FEED</span><div class="d3-sec-title">实时动态</div><div class="d3-sec-sub">入库 · 刮削 · 播放 · 跟随当前服</div></div>
+          </div>
+          <div v-if="feed.loading" class="d3-skel" style="height:300px" aria-hidden="true"></div>
+          <div v-else-if="feed.error" class="d3-err">动态加载失败：{{ feed.error }}<button type="button" class="d3-retry" @click="() => panel.loadFeed(true)">重试</button></div>
+          <div v-else-if="feedItems.length === 0" class="d3-empty">动态还没长出来——入库、刮削或播放后，这里会有记录</div>
+          <div v-else>
+            <div v-for="it in feedItems" :key="it.key" class="d3-feed-row">
+              <span class="ft">{{ it.time }}</span>
+              <span class="fx">{{ it.text }}</span>
+              <span v-if="it.library" class="fk">{{ it.library }}</span>
+            </div>
+          </div>
+        </section>
+
         <!-- 服务器脉搏（移动端专属；桌面由左栏脉搏摘要 + 服务器页接管） -->
         <section class="v4-sec m-only d3-ord-pulse">
           <div class="v4-sec-title">💓 服务器脉搏</div>
@@ -174,7 +192,7 @@ import { useHomeViewMode } from '@/composables/useHomeViewMode'
 import { RouterLink } from 'vue-router'
 import { useServerCards } from '@/composables/useServerCards'
 import { useServerCardPrefs } from '@/composables/useServerCardPrefs'
-import { humanizeError, type ParcelItem, type ParcelsData } from '@/composables/usePanelApi'
+import { humanizeError, type FeedItem, type ParcelItem, type ParcelsData } from '@/composables/usePanelApi'
 
 const panel = usePanelStore()
 const user = useUserStore()
@@ -185,7 +203,7 @@ const {
   mode: homeMode,
   setMode: setHomeMode,
 } = useHomeViewMode()
-const { today, parcels, pulse, letter } = storeToRefs(panel)
+const { today, parcels, pulse, letter, feed } = storeToRefs(panel)
 // 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
 const serverCards = useServerCards()
 const cardPrefs = useServerCardPrefs()
@@ -233,6 +251,7 @@ const anchors = [
   { id: 'disc-shelf', label: '今日封存' },
   { id: 'disc-watch', label: '继续观看' },
   { id: 'disc-letter', label: '每日一封' },
+  { id: 'feed', label: '实时动态' },
   { id: 'disc-libs', label: '媒体库' },
   { id: 'disc-world', label: '世界' },
 ]
@@ -315,6 +334,7 @@ function onResize() {
 onMounted(() => {
   // perf 2026-10-13：合并为 1 次请求（4 个 RTT → 1 个 RTT）
   void panel.loadHome()
+  void panel.loadFeed()
   void loadServers()
   window.addEventListener('resize', onResize)
   wideMq = window.matchMedia('(min-width: 1280px)')
@@ -444,6 +464,32 @@ const activityTexts = computed((): string[] => {
     if (texts.length) return texts
   }
   return ['暂无动态']
+})
+
+/* ---------- 实时动态流（C档第3批） ---------- */
+/** 事件时间展示：当天只显示 HH:MM（图纸样式），跨天带上 M-D */
+function fmtFeedTime(at: string | null): string {
+  if (!at) return ''
+  const d = new Date(at)
+  if (Number.isNaN(d.getTime())) return ''
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  const now = new Date()
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  return sameDay ? `${hh}:${mm}` : `${d.getMonth() + 1}-${d.getDate()} ${hh}:${mm}`
+}
+const feedItems = computed((): Array<{ key: string; time: string; text: string; library: string | null }> => {
+  const d = feed.value.data as { items?: FeedItem[] } | null
+  const items = Array.isArray(d?.items) ? d.items : []
+  return items.map((it, i) => ({
+    key: `${i}-${it.at || ''}-${(it.text || '').slice(0, 12)}`,
+    time: fmtFeedTime(it.at),
+    text: typeof it.text === 'string' && it.text.trim() ? it.text : '服务器刚才忙去了，这条动态没写清楚',
+    library: typeof it.library === 'string' && it.library ? it.library : null,
+  }))
 })
 
 /* ---------- 每日一封 ---------- */
