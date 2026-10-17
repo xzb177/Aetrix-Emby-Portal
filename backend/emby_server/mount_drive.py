@@ -56,11 +56,15 @@ logger = logging.getLogger(__name__)
 
 #: Drive 文件夹的 MIME 类型
 FOLDER_MIME = "application/vnd.google-apps.folder"
-#: files.list 端点（与 drive_changes / strm_gen 同一地址）
+#: files.list 端点（与 drive_changes 同一地址）
 FILES_URL = "https://www.googleapis.com/drive/v3/files"
-#: 列目录取的字段：比 strm_gen 多一个 modifiedTime（扫描器文件指纹要用）
+#: 列目录取的字段：含 modifiedTime（扫描器文件指纹要用）
 _LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed)"
 _PAGE_SIZE = 1000
+#: 单次列举内钉住 SA 时 token 的最小剩余寿命（秒）：超大目录枚举可能耗时久，
+#: 索取长寿 token；万一中途仍 401，由同 SA 刷新续跑（Google 的 pageToken
+#: 与请求身份绑定，第 2 页换 SA 会 400——2026-10-17 实证）
+_PIN_TOKEN_MIN_REMAINING = 1800.0
 
 
 def _parse_mod_ts(value: object) -> float:
@@ -116,9 +120,40 @@ class DriveMount(RemoteMount):
                 "无可用 Drive 凭据：服务账号池为空，或个人盘授权已失效")
         return token
 
-    def _list_page(self, folder_id: str, page_token: Optional[str]) -> dict:
-        """一页 files.list。401 时刷新凭据重试一次（与 strm_gen 同款续跑语义）；
-        其余失败翻译成 MountError，绝不吞成空页。"""
+    def _pin_listing_cred(self) -> tuple[Optional[str], Optional[dict]]:
+        """单次列举（``_list_all`` 一次调用）内钉住的凭据。
+
+        - 个人盘：固定 OAuth，返回 ``(token, None)``——不轮换，本来就钉住了。
+        - 共享盘：轮换出一个 SA 并按其索取长寿 token，返回 ``(token, sa)``；
+          后续每页复用，Google 分页 pageToken 与 SA 身份绑定，钉住才能翻页。
+        凭据不可用 → MountAuthError（与 ``_token`` 同款）。
+        """
+        if self.personal:
+            return self._token(), None
+        sa = drive_changes.next_shared_sa()
+        if not sa:
+            raise MountAuthError(
+                "无可用 Drive 凭据：服务账号池为空，或个人盘授权已失效")
+        token = drive_changes._sa_access_token(
+            sa, min_remaining=_PIN_TOKEN_MIN_REMAINING)
+        if not token:
+            raise MountAuthError(
+                f"服务账号取 token 失败: {sa.get('client_email', '')}")
+        return token, sa
+
+    def _list_page(self, folder_id: str, page_token: Optional[str],
+                   token: Optional[str] = None,
+                   sa: Optional[dict] = None) -> tuple[dict, str]:
+        """一页 files.list。401 时刷新凭据重试一次；其余失败翻译成 MountError，
+        绝不吞成空页。
+
+        - ``sa`` 给出（单次列举钉住模式）：401 时对**同一 SA**强制刷新续跑，
+          返回新 token（后续页沿用，pageToken 不失效）；
+        - ``sa`` 为空（其他调用方）：沿用原 force_refresh 语义（共享盘再轮换
+          一个 SA、个人盘刷新 OAuth），行为不变。
+
+        返回 ``(body, 实际用到的 token)``。
+        """
         params: dict = {
             "q": f"'{folder_id}' in parents and trashed = false",
             "pageSize": _PAGE_SIZE,
@@ -133,25 +168,49 @@ class DriveMount(RemoteMount):
         else:
             params["driveId"] = self.drive_id
             params["corpora"] = "drive"
+        if token is None:
+            token = self._token()
         try:
-            return drive_changes._api_get(FILES_URL, self._token(), params)
+            return drive_changes._api_get(FILES_URL, token, params), token
         except PermissionError:
-            # token 中途过期（长遍历跨过 1 小时有效期）：刷新一次续跑
+            # token 中途过期（长遍历跨过有效期）：刷新一次续跑
+            if sa is not None:
+                fresh = drive_changes.refresh_sa_token(
+                    sa, min_remaining=_PIN_TOKEN_MIN_REMAINING)
+                if not fresh:
+                    raise MountAuthError(
+                        "Drive 凭据已失效（同 SA 刷新失败），请检查服务账号池"
+                    )
+                try:
+                    return (drive_changes._api_get(FILES_URL, fresh, params),
+                            fresh)
+                except PermissionError as exc:
+                    raise MountAuthError(
+                        "Drive 凭据已失效（刷新后仍被拒绝），请检查服务账号池"
+                    ) from exc
             try:
-                return drive_changes._api_get(
-                    FILES_URL, self._token(force_refresh=True), params)
+                fresh_token = self._token(force_refresh=True)
+                return (drive_changes._api_get(FILES_URL, fresh_token, params),
+                        fresh_token)
             except PermissionError as exc:
                 raise MountAuthError(
                     "Drive 凭据已失效（刷新后仍被拒绝），请检查服务账号池或个人盘授权"
                 ) from exc
 
     def _list_all(self, folder_id: str) -> list[dict]:
-        """一个目录的全部条目（分页拉完为止）"""
+        """一个目录的全部条目（分页拉完为止）。
+
+        整个翻页过程钉住同一 SA（共享盘）：开头轮换出一个 SA、后续每页复用；
+        Google 的 pageToken 与请求身份绑定，换 SA 会 400。个人盘 OAuth 本来
+        就不轮换。401 续跑沿用钉住语义（同 SA 刷新）。
+        """
         items: list[dict] = []
         page_token: Optional[str] = None
+        token, sa = self._pin_listing_cred()
         while True:
             try:
-                body = self._list_page(folder_id, page_token)
+                body, token = self._list_page(folder_id, page_token,
+                                              token=token, sa=sa)
             except MountAuthError:
                 raise
             except drive_changes.DriveNotFoundError as exc:

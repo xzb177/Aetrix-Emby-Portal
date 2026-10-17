@@ -159,7 +159,8 @@ def test_thresholds_configurable(monkeypatch):
 def test_probe_subsystems_structure(db):
     subs = obs.probe_subsystems(db)
     expected_keys = {"database", "redis", "disk", "workers", "probe",
-                     "enrich", "scan", "strm", "sa_quota", "api"}
+                     "enrich", "scan", "sa_quota", "api"}
+    # 注 2026-10-17：strm 子系统已随 strm_gen 删除
     assert expected_keys <= set(subs.keys())
     for key, s in subs.items():
         assert s["status"] in ("ok", "warn", "down"), key

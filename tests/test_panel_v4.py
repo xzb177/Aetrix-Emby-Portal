@@ -126,12 +126,21 @@ def _mk_session(db, user, name, start, duration):
     return s
 
 
+def _bj_to_storage(bj_hour, bj_minute=0, days_ago=0):
+    """北京时间墙钟 → 入库存储帧（UTC naive）：成就会话时间按此换算构造。"""
+    bj = datetime.now() + timedelta(hours=8)
+    t = bj.replace(hour=bj_hour, minute=bj_minute, second=0, microsecond=0)
+    if days_ago:
+        t -= timedelta(days=days_ago)
+    return t - timedelta(hours=8)
+
+
 def test_evaluate_first_night_and_early_bird(db, user):
     pa.seed_achievement_defs(db)
-    # 深夜 23:30 开始
-    _mk_session(db, user, "深夜电影", datetime.now().replace(hour=23, minute=30), 3600)
-    # 清晨 6:30 开始
-    _mk_session(db, user, "清晨电影", datetime.now().replace(hour=6, minute=30), 3600)
+    # 深夜 23:30（北京时间）开始
+    _mk_session(db, user, "深夜电影", _bj_to_storage(23, 30), 3600)
+    # 清晨 6:30（北京时间）开始
+    _mk_session(db, user, "清晨电影", _bj_to_storage(6, 30), 3600)
     new = pa.evaluate(user.id, db)
     assert "first_night" in new
     assert "early_bird" in new
@@ -143,9 +152,9 @@ def test_evaluate_first_night_and_early_bird(db, user):
 
 def test_evaluate_night_owl(db, user):
     pa.seed_achievement_defs(db)
-    base = datetime.now().replace(hour=14, minute=0)
-    _mk_session(db, user, "马拉松1", base, 3 * 3600 + 100)
-    _mk_session(db, user, "马拉松2", base + timedelta(hours=4), 3 * 3600 + 100)
+    # 北京时间 14:00 与 18:00（同北京时间自然日）
+    _mk_session(db, user, "马拉松1", _bj_to_storage(14, 0), 3 * 3600 + 100)
+    _mk_session(db, user, "马拉松2", _bj_to_storage(18, 0), 3 * 3600 + 100)
     new = pa.evaluate(user.id, db)
     assert "night_owl" in new  # 单日超 6h
 
@@ -178,7 +187,7 @@ def test_evaluate_disabled_rule_not_granted(db, user):
     row = db.query(models.PanelAchievementDef).filter_by(key="first_night").first()
     row.enabled = False
     db.commit()
-    _mk_session(db, user, "深夜电影", datetime.now().replace(hour=23, minute=30), 3600)
+    _mk_session(db, user, "深夜电影", _bj_to_storage(23, 30), 3600)
     new = pa.evaluate(user.id, db)
     assert "first_night" not in new
 
@@ -216,28 +225,6 @@ def test_unseal_idempotent(db, user):
     # 404
     r3 = client.post("/api/panel/parcels/99999999/unseal")
     assert r3.status_code == 404
-
-
-# ==================== 4. 机关拨杆权限 ====================
-
-def test_toggle_admin_only(db, user, admin_user):
-    pa.seed_achievement_defs(db)
-    # 普通用户 -> 403
-    app = _make_app(db, user)
-    client = TestClient(app)
-    r = client.post("/api/panel/server/toggles", json={"key": "panel_night_scrape", "on": False})
-    assert r.status_code == 403
-
-    # 管理员 -> 可写
-    app2 = _make_app(db, admin_user)
-    client2 = TestClient(app2)
-    r2 = client2.post("/api/panel/server/toggles", json={"key": "panel_night_scrape", "on": False})
-    assert r2.status_code == 200
-    assert r2.json()["data"] == {"key": "panel_night_scrape", "on": False}
-
-    # 未知 key -> 400
-    r3 = client2.post("/api/panel/server/toggles", json={"key": "nope", "on": True})
-    assert r3.status_code == 400
 
 
 # ==================== 5. 特性开关 ====================
@@ -305,10 +292,24 @@ def test_home_returns_all_four_sections(db, user):
 
 
 def test_push_activity_ring_buffer(db):
-    for i in range(55):
+    for i in range(505):
         panel_api.push_activity(db, f"活动 {i}")
     count = db.query(models.PanelActivity).count()
-    assert count == 50  # 环形保留 50 条
+    assert count == 500  # 每服分区环形保留最近 500 条
+
+
+def test_push_activity_ring_buffer_per_realm(db):
+    for i in range(505):
+        panel_api.push_activity(db, f"服1活动 {i}", realm_id=1)
+    for i in range(3):
+        panel_api.push_activity(db, f"服2活动 {i}", realm_id=2)
+    from backend.panel_feed import FEED_KEEP_PER_REALM
+    c1 = db.query(models.PanelActivity).filter(
+        models.PanelActivity.realm_id == 1).count()
+    c2 = db.query(models.PanelActivity).filter(
+        models.PanelActivity.realm_id == 2).count()
+    assert c1 == FEED_KEEP_PER_REALM
+    assert c2 == 3  # 另一服的分区不受影响
 
 
 # ==================== 7. today/parcels 字段契约（r20 P1 修复锁定）===
@@ -509,3 +510,107 @@ def test_today_parcel_count_same_caliber_as_parcels(db, user):
     today = client.get("/api/panel/today").json()["data"]
     assert today["parcel_count"] == len(parcels) >= 1
     assert {p["id"] for p in parcels} == {series.id}
+
+
+# ==================== 8. GET /api/panel/feed（发现页实时动态流）====================
+
+def _push_feed(db, text, event_type="system", realm_id=None, library_name=None):
+    from backend.panel_feed import note_feed
+    assert note_feed(db, text, event_type=event_type, realm_id=realm_id,
+                     library_name=library_name) is True
+
+
+def test_feed_items_shape_and_desc_order(db, user):
+    _push_feed(db, "扫描完成 · 新增 3 · 更新 1", "scan", realm_id=None,
+               library_name="国产剧")
+    _push_feed(db, "一位影迷开始看《测试剧》第 1 集", "play", realm_id=None,
+               library_name="国产剧")
+    app = _make_app(db, user)
+    r = TestClient(app).get("/api/panel/feed")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    items = data["items"]
+    assert len(items) == 2
+    # 时间倒序：后写入的在前
+    assert items[0]["text"] == "一位影迷开始看《测试剧》第 1 集"
+    assert items[0]["type"] == "play"
+    assert items[0]["library"] == "国产剧"
+    assert items[1]["type"] == "scan"
+    # 字段契约
+    assert set(items[0].keys()) == {"at", "type", "text", "library"}
+    assert items[0]["at"]  # iso 时间戳
+
+
+def test_feed_realm_filter(db, user):
+    _push_feed(db, "服1扫描", "scan", realm_id=1, library_name="国产剧")
+    _push_feed(db, "服2扫描", "scan", realm_id=2, library_name="国产剧")
+    _push_feed(db, "全局系统事件", "system", realm_id=None)
+    app = _make_app(db, user)
+    client = TestClient(app)
+    got1 = {i["text"] for i in client.get("/api/panel/feed?realm_id=1").json()["data"]["items"]}
+    got2 = {i["text"] for i in client.get("/api/panel/feed?realm_id=2").json()["data"]["items"]}
+    # 本服事件 + 全局事件可见，别服事件不可见（不聚合）
+    assert got1 == {"服1扫描", "全局系统事件"}
+    assert got2 == {"服2扫描", "全局系统事件"}
+
+
+def test_feed_default_realm_is_active_realm(db, user):
+    from backend import realms
+    rid = realms.active_realm_id(db)
+    _push_feed(db, "当前服事件", "scan", realm_id=rid, library_name="国产剧")
+    _push_feed(db, "别服事件", "scan", realm_id=(rid + 999), library_name="国产剧")
+    _push_feed(db, "全局事件", "system", realm_id=None)
+    app = _make_app(db, user)
+    r = TestClient(app).get("/api/panel/feed")  # 不传 realm_id=跟随当前服
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert data["realm_id"] == rid
+    texts = {i["text"] for i in data["items"]}
+    assert texts == {"当前服事件", "全局事件"}
+
+
+def test_feed_limit_default_and_clamp(db, user):
+    for i in range(60):
+        _push_feed(db, f"事件 {i}", "system")
+    app = _make_app(db, user)
+    client = TestClient(app)
+    assert len(client.get("/api/panel/feed").json()["data"]["items"]) == 12
+    assert len(client.get("/api/panel/feed?limit=5").json()["data"]["items"]) == 5
+    assert len(client.get("/api/panel/feed?limit=50").json()["data"]["items"]) == 50
+    # 上限 50：超限直接 422（契约写明上限，不静默夹断）
+    assert client.get("/api/panel/feed?limit=200").status_code == 422
+
+
+def test_feed_invalid_event_type_falls_back_to_system(db, user):
+    from backend.panel_feed import read_feed
+    _push_feed(db, "未知类型", "bogus", realm_id=None)
+    items = read_feed(db, None, 5)
+    assert items[0]["type"] == "system"
+
+
+def test_play_feed_text_anonymized(db, user):
+    """播放事件文案匿名：绝不出现用户昵称/ID。"""
+    from backend.emby_server.compat_routes import _note_play_feed
+    from backend.emby_server import models as em
+
+    user.nickname = "张三"
+    db.commit()
+    series = _mk_media(db, "series", "测试剧", datetime.now() - timedelta(days=30))
+    ep = _mk_media(db, "episode", "测试剧 E3", datetime.now(),
+                  series_id=series.id, season_number=1, episode_number=3)
+    movie = _mk_media(db, "movie", "测试电影", datetime.now())
+
+    _note_play_feed(db, ep, started=True, finished=False)
+    _note_play_feed(db, movie, started=False, finished=True)
+
+    rows = db.query(models.PanelActivity).order_by(
+        models.PanelActivity.id).all()
+    assert len(rows) == 2
+    assert all(r.event_type == "play" for r in rows)
+    texts = [r.text for r in rows]
+    assert "一位影迷开始看《测试剧》第 3 集" in texts
+    assert "一位影迷看完《测试电影》" in texts
+    for t in texts:
+        assert "张三" not in t
+        assert "panel_test" not in t
+        assert str(user.id) not in t

@@ -46,7 +46,6 @@
               >{{ copiedField === 'code' ? '✓ 已复制！' : '📋 一键复制组队暗号' }}</button>
               <div class="pole"></div>
             </div>
-            <div style="height:34px"></div>
             <div class="linkrow">
               <input class="linkinput" :value="inviteLink" readonly aria-label="组队链接">
               <button class="linkbtn" :disabled="!inviteLink" @click="copyText(inviteLink, 'link')">
@@ -55,8 +54,9 @@
             </div>
           </template>
         </section>
+      </template>
 
-        <!-- 组队规则：数值全部来自后端 config -->
+      <!-- 组队规则：数值全部来自后端 config -->
         <section v-if="!loading && info?.config && !disabled" class="v4-sec">
           <div class="rule">
             📜 <b>组队规则</b><br>
@@ -69,7 +69,7 @@
 
         <!-- 已组队的伙伴 -->
         <section v-if="!loading" class="v4-sec" :aria-busy="recordsLoading">
-          <h2 class="v4-sec-title">🎒 已组队 · {{ recordsErr ? '—' : recordsTotal + ' 人' }}</h2>
+          <h2 class="v4-sec-title">🎒 已组队<template v-if="!recordsErr"> · {{ recordsTotal }} 人</template></h2>
           <div class="v4-sec-sub">跟着你一起出发的伙伴</div>
           <div v-if="recordsErr" class="v4-err">
             伙伴名单加载失败，可能是网络波动<br>
@@ -95,7 +95,7 @@
         <!-- 带路费账本 -->
         <section v-if="!loading" class="v4-sec" :aria-busy="rebatesLoading">
           <h2 class="v4-sec-title">💰 带路费账本</h2>
-          <div class="v4-sec-sub">伙伴充能量，你的回扣自动记在这里 · {{ rebatesErr ? '累计带路费 数据获取失败' : '累计 +' + totalRebate + '⚡' }}</div>
+          <div class="v4-sec-sub">伙伴充能量，你的回扣自动记在这里<template v-if="!rebatesErr"> · 累计 +{{ totalRebate }}⚡</template></div>
           <div v-if="rebatesErr" class="v4-err">
             带路费账本加载失败，可能是网络波动<br>
             <button class="v4-retry" @click="loadRebates" :disabled="rebatesLoading">{{ rebatesLoading ? '重试中…' : '重试' }}</button>
@@ -139,15 +139,12 @@
             </div>
           </div>
         </section>
-      </template>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import {
   inviteApi,
   type MyInviteInfo, type InvitationRecordRow, type RebateRow,
@@ -174,13 +171,17 @@ const promotionsErr = ref(false)
 const recordsLoading = ref(false)
 const rebatesLoading = ref(false)
 const promotionsLoading = ref(false)
+/* F4：三路加载器请求序号守卫——慢的旧响应/旧失败不许覆盖新结果 */
+let recordsSeq = 0
+let rebatesSeq = 0
+let promotionsSeq = 0
 const copiedField = ref('')
 /* R48B-5：复制成功的读屏播报 */
 const liveMsg = ref('')
 
 const inviteLink = computed(() => {
   if (!info.value?.code) return ''
-  return `${window.location.origin}/login?invite=${info.value.code}`
+  return `${window.location.origin}/login?invite=${encodeURIComponent(info.value.code)}`
 })
 
 /** 邀请是否由管理员开启（来自 /my-code 的 config） */
@@ -202,7 +203,9 @@ function fmtDate(iso?: string | null): string {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return iso
   const pad = (n: number) => (n < 10 ? '0' + n : String(n))
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  // F6：跨年记录保留年份，避免 MM-DD 歧义；当年仍显示 MM-DD
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  return d.getFullYear() === new Date().getFullYear() ? md : `${d.getFullYear()}-${md}`
 }
 function fmtTime(iso?: string | null): string {
   if (!iso) return '—'
@@ -256,52 +259,88 @@ async function loadMy() {
 
 /** R48B-4：只拉伙伴名单一路（带本区块小 loading，重试不塌整页） */
 async function loadRecords() {
+  /* F4：取号；旧请求的结果/失败不许覆盖新请求 */
+  const seq = ++recordsSeq
   recordsLoading.value = true
   try {
     const rec = await inviteApi.records({ limit: 50 })
-    records.value = rec.records
-    // total 缺失时退回本次条数，避免模板出现 "undefined 人"
-    recordsTotal.value = rec.total ?? rec.records?.length ?? 0
-    recordsErr.value = false
+    if (seq !== recordsSeq) return
+    /* F5：字段缺失/非数组不吞成"真空"，走 Err 分支 */
+    if (!Array.isArray(rec.records)) {
+      recordsErr.value = true
+      records.value = emptyRecords.records
+      recordsTotal.value = 0
+    } else {
+      records.value = rec.records
+      // total 缺失时退回本次条数，避免模板出现 "undefined 人"
+      recordsTotal.value = rec.total ?? rec.records.length ?? 0
+      recordsErr.value = false
+    }
   } catch {
+    if (seq !== recordsSeq) return
     recordsErr.value = true
     records.value = emptyRecords.records
   } finally {
-    recordsLoading.value = false
+    /* F4：只有关最新请求才清 loading，旧请求的 finally 不许提前关新请求的骨架 */
+    if (seq === recordsSeq) recordsLoading.value = false
   }
 }
 
 /** R48B-4：只拉带路费账本一路 */
 async function loadRebates() {
+  /* F4：取号；旧请求的结果/失败不许覆盖新请求 */
+  const seq = ++rebatesSeq
   rebatesLoading.value = true
   try {
     const reb = await inviteApi.rebates({ limit: 50 })
-    rebates.value = reb.rebates
-    totalRebate.value = reb.total_rebate
-    rebatesErr.value = false
+    if (seq !== rebatesSeq) return
+    /* F5：字段缺失/非数组/累计非数字不吞成"真空"，走 Err 分支 */
+    if (!Array.isArray(reb.rebates) || !Number.isFinite(reb.total_rebate)) {
+      rebatesErr.value = true
+      rebates.value = emptyRebates.rebates
+      totalRebate.value = emptyRebates.total_rebate
+    } else {
+      rebates.value = reb.rebates
+      totalRebate.value = reb.total_rebate
+      rebatesErr.value = false
+    }
   } catch {
+    if (seq !== rebatesSeq) return
     rebatesErr.value = true
     rebates.value = emptyRebates.rebates
     totalRebate.value = emptyRebates.total_rebate
   } finally {
-    rebatesLoading.value = false
+    /* F4：只有关最新请求才清 loading，旧请求的 finally 不许提前关新请求的骨架 */
+    if (seq === rebatesSeq) rebatesLoading.value = false
   }
 }
 
 /** R48B-4：只拉见面礼记录一路 */
 async function loadPromotions() {
+  /* F4：取号；旧请求的结果/失败不许覆盖新请求 */
+  const seq = ++promotionsSeq
   promotionsLoading.value = true
   try {
     const pro = await inviteApi.promotions({ limit: 50 })
-    promotions.value = pro.rewards
-    promoConfig.value = pro.config
-    promotionsErr.value = false
+    if (seq !== promotionsSeq) return
+    /* F5：字段缺失/非数组不吞成"真空"，走 Err 分支 */
+    if (!Array.isArray(pro.rewards)) {
+      promotionsErr.value = true
+      promotions.value = emptyPromotions.rewards
+      promoConfig.value = emptyPromotions.config
+    } else {
+      promotions.value = pro.rewards
+      promoConfig.value = pro.config
+      promotionsErr.value = false
+    }
   } catch {
+    if (seq !== promotionsSeq) return
     promotionsErr.value = true
     promotions.value = emptyPromotions.rewards
     promoConfig.value = emptyPromotions.config
   } finally {
-    promotionsLoading.value = false
+    /* F4：只有关最新请求才清 loading，旧请求的 finally 不许提前关新请求的骨架 */
+    if (seq === promotionsSeq) promotionsLoading.value = false
   }
 }
 
@@ -345,6 +384,8 @@ onMounted(load)
   font-size: 13px;
   font-weight: 800;
   letter-spacing: 2px;
+  /* F10：抵消行尾字距，视觉回正居中 */
+  text-indent: 2px;
   color: var(--red);
   margin-bottom: 6px;
 }
@@ -352,6 +393,8 @@ onMounted(load)
   font-size: 32px;
   font-weight: 800;
   letter-spacing: 4px;
+  /* F10：抵消行尾字距，视觉回正居中 */
+  text-indent: 4px;
   background: var(--paper-card);
   border: 2px dashed var(--ink2);
   border-radius: var(--paper-r-md, 10px);
@@ -362,6 +405,8 @@ onMounted(load)
 }
 .copybtn {
   width: 100%;
+  /* F8：继承页面 PingFang 栈，不用系统默认按钮字体 */
+  font-family: inherit;
   background: var(--red);
   color: var(--on-dark, #fff);
   border: none;
@@ -373,12 +418,13 @@ onMounted(load)
   box-shadow: 0 3px 0 var(--red-deep, #a33319);
 }
 .copybtn:active { transform: scale(0.96); }
-.copybtn.done { background: var(--green); box-shadow: 0 3px 0 #35593f; }
+.copybtn.done { background: var(--green); box-shadow: 0 3px 0 var(--green-deep, #35593f); }
 .copybtn:disabled { background: var(--ink2); box-shadow: none; cursor: default; }
 .board.off { padding: 24px 18px; }
 .off-note { font-size: 13px; color: var(--ink2); line-height: 1.8; margin: 8px 0 0; }
 
-.linkrow { display: flex; gap: 8px; }
+/* F12：牌杆伸出 34px 的留位（原内联空 div 已删，34px=牌杆高度必须保留） */
+.linkrow { display: flex; gap: 8px; margin-top: 34px; }
 .linkinput {
   flex: 1;
   min-width: 0;
@@ -391,9 +437,13 @@ onMounted(load)
 }
 .linkbtn {
   flex-shrink: 0;
+  /* F8：继承页面 PingFang 栈，不用系统默认按钮字体 */
+  font-family: inherit;
   min-height: 44px;
   /* R48B-8：固定最小宽度，文案"复制链接"/"✓ 已复制"切换时不抖动 */
   min-width: 84px;
+  /* F11：防"✓ 已复制"在个别字体下折行增高 */
+  white-space: nowrap;
   text-align: center;
   background: var(--paper2);
   border: 1.5px solid var(--ink);

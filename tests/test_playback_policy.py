@@ -41,20 +41,19 @@ def test_write_policy_short_names_take_effect(memdb):
     applied = pp.write_policy(memdb, {
         "transcode_enabled": False,
         "max_concurrent_transcodes": 5,
-        "blocked_agents": "Old-TV",
-        "allowed_agents": "",
     })
     memdb.commit()
     assert applied["playback_transcode_enabled"] == "false"
     assert applied["playback_max_concurrent_transcodes"] == "5"
-    assert applied["client_blocked_agents"] == "Old-TV"
     assert pp.transcode_enabled(memdb) is False
     assert pp.max_transcodes(memdb) == 5
 
     payload = pp.policy_payload(memdb)
     assert payload["transcode_enabled"] is False
     assert payload["max_concurrent_transcodes"] == 5
-    assert payload["blocked_agents"] == "Old-TV"
+    # 2026-10-17 瘦身：客户端名单已删除，payload 不再含这两字段
+    assert "blocked_agents" not in payload
+    assert "allowed_agents" not in payload
 
 
 def test_write_policy_long_keys_still_compatible(memdb):
@@ -69,6 +68,13 @@ def test_write_policy_ignores_unknown_keys(memdb):
     applied = pp.write_policy(memdb, {"no_such_key": "x", "transcode_enabled": True})
     memdb.commit()
     assert applied == {"playback_transcode_enabled": "true"}
+
+
+def test_removed_agent_keys_are_ignored(memdb):
+    """已删除的客户端名单键：写进来被忽略，不落库。"""
+    applied = pp.write_policy(memdb, {"blocked_agents": "Old-TV", "allowed_agents": "emby"})
+    memdb.commit()
+    assert applied == {}
 
 
 def test_drive_direct_play_switch_roundtrip(memdb):

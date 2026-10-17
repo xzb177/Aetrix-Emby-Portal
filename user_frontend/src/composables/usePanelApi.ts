@@ -66,6 +66,25 @@ export interface ParcelsData {
   parcels: ParcelItem[]
 }
 
+/** 实时动态流（GET /api/panel/feed，C档第3批；realm_id 不传=面板当前服，跟随当前服） */
+export interface FeedItem {
+  /** ISO 时间串；后端为空时为 null */
+  at: string | null
+  /** scan / enrich / play / system */
+  type: string
+  /** 展示文案（播放事件已脱敏为「一位影迷」） */
+  text: string
+  /** 库名标签；系统事件可为 null */
+  library: string | null
+  [k: string]: unknown
+}
+
+export interface FeedData {
+  items: FeedItem[]
+  realm_id: number | null
+  limit: number
+}
+
 /** 收藏家：口味护照 / 成就星图 / 馆灵 */
 export interface TasteStamp {
   name: string
@@ -136,15 +155,6 @@ export interface RadarTask {
   [k: string]: unknown
 }
 
-export interface ServerToggle {
-  key: string
-  name: string
-  desc: string
-  on: boolean
-  writable: boolean
-  [k: string]: unknown
-}
-
 export interface GrowthDay {
   date: string
   weekday: string
@@ -157,7 +167,6 @@ export interface ServerData {
   eco?: EcoItem[]
   radar_tasks?: RadarTask[]
   growth?: GrowthDay[]
-  toggles?: ServerToggle[]
   is_admin?: boolean
   [k: string]: unknown
 }
@@ -186,6 +195,8 @@ export const panelApi = {
   unseal: (itemId: string | number) => post(`/api/panel/parcels/${itemId}/unseal`),
   /** 服务器脉搏 */
   pulse: () => get<Record<string, unknown>>('/api/panel/pulse'),
+  /** 实时动态流（C档第3批）：不传 realm_id，后端按面板当前服（active_realm_id）解析，跟随当前服 */
+  feed: () => get<FeedData>('/api/panel/feed'),
   /** 每日一封 */
   letter: () => get<Record<string, unknown>>('/api/panel/letter'),
   /** 首页合并（perf 2026-10-13）：一次返回 today/parcels/pulse/letter；单区块失败时该字段为 null */
@@ -223,8 +234,6 @@ export const panelApi = {
   setWornBadge: (key: string | null) => post<{ worn_badge: WornBadge | null }>('/api/panel/worn-badge', { key }),
   /** 服务器状态 */
   server: () => get<ServerData>('/api/panel/server'),
-  /** 机关拨杆（仅管理员） */
-  toggles: (payload: Record<string, unknown>) => post('/api/panel/server/toggles', payload),
 }
 
 /**

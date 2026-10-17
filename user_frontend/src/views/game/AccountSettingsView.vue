@@ -41,12 +41,12 @@
         />
       </section>
 
-      <!-- 首页卡片展示：服务器卡片怎么摆，用户自选（模式 + 每服显隐，存 localStorage） -->
-      <section class="v4-sec" aria-label="首页卡片展示">
-        <div class="v4-sec-title">首页卡片展示</div>
-        <div class="v4-sec-sub">首页服务器卡片怎么摆，你说了算</div>
+      <!-- 发现页卡片展示：服务器卡片怎么摆，用户自选（模式 + 每服显隐，存 localStorage） -->
+      <section class="v4-sec" aria-label="发现页卡片展示">
+        <div class="v4-sec-title">发现页卡片展示</div>
+        <div class="v4-sec-sub">发现页服务器卡片怎么摆，你说了算</div>
         <div class="v4-card">
-          <div class="mode-seg" role="group" aria-label="首页卡片展示模式">
+          <div class="mode-seg" role="group" aria-label="发现页卡片展示模式">
             <button
               v-for="opt in modeOptions"
               :key="opt.v"
@@ -75,7 +75,7 @@
                 :class="{ 'is-on': cardPrefs.isVisible(s.id) }"
                 role="switch"
                 :aria-checked="cardPrefs.isVisible(s.id)"
-                :aria-label="`${s.name}：在首页显示`"
+                :aria-label="`${s.name}：在发现页显示`"
                 @click="toggleServer(s.id)"
               ></button>
             </div>
@@ -163,7 +163,6 @@
         </div>
       </section>
     </div>
-    <PanelTabbar />
 
     <!-- 修改登录密码弹窗（由 ProfileView 移植） -->
     <div v-if="showChangePwd" class="acct-mask" @click.self="closeChangePwd" @keydown="onPwdModalKeydown">
@@ -223,7 +222,6 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { Lock, ChevronRight, RefreshCw } from 'lucide-vue-next'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 import { facilityStamp } from '@/config/game'
@@ -444,7 +442,7 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
   return `${Math.floor(hours / 24)} 天前`
 }
 
-// ===== 首页卡片展示（模式 + 每服显隐，偏好存 localStorage） =====
+// ===== 发现页卡片展示（模式 + 每服显隐，偏好存 localStorage） =====
 const cardPrefs = useServerCardPrefs()
 const { mode, setMode, toggleServer } = cardPrefs
 const { servers, load: loadServers, loading: serversLoading, loadError: serversLoadError } = useServerCards()
@@ -725,7 +723,7 @@ onMounted(() => {
 /* R36：终止订阅确认弹窗的正文（走 .paper-confirm 纸色弹窗，文字排版本地样式） */
 .acct-confirm-text { font-size: 14px; line-height: 1.9; color: var(--ink); margin: 0; }
 
-/* 首页卡片展示：模式三段选择 + 每服显隐开关（只用 --paper-* token） */
+/* 发现页卡片展示：模式三段选择 + 每服显隐开关（只用 --paper-* token） */
 .mode-seg {
   display: flex;
   border: 1.5px solid var(--paper-ink);

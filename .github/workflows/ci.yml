@@ -360,6 +360,17 @@ jobs:
 
       # tests/ 下的单元测试（播放地址口径 / 路径沙箱这类纯逻辑）。以前它们没有任何运行入口，
       # 写完就只能靠人记得手动跑——于是“播放地址口径改坏了”只能在冒烟里才暴露。
+      # 缩略图 vips 路径的测试需要系统 libvips + pyvips：
+      # tests/test_image_thumbnails_vips.py 在缺 libvips 时自动 skip，
+      # 这里装上是为了让 CI 真正跑通 vips 路径（父进程永不 import pyvips，
+      # worker 跑在子进程，不影响同进程的 Pillow 封面画字测试）。
+      - name: 安装 libvips 与 pyvips（缩略图 vips 路径测试用）
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvips42t64 || sudo apt-get install -y -qq libvips42
+          pip install -q pyvips
+
       - name: 单元测试（pytest：媒体路径沙箱与播放地址口径）
         timeout-minutes: 10
         run: |

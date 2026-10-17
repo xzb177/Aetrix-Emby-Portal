@@ -91,14 +91,12 @@
       </template>
     </div>
 
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { aiApi, type AiStatus } from '@/api'
 import { humanizeError } from '@/composables/usePanelApi'
 

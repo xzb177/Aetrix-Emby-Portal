@@ -168,7 +168,6 @@
         </div>
       </section>
     </div>
-    <PanelTabbar />
 
     <!-- R27：关闭记录二次确认（纸色风格，替代原生 confirm） -->
     <Modal v-model="showCloseConfirm" size="sm" content-class="paper-confirm">
@@ -192,7 +191,6 @@
  * 遇险类型宫格 → 求救信 → 摩斯电码发送动画 → 事故记录卡跟进
  */
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import Modal from '@/components/ui/Modal.vue'
 import { facilityStamp } from '@/config/game'
 import { ticketApi, type Ticket, type TicketMessage } from '@/api'

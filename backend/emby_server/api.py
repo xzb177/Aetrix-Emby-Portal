@@ -1022,9 +1022,6 @@ def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = No
                 f"{base}/emby/Videos/{item.guid}/{item.guid}"
                 f"/Subtitles/{s.stream_index}/Stream.vtt?{auth_qs or f'api_key={api_key}'}"
             )
-            # CDN 预留（第 2/3 层）：启用时字幕也走 CDN 域名（回源到本服务）
-            if db is not None:
-                delivery = cdn.rewrite_url(db, delivery, base)
             dto["DeliveryUrl"] = delivery
     # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
     return _strip_nulls(dto)
@@ -1050,6 +1047,7 @@ _CONTAINER_BY_EXT = {
     ".flv": "flv",
     ".wmv": "wmv",
     ".mpg": "mpeg", ".mpeg": "mpeg",
+    ".iso": "iso",
 }
 
 
@@ -2102,10 +2100,13 @@ def _dedup_primary_ids(cand_rows, db) -> list[int]:
     return [row[0] for row in cand_rows if row[0] in keep]
 
 
-#: P2：重复候选 / 被去掉的 id 超过这些量就回退全量实现（避免巨型 IN / CASE）
-_DEDUP_MAX_SUSPECTS = int(os.getenv("ITEMS_DEDUP_MAX_SUSPECTS", "20000") or 20000)
-_DEDUP_MAX_DROPPED = int(os.getenv("ITEMS_DEDUP_MAX_DROPPED", "5000") or 5000)
-_DEDUP_MAX_DUP_SERIES = 2000
+#: P2：重复候选 / 被去掉的 id 超过这些量就回退全量实现（避免巨型 IN）。
+#: 注意：_DEDUP_MAX_DUP_SERIES 已废除——原来它是为保护 case(rep, ...) 巨型 CASE 而设的，
+#: rep 条目一多（去纸条化后 merged 行成千上万）CASE 直接让 PG 跑 100 秒+。
+#: P0 修复改用 VALUES 映射表 JOIN，rep 再大也只是数据行，不再是表达式分支，
+#: 因此不再需要这个上限（2026-10-17 压测实锤）。
+_DEDUP_MAX_SUSPECTS = int(os.getenv("ITEMS_DEDUP_MAX_SUSPECTS", "100000") or 100000)
+_DEDUP_MAX_DROPPED = int(os.getenv("ITEMS_DEDUP_MAX_DROPPED", "50000") or 50000)
 
 
 def _chunks(seq, n=900):
@@ -2130,7 +2131,7 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
 
     返回被去掉的 id 集合；圈出来的行太多（几乎全库都是重复）时返回 None，调用方回退全量实现。
     """
-    from sqlalchemy import String, case, cast, literal
+    from sqlalchemy import String, case, cast, column, Integer, literal, values
 
     MI = em.MediaItem
     # --- 剧的去重组（episode 桶要用）---
@@ -2138,6 +2139,7 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     ep_series = (query.filter(MI.item_type == "episode", MI.series_id.isnot(None))
                  .with_entities(MI.series_id).order_by(None).distinct().subquery())
     series_group_expr = func.coalesce(MI.series_id, 0)
+    rep_join = None
     srows = db.query(MI.id, MI.library_id, MI.tmdb_id, MI.name, MI.production_year).filter(
         MI.item_type == "series", MI.id.in_(select(ep_series.c.series_id))).all()
     if srows:
@@ -2152,10 +2154,18 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
                 head = min(members)
                 for sid in members:
                     rep[sid] = head
-        if len(rep) > _DEDUP_MAX_DUP_SERIES:
-            return None
         if rep:
-            series_group_expr = case(rep, value=MI.series_id, else_=func.coalesce(MI.series_id, 0))
+            # P0 修复（2026-10-17 压测实锤）：原来用 case(rep, value=series_id, ...)
+            # 把去重组写成 SQL 表达式，rep 条目一多（merged 行成千上万）就是几千个
+            # WHEN 分支，PG 实测 105 秒。改成 VALUES CTE 映射表 LEFT JOIN，
+            # 同样语义（左连接未命中时回退 series_id 自身），PG 实测 0.5 秒；
+            # 用 CTE 而不用别名 JOIN 是为了兼容 SQLite（测试库不支持
+            # AS rep_map (sid, grp) 的列别名语法）。
+            rep_map = values(
+                column("sid", Integer), column("grp", Integer),
+            ).data([(sid, grp) for sid, grp in rep.items()]).cte("rep_map")
+            rep_join = (rep_map, rep_map.c.sid == MI.series_id)
+            series_group_expr = func.coalesce(rep_map.c.grp, MI.series_id, 0)
 
     tmdb_clean = func.trim(func.replace(func.replace(func.replace(
         func.coalesce(MI.tmdb_id, ""), "\t", ""), "\n", ""), "\r", ""))
@@ -2171,7 +2181,8 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
          + "|" + s(func.coalesce(MI.episode_number, 0))),
         else_=literal("R|") + s(MI.id),
     )
-    cand = query.with_entities(
+    cand_q = query.outerjoin(*rep_join) if rep_join is not None else query
+    cand = cand_q.with_entities(
         MI.id.label("cid"),
         func.count().over(partition_by=bucket).label("bucket_n"),
     ).order_by(None).subquery()
@@ -3278,8 +3289,6 @@ async def playback_info(
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
     await run_db(ensure_playback_allowed, db, user)
     _pt.mark("auth")
-    # 客户端策略（v2.26.0）：被拦的客户端连播放地址都不该拿到
-    await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
     # 按需媒体信息探测：远程文件缺 codec 时入队，后台限流探测，不阻塞播放（v2.51.0）
     try:
         from backend.emby_server import probe_worker
@@ -3357,10 +3366,6 @@ async def playback_info(
     # api_key：只回显 Emby 客户端 token（第三方客户端兼容）。
     # 安全修复 H2：门户 / 管理员 JWT 不再进 URL——网页端只拿短期播放签名（uid/exp/sign）。
     api_key = _api_key_for(db, request)
-    # CDN 域名（管理员级开关）：启用时播放面 URL 换 CDN 域名（回源到本服务，
-    # 鉴权查询串原样透传；CDN 侧的缓存规则由管理员配置）。未启用时 URL
-    # 与升级前逐字节一致。
-    use_cdn = await run_db(cdn.enabled, db)
     # 播放短期签名（双轨）：老客户端继续用 api_key；新 URL 额外带 uid/exp/sign，
     # 播放端点优先验签。签名有效期可配（play_sign_ttl_seconds，默认 15 分钟）、绑定
     # user_id+item_id，泄露后窗口极小。网页端（无 api_key）保留 6 小时：
@@ -3386,7 +3391,7 @@ async def playback_info(
     # 统一播放 URL 改写（横切能力只许一套）：流节点 > 加速域名 > 原样。
     # 签名查询串原样保留，流节点用同一 SECRET_KEY 验签。
     # 最简播放（2026-10-16 用户拍板）：Drive 条目且直链开关开启时，跳过
-    # 流节点/加速域名/CDN 改写——DirectStreamUrl 保持本机 /stream，
+    # 流节点/加速域名改写——DirectStreamUrl 保持本机 /stream，
     # 由 video_stream 直接 302 到谷歌直链，字节不经任何中间层。
     from backend.emby_server import playback_strategy as _ps2
     _dd_fid = (getattr(item, "drive_file_id", "") or "").strip()
@@ -3396,10 +3401,6 @@ async def playback_info(
         from backend.emby_server import stream_accel
         stream_url, transcoding_url, _rewrite_src = stream_accel.rewrite_playback_urls_unified(
             db, stream_url, transcoding_url, base)
-        # CDN 改写是另一套（老功能）：流节点/加速域名命中时跳过——它们本身就是边缘入口。
-        if use_cdn and _rewrite_src is None:
-            stream_url = cdn.rewrite_url(db, stream_url, base)
-            transcoding_url = cdn.rewrite_url(db, transcoding_url, base)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
@@ -3468,8 +3469,6 @@ async def video_stream(
     # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token / JWT）
     await run_db(ensure_playback_allowed, db, user)
     _pt.mark("auth_playback")
-    await run_db(playback_policy.ensure_client_allowed, db, user, request.headers.get("user-agent"))
-    _pt.mark("auth_client")
     # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）
     await run_db(play_sign.check_referer, request, db)
     _pt.mark("auth_referer")
@@ -3619,7 +3618,6 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
     # 切片子请求走 session 票据，不经过这里。
     play_sign.check_referer(request, db)
     ensure_playback_allowed(db, user)
-    playback_policy.ensure_client_allowed(db, user, request.headers.get("user-agent"))
     # 并发上限按**本机**正在跑的转码数判定：分离部署时 EA 就是那台播放节点
     playback_policy.ensure_transcode_allowed(
         db, user, running=len(active_transcode_ids()), capacity=transcode_capacity(),
@@ -3659,7 +3657,6 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
             )
     # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
     # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
-    # CDN 预留（第 2/3 层）：启用时变体/切片都走 CDN 域名（回源本服务）。
     if not auth_qs:
         # 首次请求是 header 里的 JWT（无签名 / 无 Emby token）：给子请求签一把短期播放签名
         auth_qs = _url_auth_qs(db, request, user, item.guid)
@@ -3667,8 +3664,6 @@ def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
         f"{base}/emby/videos/{item.guid}/main.m3u8"
         f"?session={session_id}&{auth_qs}"
     )
-    if cdn.enabled(db):
-        variant_url = cdn.rewrite_url(db, variant_url, base)
     return f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n"
 
 
@@ -3677,8 +3672,6 @@ def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id:
     """重写 ffmpeg 播放列表：切片指向本服务，并带上 session 票据与 api_key
 
     不带 api_key 时播放器对切片子请求不会附加认证头，会直接 401。
-    CDN 预留（第 2/3 层）：启用时切片行换 CDN 域名（回源本服务）——热门分片
-    由边缘缓存，躲源站（Google Drive）单文件配额；播放列表本身不变。
     """
     master = os.path.join(out_dir, "master.m3u8")
     if not os.path.isfile(master):
@@ -3690,8 +3683,6 @@ def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id:
     else:
         suffix = f"&api_key={urllib.parse.quote(api_key)}" if api_key else ""
     seg_base = base
-    if db is not None and cdn.enabled(db):
-        seg_base = cdn.origin_base(db, base)
     lines = []
     for line in content.splitlines():
         if line.endswith((".ts", ".m4s", ".aac", ".vtt")):

@@ -46,15 +46,11 @@ def harness(monkeypatch):
     monkeypatch.setattr(api, "_require_visible_item",
                         lambda db, user, item_id: SimpleNamespace(container="mp4", guid="g1"))
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
-    monkeypatch.setattr(api.playback_policy, "ensure_client_allowed",
-                        lambda db, user, ua: None)
     monkeypatch.setattr(api.playback_policy, "ensure_transcode_allowed",
                         lambda db, user, **kw: None)
     monkeypatch.setattr(api.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(api, "_api_key_for", lambda db, request: "k")
     monkeypatch.setattr(api, "_play_target", lambda db, item: state.target)
-    monkeypatch.setattr(api.cdn, "enabled", lambda db: False)
-    monkeypatch.setattr(api.cdn, "rewrite_url", lambda db, url, base: url)
     monkeypatch.setattr(
         api.line_stats, "record_request",
         lambda **kw: state.recorded.append(kw),

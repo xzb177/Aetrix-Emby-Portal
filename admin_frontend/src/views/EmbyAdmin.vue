@@ -24,7 +24,7 @@ import { toAdminError } from '@/utils/errorMessage'
 import type { UploadRequestOptions } from 'element-plus'
 import {
   Film, FolderPlus, History, ImagePlus, RefreshCw, ScanSearch,
-  CalendarClock, Info, Link, ShieldAlert,
+  CalendarClock, Info, ShieldAlert,
   Square, Wand2, X,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
@@ -44,9 +44,9 @@ import {
   fetchServers,
   fetchAutoScan,
   fetchChaseNew,
-  fetchStrmConfig,
   fetchTmdbKeys,
   fetchEnrichEpisodeNight,
+  fetchEnrichEpisodeFields,
   fetchEnrichTuning,
   fetchEnrichNoneStats,
   fetchEnrichFieldStats,
@@ -62,15 +62,15 @@ import {
   scanLibrary,
   saveAutoScan,
   saveChaseNew,
-  saveStrmConfig,
   saveEnrichEpisodeNight,
+  saveEnrichEpisodeFields,
   saveEnrichTuning,
   saveUnifiedFallback,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichEpisodeFieldsConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -634,7 +634,7 @@ async function toggleChase(on: boolean) {
   else ids.delete(libForm.id)
   chaseLibSaving.value = true
   try {
-    const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','), cfg.strm_enabled)
+    const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','))
     chaseNew.value = normalizeChase(res)
     libForm.chase = on
     // 自动发现新增文件是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
@@ -722,8 +722,8 @@ async function load() {
       loadTmdbStatus().catch(() => undefined),
       loadAutoScanConfig(),
       loadChaseNewConfig().catch(() => undefined),
-      loadStrmConfig().catch(() => undefined),
       loadEnrichEpisodeNightConfig().catch(() => undefined),
+      loadEnrichEpisodeFieldsConfig().catch(() => undefined),
       loadEnrichTuningConfig().catch(() => undefined),
       loadUnifiedFallbackConfig().catch(() => undefined),
     ])
@@ -944,8 +944,6 @@ function normalizeChase(res: ChaseNewConfig): ChaseNewConfig {
   return {
     enabled: res.enabled,
     interval: res.interval,
-    // 老后端没有这个字段时按默认开处理——和后端的 CONFIG_STRM_ENABLED 默认 "1" 一致
-    strm_enabled: res.strm_enabled ?? true,
     excluded: res.excluded,
     libraries: res.libraries,
     last_check: res.last_check,
@@ -973,7 +971,7 @@ async function saveChaseNewAction() {
   if (!chaseNew.value) return
   chaseNewSaving.value = true
   try {
-    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded, chaseNew.value.strm_enabled)
+    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded)
     chaseNew.value = normalizeChase(res)
     ElMessage.success(res.enabled ? '自动发现新增文件已开启（每 ' + res.interval + ' 分钟）' : '自动发现新增文件已关闭')
   } catch (e: any) {
@@ -994,40 +992,6 @@ async function saveAutoScanAction() {
     ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     autoScanSaving.value = false
-  }
-}
-
-// ==================== .strm 直链目录配置 ====================
-// .strm 是内容为播放直链的纯文本小文件；宿主机目录经 docker-compose 挂进容器。
-// 三个配置项全部由管理员决定（默认启用=/opt/strm→/strm，与现状一致）；关闭总开关后
-// 扫描不再收录 .strm 文件（已入库条目不动），保存即热生效、无需重启。
-const strmConfig = ref<StrmConfig | null>(null)
-const strmConfigSaving = ref(false)
-
-async function loadStrmConfig() {
-  try {
-    const res = await fetchStrmConfig()
-    strmConfig.value = { ...res.strm }
-  } catch {
-    strmConfig.value = null // 出错不挡页面其它内容
-  }
-}
-
-async function saveStrmConfigAction() {
-  if (!strmConfig.value) return
-  strmConfigSaving.value = true
-  try {
-    const res = await saveStrmConfig({
-      enabled: strmConfig.value.enabled,
-      host_dir: strmConfig.value.host_dir,
-      container_path: strmConfig.value.container_path,
-    })
-    strmConfig.value = { ...res.strm }
-    ElMessage.success(`.strm 直链已${res.strm.enabled ? '开启' : '关闭'}`)
-  } catch (e: any) {
-    ElMessage.error(toAdminError(e, '保存失败'))
-  } finally {
-    strmConfigSaving.value = false
   }
 }
 
@@ -1112,6 +1076,41 @@ async function saveEnrichEpisodeNightAction() {
     ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     episodeNightSaving.value = false
+  }
+}
+
+// ==================== 单集分项开关（批3） ====================
+
+/** 单集下沉时标题 / 简介 / 剧照各自可开可关：后台配置，60 秒内热生效；默认全开 = 现状行为 */
+const episodeFields = ref<EnrichEpisodeFieldsConfig | null>(null)
+const episodeFieldsSaving = ref(false)
+const episodeFieldsError = ref(false)
+
+async function loadEnrichEpisodeFieldsConfig() {
+  try {
+    episodeFields.value = await fetchEnrichEpisodeFields()
+    episodeFieldsError.value = false
+  } catch {
+    episodeFields.value = null // 出错不挡页面其它内容
+    episodeFieldsError.value = true
+  }
+}
+
+async function saveEnrichEpisodeFieldsAction() {
+  if (!episodeFields.value) return
+  episodeFieldsSaving.value = true
+  try {
+    const res = await saveEnrichEpisodeFields(
+      episodeFields.value.title,
+      episodeFields.value.overview,
+      episodeFields.value.still,
+    )
+    episodeFields.value = res
+    ElMessage.success('单集分项开关已保存，60 秒内生效')
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '保存失败'))
+  } finally {
+    episodeFieldsSaving.value = false
   }
 }
 
@@ -1445,7 +1444,6 @@ const SCAN_TRIGGER_LABELS: Record<string, string> = {
   'fs-event': '文件变化',
   'drive-changes': 'Drive 变更',
   'chase-new': '追新',
-  'strm-gen': '纸条生成',
   rescrape: '重新刮削',
   resume: '自动续扫',
 }
@@ -1967,10 +1965,6 @@ function typeLabel(t: string): string {
                   保存
                 </el-button>
               </div>
-              <div v-if="chaseNew" class="scrape-actions" style="margin-top: 8px">
-                <el-switch v-model="chaseNew.strm_enabled" active-text="监听 .strm" inactive-text="忽略 .strm" />
-                <span class="drawer-hint">库路径是 /strm/... 时，strm 生成器产出的新分集（.strm 文件）也会触发增量扫描 + 刮削</span>
-              </div>
               <div v-else-if="chaseNewError" class="drawer-hint drawer-hint--after">
                 读取失败
                 <el-button size="small" text @click="loadChaseNewConfig">重试</el-button>
@@ -2094,6 +2088,43 @@ function typeLabel(t: string): string {
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="episodeNight?.from_env" class="drawer-hint drawer-hint--after">
                 环境变量（ENRICH_EPISODE_NIGHT_ONLY / ENRICH_NIGHT_START / ENRICH_NIGHT_END / ENRICH_NIGHT_TZ）覆盖了这里的设置（改这里不会生效）
+              </div>
+              <div class="scrape-subblock">
+                <h4>单集分项开关</h4>
+                <p class="drawer-hint">
+                  单集刮削时，「标题 / 简介 / 剧照」三项各自可开可关。关掉后，单集不再写入该项（TMDB 和 NFO 都不写）；默认三项全开 = 和现在一模一样。保存后 60 秒内生效，只影响之后新刮的单集，已刮好的不动。
+                </p>
+                <div v-if="episodeFields" class="scrape-actions">
+                  <el-switch
+                    v-model="episodeFields.title"
+                    active-text="标题"
+                    inactive-text="标题"
+                    aria-label="单集标题开关"
+                  />
+                  <el-switch
+                    v-model="episodeFields.overview"
+                    active-text="简介"
+                    inactive-text="简介"
+                    aria-label="单集简介开关"
+                  />
+                  <el-switch
+                    v-model="episodeFields.still"
+                    active-text="剧照"
+                    inactive-text="剧照"
+                    aria-label="单集剧照开关"
+                  />
+                  <el-button type="primary" size="small" :loading="episodeFieldsSaving" @click="saveEnrichEpisodeFieldsAction">
+                    保存
+                  </el-button>
+                </div>
+                <div v-else-if="episodeFieldsError" class="drawer-hint drawer-hint--after">
+                  读取失败
+                  <el-button size="small" text @click="loadEnrichEpisodeFieldsConfig">重试</el-button>
+                </div>
+                <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+                <div v-if="episodeFields?.from_env" class="drawer-hint drawer-hint--after">
+                  环境变量（ENRICH_EPISODE_TITLE / ENRICH_EPISODE_OVERVIEW / ENRICH_EPISODE_STILL）覆盖了这里的设置（改这里不会生效）
+                </div>
               </div>
             </div>
             <div class="scrape-block">
@@ -2297,37 +2328,7 @@ function typeLabel(t: string): string {
             </div>
           </div>
         </SectionCard>
-        <SectionCard class="strm-card" title="扫描器：识别 .strm 文件" :icon="Link">
-          <template #actions>
-            <div class="queue-facts">
-              <span class="fact" :class="{ warn: strmConfig && !strmConfig.enabled }">
-                {{ strmConfig ? (strmConfig.enabled ? '已启用' : '已关闭') : '读取中…' }}
-              </span>
-            </div>
-          </template>
-          <p class="drawer-hint">
-            这里只管「扫描器认不认 .strm 文件」：.strm 是内容为播放直链的纯文本小文件。宿主机目录经 docker-compose（STRM_MOUNT_DIR，默认 /opt/strm）挂到容器内挂载点（STRM_CONTAINER_PATH，默认 /strm，只读）；改这里只改"认哪个目录"，不动容器挂载本身。要换容器内挂载点：先改 .env 的 STRM_CONTAINER_PATH 并 docker compose up -d 重启，再回来保存（容器里不存在的目录会被拒绝）。关闭总开关后扫描不再收录 .strm 文件（已入库的不动），保存即生效。
-          </p>
-          <p class="drawer-hint">
-            另一个开关在「.strm 生成器」页：管的是批量生成 .strm 文件，别和这里搞混。
-          </p>
-          <div v-if="strmConfig" class="scrape-actions">
-            <el-switch v-model="strmConfig.enabled" active-text="开启" inactive-text="关闭" />
-            <el-input v-model="strmConfig.host_dir" placeholder="/opt/strm" style="width: 210px" aria-label="宿主机 .strm 目录">
-              <template #prepend>宿主机</template>
-            </el-input>
-            <el-input v-model="strmConfig.container_path" placeholder="/strm" style="width: 180px" aria-label="容器内挂载点">
-              <template #prepend>容器内</template>
-            </el-input>
-            <el-button type="primary" size="small" :loading="strmConfigSaving" @click="saveStrmConfigAction">
-              保存
-            </el-button>
-          </div>
-          <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
-          <div v-if="strmConfig" class="drawer-hint drawer-hint--after">
-            当前容器内挂载点：{{ strmConfig.container_path }} ｜ 建媒体库时把路径指向它（添加路径弹窗里有快捷入口）
-          </div>
-        </SectionCard>
+        
       </el-tab-pane>
     </el-tabs>
 
@@ -2696,7 +2697,7 @@ function typeLabel(t: string): string {
         <div v-if="libFormTarget && !libFormTarget.is_virtual" class="settings-section">
           <div class="settings-section-title">目录变更监听</div>
           <p class="form-hint">
-            「自动发现新增文件」每隔几分钟扫一遍目录，发现新视频文件（.strm 开关开时也含 .strm）就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
+            「自动发现新增文件」每隔几分钟扫一遍目录，发现新视频文件就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
             不用等手动扫描。开关与间隔是全局的，纳不纳入某个库在这里定。
           </p>
           <el-form label-position="top">
@@ -2971,6 +2972,9 @@ function typeLabel(t: string): string {
 }
 .scrape-block h3 { margin: 0 0 6px; font-size: var(--font-size-sm); font-weight: 700; color: var(--au-text); }
 .scrape-block .drawer-hint { margin-bottom: 10px; }
+.scrape-subblock { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--au-border); }
+.scrape-subblock h4 { margin: 0 0 6px; font-size: var(--font-size-sm); font-weight: 600; color: var(--au-text); }
+.scrape-subblock .drawer-hint { margin-bottom: 10px; }
 .scrape-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .scrape-skeleton { height: 32px; border-radius: var(--au-r-md); }
 /* 刮削性能参数：每行 标签 / 输入 / 说明 / 标记 */

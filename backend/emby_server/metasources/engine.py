@@ -103,6 +103,19 @@ class CollectResult:
         return result
 
 
+def _douban_switch_on(db) -> bool:
+    """豆瓣可选开关（``douban_enabled``）是否开启。
+
+    ``douban.enabled`` 本身读不到配置时已 fail-closed（返回 False），
+    这里再兜一层异常同样按关处理：引擎默认不打豆瓣请求。
+    """
+    try:
+        from backend.emby_server import douban as _dbn
+        return bool(_dbn.enabled(db))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _douban_banned_now() -> bool:
     """豆瓣全局冷却是否生效（封禁中）。
 
@@ -165,6 +178,13 @@ def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
             if source_cfg.needs_key:
                 result.outcomes.append(SourceOutcome(
                     source_cfg.id, label, False, skipped="需要密钥但一个都没配"))
+                continue
+            # 批 1（刮削瘦身）：豆瓣降为可选开关——开关关闭时引擎内豆瓣源
+            # 直接跳过，不打出任何豆瓣请求。只拦自动采集：后台「试采集」
+            # （only 指定源）是管理员手动点的，不拦。
+            if source_cfg.id == "douban" and not _douban_switch_on(db):
+                result.outcomes.append(SourceOutcome(
+                    source_cfg.id, label, False, skipped="豆瓣开关已关闭，已跳过"))
                 continue
             # 链路规划 Step 0.5：豆瓣封禁期跳过豆瓣源——search_douban 自己直发
             # HTTP、不查封禁状态，这里拦下才能保证封禁期零豆瓣请求（反风控红线）。

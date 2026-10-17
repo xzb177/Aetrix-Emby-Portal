@@ -262,6 +262,7 @@ const invColumns: DataColumn[] = [
   { key: 'code', label: '邀请码', width: 130, mobile: 'title' },
   { key: 'owner_username', label: '归属', width: 120 },
   { key: 'use_count', label: '使用情况', width: 120 },
+  { key: 'reward_points', label: '奖励', width: 100 },
   { key: 'state_label', label: '状态', width: 90 },
   { key: 'expires_at', label: '有效期', width: 150 },
   { key: 'whitelist', label: '白名单', minWidth: 150 },
@@ -351,7 +352,7 @@ async function bulkRevokeCodes() {
 const genVisible = ref(false)
 const genLoading = ref(false)
 const genFormRef = ref<FormInstance>()
-const genForm = ref({ owner_user_id: null as number | null, count: 5, max_uses: 100, expires_days: 0, whitelist: '' })
+const genForm = ref({ owner_user_id: null as number | null, count: 5, max_uses: 100, expires_days: 0, whitelist: '', reward_points: 0 })
 const genRules: FormRules = {
   owner_user_id: [{ required: true, message: '请选择归属用户', trigger: 'change' }],
   count: [
@@ -360,13 +361,14 @@ const genRules: FormRules = {
   ],
   max_uses: [{ type: 'number', min: 0, max: 100000, message: '次数需在 0–100000 之间', trigger: 'blur' }],
   expires_days: [{ type: 'number', min: 0, max: 3650, message: '天数需在 0–3650 之间', trigger: 'blur' }],
+  reward_points: [{ type: 'number', min: 0, max: 1000000, message: '奖励需在 0–1000000 之间', trigger: 'blur' }],
 }
 const genOwner = computed(() =>
   userOptions.value.find((u) => u.id === genForm.value.owner_user_id)?.username,
 )
 
 async function openGen() {
-  genForm.value = { owner_user_id: null, count: 5, max_uses: 100, expires_days: 0, whitelist: '' }
+  genForm.value = { owner_user_id: null, count: 5, max_uses: 100, expires_days: 0, whitelist: '', reward_points: 0 }
   genVisible.value = true
   if (!userOptions.value.length) await searchUsers('')
 }
@@ -386,6 +388,7 @@ async function handleGen() {
       max_uses: genForm.value.max_uses,
       expires_days: genForm.value.expires_days,
       whitelist: genForm.value.whitelist,
+      reward_points: genForm.value.reward_points,
     })
     ElMessage.success(res.message)
     genVisible.value = false
@@ -401,10 +404,11 @@ async function handleGen() {
 const editVisible = ref(false)
 const editLoading = ref(false)
 const editFormRef = ref<FormInstance>()
-const editForm = ref({ id: 0, code: '', max_uses: 100, expires_days: 0, whitelist: '', is_active: true })
+const editForm = ref({ id: 0, code: '', max_uses: 100, expires_days: 0, whitelist: '', is_active: true, reward_points: 0 })
 const editRules: FormRules = {
   max_uses: [{ type: 'number', min: 0, max: 100000, message: '次数需在 0–100000 之间', trigger: 'blur' }],
   expires_days: [{ type: 'number', min: 0, max: 3650, message: '天数需在 0–3650 之间', trigger: 'blur' }],
+  reward_points: [{ type: 'number', min: 0, max: 1000000, message: '奖励需在 0–1000000 之间', trigger: 'blur' }],
 }
 
 function openEdit(row: InvitationCodeRow) {
@@ -416,6 +420,7 @@ function openEdit(row: InvitationCodeRow) {
     expires_days: row.expires_days_left ?? 0,
     whitelist: row.whitelist.join(','),
     is_active: row.is_active,
+    reward_points: row.reward_points ?? 0,
   }
   editVisible.value = true
 }
@@ -434,6 +439,7 @@ async function handleEdit() {
       expires_days: editForm.value.expires_days,
       whitelist: editForm.value.whitelist,
       is_active: editForm.value.is_active,
+      reward_points: editForm.value.reward_points,
     })
     ElMessage.success('邀请码已更新')
     editVisible.value = false
@@ -594,6 +600,10 @@ onMounted(reloadAll)
           <span class="user-name">{{ row.owner_username }}</span>
         </template>
         <template #cell-use_count="{ row }"><span class="num">{{ usesText(row) }}</span></template>
+        <template #cell-reward_points="{ row }">
+          <span v-if="!row.reward_points" class="faint">跟随全局</span>
+          <span v-else class="amt-in">+{{ row.reward_points }}</span>
+        </template>
         <template #cell-state_label="{ row }">
           <span class="au-badge" :class="codeBadge(row.state)">{{ row.state_label }}</span>
         </template>
@@ -848,6 +858,10 @@ onMounted(reloadAll)
           <el-input-number v-model="genForm.max_uses" :min="0" :max="100000" style="width: 100%" />
           <div class="form-hint">0 = 不限次数</div>
         </el-form-item>
+        <el-form-item label="每码奖励（积分）" prop="reward_points">
+          <el-input-number v-model="genForm.reward_points" :min="0" :max="1000000" style="width: 100%" />
+          <div class="form-hint">0 = 跟随全局「邀请人奖励」配置；填了就是这批码的专属奖励</div>
+        </el-form-item>
         <el-form-item label="有效天数" prop="expires_days">
           <el-input-number v-model="genForm.expires_days" :min="0" :max="3650" style="width: 100%" />
           <div class="form-hint">0 = 永不过期；从生成那一刻开始算</div>
@@ -871,6 +885,10 @@ onMounted(reloadAll)
         <el-form-item label="每码可用次数" prop="max_uses">
           <el-input-number v-model="editForm.max_uses" :min="0" :max="100000" style="width: 100%" />
           <div class="form-hint">0 = 不限次数</div>
+        </el-form-item>
+        <el-form-item label="奖励（积分）" prop="reward_points">
+          <el-input-number v-model="editForm.reward_points" :min="0" :max="1000000" style="width: 100%" />
+          <div class="form-hint">0 = 跟随全局「邀请人奖励」配置；填了就是这张码的专属奖励</div>
         </el-form-item>
         <el-form-item label="有效天数（从现在起）" prop="expires_days">
           <el-input-number v-model="editForm.expires_days" :min="0" :max="3650" style="width: 100%" />

@@ -90,3 +90,57 @@ def test_user_ask_response_has_no_model_field(monkeypatch):
         SimpleNamespace(id=1), object())
     assert payload["answer"] == "我是本站的 AI 客服助手"
     assert "model" not in payload
+
+
+# ---------- r30 F1：_today() 按 Asia/Shanghai 划分自然日 ----------
+
+def test_today_uses_shanghai_day(monkeypatch):
+    """UTC 2026-01-01 16:00 = 北京时间 2026-01-02 00:00：
+    _today() 必须返回 2026-01-02（旧实现返回 2026-01-01，用户 00:00–08:00
+    的提问被记到「昨天」，配额次日 08:00 才重置）。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    real_datetime = datetime
+
+    class _FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = real_datetime(2026, 1, 1, 16, 0, tzinfo=ZoneInfo("UTC"))
+            return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(ai, "datetime", _FakeDateTime)
+    assert ai._today() == "2026-01-02"
+
+
+def test_today_fallback_without_tzdata(monkeypatch):
+    """缺 tzdata 等极端情况回退为系统时间，不抛异常。"""
+    from datetime import datetime
+
+    real_datetime = datetime
+
+    class _FakeDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is not None:
+                raise ZoneInfoNotFoundError("No time zone found with key Asia/Shanghai")
+            return real_datetime(2026, 5, 6, 7, 8)
+
+    from zoneinfo import ZoneInfoNotFoundError
+    monkeypatch.setattr(ai, "datetime", _FakeDateTime)
+    assert ai._today() == "2026-05-06"
+
+
+# ---------- r30 F2：safe_consume 读写双失败仍放行 ----------
+
+def test_safe_consume_read_also_fails_still_allows():
+    """consume 写失败、used_today 读也失败时：放行且 used=0，不抛异常。"""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    class _BadDB:
+        def query(self, *a, **k):
+            raise SQLAlchemyError("连接池耗尽")
+
+    allowed, used = ai.safe_consume(_BadDB(), user_id=1)
+    assert allowed is True
+    assert used == 0

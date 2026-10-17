@@ -4,13 +4,13 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">营地 · 接线处</span>
-        <h1>🔌 接线员</h1>
+        <h1><span aria-hidden="true">🔌</span> 接线员</h1>
         <p>买完会员来这儿接线 —— 拿上账号密码，去播放器里连上就能看。</p>
       </header>
 
       <!-- 加载中 -->
       <div v-if="loading && !account" class="v4-sec">
-        <div class="v4-skeleton" style="height:180px"></div>
+        <div class="v4-skeleton" style="height:180px" role="status" aria-label="正在加载接线信息"></div>
       </div>
 
       <!-- 加载失败 -->
@@ -24,7 +24,7 @@
       <template v-else>
         <!-- 公益服说明 -->
         <div v-if="isFreeRealm" class="v4-sec">
-          <div class="v4-sec-title">📻 接入方式</div>
+          <div class="v4-sec-title"><span aria-hidden="true">📻</span> 接入方式</div>
           <div class="free-note">
             <span class="badge free">公益服 · 免费开放</span>
             <p>{{ realmNote }}</p>
@@ -34,10 +34,10 @@
         <!-- 有查看权限：账号密码卡 -->
         <template v-if="viewGranted">
           <section class="v4-sec">
-            <div class="v4-sec-title">🔑 你的接线账号</div>
+            <div class="v4-sec-title"><span aria-hidden="true">🔑</span> 你的接线账号</div>
             <div class="v4-sec-sub">拿着这三样，去播放器里登录</div>
 
-            <div class="op-rows" :class="{ loading }">
+            <div class="op-rows" :class="{ loading: loading && !accountReloading }">
               <template v-if="accountReloading">
                 <div class="v4-skeleton" style="height:54px" role="status" aria-label="正在刷新账号信息"></div>
                 <div class="v4-skeleton" style="height:54px" aria-hidden="true"></div>
@@ -90,7 +90,7 @@
 
           <!-- 多服 -->
           <section v-if="realmCards.length > 1" class="v4-sec">
-            <div class="v4-sec-title">🗺️ 我的服</div>
+            <div class="v4-sec-title"><span aria-hidden="true">🗺️</span> 我的服</div>
             <div class="v4-sec-sub">每个服有自己的地址和会员</div>
             <div class="realm-list">
               <div v-for="r in realmCards" :key="r.id" class="realm-item">
@@ -122,7 +122,7 @@
 
           <!-- 一键导入 -->
           <section v-if="hasSchemes" class="v4-sec">
-            <div class="v4-sec-title">📲 一键导入到客户端</div>
+            <div class="v4-sec-title"><span aria-hidden="true">📲</span> 一键导入到客户端</div>
             <div class="v4-sec-sub">点一下，直接跳到播放器里填好</div>
             <div class="scheme-btns">
               <button
@@ -140,7 +140,7 @@
           <!-- 正在播放：旧 PlaybackSessions 一比一恢复（#783 删页面时丢了入口） -->
           <section class="v4-sec" aria-label="正在播放">
             <div class="v4-sec-title">
-              📺 正在播放
+              <span aria-hidden="true">📺</span> 正在播放
               <button
                 class="refresh-btn"
                 :class="{ 'is-loading': sessionsLoading }"
@@ -213,7 +213,7 @@
 
           <!-- 怎么连：小白指引 -->
           <section class="v4-sec">
-            <div class="v4-sec-title">🧭 怎么连上？</div>
+            <div class="v4-sec-title"><span aria-hidden="true">🧭</span> 怎么连上？</div>
             <div class="guide-steps">
               <div class="guide-step">
                 <span class="step-num">1</span>
@@ -242,7 +242,7 @@
 
         <!-- 没查看权限：解锁入口 -->
         <div v-else-if="viewPermission" class="v4-sec">
-          <div class="v4-sec-title">🔒 接线需要解锁</div>
+          <div class="v4-sec-title"><span aria-hidden="true">🔒</span> 接线需要解锁</div>
           <template v-if="viewPermission.realm_free">
             <p class="unlock-desc">
               花 <strong>{{ viewPermission.unlock_points }}</strong> 能量解锁查看权限，
@@ -336,7 +336,6 @@
       </div>
     </Teleport>
 
-    <PanelTabbar />
   </div>
 </template>
 
@@ -344,7 +343,6 @@
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
 import { humanizeError } from '@/composables/usePanelApi'
@@ -427,16 +425,18 @@ const importSchemes = computed((): Record<string, string> => {
 })
 const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
 
-async function refreshAccount(quiet = false) {
+async function refreshAccount(quiet = false): Promise<boolean> {
   if (!quiet) loading.value = true
   accountError.value = ''
   try {
     const res = await embyApi.getAccountCard()
     account.value = res as AccountCard
+    return true
   } catch (e: any) {
     // 没权限时后端直接 200 返回带 view_permission 的卡（granted=false），不会 403；
     // 这里只处理真正的加载失败（网络/鉴权），和 ProfileView 同一口径
     accountError.value = humanizeError(e)
+    return false
   } finally {
     loading.value = false
   }
@@ -490,9 +490,12 @@ async function confirmUnlock() {
     // R50：realmId 取不到时不带该字段，不发 realm_id: null
     if (realmId != null) await embyApi.unlockView(realmId)
     else await embyApi.unlockView()
-    toast.success('解锁成功')
     closeUnlockConfirm()
-    await refreshAccount()
+    // R77-1：先刷新再报喜——刷新失败时页面还停在未解锁态，只报「解锁成功」
+    // 会让用户以为解锁没生效；失败时明确告知解锁已成功、重进本页可见
+    const refreshed = await refreshAccount()
+    if (refreshed) toast.success('解锁成功')
+    else toast.error('解锁成功，但页面刷新失败，重新进入本页就能看到账号')
   } catch (e) {
     toast.error(humanizeError(e))
   } finally {
@@ -988,12 +991,12 @@ watch(viewGranted, (granted) => {
 .op-stop-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 /* 正在播放标题旁刷新按钮（复用 PigeonView 样式，44px 触摸目标） */
 .refresh-btn {
-  width: 44px; height: 44px; flex-shrink: 0; border-radius: var(--paper-r-lg, 12px);
+  width: 76px; height: 44px; padding: 0 14px; flex-shrink: 0; border-radius: var(--paper-r-lg, 12px);
   border: 1.5px solid var(--line); background: var(--paper-card);
-  color: var(--ink2); font-size: 18px; cursor: pointer;
+  color: var(--ink2); font-size: 18px; cursor: pointer; white-space: nowrap;
 }
 .refresh-btn:disabled { opacity: 0.5; cursor: default; }
-.refresh-btn.is-loading { width: 76px; padding: 0 14px; font-size: 14px; white-space: nowrap; }
+.refresh-btn.is-loading { font-size: 14px; }
 .refresh-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
 .op-empty {
   text-align: center;
@@ -1008,6 +1011,7 @@ watch(viewGranted, (granted) => {
   font-size: 15px;
   font-weight: 800;
   letter-spacing: 2px;
+  text-indent: 2px;
   padding: 12px 28px;
   min-height: 44px;
   border-radius: var(--paper-r-lg, 12px);

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import random
-from datetime import datetime, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -33,11 +32,6 @@ from backend import models
 from backend.api import economy
 
 logger = logging.getLogger(__name__)
-
-
-def _today_start() -> datetime:
-    """今日零点"""
-    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _get_int(db: Session, key: str, default: int) -> int:
@@ -76,7 +70,7 @@ def award_chat_points(db: Session, user_id: int) -> int:
     # 都判定未超限 → 超发。先锁用户行再统计（与红包频率检查同口径）。
     economy.lock_user_row(db, user_id)
 
-    today = _today_start()
+    today = economy._today_start_utc_naive()  # r34：上海自然日（UTC 入库帧），此前服务器本地口径在北京时间 08:00 才重置
     earned_today = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
         models.PointsLog.user_id == user_id,
         models.PointsLog.type == "chat",
@@ -100,7 +94,7 @@ def award_chat_points(db: Session, user_id: int) -> int:
 def get_points_summary(db: Session, user: models.WebUser) -> dict:
     """积分概览：余额 / 今日获得 / 累计获得"""
     balance = int(user.points or 0)
-    today = _today_start()
+    today = economy._today_start_utc_naive()  # r34：上海自然日（UTC 入库帧），此前服务器本地口径在北京时间 08:00 才重置
 
     today_earned = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
         models.PointsLog.user_id == user.id,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Activity, AlertTriangle, Bell, Cpu, Database, FileText, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, Sparkles, Users, Zap } from 'lucide-vue-next'
+import { Activity, AlertTriangle, Bell, Cpu, Database, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, Sparkles, Users, Zap } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
 import { fetchBackupConfig, saveBackupConfig, runBackupNow } from '@/api/admin'
@@ -55,7 +55,6 @@ const LAMPS: LampMeta[] = [
   { key: 'probe', name: '媒体探测', icon: Radar },
   { key: 'enrich', name: '元数据刮削', icon: Sparkles },
   { key: 'scan', name: '媒体库扫描', icon: ScanLine },
-  { key: 'strm', name: '.strm 生成器', icon: FileText },
   { key: 'sa_quota', name: 'Google 子账号', icon: KeyRound },
   { key: 'api', name: '接口指标', icon: Activity },
 ]
@@ -108,11 +107,6 @@ function lampKeyMetrics(key: string): Array<{ label: string; field: string; suff
         { label: '扫描中', field: 'scanning', suffix: '' },
         { label: '失败', field: 'failed', suffix: '' },
       ]
-    case 'strm':
-      return [
-        { label: '距上次', field: 'lag_hours', suffix: ' 小时' },
-        { label: '上次生成', field: 'last_generated', suffix: '' },
-      ]
     case 'sa_quota':
       return [{ label: 'SA 数量', field: 'sa_count', suffix: '' }]
     case 'api':
@@ -135,15 +129,6 @@ function lampMetricValue(key: string, field: string, suffix: string): string {
     const pct = Number(v) * 100
     if (!Number.isFinite(pct)) return '—'
     return `${pct.toFixed(2)}${suffix}`
-  }
-  if (key === 'strm' && field === 'lag_hours') {
-    const m = observability.value?.subsystems?.strm?.metrics || {}
-    const v = m['lag_hours']
-    if (v === null || v === undefined || v === '') return '—'
-    // R40：非数字时不显示 NaN 小时
-    const lag = Number(v)
-    if (!Number.isFinite(lag)) return '—'
-    return `${lag.toFixed(1)}${suffix}`
   }
   return `${lampMetricOf(key, field)}${suffix}`
 }
@@ -177,6 +162,8 @@ const alertSettings = ref<AlertSettings | null>(null)
 const alertSettingsSaving = ref(false)
 /** 设置表单（与展示分离，避免未保存污染） */
 const alertForm = ref({ enabled: false, check_interval_sec: 600, webhook_url: '' })
+/** 高级设置折叠：默认收起（el-collapse v-model 为空数组即全收；配置瘦身第 3b 批） */
+const alertAdvOpen = ref<string[]>([])
 /** webhook 密钥：只用于提交，后端不回显 */
 const alertWebhookSecret = ref('')
 const alertTestChannel = ref<AlertChannel>('in_app')
@@ -216,8 +203,6 @@ const ALERT_EVENT_TYPE_LABEL: Record<string, string> = {
   sa_quota_low: 'Google 子账号配额告警',
   scan_failed: '扫描失败',
   api_error_high: 'API 错误率过高',
-  strm_source_failed: '.strm 数据源失败',
-  strm_scan_trigger_failed: '.strm 扫库触发失败',
 }
 
 function alertSeverityLabel(s: string | null | undefined): string {
@@ -655,13 +640,20 @@ onMounted(() => {
         <div class="alert-block-title">设置</div>
         <div class="alert-settings-row">
           <el-switch v-model="alertForm.enabled" active-text="总开关" />
-          <span class="alert-field">
-            <span class="muted">检查间隔</span>
-            <el-input-number v-model="alertForm.check_interval_sec" :min="60" :max="86400" :controls="false" class="w-seconds" />
-            <span class="muted">秒</span>
-          </span>
-          <span class="hint">60~86400，保存后立即生效</span>
         </div>
+        <!-- 高级设置：检查间隔（一辈子不用碰的低频项，默认收起；配置瘦身第 3b 批） -->
+        <el-collapse v-model="alertAdvOpen" class="alert-advanced">
+          <el-collapse-item name="advanced" title="高级设置（1）">
+            <div class="alert-settings-row">
+              <span class="alert-field">
+                <span class="muted">检查间隔</span>
+                <el-input-number v-model="alertForm.check_interval_sec" :min="60" :max="86400" :controls="false" class="w-seconds" />
+                <span class="muted">秒</span>
+              </span>
+              <span class="hint">60~86400，默认 600，保存后立即生效</span>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
         <div class="alert-settings-row">
           <el-input v-model="alertForm.webhook_url" placeholder="Webhook 通知 URL（可选）" clearable class="w-webhook" />
           <el-input v-model="alertWebhookSecret" type="password" show-password placeholder="签名密钥（为空则不修改）" class="w-webhook" />
@@ -1061,6 +1053,9 @@ onMounted(() => {
 .alert-block { margin-bottom: 20px; }
 .alert-block:last-child { margin-bottom: 0; }
 .alert-block-title { font-size: 14px; font-weight: 600; color: var(--au-text); margin-bottom: 10px; }
+/* 高级设置折叠：与 RegistrationCodes 的 gen-advanced 同口径（默认收起） */
+.alert-advanced { margin-top: 2px; }
+.alert-advanced .el-collapse-item__header { font-size: var(--font-size-xs, 12px); color: var(--au-text-3); border-bottom: none; }
 .alert-settings-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .alert-field { display: inline-flex; align-items: center; gap: 6px; }
 .alert-secret-hint { font-size: 12px; margin-bottom: 10px; }

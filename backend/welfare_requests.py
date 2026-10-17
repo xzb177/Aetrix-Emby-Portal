@@ -33,9 +33,11 @@ OPEN_STATUSES = ("pending", "approved")
 
 
 def _month_start() -> datetime:
-    """本月1日零点"""
-    now = datetime.now()
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    """本月1日零点（r34：上海自然月，UTC 入库帧——与 media_seek.used_this_month 同口径。
+
+    此前服务器本地月界，生产 UTC 下每月 1 日 08:00（北京时间）才重置。
+    """
+    return economy._month_start_utc_naive()
 
 
 def _get_int(db: Session, key: str, default: int) -> int:

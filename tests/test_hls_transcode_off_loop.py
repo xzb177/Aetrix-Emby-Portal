@@ -37,12 +37,10 @@ def test_new_transcode_preparation_runs_in_threadpool(monkeypatch):
     monkeypatch.setattr(api, "_require_visible_item", lambda db, user, item_id: item)
     monkeypatch.setattr(api.play_sign, "check_referer", rec("check_referer"))
     monkeypatch.setattr(api, "ensure_playback_allowed", rec("ensure_playback_allowed"))
-    monkeypatch.setattr(api.playback_policy, "ensure_client_allowed", rec("ensure_client_allowed"))
     monkeypatch.setattr(api.playback_policy, "ensure_transcode_allowed", rec("ensure_transcode_allowed"))
     monkeypatch.setattr(api.shutil, "which", lambda name: "/usr/bin/ffmpeg")
     monkeypatch.setattr(api, "_play_target",
                         rec("_play_target", PlayTarget("url", "https://115.example/v.mkv", {}), sleep=0.4))
-    monkeypatch.setattr(api.cdn, "enabled", rec("cdn_enabled", False))
     monkeypatch.setattr(api.line_stats, "record_request", lambda *a, **k: None)
     from backend.emby_server import transcode as tc
     monkeypatch.setattr(tc, "find_cache", lambda *a, **k: None)
@@ -67,9 +65,9 @@ def test_new_transcode_preparation_runs_in_threadpool(monkeypatch):
     resp = asyncio.run(go())
     assert resp.status_code == 200
     assert b"session=sess123" in resp.body and b"sig=abc" in resp.body
-    for name in ("check_referer", "ensure_playback_allowed", "ensure_client_allowed",
+    for name in ("check_referer", "ensure_playback_allowed",
                  "ensure_transcode_allowed", "_play_target",
-                 "ensure_slot_or_503", "start_transcode", "_url_auth_qs", "cdn_enabled"):
+                 "ensure_slot_or_503", "start_transcode", "_url_auth_qs"):
         assert seen.get(name) is False, f"{name} 在事件循环上执行"
     # 115 慢的 0.4s 里事件循环仍在调度心跳（卡住时只会有 1 次）
     assert len(ticks) >= 5

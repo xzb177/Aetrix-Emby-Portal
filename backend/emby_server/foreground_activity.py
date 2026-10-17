@@ -1,54 +1,110 @@
-"""前台用户活跃打点——EA 进程内记录最近一次前台用户请求的时间。
+"""前台用户活跃打点——跨进程共享最近一次前台用户请求的时间。
 
-供 maintenance 的重活（缩略图补生成等）在用户活跃时让路。只用 time.monotonic
-（不碰 wall clock，NTP 跳变不影响）；线程安全；任何异常永不抛给调用方
-（中间件里调用，绝不能影响主链路）。
+供 maintenance 的重活（缩略图补生成等）在用户活跃时让路。
+
+存储：Redis 全进程共享（key 见 FOREGROUND_REDIS_KEY），写入/读取都优先走
+Redis；Redis 不可用时优雅降级到进程内变量（行为不比旧版差）。时间源：
+进程内用 time.monotonic（NTP 跳变不影响）；Redis 里存 wall clock（与既有
+note_redis 保持一致，秒级精度即可，同一机器读写无时钟差问题）。
 
 窗口秒数由调用方读环境变量 FOREGROUND_ACTIVE_SECONDS（默认 60）。
+线程安全；任何异常永不抛给调用方（中间件里调用，绝不能影响主链路）。
 """
 from __future__ import annotations
 
+import logging
+import os
 import threading
 import time
 
-_last_ts = 0.0
+logger = logging.getLogger(__name__)
+
+_last_ts = 0.0  # 降级用：Redis 不可用时的进程内打点（time.monotonic）
 _lock = threading.Lock()
+
+FOREGROUND_REDIS_KEY = "aetrix:foreground:last_api_ts"
+FOREGROUND_REDIS_TTL_S = 300
+
+
+def _redis():
+    """拿 Redis 客户端（backend.database.redis_client，与 scan_queue_redis 同一套）。
+
+    拿不到（未配置/未连上）返回 None，调用方按降级路径处理。"""
+    try:
+        from backend.database import redis_client
+
+        return redis_client
+    except Exception:
+        return None
 
 
 def note() -> None:
-    """记录一次前台请求（EA 中间件对 /emby/ 用户路径调用）。"""
+    """记录一次前台请求（emby_api 中间件对 /emby/ 用户路径调用）。
+
+    优先写 Redis（全进程可见），Redis 不可用时只写进程内变量。永不抛异常。
+    """
     global _last_ts
     try:
         with _lock:
             _last_ts = time.monotonic()
     except Exception:
         pass
+    try:
+        rc = _redis()
+        if rc is not None:
+            rc.setex(FOREGROUND_REDIS_KEY, FOREGROUND_REDIS_TTL_S, time.time())
+    except Exception:
+        pass
 
 
-def active(within_seconds: float = 60.0) -> bool:
-    """最近 within_seconds 秒内是否有前台请求。"""
+def _seconds_since() -> float | None:
+    """距上次前台请求的秒数；取 Redis 与进程内两个来源中较新的，都没有返回 None。
+
+    Redis 是跨进程共享的主来源；进程内是降级来源（Redis 抖动/未启用时兜底）。
+    取较新者是为了不漏掉任何一次活跃信号（漏报=后台重活不给前台让路）。
+    """
+    best: float | None = None
+    try:
+        rc = _redis()
+        if rc is not None:
+            v = rc.get(FOREGROUND_REDIS_KEY)
+            if v is not None:
+                if isinstance(v, bytes):
+                    v = v.decode("utf-8", "ignore")
+                best = time.time() - float(v)
+    except Exception:
+        pass
     try:
         with _lock:
             ts = _last_ts
-        return ts > 0 and (time.monotonic() - ts) <= max(0.0, within_seconds)
+        if ts > 0:
+            local_ago = time.monotonic() - ts
+            if best is None or local_ago < best:
+                best = local_ago
+    except Exception:
+        pass
+    return best
+
+
+def active(within_seconds: float = 60.0) -> bool:
+    """最近 within_seconds 秒内是否有前台请求（跨进程）。"""
+    try:
+        ago = _seconds_since()
+        return ago is not None and ago <= max(0.0, within_seconds)
     except Exception:
         return False
 
 
 def last_seen_ago() -> float | None:
-    """距上次前台请求的秒数；从未记录返回 None。"""
+    """距上次前台请求的秒数（跨进程）；从未记录返回 None。"""
     try:
-        with _lock:
-            ts = _last_ts
-        if ts <= 0:
-            return None
-        return time.monotonic() - ts
+        return _seconds_since()
     except Exception:
         return None
 
 
 def reset_for_tests() -> None:
-    """测试用：清零打点。"""
+    """测试用：清零进程内打点。"""
     global _last_ts
     try:
         with _lock:
@@ -63,23 +119,6 @@ def reset_for_tests() -> None:
 # 调用时顺手 SETEX（零新增请求路径），worker 的扫描在批次边界读它让路。
 # Redis 故障/未启用时全部退化成"不让路"（=现状），永不抛异常。
 # ---------------------------------------------------------------------------
-import logging
-import os
-
-logger = logging.getLogger(__name__)
-
-FOREGROUND_REDIS_KEY = "aetrix:foreground:last_api_ts"
-FOREGROUND_REDIS_TTL_S = 300
-
-
-def _redis():
-    """拿 Redis 客户端；拿不到返回 None（调用方按"不让路"处理）。"""
-    try:
-        from backend import database as db
-
-        return db.redis_client
-    except Exception:
-        return None
 
 
 def note_redis(redis_client=None) -> None:

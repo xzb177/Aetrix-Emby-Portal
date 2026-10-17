@@ -82,6 +82,14 @@ TMDB_POSTER_LANGUAGE_CONFIG_KEY = "tmdb_poster_language"
 TMDB_POSTER_LANGUAGE_DEFAULT = "system"
 TMDB_POSTER_LANGUAGE_OPTIONS = ("system", "original", "zh-CN")
 
+# 批2（刮削瘦身）：TMDB 文字字段只填空、不覆盖（标题/年份/简介/评分/类型/
+# 国家/语言）。默认 "1"=开（新行为：已有非空文字 TMDB 永不覆盖，为将来 NFO
+# 或人工编辑让路）；配 "0" 回退旧的覆盖行为。开关走 config_service 既有模式，
+# 无后台 UI（内部收紧，非用户能力）。
+TMDB_TEXT_FILL_ONLY_CONFIG_KEY = "enrich_tmdb_text_fill_only"
+_TEXT_FILL_CACHE = {"at": 0.0, "value": True}
+_TEXT_FILL_TTL_SEC = 30.0
+
 # ---------------------------------------------------------------------------
 # 请求级限流 / 超时 / 429 退避（v2.42.9）
 
@@ -743,9 +751,14 @@ def settings(db=None, *, refresh: bool = False) -> dict:
                                    TMDB_API_DEFAULT),
         "image_base": normalize_base(env_image or _config_text(TMDB_IMAGE_BASE_CONFIG_KEY, db),
                                      TMDB_IMAGE_DEFAULT),
-        "cooldown_sec": _positive_float(env_cooldown, DEFAULT_KEY_COOLDOWN_SEC, 1.0),
+        # 配置瘦身第 3c 批：env > DB > 默认（此前只读了 env，DB 键 unreachable，
+        # 与本函数 docstring 的口径不符；补上 DB 一层后冷却时长才真正可配）
+        "cooldown_sec": _positive_float(
+            env_cooldown or _config_text(TMDB_KEY_COOLDOWN_CONFIG_KEY, db, refresh=refresh),
+            DEFAULT_KEY_COOLDOWN_SEC, 1.0),
         "invalid_cooldown_sec": _positive_float(
-            env_invalid, DEFAULT_KEY_INVALID_COOLDOWN_SEC, 1.0),
+            env_invalid or _config_text(TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY, db, refresh=refresh),
+            DEFAULT_KEY_INVALID_COOLDOWN_SEC, 1.0),
         "api_base_from_env": bool(env_api),
         "image_base_from_env": bool(env_image),
     }
@@ -812,6 +825,25 @@ def poster_language(db=None) -> str:
         value = ""
     if value not in TMDB_POSTER_LANGUAGE_OPTIONS:
         value = TMDB_POSTER_LANGUAGE_DEFAULT
+    return value
+
+
+def tmdb_text_fill_only(db=None) -> bool:
+    """批2：TMDB 文字字段是否只填空、不覆盖（默认 True=新行为）。
+
+    口径：环境变量 ENRICH_TMDB_TEXT_FILL_ONLY > SystemConfig
+    ``enrich_tmdb_text_fill_only`` > 默认开。配成 "0" 即回退旧的覆盖行为
+    （回滚开关）。进程内 30 秒 TTL 缓存，与 settings() 同口径。
+    """
+    now = time.monotonic()
+    with _settings_lock:
+        if db is None and (now - _TEXT_FILL_CACHE["at"]) < _TEXT_FILL_TTL_SEC:
+            return _TEXT_FILL_CACHE["value"]
+    env = (os.getenv("ENRICH_TMDB_TEXT_FILL_ONLY") or "").strip()
+    raw = env if env else (_config_text(TMDB_TEXT_FILL_ONLY_CONFIG_KEY, db) or "").strip()
+    value = raw != "0"  # 缺省/空/"1" → 只填空；显式 "0" → 回退覆盖
+    with _settings_lock:
+        _TEXT_FILL_CACHE.update({"at": now, "value": value})
     return value
 
 
@@ -1168,7 +1200,14 @@ class TmdbClient:
         return [f"****{k[-4:]}" if len(k) > 4 else "****" for k in self.api_keys]
 
     def _ensure_session(self) -> None:
-        """按需创建 / 重建 HTTP 会话——让后台改完「网络代理」立刻对刮削生效
+        """按需创建 / 重建 HTTP 会话——让后台改完「网络代理」对刮削生效
+
+        进程范围注意（r30 F4）：``proxy.apply()`` 只改**本进程**的环境变量，
+        而保存动作发生在 API 进程，enrich_worker 跑在 worker 进程
+        （main.py ``if not _is_api_role`` 分支）。worker 进程只在启动时
+        ``apply_all()`` 一次，运行时改代理不会更新它的环境，所以指纹在
+        worker 进程里永远比不出变化——「改完立刻生效」只对 API 进程内的
+        刮削调用成立，worker/EA 进程需要重启才生效。
 
         httpx 只在**构造 client 时**读一遍代理环境变量（``trust_env``），建好之后改环境不再
         有效；而刮削客户端是进程级单例、活得比一次扫描久得多。不重建的话，管理员填完代理
@@ -1898,8 +1937,13 @@ class TmdbClient:
         return None
 
     @staticmethod
-    def apply_episode(episode_item, episode_data: dict) -> dict:
+    def apply_episode(episode_item, episode_data: dict,
+                      fields: Optional[dict] = None) -> dict:
         """把单集 TMDB 数据落到条目上（纯内存操作，不碰 DB/网络）。
+
+        fields: {"title": bool, "overview": bool, "still": bool}，None 表示
+        全部开（与分项开关未配置/默认一致，行为与旧调用完全相同）。
+        批3（分项开关）：被关的项跳过写入。
 
         返回 {"updated": bool, "still_path": Optional[str]}：
         - updated=True 表示 name/overview 有变化，调用方需要写库
@@ -1915,6 +1959,13 @@ class TmdbClient:
         if not episode_data:
             return result
 
+        # 批3：分项开关门控（None = 全部开，与旧行为一致）
+        enabled = {"title": True, "overview": True, "still": True}
+        if fields:
+            for _k in enabled:
+                if _k in fields:
+                    enabled[_k] = bool(fields[_k])
+
         tmdb_name = (episode_data.get("name") or "").strip()
         # TMDB 占位标题（"Episode 1" / 中文"第 1 集"）不算真实标题
         is_placeholder = (
@@ -1925,7 +1976,7 @@ class TmdbClient:
         current = (getattr(episode_item, "name", "") or "").strip()
         is_generic = _is_placeholder_episode_title(current)
 
-        if not is_placeholder and is_generic:
+        if enabled["title"] and not is_placeholder and is_generic:
             # 当前是"第X集"占位，TMDB 有真实标题 → 覆盖。先过统一标题清洗
             # （冒号副标题/控制符不进标题）；清空了就不覆盖，保住现有真实名
             cleaned = clean_title(tmdb_name)
@@ -1935,17 +1986,18 @@ class TmdbClient:
                 from backend.emby_server.pinyin_sort import make_sort_name
                 episode_item.sort_name = make_sort_name(cleaned)
                 result["updated"] = True
-        # 简介：当前为空时才补（不覆盖 NFO/已有的）
+        # 简介：当前为空时才补（不覆盖 NFO/已有的）；批3：简介分项关时跳过
         tmdb_overview = (episode_data.get("overview") or "").strip()
-        if tmdb_overview and not (getattr(episode_item, "overview", "") or "").strip():
+        if (enabled["overview"] and tmdb_overview
+                and not (getattr(episode_item, "overview", "") or "").strip()):
             episode_item.overview = tmdb_overview
             result["updated"] = True
         # 单集片长（元数据口径，探测拿到真实时长前用）
         if apply_runtime(episode_item, episode_data):
             result["updated"] = True
-        # 剧照路径（调用方拼 URL + 预热）
+        # 剧照路径（调用方拼 URL + 预热）；批3：剧照分项关时不返回路径
         still = episode_data.get("still_path")
-        if still:
+        if enabled["still"] and still:
             result["still_path"] = still
         return result
 
@@ -2003,11 +2055,14 @@ class TmdbClient:
                 item.production_year = y
         # 简介与评分也从详情补：搜索结果的 overview/vote_average 经常是空或 0，
         # 只靠 apply() 会让「有 tmdb_id 却缺简介/评分」的一大批永远补不上。
+        # 批2：只填空、不覆盖——已有简介/评分时 TMDB 详情不再覆盖。
+        fill_only = tmdb_text_fill_only()
         overview = data.get("overview")
-        if overview:
+        if overview and (not fill_only or not (getattr(item, "overview", None) or "").strip()):
             item.overview = overview
         rating = data.get("vote_average")
-        if rating is not None and rating != "":
+        if rating is not None and rating != "" and \
+                (not fill_only or getattr(item, "community_rating", None) is None):
             try:
                 item.community_rating = round(float(rating), 1)
             except (TypeError, ValueError):
@@ -2018,12 +2073,19 @@ class TmdbClient:
         names = [n for n in ([data.get("name"), data.get("original_name"),
                               data.get("title"), data.get("original_title")] + titles) if n]
         if names:
-            seen: list[str] = []
-            for n in names:
-                n = str(n).strip()
-                if n and n not in seen:
-                    seen.append(n)
-            item.aliases = ",".join(seen[:12])
+            # 批2：别名在只填空口径下按「增量合并」处理——保留已有、追加新增
+            # （与 apply() 同口径）；回退旧行为时保持原来的整体替换。
+            new_names = [n for n in dict.fromkeys(
+                str(n).strip() for n in names) if n]
+            if fill_only:
+                existing = [a for a in
+                            (getattr(item, "aliases", None) or "").split(",")
+                            if a.strip()]
+                merged = existing + [n for n in new_names if n not in existing]
+                if merged:
+                    item.aliases = ",".join(merged[:12])
+            elif new_names:
+                item.aliases = ",".join(new_names[:12])
         # 首播/上映日期 → production_year + premiere_date（只补缺项；
         # 详情的 first_air_date 通常比搜索命中准，但已有值不覆盖）
         _fill_air_dates(item, data)
@@ -2090,23 +2152,28 @@ class TmdbClient:
         item.metadata_source = "tmdb"
         item.overview = hit.get("overview") or item.overview
         rating = hit.get("vote_average")
-        # 注意不能用 `if rating:`：TMDB 对没有评分的条目返回 0.0，那是**合法数据**，
-        # 判假值会让这类条目永远没有评分（生产实测 21天重养自己 就是 0.0）。
-        if rating is not None and rating != "":
+        # 批2（刮削瘦身）：文字字段只填空、不覆盖。注意不能用 `if rating:`：
+        # TMDB 对没有评分的条目返回 0.0，那是**合法数据**，判假值会让这类条目
+        # 永远没有评分（生产实测 21天重养自己 就是 0.0）。已有评分时 TMDB 的
+        # 0.0 不再覆盖（为将来 NFO/人工编辑让路）。
+        fill_only = tmdb_text_fill_only()
+        if rating is not None and rating != "" and \
+                (not fill_only or item.community_rating is None):
             try:
                 item.community_rating = round(float(rating), 1)
             except (TypeError, ValueError):
                 pass
         for img_kind, url in image_specs(hit):
             _set_image(item, img_kind, url)
-        if kind == "series" and hit.get("name"):
-            _n = clean_title(hit.get("name"))
-            if _n:
-                item.name = _n
-        elif hit.get("title"):
-            _n = clean_title(hit.get("title"))
-            if _n:
-                item.name = _n
+        if not fill_only or not (getattr(item, "name", None) or "").strip():
+            if kind == "series" and hit.get("name"):
+                _n = clean_title(hit.get("name"))
+                if _n:
+                    item.name = _n
+            elif hit.get("title"):
+                _n = clean_title(hit.get("title"))
+                if _n:
+                    item.name = _n
         if not getattr(item, "production_year", None):
             y = _year_from_tmdb_date(hit)
             if y:
@@ -2119,7 +2186,8 @@ class TmdbClient:
         if merged:
             item.aliases = ",".join(dict.fromkeys(merged))[:2000]
         genre_ids = hit.get("genre_ids") or []
-        if genre_ids:
+        # 批2：类型只填空、不覆盖（TMDB genre_id 映射是粗分类，NFO/人工更准）
+        if genre_ids and (not fill_only or not (getattr(item, "genres", None) or "").strip()):
             item.genres = ",".join(
                 _GENRE_NAMES.get(g, str(g)) for g in genre_ids[:_MAX_GENRES]
             )

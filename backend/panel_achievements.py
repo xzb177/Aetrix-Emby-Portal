@@ -103,6 +103,21 @@ def _parse_genres(genres_raw) -> list:
     return [str(genres_raw)]
 
 
+# 成就时间口径（2026-10-17 用户拍板：成就按北京时间算）：
+# 播放会话 start_time 以服务器本地时间（UTC）naive 入库（emby_server/compat_routes.py:138）；
+# 时间类规则（初夜/早鸟/熬夜/追完/马拉松）按用户感知的北京时间判定，
+# 用 +8h 提取小时/日期/星期——与趋势图 #1010 同口径。
+# 注意：+8h 只用于提取"人看的"时间分量；和入库时间列做 >=/<= 比较的场景
+# （cutoff 90 天窗口、年卡 end_date 有效期）保持与存储帧（UTC naive）一致，不转帧，
+# 否则比较的两端帧不一致会凭空偏 8 小时。
+_BEIJING_OFFSET = timedelta(hours=8)
+
+
+def _beijing(dt):
+    """UTC-naive 入库时间 → 北京时间 naive（提取 hour/date/weekday 用）。"""
+    return dt + _BEIJING_OFFSET if dt is not None else None
+
+
 def user_tastes(db: Session, user_id: int) -> dict:
     """12 口味印章状态：{taste_key: {'name':, 'stamped': bool, 'count': int}}
 
@@ -146,8 +161,8 @@ def evaluate(user_id: int, db: Session) -> list:
     if not enabled:
         return []
     unlocked = _unlocked_keys(db, user_id)
-    now = datetime.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    now = datetime.now()  # 服务器本地帧（UTC naive），与入库时间列同帧：cutoff/end_date 比较用
+    now_bj = _beijing(now)  # 北京时间帧：小时/日期/年份判定用
 
     new_unlocks = []
 
@@ -163,22 +178,22 @@ def evaluate(user_id: int, db: Session) -> list:
     ).all()
     valid = [s for s in sessions if (s.play_duration or 0) > 60]
 
-    # --- 时间类规则 ---
+    # --- 时间类规则（按北京时间判定小时） ---
     for s in valid:
         if not s.start_time:
             continue
-        h = s.start_time.hour
+        h = _beijing(s.start_time).hour
         if h >= 23 or h < 5:
             _grant("first_night")
         if 5 <= h < 8:
             _grant("early_bird")
 
-    # --- 单日时长类 ---
+    # --- 单日时长类（按北京时间自然日分桶） ---
     day_seconds: dict = {}
     for s in valid:
         if not s.start_time:
             continue
-        d = s.start_time.date().isoformat()
+        d = _beijing(s.start_time).date().isoformat()
         day_seconds[d] = day_seconds.get(d, 0) + (s.play_duration or 0)
     for d, secs in day_seconds.items():
         if secs >= 6 * 3600:
@@ -218,8 +233,8 @@ def evaluate(user_id: int, db: Session) -> list:
         _, genres_raw, prod_year, item_type, series_id = row
         genres = _parse_genres(genres_raw)
         gtext = " ".join(genres).lower()
-        # 考古：10 年前老片
-        if prod_year and prod_year <= now.year - 10:
+        # 考古：10 年前老片（年份用北京时间帧）
+        if prod_year and prod_year <= now_bj.year - 10:
             _grant("archaeology")
         # 深海：纪录片
         if any(k in gtext for k in ["纪录片", "documentary"]):
@@ -236,7 +251,7 @@ def evaluate(user_id: int, db: Session) -> list:
             continue
         _, _, _, item_type, series_id = row
         if item_type == "episode" and series_id:
-            k = (series_id, s.start_time.date().isoformat())
+            k = (series_id, _beijing(s.start_time).date().isoformat())
             series_day[k] = series_day.get(k, 0) + 1
     if any(c >= 6 for c in series_day.values()):
         _grant("binge")

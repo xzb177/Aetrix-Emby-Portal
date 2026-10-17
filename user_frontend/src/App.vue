@@ -3,16 +3,14 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import Toast from '@/components/Toast.vue'
 import AppHeader from '@/components/AppHeader.vue'
-import AppDock from '@/components/AppDock.vue'
+import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import TgBindModal from '@/components/TgBindModal.vue'
 import { useToast } from '@/composables/useToast'
 import { useUserStore } from '@/stores/user'
 import { usePanelStore } from '@/stores/panel'
 import { refreshEmbyBaseUrl } from '@/api/emby'
 import { tgApi } from '@/api/tg'
-import { isPanelV4Enabled } from '@/composables/usePanelApi'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
-import { V4_PATHS } from '@/router'
 
 const { messages, remove, warning } = useToast()
 const userStore = useUserStore()
@@ -44,8 +42,8 @@ const route = useRoute()
  * 全局导航壳：同一份导航定义（src/config/navigation.ts），两种断点形态：
  *
  *   ≥769px  顶栏：品牌 + 主导航（≥900px 横排、769~900px 顶栏第二行滑动选项卡）
- *   ≤768px  顶栏退成单行（品牌 + 资产 pill + 账号），主导航交给底部坞（AppDock）——
- *           拇指区常驻 Tab 栏是移动端的肌肉记忆，条目与顶栏完全同源、不增不减。
+ *   ≤768px  底部坞（PanelTabbar，纸色）：拇指区常驻 Tab 栏是移动端的肌肉记忆，
+ *           条目与顶栏完全同源、不增不减；桌面 ≥769px 由 CSS 隐藏。
  *
  * 页面底部留白用 --au-dock-space 跟着坞的高度走：≥769px 为 0，≤768px 给坞让位。
  */
@@ -63,15 +61,10 @@ const hideHeaderForWorld = computed(
 )
 
 /**
- * P1#1 双底部导航：v4 16 个路由（V4_PATHS：4 panel + 12 game）模板末尾自带纸色
- * PanelTabbar（fixed bottom，z-index 50），会盖住 AppDock（z-index 40）导致
- * 「首页/补给站/我的」不可点 —— 这些路由下只渲染 PanelTabbar，隐藏 AppDock。
- * 尾斜杠规范化与 router/index.ts 的 afterEach 保持一致（/game/ 与 /game 同页）。
+ * 底部坞改走 App.vue 全局常驻（PanelTabbar，≤768px 唯一一套）：
+ * 各视图不再自带 <PanelTabbar/>，非 v4 路由（/tg-bind 等）也认同一套，
+ * 桌面 ≥769px 由 CSS 隐藏（DESIGN.md v1.1：桌面导航只留顶栏）。
  */
-const panelV4 = isPanelV4Enabled()
-const hideDockForPanel = computed(
-  () => panelV4 && V4_PATHS.has(route.path.replace(/\/+$/, '') || '/'),
-)
 
 /**
  * 三个常驻缓存视图（发现页 DiscoveryView / 补给站 ShopView / 账号设置 AccountSettingsView）常驻缓存：切 tab 不再销毁重建，
@@ -186,7 +179,7 @@ watch(
         </Transition>
       </KeepAlive>
     </RouterView>
-    <AppDock v-if="showChrome && !hideDockForPanel" />
+    <PanelTabbar v-if="showChrome" />
     <Toast :messages="messages" @remove="remove" />
     <!-- 全局 TG 绑定自动弹窗：新用户注册后自动弹出，已绑定不弹 -->
     <TgBindModal v-model="showGlobalTgBind" @bound="handleGlobalTgBound" />

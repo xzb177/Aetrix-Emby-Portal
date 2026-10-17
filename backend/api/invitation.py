@@ -162,18 +162,26 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
         logger.info("邀请码名额并发占位失败: code=%s user=%s", code_str, user.id)
         return {"applied": False}
 
+    # P0（r31 修复）：邀请者奖励按「码 > 全局」取值——InvitationCode.reward_points
+    # 是每码一份的能力字段（与 max_uses/expires_at/whitelist 同级），此前只写不读：
+    # apply_invitation 永远按全局 config 发奖，后台 DTO 却把它展示为「奖励」，
+    # 批量码恒为 0 误导管理员。>0 = 本码专属奖励；0/空 = 跟随全局 invitation_reward_points。
+    inviter_reward = int(code.reward_points or 0)
+    if inviter_reward <= 0:
+        inviter_reward = config["reward_points"]
+
     # 记录邀请关系
     record = models.InvitationRecord(
         inviter_id=inviter.id,
         invitee_id=user.id,
         code_id=code.id,
-        reward_points=config["reward_points"],
+        reward_points=inviter_reward,
     )
     db.add(record)
 
     # 邀请者奖励
     inviter_balance = _add_points(
-        db, inviter, config["reward_points"], "invite",
+        db, inviter, inviter_reward, "invite",
         f"成功邀请用户 {user.username}", f"invite:{user.id}",
     )
     # 被邀请者奖励
@@ -216,7 +224,7 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
     return {
         "applied": True,
         "inviter_id": inviter.id,
-        "inviter_reward": config["reward_points"],
+        "inviter_reward": inviter_reward,
         "invitee_reward": config["invitee_reward_points"],
         "inviter_balance": inviter_balance,
         "invitee_balance": invitee_balance,
@@ -280,13 +288,28 @@ def my_code(
         models.InvitationCode.is_active == True,  # noqa: E712
     ).first()
     if not code:
-        code = models.InvitationCode(
-            code=_generate_invite_code(db),
-            user_id=current_user.id,
-            reward_points=get_invite_config(db)["reward_points"],
-        )
-        db.add(code)
-        db.commit()
+        # 自助码恒写 reward_points=0：语义是「跟随全局配置」（r31 起 reward_points
+        # 是本码专属奖励字段，>0 才覆盖全局；自助码不该冻结生成时的配置快照）。
+        # 撞号重试：极低概率下两个并发请求生成了同码，唯一索引拦下后重生成一次。
+        created = None
+        for _attempt in range(2):
+            created = models.InvitationCode(
+                code=_generate_invite_code(db),
+                user_id=current_user.id,
+                reward_points=0,
+            )
+            db.add(created)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                logger.info("邀请码并发撞号，已重生成重试: user=%s", current_user.id)
+                created = None
+                continue
+            break
+        if created is None or created.id is None:
+            raise HTTPException(status_code=500, detail="邀请码生成失败，请重试")
+        code = created
         db.refresh(code)
 
     invited_count = db.query(models.InvitationRecord).filter(

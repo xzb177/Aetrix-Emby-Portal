@@ -50,6 +50,8 @@ from backend.emby_server.tmdb import (
     TMDB_POSTER_LANGUAGE_OPTIONS,
     TMDB_PREFERRED_LANGUAGE_CONFIG_KEY,
     TMDB_PREFERRED_LANGUAGE_DEFAULT,
+    DEFAULT_KEY_COOLDOWN_SEC,
+    DEFAULT_KEY_INVALID_COOLDOWN_SEC,
     TmdbTransientError,
     _db_keys,
     _env_keys,
@@ -453,6 +455,65 @@ def save_tmdb_poster_language(
     db.commit()
     db.expire_all()
     return {"success": True, "language": lang}
+
+
+class TmdbKeyCooldownsSaveRequest(BaseModel):
+    cooldown_sec: float = Field(default=DEFAULT_KEY_COOLDOWN_SEC,
+                                description="密钥限流冷却（秒），≥1，默认 900")
+    invalid_cooldown_sec: float = Field(default=DEFAULT_KEY_INVALID_COOLDOWN_SEC,
+                                        description="密钥 401 失效冷却（秒），≥1，默认 21600")
+
+
+@admin_emby_router.get("/scrape/tmdb-key-cooldowns")
+def get_tmdb_key_cooldowns(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """TMDB 密钥冷却时长：当前生效值 + 默认值 + 环境变量覆盖标记。
+
+    配置瘦身第 3c 批：429 限流冷却与 401 失效冷却此前无后台写入口。
+    TMDB_KEY_COOLDOWN_SEC / TMDB_KEY_INVALID_COOLDOWN_SEC 环境变量优先。
+    """
+    cfg = tmdb_settings(db, refresh=True)
+    return {
+        "cooldown_sec": cfg["cooldown_sec"],
+        "invalid_cooldown_sec": cfg["invalid_cooldown_sec"],
+        "from_env": {
+            "cooldown_sec": bool((os.getenv("TMDB_KEY_COOLDOWN_SEC") or "").strip()),
+            "invalid_cooldown_sec": bool((os.getenv("TMDB_KEY_INVALID_COOLDOWN_SEC") or "").strip()),
+        },
+        "defaults": {
+            "cooldown_sec": float(DEFAULT_KEY_COOLDOWN_SEC),
+            "invalid_cooldown_sec": float(DEFAULT_KEY_INVALID_COOLDOWN_SEC),
+        },
+    }
+
+
+@admin_emby_router.put("/scrape/tmdb-key-cooldowns")
+def save_tmdb_key_cooldowns(
+    req: TmdbKeyCooldownsSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存 TMDB 密钥冷却时长（写 SystemConfig，保存即热生效，无需重启）。"""
+    try:
+        cd = float(req.cooldown_sec)
+        icd = float(req.invalid_cooldown_sec)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="冷却时长必须是数字")
+    if cd < 1 or icd < 1:
+        raise HTTPException(status_code=400, detail="冷却时长需 ≥ 1 秒")
+    store.write_values(
+        db,
+        {TMDB_KEY_COOLDOWN_CONFIG_KEY: str(cd),
+         TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY: str(icd)},
+        {TMDB_KEY_COOLDOWN_CONFIG_KEY: "TMDB 密钥限流（429）冷却秒数，默认 900",
+         TMDB_KEY_INVALID_COOLDOWN_CONFIG_KEY: "TMDB 密钥 401 失效冷却秒数，默认 21600"},
+    )
+    db.commit()
+    db.expire_all()
+    invalidate_settings()
+    return {"success": True, "cooldown_sec": cd, "invalid_cooldown_sec": icd}
 
 
 # ==================== 条目级重刮 ====================
@@ -947,9 +1008,6 @@ class AutoScanSaveRequest(BaseModel):
 class ChaseNewSaveRequest(BaseModel):
     enabled: bool = Field(default=False, description="追新总开关")
     interval: int = Field(default=10, description="轮询间隔（分钟），5-120")
-    strm_enabled: Optional[bool] = Field(default=None, description=".strm 监听开关："
-                                         "库路径是 /strm/... 时，strm_gen 产出的新 .strm 才会触发增量扫描；"
-                                         "不传 = 保持现有值（老前端兼容）")
     excluded: str = Field(default="",
                           description="**排除**监听的库 ID，逗号分隔，空 = 全部启用库都监听")
     # 旧字段（包含清单）：只为还在用老前端的部署保留，后端会换算成排除清单
@@ -1044,8 +1102,7 @@ def save_chase_new(
 ):
     """保存追新配置：立即生效，无需重启"""
     cfg = change_watcher.save_config(db, req.enabled, req.interval,
-                                     excluded=req.excluded, libraries=req.libraries,
-                                     strm_enabled=req.strm_enabled)
+                                     excluded=req.excluded, libraries=req.libraries)
     return {"success": True, **cfg}
 
 
@@ -1166,6 +1223,50 @@ def save_enrich_episode_night(
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.save_episode_night_config(
         db, req.enabled, req.night_start, req.night_end, req.night_tz)
+    return {"success": True, **cfg}
+
+
+# ==================== 单集分项开关（批3：刮削瘦身收官）====================
+
+class EnrichEpisodeFieldsSaveRequest(BaseModel):
+    title: bool = Field(default=True, description="单集标题开关（默认开）")
+    overview: bool = Field(default=True, description="单集简介开关（默认开）")
+    still: bool = Field(default=True, description="单集剧照开关（默认开）")
+
+
+@admin_emby_router.get("/scrape/enrich-episode-fields")
+def get_enrich_episode_fields(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """单集分项开关：当前生效值 + 默认值。
+
+    from_env 为真时环境变量覆盖了后台配置（改这里不生效）。
+    三项默认全开 = 与现状行为完全一致。
+    """
+    from backend.emby_server import enrich_worker
+    cfg = enrich_worker.get_episode_field_config(db)
+    return {
+        "success": True,
+        **cfg,
+        "defaults": {
+            "title": True,
+            "overview": True,
+            "still": True,
+        },
+    }
+
+
+@admin_emby_router.put("/scrape/enrich-episode-fields")
+def save_enrich_episode_fields(
+    req: EnrichEpisodeFieldsSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存单集分项开关（写 SystemConfig，60 秒内热生效，无需重启）"""
+    from backend.emby_server import enrich_worker
+    cfg = enrich_worker.save_episode_field_config(
+        db, req.title, req.overview, req.still)
     return {"success": True, **cfg}
 
 
@@ -1680,14 +1781,14 @@ def search_tmdb_candidates(
     return {"candidates": candidates}
 
 
-# ==================== 豆瓣优先（中文内容主数据源） ====================
+# ==================== 豆瓣（可选）：中文兜底数据源 ====================
 
 @admin_emby_router.get("/scrape/douban-config")
 def get_douban_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """读取豆瓣优先配置：总开关（默认开）+ 限速（秒/次）"""
+    """读取豆瓣配置：总开关（默认关）+ 限速（秒/次）"""
     from backend.emby_server import douban as _dbn
     return {
         "enabled": _dbn.enabled(db),
@@ -1706,7 +1807,7 @@ def save_douban_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存豆瓣优先配置（保存即热生效）"""
+    """保存豆瓣配置（保存即热生效）"""
     from backend.emby_server import douban as _dbn
     from backend.integrations import store
     enabled = body.enabled
@@ -1718,12 +1819,61 @@ def save_douban_config(
             _dbn.DOUBAN_RATE_KEY: str(iv),
         },
         {
-            _dbn.DOUBAN_ENABLED_KEY: "豆瓣优先总开关（中文标题先走豆瓣）",
+            _dbn.DOUBAN_ENABLED_KEY: "豆瓣（可选）总开关（中文标题 TMDB 未命中时走豆瓣兜底）",
             _dbn.DOUBAN_RATE_KEY: "豆瓣请求最小间隔秒数",
         },
     )
     db.commit()
     return {"success": True, "enabled": enabled, "min_interval": iv}
+
+
+# ==================== 备用链路限速（配置瘦身第 3 批） ====================
+# altmeta 是豆瓣主链路封禁/降级后的备用链路（豆瓣 subject_suggest + Bangumi 兜底），
+# 它的两个最小间隔秒数（altmeta_douban_rate / altmeta_bangumi_rate）此前无后台入口。
+
+
+@admin_emby_router.get("/scrape/altmeta-rates")
+def get_altmeta_rates(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读取备用链路限速：豆瓣备用 / Bangumi 兜底的最小间隔秒数（0=不限速）"""
+    from backend.emby_server import altmeta as _am
+    return {
+        "douban_rate": _am.min_interval(db),
+        "bangumi_rate": _am.min_interval_bangumi(db),
+    }
+
+
+class _AltmetaRatesBody(BaseModel):
+    douban_rate: float = 1.0
+    bangumi_rate: float = 1.0
+
+
+@admin_emby_router.put("/scrape/altmeta-rates")
+def save_altmeta_rates(
+    body: _AltmetaRatesBody,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存备用链路限速（保存即热生效）；0=不限速，上限 60 秒"""
+    from backend.emby_server import altmeta as _am
+    from backend.integrations import store
+    iv_d = max(0.0, min(60.0, float(body.douban_rate or 0)))
+    iv_b = max(0.0, min(60.0, float(body.bangumi_rate or 0)))
+    store.write_values(
+        db,
+        {
+            _am.CONFIG_RATE: str(iv_d),
+            _am.CONFIG_BANGUMI_RATE: str(iv_b),
+        },
+        {
+            _am.CONFIG_RATE: "备用链路（豆瓣 subject_suggest）请求最小间隔秒数",
+            _am.CONFIG_BANGUMI_RATE: "备用链路（Bangumi 兜底）请求最小间隔秒数",
+        },
+    )
+    db.commit()
+    return {"success": True, "douban_rate": iv_d, "bangumi_rate": iv_b}
 
 
 # ==================== 豆瓣封禁降级（链路规划 Step 0.5） ====================

@@ -323,12 +323,6 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
         (k, v, f"活力值：{k}") for k, v in vitality.VITALITY_DEFAULTS.items()
     ])
 
-    # 7.5 CDN 域名预留（播放三层第 2/3 层）：默认关闭 + 空域名 = 与升级前一致
-    from backend.emby_server import cdn
-    items.extend([
-        (cdn.CONFIG_CDN_DOMAIN, "", "CDN 域名预留：回源到本服务的域名（留空 = 未配置）"),
-        (cdn.CONFIG_CDN_ENABLED, "false", "CDN 域名预留开关（默认关闭）"),
-    ])
 
 
     # 7.7 求片中心：每日额度（规则与默认值都在 backend/media_seek.py）
@@ -404,14 +398,12 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
                     access_guard.CONFIG_REGION_KEYWORDS)
     ])
 
-    # 7.12 防盗链（.strm 签名 + 播放签名）：默认全部启用 = 与升级前一致
+    # 7.12 防盗链（播放签名，2026-10-17 起 .strm 签名已随 strm_gen 删除）：默认全部启用 = 与升级前一致
     from backend.emby_server import play_sign
     items.extend([
         (play_sign.CONFIG_HOTLINK_ENABLED, "true", play_sign.DESCRIPTIONS[play_sign.CONFIG_HOTLINK_ENABLED]),
         (play_sign.CONFIG_PLAY_SIGN_TTL, str(play_sign.PLAY_TTL_DEFAULT),
          play_sign.DESCRIPTIONS[play_sign.CONFIG_PLAY_SIGN_TTL]),
-        (play_sign.CONFIG_STRM_SIG_TTL, str(play_sign.STRM_TTL_DEFAULT),
-         play_sign.DESCRIPTIONS[play_sign.CONFIG_STRM_SIG_TTL]),
     ])
 
     # 8. 公益服查看权限价格

@@ -36,13 +36,11 @@
         <WorldMap variant="game" />
       </section>
     </div>
-    <PanelTabbar />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import PanelTabbar from '@/components/panel/PanelTabbar.vue'
 import CampGuide from '@/components/game/CampGuide.vue'
 import WorldMap from '@/components/panel/WorldMap.vue'
 import { gameHubConfig as hub } from '@/config/game'

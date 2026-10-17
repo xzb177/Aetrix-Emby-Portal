@@ -48,7 +48,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg mediainfo ca-certificates curl gnupg \
+    # r43：tzdata 装包时会弹 debconf 时区交互，非交互模式否则 docker build 卡住
+    && export DEBIAN_FRONTEND=noninteractive \
+    && apt-get install -y --no-install-recommends ffmpeg mediainfo ca-certificates curl gnupg tzdata libvips42 \
     && rm -rf /var/lib/apt/lists/*
 # pg_dump 供 db_backup 的 PostgreSQL 分支用（E-P1-4）：生产库是 postgres:16，
 # 定时/手动备份在容器内直接调 pg_dump。客户端大版本必须与服务端对齐（16），

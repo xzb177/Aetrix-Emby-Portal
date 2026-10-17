@@ -99,7 +99,7 @@ FILES_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
 # 视频扩展名（本地判型用，不额外 import scanner）
 _VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts",
-    ".ts", ".mpg", ".mpeg", ".rmvb", ".rm", ".asf", ".3gp", ".f4v",
+    ".ts", ".mpg", ".mpeg", ".rmvb", ".rm", ".asf", ".3gp", ".f4v", ".iso",
 }
 
 # ---------------------------------------------------------------------------
@@ -423,6 +423,27 @@ def get_token_for_drive(drive_id: str, force_refresh: bool = False) -> str | Non
     return _get_token()
 
 
+def next_shared_sa() -> dict | None:
+    """共享盘：从 SA 池轮换出一个 SA（推进一次轮换），供单次列举钉住用。
+
+    不改全局轮换策略——调用一次只推进一次；钉住后同一次列举不再轮换。
+    """
+    return _next_sa()
+
+
+def refresh_sa_token(sa: dict, min_remaining: float = 1800.0) -> str | None:
+    """对指定 SA 强制换新 token（清掉该 SA 的缓存再换，不推进轮换）。
+
+    供「单次列举内钉住同一 SA」的 401 续跑语义用：分页 pageToken 与请求身份
+    绑定，换 SA 会 400，只能对同一 SA 刷新。min_remaining 沿用 _sa_access_token
+    语义（默认 1800：索取剩余寿命足够长的 token，防超大目录枚举中途过期）。
+    """
+    cache_key = sa.get("client_email", "") or sa.get("private_key_id", "")
+    if cache_key:
+        _token_cache.pop(cache_key, None)
+    return _sa_access_token(sa, min_remaining=min_remaining)
+
+
 # ---------------------------------------------------------------------------
 # Changes API
 # ---------------------------------------------------------------------------
@@ -484,7 +505,7 @@ def _retry_sleep_sec(attempt: int, is_rate_limited: bool = False,
 #: 线程本地重试计数器（_api_get 入口置 0，每次重试前 +1）。
 #: 多线程下各线程独立，互不污染。
 #: _total_retries 累计本线程自上次 reset_total_retry_count 以来的总重试数，
-#: 供 strm_gen 统计单个 drive 列举期间的 API 重试总量。
+#: 供调用方统计单次 Drive 列举期间的 API 重试总量。
 _retry_state = threading.local()
 
 
@@ -548,12 +569,12 @@ class ApiRateLimiter:
             time.sleep(wait_s)
 
 
-#: 模块级单例（默认 8 QPS，保守值；strm_gen 启动时按配置调整）
+#: 模块级单例（默认 8 QPS，保守值；可按需调整）
 _api_limiter = ApiRateLimiter(8.0)
 
 
 def set_api_qps(qps: float) -> None:
-    """设置全局 Drive API 速率上限（QPS），供 strm_gen 按管理后台配置调用。"""
+    """设置全局 Drive API 速率上限（QPS）。"""
     _api_limiter.set_qps(qps)
 
 
@@ -804,7 +825,6 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
     凭据走 get_token_for_drive(drive_id)：个人盘 OAuth 失败抛 DriveAuthError，
     同样直接抛（不静默回退 SA 池）。
     调用方必须区分"报错"和"真的无变化"：
-    - strm_gen 的 DriveChangesLister：异常向上传播 → per-drive 记 error → 整轮 phase=error
     - drive_changes poller：外层 try/except 记 errors+1，page token 不推进，下轮重放
     """
     token = get_token_for_drive(drive_id)
@@ -944,68 +964,11 @@ def _save_page_token(db, drive_id: str, token: str) -> None:
 # 变化 → 库映射
 # ---------------------------------------------------------------------------
 
-def _strm_lib_drive_mappings(db) -> list[tuple[int, str, str, str]]:
-    """[(library_id, drive_id, drive子目录, fs路径前缀)] —— /strm 库 → Drive 前缀。
-
-    通用能力（数据驱动，不写死任何库路径）：
-    .strm 树是生成器按「盘 × 源目录」镜像写出的 Drive 结构
-    （strm_gen.strm_relpath 会去掉源目录前缀、换 .strm 扩展名），
-    因此库路径 /strm/<rel> 在 Drive 侧对应 /<source_dir>/<rel>
-    （逐盘、逐源目录展开）。盘集合、源目录集合、.strm 输出根全部从
-    生成器配置（strm_gen_drive_id / strm_gen_source_dir）与唯一事实源推导。
-    """
-    from backend.emby_server import models as em
-    try:
-        from backend.emby_server import strm_gen as sg
-    except Exception:
-        return []
-    try:
-        strm_root = (sg._container_strm_root(db) or "/strm").rstrip("/") or "/strm"
-        # 源目录：显式配空 = 网盘根（strm_relpath 保留 Drive 根相对路径）
-        if not (sg.source_dir_raw(db) or "").strip():
-            srcs = [""]
-        else:
-            srcs = [s.rstrip("/") for s in sg.source_dirs(db)]
-        if not srcs:
-            return []
-        drive_cfg = (sg._db_config(db, sg.CONFIG_DRIVE_ID, "") or "").strip()
-        drives = list(discover_drives().keys())
-        if drive_cfg and drive_cfg.lower() != "all":
-            drives = [d for d in drives if d == drive_cfg]
-        libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
-    except Exception:
-        return []
-    out: list[tuple[int, str, str, str]] = []
-    for lib in libs:
-        if getattr(lib, "is_virtual", False):
-            continue
-        for raw in (getattr(lib, "paths", "") or "").split(","):
-            path = raw.strip().rstrip("/")
-            if not path:
-                continue
-            if path == strm_root:
-                rel = ""
-            elif path.startswith(strm_root + "/"):
-                rel = path[len(strm_root) + 1:]
-            else:
-                continue
-            fs_prefix = path
-            for drive_id in drives:
-                for src in srcs:
-                    sub = ("/" + src if src else "") + ("/" + rel if rel else "")
-                    out.append((lib.id, drive_id, sub or "/", fs_prefix))
-    if out:
-        logger.debug("Drive Changes: /strm 库→Drive 前缀映射 %d 条（%d 个库）",
-                     len(out), len({m[0] for m in out}))
-    return out
-
-
 def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
     """返回 [(library_id, drive_id, drive子目录前缀)]。
 
     库路径形如 /mnt/mp/nastool/剧集 → 拆出 rclone remote → team_drive，
     前缀 = remote 下的子目录（Drive 内的相对路径）。
-    /strm/... 库路径走 _strm_lib_drive_mappings（从生成器配置反推）。
     """
     from backend.emby_server import models as em
 
@@ -1061,9 +1024,6 @@ def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
                             sub = path[len(mp):] or "/"
                             out.append((lib.id, drive_id, sub))
                         break
-    # /strm 库：从生成器配置反推 Drive 前缀（通用能力，见 _strm_lib_drive_mappings）
-    for lib_id, drive_id, sub, _fs in _strm_lib_drive_mappings(db):
-        out.append((lib_id, drive_id, sub))
     return out
 
 
@@ -1169,9 +1129,6 @@ def _library_fs_prefixes(db) -> dict[tuple[int, str], str]:
                         drive_sub = path[len(mp):] or "/"
                         out[(lib.id, drive_sub)] = path
                         break
-    # /strm 库的 fs 前缀（与 _library_drive_prefixes 的 sub 一一对应）
-    for lib_id, _drive_id, sub, fs_prefix in _strm_lib_drive_mappings(db):
-        out[(lib_id, sub)] = fs_prefix
     return out
 
 

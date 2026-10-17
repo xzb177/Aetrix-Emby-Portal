@@ -4,7 +4,7 @@
 import json
 import logging
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -230,15 +230,27 @@ def add_xp(
 
     约定与 ``_add_points`` 一致：**不提交事务**，只做 SQL 级自增 + 添流水对象，
     由调用方统一 commit（履约场景要求积分/经验/订单状态在同一事务里）。
+
+    ``delta`` 可正可负：正数是发放（如充值履约），负数是回滚（如订单退款
+    撤回履约时发的经验）。负数时经验钳制在 0（不扣成负数），等级按阈值
+    重算——``_recompute_level`` 取阈值 <= xp 的最大等级，降级天然支持。
     """
-    if delta <= 0:
+    if delta == 0:
         return {"added": False}
 
     old_level = user.member_level or 1
 
-    # SQL 级自增 member_xp，防并发丢更新
+    if delta > 0:
+        new_xp_expr = func.coalesce(models.WebUser.member_xp, 0) + delta
+    else:
+        # 回滚：经验不能扣成负数。greatest/max 在 SQLite/PG 下不通用，
+        # 用 CASE WHEN 保证两边都跑得通。
+        _after = func.coalesce(models.WebUser.member_xp, 0) + delta
+        new_xp_expr = case((_after < 0, 0), else_=_after)
+
+    # SQL 级增减 member_xp，防并发丢更新
     db.query(models.WebUser).filter(models.WebUser.id == user.id).update(
-        {models.WebUser.member_xp: func.coalesce(models.WebUser.member_xp, 0) + delta},
+        {models.WebUser.member_xp: new_xp_expr},
         synchronize_session="fetch",
     )
 
@@ -261,17 +273,20 @@ def add_xp(
         )
     )
 
-    # 重算等级并检测是否升级
+    # 重算等级并检测是否升级/降级
     level = _recompute_level(db, user)
     leveled_up = level > old_level
     if leveled_up:
         logger.info("用户 %s 升级: %s -> %s", user.id, old_level, level)
+    elif level < old_level:
+        logger.info("用户 %s 降级: %s -> %s", user.id, old_level, level)
 
     return {
         "added": True,
         "xp_after": xp_after,
         "level": level,
         "leveled_up": leveled_up,
+        "leveled_down": level < old_level,
         "old_level": old_level,
     }
 

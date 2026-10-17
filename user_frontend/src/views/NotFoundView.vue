@@ -26,7 +26,7 @@ function goBack() {
         </button>
         <RouterLink to="/" class="au-btn au-btn-primary">
           <Home :size="16" aria-hidden="true" />
-          <span>首页</span>
+          <span>发现</span>
         </RouterLink>
       </div>
     </div>

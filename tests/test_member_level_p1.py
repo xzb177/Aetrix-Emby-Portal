@@ -87,10 +87,19 @@ def test_add_xp_multi_level_jump(db):
 
 
 def test_add_xp_nonpositive_ignored(db):
+    # r33 语义变更：delta=0 仍忽略；delta<0 改为退款回滚（钳制 0），不再忽略
     u = _make_user(db, "xp4")
     assert ml.add_xp(db, u, 0, "recharge")["added"] is False
-    assert ml.add_xp(db, u, -5, "recharge")["added"] is False
     assert db.query(models.MemberXpLog).count() == 0
+    ml.add_xp(db, u, 50, "recharge", "recharge:RBX")
+    db.commit()
+    r = ml.add_xp(db, u, -5, "refund", "refund:RBX")
+    db.commit()
+    assert r["added"] is True
+    db.refresh(u)
+    assert u.member_xp == 45
+    assert db.query(models.MemberXpLog).filter(
+        models.MemberXpLog.xp_delta < 0).count() == 1
 
 
 def test_add_xp_accumulates(db):

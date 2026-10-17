@@ -189,12 +189,16 @@ def _merge_aliases(item: Any, names: List[Optional[str]]) -> None:
         item.aliases = ",".join(dict.fromkeys(merged))[:2000]
 
 
-def apply_nfo(item: Any, data: Dict[str, Any], kind: str) -> None:
+def apply_nfo(item: Any, data: Dict[str, Any], kind: str,
+              skip_overview: bool = False) -> None:
     """把 NFO 元数据落到 MediaItem 上（用户整理的文本优先于 TMDB）。
 
     kind: movie / series / episode / season。episode / season 只写简介与评分，
     名称由调用方按展示格式处理；只有 movie / series 参与 TMDB 刮削策略，
     也只有它们写 ``last_scraped_at``。
+
+    skip_overview: 批3（单集分项开关）——episode 的简介分项关时跳过 plot 写入，
+    其它字段（评分/流信息）不受影响。默认 False = 现状行为。
     """
     if kind in ("movie", "series"):
         if data.get("title"):
@@ -231,7 +235,7 @@ def apply_nfo(item: Any, data: Dict[str, Any], kind: str) -> None:
         item.duration_ticks = int(sd["video_duration"] * 10_000_000)
     if sd.get("audio_codec"):
         item.audio_codec = sd["audio_codec"]
-    if data.get("plot"):
+    if data.get("plot") and not (skip_overview and kind == "episode"):
         item.overview = data["plot"]
     if data.get("rating") is not None:
         item.community_rating = data["rating"]

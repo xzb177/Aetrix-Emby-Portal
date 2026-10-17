@@ -136,6 +136,12 @@ class MediaItem(Base):
         # + ORDER BY sort_name, id。部分索引只含可见行，翻页与 COUNT 不再全表扫。
         Index("idx_item_browse_sort", "item_type", "sort_name", "id",
               postgresql_where=text("is_hidden = false AND deleted_at IS NULL")),
+        # P0 修复（2026-10-17 压测实锤）：Recursive=true（不带 ParentId）时没有
+        # item_type 等值过滤，idx_item_browse_sort 的首列用不上，ORDER BY sort_name, id
+        # 只能全表扫 + 排序。这个索引去掉首列，专供无类型过滤的浏览排序与 COUNT。
+        # 部分谓词与查询条件一致，规划器可用。
+        Index("idx_item_browse_sort_all", "sort_name", "id",
+              postgresql_where=text("is_hidden = false AND deleted_at IS NULL")),
         # 搜索 trigram GIN 索引（r7）：/emby/Items?SearchTerm=、/emby/Search/Hints、
         # 求片中心的 ILIKE 预筛都走这四列。postgresql_using / postgresql_ops
         # 是 PG 专属参数，SQLite 下 create_all 会忽略它们、退化为普通 btree 索引。
@@ -195,8 +201,8 @@ class MediaItem(Base):
     # Scanner matches existing items by it: rename/move only updates
     # path, never deletes the record or loses metadata.
     drive_file_id = Column(String(64), index=True)
-    # 播放兜底（.strm 删除链路，块3）：Drive alt=media 返回 404 时的 advisory 标记。
-    # 只做"建议性"标记，不触发任何删除；文件恢复后由 strm_gen 生成循环自动清除。
+    # 播放兜底 advisory 标记：Drive alt=media 返回 404 时打标，只做"建议性"标记，
+    # 不触发任何删除。strm_gen 已删除，清除循环不再运行，存量标记为历史数据。
     # 老库由 database._auto_migrate 补列（NULL = 未标记，行为与升级前一致）。
     source_invalid_at = Column(DateTime, default=None)
     container = Column(String(20))

@@ -7,7 +7,6 @@ import type {
   AdminRole,
   AdminRow,
   Announcement,
-  CdnConfig,
   CodeStats,
   DeviceRow,
   DeviceStats,
@@ -417,6 +416,8 @@ export const generateInvitationCodes = (data: {
   max_uses: number
   expires_days: number
   whitelist?: string
+  /** 本批码专属奖励（积分）；0/不填 = 跟随全局配置 */
+  reward_points?: number
 }) =>
   post<{ success: boolean; message: string; codes: InvitationCodeRow[] }>(
     '/invitation-codes', data,
@@ -424,7 +425,7 @@ export const generateInvitationCodes = (data: {
 
 export const updateInvitationCode = (
   id: number,
-  data: { max_uses?: number; expires_days?: number; whitelist?: string; is_active?: boolean },
+  data: { max_uses?: number; expires_days?: number; whitelist?: string; is_active?: boolean; reward_points?: number },
 ) => put<{ success: boolean; code: InvitationCodeRow }>(`/invitation-codes/${id}`, data)
 
 export const revokeInvitationCodes = (ids: number[]) =>
@@ -1202,6 +1203,34 @@ export const fetchTmdbLanguage = () => get<TmdbLanguageStatus>(`${E}/scrape/tmdb
 export const saveTmdbLanguage = (language: string) =>
   put<{ success: boolean; language: string }>(`${E}/scrape/tmdb-language`, { language })
 
+/** TMDB 海报语言偏好：海报图请求哪种语言（system 跟随系统 / original 原语言 / zh-CN） */
+export interface TmdbPosterLanguageStatus {
+  language: string
+  options: string[]
+  default: string
+}
+
+export const fetchTmdbPosterLanguage = () =>
+  get<TmdbPosterLanguageStatus>(`${E}/scrape/tmdb-poster-language`)
+
+export const saveTmdbPosterLanguage = (language: string) =>
+  put<{ success: boolean; language: string }>(`${E}/scrape/tmdb-poster-language`, { language })
+
+/** TMDB 密钥冷却时长：429 限流冷却 / 401 失效冷却（秒） */
+export interface TmdbKeyCooldowns {
+  cooldown_sec: number
+  invalid_cooldown_sec: number
+  from_env: { cooldown_sec: boolean; invalid_cooldown_sec: boolean }
+  defaults: { cooldown_sec: number; invalid_cooldown_sec: number }
+}
+
+export const fetchTmdbKeyCooldowns = () =>
+  get<TmdbKeyCooldowns>(`${E}/scrape/tmdb-key-cooldowns`)
+
+export const saveTmdbKeyCooldowns = (cooldown_sec: number, invalid_cooldown_sec: number) =>
+  put<{ success: boolean; cooldown_sec: number; invalid_cooldown_sec: number }>(
+    `${E}/scrape/tmdb-key-cooldowns`, { cooldown_sec, invalid_cooldown_sec })
+
 export interface EnrichEpisodeNightConfig {
   success: boolean
   enabled: boolean
@@ -1224,6 +1253,25 @@ export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, ni
     night_start,
     night_end,
     night_tz,
+  })
+
+/** 单集分项开关（批3）：单集下沉时标题 / 简介 / 剧照各自可开可关，默认全开 */
+export interface EnrichEpisodeFieldsConfig {
+  title: boolean
+  overview: boolean
+  still: boolean
+  from_env: boolean
+  defaults: { title: boolean; overview: boolean; still: boolean }
+}
+
+export const fetchEnrichEpisodeFields = () =>
+  get<EnrichEpisodeFieldsConfig>(`${E}/scrape/enrich-episode-fields`)
+
+export const saveEnrichEpisodeFields = (title: boolean, overview: boolean, still: boolean) =>
+  put<EnrichEpisodeFieldsConfig>(`${E}/scrape/enrich-episode-fields`, {
+    title,
+    overview,
+    still,
   })
 
 /** 刮削性能参数：env 旋钮搬进 SystemConfig + 后台 UI */
@@ -1675,8 +1723,6 @@ export const fetchAutoScan = () => get<{ success: boolean } & AutoScanConfig>(`$
 export interface ChaseNewConfig {
   enabled: boolean
   interval: number
-  /** .strm 监听开关（默认开）：库路径是 /strm/... 时，strm_gen 产出的新 .strm 才会触发增量扫描 */
-  strm_enabled: boolean
   /** v2.45.0：**排除**清单（逗号分隔的库 id）。空 = 全部启用库都监听 */
   excluded: string
   /** 已废弃：旧的包含清单，后端固定返回空串（保留字段以兼容老前端） */
@@ -1715,8 +1761,8 @@ export interface ChaseNewConfig {
 }
 
 export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`)
-export const saveChaseNew = (enabled: boolean, interval: number, excluded: string, strmEnabled: boolean) =>
-  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded, strm_enabled: strmEnabled })
+export const saveChaseNew = (enabled: boolean, interval: number, excluded: string) =>
+  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded })
 
 export const saveAutoScan = (enabled: boolean, time: string) =>
   put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
@@ -1807,14 +1853,6 @@ export const updatePlaybackPolicy = (policy: Partial<PlaybackPolicy>) =>
     '/playback/policy', { policy },
   )
 
-// ==================== CDN 域名预留（播放三层第 2/3 层，/api/admin/playback/cdn） ====================
-// 只做域名预留：启用后播放 URL 走该 CDN 域名（回源到现有服务），热门分片由边缘缓存。
-
-export const fetchCdnConfig = () =>
-  get<{ success: boolean; cdn: CdnConfig; play_lines: string[] }>('/playback/cdn')
-
-export const updateCdnConfig = (payload: { domain: string; enabled: boolean }) =>
-  put<{ success: boolean; cdn: CdnConfig }>('/playback/cdn', payload)
 
 // ==================== 存储挂载（/api/admin/emby/mounts） ====================
 // 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone / drive 是远程来源。
@@ -1928,104 +1966,22 @@ export const browseLocalDirs = (path = '/') =>
 export const fetchMountRcloneRemotes = () =>
   get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/conf`)
 
-/** .strm 直链目录配置（后端 GET/PUT /api/admin/emby/mounts/strm） */
-export interface StrmConfig {
-  enabled: boolean
-  host_dir: string
-  container_path: string
-  defaults: { enabled: boolean; host_dir: string; container_path: string }
-}
-/** 当前 .strm 直链目录配置（总开关 / 宿主机目录 / 容器内挂载点） */
-export const fetchStrmConfig = () =>
-  get<{ success: boolean; strm: StrmConfig }>(`${E}/mounts/strm`)
-/** 写回 .strm 直链目录配置；路径非法时后端 400，拦截器会弹出 detail */
-export const saveStrmConfig = (data: { enabled: boolean; host_dir: string; container_path: string }) =>
-  put<{ success: boolean; strm: StrmConfig }>(`${E}/mounts/strm`, data)
 
-// ==================== .strm 生成器（后端 /api/admin/emby/strm-gen/*） ====================
+// ==================== 备用链路限速（配置瘦身第 3 批） ====================
 
-/** .strm 生成器配置（总开关 / Drive 源目录 / 指定 Drive / 过期清理） */
-export interface StrmGenConfig {
-  enabled: boolean
-  /** 主源目录（兼容旧前端，取第一项） */
-  source_dir: string
-  /** 源目录配置原文（逗号分隔多目录），新前端回显用 */
-  source_dir_raw?: string
-  /** 源目录列表 */
-  source_dirs?: string[]
-  /** 指定 Drive ID，空或 "all"=所有发现的盘 */
-  drive_id: string
-  /** 清理 Drive 上已不存在的 .strm 文件及状态行（不可逆） */
-  prune: boolean
-  /** 同名同大小去重（同名且字节大小相同只留一份）；老后端无此键时回显 true */
-  dedupe_same_size?: boolean
-  /** 增量间隔分钟数，0=关闭 */
-  interval_minutes: number
-  /** 运行锁僵死超时（分钟），0=关闭自愈 */
-  lock_timeout_minutes: number
-  /** 数据源类型：drive=Google Drive，local=本地目录 */
-  source_type: string
-  /** 本地源根目录 */
-  local_root: string
-  /** 上次执行时间（ISO 字符串），可能为空 */
-  last_run: string
+/** 备用链路（豆瓣 subject_suggest / Bangumi 兜底）请求最小间隔秒数，0=不限速 */
+export interface AltmetaRates {
+  douban_rate: number
+  bangumi_rate: number
 }
 
-/** 生成进度（phase: idle | listing | generating | verifying | done | error） */
-export interface StrmGenProgress {
-  running: boolean
-  started_at: string | null
-  finished_at: string | null
-  phase: string
-  total: number
-  done: number
-  generated: number
-  skipped: number
-  failed: number
-  /** 最近的错误信息（最多 20 条） */
-  errors: string[]
-  /** 当前处理的文件 */
-  current: string
-}
+/** 读备用链路限速 */
+export const fetchAltmetaRates = () =>
+  get<AltmetaRates>(`${E}/scrape/altmeta-rates`)
 
-/** Drive 列表项 */
-export interface StrmGenDrive {
-  drive_id: string
-  remotes: string[]
-  is_personal: boolean
-}
-
-/** 缺集报告里的一个剧 */
-export interface StrmGenIncomplete {
-  series: string
-  drive_count: number
-  strm_count: number
-  missing_count: number
-  missing_sample: string[]
-}
-
-/** 读 .strm 生成器配置 */
-export const fetchStrmGenConfig = () =>
-  get<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`)
-
-/** 写 .strm 生成器配置（保存即热生效）；格式非法时后端 400 */
-export const saveStrmGenConfig = (data: {
-  enabled: boolean
-  source_dir: string
-  drive_id: string
-  prune: boolean
-  /** 同名同大小去重开关；不传则后端不改 */
-  dedupe_same_size?: boolean
-  interval_minutes: number
-  source_type: string
-  local_root: string
-  /** 运行锁僵死超时（分钟），不传则后端不改 */
-  lock_timeout_minutes?: number
-  /** 多盘并行列举并发数（不传则后端回落默认 3） */
-  drive_concurrency?: number
-  /** Drive API 全局速率上限 QPS（不传则后端回落默认 8.0） */
-  api_qps?: number
-}) => put<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`, data)
+/** 写备用链路限速（保存即热生效） */
+export const saveAltmetaRates = (data: AltmetaRates) =>
+  put<{ success: boolean; douban_rate: number; bangumi_rate: number }>(`${E}/scrape/altmeta-rates`, data)
 
 // ==================== 播放策略（/api/admin/emby/playback） ====================
 
@@ -2042,32 +1998,6 @@ export interface PlaybackDirectSource {
   path_style: boolean
   enabled: boolean
 }
-
-/** 手动触发一次生成（full=false 增量，true 全量）；已有任务在跑时后端返回 success=false */
-export const triggerStrmGen = (full = false) =>
-  post<{ success: boolean; message?: string; error?: string; progress?: StrmGenProgress }>(
-    `${E}/strm-gen/trigger`, { full })
-
-/** 查生成进度（附带当前配置，前端轮询用） */
-export const fetchStrmGenProgress = () =>
-  get<{ success: boolean; progress: StrmGenProgress; config: StrmGenConfig }>(`${E}/strm-gen/progress`)
-
-/** 列出发现的 Drive（供 drive_id 配置选择） */
-export const fetchStrmGenDrives = () =>
-  get<{ success: boolean; drives?: StrmGenDrive[]; error?: string }>(`${E}/strm-gen/drives`)
-
-/** 缺集报告：上次生成时 Drive 有但 .strm 缺失的剧集 */
-export const fetchStrmGenMissing = (limit = 100) =>
-  get<{
-    ok: boolean
-    has_data?: boolean
-    verify_mode?: string
-    total_series?: number
-    complete_series?: number
-    incomplete_series?: number
-    incomplete?: StrmGenIncomplete[]
-    error?: string
-  }>(`${E}/strm-gen/missing`, { limit })
 
 // ==================== 每台 EA 一份 rclone.conf ====================
 
