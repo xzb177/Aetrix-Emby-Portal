@@ -1,4 +1,8 @@
-"""公益配置 / 经济系统设置：数值与开关键类型校验（非法 400，空字符串=未设置）。"""
+"""公益配置 / 经济系统设置：数值与开关键类型校验（非法 400，空字符串=未设置）。
+
+注：schema 层校验失败在直接调用层面抛 ConfigValueError；HTTP 400 的转换由
+main.py 的统一 exception handler 承接（端到端见 test_config_value_error_400.py）。
+"""
 import sys
 
 sys.path.insert(0, ".")
@@ -8,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from backend import models
+from backend import config_schema, models
 from backend.api import admin_economy, welfare_admin
 
 
@@ -43,16 +47,15 @@ def _cfg(s, key):
 ])
 def test_welfare_config_rejects_invalid(db, key, value):
     s, admin = db
-    with pytest.raises(HTTPException) as ei:
+    with pytest.raises(config_schema.ConfigValueError) as ei:
         welfare_admin.welfare_config_set({key: value}, current_admin=admin, db=s)
-    assert ei.value.status_code == 400
-    assert key in ei.value.detail
+    assert key in str(ei.value)
     assert _cfg(s, key) is None
 
 
 def test_welfare_config_invalid_writes_nothing(db):
     s, admin = db
-    with pytest.raises(HTTPException):
+    with pytest.raises(config_schema.ConfigValueError):
         welfare_admin.welfare_config_set(
             {"points_transfer_daily_cap": "100", "points_transfer_fee_pct": "-1"}, current_admin=admin, db=s)
     assert _cfg(s, "points_transfer_daily_cap") is None
@@ -87,9 +90,17 @@ def _save_econ(s, admin, settings):
 ])
 def test_economy_settings_rejects_invalid(db, key, value):
     s, admin = db
-    with pytest.raises(HTTPException) as ei:
+    # 端点层复合校验（如 vitality 范围联动）仍直接抛 HTTPException(400)；
+    # schema 层校验失败抛 ConfigValueError（HTTP 400 由 main.py 统一 handler 转）。
+    with pytest.raises((HTTPException, config_schema.ConfigValueError)) as ei:
         _save_econ(s, admin, {key: value})
-    assert ei.value.status_code == 400
+    exc = ei.value
+    if isinstance(exc, HTTPException):
+        # 端点层复合校验的人话文案不一定带键名，只断状态码
+        assert exc.status_code == 400
+    else:
+        # schema 层错误信息恒带键名
+        assert key in str(exc)
     assert _cfg(s, key) is None
 
 
