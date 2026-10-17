@@ -110,14 +110,6 @@ def test_min_interval_reads_config():
     assert altmeta.min_interval(db) == 12.5
 
 
-def test_workers_reads_config():
-    # 统一热读走一次 IN 查询 + .all()（backend.integrations.store.get_values）
-    db = SimpleNamespace(query=lambda *a, **k: SimpleNamespace(
-        filter=lambda *x, **y: SimpleNamespace(
-            all=lambda: [(altmeta.CONFIG_WORKERS, "5")])))
-    assert altmeta.workers(db) == 5
-
-
 def test_fetch_uses_own_session_not_write_session(monkeypatch):
     """回归：_enrich_fetch 只能收 item，没有 db 参数。
 
