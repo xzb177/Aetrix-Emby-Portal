@@ -24,7 +24,7 @@ import { toAdminError } from '@/utils/errorMessage'
 import type { UploadRequestOptions } from 'element-plus'
 import {
   Film, FolderPlus, History, ImagePlus, RefreshCw, ScanSearch,
-  CalendarClock, Info, Link, ShieldAlert,
+  CalendarClock, Info, ShieldAlert,
   Square, Wand2, X,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
@@ -44,7 +44,6 @@ import {
   fetchServers,
   fetchAutoScan,
   fetchChaseNew,
-  fetchStrmConfig,
   fetchTmdbKeys,
   fetchEnrichEpisodeNight,
   fetchEnrichTuning,
@@ -62,7 +61,6 @@ import {
   scanLibrary,
   saveAutoScan,
   saveChaseNew,
-  saveStrmConfig,
   saveEnrichEpisodeNight,
   saveEnrichTuning,
   saveUnifiedFallback,
@@ -70,7 +68,7 @@ import {
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
 import type {
   EmbyLibrary,
   EmbyPlaybackReachability,
@@ -634,7 +632,7 @@ async function toggleChase(on: boolean) {
   else ids.delete(libForm.id)
   chaseLibSaving.value = true
   try {
-    const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','), cfg.strm_enabled)
+    const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','))
     chaseNew.value = normalizeChase(res)
     libForm.chase = on
     // 自动发现新增文件是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
@@ -722,7 +720,6 @@ async function load() {
       loadTmdbStatus().catch(() => undefined),
       loadAutoScanConfig(),
       loadChaseNewConfig().catch(() => undefined),
-      loadStrmConfig().catch(() => undefined),
       loadEnrichEpisodeNightConfig().catch(() => undefined),
       loadEnrichTuningConfig().catch(() => undefined),
       loadUnifiedFallbackConfig().catch(() => undefined),
@@ -944,8 +941,6 @@ function normalizeChase(res: ChaseNewConfig): ChaseNewConfig {
   return {
     enabled: res.enabled,
     interval: res.interval,
-    // 老后端没有这个字段时按默认开处理——和后端的 CONFIG_STRM_ENABLED 默认 "1" 一致
-    strm_enabled: res.strm_enabled ?? true,
     excluded: res.excluded,
     libraries: res.libraries,
     last_check: res.last_check,
@@ -973,7 +968,7 @@ async function saveChaseNewAction() {
   if (!chaseNew.value) return
   chaseNewSaving.value = true
   try {
-    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded, chaseNew.value.strm_enabled)
+    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded)
     chaseNew.value = normalizeChase(res)
     ElMessage.success(res.enabled ? '自动发现新增文件已开启（每 ' + res.interval + ' 分钟）' : '自动发现新增文件已关闭')
   } catch (e: any) {
@@ -994,40 +989,6 @@ async function saveAutoScanAction() {
     ElMessage.error(toAdminError(e, '保存失败'))
   } finally {
     autoScanSaving.value = false
-  }
-}
-
-// ==================== .strm 直链目录配置 ====================
-// .strm 是内容为播放直链的纯文本小文件；宿主机目录经 docker-compose 挂进容器。
-// 三个配置项全部由管理员决定（默认启用=/opt/strm→/strm，与现状一致）；关闭总开关后
-// 扫描不再收录 .strm 文件（已入库条目不动），保存即热生效、无需重启。
-const strmConfig = ref<StrmConfig | null>(null)
-const strmConfigSaving = ref(false)
-
-async function loadStrmConfig() {
-  try {
-    const res = await fetchStrmConfig()
-    strmConfig.value = { ...res.strm }
-  } catch {
-    strmConfig.value = null // 出错不挡页面其它内容
-  }
-}
-
-async function saveStrmConfigAction() {
-  if (!strmConfig.value) return
-  strmConfigSaving.value = true
-  try {
-    const res = await saveStrmConfig({
-      enabled: strmConfig.value.enabled,
-      host_dir: strmConfig.value.host_dir,
-      container_path: strmConfig.value.container_path,
-    })
-    strmConfig.value = { ...res.strm }
-    ElMessage.success(`.strm 直链已${res.strm.enabled ? '开启' : '关闭'}`)
-  } catch (e: any) {
-    ElMessage.error(toAdminError(e, '保存失败'))
-  } finally {
-    strmConfigSaving.value = false
   }
 }
 
@@ -1445,7 +1406,6 @@ const SCAN_TRIGGER_LABELS: Record<string, string> = {
   'fs-event': '文件变化',
   'drive-changes': 'Drive 变更',
   'chase-new': '追新',
-  'strm-gen': '纸条生成',
   rescrape: '重新刮削',
   resume: '自动续扫',
 }
@@ -1967,10 +1927,6 @@ function typeLabel(t: string): string {
                   保存
                 </el-button>
               </div>
-              <div v-if="chaseNew" class="scrape-actions" style="margin-top: 8px">
-                <el-switch v-model="chaseNew.strm_enabled" active-text="监听 .strm" inactive-text="忽略 .strm" />
-                <span class="drawer-hint">库路径是 /strm/... 时，strm 生成器产出的新分集（.strm 文件）也会触发增量扫描 + 刮削</span>
-              </div>
               <div v-else-if="chaseNewError" class="drawer-hint drawer-hint--after">
                 读取失败
                 <el-button size="small" text @click="loadChaseNewConfig">重试</el-button>
@@ -2297,37 +2253,7 @@ function typeLabel(t: string): string {
             </div>
           </div>
         </SectionCard>
-        <SectionCard class="strm-card" title="扫描器：识别 .strm 文件" :icon="Link">
-          <template #actions>
-            <div class="queue-facts">
-              <span class="fact" :class="{ warn: strmConfig && !strmConfig.enabled }">
-                {{ strmConfig ? (strmConfig.enabled ? '已启用' : '已关闭') : '读取中…' }}
-              </span>
-            </div>
-          </template>
-          <p class="drawer-hint">
-            这里只管「扫描器认不认 .strm 文件」：.strm 是内容为播放直链的纯文本小文件。宿主机目录经 docker-compose（STRM_MOUNT_DIR，默认 /opt/strm）挂到容器内挂载点（STRM_CONTAINER_PATH，默认 /strm，只读）；改这里只改"认哪个目录"，不动容器挂载本身。要换容器内挂载点：先改 .env 的 STRM_CONTAINER_PATH 并 docker compose up -d 重启，再回来保存（容器里不存在的目录会被拒绝）。关闭总开关后扫描不再收录 .strm 文件（已入库的不动），保存即生效。
-          </p>
-          <p class="drawer-hint">
-            另一个开关在「.strm 生成器」页：管的是批量生成 .strm 文件，别和这里搞混。
-          </p>
-          <div v-if="strmConfig" class="scrape-actions">
-            <el-switch v-model="strmConfig.enabled" active-text="开启" inactive-text="关闭" />
-            <el-input v-model="strmConfig.host_dir" placeholder="/opt/strm" style="width: 210px" aria-label="宿主机 .strm 目录">
-              <template #prepend>宿主机</template>
-            </el-input>
-            <el-input v-model="strmConfig.container_path" placeholder="/strm" style="width: 180px" aria-label="容器内挂载点">
-              <template #prepend>容器内</template>
-            </el-input>
-            <el-button type="primary" size="small" :loading="strmConfigSaving" @click="saveStrmConfigAction">
-              保存
-            </el-button>
-          </div>
-          <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
-          <div v-if="strmConfig" class="drawer-hint drawer-hint--after">
-            当前容器内挂载点：{{ strmConfig.container_path }} ｜ 建媒体库时把路径指向它（添加路径弹窗里有快捷入口）
-          </div>
-        </SectionCard>
+        
       </el-tab-pane>
     </el-tabs>
 
@@ -2696,7 +2622,7 @@ function typeLabel(t: string): string {
         <div v-if="libFormTarget && !libFormTarget.is_virtual" class="settings-section">
           <div class="settings-section-title">目录变更监听</div>
           <p class="form-hint">
-            「自动发现新增文件」每隔几分钟扫一遍目录，发现新视频文件（.strm 开关开时也含 .strm）就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
+            「自动发现新增文件」每隔几分钟扫一遍目录，发现新视频文件就自动触发一次扫描 + 刮削（NFO 优先 → TMDB → 豆瓣），
             不用等手动扫描。开关与间隔是全局的，纳不纳入某个库在这里定。
           </p>
           <el-form label-position="top">

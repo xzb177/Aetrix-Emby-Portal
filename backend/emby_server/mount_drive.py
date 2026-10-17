@@ -56,9 +56,9 @@ logger = logging.getLogger(__name__)
 
 #: Drive 文件夹的 MIME 类型
 FOLDER_MIME = "application/vnd.google-apps.folder"
-#: files.list 端点（与 drive_changes / strm_gen 同一地址）
+#: files.list 端点（与 drive_changes 同一地址）
 FILES_URL = "https://www.googleapis.com/drive/v3/files"
-#: 列目录取的字段：比 strm_gen 多一个 modifiedTime（扫描器文件指纹要用）
+#: 列目录取的字段：含 modifiedTime（扫描器文件指纹要用）
 _LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed)"
 _PAGE_SIZE = 1000
 #: 单次列举内钉住 SA 时 token 的最小剩余寿命（秒）：超大目录枚举可能耗时久，

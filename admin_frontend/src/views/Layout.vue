@@ -153,8 +153,6 @@ const navGroups: NavGroup[] = [
       { path: '/metadata-sources', label: '元数据来源', icon: Database },
       { path: '/pan115', label: '115 账号', icon: Cloud },
       { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
-      // Drive 视频批量生成 .strm：定时/手动、缺集报告
-      { path: '/strm-gen', label: '.strm 生成器', icon: Clapperboard },
     ],
   },
   {

@@ -1,7 +1,9 @@
-"""防盗链（.strm 签名 + Drive SA 凭据中转 + 播放签名可配置）单元测试。
+"""防盗链（Drive SA 凭据中转 + 播放签名可配置）单元测试。
+
+注（2026-10-17）：strm_sign.py 已随 strm_gen 删除，纸条签名/验签/
+刷新判定测试同步删除；local_play_target 的 .strm 内容直读分支保留。
 
 覆盖：
-- backend/emby_server/strm_sign.py：签名/验签/三态/刷新判定/参数剥离
 - backend/emby_server/drive_auth.py：Drive 域名判定/凭据头构造/失败降级
 - backend/emby_server/play_sign.py：防盗链开关 + TTL 热读/钳制/write_config 校验
 - backend/emby_server/mounts.py：local_play_target 的 .strm 分支（三态）
@@ -58,117 +60,6 @@ def _set_config(db, key, value):
         row.value = value
     db.commit()
     store.invalidate(key)
-
-
-# ==================== strm_sign ====================
-
-class TestStrmSign:
-    def test_sign_verify_roundtrip_ok(self):
-        from backend.emby_server import strm_sign
-
-        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
-        assert "aexp=" in signed and "asig=" in signed
-        clean, status = strm_sign.verify_strm_url(signed)
-        assert status == "ok"
-        assert clean == DRIVE_URL
-
-    def test_sign_is_idempotent_no_stacking(self):
-        """二次签名不叠加参数（canonical 化）。"""
-        from backend.emby_server import strm_sign
-
-        once = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
-        twice = strm_sign.sign_strm_url(once, ttl_seconds=3600)
-        assert twice.count("aexp=") == 1 and twice.count("asig=") == 1
-        clean, status = strm_sign.verify_strm_url(twice)
-        assert status == "ok" and clean == DRIVE_URL
-
-    def test_tampered_sig_is_bad(self):
-        from backend.emby_server import strm_sign
-
-        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
-        tampered = signed[:-1] + ("0" if signed[-1] != "0" else "1")
-        _, status = strm_sign.verify_strm_url(tampered)
-        assert status == "bad"
-
-    def test_tampered_url_is_bad(self):
-        from backend.emby_server import strm_sign
-
-        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600).replace("id=ABC123", "id=EVIL")
-        _, status = strm_sign.verify_strm_url(signed)
-        assert status == "bad"
-
-    def test_expired_is_bad(self):
-        from backend.emby_server import strm_sign
-
-        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
-        # 把 exp 改成过去（保持签名有效位数的错位不重要：先判过期）
-        import re
-
-        expired = re.sub(r"aexp=\d+", f"aexp={int(time.time()) - 10}", signed)
-        _, status = strm_sign.verify_strm_url(expired)
-        assert status == "bad"
-
-    def test_missing_one_param_is_bad(self):
-        from backend.emby_server import strm_sign
-
-        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
-        no_sig = strm_sign.strip_sig_params(signed) + "&aexp=9999999999"
-        _, status = strm_sign.verify_strm_url(no_sig)
-        assert status == "bad"
-
-    def test_legacy_no_signature(self):
-        from backend.emby_server import strm_sign
-
-        clean, status = strm_sign.verify_strm_url(DRIVE_URL)
-        assert status == "legacy"
-        assert clean == DRIVE_URL
-
-    def test_legacy_tolerates_bom_comments_blank_lines(self):
-        from backend.emby_server import strm_sign
-
-        content = "\ufeff\n# 这是注释\n\n" + DRIVE_URL + "\n"
-        clean, status = strm_sign.verify_strm_url(content)
-        assert status == "legacy"
-        assert clean == DRIVE_URL
-
-    def test_empty_content_is_bad(self):
-        from backend.emby_server import strm_sign
-
-        for content in ("", "   \n  ", "# 只有注释\n"):
-            _, status = strm_sign.verify_strm_url(content)
-            assert status == "bad"
-
-    def test_needs_refresh(self):
-        from backend.emby_server import strm_sign
-
-        assert strm_sign.needs_refresh(DRIVE_URL) is True  # legacy → 补签名
-        fresh = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
-        assert strm_sign.needs_refresh(fresh) is False  # 充足 → 不刷新
-        soon = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=300)
-        assert strm_sign.needs_refresh(soon) is True  # 剩余 <600s → 刷新
-        assert strm_sign.needs_refresh("not a url at all") is False  # bad → 不碰
-
-    def test_strip_sig_params(self):
-        from backend.emby_server import strm_sign
-
-        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
-        assert strm_sign.strip_sig_params(signed) == DRIVE_URL
-        # 非签名 URL 原样返回
-        assert strm_sign.strip_sig_params(DRIVE_URL) == DRIVE_URL
-        assert strm_sign.strip_sig_params("") == ""
-
-    def test_sign_empty_url_returns_as_is(self):
-        from backend.emby_server import strm_sign
-
-        assert strm_sign.sign_strm_url("") == ""
-
-    def test_verify_never_raises(self):
-        from backend.emby_server import strm_sign
-
-        for content in (None, 123, "https://[invalid", "aexp=1&asig=2"):
-            _, status = strm_sign.verify_strm_url(content)
-            assert status in ("ok", "legacy", "bad")
-
 
 # ==================== drive_auth ====================
 
@@ -279,33 +170,14 @@ class TestPlaySignConfig:
         _set_config(db, play_sign.CONFIG_PLAY_SIGN_TTL, "not-a-number")
         assert play_sign.play_sign_ttl_seconds(db) == 900  # 非法回落默认
 
-    def test_strm_sig_ttl_clamp(self, db):
-        from backend.emby_server import play_sign
-
-        assert play_sign.strm_sig_ttl_seconds() == 3600  # db=None 默认
-        _set_config(db, play_sign.CONFIG_STRM_SIG_TTL, "7200")
-        assert play_sign.strm_sig_ttl_seconds(db) == 7200
-        _set_config(db, play_sign.CONFIG_STRM_SIG_TTL, "10")  # <300 钳制
-        assert play_sign.strm_sig_ttl_seconds(db) == 300
-        _set_config(db, play_sign.CONFIG_STRM_SIG_TTL, "999999")
-        assert play_sign.strm_sig_ttl_seconds(db) == 86400
-
-    def test_strm_sign_delegates_to_play_sign(self, db):
-        """strm_sign 的 TTL 读取必须委托给 play_sign（不许两套）。"""
-        from backend.emby_server import play_sign, strm_sign
-
-        _set_config(db, play_sign.CONFIG_STRM_SIG_TTL, "7200")
-        assert strm_sign.strm_sig_ttl_seconds(db) == 7200 == play_sign.strm_sig_ttl_seconds(db)
-
     def test_write_config_roundtrip(self, db):
         from backend import models
         from backend.emby_server import play_sign
 
-        payload = play_sign.write_config(db, enabled=False, play_sign_ttl=1800, strm_sig_ttl=7200)
+        payload = play_sign.write_config(db, enabled=False, play_sign_ttl=1800)
         assert payload["enabled"] is False
         assert payload["play_sign_ttl"] == 1800
-        assert payload["strm_sig_ttl"] == 7200
-        assert payload["defaults"] == {"enabled": True, "play_sign_ttl": 900, "strm_sig_ttl": 3600}
+        assert payload["defaults"] == {"enabled": True, "play_sign_ttl": 900}
         # 落库 + description
         row = db.query(models.SystemConfig).filter(
             models.SystemConfig.key == play_sign.CONFIG_HOTLINK_ENABLED).first()
@@ -318,11 +190,11 @@ class TestPlaySignConfig:
         from backend.emby_server import play_sign
 
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl=30, strm_sig_ttl=3600)
+            play_sign.write_config(db, enabled=True, play_sign_ttl=30)
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl=900, strm_sig_ttl=100)
+            play_sign.write_config(db, enabled=True, play_sign_ttl=90000)
         with pytest.raises(ValueError):
-            play_sign.write_config(db, enabled=True, play_sign_ttl="abc", strm_sig_ttl=3600)
+            play_sign.write_config(db, enabled=True, play_sign_ttl="abc")
 
     def test_sign_ttl_seconds_constant_kept(self):
         """SIGN_TTL_SECONDS 常量保留（兼容旧引用）。"""
@@ -334,44 +206,51 @@ class TestPlaySignConfig:
 # ==================== mounts.local_play_target ====================
 
 class TestMountsStrmBranch:
+    """local_play_target 的 .strm 分支（2026-10-17 新行为：纸条签名已随 strm_gen 删除，
+    不再验签，直接用文件内容里的原文直链；Google 会忽略多余的 aexp/asig 参数）。"""
+
     def _write(self, tmp_path, name, content):
         p = tmp_path / name
         p.write_text(content, encoding="utf-8")
         return str(p)
 
-    def test_ok_signed_strm(self, tmp_path):
-        from backend.emby_server import mounts, strm_sign
+    def test_strm_content_passes_through_asis(self, tmp_path):
+        from backend.emby_server import mounts
 
-        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
+        signed = DRIVE_URL + "&aexp=9999999999&asig=abcdef"
         path = self._write(tmp_path, "ok.strm", signed + "\n# 注释保留\n")
         with mock.patch(
             "backend.emby_server.drive_auth.drive_auth_headers",
-            return_value={"Authorization": "Bearer T"},
+            return_value={"Authorization": "Bearer <redacted>"},
         ):
             target = mounts.local_play_target(path)
         assert target.kind == "url"
-        assert target.value == DRIVE_URL  # 返回 canonical（去签名参数）
-        assert target.headers["Authorization"] == "Bearer T"
+        assert target.value == signed  # 原文直传，不再剥签名参数
+        assert target.headers["Authorization"] == "Bearer <redacted>"
         assert "User-Agent" in target.headers
 
-    def test_legacy_strm_passes_with_warning(self, tmp_path, caplog):
+    def test_plain_strm_passes(self, tmp_path):
         from backend.emby_server import mounts
 
-        path = self._write(tmp_path, "legacy.strm", DRIVE_URL + "\n")
+        path = self._write(tmp_path, "plain.strm", DRIVE_URL + "\n")
         with mock.patch(
             "backend.emby_server.drive_auth.drive_auth_headers", return_value={}
         ):
             target = mounts.local_play_target(path)
         assert target.kind == "url"
         assert target.value == DRIVE_URL
-        assert "legacy" in caplog.text
 
-    def test_bad_signed_strm_raises(self, tmp_path):
+    def test_bad_signature_no_longer_rejected(self, tmp_path):
+        """验签已删除：签名无效/过期的纸条也不再拒播，原文直传。"""
         from backend.emby_server import mounts
 
         path = self._write(tmp_path, "bad.strm", DRIVE_URL + "&aexp=1&asig=deadbeef\n")
-        with pytest.raises(mounts.MountError, match="签名无效或已过期"):
-            mounts.local_play_target(path)
+        with mock.patch(
+            "backend.emby_server.drive_auth.drive_auth_headers", return_value={}
+        ):
+            target = mounts.local_play_target(path)
+        assert target.kind == "url"
+        assert target.value == DRIVE_URL + "&aexp=1&asig=deadbeef"
 
     def test_empty_strm_still_raises_missing_link(self, tmp_path):
         from backend.emby_server import mounts
@@ -380,25 +259,26 @@ class TestMountsStrmBranch:
         with pytest.raises(mounts.MountError, match="没有可用的直链"):
             mounts.local_play_target(path)
 
-    def test_resolve_final_strm_verified(self):
-        """远程挂载入口 resolve_final 同样走验签（与 local_play_target 共用 helper）。"""
-        from backend.emby_server import mounts, strm_sign
+    def test_resolve_final_strm_passthrough(self):
+        """远程挂载入口 resolve_final 同样走直传（与 local_play_target 共用 helper）。"""
+        from backend.emby_server import mounts
 
-        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
+        signed = DRIVE_URL + "&aexp=9999999999&asig=abcdef"
         provider = mounts.MountProvider.__new__(mounts.MountProvider)
         provider.read_text = lambda rel: signed
         with mock.patch(
             "backend.emby_server.drive_auth.drive_auth_headers",
-            return_value={"Authorization": "Bearer T"},
+            return_value={"Authorization": "Bearer <redacted>"},
         ):
             target = provider.resolve_final("movie.strm")
         assert target.kind == "url"
-        assert target.value == DRIVE_URL
-        assert target.headers["Authorization"] == "Bearer T"
+        assert target.value == signed
+        assert target.headers["Authorization"] == "Bearer <redacted>"
 
         provider.read_text = lambda rel: DRIVE_URL + "&aexp=1&asig=deadbeef"
-        with pytest.raises(mounts.MountError, match="签名无效或已过期"):
-            provider.resolve_final("movie.strm")
+        target = provider.resolve_final("movie.strm")
+        assert target.kind == "url"
+        assert target.value == DRIVE_URL + "&aexp=1&asig=deadbeef"
 
 
 # ==================== streaming._redirect_headers ====================
@@ -449,17 +329,3 @@ class TestRedirectHeaders:
             fwd, "https://drive.google.com/a", "https://docs.google.com/b"
         )
         assert out == {"AUTHORIZATION": "Bearer Y"}
-
-
-def test_needs_refresh_resigns_expired_authentic_signature(monkeypatch):
-    """刷新任务错过窗口（停机 > 剩余有效期）后，过期但签名真实的 .strm 必须重签，
-    否则全库永久 bad 拒播；被篡改的仍然不碰。"""
-    from backend.emby_server import strm_sign
-
-    real_time = time.time
-    signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=300)
-    monkeypatch.setattr(strm_sign.time, "time", lambda: real_time() + 3600)
-    assert strm_sign.verify_strm_url(signed)[1] == "bad"
-    assert strm_sign.needs_refresh(signed) is True
-    tampered = signed.replace("id=ABC123", "id=EVIL")
-    assert strm_sign.needs_refresh(tampered) is False

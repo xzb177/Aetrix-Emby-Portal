@@ -1008,9 +1008,6 @@ class AutoScanSaveRequest(BaseModel):
 class ChaseNewSaveRequest(BaseModel):
     enabled: bool = Field(default=False, description="追新总开关")
     interval: int = Field(default=10, description="轮询间隔（分钟），5-120")
-    strm_enabled: Optional[bool] = Field(default=None, description=".strm 监听开关："
-                                         "库路径是 /strm/... 时，strm_gen 产出的新 .strm 才会触发增量扫描；"
-                                         "不传 = 保持现有值（老前端兼容）")
     excluded: str = Field(default="",
                           description="**排除**监听的库 ID，逗号分隔，空 = 全部启用库都监听")
     # 旧字段（包含清单）：只为还在用老前端的部署保留，后端会换算成排除清单
@@ -1105,8 +1102,7 @@ def save_chase_new(
 ):
     """保存追新配置：立即生效，无需重启"""
     cfg = change_watcher.save_config(db, req.enabled, req.interval,
-                                     excluded=req.excluded, libraries=req.libraries,
-                                     strm_enabled=req.strm_enabled)
+                                     excluded=req.excluded, libraries=req.libraries)
     return {"success": True, **cfg}
 
 

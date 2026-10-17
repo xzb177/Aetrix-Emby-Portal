@@ -176,7 +176,6 @@ const DETAIL_KEY_LABEL: Record<string, string> = {
   access_mode: '访问模式',
   mount_health_ok: '挂载健康',
   play_sign_ttl: '播放签名有效期',
-  strm_sig_ttl: '.strm 签名有效期',
 }
 
 function targetText(row: AdminLogRow): string {

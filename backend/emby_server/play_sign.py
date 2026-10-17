@@ -46,19 +46,15 @@ CONFIG_ALLOWED_REFERERS = "play_allowed_referers"
 # --- 防盗链配置（SystemConfig + store 热读，风格同 backend/emby_server/cdn.py） ---
 CONFIG_HOTLINK_ENABLED = "hotlink_protection_enabled"
 CONFIG_PLAY_SIGN_TTL = "play_sign_ttl_seconds"
-CONFIG_STRM_SIG_TTL = "strm_sig_ttl_seconds"
 
 DESCRIPTIONS = {
     CONFIG_HOTLINK_ENABLED: "防盗链总开关：关闭后播放端点跳过播放签名校验（兼容老客户端）",
     CONFIG_PLAY_SIGN_TTL: "播放签名有效期（秒），范围 60~86400",
-    CONFIG_STRM_SIG_TTL: ".strm 签名有效期（秒），范围 2×维护间隔（默认 1200）~86400",
 }
 
 HOTLINK_DEFAULT = True
 PLAY_TTL_DEFAULT = 900
-STRM_TTL_DEFAULT = 3600
 PLAY_TTL_MIN, PLAY_TTL_MAX = 60, 86400
-STRM_TTL_MIN, STRM_TTL_MAX = 300, 86400
 
 _TRUTHY = {"true", "1", "yes", "on"}
 _FALSY = {"false", "0", "no", "off"}
@@ -108,71 +104,33 @@ def play_sign_ttl_seconds(db: Session | None = None) -> int:
     return _clamp_ttl(raw, PLAY_TTL_MIN, PLAY_TTL_MAX, PLAY_TTL_DEFAULT)
 
 
-def strm_sig_ttl_seconds(db: Session | None = None) -> int:
-    """`.strm` 签名有效期（秒）——全项目唯一的 TTL 配置读取实现。
-
-    ``strm_sign.strm_sig_ttl_seconds`` 只是薄委托到这里（横切能力只许一套）。
-    """
-    if db is None:
-        return STRM_TTL_DEFAULT
-    try:
-        raw = store.get_value(db, CONFIG_STRM_SIG_TTL)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(".strm 签名 TTL 读取失败，用默认值: %s", exc)
-        return STRM_TTL_DEFAULT
-    return _clamp_ttl(raw, STRM_TTL_MIN, STRM_TTL_MAX, STRM_TTL_DEFAULT)
-
-
-def strm_ttl_write_min() -> int:
-    """后台可保存的 .strm TTL 下限 = max(300, 2×janitor tick)。
-
-    刷新任务每个 janitor tick 至多跑一次；TTL 短于两拍时，两次刷新之间链接必然过期。
-    """
-    try:
-        from backend.emby_server.maintenance import MAINTENANCE_INTERVAL
-        tick = int(MAINTENANCE_INTERVAL)
-    except Exception:  # noqa: BLE001
-        tick = 600
-    return max(STRM_TTL_MIN, 2 * tick)
-
-
 def config_payload(db: Session | None = None) -> dict:
     """管理后台读取：当前值 + 默认值（前端卡片用）。"""
     return {
         "enabled": hotlink_enabled(db),
         "play_sign_ttl": play_sign_ttl_seconds(db),
-        "strm_sig_ttl": strm_sig_ttl_seconds(db),
-        "strm_sig_ttl_min": strm_ttl_write_min(),
         # 配置瘦身第 3c 批：防盗链 Referer 白名单回显（归一化后域名列表，空=不检查）
         "allowed_referers": get_allowed_referers(db),
         "defaults": {
             "enabled": HOTLINK_DEFAULT,
             "play_sign_ttl": PLAY_TTL_DEFAULT,
-            "strm_sig_ttl": STRM_TTL_DEFAULT,
         },
     }
 
 
-def write_config(db: Session, *, enabled: bool, play_sign_ttl: int,
-                 strm_sig_ttl: int) -> dict:
+def write_config(db: Session, *, enabled: bool, play_sign_ttl: int) -> dict:
     """管理后台写入：校验范围 → 逐键 upsert SystemConfig（含 description）→ 失效热缓存。"""
     try:
         play_sign_ttl = int(play_sign_ttl)
-        strm_sig_ttl = int(strm_sig_ttl)
     except (TypeError, ValueError):
-        raise ValueError("播放签名有效期与 .strm 签名有效期必须为整数秒")
+        raise ValueError("播放签名有效期必须为整数秒")
     if not (PLAY_TTL_MIN <= play_sign_ttl <= PLAY_TTL_MAX):
         raise ValueError(f"播放签名有效期需在 {PLAY_TTL_MIN}~{PLAY_TTL_MAX} 秒之间")
-    strm_min = strm_ttl_write_min()
-    if not (strm_min <= strm_sig_ttl <= STRM_TTL_MAX):
-        raise ValueError(f".strm 签名有效期需在 {strm_min}~{STRM_TTL_MAX} 秒之间"
-                         f"（签名刷新每 {strm_min // 2} 秒一拍，短于两拍会在两次刷新之间过期）")
 
     enabled = bool(enabled)
     values = (
         (CONFIG_HOTLINK_ENABLED, "true" if enabled else "false"),
         (CONFIG_PLAY_SIGN_TTL, str(play_sign_ttl)),
-        (CONFIG_STRM_SIG_TTL, str(strm_sig_ttl)),
     )
     for key, value in values:
         row = db.query(SystemConfig).filter(SystemConfig.key == key).first()

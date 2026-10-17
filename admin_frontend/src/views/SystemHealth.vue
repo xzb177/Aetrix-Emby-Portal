@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Activity, AlertTriangle, Bell, Cpu, Database, FileText, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, Sparkles, Users, Zap } from 'lucide-vue-next'
+import { Activity, AlertTriangle, Bell, Cpu, Database, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, Sparkles, Users, Zap } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
 import { fetchBackupConfig, saveBackupConfig, runBackupNow } from '@/api/admin'
@@ -55,7 +55,6 @@ const LAMPS: LampMeta[] = [
   { key: 'probe', name: '媒体探测', icon: Radar },
   { key: 'enrich', name: '元数据刮削', icon: Sparkles },
   { key: 'scan', name: '媒体库扫描', icon: ScanLine },
-  { key: 'strm', name: '.strm 生成器', icon: FileText },
   { key: 'sa_quota', name: 'Google 子账号', icon: KeyRound },
   { key: 'api', name: '接口指标', icon: Activity },
 ]
@@ -108,11 +107,6 @@ function lampKeyMetrics(key: string): Array<{ label: string; field: string; suff
         { label: '扫描中', field: 'scanning', suffix: '' },
         { label: '失败', field: 'failed', suffix: '' },
       ]
-    case 'strm':
-      return [
-        { label: '距上次', field: 'lag_hours', suffix: ' 小时' },
-        { label: '上次生成', field: 'last_generated', suffix: '' },
-      ]
     case 'sa_quota':
       return [{ label: 'SA 数量', field: 'sa_count', suffix: '' }]
     case 'api':
@@ -135,15 +129,6 @@ function lampMetricValue(key: string, field: string, suffix: string): string {
     const pct = Number(v) * 100
     if (!Number.isFinite(pct)) return '—'
     return `${pct.toFixed(2)}${suffix}`
-  }
-  if (key === 'strm' && field === 'lag_hours') {
-    const m = observability.value?.subsystems?.strm?.metrics || {}
-    const v = m['lag_hours']
-    if (v === null || v === undefined || v === '') return '—'
-    // R40：非数字时不显示 NaN 小时
-    const lag = Number(v)
-    if (!Number.isFinite(lag)) return '—'
-    return `${lag.toFixed(1)}${suffix}`
   }
   return `${lampMetricOf(key, field)}${suffix}`
 }
@@ -218,8 +203,6 @@ const ALERT_EVENT_TYPE_LABEL: Record<string, string> = {
   sa_quota_low: 'Google 子账号配额告警',
   scan_failed: '扫描失败',
   api_error_high: 'API 错误率过高',
-  strm_source_failed: '.strm 数据源失败',
-  strm_scan_trigger_failed: '.strm 扫库触发失败',
 }
 
 function alertSeverityLabel(s: string | null | undefined): string {

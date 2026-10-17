@@ -8,7 +8,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  BellRing, Clapperboard, ExternalLink, Image as ImageIcon,
+  BellRing, ExternalLink, Image as ImageIcon,
   Radar, RefreshCw, ScanSearch, Sparkles, TriangleAlert,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader } from '@/components/ui'
@@ -19,7 +19,6 @@ import {
   saveAutoScan,
   saveChaseNew,
   saveEnrichEpisodeNight,
-  saveStrmGenConfig,
   type TaskCard,
   type TaskCardStatus,
 } from '@/api/admin'
@@ -35,7 +34,6 @@ const CARD_ICON: Record<string, unknown> = {
   scan: ScanSearch,
   probe: Radar,
   enrich: Sparkles,
-  strm: Clapperboard,
   thumbnail: ImageIcon,
   chase_new: BellRing,
 }
@@ -106,24 +104,11 @@ async function onToggle(card: TaskCard, val: boolean) {
         String(keep.night_end ?? '06:00'),
         String(keep.night_tz ?? 'Asia/Shanghai'),
       )
-    } else if (key === 'strm') {
-      await saveStrmGenConfig({
-        enabled: val,
-        source_dir: String(keep.source_dir ?? ''),
-        drive_id: String(keep.drive_id ?? ''),
-        prune: !!keep.prune,
-        interval_minutes: Number(keep.interval_minutes ?? 60),
-        source_type: String(keep.source_type ?? 'drive'),
-        local_root: String(keep.local_root ?? '/media'),
-        drive_concurrency: Number(keep.drive_concurrency ?? 3),
-        api_qps: Number(keep.api_qps ?? 8),
-      })
     } else if (key === 'chase_new') {
       await saveChaseNew(
         val,
         Number(keep.interval ?? 30),
         String(keep.excluded ?? ''),
-        !!keep.strm_enabled,
       )
     }
     ElMessage.success(`${card.title}已${val ? '开启' : '关闭'}`)
