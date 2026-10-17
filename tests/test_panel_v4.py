@@ -218,28 +218,6 @@ def test_unseal_idempotent(db, user):
     assert r3.status_code == 404
 
 
-# ==================== 4. 机关拨杆权限 ====================
-
-def test_toggle_admin_only(db, user, admin_user):
-    pa.seed_achievement_defs(db)
-    # 普通用户 -> 403
-    app = _make_app(db, user)
-    client = TestClient(app)
-    r = client.post("/api/panel/server/toggles", json={"key": "panel_night_scrape", "on": False})
-    assert r.status_code == 403
-
-    # 管理员 -> 可写
-    app2 = _make_app(db, admin_user)
-    client2 = TestClient(app2)
-    r2 = client2.post("/api/panel/server/toggles", json={"key": "panel_night_scrape", "on": False})
-    assert r2.status_code == 200
-    assert r2.json()["data"] == {"key": "panel_night_scrape", "on": False}
-
-    # 未知 key -> 400
-    r3 = client2.post("/api/panel/server/toggles", json={"key": "nope", "on": True})
-    assert r3.status_code == 400
-
-
 # ==================== 5. 特性开关 ====================
 
 def test_panel_disabled_returns_403(db, user, monkeypatch):

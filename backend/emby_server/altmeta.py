@@ -14,11 +14,8 @@ TMDB 对中文剧集/综艺收录偏少，豆瓣互补很有效。
 
 ## 为什么不用 api.douban.com/v2
 
-官方 v2 API 早已停止服务——库里配的 ``altmeta_douban_keys`` 实测返回 **HTTP 400**，
-那个 key 现在是无效的。这里走无需 key 的 ``/j/subject_suggest``（实测 200、数据完整）。
-
-``altmeta_douban_keys`` 仍会被读取并记一条 warning，提示 key 不可用，
-避免以后又有人以为它有效。
+官方 v2 API 早已停止服务。这里走无需 key 的 ``/j/subject_suggest``
+（实测 200、数据完整），无需配置任何密钥。
 
 ## 字段能力边界
 
@@ -51,7 +48,6 @@ logger = logging.getLogger(__name__)
 SUGGEST_URL = "https://movie.douban.com/j/subject_suggest"
 BANGUMI_SEARCH_URL = "https://api.bgm.tv/search/subject"
 CONFIG_ENABLED = "altmeta_enabled"
-CONFIG_KEYS = "altmeta_douban_keys"
 # 注意：这个 key 的语义一旦确定就不能再改。PR #178 曾把它的语义从
 # "每分钟请求数"改成"两次请求最小间隔秒数"，沿用同名 key 会导致老配置
 # 被误读（如配了 30 会从"30次/分钟"变成"30秒一次"，慢 60 倍）。
@@ -126,22 +122,6 @@ def min_interval(db) -> float:
         return max(0.0, float(_get_config(db, CONFIG_RATE, str(DEFAULT_MIN_INTERVAL))))
     except (TypeError, ValueError):
         return DEFAULT_MIN_INTERVAL
-
-
-def warn_dead_keys_once(db) -> None:
-    """库里的 altmeta_douban_keys 实测已失效（v2 API 停服），提示一次即可"""
-    raw = _get_config(db, CONFIG_KEYS, "").strip()
-    if not raw or getattr(warn_dead_keys_once, "_done", False):
-        return
-    setattr(warn_dead_keys_once, "_done", True)
-    try:
-        keys = json.loads(raw)
-    except (ValueError, TypeError):
-        keys = []
-    if keys:
-        logger.warning(
-            "[altmeta] %s 里配置的豆瓣 key 实测已失效（api.douban.com/v2 停服，"
-            "HTTP 400），已改用无需 key 的 subject_suggest。", CONFIG_KEYS)
 
 
 def _clean(title: str) -> str:
