@@ -368,3 +368,103 @@ def test_401_mid_pagination_refreshes_same_sa_and_continues(monkeypatch):
     # 第 1 页 + 第 2 页首攻用钉住 token；重试用同 SA 刷新后的新 token
     assert USED_TOKENS == ["tok-pin-1", "tok-pin-1", "tok-pin-2"]
     assert SA_ACCESS_CALLS == [(PIN_EMAIL, 1800.0), (PIN_EMAIL, 1800.0)]
+
+
+# ---------- 同名文件夹回溯（_fid_of/_locate 缺陷修复） ----------
+
+# 生产实证：/nastool/剧集/综艺/ 下有两个同名 "脱口秀大会 (2017)" 文件夹，
+# 文件真身在第二个里；旧实现逐级只认第一个，合法路径报"找不到"。
+DUP_TREE = {
+    DRIVE_ID: [_folder("F_DUP", "综艺")],
+    "F_DUP": [
+        _folder("F_SHOW_A", "脱口秀大会 (2017)"),  # 第一个：只有 Season 6
+        _folder("F_SHOW_B", "脱口秀大会 (2017)"),  # 第二个：有 Season 5（文件真身）
+    ],
+    "F_SHOW_A": [_folder("F_S6", "Season 6")],
+    "F_S6": [_file("V_S6E1", "S06E01.mkv")],
+    "F_S5": [_file("V_S5E9", "脱口秀大会-Part2 - S05E09.mkv")],
+    "F_SHOW_B": [_folder("F_S5", "Season 5")],
+}
+DUP_FAIL_FOLDERS: set[str] = set()
+
+
+def _dup_api_get(url, token, params):
+    match = re.search(r"'([^']+)' in parents", params.get("q", ""))
+    folder_id = match.group(1) if match else ""
+    if folder_id in DUP_FAIL_FOLDERS:
+        raise drive_changes.DriveNotFoundError(folder_id)
+    return {"files": DUP_TREE.get(folder_id, [])}
+
+
+@pytest.fixture()
+def _dup_drive(monkeypatch):
+    DUP_FAIL_FOLDERS.clear()
+    monkeypatch.setattr(drive_changes, "_api_get", _dup_api_get)
+    yield
+    DUP_FAIL_FOLDERS.clear()
+
+
+DUP_FILE_REL = "/综艺/脱口秀大会 (2017)/Season 5/脱口秀大会-Part2 - S05E09.mkv"
+
+
+def test_locate_backtracks_into_second_duplicate_folder(_dup_drive):
+    """文件在第二个同名文件夹里：_locate 回溯找到它，不再报"找不到文件\""""
+    provider = DriveMount(_mount())
+    entry = provider._locate(DUP_FILE_REL)
+    assert entry.file_id == "V_S5E9" and not entry.is_dir
+
+
+def test_resolve_duplicate_folder_file(_dup_drive, monkeypatch):
+    """resolve 走 _locate：同名文件夹下的文件能拿到 usercontent 直链"""
+    monkeypatch.setattr(
+        drive_auth, "drive_auth_headers",
+        lambda url, key=None: {"Authorization": "Bearer T"})
+    provider = DriveMount(_mount())
+    target = provider.resolve(DUP_FILE_REL)
+    assert target.kind == "url" and "id=V_S5E9" in target.value
+
+
+def test_locate_first_duplicate_unchanged(_dup_drive):
+    """第一个同名文件夹里的文件：行为与旧实现一致（首个匹配）"""
+    provider = DriveMount(_mount())
+    entry = provider._locate("/综艺/脱口秀大会 (2017)/Season 6/S06E01.mkv")
+    assert entry.file_id == "V_S6E1"
+
+
+def test_locate_genuinely_missing_still_raises(_dup_drive):
+    """真不存在的路径：仍然明确报找不到，不静默"""
+    provider = DriveMount(_mount())
+    with pytest.raises(mnt.MountError, match="找不到"):
+        provider._locate("/综艺/脱口秀大会 (2017)/Season 9/不存在.mkv")
+    with pytest.raises(mnt.MountError, match="找不到"):
+        provider._locate("/综艺/没有这个综艺/xxx.mkv")
+
+
+def test_backtrack_does_not_pin_ambiguous_rel(_dup_drive):
+    """回溯命中的歧义路径不写入 _fid_cache：不把某次选中的文件夹钉死"""
+    provider = DriveMount(_mount())
+    provider._locate(DUP_FILE_REL)
+    assert "/综艺/脱口秀大会 (2017)/Season 5" not in provider._fid_cache
+    # 无歧义路径仍正常缓存（旧行为）
+    provider._locate("/综艺/脱口秀大会 (2017)/Season 6/S06E01.mkv")
+    assert provider._fid_cache.get("/综艺/脱口秀大会 (2017)") == "F_SHOW_A"
+
+
+def test_backtrack_does_not_swallow_listing_failure(_dup_drive):
+    """回溯时列举 API 本身失败：原样上抛，不被翻译成"找不到\""""
+    DUP_FAIL_FOLDERS.add("F_SHOW_B")
+    provider = DriveMount(_mount())
+    with pytest.raises(mnt.MountError) as excinfo:
+        provider._locate(DUP_FILE_REL)
+    assert "目录不存在或无权访问" in str(excinfo.value)
+    assert "找不到" not in str(excinfo.value)
+
+
+def test_unambiguous_path_caching_unchanged(_dup_drive):
+    """无歧义路径：一次 _fid_of 后各级 rel 都进缓存（与旧实现一致）"""
+    provider = DriveMount(_mount())
+    fid = provider._fid_of("/综艺/脱口秀大会 (2017)/Season 6")
+    assert fid == "F_S6"
+    assert provider._fid_cache["/综艺"] == "F_DUP"
+    assert provider._fid_cache["/综艺/脱口秀大会 (2017)"] == "F_SHOW_A"
+    assert provider._fid_cache["/综艺/脱口秀大会 (2017)/Season 6"] == "F_S6"

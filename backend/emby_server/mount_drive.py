@@ -30,9 +30,11 @@
 - 凭据问题（DriveAuthError / token 刷新后仍 401）抛 ``MountAuthError``，
   后台测试连接会明确提示是凭据问题而不是网络问题。
 
-注意：Drive 允许同一目录下有同名文件/文件夹。本类型按名逐级解析子路径，
-同名文件夹只认第一个（与 rclone 按名寻址的行为一致）；产出的 ``rel`` 若重名
-会撞同一条路径，扫描器侧有 guid 去重兜底。
+注意：Drive 允许同一目录下有同名文件/文件夹。列举展示时同名文件夹只认
+第一个（与 rclone 按名寻址的行为一致）；但路径解析（``_fid_of`` 经由的
+``_locate``/``resolve``/``exists``）在按首个匹配走入死胡同时，会回溯尝试
+其它同名文件夹——合法路径一定能定位到。产出的 ``rel`` 若重名会撞同一条
+路径，扫描器侧有 guid 去重兜底。
 """
 from __future__ import annotations
 
@@ -78,6 +80,15 @@ def _parse_mod_ts(value: object) -> float:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
+
+
+class _PathDeadEnd(MountError):
+    """内部信号：按名逐级解析走入死胡同（某级名在已选文件夹下不存在）。
+
+    仅供 ``_fid_of`` 的同名回溯捕获；它是 ``MountError`` 的子类，对外
+    ``except MountError`` 的调用方行为不变。列举 API 本身失败抛的是普通
+    ``MountError``，不会被回溯逻辑吞掉。
+    """
 
 
 class DriveMount(RemoteMount):
@@ -225,13 +236,41 @@ class DriveMount(RemoteMount):
                 return items
 
     def _fid_of(self, rel: str) -> str:
-        """把挂载内相对路径逐级解析成 folder id（仿 115 的 _cid_of）"""
+        """把挂载内相对路径逐级解析成 folder id（仿 115 的 _cid_of）。
+
+        同名文件夹回溯：Drive 允许同级目录下出现同名文件夹。逐级按名
+        解析先走快速路径（每级取首个匹配，与旧实现一致）；若走入死胡同
+        （后续某级名在已选文件夹下不存在），改用带回溯的逐级解析，在
+        最近的有多个同名候选的层级换下一个候选再试——合法路径一定能
+        定位到。无歧义路径的行为、报错与缓存和旧实现完全一致；只有歧义
+        路径才付出额外的列举开销。
+        """
         rel = ("/" + (rel or "").lstrip("/")).rstrip("/") or "/"
         if rel in self._fid_cache:
             return self._fid_cache[rel]
+        parts = [p for p in rel.split("/") if p]
+        try:
+            return self._fid_of_fast(parts, rel)
+        except _PathDeadEnd:
+            pass  # 死胡同：改用回溯解析
+        trail: list[tuple[str, str, bool]] = []
+        try:
+            fid = self._walk_parts(parts, 0, self.root_id, rel, trail)
+        except _PathDeadEnd as exc:
+            raise MountError(f"Google 云盘上找不到目录: {rel}") from exc
+        # 只有整条路径各级都无歧义（每级恰一个同名候选）才缓存各级 rel，
+        # 与旧实现一致；歧义路径不缓存，避免把某次回溯选中的文件夹钉死
+        # 成该 rel 的"标准答案"。
+        if trail and all(unambiguous for _, _, unambiguous in trail):
+            for level_rel, level_fid, _ in trail:
+                self._fid_cache[level_rel] = level_fid
+        return fid
+
+    def _fid_of_fast(self, parts: list[str], rel: str) -> str:
+        """旧实现原样：逐级取首个同名文件夹；死胡同抛 _PathDeadEnd。"""
         fid = self.root_id
         current = ""
-        for part in [p for p in rel.split("/") if p]:
+        for part in parts:
             parent_rel = current or "/"
             current = f"{current}/{part}"
             if current in self._fid_cache:
@@ -243,10 +282,44 @@ class DriveMount(RemoteMount):
                 None,
             )
             if child is None or not child.entry_id:
-                raise MountError(f"Google 云盘上找不到目录: {rel}")
+                raise _PathDeadEnd(rel)
             fid = child.entry_id
             self._fid_cache[current] = fid
         return fid
+
+    def _walk_parts(self, parts: list[str], idx: int, folder_id: str,
+                    full_rel: str,
+                    trail: list[tuple[str, str, bool]]) -> str:
+        """带同名回溯的逐级解析；死胡同抛 _PathDeadEnd 由上层换候选。
+
+        列举 API 本身失败抛普通 MountError，直接上抛不回溯（那不是
+        "名不存在"，换候选也救不了）。
+        """
+        if idx >= len(parts):
+            return folder_id
+        part = parts[idx]
+        level_rel = "/" + "/".join(parts[: idx + 1])
+        entries = self._list_by_id(folder_id)  # MountError 上抛：列举失败不回溯
+        cands = [e for e in entries
+                 if e.is_dir and e.name == part and e.entry_id]
+        if not cands:
+            raise _PathDeadEnd(full_rel)
+        last_dead: Optional[_PathDeadEnd] = None
+        for cand in cands:
+            trail.append((level_rel, cand.entry_id, len(cands) == 1))
+            try:
+                return self._walk_parts(parts, idx + 1, cand.entry_id,
+                                        full_rel, trail)
+            except _PathDeadEnd as exc:
+                trail.pop()
+                last_dead = exc
+                continue
+        assert last_dead is not None  # cands 非空，必有一次死胡同
+        raise last_dead
+
+    def _list_by_id(self, folder_id: str) -> list[MountEntry]:
+        """按 folder id 直接列目录（供回溯解析用：不经过名解析、不写 _fid_cache）。"""
+        return self._entries_of(folder_id, "", cache_children=False)
 
     # ---- 提供者接口 ----
 
@@ -263,6 +336,15 @@ class DriveMount(RemoteMount):
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         folder_id = self._fid_of(rel)
         prefix = ("/" + (rel or "").lstrip("/")).rstrip("/")
+        return self._entries_of(folder_id, prefix, cache_children=True)
+
+    def _entries_of(self, folder_id: str, prefix: str,
+                    cache_children: bool) -> list[MountEntry]:
+        """把一个 folder id 的 files.list 结果建成 MountEntry 列表。
+
+        cache_children=True（list_dir 路径）：子目录的 rel→id 按首个匹配
+        写入 _fid_cache（与旧行为一致）；回溯解析路径传 False，不污染缓存。
+        """
         entries: list[MountEntry] = []
         for item in self._list_all(folder_id):
             name = item.get("name") or ""
@@ -271,7 +353,7 @@ class DriveMount(RemoteMount):
                 continue
             is_dir = item.get("mimeType") == FOLDER_MIME
             child_rel = f"{prefix}/{name}"
-            if is_dir:
+            if is_dir and cache_children:
                 self._fid_cache.setdefault(child_rel, item_id)
             entries.append(MountEntry(
                 name=name,
