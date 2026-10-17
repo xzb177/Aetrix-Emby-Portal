@@ -1741,14 +1741,14 @@ def search_tmdb_candidates(
     return {"candidates": candidates}
 
 
-# ==================== 豆瓣优先（中文内容主数据源） ====================
+# ==================== 豆瓣（可选）：中文兜底数据源 ====================
 
 @admin_emby_router.get("/scrape/douban-config")
 def get_douban_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """读取豆瓣优先配置：总开关（默认开）+ 限速（秒/次）"""
+    """读取豆瓣配置：总开关（默认关）+ 限速（秒/次）"""
     from backend.emby_server import douban as _dbn
     return {
         "enabled": _dbn.enabled(db),
@@ -1767,7 +1767,7 @@ def save_douban_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存豆瓣优先配置（保存即热生效）"""
+    """保存豆瓣配置（保存即热生效）"""
     from backend.emby_server import douban as _dbn
     from backend.integrations import store
     enabled = body.enabled
@@ -1779,7 +1779,7 @@ def save_douban_config(
             _dbn.DOUBAN_RATE_KEY: str(iv),
         },
         {
-            _dbn.DOUBAN_ENABLED_KEY: "豆瓣优先总开关（中文标题先走豆瓣）",
+            _dbn.DOUBAN_ENABLED_KEY: "豆瓣（可选）总开关（中文标题先走豆瓣兜底）",
             _dbn.DOUBAN_RATE_KEY: "豆瓣请求最小间隔秒数",
         },
     )

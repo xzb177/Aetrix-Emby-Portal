@@ -528,11 +528,11 @@ const keyPanelOpen = ref('')
 const keyInput = ref('')
 const keyBusy = ref('')
 const sourceKeyTests = ref<Record<string, Array<{ index: number; masked: string; ok: boolean; message: string }>>>({})
-// ==================== 豆瓣优先 ====================
+// ==================== 豆瓣（可选） ====================
 const doubanCfg = ref<DoubanConfig | null>(null)
 const doubanLoading = ref(false)
 const doubanSaving = ref(false)
-const doubanDraft = reactive({ enabled: true, min_interval: 1.0 })
+const doubanDraft = reactive({ enabled: false, min_interval: 1.0 })
 
 const doubanDirty = computed(() => {
   if (!doubanCfg.value) return false
@@ -563,7 +563,7 @@ async function saveDouban() {
     doubanCfg.value = cfg
     doubanDraft.enabled = cfg.enabled
     doubanDraft.min_interval = Number(cfg.min_interval) || 1.0
-    ElMessage.success('豆瓣优先配置已保存')
+    ElMessage.success('豆瓣配置已保存')
   } catch {
     ElMessage.error('保存失败，请重试')
   } finally {
@@ -1406,8 +1406,8 @@ onMounted(() => {
         </template>
       </SectionCard>
 
-      <!-- 0.5 豆瓣优先：中文标题先走豆瓣（TMDB 中文收录差）。Batch D：限流降级从媒体库页收拢到此 -->
-      <SectionCard id="card-douban" class="ms-card" title="豆瓣优先" :icon="BookOpen">
+      <!-- 0.5 豆瓣（可选）：中文兜底源，默认关闭。Batch D：限流降级从媒体库页收拢到此 -->
+      <SectionCard id="card-douban" class="ms-card" title="豆瓣（可选）" :icon="BookOpen">
         <template #actions>
           <div class="ms-facts">
             <span v-if="doubanCfg" class="fact" :class="doubanCfg.enabled ? 'ok' : 'muted'">
@@ -1417,9 +1417,11 @@ onMounted(() => {
           </div>
         </template>
         <p class="ms-hint">
-          TMDB 对中文剧集 / 综艺收录偏少。开启后，<strong>含中文的标题优先走豆瓣搜索</strong>：
-          搜中则取详情（标题 / 简介 / 评分 / 海报）写库；没搜中则回退到 TMDB。
-          非中文标题不受影响，直接走 TMDB。
+          豆瓣是<strong>可选</strong>的中文兜底源，<strong>默认关闭</strong>。
+          开启后，<strong>仅在 TMDB 未命中时</strong>对含中文的标题走豆瓣搜索：
+          搜中则取详情（标题 / 简介 / 评分 / 海报）写库，没搜中则保持原状。
+          关闭时不发出任何豆瓣请求，中文标题也直接走 TMDB。
+          豆瓣限流 / 封禁期内自动跳过（零豆瓣请求），解封后由后台补刮。
           定时扫描、单集刮削等仍在「<router-link :to="{ name: 'EmbyAdmin' }" class="ms-link">媒体库 → 定时与刮削</router-link>」。
         </p>
         <div v-if="doubanLoading && !doubanCfg" class="ms-skeleton" aria-busy="true">
@@ -1429,7 +1431,7 @@ onMounted(() => {
           v-else-if="!doubanCfg"
           compact
           :icon="BookOpen"
-          title="读取豆瓣优先配置失败"
+          title="读取豆瓣配置失败"
           description="可能是网络或后端暂时不可用。"
         >
           <template #actions>
@@ -1441,8 +1443,8 @@ onMounted(() => {
             <div class="ms-switch">
               <el-switch v-model="doubanDraft.enabled" />
               <div>
-                <div class="ms-switch-title">中文优先走豆瓣</div>
-                <div class="ms-hint">关 = 中文标题也直接走 TMDB（原行为）</div>
+                <div class="ms-switch-title">启用豆瓣中文兜底</div>
+                <div class="ms-hint">关 = 不打任何豆瓣请求，中文标题也直接走 TMDB（默认）</div>
               </div>
             </div>
           </div>
@@ -1497,8 +1499,9 @@ onMounted(() => {
         </template>
         <p class="ms-hint">
           豆瓣主链路被封禁/降级时，刮削走备用链路：豆瓣 subject_suggest + Bangumi 兜底。
-          这里是备用链路自己的请求间隔，<strong>不是</strong>上面「豆瓣优先」卡里的间隔——
+          这里是备用链路自己的请求间隔，<strong>不是</strong>上面「豆瓣（可选）」卡里的间隔——
           两个链路各限各的。0 = 不限速（默认 1.0 秒）。
+          注意：上面「豆瓣（可选）」开关关闭时，备用链路里的豆瓣请求同样不发出（只走 Bangumi）。
         </p>
         <div v-if="amLoading && !amRates" class="ms-skeleton" aria-busy="true">
           <div class="au-skeleton" /><div class="au-skeleton" />
