@@ -919,3 +919,55 @@ def test_api_get_403_unknown_reason_retries_limited():
             pass
         # 首次 + 2 次重试 = 3 次调用，sleep 被调用 2 次
         assert sleep.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# r37：410 page token 过期 —— 重新初始化而非每轮 warning 重放
+# ---------------------------------------------------------------------------
+
+def test_api_get_raises_page_token_expired_on_410():
+    with mock.patch.object(drive_changes.httpx, "get",
+                           return_value=_fake_resp(410)):
+        try:
+            drive_changes._api_get("http://x", "tok", {})
+        except drive_changes.PageTokenExpiredError:
+            pass
+        else:
+            raise AssertionError("410 应抛 PageTokenExpiredError")
+
+
+def test_poll_once_page_token_expired_reinits(caplog):
+    import logging
+    did = "EXP410-%s" % uuid.uuid4().hex[:8]
+    db = mock.Mock()
+    saved = {}
+
+    def fake_save(db_, drive_id_, token_):
+        saved[drive_id_] = token_
+
+    with mock.patch.object(drive_changes, "discover_drives",
+                           return_value={did: ["MP"]}), \
+         mock.patch.object(drive_changes, "_get_page_token",
+                           return_value="old-expired-token"), \
+         mock.patch.object(drive_changes, "list_changes",
+                           side_effect=drive_changes.PageTokenExpiredError("expired")), \
+         mock.patch.object(drive_changes, "get_start_page_token",
+                           return_value="new-token-123"), \
+         mock.patch.object(drive_changes, "_save_page_token",
+                           side_effect=fake_save), \
+         mock.patch("backend.database.SessionLocal", return_value=db), \
+         caplog.at_level(logging.ERROR,
+                         logger="backend.emby_server.drive_changes"):
+        drive_changes._dead_drives.pop(did, None)
+        try:
+            drive_changes.poll_once()
+        finally:
+            drive_changes._dead_drives.pop(did, None)
+    # 新 token 已落库
+    assert saved.get(did) == "new-token-123", "过期后应重新初始化并保存新 token"
+    # 不标 dead（配置没问题，只是 token 老了）
+    assert did not in drive_changes._dead_drives
+    err_logs = [r for r in caplog.records
+                if r.levelno >= logging.ERROR and "page token 已过期" in r.getMessage()]
+    assert len(err_logs) == 1, "应打一条 error 日志说明 token 已重置"
+    assert did in err_logs[0].getMessage()

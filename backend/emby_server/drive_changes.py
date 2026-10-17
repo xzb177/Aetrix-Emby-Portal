@@ -70,6 +70,16 @@ class DriveNotFoundError(Exception):
         self.drive_id = drive_id
 
 
+class PageTokenExpiredError(Exception):
+    """Drive Changes API 返回 410：page token 过期。
+
+    Google 文档口径：token 长时间未用或变化过多会失效，恢复方法是重新
+    getStartPageToken。调用方不应拿同一个过期 token 每轮重放（r37 实锤：
+    原实现归入"其他 4xx 直接抛"，poller 只记 warning、下轮继续用过期 token，
+    该盘增量发现永久停摆且无恢复路径）。
+    """
+
+
 def _is_dead_drive(drive_id: str) -> bool:
     """该盘是否在 404 退避期内。过期则清除标记并返回 False（允许再试一次）。"""
     with _dead_lock:
@@ -587,6 +597,7 @@ def _api_get(url: str, token: str, params: dict) -> dict:
     - 网络层瞬时异常（超时/连接重置等）：同 5xx 退避重试
     - 401 → PermissionError（不重试，调用方刷新 token）
     - 404 → DriveNotFoundError（不重试，调用方退避）
+    - 410 → PageTokenExpiredError（不重试，调用方重新初始化 page token）
     - 其他 4xx：直接抛，不重试
     - 每次请求前过全局速率限制器（令牌桶），并发叠加不超标
     """
@@ -628,6 +639,13 @@ def _api_get(url: str, token: str, params: dict) -> dict:
             # 不要当成普通错误每 5 分钟重试。
             drive_id = (params or {}).get("driveId", "")
             raise DriveNotFoundError(drive_id)
+        if resp.status_code == 410:
+            # Changes page token 过期：Google 明确要求重新 getStartPageToken，
+            # 拿旧 token 重试永远 410。抛专用异常让 poller 重新初始化 token
+            # （r37：此前归入"其他 4xx 直接抛"，poller 每轮 warning 重放过期
+            # token，该盘增量发现永久停摆）。
+            raise PageTokenExpiredError(
+                "Drive Changes page token 已过期，需重新初始化")
         if resp.status_code == 429:
             # 429 限流：优先尊重 Retry-After 头，没有头时按 2 倍退避（更保守）
             last_exc = httpx.HTTPStatusError(
@@ -1234,6 +1252,24 @@ def poll_once() -> dict:
                     "该盘已暂停增量发现 %d 小时，之后会自动再试一次",
                     drive_id, DEAD_DRIVE_RETRY_SEC // 3600,
                 )
+                continue
+            except PageTokenExpiredError:
+                # r37：page token 过期（410）——按 Google 文档重新初始化 token，
+                # 增量从新起点继续。不标 dead（配置没问题，只是 token 老了）。
+                # 过期 token 到新 token 之间的变化会遗漏：按既有口径
+                # （"只能等全量扫描兜底"）等全量扫描补回，这里不硬触发。
+                stats["errors"] += 1
+                new_token = get_start_page_token(drive_id)
+                if new_token:
+                    _save_page_token(db, drive_id, new_token)
+                    logger.error(
+                        "Drive Changes: drive %s 的 page token 已过期（410），"
+                        "已重新初始化；过期期间的变化可能遗漏，等全量扫描兜底",
+                        drive_id)
+                else:
+                    logger.error(
+                        "Drive Changes: drive %s 的 page token 已过期（410），"
+                        "重新获取失败，下轮重试", drive_id)
                 continue
             stats["changes"] += len(changes)
             # page token 只在这批 changes **已经映射并入队**之后才推进。
