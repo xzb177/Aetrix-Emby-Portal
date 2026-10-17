@@ -404,14 +404,12 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
                     access_guard.CONFIG_REGION_KEYWORDS)
     ])
 
-    # 7.12 防盗链（.strm 签名 + 播放签名）：默认全部启用 = 与升级前一致
+    # 7.12 防盗链（播放签名，2026-10-17 起 .strm 签名已随 strm_gen 删除）：默认全部启用 = 与升级前一致
     from backend.emby_server import play_sign
     items.extend([
         (play_sign.CONFIG_HOTLINK_ENABLED, "true", play_sign.DESCRIPTIONS[play_sign.CONFIG_HOTLINK_ENABLED]),
         (play_sign.CONFIG_PLAY_SIGN_TTL, str(play_sign.PLAY_TTL_DEFAULT),
          play_sign.DESCRIPTIONS[play_sign.CONFIG_PLAY_SIGN_TTL]),
-        (play_sign.CONFIG_STRM_SIG_TTL, str(play_sign.STRM_TTL_DEFAULT),
-         play_sign.DESCRIPTIONS[play_sign.CONFIG_STRM_SIG_TTL]),
     ])
 
     # 8. 公益服查看权限价格

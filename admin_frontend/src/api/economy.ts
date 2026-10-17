@@ -339,15 +339,12 @@ export const updateEconomySettings = (settings: EconomySettings) =>
 export interface HotlinkConfigPayload {
   enabled: boolean
   play_sign_ttl: number
-  strm_sig_ttl: number
   /** Referer 白名单（逗号分隔域名），不传则后端不改 */
   allowed_referers?: string
 }
 
 export interface HotlinkConfig extends HotlinkConfigPayload {
-  /** .strm TTL 可保存下限（= 2×后端维护间隔，默认 1200） */
-  strm_sig_ttl_min?: number
-  defaults: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number }
+  defaults: { enabled: boolean; play_sign_ttl: number }
 }
 
 /** GET /hotlink-config 的白名单字段：后端返回归一化后的域名数组 */

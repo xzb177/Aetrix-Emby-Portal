@@ -7,7 +7,7 @@
 - **EM（面板）**：扫描、目录浏览、后台「测试连接」
 - **EA（网关）**：播放出流（``mount_routes`` → 代理 / 读本机文件）
 
-而挂载里有些配置是**主机相对**的：``local`` / ``strm`` 的路径、``rclone`` 的 RC 地址
+而挂载里有些配置是**主机相对**的：``local`` 的路径、``rclone`` 的 RC 地址
 （默认 ``127.0.0.1:5572`` 指的是各自容器自己）与 rclone 可执行文件。于是 EM/EA 分开
 部署时，「后台测试通过」并**不代表 EA 能播**——不一致只在之后以扫描 ``failed_roots``
 或播放 502/404 的形式暴露，排查很绕。
@@ -153,7 +153,7 @@ def probe_one_mount(db: Session, mount, usage: Optional[dict[int, list[int]]] = 
         "kind": kind,
         "path": path,
         "is_enabled": bool(mount.is_enabled),
-        # local / strm 的路径是本机相对资源，单独报出来（远程类型为 None）
+        # local 的路径是本机相对资源，单独报出来（远程类型为 None）
         "path_exists": os.path.isdir(path) if kind == "local" and path else None,
         "library_ids": (usage if usage is not None else _mount_library_map(db)).get(mount.id, []),
     }

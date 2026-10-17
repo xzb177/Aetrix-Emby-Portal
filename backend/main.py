@@ -85,9 +85,6 @@ from backend.emby_server.portal import user_emby_router, admin_emby_router, conf
 # 存储挂载端点已从 portal.py 拆出（portal.py 尾部超出编辑窗口）：导入即注册到同一个
 # admin_emby_router 上，因此必须放在 app.include_router(admin_emby_router) 之前。
 from backend.emby_server import portal_mount_routes  # noqa: F401
-# .strm 生成器管理端点：导入即把 5 个路由（config/trigger/progress/missing）注册到
-# 同一个 admin_emby_router 上，必须放在 app.include_router(admin_emby_router) 之前。
-from backend.api import admin_strm_gen  # noqa: F401
 from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
@@ -299,21 +296,6 @@ async def lifespan(app: FastAPI):
             node_health.start_health_daemon(SessionLocal)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"节点健康检查启动失败（可忽略）: {e}")
-
-    # .strm 生成器定时调度：必须在 API 进程启动（只有 aetrix-api 的 /strm 是 rw
-    # 挂载，worker/ea 都是 ro 写不进去）。这里不按 _is_api_role 区分——单体模式
-    # （未设 AETRIX_ROLE）同样走 main.py，调度器要在两种模式下都跑起来；
-    # worker 进程用 backend/worker.py 入口，根本不走这里，不会重复启动。
-    # 调度器内部按 strm_gen_enabled / strm_gen_interval_minutes 配置决定是否真正执行。
-    try:
-        from backend.emby_server import strm_gen
-        if strm_gen.start_scheduler():
-            logger.info(".strm 生成器定时调度已启动")
-        # 反向僵尸校验（.strm 删除链路块4）：独立 daemon 线程，每周有界轮查
-        if strm_gen.start_orphan_scheduler():
-            logger.info(".strm 反向僵尸校验调度已启动")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f".strm 生成器调度启动失败（可忽略）: {e}")
 
     logger.info("✅ Aetrix Portal 启动完成")
 

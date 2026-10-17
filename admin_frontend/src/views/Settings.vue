@@ -547,16 +547,15 @@ onMounted(async () => {
 })
 
 /** ==================== 防盗链卡片（独立 endpoint，非通用分组） ==================== */
-/** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400 / 300~86400），
+/** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400），
  * 通用分组的 int 字段只有 min=0 的粗校验，装不下。 */
-const hotlink = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600, allowed_referers: '' })
-const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600, allowed_referers: '' })
+const hotlink = reactive({ enabled: true, play_sign_ttl: 900, allowed_referers: '' })
+const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, allowed_referers: '' })
 const hotlinkLoading = ref(false)
 
 function applyHotlink(data: HotlinkConfigGet) {
   hotlink.enabled = !!data.enabled
   hotlink.play_sign_ttl = Number(data.play_sign_ttl) || 900
-  hotlink.strm_sig_ttl = Number(data.strm_sig_ttl) || 3600
   // 后端回包是归一化后的域名数组；编辑态存逗号分隔串
   hotlink.allowed_referers = Array.isArray(data.allowed_referers)
     ? data.allowed_referers.join(', ')
@@ -578,7 +577,6 @@ async function loadHotlink() {
 const hotlinkDirty = computed(() =>
   hotlink.enabled !== hotlinkOriginal.enabled
   || hotlink.play_sign_ttl !== hotlinkOriginal.play_sign_ttl
-  || hotlink.strm_sig_ttl !== hotlinkOriginal.strm_sig_ttl
   || hotlink.allowed_referers !== hotlinkOriginal.allowed_referers,
 )
 
@@ -589,14 +587,9 @@ async function saveHotlinkCore(): Promise<boolean> {
     ElMessage.error('播放签名有效期需在 60~86400 秒之间')
     return false
   }
-  if (!Number.isInteger(hotlink.strm_sig_ttl) || hotlink.strm_sig_ttl < 300 || hotlink.strm_sig_ttl > 86400) {
-    ElMessage.error('.strm 签名有效期需在 300~86400 秒之间')
-    return false
-  }
   const payload: HotlinkConfigPayload = {
     enabled: hotlink.enabled,
     play_sign_ttl: hotlink.play_sign_ttl,
-    strm_sig_ttl: hotlink.strm_sig_ttl,
     allowed_referers: hotlink.allowed_referers,
   }
   try {
@@ -1199,7 +1192,7 @@ watch(
             id="group-hotlink"
             title="防盗链"
             :icon="ShieldCheck"
-            description="播放签名校验总开关 + 签名有效期。.strm 文件内容带签名（1 小时过期、定时任务自动刷新），Drive 文件保持私有、服务端用 Google 子账号凭据中转拉流。"
+            description="播放签名校验总开关 + 签名有效期。播放链接带 15 分钟签名与来路检查，防止盗链。"
             :tone="hotlinkDirty ? 'accent' : 'default'"
             class="group-card"
           >
@@ -1230,22 +1223,6 @@ watch(
                     <span class="field-suffix">秒</span>
                   </div>
                   <span class="field-hint">uid/exp/sign 签名有效期，默认 900（15 分钟），范围 60~86400</span>
-                </div>
-              </el-form-item>
-              <el-form-item label=".strm 签名有效期">
-                <div class="field-stack">
-                  <div class="field-control">
-                    <el-input-number
-                      v-model="hotlink.strm_sig_ttl"
-                      :min="300"
-                      :max="86400"
-                      :step="60"
-                      controls-position="right"
-                      class="num-input"
-                    />
-                    <span class="field-suffix">秒</span>
-                  </div>
-                  <span class="field-hint">.strm 内容签名有效期，默认 3600（1 小时），范围 300~86400；定时任务每 50 分钟自动刷新</span>
                 </div>
               </el-form-item>
               <el-form-item label="Referer 白名单">

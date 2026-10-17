@@ -1,13 +1,13 @@
 """GET /api/admin/tasks/overview 任务总览聚合接口。
 
-- 6 张卡片一次返回：scan / probe / enrich / strm / thumbnail / chase_new
+- 5 张卡片一次返回：scan / probe / enrich / thumbnail / chase_new
+  （注 2026-10-17：strm_gen 删除，strm 卡片同步下线）
 - 结构断言：每张卡都有 key/title/status/status_text/summary/metrics
-- 种子数据驱动状态：扫描运行中、probe 有失败、strm 跑过一次、追新开着
+- 种子数据驱动状态：扫描运行中、probe 有失败、追新开着
 - 降级：单个任务采集抛异常时，该卡 status=error，其余卡片不受影响
 
 全部在隔离临时 SQLite 里跑，不连生产库、不碰网络。
 """
-import json
 import os
 import tempfile
 from datetime import datetime, timedelta
@@ -33,7 +33,6 @@ import pytest
 from backend import models as base_models
 from backend.api import admin_tasks
 from backend.emby_server import models as em
-from backend.emby_server import strm_gen
 from backend.integrations import store
 from backend.database import SessionLocal, init_db
 
@@ -60,7 +59,7 @@ def db():
 
 @pytest.fixture()
 def seed(db):
-    """种子数据：2 个库 + 扫描流水 + 若干条目（probe/enrich 各状态）+ strm 配置。"""
+    """种子数据：2 个库 + 扫描流水 + 若干条目（probe/enrich 各状态）。"""
     lib1 = em.Library(guid="lib1", name="电影库", scan_status="running")
     lib2 = em.Library(guid="lib2", name="剧集库", scan_status="success")
     db.add_all([lib1, lib2])
@@ -89,14 +88,6 @@ def seed(db):
                      name="剧1E1", probe_status="done", enrich_status="failed"),
     ]
     db.add_all(items)
-    # strm 生成器：开着，上次跑过一次
-    store.write_values(db, {
-        strm_gen.CONFIG_ENABLED: "true",
-        strm_gen.CONFIG_INTERVAL: "60",
-        strm_gen.CONFIG_LAST_RUN: (now - timedelta(hours=3)).isoformat(),
-        strm_gen.CONFIG_LAST_STATS: json.dumps(
-            {"generated": 120, "skipped": 5, "failed": 2, "pruned": 0, "total": 127}),
-    }, {})
     # 追新：开着
     store.write_values(db, {
         "chase_new_enabled": "1",
@@ -117,12 +108,12 @@ def _by_key(res):
     return {t["key"]: t for t in res["tasks"]}
 
 
-def test_overview_returns_six_cards(db, seed):
+def test_overview_returns_five_cards(db, seed):
     res = _call(db)
     assert res["success"] is True
     assert "fetched_at" in res
     cards = _by_key(res)
-    assert set(cards) == {"scan", "probe", "enrich", "strm", "thumbnail", "chase_new"}
+    assert set(cards) == {"scan", "probe", "enrich", "thumbnail", "chase_new"}
     for key, card in cards.items():
         for field in ("key", "title", "status", "status_text", "summary", "metrics"):
             assert field in card, f"{key} 缺字段 {field}"
@@ -162,16 +153,6 @@ def test_enrich_card_backlog(db, seed):
     assert metrics["已完成"] == "2 条"
     assert metrics["失败"] == "1 条"
     assert card["status"] == "running"
-
-
-def test_strm_card_last_run_and_stats(db, seed):
-    card = _by_key(_call(db))["strm"]
-    metrics = {m["label"]: m["value"] for m in card["metrics"]}
-    assert metrics["上次生成"] == "120 个文件"
-    assert metrics["上次失败"] == "2 个"
-    assert card["last_run"] is not None
-    assert card["switch"]["label"] == "生成器总开关"
-    assert card["switch"]["enabled"] is True
 
 
 def test_chase_new_card(db, seed):

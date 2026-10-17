@@ -841,7 +841,7 @@ def _auto_migrate():
             ("languages", "TEXT", "''"),
             # .strm 删除链路（块3）：播放时 Drive alt=media 返回 404 的 advisory 标记。
             # 老库补列后为 NULL = 未标记，行为与升级前一致；文件恢复后由
-            # strm_gen 生成循环自动清除（见 _clear_gone_marks）。
+            # 注：strm_gen 已删除，其 _clear_gone_marks 清除循环不再运行。
             ("source_invalid_at", "DATETIME", "NULL"),
         ]),
         # 媒体流逐流细节：客户端「媒体信息」页要显示帧率/动态范围/位深/采样率等，

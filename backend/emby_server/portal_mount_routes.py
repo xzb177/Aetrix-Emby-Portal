@@ -383,51 +383,6 @@ def create_mount(req: MountCreate, staff: models.WebUser = Depends(require_staff
     return {"success": True, "mount": _serialize_mount(db, mount, None, _ea_server_names(db))}
 
 
-# ==================== .strm 直链目录配置 ====================
-
-@admin_emby_router.get("/mounts/strm")
-def get_strm_config(staff: models.WebUser = Depends(require_staff),
-                    db: Session = Depends(get_db)):
-    """当前 .strm 直链目录配置（总开关 / 宿主机目录 / 容器内挂载点）"""
-    from backend.emby_server import strm_config
-    return {"success": True, "strm": strm_config.config_payload(db)}
-
-
-class StrmConfigRequest(BaseModel):
-    enabled: bool = True
-    host_dir: str = ""
-    container_path: str = ""
-
-
-@admin_emby_router.put("/mounts/strm")
-def update_strm_config(payload: StrmConfigRequest,
-                       staff: models.WebUser = Depends(require_staff),
-                       db: Session = Depends(get_db)):
-    """写回 .strm 直链目录配置；路径非法时 400 并说清怎么改（不会存半个坏配置）"""
-    import os
-
-    from backend.emby_server import strm_config
-    # 容器内挂载点必须是容器里真实存在的目录：后台只改"认哪个目录"，不动 docker 挂载本身。
-    # 总开关关闭时不校验（关功能不该被挂载卡住）。
-    if payload.enabled:
-        try:
-            wanted = strm_config._normalize_dir_path_strict(payload.container_path,
-                                                            field_label="容器内挂载点")
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not os.path.isdir(wanted):
-            raise HTTPException(status_code=400, detail=(
-                f"容器内挂载点 {wanted} 在容器里不存在。这里只改后台认哪个目录，不会改 docker 挂载："
-                f"请在 .env 设置 STRM_CONTAINER_PATH={wanted}（宿主机目录用 STRM_MOUNT_DIR），"
-                f"然后 docker compose up -d 重启容器，再回来保存。"))
-    try:
-        state = strm_config.write_config(db, enabled=payload.enabled,
-                                         host_dir=payload.host_dir,
-                                         container_path=payload.container_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"success": True, "strm": state}
-
 @admin_emby_router.put("/mounts/{mount_id}")
 def update_mount(mount_id: int, req: MountUpdate,
                        staff: models.WebUser = Depends(require_staff),

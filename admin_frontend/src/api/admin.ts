@@ -1705,8 +1705,6 @@ export const fetchAutoScan = () => get<{ success: boolean } & AutoScanConfig>(`$
 export interface ChaseNewConfig {
   enabled: boolean
   interval: number
-  /** .strm 监听开关（默认开）：库路径是 /strm/... 时，strm_gen 产出的新 .strm 才会触发增量扫描 */
-  strm_enabled: boolean
   /** v2.45.0：**排除**清单（逗号分隔的库 id）。空 = 全部启用库都监听 */
   excluded: string
   /** 已废弃：旧的包含清单，后端固定返回空串（保留字段以兼容老前端） */
@@ -1745,8 +1743,8 @@ export interface ChaseNewConfig {
 }
 
 export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`)
-export const saveChaseNew = (enabled: boolean, interval: number, excluded: string, strmEnabled: boolean) =>
-  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded, strm_enabled: strmEnabled })
+export const saveChaseNew = (enabled: boolean, interval: number, excluded: string) =>
+  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded })
 
 export const saveAutoScan = (enabled: boolean, time: string) =>
   put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
@@ -1958,148 +1956,6 @@ export const browseLocalDirs = (path = '/') =>
 export const fetchMountRcloneRemotes = () =>
   get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/conf`)
 
-/** .strm 直链目录配置（后端 GET/PUT /api/admin/emby/mounts/strm） */
-export interface StrmConfig {
-  enabled: boolean
-  host_dir: string
-  container_path: string
-  defaults: { enabled: boolean; host_dir: string; container_path: string }
-}
-/** 当前 .strm 直链目录配置（总开关 / 宿主机目录 / 容器内挂载点） */
-export const fetchStrmConfig = () =>
-  get<{ success: boolean; strm: StrmConfig }>(`${E}/mounts/strm`)
-/** 写回 .strm 直链目录配置；路径非法时后端 400，拦截器会弹出 detail */
-export const saveStrmConfig = (data: { enabled: boolean; host_dir: string; container_path: string }) =>
-  put<{ success: boolean; strm: StrmConfig }>(`${E}/mounts/strm`, data)
-
-// ==================== .strm 生成器（后端 /api/admin/emby/strm-gen/*） ====================
-
-/** .strm 生成器配置（总开关 / Drive 源目录 / 指定 Drive / 过期清理） */
-export interface StrmGenConfig {
-  enabled: boolean
-  /** 主源目录（兼容旧前端，取第一项） */
-  source_dir: string
-  /** 源目录配置原文（逗号分隔多目录），新前端回显用 */
-  source_dir_raw?: string
-  /** 源目录列表 */
-  source_dirs?: string[]
-  /** 指定 Drive ID，空或 "all"=所有发现的盘 */
-  drive_id: string
-  /** 清理 Drive 上已不存在的 .strm 文件及状态行（不可逆） */
-  prune: boolean
-  /** 同名同大小去重（同名且字节大小相同只留一份）；老后端无此键时回显 true */
-  dedupe_same_size?: boolean
-  /** 增量间隔分钟数，0=关闭 */
-  interval_minutes: number
-  /** 运行锁僵死超时（分钟），0=关闭自愈 */
-  lock_timeout_minutes: number
-  /** 数据源类型：drive=Google Drive，local=本地目录 */
-  source_type: string
-  /** 本地源根目录 */
-  local_root: string
-  /** 调度抖动比例 [0, 0.5]（默认 0.2，0=关闭） */
-  jitter_ratio: number
-  /** 子树限定列举开关（默认开） */
-  subtree_listing: boolean
-  /** 多盘并行列举并发数（1-10），老后端无此键时回显默认 3 */
-  drive_concurrency?: number
-  /** Drive API 全局速率上限 QPS（1.0-20.0），默认 8.0 */
-  api_qps?: number
-  /** 删除保护：演习开关，true=只记 would-delete 不真删 */
-  prune_dry_run?: boolean
-  /** 删除保护：单轮删除比例上限 (0, 1]，默认 0.2 */
-  prune_max_ratio?: number
-  /** 删除保护：单轮删除绝对上限 ≥1，默认 50 */
-  prune_max_absolute?: number
-  /** 增量中新文件写盘前是否验一次 file_id */
-  verify_new_ids?: boolean
-  /** 反向僵尸校验任务开关 */
-  orphan_check_enabled?: boolean
-  /** 反向僵尸校验周期（天）≥1，默认 7 */
-  orphan_check_interval_days?: number
-  /** 反向校验每轮最多校验数 100-10000，默认 2000 */
-  orphan_check_batch?: number
-  /** 反向校验 per-SA QPS 上限 0.5-10，默认 2.0 */
-  orphan_check_qps?: number
-  /** 上次执行时间（ISO 字符串），可能为空 */
-  last_run: string
-}
-
-/** 生成进度（phase: idle | listing | generating | verifying | done | error） */
-export interface StrmGenProgress {
-  running: boolean
-  started_at: string | null
-  finished_at: string | null
-  phase: string
-  total: number
-  done: number
-  generated: number
-  skipped: number
-  failed: number
-  /** 最近的错误信息（最多 20 条） */
-  errors: string[]
-  /** 当前处理的文件 */
-  current: string
-}
-
-/** Drive 列表项 */
-export interface StrmGenDrive {
-  drive_id: string
-  remotes: string[]
-  is_personal: boolean
-}
-
-/** 缺集报告里的一个剧 */
-export interface StrmGenIncomplete {
-  series: string
-  drive_count: number
-  strm_count: number
-  missing_count: number
-  missing_sample: string[]
-}
-
-/** 读 .strm 生成器配置 */
-export const fetchStrmGenConfig = () =>
-  get<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`)
-
-/** 写 .strm 生成器配置（保存即热生效）；格式非法时后端 400 */
-export const saveStrmGenConfig = (data: {
-  enabled: boolean
-  source_dir: string
-  drive_id: string
-  prune: boolean
-  /** 同名同大小去重开关；不传则后端不改 */
-  dedupe_same_size?: boolean
-  interval_minutes: number
-  source_type: string
-  local_root: string
-  /** 运行锁僵死超时（分钟），不传则后端不改 */
-  lock_timeout_minutes?: number
-  /** 多盘并行列举并发数（不传则后端回落默认 3） */
-  drive_concurrency?: number
-  /** Drive API 全局速率上限 QPS（不传则后端回落默认 8.0） */
-  api_qps?: number
-  /** 删除保护：演习开关（不传则后端不改） */
-  prune_dry_run?: boolean
-  /** 删除保护：单轮删除比例上限 (0,1]（不传则后端不改） */
-  prune_max_ratio?: number
-  /** 删除保护：单轮删除绝对上限（不传则后端不改） */
-  prune_max_absolute?: number
-  /** 增量中新文件写盘前是否验一次 file_id（不传则后端不改） */
-  verify_new_ids?: boolean
-  /** 反向僵尸校验任务开关（不传则后端不改） */
-  orphan_check_enabled?: boolean
-  /** 反向僵尸校验周期（天）（不传则后端不改） */
-  orphan_check_interval_days?: number
-  /** 反向校验每轮最多校验数（不传则后端不改） */
-  orphan_check_batch?: number
-  /** 反向校验 per-SA QPS 上限（不传则后端不改） */
-  orphan_check_qps?: number
-  /** 调度抖动比例 [0, 0.5]（不传则后端不改） */
-  jitter_ratio?: number
-  /** 子树限定列举开关（不传则后端不改） */
-  subtree_listing?: boolean
-}) => put<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`, data)
 
 // ==================== 备用链路限速（配置瘦身第 3 批） ====================
 
@@ -2132,32 +1988,6 @@ export interface PlaybackDirectSource {
   path_style: boolean
   enabled: boolean
 }
-
-/** 手动触发一次生成（full=false 增量，true 全量）；已有任务在跑时后端返回 success=false */
-export const triggerStrmGen = (full = false) =>
-  post<{ success: boolean; message?: string; error?: string; progress?: StrmGenProgress }>(
-    `${E}/strm-gen/trigger`, { full })
-
-/** 查生成进度（附带当前配置，前端轮询用） */
-export const fetchStrmGenProgress = () =>
-  get<{ success: boolean; progress: StrmGenProgress; config: StrmGenConfig }>(`${E}/strm-gen/progress`)
-
-/** 列出发现的 Drive（供 drive_id 配置选择） */
-export const fetchStrmGenDrives = () =>
-  get<{ success: boolean; drives?: StrmGenDrive[]; error?: string }>(`${E}/strm-gen/drives`)
-
-/** 缺集报告：上次生成时 Drive 有但 .strm 缺失的剧集 */
-export const fetchStrmGenMissing = (limit = 100) =>
-  get<{
-    ok: boolean
-    has_data?: boolean
-    verify_mode?: string
-    total_series?: number
-    complete_series?: number
-    incomplete_series?: number
-    incomplete?: StrmGenIncomplete[]
-    error?: string
-  }>(`${E}/strm-gen/missing`, { limit })
 
 // ==================== 每台 EA 一份 rclone.conf ====================
 

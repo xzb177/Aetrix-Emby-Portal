@@ -245,8 +245,6 @@ REMOTE_MEDIA_EXTS = {
 }
 STRM_EXT = ".strm"
 
-#: legacy（未签名）.strm 的每进程告警去重：同一 path 只 warning 一次，避免刷屏
-_STRM_LEGACY_WARNED: set[str] = set()
 REMOTE_SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 
 MOUNT_PATH_PREFIX = "mount://"
@@ -422,29 +420,16 @@ def strm_container(url: str) -> str:
 
 
 def _strm_play_target(content: str, path_hint: str) -> PlayTarget:
-    """服务端 .strm 内容 → 验签后的 PlayTarget（local_play_target 与 resolve_final 共用）。
+    """服务端 .strm 内容 → PlayTarget（local_play_target 与 resolve_final 共用）。
 
-    - status == "bad" → MountError（签名无效或已过期，拒绝播放）
-    - status == "legacy" → 放行 + 每进程对同一 path 只告警一次（刷新任务会补签名）
-    - ok → 用 canonical URL（去签名参数）
+    纸条签名（strm_sign）已随 strm_gen 删除：不再验签，直接用文件内容里的
+    原文直链（Google 会忽略多余的 aexp/asig 参数），残留纸条行继续可播。
     - Drive 直链自动附加 SA Bearer 头（非 Drive / 拿不到 token 时为空 dict，不阻断）
     """
     url = strm_url(content)
     if not url:
         raise MountError(f"STRM 文件里没有可用的直链: {path_hint}")
-    # 防盗链：.strm 内容验签（延迟 import：strm_sign 在函数内引用 mounts.strm_url）
-    from backend.emby_server import strm_sign
-    clean_url, status = strm_sign.verify_strm_url(content)
-    if status == "bad":
-        raise MountError(f"STRM 签名无效或已过期: {path_hint}")
-    if status == "legacy":
-        if path_hint not in _STRM_LEGACY_WARNED:
-            _STRM_LEGACY_WARNED.add(path_hint)
-            logger.warning("STRM 为未签名直链(legacy)，将由刷新任务补签名: %s", path_hint)
-        target_url = url
-    else:
-        target_url = clean_url
-    # Drive 私有化：服务端用 SA Bearer token 拉流（非 Drive URL / 拿不到 token 时返回 {}）
+    target_url = url
     from backend.emby_server import drive_auth
     headers = {"User-Agent": MOUNT_UA, **drive_auth.drive_auth_headers(target_url)}
     return PlayTarget("url", validate_remote_url(target_url), headers)

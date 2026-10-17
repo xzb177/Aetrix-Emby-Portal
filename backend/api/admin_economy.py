@@ -388,12 +388,11 @@ def economy_update_settings(
     return {"success": True, "changed": list(changed.keys())}
 
 
-# ---------- 防盗链（.strm 签名 + 播放签名，见 backend/emby_server/play_sign.py） ----------
+# ---------- 防盗链（播放签名 + 来路检查，见 backend/emby_server/play_sign.py） ----------
 
 class HotlinkConfigRequest(BaseModel):
     enabled: bool = True
     play_sign_ttl: int = 900
-    strm_sig_ttl: int = 3600
     # 配置瘦身第 3c 批：Referer 白名单（逗号分隔域名）；None=老前端没传=不改
     allowed_referers: Optional[str] = None
 
@@ -403,7 +402,7 @@ def hotlink_get_config(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """防盗链配置读取：总开关 + 播放签名 TTL + .strm 签名 TTL（含默认值）。"""
+    """防盗链配置读取：总开关 + 播放签名 TTL（含默认值）。"""
     from backend.emby_server import play_sign
 
     return play_sign.config_payload(db)
@@ -428,13 +427,11 @@ def hotlink_update_config(
             db,
             enabled=request.enabled,
             play_sign_ttl=request.play_sign_ttl,
-            strm_sig_ttl=request.strm_sig_ttl,
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     _audit(db, current_admin, "hotlink_update_config", "system", None,
            {"enabled": request.enabled, "play_sign_ttl": request.play_sign_ttl,
-            "strm_sig_ttl": request.strm_sig_ttl,
             "allowed_referers": request.allowed_referers})
     db.commit()
     return result
