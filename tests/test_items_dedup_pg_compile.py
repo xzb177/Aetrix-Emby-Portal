@@ -1,10 +1,11 @@
-"""P0 去重 SQL 的 PG 形状锁定：unnest CTE 与 TEMP TABLE JOIN 在 PG 方言下渲染正确。
+"""P0/P3 去重 SQL 的 PG 形状锁定：ROW_NUMBER 下推、unnest CTE 与 TEMP TABLE
+JOIN 在 PG 方言下渲染正确。
 
 无需真 PG。两层断言：
 1. 源码锁定——``api._dedup_dropped_ids`` 的 SQL 片段逐字存在，
-   生产代码改错 SQL 形状（删了 unnest / 改了临时表名）时这里变红；
+   生产代码改错 SQL 形状（删了 ROW_NUMBER / 改了临时表名）时这里变红；
 2. PG 方言真实编译——同样的 SQLAlchemy 表达式在 postgresql dialect 下
-   渲染出 unnest / CAST AS INTEGER[] / 临时表名与 LEFT JOIN 形状。
+   渲染出 row_number / unnest / 临时表名与 LEFT JOIN 形状。
 """
 import inspect
 import os
@@ -27,10 +28,16 @@ def _compile(stmt):
 def test_unnest_cte_sql_fragments_exist_in_production_source():
     """源码锁定：生产 SQL 的关键片段必须原样存在，改错形状能红。"""
     src = inspect.getsource(api._dedup_dropped_ids)
+    # P3.1：T/E 分支 ROW_NUMBER 下推直接算 dropped（无回表）
+    assert "func.row_number().over(" in src
+    assert 'label("rn")' in src
+    assert "sub.c.rn > 1" in src
+    # N 分支仍用 unnest 取行（小批量）
     assert "SELECT * FROM unnest(CAST(:ids AS INTEGER[])) AS t(id)" in src
-    assert '.cte("suspect_ids")' in src
+    assert '.cte("n_suspect_ids")' in src
+    # 剧去重组 TEMP TABLE
     assert "CREATE TEMP TABLE IF NOT EXISTS _dedup_rep_map" in src
-    assert "INSERT INTO _dedup_rep_map (sid, grp) VALUES (:sid, :grp)" in src
+    assert "INSERT INTO _dedup_rep_map (sid, grp) VALUES" in src
     assert 'table("_dedup_rep_map"' in src
 
 
