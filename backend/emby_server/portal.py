@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session, aliased
 
 from backend import models, realms, subscriptions
 from backend.database import get_db, SessionLocal
+from backend.integrations import store
 from backend.emby_server import cdn
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
@@ -313,6 +314,8 @@ def admin_view_unlock_put(body: ViewUnlockSettingsIn, db: Session = Depends(get_
         else:
             db.add(models.SystemConfig(key=key, value=str(value)))
     db.commit()
+    # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
+    store.invalidate(VIEW_UNLOCK_POINTS_KEY, VIEW_UNLOCK_DAYS_KEY)
     return {"points": body.points, "days": body.days}
 
 

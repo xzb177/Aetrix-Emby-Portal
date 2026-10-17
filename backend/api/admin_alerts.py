@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend import models, system_alerts
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
+from backend.integrations import store
 
 logger = logging.getLogger(__name__)
 
@@ -202,12 +203,14 @@ def update_alert_settings(
     DB 开关不生效）。只应用请求里非 None 的字段——部分更新不会误关总开关
     （R16 P1-1）。"""
     changed: dict = {}
+    written_keys: list = []  # 实际落库的 SystemConfig 键（用于缓存失效）
 
     if req.enabled is not None:
         val = "1" if req.enabled else "0"
         _upsert_config(db, system_alerts.MASTER_SWITCH_KEY, val,
                        description="系统告警总开关（1=开，0=关）")
         changed["system_alerts_enabled"] = val
+        written_keys.append(system_alerts.MASTER_SWITCH_KEY)
 
     if req.check_interval_sec is not None:
         # R16 P1-1：钳制 60~86400，持久化到 SystemConfig；调度器每轮重读，热更新
@@ -215,23 +218,28 @@ def update_alert_settings(
         _upsert_config(db, system_alerts.INTERVAL_KEY, str(iv),
                        description="系统告警检查间隔（秒），60~86400")
         changed["alert_check_interval_sec"] = iv
+        written_keys.append(system_alerts.INTERVAL_KEY)
 
     if req.webhook_url is not None:
         url = (req.webhook_url or "").strip()
         _upsert_config(db, "webhook_alert_url", url,
                        description="告警 webhook 通知 URL（可选）")
         changed["webhook_alert_url"] = url
+        written_keys.append("webhook_alert_url")
 
     secret_changed = False
     if req.webhook_secret is not None:
         _upsert_config(db, "webhook_alert_secret", req.webhook_secret or "",
                        description="告警 webhook HMAC 签名密钥（可选）")
+        written_keys.append("webhook_alert_secret")
         # 注意：secret 本身不进审计日志，只记"改了"
         changed["webhook_secret_set"] = bool(req.webhook_secret)
         secret_changed = True
 
     if changed:
         db.commit()
+        # 配置瘦身第 4 批：写库后清配置缓存，否则同进程 60 秒内读到旧值（store 纪律：写完即失效）
+        store.invalidate(*written_keys)
         # R16 P3-11：webhook 后配也要 refresh_channels()，否则单例缓存里
         # 的渠道还是旧配置（邮件/Telegram 保存时已经是这个口径）
         if "webhook_alert_url" in changed or secret_changed:
