@@ -24,11 +24,16 @@
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
+import json
 import logging
 import os
 import random
 import re
+import select
+import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -57,9 +62,119 @@ except Exception:  # noqa: BLE001
     _PILImage = None
     _PIL_OK = False
 
+# ---------- 缩略图引擎：libvips 跑在常驻 worker 子进程 ----------
+# 为什么 vips 不能直接 import 进本进程：
+# libvips 依赖的系统库（libharfbuzz/libfreetype）与 Pillow manylinux wheel 自带的
+# 同名库版本不同；同进程加载两份会破坏 Pillow 的文字排版——实测：封面渲染用的
+# 中文字体在 shaping 阶段读到垃圾字形 advance，直接抛 DecompressionBombError，
+# 且每次垃圾值都不同（native 内存踩坏）。封面画字必须留在 Pillow（红线），所以
+# vips 只跑在隔离的子进程里：父进程永不 import pyvips。
+# 形态：一个常驻 worker 子进程（启动开销只付一次），父子之间走行式 JSON 协议；
+# 子进程崩了自动重建、单张超时/失败则回退 Pillow。缩略图落盘缓存后，
+# 后续请求直接命中文件，不再经过这里。
+_VIPS_TIMEOUT = 120  # worker 单张超时（秒）：正常 < 5s，超时则回退 Pillow
+_vips_ok_cache: bool | None = None
+_vips_proc = None
+_vips_proc_lock = threading.Lock()
+
+_VIPS_WORKER_PY = r"""
+import sys, json
+import pyvips
+
+def handle(req):
+    thumb = pyvips.Image.thumbnail(req["src"], req["box_w"], height=req["box_h"],
+                                   size="down", crop="none", no_rotate=True)
+    if thumb.hasalpha():
+        thumb = thumb.extract_band(0, n=3)  # 只丢通道不做合成，对齐 Pillow convert("RGB")
+    thumb.write_to_file(req["tmp"], Q=req["q"], optimize_coding=True,
+                        interlace=True, strip=True)
+    return {"ok": True}
+
+def main():
+    inp, out = sys.stdin, sys.stdout
+    for line in inp:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            resp = handle(json.loads(line))
+        except Exception as exc:  # noqa: BLE001 — 报错回父进程，由父进程回退 Pillow
+            resp = {"ok": False, "error": str(exc)[:300]}
+        out.write(json.dumps(resp) + "\n")
+        out.flush()
+
+main()
+"""
+
+
+def _vips_probe() -> bool:
+    """一次性子进程里 import pyvips 探活：成功返回 True，本进程不受影响。"""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import pyvips; pyvips.version(0)"],
+            capture_output=True, timeout=30,
+        )
+        return proc.returncode == 0
+    except Exception:  # noqa: BLE001 — 超时/缺解释器等一律视为不可用
+        return False
+
+
+def vips_available() -> bool:
+    """libvips 是否可用（探活结果按进程缓存；测试可直接改 _vips_ok_cache）"""
+    global _vips_ok_cache
+    if _vips_ok_cache is None:
+        _vips_ok_cache = _vips_probe()
+    return _vips_ok_cache
+
+
+def _vips_spawn():
+    """起一个常驻 worker（-u 无缓冲，stdout 行协议）"""
+    return subprocess.Popen(
+        [sys.executable, "-u", "-c", _VIPS_WORKER_PY],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+
+
+def _vips_call(req: dict) -> dict:
+    """向 worker 发一次请求；worker 死了就重建后重试一次，仍失败抛异常。"""
+    global _vips_proc
+    payload = (json.dumps(req) + "\n").encode("utf-8")
+    with _vips_proc_lock:
+        for _ in range(2):
+            proc = _vips_proc
+            if proc is None or proc.poll() is not None:
+                proc = _vips_proc = _vips_spawn()
+            try:
+                proc.stdin.write(payload)
+                proc.stdin.flush()
+                ready, _, _ = select.select([proc.stdout], [], [], _VIPS_TIMEOUT)
+                if not ready:
+                    raise RuntimeError(f"vips worker 响应超时（{_VIPS_TIMEOUT}s）")
+                line = proc.stdout.readline()
+                if not line:
+                    raise RuntimeError("vips worker 异常退出")
+                return json.loads(line.decode("utf-8"))
+            except (OSError, ValueError, RuntimeError) as exc:
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+                _vips_proc = None
+                last = exc
+        raise RuntimeError(f"vips worker 不可用: {last}")
+
 
 def pil_available() -> bool:
     return _PIL_OK
+
+
+def thumb_engine() -> str:
+    """当前缩略图引擎：vips 优先，Pillow 兜底，都没有返回 "none"。"""
+    if vips_available():
+        return "vips"
+    if _PIL_OK:
+        return "pillow"
+    return "none"
 
 
 def thumb_widths() -> list[int]:
@@ -143,6 +258,70 @@ def _snap_to_configured_width(value) -> int | None:
     return min(larger) if larger else max(widths)
 
 
+def _probe_dims(path: str):
+    """只读图片头拿尺寸（不解码像素）：Pillow 读头即可，失败返回 None。
+
+    注意：不用 vips 探——父进程永不加载 libvips（见上）；读头这点活 Pillow 足够。
+    """
+    if _PIL_OK:
+        try:
+            with _PILImage.open(path) as im:
+                return im.size
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
+def _thumb_vips(path: str, target: str, box_w: int, box_h: int) -> str:
+    """libvips 路径：发给常驻 worker 子进程做（本进程不加载 libvips，见上）。
+
+    行为对齐点（与现行 Pillow 路径一致）：
+    - 只缩小不放大：size="down"；
+    - 去 alpha 只丢通道不做合成（对齐 Pillow convert("RGB") 的丢弃语义）；
+    - no_rotate=True：现行 Pillow 路径不做 EXIF 旋转，vips 默认会自动转，
+      这里显式关掉以保持输出一致（差异与取舍见 PR 描述）；
+    - JPEG 质量=_THUMB_QUALITY、optimize_coding/interlace 对齐
+      Pillow 的 optimize/progressive、strip=True 对齐 Pillow 不写 EXIF。
+    worker 失败/超时一律抛异常，由调用方回退 Pillow。
+    """
+    # 临时文件带 .jpg 后缀：vips 按扩展名选编码器；换名后与现行命名一致
+    tmp = f"{target}.part{os.getpid()}.jpg"
+    resp = _vips_call({"src": path, "tmp": tmp, "box_w": box_w, "box_h": box_h,
+                       "q": _THUMB_QUALITY})
+    if not resp.get("ok"):
+        raise RuntimeError(f"vips worker 失败: {resp.get('error')}")
+    if not os.path.isfile(tmp):
+        raise RuntimeError("vips worker 未产出文件")
+    return tmp
+
+
+def _vips_shutdown():
+    """进程退出时回收 worker（子进程 stdin 是管道，父进程退出它会自行结束）"""
+    global _vips_proc
+    proc, _vips_proc = _vips_proc, None
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+atexit.register(_vips_shutdown)
+
+
+def _thumb_pillow(path: str, target: str, box_w: int, box_h: int) -> str:
+    """Pillow 路径（现状行为，原样保留作兜底）"""
+    with _PILImage.open(path) as img:
+        img.load()
+        if img.mode in ("RGBA", "LA", "PA", "P"):
+            img = img.convert("RGB")
+        img.thumbnail((box_w, box_h), _PILImage.LANCZOS)
+        tmp = f"{target}.part{os.getpid()}"
+        img.save(tmp, "JPEG", quality=_THUMB_QUALITY,
+                 optimize=True, progressive=True)
+    return tmp
+
+
 def resized_variant(path: str, max_width=None, max_height=None) -> str:
     """按需生成等比缩放版本，返回缩略图路径；不需要/失败返回空串（调用方用原图）
 
@@ -158,8 +337,9 @@ def resized_variant(path: str, max_width=None, max_height=None) -> str:
       有界资源 + 无界排队 = 限流形同虚设。
     - 同一尺寸并发只生成一次（沿用 _LOCKS 的按路径单飞）；
     - 写文件走「临时文件 → fsync → os.replace」，中途被杀不留半张图。
+    - 缩略图引擎：libvips（pyvips）优先、Pillow 兜底（见 _thumb_vips/_thumb_pillow）。
     """
-    if not _PIL_OK:
+    if not (_PIL_OK or vips_available()):
         return ""
     # 宽度吸附到已配置档位：变体文件总数因此有上界，否则按需生成的文件
     # 会被 prune 当成"被引用的缩略图"永久保护，既不受容量上限约束也永不清理
@@ -187,26 +367,39 @@ def resized_variant(path: str, max_width=None, max_height=None) -> str:
                 box_w = width or 10 ** 7
                 box_h = height or 10 ** 7
                 tmp = None
-                with _PILImage.open(path) as img:
-                    ow, oh = img.size
-                    if ow * oh > _THUMB_MAX_PIXELS:
-                        logger.info("原图过大(%dMP)跳过缩略图 %s",
-                                    ow * oh // 1_000_000, path)
-                        return ""
-                    img.load()
-                    if ow <= box_w and oh <= box_h:
-                        return ""  # 已经够小，不用转
-                    if img.mode in ("RGBA", "LA", "PA", "P"):
-                        img = img.convert("RGB")
-                    img.thumbnail((box_w, box_h), _PILImage.LANCZOS)
-                    os.makedirs(image_dir(), exist_ok=True)
-                    tmp = f"{target}.part{os.getpid()}"
-                    img.save(tmp, "JPEG", quality=_THUMB_QUALITY,
-                             optimize=True, progressive=True)
-                    with open(tmp, "rb") as fh:
-                        os.fsync(fh.fileno())
-                    os.replace(tmp, target)
-                    tmp = None  # 已换名成功，不用再清
+                # 政策检查先行（只读图片头，不解码）：>25MP 拒绝、已够小不转。
+                # 放在信号量之后、引擎之前，两条引擎走同一套口径。
+                dims = _probe_dims(path)
+                if dims is None:
+                    return ""  # 头都读不出来：坏文件，调用方发原图
+                ow, oh = dims
+                if ow * oh > _THUMB_MAX_PIXELS:
+                    logger.info("原图过大(%dMP)跳过缩略图 %s",
+                                ow * oh // 1_000_000, path)
+                    return ""
+                if ow <= box_w and oh <= box_h:
+                    return ""  # 已经够小，不用转
+                os.makedirs(image_dir(), exist_ok=True)
+                # 引擎调度：vips 优先；单张失败换另一条引擎重试一次
+                engine = "vips" if vips_available() else "pillow"
+                try:
+                    if engine == "vips":
+                        tmp = _thumb_vips(path, target, box_w, box_h)
+                    else:
+                        tmp = _thumb_pillow(path, target, box_w, box_h)
+                except Exception as exc:  # noqa: BLE001 — 单张引擎失败，换引擎重试
+                    logger.info("缩略图%s引擎失败，换引擎重试 %s: %s",
+                                engine, path, exc)
+                    if engine == "vips" and _PIL_OK:
+                        tmp = _thumb_pillow(path, target, box_w, box_h)
+                    elif engine == "pillow" and vips_available():
+                        tmp = _thumb_vips(path, target, box_w, box_h)
+                    else:
+                        raise
+                with open(tmp, "rb") as fh:
+                    os.fsync(fh.fileno())
+                os.replace(tmp, target)
+                tmp = None  # 已换名成功，不用再清
             except Exception as exc:  # noqa: BLE001 — 缩略图失败只是"没小图"，原图照发
                 logger.info("缩略图生成失败 %s: %s", path, exc)
                 if tmp:
@@ -250,7 +443,7 @@ def _thumb_worker() -> None:
 def enqueue_thumb_warm(path: str) -> None:
     """原图落盘后调用：后台生成各档缩略图。失败/关闭都静默（按需生成会兜底）。"""
     global _THUMB_QUEUE
-    if not _PIL_OK or not path:
+    if not (_PIL_OK or vips_available()) or not path:
         return
     try:
         import queue as _queue_mod
@@ -808,7 +1001,8 @@ def stats() -> dict:
             except OSError:
                 pass
     return {"enabled": enabled(), "dir": root, "files": files, "thumbs": thumbs,
-            "bytes": size, "pil": _PIL_OK,
+            "bytes": size, "pil": _PIL_OK, "vips": vips_available(),
+            "engine": thumb_engine(),
             "thumb_max_dim": _THUMB_MAX_DIM,
             "thumb_concurrency": _THUMB_CONCURRENCY,
             "thumb_mem": _THUMB_MEM.snapshot(), **_STATS}
@@ -833,6 +1027,7 @@ def backfill_status(db) -> dict:
     except ValueError:
         last_id = 0
     return {"last_id": last_id, "widths": thumb_widths(), "pil": _PIL_OK,
+            "vips": vips_available(), "engine": thumb_engine(),
             "enabled": enabled()}
 
 
@@ -852,7 +1047,7 @@ def backfill_thumbnails(db, batch_size: int = _BACKFILL_BATCH,
 
     result = {"processed": 0, "generated": 0, "skipped": 0, "last_id": 0,
               "done": False}
-    if not enabled() or not _PIL_OK:
+    if not enabled() or not (_PIL_OK or vips_available()):
         return result
     vals = store.read_values(db, [_BACKFILL_KEY], {_BACKFILL_KEY: "0"})
     try:
