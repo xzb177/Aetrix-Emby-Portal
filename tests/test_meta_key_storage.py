@@ -25,6 +25,17 @@ SECRET_TVDB = "TVDBKEY-xyz789"
 ALL_SECRETS = (SECRET_TMDB_1, SECRET_TMDB_2, SECRET_OMDB, SECRET_TVDB)
 
 
+@pytest.fixture(autouse=True)
+def _no_proxy_env(monkeypatch):
+    """环境隔离：本机沙盒的 NO_PROXY 含 httpx 解析不了的条目（如 [::1]），
+    构造 httpx.Client 会直接炸 InvalidURL。本模块测试走本地内存库、从不
+    需要真实代理，这里先清掉（与 test_admin_tmdb_scrape 的 _clean_cache 同口径）。"""
+    for _var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                 "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(_var, raising=False)
+    yield
+
+
 @pytest.fixture()
 def db():
     """隔离内存库；另外清掉 store 的全局配置读缓存（它是进程级、按 key 缓存的）"""

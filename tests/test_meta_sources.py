@@ -9,6 +9,17 @@ from types import SimpleNamespace
 
 import pytest
 
+@pytest.fixture(autouse=True)
+def _no_proxy_env(monkeypatch):
+    """环境隔离：本机沙盒的 NO_PROXY 含 httpx 解析不了的条目（如 [::1]），
+    构造 httpx.Client 会直接炸 InvalidURL。本模块测试从不需真实代理，
+    这里先清掉（与 test_meta_key_storage 的同名 fixture 同口径）。"""
+    for _var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                 "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(_var, raising=False)
+    yield
+
+
 from backend.emby_server.metasources import config as ms_config
 from backend.emby_server.metasources import engine as ms_engine
 from backend.emby_server.metasources import keypool as ms_keypool

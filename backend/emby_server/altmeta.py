@@ -58,7 +58,6 @@ CONFIG_KEYS = "altmeta_douban_keys"
 # 以后如果还要改语义，必须换新 key 名 + 写迁移，禁止复用。
 CONFIG_RATE = "altmeta_douban_rate"
 CONFIG_BANGUMI_RATE = "altmeta_bangumi_rate"
-CONFIG_WORKERS = "altmeta_workers"
 
 # 速率限制：**两次请求之间的最小间隔秒数**（``altmeta_douban_rate`` 的语义）。
 #
@@ -127,13 +126,6 @@ def min_interval(db) -> float:
         return max(0.0, float(_get_config(db, CONFIG_RATE, str(DEFAULT_MIN_INTERVAL))))
     except (TypeError, ValueError):
         return DEFAULT_MIN_INTERVAL
-
-
-def workers(db) -> int:
-    try:
-        return max(1, min(8, int(_get_config(db, CONFIG_WORKERS, "3") or 3)))
-    except (TypeError, ValueError):
-        return 3
 
 
 def warn_dead_keys_once(db) -> None:
