@@ -23,17 +23,23 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
     """按 spec 校验并返回要落库的字符串；None 表示「未设置」。
 
     spec: ("int", lo, hi) | ("float", lo, hi) | ("bool",) | ("bool", "digit"|"word")
-        | ("int_list", lo, hi) | ("str",) | ("enum", (allowed...))
+        | ("int_list", lo, hi) | ("str",) | ("enum", (allowed...)) | ("raw",)
     bool_style: "word" → true/false，"digit" → 1/0（仅在传入 Python bool 时决定写法；
     字符串原样保留大小写外的写法，避免改变读取侧既有判断口径）。
     spec 里显式带风格位（("bool", "digit")）时，spec 优先于 bool_style 参数——
     同一个家族里不同键可能用不同存储风格（如告警总开关存 1/0），风格必须跟键走。
     ("str",): 自由字符串，不做类型校验（空串/None → None = 未设置）；
     ("enum", allowed): 白名单枚举，命中才收。
+    ("raw",): 原样存库的字符串：str(value) 直接落库，**空串/None 也照存**——
+    与 ("str",) 的"空串=未设置（删行）"不同。专为 economy 家族的 str/secret
+    键保留：历史行为就是 str(value) 原样存（含空串存行），迁移时一字不变。
     """
+    kind = spec[0]
+    if kind == "raw":
+        # 注意：必须在下面的"空串/None → None"早退之前处理——raw 的空串是要存库的。
+        return str(value)
     if value is None or (isinstance(value, str) and value.strip() == ""):
         return None
-    kind = spec[0]
     if kind == "bool":
         _style = spec[1] if len(spec) > 1 else bool_style
         if isinstance(value, bool):
@@ -188,20 +194,53 @@ VIEW_UNLOCK_CONFIG_SCHEMA: dict[str, tuple] = {
     "emby_view_unlock_days": ("int", 0, _BIG),
 }
 
-# 经济系统设置（admin_economy.ECONOMY_CONFIG_KEYS）里 int 键的范围；未列出的 int 键默认 0~10^9
-ECONOMY_INT_RANGES: dict[str, tuple[int, int]] = {
-    "invitation_rebate_percent": (0, 100),
-    "checkin_penalty_pct": (0, 100),
-    # Q3 同剧合并：与 merge_versions_worker.series_merge_config 的钳制一致
-    "series_merge_interval_sec": (3600, 604800),
-    "series_merge_batch_limit": (10, 100000),
+# （原 ECONOMY_INT_RANGES / economy_spec 已并入下面的 ECONOMY_CONFIG_SCHEMA，
+# 4-6 迁移后不再有任何调用方，此处删除。）
+
+
+# 经济系统设置（admin_economy.ECONOMY_CONFIG_KEYS，共 49 键，2026-10-17 实查）。
+# spec 口径与迁移前的 economy_spec() 历史行为逐字一致（4-6 已将其并入此表删除）：
+# - int：原 ECONOMY_INT_RANGES 里的 4 个用其范围，其余 (0, _BIG)；
+# - bool：("bool",)（word 风格；save_config 默认口径与端点旧调用的默认 bool_style="word" 一致）；
+# - str/secret：("raw",) 原样存库——历史行为是 str(value) 直接存（含空串存行，
+#   而不是删行）；复合校验（stream_accel 开关+域名联动、签到上下限、活力阈值）
+#   保留在端点层，注册表只表达"类型+范围"。
+ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
+    "checkin_enabled": ("bool",), "checkin_base_points": ("int", 0, _BIG),
+    "checkin_streak_bonus": ("int", 0, _BIG), "checkin_streak_max_bonus": ("int", 0, _BIG),
+    "checkin_base_min": ("int", 0, _BIG), "checkin_base_max": ("int", 0, _BIG),
+    "checkin_penalty_pct": ("int", 0, 100),
+    "checkin_penalty_min": ("int", 0, _BIG), "checkin_penalty_max": ("int", 0, _BIG),
+    "media_seek_daily_limit": ("int", 0, _BIG),
+    "exchange_enabled": ("bool",),
+    "recharge_enabled": ("bool",), "subscription_purchase_enabled": ("bool",),
+    "payment_gateway_url": ("raw",), "payment_partner_id": ("raw",),
+    "payment_partner_key": ("raw",), "payment_qqpay_enabled": ("bool",),
+    "site_url": ("raw",),
+    "subscription_required": ("bool",), "subscription_gate_message": ("raw",),
+    "allow_download": ("bool",),
+    "device_limit_per_user": ("int", 0, _BIG), "device_limit_auto_evict": ("bool",),
+    "login_log_retention_days": ("int", 0, _BIG),
+    "max_pending_orders_per_user": ("int", 0, _BIG),
+    "invitation_enabled": ("bool",), "invitation_reward_points": ("int", 0, _BIG),
+    "invitation_invitee_reward_points": ("int", 0, _BIG),
+    "invitation_rebate_percent": ("int", 0, 100),
+    "promotion_reward_enabled": ("bool",),
+    "promotion_reward_type": ("raw",),
+    "promotion_reward_amount": ("int", 0, _BIG),
+    "promotion_reward_days": ("int", 0, _BIG),
+    "stream_accel_enabled": ("bool",),
+    "stream_accel_domain": ("raw",),
+    "vitality_enabled": ("bool",), "vitality_max": ("int", 0, _BIG),
+    "vitality_daily_cost": ("int", 0, _BIG),
+    "vitality_limit_threshold": ("int", 0, _BIG),
+    "vitality_point_cost": ("int", 0, _BIG),
+    "vitality_watch_reward": ("int", 0, _BIG),
+    "vitality_daily_gain_limit": ("int", 0, _BIG),
+    "vitality_archive_clamp": ("int", 0, _BIG),
+    "points_audit_enabled": ("bool",),
+    "series_merge_enabled": ("bool",), "series_merge_loose_enabled": ("bool",),
+    "series_merge_require_year": ("bool",),
+    "series_merge_interval_sec": ("int", 3600, 604800),
+    "series_merge_batch_limit": ("int", 10, 100000),
 }
-
-
-def economy_spec(value_type: str, key: str) -> Optional[tuple]:
-    if value_type == "int":
-        lo, hi = ECONOMY_INT_RANGES.get(key, (0, _BIG))
-        return ("int", lo, hi)
-    if value_type == "bool":
-        return ("bool",)
-    return None

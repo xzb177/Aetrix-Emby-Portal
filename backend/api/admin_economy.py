@@ -344,46 +344,47 @@ def economy_update_settings(
                 raise HTTPException(status_code=400, detail=str(e))
     _validate_checkin_settings(db, request.settings)
     _validate_vitality_settings(db, request.settings)
-    # int/bool 键类型与范围校验（非法 400，尚未写库）；空字符串=未设置，删行回退默认值
-    from backend import config_schema
-    typed: dict = {}
-    for key, value in request.settings.items():
-        spec = config_schema.economy_spec(ECONOMY_CONFIG_KEYS.get(key, ""), key)
-        if spec is None:
-            continue
-        try:
-            typed[key] = config_schema.normalize(key, spec, value)
-        except config_schema.ConfigValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-    changed = {}
+    # 配置瘦身第 4 批 4-6：落库走统一写入通道 config_service.save_config
+    # （校验→批量落库→写时失效）。以下口径与旧代码逐字一致：
+    # - 未知键静默忽略；secret 传空/"******" = 保留原行、不进落库；
+    # - int/bool 键的空串 = 删行回退默认；str/secret 键原样存（空串也存行）；
+    # - 复合校验（stream_accel 联动、签到、活力值）仍在端点层、落库前 400。
+    # 失效缺口补齐：旧代码只手动失效 stream_accel_*/vitality_*，其余键保存后
+    # 60 秒内可能读到旧值；统一通道对全部落库键 + 删行键写时失效。
+    from backend import config_schema, config_service
+
+    values: dict = {}
+    is_secret: dict = {}
     for key, value in request.settings.items():
         if key not in ECONOMY_CONFIG_KEYS:
-            continue
+            continue  # 未知键：今天就是静默忽略
         if ECONOMY_CONFIG_KEYS[key] == "secret" and (not value or value == "******"):
-            continue
-        config = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if key in typed:
-            if typed[key] is None:
-                if config:
-                    db.delete(config)
-                changed[key] = ""
-                continue
-            value = typed[key]
-        if config:
-            config.value = str(value)
-        else:
-            db.add(models.SystemConfig(key=key, value=str(value)))
-        changed[key] = str(value) if ECONOMY_CONFIG_KEYS[key] != "secret" else "(已更新)"
+            continue  # 掩码/空：保留原行
+        values[key] = value
+        is_secret[key] = ECONOMY_CONFIG_KEYS[key] == "secret"
+
+    normalized: dict = {}
+
+    def _capture(_schema: str, norm: dict) -> None:
+        normalized.update(norm)
+
+    saved: list = []
+    if values:
+        try:
+            saved = config_service.save_config(
+                db, values, schema="economy", audit=_capture)
+        except config_schema.ConfigValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     db.commit()
-    if "stream_accel_enabled" in changed or "stream_accel_domain" in changed:
-        from backend.integrations import store as _store
-        _store.invalidate("stream_accel_enabled", "stream_accel_domain")
-    # C1 活力值：配置保存后同一进程立即生效（跨进程靠 60 秒 TTL 兜底）
-    _vitality_keys = [k for k in changed if k.startswith("vitality_")]
-    if _vitality_keys:
-        from backend.integrations import store as _store2
-        _store2.invalidate(*_vitality_keys)
+    # （写时失效已由 store.write_values 承接，失效时机从提交后移到写时，
+    # 这是正统通道的既定语义，4-1/4-3 起各家族迁移统一如此。）
+    changed = {}
+    for key in saved:
+        if is_secret[key]:
+            changed[key] = "(已更新)"  # secret 不进审计日志，只记"改了"
+        else:
+            changed[key] = normalized.get(key) or ""  # 删行键记 ""，与旧代码一致
     _audit(db, current_admin, "economy_update_settings", "system", None, changed)
     db.commit()
     return {"success": True, "changed": list(changed.keys())}
