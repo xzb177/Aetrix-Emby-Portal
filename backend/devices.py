@@ -118,6 +118,11 @@ def register_device(
 
     limit = device_limit(db)
     if device is None and limit and not user.is_staff:
+        # R32-F2：上限检查「先 count 后 insert」并发可绕过——两个不同
+        # device_id 并发登录都能通过检查，落成 limit+1 台；(user_id, device_id)
+        # 唯一约束拦不住不同 device_id。先锁用户行再统计（求片/红包额度同口径）。
+        from backend.api.economy import lock_user_row
+        lock_user_row(db, user.id)
         current = active_devices(db, user.id)
         if len(current) >= limit:
             if _config_bool(db, "device_limit_auto_evict"):

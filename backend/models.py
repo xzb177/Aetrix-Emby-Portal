@@ -872,7 +872,11 @@ class ExchangeDiscountCredit(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
-    exchange_code_id = Column(Integer, ForeignKey('exchange_codes.id'), nullable=False)
+    # R32-F1：来源可能是统一码系统的 registration_codes（此时记 0，不是
+    # exchange_codes 的行），去掉外键与 NOT NULL。SQLite 本就不强制 FK，
+    # PG 老库由 backend/database.py 的 _migrate_exchange_discount_credit_fk 迁移。
+    # 该列全仓只写不读（消费端只按 user_id/status 查），无语义影响。
+    exchange_code_id = Column(Integer, nullable=True)
     discount_pct = Column(Integer, default=0)  # 实付百分比，85=八五折
     status = Column(String(20), default='unused')  # unused 未用 / used 已用
     used_order_id = Column(String(64))
