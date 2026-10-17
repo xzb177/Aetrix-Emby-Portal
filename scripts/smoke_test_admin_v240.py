@@ -50,6 +50,17 @@ for row in (admin, target, invitee, plan):
     db.refresh(row)
 
 now = datetime.now()
+
+
+def _sh_midnight_utc_naive() -> datetime:
+    """r34: checkin_date 是「上海自然日 00:00」的 UTC-naive 标记（+8h 即上海日期）。
+    冒烟种子必须按上海日界取今日 00:00；若按 UTC 午夜播种，在每天 00:00–08:00
+   （CST）跑 CI 时种子会落到上海的昨天，趋势「今日签到」恒为 0（2026-10-18
+    凌晨主干红实证）。"""
+    sh_now = datetime.utcnow() + timedelta(hours=8)
+    return sh_now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=8)
+
+
 db.add_all([
     models.UserSubscription(
         user_id=target.id, plan_id=plan.id,
@@ -62,7 +73,7 @@ db.add_all([
     models.PointsLog(user_id=target.id, amount=200, balance_after=200, type="checkin", description="签到"),
     models.PointsLog(user_id=target.id, amount=150, balance_after=350, type="rebate", description="充值返利"),
     models.PointsLog(user_id=target.id, amount=-30, balance_after=320, type="exchange", description="兑换消费"),
-    models.CheckinRecord(user_id=target.id, checkin_date=now.replace(hour=0, minute=0, second=0, microsecond=0), points_awarded=15, streak=4),
+    models.CheckinRecord(user_id=target.id, checkin_date=_sh_midnight_utc_naive(), points_awarded=15, streak=4),
     models.InvitationRecord(inviter_id=target.id, invitee_id=invitee.id, code_id=1, reward_points=50),
     models.RechargeOrder(
         order_id=f"SMOKE{suf}", user_id=target.id, package_id=1, amount=500,
