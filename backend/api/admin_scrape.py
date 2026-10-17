@@ -1726,6 +1726,55 @@ def save_douban_config(
     return {"success": True, "enabled": enabled, "min_interval": iv}
 
 
+# ==================== 备用链路限速（配置瘦身第 3 批） ====================
+# altmeta 是豆瓣主链路封禁/降级后的备用链路（豆瓣 subject_suggest + Bangumi 兜底），
+# 它的两个最小间隔秒数（altmeta_douban_rate / altmeta_bangumi_rate）此前无后台入口。
+
+
+@admin_emby_router.get("/scrape/altmeta-rates")
+def get_altmeta_rates(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读取备用链路限速：豆瓣备用 / Bangumi 兜底的最小间隔秒数（0=不限速）"""
+    from backend.emby_server import altmeta as _am
+    return {
+        "douban_rate": _am.min_interval(db),
+        "bangumi_rate": _am.min_interval_bangumi(db),
+    }
+
+
+class _AltmetaRatesBody(BaseModel):
+    douban_rate: float = 1.0
+    bangumi_rate: float = 1.0
+
+
+@admin_emby_router.put("/scrape/altmeta-rates")
+def save_altmeta_rates(
+    body: _AltmetaRatesBody,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存备用链路限速（保存即热生效）；0=不限速，上限 60 秒"""
+    from backend.emby_server import altmeta as _am
+    from backend.integrations import store
+    iv_d = max(0.0, min(60.0, float(body.douban_rate or 0)))
+    iv_b = max(0.0, min(60.0, float(body.bangumi_rate or 0)))
+    store.write_values(
+        db,
+        {
+            _am.CONFIG_RATE: str(iv_d),
+            _am.CONFIG_BANGUMI_RATE: str(iv_b),
+        },
+        {
+            _am.CONFIG_RATE: "备用链路（豆瓣 subject_suggest）请求最小间隔秒数",
+            _am.CONFIG_BANGUMI_RATE: "备用链路（Bangumi 兜底）请求最小间隔秒数",
+        },
+    )
+    db.commit()
+    return {"success": True, "douban_rate": iv_d, "bangumi_rate": iv_b}
+
+
 # ==================== 豆瓣封禁降级（链路规划 Step 0.5） ====================
 
 class _DoubanBanDowngradeBody(BaseModel):

@@ -1967,6 +1967,10 @@ export interface StrmGenConfig {
   source_type: string
   /** 本地源根目录 */
   local_root: string
+  /** 调度抖动比例 [0, 0.5]（默认 0.2，0=关闭） */
+  jitter_ratio: number
+  /** 子树限定列举开关（默认开） */
+  subtree_listing: boolean
   /** 上次执行时间（ISO 字符串），可能为空 */
   last_run: string
 }
@@ -2025,7 +2029,27 @@ export const saveStrmGenConfig = (data: {
   drive_concurrency?: number
   /** Drive API 全局速率上限 QPS（不传则后端回落默认 8.0） */
   api_qps?: number
+  /** 调度抖动比例 [0, 0.5]（不传则后端不改） */
+  jitter_ratio?: number
+  /** 子树限定列举开关（不传则后端不改） */
+  subtree_listing?: boolean
 }) => put<{ success: boolean; config: StrmGenConfig }>(`${E}/strm-gen/config`, data)
+
+// ==================== 备用链路限速（配置瘦身第 3 批） ====================
+
+/** 备用链路（豆瓣 subject_suggest / Bangumi 兜底）请求最小间隔秒数，0=不限速 */
+export interface AltmetaRates {
+  douban_rate: number
+  bangumi_rate: number
+}
+
+/** 读备用链路限速 */
+export const fetchAltmetaRates = () =>
+  get<AltmetaRates>(`${E}/scrape/altmeta-rates`)
+
+/** 写备用链路限速（保存即热生效） */
+export const saveAltmetaRates = (data: AltmetaRates) =>
+  put<{ success: boolean; douban_rate: number; bangumi_rate: number }>(`${E}/scrape/altmeta-rates`, data)
 
 // ==================== 播放策略（/api/admin/emby/playback） ====================
 

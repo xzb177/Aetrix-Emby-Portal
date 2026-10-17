@@ -94,6 +94,13 @@ class StrmGenConfigSave(BaseModel):
     orphan_check_qps: Optional[float] = Field(
         default=None, description="反向校验 per-SA QPS 上限 0.5-10，默认 2.0",
     )
+    # 配置瘦身第 3 批：调度抖动比例与子树限定列举开关（Optional，None=前端没传=不改）
+    jitter_ratio: Optional[float] = Field(
+        default=None, description="调度抖动比例 [0, 0.5]，默认 0.2；0=关闭抖动（便于测试）",
+    )
+    subtree_listing: Optional[bool] = Field(
+        default=None, description="子树限定列举开关（S1），默认开；关=回退旧扁平全量拉取（应急回滚口）",
+    )
 
 
 class StrmGenTrigger(BaseModel):
@@ -139,6 +146,9 @@ def _read_config(db: Session) -> dict:
         "orphan_check_interval_days": _gen.orphan_check_interval_days(db),
         "orphan_check_batch": _gen.orphan_check_batch(db),
         "orphan_check_qps": _gen.orphan_check_qps(db),
+        # 配置瘦身第 3 批：调度抖动比例 / 子树限定列举开关（后台入口）
+        "jitter_ratio": _gen.jitter_ratio(db),
+        "subtree_listing": _gen.subtree_listing_enabled(db),
         # R10：dry_run 长期提醒——配置页"删除保护"分组据此渲染黄条
         **_gen.dry_run_stale_info(db, _last_stats_dict(db)),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
@@ -199,6 +209,11 @@ def strm_gen_config_save(body: StrmGenConfigSave,
         raise HTTPException(status_code=400, detail="僵尸校验批量应在 100-10000 之间")
     if body.orphan_check_qps is not None and not (0.5 <= float(body.orphan_check_qps) <= 10):
         raise HTTPException(status_code=400, detail="僵尸校验 QPS 应在 0.5-10 之间")
+    # 配置瘦身第 3 批：抖动比例 [0, 0.5]（与 strm_gen.jitter_ratio 钳制一致），只写显式提供的值
+    if body.jitter_ratio is not None:
+        jr = float(body.jitter_ratio)
+        if not (0.0 <= jr <= 0.5):
+            raise HTTPException(status_code=400, detail="调度抖动比例应在 [0, 0.5] 范围内")
     # 注意：store 只有 write_values（批量写），没有 set_value；
     # 且 write_values 不自动提交，提交时机由调用方决定。
     values = {
@@ -256,6 +271,12 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     if body.orphan_check_qps is not None:
         values[_gen.CONFIG_ORPHAN_QPS] = str(float(body.orphan_check_qps))
         descriptions[_gen.CONFIG_ORPHAN_QPS] = ".strm 反向校验 per-SA QPS 上限"
+    if body.jitter_ratio is not None:
+        values[_gen.CONFIG_JITTER_RATIO] = str(float(body.jitter_ratio))
+        descriptions[_gen.CONFIG_JITTER_RATIO] = ".strm 生成器调度抖动比例 [0, 0.5]，默认 0.2"
+    if body.subtree_listing is not None:
+        values[_gen.CONFIG_SUBTREE_LISTING] = "true" if body.subtree_listing else "false"
+        descriptions[_gen.CONFIG_SUBTREE_LISTING] = ".strm 生成器子树限定列举开关（默认开）"
     store.write_values(db, values, descriptions)
     db.commit()
     return {"success": True, "config": _read_config(db)}

@@ -19,7 +19,7 @@ import {
   Activity, AlertTriangle, Clock, Cloud, Cpu, Download, Gauge, Info, RefreshCw, Save,
   Server, ShieldBan, Smartphone, Target, Tv, Zap,
 } from 'lucide-vue-next'
-import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
+import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchCdnConfig, fetchPlayLines, fetchPlaybackPolicy,
   updateCdnConfig, updatePlaybackPolicy,
@@ -361,27 +361,33 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
         <el-input v-model="ops.device_limit_per_user" class="cp-num" :disabled="!isSuper" />
       </div>
 
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">超限自动踢人</label>
-          <p class="cp-hint">
-            开启则自动移除最久未使用的设备；关闭则直接拒绝新设备登录。
-          </p>
+      <!-- 配置瘦身第 3 批：低频调优项收进高级折叠（默认收起） -->
+      <AdvancedSettings
+        count="2 项"
+        description="调了也不影响主流程的参数：设备超限时的自动踢人策略、日志保留期。"
+      >
+        <div class="cp-field">
+          <div class="cp-field-main">
+            <label class="cp-label">超限自动踢人</label>
+            <p class="cp-hint">
+              开启则自动移除最久未使用的设备；关闭则直接拒绝新设备登录。
+            </p>
+          </div>
+          <el-switch
+            :model-value="ops.device_limit_auto_evict === 'true'"
+            :disabled="!isSuper"
+            @update:model-value="(v: string | number | boolean) => (ops.device_limit_auto_evict = v ? 'true' : 'false')"
+          />
         </div>
-        <el-switch
-          :model-value="ops.device_limit_auto_evict === 'true'"
-          :disabled="!isSuper"
-          @update:model-value="(v: string | number | boolean) => (ops.device_limit_auto_evict = v ? 'true' : 'false')"
-        />
-      </div>
 
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">日志保留（天）</label>
-          <p class="cp-hint">登录与安全日志的保留期，未设置时默认 90 天。</p>
+        <div class="cp-field">
+          <div class="cp-field-main">
+            <label class="cp-label">日志保留（天）</label>
+            <p class="cp-hint">登录与安全日志的保留期，未设置时默认 90 天。</p>
+          </div>
+          <el-input v-model="ops.login_log_retention_days" class="cp-num" :disabled="!isSuper" />
         </div>
-        <el-input v-model="ops.login_log_retention_days" class="cp-num" :disabled="!isSuper" />
-      </div>
+      </AdvancedSettings>
 
       <template #footer>
         <div class="cp-save">
