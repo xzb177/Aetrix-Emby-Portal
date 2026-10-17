@@ -40,8 +40,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend import coupons, models, realms, vitality as _vitality
 from backend.database import get_db
 from backend.api.user import get_current_user
-from backend.ratelimit import check_rate_limit, client_ip
-from backend.security import resolve_jwt_user_id
+from backend.ratelimit import check_rate_limit
 from backend.notifications import notify_admin_event
 from backend.tg_bind import require_tg_bound
 

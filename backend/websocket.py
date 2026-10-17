@@ -194,11 +194,15 @@ def authenticate_ws_token(raw: Optional[str]) -> Optional[int]:
 
     只接受本项目签发的 JWT access token。早期版本允许「纯数字即 user_id」的
     兜底，任何匿名请求都能冒充任意用户接收推送，已彻底移除。
+
+    P3（完美审查 r47）：建连时同样校验 token 新鲜度（jti 吊销表 + token_version），
+    改密/登出后旧 token 不得再建新连接。enforce_token_freshness 失败抛
+    HTTPException，外层 except 一律视为未通过（fail-closed）。
     """
     if not raw:
         return None
     from backend.database import SessionLocal
-    from backend.security import resolve_jwt_user_id
+    from backend.security import decode_token, enforce_token_freshness, resolve_jwt_user_id
 
     user_id = resolve_jwt_user_id(raw)
     if user_id is None:
@@ -208,7 +212,11 @@ def authenticate_ws_token(raw: Optional[str]) -> Optional[int]:
         from backend import models
 
         user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-        return user.id if user and user.is_active else None
+        if not user or not user.is_active:
+            return None
+        payload = decode_token(raw, expected_type="access")
+        enforce_token_freshness(db, payload, user)
+        return user.id
     except Exception as e:  # noqa: BLE001 — 鉴权失败一律视为未通过
         logger.error(f"WebSocket 鉴权查询失败: {e}")
         return None
@@ -309,21 +317,30 @@ def require_staff_user(
 
     角色（v2.26.0）：发送 / 广播是写操作，与 ``/api/admin/*`` 用同一处判定
     （``backend/admin_roles.py``）——只读审计角色不能从这条侧门绕道发全站通知。
+
+    P2（完美审查 r47）：与 /api/admin/* 同一套新鲜度检查（jti 吊销表 + token_version）。
+    此前只验签：管理员改密/登出后旧 token 仍可调用发送/广播接口向全站发通知
+    （站内钓鱼风险），与 admin_core「不许部分接口仍认旧 token」的口径不一致。
     """
     from fastapi import HTTPException
     from backend import admin_roles
-    from backend.security import resolve_jwt_user_id
+    from backend.security import decode_token, enforce_token_freshness
 
     if credentials is None or not credentials.credentials:
         raise HTTPException(status_code=401, detail="未提供认证凭证")
-    user_id = resolve_jwt_user_id(credentials.credentials)
-    if user_id is None:
+    payload = decode_token(credentials.credentials, expected_type="access")
+    if payload is None:
+        raise HTTPException(status_code=401, detail="无效或已过期的凭证")
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
         raise HTTPException(status_code=401, detail="无效或已过期的凭证")
     from backend import models
 
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
+    enforce_token_freshness(db, payload, user)
     if not user.is_staff:
         raise HTTPException(status_code=403, detail="需要管理员权限")
     admin_roles.ensure_admin_allowed(request, user)
