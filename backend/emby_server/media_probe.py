@@ -361,6 +361,9 @@ def probe_one(db, item) -> str:
     if (getattr(item, "container", "") or "").lower() == "iso":
         item.probe_status = "degraded"
         item.probe_next_retry_at = None
+        # 与其他终态口径对齐：写 last_probed_at，否则 needs_probe
+        # 的终态豁免（要求 last_probed_at 非空）落空，条目会被每轮重新推进探测队列
+        item.last_probed_at = datetime.now()
         _clear_claim(item, error="iso 光盘镜像：ffprobe 无 ISO 解复用器，不探测流信息")
         db.commit()
         logger.info("探测跳过 iso 镜像 item=%s：直接记 degraded",

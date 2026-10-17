@@ -1050,6 +1050,7 @@ _CONTAINER_BY_EXT = {
     ".flv": "flv",
     ".wmv": "wmv",
     ".mpg": "mpeg", ".mpeg": "mpeg",
+    ".iso": "iso",
 }
 
 
