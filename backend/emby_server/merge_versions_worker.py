@@ -51,6 +51,58 @@ MERGE_VERSIONS_BATCH_LIMIT = env_int(
     "MERGE_VERSIONS_BATCH_LIMIT", 1000, 10, 100000
 )
 
+# Q3 同剧合并配置缺省（DB system_configs 行 > 环境变量 > 这里）。
+# DB 键用小写（与 ECONOMY_CONFIG_KEYS 注册一致），环境变量用大写。
+_SERIES_MERGE_DEFAULTS = {
+    "series_merge_enabled": "1",
+    "series_merge_loose_enabled": "1",
+    "series_merge_require_year": "1",
+    "series_merge_interval_sec": "86400",
+    "series_merge_batch_limit": "1000",
+}
+
+
+def series_merge_config(db) -> dict:
+    """同剧合并有效配置：DB system_configs（60 秒 TTL 热读）> 环境变量 > 代码缺省。
+
+    供扫描器 D2（宽松复用）与 worker D3（宽松合并通道）共用，保证两处读到
+    同一份开关。返回 {"enabled", "loose_enabled", "require_year",
+    "interval_sec", "batch_limit"}。
+    """
+    from backend.integrations import store as _store
+
+    db_vals = _store.get_values(
+        db, list(_SERIES_MERGE_DEFAULTS.keys()),
+        {k: "" for k in _SERIES_MERGE_DEFAULTS},
+    )
+
+    def _pick(dbkey, envname):
+        v = (db_vals.get(dbkey) or "").strip()
+        if not v:
+            v = (os.getenv(envname, "") or "").strip() or _SERIES_MERGE_DEFAULTS[dbkey]
+        return v
+
+    def _b(s):
+        return s.strip().lower() not in ("0", "false", "no")
+
+    try:
+        interval_f = max(
+            3600.0, float(_pick("series_merge_interval_sec", "SERIES_MERGE_INTERVAL_SEC")))
+    except (TypeError, ValueError):
+        interval_f = 86400.0
+    try:
+        batch_i = min(
+            100000, max(10, int(_pick("series_merge_batch_limit", "SERIES_MERGE_BATCH_LIMIT"))))
+    except (TypeError, ValueError):
+        batch_i = 1000
+    return {
+        "enabled": _b(_pick("series_merge_enabled", "SERIES_MERGE_ENABLED")),
+        "loose_enabled": _b(_pick("series_merge_loose_enabled", "SERIES_MERGE_LOOSE_ENABLED")),
+        "require_year": _b(_pick("series_merge_require_year", "SERIES_MERGE_REQUIRE_YEAR")),
+        "interval_sec": interval_f,
+        "batch_limit": batch_i,
+    }
+
 _merge_thread: Optional[threading.Thread] = None
 _stop_event = threading.Event()
 _wake_event = threading.Event()  # nudge() 唤醒：扫描完成后提前跑一轮，不必等 24h
@@ -165,6 +217,199 @@ def find_duplicate_groups(db) -> List[List]:
     ]
 
 
+def _find_series_loose_groups(db, cfg) -> List[List]:
+    """宽松通道：按 (library_id, 宽松归一化名) 分组可见 series。
+
+    生死守卫（任一触发整组跳过）：
+    a) 组内出现 >= 2 个不同非空 tmdb_id；
+    b) require_year=1 时要求组内年份齐全且 max-min <= 1，否则跳过；
+       =0 时只否决"年份齐全但 max-min > 1"。
+    返回全行 MediaItem 分组（两阶段：轻量列分组 → 按 id 加载全行）。
+    """
+    from backend.emby_server import dedup as dedup_lib
+    from backend.emby_server import models as em
+
+    if not cfg["enabled"] or not cfg["loose_enabled"]:
+        return []
+    light_rows = (
+        db.query(
+            em.MediaItem.id,
+            em.MediaItem.library_id,
+            em.MediaItem.name,
+            em.MediaItem.production_year,
+            em.MediaItem.tmdb_id,
+        )
+        .filter(
+            em.MediaItem.item_type == "series",
+            em.MediaItem.deleted_at.is_(None),
+            em.MediaItem.merged_into_id.is_(None),
+        )
+        .order_by(em.MediaItem.id.asc())
+        .limit(cfg["batch_limit"] * MERGE_CANDIDATE_MULTIPLIER)
+        .all()
+    )
+    groups: Dict[Tuple, List] = {}
+    for row in light_rows:
+        lname = dedup_lib.normalize_name_loose(row.name)
+        if not lname:
+            continue
+        groups.setdefault((row.library_id, lname), []).append(row)
+    dup_id_groups: List[List[int]] = []
+    veto_a = 0
+    veto_b = 0
+    for _key, rows in groups.items():
+        if len(rows) < 2:
+            continue
+        tmdb_ids = {(r.tmdb_id or "").strip() for r in rows} - {""}
+        if len(tmdb_ids) > 1:
+            veto_a += 1
+            continue
+        years = [r.production_year for r in rows if r.production_year]
+        if cfg["require_year"]:
+            if len(years) != len(rows) or (
+                len(years) >= 2 and max(years) - min(years) > 1
+            ):
+                veto_b += 1
+                continue
+        elif len(years) >= 2 and max(years) - min(years) > 1:
+            veto_b += 1
+            continue
+        dup_id_groups.append([r.id for r in rows])
+    n_candidate = sum(1 for g in groups.values() if len(g) >= 2)
+    logger.info(
+        "同剧宽松通道：候选组 %d，通过 %d，守卫否决 %d（多 tmdb=%d，年份=%d）",
+        n_candidate, len(dup_id_groups), veto_a + veto_b, veto_a, veto_b,
+    )
+    if not dup_id_groups:
+        return []
+    wanted_ids = {i for g in dup_id_groups for i in g}
+    items = db.query(em.MediaItem).filter(em.MediaItem.id.in_(wanted_ids)).all()
+    item_by_id = {item.id: item for item in items}
+    return [
+        [item_by_id[i] for i in id_group if i in item_by_id]
+        for id_group in dup_id_groups
+    ]
+
+
+def _repair_series_tmdb_loose(db, cfg) -> int:
+    """Q3 D5 存量治理：tmdb_id 为空且从未宽松修过的可见 series，补 TMDB 编号。
+
+    两步：1) 库内孪生回填（同库有 tmdb 的严格/宽松孪生 → 直接抄 tmdb_id，
+    零 API 调用，宽松孪生同样受"多 tmdb 歧义"守卫）；2) 无孪生则调
+    tmdb_client.search(loose_ok=True) 宽松精确识别（绝不模糊），命中写 tmdb_id。
+    无论命中与否都打 tmdb_loose_repair_at，防无限重试；命中后 enrich_status
+    置 pending，让正常刮削按已知 tmdb_id 补全元数据。
+    返回处理的条目数。不提交，由调用方统一 commit。
+    """
+    from datetime import datetime
+
+    from backend.emby_server import dedup as dedup_lib
+    from backend.emby_server import models as em
+
+    if not cfg["enabled"]:
+        return 0
+    cands = (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.item_type == "series",
+            em.MediaItem.deleted_at.is_(None),
+            em.MediaItem.merged_into_id.is_(None),
+            em.MediaItem.tmdb_id.is_(None),
+            em.MediaItem.tmdb_loose_repair_at.is_(None),
+        )
+        .order_by(em.MediaItem.id.asc())
+        .limit(cfg["batch_limit"])
+        .all()
+    )
+    if not cands:
+        return 0
+    # 孪生表：同库有 tmdb 的 series
+    lib_ids = {c.library_id for c in cands}
+    twins = (
+        db.query(
+            em.MediaItem.library_id,
+            em.MediaItem.tmdb_id,
+            em.MediaItem.name,
+            em.MediaItem.production_year,
+        )
+        .filter(
+            em.MediaItem.item_type == "series",
+            em.MediaItem.library_id.in_(lib_ids),
+            em.MediaItem.deleted_at.is_(None),
+            em.MediaItem.merged_into_id.is_(None),
+            em.MediaItem.tmdb_id.isnot(None),
+        )
+        .all()
+    )
+    strict_map: dict = {}
+    loose_map: dict = {}
+    for lib_id, tmdb_id, name, year in twins:
+        tmdb_id = (tmdb_id or "").strip()
+        if not tmdb_id:
+            continue
+        skey = (lib_id, dedup_lib.normalize_name(name), year or 0)
+        strict_map.setdefault(skey, tmdb_id)
+        lkey = (lib_id, dedup_lib.normalize_name_loose(name), year or 0)
+        if lkey in loose_map:
+            # 宽松孪生歧义：同一宽松 key 对应 2 个不同 tmdb_id → 不用
+            if loose_map[lkey] != tmdb_id:
+                loose_map[lkey] = None
+        else:
+            loose_map[lkey] = tmdb_id
+    from backend.emby_server.tmdb import tmdb_client
+
+    now = datetime.now()
+    repaired = 0
+    twin_hits = 0
+    api_hits = 0
+    for c in cands:
+        tmdb_hit = None
+        from_twin = False
+        skey = (
+            c.library_id,
+            dedup_lib.normalize_name(c.name),
+            c.production_year or 0,
+        )
+        if skey in strict_map:
+            tmdb_hit = strict_map[skey]
+            from_twin = True
+        else:
+            lkey = (
+                c.library_id,
+                dedup_lib.normalize_name_loose(c.name),
+                c.production_year or 0,
+            )
+            # None = 歧义或无孪生，走 API
+            if loose_map.get(lkey):
+                tmdb_hit = loose_map[lkey]
+                from_twin = True
+        if not tmdb_hit:
+            try:
+                hit = tmdb_client.search(
+                    c.name, c.production_year, "series", loose_ok=True
+                )
+            except Exception as e:
+                logger.warning(
+                    "TMDB 宽松重识别异常 %s (id=%d): %s", c.name, c.id, e
+                )
+                hit = None
+            if hit and hit.get("id"):
+                tmdb_hit = str(hit["id"])
+                api_hits += 1
+        if tmdb_hit:
+            c.tmdb_id = tmdb_hit
+            c.enrich_status = "pending"
+            if from_twin:
+                twin_hits += 1
+        c.tmdb_loose_repair_at = now
+        repaired += 1
+    logger.info(
+        "TMDB 宽松重识别：处理 %d 条，孪生回填 %d，API 命中 %d",
+        repaired, twin_hits, api_hits,
+    )
+    return repaired
+
+
 def merge_group(db, group: List) -> int:
     """合并一组：选主记录，其余 merged_into_id 指向主记录。
 
@@ -193,6 +438,65 @@ def merge_group(db, group: List) -> int:
             item.name, item.id, primary.name, primary.id,
         )
     return merged
+
+
+def _follow_series_episodes(db, group: List) -> None:
+    """Q3 D4 集跟随：series 宽松合并后，被合并 series 的可见集跟随主记录。
+
+    - 在主 series 下找到同 (season_number, episode_number) 的可见集：
+      被合并集的 merged_into_id 指向主集（不改 series_id，与手工合并先例一致）；
+    - 无对应集（孤儿集）：series_id 改为指向主 series（reparent），
+      使其在主 series 下可见。
+    - 不提交，由调用方统一 commit。
+    """
+    from backend.emby_server import dedup
+    from backend.emby_server import models as em
+
+    if len(group) < 2:
+        return
+    primary = dedup.pick_primary(group)
+    primary_id = primary.id
+    main_map = {}
+    for e in (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.series_id == primary_id,
+            em.MediaItem.item_type == "episode",
+            em.MediaItem.deleted_at.is_(None),
+            em.MediaItem.merged_into_id.is_(None),
+        )
+        .all()
+    ):
+        main_map[(e.season_number, e.episode_number)] = e
+    for item in group:
+        if item.id == primary_id:
+            continue
+        eps = (
+            db.query(em.MediaItem)
+            .filter(
+                em.MediaItem.series_id == item.id,
+                em.MediaItem.item_type == "episode",
+                em.MediaItem.deleted_at.is_(None),
+                em.MediaItem.merged_into_id.is_(None),
+            )
+            .all()
+        )
+        for ep in eps:
+            key = (ep.season_number, ep.episode_number)
+            main_ep = main_map.get(key)
+            if main_ep is not None and main_ep.id != ep.id:
+                ep.merged_into_id = main_ep.id
+                logger.debug(
+                    "集跟随：%s (id=%d) → 主集 id=%d",
+                    ep.name, ep.id, main_ep.id,
+                )
+            elif main_ep is None:
+                ep.series_id = primary_id
+                main_map[key] = ep
+                logger.info(
+                    "集跟随：孤儿集 %s (id=%d) reparent 到主 series id=%d",
+                    ep.name, ep.id, primary_id,
+                )
 
 
 def get_alternate_versions(db, primary_id: int) -> List:
@@ -248,7 +552,8 @@ def unmerge_all(db, primary_id: int) -> int:
 def _merge_once() -> Tuple[int, int]:
     """跑一轮合并：返回 (组数, 合并条目数)。
 
-    含两部分：电影/剧集级（按 tmdb_id）+ 单集级（按 series/season/episode）。
+    含三部分：电影/剧集级（按 tmdb_id）+ Q3 宽松通道（同剧不同名 series）
+    + 单集级（按 series/season/episode）。
     """
     from backend.database import SessionLocal
 
@@ -269,6 +574,31 @@ def _merge_once() -> Tuple[int, int]:
             except Exception as e:
                 db.rollback()
                 logger.warning("合并组失败: %s", e)
+        # Q3 宽松通道：同剧因标题虚词差异被拆条时，按宽松归一化名自动合并
+        # （生死守卫在 _find_series_loose_groups 内：多 tmdb / 年份）。
+        # 同一轮顺带跑 D5 存量无 tmdb series 的宽松重识别。
+        try:
+            _series_cfg = series_merge_config(db)
+            if _series_cfg["enabled"] and _series_cfg["loose_enabled"]:
+                loose_groups = _find_series_loose_groups(db, _series_cfg)
+                for loose_group in loose_groups[:_series_cfg["batch_limit"]]:
+                    if _stop_event.is_set():
+                        break
+                    try:
+                        merged = merge_group(db, loose_group)
+                        if merged:
+                            _follow_series_episodes(db, loose_group)
+                            db.commit()
+                            total_merged += merged
+                    except Exception as e:
+                        db.rollback()
+                        logger.warning("宽松通道合并组失败: %s", e)
+                repaired = _repair_series_tmdb_loose(db, _series_cfg)
+                if repaired:
+                    db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.warning("同剧宽松通道失败: %s", e)
         # 单集多版本（与电影/剧集同一套 merged_into_id 机制）
         try:
             from backend.emby_server import episode_versions as _ev
@@ -290,6 +620,20 @@ def _merge_once() -> Tuple[int, int]:
         db.close()
 
 
+def _current_interval_sec() -> float:
+    """本轮等待间隔：DB 配置 > 环境变量 > 代码缺省（读失败回模块常量）。"""
+    try:
+        from backend.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            return series_merge_config(db)["interval_sec"]
+        finally:
+            db.close()
+    except Exception:
+        return MERGE_VERSIONS_INTERVAL_SEC
+
+
 def _merge_loop():
     logger.info(
         "多版本合并 worker 启动（间隔 %.0f 秒）", MERGE_VERSIONS_INTERVAL_SEC
@@ -300,10 +644,11 @@ def _merge_loop():
     except Exception as e:
         logger.warning("多版本合并首轮失败: %s", e)
     while not _stop_event.is_set():
-        # 等待：24h 超时 或 被 nudge() 唤醒（扫描完成）；stop 时退出。
+        # 等待：间隔（管理后台/环境变量可配，默认 24h）超时 或 被 nudge()
+        # 唤醒（扫描完成）；stop 时退出。
         # 先 wait 后 clear：clear 放前面会吞掉 _merge_once 执行期间到达的
-        # nudge（下一轮循环开头被清掉），只能等 24h 兜底。
-        _wake_event.wait(MERGE_VERSIONS_INTERVAL_SEC)
+        # nudge（下一轮循环开头被清掉），只能等间隔兜底。
+        _wake_event.wait(_current_interval_sec())
         _wake_event.clear()
         if _stop_event.is_set():
             break

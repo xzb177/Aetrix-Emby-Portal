@@ -23,7 +23,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
-  CalendarCheck, Coins, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
+  CalendarCheck, Coins, Globe, KeyRound, Layers, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, Lock, Zap,
   DatabaseBackup, History, TriangleAlert, SlidersHorizontal, PlugZap, Rocket,
 } from 'lucide-vue-next'
@@ -222,6 +222,19 @@ const GROUPS: Group[] = [
       },
     ],
   },
+  {
+    id: 'series_merge',
+    title: '同剧合并',
+    desc: '同部剧因标题虚词差异被拆成多条时自动合并（TMDB 编号 + 宽松标题识别，有生死守卫）；存量无 TMDB 编号的剧集也会尝试宽松重识别',
+    icon: Layers,
+    fields: [
+      { key: 'series_merge_enabled', label: '启用同剧合并', type: 'bool', hint: '关闭后扫描宽松复用与自动合并全停，严格去重不受影响' },
+      { key: 'series_merge_loose_enabled', label: '宽松通道', type: 'bool', hint: '按去虚词标题识别同剧；关掉只走 TMDB 编号通道' },
+      { key: 'series_merge_require_year', label: '年份强校验', type: 'bool', hint: '打开时组合并要求年份齐全且相差不超过 1 年' },
+      { key: 'series_merge_interval_sec', label: '合并间隔', type: 'int', suffix: '秒', hint: '最短 3600 秒；扫描完成后会自动提前跑一轮' },
+      { key: 'series_merge_batch_limit', label: '每轮组数上限', type: 'int', hint: '单轮最多处理的合并组数' },
+    ],
+  },
 ]
 
 /**
@@ -237,6 +250,7 @@ const SECTION_DEFS: Array<{ id: string; title: string; groups: string[] }> = [
   { id: 'growth', title: '注册与福利', groups: ['checkin', 'vitality', 'invitation', 'exchange'] },
   { id: 'commerce', title: '付费与支付', groups: ['payment', 'paywall'] },
   { id: 'playback', title: '播放与风控', groups: ['stream_accel'] },
+  { id: 'library', title: '媒体库', groups: ['series_merge'] },
 ]
 const SECTIONS: GroupSection[] = (() => {
   const used = new Set<string>()

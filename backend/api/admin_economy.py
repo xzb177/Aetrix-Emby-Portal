@@ -218,6 +218,12 @@ ECONOMY_CONFIG_KEYS = {
     "vitality_archive_clamp": "int",
     # C3 流水审计：积分流水 hash 链总开关（默认开；关闭后新流水不写 hash）
     "points_audit_enabled": "bool",
+    # Q3 同剧合并：宽松归一化自动合并拆条 series（默认全开；间隔下限 3600 秒，
+    # 上限 604800 秒；每轮组数上限 10~100000）。DB 行 > 环境变量 > 代码缺省，
+    # 读取侧见 merge_versions_worker.series_merge_config。
+    "series_merge_enabled": "bool", "series_merge_loose_enabled": "bool",
+    "series_merge_require_year": "bool",
+    "series_merge_interval_sec": "int", "series_merge_batch_limit": "int",
 }
 
 

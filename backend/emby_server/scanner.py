@@ -2470,10 +2470,76 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
         except ImportError:
             pass
 
+    # 系统性去重（剧集 Q3）：照抄 movie 模式。严格 key 先行
+    # （同 tmdb_id，或同归一化标题+年份）；宽松 key（去虚词归一+年份）
+    # 只收录"无歧义"的——同一宽松 key 对应 2 个不同非空 tmdb_id
+    # （如星球大战三元组）时整 key 剔除不用。
+    series_dup_map: dict[int, int] = {}  # pending index -> existing series id
+    series_pendings = [(idx, p) for idx, p in enumerate(to_claim)
+                       if p.item_type == "series"]
+    if series_pendings:
+        try:
+            from backend.emby_server import dedup as dedup_lib
+            from backend.emby_server import merge_versions_worker as _mvw
+            merge_cfg = _mvw.series_merge_config(db)
+            # 一次查出本库所有剧集的 (id, tmdb_id, name, year)，Python 层建去重映射
+            existing = db.query(MI.id, MI.tmdb_id, MI.name,
+                                MI.production_year).filter(
+                MI.library_id == ctx.lib_id,
+                MI.item_type == "series",
+                MI.deleted_at.is_(None),
+            ).all()
+            key_to_id: dict = {}
+            loose_to_tmdb: dict = {}  # 宽松 key -> 见过的非空 tmdb_id 集合
+            loose_to_id: dict = {}    # 宽松 key -> (eid, eyear)，歧义的不进
+            for eid, etmdb, ename, eyear in existing:
+                ekey = dedup_lib.dedup_key_for(ctx.lib_id, "series", etmdb,
+                                               ename, eyear)
+                if ekey and ekey not in key_to_id:
+                    key_to_id[ekey] = eid
+                lkey = ("loose", ctx.lib_id,
+                        dedup_lib.normalize_name_loose(ename), eyear or 0)
+                tmdb_norm = (etmdb or "").strip() or None
+                seen = loose_to_tmdb.setdefault(lkey, set())
+                if tmdb_norm:
+                    seen.add(tmdb_norm)
+                if len(seen) > 1:
+                    # 生死守卫：2 个不同非空 tmdb_id，整 key 剔除
+                    loose_to_id.pop(lkey, None)
+                elif lkey not in loose_to_id:
+                    loose_to_id[lkey] = (eid, eyear)
+            for idx, p in series_pendings:
+                pkey = dedup_lib.dedup_key_for(
+                    ctx.lib_id, "series", None,
+                    p.parsed.get("name"), p.parsed.get("year"))
+                if pkey and pkey in key_to_id:
+                    series_dup_map[idx] = key_to_id[pkey]
+                    continue
+                # 总开关=0 时宽松复用全停（严格逻辑不受影响）
+                if not merge_cfg["enabled"] or not merge_cfg["loose_enabled"]:
+                    continue
+                lkey = ("loose", ctx.lib_id,
+                        dedup_lib.normalize_name_loose(p.parsed.get("name")),
+                        p.parsed.get("year") or 0)
+                hit = loose_to_id.get(lkey)
+                if hit is None:
+                    continue
+                eid, eyear = hit
+                # 年份守卫：双方年份都存在且相差 > 1 时不复用；任一为空允许复用
+                pyear = p.parsed.get("year")
+                if pyear and eyear and abs(pyear - eyear) > 1:
+                    continue
+                series_dup_map[idx] = eid
+        except ImportError:
+            pass
+
     for idx, p in enumerate(to_claim):
         if idx in movie_dup_map:
             # 命中已有的同部电影：复用，不建新记录
             p.claimed_id = movie_dup_map[idx]
+        elif idx in series_dup_map:
+            # 命中已有的同部剧集：复用，不建新记录
+            p.claimed_id = series_dup_map[idx]
         else:
             p.claimed_id = _claim_guid(db, p.guid, ctx.lib_id, {
                 "item_type": p.item_type,
