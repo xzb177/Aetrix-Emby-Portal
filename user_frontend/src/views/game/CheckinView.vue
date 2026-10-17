@@ -17,7 +17,6 @@
           <span v-if="statusStale" class="v4-stale">（数据可能过期）</span>
         </div>
         <div v-else-if="statusLoading" class="v4-skeleton sk-fire" aria-hidden="true"></div>
-        <div v-else-if="statusError" class="v4-err" role="alert">连报数据加载失败：{{ statusError }}<br><button type="button" class="v4-retry" @click="load">重试</button></div>
       </header>
 
       <!-- 探险体力 -->
@@ -32,23 +31,22 @@
           <template v-if="status?.checked_today">今日已盖章 <span aria-hidden="true">✅</span></template>
           <template v-else>点击下方"报到"按钮盖章</template>
         </div>
-        <div v-if="statusLoading" class="v4-skeleton sk-book" aria-hidden="true"></div>
+        <div v-if="statusLoading" class="sk-book" aria-hidden="true">
+          <div class="cal sk-cal">
+            <div v-for="d in daysInMonth" :key="d" class="day sk-day"></div>
+          </div>
+        </div>
         <div v-else-if="statusError" class="v4-err" role="alert">报到簿加载失败：{{ statusError }}<br><button type="button" class="v4-retry" @click="load">重试</button></div>
         <div v-else class="book">
           <div class="book-head">
             <b>{{ year }}年{{ monthLabel }}</b>
             <span>本月已报 {{ signedCount }} 天</span>
           </div>
-          <div class="cal" role="grid">
-            <div
-              v-for="d in daysInMonth"
-              :key="d"
-              class="day"
-              role="gridcell"
-              :class="dayClass(d)"
-              :aria-label="`${monthLabel}${d}日${signedDays.has(d) ? '已报到' : ''}`"
-            >
-              <span class="n">{{ d }}</span>
+          <div class="cal" role="grid" aria-label="报到日历">
+            <div v-for="(week, wi) in weeks" :key="wi" class="cal-row" role="row">
+              <div v-for="(d, di) in week" :key="d ?? 'e' + wi + '-' + di" class="day" :class="d ? dayClass(d) : 'empty'" role="gridcell" :aria-label="d ? dayAriaLabel(d) : undefined" :aria-hidden="d ? undefined : 'true'">
+                <span v-if="d" class="n">{{ d }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -67,8 +65,8 @@
 
       <!-- 奖励说明 -->
       <div class="reward" v-if="status && status.enabled">
-        <span aria-hidden="true">🎁</span> <b>报到奖励</b>：能量 +{{ status.base_points }}⚡<br>
-        <span aria-hidden="true">🔥</span> <b>连报奖励</b>：每天多 +{{ status.streak_bonus }}⚡（上限 +{{ status.streak_max_bonus }}⚡）
+        <span aria-hidden="true">🎁</span> <b>报到奖励</b>：能量 +{{ status.base_points }}<span aria-hidden="true">⚡</span><br>
+        <span aria-hidden="true">🔥</span> <b>连报奖励</b>：每天多 +{{ status.streak_bonus }}<span aria-hidden="true">⚡</span>（上限 +{{ status.streak_max_bonus }}<span aria-hidden="true">⚡</span>）
       </div>
     </div>
     <PanelTabbar />
@@ -105,6 +103,17 @@ const signedDays = ref<Set<number>>(new Set())
 const daysInMonth = computed(() => new Date(year.value, month.value + 1, 0).getDate())
 const monthLabel = computed(() => `${month.value + 1}月`)
 const signedCount = computed(() => signedDays.value.size)
+/** ARIA grid 需要行结构：按 7 个一组分周，第一周开头用 null 补齐空位 */
+const weeks = computed((): Array<Array<number | null>> => {
+  const firstWeekday = new Date(year.value, month.value, 1).getDay()
+  const cells: Array<number | null> = [
+    ...Array.from({ length: firstWeekday }, (): null => null),
+    ...Array.from({ length: daysInMonth.value }, (_, i) => i + 1),
+  ]
+  const out: Array<Array<number | null>> = []
+  for (let i = 0; i < cells.length; i += 7) out.push(cells.slice(i, i + 7))
+  return out
+})
 
 const canCheckin = computed(
   () => !!status.value && status.value.enabled && !status.value.checked_today,
@@ -141,6 +150,14 @@ function dayClass(d: number): string {
   if (d === todayNum.value) return 'today'
   if (d > todayNum.value) return 'future'
   return ''
+}
+
+/** 读屏器文案：区分 已报到/今天/未来/过去未报到（原写法未报到的日子听起来都一样） */
+function dayAriaLabel(d: number): string {
+  if (signedDays.value.has(d)) return `${monthLabel.value}${d}日，已报到`
+  if (d === todayNum.value) return `${monthLabel.value}${d}日，今天，还没报到`
+  if (d > todayNum.value) return `${monthLabel.value}${d}日，还没到`
+  return `${monthLabel.value}${d}日，未报到`
 }
 
 /** 重载失败时保留旧 status，加"数据可能过期"小字提示 */
@@ -209,6 +226,12 @@ async function doCheckin() {
       pop.classList.remove('go')
       void pop.offsetWidth
       pop.classList.add('go')
+      // prefers-reduced-motion 下 go 的终态是 opacity:1，不摘类会永久遮住屏幕中央
+      if (sealTimer) window.clearTimeout(sealTimer)
+      sealTimer = window.setTimeout(() => {
+        pop.classList.remove('go')
+        sealTimer = 0
+      }, 900)
     }
     // 能量飞入（R43：付费用户无积分奖励，points_awarded=0 时不飞"+0⚡"，免得误导）
     if (r.points_awarded > 0) flyEnergy(`+${r.points_awarded}⚡`, checkinBtn.value)
@@ -235,7 +258,9 @@ async function doCheckin() {
   }
 }
 
-let flyTimers = new Set<number>()
+/** 盖章动画结束后的摘类定时器 */
+let sealTimer = 0
+const flyTimers = new Set<number>()
 
 function flyEnergy(text: string, fromEl?: HTMLElement | null) {
   // 减少动态偏好：跳过飞行动画
@@ -270,12 +295,15 @@ onMounted(() => {
       year.value = n.getFullYear()
       month.value = n.getMonth()
       todayNum.value = n.getDate()
+      // 旧 signedDays 是上月日期，先清掉；流水失败时也不该把上月红章映到新月历
+      signedDays.value = new Set()
       void load()
     }
   }, 60_000)
 })
 onUnmounted(() => {
   window.clearInterval(dateTimer)
+  if (sealTimer) window.clearTimeout(sealTimer)
   for (const id of flyTimers) window.clearTimeout(id)
   flyTimers.clear()
   // 兜底：清掉已挂载但定时器尚未触发的飞字节点
@@ -318,6 +346,9 @@ onUnmounted(() => {
   position: relative;
   border: 1px solid transparent;
 }
+/* role=grid 需要行结构：行壳不参与 7 列布局，空位占位但不显示 */
+.cal-row { display: contents; }
+.day.empty { visibility: hidden; }
 .day .n { font-weight: 700; font-size: 12px; }
 .day.done {
   /* R48：原值 #F1F4EC，改用主题变量拼出近似纸绿色 */
@@ -343,11 +374,12 @@ onUnmounted(() => {
   border-radius: var(--paper-r-sm, 8px);
   margin: 2px;
 }
-.day.today {
+.day.today:not(.done) {
   border: 2px dashed var(--red);
 }
 /* 脉冲光晕只用 transform/opacity（60fps）：::after 做扩散圆环，不刷 box-shadow */
-.day.today::after {
+/* 今天已报到的格子回落到 done 的"到"章（脉冲 ::after 只在非 done 时存在） */
+.day.today:not(.done)::after {
   content: "";
   position: absolute;
   inset: -2px;
@@ -436,7 +468,16 @@ onUnmounted(() => {
 
 /* R48A-39：骨架修饰类（替代内联 style） */
 .sk-fire { height: 32px; width: 60%; margin-top: 10px; }
-.sk-book { height: 220px; }
+/* 骨架与真实日历同构（外框同 .book、网格同 .cal），格子由全局 .sk-day 提供 shimmer */
+.sk-book {
+  border: 1.5px solid var(--line);
+  border-radius: var(--paper-r-lg, 12px);
+  padding: 16px;
+  background: var(--paper-card);
+  box-shadow: 0 2px 8px rgba(42, 38, 32, 0.06);
+}
+/* .book-head 的占位间距，骨架外框高度≈数据态 */
+.sk-cal { margin-top: 33px; }
 /* R48A-13：数据可能过期的小字提示 */
 .v4-stale { font-size: 11px; color: var(--ink2); }
 /* R27：减少动态偏好下装饰动画停掉（本地守卫） */
@@ -444,7 +485,7 @@ onUnmounted(() => {
   .day.today::after { animation: none; }
   /* R48A-28：停掉动画时补静态终态，别停在 opacity:0 不可见 */
   .seal-pop.go { animation: none; opacity: 1; transform: translate(-50%, -50%) scale(1) rotate(-12deg); }
-  :global(.energy-fly.go) { animation: none; opacity: 1; transform: translate(60px, -120px); }
+  :global(.energy-fly.go) { animation: none; opacity: 0; transform: translate(60px, -120px); }
   .checkin-btn:active { transform: none; }
 }
 </style>
