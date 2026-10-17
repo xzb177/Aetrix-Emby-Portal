@@ -1624,7 +1624,10 @@ def get_playback_stats(
     """
     from backend.emby_server import models as em
 
-    day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    # r35："今日"按上海自然日语义；start_time 是 UTC-naive 入库，起点换算成 UTC 帧
+    # 再比较（此前用服务器本地=UTC 日，"今日"实为 UTC 日）。函数内导入避循环。
+    from backend.api.panel import _today_start_utc_naive
+    day_start = _today_start_utc_naive()
 
     today_count = db.query(em.PlaybackSession).filter(
         em.PlaybackSession.start_time >= day_start

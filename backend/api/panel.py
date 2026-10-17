@@ -256,7 +256,11 @@ def panel_today(
 ):
     _guard()
     now = _now_local_naive()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # r35：PlaybackSession.start_time 是 UTC-naive 入库（compat_routes._upsert_session
+    # 以容器本地时间写入），此前拿上海-naive 的 00:00 去比 → 每天 00:00–08:00（CST）
+    # 「今日观影人数」漏计（窗口超前 8 小时），08:00 之后又把昨天 08:00–24:00 的
+    # 观看者算进来（窗口滞后 8 小时）。改走上海自然日→UTC 帧的起点。
+    today_start = _today_start_utc_naive()
 
     from backend.emby_server import models as em
 
@@ -951,24 +955,26 @@ def panel_server(
 
     # 生长记录：过去 7 天每天新入库数（替换"机关"假开关的实用组件）。
     # r28 打磨：单条 GROUP BY 一次查 7 天 —— 原来 7 次 COUNT 轮询，面板每次打开都打 7 遍。
+    # r35：date_added 是 UTC-naive 入库，此前按 func.date 的 UTC 日分组、标签却按
+    # 上海自然日画 → 每天 00:00–08:00（CST）入库的条目被算到前一天。改为取原始
+    # 时间戳、Python 侧 +8h 按上海自然日归桶（方言无关，与 r34 F8 同口径）。
     growth = []
     try:
         today = _now_local_naive().replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start = today - timedelta(days=6)
-        day_col = func.date(em.MediaItem.date_added).label("d")
+        week_start = _today_start_utc_naive() - timedelta(days=6)
         rows = db.query(
-            day_col,
+            em.MediaItem.date_added,
             func.count(em.MediaItem.id),
         ).filter(
             em.MediaItem.date_added >= week_start,
             em.MediaItem.item_type.in_(["movie", "series"]),
-        ).group_by(day_col).all()
+        ).group_by(em.MediaItem.date_added).all()
         by_day = {}
-        for d, cnt in rows:
-            # func.date 在 PG 返回 date、SQLite 返回 'YYYY-MM-DD' 字符串，统一成 date
-            if isinstance(d, str):
-                d = datetime.strptime(d, "%Y-%m-%d").date()
-            by_day[d] = cnt
+        for ts, cnt in rows:
+            if ts is None:
+                continue
+            day = (ts + timedelta(hours=8)).date()
+            by_day[day] = by_day.get(day, 0) + (cnt or 0)
         for i in range(6, -1, -1):
             day = today - timedelta(days=i)
             growth.append({
