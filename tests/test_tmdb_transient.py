@@ -234,7 +234,47 @@ def test_search_candidates_graceful_with_warning(monkeypatch, caplog):
     assert any("暂时不可用" in r.getMessage() for r in caplog.records)
 
 
-# ---------- 单集补全：瞬态上抛、真没这集静默 ----------
+# ---------- season_episodes：季接口错误载荷不许毒化缓存 ----------
+
+def test_season_episodes_error_payload_raises_without_cache(monkeypatch):
+    """HTTP 200 + 无 episodes 的错误载荷（如网关把 TMDB 季接口错误包成 200，
+    {"success": False, "status_code": 25}）→ 抛 TmdbTransientError，L1/L2 都不写。
+
+    同 _search_raw 的事故模式（#1072 修了搜索，season_episodes 是漏网之鱼）：
+    旧代码 ``eps = (data or {}).get("episodes") if data else None`` 把错误体
+    的 eps 算成 None → 写进 L2 30 天，find_episode 恒返 None，_fetch_episode_tmdb
+    把"没拉成"当成"TMDB 没这集"静默跳过。
+
+    （本文件 fixture 关了磁盘缓存 EMBY_TMDB_CACHE=0，L2 不写在 fixture 下天然成立；
+    这里额外拦截 save_details 的调用以证明写路径从未被触发。）
+    """
+    writes = []
+    monkeypatch.setattr(tmdb_mod.tmdb_cache, "save_details",
+                        lambda *a, **k: writes.append((a, k)) or True)
+    client = _client(monkeypatch, lambda u, p: _resp(payload={
+        "success": False, "status_code": 25,
+        "status_message": "Your request count (...) is over the allowed limit of (40)."}))
+    with pytest.raises(TmdbTransientError):
+        client.season_episodes("123", 1)
+    assert writes == [], "错误载荷绝不写 L2 磁盘"
+    assert not TmdbClient._cache, "L1 也不许留 None（同批后续请求必须重打）"
+
+
+def test_season_episodes_poisoned_disk_residue_self_heals(monkeypatch):
+    """毒化读路径自愈：L2 里若残留了老版本写进的错误体（无 episodes 数组），
+    hit 分支不吃它、直接穿透走网络重拉；重拉成功后返回真集列表（覆盖残留）。"""
+    monkeypatch.setattr(tmdb_mod.tmdb_cache, "load_details",
+                        lambda *a, **k: (True, {"success": False, "status_code": 25}))
+    client = _client(monkeypatch, lambda u, p: _resp())
+    monkeypatch.setattr(
+        client, "_get",
+        lambda path, params: {"id": 123, "name": "第 1 季",
+                              "episodes": [{"episode_number": 1, "name": "x"}]})
+    eps = client.season_episodes("123", 1)
+    assert eps == [{"episode_number": 1, "name": "x"}], "应穿透重拉返回真集列表，而非 None"
+    # 重拉成功后的真集列表进了 L1（残留被覆盖，自愈闭环）
+    lang = tmdb_mod.preferred_language()
+    assert client._cache_get(("season_episodes", "123", "1", lang)) == eps
 
 def test_fetch_episode_reraises_transient(monkeypatch):
     """``_fetch_episode_tmdb``：瞬态 → 上抛（整条进重试队列）；其它异常保持静默"""

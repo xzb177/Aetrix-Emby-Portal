@@ -215,6 +215,26 @@ def test_user_tastes_bounded_at_volume(db, user):
     assert all(isinstance(v["count"], int) for v in tastes.values())
 
 
+def test_user_tastes_query_emits_limit(db, user):
+    """哨兵：user_tastes 的口味口径依赖 .limit(5000) 掐住无界内存增长；
+    将来有人删掉/挪动 limit 时，这里必须先红。"""
+    from sqlalchemy import event
+
+    statements = []
+
+    def _record(conn, cursor, statement, params, context, executemany):
+        statements.append(statement)
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        pa.user_tastes(db, user.id)
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+    assert any("LIMIT" in s.upper() for s in statements), \
+        "user_tastes 发出的 SQL 里没见到 LIMIT——limit(5000) 可能被删了"
+
+
 # ---------- F8: panel_unseal 必须校验今日封存 ----------
 
 def test_unseal_rejects_non_parcel_item(db, user, monkeypatch):
@@ -230,3 +250,31 @@ def test_unseal_rejects_non_parcel_item(db, user, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         panel_api.panel_unseal(item.id, db, user)
     assert exc.value.status_code == 400
+
+
+def test_unseal_accepts_parcel_item(db, user):
+    """今日封存内的条目：首次拆返回 200 + 建行 + already=False；
+    再次拆幂等 already=True，不多建行。"""
+    from backend.emby_server import models as em
+
+    # 今日新入库的整部 movie → _today_parcel_items 的"今日封存"口径内
+    item = em.MediaItem(guid="r45-guid-parcel", library_id=1, item_type="movie",
+                        name="今日封存的片", date_added=datetime.now())
+    db.add(item)
+    db.commit()
+    assert item.id in {it.id for it in panel_api._today_parcel_items(db)}, \
+        "前置：测试数据没进今日封存口径"
+
+    got = panel_api.panel_unseal(item.id, db, user)
+    assert got["code"] == 0
+    data = got["data"]
+    assert data["unsealed"] is True and data["already"] is False
+    assert data["item"]["id"] == item.id
+    assert db.query(models.PanelUnseal).filter_by(
+        user_id=user.id, item_id=item.id).count() == 1
+
+    # 幂等：第二次直接返回，不再建行
+    got2 = panel_api.panel_unseal(item.id, db, user)
+    assert got2["data"]["already"] is True
+    assert db.query(models.PanelUnseal).filter_by(
+        user_id=user.id, item_id=item.id).count() == 1

@@ -1248,8 +1248,9 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
     if season_no is None or ep_no is None:
         # 防再犯（2026-10-18）：快照曾缺季/集号字段，导致本函数自 10-10 起
         # 静默空转。父级有 tmdb_id 却拿不到季/集号是数据/快照 bug，必须可观测。
-        logger.warning("单集 TMDB 跳过：季/集号缺失 item=%s series_tmdb=%s",
-                       getattr(item, "id", None), series_tmdb_id)
+        logger.warning("单集 TMDB 跳过：季/集号缺失 item=%s name=%r library=%s series_tmdb=%s",
+                       getattr(item, "id", None), getattr(item, "name", None),
+                       getattr(item, "library_id", None), series_tmdb_id)
         return
     try:
         ep_data = tmdb_client.find_episode(str(series_tmdb_id), season_no, ep_no)

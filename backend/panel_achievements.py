@@ -136,6 +136,9 @@ def user_tastes(db: Session, user_id: int) -> dict:
     # r45：加 5000 上界——原先无日期上限全量 .all() 进内存，重度用户每次打开
     # 信件/收藏家页（请求线程同步调用）都会触发；5000 远超 500 名去重截断口径，
     # 语义几乎不受影响，只掐掉无界内存增长。
+    # r2107 注：截断的是去重前的原始行——重度用户近期集中重刷少数几部时，
+    # 去重后名字很少，老口味印章可能随 5000 窗口滑动而抖动；5000 远大于
+    # 日常量级播放量，属可接受偏差，特此注明偏差方向。
     sessions = db.query(models.EmbySession).filter(
         models.EmbySession.user_id == user_id,
         models.EmbySession.play_duration > 60,  # 至少看 1 分钟才算
