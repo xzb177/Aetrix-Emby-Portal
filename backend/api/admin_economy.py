@@ -30,7 +30,7 @@ from backend.api.admin_core import (
     get_current_admin,
 )
 from backend.database import get_db
-from backend.notifications import notify_admin_event
+from backend.notifications import notify_admin_event_quiet
 
 
 # ---------- 邀请与返利管理 ----------
@@ -170,8 +170,11 @@ async def economy_adjust_points(
 
     balance = await run_in_threadpool(_adjust)
 
-    await notify_admin_event(
+    # r46：主流程已两次 commit 落库，通知走 quiet 守卫——失败只记日志，
+    # 永不抛 500，避免管理员重试导致重复调账。
+    await notify_admin_event_quiet(
         event_type="economy.admin_adjust",
+        log_ctx=f"admin_adjust_points user_id={user_id}",
         user_id=user_id,
         title=f"💰 积分变动 {request.amount:+d}",
         content=f"{reason or '管理员调整'}\n当前余额：{balance} 积分",
