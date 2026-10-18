@@ -1,5 +1,6 @@
 /** v2.2.0 管理端 API（全部走 /api/admin/*，详见 backend/api/admin.py 与 emby_server/portal.py） */
 import { get, getBlob, getPublic, postBlob, post, put, patch, del, upload } from '@/utils/request'
+import type { EconomyStats } from './economy'
 import type {
   AdminInfo,
   AdminListResponse,
@@ -822,6 +823,28 @@ export const fetchLogs = (params: { limit?: number; action_filter?: string } = {
   get<AdminLogRow[]>('/logs', params)
 
 export const fetchOverview = () => get<OverviewStats>('/stats/overview')
+
+/**
+ * 仪表盘聚合：一次拿回首屏 8 路数据（后端 GET /api/admin/dashboard/overview）。
+ * parts 里某一项为 null 表示该采集失败——语义与原先逐个调用的 soft() 兜底一致，
+ * 前端按同样规则点名并给重试。聚合本身失败时调用方应回退逐个调用。
+ */
+export interface DashboardAggregate {
+  success: boolean
+  fetched_at: string
+  parts: {
+    overview: OverviewStats | null
+    playback: PlaybackStats | null
+    economy: EconomyStats | null
+    libraries: { libraries: EmbyLibrary[] } | null
+    servers: ServerSummary | null
+    realms: RealmOverview | null
+    backend_services: { success: boolean; services: BackendServiceStatus[] } | null
+    trend: TrendStats | null
+  }
+}
+export const fetchDashboardAggregate = (days = 14) =>
+  get<DashboardAggregate>('/dashboard/overview', { days })
 
 export interface PanelHealth {
   status: string

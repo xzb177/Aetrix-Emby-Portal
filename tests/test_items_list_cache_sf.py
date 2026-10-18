@@ -568,6 +568,8 @@ def test_api_slow_log_threshold(fake, seeded_api, caplog, monkeypatch):
         params = {"Recursive": "true", "IncludeItemTypes": "Movie", "Limit": "20"}
         # 预热一次（冷请求走全量计算，结果忽略）
         api._query_items(_req(params), s.user, db, "http://t")
+        # 预热请求在机器忙时可能超 500ms 默认阈值打慢日志：清掉，不带入断言窗口
+        caplog.clear()
         # 阈值拉满：任何请求都不打慢日志
         monkeypatch.setattr(api, "_ITEMS_SLOW_LOG_MS", float("inf"))
         with caplog.at_level(logging.WARNING, logger="backend.emby_server.api"):
