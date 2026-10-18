@@ -2655,52 +2655,63 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         # 排序加 id 作为最终决胜键：同名/同时间的并列行在分页之间顺序稳定（否则
         # LIMIT/OFFSET 下并列行可能在两页重复或漏掉）。
         order_cols = [*order_cols, em.MediaItem.id.asc()]
-        # 列表去重缓存（2026-10-18）：dropped 集合按（用户, 查询参数, 各库数据版本）
-        # 缓存；开关关 / Redis 不可用时逐行走旧路径。
-        dropped = _dedup_cache.dedup_dropped_ids_cached(
-            request, query, db, user, allowed,
-            lambda: _dedup_dropped_ids(query, db))
-        if dropped is None:
-            cand_rows = (
-                query.order_by(*order_cols)
-                .with_entities(
-                    em.MediaItem.id,
-                    em.MediaItem.item_type,
-                    em.MediaItem.file_path,
-                    em.MediaItem.library_id,
+        # 列表 ID 清单缓存先行（r41）：命中时请求只剩按主键取本页行 + 用户态
+        # 预取 + DTO 构建；去重缓存（dropped 大集合的 Redis 读 + 反序列化）
+        # 只在清单未命中时才需要——命中路径上它是纯浪费（结果从未被使用）。
+        # 版本号作用域（lib_ids + 各库数据版本）在本请求内恒定，清单/去重两层
+        # 共用一次读取：原来各查一次媒体库列表 + 一次版本号直查（每请求 4 次
+        # 小查询），现在各一次。
+        page_ids = None
+        total = None
+        _lc_ok = _list_cache.is_cacheable(
+            filters=filters, sort_by=sort_by, has_ids=bool(ids))
+        _lc_libs: list = []
+        _lc_versions = None
+        if _lc_ok:
+            _lc_libs = _list_cache.scope_lib_ids(db, allowed)
+            # 只在清单缓存开着时预读：开关关时 get/put 内部直接返回，
+            # 预读的一次版本号查询反而是浪费；去重层没拿到预传会自己读。
+            if _list_cache.cache_enabled(db):
+                _lc_versions = _dedup_cache.read_data_versions(db, _lc_libs)
+            _lc_hit = _list_cache.get_cached_page(db, q, _lc_libs,
+                                                  versions=_lc_versions)
+            if _lc_hit is not None and start + limit <= len(_lc_hit.ids):
+                page_ids = _lc_hit.ids[start:start + limit]
+                if want_total:
+                    total = _lc_hit.total
+                else:
+                    has_more = _lc_hit.total > start + limit
+                    total = len(page_ids)
+        if page_ids is None:
+            # 列表去重缓存（2026-10-18）：dropped 集合按（用户, 查询参数,
+            # 各库数据版本）缓存；开关关 / Redis 不可用时逐行走旧路径。
+            dropped = _dedup_cache.dedup_dropped_ids_cached(
+                request, query, db, user, allowed,
+                lambda: _dedup_dropped_ids(query, db),
+                lib_ids=_lc_libs if _lc_ok else None,
+                versions=_lc_versions)
+            if dropped is None:
+                cand_rows = (
+                    query.order_by(*order_cols)
+                    .with_entities(
+                        em.MediaItem.id,
+                        em.MediaItem.item_type,
+                        em.MediaItem.file_path,
+                        em.MediaItem.library_id,
+                    )
+                    .all()
                 )
-                .all()
-            )
-            primary_ids = _dedup_primary_ids(cand_rows, db)
-            page_ids = primary_ids[start:start + limit]
-            # Emby 官方从不返回 -1：跳过总数时用本页数量，保证非负
-            total = len(primary_ids) if want_total else len(page_ids)
-            if not want_total:
-                # 多取一个判断有没有下一页
-                has_more = len(primary_ids) > start + limit
-        else:
-            kept = query.filter(~em.MediaItem.id.in_(dropped)) if dropped else query
-            # 列表 ID 清单缓存（2026-10-18）：dropped 集合缓存把去重计算摊薄后，
-            # 剩下的大头是「全量 kept 排序 + 分页 + 计数」。本层缓存「排好序的
-            # kept id 清单（前 max_ids 个）+ total」，命中时请求只剩按主键取本页
-            # 行 + 用户态预取 + DTO 构建。DTO（含用户播放状态/收藏）永不进缓存。
-            # 用户状态相关查询（收藏/已看/未看/继续看筛选、按用户数据排序、
-            # Ids 定向取条目）一律绕行；页窗口超出已存前缀时也绕行现状路径。
-            page_ids = None
-            total = None
-            _lc_ok = _list_cache.is_cacheable(
-                filters=filters, sort_by=sort_by, has_ids=bool(ids))
-            _lc_libs = _list_cache.scope_lib_ids(db, allowed) if _lc_ok else []
-            if _lc_ok:
-                _lc_hit = _list_cache.get_cached_page(db, q, _lc_libs)
-                if _lc_hit is not None and start + limit <= len(_lc_hit.ids):
-                    page_ids = _lc_hit.ids[start:start + limit]
-                    if want_total:
-                        total = _lc_hit.total
-                    else:
-                        has_more = _lc_hit.total > start + limit
-                        total = len(page_ids)
-            if page_ids is None:
+                primary_ids = _dedup_primary_ids(cand_rows, db)
+                page_ids = primary_ids[start:start + limit]
+                # Emby 官方从不返回 -1：跳过总数时用本页数量，保证非负
+                total = len(primary_ids) if want_total else len(page_ids)
+                if not want_total:
+                    # 多取一个判断有没有下一页
+                    has_more = len(primary_ids) > start + limit
+            else:
+                kept = query.filter(~em.MediaItem.id.in_(dropped)) if dropped else query
+                # 未命中清单缓存：走现状的 id-only 排序分页路径（见下）；dropped
+                # 在上面已按需取到（清单命中时根本不查去重缓存，见本函数上方注释）。
                 fetch = limit + (0 if want_total else 1)
                 page_ids = [
                     row[0] for row in kept.order_by(*order_cols)
@@ -2728,7 +2739,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                     ]
                     _list_cache.put_cached_page(
                         db, q, _lc_libs, _lc_probe[:_lc_max], total,
-                        len(_lc_probe) > _lc_max)
+                        len(_lc_probe) > _lc_max, versions=_lc_versions)
         if not page_ids:
             items = []
         else:

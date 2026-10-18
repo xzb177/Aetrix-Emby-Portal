@@ -235,8 +235,11 @@ def _cache_key(lib_ids: list[int], params_hash: str, versions: dict[int, str]) -
     return f"{_KEY_PREFIX}:a{scope_hash}:p{params_hash}:v{ver_hash}"
 
 
-def _key_for(db: Session, query_params, lib_ids: list[int]) -> str:
-    versions = _dedup.read_data_versions(db, lib_ids)
+def _key_for(db: Session, query_params, lib_ids: list[int],
+             versions: Optional[dict] = None) -> str:
+    # versions 预传时跳过版本号直查（r41：调用方已读过一次，同请求内恒定）。
+    if versions is None:
+        versions = _dedup.read_data_versions(db, lib_ids)
     params_hash = hashlib.sha1(_canonical_list_params(query_params).encode()).hexdigest()[:16]
     return _cache_key(lib_ids, params_hash, versions)
 
@@ -275,13 +278,14 @@ def _deserialize(raw) -> Optional[CachedPage]:
 
 # ---------------- 读写 ----------------
 
-def get_cached_page(db: Session, query_params, lib_ids: list[int]) -> Optional[CachedPage]:
+def get_cached_page(db: Session, query_params, lib_ids: list[int],
+                    versions: Optional[dict] = None) -> Optional[CachedPage]:
     """读缓存：命中返回 CachedPage；miss/禁用/异常/损坏返回 None。"""
     if not cache_enabled(db):
         return None
     if cache_ttl_seconds(db) <= 0:
         return None
-    key = _key_for(db, query_params, lib_ids)
+    key = _key_for(db, query_params, lib_ids, versions)
 
     def _op(c):
         raw = c.get(key)
@@ -299,14 +303,15 @@ def get_cached_page(db: Session, query_params, lib_ids: list[int]) -> Optional[C
 
 
 def put_cached_page(db: Session, query_params, lib_ids: list[int],
-                    ids: Iterable[int], total: int, truncated: bool) -> None:
+                    ids: Iterable[int], total: int, truncated: bool,
+                    versions: Optional[dict] = None) -> None:
     """写缓存：SETEX + 索引记时 + 超上限淘汰最旧。失败静默（不影响请求）。"""
     if not cache_enabled(db):
         return
     ttl = cache_ttl_seconds(db)
     if ttl <= 0:
         return
-    key = _key_for(db, query_params, lib_ids)
+    key = _key_for(db, query_params, lib_ids, versions)
     val = _serialize(ids, total, truncated)
 
     def _op(c):
