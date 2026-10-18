@@ -28,7 +28,6 @@ EA 不跑这个任务——通知与业务配置都在 EM 侧。
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from datetime import datetime, timedelta
 from typing import Optional
@@ -37,6 +36,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models, realms
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ CONFIG_DAYS = "expiry_reminder_days"
 # 默认在到期前 7 / 3 / 1 天提醒（运营可直接改配置，不必改代码）
 DEFAULT_THRESHOLDS = (7, 3, 1)
 # 提醒任务周期（秒）。默认一小时一次：档位是按「天」算的，跑得再密也不会多发一条
-REMINDER_INTERVAL = max(300, int(os.getenv("REMINDER_INTERVAL", "3600") or 3600))
+REMINDER_INTERVAL = env_int("REMINDER_INTERVAL", 3600, 300)
 
 # 消息类型：与 AdminEvent 的 ``subscription.*`` 前缀一致，用户端按此归类
 MESSAGE_TYPE = "subscription"

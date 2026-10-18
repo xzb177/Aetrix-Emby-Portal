@@ -21,6 +21,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
+from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 PAN115_COOKIE_ENV = "PAN115_COOKIE"
 # 端点可用环境变量覆盖：115 的 Web API 域名偶有调整，也便于测试指向本地假服务
 PAN115_WEBAPI_BASE = os.getenv("PAN115_WEBAPI_BASE", "https://webapi.115.com").rstrip("/")
-PAN115_TIMEOUT = float(os.getenv("PAN115_TIMEOUT", "20"))
+PAN115_TIMEOUT = env_float("PAN115_TIMEOUT", 20.0)
 PAN115_UA = os.getenv(
     "PAN115_USER_AGENT",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

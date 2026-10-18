@@ -40,6 +40,7 @@ from backend.database import SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import scan_progress as progress
 from backend.emby_server.cpu_budget import background_workers as _cpu_workers
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -53,22 +54,22 @@ logger = logging.getLogger(__name__)
 # 模式，不按 CPU 截断——未配置默认 8，ENRICH_WORKERS=8 即 8 线程。
 # 后台不抢主链路由 max_cap(16) + TMDB 令牌桶/图片信号量/DB 池独立限流保证。
 ENRICH_WORKERS = _cpu_workers("ENRICH_WORKERS", io_bound=True)
-ENRICH_BATCH = max(10, int(os.getenv("ENRICH_BATCH", "100") or 100))
+ENRICH_BATCH = env_int("ENRICH_BATCH", 100, 10)
 # TMDB 批量开关：1=抢单后批量调 batch_search/batch_details，0=逐条原逻辑
 ENRICH_TMDB_BATCH = os.getenv("ENRICH_TMDB_BATCH", "1") == "1"
-ENRICH_IDLE_POLL_SEC = max(5, int(os.getenv("ENRICH_IDLE_POLL_SEC", "30") or 30))
+ENRICH_IDLE_POLL_SEC = env_int("ENRICH_IDLE_POLL_SEC", 30, 5)
 ENRICH_ENABLED = (os.getenv("ENRICH_WORKER", "1") or "1").strip().lower() not in {
     "0", "false", "no", "off",
 }
 # 重试：最多 5 次，退避基数 60 秒（60s, 120s, 240s, 480s, 960s）
-ENRICH_MAX_ATTEMPTS = max(1, int(os.getenv("ENRICH_MAX_ATTEMPTS", "5") or 5))
-ENRICH_RETRY_BASE_SEC = max(10, int(os.getenv("ENRICH_RETRY_BASE_SEC", "60") or 60))
+ENRICH_MAX_ATTEMPTS = env_int("ENRICH_MAX_ATTEMPTS", 5, 1)
+ENRICH_RETRY_BASE_SEC = env_int("ENRICH_RETRY_BASE_SEC", 60, 10)
 # claim 租约（v2.42.9）：抢单时写 enrich_claimed_at，enriching 停滞超过租约即视为
 # worker 死亡，janitor 打回 pending。单条补全 = 若干次远程 IO + TMDB，正常远不到
 # 15 分钟；真跑超了被回收也只是幂等地多做一次（重试本来就是这么设计的）。
-ENRICH_CLAIM_LEASE_SEC = max(60, int(os.getenv("ENRICH_CLAIM_LEASE_SEC", "900") or 900))
+ENRICH_CLAIM_LEASE_SEC = env_int("ENRICH_CLAIM_LEASE_SEC", 900, 60)
 # janitor 扫描周期：远小于租约即可，回收延迟上限 = 租约 + 周期
-ENRICH_JANITOR_INTERVAL_SEC = max(10, int(os.getenv("ENRICH_JANITOR_INTERVAL_SEC", "60") or 60))
+ENRICH_JANITOR_INTERVAL_SEC = env_int("ENRICH_JANITOR_INTERVAL_SEC", 60, 10)
 
 # 调度优先级（v2.42.9 处方 4，probe_priority 先例）：
 #   100 = repair（用户主动修复，数量少、可见）——置顶
@@ -100,8 +101,8 @@ ENRICH_LIBRARY_FAIRNESS = (os.getenv("ENRICH_LIBRARY_FAIRNESS", "1") or "1").str
     "0", "false", "no", "off",
 }
 # 零 API 别名索引（处方 12）：进程内 TTL 缓存的重建周期与行数上限
-_ALIAS_INDEX_TTL = max(30, int(os.getenv("ENRICH_ALIAS_INDEX_TTL", "300") or 300))
-_ALIAS_INDEX_MAX = max(1000, int(os.getenv("ENRICH_ALIAS_INDEX_MAX", "50000") or 50000))
+_ALIAS_INDEX_TTL = env_int("ENRICH_ALIAS_INDEX_TTL", 300, 30)
+_ALIAS_INDEX_MAX = env_int("ENRICH_ALIAS_INDEX_MAX", 50000, 1000)
 _alias_index: dict = {"rows": None, "at": 0.0}
 
 # ---- 单集夜间刮削（默认关闭：不改变现有行为） ----

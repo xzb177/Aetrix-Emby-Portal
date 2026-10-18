@@ -18,18 +18,19 @@ import os
 import threading
 import time
 from typing import Optional
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
 # 全量巡检（去重）默认 24 小时一次；补头像走更短的间隔（新入库的演员不用等一天），
 # enrich 写入缺头像的演员后会 kick() 立刻唤醒一轮。
-REFRESH_INTERVAL_SEC = int(os.getenv("PERSON_REFRESH_INTERVAL_SEC", "86400"))
-FILL_INTERVAL_SEC = int(os.getenv("PERSON_FILL_INTERVAL_SEC", "1800"))
+REFRESH_INTERVAL_SEC = env_int("PERSON_REFRESH_INTERVAL_SEC", 86400)
+FILL_INTERVAL_SEC = env_int("PERSON_FILL_INTERVAL_SEC", 1800)
 # 同一行/同一条目补失败后多久再试（进程内记忆，防止每轮反复打同一批）
-RETRY_AFTER_SEC = int(os.getenv("PERSON_FILL_RETRY_SEC", "86400"))
+RETRY_AFTER_SEC = env_int("PERSON_FILL_RETRY_SEC", 86400)
 # 单轮最多处理多少行 / 多少个条目（豆瓣兜底按条目算，每条目 1~2 次请求）
-FILL_BATCH = int(os.getenv("PERSON_FILL_BATCH", "50"))
-DOUBAN_ITEMS_PER_RUN = int(os.getenv("PERSON_DOUBAN_ITEMS_PER_RUN", "10"))
+FILL_BATCH = env_int("PERSON_FILL_BATCH", 50)
+DOUBAN_ITEMS_PER_RUN = env_int("PERSON_DOUBAN_ITEMS_PER_RUN", 10)
 # 名字搜不到 TMDB 人物时写这个标记，之后不再按名字搜（仍可走豆瓣兜底）
 NO_TMDB_MARK = "none"
 

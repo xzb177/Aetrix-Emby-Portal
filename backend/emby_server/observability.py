@@ -46,6 +46,7 @@ import threading
 import time
 from collections import deque
 from typing import Any
+from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -60,32 +61,18 @@ def enabled() -> bool:
     }
 
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (ValueError, TypeError):
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(float(os.getenv(name, str(default))))
-    except (ValueError, TypeError):
-        return default
-
-
 # 阈值：warn/dowm 分界（单位见名）
 THRESHOLDS = {
     # probe 队列堆积多少条算 warn
-    "probe_queue_warn": lambda: _env_int("OBS_PROBE_QUEUE_WARN", 1000),
+    "probe_queue_warn": lambda: env_int("OBS_PROBE_QUEUE_WARN", 1000),
     # enrich 积压多少条算 warn（health_report 的 down 线是 500，这里只做展示分级）
-    "enrich_backlog_warn": lambda: _env_int("OBS_ENRICH_BACKLOG_WARN", 500),
+    "enrich_backlog_warn": lambda: env_int("OBS_ENRICH_BACKLOG_WARN", 500),
     # API P99 超过多少毫秒算 warn
-    "api_p99_ms_warn": lambda: _env_float("OBS_API_P99_MS_WARN", 2000.0),
+    "api_p99_ms_warn": lambda: env_float("OBS_API_P99_MS_WARN", 2000.0),
     # API 错误率超过多少算 warn
-    "api_error_ratio_warn": lambda: _env_float("OBS_API_ERROR_RATIO_WARN", 0.05),
+    "api_error_ratio_warn": lambda: env_float("OBS_API_ERROR_RATIO_WARN", 0.05),
     # 磁盘余量低于多少算 warn
-    "disk_free_warn": lambda: _env_float("OBS_DISK_FREE_WARN", 15.0),
+    "disk_free_warn": lambda: env_float("OBS_DISK_FREE_WARN", 15.0),
 }
 
 # ---------------------------------------------------------------------------

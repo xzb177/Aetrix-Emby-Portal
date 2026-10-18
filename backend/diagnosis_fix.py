@@ -25,6 +25,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Callable
+from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +45,6 @@ __all__ = [
 # 阈值（全部可配置，默认值只是兜底；文档即契约）
 # ---------------------------------------------------------------------------
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (ValueError, TypeError):
-        return default
-
-
 FIX_THRESHOLD_DEFS: dict[str, tuple[str, float]] = {
     # 只删 mtime 超过这么多秒的遗留转码目录（0 = 不看年龄全删遗留）
     "transcode_min_age_sec": ("DIAG_FIX_TRANSCODE_MIN_AGE_SEC", 3600.0),
@@ -64,7 +58,7 @@ FIX_THRESHOLD_DEFS: dict[str, tuple[str, float]] = {
 def get_fix_threshold(name: str) -> float:
     """取某项修复动作的当前阈值（环境变量 > 默认值）。"""
     env_name, default = FIX_THRESHOLD_DEFS[name]
-    return _env_float(env_name, default)
+    return env_float(env_name, default)
 
 
 # ---------------------------------------------------------------------------

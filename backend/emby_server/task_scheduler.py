@@ -50,6 +50,7 @@ import os
 import random
 import threading
 import time
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -62,22 +63,14 @@ SCAN_PREEMPT_ENRICH = (
     os.getenv("SCAN_PREEMPT_ENRICH", "1") or "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
 
-ENRICH_PREEMPT_WAIT_SEC = max(
-    1, int(os.getenv("ENRICH_PREEMPT_WAIT_SEC", "5") or 5)
-)
+ENRICH_PREEMPT_WAIT_SEC = env_int("ENRICH_PREEMPT_WAIT_SEC", 5, 1)
 
 # v2.54.1：降并发让路——有扫描等待时保留的最少 enrich 线程数（至少 1）
-ENRICH_PREEMPT_MIN_THREADS = max(
-    1, int(os.getenv("ENRICH_PREEMPT_MIN_THREADS", "4") or 4)
-)
+ENRICH_PREEMPT_MIN_THREADS = env_int("ENRICH_PREEMPT_MIN_THREADS", 4, 1)
 
 # v2.54.1：熔断器阈值（分钟）
-ENRICH_PREEMPT_MAX_YIELD_MIN = max(
-    1, int(os.getenv("ENRICH_PREEMPT_MAX_YIELD_MIN", "30") or 30)
-)
-ENRICH_PREEMPT_QUEUE_STALL_MIN = max(
-    1, int(os.getenv("ENRICH_PREEMPT_QUEUE_STALL_MIN", "10") or 10)
-)
+ENRICH_PREEMPT_MAX_YIELD_MIN = env_int("ENRICH_PREEMPT_MAX_YIELD_MIN", 30, 1)
+ENRICH_PREEMPT_QUEUE_STALL_MIN = env_int("ENRICH_PREEMPT_QUEUE_STALL_MIN", 10, 1)
 
 # ---- 降并发信号量：有扫描等待时，最多 N 个 enrich 线程同时干活 ----
 _REDUCED_SEMAPHORE = threading.Semaphore(ENRICH_PREEMPT_MIN_THREADS)

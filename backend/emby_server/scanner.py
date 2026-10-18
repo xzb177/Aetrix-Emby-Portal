@@ -790,28 +790,19 @@ def _episode_display_name(name: str, season_no: Optional[int], ep_no: Optional[i
 # 窗口不能开太大：ffprobe 会把 206 响应当成**整个文件**，窗口一大就等于喂了半个文件，
 # 它读到截断处判定 "File ended prematurely" 反而失败。实测 1 MiB 稳定拿到 mkv 时长，
 # 8 MiB 就会触发该错误，所以默认按 1 MiB 走（256 KiB～4 MiB 均可，按需用环境变量调）。
-try:
-    PROBE_REMOTE_RANGE_BYTES = max(1 << 18, int(os.getenv("PROBE_REMOTE_RANGE_BYTES", "1048576")))
-except ValueError:
-    PROBE_REMOTE_RANGE_BYTES = 1 << 20
+PROBE_REMOTE_RANGE_BYTES = env_int("PROBE_REMOTE_RANGE_BYTES", 1 << 20, 1 << 18)
 
 # 第三跳（去掉 Range 让 ffprobe 自己 seek）的流量闸：moov 在文件尾部时
 # 这一跳等于把整个文件下载下来，一个大文件就能烧掉一份单文件下载配额。
 # 已知大小超过此阈值的远程文件跳过第三跳、记 degraded（信息不完整但
 # 可播放），不拿配额换探测完整度。<=0 表示不设闸（回到旧行为）。
-try:
-    PROBE_WHOLE_FILE_MAX_BYTES = int(os.getenv("PROBE_WHOLE_FILE_MAX_BYTES", str(1 << 30)))
-except ValueError:
-    PROBE_WHOLE_FILE_MAX_BYTES = 1 << 30
+PROBE_WHOLE_FILE_MAX_BYTES = env_int("PROBE_WHOLE_FILE_MAX_BYTES", 1 << 30)
 
 
 # 第二跳（双 Range）的**尾部**窗口。moov 原子在文件尾的 MP4/MOV，头部窗口读不到时长，
 # 这时才并行再取一段尾巴——只对下面这些容器开，其它封装（MKV 的时长在 EBML 头部）
 # 第一跳就拿到了，别为它们多花流量。
-try:
-    PROBE_REMOTE_TAIL_BYTES = max(1 << 18, int(os.getenv("PROBE_REMOTE_TAIL_BYTES", "2097152")))
-except ValueError:
-    PROBE_REMOTE_TAIL_BYTES = 2 << 20
+PROBE_REMOTE_TAIL_BYTES = env_int("PROBE_REMOTE_TAIL_BYTES", 2 << 20, 1 << 18)
 
 #: 需要「尾部再读一次」的容器（moov 可能落在文件尾）。
 #: 只收 MP4/MOV 系：Matroska / WebM 的时长写在文件头的 Segment Info 里，

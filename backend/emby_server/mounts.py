@@ -64,6 +64,7 @@ from backend.emby_server import scan_progress as progress
 from backend.emby_server.playback_security import (
     validate_local_file_path, validate_remote_url, safe_local_path,
 )
+from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server import subtitles, transfer115
 
 logger = logging.getLogger(__name__)
@@ -251,7 +252,7 @@ REMOTE_SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 MOUNT_PATH_PREFIX = "mount://"
 
 # 播放代理 / 探测共用：远程请求超时（秒）
-MOUNT_TIMEOUT = float(os.getenv("MOUNT_TIMEOUT", "20"))
+MOUNT_TIMEOUT = env_float("MOUNT_TIMEOUT", 20.0)
 # ffprobe / ffmpeg 读远程源时的 UA（多数网盘直链对 UA 有要求）
 MOUNT_UA = os.getenv("MOUNT_UA", transfer115.PAN115_UA)
 
@@ -274,7 +275,7 @@ MOUNT_RANGE_CHUNK = 1024 * 256
 # 存储读不动时，补全条目打回 pending 后等多久再试（不是 failed，attempts 不涨）。
 # 原本这个值叫 MOUNT_BREAKER_RETRY_SEC、绑在熔断器上；熔断器删掉后它讲的是自己的
 # 事情（避免一个挂不上的网盘把队列烧成 failed），所以改名而不是跟着一起删。
-MOUNT_UNAVAILABLE_RETRY_SEC = max(60, int(os.getenv("MOUNT_UNAVAILABLE_RETRY_SEC", "1800") or 1800))
+MOUNT_UNAVAILABLE_RETRY_SEC = env_int("MOUNT_UNAVAILABLE_RETRY_SEC", 1800, 60)
 
 
 class MountError(RuntimeError):
@@ -465,18 +466,18 @@ def local_play_target(path: str) -> PlayTarget:
 #   MOUNT_LIST_CACHE_MAX      最多缓存多少个目录（满了整体清空，内存有上限）
 # 失败**不缓存**（网盘抖动不该被固化 TTL 秒），返回值是**拷贝**（调用方会排序/裁剪，
 # 共享同一个 list 对象会让它们互相污染）。
-MOUNT_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("MOUNT_LIST_CACHE_SECONDS", "30") or 0))
-MOUNT_LIST_CACHE_MAX = max(50, int(os.getenv("MOUNT_LIST_CACHE_MAX", "2000") or 2000))
+MOUNT_LIST_CACHE_SECONDS = env_float("MOUNT_LIST_CACHE_SECONDS", 30.0, 0.0)
+MOUNT_LIST_CACHE_MAX = env_int("MOUNT_LIST_CACHE_MAX", 2000, 50)
 # 远程并发上限（v2.27.0）：同时最多几个远程请求在飞。WebDAV / rclone / 网盘代理在高并发下
 # 并不会更快——它们要么排队、要么限流，四个库同时扫一个端点时延迟被放大到十几倍。
 # 本机目录（local / strm / rclone 最终落到本机路径的用法）不吃这个名额。
-MOUNT_REMOTE_CONCURRENCY = max(1, min(16, int(os.getenv("MOUNT_REMOTE_CONCURRENCY", "2") or 2)))
+MOUNT_REMOTE_CONCURRENCY = env_int("MOUNT_REMOTE_CONCURRENCY", 2, 1, 16)
 # 追新（chase_new）的**独立**远程名额（2026-10 rclone 请求风暴修复）：
 # 追新原来绕开本模块直接调 rc_call，无上限地把请求打向 rcd——生产 24 小时 5.2 万条
 # 报错（context canceled 2.6 万 / connection reset 1.9 万）就是这么来的。改成走公共
 # 通道后它会和扫描抢同一批名额，而扫描是主任务、追新只是低频后台任务，所以给它一个
 # **更小的独立名额**：追新慢一点没关系，绝不能把扫描饿着（反过来也一样）。
-CHASE_REMOTE_CONCURRENCY = max(1, min(8, int(os.getenv("CHASE_REMOTE_CONCURRENCY", "1") or 1)))
+CHASE_REMOTE_CONCURRENCY = env_int("CHASE_REMOTE_CONCURRENCY", 1, 1, 8)
 
 _LIST_CACHE: dict = {}
 _LIST_LOCKS: dict = {}

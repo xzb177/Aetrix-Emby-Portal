@@ -59,6 +59,7 @@ from backend.emby_server.auth import (
     get_play_user,
     parse_emby_authorization,
 )
+from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.scanner import (
     ScanInProgress,
@@ -1616,7 +1617,7 @@ def _api_key_for(db: Session, request: Request) -> str:
 
 # 门户（JWT）播放地址的签名有效期：网页端暂停 / 切片请求可能拖很久，默认 6 小时。
 # 签名只绑定「这个用户 + 这一部片」，泄露的影响远小于整把 JWT（含管理员 JWT）。
-PLAY_SIGN_URL_TTL = int(os.getenv("PLAY_SIGN_URL_TTL", "21600") or 21600)
+PLAY_SIGN_URL_TTL = env_int("PLAY_SIGN_URL_TTL", 21600)
 
 
 def _url_auth_qs(db: Session, request: Request, user, item_guid: str) -> str:
@@ -2110,8 +2111,8 @@ def _dedup_primary_ids(cand_rows, db) -> list[int]:
 #: rep 条目一多（去纸条化后 merged 行成千上万）CASE 直接让 PG 跑 100 秒+。
 #: P0 修复改用 VALUES 映射表 JOIN，rep 再大也只是数据行，不再是表达式分支，
 #: 因此不再需要这个上限（2026-10-17 压测实锤）。
-_DEDUP_MAX_SUSPECTS = int(os.getenv("ITEMS_DEDUP_MAX_SUSPECTS", "100000") or 100000)
-_DEDUP_MAX_DROPPED = int(os.getenv("ITEMS_DEDUP_MAX_DROPPED", "50000") or 50000)
+_DEDUP_MAX_SUSPECTS = env_int("ITEMS_DEDUP_MAX_SUSPECTS", 100000)
+_DEDUP_MAX_DROPPED = env_int("ITEMS_DEDUP_MAX_DROPPED", 50000)
 
 
 def _chunks(seq, n=900):
@@ -2992,9 +2993,9 @@ def items_intros(user: models.WebUser = Depends(get_emby_user)):
 _FILTERS_CACHE: dict = {"at": 0.0, "payload": None, "stale_at": 0.0}
 # 合成 Id 反查表的跨请求缓存（按关联表代际失效，见 _synthetic_lookup）
 _SYNTHETIC_CACHE: dict = {"gen": None, "map": None}
-_FILTERS_CACHE_TTL = float(os.getenv("EMBY_FILTERS_CACHE_TTL", "300") or 300)
+_FILTERS_CACHE_TTL = env_float("EMBY_FILTERS_CACHE_TTL", 300.0)
 # 被标记陈旧后，最快多久重建一次（0 = 只要有变化就立刻重建）
-_FILTERS_MIN_REFRESH = float(os.getenv("EMBY_FILTERS_MIN_REFRESH", "5") or 0)
+_FILTERS_MIN_REFRESH = env_float("EMBY_FILTERS_MIN_REFRESH", 5.0)
 
 
 def invalidate_filters_cache() -> None:
@@ -3587,18 +3588,13 @@ def mark_unplayed(item_id: str, user_id: str,
 #: 16 线程 × 单次 ≤3s 超时：50 并发各 1 次 files.get（典型 0.1–0.5s）
 #: 无排队压力；线程只跑网络等待，不碰 DB。
 def _drive_exists_workers() -> int:
-    """DRIVE_EXISTS_CHECK_WORKERS 解析：非法值（非整数）记 warning 后回落 16。
+    """DRIVE_EXISTS_CHECK_WORKERS 解析：走 env_util 统一入口。
 
-    P2-2（2026-10-18）：旧实现在模块 import 期直接 int(...)，env="abc"
-    时整个 api 模块导入失败、服务起不来。解析函数化后非法值只回落默认值。
+    非法值记 warning 后回落 16（旧实现在模块 import 期直接 int(...)，
+    env="abc" 时整个 api 模块导入失败、服务起不来——见 r42 env 解析统一）。
+    下限钳制 1。
     """
-    raw = (os.environ.get("DRIVE_EXISTS_CHECK_WORKERS", "16") or "16").strip()
-    try:
-        n = int(raw)
-    except (TypeError, ValueError):
-        logger.warning("DRIVE_EXISTS_CHECK_WORKERS 非法值 %r，回落默认 16", raw)
-        return 16
-    return max(1, n)
+    return env_int("DRIVE_EXISTS_CHECK_WORKERS", 16, 1)
 
 
 _DRIVE_EXISTS_CHECK_WORKERS = _drive_exists_workers()
@@ -3864,7 +3860,7 @@ async def playback_info(
     # PlaybackInfo 短期缓存（5 分钟）：同一部片子短时间内重复请求直接走 Redis，
     # 省掉 _media_source 的 DB 查询。PlaySessionId 和 api_key 每次重新生成，不进缓存。
     # 缓存 key 包含 user_id（权限不同）+ 设备 profile 指纹 + 码率上限。
-    cache_ttl = int(os.getenv("PLAYBACKINFO_CACHE_TTL", "300") or "300")
+    cache_ttl = env_int("PLAYBACKINFO_CACHE_TTL", 300)
     cache_key = None
     cached_source = None
     if cache_ttl > 0:

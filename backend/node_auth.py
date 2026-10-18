@@ -31,6 +31,7 @@ import threading
 import time
 from typing import Optional
 from urllib.parse import urlsplit
+from backend.emby_server.env_util import env_int
 
 PANEL_KEY_HEADER = "X-Panel-Key"
 PANEL_TS_HEADER = "X-Panel-Ts"
@@ -41,7 +42,7 @@ NODE_SECRET_ENV = "NODE_SHARED_SECRET"
 _DERIVE_LABEL = b"aetrix-node-auth"
 
 # 签名有效窗口（秒）：两端时钟允许的偏差
-SIGN_MAX_SKEW = int(os.getenv("NODE_AUTH_MAX_SKEW", "300") or 300)
+SIGN_MAX_SKEW = env_int("NODE_AUTH_MAX_SKEW", 300)
 
 _nonce_lock = threading.Lock()
 _seen_nonces: dict[str, float] = {}

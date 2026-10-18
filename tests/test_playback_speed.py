@@ -74,7 +74,8 @@ class TestPlaybackInfoCache:
 
     def test_ttl_configurable_via_env(self):
         src = self._src()
-        assert 'os.getenv("PLAYBACKINFO_CACHE_TTL", "300")' in src
+        # r42：统一走 env_util（非法值回落默认，不再裸 os.getenv）
+        assert 'env_int("PLAYBACKINFO_CACHE_TTL", 300)' in src
 
     def test_cache_disabled_when_ttl_zero(self):
         src = self._src()
