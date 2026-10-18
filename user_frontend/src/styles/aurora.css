@@ -607,3 +607,23 @@ h1, h2, .title {
   font-variant-numeric: var(--au-nums);
 }
 
+
+/* ==================== 世界地图重构（2026-10-18）：深青纸厅令牌 ==================== */
+/* 只追加、不改动既有令牌块的值（美化分支 ui/beautify-20261018 正在并行改同一文件）。
+   DESIGN.md v1.0 唯一彩色 #016a71；画布/卡片/发丝边/墨色按 v1.0 定版值。
+   美化分支转正后可与 --paper-* 主令牌合并，此处为过渡期的加法块。 */
+:root {
+  --paper-teal: #016a71;
+  --paper-teal-strong: #015a60;
+  --paper-teal-deep: #01404a;
+  --paper-teal-soft: rgba(1, 106, 113, 0.08);
+  --paper-teal-mid: rgba(1, 106, 113, 0.14);
+  --paper-teal-border: rgba(1, 106, 113, 0.22);
+  --paper-teal-focus: rgba(1, 106, 113, 0.35);
+  --paper-canvas: #faf8f5;
+  --paper-card-soft: #fdfbfa;
+  --paper-hairline: #d1d1cd;
+  --paper-ink-deep: #27251e;
+  --paper-ink-soft: #6d675c;
+  --paper-badge: #d9482b;
+}
