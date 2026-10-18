@@ -20,6 +20,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
@@ -27,11 +30,40 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.api.admin_core import get_current_admin
-from backend.database import get_db
+from backend.database import SessionLocal, get_db
 
 logger = logging.getLogger(__name__)
 
 tasks_router = APIRouter(prefix="/api/admin", tags=["管理后台·任务总览"])
+
+
+# ---------------------------------------------------------------------------
+# 采集快照短 TTL 缓存
+# ---------------------------------------------------------------------------
+# 面板统计类数据容忍秒级陈旧：probe/enrich 的聚合快照在进程内缓存 20 秒，
+# 高频刷新仪表盘时不再每次都扫全表。键与失效保持最简单：固定键 + 到期即丢。
+_SNAP_TTL_SEC = 20
+_snap_cache: dict = {}
+_snap_lock = threading.Lock()
+
+
+def _cached_snapshot(key: str, loader):
+    """取缓存快照；未命中/过期则调 loader() 重算并回填。loader 的异常不缓存。"""
+    now = time.monotonic()
+    with _snap_lock:
+        hit = _snap_cache.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+    value = loader()
+    with _snap_lock:
+        _snap_cache[key] = (time.monotonic() + _SNAP_TTL_SEC, value)
+    return value
+
+
+def _clear_task_snapshots() -> None:
+    """清掉任务总览的快照缓存（测试/运维用）。"""
+    with _snap_lock:
+        _snap_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +110,8 @@ def _task_scan(db: Session) -> dict:
     from backend.emby_server import task_scheduler, auto_scan
     from backend.emby_server import models as em
 
-    sched = task_scheduler.get_unified_status()
+    # light 模式：_task_scan 不读 enrich 字段，跳过这次 DB 聚合。
+    sched = task_scheduler.get_unified_status(light=True)
     scan = sched.get("scan", {})
     waiting = int(scan.get("waiting") or 0)
     running = int(scan.get("running") or 0)
@@ -159,7 +192,11 @@ def _task_scan(db: Session) -> dict:
 def _task_probe(db: Session) -> dict:
     from backend.emby_server import probe_worker
 
-    snap = probe_worker.status_snapshot(db)
+    # 轻量快照 + 20s 缓存：_task_probe 只用 counts/runtime/eta，
+    # 跳过 probe_last_error 全表聚合（无索引，是最慢的一段）。
+    snap = _cached_snapshot(
+        "probe_status_light",
+        lambda: probe_worker.status_snapshot(db, light=True))
     counts = snap.get("counts") or {}
     pending = int(counts.get("pending") or 0)
     failed = int(counts.get("failed") or 0)
@@ -217,7 +254,11 @@ def _task_probe(db: Session) -> dict:
 def _task_enrich(db: Session) -> dict:
     from backend.emby_server import enrich_worker
 
-    prog = enrich_worker.get_progress()
+    # 进度快照 20s 缓存：get_progress 自带聚合查询，高频刷新时不必每次重算。
+    # light 模式跳过 probe 全表聚合（本卡不读 probe 字段，probe 有自己的轻量快照）。
+    prog = _cached_snapshot(
+        "enrich_progress_light",
+        lambda: enrich_worker.get_progress(light=True))
     en = prog.get("enrich") or {}
     pending = int(en.get("pending") or 0)
     enriching = int(en.get("enriching") or 0)
@@ -379,24 +420,40 @@ _BUILDERS = (
 # 注：存函数名而不是函数对象，测试时 monkeypatch 模块属性才能生效。
 
 
+def _build_card(key: str, title: str, builder_name: str) -> dict:
+    """单个采集器：独立 Session 独立降级。线程安全（不共享 Session）。"""
+    # 通过 globals() 按名解析：测试 monkeypatch 模块属性才能生效（历史约定）。
+    builder = globals()[builder_name]
+    s = SessionLocal()
+    try:
+        return builder(s)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("任务总览采集失败 [%s]: %s", key, e, exc_info=True)
+        try:
+            s.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return _failed_card(key, title, str(e))
+    finally:
+        s.close()
+
+
 @tasks_router.get("/tasks/overview")
 def tasks_overview(db: Session = Depends(get_db),
                    admin=Depends(get_current_admin)):
     """任务总览：一次返回所有后台任务的状态、进度、开关。
 
-    每个任务独立采集、独立降级：单个失败不影响其余卡片。
+    五个采集器并行执行（各持独立 Session，不跨线程共享），单个失败不影响其余卡片。
+    db 参数保留作兼容（FastAPI 依赖注入/直接调用），采集实际使用线程内独立 Session。
     """
-    tasks = []
-    for key, title, builder_name in _BUILDERS:
-        try:
-            tasks.append(globals()[builder_name](db))
-        except Exception as e:  # noqa: BLE001
-            logger.warning("任务总览采集失败 [%s]: %s", key, e, exc_info=True)
-            try:
-                db.rollback()
-            except Exception:  # noqa: BLE001
-                pass
-            tasks.append(_failed_card(key, title, str(e)))
+    n = len(_BUILDERS)
+    tasks: list = [None] * n
+    with ThreadPoolExecutor(max_workers=n,
+                            thread_name_prefix="tasks-overview") as ex:
+        futs = {ex.submit(_build_card, key, title, name): i
+                for i, (key, title, name) in enumerate(_BUILDERS)}
+        for fut in as_completed(futs):
+            tasks[futs[fut]] = fut.result()
     return {
         "success": True,
         "fetched_at": datetime.now().isoformat(timespec="seconds"),

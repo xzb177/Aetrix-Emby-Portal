@@ -1205,8 +1205,13 @@ def _dispatcher_loop() -> None:
 
 
 # ---------------------------------------------------------------- 状态 / 运维
-def status_snapshot(db=None) -> dict:
-    """进度：各状态计数 + 重试中 + 运行时（速率/错误/熔断）+ ETA。供管理接口/health。"""
+def status_snapshot(db=None, light: bool = False) -> dict:
+    """进度：各状态计数 + 重试中 + 运行时（速率/错误/熔断）+ ETA。供管理接口/health。
+
+    light=True 时只做轻量计数（跳过 probe_last_error 全表聚合与
+    retrying/stale 明细），供 tasks/overview 这类高频聚合接口用；
+    返回字典键保持不变，轻量模式下未采集的项为 0/[]。
+    """
     own = db is None
     if own:
         from backend.database import SessionLocal
@@ -1217,19 +1222,23 @@ def status_snapshot(db=None) -> dict:
                 .filter(MI.item_type.in_(PROBE_ITEM_TYPES))
                 .group_by(MI.probe_status).all())
         counts = {(s or "unknown"): int(c) for s, c in rows}
-        now = datetime.now()
-        retrying = db.query(func.count(MI.id)).filter(
-            MI.probe_status == "pending", MI.probe_next_retry_at.isnot(None),
-            MI.probe_next_retry_at > now).scalar() or 0
-        stale_cut = now - timedelta(seconds=PROBE_CLAIM_TTL_SEC)
-        stale = db.query(func.count(MI.id)).filter(
-            MI.probe_status == "probing",
-            or_(MI.probe_claimed_at.is_(None), MI.probe_claimed_at < stale_cut)).scalar() or 0
-        errs = (db.query(MI.probe_last_error, func.count(MI.id))
-                .filter(MI.probe_last_error.isnot(None),
-                        MI.probe_status.in_(("pending", "failed")))
-                .group_by(MI.probe_last_error)
-                .order_by(func.count(MI.id).desc()).limit(5).all())
+        retrying = 0
+        stale = 0
+        errs = []
+        if not light:
+            now = datetime.now()
+            retrying = db.query(func.count(MI.id)).filter(
+                MI.probe_status == "pending", MI.probe_next_retry_at.isnot(None),
+                MI.probe_next_retry_at > now).scalar() or 0
+            stale_cut = now - timedelta(seconds=PROBE_CLAIM_TTL_SEC)
+            stale = db.query(func.count(MI.id)).filter(
+                MI.probe_status == "probing",
+                or_(MI.probe_claimed_at.is_(None), MI.probe_claimed_at < stale_cut)).scalar() or 0
+            errs = (db.query(MI.probe_last_error, func.count(MI.id))
+                    .filter(MI.probe_last_error.isnot(None),
+                            MI.probe_status.in_(("pending", "failed")))
+                    .group_by(MI.probe_last_error)
+                    .order_by(func.count(MI.id).desc()).limit(5).all())
         db.rollback()
     finally:
         if own:

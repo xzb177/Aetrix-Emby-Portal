@@ -349,7 +349,7 @@ def note_enrich_yielded() -> None:
     )
 
 
-def get_unified_status() -> dict:
+def get_unified_status(light: bool = False) -> dict:
     """统一后台任务状态（管理后台用）
 
     一次调用看到：
@@ -357,6 +357,8 @@ def get_unified_status() -> dict:
     - enrich: pending / enriching（DB 实时计数）
     - preempt_active: 当前是否在降并发让路
     - circuit_open: 熔断器是否触发
+
+    light=True 跳过 enrich 侧的 DB 聚合（供 tasks/overview 用，它不读 enrich 字段）。
     """
     # 扫描侧
     scan_waiting = 0
@@ -386,29 +388,30 @@ def get_unified_status() -> dict:
     except Exception:
         pass
 
-    # 刮削侧（DB 实时计数，轻量 GROUP BY）
+    # 刮削侧（DB 实时计数，轻量 GROUP BY；light 模式跳过，调用方不读 enrich 字段）
     enrich_pending = 0
     enrich_running = 0
-    try:
-        from backend.database import SessionLocal
-        from backend.emby_server import models as em
-        from sqlalchemy import func as _func
-
-        db = SessionLocal()
+    if not light:
         try:
-            rows = (
-                db.query(em.MediaItem.enrich_status, _func.count(em.MediaItem.id))
-                .filter(em.MediaItem.enrich_status.in_(("pending", "enriching")))
-                .group_by(em.MediaItem.enrich_status)
-                .all()
-            )
-            by_status = {s or "unknown": c for s, c in rows}
-            enrich_pending = int(by_status.get("pending", 0))
-            enrich_running = int(by_status.get("enriching", 0))
-        finally:
-            db.close()
-    except Exception:
-        pass
+            from backend.database import SessionLocal
+            from backend.emby_server import models as em
+            from sqlalchemy import func as _func
+
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(em.MediaItem.enrich_status, _func.count(em.MediaItem.id))
+                    .filter(em.MediaItem.enrich_status.in_(("pending", "enriching")))
+                    .group_by(em.MediaItem.enrich_status)
+                    .all()
+                )
+                by_status = {s or "unknown": c for s, c in rows}
+                enrich_pending = int(by_status.get("pending", 0))
+                enrich_running = int(by_status.get("enriching", 0))
+            finally:
+                db.close()
+        except Exception:
+            pass
 
     preempt_active = bool(
         TASK_SCHEDULER_ENABLED
