@@ -3,7 +3,7 @@
 [简体中文](README.md) | **English**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml)
+[![CI](https://github.com/xzb177/Aetrix-Emby-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Emby-Portal/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg?logo=docker&logoColor=white)](docs/deploy-docker.md)
 
 A self-hosted movie & TV media server that fully implements the Emby protocol (`/emby/*`). Third-party Emby clients connect to it directly — no official Emby Server required.
@@ -47,8 +47,8 @@ EM and EA must be configured with the same `SECRET_KEY`. The default layout is a
 Requires Docker and Docker Compose v2.
 
 ```bash
-git clone https://github.com/xzb177/Aetrix-Portal.git
-cd Aetrix-Portal
+git clone https://github.com/xzb177/Aetrix-Emby-Portal.git
+cd Aetrix-Emby-Portal
 cp env.example .env
 ```
 
