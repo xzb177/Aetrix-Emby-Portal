@@ -188,3 +188,68 @@ def test_hit_score_gate_rejects_mismatch_in_end_to_end_path():
     hit = {"name": "虎子的冒险日记", "original_name": "Tiger Kid",
            "original_language": "en", "origin_country": ["US"]}
     assert tmdb._hit_score("虎子的冒险 (2024)", "虎子的冒险", hit) is None
+
+
+# ==================== Tier 1.2：纯 CJK 查询 + 年份硬相等的别名命中兜底 ====================
+# 生产实证：《波西·杰克逊与奥林匹斯众神》2023，TMDB /search/tv（带
+# first_air_date_year=2023）靠别名索引返回 id=103540 "Percy Jackson and
+# the Olympians"；Tier 2（归一化相等）与 Tier 1（LCS≥6）拒之（中文 vs
+# 英文无字符可对），Tier 1.5 的语种闸门又挡死 en/US。103 条中文名欧美剧
+# 整类刮不上。
+
+
+def _percy_hit(**kw):
+    """生产实证的 hit 形态：英文标题、欧美原产、首播 2023-12-19"""
+    hit = {"id": 103540, "name": "Percy Jackson and the Olympians",
+           "original_name": "Percy Jackson and the Olympians",
+           "original_language": "en", "origin_country": ["US"],
+           "first_air_date": "2023-12-19", "popularity": 123.4}
+    hit.update(kw)
+    return hit
+
+
+def test_hit_score_tier_12_accepts_cjk_alias_with_hard_year_match():
+    """纯中文查询 + 英文标题 hit + 年份硬相等 → Tier 1.2 接受"""
+    sc = tmdb._hit_score("波西·杰克逊与奥林匹斯众神 (2023)",
+                         "波西·杰克逊与奥林匹斯众神",
+                         _percy_hit(), year=2023)
+    assert sc is not None, "纯中文名+年份硬相等必须接受 TMDB 别名命中"
+    assert sc[0] == 1.2, sc
+    assert sc[1] == 123, sc  # rank = popularity 取整
+
+
+def test_hit_score_tier_12_rejects_on_year_mismatch():
+    """年份对不上 → 硬门槛拒绝，不接受"""
+    hit = _percy_hit(first_air_date="2022-01-05")
+    sc = tmdb._hit_score("波西·杰克逊与奥林匹斯众神 (2023)",
+                         "波西·杰克逊与奥林匹斯众神", hit, year=2023)
+    assert sc is None, sc
+
+
+def test_hit_score_tier_12_requires_year():
+    """year=None（没解析出年份）→ 不走别名兜底，照旧拒绝"""
+    sc = tmdb._hit_score("波西·杰克逊与奥林匹斯众神",
+                         "波西·杰克逊与奥林匹斯众神",
+                         _percy_hit())
+    assert sc is None, sc
+
+
+def test_hit_score_tier_12_rejects_query_with_latin():
+    """查询里含拉丁字母（可能丢了拉丁关键词）→ 不走别名兜底"""
+    hit = _percy_hit()
+    sc = tmdb._hit_score("波西 Percy 杰克逊 (2023)", "波西 Percy 杰克逊",
+                         hit, year=2023)
+    assert sc is None, sc
+
+
+def test_cjk_alias_rank_two_char_variant_is_too_short():
+    """归一化变体没有 ≥3 字的纯 CJK → 不接受"""
+    assert tmdb._cjk_alias_rank("虎子", ["虎子"], 2024, _percy_hit()) is None
+
+
+def test_cjk_alias_rank_missing_popularity_falls_back_to_zero():
+    """popularity 缺失/异常 → rank 回 0，但仍接受"""
+    hit = _percy_hit(popularity=None)
+    sc = tmdb._hit_score("波西·杰克逊与奥林匹斯众神 (2023)",
+                         "波西·杰克逊与奥林匹斯众神", hit, year=2023)
+    assert sc == (1.2, 0), sc

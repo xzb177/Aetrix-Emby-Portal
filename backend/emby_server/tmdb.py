@@ -588,6 +588,45 @@ def _cjk_contain_rank(variants, names, hit):
     return None
 
 
+def _cjk_alias_rank(query, variants, year, hit):
+    """Tier 1.2：TMDB 别名命中兜底的 rank；不达标返回 None。
+
+    中文文件夹名的西方剧（如《波西·杰克逊与奥林匹斯众神》）会被 Tier 2
+    （归一化标题相等）与 Tier 1（LCS≥6）拒掉——中文查询 vs 英文标题两边
+    根本没字符可对；Tier 1.5 又被语种/地区闸门挡死（欧美原产物）。但
+    TMDB 的检索本身（带年份过滤的 /search/tv + 它的别名索引）已经把
+    id=103540 "Percy Jackson and the Olympians" 捞出来了——检索链路本身
+    即匹配证据，不需要再做字符级对撞。
+
+    接受条件（全部满足才收，宁缺毋滥）：
+    1. 调用方传入的 year 非空，且 hit 的年份（first_air_date / release_date
+       前 4 位）与 year 硬相等——这是替代原产地闸门的硬门槛，防同年巧合；
+    2. 候选查询串 query（_hit_score 的入参原串）不含任何拉丁字母，防
+       丢关键词的错配（如全名候选里有拉丁艺人名就不走这条）；
+    3. 其归一化变体里至少有一个纯 CJK、长度 ≥3 的变体。
+
+    rank = hit 的 popularity 取整（异常回 0）；返回的 (1.2, rank) 还会照常
+    走 _confirm_year——年份已硬相等，它不会降级。
+    """
+    if not year:
+        return None
+    hy = (hit.get("first_air_date") or hit.get("release_date") or "")[:4]
+    if not hy or hy != str(year):
+        return None
+    if re.search(r"[a-zA-Z]", query or ""):
+        return None
+    has_pure_cjk = any(
+        v and len(v) >= 3 and _CJK_RE.fullmatch(v)
+        for v in variants
+    )
+    if not has_pure_cjk:
+        return None
+    try:
+        return int(hit.get("popularity") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _confirm_year(score, year, hit):
     """年份二次确认：用解析出的年份（调用方传入），而不是从名字里正则挖。
 
@@ -620,6 +659,9 @@ def _hit_score(raw_name, query, hit, fuzzy_ok=True, year=None):
     Tier 1.5（包含式，C-14）：短中文标题（2~5 字）的 LCS 上限就是标题长度，
     在 Tier 1 的 lcs≥6 口径下结构性永远不达标（PR #119 的坑）。仅在 Tier 1
     未命中时启用：CJK 查询 ≥3 字用字符级包含，并以语种/地区闸门防同名错配。
+    Tier 1.2（别名命中兜底）：纯 CJK 查询 + 年份硬相等 → 接受 TMDB 检索本身
+    （带年份过滤 + 别名索引）捞回的 hit（如中文名欧美剧）。不做字符级对撞：
+    年份硬门槛替代原产地闸门防同年巧合。
     另：文件名里有年份而 TMDB 条目年份对不上，直接否决。
     """
     variants = _query_variants(query)
@@ -653,6 +695,12 @@ def _hit_score(raw_name, query, hit, fuzzy_ok=True, year=None):
         t15 = _cjk_contain_rank(variants, names, hit)
         if t15 is not None:
             best = (1.5, t15)
+    if best is None:
+        # Tier 1.2：最后兜底——纯 CJK 查询 + 年份硬相等，接受 TMDB 别名命中。
+        # rank 用 popularity，之后照常走 _confirm_year（年份已硬相等，不降级）。
+        t12 = _cjk_alias_rank(query, variants, year, hit)
+        if t12 is not None:
+            best = (1.2, t12)
     if best is None:
         return None
     best = _confirm_year(best, year, hit)
