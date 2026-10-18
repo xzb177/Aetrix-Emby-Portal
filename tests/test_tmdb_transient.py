@@ -174,6 +174,54 @@ def test_search_none_when_all_candidates_answered_empty(monkeypatch):
     assert client.search(NAME, 2013, "series") is None
 
 
+# ---------- _search_raw：错误载荷不许毒化阴性缓存 ----------
+
+def test_search_raw_error_payload_raises_without_negative_cache(monkeypatch):
+    """HTTP 200 + 无 results 的错误载荷（如被网关/反代包成 200 的 TMDB 限流
+    错误体）→ 抛 TmdbTransientError，L1/L2 都不写。
+
+    2026-10-18 生产事故：7 分钟内 2,115 条假阴性被写进磁盘阴性缓存
+    （TTL 24h），此后这些查询全部吃假空结果、条目被批量误判为
+    metadata_source='none'（连 TMDB 95396《人生切割术》都中招）。
+    旧代码 ``(data or {}).get("results") or []`` 把错误体当成真实阴性存盘。
+    """
+    writes = []
+    monkeypatch.setattr(tmdb_mod.tmdb_cache, "save_search",
+                        lambda *a, **k: writes.append((a, k)) or True)
+    client = _client(monkeypatch, lambda u, p: _resp(payload={
+        "success": False, "status_code": 25,
+        "status_message": "Your request count (...) is over the allowed limit of (40)."}))
+    with pytest.raises(TmdbTransientError):
+        client._search_raw("人生切割术", 2022, "series")
+    assert writes == [], "错误载荷绝不写磁盘阴性缓存"
+    assert not TmdbClient._cache, "L1 也不许留空结果（同批后续请求必须重打）"
+
+
+def test_search_raw_empty_results_still_writes_negative(monkeypatch):
+    """真实成功的空结果（响应体带 results 数组、TMDB 确认无此片）→
+    照常写阴性缓存，旧行为不变"""
+    writes = []
+    monkeypatch.setattr(tmdb_mod.tmdb_cache, "save_search",
+                        lambda *a, **k: writes.append((a, k)) or True)
+    client = _client(monkeypatch, lambda u, p: _resp(
+        payload={"page": 1, "results": [], "total_pages": 0, "total_results": 0}))
+    assert client._search_raw("不存在的片名xyz", 2022, "series") == []
+    assert len(writes) == 1, "真实阴性仍要落盘"
+    endpoint, _norm, _year, results, _lang = writes[0][0]
+    assert endpoint == "tv" and results == []
+
+
+def test_search_raw_none_keeps_legacy_l1_only(monkeypatch):
+    """_get 返回 None（404/401）→ 仍返回 []、不写 L2 磁盘，L1 短缓存旧口径不变"""
+    writes = []
+    monkeypatch.setattr(tmdb_mod.tmdb_cache, "save_search",
+                        lambda *a, **k: writes.append((a, k)) or True)
+    client = _client(monkeypatch, lambda u, p: _resp(status=404))
+    assert client._search_raw("xxx", 2022, "series") == []
+    assert writes == [], "非瞬态 None 不写 L2（旧口径）"
+    assert TmdbClient._cache, "L1 短缓存旧口径保留（300 秒，同批内复用）"
+
+
 def test_search_candidates_graceful_with_warning(monkeypatch, caplog):
     """求片中心契约：瞬态失败也不 500，返回空表但留下 WARNING"""
     def fake_search_raw(query, year, kind, lang=None):
