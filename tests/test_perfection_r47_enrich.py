@@ -88,7 +88,12 @@ def feed_env(monkeypatch):
     calls = []
     monkeypatch.setattr("backend.panel_feed.note_feed",
                         lambda db, text, **kw: calls.append((text, kw)))
-    monkeypatch.setattr(enrich_worker, "_enrich_feed_last_ts", 0.0)
+    # 把节流钉到"窗口已过期"：_note_enrich_batch_feed 用 time.monotonic() 口径
+    # 做 10 分钟节流，0.0 只在 monotonic() >> 600 时才等价于"已过期"。
+    # CI runner 是刚开机的机器，monotonic() < 600 时 0.0 会误判节流命中
+    # （本地 7/7 绿、CI 挂 2 个的根因）。取负值在任何机器上都保证已过期。
+    monkeypatch.setattr(enrich_worker, "_enrich_feed_last_ts",
+                        -(enrich_worker._ENRICH_FEED_MIN_INTERVAL_SEC + 1))
     return calls
 
 
