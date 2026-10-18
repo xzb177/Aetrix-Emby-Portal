@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -46,14 +47,19 @@ PET_STAGES_DEFAULT = [
 
 
 def _read_pet_stages(db: Session) -> list:
-    """读馆灵阶段配置；未配置/非法时回退到出厂默认。"""
+    """读馆灵阶段配置；未配置/非法时回退到出厂默认。
+
+    r45：形状校验——合法 JSON 但非 list[dict]（如裸字符串/对象）以前会穿透，
+    在 /collector 里 `st["hours"]` 抛 TypeError 致全站 500；现在统一走
+    _validate_pet_stages（与管理后台写入口同一套校验），非法即回退默认。
+    """
     try:
         from backend.servers import config_value
         raw = config_value(db, PET_STAGES_KEY, "")
         stages = json.loads(raw) if raw else []
+        return _validate_pet_stages(stages)
     except Exception:  # noqa: BLE001
-        stages = []
-    return stages if stages else [dict(s) for s in PET_STAGES_DEFAULT]
+        return [dict(s) for s in PET_STAGES_DEFAULT]
 
 
 def _validate_pet_stages(stages) -> list:
@@ -397,6 +403,11 @@ def panel_unseal(
     item = db.query(em.MediaItem).filter_by(id=item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="条目不存在")
+    # r45：业务校验——只能拆"今日封存"里的条目。原来只查条目存在，
+    # 枚举 id 可往 panel_unseals 灌任意行（表膨胀）；与 panel_parcels 同口径。
+    parcel_ids = {it.id for it in _today_parcel_items(db)}
+    if item_id not in parcel_ids:
+        raise HTTPException(status_code=400, detail="该条目不在今日封存中")
     try:
         db.add(models.PanelUnseal(user_id=user.id, item_id=item_id))
         db.commit()
@@ -439,6 +450,31 @@ def _evaluate_achievements_async(user_id: int) -> None:
             db2.close()
     except Exception:  # noqa: BLE001
         logger.exception("成就后台评估失败")
+
+
+# r45：成就评估线程防抖——原来每个 GET /collector 都起一个无界线程，
+# 每个线程 checkout 1 个 DB 连接（池共 20，主链路共用）；多用户并发/高频刷新时
+# 线程与连接占用随"请求速率 × 评估耗时"线性增长，DB 稍慢就会拖垮主链路。
+# 评估幂等，高频重评无意义：同一用户 60 秒内只起一个评估线程。
+_EVAL_DEBOUNCE_SEC = 60
+_eval_last: dict = {}
+_eval_lock = threading.Lock()
+
+
+def _spawn_evaluate_debounced(user_id: int) -> bool:
+    """按用户防抖起成就评估线程；60 秒内重复请求返回 False（跳过）。"""
+    now = time.monotonic()
+    with _eval_lock:
+        if now - _eval_last.get(user_id, 0.0) < _EVAL_DEBOUNCE_SEC:
+            return False
+        _eval_last[user_id] = now
+        if len(_eval_last) > 10000:  # 偶发清理，防止 key 无限增长
+            cutoff = now - _EVAL_DEBOUNCE_SEC
+            for uid in [u for u, t in _eval_last.items() if t < cutoff]:
+                del _eval_last[uid]
+    threading.Thread(
+        target=_evaluate_achievements_async, args=(user_id,), daemon=True).start()
+    return True
 
 
 def _derive_activity(db: Session, health: dict | None = None) -> list:
@@ -588,11 +624,20 @@ def panel_feed(
 
 
 def _section_or_none(fn, db, user):
-    """调单个区块函数；异常则隔离为 None，不拖垮整个 /home。"""
+    """调单个区块函数；异常则隔离为 None，不拖垮整个 /home。
+
+    r45：异常后先 rollback——失败的查询会让 session 进入待回滚状态，
+    不清掉的话后续区块共用同一 db 会连带抛 PendingRollbackError，
+    本应只隔离一个区块，结果 5 个全变 None。
+    """
     try:
         return fn(db, user)["data"]
     except Exception:  # noqa: BLE001
         logger.warning("panel_home 区块 %s 失败，已隔离", fn.__name__, exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
         return None
 
 
@@ -622,9 +667,9 @@ def panel_collector(
     from backend.panel_achievements import user_tastes
 
     # r20: 成就评估移出请求热路径——后台线程异步跑（幂等），GET 本身不再写库。
+    # r45：加 60 秒防抖（_spawn_evaluate_debounced），防高频刷新无界起线程抢 DB 连接。
     # 本轮 new_unlocks 恒为空；解锁状态通过 achievements[].unlocked 下次可见。
-    threading.Thread(
-        target=_evaluate_achievements_async, args=(user.id,), daemon=True).start()
+    _spawn_evaluate_debounced(user.id)
     new_unlocks: list = []
 
     tastes = {}
@@ -650,14 +695,9 @@ def panel_collector(
     total_secs = db.query(func.coalesce(func.sum(models.EmbySession.play_duration), 0)).filter(
         models.EmbySession.user_id == user.id).scalar() or 0
     total_hours = total_secs / 3600
-    try:
-        from backend.servers import config_value
-        stages_raw = config_value(db, "panel_pet_stages", "")
-        stages = json.loads(stages_raw) if stages_raw else []
-    except Exception:  # noqa: BLE001
-        stages = []
-    if not stages:
-        stages = [dict(s) for s in PET_STAGES_DEFAULT]
+    # r45：直接复用 _read_pet_stages（横切只许一套）——原来这里另起一套内联解析，
+    # 无形状校验，畸形 JSON 值会让 /collector 全站 500。
+    stages = _read_pet_stages(db)
     cur_idx = 0
     for i, st in enumerate(stages):
         if total_hours >= st["hours"]:

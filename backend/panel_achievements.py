@@ -24,6 +24,7 @@ import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models
@@ -75,7 +76,14 @@ def seed_achievement_defs(db: Session) -> int:
             ))
             added += 1
     if added:
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # r45：多 worker 并发启动时"查无则插"会撞主键——终态正确（对方已写入），
+            # 这里吞掉冲突只为不刷误导性 warning；下次启动缺的键会继续补。
+            db.rollback()
+            logger.info("成就定义并发播种冲突（他进程已写入），本次跳过")
+            added = 0
     return added
 
 
@@ -125,10 +133,13 @@ def user_tastes(db: Session, user_id: int) -> dict:
     """
     from backend.emby_server import models as em  # noqa: F401  (确保表已注册)
     # 用 emby_sessions 的 item_name 去重近似（session 不存 item_id）
+    # r45：加 5000 上界——原先无日期上限全量 .all() 进内存，重度用户每次打开
+    # 信件/收藏家页（请求线程同步调用）都会触发；5000 远超 500 名去重截断口径，
+    # 语义几乎不受影响，只掐掉无界内存增长。
     sessions = db.query(models.EmbySession).filter(
         models.EmbySession.user_id == user_id,
         models.EmbySession.play_duration > 60,  # 至少看 1 分钟才算
-    ).order_by(models.EmbySession.start_time.desc()).all()
+    ).order_by(models.EmbySession.start_time.desc()).limit(5000).all()
     # r20 确定性截断：按最近观看倒序、去重保序取前 500（原 list(set)[:500] 顺序不定，
     # 重度用户每次请求截到不同子集，口味/成就判定抖动）
     seen_names = list(dict.fromkeys(s.item_name for s in sessions if s.item_name))
@@ -280,7 +291,9 @@ def evaluate(user_id: int, db: Session) -> list:
         if yearly:
             _grant("yearly_explorer")
     except Exception:
-        pass  # 订阅表不可用时跳过，不影响其他成就
+        # r45：订阅表不可用时跳过本规则，但必须留日志——原来裸 pass 是静默失败，
+        # 订阅表迁移缺失会导致该成就永久不发且无人知道。
+        logger.exception("年卡成就查询失败，已跳过 yearly_explorer 规则")
 
     # 回头：同一条目 30 天后再次播放
     name_times: dict = {}
@@ -295,12 +308,19 @@ def evaluate(user_id: int, db: Session) -> list:
                 break
 
     # 写库（幂等：UNIQUE 约束兜底）
+    # r45：异常分类——只有 IntegrityError（并发重复解锁）才忽略；其他异常
+    # （断连/锁超时/磁盘满）必须打日志并抛出去，不能把"没写进去"当解锁成功返回。
+    # 未写成的 key 下次评估会重算重写（幂等），不会丢。
     for key in new_unlocks:
         try:
             db.add(models.PanelAchievementUnlock(user_id=user_id, ach_key=key))
             db.commit()
-        except Exception:
+        except IntegrityError:
             db.rollback()  # 并发重复解锁，忽略
+        except Exception:
+            db.rollback()
+            logger.exception("成就解锁写库失败 user=%s key=%s", user_id, key)
+            raise
     return new_unlocks
 
 
