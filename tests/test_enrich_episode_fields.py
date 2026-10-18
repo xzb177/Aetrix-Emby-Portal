@@ -33,7 +33,7 @@ from types import SimpleNamespace
 from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
 from backend.emby_server import enrich_worker
-from backend.emby_server.tmdb import TmdbClient
+from backend.emby_server.tmdb import TmdbClient, TmdbTransientError
 
 init_db()
 
@@ -366,3 +366,42 @@ def test_fetch_episode_tmdb_missing_numbers_still_skips():
     result: dict = {}
     enrich_worker._fetch_episode_tmdb(snap, {"tmdb_id": "12345"}, result)
     assert "episode_tmdb" not in result
+
+
+# ---------- 缺失告警 + 纯继承瞬态上抛（2026-10-18 #1070 补件） ----------
+
+def test_fetch_episode_tmdb_warns_when_season_missing(monkeypatch, caplog):
+    """防再犯：父级有 tmdb_id 但季/集号缺失时，不许静默 return，
+    必须记 warning（带 item id）"""
+    def _boom(self, *a, **k):
+        raise AssertionError("季/集号缺失时不应打 TMDB 请求")
+    monkeypatch.setattr(TmdbClient, "find_episode", _boom)
+
+    snap = enrich_worker._EnrichItemSnapshot(
+        id=7, library_id=44, item_type="episode", name="第 1 集",
+        file_path="/x.mkv")
+    result: dict = {}
+    with caplog.at_level("WARNING", logger=enrich_worker.logger.name):
+        enrich_worker._fetch_episode_tmdb(snap, {"tmdb_id": "999"}, result)
+    assert "episode_tmdb" not in result
+    assert any("item=7" in r.message for r in caplog.records), \
+        f"未找到带 item id 的 warning 日志: {[r.message for r in caplog.records]}"
+
+def test_pure_inherit_branch_propagates_transient(monkeypatch):
+    """口径对齐：纯继承分支调 _fetch_episode_tmdb 遇到瞬态失败必须上抛
+    （与非继承分支一致，整条进重试队列，不许静默写 done）"""
+    monkeypatch.setattr(enrich_worker, "_shared_ctx",
+                        lambda item, holder=None: object())
+    monkeypatch.setattr(enrich_worker, "_episode_has_own_nfo",
+                        lambda ctx, scan_file: False)
+
+    def _transient(self, *a, **k):
+        raise TmdbTransientError("429 限流")
+    monkeypatch.setattr(TmdbClient, "find_episode", _transient)
+
+    snap = enrich_worker._EnrichItemSnapshot(
+        id=9, library_id=44, item_type="episode", name="第 1 集",
+        season_number=1, episode_number=1, file_path="/x/s01e01.mkv")
+    with pytest.raises(TmdbTransientError):
+        enrich_worker._enrich_fetch_pre(
+            snap, holder=None, inherit_parent={"tmdb_id": "999"})

@@ -1246,6 +1246,10 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
     season_no = getattr(item, "season_number", None)
     ep_no = getattr(item, "episode_number", None)
     if season_no is None or ep_no is None:
+        # 防再犯（2026-10-18）：快照曾缺季/集号字段，导致本函数自 10-10 起
+        # 静默空转。父级有 tmdb_id 却拿不到季/集号是数据/快照 bug，必须可观测。
+        logger.warning("单集 TMDB 跳过：季/集号缺失 item=%s series_tmdb=%s",
+                       getattr(item, "id", None), series_tmdb_id)
         return
     try:
         ep_data = tmdb_client.find_episode(str(series_tmdb_id), season_no, ep_no)
@@ -1514,8 +1518,14 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
             result["pure_inherit"] = True
             progress.note_stage("enrich_pure_inherit")
             # 单集 TMDB 补全（v2.50.0）：父级有 tmdb_id 时拉取本集标题/简介/剧照
-            # 季接口带缓存，同一季多集只打 1 次 TMDB；失败静默，不影响继承主流程
-            _fetch_episode_tmdb(item, inherit_parent, result)
+            # 季接口带缓存，同一季多集只打 1 次 TMDB；瞬态失败上抛进重试队列
+            # （与非继承分支同口径），非瞬态失败静默，不影响继承主流程
+            from backend.emby_server.tmdb import TmdbTransientError as _TTE2
+            try:
+                _fetch_episode_tmdb(item, inherit_parent, result)
+            except _TTE2:
+                # 与非继承分支一致：瞬态失败（网络/限流）上抛，整条进重试队列
+                raise
             return result, None
 
         # 2. NFO（B 方案：NFO 管文字；series/season/episode/movie 全支持）
