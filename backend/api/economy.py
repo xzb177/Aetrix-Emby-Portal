@@ -694,6 +694,11 @@ def _grant_subscription(db: Session, user: models.WebUser, plan: models.Subscrip
         active.end_date = active.end_date + timedelta(days=days)
         active.updated_at = now
         subscription = active
+        # 续费顺延复用同一行：清掉上一周期的提醒去重记录，否则新周期
+        # 的 7d/3d/1d/expired 档位会被旧记录挡住、用户再也收不到到期提醒。
+        db.query(models.SubscriptionReminder).filter(
+            models.SubscriptionReminder.subscription_id == active.id
+        ).delete(synchronize_session=False)
     else:
         subscription = models.UserSubscription(
             user_id=user.id,
@@ -1018,7 +1023,7 @@ def currency_info(db: Session = Depends(get_db)):
 
 
 class CouponQuoteRequest(BaseModel):
-    code: str = Field(..., description="用户填写的优惠码")
+    code: str = Field(default="", description="用户填写的优惠码（可空；空时按「没填码自动用最优兑换码折扣权益」口径试算，与下单一致）")
     kind: str = Field(..., description="recharge / subscription")
     item_id: int = Field(..., description="充值套餐ID 或 套餐ID")
 
@@ -1032,18 +1037,40 @@ def coupon_quote(
     """优惠码试算（下单前预览）
 
     用 POST 而不是 GET：优惠码不该进访问日志/浏览器历史（与卡码预检同一考虑）。
-    下单时走的是同一套口径（先会员折扣→再优惠券），不会出现「预览 8 折、实付全价」。
+    下单时走的是同一套口径（先会员折扣→再优惠券/权益），不会出现「预览 8 折、实付全价」。
+    code 可空：空时按「没填优惠券自动用最优兑换码折扣权益」口径试算（与下单一致），
+    否则有未用权益的用户看到的预览价会高于实付价。
     返回里带 member_discount_pct/amount，前端可算出最终实付。
     """
     allowed, _ = check_rate_limit(f"coupon-quote:{current_user.id}", 30, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
-    result = coupons.quote(db, user=current_user, code=req.code,
-                           kind=req.kind, item_id=req.item_id)
+    code = (req.code or "").strip()
+    if code:
+        result = coupons.quote(db, user=current_user, code=code,
+                               kind=req.kind, item_id=req.item_id)
+    else:
+        # 空码试算：充值没有「自动权益」一说，仍要求填码；订阅走自动权益口径。
+        if req.kind != "subscription":
+            raise HTTPException(status_code=400, detail="请填写优惠码")
+        list_price, _, item_name = coupons.resolve_item(db, req.kind, req.item_id)
+        result = {
+            "valid": True,
+            "code": "",
+            "coupon_id": 0,
+            "item_name": item_name,
+            "list_price": float(list_price),
+            "discount_amount": 0.0,
+            "paid_amount": float(list_price),
+            "discount_type": "percent",
+            "value": 0,
+        }
     # 会员等级折扣（仅订阅+仅付费服），与 create_payment_order 同一口径：
-    # 先会员折扣得中间价，再对中间价算优惠券。预览与下单必须一致。
+    # 先会员折扣得中间价，再对中间价算优惠券/权益。预览与下单必须一致。
+    # 注意：自动权益在下单时不分付费/公益服（没填码就用），这里同样。
     member_discount_pct = 0
     member_discount_amount = Decimal("0.00")
+    exchange_discount_pct = 0
     if req.kind == "subscription":
         from backend import member_level as _ml
         plan = db.query(models.SubscriptionPlan).options(
@@ -1052,23 +1079,33 @@ def coupon_quote(
         _realm = plan.realm if plan else None
         _is_paid = not (_realm is not None
                         and getattr(_realm, "access_mode", "paid") == "free")
+        _list = Decimal(str(result.get("list_price", 0)))
         if _is_paid:
             member_discount_pct = _ml.get_user_discount_pct(db, current_user)
             if member_discount_pct > 0:
-                _list = Decimal(str(result.get("list_price", 0)))
                 member_discount_amount = (
                     _list * Decimal(member_discount_pct) / Decimal(100)
                 ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                # 对中间价重算优惠券（与下单逻辑一致）
-                coupon_obj = db.query(models.CouponCode).filter(
-                    models.CouponCode.id == result["coupon_id"]).first()
-                if coupon_obj is not None:
-                    _base = _list - member_discount_amount
-                    c_discount, c_paid = coupons.compute(_base, coupon_obj)
-                    result["discount_amount"] = float(member_discount_amount + c_discount)
-                    result["paid_amount"] = float(c_paid)
+        _base = _list - member_discount_amount
+        if code:
+            # 对中间价重算优惠券（与下单逻辑一致）
+            coupon_obj = db.query(models.CouponCode).filter(
+                models.CouponCode.id == result["coupon_id"]).first()
+            if coupon_obj is not None:
+                c_discount, c_paid = coupons.compute(_base, coupon_obj)
+                result["discount_amount"] = float(member_discount_amount + c_discount)
+                result["paid_amount"] = float(c_paid)
+        else:
+            # 没填码：自动用最优兑换码折扣权益（与下单逻辑一致，同样先会员折扣再算权益）
+            credit = _best_discount_credit(db, current_user.id)
+            if credit is not None:
+                exchange_discount_pct = credit.discount_pct
+                c_discount, c_paid = _exchange_discount_amount(_base, credit.discount_pct)
+                result["discount_amount"] = float(member_discount_amount + c_discount)
+                result["paid_amount"] = float(c_paid)
     result["member_discount_pct"] = member_discount_pct
     result["member_discount_amount"] = float(member_discount_amount)
+    result["exchange_discount_pct"] = exchange_discount_pct
     return result
 
 
@@ -1268,10 +1305,13 @@ def create_payment_order(
         paid_amount = c_paid
         coupon_code = preview["code"]
     elif req.kind == "subscription":
-        # 兑换码折扣权益：没填优惠券时自动用最优的一张（pct 最小=折扣最大），不与优惠券叠加
+        # 兑换码折扣权益：没填优惠券时自动用最优的一张（pct 最小=折扣最大），不与优惠券叠加；
+        # 但与会员等级折扣叠加（与上面的优惠券分支同口径：先会员折扣得中间价，再对中间价算权益）。
         credit = _best_discount_credit(db, current_user.id)
         if credit is not None:
-            discount_amount, paid_amount = _exchange_discount_amount(list_price, credit.discount_pct)
+            c_discount, c_paid = _exchange_discount_amount(coupon_base, credit.discount_pct)
+            discount_amount = member_discount_amount + c_discount
+            paid_amount = c_paid
 
     # 订单上快照「原价 / 优惠 / 实付」，并让订单金额一律等于**实付**：
     # 对账、邀请返利比例、退款都以用户真付的钱为准，不能按原价算。

@@ -158,21 +158,20 @@ async def grant_subscription(
             raise HTTPException(status_code=404, detail="套餐不存在")
         plan_name = plan.name    # 提交后回读属性=一次隐式回查，先取成纯值
 
-        end_date = datetime.now() + timedelta(days=request.duration_days)
         # 会员开在哪个服：显式指定 > 套餐所属的服 > 面板当前服。
         # 决定了这份会员能在哪台 EA 上播放（见 backend/subscriptions.py）。
         realm_id = request.realm_id or plan.realm_id or realms.active_realm_id(db)
-        subscription = models.UserSubscription(
-            user_id=user_id,
-            plan_id=request.plan_id,
+        # 走 _grant_subscription：该用户该服已有生效订阅则顺延（不新建第二条 active 行），
+        # 否则直接新建会造成双 active 行——提醒任务按行发通知会双发、统计虚高。
+        from backend.api.economy import _grant_subscription
+        subscription = _grant_subscription(
+            db, user, plan, request.duration_days,
+            "admin_grant", f"admin_grant:{admin_id}:{user_id}",
             realm_id=realm_id,
-            start_date=datetime.now(),
-            end_date=end_date,
-            status="active",
         )
-        db.add(subscription)
         db.commit()
         db.refresh(subscription)
+        end_date = subscription.end_date
 
         _audit(db, admin_id, "grant_subscription", "subscription",
                subscription.id, {"user_id": user_id, "plan_id": request.plan_id,
