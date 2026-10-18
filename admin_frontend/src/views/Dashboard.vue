@@ -30,8 +30,8 @@ import {
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchLibraries, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
-  fetchServersSummary, fetchStatsTrend, fetchBackendServices,
-  type BackendServiceStatus } from '@/api/admin'
+  fetchServersSummary, fetchStatsTrend, fetchBackendServices, fetchDashboardAggregate,
+  type BackendServiceStatus, type DashboardAggregate } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
   EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary, TrendStats,
@@ -80,12 +80,45 @@ async function loadTrend() {
 }
 
 /**
- * 首屏：所有请求并行（趋势也不再排在其余请求之后串行等待）。
- * 以前核心三项任何一个失败，整个 Promise.all 直接 reject——页面落成一排 0、没有任何提示，
- * 还多一条未处理的 rejection。现在逐项兜底，失败的那几项在顶部点名并给「重试」。
+ * 聚合优先：一次拿回首屏 8 路数据（省 7 次跨洋往返）。
+ * 聚合接口本身失败（网络/5xx/鉴权等）时返回 false，调用方回退逐个调用。
+ * parts 里为 null 的项按原 soft() 语义点名并给重试。
+ */
+async function loadAggregate(): Promise<boolean> {
+  let agg: DashboardAggregate
+  try {
+    agg = await fetchDashboardAggregate(days.value)
+  } catch {
+    return false
+  }
+  const parts = agg?.parts
+  if (!parts) return false
+  const failed: string[] = []
+  const take = <T,>(label: string, v: T | null): T | null => {
+    if (v == null) failed.push(label)
+    return v
+  }
+  overview.value = take('概览', parts.overview)
+  playback.value = take('播放统计', parts.playback)
+  economy.value = take('经营数据', parts.economy)
+  trend.value = parts.trend
+  libraries.value = parts.libraries?.libraries ?? []
+  servers.value = parts.servers ?? null
+  realms.value = parts.realms ?? null
+  backendServices.value = parts.backend_services?.services ?? []
+  failedParts.value = failed
+  loading.value = false
+  return true
+}
+
+/**
+ * 首屏：优先走聚合接口，失败则回退原来的 8 路并行逐个调用。
+ * （聚合只是把"逐个调用"搬到服务端一次完成，任一形态下各区块的
+ *  失败兜底语义保持一致：失败的那几项在顶部点名并给「重试」。）
  */
 async function loadAll() {
   loading.value = true
+  if (await loadAggregate()) return  // 内部已收尾 loading/failedParts
   const failed: string[] = []
   const soft = <T,>(label: string, p: Promise<T>) => p.catch(() => { failed.push(label); return null })
   try {
