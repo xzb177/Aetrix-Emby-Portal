@@ -110,11 +110,15 @@ def test_direct_is_not_a_selectable_line():
 def test_video_stream_source_has_no_google_direct_call():
     """结构性护栏：video_stream 里的 Drive 直链 302 必须经审批开关。
 
-    302 的合法出现方式（2026-10-16 能力化 + 2026-10-17 最简播放拍板）：
+    302 的合法出现方式（2026-10-16 能力化 + 2026-10-17 最简播放拍板 +
+    2026-10-18 P0 快路径）：
     ①由能力判定 ``maybe_direct_url`` 给出对象存储签名直链后发
     ``RedirectResponse``；②由用户批准的 ``drive_direct_play_enabled``
-    开关（默认开）判定后直接 302 到谷歌 usercontent 直链。
-    全局只许这两处，别的直链入口一律不许出现。
+    开关（默认开）判定后直接 302 到谷歌 usercontent 直链——2026-10-18 起
+    分两处写法（快路径：存在性校验通过后直接 302，跳过步行；回落分支：
+    快路径未命中时保留原语义），但判定门（开关）与 URL 来源
+    （``drive_usercontent_download_url``）是同一套，不许新增别的直链入口。
+    全局只许这三处，别的直链入口一律不许出现。
     用 AST 取**真实代码**（注释里可以继续解释）。
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(api.video_stream)))
@@ -123,7 +127,8 @@ def test_video_stream_source_has_no_google_direct_call():
     assert "target.direct" not in code
     if "status_code=302" in code:
         assert "maybe_direct_url" in code, "302 必须经播放策略能力判定"
-        assert code.count("RedirectResponse(") == 2, "播放路径只许两处 302"
+        assert code.count("RedirectResponse(") == 3, (
+            "播放路径只许三处 302（drive 快路径 + drive 回落 + 对象存储）")
         assert "RedirectResponse(direct_url" in code, (
             "302 的 URL 只能来自 maybe_direct_url 的返回值")
         assert "drive_direct_play_enabled" in code, (

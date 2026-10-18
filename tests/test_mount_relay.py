@@ -176,12 +176,23 @@ def test_non_mount_url_item_still_410(monkeypatch):
 
 
 def test_drive_item_with_fid_still_302_first(monkeypatch):
-    """Drive 条目（有 drive_file_id）→ 302 优先，不走挂载中继。"""
+    """Drive 条目（有 drive_file_id）→ 302 优先，不走挂载中继。
+
+    2026-10-18 P0：drive 直链 302 走快路径（存在性校验后直接 302，
+    跳过 _play_target 的 Drive 路径步行）。此处把存在性校验桩成通过，
+    断言的仍是"302 优先、不进中继"这一条语义。
+    """
     item = SimpleNamespace(container="mkv", drive_file_id=FID,
                            file_path="mount://3/Movies/a.mkv")
     target = PlayTarget("url", f"https://drive.google.com/uc?id={FID}", {})
     _stub_common(monkeypatch, item, target)
     monkeypatch.setattr(_strategy, "drive_direct_play_enabled", lambda db: True)
+
+    async def _exists_ok(db, it, fid):
+        assert fid == FID
+        return True
+
+    monkeypatch.setattr(api, "_ensure_drive_file_playable", _exists_ok)
 
     resp = asyncio.run(api.video_stream("item", _request(), object(), object()))
     assert resp.status_code == 302

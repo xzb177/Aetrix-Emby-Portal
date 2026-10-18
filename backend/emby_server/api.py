@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import httpx
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import secrets
 import shutil
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -3432,6 +3434,139 @@ def mark_unplayed(item_id: str, user_id: str,
 
 # ==================== 播放 ====================
 
+#: drive 直链 302 前的存在性校验（P0，2026-10-18）：一次 files.get 替代
+#: ``_play_target`` 的逐级路径步行。独立执行器，不占用 run_db 的默认线程池。
+#:
+#: 背景：步行结果在 302 分支根本没用（URL 由 drive_file_id 纯拼串），
+#: 但它在 run_db 线程（asyncio.to_thread，默认执行器仅 8 线程）里做
+#: 1.3–4.7s 的 Drive API 调用并全程持有 DB 会话——50 并发时打满连接池
+#: （25+25），新会话 30s 超时，全线排队约 90s（见
+#: ``~/workspace/reports/auth-playback-stall-investigation-20261018.md``）。
+#:
+#: 独立执行器的理由：这次校验是纯网络 I/O，
+#: ① 不能进 run_db 的 8 线程池（50 并发排队正是卡死的放大器）；
+#: ② 不能在事件循环里直接调同步 httpx（会卡住单 worker 的事件循环）；
+#: ③ 不需要 DB 会话（只用 drive_id + file_id 调 Drive API）。
+#: 并发上限写成常量可调：环境变量 DRIVE_EXISTS_CHECK_WORKERS（默认 16）。
+#: 16 线程 × 单次 ≤3s 超时：50 并发各 1 次 files.get（典型 0.1–0.5s）
+#: 无排队压力；线程只跑网络等待，不碰 DB。
+_DRIVE_EXISTS_CHECK_WORKERS = max(
+    1, int(os.environ.get("DRIVE_EXISTS_CHECK_WORKERS", "16") or "16"))
+_DRIVE_EXISTS_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_DRIVE_EXISTS_CHECK_WORKERS,
+    thread_name_prefix="drive-exists")
+#: 单次 files.get 超时（秒）：只做存在性判定，不许引入新的长等待。
+_DRIVE_EXISTS_TIMEOUT = 3.0
+_DRIVE_FILE_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
+
+
+class _DriveFileGone(Exception):
+    """files.get 404：文件在网盘上已不存在 → 上层转 HTTP 404"""
+
+
+class _DriveFileUnavailable(Exception):
+    """files.get 非 404 失败（超时/5xx/凭据问题）→ 上层转 HTTP 503"""
+
+
+def _drive_mount_id_for_item(db: Session, item: em.MediaItem) -> Optional[str]:
+    """drive 直链快路径用的 drive_id；其他情况返回 None（调用方回落原路径）。
+
+    只接受「file_path 是 mount:// 前缀、挂载存在且启用、类型为 drive」
+    的条目，返回该挂载的 drive_id（共享盘 id 或 ``myDrive:<remote>``）。
+    同步、只做一次主键查询（毫秒级），调用方经 run_db 走线程池；
+    后续的网络校验在独立执行器里跑，不再碰 db。
+    """
+    parsed = mount_lib.parse_mount_path(getattr(item, "file_path", "") or "")
+    if not parsed:
+        return None
+    mount_id, rel = parsed
+    if mount_lib._is_strm_name(rel):
+        # .strm 走内容解析（resolve_final 读文件内容），语义与步行不同，
+        # 不进快路径，回落原 _play_target。
+        return None
+    mount = db.query(em.StorageMount).filter(
+        em.StorageMount.id == mount_id).first()
+    if mount is None or not getattr(mount, "is_enabled", False):
+        return None
+    if (getattr(mount, "mount_type", "") or "") != mount_lib.MOUNT_DRIVE:
+        return None
+    # 复用 DriveMount 自身的 drive_id 解析（含 config.drive_id 覆盖与
+    # myDrive 个人盘），不重复造逻辑；__init__ 只做字符串解析，无 I/O。
+    from backend.emby_server.mount_drive import DriveMount
+    provider = mount_lib.build_provider(mount, db, getattr(item, "library", None))
+    if not isinstance(provider, DriveMount):
+        return None
+    return provider.drive_id or None
+
+
+def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
+    """同步：一次 files.get 判定存在性。只在 _DRIVE_EXISTS_EXECUTOR 里调用。
+
+    404 抛 _DriveFileGone；其他失败抛 _DriveFileUnavailable。永不碰 db。
+    凭据走 ``drive_changes.get_token_for_drive``（全项目唯一入口，含
+    个人盘 OAuth 与共享盘 SA 轮换）；401 时按 token 值失效内外两层缓存。
+    """
+    from backend.emby_server import drive_auth, drive_changes
+    try:
+        token = drive_changes.get_token_for_drive(drive_id)
+    except drive_changes.DriveAuthError as exc:
+        raise _DriveFileUnavailable(f"Drive 凭据失效：{exc}") from exc
+    if not token:
+        raise _DriveFileUnavailable("无可用 Drive 凭据")
+    url = _DRIVE_FILE_GET_URL.format(file_id=file_id)
+    try:
+        resp = httpx.get(
+            url,
+            params={"supportsAllDrives": "true", "fields": "id"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_DRIVE_EXISTS_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001 — 超时/网络异常一律转 503
+        raise _DriveFileUnavailable(f"files.get 调用失败：{exc}") from exc
+    if resp.status_code == 404:
+        raise _DriveFileGone(f"Drive 文件已不存在：{file_id}")
+    if resp.status_code == 401:
+        # 401 毒化修复：按 token 值失效内外两层缓存，下次请求重新换取
+        drive_auth.note_drive_unauthorized(url, f"Bearer {token}")
+        raise _DriveFileUnavailable("Drive 凭据失效（401）")
+    if resp.status_code != 200:
+        raise _DriveFileUnavailable(f"files.get 返回 {resp.status_code}")
+
+
+async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
+                                      file_id: str) -> None:
+    """drive 直链 302 前的便宜存在性校验（P0，2026-10-18）。
+
+    先经 run_db 做一次毫秒级挂载解析（拿 drive_id；解析失败返回 None
+    时调用方回落原路径，本函数不处理）；再把一次 files.get 放进独立
+    执行器，不占 run_db 线程、不持有 DB 会话做网络等待。
+
+    语义映射：
+    - 404 → HTTP 404（文件已删/不可见；与旧步行 MountError→404 对齐）
+    - 401 → 失效坏 token 后 HTTP 503（与旧 MountAuthError→503 对齐）
+    - 403/429/5xx/超时/网络异常/无凭据 → HTTP 503。
+      注意：旧步行把「列目录失败」（超时/5xx）也归成 MountError→404；
+      新语义改成 503 是有意修正——瞬时故障不应读成「文件没了」
+      （客户端拿到 404 可能丢弃条目，503 才是可重试信号）。
+    """
+    from backend.emby_server.async_db import run_db
+    drive_id = await run_db(_drive_mount_id_for_item, db, item)
+    if not drive_id:
+        # 挂载解析失败（已删/停用/非 drive 挂载/.strm）：回落原路径，
+        # 由 _play_target 按旧语义处理（本函数不抛 404，避免误伤）。
+        # 调用方约定：返回 True 才走快路径 302；返回 None 则回落原路径。
+        return None
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            _DRIVE_EXISTS_EXECUTOR, _drive_file_exists_sync, drive_id, file_id)
+    except _DriveFileGone as exc:
+        raise HTTPException(status_code=404, detail=f"媒体来源不可用：{exc}")
+    except _DriveFileUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"媒体来源暂不可用：{exc}")
+    return True
+
+
 def _play_target(db: Session, item: em.MediaItem):
     """把条目的 ``file_path`` 解析成播放目标（本机文件 或 挂载直链）
 
@@ -3657,17 +3792,36 @@ async def video_stream(
     await run_db(play_sign.check_referer, request, db)
     _pt.mark("auth_referer")
     media_type = f"video/{item.container}" if item.container else "video/mp4"
+    # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有 drive_file_id）
+    # 且 drive_direct_play_enabled 开关开启时，直接 302 到谷歌 usercontent
+    # 直链，播放器自拉；服务器退出字节通道。
+    # P0（2026-10-18）：存在性校验通过则直接 302，跳过 _play_target 的
+    # Drive 路径步行——步行结果在 302 分支根本没用（URL 由 drive_file_id
+    # 纯拼串），却在 run_db 线程里做 1.3–4.7s 的 Drive API 调用并全程持有
+    # DB 会话，50 并发时打满连接池（25+25）致全线排队约 90s（见本文件
+    # _DRIVE_EXISTS_EXECUTOR 注释与 auth-playback 专项调查报告）。
+    from backend.emby_server import playback_strategy as _strategy
+    _fid = (getattr(item, "drive_file_id", "") or "").strip()
+    _drive_switch_on = bool(_fid) and await run_db(
+        _strategy.drive_direct_play_enabled, db)
+    _fast302 = False
+    if _drive_switch_on:
+        _fast302 = await _ensure_drive_file_playable(db, item, _fid)
+    if _fast302:
+        _pt.mark("drive_exists_check")
+        _pt.done()
+        from backend.emby_server.drive_auth import drive_usercontent_download_url
+        return _observe_traffic(
+            RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
+                             headers=_strategy.DIRECT_REDIRECT_HEADERS))
     target = await run_db(_play_target, db, item)
     _pt.mark("play_target")
     if target.kind == "url":
         # 播放策略能力：对象存储直链名单命中时 302 到对象存储；Drive 条目
         # 直接 302 到谷歌 usercontent 直链。判定逻辑见 playback_strategy。
-        from backend.emby_server import playback_strategy as _strategy
-        # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有
-        # drive_file_id）且 drive_direct_play_enabled 开关开启时，直接 302
-        # 到谷歌 usercontent 直链，播放器自拉；服务器退出字节通道。
-        _fid = (getattr(item, "drive_file_id", "") or "").strip()
-        if _fid and await run_db(_strategy.drive_direct_play_enabled, db):
+        # 回落分支：快路径未命中（挂载解析失败等）时仍走原 _play_target，
+        # 这里保留原 drive 302 语义（_fid + 开关）。
+        if _drive_switch_on:
             from backend.emby_server.drive_auth import drive_usercontent_download_url
             _pt.mark("drive_direct_302")
             _pt.done()
