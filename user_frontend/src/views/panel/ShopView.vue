@@ -32,10 +32,9 @@
         <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <div v-else-if="packages.length === 0" class="v4-empty">能量罐暂未上架，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <template v-else>
-          <!-- R53B-1：支付方式未就绪（本分支只在整页 loading 结束后进入，此时未就绪=请求失败或列表为空）只渲染空态，不再与可点击的充能按钮同屏出现 -->
+          <!-- R82A-1：支付方式未就绪不再整体替换空态，改为货架上方一条瘦横幅提示；浏览照常，充能类按钮靠已有 !methodsReady 禁用 -->
           <!-- 口径：错误态给"重试"，配置态给"刷新看看"（页面被 KeepAlive 缓存，配置态也需要站内刷新入口） -->
-          <div v-if="!methodsReady" class="v4-empty"><template v-if="methodsFailed">支付方式加载失败，请检查网络后重试<br><button class="v4-retry" @click="loadAll">重试</button></template><template v-else>暂无可用支付方式，请联系服主<br><button class="v4-retry" @click="loadAll">刷新看看</button></template></div>
-          <template v-else>
+          <div v-if="!methodsReady" class="methods-note" role="status"><template v-if="methodsFailed">支付方式加载失败，请检查网络后重试<button class="v4-retry" @click="loadAll">重试</button></template><template v-else>暂无可用支付方式，请联系服主<button class="v4-retry" @click="loadAll">刷新看看</button></template></div>
           <div class="shelf">
             <div
               v-for="pkg in packages"
@@ -113,7 +112,6 @@
             <span class="payway on" aria-current="true"><span class="lbl">{{ methods[0].name || methods[0].id }}</span></span>
           </div>
           <div class="fineprint">能量可用于续命体力、兑换会员、发红包 —— 不过期</div>
-          </template>
         </template>
       </section>
 
@@ -1010,16 +1008,18 @@ async function copyInviteCode() {
 }
 .meter .txt {
   position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   font-size: 12px;
   font-weight: 700;
   z-index: 1;
-  /* R30：压在红渐变 fill 上，加白色 + 阴影保证对比度 */
+  /* R82C1-2：深色小胶囊垫底，进度 0%（浅纸底）/100%（红渐变）下白字均可读 */
   color: var(--on-dark, #fff);
-  text-shadow: 0 1px 2px rgba(0,0,0,.35);
+  background: rgba(20,16,12,.55);
+  border-radius: 999px;
+  padding: 3px 14px;
+  white-space: nowrap;
 }
 .charge {
   display: block;
@@ -1369,6 +1369,26 @@ async function copyInviteCode() {
   .redeem-btn:active {
     transform: none;
   }
+}
+
+/* ---------- R82A-1：支付方式未就绪提示横幅（瘦条，浏览不受影响） ---------- */
+.methods-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-left: 3px solid var(--red);
+  border-top: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-card);
+}
+.methods-note .v4-retry {
+  font-size: 12px;
 }
 
 /* ---------- 核销中心 ---------- */
