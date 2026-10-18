@@ -832,7 +832,6 @@ onUnmounted(() => {
   aspect-ratio: 1568 / 882;
   overflow: hidden;
   background: var(--paper-canvas);
-  flex: 0 0 auto;
   border: 1px solid var(--paper-hairline);
   border-radius: 18px;
 }
