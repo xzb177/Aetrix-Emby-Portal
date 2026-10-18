@@ -1,4 +1,5 @@
 # Aetrix Portal
+English: [README.en.md](README.en.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml)
