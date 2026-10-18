@@ -2320,6 +2320,9 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     return dropped
 
 
+_ITEMS_SLOW_LOG_MS = 500.0  # _query_items 分段计时慢日志阈值（ms）；测试可 monkeypatch
+
+
 def _query_items(request: Request, user: models.WebUser, db: Session, base: str) -> dict:
     q = request.query_params
     parent_id = q.get("ParentId")
@@ -2673,10 +2676,25 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         # 小查询），现在各一次。
         page_ids = None
         total = None
+        # 分段计时（观测）：各段毫秒；总耗时>500ms 打一行结构化日志。
+        # 段名：scope_versions=作用域/版本号读取；cache_get=缓存查询（含
+        # singleflight 等待者等待时间）；miss_compute=未命中全量计算（去重+
+        # 排序+计数+回填）；page_fetch=本页行按主键取回；prefetch=用户态预取；
+        # dto_build=DTO 构建。
+        _seg = {k: 0.0 for k in ("scope_versions", "cache_get", "miss_compute",
+                                 "page_fetch", "prefetch", "dto_build")}
+        _t = time.perf_counter()
+
+        def _mark(name):
+            nonlocal _t
+            _seg[name] += (time.perf_counter() - _t) * 1000.0
+            _t = time.perf_counter()
+
         _lc_ok = _list_cache.is_cacheable(
             filters=filters, sort_by=sort_by, has_ids=bool(ids))
         _lc_libs: Optional[list] = None   # None=作用域未知，整层 fail-closed
         _lc_versions = None
+        _lc_flight = None  # singleflight 结果（hit/leader/coalesced/disabled）
         if _lc_ok:
             # 双缓存都关时连作用域都不读：省一次小查询（r41 口径）
             if _list_cache.cache_enabled(db) or _dedup_cache.cache_enabled(db):
@@ -2687,13 +2705,21 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                 # 绝不能拿 [] 充数：[] 与 allowed=set() 的空作用域同键，
                 # DB 抖动时把清单写进去会污染不可见用户。
                 _lc_ok = False
+                _mark("scope_versions")
             else:
                 # 只在清单缓存开着时预读版本号：开关关时 get/put 内部直接返回，
                 # 预读的一次版本号查询反而是浪费；去重层没拿到预传会自己读。
                 if _list_cache.cache_enabled(db):
                     _lc_versions = _dedup_cache.read_data_versions(db, _lc_libs)
-                _lc_hit = _list_cache.get_cached_page(db, q, _lc_libs,
-                                                      versions=_lc_versions)
+                _mark("scope_versions")
+                # singleflight 合并读：同一 key 并发未命中时只一个领头计算，
+                # 其余等待者有界等待后复用结果；超时/领头失败则自行计算。
+                # #1053 语义逐字保留：_lc_libs=None（作用域未知）时整层
+                # fail-closed（本分支根本到不了这里），空集合与 None 分键
+                # 由 scope_lib_ids 保证。
+                _lc_flight = _list_cache.coalesced_get(db, q, _lc_libs,
+                                                       versions=_lc_versions)
+                _lc_hit = _lc_flight.page
                 if _lc_hit is not None and start + limit <= len(_lc_hit.ids):
                     page_ids = _lc_hit.ids[start:start + limit]
                     if want_total:
@@ -2701,74 +2727,97 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                     else:
                         has_more = _lc_hit.total > start + limit
                         total = len(page_ids)
+                _mark("cache_get")
+        if _seg["scope_versions"] == 0.0:
+            # 不可缓存请求（is_cacheable=False）：上面没走作用域分支，补记
+            _mark("scope_versions")
         if page_ids is None:
-            # 列表去重缓存（2026-10-18）：dropped 集合按（用户, 查询参数,
-            # 各库数据版本）缓存；开关关 / Redis 不可用时逐行走旧路径。
-            dropped = _dedup_cache.dedup_dropped_ids_cached(
-                request, query, db, user, allowed,
-                lambda: _dedup_dropped_ids(query, db),
-                lib_ids=_lc_libs if _lc_ok else None,
-                versions=_lc_versions)
-            if dropped is None:
-                cand_rows = (
-                    query.order_by(*order_cols)
-                    .with_entities(
-                        em.MediaItem.id,
-                        em.MediaItem.item_type,
-                        em.MediaItem.file_path,
-                        em.MediaItem.library_id,
+            with _list_cache.leader_slot(_lc_flight):  # singleflight 领头槽：退出时（成功/抛错）必释放标记、唤醒等待者；非领头时空操作
+                # 列表去重缓存（2026-10-18）：dropped 集合按（用户, 查询参数,
+                # 各库数据版本）缓存；开关关 / Redis 不可用时逐行走旧路径。
+                dropped = _dedup_cache.dedup_dropped_ids_cached(
+                    request, query, db, user, allowed,
+                    lambda: _dedup_dropped_ids(query, db),
+                    lib_ids=_lc_libs if _lc_ok else None,
+                    versions=_lc_versions)
+                if dropped is None:
+                    cand_rows = (
+                        query.order_by(*order_cols)
+                        .with_entities(
+                            em.MediaItem.id,
+                            em.MediaItem.item_type,
+                            em.MediaItem.file_path,
+                            em.MediaItem.library_id,
+                        )
+                        .all()
                     )
-                    .all()
-                )
-                primary_ids = _dedup_primary_ids(cand_rows, db)
-                page_ids = primary_ids[start:start + limit]
-                # Emby 官方从不返回 -1：跳过总数时用本页数量，保证非负
-                total = len(primary_ids) if want_total else len(page_ids)
-                if not want_total:
-                    # 多取一个判断有没有下一页
-                    has_more = len(primary_ids) > start + limit
-            else:
-                kept = query.filter(~em.MediaItem.id.in_(dropped)) if dropped else query
-                # 未命中清单缓存：走现状的 id-only 排序分页路径（见下）；dropped
-                # 在上面已按需取到（清单命中时根本不查去重缓存，见本函数上方注释）。
-                fetch = limit + (0 if want_total else 1)
-                page_ids = [
-                    row[0] for row in kept.order_by(*order_cols)
-                    .with_entities(em.MediaItem.id).offset(start).limit(fetch).all()
-                ]
-                if not want_total:
-                    has_more = len(page_ids) > limit
-                    page_ids = page_ids[:limit]
-                    total = len(page_ids)
+                    primary_ids = _dedup_primary_ids(cand_rows, db)
+                    page_ids = primary_ids[start:start + limit]
+                    # Emby 官方从不返回 -1：跳过总数时用本页数量，保证非负
+                    total = len(primary_ids) if want_total else len(page_ids)
+                    if not want_total:
+                        # 多取一个判断有没有下一页
+                        has_more = len(primary_ids) > start + limit
                 else:
-                    # R4（2026-10-18）：dropped 恒为 query 的子集（T/E/N 分支都从 query
-                    # 里圈出），故 count(kept) = count(query) - len(dropped)，数学精确
-                    # 相等。省掉 16k NOT IN 的 COUNT（生产实测 ~100ms）。
-                    total = query.order_by(None).count() - (len(dropped) if dropped else 0)
-                # 未命中时顺手回填：一条 id-only 全量排序查询的成本被后续命中摊薄。
-                # 排序口径与上面的 page_ids 查询逐字一致（含 id 决胜键），结果天然一致。
-                # 只在 want_total=true 时回填：缓存的 total 必须是真实 kept 总数，
-                # 而 want_total=false 的请求本来就是为了跳过 COUNT 才来的——
-                # 不为它多付一次 COUNT；false 请求只读缓存不写缓存。
-                if _lc_ok and want_total:
-                    _lc_max = _list_cache.cache_max_ids(db)
-                    _lc_probe = [
+                    kept = query.filter(~em.MediaItem.id.in_(dropped)) if dropped else query
+                    # 未命中清单缓存：走现状的 id-only 排序分页路径（见下）；dropped
+                    # 在上面已按需取到（清单命中时根本不查去重缓存，见本函数上方注释）。
+                    fetch = limit + (0 if want_total else 1)
+                    page_ids = [
                         row[0] for row in kept.order_by(*order_cols)
-                        .with_entities(em.MediaItem.id).limit(_lc_max + 1).all()
+                        .with_entities(em.MediaItem.id).offset(start).limit(fetch).all()
                     ]
-                    _list_cache.put_cached_page(
-                        db, q, _lc_libs, _lc_probe[:_lc_max], total,
-                        len(_lc_probe) > _lc_max, versions=_lc_versions)
+                    if not want_total:
+                        has_more = len(page_ids) > limit
+                        page_ids = page_ids[:limit]
+                        total = len(page_ids)
+                    else:
+                        # R4（2026-10-18）：dropped 恒为 query 的子集（T/E/N 分支都从 query
+                        # 里圈出），故 count(kept) = count(query) - len(dropped)，数学精确
+                        # 相等。省掉 16k NOT IN 的 COUNT（生产实测 ~100ms）。
+                        total = query.order_by(None).count() - (len(dropped) if dropped else 0)
+                    # 未命中时顺手回填：一条 id-only 全量排序查询的成本被后续命中摊薄。
+                    # 排序口径与上面的 page_ids 查询逐字一致（含 id 决胜键），结果天然一致。
+                    # 只在 want_total=true 时回填：缓存的 total 必须是真实 kept 总数，
+                    # 而 want_total=false 的请求本来就是为了跳过 COUNT 才来的——
+                    # 不为它多付一次 COUNT；false 请求只读缓存不写缓存。
+                    if _lc_ok and want_total:
+                        _lc_max = _list_cache.cache_max_ids(db)
+                        _lc_probe = [
+                            row[0] for row in kept.order_by(*order_cols)
+                            .with_entities(em.MediaItem.id).limit(_lc_max + 1).all()
+                        ]
+                        _list_cache.put_cached_page(
+                            db, q, _lc_libs, _lc_probe[:_lc_max], total,
+                            len(_lc_probe) > _lc_max, versions=_lc_versions)
+        _mark("miss_compute")
         if not page_ids:
             items = []
         else:
             items = db.query(em.MediaItem).filter(em.MediaItem.id.in_(page_ids)).all()
             position = {item_id: index for index, item_id in enumerate(page_ids)}
             items.sort(key=lambda item: position.get(item.id, 0))
+        _mark("page_fetch")
     _prefetch_list_data(db, user.id, items)
+    _mark("prefetch")
+    _items = [_item_dto(i, base, user.id, db) for i in items]
+    _mark("dto_build")
+    _seg_total = sum(_seg.values())
+    if _seg_total > _ITEMS_SLOW_LOG_MS:
+        # 慢才打一行结构化日志，防日志洪水
+        logger.warning(
+            "items 列表慢请求 total=%.0fms scope_versions=%.0fms "
+            "cache_get=%.0fms miss_compute=%.0fms page_fetch=%.0fms "
+            "prefetch=%.0fms dto_build=%.0fms flight=%s start=%s limit=%s "
+            "want_total=%s n_items=%s",
+            _seg_total, _seg["scope_versions"], _seg["cache_get"],
+            _seg["miss_compute"], _seg["page_fetch"], _seg["prefetch"],
+            _seg["dto_build"],
+            _lc_flight.mode if _lc_flight else "n/a",
+            start, limit, want_total, len(_items))
 
     return {
-        "Items": [_item_dto(i, base, user.id, db) for i in items],
+        "Items": _items,
         "TotalRecordCount": total,
         "StartIndex": start,
         # 跳过总数时才带：前端无限滚动用它判断要不要继续加载

@@ -220,10 +220,10 @@ def test_config_defaults(clean_config):
     db = _test_db()
     try:
         assert ilc.cache_enabled(db) is True
-        assert ilc.cache_ttl_seconds(db) == 60
+        assert ilc.cache_ttl_seconds(db) == 300  # 2026-10-18：默认 60→300（未命中风暴治理）
         assert ilc.cache_max_ids(db) == 5000
         p = ilc.config_payload(db)
-        assert p["enabled"] is True and p["ttl_seconds"] == 60 and p["max_ids"] == 5000
+        assert p["enabled"] is True and p["ttl_seconds"] == 300 and p["max_ids"] == 5000
         assert p["defaults"]["max_ids"] == 5000
     finally:
         db.close()
@@ -582,14 +582,14 @@ def test_e2e_want_total_false_hit_branch(seeded, fake_backend, clean_config, mon
     """want_total=false 命中清单缓存的分支：HasMore/总数/Ids 都对。"""
     s = seeded
     hits = []
-    _real = ilc.get_cached_page
+    _real = ilc.coalesced_get
 
-    def spy(db, query_params, lib_ids, versions=None):
-        page = _real(db, query_params, lib_ids, versions=versions)
-        hits.append(page is not None)
-        return page
+    def spy(db, query_params, lib_ids, versions=None, **kw):
+        fr = _real(db, query_params, lib_ids, versions=versions, **kw)
+        hits.append(fr.page is not None)
+        return fr
 
-    monkeypatch.setattr(ilc, "get_cached_page", spy)
+    monkeypatch.setattr(ilc, "coalesced_get", spy)
 
     # 先 want_total=true 写热（seeded 去重后 N 条，前面别的用例可能新增过条目）
     hot = api._query_items(_req(_full_params(Limit="3")), s.user, s.db, "http://t")

@@ -26,7 +26,7 @@
    刮削回填/软删清理/后台解绑——都已在去重缓存的 bump 覆盖内，
    见 :func:`items_dedup_cache.bump_library_item_versions` 调用方）。
    残余缺口（例如运维手工 ORM 改数据不走应用写路径）由条目 TTL 兜底
-   （默认 60s），与去重缓存同一残余口径。
+   （默认 300s），与去重缓存同一残余口径。
 5. **有界**：只存前 ``max_ids`` 个 id（默认 5000）+ total + 截断标记；
    请求的页窗口超出已存前缀 → 绕行现状路径（深翻页走 DB，不错不错位）。
    Redis string 紧凑二进制（SETEX），条目大小恒有界。
@@ -34,7 +34,7 @@
    的旧路径，请求不受影响。
 
 可配置（项目铁律）：``items_list_cache_enabled``（默认开）、
-``items_list_cache_ttl_seconds``（默认 60，范围 10~3600）、
+``items_list_cache_ttl_seconds``（默认 300，范围 10~3600）、
 ``items_list_cache_max_ids``（默认 5000，范围 100~50000）。
 读法与 items_dedup_cache 同风格（store 热读，读失败回默认）。
 """
@@ -42,9 +42,11 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import logging
 import struct
+import threading
 import time
 from typing import Iterable, NamedTuple, Optional
 from urllib.parse import urlencode
@@ -63,7 +65,7 @@ CFG_TTL_SECONDS = "items_list_cache_ttl_seconds"
 CFG_MAX_IDS = "items_list_cache_max_ids"
 
 ENABLED_DEFAULT = True
-TTL_DEFAULT = 60
+TTL_DEFAULT = 300
 TTL_MIN, TTL_MAX = 10, 3600
 MAX_IDS_DEFAULT = 5000
 MAX_IDS_MIN, MAX_IDS_MAX = 100, 50000
@@ -284,6 +286,163 @@ def _deserialize(raw) -> Optional[CachedPage]:
     return CachedPage(ids=ids, total=total, truncated=truncated)
 
 
+# ---------------- 统计（观测用，不影响主路径） ----------------
+
+_STATS_PREFIX = "items:list:stats:"
+_STAT_NAMES = ("hit", "miss", "put", "coalesced")
+
+
+def _bump_stat(name: str) -> None:
+    """Redis 计数器 +1；后端异常时静默（fail-open，不影响请求）。"""
+    _dedup._do(lambda c: c.incr(f"{_STATS_PREFIX}{name}"), None)
+
+
+def get_stats() -> dict:
+    """读四项计数器（hit/miss/put/coalesced），读不到按 0。"""
+    def _op(c):
+        return [c.get(f"{_STATS_PREFIX}{n}") for n in _STAT_NAMES]
+
+    vals = _dedup._do(_op, None) or []
+    out = {}
+    for n, v in zip(_STAT_NAMES, vals):
+        try:
+            out[n] = int(v) if v is not None else 0
+        except (TypeError, ValueError):
+            out[n] = 0
+    for n in _STAT_NAMES:
+        out.setdefault(n, 0)
+    return out
+
+
+# ---------------- 未命中合并（singleflight，进程内） ----------------
+#
+# 同一缓存 key 并发未命中时，只许一个请求（领头）真正计算，其余等待者有界
+# 等待后回读缓存。等待超时 / 领头失败或没写缓存 → 等待者自行计算
+# （fail-open：合并机制本身不许产生 5xx）。
+#
+# 粒度说明：进程内实现。生产 EA 容器经查是单进程（``python -m emby_api.main``
+# 单进程），故生产粒度 = 全局；若未来改多进程，粒度退化为每进程。
+# 等待期间不持有、不使用 DB 会话（等待只发生在 Redis 回读前后）。
+# 不用 Redis 分布式锁：避免引入新的故障模式。
+
+# 等待者有界等待上限（秒）。领头一次全量计算约 5~16s；超时后等待者自行
+# 计算（fail-open），重复计算有界。测试可 monkeypatch 该常量。
+SINGLEFLIGHT_WAIT_SECONDS = 15
+
+
+class _FlightSlot:
+    __slots__ = ("event",)
+
+    def __init__(self):
+        self.event = threading.Event()
+
+
+_in_flight: dict = {}
+_in_flight_lock = threading.Lock()
+
+
+class FlightResult(NamedTuple):
+    page: Optional[CachedPage]
+    mode: str  # "hit" | "leader" | "coalesced" | "disabled"
+    slot_key: Optional[str] = None
+    slot: Optional[_FlightSlot] = None
+
+
+def _read_page(key: str) -> Optional[CachedPage]:
+    """按已算好的 key 直接读 Redis（singleflight 内部复用，不重复算键）。"""
+    def _op(c):
+        raw = c.get(key)
+        if raw is not None:
+            c.zadd(_INDEX_KEY, {key: time.time()})
+        return raw
+
+    raw = _dedup._do(_op, None)
+    if raw is None:
+        return None
+    page = _deserialize(raw)
+    if page is None:
+        logger.warning("ID 清单缓存值无法解析，已按 miss 处理 key=%s", key)
+    return page
+
+
+def coalesced_get(db: Session, query_params, lib_ids: list[int],
+                  versions: Optional[dict] = None,
+                  wait_seconds: Optional[float] = None) -> FlightResult:
+    """读缓存；miss 时做进程内 singleflight 合并。
+
+    返回 FlightResult：
+    - mode="hit"：缓存命中，直接用 ``page``；
+    - mode="leader"：你是领头，调用方负责计算；计算结束（无论成功/抛错）
+      必须经 :func:`leader_slot` 上下文释放 slot；
+    - mode="coalesced"：等待者复用了领头的写入结果，用 ``page``；
+    - mode="disabled"：开关关 / TTL<=0，按旧路径。
+
+    等待期间不持有、不使用 DB 会话。
+    """
+    if not cache_enabled(db) or cache_ttl_seconds(db) <= 0:
+        return FlightResult(None, "disabled")
+    key = _key_for(db, query_params, lib_ids, versions)
+    page = _read_page(key)
+    if page is not None:
+        _bump_stat("hit")
+        return FlightResult(page, "hit")
+    wait = SINGLEFLIGHT_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    with _in_flight_lock:
+        slot = _in_flight.get(key)
+        if slot is None:
+            slot = _FlightSlot()
+            _in_flight[key] = slot
+            leader = True
+        else:
+            leader = False
+    if leader:
+        # 双重检查：拿锁期间可能已被别的请求写好
+        page = _read_page(key)
+        if page is not None:
+            _bump_stat("hit")
+            finish_compute(key, slot)
+            return FlightResult(page, "hit")
+        _bump_stat("miss")
+        return FlightResult(None, "leader", key, slot)
+    # 等待者：有界等待领头写入；等待本身只 block 线程，不碰 DB
+    slot.event.wait(wait)
+    page = _read_page(key)
+    if page is not None:
+        _bump_stat("coalesced")
+        return FlightResult(page, "coalesced")
+    # 超时 / 领头抛错 / 领头没写（例如 want_total=false 不回填）：
+    # 自己算，fail-open。换一个新 slot，避免和旧领头互相干扰。
+    with _in_flight_lock:
+        slot2 = _FlightSlot()
+        _in_flight[key] = slot2
+    _bump_stat("miss")
+    return FlightResult(None, "leader", key, slot2)
+
+
+def finish_compute(slot_key: Optional[str],
+                   slot: Optional[_FlightSlot]) -> None:
+    """领头收尾：清 in-flight 标记并唤醒等待者。幂等，可安全重入。"""
+    if slot_key is None or slot is None:
+        return
+    with _in_flight_lock:
+        if _in_flight.get(slot_key) is slot:
+            del _in_flight[slot_key]
+    slot.event.set()
+
+
+@contextlib.contextmanager
+def leader_slot(flight: Optional[FlightResult]):
+    """领头计算槽：with 块退出时（成功/抛错都一样）必清理标记、唤醒等待者。
+
+    非领头（hit/coalesced/disabled/None）时是空操作。
+    """
+    try:
+        yield flight
+    finally:
+        if flight is not None and flight.mode == "leader":
+            finish_compute(flight.slot_key, flight.slot)
+
+
 # ---------------- 读写 ----------------
 
 def get_cached_page(db: Session, query_params, lib_ids: list[int],
@@ -294,19 +453,9 @@ def get_cached_page(db: Session, query_params, lib_ids: list[int],
     if cache_ttl_seconds(db) <= 0:
         return None
     key = _key_for(db, query_params, lib_ids, versions)
-
-    def _op(c):
-        raw = c.get(key)
-        if raw is not None:
-            c.zadd(_INDEX_KEY, {key: time.time()})
-        return raw
-
-    raw = _dedup._do(_op, None)  # 与去重缓存共用 Redis 后端（含测试注入点）
-    if raw is None:
-        return None
-    page = _deserialize(raw)
-    if page is None:
-        logger.warning("ID 清单缓存值无法解析，已按 miss 处理 key=%s", key)
+    page = _read_page(key)
+    if page is not None:
+        _bump_stat("hit")
     return page
 
 
@@ -343,6 +492,9 @@ def put_cached_page(db: Session, query_params, lib_ids: list[int],
                 # 删掉「别的请求刚写的新条目」，成员名删保证「删的正是刚读出来的那些」，
                 # 避免「值已删成员仍在 / 成员已删值成孤儿」的漂移。
                 c.zrem(_INDEX_KEY, *oldest)
+        # 计数放最后：旧后端替身可能没有 incr，_do 会吞掉异常，
+        # 不影响上面的 set/zadd/淘汰语义。
+        c.incr(f"{_STATS_PREFIX}put")
         return True
 
     _dedup._do(_op, False)
