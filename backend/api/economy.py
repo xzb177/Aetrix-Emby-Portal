@@ -42,7 +42,7 @@ from backend.database import get_db
 from backend.api.user import get_current_user
 from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import resolve_jwt_user_id
-from backend.notifications import notify_admin_event
+from backend.notifications import AdminEvent, notify_admin_event
 from backend.tg_bind import require_tg_bound
 
 logger = logging.getLogger(__name__)
@@ -1508,6 +1508,18 @@ class FulfillmentError(RuntimeError):
     """
 
 
+def _lookup_inviter_id(db: Session, invitee_id: int) -> int | None:
+    """查被邀请人的邀请人 id（返利失败时通知用）。查不到/异常一律返回 None，
+    调用方只记日志、不让通知查找本身再抛异常。"""
+    try:
+        record = db.query(models.InvitationRecord).filter(
+            models.InvitationRecord.invitee_id == invitee_id
+        ).first()
+        return record.inviter_id if record else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) -> list:
     """订单履约：充值发积分 / 订阅发放，幂等（重复回调不重复发货）
 
@@ -1541,22 +1553,45 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
                 f"recharge:{recharge_order.order_id}",
             )
             # P1 会员经验：真实充值 1 元 = 1 经验（向下取整），与积分/订单在同一事务。
-            # 经验失败不阻塞充值履约（只记日志），避免「钱收了货没发全」。
+            # 经验失败不阻塞充值履约（订单/积分照常提交），但绝不静默：把失败记成
+            # 一条用户可见的站内信（提交后由 send_fulfill_notifications 发出），
+            # 用户可凭此联系客服补发——「钱收了、经验没到」不能只留一行日志。
+            _xp = max(0, int(recharge_order.price or 0))
             try:
                 from backend import member_level as _ml
-                _xp = max(0, int(recharge_order.price or 0))
                 if _xp:
                     _ml.add_xp(db, user, _xp, "recharge",
                                f"recharge:{recharge_order.order_id}")
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("充值经验累加失败: %s", recharge_order.order_id)
+                pending.append(dict(
+                    event_type=AdminEvent.FULFILL_PARTIAL,
+                    user_id=user.id,
+                    title="⚠️ 充值成功，会员经验发放失败",
+                    content=(f"订单 {recharge_order.order_id} 的积分已到账，"
+                             f"但会员经验（约 {_xp} 点）累加失败：{exc}。"
+                             "请联系客服补发。"),
+                    related_id=None,
+                ))
             # 邀请返利：被邀请人充值 → 邀请人得返利积分
+            # 返利失败同样不静默：通知受影响的邀请人（凭站内信联系服主补发）；
+            # 邀请人查不到时只记日志，不让通知查找本身再添异常。
             try:
                 from backend.api.invitation import apply_rebate
                 apply_rebate(db, user, float(recharge_order.price or 0),
                              recharge_order.order_id)
-            except Exception:  # noqa: BLE001 — 返利失败不阻塞充值履约
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("充值返利计算失败: %s", recharge_order.order_id)
+                _inviter_id = _lookup_inviter_id(db, user.id)
+                if _inviter_id:
+                    pending.append(dict(
+                        event_type=AdminEvent.FULFILL_PARTIAL,
+                        user_id=_inviter_id,
+                        title="⚠️ 邀请返利发放失败",
+                        content=(f"订单 {recharge_order.order_id} 的邀请返利"
+                                 f"发放失败：{exc}。请联系服主补发。"),
+                        related_id=None,
+                    ))
             pending.append(dict(
                 event_type="economy.recharge_success",
                 user_id=user.id,
@@ -1590,14 +1625,24 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
                 realm_id=plan.realm_id,
             )
             # P1 会员经验：订阅实付 1 元 = 1 经验（向下取整），与订阅发放同一事务。
+            # 经验失败不阻塞订阅履约，但绝不静默：同充值，发一条用户可见的站内信。
+            _xp = max(0, int(subscription_order.amount or 0))
             try:
                 from backend import member_level as _ml
-                _xp = max(0, int(subscription_order.amount or 0))
                 if _xp:
                     _ml.add_xp(db, user, _xp, "subscription",
                                f"subscription:{subscription_order.order_id}")
-            except Exception:  # noqa: BLE001 — 经验失败不阻塞订阅履约
+            except Exception as exc:  # noqa: BLE001
                 logger.exception("订阅经验累加失败: %s", subscription_order.order_id)
+                pending.append(dict(
+                    event_type=AdminEvent.FULFILL_PARTIAL,
+                    user_id=user.id,
+                    title="⚠️ 订阅成功，会员经验发放失败",
+                    content=(f"订单 {subscription_order.order_id} 的订阅已开通，"
+                             f"但会员经验（约 {_xp} 点）累加失败：{exc}。"
+                             "请联系客服补发。"),
+                    related_id=None,
+                ))
             # 记下「这条订单开出的是哪份订阅、多少天」：退款按这笔精确回滚，
             # 不靠猜用户当前那笔生效中的订阅（可能来自卡码/兑换码/别的订单）。
             subscription_order.subscription_id = subscription.id

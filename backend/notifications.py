@@ -785,6 +785,9 @@ class AdminEvent:
     # 订单事件（经济）
     RECHARGE_SUCCESS = "economy.recharge_success"
     SUBSCRIPTION_SUCCESS = "economy.subscription_success"
+    # 履约部分失败：订单/积分/订阅主体已履约，但会员经验或邀请返利等副作用失败。
+    # 绝不静默：调用方必须给受影响的用户发一条站内信（凭此联系客服/服主补发）。
+    FULFILL_PARTIAL = "economy.fulfill_partial"
     # 退款：属于“钱”的事件，不要复用 subscription.expired（那个语义是会员到期）
     ORDER_REFUNDED = "economy.order_refunded"
 
