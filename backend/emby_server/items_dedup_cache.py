@@ -372,7 +372,9 @@ def put_cached_dropped(db: Session, user_id: int, query_params,
 
 def dedup_dropped_ids_cached(request, query, db: Session, user,
                              allowed: Optional[set],
-                             compute: Callable[[], Optional[set]]) -> Optional[set]:
+                             compute: Callable[[], Optional[set]],
+                             *, lib_ids: Optional[list] = None,
+                             versions: Optional[dict] = None) -> Optional[set]:
     """``_query_items`` 的唯一调用点：缓存包装的 ``_dedup_dropped_ids``。
 
     - 开关关 / Redis 不可用 → ``compute()``（旧路径，逐行一致）；
@@ -381,26 +383,31 @@ def dedup_dropped_ids_cached(request, query, db: Session, user,
     - 未命中 → ``compute()``，结果非 None 才写入缓存（``None`` 是回退旧实现
       的信号，不缓存）；
     - 范围 ``allowed`` 为 None（不过滤）时，版本号取全部启用库。
+    - ``lib_ids``/``versions`` 预传时跳过内部的媒体库查询与版本号直查
+      （r41：调用方 _query_items 已为 ID 清单缓存算过一次，同请求内恒定；
+      不传时行为与旧实现逐行一致，含读失败 fail-closed 回 compute()）。
     """
     if not cache_enabled(db) or cache_ttl_seconds(db) <= 0:
         return compute()
-    if allowed is not None:
-        # 空集合与 None 必须走不同的键：allowed=set() 时 lib_ids=[]，
-        # read_data_versions(db, []) 返回 {}（空输入直接 return），版本号
-        # 串为空 → 生成独立的降级缓存键，与 None（取全部启用库做版本号
-        # 的全量键）天然不同；空范围查询的结果不再毒化全量缓存键。
-        lib_ids = list(allowed)
-    else:
-        try:
-            lib_ids = [r[0] for r in
-                       db.query(em.Library.id).filter(em.Library.is_enabled == True).all()]  # noqa: E712
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("读媒体库列表失败，走旧路径: %s", exc)
-            return compute()
+    if lib_ids is None:
+        if allowed is not None:
+            # 空集合与 None 必须走不同的键：allowed=set() 时 lib_ids=[]，
+            # read_data_versions(db, []) 返回 {}（空输入直接 return），版本号
+            # 串为空 → 生成独立的降级缓存键，与 None（取全部启用库做版本号
+            # 的全量键）天然不同；空范围查询的结果不再毒化全量缓存键。
+            lib_ids = list(allowed)
+        else:
+            try:
+                lib_ids = [r[0] for r in
+                           db.query(em.Library.id).filter(em.Library.is_enabled == True).all()]  # noqa: E712
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("读媒体库列表失败，走旧路径: %s", exc)
+                return compute()
     q = request.query_params
     # miss+put 共用一次版本号读取：同请求内版本号恒定，省一次 DB 查询，
     # 且键与命中/写入的版本输入完全一致（与分两次读行为等价）。
-    versions = read_data_versions(db, lib_ids)
+    if versions is None:
+        versions = read_data_versions(db, lib_ids)
     hit = get_cached_dropped(db, user.id, q, lib_ids, versions=versions)
     if hit is not None:
         return hit
