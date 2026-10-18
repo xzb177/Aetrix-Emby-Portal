@@ -1418,11 +1418,17 @@ def _watcher_loop() -> None:
             if stats["changes"]:
                 logger.info("Drive Changes: 本轮 changes=%d libraries=%d",
                             stats["changes"], stats["libraries"])
-            # 抖动计算也在 try 内：若抛异常会被下面兜住记 warning，
-            # 而不是静默杀死整个守护线程。
-            wait_s = _jittered_interval()
         except Exception as exc:  # noqa: BLE001
+            # 轮询异常只记 warning，不杀死守护线程。
             logger.warning("Drive Changes: 轮询异常: %s", exc)
+        # 抖动计算独立于轮询 try：poll_once 抛异常时仍要打散节拍（反风控，
+        # 固定 300s 的机械节拍正是要打破的模式）；只有抖动函数自身抛异常时
+        # 才退回固定间隔——守护线程不许被杀死。
+        try:
+            wait_s = _jittered_interval()
+        except Exception:
+            logger.warning("Drive Changes: 抖动计算异常，用固定间隔",
+                           exc_info=True)
             wait_s = float(POLL_INTERVAL)
         _watcher_stop.wait(wait_s)
 
