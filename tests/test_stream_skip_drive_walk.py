@@ -112,7 +112,9 @@ def _stub_http(monkeypatch, status_code=200, exc=None, token="tok"):
         return SimpleNamespace(status_code=status_code)
 
     monkeypatch.setattr(drive_changes, "get_token_for_drive", fake_get_token)
-    monkeypatch.setattr(api.httpx, "get", fake_http_get)
+    # A-P2-1（2026-10-18）：存在性校验改走模块共享 httpx.Client，
+    # 桩点从 api.httpx.get 挪到 api._drive_exists_http_get。
+    monkeypatch.setattr(api, "_drive_exists_http_get", fake_http_get)
     return thread_names, token_calls
 
 
@@ -319,3 +321,100 @@ def test_personal_drive_uses_oauth_token_source(monkeypatch):
     assert resp.status_code == 302
     assert token_calls == ["myDrive:paul_emby"], \
         f"个人盘必须按 myDrive:<remote> 取 OAuth 凭据，实际：{token_calls}"
+
+
+# ---------------- A 轮修复（2026-10-18，r1507） ----------------
+
+@pytest.fixture(autouse=True)
+def _clear_drive_exists_cache():
+    """模块级正缓存是全局态：每用例前后清空，保证用例隔离。"""
+    api._drive_exists_cache.clear()
+    yield
+    api._drive_exists_cache.clear()
+
+
+def test_drive_exists_client_is_shared(monkeypatch):
+    """A-P2-1：共享 httpx.Client 懒单例，多次取到同一对象（连接复用）。"""
+    import httpx as _httpx
+    # 沙箱的代理/no_proxy env 值 httpx 解析不了（Invalid port），与生产无关：先清掉
+    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+              "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(k, raising=False)
+    c1 = api._drive_exists_client()
+    c2 = api._drive_exists_client()
+    assert isinstance(c1, _httpx.Client)
+    assert c1 is c2, "每次新建 Client 就没有连接复用"
+
+
+def test_drive_exists_workers_bad_env_falls_back(monkeypatch):
+    """A-P2-2：非法 env 值记 warning 后回落 16，不抛（旧实现 import 期炸）。"""
+    monkeypatch.setenv("DRIVE_EXISTS_CHECK_WORKERS", "abc")
+    assert api._drive_exists_workers() == 16
+    monkeypatch.setenv("DRIVE_EXISTS_CHECK_WORKERS", "")
+    assert api._drive_exists_workers() == 16
+    monkeypatch.setenv("DRIVE_EXISTS_CHECK_WORKERS", "8")
+    assert api._drive_exists_workers() == 8
+    monkeypatch.setenv("DRIVE_EXISTS_CHECK_WORKERS", "-3")
+    assert api._drive_exists_workers() == 1
+    monkeypatch.delenv("DRIVE_EXISTS_CHECK_WORKERS", raising=False)
+    assert api._drive_exists_workers() == 16
+
+
+def test_drive_exists_positive_cache(monkeypatch):
+    """A-P2-3：同 (drive_id, file_id) 两次判定只打一次 files.get。"""
+    from backend.emby_server import drive_changes
+    calls = []
+    monkeypatch.setattr(
+        drive_changes, "get_token_for_drive",
+        lambda drive_id, force_refresh=False: "tok")
+
+    def fake_http_get(url, *, params=None, headers=None, timeout=None):
+        calls.append(url)
+        return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(api, "_drive_exists_http_get", fake_http_get)
+    api._drive_file_exists_sync(SHARED_DRIVE_ID, FID)
+    api._drive_file_exists_sync(SHARED_DRIVE_ID, FID)
+    assert len(calls) == 1, "正缓存命中时不应重复打 Drive API"
+
+
+def test_drive_exists_404_not_cached(monkeypatch):
+    """A-P2-3：404 不进正缓存（删后恢复应可播，每次都真实判定）。"""
+    from backend.emby_server import drive_changes
+    calls = []
+    monkeypatch.setattr(
+        drive_changes, "get_token_for_drive",
+        lambda drive_id, force_refresh=False: "tok")
+
+    def fake_http_get(url, *, params=None, headers=None, timeout=None):
+        calls.append(url)
+        return SimpleNamespace(status_code=404)
+
+    monkeypatch.setattr(api, "_drive_exists_http_get", fake_http_get)
+    for _ in range(2):
+        with pytest.raises(api._DriveFileGone):
+            api._drive_file_exists_sync(SHARED_DRIVE_ID, FID)
+    assert len(calls) == 2, "404 不许缓存，每次都要真实判定"
+
+
+def test_files_get_401_invalidates_token_asserted(monkeypatch):
+    """A-P3-1：补断言——401 时 note_drive_unauthorized 真的发生（按值失效）。"""
+    from backend.emby_server import drive_auth
+    item = _drive_item()
+    _stub_common(monkeypatch, item)
+    _stub_switch(monkeypatch, "true")
+    _stub_http(monkeypatch, status_code=401)
+    noted = []
+    monkeypatch.setattr(
+        drive_auth, "note_drive_unauthorized",
+        lambda url, auth_header: noted.append((url, auth_header)) or True)
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(api.video_stream("item", _request(), object(),
+                                     _FakeDB(_drive_mount())))
+
+    assert getattr(exc_info.value, "status_code", None) == 503
+    assert len(noted) == 1, "401 时必须按 token 值失效内外两层缓存"
+    url, auth_header = noted[0]
+    assert "googleapis.com" in url
+    assert auth_header == "Bearer tok"

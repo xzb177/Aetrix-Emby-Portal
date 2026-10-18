@@ -208,7 +208,11 @@ def test_api_probe_warn_on_high_p99(monkeypatch):
 
 def test_probe_enrich_excludes_merged_copies(db):
     """合并副本（merged_into_id 非空）不计入 backlog：与 health_report 同口径，
-    否则探针常年 warn（2026-10-16 实测：真实 pending 2 条、副本 pending 72167 条）。"""
+    否则探针常年 warn（2026-10-16 实测：真实 pending 2 条、副本 pending 72167 条）。
+
+    C-P3-2（2026-10-18）：断言改增量——建行前后各取一次探针，断言差值，
+    不再假设全库 backlog 绝对值（脆弱：别的用例/后台可能留行）。
+    """
     from backend.emby_server import models as em
     lib = em.Library(guid=_guid(), name="obs_r37_%s" % _guid()[:8],
                      collection_type="movies", paths="/tmp/obs_r37")
@@ -216,6 +220,7 @@ def test_probe_enrich_excludes_merged_copies(db):
     db.commit()
     db.refresh(lib)
     try:
+        before = obs._probe_enrich(db)
         parent = em.MediaItem(guid=_guid(), library_id=lib.id, name="parent",
                               item_type="movie", enrich_status="done")
         db.add(parent)
@@ -230,12 +235,28 @@ def test_probe_enrich_excludes_merged_copies(db):
                                 enrich_status="pending",
                                 merged_into_id=parent.id))
         db.commit()
-        res = obs._probe_enrich(db)
-        assert res["metrics"]["backlog"] == 1, \
-            "backlog 应只数真实条目，合并副本不计入"
-        assert res["metrics"]["pending"] == 1
+        after = obs._probe_enrich(db)
+        assert (after["metrics"]["backlog"] - before["metrics"]["backlog"]
+                == 1), "backlog 增量应只数真实条目，合并副本不计入"
+        assert (after["metrics"]["pending"] - before["metrics"]["pending"]
+                == 1)
     finally:
         db.query(em.MediaItem).filter(
             em.MediaItem.library_id == lib.id).delete(synchronize_session=False)
         db.delete(lib)
         db.commit()
+
+
+def test_probe_items_cache_reports_stats():
+    """E-P3-2：items_cache 探针把 get_stats() 接到只读观测通道。
+
+    计数器原先只定义无调用方、精确命中率不可观测；现在经 observability
+    探针注册表暴露（/api/health 的 observability 快照里可见）。
+    """
+    s = obs._probe_items_cache()
+    assert s["status"] == "ok"
+    assert "items_cache" in dict(obs._PROBES), "探针必须在注册表里"
+    for k in ("hit", "miss", "recompute", "put", "coalesced", "hit_ratio"):
+        assert k in s["metrics"], s
+    # REDIS_ENABLED=false 时计数器全 0 → hit_ratio 为 None，不抛
+    assert s["metrics"]["hit_ratio"] is None
