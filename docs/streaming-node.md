@@ -33,7 +33,7 @@
 在**流节点机器**（高宽带大盘，Debian/Ubuntu，root）上：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xzb177/Aetrix-Portal/main/scripts/deploy-streaming-node.sh -o deploy.sh
+curl -fsSL https://raw.githubusercontent.com/xzb177/Aetrix-Emby-Portal/main/scripts/deploy-streaming-node.sh -o deploy.sh
 chmod +x deploy.sh
 sudo ./deploy.sh
 ```

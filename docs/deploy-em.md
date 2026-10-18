@@ -41,8 +41,8 @@ sudo apt update && sudo apt install -y python3 python3-venv python3-pip
 ## 3. 拉取代码并安装依赖
 
 ```bash
-git clone https://github.com/xzb177/Aetrix-Portal.git
-cd Aetrix-Portal
+git clone https://github.com/xzb177/Aetrix-Emby-Portal.git
+cd Aetrix-Emby-Portal
 
 python3 -m venv .venv
 source .venv/bin/activate
