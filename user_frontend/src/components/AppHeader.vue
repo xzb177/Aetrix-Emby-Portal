@@ -738,7 +738,8 @@ onBeforeUnmount(() => {
     border-color var(--paper-fast, 0.16s) var(--paper-ease, ease);
 }
 .app-header.is-scrolled {
-  background: var(--paper-chrome);
+  /* ui/beautify-20261018：DESIGN.md §5-7 口径——滚动后才 blur(12px) + 1px #e3e3e2 边框 */
+  background: rgba(250, 248, 245, 0.92);
   -webkit-backdrop-filter: saturate(1.4) blur(12px);
   backdrop-filter: saturate(1.4) blur(12px);
   border-bottom: 1px solid #e3e3e2;

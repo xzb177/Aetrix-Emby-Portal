@@ -58,6 +58,15 @@ withDefaults(
   background: var(--au-surface);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
+  /* ui/beautify-20261018：同 StatTile 的质感（顶缘高光 + 悬停提升） */
+  box-shadow: var(--au-card-highlight);
+  transition: transform var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease),
+    box-shadow var(--au-fast) var(--au-ease);
+}
+.au-section:hover {
+  border-color: var(--au-border-strong);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(245, 235, 220, 0.06), 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
 .au-section.is-accent { border-color: var(--au-primary-border); }

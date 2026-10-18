@@ -121,6 +121,11 @@
   --au-input-bg: #11100e;
   --au-input-bg-focus: #0c0a09;
   --au-input-border: var(--au-border);
+
+  /* ui/beautify-20261018：卡片顶缘高光 / 焦点环 / 悬浮抬升影（暗房影院） */
+  --au-card-highlight: inset 0 1px 0 rgba(245, 235, 220, 0.05);
+  --au-focus-ring: 0 0 0 3px var(--au-primary-soft);
+  --au-lift-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
 /* ==================== 白日模式「影院大厅」 ==================== */
@@ -187,6 +192,11 @@ html[data-theme='light'] {
   --au-shadow-2: 0 12px 32px rgba(28, 25, 21, 0.12);
   --au-shadow-color: rgba(28, 25, 21, 0.14);
   --au-shadow-text: 0 2px 12px rgba(28, 25, 21, 0.35);
+
+  /* ui/beautify-20261018：白日模式版（影院大厅） */
+  --au-card-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  --au-focus-ring: 0 0 0 3px rgba(185, 128, 47, 0.18);
+  --au-lift-shadow: 0 8px 24px rgba(28, 25, 21, 0.10);
 }
 
 /* ==================== 通用原子类（与用户端同名同配方） ====================

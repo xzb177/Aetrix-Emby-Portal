@@ -793,6 +793,17 @@ onUnmounted(() => {
   padding: 6px 10px 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* ui/beautify-20261018：侧栏细滚动条（暗房影院发丝线质感） */
+  scrollbar-width: thin;
+  scrollbar-color: var(--au-border-strong) transparent;
+}
+.nav::-webkit-scrollbar { width: 8px; }
+.nav::-webkit-scrollbar-track { background: transparent; }
+.nav::-webkit-scrollbar-thumb {
+  background: var(--au-border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
 .nav-section { padding-top: 14px; }
@@ -933,6 +944,14 @@ onUnmounted(() => {
   padding-top: env(safe-area-inset-top);
   background: var(--au-bg);
   border-bottom: 1px solid var(--au-border);
+  /* ui/beautify-20261018：滚动模糊 + 边框色过渡（底色不透明，blur 仅为未来半透明底色备） */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: border-color var(--au-fast) var(--au-ease);
+}
+/* ui/beautify-20261018：滚动态钩子——当前无 JS 接线（<script> 不许动），类暂不会被切换 */
+.topbar.is-scrolled {
+  border-bottom-color: var(--au-border-strong);
 }
 
 .topbar-title { display: flex; flex-direction: column; justify-content: center; min-width: 0; line-height: 1.2; }

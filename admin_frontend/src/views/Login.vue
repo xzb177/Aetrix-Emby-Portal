@@ -122,10 +122,12 @@ async function submit() {
   width: 100%;
   max-width: 400px;
   background: var(--au-surface);
+  /* ui/beautify-20261018：顶部暖光叠加（ radial 琥珀光，不抢琥珀主色） */
+  background-image: radial-gradient(ellipse 120% 90% at 50% 0%, rgba(232, 168, 74, 0.07), transparent 60%);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
   padding: 2rem 1.75rem 1.5rem;
-  box-shadow: var(--au-shadow-2);
+  box-shadow: var(--au-card-highlight), var(--au-shadow-2);
   animation: au-fade-up var(--au-fade-in) var(--au-ease) both;
 }
 
@@ -143,6 +145,9 @@ async function submit() {
   align-items: center;
   justify-content: center;
   color: var(--au-primary);
+  /* ui/beautify-20261018：琥珀淡底 + 琥珀发丝描边 */
+  background: var(--au-primary-soft);
+  border: 1px solid var(--au-primary-border);
 }
 
 .brand-mark img {

@@ -191,6 +191,11 @@ html[data-theme='light'] {
   filter: brightness(1.08);
 }
 
+/* ui/beautify-20261018：按钮悬停上浮 1px（文本/链接型按钮除外——transform 已在 .el-button 的 transition 里） */
+.el-button:hover:not(.is-text):not(.is-link):not(.is-disabled):not(:disabled) {
+  transform: translateY(-1px);
+}
+
 /* 语义实心按钮：暗房里不铺大面积彩色块——成功 / 警告 / 危险 / 信息
    都是「浅底 + 同色描边 + 同色字」（同 .au-btn-danger），悬停底色加深一档 */
 .el-button.el-button--success,
@@ -410,7 +415,8 @@ html[data-theme='light'] {
 .el-range-editor.is-active,
 .el-range-editor.is-active:hover {
   background-color: var(--au-input-bg-focus);
-  box-shadow: 0 0 0 1px var(--au-border-focus) inset, 0 0 0 3px var(--au-primary-soft);
+  border-color: var(--au-border-focus);
+  box-shadow: 0 0 0 1px var(--au-border-focus) inset, var(--au-focus-ring);
 }
 
 .el-input__inner {
