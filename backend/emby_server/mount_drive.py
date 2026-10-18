@@ -41,9 +41,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import FrozenSet, Optional
+from typing import FrozenSet, Iterator, Optional
 
-from backend.emby_server import drive_auth, drive_changes
+from backend.emby_server import disc_filter, drive_auth, drive_changes
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server.mounts import (
     MOUNT_DRIVE,
@@ -389,6 +389,141 @@ class DriveMount(RemoteMount):
         # 8 QPS 令牌桶兜底，这里再把本挂载的并发压到 4，避免一轮全量遍历
         # 把令牌桶长期占满、饿着播放探测与追新。
         return 4
+
+    def walk_media(self, max_depth: int = 32, root: str = "/",
+                   exts: Optional[set] = None) -> Iterator[mount_lib.MountFile]:
+        """Drive 覆盖：按 folder id 遍历，合并同名文件夹的命名空间。
+
+        基类 ``RemoteMount.walk_media`` 按 rel 文本逐级解析（每级取首个同名
+        文件夹），同级同名文件夹的第二分支子树永远走不到——里面的文件入不了库。
+        本实现改按 folder id 做 BFS：同级同名文件夹全部入队，各自子树的文件
+        都产出（文本路径天然相同，绝大多数文件直接入库）。
+
+        真撞（同文本路径、不同 file_id，极少数）：按 (分支键, file_id) 确定性
+        排序，首个保留原名，其余文件名词干加 " [n]"（n=2,3…）后缀再产出——
+        guid 仍由路径派生（guid↔path 不变式不断）、文件名解析不受影响
+        （季/集照认），复用既有单集多版本合并语义（merged_into），
+        不静默丢弃任何文件。
+
+        ``exts``：媒体扩展名集合，缺省 ``mount_lib.REMOTE_MEDIA_EXTS``
+        （扫描器口径）。追新（change_watcher）传它自己的 VIDEO_EXTS——
+        比如 .rmvb/.mpg/.mpeg 只在追新口径里算视频，缺省集会漏掉。
+
+        其余语义与基类一致：原盘结构目录整棵跳过、max_depth、媒体扩展名过滤、
+        子目录列举失败收集后统一抛错（扫描器据此跳过清理，防误删）。
+        _locate/_fid_of 的首个匹配语义不受影响（本方法不写 _fid_cache，
+        列举走 _list_by_id 直查）。
+        """
+        import os as _os
+        from collections import defaultdict as _defaultdict
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        want_exts = exts or mount_lib.REMOTE_MEDIA_EXTS
+
+        # 起始目录解析失败直接抛（基类同理：来源不可用，不能当成空目录）
+        root_fid = self._fid_of(root)
+        root_rel = "/" + (root or "").strip("/")
+
+        def _child_rel(parent: str, name: str) -> str:
+            return (parent + "/" + name) if parent != "/" else ("/" + name)
+
+        # ---- 第一遍：按 folder id 并行 BFS，收齐文件 ----
+        # 条目：(rel 文本, file_id, 文件名, 大小, mod_ts, 分支键)
+        # 分支键 = 从 root 到父目录的 folder id 元组：真撞时排序用，
+        # 保证多次扫描的改名结果确定一致。
+        collected: list[tuple[str, str, str, int, float, tuple]] = []
+        seen_folders: set[str] = {root_fid}
+        walk_errors: list[str] = []
+        current: list[tuple[str, str, int, tuple]] = [(root_fid, root_rel, 0, (root_fid,))]
+        workers = self.walk_workers() if hasattr(self, "walk_workers") else 4
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="walk") as pool:
+            while current:
+                fut_to_dir = {
+                    pool.submit(self._list_by_id, fid): (fid, dpath, depth, bkey)
+                    for fid, dpath, depth, bkey in current
+                }
+                current = []
+                for fut in as_completed(fut_to_dir):
+                    fid, dpath, depth, bkey = fut_to_dir[fut]
+                    try:
+                        entries = fut.result()
+                    except Exception as exc:  # noqa: BLE001 — 单个子目录失败不中断整轮，统一收集后上报
+                        logger.warning("%s 并行列目录失败 %s: %s", self.what, dpath, exc)
+                        walk_errors.append(f"{dpath}: {exc}")
+                        continue
+                    for entry in entries:
+                        if entry.is_dir:
+                            # 原盘结构目录（BDMV/STREAM、CERTIFICATE…）整棵跳过
+                            if disc_filter.is_disc_subtree_dir(entry.name):
+                                continue
+                            if not entry.entry_id or entry.entry_id in seen_folders:
+                                continue
+                            if depth < max_depth:
+                                seen_folders.add(entry.entry_id)
+                                current.append((
+                                    entry.entry_id,
+                                    _child_rel(dpath, entry.name),
+                                    depth + 1,
+                                    bkey + (entry.entry_id,),
+                                ))
+                            continue
+                        ext = _os.path.splitext(entry.name)[1].lower()
+                        if ext not in want_exts:
+                            continue
+                        if not entry.file_id:
+                            # 防御：无 file_id 的文件做不了身份识别，跳过并记日志
+                            logger.warning("%s 遍历跳过无 file_id 文件：%s",
+                                           self.what, _child_rel(dpath, entry.name))
+                            continue
+                        collected.append((
+                            _child_rel(dpath, entry.name), entry.file_id,
+                            entry.name, entry.size, entry.mod_ts, bkey,
+                        ))
+
+        # ---- 第二遍：按 rel 文本分组，真撞的文件确定性改名 ----
+        # 同 (rel, file_id) 重复出现（网盘侧重复条目/分页异常）按重复去重，
+        # 与基类 seen_files 同语义。
+        by_rel: dict[str, dict[str, tuple]] = _defaultdict(dict)
+        for rel, file_id, name, size, mod_ts, bkey in collected:
+            by_rel[rel].setdefault(file_id, (name, size, mod_ts, bkey))
+        for rel in sorted(by_rel):
+            members = sorted(by_rel[rel].items(), key=lambda kv: (kv[1][3], kv[0]))
+            for idx, (file_id, (name, size, mod_ts, _bkey)) in enumerate(members):
+                if idx == 0:
+                    out_name, out_rel = name, rel
+                else:
+                    stem, ext = _os.path.splitext(name)
+                    out_name = f"{stem} [{idx + 1}]{ext}"
+                    # rel 必然以 name 结尾（同组）；防御分支仅保底
+                    out_rel = (rel[: -len(name)] + out_name) if rel.endswith(name) \
+                        else rel + f" [{idx + 1}]"
+                yield mount_lib.MountFile(
+                    rel=out_rel, name=out_name, size=size,
+                    is_strm=mount_lib._is_strm_name(out_name),
+                    file_id=file_id, mod_ts=mod_ts,
+                )
+        if walk_errors:
+            # 生成器收尾时抛：已产出的文件照常处理，上层按来源不可用处理并
+            # 跳过清理阶段，避免误删这些子目录下的条目（与基类同契约）。
+            raise MountError(
+                f"{self.what} {len(walk_errors)} 个子目录列举失败: "
+                + "; ".join(walk_errors[:5])
+                + ("..." if len(walk_errors) > 5 else "")
+            )
+
+    def walk_media_merged(self, root: str = "/", max_depth: int = 32,
+                          exts: Optional[set] = None) -> Iterator[mount_lib.MountFile]:
+        """追新（change_watcher）用的合并枚举入口：与 ``walk_media`` 完全同实现。
+
+        之所以单开一个方法名：基类 ``RemoteMount.walk_media`` 也有同名方法但
+        是文本逐层语义（未合并）；追新要显式表达"我要的是合并命名空间的那版"，
+        ``change_watcher._walk_files`` 按这个方法是否存在做分发——只有 Drive
+        提供这个入口，115/rclone 的追新路径原样不动。
+
+        文本逐层解析只认每级首个同名文件夹：新文件若落在第二个同名分支里，
+        追新的旧遍历永远发现不了（只能等全量扫描兜底）。这个入口修的就是它。
+        """
+        return self.walk_media(root=root, max_depth=max_depth, exts=exts)
 
     def _locate(self, rel: str) -> MountEntry:
         """按 rel 定位文件条目（resolve 用）。

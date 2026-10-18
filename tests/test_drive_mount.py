@@ -556,3 +556,94 @@ def test_resolve_second_duplicate_file(_dup2_drive, monkeypatch):
     provider = DriveMount(_mount())
     target = provider.resolve(DUP2_FILE_REL)
     assert target.kind == "url" and "id=V_TGT" in target.value
+
+
+# ---------- 同名文件夹命名空间合并（walk_media 覆盖） ----------
+
+def test_walk_media_yields_second_duplicate_branch_files(_dup2_drive):
+    """遍历合并同名文件夹命名空间：第二个分支的文件也要产出（自然路径）"""
+    provider = DriveMount(_mount())
+    files = {f.rel: f for f in provider.walk_media(root="/剧集")}
+    # 第一分支的文件
+    assert files["/剧集/黑白密码 (2023)/Season 1/别的剧集 - S01E01.mkv"].file_id == "V_OTHER"
+    # 第二分支（旧实现里被遮蔽）的文件：自然路径产出，不改名
+    assert files["/剧集/黑白密码 (2023)/Season 1/黑白密码 - S01E16.mkv"].file_id == "V_TGT"
+
+
+def test_walk_media_is_deterministic_across_runs(_dup2_drive):
+    """多次遍历结果确定一致（分支键+file_id 排序，不依赖 API 返回顺序）"""
+    provider = DriveMount(_mount())
+    run1 = [(f.rel, f.file_id) for f in provider.walk_media(root="/剧集")]
+    run2 = [(f.rel, f.file_id) for f in provider.walk_media(root="/剧集")]
+    assert run1 == run2 and len(run1) == 2
+
+
+def test_walk_media_subdir_failure_still_raises(_dup2_drive, monkeypatch):
+    """合并遍历下子目录列举失败：其余文件照常产出，收尾仍抛错（防误删语义）"""
+    failing = {"F_S1B"}
+
+    def _api_get_fail(url, token, params):
+        import re as _re
+        match = _re.search(r"'([^']+)' in parents", params.get("q", ""))
+        folder_id = match.group(1) if match else ""
+        if folder_id in failing:
+            raise drive_changes.DriveNotFoundError(folder_id)
+        return {"files": DUP2_TREE.get(folder_id, [])}
+
+    monkeypatch.setattr(drive_changes, "_api_get", _api_get_fail)
+    provider = DriveMount(_mount())
+    got = []
+    import pytest as _pytest
+    with _pytest.raises(mnt.MountError):
+        for f in provider.walk_media(root="/剧集"):
+            got.append(f)
+    assert any(f.file_id == "V_OTHER" for f in got)
+
+
+# 真撞树：两个同名文件夹下有完全相同的文本路径文件（不同 file id）
+SHADOW_COLLIDE_TREE = {
+    DRIVE_ID: [_folder("F_C_ROOT", "综艺")],
+    "F_C_ROOT": [
+        _folder("F_C_A", "同名节目"),  # 第一个分支
+        _folder("F_C_B", "同名节目"),  # 第二个分支（被遮蔽）
+    ],
+    "F_C_A": [_file("V_CA_E1", "S01E01.mkv")],
+    "F_C_B": [_file("V_CB_E1", "S01E01.mkv")],  # 真撞：同文本路径，不同 fid
+}
+
+
+def _collide_api_get(url, token, params):
+    match = re.search(r"'([^']+)' in parents", params.get("q", ""))
+    folder_id = match.group(1) if match else ""
+    return {"files": SHADOW_COLLIDE_TREE.get(folder_id, [])}
+
+
+@pytest.fixture()
+def _collide_drive(monkeypatch):
+    monkeypatch.setattr(drive_changes, "_api_get", _collide_api_get)
+    yield
+
+
+def test_walk_media_true_collision_gets_indexed_suffix(_collide_drive):
+    """真撞（同文本路径、不同 file_id）：首个保留原名，其余加 ' [n]' 后缀"""
+    provider = DriveMount(_mount())
+    files = {f.rel: f for f in provider.walk_media(root="/综艺")}
+    assert files["/综艺/同名节目/S01E01.mkv"].file_id == "V_CA_E1"
+    assert files["/综艺/同名节目/S01E01 [2].mkv"].file_id == "V_CB_E1"
+    # 两个文件都不丢，且 guid 必然不同（路径派生）
+    from backend.emby_server.scanner import item_guid, parse_media_filename
+    guids = {item_guid(rel) for rel in files}
+    assert len(guids) == 2
+    # 后缀不影响季/集解析（复用多版本合并语义的前提）
+    parsed = parse_media_filename("/综艺/同名节目/S01E01 [2].mkv", "tvshows")
+    assert parsed["season"] == 1 and parsed["episode"] == 1
+
+
+def test_walk_media_collision_suffix_is_deterministic(_collide_drive):
+    """真撞改名多次遍历一致：分支键 (…F_C_A) < (…F_C_B)，归属不漂移"""
+    provider = DriveMount(_mount())
+    run1 = sorted(((f.file_id, f.rel) for f in provider.walk_media(root="/综艺")))
+    run2 = sorted(((f.file_id, f.rel) for f in provider.walk_media(root="/综艺")))
+    assert run1 == run2
+    assert run1[0] == ("V_CA_E1", "/综艺/同名节目/S01E01.mkv")
+    assert run1[1] == ("V_CB_E1", "/综艺/同名节目/S01E01 [2].mkv")
