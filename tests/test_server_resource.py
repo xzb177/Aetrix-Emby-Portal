@@ -85,9 +85,12 @@ def test_body_limit_middleware_exists():
 # ---------- 3. Emby 登录限流 ----------
 
 def test_emby_login_rate_limit_rule_exists():
-    """RATE_LIMITS 里有 /emby/Users/AuthenticateByName 的 15次/分钟规则，
+    """API_RATE_LIMITS 里有 /emby/Users/AuthenticateByName 的 15次/分钟规则，
     且中间件覆盖 /emby/ 路径（原来只覆盖 /api/）。
     EM（backend/main.py，单进程模式）和 EA（emby_api，分离部署生产用）都要有。
+
+    r38 起规则表收敛到 backend/ratelimit.py 的 API_RATE_LIMITS（横切能力只许一套），
+    两处中间件只许引用、不许各自手写。本测试改查规范位置，并校验两处确实在用它。
 
     EA 侧 2026-10-07 起为纯 ASGI 类（emby_api/asgi_middleware.py，
     中转零拷贝优化），此处同时接受函数式与类式两种形态。
@@ -125,13 +128,15 @@ def test_emby_login_rate_limit_rule_exists():
                 return
         raise AssertionError(f"rate limit middleware {names} not found in {path}")
 
-    # EM（backend/main.py，单进程模式）：函数式
-    _check_rule(REPO_ROOT / "backend/main.py", "RATE_LIMITS")
-    _check_mw_covers_emby(REPO_ROOT / "backend/main.py", {"rate_limit_middleware"})
-
-    # EA（分离部署生产用）：纯 ASGI 类
+    # 规则表规范位置：backend/ratelimit.py::API_RATE_LIMITS（r38 收敛）
+    _check_rule(REPO_ROOT / "backend/ratelimit.py", "API_RATE_LIMITS")
     ea_mw_path = REPO_ROOT / "emby_api/asgi_middleware.py"
-    _check_rule(ea_mw_path, "_EA_RATE_LIMITS")
+    # EM 与 EA 不许各自手写表：两处都必须引用规范表
+    for p in (REPO_ROOT / "backend/main.py", ea_mw_path):
+        src = open(p).read()
+        assert "API_RATE_LIMITS" in src, f"{p} 未引用共用规则表"
+    # 中间件覆盖 /emby/ 路径：EM 函数式，EA 纯 ASGI 类
+    _check_mw_covers_emby(REPO_ROOT / "backend/main.py", {"rate_limit_middleware"})
     _check_mw_covers_emby(ea_mw_path, {"EaRateLimitMiddleware"})
 
 def test_body_limit_middleware_in_both_apps():

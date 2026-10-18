@@ -126,13 +126,9 @@ class EaBodyLimitMiddleware:
         await self.app(scope, receive, send)
 
 
-_EA_RATE_LIMITS = [
-    ("/api/health", 0, 0),              # 健康检查：不限流
-    ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
-    ("/api/admin/emby/login", 10, 10),  # 登录：防暴力破解
-    ("/api/user/login", 10, 10),
-    ("/api/", 120, 600),               # 普通 API
-]
+# 限流规则表：收敛到 backend.ratelimit.API_RATE_LIMITS（横切能力只许一套），
+# EM 与 EA 共用，改限额只改一处。保留本名做兼容。
+from backend.ratelimit import API_RATE_LIMITS as _EA_RATE_LIMITS  # noqa: E402
 
 
 def _ea_get_ip(request: Request) -> str:
@@ -143,9 +139,16 @@ def _ea_get_ip(request: Request) -> str:
 
 
 def _ea_is_auth(request: Request) -> bool:
-    auth = request.headers.get("authorization", "")
-    token = request.headers.get("x-emby-token", "") or request.query_params.get("api_key", "")
-    return bool(auth or token)
+    """EA 限流档判定：是否认证用户。
+
+    判定逻辑收敛到 backend.ratelimit.is_authenticated_request（横切能力只许一套）。
+    旧实现只看 Authorization 头 / Emby token 在不在（``bool(auth or token)``），
+    攻击者发任意伪造头就能拿到 600/分钟认证档；现纯验签，失败一律 False。
+    保留本函数名做兼容。
+    """
+    from backend.ratelimit import is_authenticated_request
+
+    return is_authenticated_request(request)
 
 
 def _ea_check_limit(ip: str, path: str, authenticated: bool) -> tuple:
