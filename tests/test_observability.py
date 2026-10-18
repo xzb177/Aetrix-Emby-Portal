@@ -200,3 +200,42 @@ def test_api_probe_warn_on_high_p99(monkeypatch):
     s = obs._probe_api()
     assert s["status"] == "warn"
     assert "P99" in s["message"]
+
+
+# ---------------------------------------------------------------------------
+# r37：_probe_enrich 只数真实条目（与 health_report._enrich_count 同口径）
+# ---------------------------------------------------------------------------
+
+def test_probe_enrich_excludes_merged_copies(db):
+    """合并副本（merged_into_id 非空）不计入 backlog：与 health_report 同口径，
+    否则探针常年 warn（2026-10-16 实测：真实 pending 2 条、副本 pending 72167 条）。"""
+    from backend.emby_server import models as em
+    lib = em.Library(guid=_guid(), name="obs_r37_%s" % _guid()[:8],
+                     collection_type="movies", paths="/tmp/obs_r37")
+    db.add(lib)
+    db.commit()
+    db.refresh(lib)
+    try:
+        parent = em.MediaItem(guid=_guid(), library_id=lib.id, name="parent",
+                              item_type="movie", enrich_status="done")
+        db.add(parent)
+        db.commit()
+        db.refresh(parent)
+        # 1 条真实 pending + 3 条合并副本 pending
+        db.add(em.MediaItem(guid=_guid(), library_id=lib.id, name="real",
+                            item_type="movie", enrich_status="pending"))
+        for i in range(3):
+            db.add(em.MediaItem(guid=_guid(), library_id=lib.id,
+                                name="copy%d" % i, item_type="movie",
+                                enrich_status="pending",
+                                merged_into_id=parent.id))
+        db.commit()
+        res = obs._probe_enrich(db)
+        assert res["metrics"]["backlog"] == 1, \
+            "backlog 应只数真实条目，合并副本不计入"
+        assert res["metrics"]["pending"] == 1
+    finally:
+        db.query(em.MediaItem).filter(
+            em.MediaItem.library_id == lib.id).delete(synchronize_session=False)
+        db.delete(lib)
+        db.commit()

@@ -34,16 +34,31 @@ from backend.emby_server.tmdb import TmdbClient, cast_list, _has_credits
 init_db()
 
 
+def _clear_media_tables(s):
+    """清空本文件用到的三张表（进出各一次，避免跨文件污染共享库）。"""
+    s.rollback()
+    s.query(em.EmbyPerson).delete()
+    s.query(em.MediaStream).delete()
+    s.query(em.MediaItem).delete()
+    s.commit()
+
+
 @pytest.fixture()
 def db():
     s = SessionLocal()
     try:
-        # 每个测试前清空（隔离，避免测试间污染）
-        s.query(em.EmbyPerson).delete()
-        s.query(em.MediaStream).delete()
-        s.query(em.MediaItem).delete()
-        s.commit()
+        # 每个测试前后都清空（隔离，避免测试间污染）。
+        # 只在测试前清不够：文件内最后一个用例的残留行会漏进共享库，
+        # 污染后续文件的全库计数断言（#1034 冒烟实证：
+        # test_person_image_404_cases 残留的 pending 行让
+        # test_probe_enrich_excludes_merged_copies 的 backlog 被多算 1）。
+        _clear_media_tables(s)
         yield s
+        try:
+            _clear_media_tables(s)
+        except Exception:
+            # teardown 清理绝不能掩盖用例本身的失败
+            s.rollback()
     finally:
         s.close()
 

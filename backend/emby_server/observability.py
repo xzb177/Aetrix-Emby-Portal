@@ -305,6 +305,9 @@ def _probe_enrich(db) -> dict:
     enrich_status COUNT（走 ``idx_item_enrich`` 索引，单次开销小）。重复是刻意的：
     本模块顶层不导入项目内模块（设计原则#5），不与 health_report 共享中间结果，
     避免循环依赖；开关默认关，/api/health 额外 4 次索引 COUNT 可接受。
+    r37：与 health_report._enrich_count 同口径——只数真实条目，合并副本
+    （merged_into_id 非空）按设计不参与补全，算进来会让积压常年虚高几万条、
+    探针长 warn（2026-10-16 实测：真实 pending 2 条、副本 pending 72167 条）。
     """
     try:
         from backend.emby_server import models as em
@@ -313,7 +316,8 @@ def _probe_enrich(db) -> dict:
         for st in ("pending", "enriching", "done", "failed"):
             try:
                 counts[st] = db.query(func.count(em.MediaItem.id)).filter(
-                    em.MediaItem.enrich_status == st).scalar() or 0
+                    em.MediaItem.enrich_status == st,
+                    em.MediaItem.merged_into_id.is_(None)).scalar() or 0
             except Exception:  # noqa: BLE001
                 counts[st] = 0
         backlog = counts["pending"] + counts["enriching"]
