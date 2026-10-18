@@ -565,8 +565,15 @@ def optimize_query_plans(db: Session) -> bool:
 
 
 
-def janitor_tick() -> dict:
-    """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）"""
+def janitor_tick(heavy: bool = True) -> dict:
+    """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）。
+
+    heavy=True（默认）：全套维护，worker 进程用。
+    heavy=False：只做播放相关的轻量清理（转码/播放会话/token/字幕缓存/GC），
+    跳过图片/缩略图/分类回填/扫描指纹/流水/AI 用量/查询计划/TMDB 缓存等重活——
+    EA 是播放前台进程，重活每 600 秒在它进程里跑会跟播放请求抢 DB/磁盘/CPU，
+    且这些活 worker 进程本来就会做（幂等，双跑纯浪费）。
+    """
     from backend.database import SessionLocal
     from backend.emby_server import streaming
 
@@ -605,108 +612,111 @@ def janitor_tick() -> dict:
     finally:
         db.close()
 
-    # 分类关联表：把老库还没回填的条目补齐（增量，按 id 水位），
-    # 并清掉指向已删除条目的孤儿行（批量删除走 Core 语句，ORM 事件看不到）
-    db = SessionLocal()
-    try:
-        result["item_facets_backfilled"] = facets.ensure_backfill(db)
-        result["item_facets_orphans"] = facets.prune_orphans(db)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("维护分类关联表失败: %s", exc)
-        db.rollback()
-    finally:
-        db.close()
+    # ---- 重活区（heavy）：图片/缩略图/分类回填/扫描指纹/流水/AI 用量/查询计划 ----
+    # worker 进程跑全套；EA（播放前台）传 heavy=False 跳过，把 DB/磁盘/CPU 留给播放请求。
+    if heavy:
+        # 分类关联表：把老库还没回填的条目补齐（增量，按 id 水位），
+        # 并清掉指向已删除条目的孤儿行（批量删除走 Core 语句，ORM 事件看不到）
+        db = SessionLocal()
+        try:
+            result["item_facets_backfilled"] = facets.ensure_backfill(db)
+            result["item_facets_orphans"] = facets.prune_orphans(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("维护分类关联表失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
 
-    # 增量扫描的目录指纹：媒体库删了之后那批行没人会再用（指纹键含库 id），
-    # 留着只会随「建库→删库」慢慢涨
-    db = SessionLocal()
-    try:
-        result["scan_dir_states_pruned"] = prune_scan_dir_states(db)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("清理扫描目录指纹失败: %s", exc)
-        db.rollback()
-    finally:
-        db.close()
+        # 增量扫描的目录指纹：媒体库删了之后那批行没人会再用（指纹键含库 id），
+        # 留着只会随「建库→删库」慢慢涨
+        db = SessionLocal()
+        try:
+            result["scan_dir_states_pruned"] = prune_scan_dir_states(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("清理扫描目录指纹失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
 
-    # 扫描流水：同一个原因（媒体库删了没人再看），+ 每个库超出上限的旧行兜底
-    db = SessionLocal()
-    try:
-        result["scan_runs_pruned"] = prune_scan_runs(db)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("清理扫描流水失败: %s", exc)
-        db.rollback()
-    finally:
-        db.close()
+        # 扫描流水：同一个原因（媒体库删了没人再看），+ 每个库超出上限的旧行兜底
+        db = SessionLocal()
+        try:
+            result["scan_runs_pruned"] = prune_scan_runs(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("清理扫描流水失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
 
-    # 刮削图片本地化的缓存：换过海报的旧文件、已被删除的条目留下的图都要回收，
-    # 超出上限时再从旧到新淘汰（有引用的图一张不动）
-    db = SessionLocal()
-    try:
-        image_result = image_store.prune(db)
-        result["images_pruned"] = image_result["removed"]
-        result["images_freed_bytes"] = image_result["freed_bytes"]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("清理图片缓存失败: %s", exc)
-        db.rollback()
-    finally:
-        db.close()
+        # 刮削图片本地化的缓存：换过海报的旧文件、已被删除的条目留下的图都要回收，
+        # 超出上限时再从旧到新淘汰（有引用的图一张不动）
+        db = SessionLocal()
+        try:
+            image_result = image_store.prune(db)
+            result["images_pruned"] = image_result["removed"]
+            result["images_freed_bytes"] = image_result["freed_bytes"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("清理图片缓存失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
 
-    # 缩略图历史补生成：每天维护周期跑一批（限速+断点续跑），补完为止。
-    # 扫描正在跑时跳过：转码吃 CPU，别跟扫描抢资源（水位已提交，下次继续）。
-    # 手动触发（管理后台 POST）不受影响：那是管理员明确点的。
-    db = SessionLocal()
-    try:
-        scanning = db.query(em.Library.id).filter(
-            em.Library.is_scanning.is_(True)).first() is not None
-        if scanning:
-            logger.info("缩略图补生成：有扫描在跑，本轮跳过")
-        else:
-            # 前台活跃让路：最近有用户在看/刷，本轮重活跳过（任务留到下个周期，不丢）
-            try:
-                from backend.emby_server import foreground_activity as _fa
-                _window = max(0.0, float(os.getenv("FOREGROUND_ACTIVE_SECONDS", "60") or 60))
-            except (TypeError, ValueError):
-                _window = 60.0
-            if _window > 0 and _fa.active(_window):
-                _ago = _fa.last_seen_ago()
-                logger.info("缩略图补生成：前台 %d 秒前有用户请求，本轮跳过",
-                            int(_ago) if _ago is not None else 0)
-                result["thumbs_backfill_skipped_active"] = True
+        # 缩略图历史补生成：每天维护周期跑一批（限速+断点续跑），补完为止。
+        # 扫描正在跑时跳过：转码吃 CPU，别跟扫描抢资源（水位已提交，下次继续）。
+        # 手动触发（管理后台 POST）不受影响：那是管理员明确点的。
+        db = SessionLocal()
+        try:
+            scanning = db.query(em.Library.id).filter(
+                em.Library.is_scanning.is_(True)).first() is not None
+            if scanning:
+                logger.info("缩略图补生成：有扫描在跑，本轮跳过")
             else:
-                thumb_result = image_store.backfill_thumbnails(db)
-                result["thumbs_backfilled"] = thumb_result["generated"]
-                result["thumbs_backfill_done"] = thumb_result["done"]
-                if thumb_result["generated"]:
-                    logger.info("缩略图补生成：本轮 %d 张，水位 id=%d%s",
-                                thumb_result["generated"], thumb_result["last_id"],
-                                "（已补完）" if thumb_result["done"] else "")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("缩略图补生成失败: %s", exc)
-        db.rollback()
-    finally:
-        db.close()
+                # 前台活跃让路：最近有用户在看/刷，本轮重活跳过（任务留到下个周期，不丢）
+                try:
+                    from backend.emby_server import foreground_activity as _fa
+                    _window = max(0.0, float(os.getenv("FOREGROUND_ACTIVE_SECONDS", "60") or 60))
+                except (TypeError, ValueError):
+                    _window = 60.0
+                if _window > 0 and _fa.active(_window):
+                    _ago = _fa.last_seen_ago()
+                    logger.info("缩略图补生成：前台 %d 秒前有用户请求，本轮跳过",
+                                int(_ago) if _ago is not None else 0)
+                    result["thumbs_backfill_skipped_active"] = True
+                else:
+                    thumb_result = image_store.backfill_thumbnails(db)
+                    result["thumbs_backfilled"] = thumb_result["generated"]
+                    result["thumbs_backfill_done"] = thumb_result["done"]
+                    if thumb_result["generated"]:
+                        logger.info("缩略图补生成：本轮 %d 张，水位 id=%d%s",
+                                    thumb_result["generated"], thumb_result["last_id"],
+                                    "（已补完）" if thumb_result["done"] else "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("缩略图补生成失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
 
-    # AI 助手每日用量（能力：AI 模型设置）：一个用户一天一行，不清就会一直涨。
-    # 只保留近 90 天——配额看的是「今天」，历史行只在回看用量时有意义。
-    db = SessionLocal()
-    try:
-        result["ai_usage_pruned"] = prune_ai_usage(db)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("清理 AI 用量记录失败: %s", exc)
-        db.rollback()
-    finally:
-        db.close()
+        # AI 助手每日用量（能力：AI 模型设置）：一个用户一天一行，不清就会一直涨。
+        # 只保留近 90 天——配额看的是「今天」，历史行只在回看用量时有意义。
+        db = SessionLocal()
+        try:
+            result["ai_usage_pruned"] = prune_ai_usage(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("清理 AI 用量记录失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
 
-    # 查询计划：库长到几十万行之后，SQLite 可能还在按老统计信息估行数（选错索引就是
-    # 全表扫描）。官方建议周期性跑 `PRAGMA optimize`，成本几乎为零，见 optimize_query_plans。
-    db = SessionLocal()
-    try:
-        result["query_plans_optimized"] = optimize_query_plans(db)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("优化查询计划失败: %s", exc)
-        db.rollback()
-    finally:
-        db.close()
+        # 查询计划：库长到几十万行之后，SQLite 可能还在按老统计信息估行数（选错索引就是
+        # 全表扫描）。官方建议周期性跑 `PRAGMA optimize`，成本几乎为零，见 optimize_query_plans。
+        db = SessionLocal()
+        try:
+            result["query_plans_optimized"] = optimize_query_plans(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("优化查询计划失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
 
     try:
         # 只清「已经不活跃」的目录：给刚启动、还没登记进注册表的会话留出余量
@@ -717,13 +727,15 @@ def janitor_tick() -> dict:
         result["subtitle_cache_pruned"] = prune_subtitle_cache()
     except Exception as exc:  # noqa: BLE001
         logger.warning("字幕缓存淘汰失败: %s", exc)
-    try:
-        from backend.emby_server import tmdb_cache
-        _pruned = tmdb_cache.prune(force=True) or {}
-        result["tmdb_cache_pruned"] = int(_pruned.get("expired_removed", 0)) \
-            + int(_pruned.get("evicted", 0))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("TMDB 缓存巡检失败: %s", exc)
+    if heavy:
+        # TMDB 响应缓存巡检：enrich 侧的活，EA 不跑
+        try:
+            from backend.emby_server import tmdb_cache
+            _pruned = tmdb_cache.prune(force=True) or {}
+            result["tmdb_cache_pruned"] = int(_pruned.get("expired_removed", 0)) \
+                + int(_pruned.get("evicted", 0))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("TMDB 缓存巡检失败: %s", exc)
     try:
         result["idle_gc_done"] = bool(_idle_gc_if_quiet())
     except Exception as exc:  # noqa: BLE001
@@ -770,8 +782,11 @@ def _idle_gc_if_quiet() -> int:
     return freed
 
 
-def start_janitor(interval_seconds: Optional[int] = None) -> bool:
-    """启动后台维护线程（同一进程只启动一次；daemon，随进程退出）"""
+def start_janitor(interval_seconds: Optional[int] = None, heavy: bool = True) -> bool:
+    """启动后台维护线程（同一进程只启动一次；daemon，随进程退出）
+
+    heavy 透传给 janitor_tick：EA（播放前台）传 heavy=False 只跑轻量清理。
+    """
     global _JANITOR_STARTED
     interval = MAINTENANCE_INTERVAL if interval_seconds is None else max(30, interval_seconds)
     with _JANITOR_LOCK:
@@ -781,7 +796,7 @@ def start_janitor(interval_seconds: Optional[int] = None) -> bool:
 
     def _one_tick() -> None:
         try:
-            summary = janitor_tick()
+            summary = janitor_tick(heavy=heavy)
             if any(summary.values()):
                 logger.info("维护周期完成: %s", summary)
             gc.collect()  # 2026-10-07 压力测试：强制回收防内存不回落
@@ -798,7 +813,8 @@ def start_janitor(interval_seconds: Optional[int] = None) -> bool:
             _one_tick()
 
     threading.Thread(target=_loop, daemon=True, name="maintenance-janitor").start()
-    logger.info("后台维护已启动（每 %s 秒）", interval)
+    logger.info("后台维护已启动（每 %s 秒，%s）", interval,
+                "全量" if heavy else "轻量（EA 播放前台，重活由 worker 进程做）")
     return True
 
 
