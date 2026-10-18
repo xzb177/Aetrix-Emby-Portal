@@ -180,6 +180,9 @@ function toTop() {
 .m-scroll {
   position: relative;
   height: 100dvh;
+  /* 底部垫 --paper-dock-space 避让全局底部导航栏（App.vue 的 PanelTabbar），否则最后一节被压住滑不上来 */
+  box-sizing: border-box;
+  padding-bottom: var(--paper-dock-space);
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
