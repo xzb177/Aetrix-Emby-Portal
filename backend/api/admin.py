@@ -2302,6 +2302,9 @@ def admin_unmerge_version(
         raise HTTPException(status_code=400, detail="该条目未被合并")
     _audit(db, current_admin, "unmerge_version", "media_item", item.id,
            {"name": item.name})
+    # 列表去重缓存：merged_into_id 变化 → bump 该库数据版本号（与提交同事务）
+    from backend.emby_server import items_dedup_cache as _idc
+    _idc.bump_library_item_versions(db, [item.library_id], force=True)
     db.commit()
     return {"success": True, "message": f"已解除合并：{item.name}"}
 
@@ -2323,6 +2326,9 @@ def admin_unmerge_all(
     count = _mvw.unmerge_all(db, primary_id)
     _audit(db, current_admin, "unmerge_all_versions", "media_item", primary_id,
            {"count": count})
+    # 列表去重缓存：merged_into_id 批量变化 → bump 该库数据版本号
+    from backend.emby_server import items_dedup_cache as _idc
+    _idc.bump_library_item_versions(db, [item.library_id], force=True)
     db.commit()
     return {"success": True, "message": f"已解除 {count} 个版本的合并"}
 
@@ -2347,5 +2353,14 @@ def admin_merge_episode_versions(
     stats = _ev.merge_episode_versions(db, library_id)
     _audit(db, current_admin, "merge_episode_versions", "library",
            library_id or 0, stats)
+    # 列表去重缓存：单集多版本合并改 merged_into_id → bump 版本号
+    #（不传库 = 全库，取全部启用库；与提交同事务）
+    from backend.emby_server import items_dedup_cache as _idc
+    from backend.emby_server import models as _em
+    if any(stats.get(k) for k in ("groups", "merged", "promoted", "unmerged_orphans")):
+        _libs = [library_id] if library_id else [
+            r[0] for r in db.query(_em.Library.id)
+            .filter(_em.Library.is_enabled == True).all()]  # noqa: E712
+        _idc.bump_library_item_versions(db, _libs, force=True)
     db.commit()
     return {"success": True, **stats}

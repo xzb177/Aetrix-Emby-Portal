@@ -357,6 +357,26 @@ export const fetchHotlinkConfig = () => get<HotlinkConfigGet>('/hotlink-config')
 export const updateHotlinkConfig = (payload: HotlinkConfigPayload) =>
   put<HotlinkConfig>('/hotlink-config', payload)
 
+// ==================== 列表去重缓存（v2.54.0） ====================
+// 后端：backend/api/admin_economy.py（/api/admin/items-dedup-cache-config）
+// 配置读取唯一实现：backend/emby_server/items_dedup_cache.py
+
+export interface ItemsDedupCacheConfigPayload {
+  enabled: boolean
+  ttl_seconds: number
+  max_entries: number
+}
+
+export interface ItemsDedupCacheConfig extends ItemsDedupCacheConfigPayload {
+  defaults: ItemsDedupCacheConfigPayload
+}
+
+export const fetchItemsDedupCacheConfig = () =>
+  get<ItemsDedupCacheConfig>('/items-dedup-cache-config')
+
+export const updateItemsDedupCacheConfig = (payload: ItemsDedupCacheConfigPayload) =>
+  put<ItemsDedupCacheConfig>('/items-dedup-cache-config', payload)
+
 // ==================== 到期续费提醒（v2.8.0） ====================
 // 后端：backend/api/reminders_admin.py + backend/reminders.py
 

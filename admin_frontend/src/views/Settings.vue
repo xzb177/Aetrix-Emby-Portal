@@ -38,7 +38,8 @@ import { useDangerOps } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
 import {
   fetchHotlinkConfig, updateHotlinkConfig, type HotlinkConfigPayload,
-  type HotlinkConfigGet,
+  type HotlinkConfigGet, fetchItemsDedupCacheConfig, updateItemsDedupCacheConfig,
+  type ItemsDedupCacheConfigPayload,
 } from '@/api/economy'
 import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
@@ -536,7 +537,7 @@ async function load() {
 onMounted(async () => {
   // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
   if (tab.value === 'danger') loadDanger()
-  await Promise.all([load(), loadCapabilities(), loadHotlink()])
+  await Promise.all([load(), loadCapabilities(), loadHotlink(), loadItemsDedupCache()])
   // Batch D 入口收敛：邀请页 / 客户端策略等用 hash 深链跳进来（如 #group-invitation）
   // R40：querySelector 直接塞 hash 会在畸形值时抛 SyntaxError；改用 getElementById
   if (route.hash) {
@@ -601,6 +602,61 @@ async function saveHotlinkCore(): Promise<boolean> {
   }
 }
 
+/** ==================== 列表去重缓存卡片（独立 endpoint，非通用分组） ==================== */
+/** 与防盗链卡片同构：TTL/条目上限需要前后端双重范围校验，通用分组装不下。 */
+const itemsDedupCache = reactive({ enabled: true, ttl_seconds: 60, max_entries: 2000 })
+const itemsDedupCacheOriginal = reactive({ enabled: true, ttl_seconds: 60, max_entries: 2000 })
+const itemsDedupCacheLoading = ref(false)
+
+function applyItemsDedupCache(data: ItemsDedupCacheConfigPayload & { defaults?: ItemsDedupCacheConfigPayload }) {
+  itemsDedupCache.enabled = data.enabled !== false
+  itemsDedupCache.ttl_seconds = Number(data.ttl_seconds) || 60
+  itemsDedupCache.max_entries = Number(data.max_entries) || 2000
+  Object.assign(itemsDedupCacheOriginal, itemsDedupCache)
+}
+
+async function loadItemsDedupCache() {
+  itemsDedupCacheLoading.value = true
+  try {
+    applyItemsDedupCache(await fetchItemsDedupCacheConfig())
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
+  } finally {
+    itemsDedupCacheLoading.value = false
+  }
+}
+
+const itemsDedupCacheDirty = computed(() =>
+  itemsDedupCache.enabled !== itemsDedupCacheOriginal.enabled
+  || itemsDedupCache.ttl_seconds !== itemsDedupCacheOriginal.ttl_seconds
+  || itemsDedupCache.max_entries !== itemsDedupCacheOriginal.max_entries,
+)
+
+/** 列表去重缓存保存核心：返回是否成功，失败时拦截器/校验已提示。 */
+async function saveItemsDedupCacheCore(): Promise<boolean> {
+  // 前端先行校验：与后端 write_config 的范围保持一致
+  if (!Number.isInteger(itemsDedupCache.ttl_seconds) || itemsDedupCache.ttl_seconds < 10 || itemsDedupCache.ttl_seconds > 3600) {
+    ElMessage.error('缓存有效期需在 10~3600 秒之间')
+    return false
+  }
+  if (!Number.isInteger(itemsDedupCache.max_entries) || itemsDedupCache.max_entries < 100 || itemsDedupCache.max_entries > 20000) {
+    ElMessage.error('缓存条目上限需在 100~20000 之间')
+    return false
+  }
+  const payload: ItemsDedupCacheConfigPayload = {
+    enabled: itemsDedupCache.enabled,
+    ttl_seconds: itemsDedupCache.ttl_seconds,
+    max_entries: itemsDedupCache.max_entries,
+  }
+  try {
+    applyItemsDedupCache(await updateItemsDedupCacheConfig(payload))
+    return true
+  } catch {
+    // 拦截器已提示
+    return false
+  }
+}
+
 /** 运营参数页签顶部的分组跳转：分组多（注册 + 9 块 + 防盗链），先看目录再定位，不用一路滚 */
 function scrollToGroup(id: string) {
   document.getElementById(`group-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -626,6 +682,7 @@ async function reloadAll() {
   loadCapabilities()
   load()
   loadHotlink()
+  loadItemsDedupCache()
   if (tab.value === 'danger') loadDanger()
 }
 
@@ -652,7 +709,8 @@ const hasAdvanced = (g: Group): boolean => g.fields.some((f) => f.advanced)
  */
 const dirtyGroups = computed(() => GROUPS.filter((g) => isDirty(g)))
 const dirtyCount = computed(() =>
-  dirtyGroups.value.length + (regDirty.value ? 1 : 0) + (hotlinkDirty.value ? 1 : 0),
+  dirtyGroups.value.length + (regDirty.value ? 1 : 0) + (hotlinkDirty.value ? 1 : 0)
+  + (itemsDedupCacheDirty.value ? 1 : 0),
 )
 const anyDirty = computed(() => dirtyCount.value > 0)
 const savingAll = ref(false)
@@ -747,6 +805,10 @@ async function saveAll() {
       if (await saveHotlinkCore()) saved += 1
       else failed.push('防盗链')
     }
+    if (itemsDedupCacheDirty.value) {
+      if (await saveItemsDedupCacheCore()) saved += 1
+      else failed.push('列表去重缓存')
+    }
   } finally {
     savingAll.value = false
   }
@@ -759,7 +821,8 @@ async function saveAll() {
 
 /**
  * 放弃：把运营参数页签里所有未保存的改动丢掉，回到服务端当前值。
- * load() 会同时重置经济分组与注册策略，loadHotlink() 重置防盗链。
+ * load() 会同时重置经济分组与注册策略，loadHotlink() 重置防盗链，
+ * loadItemsDedupCache() 重置列表去重缓存。
  */
 async function discardAll() {
   if (!anyDirty.value) return
@@ -774,6 +837,7 @@ async function discardAll() {
   }
   load()
   loadHotlink()
+  loadItemsDedupCache()
 }
 
 // ==================== 危险操作（Phase 5） ====================
@@ -978,6 +1042,16 @@ watch(
               >
                 <ShieldCheck :size="13" />防盗链
                 <span v-if="hotlinkDirty" class="chip-dot" aria-label="有未保存的改动" />
+              </button>
+              <button
+                v-if="sec.id === 'playback'"
+                type="button"
+                class="group-chip"
+                :class="{ 'is-dirty': itemsDedupCacheDirty }"
+                @click="scrollToGroup('items-dedup-cache')"
+              >
+                <Zap :size="13" />列表缓存
+                <span v-if="itemsDedupCacheDirty" class="chip-dot" aria-label="有未保存的改动" />
               </button>
             </div>
           </nav>
@@ -1237,6 +1311,63 @@ watch(
                     />
                   </div>
                   <span class="field-hint">逗号分隔的域名；只有带 Referer 且主机不在名单里才会被 403。留空 = 不检查（放行所有）</span>
+                </div>
+              </el-form-item>
+            </el-form>
+          </SectionCard>
+
+          <!-- 列表去重缓存 -->
+          <SectionCard
+            id="group-items-dedup-cache"
+            title="列表去重缓存"
+            :icon="Zap"
+            description="列表接口去重结果的服务端缓存：命中时跳过约 0.6 秒的去重计算。数据版本号 + 有效期双保险，库数据变化后最多旧一个有效期。"
+            :tone="itemsDedupCacheDirty ? 'accent' : 'default'"
+            class="group-card"
+          >
+            <template v-if="itemsDedupCacheDirty" #actions>
+              <span class="au-badge au-badge-amber">未保存</span>
+            </template>
+
+            <el-form label-position="top" class="field-form field-grid">
+              <el-form-item label="启用列表去重缓存">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch v-model="itemsDedupCache.enabled" />
+                  </div>
+                  <span class="field-hint">关闭后列表接口走原计算路径（与未上线缓存时一致）</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="缓存有效期">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="itemsDedupCache.ttl_seconds"
+                      :min="10"
+                      :max="3600"
+                      :step="10"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">秒</span>
+                  </div>
+                  <span class="field-hint">同一查询多久内直接给缓存结果，默认 60。库数据变化靠版本号即时失效，这里是第二道保险</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="缓存条目上限">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="itemsDedupCache.max_entries"
+                      :min="100"
+                      :max="20000"
+                      :step="100"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">条</span>
+                  </div>
+                  <span class="field-hint">内存有界：超限时淘汰最久未访问的条目，默认 2000</span>
                 </div>
               </el-form-item>
             </el-form>

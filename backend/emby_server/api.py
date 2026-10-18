@@ -39,6 +39,7 @@ from backend.emby_server.fastjson import json_route
 from backend.emby_server import image_store
 from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
+from backend.emby_server import items_dedup_cache as _dedup_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_sign
@@ -2653,7 +2654,11 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         # 排序加 id 作为最终决胜键：同名/同时间的并列行在分页之间顺序稳定（否则
         # LIMIT/OFFSET 下并列行可能在两页重复或漏掉）。
         order_cols = [*order_cols, em.MediaItem.id.asc()]
-        dropped = _dedup_dropped_ids(query, db)
+        # 列表去重缓存（2026-10-18）：dropped 集合按（用户, 查询参数, 各库数据版本）
+        # 缓存；开关关 / TTL<=0 / Redis 不可用时逐行走旧路径。
+        dropped = _dedup_cache.dedup_dropped_ids_cached(
+            request, query, db, user, allowed,
+            lambda: _dedup_dropped_ids(query, db))
         if dropped is None:
             cand_rows = (
                 query.order_by(*order_cols)

@@ -168,6 +168,16 @@ def purge_expired(db, purge_days: int = None, library_id: int = None) -> int:
     if not ids:
         return 0
     _purge_items(db, ids)
+    # 列表去重缓存：物理删除改变条目集合 → bump 版本号（提交后可见）。
+    # 唯一调用方（扫描清理）恒传 library_id；None 时退化为全库 bump。
+    try:
+        from backend.emby_server import items_dedup_cache as _idc
+        from backend.emby_server.models import Library
+        _libs = [library_id] if library_id else [
+            r[0] for r in db.query(Library.id).filter(Library.is_enabled == True).all()]  # noqa: E712
+        _idc.bump_library_item_versions(db, _libs, force=True)
+    except Exception:  # noqa: BLE001
+        pass
     db.commit()
     logger.info("软删除回收：%d 条隐藏超过 %d 天的条目已物理删除", len(ids), days)
     return len(ids)
