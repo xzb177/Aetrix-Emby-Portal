@@ -59,8 +59,8 @@ const ZONE_LAYOUT: Record<string, { en: string; left: string; top: string; width
   daily: { en: 'CAMP GATE', left: '13%', top: '2%', width: '21%' },
   account: { en: 'ACCOUNT HUT', left: '37%', top: '2%', width: '11%' },
   social: { en: 'SIGNAL HILL', left: '63%', top: '2%', width: '23%' },
-  asset: { en: 'LEDGER HUT', left: '78%', top: '63%', width: '20%' },
-  style: { en: 'LIFE CAMP', left: '2%', top: '63%', width: '17%' },
+  asset: { en: 'LEDGER HUT', left: 'calc(98% - max(20%, 300px))', top: '60%', width: 'max(20%, 300px)' },
+  style: { en: 'LIFE CAMP', left: '2%', top: '60%', width: 'max(17%, 300px)' },
 }
 
 const zones = computed<Zone[]>(() =>
@@ -89,12 +89,13 @@ const zones = computed<Zone[]>(() =>
 }
 .zone {
   position: absolute;
-  pointer-events: auto;
+  pointer-events: none;
   border: 1.5px dashed var(--paper-hairline);
   border-radius: 48%;
   padding: 18px 16px 14px;
   background: rgba(253, 251, 250, 0.55);
 }
+.zone .facility-pin { pointer-events: auto; }
 .zone-label {
   margin: 0 0 8px;
   text-align: center;
