@@ -30,7 +30,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 from backend.emby_server.env_util import env_float

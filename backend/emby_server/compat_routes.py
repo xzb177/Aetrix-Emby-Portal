@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from backend import admin_roles, models, share_guard
 from backend.authlog import client_ip as real_client_ip

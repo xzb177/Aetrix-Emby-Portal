@@ -182,7 +182,7 @@ async def refund_order(
     通知要走 WebSocket，必须留在事件循环上 await。
     """
     from backend.api.economy import _add_points  # noqa: F401 — 保持与履约同一套账本写入
-    from backend.notifications import AdminEvent, notify_admin_event
+    from backend.notifications import AdminEvent, notify_admin_event_quiet
 
     admin_id = current_admin.id
 
@@ -305,19 +305,18 @@ async def refund_order(
         return info      # 并发抢不到的那一次：订单已被处理，不重复通知
 
     # 先提交再通知：履约事务未提交时另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
+    # r46：内联 try/except 并入统一 quiet 守卫（横切只许一套）。
     reason_text = f"\n原因：{notify_ctx['reason']}" if notify_ctx["reason"] else ""
-    try:
-        await notify_admin_event(
-            event_type=AdminEvent.ORDER_REFUNDED,
-            user_id=notify_ctx["user_id"],
-            title="↩️ 订单已退款",
-            content=(f"订单 {order_id} 已退款。"
-                     + ("；".join(notify_ctx["details"]) + "。" if notify_ctx["details"] else "")
-                     + reason_text),
-            related_id=None,
-        )
-    except Exception as exc:  # noqa: BLE001 — 通知失败不影响已完成的退款
-        logger.warning("退款通知发送失败（订单 %s）: %s", order_id, exc)
+    await notify_admin_event_quiet(
+        event_type=AdminEvent.ORDER_REFUNDED,
+        log_ctx=f"refund order_id={order_id}",
+        user_id=notify_ctx["user_id"],
+        title="↩️ 订单已退款",
+        content=(f"订单 {order_id} 已退款。"
+                 + ("；".join(notify_ctx["details"]) + "。" if notify_ctx["details"] else "")
+                 + reason_text),
+        related_id=None,
+    )
 
     return info
 

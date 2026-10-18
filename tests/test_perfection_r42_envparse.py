@@ -4,7 +4,7 @@
 1. env_int/env_float 语义：非法/空/未设置→回落默认并记 warning；合法值按原钳制；
    lo/hi 为 None 时不钳制该侧（保持各调用点原有 max()/min() 语义）。
 2. 模块顶层不再因非法 env 值在 import 时崩（r42 前 ValueError 直接炸服务）。
-3. 迁移点 unset 默认值与旧实现一致（抽查代表点；全量对账见 r42_verify.py）。
+3. 迁移点 unset 默认值与旧实现一致（抽查代表点；全量对账见 r42_compare.py）。
 """
 import importlib
 import json

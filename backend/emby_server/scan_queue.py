@@ -1049,6 +1049,14 @@ def _run_task(task: ScanTask) -> None:
         task.error = f"{type(exc).__name__}: {exc}"[:500]
     finally:
         task.finished_at = datetime.now()
+        # r46补遗：BaseException（部署重启时的 KeyboardInterrupt/SystemExit，
+        # scanner.py 注释证实真实发生过）会穿透上面的 except Exception——
+        # state 会永远卡在 RUNNING，队列面板永久显示"运行中"。
+        # 兜底：只要还没落到终态，就诚实记成失败，不谎报运行中。
+        if task.state == STATE_RUNNING:
+            task.state = STATE_FAILED
+            task.result = STATE_FAILED
+            task.error = "任务被中断（进程退出/重启），未完成"
         if task.started_at is not None:
             task.duration_ms = int((task.finished_at - task.started_at).total_seconds() * 1000)
         # 这一轮期间的远程列举次数（全局计数器的差值）：并发时两轮共用一个计数器，

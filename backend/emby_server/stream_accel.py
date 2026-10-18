@@ -133,7 +133,9 @@ def rewrite_playback_urls_unified(
         if node_hit[1]:
             return node_hit[0], "node"
     except Exception:
-        logger.debug("流节点改写跳过", exc_info=True)
+        # r46补遗：debug 级生产默认看不到——流节点改写失败会静默回落本机，
+        # 服主配了节点却没生效时无从定位。提 warning。
+        logger.warning("流节点改写跳过，回落本机", exc_info=True)
 
     # 2. 加速域名
     domain = get_effective_domain(db)

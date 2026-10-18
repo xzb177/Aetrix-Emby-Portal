@@ -563,7 +563,7 @@ def economy_client(db, monkeypatch):
     async def _noop(**kw):
         return None
 
-    monkeypatch.setattr(economy, "notify_admin_event", _noop)
+    monkeypatch.setattr(economy, "notify_admin_event_quiet", _noop)
     monkeypatch.setattr(economy, "check_rate_limit", lambda *a, **k: (True, 0))
     app = FastAPI()
     app.include_router(economy.router)

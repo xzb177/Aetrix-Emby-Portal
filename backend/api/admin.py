@@ -39,6 +39,7 @@ from backend.error_lexicon import translate as _translate_error
 from backend.notifications import (
     AdminEvent,
     notify_admin_event,
+    notify_admin_event_quiet,
     notify_all_users,
 )
 from backend.security import hash_password
@@ -183,8 +184,11 @@ async def grant_subscription(
 
     info = await run_in_threadpool(_grant)
 
-    await notify_admin_event(
+    # r46：订阅已落库，通知走 quiet 守卫——失败只记日志不抛 500，
+    # 避免管理员重试导致重复开订阅（天数叠加）。
+    await notify_admin_event_quiet(
         event_type=AdminEvent.SUBSCRIPTION_MANUAL,
+        log_ctx=f"grant_subscription user_id={user_id}",
         user_id=user_id,
         title="🎉 恭喜获得订阅",
         content=(f"管理员已为您开通「{info['plan_name']}」订阅，有效期 {request.duration_days} 天"
@@ -233,8 +237,11 @@ async def extend_subscription(
 
     info = await run_in_threadpool(_extend)
 
-    await notify_admin_event(
+    # r46：延长已落库，通知走 quiet 守卫——失败只记日志不抛 500，
+    # 避免管理员重试导致重复加天数。
+    await notify_admin_event_quiet(
         event_type=AdminEvent.SUBSCRIPTION_EXTENDED,
+        log_ctx=f"extend_subscription user_id={info['user_id']}",
         user_id=info["user_id"],
         title="订阅已延长",
         content=(f"您的订阅已延长 {request.days} 天，"
@@ -476,14 +483,21 @@ def reset_user_password(
     db.commit()
 
     # 同步 Emby 播放密码，保持"门户账号即 Emby 账号"
+    # r46：同步失败是"部分成功"，不能报成全成功——管理员需知道用户用新密码登 Emby 会失败
+    emby_synced = True
     try:
         ensure_emby_credentials(db, user, password=request.new_password)
     except Exception:  # noqa: BLE001 — Emby 凭据同步失败不阻塞密码重置
+        emby_synced = False
         logger.warning("重置密码后同步 Emby 凭据失败: user_id=%s", user_id, exc_info=True)
 
-    _audit(db, current_admin, "reset_user_password", "user", user.id)
+    _audit(db, current_admin, "reset_user_password", "user", user.id,
+           {"emby_synced": emby_synced})
     db.commit()
-    return {"success": True, "message": "密码已重置"}
+    return {"success": True,
+            "message": "密码已重置" if emby_synced else
+                       "密码已重置，但 Emby 播放密码同步失败（已记日志），用户用新密码登录 Emby 可能失败",
+            "emby_synced": emby_synced}
 
 
 @admin_router.post("/users/{user_id}/messages")
@@ -565,24 +579,29 @@ def gdrive_sa_status(
     state_file = sa_dir / ".sa_rotation.json"
     current_sa = None
     rotation_index = 0
+    # r46：读失败与"真没有"必须区分——监控数据撒谎（显示无 SA/缓存 0）比没数据更糟
+    sa_state_ok = True
     if state_file.exists():
         try:
             state = json.loads(state_file.read_text())
             rotation_index = state.get("index", 0)
             if sa_files:
                 current_sa = sa_files[rotation_index % len(sa_files)].name
-        except Exception:
-            pass
+        except Exception as exc:
+            sa_state_ok = False
+            logger.warning("SA 轮换状态文件读取失败 %s: %s", state_file, exc)
     # 磁盘压力
     disk = playback_tune.check_disk_pressure("/") if hasattr(playback_tune, "check_disk_pressure") else {}
     # rclone 缓存目录大小
     cache_dir = Path("/var/cache/rclone-mp")
     cache_size = 0
+    cache_stat_ok = True
     if cache_dir.exists():
         try:
             cache_size = sum(f.stat().st_size for f in cache_dir.rglob("*") if f.is_file())
-        except Exception:
-            pass
+        except Exception as exc:
+            cache_stat_ok = False
+            logger.warning("rclone 缓存目录统计失败 %s: %s", cache_dir, exc)
 
     return {
         "sa_count": len(sa_files),
@@ -590,9 +609,11 @@ def gdrive_sa_status(
         "sa_truncated": len(sa_files) > 20,
         "current_sa": current_sa,
         "rotation_index": rotation_index,
+        "sa_state_ok": sa_state_ok,  # r46：False=状态文件读失败，current_sa 不可信
         "disk": disk,
         "cache_size_bytes": cache_size,
         "cache_size_human": f"{cache_size / (1024**3):.1f} GB" if cache_size else "0",
+        "cache_stat_ok": cache_stat_ok,  # r46：False=统计失败，cache_size 不可信
     }
 
 
@@ -1084,8 +1105,10 @@ async def update_ticket(
 
     info = await run_in_threadpool(_update)
 
-    await notify_admin_event(
+    # r46：工单状态已落库，通知走 quiet 守卫（失败只记日志，不抛 500）。
+    await notify_admin_event_quiet(
         event_type=AdminEvent.TICKET_REPLIED,
+        log_ctx=f"update_ticket ticket_id={ticket_id}",
         user_id=info["user_id"],
         title="工单状态已更新",
         content=f"您的工单「{info['title']}」状态已变更为：{info['status']}",
@@ -1129,8 +1152,11 @@ async def reply_ticket(
 
     info = await run_in_threadpool(_reply)
 
-    await notify_admin_event(
+    # r46：回复已落库，通知走 quiet 守卫——失败只记日志不抛 500，
+    # 避免管理员重试导致用户收到重复回复。
+    await notify_admin_event_quiet(
         event_type=AdminEvent.TICKET_REPLIED if not request.close_ticket else AdminEvent.TICKET_CLOSED,
+        log_ctx=f"reply_ticket ticket_id={ticket_id}",
         user_id=info["user_id"],
         title="工单有新回复" if not request.close_ticket else "工单已关闭",
         content=request.message,
@@ -1165,8 +1191,10 @@ async def close_ticket(
 
     info = await run_in_threadpool(_close)
 
-    await notify_admin_event(
+    # r46：关单已落库，通知走 quiet 守卫（失败只记日志，不抛 500）。
+    await notify_admin_event_quiet(
         event_type=AdminEvent.TICKET_CLOSED,
+        log_ctx=f"close_ticket ticket_id={ticket_id}",
         user_id=info["user_id"],
         title="工单已关闭",
         content=f"您的工单「{info['title']}」已被管理员关闭",
@@ -1405,8 +1433,10 @@ async def update_media_seek(
     # 用户看到的通知用中文状态与「（全季）」这样的范围说明，不把英文状态码和季混在一起
     status_text = {"approved": "已批准", "rejected": "已拒绝"}.get(status_value, status_value)
     season_text = media_seek.season_label(info["season"])
-    await notify_admin_event(
+    # r46：审批已落库，通知走 quiet 守卫（失败只记日志，不抛 500）。
+    await notify_admin_event_quiet(
         event_type=event_map.get(status_value, "media_seek.updated"),
+        log_ctx=f"review_media_seek request_id={request_id}",
         user_id=info["user_id"],
         title=title_map.get(status_value, "求片状态已更新"),
         content=(f"您的求片《{info['movie_name']}》"
@@ -1481,8 +1511,10 @@ async def mark_media_seek_in_library(
     info = await run_in_threadpool(_mark_media_seek_sync, db, admin_id, request_id, force)
 
     season_text = media_seek.season_label(info["season"])
-    await notify_admin_event(
+    # r46：入库标记已落库，主通知走 quiet 守卫（失败只记日志，不抛 500）。
+    await notify_admin_event_quiet(
         event_type=AdminEvent.MEDIA_SEEK_COMPLETED,
+        log_ctx=f"mark_media_seek request_id={request_id}",
         user_id=info["user_id"],
         title="求片已入库",
         content=(f"您求的《{info['movie_name']}》"
@@ -1492,20 +1524,19 @@ async def mark_media_seek_in_library(
         from_admin_id=admin_id,
     )
     # v2：附议者也收到入库通知（开关可关；失败不影响主流程）
+    # r46：内联 try/except 并入统一 quiet 守卫（横切只许一套）。
     for voter_id in info.get("voter_ids") or []:
-        try:
-            await notify_admin_event(
-                event_type=AdminEvent.MEDIA_SEEK_COMPLETED,
-                user_id=voter_id,
-                title="求片已入库",
-                content=(f"您附议的《{info['movie_name']}》"
-                         + (f"（{season_text}）" if season_text else "")
-                         + "已入库，可以直接观看了。"),
-                related_id=request_id,
-                from_admin_id=admin_id,
-            )
-        except Exception:  # noqa: BLE001 — 通知失败不应影响标记入库
-            logger.warning("求片入库通知附议者失败（user_id=%s）", voter_id)
+        await notify_admin_event_quiet(
+            event_type=AdminEvent.MEDIA_SEEK_COMPLETED,
+            log_ctx=f"mark_media_seek voter_id={voter_id}",
+            user_id=voter_id,
+            title="求片已入库",
+            content=(f"您附议的《{info['movie_name']}》"
+                     + (f"（{season_text}）" if season_text else "")
+                     + "已入库，可以直接观看了。"),
+            related_id=request_id,
+            from_admin_id=admin_id,
+        )
     return {
         "success": True,
         "matched": info["matched"],

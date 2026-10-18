@@ -148,8 +148,10 @@ def _raw_nodes(db: Session) -> list:
             nodes = json.loads(row.value)
             if isinstance(nodes, list):
                 return nodes
-        except (json.JSONDecodeError, TypeError):
-            pass
+        except (json.JSONDecodeError, TypeError) as exc:
+            # r46补遗：配置写坏不能静默吞掉——否则全部流节点被忽略，
+            # 后台却仍显示"已注册"，无从排查。
+            logger.warning("流节点配置解析失败，已忽略全部节点: %s", exc)
     return []
 
 

@@ -836,6 +836,29 @@ async def notify_admin_event(
     )
 
 
+async def notify_admin_event_quiet(
+    event_type: str,
+    log_ctx: str = "",
+    **kwargs,
+) -> bool:
+    """post-commit 通知专用守卫：主流程已落库，通知失败只记日志、永不抛异常。
+
+    背景（r46 静默失败专项）：管理员调账 / 授订阅 / 延长订阅 / 工单回复 /
+    求片审批 / 签到 / 兑换码核销等入口，曾在 commit 成功后裸调
+    ``notify_admin_event``。通知抛异常（连接池耗尽、渠道异常等）→ 接口 500 →
+    调用方以为没成功而重试 → 重复调账 / 重复开订阅（真金白银）。
+    通知是 best-effort 性质，不能推翻已提交的主流程。
+
+    全仓 post-commit 通知只许走这一个守卫（横切只许一套），不许再裸调。
+    """
+    try:
+        await notify_admin_event(event_type=event_type, **kwargs)
+        return True
+    except Exception as exc:  # noqa: BLE001 — 通知失败不能影响已提交的主流程
+        logger.warning("管理事件通知发送失败（%s）: %s", log_ctx or event_type, exc)
+        return False
+
+
 def _persist_staff_messages(
     db: Session,
     title: str,

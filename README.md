@@ -1,7 +1,8 @@
-# Aetrix Portal
+# Aetrix Emby Portal
+English: [README.en.md](README.en.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Portal/actions/workflows/ci.yml)
+[![CI](https://github.com/xzb177/Aetrix-Emby-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Emby-Portal/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg?logo=docker&logoColor=white)](docs/deploy-docker.md)
 
 自建影视媒体服务器，完整实现 Emby 协议（`/emby/*`），第三方 Emby 客户端直连，无需部署官方 Emby Server。
@@ -45,8 +46,8 @@ EM 与 EA 必须配置相同的 `SECRET_KEY`；默认部署形态为单机同容
 需要 Docker 与 Docker Compose v2。
 
 ```bash
-git clone https://github.com/xzb177/Aetrix-Portal.git
-cd Aetrix-Portal
+git clone https://github.com/xzb177/Aetrix-Emby-Portal.git
+cd Aetrix-Emby-Portal
 cp env.example .env
 ```
 
@@ -187,3 +188,13 @@ PR 流程：从分支提交 → 发起 PR → CI 全绿 → 合并。
 ## License
 
 MIT
+
+---
+
+## ☕ 请开发者喝杯咖啡
+
+这个项目是一个人带着 AI 团队从零搭起来的，刮削、整理、播放，一套全包，全都开源在这里。
+
+如果它帮到了你，或者你看好它能走得更远，可以请开发者喝杯咖啡，支持我把这个项目继续做下去。
+
+<img src="docs/assets/coffee-qr.jpg" width="300" alt="微信赞赏码">
