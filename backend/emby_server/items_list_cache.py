@@ -187,11 +187,14 @@ def is_cacheable(*, filters: set, sort_by: list, has_ids: bool) -> bool:
 # ---------------- 键 ----------------
 
 def scope_lib_ids(db: Session, allowed: Optional[set]) -> list[int]:
-    """版本号作用域：allowed 非空用它；None = 不过滤 → 全部启用库。
+    """版本号作用域：allowed 非 None（含空集合）用它本身；None = 不过滤 → 全部启用库。
 
-    与 items_dedup_cache.dedup_dropped_ids_cached 的 None 展开口径一致。
+    ⚠️ 空集合是 _library_scope 的 fail-closed 语义（全部不可见），绝不能
+    落到下面的「全部启用库」分支：那会让不可见用户与不限制用户（None）
+    共用同一个缓存键，把全量清单喂给本该看不到任何条目的人。空集合
+    返回空作用域（键独立、其清单本就为空，语义正确）。
     """
-    if allowed:
+    if allowed is not None:
         return sorted({int(i) for i in allowed})
     try:
         return sorted(

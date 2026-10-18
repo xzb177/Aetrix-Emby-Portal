@@ -303,6 +303,32 @@ def test_key_shared_across_users_same_scope(fake_backend, clean_config):
         db.close()
 
 
+def test_empty_scope_never_shares_with_unrestricted(fake_backend, clean_config):
+    """fail-closed 空可见范围（allowed=∅）不得与不限制（None→全部库）共用键。
+
+    回归：scope_lib_ids 曾用真值判断区分 None/集合，空集合（_library_scope
+    的 fail-closed「全部不可见」）会被膨胀成全部启用库，与 allowed=None
+    的键撞车——本该什么都看不到的用户会读到全量清单。
+    """
+    db = _test_db()
+    try:
+        lib1 = em.Library(guid=_g(), name="甲库", collection_type="movies", is_enabled=True)
+        lib2 = em.Library(guid=_g(), name="乙库", collection_type="tvshows", is_enabled=True)
+        db.add_all([lib1, lib2])
+        db.commit()
+        assert ilc.scope_lib_ids(db, set()) == []
+        all_libs = ilc.scope_lib_ids(db, None)
+        assert {lib1.id, lib2.id} <= set(all_libs)
+        # 不限制作用域存了清单 → 空作用域读不到
+        ilc.put_cached_page(db, {"a": "1"}, all_libs, [7, 8], 2, False)
+        assert ilc.get_cached_page(db, {"a": "1"}, ilc.scope_lib_ids(db, set())) is None
+        # 反向亦然：空作用域存的空清单不污染不限制作用域
+        ilc.put_cached_page(db, {"a": "1"}, [], [], 0, False)
+        assert ilc.get_cached_page(db, {"a": "1"}, all_libs).ids == [7, 8]
+    finally:
+        db.close()
+
+
 def test_corrupt_value_is_miss(fake_backend, clean_config):
     db = _test_db()
     try:
