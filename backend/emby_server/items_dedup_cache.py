@@ -305,13 +305,18 @@ def _deserialize(raw: str) -> set[int]:
 
 
 def get_cached_dropped(db: Session, user_id: int, query_params,
-                       scope_lib_ids: Iterable[int]) -> Optional[set]:
-    """读缓存：命中返回 dropped 集合；miss/禁用/异常返回 None。"""
+                       scope_lib_ids: Iterable[int],
+                       versions: dict[int, str] | None = None) -> Optional[set]:
+    """读缓存：命中返回 dropped 集合；miss/禁用/异常返回 None。
+
+    versions 预传时跳过读数据版本号（调用方已在 miss+put 两处复用一次读取）。
+    """
     if not cache_enabled(db):
         return None
     if cache_ttl_seconds(db) <= 0:
         return None
-    versions = read_data_versions(db, scope_lib_ids)
+    if versions is None:
+        versions = read_data_versions(db, scope_lib_ids)
     params_hash = hashlib.sha1(_canonical_params(query_params).encode()).hexdigest()[:16]
     key = _cache_key(user_id, params_hash, versions)
 
@@ -333,15 +338,20 @@ def get_cached_dropped(db: Session, user_id: int, query_params,
 
 
 def put_cached_dropped(db: Session, user_id: int, query_params,
-                       scope_lib_ids: Iterable[int], dropped: set) -> None:
-    """写缓存：SETEX + 索引记时 + 超上限淘汰最旧。失败静默（不影响请求）。"""
+                       scope_lib_ids: Iterable[int], dropped: set,
+                       versions: dict[int, str] | None = None) -> None:
+    """写缓存：SETEX + 索引记时 + 超上限淘汰最旧。失败静默（不影响请求）。
+
+    versions 预传时跳过读数据版本号（调用方已在 miss+put 两处复用一次读取）。
+    """
     if not cache_enabled(db):
         return
     ttl = cache_ttl_seconds(db)
     if ttl <= 0:
         return
     max_entries = cache_max_entries(db)
-    versions = read_data_versions(db, scope_lib_ids)
+    if versions is None:
+        versions = read_data_versions(db, scope_lib_ids)
     params_hash = hashlib.sha1(_canonical_params(query_params).encode()).hexdigest()[:16]
     key = _cache_key(user_id, params_hash, versions)
     val = _serialize(dropped)
@@ -365,7 +375,8 @@ def dedup_dropped_ids_cached(request, query, db: Session, user,
                              compute: Callable[[], Optional[set]]) -> Optional[set]:
     """``_query_items`` 的唯一调用点：缓存包装的 ``_dedup_dropped_ids``。
 
-    - 开关关 / TTL<=0 / Redis 不可用 → ``compute()``（旧路径，逐行一致）；
+    - 开关关 / Redis 不可用 → ``compute()``（旧路径，逐行一致）；
+      （TTL 被钳制在 10~3600 秒，<=0 不可达，故不在此列）
     - 命中 → 直接返回集合；
     - 未命中 → ``compute()``，结果非 None 才写入缓存（``None`` 是回退旧实现
       的信号，不缓存）；
@@ -373,7 +384,11 @@ def dedup_dropped_ids_cached(request, query, db: Session, user,
     """
     if not cache_enabled(db) or cache_ttl_seconds(db) <= 0:
         return compute()
-    if allowed:
+    if allowed is not None:
+        # 空集合与 None 必须走不同的键：allowed=set() 时 lib_ids=[]，
+        # read_data_versions(db, []) 返回 {}（空输入直接 return），版本号
+        # 串为空 → 生成独立的降级缓存键，与 None（取全部启用库做版本号
+        # 的全量键）天然不同；空范围查询的结果不再毒化全量缓存键。
         lib_ids = list(allowed)
     else:
         try:
@@ -383,10 +398,13 @@ def dedup_dropped_ids_cached(request, query, db: Session, user,
             logger.warning("读媒体库列表失败，走旧路径: %s", exc)
             return compute()
     q = request.query_params
-    hit = get_cached_dropped(db, user.id, q, lib_ids)
+    # miss+put 共用一次版本号读取：同请求内版本号恒定，省一次 DB 查询，
+    # 且键与命中/写入的版本输入完全一致（与分两次读行为等价）。
+    versions = read_data_versions(db, lib_ids)
+    hit = get_cached_dropped(db, user.id, q, lib_ids, versions=versions)
     if hit is not None:
         return hit
     dropped = compute()
     if dropped is not None:
-        put_cached_dropped(db, user.id, q, lib_ids, dropped)
+        put_cached_dropped(db, user.id, q, lib_ids, dropped, versions=versions)
     return dropped

@@ -92,7 +92,9 @@
               ><span class="lbl">¥{{ q }}</span></button>
             </div>
             <!-- R37 P3-1：比例未知时不静默错算，标注「比例待确认」 -->
-            <small v-if="customAmount != null && customAmount > 100000" class="custom-note" style="color:var(--red-ink)">最多充 100000，减一点再下单</small>
+            <!-- R85：小数手输时按钮静默禁用无提示，先给人话；与 canCustomRecharge 的整数门一致 -->
+            <small v-if="customAmount && !Number.isInteger(customAmount)" class="custom-note" style="color:var(--red-ink)">金额需为整数</small>
+            <small v-else-if="customAmount != null && customAmount > 100000" class="custom-note" style="color:var(--red-ink)">最多充 100000，减一点再下单</small>
             <small v-else-if="customAmount && customAmount >= 1" class="custom-note">
               <template v-if="rechargeRatio == null">≈ 比例待确认</template>
               <template v-else>≈ {{ fmtNum(customPointsPreview) }} 能量</template>
@@ -1457,6 +1459,10 @@ async function copyInviteCode() {
 .methods-note .v4-retry {
   font-size: 12px;
 }
+/* R85：.v4-retry 自带 margin-top:8px，在 flex 行内（purse coin / methods-note）
+   会整体下沉 8px 错位；行内按钮清掉上边距，触控高度 44px 不动 */
+.purse .coin .v4-retry { margin-top: 0; }
+.methods-note .v4-retry { margin-top: 0; }
 
 /* ---------- 核销中心 ---------- */
 .redeem {

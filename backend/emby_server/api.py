@@ -2655,7 +2655,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         # LIMIT/OFFSET 下并列行可能在两页重复或漏掉）。
         order_cols = [*order_cols, em.MediaItem.id.asc()]
         # 列表去重缓存（2026-10-18）：dropped 集合按（用户, 查询参数, 各库数据版本）
-        # 缓存；开关关 / TTL<=0 / Redis 不可用时逐行走旧路径。
+        # 缓存；开关关 / Redis 不可用时逐行走旧路径。
         dropped = _dedup_cache.dedup_dropped_ids_cached(
             request, query, db, user, allowed,
             lambda: _dedup_dropped_ids(query, db))
