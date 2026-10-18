@@ -136,6 +136,33 @@ def test_apply_legacy_mode_still_overwrites(monkeypatch):
     assert item.genres != "剧情"
 
 
+# ---------------- T3：apply() 的简介也只填空 ----------------
+
+def test_apply_keeps_existing_overview():
+    """fill_only 开（默认）时，apply() 的简介只填空、不再恒覆盖
+    （与 apply_details 同口径）。"""
+    item = _item(overview="人工整理的简介")
+    hit = {"id": 123, "overview": "TMDB 简介"}
+    _client().apply(item, hit, "series")
+    assert item.overview == "人工整理的简介"
+
+
+def test_apply_fills_missing_overview():
+    item = _item(overview=None)
+    hit = {"id": 123, "overview": "TMDB 简介"}
+    _client().apply(item, hit, "series")
+    assert item.overview == "TMDB 简介"
+
+
+def test_apply_overview_legacy_mode_overwrites(monkeypatch):
+    monkeypatch.setenv(ENV_KEY, "0")
+    tmdb_mod._TEXT_FILL_CACHE["at"] = 0.0
+    item = _item(overview="旧简介")
+    hit = {"id": 123, "overview": "TMDB 简介"}
+    _client().apply(item, hit, "series")
+    assert item.overview == "TMDB 简介"
+
+
 # ---------------- apply_details()：详情 ----------------
 
 def test_apply_details_keeps_existing_text():

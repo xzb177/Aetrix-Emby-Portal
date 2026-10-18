@@ -1290,7 +1290,7 @@ def save_enrich_episode_fields(
 # ==================== 刮削性能参数（链路规划 Step 1：配置面收口）====================
 
 class EnrichTuningSaveRequest(BaseModel):
-    values: dict = Field(default_factory=dict, description="9 个性能参数的待保存值（key 必须在白名单内）")
+    values: dict = Field(default_factory=dict, description="11 个性能参数的待保存值（key 必须在白名单内）")
     db_pool_size: Optional[str] = Field(default=None, description="DB 连接池大小（进程启动时解析，改完需重启进程）")
 
 

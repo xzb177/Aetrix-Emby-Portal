@@ -2760,7 +2760,7 @@ function typeLabel(t: string): string {
     <!-- 刷新元数据：选策略；all 二次确认并提示配额消耗 -->
     <el-dialog v-model="rescrapeVisible" title="刷新元数据" width="min(420px, 92vw)">
       <p class="drawer-hint">
-        对「{{ rescrapeTarget?.name }}」里**已有**的条目重新刮削一遍。不会扫描新文件（要发现新片请用「扫描」），
+        对「{{ rescrapeTarget?.name }}」做一次完整扫描并重新刮削：会发现新文件入库，也会清理已缺失的文件。
         策略只覆盖本轮，不改库配置。
       </p>
       <el-radio-group v-model="rescrapePolicy">
@@ -2768,7 +2768,7 @@ function typeLabel(t: string): string {
         <el-radio-button value="all">全量重刮</el-radio-button>
       </el-radio-group>
       <p v-if="rescrapePolicy === 'all'" class="drawer-hint text-danger" style="margin-top: 8px">
-        全量重刮会对该库所有条目重新请求 TMDB，会消耗大量配额，确定要继续吗？
+        全量重刮会对该库所有条目重新请求 TMDB，会消耗大量配额。但已有文字内容（片名/简介/评分/类型）不会被覆盖（默认只填空），实际刷新的主要是图片（别名会合并新增）。确定要继续吗？
       </p>
       <template #footer>
         <el-button @click="rescrapeVisible = false">取消</el-button>
