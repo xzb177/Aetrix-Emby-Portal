@@ -167,6 +167,30 @@ def test_get_progress(db):
     assert "mount_breakers" not in p, "熔断器删了，进度里不该再有这个字段"
 
 
+def test_get_progress_counts_visible_only(db):
+    """进度接口只数可见行：已合并副本与软删行的 pending 不得计入。
+
+    回归 2026-10-19 生产事故：get_progress 按全表口径报出待处理 29,798，
+    实际可见（deleted_at 空且 merged_into_id 空）pending 只有 1。
+    """
+    # 可见行：2 条 pending（含 1 条带重试时间）、1 条 done
+    _make_item(db, enrich_status="pending")
+    _make_item(db, enrich_status="pending",
+               enrich_next_retry_at=datetime.now() + timedelta(minutes=5))
+    _make_item(db, enrich_status="done")
+    # 已合并副本行：merged_into_id 非空，worker 按设计不处理
+    _make_item(db, enrich_status="pending", merged_into_id=999)
+    _make_item(db, enrich_status="pending",
+               merged_into_id=999,
+               enrich_next_retry_at=datetime.now() + timedelta(minutes=5))
+    # 软删行：deleted_at 非空，等待清理
+    _make_item(db, enrich_status="pending", deleted_at=datetime.now())
+    p = enrich_worker.get_progress()
+    assert p["enrich"]["pending"] == 2, "只数可见 pending（2），不得数进副本/软删行"
+    assert p["enrich"]["retrying"] == 1, "retrying 同样只数可见行"
+    assert p["enrich"]["done"] == 1
+
+
 # ==================== claim 租约 + janitor（v2.42.9）====================
 
 

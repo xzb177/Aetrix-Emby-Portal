@@ -3894,11 +3894,17 @@ def get_progress(light: bool = False) -> dict:
     db = SessionLocal()
     try:
         from sqlalchemy import func as _func
+        # 只数可见行：已合并副本与软删行 worker 按设计永不处理，不计入进度
+        # （2026-10-19：全表口径曾报出 pending 29,798 的幻影数，实为 29,797 不可见行）
+        _visible = (em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None))
         q = db.query(em.MediaItem.enrich_status,
-                     _func.count(em.MediaItem.id)).group_by(
-                         em.MediaItem.enrich_status).all()
+                     _func.count(em.MediaItem.id)).filter(
+                         *_visible).group_by(
+                             em.MediaItem.enrich_status).all()
         by_status = {s or "unknown": c for s, c in q}
         retrying = db.query(_func.count(em.MediaItem.id)).filter(
+            *_visible,
             em.MediaItem.enrich_status == "pending",
             em.MediaItem.enrich_next_retry_at.isnot(None)).scalar() or 0
         probe_by_status = {}
