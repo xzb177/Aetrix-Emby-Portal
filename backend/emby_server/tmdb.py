@@ -1797,7 +1797,10 @@ class TmdbClient:
             data = self._get(f"/{endpoint}/{tmdb_id}",
                              {"language": lang,
                               "append_to_response": "alternative_titles,external_ids,credits"})
-            if data is not None:
+            if isinstance(data, dict) and "id" in data:
+                # 真实详情载荷必带 id：错误体 {"success": False, ...} 不写 L2，
+                # 免得磁盘积错误体——读路径虽有 _has_credits 守卫不会误服，
+                # 但每次都会穿透重打网络。
                 tmdb_cache.save_details(endpoint, str(tmdb_id), data, lang)
             self._cache_put(key, data)
             return data
@@ -1941,7 +1944,9 @@ class TmdbClient:
         两级缓存同 ``details``（L1 300 秒 → L2 磁盘 30 天，按 tv_id+季号键）。
 
         返回 episode 字典列表（每项有 episode_number / name / overview /
-        still_path），失败返回 None。
+        still_path）；404/未配置返回 None；HTTP 成功但响应体无 episodes
+        数组的错误载荷抛 ``TmdbTransientError``（瞬态失败，L1/L2 都不写，
+        条目进重试队列——不是"没这集"）。
         """
         try:
             season_no = int(season_number)
@@ -1954,9 +1959,11 @@ class TmdbClient:
             return cached
         cache_key = f"{tmdb_id}_{season_no}"
         hit, data = tmdb_cache.load_details("season", cache_key, lang)
-        if hit:
+        if hit and isinstance(data, dict) and "episodes" in data:
+            # 真实成功的季响应才吃缓存：老版本曾把 {"success": False, ...}
+            # 的错误体写进 L2，残留必须穿透重拉（重拉成功即覆盖，自愈）。
             progress.note_stage("tmdb_disk_hit")
-            eps = (data or {}).get("episodes")
+            eps = data.get("episodes") or []
             self._cache_put(key, eps)
             return eps
         with tmdb_cache.single_flight(key):
@@ -1964,24 +1971,38 @@ class TmdbClient:
             if cached is not _MISS:
                 return cached
             hit, data = tmdb_cache.load_details("season", cache_key, lang)
-            if hit:
+            if hit and isinstance(data, dict) and "episodes" in data:
                 progress.note_stage("tmdb_disk_hit")
-                eps = (data or {}).get("episodes")
+                eps = data.get("episodes") or []
                 self._cache_put(key, eps)
                 return eps
             data = self._get(f"/tv/{tmdb_id}/season/{season_no}",
                              {"language": lang})
-            if data is not None:
+            if isinstance(data, dict) and "episodes" in data:
+                # 真实成功的季响应：带 episodes 数组才算"拉过了"；
+                # 空数组是合法阴性，允许写 L1/L2。
                 tmdb_cache.save_details("season", cache_key, data, lang)
-            eps = (data or {}).get("episodes") if data else None
-            self._cache_put(key, eps)
-            return eps
+                eps = data.get("episodes") or []
+                self._cache_put(key, eps)
+                return eps
+            if data is None:
+                # 非瞬态（401/404/未配置）：旧口径——L1 短缓存 None，不写 L2。
+                self._cache_put(key, None)
+                return None
+            # 错误载荷：HTTP 成功但响应体里没有 episodes 数组
+            # （网关把错误包成 200）。按瞬态失败抛出去：L1/L2 都不写，
+            # 条目进重试队列而非被记成"没这集"。
+            logger.warning("TMDB 季接口响应异常（无 episodes 数组）tv=%s season=%s: %.200r",
+                           tmdb_id, season_no, data)
+            raise TmdbTransientError(
+                f"TMDB 季接口响应异常（无 episodes 数组）: tv={tmdb_id} season={season_no}")
 
     def find_episode(self, tmdb_id: str, season_number: int,
                      episode_number: int) -> Optional[dict]:
         """在某季里找指定集的数据（标题/简介/剧照）。
 
-        找不到返回 None（TMDB 没这集，或季接口失败）。
+        找不到返回 None（TMDB 没这集，或 404/未配置）；季接口返回错误载荷
+        （HTTP 成功但无 episodes 数组）时抛 ``TmdbTransientError``。
         """
         try:
             ep_no = int(episode_number)

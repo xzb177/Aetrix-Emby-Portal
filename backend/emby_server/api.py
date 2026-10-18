@@ -3129,23 +3129,57 @@ def _family_series_ids(db: Session, show: em.MediaItem) -> set:
     Episodes 请求归零（真集 parent 指向分身季）。
 
     口径（与生产实测口径对齐）：
-    - 从 show.id 出发，沿 merged_into_id 反向 BFS（item_type='series'、
-      deleted_at IS NULL），visited 防环，层数上限防御；
+    - 入口本身是分身行时，先沿 merged_into_id 向上走到露面行（链顶端，
+      防环 + 深度上限），再从露面行反向 BFS——家族口径与入口无关；
+      互指环/链回环时没有真正的露面行，退回以入口为根（环上异名行
+      不得无条件入集，见 test_cycle_terminates）；
+    - 反向 BFS（item_type='series'、deleted_at IS NULL），visited 防环，
+      层数上限防御（耗尽时打 warning，不静默）；
     - 成员准入只对**露面行**判定：与露面行同 library_id，且
       （tmdb_id 非空且相等，或 dedup.normalize_name(name) 相等）。
       不链式放宽：B 只像 A、不像露面行时，B 不入集；
-    - 露面行本身无条件入集；非 series 的 show 只返回 {show.id}。
+    - 露面行与入口行本身无条件入集；非 series 的 show 只返回 {show.id}。
     """
     family = {show.id}
     if show.item_type != "series":
         return family
-    show_norm = dedup_lib.normalize_name(show.name)
-    show_tmdb = (show.tmdb_id or "").strip()
-    visited = {show.id}
-    frontier = [show.id]
+    # 入口可能是分身行（陈旧书签/客户端缓存直达）：先向上走到露面行，
+    # 再从露面行反向 BFS，保证家族口径与入口无关。
+    root = show
+    _seen_up = {show.id}
+    for _ in range(_FAMILY_BFS_MAX_DEPTH):
+        nxt = root.merged_into_id
+        if not nxt:
+            break
+        if nxt in _seen_up:
+            # 互指环/链回环：没有真正的露面行，退回以入口为根——
+            # 否则环上的异名行会被无条件入集（test_cycle_terminates）。
+            root = show
+            break
+        parent = (
+            db.query(em.MediaItem)
+            .filter(
+                em.MediaItem.id == nxt,
+                em.MediaItem.item_type == "series",
+                em.MediaItem.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if parent is None:
+            break
+        _seen_up.add(parent.id)
+        root = parent
+    family.add(root.id)
+    root_norm = dedup_lib.normalize_name(root.name)
+    root_tmdb = (root.tmdb_id or "").strip()
+    visited = {root.id}
+    frontier = [root.id]
     for _ in range(_FAMILY_BFS_MAX_DEPTH):
         if not frontier:
             break
+        # 遍历不过滤 library：merged 写入按库隔离（dedup 逐库合并），
+        # 跨库中间行只被"穿过"、准入仍要求同库；若将来允许跨库合并，
+        # 这里要补 library 过滤。
         children = (
             db.query(em.MediaItem)
             .filter(
@@ -3163,13 +3197,17 @@ def _family_series_ids(db: Session, show: em.MediaItem) -> set:
             frontier.append(child.id)
             # 准入只对露面行判定：BFS 继续穿过所有分身行（孙行可能直接像露面行），
             # 但只有像露面行的行才入集。
-            if child.library_id != show.library_id:
+            if child.library_id != root.library_id:
                 continue
             child_tmdb = (child.tmdb_id or "").strip()
-            if show_tmdb and child_tmdb and show_tmdb == child_tmdb:
+            if root_tmdb and child_tmdb and root_tmdb == child_tmdb:
                 family.add(child.id)
-            elif show_norm and dedup_lib.normalize_name(child.name) == show_norm:
+            elif root_norm and dedup_lib.normalize_name(child.name) == root_norm:
                 family.add(child.id)
+    if frontier:
+        # 深度上限耗尽：家族可能不完整（部分集不可达），必须可观测
+        logger.warning("家族 BFS 深度上限(%s)耗尽，家族可能不完整 show=%s root=%s",
+                       _FAMILY_BFS_MAX_DEPTH, show.id, root.id)
     return family
 
 

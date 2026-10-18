@@ -22,7 +22,7 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
@@ -43,6 +43,8 @@ tasks_router = APIRouter(prefix="/api/admin", tags=["管理后台·任务总览"
 # 面板统计类数据容忍秒级陈旧：probe/enrich 的聚合快照在进程内缓存 20 秒，
 # 高频刷新仪表盘时不再每次都扫全表。键与失效保持最简单：固定键 + 到期即丢。
 _SNAP_TTL_SEC = 20
+# 单卡采集超时：某采集器 hang 住时只降级该卡，不拖住整个总览接口。
+_TASKS_OVERVIEW_TIMEOUT_SEC = 30
 _snap_cache: dict = {}
 _snap_lock = threading.Lock()
 
@@ -423,9 +425,11 @@ _BUILDERS = (
 def _build_card(key: str, title: str, builder_name: str) -> dict:
     """单个采集器：独立 Session 独立降级。线程安全（不共享 Session）。"""
     # 通过 globals() 按名解析：测试 monkeypatch 模块属性才能生效（历史约定）。
-    builder = globals()[builder_name]
+    # 放进 try 内部：KeyError（名字写错/删了）走 _failed_card 降级，
+    # 而不是穿过 try 直接整接口 500（旧串行版就是包在 try 里的）。
     s = SessionLocal()
     try:
+        builder = globals()[builder_name]
         return builder(s)
     except Exception as e:  # noqa: BLE001
         logger.warning("任务总览采集失败 [%s]: %s", key, e, exc_info=True)
@@ -448,12 +452,22 @@ def tasks_overview(db: Session = Depends(get_db),
     """
     n = len(_BUILDERS)
     tasks: list = [None] * n
-    with ThreadPoolExecutor(max_workers=n,
-                            thread_name_prefix="tasks-overview") as ex:
-        futs = {ex.submit(_build_card, key, title, name): i
+    # 单卡超时：某采集器 hang 住时只降级该卡，不拖住整个总览。
+    # shutdown(wait=False)：with 的隐式等待会等住 hang 的线程，超时就失去意义；
+    # 超时的线程在后台跑完后由 _build_card 的 finally 关会话，不泄漏。
+    ex = ThreadPoolExecutor(max_workers=n, thread_name_prefix="tasks-overview")
+    try:
+        futs = {ex.submit(_build_card, key, title, name): (i, key, title)
                 for i, (key, title, name) in enumerate(_BUILDERS)}
-        for fut in as_completed(futs):
-            tasks[futs[fut]] = fut.result()
+        for fut, (i, key, title) in futs.items():
+            try:
+                tasks[i] = fut.result(timeout=_TASKS_OVERVIEW_TIMEOUT_SEC)
+            except _FutTimeout:
+                logger.warning("任务总览采集超时 [%s]（>%ss），已降级为失败卡",
+                               key, _TASKS_OVERVIEW_TIMEOUT_SEC)
+                tasks[i] = _failed_card(key, title, f"采集超时({_TASKS_OVERVIEW_TIMEOUT_SEC}s)")
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
     return {
         "success": True,
         "fetched_at": datetime.now().isoformat(timespec="seconds"),

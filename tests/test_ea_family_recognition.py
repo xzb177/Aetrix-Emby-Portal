@@ -384,3 +384,29 @@ def test_depth_cap_bounds_traversal():
         db.commit()
     finally:
         db.close()
+
+
+def test_endpoint_assembly_sentinel():
+    """哨兵：本文件的 _series_ids/_seasons/_episodes 是手抄端点查询组装的；
+    端点改了组装口径而 helper 没同步时，这里必须先红，避免测试静默失真。
+    （只防"忘了同步"，不证明逻辑等价。）"""
+    import inspect
+    src_seasons = inspect.getsource(api.get_seasons)
+    src_episodes = inspect.getsource(api.get_episodes)
+    for frag in ("_family_series_ids", "find_duplicate_ids", "merged_into_id.is_(None)"):
+        assert frag in src_seasons, f"get_seasons 组装口径疑似变化，先同步 helper：缺 {frag!r}"
+    for frag in ("_family_series_ids", "find_duplicate_ids", "family_season", "_season_belongs_to"):
+        assert frag in src_episodes, f"get_episodes 组装口径疑似变化，先同步 helper：缺 {frag!r}"
+
+
+def test_family_from_clone_entry_reroots_to_visible(world):
+    """入口是分身行时，家族仍以露面行为根（向上认亲）。"""
+    db = _dbmod.SessionLocal()
+    try:
+        fam = api._family_series_ids(db, world["B"])
+        assert world["A"].id in fam, "分身入口应向上找到露面行"
+        assert world["B2"].id in fam
+        assert world["C"].id in fam
+        assert world["W"].id not in fam
+    finally:
+        db.close()
