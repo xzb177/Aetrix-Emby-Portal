@@ -391,6 +391,74 @@ def test_leader_no_write_waiter_fail_open(fake, counting_slots):
         os.unlink(path)
 
 
+def test_want_total_false_fail_open_is_direct(fake, counting_slots):
+    """want_total=False 的等待者被唤醒后不许当继任领头（入口 E-P2-2 的补全）。
+
+    场景：true 领头抛错/不写缓存退出（counting_slots 保证等待者真正进过
+    wait）；false 等待者按 E-P2-2 在入口只是 waiter，被唤醒、回读 miss
+    后走到继任领头路径——它永不回填，当领头做的全量计算写不回去
+    （api.py ``if _lc_ok and want_total`` 守卫），还会让 true 请求白等一轮，
+    所以必须 mode="direct"、不注册 slot。
+    """
+    eng, path = _file_db()
+    try:
+        db_main = _session(eng)
+        leader_ready = threading.Event()
+        out = {}
+        leader_slot_ref = {}
+
+        def leader():
+            db = _session(eng)
+            try:
+                fr = ilc.coalesced_get(db, {"a": "1"}, [1], wait_seconds=10)
+                assert fr.mode == "leader"
+                leader_slot_ref["slot"] = fr.slot
+                leader_ready.set()
+                # 等待者确实进入 wait() 后再退出：否则 set 是空操作
+                deadline = time.monotonic() + 10
+                while (getattr(fr.slot.event, "wait_calls", 0) < 1
+                       and time.monotonic() < deadline):
+                    time.sleep(0.01)
+                with ilc.leader_slot(fr):
+                    pass  # 模拟：计算抛错 / 没写缓存，直接退出
+            finally:
+                db.close()
+
+        def waiter():
+            db = _session(eng)
+            try:
+                leader_ready.wait(timeout=10)
+                fr = ilc.coalesced_get(db, {"a": "1"}, [1],
+                                       wait_seconds=10, want_total=False)
+                out["mode"] = fr.mode
+                out["slot"] = fr.slot
+                out["slot_key"] = fr.slot_key
+            finally:
+                db.close()
+
+        t1 = threading.Thread(target=leader)
+        t2 = threading.Thread(target=waiter)
+        t1.start()
+        t2.start()
+        t1.join(timeout=15)
+        t2.join(timeout=15)
+        assert not t1.is_alive() and not t2.is_alive()
+        assert leader_slot_ref["slot"].event.wait_calls >= 1, \
+            "等待者必须真正调过 wait()，否则唤醒路径没测到"
+        # false 等待者被唤醒、回读 miss：不许当继任领头，直算不注册
+        assert out["mode"] == "direct", out
+        assert out["slot"] is None, "false 等待者不许注册继任 slot"
+        assert out["slot_key"] is None
+        st = ilc.get_stats()
+        assert st["miss"] == 1, st  # 首领头
+        assert st["recompute"] == 0, st  # 继任领头没发生
+        assert ilc._in_flight == {}, "slot 泄漏"
+        db_main.close()
+    finally:
+        eng.dispose()
+        os.unlink(path)
+
+
 def test_wait_timeout_fallback(fake):
     """领头算得太久 → 等待者超时后自行计算，不无限等。
 
