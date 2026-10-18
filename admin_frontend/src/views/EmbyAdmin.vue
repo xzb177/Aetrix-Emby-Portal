@@ -25,8 +25,7 @@ import type { UploadRequestOptions } from 'element-plus'
 import {
   Film, FolderPlus, History, ImagePlus, RefreshCw, ScanSearch,
   CalendarClock, Info, ShieldAlert,
-  Square, Wand2, X,
-} from 'lucide-vue-next'
+  Square, Wand2, X,} from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import {
   cancelQueuedScan,
@@ -66,7 +65,6 @@ import {
   saveEnrichEpisodeFields,
   saveEnrichTuning,
   saveUnifiedFallback,
-  stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
@@ -1391,11 +1389,6 @@ async function removeLib(l: EmbyLibrary) {
   load()
 }
 
-async function stopAll() {
-  const res = await stopAllTranscodes()
-  ElMessage.success(`已停止 ${res.stopped} 路转码`)
-}
-
 function fmtDate(s: string | null): string {
   if (!s) return '—'
   return s.slice(0, 16).replace('T', ' ')
@@ -1721,9 +1714,6 @@ function typeLabel(t: string): string {
         </el-button>
         <el-button :loading="virtualLoading" @click="generateVirtual">
           <Wand2 :size="14" style="margin-right: 4px" />生成平台虚拟库
-        </el-button>
-        <el-button @click="stopAll">
-          <Square :size="13" style="margin-right: 4px" />停止全部转码
         </el-button>
         <el-button type="primary" @click="openCreate">
           <FolderPlus :size="15" style="margin-right: 4px" />新建媒体库

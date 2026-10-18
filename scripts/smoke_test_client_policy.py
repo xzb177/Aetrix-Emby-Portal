@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""播放与客户端策略冒烟测试（v2.26.0）
+"""播放与客户端策略冒烟测试（v2.26.0；2026-10-17 转码删除版）
 
 以前这些策略散在两处：环境变量（``EMBY_MAX_TRANSCODES``，改一次要登机器重启）与设置页里的
-下载开关。现在它们是面板上的**播放与客户端策略**，而且**真的在播放入口生效**：
-
-1. 默认 = 与升级前完全一致（允许转码、不限并发、不拦客户端）；
-2. 关掉转码 → 播放信息不再给「可转码」与转码地址，直接请求 master.m3u8 得到 403；
-3. 并发上限 → 满了拒绝**新的**转码请求（503），不影响已经在看的人；
-4. 写策略只认白名单键（未知键 / 非法值不影响原值），并且只有超级管理员能写；
-5. 每次写入都留审计日志。
+下载开关。现在它们是面板上的**播放与客户端策略**，而且**真的在播放入口生效**。
 
 2026-10：删除服务端码率钳制，客户端要多少码率给多少。
+2026-10-17：**服务端转码整套删除**（用户拍板）。剩下的策略只有 Drive 302 开关；
+播放信息恒不声明可转码、不给 TranscodingUrl；master.m3u8 端点不再存在。
+
+断言：
+1. 默认口径：policy 只有 ``drive_direct_play_enabled``；runtime 只有 ``playback_node``；
+   播放信息的 MediaSource ``SupportsTranscoding`` 恒 False、无 ``TranscodingUrl``；
+2. 残留的转码配置键（``playback_transcode_enabled`` / ``playback_max_concurrent_transcodes``）
+   写了也不生效、payload 里不出现（作废键）；
+3. 写策略只认白名单键（未知键 / 非法值不影响原值），并且只有超级管理员能写；
+4. 每次写入都留审计日志。
 
 用法：python scripts/smoke_test_client_policy.py
 """
@@ -28,7 +32,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from backend import models, playback_policy  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
-from backend.emby_server import api as emby_api  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.main import app  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
@@ -106,78 +109,58 @@ def playback(headers=H_USER, ua="Emby/4.9.0.30 Android", body=None):
 
 
 # ==================== 1. 默认口径 ====================
-print("=== 1. 默认（与升级前一致）===")
+print("=== 1. 默认口径（转码已删除）===")
 r = client.get("/api/admin/playback/policy", headers=H_STAFF)
 policy = r.json() if r.status_code == 200 else {}
-check("策略端点 200 且返回默认值（允许转码 / 不限并发）",
+check("策略端点 200 且只剩 drive_direct_play_enabled",
       r.status_code == 200
-      and policy["policy"]["transcode_enabled"] is True
-      and policy["policy"]["max_concurrent_transcodes"] == 0,
+      and set(policy["policy"]) == {"drive_direct_play_enabled"},
       str(policy.get("policy")))
-check("策略端点带回运行态（本机并发 / 上限 / 谁在出流 / ffmpeg）",
-      {"active_transcodes", "capacity", "playback_node", "ffmpeg_available"} <= set(policy["runtime"]),
+check("策略端点带回运行态（只剩播放节点）",
+      set(policy["runtime"]) == {"playback_node"},
       str(policy.get("runtime")))
 
 r = playback()
-check("默认：播放信息带可转码与转码地址",
-      r.status_code == 200 and r.json()["MediaSources"][0]["SupportsTranscoding"] is True
-      and "TranscodingUrl" in r.json()["MediaSources"][0],
-      f"HTTP {r.status_code}")
-
-# ==================== 2. 关掉转码 ====================
-print("\n=== 2. 关掉服务端转码 ===")
-set_config("playback_transcode_enabled", "false")
-r = playback()
 src = r.json()["MediaSources"][0] if r.status_code == 200 else {}
-check("关掉转码：播放信息不再声明可转码，也不给转码地址",
+check("播放信息恒不声明可转码、也不给转码地址",
       r.status_code == 200 and src.get("SupportsTranscoding") is False
       and "TranscodingUrl" not in src,
-      str({k: src.get(k) for k in ("SupportsTranscoding", "TranscodingUrl")}))
-r = client.get(f"/emby/videos/{item_id}/master.m3u8", headers=H_USER)
-check("关掉转码：直接请求 master.m3u8 → 403 且说明原因",
-      r.status_code == 403 and "转码" in str(r.json().get("detail", "")), f"HTTP {r.status_code} {r.text[:120]}")
-r = playback(headers=H_STAFF)
-check("管理员不受转码开关限制（排障时能自己验证）",
-      r.status_code == 200 and r.json()["MediaSources"][0]["SupportsTranscoding"] is True,
+      f"HTTP {r.status_code} {str({k: src.get(k) for k in ('SupportsTranscoding', 'TranscodingUrl')})[:120]}")
+check("播放信息仍给直连地址（DirectStreamUrl）",
+      r.status_code == 200 and bool(src.get("DirectStreamUrl")),
+      f"HTTP {r.status_code}")
+
+# ==================== 2. 作废的转码键 ====================
+print("\n=== 2. 残留转码配置键作废 ===")
+set_config("playback_transcode_enabled", "false")
+set_config("playback_max_concurrent_transcodes", "1")
+with SessionLocal() as db:
+    payload = playback_policy.policy_payload(db)
+check("作废键写了也不生效、payload 里不出现",
+      "transcode_enabled" not in payload and "max_concurrent_transcodes" not in payload,
+      str(payload))
+r = playback()
+src = r.json()["MediaSources"][0] if r.status_code == 200 else {}
+check("作废键不影响播放信息（仍恒 False、无 TranscodingUrl）",
+      r.status_code == 200 and src.get("SupportsTranscoding") is False
+      and "TranscodingUrl" not in src,
       f"HTTP {r.status_code}")
 set_config("playback_transcode_enabled", None)
+set_config("playback_max_concurrent_transcodes", None)
 
-# ==================== 3. 并发上限 ====================
-print("\n=== 3. 并发上限（拒绝新的，不动正在看的）===")
-set_config("playback_max_concurrent_transcodes", "1")
-real_active = emby_api.active_transcode_ids
-emby_api.active_transcode_ids = lambda: ["fake-session"]
-try:
-    r = client.get(f"/emby/videos/{item_id}/master.m3u8", headers=H_USER)
-    detail = str(r.json().get("detail", "")) if r.headers.get("content-type", "").startswith("application/json") else ""
-    check("并发满了：新的转码请求被拒 503 且说清上限",
-          r.status_code == 503 and "上限" in detail, f"HTTP {r.status_code} {detail[:80]}")
-finally:
-    emby_api.active_transcode_ids = real_active
-
-set_config("playback_max_concurrent_transcodes", "0")
-r = client.get(f"/emby/videos/{item_id}/master.m3u8", headers=H_USER)
-detail = ""
-try:
-    detail = str(r.json().get("detail", ""))
-except Exception:  # noqa: BLE001
-    pass
-check("上限归零（= 用进程内置上限）：不再按策略拒绝",
-      not (r.status_code == 503 and "上限" in detail and "已达上限（" in detail),
-      f"HTTP {r.status_code} {detail[:80]}")
-
-# ==================== 6. 写策略：白名单键与权限 ====================
-print("\n=== 5. 写策略 ===")
+# ==================== 3. 写策略：白名单键与权限 ====================
+print("\n=== 3. 写策略 ===")
 r = client.put("/api/admin/playback/policy", headers=H_STAFF,
-               json={"policy": {"playback_max_concurrent_transcodes": "3",
+               json={"policy": {"drive_direct_play_enabled": False,
+                                "playback_transcode_enabled": "true",  # 作废键，不认
                                 "unknown_key": "1"}})
 applied = r.json().get("applied", {}) if r.status_code == 200 else {}
-check("写策略 200 且只应用白名单里的键",
-      r.status_code == 200 and set(applied) == {"playback_max_concurrent_transcodes"},
+check("写策略 200 且只应用白名单里的键（作废键/未知键忽略）",
+      r.status_code == 200 and set(applied) == {"drive_direct_play_enabled"},
       str(applied))
 with SessionLocal() as db:
     check("回读一致",
-          playback_policy.policy_payload(db)["max_concurrent_transcodes"] == 3)
+          playback_policy.policy_payload(db)["drive_direct_play_enabled"] is False)
 with SessionLocal() as db:
     actions = [row.action for row in db.query(models.AdminLog).all()]
 check("策略变更留了审计日志", "playback_policy_update" in actions, str(sorted(set(actions))))
@@ -185,9 +168,8 @@ check("策略变更留了审计日志", "playback_policy_update" in actions, str
 clear_policy()
 with SessionLocal() as db:
     final = playback_policy.policy_payload(db)
-check("清空后回到与升级前一致的口径",
-      final["transcode_enabled"] is True
-      and final["max_concurrent_transcodes"] == 0,
+check("清空后回到默认值",
+      final["drive_direct_play_enabled"] is True,
       str(final))
 
 print()

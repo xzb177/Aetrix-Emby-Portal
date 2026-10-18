@@ -4,7 +4,6 @@
  *
  * 一句话回答「客户端这边到底允许做什么」：
  *
- * - **转码**：允不允许服务端转码、同时几路（省 CPU / 省上行）；
  * - **下载与设备**：是否允许下载、每人几台设备、超限是拒绝还是自动踢最久未用的、
  *   安全日志保留多久（这组 SystemConfig 键的唯一写入口，「系统设置」只读回显）。
  *
@@ -15,8 +14,8 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import {
-  Activity, AlertTriangle, Clock, Cpu, Download, Gauge, Info, RefreshCw, Save,
-  Server, Smartphone, Target, Tv, Zap,
+  Activity, AlertTriangle, Download, Gauge, Info, RefreshCw, Save,
+  Server, Smartphone, Zap,
 } from 'lucide-vue-next'
 import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
@@ -45,8 +44,6 @@ const savingPolicy = ref(false)
 const savingOps = ref(false)
 
 const policy = ref<PlaybackPolicy>({
-  transcode_enabled: true,
-  max_concurrent_transcodes: 0,
   drive_direct_play_enabled: true,
 })
 const runtime = ref<PlaybackRuntime | null>(null)
@@ -100,8 +97,8 @@ onMounted(load)
 
 const playLines = ref<PlayLinesSnapshot | null>(null)
 
-/** 本机文件整文件直发 / 转码拉流不走本服务响应体，流量口径不包含它们 */
-const lineBytesHint = '流量 = 本进程经手的出流量（不含转码时 ffmpeg 的拉流与整文件直发）'
+/** 本机文件整文件直发不走本服务响应体，流量口径不包含它们 */
+const lineBytesHint = '流量 = 本进程经手的出流量（不含整文件直发）'
 
 async function savePolicy() {
   savingPolicy.value = true
@@ -129,8 +126,6 @@ async function saveOps() {
   }
 }
 
-const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_seconds ?? 0))
-
 </script>
 
 <template>
@@ -138,7 +133,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
     <PageHeader
       eyebrow="安全与准入"
       title="客户端策略"
-      description="转码、下载与设备、播放线路：改完对面板与出流的节点同时生效（管理员不受这些策略限制）。"
+      description="下载与设备、播放线路：改完对面板与出流的节点同时生效（管理员不受这些策略限制）。"
     >
       <template #actions>
         <el-button :loading="loading" @click="load">
@@ -167,35 +162,15 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       description="下面显示的是默认值，请勿直接保存。点右上角「刷新」重试。"
     />
 
-    <!-- 运行态：改上限之前先知道现在跑到什么程度 -->
+    <!-- 运行态 -->
     <SectionCard
       v-if="runtime"
       title="运行态"
       :icon="Gauge"
       meta="本进程"
-      description="分离部署时转码跑在 EA 上，这里的数字是面板本机的。"
+      description="当前播放由谁出流（面板本机判定）。"
     >
       <div class="tile-grid">
-        <StatTile
-          label="正在转码"
-          :icon="Cpu"
-          :value="runtime.active_transcodes"
-          :tone="runtime.active_transcodes > 0 ? 'warn' : 'plain'"
-        />
-        <StatTile
-          :label="policy.max_concurrent_transcodes ? '策略上限' : '内置上限'"
-          :icon="Target"
-          :value="policy.max_concurrent_transcodes || runtime.capacity"
-          suffix="路"
-        />
-        <StatTile label="闲置回收" :icon="Clock" :value="idleSeconds" suffix="s" />
-        <StatTile
-          label="ffmpeg"
-          :icon="Tv"
-          :value="runtime.ffmpeg_available ? '可用' : '未安装'"
-          :tone="runtime.ffmpeg_available ? 'ok' : 'warn'"
-          class="text-tile"
-        />
         <StatTile
           label="当前出流"
           :icon="Server"
@@ -203,50 +178,6 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
           class="text-tile"
         />
       </div>
-      <template #footer>
-        内置上限 {{ runtime.capacity }} 路（来自 <code>EMBY_MAX_TRANSCODES</code> 或 CPU 核数）；
-        超上限时只拒绝<strong>新的</strong>转码请求，不会中断正在看的人。
-      </template>
-    </SectionCard>
-
-    <!-- 转码与清晰度 -->
-    <SectionCard title="转码与清晰度" :icon="Tv" description="控制服务端转码：省 CPU / 省上行与兼容性之间的取舍。">
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label" for="cp-transcode">允许服务端转码</label>
-          <p class="cp-hint">
-            关闭后只放直连 / 直接播放：省 CPU 与上行，但客户端兼容性会变差
-            （网页端播放器遇到不支持的编码会播不了）。
-          </p>
-        </div>
-        <el-switch id="cp-transcode" v-model="policy.transcode_enabled" :disabled="!isSuper" />
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">并发转码上限</label>
-          <p class="cp-hint">
-            0 = 用进程内置上限（默认按 CPU 核数）。设成具体值后，满了会<strong>拒绝新的转码请求</strong>
-            并提示稍后再试，而不是把整台机器的 CPU 打满、所有人一起卡。
-          </p>
-        </div>
-        <el-input-number
-          v-model="policy.max_concurrent_transcodes"
-          :min="0" :max="200"
-          :disabled="!isSuper"
-          controls-position="right"
-          class="cp-num"
-        />
-      </div>
-
-      <template #footer>
-        <div class="cp-save">
-          <span class="cp-save-hint">与「Drive 302 直链」同属播放策略，保存任一处都会一起提交。</span>
-          <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
-            <Save :size="14" class="btn-ico" />保存
-          </el-button>
-        </div>
-      </template>
     </SectionCard>
 
     <!-- 下载与设备：这批配置键的唯一写入口（系统设置页只读回显） -->
@@ -336,8 +267,8 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       :description="playLines?.scope_note || lineBytesHint"
     >
       <p class="cp-hint cp-lead">
-        Drive 文件直接 302 到谷歌直链，播放器自拉，字节不经服务器；
-        115 等挂载源暂不支持（410）。转码不受影响。
+        播放统一走 302 直链：Drive 文件 302 到谷歌直链，挂载源（115/WebDAV/AList）
+        302 到挂载解析出的直链，本机文件直接流——字节不经服务器。
       </p>
 
       <div v-if="playLines" class="line-card">
@@ -381,7 +312,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
 
       <template #footer>
         <div class="cp-save">
-          <span class="cp-save-hint">与「转码与清晰度」同属播放策略，保存任一处都会一起提交。</span>
+          <span class="cp-save-hint">本页所有开关同属播放策略，保存任一处都会一起提交。</span>
           <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
             <Save :size="14" class="btn-ico" />保存
           </el-button>
@@ -397,7 +328,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       storage-key="client-policy-scope"
     >
       <div class="policy-guide">
-        这里只放「客户端能做什么」（转码、下载与设备）；
+        这里只放「客户端能做什么」（下载与设备）；
         「站点怎么运营」（注册、支付、付费墙、邀请返利）仍然在系统设置里。
       </div>
     </NoticePanel>

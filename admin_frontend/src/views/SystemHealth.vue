@@ -85,7 +85,6 @@ function lampKeyMetrics(key: string): Array<{ label: string; field: string; suff
     case 'disk':
       return [
         { label: '磁盘剩余', field: 'disk_free_percent', suffix: '%' },
-        { label: '转码中', field: 'transcode_sessions', suffix: '' },
       ]
     case 'workers':
       return [

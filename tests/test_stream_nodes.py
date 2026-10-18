@@ -4,8 +4,14 @@
 原样返回，hit=False）。其余钉住：公网地址守卫、改写只换基址前缀、
 base 对不上时宁可不改写、管理接口的注册/去重/移除。
 
+（2026-10-17 转码删除后）：``rewrite_playback_urls`` 不再接收/处理
+``transcoding_url``，签名 ``(db, stream_url, base)``、返回二元组
+``(stream_url, hit)``。TranscodingUrl 已不存在，调用方只改写播放 URL。
+
 用隔离的内存 SQLite，不碰生产库。
 """
+import inspect
+
 import pytest
 
 
@@ -32,7 +38,6 @@ BASE = "https://portal.example.com"
 NODE = "https://stream.example.com"
 STREAM = (BASE + "/emby/Videos/abc123/stream?static=true&MediaSourceId=abc123"
           "&api_key=k&uid=1&exp=999&sign=s")
-TRANSCODE = BASE + "/emby/videos/abc123/master.m3u8?MediaSourceId=abc123&api_key=k"
 
 
 def _register(db, url=NODE, name="n1", weight=100):
@@ -40,12 +45,21 @@ def _register(db, url=NODE, name="n1", weight=100):
     return stream_nodes.register_node(db, url, name, weight)
 
 
+# ---------- 新签名（转码删除后）：(db, stream_url, base) -> (stream_url, hit) ----------
+
+def test_new_signature_has_no_transcoding_url():
+    """2026-10-17：改写函数不再接收 transcoding_url 参数，返回二元组。"""
+    from backend.emby_server import stream_nodes
+    params = list(inspect.signature(stream_nodes.rewrite_playback_urls).parameters)
+    assert params == ["db", "stream_url", "base"], params
+
+
 # ---------- 默认：无配置不改写 ----------
 
 def test_no_config_no_rewrite(db):
     from backend.emby_server import stream_nodes
-    s, t, hit = stream_nodes.rewrite_playback_urls(db, STREAM, TRANSCODE, BASE)
-    assert (s, t, hit) == (STREAM, TRANSCODE, False)
+    s, hit = stream_nodes.rewrite_playback_urls(db, STREAM, BASE)
+    assert (s, hit) == (STREAM, False)
 
 
 # ---------- 注册后改写 ----------
@@ -53,27 +67,26 @@ def test_no_config_no_rewrite(db):
 def test_register_then_rewrite(db):
     from backend.emby_server import stream_nodes
     _register(db)
-    s, t, hit = stream_nodes.rewrite_playback_urls(db, STREAM, TRANSCODE, BASE)
+    s, hit = stream_nodes.rewrite_playback_urls(db, STREAM, BASE)
     assert hit is True
     assert s.startswith(NODE + "/emby/Videos/abc123/stream?")
     assert "uid=1&exp=999&sign=s" in s  # 签名查询串原样保留
-    assert t.startswith(NODE + "/emby/videos/abc123/master.m3u8?")
 
 
 def test_rewrite_only_prefix(db):
     from backend.emby_server import stream_nodes
     _register(db)
-    # URL 不以 base 开头：一个都不换，不能造出坏 URL
+    # URL 不以 base 开头：不换，不能造出坏 URL
     other = "https://other.example.com/emby/Videos/x/stream"
-    s, t, hit = stream_nodes.rewrite_playback_urls(db, other, other, BASE)
-    assert (s, t, hit) == (other, other, False)
+    s, hit = stream_nodes.rewrite_playback_urls(db, other, BASE)
+    assert (s, hit) == (other, False)
 
 
 def test_same_origin_no_rewrite(db):
     from backend.emby_server import stream_nodes
     _register(db, url=BASE)  # 节点就是本机域名
-    s, t, hit = stream_nodes.rewrite_playback_urls(db, STREAM, TRANSCODE, BASE)
-    assert (s, t, hit) == (STREAM, TRANSCODE, False)
+    s, hit = stream_nodes.rewrite_playback_urls(db, STREAM, BASE)
+    assert (s, hit) == (STREAM, False)
 
 
 # ---------- 公网守卫 ----------
@@ -89,7 +102,7 @@ def test_reject_private_node_url(db):
 def test_default_loopback_never_rewritten(db):
     from backend.emby_server import stream_nodes
     # node_health 无配置时的默认本机条目是回环地址：改写层必须忽略
-    s, t, hit = stream_nodes.rewrite_playback_urls(db, STREAM, TRANSCODE, BASE)
+    s, hit = stream_nodes.rewrite_playback_urls(db, STREAM, BASE)
     assert hit is False
     assert "127.0.0.1" not in s
 
@@ -124,7 +137,7 @@ def test_unregister(db):
     assert stream_nodes._raw_nodes(db) == []
     assert stream_nodes.unregister_node(db, NODE) is False
     # 移除后恢复默认行为
-    s, t, hit = stream_nodes.rewrite_playback_urls(db, STREAM, TRANSCODE, BASE)
+    s, hit = stream_nodes.rewrite_playback_urls(db, STREAM, BASE)
     assert hit is False
 
 
@@ -135,20 +148,18 @@ def test_rewrite_rejects_non_boundary_prefix(db):
     from backend.emby_server import stream_nodes
     _register(db)
     bad_stream = "https://portal.example.com/embyfoo/x"
-    bad_trans = "https://portal.example.com/embyfoo/y"
     base = "https://portal.example.com/emby"
-    s, t, hit = stream_nodes.rewrite_playback_urls(db, bad_stream, bad_trans, base)
-    assert (s, t, hit) == (bad_stream, bad_trans, False)
+    s, hit = stream_nodes.rewrite_playback_urls(db, bad_stream, base)
+    assert (s, hit) == (bad_stream, False)
 
 
 def test_rewrite_boundary_match_regression(db):
     """真实调用方形态（base=纯主机，URL 后紧跟路径/查询）改写行为逐字节不变。"""
     from backend.emby_server import stream_nodes
     _register(db)
-    s, t, hit = stream_nodes.rewrite_playback_urls(db, STREAM, TRANSCODE, BASE)
+    s, hit = stream_nodes.rewrite_playback_urls(db, STREAM, BASE)
     assert hit is True
     assert s == STREAM.replace(BASE, NODE, 1)
-    assert t == TRANSCODE.replace(BASE, NODE, 1)
 
 
 # ---------- r30 F2：注册 scheme 白名单 ----------

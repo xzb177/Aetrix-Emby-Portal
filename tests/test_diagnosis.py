@@ -47,8 +47,7 @@ def _probe(key, status="ok", message="", metrics=None):
 def healthy_subs():
     return {
         "database": _probe("database", "ok", "ok"),
-        "disk": _probe("disk", "ok", "ok", {"disk_free_percent": 63.0,
-                                            "transcode_sessions": 0}),
+        "disk": _probe("disk", "ok", "ok", {"disk_free_percent": 63.0}),
         "probe": _probe("probe", "ok", "ok",
                         {"pending_ready": 12, "retrying": 0, "running": True,
                          "paused": False, "rate_per_min": 88.0,

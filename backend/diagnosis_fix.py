@@ -46,11 +46,9 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 FIX_THRESHOLD_DEFS: dict[str, tuple[str, float]] = {
-    # 只删 mtime 超过这么多秒的遗留转码目录（0 = 不看年龄全删遗留）
-    "transcode_min_age_sec": ("DIAG_FIX_TRANSCODE_MIN_AGE_SEC", 3600.0),
     # 探测租约 TTL（秒）；<= 0 时用 probe_worker 模块默认值
     "probe_claim_ttl_sec": ("DIAG_FIX_PROBE_TTL_SEC", -1.0),
-    # 1 = 顺带淘汰过期字幕缓存；0 = 只清转码目录
+    # 1 = 淘汰过期字幕缓存；0 = 不动
     "subtitle_cache": ("DIAG_FIX_SUBTITLE_CACHE", 1.0),
 }
 
@@ -77,23 +75,19 @@ class FixSpec:
 def _fix_disk_space(db) -> dict:
     """disk_space：清理过期缓存。
 
-    只删可再生的东西：不属于任何在跑会话的遗留 HLS 转码目录
-    （``maintenance.cleanup_transcode_orphans``，跳过共享目录与在跑会话），
-    可选再淘汰过期字幕缓存。删掉的下次需要时会自动重新生成。
+    只删可再生的东西：过期字幕缓存。删掉的下次需要时会自动重新生成。
+    （转码已删除，遗留 HLS 转码目录清理随之移除。）
     """
     from backend.emby_server import maintenance
 
-    min_age = get_fix_threshold("transcode_min_age_sec")
-    removed_dirs = maintenance.cleanup_transcode_orphans(min_age_seconds=min_age)
     removed_subs = 0
     if get_fix_threshold("subtitle_cache") >= 1.0:
         removed_subs = maintenance.prune_subtitle_cache()
     return {
-        "removed_transcode_dirs": int(removed_dirs),
         "removed_subtitle_files": int(removed_subs),
         "detail": (
-            f"清理了 {removed_dirs} 个遗留转码目录、{removed_subs} 个过期字幕缓存文件。"
-            "删的都是可再生的临时文件，在跑的转码任务没动。"
+            f"清理了 {removed_subs} 个过期字幕缓存文件。"
+            "删的都是可再生的临时文件。"
         ),
     }
 

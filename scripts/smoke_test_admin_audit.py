@@ -246,7 +246,7 @@ check("动作名区分「改」与「建」",
       (latest() or {}).get("action") == "emby_update_library", str((latest() or {}).get("action")))
 
 r = client.post("/api/admin/emby/transcodes/stop-all", headers=H_ADMIN)
-check("停全站转码 → 200", r.status_code == 200, f"HTTP {r.status_code}")
+check("停全站转码（转码已删除，兼容桩）→ 200", r.status_code == 200, f"HTTP {r.status_code}")
 check("停转码也留下审计（以前查不到是谁停的）",
       (latest() or {}).get("action") == "emby_stop_all_transcodes",
       str((latest() or {}).get("action")))

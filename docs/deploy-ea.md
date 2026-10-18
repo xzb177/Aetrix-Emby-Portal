@@ -1,6 +1,6 @@
 # EA · Emby API —— 协议网关部署
 
-**EA 是客户端眼里的"那台 Emby 服务器"**：Infuse / Fileball / Forward+ / Hills / SenPlayer / 官方 App 直接连 EA，媒体流由 EA 直连透传（HTTP Range）或 HLS 转码后送出。
+**EA 是客户端眼里的"那台 Emby 服务器"**：Infuse / Fileball / Forward+ / Hills / SenPlayer / 官方 App 直接连 EA，媒体流一律 302 直链（播放器自拉），服务器不传字节（转码/中继已于 2026-10-17 删除）。
 
 EA 自己**不定义任何业务策略**——用户、媒体库、套餐与订阅、设备上限、下载开关、限流口径全部由 EM 写入共享数据库，EA 只按要求兑现。所以：
 
@@ -22,7 +22,7 @@ panel.example.com ──┤  EM 控制面（注册登录、订阅权限、求片
         私网 API / WireGuard / Tailscale
                     │
                     ▼
-              EA 播放节点（Emby 协议、认证、权限校验、直链代理、HLS 转码、播放会话）
+              EA 播放节点（Emby 协议、认证、权限校验、302 直链、播放会话）
                     │
           共享存储（WebDAV / rclone / 115 / AList）
                     ▼

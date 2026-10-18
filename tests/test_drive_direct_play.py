@@ -5,8 +5,9 @@
   usercontent 直链（Location 含 file_id），不经过对象存储直链/中继。
 - 开关关 → 走原路径（对象存储直链判定；不命中则 410）。
 - 非 Drive 条目（无 drive_file_id，如本地 .strm 里一条普通 http 直链）→
-  不受影响，不命中则 410；但 mount:// 路径的远程挂载条目（115 等）→
-  走专用中继 serve_mount_relay_async（2026-10-17 用户拍板）。
+  不受影响，不命中则 410。
+- mount:// 路径的远程挂载条目（115 等）→ 直接 302 到解析出的直链
+  （2026-10-17 用户拍板：中继全删，115 也走纯 302；字节不经本机）。
 - 302 响应带卫生头：Cache-Control: no-store（直链个人化/短时，不可缓存复用）、
   Referrer-Policy: no-referrer。
 
@@ -45,7 +46,7 @@ def _stub_common(monkeypatch, item, target):
     monkeypatch.setattr(api, "_play_target", lambda db, it: target)
     # 通用中继已删（2026-10-17 用户拍板全删）：serve_remote_async 不复存在；
     # 未命中直链时 video_stream 直接 410——mount:// 的远程挂载条目除外，
-    # 它们走专用中继 serve_mount_relay_async（见 test_mount_relay.py）。
+    # 它们直接 302 到解析出的直链（中继已删，播放器自拉）。
 
 
 def _stub_switch(monkeypatch, value):
@@ -88,7 +89,7 @@ def test_switch_on_drive_item_302_to_usercontent(monkeypatch):
     assert resp.headers.get("referrer-policy") == "no-referrer"
 
 
-def test_switch_off_drive_item_falls_back_to_relay(monkeypatch):
+def test_switch_off_drive_item_410_no_relay(monkeypatch):
     """开关关 → Drive 条目走原路径（这里桩掉对象存储直链；中继已删，不命中则 410）。"""
     _stub_common(monkeypatch, _drive_item(), _drive_target())
     _stub_switch(monkeypatch, "false")
@@ -103,7 +104,7 @@ def test_switch_off_drive_item_falls_back_to_relay(monkeypatch):
 
 def test_switch_on_non_drive_item_unaffected(monkeypatch):
     """非 Drive、非挂载条目（本地 .strm 里一条普通 http 直链）→ 开关开也不 302，
-    无直链命中时仍 410（mount:// 条目走专用中继，见 test_mount_relay.py）。"""
+    无直链命中时仍 410（mount:// 条目直接 302，见下）。"""
     item = SimpleNamespace(container="mkv", drive_file_id="",
                            file_path="/strm/Movies/x.strm")
     target = PlayTarget("url", "https://115.example.com/direct/abc.mkv", {})
@@ -115,6 +116,25 @@ def test_switch_on_non_drive_item_unaffected(monkeypatch):
 
     assert getattr(exc_info.value, "status_code", None) == 410, \
         "非 Drive 非挂载条目无直链命中时，应 410"
+
+
+def test_mount_item_302_to_resolved_direct_url(monkeypatch):
+    """2026-10-17 用户拍板（推翻同日 08:03 的 115 中继例外）：mount:// 条目
+    （kind="url"、无 drive_file_id）→ 直接 302 到解析出的直链，不再走中继，
+    也不 410。服务端不再传一个字节。"""
+    item = SimpleNamespace(container="mkv", drive_file_id="",
+                           file_path="mount://3/Movies/a.mkv")
+    target = PlayTarget("url", "https://115.example.com/d/abc.mkv", {})
+    _stub_common(monkeypatch, item, target)
+    _stub_switch(monkeypatch, "true")
+    monkeypatch.setattr(_strategy, "maybe_direct_url", lambda db, fid: None)
+
+    resp = asyncio.run(api.video_stream("item", _request(), object(), object()))
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://115.example.com/d/abc.mkv"
+    assert resp.headers.get("cache-control") == "no-cache, no-store"
+    assert resp.headers.get("referrer-policy") == "no-referrer"
 
 
 def test_drive_direct_play_enabled_defaults_on(monkeypatch):

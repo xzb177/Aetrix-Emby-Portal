@@ -147,7 +147,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now aetrix-em
 journalctl -u aetrix-em -f
 ```
 
-> 单进程模式（EM 自带协议面）下**不要**用 `uvicorn --workers N`：HLS 转码子进程与会话管理在同一进程内闭环，多 worker 会重复 fork 并泄漏进程。分离部署时 EM 不参与转码，但仍建议保持单进程以免风控计数分散。
+> 单进程模式（EM 自带协议面）下建议保持单进程，以免风控计数分散。
 
 ## 7. Nginx + HTTPS（按域名授权）
 
@@ -181,7 +181,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
-        proxy_buffering off;          # 边转码边播放
+        proxy_buffering off;          # 直链 302 无体，播放器自拉
     }
 
     location / {

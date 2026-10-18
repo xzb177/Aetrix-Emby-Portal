@@ -33,7 +33,7 @@ curl http://127.0.0.1:8000/api/health
 
 - `aetrix`：Python 3.12 + 前端多阶段构建 + ffmpeg，默认端口 `8000`；
 - `aetrix-redis`：Redis 7，数据通过 Docker volume 持久化；
-- `aetrix_data`：SQLite、转码临时目录、图片缓存；
+- `aetrix_data`：SQLite、图片缓存、字幕缓存；
 - `redis_data`：Redis AOF 数据。
 
 媒体目录由 `MEDIA_ROOT` 映射到容器 `/media`，默认只读。媒体挂载配置若使用主机路径，必须改成容器内可见的路径。
@@ -212,7 +212,7 @@ du -sh /opt/aetrix-rclone/vfs
 - `SECRET_KEY` 至少 32 字符，EM/EA 必须一致；
 - `.env` 权限设为 `600`；
 - Docker 容器不要使用 `--privileged`；
-- 转码目录与数据库使用持久卷；
+- 缓存目录与数据库使用持久卷；
 - 部署后验证 `/api/health`、`/admin/`、`/emby/System/Info/Public`；
 - root 密码部署完成后应立即轮换，改用 SSH key 并关闭密码登录。
 

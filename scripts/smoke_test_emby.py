@@ -264,13 +264,10 @@ r = client.get("/api/admin/emby/overview", headers={"Authorization": f"Bearer {j
 assert r.status_code == 200, r.text
 print("OK admin overview:", r.json())
 
-# HLS 转码（仅当 ffmpeg 可用时验证真实转码）
-if have_ffmpeg:
-    r = client.get(f"/emby/videos/{movie['Id']}/master.m3u8?VideoBitrate=2000000", headers=H)
-    assert r.status_code == 200 and "m3u8" in r.text, r.text[:200]
-    print("OK HLS transcode entry")
-else:
-    print("SKIP HLS transcode (ffmpeg 不可用，生产环境安装 ffmpeg 后可用)")
+# HLS 转码已删除（2026-10-17）：master.m3u8 端点不再存在，转码入口返回 404。
+r = client.get(f"/emby/videos/{movie['Id']}/master.m3u8?VideoBitrate=2000000", headers=H)
+assert r.status_code == 404, f"转码端点应 404, got {r.status_code}"
+print("OK HLS transcode endpoint removed (404)")
 
 print("\n✅ 全部冒烟测试通过")
 shutil.rmtree(lib_dir, ignore_errors=True)

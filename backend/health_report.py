@@ -159,7 +159,6 @@ def collect(db) -> dict:
             _bump("warn")
             issues.append({"level": "warn", "key": "disk",
                            "message": f"磁盘余量偏低（{float(free_pct):.0f}% 剩余）"})
-        metrics["transcode_sessions"] = rep.get("transcode_sessions", 0)
     except Exception as exc:  # noqa: BLE001
         logger.debug("读磁盘信息失败: %s", exc)
 

@@ -1,7 +1,8 @@
 """播放端点库范围越权防护测试（P0 安全修复）。
 
-验证 video_stream / video_hls 在用户被限制库可见范围时，
+验证 video_stream 在用户被限制库可见范围时，
 不能通过直接构造 URL 越权播放受限库的内容。
+（2026-10-17 转码删除：video_hls 已不存在，只剩 video_stream 一个播放端点。）
 """
 import pytest
 
@@ -32,8 +33,12 @@ class TestLibraryScopeStreamGuard:
         assert _blocked({1, 2, 3}, getattr(FakeItem(), "library_id", None))
 
     def test_fix_present_in_api(self):
-        """两个播放端点都经统一 helper 做库范围校验（H1：_require_visible_item）"""
+        """播放端点经统一 helper 做库范围校验（H1：_require_visible_item）。
+
+        2026-10-17 转码删除后：只剩 video_stream 一个播放端点
+        （video_hls 已删），playback_info 同样过可见范围。
+        """
         with open("backend/emby_server/api.py", encoding="utf-8") as f:
             content = f.read()
-        assert content.count("P0 / H1") == 2
-        assert content.count("await run_db(_require_visible_item, db, user, item_id)") >= 3
+        assert content.count("P0 / H1") == 1
+        assert content.count("await run_db(_require_visible_item, db, user, item_id)") == 2

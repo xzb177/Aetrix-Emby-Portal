@@ -5,21 +5,18 @@
 整个 CDN 配置能力（生产从未启用，且与流节点的域名改写重复）。
 
 **保留的另一半**：分片缓存头口径——它与 CDN 域名配置无关，是给
-转码/直流分片的通用 HTTP 缓存语义，被以下几处直接使用：
+直接流分片的通用 HTTP 缓存语义，被以下几处直接使用：
 
-- ``backend/emby_server/api.py``：直流文件的 ``Cache-Control``、
-  转码播放列表（no-store）、转码分片（可缓存）；
+- ``backend/emby_server/api.py``：本机文件直接流的 ``Cache-Control``；
 - ``backend/main.py`` 的 ASGI 中间件：分片路径跳过强制 no-store
   （用 ``is_segment_path`` 判定）。
 
-- 视频/音频**分片**（HLS .ts/.m4s、直接流）→ ``public, max-age``，让边缘/浏览器
-  缓存热门分片（分片写完不可变，缓存多久都安全）；
-- 播放列表（.m3u8）、API、302 跳转 → ``no-store``，绝不被缓存。
-"""
+- 视频/音频**分片**（直接流 /stream、/stream.{容器}）→ ``public, max-age``，
+  让浏览器缓存热门分片（分片写完不可变，缓存多久都安全）；
+- API、302 跳转 → ``no-store``，绝不被缓存。"""
 from __future__ import annotations
 
-# 分片缓存时长（秒）：HLS 分片是不可变的（ffmpeg 写完就不改），边缘可以放心缓存。
-# 转码会话的分片同样不可变（一个 session 一份内容，session 票据在查询串里）。
+# 分片缓存时长（秒）：分片是不可变的，边缘可以放心缓存。
 SEGMENT_CACHE_SECONDS = 6 * 3600
 # 边缘缓存一般要比浏览器激进：给 s-maxage 留长一些，浏览器短一点
 SEGMENT_CACHE_HEADER = f"public, max-age={SEGMENT_CACHE_SECONDS}, s-maxage={SEGMENT_CACHE_SECONDS}, immutable"
@@ -30,8 +27,7 @@ NO_STORE = "no-store"
 def is_segment_path(path: str) -> bool:
     """这是不是可以缓存的视频/音频分片请求。
 
-    只认分片形态：HLS 切片（.ts/.m4s/.aac 包在 videos/{id}/ 下）与直接流
-    （/stream 或 /stream.{容器}）。播放列表、API、302 都不算。
+    只认直接流形态（/stream 或 /stream.{容器}）。API、302 都不算。
     """
     lowered = (path or "").lower().split("?", 1)[0]
     if lowered.endswith((".m3u8", ".json", ".xml", ".vtt", ".srt")):

@@ -8,9 +8,8 @@
    **绝不误清正在跑的扫描**（本进程注册在扫的、或刚在别的机器上开始的）；
 2. **播放会话回收**：客户端异常断开不会上报 Stopped，靠心跳过期收掉，
    且结束时间要贴近事实（用上次心跳，而不是收尾那一刻）；
-3. **转码/字幕临时文件**：重启后注册表为空的 HLS 目录、只增不减的字幕缓存，
-   以及退出时不留孤儿 ffmpeg 子进程；
-4. **健康检查是常数级**：临时目录统计有上限，残留再多也不会把探针拖慢；
+3. **字幕临时文件**：只增不减的字幕缓存；
+4. **健康检查是常数级**：目录统计有上限，残留再多也不会把探针拖慢；
 5. **扫描清理阶段**：十万级库也不整库载入内存（游标分批，置入更小的批大小仍正确），
    删条目时连 `UserMediaData`（播放进度/收藏）一起清——它没有 ORM 级联，
    老实现留下的是永远指向不存在条目的孤儿行。
@@ -22,7 +21,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -46,7 +44,7 @@ from backend.emby_server import maintenance as maint  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server import scanner as sc  # noqa: E402
 from backend.emby_server import soft_delete  # noqa: E402
-from backend.emby_server import streaming, subtitles  # noqa: E402
+from backend.emby_server import subtitles  # noqa: E402
 
 init_db()
 Session = sessionmaker(bind=engine)
@@ -147,112 +145,36 @@ check("s-ancient-live" in keys, "正在播的会话永远不裁（即便开始�
 check("s-old" not in keys, "过老的已结束会话被清掉")
 
 
-# ==================== 3. 转码目录 / 字幕缓存 / 退出收尾 ====================
+# ==================== 3. 字幕缓存淘汰（转码已删除） ====================
 
-class FakeProc:
-    """替代 ffmpeg：只实现 stop_transcode 需要的四个方法"""
+# 字幕缓存：过期先删，再按数量删最旧的
+sub_dir = tempfile.mkdtemp(prefix="maint_subs_")
+real_sub_dir = subtitles.SUB_CACHE_DIR
+subtitles.SUB_CACHE_DIR = sub_dir
+for i in range(5):
+    p = os.path.join(sub_dir, f"{i}.vtt")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("WEBVTT\n")
+    ts = time.time() - (10 * 86400 if i == 0 else i * 60)
+    os.utime(p, (ts, ts))
+expired = maint.prune_subtitle_cache(max_files=3, max_age_days=7)
+left = sorted(os.listdir(sub_dir))
+check(expired == 2, "字幕缓存：过期的 1 个 + 超量的 1 个被淘汰",
+      f"淘汰={expired} 剩余={left}")
+check(left == ["1.vtt", "2.vtt", "3.vtt"], "保留的是较新的 3 个", f"剩余={left}")
+subtitles.SUB_CACHE_DIR = real_sub_dir
 
-    def __init__(self, alive: bool = True) -> None:
-        self.alive = alive
-
-    def poll(self):  # noqa: ANN201
-        return None if self.alive else 0
-
-    def terminate(self) -> None:
-        self.alive = False
-
-    def wait(self, timeout=None):  # noqa: ANN001, ANN201
-        return 0
-
-    def kill(self) -> None:
-        self.alive = False
-
-
-root = tempfile.mkdtemp(prefix="maint_transcode_")
-real_transcode_dir = streaming.TRANSCODE_DIR
-streaming.TRANSCODE_DIR = root
-
-live_dir = os.path.join(root, "sess-live")
-orphan_dir = os.path.join(root, "sess-orphan")
-fresh_orphan_dir = os.path.join(root, "sess-just-died")
-shared_dir = os.path.join(root, "subs")
-for d in (live_dir, orphan_dir, fresh_orphan_dir, shared_dir):
-    os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, "seg.ts"), "wb") as f:
-        f.write(b"x" * 32)
-old = time.time() - 3600
-os.utime(orphan_dir, (old, old))
-
-streaming._TRANSCODE_PROCS["sess-live"] = {"proc": FakeProc(True), "dir": live_dir,
-                                           "started": now, "user_id": None}
-try:
-    removed = maint.cleanup_transcode_orphans(min_age_seconds=300)
-    check(removed == 1, "只清掉已经停下的遗留转码目录", f"清理={removed}")
-    check(os.path.isdir(live_dir), "正在跑的会话目录保留")
-    check(not os.path.exists(orphan_dir), "重启前遗留的目录被清掉")
-    check(os.path.isdir(fresh_orphan_dir), "刚生成、可能正在登记的目录留有余量")
-    check(os.path.isdir(shared_dir), "共享缓存目录（subs）不动")
-
-    # 正常路径下（无阈值）也应保留在跑会话
-    check(maint.cleanup_transcode_orphans() == 1, "无阈值时也只清不在跑的会话目录")
-
-    # 字幕缓存：过期先删，再按数量删最旧的
-    sub_dir = tempfile.mkdtemp(prefix="maint_subs_")
-    real_sub_dir = subtitles.SUB_CACHE_DIR
-    subtitles.SUB_CACHE_DIR = sub_dir
-    for i in range(5):
-        p = os.path.join(sub_dir, f"{i}.vtt")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write("WEBVTT\n")
-        ts = time.time() - (10 * 86400 if i == 0 else i * 60)
-        os.utime(p, (ts, ts))
-    expired = maint.prune_subtitle_cache(max_files=3, max_age_days=7)
-    left = sorted(os.listdir(sub_dir))
-    check(expired == 2, "字幕缓存：过期的 1 个 + 超量的 1 个被淘汰",
-          f"淘汰={expired} 剩余={left}")
-    check(left == ["1.vtt", "2.vtt", "3.vtt"], "保留的是较新的 3 个", f"剩余={left}")
-    subtitles.SUB_CACHE_DIR = real_sub_dir
-
-    # 健康检查的统计有上限：残留再多也不会把探针拖慢
-    maint.REPORT_MAX_FILES = 10
-    big_dir = os.path.join(root, "sess-big")
-    os.makedirs(big_dir, exist_ok=True)
-    for i in range(25):
-        with open(os.path.join(big_dir, f"s{i}.ts"), "wb") as f:
-            f.write(b"x" * 8)
-    report = maint.resource_report()
-    check(report["transcode_dir_files"] <= 10, "健康检查统计有上限",
-          f"统计={report['transcode_dir_files']} 上限=10")
-    check(report["transcode_scan_truncated"] is True, "统计被截断时会如实标注")
-    check(report["transcode_sessions"] == 1, "报告在跑的转码会话数")
-    check(maint.active_scan_count() == 0, "报告本进程正在扫描的库数")
-    maint.REPORT_MAX_FILES = 5000
-finally:
-    streaming._TRANSCODE_PROCS.clear()  # 这一段只验证目录清理，会话本身在下一段验证
-    streaming.TRANSCODE_DIR = real_transcode_dir
-
-
-# ==================== 4. 退出收尾：真子进程也要收掉 ====================
-
-child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-child_dir = os.path.join(root, "sess-child")
-os.makedirs(child_dir, exist_ok=True)
-streaming.TRANSCODE_DIR = root
-streaming._TRANSCODE_PROCS["sess-child"] = {"proc": child, "dir": child_dir,
-                                            "started": now, "user_id": None}
-summary = maint.shutdown_cleanup()
-streaming.TRANSCODE_DIR = real_transcode_dir
-check(summary["transcodes_stopped"] == 1, "退出收尾停掉在册的转码会话",
-      f"stopped={summary['transcodes_stopped']}")
-check(child.poll() is not None, "真的子进程被终止（不留孤儿 ffmpeg）")
-check(not streaming._TRANSCODE_PROCS, "注册表清空")
+# 健康检查：字幕缓存与磁盘余量
+report = maint.resource_report()
+check("subtitle_cache_files" in report, "运行期资源含字幕缓存统计")
+check(report["disk_free_percent"] is not None, "运行期资源含磁盘余量")
+check(maint.active_scan_count() == 0, "报告本进程正在扫描的库数")
 
 
 # ==================== 5. 维护周期可反复执行且不抛异常 ====================
 
 tick = maint.janitor_tick()
-check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
-                    "transcode_orphans", "subtitle_cache_pruned",
+check(set(tick) == {"sessions_reaped", "sessions_pruned", "subtitle_cache_pruned",
                     # v2.42.9 第 7 批：TMDB 磁盘缓存巡检删掉的文件数（干净时 0，
                     # 参与全零断言），见 tmdb_cache.prune。
                     "tmdb_cache_pruned",

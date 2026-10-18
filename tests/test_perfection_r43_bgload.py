@@ -50,11 +50,10 @@ def _patch_sections(monkeypatch):
         return _fn
 
     # ---- 轻量（EA 保留）----
-    monkeypatch.setattr(_streaming, "reap_stale_transcodes", _rec(light_calls, "reap_stale_transcodes"))
+    # 2026-10-17 转码删除：reap_stale_transcodes / cleanup_transcode_orphans 已随整套删除
     monkeypatch.setattr(maint, "reap_stale_playback_sessions", _rec(light_calls, "reap_stale_playback_sessions"))
     monkeypatch.setattr(maint, "prune_playback_sessions", _rec(light_calls, "prune_playback_sessions"))
     monkeypatch.setattr(maint, "purge_expired_emby_tokens", _rec(light_calls, "purge_expired_emby_tokens"))
-    monkeypatch.setattr(maint, "cleanup_transcode_orphans", _rec(light_calls, "cleanup_transcode_orphans"))
     monkeypatch.setattr(maint, "prune_subtitle_cache", _rec(light_calls, "prune_subtitle_cache"))
     monkeypatch.setattr(maint, "_idle_gc_if_quiet", _rec(light_calls, "idle_gc", ret=1))
     # ---- 重活（EA 跳过）----

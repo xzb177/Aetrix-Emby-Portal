@@ -207,9 +207,7 @@ export interface EmbyMediaSource {
   Size?: number | null
   SupportsDirectPlay?: boolean
   SupportsDirectStream?: boolean
-  SupportsTranscoding?: boolean
   DirectStreamUrl?: string
-  TranscodingUrl?: string
   MediaStreams?: Array<{
     Index: number
     Type: string

@@ -4,10 +4,11 @@
 
 1. ``GET /Sessions``（含 ``/emby/Sessions``）**没有任何鉴权**，返回全站所有未结束会话：
    用户名 / 设备 / 客户端 / IP / 正在播放的条目；
-2. ``DELETE /Sessions/{key}``（含 ``/emby/Sessions/{key}``）**同样没有鉴权**，并且会调用
-   ``stop_transcode()`` —— 匿名即可把任意用户踢下线；
+2. ``DELETE /Sessions/{key}``（含 ``/emby/Sessions/{key}``）**同样没有鉴权**；
 3. 客户端没带 ``PlaySessionId`` 时，会话键回退成 ``{user.id}-{item.guid[:16]}``，而
    ``item.guid`` 就是客户端可见的条目 id：会话键可以被公开算出来。
+
+转码已删除（2026-10-17）：结束会话只标记结束时间，不再有转码进程可停。
 
 本模块沿用 ``mount_routes.py`` 的做法——在 ``include_router`` **之前**把这几条路由换成
 带鉴权的实现（``install_session_routes``），并把上报入口的会话键归一化：
@@ -41,7 +42,6 @@ from backend.emby_server import api as emby_api
 from backend.emby_server import compat_routes
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization
-from backend.emby_server.streaming import stop_transcodes_for
 from backend.security import SECRET_KEY
 
 logger = logging.getLogger(__name__)
@@ -185,12 +185,9 @@ def stop_session_checked(
             raise HTTPException(status_code=403, detail="只能结束自己的播放会话")
         admin_roles.ensure_admin_allowed(request, user)
 
-    # 转码会话按「用户 + 条目 guid」反查（播放会话键与转码 uuid 不是一回事，
-    # 旧写法 stop_transcode(session_key) 永远匹配不上）
-    item_guid = emby_api.item_guid_for(db, session.item_id)
+    # 转码已删除（2026-10-17）：结束会话只标记，会话上报的 PlayMethod 恒为直连。
     session.ended_at = datetime.now()
     db.commit()
-    stop_transcodes_for(session.user_id, item_guid)
     return {"success": True}
 
 

@@ -14,6 +14,10 @@
 修复方式是在 ``if TYPE_CHECKING:`` 分支内 ``import httpx``：类型检查器可见，
 运行时不会执行，延迟导入行为不变。
 
+（2026-10-17 中继删除：relay_timeout / get_relay_client 已随中继删除，
+streaming.py 当前已无 httpx 引用；下面的 TYPE_CHECKING 断言改为条件式，
+httpx 注解若回来仍必须走 TYPE_CHECKING 分支。）
+
 本测试静态解析源码，收集模块顶层已定义的名称与所有注解引用的名称根，
 断言注解引用的名称根均有定义，从而防止 F821 回归。
 """
@@ -174,7 +178,13 @@ def test_annotation_names_are_defined() -> None:
 
 
 def test_httpx_only_declared_under_type_checking() -> None:
-    """httpx 只能在 ``if TYPE_CHECKING:`` 内声明，不能被提升为顶层运行时导入。"""
+    """httpx 只能在 ``if TYPE_CHECKING:`` 内声明，不能被提升为顶层运行时导入。
+
+    2026-10-17 中继删除：httpx 延迟客户端（relay_timeout/get_relay_client）
+    已随中继删除，streaming.py 当前已无 httpx 引用；若将来重新引入
+    httpx 注解，仍必须走 TYPE_CHECKING 分支（运行时保持延迟导入），
+    否则 pyflakes 报 F821。
+    """
     tree = _load_module_ast()
 
     runtime_imports = _runtime_top_level_import_names(tree)
@@ -182,8 +192,10 @@ def test_httpx_only_declared_under_type_checking() -> None:
         "httpx 应保持运行时延迟导入，不应出现在模块顶层的运行时 import 中"
     )
 
-    type_checking_imports = _type_checking_import_names(tree)
-    assert "httpx" in type_checking_imports, (
-        "缺少 `if TYPE_CHECKING: import httpx` 声明，注解中的 "
-        "httpx.AsyncClient / httpx.Timeout 会让 pyflakes 报 F821"
-    )
+    referenced = _collect_annotation_roots(tree)
+    if "httpx" in referenced:
+        type_checking_imports = _type_checking_import_names(tree)
+        assert "httpx" in type_checking_imports, (
+            "缺少 `if TYPE_CHECKING: import httpx` 声明，注解中的 "
+            "httpx.AsyncClient / httpx.Timeout 会让 pyflakes 报 F821"
+        )

@@ -241,7 +241,7 @@ def _health_env(monkeypatch, counts):
     monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: counts.get(s, 0))
     monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
     monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
-                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+                        lambda: {"disk_free_percent": 80.0})
     return health_report
 
 

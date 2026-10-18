@@ -5,7 +5,8 @@ FastAPI ≥0.118 的 yield 依赖在「响应发完之后」才清理；流式�
 
 1. 真连接池：响应体迭代期间 ``engine.pool.checkedout() == 0``（对照组不装饰时为 1，
    证明测试本身能抓到问题）。
-2. 真实端点 ``api.video_stream`` / ``api.video_hls``：会话在第一块数据发出之前已关闭。
+2. 真实端点 ``api.video_stream``：会话在第一块数据发出之前已关闭。
+   （2026-10-17 转码删除：video_hls 已不存在，本文件不再覆盖它。）
 """
 import asyncio
 import os
@@ -145,33 +146,11 @@ def test_video_stream_closes_session_before_body(monkeypatch, tmp_path):
     assert states == [True]
 
 
-def test_video_hls_segment_closes_session(monkeypatch, tmp_path):
-    from backend.emby_server import api
-
-    _patch_common(monkeypatch, api)
-    seg = tmp_path / "seg1.ts"
-    seg.write_bytes(b"ts")
-    info = {"dir": str(tmp_path)}
-    monkeypatch.setattr(api, "get_transcode", lambda sid: info)
-    monkeypatch.setattr(api, "touch_transcode", lambda sid: None, raising=False)
-    db = _FakeDb()
-    req = types.SimpleNamespace(
-        headers={}, query_params={"session": "s1"},
-        url=types.SimpleNamespace(path="/emby/videos/g1/seg1.ts"),
-        base_url="http://t/",
-    )
-    monkeypatch.setattr(api, "_base_url", lambda r: "http://t")
-    monkeypatch.setattr(api, "_echo_auth_qs", lambda r: "")
-    user = types.SimpleNamespace(id=1)
-    resp = asyncio.run(api.video_hls("g1", "seg1.ts", req, user, db))
-    assert db.closed
-    assert resp.path == str(seg)
-
-
 def test_streaming_endpoints_are_decorated():
     from backend.emby_server import api, media_routes, mount_routes, stream_routes
 
-    for fn in (api.video_stream, api.video_hls, media_routes.download_item,
+    # 2026-10-17 转码删除：api.video_hls 已不存在，从护栏名单移除
+    for fn in (api.video_stream, media_routes.download_item,
                media_routes.item_thumbnail, stream_routes.item_file,
                mount_routes.mounted_item_file):
         assert getattr(fn, "__wrapped__", None) is not None, fn

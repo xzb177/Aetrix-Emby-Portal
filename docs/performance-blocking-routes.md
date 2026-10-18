@@ -43,7 +43,7 @@
 | `economy._fulfill_order` | `async def`，但体内一个 await 都没有（回调与人工补单都被迫在循环上跑它） | 改同步 `def`，两个调用方都用 `run_in_threadpool` 调它 |
 | `user.py` 消息全标已读 / 创建与回复工单 | 批量 UPDATE、工单落库在 `async` 体里 | 各自下放；工单通知仍 await（提交后回读的属性先取成纯值） |
 | `emby_server/api.py::rate_item` | 收藏 / 已看标记（读条目 + 写 `UserMediaData` + 序列化）在 `async` 体里 | 只有 `await request.json()` 留在循环上，其余整段在工作线程 |
-| `portal.py::stop_my_session` / `admin_stop_session` | 查会话 + 算条目 guid + 写结束时间在 `async` 体里 | 下放；`stop_transcodes_for_async`（要 await 子进程与文件）仍在循环上 |
+| `portal.py::stop_my_session` / `admin_stop_session` | 查会话 + 写结束时间在 `async` 体里 | 下放；转码已删除，不再有子进程可停 |
 | `portal.py::scan_library_endpoint` | 查库 + 归属节点判定 + 入队都在 `async` 体里 | 整段下放，返回「要转发的节点身份」或「入队结果」；`push_scan` 的网络转发仍 await |
 
 **业务语义未变**：扫描入队与转发口径、字幕与播放地址规则、签到 / 兑换 / 退款 / 履约的判定、

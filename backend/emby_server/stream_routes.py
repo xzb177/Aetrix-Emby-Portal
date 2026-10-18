@@ -1,7 +1,7 @@
 """播放流与字幕投递路由
 
 由 ``backend/emby_server/api.py`` 拆分而来（v2.13.0），容器后缀变体流、原始文件端点（挂载来源由 mount_routes 接管）、
-字幕投递与 HLS 大小写兼容通配（必须最后注册）。
+字幕投递。转码已删除（2026-10-17），不再有 HLS 通配路由。
 
 路由仍注册在同一个 ``emby_router`` 上（从 ``api`` 导入同一实例），注册顺序与拆分前一致，
 因此 ``mount_routes`` / ``image_routes`` / ``session_routes`` 的「按路径 + 端点名替换」逻辑不受影响。
@@ -28,7 +28,6 @@ import os
 from backend.emby_server.api import (
     emby_router,
     _require_visible_item,
-    video_hls,
     video_stream,
 )
 
@@ -123,14 +122,3 @@ def video_subtitle_offset(item_id: str, sub_index: str, start_ticks: str, fmt: s
                           db: Session = Depends(get_db)):
     # 非直播场景忽略时间偏移，直接投递完整字幕
     return _serve_subtitle(item_id, sub_index, fmt, user, db)
-
-
-# ---- HLS 大小写兼容（必须放在文件最后，避免抢在更具体的路由之前匹配）----
-
-@emby_router.get("/emby/Videos/{item_id}/{transcode_path:path}")
-@emby_router.get("/Videos/{item_id}/{transcode_path:path}")
-async def video_hls_upper(item_id: str, transcode_path: str, request: Request,
-                          user: models.WebUser = Depends(get_play_user),
-                          db: Session = Depends(get_db)):
-    """Emby 客户端在不同版本混用 /Videos 与 /videos 前缀，补齐大写前缀的通配"""
-    return await video_hls(item_id, transcode_path, request, user, db)

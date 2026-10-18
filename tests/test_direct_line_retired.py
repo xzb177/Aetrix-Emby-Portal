@@ -108,7 +108,7 @@ def test_direct_is_not_a_selectable_line():
 
 
 def test_video_stream_source_has_no_google_direct_call():
-    """结构性护栏：video_stream 里的 Drive 直链 302 必须经审批开关。
+    """结构性护栏：video_stream 里的直链 302 必须经审批开关。
 
     302 的合法出现方式（2026-10-16 能力化 + 2026-10-17 最简播放拍板 +
     2026-10-18 P0 快路径）：
@@ -117,7 +117,9 @@ def test_video_stream_source_has_no_google_direct_call():
     开关（默认开）判定后直接 302 到谷歌 usercontent 直链——2026-10-18 起
     分两处写法（快路径：存在性校验通过后直接 302，跳过步行；回落分支：
     快路径未命中时保留原语义），但判定门（开关）与 URL 来源
-    （``drive_usercontent_download_url``）是同一套，不许新增别的直链入口。
+    （``drive_usercontent_download_url``）是同一套；③挂载条目（115 等）
+    经 ``is_mount_path`` 判定后 302 到解析出的直链目标（2026-10-17 用户拍板
+    115 改纯直链，挂载中继已删），不许新增别的直链入口。
     用 AST 取**真实代码**（注释里可以继续解释）。
     A-P3-4（2026-10-18）：不再纯计数——**每处** 302 的 URL 来源表达式必须
     ∈ 白名单集合，第 4 处出现时若来源不在白名单即红。
@@ -130,6 +132,7 @@ def test_video_stream_source_has_no_google_direct_call():
     _WHITELIST_302_URL_SOURCES = {
         "drive_usercontent_download_url(_fid)",  # Drive 直链（快路径 + 回落）
         "direct_url",  # 对象存储签名直链（← _strategy.maybe_direct_url）
+        "target.value",  # 挂载 302（115 纯直链，中继已删；判定门见下）
     }
     sources = []
     for node in ast.walk(tree):
@@ -156,6 +159,9 @@ def test_video_stream_source_has_no_google_direct_call():
         assert "drive_direct_play_enabled" in code, (
             "Drive 直链 302 必须经 drive_direct_play_enabled 开关判定")
         assert "maybe_direct_url" in code, "对象存储 302 必须经播放策略能力判定"
+    # 配套判定门：挂载 302 必须经 is_mount_path 判定
+    if "target.value" in sources:
+        assert "is_mount_path" in code, "挂载 302 必须经 is_mount_path 判定"
 
 
 def test_module_no_longer_imports_direct_url():

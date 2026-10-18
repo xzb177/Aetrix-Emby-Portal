@@ -34,7 +34,7 @@ from backend.database import get_db, SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
 from backend.emby_server.api import (
-    TICKS, SERVER_ID, item_guid_for,
+    TICKS, SERVER_ID,
     _base_url, _item_dto, _library_scope, _prefetch_list_data, _scope_items,
     season_poster_url,
 )
@@ -54,12 +54,7 @@ from backend.emby_server.scanner import (
     scan_result_payload,
     scan_runs_payload,
 )
-# 本文件里这几个路由都是 async def，所以必须用异步变体：同步的 stop_transcode 会
-# terminate 子进程、等它退出（最坏 5 秒）、再递归删分片目录，放在事件循环上等于把全站卡住。
-from backend.emby_server.streaming import (
-    stop_all_transcodes_async,
-    stop_transcodes_for_async,
-)
+# （转码已删除：同步变体已随 streaming 转码模块移除）
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import mounts as mount_lib
@@ -1246,9 +1241,9 @@ def get_my_sessions(request_user: models.WebUser = Depends(get_admin_or_emby_use
 async def stop_my_session(session_key: str,
                           request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
-    """结束自己的播放会话（同时释放转码进程）"""
-    def _end_session() -> tuple:
-        "结束会话的同步段：查会话 / 取条目 guid / 写结束时间（下放线程池）"
+    """结束自己的播放会话"""
+    def _end_session() -> None:
+        "结束会话的同步段：查会话 / 写结束时间（下放线程池）"
         session = (
             db.query(em.PlaybackSession)
             .filter(
@@ -1259,15 +1254,10 @@ async def stop_my_session(session_key: str,
         )
         if not session:
             raise HTTPException(status_code=404, detail="播放会话不存在")
-        ended = (session.user_id, item_guid_for(db, session.item_id))
         session.ended_at = datetime.now()
         db.commit()
-        return ended
 
-    ended_user_id, ended_item = await run_in_threadpool(_end_session)
-    # 按「用户 + 条目 guid」反查转码会话：播放会话键（PlaySessionId）与转码会话 id（uuid）
-    # 不是同一个东西，旧实现拿前者去 pop 等于什么都没停到（见 streaming.find_transcodes）。
-    await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
+    await run_in_threadpool(_end_session)
     return {"success": True}
 
 
@@ -2518,28 +2508,26 @@ def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session =
 
 @admin_emby_router.delete("/sessions/{session_key}")
 async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
-    def _end_session() -> tuple | None:
-        """查会话 / 写结束时间（同步段下放线程池），返回要停的转码定位信息"""
+    def _end_session() -> bool:
+        """查会话 / 写结束时间（同步段下放线程池）"""
         session = db.query(em.PlaybackSession).filter(
             em.PlaybackSession.session_key == session_key
         ).first()
         if not session:
-            return None
-        ended = (session.user_id, item_guid_for(db, session.item_id))
+            return False
         session.ended_at = datetime.now()
         db.commit()
-        return ended
+        return True
 
-    ended = await run_in_threadpool(_end_session)
-    if ended:
-        await stop_transcodes_for_async(ended[0], item_guid=ended[1])
+    await run_in_threadpool(_end_session)
     return {"success": True}
 
 
 @admin_emby_router.post("/transcodes/stop-all")
 async def admin_stop_all_transcodes(staff: models.WebUser = Depends(require_staff)):
-    count = await stop_all_transcodes_async()
-    return {"success": True, "stopped": count}
+    # 转码已删除（2026-10-17）：不再有转码会话。端点保留成功回包，
+    # 兼容管理后台旧版本调用（删端点会让旧面板吃 404）。
+    return {"success": True, "stopped": 0}
 
 
 # ==================== 存储挂载（已拆出） ====================

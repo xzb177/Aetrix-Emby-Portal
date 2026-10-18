@@ -22,7 +22,7 @@ def snapshot(db: Session) -> dict:
         "path": "relay",
         "label": "302 直链",
         "summary": "Drive 文件 302 到谷歌直链（播放器自拉，字节不经本机）；"
-                   "115 等挂载源暂不支持；转码走 ffmpeg 自拉，不受影响。",
+                   "115 等挂载源同样 302 到挂载解析出的直链；本机文件直接流。",
         "requests": int(counter.get("requests") or 0),
         "bytes_out": int(counter.get("bytes_out") or 0),
         "idle_seconds": counter.get("idle_seconds"),

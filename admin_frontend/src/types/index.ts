@@ -43,24 +43,14 @@ export interface AdminListResponse {
 
 /** 播放与客户端策略（后端 playback_policy.py，EM / EA 共用同一个库） */
 export interface PlaybackPolicy {
-  /** 是否允许服务端转码（关掉只放直连） */
-  transcode_enabled: boolean
-  /** 并发转码上限；0 = 用进程内置上限（EMBY_MAX_TRANSCODES / CPU 核数） */
-  max_concurrent_transcodes: number
   /** 客户端 UA 黑名单（子串，逗号分隔） */
   /** 客户端 UA 白名单（填了就只放列表内的客户端） */
   /** Drive 302 直链总开关（#957 的回滚闸；关掉后 Drive 文件播放返回 410） */
   drive_direct_play_enabled: boolean
 }
 
-/** 策略的运行态：只反映**本进程**（分离部署时转码跑在 EA 上） */
-export interface PlaybackRuntime {
-  active_transcodes: number
-  capacity: number
-  idle_timeout_seconds: number
+/** 策略的运行态：只反映**本进程**（当前出流节点） */export interface PlaybackRuntime {
   playback_node: string
-  ffmpeg_available: boolean
-  max_transcodes_env: string
 }
 
 /** 一条线路的降级原因（本进程累计，按次数降序） */

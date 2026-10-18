@@ -4,7 +4,8 @@
 覆盖：
 1. 白名单：只有 disk_space / probe_queue / workers_alive 可修复；
    db_health 等 6 条危险规则不在白名单，只能手动
-2. 安全修复成功路径：disk_space 真删遗留转码目录（tmp 目录实测端到端）
+2. 安全修复成功路径：disk_space 清过期字幕缓存（tmp 目录实测端到端；
+   2026-10-17 转码删除后，遗留转码目录清理已随转码移除）
 3. 危险操作被拒绝：db_health → 400 not_fixable（附手动步骤）
 4. 未知规则被拒绝：400 unknown_rule
 5. 二次确认缺失被拒绝：confirm=False/缺省 → 400 confirm_required
@@ -107,24 +108,25 @@ def test_whitelist_only_safe_rules():
 
 # ---------------------------------------------------------------- 2. 安全修复成功路径（端到端）
 
-def test_disk_space_fix_removes_orphans_end_to_end(db, admin, tmp_path,
-                                                  monkeypatch):
-    from backend.emby_server import maintenance
+def test_disk_space_fix_prunes_subtitle_cache_end_to_end(db, admin, tmp_path,
+                                                          monkeypatch):
+    """disk_space 只删可再生的过期字幕缓存（2026-10-17 转码删除后，
+    遗留转码目录清理已随转码移除，不再有 removed_transcode_dirs）。"""
+    from backend.emby_server import maintenance, subtitles
 
-    # 造两个遗留转码目录（不在跑、非共享目录）
-    for name in ("old_sess_1", "old_sess_2"):
-        d = tmp_path / name
-        d.mkdir()
-        (d / "seg0.ts").write_bytes(b"x" * 16)
-    (tmp_path / "keep_alive").mkdir()  # 假装是在跑的会话
+    # 造三个"过期"字幕缓存文件（mtime 设为 30 天前，必超 SUB_CACHE_MAX_DAYS）
+    import time
+    old = time.time() - 30 * 86400
+    for name in ("sub_a.vtt", "sub_b.vtt", "sub_c.vtt"):
+        p = tmp_path / name
+        p.write_bytes(b"WEBVTT\n")
+        os.utime(p, (old, old))
+    (tmp_path / "fresh.vtt").write_bytes(b"WEBVTT\n")  # 新文件不动
 
-    monkeypatch.setattr(maintenance, "_transcode_root",
-                        lambda: str(tmp_path))
-    monkeypatch.setattr(
-        "backend.emby_server.streaming.active_transcode_ids",
-        lambda: {"keep_alive"})
-    monkeypatch.setenv("DIAG_FIX_TRANSCODE_MIN_AGE_SEC", "0")
-    monkeypatch.setenv("DIAG_FIX_SUBTITLE_CACHE", "0")  # 本用例只测转码清理
+    monkeypatch.setattr(subtitles, "SUB_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(maintenance, "SUB_CACHE_MAX_DAYS", 7.0)
+    monkeypatch.setattr(maintenance, "SUB_CACHE_MAX_FILES", 10_000)
+    monkeypatch.setenv("DIAG_FIX_SUBTITLE_CACHE", "1")
 
     out = admin_diagnosis.fix_diagnosis_rule(
         DiagnosisFixRequest(rule_id="disk_space", confirm=True),
@@ -132,10 +134,10 @@ def test_disk_space_fix_removes_orphans_end_to_end(db, admin, tmp_path,
 
     assert out["ok"] is True
     assert out["rule_id"] == "disk_space"
-    assert out["result"]["removed_transcode_dirs"] == 2
-    assert not (tmp_path / "old_sess_1").exists()
-    assert not (tmp_path / "old_sess_2").exists()
-    assert (tmp_path / "keep_alive").exists()  # 在跑的没动
+    assert out["result"]["removed_subtitle_files"] == 3
+    assert "removed_transcode_dirs" not in out["result"]
+    assert not (tmp_path / "sub_a.vtt").exists()
+    assert (tmp_path / "fresh.vtt").exists()  # 没过期的没动
 
     audit = _last_audit(db, admin)
     assert audit is not None
@@ -179,10 +181,10 @@ def test_confirm_required(db, admin, body):
 def test_fix_failure_returns_structured_error(db, admin, monkeypatch):
     from backend.emby_server import maintenance
 
-    def boom(**kwargs):
+    def boom():
         raise RuntimeError("磁盘只读，删不动")
 
-    monkeypatch.setattr(maintenance, "cleanup_transcode_orphans", boom)
+    monkeypatch.setattr(maintenance, "prune_subtitle_cache", boom)
 
     out = admin_diagnosis.fix_diagnosis_rule(
         DiagnosisFixRequest(rule_id="disk_space", confirm=True),
@@ -199,11 +201,15 @@ def test_fix_failure_returns_structured_error(db, admin, monkeypatch):
 # ---------------------------------------------------------------- 8. 阈值可配
 
 def test_fix_thresholds_configurable(monkeypatch):
-    assert diagnosis_fix.get_fix_threshold("transcode_min_age_sec") == 3600.0
-    monkeypatch.setenv("DIAG_FIX_TRANSCODE_MIN_AGE_SEC", "60")
-    assert diagnosis_fix.get_fix_threshold("transcode_min_age_sec") == 60.0
-    monkeypatch.setenv("DIAG_FIX_TRANSCODE_MIN_AGE_SEC", "not-a-number")
-    assert diagnosis_fix.get_fix_threshold("transcode_min_age_sec") == 3600.0
+    # 2026-10-17 转码删除后，transcode_min_age_sec 阈值已随转码移除；
+    # 现有阈值：subtitle_cache（1=清过期字幕缓存，0=不动）
+    assert diagnosis_fix.get_fix_threshold("subtitle_cache") == 1.0
+    monkeypatch.setenv("DIAG_FIX_SUBTITLE_CACHE", "0")
+    assert diagnosis_fix.get_fix_threshold("subtitle_cache") == 0.0
+    monkeypatch.setenv("DIAG_FIX_SUBTITLE_CACHE", "not-a-number")
+    assert diagnosis_fix.get_fix_threshold("subtitle_cache") == 1.0
+    with pytest.raises(KeyError):
+        diagnosis_fix.get_fix_threshold("transcode_min_age_sec")
 
 
 # ---------------------------------------------------------------- 9. workers 修复

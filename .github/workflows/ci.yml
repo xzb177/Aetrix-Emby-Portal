@@ -253,13 +253,6 @@ jobs:
         timeout-minutes: 5
         run: python scripts/smoke_test_paywall.py
 
-      # 转码停止原先是「事件循环上等子进程退出 + 递归删分片」：停一次转码 = 全站卡住。
-      # 这里用后台心跳量事件循环被占住多久（同步基线 ≥0.5s vs 异步 <0.15s），并从真实路由
-      # 打进去验证「结束播放真的释放了转码」（播放会话键与转码 id 不是一回事）。
-      - name: 转码停止冒烟（不阻塞事件循环 / 真的停掉转码 / 并发停止）
-        timeout-minutes: 5
-        run: python scripts/smoke_test_transcode_stop.py
-
       - name: 运营能力冒烟（卡码 / 设备风控 / 登录日志 / 公告与广播送审）
         timeout-minutes: 5
         run: python scripts/smoke_test_ops_v260.py

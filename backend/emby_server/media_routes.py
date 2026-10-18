@@ -1,6 +1,7 @@
 """图片与下载路由
 
-由 ``backend/emby_server/api.py`` 拆分而来（v2.13.0），图片投递（含带序号的 Backdrop/Thumb 等）、原始文件下载、HLS 的 hls1 入口。
+由 ``backend/emby_server/api.py`` 拆分而来（v2.13.0），图片投递（含带序号的 Backdrop/Thumb 等）、原始文件下载。
+转码已删除（2026-10-17），不再有 HLS 入口。
 
 路由仍注册在同一个 ``emby_router`` 上（从 ``api`` 导入同一实例），注册顺序与拆分前一致，
 因此 ``mount_routes`` / ``image_routes`` / ``session_routes`` 的「按路径 + 端点名替换」逻辑不受影响。
@@ -18,15 +19,8 @@ from backend.emby_server import image_store
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server.streaming import (
-    get_transcode,
     serve_file,
     serve_image,
-    start_transcode,
-    stop_all_transcodes,
-    stop_transcode,
-    stop_user_transcodes,
-    transcode_alive,
-    wait_for_file,
 )
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -41,7 +35,6 @@ from backend.emby_server.api import (
     _play_target,
     _queue_image_repair,
     _require_visible_item,
-    video_hls,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,15 +54,6 @@ def _remember_local_image(db: Session, item: em.MediaItem, kind: str, path: str)
     except Exception as exc:  # noqa: BLE001
         logger.warning("记录本地化图片路径失败 item=%s: %s", getattr(item, "guid", "?"), exc)
         db.rollback()
-
-
-@emby_router.get("/emby/Videos/{item_id}/hls1")
-@emby_router.get("/Videos/{item_id}/hls1")
-async def video_hls1(item_id: str, request: Request,
-                     user: models.WebUser = Depends(get_emby_user),
-                     db: Session = Depends(get_db)):
-    # Emby 客户端直接请求 hls1 路径
-    return await video_hls(item_id, "master.m3u8", request, user, db)
 
 
 @emby_router.get("/emby/Items/{item_id}/Download")

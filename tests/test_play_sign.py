@@ -198,10 +198,11 @@ class TestWiring:
         # playback_info 双轨发放签名参数
         assert "issue_play_sign" in content
         assert "&uid=" in content and "&exp=" in content and "&sign=" in content
-        # 三个播放路由走签名优先的鉴权依赖
-        assert content.count("Depends(get_play_user)") == 3
-        # 防盗链检查挂在两个播放入口
-        assert content.count("play_sign.check_referer") == 2
+        # 播放路由走签名优先的鉴权依赖（2026-10-17 转码删除：video_hls 已删，
+        # 只剩 video_stream 与 video_stream_ext 两个）
+        assert content.count("Depends(get_play_user)") == 2
+        # 防盗链检查挂在播放入口（video_hls 删除后只剩 video_stream 一处）
+        assert content.count("play_sign.check_referer") == 1
 
     def test_auth_wiring(self):
         with open("backend/emby_server/auth.py", encoding="utf-8") as f:

@@ -376,6 +376,9 @@ def test_user_dto_policy_and_configuration_key_coverage(client, token, seed):
     missing = official_policy_keys - set(policy)
     assert not missing, f"Policy 缺官方字段: {sorted(missing)}"
     assert policy["IsAdministrator"] is True  # 种子用户是管理员
+    # 2026-10-17 转码删除：转码开关字段仍在（官方口径），但恒下发 False
+    assert policy["EnableAudioPlaybackTranscoding"] is False
+    assert policy["EnableVideoPlaybackTranscoding"] is False
 
     cfg = user["Configuration"]
     official_cfg_keys = {
@@ -460,7 +463,9 @@ def test_playback_info_media_source_has_official_static_fields(client, token, se
     for key, value in official_static.items():
         assert src.get(key) == value, f"MediaSource {key} 应为 {value}"
     assert src["SupportsDirectPlay"] is True
-    assert src["SupportsTranscoding"] is True
+    # 2026-10-17 转码删除：SupportsTranscoding 恒 False，不再下发 TranscodingUrl
+    assert src["SupportsTranscoding"] is False
+    assert "TranscodingUrl" not in src
     assert src["IsRemote"] is False
 
 

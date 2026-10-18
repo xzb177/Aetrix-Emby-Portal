@@ -338,12 +338,9 @@ class PlayTarget:
     """媒体可播放目标
 
     - ``kind="local"``：本机文件，调用方直接按文件读；
-    - ``kind="url"``：远程地址，调用方用 ``headers`` 代理转发（不要下发给客户端）。
-
-    **没有「客户端直连地址」这种形态**：曾经有个可选的 ``direct`` 字段给
-    302 直链用（拼一条带 access_token 的 Google 地址），现已删除——Drive 的
-    ``alt=media`` 要 Authorization 头而重定向带不过去，token 放 URL 又会被限流，
-    所以播放只有「服务端代理转发」这一种走法。
+    - ``kind="url"``：远程直链，调用方回 302 让播放器自拉（2026-10-17 起，
+      中继全删；115 的 pickcode 直链、rclone serve/rc 直链都是这个形态）。
+      ``headers`` 只供服务端内部读取（如扫描/字幕），不下发给客户端。
     """
 
     kind: str
@@ -1147,7 +1144,7 @@ class Pan115Mount(MountProvider):
                 _set_cached_115_url(pickcode_115, url)
         except (transfer115.Pan115Error, transfer115.Pan115AuthError) as exc:
             raise self._wrap(exc) from exc
-        # 直链自带签名，但仍带上 UA/Cookie：EA 代理转发，客户端看不到这些头
+        # 直链自带签名；headers 只供服务端内部读取（如字幕/扫描），播放时回 302 不下发
         return PlayTarget("url", url, {
             "User-Agent": self._ua() or MOUNT_UA,
             "Referer": "https://115.com/",

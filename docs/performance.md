@@ -117,16 +117,9 @@
   或者被别的模块 `await` 复用。新加端点时按这个口径选签名。
 - **为什么要拆**：文件小，单次改动的 diff 可读、可评审；后续把剩下的异步路由换异步 ORM
   或继续下沉阻塞调用时，改动面是可控的。
-- **慢动作必须有 `*_async` 变体**（v2.20.2）：确实需要 `await` 的端点里也不能直接调阻塞函数。
-  典型例子是「停止转码」：`stop_transcode()` 要 `terminate` 子进程、等它退出（最多 5 秒）、
-  再递归删掉整场播放的分片目录，一次「结束播放」就能把整个进程按住。现在事件循环上一律用
-  `stop_transcode_async()` / `stop_transcodes_for_async()` / `stop_all_transcodes_async()`
-  （阻塞部分 `asyncio.to_thread`，全部会话并发停），同步版本只留给同步路由与后台线程
-  （维护周期、`_reap_in_background`）。`scripts/smoke_test_transcode_stop.py` 用后台心跳
-  量出差别（同步基线 0.61s 空洞 vs 异步 0.01s），并静态拦住「`async def` 里调同步实现」的写法。
-- **停止转码按「用户 + 条目 guid」反查**：转码会话 id 是 `start_transcode` 生成的 uuid
-  （只出现在 HLS 播放列表的 `?session=` 上），与客户端的 `PlaySessionId`（播放会话键）
-  不是同一个值；`stop_transcode(session_key)` 这种写法永远匹配不上、等于什么都没停到。
+- **转码已删除（2026-10-17）**：服务端转码能力（ffmpeg 会话、HLS 切片、中继代理）
+  整套下线，播放侧只剩 302 直链（播放器自拉）。上述「`*_async` 变体」约束随转码移除；
+  结束会话只标记结束时间，不再有子进程可停。
 
 ## 二·六、分类筛选的索引（v2.15.0）
 

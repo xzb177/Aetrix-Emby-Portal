@@ -160,15 +160,13 @@ def _rule_disk(subs: dict) -> dict:
         )
     crit = get_threshold("disk_crit_pct")
     warn = get_threshold("disk_warn_pct")
-    ev = {"disk_free_percent": round(free_f, 1),
-          "transcode_sessions": m.get("transcode_sessions", 0)}
+    ev = {"disk_free_percent": round(free_f, 1)}
     if free_f < crit:
         return Finding(
             "disk_space", "磁盘空间", "critical",
             f"磁盘快满了，只剩 {free_f:.1f}%",
-            "磁盘余量极低，转码、下载、缩略图都可能写不进去，随时可能出故障。",
-            ["立即清理：删旧转码缓存、旧日志、没用的备份",
-             "转码会话较多时先停掉不紧急的转码任务",
+            "磁盘余量极低，下载、缩略图、字幕缓存都可能写不进去，随时可能出故障。",
+            ["立即清理：删旧日志、没用的备份、过期缓存",
              "长期看：加磁盘或把缓存目录迁到大盘"],
             ev,
         )

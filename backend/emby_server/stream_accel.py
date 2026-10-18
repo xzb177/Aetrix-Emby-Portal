@@ -111,8 +111,8 @@ def rewrite_url_domain(url: str, base: str, domain: str) -> str:
         return url
     return new_base + url[len(base):]
 def rewrite_playback_urls_unified(
-    db, stream_url: str, transcoding_url: str, base: str
-) -> tuple[str, str, str | None]:
+    db, stream_url: str, base: str
+) -> tuple[str, str | None]:
     """统一播放 URL 改写（横切能力只许一套）。
 
     优先级：流节点 > 加速域名 > 原样。
@@ -120,18 +120,18 @@ def rewrite_playback_urls_unified(
     - 否则加速开关打开时改写到加速域名
     - 都没命中时原样返回
 
-    返回 ``(stream_url, transcoding_url, source)``，
-    source 为 'node' / 'accel' / None。
+    转码已删除（2026-10-17）：不再处理 TranscodingUrl。
+    返回 ``(stream_url, source)``，source 为 'node' / 'accel' / None。
     """
     # 1. 流节点（需要时懒导入，避免循环导入）
     try:
         from backend.emby_server import stream_nodes
 
         node_hit = stream_nodes.rewrite_playback_urls(
-            db, stream_url, transcoding_url, base
+            db, stream_url, base
         )
-        if node_hit[2]:
-            return node_hit[0], node_hit[1], "node"
+        if node_hit[1]:
+            return node_hit[0], "node"
     except Exception:
         logger.debug("流节点改写跳过", exc_info=True)
 
@@ -139,9 +139,8 @@ def rewrite_playback_urls_unified(
     domain = get_effective_domain(db)
     if domain:
         new_stream = rewrite_url_domain(stream_url, base, domain)
-        new_trans = rewrite_url_domain(transcoding_url, base, domain)
-        if new_stream != stream_url or new_trans != transcoding_url:
-            return new_stream, new_trans, "accel"
+        if new_stream != stream_url:
+            return new_stream, "accel"
 
     # 3. 原样
-    return stream_url, transcoding_url, None
+    return stream_url, None

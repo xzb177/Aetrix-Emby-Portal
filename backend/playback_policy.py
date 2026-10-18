@@ -1,12 +1,15 @@
-"""播放与客户端策略（v2.26.0，2026-10 简化）
+"""播放与客户端策略（v2.26.0，2026-10 简化；2026-10-17 转码删除版）
 
 以前这些策略散在两处：一部分是环境变量（``EMBY_MAX_TRANSCODES`` / ``EMBY_TRANSCODE_IDLE``，
 改一次要登机器重启进程），一部分是设置页里的下载 / 设备开关。运营想要的是
-「客户端这边到底允许做什么」——一句话能回答的问题：
+「客户端这边到底允许做什么」——一句话能回答的问题。
 
-- **允许转码吗**（关掉只放直连/直接播放：省 CPU，代价是客户端兼容性变差）；
-- **同时几路转码**（超了直接拒绝新的，而不是把正在看的人挤掉）。
+2026-10-17 用户拍板**删除服务端转码整套**（生产实查近 7 天零使用）：
+``playback_transcode_enabled`` / ``playback_max_concurrent_transcodes`` 两键作废，
+写了也不生效、payload 里不出现（旧库残留行照常忽略）。剩下的策略只有：
 
+- **Drive 302 直链开关**（``drive_direct_play_enabled``，默认开）：关掉则 Drive 条目
+  走服务端 302 到对象存储直链名单（playback_strategy.direct），否则 302 到谷歌直链。
 （2026-10-17 瘦身：客户端黑白名单 ``client_allowed_agents`` / ``client_blocked_agents``
 已随用户拍板删除，不再做 UA 准入。）
 
@@ -21,21 +24,17 @@
 from __future__ import annotations
 
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend import models
 from backend.emby_server.playback_strategy import KEY_DRIVE_DIRECT_PLAY
 from backend.integrations import store
 
-CONFIG_TRANSCODE_ENABLED = "playback_transcode_enabled"
-CONFIG_MAX_TRANSCODES = "playback_max_concurrent_transcodes"
+# 转码已删除（2026-10-17 用户拍板）：playback_transcode_enabled /
+# playback_max_concurrent_transcodes 两键作废，不再读写。
 
 # 键 → 类型（设置页与 PUT 接口共用一份，避免两边各写一套白名单）
-POLICY_KEYS = {
-    CONFIG_TRANSCODE_ENABLED: "bool",
-    CONFIG_MAX_TRANSCODES: "int",
-    # Drive 302 直链总开关（#957，playback_strategy.KEY_DRIVE_DIRECT_PLAY 定义，
+POLICY_KEYS = {    # Drive 302 直链总开关（#957，playback_strategy.KEY_DRIVE_DIRECT_PLAY 定义，
     # video_stream 读它决定 302/410；键名本身就是页面字段名，无需短名映射）
     KEY_DRIVE_DIRECT_PLAY: "bool",
 }
@@ -43,16 +42,12 @@ POLICY_KEYS = {
 # 各键的出厂默认值（字符串形态，与 _config_bool / _config_int 的缺省语义一致）。
 # 配置自愈（backend/config_self_heal.py）引用这份表补缺失行 —— 默认值只许在这里定义一次。
 POLICY_DEFAULTS = {
-    CONFIG_TRANSCODE_ENABLED: "true",
-    CONFIG_MAX_TRANSCODES: "0",
     KEY_DRIVE_DIRECT_PLAY: "true",  # 与 playback_strategy.drive_direct_play_enabled 缺省一致
 }
 
 # 页面字段短名 → SystemConfig 键（GET policy_payload 返回短名，PUT 必须认短名；
 # 2026-10-17 实锤：前端一直送短名，write_policy 只认长键名导致保存静默失效）
 FIELD_TO_KEY = {
-    "transcode_enabled": CONFIG_TRANSCODE_ENABLED,
-    "max_concurrent_transcodes": CONFIG_MAX_TRANSCODES,
     "drive_direct_play_enabled": KEY_DRIVE_DIRECT_PLAY,
 }
 
@@ -79,43 +74,9 @@ def _config_int(db: Session, key: str, default: int) -> int:
         return default
 
 
-def transcode_enabled(db: Session) -> bool:
-    """是否允许服务端转码（缺省允许；关掉只放直连）"""
-    return _config_bool(db, CONFIG_TRANSCODE_ENABLED,
-                        POLICY_DEFAULTS[CONFIG_TRANSCODE_ENABLED] == "true")
-
-
-def max_transcodes(db: Session) -> int:
-    """并发转码上限；0 = 用进程内置上限（``EMBY_MAX_TRANSCODES`` / CPU 核数）"""
-    return max(0, _config_int(db, CONFIG_MAX_TRANSCODES,
-                        int(POLICY_DEFAULTS[CONFIG_MAX_TRANSCODES])))
-
-
-def ensure_transcode_allowed(db: Session, user, *, running: int, capacity: int) -> None:
-    """建立转码会话前校验：关掉转码 / 并发已满都直接拒绝
-
-    与 ``streaming.enforce_transcode_capacity`` 的分工：那里只回收**闲置**会话、宁可短暂
-    超限也不打断正在看的人；这里的上限是运营**明确设定**的（``playback_max_concurrent_transcodes``），
-    超了就该让新请求排队或降级直连，而不是把整台机器的 CPU 打满、所有人都卡。
-    """
-    if getattr(user, "is_staff", False):
-        return
-    if not transcode_enabled(db):
-        raise HTTPException(status_code=403, detail="本站已关闭服务端转码，请使用直连播放")
-    limit = max_transcodes(db)
-    if limit and running >= limit:
-        raise HTTPException(
-            status_code=503,
-            detail=f"当前转码路数已达上限（{running}/{limit}），请稍后再试或使用直连播放",
-        )
-
-
 def policy_payload(db: Session) -> dict:
     """当前策略（面板读一份，前端不维护默认值）"""
-    return {
-        "transcode_enabled": transcode_enabled(db),
-        "max_concurrent_transcodes": max_transcodes(db),
-        # Drive 302 直链总开关（#957 的回滚闸；缺省开）
+    return {        # Drive 302 直链总开关（#957 的回滚闸；缺省开）
         "drive_direct_play_enabled": _config_bool(db, KEY_DRIVE_DIRECT_PLAY, True),
     }
 

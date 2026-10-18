@@ -463,7 +463,7 @@ class PlaybackSession(Base):
     client_name = Column(String(100))
     client_version = Column(String(50))
     remote_addr = Column(String(64))
-    play_method = Column(String(30))  # DirectStream / Transcode
+    play_method = Column(String(30))  # DirectStream（历史会话可能有 Transcode：转码已删除）
     start_time = Column(DateTime, default=datetime.now)
     last_update_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     position_ticks = Column(BigInteger, default=0)

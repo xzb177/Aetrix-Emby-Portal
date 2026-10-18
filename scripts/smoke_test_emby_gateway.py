@@ -396,18 +396,24 @@ if shutil.which("ffmpeg"):
 else:
     print("SKIP HLS 变体（沙箱无 ffmpeg）")
 
-# ---- 播放列表重写（纯函数，不依赖 ffmpeg）----
-from backend.emby_server.api import _rewrite_playlist  # noqa: E402
+# ---- 播放列表重写（纯函数，不依赖 ffmpeg；转码删除分支已移除该函数）----
+try:
+    from backend.emby_server.api import _rewrite_playlist  # noqa: E402
+except ImportError:  # 转码已删除的分支：该函数不存在，跳过本段
+    _rewrite_playlist = None
 
-pl_dir = tempfile.mkdtemp(prefix="gwpl_")
-with open(os.path.join(pl_dir, "master.m3u8"), "w", encoding="utf-8") as f:
-    f.write("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg00001.ts\n")
-rewritten = _rewrite_playlist(pl_dir, "http://h", "GUID", "SESS", "TOK")
-assert "seg00001.ts?session=SESS&api_key=TOK" in rewritten, rewritten
-rewritten_no_key = _rewrite_playlist(pl_dir, "http://h", "GUID", "SESS")
-assert "api_key" not in rewritten_no_key, rewritten_no_key
-ok("播放列表重写带上 session 与 api_key（旧实现只有 session，切片 401）")
-shutil.rmtree(pl_dir, ignore_errors=True)
+if _rewrite_playlist is None:
+    print("SKIP 播放列表重写（服务端转码已删除）")
+else:
+    pl_dir = tempfile.mkdtemp(prefix="gwpl_")
+    with open(os.path.join(pl_dir, "master.m3u8"), "w", encoding="utf-8") as f:
+        f.write("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg00001.ts\n")
+    rewritten = _rewrite_playlist(pl_dir, "http://h", "GUID", "SESS", "TOK")
+    assert "seg00001.ts?session=SESS&api_key=TOK" in rewritten, rewritten
+    rewritten_no_key = _rewrite_playlist(pl_dir, "http://h", "GUID", "SESS")
+    assert "api_key" not in rewritten_no_key, rewritten_no_key
+    ok("播放列表重写带上 session 与 api_key（旧实现只有 session，切片 401）")
+    shutil.rmtree(pl_dir, ignore_errors=True)
 
 # ---- 登出：token 失效 ----
 r = client.post("/emby/Sessions/Logout", headers=H)

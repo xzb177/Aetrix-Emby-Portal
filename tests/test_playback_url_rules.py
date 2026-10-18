@@ -13,11 +13,15 @@
 
 另外钉住一条容易写错的细节：**域名解析不了不等于它指向内网**。曾经的实现在这儿
 fail-closed，于是离线 / 内网 DNS / 临时解析故障会把公开 CDN 直链也一并拒掉。
+
+（2026-10-17 转码/中继删除：服务端不再追重定向取字节，
+``streaming._next_redirect`` / ``_redirect_headers`` 已随挂载中继删除；
+下面的重定向目标严格口径仍由 ``playback_security.reject_private_url``
+保留，供配置面校验用。）
 """
 import pytest
 
 from backend.emby_server import playback_security as pb
-from backend.emby_server import streaming
 from backend.emby_server.mounts import MountError
 
 # 用 IP 字面量写用例：不依赖测试机器的 DNS，结果才稳定
@@ -112,31 +116,3 @@ def test_allowlist_is_an_explicit_carve_out_everywhere(monkeypatch):
     assert pb.reject_private_url("http://10.0.0.5/secret")
     monkeypatch.setenv("EMBY_BLOCK_PRIVATE_MEDIA_URLS", "1")
     assert pb.validate_remote_url("http://10.0.0.5/secret")
-
-
-# ==================== 代理追重定向的细节 ====================
-
-def test_next_redirect_resolves_relative_location():
-    # A-P2-2 起 _next_redirect 返回 (目标URL, dns_pinning) 二元组
-    target, pinning = streaming._next_redirect(PUBLIC, "/b.mkv")
-    assert target == "https://93.184.216.34/b.mkv"
-    # IP 字面量主机：pin 住自己（建连不再二次解析）
-    assert pinning == {"93.184.216.34": ["93.184.216.34"]}
-
-
-def test_next_redirect_rejects_internal_target():
-    with pytest.raises(MountError):
-        streaming._next_redirect(PUBLIC, "http://10.0.0.5/secret")
-
-
-def test_cross_host_redirect_drops_credential_headers():
-    headers = {"Authorization": "Basic secret", "Cookie": "session=1", "User-Agent": "server"}
-    assert streaming._redirect_headers(headers, "https://a.example.com/1", "https://b.example.com/2") == {
-        "User-Agent": "server",
-    }
-
-
-def test_same_host_redirect_keeps_credential_headers():
-    """同主机的相对跳转（WebDAV 常见）不能把鉴权弄丢，否则直接 401"""
-    headers = {"Authorization": "Basic secret", "User-Agent": "server"}
-    assert streaming._redirect_headers(headers, "https://a.example.com/1", "https://a.example.com/2") == headers

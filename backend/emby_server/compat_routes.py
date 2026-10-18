@@ -29,15 +29,8 @@ from backend.emby_server.scanner import (
 )
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.streaming import (
-    get_transcode,
     serve_file,
     serve_image,
-    start_transcode,
-    stop_all_transcodes,
-    stop_transcodes_for,
-    stop_user_transcodes,
-    transcode_alive,
-    wait_for_file,
 )
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -54,7 +47,6 @@ from backend.emby_server.api import (
     _empty_items,
     _guid_of,
     _now_playing_dto,
-    item_guid_for,
     _policy_dto,
     _query_result,
     _require_visible_item,
@@ -359,12 +351,9 @@ def stop_session(session_key: str, db: Session = Depends(get_db),
     if session:
         if session.user_id != user.id and not getattr(user, "is_staff", False):
             raise HTTPException(status_code=403, detail="无权操作他人的播放会话")
-        # 转码会话按「用户 + 条目 guid」反查：播放会话键与转码 uuid 不是一回事
-        # （旧写法 stop_transcode(session_key) 永远匹配不上，进程其实没被停）
-        user_id, item_guid = session.user_id, item_guid_for(db, session.item_id)
+        # 转码已删除（2026-10-17）：这里只标记播放会话结束，不再有转码进程可杀。
         session.ended_at = datetime.now()
         db.commit()
-        stop_transcodes_for(user_id, item_guid)
     return {"success": True}
 
 
@@ -787,11 +776,8 @@ def activity_log(user: models.WebUser = Depends(get_emby_user)):
 @emby_router.post("/Videos/ActiveEncodings/Delete")
 def delete_active_encodings(request: Request,
                             user: models.WebUser = Depends(get_emby_user)):
-    # 管理员释放全部转码，普通用户只能释放自己的（避免互相踢掉播放）；
-    # 只读审计角色（v2.26.0）不算「管理员」：它只能释放自己的转码
-    is_admin = user.is_staff and admin_roles.can_write(user)
-    count = stop_all_transcodes() if is_admin else stop_user_transcodes(user.id)
-    logger.info("释放转码会话 user=%s count=%s", user.id, count)
+    # 转码已删除（2026-10-17）：不再有转码会话可释放。端点保留 204，
+    # 兼容会在停止播放时调用它的客户端（删端点会让它们吃 404）。
     return Response(status_code=204)
 
 

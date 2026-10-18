@@ -1,18 +1,15 @@
 """运行期维护（janitor）：把「跑久了会积累」的东西定期收掉
 
-自建后端要能长期稳定跑在小机器上，除了扫描器的资源预算，还有三类**会随运行时间累积**的东西：
+自建后端要能长期稳定跑在小机器上，除了扫描器的资源预算，还有几类**会随运行时间累积**的东西：
 
 1. **崩溃残留的状态标志**：进程被 kill 后 `emby_libraries.is_scanning` 会停在 True，
    于是「刷新全部」永远跳过这台库、界面一直显示“扫描中”。启动时复位。
 2. **崩溃残留的播放会话**：客户端异常退出不会上报 Stopped，`ended_at IS NULL` 的行会一直
    算作“正在播放”（后台首页、我的会话里的数字就永远是错的）。按心跳时间收掉。
-3. **临时文件**：HLS 转码目录（默认 `/tmp/emby_transcode`，很多机器上 `/tmp` 是 tmpfs＝内存）
-   与字幕缓存。重启后注册表是空的，旧会话目录再也没人管；字幕缓存则是只增不减。
-
-外加一个**关闭时不留孤儿进程**的收尾：ffmpeg 是子进程，父进程被 SIGTERM 时不会自动带走它。
+3. **临时文件**：字幕缓存是只增不减的，定期淘汰。
 
 这些都不改变任何用户可见功能，只是让「稳定」这件事可验证：`/api/health` 会报告
-转码会话数、正在扫描的库数、临时目录占用与磁盘余量。
+正在扫描的库数、字幕缓存与磁盘余量。
 """
 from __future__ import annotations
 
@@ -50,10 +47,6 @@ SUB_CACHE_MAX_FILES = env_int("SUB_CACHE_MAX_FILES", 2000)
 SUB_CACHE_MAX_DAYS = env_float("SUB_CACHE_MAX_DAYS", 7.0)
 # 维护周期（秒）：转码回收 / 会话过期 / 字幕缓存
 MAINTENANCE_INTERVAL = env_int("MAINTENANCE_INTERVAL", 600, 60)
-
-# 转码根目录下这些子目录是**共享缓存**，不属于某个会话，清理时要留下
-# （115 转存的状态目录 pan115 已在 v2.18.0 移除：它不再受保护，遗留的会被本清理回收）
-_SHARED_DIRS = {"subs"}
 
 
 # ==================== 数据库侧 ====================
@@ -226,39 +219,7 @@ def purge_expired_emby_tokens(db: Session) -> int:
     return play_sign.purge_expired_tokens(db)
 
 
-def _transcode_root() -> str:
-    from backend.emby_server import streaming
-
-    return streaming.TRANSCODE_DIR
-
-
-def cleanup_transcode_orphans(min_age_seconds: float = 0) -> int:
-    """清掉转码根目录下不属于任何「在跑的会话」的遗留目录
-
-    重启后注册表为空，上一进程留下的 HLS 目录再也没人清理；`/tmp` 是 tmpfs 的机器上
-    这些分片就是内存占用。`subs` 这类共享缓存在这里不动（字幕缓存另有淘汰）。
-    """
-    from backend.emby_server import streaming
-
-    root = _transcode_root()
-    if not root or not os.path.isdir(root):
-        return 0
-    live = set(streaming.active_transcode_ids())
-    removed = 0
-    for entry in os.scandir(root):
-        if not entry.is_dir() or entry.name in _SHARED_DIRS:
-            continue
-        if entry.name in live:
-            continue
-        if min_age_seconds > 0:
-            age = datetime.now().timestamp() - entry.stat().st_mtime
-            if age < min_age_seconds:
-                continue
-        shutil.rmtree(entry.path, ignore_errors=True)
-        removed += 1
-    if removed:
-        logger.info("清理 %d 个遗留的 HLS 转码目录", removed)
-    return removed
+REPORT_MAX_FILES = 5000
 
 
 def prune_subtitle_cache(max_files: Optional[int] = None,
@@ -320,56 +281,22 @@ REPORT_MAX_FILES = 5000
 
 
 def resource_report() -> dict:
-    """轻量的运行期资源快照：转码会话 / 临时目录占用 / 磁盘余量
+    """轻量的运行期资源快照：字幕缓存 / 磁盘余量
 
-    刻意只统计顶层与在跑的会话目录，且**有上限**：健康检查必须是常数级的，
-    统计到这里就停（数字是下界，但探针的响应时间不会随残留目录增长）。
+    转码已删除（2026-10-17）：不再统计转码会话与转码目录。
+    刻意只做常数级统计：健康检查的响应时间不随文件数增长。
     """
-    from backend.emby_server import streaming
-
-    root = _transcode_root()
     report: dict = {
-        "transcode_sessions": len(streaming.active_transcode_ids()),
-        "transcode_dir": root,
-        "transcode_dir_bytes": 0,
-        "transcode_dir_files": 0,
         "subtitle_cache_files": 0,
-        "transcode_scan_truncated": False,
         "disk_free_bytes": None,
         "disk_free_percent": None,
     }
-    if root and os.path.isdir(root):
-        try:
-            for entry in os.scandir(root):
-                if report["transcode_dir_files"] >= REPORT_MAX_FILES:
-                    report["transcode_scan_truncated"] = True
-                    break
-                if entry.is_file():
-                    report["transcode_dir_files"] += 1
-                    report["transcode_dir_bytes"] += entry.stat().st_size
-                elif entry.is_dir() and entry.name not in _SHARED_DIRS:
-                    for dirpath, _dirs, files in os.walk(entry.path):
-                        for name in files:
-                            if report["transcode_dir_files"] >= REPORT_MAX_FILES:
-                                report["transcode_scan_truncated"] = True
-                                break
-                            try:
-                                report["transcode_dir_bytes"] += os.stat(
-                                    os.path.join(dirpath, name)
-                                ).st_size
-                                report["transcode_dir_files"] += 1
-                            except OSError:
-                                continue
-                        if report["transcode_scan_truncated"]:
-                            break
-        except OSError as exc:  # noqa: BLE001 — 健康检查不能被统计拖垮
-            logger.debug("统计转码目录失败: %s", exc)
-        try:
-            usage = shutil.disk_usage(root)
-            report["disk_free_bytes"] = usage.free
-            report["disk_free_percent"] = round(usage.free / usage.total * 100, 1)
-        except OSError:
-            pass
+    try:
+        usage = shutil.disk_usage("/")
+        report["disk_free_bytes"] = usage.free
+        report["disk_free_percent"] = round(usage.free / usage.total * 100, 1)
+    except OSError:
+        pass
     from backend.emby_server import subtitles
 
     cache_dir = getattr(subtitles, "SUB_CACHE_DIR", "")
@@ -410,7 +337,7 @@ def run_startup_maintenance() -> dict:
 
     result = {"scan_flags_reset": 0, "scan_runs_closed": 0, "scan_resumed": 0,
               "sessions_reaped": 0,
-              "transcode_orphans": 0, "subtitle_cache_pruned": 0,
+              "subtitle_cache_pruned": 0,
               "tmdb_cache_pruned": 0, "mount_file_ids_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_pruned": 0,
               "item_facets_ready": False}
@@ -446,11 +373,6 @@ def run_startup_maintenance() -> dict:
     finally:
         db.close()
 
-    # 启动时把上一进程留下的转码目录全部清掉（此刻还没有任何“在跑的会话”）
-    try:
-        result["transcode_orphans"] = cleanup_transcode_orphans()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("启动维护（转码目录）失败: %s", exc)
     try:
         result["subtitle_cache_pruned"] = prune_subtitle_cache()
     except Exception as exc:  # noqa: BLE001
@@ -576,10 +498,9 @@ def janitor_tick(heavy: bool = True) -> dict:
     且这些活 worker 进程本来就会做（幂等，双跑纯浪费）。
     """
     from backend.database import SessionLocal
-    from backend.emby_server import streaming
 
-    result = {"sessions_reaped": 0, "sessions_pruned": 0, "transcodes_reaped": 0,
-              "transcode_orphans": 0, "subtitle_cache_pruned": 0,
+    result = {"sessions_reaped": 0, "sessions_pruned": 0,
+              "subtitle_cache_pruned": 0,
               "tmdb_cache_pruned": 0,
               "item_facets_backfilled": 0, "item_facets_orphans": 0,
               "scan_dir_states_pruned": 0, "scan_runs_pruned": 0,
@@ -588,10 +509,6 @@ def janitor_tick(heavy: bool = True) -> dict:
               "images_freed_bytes": 0, "ai_usage_pruned": 0,
               "thumbs_backfilled": 0, "thumbs_backfill_done": False,
               "query_plans_optimized": False}
-    try:
-        result["transcodes_reaped"] = streaming.reap_stale_transcodes()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("回收转码会话失败: %s", exc)
 
     db = SessionLocal()
     try:
@@ -718,11 +635,6 @@ def janitor_tick(heavy: bool = True) -> dict:
             db.close()
 
     try:
-        # 只清「已经不活跃」的目录：给刚启动、还没登记进注册表的会话留出余量
-        result["transcode_orphans"] = cleanup_transcode_orphans(min_age_seconds=300)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("清理遗留转码目录失败: %s", exc)
-    try:
         result["subtitle_cache_pruned"] = prune_subtitle_cache()
     except Exception as exc:  # noqa: BLE001
         logger.warning("字幕缓存淘汰失败: %s", exc)
@@ -815,22 +727,4 @@ def start_janitor(interval_seconds: Optional[int] = None, heavy: bool = True) ->
     logger.info("后台维护已启动（每 %s 秒，%s）", interval,
                 "全量" if heavy else "轻量（EA 播放前台，重活由 worker 进程做）")
     return True
-
-
-def shutdown_cleanup() -> dict:
-    """进程退出前的收尾：不留孤儿 ffmpeg、不留半截临时目录"""
-    from backend.emby_server import streaming
-
-    result = {"transcodes_stopped": 0, "transcode_dirs_removed": 0}
-    try:
-        result["transcodes_stopped"] = streaming.stop_all_transcodes()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("停止转码会话失败: %s", exc)
-    try:
-        result["transcode_dirs_removed"] = cleanup_transcode_orphans()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("清理转码目录失败: %s", exc)
-    if any(result.values()):
-        logger.info("退出收尾完成: %s", result)
-    return result
 
