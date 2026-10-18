@@ -7,7 +7,6 @@
 - backend/emby_server/drive_auth.py：Drive 域名判定/凭据头构造/失败降级
 - backend/emby_server/play_sign.py：防盗链开关 + TTL 热读/钳制/write_config 校验
 - backend/emby_server/mounts.py：local_play_target 的 .strm 分支（三态）
-- backend/emby_server/streaming.py：_redirect_headers 的 Drive 例外
 
 用隔离的内存 SQLite，不碰生产库；不碰真实网络。
 """
@@ -279,53 +278,3 @@ class TestMountsStrmBranch:
         target = provider.resolve_final("movie.strm")
         assert target.kind == "url"
         assert target.value == DRIVE_URL + "&aexp=1&asig=deadbeef"
-
-
-# ==================== streaming._redirect_headers ====================
-
-class TestRedirectHeaders:
-    def test_same_host_untouched(self):
-        from backend.emby_server.streaming import _redirect_headers
-
-        fwd = {"Authorization": "Bearer X", "Cookie": "c=1", "User-Agent": "ua"}
-        assert _redirect_headers(fwd, "https://a.com/1", "https://a.com/2") == fwd
-
-    def test_drive_to_drive_keeps_authorization_only(self):
-        from backend.emby_server.streaming import _redirect_headers
-
-        fwd = {
-            "Authorization": "Bearer X",
-            "Cookie": "c=1",
-            "Proxy-Authorization": "p",
-            "User-Agent": "ua",
-        }
-        out = _redirect_headers(
-            fwd,
-            "https://drive.google.com/uc?id=1",
-            "https://drive.usercontent.google.com/download?id=1",
-        )
-        assert out == {"Authorization": "Bearer X", "User-Agent": "ua"}
-
-    def test_drive_to_evil_strips_all(self):
-        from backend.emby_server.streaming import _redirect_headers
-
-        fwd = {"Authorization": "Bearer X", "Cookie": "c=1", "User-Agent": "ua"}
-        out = _redirect_headers(fwd, "https://drive.google.com/uc?id=1", "https://evil.com/x")
-        assert out == {"User-Agent": "ua"}
-
-    def test_non_drive_cross_host_strips_all(self):
-        """非 Drive 目标保持原逻辑：全剥（回归）。"""
-        from backend.emby_server.streaming import _redirect_headers
-
-        fwd = {"Authorization": "Basic X", "Cookie": "c=1", "User-Agent": "ua"}
-        out = _redirect_headers(fwd, "https://webdav.example.com/a", "https://other.example.com/b")
-        assert out == {"User-Agent": "ua"}
-
-    def test_header_name_case_insensitive(self):
-        from backend.emby_server.streaming import _redirect_headers
-
-        fwd = {"AUTHORIZATION": "Bearer Y", "cookie": "c=1"}
-        out = _redirect_headers(
-            fwd, "https://drive.google.com/a", "https://docs.google.com/b"
-        )
-        assert out == {"AUTHORIZATION": "Bearer Y"}

@@ -39,7 +39,6 @@ INDIRECT_READS = {
     "DIAG_ENRICH_BACKLOG_FLOOR": "backend/diagnosis.py:71 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
     "DIAG_ENRICH_IDLE_SEC": "backend/diagnosis.py:72 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
     "DIAG_API_ERROR_RATIO": "backend/diagnosis.py:73 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
-    "DIAG_FIX_TRANSCODE_MIN_AGE_SEC": "backend/diagnosis_fix.py:56 FIX_THRESHOLD_DEFS 元组 + 变量传键 _env_float",
     "DIAG_FIX_PROBE_TTL_SEC": "backend/diagnosis_fix.py:58 FIX_THRESHOLD_DEFS 元组 + 变量传键 _env_float",
     "DIAG_FIX_SUBTITLE_CACHE": "backend/diagnosis_fix.py:60 FIX_THRESHOLD_DEFS 元组 + 变量传键 _env_float",
 }

@@ -1,8 +1,8 @@
-"""第 14 轮完美主义迭代回归测试（P1-1 / P2-2 / P3-2~P3-6；P2-1/P3-1 跳转缓存已删）。
+"""第 14 轮完美主义迭代回归测试（P1-1 / P2-2 / P3-2~P3-6；
+P2-1/P3-1 跳转缓存已删、P3-5 跳转跟随已随挂载中继删除）。
 
 实现者编写（workbuddy 网关本轮可用，但改动均为片段级精确修复，
-人工编写 + 逐行核验；_follow_redirects helper 由 deepseek-v4.1-flash
-按片段 prompt 生成、人工核验后落盘）。
+人工编写 + 逐行核验）。
 """
 from __future__ import annotations
 
@@ -188,99 +188,6 @@ def test_p2_2_backup_dirs_includes_both(tmp_path, monkeypatch):
     monkeypatch.setenv("PG_BACKUP_DIR", str(pg_dir))
     dirs = db_backup._backup_dirs()
     assert sqlite_dir in dirs and pg_dir in dirs
-
-
-# ---------------------------------------------------------------------------
-# P3-5：共用 _follow_redirects helper
-# ---------------------------------------------------------------------------
-
-def _fake_redirect_client(statuses):
-    """假 httpx 客户端：按顺序返回 (status_code, location)。"""
-    calls: list[str] = []
-
-    class FakeResponse:
-        def __init__(self, code, headers=None):
-            self.status_code = code
-            self.headers = headers or {}
-            self.closed = False
-
-        async def aclose(self):
-            self.closed = True
-
-    class FakeClient:
-        def build_request(self, method, url, headers=None):
-            return (method, url, headers)
-
-        async def send(self, request, stream=True):
-            method, url, headers = request
-            calls.append(url)
-            code, location = statuses[min(len(calls) - 1, len(statuses) - 1)]
-            return FakeResponse(code, {"location": location} if location else {})
-
-    return FakeClient(), calls
-
-
-def test_p3_5_follow_redirects_happy_path():
-    """正常跳转：跟随 307 → 返回终态 resp + final_url + hops；终态 resp 不关。"""
-    import backend.emby_server.streaming as st
-    from urllib.parse import urljoin
-    final = "https://drive.usercontent.google.com/download?id=X"
-
-    async def go():
-        client, calls = _fake_redirect_client([(307, final), (200, None)])
-        # _next_redirect 的内网校验已有专门测试；沙箱 DNS 会把测试域名
-        # 解析到内网，这里只测跳转跟随逻辑
-        with patch("backend.emby_server.streaming._next_redirect",
-                   side_effect=lambda base, loc: (urljoin(base, loc), {})):
-            resp, current, hops = await st._follow_redirects(
-                client, "https://www.googleapis.com/drive/v3/files/ABC?alt=media",
-                {}, silent=False)
-        assert hops == 1
-        assert current == final
-        assert resp.status_code == 200
-        assert calls == ["https://www.googleapis.com/drive/v3/files/ABC?alt=media", final]
-        await resp.aclose()
-
-    asyncio.run(go())
-
-
-def test_p3_5_follow_redirects_silent_bad_target():
-    """非法重定向目标（内网）：silent 口径返回 (None, current, hops)，不抛。"""
-    import backend.emby_server.streaming as st
-
-    async def go():
-        client, _ = _fake_redirect_client([(307, "http://127.0.0.1/evil")])
-        resp, current, hops = await st._follow_redirects(
-            client, "https://www.googleapis.com/drive/v3/files/ABC?alt=media",
-            {}, silent=True)
-        assert resp is None
-        # 非法目标不跟随，current 停在起点
-        assert current == "https://www.googleapis.com/drive/v3/files/ABC?alt=media"
-
-    asyncio.run(go())
-
-
-def test_p3_5_follow_redirects_silent_too_many():
-    """跳转超限：silent 口径返回 (None, …)，不抛；raise 口径抛 502。"""
-    import backend.emby_server.streaming as st
-    from fastapi import HTTPException
-    from urllib.parse import urljoin
-
-    async def go():
-        with patch("backend.emby_server.streaming._next_redirect",
-                   side_effect=lambda base, loc: (urljoin(base, loc), {})):
-            client, _ = _fake_redirect_client([(307, "https://example.com/loop")] * 10)
-            resp, _, hops = await st._follow_redirects(
-                client, "https://example.com/start", {}, silent=True)
-            assert resp is None
-            assert hops == st.MAX_REDIRECTS + 1
-
-            client2, _ = _fake_redirect_client([(307, "https://example.com/loop")] * 10)
-            with pytest.raises(HTTPException) as ei:
-                await st._follow_redirects(client2, "https://example.com/start", {}, silent=False)
-            assert ei.value.status_code == 502
-
-    asyncio.run(go())
 
 
 # ---------------------------------------------------------------------------
