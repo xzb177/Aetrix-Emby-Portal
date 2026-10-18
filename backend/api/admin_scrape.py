@@ -1619,6 +1619,9 @@ def bind_tmdb_id(
         item.enrich_next_retry_at = None
         # 解绑即解锁：绑定时加的锁随之解除，恢复自动刮削
         item.metadata_locked = False
+        # 列表去重缓存：tmdb_id 变化影响去重/选主 → bump 该库数据版本号
+        from backend.emby_server import items_dedup_cache as _idc
+        _idc.bump_library_item_versions(db, [item.library_id], force=True)
         db.commit()
         return {
             "success": True, "unbound": True,
@@ -1688,6 +1691,9 @@ def bind_tmdb_id(
     # 解绑（unbind 分支）时解锁，恢复自动刮削。
     item.metadata_locked = True
     notes.append("已锁定：自动刮削不再覆盖（解绑可解锁）")
+    # 列表去重缓存：tmdb_id/海报/简介变化影响去重/选主 → bump 该库数据版本号
+    from backend.emby_server import items_dedup_cache as _idc
+    _idc.bump_library_item_versions(db, [item.library_id], force=True)
     db.commit()
     return {
         "success": True, "unbound": False,

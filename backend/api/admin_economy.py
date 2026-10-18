@@ -437,6 +437,50 @@ def hotlink_update_config(
     return result
 
 
+# ---------- 列表去重缓存（见 backend/emby_server/items_dedup_cache.py） ----------
+
+class ItemsDedupCacheConfigRequest(BaseModel):
+    enabled: bool = True
+    ttl_seconds: int = 60
+    max_entries: int = 2000
+
+
+@admin_router.get("/items-dedup-cache-config")
+def items_dedup_cache_get_config(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """列表去重缓存配置读取：总开关 + 条目 TTL + 条目上限（含默认值）。"""
+    from backend.emby_server import items_dedup_cache
+
+    return items_dedup_cache.config_payload(db)
+
+
+@admin_router.put("/items-dedup-cache-config")
+def items_dedup_cache_update_config(
+    request: ItemsDedupCacheConfigRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """列表去重缓存配置写入：范围非法时 400（中文信息），写完即失效热缓存。"""
+    from backend.emby_server import items_dedup_cache
+
+    try:
+        result = items_dedup_cache.write_config(
+            db,
+            enabled=request.enabled,
+            ttl_seconds=request.ttl_seconds,
+            max_entries=request.max_entries,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _audit(db, current_admin, "items_dedup_cache_update_config", "system", None,
+           {"enabled": request.enabled, "ttl_seconds": request.ttl_seconds,
+            "max_entries": request.max_entries})
+    db.commit()
+    return result
+
+
 # ---------- 经济统计 ----------
 
 def _checkin_day_key(day_val) -> str:

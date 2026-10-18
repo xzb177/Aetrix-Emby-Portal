@@ -4020,6 +4020,13 @@ def _write_scan_state(db: Session, library: emby_models.Library, status: str,
     library.scan_status = status
     library.scan_stats = encode_scan_stats(stats)
     library.scan_error = (error or "")[:500] or None
+    # 列表去重缓存：本轮扫描可能增删改了条目，bump 该库数据版本号
+    #（与状态写回同一事务提交；bump 自带异常兜底，不影响扫描本身）。
+    try:
+        from backend.emby_server import items_dedup_cache as _idc
+        _idc.bump_library_item_versions(db, [library.id])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("去重缓存版本号 bump 失败（扫描收尾）: %s", exc)
     try:
         commit_with_retry(db, label="扫描结果写回")
     except Exception as exc:  # noqa: BLE001

@@ -559,6 +559,7 @@ def _merge_once() -> Tuple[int, int]:
 
     groups = []
     total_merged = 0
+    touched_libs: set[int] = set()
     db = SessionLocal()
     try:
         groups = find_duplicate_groups(db)
@@ -570,6 +571,10 @@ def _merge_once() -> Tuple[int, int]:
                 merged = merge_group(db, group)
                 total_merged += merged
                 if merged:
+                    for _it in group:
+                        _lid = getattr(_it, "library_id", None)
+                        if _lid:
+                            touched_libs.add(int(_lid))
                     db.commit()
             except Exception as e:
                 db.rollback()
@@ -588,6 +593,10 @@ def _merge_once() -> Tuple[int, int]:
                         merged = merge_group(db, loose_group)
                         if merged:
                             _follow_series_episodes(db, loose_group)
+                            for _it in loose_group:
+                                _lid = getattr(_it, "library_id", None)
+                                if _lid:
+                                    touched_libs.add(int(_lid))
                             db.commit()
                             total_merged += merged
                     except Exception as e:
@@ -615,6 +624,19 @@ def _merge_once() -> Tuple[int, int]:
         except Exception as e:
             db.rollback()
             logger.warning("单集多版本合并失败: %s", e)
+        # 列表去重缓存：本轮若有实际合并写库，bump 受影响库的数据版本号。
+        # 单集多版本是全库跑的，这里取全部启用库（bump 自带 30s 防抖，开销可忽略）。
+        try:
+            if total_merged:
+                from backend.emby_server import items_dedup_cache as _idc
+                from backend.emby_server import models as _em
+                _all_libs = [r[0] for r in
+                             db.query(_em.Library.id).filter(_em.Library.is_enabled == True).all()]  # noqa: E712
+                _idc.bump_library_item_versions(db, touched_libs or _all_libs, force=True)
+                db.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("去重缓存版本号 bump 失败（合并轮）: %s", e)
+            db.rollback()
         return len(groups), total_merged
     finally:
         db.close()

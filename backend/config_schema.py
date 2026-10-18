@@ -218,6 +218,14 @@ HOTLINK_CONFIG_SCHEMA: dict[str, tuple] = {
     "play_allowed_referers": ("raw",),
 }
 
+# 列表去重缓存（2026-10-18）：Emby 列表接口 dropped 集合的服务端缓存。
+# enabled 默认开（纯性能优化、零行为变化）；ttl=0 或关 = 旧路径。
+ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {
+    "items_dedup_cache_enabled": ("bool",),
+    "items_dedup_cache_ttl_seconds": ("int", 10, 3600),
+    "items_dedup_cache_max_entries": ("int", 100, 20000),
+}
+
 # （原 ECONOMY_INT_RANGES / economy_spec 已并入下面的 ECONOMY_CONFIG_SCHEMA，
 # 4-6 迁移后不再有任何调用方，此处删除。）
 
