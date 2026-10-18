@@ -80,9 +80,12 @@
   transition: transform var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease),
     box-shadow var(--au-fast) var(--au-ease);
 }
-.admin-card:hover {
-  border-color: var(--au-border-strong);
-  transform: translateY(-1px);
+/* P3-5：悬停提升只在桌面（hover 可用 + 精确指针）生效，避免移动端触摸 :hover 粘滞 */
+@media (hover: hover) and (pointer: fine) {
+  .admin-card:hover {
+    border-color: var(--au-border-strong);
+    transform: translateY(-1px);
+  }
 }
 
 .admin-layout .admin-content .admin-card {

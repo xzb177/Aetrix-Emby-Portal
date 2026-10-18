@@ -120,7 +120,7 @@ html[data-theme='light'] {
   --paper-scrim: rgba(39, 37, 30, 0.32);
 
   /* ===== 2. 裁决3 扩展 token（浅色值 = 现有 au 浅色渲染值，零视觉变化） ===== */
-  --paper-ink-3: rgba(39, 37, 30, 0.55);
+  --paper-ink-3: rgba(39, 37, 30, 0.68); /* P2-1: 与 --au-text-3 同步，保证 .badge.off 等在 #f0ebe3 上 ≥4.5:1，实测 4.95:1 */
   --paper-card-2: #f0ebe3;
   --paper-card-3: #e8e0d4;
   --paper-warning: #b9802f;

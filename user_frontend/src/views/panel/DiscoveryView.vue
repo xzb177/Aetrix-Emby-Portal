@@ -222,7 +222,9 @@ const {
 const visibleServers = computed(() => serverList.value.filter((s) => isVisible(s.id)))
 // 可见服数量（0 服时首页走空态，见模板）
 const visibleCount = computed(() => visibleServers.value.length)
-const LAST_SERVER_COUNT_KEY = 'aetrix:lastServerCount'
+// D-P3-1：key 带版本。旧 key 存的是「总服数」（旧语义），新语义是「可见服数」——
+// 若沿用旧 key，升级后首次骨架屏会按总服数多渲染。v2 起互不干扰，旧值留在原地无害。
+const LAST_SERVER_COUNT_KEY = 'aetrix:lastServerCount:v2'
 // 上一轮可见非空服数量：骨架屏按此渲染，避免数据到达后高度跳动（优先取本地存过的真实数量）
 const lastServerCount = ref(2)
 try {
@@ -278,11 +280,16 @@ function teardownSpy() {
   spy?.disconnect()
   spy = null
 }
-const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+// D-P3-2：系统「减少动态效果」设置中途切换时跟随，而非 setup 期只读一次
+const reduceMotion = ref(false)
+let reduceMq: MediaQueryList | null = null
+function syncReduceMotion() {
+  reduceMotion.value = !!reduceMq?.matches
+}
 
 function jumpTo(id: string) {
   activeAnchor.value = id
-  document.getElementById(id)?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' })
+  document.getElementById(id)?.scrollIntoView({ behavior: reduceMotion.value ? 'auto' : 'smooth', block: 'start' })
 }
 watch(isWide, (v) => {
   if (v) void nextTick(() => setupSpy())
@@ -293,7 +300,7 @@ watch(isWide, (v) => {
 function scrollShelf(dir: 1 | -1) {
   const el = parcelsEl.value
   if (!el) return
-  el.scrollBy({ left: dir * Math.max(240, el.clientWidth * 0.8), behavior: reduceMotion ? 'auto' : 'smooth' })
+  el.scrollBy({ left: dir * Math.max(240, el.clientWidth * 0.8), behavior: reduceMotion.value ? 'auto' : 'smooth' })
 }
 let shelfDrag: { startX: number; startScroll: number; moved: boolean } | null = null
 function onShelfPointerDown(e: PointerEvent) {
@@ -349,11 +356,15 @@ onMounted(() => {
   wideMq = window.matchMedia('(min-width: 1280px)')
   syncWide()
   wideMq.addEventListener('change', syncWide)
+  reduceMq = window.matchMedia('(prefers-reduced-motion: reduce)')
+  syncReduceMotion()
+  reduceMq.addEventListener('change', syncReduceMotion)
   spyRaf = requestAnimationFrame(() => { spyRaf = 0; setupSpy() })
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   wideMq?.removeEventListener('change', syncWide)
+  reduceMq?.removeEventListener('change', syncReduceMotion)
   teardownSpy()
   if (resizeRaf) cancelAnimationFrame(resizeRaf)
   if (spyRaf) { cancelAnimationFrame(spyRaf); spyRaf = 0 }
