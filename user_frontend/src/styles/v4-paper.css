@@ -158,6 +158,7 @@ html[data-theme='light'] {
   --blue: #2E5FA3;
   --green: #4A7C59;
   --gold: #C99B3F;
+  --gold-tint: rgba(255, 217, 138, 0.25); /* R85：券条/优惠券预览底色：原 ShopView rgba(255,217,138,0.25) */
   --line: #D8CDB8;
   --paper-card: #FFFDF6;
   /* R27 收敛硬编码色值：以下 token 原值来自各 panel 页 scoped 样式，原值同步注释 */

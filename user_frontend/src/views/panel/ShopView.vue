@@ -11,6 +11,8 @@
           <div class="coin">
             <span class="ic" aria-hidden="true">⚡</span>
             <div><div class="n">{{ pointsText }}</div><div class="t">能量</div></div>
+            <!-- R85：能量余额加载失败时给重试入口，不再永久挂「–」 -->
+            <button v-if="pointsFailed && !loading" class="v4-retry" style="margin-left:auto;font-size:12px" @click="loadAll">重试</button>
           </div>
           <div class="coin">
             <span class="ic" aria-hidden="true">📜</span>
@@ -76,8 +78,9 @@
                 placeholder="任意金额"
                 class="custom-input"
               />
-              <button class="custom-btn" :disabled="!canCustomRecharge || orderBusy || !methodsReady" @click="handleCustomRecharge">
-                <span class="lbl">按这个金额充</span>
+              <!-- R85：支付中给忙时文案 + aria-busy，与充能/领取按钮口径一致（此前 orderBusyTag='custom' 无任何读取方） -->
+              <button class="custom-btn" :disabled="!canCustomRecharge || orderBusy || !methodsReady" :aria-busy="orderBusy && orderBusyTag === 'custom'" @click="handleCustomRecharge">
+                <span class="lbl">{{ orderBusy && orderBusyTag === 'custom' ? '支付中…' : '按这个金额充' }}</span>
               </button>
             </div>
             <div v-if="quickAmounts.length" class="quick">
@@ -89,7 +92,8 @@
               ><span class="lbl">¥{{ q }}</span></button>
             </div>
             <!-- R37 P3-1：比例未知时不静默错算，标注「比例待确认」 -->
-            <small v-if="customAmount && customAmount >= 1" class="custom-note">
+            <small v-if="customAmount != null && customAmount > 100000" class="custom-note" style="color:var(--red-ink)">最多充 100000，减一点再下单</small>
+            <small v-else-if="customAmount && customAmount >= 1" class="custom-note">
               <template v-if="rechargeRatio == null">≈ 比例待确认</template>
               <template v-else>≈ {{ fmtNum(customPointsPreview) }} 能量</template>
             </small>
@@ -104,12 +108,12 @@
               :class="{ on: payMethod === m.id }"
               :aria-pressed="payMethod === m.id"
               @click="payMethod = m.id"
-            ><span class="lbl">{{ m.name || m.id }}</span></button>
+            ><!-- R85：name 为空时不再把内部 id 暴露给用户 --><span class="lbl">{{ m.name || '在线支付' }}</span></button>
           </div>
           <!-- R28：只有一种支付方式时展示只读标签，不隐藏 -->
           <div v-else-if="methods.length === 1" class="payways">
             <span class="payways-label">支付方式</span>
-            <span class="payway on" aria-current="true"><span class="lbl">{{ methods[0].name || methods[0].id }}</span></span>
+            <span class="payway on" aria-current="true"><!-- R85：同上，内部 id 不暴露 --><span class="lbl">{{ methods[0].name || '在线支付' }}</span></span>
           </div>
           <div class="fineprint">能量可用于续命体力、兑换会员、发红包 —— 不过期</div>
         </template>
@@ -117,7 +121,7 @@
 
       <!-- 📜 探险执照 -->
       <section class="shop-sec">
-        <div class="v4-sec-title">📜 探险执照</div>
+        <div class="v4-sec-title"><span aria-hidden="true">📜</span> 探险执照</div>
         <div class="v4-sec-sub">买会员 = 领取执照 —— 凭执照解锁全片库，点开看细则</div>
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
@@ -164,6 +168,8 @@
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ (100 - memberDiscountPct) / 10 }} 折</b></div>
               <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
               <button class="buy" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" :aria-busy="orderBusy && orderBusyTag === 'buy'" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>{{ orderBusy && orderBusyTag === 'buy' ? '领取中…' : '领取执照 →' }}</button>
+              <!-- R85：支付通道没准备好时按钮静默禁用，给一行人话说明（口径与能量区 methods-note 对齐） -->
+              <div v-if="!methodsReady" class="methods-note" role="status" style="margin:8px 0 0"><template v-if="methodsFailed">支付方式加载失败，通道恢复后可领<button class="v4-retry" @click="loadAll">重试</button></template><template v-else>支付通道准备中，稍后就能领<button class="v4-retry" @click="loadAll">刷新看看</button></template></div>
             </div>
           </div>
           <div class="fineprint">人民币 / 能量二选一，价格以页面显示为准</div>
@@ -189,6 +195,8 @@
             role="button"
             tabindex="0"
             :aria-expanded="openCampLevel === lv.level"
+            :aria-controls="`camp-perks-${lv.level}`"
+            :id="`camp-${lv.level}`"
             @click="toggleCamp(lv.level)"
             @keydown.enter="toggleCamp(lv.level)"
             @keydown.space.prevent="toggleCamp(lv.level)"
@@ -199,7 +207,8 @@
               <div v-if="lv.discount_pct > 0" class="off">执照 {{ (100 - lv.discount_pct) / 10 }} 折</div>
               <div v-else class="xp">经验 {{ lv.xp_threshold }}</div>
             </div>
-            <div class="perks" v-if="openCampLevel === lv.level">
+            <!-- R85：展开面板移出点击冒泡区（点文本不再误收起），并与 camp 的 aria-controls 配对 -->
+            <div class="perks" v-if="openCampLevel === lv.level" :id="`camp-perks-${lv.level}`" @click.stop>
               <template v-for="(b, i) in lv.benefits" :key="i"><i aria-hidden="true">★</i> {{ b }}<br /></template>
               <span style="font-size:12px">经验 {{ lv.xp_threshold }}<span v-if="lv.level === member.level && member.next_level && member.xp_to_next != null"> → 下一级 Lv.{{ member.next_level }} 还差 {{ member.xp_to_next }}</span></span>
               <div v-if="lv.level === member.level && member.progress_pct != null" style="background:var(--paper2);border-radius:6px;height:8px;margin-top:6px;overflow:hidden">
@@ -249,7 +258,8 @@
               @input="resetCodeFeedback"
             />
             <button type="submit" class="redeem-btn" :class="{ 'is-loading': redeemLoading || couponApplying }" :disabled="redeemLoading || couponApplying || !redeemCode.trim()" :aria-busy="redeemLoading || couponApplying">
-              <span class="lbl">{{ redeemLoading ? '核销中…' : couponApplying ? '验券中…' : '使用' }}</span>
+              <!-- R85：验券（applyCoupon）期间 redeemLoading 同为 true，原顺序下「验券中…」永不可达——先判验券 -->
+              <span class="lbl">{{ couponApplying ? '验券中…' : redeemLoading ? '核销中…' : '使用' }}</span>
             </button>
           </form>
           <div v-if="codePreview" class="redeem-preview">
@@ -324,6 +334,8 @@ const inviteCode = ref('')
 const inviteReward = ref(0)
 const inviteeReward = ref(0)
 const points = ref<number | null>(null)
+// R85：能量余额请求失败的标记（此前失败静默吞掉，页头永久显示占位「–」且无重试入口）
+const pointsFailed = ref(false)
 const rechargeRatio = ref<number | null>(null)
 /** R37 P3-1：充值比例接口失败标记 —— 失败时副标题走诚实兜底，不再永久「加载中」 */
 const ratioFailed = ref(false)
@@ -346,7 +358,11 @@ const methods = ref<PaymentMethod[]>([])
 /* ---------- 自定义金额充值 ---------- */
 const customAmount = ref<number | null>(null)
 const quickAmounts = ref<number[]>([])
-const canCustomRecharge = computed(() => (customAmount.value ?? 0) >= 1)
+const canCustomRecharge = computed(() => {
+  const amt = customAmount.value ?? 0
+  // R85：上限 100000 与后端 economy.py Field(ge=1, le=100000) 对齐；非整数（手输小数）也不放行
+  return Number.isInteger(amt) && amt >= 1 && amt <= 100000
+})
 const customPointsPreview = computed(() => {
   const amt = customAmount.value ?? 0
   const ratio = rechargeRatio.value
@@ -379,6 +395,8 @@ function resetCodeFeedback() {
   previewedCode.value = ''
   couponHint.value = ''
   codeNotice.value = ''
+  // R85：上一张失败券的红色错误停在用户真正改输入的那一刻，不再赖着不走
+  couponError.value = ''
 }
 
 // 优惠券即时验券：防抖定时器句柄与预检竞态序号
@@ -394,6 +412,8 @@ async function previewCoupon(code: string) {
   try {
     const preview = await membershipApi.preview(code)
     if (token !== couponPreviewToken) return
+    // R85：预检在途时用户可能已点「使用」触发验券——验券中/验券失败/已应用时，不让旧预检把「这张券可用」与失败提示同屏写出
+    if (couponApplying.value || couponError.value || couponApplied.value) return
     if (preview.kind === 'coupon' && preview.valid && couponEnabled.value) {
       // R28：只提示"这张券可用"，不自动改价；点「使用」才应用
       couponHint.value = code
@@ -457,6 +477,8 @@ async function applyCoupon(code: string) {
       // R53B-11：packages/plans 都为空（加载失败/无在售项）时没有可下单条目，不能归因到券上
       if (rows.length === 0) couponError.value = '暂时没有可用的充值/订阅项，请稍后重试'
       else if (allFailed) couponError.value = '验券失败，稍后再试'
+      // R85：某类商品因加载失败/未开启没参与验券时，不能归罪于券——说清楚是商品没加载全
+      else if (pkgsFailed.value || plansFailed.value || !plansEnabled.value) couponError.value = '部分商品没加载出来，这张券可能用得上，点页面上的「重试 / 刷新看看」再试'
       else couponError.value = '这张券用不上，换一张试试'
       return
     }
@@ -482,6 +504,8 @@ const quoteOf = (kind: 'recharge' | 'subscription', id: number) =>
   couponQuotes.value[`${kind}:${id}`] || null
 
 async function handleRedeem() {
+  // R85：入口守卫——按钮 disabled 防不住隐式提交/重复触发，与 confirm* 对齐
+  if (redeemLoading.value || couponApplying.value) return
   const code = redeemCode.value.trim()
   if (!code) {
     toast.error('请输入会员卡码、兑换码或优惠券')
@@ -544,7 +568,7 @@ async function confirmExchangeRedeem() {
     toast.success(res.message || '兑换成功，能量已到账')
     redeemCode.value = ''
     exchangePreview.value = null
-    await loadAll()
+    await loadAll(true)
   } catch (err: unknown) {
     toast.error(humanizeError(err))
   } finally {
@@ -557,7 +581,8 @@ async function confirmCodeRedeem() {
   if (!code) return
   if (redeemLoading.value) return
   if (code !== previewedCode.value) {
-    toast.error('兑换码已变更，请重新预览后再确认')
+    // R85：这是会员卡码的确认分支——文案不说「兑换码」，说人话
+    toast.error('内容已变更，请重新输入后再确认')
     return
   }
   redeemLoading.value = true
@@ -566,7 +591,7 @@ async function confirmCodeRedeem() {
     toast.success(res.message || '开通成功，会员已生效')
     redeemCode.value = ''
     codePreview.value = null
-    await loadAll()
+    await loadAll(true)
   } catch (err: unknown) {
     toast.error(humanizeError(err))
   } finally {
@@ -576,7 +601,11 @@ async function confirmCodeRedeem() {
 
 async function handleCustomRecharge() {
   const amt = customAmount.value ?? 0
-  if (amt < 1 || orderBusy.value || !methodsReady.value) return
+  // R85：按钮已按 canCustomRecharge 禁用，这里是纵深防御——手输超限/小数不静默丢弃，给人话提示
+  if (!Number.isInteger(amt) || amt < 1 || amt > 100000 || orderBusy.value || !methodsReady.value) {
+    toast.error('金额需为 1～100000 的整数')
+    return
+  }
   orderBusy.value = true
   orderBusyTag.value = 'custom'
   try {
@@ -604,19 +633,22 @@ onMounted(() => {
 })
 
 let loadAllPromise: Promise<void> | null = null
-function loadAll(): Promise<void> {
+// R85：模板十来处 @click 直接绑 loadAll，Vue 会把事件对象当第一个参数传进来——静默仅认 === true，事件对象绝不触发静默刷新，原有重试按钮照旧走骨架
+function loadAll(silent: unknown = false): Promise<void> {
   if (!loadAllPromise) {
-    loadAllPromise = doLoadAll().finally(() => {
+    loadAllPromise = doLoadAll(silent === true).finally(() => {
       loadAllPromise = null
     })
   }
   return loadAllPromise
 }
 
-async function doLoadAll() {
-  loading.value = true
+// R85：silent=true 时不碰 loading —— 核销成功后只定向刷新受影响数据（能量/会员），页面其余部分保持可交互、不闪回骨架
+async function doLoadAll(silent = false) {
+  if (!silent) loading.value = true
   pkgsFailed.value = false
   ratioFailed.value = false
+  pointsFailed.value = false
   plansFailed.value = false
   inviteFailed.value = false
   inviteErrMsg.value = ''
@@ -667,7 +699,9 @@ async function doLoadAll() {
     inviteFailed.value = true
     inviteErrMsg.value = humanizeError(inv.reason)
   }
+  // R85：pointsApi.log 的 balance 字段已核实存在（api/economy.ts PointsLogResponse.balance）——成功恒有值，失败才置标记
   if (pts.status === 'fulfilled') points.value = pts.value.balance ?? null
+  else pointsFailed.value = true
   if (cur.status === 'fulfilled') {
     rechargeRatio.value = cur.value.recharge_ratio ?? null
     quickAmounts.value = cur.value.quick_amounts || []
@@ -685,6 +719,8 @@ async function doLoadAll() {
     }
   } else {
     methodsFailed.value = true
+    // R85：methods 挂了就绪态必须落下，否则模板 37 行的「支付方式加载失败」错误态永不可达、按钮仍可用旧方式下单
+    methodsReady.value = false
   }
   if (exCfg.status === 'fulfilled') exchangeEnabled.value = exCfg.value.enabled !== false
   if (cpCfg.status === 'fulfilled') couponEnabled.value = cpCfg.value.enabled !== false
@@ -748,7 +784,8 @@ function waxText(plan: SubscriptionPlan): string {
 }
 /* 执照名：后端配置名原样展示（R28：旧注释"去掉订阅/会员等现实词"与实现不符，已按实现修正，不改行为） */
 function licenseName(plan: SubscriptionPlan): string {
-  return plan.name || `${plan.duration_days} 天通行证`
+  // R85：与模板 154 行口径对齐——duration_days 为 null 时不拼「null 天」，说人话兜底
+  return plan.name || (plan.duration_days != null ? `${plan.duration_days} 天通行证` : '时长以购买页为准')
 }
 function planPriceText(plan: SubscriptionPlan): string {
   if (currency.value === 'e') {
@@ -943,7 +980,9 @@ async function copyInviteCode() {
 .can.sel {
   border-style: solid;
   border-color: var(--red);
+  /* R85：原 rgba(217,72,43,0.15) 硬编码，主色一换阴影即脱钩——color-mix 跟 --red 联动，老浏览器走纯色兜底（GrowthChart 同款） */
   box-shadow: 0 0 0 2px rgba(217, 72, 43, 0.15);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--red) 15%, transparent);
 }
 .can .bolt {
   font-size: 30px;
@@ -1183,6 +1222,8 @@ async function copyInviteCode() {
   padding: 12px;
   border-radius: var(--paper-r-md, 10px);
   letter-spacing: 1px;
+  /* R85：与 .charge 对齐——:active 缩放补 transition，按压不瞬跳 */
+  transition: transform 0.12s;
 }
 .buy:active {
   transform: scale(0.98);
@@ -1232,7 +1273,9 @@ async function copyInviteCode() {
   background: var(--red);
   border-color: var(--red);
   color: var(--on-dark);
+  /* R85：同上，20% 版 */
   box-shadow: 0 0 0 4px rgba(217, 72, 43, 0.2);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 20%, transparent);
 }
 .camp .card {
   background: var(--paper-card);
@@ -1247,7 +1290,8 @@ async function copyInviteCode() {
   border-color: var(--red);
   border-style: solid;
 }
-.camp.locked {
+/* R85：.camp 是透明容器，inset 色条被不透明的 .card 整片盖住——把色条移到 .card 内侧（卡片不透明，条可见） */
+.camp.locked .card {
   box-shadow: inset 3px 0 0 var(--ink2);
 }
 .camp .lv {
@@ -1312,6 +1356,8 @@ async function copyInviteCode() {
   font-size: 18px;
   font-weight: 800;
   letter-spacing: 4px;
+  /* R85：letter-spacing 会给末字尾追加 4px 导致视觉左偏——text-indent 补回 */
+  text-indent: 4px;
   padding: 10px;
   color: var(--ember);
 }
@@ -1319,13 +1365,16 @@ async function copyInviteCode() {
 .invite .code .c.generating {
   font-size: 12px;
   letter-spacing: 1px;
+  /* R85：生成中态字距只有 1px，不套用上面的 4px 居中补偿 */
+  text-indent: 0;
   color: var(--line-deep);
   display: flex;
   align-items: center;
   justify-content: center;
 }
+/* R85：13px 白字配 --red 只有 4.27:1——换 --red-deep #A33319（约 6.9:1，达小字 AA） */
 .invite .code button {
-  background: var(--red);
+  background: var(--red-deep);
   color: var(--on-dark);
   border: none;
   border-radius: var(--paper-r-sm, 8px);
@@ -1333,11 +1382,17 @@ async function copyInviteCode() {
   min-height: 44px;
   font-size: 13px;
   font-weight: 700;
+  /* R85：补按压反馈，与主按钮口径一致 */
+  transition: transform 0.12s;
+}
+.invite .code button:active {
+  transform: scale(0.97);
 }
 
 /* 键盘可达性：role=button 的卡片获得焦点时给出可见轮廓 */
 .can:focus-visible,
-.license:focus-visible,
+/* R85：.license 本身无 tabindex 永远拿不到焦点，可聚焦的是内部 .face——选择器随之修正（.can/.camp 自带 tabindex，原规则有效） */
+.license .face:focus-visible,
 .camp:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
@@ -1350,7 +1405,13 @@ async function copyInviteCode() {
   .license,
   .meter .fill,
   .charge,
-  .buy {
+  .buy,
+  /* R85：新补 transition 的五个按钮同步 */
+  .invite .code button,
+  .custom-btn,
+  .quick-btn,
+  .payway,
+  .redeem-confirm {
     transition: none;
   }
   .license.open .detail {
@@ -1366,7 +1427,13 @@ async function copyInviteCode() {
   .charge:active,
   .buy:active,
   .license:active,
-  .redeem-btn:active {
+  .redeem-btn:active,
+  /* R85：上面新补的五个按压反馈同步进减少动态清单 */
+  .invite .code button:active,
+  .custom-btn:active,
+  .quick-btn:active,
+  .payway:active,
+  .redeem-confirm:active {
     transform: none;
   }
 }
@@ -1412,6 +1479,8 @@ async function copyInviteCode() {
   background: var(--paper);
   color: var(--ink);
   min-width: 0;
+  /* R85：R28 只解决了 iOS 聚焦缩放，触控高度 38px 未达标——补 min-height:44px */
+  min-height: 44px;
 }
 .redeem-input:focus {
   outline: 2px solid var(--red);
@@ -1445,25 +1514,25 @@ async function copyInviteCode() {
   transform: scale(0.97);
 }
 /* R28：加载态不用 CSS 旋转圈（标准3），改用纸片风呼吸脉冲 */
-.redeem-btn.is-loading:not(:disabled) {
+/* R85：模板里 is-loading/is-busy 的按钮恒带 :disabled，原 :not(:disabled) 恒不匹配是死规则——去掉，让脉冲与禁用态并存；关键帧改为从禁用透明度(0.4)起落(0.4↔0.55) */
+.redeem-btn.is-loading {
   animation: redeem-pulse 1.2s ease-in-out infinite;
 }
 @keyframes redeem-pulse {
-  0%, 100% { opacity: 1; }
+  0%, 100% { opacity: 0.4; }
   50% { opacity: 0.55; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .redeem-btn.is-loading:not(:disabled) { animation: none; opacity: 0.65; }
+  .redeem-btn.is-loading { animation: none; opacity: 0.65; }
 }
 /* R30：下单忙碌态复用 R28 呼吸脉冲，不只变灰 */
-/* R53B-26 扩展：busy 时按钮同样带 disabled，脉冲不能盖掉禁用透明度 */
-.charge.is-busy:not(:disabled),
-.buy.is-busy:not(:disabled) {
+.charge.is-busy,
+.buy.is-busy {
   animation: redeem-pulse 1.2s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .charge.is-busy:not(:disabled),
-  .buy.is-busy:not(:disabled) { animation: none; opacity: 0.65; }
+  .charge.is-busy,
+  .buy.is-busy { animation: none; opacity: 0.65; }
 }
 .redeem-preview,
 .redeem-coupon {
@@ -1473,7 +1542,8 @@ async function copyInviteCode() {
   gap: 8px;
   margin-top: 10px;
   padding: 10px 12px;
-  background: rgba(255, 217, 138, 0.25);
+  /* R85：硬编码金色收敛到 --gold-tint（与 v4-paper.css 同名 token） */
+  background: var(--gold-tint);
   border: 1.5px solid var(--gold);
   border-radius: var(--paper-r-sm, 8px);
   font-size: 13px;
@@ -1489,30 +1559,40 @@ async function copyInviteCode() {
   font-size: 13px;
   font-weight: 700;
 }
+/* R85：同上，13px 白字红底换 --red-deep */
 .redeem-confirm::before {
   content: "";
   position: absolute;
   top: 9px; right: 0; bottom: 9px; left: 0;
-  background: var(--red);
+  background: var(--red-deep);
   border-radius: 6px;
 }
 .redeem-confirm .lbl { position: relative; }
+/* R85：补按压反馈 */
+.redeem-confirm {
+  transition: transform 0.12s;
+}
+.redeem-confirm:active {
+  transform: scale(0.97);
+}
 .redeem-clear {
   background: none;
   border: none;
   font-size: 14px;
   color: var(--ink2);
-  /* R30：无背景按钮，透明 padding + 负 margin 直接扩点击区到 ≥44px，视觉不变 */
+  /* R85：R30 只扩了纵向——横向 padding 增至 16px + min-width 44px 兜底（✕ 约 12.6px + 32px ≥ 44px；无背景，加宽无视觉副作用） */
   margin: -10px 0 -10px auto;
-  padding: 14px 8px;
+  padding: 14px 16px;
+  min-width: 44px;
 }
 .redeem-note {
   font-size: 12px;
   color: var(--ink2);
   margin: 8px 2px 0;
 }
+/* R85：12px 红字用 --red-ink（纸色底 5.59:1），--red 只有约 4.2:1 不达小字 AA */
 .redeem-note.warn {
-  color: var(--red);
+  color: var(--red-ink);
 }
 /* R28：旧 .spin 旋转圈已删除（标准3：加载态用 shimmer/脉冲，不用转圈） */
 
@@ -1541,6 +1621,8 @@ async function copyInviteCode() {
   background: var(--paper);
   color: var(--ink);
   min-width: 0;
+  /* R85：同上，34px 未达标——补 min-height:44px */
+  min-height: 44px;
 }
 .custom-btn {
   position: relative;
@@ -1564,6 +1646,13 @@ async function copyInviteCode() {
 .custom-btn .lbl { position: relative; }
 .custom-btn:disabled {
   opacity: 0.4;
+}
+/* R85：补按压反馈 */
+.custom-btn {
+  transition: transform 0.12s;
+}
+.custom-btn:active {
+  transform: scale(0.97);
 }
 .quick {
   display: flex;
@@ -1591,6 +1680,13 @@ async function copyInviteCode() {
   border-radius: 14px;
 }
 .quick-btn .lbl { position: relative; }
+/* R85：补按压反馈 */
+.quick-btn {
+  transition: transform 0.12s;
+}
+.quick-btn:active {
+  transform: scale(0.97);
+}
 .custom-note {
   display: block;
   margin-top: 6px;
@@ -1630,6 +1726,13 @@ async function copyInviteCode() {
   border-radius: 14px;
 }
 .payway .lbl { position: relative; }
+/* R85：补按压反馈 */
+.payway {
+  transition: transform 0.12s;
+}
+.payway:active {
+  transform: scale(0.97);
+}
 .payway.on {
   color: var(--paper);
   font-weight: 700;
@@ -1640,10 +1743,11 @@ async function copyInviteCode() {
 }
 
 /* ---------- 优惠券折后价 ---------- */
+/* R85：13px 红字同上，换 --red-ink 达标 */
 .coupon-strip {
   margin-top: 8px;
   font-size: 13px;
-  color: var(--red);
+  color: var(--red-ink);
   font-weight: 700;
 }
 .coupon-strip s {
