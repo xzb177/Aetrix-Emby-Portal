@@ -1586,7 +1586,10 @@ class TmdbClient:
         同一部剧的两个文件名（``Some Show`` 与 ``Some Show (2024)``）不再各打
         一遍——跨条目去重从此可靠而非碰运气（§7.3③）。
         瞬态失败直接抛 ``TmdbTransientError``（L1/L2 都不写，网络恢复后自然
-        重打）；``data=None`` 的非瞬态（401/404）不写 L2 磁盘。
+        重打）；``data=None`` 的非瞬态（401/404）不写 L2 磁盘；HTTP 成功但
+        响应体里没有 ``results`` 数组的错误载荷（网关把错误包成 200 的情形）
+        也按瞬态抛出去——绝不把错误体当成"搜过了没有"写进阴性缓存
+        （2026-10-18 阴性缓存毒化事故：2,115 条假阴性/7 分钟）。
 
         lang：指定语言（fallback 链用）；None 则用首选语言。
         """
@@ -1623,11 +1626,22 @@ class TmdbClient:
                 else:
                     params["year"] = year
             data = self._get(f"/search/{endpoint}", params)
-            results = (data or {}).get("results") or []
-            if data is not None:
+            if isinstance(data, dict) and "results" in data:
+                # 真实成功的搜索响应：响应体里带 results 数组才算"搜过了"。
+                # 空数组是合法阴性（TMDB 确认无此片），允许写 L1/L2。
+                results = data.get("results") or []
                 tmdb_cache.save_search(endpoint, norm, year or 0, results, lang)
-            self._cache_put(key, results)
-            return results
+                self._cache_put(key, results)
+                return results
+            if data is None:
+                # 非瞬态（401/404/未配置）：旧口径——L1 短缓存 300 秒，不写 L2。
+                self._cache_put(key, [])
+                return []
+            # 错误载荷：HTTP 成功但响应体里没有 results 数组（网关/反代把错误
+            # 包成 200 的情形，如 TMDB 限流错误体 {"success": false, ...}）。
+            # 按瞬态失败抛出去：L1/L2 都不写，条目进重试队列而非被记成 none。
+            logger.warning("TMDB 搜索响应异常（无 results 数组）%s: %.200r", query, data)
+            raise TmdbTransientError(f"TMDB 搜索响应异常（无 results 数组）: {query}")
 
     def search(self, name: str, year: Optional[int], kind: str,
                loose_ok: bool = False) -> Optional[dict]:
