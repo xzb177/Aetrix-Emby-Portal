@@ -25,7 +25,7 @@ import type { UploadRequestOptions } from 'element-plus'
 import {
   Film, FolderPlus, History, ImagePlus, RefreshCw, ScanSearch,
   CalendarClock, Info, ShieldAlert,
-  Square, Wand2, X,} from 'lucide-vue-next'
+  Wand2, X,} from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import {
   cancelQueuedScan,

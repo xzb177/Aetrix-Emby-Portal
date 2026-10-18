@@ -3939,8 +3939,8 @@ async def playback_info(
         pass  # 直链播放：跳过改写即可（本分支 _rewrite_src 已无其他消费方）
     else:
         from backend.emby_server import stream_accel
-        stream_url, transcoding_url, _ = stream_accel.rewrite_playback_urls_unified(
-            db, stream_url, transcoding_url, base)
+        stream_url, _ = stream_accel.rewrite_playback_urls_unified(
+            db, stream_url, base)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
