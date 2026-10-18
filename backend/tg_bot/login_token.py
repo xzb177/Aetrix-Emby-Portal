@@ -121,7 +121,14 @@ def consume_login_token(token: str) -> dict | None:
 def build_login_url(db, user) -> str | None:
     """基于站点地址与一次性 token 构建一键登录链接，无法构建返回 None"""
     try:
-        base = (store.get_value(db, "site_base_url", "") or "").rstrip("/")
+        # r40：站点地址只许一套键。``site_url`` 是正统键（支付设置「站点地址」，
+        # 有后台写入通道）；``site_base_url`` 是历史遗留键（无任何写入通道，
+        # 仅作回退兼容手写过该键的库）。
+        base = (
+            store.get_value(db, "site_url", "")
+            or store.get_value(db, "site_base_url", "")
+            or ""
+        ).rstrip("/")
         if not base:
             return None
         token = create_login_token(user.id, user.telegram_id)

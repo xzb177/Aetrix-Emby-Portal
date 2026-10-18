@@ -190,6 +190,7 @@ ECONOMY_CONFIG_KEYS = {
     "checkin_penalty_pct": "int", "checkin_penalty_min": "int", "checkin_penalty_max": "int",
     "media_seek_daily_limit": "int",  # 用户每日求片上限（用户端硬性校验）
     "exchange_enabled": "bool",
+    "code_default_plan_id": "int",  # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取）
     "recharge_enabled": "bool", "subscription_purchase_enabled": "bool",
     "payment_gateway_url": "str", "payment_partner_id": "str",
     "payment_partner_key": "secret", "payment_qqpay_enabled": "bool",

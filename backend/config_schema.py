@@ -245,6 +245,8 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "checkin_penalty_min": ("int", 0, _BIG), "checkin_penalty_max": ("int", 0, _BIG),
     "media_seek_daily_limit": ("int", 0, _BIG),
     "exchange_enabled": ("bool",),
+    # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取；无行=按服自动推导）
+    "code_default_plan_id": ("int", 0, _BIG),
     "recharge_enabled": ("bool",), "subscription_purchase_enabled": ("bool",),
     "payment_gateway_url": ("raw",), "payment_partner_id": ("raw",),
     "payment_partner_key": ("raw",), "payment_qqpay_enabled": ("bool",),
