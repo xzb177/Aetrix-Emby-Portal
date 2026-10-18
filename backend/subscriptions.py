@@ -121,7 +121,7 @@ def view_grant(db: Session, user: models.WebUser,
             .first()
         )
         return (unlock is not None), unlock
-    return has_active_subscription(db, user.id, resolve_realm_id(realm_id)), None
+    return has_active_subscription(db, user.id, target), None  # r49: 用 _scoped 口径（此前 resolve_realm_id；现有调用方下等价）
 
 CONFIG_REQUIRED = "subscription_required"
 CONFIG_MESSAGE = "subscription_gate_message"

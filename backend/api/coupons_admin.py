@@ -355,8 +355,16 @@ def create_coupons(
         codes.append(_gen_code(db))
 
     created: list[models.CouponCode] = []
+    # r49: 一次 IN 查完已存在的码（防 N+1：此前循环内每码一次 query；_gen_code 生成时已查重，
+    # 此处只防手动指定码与并发插入，语义与逐码查一致）
+    existing = {
+        row[0]
+        for row in db.query(models.CouponCode.code)
+        .filter(models.CouponCode.code.in_(codes))
+        .all()
+    }
     for code in codes:
-        if db.query(models.CouponCode.id).filter(models.CouponCode.code == code).first():
+        if code in existing:
             raise HTTPException(status_code=400, detail=f"优惠码 {code} 已存在")
         coupon = models.CouponCode(
             code=code,

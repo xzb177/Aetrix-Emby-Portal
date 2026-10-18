@@ -19,7 +19,7 @@ from fastapi import Depends, HTTPException, Query
 logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from backend import config_service, models
 from backend.api.admin_core import admin_router, get_current_admin, _audit
@@ -176,7 +176,11 @@ def welfare_requests(
     db: Session = Depends(get_db),
 ):
     """求片审核列表"""
-    q = db.query(models.MediaRequest).order_by(models.MediaRequest.id.desc())
+    q = (
+        db.query(models.MediaRequest)
+        .options(joinedload(models.MediaRequest.user))  # r49: 防 N+1（_request_to_dict 逐行读 r.user.username）
+        .order_by(models.MediaRequest.id.desc())
+    )
     if status:
         q = q.filter(models.MediaRequest.status == status)
     total = q.count()
@@ -737,12 +741,19 @@ def list_lottery_blacklist(
         .all()
     )
     items = []
+    # r49: 一次 IN 查完用户名（防 N+1：此前循环内每行一次 query）
+    user_ids = [r.user_id for r in rows]
+    name_by_id = {
+        u.id: u.username
+        for u in db.query(models.WebUser.id, models.WebUser.username)
+        .filter(models.WebUser.id.in_(user_ids))
+        .all()
+    } if user_ids else {}
     for r in rows:
-        u = db.query(models.WebUser).filter(models.WebUser.id == r.user_id).first()
         items.append({
             "id": r.id,
             "user_id": r.user_id,
-            "username": getattr(u, "username", None),
+            "username": name_by_id.get(r.user_id),
             "reason": r.reason,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         })
