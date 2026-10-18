@@ -3867,8 +3867,12 @@ def _worker_loop(worker_id: int) -> None:
     logger.info("补全 worker #%d 退出", worker_id)
 
 
-def get_progress() -> dict:
-    """进度快照：给管理后台接口用。"""
+def get_progress(light: bool = False) -> dict:
+    """进度快照：给管理后台接口用。
+
+    light=True 跳过 probe 侧的全表聚合（tasks/overview 不读 probe 字段，
+    它有自己的轻量 probe 快照），其余键保持不变。
+    """
     db = SessionLocal()
     try:
         from sqlalchemy import func as _func
@@ -3879,10 +3883,12 @@ def get_progress() -> dict:
         retrying = db.query(_func.count(em.MediaItem.id)).filter(
             em.MediaItem.enrich_status == "pending",
             em.MediaItem.enrich_next_retry_at.isnot(None)).scalar() or 0
-        pq = db.query(em.MediaItem.probe_status,
-                      _func.count(em.MediaItem.id)).group_by(
-                          em.MediaItem.probe_status).all()
-        probe_by_status = {s or "unknown": c for s, c in pq}
+        probe_by_status = {}
+        if not light:
+            pq = db.query(em.MediaItem.probe_status,
+                          _func.count(em.MediaItem.id)).group_by(
+                              em.MediaItem.probe_status).all()
+            probe_by_status = {s or "unknown": c for s, c in pq}
         return {
             "enrich": {
                 "pending": by_status.get("pending", 0),

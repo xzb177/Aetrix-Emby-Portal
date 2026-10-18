@@ -173,3 +173,74 @@ def test_single_task_failure_degrades_only_that_card(db, seed, monkeypatch):
     assert "probe 炸了" in cards["probe"]["summary"]
     assert cards["scan"]["status"] == "running"
     assert cards["enrich"]["status"] == "running"
+
+
+@pytest.fixture(autouse=True)
+def _clear_task_snapshots():
+    """快照缓存是进程级的：每个测试前后清掉，避免测试间污染。"""
+    admin_tasks._clear_task_snapshots()
+    yield
+    admin_tasks._clear_task_snapshots()
+
+
+def test_cards_keep_builders_order(db, seed):
+    """并行采集后，卡片顺序仍与 _BUILDERS 定义一致。"""
+    res = _call(db)
+    assert [t["key"] for t in res["tasks"]] == [k for k, _, _ in admin_tasks._BUILDERS]
+
+
+def test_probe_snapshot_cache_serves_stale_within_ttl(db, seed):
+    """probe 快照 20s 内走缓存：DB 变了，卡片数字不变；清缓存后重算。"""
+    m1 = {m["label"]: m["value"] for m in _by_key(_call(db))["probe"]["metrics"]}
+    assert m1["待探测"] == "3 条"
+    db.add(em.MediaItem(guid="mx", library_id=seed["lib1"].id, item_type="movie",
+                        name="新增", probe_status="pending", enrich_status="done"))
+    db.commit()
+    m2 = {m["label"]: m["value"] for m in _by_key(_call(db))["probe"]["metrics"]}
+    assert m2["待探测"] == "3 条"  # 缓存命中，仍是旧数
+    admin_tasks._clear_task_snapshots()
+    m3 = {m["label"]: m["value"] for m in _by_key(_call(db))["probe"]["metrics"]}
+    assert m3["待探测"] == "4 条"  # 缓存清掉，重算拿到新数
+
+
+def test_enrich_snapshot_cache_serves_stale_within_ttl(db, seed):
+    e1 = {m["label"]: m["value"] for m in _by_key(_call(db))["enrich"]["metrics"]}
+    assert e1["待刮削"] == "2 条"
+    db.query(em.MediaItem).filter(em.MediaItem.guid == "m1").update(
+        {"enrich_status": "done"})
+    db.commit()
+    e2 = {m["label"]: m["value"] for m in _by_key(_call(db))["enrich"]["metrics"]}
+    assert e2["待刮削"] == "2 条"  # 缓存命中
+    admin_tasks._clear_task_snapshots()
+    e3 = {m["label"]: m["value"] for m in _by_key(_call(db))["enrich"]["metrics"]}
+    assert e3["待刮削"] == "1 条"
+
+
+def test_light_snapshot_keeps_shape_but_skips_error_scan(db, seed):
+    """light 快照：键不变、计数一致；跳过 probe_last_error 全表聚合。"""
+    from backend.emby_server import probe_worker
+
+    full = probe_worker.status_snapshot(db)
+    light = probe_worker.status_snapshot(db, light=True)
+    assert set(light) == set(full)
+    assert light["counts"] == full["counts"]
+    assert light["retrying"] == 0
+    assert light["stale_probing"] == 0
+    assert light["top_errors"] == []
+    # 全量模式照旧：种子里 m4（failed + timeout）应出现在 top_errors
+    assert any(e["error"] == "timeout" for e in full["top_errors"])
+
+
+def test_cached_snapshot_does_not_cache_loader_errors(db, seed, monkeypatch):
+    """loader 抛异常不进缓存：下一次调用会重新执行 loader。"""
+    calls = {"n": 0}
+
+    def _boom():
+        calls["n"] += 1
+        raise RuntimeError("loader 炸了")
+
+    with pytest.raises(RuntimeError):
+        admin_tasks._cached_snapshot("k-boom", _boom)
+    with pytest.raises(RuntimeError):
+        admin_tasks._cached_snapshot("k-boom", _boom)
+    assert calls["n"] == 2
