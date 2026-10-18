@@ -135,8 +135,9 @@ check("会员拉流 → 206 分段", r.status_code in (200, 206), str(r.status_c
 r = client.get(f"/emby/Items/{item_guid}/Download", headers=free_h)
 check("非会员下载 → 403", r.status_code == 403, str(r.status_code))
 
+# HLS 转码已删除（#991）：master.m3u8 端点不再存在，转码入口返回 404（与 smoke_test_emby.py 同口径）。
 r = client.get(f"/emby/videos/{item_guid}/master.m3u8", headers=free_h)
-check("非会员新建转码会话 → 403（先于 ffmpeg 可用性检查）", r.status_code == 403, str(r.status_code))
+check("转码端点已删除 → 404", r.status_code == 404, str(r.status_code))
 
 r = client.get(f"/emby/Items/{item_guid}/Download", headers=member_h)
 check("会员下载放行", r.status_code == 200, str(r.status_code))
