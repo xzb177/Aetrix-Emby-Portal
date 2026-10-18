@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from backend import models
 from backend.integrations import store
 from backend.emby_server import models as em
+from backend.emby_server import soft_delete
 
 logger = logging.getLogger(__name__)
 
@@ -333,8 +334,11 @@ def stats(db: Session, realm_id: int) -> dict:
     ).all()
     lib_ids = [row[0] for row in lib_rows]
     item_count = (
-        db.query(func.count(em.MediaItem.id))
-        .filter(em.MediaItem.library_id.in_(lib_ids)).scalar() or 0
+        # 假数字修复（2026-10-19 系统清点 F3）：与媒体库列表页对齐只数可见。
+        # 注意 count_visible 本身不带 merged 过滤（实测：不加 merged 条件
+        # 付费服=218,085，加了=178,778），必须显式加 merged_into_id IS NULL。
+        soft_delete.count_visible(db, em.MediaItem.library_id.in_(lib_ids),
+                                  em.MediaItem.merged_into_id.is_(None))
         if lib_ids else 0
     )
 

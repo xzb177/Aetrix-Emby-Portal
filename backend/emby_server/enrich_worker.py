@@ -3083,6 +3083,9 @@ def _none_reschedulable_query(db, cutoff):
                     em.MediaItem.tmdb_id.is_(None),
                     em.MediaItem.item_type.in_(["series", "movie"]),
                     em.MediaItem.file_fingerprint.isnot(None),
+                    # 假数字修复（2026-10-19 系统清点 F5/T2）：合并副本按设计
+                    # 永不参与补全，回捞动作与只读计数共用同一口径，一起过滤掉
+                    em.MediaItem.merged_into_id.is_(None),
                     _or(em.MediaItem.enrich_next_retry_at.is_(None),
                         em.MediaItem.enrich_next_retry_at <= cutoff)))
 
@@ -3158,13 +3161,20 @@ def none_stock_stats(db) -> dict:
     rows = (db.query(em.MediaItem.item_type, func.count(em.MediaItem.id))
             .filter(em.MediaItem.enrich_status == "done",
                     em.MediaItem.metadata_source == "none",
-                    em.MediaItem.tmdb_id.is_(None))
+                    em.MediaItem.tmdb_id.is_(None),
+                    # 假数字修复（2026-10-19 系统清点 F5）：同上，加 merged 过滤
+                    em.MediaItem.merged_into_id.is_(None))
             .group_by(em.MediaItem.item_type)
             .all())
     by_type = {t or "unknown": int(c) for t, c in rows}
     days = enrich_tuning_value(CFG_ENRICH_NONE_RESCHEDULE_DAYS, db)
     cutoff = datetime.now() - timedelta(days=days)
-    reschedulable = _none_reschedulable_query(db, cutoff).count()
+    # 假数字修复（2026-10-19 系统清点 F5/T2）：Query.count() 会被包成子查询，
+    # 软删钩子看不见（soft_delete.py 明说），改 with_entities(func.count)
+    # .scalar() 写法（与 count_visible 同形），否则软删行会被数进去
+    reschedulable = (_none_reschedulable_query(db, cutoff)
+                     .with_entities(func.count(em.MediaItem.id))
+                     .scalar() or 0)
     return {
         "by_type": by_type,
         "total": sum(by_type.values()),
@@ -3233,25 +3243,34 @@ def field_missing_stats(db) -> dict:
             .filter(em.MediaItem.enrich_status == "done",
                     em.MediaItem.metadata_source.isnot(None),
                     em.MediaItem.metadata_source != "none",
-                    em.MediaItem.item_type.in_(["series", "movie"])))
-    total = base.count()
+                    em.MediaItem.item_type.in_(["series", "movie"]),
+                    # 假数字修复（2026-10-19 系统清点 F4）：合并副本无全局过滤
+                    em.MediaItem.merged_into_id.is_(None)))
+
+    def _visible_count(q):
+        # Query.count() 会被包成子查询，软删钩子看不见它（soft_delete.py 明说），
+        # 改用 with_entities(func.count(...)).scalar() 让钩子正常加上
+        # deleted_at IS NULL，否则软删行也会被算进来
+        return q.with_entities(_safunc.count(em.MediaItem.id)).scalar() or 0
+
+    total = _visible_count(base)
     missing = {
-        "title": base.filter(_blank(em.MediaItem.name)).count() if total else 0,
-        "year": (base.filter(em.MediaItem.production_year.is_(None)).count()
+        "title": _visible_count(base.filter(_blank(em.MediaItem.name))) if total else 0,
+        "year": (_visible_count(base.filter(em.MediaItem.production_year.is_(None)))
                  if total else 0),
         # P3(r32)：poster 缺失口径与内存判定 `_field_completeness_missing` 统一——
         # 空字符串也算缺失（此前只用 is_(None)，与 _blank 不一致）。
-        "poster": (base.filter(_and(_blank(em.MediaItem.poster_path),
-                                    _blank(em.MediaItem.primary_image_url))).count()
+        "poster": (_visible_count(base.filter(_and(_blank(em.MediaItem.poster_path),
+                                                    _blank(em.MediaItem.primary_image_url))))
                    if total else 0),
-        "overview": base.filter(_blank(em.MediaItem.overview)).count() if total else 0,
-        "genres": base.filter(_blank(em.MediaItem.genres)).count() if total else 0,
+        "overview": _visible_count(base.filter(_blank(em.MediaItem.overview))) if total else 0,
+        "genres": _visible_count(base.filter(_blank(em.MediaItem.genres))) if total else 0,
     }
     if total:
-        cast_missing = (base.filter(
+        cast_missing = _visible_count(base.filter(
             ~db.query(em.EmbyPerson.id)
             .filter(em.EmbyPerson.item_id == em.MediaItem.id)
-            .exists()).count())
+            .exists()))
     else:
         cast_missing = 0
     missing["cast"] = cast_missing

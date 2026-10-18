@@ -1218,8 +1218,11 @@ def status_snapshot(db=None, light: bool = False) -> dict:
         db = SessionLocal()
     try:
         MI = em.MediaItem
+        # 假数字修复（2026-10-19 系统清点 F6）：合并副本按设计永不参与探测
+        #（_shape_clause 要求 merged_into_id IS NULL），四个计数查询都加过滤
+        _vis = (MI.merged_into_id.is_(None),)
         rows = (db.query(MI.probe_status, func.count(MI.id))
-                .filter(MI.item_type.in_(PROBE_ITEM_TYPES))
+                .filter(MI.item_type.in_(PROBE_ITEM_TYPES), *_vis)
                 .group_by(MI.probe_status).all())
         counts = {(s or "unknown"): int(c) for s, c in rows}
         retrying = 0
@@ -1229,14 +1232,14 @@ def status_snapshot(db=None, light: bool = False) -> dict:
             now = datetime.now()
             retrying = db.query(func.count(MI.id)).filter(
                 MI.probe_status == "pending", MI.probe_next_retry_at.isnot(None),
-                MI.probe_next_retry_at > now).scalar() or 0
+                MI.probe_next_retry_at > now, *_vis).scalar() or 0
             stale_cut = now - timedelta(seconds=PROBE_CLAIM_TTL_SEC)
             stale = db.query(func.count(MI.id)).filter(
-                MI.probe_status == "probing",
+                MI.probe_status == "probing", *_vis,
                 or_(MI.probe_claimed_at.is_(None), MI.probe_claimed_at < stale_cut)).scalar() or 0
             errs = (db.query(MI.probe_last_error, func.count(MI.id))
                     .filter(MI.probe_last_error.isnot(None),
-                            MI.probe_status.in_(("pending", "failed")))
+                            MI.probe_status.in_(("pending", "failed")), *_vis)
                     .group_by(MI.probe_last_error)
                     .order_by(func.count(MI.id).desc()).limit(5).all())
         db.rollback()

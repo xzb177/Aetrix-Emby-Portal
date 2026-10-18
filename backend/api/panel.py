@@ -980,7 +980,10 @@ def panel_server(
     try:
         lib_counts = db.query(
             em.MediaItem.library_id, func.count(em.MediaItem.id)
-        ).filter(em.MediaItem.item_type.in_(["movie", "series"])).group_by(
+        ).filter(em.MediaItem.item_type.in_(["movie", "series"]),
+                 # 假数字修复（2026-10-19 系统清点 F1）：合并副本没有任何全局
+                 # 过滤，不加 merged_into_id IS NULL 会把副本算进去（约 2 倍虚高）
+                 em.MediaItem.merged_into_id.is_(None)).group_by(
             em.MediaItem.library_id).all()
         # 库名映射
         lib_names = {}
@@ -1012,6 +1015,8 @@ def panel_server(
         ).filter(
             em.MediaItem.date_added >= week_start,
             em.MediaItem.item_type.in_(["movie", "series"]),
+            # 假数字修复（2026-10-19 系统清点 F2）：同 F1，加 merged 过滤
+            em.MediaItem.merged_into_id.is_(None),
         ).group_by(em.MediaItem.date_added).all()
         by_day = {}
         for ts, cnt in rows:
