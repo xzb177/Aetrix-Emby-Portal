@@ -222,7 +222,10 @@ def bump_library_item_versions(db: Session, library_ids: Iterable[int],
                 _last_bump_at[lid] = now
     if not libs:
         return 0
-    ts = str(int(time.time()))
+    # 毫秒时间戳：跨进程（api/worker/EA）的 force bump 可能落在同一秒，
+    # 秒级版本号会写出相同值导致第二次 bump 语义上丢失；毫秒级基本杜绝碰撞。
+    # （同进程内另有 30s 防抖；残余的极端碰撞仍被条目 TTL 兜底。）
+    ts = str(int(time.time() * 1000))
     desc = "列表去重缓存数据版本号（写路径自动 bump，勿手改）"
     store.write_values(
         db,
