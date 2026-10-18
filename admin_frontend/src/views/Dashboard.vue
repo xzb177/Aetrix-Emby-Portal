@@ -85,6 +85,7 @@ async function loadTrend() {
  * parts 里为 null 的项按原 soft() 语义点名并给重试。
  */
 async function loadAggregate(): Promise<boolean> {
+  const d = days.value
   let agg: DashboardAggregate
   try {
     agg = await fetchDashboardAggregate(days.value)
@@ -101,7 +102,8 @@ async function loadAggregate(): Promise<boolean> {
   overview.value = take('概览', parts.overview)
   playback.value = take('播放统计', parts.playback)
   economy.value = take('经营数据', parts.economy)
-  trend.value = parts.trend
+  // 天数在请求途中被用户切换：沿用 watch 触发的新请求数据，不覆盖
+  if (days.value === d) trend.value = parts.trend
   libraries.value = parts.libraries?.libraries ?? []
   servers.value = parts.servers ?? null
   realms.value = parts.realms ?? null

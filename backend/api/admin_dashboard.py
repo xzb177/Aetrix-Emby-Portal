@@ -19,8 +19,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from datetime import datetime
 from typing import Any, Callable, Optional
 
@@ -34,7 +35,22 @@ from backend import models as base_models
 logger = logging.getLogger(__name__)
 
 _DASH_TTL_SEC = 20
+_DASH_PART_TIMEOUT_SEC = 30
 _dash_cache: dict = {}
+_dash_lock = threading.Lock()
+
+# (part 名, builder 名)：_collect 在调用时刻用局部 import 解析 builder 名，
+# 测试 monkeypatch 目标模块属性时依然生效（与原 lambda 闭包口径一致）。
+_JOBS: list[tuple[str, str]] = [
+    ("overview", "get_stats_overview"),
+    ("playback", "get_playback_stats"),
+    ("economy", "economy_stats"),
+    ("libraries", "list_libraries"),
+    ("servers", "servers_summary"),
+    ("realms", "realms_overview"),
+    ("backend_services", "get_services_status"),
+    ("trend", "get_stats_trend"),
+]
 
 
 def _call_one(
@@ -63,7 +79,13 @@ def _call_one(
 
 
 def _collect(admin_id: int, days: int) -> dict:
-    """并行采集 8 个 part，返回 {part: payload|None}。"""
+    """并行采集 8 个 part，返回 {part: payload|None}。
+
+    单 part 超时（_DASH_PART_TIMEOUT_SEC）：该 part 降级为 None，
+    不拖住整个聚合。超时的线程在后台跑完后由 _call_one 的 finally
+    关会话，不泄漏（与 admin_tasks.tasks_overview 同手法：手动建池，
+    不用 with 的隐式等待——with 会等住 hang 的线程，超时就失去意义）。
+    """
     from backend.api.admin import get_playback_stats, get_stats_overview
     from backend.api.admin_economy import economy_stats, get_stats_trend
     from backend.api.admin_services import get_services_status
@@ -71,35 +93,49 @@ def _collect(admin_id: int, days: int) -> dict:
     from backend.api.servers import servers_summary
     from backend.emby_server.portal import list_libraries
 
-    # (part 名, 调用器)：lambda 在调用时刻解析模块属性，测试 monkeypatch 依然生效
-    jobs: list[tuple[str, Callable[[Any, Session], Any]]] = [
-        ("overview", lambda a, d: get_stats_overview(a, d)),
-        ("playback", lambda a, d: get_playback_stats(a, d)),
-        ("economy", lambda a, d: economy_stats(a, d)),
-        ("libraries", lambda a, d: list_libraries(a, d)),
-        ("servers", lambda a, d: servers_summary(a, d)),
-        ("realms", lambda a, d: realms_overview(a, d)),
-        ("backend_services", lambda a, d: get_services_status(a, d)),
-        ("trend", lambda a, d: get_stats_trend(days, a, d)),
-    ]
+    # 局部 import 绑定本地名；lambda 在调用时刻解析，测试 monkeypatch 依然生效。
+    # trend 的 days 用闭包传入（_JOBS 在模块级，没有 days）。
+    builders: dict[str, Callable[[Any, Session], Any]] = {
+        "get_stats_overview": lambda a, d: get_stats_overview(a, d),
+        "get_playback_stats": lambda a, d: get_playback_stats(a, d),
+        "economy_stats": lambda a, d: economy_stats(a, d),
+        "list_libraries": lambda a, d: list_libraries(a, d),
+        "servers_summary": lambda a, d: servers_summary(a, d),
+        "realms_overview": lambda a, d: realms_overview(a, d),
+        "get_services_status": lambda a, d: get_services_status(a, d),
+        "get_stats_trend": lambda a, d: get_stats_trend(days, a, d),
+    }
     parts: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=len(jobs), thread_name_prefix="dashagg") as pool:
-        futures = {pool.submit(_call_one, key, fn, admin_id): key for key, fn in jobs}
+    ex = ThreadPoolExecutor(max_workers=len(_JOBS), thread_name_prefix="dashagg")
+    try:
+        futures = {ex.submit(_call_one, key, builders[name], admin_id): key
+                   for key, name in _JOBS}
         for fut in as_completed(futures):
-            key, payload = fut.result()
+            key = futures[fut]
+            try:
+                _, payload = fut.result(timeout=_DASH_PART_TIMEOUT_SEC)
+            except TimeoutError:
+                logger.warning("仪表盘聚合采集超时 [%s]（>%ss），已降级为 None",
+                               key, _DASH_PART_TIMEOUT_SEC)
+                payload = None
             parts[key] = payload
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
     return parts
 
 
 def _cached_collect(admin_id: int, days: int) -> dict:
-    now = time.monotonic()
-    cache_key = f"dash:{days}"
-    hit = _dash_cache.get(cache_key)
-    if hit and hit[0] > now:
-        return hit[1]
-    parts = _collect(admin_id, days)
-    _dash_cache[cache_key] = (now + _DASH_TTL_SEC, parts)
-    return parts
+    # 单 flight 锁：20s TTL、管理端低频，查缓存→miss 采集→回填全程串行化，
+    # 避免缓存击穿瞬间多请求重复并行采集（8 路 × N 请求）。
+    with _dash_lock:
+        now = time.monotonic()
+        cache_key = f"dash:{days}"
+        hit = _dash_cache.get(cache_key)
+        if hit and hit[0] > now:
+            return hit[1]
+        parts = _collect(admin_id, days)
+        _dash_cache[cache_key] = (now + _DASH_TTL_SEC, parts)
+        return parts
 
 
 @admin_router.get("/dashboard/overview")
@@ -113,7 +149,7 @@ def dashboard_overview(
     - ``parts``：各原接口响应的原样映射，采集失败的 part 为 null。
     - 老接口全部保留，本接口失败时前端回退逐个调用。
     """
-    days = max(1, min(int(days or 14), 90))
+    days = max(1, min(int(days), 90))
     admin_id = current_admin.id
     parts = _cached_collect(admin_id, days)
     return {
