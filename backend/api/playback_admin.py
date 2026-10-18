@@ -12,12 +12,8 @@
 - ``GET  /api/admin/playback/lines``：单路径快照——播放流量（本进程请求数/出流量）、
   本地缓存层状态（启用/命中率/占用）。**纯只读**。
 
-VPS 本地缓存（播放线路「本地缓存」）：
-
-- ``GET  /api/admin/playback/local-cache``：配置 + 占用/命中率统计 + 条目列表；
-- ``PUT  /api/admin/playback/local-cache``：写回开关/目录/配额/热门规则/限速；
-- ``POST /api/admin/playback/local-cache/clean``：手动清理（ready / failed / all）。
-  写端点一律仅超级管理员，并写审计日志。
+VPS 本地缓存（播放线路「本地缓存」）段落已随 #957/#958/#959 删除（本地缓存整套移除）——
+本文件当前仅实现 /lines 与 /policy。
 
 运行态只反映**本进程**：一体化部署时它就是全部；分离部署时转码跑在 EA 上，
 面板这边会显示 ``playback_node=ea``，并提示去「服务器与线路」看节点状态——

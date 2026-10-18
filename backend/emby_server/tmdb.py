@@ -2231,13 +2231,15 @@ class TmdbClient:
         item.last_scraped_at = datetime.now()
         # 文字与图片都来自 TMDB 搜索结果
         item.metadata_source = "tmdb"
-        item.overview = hit.get("overview") or item.overview
-        rating = hit.get("vote_average")
-        # 批2（刮削瘦身）：文字字段只填空、不覆盖。注意不能用 `if rating:`：
+        # 批2（刮削瘦身）：文字字段只填空、不覆盖（与 apply_details 同口径；
+        # 之前简介恒覆盖是口径漂移）。注意 rating 不能用 `if rating:`：
         # TMDB 对没有评分的条目返回 0.0，那是**合法数据**，判假值会让这类条目
         # 永远没有评分（生产实测 21天重养自己 就是 0.0）。已有评分时 TMDB 的
         # 0.0 不再覆盖（为将来 NFO/人工编辑让路）。
         fill_only = tmdb_text_fill_only()
+        if not fill_only or not (getattr(item, "overview", None) or "").strip():
+            item.overview = hit.get("overview") or item.overview
+        rating = hit.get("vote_average")
         if rating is not None and rating != "" and \
                 (not fill_only or item.community_rating is None):
             try:
