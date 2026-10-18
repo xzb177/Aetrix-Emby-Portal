@@ -433,29 +433,29 @@ def test_api_leader_exception_cleans_slot(fake, monkeypatch):
 
 
 def test_api_slow_log_threshold(fake, seeded_api, caplog, monkeypatch):
-    """慢日志：正常请求不打；cache_get 被人为拖慢 0.6s 时打一行且带段名。"""
+    """慢日志阈值行为：阈值拉满时不打；阈值归零时打一行且带段名。
+
+    不依赖真实耗时断言（协调员亲审补修）：原版拿「热请求 <500ms」做负例，
+    机器忙时热请求超 500ms 即误红（组合跑亲验复现、单跑绿）。改为
+    monkeypatch api._ITEMS_SLOW_LOG_MS，两方向都确定性。
+    """
     import logging
     s = seeded_api
     db = _session(s.eng)
-    real = ilc.coalesced_get
     try:
         params = {"Recursive": "true", "IncludeItemTypes": "Movie", "Limit": "20"}
-        # 预热一次（冷请求走全量计算，耗时不稳定，结果忽略）
+        # 预热一次（冷请求走全量计算，结果忽略）
         api._query_items(_req(params), s.user, db, "http://t")
-        # 正常热请求：走缓存命中，远快于 500ms，不打慢日志
+        # 阈值拉满：任何请求都不打慢日志
+        monkeypatch.setattr(api, "_ITEMS_SLOW_LOG_MS", float("inf"))
         with caplog.at_level(logging.WARNING, logger="backend.emby_server.api"):
             api._query_items(_req(params), s.user, db, "http://t")
         assert not [r for r in caplog.records
                     if "items 列表慢请求" in r.getMessage()]
         caplog.clear()
 
-        # cache_get 人为拖慢 0.6s → 触发慢日志（第二次请求走缓存命中分支）
-        def slow(db_, qp, libs, versions=None, wait_seconds=None):
-            time.sleep(0.6)
-            return real(db_, qp, libs, versions=versions,
-                        wait_seconds=wait_seconds)
-
-        monkeypatch.setattr(ilc, "coalesced_get", slow)
+        # 阈值归零：任何请求都打一行慢日志，且带段名
+        monkeypatch.setattr(api, "_ITEMS_SLOW_LOG_MS", 0.0)
         with caplog.at_level(logging.WARNING, logger="backend.emby_server.api"):
             api._query_items(_req(params), s.user, db, "http://t")
         hits = [r for r in caplog.records

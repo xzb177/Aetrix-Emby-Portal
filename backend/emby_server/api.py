@@ -2320,6 +2320,9 @@ def _dedup_dropped_ids(query, db) -> Optional[set]:
     return dropped
 
 
+_ITEMS_SLOW_LOG_MS = 500.0  # _query_items 分段计时慢日志阈值（ms）；测试可 monkeypatch
+
+
 def _query_items(request: Request, user: models.WebUser, db: Session, base: str) -> dict:
     q = request.query_params
     parent_id = q.get("ParentId")
@@ -2800,7 +2803,7 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     _items = [_item_dto(i, base, user.id, db) for i in items]
     _mark("dto_build")
     _seg_total = sum(_seg.values())
-    if _seg_total > 500:
+    if _seg_total > _ITEMS_SLOW_LOG_MS:
         # 慢才打一行结构化日志，防日志洪水
         logger.warning(
             "items 列表慢请求 total=%.0fms scope_versions=%.0fms "
