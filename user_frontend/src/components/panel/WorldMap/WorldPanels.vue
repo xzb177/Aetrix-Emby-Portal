@@ -47,13 +47,11 @@ defineProps<{
   margin-top: 12px;
   pointer-events: auto;
 }
-.world-panels .feed,
-.world-panels .quest {
-  pointer-events: auto;
-}
 .feed {
   position: static;
   flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: break-word;
   width: auto;
   background: var(--paper-card-soft);
   border: 1px solid var(--paper-hairline);
@@ -98,6 +96,8 @@ defineProps<{
 .quest {
   position: relative;
   flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: break-word;
   width: auto;
   background: var(--paper-card-soft);
   border: 1px solid var(--paper-hairline);

@@ -31,6 +31,17 @@ INDIRECT_READS = {
     "HTTPS_PROXY": "backend/integrations/proxy.py:39 ENV_KEYS 元组 + :90 轮询写入/读取",
     # 变量名 ENV_EDGE_CACHE_MODE 不以 _ENV 结尾，静态模式抓不到
     "EDGE_CACHE_MODE": "backend/emby_server/edge_cache.py:27 ENV_EDGE_CACHE_MODE 常量 + :45 os.environ.get",
+    # DIAG_* 一键诊断阈值：经 THRESHOLD_DEFS / FIX_THRESHOLD_DEFS 元组轮询、
+    # get_threshold / get_fix_threshold 以变量传键读 _env_float（r1907 逐键亲验）
+    "DIAG_DISK_WARN_PCT": "backend/diagnosis.py:68 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
+    "DIAG_DISK_CRIT_PCT": "backend/diagnosis.py:69 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
+    "DIAG_PROBE_QUEUE_WARN": "backend/diagnosis.py:70 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
+    "DIAG_ENRICH_BACKLOG_FLOOR": "backend/diagnosis.py:71 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
+    "DIAG_ENRICH_IDLE_SEC": "backend/diagnosis.py:72 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
+    "DIAG_API_ERROR_RATIO": "backend/diagnosis.py:73 THRESHOLD_DEFS 元组 + 变量传键 _env_float",
+    "DIAG_FIX_TRANSCODE_MIN_AGE_SEC": "backend/diagnosis_fix.py:56 FIX_THRESHOLD_DEFS 元组 + 变量传键 _env_float",
+    "DIAG_FIX_PROBE_TTL_SEC": "backend/diagnosis_fix.py:58 FIX_THRESHOLD_DEFS 元组 + 变量传键 _env_float",
+    "DIAG_FIX_SUBTITLE_CACHE": "backend/diagnosis_fix.py:60 FIX_THRESHOLD_DEFS 元组 + 变量传键 _env_float",
 }
 
 # 部署/编排专用键：代码不直接读，但 docker-compose / 部署脚本 / 授权版部署消费
