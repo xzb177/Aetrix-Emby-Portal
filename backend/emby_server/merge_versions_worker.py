@@ -626,6 +626,9 @@ def _merge_once() -> Tuple[int, int]:
             logger.warning("单集多版本合并失败: %s", e)
         # 列表去重缓存：本轮若有实际合并写库，bump 受影响库的数据版本号。
         # 单集多版本是全库跑的，这里取全部启用库（bump 自带 30s 防抖，开销可忽略）。
+        # 非原子披露：循环内已逐组 commit，末尾 bump 与各组合并不原子；
+        # 若中途崩溃，部分合并已提交而版本号未 bump，去重缓存至多一个 TTL
+        # 陈旧后自愈（版本号仍是旧值，旧缓存自然过期失效）。
         try:
             if total_merged:
                 from backend.emby_server import items_dedup_cache as _idc

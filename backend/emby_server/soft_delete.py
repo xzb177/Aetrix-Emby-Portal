@@ -176,8 +176,8 @@ def purge_expired(db, purge_days: int = None, library_id: int = None) -> int:
         _libs = [library_id] if library_id else [
             r[0] for r in db.query(Library.id).filter(Library.is_enabled == True).all()]  # noqa: E712
         _idc.bump_library_item_versions(db, _libs, force=True)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("去重缓存版本号 bump 失败（软删除回收）: %s", exc)
     db.commit()
     logger.info("软删除回收：%d 条隐藏超过 %d 天的条目已物理删除", len(ids), days)
     return len(ids)

@@ -1569,7 +1569,7 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
                     user_id=user.id,
                     title="⚠️ 充值成功，会员经验发放失败",
                     content=(f"订单 {recharge_order.order_id} 的积分已到账，"
-                             f"但会员经验（约 {_xp} 点）累加失败：{exc}。"
+                             f"但会员经验（约 {_xp} 点）累加失败。"
                              "请联系客服补发。"),
                     related_id=None,
                 ))
@@ -1639,7 +1639,7 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
                     user_id=user.id,
                     title="⚠️ 订阅成功，会员经验发放失败",
                     content=(f"订单 {subscription_order.order_id} 的订阅已开通，"
-                             f"但会员经验（约 {_xp} 点）累加失败：{exc}。"
+                             f"但会员经验（约 {_xp} 点）累加失败。"
                              "请联系客服补发。"),
                     related_id=None,
                 ))

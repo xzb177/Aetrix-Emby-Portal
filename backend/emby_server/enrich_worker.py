@@ -3618,12 +3618,13 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
         db.commit()
         # 列表去重缓存：刮削回填海报/tmdb_id/简介（只填空）影响去重选主；
         # 逐条提交高频，bump 自带 30s 防抖，实际写库极少。
+        # 非原子窗口：bump 在主 commit 之后，bump 失败只记日志不回滚业务。
         try:
             from backend.emby_server import items_dedup_cache as _idc
             if _idc.bump_library_item_versions(db, [fresh.library_id]):
                 db.commit()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("去重缓存版本号 bump 失败（补全写库）: %s", exc)
         _maybe_flip_inherit_children(db, fetched)
         return outcome
     except Exception as exc:  # noqa: BLE001
@@ -3769,12 +3770,13 @@ def _process_batch(db, batch: list) -> None:
                 outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
                 db.commit()
                 # 列表去重缓存：同上，刮削回填影响去重选主（bump 防抖）。
+                # 非原子窗口：bump 在主 commit 之后，bump 失败只记日志不回滚业务。
                 try:
                     from backend.emby_server import items_dedup_cache as _idc
                     if _idc.bump_library_item_versions(db, [fresh.library_id]):
                         db.commit()
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("去重缓存版本号 bump 失败（批量补全写库）: %s", exc)
                 _maybe_flip_inherit_children(db, fetched)
         except Exception as exc:  # noqa: BLE001
             logger.warning("批量补全写库失败 id=%s: %s", item_id, exc)

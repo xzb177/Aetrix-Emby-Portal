@@ -398,3 +398,13 @@ def test_disabled_path_matches_uncached(seeded, fake_backend, clean_config, monk
     res_cached = api._query_items(_req(params), seeded.user, seeded.db, "http://t")
     assert _ids(res_cached) == _ids(res_plain)
     assert res_cached["TotalRecordCount"] == res_plain["TotalRecordCount"]
+
+    # 名副其实：真的关掉开关（write_config enabled=False），走旧路径，
+    # 结果仍与旧路径逐行一致，且关开关之后不再写任何新缓存键。
+    n_keys_before = len(fake_backend.strings)
+    idc.write_config(seeded.db, enabled=False, ttl_seconds=60, max_entries=2000)
+    seeded.db.commit()
+    res_disabled = api._query_items(_req(params), seeded.user, seeded.db, "http://t")
+    assert _ids(res_disabled) == _ids(res_plain)
+    assert res_disabled["TotalRecordCount"] == res_plain["TotalRecordCount"]
+    assert len(fake_backend.strings) == n_keys_before
