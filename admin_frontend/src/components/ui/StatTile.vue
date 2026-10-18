@@ -85,7 +85,8 @@ const tag = computed(() => (props.to ? RouterLink : 'div'))
   background: var(--au-surface-2);
   /* ui/beautify-20261018：悬停抬升（与验收「无阴影」行的口径冲突见 PR 正文，暂按任务条文实现） */
   transform: translateY(-2px);
-  box-shadow: inset 0 1px 0 rgba(245, 235, 220, 0.06), 0 4px 16px rgba(0, 0, 0, 0.12);
+  /* P3-2：提升阴影走 --au-lift-shadow 单源（A1/A4 裁定保留令牌） */
+  box-shadow: var(--au-card-highlight), var(--au-lift-shadow);
 }
 .au-stat.is-link:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
 

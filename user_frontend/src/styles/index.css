@@ -135,7 +135,7 @@ body.theme-transition *::after {
 .btn-primary {
   background: var(--au-primary);
   color: var(--au-on-primary);
-  /* ui/beautify-20261018：填充按钮 1px 极浅底影（非投影栈，DESIGN.md §4 允许的低平表达） */
+  /* ui/beautify-20261018：填充按钮 1px 极浅底影——发丝级底影，非 §4 所指投影栈 */
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
@@ -191,9 +191,12 @@ body.theme-transition *::after {
   /* ui/beautify-20261018：悬停上浮（DESIGN.md §5-4：只许 transform/opacity；不许加阴影） */
   transition: transform var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease);
 }
-.card:hover {
-  transform: translateY(-2px);
-  border-color: var(--au-border-strong);
+/* P3-5：悬停提升只在桌面（hover 可用 + 精确指针）生效，避免移动端触摸 :hover 粘滞 */
+@media (hover: hover) and (pointer: fine) {
+  .card:hover {
+    transform: translateY(-2px);
+    border-color: var(--au-border-strong);
+  }
 }
 
 

@@ -20,13 +20,8 @@ export default {
           800: '#012f36',
           900: '#01222a',
         },
-        accent: {
-          // 只有一支强调色：紫 / 粉并入琥珀，语义绿降饱和
-          purple: '#e8a84a',
-          pink: '#d4923a',
-          emerald: '#8fbf8a',
-          amber: '#e8a84a',
-        },
+        // P3-1：DESIGN.md「深青 #016a71 是全站唯一彩色」——accent 色板（紫/粉/绿/琥珀）零使用，
+        // 为避免与 DESIGN.md 硬门字面冲突已删除。强调语义只用 primary 家族 / au 语义色。
       },
       fontFamily: {
         // ui/beautify-20261018：走 --au-font-sans 系统字体栈（DESIGN.md §3：不引入 Web 字体）

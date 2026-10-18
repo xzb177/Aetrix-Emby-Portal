@@ -66,7 +66,8 @@ withDefaults(
 .au-section:hover {
   border-color: var(--au-border-strong);
   transform: translateY(-1px);
-  box-shadow: inset 0 1px 0 rgba(245, 235, 220, 0.06), 0 4px 16px rgba(0, 0, 0, 0.12);
+  /* P3-2：提升阴影走 --au-lift-shadow 单源（A1/A4 裁定保留令牌） */
+  box-shadow: var(--au-card-highlight), var(--au-lift-shadow);
 }
 
 .au-section.is-accent { border-color: var(--au-primary-border); }
