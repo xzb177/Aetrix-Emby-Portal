@@ -63,11 +63,14 @@ withDefaults(
   transition: transform var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease),
     box-shadow var(--au-fast) var(--au-ease);
 }
-.au-section:hover {
-  border-color: var(--au-border-strong);
-  transform: translateY(-1px);
-  /* P3-2：提升阴影走 --au-lift-shadow 单源（A1/A4 裁定保留令牌） */
-  box-shadow: var(--au-card-highlight), var(--au-lift-shadow);
+/* P3：悬停提升只在桌面（hover 可用 + 精确指针）生效，避免移动端触摸 :hover 粘滞 */
+@media (hover: hover) and (pointer: fine) {
+  .au-section:hover {
+    border-color: var(--au-border-strong);
+    transform: translateY(-1px);
+    /* P3-2：提升阴影走 --au-lift-shadow 单源（A1/A4 裁定保留令牌） */
+    box-shadow: var(--au-card-highlight), var(--au-lift-shadow);
+  }
 }
 
 .au-section.is-accent { border-color: var(--au-primary-border); }

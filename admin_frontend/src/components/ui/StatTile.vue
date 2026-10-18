@@ -80,13 +80,16 @@ const tag = computed(() => (props.to ? RouterLink : 'div'))
 }
 
 .au-stat.is-link { cursor: pointer; }
-.au-stat.is-link:hover {
-  border-color: var(--au-border-strong);
-  background: var(--au-surface-2);
-  /* ui/beautify-20261018：悬停抬升（与验收「无阴影」行的口径冲突见 PR 正文，暂按任务条文实现） */
-  transform: translateY(-2px);
-  /* P3-2：提升阴影走 --au-lift-shadow 单源（A1/A4 裁定保留令牌） */
-  box-shadow: var(--au-card-highlight), var(--au-lift-shadow);
+/* P3：悬停提升只在桌面（hover 可用 + 精确指针）生效，避免移动端触摸 :hover 粘滞 */
+@media (hover: hover) and (pointer: fine) {
+  .au-stat.is-link:hover {
+    border-color: var(--au-border-strong);
+    background: var(--au-surface-2);
+    /* ui/beautify-20261018：悬停抬升（与验收「无阴影」行的口径冲突见 PR 正文，暂按任务条文实现） */
+    transform: translateY(-2px);
+    /* P3-2：提升阴影走 --au-lift-shadow 单源（A1/A4 裁定保留令牌） */
+    box-shadow: var(--au-card-highlight), var(--au-lift-shadow);
+  }
 }
 .au-stat.is-link:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
 

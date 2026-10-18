@@ -139,8 +139,11 @@ body.theme-transition *::after {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
-.btn-primary:hover {
-  filter: brightness(1.08);
+/* P3：悬停态只在桌面（hover 可用 + 精确指针）生效，避免移动端触摸 :hover 粘滞 */
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover {
+    filter: brightness(1.08);
+  }
 }
 
 /* 主按钮按下态 */
@@ -154,9 +157,11 @@ body.theme-transition *::after {
   color: var(--au-text-2);
 }
 
-.btn-ghost:hover {
-  background: var(--au-surface-2);
-  color: var(--au-text);
+@media (hover: hover) and (pointer: fine) {
+  .btn-ghost:hover {
+    background: var(--au-surface-2);
+    color: var(--au-text);
+  }
 }
 
 /* 键盘焦点：统一走品牌色环（鼠标点击不会出现轮廓） */

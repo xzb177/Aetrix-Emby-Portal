@@ -739,7 +739,7 @@ onBeforeUnmount(() => {
 }
 .app-header.is-scrolled {
   /* ui/beautify-20261018：DESIGN.md §5-7 口径——滚动后才 blur(12px) + 1px #e3e3e2 边框 */
-  /* P3-4：滚动背景色与同文件 --au-chrome（0.96）统一，单源 */
+  /* P3-4：滚动背景色与 aurora.css --au-chrome（0.96）统一，单源 */
   background: var(--au-chrome);
   -webkit-backdrop-filter: saturate(1.4) blur(12px);
   backdrop-filter: saturate(1.4) blur(12px);
