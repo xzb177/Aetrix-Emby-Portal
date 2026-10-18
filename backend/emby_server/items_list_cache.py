@@ -439,6 +439,11 @@ def coalesced_get(db: Session, query_params, lib_ids: list[int],
         with _in_flight_lock:
             cur = _in_flight.get(key)
             if cur is None:
+                if not want_total:
+                    # false 请求永不回填，不许当继任领头（与入口 E-P2-2 同口径）：
+                    # 它当领头做的全量计算写不回去（api.py if _lc_ok and want_total 守卫），
+                    # 还会让 true 等待者白等一轮。
+                    return FlightResult(None, "direct")
                 # key 上无活 slot：自己当领头（继任领头，计 recompute）
                 slot2 = _FlightSlot()
                 _in_flight[key] = slot2

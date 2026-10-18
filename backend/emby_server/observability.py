@@ -405,6 +405,9 @@ def _probe_items_cache() -> dict:
         from backend.emby_server import items_list_cache as ilc
         st = ilc.get_stats()
         hit = st.get("hit", 0) + st.get("coalesced", 0)
+        # 口径说明：coalesced 的等待者复用了领头的写入结果、自己没做全量计算，
+        # 视为缓存服务。这里展示的是"请求级命中率"，与"首访命中率"
+        # hit/(hit+miss) 是两个口径——后者衡量第一次访问的冷启动比例。
         miss = st.get("miss", 0)
         denom = hit + miss
         m = {
