@@ -2643,6 +2643,14 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         position = {item_id: index for index, item_id in enumerate(picked)}
         items.sort(key=lambda item: position.get(item.id, 0))
         total = len(ids) if want_total else len(picked)
+        # 随机分支这里直接返回：它既没走 page_ids 路径（page_ids 在 else 分支
+        # 才定义，继续往下走会 NameError → 500），形态照抄 search 分支。
+        _prefetch_list_data(db, user.id, items)
+        return {
+            "Items": [_item_dto(i, base, user.id, db) for i in items],
+            "TotalRecordCount": total,
+            "StartIndex": start,
+        }
     else:
         # 修复：去重必须在分页之前，否则 Limit=20 可能只返回 2-3 条
         # （第三方播放器靠 TotalRecordCount + 分页加载，去重后数量不对会显示不全）。
@@ -2665,23 +2673,32 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         total = None
         _lc_ok = _list_cache.is_cacheable(
             filters=filters, sort_by=sort_by, has_ids=bool(ids))
-        _lc_libs: list = []
+        _lc_libs: Optional[list] = None   # None=作用域未知，整层 fail-closed
         _lc_versions = None
         if _lc_ok:
-            _lc_libs = _list_cache.scope_lib_ids(db, allowed)
-            # 只在清单缓存开着时预读：开关关时 get/put 内部直接返回，
-            # 预读的一次版本号查询反而是浪费；去重层没拿到预传会自己读。
-            if _list_cache.cache_enabled(db):
-                _lc_versions = _dedup_cache.read_data_versions(db, _lc_libs)
-            _lc_hit = _list_cache.get_cached_page(db, q, _lc_libs,
-                                                  versions=_lc_versions)
-            if _lc_hit is not None and start + limit <= len(_lc_hit.ids):
-                page_ids = _lc_hit.ids[start:start + limit]
-                if want_total:
-                    total = _lc_hit.total
-                else:
-                    has_more = _lc_hit.total > start + limit
-                    total = len(page_ids)
+            # 双缓存都关时连作用域都不读：省一次小查询（r41 口径）
+            if _list_cache.cache_enabled(db) or _dedup_cache.cache_enabled(db):
+                _lc_libs = _list_cache.scope_lib_ids(db, allowed)
+            if _lc_libs is None:
+                # 作用域未知：整层清单缓存 fail-closed，不读不写；
+                # 去重层拿不到预传会走自己的 fail-closed（lib_ids=None → 读失败回 compute() 不写缓存）。
+                # 绝不能拿 [] 充数：[] 与 allowed=set() 的空作用域同键，
+                # DB 抖动时把清单写进去会污染不可见用户。
+                _lc_ok = False
+            else:
+                # 只在清单缓存开着时预读版本号：开关关时 get/put 内部直接返回，
+                # 预读的一次版本号查询反而是浪费；去重层没拿到预传会自己读。
+                if _list_cache.cache_enabled(db):
+                    _lc_versions = _dedup_cache.read_data_versions(db, _lc_libs)
+                _lc_hit = _list_cache.get_cached_page(db, q, _lc_libs,
+                                                      versions=_lc_versions)
+                if _lc_hit is not None and start + limit <= len(_lc_hit.ids):
+                    page_ids = _lc_hit.ids[start:start + limit]
+                    if want_total:
+                        total = _lc_hit.total
+                    else:
+                        has_more = _lc_hit.total > start + limit
+                        total = len(page_ids)
         if page_ids is None:
             # 列表去重缓存（2026-10-18）：dropped 集合按（用户, 查询参数,
             # 各库数据版本）缓存；开关关 / Redis 不可用时逐行走旧路径。

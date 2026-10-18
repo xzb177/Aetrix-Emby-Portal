@@ -94,6 +94,15 @@ class FakeRedis:
             z.pop(k, None)
         return len(doomed)
 
+    def zrem(self, name, *members):
+        z = self.zsets.get(name, {})
+        n = 0
+        for m in members:
+            if m in z:
+                del z[m]
+                n += 1
+        return n
+
 
 def _g():
     return uuid.uuid4().hex
@@ -110,13 +119,15 @@ def fake_backend():
 
 @pytest.fixture()
 def clean_config():
-    """每个用例后清掉本模块的配置行与 store 热缓存（防跨文件污染）。"""
+    """每个用例后清掉本模块与清单模块的配置行与 store 热缓存（防跨文件污染）。"""
     yield
+    from backend.emby_server import items_list_cache as ilc
     db = _test_db()
     try:
         db.query(models.SystemConfig).filter(
             models.SystemConfig.key.in_([
                 idc.CFG_ENABLED, idc.CFG_TTL_SECONDS, idc.CFG_MAX_ENTRIES,
+                ilc.CFG_ENABLED, ilc.CFG_TTL_SECONDS, ilc.CFG_MAX_IDS,
             ])).delete(synchronize_session=False)
         db.query(models.SystemConfig).filter(
             models.SystemConfig.key.like(idc._VERSION_KEY_PREFIX + "%")
@@ -124,7 +135,8 @@ def clean_config():
         db.commit()
     finally:
         db.close()
-    store.invalidate(idc.CFG_ENABLED, idc.CFG_TTL_SECONDS, idc.CFG_MAX_ENTRIES)
+    store.invalidate(idc.CFG_ENABLED, idc.CFG_TTL_SECONDS, idc.CFG_MAX_ENTRIES,
+                     ilc.CFG_ENABLED, ilc.CFG_TTL_SECONDS, ilc.CFG_MAX_IDS)
     idc._reset_bump_state()
 
 
@@ -404,6 +416,12 @@ def test_disabled_path_matches_uncached(seeded, fake_backend, clean_config, monk
     n_keys_before = len(fake_backend.strings)
     idc.write_config(seeded.db, enabled=False, ttl_seconds=60, max_entries=2000)
     seeded.db.commit()
+    # 去重开关与清单开关都要关：清单层开了也会写 items:list:* 键，
+    # 只关去重时断言「不再写任何新缓存键」恒过（旧断言漏洞）。
+    from backend.emby_server import items_list_cache as ilc
+    store.write_values(seeded.db, {ilc.CFG_ENABLED: "false"}, {ilc.CFG_ENABLED: "test"})
+    seeded.db.commit()
+    store.invalidate(ilc.CFG_ENABLED)
     res_disabled = api._query_items(_req(params), seeded.user, seeded.db, "http://t")
     assert _ids(res_disabled) == _ids(res_plain)
     assert res_disabled["TotalRecordCount"] == res_plain["TotalRecordCount"]

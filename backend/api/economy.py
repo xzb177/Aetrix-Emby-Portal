@@ -1589,7 +1589,7 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
                         user_id=_inviter_id,
                         title="⚠️ 邀请返利发放失败",
                         content=(f"订单 {recharge_order.order_id} 的邀请返利"
-                                 f"发放失败：{exc}。请联系服主补发。"),
+                                 f"发放失败。请联系服主补发。"),
                         related_id=None,
                     ))
             pending.append(dict(
