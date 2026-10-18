@@ -1235,9 +1235,35 @@ def poll_once() -> dict:
                 page_token = _get_page_token(db, drive_id)
                 if not page_token:
                     # 首次：只存 token，不触发扫描（下次从这里开始算增量）
-                    token = get_start_page_token(drive_id)
+                    # C-P2-1 同类（2026-10-18）：get_start_page_token 可能抛
+                    # DriveAuthError（个人盘 OAuth 失败）；_save_page_token 的
+                    # db.commit 可能抛异常。逃出会穿透 per-drive 循环、外层
+                    # except 终止本轮剩余所有盘——同样包 try/except + continue。
+                    try:
+                        token = get_start_page_token(drive_id)
+                    except DriveNotFoundError:
+                        # 盘已永久无效：透出给 per-drive try 的同级
+                        # except DriveNotFoundError 打 dead 标记（本嵌套 try
+                        # 在 per-drive try 体内，raise 能被同级接住），不能吞掉
+                        # （否则 dead 盘每轮重试，退避机制失效）。
+                        raise
+                    except Exception as exc:
+                        stats["errors"] += 1
+                        logger.error(
+                            "Drive Changes: drive %s 初始化 page token 获取失败（%s），"
+                            "下轮重试；本轮其余盘继续",
+                            drive_id, exc)
+                        continue
                     if token:
-                        _save_page_token(db, drive_id, token)
+                        try:
+                            _save_page_token(db, drive_id, token)
+                        except Exception as exc:
+                            stats["errors"] += 1
+                            logger.error(
+                                "Drive Changes: drive %s 初始化 page token 保存失败（%s），"
+                                "下轮重试；本轮其余盘继续",
+                                drive_id, exc)
+                            continue
                         logger.info("Drive Changes: drive %s 初始化 page token", drive_id)
                     continue
                 changes, new_token = list_changes(page_token, drive_id)
@@ -1258,15 +1284,53 @@ def poll_once() -> dict:
                 # 增量从新起点继续。不标 dead（配置没问题，只是 token 老了）。
                 # 过期 token 到新 token 之间的变化会遗漏：按既有口径
                 # （"只能等全量扫描兜底"）等全量扫描补回，这里不硬触发。
-                stats["errors"] += 1
-                new_token = get_start_page_token(drive_id)
+                # C-P2-1（2026-10-18）：重取 token 可能抛 DriveAuthError
+                # （个人盘 OAuth 失败）或 _save_page_token 的 db.commit 抛异常；
+                # 逃出本处理器会穿透 per-drive 循环、外层 except 终止本轮剩余
+                # 所有盘——处理器内再包一层 try/except，失败记 error + continue。
+                try:
+                    new_token = get_start_page_token(drive_id)
+                except DriveNotFoundError:
+                    # 盘已永久无效：不能吞成普通 error（否则 dead 退避失效、
+                    # 每轮重试）。注意此处在 except PageTokenExpiredError
+                    # 处理器内部，raise 会穿透 per-drive 整轮 try 直达外层
+                    # except Exception 终止本轮——故直接内联与外层
+                    # except DriveNotFoundError 相同的 dead 标记逻辑。
+                    stats["errors"] += 1
+                    _mark_dead_drive(drive_id)
+                    logger.error(
+                        "Drive Changes: 共享盘 ID 无效 drive=%s（410 恢复时 Drive API 返回 404），"
+                        "请检查 rclone.conf 中对应 remote 的 team_drive 是否写错、"
+                        "共享盘是否被删除、SA 是否有访问权限；"
+                        "该盘已暂停增量发现 %d 小时，之后会自动再试一次",
+                        drive_id, DEAD_DRIVE_RETRY_SEC // 3600,
+                    )
+                    continue
+                except Exception as exc:
+                    stats["errors"] += 1
+                    logger.error(
+                        "Drive Changes: drive %s 的 page token 已过期（410），"
+                        "重新获取失败（%s），下轮重试；本轮其余盘继续",
+                        drive_id, exc)
+                    continue
                 if new_token:
-                    _save_page_token(db, drive_id, new_token)
+                    try:
+                        _save_page_token(db, drive_id, new_token)
+                    except Exception as exc:
+                        stats["errors"] += 1
+                        logger.error(
+                            "Drive Changes: drive %s 的 page token 重新获取成功但"
+                            "保存失败（%s），下轮重试；本轮其余盘继续",
+                            drive_id, exc)
+                        continue
+                    # C-P3-1：成功恢复不计 errors（旧实现无条件 +1，
+                    # 成功恢复的 410 让本轮记 partial/fail）
                     logger.error(
                         "Drive Changes: drive %s 的 page token 已过期（410），"
                         "已重新初始化；过期期间的变化可能遗漏，等全量扫描兜底",
                         drive_id)
                 else:
+                    stats["errors"] += 1
                     logger.error(
                         "Drive Changes: drive %s 的 page token 已过期（410），"
                         "重新获取失败，下轮重试", drive_id)

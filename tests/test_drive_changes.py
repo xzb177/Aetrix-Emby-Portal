@@ -971,3 +971,202 @@ def test_poll_once_page_token_expired_reinits(caplog):
                 if r.levelno >= logging.ERROR and "page token 已过期" in r.getMessage()]
     assert len(err_logs) == 1, "应打一条 error 日志说明 token 已重置"
     assert did in err_logs[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# C 轮修复（2026-10-18，r1507）：410 恢复处理器异常逃逸 / errors 误计
+# ---------------------------------------------------------------------------
+
+def _run_poll_multi(drives, list_changes_effects, gst_effect, db=None):
+    """多盘跑 poll_once，返回 (stats, calls)。
+
+    drives: drive_id 列表；list_changes_effects: drive_id → 返回值或异常；
+    gst_effect: get_start_page_token 的效果（异常/返回值/按盘函数）；
+    db: 可选的 mock db（默认 Mock）。
+    """
+    db = mock.Mock() if db is None else db
+    calls = {"list_changes": [], "gst": []}
+
+    def fake_list_changes(page_token, drive_id):
+        calls["list_changes"].append(drive_id)
+        eff = list_changes_effects[drive_id]
+        if isinstance(eff, Exception):
+            raise eff
+        return eff
+
+    def fake_gst(drive_id):
+        calls["gst"].append(drive_id)
+        if isinstance(gst_effect, Exception):
+            raise gst_effect
+        if callable(gst_effect):
+            return gst_effect(drive_id)
+        return gst_effect
+
+    with mock.patch.object(drive_changes, "discover_drives",
+                           return_value={d: ["MP"] for d in drives}), \
+         mock.patch.object(drive_changes, "_get_page_token",
+                           return_value="old-token"), \
+         mock.patch.object(drive_changes, "list_changes",
+                           side_effect=fake_list_changes), \
+         mock.patch.object(drive_changes, "get_start_page_token",
+                           side_effect=fake_gst), \
+         mock.patch("backend.database.SessionLocal", return_value=db):
+        for d in drives:
+            drive_changes._dead_drives.pop(d, None)
+        try:
+            stats = drive_changes.poll_once()
+        finally:
+            for d in drives:
+                drive_changes._dead_drives.pop(d, None)
+    return stats, calls
+
+
+def _did(prefix):
+    return "%s-%s" % (prefix, uuid.uuid4().hex[:8])
+
+
+def test_poll_once_410_reinit_failure_does_not_kill_other_drives():
+    """C-P2-1：410 恢复处理器内 get_start_page_token 抛 DriveAuthError
+    （个人盘 OAuth 失败）→ 记 error + continue，本轮其余盘继续处理
+    （旧实现逃出 per-drive 循环，外层 except 终止剩余所有盘）。"""
+    did_a, did_b = _did("410A"), _did("410B")
+    stats, calls = _run_poll_multi(
+        [did_a, did_b],
+        {did_a: drive_changes.PageTokenExpiredError("410"),
+         did_b: ([], "new-token-b")},
+        drive_changes.DriveAuthError("oauth boom"))
+    assert calls["list_changes"] == [did_a, did_b], \
+        "driveA 的 410 恢复失败不应中断 driveB"
+    assert calls["gst"] == [did_a], "只有 driveA 需要重取 token"
+    assert stats["drives"] == 2, stats
+    assert stats["errors"] == 1, stats  # driveA 重取失败计 1 次
+
+
+def test_poll_once_410_save_failure_does_not_kill_other_drives():
+    """C-P2-1：_save_page_token 的 db.commit 抛异常同样被处理器内兜住，
+    本轮其余盘继续（driveB 自己的保存失败走既有的映射/入队异常分支）。"""
+    did_a, did_b = _did("410C"), _did("410D")
+    db = mock.Mock()
+    db.commit = mock.Mock(side_effect=RuntimeError("db down"))
+    db.query.return_value.filter.return_value.first.return_value = None
+    stats, calls = _run_poll_multi(
+        [did_a, did_b],
+        {did_a: drive_changes.PageTokenExpiredError("410"),
+         did_b: ([], "new-token-b")},
+        "brand-new-token", db=db)
+    assert calls["list_changes"] == [did_a, did_b], \
+        "driveA 的保存失败不应中断 driveB"
+    assert stats["errors"] == 2, stats  # driveA 保存失败 + driveB 保存失败
+
+
+def test_poll_once_410_recovery_success_not_counted_as_error():
+    """C-P3-1：410 成功恢复不计 errors（旧实现无条件 +1，
+    成功恢复的 410 让本轮记 partial/fail）。"""
+    did = _did("410S")
+    stats, calls = _run_poll_multi(
+        [did],
+        {did: drive_changes.PageTokenExpiredError("410")},
+        "brand-new-token")
+    assert calls["gst"] == [did]
+    assert stats["errors"] == 0, stats
+
+
+def test_poll_once_410_reinit_none_counts_error():
+    """C-P3-1：410 重取返回 None（失败）→ 仍计 1 次 error，下轮重试。"""
+    did = _did("410N")
+    stats, _ = _run_poll_multi(
+        [did],
+        {did: drive_changes.PageTokenExpiredError("410")},
+        None)
+    assert stats["errors"] == 1, stats
+
+
+def test_poll_once_410_reinit_drive_not_found_marks_dead():
+    """410 恢复时 get_start_page_token 抛 DriveNotFoundError（盘已永久无效）
+    → 必须打 dead 标记，不能被处理器内 except Exception 吞掉
+    （否则 dead 盘每轮重试，退避机制失效）。"""
+    did = _did("410DEAD")
+    db = mock.Mock()
+    marked = []
+    gst_calls = []
+    real_mark = drive_changes._mark_dead_drive
+
+    def spy_mark(drive_id):
+        marked.append(drive_id)
+        return real_mark(drive_id)
+
+    def fake_list_changes(page_token, drive_id):
+        raise drive_changes.PageTokenExpiredError("410")
+
+    def fake_gst(drive_id):
+        gst_calls.append(drive_id)
+        raise drive_changes.DriveNotFoundError(drive_id)
+
+    with mock.patch.object(drive_changes, "discover_drives",
+                           return_value={did: ["MP"]}), \
+         mock.patch.object(drive_changes, "_get_page_token",
+                           return_value="old-token"), \
+         mock.patch.object(drive_changes, "list_changes",
+                           side_effect=fake_list_changes), \
+         mock.patch.object(drive_changes, "get_start_page_token",
+                           side_effect=fake_gst), \
+         mock.patch.object(drive_changes, "_mark_dead_drive",
+                           side_effect=spy_mark), \
+         mock.patch("backend.database.SessionLocal", return_value=db):
+        drive_changes._dead_drives.pop(did, None)
+        try:
+            stats = drive_changes.poll_once()
+            assert marked == [did], "DriveNotFoundError 必须触发 dead 标记"
+            assert did in drive_changes._dead_drives, "标记后应在退避表内"
+            assert gst_calls == [did]
+            # 第二轮：退避期内直接跳过，不再调 get_start_page_token
+            drive_changes.poll_once()
+            assert gst_calls == [did], "退避期内第二轮不应再请求 API"
+        finally:
+            drive_changes._dead_drives.pop(did, None)
+    assert stats["errors"] == 1, stats  # dead 标记路径计 1 次
+
+
+def test_poll_once_init_reinit_failure_does_not_kill_other_drives():
+    """C-P2-1 同类（2026-10-18，协调员补修）：首次初始化路径
+   （_get_page_token 为 None）get_start_page_token 抛 DriveAuthError
+    → 记 error + continue，本轮其余盘继续处理
+    （旧实现逃出 per-drive 循环，外层 except 终止剩余所有盘）。"""
+    did_a, did_b = _did("INIT-A"), _did("INIT-B")
+    db = mock.Mock()
+    calls = {"list_changes": [], "gst": []}
+
+    def fake_list_changes(page_token, drive_id):
+        calls["list_changes"].append(drive_id)
+        return ([], "tok-b")
+
+    def fake_gst(drive_id):
+        calls["gst"].append(drive_id)
+        if drive_id == did_a:
+            raise drive_changes.DriveAuthError("oauth boom")
+        return "brand-new-token"
+
+    def fake_get_page_token(db_, drive_id):
+        return None if drive_id == did_a else "old-token"
+
+    with mock.patch.object(drive_changes, "discover_drives",
+                           return_value={d: ["MP"] for d in (did_a, did_b)}), \
+         mock.patch.object(drive_changes, "_get_page_token",
+                           side_effect=fake_get_page_token), \
+         mock.patch.object(drive_changes, "list_changes",
+                           side_effect=fake_list_changes), \
+         mock.patch.object(drive_changes, "get_start_page_token",
+                           side_effect=fake_gst), \
+         mock.patch("backend.database.SessionLocal", return_value=db):
+        for d in (did_a, did_b):
+            drive_changes._dead_drives.pop(d, None)
+        try:
+            stats = drive_changes.poll_once()
+        finally:
+            for d in (did_a, did_b):
+                drive_changes._dead_drives.pop(d, None)
+    assert calls["list_changes"] == [did_b], \
+        "driveA 的初始化失败不应中断 driveB"
+    assert calls["gst"] == [did_a], "只有 driveA 需要初始化 token"
+    assert stats["drives"] == 2, stats
+    assert stats["errors"] == 1, stats  # driveA 初始化失败计 1 次

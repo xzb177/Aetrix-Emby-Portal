@@ -26,7 +26,9 @@
    刮削回填/软删清理/后台解绑——都已在去重缓存的 bump 覆盖内，
    见 :func:`items_dedup_cache.bump_library_item_versions` 调用方）。
    残余缺口（例如运维手工 ORM 改数据不走应用写路径）由条目 TTL 兜底
-   （默认 300s），与去重缓存同一残余口径。
+   （默认 300s）。注意：去重缓存（items_dedup_cache）TTL 默认 60s，
+   与本层不同——两层各有自己的残余窗口（本层最长 300s、去重层最长 60s）；
+   不走版本 bump 的写路径最长可见过期是本层的 300s，不是 60s。
 5. **有界**：只存前 ``max_ids`` 个 id（默认 5000）+ total + 截断标记；
    请求的页窗口超出已存前缀 → 绕行现状路径（深翻页走 DB，不错不错位）。
    Redis string 紧凑二进制（SETEX），条目大小恒有界。
@@ -289,7 +291,10 @@ def _deserialize(raw) -> Optional[CachedPage]:
 # ---------------- 统计（观测用，不影响主路径） ----------------
 
 _STATS_PREFIX = "items:list:stats:"
-_STAT_NAMES = ("hit", "miss", "put", "coalesced")
+# 口径说明（E-P3-3）：miss = 首次未命中当领头（每次 key 缺失恰计一次）；
+# recompute = fail-open 继任重算（领头抛错/超时/没写后等待者自行再算）。
+# hit/(hit+miss) 才是真实"首访命中率"；miss+recompute = 全量计算总次数。
+_STAT_NAMES = ("hit", "miss", "recompute", "put", "coalesced")
 
 
 def _bump_stat(name: str) -> None:
@@ -298,7 +303,7 @@ def _bump_stat(name: str) -> None:
 
 
 def get_stats() -> dict:
-    """读四项计数器（hit/miss/put/coalesced），读不到按 0。"""
+    """读五项计数器（hit/miss/recompute/put/coalesced），读不到按 0。"""
     def _op(c):
         return [c.get(f"{_STATS_PREFIX}{n}") for n in _STAT_NAMES]
 
@@ -343,7 +348,7 @@ _in_flight_lock = threading.Lock()
 
 class FlightResult(NamedTuple):
     page: Optional[CachedPage]
-    mode: str  # "hit" | "leader" | "coalesced" | "disabled"
+    mode: str  # "hit" | "leader" | "coalesced" | "direct" | "disabled"
     slot_key: Optional[str] = None
     slot: Optional[_FlightSlot] = None
 
@@ -367,7 +372,8 @@ def _read_page(key: str) -> Optional[CachedPage]:
 
 def coalesced_get(db: Session, query_params, lib_ids: list[int],
                   versions: Optional[dict] = None,
-                  wait_seconds: Optional[float] = None) -> FlightResult:
+                  wait_seconds: Optional[float] = None,
+                  want_total: bool = True) -> FlightResult:
     """读缓存；miss 时做进程内 singleflight 合并。
 
     返回 FlightResult：
@@ -375,6 +381,10 @@ def coalesced_get(db: Session, query_params, lib_ids: list[int],
     - mode="leader"：你是领头，调用方负责计算；计算结束（无论成功/抛错）
       必须经 :func:`leader_slot` 上下文释放 slot；
     - mode="coalesced"：等待者复用了领头的写入结果，用 ``page``；
+    - mode="direct"：未注册直算——调用方自行计算，不触碰 ``_in_flight``，
+      :func:`leader_slot` 对该模式是空操作。两种情形：① want_total=false
+      的请求（永不回填，不许当领头）；② 等待预算耗尽时仍有活领头
+      （fail-open，不与别人的等待链互相干扰）；
     - mode="disabled"：开关关 / TTL<=0，按旧路径。
 
     等待期间不持有、不使用 DB 会话。
@@ -387,9 +397,16 @@ def coalesced_get(db: Session, query_params, lib_ids: list[int],
         _bump_stat("hit")
         return FlightResult(page, "hit")
     wait = SINGLEFLIGHT_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    t0 = time.monotonic()
     with _in_flight_lock:
         slot = _in_flight.get(key)
         if slot is None:
+            if not want_total:
+                # E-P2-2：false 请求只做 waiter/直读——miss 且 key 上无领头时
+                # 不建 slot，直接自己算（不注册领头）。false 永不回填
+                # （调用方 ``if _lc_ok and want_total`` 已保证），它当领头
+                # 会让 true 请求白等 5~16s 再 miss 重算（比 PR 前更慢）。
+                return FlightResult(None, "direct")
             slot = _FlightSlot()
             _in_flight[key] = slot
             leader = True
@@ -404,19 +421,35 @@ def coalesced_get(db: Session, query_params, lib_ids: list[int],
             return FlightResult(page, "hit")
         _bump_stat("miss")
         return FlightResult(None, "leader", key, slot)
-    # 等待者：有界等待领头写入；等待本身只 block 线程，不碰 DB
-    slot.event.wait(wait)
-    page = _read_page(key)
-    if page is not None:
-        _bump_stat("coalesced")
-        return FlightResult(page, "coalesced")
-    # 超时 / 领头抛错 / 领头没写（例如 want_total=false 不回填）：
-    # 自己算，fail-open。换一个新 slot，避免和旧领头互相干扰。
-    with _in_flight_lock:
-        slot2 = _FlightSlot()
-        _in_flight[key] = slot2
-    _bump_stat("miss")
-    return FlightResult(None, "leader", key, slot2)
+    # 等待者：有界等待领头写入；等待本身只 block 线程，不碰 DB。
+    # 总预算 wait 秒（E-P2-1 惊群修：带剩余预算重查，见下）。
+    while True:
+        remaining = wait - (time.monotonic() - t0)
+        if remaining <= 0:
+            break
+        slot.event.wait(remaining)
+        page = _read_page(key)
+        if page is not None:
+            _bump_stat("coalesced")
+            return FlightResult(page, "coalesced")
+        # 超时 / 领头抛错 / 领头没写（want_total=false 的 direct 直算不写）：
+        # 先看有没有别人活着的 slot（E-P2-1：fail-open 惊群修）。
+        # 多个等待者同时被唤醒、各自覆盖安装都算一次就是惊群——
+        # herd_probe 实证：1 领头抛错 + 6 等待者 → 7 次全量计算。
+        with _in_flight_lock:
+            cur = _in_flight.get(key)
+            if cur is None:
+                # key 上无活 slot：自己当领头（继任领头，计 recompute）
+                slot2 = _FlightSlot()
+                _in_flight[key] = slot2
+                _bump_stat("recompute")
+                return FlightResult(None, "leader", key, slot2)
+            slot = cur
+        # 有别人的活 slot（即使恰是自己正在等的）：转为它的等待者
+        # （剩余预算内，不无限等）
+    # 预算耗尽但仍有活领头：fail-open，直算不注册——
+    # 不干扰别人的等待链，也不制造第二个注册领头。
+    return FlightResult(None, "direct")
 
 
 def finish_compute(slot_key: Optional[str],
@@ -434,7 +467,7 @@ def finish_compute(slot_key: Optional[str],
 def leader_slot(flight: Optional[FlightResult]):
     """领头计算槽：with 块退出时（成功/抛错都一样）必清理标记、唤醒等待者。
 
-    非领头（hit/coalesced/disabled/None）时是空操作。
+    非领头（hit/coalesced/direct/disabled/None）时是空操作。
     """
     try:
         yield flight

@@ -118,23 +118,44 @@ def test_video_stream_source_has_no_google_direct_call():
     分两处写法（快路径：存在性校验通过后直接 302，跳过步行；回落分支：
     快路径未命中时保留原语义），但判定门（开关）与 URL 来源
     （``drive_usercontent_download_url``）是同一套，不许新增别的直链入口。
-    全局只许这三处，别的直链入口一律不许出现。
     用 AST 取**真实代码**（注释里可以继续解释）。
+    A-P3-4（2026-10-18）：不再纯计数——**每处** 302 的 URL 来源表达式必须
+    ∈ 白名单集合，第 4 处出现时若来源不在白名单即红。
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(api.video_stream)))
     code = ast.unparse(ast.Module(body=tree.body, type_ignores=[]))
     assert "try_google_direct_url" not in code
     assert "target.direct" not in code
-    if "status_code=302" in code:
-        assert "maybe_direct_url" in code, "302 必须经播放策略能力判定"
-        assert code.count("RedirectResponse(") == 3, (
-            "播放路径只许三处 302（drive 快路径 + drive 回落 + 对象存储）")
-        assert "RedirectResponse(direct_url" in code, (
-            "302 的 URL 只能来自 maybe_direct_url 的返回值")
+    # 白名单：每处 302 第一个位置参数（URL 来源表达式）的源码文本
+    _WHITELIST_302_URL_SOURCES = {
+        "drive_usercontent_download_url(_fid)",  # Drive 直链（快路径 + 回落）
+        "direct_url",  # 对象存储签名直链（← _strategy.maybe_direct_url）
+    }
+    sources = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = getattr(func, "attr", None) or getattr(func, "id", None)
+        if name != "RedirectResponse":
+            continue
+        is_302 = any(
+            kw.arg == "status_code"
+            and getattr(kw.value, "value", None) == 302
+            for kw in node.keywords)
+        if not is_302 or not node.args:
+            continue
+        sources.append(ast.unparse(node.args[0]))
+    assert sources, "video_stream 里应有 302（Drive 直链/对象存储）"
+    for src in sources:
+        assert src in _WHITELIST_302_URL_SOURCES, (
+            f"302 的 URL 来源不在白名单: {src!r}（白名单: "
+            f"{sorted(_WHITELIST_302_URL_SOURCES)}）")
+    # 配套判定门：Drive 直链 302 必须经开关 + 统一 URL 入口
+    if any("drive_usercontent_download_url" in s for s in sources):
         assert "drive_direct_play_enabled" in code, (
             "Drive 直链 302 必须经 drive_direct_play_enabled 开关判定")
-        assert "drive_usercontent_download_url" in code, (
-            "Drive 直链 302 的 URL 必须来自 drive_auth 的统一入口")
+        assert "maybe_direct_url" in code, "对象存储 302 必须经播放策略能力判定"
 
 
 def test_module_no_longer_imports_direct_url():

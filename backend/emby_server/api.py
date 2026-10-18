@@ -20,6 +20,7 @@ import os
 import random
 import secrets
 import shutil
+import threading
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -2718,7 +2719,8 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                 # fail-closed（本分支根本到不了这里），空集合与 None 分键
                 # 由 scope_lib_ids 保证。
                 _lc_flight = _list_cache.coalesced_get(db, q, _lc_libs,
-                                                       versions=_lc_versions)
+                                                       versions=_lc_versions,
+                                                       want_total=want_total)
                 _lc_hit = _lc_flight.page
                 if _lc_hit is not None and start + limit <= len(_lc_hit.ids):
                     page_ids = _lc_hit.ids[start:start + limit]
@@ -2729,7 +2731,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                         total = len(page_ids)
                 _mark("cache_get")
         if _seg["scope_versions"] == 0.0:
-            # 不可缓存请求（is_cacheable=False）：上面没走作用域分支，补记
+            # 不可缓存请求（is_cacheable=False）：上面没走作用域分支。
+            # 纯观测修正：用独立计时起点——函数入口以来的参数解析时间
+            # 不再记到 scope_versions 名下。
+            _t = time.perf_counter()
             _mark("scope_versions")
         if page_ids is None:
             with _list_cache.leader_slot(_lc_flight):  # singleflight 领头槽：退出时（成功/抛错）必释放标记、唤醒等待者；非领头时空操作
@@ -3499,11 +3504,84 @@ def mark_unplayed(item_id: str, user_id: str,
 #: 并发上限写成常量可调：环境变量 DRIVE_EXISTS_CHECK_WORKERS（默认 16）。
 #: 16 线程 × 单次 ≤3s 超时：50 并发各 1 次 files.get（典型 0.1–0.5s）
 #: 无排队压力；线程只跑网络等待，不碰 DB。
-_DRIVE_EXISTS_CHECK_WORKERS = max(
-    1, int(os.environ.get("DRIVE_EXISTS_CHECK_WORKERS", "16") or "16"))
+def _drive_exists_workers() -> int:
+    """DRIVE_EXISTS_CHECK_WORKERS 解析：非法值（非整数）记 warning 后回落 16。
+
+    P2-2（2026-10-18）：旧实现在模块 import 期直接 int(...)，env="abc"
+    时整个 api 模块导入失败、服务起不来。解析函数化后非法值只回落默认值。
+    """
+    raw = (os.environ.get("DRIVE_EXISTS_CHECK_WORKERS", "16") or "16").strip()
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("DRIVE_EXISTS_CHECK_WORKERS 非法值 %r，回落默认 16", raw)
+        return 16
+    return max(1, n)
+
+
+_DRIVE_EXISTS_CHECK_WORKERS = _drive_exists_workers()
 _DRIVE_EXISTS_EXECUTOR = ThreadPoolExecutor(
     max_workers=_DRIVE_EXISTS_CHECK_WORKERS,
     thread_name_prefix="drive-exists")
+#: 共享 httpx.Client（P2-1，2026-10-18）：顶层 httpx.get 每次新建 TCP+TLS
+#: 握手（压测 drive_exists_check p50=1097ms 有握手放大器在内）；
+#: httpx.Client 线程安全，16 执行器线程可共享连接。懒初始化——
+#: 进程 fork 前不建连接。模块内「共享 HTTP client」只这一套（横切只许一套）。
+_shared_drive_exists_client: "Optional[httpx.Client]" = None
+_drive_exists_client_lock = threading.Lock()
+
+
+def _drive_exists_client() -> httpx.Client:
+    """存在性校验的共享 client（懒单例，双重检查锁）。"""
+    global _shared_drive_exists_client
+    if _shared_drive_exists_client is None:
+        with _drive_exists_client_lock:
+            if _shared_drive_exists_client is None:
+                _shared_drive_exists_client = httpx.Client(
+                    timeout=_DRIVE_EXISTS_TIMEOUT)
+    return _shared_drive_exists_client
+
+
+def _drive_exists_http_get(url, *, params, headers, timeout):
+    """经共享 client 的 files.get（线程安全；测试桩点）。"""
+    return _drive_exists_client().get(
+        url, params=params, headers=headers, timeout=timeout)
+
+
+#: files.get 存在性正缓存（P2-3，2026-10-18）：(drive_id, file_id) → 到期时间戳。
+#: 播放器重试/连播时同文件被反复播放，免掉重复的 Drive API 调用（省配额）。
+#: 只存"文件存在"的断言（到期时间即断言），不存任何用户数据/凭据；
+#: 存在性判定不依赖 token 值——SA 轮换/换取不影响缓存有效性，无需失效。
+#: 404 不缓存（文件删后恢复应可播）；401/超时/5xx 等异常不缓存
+#: （401 毒化失效依赖每次真实判定；异常结果不值得信任）。
+_DRIVE_EXISTS_CACHE_TTL = 60.0
+_drive_exists_cache: dict = {}
+_drive_exists_cache_lock = threading.Lock()
+
+
+def _drive_exists_cache_hit(drive_id: str, file_id: str) -> bool:
+    """正缓存命中（60s 内已判定存在）→ True；否则 False。"""
+    now = time.monotonic()
+    key = (drive_id, file_id)
+    with _drive_exists_cache_lock:
+        exp = _drive_exists_cache.get(key)
+        if exp is not None:
+            if exp > now:
+                return True
+            del _drive_exists_cache[key]
+    return False
+
+
+def _drive_exists_cache_put(drive_id: str, file_id: str) -> None:
+    """files.get 200 后写入正缓存（只在成功路径调用）。"""
+    with _drive_exists_cache_lock:
+        if len(_drive_exists_cache) > 10000:
+            # 防无限增长：清掉已过期条目（常态字典很小，不触发）
+            now = time.monotonic()
+            for k in [k for k, e in _drive_exists_cache.items() if e <= now]:
+                del _drive_exists_cache[k]
+        _drive_exists_cache[(drive_id, file_id)] = (
+            time.monotonic() + _DRIVE_EXISTS_CACHE_TTL)
 #: 单次 files.get 超时（秒）：只做存在性判定，不许引入新的长等待。
 _DRIVE_EXISTS_TIMEOUT = 3.0
 _DRIVE_FILE_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
@@ -3554,17 +3632,23 @@ def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
     404 抛 _DriveFileGone；其他失败抛 _DriveFileUnavailable。永不碰 db。
     凭据走 ``drive_changes.get_token_for_drive``（全项目唯一入口，含
     个人盘 OAuth 与共享盘 SA 轮换）；401 时按 token 值失效内外两层缓存。
+    60s 正缓存命中时直接返回（A-P2-3）；404 不缓存。
     """
     from backend.emby_server import drive_auth, drive_changes
+    if _drive_exists_cache_hit(drive_id, file_id):
+        return
     try:
         token = drive_changes.get_token_for_drive(drive_id)
     except drive_changes.DriveAuthError as exc:
-        raise _DriveFileUnavailable(f"Drive 凭据失效：{exc}") from exc
+        # P3-2（2026-10-18）：503 detail 脱敏——不把 DriveAuthError 原文
+        # （可能含 rclone remote 名/刷新异常堆栈等实现细节）插进用户可见的
+        # 503 detail；只留粗分类。异常链（from exc）保留，服务端日志仍可查。
+        raise _DriveFileUnavailable("Drive 凭据失效") from exc
     if not token:
         raise _DriveFileUnavailable("无可用 Drive 凭据")
     url = _DRIVE_FILE_GET_URL.format(file_id=file_id)
     try:
-        resp = httpx.get(
+        resp = _drive_exists_http_get(
             url,
             params={"supportsAllDrives": "true", "fields": "id"},
             headers={"Authorization": f"Bearer {token}"},
@@ -3580,6 +3664,8 @@ def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
         raise _DriveFileUnavailable("Drive 凭据失效（401）")
     if resp.status_code != 200:
         raise _DriveFileUnavailable(f"files.get 返回 {resp.status_code}")
+    # 200：文件存在 → 写入正缓存（404/401/异常路径不缓存）
+    _drive_exists_cache_put(drive_id, file_id)
 
 
 async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
@@ -3597,6 +3683,10 @@ async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
       注意：旧步行把「列目录失败」（超时/5xx）也归成 MountError→404；
       新语义改成 503 是有意修正——瞬时故障不应读成「文件没了」
       （客户端拿到 404 可能丢弃条目，503 才是可重试信号）。
+    - 文件改名/移动：旧步行按路径找、路径没了 → 404；新逻辑以
+      drive_file_id 为锚（files.get 直接按 id 查），照样 302 可播——
+      这是既定方向（网盘直挂：文件身份以 drive_file_id 为锚）带来的
+      改进，不是 bug，后人别把它"修"回去。
     """
     from backend.emby_server.async_db import run_db
     drive_id = await run_db(_drive_mount_id_for_item, db, item)

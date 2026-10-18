@@ -36,6 +36,7 @@
 | sa_quota   | SA 数量（不打 API）                   | drive_auth.sa_count（文件清单缓存）|
 | workers    | 后台线程存活                          | worker_registry.snapshot    |
 | api        | P50/P99/错误率（进程内）              | 本模块环形缓冲              |
+| items_cache| ID 清单缓存命中率                     | items_list_cache.get_stats  |
 """
 from __future__ import annotations
 
@@ -394,6 +395,34 @@ def _probe_api() -> dict:
         return _warn("api", "API 指标读取失败")
 
 
+def _probe_items_cache() -> dict:
+    """ID 清单缓存命中率（E-P3-2，2026-10-18）。
+
+    只读 items_list_cache 的 Redis 计数器（hit/miss/recompute/put/
+    coalesced），不读不写业务数据。计数器读不到按 0（get_stats 已保证）。
+    """
+    try:
+        from backend.emby_server import items_list_cache as ilc
+        st = ilc.get_stats()
+        hit = st.get("hit", 0) + st.get("coalesced", 0)
+        miss = st.get("miss", 0)
+        denom = hit + miss
+        m = {
+            "hit": st.get("hit", 0),
+            "coalesced": st.get("coalesced", 0),
+            "miss": miss,
+            "recompute": st.get("recompute", 0),
+            "put": st.get("put", 0),
+            "hit_ratio": (hit / denom) if denom else None,
+        }
+        if not denom:
+            return _ok("items_cache", m, "暂无请求（计数器未累计）")
+        return _ok("items_cache", m, f"清单缓存命中率 {m['hit_ratio']:.0%}")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("items_cache 探针失败: %s", exc)
+        return _warn("items_cache", "缓存计数器读取失败")
+
+
 # 探针注册表：key → 函数（新增子系统只加一行）
 _PROBES = [
     ("database", _probe_database),
@@ -405,6 +434,7 @@ _PROBES = [
     ("scan", _probe_scan),
     ("sa_quota", _probe_sa_quota),
     ("api", _probe_api),
+    ("items_cache", _probe_items_cache),
 ]
 
 
