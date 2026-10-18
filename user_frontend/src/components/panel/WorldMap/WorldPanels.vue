@@ -41,25 +41,24 @@ defineProps<{
 
 <style scoped>
 .world-panels {
-  position: absolute;
-  inset: 0;
-  z-index: 30;
-  pointer-events: none;
+  position: static;
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+  pointer-events: auto;
 }
 .world-panels .feed,
 .world-panels .quest {
   pointer-events: auto;
 }
 .feed {
-  position: absolute;
-  left: 1.53cqw;
-  bottom: 1.53cqw;
-  width: 21.39cqw;
+  position: static;
+  flex: 1 1 0;
+  width: auto;
   background: var(--paper-card-soft);
   border: 1px solid var(--paper-hairline);
   border-radius: 1.11cqw;
   padding: 0.97cqw 1.11cqw;
-  z-index: 30;
 }
 
 .feed h4 {
@@ -97,15 +96,13 @@ defineProps<{
 }
 
 .quest {
-  position: absolute;
-  right: 1.53cqw;
-  bottom: 1.53cqw;
-  width: 19.72cqw;
+  position: relative;
+  flex: 1 1 0;
+  width: auto;
   background: var(--paper-card-soft);
   border: 1px solid var(--paper-hairline);
   border-radius: 1.11cqw;
   padding: 0.97cqw 1.11cqw;
-  z-index: 30;
 }
 
 .quest .stamp-done { position: absolute; top: -11px; right: 12px; transform: rotate(-6deg); border: 2px solid #D9482B; color: #D9482B; background: rgba(255,253,246,.92); border-radius: 6px; padding: 2px 9px; font-size: 11px; font-weight: 600; letter-spacing: 1px; }

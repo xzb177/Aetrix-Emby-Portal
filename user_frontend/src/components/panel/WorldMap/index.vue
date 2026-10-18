@@ -5,7 +5,8 @@
       <div class="m-goal-bar"><i :style="{ width: questPercent + '%' }"></i></div>
     </div>
 
-    <div class="world" v-if="!isMobile">
+    <div class="world-col" v-if="!isMobile">
+      <div class="world">
       <div class="hud">
         <span class="brand">Aetrix<b>.</b></span>
         <span class="worldname">🗺 探险世界</span>
@@ -44,6 +45,7 @@
         :selected-key="selectedKey"
         :select-facility="selectFacility"
       />
+      </div>
       <WorldPanels
         :feed-items="feedItems"
         :feed-state="feedState"
@@ -818,13 +820,18 @@ onUnmounted(() => {
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--paper-ink-deep);
 }
-.world {
+.world-col {
   position: relative;
   width: min(1120px, 94vw);
+  margin: 0 auto;
+  container-type: inline-size;
+}
+.world {
+  position: relative;
+  width: 100%;
   aspect-ratio: 1568 / 882;
   overflow: hidden;
   background: var(--paper-canvas);
-  container-type: inline-size;
   flex: 0 0 auto;
   border: 1px solid var(--paper-hairline);
   border-radius: 18px;
@@ -863,9 +870,8 @@ onUnmounted(() => {
   display: block;
   padding: 16px 0;
 }
-.world-root.is-game .world {
+.world-root.is-game .world-col {
   width: min(1500px, 94vw);
-  margin: 0 auto;
 }
 /* HUD */
 .hud {
