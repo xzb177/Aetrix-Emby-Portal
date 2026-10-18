@@ -54,7 +54,7 @@
       <span class="name">观影碑</span>
       <span class="sub">{{ subs.stele }}</span>
     </button>
-    <button type="button" class="mark m-board" style="left: 22%; top: 82.5%;" @click="on.board" aria-label="告示牌">
+    <button type="button" class="mark m-board" style="left: 27%; top: 82.5%;" @click="on.board" aria-label="告示牌">
       <AnchorArt art="board" class="pin art-board" />
       <span class="name">告示牌</span>
       <span class="sub">{{ subs.board }}</span>
