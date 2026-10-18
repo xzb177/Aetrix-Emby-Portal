@@ -271,6 +271,8 @@ def test_version_bump_invalidates(fake_backend, clean_config):
         db.commit()
         v = idc.read_data_versions(db, [1])[1]
         assert v != "0"
+        # 毫秒级版本号（跨进程同秒双 bump 不丢失效）
+        assert int(v) > 10 ** 12
         # 版本变了 → 旧条目键对不上 → miss
         assert idc.get_cached_dropped(db, 7, {"a": "1"}, [1]) is None
     finally:
