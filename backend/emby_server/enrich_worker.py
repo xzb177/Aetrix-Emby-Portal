@@ -835,6 +835,9 @@ def _note_enrich_batch_feed(db, batch: list) -> None:
                              _em.MediaItem.enrich_status == "done")
                      .all())
         if not done_rows:
+            # SELECT 已打开事务：无补全条目可写时回滚，避免连接以
+            # idle-in-transaction 状态占着池位等到下一轮 _claim_batch 才被收掉。
+            db.rollback()
             return
         first = done_rows[0]
         lib_id = first[2]
