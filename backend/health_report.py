@@ -45,9 +45,12 @@ DOWN_QUEUE_BACKLOG = 500            # 补全队列堆积超过这个数就是处
 def _count(db, item_type: str, status: str) -> int:
     from backend.emby_server import models as em
     try:
+        # 假数字修复（2026-10-19 系统清点 F7）：只数真实条目——合并副本
+        # （merged_into_id 非空）按设计不参与探测，与同文件 _enrich_count 对齐
         return db.query(func.count(em.MediaItem.id)).filter(
             em.MediaItem.item_type == item_type,
             em.MediaItem.probe_status == status,
+            em.MediaItem.merged_into_id.is_(None),
         ).scalar() or 0
     except Exception as exc:  # noqa: BLE001 — 统计失败不该让健康检查 500
         logger.debug("统计 probe %s 失败: %s", status, exc)
