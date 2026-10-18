@@ -3114,6 +3114,65 @@ def get_item_detail(
                      auth_qs=_url_auth_qs(db, request, user, item.guid))
 
 
+_FAMILY_BFS_MAX_DEPTH = 8
+
+
+def _family_series_ids(db: Session, show: em.MediaItem) -> set:
+    """认亲：沿 merged_into_id 反向 BFS 找「分身行」，组装本剧的家族 series_id 集合。
+
+    背景（生产实证）：一部剧在库里常有多个 series 行——露面行
+    （merged_into_id 为空）+ 若干被合并隐藏的分身行（merged_into_id 指向
+    露面行，可多层）。真集常挂在分身的季下；而 get_episodes 的
+    find_duplicate_ids 按「同库 + tmdb 相同，或同库 + 归一化名相同 +
+    年份 ±1」认亲——分身名带年份后缀「(2024)」时归一化后多了数字，
+    对不上（生产实测 3,747 部受此影响），导致带露面季 SeasonId 的
+    Episodes 请求归零（真集 parent 指向分身季）。
+
+    口径（与生产实测口径对齐）：
+    - 从 show.id 出发，沿 merged_into_id 反向 BFS（item_type='series'、
+      deleted_at IS NULL），visited 防环，层数上限防御；
+    - 成员准入只对**露面行**判定：与露面行同 library_id，且
+      （tmdb_id 非空且相等，或 dedup.normalize_name(name) 相等）。
+      不链式放宽：B 只像 A、不像露面行时，B 不入集；
+    - 露面行本身无条件入集；非 series 的 show 只返回 {show.id}。
+    """
+    family = {show.id}
+    if show.item_type != "series":
+        return family
+    show_norm = dedup_lib.normalize_name(show.name)
+    show_tmdb = (show.tmdb_id or "").strip()
+    visited = {show.id}
+    frontier = [show.id]
+    for _ in range(_FAMILY_BFS_MAX_DEPTH):
+        if not frontier:
+            break
+        children = (
+            db.query(em.MediaItem)
+            .filter(
+                em.MediaItem.merged_into_id.in_(frontier),
+                em.MediaItem.item_type == "series",
+                em.MediaItem.deleted_at.is_(None),
+            )
+            .all()
+        )
+        frontier = []
+        for child in children:
+            if child.id in visited:
+                continue
+            visited.add(child.id)
+            frontier.append(child.id)
+            # 准入只对露面行判定：BFS 继续穿过所有分身行（孙行可能直接像露面行），
+            # 但只有像露面行的行才入集。
+            if child.library_id != show.library_id:
+                continue
+            child_tmdb = (child.tmdb_id or "").strip()
+            if show_tmdb and child_tmdb and show_tmdb == child_tmdb:
+                family.add(child.id)
+            elif show_norm and dedup_lib.normalize_name(child.name) == show_norm:
+                family.add(child.id)
+    return family
+
+
 def _season_belongs_to(season: em.MediaItem, show: em.MediaItem) -> bool:
     """这个 season 是不是 show 自己的季（show 可能是 series，也可能本身是 season）
 
@@ -3136,9 +3195,21 @@ def get_seasons(item_id: str, request: Request,
                       user: models.WebUser = Depends(get_emby_user),
                       db: Session = Depends(get_db)):
     item = _require_visible_item(db, user, item_id)
+    # 合并家族认亲：分身行名下的季也属于本剧（分身名带年份后缀时
+    # find_duplicate_ids 的归一化认亲对不上，真集常挂在分身的季下）。
+    # 只列 canonical 季：已被合并到别的季的分身季（merged_into_id 非空）不重复列出。
+    if item.item_type == "series":
+        series_ids = list(set([item.id] + dedup_lib.find_duplicate_ids(
+            db, item.library_id, "series",
+            tmdb_id=item.tmdb_id, name=item.name,
+            year=item.production_year,
+        )) | _family_series_ids(db, item))
+    else:
+        series_ids = [item.id]
     seasons = (
         db.query(em.MediaItem)
-        .filter(em.MediaItem.series_id == item.id, em.MediaItem.item_type == "season")
+        .filter(em.MediaItem.series_id.in_(series_ids), em.MediaItem.item_type == "season",
+                em.MediaItem.merged_into_id.is_(None))
         .order_by(em.MediaItem.season_number)
         .all()
     )
@@ -3163,6 +3234,9 @@ def get_episodes(item_id: str, request: Request,
             year=item.production_year,
         )
         series_ids = list(set(series_ids + dup_ids))
+        # 合并家族认亲（见 _family_series_ids）：分身行即使归一化名对不上，
+        # 其名下真集也应可达
+        series_ids = list(set(series_ids) | _family_series_ids(db, item))
     query = db.query(em.MediaItem).filter(
         or_(em.MediaItem.series_id.in_(series_ids), em.MediaItem.parent_id == item.id),
         em.MediaItem.item_type == "episode",
@@ -3171,7 +3245,15 @@ def get_episodes(item_id: str, request: Request,
     )
     if season_id:
         season = db.query(em.MediaItem).filter(em.MediaItem.guid == season_id).first()
-        if season and _season_belongs_to(season, item):
+        # 家族季视为属于本剧：分身行名下的季（series_id ∈ series_ids）正常按
+        # parent_id 过滤，不再掉进下面的兜底。_season_belongs_to 本身不改。
+        family_season = (
+            item.item_type == "series"
+            and season is not None
+            and season.item_type == "season"
+            and season.series_id in series_ids
+        )
+        if season and (_season_belongs_to(season, item) or family_season):
             query = query.filter(em.MediaItem.parent_id == season.id)
         else:
             # 客户端带了不属于本剧的 SeasonId（缓存串了、或集数列表被别处复用）。
