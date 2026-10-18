@@ -483,6 +483,7 @@ def _derive_activity(db: Session, health: dict | None = None) -> list:
     health 由调用方传入（panel_pulse 只调一次 _collect_health），避免重复全量聚合。
     """
     lines = []
+    degraded = False  # r46：任一数据源抛异常即置位，不再用"一切正常"掩盖未知
     # 优先读埋点表
     try:
         rows = db.query(models.PanelActivity).order_by(
@@ -490,7 +491,8 @@ def _derive_activity(db: Session, health: dict | None = None) -> list:
         if rows:
             return [{"text": r.text, "at": r.created_at.isoformat()} for r in rows]
     except Exception:  # noqa: BLE001
-        pass
+        degraded = True
+        logger.exception("panel 活动埋点表读取失败")
     # 推导版：从 health 快照推（调用方传入；无快照则跳过推导）
     try:
         h = health or {}
@@ -512,9 +514,11 @@ def _derive_activity(db: Session, health: dict | None = None) -> list:
             if msg:
                 lines.append(msg[:60])
     except Exception:  # noqa: BLE001
-        pass
+        degraded = True
+        logger.exception("panel 活动 health 推导失败")
     if not lines:
-        lines.append("服务器运行中，一切正常")
+        # r46：数据源异常时不谎报"一切正常"（未知≠正常）
+        lines.append("活动状态暂不可用" if degraded else "服务器运行中，一切正常")
     # 凌晨单集刮削预告
     now = _now_local_naive()
     if now.hour < 2:

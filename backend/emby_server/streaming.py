@@ -57,6 +57,7 @@ def _drive_alt_media_file_id(url: str) -> Optional[str]:
     return None
 
 
+def _drive_403_error_reason(body) -> tuple:
     """解析 Google Drive API 403 错误体，返回 (reason, message)；解析失败返回 ("", "")，永不抛异常。"""
     try:
         import json  # 局部导入，兼容文件内既有风格

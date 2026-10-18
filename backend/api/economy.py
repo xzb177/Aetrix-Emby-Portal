@@ -42,7 +42,7 @@ from backend.database import get_db
 from backend.api.user import get_current_user
 from backend.ratelimit import check_rate_limit, client_ip
 from backend.security import resolve_jwt_user_id
-from backend.notifications import AdminEvent, notify_admin_event
+from backend.notifications import AdminEvent, notify_admin_event_quiet
 from backend.tg_bind import require_tg_bound
 
 logger = logging.getLogger(__name__)
@@ -540,8 +540,11 @@ async def do_checkin(
         title = "📅 签到成功"
         content = (f"已连续签到 {award['streak']} 天。积分奖励仅限公益服用户。")
         message = f"签到成功（连续 {award['streak']} 天，积分仅限公益服用户）"
-    await notify_admin_event(
+    # r46：签到积分已落库，通知走 quiet 守卫——失败只记日志不抛 500，
+    # 避免用户看到 500 重试时被"今天已经签到过啦"误导（已完成写成失败）。
+    await notify_admin_event_quiet(
         event_type="economy.checkin",
+        log_ctx=f"checkin user_id={user_id}",
         user_id=user_id,
         title=title,
         content=content,
@@ -890,8 +893,11 @@ async def redeem_exchange_code(
 
     result = await run_in_threadpool(_redeem_exchange_core, db, current_user, req.code)
 
-    await notify_admin_event(
+    # r46：兑换已落库（权益已发放），通知走 quiet 守卫——失败只记日志不抛 500，
+    # 避免用户重试时被"兑换码已使用"误导（已完成写成失败）。
+    await notify_admin_event_quiet(
         event_type="economy.redeem",
+        log_ctx=f"redeem user_id={user_id}",
         user_id=user_id,
         title="🎁 兑换成功",
         content=result["message"],
@@ -1662,11 +1668,10 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
 
 async def send_fulfill_notifications(pending: list) -> None:
     """履约事务提交之后发送站内信（失败只记日志，不影响已到账的订单）"""
+    # r46：内联 try/except 并入统一 quiet 守卫（横切只许一套）。
     for item in pending or []:
-        try:
-            await notify_admin_event(**item)
-        except Exception as exc:  # noqa: BLE001 — 通知失败不能影响支付结果
-            logger.warning("履约通知发送失败（用户 %s）: %s", item.get("user_id"), exc)
+        await notify_admin_event_quiet(
+            log_ctx=f"fulfill user_id={item.get('user_id')}", **item)
 
 
 @router.api_route("/payment/notify", methods=["GET", "POST"], response_class=PlainTextResponse)
