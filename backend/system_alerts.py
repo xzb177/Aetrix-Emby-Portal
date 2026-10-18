@@ -37,6 +37,7 @@ import os
 import threading
 from datetime import datetime, timedelta
 from typing import Any, Optional
+from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -70,20 +71,6 @@ CHECK_INTERVAL_ENV = "ALERT_CHECK_INTERVAL_SEC"
 DEFAULT_CHECK_INTERVAL_SEC = 600  # 10 分钟
 # 检查间隔的 DB 配置键（R16 P1-1：后台可配，热更新，不再只读环境变量）
 INTERVAL_KEY = "alert_check_interval_sec"
-
-
-def env_int(name: str, default: int) -> int:
-    try:
-        return int(float(os.getenv(name, str(default))))
-    except (ValueError, TypeError):
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (ValueError, TypeError):
-        return default
 
 
 def is_truthy(v: Any) -> bool:
@@ -142,7 +129,7 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
     },
     EVT_DISK_FULL: {
         "name": "磁盘空间不足",
-        "threshold": lambda: _env_float("ALERT_DISK_FREE_PCT", 10.0),
+        "threshold": lambda: env_float("ALERT_DISK_FREE_PCT", 10.0),
         "severity": "critical",
         "channels": ["in_app", "telegram"],
         "cooldown_sec": 86400,
@@ -163,7 +150,7 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
     },
     EVT_API_ERROR_HIGH: {
         "name": "API 错误率过高",
-        "threshold": lambda: _env_float("ALERT_API_ERROR_RATIO", 0.05),
+        "threshold": lambda: env_float("ALERT_API_ERROR_RATIO", 0.05),
         "severity": "warning",
         "channels": ["in_app", "telegram"],
         "cooldown_sec": 3600,
@@ -721,8 +708,8 @@ __all__ = [
     "EVT_PROBE_QUEUE_HIGH", "EVT_ENRICH_STALLED", "EVT_DISK_FULL",
     "EVT_SA_QUOTA_LOW", "EVT_SCAN_FAILED", "EVT_API_ERROR_HIGH",
     "ALL_EVENTS", "DEFAULT_RULES",
-    # R16 P3-1：is_truthy / env_int 公开，跨模块不再调私有名
-    "is_truthy", "env_int",
+    # r42：env_int 统一走 backend.emby_server.env_util（原本地实现已删）
+    "is_truthy",
     "INTERVAL_KEY", "current_interval_sec",
     "enabled", "ensure_default_rules",
     "notify_alert", "resolve_alerts", "check_all",

@@ -37,6 +37,7 @@ from backend.emby_server import mounts as mount_lib
 from backend.emby_server import mount_rclone
 from backend.emby_server import mount_drive  # noqa: F401 — 导入即注册 drive 提供者
 from backend.emby_server import scan_queue
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ MAX_INTERVAL = 120
 #: 单个目录的 ``find`` 超时秒数。超时不会丢数据——会退回 ``_scandir_new_videos``
 #: （慢但能跑完），所以这里不需要设很大；生产上 FUSE 目录 60 秒都扫不完，
 #: 早降级早拿到结果。
-_FIND_TIMEOUT_SEC = max(10, int(os.getenv("CHASE_NEW_FIND_TIMEOUT", "60") or 60))
+_FIND_TIMEOUT_SEC = env_int("CHASE_NEW_FIND_TIMEOUT", 60, 10)
 
 # 视频扩展名白名单（.iso 光盘镜像：部分客户端可直接播放整盘）
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".wmv", ".flv", ".mov", ".rmvb", ".mpg", ".mpeg", ".webm", ".iso"}
@@ -77,9 +78,9 @@ def _tracked_exts(db: Session) -> set[str]:
 # 国产剧 1.4 万个文件时生产实测要几分钟、远超任何合理超时。改成逐层走公共通道后
 # 每一跳都是「一个小目录」，但仍需要上限：层数不封顶，遇到结构异常深的面粉盘
 # 会变成无界遍历。3 层足够盖住「季目录 / 特别篇 / 压制组」这类真实结构。
-CHASE_MAX_DEPTH = max(1, int(os.getenv("CHASE_MAX_DEPTH", "3") or 3))
+CHASE_MAX_DEPTH = env_int("CHASE_MAX_DEPTH", 3, 1)
 # 单个季目录递归时最多收多少条目：卡住不是因为结构，而是有人往里塞了几万个文件。
-CHASE_MAX_ENTRIES = max(100, int(os.getenv("CHASE_MAX_ENTRIES", "5000") or 5000))
+CHASE_MAX_ENTRIES = env_int("CHASE_MAX_ENTRIES", 5000, 100)
 
 _WATCHER_STARTED = False
 _WATCHER_LOCK = threading.Lock()

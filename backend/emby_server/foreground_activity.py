@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 import time
+from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -148,13 +149,6 @@ def seconds_since_redis_activity(redis_client=None):
         return None
 
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, "") or default)
-    except (TypeError, ValueError):
-        return default
-
-
 def maybe_yield_for_foreground(tag: str = "scan") -> float:
     """前台活跃时让路：小睡若干轮直到前台安静或触及上限。返回让出的秒数。
 
@@ -166,9 +160,9 @@ def maybe_yield_for_foreground(tag: str = "scan") -> float:
     try:
         if os.getenv("SCAN_FOREGROUND_YIELD", "1") != "1":
             return 0.0
-        window_s = _env_float("SCAN_FOREGROUND_WINDOW_S", 120.0)
-        sleep_s = _env_float("SCAN_FOREGROUND_SLEEP_S", 5.0)
-        max_s = _env_float("SCAN_FOREGROUND_MAX_YIELD_S", 900.0)
+        window_s = env_float("SCAN_FOREGROUND_WINDOW_S", 120.0)
+        sleep_s = env_float("SCAN_FOREGROUND_SLEEP_S", 5.0)
+        max_s = env_float("SCAN_FOREGROUND_MAX_YIELD_S", 900.0)
         if sleep_s <= 0 or max_s <= 0:
             return 0.0
         while yielded < max_s:

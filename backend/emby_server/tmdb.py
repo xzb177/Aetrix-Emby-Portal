@@ -27,6 +27,7 @@ from backend.emby_server import image_store
 from backend.emby_server import models as emby_models
 from backend.emby_server import scan_progress as progress
 from backend.emby_server import tmdb_cache
+from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +99,7 @@ _TEXT_FILL_TTL_SEC = 30.0
 MOVIEDB_FALLBACK_LANGUAGES = ("zh-CN", "zh-HK", "zh-TW", "ja-JP", "en-US")
 # fallback 最大深度（环境变量 TMDB_FALLBACK_MAX_LANGS）：首选语言 + 最多 N 种备选。
 # 最坏请求数 = (1+N) × 候选数；默认 2（最坏 15 请求），设 0 则关闭 fallback。
-try:
-    _FALLBACK_MAX = int(os.getenv("TMDB_FALLBACK_MAX_LANGS", "2") or 2)
-except ValueError:
-    _FALLBACK_MAX = 2
+_FALLBACK_MAX = env_int("TMDB_FALLBACK_MAX_LANGS", 2)
 TMDB_FALLBACK_MAX_LANGS = max(0, min(_FALLBACK_MAX, len(MOVIEDB_FALLBACK_LANGUAGES)))
 
 
@@ -134,14 +132,14 @@ def language_fallback_chain(db=None) -> list[str]:
 #   TMDB_TIMEOUT             单次请求超时秒数（默认 10；带 append_to_response 的详情请求
 #                            在跨境链路上 8 秒偏紧）
 #   TMDB_NET_RETRIES         读超时/连接错误的重试次数（默认 2）
-TMDB_PER_SEC = max(1.0, float(os.getenv("ENRICH_TMDB_PER_SEC", "2") or 2))
-TMDB_MIN_PER_SEC = max(1.0, float(os.getenv("ENRICH_TMDB_MIN_PER_SEC", "1") or 1))
-TMDB_TIMEOUT = max(5.0, float(os.getenv("TMDB_TIMEOUT", "10") or 10))
-TMDB_NET_RETRIES = max(0, min(4, int(os.getenv("TMDB_NET_RETRIES", "2") or 2)))
+TMDB_PER_SEC = env_float("ENRICH_TMDB_PER_SEC", 2.0, 1.0)
+TMDB_MIN_PER_SEC = env_float("ENRICH_TMDB_MIN_PER_SEC", 1.0, 1.0)
+TMDB_TIMEOUT = env_float("TMDB_TIMEOUT", 10.0, 5.0)
+TMDB_NET_RETRIES = env_int("TMDB_NET_RETRIES", 2, 0, 4)
 # Retry-After 上限：后台 worker 睡太久会白白占着线程， 超过就按上限退避
-TMDB_RETRY_AFTER_CAP_SEC = max(1.0, float(os.getenv("TMDB_RETRY_AFTER_CAP_SEC", "20") or 20))
+TMDB_RETRY_AFTER_CAP_SEC = env_float("TMDB_RETRY_AFTER_CAP_SEC", 20.0, 1.0)
 # 连续成功多少次之后才试着恢复速率（避免成功一次就立刻又撞 429）
-TMDB_RECOVER_AFTER = max(5, int(os.getenv("TMDB_RECOVER_AFTER", "50") or 50))
+TMDB_RECOVER_AFTER = env_int("TMDB_RECOVER_AFTER", 50, 5)
 
 
 class _RequestLimiter:

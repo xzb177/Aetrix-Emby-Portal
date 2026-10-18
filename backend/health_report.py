@@ -24,12 +24,12 @@ worker 刷几千条探测失败、扫描队列堆积，前台「服务健康」�
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from typing import Any
 
 from sqlalchemy import func
+from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -367,11 +367,7 @@ DEFAULT_HEALTH_TTL_SECONDS = 60.0
 
 
 def _health_ttl_seconds() -> float:
-    try:
-        return float(os.environ.get("HEALTH_REPORT_TTL_SECONDS",
-                                    str(DEFAULT_HEALTH_TTL_SECONDS)))
-    except (TypeError, ValueError):
-        return DEFAULT_HEALTH_TTL_SECONDS
+    return env_float("HEALTH_REPORT_TTL_SECONDS", DEFAULT_HEALTH_TTL_SECONDS)
 
 
 def collect_cached(db, ttl_seconds: float | None = None) -> dict:

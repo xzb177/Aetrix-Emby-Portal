@@ -11,13 +11,7 @@ from sqlalchemy.orm import sessionmaker, Session, relationship
 from datetime import datetime
 import redis
 from typing import Optional
-
-def _env_int_or(name: str, default: int, minimum: int = 0) -> int:
-    try:
-        return max(minimum, int((os.getenv(name) or "").strip() or default))
-    except ValueError:
-        return default
-
+from backend.emby_server.env_util import env_float, env_int
 
 # ==================== 数据库配置 ====================
 # 支持环境变量切换数据库类型
@@ -142,7 +136,7 @@ def _bootstrap_config_value(key: str, default: str) -> str:
 def _resolve_db_pool_size() -> int:
     raw = (os.getenv(DB_POOL_SIZE_ENV) or "").strip()
     if raw:
-        return _env_int_or(DB_POOL_SIZE_ENV, DB_POOL_SIZE_DEFAULT, 1)
+        return env_int(DB_POOL_SIZE_ENV, DB_POOL_SIZE_DEFAULT, 1)
     return _int_or(
         _bootstrap_config_value(CFG_DB_POOL_SIZE, str(DB_POOL_SIZE_DEFAULT)),
         DB_POOL_SIZE_DEFAULT, 1)
@@ -150,7 +144,7 @@ def _resolve_db_pool_size() -> int:
 
 _POOL_SIZE = _resolve_db_pool_size()
 _DB_POOL_SIZE_FROM_ENV = bool((os.getenv(DB_POOL_SIZE_ENV) or "").strip())
-_MAX_OVERFLOW = _env_int_or("DB_MAX_OVERFLOW", 10, 0)
+_MAX_OVERFLOW = env_int("DB_MAX_OVERFLOW", 10, 0)
 if DATABASE_TYPE == "postgresql":
     engine_config["pool_size"] = _POOL_SIZE
     engine_config["max_overflow"] = _MAX_OVERFLOW
@@ -266,18 +260,10 @@ import threading as _threading
 import time as _time
 
 
-def _env_float(name: str, default: float, lo: float, hi: float) -> float:
-    try:
-        value = float(os.getenv(name, "") or default)
-    except ValueError:
-        value = default
-    return max(lo, min(hi, value))
-
-
-REDIS_SOCKET_TIMEOUT = _env_float("REDIS_SOCKET_TIMEOUT", 1.0, 0.1, 30.0)
-REDIS_CONNECT_TIMEOUT = _env_float("REDIS_CONNECT_TIMEOUT", 1.0, 0.1, 30.0)
-REDIS_BREAKER_FAILURES = int(_env_float("REDIS_BREAKER_FAILURES", 3, 1, 100))
-REDIS_BREAKER_SECONDS = _env_float("REDIS_BREAKER_SECONDS", 30.0, 1.0, 3600.0)
+REDIS_SOCKET_TIMEOUT = env_float("REDIS_SOCKET_TIMEOUT", 1.0, 0.1, 30.0)
+REDIS_CONNECT_TIMEOUT = env_float("REDIS_CONNECT_TIMEOUT", 1.0, 0.1, 30.0)
+REDIS_BREAKER_FAILURES = env_int("REDIS_BREAKER_FAILURES", 3, 1, 100)
+REDIS_BREAKER_SECONDS = env_float("REDIS_BREAKER_SECONDS", 30.0, 1.0, 3600.0)
 
 
 class RedisBreaker:

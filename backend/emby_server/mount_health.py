@@ -41,6 +41,7 @@ from backend import models, realms
 from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ PLAYBACK_NODE_EXTERNAL = "external"
 PLAYBACK_NODE_PANEL = "panel"
 
 # EM 向 EA 拉体检的超时：每条挂载最多 MOUNT_TIMEOUT（默认 20s），这里给足余量
-EA_FETCH_TIMEOUT = float(os.getenv("MOUNT_HEALTH_FETCH_TIMEOUT", "60"))
+EA_FETCH_TIMEOUT = env_float("MOUNT_HEALTH_FETCH_TIMEOUT", 60.0)
 
 
 # ==================== 面板密钥 ====================

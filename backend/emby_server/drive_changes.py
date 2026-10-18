@@ -29,6 +29,7 @@ import time
 from datetime import datetime, timezone
 
 import httpx
+from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -41,18 +42,18 @@ SA_DIR = os.getenv("RCLONE_SA_DIR", "/sa-accounts")
 #: rclone 配置（容器内路径），用于找 Drive remote → team_drive 的映射
 RCLONE_CONF = os.getenv("MOUNT_RCLONE_CONF", "/config/rclone/rclone.conf")
 #: 轮询间隔（秒），默认 5 分钟
-POLL_INTERVAL = max(60, int(os.getenv("DRIVE_CHANGES_INTERVAL", "300") or 300))
+POLL_INTERVAL = env_int("DRIVE_CHANGES_INTERVAL", 300, 60)
 #: 轮询间隔抖动比例（反风控：请求间隔随机化，避免机械的固定节拍被识别为机器行为）。
 #: 每次等待按 POLL_INTERVAL * uniform(1-ratio, 1+ratio) 重新计算，默认 ±20%。
 #: 设为 0 可关闭抖动（便于测试）。钳制在 [0, 0.5]。
-POLL_JITTER_RATIO = max(0.0, min(0.5, float(os.getenv("DRIVE_CHANGES_JITTER_RATIO", "0.2") or 0.2)))
+POLL_JITTER_RATIO = env_float("DRIVE_CHANGES_JITTER_RATIO", 0.2, 0.0, 0.5)
 #: page token 在 SystemConfig 里的 key 前缀
 TOKEN_KEY_PREFIX = "drive_changes_page_token_"
 #: 开关
 ENABLED = (os.getenv("DRIVE_CHANGES_ENABLED", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}
 #: 共享盘 404（ID 无效/被删/SA 无权）后的退避秒数，默认 24 小时，最小 1 小时。
 #: 404 是永久性配置问题，每 5 分钟重试毫无意义，退避期内直接跳过该盘。
-DEAD_DRIVE_RETRY_SEC = max(3600, int(os.getenv("DRIVE_CHANGES_DEAD_RETRY_SEC", "86400") or 86400))
+DEAD_DRIVE_RETRY_SEC = env_int("DRIVE_CHANGES_DEAD_RETRY_SEC", 86400, 3600)
 
 #: drive_id -> 标记为 dead 的时间戳（time.time()）。内存态，重启后清零。
 _dead_drives: dict[str, float] = {}

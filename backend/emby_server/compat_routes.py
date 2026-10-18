@@ -27,6 +27,7 @@ from backend.emby_server.scanner import (
     parse_media_filename,
     scan_library_sync,
 )
+from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.streaming import (
     get_transcode,
     serve_file,
@@ -69,8 +70,8 @@ logger = logging.getLogger(__name__)
 # PROGRESS_WRITE_SECONDS 内只写一次——上限远小于 maintenance 的会话回收阈值
 # （``SESSION_STALE_MINUTES``，默认 10 分钟），心跳不会掉队。
 # 设 ``EMBY_PROGRESS_WRITE_SECONDS=0`` 回到旧行为（每报必写）。
-PROGRESS_WRITE_SECONDS = float(os.getenv("EMBY_PROGRESS_WRITE_SECONDS", "15") or 0)
-PROGRESS_SEEK_TICKS = int(os.getenv("EMBY_PROGRESS_SEEK_TICKS", "300000000") or 0)  # 30s
+PROGRESS_WRITE_SECONDS = env_float("EMBY_PROGRESS_WRITE_SECONDS", 15.0)
+PROGRESS_SEEK_TICKS = env_int("EMBY_PROGRESS_SEEK_TICKS", 300000000)  # 30s
 
 
 # ==================== 会话上报 ====================

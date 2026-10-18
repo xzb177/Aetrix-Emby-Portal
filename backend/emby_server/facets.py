@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from backend import models
 from backend.emby_server import models as em
+from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +49,12 @@ KINDS = (KIND_GENRE, KIND_STUDIO, KIND_TAG, KIND_PLATFORM)
 # 取值最长长度（与列定义一致：超长直接截断，否则整批插入会失败）
 MAX_VALUE_LEN = 200
 # 取值缓存 TTL（秒）：扫描 / 回填会主动失效，这里只是兜底
-VALUES_CACHE_TTL = float(os.getenv("ITEM_FACETS_CACHE_TTL", "600") or 0)
+VALUES_CACHE_TTL = env_float("ITEM_FACETS_CACHE_TTL", 600.0)
 # 回填水位（system_configs 里的一个键，值为「已同步到哪个 item id」）
 BACKFILL_KEY = "item_facets_backfill_max_id"
-BACKFILL_BATCH = int(os.getenv("ITEM_FACETS_BACKFILL_BATCH", "2000") or 2000)
+BACKFILL_BATCH = env_int("ITEM_FACETS_BACKFILL_BATCH", 2000)
 # 筛选路径里一次最多补多少条（读请求不该被回填拖住）
-FILTER_BACKFILL_BUDGET = int(os.getenv("ITEM_FACETS_FILTER_BUDGET", "2000") or 2000)
+FILTER_BACKFILL_BUDGET = env_int("ITEM_FACETS_FILTER_BUDGET", 2000)
 # 两次「筛选路径补块」之间的最小间隔（秒）：并发请求不要一起抢写锁
 FILTER_BACKFILL_COOLDOWN = 5.0
 

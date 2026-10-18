@@ -93,6 +93,7 @@ from backend.api.welfare_requests import router as welfare_requests_router
 from backend.api.welfare_reviews import router as welfare_reviews_router
 from backend.api.tg_bind import router as tg_bind_router
 from backend.api.lottery import router as lottery_router
+from backend.emby_server.env_util import env_float
 
 # 配置日志
 logging.basicConfig(
@@ -175,20 +176,11 @@ async def lifespan(app: FastAPI):
             import threading
 
             def _premint_in_bg():
-                def _env_float(name: str, default: float) -> float:
-                    raw = os.environ.get(name)
-                    if raw is None:
-                        return default
-                    try:
-                        return max(0.0, float(raw))
-                    except ValueError:
-                        return default
-
                 try:
                     from backend.emby_server import drive_auth
                     # 启动期错峰，避免 100 个 RSA 签名+HTTPS POST 集中打满 CPU 与刚启动的维护任务抢资源
-                    _delay = _env_float("SA_PREMINT_STARTUP_DELAY_SECONDS", 60.0)
-                    _stagger = _env_float("SA_PREMINT_STAGGER_SECONDS", 180.0)
+                    _delay = env_float("SA_PREMINT_STARTUP_DELAY_SECONDS", 60.0, 0.0)
+                    _stagger = env_float("SA_PREMINT_STAGGER_SECONDS", 180.0, 0.0)
                     time.sleep(_delay)
                     drive_auth.premint_tokens(max_workers=2, stagger_seconds=_stagger)
                 except Exception as e:  # noqa: BLE001
@@ -476,10 +468,7 @@ async def request_body_limit_middleware(request, call_next):
     # P2 修复（审查）：此前只看 Content-Length 头，分块传输（无该头）的请求
     # 完全绕过上限——Starlette 默认不截断，大包会完整读进内存。
     # 现用包装 receive 的方式强制上限：读超即 413。
-    try:
-        max_mb = float(os.getenv("MAX_REQUEST_BODY_MB", "10"))
-    except ValueError:
-        max_mb = 10
+    max_mb = env_float("MAX_REQUEST_BODY_MB", 10.0)
     max_bytes = int(max_mb * 1024 * 1024)
 
     clen = request.headers.get("content-length")

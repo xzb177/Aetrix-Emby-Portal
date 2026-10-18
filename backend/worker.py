@@ -25,6 +25,7 @@ import os
 import signal
 import threading
 import time
+from backend.emby_server.env_util import env_float, env_int
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +45,7 @@ _WORKER_LOCK_KEY = "aetrix:worker:lock"
 _WORKER_LOCK_TTL_MS = 30000  # 30 秒，靠心跳续期
 # 抢锁最多等多久：必须 > TTL，否则部署时旧实例还没走到释放，新实例就会
 # 误判「已有 worker 在跑」直接退出（worker 退出 = 扫描/探测全停摆）。
-_WORKER_LOCK_WAIT_SEC = max(0, int(os.getenv("WORKER_LOCK_WAIT_SEC", "45") or 45))
+_WORKER_LOCK_WAIT_SEC = env_int("WORKER_LOCK_WAIT_SEC", 45, 0)
 _worker_lock_token: str | None = None
 _lock_renew_thread: threading.Thread | None = None
 
@@ -57,7 +58,7 @@ def _handle_signal(signum, frame):
 
 
 #: 等 Redis 的重试间隔上限（秒）
-_REDIS_WAIT_MAX_SEC = max(1.0, float(os.getenv("WORKER_REDIS_WAIT_MAX", "30") or 30))
+_REDIS_WAIT_MAX_SEC = env_float("WORKER_REDIS_WAIT_MAX", 30.0, 1.0)
 
 
 def _wait_for_redis(max_wait: float | None = None):
@@ -191,7 +192,7 @@ _WORKER_STARTED_AT = time.time()
 
 #: 心跳写入间隔（秒）。必须小于心跳键的 TTL（60 秒），否则监控端会误判 stale。
 #: 可配（WORKER_HEARTBEAT_INTERVAL_SEC），但不要配到 >= 60。
-_HEARTBEAT_INTERVAL_SEC = max(5, int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SEC", "30") or 30))
+_HEARTBEAT_INTERVAL_SEC = env_int("WORKER_HEARTBEAT_INTERVAL_SEC", 30, 5)
 
 
 def _write_heartbeat(redis_client):

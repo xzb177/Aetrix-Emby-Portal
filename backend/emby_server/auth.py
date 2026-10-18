@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
+from backend.emby_server.env_util import env_float
 
 
 def hash_emby_token(token_value: str) -> str:
@@ -28,10 +29,7 @@ from backend.security import hash_password, needs_password_rehash, verify_passwo
 bearer_scheme = HTTPBearer(auto_error=False)
 
 # 客户端 token 的 last_used_at 写库节流间隔（秒）
-try:
-    TOKEN_TOUCH_INTERVAL = float(os.getenv("EMBY_TOKEN_TOUCH_SECONDS", "60") or 60)
-except ValueError:
-    TOKEN_TOUCH_INTERVAL = 60.0
+TOKEN_TOUCH_INTERVAL = env_float("EMBY_TOKEN_TOUCH_SECONDS", 60.0)
 
 # 请求头里的客户端信息（X-Emby-Authorization: MediaBrowser Client="...", Device="...", DeviceId="...", Version="..."）
 DEVICE_HEADERS = ["X-Emby-Authorization", "X-MediaBrowser-Token"]

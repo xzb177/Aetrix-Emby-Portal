@@ -33,6 +33,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
+from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +50,6 @@ __all__ = [
 # 阈值（全部可配置，默认值只是兜底）
 # ---------------------------------------------------------------------------
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (ValueError, TypeError):
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(float(os.getenv(name, str(default))))
-    except (ValueError, TypeError):
-        return default
-
-
 # 规则 id → 环境变量名 → 默认值（文档即契约）
 THRESHOLD_DEFS: dict[str, tuple[str, float]] = {
     "disk_warn_pct": ("DIAG_DISK_WARN_PCT", 15.0),       # 磁盘余量低于此 → 注意
@@ -77,7 +64,7 @@ THRESHOLD_DEFS: dict[str, tuple[str, float]] = {
 def get_threshold(rule_id: str) -> float:
     """取某条规则的当前阈值（环境变量 > 默认值）。"""
     env_name, default = THRESHOLD_DEFS[rule_id]
-    return _env_float(env_name, default)
+    return env_float(env_name, default)
 
 
 # ---------------------------------------------------------------------------

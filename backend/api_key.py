@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from backend import models
 from backend.database import get_db
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +57,7 @@ def allowed_scopes() -> tuple[str, ...]:
 
 def max_expire_days() -> int:
     """允许的最大有效期（天）。"""
-    try:
-        return max(1, int(os.getenv(_MAX_EXPIRE_ENV) or _DEFAULT_MAX_EXPIRE_DAYS))
-    except (TypeError, ValueError):
-        return _DEFAULT_MAX_EXPIRE_DAYS
+    return env_int(_MAX_EXPIRE_ENV, _DEFAULT_MAX_EXPIRE_DAYS, 1)
 
 
 def _scope_rank() -> dict[str, int]:

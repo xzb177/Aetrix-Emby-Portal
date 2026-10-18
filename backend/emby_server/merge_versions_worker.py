@@ -28,14 +28,6 @@ from typing import Dict, List, Optional, Set, Tuple
 logger = logging.getLogger(__name__)
 
 
-def env_float(name: str, default: float, lo: float) -> float:
-    try:
-        value = float(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, value)
-
-
 # 开关：默认开
 MERGE_VERSIONS_ENABLED = (
     os.getenv("MERGE_VERSIONS_ENABLED", "1") or "1"

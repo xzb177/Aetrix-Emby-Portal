@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import os
+from backend.emby_server.env_util import env_float, env_int
 
 # 后端拆分（v2.41.0）：AETRIX_ROLE 环境变量
 # - "api"：API 进程，enqueue() 走 Redis 桥接推给 worker
@@ -54,13 +55,13 @@ logger = logging.getLogger(__name__)
 # 扫描队列开关（0 = 回到升级前「谁点谁起线程」，但仍会上报进度）
 SCAN_QUEUE_ENABLED = (os.getenv("EMBY_SCAN_QUEUE", "1") or "1").strip().lower() not in ("0", "false", "no")
 # 同时最多跑几个扫描（默认 2：一个在扫 + 一个可以立即接上，再多就是互相抢资源）
-SCAN_MAX_PARALLEL = max(1, min(8, int(os.getenv("EMBY_SCAN_MAX_PARALLEL", "2") or 2)))
+SCAN_MAX_PARALLEL = env_int("EMBY_SCAN_MAX_PARALLEL", 2, 1, 8)
 # 同一个远程挂载同时只允许一个扫描任务（0 = 关闭这条串行化，不建议）
 SCAN_MOUNT_SERIAL = (os.getenv("EMBY_SCAN_MOUNT_SERIAL", "1") or "1").strip().lower() not in ("0", "false", "no")
 # 队列与最近完成的任务保留多少条（给管理端看「刚才那几轮排队等了多久」）
-SCAN_QUEUE_HISTORY = max(0, min(50, int(os.getenv("EMBY_SCAN_QUEUE_HISTORY", "12") or 12)))
+SCAN_QUEUE_HISTORY = env_int("EMBY_SCAN_QUEUE_HISTORY", 12, 0, 50)
 # 进度刷盘间隔（秒）：管理端刷新页面时即使不在同一个进程也能看到进度
-SCAN_PROGRESS_FLUSH_SECONDS = max(0.5, float(os.getenv("EMBY_SCAN_PROGRESS_FLUSH", "2") or 2))
+SCAN_PROGRESS_FLUSH_SECONDS = env_float("EMBY_SCAN_PROGRESS_FLUSH", 2.0, 0.5)
 
 STATE_QUEUED = "queued"
 STATE_RUNNING = "running"

@@ -33,22 +33,23 @@ from backend.db_retry import commit_with_retry
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import models as em
+from backend.emby_server.env_util import env_float, env_int
 
 logger = logging.getLogger(__name__)
 
 # 扫描标志超过这个时间还挂着 True，就认为是崩溃残留（正常扫描不会跑这么久）
-STALE_SCAN_HOURS = float(os.getenv("SCAN_STALE_HOURS", "6") or 6)
+STALE_SCAN_HOURS = env_float("SCAN_STALE_HOURS", 6.0)
 # 播放会话心跳超过这个时间没更新，就当作已经结束
-STALE_SESSION_MINUTES = int(os.getenv("SESSION_STALE_MINUTES", "10") or 10)
+STALE_SESSION_MINUTES = env_int("SESSION_STALE_MINUTES", 10)
 # 播放会话保留天数：0 = 永久保留（默认，与历史统计口径一致）。
 # 这张表每播一次多一行，机器小、跑得久会明显变大；设成比如 90 就会自动裁掉更早的记录，
 # 代价是后台的「总播放次数 / 按日趋势」只剩保留期内的数据。
-SESSION_RETENTION_DAYS = float(os.getenv("SESSION_RETENTION_DAYS", "0") or 0)
+SESSION_RETENTION_DAYS = env_float("SESSION_RETENTION_DAYS", 0.0)
 # 字幕缓存上限（文件数与天数），超过就按最旧先删
-SUB_CACHE_MAX_FILES = int(os.getenv("SUB_CACHE_MAX_FILES", "2000") or 2000)
-SUB_CACHE_MAX_DAYS = float(os.getenv("SUB_CACHE_MAX_DAYS", "7") or 7)
+SUB_CACHE_MAX_FILES = env_int("SUB_CACHE_MAX_FILES", 2000)
+SUB_CACHE_MAX_DAYS = env_float("SUB_CACHE_MAX_DAYS", 7.0)
 # 维护周期（秒）：转码回收 / 会话过期 / 字幕缓存
-MAINTENANCE_INTERVAL = max(60, int(os.getenv("MAINTENANCE_INTERVAL", "600") or 600))
+MAINTENANCE_INTERVAL = env_int("MAINTENANCE_INTERVAL", 600, 60)
 
 # 转码根目录下这些子目录是**共享缓存**，不属于某个会话，清理时要留下
 # （115 转存的状态目录 pan115 已在 v2.18.0 移除：它不再受保护，遗留的会被本清理回收）
@@ -672,11 +673,9 @@ def janitor_tick(heavy: bool = True) -> dict:
                 logger.info("缩略图补生成：有扫描在跑，本轮跳过")
             else:
                 # 前台活跃让路：最近有用户在看/刷，本轮重活跳过（任务留到下个周期，不丢）
-                try:
-                    from backend.emby_server import foreground_activity as _fa
-                    _window = max(0.0, float(os.getenv("FOREGROUND_ACTIVE_SECONDS", "60") or 60))
-                except (TypeError, ValueError):
-                    _window = 60.0
+                # r42：非法值解析走 env_util 统一入口（非法值记 warning 回落 60.0，下限 0.0）
+                from backend.emby_server import foreground_activity as _fa
+                _window = env_float("FOREGROUND_ACTIVE_SECONDS", 60.0, 0.0)
                 if _window > 0 and _fa.active(_window):
                     _ago = _fa.last_seen_ago()
                     logger.info("缩略图补生成：前台 %d 秒前有用户请求，本轮跳过",

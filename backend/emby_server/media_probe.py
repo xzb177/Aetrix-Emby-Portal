@@ -25,15 +25,16 @@ from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import mediainfo_persist as persist_lib
 from backend.emby_server.scanner import probe_metadata
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
 # 探测一次最多尝试次数（含首次）；超限标 failed，不再打扰
-PROBE_MAX_ATTEMPTS = max(1, int(os.getenv("PROBE_MAX_ATTEMPTS", "3") or 3))
+PROBE_MAX_ATTEMPTS = env_int("PROBE_MAX_ATTEMPTS", 3, 1)
 # 重试退避基数（秒）：60/120/240…，与 enrich_worker 同口径，保护 Drive 配额
-PROBE_RETRY_BASE_SEC = max(10, int(os.getenv("PROBE_RETRY_BASE_SEC", "60") or 60))
+PROBE_RETRY_BASE_SEC = env_int("PROBE_RETRY_BASE_SEC", 60, 10)
 # 退避上限（秒）：指数退避不无限增长
-PROBE_RETRY_MAX_SEC = max(60, int(os.getenv("PROBE_RETRY_MAX_SEC", "21600") or 21600))
+PROBE_RETRY_MAX_SEC = env_int("PROBE_RETRY_MAX_SEC", 21600, 60)
 # 配额耗尽长退避（秒）：Drive 配额按 24h 窗口重置，配额类 403 永不判死，
 # 24h 后再试一次（C-P1-1）。固定间隔，不指数增长，避免越等越久。
 PROBE_QUOTA_RETRY_SEC = 24 * 3600

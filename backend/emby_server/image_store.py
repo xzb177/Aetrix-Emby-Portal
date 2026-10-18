@@ -39,6 +39,7 @@ import time
 from typing import Optional
 
 from backend.emby_server import scan_progress as progress
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ _STATS = {"downloaded": 0, "failed": 0, "served": 0, "throttled": 0}
 # ---------- 缩略图 ----------
 # 海报墙下发 TMDB 原图（500KB–2MB/张）是带宽杀手：缩略图把单张压到几十 KB。
 # 尺寸全部参数化（EMBY_THUMB_WIDTHS），只提供能力，不写死业务尺寸。
-# “有界”旋钮（最大边/超大图拒绝/并发信号量/内存上限）见下面的 _env_int 之后那段。
+# “有界”旋钮（最大边/超大图拒绝/并发信号量/内存上限）见下面的 env_int 调用。
 _THUMB_QUALITY = 82            # JPEG 质量：82 是体积/观感的甜点
 _THUMB_WIDTHS_ENV = "EMBY_THUMB_WIDTHS"
 
@@ -467,30 +468,23 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-def _env_int(name: str, default: int, minimum: int = 0) -> int:
-    try:
-        return max(minimum, int((os.getenv(name) or "").strip() or default))
-    except ValueError:
-        return default
-
-
 # ---------- 缩略图“有界”旋钮（借鉴 go-emby：并发 / 内存 / 尺寸三处设上限） ----------
 # 海报墙一次几十张图同时请求缩略图：不限并发会把 CPU 打满，不限内存会把服务
 # 器吃光，不限尺寸会被恶意参数拖死。这里三处都有上限，全部可环境变量调。
-_THUMB_MAX_DIM = _env_int("EMBY_THUMB_MAX_DIM", 4096, 64)
+_THUMB_MAX_DIM = env_int("EMBY_THUMB_MAX_DIM", 4096, 64)
 # 单次请求允许的最大边长（防滥用）：超出钳制到这个值
-_THUMB_MAX_PIXELS = _env_int("EMBY_THUMB_MAX_MEGAPIXELS", 25, 1) * 1_000_000
+_THUMB_MAX_PIXELS = env_int("EMBY_THUMB_MAX_MEGAPIXELS", 25, 1) * 1_000_000
 # 原图超过这么多像素直接拒绝转码（Pillow 解码 25MP ≈ 75MB 内存，再大不碰）
-_THUMB_CONCURRENCY = _env_int("EMBY_THUMB_CONCURRENCY", 4, 1)
+_THUMB_CONCURRENCY = env_int("EMBY_THUMB_CONCURRENCY", 4, 1)
 # 同时转码的缩略图数（信号量）：海报墙/预热/补生成三条路共用一把
 _GEN_SEMAPHORE = threading.Semaphore(_THUMB_CONCURRENCY)
 # 同时进行的远程下载数：下载吃带宽，但**同样占住请求线程**——_download 超时默认
 # 15s，一张打不通的远程图就能占死一个 anyio 线程。海报墙 40 张冷缓存同时进来
 # 会把线程池占满，其它同步端点（/api/*、管理后台）全部拿不到线程 → 服务假死。
 # 抢不到名额就直接退回远程地址（调用方本来就支持），不排队。
-_DOWNLOAD_CONCURRENCY = _env_int("EMBY_IMAGE_DL_CONCURRENCY", 8, 1)
+_DOWNLOAD_CONCURRENCY = env_int("EMBY_IMAGE_DL_CONCURRENCY", 8, 1)
 _DL_SEMAPHORE = threading.Semaphore(_DOWNLOAD_CONCURRENCY)
-_THUMB_MEM_CAP = _env_int("EMBY_THUMB_MEM_MB", 32, 0) * 1024 * 1024
+_THUMB_MEM_CAP = env_int("EMBY_THUMB_MEM_MB", 32, 0) * 1024 * 1024
 # 内存缓存总量上限（默认 32MB）：一张缩略图几十 KB，32MB ≈ 缓存上千张热图
 _THUMB_MEM_ENTRY_MAX = 2 * 1024 * 1024  # 单条目上限：超过 2MB 的不进内存（异常）
 
@@ -607,7 +601,7 @@ def local_path(url: str) -> str:
 
 def _download_attempts() -> int:
     """图片下载总尝试次数 = 1 + ``EMBY_IMAGE_RETRIES``（默认 2 次重试，共 3 次）"""
-    return 1 + max(0, int(os.getenv("EMBY_IMAGE_RETRIES", "2") or 2))
+    return 1 + env_int("EMBY_IMAGE_RETRIES", 2, 0)
 
 
 def _fetch_once(url: str, timeout: int) -> tuple:
@@ -654,7 +648,7 @@ def _download(url: str, attempts: Optional[int] = None) -> Optional[bytes]:
     if attempts is None:
         attempts = _download_attempts()
     attempts = max(1, int(attempts))
-    timeout = _env_int("EMBY_IMAGE_TIMEOUT", 15, 1)
+    timeout = env_int("EMBY_IMAGE_TIMEOUT", 15, 1)
     delay = 0.5
     for n in range(1, attempts + 1):
         content, retryable = _fetch_once(url, timeout)
@@ -867,7 +861,7 @@ def prune(db) -> dict:
     # 表现就是 WAL 文件长期不收敛（见 docs/performance.md 的「事务范围」）。
     # 这里没有待提交的改动（只有上面那次查询），所以 rollback 与 commit 等价，语义更明确。
     db.rollback()
-    grace = _env_int("EMBY_IMAGE_GRACE_SECONDS", 3600, 0)
+    grace = env_int("EMBY_IMAGE_GRACE_SECONDS", 3600, 0)
     now = time.time()
     kept: list[tuple[str, int, float]] = []
     protected = set(referenced)  # 原图：清理与淘汰都不动
@@ -936,7 +930,7 @@ def prune(db) -> dict:
             kept.append((entry.name, stat.st_size, stat.st_mtime))
 
     total = sum(size for _n, size, _m in kept)
-    cap = _env_int("EMBY_IMAGE_CACHE_MB", 2048, 0) * 1024 * 1024
+    cap = env_int("EMBY_IMAGE_CACHE_MB", 2048, 0) * 1024 * 1024
     attempted = set()
     if cap and total > cap:
         for name, size, _mtime in sorted(kept, key=lambda item: item[2]):

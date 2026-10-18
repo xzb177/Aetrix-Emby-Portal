@@ -39,15 +39,9 @@ import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(str(os.getenv(name, "") or default).strip() or default)
-    except (TypeError, ValueError):
-        return default
 
 
 def _env_flag(name: str, default: str = "1") -> bool:
@@ -69,19 +63,19 @@ def _cfg_enabled() -> bool:
 
 
 def _cfg_max_bytes() -> int:
-    return max(0, _env_int("EMBY_TMDB_CACHE_MB", 256)) * 1024 * 1024  # 0 = 不限
+    return max(0, env_int("EMBY_TMDB_CACHE_MB", 256)) * 1024 * 1024  # 0 = 不限
 
 
 def _cfg_ttl_search() -> int:
-    return max(60, _env_int("EMBY_TMDB_TTL_SEARCH", 7 * 86400))
+    return max(60, env_int("EMBY_TMDB_TTL_SEARCH", 7 * 86400))
 
 
 def _cfg_ttl_negative() -> int:
-    return max(60, _env_int("EMBY_TMDB_TTL_NEGATIVE", 86400))
+    return max(60, env_int("EMBY_TMDB_TTL_NEGATIVE", 86400))
 
 
 def _cfg_ttl_details() -> int:
-    return max(60, _env_int("EMBY_TMDB_TTL_DETAILS", 30 * 86400))
+    return max(60, env_int("EMBY_TMDB_TTL_DETAILS", 30 * 86400))
 
 
 # 写入量累计到 32MB 或距上次巡检 ≥5 分钟就顺手巡检一次（删过期 + 容量淘汰）

@@ -46,6 +46,7 @@ from backend import models, realms
 from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server.mount_health import PANEL_KEY_HEADER, require_panel_key
+from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +328,7 @@ def _apply_scope(state) -> None:
 node_router = APIRouter(prefix="/api/admin/nodes", tags=["节点（多机播放）"])
 
 # EM 调节点的超时：体检要逐条挂载走一遍，给足余量
-NODE_IO_TIMEOUT = float(os.getenv("NODE_IO_TIMEOUT", "60"))
+NODE_IO_TIMEOUT = env_float("NODE_IO_TIMEOUT", 60.0)
 
 
 def _node_libraries(db: Session, realm_id: Optional[int], node_id: Optional[int]) -> list[dict]:

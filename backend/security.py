@@ -12,6 +12,7 @@ from typing import Any, Optional
 import bcrypt
 from jose import JWTError, jwt
 from sqlalchemy import func
+from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,8 @@ _ALLOW_EPHEMERAL_SECRET = os.getenv("ALLOW_EPHEMERAL_SECRET", "").strip().lower(
 }
 SECRET_KEY = _RAW_SECRET_KEY or secrets.token_urlsafe(48)
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "120"))
-REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30"))
+ACCESS_TOKEN_EXPIRE_MINUTES = env_int("ACCESS_TOKEN_EXPIRE_MINUTES", 120)
+REFRESH_TOKEN_EXPIRE_DAYS = env_int("REFRESH_TOKEN_EXPIRE_DAYS", 30)
 
 
 def validate_secret_key() -> str:

@@ -32,6 +32,7 @@ from backend.emby_server.library_cover_render import (
     human_media_type,
     render_cover_bytes,
 )
+from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger("aetrix.library_cover_api")
 
@@ -251,7 +252,7 @@ _COVER_STOP: Optional[threading.Event] = None
 #: 有新任务时叫醒 worker：空闲就真的阻塞着，不做「每秒醒一次看看有没有活」
 _COVER_WAKE = threading.Event()
 #: 两个任务之间的最小间隔（秒）：批量导入时不给渲染器喘息
-COVER_MIN_INTERVAL_SEC = max(0, float(os.getenv("COVER_MIN_INTERVAL_SEC", "2") or 2))
+COVER_MIN_INTERVAL_SEC = env_float("COVER_MIN_INTERVAL_SEC", 2.0, 0.0)
 
 
 def cover_status(lib_id: int) -> dict:
