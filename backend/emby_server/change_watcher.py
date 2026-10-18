@@ -376,7 +376,15 @@ def _walk_files(provider, rel: str, max_depth: int, max_entries: int,
     限流名额、熔断保护与统计——这正是这个修复要的东西。
 
     层数与条目数都有上限：没有上限的话，结构异常深或异常大的目录会变成无界遍历。
+
+    Drive 挂载走合并枚举（``_walk_files_merged``）：文本逐层解析只认每级首个
+    同名文件夹，第二分支的新文件旧遍历永远发现不了。其它提供者（115/rclone
+    等）走下面的原逻辑，一字不动。
     """
+    merged_walk = getattr(provider, "walk_media_merged", None)
+    if callable(merged_walk):
+        return _walk_files_merged(provider, merged_walk, rel,
+                                  max_depth, max_entries, exts)
     found: list = []
     seen_dirs: set[str] = set()
     current = ["/" + (rel or "").lstrip("/")]
@@ -402,6 +410,40 @@ def _walk_files(provider, rel: str, max_depth: int, max_entries: int,
                     found.append(entry)
         current = nxt
         depth += 1
+    if len(found) >= max_entries:
+        logger.warning("[chase-new] %s 递归达到条目上限 %d（可能有异常大的目录），已截断",
+                       rel, max_entries)
+    return found
+
+
+def _walk_files_merged(provider, merged_walk, rel: str, max_depth: int,
+                       max_entries: int, exts: set[str] | None = None) -> list:
+    """Drive 合并枚举（``_walk_files`` 的 Drive 分支）。
+
+    ``merged_walk`` 即 ``DriveMount.walk_media_merged``：按 folder id 并行 BFS、
+    合并同级同名文件夹的命名空间、真撞（同文本路径不同 file_id）确定性改名
+    （#1036 同构）。新文件落在第二个同名分支里也能被发现；同一文件不会在
+    多个分支重复产出（按 (rel, file_id) 去重，真撞改名后 rel 唯一）。
+
+    逐条转成 ``_walk_files`` 的条目形态（``MountEntry``，``is_dir`` 恒 False），
+    保留原有契约：``max_entries`` 截断告警；子目录列举失败只记日志、已产出
+    的文件照常处理——``walk_media`` 把失败收集后在收尾聚合成 ``MountError``
+    抛出来，这里按追新一贯的"单个目录失败不影响其它"消化掉，不整轮失败。
+    """
+    found: list = []
+    try:
+        for mf in merged_walk(root=rel, max_depth=max_depth,
+                              exts=(exts or VIDEO_EXTS)):
+            if len(found) >= max_entries:
+                break
+            found.append(mount_lib.MountEntry(
+                name=mf.name, rel=mf.rel, is_dir=False,
+                size=mf.size or 0, file_id=mf.file_id or "",
+                mod_ts=mf.mod_ts or 0.0))
+    except mount_lib.MountError as exc:
+        # 收尾抛出的子目录失败聚合：已产出的文件是全的，照常处理
+        logger.warning("[chase-new] %s 合并枚举部分子目录失败（已产出文件照常处理）: %s",
+                       rel, exc)
     if len(found) >= max_entries:
         logger.warning("[chase-new] %s 递归达到条目上限 %d（可能有异常大的目录），已截断",
                        rel, max_entries)
