@@ -313,3 +313,56 @@ def test_fields_apply_when_night_gate_off(db):
     ep = _make_item(db, item_type="episode", name="S01E01", series_id=999)
     claimed = enrich_worker._claim_batch(db, 10)
     assert {c.id for c in claimed} == {ep.id}
+
+
+# ---------- _EnrichItemSnapshot 季/集号回带（2026-10-18 单集刮削缺号回归） ----------
+
+def test_snapshot_item_preserves_season_and_episode_numbers(db):
+    """_snapshot_item 必须把 season_number / episode_number 带进快照。
+
+    回归：_fetch_episode_tmdb 靠 getattr(item, "season_number"/"episode_number")
+    读快照，快照缺这两个字段时恒为 None → 函数直接 return，全库单集永远拿不到
+    TMDB 标题/简介/剧照（生产实测 159,612 集 overview 全 0）。"""
+    ep = _make_item(db, item_type="episode", name="S01E05",
+                    series_id=999, season_number=1, episode_number=5)
+    snap = enrich_worker._snapshot_item(ep)
+    assert snap.season_number == 1
+    assert snap.episode_number == 5
+    # 缺号的条目（字段为 None）照样保留 None，不捏造
+    ep2 = _make_item(db, item_type="episode", name="S01E06",
+                     series_id=999, season_number=None, episode_number=None)
+    snap2 = enrich_worker._snapshot_item(ep2)
+    assert snap2.season_number is None
+    assert snap2.episode_number is None
+
+
+def test_fetch_episode_tmdb_snapshot_with_numbers_calls_find_episode(
+        db, monkeypatch):
+    """带季集号的快照进 _fetch_episode_tmdb：不再因缺号跳过，
+    find_episode 被调用且返回数据落入 result["episode_tmdb"]"""
+    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_STILL_ENV, "0")
+    called = []
+
+    def _fake_find(self, sid, season_no, ep_no):
+        called.append((sid, season_no, ep_no))
+        return {"episode_number": ep_no, "name": "摩登到访",
+                "overview": "简介", "still_path": "/still1.jpg"}
+    # 与本文件既有测试同口径：patch 类属性，不 patch 单例实例属性
+    monkeypatch.setattr(TmdbClient, "find_episode", _fake_find)
+
+    ep = _make_item(db, item_type="episode", name="S01E05",
+                    series_id=999, season_number=1, episode_number=5)
+    snap = enrich_worker._snapshot_item(ep)
+    result: dict = {}
+    enrich_worker._fetch_episode_tmdb(snap, {"tmdb_id": "12345"}, result)
+    assert called == [("12345", 1, 5)]
+    assert result.get("episode_tmdb", {}).get("name") == "摩登到访"
+
+
+def test_fetch_episode_tmdb_missing_numbers_still_skips():
+    """对照：快照上季/集号缺失（None）时仍然跳过（确定性语义保留，
+    不捏造请求去 TMDB 撞号）"""
+    snap = SimpleNamespace(season_number=None, episode_number=None)
+    result: dict = {}
+    enrich_worker._fetch_episode_tmdb(snap, {"tmdb_id": "12345"}, result)
+    assert "episode_tmdb" not in result

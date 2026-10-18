@@ -874,6 +874,8 @@ class _EnrichItemSnapshot:
     overview: Optional[str] = None
     series_id: Optional[int] = None
     parent_id: Optional[int] = None
+    season_number: Optional[int] = None
+    episode_number: Optional[int] = None
     metadata_locked: bool = False
     # 认领归属校验用：僵尸 worker 防护（_claim_still_ours）。慢 IO 阶段不碰 ORM，
     # 写回/记失败时凭它判断"这行是否还属于我这次认领"。
@@ -921,6 +923,8 @@ def _snapshot_item(item: Any) -> _EnrichItemSnapshot:
         metadata_locked=bool(getattr(item, "metadata_locked", False)),
         series_id=item.series_id,
         parent_id=item.parent_id,
+        season_number=getattr(item, "season_number", None),
+        episode_number=getattr(item, "episode_number", None),
         enrich_claim_token=getattr(item, "enrich_claim_token", None),
     )
 
