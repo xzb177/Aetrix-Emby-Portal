@@ -1,0 +1,206 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1568 882" fill="none" aria-hidden="true">
+  <!-- 世界地图地形资产：静态层。树/草丛经 <symbol>/<use> 复用。 -->
+  <defs>
+    <linearGradient id="wtsky" x1="0" y1="0" x2=".15" y2="1">
+      <stop offset="0" stop-color="#faf8f5"/>
+      <stop offset=".46" stop-color="#f7f2e9"/>
+      <stop offset="1" stop-color="#f0e7d2"/>
+    </linearGradient>
+    <filter id="wtsoft" x="-40%" y="-60%" width="180%" height="220%"><feGaussianBlur stdDeviation="2.6"/></filter>
+    <symbol id="wt-tree" viewBox="-20 -32 40 40">
+      <ellipse cx="0" cy="1" rx="17" ry="4.5" fill="#2A2620" opacity=".13" filter="url(#wtsoft)"/>
+      <circle cx="-7.5" cy="-10" r="11" fill="#7d9b76"/>
+      <circle cx="7" cy="-8" r="9" fill="#93ad8b"/>
+      <circle cx="-1" cy="-19" r="9.5" fill="#93ad8b"/>
+      <circle cx="-2.5" cy="-6" r="8" fill="#7d9b76" opacity=".92"/>
+    </symbol>
+    <symbol id="wt-grass" viewBox="-12 -14 24 18">
+      <ellipse cx="0" cy="0" rx="9" ry="2.6" fill="#2A2620" opacity=".10" filter="url(#wtsoft)"/>
+      <path d="M-6 0 C -7.5 -5 -5 -8 -4 -10.5 M0 0 C 0 -6 1 -9 2 -12 M6 0 C 7 -4 6 -7 5 -9" fill="none" stroke="#7d9b76" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="-4.5" cy="-2.5" r="3.4" fill="#93ad8b"/>
+      <circle cx="3" cy="-3" r="3" fill="#7d9b76"/>
+      <circle cx="0" cy="-4.5" r="2.4" fill="#93ad8b" opacity=".85"/>
+    </symbol>
+  </defs>
+  <rect width="1568" height="882" fill="url(#wtsky)"/>
+  <!-- 纸纹太阳：纸色圆 + 虚线环 + 纸纹弧线，替代旧实心太阳 -->
+  <g class="wt-sun">
+    <circle cx="125" cy="88" r="48" fill="none" stroke="#d9cba6" stroke-width="2" stroke-dasharray="3 8" opacity=".65"/>
+    <circle cx="125" cy="88" r="30" fill="#FFFDF6" opacity=".94"/>
+    <path d="M107 80 q9 -7 19 -3 M105 95 q11 5 22 1" stroke="#e6d9ba" stroke-width="2.4" fill="none" stroke-linecap="round" opacity=".9"/>
+  </g>
+  <!-- 云剪影 -->
+  <g fill="#FFFDF6" opacity=".85">
+    <ellipse cx="722" cy="56" rx="52" ry="17"/><ellipse cx="750" cy="46" rx="32" ry="14"/><ellipse cx="692" cy="51" rx="26" ry="12"/>
+  </g>
+  <g fill="#FFFDF6" opacity=".85">
+    <ellipse cx="1055" cy="50" rx="52" ry="17"/><ellipse cx="1083" cy="40" rx="32" ry="14"/><ellipse cx="1025" cy="45" rx="26" ry="12"/>
+  </g>
+  <g fill="#FFFDF6" opacity=".85">
+    <ellipse cx="938" cy="73" rx="52" ry="17"/><ellipse cx="966" cy="63" rx="32" ry="14"/><ellipse cx="908" cy="68" rx="26" ry="12"/>
+  </g>
+  <g fill="#FFFDF6" opacity=".6">
+    <ellipse cx="240" cy="120" rx="34" ry="11"/><ellipse cx="262" cy="112" rx="20" ry="9"/>
+  </g>
+  <!-- 极淡等高线 -->
+  <g fill="none" stroke="rgba(39,37,30,0.04)" stroke-width="1.5">
+    <path d="M180 640 Q 340 600 520 640 Q 700 680 880 640"/>
+    <path d="M150 690 Q 340 646 540 690 Q 740 734 940 690"/>
+    <path d="M1020 700 Q 1180 660 1340 700 Q 1440 722 1520 706"/>
+  </g>
+  <!-- 山丘双层 -->
+  <path d="M-20 459 Q 392 388 862 459 T 1588 423 L1588 902 L-20 902 Z" fill="#e9dfc6" opacity=".8"/>
+  <path d="M-20 582 Q 470 512 941 582 T 1588 547 L1588 902 L-20 902 Z" fill="#e2d3ae" opacity=".75"/>
+  <!-- 河流双层 -->
+  <path d="M125 892 Q 470 617 815 688 T 1490 547" fill="none" stroke="#c3d9ea" stroke-width="24" stroke-linecap="round" opacity=".5"/>
+  <path d="M125 892 Q 470 617 815 688 T 1490 547" fill="none" stroke="#c3d9ea" stroke-width="12" stroke-linecap="round" opacity=".85"/>
+  <!-- 植被：symbol 复用 -->
+    <use href="#wt-tree" transform="translate(1416,793) scale(1.10)"/>
+    <use href="#wt-tree" transform="translate(702,388) scale(0.90)"/>
+    <use href="#wt-tree" transform="translate(77,312) scale(1.02)"/>
+    <use href="#wt-tree" transform="translate(1133,465) scale(0.73)"/>
+    <use href="#wt-tree" transform="translate(1205,593) scale(1.00)"/>
+    <use href="#wt-tree" transform="translate(964,806) scale(0.86)"/>
+    <use href="#wt-tree" transform="translate(1171,470) scale(0.96)"/>
+    <use href="#wt-tree" transform="translate(1023,440) scale(0.74)"/>
+    <use href="#wt-tree" transform="translate(745,665) scale(0.97)"/>
+    <use href="#wt-tree" transform="translate(187,286) scale(0.82)"/>
+    <use href="#wt-tree" transform="translate(532,471) scale(0.83)"/>
+    <use href="#wt-tree" transform="translate(857,409) scale(0.75)"/>
+    <use href="#wt-tree" transform="translate(1206,659) scale(1.07)"/>
+    <use href="#wt-tree" transform="translate(1407,595) scale(1.13)"/>
+    <use href="#wt-tree" transform="translate(289,808) scale(0.73)"/>
+    <use href="#wt-tree" transform="translate(659,278) scale(1.06)"/>
+    <use href="#wt-tree" transform="translate(1063,807) scale(1.06)"/>
+    <use href="#wt-tree" transform="translate(1452,565) scale(1.14)"/>
+    <use href="#wt-tree" transform="translate(1155,458) scale(1.14)"/>
+    <use href="#wt-tree" transform="translate(601,372) scale(0.73)"/>
+    <use href="#wt-tree" transform="translate(733,374) scale(1.12)"/>
+    <use href="#wt-tree" transform="translate(1454,385) scale(0.75)"/>
+    <use href="#wt-tree" transform="translate(1380,512) scale(0.85)"/>
+    <use href="#wt-tree" transform="translate(1368,718) scale(1.10)"/>
+    <use href="#wt-tree" transform="translate(1071,727) scale(0.99)"/>
+    <use href="#wt-tree" transform="translate(395,429) scale(0.88)"/>
+    <use href="#wt-grass" transform="translate(1194,606) scale(1.02)"/>
+    <use href="#wt-grass" transform="translate(1276,367) scale(1.05)"/>
+    <use href="#wt-grass" transform="translate(531,607) scale(1.13)"/>
+    <use href="#wt-grass" transform="translate(405,816) scale(0.83)"/>
+    <use href="#wt-grass" transform="translate(878,598) scale(0.89)"/>
+    <use href="#wt-grass" transform="translate(876,560) scale(0.98)"/>
+    <use href="#wt-grass" transform="translate(1113,311) scale(0.95)"/>
+    <use href="#wt-grass" transform="translate(1338,417) scale(1.07)"/>
+    <use href="#wt-grass" transform="translate(291,548) scale(0.97)"/>
+    <use href="#wt-grass" transform="translate(153,682) scale(0.99)"/>
+    <use href="#wt-grass" transform="translate(1069,596) scale(1.02)"/>
+    <use href="#wt-grass" transform="translate(823,468) scale(1.16)"/>
+    <use href="#wt-grass" transform="translate(160,776) scale(1.15)"/>
+    <use href="#wt-grass" transform="translate(781,723) scale(1.07)"/>
+    <use href="#wt-grass" transform="translate(942,464) scale(0.93)"/>
+    <use href="#wt-grass" transform="translate(557,470) scale(1.18)"/>
+    <use href="#wt-grass" transform="translate(545,515) scale(0.97)"/>
+    <use href="#wt-grass" transform="translate(1261,563) scale(1.02)"/>
+    <use href="#wt-grass" transform="translate(415,457) scale(0.84)"/>
+    <use href="#wt-grass" transform="translate(358,449) scale(1.14)"/>
+    <use href="#wt-grass" transform="translate(728,373) scale(1.03)"/>
+    <use href="#wt-grass" transform="translate(697,766) scale(0.90)"/>
+    <use href="#wt-grass" transform="translate(1313,441) scale(1.19)"/>
+    <use href="#wt-grass" transform="translate(986,331) scale(1.12)"/>
+    <use href="#wt-grass" transform="translate(251,755) scale(0.84)"/>
+    <use href="#wt-grass" transform="translate(1143,520) scale(1.07)"/>
+  <!-- 装饰 -->
+  <g class="scene-dress"><g transform="translate(1330,150)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-40 -145 80 165" width="160" height="330">
+  <g transform="translate(0,0)">
+    <!-- 气球主体 -->
+    <path d="M0,-132 C-22,-132 -28,-112 -28,-98 C-28,-82 -14,-70 0,-68 C14,-70 28,-82 28,-98 C28,-112 22,-132 0,-132 Z"
+          fill="#FFFDF6" stroke="#c9b98f" stroke-width="2" stroke-linejoin="round"/>
+    <!-- 土色竖纹 3 条 -->
+    <path d="M0,-131 Q2,-100 0,-68" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M-14,-123 Q-12,-96 -7,-70" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M14,-123 Q12,-96 7,-70" fill="none" stroke="#d9cba6" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- 小金星 -->
+    <path d="M0,-113.5 L1.6,-109.8 L5.5,-109.4 L2.6,-106.7 L3.4,-102.9 L0,-105 L-3.4,-102.9 L-2.6,-106.7 L-5.5,-109.4 L-1.6,-109.8 Z"
+          fill="#e8a84a" stroke="#c97e2c" stroke-width="0.8" stroke-linejoin="round"/>
+    <!-- 4 根墨色细绳 -->
+    <path d="M-13,-72 L-9,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M-5,-68 L-4,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M5,-68 L4,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M13,-72 L9,-40" fill="none" stroke="#2A2620" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- 土色小吊篮 -->
+    <rect x="-11" y="-40" width="22" height="15" rx="3" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+    <path d="M-11,-34 L11,-34" fill="none" stroke="#8a6d3b" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+</svg></g><g transform="translate(120,780)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="0" rx="16" ry="3.5" fill="#c9b98f" opacity="0.55"/>
+  <circle cx="0" cy="-26" r="26" fill="none" stroke="#c97e2c" stroke-width="1.5"/>
+  <circle cx="0" cy="-26" r="22" fill="#FFFDF6" stroke="#c9b98f" stroke-width="2"/>
+  <circle cx="0" cy="-26" r="13" fill="none" stroke="#d9cba6" stroke-width="1.2"/>
+  <path d="M16 -26 L20 -26 M11.31 -14.69 L14.14 -11.86 M0 -10 L0 -6 M-11.31 -14.69 L-14.14 -11.86 M-16 -26 L-20 -26 M-11.31 -37.31 L-14.14 -40.14 M0 -42 L0 -46 M11.31 -37.31 L14.14 -40.14" fill="none" stroke="#2A2620" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M0 -40 L3.5 -26 L0 -12 L-3.5 -26 Z" fill="#D9482B"/>
+  <circle cx="0" cy="-26" r="2.6" fill="#2A2620"/>
+  <circle cx="0" cy="-41.5" r="2" fill="#FFD27A"/>
+</g></g><g transform="translate(950,770)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="2" rx="33" ry="5" fill="#6B6257" opacity="0.18"/>
+  <rect x="-32" y="-42" width="64" height="42" rx="7" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+  <path d="M-30,-39 H30" stroke="#8a6d3b" stroke-width="1.5" opacity="0.45" fill="none"/>
+  <path d="M-11,-35 V-6 M11,-35 V-6" stroke="#8a6d3b" stroke-width="1.5" opacity="0.38" fill="none"/>
+  <rect x="-6.5" y="-27" width="13" height="15" rx="3" fill="#e8a84a" stroke="#c97e2c" stroke-width="1.5"/>
+  <circle cx="0" cy="-20" r="2.2" fill="#a06c24"/>
+  <rect x="-30" y="-45.5" width="60" height="3.5" rx="1.7" fill="#FFFDF6" opacity="0.8"/>
+  <circle cx="-6" cy="-48" r="1.4" fill="#FFD27A" opacity="0.8"/>
+  <circle cx="9" cy="-49" r="1.1" fill="#FFD27A" opacity="0.7"/>
+  <g transform="rotate(-25 -28 -40)">
+    <rect x="-30" y="-53" width="60" height="13" rx="6" fill="#d9cba6" stroke="#8a6d3b" stroke-width="2"/>
+    <rect x="-25" y="-50" width="50" height="7" rx="3.5" fill="#c9b98f"/>
+  </g>
+</g></g><g transform="translate(950,180)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="-60 -110 120 130" width="120" height="130">
+  <g transform="translate(0,0)">
+    <ellipse cx="0" cy="-8" rx="27" ry="8" fill="#FFFDF6" opacity="0.5"/>
+    <path d="M0 -74 L21 -44 L0 -14 L-21 -44 Z" fill="#a8c6dd" stroke="#2e3a5c" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M-7 -48 L-1 -66" stroke="#FFFDF6" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+    <path d="M4 -52 L7 -58" stroke="#FFFDF6" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+    <circle cx="23" cy="-72" r="2.5" fill="#a8c6dd"/>
+    <g class="nl" display="none">
+      <circle cx="0" cy="-44" r="40" fill="#a8c6dd" opacity="0.4"/>
+    </g>
+  </g>
+</svg></g><g transform="translate(150,250)"><g transform="translate(0,0)">
+  <ellipse cx="0" cy="0" rx="9" ry="2.5" fill="#d9cba6" opacity="0.7"/>
+  <path d="M0,0 L0,-70" stroke="#2A2620" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="0" cy="-70" r="2.4" fill="#2A2620"/>
+  <path d="M0,-70 Q32,-52 64,-44" fill="none" stroke="#6B6257" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M16,-61.6 L29,-55.7 L22.5,-46 Z" fill="#e8a84a" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M32,-54.5 L45,-49.6 L38.5,-40 Z" fill="#D9482B" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M48,-48.6 L61,-44.8 L54.5,-35 Z" fill="#a8c6dd" stroke="#2A2620" stroke-width="1.6" stroke-linejoin="round"/>
+  <g class="nl" display="none">
+    <path d="M54.5,-35 L56,-28" stroke="#6B6257" stroke-width="1.5" stroke-linecap="round"/>
+    <circle cx="56" cy="-24" r="8" fill="#FFD27A" opacity="0.28"/>
+    <circle cx="56" cy="-24" r="3.4" fill="#FFD27A" stroke="#a06c24" stroke-width="1.4"/>
+  </g>
+</g></g></g>
+  <!-- 夜灯微光（仅夜里显形，由页面 dp-night 控制） -->
+  <g class="scene-ff"><g transform="translate(1150,420)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g><g transform="translate(1290,560)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g><g transform="translate(700,640)"><g class="nl" display="none">
+    <circle cx="-34" cy="-72" r="10" fill="#FFD27A" opacity=".45"/>
+    <circle cx="-34" cy="-72" r="3.2" fill="#FFD27A"/>
+    <circle cx="36" cy="-58" r="9" fill="#FFD27A" opacity=".45"/>
+    <circle cx="36" cy="-58" r="3" fill="#FFD27A"/>
+    <circle cx="26" cy="-96" r="7.5" fill="#FFD27A" opacity=".45"/>
+    <circle cx="26" cy="-96" r="2.5" fill="#FFD27A"/>
+  </g>
+</g></g>
+</svg>

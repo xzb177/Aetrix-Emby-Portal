@@ -42,7 +42,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import CampGuide from '@/components/game/CampGuide.vue'
-import WorldMap from '@/components/panel/WorldMap.vue'
+import WorldMap from '@/components/panel/WorldMap/index.vue'
 import { gameHubConfig as hub } from '@/config/game'
 import { checkinApi, vitalityApi } from '@/api/economy'
 import { useUserStore } from '@/stores/user'
