@@ -40,6 +40,7 @@ from backend.emby_server import image_store
 from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import items_dedup_cache as _dedup_cache
+from backend.emby_server import items_list_cache as _list_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_sign
@@ -2679,20 +2680,55 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                 has_more = len(primary_ids) > start + limit
         else:
             kept = query.filter(~em.MediaItem.id.in_(dropped)) if dropped else query
-            fetch = limit + (0 if want_total else 1)
-            page_ids = [
-                row[0] for row in kept.order_by(*order_cols)
-                .with_entities(em.MediaItem.id).offset(start).limit(fetch).all()
-            ]
-            if not want_total:
-                has_more = len(page_ids) > limit
-                page_ids = page_ids[:limit]
-                total = len(page_ids)
-            else:
-                # R4（2026-10-18）：dropped 恒为 query 的子集（T/E/N 分支都从 query
-                # 里圈出），故 count(kept) = count(query) - len(dropped)，数学精确
-                # 相等。省掉 16k NOT IN 的 COUNT（生产实测 ~100ms）。
-                total = query.order_by(None).count() - (len(dropped) if dropped else 0)
+            # 列表 ID 清单缓存（2026-10-18）：dropped 集合缓存把去重计算摊薄后，
+            # 剩下的大头是「全量 kept 排序 + 分页 + 计数」。本层缓存「排好序的
+            # kept id 清单（前 max_ids 个）+ total」，命中时请求只剩按主键取本页
+            # 行 + 用户态预取 + DTO 构建。DTO（含用户播放状态/收藏）永不进缓存。
+            # 用户状态相关查询（收藏/已看/未看/继续看筛选、按用户数据排序、
+            # Ids 定向取条目）一律绕行；页窗口超出已存前缀时也绕行现状路径。
+            page_ids = None
+            total = None
+            _lc_ok = _list_cache.is_cacheable(
+                filters=filters, sort_by=sort_by, has_ids=bool(ids))
+            _lc_libs = _list_cache.scope_lib_ids(db, allowed) if _lc_ok else []
+            if _lc_ok:
+                _lc_hit = _list_cache.get_cached_page(db, q, _lc_libs)
+                if _lc_hit is not None and start + limit <= len(_lc_hit.ids):
+                    page_ids = _lc_hit.ids[start:start + limit]
+                    if want_total:
+                        total = _lc_hit.total
+                    else:
+                        has_more = _lc_hit.total > start + limit
+                        total = len(page_ids)
+            if page_ids is None:
+                fetch = limit + (0 if want_total else 1)
+                page_ids = [
+                    row[0] for row in kept.order_by(*order_cols)
+                    .with_entities(em.MediaItem.id).offset(start).limit(fetch).all()
+                ]
+                if not want_total:
+                    has_more = len(page_ids) > limit
+                    page_ids = page_ids[:limit]
+                    total = len(page_ids)
+                else:
+                    # R4（2026-10-18）：dropped 恒为 query 的子集（T/E/N 分支都从 query
+                    # 里圈出），故 count(kept) = count(query) - len(dropped)，数学精确
+                    # 相等。省掉 16k NOT IN 的 COUNT（生产实测 ~100ms）。
+                    total = query.order_by(None).count() - (len(dropped) if dropped else 0)
+                # 未命中时顺手回填：一条 id-only 全量排序查询的成本被后续命中摊薄。
+                # 排序口径与上面的 page_ids 查询逐字一致（含 id 决胜键），结果天然一致。
+                # 只在 want_total=true 时回填：缓存的 total 必须是真实 kept 总数，
+                # 而 want_total=false 的请求本来就是为了跳过 COUNT 才来的——
+                # 不为它多付一次 COUNT；false 请求只读缓存不写缓存。
+                if _lc_ok and want_total:
+                    _lc_max = _list_cache.cache_max_ids(db)
+                    _lc_probe = [
+                        row[0] for row in kept.order_by(*order_cols)
+                        .with_entities(em.MediaItem.id).limit(_lc_max + 1).all()
+                    ]
+                    _list_cache.put_cached_page(
+                        db, q, _lc_libs, _lc_probe[:_lc_max], total,
+                        len(_lc_probe) > _lc_max)
         if not page_ids:
             items = []
         else:
