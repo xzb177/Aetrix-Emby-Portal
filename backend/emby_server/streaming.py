@@ -20,6 +20,59 @@ from backend.emby_server.playback_tune import RANGE_LIMITER
 
 logger = logging.getLogger(__name__)
 
+def _drive_alt_media_file_id(url: str) -> Optional[str]:
+    """从 Drive alt=media URL 提取 file_id。
+
+    https://www.googleapis.com/drive/v3/files/<fid>?alt=media → fid；
+    非此格式（115/WebDAV/其它）返回 None。
+    """
+    try:
+        parts = urlsplit(url or "")
+        if parts.netloc != "www.googleapis.com":
+            return None
+        segs = parts.path.strip("/").split("/")
+        if len(segs) == 4 and segs[0] == "drive" and segs[1] == "v3" \
+                and segs[2] == "files" and segs[3]:
+            from urllib.parse import unquote
+            return unquote(segs[3])
+    except Exception:
+        pass
+    return None
+
+
+def _drive_403_error_reason(body) -> tuple:
+    """解析 Google Drive API 403 错误体，返回 (reason, message)；解析失败返回 ("", "")，永不抛异常。"""
+    try:
+        import json  # 局部导入，兼容文件内既有风格
+
+        if not body:
+            return ("", "")
+        data = json.loads(body)
+        if not isinstance(data, dict):
+            return ("", "")
+        err = data.get("error")
+        if not isinstance(err, dict):
+            return ("", "")
+
+        errors = err.get("errors")
+        first = {}
+        if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+            first = errors[0]
+
+        reason = first.get("reason", "")
+        if not isinstance(reason, str):
+            reason = str(reason) if reason is not None else ""
+
+        message = err.get("message")
+        if not message:
+            message = first.get("message", "")
+        if not isinstance(message, str):
+            message = str(message) if message is not None else ""
+        message = message[:200]
+
+        return (reason, message)
+    except Exception:
+        return ("", "")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
 CHUNK = 1024 * 256
