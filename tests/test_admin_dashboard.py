@@ -58,7 +58,11 @@ def admin(db):
 
 
 def _direct_parts(admin, days=14):
-    """单线程直接调用 8 个原 handler，失败记 None（与聚合的降级口径对齐）。"""
+    """单线程直接调用 8 个原 handler，失败记 None（与聚合的降级口径对齐）。
+
+    调用清单从 admin_dashboard._JOBS 派生：_JOBS 增减 part 时这里自动跟进；
+    8 个 part 名的 tripwire 断言见 test_collect_matches_direct_handlers。
+    """
     from backend.api.admin import get_playback_stats, get_stats_overview
     from backend.api.admin_economy import economy_stats, get_stats_trend
     from backend.api.admin_services import get_services_status
@@ -67,19 +71,20 @@ def _direct_parts(admin, days=14):
     from backend.emby_server.portal import list_libraries
 
     db = SessionLocal()
+    builders = {
+        "get_stats_overview": lambda: get_stats_overview(admin, db),
+        "get_playback_stats": lambda: get_playback_stats(admin, db),
+        "economy_stats": lambda: economy_stats(admin, db),
+        "list_libraries": lambda: list_libraries(admin, db),
+        "servers_summary": lambda: servers_summary(admin, db),
+        "realms_overview": lambda: realms_overview(admin, db),
+        "get_services_status": lambda: get_services_status(admin, db),
+        "get_stats_trend": lambda: get_stats_trend(days, admin, db),
+    }
     try:
-        calls = [
-            ("overview", lambda: get_stats_overview(admin, db)),
-            ("playback", lambda: get_playback_stats(admin, db)),
-            ("economy", lambda: economy_stats(admin, db)),
-            ("libraries", lambda: list_libraries(admin, db)),
-            ("servers", lambda: servers_summary(admin, db)),
-            ("realms", lambda: realms_overview(admin, db)),
-            ("backend_services", lambda: get_services_status(admin, db)),
-            ("trend", lambda: get_stats_trend(days, admin, db)),
-        ]
         out = {}
-        for key, fn in calls:
+        for key, name in admin_dashboard._JOBS:
+            fn = builders[name]  # 未知 builder 名直接 KeyError，不静默成 None
             try:
                 out[key] = fn()
             except Exception:  # noqa: BLE001
@@ -159,3 +164,45 @@ def test_endpoint_shape(admin):
     resp2 = admin_dashboard.dashboard_overview(
         days=999, current_admin=SimpleNamespace(id=admin.id))
     assert resp2["success"] is True
+
+
+@pytest.fixture()
+def dash_client(admin):
+    """真实 app 的 TestClient：鉴权保持真实依赖（不覆盖 get_current_admin），
+    get_db 指向隔离库。"""
+    from fastapi.testclient import TestClient
+
+    from backend.database import get_db
+    from backend.main import app
+
+    app.dependency_overrides[get_db] = lambda: SessionLocal()
+    try:
+        yield TestClient(app, raise_server_exceptions=False)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_dashboard_overview_requires_auth(dash_client):
+    """无鉴权头 → 401/403（与 8 个原接口中最严格者一致）。"""
+    r = dash_client.get("/api/admin/dashboard/overview")
+    assert r.status_code in (401, 403)
+
+
+def test_dashboard_days_clamped_to_90_over_http(admin, dash_client):
+    """days=999 → trend 按 90 天计算（trend payload 自带 days 字段）。"""
+    from backend.api.admin_core import get_current_admin
+    from backend.main import app
+
+    app.dependency_overrides[get_current_admin] = lambda: admin
+    try:
+        admin_dashboard._dash_cache.clear()
+        r = dash_client.get("/api/admin/dashboard/overview", params={"days": 999})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["success"] is True
+        trend = body["parts"]["trend"]
+        assert trend is not None
+        assert trend["days"] == 90
+        assert len(trend["series"]) == 90
+    finally:
+        del app.dependency_overrides[get_current_admin]

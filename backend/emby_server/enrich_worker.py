@@ -2231,8 +2231,9 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     try:
         from backend.emby_server.tmdb import apply_runtime as _apply_rt
         _apply_rt(item, fetched.get("tmdb_details"))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # r46补遗：片长缺失原来完全无痕（连日志都没有）
+        logger.debug("apply_runtime 失败 id=%s: %s", getattr(item, "id", "?"), exc)
 
     # 单集 TMDB 数据（v2.50.0）：标题/简介/剧照
     # 在父级图片回退之前应用——有专属剧照的集用自己的，没有的才回退
@@ -2622,8 +2623,10 @@ def _maybe_queue_probe(db, item: Any) -> None:
                 item.probe_priority = max(item.probe_priority or 0, 100)
                 item.probe_attempts = 0
                 item.probe_next_retry_at = None
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # r46补遗：probe 衔接入队失败原来静默 pass——条目技术信息永远不进
+        # 探测队列却无痕。记 warning 可定位。
+        logger.warning("probe 衔接入队失败 id=%s: %s", getattr(item, "id", "?"), exc)
 
 
 def _claim_group_atomic(db, q, now) -> list:

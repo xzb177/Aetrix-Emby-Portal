@@ -1,7 +1,6 @@
 """自建 Emby 服务器：认证与 Token 管理"""
 import hashlib
 import logging
-import os
 import secrets
 import uuid
 from datetime import datetime

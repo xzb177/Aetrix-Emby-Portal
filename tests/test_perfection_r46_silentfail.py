@@ -199,3 +199,145 @@ def test_drive_403_error_reason_never_raises():
     for bad in (b"", b"not json", b"[1,2]", b'{"error": null}',
                 b'{"error": {"errors": "x"}}', None):
         assert st._drive_403_error_reason(bad) == ("", ""), bad
+
+
+# ---------------- r46 补遗：播放/扫描/enrich 静默点 ----------------
+
+def test_raw_nodes_corrupt_json_warns(caplog):
+    """流节点配置写坏 → warning 日志 + 返回 []（原来静默 pass）。"""
+    from backend.emby_server import stream_nodes as sn
+
+    class _Row:
+        value = "{bad json"
+
+    class _Q:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return _Row()
+
+    class _DB:
+        def query(self, *a, **k):
+            return _Q()
+
+    with caplog.at_level("WARNING", logger="backend.emby_server.stream_nodes"):
+        assert sn._raw_nodes(_DB()) == []
+    assert any("流节点配置解析失败" in r.getMessage() for r in caplog.records)
+
+
+def test_stream_accel_node_failure_warns(monkeypatch, caplog):
+    """流节点改写抛异常 → warning（原来 debug，生产看不到）+ 回落本机。"""
+    from backend.emby_server import stream_accel as sa
+    from backend.emby_server import stream_nodes as sn
+
+    def _boom(db, stream_url, transcoding_url, base):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(sn, "rewrite_playback_urls", _boom)
+    monkeypatch.setattr(sa, "get_effective_domain", lambda db: "")
+    with caplog.at_level("WARNING", logger="backend.emby_server.stream_accel"):
+        out = sa.rewrite_playback_urls_unified(
+            None, "https://base/x.mp4", "https://base/x.m3u8", "https://base")
+    assert out[2] is None  # 回落：无改写
+    assert any("流节点改写跳过" in r.getMessage() for r in caplog.records)
+
+
+def test_run_task_base_exception_marks_failed(monkeypatch):
+    """BaseException 穿透 except Exception 时，finally 必须把 RUNNING 改成 FAILED。
+
+    回归：部署重启的 KeyboardInterrupt 曾让任务永远卡"运行中"。
+    """
+    from backend.emby_server import scan_queue as sq
+
+    class _FakeProgress:
+        def begin_scan(self, *a, **k):
+            pass
+
+        def remote_stats(self):
+            return {"lists": 0, "reused": 0}
+
+        def end_scan(self, *a, **k):
+            pass
+
+    class _FakeLib:
+        scan_status = "success"
+
+    class _Q:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return _FakeLib()
+
+    class _DB:
+        expire_on_commit = True
+
+        def query(self, *a, **k):
+            return _Q()
+
+        def close(self):
+            pass
+
+    def _boom(*a, **k):
+        raise KeyboardInterrupt("shutdown")
+
+    from backend.emby_server import scanner as _scanner
+    monkeypatch.setattr(_scanner, "scan_library_sync", _boom)
+    monkeypatch.setattr(sq, "SessionLocal", lambda: _DB())
+    monkeypatch.setattr(sq, "progress", _FakeProgress())
+    monkeypatch.setattr(sq, "clear_progress", lambda *a, **k: None)
+    monkeypatch.setattr(sq, "_release_locked", lambda *a, **k: None)
+
+    from datetime import datetime
+    task = sq.ScanTask(library_id=1, name="t", trigger="manual")
+    task.state = sq.STATE_RUNNING
+    task.started_at = datetime.now()
+    # KeyboardInterrupt 本就该继续向上传（工作线程要死），finally 只负责修状态
+    with pytest.raises(KeyboardInterrupt):
+        sq._run_task(task)
+    assert task.state == sq.STATE_FAILED, task.state
+    assert "中断" in (task.error or ""), task.error
+    assert task.finished_at is not None
+
+
+def test_maybe_queue_probe_failure_warns(monkeypatch, caplog):
+    """probe 衔接入队抛异常 → warning + 不抛（原来静默 pass）。"""
+    from backend.emby_server import enrich_worker as ew
+    from backend.emby_server import scanner as _sc
+
+    def _boom(*a, **k):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(_sc, "needs_probe", _boom)
+
+    class _Item:
+        id = 42
+        file_path = "/x.mp4"
+        size = 1
+
+    with caplog.at_level("WARNING", logger="backend.emby_server.enrich_worker"):
+        ew._maybe_queue_probe(None, _Item())  # 不抛即过
+    assert any("probe 衔接入队失败" in r.getMessage() for r in caplog.records)
+
+
+def test_apply_runtime_failure_logged():
+    """apply_runtime 失败分支必须有日志（原来裸 pass 连日志都没有）。"""
+    import inspect
+    from backend.emby_server import enrich_worker as ew
+    src = inspect.getsource(ew)
+    i = src.find("apply_runtime as _apply_rt")
+    assert i > 0
+    block = src[i:i + 400]
+    assert "logger.debug" in block or "logger.warning" in block, block
+
+
+def test_pickcode_invalidate_failure_logged():
+    """115 pickcode 缓存失效失败必须记日志（原来 except: pass）。"""
+    import inspect
+    from backend.emby_server import streaming as st
+    src = inspect.getsource(st.serve_mount_relay_async)
+    i = src.find("_invalidate_115_url")
+    assert i > 0
+    block = src[i:i + 300]
+    assert "logger.warning" in block, block

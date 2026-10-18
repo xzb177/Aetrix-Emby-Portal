@@ -583,8 +583,11 @@ async def serve_mount_relay_async(
                 try:
                     from backend.emby_server.mounts import _invalidate_115_url
                     _invalidate_115_url(_pickcode)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # r46补遗：清缓存失败不能静默——否则死直链继续被沿用，
+                    # 后续播放反复 403/502 却无日志可查。
+                    logger.warning("115 直链缓存失效失败 pickcode=%s: %s",
+                                   _pickcode, exc)
         if resp.status_code >= 400:
             status = resp.status_code
             await resp.aclose()
