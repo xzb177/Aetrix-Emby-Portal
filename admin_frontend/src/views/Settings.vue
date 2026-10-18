@@ -136,6 +136,14 @@ const GROUPS: Group[] = [
     fields: [
       { key: 'exchange_enabled', label: '启用兑换', type: 'bool', hint: '关闭后兑换码无法使用，求片功能一并关闭' },
       {
+        key: 'code_default_plan_id',
+        label: '卡码默认套餐',
+        type: 'int',
+        suffix: '套餐 ID',
+        hint: '卡码授予天数时优先用的套餐 ID；0=不指定，按服自动推导（r40 补后台入口）',
+        advanced: true,
+      },
+      {
         key: 'media_seek_daily_limit',
         label: '每日求片上限',
         type: 'int',
@@ -157,6 +165,7 @@ const GROUPS: Group[] = [
       { key: 'payment_partner_key', label: '商户密钥', type: 'secret', hint: '已配置时显示为 ******，留空不修改' },
       { key: 'payment_qqpay_enabled', label: '启用 QQ 钱包', type: 'bool', hint: '网关配好后才生效：多一种收款方式' },
       { key: 'site_url', label: '站点地址', type: 'str', hint: '用于支付回调，必须是外网可访问地址' },
+      { key: 'max_pending_orders_per_user', label: '待支付订单上限', type: 'int', suffix: '单/人', hint: '每人同时未支付的订单上限，默认 5，r40 补后台入口' },
     ],
   },
   {

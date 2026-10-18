@@ -934,6 +934,21 @@ const E = '/emby'
 
 export const fetchEmbyOverview = () => get<{ total_items: number; total_libraries: number; active_sessions: number; total_users: number }>(`${E}/overview`)
 
+/**
+ * r40：公益服查看权限解锁价格（后端 /api/admin/emby/view-unlock，
+ * view_unlock 家族：emby_view_unlock_points / emby_view_unlock_days）。
+ * 此前有后端读写接口但管理后台无入口，本轮补上。
+ */
+export interface ViewUnlockSettings {
+  points: number
+  days: number
+}
+
+export const fetchViewUnlockSettings = () => get<ViewUnlockSettings>(`${E}/view-unlock`)
+
+export const updateViewUnlockSettings = (data: ViewUnlockSettings) =>
+  put<ViewUnlockSettings>(`${E}/view-unlock`, data)
+
 /** 封面自动生成的配置：样式 + 标题文字（都支持 {library}{type}{year} 变量） */
 export interface LibraryCoverConfig {
   template: 'poster' | 'visual' | 'filmstrip'

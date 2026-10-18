@@ -8,10 +8,11 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowLeftRight, Bot, Coins, Gift, MessageCircle, MessageSquareDashed, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
+import { ArrowLeftRight, Bot, Coins, Gift, KeyRound, MessageCircle, MessageSquareDashed, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
+import { fetchViewUnlockSettings, updateViewUnlockSettings } from '@/api/admin'
 
 const { isPhone } = useBreakpoint()
 /** 窄屏标签放到输入框上方，120px 的左侧标签会把输入框挤出屏幕 */
@@ -120,6 +121,28 @@ const mediaSeekEnabled = seekBoolSwitch('media_seek_enabled')
 const mediaSeekVoteEnabled = seekBoolSwitch('media_seek_vote_enabled')
 const mediaSeekNotifyVoters = seekBoolSwitch('media_seek_notify_voters')
 
+// r40：查看权限解锁价格（emby_view_unlock_points / emby_view_unlock_days，
+// 后端 GET/PUT /api/admin/emby/view-unlock；此前有接口无后台入口）
+const viewUnlock = ref({ points: 0, days: 0 })
+const viewUnlockLoaded = ref(false)
+const viewUnlockSaving = ref(false)
+
+async function saveViewUnlock() {
+  if (!viewUnlockLoaded.value || viewUnlockSaving.value) return
+  const points = Math.max(0, Math.floor(Number(viewUnlock.value.points) || 0))
+  const days = Math.max(0, Math.floor(Number(viewUnlock.value.days) || 0))
+  viewUnlockSaving.value = true
+  try {
+    const res = await updateViewUnlockSettings({ points, days })
+    viewUnlock.value = { points: res.points ?? points, days: res.days ?? days }
+    ElMessage.success('查看权限解锁价格已保存')
+  } catch {
+    /* 写操作失败由请求拦截器统一弹错 */
+  } finally {
+    viewUnlockSaving.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   loadError.value = ''
@@ -131,6 +154,15 @@ async function load() {
     loadError.value = e instanceof Error ? e.message : '加载配置失败'
   } finally {
     loading.value = false
+  }
+  // r40：查看权限解锁价格走独立 endpoint（view_unlock 家族），与福利表单分开加载，
+  // 一边失败不影响另一边展示
+  try {
+    const vu = await fetchViewUnlockSettings()
+    viewUnlock.value = { points: vu.points ?? 0, days: vu.days ?? 0 }
+    viewUnlockLoaded.value = true
+  } catch {
+    /* 查看权限加载失败时该卡片显示错误态，不影响福利表单 */
   }
 }
 
@@ -295,6 +327,31 @@ onMounted(load)
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
         </el-form>
+      </SectionCard>
+
+      <!-- r40：查看权限解锁价格（emby_view_unlock_points/days）。后端接口一直存在，
+           但管理后台没有入口，只能手写 DB；本轮补上独立卡片（独立 endpoint 独立保存） -->
+      <SectionCard
+        title="查看权限解锁"
+        :icon="KeyRound"
+        description="公益服查看权限（Emby 账号/线路）的积分价格与有效期"
+      >
+        <el-form v-if="viewUnlockLoaded" :label-position="labelPosition" label-width="120px" class="config-form">
+          <el-form-item label="积分价格">
+            <el-input-number v-model="viewUnlock.points" :min="0" :step="10" class="field-input" />
+            <span class="field-suffix">积分</span>
+            <span class="field-hint">用户解锁查看权限需要支付的积分</span>
+          </el-form-item>
+          <el-form-item label="有效期">
+            <el-input-number v-model="viewUnlock.days" :min="0" :step="1" class="field-input" />
+            <span class="field-suffix">天</span>
+            <span class="field-hint">解锁后有效天数，0 = 永久有效</span>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" :icon="Save" :loading="viewUnlockSaving" @click="saveViewUnlock">保存解锁价格</el-button>
+          </el-form-item>
+        </el-form>
+        <el-alert v-else title="查看权限配置加载失败，请刷新重试" type="warning" :closable="false" />
       </SectionCard>
 
       <SectionCard

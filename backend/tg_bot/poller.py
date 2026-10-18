@@ -165,12 +165,10 @@ def poll_forever() -> None:
             if not bot_token:
                 logger.warning("tg_bot_poller: token 未配置，线程退出")
                 return
-            # 检查总开关
-            enabled = store.get_value(db, "tg_bot_commands_enabled", "1")
-            if enabled != "1":
-                logger.info("tg_bot_poller: 开关关闭，休眠 60s")
-                time.sleep(60)
-                continue
+            # r40：删除 ``tg_bot_commands_enabled`` 死开关检查。该键在全产品无任何
+            # 写入通道（无 schema、无管理端点、无后台 UI），恒为默认值 "1"。
+            # Bot 总开关只许一套：``bot_enabled``（welfare 家族，有后台 UI，
+            # 关闭后 router 层静默丢弃 update，见 tg_bot/router.py）。
             offset = _get_offset(db)
             _beat(db)
         finally:
