@@ -247,7 +247,7 @@ _backend_override = None
 
 
 def _set_backend_override(backend) -> None:
-    """测试用：注入假后端（实现 get/set/zadd/zcard/zrange/zremrangebyrank/delete）。"""
+    """测试用：注入假后端（实现 get/set/zadd/zcard/zrange/zrem/delete）。"""
     global _backend_override
     _backend_override = backend
 
@@ -364,7 +364,9 @@ def put_cached_dropped(db: Session, user_id: int, query_params,
             oldest = c.zrange(_INDEX_KEY, 0, over - 1)
             if oldest:
                 c.delete(*oldest)
-            c.zremrangebyrank(_INDEX_KEY, 0, over - 1)
+                # 按成员名删（与 delete 配对）：并发交错时 zremrangebyrank 可能
+                # 删掉「别的请求刚写的新条目」，成员名删保证一致。
+                c.zrem(_INDEX_KEY, *oldest)
         return True
 
     _do(_op, False)

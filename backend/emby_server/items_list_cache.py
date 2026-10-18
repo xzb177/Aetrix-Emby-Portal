@@ -186,8 +186,16 @@ def is_cacheable(*, filters: set, sort_by: list, has_ids: bool) -> bool:
 
 # ---------------- 键 ----------------
 
-def scope_lib_ids(db: Session, allowed: Optional[set]) -> list[int]:
+def scope_lib_ids(db: Session, allowed: Optional[set]) -> Optional[list[int]]:
     """版本号作用域：allowed 非 None（含空集合）用它本身；None = 不过滤 → 全部启用库。
+
+    返回值约定：
+    - None = 作用域未知（读媒体库列表时 DB 抛异常）。调用方必须整层
+      fail-closed：不读缓存、不写缓存、不做任何基于作用域的判定。
+    - [] = 真实空集合（allowed 本来就是空集合），键独立：它与
+      allowed=set() 的空作用域共用同一个键是正确的，因为两者语义相同；
+      但 None 绝不能用 [] 充数——DB 抖动时若把某用户的 kept 清单写进
+      「空作用域」键，随后不可见用户命中该键会造成数据泄露。
 
     ⚠️ 空集合是 _library_scope 的 fail-closed 语义（全部不可见），绝不能
     落到下面的「全部启用库」分支：那会让不可见用户与不限制用户（None）
@@ -203,7 +211,7 @@ def scope_lib_ids(db: Session, allowed: Optional[set]) -> list[int]:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("ID 清单缓存读媒体库列表失败: %s", exc)
-        return []
+        return None
 
 
 def _canonical_list_params(query_params) -> str:
@@ -312,7 +320,16 @@ def put_cached_page(db: Session, query_params, lib_ids: list[int],
     if ttl <= 0:
         return
     key = _key_for(db, query_params, lib_ids, versions)
-    val = _serialize(ids, total, truncated)
+    # 内部防御性截断：调用方已在回填前切过，这里防未来调用方遗漏。
+    max_ids = cache_max_ids(db)
+    ids = list(ids)
+    truncated = truncated or len(ids) > max_ids
+    ids = ids[:max_ids]
+    try:
+        val = _serialize(ids, total, truncated)
+    except Exception as exc:  # noqa: BLE001 失败静默（docstring 承诺不影响请求）
+        logger.warning("ID 清单缓存序列化失败: %s", exc)
+        return
 
     def _op(c):
         c.set(key, val, ex=ttl)
@@ -322,7 +339,10 @@ def put_cached_page(db: Session, query_params, lib_ids: list[int],
             oldest = c.zrange(_INDEX_KEY, 0, over - 1)
             if oldest:
                 c.delete(*oldest)
-            c.zremrangebyrank(_INDEX_KEY, 0, over - 1)
+                # 按成员名删（与 delete 配对）：并发交错时 zremrangebyrank 可能
+                # 删掉「别的请求刚写的新条目」，成员名删保证「删的正是刚读出来的那些」，
+                # 避免「值已删成员仍在 / 成员已删值成孤儿」的漂移。
+                c.zrem(_INDEX_KEY, *oldest)
         return True
 
     _dedup._do(_op, False)

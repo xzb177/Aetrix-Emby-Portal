@@ -78,6 +78,9 @@ class FakeRedis:
     def zremrangebyrank(self, name, start, end):
         return 0
 
+    def zrem(self, name, *members):
+        return 0
+
 
 def _g():
     return uuid.uuid4().hex

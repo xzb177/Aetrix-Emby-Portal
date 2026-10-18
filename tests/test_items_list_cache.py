@@ -94,6 +94,15 @@ class FakeRedis:
             z.pop(k, None)
         return len(doomed)
 
+    def zrem(self, name, *members):
+        z = self.zsets.get(name, {})
+        n = 0
+        for m in members:
+            if m in z:
+                del z[m]
+                n += 1
+        return n
+
 
 def _g():
     return uuid.uuid4().hex
@@ -369,7 +378,7 @@ def test_version_bump_invalidates(fake_backend, clean_config):
         db.close()
 
 
-def test_max_entries_evicts_oldest(fake_backend, clean_config, monkeypatch):
+def test_max_entries_evicts_oldest(fake_backend, clean_config):
     db = _test_db()
     try:
         for i in range(ilc._MAX_ENTRIES + 3):
@@ -541,3 +550,76 @@ def test_e2e_serialize_bounded(fake_backend, clean_config):
         assert page.ids == ids and page.total == 180000 and page.truncated is True
     finally:
         db.close()
+
+
+def test_scope_db_failure_returns_none():
+    """DB 抖动 → scope_lib_ids 返回 None（作用域未知），绝不拿 [] 充数。"""
+    class BoomDB:
+        def query(self, *a, **kw):
+            raise RuntimeError("db down")
+
+    assert ilc.scope_lib_ids(BoomDB(), None) is None
+    # 真实空集合不受影响：仍是 []（键独立、语义正确）
+    assert ilc.scope_lib_ids(BoomDB(), set()) == []
+
+
+def test_e2e_unknown_scope_fail_closed(seeded, fake_backend, clean_config, monkeypatch):
+    """作用域未知 → 整层清单缓存 fail-closed：不读不写，结果与基线逐条一致。"""
+    s = seeded
+    params = _full_params(Limit="3")
+    base = api._query_items(_req(params), s.user, s.db, "http://t")
+    keys_before = set(_list_keys(fake_backend))
+
+    monkeypatch.setattr(ilc, "scope_lib_ids", lambda db, allowed: None)
+    res = api._query_items(_req(params), s.user, s.db, "http://t")
+
+    assert set(_list_keys(fake_backend)) == keys_before, "作用域未知时不许写清单缓存"
+    assert _ids(res) == _ids(base)
+    assert res["TotalRecordCount"] == base["TotalRecordCount"]
+
+
+def test_e2e_want_total_false_hit_branch(seeded, fake_backend, clean_config, monkeypatch):
+    """want_total=false 命中清单缓存的分支：HasMore/总数/Ids 都对。"""
+    s = seeded
+    hits = []
+    _real = ilc.get_cached_page
+
+    def spy(db, query_params, lib_ids, versions=None):
+        page = _real(db, query_params, lib_ids, versions=versions)
+        hits.append(page is not None)
+        return page
+
+    monkeypatch.setattr(ilc, "get_cached_page", spy)
+
+    # 先 want_total=true 写热（seeded 去重后 N 条，前面别的用例可能新增过条目）
+    hot = api._query_items(_req(_full_params(Limit="3")), s.user, s.db, "http://t")
+    total = hot["TotalRecordCount"]
+    assert total >= 6
+    assert hits, "至少写过一次清单缓存"
+    hits.clear()
+
+    # 同参数、EnableTotalRecordCount=false → 必须命中
+    no_total = api._query_items(
+        _req(_full_params(Limit="3", EnableTotalRecordCount="false")), s.user, s.db, "http://t")
+    assert hits[-1] is True, "false 请求应命中清单缓存"
+    assert no_total.get("HasMore") is True
+    assert no_total["TotalRecordCount"] == 3  # Emby 约束：永不为负，本页数量
+    assert _ids(no_total) == _ids(hot)
+
+    # 尾页：StartIndex=total-3 → 命中且 HasMore=False
+    tail = api._query_items(
+        _req(_full_params(Limit="3", StartIndex=str(total - 3), EnableTotalRecordCount="false")),
+        s.user, s.db, "http://t")
+    assert hits[-1] is True
+    assert tail.get("HasMore") is False
+    assert len(tail["Items"]) == 3
+
+
+def test_random_sort_does_not_500(seeded, fake_backend, clean_config):
+    """SortBy=Random 有结果时不 500（r1307 之前 NameError）：顺序随机，只验形态。"""
+    s = seeded
+    res = api._query_items(
+        _req(_full_params(SortBy="Random", Limit="5")), s.user, s.db, "http://t")
+    assert len(res["Items"]) > 0
+    assert res["TotalRecordCount"] > 0
+    assert res["StartIndex"] == 0
