@@ -137,8 +137,11 @@
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
-.stat-tile:hover {
-  border-color: var(--au-border-strong);
+/* P3：悬停提升只在桌面（hover 可用 + 精确指针）生效，避免移动端触摸 :hover 粘滞 */
+@media (hover: hover) and (pointer: fine) {
+  .stat-tile:hover {
+    border-color: var(--au-border-strong);
+  }
 }
 
 .stat-tile .stat-label,

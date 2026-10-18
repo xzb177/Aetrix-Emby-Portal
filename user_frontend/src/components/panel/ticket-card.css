@@ -73,7 +73,10 @@
     gap: 12px;
     transition: transform .18s ease;
   }
-  .hc-card:hover { transform: translateY(-2px); }
+  /* P3：悬停提升只在桌面（hover 可用 + 精确指针）生效，避免移动端触摸 :hover 粘滞 */
+  @media (hover: hover) and (pointer: fine) {
+    .hc-card:hover { transform: translateY(-2px); }
+  }
   .hc-title { font-size: 15px; font-weight: 500; color: #27251e; }
   .hc-tag { color: #6d675c; }
   .hc-badge {
