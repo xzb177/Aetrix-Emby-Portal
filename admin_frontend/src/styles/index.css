@@ -34,9 +34,20 @@
   font-size: var(--font-size-3xl);
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-tight);
-  letter-spacing: 0.01em;
+  /* ui/beautify-20261018：字距 0.02em + 下方琥珀装饰线 */
+  letter-spacing: 0.02em;
   color: var(--text-primary);
   margin: 0;
+}
+.admin-page-title::after {
+  content: '';
+  display: block;
+  width: 28px;
+  height: 2px;
+  background: var(--au-primary);
+  border-radius: 999px;
+  margin-top: 8px;
+  opacity: 0.6;
 }
 
 /* 页面副标题：它是一段说明文，不是第二个大标题。
@@ -62,9 +73,16 @@
 .admin-card {
   background: var(--bg-card);
   border: 1px solid var(--border-subtle);
-  /* 暗房影院：实色表面 + 发丝线 + 14px 圆角，不靠阴影分层（同用户端 .au-card） */
+  /* 暗房影院：实色表面 + 发丝线 + 14px 圆角 + 顶缘高光，不靠阴影分层（同用户端 .au-card） */
   border-radius: var(--au-r-lg);
   padding: var(--space-5);
+  box-shadow: var(--au-card-highlight);
+  transition: transform var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease),
+    box-shadow var(--au-fast) var(--au-ease);
+}
+.admin-card:hover {
+  border-color: var(--au-border-strong);
+  transform: translateY(-1px);
 }
 
 .admin-layout .admin-content .admin-card {

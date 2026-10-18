@@ -118,9 +118,9 @@
   --au-space-2xl: 48px;
 
   /* 圆角：收敛，不再有 22px 的大圆角 */
-  --au-r-sm: 8px;
-  --au-r-md: 10px;
-  --au-r-lg: 14px;
+  --au-r-sm: 6px;
+  --au-r-md: 12px;
+  --au-r-lg: 16px;
   /* U0 阶梯缺陷修复：xl 与 lg 重值 14px → 20px（对齐 --paper-r-2xl；
      实测 --au-r-xl/--neo-radius-xl 当前零引用，零视觉差） */
   --au-r-xl: 20px;
@@ -487,43 +487,45 @@ a:active {
 html[data-theme='light'] {
   color-scheme: light;
 
-  /* ==================== 别名层（UI 统一 U2） ====================
-     浅色主题下 --au-* 映射到 --paper* 语义令牌 */
-  --au-bg: var(--paper-bg);
-  --au-bg-soft: var(--paper-bg-soft);
+  /* ==================== 纸厅转正（ui/beautify-20261018） ====================
+     按 DESIGN.md v1.0 纸厅口径重写浅色令牌（羊皮纸 #faf8f5 + 深青 #016a71 唯一彩色）。
+     深色 :root 保持不变（播放沉浸页与系统回退用）。
+     口径说明：--au-border 取 DESIGN.md 的 #d1d1cd（说明书 U1 的 rgba(39,37,30,0.09) 与之冲突，以 DESIGN.md 为准）。 */
+  --au-bg: #faf8f5;
+  --au-bg-soft: #efe9df;
   --au-input-bg: var(--paper-input-bg);
   --au-input-bg-focus: #ffffff;
   --au-input-border: var(--paper-line);
-  --au-surface: var(--paper-card);
-  --au-surface-2: var(--paper-card-2);
-  --au-surface-3: var(--paper-card-3);
+  --au-surface: #fdfbfa;
+  --au-surface-2: #f0ebe3;
+  --au-surface-3: #e8e0d4;
   --au-overlay: var(--paper-overlay);
   --au-overlay-soft: rgba(28, 25, 21, 0.16);
   --au-overlay-mid: rgba(28, 25, 21, 0.3);
   --au-overlay-strong: rgba(28, 25, 21, 0.55);
   --au-overlay-menu: var(--paper-overlay-menu);
-  --au-chrome: var(--paper-chrome);
-  --au-scrim: var(--paper-scrim);
+  --au-chrome: rgba(250, 248, 245, 0.96);
+  --au-scrim: rgba(39, 37, 30, 0.32);
   --au-grid-line: rgba(28, 25, 21, 0.05);
   --au-track: rgba(28, 25, 21, 0.1);
 
-  --au-text: var(--paper-ink);
-  --au-text-2: var(--paper-ink-2);
-  --au-text-3: var(--paper-ink-3);
+  --au-text: #27251e;
+  --au-text-2: #6d675c;
+  --au-text-3: rgba(39, 37, 30, 0.55);
   --au-text-4: rgba(28, 25, 21, 0.42);
 
-  --au-border: var(--paper-line);
-  --au-border-strong: var(--paper-line-strong);
-  --au-border-focus: var(--paper-border-focus);
+  --au-border: #d1d1cd;
+  --au-border-strong: rgba(39, 37, 30, 0.14);
+  --au-border-focus: rgba(1, 106, 113, 0.35);
 
-  --au-primary: var(--paper-primary);
-  --au-primary-strong: var(--paper-primary-strong);
-  --au-primary-deep: #7f541b;
-  --au-primary-soft: var(--paper-primary-soft);
-  --au-primary-mid: rgba(185, 128, 47, 0.16);
-  --au-primary-border: var(--paper-primary-border);
+  --au-primary: #016a71;
+  --au-primary-strong: #015a60;
+  --au-primary-deep: #01404a;
+  --au-primary-soft: rgba(1, 106, 113, 0.08);
+  --au-primary-mid: rgba(1, 106, 113, 0.14);
+  --au-primary-border: rgba(1, 106, 113, 0.22);
   --au-primary-glow: transparent;
-  --au-on-primary: var(--paper-on-primary);
+  --au-on-primary: #fff;
 
   --au-violet: rgba(28, 25, 21, 0.72);
   --au-violet-soft: rgba(28, 25, 21, 0.05);

@@ -8,17 +8,17 @@ export default {
     extend: {
       colors: {
         primary: {
-          // 暗房影院：放映机琥珀（与 --au-primary 同一色相）
-          50: '#fbf3e6',
-          100: '#f6e3c3',
-          200: '#efcd94',
-          300: '#ecbb6c',
-          400: '#e8a84a',
-          500: '#d4923a',
-          600: '#a86f24',
-          700: '#7f541b',
-          800: '#573914',
-          900: '#2f1f0b',
+          // ui/beautify-20261018：深青家族（与浅色 --au-primary #016a71 / -strong #015a60 / -deep #01404a 同源）
+          50: '#ecf5f5',
+          100: '#d2e9e9',
+          200: '#a3d3d3',
+          300: '#6db8b9',
+          400: '#2f979a',
+          500: '#016a71',
+          600: '#015a60',
+          700: '#01404a',
+          800: '#012f36',
+          900: '#01222a',
         },
         accent: {
           // 只有一支强调色：紫 / 粉并入琥珀，语义绿降饱和
@@ -29,7 +29,16 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
+        // ui/beautify-20261018：走 --au-font-sans 系统字体栈（DESIGN.md §3：不引入 Web 字体）
+        sans: ['var(--au-font-sans)'],
+      },
+      // ui/beautify-20261018：圆角映射 --au-r-* 令牌（卡片 16px / 输入与填充按钮 12px / 幽灵按钮 6px / chips 999px）
+      borderRadius: {
+        sm: 'var(--au-r-sm)',
+        md: 'var(--au-r-md)',
+        lg: 'var(--au-r-lg)',
+        xl: 'var(--au-r-xl)',
+        full: 'var(--au-r-full)',
       },
     },
   },
