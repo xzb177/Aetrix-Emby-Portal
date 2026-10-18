@@ -223,13 +223,13 @@ const visibleServers = computed(() => serverList.value.filter((s) => isVisible(s
 // 可见服数量（0 服时首页走空态，见模板）
 const visibleCount = computed(() => visibleServers.value.length)
 const LAST_SERVER_COUNT_KEY = 'aetrix:lastServerCount'
-// 上一轮非空服数量：骨架屏按此渲染，避免数据到达后高度跳动（优先取本地存过的真实数量）
+// 上一轮可见非空服数量：骨架屏按此渲染，避免数据到达后高度跳动（优先取本地存过的真实数量）
 const lastServerCount = ref(2)
 try {
   const n = Number(localStorage.getItem(LAST_SERVER_COUNT_KEY))
   if (Number.isInteger(n) && n > 0) lastServerCount.value = n
 } catch { /* 取不到就用默认 2 */ }
-watch(serverList, (v) => {
+watch(visibleServers, (v) => {
   if (v.length > 0) {
     lastServerCount.value = v.length
     try { localStorage.setItem(LAST_SERVER_COUNT_KEY, String(v.length)) } catch { /* 忽略 */ }
@@ -278,9 +278,11 @@ function teardownSpy() {
   spy?.disconnect()
   spy = null
 }
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
 function jumpTo(id: string) {
   activeAnchor.value = id
-  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  document.getElementById(id)?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' })
 }
 watch(isWide, (v) => {
   if (v) void nextTick(() => setupSpy())
@@ -291,7 +293,7 @@ watch(isWide, (v) => {
 function scrollShelf(dir: 1 | -1) {
   const el = parcelsEl.value
   if (!el) return
-  el.scrollBy({ left: dir * Math.max(240, el.clientWidth * 0.8), behavior: 'smooth' })
+  el.scrollBy({ left: dir * Math.max(240, el.clientWidth * 0.8), behavior: reduceMotion ? 'auto' : 'smooth' })
 }
 let shelfDrag: { startX: number; startScroll: number; moved: boolean } | null = null
 function onShelfPointerDown(e: PointerEvent) {
@@ -299,7 +301,9 @@ function onShelfPointerDown(e: PointerEvent) {
   const el = parcelsEl.value
   if (!el) return
   shelfDrag = { startX: e.clientX, startScroll: el.scrollLeft, moved: false }
+  try { el.setPointerCapture(e.pointerId) } catch { /* 忽略：旧浏览器不支持 */ }
   const onMove = (ev: PointerEvent) => {
+    if (!(ev.buttons & 1)) { onUp(); return }
     if (!shelfDrag) return
     const dx = ev.clientX - shelfDrag.startX
     if (Math.abs(dx) > 6) shelfDrag.moved = true
@@ -308,6 +312,7 @@ function onShelfPointerDown(e: PointerEvent) {
   const onUp = () => {
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
+    window.removeEventListener('pointercancel', onUp)
     if (shelfDrag?.moved) {
       // 吞掉拖拽松手后的那次 click，避免误触开封
       const swallow = (ce: Event) => {
@@ -321,8 +326,10 @@ function onShelfPointerDown(e: PointerEvent) {
   }
   window.addEventListener('pointermove', onMove)
   window.addEventListener('pointerup', onUp)
+  window.addEventListener('pointercancel', onUp)
 }
 
+let spyRaf = 0
 let resizeRaf = 0
 /** resize 高频触发时用 rAF 合并滚动提示重算 */
 function onResize() {
@@ -342,13 +349,14 @@ onMounted(() => {
   wideMq = window.matchMedia('(min-width: 1280px)')
   syncWide()
   wideMq.addEventListener('change', syncWide)
-  requestAnimationFrame(() => setupSpy())
+  spyRaf = requestAnimationFrame(() => { spyRaf = 0; setupSpy() })
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   wideMq?.removeEventListener('change', syncWide)
   teardownSpy()
   if (resizeRaf) cancelAnimationFrame(resizeRaf)
+  if (spyRaf) { cancelAnimationFrame(spyRaf); spyRaf = 0 }
 })
 
 /* ---------- 日志头 ---------- */
