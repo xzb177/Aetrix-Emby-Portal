@@ -388,3 +388,21 @@ def test_parity_patrol_rescue_end_to_end(db, monkeypatch):
     db.expire_all()
     assert _nums(db, s.id) == [1, 2, 3, 4]
     assert _nums(db, other.id) == [1, 2, 3, 4]
+
+
+# 21. 巡检不受进程级 DONE 集挡住：本进程 enrich 早先已判过该季
+# （键在 _PARITY_RENUMBER_DONE 里）、集号又被改回偶数列时，巡检强制
+# 重判、照样归一
+def test_parity_patrol_rescue_ignores_done_cache(db, monkeypatch):
+    s = _series(db, name="回滚剧")
+    _episodes(db, s, [2, 4, 6, 8], dur_min=60, ref_min=30)
+    monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(8))
+    # 模拟本进程 enrich 早先已判过该季（key 留在进程级 DONE 集里）
+    ew._PARITY_RENUMBER_DONE.add((s.id, 1))
+    first = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode").first()
+    assert ew._maybe_parity_renumber_season(db, first) is False  # 被 DONE 挡住
+    db.expire_all()
+    assert ew.parity_patrol_rescue(db) == 1  # 巡检强制重判，照样归一
+    db.expire_all()
+    assert _nums(db, s.id) == [1, 2, 3, 4]

@@ -3316,8 +3316,9 @@ def parity_patrol_rescue(db, limit: int = _PARITY_PATROL_PER_ROUND) -> int:
     _maybe_parity_renumber_season（TMDB/时长门槛在函数内复查）。
     默认开、无面板开关；单轮硬上限 200 季；只读预筛＋逐季短事务，
     不抢主链路。
-    进程级 _PARITY_RENUMBER_DONE：与 enrich 同进程时正好去重；不同进程时
-    函数内门槛复查本身幂等（归一后集号 1..N 不再命中图案），可接受。
+    进程级 _PARITY_RENUMBER_DONE：巡检在调用前先清掉本季的已判标记、
+    强制新鲜重判（enrich 路径「每季只判一次」语义不变）；门槛复查本身
+    幂等（归一后集号 1..N 不再命中图案）。
     """
     fixed = 0
     for sid, sno in _parity_patrol_candidates(db)[:limit]:
@@ -3330,6 +3331,11 @@ def parity_patrol_rescue(db, limit: int = _PARITY_PATROL_PER_ROUND) -> int:
         if first is None:
             continue
         try:
+            # 巡检每轮强制新鲜重判：先清掉该季在本进程的已判标记。
+            # 不清的话，本进程 enrich 早先留下的键会把函数入口直接挡掉
+            # ——而「已归一过又被重扫改回偶数列」恰恰是巡检兜底要修的场景。
+            with _PARITY_RENUMBER_LOCK:
+                _PARITY_RENUMBER_DONE.discard((int(sid), int(sno)))
             if _maybe_parity_renumber_season(db, first):
                 db.commit()
                 fixed += 1
