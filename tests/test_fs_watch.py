@@ -11,6 +11,7 @@
    的库这一轮不做指纹秒跳；``force_full`` 只影响那一轮。
 """
 import os
+import time
 from types import SimpleNamespace
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
@@ -29,6 +30,7 @@ def _reset_watcher():
     fw._DEGRADED.clear()
     fw._PENDING.clear()
     fw._LAST_TRIGGER.clear()
+    fw._RETRY_AT.clear()
     for key in fw._STATS:
         fw._STATS[key] = 0
     yield
@@ -430,3 +432,147 @@ def test_watcher_status_exposes_reconcile(monkeypatch):
     assert status["reconcile_interval_sec"] == fw.RECONCILE_INTERVAL_SEC
     assert status["last_reconcile_at"] == 123.0
     assert status["last_reconcile_changed"] is True
+
+
+# ==================== 合并窗口延迟补发（60s 窗口吞事件修复）====================
+# 沙盒实测：T 触发后 T+57.5s 落地的文件，事件被合并计数吞掉、150s 内无扫描无入库；
+# 落单文件 + 后续无事件时静默漏到定时扫描。修复口径：合并=延迟，不是丢弃——
+# 窗口结束后若期间有被合并的事件，drain 线程自动补发一轮增量扫描。
+
+class _FakeClock:
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+
+def _trigger_harness(monkeypatch, calls):
+    """给 _trigger_scan 装最小桩：查库返回启用库、enqueue 只记账"""
+    import backend.database as dbmod
+
+    class _Lib:
+        id = 5
+        name = "电影库"
+        is_enabled = True
+        fs_watch = True
+
+    class _FakeQuery:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return _Lib()
+
+    class _FakeSession:
+        def query(self, *a, **k):
+            return _FakeQuery()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(dbmod, "SessionLocal", _FakeSession)
+    monkeypatch.setattr("backend.emby_server.scan_queue.enqueue",
+                        lambda lib, trigger=None, **kw: calls.append((lib.id, trigger)))
+
+
+def _wait_for(predicate, timeout=10.0, interval=0.05):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def _fs_event_triggers(calls):
+    return [c for c in calls if c[1] == "fs-event"]
+
+
+def test_coalesced_event_is_retried_after_min_interval(monkeypatch):
+    """复现：T 触发、T+30s 再来事件 → 窗口结束后必须补触发一轮（不是丢弃）"""
+    import threading
+
+    calls = []
+    _trigger_harness(monkeypatch, calls)
+    clock = _FakeClock(1000.0)
+    monkeypatch.setattr(fw, "_now", clock)
+    monkeypatch.setattr(fw, "FS_EVENT_DEBOUNCE_SEC", 0.05)
+    monkeypatch.setattr(fw, "_reconcile_once", lambda: {"changed": False})
+
+    fw._trigger_scan(5)                      # T=1000：触发
+    assert _fs_event_triggers(calls) == [(5, "fs-event")]
+
+    clock.now = 1030.0
+    fw._trigger_scan(5)                      # T+30：在 60s 窗口内 → 合并
+    assert _fs_event_triggers(calls) == [(5, "fs-event")]
+    assert fw._STATS["coalesced"] == 1
+    assert fw._RETRY_AT.get(5) == 1060.0, "延迟补发点应=上次触发+60s"
+
+    # drain 线程跑起来；窗口结束（T+60）后必须补触发
+    stop = threading.Event()
+    thread = threading.Thread(target=fw._drain_loop, args=(stop,), daemon=True)
+    thread.start()
+    clock.now = 1061.0
+    ok = _wait_for(lambda: len(_fs_event_triggers(calls)) == 2, timeout=10.0)
+    stop.set()
+    thread.join(timeout=5)
+    assert ok, "窗口结束后没有补触发：事件被吞了"
+    assert 5 not in fw._RETRY_AT, "补发后延迟点要清掉，不能留着再发一次"
+
+
+def test_retry_is_cancelled_when_a_real_trigger_fires(monkeypatch):
+    """T 触发、T+30 合并（已记延迟补发）、T+61 有新事件直接触发 → 不能再补发一次"""
+    calls = []
+    _trigger_harness(monkeypatch, calls)
+    clock = _FakeClock(1000.0)
+    monkeypatch.setattr(fw, "_now", clock)
+
+    fw._trigger_scan(5)                      # T=1000：触发
+    clock.now = 1030.0
+    fw._trigger_scan(5)                      # T+30：合并 → 延迟补发点 1060
+    assert fw._RETRY_AT.get(5) == 1060.0
+
+    clock.now = 1061.0
+    fw._trigger_scan(5)                      # T+61：窗口已过，直接触发，"债"已还
+    assert _fs_event_triggers(calls) == [(5, "fs-event"), (5, "fs-event")]
+    assert 5 not in fw._RETRY_AT
+
+    # 再过一个窗口：不能有第三次触发
+    clock.now = 1130.0
+    for lib_id in fw._due_retries(1130.0):
+        fw._trigger_scan(lib_id)
+    assert _fs_event_triggers(calls) == [(5, "fs-event"), (5, "fs-event")]
+
+
+def test_coalesced_rearm_does_not_stack(monkeypatch):
+    """窗口内多次合并：延迟补发点不叠加，窗口结束只补发一轮"""
+    calls = []
+    _trigger_harness(monkeypatch, calls)
+    clock = _FakeClock(1000.0)
+    monkeypatch.setattr(fw, "_now", clock)
+
+    fw._trigger_scan(5)
+    for t in (1030.0, 1045.0, 1059.0):
+        clock.now = t
+        fw._trigger_scan(5)
+    assert fw._STATS["coalesced"] == 3
+    assert fw._RETRY_AT.get(5) == 1060.0
+
+    clock.now = 1061.0
+    for lib_id in fw._due_retries(1061.0):
+        fw._trigger_scan(lib_id)
+    assert _fs_event_triggers(calls) == [(5, "fs-event"), (5, "fs-event")]
+
+
+def test_due_retries_returns_only_expired():
+    fw._RETRY_AT[5] = 1060.0
+    fw._RETRY_AT[6] = 1200.0
+    assert fw._due_retries(1059.0) == []
+    assert fw._due_retries(1060.0) == [5]
+    assert fw._due_retries(1200.0) == [5, 6]
+
+
+def test_watcher_status_exposes_pending_retries():
+    fw._RETRY_AT[5] = 1060.0
+    assert fw.watcher_status()["pending_retries"] == [5]
