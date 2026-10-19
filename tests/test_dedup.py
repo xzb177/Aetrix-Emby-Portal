@@ -117,3 +117,32 @@ def test_deduplicate_items_episode_passthrough():
     ]
     result = dedup_lib.deduplicate_items(items)
     assert len(result) == 2
+
+
+def test_normalize_name_strips_broken_year_suffix():
+    """缺集普查 2026-10-19 桶 C2：手工改名残留的未闭合年份后缀「(2023」
+    要被当作残缺片段剥掉，让它与正名归一一致，避免认亲失败。"""
+    assert dedup_lib.normalize_name("九尾狐传 (2023") == dedup_lib.normalize_name("九尾狐传")
+    assert dedup_lib.normalize_name("Test Show [2024") == dedup_lib.normalize_name("Test Show")
+    assert dedup_lib.normalize_name("剧名（2023") == dedup_lib.normalize_name("剧名")
+    assert dedup_lib.normalize_name("剧名［2025") == dedup_lib.normalize_name("剧名")
+    assert dedup_lib.normalize_name("(2023") == ""
+
+
+def test_normalize_name_keeps_closed_year_suffix():
+    """闭合的年份后缀故意不动：年份是跨年同名剧的区分信号，
+    剥掉会把「X (2023)」和「X (2024)」误判成同一部。"""
+    assert dedup_lib.normalize_name("九尾狐传 (2023)") == "九尾狐传2023"
+    assert dedup_lib.normalize_name("Test Show (2024)") == "testshow2024"
+
+
+def test_normalize_name_keeps_non_year_titles():
+    """正常标题（含括号的正名）行为不动：只有「括号+四位年份」才剥。"""
+    assert dedup_lib.normalize_name("xxx (导演剪辑版)") == "xxx导演剪辑版"
+    # 未闭合但不是年份的括号也不动
+    assert dedup_lib.normalize_name("xxx (导演剪辑版") == "xxx导演剪辑版"
+    # 年份不在行尾的不动
+    assert dedup_lib.normalize_name("2023 大作战") == "2023大作战"
+    assert dedup_lib.normalize_name("Report (2023) Final") == "report2023final"
+    # 三位数不是年份
+    assert dedup_lib.normalize_name("剧名 (202") == "剧名202"
