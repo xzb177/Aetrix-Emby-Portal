@@ -59,10 +59,12 @@ MODE_CLI = "cli"
 
 RCLONE_BIN = os.getenv("MOUNT_RCLONE_BIN", "rclone")
 #: 用户粘贴的 rclone.conf 落盘位置。可用挂载配置里的 ``rclone_config`` 覆盖，
-#: 也可用 MOUNT_RCLONE_RCLONE_CONF 换路径（容器里 data/ 是持久卷）。
-CONF_PATH = os.getenv(
-    "MOUNT_RCLONE_CONF", os.getenv("AETRIX_DATA_DIR", "data") + "/rclone/rclone.conf"
-)
+#: 也可用 MOUNT_RCLONE_CONF 换路径。
+#: 同一环境变量只许一处默认值（横切纪律）：与 drive_changes.RCLONE_CONF、
+#: database.py 及 compose 的 /config/rclone/rclone.conf 保持一致（compose 把
+#: 后台粘贴的 rclone.conf 挂在这里）；此前默认是 data/rclone/rclone.conf，
+#: 未配该变量时粘贴落盘与 Drive Changes 轮询读的不是同一个文件。
+CONF_PATH = os.getenv("MOUNT_RCLONE_CONF", "/config/rclone/rclone.conf")
 RC_URL = os.getenv("MOUNT_RCLONE_RC_URL", "http://127.0.0.1:5572")
 # 服务器侧统一配置的 RC 凭据（见 docker-compose.yml 的 .env）：
 # 同一台机器上的 rclone RC 属于本机基础设施，挂载表单不必（也不应该）每条都存一份密码。

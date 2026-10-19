@@ -25,7 +25,7 @@ from backend.emby_server import hwaccel as _hwaccel
 from backend.emby_server.playback_tune import RANGE_LIMITER
 from urllib.parse import parse_qsl, urljoin, urlsplit
 
-from backend.emby_server.mounts import MountError
+from backend.emby_server.mounts import MOUNT_UA, MountError
 
 if TYPE_CHECKING:
     # httpx 运行时是延迟导入（各函数内按需 import，保持模块导入轻量）；
@@ -93,8 +93,10 @@ def _drive_403_error_reason(body) -> tuple:
 
 
 TRANSCODE_DIR = os.getenv("EMBY_TRANSCODE_DIR", "/tmp/emby_transcode")
-# 远程挂载（115 / WebDAV / AList）代理转发时的 UA
-REMOTE_UA = os.getenv("MOUNT_UA", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+# 远程挂载（115 / WebDAV / AList）代理转发时的 UA。
+# 同一环境变量只许一处默认值（横切纪律）：默认值在 mounts.MOUNT_UA 定义
+# （115 优化的 PAN115_UA；115 直链对 UA 有偏好），这里直接复用，不另起一套。
+REMOTE_UA = MOUNT_UA
 FFMPEG = os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")
 RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
