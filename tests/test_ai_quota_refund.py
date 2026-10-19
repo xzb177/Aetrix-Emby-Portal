@@ -145,7 +145,7 @@ def test_assistant_ask_failure_failopen_does_not_refund(db, monkeypatch):
 
     assistant_api = _ask(
         db, monkeypatch, {"ok": False, "message": "boom"},
-        safe_consume=lambda db_, uid, limit: (True, 0, False))
+        safe_consume=lambda db_, uid, limit, request_id=None: (True, 0, False))
     monkeypatch.setattr(ai, "refund_quota", _counting_refund)
     with pytest.raises(HTTPException) as exc_info:
         assistant_api.assistant_ask(
@@ -154,3 +154,54 @@ def test_assistant_ask_failure_failopen_does_not_refund(db, monkeypatch):
     assert exc_info.value.status_code == 502
     assert calls == []
     assert ai.used_today(db, 7) == 0
+
+
+# ---------- 跨午夜漂移（r51 观察项 → 用户已批准修复） ----------
+
+def _usage_row(db, user_id, day):
+    return db.query(models.AiUsage).filter(
+        models.AiUsage.user_id == user_id, models.AiUsage.day == day).first()
+
+
+def test_refund_across_midnight_returns_to_deduct_day(db, monkeypatch):
+    """23:59:59 扣的配额、次日凌晨退款：必须退回「扣费当天」的账，
+    不能退到退款时刻的当天账上（否则当天账永久少退、净差 1 单位）。"""
+    monkeypatch.setattr(ai, "_today", lambda: "2026-10-19")
+    allowed, used, deducted = ai.consume(db, 1, 20, request_id="cross-day-1")
+    assert (allowed, used, deducted) == (True, 1, True)
+    assert ai.used_today(db, 1) == 1
+
+    # 跨过午夜再退款
+    monkeypatch.setattr(ai, "_today", lambda: "2026-10-20")
+    assert ai.refund_quota(db, 1, "cross-day-1") is True
+
+    # 扣费当天的计数必须被恢复
+    day1 = _usage_row(db, 1, "2026-10-19")
+    assert day1 is not None and day1.count == 0
+    # 退款当天不许被误减
+    day2 = _usage_row(db, 1, "2026-10-20")
+    assert day2 is None or day2.count == 0
+
+
+def test_refund_across_midnight_is_idempotent(db, monkeypatch):
+    """跨日退款同样幂等：第二次是空操作，不双退。"""
+    monkeypatch.setattr(ai, "_today", lambda: "2026-10-19")
+    ai.consume(db, 1, 20, request_id="cross-day-2")
+
+    monkeypatch.setattr(ai, "_today", lambda: "2026-10-20")
+    assert ai.refund_quota(db, 1, "cross-day-2") is True
+    assert ai.refund_quota(db, 1, "cross-day-2") is False
+
+    day1 = _usage_row(db, 1, "2026-10-19")
+    assert day1 is not None and day1.count == 0
+
+
+def test_refund_legacy_row_not_refunded_twice(db):
+    """老数据行（升级前已退过的 request_id，迁移后 refunded=TRUE=已退标记）：
+    升级后重放不许再退一次。"""
+    db.add(models.AiRefundLog(user_id=1, day="2026-10-19",
+                              request_id="legacy-1", refunded=True))
+    db.commit()
+    assert ai.used_today(db, 1) == 0
+    assert ai.refund_quota(db, 1, "legacy-1") is False
+    assert ai.used_today(db, 1) == 0

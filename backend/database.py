@@ -865,6 +865,13 @@ def _auto_migrate():
             ("library", "VARCHAR(200)", "NULL"),
             ("realm_id", "INTEGER", "NULL"),
         ]),
+        # AI 配额跨午夜退款漂移修复（r51 观察项）：ai_refund_log 加 refunded 标记。
+        # 老库补列后 DEFAULT TRUE：升级前的行都是在退款时写入的「已退」标记，
+        # 语义与升级前完全一致（升级后重放旧 request_id 是空操作，不会再退一次）；
+        # 升级后 consume 在扣费时写 refunded=0 的归属行，退款时原子认领翻成 1。
+        ("ai_refund_log", [
+            ("refunded", "BOOLEAN", "1"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
