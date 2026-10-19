@@ -60,10 +60,10 @@ function startTick() {
   const update = () => {
     const left = Math.max(0, Math.round((codeDeadline - Date.now()) / 1000))
     expiresIn.value = left
-    if (left <= 0 && tickTimer) {
-      // 归零后停掉计时器，不再空转
-      clearInterval(tickTimer)
-      tickTimer = null
+    if (left <= 0) {
+      // R108-2：码过期了轮询不能再空等旧码，停掉并提示换码
+      clearTimers()
+      toast.info('绑定码已过期，点「重新获取」换个码')
     }
   }
   update()
@@ -71,34 +71,46 @@ function startTick() {
 }
 
 const POLL_INTERVAL = 3000
-const MAX_POLLS = 100 // 100 次 × 3 秒 ≈ 5 分钟
+// R108-1：200 次 × 3 秒 = 600 秒，对齐后端 CODE_TTL_SECONDS（10 分钟）；
+// 此前 100 次（5 分钟）会让码还有效时轮询先停，用户按指引发码也无人响应
+const MAX_POLLS = 200
 let pollCount = 0
 let pollStart = 0
 let pollInFlight = false
+let pollFailStreak = 0   // R108-7：轮询连续失败计数
+let pollNetWarned = false
 
 function startPoll() {
   if (pollTimer) clearInterval(pollTimer)
   pollCount = 0
   pollStart = Date.now()
+  pollFailStreak = 0
+  pollNetWarned = false
   pollTimer = setInterval(async () => {
     if (pollInFlight) return
     pollInFlight = true
     try {
       const st: TgBindStatus = await tgApi.status()
+      pollFailStreak = 0
       if (st.bound) {
         clearTimers()
         router.replace(redirect)
         return
       }
     } catch {
-      // 轮询失败不抛错、不锁死
+      // R108-7：轮询期网络中断不再静默，连续失败 3 次提示一次
+      pollFailStreak += 1
+      if (pollFailStreak >= 3 && !pollNetWarned) {
+        pollNetWarned = true
+        toast.info('网络有点晃，还在等你完成绑定')
+      }
     } finally {
       pollInFlight = false
     }
     pollCount += 1
     if (pollCount >= MAX_POLLS || Date.now() - pollStart > MAX_POLLS * POLL_INTERVAL) {
       clearTimers()
-      toast.info('长时间没扫上，点"重新获取"换个码再试')
+      toast.info('长时间没扫上，点「重新获取」换个码再试')
     }
   }, POLL_INTERVAL)
 }
@@ -118,8 +130,10 @@ async function refreshCode() {
   try {
     await fetchBindCode()
     startTick()
+    // R108-3：轮询已停（过期/超上限）时重启，否则新码绑定成功无人感知、自动跳转不触发
+    if (!pollTimer) startPoll()
   } catch {
-    toast.error('刷新失败，点"重新获取"再试一次')
+    toast.error('刷新失败，点「重新获取」再试一次')
   } finally {
     refreshing.value = false
   }
@@ -230,7 +244,7 @@ onUnmounted(() => {
         <button class="btn btn-primary" @click="init">重试</button>
       </div>
 
-      <div v-else-if="notConfigured" class="warn-box">
+      <div v-else-if="notConfigured" class="warn-box" role="alert">
         <p>Telegram 绑定功能还没开启，请联系服主开启后再试</p>
         <button class="btn btn-ghost" @click="init">重新检查</button>
       </div>
@@ -289,6 +303,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   padding: 24px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom)); /* R108-6：iOS 底部安全区 */
   background: var(--bg-canvas);
   color: var(--text-main);
 }
@@ -557,6 +572,7 @@ html[data-theme='light'] .warn-box {
 @media (max-width: 768px) {
   .tg-guide-page {
     padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom)); /* R108-6：iOS 底部安全区 */
   }
 
   .tg-guide-card {
