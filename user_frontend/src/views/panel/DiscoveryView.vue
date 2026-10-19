@@ -549,7 +549,7 @@ const feedItems = computed((): Array<{ key: string; time: string; text: string; 
   const d = feed.value.data as { items?: FeedItem[] } | null
   const items = Array.isArray(d?.items) ? d.items : []
   return items.map((it, i) => ({
-    key: `${i}-${it.at || ''}-${(it.text || '').slice(0, 12)}`,
+    key: `${i}-${it.at || ''}-${String(it.text ?? '').slice(0, 12)}`,
     time: fmtFeedTime(it.at),
     text: typeof it.text === 'string' && it.text.trim() ? it.text : '服务器刚才忙去了，这条动态没写清楚',
     library: typeof it.library === 'string' && it.library ? it.library : null,
@@ -682,7 +682,7 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: var(--ink);
+  background: var(--paper-primary); /* R98：DESIGN.md 主按钮深青 #016a71；备选深墨未采用 */
   color: var(--paper2);
   border: none;
   border-radius: 999px;
