@@ -124,11 +124,11 @@ def test_garbage_env_falls_back_to_default():
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                        timeout=120, cwd=REPO_ROOT, env=env)
     assert r.returncode == 0
-    assert r.stdout.strip() == "100"
+    assert r.stdout.strip() == "200"  # Batch 2：ENRICH_BATCH 默认 200 = 生产现值
 
 
 @pytest.mark.parametrize("modname,attr,expected", [
-    ("backend.emby_server.enrich_worker", "ENRICH_BATCH", 100),
+    ("backend.emby_server.enrich_worker", "ENRICH_BATCH", 200),  # Batch 2：默认 200 = 生产现值
     ("backend.emby_server.tmdb", "TMDB_TIMEOUT", 10.0),
     ("backend.emby_server.tmdb", "TMDB_NET_RETRIES", 2),
     ("backend.emby_server.mounts", "MOUNT_REMOTE_CONCURRENCY", 2),
