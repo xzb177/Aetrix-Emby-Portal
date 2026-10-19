@@ -343,6 +343,13 @@ html[data-theme='light'] {
   from { transform: translateX(-100%); }
   to { transform: translateX(100%); }
 }
+/* R99：v4-fadein 全局唯一定义——此前 ParcelBox/PulseActivity/WaxLetter/CollectorView
+   四处 scoped style 各自定义一份（scoped 不隔离 @keyframes，全局同名后加载者胜，
+   PulseActivity 的 6px 与另三处的 8px 互相覆盖）；收敛到 8px（多数值，2px 差肉眼不可辨） */
+@keyframes v4-fadein {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
 .v4-err {
   font-size: 12px;
   color: var(--ink2);

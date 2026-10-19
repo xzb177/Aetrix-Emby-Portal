@@ -264,7 +264,7 @@ const pet = computed((): PetData | null => {
 }
 /* 新解锁横幅 */
 .v4-fresh {
-  background: rgba(255, 217, 138, 0.25);
+  background: var(--gold-tint); /* R99：原 rgba(255,217,138,0.25) 收敛到 v4-paper.css 已有 token（等值） */
   border: 1.5px solid var(--gold);
   border-radius: var(--paper-r-lg, 12px);
   padding: 10px 14px;
@@ -295,17 +295,8 @@ const pet = computed((): PetData | null => {
   margin: -10px -10px -10px 0;
   cursor: pointer;
 }
-@keyframes v4-fadein {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
+/* R99：@keyframes v4-fadein 已收敛到 v4-paper.css 全局唯一定义，此处删除本地重复定义
+   （scoped 不隔离 keyframes，四处重复定义会以后加载者胜） */
 /* R27：减少动态偏好下横幅直接出现，不淡入（本地守卫） */
 @media (prefers-reduced-motion: reduce) {
   .v4-fresh {

@@ -135,10 +135,7 @@ const watchedText = computed(() => {
 }
 .v4-kv span:first-child { color: var(--ink2); flex-shrink: 0; }
 .v4-kv b, .v4-kv span:last-child { text-align: right; }
-@keyframes v4-fadein {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
-}
+/* R99：@keyframes v4-fadein 已收敛到 v4-paper.css 全局唯一定义，删除本地重复定义 */
 .v4-letter:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
