@@ -13,7 +13,7 @@
   deep_sea      深海：看完一部纪录片
   mind_bender   烧脑：看完一部悬疑/科幻/惊悚片
   sharer        分享：成功邀请 1 位好友注册
-  revisit       回头：重温（同一条目 30 天后再次播放）
+  revisit       回头：同一部片，隔了 30 天以上才再看
   marathon      马拉松：周末单日观影超 10 小时
   early_bird    早鸟：首次晨间观影（05:00–08:00 开始播放）
 """
@@ -58,7 +58,7 @@ ACHIEVEMENT_DEFS = [
     ("deep_sea", "深海", "看完一部纪录片", "🌊", 70),
     ("mind_bender", "烧脑", "看完一部悬疑/科幻/惊悚片", "🧠", 80),
     ("sharer", "分享", "成功邀请 1 位好友", "💌", 90),
-    ("revisit", "回头", "30 天后重温同一部片", "🔄", 100),
+    ("revisit", "回头", "同一部片，隔了 30 天以上才再看", "🔄", 100),
     ("marathon", "马拉松", "周末单日观影超 10 小时", "🏃", 110),
     ("early_bird", "早鸟", "第一次在清晨看片（05:00–08:00）", "🐦", 120),
     ("yearly_explorer", "年卡探险家", "持有有效的年卡订阅", "🎫", 130),
@@ -298,7 +298,7 @@ def evaluate(user_id: int, db: Session) -> list:
         # 订阅表迁移缺失会导致该成就永久不发且无人知道。
         logger.exception("年卡成就查询失败，已跳过 yearly_explorer 规则")
 
-    # 回头：同一条目 30 天后再次播放
+    # 回头：同一条目相邻两次播放间隔 ≥30 天（沉寂满 30 天才算回头）
     name_times: dict = {}
     for s in valid:
         if s.item_name and s.start_time:
