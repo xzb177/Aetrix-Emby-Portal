@@ -265,3 +265,57 @@ def test_patrol_only_creates_reader_permission(share_state, db, monkeypatch):
     n = dsh.drive_share_patrol(db, limit=150)
     assert n == 1
     assert seen["body"] == {"type": "anyone", "role": "reader"}
+
+
+# --- r57：#1127 遗留修复的回归测试 ---
+
+def test_models_have_share_columns():
+    assert hasattr(em.MediaItem, "drive_share_ok")
+    assert hasattr(em.MediaItem, "drive_share_checked_at")
+
+
+def test_migration_list_has_share_columns():
+    """r57-1：模型加列必须同步进 _auto_migrate 清单，否则生产老库永远补不上列
+    （create_all 只建新表不改旧表），巡检/写回静默失效。"""
+    import inspect as _inspect
+    src = _inspect.getsource(_dbmod._auto_migrate)
+    assert '("drive_share_ok", "BOOLEAN", "NULL")' in src
+    assert '("drive_share_checked_at", "DATETIME", "NULL")' in src
+
+
+def test_patrol_skips_in_flight_files(share_state, db, monkeypatch):
+    """r57-2：内存队列里待处理的文件不是「漏网」，巡检本轮跳过，
+    避免与 worker 对同一文件发重复的补开调用。"""
+    # 不启动真实后台线程：只测巡检对「在队等待」行的跳过语义
+    monkeypatch.setattr(dsh, "_ensure_worker_locked", lambda: None)
+    seen = []
+    monkeypatch.setattr(dsh, "ensure_shared", lambda f, t: seen.append(f) or "ok")
+    queued = _item(db, fid="fid-q1")
+    other = _item(db, fid="fid-q2")
+    assert dsh.note_new_file(queued.id, "fid-q1", True) is True
+    assert "fid-q1" in dsh._in_flight
+    n = dsh.drive_share_patrol(db, limit=150)
+    assert n == 1
+    assert seen == ["fid-q2"]
+    db.refresh(queued)
+    db.refresh(other)
+    assert queued.drive_share_ok is None  # 在队等待：巡检不动，交 worker 处理
+    assert other.drive_share_ok is True
+
+
+def test_attempts_cleared_on_terminal(share_state, monkeypatch):
+    """r57-3：重试计数在终态（成功/超限失败）必须清理，不继承、不无限增长。"""
+    monkeypatch.setattr(dsh, "ensure_shared", lambda f, t: "rate_limited")
+    assert dsh._process_one_share(999999, "fid-a1") == "rate_limited"
+    assert dsh._attempts.get("fid-a1") == 1
+    # 成功终态：计数清掉
+    monkeypatch.setattr(dsh, "ensure_shared", lambda f, t: "ok")
+    assert dsh._process_one_share(999999, "fid-a1") == "ok"
+    assert "fid-a1" not in dsh._attempts
+    # 超限转 failed 终态：计数同样清掉
+    monkeypatch.setattr(dsh, "ensure_shared", lambda f, t: "rate_limited")
+    last = None
+    for _ in range(5):
+        last = dsh._process_one_share(999999, "fid-a2")
+    assert last == "failed"
+    assert "fid-a2" not in dsh._attempts

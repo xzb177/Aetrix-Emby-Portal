@@ -66,6 +66,9 @@ _MAX_ATTEMPTS = 5
 _PATROL_LIMIT = 150
 #: 巡检对失败/未确认行的重捞间隔（小时）。
 _PATROL_RETRY_HOURS = 24
+#: 巡检跳过内存队列快照的上限（个 file_id）：在队文件数超过该值时不过滤，
+#: 退化为现状（大批量入库时宁可重复调用，也不构造巨型 IN 查询）。
+_PATROL_SKIP_INFLIGHT_CAP = 2000
 
 #: 可注入的 HTTP 入口（测试桩打这里，不碰 httpx 全局）。
 _http_post = httpx.post
@@ -174,6 +177,10 @@ def _process_one_share(item_id: int, file_id: str) -> str:
         # 超过重试上限：标记失败，交巡检次日再捞，不在队列里死磕。
         outcome = "failed"
     _mark_share_result(item_id, outcome in ("ok", "already"))
+    with _lock:
+        # 终态清理该文件的重试计数：成功/失败都不再需要；同一 file_id 将来
+        # 若再次入队也不应继承旧计数；同时防止 _attempts 随限流文件数无限增长。
+        _attempts.pop(file_id, None)
     return outcome
 
 
@@ -218,6 +225,12 @@ def _ensure_worker_locked() -> None:
     t = threading.Thread(target=_share_worker, name="drive-share", daemon=True)
     t.start()
     _worker_started = True
+
+
+def _in_flight_snapshot() -> frozenset:
+    """内存队列中待处理 file_id 快照（巡检用，避免与 worker 重复补开）。"""
+    with _lock:
+        return frozenset(_in_flight)
 
 
 def note_new_file(item_id, file_id, is_new) -> bool:
@@ -273,6 +286,14 @@ def drive_share_patrol(db, limit: int = _PATROL_LIMIT) -> int:
         return 0
     if not rows:
         return 0
+    # 主路径（扫描入库后内存队列）里待处理的行不是「漏网」：worker 几分钟内会
+    # 处理，巡检跳过它们，避免大批量入库时对同一文件发重复的补开调用
+    # （409 幂等收敛、正确性无损，但烧配额）。快照过大时不过滤，退化为现状。
+    in_flight = _in_flight_snapshot()
+    if in_flight and len(in_flight) <= _PATROL_SKIP_INFLIGHT_CAP:
+        rows = [r for r in rows if r[1] not in in_flight]
+        if not rows:
+            return 0
     try:
         from backend.emby_server import drive_auth
     except Exception:

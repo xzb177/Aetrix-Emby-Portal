@@ -872,6 +872,14 @@ def _auto_migrate():
         ("ai_refund_log", [
             ("refunded", "BOOLEAN", "1"),
         ]),
+        # Drive 链接分享自动补开（2026-10-19 播放事故治本；r57 补上 #1127 漏掉的迁移）：
+        # emby_items 加 drive_share_ok / drive_share_checked_at。老库补列后为
+        # NULL（= 尚未确认），enrich janitor 巡检会把未确认行捞起补开；
+        # 此前无此功能，行为与升级前一致。
+        ("emby_items", [
+            ("drive_share_ok", "BOOLEAN", "NULL"),
+            ("drive_share_checked_at", "DATETIME", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
