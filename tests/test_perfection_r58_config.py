@@ -16,23 +16,31 @@ import os
 import subprocess
 import sys
 
+import json
+
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# 子进程只输出一行 JSON（键名固定），解析时按行找 JSON：
+# 曾出现 CI 上子进程 stdout 多出杂散行的情况（本地复现不出），
+# 逐行打印再按行数 unpack 的写法在那种环境下直接炸，
+# 改成单行 JSON + 找花括号行的鲁棒解析，杂散行不再影响断言。
 PROBE = (
-    "import os;"
+    "import json, os;"
     "from backend.emby_server import streaming, mounts, transfer115,"
     " mount_rclone, drive_changes;"
-    "print(streaming.REMOTE_UA);"
-    "print(mounts.MOUNT_UA);"
-    "print(transfer115.PAN115_UA);"
-    "print(mount_rclone.CONF_PATH);"
-    "print(drive_changes.RCLONE_CONF)"
+    "print(json.dumps({"
+    "'remote_ua': streaming.REMOTE_UA,"
+    "'mount_ua': mounts.MOUNT_UA,"
+    "'pan115_ua': transfer115.PAN115_UA,"
+    "'conf_path': mount_rclone.CONF_PATH,"
+    "'rclone_conf': drive_changes.RCLONE_CONF,"
+    "}))"
 )
 
 
-def _probe(extra_env: dict) -> list[str]:
+def _probe(extra_env: dict) -> dict:
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
@@ -53,38 +61,40 @@ def _probe(extra_env: dict) -> list[str]:
         timeout=120,
     )
     assert out.returncode == 0, f"probe failed: {out.stderr[-2000:]}"
-    return out.stdout.splitlines()
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            return json.loads(line)
+    raise AssertionError(f"probe 未输出 JSON 行，原始 stdout: {out.stdout!r}")
 
 
 def test_mount_ua_single_default_when_unset():
-    remote_ua, mount_ua, pan115_ua, _, _ = _probe({})
-    assert mount_ua == pan115_ua, "mounts.MOUNT_UA 默认应为 115 优化的 PAN115_UA"
-    assert remote_ua == mount_ua, (
+    got = _probe({})
+    assert got["mount_ua"] == got["pan115_ua"], "mounts.MOUNT_UA 默认应为 115 优化的 PAN115_UA"
+    assert got["remote_ua"] == got["mount_ua"], (
         "streaming.REMOTE_UA 必须复用 mounts.MOUNT_UA，不许另起一套默认值"
     )
 
 
 def test_mount_ua_env_override_applies_to_both():
-    remote_ua, mount_ua, _, _, _ = _probe({"MOUNT_UA": "X-Custom-UA/1.0"})
-    assert mount_ua == "X-Custom-UA/1.0"
-    assert remote_ua == "X-Custom-UA/1.0"
+    got = _probe({"MOUNT_UA": "X-Custom-UA/1.0"})
+    assert got["mount_ua"] == "X-Custom-UA/1.0"
+    assert got["remote_ua"] == "X-Custom-UA/1.0"
 
 
 def test_rclone_conf_single_default_when_unset():
-    _, _, _, conf_path, rclone_conf = _probe({})
-    assert rclone_conf == "/config/rclone/rclone.conf"
-    assert conf_path == rclone_conf, (
+    got = _probe({})
+    assert got["rclone_conf"] == "/config/rclone/rclone.conf"
+    assert got["conf_path"] == got["rclone_conf"], (
         "mount_rclone.CONF_PATH 默认必须与 drive_changes.RCLONE_CONF 一致，"
         "否则后台粘贴的 rclone.conf 与轮询读的不是同一文件"
     )
 
 
 def test_rclone_conf_env_override_applies_to_both():
-    _, _, _, conf_path, rclone_conf = _probe(
-        {"MOUNT_RCLONE_CONF": "/tmp/custom-r58/rclone.conf"}
-    )
-    assert conf_path == "/tmp/custom-r58/rclone.conf"
-    assert rclone_conf == "/tmp/custom-r58/rclone.conf"
+    got = _probe({"MOUNT_RCLONE_CONF": "/tmp/custom-r58/rclone.conf"})
+    assert got["conf_path"] == "/tmp/custom-r58/rclone.conf"
+    assert got["rclone_conf"] == "/tmp/custom-r58/rclone.conf"
 
 
 def test_no_second_literal_default_for_mount_ua_in_streaming():
