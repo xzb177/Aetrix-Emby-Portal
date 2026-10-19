@@ -709,7 +709,8 @@ def studios_list(user: models.WebUser = Depends(get_emby_user), db: Session = De
 @emby_router.get("/emby/Persons")
 @emby_router.get("/Persons")
 def persons_list(request: Request, user: models.WebUser = Depends(get_emby_user),
-                 db: Session = Depends(get_db)):
+                 db: Session = Depends(get_db),
+                 Limit: str | None = None, StartIndex: str | None = None):
     """演员列表（v2.51.0）：``emby_people`` 落库后返回真实数据。
 
     以前刮削没落演员表，这里只能返回空（``_empty_items``）；现在 TMDB credits
@@ -718,9 +719,11 @@ def persons_list(request: Request, user: models.WebUser = Depends(get_emby_user)
     见 ``media_routes.person_image``）。
     """
     # r50：畸形 Limit/StartIndex 回 default（此前 FastAPI 原生 int 强转 → 422；
-    # 全站其余协议端点走 qint 畸形回 default，口径统一）
-    start = qstart(request.query_params)
-    limit = qint(request.query_params, "Limit", 5000, lo=0, hi=5000)
+    # 全站其余协议端点走 qint 畸形回 default，口径统一）。声明为 str 由 FastAPI 原样
+    # 绑定、再经 qint/qstart 宽容解析；保留 Limit/StartIndex kwargs 兼容旧的直接调用
+    #（tests/test_metadata_cast.py），任何行为都不放宽。
+    start = qstart({"StartIndex": StartIndex})
+    limit = qint({"Limit": Limit}, "Limit", 5000, lo=0, hi=5000)
     base = (
         db.query(
             em.EmbyPerson.name,
