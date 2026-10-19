@@ -16,7 +16,7 @@ from backend.emby_server.async_db import release_db_before_response
 from backend.database import SessionLocal, get_db
 from backend.emby_server import image_store
 from backend.emby_server import models as em
-from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
+from backend.emby_server.auth import get_emby_user, get_play_user, parse_emby_authorization, resolve_token
 from backend.emby_server.streaming import (
     get_transcode,
     serve_file,
@@ -66,8 +66,9 @@ def _remember_local_image(db: Session, item: em.MediaItem, kind: str, path: str)
 @emby_router.get("/emby/Videos/{item_id}/hls1")
 @emby_router.get("/Videos/{item_id}/hls1")
 async def video_hls1(item_id: str, request: Request,
-                     user: models.WebUser = Depends(get_emby_user),
+                     user: models.WebUser = Depends(get_play_user),
                      db: Session = Depends(get_db)):
+    # r62：与 video_hls 同口径（get_play_user）：签名优先，回退 Emby token/JWT。
     # Emby 客户端直接请求 hls1 路径
     return await video_hls(item_id, "master.m3u8", request, user, db)
 
@@ -76,8 +77,10 @@ async def video_hls1(item_id: str, request: Request,
 @emby_router.get("/Items/{item_id}/Download")
 @release_db_before_response
 def download_item(item_id: str, request: Request,
-                  user: models.WebUser = Depends(get_emby_user),
+                  user: models.WebUser = Depends(get_play_user),
                   db: Session = Depends(get_db)):
+    # r62：投递端点统一走 get_play_user（短期签名优先，回退 Emby token/JWT）；
+    # 此前 get_emby_user 不认 uid/exp/sign，门户网页端的签名下载链接会被 401。
     item = _require_visible_item(db, user, item_id)
     # 付费墙：下载与在线播放同一门槛，避免绕过
     ensure_playback_allowed(db, user)

@@ -27,7 +27,7 @@ from backend.emby_server.async_db import release_db_before_response
 from backend.database import get_db
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server.api import _play_target, _require_visible_item
-from backend.emby_server.auth import get_emby_user
+from backend.emby_server.auth import get_play_user
 from backend.subscriptions import ensure_playback_allowed
 
 logger = logging.getLogger(__name__)
@@ -40,10 +40,14 @@ SUPERSEDED_FILE_PATHS = ("/emby/Items/{item_id}/File", "/Items/{item_id}/File")
 def mounted_item_file(
     item_id: str,
     request: Request,
-    user: models.WebUser = Depends(get_emby_user),
+    user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
-    """条目原始文件（Emby 客户端的「下载 / 拉文件」路径之一）"""
+    """条目原始文件（Emby 客户端的「下载 / 拉文件」路径之一）
+
+    r62：与其它播放投递端点统一走 get_play_user（短期签名优先，回退 Emby
+    token/JWT）；此前 get_emby_user 不认 uid/exp/sign，签名链接会被 401。
+    """
     item = _require_visible_item(db, user, item_id)
     # 与在线播放、下载同一门槛：付费墙对拉文件同样生效
     ensure_playback_allowed(db, user)
