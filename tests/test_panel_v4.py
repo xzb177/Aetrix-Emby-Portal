@@ -112,14 +112,30 @@ def test_seed_does_not_override_disabled(db):
 
 # ==================== 2. 成就评估器 ====================
 
-def _mk_session(db, user, name, start, duration):
-    s = models.EmbySession(
-        id=f"sess-{name}-{start.isoformat()}",
+# 真实播放会话数据源（emby_playback_sessions）：每 (user, item) 一行，
+# 观看秒数 = position_ticks/1e7（与 backend.panel_achievements.playback_seconds 同口径）。
+_session_seq = [0]
+
+
+def _mk_session(db, user, name, start, duration, genres=""):
+    from backend.emby_server import models as em
+    _session_seq[0] += 1
+    n = _session_seq[0]
+    item = em.MediaItem(
+        guid=f"sess-item-{n:06d}",
+        library_id=1, item_type="movie", name=name,
+        date_added=datetime.now(), genres=genres,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    s = em.PlaybackSession(
+        session_key=f"sess-key-{n:06d}",
         user_id=user.id,
-        item_name=name,
-        item_type="movie",
+        item_id=item.id,
         start_time=start,
-        play_duration=duration,
+        last_update_at=start,
+        position_ticks=int(duration * 10_000_000),
     )
     db.add(s)
     db.commit()
@@ -190,6 +206,36 @@ def test_evaluate_disabled_rule_not_granted(db, user):
     _mk_session(db, user, "深夜电影", _bj_to_storage(23, 30), 3600)
     new = pa.evaluate(user.id, db)
     assert "first_night" not in new
+
+
+def test_user_tastes_reads_playback_sessions(db, user):
+    """换源回归：口味印章从 emby_playback_sessions（真实播放）来，
+    genre 走 item_id 精确关联；不足 1 分钟的播放不计入。"""
+    for i in range(5):
+        _mk_session(db, user, f"纪录片{i}", datetime.now() - timedelta(hours=i + 1),
+                    3600, genres="纪录片,自然")
+    _mk_session(db, user, "快进纪录片", datetime.now() - timedelta(hours=9),
+                30, genres="纪录片")
+    tastes = pa.user_tastes(db, user.id)
+    assert tastes["taste_doc"]["stamped"] is True
+    assert tastes["taste_doc"]["count"] == 5
+
+
+def test_letter_and_collector_read_playback_sessions(db, user):
+    """换源回归：/letter 昨日观影时长与条目、/collector 累计小时，
+    都从 emby_playback_sessions 的 position_ticks 来。"""
+    pa.seed_achievement_defs(db)
+    start = (datetime.now() - timedelta(days=1)).replace(
+        hour=12, minute=0, second=0, microsecond=0)
+    _mk_session(db, user, "昨日电影", start, 7200)
+    app = _make_app(db, user)
+    client = TestClient(app)
+    letter = client.get("/api/panel/letter").json()["data"]
+    assert letter["watch_count"] == 1
+    assert letter["watched"] == ["昨日电影"]
+    assert letter["watch_duration"] == "2小时0分"
+    coll = client.get("/api/panel/collector").json()["data"]
+    assert coll["watch_hours"] == 2.0
 
 
 # ==================== 3. 盲盒拆封幂等 ====================
