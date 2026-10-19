@@ -306,6 +306,10 @@ def test_guard_fail_closed_skips_row(db, monkeypatch):
     bad = _series(db, lib.id, "Bad", tmdb_id="600")
     good = _series(db, lib.id, "Good", tmdb_id="601")
     bad_id, good_id = bad.id, good.id
+    # r55：bad 必须真有一个分身指向它——只有"需要守卫"的行才会调守卫；
+    # 无合并关系的普通行守卫注定 no-children，直接标记（见
+    # test_mark_soft_deleted_skips_guard_for_plain_rows）。
+    _series(db, lib.id, "Bad (2020)", tmdb_id="600", merged_into_id=bad_id)
 
     real = soft_delete.rehome_merged_children
 
@@ -365,3 +369,57 @@ def test_purge_skips_row_when_guard_fails(db, monkeypatch):
     with soft_delete.include_deleted():
         assert db.query(em.MediaItem).filter(
             em.MediaItem.id == root_id).first() is not None
+
+
+# ==================== 8. r55：计数诚实化 + 守卫短路优化 ====================
+
+def test_mark_soft_deleted_skips_guard_for_plain_rows(db, monkeypatch):
+    """无合并关系的普通行：守卫注定 no-children，直接标记，不逐行调守卫。
+
+    把守卫整个炸掉——如果优化没生效，普通行也会被 fail-closed 跳过；
+    优化生效时它们照常被标记（且不需要守卫参与）。
+    """
+    lib = _lib(db)
+    a = _series(db, lib.id, "Plain A", tmdb_id="800")
+    b = _series(db, lib.id, "Plain B", tmdb_id="801")
+    a_id, b_id = a.id, b.id
+
+    def boom(db_, item, skip_ids=frozenset()):
+        raise RuntimeError("守卫不应被普通行调用")
+
+    monkeypatch.setattr(soft_delete, "rehome_merged_children", boom)
+    n = soft_delete.mark_soft_deleted(db, [a_id, b_id])
+
+    assert n == 2
+    assert _is_hidden(db, a_id)
+    assert _is_hidden(db, b_id)
+
+
+def test_purge_expired_counts_only_actually_purged(db, monkeypatch):
+    """混合场景：一个回收成功、一个守卫失败 → 返回 1（不是 2），失败的行还在"""
+    lib = _lib(db)
+    ok_root = _series(db, lib.id, "OkShow", tmdb_id="810",
+                      deleted_at=datetime.now() - timedelta(days=40))
+    ok_id = ok_root.id
+    bad_root = _series(db, lib.id, "BadShow", tmdb_id="811",
+                       deleted_at=datetime.now() - timedelta(days=40))
+    bad_id = bad_root.id
+    # bad 有一个分身指向它：守卫会跑起来（然后被炸掉）
+    _series(db, lib.id, "BadShow (2020)", tmdb_id="811", merged_into_id=bad_id)
+
+    real = soft_delete.rehome_merged_children
+
+    def boom(db_, item, skip_ids=frozenset()):
+        if item.id == bad_id:
+            raise RuntimeError("模拟守卫异常")
+        return real(db_, item, skip_ids)
+
+    monkeypatch.setattr(soft_delete, "rehome_merged_children", boom)
+    n = soft_delete.purge_expired(db, purge_days=30)
+
+    assert n == 1, "只物理删除了 1 条，返回值必须是 1"
+    with soft_delete.include_deleted():
+        assert db.query(em.MediaItem).filter(
+            em.MediaItem.id == ok_id).first() is None, "ok 的应被物理删除"
+        assert db.query(em.MediaItem).filter(
+            em.MediaItem.id == bad_id).first() is not None, "守卫失败的行必须还在"

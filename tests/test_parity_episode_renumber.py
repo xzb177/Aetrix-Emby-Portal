@@ -406,3 +406,28 @@ def test_parity_patrol_rescue_ignores_done_cache(db, monkeypatch):
     assert ew.parity_patrol_rescue(db) == 1  # 巡检强制重判，照样归一
     db.expire_all()
     assert _nums(db, s.id) == [1, 2, 3, 4]
+
+
+def test_enrich_apply_parity_failure_does_not_fail_item(db, monkeypatch):
+    """r55：奇偶归一中途抛异常时，_enrich_apply 不抛、条目补全照常继续；
+    且本季的已判标记被清掉（入口先打标记再干活，中途异常不清的话，
+    本进程内此季永不再判，只能等巡检 discard）。"""
+    series = _series(db)
+    _episodes(db, series, [2, 4])
+    ep = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode",
+        em.MediaItem.series_id == series.id).first()
+
+    def boom(db_, item):
+        # 模拟"入口已打标记、中途抛异常"：先打标记再抛
+        with ew._PARITY_RENUMBER_LOCK:
+            ew._PARITY_RENUMBER_DONE.add(
+                (item.series_id, int(item.season_number)))
+        raise RuntimeError("模拟归一中途异常")
+
+    monkeypatch.setattr(ew, "_maybe_parity_renumber_season", boom)
+    ew._enrich_apply(db, ep, {})  # 不抛：归一是 best-effort
+
+    with ew._PARITY_RENUMBER_LOCK:
+        assert (series.id, 1) not in ew._PARITY_RENUMBER_DONE, \
+            "异常后已判标记必须清掉，否则本进程内此季永不再判"

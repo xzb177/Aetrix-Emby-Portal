@@ -3726,10 +3726,11 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
         if doomed:
             if _soft_delete.soft_delete_enabled():
                 # 只标记：从属数据（播放进度 / 收藏 / 分面）留着，文件回来就能恢复
-                _soft_delete.mark_soft_deleted(db, doomed)
+                # r55：守卫 fail-closed 跳过的行不计入 removed（之前用 len(doomed) 虚高）
+                removed += _soft_delete.mark_soft_deleted(db, doomed)
             else:
                 _purge_items(db, doomed)
-            removed += len(doomed)
+                removed += len(doomed)
             db.commit()  # 一批一次提交：与扫描主体同一套资源口径
     if _soft_delete.soft_delete_enabled():
         try:

@@ -2,7 +2,9 @@
 
 失败时落一条 pending 欠账（RebateReversalDebt，同一订单只一条）；
 重复尝试不重复记账；后来撤回成功时把 pending 欠账标记 recovered；
-管理端有只读列表＋豁免端点。
+管理端有只读列表＋豁免端点＋重试收回端点（r55：refund_order 对已退款订单
+直接 400，_reverse_rebate 的成功分支在生产走不到，欠账只进不出，
+重试端点补上"收回"路径）。
 """
 import os
 
@@ -173,3 +175,79 @@ def test_list_and_waive_rebate_debt(db):
 
     # 豁免过的欠账不能再豁免
     assert client.post(f"/api/admin/economy/rebate-debts/{debt_id}/waive").status_code == 404
+
+
+# ---------------- r55：欠账重试收回端点 ----------------
+# 背景：refund_order 对已退款订单直接 400，_reverse_rebate 的成功分支在生产
+# 走不到，pending 欠账只进不出；本端点补上"收回"路径，必须走 HTTP 端点测。
+
+def _seed_pending_debt(db, order_id="R1", amount=200, inviter_points=50):
+    inviter = _make_user(db, f"inviter_{order_id}", points=inviter_points)
+    _seed_rebate(db, inviter.id, order_id, amount=amount)
+    assert orders_admin._reverse_rebate(db, order_id, allow_negative=False) == (0, True)
+    db.commit()
+    debts = _debts(db, order_id)
+    assert len(debts) == 1 and debts[0].status == "pending"
+    return inviter, debts[0].id
+
+
+def test_retry_rebate_debt_success_marks_recovered(db):
+    """允许负数后重试：撤回成功，pending → recovered，邀请人被扣成负数"""
+    inviter, debt_id = _seed_pending_debt(db, "R1")
+    client = _admin_app(db)
+
+    resp = client.post(f"/api/admin/economy/rebate-debts/{debt_id}/retry",
+                       json={"allow_negative": True})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["status"] == "recovered"
+    assert body["reversed_amount"] == 200
+
+    db.expire_all()
+    assert _debts(db, "R1")[0].status == "recovered"
+    assert _debts(db, "R1")[0].resolved_at is not None
+    assert db.query(models.WebUser).filter(
+        models.WebUser.id == inviter.id).first().points == -150
+
+
+def test_retry_rebate_debt_insufficient_stays_pending(db):
+    """不允许负数时重试：余额仍不足 → success=False，保持 pending，账不动"""
+    inviter, debt_id = _seed_pending_debt(db, "R2")
+    client = _admin_app(db)
+
+    resp = client.post(f"/api/admin/economy/rebate-debts/{debt_id}/retry",
+                       json={"allow_negative": False})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is False
+    assert body["status"] == "pending"
+    assert "不足" in (body["reason"] or "")
+
+    db.expire_all()
+    assert _debts(db, "R2")[0].status == "pending"
+    assert db.query(models.WebUser).filter(
+        models.WebUser.id == inviter.id).first().points == 50
+
+
+def test_retry_rebate_debt_second_retry_404(db):
+    """已收回的欠账再重试：404，不重复扣"""
+    inviter, debt_id = _seed_pending_debt(db, "R3")
+    client = _admin_app(db)
+
+    assert client.post(f"/api/admin/economy/rebate-debts/{debt_id}/retry",
+                       json={"allow_negative": True}).status_code == 200
+    resp = client.post(f"/api/admin/economy/rebate-debts/{debt_id}/retry",
+                       json={"allow_negative": True})
+    assert resp.status_code == 404
+
+    db.expire_all()
+    assert db.query(models.WebUser).filter(
+        models.WebUser.id == inviter.id).first().points == -150  # 只扣了一次
+
+
+def test_retry_rebate_debt_nonexistent_404(db):
+    client = _admin_app(db)
+    resp = client.post("/api/admin/economy/rebate-debts/999999/retry",
+                       json={"allow_negative": True})
+    assert resp.status_code == 404
