@@ -195,9 +195,12 @@ def admin_logout(
 ):
     """管理员登出：吊销当前 access token 的 jti（服务端生效）。
 
-    P0-1 修复：此前管理后台没有登出接口，"登出"只是前端清 localStorage，
-    服务端无吊销能力，偷到的 token 在过期前一直有效。现在与用户端
-    /api/user/auth/logout 同口径：登出是安全动作，必须服务端生效。
+    与用户端 /api/user/auth/logout 同口径：登出是安全动作，必须服务端生效。
+    R49 补齐：同步 bump token_version，令该管理员全部已签发 refresh 立即失效——
+    否则本次登录签发的 refresh（前端不存、但服务端 30 天有效）仍可换发管理
+    token，登出对持有 refresh 的攻击者形同虚设（用户端 A-P1-1 同一教训）。
+    代价：该管理员的门户会话一并失效（同一套版本号），需重登——安全动作的
+    合理语义。
 
     如请求体附带 refresh_token，一并吊销（防"已登出"的会话被 refresh 续签）。
     只吊销属于当前管理员自己的 refresh token，防止跨用户吊销。
@@ -226,5 +229,8 @@ def admin_logout(
             if refresh_user_id == current_admin.id:
                 revoke_jti(db, payload.get("jti"), current_admin.id, reason="admin_logout")
 
+    # R49：bump token_version —— 该管理员全部已签发 refresh 立即失效
+    # （revoke_jti 内部已 commit，这里是同一事务的继续）
+    current_admin.token_version = int(current_admin.token_version or 0) + 1
     db.commit()  # 无 token 可吊销时，审计记录靠这里落盘（有 revoke 时已在内部提交，这里是 no-op）
     return {"success": True, "message": "已登出"}

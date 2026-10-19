@@ -166,7 +166,6 @@ async def grant_subscription(
         from backend.api.economy import _grant_subscription
         subscription = _grant_subscription(
             db, user, plan, request.duration_days,
-            "admin_grant", f"admin_grant:{admin_id}:{user_id}",
             realm_id=realm_id,
         )
         db.commit()
@@ -176,7 +175,8 @@ async def grant_subscription(
         _audit(db, admin_id, "grant_subscription", "subscription",
                subscription.id, {"user_id": user_id, "plan_id": request.plan_id,
                                  "duration_days": request.duration_days,
-                                 "realm_id": realm_id})
+                                 "realm_id": realm_id,
+                                 "source": "admin_grant"})
         db.commit()
         return {"subscription_id": subscription.id, "plan_name": plan_name,
                 "end_date": end_date}
@@ -2268,6 +2268,13 @@ async def economy_mark_order_paid(
     from backend.api.economy import send_fulfill_notifications
 
     pending = await run_in_threadpool(_mark_order_paid, db, order_id, current_admin.id)
+
+    # R49：两管理员并发补同一单时只有一个能 claim 成功（_claim_order 原子认领），
+    # 败者 pending 为空——此前照样返回"订单已标记支付并发货"，管理员会以为是
+    # 自己补的单。与 refund 的 already_processed 同一口径如实告知。
+    if not pending:
+        return {"success": True, "already_processed": True,
+                "message": "订单已被处理（并发补单只有一次生效）"}
 
     # 先提交再发通知：履约事务里另开会话写站内信会撞 SQLite 写锁，通知会被静默丢掉
     await send_fulfill_notifications(pending)

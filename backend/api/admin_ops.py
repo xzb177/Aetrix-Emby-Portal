@@ -1126,6 +1126,14 @@ def update_invitation_code(
               "whitelist": code.whitelist or ""}
 
     if request.max_uses is not None:
+        # 不能改到已用次数之下：否则码立即变"已用完"状态——与改优惠券的
+        # active_use_count 守卫同一口径（见 coupons_admin.update_coupon）
+        used = int(code.use_count or 0)
+        if int(request.max_uses) < used:
+            raise HTTPException(
+                status_code=400,
+                detail=f"该邀请码已有 {used} 次使用，总次数不能低于这个数",
+            )
         code.max_uses = request.max_uses
     if request.expires_days is not None:
         code.expires_at = (datetime.now() + timedelta(days=request.expires_days)

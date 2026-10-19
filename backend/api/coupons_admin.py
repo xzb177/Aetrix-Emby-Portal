@@ -294,11 +294,18 @@ def list_coupons(
     active: Optional[str] = None,
     search: str = "",
     limit: int = 200,
+    offset: int = 0,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """优惠券列表（带额度分布与归属服）"""
+    """优惠券列表（带额度分布与归属服）
+
+    分页：此前无 offset 参数、total 返回的是本页条数而非真实总数，
+    券超过 500 张时旧券永远翻不到、前端分页也被 total 误导。
+    offset 默认为 0，老调用方行为不变。
+    """
     limit = max(1, min(int(limit or 200), 500))
+    offset = max(0, int(offset or 0))
     query = db.query(models.CouponCode)
     if kind in ("all", "subscription", "recharge"):
         query = query.filter(models.CouponCode.kind == kind)
@@ -310,11 +317,13 @@ def list_coupons(
         # （SQLite 的 LIKE 本来就不区分 ASCII 大小写），两边行为一致。
         query = query.filter(models.CouponCode.code.ilike(f"%{text}%"))
 
-    rows = query.order_by(models.CouponCode.id.desc()).limit(limit).all()
+    rows = query.order_by(models.CouponCode.id.desc()).offset(offset).limit(limit).all()
     stats = _usage_stats(db, [c.id for c in rows])
     return {
         "enabled": coupons.enabled(db),
-        "total": len(rows),
+        "total": query.count(),
+        "offset": offset,
+        "limit": limit,
         "coupons": [serialize(c, stats.get(c.id)) for c in rows],
     }
 
@@ -487,22 +496,37 @@ def delete_coupon(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """删券：只允许从没用过的券；有核销记录请改为停用（历史订单要能解释优惠来源）"""
-    coupon = db.query(models.CouponCode).filter(models.CouponCode.id == coupon_id).first()
-    if coupon is None:
+    """删券：只允许从没用过的券；有核销记录请改为停用（历史订单要能解释优惠来源）
+
+    原子 DELETE：读-查-删之间若有用户并发预订占上额度（coupon_usages 无
+    ondelete 的 FK），无条件 db.delete 会撞 FK 报 500。这里用 NOT EXISTS
+    条件一次判定——与 registration_codes 的 delete_code（P0-2）同一写法。
+    """
+    code_row = db.query(models.CouponCode.code).filter(
+        models.CouponCode.id == coupon_id
+    ).first()
+    if code_row is None:
         raise HTTPException(status_code=404, detail="优惠券不存在")
 
-    used = db.query(models.CouponUsage.id).filter(
-        models.CouponUsage.coupon_id == coupon.id).first()
-    if used:
+    deleted = (
+        db.query(models.CouponCode)
+        .filter(
+            models.CouponCode.id == coupon_id,
+            ~db.query(models.CouponUsage.id)
+            .filter(models.CouponUsage.coupon_id == coupon_id)
+            .exists(),
+        )
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        # 行存在但已有核销/预订记录：并发预订在我们检查后占上了额度
+        db.rollback()
         raise HTTPException(
             status_code=400,
             detail="该优惠券已有核销记录，不能删除；请改为停用（历史订单需要保留优惠来源）",
         )
 
-    code = coupon.code
-    db.delete(coupon)
-    db.commit()
+    code = code_row[0]
     _audit(db, current_admin, "economy_delete_coupon", "coupon", coupon_id, {"code": code})
     db.commit()
     return {"success": True, "message": f"优惠券 {code} 已删除"}

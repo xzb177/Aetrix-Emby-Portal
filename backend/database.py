@@ -927,6 +927,23 @@ def _auto_migrate():
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠️ alert_rules event_type 唯一索引创建跳过: {exc}")
 
+    # R49：lottery_rounds 同群进行中（status='open'）唯一索引。
+    # create_lottery_round 的"同群已有进行中则拒绝"此前只在端点层读-查-写，
+    # 两管理员同群并发建活动可产生两个 open 轮次。部分唯一索引与
+    # get_active_round（只查 status='open'）口径对齐；老库有重复行时记
+    # warning 不崩启动（与上面 uq_alert_rules_event_type 同一口径），
+    # 由 create 端的 IntegrityError 兜底路径拦截新的双建。
+    if "lottery_rounds" in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_lottery_rounds_open_chat "
+                    "ON lottery_rounds (chat_id) WHERE status = 'open'"
+                ))
+            print("  🔧 已迁移: lottery_rounds 同群进行中唯一索引 (chat_id WHERE open)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ lottery_rounds 同群进行中唯一索引创建跳过: {exc}")
+
     _widen_code_column(existing_tables, inspector)
     _widen_bitrate_column(existing_tables, inspector)
     _fix_station_message_from_user_fk(existing_tables, inspector)

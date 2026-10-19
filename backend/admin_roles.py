@@ -63,6 +63,16 @@ SUPER_ONLY_PREFIXES = (
     "/api/admin/api-keys",
 )
 
+# 仅超级管理员可读写（不分读写方法）的路径后缀：凭据材料类端点。
+# rclone.conf 含网盘凭据，仅超管可读写；server_id 在路径中间
+# （/api/admin/servers/{id}/rclone-conf），前缀匹配切不出来，故用后缀收进集中判定——
+# 仍不做端点级散落判断（R49 收编 servers.py 的散落 _require_super）。
+# 口径补正（2026-10-19）：原 PR 文把 GET 读放宽成「人人可看」，冒烟测试确诊这是回归
+# （旧 _require_super 拦的是读写、冒烟断言「读写都被拒」）——恢复成读也要拦。
+SUPER_ONLY_SUFFIXES = (
+    "/rclone-conf",
+)
+
 
 def normalize_role(raw: Optional[str]) -> str:
     """把库里的值收敛到枚举内
@@ -96,17 +106,24 @@ def is_super(user) -> bool:
 def blocked_reason(request: Request, user) -> Optional[str]:
     """这次请求为什么被拦（None = 放行）
 
-    只读角色的**所有**写操作都拦；运营角色只拦 ``SUPER_ONLY_PREFIXES`` 下的写操作。
+    只读角色的**所有**写操作都拦；运营角色只拦 ``SUPER_ONLY_PREFIXES`` 下的写操作；
+    ``SUPER_ONLY_SUFFIXES`` 下的路径（凭据类，含 rclone.conf）**读写一律**只限超管。
     """
     path = getattr(getattr(request, "url", None), "path", "") or ""
     method = (getattr(request, "method", "") or "").upper()
     role = role_of(user)
     if role == ROLE_VIEWER and method not in SAFE_METHODS:
         return "当前账号是「只读审计」角色：可以查看，不能修改；需要写权限请让超级管理员调整角色"
-    if role != ROLE_SUPER and method not in SAFE_METHODS:
-        for prefix in SUPER_ONLY_PREFIXES:
-            if path.startswith(prefix):
+    if role != ROLE_SUPER:
+        # 凭据类路径后缀（rclone.conf 含网盘凭据）：读写一律只限超管，
+        # 不区分 GET / HEAD / OPTIONS（2026-10-19 补正：之前只拦写是回归）。
+        for suffix in SUPER_ONLY_SUFFIXES:
+            if path.endswith(suffix):
                 return "这一项需要「超级管理员」角色（当前：{}）".format(role_label(role))
+        if method not in SAFE_METHODS:
+            for prefix in SUPER_ONLY_PREFIXES:
+                if path.startswith(prefix):
+                    return "这一项需要「超级管理员」角色（当前：{}）".format(role_label(role))
     return None
 
 

@@ -72,3 +72,54 @@ def test_empty_role_is_treated_as_lowest_privilege():
     assert blocked_reason(_req("/api/admin/users/1", method="GET"), legacy) is None
     bogus = SimpleNamespace(admin_role="root", is_staff=True)
     assert blocked_reason(_req("/api/admin/users/1", method="PUT"), bogus)
+
+
+# ==================== R49 M2：凭据类路径后缀集中判定 ====================
+# 散落的 _require_super 收进 admin_roles 的 SUPER_ONLY_SUFFIXES：读写一律只限超管。
+# 口径补正（2026-10-19）：原 PR 文把 GET 读放宽成「人人可看」，冒烟测试确诊是回归
+# （旧 _require_super 拦读写、冒烟断言「读写都被拒」），恢复成读也要拦。
+
+_RCLONE = "/api/admin/servers/5/rclone-conf"
+
+# 7 条服务器写路由：operator 仍可写（M2 未动它们，防回归）
+_SERVER_WRITE_ROUTES = [
+    ("POST", "/api/admin/servers"),
+    ("PUT", "/api/admin/servers/5"),
+    ("POST", "/api/admin/servers/test"),
+    ("POST", "/api/admin/servers/5/test"),
+    ("POST", "/api/admin/servers/5/activate"),
+    ("POST", "/api/admin/servers/5/toggle"),
+    ("DELETE", "/api/admin/servers/5"),
+]
+
+
+def test_rclone_conf_write_is_super_only():
+    """写 rclone.conf 仍只限超管：operator/viewer 的 POST 一律 403"""
+    for role in (ROLE_OPERATOR, ROLE_VIEWER):
+        reason = blocked_reason(_req(_RCLONE, "POST"), _admin(role))
+        assert reason, f"{role} POST {_RCLONE} 应被拦"
+    assert blocked_reason(_req(_RCLONE, "POST"), _admin(ROLE_SUPER)) is None
+
+
+def test_rclone_conf_read_is_super_only():
+    """GET rclone-conf 也只限超管：operator/viewer 的读一律 403
+    （2026-10-19 补正：rclone.conf 含网盘凭据，恢复旧 _require_super 的读写都拦口径；
+    冒烟测试 scripts/smoke_test_servers.py 的「读写都被拒」是长约，之前放宽读是回归）"""
+    for role in (ROLE_OPERATOR, ROLE_VIEWER):
+        reason = blocked_reason(_req(_RCLONE, "GET"), _admin(role))
+        assert reason, f"{role} GET {_RCLONE} 应被拦"
+        assert "超级管理员" in reason
+    assert blocked_reason(_req(_RCLONE, "GET"), _admin(ROLE_SUPER)) is None
+
+
+@pytest.mark.parametrize("method,path", _SERVER_WRITE_ROUTES)
+def test_server_write_routes_still_open_to_operator(method, path):
+    """M2 未动服务器其余写路由：operator 仍可写，viewer 仍被拦（防回归）"""
+    assert blocked_reason(_req(path, method), _admin(ROLE_OPERATOR)) is None, f"operator {method} {path}"
+    assert blocked_reason(_req(path, method), _admin(ROLE_VIEWER)), f"viewer {method} {path} 应被拦"
+
+
+def test_rclone_conf_suffix_does_not_overmatch():
+    """后缀判定不误伤：路径里含 rclone-conf 但不是后缀结尾的不受影响"""
+    assert blocked_reason(_req("/api/admin/servers/rclone-conf-list", "POST"), _admin(ROLE_OPERATOR)) is None
+    assert blocked_reason(_req("/api/admin/mounts/health", "POST"), _admin(ROLE_OPERATOR)) is None

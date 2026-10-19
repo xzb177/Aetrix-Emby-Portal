@@ -117,7 +117,7 @@ def test_concurrent_grants_serialized(engine, monkeypatch):
         try:
             user = s1.get(models.WebUser, user_id)
             plan = s1.get(models.SubscriptionPlan, plan_id)
-            _grant_subscription(s1, user, plan, 30, "t", "race:a", realm_id=realm_id)
+            _grant_subscription(s1, user, plan, 30, realm_id=realm_id)
             s1.commit()
         except Exception as e:  # noqa: BLE001 - 透传给主线程断言
             errors.append(e)
@@ -129,7 +129,7 @@ def test_concurrent_grants_serialized(engine, monkeypatch):
         try:
             user = s2.get(models.WebUser, user_id)
             plan = s2.get(models.SubscriptionPlan, plan_id)
-            _grant_subscription(s2, user, plan, 30, "t", "race:b", realm_id=realm_id)
+            _grant_subscription(s2, user, plan, 30, realm_id=realm_id)
             s2.commit()
         except Exception as e:  # noqa: BLE001
             errors.append(e)
@@ -162,9 +162,9 @@ def test_sequential_grants_extend_single_row(engine):
     plan = _make_plan(s)
     realm = _make_realm(s, "seq")
     t0 = datetime.now()
-    _grant_subscription(s, u, plan, 30, "t", "seq:1", realm_id=realm.id)
+    _grant_subscription(s, u, plan, 30, realm_id=realm.id)
     s.commit()
-    _grant_subscription(s, u, plan, 30, "t", "seq:2", realm_id=realm.id)
+    _grant_subscription(s, u, plan, 30, realm_id=realm.id)
     s.commit()
     rows = _active_rows(s, u.id, realm.id)
     assert len(rows) == 1
@@ -179,8 +179,8 @@ def test_grant_lock_is_per_realm(engine):
     plan = _make_plan(s)
     r1 = _make_realm(s, "iso1")
     r2 = _make_realm(s, "iso2")
-    _grant_subscription(s, u, plan, 30, "t", "iso:1", realm_id=r1.id)
-    _grant_subscription(s, u, plan, 30, "t", "iso:2", realm_id=r2.id)
+    _grant_subscription(s, u, plan, 30, realm_id=r1.id)
+    _grant_subscription(s, u, plan, 30, realm_id=r2.id)
     s.commit()
     assert len(_active_rows(s, u.id, r1.id)) == 1
     assert len(_active_rows(s, u.id, r2.id)) == 1
