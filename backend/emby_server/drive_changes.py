@@ -1163,6 +1163,15 @@ _last_poll_at: str | None = None
 _last_poll_changes: int = 0
 _last_poll_libs: int = 0
 
+#: 共享心跳的 system_configs 键。守护线程只在 worker 进程里起，API 进程读本进程
+#: 内存永远是 False（管理后台"Drive 轮询"恒错的根因）——现每轮在 system_configs
+#: 写一份心跳，面板跨进程读它判运行状态。复用 page token 同路，不新造表。
+HEARTBEAT_KEY = "drive_changes_heartbeat"
+#: 心跳新鲜阈值 = 轮询间隔 × 3。依据：单轮最大间隔 ≈ POLL_INTERVAL×(1+抖动0.2)
+#: = 360s；阈值 900s 容忍一轮丢失/一次慢轮询而不闪烁，守护线程真死后
+#: 15 分钟内面板翻为"没在跑"。
+HEARTBEAT_STALE_SEC = 3 * POLL_INTERVAL
+
 
 def is_running() -> bool:
     """守护线程是否在跑（change_watcher 用它决定远程源是否跳过快照列举）。"""
@@ -1170,13 +1179,99 @@ def is_running() -> bool:
 
 
 def status() -> dict:
-    """管理后台展示用：drive_changes 运行状态。"""
+    """管理后台展示用：drive_changes 运行状态。
+
+    跨进程修复：守护线程只在 worker 进程启动，API 进程读本进程内存的
+    _watcher_thread 永远是 False（面板"Drive 轮询"恒错的根因）。现以
+    worker 每轮写在 system_configs 的共享心跳为准：心跳新鲜
+    （< HEARTBEAT_STALE_SEC）判在跑；本进程线程在跑时走快路径直接判在跑。
+    无心跳时回退旧行为（running=False），不抛错。
+    """
+    if is_running():
+        return {
+            "running": True,
+            "last_poll": _last_poll_at,
+            "last_changes": _last_poll_changes,
+            "last_libs_triggered": _last_poll_libs,
+            "heartbeat_source": "local",
+        }
+    hb = _read_heartbeat()
+    if hb is not None:
+        age_s = (datetime.now(timezone.utc) - hb["last_poll_at"]).total_seconds()
+        return {
+            "running": age_s < HEARTBEAT_STALE_SEC,
+            "last_poll": hb["last_poll_at"].isoformat(),
+            "last_changes": hb["changes"],
+            "last_libs_triggered": hb["libraries"],
+            "heartbeat_source": "shared",
+        }
     return {
-        "running": is_running(),
-        "last_poll": _last_poll_at,
-        "last_changes": _last_poll_changes,
-        "last_libs_triggered": _last_poll_libs,
+        "running": False,
+        "last_poll": None,
+        "last_changes": 0,
+        "last_libs_triggered": 0,
+        "heartbeat_source": "none",
     }
+
+
+def _write_heartbeat(db, stats: dict, run_status: str) -> None:
+    """写共享心跳（system_configs）。每轮 poll 必调：成功与失败都写，
+    失败恰是面板最该看见的（errors/run_status 一并落盘）。"""
+    from backend import models as base_models
+    payload = {
+        "last_poll_at": datetime.now(timezone.utc).isoformat(),
+        "changes": int(stats.get("changes", 0)),
+        "libraries": int(stats.get("libraries", 0)),
+        "errors": int(stats.get("errors", 0)),
+        "run_status": run_status,
+    }
+    # 上游（record_chase_run/轮询体）可能留下脏事务：先回滚再独立写一行，
+    # 心跳自己成局，不受上游失败牵连。
+    try:
+        db.rollback()
+    except Exception:  # noqa: BLE001
+        pass
+    row = db.query(base_models.SystemConfig).filter(
+        base_models.SystemConfig.key == HEARTBEAT_KEY).first()
+    text = json.dumps(payload, ensure_ascii=False)
+    if row:
+        row.value = text
+    else:
+        db.add(base_models.SystemConfig(
+            key=HEARTBEAT_KEY, value=text,
+            description="Drive Changes 守护线程心跳（管理后台跨进程读）"))
+    db.commit()
+
+
+def _read_heartbeat() -> dict | None:
+    """读共享心跳。缺失/解析失败/DB 异常都返回 None，调用方回退旧行为。"""
+    from backend import models as base_models
+    from backend.database import SessionLocal
+    db = SessionLocal()
+    try:
+        row = db.query(base_models.SystemConfig).filter(
+            base_models.SystemConfig.key == HEARTBEAT_KEY).first()
+        if not row or not row.value:
+            return None
+        payload = json.loads(row.value)
+        ts = datetime.fromisoformat(payload["last_poll_at"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return {
+            "last_poll_at": ts,
+            "changes": int(payload.get("changes", 0)),
+            "libraries": int(payload.get("libraries", 0)),
+            "errors": int(payload.get("errors", 0)),
+            "run_status": str(payload.get("run_status", "")),
+        }
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive Changes: 读心跳失败，回退本进程状态", exc_info=True)
+        return None
+    finally:
+        try:
+            db.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _trigger_scan(db, library_id: int, prefixes: set[str]) -> bool:
@@ -1386,6 +1481,12 @@ def poll_once() -> dict:
                 status=run_status, error=fatal_error)
         except Exception:
             logger.warning("Drive Changes: 写运行历史失败", exc_info=True)
+        # 跨进程状态修复：每轮都写共享心跳（成功/失败都写），管理后台读它。
+        # 只加写操作，不改轮询行为（间隔/抖动/SA 轮换一律不动）。
+        try:
+            _write_heartbeat(db, stats, run_status)
+        except Exception:
+            logger.warning("Drive Changes: 写心跳失败", exc_info=True)
         try:
             db.close()
         except Exception:

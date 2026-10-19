@@ -1170,3 +1170,157 @@ def test_poll_once_init_reinit_failure_does_not_kill_other_drives():
     assert calls["gst"] == [did_a], "只有 driveA 需要初始化 token"
     assert stats["drives"] == 2, stats
     assert stats["errors"] == 1, stats  # driveA 初始化失败计 1 次
+
+
+# ---------------------------------------------------------------------------
+# 共享心跳：管理后台跨进程读运行状态（面板"Drive 轮询"恒错修复）
+#
+# 根因：守护线程只在 worker 进程启动；API 进程的 status()/is_running()
+# 读本进程内存 _watcher_thread，永远 False。现 worker 每轮 poll 在
+# system_configs 写心跳（drive_changes_heartbeat），status() 跨进程读它。
+# ---------------------------------------------------------------------------
+
+import json as _json
+from datetime import timedelta, timezone as _tz
+
+
+def _hb_row(db):
+    from backend import models as base_models
+    return db.query(base_models.SystemConfig).filter(
+        base_models.SystemConfig.key == drive_changes.HEARTBEAT_KEY).first()
+
+
+def _hb_clear(db):
+    row = _hb_row(db)
+    if row:
+        db.delete(row)
+        db.commit()
+
+
+def _hb_write_raw(db, minutes_ago, changes=3, libraries=1, errors=0,
+                  run_status="ok"):
+    from backend import models as base_models
+    ts = datetime.now(_tz.utc) - timedelta(minutes=minutes_ago)
+    payload = {"last_poll_at": ts.isoformat(), "changes": changes,
+               "libraries": libraries, "errors": errors,
+               "run_status": run_status}
+    text = _json.dumps(payload)
+    row = _hb_row(db)
+    if row:
+        row.value = text
+    else:
+        db.add(base_models.SystemConfig(key=drive_changes.HEARTBEAT_KEY,
+                                        value=text, description="test"))
+    db.commit()
+
+
+def test_status_fresh_heartbeat_shows_running():
+    db = SessionLocal()
+    try:
+        _hb_clear(db)
+        _hb_write_raw(db, minutes_ago=2, changes=5, libraries=2)
+        with mock.patch.object(drive_changes, "is_running",
+                               return_value=False):
+            st = drive_changes.status()
+        assert st["running"] is True
+        assert st["heartbeat_source"] == "shared"
+        assert st["last_changes"] == 5
+        assert st["last_libs_triggered"] == 2
+        assert st["last_poll"] is not None
+    finally:
+        _hb_clear(db)
+        db.close()
+
+
+def test_status_stale_heartbeat_shows_stopped():
+    db = SessionLocal()
+    try:
+        _hb_clear(db)
+        # 阈值 = 3 × POLL_INTERVAL(300s) = 15min；20min 前的心跳判没在跑
+        _hb_write_raw(db, minutes_ago=20)
+        with mock.patch.object(drive_changes, "is_running",
+                               return_value=False):
+            st = drive_changes.status()
+        assert st["running"] is False
+        assert st["heartbeat_source"] == "shared"
+    finally:
+        _hb_clear(db)
+        db.close()
+
+
+def test_status_missing_heartbeat_falls_back_silently():
+    db = SessionLocal()
+    try:
+        _hb_clear(db)
+        with mock.patch.object(drive_changes, "is_running",
+                               return_value=False):
+            st = drive_changes.status()  # 无心跳：不许抛错，回退旧行为
+        assert st["running"] is False
+        assert st["heartbeat_source"] == "none"
+        assert st["last_poll"] is None
+        assert st["last_changes"] == 0
+        assert st["last_libs_triggered"] == 0
+    finally:
+        db.close()
+
+
+def test_status_local_thread_fast_path():
+    db = SessionLocal()
+    try:
+        _hb_clear(db)  # 无心跳，但本进程线程在跑 → 快路径判在跑
+        with mock.patch.object(drive_changes, "is_running",
+                               return_value=True):
+            st = drive_changes.status()
+        assert st["running"] is True
+        assert st["heartbeat_source"] == "local"
+    finally:
+        db.close()
+
+
+def test_write_heartbeat_roundtrip():
+    db = SessionLocal()
+    try:
+        _hb_clear(db)
+        drive_changes._write_heartbeat(
+            db, {"changes": 7, "libraries": 3, "errors": 1}, "partial")
+        row = _hb_row(db)
+        assert row is not None
+        p = _json.loads(row.value)
+        assert p["changes"] == 7
+        assert p["libraries"] == 3
+        assert p["errors"] == 1
+        assert p["run_status"] == "partial"
+        assert p["last_poll_at"]
+    finally:
+        _hb_clear(db)
+        db.close()
+
+
+def test_poll_once_writes_heartbeat_even_on_failure():
+    # 失败也写心跳：list_changes 抛异常 → errors>0 → 心跳仍落盘，
+    # 面板在失败轮次照样能读到"最近一轮时间"。
+    db = SessionLocal()
+    try:
+        _hb_clear(db)
+        with mock.patch.object(drive_changes, "discover_drives",
+                               return_value=["D1"]), \
+             mock.patch.object(drive_changes, "_is_dead_drive",
+                               return_value=False), \
+             mock.patch.object(drive_changes, "_get_page_token",
+                               return_value="tok0"), \
+             mock.patch.object(drive_changes, "list_changes",
+                               side_effect=RuntimeError("boom")):
+            stats = drive_changes.poll_once()
+        assert stats["errors"] >= 1
+        row = _hb_row(db)
+        assert row is not None, "失败轮次也必须写心跳"
+        p = _json.loads(row.value)
+        assert p["errors"] >= 1
+        with mock.patch.object(drive_changes, "is_running",
+                               return_value=False):
+            st = drive_changes.status()
+        assert st["running"] is True
+        assert st["heartbeat_source"] == "shared"
+    finally:
+        _hb_clear(db)
+        db.close()
