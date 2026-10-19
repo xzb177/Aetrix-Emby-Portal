@@ -228,12 +228,15 @@ EP_PATTERNS = [
 EP_PATTERNS_TV = [
     re.compile(r"\b[Ee][Pp]?\.?\s?(\d{1,4})(?!\d)"),
 ]
-# 合集区间：S06E27-E28 / S01E26 - E27（同一文件含多集）。
+# 合集区间：S06E27-E28 / S01E26 - E27 / S01E27E28（同一文件含多集）。
 # **必须在 EP_PATTERNS_TV 的独立 E 模式之前命中**：否则 "-E28" 的尾巴
 # 会被独立 E 模式先咬住（生产实证：海绵宝宝 S06E27-E28 被标成 S1E28）。
 # 命中后 episode 取区间起点，episode_end 记终点；下游按起点入库。
 EP_RANGE_RES = [
     re.compile(r"[Ss](\d{1,2})\s?[\s._-]*[Ee](\d{1,4})\s*-\s*[Ee]?(\d{1,3})"),
+    # 连写：S01E27E28。排在分隔符形态之后；单集 S01E27 不会被它咬住
+    # （需要第二个 E + 数字）。
+    re.compile(r"[Ss](\d{1,2})[\s._-]*[Ee](\d{1,4})[Ee](\d{1,3})\b"),
 ]
 # 仅剧集库：绝对集数（动漫常见 `Frieren - 28`）。
 # 要求分隔符 + 锚定末尾；年份段位 (1900-2099) 让位给年份解析；不与已匹配段重叠。
@@ -500,6 +503,16 @@ def needs_probe(item, path: str, size: Optional[int] = None) -> bool:
 def item_guid(path: str) -> str:
     """由稳定路径生成 32 位 guid"""
     return hashlib.md5(("rb:item:" + path.lower()).encode("utf-8")).hexdigest()
+
+
+def _multi_episode_guid(stored_path: str, episode: int) -> str:
+    """多集文件第 N 集行的 guid：与主行（path 派生）同族、必不冲突。
+
+    主行 guid = item_guid(path)；第二行 = item_guid(f"{path}#E{episode:03d}")。
+    md5 十六进制恒 32 位，符合 emby_items.guid 长度不变式；重命名/移动时
+    两行按各自 guid 独立走改名识别（见 _match_renames_by_*），互不干扰。
+    """
+    return item_guid(f"{stored_path}#E{episode:03d}")
 
 
 def _find_duplicate_series(db, library_id: int, tmdb_id=None,
@@ -2098,6 +2111,11 @@ class _Pending:
     renamed: bool = False
     claimed_id: Optional[int] = None  # 批次开头占位成功拿到的 id（None=没抢到）
     claimed_item: Any = None  # 占位成功的行（强引用，防 identity map 弱引用被 GC）
+    # 多集文件（如 S06E27-E28）：本 pending 是该文件的第二集行。
+    # master_pending 指向同一文件的第一集 pending：探测/海报/字幕/NFO 的
+    # IO Future 复用主行的，同一文件只跑一次 IO（证据见 tests/test_multi_episode_file.py）。
+    multi_episode: bool = False
+    master_pending: Any = None
     series: Any = None
     season: Any = None
     probe: Any = None   # Future[dict] | None
@@ -2981,25 +2999,35 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
         fids.append(fid)
     if not need:
         return
-    # 批量查（分片），要看得见软删除的行（改名后又删了又改回来也能认出来）
-    found: dict[str, Any] = {}
+    # 批量查（分片），要看得见软删除的行（改名后又删了又改回来也能认出来）。
+    # 同一 file_id 可能对应多行（多集文件 S06E27-E28 建两行）：按行收，
+    # 后面按集号精确配对，不许张冠李戴。
+    found: dict[str, list] = {}
     unique_fids = list(dict.fromkeys(fids))
     with _soft_delete.include_deleted():
         for chunk in _chunks(unique_fids, SQL_IN_CHUNK):
             for row in db.query(MI).filter(
                     MI.drive_file_id.in_(chunk),
                     MI.library_id == ctx.lib_id).all():
-                if row.drive_file_id and row.drive_file_id not in found:
-                    found[row.drive_file_id] = row
+                if row.drive_file_id:
+                    found.setdefault(row.drive_file_id, []).append(row)
     matched = 0
-    claimed_fids: set[str] = set()  # 同一批里同一 file_id 只认一次（防 rclone 重复条目）
+    claimed_row_ids: set = set()  # 同一行只认领一次（多集文件两行各认各的）
     for p, fid in zip(need, fids):
-        if fid in claimed_fids:
+        rows = [r for r in found.get(fid, []) if r.id not in claimed_row_ids]
+        if not rows:
             continue
-        row = found.get(fid)
-        if row is None:
-            continue
-        claimed_fids.add(fid)
+        # 多集文件同一 file_id 对应多行：按集号精确配对（E27 的 pending
+        # 只认 episode_number=27 的行）。电影行没有集号时沿用旧行为。
+        if p.item_type == "episode":
+            _ep = (p.parsed or {}).get("episode")
+            rows = [r for r in rows
+                    if getattr(r, "episode_number", None) == _ep]
+            if len(rows) != 1:
+                # 集号对不上 / 歧义：不碰，走新文件流程（宁可删旧建新）
+                continue
+        row = rows[0]
+        claimed_row_ids.add(row.id)
         # 同一文件但路径没变：说明 guid 查漏了（不应该发生），防御性处理
         if row.file_path == p.scan_file.stored_path:
             p.item = row
@@ -3116,11 +3144,18 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
             series_name = _series_name_of(sf, parsed)
         except Exception:  # noqa: BLE001
             return None
-        if (not series_name or parsed.get("season") is None
-                or parsed.get("episode") is None):
+        # episode 的季/集身份用行自身的字段（入库时写死），而不是从旧路径
+        # 重新解析——多集文件的第二行（episode_number=episode_end）解析旧路径
+        # 只会得到区间起点，永远匹配不上自己的 pending。单集行两者一致，
+        # 行为不变（存量手工订正过的行按订正后的身份参与匹配，更准确）。
+        _r_season = (row.season_number if row.season_number is not None
+                     else parsed.get("season"))
+        _r_ep = (row.episode_number if row.episode_number is not None
+                 else parsed.get("episode"))
+        if not series_name or _r_season is None or _r_ep is None:
             return None
         return ("episode", row.size, _norm(series_name),
-                parsed["season"], parsed["episode"],
+                _r_season, _r_ep,
                 _ver_sig(row.file_path or ""))
 
     need: list = []
@@ -3218,6 +3253,55 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         ctx.stats["renamed"] = ctx.stats.get("renamed", 0) + matched
 
 
+def _reuse_master_io_futures(pending) -> None:
+    """多集文件第二行复用主行的 IO Future（探测/海报/字幕/NFO 只跑一次）。
+
+    主行本轮没提交对应 IO（秒跳/不需要探测/分层跳过）时主行对应属性为
+    None，第二行按自己的条件正常提交，保证正确不丢活。
+    """
+    _mp = getattr(pending, "master_pending", None)
+    if _mp is None:
+        return
+    for attr in ("probe", "side", "nfo"):
+        if getattr(_mp, attr, None) is not None and getattr(pending, attr, None) is None:
+            setattr(pending, attr, getattr(_mp, attr))
+
+
+def _maybe_make_multi_episode_pending(ctx, prepared: list, guids: list,
+                                      scan_file, pending, parsed: dict,
+                                      item_type: str) -> None:
+    """多集文件为第二集追加一个 pending（合集文件一文件顶两集）。
+
+    触发条件：解析出 episode_end 且 episode_end > episode（S06E27-E28 /
+    S06E27E28 等形态；_1092 的解析保证）。
+    第二行：guid = _multi_episode_guid(path, episode_end)（与主行同族不冲突）；
+    parsed 拷贝一份只改 episode；series/season 身份与主行一致；
+    master_pending 指回主行 pending 供 IO Future 复用。
+    """
+    ep_end = parsed.get("episode_end")
+    if not (item_type == "episode" and ep_end
+            and parsed.get("episode") is not None
+            and ep_end > parsed["episode"]):
+        return
+    parsed2 = dict(parsed)
+    parsed2["episode"] = ep_end
+    guid2 = _multi_episode_guid(scan_file.stored_path, ep_end)
+    if guid2 in ctx.seen_guids:
+        # 同一文件在本轮已被处理过（遍历器重复产出）：沿用主行的
+        # 防重复语义，第二次不再建任务
+        ctx.stats["duplicate_files"] = ctx.stats.get("duplicate_files", 0) + 1
+        return
+    ctx.seen_guids.add(guid2)
+    pending2 = _Pending(scan_file=scan_file, guid=guid2,
+                       parsed=parsed2, item_type="episode")
+    pending2.series_guid = pending.series_guid
+    pending2.series_name = pending.series_name
+    pending2.season_guid = pending.season_guid
+    pending2.multi_episode = True
+    pending2.master_pending = pending
+    prepared.append(pending2)
+    guids.append(guid2)
+
 def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -> list:
     """把一批文件变成「可直接写库」的任务：一次查库 + 并行预取"""
     prepared: list = []
@@ -3247,6 +3331,13 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             pending.season_guid = item_guid(f"{pending.series_guid}:S{parsed['season']:02d}")
         prepared.append(pending)
         guids.append(guid)
+
+        # 多集文件（如 S06E27-E28）：为第二集单独建一个 pending/行，
+        # 两集在播放器里都可见、都能播。第二行 guid 与主行同族但不冲突
+        # （见 _multi_episode_guid）；IO（探测/海报/字幕/NFO）在提交阶段
+        # 复用主行的 Future，同一文件只跑一次。
+        _maybe_make_multi_episode_pending(ctx, prepared, guids, scan_file,
+                                          pending, parsed, item_type)
 
     known = _load_items(db, guids)
 
@@ -3342,7 +3433,11 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             pending.layered = True
             # SCAN_FORCE_REMOTE=1 时强制按远程处理（FUSE 有本地路径但 IO 慢）
             pending.layered_local_fast = bool(scan_file.local_dir) and not SCAN_FORCE_REMOTE
-        if pending.probe_needed:
+        # 多集第二行：复用主行的 IO Future（探测/海报/字幕/NFO 只跑一次）。
+        # 主行本轮没提交对应 IO（秒跳/不需要探测/分层跳过）时对应属性为 None，
+        # 下面的提交分支按第二行自己的条件正常提交，保证正确不丢活。
+        _reuse_master_io_futures(pending)
+        if pending.probe_needed and pending.probe is None:
             if PROBE_BACKGROUND:
                 # Phase 1：不提交 ffprobe（连 probe_input 的直链解析都省了），
                 # 写库时把条目标 probe_status='pending' 交给后台 worker。
@@ -3350,15 +3445,19 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             elif pool is not None and (not pending.layered or getattr(pending, "layered_local_fast", False)):
                 # inline 模式当场探测：分层下本机文件也探（本地 ffprobe 很快），
                 # 只有远程文件才推迟（直链解析要走网络）。
+                # 多集第二行（master_pending 非空）且主行已提交探测时，
+                # 上面已复用主行的 Future，这里不再重复提交。
                 pending.probe = _submit(pool, probe_metadata, *scan_file.probe_input(), size=scan_file.size)
             # 分层 + inline + 远程：L1 不探，enrich_worker 补全时把 probe_status
             # 置 pending，probe_worker 接手
-        if pool is not None and (not pending.layered or getattr(pending, "layered_local_fast", False)):
+        if (pending.side is None and pool is not None
+                and (not pending.layered or getattr(pending, "layered_local_fast", False))):
             pending.side = _submit(pool, _side_info, ctx, scan_file)
         # NFO 发现与解析（与 probe / side / TMDB 并行；结果在下面先取回，
         # TMDB 预取口径按 NFO 有无决定：有 tmdb_id 就不调搜索）
-        if pool is not None and pending.item_type in ("series", "movie", "episode") and (
-            not pending.layered or getattr(pending, "layered_local_fast", False)):
+        if (pending.nfo is None and pool is not None
+                and pending.item_type in ("series", "movie", "episode")
+                and (not pending.layered or getattr(pending, "layered_local_fast", False))):
             pending.nfo = _submit(pool, _nfo_work, ctx, scan_file, pending.item_type)
 
     # NFO 先取回（小文件 IO），再决定 TMDB 预取口径——搜索是扫描里最贵的网络调用，
