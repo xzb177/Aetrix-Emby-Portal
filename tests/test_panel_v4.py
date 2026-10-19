@@ -225,8 +225,10 @@ def test_letter_and_collector_read_playback_sessions(db, user):
     """换源回归：/letter 昨日观影时长与条目、/collector 累计小时，
     都从 emby_playback_sessions 的 position_ticks 来。"""
     pa.seed_achievement_defs(db)
-    start = (datetime.now() - timedelta(days=1)).replace(
-        hour=12, minute=0, second=0, microsecond=0)
+    # /letter 用北京时间划"昨日"窗口（panel.py::_now_local_naive），夹具必须同
+    # 口径：昨日 12:00（北京）→ 存储帧。之前用 datetime.now()（UTC naive），
+    # CI 落在 16:00–24:00 UTC 时必红。
+    start = _bj_to_storage(12, 0, days_ago=1)
     _mk_session(db, user, "昨日电影", start, 7200)
     app = _make_app(db, user)
     client = TestClient(app)
