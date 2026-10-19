@@ -1185,6 +1185,31 @@ def _http_fetch_range(url: str, headers: Optional[dict], start: int, end: int) -
     return body[start:end + 1] if len(body) >= end + 1 else None
 
 
+def _remote_returns_login_page(url: str, headers: Optional[dict]) -> bool:
+    """远端 URL 预检：响应的 Content-Type 是不是 text/html。
+
+    2026-10-19 探测塌方教训：``drive.usercontent.google.com/download`` 对部分
+    文件即使带 SA Bearer 也返回 HTTP 200 的 Google 登录页 HTML——状态码检查
+    全部通过，ffprobe 读 HTML 拿不到 format，白白烧掉 3 次尝试后判死。
+    只读响应头（stream 方式，不下载 body）；预检失败（超时/异常）一律返回
+    False（放行），不阻断正常探测。非 http(s) URL 直接返回 False。
+    """
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return False
+    try:
+        import httpx
+        req = {str(k): str(v) for k, v in (headers or {}).items()}
+        req["Range"] = "bytes=0-0"
+        with httpx.Client(timeout=PROBE_HTTP_TIMEOUT, follow_redirects=True) as client:
+            with client.stream("GET", url, headers=req) as resp:
+                if not (200 <= resp.status_code < 300):
+                    return False
+                ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                return ctype == "text/html"
+    except Exception:  # noqa: BLE001 — 预检失败放行
+        return False
+
+
 def _dual_range_temp_file(path: str, headers: Optional[dict], size: int) -> Optional[str]:
     """并行取「前 1 MiB + 后 PROBE_REMOTE_TAIL_BYTES」，拼成「头部 + moov」的临时文件。
 
@@ -1328,6 +1353,10 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
 
     ``size`` 是已知的文件大小（远程挂载从目录列表传入），ffprobe 读不到本地文件大小时用它兜底。
     ``container`` 是调用方从库里带来的容器后缀（``MediaItem.container``）；不给就从 URL 后缀推。
+
+    ``_error`` 可能含 ``"login_page"``（2026-10-19）：远端返回 text/html 登录页，
+    授权类临时故障——调用方（media_probe.probe_one / probe_worker.process_item）
+    一律走 24h 长退避，永不判死、不消耗普通重试次数。
     """
     info: dict = {
         "duration_ticks": 0, "bitrate": 0, "width": 0, "height": 0,
@@ -1336,6 +1365,9 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
         "moov_position": None,
     }
     remote = path.startswith(("http://", "https://"))
+    if remote and _remote_returns_login_page(path, headers):
+        return {"_error": "login_page", "_http_code": 200,
+                "_error_detail": "远端返回登录页（Content-Type=text/html，需要有效授权）"}
     data = _ffprobe(path, headers, size=size)
     # 有限 Range 只是「少读点」的快速路径（decd396）：它只保证**头部带时长**的封装
     # （Matroska 实测有效）。moov 在文件尾的 MP4/MOV 在前 1 MiB 里根本没有时长，

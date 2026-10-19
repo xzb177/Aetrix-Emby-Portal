@@ -427,19 +427,34 @@ def drive_api_media_url(url: str) -> str:
     Bearer token 能用的下载端点，支持 Range 分片。
 
     非 uc 格式的 URL 原样返回，永不抛异常。
+
+    2026-10-19 追加：``https://drive.usercontent.google.com/download?id=<FILE_ID>…``
+    （挂载层 ``resolve_final`` 的现行直链格式，2026-10 起替代 uc）对部分文件
+    即使带 Bearer 也返回 HTTP 200 的 Google 登录页 HTML——2026-10-19 探测塌方
+    即此因（9,493 个冤判 failed），一并转成 alt=media；共享盘文件实测必须带
+    ``supportsAllDrives=true`` 才能取到字节。legacy uc 分支输出保持字节一致
+    （不追加 supportsAllDrives），不许回归。
     """
     try:
         if not url:
             return url
         parsed = urlparse(url)
-        if (parsed.hostname or "").lower() != "drive.google.com":
-            return url
-        if parsed.path.rstrip("/") != "/uc":
+        host = (parsed.hostname or "").lower()
+        if host == "drive.google.com":
+            if parsed.path.rstrip("/") != "/uc":
+                return url
+        elif host == "drive.usercontent.google.com":
+            if parsed.path.rstrip("/") != "/download":
+                return url
+        else:
             return url
         params = dict(parse_qsl(parsed.query))
         file_id = params.get("id")
         if not file_id:
             return url
+        if host == "drive.usercontent.google.com":
+            return ("https://www.googleapis.com/drive/v3/files/" + file_id
+                    + "?alt=media&supportsAllDrives=true")
         return "https://www.googleapis.com/drive/v3/files/" + file_id + "?alt=media"
     except Exception:
         return url

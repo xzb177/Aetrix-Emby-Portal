@@ -828,6 +828,13 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
 
     http_code = (probe or {}).get("_http_code")
     err = (probe or {}).get("_error")
+    # 登录页守卫（2026-10-19）：远端返回 HTML 说明端点没认授权——按认证类
+    # 临时故障处理，24h 长退避重试，永不判死、不消耗尝试次数（端点有回应，
+    # 挂载是活的）。
+    if err == "login_page":
+        breaker.record_ok(key)
+        return _finish(item_id, "long_retry", "远端返回登录页（需要有效授权）",
+                       kind="auth")
     # 配额 403 永不判死：走 24h 长退避，配额恢复后自动自愈（C-P1-1）。
     # _error="quota" 由 scanner.probe_metadata 标记；403 本身也按配额处理。
     if err == "quota" or http_code == 403:
