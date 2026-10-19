@@ -41,7 +41,8 @@
       </section>
 
       <!-- 生长记录 -->
-      <section class="v4-sec" style="padding-bottom: calc(20px + env(safe-area-inset-bottom))">
+      <!-- R100-2：safe-area 只由 .v4-page 统一处理（76px + env），这里不再重复加 env，否则刘海机型底部多出一个安全区高度的空白 -->
+      <section class="v4-sec" style="padding-bottom: 20px">
         <div class="v4-sec-title"><span aria-hidden="true">📈</span> 生长记录</div>
         <div class="v4-sec-sub">过去 7 天，片库每天新长了多少</div>
         <div v-if="server.loading" class="v4-skeleton" style="height: 190px"></div>
@@ -80,10 +81,11 @@ function retryServer() {
 <style scoped>
 /* 生长记录区无额外样式，复用 v4-sec */
 /* 空态第二行指引：小一号、弱化，告诉用户"正常还是故障" */
+/* R100-1：硬编码冷灰 #6b7280 改走 --ink2（暖灰 #6B6257），与纸面色系统一 */
 .v4-empty-hint {
   display: block;
   margin-top: 6px;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--ink2);
 }
 </style>
