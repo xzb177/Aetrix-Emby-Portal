@@ -624,15 +624,24 @@ def panel_letter(
         hour=0, minute=0, second=0, microsecond=0)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    sessions = db.query(models.EmbySession).filter(
-        models.EmbySession.user_id == user.id,
-        models.EmbySession.start_time >= yesterday_start,
-        models.EmbySession.start_time < today_start,
-    ).all()
-    total_secs = sum(s.play_duration or 0 for s in sessions)
+    # 数据源：emby_playback_sessions（真实播放会话；旧 emby_sessions
+    # 全仓无写入路径、生产恒 0 行，2026-10-19 换源）
+    from backend.emby_server import models as em
+    from backend.panel_achievements import playback_seconds
+    rows = (
+        db.query(em.PlaybackSession, em.MediaItem)
+        .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
+        .filter(
+            em.PlaybackSession.user_id == user.id,
+            em.PlaybackSession.start_time >= yesterday_start,
+            em.PlaybackSession.start_time < today_start,
+        )
+        .all()
+    )
+    total_secs = sum(playback_seconds(s, i) for s, i in rows)
     # 看完的条目（去重，播放超 1 分钟）
-    watched = sorted({s.item_name for s in sessions
-                      if s.item_name and (s.play_duration or 0) > 60})
+    watched = sorted({i.name for s, i in rows
+                      if i.name and playback_seconds(s, i) > 60})
     # 口味偏移：昨日最多的 genre（尽力而为）
     taste_shift = ""
     try:
@@ -755,8 +764,17 @@ def panel_collector(
     } for d in defs]
 
     # 馆灵：累计观影小时推导（阈值走 SystemConfig，可配置）
-    total_secs = db.query(func.coalesce(func.sum(models.EmbySession.play_duration), 0)).filter(
-        models.EmbySession.user_id == user.id).scalar() or 0
+    # 数据源：emby_playback_sessions（旧 emby_sessions 无写入、恒 0 行，
+    # 2026-10-19 换源；每 (user, item) 一行、两列窄查询后 Python 累加）
+    from backend.emby_server import models as em
+    from backend.panel_achievements import playback_seconds
+    _sess_rows = db.query(
+        em.PlaybackSession.position_ticks,
+        em.MediaItem.duration_ticks,
+    ).join(
+        em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id
+    ).filter(em.PlaybackSession.user_id == user.id).all()
+    total_secs = sum(playback_seconds(r) for r in _sess_rows)
     total_hours = total_secs / 3600
     # r45：直接复用 _read_pet_stages（横切只许一套）——原来这里另起一套内联解析，
     # 无形状校验，畸形 JSON 值会让 /collector 全站 500。

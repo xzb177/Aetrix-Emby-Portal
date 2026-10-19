@@ -62,14 +62,30 @@ def _bj_to_storage(bj_hour, bj_minute=0, days_ago=0):
     return t - timedelta(hours=8)
 
 
-def _mk_session(db, user, name, start, duration):
-    s = models.EmbySession(
-        id=f"sess-tz-{name}-{start.isoformat()}",
+# 真实播放会话数据源（emby_playback_sessions）：每 (user, item) 一行，
+# 观看秒数 = position_ticks/1e7（与 backend.panel_achievements.playback_seconds 同口径）。
+_session_seq = [0]
+
+
+def _mk_session(db, user, name, start, duration, genres=""):
+    from backend.emby_server import models as em
+    _session_seq[0] += 1
+    n = _session_seq[0]
+    item = em.MediaItem(
+        guid=f"sess-tz-{n:06d}",
+        library_id=1, item_type="movie", name=name,
+        date_added=datetime.now(), genres=genres,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    s = em.PlaybackSession(
+        session_key=f"sess-tz-key-{n:06d}",
         user_id=user.id,
-        item_name=name,
-        item_type="movie",
+        item_id=item.id,
         start_time=start,
-        play_duration=duration,
+        last_update_at=start,
+        position_ticks=int(duration * 10_000_000),
     )
     db.add(s)
     db.commit()

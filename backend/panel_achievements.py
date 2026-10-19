@@ -126,37 +126,52 @@ def _beijing(dt):
     return dt + _BEIJING_OFFSET if dt is not None else None
 
 
+def playback_seconds(session, item=None) -> int:
+    """播放会话 → 观看秒数。
+
+    数据源 PlaybackSession（emby_playback_sessions）不存累计秒数，
+    用「末次上报进度」近似：min(position_ticks, duration_ticks)/1e7；
+    条目无 runtime 时直接 position_ticks/1e7。口径与
+    backend/api/home_summary.py 的「继续观看」累计一致（TICKS 单一定义
+    在 backend/emby_server/api.py，函数内惰性导入防循环）。
+    """
+    from backend.emby_server.api import TICKS
+    pos = getattr(session, "position_ticks", 0) or 0
+    src = item if item is not None else session
+    runtime = getattr(src, "duration_ticks", 0) or 0
+    return int(min(pos, runtime) // TICKS if runtime else pos // TICKS)
+
+
 def user_tastes(db: Session, user_id: int) -> dict:
     """12 口味印章状态：{taste_key: {'name':, 'stamped': bool, 'count': int}}
 
     阈值：某口味看满 5 部（去重条目）盖章。genre 缺失的条目不计入任何口味。
+
+    数据源：emby_playback_sessions（真实播放会话，EA 兼容层写入，
+    每 (user, item) 一行）。旧数据源 emby_sessions 全仓无写入路径、
+    生产恒 0 行，2026-10-19 换源；换源后 genre 走 item_id 精确关联，
+    不再用 item_name 模糊匹配（旧法重名条目会串味）。
+    r45 的 5000 上界保留（哨兵测试钉住 SQL 必须带 LIMIT）。
     """
     from backend.emby_server import models as em  # noqa: F401  (确保表已注册)
-    # 用 emby_sessions 的 item_name 去重近似（session 不存 item_id）
-    # r45：加 5000 上界——原先无日期上限全量 .all() 进内存，重度用户每次打开
-    # 信件/收藏家页（请求线程同步调用）都会触发；5000 远超 500 名去重截断口径，
-    # 语义几乎不受影响，只掐掉无界内存增长。
-    # r2107 注：截断的是去重前的原始行——重度用户近期集中重刷少数几部时，
-    # 去重后名字很少，老口味印章可能随 5000 窗口滑动而抖动；5000 远大于
-    # 日常量级播放量，属可接受偏差，特此注明偏差方向。
-    sessions = db.query(models.EmbySession).filter(
-        models.EmbySession.user_id == user_id,
-        models.EmbySession.play_duration > 60,  # 至少看 1 分钟才算
-    ).order_by(models.EmbySession.start_time.desc()).limit(5000).all()
-    # r20 确定性截断：按最近观看倒序、去重保序取前 500（原 list(set)[:500] 顺序不定，
-    # 重度用户每次请求截到不同子集，口味/成就判定抖动）
-    seen_names = list(dict.fromkeys(s.item_name for s in sessions if s.item_name))
-    # 批量查 genre
-    items = {}
-    if seen_names:
-        for row in db.query(em.MediaItem.name, em.MediaItem.genres).filter(
-            em.MediaItem.name.in_(seen_names[:500])
-        ).all():
-            items[row[0]] = _parse_genres(row[1])
+    rows = (
+        db.query(em.PlaybackSession, em.MediaItem)
+        .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
+        .filter(em.PlaybackSession.user_id == user_id)
+        .order_by(em.PlaybackSession.last_update_at.desc())
+        .limit(5000)
+        .all()
+    )
 
     taste_counts = {t[0]: 0 for t in TASTE_MAP}
-    for name in seen_names:
-        genres = items.get(name, [])
+    seen_ids = set()
+    for session, item in rows:
+        if item.id in seen_ids:
+            continue
+        seen_ids.add(item.id)
+        if playback_seconds(session, item) <= 60:  # 至少看 1 分钟才算
+            continue
+        genres = _parse_genres(getattr(item, "genres", None))
         genre_text = " ".join(genres).lower()
         for tkey, tname, keywords in TASTE_MAP:
             if any(kw.lower() in genre_text for kw in keywords):
@@ -184,16 +199,25 @@ def evaluate(user_id: int, db: Session) -> list:
         if key in enabled and key not in unlocked and key not in new_unlocks:
             new_unlocks.append(key)
 
-    # 基础数据：近 90 天有效 session
+    from backend.emby_server import models as em
+    # 基础数据：近 90 天有效播放会话（数据源 emby_playback_sessions；
+    # 旧 emby_sessions 全仓无写入路径、生产恒 0 行，2026-10-19 换源。
+    # valid 为 (session, item) 对，item 直接携带 genre/年份/类型，
+    # 不再用 item_name 模糊匹配 MediaItem。）
     cutoff = now - timedelta(days=90)
-    sessions = db.query(models.EmbySession).filter(
-        models.EmbySession.user_id == user_id,
-        models.EmbySession.start_time >= cutoff,
-    ).all()
-    valid = [s for s in sessions if (s.play_duration or 0) > 60]
+    rows = (
+        db.query(em.PlaybackSession, em.MediaItem)
+        .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
+        .filter(
+            em.PlaybackSession.user_id == user_id,
+            em.PlaybackSession.start_time >= cutoff,
+        )
+        .all()
+    )
+    valid = [(s, i) for s, i in rows if playback_seconds(s, i) > 60]
 
     # --- 时间类规则（按北京时间判定小时） ---
-    for s in valid:
+    for s, _i in valid:
         if not s.start_time:
             continue
         h = _beijing(s.start_time).hour
@@ -204,11 +228,11 @@ def evaluate(user_id: int, db: Session) -> list:
 
     # --- 单日时长类（按北京时间自然日分桶） ---
     day_seconds: dict = {}
-    for s in valid:
+    for s, i in valid:
         if not s.start_time:
             continue
         d = _beijing(s.start_time).date().isoformat()
-        day_seconds[d] = day_seconds.get(d, 0) + (s.play_duration or 0)
+        day_seconds[d] = day_seconds.get(d, 0) + playback_seconds(s, i)
     for d, secs in day_seconds.items():
         if secs >= 6 * 3600:
             _grant("night_owl")
@@ -226,27 +250,11 @@ def evaluate(user_id: int, db: Session) -> list:
     if latest and (latest.streak or 0) >= 7:
         _grant("streak7")
 
-    # --- 内容类规则（需要 item genre/年份） ---
-    from backend.emby_server import models as em
-    # r20 确定性截断：valid 按 start_time 倒序、去重保序取前 500（同上）
-    _ordered = sorted((s for s in valid if s.item_name),
-                      key=lambda s: s.start_time or datetime.min, reverse=True)
-    names = list(dict.fromkeys(s.item_name for s in _ordered))
-    item_map = {}
-    if names:
-        for row in db.query(
-            em.MediaItem.name, em.MediaItem.genres, em.MediaItem.production_year,
-            em.MediaItem.item_type, em.MediaItem.series_id,
-        ).filter(em.MediaItem.name.in_(names[:500])).all():
-            item_map[row[0]] = row
-
-    for s in valid:
-        row = item_map.get(s.item_name)
-        if not row:
-            continue
-        _, genres_raw, prod_year, item_type, series_id = row
-        genres = _parse_genres(genres_raw)
+    # --- 内容类规则（需要 item genre/年份；item 直接从联表来） ---
+    for _s, item in valid:
+        genres = _parse_genres(getattr(item, "genres", None))
         gtext = " ".join(genres).lower()
+        prod_year = getattr(item, "production_year", None)
         # 考古：10 年前老片（年份用北京时间帧）
         if prod_year and prod_year <= now_bj.year - 10:
             _grant("archaeology")
@@ -259,13 +267,11 @@ def evaluate(user_id: int, db: Session) -> list:
 
     # 追完：同一 series_id 单日 >= 6 集（episode 类型）
     series_day: dict = {}
-    for s in valid:
-        row = item_map.get(s.item_name)
-        if not row or not s.start_time:
+    for s, item in valid:
+        if not s.start_time:
             continue
-        _, _, _, item_type, series_id = row
-        if item_type == "episode" and series_id:
-            k = (series_id, _beijing(s.start_time).date().isoformat())
+        if getattr(item, "item_type", None) == "episode" and getattr(item, "series_id", None):
+            k = (item.series_id, _beijing(s.start_time).date().isoformat())
             series_day[k] = series_day.get(k, 0) + 1
     if any(c >= 6 for c in series_day.values()):
         _grant("binge")
@@ -299,10 +305,17 @@ def evaluate(user_id: int, db: Session) -> list:
         logger.exception("年卡成就查询失败，已跳过 yearly_explorer 规则")
 
     # 回头：同一条目相邻两次播放间隔 ≥30 天（沉寂满 30 天才算回头）
+    # 数据源限制（2026-10-19 换源后已知缺口）：emby_playback_sessions 每
+    # (user, item) 只保留一行（客户端复用会话键时「复活」旧行并重置
+    # start_time，见 compat_routes._upsert_session），同一条目的多次播放
+    # 时间点不可得——本规则暂无法触发。旧数据源 emby_sessions 生产恒 0 行，
+    # 本就从未触发过。保留规则结构（口径二选一仍在用户待拍板清单⑧），
+    # 待逐条播放历史能力补上后恢复判定。
     name_times: dict = {}
-    for s in valid:
-        if s.item_name and s.start_time:
-            name_times.setdefault(s.item_name, []).append(s.start_time)
+    for s, item in valid:
+        item_name = getattr(item, "name", None)
+        if item_name and s.start_time:
+            name_times.setdefault(item_name, []).append(s.start_time)
     for times in name_times.values():
         times.sort()
         for i in range(1, len(times)):

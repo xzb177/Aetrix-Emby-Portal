@@ -52,16 +52,33 @@ def user(db):
     return u
 
 
-def _mk_session(db, user, name, minutes_ago=10, duration=300):
-    s = models.EmbySession(
-        id=f"sess-{name}-{minutes_ago}",
+# 真实播放会话数据源（emby_playback_sessions）：每 (user, item) 一行，
+# 观看秒数 = position_ticks/1e7（与 backend.panel_achievements.playback_seconds 同口径）。
+_session_seq = [0]
+
+
+def _mk_session(db, user, name, minutes_ago=10, duration=300, genres=""):
+    from backend.emby_server import models as em
+    _session_seq[0] += 1
+    n = _session_seq[0]
+    item = em.MediaItem(
+        guid=f"sess-r45-{n:06d}",
+        library_id=1, item_type="movie", name=name,
+        date_added=datetime.now(), genres=genres,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    s = em.PlaybackSession(
+        session_key=f"sess-r45-key-{n:06d}",
         user_id=user.id,
-        item_name=name,
-        item_type="movie",
+        item_id=item.id,
         start_time=datetime.now() - timedelta(minutes=minutes_ago),
-        play_duration=duration,
+        last_update_at=datetime.now() - timedelta(minutes=minutes_ago),
+        position_ticks=int(duration * 10_000_000),
     )
     db.add(s)
+    db.commit()
     return s
 
 
