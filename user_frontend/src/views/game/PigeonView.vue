@@ -18,7 +18,7 @@
           <p v-if="unreadCount > 0" class="perch-tip">
             <b>{{ unreadCount }}</b> 只鸽子带着信在栖木上等你
           </p>
-          <p v-else class="perch-tip">信都拆完啦，鸽子们去歇着了 🕊️</p>
+          <p v-else class="perch-tip">信都拆完啦，鸽子们去歇着了 <span aria-hidden="true">🕊️</span></p>
         </div>
       </section>
 
@@ -328,7 +328,10 @@ function fmtFull(iso: string) {
   // R41：非法日期回退原串（照抄 CompanionView R38 P3-10 的 isNaN 回退）
   const d = new Date(iso)
   if (isNaN(d.getTime())) return iso
+  // R105-1：跨年信件补年份（"1月5日" 不再与去年同日混淆）
+  const sameYear = d.getFullYear() === new Date().getFullYear()
   return d.toLocaleString('zh-CN', {
+    ...(sameYear ? {} : { year: 'numeric' as const }),
     month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit',
   })
 }
