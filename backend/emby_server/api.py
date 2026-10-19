@@ -3229,6 +3229,94 @@ def _season_belongs_to(season: em.MediaItem, show: em.MediaItem) -> bool:
     return season.series_id == show.id
 
 
+# 虚拟季的协议 Id：``vseason-<剧 db id>-<季号>``，与真实 guid 形制不同不会碰撞。
+_VIRTUAL_SEASON_ID_PREFIX = "vseason-"
+
+
+def _virtual_season_id(series_db_id: int, season_number: int) -> str:
+    return f"{_VIRTUAL_SEASON_ID_PREFIX}{series_db_id}-{season_number}"
+
+
+def _parse_virtual_season_id(season_id) -> "tuple[int, int] | None":
+    """解析虚拟季 Id → (series_db_id, season_number)；非法返回 None。"""
+    if not isinstance(season_id, str) or not season_id.startswith(_VIRTUAL_SEASON_ID_PREFIX):
+        return None
+    try:
+        db_id_s, num_s = season_id[len(_VIRTUAL_SEASON_ID_PREFIX):].rsplit("-", 1)
+        db_id, num = int(db_id_s), int(num_s)
+    except (ValueError, AttributeError):
+        return None
+    if db_id <= 0 or num < 0:
+        return None
+    return db_id, num
+
+
+def _episode_base_filters(item: em.MediaItem, series_ids: list) -> list:
+    """get_episodes 的基础集过滤（不带季筛选）：series 口径 = 露面行 +
+    find_duplicate_ids 认亲 + _family_series_ids 家族认亲；单集多版本
+    （merged_into_id 非空）不独立出现在列表里，走主记录的 AlternateVersions。
+
+    get_seasons 的桶B 虚拟季判定复用同一口径——「有可见集」的定义两处必须
+    一致，口径漂移由 tests/test_missing_episodes_virtual_season.py 的
+    源码断言发现。
+    """
+    return [
+        or_(em.MediaItem.series_id.in_(series_ids), em.MediaItem.parent_id == item.id),
+        em.MediaItem.item_type == "episode",
+        em.MediaItem.merged_into_id.is_(None),
+    ]
+
+
+def _missing_season_numbers(db: Session, item: em.MediaItem, series_ids: list,
+                            present: set) -> list[int]:
+    """桶B（缺集普查 2026-10-19）：有可见集（含家族∪dedup 认亲，与
+    get_episodes 同口径）但无可见季行的季号，升序。season_number 为空的不算。"""
+    q = db.query(em.MediaItem.season_number).filter(
+        *_episode_base_filters(item, series_ids),
+        em.MediaItem.season_number.isnot(None),
+    )
+    if present:
+        q = q.filter(~em.MediaItem.season_number.in_(present))
+    return sorted({n for (n,) in q.distinct().all()})
+
+
+def _virtual_season_dto(item: em.MediaItem, season_number: int, ep_count: int,
+                        db: Session) -> dict:
+    """虚拟季条目 DTO：与 _item_dto 的季分支同字段约定（客户端渲染季行所需的键）。
+
+    季名由季号推导（与库内季行命名 ``第 N 季`` 同形）。图片键留空——虚拟季
+    没有独立图片行，客户端按无图占位处理；UserData 为默认未看。
+    """
+    vid = _virtual_season_id(item.id, season_number)
+    name = f"第 {season_number} 季"
+    etag = hashlib.md5(
+        f"vseason|{item.guid}|{season_number}|{ep_count}".encode("utf-8", "ignore")
+    ).hexdigest()
+    ok = _download_ok(db)
+    dto = {
+        "Name": name, "SortName": name, "Id": vid, "ServerId": SERVER_ID,
+        "Etag": etag, "Type": "Season", "IsFolder": True, "MediaType": "Video",
+        "LocationType": "FileSystem", "IsHidden": False, "CanDelete": False,
+        "CanDownload": ok, "SupportsSync": False, "SupportsContentDownloading": ok,
+        "LockData": False, "LockedFields": [],
+        "Genres": [], "GenreItems": [], "Tags": [], "Taglines": [],
+        "Studios": [], "Countries": [], "Languages": [],
+        "People": [], "RemoteTrailers": [], "ExternalUrls": [],
+        "Subviews": [], "BackdropImageTags": [], "ImageTags": {},
+        "ImageBlurHashes": {}, "ProviderIds": _provider_ids(item),
+        "UserData": _user_data_dto(None, vid, None),
+        "MediaSources": [],
+        "PrimaryImageAspectRatio": 0.6666667, "SyncStatus": "Synced",
+        "RunTimeTicks": 0, "Container": "", "IsHD": False,
+        "ChildCount": ep_count or 0,
+        "SeriesId": item.guid, "SeriesName": item.name or "",
+        "IndexNumber": season_number,
+    }
+    if item.production_year:
+        dto["ProductionYear"] = item.production_year
+    return dto
+
+
 @json_route(emby_router, "/emby/Shows/{item_id}/Seasons", "/Shows/{item_id}/Seasons")
 def get_seasons(item_id: str, request: Request,
                       user: models.WebUser = Depends(get_emby_user),
@@ -3254,8 +3342,26 @@ def get_seasons(item_id: str, request: Request,
     )
     base = _base_url(request)
     _prefetch_list_data(db, user.id, seasons)
-    return {"Items": [_item_dto(s, base, user.id, db) for s in seasons],
-            "TotalRecordCount": len(seasons), "StartIndex": 0}
+    items = [_item_dto(s, base, user.id, db) for s in seasons]
+    # 桶B（缺集普查 2026-10-19）：有可见集但无可见季行的季 → 合成虚拟季条目
+    # 返回，避免季列表缺口。已有季行的内容与相对排序语义不动：虚拟条目只补
+    # 没有的行，按季号并入同一顺序。
+    present = {s.season_number for s in seasons if s.season_number is not None}
+    missing = _missing_season_numbers(db, item, series_ids, present)
+    if missing:
+        ep_counts = dict(
+            db.query(em.MediaItem.season_number, func.count(em.MediaItem.id))
+            .filter(*_episode_base_filters(item, series_ids),
+                    em.MediaItem.season_number.in_(missing))
+            .group_by(em.MediaItem.season_number).all())
+        vdtos = [_virtual_season_dto(item, n, ep_counts.get(n, 0), db)
+                 for n in missing]
+        keyed = ([((s.season_number if s.season_number is not None else -1), i, d)
+                  for i, (s, d) in enumerate(zip(seasons, items))]
+                 + [(n, len(seasons) + k, d)
+                    for k, (n, d) in enumerate(zip(missing, vdtos))])
+        items = [d for _, _, d in sorted(keyed, key=lambda t: (t[0], t[1]))]
+    return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
 
 
 @json_route(emby_router, "/emby/Shows/{item_id}/Episodes", "/Shows/{item_id}/Episodes")
@@ -3276,12 +3382,8 @@ def get_episodes(item_id: str, request: Request,
         # 合并家族认亲（见 _family_series_ids）：分身行即使归一化名对不上，
         # 其名下真集也应可达
         series_ids = list(set(series_ids) | _family_series_ids(db, item))
-    query = db.query(em.MediaItem).filter(
-        or_(em.MediaItem.series_id.in_(series_ids), em.MediaItem.parent_id == item.id),
-        em.MediaItem.item_type == "episode",
-        # 单集多版本：被合并的版本不独立出现在列表里，走主记录的 AlternateVersions
-        em.MediaItem.merged_into_id.is_(None),
-    )
+    # 基础集过滤与 _episode_base_filters 同口径（桶B 虚拟季判定复用它）。
+    query = db.query(em.MediaItem).filter(*_episode_base_filters(item, series_ids))
     if season_id:
         season = db.query(em.MediaItem).filter(em.MediaItem.guid == season_id).first()
         # 家族季视为属于本剧：分身行名下的季（series_id ∈ series_ids）正常按
@@ -3295,13 +3397,27 @@ def get_episodes(item_id: str, request: Request,
         if season and (_season_belongs_to(season, item) or family_season):
             query = query.filter(em.MediaItem.parent_id == season.id)
         else:
-            # 客户端带了不属于本剧的 SeasonId（缓存串了、或集数列表被别处复用）。
-            # 以前这里照样把 parent_id == 别人的季 套上去，于是 200 + 空 Items：
-            # 详情页「第几集」整片空白，而客户端无法区分「这季没集」和「参数错了」。
-            # 现在按本剧口径忽略这个筛选，返回本剧全部集 —— 宁可多给，不可给空。
-            logger.info(
-                "Episodes 收到不匹配的 SeasonId，忽略该筛选：series=%s season_id=%s",
-                item.guid, season_id)
+            # 虚拟季（桶B：get_seasons 合成的 ``vseason-<剧 db id>-<季号>`` 条目）：
+            # 真实 guid 查不到；校验它属于本剧口径且真有可见集后按季号筛集。
+            # 校验失败（伪造 Id / 已无可见集）时沿用下面的旧兜底。
+            parsed = _parse_virtual_season_id(season_id) if season is None else None
+            vq = None
+            if parsed is not None and parsed[0] in series_ids:
+                cand = query.filter(em.MediaItem.season_number == parsed[1])
+                if cand.limit(1).first() is not None:
+                    vq = cand
+            if vq is not None:
+                logger.info("Episodes 用虚拟季筛选：series=%s season_number=%s",
+                            item.guid, parsed[1])
+                query = vq
+            else:
+                # 客户端带了不属于本剧的 SeasonId（缓存串了、或集数列表被别处复用）。
+                # 以前这里照样把 parent_id == 别人的季 套上去，于是 200 + 空 Items：
+                # 详情页「第几集」整片空白，而客户端无法区分「这季没集」和「参数错了」。
+                # 现在按本剧口径忽略这个筛选，返回本剧全部集 —— 宁可多给，不可给空。
+                logger.info(
+                    "Episodes 收到不匹配的 SeasonId，忽略该筛选：series=%s season_id=%s",
+                    item.guid, season_id)
     episodes = query.order_by(em.MediaItem.season_number, em.MediaItem.episode_number).all()
     # 集级别去重：同一季集号只保留一条（不同 series 记录下的重复集）
     seen = set()
