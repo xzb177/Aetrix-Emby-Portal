@@ -102,8 +102,9 @@ def assistant_ask(
         )
 
     # 再占额度：并发时靠条件 UPDATE 判定，不会两个请求都放行
-    # r48 遗留 ①：request_id 是配额回滚的幂等键——上游失败退配额时，
-    # 同一请求重复走失败分支只退一次（见 ai_capability.refund_quota）。
+    # r48 遗留 ① / r51：request_id 是回滚审计键（ai_refund_log.request_id
+    # 唯一约束做"已退"标记）。每请求只走一次失败分支，天然只退一次；
+    # 客户端重试是新请求（新 request_id），走"新扣+新退"口径，净效果正确。
     request_id = uuid.uuid4().hex
     limit = ai_capability.daily_limit(db)
     allowed, used, deducted = ai_capability.safe_consume(db, current_user.id, limit)
@@ -121,7 +122,8 @@ def assistant_ask(
     if not result.get("ok"):
         # r48 遗留 ①：上游明确失败时退回本次预扣的配额。只在本次真实扣减过
         # （deducted）时才退——fail-open 穿透的请求没扣过，退了就是误减。
-        # 幂等由 request_id 保证：同一请求重复走这里只退一次。
+        # 单次退由"每请求只走一次本分支"的结构保证；request_id 写入
+        # ai_refund_log 做审计与防重标记（见 ai_capability.refund_quota）。
         if deducted:
             ok_refund = ai_capability.refund_quota(db, current_user.id, request_id)
             logger.debug("AI 配额回滚 user=%s request=%s: %s",

@@ -163,7 +163,16 @@ def _virtual_season_series(db: Session, item_id: str):
         return None
     series_id, _season_number = parsed
     # 全局软删钩子自动排除 deleted_at 非空行
-    return db.query(em.MediaItem).filter(em.MediaItem.id == series_id).first()
+    # r51：限定 series 行——否则 vseason-<任意数字id>-<季号> 可命中电影/
+    # 单集等任意行，把 guid 寻址降级成数字 id 枚举。
+    return (
+        db.query(em.MediaItem)
+        .filter(
+            em.MediaItem.id == series_id,
+            em.MediaItem.item_type == "series",
+        )
+        .first()
+    )
 
 
 @emby_router.get("/emby/Items/{item_id}/Images/{image_type}")

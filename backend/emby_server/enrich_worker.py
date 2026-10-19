@@ -2191,6 +2191,10 @@ def _enrich_season_posters_io(db, snapshot: Any, fetched: dict) -> None:
         return
     got: dict[int, str] = {}
     for season_id, season_number in rows:
+        # r51：季号为空的行不请求——season_poster(None) 会退化成
+        # /tv/{id}/season/0（specials），海报会错配落到无季号行上。
+        if season_number is None:
+            continue
         try:
             url = tmdb_client.season_poster(tmdb_id, season_number)
         except TmdbTransientError:
