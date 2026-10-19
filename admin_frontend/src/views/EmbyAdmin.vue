@@ -1127,15 +1127,16 @@ const dbPoolDraft = ref('10')
 // 单集认领：日配额制：开关 + 日配额（专用区块，不进上面的通用表）
 const quotaModeDraft = ref(false)
 const dayQuotaDraft = ref('2000')
-// 搜不到的条目定时回捞：开关 + 回捞周期（专用区块，不进上面的通用表）
+// 搜不到的条目定时回捞：开关 + 回捞周期 + 轮数上限（专用区块，不进上面的通用表）
 const noneRsEnabledDraft = ref(false)
-const noneRsDaysDraft = ref('30')
+const noneRsDaysDraft = ref('14')
+const noneRsMaxRoundsDraft = ref('6')
 // 刮削完成口径（按字段判定）：开关（专用区块，不进上面的通用表）
 const fcEnabledDraft = ref(false)
 /** 配额制两个 key 在通用表里不重复展示 */
 const TUNING_QUOTA_KEYS = ['enrich_episode_quota_mode', 'enrich_episode_day_quota']
-/** Step 4 两个 key 在通用表里不重复展示（专用区块） */
-const TUNING_STEP4_KEYS = ['enrich_none_auto_reschedule', 'enrich_none_reschedule_days']
+/** Step 4 三个 key 在通用表里不重复展示（专用区块） */
+const TUNING_STEP4_KEYS = ['enrich_none_auto_reschedule', 'enrich_none_reschedule_days', 'enrich_none_max_reschedules']
 /** Step 5 的 key 在通用表里不重复展示（专用区块） */
 const TUNING_STEP5_KEYS = ['enrich_field_completeness']
 const tuningOrderShown = computed(() =>
@@ -1158,6 +1159,7 @@ const TUNING_LABELS: Record<string, string> = {
   enrich_claim_lease_sec: '认领租约（秒）',
   enrich_episode_day_quota: '白天单集日配额',
   enrich_none_reschedule_days: 'none 回捞周期（天）',
+  enrich_none_max_reschedules: 'none 回捞轮数上限',
   enrich_none_auto_reschedule: 'none 定时回捞开关',
 }
 // Step 1 的占坑位已在 Step 4 接入（回捞周期现在真实生效，不再占坑）
@@ -1174,7 +1176,8 @@ async function loadEnrichTuningConfig() {
     quotaModeDraft.value = t.values?.enrich_episode_quota_mode === true
     dayQuotaDraft.value = t.raw?.enrich_episode_day_quota ?? t.defaults?.enrich_episode_day_quota ?? '2000'
     noneRsEnabledDraft.value = t.values?.enrich_none_auto_reschedule === true
-    noneRsDaysDraft.value = t.raw?.enrich_none_reschedule_days ?? t.defaults?.enrich_none_reschedule_days ?? '30'
+    noneRsDaysDraft.value = t.raw?.enrich_none_reschedule_days ?? t.defaults?.enrich_none_reschedule_days ?? '14'
+    noneRsMaxRoundsDraft.value = t.raw?.enrich_none_max_reschedules ?? t.defaults?.enrich_none_max_reschedules ?? '6'
     fcEnabledDraft.value = t.values?.enrich_field_completeness === true
     dbPoolDraft.value = t.db_pool?.saved_pool_size || String(t.db_pool?.pool_size ?? 10)
   } catch {
@@ -1197,6 +1200,7 @@ async function saveEnrichTuningAction() {
     values.enrich_episode_day_quota = dayQuotaDraft.value
     values.enrich_none_auto_reschedule = noneRsEnabledDraft.value
     values.enrich_none_reschedule_days = noneRsDaysDraft.value
+    values.enrich_none_max_reschedules = noneRsMaxRoundsDraft.value
     values.enrich_field_completeness = fcEnabledDraft.value
     const res = await saveEnrichTuning(values, dbPoolDraft.value)
     enrichTuning.value = res
@@ -1207,7 +1211,8 @@ async function saveEnrichTuningAction() {
     quotaModeDraft.value = res.values?.enrich_episode_quota_mode === true
     dayQuotaDraft.value = res.raw?.enrich_episode_day_quota ?? res.defaults?.enrich_episode_day_quota ?? '2000'
     noneRsEnabledDraft.value = res.values?.enrich_none_auto_reschedule === true
-    noneRsDaysDraft.value = res.raw?.enrich_none_reschedule_days ?? res.defaults?.enrich_none_reschedule_days ?? '30'
+    noneRsDaysDraft.value = res.raw?.enrich_none_reschedule_days ?? res.defaults?.enrich_none_reschedule_days ?? '14'
+    noneRsMaxRoundsDraft.value = res.raw?.enrich_none_max_reschedules ?? res.defaults?.enrich_none_max_reschedules ?? '6'
     fcEnabledDraft.value = res.values?.enrich_field_completeness === true
     dbPoolDraft.value = res.db_pool?.saved_pool_size || String(res.db_pool?.pool_size ?? 10)
     ElMessage.success('刮削性能参数已保存（线程数 / DB 池需重启生效，其余 60 秒内热生效）')
@@ -2166,7 +2171,7 @@ function typeLabel(t: string): string {
             <div class="scrape-block">
               <h3>搜不到的条目：定时回捞</h3>
               <p class="drawer-hint">
-                打开后，「搜过、没有」的条目（done + metadata_source='none'）不再是永久终态：超过回捞周期后由 janitor 按最旧优先、单轮 2000 条翻回 pending 重新补搜（清 TMDB 搜索阴性缓存）；资料不全 5 次后也转 done+none 等回捞，不再进 failed。保存后 60 秒内生效。
+                打开后，「搜过、没有」的条目（done + metadata_source='none'）不再是永久终态：超过回捞周期后由 janitor 按最旧优先、单轮 2000 条翻回 pending 重新补搜（清 TMDB 搜索阴性缓存）；资料不全 5 次后也转 done+none 等回捞，不再进 failed。每条最多回捞指定轮数，达上限后永久保留 done（防冷门条目无限空转）。保存后 60 秒内生效。
               </p>
               <div v-if="enrichTuning" class="scrape-actions">
                 <el-switch
@@ -2182,6 +2187,13 @@ function typeLabel(t: string): string {
                   aria-label="none 回捞周期（天）"
                 />
                 <span class="drawer-hint">天</span>
+                <span class="chase-muted">轮数上限</span>
+                <el-input
+                  v-model="noneRsMaxRoundsDraft"
+                  style="width: 110px"
+                  aria-label="none 回捞轮数上限"
+                />
+                <span class="drawer-hint">轮</span>
                 <el-button type="primary" size="small" :loading="enrichTuningSaving" @click="saveEnrichTuningAction">
                   保存
                 </el-button>
@@ -2196,7 +2208,8 @@ function typeLabel(t: string): string {
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="noneStats" class="drawer-hint drawer-hint--after">
                 none 存量（done+none+无 tmdb_id，只读）：{{ noneStockText }}，共 {{ noneStats.total }} 条；
-                按当前 {{ noneStats.cycle_days }} 天周期，下一轮可捞回 {{ noneStats.reschedulable_now }} 条
+                按当前 {{ noneStats.cycle_days }} 天周期、轮数上限 {{ noneStats.max_rounds }} 轮，
+                下一轮可捞回 {{ noneStats.reschedulable_now }} 条
                 （单轮硬上限 {{ noneStats.batch_limit }} 条）。
               </div>
               <div v-else-if="noneStatsError" class="drawer-hint drawer-hint--after">

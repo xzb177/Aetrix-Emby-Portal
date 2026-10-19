@@ -1364,6 +1364,7 @@ export interface EnrichNoneStats {
   total: number
   reschedulable_now: number
   cycle_days: number
+  max_rounds: number
   auto_reschedule_enabled: boolean
   batch_limit: number
 }

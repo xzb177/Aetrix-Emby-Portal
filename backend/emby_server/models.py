@@ -280,6 +280,10 @@ class MediaItem(Base):
     # WS1/T1：failed 自动回捞已执行的轮数。达上限（enrich_failed_max_reschedules）
     # 的行永久保留 failed，不再被 janitor 自动捞回。老库补列后为 0。
     enrich_failed_reschedules = Column(Integer, default=0)
+    # Step 4 补强：none 自动回捞已执行的轮数。达上限（enrich_none_max_reschedules）
+    # 的行永久保留 done，不再被 janitor 自动捞回（防搜不中的冷门条目无限空转）。
+    # 老库补列后为 0。列模式仿 WS1/T1 的 enrich_failed_reschedules。
+    enrich_none_reschedules = Column(Integer, default=0)
     # v2.42.9 处方 4 调度优先级：越大越先补全（0 = 默认，沿用旧口径）。
     # repair（用户主动修复）置 100；「重试未匹配项」置 50。只影响同库内的排序，
     # 跨库公平由按库轮转保证（见 enrich_worker._claim_batch）。

@@ -93,7 +93,8 @@ def test_defaults_match_today(db):
     assert v[enrich_worker.CFG_ENRICH_CLAIM_LEASE_SEC] == 900
     # 新占坑位：用户拍板值
     assert v[enrich_worker.CFG_ENRICH_EPISODE_DAY_QUOTA] == 2000
-    assert v[enrich_worker.CFG_ENRICH_NONE_RESCHEDULE_DAYS] == 30
+    assert v[enrich_worker.CFG_ENRICH_NONE_RESCHEDULE_DAYS] == 14, \
+        "Step 4 补强：none 回捞周期默认由 30 改为 14 天"
     assert all(f is False for f in cfg["from_env"].values())
 
 
