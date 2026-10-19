@@ -12,6 +12,7 @@
 3. moov 跨度超上限：不补取，返回 None（现行失败语义）；
 4. largesize / mdat 后有 free 盒 / 损坏文件：不崩、语义正确。
 """
+import logging
 import os
 import struct
 
@@ -197,3 +198,20 @@ def test_adaptive_fetch_failure_returns_none(monkeypatch):
 
     monkeypatch.setattr(scanner, "_http_fetch_range", fetch)
     assert scanner._dual_range_temp_file(MP4_URL, {}, len(blob)) is None
+
+
+def test_adaptive_skip_log_strips_query_string(monkeypatch, caplog):
+    """r56：超限跳过的 info 日志不能带查询串。
+
+    115 直链自带签名查询参数，log_redact 的 URL 脱敏词表不覆盖其参数名——
+    原始日志消息里就不能有查询串（纵深防御，不依赖输出层脱敏）。
+    """
+    blob = _big_moov_file(MOOV_MAX + (1 << 20))  # 9 MiB > 上限，走超限分支
+    url = MP4_URL + "?sig=SECRET123&foo=bar"
+    monkeypatch.setattr(scanner, "_http_fetch_range", _sliced(blob))
+    with caplog.at_level(logging.INFO, logger="backend.emby_server.scanner"):
+        assert scanner._dual_range_temp_file(url, {}, len(blob)) is None
+    assert "自适应尾窗跳过" in caplog.text  # info 行确实打了
+    assert "SECRET123" not in caplog.text
+    assert "foo=bar" not in caplog.text
+    assert "Big Movie" in caplog.text  # 去查询串后路径仍在，可定位

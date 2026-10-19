@@ -1254,17 +1254,23 @@ def _adaptive_moov_tail(path: str, headers: Optional[dict], head: bytes,
     if span <= 0:
         return None
     if span > PROBE_MOOV_MAX_BYTES:
+        # 2026-10-19 r56：日志只打去查询串的 path——115 直链自带签名查询参数，
+        # log_redact 的 URL 脱敏词表不覆盖其参数名，完整 URL 进日志会泄签名。
+        # （与 _tail_moov_container 剥查询串的手法一致；实际请求仍用完整 path。）
+        safe_path = path.split("?", 1)[0].split("#", 1)[0]
         logger.info("双 Range 自适应尾窗跳过 %s：moov 跨度 %d 超过上限 %d",
-                    path, span, PROBE_MOOV_MAX_BYTES)
+                    safe_path, span, PROBE_MOOV_MAX_BYTES)
         return None
     try:
         extra = _http_fetch_range(path, headers, mdat_end, int(total or 0) - 1)
     except Exception as exc:  # noqa: BLE001 — 补取失败只是「这次没成」
-        logger.debug("双 Range 自适应补取失败 %s: %s", path, exc)
+        logger.debug("双 Range 自适应补取失败 %s: %s",
+                     path.split("?", 1)[0].split("#", 1)[0], exc)
         return None
     if not extra:
         return None
-    logger.debug("双 Range 自适应补取 %s：mdat_end=%d span=%d", path, mdat_end, span)
+    logger.debug("双 Range 自适应补取 %s：mdat_end=%d span=%d",
+                 path.split("?", 1)[0].split("#", 1)[0], mdat_end, span)
     return extra
 
 
