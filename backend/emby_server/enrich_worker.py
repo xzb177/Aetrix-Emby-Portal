@@ -630,6 +630,9 @@ CFG_ENRICH_EPISODE_QUOTA_MODE = "enrich_episode_quota_mode"
 CFG_ENRICH_NONE_RESCHEDULE_DAYS = "enrich_none_reschedule_days"
 # Step 4 的 feature flag：none 定时自动回捞开关（默认 0=关，关时行为与 Step 4 前一致）
 CFG_ENRICH_NONE_AUTO_RESCHEDULE = "enrich_none_auto_reschedule"
+# Step 4 补强：none 自动回捞轮数上限（默认 6 轮；达上限的行永久保留 done，
+# 不再被 janitor 自动捞回——防搜不中的冷门条目无限空转吃 TMDB 配额）
+CFG_ENRICH_NONE_MAX_RESCHEDULES = "enrich_none_max_reschedules"
 # WS1/T1 的 feature flag：failed 定时自动回捞开关（默认 0=关，关时行为与改前完全一致）
 CFG_ENRICH_FAILED_AUTO_RESCHEDULE = "enrich_failed_auto_reschedule"
 CFG_ENRICH_FAILED_RESCHEDULE_DAYS = "enrich_failed_reschedule_days"
@@ -658,9 +661,14 @@ _ENRICH_TUNING_SPECS = [
     (CFG_ENRICH_EPISODE_QUOTA_MODE, None, "0", "flag1", None,
      "单集认领配额制开关（链路规划 Step 3）：1=白天单集按日配额认领（夜间不限），"
      "0=夜间窗口禁令制（默认，行为与 Step 3 前一致）", False),
-    (CFG_ENRICH_NONE_RESCHEDULE_DAYS, None, "30", "int", 1,
+    (CFG_ENRICH_NONE_RESCHEDULE_DAYS, None, "14", "int", 1,
      "【Step 4】none 条目自动回捞周期（天）：enrich_none_auto_reschedule=1 时生效，"
-     "开关关闭时改这里不影响实际行为", False),
+     "开关关闭时改这里不影响实际行为（新剧 TMDB 上架常滞后数天到数周，"
+     "14 天把最坏等待减半；存量仅数十条，配额可忽略）", False),
+    (CFG_ENRICH_NONE_MAX_RESCHEDULES, None, "6", "int", 1,
+     "【Step 4】none 条目自动回捞轮数上限：达到上限的行永久保留 done，"
+     "不再被 janitor 自动捞回（防搜不中的冷门条目无限空转；6 轮 × 14 天"
+     "约覆盖 12 周，TMDB 滞后上架的大多数能赶上）", False),
     (CFG_ENRICH_NONE_AUTO_RESCHEDULE, None, "0", "flag1", None,
      "【Step 4】none 条目定时自动回捞开关：1=开（超周期的 done+none 剧/电影由 "
      "janitor 按最旧优先、单轮 2000 条翻回 pending；资料不全 5 次后转 done+none "
@@ -3201,12 +3209,13 @@ def retry_unmatched(db) -> int:
     return n
 
 
-def _none_reschedulable_query(db, cutoff):
+def _none_reschedulable_query(db, cutoff, max_rounds):
     """Step 4：超期 none 条目的查询（回捞动作与只读计数共用同一口径）。
 
     口径：enrich_status='done' + metadata_source='none' + 无 tmdb_id +
-    剧/电影 + 有文件指纹 + （enrich_next_retry_at 为 NULL（旧存量/从未记录）或
-    <= cutoff（上次回捞/终态化已超过周期））。
+    剧/电影 + 有文件指纹 + 未锁定 + 回捞轮数未达上限 +
+    （enrich_next_retry_at 为 NULL（旧存量/从未记录）或 <= cutoff
+    （上次回捞/终态化已超过周期））。
     """
     from sqlalchemy import or_ as _or
     return (db.query(em.MediaItem)
@@ -3218,6 +3227,12 @@ def _none_reschedulable_query(db, cutoff):
                     # 假数字修复（2026-10-19 系统清点 F5/T2）：合并副本按设计
                     # 永不参与补全，回捞动作与只读计数共用同一口径，一起过滤掉
                     em.MediaItem.merged_into_id.is_(None),
+                    # P3 锁定：管理员手动锁定的条目自动补全永远跳过（抢单同口径，
+                    # isnot(True) 容忍 NULL 旧行）。翻回被锁定的行会使其永久卡
+                    # 在 pending（抢单跳过），污染待刮计数，故这里直接剔除。
+                    em.MediaItem.metadata_locked.isnot(True),
+                    # 轮数上限：达到上限的行永久保留 done（防无限重搜）
+                    em.MediaItem.enrich_none_reschedules < max_rounds,
                     _or(em.MediaItem.enrich_next_retry_at.is_(None),
                         em.MediaItem.enrich_next_retry_at <= cutoff)))
 
@@ -3228,10 +3243,14 @@ def enrich_none_auto_reschedule(db) -> int:
     - 总开关：``enrich_none_auto_reschedule``（SystemConfig，默认 0=关）。
       关时直接返回 0，行为与 Step 4 前完全一致。
     - 超期口径：上次回捞（或首次终态化）时间超过
-      ``enrich_none_reschedule_days``（默认 30 天）。「上次回捞时间」复用现有
+      ``enrich_none_reschedule_days``（默认 14 天）。「上次回捞时间」复用现有
       字段 ``enrich_next_retry_at`` 记录（不加 DB migration）：
       终态化记 now；翻回 pending 时记 now（认领不受阻，且下次超期前不再被捞）。
       NULL = 旧存量（Step 4 前终态化的行），视为已超期、本轮优先捞回。
+    - 轮数上限：``enrich_none_max_reschedules``（默认 6 轮），翻回时
+      ``enrich_none_reschedules`` +1；达上限的行永久保留 done（防无限重搜）。
+    - 锁定跳过：``metadata_locked=True`` 的行永不被翻回（抢单本就跳过锁定行，
+      翻回只会让它烂在 pending 里污染待刮计数）。
     - 单轮硬上限 ``ENRICH_NONE_AUTO_RESCHEDULE_BATCH``（2000，写死）：按最旧
       优先（NULL 最旧，其次按时间戳），捞满即停，下一轮 janitor 继续。
     - 翻回动作复用 ``retry_unmatched`` 的逻辑：清 TMDB 搜索阴性缓存 +
@@ -3242,9 +3261,10 @@ def enrich_none_auto_reschedule(db) -> int:
     if not enrich_tuning_value(CFG_ENRICH_NONE_AUTO_RESCHEDULE, db):
         return 0
     days = enrich_tuning_value(CFG_ENRICH_NONE_RESCHEDULE_DAYS, db)
+    max_rounds = enrich_tuning_value(CFG_ENRICH_NONE_MAX_RESCHEDULES, db)
     cutoff = datetime.now() - timedelta(days=days)
     batch = ENRICH_NONE_AUTO_RESCHEDULE_BATCH
-    cands = (_none_reschedulable_query(db, cutoff)
+    cands = (_none_reschedulable_query(db, cutoff, max_rounds)
              .with_entities(em.MediaItem.id, em.MediaItem.name,
                             em.MediaItem.production_year, em.MediaItem.item_type)
              .order_by(em.MediaItem.enrich_next_retry_at.asc().nullsfirst(),
@@ -3258,12 +3278,13 @@ def enrich_none_auto_reschedule(db) -> int:
     n = (db.query(em.MediaItem).filter(em.MediaItem.id.in_(ids))
          .update({"enrich_status": "pending",
                   "enrich_attempts": 0,
+                  "enrich_none_reschedules": em.MediaItem.enrich_none_reschedules + 1,
                   "enrich_next_retry_at": datetime.now(),
                   "enrich_priority": ENRICH_PRIORITY_RETRY_UNMATCHED},
                  synchronize_session=False))
     db.commit()
-    logger.info("none 定时回捞：%d 条超期无望条目翻回 pending（priority=50，周期 %d 天）",
-                n, days)
+    logger.info("none 定时回捞：%d 条超期无望条目翻回 pending（priority=50，周期 %d 天，轮数上限 %d）",
+                n, days, max_rounds)
     if n:
         try:
             from backend.emby_server import tmdb_cache
@@ -3384,11 +3405,12 @@ def none_stock_stats(db) -> dict:
             .all())
     by_type = {t or "unknown": int(c) for t, c in rows}
     days = enrich_tuning_value(CFG_ENRICH_NONE_RESCHEDULE_DAYS, db)
+    max_rounds = enrich_tuning_value(CFG_ENRICH_NONE_MAX_RESCHEDULES, db)
     cutoff = datetime.now() - timedelta(days=days)
     # 假数字修复（2026-10-19 系统清点 F5/T2）：Query.count() 会被包成子查询，
     # 软删钩子看不见（soft_delete.py 明说），改 with_entities(func.count)
     # .scalar() 写法（与 count_visible 同形），否则软删行会被数进去
-    reschedulable = (_none_reschedulable_query(db, cutoff)
+    reschedulable = (_none_reschedulable_query(db, cutoff, max_rounds)
                      .with_entities(func.count(em.MediaItem.id))
                      .scalar() or 0)
     return {
@@ -3396,6 +3418,7 @@ def none_stock_stats(db) -> dict:
         "total": sum(by_type.values()),
         "reschedulable_now": reschedulable,
         "cycle_days": days,
+        "max_rounds": max_rounds,
         "auto_reschedule_enabled": bool(
             enrich_tuning_value(CFG_ENRICH_NONE_AUTO_RESCHEDULE, db)),
         "batch_limit": ENRICH_NONE_AUTO_RESCHEDULE_BATCH,

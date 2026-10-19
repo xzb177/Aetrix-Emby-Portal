@@ -53,6 +53,7 @@ init_db()
 
 FLAG = ew.CFG_ENRICH_NONE_AUTO_RESCHEDULE
 DAYS = ew.CFG_ENRICH_NONE_RESCHEDULE_DAYS
+MAX_ROUNDS = ew.CFG_ENRICH_NONE_MAX_RESCHEDULES
 
 
 def _clear_tuning_cache():
@@ -72,14 +73,28 @@ def _set_flag(value: str):
     _clear_tuning_cache()
 
 
+def _set_max_rounds(value: str):
+    _clear_tuning_cache()
+    db = SessionLocal()
+    try:
+        store.write_values(db, {MAX_ROUNDS: value}, {MAX_ROUNDS: "Step 4 补强测试轮数上限"})
+        db.commit()
+    finally:
+        db.close()
+    store.invalidate(MAX_ROUNDS)
+    _clear_tuning_cache()
+
+
 @pytest.fixture(autouse=True)
 def _flag_off():
-    # 每个测试前后都把 flag 复位为 0：既保证本文件内默认关，
-    # 也防止 _flag_on() 的 "1" 泄漏到本文件之后的其它测试文件
-    #（SystemConfig 是落库的，跨文件共享同一个 DB 会话工厂）。
+    # 每个测试前后都把 flag 复位为 0、轮数上限复位为默认值 6：既保证本文件内
+    # 默认关，也防止 _flag_on() / _set_max_rounds() 的值泄漏到本文件之后的
+    # 其它测试文件（SystemConfig 是落库的，跨文件共享同一个 DB 会话工厂）。
     _set_flag("0")
+    _set_max_rounds("6")
     yield
     _set_flag("0")
+    _set_max_rounds("6")
 
 
 @pytest.fixture()
@@ -294,6 +309,89 @@ def test_none_stock_stats(db):
     assert stats["total"] == 4
     # 可捞回：剧/电影 + 超期（单集不在回捞范围）
     assert stats["reschedulable_now"] == 3
-    assert stats["cycle_days"] == 30
+    assert stats["cycle_days"] == 14, "周期默认 14 天（Step 4 补强由 30 改为 14）"
+    assert stats["max_rounds"] == 6
     assert stats["auto_reschedule_enabled"] is True
     assert stats["batch_limit"] == 2000
+
+
+# ================= Step 4 补强：轮数上限 + 锁定跳过 =================
+
+def test_none_tuning_specs_registered(db):
+    """新键注册：周期默认 14、轮数上限默认 6、开关默认关（面板同口径）"""
+    specs = {k: (default, kind) for k, _, default, kind, _, _, _
+             in ew._ENRICH_TUNING_SPECS}
+    assert specs[ew.CFG_ENRICH_NONE_RESCHEDULE_DAYS] == ("14", "int")
+    assert specs[ew.CFG_ENRICH_NONE_MAX_RESCHEDULES] == ("6", "int")
+    assert specs[ew.CFG_ENRICH_NONE_AUTO_RESCHEDULE] == ("0", "flag1")
+    cfg = ew.get_enrich_tuning_config(db)["values"]
+    assert cfg[ew.CFG_ENRICH_NONE_RESCHEDULE_DAYS] == 14
+    assert cfg[ew.CFG_ENRICH_NONE_MAX_RESCHEDULES] == 6
+    assert cfg[ew.CFG_ENRICH_NONE_AUTO_RESCHEDULE] is False
+
+
+def test_models_have_none_reschedules_column():
+    assert hasattr(em.MediaItem, "enrich_none_reschedules")
+
+
+def test_migration_list_has_none_reschedules_column():
+    import inspect as _inspect
+    src = _inspect.getsource(_dbmod._auto_migrate)
+    assert '("enrich_none_reschedules", "INTEGER", "0")' in src
+
+
+def test_auto_reschedule_skips_locked(db):
+    """metadata_locked 的行永不被翻回：抢单本就跳过锁定行，
+    翻回只会让它永久卡在 pending、污染待刮计数"""
+    _flag_on()
+    old = datetime.now() - timedelta(days=31)
+    locked = _none_row(db, "锁定剧", enrich_next_retry_at=old,
+                       metadata_locked=True)
+    n = ew.enrich_none_auto_reschedule(db)
+    assert n == 0
+    db.refresh(locked)
+    assert locked.enrich_status == "done", "锁定的行不动"
+    # 只读计数同口径：锁定行也不计入可捞回
+    assert ew.none_stock_stats(db)["reschedulable_now"] == 0
+
+
+def test_auto_reschedule_round_cap(db):
+    """轮数上限：达上限的不动；未达上限的翻回且计数 +1"""
+    _flag_on()
+    _set_max_rounds("1")
+    old = datetime.now() - timedelta(days=31)
+    capped = _none_row(db, "已满轮剧", enrich_next_retry_at=old,
+                       enrich_none_reschedules=1)
+    fresh = _none_row(db, "还有轮次剧", enrich_next_retry_at=old,
+                      enrich_none_reschedules=0)
+    n = ew.enrich_none_auto_reschedule(db)
+    assert n == 1
+    db.refresh(capped)
+    assert capped.enrich_status == "done", "达上限永久保留 done"
+    assert capped.enrich_none_reschedules == 1
+    db.refresh(fresh)
+    assert fresh.enrich_status == "pending"
+    assert fresh.enrich_priority == ew.ENRICH_PRIORITY_RETRY_UNMATCHED == 50
+    assert fresh.enrich_none_reschedules == 1, "翻回时计数 +1"
+
+
+def test_flipped_row_is_claimable(db):
+    """翻回的行必须真的能被工人认领（与 _claim_batch 认领口径同形断言）"""
+    _flag_on()
+    old = datetime.now() - timedelta(days=31)
+    it = _none_row(db, "待认领剧", enrich_next_retry_at=old)
+    n = ew.enrich_none_auto_reschedule(db)
+    assert n == 1
+    db.refresh(it)
+    assert it.enrich_status == "pending"
+    assert it.enrich_attempts == 0
+    # _claim_batch 核心认领口径：pending + 未到退避期 + 未锁定 + 非合并副本
+    from sqlalchemy import or_ as _or
+    hit = (db.query(em.MediaItem.id)
+           .filter(em.MediaItem.enrich_status == "pending",
+                   em.MediaItem.metadata_locked.isnot(True),
+                   em.MediaItem.merged_into_id.is_(None),
+                   _or(em.MediaItem.enrich_next_retry_at.is_(None),
+                       em.MediaItem.enrich_next_retry_at <= datetime.now()))
+           .filter(em.MediaItem.id == it.id).count())
+    assert hit == 1, "翻回行必须落在工人认领口径内"

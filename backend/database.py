@@ -806,6 +806,10 @@ def _auto_migrate():
             # 历史 failed 行无错误原文、回捞轮数从 0 起算，行为与升级前一致。
             ("enrich_last_error", "VARCHAR(255)", "NULL"),
             ("enrich_failed_reschedules", "INTEGER", "0"),
+            # Step 4 补强：none 自动回捞轮数（列模式仿 enrich_failed_reschedules）。
+            # 老库补列后为 0，历史 none 行从 0 起算；达 enrich_none_max_reschedules
+            # 上限后永久保留 done，不再被 janitor 自动捞回。
+            ("enrich_none_reschedules", "INTEGER", "0"),
             # v2.42.9 处方 4 调度优先级：repair 置顶 100 / 重试未匹配 50，0=默认。
             ("enrich_priority", "INTEGER", "0"),
             # 元数据来源标记：老库补列后为 NULL（历史数据未标记），
