@@ -2252,10 +2252,16 @@ def _apply_season_posters(db, season_posters: dict) -> int:
 # 排列看着缺了一半。
 # 触发点：写库阶段、单集条目（不要求本集命中 TMDB——双倍编号的集号在
 # TMDB 里根本不存在，命中了反而说明编号正常）。门槛拉满、宁漏勿错：
-# 某季满足 (a) 有 tmdb_id 且拿到 TMDB 该季权威集数 N；(b) 库内该季可见
-# 集行恰好 N 条且集号各不相同；(c) 集号恰好是 2,4,6,…,2N，才按集号
-# 排序重编号为 1..N。任一条件不满足（奇数列/混杂/集数对不上/重复集号）
-# 一律不动。
+# 路径 A（#1109）：某季满足 (a) 有 tmdb_id 且拿到 TMDB 该季权威集数 N；
+# (b) 库内该季可见集行恰好 N 条且集号各不相同；(c) 集号恰好是
+# 2,4,6,…,2N，才按集号排序重编号为 1..N。
+# 路径 B（甲案）：韩剧在 TMDB 常按 ~30 分钟「分集」计总，A 的 (a) 永不
+# 成立。B 要求 (a') TMDB 该季集数 M 恰为可见行数 N 的 2 倍且 TMDB 集号
+# 恰为 1..2N；(b')(c') 同 A（集号恰为偶数半）；(d) 时长证据——实测时长
+# duration_ticks 与 TMDB 分集时长参照 metadata_runtime_ticks 逐行比：
+# 可比行 ≥3 且 ≥50% 可见行，其中实测 ≥ 参照×1.5 的行 ≥2/3。
+# 这一步区分「全长正片」（内容齐全、仅编号翻倍，可归一）与「半集文件」
+# （单数集真缺，改号等于造假，绝不动）。任一条件不满足一律不动。
 # 幂等：归一后集号为 1..N，自然不再命中偶数列；进程内每季只判定一次
 # （_PARITY_RENUMBER_DONE）。日志逐行可审计、支持事后按日志回滚。
 # 无开关：默认行为（用户口径），门槛本身就是安全阀。
@@ -2306,7 +2312,7 @@ def _maybe_parity_renumber_season(db, item: Any) -> bool:
     if n <= 0:
         return _skip("TMDB 季有效集数为 0")
 
-    # (b) 库内该季可见集行恰好 N 条（软删/合并副本排除，集号非空且不重复）
+    # (b) 库内该季可见集行（软删/合并副本排除，集号非空且不重复）
     siblings = db.query(em.MediaItem).filter(
         em.MediaItem.item_type == "episode",
         em.MediaItem.series_id == series_id,
@@ -2315,24 +2321,68 @@ def _maybe_parity_renumber_season(db, item: Any) -> bool:
         em.MediaItem.merged_into_id.is_(None),
         em.MediaItem.episode_number.isnot(None),
     ).all()
-    if len(siblings) != n:
-        return _skip(f"库内可见集 {len(siblings)} 条 ≠ TMDB {n} 集")
     old_nums = [s.episode_number for s in siblings]
+    cnt = len(siblings)
     if len(set(old_nums)) != len(old_nums):
         return _skip("存在重复集号")
+    # 本地集号恰为偶数半 2,4,…,2N（N=可见行数）；TMDB 集号恰为完整 1..2N
+    local_even_half = set(old_nums) == set(range(2, 2 * cnt + 1, 2))
+    tmdb_full_seq = tmdb_nums == set(range(1, 2 * cnt + 1))
 
-    # (c) 集号恰好是 2,4,6,…,2N（一条不多一条不少）
-    if set(old_nums) != set(range(2, 2 * n + 1, 2)):
+    # 路径 A（#1109 原口径）：TMDB 集数 N == 可见行数，集号恰为 2,4,…,2N
+    if cnt == n and local_even_half:
+        return _parity_renumber_apply(
+            db, siblings, series, series_id, season_no,
+            tmdb_id, cnt, old_nums, path="A", evidence="")
+
+    # 路径 B（甲案）：TMDB 集数 M == 2×可见行数 N，集号恰为 TMDB 偶数半，
+    # 再加时长证据区分「全长正片」与「半集文件」（后者单数集真缺，绝不动）
+    if cnt >= 2 and n == 2 * cnt and tmdb_full_seq and local_even_half:
+        ok, evidence = _parity_duration_evidence(siblings, cnt)
+        if ok:
+            return _parity_renumber_apply(
+                db, siblings, series, series_id, season_no,
+                tmdb_id, cnt, old_nums, path="B", evidence=evidence)
+        return _skip(f"路径 B 时长证据不足: {evidence}")
+
+    if cnt == n:
         return _skip("非完美偶数列")
+    return _skip(f"库内可见集 {cnt} 条，TMDB {n} 集"
+                 "（路径 A 需相等，路径 B 需 2 倍）")
 
-    # 全部满足：按集号升序映射为 1..N 落库
+
+def _parity_duration_evidence(siblings, cnt: int):
+    """路径 B 时长判据。返回 (是否成立, 证据摘要)。
+
+    实测时长 duration_ticks（探测值，>0 才算）vs TMDB 分集时长参照
+    metadata_runtime_ticks（>0 才算）：可比行 ≥3 且 ≥50% 可见行，
+    其中实测 ≥ 参照×1.5 的行 ≥2/3，证据成立。
+    """
+    pairs = []
+    for s in siblings:
+        dur = getattr(s, "duration_ticks", 0) or 0
+        ref = getattr(s, "metadata_runtime_ticks", 0) or 0
+        if dur > 0 and ref > 0:
+            pairs.append((dur, ref))
+    n_cmp = len(pairs)
+    if n_cmp < 3 or n_cmp * 2 < cnt:
+        return False, f"可比行 {n_cmp}/{cnt}（需≥3 且 ≥50%）"
+    hit = sum(1 for dur, ref in pairs if dur * 2 >= ref * 3)
+    med = sorted(dur / ref for dur, ref in pairs)[n_cmp // 2]
+    ok = hit * 3 >= n_cmp * 2
+    return ok, f"可比行 {n_cmp}/{cnt}，达标 {hit}/{n_cmp}，中位比值 {med:.2f}"
+
+
+def _parity_renumber_apply(db, siblings, series, series_id, season_no,
+                           tmdb_id, n, old_nums, path: str, evidence: str) -> bool:
+    """路径 A/B 共用的落库动作：按集号升序映射为 1..n，逐行记日志。"""
     ordered = sorted(siblings, key=lambda s: s.episode_number)
     series_name = getattr(series, "name", "") or ""
     logger.info(
-        "[parity-renumber] 奇偶双倍编号归一: series_id=%s series=%r "
-        "season=%s tmdb=%s N=%s 原集号=%s → 1..%s",
-        series_id, series_name, season_no, tmdb_id, n,
-        sorted(old_nums), n)
+        "[parity-renumber] 奇偶双倍编号归一(path=%s): series_id=%s series=%r "
+        "season=%s tmdb=%s N=%s 原集号=%s → 1..%s%s",
+        path, series_id, series_name, season_no, tmdb_id, n,
+        sorted(old_nums), n, f" 证据: {evidence}" if evidence else "")
     for idx, sib in enumerate(ordered, start=1):
         # 此时 old_nums 必为 2,4,…,2N 的偶数列，sib.episode_number == idx
         # 不可能成立，无需双保险分支。
@@ -2481,7 +2531,8 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 奇偶双倍编号归一（缺集普查桶 C1）：源头 release 即双倍编号
     # （如 S01E02…S01E32）的季，在 TMDB 季数据已到手的环节按集号排序
     # 归一为 1..N。不要求本集命中 TMDB（双倍编号的集号在 TMDB 里根本
-    # 不存在）；门槛拉满，任一条件不满足一律不动，幂等。
+    # 不存在）；路径 A（TMDB 集数==可见行数）与路径 B（TMDB 集数==2×行数
+    # ＋时长证据）任一命中即归一，门槛拉满，任一条件不满足一律不动，幂等。
     if item_type == "episode":
         _maybe_parity_renumber_season(db, item)
 
@@ -3226,12 +3277,85 @@ def _reclaim_stale(db, lease_sec: Optional[int] = None) -> int:
     return n
 
 
+_PARITY_PATROL_EVERY_ROUNDS = 30  # janitor 每 60s 一轮 → 巡检约每 30 分钟一次
+_PARITY_PATROL_PER_ROUND = 200  # 单轮硬上限（与 none/failed 回捞同量级）
+
+
+def _parity_patrol_candidates(db):
+    """巡检候选预筛：可见集行集号恰为 {2,4,…,2N}（N≥2）的 (series_id, season)。
+
+    只喂候选，真正的 TMDB/时长门槛在 _maybe_parity_renumber_season 内复查
+    （幂等：归一后集号为 1..N，自然不再命中图案）。
+    """
+    rows = db.query(em.MediaItem.series_id,
+                    em.MediaItem.season_number,
+                    em.MediaItem.episode_number).filter(
+        em.MediaItem.item_type == "episode",
+        em.MediaItem.deleted_at.is_(None),
+        em.MediaItem.merged_into_id.is_(None),
+        em.MediaItem.episode_number.isnot(None)).all()
+    groups = {}
+    for sid, sno, eno in rows:
+        if sid is None or sno is None:
+            continue
+        groups.setdefault((int(sid), int(sno)), []).append(eno)
+    cands = []
+    for (sid, sno), nums in groups.items():
+        n = len(nums)
+        if n >= 2 and len(set(nums)) == n \
+                and set(nums) == set(range(2, 2 * n + 1, 2)):
+            cands.append((sid, sno))
+    return cands
+
+
+def parity_patrol_rescue(db, limit: int = _PARITY_PATROL_PER_ROUND) -> int:
+    """奇偶归一巡检兜底（防 scanner 重扫把集号按文件名改回偶数列）。
+
+    WS2 试点实证：纯改集号会被重扫回滚，而 enrich 触发只在刮削时发生、
+    回滚后不会自动再触发。本巡检周期性重喂候选季给同一个
+    _maybe_parity_renumber_season（TMDB/时长门槛在函数内复查）。
+    默认开、无面板开关；单轮硬上限 200 季；只读预筛＋逐季短事务，
+    不抢主链路。
+    进程级 _PARITY_RENUMBER_DONE：巡检在调用前先清掉本季的已判标记、
+    强制新鲜重判（enrich 路径「每季只判一次」语义不变）；门槛复查本身
+    幂等（归一后集号 1..N 不再命中图案）。
+    """
+    fixed = 0
+    for sid, sno in _parity_patrol_candidates(db)[:limit]:
+        first = db.query(em.MediaItem).filter(
+            em.MediaItem.item_type == "episode",
+            em.MediaItem.series_id == sid,
+            em.MediaItem.season_number == sno,
+            em.MediaItem.deleted_at.is_(None),
+            em.MediaItem.merged_into_id.is_(None)).first()
+        if first is None:
+            continue
+        try:
+            # 巡检每轮强制新鲜重判：先清掉该季在本进程的已判标记。
+            # 不清的话，本进程 enrich 早先留下的键会把函数入口直接挡掉
+            # ——而「已归一过又被重扫改回偶数列」恰恰是巡检兜底要修的场景。
+            with _PARITY_RENUMBER_LOCK:
+                _PARITY_RENUMBER_DONE.discard((int(sid), int(sno)))
+            if _maybe_parity_renumber_season(db, first):
+                db.commit()
+                fixed += 1
+                logger.info("奇偶巡检兜底归一: series_id=%s season=%s", sid, sno)
+            else:
+                db.rollback()
+        except Exception as exc:  # noqa: BLE001 — 一季失败不拖垮整轮
+            db.rollback()
+            logger.warning("奇偶巡检季 series_id=%s season=%s 失败: %s",
+                           sid, sno, exc)
+    return fixed
+
+
 def _janitor_loop() -> None:
     """租约 janitor 线程：周期回收停滞的 enriching 行（v2.42.9）"""
     # Step 1：租约后台可配（60s 热生效），janitor 每轮重读
     logger.info("补全 janitor 启动（租约 %ss，每 %ss 一轮）",
                 enrich_tuning_value(CFG_ENRICH_CLAIM_LEASE_SEC),
                 ENRICH_JANITOR_INTERVAL_SEC)
+    patrol_round = 0
     while not _stop_event.is_set():
         try:
             db = SessionLocal()
@@ -3249,6 +3373,14 @@ def _janitor_loop() -> None:
                 nfr = enrich_failed_auto_reschedule(db)
                 if nfr:
                     logger.info("补全 janitor 回捞 %d 条超期 failed（failed → pending）", nfr)
+                # C1 巡检兜底：奇偶双倍编号防重扫回滚（默认开、无面板开关；
+                # 每 30 轮（约 30 分钟）跑一次、单轮硬上限 200 季；
+                # TMDB/时长门槛在函数内复查，幂等）
+                patrol_round += 1
+                if patrol_round % _PARITY_PATROL_EVERY_ROUNDS == 0:
+                    npr = parity_patrol_rescue(db)
+                    if npr:
+                        logger.info("补全 janitor 奇偶巡检归一 %d 季（防重扫回滚）", npr)
             finally:
                 db.close()
         except Exception as exc:  # noqa: BLE001 — 一轮失败不该拖垮 janitor
