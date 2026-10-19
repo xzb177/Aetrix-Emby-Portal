@@ -456,7 +456,7 @@ def _auto_renew_one(db: Session, sub_id: int, now: datetime):
         # 扣款成功：顺延（_grant_subscription 会清掉该订阅的全部提醒记录，
         # 包括之前可能落过的 renew_failed，下一周期可重新提醒）。
         subscription = _grant_subscription(
-            db, user, plan, plan.duration_days, "auto_renew", ref_id,
+            db, user, plan, plan.duration_days,
             realm_id=sub.realm_id,
         )
         order_id = f"AR{int(now.timestamp() * 1000)}{uuid.uuid4().hex[:6].upper()}"

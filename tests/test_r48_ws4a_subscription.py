@@ -209,11 +209,11 @@ def test_grant_renew_updates_plan_id(db):
     u = _user(db, "u1")
     plan_a = _plan(db, r.id, name="月卡", days=30)
     plan_b = _plan(db, r.id, name="季卡", days=90)
-    s1 = _grant_subscription(db, u, plan_a, 30, "purchase", "o1",
+    s1 = _grant_subscription(db, u, plan_a, 30,
                              realm_id=r.id)
     db.commit()
     first_end = s1.end_date
-    s2 = _grant_subscription(db, u, plan_b, 90, "purchase", "o2",
+    s2 = _grant_subscription(db, u, plan_b, 90,
                              realm_id=r.id)
     db.commit()
     assert s2.id == s1.id  # 同一行
