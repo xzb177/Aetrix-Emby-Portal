@@ -3319,6 +3319,13 @@ def _reclaim_stale(db, lease_sec: Optional[int] = None) -> int:
 _PARITY_PATROL_EVERY_ROUNDS = 30  # janitor 每 60s 一轮 → 巡检约每 30 分钟一次
 _PARITY_PATROL_PER_ROUND = 200  # 单轮硬上限（与 none/failed 回捞同量级）
 
+# Drive 链接分享巡检（2026-10-19 播放事故治本）：主路径（扫描入库后异步补开）
+# 漏网（进程重启丢内存队列）或失败的兜底。默认开、无面板开关；每 120 轮
+# （约 2 小时）跑一次、单轮硬上限 150 个文件；每文件 1 次 Drive API 调用
+# （已分享的 409 即确认），调用间随机抖动——防风控优先于速度。
+_DRIVE_SHARE_PATROL_EVERY_ROUNDS = 120
+_DRIVE_SHARE_PATROL_PER_ROUND = 150
+
 
 def _parity_patrol_candidates(db):
     """巡检候选预筛：可见集行集号恰为 {2,4,…,2N}（N≥2）的 (series_id, season)。
@@ -3420,6 +3427,19 @@ def _janitor_loop() -> None:
                     npr = parity_patrol_rescue(db)
                     if npr:
                         logger.info("补全 janitor 奇偶巡检归一 %d 季（防重扫回滚）", npr)
+                # Drive 链接分享巡检（2026-10-19 播放事故治本）：主路径漏网/失败兜底。
+                # 默认开、无面板开关；每 120 轮（约 2 小时）一次、单轮硬上限 150 文件。
+                if patrol_round % _DRIVE_SHARE_PATROL_EVERY_ROUNDS == 0:
+                    try:
+                        from backend.emby_server import drive_share as _dsh
+                        nds = _dsh.drive_share_patrol(
+                            db, limit=_DRIVE_SHARE_PATROL_PER_ROUND)
+                    except Exception:
+                        logger.warning("补全 janitor Drive 分享巡检异常",
+                                       exc_info=True)
+                        nds = 0
+                    if nds:
+                        logger.info("补全 janitor Drive 分享巡检确认 %d 个文件", nds)
             finally:
                 db.close()
         except Exception as exc:  # noqa: BLE001 — 一轮失败不该拖垮 janitor

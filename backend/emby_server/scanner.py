@@ -5056,6 +5056,17 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     emby_models.sanitize_stream_strings(stream)
                     db.add(stream)
                 db.commit()
+                # Drive 链接分享（2026-10-19 播放事故治本）：新入库条目异步补开
+                # anyone reader 权限，否则播放 302 到 usercontent 匿名直链会被
+                # 谷歌登录页拦截。纯内存入队、无 IO，提交后执行不阻塞扫描；
+                # 补开失败绝不影响入库，由 enrich janitor 巡检兜底。
+                if is_new and _fid:
+                    try:
+                        from backend.emby_server import drive_share as _dsh
+                        _dsh.note_new_file(item.id, _fid, True)
+                    except Exception:
+                        logger.warning("drive-share 入队失败（巡检会兜底）",
+                                       exc_info=True)
             counted = _FileCounter(source_files)
             _iter_prepared(ctx, counted, pool, db, _process_one,
                             label, counted, stats, failed_roots)

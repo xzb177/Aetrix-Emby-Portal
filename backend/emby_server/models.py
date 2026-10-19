@@ -201,6 +201,11 @@ class MediaItem(Base):
     # Scanner matches existing items by it: rename/move only updates
     # path, never deletes the record or loses metadata.
     drive_file_id = Column(String(64), index=True)
+    # Drive 链接分享（2026-10-19 播放事故治本）：播放 302 是 usercontent 匿名
+    # 直链，要求文件有 anyone reader 权限。新文件入库后 drive_share 模块异步
+    # 补开；enrich janitor 巡检兜底。NULL=尚未确认，True=已确认，False=待重试。
+    drive_share_ok = Column(Boolean, default=None)
+    drive_share_checked_at = Column(DateTime)  # 上次确认/补开尝试时间
     container = Column(String(20))
     size = Column(BigInteger, default=0)
     # 增量扫描（v2.50.0）：文件修改时间戳，用于 mtime 比对跳过未变更文件。
