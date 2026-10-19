@@ -29,6 +29,7 @@ def _reset_watcher():
     fw._DEGRADED.clear()
     fw._PENDING.clear()
     fw._LAST_TRIGGER.clear()
+    fw._RETRY_AT.clear()
     for key in fw._STATS:
         fw._STATS[key] = 0
     yield

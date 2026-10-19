@@ -12,6 +12,8 @@
 - **1 秒防抖 + 按库合并**：转场一个目录（复制一批剧集）会产生成百上千个事件，
   逐个处理等于把磁盘读烂。这里按「库」聚合，1 秒内的所有事件只触发**一次**入队；
   入队本身对同一库是幂等的（已在队列里就返回已有任务），所以重复触发天然安全。
+  同库 60 秒内只入队一轮：窗口内后到的事件**延迟**到窗口结束补发一轮，而不是丢弃
+  （增量扫描是整目录枚举，补发的那一轮把窗口内所有事件一起覆盖）。
 - **独立线程 + 事件回调只做记账**：watchdog 的回调线程只把 (库 id → 计数) 记进字典，
   真正的入队放在自己的线程里按防抖窗口做，不碰数据库连接。
 - **降级而不是失败**：路径不可读 / watch 数超上限 / inotify 实例耗尽时，把该库记成
@@ -44,7 +46,9 @@ FS_EVENT_DEBOUNCE_SEC = 1.0
 #: 扫描队列灌满——待处理集合不会丢，下一轮接着出）
 FS_EVENT_MAX_TRIGGERS = 8
 #: 全局最小入队间隔（秒）：防抖窗口之上的第二道闸——磁盘抖动导致事件断断续续时，
-#: 不会把扫描队列灌满（同库入队本就幂等，但队列长度会虚高、界面一直在闪）
+#: 不会把扫描队列灌满（同库入队本就幂等，但队列长度会虚高、界面一直在闪）。
+#: 窗口内被合并的事件记入 ``_RETRY_AT``，窗口结束后由 drain 线程补发一轮——
+#: 合并是延迟，不是丢弃。
 FS_EVENT_MIN_INTERVAL_SEC = 60.0
 #: 同时监听的最大目录数（watchdog/inotify 每个目录占一个 watch，实例数有限）
 FS_WATCH_MAX_DIRS = 4000
@@ -90,6 +94,9 @@ _WATCHES: dict[int, dict] = {}
 _LAST_TRIGGER: dict[int, float] = {}
 #: 待处理事件：库 id → 最近一次事件时刻
 _PENDING: dict[int, float] = {}
+#: 延迟补发点：库 id → 最早允许补触发的时刻。合并窗口内被合并的事件不再丢弃，
+#: 而是记在这里，窗口结束后由 drain 线程补发一轮增量扫描（合并=延迟，不是丢弃）。
+_RETRY_AT: dict[int, float] = {}
 
 #: 最近一次对账的结果（状态接口回显用）：at=单调时刻, changed=是否有差异
 _LAST_RECONCILE: dict = {"at": 0.0, "changed": None}
@@ -290,8 +297,10 @@ def _trigger_scan(library_id: int) -> None:
     with _STATE_LOCK:
         last = _LAST_TRIGGER.get(library_id, 0.0)
         if now - last < FS_EVENT_MIN_INTERVAL_SEC:
-            with _STATE_LOCK:
-                _STATS["coalesced"] += 1
+            _STATS["coalesced"] += 1
+            # 合并窗口内被合并的事件改成延迟补发：窗口结束后由 drain 线程补触发一轮。
+            # （之前是直接丢弃——落单文件 + 后续无事件时，会静默漏到定时扫描才被发现。）
+            _RETRY_AT[library_id] = last + FS_EVENT_MIN_INTERVAL_SEC
             return
         _LAST_TRIGGER[library_id] = now
     try:
@@ -303,13 +312,20 @@ def _trigger_scan(library_id: int) -> None:
         try:
             lib = db.query(em.Library).filter(em.Library.id == library_id).first()
             if lib is None or not lib.is_enabled:
+                with _STATE_LOCK:
+                    _RETRY_AT.pop(library_id, None)
                 return
             if getattr(lib, "fs_watch", True) is False:
+                with _STATE_LOCK:
+                    _RETRY_AT.pop(library_id, None)
                 return
             # 一定是增量：监听到的只是「有变动」，到底变没变由扫描器的指纹判断
             scan_queue.enqueue(lib, trigger="fs-event")
             with _STATE_LOCK:
                 _STATS["triggers"] += 1
+                # 这轮扫描是整目录枚举：窗口内所有被合并的事件都被它覆盖，
+                # 延迟补发的"债"已还清，不再补发。
+                _RETRY_AT.pop(library_id, None)
             logger.info("fs-watch: 库「%s」(id=%s) 有文件变动，已入队增量扫描",
                         lib.name, library_id)
         finally:
@@ -318,6 +334,17 @@ def _trigger_scan(library_id: int) -> None:
         with _STATE_LOCK:
             _STATS["errors"] += 1
         logger.warning("fs-watch: 触发扫描失败 library_id=%s", library_id, exc_info=True)
+
+
+def _due_retries(now: float) -> list[int]:
+    """窗口到期的延迟补发：返回此刻应该补触发的库 id（排序后，确定性）
+
+    只读不弹：真正调用 ``_trigger_scan`` 时它会自己处理——成功/早退清掉，
+    再次被合并就重新记。剩下的留给下一轮 drain，保证合并窗口的限流不被补发冲破。
+    """
+    with _STATE_LOCK:
+        return [lib_id for lib_id in sorted(_RETRY_AT)
+                if now >= _RETRY_AT[lib_id]]
 
 
 def _drain_loop(stop: threading.Event) -> None:
@@ -342,6 +369,10 @@ def _drain_loop(stop: threading.Event) -> None:
                     _PENDING.pop(lib_id, None)
                     ready.append(lib_id)
         for lib_id in ready[:FS_EVENT_MAX_TRIGGERS]:
+            _trigger_scan(lib_id)
+        # 延迟补发：合并窗口内被合并的事件，窗口结束后补触发一轮。
+        # 同样受每轮上限约束——合并窗口的限流不能因为补发就被冲破。
+        for lib_id in _due_retries(now)[:FS_EVENT_MAX_TRIGGERS]:
             _trigger_scan(lib_id)
 
 
@@ -583,6 +614,7 @@ def stop_fs_watcher() -> None:
         _LIBRARY_PATHS.clear()
         _DEGRADED.clear()
         _PENDING.clear()
+        _RETRY_AT.clear()
         _OBSERVER = None
     if stop_event is not None:
         stop_event.set()
@@ -613,5 +645,7 @@ def watcher_status() -> dict:
             "last_reconcile_changed": _LAST_RECONCILE.get("changed"),
             "watched_libraries": sorted(_WATCHES.keys()),
             "degraded": {str(k): v for k, v in _DEGRADED.items()},
+            # 等待延迟补发的库：窗口内被合并的事件还没等到补发，界面可提示
+            "pending_retries": sorted(_RETRY_AT.keys()),
             "stats": dict(_STATS),
         }
