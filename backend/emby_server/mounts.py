@@ -1168,18 +1168,17 @@ class Pan115Mount(MountProvider):
 # 每次请求都新建连接池（借鉴 go-emby 的连接复用思路）。httpx.Client
 # 的同步 API 是线程安全的，可在扫描线程池里共用。
 _shared_clients: dict = {}
-_shared_clients_lock = None
+# 模块级直接初始化：懒初始化（if None: 建锁）在多线程首次并发调用时存在
+# 竞态——两线程可各建一把锁导致互斥被架空。本文件 _LIST_CACHE_LOCK 即此口径。
+_shared_clients_lock = threading.Lock()
 
 
 # 115 direct URL cache: pickcode -> (url, expire_at). URLs valid ~4h, cache 3h.
 _pan115_url_cache = {}
-_pan115_url_cache_lock = None
+# 同上：模块级直接初始化，不许懒初始化。
+_pan115_url_cache_lock = threading.Lock()
 
 def _get_cached_115_url(pickcode):
-    import threading, time
-    global _pan115_url_cache_lock
-    if _pan115_url_cache_lock is None:
-        _pan115_url_cache_lock = threading.Lock()
     with _pan115_url_cache_lock:
         entry = _pan115_url_cache.get(pickcode)
         if entry and entry[1] > time.time():
@@ -1189,10 +1188,6 @@ def _get_cached_115_url(pickcode):
     return None
 
 def _set_cached_115_url(pickcode, url, ttl=10800):
-    import threading, time
-    global _pan115_url_cache_lock
-    if _pan115_url_cache_lock is None:
-        _pan115_url_cache_lock = threading.Lock()
     with _pan115_url_cache_lock:
         if len(_pan115_url_cache) >= 1000:
             sk = sorted(_pan115_url_cache, key=lambda k: _pan115_url_cache[k][1])
@@ -1201,10 +1196,6 @@ def _set_cached_115_url(pickcode, url, ttl=10800):
         _pan115_url_cache[pickcode] = (url, time.time() + ttl)
 
 def _invalidate_115_url(pickcode):
-    import threading
-    global _pan115_url_cache_lock
-    if _pan115_url_cache_lock is None:
-        _pan115_url_cache_lock = threading.Lock()
     with _pan115_url_cache_lock:
         _pan115_url_cache.pop(pickcode, None)
 
@@ -1212,11 +1203,7 @@ def _invalidate_115_url(pickcode):
 def _shared_http_client(key: str = "default", timeout=None):
     """取（或创建）具名共享客户端。"""
     import httpx
-    import threading
 
-    global _shared_clients_lock
-    if _shared_clients_lock is None:
-        _shared_clients_lock = threading.Lock()
     with _shared_clients_lock:
         client = _shared_clients.get(key)
         if client is None:
