@@ -717,20 +717,10 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
         dto["MediaSources"] = [_media_source(item, base, api_key, db, auth_qs,
                                              synthesize=True)]
         dto["MediaSourceCount"] = 1
-        # 片头片尾标记 → Chapters（对标 StrmAssistant #3：播放器显示"跳过片头"按钮）
-        # IntroDB 自动分段（2026-10-17 学 raisemby）：按需拉取+缓存后汇入现成
-        # to_chapters 管道，手动标记优先；introdb 模块全程 fail-safe，上游故障
-        # 时这里只剩手动标记，播放信息照常返回。
-        try:
-            from backend.emby_server import intro_marker as _im
-            from backend.emby_server import introdb as _idb
-            manual = _im.get_markers(db, item.id)
-            extra = _idb.get_segments_for_item(db, item)
-            dto["Chapters"] = _im.to_chapters(
-                _idb.merge_segments(manual, extra, getattr(item, "item_type", None)))
-        except Exception as exc:
-            logger.debug("Chapters 加载失败 item=%s: %s", getattr(item, "id", "?"), exc)
-            dto["Chapters"] = []
+        # 片头片尾标记 → Chapters：复用 MediaSource 里已算好的（_chapters_for_item
+        # 同一套口径），不重复跑两次 intro 管道
+        dto["Chapters"] = (dto["MediaSources"][0].get("Chapters")
+                           if dto["MediaSources"] else []) or []
         # 多版本：同一目录下的其他版本 + 物理合并的版本，供详情页版本切换器使用
         # （对标 StrmAssistant MergeMultiVersionTask：合并后用户要在详情页看到并切换版本）
         if item.item_type == "movie":
@@ -1040,6 +1030,40 @@ def _default_subtitle_index(item: em.MediaItem):
     return None
 
 
+def _default_audio_stream_index(media_streams: list) -> int | None:
+    """默认音频轨索引（r50 补齐，官方 MediaSourceInfo 字段）。
+
+    取 MediaStreams 里 IsDefault 的音频轨的 Index，否则第一条音频轨；
+    无音频轨时返回 None（由 _strip_nulls 去掉，不发 null）。
+    """
+    audios = [st for st in (media_streams or [])
+              if isinstance(st, dict) and (st.get("Type") or "").lower() == "audio"]
+    for st in audios:
+        if st.get("IsDefault"):
+            return st.get("Index")
+    return audios[0].get("Index") if audios else None
+
+
+def _chapters_for_item(db, item) -> list:
+    """片头片尾标记 → Chapters（r50 抽取；_item_dto 详情与 _media_source 共用一套）。
+
+    对标 StrmAssistant #3：播放器显示"跳过片头"按钮。IntroDB 自动分段
+    （2026-10-17 学 raisemby）：按需拉取+缓存后汇入现成 to_chapters 管道，
+    手动标记优先；introdb 模块全程 fail-safe，上游故障时这里只剩手动标记，
+    播放信息照常返回。
+    """
+    try:
+        from backend.emby_server import intro_marker as _im
+        from backend.emby_server import introdb as _idb
+        manual = _im.get_markers(db, item.id)
+        extra = _idb.get_segments_for_item(db, item)
+        return _im.to_chapters(
+            _idb.merge_segments(manual, extra, getattr(item, "item_type", None)))
+    except Exception as exc:
+        logger.debug("Chapters 加载失败 item=%s: %s", getattr(item, "id", "?"), exc)
+        return []
+
+
 # 文件扩展名 -> 容器格式的安全映射（只做 container 回退，不猜测编码）。
 # 原理：扩展名可靠地反映容器格式；缺失 container 会导致客户端无法判断直放兼容性
 # 而误走转码。这里只补 container，绝不虚报 video/audio codec（宁可保守）。
@@ -1210,6 +1234,13 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         synth = _synthetic_streams(item, dto["MediaStreams"])
         if synth:
             dto["MediaStreams"] = synth + dto["MediaStreams"]
+    # r50：补默认音频轨索引（此前全仓缺失；多音轨时客户端只能逐个试 IsDefault，
+    # 与官方字段面不一致）。IsDefault 优先，否则第一条音频轨。
+    dto["DefaultAudioStreamIndex"] = _default_audio_stream_index(dto["MediaStreams"])
+    if db is not None:
+        # r50：MediaSource 也带 Chapters（此前只在详情 DTO 下发；靠 PlaybackInfo
+        # 拿章节做"跳过片头"的播放器拿不到）。与详情共用 _chapters_for_item。
+        dto["Chapters"] = _chapters_for_item(db, item)
     # 文件名解析的视频信息（v2.49.0）：MediaStreams 为空时客户端「媒体信息」页
     # 也有编码可显示；有流信息时以流为准（这里只是回退）。
     if item.video_codec:
@@ -1472,7 +1503,9 @@ def authenticate_by_name(
         "ServerId": server_id,
         "SessionInfo": {
             "UserId": str(user.id),
-            "UserName": user.username,
+            # r50 口径统一：与 _user_dto 的 Name 一致（emby_username 优先），
+            # 官方两者一致；此前一个用 username、一个用 emby_username。
+            "UserName": user.emby_username or user.username,
             "Client": auth.get("Client") or "Emby",
             "DeviceName": auth.get("Device") or "Unknown Device",
             "DeviceId": token_row.device_id,
@@ -1483,8 +1516,10 @@ def authenticate_by_name(
             "IsActive": True,
             "HasCustomDeviceName": False,
             "LastActivityDate": _iso(datetime.now()),
-            "SupportsRemoteControl": True,
-            "SupportsMediaControl": True,
+            # r50 诚实化：本服务没有实现任何远程控制接收端点（无 SendCommand /
+            # websocket），此前恒 True 属虚假宣称；客户端据此展示遥控 UI 也无处可发。
+            "SupportsRemoteControl": False,
+            "SupportsMediaControl": False,
             "PlayState": {
                 "CanSeek": False,
                 "IsPaused": False,
@@ -2482,8 +2517,10 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                     query = query.filter(em.MediaItem.production_year == int(hit[1]))
                 else:
                     query = query.filter(em.MediaItem.guid == parent_id)
-    elif not recursive:
-        # 非递归默认返回顶层
+    elif not recursive and not explicit_types:
+        # 非递归默认返回顶层；但客户端显式传了 IncludeItemTypes 时以显式为准
+        #（r50：此前 IncludeItemTypes=Episode + 非递归 + 无 ParentId 恒空，
+        # 显式要单集被顶层默认吞掉）
         query = query.filter(em.MediaItem.item_type.in_(["movie", "series"]))
 
     # 媒体库可见范围：搜索 / 递归浏览 / Latest 都走这条路径，一处过滤全覆盖
@@ -2607,6 +2644,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             "DateLastContentAdded": _date_last_content_added,
         }.get(key)
         if c is None:
+            # r50：不支持的排序键此前静默回退默认排序；记一条 warning 便于定位
+            #（客户端拼错参数时不再一声不吭；回退行为不变）
+            logger.warning("Items 忽略不支持的 SortBy=%r，已回退默认排序", key)
             continue
         order_cols.append(c.desc() if _desc else c.asc())
     if not order_cols:
@@ -3361,7 +3401,12 @@ def get_seasons(item_id: str, request: Request,
                  + [(n, len(seasons) + k, d)
                     for k, (n, d) in enumerate(zip(missing, vdtos))])
         items = [d for _, _, d in sorted(keyed, key=lambda t: (t[0], t[1]))]
-    return {"Items": items, "TotalRecordCount": len(items), "StartIndex": 0}
+    # r50：补 Limit/StartIndex 分页（虚拟季并入最终列表后分页；此前全量一次序列化）
+    start = qstart(request.query_params)
+    limit = qlimit(request.query_params, default=100)
+    total = len(items)
+    items = items[start:start + limit]
+    return {"Items": items, "TotalRecordCount": total, "StartIndex": start}
 
 
 @json_route(emby_router, "/emby/Shows/{item_id}/Episodes", "/Shows/{item_id}/Episodes")
@@ -3428,6 +3473,11 @@ def get_episodes(item_id: str, request: Request,
             seen.add(key)
             deduped.append(e)
     episodes = deduped
+    # r50：补 Limit/StartIndex 分页（去重后分页；此前千集级剧集一次全量序列化）
+    start = qstart(request.query_params)
+    limit = qlimit(request.query_params, default=100)
+    total = len(episodes)
+    episodes = episodes[start:start + limit]
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
     # 分集标题美化：相关剧名（供文件名去剧名前缀用）。_prefetch_list_data 已把剧载入
@@ -3446,7 +3496,7 @@ def get_episodes(item_id: str, request: Request,
                                auth_qs=_url_auth_qs(db, request, user, e.guid)
                                if want_sources else "")
                       for e in episodes],
-            "TotalRecordCount": len(episodes), "StartIndex": 0}
+            "TotalRecordCount": total, "StartIndex": start}
 
 
 @emby_router.get("/emby/Shows/{item_id}/MissingEpisodes")
@@ -3522,6 +3572,10 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
     """
     # G1-P1-2：Limit 钳制 200（原无上界；batch = max(limit*2, 32) 会随 limit 放大整轮扫描）
     limit = qlimit(request.query_params, default=20)
+    # r50：补 StartIndex（此前翻页永远拿到同一批）；TotalRecordCount 取全部已开看剧集的
+    # 真实下一集数（此前是当前页条数）。全量扫描按批走（每批一条窗口函数 SQL，P3 优化保留），
+    # 贵重的 _item_dto 序列化只发生在当前页上。
+    start = qstart(request.query_params)
     requested_series_guid = (request.query_params.get("SeriesId") or "").strip()
     allowed = _library_scope(db, user)
     if requested_series_guid:
@@ -3612,47 +3666,53 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
             nxt = nxt_map.get(sid)
             if nxt is not None:
                 ranked.append((series_recent.get(sid), nxt))
-        if len(ranked) >= limit:
-            break
-    episodes = [e for _, e in ranked[:limit]]
+    episodes = [e for _, e in ranked[start:start + limit]]
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
     return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],
-            "TotalRecordCount": len(episodes), "StartIndex": 0}
+            "TotalRecordCount": len(ranked), "StartIndex": start}
 
 
 @emby_router.get("/emby/Users/{user_id}/FavoriteItems")
 @emby_router.get("/Users/{user_id}/FavoriteItems")
 def get_favorites(request: Request, user: models.WebUser = Depends(get_emby_user),
                         db: Session = Depends(get_db)):
-    rows = (
+    # r50：补 Limit/StartIndex 分页（此前全量返回、无上界；与 _query_items 的钳制纪律一致）
+    start = qstart(request.query_params)
+    limit = qlimit(request.query_params, default=100)
+    base_q = (
         db.query(em.MediaItem)
         .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
         .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.is_favorite == True)  # noqa: E712
         .order_by(em.UserMediaData.updated_at.desc())
-        .all()
     )
+    total = base_q.count()
+    rows = base_q.offset(start).limit(limit).all()
     base = _base_url(request)
     _prefetch_list_data(db, user.id, rows)
     return {"Items": [_item_dto(i, base, user.id, db) for i in rows],
-            "TotalRecordCount": len(rows), "StartIndex": 0}
+            "TotalRecordCount": total, "StartIndex": start}
 
 
 @emby_router.get("/emby/Users/{user_id}/PlayedItems")
 @emby_router.get("/Users/{user_id}/PlayedItems")
 def get_played_items(request: Request, user: models.WebUser = Depends(get_emby_user),
                            db: Session = Depends(get_db)):
-    rows = (
+    # r50：补 Limit/StartIndex 分页（此前全量返回、无上界；与 _query_items 的钳制纪律一致）
+    start = qstart(request.query_params)
+    limit = qlimit(request.query_params, default=100)
+    base_q = (
         db.query(em.MediaItem)
         .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
         .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.played == True)  # noqa: E712
         .order_by(em.UserMediaData.last_played_at.desc())
-        .all()
     )
+    total = base_q.count()
+    rows = base_q.offset(start).limit(limit).all()
     base = _base_url(request)
     _prefetch_list_data(db, user.id, rows)
     return {"Items": [_item_dto(i, base, user.id, db) for i in rows],
-            "TotalRecordCount": len(rows), "StartIndex": 0}
+            "TotalRecordCount": total, "StartIndex": start}
 
 
 @emby_router.post("/emby/Users/{user_id}/Items/{item_id}/Rating")
@@ -4095,6 +4155,9 @@ async def playback_info(
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
         "SupportsTranscoding": allow_transcode,
+        # r50：补 DirectPlayUrl（此前恒缺，SupportsDirectPlay=True 却无对应地址）。
+        # 本架构直放与直接串流是同一条 302（video_stream 302 到网盘直链），故同值。
+        "DirectPlayUrl": stream_url,
         "DirectStreamUrl": stream_url,
     })
     if allow_transcode:

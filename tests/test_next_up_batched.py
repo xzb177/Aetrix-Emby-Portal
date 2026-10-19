@@ -137,7 +137,10 @@ def test_next_up_matches_legacy(seeded, limit, monkeypatch):
                    for i in res["Items"]]
             want = _legacy_next_up_ids(seeded.db, wu.id, allowed, limit)
             assert got == want, (wu.id, allowed, limit)
-            assert res["TotalRecordCount"] == len(want)
+            # r50：TotalRecordCount 取全部可用下一集数（真实 Emby QueryResult 口径，
+            # 与 F-c/F-d/F-e/F-f 一致；此前是当前页条数）。legacy 对照取全量做总数基准。
+            full = _legacy_next_up_ids(seeded.db, wu.id, allowed, 10 ** 9)
+            assert res["TotalRecordCount"] == len(full)
 
 
 def test_next_up_sql_count_independent_of_series_count(seeded, monkeypatch):

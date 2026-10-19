@@ -102,4 +102,6 @@ def search_hints(request: Request, user: models.WebUser = Depends(get_emby_user)
         }
         for it in ordered[:limit]
     ]
-    return {"SearchHints": hints, "TotalRecordCount": len(hints)}
+    # r50：TotalRecordCount 必须是截断前的命中总数（客户端据此翻页）；
+    # 此前是当前页条数，有更多结果时客户端会认为没有下一页。
+    return {"SearchHints": hints, "TotalRecordCount": len(ordered)}

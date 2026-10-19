@@ -19,7 +19,7 @@ from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server import facets
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
-from backend.emby_server.query_params import qlimit
+from backend.emby_server.query_params import qint, qlimit, qstart
 from backend.emby_server.scanner import (
     ScanInProgress,
     item_guid,
@@ -57,6 +57,7 @@ from backend.emby_server.api import (
     _policy_dto,
     _query_result,
     _require_visible_item,
+    _run_time_ticks,
     _user_data_dto,
     user_views,
 )
@@ -237,6 +238,32 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
 # 跑在事件循环上：多路并发播放时，所有人的其它请求都得排在这几次写事务后面。
 
 
+def _get_or_create_umd(db: Session, user: models.WebUser, item: em.MediaItem) -> em.UserMediaData:
+    """取/建观看进度行（_record_progress 与 _record_stopped 共用，r50 抽取）。"""
+    umd = db.query(em.UserMediaData).filter(
+        em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
+    ).first()
+    if not umd:
+        # 第一次上报这个条目：即使会话被节流也必须落库（否则「继续观看」没有起点）
+        umd = em.UserMediaData(user_id=user.id, item_id=item.id)
+        db.add(umd)
+    return umd
+
+
+def _apply_play_progress(umd: em.UserMediaData, pos: int, finished: bool) -> None:
+    """把一次进度落到 UserMediaData 行上（Progress 与 Stopped 共用；调用方负责 commit）。
+
+    finished（90% 口径）时标已看并清零断点；played 已标时 play_count 不重复加。
+    """
+    umd.playback_position_ticks = pos
+    umd.last_played_at = datetime.now()
+    if finished:
+        if not umd.played:
+            umd.play_count = (umd.play_count or 0) + 1
+        umd.played = True
+        umd.playback_position_ticks = 0
+
+
 def _record_playing(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
     item = _require_visible_item(db, user, body.get("ItemId") or "")
     session, _wrote = _upsert_session(db, request, user, item, body)
@@ -262,34 +289,33 @@ def _record_progress(request: Request, user: models.WebUser, db: Session, body: 
     runtime = item.duration_ticks or 0
     finished = bool(runtime and pos >= runtime * 0.9)
 
-    umd = db.query(em.UserMediaData).filter(
-        em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
-    ).first()
-    if not umd:
-        # 第一次上报这个条目：即使会话被节流也必须落库（否则「继续观看」没有起点）
-        umd = em.UserMediaData(user_id=user.id, item_id=item.id)
-        db.add(umd)
-    elif (
-        not wrote
+    umd = _get_or_create_umd(db, user, item)
+    if (
+        umd.id is not None  # 新建行（id 为 None）必须落库，不能被节流跳过
+        and not wrote
         and (umd.playback_position_ticks or 0) == pos
         and not (finished and not umd.played)
     ):
         # 会话和观看进度都没有新信息：同一次上报不必再来一次写事务（见文件头的节流说明）
         return
 
-    umd.playback_position_ticks = pos
-    umd.last_played_at = datetime.now()
-    if finished:
-        if not umd.played:
-            umd.play_count = (umd.play_count or 0) + 1
-        umd.played = True
-        umd.playback_position_ticks = 0
+    _apply_play_progress(umd, pos, finished)
     db.commit()
 
 
 def _record_stopped(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
     item = _require_visible_item(db, user, body.get("ItemId") or "")
     _upsert_session(db, request, user, item, body, ended=True)
+    # r50：Stopped 携带的最终进度必须落库（此前只更新会话行，最终断点与已看状态
+    # 全丢——客户端最后一次 Progress 可能因网络抖动没送达，或客户端只发 Stopped）。
+    # 与 _record_progress 同一落库口径（90% 自动已看）；幂等：重复 Stopped 只是把
+    # 同一位置再写一遍，played 已标时 play_count 不重复加。
+    pos = int(body.get("PositionTicks") or 0)
+    runtime = item.duration_ticks or 0
+    finished = bool(runtime and pos >= runtime * 0.9)
+    umd = _get_or_create_umd(db, user, item)
+    _apply_play_progress(umd, pos, finished)
+    db.commit()
 
 
 @emby_router.post("/emby/Sessions/Playing")
@@ -485,7 +511,9 @@ def _set_favorite(db: Session, user: models.WebUser, item_id: str, value: bool) 
         db.add(umd)
     umd.is_favorite = value
     db.commit()
-    return _user_data_dto(umd)
+    # r50：补 item.guid（与 mark_played/mark_unplayed/rate 同口径；
+    # _user_data_dto 无 item_id 时不下发 ItemId/Key，严格解码器会失败）
+    return _user_data_dto(umd, item.guid, _run_time_ticks(item))
 
 
 @emby_router.post("/emby/Users/{user_id}/FavoriteItems/{item_id}")
@@ -680,10 +708,9 @@ def studios_list(user: models.WebUser = Depends(get_emby_user), db: Session = De
 
 @emby_router.get("/emby/Persons")
 @emby_router.get("/Persons")
-def persons_list(user: models.WebUser = Depends(get_emby_user),
+def persons_list(request: Request, user: models.WebUser = Depends(get_emby_user),
                  db: Session = Depends(get_db),
-                 Limit: int | None = None,
-                 StartIndex: int = 0):
+                 Limit: str | None = None, StartIndex: str | None = None):
     """演员列表（v2.51.0）：``emby_people`` 落库后返回真实数据。
 
     以前刮削没落演员表，这里只能返回空（``_empty_items``）；现在 TMDB credits
@@ -691,8 +718,12 @@ def persons_list(user: models.WebUser = Depends(get_emby_user),
     有头像就给 ``PrimaryImageTag``（取图按名字找第一条有头像的行，
     见 ``media_routes.person_image``）。
     """
-    start = max(0, int(StartIndex or 0))
-    limit = 5000 if Limit is None else max(0, min(int(Limit), 5000))
+    # r50：畸形 Limit/StartIndex 回 default（此前 FastAPI 原生 int 强转 → 422；
+    # 全站其余协议端点走 qint 畸形回 default，口径统一）。声明为 str 由 FastAPI 原样
+    # 绑定、再经 qint/qstart 宽容解析；保留 Limit/StartIndex kwargs 兼容旧的直接调用
+    #（tests/test_metadata_cast.py），任何行为都不放宽。
+    start = qstart({"StartIndex": StartIndex})
+    limit = qint({"Limit": Limit}, "Limit", 5000, lo=0, hi=5000)
     base = (
         db.query(
             em.EmbyPerson.name,

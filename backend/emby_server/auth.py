@@ -99,7 +99,10 @@ def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optiona
 
 
 def issue_token(db: Session, user: models.WebUser, request: Request) -> tuple[str, emby_models.EmbyApiToken]:
-    """为用户签发 Emby 客户端 Token（幂等：同设备复用）
+    """为用户签发 Emby 客户端 Token（每次登录签发新行，与官方 Emby 一致：
+
+    AuthenticateByName 每次调用都产生一个新会话/token，旧 token 在过期或注销前
+    仍然有效，不会被新登录顶掉；r50 修正 docstring，此前"同设备复用"的写法与实现不符）。
 
     签发前先做设备登记与设备数上限校验；超限时抛 ``DeviceLimitExceeded``
     （由 AuthenticateByName 转成可读响应），避免在函数内部直接返回 HTTP 错误。
@@ -148,6 +151,11 @@ def _token_from_request(request: Request) -> Optional[str]:
     token = request.headers.get("X-Emby-Token") or request.headers.get("X-MediaBrowser-Token")
     if token:
         return token.strip()
+    # r50 补齐官方口径：X-Emby-Authorization 头里的 Token="" 字段
+    auth_header = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
+    token = (auth_header.get("Token") or "").strip()
+    if token:
+        return token
     auth = request.headers.get("Authorization") or request.headers.get("X-Emby-Authorization")
     if auth and auth.lower().startswith("bearer "):
         return auth[7:].strip()

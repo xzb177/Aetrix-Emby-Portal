@@ -331,7 +331,7 @@ def test_persons_list_returns_scraped_people(db):
     db.add(em.EmbyPerson(item_id=item.id, name="李四", role="配角",
                          image="", sort_order=1))
     db.commit()
-    got = compat_routes.persons_list(None, db)
+    got = compat_routes.persons_list(None, None, db)
     assert got["TotalRecordCount"] == 2
     assert got["StartIndex"] == 0
     by_name = {p["Name"]: p for p in got["Items"]}
@@ -349,8 +349,8 @@ def test_persons_list_pagination(db):
         db.add(em.EmbyPerson(item_id=item.id, name=f"演员{i:02d}",
                              role="", image="", sort_order=i))
     db.commit()
-    page1 = compat_routes.persons_list(None, db, Limit=2, StartIndex=0)
-    page2 = compat_routes.persons_list(None, db, Limit=2, StartIndex=2)
+    page1 = compat_routes.persons_list(None, None, db, Limit=2, StartIndex=0)
+    page2 = compat_routes.persons_list(None, None, db, Limit=2, StartIndex=2)
     assert page1["TotalRecordCount"] == 5
     assert [p["Name"] for p in page1["Items"]] == ["演员00", "演员01"]
     assert [p["Name"] for p in page2["Items"]] == ["演员02", "演员03"]
