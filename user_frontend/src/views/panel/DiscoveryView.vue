@@ -4,7 +4,7 @@
     <WorldHome v-if="homeWorldActive" />
     <template v-else>
     <!-- C档第2批：≥1280px 三栏仪表盘（d3-root 网格）；<1280px 保持现行单栏，移动端零变化 -->
-    <div class="v4-page d3-root">
+    <div ref="d3Root" class="v4-page d3-root">
       <!-- 左栏：问候 / 锚点 / 服务器卡 / 收藏家入口 / 脉搏摘要 / 每日一封 -->
       <div class="d3-left">
         <!-- 日志头：问候 + 封存件数 + 连签（移动端专属；桌面由问候卡接管） -->
@@ -45,7 +45,7 @@
 
         <!-- 首页服务器卡片：服清单数据驱动（发现页最显眼的位置） -->
         <div v-if="visibleCount === 0 && !serversLoading && !serversLoadError" class="v4-sec d3-ord-ticket">
-          <div class="v4-empty">暂无可见服务器，去<RouterLink to="/game/settings">设置</RouterLink>恢复显示</div>
+          <div class="v4-empty">暂无可见服务器，去<RouterLink class="v4-empty-link" to="/game/settings">设置</RouterLink>恢复显示</div>
         </div>
         <TicketCard
           v-else
@@ -280,6 +280,39 @@ function teardownSpy() {
   spy?.disconnect()
   spy = null
 }
+
+const d3Root = ref<HTMLElement | null>(null)
+
+/** 重建滚动侦测：先拆旧 observer，再在 nextTick 后按当前 DOM 重建（覆盖异步区块与世界/经典视图切换） */
+function refreshSpy() {
+  teardownSpy()
+  teardownDomObserver()
+  if (!isWide.value) return
+  void nextTick(() => {
+    setupSpy()
+    bindDomObserver()
+  })
+}
+
+let domObs: MutationObserver | null = null
+let spyDebounce = 0
+/** 拆 DOM 观察（覆盖异步渲染的 disc-libs 等区块）：250ms 防抖后重建 spy */
+function teardownDomObserver() {
+  domObs?.disconnect()
+  domObs = null
+  window.clearTimeout(spyDebounce)
+  spyDebounce = 0
+}
+function bindDomObserver() {
+  const root = d3Root.value
+  if (!root || domObs || typeof MutationObserver === 'undefined') return
+  domObs = new MutationObserver(() => {
+    if (!isWide.value) return
+    window.clearTimeout(spyDebounce)
+    spyDebounce = window.setTimeout(() => refreshSpy(), 250)
+  })
+  domObs.observe(root, { childList: true, subtree: true })
+}
 // D-P3-2：系统「减少动态效果」设置中途切换时跟随，而非 setup 期只读一次
 const reduceMotion = ref(false)
 let reduceMq: MediaQueryList | null = null
@@ -291,10 +324,8 @@ function jumpTo(id: string) {
   activeAnchor.value = id
   document.getElementById(id)?.scrollIntoView({ behavior: reduceMotion.value ? 'auto' : 'smooth', block: 'start' })
 }
-watch(isWide, (v) => {
-  if (v) void nextTick(() => setupSpy())
-  else teardownSpy()
-})
+watch(isWide, () => refreshSpy())
+watch(homeWorldActive, () => refreshSpy())
 
 /* ---------- 货架桌面交互：左右箭头 + 鼠标拖拽（手机触屏横滑不动） ---------- */
 function scrollShelf(dir: 1 | -1) {
@@ -360,12 +391,14 @@ onMounted(() => {
   syncReduceMotion()
   reduceMq.addEventListener('change', syncReduceMotion)
   spyRaf = requestAnimationFrame(() => { spyRaf = 0; setupSpy() })
+  bindDomObserver()
 })
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   wideMq?.removeEventListener('change', syncWide)
   reduceMq?.removeEventListener('change', syncReduceMotion)
   teardownSpy()
+  teardownDomObserver()
   if (resizeRaf) cancelAnimationFrame(resizeRaf)
   if (spyRaf) { cancelAnimationFrame(spyRaf); spyRaf = 0 }
 })
@@ -652,5 +685,14 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
+}
+
+/* R86：空态行内链接触控区垫到 44px（视觉不变，负 margin 抵消） */
+.v4-empty-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 4px 12px;
+  margin: -4px -12px;
 }
 </style>
