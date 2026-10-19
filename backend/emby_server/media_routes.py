@@ -151,6 +151,21 @@ def _serve_sized(src: str, max_width=None, max_height=None):
     return serve_image(src)
 
 
+def _virtual_season_series(db: Session, item_id: str):
+    """虚拟季 Id（``vseason-<剧 db id>-<季号>``，见 api._virtual_season_id）→ 父剧行
+
+    WS5：虚拟季没有独立行，``item_image`` 用 guid 查不到时走这里回退到父剧，
+    只影响显示、不写库。
+    """
+    from backend.emby_server.api import _parse_virtual_season_id
+    parsed = _parse_virtual_season_id(item_id)
+    if not parsed:
+        return None
+    series_id, _season_number = parsed
+    # 全局软删钩子自动排除 deleted_at 非空行
+    return db.query(em.MediaItem).filter(em.MediaItem.id == series_id).first()
+
+
 @emby_router.get("/emby/Items/{item_id}/Images/{image_type}")
 @emby_router.get("/Items/{item_id}/Images/{image_type}")
 def item_image(item_id: str, image_type: str, request: Request,
@@ -192,7 +207,14 @@ def item_image(item_id: str, image_type: str, request: Request,
                 em.EmbyPerson.id == int(item_id)).first()
             if person is not None:
                 return _serve_person_image(person.name, db, ew, eh)
-        raise HTTPException(status_code=404, detail="Item not found")
+        # WS5：#1092 的虚拟季（vseason-<剧 db id>-<季号>）没有独立行，
+        # guid 查不到。显示口径上回退到父剧的图片链（只影响显示、不写库），
+        # 避免客户端整季灰色占位。查不到父剧时照旧 404。
+        _vseries = _virtual_season_series(db, item_id)
+        if _vseries is not None:
+            item = _vseries
+        else:
+            raise HTTPException(status_code=404, detail="Item not found")
     if image_type not in ("Primary", "Backdrop", "Art", "Thumb", "Logo"):
         raise HTTPException(status_code=404, detail="Image not found")
     kind = "Primary" if image_type == "Primary" else "Backdrop"

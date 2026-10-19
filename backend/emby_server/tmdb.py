@@ -963,6 +963,15 @@ def prewarm_images(*payloads, extra=()) -> int:
         return 0
 
 
+def _season_poster_url(data: Optional[dict]) -> Optional[str]:
+    """季详情载荷 → 季海报完整 URL（无海报返回 None）
+
+    与 ``image_specs`` 同尺寸口径（w500），预热与落库看同一份 URL。
+    """
+    p = (data or {}).get("poster_path")
+    return f"{image_base()}/w500{p}" if p else None
+
+
 # 演员表一次取几个（TMDB cast 按戏份排序，取前 10 足够详情页展示）
 TMDB_CAST_LIMIT = 10
 
@@ -1802,6 +1811,42 @@ class TmdbClient:
                 tmdb_cache.save_details(endpoint, str(tmdb_id), data, lang)
             self._cache_put(key, data)
             return data
+
+    def season_poster(self, tmdb_id: str, season_number: int) -> Optional[str]:
+        """TMDB 季海报（``GET /tv/{id}/season/{n}`` 的 ``poster_path``）
+
+        返回完整图片 URL；该季无独立海报（``poster_path`` 为空）或 TMDB
+        404 返回 ``None``——调用方**不许拿剧海报冒充**，季显示回退由
+        ``api._image_chain`` / ``season_poster_url`` 负责。瞬态失败
+        （网络/5xx/限流）按既有口径上抛 ``TmdbTransientError``，供调用方
+        送回重试队列。缓存与 ``details()`` 同口径：L1 内存 300 秒 +
+        L2 磁盘（details 30 天 TTL），走同一个限速桶。
+        """
+        tid = str(tmdb_id or "").strip()
+        try:
+            sn = int(season_number or 0)
+        except (TypeError, ValueError):
+            return None
+        if not tid:
+            return None
+        key = ("season_poster", "tv", tid, sn)
+        cached = self._cache_get(key)
+        if cached is not _MISS:
+            return cached or None
+        hit, data = tmdb_cache.load_details("tv_season", f"{tid}:{sn}", "")
+        if hit and isinstance(data, dict) and data.get("id") is not None:
+            url = _season_poster_url(data)
+            self._cache_put(key, url)
+            return url
+        # 404/401 按阴性处理返回 None（_get 口径）；5xx/网络问题上抛瞬态
+        data = self._get(f"/tv/{tid}/season/{sn}",
+                         {"language": preferred_language()})
+        if isinstance(data, dict) and data.get("id") is not None:
+            # 真实季载荷必带 id：错误体不写 L2（与 details 同理）
+            tmdb_cache.save_details("tv_season", f"{tid}:{sn}", data, "")
+        url = _season_poster_url(data) if data else None
+        self._cache_put(key, url)
+        return url
 
     def batch_search(self, queries, return_transient=False):
         """批量搜索。

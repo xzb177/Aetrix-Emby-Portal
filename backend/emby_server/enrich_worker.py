@@ -2123,6 +2123,89 @@ def _parent_should_wait(db, item: Any) -> bool:
     return True
 
 
+def _img_col_empty(col):
+    """图片字段判空：NULL 或空串都算没图（与普查口径 coalesce 一致）"""
+    from sqlalchemy import or_ as _or
+    return _or(col.is_(None), col == "")
+
+
+def _enrich_season_posters_io(db, snapshot: Any, fetched: dict) -> None:
+    """IO 阶段：剧条目刮削时顺带把名下无图季的 TMDB 季海报拉下并预热
+
+    结果存 ``fetched["season_posters"] = {季 dbid: 图片 URL}``，写库阶段由
+    ``_enrich_apply`` 落字段。只查无图季（四图字段全空，fill-only 一致），
+    绝不覆盖已有图；某季无独立海报时跳过（不拿剧海报冒充，显示回退由
+    ``api._image_chain`` / ``season_poster_url`` 负责）。
+
+    调用位置：单条 ``_process_item`` 与批量 Phase 3 循环，IO 拿到 tmdb_id 后、
+    写库 ``db.rollback()`` 前。只读查询 + 网络 IO，不写库。
+    """
+    if (getattr(snapshot, "item_type", "") or "") != "series":
+        return
+    tmdb_id = str((fetched or {}).get("tmdb_id")
+                  or getattr(snapshot, "tmdb_id", "") or "").strip()
+    if not tmdb_id:
+        return
+    from backend.emby_server import image_store
+    from backend.emby_server.tmdb import tmdb_client, TmdbTransientError
+    rows = (
+        db.query(em.MediaItem.id, em.MediaItem.season_number)
+        .filter(em.MediaItem.series_id == snapshot.id,
+                em.MediaItem.item_type == "season",
+                em.MediaItem.merged_into_id.is_(None),
+                _img_col_empty(em.MediaItem.poster_path),
+                _img_col_empty(em.MediaItem.primary_image_url),
+                _img_col_empty(em.MediaItem.backdrop_path),
+                _img_col_empty(em.MediaItem.backdrop_image_url))
+        .all()
+    )
+    if not rows:
+        return
+    got: dict[int, str] = {}
+    for season_id, season_number in rows:
+        try:
+            url = tmdb_client.season_poster(tmdb_id, season_number)
+        except TmdbTransientError:
+            # 瞬态失败整条送回重试队列（与主流程同口径），不静默吞掉
+            raise
+        except Exception as exc:  # noqa: BLE001 — 非瞬态失败不影响主条目
+            logger.warning("季海报拉取失败 tmdb=%s S%s: %s",
+                           tmdb_id, season_number, exc)
+            continue
+        if url:
+            got[int(season_id)] = url
+    if got:
+        image_store.prewarm(got.values())
+        fetched["season_posters"] = got
+        progress.note_stage("enrich_season_posters", len(got))
+
+
+def _apply_season_posters(db, season_posters: dict) -> int:
+    """写库阶段：把 IO 阶段拿到的季海报落字段，返回实际写入的季数
+
+    只给仍无图的季写（fill-only）；``image_store.localize(..., allow_download=False)``
+    只认 IO 阶段已预热好的本地文件，写事务里不下载。
+    """
+    from backend.emby_server import image_store
+    n = 0
+    for season_id, url in (season_posters or {}).items():
+        if not url:
+            continue
+        row = db.query(em.MediaItem).filter(
+            em.MediaItem.id == season_id).first()
+        if row is None:
+            continue
+        # 并发保护：IO 到写库的窗口里别人已补上时不覆盖
+        if row.poster_path or row.primary_image_url:
+            continue
+        row.primary_image_url = url
+        local = image_store.localize(url, allow_download=False)
+        if local:
+            row.poster_path = local
+        n += 1
+    return n
+
+
 def _enrich_apply(db, item: Any, fetched: dict) -> None:
     """写库阶段（单条短事务内调用）：把 IO 阶段拿到的数据落库。"""
     from backend.emby_server import nfo as nfo_lib
@@ -2292,6 +2375,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 item.backdrop_path = parent.backdrop_path
                 item.backdrop_image_url = parent.backdrop_image_url
                 break
+
+    # WS5 季海报：IO 阶段拉下的各季 TMDB 海报落字段（只落预热好的，
+    # 写事务里不下载）。季无独立海报时 IO 阶段已跳过，这里不补剧海报。
+    season_posters = fetched.get("season_posters") or {}
+    if item_type == "series" and season_posters:
+        _apply_season_posters(db, season_posters)
 
     if needs_repair:
         item.repair_requested_at = None
@@ -3638,6 +3727,10 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
                             fetched.get("error") or "fetch failed",
                             claim_token=snapshot.enrich_claim_token)
 
+    # WS5 季海报：IO 阶段（有 DB 会话、无事务）给剧的名下无图季拉 TMDB 季海报
+    # 并预热，写库阶段由 _enrich_apply 落字段
+    _enrich_season_posters_io(db, snapshot, fetched)
+
     # ---- 写库阶段：重新加载 ORM，单条短事务 ----
     try:
         db.rollback()  # 防止 IO 前任何只读查询把事务带进写回阶段
@@ -3793,6 +3886,9 @@ def _process_batch(db, batch: list) -> None:
                 "enrich_item", (time.monotonic() - started) * 1000.0)
             progress.note_completed(outcome)
             continue
+        # WS5 季海报：IO 阶段给剧的名下无图季拉 TMDB 季海报并预热
+        #（写库阶段由 _enrich_apply 落字段；与单条 _process_item 同口径）
+        _enrich_season_posters_io(db, snapshot, fetched)
         try:
             db.rollback()
             fresh = db.query(em.MediaItem).filter(
