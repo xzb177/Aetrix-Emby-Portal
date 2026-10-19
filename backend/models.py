@@ -1014,6 +1014,14 @@ class AiRefundLog(Base):
     所以每个回滚请求带 request_id，这里用唯一约束做「已退」标记：
     同一 request_id 第二次 refund 是空操作。
     新表由 create_all 建（与 ai_usage 等表同口径）。
+
+    跨午夜漂移修复：``day`` 记录的是**扣费归属日**（consume 时写入），退款
+    按该日退回，不按退款时刻的当天退。``refunded`` 为 0 表示扣费时落的归属行
+    （尚未退），1 表示已退；退款用「refunded=0 → 1」的原子认领（条件 UPDATE
+    看 rowcount）防并发双退。
+    老数据行（升级前在退款时写入的、实质是「已退」标记）在 _auto_migrate 里
+    以 DEFAULT TRUE 补列——语义与升级前完全一致（升级后重放旧 request_id
+    是空操作，不会再退一次）。
     """
     __tablename__ = 'ai_refund_log'
 
@@ -1024,8 +1032,9 @@ class AiRefundLog(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
-    day = Column(String(10), nullable=False)   # 本地日期 YYYY-MM-DD（与 AiUsage 同口径）
+    day = Column(String(10), nullable=False)   # 扣费归属日（Asia/Shanghai 日界，与 AiUsage 同口径）
     request_id = Column(String(64), nullable=False)  # assistant_ask 入口生成的 uuid4 hex
+    refunded = Column(Boolean, default=False, nullable=False)  # 0=扣费归属行未退，1=已退
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
 

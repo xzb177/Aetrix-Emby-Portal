@@ -79,7 +79,7 @@ def test_user_ask_response_has_no_model_field(monkeypatch):
 
     monkeypatch.setattr(ai, "available", lambda db: True)
     monkeypatch.setattr(ai, "daily_limit", lambda db: 20)
-    monkeypatch.setattr(ai, "safe_consume", lambda db, uid, limit: (True, 1, True))
+    monkeypatch.setattr(ai, "safe_consume", lambda db, uid, limit, request_id=None: (True, 1, True))
     monkeypatch.setattr(
         ai, "ask",
         lambda db, q, h=None: {"ok": True, "answer": "我是本站的 AI 客服助手",

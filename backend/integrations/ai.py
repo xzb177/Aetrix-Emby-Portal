@@ -266,7 +266,30 @@ def _insert_first(db: Session, user_id: int, day: str) -> bool:
         return False
 
 
-def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[bool, int, bool]:
+def _record_deduction(db: Session, user_id: int, day: str,
+                      request_id: Optional[str]) -> None:
+    """扣费归属日落账（跨午夜退款修复）：退款必须退回「原扣费那一天」，
+    所以扣费时把归属日随 request_id 落到 ai_refund_log（refunded=0）。
+    best-effort：写失败不许影响已经成功的扣费（退款缺归属行时会回退到
+    按退款当天退的老口径，不会多退）。"""
+    if not request_id:
+        return
+    try:
+        db.add(models.AiRefundLog(user_id=user_id, day=day,
+                                  request_id=request_id, refunded=False))
+        db.commit()
+    except IntegrityError:
+        # request_id 被复用（正常流程是 uuid4，几乎不可能）：沿用既有归属行
+        db.rollback()
+        logger.warning("AI 配额扣费归属行已存在 request_id=%s，沿用既有归属日",
+                       request_id)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.warning("AI 配额扣费归属行写入失败（退款将回退到按当天退）: %s", exc)
+
+
+def consume(db: Session, user_id: int, limit: Optional[int] = None,
+            request_id: Optional[str] = None) -> tuple[bool, int, bool]:
     """占用一次配额：返回 ``(是否允许, 今日已用, 本次是否真实扣减)``
 
     并发下不能「先读再写」（两个请求都读到 limit-1 就都会放行），所以：
@@ -297,9 +320,11 @@ def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[boo
         )
         db.commit()
         if updated:
+            _record_deduction(db, user_id, day, request_id)
             return True, used_today(db, user_id), True
         if not _insert_first(db, user_id, day):
             return False, used_today(db, user_id), False
+        _record_deduction(db, user_id, day, request_id)
         return True, 1, True
     # 不限次数也记账（便于统计），不影响放行
     updated = (
@@ -312,10 +337,12 @@ def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[boo
     db.commit()
     if not updated:
         _insert_first(db, user_id, day)
+    _record_deduction(db, user_id, day, request_id)
     return True, used_today(db, user_id), True
 
 
-def safe_consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[bool, int, bool]:
+def safe_consume(db: Session, user_id: int, limit: Optional[int] = None,
+                 request_id: Optional[str] = None) -> tuple[bool, int, bool]:
     """配额占用的「不带病拦人」包装
 
     计数写不进去（例如库被锁、只读副本）时**放行**并记一条警告：AI 助手的价值是答问题，
@@ -325,7 +352,7 @@ def safe_consume(db: Session, user_id: int, limit: Optional[int] = None) -> tupl
     对这类请求做回滚（没扣过，退了就是误减别人的计数）。
     """
     try:
-        return consume(db, user_id, limit)
+        return consume(db, user_id, limit, request_id)
     except SQLAlchemyError as exc:
         logger.warning("AI 配额计数失败，本次放行: %s", exc)
         try:
@@ -339,9 +366,18 @@ def safe_consume(db: Session, user_id: int, limit: Optional[int] = None) -> tupl
 def refund_quota(db: Session, user_id: int, request_id: str) -> bool:
     """上游调用失败时退回本次预扣的配额（r48 遗留 ①）
 
-    幂等：``request_id`` 在 ``ai_refund_log`` 有唯一约束，同一请求重复调只退一次；
-    第二次调用因唯一约束冲突直接返回 False（空操作）。退计数用条件递减
-    ``count > 0`` 兜底，脏数据/并发下不会减出负数。
+    跨午夜漂移修复：退款退回**扣费归属日**的账（consume 时随 request_id
+    落在 ai_refund_log.day），不按退款时刻的当天退——23:59 扣的配额，
+    次日退款也退回当天。
+
+    幂等（不回退 #1094 语义）：
+    - 同一 request_id 用「refunded=0 → 1」的原子认领（条件 UPDATE 看
+      rowcount）：抢到认领的才退一次，并发双退被行锁挡住，第二个认领到
+      0 行返回 False；
+    - 老数据行（升级前在退款时写入，迁移后 refunded=TRUE=已退标记）
+      重放是空操作。
+    - 归属行缺失（升级过渡期在途请求 / 调用方没传 request_id）：回退到
+      老口径（按退款当天记账本＋退当天），行为与升级前一致。
 
     返回 True=本次确实执行了一次回滚；False=已退过/无需退/回滚写失败。
     回滚写失败时只记警告不抛异常：配额是统计口径，不能因为退账把 502 变成 500。
@@ -349,22 +385,55 @@ def refund_quota(db: Session, user_id: int, request_id: str) -> bool:
     if not request_id:
         logger.warning("AI 配额回滚缺 request_id，跳过（无法保证幂等）")
         return False
-    day = _today()
     try:
-        db.add(models.AiRefundLog(user_id=user_id, day=day, request_id=request_id))
-        db.flush()  # 唯一约束冲突在这里抛 IntegrityError
-        db.query(models.AiUsage).filter(
-            models.AiUsage.user_id == user_id,
-            models.AiUsage.day == day,
-            models.AiUsage.count > 0,
-        ).update(
-            {models.AiUsage.count: models.AiUsage.count - 1,
-             models.AiUsage.updated_at: datetime.now()},
-            synchronize_session=False,
+        # ① 原子认领：只有归属行存在且未退过才能抢到
+        claimed = (
+            db.query(models.AiRefundLog)
+            .filter(models.AiRefundLog.request_id == request_id,
+                    models.AiRefundLog.refunded == False)  # noqa: E712 — SQLAlchemy 语义
+            .update({models.AiRefundLog.refunded: True},
+                    synchronize_session=False)
         )
-        db.commit()
+        if claimed:
+            row = (db.query(models.AiRefundLog.day)
+                     .filter(models.AiRefundLog.request_id == request_id)
+                     .first())
+            day = row[0] if row and row[0] else _today()
+            db.query(models.AiUsage).filter(
+                models.AiUsage.user_id == user_id,
+                models.AiUsage.day == day,
+                models.AiUsage.count > 0,
+            ).update(
+                {models.AiUsage.count: models.AiUsage.count - 1,
+                 models.AiUsage.updated_at: datetime.now()},
+                synchronize_session=False,
+            )
+            db.commit()
+        else:
+            db.rollback()
+            known = (db.query(models.AiRefundLog.id)
+                       .filter(models.AiRefundLog.request_id == request_id)
+                       .first())
+            if known is not None:
+                # 已退过（或老数据行）：空操作
+                return False
+            # ② 老口径兜底：归属行缺失，按退款当天记账本＋退当天
+            day = _today()
+            db.add(models.AiRefundLog(user_id=user_id, day=day,
+                                      request_id=request_id, refunded=True))
+            db.flush()  # 唯一约束冲突在这里抛 IntegrityError
+            db.query(models.AiUsage).filter(
+                models.AiUsage.user_id == user_id,
+                models.AiUsage.day == day,
+                models.AiUsage.count > 0,
+            ).update(
+                {models.AiUsage.count: models.AiUsage.count - 1,
+                 models.AiUsage.updated_at: datetime.now()},
+                synchronize_session=False,
+            )
+            db.commit()
     except IntegrityError:
-        # 同一 request_id 已退过：空操作
+        # 同一 request_id 并发走到老口径兜底：第二个是空操作
         db.rollback()
         return False
     except SQLAlchemyError as exc:

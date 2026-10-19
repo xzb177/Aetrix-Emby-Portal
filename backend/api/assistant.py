@@ -105,9 +105,12 @@ def assistant_ask(
     # r48 遗留 ① / r51：request_id 是回滚审计键（ai_refund_log.request_id
     # 唯一约束做"已退"标记）。每请求只走一次失败分支，天然只退一次；
     # 客户端重试是新请求（新 request_id），走"新扣+新退"口径，净效果正确。
+    # 跨午夜漂移修复：request_id 透传给 safe_consume，扣费归属日随它落账，
+    # 退款按归属日退回（见 ai_capability.refund_quota）。
     request_id = uuid.uuid4().hex
     limit = ai_capability.daily_limit(db)
-    allowed, used, deducted = ai_capability.safe_consume(db, current_user.id, limit)
+    allowed, used, deducted = ai_capability.safe_consume(
+        db, current_user.id, limit, request_id)
     if not allowed:
         _ai_ask_semaphore.release()
         raise HTTPException(
