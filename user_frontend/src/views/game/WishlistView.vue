@@ -21,7 +21,9 @@
           </div>
           <div class="well-note">
             <!-- R43：加载中不写"0 条"（列表还没回来，0 是假的），等数出来了再报数 -->
+            <!-- R102-5：双列表都失败时也不写"0 条"，说人话 -->
             <template v-if="myLoading || hotLoading">池里有几条心愿在漂流，正在数…</template>
+            <template v-else-if="myError && hotError">池子里的心愿暂时数不出来，看看下面的列表吧</template>
             <template v-else>池里已有 <b>{{ totalWishes }}</b> 条心愿在漂流</template>
           </div>
         </div>
@@ -74,7 +76,7 @@
             <button
               class="upvote"
               :class="{ done: w.voted }"
-              :disabled="w.voted || voting === w.id"
+              :disabled="w.voted || voting !== null"
               @click="upvote(w)"
             >
               <span class="lbl">{{ w.voted ? '✓ 已附议，坐等打捞' : voting === w.id ? '附议中' : '+1 附议' }}</span>
@@ -141,7 +143,7 @@
           <button type="button" class="picked-change" @click="clearPick">换一部</button>
         </div>
 
-        <div v-if="picked && picked.kind === 'series' && !picked.in_library && (seasons.length > 0 || loadingSeasons || seasonsError !== '')" class="sels-box">
+        <div v-if="picked && picked.kind === 'series' && !picked.in_library && (seasons.length > 0 || loadingSeasons || seasonsLoaded || seasonsError !== '')" class="sels-box">
           <div v-if="seasons.length > 0" class="sels-label">选季（可多选）</div>
           <div v-if="seasons.length > 0" class="sels-row">
             <button
@@ -274,6 +276,8 @@ const picked = ref<MediaSeekCandidate | null>(null)
 const seasons = ref<TvSeason[]>([])
 const loadingSeasons = ref<boolean>(false)
 const seasonsError = ref<string>('')
+/** R102-4：季列表是否已成功拉取过（成功但 0 季也要亮出"按全季投放"说明，不能静默消失） */
+const seasonsLoaded = ref<boolean>(false)
 const seasonAll = ref<boolean>(true)
 const chosenSeasons = ref<number[]>([])
 
@@ -379,9 +383,11 @@ async function loadSeasons(tmdbId: string): Promise<void> {
     const r = await mediaSeekApi.seasons(tmdbId)
     if (seq !== seasonsSeq) return
     seasons.value = r.seasons || []
+    seasonsLoaded.value = true
   } catch (e) {
     if (seq !== seasonsSeq) return
     seasons.value = []
+    seasonsLoaded.value = false
     seasonsError.value = humanizeError(e)
   } finally {
     if (seq === seasonsSeq) loadingSeasons.value = false
@@ -398,6 +404,7 @@ function retrySeasons(): void {
 function invalidateSeasons(): void {
   seasonsSeq++
   loadingSeasons.value = false
+  seasonsLoaded.value = false
   seasonsError.value = ''
 }
 
@@ -446,6 +453,7 @@ function closeModal() {
   picked.value = null
   seasons.value = []
   loadingSeasons.value = false
+  seasonsLoaded.value = false
   seasonAll.value = true
   chosenSeasons.value = []
   searchReady.value = true
@@ -818,7 +826,8 @@ onMounted(() => {
   align-items: flex-start;
   justify-content: center;
   background: rgba(42, 38, 32, 0.45);
-  padding: 24px 24px max(24px, env(safe-area-inset-bottom));
+  /* R102-2：四边安全区（与 AccountSettingsView 弹窗同口径），刘海屏顶部不再贴边 */
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
   overflow-y: auto;
 }
 .modal.show { display: flex; }
@@ -828,6 +837,8 @@ onMounted(() => {
   border-radius: 14px;
   padding: 22px 20px;
   width: 100%;
+  /* R102-1：桌面端限宽，与 .v4-page 的 min(430px,100vw) 列宽对齐（同类弹窗 OperatorView/AccountSettingsView 均有限宽，本页是离群） */
+  max-width: 430px;
   animation: up 0.25s;
 }
 @keyframes up { from { transform: translateY(24px); opacity: 0; } }
