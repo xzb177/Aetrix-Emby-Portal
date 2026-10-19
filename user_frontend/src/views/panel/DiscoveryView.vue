@@ -369,6 +369,7 @@ function onShelfPointerDown(e: PointerEvent) {
 
 let spyRaf = 0
 let resizeRaf = 0
+let parcelsRaf = 0
 /** resize 高频触发时用 rAF 合并滚动提示重算 */
 function onResize() {
   if (resizeRaf) return
@@ -401,6 +402,7 @@ onUnmounted(() => {
   teardownDomObserver()
   if (resizeRaf) cancelAnimationFrame(resizeRaf)
   if (spyRaf) { cancelAnimationFrame(spyRaf); spyRaf = 0 }
+  if (parcelsRaf) { cancelAnimationFrame(parcelsRaf); parcelsRaf = 0 }
 })
 
 /* ---------- 日志头 ---------- */
@@ -474,10 +476,14 @@ function bindParcelsScroll() {
     el.addEventListener('pointerdown', onShelfPointerDown)
   }
 }
-watch(parcelList, () => requestAnimationFrame(() => {
-  updateScrollHint()
-  bindParcelsScroll()
-}), { immediate: true, flush: 'post' })
+watch(parcelList, () => {
+  if (parcelsRaf) cancelAnimationFrame(parcelsRaf)
+  parcelsRaf = requestAnimationFrame(() => {
+    parcelsRaf = 0
+    updateScrollHint()
+    bindParcelsScroll()
+  })
+}, { immediate: true, flush: 'post' })
 /* 拆封中 id 集合：busy 与请求生命周期绑定（请求完成/失败才释放），替代旧的固定 600ms 释放 */
 const unsealingIds = ref(new Set<string>())
 async function onUnseal(id: string | number) {
