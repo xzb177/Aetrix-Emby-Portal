@@ -101,7 +101,6 @@ curl http://127.0.0.1:8000/api/health
 | `DATABASE_TYPE` | 否 | 默认 `postgresql`；测试场景可用 `sqlite` |
 | `REDIS_URL` | 否 | Redis 连接串，默认指向内置 `redis` 服务 |
 | `MEDIA_ROOT` | 否 | 宿主机影视目录，以只读方式挂载进容器 |
-| `STRM_MOUNT_DIR` | 否 | `.strm` 直链场景下 rclone / Drive 挂载点 |
 | `TMDB_API_KEY` | 否 | 启用 TMDB 刮削时填写 |
 | `AETRIX_PORT` | 否 | 宿主机对外端口，默认 `8000`（改端口改这个，不要改容器内的 `PORT`） |
 
@@ -109,7 +108,6 @@ curl http://127.0.0.1:8000/api/health
 
 ```bash
 MEDIA_ROOT=/srv/media
-STRM_MOUNT_DIR=/mnt/rclone
 ```
 
 `MEDIA_ROOT` 默认只读挂载，服务不会写入你的媒体目录。

@@ -662,9 +662,6 @@ def _auto_migrate():
         # 所以存量邀请码行为升级前后完全一致（见 backend/api/invitation.py）
         ("invitation_codes", [
             ("whitelist", "TEXT", "''"),
-            # v2.57.0 公益服模块1：邀请码注册赠送公益天数。老库补列后 welfare_days=30，
-            # 与模型 default=30 一致，存量邀请码注册行为与升级前一致。
-            ("welfare_days", "INTEGER", "30"),
         ]),
         # v2.6.15 通知历史记录真实投递结果：邮件/TG 发送失败必须留下原因，
         # 而不是像以前那样一律写成 status="sent"

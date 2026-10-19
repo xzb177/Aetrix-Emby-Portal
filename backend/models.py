@@ -1050,7 +1050,6 @@ class InvitationCode(Base):
     # 用完即无效——与卡码的 target_username 同一个思路（内测码 / 渠道码）。
     # 空 = 不限（与升级前行为一致）。
     whitelist = Column(Text, default="")
-    welfare_days = Column(Integer, default=30, nullable=False, server_default="30")
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")
@@ -1082,7 +1081,6 @@ class InvitationRecord(Base):
     invitee_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
     code_id = Column(Integer, ForeignKey('invitation_codes.id'), nullable=False)
     reward_points = Column(Integer, default=0)
-    reward_claimed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
 
     inviter = relationship("WebUser", foreign_keys=[inviter_id])

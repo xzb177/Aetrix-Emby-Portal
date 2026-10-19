@@ -102,7 +102,6 @@ Core environment variables below; the full list lives in `env.example`.
 | `DATABASE_TYPE` | No | Defaults to `postgresql`; `sqlite` for test scenarios |
 | `REDIS_URL` | No | Redis connection string, defaults to the built-in `redis` service |
 | `MEDIA_ROOT` | No | Host media directory, mounted into containers read-only |
-| `STRM_MOUNT_DIR` | No | rclone / Drive mount point for `.strm` direct-play scenarios |
 | `TMDB_API_KEY` | No | Set to enable TMDB scraping |
 | `AETRIX_PORT` | No | Host-facing port, default `8000` (change this to change ports, not the container-internal `PORT`) |
 
@@ -110,7 +109,6 @@ Example media directory mounts (host paths specified in `.env`):
 
 ```bash
 MEDIA_ROOT=/srv/media
-STRM_MOUNT_DIR=/mnt/rclone
 ```
 
 `MEDIA_ROOT` is mounted read-only by default — the services never write to your media directory.
