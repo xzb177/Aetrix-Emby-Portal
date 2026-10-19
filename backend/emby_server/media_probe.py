@@ -288,7 +288,7 @@ def mark_long_retry(db, item, reason: str, kind: str = "quota") -> None:
     - 不增加 ``probe_attempts``（不消耗普通重试次数）；
     - 永不判死——配额恢复 / 限流解除 / 挂载恢复后自动自愈（C-P1-1）。
     - ``kind`` 仅用于日志与 ``probe_last_error`` 标记：
-      "quota" / "timeout" / "ratelimit"（429）/ "server"（5xx）。
+      "quota" / "timeout" / "ratelimit"（429）/ "server"（5xx）/ "auth"（登录页）。
 
     防负优化：24h 一次的重试对 Drive 配额 / worker 槽位的影响可忽略；
     系统性挂载故障由 ``probe_worker.MountBreaker`` 熔断限流，不会打爆。
@@ -398,6 +398,11 @@ def probe_one(db, item) -> str:
 
     http_code = (probe or {}).get("_http_code")
     err = (probe or {}).get("_error")
+    # 登录页守卫（2026-10-19）：远端返回 HTML 说明端点没认授权——按认证类
+    # 临时故障处理，走 24h 长退避重试，永不判死、不消耗普通重试次数。
+    if err == "login_page":
+        mark_long_retry(db, item, "远端返回登录页（需要有效授权）", kind="auth")
+        return item.probe_status
     # 配额 403 永不判死：走 24h 长退避，配额恢复后自动自愈（C-P1-1）。
     # scanner.probe_metadata 把 403 统一标为 _error="quota"；即使 _error 缺失，
     # 403 本身也按配额处理（真权限问题的代价只是 24h 后多一次探测，可接受）。
