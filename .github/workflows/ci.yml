@@ -91,6 +91,10 @@ jobs:
       DATABASE_TYPE: sqlite
       DATABASE_URL: sqlite:///./ci-smoke.db
       REDIS_ENABLED: "false"
+      # mount_rclone.CONF_PATH 默认已统一为 /config/rclone/rclone.conf
+      #（与生产 compose 挂载形态一致）；CI runner 上 /config 不可写，这里用
+      # runner.temp 模拟生产挂载，避免冒烟真起服务步 PermissionError。
+      MOUNT_RCLONE_CONF: ${{ runner.temp }}/rclone.conf
     steps:
       - uses: actions/checkout@v7
 
