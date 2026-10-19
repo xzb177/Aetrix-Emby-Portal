@@ -19,7 +19,7 @@
           <div class="fuel-lbl"><span aria-hidden="true">⚡</span> 当前能量 · 燃料表</div>
           <div class="fuel-num"><small aria-hidden="true">⚡</small> {{ fmtNum(balance) }}</div>
           <!-- R27：非「全部」筛选时后端 total 不可信（是未筛选总数），数字去掉，不加后端接口 -->
-          <span v-if="todayIncome > 0" class="fuel-today">{{ !hasMore && filter === 'all' ? `今日 +${fmtNum(todayIncome)} ⚡` : '今日有进账 ⚡' }}</span>
+          <span v-if="todayIncome > 0" class="fuel-today">{{ !hasMore && filter === 'all' ? `今日 +${fmtNum(todayIncome)}` : '今日有进账' }} <span aria-hidden="true">⚡</span></span>
         </div>
       </section>
 
@@ -47,24 +47,33 @@
         </div>
         <div v-else-if="!filteredGroups.length" class="v4-empty">
           <template v-if="filter === 'all'">这一栏空空的 —— 去探索片库大陆，赚点能量回来吧 <span aria-hidden="true">🧭</span></template>
+          <!-- R106-1：筛选只过滤已加载的分页；还有没翻到的记录时空态要诚实，不能让人以为真没有 -->
+          <template v-else-if="hasMore">
+            已翻到的记录里还没有，要继续往下翻吗 <span aria-hidden="true">👀</span><br>
+            <button type="button" class="v4-retry" :disabled="loadingMore" @click="loadMore">{{ loadingMore ? '加载中…' : '继续翻' }}</button>
+          </template>
           <template v-else>当前筛选下没有记录，换个筛选看看 <span aria-hidden="true">👀</span></template>
         </div>
         <template v-else>
           <div v-for="g in filteredGroups" :key="g.key" class="day-group">
             <div class="v4-sec-title"><span aria-hidden="true">📅</span> {{ g.title }}</div>
             <div class="v4-sec-sub">{{ g.sub }}</div>
-            <div
-              v-for="l in g.rows"
-              :key="l.id"
-              class="row"
-              :class="rowTone(l)"
-            >
-              <div class="ic" aria-hidden="true">{{ gameMeta(l.type).icon }}</div>
-              <div class="mid">
-                <div class="t">{{ l.description || gameMeta(l.type).title }}</div>
-                <div class="d">{{ fmtTime(l.created_at) }}</div>
+            <!-- R106-6：流水行加 list 语义，读屏器可逐条朗读 -->
+            <div role="list" :aria-label="g.title">
+              <div
+                v-for="l in g.rows"
+                :key="l.id"
+                role="listitem"
+                class="row"
+                :class="rowTone(l)"
+              >
+                <div class="ic" aria-hidden="true">{{ gameMeta(l.type).icon }}</div>
+                <div class="mid">
+                  <div class="t">{{ l.description || gameMeta(l.type).title }}</div>
+                  <div class="d">{{ fmtTime(l.created_at) }}</div>
+                </div>
+                <div class="amt">{{ rowSign(l) }}{{ rowAmt(l) }} <span aria-hidden="true">⚡</span></div>
               </div>
-              <div class="amt">{{ rowSign(l) }}{{ fmtNum(Math.abs(l.amount)) }} ⚡</div>
             </div>
           </div>
 
@@ -76,7 +85,7 @@
             :disabled="loadingMore"
             @click="loadMore"
           >
-            {{ loadingMore ? '翻页中' : (filter === 'all' && Number.isFinite(total) ? `加载更多（还剩 ${total - logs.length} 笔）` : '加载更多') }}
+            {{ loadingMore ? '加载中…' : (filter === 'all' && Number.isFinite(total) ? `加载更多（还剩 ${total - logs.length} 笔）` : '加载更多') }}
           </button>
           <div v-else-if="logs.length" class="v4-sec-sub" style="text-align:center;margin-top:14px">
             —— 账本到这里就记满了 ——
@@ -150,6 +159,13 @@ const rowSign = (l: PointsLogEntry): string => {
   return t === 'in' ? '+' : t === 'out' ? '−' : ''
 }
 
+/** R106-4：金额缺失/非数值时显示"—"（Math.abs(null)=0 会误显示"0"，与 undefined 的"—"不一致） */
+const rowAmt = (l: PointsLogEntry): string => {
+  const n = Number(l.amount)
+  if (!Number.isFinite(n)) return '—'
+  return fmtNum(Math.abs(n))
+}
+
 const PAGE_SIZE = 30
 type FilterKey = 'all' | 'in' | 'out'
 const filters: { key: FilterKey; label: string }[] = [
@@ -182,7 +198,9 @@ function fmtTime(iso?: string | null) {
   const day = d.getDate()
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
-  return `${m}-${day} ${hh}:${mm}`
+  // R106-2：跨年流水加年份（当年视觉零变化；与 r105-1 信鸽页同口径）
+  const yPrefix = d.getFullYear() === new Date().getFullYear() ? '' : `${d.getFullYear()}-`
+  return `${yPrefix}${m}-${day} ${hh}:${mm}`
 }
 
 /** 本地日期键 YYYY-M-D */
