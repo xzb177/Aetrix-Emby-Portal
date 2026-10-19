@@ -34,7 +34,6 @@ services:
       RCLONE_SA_DIR: /sa-accounts
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      STRM_CONTAINER_PATH: ${STRM_CONTAINER_PATH:-/strm}
     expose:
     - '8000'
     healthcheck:
@@ -58,7 +57,6 @@ services:
     - ${MEDIA_ROOT:-./media}:/media:ro
     - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
     - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
-    - ${STRM_MOUNT_DIR:-/opt/strm}:${STRM_CONTAINER_PATH:-/strm}:rw
     - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
     - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
   aetrix-ea:
@@ -94,7 +92,6 @@ services:
       MOUNT_RCLONE_RC_URL: ${MOUNT_RCLONE_RC_URL:-http://rclone:5572}
       RCLONE_SA_DIR: /sa-accounts
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
-      STRM_CONTAINER_PATH: ${STRM_CONTAINER_PATH:-/strm}
       NODE_KEY: ea-01
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     expose:
@@ -118,7 +115,6 @@ services:
     - ${MEDIA_ROOT:-./media}:/media:ro
     - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
     - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
-    - ${STRM_MOUNT_DIR:-/opt/strm}:${STRM_CONTAINER_PATH:-/strm}:ro
     - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
     - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
   aetrix-worker:
@@ -158,7 +154,6 @@ services:
       RCLONE_SA_DIR: /sa-accounts
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      STRM_CONTAINER_PATH: ${STRM_CONTAINER_PATH:-/strm}
       SCAN_FORCE_REMOTE: 1
       SCAN_WORKERS: 16
     healthcheck:
@@ -181,7 +176,6 @@ services:
     - ${MEDIA_ROOT:-./media}:/media:ro
     - ${RCLONE_MOUNT_MP:-/mnt/mp}:/mnt/mp:ro
     - ${RCLONE_MOUNT_PAUL:-/mnt/paul}:/mnt/paul:ro
-    - ${STRM_MOUNT_DIR:-/opt/strm}:${STRM_CONTAINER_PATH:-/strm}:rw
     - ${RCLONE_CONFIG_DIR:-./rclone}:/config/rclone
     - ${RCLONE_SA_DIR:-/root/sa-accounts}:/sa-accounts
   postgres:
