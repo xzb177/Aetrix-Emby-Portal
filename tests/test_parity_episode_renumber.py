@@ -71,13 +71,24 @@ def _series(db, tmdb_id="239577", name="囚犯医生"):
     return it
 
 
-def _episodes(db, series, numbers, season=1):
-    for n in numbers:
+_SEC = 10_000_000  # 1e7 ticks = 1 秒
+
+
+def _episodes(db, series, numbers, season=1, dur_min=None, ref_min=None):
+    """dur_min/ref_min：整季统一的实测分钟数与参照分钟数；传 (per_ep_list) 可逐行。
+
+    dur_min 为 None 表示该行无实测（duration_ticks=0）；ref 同理。
+    """
+    for i, n in enumerate(numbers):
+        d = dur_min[i] if isinstance(dur_min, (list, tuple)) else dur_min
+        r = ref_min[i] if isinstance(ref_min, (list, tuple)) else ref_min
         db.add(em.MediaItem(
             guid=uuid.uuid4().hex, library_id=1, item_type="episode",
             name=f"第{n}集", file_path=f"/tmp/s{n}.mp4",
             series_id=series.id, season_number=season,
-            episode_number=n, enrich_status="pending"))
+            episode_number=n, enrich_status="pending",
+            duration_ticks=int(d * 60 * _SEC) if d else 0,
+            metadata_runtime_ticks=int(r * 60 * _SEC) if r else 0))
     db.commit()
 
 
@@ -264,3 +275,116 @@ def test_rollback_friendly_logging(db, monkeypatch, caplog):
     text = caplog.text
     assert "[parity-renumber]" in text
     assert "2→1" in text and "4→2" in text
+
+
+# ── 路径 B（甲案：TMDB 集数==2×可见行数＋时长证据） ──
+
+# 13. 路径 B 全长正片命中 → 归一（TMDB 8 集，4 行实测≈2×参照）
+def test_path_b_full_length_renumbered(db, monkeypatch, caplog):
+    import logging
+    s = _series(db)
+    _episodes(db, s, [2, 4, 6, 8], dur_min=60, ref_min=30)
+    monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(8))
+    first = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode").first()
+    with caplog.at_level(logging.INFO, logger="backend.emby_server.enrich_worker"):
+        assert ew._maybe_parity_renumber_season(db, first) is True
+    db.expire_all()
+    assert _nums(db, s.id) == [1, 2, 3, 4]
+    assert "path=B" in caplog.text
+
+
+# 14. 路径 B 半集文件（实测≈1×参照，单数集真缺）→ 不动
+def test_path_b_half_length_untouched(db, monkeypatch):
+    s = _series(db)
+    _episodes(db, s, [2, 4, 6, 8], dur_min=30, ref_min=30)
+    monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(8))
+    first = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode").first()
+    assert ew._maybe_parity_renumber_season(db, first) is False
+    db.expire_all()
+    assert _nums(db, s.id) == [2, 4, 6, 8]
+
+
+# 15. 路径 B 可比行不足（只有 2 行有实测，<3）→ 不动
+def test_path_b_insufficient_evidence_untouched(db, monkeypatch):
+    s = _series(db)
+    _episodes(db, s, [2, 4, 6, 8], dur_min=[60, 60, None, None], ref_min=30)
+    monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(8))
+    first = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode").first()
+    assert ew._maybe_parity_renumber_season(db, first) is False
+    db.expire_all()
+    assert _nums(db, s.id) == [2, 4, 6, 8]
+
+
+# 16. 路径 B 达标行不足 2/3（4 行可比，只有 2 行达标）→ 不动
+def test_path_b_low_hit_ratio_untouched(db, monkeypatch):
+    s = _series(db)
+    _episodes(db, s, [2, 4, 6, 8], dur_min=[60, 60, 30, 30], ref_min=30)
+    monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(8))
+    first = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode").first()
+    assert ew._maybe_parity_renumber_season(db, first) is False
+    db.expire_all()
+    assert _nums(db, s.id) == [2, 4, 6, 8]
+
+
+# 17. 路径 B TMDB 非 2 倍（TMDB 6 集，可见 4 行）→ 不动
+def test_path_b_tmdb_not_double_untouched(db, monkeypatch):
+    s = _series(db)
+    _episodes(db, s, [2, 4, 6, 8], dur_min=60, ref_min=30)
+    monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(6))
+    first = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode").first()
+    assert ew._maybe_parity_renumber_season(db, first) is False
+    db.expire_all()
+    assert _nums(db, s.id) == [2, 4, 6, 8]
+
+
+# 18. 路径 B 幂等：归一后再跑不再命中图案
+# （注：路径 B 时长判据要求可比行 ≥3，2 集季天然走不通 B，属口径内）
+def test_path_b_idempotent(db, monkeypatch):
+    s = _series(db)
+    _episodes(db, s, [2, 4, 6, 8], dur_min=60, ref_min=30)
+    monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(8))
+    first = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode").first()
+    assert ew._maybe_parity_renumber_season(db, first) is True
+    db.expire_all()
+    assert _nums(db, s.id) == [1, 2, 3, 4]
+    # 归一后集号为 1..N，不再命中偶数列图案（清掉 DONE 集模拟跨进程再判）
+    ew._PARITY_RENUMBER_DONE.clear()
+    first2 = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode").first()
+    assert ew._maybe_parity_renumber_season(db, first2) is False
+    assert _nums(db, s.id) == [1, 2, 3, 4]
+
+
+# ── 巡检兜底 ──
+
+# 19. 巡检候选预筛：命中图案的季被喂到、非图案/N<2 不喂
+def test_parity_patrol_candidates(db):
+    good = _series(db, name="全长剧")
+    _episodes(db, good, [2, 4, 6])
+    bad = _series(db, name="正常剧")
+    _episodes(db, bad, [1, 2, 3])
+    tiny = _series(db, name="单集")
+    _episodes(db, tiny, [2])
+    cands = ew._parity_patrol_candidates(db)
+    assert (good.id, 1) in cands
+    assert not any(sid == bad.id for sid, _ in cands)
+    assert not any(sid == tiny.id for sid, _ in cands)
+
+
+# 20. 巡检整链：候选季经 janitor 函数归一，非候选不动
+def test_parity_patrol_rescue_end_to_end(db, monkeypatch):
+    s = _series(db)
+    _episodes(db, s, [2, 4, 6, 8], dur_min=60, ref_min=30)
+    other = _series(db, name="正常剧")
+    _episodes(db, other, [1, 2, 3, 4], dur_min=60, ref_min=30)
+    monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(8))
+    assert ew.parity_patrol_rescue(db) == 1
+    db.expire_all()
+    assert _nums(db, s.id) == [1, 2, 3, 4]
+    assert _nums(db, other.id) == [1, 2, 3, 4]
