@@ -724,6 +724,33 @@ class PointsLog(Base):
     user = relationship("WebUser")
 
 
+class RebateReversalDebt(Base):
+    """返利撤回欠账：订单退款时邀请人余额不足、返利撤回失败，留下持久化欠账。
+
+    失败时只记录不自动追扣（追扣策略未定）；同一订单只许一条欠账（唯一约束＋
+    记账前先查，重复退款尝试不重复记账）。后来返利撤回成功时把 pending 标记
+    recovered；管理员可 waived 豁免。
+    """
+    __tablename__ = 'rebate_reversal_debts'
+
+    __table_args__ = (
+        UniqueConstraint('order_id', name='uq_rebate_debt_order'),
+        Index('idx_rebate_debt_status', 'status'),
+        Index('idx_rebate_debt_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    order_id = Column(String(64), nullable=False)  # 退款的那笔订单号
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)  # 欠钱的邀请人
+    amount = Column(Integer, nullable=False)  # 应撤回、没撤回来的返利积分
+    reason = Column(String(255))  # 撤回失败时的明细
+    status = Column(String(16), default='pending')  # pending / recovered / waived
+    created_at = Column(DateTime, default=datetime.now)
+    resolved_at = Column(DateTime, nullable=True)  # recovered/waived 的时间
+
+    user = relationship("WebUser")
+
+
 class VitalityLog(Base):
     """活力值变动流水（C1 竞品借鉴）：每日扣减/签到恢复/积分续活"""
     __tablename__ = 'vitality_logs'

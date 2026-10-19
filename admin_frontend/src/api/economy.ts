@@ -219,6 +219,21 @@ export const refundOrder = (
 export const fetchRefundRecords = (limit = 20) =>
   get<{ records: RefundRecord[] }>('/economy/refunds', { limit })
 
+export interface RebateDebt {
+  id: number
+  order_id: string
+  username: string
+  amount: number
+  status: 'pending' | 'recovered' | 'waived'
+  reason: string
+  created_at: string | null
+  resolved_at: string | null
+}
+
+/** 返利撤回欠账列表（只读）：退款时邀请人余额不足留下的持久化欠账 */
+export const fetchRebateDebts = (limit = 50) =>
+  get<{ records: RebateDebt[] }>('/economy/rebate-debts', { limit })
+
 // ==================== 优惠券（v2.10.0） ====================
 // 后端：backend/api/coupons_admin.py + backend/coupons.py
 // 额度是预订制的：下单占额度（reserved）、付款转已用（consumed）、关单/退款释放（released）。

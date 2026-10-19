@@ -40,9 +40,11 @@ import {
   closeOrder,
   refundOrder,
   fetchRefundRecords,
+  fetchRebateDebts,
   type EconomyStats,
   type OrderRow,
   type RefundRecord,
+  type RebateDebt,
 } from '@/api/economy'
 
 const loading = ref(false)
@@ -276,12 +278,18 @@ function statusType(status: string) {
 }
 
 const records = ref<RefundRecord[]>([])
+const rebateDebts = ref<RebateDebt[]>([])
 
 async function loadRecords() {
   try {
     records.value = (await fetchRefundRecords(8)).records
   } catch {
     // 记录区加载失败不该影响订单主表
+  }
+  try {
+    rebateDebts.value = (await fetchRebateDebts(20)).records
+  } catch {
+    // 欠账区加载失败不该影响订单主表
   }
 }
 
@@ -565,6 +573,27 @@ onMounted(() => {
           <span class="record-user">{{ r.username }}</span>
           <span class="record-reason">{{ r.reason || '（未填原因）' }}</span>
           <span class="record-time">{{ fmtTime(r.at) }}</span>
+        </li>
+      </ul>
+    </SectionCard>
+
+    <!-- 返利撤回欠账（只读）：退款时邀请人余额不足、返利没撤回来留下的欠账 -->
+    <SectionCard
+      v-if="rebateDebts.length"
+      title="返利撤回欠账"
+      :icon="Undo2"
+      meta="只记录、不自动追扣；追扣策略待定"
+      flush
+    >
+      <ul class="records">
+        <li v-for="d in rebateDebts" :key="d.id" class="record">
+          <span class="mono record-id">{{ d.order_id }}</span>
+          <span class="au-badge" :class="d.status === 'pending' ? 'au-badge-rose' : 'au-badge-muted'">
+            {{ d.status === 'pending' ? '欠着' : d.status === 'recovered' ? '已收回' : '已豁免' }}
+          </span>
+          <span class="record-user">{{ d.username }}</span>
+          <span class="record-reason">应撤 {{ d.amount }} 积分{{ d.reason ? `（${d.reason}）` : '' }}</span>
+          <span class="record-time">{{ fmtTime(d.created_at) }}</span>
         </li>
       </ul>
     </SectionCard>

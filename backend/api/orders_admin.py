@@ -403,6 +403,9 @@ def _reverse_rebate(db: Session, order_id: str, allow_negative: bool) -> tuple[i
     返回 (撤回金额, 是否欠账)：邀请人余额不足时主退款照做、返利欠着，
     调用方必须把欠账如实告诉前端——否则界面上的 rebate_reversed=0
     既可能是"本来就没返利"，也可能是"返利没撤回来"，无法区分。
+
+    撤回失败留下持久化欠账（RebateReversalDebt，同一订单只一条）；
+    后来撤回成功时把对应 pending 欠账标记 recovered。
     """
     entry = db.query(models.PointsLog).filter(
         models.PointsLog.ref_id == f"rebate:{order_id}",
@@ -414,15 +417,40 @@ def _reverse_rebate(db: Session, order_id: str, allow_negative: bool) -> tuple[i
     if inviter is None:
         return 0, False
     try:
-        return _reverse_points(
+        reversed_amount = _reverse_points(
             db, inviter, int(entry.amount),
             f"订单退款撤回返利（订单 {order_id}）", f"rebate-reversal:{order_id}",
             allow_negative,
-        ), False
+        )
+        _mark_rebate_debt_recovered(db, order_id)
+        return reversed_amount, False
     except HTTPException as exc:
         # 邀请人余额不够：不因为"退不了返利"就整单退不了款——主退款照做，返利欠着
         logger.warning("撤回返利失败（订单 %s）: %s", order_id, exc.detail)
+        _record_rebate_debt(db, order_id, inviter.id, int(entry.amount), exc.detail)
         return 0, True
+
+
+def _record_rebate_debt(db: Session, order_id: str, user_id: int,
+                        amount: int, reason: str) -> None:
+    """返利撤回失败时落一条 pending 欠账（幂等：同一订单只许一条）"""
+    existing = db.query(models.RebateReversalDebt).filter(
+        models.RebateReversalDebt.order_id == order_id).first()
+    if existing is not None:
+        return
+    db.add(models.RebateReversalDebt(
+        order_id=order_id, user_id=user_id, amount=int(amount),
+        reason=(reason or "")[:255], status="pending"))
+
+
+def _mark_rebate_debt_recovered(db: Session, order_id: str) -> None:
+    """返利撤回成功时把该订单的 pending 欠账标记 recovered"""
+    now = datetime.now()
+    db.query(models.RebateReversalDebt).filter(
+        models.RebateReversalDebt.order_id == order_id,
+        models.RebateReversalDebt.status == "pending",
+    ).update({"status": "recovered", "resolved_at": now},
+             synchronize_session=False)
 
 
 @admin_orders_router.get("/economy/refunds")
@@ -463,6 +491,61 @@ def list_recent_refunds(
     ]
     out.sort(key=lambda x: x["at"] or "", reverse=True)
     return {"records": out[:limit]}
+
+
+@admin_orders_router.get("/economy/rebate-debts")
+def list_rebate_debts(
+    status: str | None = None,
+    limit: int = 50,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """返利撤回欠账列表：退款时邀请人余额不足、返利没撤回来留下的持久化欠账"""
+    limit = max(1, min(int(limit or 50), 200))
+    q = db.query(models.RebateReversalDebt)
+    if status:
+        q = q.filter(models.RebateReversalDebt.status == status)
+    rows = q.order_by(models.RebateReversalDebt.id.desc()).limit(limit).all()
+    user_ids = {r.user_id for r in rows}
+    users = {u.id: u.username for u in db.query(models.WebUser).filter(
+        models.WebUser.id.in_(user_ids)).all()} if user_ids else {}
+    return {"records": [
+        {
+            "id": r.id,
+            "order_id": r.order_id,
+            "username": users.get(r.user_id, f"用户 {r.user_id}"),
+            "amount": r.amount,
+            "status": r.status,
+            "reason": r.reason or "",
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+        }
+        for r in rows
+    ]}
+
+
+@admin_orders_router.post("/economy/rebate-debts/{debt_id}/waive")
+def waive_rebate_debt(
+    debt_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """豁免一条返利撤回欠账（pending → waived）"""
+    now = datetime.now()
+    n = (
+        db.query(models.RebateReversalDebt)
+        .filter(models.RebateReversalDebt.id == debt_id,
+                models.RebateReversalDebt.status == "pending")
+        .update({"status": "waived", "resolved_at": now},
+                synchronize_session=False)
+    )
+    if not n:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="欠账不存在或已处理")
+    _audit(db, current_admin, "economy_waive_rebate_debt", "rebate_debt", debt_id,
+           {"status": "waived"})
+    db.commit()
+    return {"success": True, "debt_id": debt_id, "status": "waived"}
 
 
 __all__ = ["admin_orders_router"]
