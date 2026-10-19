@@ -228,6 +228,13 @@ EP_PATTERNS = [
 EP_PATTERNS_TV = [
     re.compile(r"\b[Ee][Pp]?\.?\s?(\d{1,4})(?!\d)"),
 ]
+# 合集区间：S06E27-E28 / S01E26 - E27（同一文件含多集）。
+# **必须在 EP_PATTERNS_TV 的独立 E 模式之前命中**：否则 "-E28" 的尾巴
+# 会被独立 E 模式先咬住（生产实证：海绵宝宝 S06E27-E28 被标成 S1E28）。
+# 命中后 episode 取区间起点，episode_end 记终点；下游按起点入库。
+EP_RANGE_RES = [
+    re.compile(r"[Ss](\d{1,2})\s?[\s._-]*[Ee](\d{1,4})\s*-\s*[Ee]?(\d{1,3})"),
+]
 # 仅剧集库：绝对集数（动漫常见 `Frieren - 28`）。
 # 要求分隔符 + 锚定末尾；年份段位 (1900-2099) 让位给年份解析；不与已匹配段重叠。
 _ABS_EP_RE = re.compile(r"[\s\-_.](\d{1,4})\s*$")
@@ -673,6 +680,7 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     is_tv = library_type == "tvshows"
 
     season = episode = None
+    episode_end = None
     matched_in_folder = False
     match_span: Optional[tuple[int, int]] = None
     abs_ep_span: Optional[tuple[int, int]] = None
@@ -685,10 +693,26 @@ def parse_media_filename(path: str, library_type: str) -> dict:
             return int(g)
         return cn_to_int(g)
 
-    # 1) 带集号：文件名优先，剧集库再退回目录名
+    # 1) 合集区间先行：S06E27-E28（见 EP_RANGE_RES 注释）
+    for pat in EP_RANGE_RES:
+        m = pat.search(stem)
+        if not m and is_tv:
+            m = pat.search(folder)
+            matched_in_folder = m is not None
+        if not m:
+            continue
+        season, episode = int(m.group(1)), int(m.group(2))
+        end = int(m.group(3))
+        episode_end = end if end > episode else None
+        match_span = (m.start(), m.end())
+        break
+
+    # 1b) 带集号：文件名优先，剧集库再退回目录名
     #    剧集库先试 EP_PATTERNS_TV（独立 E05 / 4 位 EP），再试通用模式
     ep_patterns = (EP_PATTERNS_TV if is_tv else []) + EP_PATTERNS
     for pat in ep_patterns:
+        if episode is not None:
+            break
         m = pat.search(stem)
         if not m and is_tv:
             m = pat.search(folder)
@@ -763,7 +787,8 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     if year:
         name_part = _strip_year(name_part, year)
 
-    return {"name": name_part or stem, "year": year, "season": season, "episode": episode}
+    return {"name": name_part or stem, "year": year, "season": season, "episode": episode,
+            "episode_end": episode_end}
 
 
 def _episode_display_name(name: str, season_no: Optional[int], ep_no: Optional[int]) -> str:
