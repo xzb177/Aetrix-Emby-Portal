@@ -75,8 +75,9 @@ def test_empty_role_is_treated_as_lowest_privilege():
 
 
 # ==================== R49 M2：凭据类路径后缀集中判定 ====================
-# 散落的 _require_super 收进 admin_roles 的 SUPER_ONLY_SUFFIXES：写仍只限超管，
-# GET 只返 remote 名不返明文，按「读人人可看」口径放行（用户已批准此放宽）。
+# 散落的 _require_super 收进 admin_roles 的 SUPER_ONLY_SUFFIXES：读写一律只限超管。
+# 口径补正（2026-10-19）：原 PR 文把 GET 读放宽成「人人可看」，冒烟测试确诊是回归
+# （旧 _require_super 拦读写、冒烟断言「读写都被拒」），恢复成读也要拦。
 
 _RCLONE = "/api/admin/servers/5/rclone-conf"
 
@@ -100,10 +101,15 @@ def test_rclone_conf_write_is_super_only():
     assert blocked_reason(_req(_RCLONE, "POST"), _admin(ROLE_SUPER)) is None
 
 
-def test_rclone_conf_read_is_open_to_all_roles():
-    """GET rclone-conf 放宽：三角色可读（只返 remote 名，不返明文）"""
-    for role in (ROLE_SUPER, ROLE_OPERATOR, ROLE_VIEWER):
-        assert blocked_reason(_req(_RCLONE, "GET"), _admin(role)) is None, f"{role} 读 {_RCLONE}"
+def test_rclone_conf_read_is_super_only():
+    """GET rclone-conf 也只限超管：operator/viewer 的读一律 403
+    （2026-10-19 补正：rclone.conf 含网盘凭据，恢复旧 _require_super 的读写都拦口径；
+    冒烟测试 scripts/smoke_test_servers.py 的「读写都被拒」是长约，之前放宽读是回归）"""
+    for role in (ROLE_OPERATOR, ROLE_VIEWER):
+        reason = blocked_reason(_req(_RCLONE, "GET"), _admin(role))
+        assert reason, f"{role} GET {_RCLONE} 应被拦"
+        assert "超级管理员" in reason
+    assert blocked_reason(_req(_RCLONE, "GET"), _admin(ROLE_SUPER)) is None
 
 
 @pytest.mark.parametrize("method,path", _SERVER_WRITE_ROUTES)
