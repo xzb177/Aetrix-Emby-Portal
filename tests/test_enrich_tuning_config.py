@@ -8,6 +8,10 @@
 - 管理后台保存后立即清缓存。
 纯搬迁：未设置时行为与今天逐字节一致。
 
+Batch 2（2026-10-19 开关清理）：enrich_workers / enrich_batch / db_pool_size
+改回 env-only 单源——面板不再可写，代码只读环境变量（缺省=生产现值 8/200/25），
+SystemConfig 旧行被忽略。本文件的相关用例已按新口径改写。
+
 - 全部在隔离临时 SQLite 里跑，不连生产库；
 - 不测真实 TMDB 网络。
 """
@@ -86,7 +90,7 @@ def test_defaults_match_today(db):
     cfg = enrich_worker.get_enrich_tuning_config(db)
     v = cfg["values"]
     assert v[enrich_worker.CFG_ENRICH_WORKERS] == 8
-    assert v[enrich_worker.CFG_ENRICH_BATCH] == 100
+    assert v[enrich_worker.CFG_ENRICH_BATCH] == 200  # Batch 2：默认 200 = 生产现值
     assert v[enrich_worker.CFG_ENRICH_TMDB_BATCH] is True
     assert v[enrich_worker.CFG_ENRICH_MAX_ATTEMPTS] == 5
     assert v[enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == 60
@@ -101,7 +105,7 @@ def test_defaults_match_today(db):
 def test_module_constants_unchanged():
     """import 期常量保持今天的 env-only 快照口径（未设置 env 时 = 默认值）"""
     assert enrich_worker.ENRICH_WORKERS == 8
-    assert enrich_worker.ENRICH_BATCH == 100
+    assert enrich_worker.ENRICH_BATCH == 200  # Batch 2：默认 200 = 生产现值
     assert enrich_worker.ENRICH_TMDB_BATCH is True
     assert enrich_worker.ENRICH_MAX_ATTEMPTS == 5
     assert enrich_worker.ENRICH_RETRY_BASE_SEC == 60
@@ -125,11 +129,11 @@ def test_env_takes_over(db):
 
 def test_env_beats_system_config(db):
     """env 设置后，后台改了也不生效（from_env=True）"""
-    os.environ[enrich_worker.ENRICH_BATCH_ENV] = "50"
-    enrich_worker.save_enrich_tuning_config(db, {enrich_worker.CFG_ENRICH_BATCH: "250"})
+    os.environ[enrich_worker.ENRICH_MAX_ATTEMPTS_ENV] = "7"
+    enrich_worker.save_enrich_tuning_config(db, {enrich_worker.CFG_ENRICH_MAX_ATTEMPTS: "9"})
     cfg = enrich_worker.get_enrich_tuning_config(db)
-    assert cfg["values"][enrich_worker.CFG_ENRICH_BATCH] == 50
-    assert cfg["from_env"][enrich_worker.CFG_ENRICH_BATCH] is True
+    assert cfg["values"][enrich_worker.CFG_ENRICH_MAX_ATTEMPTS] == 7
+    assert cfg["from_env"][enrich_worker.CFG_ENRICH_MAX_ATTEMPTS] is True
 
 
 def test_env_tmdb_batch_flag_semantics(db):
@@ -165,21 +169,22 @@ def test_resolve_workers_env(db):
     assert enrich_worker._resolve_enrich_workers(db) == 16
 
 
-def test_resolve_workers_from_system_config(db):
+def test_resolve_workers_panel_write_ignored(db):
+    """Batch 2：enrich_workers 面板写入被忽略（env-only），未设 env 时恒默认 8"""
     enrich_worker.save_enrich_tuning_config(db, {enrich_worker.CFG_ENRICH_WORKERS: "6"})
-    assert enrich_worker._resolve_enrich_workers(db) == 6
+    assert enrich_worker._resolve_enrich_workers(db) == 8
 
 
 # ---------- 保存 / 读取 / 缓存 ----------
 
 def test_save_load_roundtrip(db):
     out = enrich_worker.save_enrich_tuning_config(db, {
-        enrich_worker.CFG_ENRICH_BATCH: "250",
+        enrich_worker.CFG_ENRICH_RETRY_BASE_SEC: "120",
         enrich_worker.CFG_ENRICH_TMDB_BATCH: False,
         enrich_worker.CFG_ENRICH_EPISODE_DAY_QUOTA: "1500",
     })
-    assert out["values"][enrich_worker.CFG_ENRICH_BATCH] == 250
-    assert out["raw"][enrich_worker.CFG_ENRICH_BATCH] == "250"
+    assert out["values"][enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == 120
+    assert out["raw"][enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == "120"
     assert out["values"][enrich_worker.CFG_ENRICH_TMDB_BATCH] is False
     assert out["raw"][enrich_worker.CFG_ENRICH_TMDB_BATCH] == "0"
     assert out["values"][enrich_worker.CFG_ENRICH_EPISODE_DAY_QUOTA] == 1500
@@ -190,10 +195,10 @@ def test_save_load_roundtrip(db):
 def test_save_clears_cache(db):
     """保存后立即清缓存：下一次读取即用新值，不用等 60 秒 TTL"""
     before = enrich_worker.get_enrich_tuning_config(db)
-    assert before["values"][enrich_worker.CFG_ENRICH_BATCH] == 100
-    enrich_worker.save_enrich_tuning_config(db, {enrich_worker.CFG_ENRICH_BATCH: "250"})
+    assert before["values"][enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == 60
+    enrich_worker.save_enrich_tuning_config(db, {enrich_worker.CFG_ENRICH_RETRY_BASE_SEC: "120"})
     after = enrich_worker.get_enrich_tuning_config(db)
-    assert after["values"][enrich_worker.CFG_ENRICH_BATCH] == 250
+    assert after["values"][enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == 120
 
 
 def test_save_ignores_unknown_keys(db):
@@ -201,11 +206,27 @@ def test_save_ignores_unknown_keys(db):
     assert "not_a_real_key" not in out["values"]
 
 
+def test_env_only_keys_panel_write_ignored(db):
+    """Batch 2：enrich_workers / enrich_batch 面板写入一律忽略，只走 env；DB 不落行"""
+    out = enrich_worker.save_enrich_tuning_config(db, {
+        enrich_worker.CFG_ENRICH_WORKERS: "6",
+        enrich_worker.CFG_ENRICH_BATCH: "250",
+    })
+    assert out["values"][enrich_worker.CFG_ENRICH_WORKERS] == 8
+    assert out["values"][enrich_worker.CFG_ENRICH_BATCH] == 200
+    assert out["env_only"] == [enrich_worker.CFG_ENRICH_WORKERS, enrich_worker.CFG_ENRICH_BATCH]
+    from backend import models as _models
+    rows = db.query(_models.SystemConfig).filter(
+        _models.SystemConfig.key.in_(
+            [enrich_worker.CFG_ENRICH_WORKERS, enrich_worker.CFG_ENRICH_BATCH])).all()
+    assert rows == []
+
+
 def test_save_normalizes_illegal_value(db):
     """非法值回退默认，保证库里永远是干净值"""
-    out = enrich_worker.save_enrich_tuning_config(db, {enrich_worker.CFG_ENRICH_BATCH: "abc"})
-    assert out["values"][enrich_worker.CFG_ENRICH_BATCH] == 100
-    assert out["raw"][enrich_worker.CFG_ENRICH_BATCH] == "100"
+    out = enrich_worker.save_enrich_tuning_config(db, {enrich_worker.CFG_ENRICH_RETRY_BASE_SEC: "abc"})
+    assert out["values"][enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == 60
+    assert out["raw"][enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == "60"
 
 
 def test_placeholder_keys_have_no_env(db):
@@ -223,36 +244,21 @@ def test_db_pool_env_priority(monkeypatch):
     assert _dbmod._resolve_db_pool_size() == 25
 
 
-def test_db_pool_bootstrap_reads_system_config(monkeypatch, tmp_path):
-    """未设 env 时：engine 创建前用 bootstrap 连接读 system_configs"""
+def test_db_pool_env_only_default_25(monkeypatch):
+    """Batch 2：DB_POOL_SIZE 只读环境变量；未设 env 时=25（生产现值），DB 旧行被忽略"""
     monkeypatch.delenv("DB_POOL_SIZE", raising=False)
-    p = tmp_path / "pooltest.db"
-    eng = _ce(f"sqlite:///{p}")
-    from sqlalchemy import text as _text
-    with eng.begin() as conn:
-        conn.execute(_text("CREATE TABLE system_configs (key VARCHAR(50), value TEXT)"))
-        conn.execute(_text("INSERT INTO system_configs (key, value) VALUES ('db_pool_size', '20')"))
-    eng.dispose()
-    monkeypatch.setattr(_dbmod, "DATABASE_URL", f"sqlite:///{p}")
-    assert _dbmod._resolve_db_pool_size() == 20
+    assert _dbmod._resolve_db_pool_size() == 25
 
 
-def test_db_pool_bootstrap_falls_back_when_table_missing(monkeypatch, tmp_path):
-    """表不存在（如迁移前）→ 回退默认 10，永不抛异常"""
-    monkeypatch.delenv("DB_POOL_SIZE", raising=False)
-    p = tmp_path / "empty.db"
-    from sqlalchemy import text as _text
-    eng = _ce(f"sqlite:///{p}")
-    with eng.begin() as conn:
-        conn.execute(_text("SELECT 1"))
-    eng.dispose()
-    monkeypatch.setattr(_dbmod, "DATABASE_URL", f"sqlite:///{p}")
-    assert _dbmod._resolve_db_pool_size() == 10
+def test_db_pool_env_only_invalid_falls_back(monkeypatch):
+    """非法值回落 25"""
+    monkeypatch.setenv("DB_POOL_SIZE", "abc")
+    assert _dbmod._resolve_db_pool_size() == 25
 
 
 def test_db_pool_config_shape():
     cfg = _dbmod.db_pool_config()
     assert cfg["pool_size"] >= 1
-    assert cfg["default"] == 10
+    assert cfg["default"] == 25
     assert cfg["restart_required"] is True
     assert cfg["env_name"] == "DB_POOL_SIZE"

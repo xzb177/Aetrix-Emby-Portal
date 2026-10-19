@@ -54,7 +54,9 @@ logger = logging.getLogger(__name__)
 # 模式，不按 CPU 截断——未配置默认 8，ENRICH_WORKERS=8 即 8 线程。
 # 后台不抢主链路由 max_cap(16) + TMDB 令牌桶/图片信号量/DB 池独立限流保证。
 ENRICH_WORKERS = _cpu_workers("ENRICH_WORKERS", io_bound=True)
-ENRICH_BATCH = env_int("ENRICH_BATCH", 100, 10)
+# Batch 2（2026-10-19 开关清理）：批次回到 env-only（面板不再可写），
+# 默认 200 = 生产现值（system_configs 旧行被忽略）。
+ENRICH_BATCH = env_int("ENRICH_BATCH", 200, 10)
 # TMDB 批量开关：1=抢单后批量调 batch_search/batch_details，0=逐条原逻辑
 ENRICH_TMDB_BATCH = os.getenv("ENRICH_TMDB_BATCH", "1") == "1"
 ENRICH_IDLE_POLL_SEC = env_int("ENRICH_IDLE_POLL_SEC", 30, 5)
@@ -601,15 +603,18 @@ def save_episode_field_config(db, title: bool, overview: bool, still: bool) -> d
     return get_episode_field_config(db)
 
 # ---------------------------------------------------------------------------
-# 刮削性能参数（链路规划 Step 1：配置面收口）
+# 刮削性能参数（链路规划 Step 1：配置面收口；2026-10-19 Batch 2 开关清理回退）
 #
-# 原来 env-only 的关键旋钮搬进 SystemConfig + 后台 UI；env 保留为部署覆盖。
-# 口径照抄 _episode_night_config：
+# Step 1 曾把 env-only 旋钮搬进 SystemConfig + 后台 UI；Batch 2 按用户原则
+# （功能默认开、想关去文件配置）把其中三个改回 env-only 单源：
+#   enrich_workers / enrich_batch / db_pool_size（后者在 database.py）
+#   —— 代码只读环境变量（缺省=生产现值：8/200/25），面板不再可写，
+#      SystemConfig 里即便有旧行也会被忽略。
+# 其余参数仍走既有口径：
 #   - 任一环境变量被设置（含显式 "0"）即 env 接管，后台改了也不生效，
 #     from_env=True 让管理后台显示提示；
 #   - 未设置 env 时读 SystemConfig（backend.integrations.store），
 #     60 秒 TTL 缓存热生效；管理后台保存后立即清缓存，下一次抢单即用新值。
-# 纯搬迁：未设置时行为与今天逐字节一致（各默认值见 _ENRICH_TUNING_SPECS）。
 # ---------------------------------------------------------------------------
 ENRICH_WORKERS_ENV = "ENRICH_WORKERS"
 ENRICH_BATCH_ENV = "ENRICH_BATCH"
@@ -620,6 +625,9 @@ ENRICH_CLAIM_LEASE_SEC_ENV = "ENRICH_CLAIM_LEASE_SEC"
 
 CFG_ENRICH_WORKERS = "enrich_workers"
 CFG_ENRICH_BATCH = "enrich_batch"
+# Batch 2（2026-10-19 开关清理）：回到 env-only 的键——面板写入路径已摘，
+# 代码只读环境变量（缺省=生产现值：workers 8 / batch 200），DB 旧行忽略。
+_ENRICH_TUNING_ENV_ONLY_KEYS = frozenset({CFG_ENRICH_WORKERS, CFG_ENRICH_BATCH})
 CFG_ENRICH_TMDB_BATCH = "enrich_tmdb_batch"
 CFG_ENRICH_MAX_ATTEMPTS = "enrich_max_attempts"
 CFG_ENRICH_RETRY_BASE_SEC = "enrich_retry_base_sec"
@@ -645,9 +653,9 @@ CFG_ENRICH_FIELD_COMPLETENESS = "enrich_field_completeness"
 #       int=整数下限钳制；flag1=是否为 "1"（口径照抄现状）。
 _ENRICH_TUNING_SPECS = [
     (CFG_ENRICH_WORKERS, ENRICH_WORKERS_ENV, "8", "workers", None,
-     "补全 worker 线程数（IO 密集型，未配置默认 8，上限 16；改完需重启 worker）", True),
-    (CFG_ENRICH_BATCH, ENRICH_BATCH_ENV, "100", "int", 10,
-     "每批认领条数（下限 10）", False),
+     "补全 worker 线程数（环境变量专供，默认 8，上限 16；改完需重启 worker；面板只读）", True),
+    (CFG_ENRICH_BATCH, ENRICH_BATCH_ENV, "200", "int", 10,
+     "每批认领条数（环境变量专供，默认 200，下限 10；面板只读）", False),
     (CFG_ENRICH_TMDB_BATCH, ENRICH_TMDB_BATCH_ENV, "1", "flag1", None,
      "TMDB 批量开关：1=批量调 batch_search/batch_details，0=逐条原逻辑", False),
     (CFG_ENRICH_MAX_ATTEMPTS, ENRICH_MAX_ATTEMPTS_ENV, "5", "int", 1,
@@ -743,6 +751,12 @@ def _enrich_tuning_config(db=None) -> dict:
         env_raw = (os.getenv(env_name) or "").strip() if env_name else ""
         taken = bool(env_raw)
         from_env[key] = taken
+        if key in _ENRICH_TUNING_ENV_ONLY_KEYS:
+            # env-only：面板写入已摘，DB 旧行直接忽略；未设 env 时用缺省（=生产现值）
+            s = env_raw if taken else default
+            raw[key] = s
+            values[key] = _parse_tuning_value(kind, minimum, s, default)
+            continue
         if taken:
             # flag1 保持原口径不对 env 做 strip（现状就是 == "1" 精确比较）
             s = os.getenv(env_name) if kind == "flag1" else env_raw
@@ -771,8 +785,9 @@ def enrich_tuning_value(key: str, db=None):
 
 
 def _resolve_enrich_workers(db=None) -> int:
-    """线程数：进程启动（start()）时解析，env → SystemConfig → 默认 8。
+    """线程数：进程启动（start()）时解析，env → 默认 8。
 
+    Batch 2（2026-10-19）：env-only，面板不再可写（DB 旧行忽略）。
     运行时动态增减线程不做（不安全），改这里要重启 worker 进程。
     """
     return int(_enrich_tuning_config(db)["values"][CFG_ENRICH_WORKERS])
@@ -785,6 +800,9 @@ def get_enrich_tuning_config(db) -> dict:
         "values": cfg["values"],
         "raw": cfg["raw"],
         "from_env": cfg["from_env"],
+        # Batch 2：env-only 键（面板只读、只写环境变量）
+        "env_only": [spec[0] for spec in _ENRICH_TUNING_SPECS
+                     if spec[0] in _ENRICH_TUNING_ENV_ONLY_KEYS],
         "restart_required": cfg["restart_required"],
         "order": [spec[0] for spec in _ENRICH_TUNING_SPECS],
         "defaults": {spec[0]: spec[2] for spec in _ENRICH_TUNING_SPECS},
@@ -794,9 +812,10 @@ def get_enrich_tuning_config(db) -> dict:
 
 
 def save_enrich_tuning_config(db, values: dict) -> dict:
-    """管理后台用：保存刮削性能参数（写 SystemConfig；除线程数外 60 秒内热生效）。
+    """管理后台用：保存刮削性能参数（写 SystemConfig；60 秒内热生效）。
 
-    values 未知的 key 会被忽略；非法值回退该项默认值，保证库里永远是干净值。
+    values 未知的 key 会被忽略；env-only 键（enrich_workers/enrich_batch）
+    面板不再可写，直接忽略；非法值回退该项默认值，保证库里永远是干净值。
     """
     from backend.integrations import store
     payload, descriptions = {}, {}
@@ -804,6 +823,10 @@ def save_enrich_tuning_config(db, values: dict) -> dict:
         spec = _ENRICH_TUNING_BY_KEY.get(key)
         if spec is None:
             logger.warning("刮削性能参数忽略未知 key: %s", key)
+            continue
+        if key in _ENRICH_TUNING_ENV_ONLY_KEYS:
+            # Batch 2：env-only 键只走环境变量，面板写入一律忽略（不写库、不报错）
+            logger.info("刮削性能参数忽略 env-only key（面板不可写）: %s", key)
             continue
         _k, _env, default, kind, minimum, desc, _restart = spec
         s = str(val).strip() if val is not None else ""

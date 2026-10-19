@@ -1312,12 +1312,14 @@ export const saveEnrichEpisodeFields = (title: boolean, overview: boolean, still
     still,
   })
 
-/** 刮削性能参数：env 旋钮搬进 SystemConfig + 后台 UI */
+/** 刮削性能参数：env 旋钮 + 后台 UI（Batch 2：线程数/批次/DB 池回到 env-only，面板只读） */
 export interface EnrichTuningConfig {
   success: boolean
   values: Record<string, number | boolean>
   raw: Record<string, string>
   from_env: Record<string, boolean>
+  /** Batch 2：env-only 键（面板只读，只写环境变量） */
+  env_only?: string[]
   restart_required: string[]
   order: string[]
   defaults: Record<string, string>
@@ -1342,8 +1344,6 @@ export interface EnrichTuningConfig {
     default: number
     database_type: string
     restart_required: boolean
-    saved_pool_size: string
-    pending_restart: boolean
   }
 }
 
@@ -1351,11 +1351,8 @@ export interface EnrichTuningConfig {
 export const fetchEnrichTuning = () =>
   get<EnrichTuningConfig>(`${E}/scrape/enrich-tuning`)
 
-export const saveEnrichTuning = (values: Record<string, string | number | boolean>, db_pool_size?: string) =>
-  put<EnrichTuningConfig>(`${E}/scrape/enrich-tuning`, {
-    values,
-    db_pool_size: db_pool_size ?? null,
-  })
+export const saveEnrichTuning = (values: Record<string, string | number | boolean>) =>
+  put<EnrichTuningConfig>(`${E}/scrape/enrich-tuning`, { values })
 
 /** 搜不到的条目存量只读计数：done+none+无 tmdb_id 按类型分组 + 下一轮可捞回数 */
 export interface EnrichNoneStats {
