@@ -29,8 +29,8 @@ services:
       EMBY_API_PORT: 8001
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       DATABASE_TYPE: ${DATABASE_TYPE:-postgresql}
+      # WS1: db_pool_size 改由管理面板接管（system_configs），此处不再设 env
       DATABASE_URL: ${DATABASE_URL:-postgresql://aetrix:${POSTGRES_PASSWORD:-aetrix_dev_only_change_me}@postgres:5432/aetrix}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-25}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-25}
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}

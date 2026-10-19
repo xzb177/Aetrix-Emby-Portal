@@ -1502,6 +1502,31 @@ def _clear_tmdb_fields(item: em.MediaItem) -> None:
             setattr(item, field, None)
 
 
+def _tmdb_text_needs_fill(item: em.MediaItem) -> bool:
+    """绑定 TMDB「仅补缺失」的文字门：apply_details 能补的字段里任一缺失即 True。
+
+    与 tmdb.apply_details 的 fill-only 语义对齐——它只填空不覆盖，
+    所以门条件放宽不会带来覆盖风险；imdb_id 虽恒写但同 tid 幂等。
+    """
+    if not getattr(item, "imdb_id", None):
+        return True
+    if not (getattr(item, "aliases", None) or "").strip():
+        return True
+    if not (getattr(item, "overview", None) or "").strip():
+        return True
+    if getattr(item, "community_rating", None) is None:
+        return True
+    if not (getattr(item, "genres", None) or "").strip():
+        return True
+    if not getattr(item, "production_year", None):
+        return True
+    if not getattr(item, "premiere_date", None):
+        return True
+    if not (getattr(item, "metadata_runtime_ticks", 0) or 0):
+        return True
+    return False
+
+
 def _resolve_external_id(tid: str, kind: str) -> tuple[str, str | None]:
     """IMDb ID（tt 开头）→ TMDB ID；纯数字的 TMDB ID 原样返回。
 
@@ -1659,7 +1684,9 @@ def bind_tmdb_id(
     item.tmdb_id = tid
     item.last_scraped_at = datetime.now()
     item.metadata_source = "tmdb"
-    if tmdb_client.configured and (req.verify or mode == "all"):
+    # WS1/B3：missing 模式也要拉详情 —— 否则「仅补缺失」分支根本不可达，
+    # 绑定后条目被锁定，简介等字段永久缺失。details 只调一次，复用同一份 payload。
+    if tmdb_client.configured:
         try:
             if data is None:
                 data = tmdb_client.details(tid, kind)
@@ -1676,10 +1703,12 @@ def bind_tmdb_id(
                 if tmdb_client.apply_images(item, data):
                     notes.append("全量刷新：海报/背景图已按 TMDB 重写")
             else:
-                # 仅补缺失（不覆盖 NFO 已提供的文字 / 已有图片）
-                if not (item.imdb_id and item.aliases):
+                # 仅补缺失（不覆盖 NFO 已提供的文字 / 已有图片）：
+                # 门条件 = apply_details 能补的文字字段里任一缺失即调
+                #（fill-only 保证不覆盖已有值，imdb_id 同 tid 幂等）。
+                if _tmdb_text_needs_fill(item):
                     tmdb_client.apply_details(item, data)
-                    notes.append("补齐 IMDb/别名")
+                    notes.append("补齐缺失的 TMDB 文字字段（IMDb/别名/简介/评分/类型/年份等）")
                 if not (item.poster_path or item.primary_image_url):
                     if tmdb_client.apply_images(item, data):
                         notes.append("补齐海报")

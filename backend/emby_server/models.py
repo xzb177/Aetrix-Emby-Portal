@@ -274,6 +274,12 @@ class MediaItem(Base):
     # 都不会重复认领），再用本批次的 token 把赢到的行查回来。
     # 老库补列后为 NULL；janitor/完成/失败释放租约时一并清空。
     enrich_claim_token = Column(String(32), default=None)
+    # WS1/T1：最近一次补全失败的原因（成功即清零；资料不全超限写固定文案）。
+    # 老库补列后为 NULL：历史 failed 行没有错误原文。
+    enrich_last_error = Column(String(255))
+    # WS1/T1：failed 自动回捞已执行的轮数。达上限（enrich_failed_max_reschedules）
+    # 的行永久保留 failed，不再被 janitor 自动捞回。老库补列后为 0。
+    enrich_failed_reschedules = Column(Integer, default=0)
     # v2.42.9 处方 4 调度优先级：越大越先补全（0 = 默认，沿用旧口径）。
     # repair（用户主动修复）置 100；「重试未匹配项」置 50。只影响同库内的排序，
     # 跨库公平由按库轮转保证（见 enrich_worker._claim_batch）。
