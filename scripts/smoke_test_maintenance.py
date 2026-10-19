@@ -270,7 +270,10 @@ check(set(tick) == {"sessions_reaped", "sessions_pruned", "transcodes_reaped",
                     # 「干净时什么都不做」的全零断言：SQLite 上跑了就是 True，非 SQLite 是 False。
                     "query_plans_optimized",
                     # perf/server-resource：空闲 GC 是否执行（布尔标记，非计数，同样不参与全零断言）
-                    "idle_gc_done"},
+                    "idle_gc_done",
+                    # WS4a（r48 遗留⑬）：janitor 自动续订计数（干净时全 0，参与全零断言）
+                    "auto_renew_renewed", "auto_renew_failed",
+                    "auto_renew_skipped", "auto_renew_errors"},
       # 注 2026-10-17：strm_sig_refresh 已随 strm_gen/strm_sign 删除
       "维护周期返回可观测的计数", f"{tick}")
 second = maint.janitor_tick()

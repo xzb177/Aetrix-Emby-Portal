@@ -5,7 +5,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -1036,6 +1036,51 @@ def cancel_my_subscription(
     sub.auto_renew = False
     db.commit()
     return {"success": True, "message": "订阅已终止"}
+
+
+class AutoRenewRequest(BaseModel):
+    enabled: bool = Field(..., description="true=开启自动续订，false=关闭")
+
+
+@user_router.post("/subscriptions/{subscription_id}/auto-renew")
+def set_my_subscription_auto_renew(
+    subscription_id: int,
+    req: AutoRenewRequest,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """我的订阅自动续订开关（r48-⑬）
+
+    开启后：到期前 24 小时内用能量（积分余额）按当前档位自动续订一个周期，
+    余额不足则不续并站内信提醒。人民币自动扣款不开通（支付网关未配），
+    所以套餐必须配了积分价才能开。
+    """
+    sub = db.query(models.UserSubscription).filter(
+        models.UserSubscription.id == subscription_id,
+        models.UserSubscription.user_id == current_user.id,
+    ).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="订阅不存在")
+    if not req.enabled:
+        sub.auto_renew = False
+        db.commit()
+        return {"success": True, "auto_renew": False, "message": "已关闭自动续订"}
+    now = datetime.now()
+    if not (sub.status == "active" and sub.end_date and sub.end_date > now):
+        raise HTTPException(status_code=400, detail="订阅已失效，无法开启自动续订")
+    plan = db.query(models.SubscriptionPlan).filter(
+        models.SubscriptionPlan.id == sub.plan_id).first()
+    if plan is None or not plan.is_active:
+        raise HTTPException(status_code=400, detail="套餐已下架，无法开启自动续订")
+    if plan.points_price is None:
+        raise HTTPException(
+            status_code=400,
+            detail="该套餐不支持能量自动续订（人民币自动扣款尚未开通）",
+        )
+    sub.auto_renew = True
+    db.commit()
+    return {"success": True, "auto_renew": True,
+            "message": "已开启自动续订：到期前 24 小时用能量自动续订，余额不足则不续"}
 
 
 @user_router.get("/subscription-plans")

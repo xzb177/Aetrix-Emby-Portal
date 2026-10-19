@@ -11,6 +11,7 @@ export interface SubscriptionItem {
   end_date: string
   status: string
   days_left?: number
+  auto_renew?: boolean
 }
 
 const props = defineProps<{
@@ -20,10 +21,12 @@ const props = defineProps<{
   isFreeRealm?: boolean
   realmNote?: string
   cancellingSub?: number | string | null
+  togglingRenew?: number | string | null
 }>()
 
 const emit = defineEmits<{
   (e: 'cancel', sub: any): void
+  (e: 'toggle-renew', sub: any): void
 }>()
 
 const router = useRouter()
@@ -51,6 +54,25 @@ const router = useRouter()
       <span class="badge" :class="expiringSoon ? 'warn' : 'ok'">
         {{ expiringSoon ? '即将到期' : '生效中' }}
       </span>
+    </div>
+    <!-- r48-⑬：自动续订开关 —— 到期前 24 小时用能量按当前档位续订一期，
+         能量不足则不续并站内信提醒；人民币自动扣款不开通 -->
+    <div v-if="activeSub" class="renew-row">
+      <div class="renew-info">
+        <b>到期自动续订</b>
+        <small>到期前 24 小时用能量自动续订一期 · 能量不足则不续并提醒你</small>
+      </div>
+      <button
+        type="button"
+        class="renew-switch"
+        :class="{ on: activeSub.auto_renew }"
+        :disabled="togglingRenew === activeSub.id"
+        :aria-pressed="!!activeSub.auto_renew"
+        :aria-label="activeSub.auto_renew ? '关闭自动续订' : '开启自动续订'"
+        @click="emit('toggle-renew', activeSub)"
+      >
+        <span class="knob" aria-hidden="true"></span>
+      </button>
     </div>
     <div v-else-if="isFreeRealm" class="sub-free">
       <span class="badge free">公益服 · 免费开放</span>
@@ -141,6 +163,46 @@ const router = useRouter()
 .sub-history-foot { padding: 8px 0 0; border-top: 1px solid var(--paper-line); text-align: center; font-size: 11px; color: var(--paper-ink-3); letter-spacing: 1px; }
 .sub-history-date { color: var(--paper-ink-3); margin-left: auto; }
 .text-btn.danger { color: var(--paper-danger); background: none; border: none; cursor: pointer; }
+/* r48-⑬：自动续订开关行 */
+.renew-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--paper-card-2);
+  border: 1px solid var(--paper-line);
+  border-radius: var(--paper-r-md);
+}
+.renew-info { display: flex; flex-direction: column; gap: 2px; }
+.renew-info b { font-size: 0.875rem; color: var(--paper-ink); }
+.renew-info small { font-size: 0.75rem; color: var(--paper-ink-3); line-height: 1.5; }
+.renew-switch {
+  flex: none;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--paper-line);
+  background: var(--paper-card);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.2s var(--paper-ease, ease), border-color 0.2s;
+}
+.renew-switch .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--paper-ink-3);
+  transition: transform 0.2s var(--paper-ease, ease), background 0.2s;
+}
+.renew-switch.on { background: var(--paper-primary); border-color: var(--paper-primary); }
+.renew-switch.on .knob { transform: translateX(20px); background: #fff; }
+.renew-switch:disabled { opacity: 0.6; cursor: wait; }
+.renew-switch:focus-visible { outline: 2px solid var(--paper-primary); outline-offset: 2px; }
 /* P2-26：公益服状态块三条旧规则全文（ProfileView.vue 第 1087 / 1050 / 1469-1473 行） */
 .sub-free { display: flex; flex-direction: column; gap: 0.375rem; align-items: flex-start; }
 .pane-empty {
