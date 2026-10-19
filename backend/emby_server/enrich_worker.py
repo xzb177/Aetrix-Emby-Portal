@@ -2258,28 +2258,14 @@ def _apply_season_posters(db, season_posters: dict) -> int:
 # 一律不动。
 # 幂等：归一后集号为 1..N，自然不再命中偶数列；进程内每季只判定一次
 # （_PARITY_RENUMBER_DONE）。日志逐行可审计、支持事后按日志回滚。
-# 开关：SystemConfig `enrich_parity_renumber`（默认开=1；读库失败也按开处理），
-# 无需 migration（读不到键即默认）。
-_PARITY_RENUMBER_ENABLED_KEY = "enrich_parity_renumber"
+# 无开关：默认行为（用户口径），门槛本身就是安全阀。
 _PARITY_RENUMBER_DONE: set = set()
 _PARITY_RENUMBER_LOCK = threading.Lock()
 _PARITY_RENUMBER_DONE_CAP = 5000
 
 
-def _parity_renumber_enabled(db) -> bool:
-    """奇偶归一总开关（默认开）。"""
-    try:
-        from backend.integrations import store
-        return store.read_value(db, _PARITY_RENUMBER_ENABLED_KEY, "1") == "1"
-    except Exception:  # noqa: BLE001 — 读库失败不挡刮削，按默认开
-        logger.debug("奇偶归一开关读库失败，按默认开", exc_info=True)
-        return True
-
-
 def _maybe_parity_renumber_season(db, item: Any) -> bool:
     """对 item 所在季做奇偶双倍编号归一检查。执行了归一返回 True。"""
-    if not _parity_renumber_enabled(db):
-        return False
     series_id = getattr(item, "series_id", None)
     season_no = getattr(item, "season_number", None)
     if series_id is None or season_no is None:
@@ -2348,8 +2334,8 @@ def _maybe_parity_renumber_season(db, item: Any) -> bool:
         series_id, series_name, season_no, tmdb_id, n,
         sorted(old_nums), n)
     for idx, sib in enumerate(ordered, start=1):
-        if sib.episode_number == idx:
-            continue  # 不可能发生（偶数列），双保险
+        # 此时 old_nums 必为 2,4,…,2N 的偶数列，sib.episode_number == idx
+        # 不可能成立，无需双保险分支。
         logger.info(
             "[parity-renumber] item_id=%s %s→%s",
             sib.id, sib.episode_number, idx)

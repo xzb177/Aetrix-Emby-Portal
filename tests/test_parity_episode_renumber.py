@@ -37,16 +37,11 @@ from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
 from backend.emby_server import enrich_worker as ew
 from backend.emby_server.tmdb import TmdbClient
-from backend.integrations import store
-
 init_db()
-
-CFG_KEY = ew._PARITY_RENUMBER_ENABLED_KEY
 
 
 def _reset_state():
     ew._PARITY_RENUMBER_DONE.clear()
-    store.invalidate(CFG_KEY)
 
 
 @pytest.fixture()
@@ -55,10 +50,6 @@ def db():
     try:
         s.query(em.MediaStream).delete()
         s.query(em.MediaItem).delete()
-        # 开关每轮复位为默认（开），防跨测试泄漏（SystemConfig 落库）
-        store.write_values(s, {CFG_KEY: "1"}, {CFG_KEY: "奇偶归一总开关"})
-        s.commit()
-        store.invalidate(CFG_KEY)
         yield s
     finally:
         _reset_state()
@@ -239,28 +230,20 @@ def test_softdeleted_rows_excluded(db, monkeypatch):
     assert _nums(db, s.id) == [1, 2, 3, 4]
 
 
-# 11. 总开关关 → 不动；默认（无键）→ 开
-def test_kill_switch(db, monkeypatch):
+# 11. 无开关、默认执行：SystemConfig 里不写任何键，完美偶数列照常归一
+def test_default_behavior_without_switch(db, monkeypatch):
+    from backend import models as _models
     s = _series(db)
     _episodes(db, s, [2, 4, 6, 8])
     monkeypatch.setattr(TmdbClient, "season_episodes", _fake_season(4))
     first = db.query(em.MediaItem).filter(
         em.MediaItem.item_type == "episode").first()
-    # 默认无键 = 开：先删掉 fixture 预置的键，测真正的「无键」路径
-    from backend import models as _models
-    db.query(_models.SystemConfig).filter(
-        _models.SystemConfig.key == CFG_KEY).delete(
-        synchronize_session=False)
-    db.commit()
-    store.invalidate(CFG_KEY)
-    assert ew._parity_renumber_enabled(db) is True
-    # 写 0 = 关
-    store.write_values(db, {CFG_KEY: "0"}, {CFG_KEY: "奇偶归一总开关"})
-    db.commit()
-    assert ew._parity_renumber_enabled(db) is False
-    assert ew._maybe_parity_renumber_season(db, first) is False
+    # 确认库里没有任何与本功能相关的开关配置行
+    assert db.query(_models.SystemConfig).filter(
+        _models.SystemConfig.key.like("%parity%")).count() == 0
+    assert ew._maybe_parity_renumber_season(db, first) is True
     db.expire_all()
-    assert _nums(db, s.id) == [2, 4, 6, 8]
+    assert _nums(db, s.id) == [1, 2, 3, 4]
 
 
 # 12. 日志可审计：逐行含 item_id 与 旧→新
