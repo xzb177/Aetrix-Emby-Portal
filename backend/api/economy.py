@@ -22,8 +22,10 @@ import hmac
 import logging
 import math
 import random
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Optional
@@ -33,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 
@@ -668,6 +670,64 @@ def points_log(
 
 # ==================== 兑换码 ====================
 
+def _subscription_grant_lock_key(user_id: int, realm_id: int | None) -> int:
+    """订阅发放串行锁的 64 位 key：按（用户，服）派生，与 setup.py 的 key 域隔离。"""
+    return int.from_bytes(
+        hashlib.sha256(f"aetrix-sub-grant:{user_id}:{realm_id or 0}".encode()).digest()[:8],
+        "big", signed=True,
+    )
+
+
+_grant_thread_lock = threading.RLock()  # 非 PG（测试/SQLite）回退：进程内串行
+
+
+def _grant_realm_for_key(db: Session, target_realm: int | None) -> int:
+    """锁 key 用的服 id：纯读，不触发 ``ensure_default_realm`` 的建服+commit。
+
+    ``target_realm`` 为 None 时（套餐未绑服），检查分支按「任意服」匹配、
+    新建分支落到面板当前服——key 取当前服可读快照，保证并发双方算出同一个 key。
+    与新建分支的 ``realms.active_realm_id(db)`` 语义一致（读路径相同），
+    只是去掉了「无服时自动建服」的写路径。
+    """
+    if target_realm is not None:
+        return target_realm
+    row = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == realms.CONFIG_ACTIVE_REALM).first()
+    if row and str(row.value or "").strip().isdigit():
+        realm = realms.get_realm(db, int(row.value))
+        if realm is not None and getattr(realm, "is_active", True):
+            return realm.id
+    legacy = realms.legacy_realm_id(db)
+    return legacy if legacy is not None else 0
+
+
+@contextmanager
+def subscription_grant_lock(db: Session, user_id: int, realm_id: int | None):
+    """订阅「先查生效行再顺延/新建」的串行锁（r52，闭 EDGE-1 缺口）。
+
+    ``_grant_subscription`` 先 SELECT 生效行（``FOR UPDATE``）再决定顺延还是新建：
+    无行可锁时，两个并发事务会各自 INSERT，产生双 active 行（到期提醒双发、
+    订阅统计虚高）。行锁锁不住「不存在的行」，所以在这里按（用户，服）先串行：
+    PG 用事务级 advisory lock（随事务提交/回滚自动释放，锁覆盖到 commit 之后，
+    第二个事务的检查一定能看到第一个事务已提交的行）；SQLite/测试用进程内 RLock。
+
+    锁序纪律：所有发放路径必须**先拿本锁、再拿任何行锁**
+    （``_auto_renew_one`` 已按此重排），否则行锁与本锁会形成 AB-BA 死锁。
+    """
+    key = _subscription_grant_lock_key(user_id, realm_id)
+    try:
+        is_pg = db.bind.dialect.name == "postgresql"
+    except Exception:
+        is_pg = False
+    if is_pg:
+        # xact 级：事务结束自动释放，无需显式解锁
+        db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": key})
+        yield
+    else:
+        with _grant_thread_lock:
+            yield
+
+
 def _grant_subscription(db: Session, user: models.WebUser, plan: models.SubscriptionPlan,
                         days: int, source: str, ref_id: str,
                         realm_id: int | None = None) -> models.UserSubscription:
@@ -675,44 +735,49 @@ def _grant_subscription(db: Session, user: models.WebUser, plan: models.Subscrip
 
     订阅是一个服一个的：甲服的兑换码只能顺延甲服的会员，不能给乙服的会员加天数。
 
-    `with_for_update()` 在 PostgreSQL 下是真正的行锁，避免同一用户并发发放
-    （同时核销两张码 / 码与支付回调撞车）时两边都读到同一到期时间、互相覆盖；
-    SQLite 会忽略它，但 SQLite 写入本身是库级串行的。
+    并发说明（r52 修 EDGE-1）：函数入口先拿 ``subscription_grant_lock``
+    按（用户，服）串行，再做「查-改/查-增」。此前的 ``with_for_update()``
+    只在行存在时有效，无行可锁时并发双事务会各自新建（双 active 行）。
+    PostgreSQL 下是真正的串行；SQLite 会忽略行锁但写入本身是库级串行的，
+    测试/单机路径另有进程内 RLock 兜底。
     """
     now = datetime.now()
     target_realm = realm_id if realm_id is not None else plan.realm_id
-    query = db.query(models.UserSubscription).filter(
-        models.UserSubscription.user_id == user.id,
-        models.UserSubscription.status == "active",
-        models.UserSubscription.end_date > now,
-    )
-    if target_realm is not None:
-        query = query.filter(models.UserSubscription.realm_id == target_realm)
-    active = query.order_by(models.UserSubscription.end_date.desc()).with_for_update().first()
-
-    if active:
-        active.end_date = active.end_date + timedelta(days=days)
-        active.updated_at = now
-        # r48-⑫：续买/顺延到不同档位时，plan_id 跟随本次购买的档位
-        # （展示「买的是哪个档」以最近一次购买为准；顺延天数逻辑不变）。
-        active.plan_id = plan.id
-        subscription = active
-        # 续费顺延复用同一行：清掉上一周期的提醒去重记录，否则新周期
-        # 的 7d/3d/1d/expired 档位会被旧记录挡住、用户再也收不到到期提醒。
-        db.query(models.SubscriptionReminder).filter(
-            models.SubscriptionReminder.subscription_id == active.id
-        ).delete(synchronize_session=False)
-    else:
-        subscription = models.UserSubscription(
-            user_id=user.id,
-            plan_id=plan.id,
-            realm_id=target_realm if target_realm is not None else realms.active_realm_id(db),
-            start_date=now,
-            end_date=now + timedelta(days=days),
-            status="active",
+    # 锁 key 用只读快照（不触发建服+commit），与下面新建分支的落点一致
+    grant_realm = _grant_realm_for_key(db, target_realm)
+    with subscription_grant_lock(db, user.id, grant_realm):
+        query = db.query(models.UserSubscription).filter(
+            models.UserSubscription.user_id == user.id,
+            models.UserSubscription.status == "active",
+            models.UserSubscription.end_date > now,
         )
-        db.add(subscription)
-        db.flush()
+        if target_realm is not None:
+            query = query.filter(models.UserSubscription.realm_id == target_realm)
+        active = query.order_by(models.UserSubscription.end_date.desc()).with_for_update().first()
+
+        if active:
+            active.end_date = active.end_date + timedelta(days=days)
+            active.updated_at = now
+            # r48-⑫：续买/顺延到不同档位时，plan_id 跟随本次购买的档位
+            # （展示「买的是哪个档」以最近一次购买为准；顺延天数逻辑不变）。
+            active.plan_id = plan.id
+            subscription = active
+            # 续费顺延复用同一行：清掉上一周期的提醒去重记录，否则新周期
+            # 的 7d/3d/1d/expired 档位会被旧记录挡住、用户再也收不到到期提醒。
+            db.query(models.SubscriptionReminder).filter(
+                models.SubscriptionReminder.subscription_id == active.id
+            ).delete(synchronize_session=False)
+        else:
+            subscription = models.UserSubscription(
+                user_id=user.id,
+                plan_id=plan.id,
+                realm_id=target_realm if target_realm is not None else realms.active_realm_id(db),
+                start_date=now,
+                end_date=now + timedelta(days=days),
+                status="active",
+            )
+            db.add(subscription)
+            db.flush()
     return subscription
 
 

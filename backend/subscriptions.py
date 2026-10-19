@@ -361,102 +361,119 @@ def _auto_renew_one(db: Session, sub_id: int, now: datetime):
     或 {"notice": {...}}（余额不足：已落去重记录，调用方发通知）。"""
     from backend.api.economy import (
         InsufficientPoints,
+        _grant_realm_for_key,
         _grant_subscription,
         _spend_points,
+        subscription_grant_lock,
     )
     from backend import reminders as _reminders
 
-    sub = (
-        db.query(models.UserSubscription)
-        .options(joinedload(models.UserSubscription.plan),
-                 joinedload(models.UserSubscription.user))
+    # r52 锁序：先拿（用户，服）发放串行锁，再拿行锁。_grant_subscription 内部
+    # 也会拿同一把锁（可重入），顺序一致就不会与并发的手动发放形成 AB-BA 死锁。
+    # 这里只做无锁 key 查询取锁 key，锁内的行锁查询仍是并发正确性的依据。
+    key_row = (
+        db.query(models.UserSubscription.user_id, models.UserSubscription.realm_id)
         .filter(models.UserSubscription.id == sub_id)
-        .with_for_update()
         .first()
     )
-    if sub is None:
+    if key_row is None:
         db.rollback()
         return "skipped"
-    # 锁内复核：并发的另一轮可能已经续过，end_date 已推出窗口
-    window_end = now + timedelta(hours=AUTO_RENEW_WINDOW_HOURS)
-    if not (sub.status == "active" and sub.auto_renew
-            and sub.end_date and now < sub.end_date <= window_end):
-        db.rollback()
-        return "skipped"
-    user = sub.user
-    plan = sub.plan
-    if user is None or not getattr(user, "is_active", True):
-        db.rollback()
-        logger.info("自动续订跳过（订阅 %s）：用户不存在或已禁用", sub_id)
-        return "skipped"
-    if plan is None or not plan.is_active or plan.points_price is None:
-        # 套餐下架 / 未配积分价：人民币自动扣款未开通，无从续订；只记数不打扰
-        # （用户在开启开关时已做过 points_price 校验，这里是兜底）。
-        db.rollback()
-        logger.info("自动续订跳过（订阅 %s）：套餐不可用或无积分价", sub_id)
-        return "skipped"
-
-    cost = _auto_renew_cost(db, user, plan)
-    paid_points = cost["paid_points"]
-    if paid_points <= 0:
-        db.rollback()
-        logger.warning("自动续订跳过（订阅 %s）：积分价配置错误", sub_id)
-        return "skipped"
-
-    ref_id = f"auto_renew:{sub.id}:{now.strftime('%Y%m%d%H%M')}"
-    try:
-        _spend_points(
-            db, user, paid_points, "subscription_auto_renew",
-            f"自动续订 - {plan.name}（原价 {cost['list_points']}，"
-            f"会员折扣 -{cost['member_discount_points']}，实付 {paid_points}）",
-            ref_id,
+    # key 必须与 _grant_subscription 内部算出的一致（它对 None 会做只读快照），
+    # 否则自动续订与手动发放拿的不是同一把锁，锁序保证失效。
+    with subscription_grant_lock(db, key_row.user_id,
+                                _grant_realm_for_key(db, key_row.realm_id)):
+        sub = (
+            db.query(models.UserSubscription)
+            .options(joinedload(models.UserSubscription.plan),
+                     joinedload(models.UserSubscription.user))
+            .filter(models.UserSubscription.id == sub_id)
+            .with_for_update()
+            .first()
         )
-    except InsufficientPoints:
-        db.rollback()
-        # 余额不足：不续订。落一条去重记录（同一订阅只提醒一次），
-        # 调用方走订阅到期提醒通道（站内信）通知用户。
-        recorded = _reminders._record(
-            db,
-            {"subscription_id": sub.id, "user_id": user.id,
-             "realm_id": sub.realm_id},
-            RENEW_FAILED_KIND,
+        if sub is None:
+            db.rollback()
+            return "skipped"
+        # 锁内复核：并发的另一轮可能已经续过，end_date 已推出窗口
+        window_end = now + timedelta(hours=AUTO_RENEW_WINDOW_HOURS)
+        if not (sub.status == "active" and sub.auto_renew
+                and sub.end_date and now < sub.end_date <= window_end):
+            db.rollback()
+            return "skipped"
+        user = sub.user
+        plan = sub.plan
+        if user is None or not getattr(user, "is_active", True):
+            db.rollback()
+            logger.info("自动续订跳过（订阅 %s）：用户不存在或已禁用", sub_id)
+            return "skipped"
+        if plan is None or not plan.is_active or plan.points_price is None:
+            # 套餐下架 / 未配积分价：人民币自动扣款未开通，无从续订；只记数不打扰
+            # （用户在开启开关时已做过 points_price 校验，这里是兜底）。
+            db.rollback()
+            logger.info("自动续订跳过（订阅 %s）：套餐不可用或无积分价", sub_id)
+            return "skipped"
+
+        cost = _auto_renew_cost(db, user, plan)
+        paid_points = cost["paid_points"]
+        if paid_points <= 0:
+            db.rollback()
+            logger.warning("自动续订跳过（订阅 %s）：积分价配置错误", sub_id)
+            return "skipped"
+
+        ref_id = f"auto_renew:{sub.id}:{now.strftime('%Y%m%d%H%M')}"
+        try:
+            _spend_points(
+                db, user, paid_points, "subscription_auto_renew",
+                f"自动续订 - {plan.name}（原价 {cost['list_points']}，"
+                f"会员折扣 -{cost['member_discount_points']}，实付 {paid_points}）",
+                ref_id,
+            )
+        except InsufficientPoints:
+            db.rollback()
+            # 余额不足：不续订。落一条去重记录（同一订阅只提醒一次），
+            # 调用方走订阅到期提醒通道（站内信）通知用户。
+            recorded = _reminders._record(
+                db,
+                {"subscription_id": sub.id, "user_id": user.id,
+                 "realm_id": sub.realm_id},
+                RENEW_FAILED_KIND,
+            )
+            db.commit()
+            if not recorded:
+                return "failed"  # 已提醒过，不再打扰
+            balance = int(getattr(user, "points", 0) or 0)
+            return {"notice": {
+                "user_id": user.id,
+                "subscription_id": sub.id,
+                "title": "⚡ 自动续订失败：能量不足",
+                "content": (
+                    f"你的「{plan.name}」将于 {sub.end_date.strftime('%Y-%m-%d %H:%M')} 到期，"
+                    f"自动续订需要 {paid_points} 能量，当前余额 {balance}，余额不足未续订。"
+                    f"请及时补充能量，或关闭自动续订改手动续费。"
+                ),
+            }}
+
+        # 扣款成功：顺延（_grant_subscription 会清掉该订阅的全部提醒记录，
+        # 包括之前可能落过的 renew_failed，下一周期可重新提醒）。
+        subscription = _grant_subscription(
+            db, user, plan, plan.duration_days, "auto_renew", ref_id,
+            realm_id=sub.realm_id,
         )
+        order_id = f"AR{int(now.timestamp() * 1000)}{uuid.uuid4().hex[:6].upper()}"
+        order = models.SubscriptionOrder(
+            order_id=order_id, user_id=user.id,
+            plan_id=plan.id, item_name=plan.name,
+            # amount 保持人民币口径（沿用既有收入统计/退款/对账口径）；
+            # 积分口径的原价/优惠/实付记在积分台账描述里，不混进人民币列。
+            amount=plan.price, payment_method="auto_renew", status="paid",
+            paid_at=now, subscription_id=subscription.id,
+            days_granted=plan.duration_days,
+        )
+        db.add(order)
         db.commit()
-        if not recorded:
-            return "failed"  # 已提醒过，不再打扰
-        balance = int(getattr(user, "points", 0) or 0)
-        return {"notice": {
-            "user_id": user.id,
-            "subscription_id": sub.id,
-            "title": "⚡ 自动续订失败：能量不足",
-            "content": (
-                f"你的「{plan.name}」将于 {sub.end_date.strftime('%Y-%m-%d %H:%M')} 到期，"
-                f"自动续订需要 {paid_points} 能量，当前余额 {balance}，余额不足未续订。"
-                f"请及时补充能量，或关闭自动续订改手动续费。"
-            ),
-        }}
-
-    # 扣款成功：顺延（_grant_subscription 会清掉该订阅的全部提醒记录，
-    # 包括之前可能落过的 renew_failed，下一周期可重新提醒）。
-    subscription = _grant_subscription(
-        db, user, plan, plan.duration_days, "auto_renew", ref_id,
-        realm_id=sub.realm_id,
-    )
-    order_id = f"AR{int(now.timestamp() * 1000)}{uuid.uuid4().hex[:6].upper()}"
-    order = models.SubscriptionOrder(
-        order_id=order_id, user_id=user.id,
-        plan_id=plan.id, item_name=plan.name,
-        # amount 保持人民币口径（沿用既有收入统计/退款/对账口径）；
-        # 积分口径的原价/优惠/实付记在积分台账描述里，不混进人民币列。
-        amount=plan.price, payment_method="auto_renew", status="paid",
-        paid_at=now, subscription_id=subscription.id,
-        days_granted=plan.duration_days,
-    )
-    db.add(order)
-    db.commit()
-    logger.info("自动续订成功（订阅 %s）：用户 %s 续 %s，实付 %s 能量",
-                sub.id, user.id, plan.name, paid_points)
-    return "renewed"
+        logger.info("自动续订成功（订阅 %s）：用户 %s 续 %s，实付 %s 能量",
+                    sub.id, user.id, plan.name, paid_points)
+        return "renewed"
 
 
 __all__ = [
