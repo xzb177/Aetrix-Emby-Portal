@@ -189,6 +189,7 @@ def test_match_renames_by_file_id():
         class FakePending:
             item = None
             renamed = False
+            item_type = "movie"
             scan_file = FakeSF()
 
         class FakeCtx:
@@ -219,6 +220,7 @@ def test_match_renames_no_file_id_skipped():
         class FakePending:
             item = None
             renamed = False
+            item_type = "movie"
             scan_file = FakeSF()
 
         class FakeCtx:
@@ -248,6 +250,7 @@ def test_match_renames_unknown_fid():
         class FakePending:
             item = None
             renamed = False
+            item_type = "movie"
             scan_file = FakeSF()
 
         class FakeCtx:

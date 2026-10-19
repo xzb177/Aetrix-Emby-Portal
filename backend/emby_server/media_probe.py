@@ -228,6 +228,8 @@ def write_back(db, item, probe: dict) -> None:
     - 编码：有值才写。
     - 宽/高/码率/大小/时长：>0 才写（0 可能是探测没拿到，不能把库里已有的清掉）。
     - 成功清零 attempts；degraded（信息不全但可播）同样落库，下次不再白跑。
+    - 多集文件（S06E27-E28 建两行）：结果同步给同文件其他行（见
+      _backfill_sibling_rows），同一文件只探测一次。
     """
     if probe.get("video_codec"):
         item.video_codec = probe["video_codec"]
@@ -252,6 +254,7 @@ def write_back(db, item, probe: dict) -> None:
         replace_streams(db, item, probe.get("streams"))
     except Exception as exc:  # noqa: BLE001 — 轨道写失败不影响条目级信息落库
         logger.warning("按需探测：轨道写库失败 item=%s: %s", getattr(item, "id", "?"), exc)
+    _backfill_sibling_rows(db, item, probe)
     item.last_probed_at = datetime.now()
     item.probe_attempts = 0
     item.probe_next_retry_at = None
@@ -261,6 +264,86 @@ def write_back(db, item, probe: dict) -> None:
     logger.info("按需探测成功 item=%s %s %sx%s audio=%s",
                 item.id, item.video_codec or "?", item.width or "?",
                 item.height or "?", item.audio_codec or "?")
+
+
+def _backfill_sibling_rows(db, item, probe: dict) -> None:
+    """同文件多行的探测结果共享：同一文件只探测一次。
+
+    多集文件（如 S06E27-E28）入库建两行（同 file_path、不同集号）。
+    探测 worker 按行认领时会把两行都当成待探测——结果写回本行后，
+    把同库同 file_path 的其他可见文件类行（episode/movie）的标量探测字段
+    与轨道行一并同步，避免对同一文件重复 ffprobe（远程源是配额成本）。
+
+    只同步标量字段＋轨道行，不碰元数据（标题/简介/评分）——那些是按集的。
+    只回填 probe_status 在 pending/None/failed 的行：probing 中的行是别的
+    worker 正在探测的，它完成后自己的 write_back 会做同样的回填。
+    """
+    fp = getattr(item, "file_path", None)
+    if not fp:
+        return
+    MI = em.MediaItem
+    try:
+        siblings = (db.query(MI)
+                    .filter(MI.library_id == item.library_id,
+                            MI.item_type.in_(("episode", "movie")),
+                            MI.file_path == fp,
+                            MI.id != item.id,
+                            MI.deleted_at.is_(None),
+                            MI.merged_into_id.is_(None),
+                            MI.probe_status.in_(("pending", "failed")))
+                    .all())
+    except Exception:  # noqa: BLE001 — 回填失败不影响本行落库
+        logger.warning("探测同行回填查询失败 item=%s", getattr(item, "id", "?"),
+                       exc_info=True)
+        return
+    # None 状态（历史数据无 probe_status 列默认值之外的值）也回填
+    try:
+        null_sibs = (db.query(MI)
+                     .filter(MI.library_id == item.library_id,
+                             MI.item_type.in_(("episode", "movie")),
+                             MI.file_path == fp,
+                             MI.id != item.id,
+                             MI.deleted_at.is_(None),
+                             MI.merged_into_id.is_(None),
+                             MI.probe_status.is_(None))
+                     .all())
+        siblings.extend(null_sibs)
+    except Exception:  # noqa: BLE001
+        pass
+    if not siblings:
+        return
+    for sib in siblings:
+        if probe.get("video_codec"):
+            sib.video_codec = probe["video_codec"]
+        if probe.get("audio_codec"):
+            sib.audio_codec = probe["audio_codec"]
+        for field in ("width", "height", "bitrate", "size"):
+            try:
+                value = int(probe.get(field) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                setattr(sib, field, value)
+        try:
+            ticks = int(probe.get("duration_ticks") or 0)
+        except (TypeError, ValueError):
+            ticks = 0
+        if ticks > 0:
+            sib.duration_ticks = ticks
+        if probe.get("moov_position"):
+            sib.moov_position = probe["moov_position"]
+        try:
+            replace_streams(db, sib, probe.get("streams"))
+        except Exception:  # noqa: BLE001
+            logger.warning("探测同行回填：轨道写库失败 item=%s",
+                           getattr(sib, "id", "?"))
+        sib.last_probed_at = datetime.now()
+        sib.probe_attempts = 0
+        sib.probe_next_retry_at = None
+        sib.probe_status = "degraded" if probe.get("_degraded") else "done"
+        _clear_claim(sib, error=None)
+    logger.info("探测同文件回填：%s 共享给 %d 行（file=%s）",
+                getattr(item, "id", "?"), len(siblings), fp[:80])
 
 
 def _clear_claim(item, error: Optional[str]) -> None:
