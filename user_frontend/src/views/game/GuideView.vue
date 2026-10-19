@@ -27,7 +27,8 @@
           <span class="tip">着急的话，可以发封求救信，会有人回你。</span>
           <button type="button" class="signal-link" @click="goSignal">去发求救信号</button>
         </div>
-        <button class="v4-retry" style="margin-top:12px" :disabled="loading" @click="load">再去看看</button>
+        <!-- R107-4：删掉 :disabled="loading" —— 该按钮只在「向导不在」分支渲染，此时 loading 恒为 false，disabled 永不生效 -->
+        <button class="v4-retry" style="margin-top:12px" @click="load">再去看看</button>
       </section>
 
       <template v-else>
@@ -62,12 +63,15 @@
         <section class="v4-sec">
           <div ref="scroller" class="chat" role="log" tabindex="0" aria-label="聊天记录">
             <!-- R41：.chat-empty 已删 —— onMounted 同步 push 欢迎气泡，bubbles 永不为空，空态死代码 -->
-            <div v-for="(b, i) in bubbles" :key="i" class="msg" :class="b.role">
+            <!-- R107-2：:key 用气泡唯一 id，不再用索引 -->
+            <div v-for="b in bubbles" :key="b.id" class="msg" :class="b.role">
               <div v-if="b.role === 'guide'" class="who">老陈 · 向导</div>
               <p>{{ b.content }}</p>
             </div>
             <div v-if="sending" class="msg guide">
               <div class="who">老陈 · 向导</div>
+              <!-- R107-3：读屏播报「正在回话」（typing 省略号 aria-hidden，读屏用户原来等不到任何反馈） -->
+              <span class="sr-only" role="status">老陈正在回话…</span>
               <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
             </div>
           </div>
@@ -107,6 +111,7 @@ function goSignal() {
 }
 
 interface Bubble {
+  id: number
   role: 'me' | 'guide' | 'error'
   content: string
 }
@@ -117,8 +122,14 @@ const question = ref('')
 const sending = ref(false)
 const bubbles = ref<Bubble[]>([])
 const MAX_BUBBLES = 80
+let bubbleSeq = 0
 function trimBubbles() {
   if (bubbles.value.length > MAX_BUBBLES) bubbles.value.splice(0, bubbles.value.length - MAX_BUBBLES)
+}
+/** R107-2：气泡带唯一 id（:key 不再用索引）—— trimBubbles 从头部删时，索引 key 会让 Vue 错位复用节点 */
+function addBubble(role: Bubble['role'], content: string) {
+  bubbles.value.push({ id: ++bubbleSeq, role, content })
+  trimBubbles()
 }
 const scroller = ref<HTMLElement | null>(null)
 /** true=请求抛错（网络开小差）；false=明确未启用（管理员还没请向导） */
@@ -174,8 +185,7 @@ async function ask(text?: string) {
   const content = (text ?? question.value).trim()
   if (!content || sending.value) return
   question.value = ''
-  bubbles.value.push({ role: 'me', content })
-  trimBubbles()
+  addBubble('me', content)
   sending.value = true
   scrollToEnd()
   try {
@@ -189,12 +199,12 @@ async function ask(text?: string) {
       .slice(0, -1)
       .slice(-8)
     const res = await aiApi.ask(content, history)
-    bubbles.value.push({ role: 'guide', content: res.answer })
-    trimBubbles()
+    addBubble('guide', res.answer)
     status.value = { ...(status.value as AiStatus), ...res }
   } catch (err) {
-    bubbles.value.push({ role: 'error', content: humanizeError(err) })
-    trimBubbles()
+    addBubble('error', humanizeError(err))
+    // R107-1：发送失败把问题还回输入框（只在输入框为空时，避免覆盖等待期间用户新打的字）
+    if (!question.value) question.value = content
     // 配额用尽 / 被关闭时刷新一次状态，界面提示随之更新
     // R37 P2-1：只刷新 status，不调 load() —— 全页 skeleton 不闪，聊天停留在原位置
     void refreshStatus()
@@ -206,10 +216,7 @@ async function ask(text?: string) {
 
 onMounted(() => {
   load()
-  bubbles.value.push({
-    role: 'guide',
-    content: '哟，来了。老陈我在这营地坐了三年，片库里哪部片子后劲大、哪条线路最稳，门儿清。甭客气，随便问。',
-  })
+  addBubble('guide', '哟，来了。老陈我在这营地坐了三年，片库里哪部片子后劲大、哪条线路最稳，门儿清。甭客气，随便问。')
 })
 </script>
 
@@ -385,5 +392,18 @@ onMounted(() => {
   .chip:active, .inputbar button:active { transform: none; }
   /* R41：打字省略号呼吸动画在减弱动态下关闭，留半透明静态点 */
   .typing i { animation: none; opacity: 0.6; }
+}
+
+/* R107-3：读屏播报节点（视觉隐藏），口径同 CalendarView R48B-14 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>
