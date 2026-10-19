@@ -435,3 +435,39 @@ def test_prepare_and_prefetch_creates_two_pendings(db):
         assert p1.guid in ctx.seen_guids and p2.guid in ctx.seen_guids
     finally:
         _cleanup(db, lib)
+
+
+# ---------- 7. r60：迁移场景不许双认领 ----------
+
+def test_migration_old_single_row_not_double_claimed(db):
+    """r60：迁移场景——旧单行（曾被误解析为 S1E28，guid 与主行一致）重扫时，
+    主行按 guid 认领旧行，第二行不得再认领同一行。
+
+    旧顺序（改名识别先跑）下：file_id 匹配把旧行给了第二行，
+    _attach_known_items 又把同一旧行给了主行——两个 pending 共用一行，
+    _process_one 里后写的覆盖先写的，第二行永远建不出来，且静默无报错。
+    新顺序：guid 挂行先行，改名识别带 claimed 集合，不得抢走已认领的行。
+    """
+    lib = _make_lib(db)
+    series = _make_series(db, lib)
+    season = _make_season(db, lib, series)
+    old = _make_episode(db, lib, series, season, 28, path=OLD_PATH,
+                        guid=scanner.item_guid(OLD_PATH))
+    old.season_number = 1  # 误解析时代的形态：S1E28
+    old.name = "海绵宝宝 S01E28"
+    db.commit()
+    try:
+        p_master = _fid_pending(OLD_PATH, 27)
+        p_second = _fid_pending(OLD_PATH, 28)
+        prepared = [p_master, p_second]
+        known = scanner._load_items(db, [p_master.guid, p_second.guid])
+        ctx = SimpleNamespace(seen_guids=set(), lib_id=lib.id, stats={})
+        # 生产顺序：guid 挂行 → 改名识别（带 claimed）
+        claimed = scanner._attach_known_items(prepared, known)
+        scanner._match_renames_by_file_id(db, prepared, known, ctx, claimed)
+        # 主行认领旧行（guid 命中是最强身份）
+        assert p_master.item is not None and p_master.item.id == old.id
+        # 第二行不许复用旧行：item 为 None，走新行占位流程
+        assert p_second.item is None
+    finally:
+        _cleanup(db, lib)
