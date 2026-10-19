@@ -104,7 +104,7 @@
           <button class="v4-retry" @click="fetchTickets()">重试</button>
         </div>
         <div v-else-if="tickets.length === 0" class="v4-empty">
-          营地一切安好，还没有发过求救信号 📡
+          营地一切安好，还没有发过求救信号 <span aria-hidden="true">📡</span>
         </div>
 
         <div v-else class="cards">
@@ -134,8 +134,8 @@
                   :class="{ 'message-camp': msg.is_admin }"
                 >
                   <div class="message-content">
-                    <span v-if="msg.is_admin" class="message-author">🏕️ 营地回复{{ msg.admin_name ? ` · ${msg.admin_name}` : '' }}</span>
-                    <span v-else class="message-author me">🧭 我的求救信</span>
+                    <span v-if="msg.is_admin" class="message-author"><span aria-hidden="true">🏕️</span> 营地回复{{ msg.admin_name ? ` · ${msg.admin_name}` : '' }}</span>
+                    <span v-else class="message-author me"><span aria-hidden="true">🧭</span> 我的求救信</span>
                     <span class="message-text">{{ msg.message }}</span>
                     <span class="message-time">{{ formatDate(msg.created_at) }}</span>
                   </div>
@@ -162,7 +162,7 @@
                 </div>
                 <button class="close-record" @click="closeTicket"><span aria-hidden="true">🏁</span> 关闭记录</button>
               </div>
-              <p v-else class="closed-hint">这条记录已关闭 · 感谢你的信任，继续探险吧 🧭</p>
+              <p v-else class="closed-hint">这条记录已关闭 · 感谢你的信任，继续探险吧 <span aria-hidden="true">🧭</span></p>
             </div>
           </div>
         </div>
@@ -365,6 +365,9 @@ async function toggleDetail(t: Ticket) {
     selectedTicket.value = null
     return
   }
+  // R104-1：切到另一条记录时清空回复草稿 —— 回复框是整页共享的，
+  // A 卡的草稿留在 B 卡里会误发；同卡收起时保留草稿（用户可能再展开继续写）
+  replyMessage.value = ''
   expandedId.value = t.id
   selectedTicket.value = t
   messages.value = []
