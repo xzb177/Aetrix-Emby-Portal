@@ -601,7 +601,7 @@ check("配额快照口径一致",
 
 # 不限次数时仍会记账（便于统计），但不拦人
 db = SessionLocal()
-allowed_unlimited, used_unlimited = ai_cap.consume(db, user_id, 0)
+allowed_unlimited, used_unlimited, _deducted = ai_cap.consume(db, user_id, 0)
 db.close()
 check("上限 0 表示不限，但依然计入用量",
       allowed_unlimited is True and used_unlimited == 3, f"{allowed_unlimited}/{used_unlimited}")

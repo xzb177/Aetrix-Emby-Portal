@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -101,8 +102,11 @@ def assistant_ask(
         )
 
     # 再占额度：并发时靠条件 UPDATE 判定，不会两个请求都放行
+    # r48 遗留 ①：request_id 是配额回滚的幂等键——上游失败退配额时，
+    # 同一请求重复走失败分支只退一次（见 ai_capability.refund_quota）。
+    request_id = uuid.uuid4().hex
     limit = ai_capability.daily_limit(db)
-    allowed, used = ai_capability.safe_consume(db, current_user.id, limit)
+    allowed, used, deducted = ai_capability.safe_consume(db, current_user.id, limit)
     if not allowed:
         _ai_ask_semaphore.release()
         raise HTTPException(
@@ -115,6 +119,13 @@ def assistant_ask(
     finally:
         _ai_ask_semaphore.release()
     if not result.get("ok"):
+        # r48 遗留 ①：上游明确失败时退回本次预扣的配额。只在本次真实扣减过
+        # （deducted）时才退——fail-open 穿透的请求没扣过，退了就是误减。
+        # 幂等由 request_id 保证：同一请求重复走这里只退一次。
+        if deducted:
+            ok_refund = ai_capability.refund_quota(db, current_user.id, request_id)
+            logger.debug("AI 配额回滚 user=%s request=%s: %s",
+                         current_user.id, request_id, "已退" if ok_refund else "跳过")
         # 上游的错误信息（含模型名与 HTTP 状态）对排错很有用，原样转给用户端
         raise HTTPException(status_code=502, detail=result.get("message") or "模型调用失败")
     remaining = None if limit <= 0 else max(0, limit - used)

@@ -1006,6 +1006,29 @@ class AiUsage(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class AiRefundLog(Base):
+    """AI 配额回滚幂等账本（r48 遗留 ①）
+
+    上游调用失败时要退回预扣的配额。AiUsage 是 (user_id, day) 聚合计数行，
+    没有请求级锚点，同一请求被客户端重试/服务端重复走失败分支时会双退——
+    所以每个回滚请求带 request_id，这里用唯一约束做「已退」标记：
+    同一 request_id 第二次 refund 是空操作。
+    新表由 create_all 建（与 ai_usage 等表同口径）。
+    """
+    __tablename__ = 'ai_refund_log'
+
+    __table_args__ = (
+        UniqueConstraint('request_id', name='uq_ai_refund_log_request_id'),
+        Index('idx_ai_refund_log_day', 'day'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    day = Column(String(10), nullable=False)   # 本地日期 YYYY-MM-DD（与 AiUsage 同口径）
+    request_id = Column(String(64), nullable=False)  # assistant_ask 入口生成的 uuid4 hex
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
 class InvitationCode(Base):
     """邀请码表"""
     __tablename__ = 'invitation_codes'

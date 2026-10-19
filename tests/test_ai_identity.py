@@ -79,7 +79,7 @@ def test_user_ask_response_has_no_model_field(monkeypatch):
 
     monkeypatch.setattr(ai, "available", lambda db: True)
     monkeypatch.setattr(ai, "daily_limit", lambda db: 20)
-    monkeypatch.setattr(ai, "safe_consume", lambda db, uid, limit: (True, 1))
+    monkeypatch.setattr(ai, "safe_consume", lambda db, uid, limit: (True, 1, True))
     monkeypatch.setattr(
         ai, "ask",
         lambda db, q, h=None: {"ok": True, "answer": "我是本站的 AI 客服助手",
@@ -141,6 +141,7 @@ def test_safe_consume_read_also_fails_still_allows():
         def query(self, *a, **k):
             raise SQLAlchemyError("连接池耗尽")
 
-    allowed, used = ai.safe_consume(_BadDB(), user_id=1)
+    allowed, used, deducted = ai.safe_consume(_BadDB(), user_id=1)
     assert allowed is True
     assert used == 0
+    assert deducted is False
