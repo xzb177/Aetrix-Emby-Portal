@@ -24,7 +24,7 @@ from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.pinyin_sort import make_sort_name
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -680,6 +680,26 @@ def clean_name(raw: str) -> str:
     return re.sub(r"\s+", " ", name).strip(" .-_") or raw
 
 
+def _season_from_dirname(folder: str) -> Optional[int]:
+    """A3（缺集普查 2026-10-19）：父目录名的确定性季号兜底。
+
+    只认与文件名解析同一套的季号形态（Season 1 / S01 / 第1季…）；
+    目录名给出 0 个或多个**不同**值时返回 None——含糊的一律不动（宁漏勿错标）。
+    """
+    if not folder:
+        return None
+    found = set()
+    for pat in SEASON_PATTERNS_ANY + SEASON_PATTERNS_TV:
+        m = pat.search(folder)
+        if not m:
+            continue
+        raw = m.group(1)
+        v = cn_to_int(raw) if raw and not raw.isdigit() else int(raw)
+        if v is not None and 0 <= v <= 99:
+            found.add(v)
+    return found.pop() if len(found) == 1 else None
+
+
 def parse_media_filename(path: str, library_type: str) -> dict:
     """从文件路径解析 基础名称/年份/季/集
 
@@ -694,7 +714,15 @@ def parse_media_filename(path: str, library_type: str) -> dict:
 
     season = episode = None
     episode_end = None
+    # A3：季号是否来自文件名的显式标记（Sxx / Season N / 第N季…）。
+    # 裸 E05 / 绝对集数给的 season=1 只是默认值，不算显式——父目录名有确定
+    # 季号时允许兜底覆盖；显式标记永远优先，目录名不得覆盖它。
+    season_explicit = False
     matched_in_folder = False
+    # A3：只有 1a/1b 的集号匹配来自目录时才置 True；第 2 步的季号目录匹配
+    # 不算——否则 `Season 3/Frieren - 28` 这类绝对集数会被连带跳过，
+    # 集号恒为 None（普查 A3 的 episode_number 为空 104 行即此类）。
+    ep_matched_in_folder = False
     match_span: Optional[tuple[int, int]] = None
     abs_ep_span: Optional[tuple[int, int]] = None
 
@@ -712,11 +740,13 @@ def parse_media_filename(path: str, library_type: str) -> dict:
         if not m and is_tv:
             m = pat.search(folder)
             matched_in_folder = m is not None
+            ep_matched_in_folder = m is not None
         if not m:
             continue
         season, episode = int(m.group(1)), int(m.group(2))
         end = int(m.group(3))
         episode_end = end if end > episode else None
+        season_explicit = True
         match_span = (m.start(), m.end())
         break
 
@@ -730,16 +760,19 @@ def parse_media_filename(path: str, library_type: str) -> dict:
         if not m and is_tv:
             m = pat.search(folder)
             matched_in_folder = m is not None
+            ep_matched_in_folder = m is not None
         if not m:
             continue
         groups = m.groups()
         if len(groups) == 2:
             season, episode = int(groups[0]), _to_num(groups[1])
+            season_explicit = True
         else:
             season, episode = 1, _to_num(groups[0])
         if episode is None:
             # 中文数字解析失败（如非法字符），继续试下一个模式
             season = None
+            season_explicit = False
             continue
         match_span = (m.start(), m.end())
         break
@@ -759,6 +792,7 @@ def parse_media_filename(path: str, library_type: str) -> dict:
             if season is None or season < 0 or season > 99:
                 season = None
                 continue
+            season_explicit = True
             match_span = (m.start(), m.end())
             break
 
@@ -766,7 +800,7 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     # 必须在季号匹配之后：`The 100 Season 1` 的 "1" 是季号，不能被当成集号
     #（用 _overlaps 排除已匹配段）。
     # 年份段位 (1900-2099) 让位给年份解析。
-    if episode is None and is_tv and not matched_in_folder:
+    if episode is None and is_tv and not ep_matched_in_folder:
         m = _ABS_EP_RE.search(stem)
         if m and not _overlaps(m.start(), m.end(), match_span):
             n = int(m.group(1))
@@ -775,6 +809,15 @@ def parse_media_filename(path: str, library_type: str) -> dict:
                     season = 1
                 episode = n
                 abs_ep_span = (m.start(), m.end())
+
+    # A3（缺集普查 2026-10-19）：季号兜底。文件名没给显式季号（裸 E05 /
+    # 绝对集数只给了默认的 season=1）时，看父目录名有没有确定的季号。
+    # 只认既有可解析形态（Season 1 / S01 / 第1季…），目录名含糊（无值或
+    # 多个不同值）时不动——宁漏勿错标。显式季号永远优先，不会被覆盖。
+    if not season_explicit and is_tv:
+        _dir_season = _season_from_dirname(folder)
+        if _dir_season is not None:
+            season = _dir_season
 
     # 片名：把匹配到的季/集标记从名称里**挖掉**其余保留。
     # 只看前缀在 "Rick.and.Morty.Season 9" 这类命名上会把季号留在片名里，
@@ -2159,6 +2202,15 @@ class _ScanContext:
     #  「集 → 季 → 剧」的海报回退；同一 Session 的身份映射保证对象不会有两个实例）
     series_items: dict = field(default_factory=dict)
     season_items: dict = field(default_factory=dict)
+    # B2（缺集普查 2026-10-19）：(series.id, season_no) → 季行。季的身份跟
+    # 最终落定的 series 走（目录推导 guid 在重扫/改名后会变），建集时同事务
+    # 内确保季行存在就靠这把键，幂等且不受目录 guid 漂移影响。
+    season_items_by_series: dict = field(default_factory=dict)
+    # B2 季行随批预取（2026-10-20）：本轮扫描中新建的 series id。
+    # _ensure_season_row 的 (series.id, season_no) 回退 SELECT 只对"扫描前已
+    # 存在"的 series 有意义——新建 series 的季行不可能已在库里，跳过回退直接
+    # 插入，守住"按批加载"预算护栏（逐键 SELECT 曾把预算从 12 推到 14）。
+    new_series_ids: set = field(default_factory=set)
     # 增量扫描：目录 → 本次指纹（None = 拿不到，这个目录不走捷径）
     dir_fingerprints: dict = field(default_factory=dict)
     # 本批处理过的目录（目录 → 当前指纹），批次提交时写回
@@ -2703,6 +2755,141 @@ def _resolve_conflict(db: Session, guid: str) -> Any:
     return db.query(emby_models.MediaItem).filter(
         emby_models.MediaItem.guid == guid
     ).first()
+
+
+def _season_row_visible(row) -> bool:
+    """季行是否对播放器可见：软删行与合并走的行不算（季列表只认可见行）。"""
+    return (row is not None
+            and getattr(row, "deleted_at", None) is None
+            and getattr(row, "merged_into_id", None) is None)
+
+
+def _prefetch_batch_season_rows(db: Session, ctx: "_ScanContext",
+                                prepared: list) -> None:
+    """B2 季行随批预取（2026-10-20）：本批剧集用到的季行按 (series_id, season_no)
+    一次查回，写库循环里 ``_ensure_season_row`` 不再逐键回退 SELECT。
+
+    只能覆盖预取时已解析出的 series（``ctx.series_items`` 里已有行，即扫描前
+    已存在的剧）；本批新建的 series 在预取时还没有 id——它们的季行不可能已在
+    库里，``_ensure_season_row`` 里凭 ``ctx.new_series_ids`` 跳过回退 SELECT
+    直接插入。目录 guid 漂移（``_find_duplicate_series`` 复用老 series）是例外：
+    老 series 不在 new_series_ids 里，回退 SELECT 保留。
+    """
+    MI = emby_models.MediaItem
+    pairs = set()
+    for pending in prepared:
+        if getattr(pending, "item_type", None) != "episode":
+            continue
+        season_no = (getattr(pending, "parsed", None) or {}).get("season")
+        if season_no is None:
+            continue
+        srow = ctx.series_items.get(getattr(pending, "series_guid", None))
+        sid = getattr(srow, "id", None)
+        if sid is not None:
+            pairs.add((sid, season_no))
+    if not pairs:
+        return
+    for chunk in _chunks(sorted(pairs), SQL_IN_CHUNK):
+        rows = (
+            db.query(MI)
+            .filter(MI.library_id == ctx.lib_id,
+                    MI.item_type == "season",
+                    tuple_(MI.series_id, MI.season_number).in_(chunk),
+                    MI.deleted_at.is_(None),
+                    MI.merged_into_id.is_(None))
+            .all()
+        )
+        for row in rows:
+            ctx.season_items_by_series[(row.series_id, row.season_number)] = row
+
+
+def _ensure_season_row(db: Session, ctx: "_ScanContext", library,
+                       series, season_no: int, season_guid_hint: str):
+    """B2（缺集普查 2026-10-19）：建集行时同事务内保证季行存在。
+
+    幂等键是 ``(series.id, season_no)``——季的身份跟最终落定的 series 走，
+    而不是目录推导的 guid：重扫/改名/目录结构变化后目录 guid 会漂移，旧实现
+    只按目录 guid 查就会漏建（集行建了季行没建）或建重复。
+    并发安全沿用现有模式：SAVEPOINT 内插入，撞唯一键（另一扫描并发先建了）
+    时降级为按 guid 重查复用，不让整批回滚。
+    特殊集（season 0）沿用现有惯例（同样建「第 0 季」行），不另立口径。
+    """
+    key = (series.id, season_no)
+    season_item = ctx.season_items_by_series.get(key)
+    if _season_row_visible(season_item):
+        return season_item
+    # 批次预取的 guid 缓存：命中也要验可见性（_load_items 带 include_deleted，
+    # 软删/合并走的季行会被查回来，但季列表认不出它们）。
+    season_item = ctx.season_items.get(season_guid_hint)
+    if _season_row_visible(season_item):
+        # 同一 guid 的季行若归属别的 series，不能复用（防目录 guid 漂移串季）
+        if (season_item.series_id == series.id
+                and season_item.season_number == season_no):
+            ctx.season_items_by_series[key] = season_item
+            return season_item
+        season_item = None
+    if season_item is None and series.id not in ctx.new_series_ids:
+        # 回退 SELECT 只对扫描前已存在的 series 有意义：目录 guid 漂移时季行
+        # 挂在老 guid 下，(series.id, season_no) 能把它找回来（B2 的主场景）。
+        # 本批新建的 series（ctx.new_series_ids）季行不可能已存在，跳过回退
+        # 直接插入——守住"按批加载"预算护栏（逐键 SELECT 曾把预算 12 推到 14）。
+        # 本批可解析 series 的季行已在 _prepare_and_prefetch 里随批预取。
+        MI = emby_models.MediaItem
+        season_item = (
+            db.query(MI)
+            .filter(MI.library_id == library.id,
+                    MI.item_type == "season",
+                    MI.series_id == series.id,
+                    MI.season_number == season_no,
+                    MI.deleted_at.is_(None),
+                    MI.merged_into_id.is_(None))
+            .order_by(MI.id)
+            .first()
+        )
+    if season_item is None:
+        season_item = emby_models.MediaItem(
+            guid=season_guid_hint, library_id=library.id,
+            item_type="season", name=f"第 {season_no} 季",
+            parent_id=series.id, series_id=series.id,
+            season_number=season_no, date_added=datetime.now(),
+            probe_status="done",  # 剧集/季没有文件可探测
+        )
+        try:
+            with db.begin_nested():
+                db.add(season_item)
+                db.flush()
+        except IntegrityError as exc:
+            if not _is_unique_violation(exc):
+                raise
+            # 并发扫描抢先建了同 guid 季行：降级复用，不让整批回滚。
+            # 注意：SAVEPOINT 回滚后失败对象已不在 session.new 里（跨版本行为有
+            # 差异），重查前只在仍在 new 里时才 expunge，避免 autoflush 重插。
+            if season_item in db.new:
+                db.expunge(season_item)
+            logger.info("季行并发建重复，降级复用 guid=%s", season_guid_hint)
+            # 复用行可能已被软删/合并（guid 唯一键仍占着，建不出第二行）：
+            # 用 include_deleted 把它找回来（B1 死壳范畴，读侧虚拟季兜底），
+            # 而不是让唯一键异常漏出去把整批掀翻。
+            with _soft_delete.include_deleted():
+                season_item = (
+                    db.query(emby_models.MediaItem)
+                    .filter(emby_models.MediaItem.guid == season_guid_hint)
+                    .first()
+                )
+            if season_item is None:
+                raise
+    if not _season_row_visible(season_item):
+        # 极少数情况：同 guid 的旧季行已被软删/合并（B1 死壳范畴）。
+        # guid 唯一键占着建不出新行，只能复用旧行；先把属性加载完再脱离
+        # 会话并跳过缓存——否则后续属性刷新会被软删钩子过滤掉而抛
+        # ObjectDeletedError。读侧虚拟季（#1092）会为这类季合成条目，季列表不断。
+        with _soft_delete.include_deleted():
+            db.refresh(season_item)
+        db.expunge(season_item)
+        return season_item
+    ctx.season_items_by_series[key] = season_item
+    ctx.season_items[season_guid_hint] = season_item
+    return season_item
 
 
 def _load_external_subtitles(db, item_ids: list) -> dict:
@@ -3374,6 +3561,11 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             row = parents.get(pending.season_guid)
             if row is not None:
                 ctx.season_items[pending.season_guid] = row
+
+    # B2 季行随批预取（2026-10-20）：本批剧集用到的 (series_id, season_no)
+    # 季行一次查回——写库循环里 _ensure_season_row 不再逐键回退 SELECT，
+    # 守住"按批加载"预算护栏。只能覆盖预取时已解析出的 series。
+    _prefetch_batch_season_rows(db, ctx, prepared)
 
     # 增量扫描：先把本批远程目录的列举并发预热（指纹要用，写库循环里的图片/字幕判定
     # 也要用同一份，不会多一次网络往返），再一次取出这些目录的已存指纹
@@ -4967,6 +5159,9 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             db.add(series)
                             db.flush()
                             ctx.series_items[series_guid] = series
+                            # B2 季行随批预取（2026-10-20）：本批新建的 series，
+                            # _ensure_season_row 对它跳过回退 SELECT（季行不可能已存在）。
+                            ctx.new_series_ids.add(series.id)
                     # 现有隐式 series 可能是旧版本用 episode 文件名建出来的污染名称；
                     # 只要还没有 TMDB/NFO 的权威名称，就用目录名纠正。
                     if _pending.series_name and not series.tmdb_id:
@@ -5005,18 +5200,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         stats["nfo"] = stats.get("nfo", 0) + 1
 
                     season_guid = _pending.season_guid
-                    season_item = ctx.season_items.get(season_guid)
-                    if season_item is None:
-                        season_item = emby_models.MediaItem(
-                            guid=season_guid, library_id=library.id,
-                            item_type="season", name=f"第 {season_no} 季",
-                            parent_id=series.id, series_id=series.id,
-                            season_number=season_no, date_added=datetime.now(),
-                            probe_status="done",  # 同上：无文件可探测
-                        )
-                        db.add(season_item)
-                        db.flush()
-                        ctx.season_items[season_guid] = season_item
+                    season_item = _ensure_season_row(
+                        db, ctx, library, series, season_no, season_guid)
                     if _pending.season_nfo_data and not season_item.overview:
                         # 季 NFO（season.nfo）：只补简介与评分
                         nfo_lib.apply_nfo(season_item, _pending.season_nfo_data, "season")
