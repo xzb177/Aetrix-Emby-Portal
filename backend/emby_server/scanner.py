@@ -890,6 +890,22 @@ PROBE_REMOTE_TAIL_BYTES = env_int("PROBE_REMOTE_TAIL_BYTES", 2 << 20, 1 << 18)
 # 不无封顶地烧探测流量。
 PROBE_MOOV_MAX_BYTES = env_int("PROBE_MOOV_MAX_BYTES", 8 << 20, 1 << 20)
 
+
+def _env_flag(name: str, default: str = "1") -> bool:
+    return (os.getenv(name, default) or default).strip().lower() not in ("0", "false", "no", "off")
+
+
+# 头尾探测（探测正案第 1 步）：不再让 ffprobe 直接在 FUSE 上乱 seek——两次读
+# （头部 + 尾部），写进同尺寸的稀疏临时文件（truncate(size) 后只填头尾），再对
+# 本地文件跑 ffprobe -probesize 5M -analyzeduration 0。mkv 的 Info/Tracks 在头部、
+# mp4 的 moov 在头或尾，都覆盖得到；50GB 的原盘和 500MB 的剧集一样只读头尾两段，
+# 耗时与大小无关。失败时返回 None，调用方回退现行流程。
+PROBE_HEADTAIL_ENABLED = _env_flag("PROBE_HEADTAIL_ENABLED")
+PROBE_HEADTAIL_HEAD_BYTES = env_int("PROBE_HEADTAIL_HEAD_BYTES", 4 << 20, 1 << 20)
+PROBE_HEADTAIL_TAIL_BYTES = env_int("PROBE_HEADTAIL_TAIL_BYTES", 16 << 20, 1 << 20)
+PROBE_HEADTAIL_PROBESIZE = env_int("PROBE_HEADTAIL_PROBESIZE", 5 << 20, 1024)
+PROBE_HEADTAIL_ANALYZEDURATION = env_int("PROBE_HEADTAIL_ANALYZEDURATION", 0, 0)
+
 #: 需要「尾部再读一次」的容器（moov 可能落在文件尾）。
 #: 只收 MP4/MOV 系：Matroska / WebM 的时长写在文件头的 Segment Info 里，
 #: 第一跳 1 MiB 稳定命中，给它们加尾部请求纯属白烧网盘流量与带宽。
@@ -966,7 +982,8 @@ def _parse_ffprobe_http_error(stderr: str) -> Optional[int]:
 
 
 def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
-             ranged: bool = True, local_path: str = "") -> Optional[dict]:
+             ranged: bool = True, local_path: str = "",
+             probesize: Optional[int] = None, analyzeduration: Optional[int] = None) -> Optional[dict]:
     """ffprobe 提取媒体信息（无 ffprobe 时优雅降级）。
 
     远程直链补一个有限 Range，兼容 rclone rc-serve；本机文件不改变行为。
@@ -975,6 +992,8 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
     ``local_path`` 非空时改为探测**这个本地文件**（双 Range 拼出来的「头部 + moov」临时文件），
     完全不碰 Range / ``-headers``——这两项只对 http 协议有效，喂本地文件反而会让
     ffprobe 报 ``Option headers not found`` 直接失败。
+    ``probesize`` / ``analyzeduration`` 非空时覆盖模块默认的 FFPROBE_PROBESIZE /
+    FFPROBE_ANALYZEDURATION（头尾探测按正案要求用 -probesize 5M -analyzeduration 0）。
 
     返回的 dict 可能含 `_error` 字段：
     - `_error="quota"`：HTTP 403，远端配额/权限受限
@@ -986,7 +1005,8 @@ def _ffprobe(path: str, headers: Optional[dict] = None, size: int = 0,
     # -v error：只输出错误（不用 quiet，否则 403/404 的真实原因被吞掉）
     cmd = ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams"]
     # Hark 6链路第4项：显式限制分析量，避免在残缺/远程流上无限制读取导致探测慢
-    cmd += ["-probesize", str(FFPROBE_PROBESIZE), "-analyzeduration", str(FFPROBE_ANALYZEDURATION)]
+    cmd += ["-probesize", str(FFPROBE_PROBESIZE if probesize is None else probesize),
+            "-analyzeduration", str(FFPROBE_ANALYZEDURATION if analyzeduration is None else analyzeduration)]
     target = local_path or path
     if not local_path:
         probe_headers = dict(headers or {})
@@ -1248,6 +1268,82 @@ def _http_fetch_range(url: str, headers: Optional[dict], start: int, end: int) -
     return body[start:end + 1] if len(body) >= end + 1 else None
 
 
+def _local_fetch_range(path: str, headers: Optional[dict], start: int, end: int) -> Optional[bytes]:
+    """读本机文件的一段字节（FUSE 挂载也只做两次定长读，不让 ffprobe 乱 seek）。
+
+    签名与 ``_http_fetch_range`` 对齐（headers 忽略），失败返回 None（不抛）。
+    """
+    try:
+        want = int(end) - int(start) + 1
+        if want <= 0:
+            return None
+        with open(path, "rb") as fh:
+            fh.seek(int(start))
+            data = fh.read(want)
+        return data if len(data) == want else None
+    except OSError:
+        return None
+
+
+def _headtail_sparse_temp(path: str, headers: Optional[dict], size: int) -> Optional[str]:
+    """头尾探测：并行取「头 PROBE_HEADTAIL_HEAD_BYTES + 尾 PROBE_HEADTAIL_TAIL_BYTES」，
+    写进同尺寸的稀疏临时文件（ftruncate(total) 后只在头尾两处落盘，中间全是空洞），
+    返回临时文件路径（调用方负责删）。
+
+    远端直链走 HTTP Range（比走挂载稳）；本机/FUSE 路径走两次定长本地读。
+    两个请求是并行的：先全部 submit 再取结果。
+    任何一步没成就返回 None，调用方回退到现行流程，行为不倒退。
+    """
+    total = int(size or 0)
+    head_n = int(PROBE_HEADTAIL_HEAD_BYTES)
+    tail_n = int(PROBE_HEADTAIL_TAIL_BYTES)
+    if total <= 0 or head_n <= 0 or tail_n <= 0:
+        return None
+    if total <= head_n + tail_n:
+        return None  # 小文件：两段窗口就盖住全文件，走现行流程更直接
+    if any(str(k).lower() == "range" for k in (headers or {})):
+        return None  # 调用方自己带了 Range（说明另有安排），别插手
+    remote = path.startswith(("http://", "https://"))
+    fetch = _http_fetch_range if remote else _local_fetch_range
+    head_end = head_n - 1
+    tail_start = total - tail_n
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        head_future = pool.submit(fetch, path, headers, 0, head_end)
+        tail_future = pool.submit(fetch, path, headers, tail_start, total - 1)
+        try:
+            head = head_future.result(timeout=PROBE_HTTP_TIMEOUT)
+            tail = tail_future.result(timeout=PROBE_HTTP_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 — 抓字节失败只是「这次头尾没成」
+            logger.debug("头尾探测抓取失败 %s: %s", path, exc)
+            return None
+    if not head or len(head) != head_n or not tail or len(tail) != tail_n:
+        logger.debug("头尾探测缺段 %s：head=%s tail=%s",
+                     path, len(head or b""), len(tail or b""))
+        return None
+    suffix = posixpath.splitext(path.split("?", 1)[0])[1][:8] or ".bin"
+    fd, tmp = tempfile.mkstemp(prefix="probe-headtail-", suffix=suffix)
+    try:
+        os.ftruncate(fd, total)  # 同尺寸稀疏文件：中间全是空洞，不占空间
+        os.pwrite(fd, head, 0)
+        os.pwrite(fd, tail, tail_start)
+    except OSError as exc:
+        logger.debug("头尾探测写临时文件失败 %s: %s", path, exc)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return None
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return tmp
+
+
 def _remote_returns_login_page(url: str, headers: Optional[dict]) -> bool:
     """远端 URL 预检：响应的 Content-Type 是不是 text/html。
 
@@ -1494,7 +1590,42 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
     if remote and _remote_returns_login_page(path, headers):
         return {"_error": "login_page", "_http_code": 200,
                 "_error_detail": "远端返回登录页（Content-Type=text/html，需要有效授权）"}
-    data = _ffprobe(path, headers, size=size)
+    # 第零跳（头尾探测，探测正案第 1 步）：先于下面的第一跳。两次读（头 + 尾）写进
+    # 同尺寸稀疏临时文件，对本地文件跑 ffprobe -probesize 5M -analyzeduration 0。
+    # 拿到 format 就直接用，后面两级回退不再跑；拿不到则走下面的现行流程。
+    data = None
+    _via_headtail = False
+    if PROBE_HEADTAIL_ENABLED:
+        _ht_tmp = _headtail_sparse_temp(path, headers, size)
+        if _ht_tmp:
+            try:
+                _ht_data = _ffprobe(path, headers, size=size, local_path=_ht_tmp,
+                                    probesize=PROBE_HEADTAIL_PROBESIZE,
+                                    analyzeduration=PROBE_HEADTAIL_ANALYZEDURATION)
+                if _ht_data and _ht_data.get("format"):
+                    try:
+                        # 合成大小取 ffprobe **自己报的**文件大小：稀疏临时文件与原文件
+                        # 同尺寸时报的就是原大小（码率本就按真实大小算过，不该再放大）；
+                        # 真是小尺寸的合成文件时才按 真实大小/合成大小 还原码率。
+                        _fmt = _ht_data.get("format") or {}
+                        try:
+                            _synth_size = int(_fmt.get("size") or 0)
+                        except (TypeError, ValueError):
+                            _synth_size = 0
+                        if _synth_size <= 0:
+                            _synth_size = os.path.getsize(_ht_tmp)
+                        _rescale_synthetic_format(_ht_data, int(size or 0), _synth_size)
+                    except OSError:
+                        pass
+                    _via_headtail = True
+                    data = _ht_data
+            finally:
+                try:
+                    os.unlink(_ht_tmp)
+                except OSError:  # noqa: BLE001 — 临时文件删不掉也不该让探测崩掉
+                    logger.debug("头尾探测临时文件删除失败 %s", _ht_tmp)
+    if data is None:
+        data = _ffprobe(path, headers, size=size)
     # 有限 Range 只是「少读点」的快速路径（decd396）：它只保证**头部带时长**的封装
     # （Matroska 实测有效）。moov 在文件尾的 MP4/MOV 在前 1 MiB 里根本没有时长，
     # 而我们注入的 Range 又让 ffprobe 把 206 当成整个文件，读到窗口末尾就报
@@ -1557,6 +1688,8 @@ def probe_metadata(path: str, headers: Optional[dict] = None, size: int = 0,
             return info
     if used_mediainfo:
         info["_probe_backend"] = "mediainfo"
+    elif _via_headtail:
+        info["_probe_backend"] = "headtail"
     else:
         _container_lc = (container or "").lower()
         if _container_lc in ("mp4", "mov", "m4v"):

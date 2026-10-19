@@ -318,27 +318,34 @@ def test_mp4_second_hop_beats_slow_seek(monkeypatch):
     assert not info.get("_degraded")
 
 
-def test_mkv_never_takes_second_hop(monkeypatch):
-    """MKV 第一跳失败直接走旧的自由 seek，第二跳对它完全不触发"""
+def test_mkv_takes_headtail_hop(monkeypatch):
+    """头尾探测（正案第 1 步，用户 2026-10-19 亲定）：MKV 也走第零跳。
+
+    旧行为「MKV 不该发尾部请求」是双 Range 时代的省流量优化；正案第 1 步改走
+    统一的头尾稀疏文件（4MB 头本就含 MKV 时长），容器不再设门。
+    第零跳拿到 format 后旧的三跳不再跑。
+    """
+    _size = int(scanner.PROBE_HEADTAIL_HEAD_BYTES) + int(scanner.PROBE_HEADTAIL_TAIL_BYTES) + (1 << 20)
+    blob = b"M" * _size
+    monkeypatch.setattr(scanner, "_http_fetch_range", _sliced(blob))
     calls = []
 
-    def fake_ffprobe(path, headers=None, size=0, ranged=True, local_path=""):
-        calls.append("local" if local_path else ranged)
+    def fake_ffprobe(path, headers=None, size=0, ranged=True, local_path="",
+                     probesize=None, analyzeduration=None):
+        calls.append((ranged, bool(local_path), probesize, analyzeduration))
         if local_path:
-            return pytest.fail("MKV 不该走双 Range")
-        if ranged:
-            return {}
-        return {"format": {"duration": "1800.0"}, "streams": []}
+            return {"format": {"duration": "1800.0"}, "streams": []}
+        return pytest.fail("第零跳成功后不该再跑旧的三跳")
 
     monkeypatch.setattr(scanner, "_ffprobe", fake_ffprobe)
-    monkeypatch.setattr(scanner, "_http_fetch_range",
-                        lambda *a, **k: pytest.fail("MKV 不该发尾部请求"))
-    # 本例验的是回退机制本身：关掉整文件流量闸（TOTAL=8GiB 默认会被闸拦下，
-    # 闸的行为由 test_playback_readfix 单独覆盖）
-    monkeypatch.setattr(scanner, "PROBE_WHOLE_FILE_MAX_BYTES", 0)
-    info = scanner.probe_metadata("http://x/a.mkv", size=TOTAL)
-    assert calls == [True, False]
+    info = scanner.probe_metadata("http://x/a.mkv", size=_size)
     assert info["duration_ticks"] == 1800 * 10_000_000
+    assert len(calls) == 1, "第零跳成功后不再调 _ffprobe"
+    ranged, via_local, probesize, analyzeduration = calls[0]
+    assert via_local is True, "第零跳走本地稀疏文件"
+    assert probesize == scanner.PROBE_HEADTAIL_PROBESIZE
+    assert analyzeduration == scanner.PROBE_HEADTAIL_ANALYZEDURATION
+    assert info.get("_probe_backend") == "headtail"
 
 
 def test_falls_back_to_slow_seek_when_dual_range_fails(monkeypatch):
@@ -363,13 +370,24 @@ def test_falls_back_to_slow_seek_when_dual_range_fails(monkeypatch):
 
 
 def test_http_error_still_skips_second_hop(monkeypatch):
-    """403 重试没有意义：配额熔断器已经拿到信号了"""
+    """403 时：允许第零跳的两次 Range 试探（失败即停），拿到 403 信号后不再发任何请求。
+
+    旧断言「HTTP 错误不该再发请求」针对的是「第一跳已知 403 后还去重试」；
+    头尾探测作为第零跳先行，两次试探失败（403）后回退，第一跳报出 403，
+    双 Range / 自由 seek 照旧被 _http_code 门控拦下——配额保护不断。
+    """
+    fetch_calls = []
+
+    def boom_fetch(url, headers, start, end):
+        fetch_calls.append((start, end))
+        raise RuntimeError("HTTP 403")
+
+    monkeypatch.setattr(scanner, "_http_fetch_range", boom_fetch)
     monkeypatch.setattr(scanner, "_ffprobe", lambda *a, **k: {
         "_http_code": 403, "_error": "quota", "_error_detail": "远端配额/权限受限 (HTTP 403)"})
-    monkeypatch.setattr(scanner, "_http_fetch_range",
-                        lambda *a, **k: pytest.fail("HTTP 错误不该再发请求"))
     info = scanner.probe_metadata(MP4_URL, size=TOTAL)
     assert info["_error"] == "quota" and info["_http_code"] == 403
+    assert len(fetch_calls) == 2, "403 已知后不许再有抓取请求（双 Range/自由 seek 全被门控拦下）"
 
 
 def test_local_file_never_takes_second_hop(monkeypatch):
