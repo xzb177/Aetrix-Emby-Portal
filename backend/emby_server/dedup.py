@@ -22,16 +22,29 @@ from typing import Any, Iterable, Optional
 DEDUP_TYPES = ("movie", "series")
 
 
+#: 行尾残缺年份后缀：手工改名残留的「九尾狐传 (2023」（括号未闭合）。
+#: 归一化时当作残缺片段剥掉，让它与正名「九尾狐传」归一一致，避免认亲失败
+#: （缺集普查 2026-10-19 桶 C2）。只剥**行尾**、只认 ``(19|20)xx`` 四位年份；
+#: 闭合的「(2023)」**故意不动**——年份仍是跨年同名剧的区分信号（dedup_key 的
+#: year 分量与 find_duplicate_ids 的 ±1 过滤都依赖它）；剥掉会把
+#: 「X (2023)」和「X (2024)」误判成同一部。非年份的未闭合括号
+#: （如「xxx (导演剪辑版」）同样不动。
+_TRAILING_BROKEN_YEAR_RE = re.compile(r"[\(（\[【［]\s*(?:19|20)\d{2}\s*$")
+
+
 def normalize_name(name: Optional[str]) -> str:
     """归一化标题：NFKC、全小写、去所有空白与标点。
 
     目标：让「19号消防局」「19号消防局 」「19號消防局」算同一个。
     注意：不做繁简转换（避免误合并），只做空白/标点/大小写归一。
+    另见 _TRAILING_BROKEN_YEAR_RE：行尾未闭合的年份后缀（如「(2023」）
+    先当作残缺片段剥掉。
     """
     if not name:
         return ""
     s = unicodedata.normalize("NFKC", name)
     s = s.lower()
+    s = _TRAILING_BROKEN_YEAR_RE.sub("", s)
     # 去掉所有空白和标点，只保留字母数字（中日韩字符属于字母，保留）
     s = "".join(ch for ch in s if ch.isalnum())
     return s

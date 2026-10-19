@@ -126,16 +126,176 @@ def count_visible(db, *filters) -> int:
     return int(query.scalar() or 0)
 
 
+#: 合并链深度上限（与 api._family_series_ids 的 8 层同口径）
+_MERGE_CHAIN_DEPTH = 8
+
+
+def _visible_merge_target(db, item, skip_ids=frozenset()):
+    """沿 merged_into_id 向上找「可见的」合并链顶（不含 item 自身）。
+
+    只认 ORM 可见行（全局软删过滤自动生效）且不在 skip_ids（本批待删）里的行；
+    item 本来就没有上游 / 上游不可见（已软删）/ 上游在本批待删 / 成环 /
+    深度耗尽 → 返回 None（调用方走家族 root 或提升分身兜底）。
+
+    注意：读的是同一 Session 的实例——调用方之前改过的 merged_into_id
+    （未提交）在内存里同样生效，批量处理时浅层先行即靠这一点保持一致。
+    """
+    from backend.emby_server.models import MediaItem
+
+    nxt_id = item.merged_into_id
+    if not nxt_id:
+        return None
+    seen = {item.id}
+    top = None
+    for _ in range(_MERGE_CHAIN_DEPTH):
+        if not nxt_id or nxt_id in seen or nxt_id in skip_ids:
+            break
+        seen.add(nxt_id)
+        parent = db.query(MediaItem).filter(MediaItem.id == nxt_id).first()
+        if parent is None:
+            break  # 上游不可见（已软删）：链已断
+        top = parent
+        nxt_id = parent.merged_into_id
+    return top
+
+
+def _find_alternate_family_root(db, item, skip_ids=frozenset()):
+    """在同库家族里找另一个可见 root。
+
+    准入与 api._family_series_ids 一致：同 item_type、同库、
+    merged_into_id 为空、非本行、非本批待删，且（tmdb_id 非空且相等，
+    或 dedup.normalize_name(name) 相等）。多个候选时按 pick_primary 取最优。
+    """
+    from backend.emby_server import models as em
+    from backend.emby_server.dedup import normalize_name, pick_primary
+
+    norm = normalize_name(item.name)
+    tmdb = (item.tmdb_id or "").strip()
+    q = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == item.item_type,
+        em.MediaItem.library_id == item.library_id,
+        em.MediaItem.merged_into_id.is_(None),
+        em.MediaItem.id != item.id,
+    )
+    if skip_ids:
+        q = q.filter(~em.MediaItem.id.in_(skip_ids))
+    cands = []
+    for cand in q.all():
+        cand_tmdb = (cand.tmdb_id or "").strip()
+        if (tmdb and cand_tmdb == tmdb) or (norm and normalize_name(cand.name) == norm):
+            cands.append(cand)
+    return pick_primary(cands) if cands else None
+
+
+def _merge_depth(db, item) -> int:
+    """合并链深度（root=0）：批量软删时浅层先行，保证父行先改指。"""
+    from backend.emby_server.models import MediaItem
+
+    depth, seen, nxt_id = 0, {item.id}, item.merged_into_id
+    for _ in range(_MERGE_CHAIN_DEPTH):
+        if not nxt_id or nxt_id in seen:
+            break
+        seen.add(nxt_id)
+        depth += 1
+        parent = db.query(MediaItem).filter(MediaItem.id == nxt_id).first()
+        if parent is None:
+            break
+        nxt_id = parent.merged_into_id
+    return depth
+
+
+def rehome_merged_children(db, item, skip_ids=frozenset()) -> str:
+    """软删/回收某行之前，把指向它的分身（merged_into 链）改指到其它可见行。
+
+    防治缺集普查 2026-10-19 桶 C2 的「孤儿集」：分身的合并目标 root 被软删后，
+    分身名下可见的季/集再也触达不到（没有任何可见 root 的 family 能含它）。
+
+    处置优先级：
+    1. item 有可见合并上游链顶（排除本批待删）→ 分身改指链顶；
+    2. 否则 item 就是可见链顶：在同库家族里找另一个可见 root
+       （tmdb 相同或归一化名相同，准入与 api._family_series_ids 一致）
+       → 分身改指它；
+    3. 否则把最合适的分身提升为可见 root（merged_into_id=None，
+       pick_primary 评分），其余分身改指它。
+
+    只改 merged_into_id，不碰 deleted_at 与从属数据；失败抛异常，
+    由调用方 fail-closed（本批跳过该行：宁可本次不删，不造孤儿）。
+
+    返回处置动作：no-children / repointed-to-chain-top /
+    repointed-to-family-root / promoted-child。
+    """
+    from backend.emby_server import models as em
+    from backend.emby_server.dedup import DEDUP_TYPES, pick_primary
+
+    # include_deleted：要改指的**所有**分身（含已隐藏的）——否则回收隐藏 root
+    # 时，已隐藏分身的 merged_into 会悬空指向一个物理上不存在的行
+    # （PG 外键还会直接让回收报错）。
+    with include_deleted():
+        children = db.query(em.MediaItem).filter(
+            em.MediaItem.merged_into_id == item.id).all()
+    if not children:
+        return "no-children"
+    top = _visible_merge_target(db, item, skip_ids)
+    target, action = None, None
+    if top is not None:
+        target, action = top, "repointed-to-chain-top"
+    elif item.item_type in DEDUP_TYPES:
+        alt = _find_alternate_family_root(db, item, skip_ids)
+        if alt is not None:
+            target, action = alt, "repointed-to-family-root"
+    if target is not None:
+        for child in children:
+            child.merged_into_id = target.id
+    else:
+        # 兜底：提升最合适的分身。优先选可见且非本批待删的分身——本批待删的
+        # 分身稍后由它们自己的守卫处理自己的分身；若分身全在本批，任选其一
+        # （随后同样被删，无孤儿产生）。
+        candidates = [c for c in children
+                      if c.id not in skip_ids and c.deleted_at is None]
+        if not candidates:
+            candidates = [c for c in children if c.id not in skip_ids] or children
+        best = pick_primary(candidates)
+        best.merged_into_id = None
+        for child in children:
+            if child.id != best.id:
+                child.merged_into_id = best.id
+        target, action = best, "promoted-child"
+    logger.info("软删孤儿守卫：%s(id=%s) 的 %d 个分身已改指 id=%s（%s）",
+                item.item_type, item.id, len(children), target.id, action)
+    return action
+
+
 def mark_soft_deleted(db, item_ids: list) -> int:
-    """把条目标记为已删除（不碰从属数据：进度、收藏都留着等它回来）"""
+    """把条目标记为已删除（不碰从属数据：进度、收藏都留着等它回来）
+
+    C2 孤儿防治（缺集普查 2026-10-19）：先对每行跑合并链守卫
+    （rehome_merged_children），浅层先行——父行先改指，子行再基于已改指的
+    状态处理。守卫失败的行从本批剔除（fail-closed：宁可本次不删，不造孤儿）。
+    """
     from backend.emby_server.models import MediaItem
 
     ids = [int(i) for i in item_ids if i]
     if not ids:
         return 0
-    db.query(MediaItem).filter(MediaItem.id.in_(ids)).update(
+    skip = set(ids)
+    rows = []
+    for _id in ids:
+        row = db.query(MediaItem).filter(MediaItem.id == _id).first()
+        if row is not None:
+            rows.append(row)
+    rows.sort(key=lambda r: _merge_depth(db, r))
+    safe_ids = []
+    for row in rows:
+        try:
+            rehome_merged_children(db, row, skip_ids=skip)
+            safe_ids.append(row.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("软删孤儿守卫失败，跳过本行 id=%s: %s", row.id, exc)
+    if not safe_ids:
+        return 0
+    db.query(MediaItem).filter(MediaItem.id.in_(safe_ids)).update(
         {"deleted_at": datetime.now()}, synchronize_session=False)
-    return len(ids)
+    return len(safe_ids)
 
 
 def resurrect(db, item_ids: list) -> int:
@@ -167,7 +327,25 @@ def purge_expired(db, purge_days: int = None, library_id: int = None) -> int:
         ids = [row[0] for row in query.limit(PURGE_BATCH).all()]
     if not ids:
         return 0
-    _purge_items(db, ids)
+    # C2 孤儿防治：物理回收前同样先改指分身——隐藏 root 被回收时，其分身
+    # （可见或已隐藏）可能还指着它；不改指则悬空（PG 外键还会直接让回收报错）。
+    # 注意：行加载用 include_deleted（要删的就是隐藏行），但改指的目标搜索必须
+    # 走正常可见性，所以 rehome 调用放在 include_deleted 块之外。
+    purgeable = []
+    skip = set(ids)
+    for _id in ids:
+        with include_deleted():
+            row = db.query(MediaItem).filter(MediaItem.id == _id).first()
+        if row is None:
+            continue
+        try:
+            rehome_merged_children(db, row, skip_ids=skip)
+            purgeable.append(_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("回收孤儿守卫失败，跳过本行 id=%s: %s", _id, exc)
+    if not purgeable:
+        return 0
+    _purge_items(db, purgeable)
     # 列表去重缓存：物理删除改变条目集合 → bump 版本号（提交后可见）。
     # 唯一调用方（扫描清理）恒传 library_id；None 时退化为全库 bump。
     try:
