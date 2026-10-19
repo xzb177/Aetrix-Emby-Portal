@@ -87,10 +87,17 @@ class _FakeClient:
         return self._find
 
     def apply_details(self, item, data):
-        item.overview = data.get("overview")
-        item.community_rating = data.get("vote_average")
-        item.imdb_id = (data.get("external_ids") or {}).get("imdb_id")
-        item.aliases = "新片名"
+        # 与真客户端 tmdb_client.apply_details 同契约：只填空、不覆盖（fill-only）。
+        # WS1/B3 门放宽后：即使条目已有 imdb_id/别名，只要任一文字字段缺失
+        # 就调 apply_details——已有简介/评分绝不许被覆盖，mock 必须建模这一点。
+        if not (getattr(item, "overview", None) or "").strip():
+            item.overview = data.get("overview")
+        if getattr(item, "community_rating", None) is None:
+            item.community_rating = data.get("vote_average")
+        if not getattr(item, "imdb_id", None):
+            item.imdb_id = (data.get("external_ids") or {}).get("imdb_id")
+        if not (getattr(item, "aliases", None) or "").strip():
+            item.aliases = "新片名"
 
     def apply_images(self, item, data):
         item.primary_image_url = "https://img.example/p.jpg"
