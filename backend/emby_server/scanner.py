@@ -829,6 +829,11 @@ PROBE_WHOLE_FILE_MAX_BYTES = env_int("PROBE_WHOLE_FILE_MAX_BYTES", 1 << 30)
 # 第一跳就拿到了，别为它们多花流量。
 PROBE_REMOTE_TAIL_BYTES = env_int("PROBE_REMOTE_TAIL_BYTES", 2 << 20, 1 << 18)
 
+# 自适应尾窗上限：moov 比固定尾窗大时（实测 2.2~4.6 MiB），按 mdat 声明长度算出的
+# moov 跨度在此上限内才补一次精确 Range。超过上限的按现行失败语义走（日志计数），
+# 不无封顶地烧探测流量。
+PROBE_MOOV_MAX_BYTES = env_int("PROBE_MOOV_MAX_BYTES", 8 << 20, 1 << 20)
+
 #: 需要「尾部再读一次」的容器（moov 可能落在文件尾）。
 #: 只收 MP4/MOV 系：Matroska / WebM 的时长写在文件头的 Segment Info 里，
 #: 第一跳 1 MiB 稳定命中，给它们加尾部请求纯属白烧网盘流量与带宽。
@@ -1115,7 +1120,9 @@ def _find_moov(buf: bytes, base: int = 0):
         if hit < 0:
             return None
         start = hit - 4
-        if start >= 4:
+        # 2026-10-19 自适应尾窗：moov 可能恰好顶在缓冲区开头（start=0），
+        # 此时 buf[0:4] 就是合法的长度字段。旧的 >=4 会把这种顶格 moov 漏掉。
+        if start >= 0:
             size = int.from_bytes(buf[start:start + 4], "big")
             hdr = 8
             if size == 1 and start + 16 <= len(buf):
@@ -1210,6 +1217,57 @@ def _remote_returns_login_page(url: str, headers: Optional[dict]) -> bool:
         return False
 
 
+def _mdat_end_from_head(head: bytes) -> Optional[int]:
+    """从头部字节里算第一个顶层 mdat 的绝对终点。
+
+    allow_overrun 模式下 mdat 的声明长度（整个媒体数据大小）是可信的——
+    这正是「moov 落在文件尾」布局里定位 moov 起点的锚。找不到返回 None。
+    """
+    for typ, _start, end, _hdr, _size in _mp4_boxes(head, base=0, allow_overrun=True):
+        if typ == b"mdat":
+            return end
+    return None
+
+
+def _adaptive_moov_tail(path: str, headers: Optional[dict], head: bytes,
+                        total: int, tail_start: int) -> Optional[bytes]:
+    """自适应尾窗：moov 比固定尾窗大时的补救（最多多 1 次 Range 请求）。
+
+    背景（2026-10-19 大 moov 教训）：moov > PROBE_REMOTE_TAIL_BYTES 时，
+    它的四字节码根本不在尾窗口里，``_find_moov`` 注定找不到，文件会被
+    ``moov atom not found`` 判死。此时用头部 mdat 的声明长度算出 moov
+    起点（= 第一个 mdat 的终点），按精确范围补一次。
+
+    触发条件（缺一不可）：
+    - 头部里能解析出 mdat，且它的终点在尾窗口起点之前（moov 可证明地
+      完全落在固定窗口之外——正常文件走不到这里）；
+    - moov 跨度（total - mdat_end）在 PROBE_MOOV_MAX_BYTES 上限内。
+    否则返回 None，保持现行失败语义。
+    """
+    mdat_end = _mdat_end_from_head(head)
+    if mdat_end is None:
+        return None
+    if mdat_end >= tail_start:
+        # moov 起点在尾窗口内：_find_moov 已经找过，没什么可补的
+        return None
+    span = int(total or 0) - mdat_end
+    if span <= 0:
+        return None
+    if span > PROBE_MOOV_MAX_BYTES:
+        logger.info("双 Range 自适应尾窗跳过 %s：moov 跨度 %d 超过上限 %d",
+                    path, span, PROBE_MOOV_MAX_BYTES)
+        return None
+    try:
+        extra = _http_fetch_range(path, headers, mdat_end, int(total or 0) - 1)
+    except Exception as exc:  # noqa: BLE001 — 补取失败只是「这次没成」
+        logger.debug("双 Range 自适应补取失败 %s: %s", path, exc)
+        return None
+    if not extra:
+        return None
+    logger.debug("双 Range 自适应补取 %s：mdat_end=%d span=%d", path, mdat_end, span)
+    return extra
+
+
 def _dual_range_temp_file(path: str, headers: Optional[dict], size: int) -> Optional[str]:
     """并行取「前 1 MiB + 后 PROBE_REMOTE_TAIL_BYTES」，拼成「头部 + moov」的临时文件。
 
@@ -1240,6 +1298,12 @@ def _dual_range_temp_file(path: str, headers: Optional[dict], size: int) -> Opti
                      path, len(head or b""), len(tail or b""))
         return None
     payload = _mp4_probe_bytes(head, tail)
+    if not payload and tail:
+        # 尾窗口里没有完整 moov：可能是 moov 比窗口大（自适应补一次），
+        # 也可能这文件本来就没有可拼的 moov（补取函数会自行放弃）。
+        tail2 = _adaptive_moov_tail(path, headers, head, total, tail_start)
+        if tail2:
+            payload = _mp4_probe_bytes(head, tail2)
     if not payload:
         logger.debug("双 Range 拼不出可探的 mp4 %s（尾窗口里没有完整的 moov？）", path)
         return None
