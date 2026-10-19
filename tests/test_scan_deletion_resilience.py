@@ -394,6 +394,6 @@ def test_attach_known_items_keeps_rename_match():
 
     p2 = _P()
     p2.item = None
-    row = object()
+    row = SimpleNamespace(id=4242)  # r60：attach 返回 claimed 行 id 集合，dummy 需带 id
     scanner._attach_known_items([p2], {"new-guid": row})
     assert p2.item is row

@@ -48,3 +48,7 @@ def test_absolute_episode_with_dirname():
     # 绝对集数 + 目录季号：季号按目录来
     r = _p("/lib/Show/Season 3/Frieren - 28.mkv")
     assert (r["season"], r["episode"]) == (3, 28)
+    # r60：挖词目标按集号段的来源定——集号在文件名（stem）时从 stem 挖，
+    # 不能把 stem 坐标的 span 切在目录名 folder 文本上（曾把名挖成 "Season 3"，
+    # 单集展示名变成 "Season 3 S03E28"）。
+    assert r["name"] == "Frieren"

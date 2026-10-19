@@ -824,7 +824,12 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     # 也会在标记在最前面时丢掉片名。
     # 从后往前挖，避免位置偏移；只有基于 target 文本的段才参与挖掘
     #（match_span 可能基于 folder，abs_ep_span 只在 stem 上）。
-    target = folder if matched_in_folder else stem
+    # r60：挖词目标按集号段的来源定——A3 新增组合（季号在目录、集号用绝对
+    # 集数在文件名）时 matched_in_folder 为 True，但 abs_ep_span 是 stem
+    # 坐标；此时必须从 stem 挖，否则会把 stem 坐标的 span 切在 folder 文本
+    # 上（实证："Season 3/Frieren - 28" 的名被挖成 "Season 3" 而不是
+    # "Frieren"，单集展示名变成 "Season 3 S03E28"）。
+    target = folder if (matched_in_folder and abs_ep_span is None) else stem
     dig_spans = []
     if match_span and not matched_in_folder:
         dig_spans.append(match_span)
@@ -3296,7 +3301,8 @@ def _submit(pool: ThreadPoolExecutor, fn, *args, **kwargs) -> "Future":
 
 
 def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
-                              ctx: "_ScanContext") -> None:
+                              ctx: "_ScanContext",
+                              claimed_row_ids: Optional[set] = None) -> None:
     """v2.52.0: 用 drive_file_id 识别改名/移动。
 
     guid（path 派生）没命中的文件，如果它的 drive_file_id 在库里能找到，
@@ -3304,6 +3310,9 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
     写库循环走 update 分支（更新 file_path + guid），不删记录、不丢元数据。
 
     批量查一次，不逐文件点查。没有 file_id 的文件（本地/115）跳过。
+
+    claimed_row_ids：调用方先跑的 ``_attach_known_items`` 已认领的行 id
+    集合——这些行不得再被认领（r60：多集迁移下主/次 pending 双认领同一旧行）。
     """
     MI = emby_models.MediaItem
     # 收集需要按 file_id 查的 pending
@@ -3332,7 +3341,8 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
                 if row.drive_file_id:
                     found.setdefault(row.drive_file_id, []).append(row)
     matched = 0
-    claimed_row_ids: set = set()  # 同一行只认领一次（多集文件两行各认各的）
+    # r60：先跑的 _attach_known_items 已认领的行不得再认领（多集迁移场景）。
+    claimed_row_ids = set(claimed_row_ids) if claimed_row_ids else set()
     for p, fid in zip(need, fids):
         rows = [r for r in found.get(fid, []) if r.id not in claimed_row_ids]
         if not rows:
@@ -3373,20 +3383,30 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
         ctx.stats["renamed"] = ctx.stats.get("renamed", 0) + matched
 
 
-def _attach_known_items(prepared: list, known: dict) -> None:
+def _attach_known_items(prepared: list, known: dict) -> set:
     """把 guid 命中的已有行挂到 pending 上。
 
-    改名匹配（file_id / 指纹）已经把旧行挂上来的不要覆盖——否则改名识别的成果
-    在这里被丢掉：旧行会被清理阶段删掉、新行重建，播放进度等元数据就丢了。
-    只有没匹配上的才从 known 里取。
+    guid（path 派生）是最强的身份，调用方必须**先**调本函数、再调改名匹配
+    （``_match_renames_by_file_id`` / ``_match_renames_by_fingerprint``），
+    并把返回的已认领行 id 集合传给它们——改名识别不得再认领这些行。
+
+    r60 实证：多集迁移场景（旧单行 guid 与主行一致）下，若改名识别先跑，
+    第二行会把旧行抢走，随后本函数又把同一旧行挂给主行——两个 pending
+    共用一行，第二行永远建不出来，且静默无报错。
     """
+    claimed: set = set()
     for pending in prepared:
         if pending.item is None:
-            pending.item = known.get(pending.guid)
+            row = known.get(pending.guid)
+            if row is not None:
+                pending.item = row
+                claimed.add(row.id)
+    return claimed
 
 
 def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
-                                  ctx: "_ScanContext") -> None:
+                                  ctx: "_ScanContext",
+                                  claimed_row_ids: Optional[set] = None) -> None:
     """用 (文件大小, 解析身份) 指纹识别改名/移动（无 file_id 的来源）。
 
     ``_match_renames_by_file_id`` 只覆盖有稳定 file_id 的来源（Drive/rclone）；
@@ -3401,6 +3421,7 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
     - 同一指纹下必须**恰好 1 个待匹配文件对恰好 1 个候选行**才认领；
     - 候选行必须本轮没再见到（guid 在 seen_guids 里的是重复文件，不是改名）；
     - 有 file_id 的文件跳过——file_id 是权威身份，没匹配上就是真新文件。
+    - claimed_row_ids：``_attach_known_items`` 已认领的行不得再认领（r60）。
     """
     from types import SimpleNamespace
     # 版本签名模块：函数顶部导入一次，_ver_sig 在热路径（逐文件×逐候选行）
@@ -3523,7 +3544,7 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
     want_count: dict = {}
     for _, fp in need:
         want_count[fp] = want_count.get(fp, 0) + 1
-    claimed_rows: set = set()
+    claimed_rows: set = set(claimed_row_ids) if claimed_row_ids else set()
     matched = 0
     for p, fp in need:
         if want_count[fp] != 1:
@@ -3661,12 +3682,17 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
 
     known = _load_items(db, guids)
 
+    # r60：guid（path 派生）是最强的身份，先挂行；改名识别随后，且不得抢走
+    # 已被 guid 认领的行——否则多集迁移场景（旧单行 guid 与主行一致）下，
+    # 主行与第二行会双认领同一旧行，第二行永远建不出来（静默失败）。
+    claimed_row_ids = _attach_known_items(prepared, known)
+
     # v2.52.0: guid 没命中的，用 drive_file_id 识别改名/移动（复用已有行）
-    _match_renames_by_file_id(db, prepared, known, ctx)
+    _match_renames_by_file_id(db, prepared, known, ctx, claimed_row_ids)
 
     # v2.53.x: 没有 file_id 的来源（本地目录/115），用 (大小, 解析身份) 指纹
     # 识别改名/移动，保住播放进度与元数据
-    _match_renames_by_fingerprint(db, prepared, known, ctx)
+    _match_renames_by_fingerprint(db, prepared, known, ctx, claimed_row_ids)
 
     # 外挂字幕一批查齐：秒跳时每个文件都要比对字幕有无变化，不能逐文件查 DB
     ctx.ext_subtitles = _load_external_subtitles(
@@ -3709,7 +3735,8 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     ) if _incremental_on(ctx) else {}
 
     policy = ctx.snap.scrape_policy
-    _attach_known_items(prepared, known)
+    # r60：_attach_known_items 已在批次开头（改名识别之前）执行，
+    # 这里不再重复挂（幂等，但避免歧义）。
     for pending in prepared:
         item = pending.item
         scan_file = pending.scan_file
