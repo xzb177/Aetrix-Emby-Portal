@@ -1698,8 +1698,14 @@ def admin_overview(staff: models.WebUser = Depends(require_staff), db: Session =
     total_libraries = lib_query.count()
     lib_ids = [row[0] for row in realms.scope_inclusive(
         db.query(em.Library.id), em.Library.realm_id, scope_id).all()]
-    total_items = (soft_delete.count_visible(db, em.MediaItem.library_id.in_(lib_ids))
-                   if lib_ids else 0)
+    # WS1：显式可见口径 —— count_visible 只带软删钩子（且钩子是隐式的），
+    # merged_into_id 没有任何全局过滤，必须显式剔除合并副本（系统清点 F3 同类）
+    total_items = (soft_delete.count_visible(
+        db,
+        em.MediaItem.library_id.in_(lib_ids),
+        em.MediaItem.deleted_at.is_(None),
+        em.MediaItem.merged_into_id.is_(None),
+    ) if lib_ids else 0)
     active_sessions = (
         db.query(em.PlaybackSession).filter(em.PlaybackSession.ended_at.is_(None)).count()
     )

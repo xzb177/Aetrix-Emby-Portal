@@ -4964,10 +4964,14 @@ def _scan_library_body(db: Session, library: emby_models.Library,
             stats["removal_guard"] = _CLEANUP_LAST["skipped"]
             stats["removal_skipped"] = True
 
+    # WS1：显式可见口径 —— merged_into_id 无全局过滤，必须显式剔除合并副本
+    #（与 portal.admin_overview 同类；索引齐全，仍是单条 COUNT 查询）
     library.item_count = _soft_delete.count_visible(
         db,
         emby_models.MediaItem.library_id == library.id,
         emby_models.MediaItem.item_type.in_(["movie", "series"]),
+        emby_models.MediaItem.deleted_at.is_(None),
+        emby_models.MediaItem.merged_into_id.is_(None),
     )
     # 单集多版本：扫描结束后唤醒合并 worker（best-effort，零查询）。
     # 合并本身在 merge_versions_worker 后台做，不占用扫描的资源预算；
