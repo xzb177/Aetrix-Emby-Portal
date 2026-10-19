@@ -729,11 +729,15 @@ def subscription_grant_lock(db: Session, user_id: int, realm_id: int | None):
 
 
 def _grant_subscription(db: Session, user: models.WebUser, plan: models.SubscriptionPlan,
-                        days: int, source: str, ref_id: str,
-                        realm_id: int | None = None) -> models.UserSubscription:
+                        days: int, realm_id: int | None = None) -> models.UserSubscription:
     """发放订阅：**同一个服**已有有效订阅则顺延，否则新建
 
     订阅是一个服一个的：甲服的兑换码只能顺延甲服的会员，不能给乙服的会员加天数。
+
+    去重靠"同服 active 订阅顺延"语义天然成立（重复发放只是顺延同一行，
+    不会产生第二条 active 行），不需要幂等键——R49 删掉了从未被使用、
+    也从未落库的 source/ref_id 形参（调用方以为有幂等键，实际没有，
+    属误导性 API；追溯靠各调用方的 _audit details）。
 
     并发说明（r52 修 EDGE-1）：函数入口先拿 ``subscription_grant_lock``
     按（用户，服）串行，再做「查-改/查-增」。此前的 ``with_for_update()``
@@ -1001,7 +1005,7 @@ def _redeem_exchange_core(db: Session, user: models.WebUser, code_str: str) -> d
             db.rollback()
             raise HTTPException(status_code=400, detail="兑换码关联套餐不存在")
         subscription = _grant_subscription(
-            db, user, plan, code.duration_days, "exchange", code_str,
+            db, user, plan, code.duration_days,
             # 兑换码按它自己所属的服发会员（未标注时回退到套餐的服）
             realm_id=getattr(code, "realm_id", None) or plan.realm_id,
         )
@@ -1433,7 +1437,8 @@ def create_payment_order(
             except InsufficientPoints:
                 db.rollback()
                 raise HTTPException(status_code=400, detail=f"积分不足（需要 {points_cost}）")
-            sub = _grant_subscription(db, current_user, plan, plan.duration_days, "points_purchase", f"subscription_points:{order_id}")
+            sub = _grant_subscription(db, current_user, plan, plan.duration_days,
+                                      realm_id=plan.realm_id)
             order = models.SubscriptionOrder(
                 order_id=order_id, user_id=current_user.id,
                 plan_id=plan.id, item_name=plan.name,
@@ -1900,7 +1905,7 @@ def _fulfill_order(db: Session, recharge_order=None, subscription_order=None) ->
         if user and plan:
             subscription = _grant_subscription(
                 db, user, plan,
-                plan.duration_days, "purchase", subscription_order.order_id,
+                plan.duration_days,
                 realm_id=plan.realm_id,
             )
             # P1 会员经验：订阅实付 1 元 = 1 经验（向下取整），与订阅发放同一事务。

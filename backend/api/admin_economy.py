@@ -572,7 +572,7 @@ def get_user_detail(
     def _sub_row(s: models.UserSubscription) -> dict:
         return {
             "id": s.id,
-            "plan_name": s.plan.name if s.plan else f"套餐 #{s.plan_id}",
+            "plan_name": _plan_names.get(s.plan_id, f"套餐 #{s.plan_id}"),
             "start_date": s.start_date.isoformat() if s.start_date else None,
             "end_date": s.end_date.isoformat() if s.end_date else None,
             "days_left": _days_left(s.end_date, now),
@@ -609,6 +609,23 @@ def get_user_detail(
         .limit(10)
         .all()
     )
+    # P1（r49）：订阅/订单的 plan/package 名批量一次查完。此前 _sub_row 与订单行
+    # 里 s.plan.name / o.package.name / o.plan.name 都是 lazy relationship 逐行回查
+    # （详情页一次最多约 30 次额外查询），与邀请部分的 invitee_names 同一写法。
+    # 注意：必须放在 sub_orders / recharge_orders 取数之后（曾放错位置导致
+    # UnboundLocalError，被 smoke_test_admin_v240 抓到）。
+    _plan_ids = ({s.plan_id for s in subs} | {o.plan_id for o in sub_orders}) - {None}
+    _package_ids = {o.package_id for o in recharge_orders} - {None}
+    _plan_names = {
+        p.id: p.name
+        for p in db.query(models.SubscriptionPlan.id, models.SubscriptionPlan.name)
+        .filter(models.SubscriptionPlan.id.in_(list(_plan_ids) or [-1])).all()
+    } if _plan_ids else {}
+    _package_names = {
+        p.id: p.name
+        for p in db.query(models.RechargePackage.id, models.RechargePackage.name)
+        .filter(models.RechargePackage.id.in_(list(_package_ids) or [-1])).all()
+    } if _package_ids else {}
     paid_total = float(
         db.query(func.coalesce(func.sum(models.RechargeOrder.price), 0)).filter(
             models.RechargeOrder.user_id == user_id,
@@ -693,7 +710,7 @@ def get_user_detail(
             "recharge": [
                 {
                     "order_id": o.order_id,
-                    "item_name": o.package.name if o.package else f"套餐 #{o.package_id}",
+                    "item_name": _package_names.get(o.package_id, f"套餐 #{o.package_id}"),
                     "amount": float(o.price),
                     "points": o.amount,
                     "status": o.status,
@@ -704,7 +721,7 @@ def get_user_detail(
             "subscription": [
                 {
                     "order_id": o.order_id,
-                    "item_name": o.item_name or (o.plan.name if o.plan else f"套餐 #{o.plan_id}"),
+                    "item_name": o.item_name or _plan_names.get(o.plan_id, f"套餐 #{o.plan_id}"),
                     "amount": float(o.amount),
                     "status": o.status,
                     "created_at": o.created_at.isoformat() if o.created_at else None,
@@ -998,13 +1015,15 @@ def delete_member_level(level_id: int, current_admin: models.WebUser = Depends(g
     lv = db.query(models.MemberLevel).filter(models.MemberLevel.id == level_id).first()
     if not lv:
         raise HTTPException(status_code=404, detail="等级不存在")
-    # 删除前校验：删除启用等级时至少保留 1 个启用等级
+    # 删除前校验：删除启用等级时至少保留 1 个启用等级。
+    # R49：检查与删除必须同事务串行化——不加锁时两名管理员并发删最后两个
+    # 启用等级可同时读到数量 1 并双双通过，留下 0 启用等级。与
+    # update_user 的 _locked_loginable_super_count（F-P1-6）同一写法。
     if lv.is_active:
-        active_count = db.query(models.MemberLevel).filter(
-            models.MemberLevel.is_active.is_(True),
-            models.MemberLevel.id != level_id,
-        ).count()
+        locked = db.query(models.MemberLevel).with_for_update().all()
+        active_count = sum(1 for r in locked if r.is_active and r.id != level_id)
         if active_count < 1:
+            db.rollback()
             raise HTTPException(status_code=400, detail="至少保留 1 个启用等级")
     level_num = lv.level
     db.delete(lv)
@@ -1018,13 +1037,13 @@ def toggle_member_level(level_id: int, current_admin: models.WebUser = Depends(g
     lv = db.query(models.MemberLevel).filter(models.MemberLevel.id == level_id).first()
     if not lv:
         raise HTTPException(status_code=404, detail="等级不存在")
-    # 关闭时需保证至少保留 1 个启用等级
+    # 关闭时需保证至少保留 1 个启用等级（R49：与 delete 同口径，行锁串行化，
+    # 防两名管理员并发关掉最后两个启用等级留下 0 启用）
     if lv.is_active:
-        active_count = db.query(models.MemberLevel).filter(
-            models.MemberLevel.is_active.is_(True),
-            models.MemberLevel.id != level_id,
-        ).count()
+        locked = db.query(models.MemberLevel).with_for_update().all()
+        active_count = sum(1 for r in locked if r.is_active and r.id != level_id)
         if active_count < 1:
+            db.rollback()
             raise HTTPException(status_code=400, detail="至少保留 1 个启用等级")
     lv.is_active = not lv.is_active
     db.commit()

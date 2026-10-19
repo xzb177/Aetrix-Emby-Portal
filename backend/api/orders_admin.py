@@ -154,8 +154,24 @@ def close_order(
             detail=f"只有待支付订单可以关闭（当前状态：{order.status}）；已支付订单请用退款。",
         )
 
-    order.status = "closed"
-    order.closed_at = datetime.now()
+    # 原子认领：读-查-写之间支付回调（economy._claim_order）可能把 pending
+    # 原子推进到 paid 并履约；无条件 UPDATE 会把已支付订单覆盖成 closed，
+    # 钱已付、权益已发，订单却显示作废——与 refund 的条件 UPDATE 同一写法，
+    # 抢不到的行说明状态已变，报 409 让管理员刷新。
+    model = models.RechargeOrder if kind == "recharge" else models.SubscriptionOrder
+    claimed = (
+        db.query(model)
+        .filter(model.id == order.id, model.status.in_(tuple(CLOSEABLE_STATUSES)))
+        .update({"status": "closed", "closed_at": datetime.now()},
+                synchronize_session=False)
+    )
+    if not claimed:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="订单状态已变化（可能已被支付或处理），请刷新后重试",
+        )
+
     # 优惠券用的是预订制额度：订单作废了，把占用的次数还回去（不还就等于把码烧了）
     coupons.release(db, order.coupon_usage_id)
     # 兑换码折扣权益同样是「下单即占」：订单作废后还回未用（与上面优惠券同一道理，
@@ -237,7 +253,11 @@ async def refund_order(
                     request.allow_negative,
                 )
                 if request.reverse_rebate:
-                    result["rebate_reversed"] = _reverse_rebate(db, order_id, request.allow_negative)
+                    reversed_amount, rebate_owed = _reverse_rebate(db, order_id, request.allow_negative)
+                    result["rebate_reversed"] = reversed_amount
+                    # 欠账必须如实告诉前端：rebate_reversed=0 可能是"本来就没返利"，
+                    # 也可能是"邀请人余额不足、返利没撤回来"，两种情况界面不能长一个样
+                    result["rebate_reversal_failed"] = rebate_owed
             else:
                 plan = db.query(models.SubscriptionPlan).filter(
                     models.SubscriptionPlan.id == order.plan_id).first()
@@ -377,27 +397,32 @@ def _reverse_xp(db: Session, user: models.WebUser, order_id: str, kind: str) -> 
     return to_reverse
 
 
-def _reverse_rebate(db: Session, order_id: str, allow_negative: bool) -> int:
-    """撤回这笔充值带给邀请人的返利（按账本引用精确找，不重算比例）"""
+def _reverse_rebate(db: Session, order_id: str, allow_negative: bool) -> tuple[int, bool]:
+    """撤回这笔充值带给邀请人的返利（按账本引用精确找，不重算比例）
+
+    返回 (撤回金额, 是否欠账)：邀请人余额不足时主退款照做、返利欠着，
+    调用方必须把欠账如实告诉前端——否则界面上的 rebate_reversed=0
+    既可能是"本来就没返利"，也可能是"返利没撤回来"，无法区分。
+    """
     entry = db.query(models.PointsLog).filter(
         models.PointsLog.ref_id == f"rebate:{order_id}",
         models.PointsLog.type == "rebate",
     ).order_by(models.PointsLog.id.asc()).first()
     if entry is None:
-        return 0
+        return 0, False
     inviter = db.query(models.WebUser).filter(models.WebUser.id == entry.user_id).first()
     if inviter is None:
-        return 0
+        return 0, False
     try:
         return _reverse_points(
             db, inviter, int(entry.amount),
             f"订单退款撤回返利（订单 {order_id}）", f"rebate-reversal:{order_id}",
             allow_negative,
-        )
+        ), False
     except HTTPException as exc:
         # 邀请人余额不够：不因为"退不了返利"就整单退不了款——主退款照做，返利欠着
         logger.warning("撤回返利失败（订单 %s）: %s", order_id, exc.detail)
-        return 0
+        return 0, True
 
 
 @admin_orders_router.get("/economy/refunds")

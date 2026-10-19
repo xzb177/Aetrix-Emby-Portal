@@ -19,6 +19,7 @@ from fastapi import Depends, HTTPException, Query
 logger = logging.getLogger(__name__)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from backend import config_service, models
@@ -122,6 +123,7 @@ def welfare_bulk_extend(
     now = datetime.now()
     from backend.emby_server import portal
     affected = 0
+    failed: list[dict] = []
     # P2 修复（完美审查 B-P2-3）：键集分页（id > last_id，每批 500），
     # 与 welfare_expiry.check_welfare_expiry 同一口径——之前全表 .all()
     # 无界加载进内存。
@@ -145,11 +147,22 @@ def welfare_bulk_extend(
             if expired_days < 0:
                 continue  # 未过期跳过
             if req.min_expired_days <= expired_days <= req.max_expired_days:
-                portal.grant_welfare(db, u, "bulk_extend", req.add_days, granted_by=current_admin.id)
-                affected += 1
-    _audit(db, current_admin.id, "welfare_bulk_extend", "system", None, {"affected": affected, "add_days": req.add_days})
+                try:
+                    portal.grant_welfare(db, u, "bulk_extend", req.add_days, granted_by=current_admin.id)
+                    affected += 1
+                except Exception as e:
+                    # 批量里单个失败不许掀翻整批：grant_welfare 每用户独立提交，
+                    # 已延期的不回滚；失败记清单并 rollback 清会话，最后汇总审计
+                    # 如实返回，前端能看到谁没延上（此前中途抛错=前面白做、
+                    # 汇总审计也没落盘、前端只拿到 500 猜谜）。
+                    db.rollback()
+                    failed.append({"user_id": u.id, "username": u.username,
+                                   "error": str(e)[:200]})
+                    logger.warning("公益批量延期用户 %s 失败：%s", u.id, e)
+    _audit(db, current_admin.id, "welfare_bulk_extend", "system", None,
+           {"affected": affected, "failed": len(failed), "add_days": req.add_days})
     db.commit()
-    return {"success": True, "affected": affected}
+    return {"success": True, "affected": affected, "failed": failed}
 
 
 # ==================== 求片审核 ====================
@@ -507,17 +520,23 @@ def create_lottery_round(
     active = lottery_module.get_active_round(db, effective_chat_id)
     if active:
         raise HTTPException(status_code=400, detail="该群已有进行中的抽奖活动")
-    result = lottery_module.create_round(
-        db=db,
-        title=req.title,
-        chat_id=effective_chat_id,
-        prizes=[item.model_dump() for item in req.prizes],
-        draw_at=dt,
-        max_participants=req.max_participants,
-        created_by=current_admin.id,
-        lottery_type=req.lottery_type,
-        password_keyword=req.password_keyword,
-    )
+    try:
+        result = lottery_module.create_round(
+            db=db,
+            title=req.title,
+            chat_id=effective_chat_id,
+            prizes=[item.model_dump() for item in req.prizes],
+            draw_at=dt,
+            max_participants=req.max_participants,
+            created_by=current_admin.id,
+            lottery_type=req.lottery_type,
+            password_keyword=req.password_keyword,
+        )
+    except IntegrityError:
+        # R49：上面的读-查-写拦不住并发双建；uq_lottery_rounds_open_chat
+        # （chat_id WHERE status='open'）在 DB 层拦下第二个，PG 抛唯一冲突
+        db.rollback()
+        raise HTTPException(status_code=400, detail="该群已有进行中的抽奖活动")
     _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": effective_chat_id, "lottery_type": req.lottery_type})
     db.commit()
     # 新活动创建后通知到群（之前漏掉了，群里没人知道有新抽奖）。

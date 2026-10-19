@@ -742,17 +742,6 @@ class RcloneConfPayload(BaseModel):
     conf: str = Field(default="", max_length=200_000)
 
 
-def _require_super(user) -> None:
-    from backend import admin_roles
-
-    if not admin_roles.is_super(user):
-        raise HTTPException(
-            status_code=403,
-            detail="rclone.conf 含网盘凭据，仅超级管理员可读写（当前角色：{}）".format(
-                admin_roles.role_label(admin_roles.role_of(user))),
-        )
-
-
 def _ea_server_or_404(db: Session, server_id: int):
     server = registry.get_server(db, server_id)
     if not server:
@@ -770,7 +759,6 @@ async def get_server_rclone_conf(
     db: Session = Depends(get_db),
 ):
     """这台 EA 的 rclone.conf：只返 remote 名，**不返明文**"""
-    _require_super(admin)
     server = _ea_server_or_404(db, server_id)
     path = mount_rclone.conf_path_for_server(server.id)
     text = await run_in_threadpool(mount_rclone.read_rclone_conf, path)
@@ -796,7 +784,6 @@ async def save_server_rclone_conf(
     db: Session = Depends(get_db),
 ):
     """保存这台 EA 的 rclone.conf（整份替换，写到 ``rclone-<id>.conf``，权限 600）"""
-    _require_super(admin)
     server = _ea_server_or_404(db, server_id)
     path = mount_rclone.conf_path_for_server(server.id)
     try:

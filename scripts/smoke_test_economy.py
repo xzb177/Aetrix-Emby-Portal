@@ -100,7 +100,7 @@ def main():
     check("积分型兑换入账", balance >= 88)
 
     from backend.api.economy import _grant_subscription
-    sub = _grant_subscription(db, u2, plan, ex2.duration_days, "exchange", ex2.code)
+    sub = _grant_subscription(db, u2, plan, ex2.duration_days)
     ex2.use_count += 1
     db.commit()
     db.refresh(sub)
@@ -108,7 +108,7 @@ def main():
     # 顺延逻辑：同一订阅对象被延长 10 天
     sub_id_before = sub.id
     end_before = sub.end_date
-    sub2 = _grant_subscription(db, u2, plan, 10, "exchange", "EXTEND")
+    sub2 = _grant_subscription(db, u2, plan, 10)
     db.commit()
     db.refresh(sub)
     check("已有订阅则顺延",

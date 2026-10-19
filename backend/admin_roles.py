@@ -63,6 +63,15 @@ SUPER_ONLY_PREFIXES = (
     "/api/admin/api-keys",
 )
 
+# 仅超级管理员可写的路径后缀：凭据材料类端点。rclone.conf 含网盘凭据，
+# 仅超管可读写；server_id 在路径中间（/api/admin/servers/{id}/rclone-conf），
+# 前缀匹配切不出来，故用后缀收进集中判定——仍不做端点级散落判断
+# （R49 收编 servers.py 的散落 _require_super；GET 只返 remote 名不返明文，
+# 读仍人人可看，与上面的前缀名单同一口径）。
+SUPER_ONLY_SUFFIXES = (
+    "/rclone-conf",
+)
+
 
 def normalize_role(raw: Optional[str]) -> str:
     """把库里的值收敛到枚举内
@@ -106,6 +115,9 @@ def blocked_reason(request: Request, user) -> Optional[str]:
     if role != ROLE_SUPER and method not in SAFE_METHODS:
         for prefix in SUPER_ONLY_PREFIXES:
             if path.startswith(prefix):
+                return "这一项需要「超级管理员」角色（当前：{}）".format(role_label(role))
+        for suffix in SUPER_ONLY_SUFFIXES:
+            if path.endswith(suffix):
                 return "这一项需要「超级管理员」角色（当前：{}）".format(role_label(role))
     return None
 

@@ -194,7 +194,7 @@ def test_grant_subscription_extension_resets_reminders(db):
     db.commit()
 
     # 续费：顺延同一行
-    new_sub = _grant_subscription(db, u, plan, 30, "test", "test:1")
+    new_sub = _grant_subscription(db, u, plan, 30)
     db.commit()
     assert new_sub.id == sub.id
     assert new_sub.end_date > now + timedelta(days=30)
@@ -209,7 +209,7 @@ def test_grant_subscription_new_row_keeps_nothing(db):
     # 新建订阅（无顺延）：本来就没有提醒记录，不报错
     u = _make_user(db)
     plan = _make_plan(db, price=100, days=30)
-    sub = _grant_subscription(db, u, plan, 30, "test", "test:2")
+    sub = _grant_subscription(db, u, plan, 30)
     db.commit()
     assert sub.id is not None
     assert sub.end_date > datetime.now() + timedelta(days=29)
