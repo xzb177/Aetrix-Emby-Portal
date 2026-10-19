@@ -93,53 +93,19 @@ if DATABASE_TYPE == "sqlite":
     # busy timeout：等待写锁而不是立刻报 "database is locked"（媒体扫描/播放上报并发场景）
     engine_config["connect_args"] = {"check_same_thread": False, "timeout": 30}
 # 每进程连接上限 = _POOL_SIZE + _MAX_OVERFLOW；api / worker / EA 三个进程各自持有独立 engine，
-# 峰值 3×(10+10)=60 < PG 默认 max_connections(100)，为运维/复制/迁移连接留足余量，
+# 峰值 3×(25+10)=105；请保证 PG max_connections 留足富余（默认 100 不够，需同步调高），
 # 避免高峰期随机 "too many clients already" 导致全站 500。
-# 如需放大，请同步调高 PG max_connections，并保证 3×(DB_POOL_SIZE+DB_MAX_OVERFLOW) 仍有富余。
-# ---- DB 连接池大小（链路规划 Step 1：配置面收口） ----
-# DB_POOL_SIZE：env 优先（部署覆盖）；未设置时读 SystemConfig（管理后台可配）。
+# ---- DB 连接池大小（Batch 2 开关清理：env-only 单源化） ----
+# DB_POOL_SIZE：只读环境变量（默认 25 = 生产现值）；管理后台不再可写，
+# SystemConfig 里即便有旧行也会被忽略。
 # engine 创建时解析一次（进程启动时），改完需重启进程生效。
-# import 期用一次性 bootstrap 连接直查 system_configs 表读值（不经过 ORM，
-# 避免 database → store → models → database 的循环导入）；表不存在 / 库不可达
-# 时回退默认 10，永不抛异常。
 DB_POOL_SIZE_ENV = "DB_POOL_SIZE"
-CFG_DB_POOL_SIZE = "db_pool_size"
-DB_POOL_SIZE_DEFAULT = 10
-
-
-def _int_or(value, default: int, minimum: int = 0) -> int:
-    try:
-        return max(minimum, int(str(value or "").strip() or default))
-    except (ValueError, TypeError):
-        return default
-
-
-def _bootstrap_config_value(key: str, default: str) -> str:
-    """engine 创建前读 SystemConfig：一次性 bootstrap 连接直查表，失败回退默认。"""
-    try:
-        from sqlalchemy import text as _text
-        _boot = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=3600)
-        try:
-            with _boot.connect() as _conn:
-                _row = _conn.execute(
-                    _text("SELECT value FROM system_configs WHERE key = :k LIMIT 1"),
-                    {"k": key}).fetchone()
-                if _row is not None and _row[0] not in (None, ""):
-                    return str(_row[0])
-        finally:
-            _boot.dispose()
-    except Exception:
-        pass
-    return default
+DB_POOL_SIZE_DEFAULT = 25
 
 
 def _resolve_db_pool_size() -> int:
-    raw = (os.getenv(DB_POOL_SIZE_ENV) or "").strip()
-    if raw:
-        return env_int(DB_POOL_SIZE_ENV, DB_POOL_SIZE_DEFAULT, 1)
-    return _int_or(
-        _bootstrap_config_value(CFG_DB_POOL_SIZE, str(DB_POOL_SIZE_DEFAULT)),
-        DB_POOL_SIZE_DEFAULT, 1)
+    """DB 连接池大小：env-only（默认 25 = 生产现值）；改完需重启进程生效。"""
+    return env_int(DB_POOL_SIZE_ENV, DB_POOL_SIZE_DEFAULT, 1)
 
 
 _POOL_SIZE = _resolve_db_pool_size()

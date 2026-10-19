@@ -18,9 +18,10 @@ def _import_database():
 
 
 def test_p1_ds_1_pool_size_and_overflow():
-    """E-P1-1: 连接池 pool_size / max_overflow 默认值应为 10 / 10。"""
+    """E-P1-1: 连接池 pool_size / max_overflow 默认值应为 25 / 10
+    （Batch 2 半死三键 env 迁移：默认 25 = 生产现值，env-only 单源化）。"""
     database = _import_database()
-    assert database._POOL_SIZE == 10, f"_POOL_SIZE 期望 10，实际 {database._POOL_SIZE!r}"
+    assert database._POOL_SIZE == 25, f"_POOL_SIZE 期望 25，实际 {database._POOL_SIZE!r}"
     assert database._MAX_OVERFLOW == 10, f"_MAX_OVERFLOW 期望 10，实际 {database._MAX_OVERFLOW!r}"
 
 

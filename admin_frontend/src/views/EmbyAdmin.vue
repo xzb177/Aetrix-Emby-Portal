@@ -1123,7 +1123,8 @@ const enrichTuningError = ref(false)
 // 本地编辑态：整数项用字符串（原样展示库里存的值），开关项用布尔
 const tuningDraft = ref<Record<string, string>>({})
 const tmdbBatchDraft = ref(true)
-const dbPoolDraft = ref('10')
+/** Batch 2（开关清理）：env-only 键——面板只读，不参与保存 */
+const TUNING_ENV_ONLY_KEYS = ['enrich_workers', 'enrich_batch']
 // 单集认领：日配额制：开关 + 日配额（专用区块，不进上面的通用表）
 const quotaModeDraft = ref(false)
 const dayQuotaDraft = ref('2000')
@@ -1179,7 +1180,6 @@ async function loadEnrichTuningConfig() {
     noneRsDaysDraft.value = t.raw?.enrich_none_reschedule_days ?? t.defaults?.enrich_none_reschedule_days ?? '14'
     noneRsMaxRoundsDraft.value = t.raw?.enrich_none_max_reschedules ?? t.defaults?.enrich_none_max_reschedules ?? '6'
     fcEnabledDraft.value = t.values?.enrich_field_completeness === true
-    dbPoolDraft.value = t.db_pool?.saved_pool_size || String(t.db_pool?.pool_size ?? 10)
   } catch {
     enrichTuning.value = null // 出错不挡页面其它内容
     enrichTuningError.value = true
@@ -1195,6 +1195,8 @@ async function saveEnrichTuningAction() {
   enrichTuningSaving.value = true
   try {
     const values: Record<string, string | boolean> = { ...tuningDraft.value }
+    // env-only 键面板不可写，不下发（后端也会忽略）
+    for (const k of TUNING_ENV_ONLY_KEYS) delete values[k]
     values.enrich_tmdb_batch = tmdbBatchDraft.value
     values.enrich_episode_quota_mode = quotaModeDraft.value
     values.enrich_episode_day_quota = dayQuotaDraft.value
@@ -1202,7 +1204,7 @@ async function saveEnrichTuningAction() {
     values.enrich_none_reschedule_days = noneRsDaysDraft.value
     values.enrich_none_max_reschedules = noneRsMaxRoundsDraft.value
     values.enrich_field_completeness = fcEnabledDraft.value
-    const res = await saveEnrichTuning(values, dbPoolDraft.value)
+    const res = await saveEnrichTuning(values)
     enrichTuning.value = res
     const d: Record<string, string> = {}
     for (const k of res.order || []) d[k] = res.raw?.[k] ?? res.defaults?.[k] ?? ''
@@ -1214,8 +1216,7 @@ async function saveEnrichTuningAction() {
     noneRsDaysDraft.value = res.raw?.enrich_none_reschedule_days ?? res.defaults?.enrich_none_reschedule_days ?? '14'
     noneRsMaxRoundsDraft.value = res.raw?.enrich_none_max_reschedules ?? res.defaults?.enrich_none_max_reschedules ?? '6'
     fcEnabledDraft.value = res.values?.enrich_field_completeness === true
-    dbPoolDraft.value = res.db_pool?.saved_pool_size || String(res.db_pool?.pool_size ?? 10)
-    ElMessage.success('刮削性能参数已保存（线程数 / DB 池需重启生效，其余 60 秒内热生效）')
+    ElMessage.success('刮削性能参数已保存（60 秒内热生效；线程数/批次/DB 池改环境变量后重启对应进程）')
     // 参数变了，存量计数里的周期/可捞回数可能跟着变，刷新一次只读展示
     loadEnrichNoneStats().catch(() => undefined)
     loadEnrichFieldStats().catch(() => undefined)
@@ -2258,7 +2259,7 @@ function typeLabel(t: string): string {
             <div class="scrape-block">
               <h3>刮削性能参数</h3>
               <p class="drawer-hint">
-                原来只能改环境变量的旋钮，现在后台可配：线程数 / 批次 / 退避 / 租约。线程数与 DB 池大小改完需重启进程生效，其余保存后 60 秒内热生效。被环境变量接管的项会标出（改这里不生效）。
+                原来只能改环境变量的旋钮，现在后台可配；线程数 / 每批认领条数 / DB 连接池大小为环境变量专供（面板只读，改完需重启对应进程）。其余保存后 60 秒内热生效。被环境变量接管的项会标出（改这里不生效）。
               </p>
               <div v-if="enrichTuning" class="tuning-list">
                 <div v-for="k in tuningOrderShown" :key="k" class="tuning-row">
@@ -2271,11 +2272,21 @@ function typeLabel(t: string): string {
                     :aria-label="TUNING_LABELS[k]"
                   />
                   <el-input
-                    v-else
+                    v-else-if="!TUNING_ENV_ONLY_KEYS.includes(k)"
                     v-model="tuningDraft[k]"
                     style="width: 130px"
                     :aria-label="TUNING_LABELS[k]"
                   />
+                  <span
+                    v-else
+                    class="tuning-readonly"
+                    :aria-label="TUNING_LABELS[k]"
+                  >
+                    {{ enrichTuning.values?.[k] }}
+                    <el-tag type="warning" size="small">
+                      环境变量 {{ enrichTuning.env_names?.[k] }} 专供，面板不可改
+                    </el-tag>
+                  </span>
                   <span class="drawer-hint tuning-desc">
                     {{ enrichTuning.descriptions?.[k] }}（默认 {{ enrichTuning.defaults?.[k] }}）
                   </span>
@@ -2288,21 +2299,15 @@ function typeLabel(t: string): string {
                 </div>
                 <div class="tuning-row">
                   <span class="tuning-label">DB 连接池大小</span>
-                  <el-input
-                    v-model="dbPoolDraft"
-                    style="width: 130px"
-                    aria-label="DB 连接池大小"
-                  />
-                  <span class="drawer-hint tuning-desc">
-                    当前生效 {{ enrichTuning.db_pool?.pool_size }}（{{ enrichTuning.db_pool?.database_type }}；默认 {{ enrichTuning.db_pool?.default }}）。
-                    红线：线程数 × 单线程 DB 连接 ≤ 池子 80%，改完需重启进程。
-                    <template v-if="enrichTuning.db_pool?.pending_restart">
-                      已保存 {{ enrichTuning.db_pool.saved_pool_size }}，重启后生效。
-                    </template>
+                  <span class="tuning-readonly" aria-label="DB 连接池大小">
+                    {{ enrichTuning.db_pool?.pool_size }}（默认 {{ enrichTuning.db_pool?.default }}）
+                    <el-tag type="warning" size="small">
+                      环境变量 {{ enrichTuning.db_pool?.env_name }} 专供，面板不可改
+                    </el-tag>
                   </span>
-                  <el-tag v-if="enrichTuning.db_pool?.from_env" type="warning" size="small">
-                    环境变量 {{ enrichTuning.db_pool?.env_name }} 接管中
-                  </el-tag>
+                  <span class="drawer-hint tuning-desc">
+                    红线：线程数 × 单线程 DB 连接 ≤ 池子 80%，改完需重启进程。
+                  </span>
                   <el-tag type="info" size="small">重启生效</el-tag>
                 </div>
                 <div class="scrape-actions">
@@ -2994,6 +2999,7 @@ function typeLabel(t: string): string {
 .tuning-list { display: flex; flex-direction: column; gap: 10px; }
 .tuning-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tuning-label { min-width: 118px; font-size: var(--font-size-sm); font-weight: 600; color: var(--au-text); }
+.tuning-readonly { display: inline-flex; align-items: center; gap: 8px; font-size: var(--font-size-sm); font-weight: 600; color: var(--au-text); }
 .tuning-row .tuning-desc { margin-bottom: 0; flex: 1 1 220px; }
 
 /* ==================== 扫描状态（卡片 + 记录抽屉） ==================== */
