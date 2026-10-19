@@ -32,6 +32,10 @@
           <template v-else>点击下方"报到"按钮盖章</template>
         </div>
         <div v-if="statusLoading" class="sk-book" aria-hidden="true">
+          <!-- R103-2：骨架星期头占位，与真实 .wdays 同高 -->
+          <div class="sk-wdays">
+            <div v-for="i in 7" :key="i" class="v4-skeleton sk-wday"></div>
+          </div>
           <div class="cal sk-cal">
             <div v-for="d in daysInMonth" :key="d" class="day sk-day"></div>
           </div>
@@ -43,8 +47,13 @@
             <span>本月已报 {{ signedCount }} 天</span>
           </div>
           <div class="cal" role="grid" aria-label="报到日历">
+            <!-- R103-2：星期头（与 weeks 周日起始对齐）；读屏器每格已有"X月X日"，此处纯视觉不再朗读 -->
+            <div class="cal-row" aria-hidden="true">
+              <div v-for="w in weekNames" :key="w" class="wday">{{ w }}</div>
+            </div>
             <div v-for="(week, wi) in weeks" :key="wi" class="cal-row" role="row">
-              <div v-for="(d, di) in week" :key="d ?? 'e' + wi + '-' + di" class="day" :class="d ? dayClass(d) : 'empty'" role="gridcell" :aria-label="d ? dayAriaLabel(d) : undefined" :aria-hidden="d ? undefined : 'true'">
+              <!-- R103-3：空位是纯布局占位，不再挂 role="gridcell"（与 aria-hidden 语义矛盾） -->
+              <div v-for="(d, di) in week" :key="d ?? 'e' + wi + '-' + di" class="day" :class="d ? dayClass(d) : 'empty'" :role="d ? 'gridcell' : undefined" :aria-label="d ? dayAriaLabel(d) : undefined" :aria-hidden="d ? undefined : 'true'">
                 <span v-if="d" class="n">{{ d }}</span>
               </div>
             </div>
@@ -64,9 +73,15 @@
       </button>
 
       <!-- 奖励说明 -->
+      <!-- R103-1：非公益服用户不发能量（points_awarded=0），原奖励数字会误导，按 points_enabled 分支诚实文案 -->
       <div class="reward" v-if="status && status.enabled">
-        <span aria-hidden="true">🎁</span> <b>报到奖励</b>：能量 +{{ status.base_points }}<span aria-hidden="true">⚡</span><br>
-        <span aria-hidden="true">🔥</span> <b>连报奖励</b>：每天多 +{{ status.streak_bonus }}<span aria-hidden="true">⚡</span>（上限 +{{ status.streak_max_bonus }}<span aria-hidden="true">⚡</span>）
+        <template v-if="status.points_enabled">
+          <span aria-hidden="true">🎁</span> <b>报到奖励</b>：能量 +{{ status.base_points }}<span aria-hidden="true">⚡</span><br>
+          <span aria-hidden="true">🔥</span> <b>连报奖励</b>：每天多 +{{ status.streak_bonus }}<span aria-hidden="true">⚡</span>（上限 +{{ status.streak_max_bonus }}<span aria-hidden="true">⚡</span>）
+        </template>
+        <template v-else>
+          <span aria-hidden="true">🔥</span> 报到只记连击，能量奖励是公益服专属
+        </template>
       </div>
     </div>
     <!-- 盖章动画 -->
@@ -100,6 +115,8 @@ const signedDays = ref<Set<number>>(new Set())
 
 const daysInMonth = computed(() => new Date(year.value, month.value + 1, 0).getDate())
 const monthLabel = computed(() => `${month.value + 1}月`)
+/** R103-2：星期头文案，与 weeks 的周日起始（getDay 周日=0）对齐 */
+const weekNames = ['日', '一', '二', '三', '四', '五', '六']
 const signedCount = computed(() => signedDays.value.size)
 /** ARIA grid 需要行结构：按 7 个一组分周，第一周开头用 null 补齐空位 */
 const weeks = computed((): Array<Array<number | null>> => {
@@ -391,6 +408,14 @@ onUnmounted(() => {
   50% { transform: scale(1.18); opacity: 0; }
 }
 .day.future { opacity: 0.45; }
+/* R103-2：星期头（视觉辅助列头；.cal-row display:contents，7 个 .wday 直接成为网格列项） */
+.wday {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--ink2);
+  text-align: center;
+  padding: 4px 0;
+}
 
 /* 报到按钮：设计稿原值 */
 .checkin-btn {
@@ -475,7 +500,15 @@ onUnmounted(() => {
   box-shadow: 0 2px 8px rgba(42, 38, 32, 0.06);
 }
 /* .book-head 的占位间距，骨架外框高度≈数据态 */
-.sk-cal { margin-top: 33px; }
+.sk-cal { margin-top: 0; }
+/* R103-2：骨架星期头占位（33px 对齐 book-head；单格 19px 与真实 .wday 同高） */
+.sk-wdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+  margin-top: 33px;
+}
+.sk-wday { height: 19px; }
 /* R48A-13：数据可能过期的小字提示 */
 .v4-stale { font-size: 11px; color: var(--ink2); }
 /* R27：减少动态偏好下装饰动画停掉（本地守卫） */

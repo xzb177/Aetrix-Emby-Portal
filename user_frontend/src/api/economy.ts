@@ -42,6 +42,8 @@ export interface CheckinStatus {
   streak_bonus: number
   streak_max_bonus: number
   points: number
+  /** R103-1：当前用户是否为公益服（是否会获得积分），后端 CheckinStatusResponse.points_enabled（2026-10-09 已上线） */
+  points_enabled: boolean
 }
 
 export interface PointsLogEntry {
