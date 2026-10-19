@@ -63,10 +63,12 @@ def test_chase_new_api_extended_fields(db):
     for k in ("enabled", "interval", "excluded", "libraries",
               "last_check", "last_found"):
         assert k in res, k
-    # drive_changes 状态
+    # drive_changes 状态（heartbeat_source：心跳来源 local/shared/none，
+    # 面板跨进程修复新增，API/面板读取时忽略多余字段即可）
     dc = res["drive_changes"]
     assert set(dc) == {"running", "last_poll", "last_changes",
-                       "last_libs_triggered"}
+                       "last_libs_triggered", "heartbeat_source"}
+    assert dc["heartbeat_source"] == "none"  # 测试里无心跳、无线程
     assert dc["running"] is False  # 测试里没有守护线程在跑
     # 最近轮次：倒序、10 条上限内
     runs = res["recent_runs"]
