@@ -46,6 +46,11 @@ def _reset_state():
 
 @pytest.fixture()
 def db():
+    # _PARITY_RENUMBER_DONE 是进程级状态：全量跑时排在本文件之前的其它
+    # enrich 测试会经 _enrich_apply 触发归一检查、留下 (series_id, 1) 键，
+    # 本文件第一个用例的新剧 id 与之撞键会被误判「已判定过」而跳过。
+    # 故 setup 也要清（只靠 teardown 清防不住跨文件污染）。
+    _reset_state()
     s = SessionLocal()
     try:
         s.query(em.MediaStream).delete()
