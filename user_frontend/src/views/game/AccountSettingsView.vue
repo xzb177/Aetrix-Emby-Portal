@@ -37,7 +37,9 @@
           :is-free-realm="isFreeRealm"
           :realm-note="realmNote"
           :cancelling-sub="cancellingSub"
+          :toggling-renew="togglingRenew"
           @cancel="cancelSubscription"
+          @toggle-renew="toggleAutoRenew"
         />
       </section>
 
@@ -355,6 +357,22 @@ async function loadSubs() {
 
 /** R36：终止订阅二次确认 —— 原生 confirm() 改用纸色 Modal（照抄 SignalView R27 先例）。
  *  文案继续走 confirmCopy.cancelSubscription，不改文案。 */
+/** r48-⑬：自动续订开关 —— 在途标记，防重复点击 */
+const togglingRenew = ref<number | null>(null)
+async function toggleAutoRenew(s: MySubscription) {
+  if (togglingRenew.value !== null) return
+  togglingRenew.value = s.id
+  try {
+    const res = await subscriptionApi.setAutoRenew(s.id, !s.auto_renew)
+    toast.success(res.message || (res.auto_renew ? '已开启自动续订' : '已关闭自动续订'))
+    await loadSubs()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'toggleAutoRenewFailed'))
+  } finally {
+    togglingRenew.value = null
+  }
+}
+
 const pendingCancel = ref<MySubscription | null>(null)
 const cancelConfirmOpen = computed({
   get: () => pendingCancel.value !== null,

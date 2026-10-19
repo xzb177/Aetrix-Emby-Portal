@@ -710,4 +710,6 @@ export const subscriptionApi = {
   getMine: () => api.get<never, MySubscription[]>('/api/user/subscriptions'),
   // 终止订阅（立即失效）
   cancel: (id: number) => api.post<never, { success: boolean; message: string }>(`/api/user/subscriptions/${id}/cancel`),
+  // 自动续订开关：到期前 24 小时用能量自动续订，余额不足则不续
+  setAutoRenew: (id: number, enabled: boolean) => api.post<never, { success: boolean; auto_renew: boolean; message: string }>(`/api/user/subscriptions/${id}/auto-renew`, { enabled }),
 }

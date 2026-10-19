@@ -168,7 +168,7 @@
               <div class="kv"><span>有效期</span><b>{{ plan.duration_days != null ? `${plan.duration_days} 天` : '以购买页为准' }}</b></div>
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ (100 - memberDiscountPct) / 10 }} 折</b></div>
-              <div class="kv"><span>到期后</span><span>自动失效，不自动续费</span></div>
+              <div class="kv"><span>到期后</span><span>自动失效；可在「我的会员」开启能量自动续订</span></div>
               <button class="buy" :class="{ 'is-busy': orderBusy }" :disabled="orderBusy || !methodsReady" :aria-busy="orderBusy && orderBusyTag === 'buy'" @click.stop="doBuyPlan(plan)" @keydown.enter.stop @keydown.space.stop>{{ orderBusy && orderBusyTag === 'buy' ? '领取中…' : '领取执照 →' }}</button>
               <!-- R85：支付通道没准备好时按钮静默禁用，给一行人话说明（口径与能量区 methods-note 对齐） -->
               <div v-if="!methodsReady" class="methods-note" role="status" style="margin:8px 0 0"><template v-if="methodsFailed">支付方式加载失败，通道恢复后可领<button class="v4-retry" @click="loadAll">重试</button></template><template v-else>支付通道准备中，稍后就能领<button class="v4-retry" @click="loadAll">刷新看看</button></template></div>

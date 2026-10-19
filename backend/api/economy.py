@@ -693,6 +693,9 @@ def _grant_subscription(db: Session, user: models.WebUser, plan: models.Subscrip
     if active:
         active.end_date = active.end_date + timedelta(days=days)
         active.updated_at = now
+        # r48-⑫：续买/顺延到不同档位时，plan_id 跟随本次购买的档位
+        # （展示「买的是哪个档」以最近一次购买为准；顺延天数逻辑不变）。
+        active.plan_id = plan.id
         subscription = active
         # 续费顺延复用同一行：清掉上一周期的提醒去重记录，否则新周期
         # 的 7d/3d/1d/expired 档位会被旧记录挡住、用户再也收不到到期提醒。
@@ -761,6 +764,91 @@ def _exchange_discount_amount(list_price: Decimal, pct: int) -> tuple[Decimal, D
         discount = list_price
     paid = _money(list_price - discount)
     return discount, paid
+
+
+def _points_subscription_price(db: Session, user: models.WebUser,
+                               plan: models.SubscriptionPlan,
+                               coupon_code: str = "") -> dict:
+    """积分买订阅的价格口径（r48-⑪：与人民币路径同口径）。
+
+    叠加顺序与人民币下单完全一致：先会员等级折扣得中间价，再对中间价算
+    优惠券 / 兑换码折扣权益。金额单位是**积分**（int）。
+    - 会员等级折扣：仅付费服（公益服 access_mode='free' 不打折），与人民币口径同。
+    - 优惠券：仅 ``percent`` 型可用于积分支付（百分比无单位，积分/人民币通用）；
+      ``fixed`` 型是人民币直减，单位对不上，明确 400 拒绝、不静默忽略。
+      有效性校验走 ``coupons.quote``（按套餐原价校验门槛，与人民币路径一致）。
+    - 没填优惠券时自动用最优的一张兑换码折扣权益（pct 型，无单位），与人民币
+      下单「没填码就用权益」口径一致；权益与优惠券不叠加。
+    - 百分比券的 ``max_discount`` 是人民币封顶，在积分口径下不做封顶换算
+      （单位无锚，换算会引入充值比例耦合）；用百分比券买积分价套餐时以此为准。
+    返回 dict：list_points / member_discount_pct / member_discount_points /
+    coupon_code / coupon(对象或None) / coupon_discount_points /
+    exchange_discount_pct / credit(对象或None) / exchange_discount_points /
+    paid_points。调用方负责真正的扣减与权益核销。
+    """
+    from backend import member_level as _ml
+
+    list_points = int(plan.points_price)
+    member_discount_pct = 0
+    member_discount_points = 0
+    # plan.realm 在调用方处已 joinedload；realm 为空（老数据）按付费服处理
+    _realm = getattr(plan, "realm", None)
+    _is_paid_plan = not (_realm is not None
+                         and getattr(_realm, "access_mode", "paid") == "free")
+    if _is_paid_plan:
+        member_discount_pct = _ml.get_user_discount_pct(db, user)
+        if member_discount_pct > 0:
+            member_discount_points = int(
+                (Decimal(list_points) * Decimal(member_discount_pct)
+                 / Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+    base = list_points - member_discount_points
+
+    coupon_code = (coupon_code or "").strip()
+    coupon_obj = None
+    coupon_discount_points = 0
+    credit = None
+    exchange_discount_pct = 0
+    exchange_discount_points = 0
+    if coupon_code:
+        preview = coupons.quote(db, user=user, code=coupon_code,
+                                kind="subscription", item_id=plan.id)
+        coupon_obj = db.query(models.CouponCode).filter(
+            models.CouponCode.id == preview["coupon_id"]).first()
+        if coupon_obj is None:
+            raise HTTPException(status_code=400, detail="优惠码不存在")
+        if coupon_obj.discount_type != coupons.PERCENT:
+            raise HTTPException(
+                status_code=400,
+                detail="该优惠券为人民币直减券，不支持能量抵扣（能量抵扣仅支持百分比券）",
+            )
+        c_discount, c_paid = coupons.compute(Decimal(base), coupon_obj)
+        coupon_discount_points = int(c_discount)
+        coupon_code = preview["code"]
+    else:
+        # 兑换码折扣权益：没填优惠券时自动用最优的一张（与人民币下单同口径，
+        # 同样先会员折扣再对中间价算权益）。
+        credit = _best_discount_credit(db, user.id)
+        if credit is not None:
+            exchange_discount_pct = credit.discount_pct
+            c_discount, c_paid = _exchange_discount_amount(
+                Decimal(base), credit.discount_pct)
+            exchange_discount_points = int(c_discount)
+    paid_points = base - coupon_discount_points - exchange_discount_points
+    if paid_points < 0:
+        paid_points = 0
+    return {
+        "list_points": list_points,
+        "member_discount_pct": member_discount_pct,
+        "member_discount_points": member_discount_points,
+        "coupon_code": coupon_code,
+        "coupon": coupon_obj,
+        "coupon_discount_points": coupon_discount_points,
+        "exchange_discount_pct": exchange_discount_pct,
+        "credit": credit,
+        "exchange_discount_points": exchange_discount_points,
+        "paid_points": paid_points,
+    }
 
 
 class RedeemRequest(BaseModel):
@@ -1026,6 +1114,7 @@ class CouponQuoteRequest(BaseModel):
     code: str = Field(default="", description="用户填写的优惠码（可空；空时按「没填码自动用最优兑换码折扣权益」口径试算，与下单一致）")
     kind: str = Field(..., description="recharge / subscription")
     item_id: int = Field(..., description="充值套餐ID 或 套餐ID")
+    pay_with_points: bool = Field(default=False, description="积分支付试算；仅 kind=subscription 时有效，按积分口径（_points_subscription_price）试算，与积分下单一致")
 
 
 @router.post("/payment/coupon/quote")
@@ -1045,6 +1134,41 @@ def coupon_quote(
     allowed, _ = check_rate_limit(f"coupon-quote:{current_user.id}", 30, 60)
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
+    if req.pay_with_points:
+        # r48-⑪：积分支付试算——与积分下单同一套口径（_points_subscription_price），
+        # 预览与下单必须一致。金额单位是积分。
+        if req.kind != "subscription":
+            raise HTTPException(status_code=400, detail="积分支付试算仅支持订阅")
+        plan = db.query(models.SubscriptionPlan).options(
+            joinedload(models.SubscriptionPlan.realm)
+        ).filter(
+            models.SubscriptionPlan.id == req.item_id,
+            models.SubscriptionPlan.is_active == True,  # noqa: E712
+        ).first()
+        if not plan:
+            raise HTTPException(status_code=404, detail="套餐不存在")
+        if plan.points_price is None:
+            raise HTTPException(status_code=400, detail="该套餐不支持积分购买")
+        pricing = _points_subscription_price(
+            db, current_user, plan, coupon_code=req.code)
+        return {
+            "valid": True,
+            "code": pricing["coupon_code"],
+            "coupon_id": pricing["coupon"].id if pricing["coupon"] is not None else 0,
+            "item_name": plan.name,
+            "list_price": float(pricing["list_points"]),
+            "discount_amount": float(
+                pricing["member_discount_points"]
+                + pricing["coupon_discount_points"]
+                + pricing["exchange_discount_points"]),
+            "paid_amount": float(pricing["paid_points"]),
+            "discount_type": "points",
+            "value": 0,
+            "member_discount_pct": pricing["member_discount_pct"],
+            "member_discount_amount": float(pricing["member_discount_points"]),
+            "exchange_discount_pct": pricing["exchange_discount_pct"],
+            "pay_with_points": True,
+        }
     code = (req.code or "").strip()
     if code:
         result = coupons.quote(db, user=current_user, code=code,
@@ -1221,7 +1345,11 @@ def create_payment_order(
         if req.pay_with_points:
             if plan.points_price is None:
                 raise HTTPException(status_code=400, detail="该套餐不支持积分购买")
-            points_cost = int(plan.points_price)
+            # r48-⑪：积分路径与人民币路径同口径——先会员等级折扣得中间价，
+            # 再叠加优惠券/兑换码折扣权益（见 _points_subscription_price）。
+            pricing = _points_subscription_price(
+                db, current_user, plan, coupon_code=req.coupon_code)
+            points_cost = pricing["paid_points"]
             if points_cost <= 0:
                 raise HTTPException(status_code=400, detail="套餐积分价配置错误")
             balance = db.query(models.WebUser.points).filter(models.WebUser.id == current_user.id).scalar() or 0
@@ -1230,8 +1358,13 @@ def create_payment_order(
             # 原子条件扣减：上面的余额预检只用于给出友好提示，真正的够不够由 UPDATE 判定，
             # 防并发双下单把余额扣成负数（双花）
             try:
-                _spend_points(db, current_user, points_cost, "subscription_buy",
-                              f"积分购买订阅 - {plan.name}", f"subscription_points:{order_id}")
+                _spend_points(
+                    db, current_user, points_cost, "subscription_buy",
+                    f"积分购买订阅 - {plan.name}（原价 {pricing['list_points']}，"
+                    f"会员折扣 -{pricing['member_discount_points']}，"
+                    f"优惠 -{pricing['coupon_discount_points'] + pricing['exchange_discount_points']}，"
+                    f"实付 {points_cost}）",
+                    f"subscription_points:{order_id}")
             except InsufficientPoints:
                 db.rollback()
                 raise HTTPException(status_code=400, detail=f"积分不足（需要 {points_cost}）")
@@ -1239,17 +1372,52 @@ def create_payment_order(
             order = models.SubscriptionOrder(
                 order_id=order_id, user_id=current_user.id,
                 plan_id=plan.id, item_name=plan.name,
+                # amount 保持人民币口径（沿用既有收入统计/退款/对账口径）；
+                # 积分口径的原价/优惠/实付记在积分台账描述里，不混进人民币列。
                 amount=plan.price, payment_method="points", status="paid",
                 paid_at=datetime.now(),
                 subscription_id=sub.id, days_granted=plan.duration_days,
             )
             db.add(order)
+            # 优惠券：积分订单即时支付，预订后直接转已消费（与人民币回调的 consume 同语义）
+            if pricing["coupon"] is not None:
+                usage = coupons.reserve(
+                    db, coupon=pricing["coupon"], user=current_user,
+                    order_id=order_id, kind=req.kind,
+                    list_price=Decimal(pricing["list_points"] - pricing["member_discount_points"]),
+                    discount=Decimal(pricing["coupon_discount_points"]),
+                    paid=Decimal(points_cost))
+                order.coupon_usage_id = usage.id
+                coupons.consume(db, usage.id)
+            if pricing["credit"] is not None:
+                # 兑换码折扣权益：下单即核销（一张只用一次），条件 UPDATE 防并发双下单
+                claimed = (
+                    db.query(models.ExchangeDiscountCredit)
+                    .filter(
+                        models.ExchangeDiscountCredit.id == pricing["credit"].id,
+                        models.ExchangeDiscountCredit.status == "unused",
+                    )
+                    .update(
+                        {"status": "used", "used_order_id": order_id},
+                        synchronize_session=False,
+                    )
+                )
+                if not claimed:
+                    db.rollback()
+                    raise HTTPException(status_code=409, detail="折扣权益已被使用，请刷新后重试")
             db.commit()
             return {
                 "success": True,
                 "order_id": order_id,
                 "paid_with_points": True,
                 "points_cost": points_cost,
+                "points_list_price": pricing["list_points"],
+                "member_discount_pct": pricing["member_discount_pct"],
+                "member_discount_points": pricing["member_discount_points"],
+                "coupon_code": pricing["coupon_code"],
+                "coupon_discount_points": pricing["coupon_discount_points"],
+                "exchange_discount_pct": pricing["exchange_discount_pct"],
+                "exchange_discount_points": pricing["exchange_discount_points"],
                 "message": "积分支付成功，订阅已开通",
             }
         item_name = f"订阅购买 - {plan.name}"

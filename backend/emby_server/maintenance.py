@@ -706,6 +706,54 @@ def janitor_tick(heavy: bool = True) -> dict:
         finally:
             db.close()
 
+        # 订阅自动续订（r48-⑬）：auto_renew=true 且 24h 内到期的订阅，
+        # 用积分余额按当前档位自动续订一个周期。只对用户显式开启了开关的
+        # 订阅生效（开关本身就是总闸，不再另设全局配置）。
+        # 注意 janitor 在 api 与 worker 两个进程都会跑（都是 heavy=True），
+        # 并发靠 subscriptions 内的 with_for_update + 锁内复核窗口串行。
+        db = SessionLocal()
+        _renew_notices: list = []
+        try:
+            from backend import subscriptions as _subs
+            _auto = _subs.auto_renew_subscriptions(db)
+            result["auto_renew_renewed"] = _auto["renewed"]
+            result["auto_renew_failed"] = _auto["failed"]
+            result["auto_renew_skipped"] = _auto["skipped"]
+            result["auto_renew_errors"] = _auto["errors"]
+            _renew_notices = _auto["notices"]
+            if _auto["renewed"] or _auto["failed"]:
+                logger.info("订阅自动续订：成功 %s / 余额不足 %s / 跳过 %s",
+                            _auto["renewed"], _auto["failed"], _auto["skipped"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("订阅自动续订失败: %s", exc)
+            db.rollback()
+        finally:
+            db.close()
+        # 续订失败通知：走既有订阅到期提醒通道（站内信），best-effort——
+        # 通知失败只记日志，不影响已提交的续订（r46 通知守卫口径）。
+        for _n in _renew_notices:
+            try:
+                import asyncio as _asyncio
+                from backend.notifications import (
+                    AdminEvent as _AdminEvent,
+                    notify_admin_event_quiet as _notify_quiet,
+                )
+                _sent = _asyncio.run(_notify_quiet(
+                    event_type=_AdminEvent.SUBSCRIPTION_REMINDER,
+                    log_ctx="auto_renew_fail sub={}".format(
+                        _n["subscription_id"]),
+                    user_id=_n["user_id"],
+                    title=_n["title"],
+                    content=_n["content"],
+                    related_id=_n["subscription_id"],
+                ))
+                if not _sent:
+                    logger.warning("自动续订失败通知发送失败（订阅 %s）",
+                                   _n["subscription_id"])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("自动续订失败通知异常（订阅 %s）: %s",
+                               _n.get("subscription_id"), exc)
+
         # 查询计划：库长到几十万行之后，SQLite 可能还在按老统计信息估行数（选错索引就是
         # 全表扫描）。官方建议周期性跑 `PRAGMA optimize`，成本几乎为零，见 optimize_query_plans。
         db = SessionLocal()

@@ -983,7 +983,7 @@ function fmtCount(n: number | null | undefined): string {
                         <Download :size="12" />{{ card.download_allowed ? '可下载' : '禁下载' }}
                       </span>
                       <span v-if="card.subscription?.auto_renew" class="cap on">
-                        <CircleCheck :size="12" />自动续费
+                        <CircleCheck :size="12" />自动续订（能量）
                       </span>
                     </div>
 
