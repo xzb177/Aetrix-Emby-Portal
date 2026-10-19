@@ -829,50 +829,6 @@ class ChaseSourceState(Base):
     last_error = Column(Text)
 
 
-class StrmGenFile(Base):
-    """.strm 生成器增量状态：Drive 文件 -> .strm 文件的去重记录。
-
-    主键为 (drive_id, remote_path) 复合键：同一相对路径可能出现在多个盘上
-    （如两盘都有 MoviePilot/ 结构），单列主键在多盘模式下会冲突。
-    drive_id 为 _discover_drives() 的键（共享盘=driveId，个人盘=myDrive:<remote名>，
-    本地模式=listers 的 drive_key）。file_id/size 变化时触发重建
-    （Drive 上替换文件会换 file_id，原地覆盖只变 size）。
-    状态随 PG 备份走，替代旧独立脚本的 sqlite 状态文件（容器重建即丢）。
-    由 Base.metadata.create_all 自动建表；老库由 _migrate_strm_gen_files_drive_id
-    补列 + 改主键（见 backend/database.py）。
-    """
-
-    __tablename__ = "strm_gen_files"
-
-    drive_id = Column(String(128), primary_key=True, default="")
-    remote_path = Column(String(1024), primary_key=True)
-    # 墓碑消费按 file_id IN 批量回查：加索引（老库由 _LEGACY_INDEXES 补，见 database.py）
-    file_id = Column(String(128), nullable=False, index=True)
-    size = Column(BigInteger, default=0)
-    # 相对 /strm 容器的输出路径（如 "剧集/国产剧/xx.strm"）
-    strm_path = Column(String(1024), nullable=False, index=True)
-    updated_at = Column(DateTime, default=datetime.now)
-
-
-class StrmFileHealth(Base):
-    """file_id 存活状态缓存：反向僵尸校验（run_orphan_drive_check）的结果。
-
-    避免重复查 Drive：每轮最多校验 strm_orphan_check_batch 个 file_id，
-    结果落这里去重；checked_at 最老的优先被复查（兜底全量轮查）。
-    status='unknown' 的行是墓碑消费时积压的疑点（查不到状态行/多盘跳过），
-    下一轮 orphan check 优先复核。
-    由 Base.metadata.create_all 自动建表，老库无需 ALTER。
-    """
-
-    __tablename__ = "strm_file_health"
-
-    file_id = Column(String(128), primary_key=True)
-    drive_id = Column(String(128), default="")
-    status = Column(String(16), default="unknown")  # alive | gone | error | unknown
-    checked_at = Column(DateTime)
-    note = Column(String(512), default="")
-
-
 __all__ = [
     "Library",
     "ScanRun",
@@ -888,6 +844,4 @@ __all__ = [
     "ChaseFileSnapshot",
     "ChaseRun",
     "ChaseSourceState",
-    "StrmGenFile",
-    "StrmFileHealth",
 ]
