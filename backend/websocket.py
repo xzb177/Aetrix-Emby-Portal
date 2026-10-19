@@ -194,11 +194,16 @@ def authenticate_ws_token(raw: Optional[str]) -> Optional[int]:
 
     只接受本项目签发的 JWT access token。早期版本允许「纯数字即 user_id」的
     兜底，任何匿名请求都能冒充任意用户接收推送，已彻底移除。
+
+    r54 横切复查：补 token 新鲜度检查（jti 吊销 + token_version），与
+    ``emby_server/auth.py`` 的 JWT 回退路径（A-P1-2）同口径——改密/登出后
+    旧 token 建连即拒。``enforce_token_freshness`` 抛出的 HTTPException 在
+    WS 上下文里转 None（无 HTTP 响应可抛，fail-closed）。
     """
     if not raw:
         return None
     from backend.database import SessionLocal
-    from backend.security import resolve_jwt_user_id
+    from backend.security import decode_token, enforce_token_freshness, resolve_jwt_user_id
 
     user_id = resolve_jwt_user_id(raw)
     if user_id is None:
@@ -206,9 +211,19 @@ def authenticate_ws_token(raw: Optional[str]) -> Optional[int]:
     db = SessionLocal()
     try:
         from backend import models
+        from fastapi import HTTPException
 
         user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-        return user.id if user and user.is_active else None
+        if not user or not user.is_active:
+            return None
+        payload = decode_token(raw, expected_type="access")
+        if payload is None:
+            return None
+        try:
+            enforce_token_freshness(db, payload, user)
+        except HTTPException:
+            return None
+        return user.id
     except Exception as e:  # noqa: BLE001 — 鉴权失败一律视为未通过
         logger.error(f"WebSocket 鉴权查询失败: {e}")
         return None
@@ -309,25 +324,18 @@ def require_staff_user(
 
     角色（v2.26.0）：发送 / 广播是写操作，与 ``/api/admin/*`` 用同一处判定
     （``backend/admin_roles.py``）——只读审计角色不能从这条侧门绕道发全站通知。
+
+    r54 横切复查：此前这里是第二套手写实现（纯验签，不查 jti 吊销 /
+    token_version），改密/登出后旧 token 在 120 分钟有效期内仍能调发送 /
+    广播接口，违反 ``security.enforce_token_freshness``「所有 JWT 鉴权依赖
+    都必须调这里」的横切纪律。现直接复用
+    ``backend.api.admin_core.get_current_admin``（与 ``/api/admin/*`` 完全同一
+    口径：验签 + 新鲜度双检查 + is_staff/is_active + admin_roles）。
+    函数内导入防循环（同 ``portal._bearer_admin`` 模式）。
     """
-    from fastapi import HTTPException
-    from backend import admin_roles
-    from backend.security import resolve_jwt_user_id
+    from backend.api.admin_core import get_current_admin
 
-    if credentials is None or not credentials.credentials:
-        raise HTTPException(status_code=401, detail="未提供认证凭证")
-    user_id = resolve_jwt_user_id(credentials.credentials)
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="无效或已过期的凭证")
-    from backend import models
-
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
-    if not user.is_staff:
-        raise HTTPException(status_code=403, detail="需要管理员权限")
-    admin_roles.ensure_admin_allowed(request, user)
-    return user
+    return get_current_admin(request, credentials, db)
 
 
 class SendNotificationRequest(BaseModel):
