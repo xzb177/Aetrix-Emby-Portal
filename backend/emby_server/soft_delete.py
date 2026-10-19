@@ -277,15 +277,31 @@ def mark_soft_deleted(db, item_ids: list) -> int:
     ids = [int(i) for i in item_ids if i]
     if not ids:
         return 0
-    skip = set(ids)
-    rows = []
-    for _id in ids:
-        row = db.query(MediaItem).filter(MediaItem.id == _id).first()
-        if row is not None:
-            rows.append(row)
-    rows.sort(key=lambda r: _merge_depth(db, r))
+    # r55 性能：原来逐行 load（N 条）+ 逐行 _merge_depth（每行 ≤8 条），
+    # 5000 行一批就是数万条 PK 查询。这里先批量把行一次拉回（1 条），再一次
+    # 查出"被分身指向"的行（1 条，include_deleted：隐藏分身也要算，否则漏守卫
+    # 会留悬空 merged_into_id）。既无分身、自身 merged_into_id 又为空的行，
+    # 守卫注定 no-children、深度为 0，直接进 safe 名单，不再逐行查；
+    # 剩下的（合并链成员）才走原来的深度排序 + 逐行守卫，语义不变。
+    rows = db.query(MediaItem).filter(MediaItem.id.in_(ids)).all()
+    if not rows:
+        return 0
+    by_id = {r.id: r for r in rows}
+    with include_deleted():
+        child_target_ids = {
+            r[0] for r in db.query(MediaItem.merged_into_id).filter(
+                MediaItem.merged_into_id.in_(list(by_id))).all()
+        }
+    skip = set(by_id)
     safe_ids = []
+    guarded = []
     for row in rows:
+        if row.merged_into_id is None and row.id not in child_target_ids:
+            safe_ids.append(row.id)
+        else:
+            guarded.append(row)
+    guarded.sort(key=lambda r: _merge_depth(db, r))
+    for row in guarded:
         try:
             rehome_merged_children(db, row, skip_ids=skip)
             safe_ids.append(row.id)
@@ -357,8 +373,10 @@ def purge_expired(db, purge_days: int = None, library_id: int = None) -> int:
     except Exception as exc:  # noqa: BLE001
         logger.warning("去重缓存版本号 bump 失败（软删除回收）: %s", exc)
     db.commit()
-    logger.info("软删除回收：%d 条隐藏超过 %d 天的条目已物理删除", len(ids), days)
-    return len(ids)
+    # r55：守卫 fail-closed 跳过的行不在 purgeable 里，计数/返回值必须按实际
+    # 物理删除的走（之前用 len(ids) 虚高）。
+    logger.info("软删除回收：%d 条隐藏超过 %d 天的条目已物理删除", len(purgeable), days)
+    return len(purgeable)
 
 
 def restore_all(db) -> int:

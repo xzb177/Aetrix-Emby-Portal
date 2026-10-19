@@ -386,10 +386,13 @@ def refund_quota(db: Session, user_id: int, request_id: str) -> bool:
         logger.warning("AI 配额回滚缺 request_id，跳过（无法保证幂等）")
         return False
     try:
-        # ① 原子认领：只有归属行存在且未退过才能抢到
+        # ① 原子认领：只有归属行存在且未退过才能抢到；user_id 必须一致，
+        # 防止错位认领（r55：归属行是 A 的、传入 user_id 是 B 时，不能把 A 的
+        # 行认领走再去减 B 的账——防御纵深，当前唯一调用方 assistant.py 传参一致）。
         claimed = (
             db.query(models.AiRefundLog)
             .filter(models.AiRefundLog.request_id == request_id,
+                    models.AiRefundLog.user_id == user_id,
                     models.AiRefundLog.refunded == False)  # noqa: E712 — SQLAlchemy 语义
             .update({models.AiRefundLog.refunded: True},
                     synchronize_session=False)

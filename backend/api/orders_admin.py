@@ -548,4 +548,65 @@ def waive_rebate_debt(
     return {"success": True, "debt_id": debt_id, "status": "waived"}
 
 
+class RebateDebtRetryRequest(BaseModel):
+    # 邀请人余额不足时是否允许扣成负数（与退款对话框的 allow_negative 同口径）
+    allow_negative: bool = False
+
+
+@admin_orders_router.post("/economy/rebate-debts/{debt_id}/retry")
+def retry_rebate_debt(
+    debt_id: int,
+    request: RebateDebtRetryRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """重试一条返利撤回欠账（pending → recovered）
+
+    背景（r55 审查）：欠账在 refund_order 里产生，但订单一旦退款完成状态即
+    "refunded"，refund_order 会 400 拒绝重复退款——_reverse_rebate 的成功分支
+    在生产永远走不到，pending 欠账只进不出。本端点补上"收回"路径：
+    行锁认领（SELECT … FOR UPDATE，防并发双重试；崩溃回滚后仍是 pending，
+    不留中间态）→ 再扣一次邀请人返利 → 成功则 recovered；
+    余额仍不足则保持 pending 并如实返回原因（不是报错）。
+    """
+    now = datetime.now()
+    # 行锁认领：并发点两次重试时只有一个能拿到这一单；崩溃回滚后仍是 pending
+    debt = (
+        db.query(models.RebateReversalDebt)
+        .filter(models.RebateReversalDebt.id == debt_id,
+                models.RebateReversalDebt.status == "pending")
+        .with_for_update()
+        .first()
+    )
+    if debt is None:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="欠账不存在或已处理")
+    inviter = db.query(models.WebUser).filter(
+        models.WebUser.id == debt.user_id).first()
+    if inviter is None:
+        # 邀请人已删：这笔欠账永远收不回来，保持 pending 并明示（管理员可豁免）
+        db.rollback()
+        raise HTTPException(status_code=404, detail="邀请人已不存在，无法追扣（可豁免这笔欠账）")
+    try:
+        reversed_amount = _reverse_points(
+            db, inviter, int(debt.amount),
+            f"欠账重试撤回返利（订单 {debt.order_id}）",
+            f"rebate-reversal:{debt.order_id}",
+            request.allow_negative,
+        )
+    except HTTPException as exc:
+        # 余额仍不足：保持 pending（这是"继续欠着"，不是失败），如实返回原因
+        db.rollback()
+        return {"success": False, "debt_id": debt_id, "status": "pending",
+                "reason": exc.detail}
+    debt.status = "recovered"
+    debt.resolved_at = now
+    _audit(db, current_admin, "economy_retry_rebate_debt", "rebate_debt", debt_id,
+           {"status": "recovered", "amount": int(debt.amount),
+            "allow_negative": request.allow_negative})
+    db.commit()
+    return {"success": True, "debt_id": debt_id, "status": "recovered",
+            "reversed_amount": reversed_amount}
+
+
 __all__ = ["admin_orders_router"]

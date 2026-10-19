@@ -5,6 +5,15 @@
 2. 成功不回滚（assistant 层为主）；
 3. 重复回调/重复走失败分支不双回滚（幂等，ai 层 request_id 去重单元为主）。
 """
+import os
+
+# r55：与其它测试文件同口径——在 import backend 之前先钉住方言，否则本文件
+# 先被 pytest 收集时，backend.database 会按默认 postgresql 初始化，
+# 后续 test_parity_episode_renumber.py 模块级 init_db() 会走 pg_advisory_lock
+# 在 sqlite 上收集失败（CI 全局设了 DATABASE_TYPE=sqlite 故不受影响）。
+os.environ.setdefault("DATABASE_TYPE", "sqlite")
+os.environ.setdefault("REDIS_ENABLED", "false")
+
 from types import SimpleNamespace
 
 import pytest
@@ -205,3 +214,20 @@ def test_refund_legacy_row_not_refunded_twice(db):
     assert ai.used_today(db, 1) == 0
     assert ai.refund_quota(db, 1, "legacy-1") is False
     assert ai.used_today(db, 1) == 0
+
+
+def test_refund_rejects_mismatched_user_id(db):
+    """r55 A1：claim 必须校验 user_id——归属行是 user1 的，user2 拿同一
+    request_id 来退必须被拒绝，且两边账都不动；user1 自己的退款不受影响。"""
+    ai.consume(db, 1, 20, request_id="cross-user-1")
+    ai.consume(db, 2, 20, request_id="u2-seed")
+    assert ai.used_today(db, 1) == 1
+    assert ai.used_today(db, 2) == 1
+
+    assert ai.refund_quota(db, 2, "cross-user-1") is False
+    assert ai.used_today(db, 1) == 1  # user1 的归属行没被认领走
+    assert ai.used_today(db, 2) == 1  # user2 没白捡一次配额
+
+    assert ai.refund_quota(db, 1, "cross-user-1") is True
+    assert ai.used_today(db, 1) == 0
+    assert ai.used_today(db, 2) == 1

@@ -191,6 +191,8 @@ export interface RefundResult {
   revoked_days: number
   /** 同时撤回的邀请人返利 */
   rebate_reversed: number
+  /** 返利撤回失败是否留了欠账（true = 邀请人余额不足，返利没撤回来，已记欠账） */
+  rebate_reversal_failed?: boolean
   /** 回滚后是否已撤销该订阅 */
   cancelled: boolean
   subscription_end?: string
@@ -233,6 +235,15 @@ export interface RebateDebt {
 /** 返利撤回欠账列表（只读）：退款时邀请人余额不足留下的持久化欠账 */
 export const fetchRebateDebts = (limit = 50) =>
   get<{ records: RebateDebt[] }>('/economy/rebate-debts', { limit })
+
+/** 重试收回一条返利撤回欠账（pending → recovered；邀请人余额仍不足则继续欠着） */
+export const retryRebateDebt = (debtId: number, allowNegative = false) =>
+  post<{ success: boolean; debt_id: number; status: string; reason?: string; reversed_amount?: number }>(
+    `/economy/rebate-debts/${debtId}/retry`, { allow_negative: allowNegative })
+
+/** 豁免一条返利撤回欠账（pending → waived，认亏，写审计） */
+export const waiveRebateDebt = (debtId: number) =>
+  post<{ success: boolean; debt_id: number; status: string }>(`/economy/rebate-debts/${debtId}/waive`, {})
 
 // ==================== 优惠券（v2.10.0） ====================
 // 后端：backend/api/coupons_admin.py + backend/coupons.py

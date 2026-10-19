@@ -2556,8 +2556,24 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 归一为 1..N。不要求本集命中 TMDB（双倍编号的集号在 TMDB 里根本
     # 不存在）；路径 A（TMDB 集数==可见行数）与路径 B（TMDB 集数==2×行数
     # ＋时长证据）任一命中即归一，门槛拉满，任一条件不满足一律不动，幂等。
+    # r55：归一是 best-effort（janitor 巡检每 30 分钟会重判），不能让它
+    # 的异常拖垮整条目 enrich（外层 except 会把条目标 failed 终态）。
+    # 异常时清掉本季的已判标记——_maybe_parity_renumber_season 入口先打标记
+    # 再干活，中途抛异常不清理的话，本进程内此季永不再判。
     if item_type == "episode":
-        _maybe_parity_renumber_season(db, item)
+        try:
+            _maybe_parity_renumber_season(db, item)
+        except Exception as exc:  # noqa: BLE001 — 归一失败不影响本条目补全
+            logger.warning("奇偶归一失败 series_id=%s season=%s（已跳过，不影响补全）: %s",
+                           getattr(item, "series_id", None),
+                           getattr(item, "season_number", None), exc)
+            try:
+                with _PARITY_RENUMBER_LOCK:
+                    _PARITY_RENUMBER_DONE.discard(
+                        (getattr(item, "series_id", None),
+                         int(getattr(item, "season_number", 0) or 0)))
+            except Exception:  # noqa: BLE001 — 清标记失败也认了，巡检会兜底
+                pass
 
     # 集/季通常没有独立 TMDB 图片，但客户端会把它们作为独立卡片展示。
     # 物化一份父级图片到条目上，配合 API 的图片回退链，避免不同客户端只看

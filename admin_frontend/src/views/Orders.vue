@@ -41,6 +41,8 @@ import {
   refundOrder,
   fetchRefundRecords,
   fetchRebateDebts,
+  retryRebateDebt,
+  waiveRebateDebt,
   type EconomyStats,
   type OrderRow,
   type RefundRecord,
@@ -222,9 +224,15 @@ async function submitBatchRefund() {
     selection.selectedKeys.value = summary.failedKeys as RowKey[]
     ElMessage[summary.failed ? 'warning' : 'success'](bulkSummaryText(summary, '退款'))
     batchRefundDialog.value.visible = false
+    const debtsBefore = pendingDebtCount.value
     load()
     loadStats()
-    loadRecords()
+    await loadRecords()
+    // 批量退款不拆单条结果：用欠账数前后差精确提示本次新增的欠账（r55）
+    const debtsAdded = pendingDebtCount.value - debtsBefore
+    if (debtsAdded > 0) {
+      ElMessage.warning(`本次新增 ${debtsAdded} 笔返利撤回欠账，可在下方欠账区重试收回`)
+    }
   } finally {
     bulkBusy.value = false
   }
@@ -290,6 +298,60 @@ async function loadRecords() {
     rebateDebts.value = (await fetchRebateDebts(20)).records
   } catch {
     // 欠账区加载失败不该影响订单主表
+  }
+}
+
+// 欠着的笔数：>0 时在欠账区标题旁醒目提示，避免静默堆积（r55）
+const pendingDebtCount = computed(() => rebateDebts.value.filter((d) => d.status === 'pending').length)
+
+// 重试收回一条欠账：再扣一次邀请人返利；余额仍不足则继续欠着（后端如实返回原因）。
+// 「允许负数」的选择嵌进确认按钮，一次弹窗搞定。
+async function retryDebt(d: RebateDebt) {
+  let allowNegative = false
+  try {
+    await ElMessageBox.confirm(
+      `对 ${d.username} 再扣 ${d.amount} 积分。选「允许扣成负数」先追回来；选「不重试」则保持欠着。`,
+      '重试收回欠账',
+      {
+        confirmButtonText: '允许扣成负数并重试',
+        cancelButtonText: '不重试，继续欠着',
+        distinguishCancelAndClose: true,
+      },
+    )
+    allowNegative = true
+  } catch {
+    return // 取消 / 右上角 X：什么都不做，保持欠着
+  }
+  try {
+    const res = await retryRebateDebt(d.id, allowNegative)
+    if (res.success) {
+      ElMessage.success(`已收回 ${res.reversed_amount ?? d.amount} 积分`)
+    } else {
+      ElMessage.warning(`仍未收回，继续欠着：${res.reason || '邀请人余额不足'}`)
+    }
+    await loadRecords()
+  } catch (e: unknown) {
+    ElMessage.error(toAdminError(e, '重试失败'))
+  }
+}
+
+// 豁免一条欠账：认亏，pending → waived（写审计，不可撤销）
+async function waiveDebt(d: RebateDebt) {
+  try {
+    await ElMessageBox.confirm(
+      `豁免后这 ${d.amount} 积分就认亏了，不会再追扣，确定吗？`,
+      '豁免欠账',
+      { confirmButtonText: '确认豁免', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await waiveRebateDebt(d.id)
+    ElMessage.success('已豁免（认亏）')
+    await loadRecords()
+  } catch (e: unknown) {
+    ElMessage.error(toAdminError(e, '豁免失败'))
   }
 }
 
@@ -382,6 +444,7 @@ async function submitRefund() {
     const bits: string[] = []
     if (res.revoked_points) bits.push(`扣回 ${res.revoked_points} 积分`)
     if (res.rebate_reversed) bits.push(`撤回返利 ${res.rebate_reversed} 积分`)
+    if (res.rebate_reversal_failed) bits.push('返利撤回失败，已记欠账（下方欠账区可重试收回）')
     if (res.revoked_days) bits.push(`回滚 ${res.revoked_days} 天`)
     if (res.cancelled) bits.push('该订阅已撤销')
     ElMessage.success(`退款完成${bits.length ? '：' + bits.join('、') : ''}`)
@@ -577,12 +640,12 @@ onMounted(() => {
       </ul>
     </SectionCard>
 
-    <!-- 返利撤回欠账（只读）：退款时邀请人余额不足、返利没撤回来留下的欠账 -->
+    <!-- 返利撤回欠账：退款时邀请人余额不足、返利没撤回来留下的欠账，可重试收回或豁免 -->
     <SectionCard
       v-if="rebateDebts.length"
       title="返利撤回欠账"
       :icon="Undo2"
-      meta="只记录、不自动追扣；追扣策略待定"
+      :meta="pendingDebtCount ? `有 ${pendingDebtCount} 笔欠着，点「重试」追扣` : '无待追欠账'"
       flush
     >
       <ul class="records">
@@ -594,6 +657,10 @@ onMounted(() => {
           <span class="record-user">{{ d.username }}</span>
           <span class="record-reason">应撤 {{ d.amount }} 积分{{ d.reason ? `（${d.reason}）` : '' }}</span>
           <span class="record-time">{{ fmtTime(d.created_at) }}</span>
+          <span v-if="d.status === 'pending'" class="record-actions">
+            <el-button link type="primary" size="small" @click="retryDebt(d)">重试</el-button>
+            <el-button link type="danger" size="small" @click="waiveDebt(d)">豁免</el-button>
+          </span>
         </li>
       </ul>
     </SectionCard>
@@ -808,6 +875,7 @@ onMounted(() => {
 .record-user { color: var(--au-text-3); }
 .record-reason { flex: 1 1 160px; min-width: 120px; }
 .record-time { font-variant-numeric: tabular-nums; color: var(--au-text-4); }
+.record-actions { margin-left: auto; display: inline-flex; gap: 2px; }
 
 @media (max-width: 768px) {
   .view-toolbar { padding: 2px 16px 12px; }
