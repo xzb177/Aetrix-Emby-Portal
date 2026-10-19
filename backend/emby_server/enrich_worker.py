@@ -2246,6 +2246,105 @@ def _apply_season_posters(db, season_posters: dict) -> int:
     return n
 
 
+# 奇偶双倍编号归一（缺集普查桶 C1）。
+# 病象：源头 release 即双倍编号（如《囚犯医生》文件名就是 S01E02…S01E32，
+# 16 个文件演 16 集），库里行与文件一致、什么都不缺，但播放器按 1–32
+# 排列看着缺了一半。
+# 触发点：写库阶段、单集条目（不要求本集命中 TMDB——双倍编号的集号在
+# TMDB 里根本不存在，命中了反而说明编号正常）。门槛拉满、宁漏勿错：
+# 某季满足 (a) 有 tmdb_id 且拿到 TMDB 该季权威集数 N；(b) 库内该季可见
+# 集行恰好 N 条且集号各不相同；(c) 集号恰好是 2,4,6,…,2N，才按集号
+# 排序重编号为 1..N。任一条件不满足（奇数列/混杂/集数对不上/重复集号）
+# 一律不动。
+# 幂等：归一后集号为 1..N，自然不再命中偶数列；进程内每季只判定一次
+# （_PARITY_RENUMBER_DONE）。日志逐行可审计、支持事后按日志回滚。
+# 无开关：默认行为（用户口径），门槛本身就是安全阀。
+_PARITY_RENUMBER_DONE: set = set()
+_PARITY_RENUMBER_LOCK = threading.Lock()
+_PARITY_RENUMBER_DONE_CAP = 5000
+
+
+def _maybe_parity_renumber_season(db, item: Any) -> bool:
+    """对 item 所在季做奇偶双倍编号归一检查。执行了归一返回 True。"""
+    series_id = getattr(item, "series_id", None)
+    season_no = getattr(item, "season_number", None)
+    if series_id is None or season_no is None:
+        return False
+    key = (series_id, int(season_no))
+    with _PARITY_RENUMBER_LOCK:
+        if key in _PARITY_RENUMBER_DONE:
+            return False
+        if len(_PARITY_RENUMBER_DONE) >= _PARITY_RENUMBER_DONE_CAP:
+            _PARITY_RENUMBER_DONE.clear()
+        _PARITY_RENUMBER_DONE.add(key)
+
+    def _skip(reason: str) -> bool:
+        logger.debug("奇偶归一跳过 series_id=%s season=%s: %s",
+                     series_id, season_no, reason)
+        return False
+
+    series = db.query(em.MediaItem).filter(
+        em.MediaItem.id == series_id).first()
+    tmdb_id = getattr(series, "tmdb_id", None) if series is not None else None
+    if not tmdb_id:
+        return _skip("正主剧无 tmdb_id")
+
+    # (a) TMDB 该季权威集数 N：走季接口一次全拿（两级缓存，IO 阶段
+    # 往往已拉过）。瞬态失败/无数据一律不动（宁漏勿错）。
+    try:
+        from backend.emby_server.tmdb import tmdb_client
+        eps = tmdb_client.season_episodes(str(tmdb_id), int(season_no))
+    except Exception as exc:  # noqa: BLE001 — 含 TmdbTransientError
+        logger.debug("奇偶归一跳过 series_id=%s season=%s: TMDB 季数据失败: %s",
+                     series_id, season_no, exc)
+        return False
+    if not eps:
+        return _skip("TMDB 季数据为空/404")
+    tmdb_nums = {ep.get("episode_number") for ep in eps
+                 if ep.get("episode_number") is not None}
+    n = len(tmdb_nums)
+    if n <= 0:
+        return _skip("TMDB 季有效集数为 0")
+
+    # (b) 库内该季可见集行恰好 N 条（软删/合并副本排除，集号非空且不重复）
+    siblings = db.query(em.MediaItem).filter(
+        em.MediaItem.item_type == "episode",
+        em.MediaItem.series_id == series_id,
+        em.MediaItem.season_number == int(season_no),
+        em.MediaItem.deleted_at.is_(None),
+        em.MediaItem.merged_into_id.is_(None),
+        em.MediaItem.episode_number.isnot(None),
+    ).all()
+    if len(siblings) != n:
+        return _skip(f"库内可见集 {len(siblings)} 条 ≠ TMDB {n} 集")
+    old_nums = [s.episode_number for s in siblings]
+    if len(set(old_nums)) != len(old_nums):
+        return _skip("存在重复集号")
+
+    # (c) 集号恰好是 2,4,6,…,2N（一条不多一条不少）
+    if set(old_nums) != set(range(2, 2 * n + 1, 2)):
+        return _skip("非完美偶数列")
+
+    # 全部满足：按集号升序映射为 1..N 落库
+    ordered = sorted(siblings, key=lambda s: s.episode_number)
+    series_name = getattr(series, "name", "") or ""
+    logger.info(
+        "[parity-renumber] 奇偶双倍编号归一: series_id=%s series=%r "
+        "season=%s tmdb=%s N=%s 原集号=%s → 1..%s",
+        series_id, series_name, season_no, tmdb_id, n,
+        sorted(old_nums), n)
+    for idx, sib in enumerate(ordered, start=1):
+        # 此时 old_nums 必为 2,4,…,2N 的偶数列，sib.episode_number == idx
+        # 不可能成立，无需双保险分支。
+        logger.info(
+            "[parity-renumber] item_id=%s %s→%s",
+            sib.id, sib.episode_number, idx)
+        sib.episode_number = idx
+        db.add(sib)
+    db.flush()
+    return True
+
+
 def _enrich_apply(db, item: Any, fetched: dict) -> None:
     """写库阶段（单条短事务内调用）：把 IO 阶段拿到的数据落库。"""
     from backend.emby_server import nfo as nfo_lib
@@ -2378,6 +2477,13 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             local = image_store.localize(still_url, allow_download=False)
             if local:
                 item.poster_path = local
+
+    # 奇偶双倍编号归一（缺集普查桶 C1）：源头 release 即双倍编号
+    # （如 S01E02…S01E32）的季，在 TMDB 季数据已到手的环节按集号排序
+    # 归一为 1..N。不要求本集命中 TMDB（双倍编号的集号在 TMDB 里根本
+    # 不存在）；门槛拉满，任一条件不满足一律不动，幂等。
+    if item_type == "episode":
+        _maybe_parity_renumber_season(db, item)
 
     # 集/季通常没有独立 TMDB 图片，但客户端会把它们作为独立卡片展示。
     # 物化一份父级图片到条目上，配合 API 的图片回退链，避免不同客户端只看
