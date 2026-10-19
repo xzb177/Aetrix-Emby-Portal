@@ -28,6 +28,7 @@ from backend.emby_server import models as emby_models
 from backend.emby_server import scan_progress as progress
 from backend.emby_server import tmdb_cache
 from backend.emby_server.env_util import env_float, env_int
+from backend.emby_server.zh_s2t import to_traditional as _to_traditional
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +361,24 @@ def strip_year_suffix(name):
     return _YEAR_SUFFIX_RE.sub("", str(name)).strip()
 
 
+_NAME_YEAR_SUFFIX_VALUE_RE = re.compile(r"[\(\（]\s*((?:19|20)\d{2})\s*[\)\）]\s*$")
+
+
+def year_from_name_suffix(name):
+    """标题末尾年份后缀里的年份值（`人生切割术 (2022)` → 2022）。
+
+    无后缀返回 None。供搜索链的「年份后缀兜底」用：production_year 为空时
+    把后缀年份喂给匹配器做年份确认（传 None 常常直接零命中）。
+    """
+    m = _NAME_YEAR_SUFFIX_VALUE_RE.search(str(name or ""))
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
 # ---- 标题清洗（问题二：横切纪律——写 item.name 的地方只许走这一套） ----
 #
 # ① 冒号切「主标题：副标题」：TMDB 中文译名常带「：第一季」这类后缀
@@ -503,6 +522,13 @@ def _search_candidates(name, year=None):
     for c, fuzzy in ((cleaned, True), (raw, True), (_first_run(cleaned), True)):
         if c and c not in [x[0] for x in cands]:
             cands.append((c, fuzzy))
+    # WS6 搜索链根治：繁体候选。只繁中标题在 TMDB 检索里是独立索引项，
+    # 简体查询零结果时繁体常能命中（92 条复核实证：只繁中 6 部获救）。
+    # 转换走内嵌单字表（zh_s2t，无外部依赖）；候选只多发 1~2 个请求，
+    # 命中仍须过 _hit_score 的 Tier 裁剪——错繁只会导致零结果，不会导致错配。
+    for tc in (_to_traditional(cleaned), _to_traditional(_first_run(cleaned))):
+        if tc and tc not in [x[0] for x in cands]:
+            cands.append((tc, True))
     # 剥掉年份再搜一次：目录名几乎都带「(YYYY)」，而归一化后年份仍在字符串里
     # （`Schlag den Star (2009)` → `schlagdenstar2009`），永远匹配不上 TMDB 标题
     # `schlagdenstar`。西方剧几乎全带年份，不剥就是全军覆没（欧美剧 679 条

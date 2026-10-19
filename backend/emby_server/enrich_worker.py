@@ -1291,10 +1291,21 @@ def _tmdb_plan_for_item(item, nfo_data, kind, needs_repair):
     - {"op": "search", ...}：需要按名称搜索
     - {"op": "none"}：无需操作
     """
-    from backend.emby_server.tmdb import tmdb_client
+    from backend.emby_server.tmdb import tmdb_client, year_from_name_suffix
 
     name = getattr(item, "name", None)
     production_year = getattr(item, "production_year", None)
+    # WS6 搜索链根治：年份后缀兜底。production_year 为空但名字带 "(YYYY)"
+    # 后缀时，把后缀年份喂给匹配器做年份确认（年份关实证：传 None 时
+    # 匹配器直接判 None、传年份立刻命中）。search() 内置"带年份零结果 →
+    # 去年份重试"兜底，后缀年份写错时退化为原行为，不会更差。命中后
+    # apply()/apply_details() 会从 TMDB 日期回填真正的 production_year。
+    suffix_year_used = False
+    if production_year is None:
+        suffix_year = year_from_name_suffix(name)
+        if suffix_year:
+            production_year = suffix_year
+            suffix_year_used = True
     poster_path = getattr(item, "poster_path", None)
     primary_image_url = getattr(item, "primary_image_url", None)
 
@@ -1319,7 +1330,8 @@ def _tmdb_plan_for_item(item, nfo_data, kind, needs_repair):
             return {"op": "details", "tmdb_id": str(alias_id), "why": "alias", "kind": kind,
             "name": name or "", "year": production_year}
         return {"op": "search", "name": name or "", "year": production_year,
-                "kind": kind, "existing_id": getattr(item, "tmdb_id", None)}
+                "kind": kind, "existing_id": getattr(item, "tmdb_id", None),
+                "year_from_name_suffix": suffix_year_used}
 
     # 3) 其余情况不做任何操作
     return {"op": "none"}
