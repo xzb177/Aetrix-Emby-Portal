@@ -161,6 +161,7 @@ const navGroups: NavGroup[] = [
     icon: MessageSquareDashed,
     items: [
       { path: '/media-seek', label: '求片管理', icon: MessageSquareDashed },
+      { path: '/panel-achievements', label: '成就与馆灵', icon: Medal },
       { path: '/announcements', label: '公告管理', icon: Megaphone },
       { path: '/wall-posts', label: '留言墙管理', icon: MessageSquareText },
       { path: '/tickets', label: '工单', icon: Ticket },

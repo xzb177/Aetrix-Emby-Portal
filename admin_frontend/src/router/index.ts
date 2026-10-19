@@ -47,6 +47,8 @@ const routes: RouteRecordRaw[] = [
       // 探险世界 · 到此一游留言墙管理
       { path: 'wall-posts', name: 'WallPosts', component: () => import('@/views/WallPosts.vue'), meta: { title: '留言墙管理' } },
       { path: 'tickets', name: 'Tickets', component: () => import('@/views/Tickets.vue'), meta: { title: '工单' } },
+      // 成就与馆灵（r48 遗留 ⑨）：面板 v4 成就定义 + 馆灵阶段的管理入口
+      { path: 'panel-achievements', name: 'PanelAchievements', component: () => import('@/views/PanelAchievements.vue'), meta: { title: '成就与馆灵' } },
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
       // 公益服：抽奖配置 / 积分配置（v2.55 公益用户页已并入用户管理，求片审核页已合并）
       // 求片审核已并入「求片管理」（MediaSeek.vue），路由移除

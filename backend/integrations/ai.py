@@ -16,7 +16,7 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -266,8 +266,8 @@ def _insert_first(db: Session, user_id: int, day: str) -> bool:
         return False
 
 
-def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[bool, int]:
-    """占用一次配额：返回 ``(是否允许, 今日已用)``
+def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[bool, int, bool]:
+    """占用一次配额：返回 ``(是否允许, 今日已用, 本次是否真实扣减)``
 
     并发下不能「先读再写」（两个请求都读到 limit-1 就都会放行），所以：
 
@@ -276,6 +276,10 @@ def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[boo
        唯一约束失败，那正好就是「已到上限」的判定依据。
 
     SQLite 与 PostgreSQL 都支持这套写法（不依赖 ``ON CONFLICT`` 方言）。
+
+    r48 遗留 ①：第三个返回值 ``deducted`` 标记本次是否真的发生了扣减——fail-open
+    穿透（见 ``safe_consume``）时为 False，调用方做上游失败回滚时必须先看它，
+    否则会对没扣过的请求误减计数。
     """
     if limit is None:
         limit = daily_limit(db)
@@ -293,10 +297,10 @@ def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[boo
         )
         db.commit()
         if updated:
-            return True, used_today(db, user_id)
+            return True, used_today(db, user_id), True
         if not _insert_first(db, user_id, day):
-            return False, used_today(db, user_id)
-        return True, 1
+            return False, used_today(db, user_id), False
+        return True, 1, True
     # 不限次数也记账（便于统计），不影响放行
     updated = (
         db.query(models.AiUsage)
@@ -308,25 +312,76 @@ def consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[boo
     db.commit()
     if not updated:
         _insert_first(db, user_id, day)
-    return True, used_today(db, user_id)
+    return True, used_today(db, user_id), True
 
 
-def safe_consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[bool, int]:
+def safe_consume(db: Session, user_id: int, limit: Optional[int] = None) -> tuple[bool, int, bool]:
     """配额占用的「不带病拦人」包装
 
     计数写不进去（例如库被锁、只读副本）时**放行**并记一条警告：AI 助手的价值是答问题，
     不该因为一张统计表写失败就把用户挡在门外（真出这种故障时，日志里看得见）。
+
+    r48 遗留 ①：fail-open 穿透时 ``deducted=False``——调用方在上游失败时**不许**
+    对这类请求做回滚（没扣过，退了就是误减别人的计数）。
     """
     try:
         return consume(db, user_id, limit)
     except SQLAlchemyError as exc:
         logger.warning("AI 配额计数失败，本次放行: %s", exc)
         try:
-            return True, used_today(db, user_id)
+            return True, used_today(db, user_id), False
         except SQLAlchemyError:
             # 写失败的场景（连接池耗尽等）读大概率也失败：used 置 0，
             # 「不带病拦人」的放行承诺不变（r30 F2）。
-            return True, 0
+            return True, 0, False
+
+
+def refund_quota(db: Session, user_id: int, request_id: str) -> bool:
+    """上游调用失败时退回本次预扣的配额（r48 遗留 ①）
+
+    幂等：``request_id`` 在 ``ai_refund_log`` 有唯一约束，同一请求重复调只退一次；
+    第二次调用因唯一约束冲突直接返回 False（空操作）。退计数用条件递减
+    ``count > 0`` 兜底，脏数据/并发下不会减出负数。
+
+    返回 True=本次确实执行了一次回滚；False=已退过/无需退/回滚写失败。
+    回滚写失败时只记警告不抛异常：配额是统计口径，不能因为退账把 502 变成 500。
+    """
+    if not request_id:
+        logger.warning("AI 配额回滚缺 request_id，跳过（无法保证幂等）")
+        return False
+    day = _today()
+    try:
+        db.add(models.AiRefundLog(user_id=user_id, day=day, request_id=request_id))
+        db.flush()  # 唯一约束冲突在这里抛 IntegrityError
+        db.query(models.AiUsage).filter(
+            models.AiUsage.user_id == user_id,
+            models.AiUsage.day == day,
+            models.AiUsage.count > 0,
+        ).update(
+            {models.AiUsage.count: models.AiUsage.count - 1,
+             models.AiUsage.updated_at: datetime.now()},
+            synchronize_session=False,
+        )
+        db.commit()
+    except IntegrityError:
+        # 同一 request_id 已退过：空操作
+        db.rollback()
+        return False
+    except SQLAlchemyError as exc:
+        logger.warning("AI 配额回滚失败，本次不退: %s", exc)
+        db.rollback()
+        return False
+    # 顺手清 90 天前的幂等账本（与 prune_ai_usage 同口径，best-effort）
+    try:
+        cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        (db.query(models.AiRefundLog)
+           .filter(models.AiRefundLog.day < cutoff)
+           .delete(synchronize_session=False))
+        db.commit()
+    except SQLAlchemyError as exc:
+        logger.warning("AI 回滚账本清理失败（不影响本次回滚）: %s", exc)
+        db.rollback()
+    return True
 
 
 def is_configured(values: dict) -> bool:

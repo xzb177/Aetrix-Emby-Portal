@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -80,6 +80,15 @@ def _validate_pet_stages(stages) -> list:
         if isinstance(hours, bool) or not isinstance(hours, (int, float)) or hours < 0:
             raise HTTPException(status_code=400, detail=f"stages[{i}].hours 必须是非负数")
         norm.append({"name": name.strip(), "icon": icon, "hours": hours})
+    # r48 遗留 ⑨：消费处（panel.py /collector 按升序判定当前阶段）隐式依赖阈值升序。
+    # 第一阶段必须从 0 开始，否则 0 小时用户无阶段可归；阈值倒挂会让阶段错乱。
+    if norm[0]["hours"] != 0:
+        raise HTTPException(status_code=400, detail="stages[0].hours 必须为 0（第一阶段从 0 小时开始）")
+    for i in range(1, len(norm)):
+        if norm[i]["hours"] < norm[i - 1]["hours"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"stages[{i}].hours 不能小于前一阶段（判定按升序，写歪会阶段错乱）")
     return norm
 
 
@@ -111,6 +120,56 @@ def admin_pet_stages_put(
     set_config(db, PET_STAGES_KEY, json.dumps(stages, ensure_ascii=False), "馆灵阶段配置（管理后台）")
     db.commit()
     return {"stages": stages}
+
+
+class AchievementDefIn(BaseModel):
+    """成就定义编辑体（r48 遗留 ⑨）
+
+    只允许改已有 key 的展示字段：name/desc/icon/sort/enabled。
+    不允许新增/删除 key——判定逻辑在 panel_achievements.evaluate() 按 key 硬编码，
+    新增的 key 没有判定会永远拿不到，删除的 key 会让已解锁记录悬空。
+    """
+    name: str = Field(min_length=1, max_length=50)
+    desc: str = Field(min_length=1, max_length=200)
+    icon: str = Field(default="🏅", max_length=20)
+    sort: int = 0
+    enabled: bool = True
+
+
+def _achievement_def_to_dict(row) -> dict:
+    return {"key": row.key, "name": row.name, "desc": row.desc,
+            "icon": row.icon, "sort": row.sort, "enabled": row.enabled}
+
+
+@admin_router.get("/achievements")
+def admin_achievements_get(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """管理后台：读全部成就定义（按 sort 排序；r48 遗留 ⑨补的管理入口）。"""
+    rows = (db.query(models.PanelAchievementDef)
+              .order_by(models.PanelAchievementDef.sort).all())
+    return {"achievements": [_achievement_def_to_dict(r) for r in rows]}
+
+
+@admin_router.put("/achievements/{key}")
+def admin_achievements_put(
+    key: str,
+    body: AchievementDefIn,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """管理后台：改一条成就定义（仅 name/desc/icon/sort/enabled；key 不可改）。"""
+    row = db.query(models.PanelAchievementDef).filter_by(key=key).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="成就定义不存在")
+    row.name = body.name.strip()
+    row.desc = body.desc.strip()
+    row.icon = (body.icon or "").strip() or "🏅"
+    row.sort = body.sort
+    row.enabled = body.enabled
+    db.commit()
+    return {"achievement": _achievement_def_to_dict(row)}
 
 
 def _panel_enabled() -> bool:
