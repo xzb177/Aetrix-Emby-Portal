@@ -69,10 +69,8 @@ onUnmounted(() => {
   display: inline-block;
   animation: v4-fadein 0.4s ease;
 }
-@keyframes v4-fadein {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
-}
+/* R99：@keyframes v4-fadein 已收敛到 v4-paper.css 全局唯一定义（8px），删除本地 6px 重复定义
+   （2px 差异肉眼不可辨；此前四处重复定义以后加载者胜） */
 
 /* R41：减少动态偏好下轮播行装饰动画停掉（组件本地守卫） */
 @media (prefers-reduced-motion: reduce) {

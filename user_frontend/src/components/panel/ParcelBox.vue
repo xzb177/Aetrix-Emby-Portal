@@ -312,10 +312,7 @@ function onTap() {
   60% { transform: scale(1.03); }
   100% { transform: scale(1); }
 }
-@keyframes v4-fadein {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
-}
+/* R99：@keyframes v4-fadein 已收敛到 v4-paper.css 全局唯一定义，删除本地重复定义 */
 .v4-parcel:focus-visible {
   outline: 2px solid var(--red);
   outline-offset: 2px;
