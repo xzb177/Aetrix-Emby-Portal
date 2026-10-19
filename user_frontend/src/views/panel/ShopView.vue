@@ -872,8 +872,11 @@ async function doBuyPlan(plan: SubscriptionPlan) {
       coupon_code: quote ? quote.code : undefined,
     })
     if (res.paid_with_points) {
+      // R101-1：静默刷新——刚领完执照不闪全页骨架（与 confirmExchangeRedeem 的 loadAll(true) 口径对齐）；
+      // 能量抵扣即时消费优惠券（后端 coupons.consume），过期的「已应用」展示一并清掉
+      clearCoupon()
       toast.success('执照领取成功，出发吧！')
-      void loadAll()
+      void loadAll(true)
     } else if (res.pay_url) {
       toast.success('正在跳转支付')
       window.location.href = res.pay_url
@@ -1119,18 +1122,20 @@ async function copyInviteCode() {
   border-radius: var(--paper-r-lg, 12px);
   margin-bottom: 12px;
   overflow: hidden;
-  cursor: pointer;
-  transition: transform 0.15s;
+  /* R101-2：整卡不再挂 cursor:pointer——真正可点的只有 .face，detail 空白区点无反应，
+     手型与按压缩放都收敛到 .face，不误导 */
   position: relative;
-}
-.license:active {
-  transform: scale(0.98);
 }
 .license .face {
   padding: 16px;
   display: flex;
   gap: 14px;
   align-items: center;
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.license .face:active {
+  transform: scale(0.98);
 }
 .license .wax {
   flex: none;
@@ -1404,7 +1409,7 @@ async function copyInviteCode() {
 @media (prefers-reduced-motion: reduce) {
   .can,
   .can .bolt,
-  .license,
+  .license .face,
   .meter .fill,
   .charge,
   .buy,
@@ -1428,7 +1433,7 @@ async function copyInviteCode() {
   .can:active,
   .charge:active,
   .buy:active,
-  .license:active,
+  .license .face:active,
   .redeem-btn:active,
   /* R85：上面新补的五个按压反馈同步进减少动态清单 */
   .invite .code button:active,
