@@ -313,6 +313,18 @@ def _norm(text: str) -> str:
     return re.sub(r"[\s\.\-_:,!！?？'\"“”‘’()（）\[\]【】]", "", str(text or "")).lower()
 
 
+def _title_consistent(want: str, got: str) -> bool:
+    """标题一致性：归一化后全等或互为前缀（与本文件 TVMaze/AniList 同口径）。
+
+    任一方为空即不一致——没法验证 = 不可信。
+    """
+    w = _norm(want)
+    g = _norm(got)
+    if not w or not g:
+        return False
+    return g == w or g.startswith(w) or w.startswith(g)
+
+
 # ---------------------------------------------------------------------------
 # 5. TVmaze：免费、无 key，英文剧集强
 # ---------------------------------------------------------------------------
@@ -381,6 +393,16 @@ def search_omdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
         if "key" in error.lower():
             pool.note_invalid(key)
             raise SourceError("OMDb 密钥无效")
+        return None
+    # OMDb 的 t= 是模糊 best-guess：拿冷门/中文名去问，会返回毫不相干的
+    # 片（2026-10-21 生产实证：《彼得58》→ 捷克建筑纪录片《Architektura
+    # ČSSR 58–89》、《逐爱之心 2》→《穿普拉达的女王2》，只对上年份）。
+    # 返回的标题/年份跟问的对不上就当没命中——它的 imdbID 会被引擎当真
+    # 喂给 IMDb 接力绑 TMDB，模糊命中在这里就是错绑源头。宁可 none 不乱认。
+    if not _title_consistent(title, str(data.get("Title") or "")):
+        return None
+    got_year = _year_of(data.get("Year"))
+    if year and got_year and int(year) != got_year:
         return None
     genres = [g.strip() for g in str(data.get("Genre") or "").split(",") if g.strip()]
     return Hit(

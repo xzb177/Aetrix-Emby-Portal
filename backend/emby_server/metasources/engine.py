@@ -241,8 +241,9 @@ def _relay_tmdb(result: CollectResult, hits: list, targets: list,
     两座桥（已有 tmdb 命中的不接力；只在自动采集跑，试采集是单源体检）：
     1. 原名 → 用其它源命中的 ``original_title`` 再搜一次 TMDB（TMDB 搜索
        本身带高置信校验，原名全等即 Tier 2，不会乱认）；
-    2. IMDb → 任一源给出 IMDb 编号时，用 ``find_by_imdb`` 精确落点
-       （再过一道年份 ±1 的门，防同名重拍串号）。
+    2. IMDb → 标题对得上的源给出 IMDb 编号时，用 ``find_by_imdb`` 精确
+       落点（再过一道年份 ±1 的门，防同名重拍串号）。编号来源要校验的
+       原因见桥二实现处的注释（模糊命中的错编号会被「转正」成错绑）。
     接力命中的 Hit 直接并入 ``hits`` 参与归并，``apply_to_item`` 会据此
     写下 tmdb_id 与 TMDB 的海报/简介。失败一律静默（接力是增益，不是主链）。
     """
@@ -273,9 +274,16 @@ def _relay_tmdb(result: CollectResult, hits: list, targets: list,
                 "tmdb", "TMDB（原名接力）", True, hit=True,
                 elapsed_ms=int((time.monotonic() - began) * 1000)))
             return
-    # 桥二：IMDb 精确落点
+    # 桥二：IMDb 精确落点。编号的来源必须可信：给出编号的那条命中，标题
+    # 须与条目名或任一命中的原名对得上（归一化全等/互为前缀）——否则一个
+    # 模糊命中的错编号会被 find_by_imdb「转正」成带海报简介的完整错绑，
+    # 年份 ±1 的门在同年错配时完全拦不住（2026-10-21 生产实证：OMDb
+    # 模糊查名给出错 imdbID，《彼得58》被绑成捷克建筑纪录片）。
+    known_titles = [title] + [h.original_title for h in hits if h.original_title]
     imdb = next((h.external_ids.get("imdb") for h in hits
-                 if h.external_ids.get("imdb")), None)
+                 if h.external_ids.get("imdb")
+                 and any(sources._title_consistent(t, h.title)
+                         for t in known_titles)), None)
     if not imdb:
         return
     began = time.monotonic()
