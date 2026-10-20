@@ -6,9 +6,14 @@
 #   → docker compose config --quiet
 #   → docker compose build --pull
 #   → docker compose up -d --remove-orphans
-#   → 等待 aetrix 容器健康检查通过
+#   → 等待 aetrix-api 容器健康检查通过
 #
 # 已经部署过、想从远端拉取新版本时，请使用 scripts/update.sh；本脚本不执行 git pull。
+#
+# 注意：本脚本只管理默认编排文件（docker-compose.yml）里的后端 5 个容器，
+# 不含网页前端（docker-compose.frontend.yml 的 aetrix-web）。两条路线不要混用：
+# 脚本的 up 带 --remove-orphans，会摘掉不在默认编排文件里的前端容器。
+# 完整口径见 docs/deploy-docker.md 第 3 节。
 #
 # 用法：
 #   bash scripts/deploy.sh
@@ -95,28 +100,28 @@ if ((DRY_RUN)); then
   exit 0
 fi
 
-log "等待 aetrix 容器健康检查通过"
+log "等待 aetrix-api 容器健康检查通过"
 healthy=0
 for _ in $(seq 1 60); do
-  status="$(docker inspect -f '{{.State.Status}}' aetrix 2>/dev/null || true)"
-  health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' aetrix 2>/dev/null || true)"
+  status="$(docker inspect -f '{{.State.Status}}' aetrix-api 2>/dev/null || true)"
+  health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' aetrix-api 2>/dev/null || true)"
   if [[ "$status" == "running" && "$health" == "healthy" ]]; then
     healthy=1
     break
   fi
   if [[ "$status" == "exited" || "$status" == "dead" ]]; then
-    "${compose[@]}" logs --tail 80 aetrix >&2 || true
-    die "aetrix 容器启动失败（状态：$status）。"
+    "${compose[@]}" logs --tail 80 aetrix-api >&2 || true
+    die "aetrix-api 容器启动失败（状态：$status）。"
   fi
   sleep 2
 done
 
 if (( ! healthy )); then
   "${compose[@]}" ps >&2 || true
-  die "aetrix 在 120 秒内没有通过健康检查。"
+  die "aetrix-api 在 120 秒内没有通过健康检查。"
 fi
 
 log "查看服务状态"
 "${compose[@]}" ps
-log "部署完成：aetrix 容器已通过健康检查"
+log "部署完成：aetrix-api 容器已通过健康检查"
 log "建议随后检查：curl http://127.0.0.1:8000/api/health"

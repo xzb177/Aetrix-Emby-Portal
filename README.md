@@ -15,7 +15,7 @@ Python 3.12 + FastAPI · Vue 3 + TypeScript · PostgreSQL · Redis 7 · ffmpeg
 
 Aetrix Portal 是一套自托管的影视媒体服务器。后端完整实现 Emby 协议，Infuse、SenPlayer、Forward、Emby 官方 App 等客户端可以把它当作一台 Emby Server 直接连接——但服务端完全由本项目提供，不依赖官方 Emby Server。
 
-系统按职责拆成两个进程：**EM**（面板，用户门户 / 管理后台 / 媒体库扫描 / 会员计费）和 **EA**（Emby 协议网关，认证 / 浏览 / 出流 / 转码 / 字幕）。两者共用同一个 PostgreSQL 和同一个 `SECRET_KEY`，默认单机同容器部署，也可以拆到不同机器上分离部署。
+系统按职责拆成两个进程：**EM**（面板，用户门户 / 管理后台 / 媒体库扫描 / 会员计费）和 **EA**（Emby 协议网关，认证 / 浏览 / 出流 / 转码 / 字幕）。两者共用同一个 PostgreSQL 和同一个 `SECRET_KEY`，默认单机部署（自建版是 api / ea / worker 三个容器，授权版合并为一个容器），也可以拆到不同机器上分离部署。
 
 面向自己搭服务器、自己管媒体库和用户的技术用户。
 
@@ -37,7 +37,7 @@ Emby 客户端 ──HTTP──▶ EA（出流）
                         └──▶ Redis
 ```
 
-EM 与 EA 必须配置相同的 `SECRET_KEY`；默认部署形态为单机同容器，可通过环境变量指向远端 PostgreSQL / Redis 实现分离部署，参见 [docs/deploy-ea.md](docs/deploy-ea.md)。
+EM 与 EA 必须配置相同的 `SECRET_KEY`；默认部署形态为单机部署，可通过环境变量指向远端 PostgreSQL / Redis 实现分离部署，参见 [docs/deploy-ea.md](docs/deploy-ea.md)。
 
 ---
 
@@ -61,7 +61,7 @@ SECRET_KEY=<上面生成的值>
 POSTGRES_PASSWORD=<自定义数据库密码>
 ```
 
-启动：
+启动后端：
 
 ```bash
 ./scripts/deploy.sh
@@ -71,13 +71,24 @@ POSTGRES_PASSWORD=<自定义数据库密码>
 
 | 服务 | 说明 |
 | --- | --- |
-| `aetrix-api` | EM 面板 API 与 Web |
+| `aetrix-api` | EM 面板 API（只提供接口，不提供网页） |
 | `aetrix-ea` | EA Emby 协议网关 |
 | `aetrix-worker` | 扫描、刮削、转码等后台任务 |
 | `postgres` | 数据库 |
 | `redis` | 缓存与队列 |
 
-后续更新使用 `scripts/update.sh`，会自动备份数据库与配置后再拉取新镜像。
+网页前端（用户端 + 管理后台）不在上面的脚本里，它是另一个容器 `aetrix-web`
+（nginx，宿主机端口 8081）。想要网页，把两份编排文件一起起：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.frontend.yml up -d
+```
+
+注意：脚本路线与组合命令路线二选一、不要混用（脚本的 `--remove-orphans`
+会摘掉不在默认编排文件里的 `aetrix-web`）。完整教程见 [docs/deploy-docker.md](docs/deploy-docker.md)。
+
+后续更新：`scripts/update.sh` 会 `git pull` 后重新构建并重启后端服务；
+它只尝试备份 SQLite，默认的 PostgreSQL 部署更新前请先运行 `scripts/backup_db.sh` 备份。
 
 验证：
 
@@ -85,7 +96,7 @@ POSTGRES_PASSWORD=<自定义数据库密码>
 curl http://127.0.0.1:8000/api/health
 ```
 
-管理后台：`http://<IP>:8000/admin/`
+管理后台：`http://<IP>:8081/admin/`（起了 `aetrix-web` 之后）
 
 ---
 
@@ -102,7 +113,7 @@ curl http://127.0.0.1:8000/api/health
 | `REDIS_URL` | 否 | Redis 连接串，默认指向内置 `redis` 服务 |
 | `MEDIA_ROOT` | 否 | 宿主机影视目录，以只读方式挂载进容器 |
 | `TMDB_API_KEY` | 否 | 启用 TMDB 刮削时填写 |
-| `AETRIX_PORT` | 否 | 宿主机对外端口，默认 `8000`（改端口改这个，不要改容器内的 `PORT`） |
+| `AETRIX_PORT` | 否 | 仅授权版编排（`docker-compose.prod.yml`）的对外端口，默认 `8000`；自建版端口写在编排文件的 `ports` 里（后端 8000、网页 8081），改端口去改那里 |
 
 媒体目录挂载示例（在 `.env` 中指定宿主机路径）：
 

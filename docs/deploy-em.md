@@ -26,7 +26,7 @@ ENABLE_EMBY_GATEWAY=false   # 分离模式：协议面交给 EA，EM 只跑面�
 
 | 组件 | 版本 | 说明 |
 | --- | --- | --- |
-| Python | 3.10+（容器镜像为 3.11-slim） | 必需 |
+| Python | 3.10+（容器镜像为 3.12-slim-bookworm） | 必需 |
 | Node.js | 20.19+ 或 22.12+ | 仅构建前端时需要（见 `user_frontend/package.json` 的 `engines`） |
 | PostgreSQL | 13+ | **默认数据库**（v2.42.0 起）。必须能被 EM 连上，连不上启动即退出 |
 | SQLite | 内置 | 可选：设 `DATABASE_TYPE=sqlite` 后使用，单机 / 单进程够用 |
