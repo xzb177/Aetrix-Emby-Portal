@@ -659,12 +659,73 @@ def _strip_year(name: str, year) -> str:
     return re.sub(r"\s+", " ", out).strip(" .-_()")
 
 
+# 标题里紧贴文字的版本号 token：`梅根2.0` 的 `2.0`、`哥斯拉-1.0` 的 `-1.0`。
+# 其中的 `.`/`-` 是片名的一部分、不是分隔符；CLEAN_RE 会把它们拆成空格
+# （生产实证：「梅根2 0」「哥斯拉 1 0」）。清洗前先把 token 内的 `.`/`-`
+# 换成占位符，清洗完再还原。约束（防误伤点分风格的发布名）：
+# - 只认紧贴非空白字符的 token（`(?<=\S)`）：独立的空格分隔版本号
+#   （如 `Movie 2.0`）不在此列，保持既有行为；
+# - 整数/小数各 1–2 位且两侧不挨数字与点：`2024.1080p`（年份.分辨率）
+#   这类链不能被当成版本号，否则会洗出「Alpha Target 2024.」的尾巴点。
+_VERSION_TOKEN_RE = re.compile(r"(?<=\S)(?<![\d.])-?\d{1,2}\.\d{1,2}(?![\d.])")
+_VERSION_DOT_PLACEHOLDER = "\ue000"
+_VERSION_DASH_PLACEHOLDER = "\ue001"
+
+
+_DUP_DASH_BEFORE_YEAR_RE = re.compile(
+    r"-\s*(\d{1,2})(?=\s*[\(\[【]|\.\s*(?:19|20)\d{2}\b)"
+)
+
+
+def _strip_redundant_dash_number(name: str) -> str:
+    """去掉标题后紧贴的冗余 `-N` 重复标记（其后是年份/质量标签时）。
+
+    只剔"冗余"的：N 必须已作为数字出现在它前面的标题里。
+    - `月球叛军2：烙印之人-2 (2024)`：标题里已有 `2`，`-2` 是下载器的重复
+      记号 → 剔除（生产实证）。
+    - `Delta Movie 02-00 (2020)`：标题里的数字是 `02`，`-00` 不是冗余，
+      是真标题的一部分 → 保留。
+    - `Avatar-2 (2022)`：标题里没有数字 → 保留（可能是真续集号）。
+    数字比较按整数值（`02` 与 `2` 视为同一数字）。
+    """
+    def _repl(m: "re.Match") -> str:
+        n = str(int(m.group(1)))
+        title_before = name[: m.start()]
+        seen = {str(int(x)) for x in re.findall(r"\d+", title_before)}
+        return "" if n in seen else m.group(0)
+
+    return _DUP_DASH_BEFORE_YEAR_RE.sub(_repl, name)
+
+
 def clean_name(raw: str) -> str:
     name = raw or ""
-    # 去掉发行版本号后缀：`WEB-DL-3` / `BluRay-2` 末尾的 `-N`（多版本/重复标记，非片名）。
-    # 必须在 CLEAN_RE 把 `-` 换成空格之前处理，否则 `-3` 会变成孤立的 `3` 留下来。
-    # 只处理末尾的 `-N`，片名内部的数字（如 `比佛利拜金狗2` 的 `2`）不受影响。
+    # 版本号 token 先行保护（见 _VERSION_TOKEN_RE 注释）：`梅根2.0`→不拆，
+    # `哥斯拉-1.0`→不拆。必须在下面的 `-N` 剔除之前，占位的 `-` 不再被误杀。
+    name = _VERSION_TOKEN_RE.sub(
+        lambda m: m.group(0)
+        .replace("-", _VERSION_DASH_PLACEHOLDER)
+        .replace(".", _VERSION_DOT_PLACEHOLDER),
+        name,
+    )
+    # 去掉文件名主干末尾的 `[N]` 重复下载标记（如 `... - 1080p [2]`）：下载器
+    # 给同名第二个文件打的记号，不是片名。必须在 CLEAN_RE 剥掉 `[]` 之前
+    # 整段删除，否则只剩孤立的 `N` 留在片名里（生产实证：「第四公民 2」）。
+    name = re.sub(r"\s*\[\s*\d{1,2}\s*\]\s*$", "", name)
+    # 去掉 `-N` 重复标记（多版本/重复下载，非片名），两种位置：
+    # ① 字符串末尾（`WEB-DL-3`，既有行为）；② 紧跟年份段之前
+    # （`月球叛军2：烙印之人-2 (2024)` 的 `-2`，生产实证曾入库成
+    # 「月球叛军2：烙印之人 2」）。
+    # 必须在 CLEAN_RE 把 `-` 换成空格之前处理，否则会变成孤立数字留下来。
+    # 版本号 token 已在上面占位保护，`-1.0` 不会被这里误删；
+    # ② 必须认"冗余"才剔（见 _strip_redundant_dash_number）：`Delta Movie 02-00
+    # (2020)` 的 `-00` 是真标题的一部分——剁掉会让同目录 25 个文件解析成同一
+    # 个标题，进而撞上扫描器的同名电影去重（_claim_batch_guids），把别人的行
+    # 复用掉（CI 冒烟 side=202≠201 的实证）。
     name = re.sub(r"-\s*\d{1,2}\s*$", "", name)
+    name = _strip_redundant_dash_number(name)
+    # 兜底串：重复标记已剥净的版本。纯标记输入（如 ` [2]`）最后不把标记
+    # 当片名吐回去（之前会因为 `or raw` 变成「2」/「[2]」）。
+    fallback = name
     name = CLEAN_RE.sub(" ", name)
     # 去掉质量标签。注意 CLEAN_RE 已经把 `.` `_` `-` 换成了空格，所以这里的分隔符
     # 必须容得下空格：否则 "WEB-DL" 变成 "WEB DL" 后不再被识别。
@@ -677,7 +738,19 @@ def clean_name(raw: str) -> str:
         flags=re.IGNORECASE,
     )
     name = _strip_platform_tags(name)
-    return re.sub(r"\s+", " ", name).strip(" .-_") or raw
+    name = re.sub(r"\s+", " ", name).strip(" .-_")
+    # 还原版本号 token 的占位符
+    name = name.replace(_VERSION_DOT_PLACEHOLDER, ".").replace(
+        _VERSION_DASH_PLACEHOLDER, "-")
+    fallback = fallback.replace(_VERSION_DOT_PLACEHOLDER, ".").replace(
+        _VERSION_DASH_PLACEHOLDER, "-")
+    if name:
+        return name
+    if not fallback:
+        # 输入只剩重复标记（` [2]` / `-3` 之类）：标记已剥净，返回空，
+        # 让上层回退到目录名，而不是把标记原样当片名。
+        return ""
+    return fallback or raw
 
 
 def _season_from_dirname(folder: str) -> Optional[int]:
