@@ -68,7 +68,7 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 # 电视剧/综艺的 type 值（subject_suggest 返回 movie/tv/book/music）
 _SERIES_TYPES = {"tv", "show", "series"}
 # Bangumi subject type：2=动画 4=音乐 6=电影（无 TV 类，番剧都归 2）
-_BANGUMI_SERIES_TYPES = {"2"}
+_BANGUMI_SERIES_TYPES = {"2", "6"}
 
 _lock = threading.Lock()
 
@@ -239,9 +239,14 @@ def search_bangumi(title: str, year: Optional[int] = None, kind: str = "series",
     1. 返回 ``name_cn``（中文名）——TMDB 对中文剧集收录差，这正是我们缺的；
     2. 返回 ``images``（封面），豆瓣 suggest 也能给但中文剧命中率低得多。
 
-    同样从严：只认清洗后标题完全一致（或互为前缀）且 type 是动画的候选。
+    同样从严：只认清洗后标题完全一致的候选（中文名或原名任一全等即可）。
     实测「电锯人」会搜到「电锯人~温泉旅行篇」「电锯人 舞台剧」等同系列作品，
     这类必须拒绝——写错片名比不写更糟。
+
+    类型口径：剧集收 2（动画）与 6（三次元真人）——真人剧集在 Bangumi 是
+    type 6，只收 2 时所有日韩真人剧会被结构性过滤掉（2026-10-20 救援复盘：
+    《法钱》《脆弱的英雄》等 TMDB 按中文名搜不中的剧，全卡在这一条）。
+    返回的 ``original_title`` 是原名，供引擎做「原名接力」再搜 TMDB。
     """
     q = (title or "").strip()
     if not q:
@@ -267,12 +272,13 @@ def search_bangumi(title: str, year: Optional[int] = None, kind: str = "series",
         if kind in ("series", "season", "episode") and str(it.get("type")) not in _BANGUMI_SERIES_TYPES:
             continue
         names = [it.get("name_cn"), it.get("name")]
-        got = next((_clean(str(n)) for n in names if n), "")
-        if not got:
+        cleaned = [_clean(str(n)) for n in names if n]
+        if not cleaned:
             continue
-        # 必须是**完全相等**。前缀匹配会放进「电锯人」→「电锯人~温泉旅行篇」
-        # 「电锯人 舞台剧」这类同系列其它作品——写错片名比不写更糟。
-        if got != want:
+        # 必须是**完全相等**（中文名、原名任一全等即可）。前缀匹配会放进
+        # 「电锯人」→「电锯人~温泉旅行篇」「电锯人 舞台剧」这类同系列其它
+        # 作品——写错片名比不写更糟。
+        if want not in cleaned:
             continue
         img = it.get("images") or {}
         cover = img.get("large") or img.get("common") or img.get("medium") or ""
@@ -280,6 +286,7 @@ def search_bangumi(title: str, year: Optional[int] = None, kind: str = "series",
         return {
             "id": str(it.get("id") or ""),
             "title": str(it.get("name_cn") or it.get("name") or ""),
+            "original_title": str(it.get("name") or ""),
             "year": air[:4] or None,
             "image": str(cover or ""),
             "type": "tv",

@@ -321,9 +321,12 @@ def test_bangumi_rejects_same_franchise_siblings(monkeypatch):
     assert altmeta.search_bangumi("电锯人", 2022, "series", min_interval=0) is None
 
 
-def test_bangumi_rejects_non_anime_type(monkeypatch):
+def test_bangumi_rejects_non_series_types(monkeypatch):
+    # 2026-10-20 口径变更：剧集收 type 2（动画）与 6（三次元真人）——真人剧
+    # 被整体过滤正是 TMDB 搜不中的日韩剧永远救不回的原因（见救援链复盘）。
+    # 仍要拒的是书（1）/音乐（3）/游戏（4）这类根本不是剧集的类型。
     _bgm_resp(monkeypatch, {"list": [
-        {"id": 1, "type": 6, "name": "Leatherface", "name_cn": "人皮脸"}]})
+        {"id": 1, "type": 1, "name": "人皮脸", "name_cn": "人皮脸"}]})
     assert altmeta.search_bangumi("人皮脸", None, "series", min_interval=0) is None
 
 

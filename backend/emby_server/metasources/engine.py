@@ -225,8 +225,71 @@ def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
         result.outcomes.append(SourceOutcome(source_cfg.id, label, True, hit=True,
                                              elapsed_ms=elapsed))
 
+    _relay_tmdb(result, hits, targets, title, year, kind, only=only)
     _merge(result, hits)
     return result
+
+
+def _relay_tmdb(result: CollectResult, hits: list, targets: list,
+                title: str, year: Optional[int], kind: str, *, only: Optional[str]) -> None:
+    """原名接力（救援链，2026-10-20 人工救援复盘后产品化）。
+
+    背景：TMDB 按中文名搜不中的片，多半是译名对不上——Bangumi/TVMaze 等源
+    知道它的**原名**与 **IMDb 编号**，但此前没有任何一步把原名/编号再喂给
+    TMDB，条目就永远拿不到 tmdb_id（后续详情、单集刮削全靠它）。
+
+    两座桥（已有 tmdb 命中的不接力；只在自动采集跑，试采集是单源体检）：
+    1. 原名 → 用其它源命中的 ``original_title`` 再搜一次 TMDB（TMDB 搜索
+       本身带高置信校验，原名全等即 Tier 2，不会乱认）；
+    2. IMDb → 任一源给出 IMDb 编号时，用 ``find_by_imdb`` 精确落点
+       （再过一道年份 ±1 的门，防同名重拍串号）。
+    接力命中的 Hit 直接并入 ``hits`` 参与归并，``apply_to_item`` 会据此
+    写下 tmdb_id 与 TMDB 的海报/简介。失败一律静默（接力是增益，不是主链）。
+    """
+    if only is not None:
+        return
+    if any(h.external_ids.get("tmdb") for h in hits):
+        return
+    tmdb_cfg = next((s for s in targets if s.id == "tmdb"), None)
+    if tmdb_cfg is None or not tmdb_cfg.enabled or tmdb_cfg.needs_key:
+        return
+    # 桥一：原名再搜
+    tried: set = set()
+    for hit in hits:
+        original = (hit.original_title or "").strip()
+        if not original or original in tried:
+            continue
+        tried.add(original)
+        if sources._norm(original) == sources._norm(title):
+            continue
+        began = time.monotonic()
+        try:
+            relay_hit = _fetch_one(tmdb_cfg, original, year, kind)
+        except Exception:  # noqa: BLE001 — 接力失败不影响已采到的结果
+            continue
+        if relay_hit is not None:
+            hits.append(relay_hit)
+            result.outcomes.append(SourceOutcome(
+                "tmdb", "TMDB（原名接力）", True, hit=True,
+                elapsed_ms=int((time.monotonic() - began) * 1000)))
+            return
+    # 桥二：IMDb 精确落点
+    imdb = next((h.external_ids.get("imdb") for h in hits
+                 if h.external_ids.get("imdb")), None)
+    if not imdb:
+        return
+    began = time.monotonic()
+    try:
+        pool = keypool.pool_for(tmdb_cfg.id, tmdb_cfg.keys)
+        gate = keypool.RateGate(tmdb_cfg.id, tmdb_cfg.rate)
+        relay_hit = sources.find_tmdb_by_imdb(imdb, year, kind, pool=pool, gate=gate)
+    except Exception:  # noqa: BLE001
+        return
+    if relay_hit is not None:
+        hits.append(relay_hit)
+        result.outcomes.append(SourceOutcome(
+            "tmdb", "TMDB（IMDb 接力）", True, hit=True,
+            elapsed_ms=int((time.monotonic() - began) * 1000)))
 
 
 def _merge(result: CollectResult, hits: list) -> None:
