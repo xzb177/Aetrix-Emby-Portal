@@ -365,11 +365,27 @@ def get_sessions(request: Request, db: Session = Depends(get_db),
         q = q.filter(em.PlaybackSession.user_id == user.id)
     sessions = q.order_by(em.PlaybackSession.last_update_at.desc()).all()
     result = []
+    # 客户端会周期性轮询会话列表：逐条查 item/user 是 2N 次的 N+1，改为两个批量 IN
+    # 查询（与 session_routes 同一口径）。空集合不给 IN 列表，直接用空映射跳过查询。
+    item_ids = {s.item_id for s in sessions}
+    user_ids = {s.user_id for s in sessions}
+    items = {}
+    owners = {}
+    if item_ids:
+        items = {
+            item.id: item
+            for item in db.query(em.MediaItem).filter(em.MediaItem.id.in_(item_ids)).all()
+        }
+    if user_ids:
+        owners = {
+            owner.id: owner
+            for owner in db.query(models.WebUser).filter(models.WebUser.id.in_(user_ids)).all()
+        }
     for s in sessions:
-        item = db.query(em.MediaItem).filter(em.MediaItem.id == s.item_id).first()
-        user = db.query(models.WebUser).filter(models.WebUser.id == s.user_id).first()
-        if item and user:
-            result.append(_now_playing_dto(s, item, user))
+        item = items.get(s.item_id)
+        owner = owners.get(s.user_id)
+        if item and owner:  # 缺条目或缺用户的会话照旧跳过，不入结果
+            result.append(_now_playing_dto(s, item, owner))
     return result
 
 
