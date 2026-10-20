@@ -13,7 +13,10 @@
         <div class="v4-sec-title"><span aria-hidden="true">📌</span> 布告栏</div>
         <div class="v4-sec-sub">在补给站买过的东西</div>
 
-        <div v-if="loading" class="v4-skeleton" style="height:180px;margin-bottom:20px"></div>
+        <div v-if="loading" role="status" aria-label="正在加载补给记录">
+          <div class="v4-skeleton" aria-hidden="true" style="height:104px;margin-bottom:22px"></div>
+          <div class="v4-skeleton" aria-hidden="true" style="height:104px;margin-bottom:22px"></div>
+        </div>
         <div v-else-if="error" class="v4-err">布告栏的小票拿不到：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
         <div v-else-if="!orders.length" class="v4-empty"><span aria-hidden="true">🧾</span><br>布告栏空空的 —— 去补给站备点干粮吧 <span aria-hidden="true">🎒</span></div>
 
@@ -26,7 +29,7 @@
             role="button"
             tabindex="0"
             :aria-expanded="openId === o.order_id"
-            :aria-label="`补给小票：${plainText(kindIcon(o.kind))}${o.item_name}，实付${fmtMoney(o.amount)}，${plainText(seal(o.status).label)}。点击${openId === o.order_id ? '收起' : '展开'}明细`"
+            :aria-label="`补给小票：${kindText(o.kind)} ${o.item_name}，实付${fmtMoney(o.amount)}，${plainText(seal(o.status).label)}。点击${openId === o.order_id ? '收起' : '展开'}明细`"
             @click="toggle(o.order_id)"
             @keydown.enter="toggle(o.order_id)"
             @keydown.space.prevent="toggle(o.order_id)"
@@ -91,6 +94,13 @@ function kindIcon(kind: OrderRow['kind']): string {
   if (kind === 'recharge') return '⚡'
   if (kind === 'subscription') return '📜'
   return '📦'
+}
+
+/** R110-3：aria-label 用的品类文字（kindIcon 的 emoji 版只给视觉，读屏走这里） */
+function kindText(kind: OrderRow['kind']): string {
+  if (kind === 'recharge') return '能量补给'
+  if (kind === 'subscription') return '远征执照'
+  return '补给'
 }
 
 /**
@@ -271,4 +281,8 @@ onMounted(load)
   .seal.ship { animation: none; }
   .receipt.open .rc-detail { animation: none; }
 }
+
+/* R110-2：空态/错误态底部与列表态（最后小票 margin-bottom:22px）对齐 */
+.v4-sec > .v4-empty,
+.v4-sec > .v4-err { margin-bottom: 22px; }
 </style>
