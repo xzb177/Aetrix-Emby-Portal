@@ -24,7 +24,7 @@ from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.pinyin_sort import make_sort_name
 
-from sqlalchemy import func, select, text, tuple_
+from sqlalchemy import func, inspect, select, text, tuple_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -3021,6 +3021,13 @@ def _ensure_season_row(db: Session, ctx: "_ScanContext", library,
         # guid 唯一键占着建不出新行，只能复用旧行；先把属性加载完再脱离
         # 会话并跳过缓存——否则后续属性刷新会被软删钩子过滤掉而抛
         # ObjectDeletedError。读侧虚拟季（#1092）会为这类季合成条目，季列表不断。
+        if not inspect(season_item).persistent:
+            # 已不在本会话里的实例：只能是本分支在同一 (剧, 季) 的前一集
+            # 处理时 refresh+expunge 留下的（ctx.season_items 的 guid 键
+            # 没有摘，后续集数还会命中它）。脱离前属性已全量加载，直接
+            # 复用；再对脱离实例 db.refresh 会抛 InvalidRequestError
+            # （2026-10-20 动漫库连续三轮整库失败的生产事故）。
+            return season_item
         with _soft_delete.include_deleted():
             db.refresh(season_item)
         db.expunge(season_item)
