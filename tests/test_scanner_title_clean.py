@@ -78,6 +78,11 @@ class TestRedundantDashNumberStripped:
             ("Avatar-2 (2022) - 1080p WEB-DL.mkv", "Avatar 2"),
             ("流浪地球-2 (2024) - 1080p WEB-DL.mkv", "流浪地球 2"),
             ("Title-2.2024.1080p.WEB-DL.mkv", "Title 2"),
+            # 纯数字标题守卫（r66）：标题没有任何非数字实义字符时，
+            # `-N` 一律保留——`11-11-11` 是真实片名，不是重复记号
+            ("11-11-11.2011.1080p.BluRay.mkv", "11 11 11"),
+            ("11-11-11 (2011).mkv", "11 11 11"),
+            ("24-24 (2024).mkv", "24 24"),
         ],
     )
     def test_redundant_dash_number(self, filename, expected):
@@ -136,3 +141,37 @@ class TestExistingBehavior:
         p = parse_media_filename("/综艺/同名节目/S01E01 [2].mkv", "tvshows")
         assert (p["season"], p["episode"]) == (1, 1)
         assert p["name"] == "同名节目"
+
+
+class TestTrailingYearNotInName:
+    """片名尾巴带括号的年份不许进显示名（2026-10-20 用户亲令）。
+
+    生产实证 1,662 条：文件夹名「片名 (2024)」原样入库、年份栏反而
+    为空，客户端把年份显示两遍。剥年份原本靠 _strip_year(name, year)，
+    year 没解析出来时整段保留——本类锁定 year 缺失路径也剥净，
+    且剥出的年份要落进年份栏。
+    """
+
+    @pytest.mark.parametrize(
+        "filename,expected",
+        [
+            ("泪之女王 (2024).mkv", "泪之女王"),
+            ("好想告诉你（2023）.mkv", "好想告诉你"),
+            ("母亲往事 (2025).mkv", "母亲往事"),
+        ],
+    )
+    def test_bracketed_year_stripped_from_name(self, filename, expected):
+        assert _title(filename) == expected
+
+    def test_bracketed_year_lands_in_year_field(self):
+        p = parse_media_filename("/电影/日韩电影/泪之女王 (2024).mkv", LIB_MOVIES)
+        assert p["year"] == 2024
+
+    def test_non_year_brackets_kept(self):
+        """括号里不是年份的（如版本说明）不许误剥。"""
+        assert _title("某某电影 (真人版).mkv") == "某某电影 (真人版)"
+
+    def test_bare_numeric_title_kept(self):
+        """片名本体就是数字、且无括号年份时原样保留（《2012》类）。"""
+        p = parse_media_filename("/电影/外语电影/2012.mkv", LIB_MOVIES)
+        assert p["name"] == "2012"

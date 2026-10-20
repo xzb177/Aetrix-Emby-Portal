@@ -644,6 +644,21 @@ def _strip_platform_tags(name: str) -> str:
     return " ".join(p for idx, p in enumerate(parts) if idx == 0 or not _PLATFORM_TOKEN_RE.fullmatch(p))
 
 
+# 名字尾巴上带括号的年份：「泪之女王 (2024)」「好想告诉你（2023）」。
+# 只认结尾、带括号的 4 位年份（1900–2099）：片名本体的数字没有括号
+# （如电影《2012》）、不会命中；「(真人版)」这类非年份括号也不命中。
+_TRAILING_YEAR_RE = re.compile(
+    r"\s*[\(\[【（]\s*((?:19|20)\d{2})\s*[\)\]】）]\s*$")
+
+
+def _split_trailing_year(name: str):
+    """把片名尾巴带括号的年份剥出来，返回 (剥净的名字, 年份或 None)。"""
+    m = _TRAILING_YEAR_RE.search(name or "")
+    if not m:
+        return name, None
+    return (name[: m.start()].strip(), int(m.group(1)))
+
+
 def _strip_year(name: str, year) -> str:
     """从片名里去掉年份（含括号），避免留下空括号 `()`。
 
@@ -652,8 +667,12 @@ def _strip_year(name: str, year) -> str:
     115 条 `XXX () 3` 乱码的根因（见 fix/scrape-title-garbled-parens）。
     """
     if not year:
-        return name
-    out = re.sub(r"[\(\[【]\s*" + str(year) + r"\s*[\)\]】]", " ", name)
+        # 年份没解析出来时，尾巴上带括号的年份也要剥（见 _TRAILING_YEAR_RE）：
+        # 否则「泪之女王 (2024)」整段当片名入库、年份栏反而留空，客户端
+        # 会把年份显示两遍（2026-10-20 生产 1,662 条实证，用户亲令
+        # 「名字后面不要带年份」）。剥出的年份由调用方按需回填年份栏。
+        return _split_trailing_year(name)[0]
+    out = re.sub(r"[\(\[【（]\s*" + str(year) + r"\s*[\)\]】）]", " ", name)
     if str(year) in out:
         out = out.replace(str(year), "")
     return re.sub(r"\s+", " ", out).strip(" .-_()")
@@ -691,6 +710,12 @@ def _strip_redundant_dash_number(name: str) -> str:
     def _repl(m: "re.Match") -> str:
         n = str(int(m.group(1)))
         title_before = name[: m.start()]
+        # 纯数字标题守卫：标题里没有任何非数字的实义字符时（如真实电影
+        # `11-11-11`、`24-24`），每个 `-N` 按上面的口径都会判"冗余"，
+        # 启发式失效——这类标题的 `-N` 一律保留、保守不洗（r66 实证：
+        # `11-11-11` 曾被洗成 `11 11`）。
+        if not re.sub(r"[\d\s\.\-_\(\)\[\]:：]", "", title_before):
+            return m.group(0)
         seen = {str(int(x)) for x in re.findall(r"\d+", title_before)}
         return "" if n in seen else m.group(0)
 
@@ -920,6 +945,13 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     year = _extract_year(stem, folder, exclude_spans=year_spans)
     if year:
         name_part = _strip_year(name_part, year)
+    elif name_part:
+        # 年份没从文件名/目录解析出来时，片名尾巴带括号的年份就是唯一
+        # 线索：剥出来填进年份栏、名字里去掉（与 _series_name_of 同口径，
+        # 见 _TRAILING_YEAR_RE 的实证注释）。
+        name_part, trailing_year = _split_trailing_year(name_part)
+        if trailing_year is not None:
+            year = trailing_year
 
     return {"name": name_part or stem, "year": year, "season": season, "episode": episode,
             "episode_end": episode_end}
@@ -2680,7 +2712,16 @@ def _series_name_of(scan_file: "ScanFile", parsed: dict) -> str:
 
     name = _tidy_name(directory_name)
     year = parsed.get("year")
-    name = _strip_year(name, year) if year and str(year) in name else name
+    if year and str(year) in name:
+        name = _strip_year(name, year)
+    elif not year:
+        # 目录名是剧名的权威来源，年份常常只写在目录名尾巴上
+        # （「泪之女王 (2024)/Season 1/…」）：集文件名里解析不到年份时，
+        # 从这里剥出来回填 parsed["year"]（建 series 行时写进年份栏），
+        # 名字里不再带年份（2026-10-20 用户亲令：名字后面不要带年份）。
+        name, trailing_year = _split_trailing_year(name)
+        if trailing_year is not None:
+            parsed["year"] = trailing_year
     return name or _tidy_name(parsed.get("name") or "") or (parsed.get("name") or "未知剧集")
 
 
