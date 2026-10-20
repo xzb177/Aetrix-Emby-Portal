@@ -13,6 +13,7 @@
            R27：左右箭头切换并移动焦点（WAI-ARIA tabs 键盘交互） -->
       <div class="tabs" role="tablist" aria-label="换装" @keydown="onTabKeydown">
         <button
+          type="button"
           role="tab"
           id="tab-outfit"
           aria-controls="panel-outfit"
@@ -25,6 +26,7 @@
           穿搭
         </button>
         <button
+          type="button"
           role="tab"
           id="tab-gear"
           aria-controls="panel-gear"
@@ -87,7 +89,7 @@
         aria-label="装备库"
       >
       <div class="v4-sec">
-        <div class="v4-sec-title">🎒 装备库 · 徽章陈列柜</div>
+        <div class="v4-sec-title"><span aria-hidden="true">🎒</span> 装备库 · 徽章陈列柜</div>
         <div class="v4-sec-sub">探险攒下的徽章都在这儿 —— 点一枚戴上，再点右上角头像就能看到它</div>
         <!-- 加载中 -->
         <div v-if="badgeLoading" class="badge-wall" role="status" aria-live="polite">
@@ -97,7 +99,7 @@
         <!-- 加载失败 -->
         <div v-else-if="badgeError" class="v4-err">
           徽章柜没打开：{{ badgeError }}<br>
-          <button class="v4-retry" @click="loadBadges">重试</button>
+          <button type="button" class="v4-retry" @click="loadBadges">重试</button>
         </div>
         <!-- 徽章墙 -->
         <div v-else-if="badges.length > 0" class="badge-wall">
@@ -144,21 +146,21 @@
           </div>
         </div>
         <!-- 空 -->
-        <div v-else class="v4-empty">还没有徽章，去探险攒一枚 ✨</div>
+        <div v-else class="v4-empty">还没有徽章，去探险攒一枚 <span aria-hidden="true">✨</span></div>
         <!-- 新解锁提示 -->
         <div v-if="newUnlockNames.length > 0" class="v4-fresh" style="margin-top:12px" role="status" aria-live="polite">
           <span aria-hidden="true">🎉</span> 新徽章解锁：{{ newUnlockNames.join('、') }}
         </div>
       </div>
       <div class="note">
-        💡 换装是换衣服（营地天色），徽章是别在衣服上的荣誉 —— 两不耽误。
+        <span aria-hidden="true">💡</span> 换装是换衣服（营地天色），徽章是别在衣服上的荣誉 —— 两不耽误。
       </div>
       </section>
     </div>
 
     <!-- 确认条：试穿中才出现 -->
     <div class="confirm" :class="{ show: picked !== storedPref }">
-      <button @click="confirmWear">就穿这套</button>
+      <button type="button" @click="confirmWear">就穿这套</button>
     </div>
 
   </div>
@@ -329,7 +331,9 @@ async function unwearBadge() {
 
 function onBadgeClick(b: Achievement) {
   if (!b.unlocked) {
-    toast.info(`还没解锁：${b.desc}`)
+    // R112：未解锁卡不许泄露真实名/des（防泄底，见卡片上的 ???/aria-label）。
+    // 后端下发的 desc 直接写着解锁条件（如"看了一部 10 年前的老片"），toast 不许用它。
+    toast.info('这枚徽章还没解锁，继续探险吧')
     return
   }
   if (wornBadgeKey.value === b.key) unwearBadge()
