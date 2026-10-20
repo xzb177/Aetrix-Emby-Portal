@@ -2677,19 +2677,42 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         "false", "0", "no", "off")
     has_more: bool | None = None
     if random_sort:
-        # ``ORDER BY RANDOM()`` 会让数据库把整个结果集物化再排序（十万级库就是全表排序）。
-        # 随机排序只需要一个随机子集：先取主键、在内存里抽样，再按抽到的 id 取这一页，
-        # 成本从「全表排序 + 全行物化」降到「扫主键 + 取 N 行」。
+        # R63-1：随机排序不再全量物化主键。旧实现 `query.with_entities(id).all()`
+        # 每次请求把全部匹配 id 拉进 Python（十万级库 = O(全库)/请求）再内存抽样；
+        # 旧注释所谓「扫主键 + 取 N 行」里的「扫主键」本身就是全量扫描，并没有真省掉。
+        # 新实现：一次 COUNT 定总数，用 row_number() 窗口按随机行号取 id ——
+        # 全程只物化本页需要的 id（≤ limit 个），一次索引有序扫描、无排序。
+        # 页语义与旧实现一致：旧实现取随机排列的 [start:start+limit] 切片，
+        # 每次请求都重排，StartIndex 在随机模式下本就没有跨请求的稳定性；
+        # 直接抽 need 个随机行号得到的是同分布的均匀随机子集。
         # 注意：随机模式下跳过去重（Emby 官方随机也是全量随机），保持原有行为。
-        id_rows = query.with_entities(em.MediaItem.id).all()
-        ids = [row[0] for row in id_rows]
-        if not ids:
+        total = query.order_by(None).with_entities(func.count()).scalar() or 0
+        if not total:
             return {"Items": [], "TotalRecordCount": 0, "StartIndex": start}
-        picked = random.sample(ids, min(len(ids), start + limit))[start:start + limit]
+        need = min(limit, total - start) if start < total else 0
+        picked: list = []
+        if need:
+            offsets = sorted(random.sample(range(1, total + 1), need))
+            id_sub = (
+                query.order_by(None).order_by(em.MediaItem.id)
+                .with_entities(
+                    em.MediaItem.id,
+                    func.row_number().over(order_by=em.MediaItem.id).label("rn"),
+                )
+                .subquery()
+            )
+            id_rows = (
+                db.query(id_sub.c.id, id_sub.c.rn)
+                .filter(id_sub.c.rn.in_(offsets))
+                .all()
+            )
+            rn_to_id = {_rn: _id for _id, _rn in id_rows}
+            picked = [rn_to_id[rn] for rn in offsets]
+            random.shuffle(picked)  # offsets 有序，shuffle 回随机页序（与旧 random.sample 语义一致）
         items = db.query(em.MediaItem).filter(em.MediaItem.id.in_(picked)).all() if picked else []
         position = {item_id: index for index, item_id in enumerate(picked)}
         items.sort(key=lambda item: position.get(item.id, 0))
-        total = len(ids) if want_total else len(picked)
+        total = total if want_total else len(picked)
         # 随机分支这里直接返回：它既没走 page_ids 路径（page_ids 在 else 分支
         # 才定义，继续往下走会 NameError → 500），形态照抄 search 分支。
         _prefetch_list_data(db, user.id, items)
