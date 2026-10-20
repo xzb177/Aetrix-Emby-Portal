@@ -11,18 +11,23 @@
       <!-- 今日状态条：一句话状态（替代旧体力槽组件）。
            没报到时可点 → 跳报到页；已报到时是纯展示。
            任一 API 失败都静默降级为静态文案，不 blocking 首屏。 -->
+      <!-- R109-3：首屏加载中（已登录）用纸色 shimmer 骨架条，不许纯文本干等 8 秒 -->
+      <div v-if="statusLoading" class="status-strip" role="status" aria-label="正在看营地情况">
+        <span class="status-dot" aria-hidden="true" style="visibility:hidden"></span>
+        <div class="v4-skeleton" style="flex:1;height:14px" aria-hidden="true"></div>
+      </div>
       <router-link
-        v-if="statusClickable"
+        v-else-if="statusClickable"
         to="/game/checkin"
         class="status-strip"
-        :aria-label="allFailed ? '数据未更新，去报到盖章' : '去报到盖章'"
       >
         <!-- R37 P3-7：全失败时只留琥珀点，绿色「一切正常」点不再并列 -->
+        <!-- R109-2：链接不再用 aria-label 覆盖全文朗读；状态文本自带 role=status 内层播报 -->
         <span v-if="allFailed" class="status-dot stale" aria-hidden="true"></span>
         <span v-else class="status-dot" aria-hidden="true"></span>
-        {{ statusText }}
+        <span role="status">{{ statusText }}</span>
       </router-link>
-      <div v-else class="status-strip static" role="status" :aria-label="allFailed ? '数据未更新' : undefined">
+      <div v-else class="status-strip static" role="status">
         <span v-if="allFailed" class="status-dot stale" aria-hidden="true"></span>
         <span v-else class="status-dot" aria-hidden="true"></span>
         {{ statusText }}
@@ -65,18 +70,21 @@ const statusText = computed(() => {
     const base = `今日体力 ${vit}/${vitalityMax.value ?? DEFAULT_STAMINA_MAX}`
     return checked ? `${base} · 已报到✓，出发吧！` : `${base} · 还没报到，点我去盖章 →`
   }
-  if (vit !== null) return `今日体力 ${vit}/${vitalityMax.value ?? DEFAULT_STAMINA_MAX}`
+  // R109-7：报到状态未知时不臆断"还没报到"，诚实说明 + 保留可点暗示（link 分支 aria-label 已移除，文本必须自带 affordance）
+  if (vit !== null) return `今日体力 ${vit}/${vitalityMax.value ?? DEFAULT_STAMINA_MAX} · 报到状态还没拿到，点我去报到 →`
   if (checked !== null) return checked ? '今日已报到✓，出发吧！' : '还没报到，点我去盖章 →'
-  // R54-14：状态未知（未登录 / 首屏加载中 / 请求失败）时不臆断「元气满满」
+  // R54-14：状态未知（未登录 / 请求失败）时不臆断「元气满满」
+  // R109-4：删两条死分支——allFailed 已在首行返回；加载中走骨架条（statusLoading），不再经此文本
   if (!userStore.isLoggedIn) return '登录后查看今日营地情况'
-  if (!statusLoaded.value) return '正在看营地情况…'
-  if (allFailed.value) return '营地数据没加载出来，稍后刷新看看'
   // 两个都没拿到：静态文案，照样能点去报到
   return '营地情况待确认，点我去报到 →'
 })
 
 /** 没报到（或状态未知）时状态条可点；已报到是纯展示 */
 const statusClickable = computed(() => checkedToday.value !== true)
+
+/** R109-3：已登录且首屏两路请求未落定 → 骨架条，不干等纯文本 */
+const statusLoading = computed(() => userStore.isLoggedIn && !statusLoaded.value)
 
 /** R28：两路 API 全失败标记——状态条前加小琥珀点 + aria-label，文案不动 */
 const allFailed = ref(false)
@@ -176,7 +184,4 @@ onMounted(async () => {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .game-world { scroll-behavior: auto; }
-}
 </style>
