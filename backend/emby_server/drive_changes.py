@@ -988,6 +988,8 @@ def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
 
     库路径形如 /mnt/mp/nastool/剧集 → 拆出 rclone remote → team_drive，
     前缀 = remote 下的子目录（Drive 内的相对路径）。
+    Drive 直挂（挂载 path 形如 drive:<drive_id>）：冒号后直接就是
+    drive_id（个人盘 drive:myDrive:<remote> 同理），不走 remote 映射。
     """
     from backend.emby_server import models as em
 
@@ -1025,11 +1027,21 @@ def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
                     if not m:
                         continue
                     mpath = (getattr(m, "path", "") or "").strip()
-                    remote = None
+                    drive_id = None
                     if mpath.startswith("rclone:"):
                         remote = mpath[len("rclone:"):].split("/", 1)[0]
                         remote = remote.rstrip(":")
-                    drive_id = remote_drive.get(remote) if remote else None
+                        drive_id = remote_drive.get(remote) if remote else None
+                    elif mpath.startswith("drive:"):
+                        # Drive 直挂：path 形如 drive:<drive_id>（个人盘为
+                        # drive:myDrive:<rclone remote 名>），与
+                        # mount_drive.DriveMount 的路径约定一致：冒号之后
+                        # 直接就是 drive_id；config.drive_id 显式值优先覆盖。
+                        try:
+                            cfg_drive = (mount_lib.parse_config(m).get("drive_id") or "").strip()
+                        except Exception:
+                            cfg_drive = ""
+                        drive_id = cfg_drive or mpath[len("drive:"):].strip() or None
                     if drive_id:
                         out.append((lib.id, drive_id, "/" + subdir.strip("/")))
                 except Exception:
