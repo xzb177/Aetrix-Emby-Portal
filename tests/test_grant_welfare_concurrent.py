@@ -108,7 +108,10 @@ def _run_concurrent(Session, username, grants, monkeypatch):
 def test_concurrent_grants_accumulate_without_loss(file_engine, monkeypatch):
     """两路并发发放 7 天 + 30 天：最终必须是 T0+37 天，不许丢。"""
     Session = sessionmaker(bind=file_engine)
-    T0 = datetime(2026, 10, 20, 12, 0, 0)
+    # 种子到期时间必须恒在未来：grant_welfare 的规则是「已过期就从当前
+    # 时间重算」，写死某个钟点（如当初中午 12 点）会让用例一过点就过期、
+    # 断言必然对不上（2026-10-20 CI 实证：中午后跑必红、之前必绿）。
+    T0 = (datetime.now() + timedelta(days=30)).replace(microsecond=0)
     _seed(Session, "race_accumulate", True, T0)
 
     _, final = _run_concurrent(
@@ -128,7 +131,10 @@ def test_concurrent_grant_with_permanent_keeps_permanent(file_engine, monkeypatc
     无论两路谁先谁后，永久都不能被有限天数覆盖。
     """
     Session = sessionmaker(bind=file_engine)
-    T0 = datetime(2026, 10, 20, 12, 0, 0)
+    # 种子到期时间必须恒在未来：grant_welfare 的规则是「已过期就从当前
+    # 时间重算」，写死某个钟点（如当初中午 12 点）会让用例一过点就过期、
+    # 断言必然对不上（2026-10-20 CI 实证：中午后跑必红、之前必绿）。
+    T0 = (datetime.now() + timedelta(days=30)).replace(microsecond=0)
     _seed(Session, "race_permanent", True, T0)
 
     _, final = _run_concurrent(
