@@ -123,15 +123,8 @@ def _clean_tags(text: str) -> str:
 # 1. TMDB：复用既有客户端（它自己已经有多密钥与冷却）
 # ---------------------------------------------------------------------------
 
-def search_tmdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Optional[Hit]:
-    from backend.emby_server import tmdb as tmdb_lib
-
-    gate.acquire()
-    if not tmdb_lib.tmdb_client.configured:
-        raise SourceError("没有可用的 TMDB 密钥")
-    raw = tmdb_lib.tmdb_client.search(title, year, kind)
-    if not raw:
-        return None
+def _hit_from_tmdb_raw(raw: dict, kind: str) -> Hit:
+    """TMDB 搜索/find 结果 dict → Hit（search 与 IMDb 桥共用一套口径）"""
     return Hit(
         source="tmdb",
         title=str(raw.get("title") or raw.get("name") or ""),
@@ -145,6 +138,39 @@ def search_tmdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
         external_ids={"tmdb": str(raw.get("id") or "")} if raw.get("id") else {},
         kind_hint="movie" if kind == "movie" else "tv",
     )
+
+
+def search_tmdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Optional[Hit]:
+    from backend.emby_server import tmdb as tmdb_lib
+
+    gate.acquire()
+    if not tmdb_lib.tmdb_client.configured:
+        raise SourceError("没有可用的 TMDB 密钥")
+    raw = tmdb_lib.tmdb_client.search(title, year, kind)
+    if not raw:
+        return None
+    return _hit_from_tmdb_raw(raw, kind)
+
+
+def find_tmdb_by_imdb(imdb_id: str, year: Optional[int], kind: str, *, pool, gate) -> Optional[Hit]:
+    """IMDb 编号 → TMDB 精确落点（救援链的桥二）。
+
+    ``find_by_imdb`` 是精确查询，返回的候选天然可信；仍加一道年份门
+    （与条目年份差 >1 视为对不上），防止同名重拍串号。
+    """
+    from backend.emby_server import tmdb as tmdb_lib
+
+    gate.acquire()
+    if not tmdb_lib.tmdb_client.configured:
+        raise SourceError("没有可用的 TMDB 密钥")
+    found = tmdb_lib.tmdb_client.find_by_imdb(imdb_id) or {}
+    key = "movie_results" if kind == "movie" else "tv_results"
+    for raw in found.get(key) or []:
+        cand_year = _year_of(raw.get("release_date") or raw.get("first_air_date"))
+        if year and cand_year and abs(cand_year - int(year)) > 1:
+            continue
+        return _hit_from_tmdb_raw(raw, kind)
+    return None
 
 
 def _tmdb_poster(raw: dict) -> Optional[str]:
@@ -204,6 +230,7 @@ def search_bangumi(title: str, year: Optional[int], kind: str, *, pool, gate) ->
     return Hit(
         source="bangumi",
         title=str(hit.get("title") or ""),
+        original_title=str(hit.get("original_title") or ""),
         year=_year_of(hit.get("year")),
         poster=str(hit.get("image") or "") or None,
         lang="zh",
@@ -313,6 +340,11 @@ def search_tvmaze(title: str, year: Optional[int], kind: str, *, pool, gate) -> 
     if best is None:
         return None
     image = best.get("image") or {}
+    ext_ids = {"tvmaze": str(best.get("id"))} if best.get("id") else {}
+    # IMDb 编号一并带上：引擎的「IMDb 接力」靠它去 TMDB 精确落点
+    imdb = str((best.get("externals") or {}).get("imdb") or "")
+    if imdb:
+        ext_ids["imdb"] = imdb
     return Hit(
         source="tvmaze",
         title=str(best.get("name") or ""),
@@ -322,7 +354,7 @@ def search_tvmaze(title: str, year: Optional[int], kind: str, *, pool, gate) -> 
         year=_year_of((best.get("premiered") or "")[:4]),
         poster=str(image.get("original") or image.get("medium") or "") or None,
         lang="en",
-        external_ids={"tvmaze": str(best.get("id"))} if best.get("id") else {},
+        external_ids=ext_ids,
     )
 
 
