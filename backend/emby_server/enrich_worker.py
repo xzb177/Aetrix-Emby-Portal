@@ -2914,10 +2914,19 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             item.enrich_next_retry_at = datetime.now()
         else:
             item.enrich_next_retry_at = None
-        # 批2小修：none 诚实终态写 last_scraped_at（同上：与「从未跑过」区分，
-        # 口径自明）。非 none 的 done 项不受影响（apply 已写过）。
-        # getattr 兜底：调用方（含测试里的轻量替身）未必带这个字段。
-        if item.metadata_source == "none" and not getattr(item, "last_scraped_at", None):
+        # 批2小修 + 假完成修复（2026-10-20）：done 必须有刮削证据。
+        # 旧口径只有 source='none' 时才补 last_scraped_at，其余 done 全靠
+        # 「上游 apply 已写过」的假设、无断言无兜底——带 tmdb_id 入库、
+        # 本轮又没产生 apply 落库的行（按名无命中、details 为空等）就会
+        # 落成 done + 证据双空（假完成）。本轮 worker 真实执行过抓取/
+        # 应用流程，这次执行本身即证据：last 为空一律补 now；
+        # metadata_source 不在此伪造（仍由各 apply 路径写）。补写前
+        # source/last 双空记一条 warning，便于与假完成巡检对账。
+        # getattr 兜底：调用方（含测试里的轻量替身）未必带这些字段。
+        if not getattr(item, "last_scraped_at", None):
+            if not getattr(item, "metadata_source", None):
+                logger.warning("补全终态 done 但无刮削证据（source/last 双空），"
+                               "补记 last_scraped_at id=%s", item.id)
             item.last_scraped_at = datetime.now()
     item.enrich_claimed_at = None  # 处理完毕，释放 claim 租约（v2.42.9）
     item.enrich_claim_token = None
@@ -3326,6 +3335,13 @@ _PARITY_PATROL_PER_ROUND = 200  # 单轮硬上限（与 none/failed 回捞同量
 _DRIVE_SHARE_PATROL_EVERY_ROUNDS = 120
 _DRIVE_SHARE_PATROL_PER_ROUND = 150
 
+# 假完成自愈巡检（2026-10-20）：done 但无刮削证据（last_scraped_at 为空）
+# 的顶层条目是「假完成」——从未真刮过却被标 done，海报/简介永远没人补。
+# 默认开、无面板开关；每 30 轮（约 30 分钟）跑一次、单轮硬上限 1000 条，
+# 翻回 pending 让 worker 真刮。判别与翻回口径见 fake_done_patrol。
+_FAKE_DONE_PATROL_EVERY_ROUNDS = 30
+_FAKE_DONE_PATROL_PER_ROUND = 1000
+
 
 def _parity_patrol_candidates(db):
     """巡检候选预筛：可见集行集号恰为 {2,4,…,2N}（N≥2）的 (series_id, season)。
@@ -3427,6 +3443,13 @@ def _janitor_loop() -> None:
                     npr = parity_patrol_rescue(db)
                     if npr:
                         logger.info("补全 janitor 奇偶巡检归一 %d 季（防重扫回滚）", npr)
+                # 假完成自愈巡检（2026-10-20）：默认开、无面板开关；
+                # 每 30 轮（约 30 分钟）一次、单轮硬上限 1000 条。
+                if patrol_round % _FAKE_DONE_PATROL_EVERY_ROUNDS == 0:
+                    nfd = fake_done_patrol(db)
+                    if nfd:
+                        logger.info("补全 janitor 假完成巡检翻回 %d 条"
+                                    "（done → pending）", nfd)
                 # Drive 链接分享巡检（2026-10-19 播放事故治本）：主路径漏网/失败兜底。
                 # 默认开、无面板开关；每 120 轮（约 2 小时）一次、单轮硬上限 150 文件。
                 if patrol_round % _DRIVE_SHARE_PATROL_EVERY_ROUNDS == 0:
@@ -3679,6 +3702,50 @@ def enrich_failed_auto_reschedule(db) -> int:
                             purged)
         except Exception as exc:  # noqa: BLE001 — 缓存清理失败不影响重试入队
             logger.debug("failed 定时回捞清理 TMDB 搜索缓存失败: %s", exc)
+    return n
+
+
+def fake_done_patrol(db) -> int:
+    """假完成自愈巡检：done + 无刮削证据的顶层条目翻回 pending（janitor 顺带）。
+
+    - 判别口径：enrich_status='done' 且 last_scraped_at IS NULL。只认
+      时间戳、不认 metadata_source：多源落库的 apply_details 只写 source
+      不写时间戳，认 source 判别会漏检；反过来 source='tmdb' 也证明不了
+      刮削证据齐全。存量里经多源 apply 落库、终态旧口径没补戳的行会被
+      翻回一次，经新终态（_enrich_apply 补戳）后即收敛、不再反复。
+    - 只动顶层 series/movie；软删与合并副本按全站可见口径排除；
+      metadata_locked 行是「转人工」语义（抢单同口径 isnot(True)），
+      翻回只会让它烂在 pending 里污染待刮计数，豁免。
+    - 单轮硬上限 ``_FAKE_DONE_PATROL_PER_ROUND``（1000）：先按 id 取候选
+      再按 id 更新，捞满即停，下一轮 janitor 继续。
+    - 翻回动作：status→pending、attempts→0、next_retry_at=None、
+      priority=50（与 retry_unmatched 同级，排在普通新入库之前）。
+    - 例行调度只记 info 日志，不走翻转告警（与 none/failed 回捞同口径）；
+      巡检计数持续非零即说明还有未堵的盖 done 通道，是现行告警信号。
+    返回本轮实际翻回的条数。
+    """
+    ids = [r[0] for r in (db.query(em.MediaItem.id)
+             .filter(em.MediaItem.enrich_status == "done",
+                     em.MediaItem.last_scraped_at.is_(None),
+                     em.MediaItem.item_type.in_(["series", "movie"]),
+                     em.MediaItem.deleted_at.is_(None),
+                     em.MediaItem.merged_into_id.is_(None),
+                     em.MediaItem.metadata_locked.isnot(True))
+             .order_by(em.MediaItem.id.asc())
+             .limit(_FAKE_DONE_PATROL_PER_ROUND)
+             .all())]
+    if not ids:
+        return 0
+    n = (db.query(em.MediaItem).filter(em.MediaItem.id.in_(ids))
+         .update({"enrich_status": "pending",
+                  "enrich_attempts": 0,
+                  "enrich_next_retry_at": None,
+                  "enrich_priority": ENRICH_PRIORITY_RETRY_UNMATCHED},
+                 synchronize_session=False))
+    db.commit()
+    if n:
+        logger.info("假完成巡检：%d 条 done 无刮削证据条目翻回 pending"
+                    "（priority=50）", n)
     return n
 
 
@@ -3973,16 +4040,18 @@ def _suppress_flood(db) -> int:
     """防入队洪峰：分层扫描启用前的老数据（无 file_fingerprint）默认 enrich_status
     是 pending，会一次性全进队列。用启发式直接标 done：
     - 有 last_scraped_at（已被旧扫描器刮过）→ done
-    - 有 tmdb_id → done
     其余老数据保留 pending（真需要补），但按 date_added 倒序慢慢消化。
     返回标为 done 的条数。
+
+    注意（2026-10-20 假完成修复）：tmdb_id 只是身份标识、不是刮削证据，
+    不再单独算数。只带 tmdb_id、从未真刮过的行若在此被盖成 done，海报/
+    简介永远没人补（欧美剧库 767 部假完成实锤）；这类行留 pending 由
+    worker 按 tmdb_id 正常补刮详情即可。
     """
-    from sqlalchemy import or_ as _or
     n = (db.query(em.MediaItem)
          .filter(em.MediaItem.enrich_status == "pending")
          .filter(em.MediaItem.file_fingerprint.is_(None))
-         .filter(_or(em.MediaItem.last_scraped_at.isnot(None),
-                     em.MediaItem.tmdb_id.isnot(None)))
+         .filter(em.MediaItem.last_scraped_at.isnot(None))
          .update({"enrich_status": "done"}, synchronize_session=False))
     db.commit()
     return n
