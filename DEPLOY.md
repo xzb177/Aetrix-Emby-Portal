@@ -40,7 +40,7 @@ cd dist && zip -r "aetrix-portal-$VER.zip" "aetrix-portal-$VER"
 发行包一共 3 个文件，解压后长这样：
 
 ```
-aetrix-portal-2.42.11/
+aetrix-portal-<版本号>/        ← 目录名里的版本号以你收到的包为准（如 2.54.0）
 ├── docker-compose.yml   ← 部署编排（已写好官方镜像地址）
 ├── env.example          ← 配置模板
 └── DEPLOY.md             ← 本文件
@@ -119,7 +119,7 @@ docker login ghcr.io -u <你的GitHub用户名>
 ### 第 3 步：配置并启动
 
 ```bash
-cd aetrix-portal-2.42.11     # 换成你实际解压出来的目录名
+cd aetrix-portal-<版本号>     # 换成你实际解压出来的目录名
 
 # 1) 生成配置文件
 cp env.example .env
@@ -162,7 +162,9 @@ docker compose logs -f aetrix-api
 > 改端口改 `AETRIX_PORT`。`env.example` 里的 `PORT` / `HOST` 是容器**内部**
 > 监听用的，编排文件不读它们 —— 改那里不会有任何效果。
 
-首次进入需要创建管理员账号：打开 `http://<服务器IP>:8000/admin`。
+首次进入需要创建管理员账号：打开 `http://<服务器IP>:8000/admin`，第一次打开会被送到
+初始化向导，在向导里建第一个管理员（没有默认账号）；向导完成后入口永久关闭。
+如果部署时在 `.env` 里设了 `SETUP_BOOTSTRAP_TOKEN`，向导会要求填入它，照填即可。
 
 ---
 
@@ -190,12 +192,12 @@ docker compose logs -f aetrix-api
 
 ## 三、升级到新版本
 
-我们每次发新版会在仓库里更新 `VERSION`，镜像 tag 跟着版本号走（如 `2.42.12`）。
+我们每次发新版会在仓库里更新 `VERSION`，镜像 tag 跟着版本号走（如 `2.54.0`）。
 
 **推荐：锁定版本号**，这样出问题能精确回滚。在 `.env` 里加一行：
 
 ```
-AETRIX_IMAGE_TAG=2.42.12
+AETRIX_IMAGE_TAG=<新版本号>
 ```
 
 然后升级：
@@ -212,9 +214,9 @@ docker compose up -d    # 原地替换容器
 > 不写 `AETRIX_IMAGE_TAG` 时默认跟随 `latest`（永远是最新的稳定版）。图省事可以不管，
 > 但出问题时就没法一句话回滚了。
 
-### 从 2.42.11 升到 2.42.12：存储来源只剩三种
+### 存储来源与 rclone 配置（现行口径）
 
-后台「存储来源」的类型**由路径前缀决定**，不再有类型下拉，只有三种：
+后台「存储来源」的类型**由路径前缀决定**，没有类型下拉，只有三种：
 
 | 路径写法 | 来源 |
 | --- | --- |
@@ -222,17 +224,17 @@ docker compose up -d    # 原地替换容器
 | `115:/...` | 115 网盘 |
 | `rclone:...` | rclone 任意后端 |
 
-升级前请注意两件事：
+使用 rclone 时请注意：
 
-1. **rclone 配置改由你自己粘贴。** 升级后到后台「服务器与线路」页，编辑对应
+1. **rclone 配置由你自己粘贴。** 到后台「服务器与线路」页，编辑对应
    的 EA，在弹窗里的 **rclone 配置** 区把你的 `rclone.conf`（标准 INI 文本）粘
    进去保存；**每台 EA 一份**（落盘为 `rclone-<服务器ID>.conf`）。面板只负责
    落盘并给 rclone 命令加 `--config`，不代管任何凭据、也不回显原文。粘好之前，
    rclone 挂载会连不上（面板会明确报「读不到 rclone.conf」，不会静默失败）。
-2. **老数据不动。** 已有的挂载、媒体库、已入库条目都保留；只是那些不再支持的
-   类型（Google Drive 原生挂载等）不再能被新建。库里三张没人读写的遗留表
+2. **老数据不动。** 已有的挂载、媒体库、已入库条目都保留；不再支持的
+   类型（Google Drive 原生挂载等）不能被新建。库里三张没人读写的遗留表
    （`rclone_remotes` / `service_account_files` / `emby_mount_file_ids`）
-   **不自动删**，占点空间而已，**不清也完全不影响功能**。确认新配置跑通后再清理：
+   **不自动删**，占点空间而已，**不清也完全不影响功能**。想清理时：
 
    ```bash
    # 发行镜像里不含 scripts/（客户看不到源码），所以走 SQL：
@@ -305,9 +307,10 @@ docker image rm ghcr.io/xzb177/aetrix-api:<版本> ghcr.io/xzb177/aetrix-web:<�
 只在你要用「rclone 挂载」时才需要。现在不用管，也不影响启动。
 （授权版 `docker-compose.prod.yml` 里这两个变量默认空，不会因为它起不来。）
 
-**升级到 2.42.12 后 rclone 挂载连不上了？**
-面板不再代管 `rclone.conf`——到后台「rclone.conf」页把你的配置粘进去保存。
-另见上面「三、升级到新版本」里的两种来源写法。
+**rclone 挂载连不上了？**
+面板不代管 `rclone.conf`——到后台「服务器与线路」页，编辑对应的 EA，
+在弹窗的 **rclone 配置** 区把你的配置粘进去保存（没有单独的「rclone.conf」页）。
+另见上面「三、升级到新版本」里的存储来源口径。
 
 **`/api/health` 打不开 / 容器一直 restarting？**
 `docker compose logs aetrix-api`，最常见是 `.env` 里 `SECRET_KEY` 没填或长度不够 32 位。
