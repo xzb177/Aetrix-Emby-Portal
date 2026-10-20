@@ -41,6 +41,7 @@
                   <span><template v-if="item.LibraryName">{{ item.LibraryName }} · </template>{{ typeLabel(item.Type) }}</span>
                 </div>
                 <button
+                  type="button"
                   class="want"
                   :class="{ on: plan.has(item.Id) }"
                   :aria-pressed="plan.has(item.Id)"
@@ -51,7 +52,7 @@
                 </button>
               </div>
               <!-- R27：按实际拿到的条数判断，避免 day.count>3 但只有 3 条时显示「还有 0 件」 -->
-              <button v-if="day.items.length > 3" class="more" :aria-expanded="expanded.has(day.date)" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (day.items.length - 3) + ' 件，点我看全部 →' }}</button>
+              <button v-if="day.items.length > 3" type="button" class="more" :aria-expanded="expanded.has(day.date)" @click="toggleExpand(day.date)">{{ expanded.has(day.date) ? '收起 ↑' : '还有 ' + (day.items.length - 3) + ' 件，点我看全部 →' }}</button>
               <div v-if="day.items.length === 0" class="empty-day">这天营地很安静，没有新大陆</div>
             </div>
           </section>
@@ -84,7 +85,7 @@
           </section>
           </div>
           <!-- R27：无报错但一天都没有 → 空态说明（计划不持久化是 v1 设计，不改） -->
-          <div v-if="!days.length && !teaserStandalone" class="v4-empty">这几天营地里还没有新大陆，过几天再来看看 🧭</div>
+          <div v-if="!days.length && !teaserStandalone" class="v4-empty">这几天营地里还没有新大陆，过几天再来看看 <span aria-hidden="true">🧭</span></div>
         </div>
       </section>
 
@@ -453,4 +454,6 @@ onUnmounted(() => {
 .sk-tdate { height: 18px; width: 40%; }
 .sk-card { height: 60px; }
 .sk-teaser { height: 64px; }
+/* R111-2：空态/错误态底部留白与列表态 .tday 的 16px 对齐（r110 判例） */
+.v4-sec .v4-empty, .v4-sec .v4-err { margin-bottom: 16px; }
 </style>
