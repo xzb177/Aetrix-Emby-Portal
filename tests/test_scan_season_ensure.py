@@ -91,6 +91,51 @@ def test_ensure_creates_season_when_missing():
         db.close()
 
 
+def test_ensure_soft_deleted_season_second_call_no_refresh_crash():
+    """软删季行：同一 (剧, 季) 的第二集进来时不抛 InvalidRequestError。
+
+    生产事故（2026-10-20）：动漫库（library 43，有 1255 个软删季行）
+    连续三轮整库失败，错误均为 _ensure_season_row 里 db.refresh 抛
+    sqlalchemy.exc.InvalidRequestError。
+    复现链：_prepare_and_prefetch 用 include_deleted 把软删季行装进
+    ctx.season_items；第一集走 refresh+expunge 分支（行脱离会话，但
+    ctx.season_items 里的键还在）；第二集再从缓存里拿到这个脱离实例，
+    走到 db.refresh(detached) 就炸。旧代码第二次调用必抛。
+    """
+    db = SessionLocal()
+    lib = _make_lib(db)
+    series = _make_series(db, lib)
+    try:
+        hint = "hint-softdel2-%s" % _guid()
+        dead = em.MediaItem(
+            guid=hint, library_id=lib.id, item_type="season",
+            name="第 7 季", parent_id=series.id, series_id=series.id,
+            season_number=7, date_added=datetime.now(), probe_status="done",
+            deleted_at=datetime.now())
+        db.add(dead)
+        db.commit()
+
+        # 模拟 _prepare_and_prefetch 的 _load_items(include_deleted)：
+        # 软删季行被装进 guid 缓存。
+        with scanner._soft_delete.include_deleted():
+            cached = db.query(em.MediaItem).filter(
+                em.MediaItem.guid == hint).first()
+        assert cached is not None
+        ctx = _ctx()
+        ctx.season_items[hint] = cached
+
+        s1 = scanner._ensure_season_row(db, ctx, lib, series, 7, hint)
+        # 第二集：同一 (series, season_no)，缓存里还是第一集 expunge 后
+        # 留下的脱离实例——旧代码在这里抛 InvalidRequestError。
+        s2 = scanner._ensure_season_row(db, ctx, lib, series, 7, hint)
+        db.commit()
+        assert s1.id == s2.id == dead.id
+        assert s1.season_number == 7
+    finally:
+        _cleanup(db, lib)
+        db.close()
+
+
 def test_ensure_is_idempotent():
     """重复调用不建第二行（幂等）。"""
     db = SessionLocal()
