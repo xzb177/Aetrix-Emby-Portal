@@ -214,7 +214,9 @@ def test_relay_imdb_bridge(monkeypatch):
             external_ids={"tmdb": "209751"}))
     snap = _snapshot(_spec("tvmaze", "TVMaze", tvmaze_search),
                      _spec("tmdb", "TMDB", tmdb_search))
-    result = ms_engine.collect(None, "法钱", 2023, "series", snapshot=snap)
+    # 条目以英文名 Payback 入库：TVMaze 命中标题与条目名对得上，编号可信
+    # （2026-10-21 起桥二要求编号来源的标题先对得上，见第 5 节）
+    result = ms_engine.collect(None, "Payback", 2023, "series", snapshot=snap)
     assert result.external_ids.get("tmdb") == "209751"
     assert any("IMDb 接力" in (o.label or "") for o in result.outcomes)
 
@@ -231,3 +233,100 @@ def test_relay_no_original_no_imdb_stays_unbound():
                      _spec("tmdb", "TMDB", tmdb_search))
     result = ms_engine.collect(None, "法钱", 2023, "series", snapshot=snap)
     assert "tmdb" not in result.external_ids
+
+
+# ---------------------------------------------------------------------------
+# 5. 防错绑（2026-10-21 生产实证）：OMDb 模糊命中校验 + 桥二编号来源校验
+#
+# 实证：人工桶复验时《彼得58》(2024) 被绑成捷克建筑纪录片、 《逐爱之心 2》
+# (2026) 被绑成《穿普拉达的女王2》。链条是——OMDb 的 t= 模糊查名零校验，
+# 拿同年毫不相干的片当命中，还给出它的 imdbID；桥二再用这个错编号
+# find_by_imdb 精确落点，年份门同年拦不住，错绑就此「转正」。
+# ---------------------------------------------------------------------------
+
+class _Pool:
+    def pick_any(self):
+        return "test-key"
+
+    def note_invalid(self, key):
+        pass
+
+
+def _omdb_payload(title, year, imdb="tt0000001"):
+    return {"Response": "True", "Title": title, "Year": str(year),
+            "Genre": "Drama", "Plot": "x", "imdbRating": "7.5",
+            "Poster": "https://img.example/p.jpg", "imdbID": imdb}
+
+
+def test_omdb_rejects_fuzzy_title_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        ms_sources, "_http_obj",
+        lambda url: _omdb_payload("Architektura CSSR 58-89", 2024, "tt32644903"))
+    assert ms_sources.search_omdb("彼得58", 2024, "movie",
+                                  pool=_Pool(), gate=_Gate()) is None
+
+
+def test_omdb_accepts_matching_title(monkeypatch):
+    monkeypatch.setattr(
+        ms_sources, "_http_obj",
+        lambda url: _omdb_payload("Parasite", 2019, "tt6751668"))
+    hit = ms_sources.search_omdb("Parasite", 2019, "movie",
+                                 pool=_Pool(), gate=_Gate())
+    assert hit is not None
+    assert hit.external_ids.get("imdb") == "tt6751668"
+
+
+def test_omdb_rejects_year_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        ms_sources, "_http_obj",
+        lambda url: _omdb_payload("Parasite", 2024, "tt6751668"))
+    assert ms_sources.search_omdb("Parasite", 2019, "movie",
+                                  pool=_Pool(), gate=_Gate()) is None
+
+
+def test_relay_imdb_bridge_rejects_uncorroborated_donor(monkeypatch):
+    called = []
+
+    def omdb_search(title, year, kind, *, pool, gate):
+        return _hit(source="omdb", title="Architektura CSSR 58-89", year=2024,
+                    external_ids={"imdb": "tt32644903"})
+
+    def tmdb_search(title, year, kind, *, pool, gate):
+        return None
+
+    def fake_find(imdb, year, kind, *, pool, gate):
+        called.append(imdb)
+        return _hit(source="tmdb", title="Architektura CSSR 58-89", year=2024,
+                    external_ids={"tmdb": "1301895"})
+
+    monkeypatch.setattr(ms_sources, "find_tmdb_by_imdb", fake_find)
+    snap = _snapshot(_spec("omdb", "OMDb", omdb_search),
+                     _spec("tmdb", "TMDB", tmdb_search))
+    result = ms_engine.collect(None, "彼得58", 2024, "movie", snapshot=snap)
+    assert called == []  # 编号来源标题对不上，桥二不许出发
+    assert "tmdb" not in result.external_ids
+
+
+def test_relay_imdb_bridge_accepts_original_title_corroborated_donor(monkeypatch):
+    def bgm_search(title, year, kind, *, pool, gate):
+        return _hit(source="bangumi", title="法钱", original_title="Payback",
+                    year=2023, lang="zh", external_ids={"bangumi": "404804"})
+
+    def tvmaze_search(title, year, kind, *, pool, gate):
+        return _hit(source="tvmaze", title="Payback", year=2023,
+                    external_ids={"tvmaze": "1", "imdb": "tt23860034"})
+
+    def tmdb_search(title, year, kind, *, pool, gate):
+        return None
+
+    monkeypatch.setattr(
+        ms_sources, "find_tmdb_by_imdb",
+        lambda imdb, year, kind, *, pool, gate: _hit(
+            source="tmdb", title="权贵复仇", year=2023,
+            external_ids={"tmdb": "209751"}))
+    snap = _snapshot(_spec("bangumi", "Bangumi", bgm_search),
+                     _spec("tvmaze", "TVMaze", tvmaze_search),
+                     _spec("tmdb", "TMDB", tmdb_search))
+    result = ms_engine.collect(None, "法钱", 2023, "series", snapshot=snap)
+    # TVMaze 命中的标题与 Bangumi 给的原名对得上 → 编号可信，接力照常
+    assert result.external_ids.get("tmdb") == "209751"
