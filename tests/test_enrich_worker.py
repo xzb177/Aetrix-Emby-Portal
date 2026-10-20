@@ -60,16 +60,88 @@ def _make_item(db, **kw):
 
 
 def test_suppress_flood_marks_scraped_old_data_done(db):
-    """防洪峰：有 last_scraped_at / tmdb_id 的老数据（无指纹）直接标 done"""
+    """防洪峰：只有 last_scraped_at 的老数据（无指纹）直接标 done。
+
+    2026-10-20 假完成修复后口径：tmdb_id 只是身份、不是刮削证据，
+    只带 tmdb_id 的行不再被盖 done（见下一条回归用例）。
+    """
     _make_item(db, file_fingerprint=None, last_scraped_at=datetime.now())
     _make_item(db, file_fingerprint=None, tmdb_id="123")
     _make_item(db, file_fingerprint=None)  # 真需要补的，保留 pending
     _make_item(db, file_fingerprint="abc", enrich_status="pending")  # L1 新数据不动
     n = enrich_worker._suppress_flood(db)
-    assert n == 2
+    assert n == 1
     statuses = sorted(
         r[0] for r in db.query(em.MediaItem.enrich_status).all())
-    assert statuses == ["done", "done", "pending", "pending"]
+    assert statuses == ["done", "pending", "pending", "pending"]
+
+
+def test_suppress_flood_keeps_tmdb_only_rows_pending(db):
+    """假完成回归：pending + 无指纹 + 有 tmdb_id + 从未刮过 → 仍 pending。
+
+    这是欧美剧库 767 部假完成的现场签名：条目先带上 tmdb_id、还没真刮，
+    worker 一重启就被 _suppress_flood 整批盖成 done，海报/简介永远没人补。
+    """
+    it = _make_item(db, item_type="series", file_fingerprint=None,
+                    tmdb_id="44217", last_scraped_at=None)
+    n = enrich_worker._suppress_flood(db)
+    assert n == 0
+    db.refresh(it)
+    assert it.enrich_status == "pending"
+
+
+def test_fake_done_patrol_flips_only_fake_done(db):
+    """假完成巡检：只翻 done+无刮削证据的顶层可见未锁定行，且幂等。"""
+    fake = _make_item(db, item_type="series", enrich_status="done",
+                      tmdb_id="44217", last_scraped_at=None)
+    locked = _make_item(db, item_type="series", enrich_status="done",
+                        last_scraped_at=None, metadata_locked=True)
+    merged = _make_item(db, item_type="series", enrich_status="done",
+                        last_scraped_at=None, merged_into_id=fake.id)
+    honest_none = _make_item(db, item_type="movie", enrich_status="done",
+                             metadata_source="none",
+                             last_scraped_at=datetime.now())
+    real_done = _make_item(db, item_type="movie", enrich_status="done",
+                           metadata_source="tmdb",
+                           last_scraped_at=datetime.now())
+    episode = _make_item(db, item_type="episode", enrich_status="done",
+                         last_scraped_at=None)
+    pending = _make_item(db, item_type="series", enrich_status="pending",
+                         last_scraped_at=None)
+    n = enrich_worker.fake_done_patrol(db)
+    assert n == 1
+    for it, want in [(fake, "pending"), (locked, "done"), (merged, "done"),
+                     (honest_none, "done"), (real_done, "done"),
+                     (episode, "done"), (pending, "pending")]:
+        db.refresh(it)
+        assert it.enrich_status == want, it.name
+    assert fake.enrich_attempts == 0
+    assert fake.enrich_priority == 50
+    assert fake.enrich_next_retry_at is None
+    # 幂等：再跑一轮无可翻
+    assert enrich_worker.fake_done_patrol(db) == 0
+
+
+def test_enrich_apply_done_implies_scraped_at(db):
+    """终态不变量：done 必须蕴含 last_scraped_at 非空（假完成修复）。
+
+    预置 tmdb_id、本轮无命中无 details 落库的行，旧终态会落成
+    done + 证据双空；现在终态补记本次执行时间作为刮削证据。
+    """
+    it = _make_item(db, item_type="movie", tmdb_id="999",
+                    overview="已有简介", last_scraped_at=None,
+                    metadata_source=None)
+    fetched = {
+        "poster": None, "fanart": None, "external_subs": [],
+        "nfo_data": None, "tmdb_hit": None, "tmdb_details": None,
+        "ok": True,
+    }
+    with mock.patch("backend.emby_server.tmdb.tmdb_client"):
+        enrich_worker._enrich_apply(db, it, fetched)
+    db.commit()
+    db.refresh(it)
+    assert it.enrich_status == "done"
+    assert it.last_scraped_at is not None
 
 
 def test_claim_batch_skips_not_yet_due(db):

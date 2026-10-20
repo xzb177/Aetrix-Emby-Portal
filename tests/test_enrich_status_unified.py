@@ -248,9 +248,14 @@ class TestScanHasMetadata:
         pending = SimpleNamespace(tmdb_hit=None, nfo_data={})
         assert _scan_has_metadata(_item(), pending) is False
 
-    def test_existing_tmdb_id_counts(self):
+    def test_existing_tmdb_id_alone_does_not_count(self):
+        """2026-10-20 假完成修复：tmdb_id 只是身份、不是刮削证据。
+
+        只带 tmdb_id、metadata_source 与简介皆空的行实际从未刮过，
+        单独算「已齐」会在 flat 扫描当场标 done（假完成）。
+        """
         pending = SimpleNamespace(tmdb_hit=None, nfo_data=None)
-        assert _scan_has_metadata(_item(tmdb_id="123"), pending) is True
+        assert _scan_has_metadata(_item(tmdb_id="123"), pending) is False
 
     def test_authoritative_source_counts(self):
         pending = SimpleNamespace(tmdb_hit=None, nfo_data=None)

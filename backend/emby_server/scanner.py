@@ -5057,16 +5057,19 @@ def _scan_has_metadata(item, pending) -> bool:
     - 本轮 TMDB 搜索命中（pending.tmdb_hit，写库后段会 apply，
       metadata_source='tmdb' + last_scraped_at）；
     - 本轮 NFO 有实质内容（title/overview/tmdb_id）：NFO 权威，B 方案本意；
-    - 行上已有权威元数据（tmdb_id / 真实 metadata_source / 有效简介）：
+    - 行上已有权威元数据（真实 metadata_source / 有效简介）：
       更新扫描/重刮，worker 不需要再跑一轮。
     三者皆无（无 NFO 且无 TMDB 命中且无有效文本）→ False，行走 pending，
     与分层远程文件用同一个待刮状态值，等 enrich_worker 后台补。
+
+    注意（2026-10-20 假完成修复）：tmdb_id 不再单独算数——它只是身份
+    标识、不是刮削证据。只带 tmdb_id、metadata_source 与简介皆空的行
+    实际从未刮过，在此算「已齐」标 done 即假完成（与 enrich_worker
+    _suppress_flood 同口径修复）。
     """
     if getattr(pending, "tmdb_hit", None):
         return True
     if _nfo_has_content(getattr(pending, "nfo_data", None)):
-        return True
-    if getattr(item, "tmdb_id", None):
         return True
     if getattr(item, "metadata_source", None) in _ENRICH_AUTHORITATIVE_SOURCES:
         return True
