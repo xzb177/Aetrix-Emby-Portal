@@ -77,6 +77,8 @@ def test_completes_when_title_and_year_present_but_no_overview(db, monkeypatch):
     # 2026-10-21 A 类开关摘面板：字段级完成口径缺省改为开（=生产现值），
     # 本用例验证的是「字段级口径关」时的核心完成线，按 env 显式关闭
     monkeypatch.setenv("ENRICH_FIELD_COMPLETENESS", "0")
+    # 刮削调优有 60s 进程缓存：清掉，让本用例的 env 立即生效
+    monkeypatch.setitem(enrich_worker._enrich_tuning_cache, "cfg", None)
     it = _item(db, name="007：女王密使", production_year=1969,
                tmdb_id="1642")
     _apply(db, it, dict(BASE_OK))

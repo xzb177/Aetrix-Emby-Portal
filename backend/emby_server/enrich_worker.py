@@ -109,7 +109,7 @@ _ALIAS_INDEX_TTL = env_int("ENRICH_ALIAS_INDEX_TTL", 300, 30)
 _ALIAS_INDEX_MAX = env_int("ENRICH_ALIAS_INDEX_MAX", 50000, 1000)
 _alias_index: dict = {"rows": None, "at": 0.0}
 
-# ---- 单集夜间刮削（默认关闭：不改变现有行为） ----
+# ---- 单集夜间刮削（env 开关，缺省 1=开，与生产现值一致） ----
 # ENRICH_EPISODE_NIGHT_ONLY=1 时，白天只刮顶层条目（movie/series/season），
 # 单集（episode）只在夜间窗口 [ENRICH_NIGHT_START, ENRICH_NIGHT_END) 内刮削。
 # 目的：白天优先把电影/剧集本身的元数据补出来，单集留到低峰期再补。
@@ -1152,8 +1152,8 @@ def _should_multisource_on_tmdb_miss(item: Any, kind: str) -> bool:
     前置检查多源总开关：关着时直接返回 False，避免不必要的 DB 会话与引擎调用
     （测试环境默认关闭，保持原有行为不变）。
 
-    v2.54.0 新增独立开关 ``meta_sources_tmdb_miss_fallback``（默认 0 关闭）：
-    只有显式打开时才在 TMDB-miss 路径走多源兜底。避免默认开启改变现有行为。
+    v2.54.0 新增独立开关 ``meta_sources_tmdb_miss_fallback``（2026-10-21 起走 env，缺省 1=开）：
+    开着时在 TMDB-miss 路径走多源兜底。
     v2.58.0 起该开关由配置中心统一管理（``ms_config.Snapshot.tmdb_miss_fallback``），
     后台「多源元数据补全」卡里有这个开关，不再这里直查 SystemConfig。
 
@@ -2787,8 +2787,8 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 _incomplete = True
         else:
             _searched_no_hit = False
-        # ★ Step 5（链路规划）：字段级完成口径（feature flag，默认关）。
-        # 关时下面整块不执行，行为与 Step 5 前逐行一致。
+        # ★ Step 5（链路规划）：字段级完成口径（env-only 调优开关，默认 1=开）。
+        # 关（ENRICH_FIELD_COMPLETENESS=0）时下面整块不执行，行为与 Step 5 前逐行一致。
         # 开时：核心字段齐（tmdb_id，或标题/年份/海报三者有其二）但缺次要字段
         # （简介/类型/演员）的条目不直接 done，而是 pending + 低优先级
         # （enrich_priority=-10，_claim_batch 按 priority desc 认领，天然排在
@@ -3442,12 +3442,12 @@ def _janitor_loop() -> None:
                 n = _reclaim_stale(db)
                 if n:
                     logger.info("补全 janitor 回收 %d 条超时租约（enriching → pending）", n)
-                # Step 4：none 定时回捞（开关默认关；单轮硬上限 2000 条，
+                # Step 4：none 定时回捞（env-only 开关，缺省 1=开；单轮硬上限 2000 条，
                 # 与 _reclaim_stale 同一连接、同一轮顺带做，不额外抢 worker 的 DB）
                 nr = enrich_none_auto_reschedule(db)
                 if nr:
                     logger.info("补全 janitor 回捞 %d 条超期 none（done → pending）", nr)
-                # WS1/T1：failed 定时回捞（开关默认关；单轮硬上限 2000 条，
+                # WS1/T1：failed 定时回捞（env-only 开关，缺省 1=开；单轮硬上限 2000 条，
                 # 与 none 回捞同一连接、同一轮顺带做，不额外抢 worker 的 DB）
                 nfr = enrich_failed_auto_reschedule(db)
                 if nfr:
