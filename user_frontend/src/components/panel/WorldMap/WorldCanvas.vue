@@ -198,11 +198,7 @@ defineProps<{
   width: 0;
   height: 0;
 }
-/* 副标题比房子宽时，标签让开相邻建筑：影院改到屋顶上方，邮局左移，补给站右移，留言墙改到灯塔右侧 */
-.spot.s-cinema { --lab-x: 0.8cqw; --lab-y: -16cqw; }
-.spot.s-post { --lab-x: -1.2cqw; }
-.spot.s-shop { --lab-x: 2.8cqw; }
-.spot.s-wall { --lab-x: 12.4cqw; --lab-y: -10.6cqw; }
+/* 标签在建筑下方仍会压到旁边的房子时，只平移标签，不改建筑尺寸。 */
 .pin-hit,
 .lab-hit {
   position: absolute;
@@ -241,13 +237,25 @@ defineProps<{
 }
 .lab-hit {
   z-index: 8;
-  transform: translate(calc(-50% + var(--lab-x, 0px)), var(--lab-y, 0px));
+  transform: translate(-50%, 0);
   display: flex;
   flex-direction: column;
   align-items: center;
   width: max-content;
   pointer-events: auto;
 }
+.spot.s-cinema .lab-hit { transform: translate(calc(-50% - 12.3cqw), 5.65cqw); }
+.spot.s-parcels .lab-hit { transform: translate(calc(-50% - 0.35cqw), 8.31cqw); }
+.spot.s-lighthouse .lab-hit { transform: translate(calc(-50% - 0.35cqw), -0.35cqw); }
+.spot.s-shop .lab-hit { transform: translate(calc(-50% + 1.8cqw), -1.2cqw); }
+.spot.s-collector .lab-hit { transform: translate(calc(-50% - 0.35cqw), -0.35cqw); }
+.spot.s-post .lab-hit { transform: translate(calc(-50% - 0.35cqw), -0.35cqw); }
+.spot.s-gamehall .lab-hit { transform: translate(calc(-50% - 0.35cqw), -0.35cqw); }
+.spot.s-stele .lab-hit { transform: translate(calc(-50% - 8.15cqw), -14.96cqw); }
+.spot.s-board .lab-hit { transform: translate(calc(-50% - 0.35cqw), 1cqw); }
+.spot.s-wall .lab-hit { transform: translate(calc(-50% + 14.3cqw), -0.35cqw); }
+.spot.s-fortune .lab-hit { transform: translate(calc(-50% + 4.32cqw), -0.35cqw); }
+.spot.s-player .lab-hit { transform: translate(calc(-50% - 0.35cqw), -0.35cqw); }
 .lab-spacer {
   visibility: hidden;
   display: flex;
@@ -266,6 +274,9 @@ defineProps<{
   width: 100%;
   height: auto;
   overflow: visible;
+}
+.mark .pin {
+  flex: 0 0 auto;
 }
 .mark .art-cinema { width: 9.95cqw; }
 
@@ -288,6 +299,13 @@ defineProps<{
 .mark .art-lighthouse { width: 6.63cqw; }
 
 .mark .art-hall { width: 7.65cqw; }
+
+/* 封存驿站 / 补给站 / 游戏大厅 / 留言墙的类名对不上上面的 cqw 规则，
+   上一版因此用了 SVG 固有宽度（1280 下约 300px）。按画布宽锁回这个尺寸，避免 flex 收成标签那么窄。 */
+.mark .art-parcels,
+.mark .art-shop,
+.mark .art-gamehall,
+.mark .art-wall { width: 24.94cqw; }
 
 /* 夜灯层：部件自带 .nl（暖窗光/光晕），只在夜里显形 */
 /* 场景昼夜小部件：弯月与萤火虫只在夜里，太阳夜里收起 */
@@ -369,7 +387,8 @@ defineProps<{
   font-weight: 600;
   font-size: 1.11cqw;
 }
-.player .who {
+.player .who,
+.player-lab .who {
   margin-top: 0.35cqw;
   font-size: 0.83cqw;
   font-weight: 600;
@@ -378,6 +397,7 @@ defineProps<{
   padding: 0.07cqw 0.63cqw;
   border-radius: 99px;
   display: inline-block;
+  white-space: nowrap;
 }
 .pin-hit.fortune-pending .pin { animation: fortunePulse 2.2s ease-in-out infinite; }
 @keyframes fortunePulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
