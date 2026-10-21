@@ -216,14 +216,9 @@ def test_env_only_keys_panel_write_ignored(db):
     })
     assert out["values"][enrich_worker.CFG_ENRICH_WORKERS] == 8
     assert out["values"][enrich_worker.CFG_ENRICH_BATCH] == 200
-    # 2026-10-21 A 类摘面板：env-only 扩至 7 键（原 2 键 + 5 个布尔开关）
     assert set(out["env_only"]) == {
         enrich_worker.CFG_ENRICH_WORKERS, enrich_worker.CFG_ENRICH_BATCH,
         enrich_worker.CFG_ENRICH_TMDB_BATCH,
-        enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE,
-        enrich_worker.CFG_ENRICH_NONE_AUTO_RESCHEDULE,
-        enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE,
-        enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS,
     }
     from backend import models as _models
     rows = db.query(_models.SystemConfig).filter(

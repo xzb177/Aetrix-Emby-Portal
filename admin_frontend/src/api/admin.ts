@@ -1287,8 +1287,9 @@ export interface EnrichEpisodeNightConfig {
 export const fetchEnrichEpisodeNight = () =>
   get<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`)
 
-export const saveEnrichEpisodeNight = (night_start: string, night_end: string, night_tz: string) =>
+export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, night_end: string, night_tz: string) =>
   put<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`, {
+    enabled,
     night_start,
     night_end,
     night_tz,
@@ -1457,8 +1458,8 @@ export interface DoubanConfig {
   min_interval: number
 }
 export const fetchDoubanConfig = () => get<DoubanConfig>(`${E}/scrape/douban-config`)
-export const saveDoubanConfig = (min_interval: number) =>
-  put<DoubanConfig>(`${E}/scrape/douban-config`, { min_interval })
+export const saveDoubanConfig = (enabled: boolean, min_interval: number) =>
+  put<DoubanConfig>(`${E}/scrape/douban-config`, { enabled, min_interval })
 
 /** 豆瓣限流降级：限流期跳过豆瓣走多源兜底 */
 export interface DoubanBanDowngradeConfig {
@@ -1478,8 +1479,13 @@ export interface UnifiedFallbackConfig {
 export const fetchUnifiedFallback = () =>
   get<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`)
 
-/** 保存源顺序 / 逐源限速（**不动密钥池**；开关类已摘面板，由服务端配置控制） */
+export const saveUnifiedFallback = (enabled: boolean) =>
+  put<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`, { enabled })
+
+/** 保存总开关 / TMDB-miss 兜底 / 源顺序 / 逐源限速（**不动密钥池**；中文优先与逐源开关仍走 env） */
 export const saveMetaSources = (data: {
+  enabled: boolean
+  tmdb_miss_fallback: boolean
   order: string[]
   rates: Record<string, number>
 }) => put<MetaSourcesConfig>(`${E}/scrape/meta-sources`, data)
@@ -1799,11 +1805,11 @@ export interface ChaseNewConfig {
 }
 
 export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`)
-export const saveChaseNew = (interval: number, excluded: string) =>
-  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { interval, excluded })
+export const saveChaseNew = (enabled: boolean, interval: number, excluded: string) =>
+  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded })
 
-export const saveAutoScan = (time: string) =>
-  put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { time })
+export const saveAutoScan = (enabled: boolean, time: string) =>
+  put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
 
 export interface BackupFile { name: string; size: number; created_at: string }
 export interface BackupConfig {

@@ -68,9 +68,22 @@ def _env():
     store.invalidate(ew.CFG_DOUBAN_BAN_DOWNGRADE)
     yield
     dbn.reset_ban()
-    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
-    store.invalidate(ew.CFG_UNIFIED_FALLBACK)
+    _drop_switch_rows(dbn.DOUBAN_ENABLED_KEY, ew.CFG_UNIFIED_FALLBACK)
     store.invalidate(ew.CFG_DOUBAN_BAN_DOWNGRADE)
+
+
+def _drop_switch_rows(*keys):
+    from backend import models as _models
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key.in_(keys)
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    for key in keys:
+        store.invalidate(key)
 
 
 def _fresh_session_without_config_row():

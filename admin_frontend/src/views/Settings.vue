@@ -196,6 +196,12 @@ const GROUPS: Group[] = [
       { key: 'invitation_invitee_reward_points', label: '被邀请人奖励', type: 'int', suffix: '积分', hint: '新人用邀请链接注册时多拿的积分。推荐值：50', advanced: true },
       { key: 'invitation_rebate_percent', label: '消费返利', type: 'int', suffix: '%', hint: '下级充值/消费时邀请人可得的比例', advanced: true },
       {
+        key: 'promotion_reward_enabled',
+        label: '推广奖励',
+        type: 'bool',
+        hint: '邀请成功后在双向积分之外「另发」一笔；默认开启。金额和天数都是 0 时即使开启也不会发',
+      },
+      {
         key: 'promotion_reward_type',
         label: '推广奖励类型',
         type: 'str',
@@ -212,9 +218,10 @@ const GROUPS: Group[] = [
   {
     id: 'stream_accel',
     title: '流媒体加速',
-    desc: '播放地址统一用加速域名（强制域名访问 + 自动信任 CF 真实 IP 由服务端开关控制）',
+    desc: '一键开启：强制域名访问（防 IP 直连） + 自动信任 CF 真实 IP + 播放地址统一用加速域名',
     icon: Rocket,
     fields: [
+      { key: 'stream_accel_enabled', label: '启用加速', type: 'bool', hint: '打开后只能用加速域名访问，IP 直连会被拒绝。默认开启' },
       {
         key: 'stream_accel_domain',
         label: '加速域名',

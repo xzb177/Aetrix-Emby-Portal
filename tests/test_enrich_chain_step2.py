@@ -75,9 +75,23 @@ def _env():
     yield
     dbn.reset_ban()
     ms_config.invalidate()
-    store.invalidate(FLAG)
+    _drop_switch_rows(FLAG, dbn.DOUBAN_ENABLED_KEY)
     store.invalidate(BAN_FLAG)
-    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
+
+
+def _drop_switch_rows(*keys):
+    """关掉的开关行必须删掉：缺省已是开，留下 "0" 会让后面的测试读到关。"""
+    from backend import models as _models
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key.in_(keys)
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    for key in keys:
+        store.invalidate(key)
 
 
 def _flag_on():
@@ -215,26 +229,16 @@ class TestFlag:
         assert ew._unified_fallback_flag_on() is True
 
     def test_config_roundtrip(self):
-        # 2026-10-21 A 类摘面板：save 不再写库（开关改走 env
-        # ENRICH_UNIFIED_FALLBACK / 存量行，缺省=生产现值开），只回读生效值。
-        # 本文件 fixture 预置行 "0"，故 save(True) 后仍读到关。
         db = SessionLocal()
         try:
             assert ew.get_unified_fallback_config(db)["enabled"] is False
             cfg = ew.save_unified_fallback_config(db, True)
-            assert cfg["enabled"] is False
-            assert ew.get_unified_fallback_config(db)["enabled"] is False
-            store.write_values(db, {FLAG: "1"}, {FLAG: "Step 2 测试开关"})
-            db.commit()
-            store.invalidate(FLAG)
+            assert cfg["enabled"] is True
             assert ew.get_unified_fallback_config(db)["enabled"] is True
             ew.save_unified_fallback_config(db, False)
-            assert ew.get_unified_fallback_config(db)["enabled"] is True
+            assert ew.get_unified_fallback_config(db)["enabled"] is False
         finally:
             db.close()
-            store.write_values(db, {FLAG: "0"}, {FLAG: "Step 2 测试开关"})
-            db.commit()
-            store.invalidate(FLAG)
 
 
 # ============ 2. 可达性分析：四种组合谁进 else ============

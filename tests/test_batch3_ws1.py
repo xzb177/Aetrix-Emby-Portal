@@ -168,23 +168,32 @@ def test_failed_tuning_specs_registered(db):
     assert cfg[enrich_worker.CFG_ENRICH_FAILED_MAX_RESCHEDULES] == 3
 
 
-def test_failed_reschedule_switch_off_is_noop(db, monkeypatch):
-    """开关关（2026-10-21 后经 env ENRICH_FAILED_AUTO_RESCHEDULE=0 控制）：
-    直接返回 0，不碰任何行"""
-    monkeypatch.setenv("ENRICH_FAILED_AUTO_RESCHEDULE", "0")
-    enrich_worker._enrich_tuning_cache["at"] = 0.0
-    enrich_worker._enrich_tuning_cache["cfg"] = None
-    it = _make_item(db, enrich_status="failed", enrich_attempts=5)
-    n = enrich_worker.enrich_failed_auto_reschedule(db)
-    assert n == 0
-    db.refresh(it)
-    assert it.enrich_status == "failed"
+def test_failed_reschedule_switch_off_is_noop(db):
+    """开关关掉后直接返回 0，不碰任何行。缺省是开，本例经保存路径显式关掉。"""
+    enrich_worker.save_enrich_tuning_config(db, {
+        enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE: False,
+    })
+    try:
+        it = _make_item(db, enrich_status="failed", enrich_attempts=5)
+        n = enrich_worker.enrich_failed_auto_reschedule(db)
+        assert n == 0
+        db.refresh(it)
+        assert it.enrich_status == "failed"
+    finally:
+        from backend import models as _models
+        from backend.integrations import store as _store
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE
+        ).delete(synchronize_session=False)
+        db.commit()
+        _store.invalidate(enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE)
+        enrich_worker._enrich_tuning_cache["at"] = 0.0
+        enrich_worker._enrich_tuning_cache["cfg"] = None
 
 
 def _enable_failed_reschedule(db):
-    # 2026-10-21 A 类摘面板：开关已 env-only 且缺省=开（生产现值），保存路径
-    # 不再写它；这里只保存仍可写的周期/上限（保存会清进程缓存）
     enrich_worker.save_enrich_tuning_config(db, {
+        enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE: "1",
         enrich_worker.CFG_ENRICH_FAILED_RESCHEDULE_DAYS: "30",
         enrich_worker.CFG_ENRICH_FAILED_MAX_RESCHEDULES: "3",
     })

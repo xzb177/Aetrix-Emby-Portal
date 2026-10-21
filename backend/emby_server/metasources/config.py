@@ -190,13 +190,11 @@ def write_config(db, *, enabled: bool = True, prefer_chinese: bool = True,
                  keys: Optional[dict] = None,
                  rates: Optional[dict] = None,
                  tmdb_miss_fallback: Optional[bool] = None) -> int:
-    """保存配置（顺序 / 密钥池 / 限速），立即热生效。
+    """保存配置（总开关 / TMDB-miss 兜底 / 顺序 / 密钥池 / 限速），立即热生效。
 
-    A 类开关摘面板（2026-10-21）：总开关 / 中文优先 / 逐源开关 /
-    TMDB-miss 兜底开关不再落库（``enabled`` / ``prefer_chinese`` /
-    ``toggles`` / ``tmdb_miss_fallback`` 参数仅为兼容旧调用方保留）——
-    这 10 个开关改走 env（META_SOURCES_ENABLED 等，缺省已对齐生产现值），
-    口径见 backend.integrations.store 的摘面板开关表。
+    总开关与 TMDB-miss 兜底留在面板、落库（DB 行 > 代码缺省开）。
+    ``tmdb_miss_fallback`` 不传时不写该键（保持库里原值）。
+    中文优先与逐源开关仍走 env（``prefer_chinese`` / ``toggles`` 不落库）。
 
     ``keys`` / ``rates`` 只在字典里出现的源才写，「改一下顺序」不会顺手
     把密钥池洗掉（密钥原文从不上前端，全靠这一层保留）。
@@ -204,9 +202,11 @@ def write_config(db, *, enabled: bool = True, prefer_chinese: bool = True,
     from backend.integrations import store
 
     values = {
+        CONFIG_ENABLED: "1" if enabled else "0",
         CONFIG_ORDER: json.dumps(list(order), ensure_ascii=False),
     }
     descriptions = {
+        CONFIG_ENABLED: "多源元数据补全总开关（关闭 = 只用原来的 NFO/TMDB/豆瓣链路）",
         CONFIG_ORDER: "元数据源采集顺序（JSON 数组，靠前的源先取，字段按序填充）",
     }
     for source_id, pool in (keys or {}).items():
@@ -229,6 +229,12 @@ def write_config(db, *, enabled: bool = True, prefer_chinese: bool = True,
         key = CONFIG_SOURCE_RATE.format(id=source_id)
         values[key] = str(_rate(raw_rate))
         descriptions[key] = f"元数据源「{source_id}」请求最小间隔秒数（0 = 不限速）"
+    if tmdb_miss_fallback is not None:
+        values[CONFIG_TMDB_MISS_FALLBACK] = "1" if tmdb_miss_fallback else "0"
+        descriptions[CONFIG_TMDB_MISS_FALLBACK] = (
+            "TMDB 搜过无命中时走多源兜底（多源总开关的子项：链路规划 Step 2 的"
+            "统一兜底链启用时由总开关统一控制，保留键值用于回滚/兼容）"
+        )
     count = store.write_values(db, values, descriptions)
     db.commit()
     if any(source_id == "tmdb" for source_id in (keys or {})):

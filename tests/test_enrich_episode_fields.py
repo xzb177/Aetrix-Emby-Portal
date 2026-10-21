@@ -69,8 +69,19 @@ def _clear_field_cfg_cache(monkeypatch, db):
         ])).delete(synchronize_session=False)
     db.commit()
     yield
+    db.query(_models.SystemConfig).filter(
+        _models.SystemConfig.key.in_([
+            enrich_worker.CFG_EPISODE_TITLE,
+            enrich_worker.CFG_EPISODE_OVERVIEW,
+            enrich_worker.CFG_EPISODE_STILL,
+            enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE,
+            enrich_worker.CFG_EPISODE_NIGHT_ONLY,
+        ])).delete(synchronize_session=False)
+    db.commit()
     enrich_worker._ep_fields_cfg_cache["at"] = 0.0
     enrich_worker._ep_fields_cfg_cache["cfg"] = None
+    enrich_worker._enrich_tuning_cache["at"] = 0.0
+    enrich_worker._enrich_tuning_cache["cfg"] = None
 
 
 def _make_item(db, **kw):
@@ -286,13 +297,10 @@ def test_fetch_episode_tmdb_still_off_skips_prewarm(monkeypatch):
 
 # ---------- 夜间总开关优先（分项不能绕过认领门控） ----------
 
-def _enable_night_only(monkeypatch, in_window: bool):
+def _enable_night_only(db, monkeypatch, in_window: bool):
     monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
-    # 配额制 2026-10-21 起缺省开：开着时白天配额内单集照样可认领，
-    # 会盖住夜间门；本文件验夜间门/分项的优先级，显式关掉配额制
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV, "0")
-    enrich_worker._enrich_tuning_cache["at"] = 0.0
-    enrich_worker._enrich_tuning_cache["cfg"] = None
+    enrich_worker.save_enrich_tuning_config(
+        db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: False})
     monkeypatch.setattr(
         enrich_worker, "_in_night_window", lambda *a, **k: in_window)
 
@@ -300,7 +308,7 @@ def _enable_night_only(monkeypatch, in_window: bool):
 def test_night_gate_takes_precedence_over_fields(db, monkeypatch):
     """夜间总开关开 + 窗口外：单集在认领层即被跳过——此时分项开关
     （即使全开）也不能让单集被刮。分项只管"写什么"，不管"何时抢单"。"""
-    _enable_night_only(monkeypatch, in_window=False)
+    _enable_night_only(db, monkeypatch, in_window=False)
     # 分项开关全开
     enrich_worker.save_episode_field_config(db, True, True, True)
     ep = _make_item(db, item_type="episode", name="S01E01", series_id=999)

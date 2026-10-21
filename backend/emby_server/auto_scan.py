@@ -5,7 +5,7 @@
 但"什么时候扫"由用户决定（管理后台「元数据与刮削」分组里的「定时扫描」
 开关 + 时间），而不是写死一个定时任务——这是产品原则"功能只提供能力"的体现。
 
-- 配置（SystemConfig）：``auto_scan_enabled``（"1"/"0"，默认 "0" 关）、
+- 配置（SystemConfig）：``auto_scan_enabled``（"1"/"0"，默认 "1" 开）、
   ``auto_scan_time``（"HH:MM"，默认 "03:00"，服务器本地时间）、
   ``auto_scan_last_run``（"YYYY-MM-DD"，同一天不重复跑）。
 - 调度：EM（面板）启动时 ``start_auto_scan_scheduler()`` 起一个 daemon 线程，
@@ -76,16 +76,16 @@ def get_config(db: Session) -> dict:
 def save_config(db: Session, enabled: bool, time_str: str) -> dict:
     """保存定时扫描配置；时间格式非法时抛 ValueError（接口转 400）。
 
-    A 类开关摘面板（2026-10-21）：``enabled`` 参数仅为兼容旧调用方保留，
-    不再落库——开关改走 env AUTO_SCAN_ENABLED（缺省=开，见 get_config）。
+    开关落库（DB 行 > 代码缺省 "1"）。缺省保持开，与 #1163 对齐的生产现值一致。
     """
     parsed = parse_time(time_str)
     if parsed is None:
         raise ValueError(f"时间格式非法，应为 HH:MM（24 小时制），收到：{time_str!r}")
     store.write_values(
         db,
-        {CONFIG_TIME: parsed},
+        {CONFIG_ENABLED: "1" if enabled else "0", CONFIG_TIME: parsed},
         {
+            CONFIG_ENABLED: "定时扫描开关（元数据与刮削）",
             CONFIG_TIME: "定时扫描每天执行时间（HH:MM，服务器本地时间）",
         },
     )

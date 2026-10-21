@@ -831,8 +831,8 @@ def save_config(db: Session, enabled: bool, interval: int,
 
     """
     minutes = _parse_interval(str(interval))
-    # A 类开关摘面板（2026-10-21）：enabled 参数仅为兼容旧调用方保留，不再落库
-    # ——开关改走 env CHASE_NEW_ENABLED（缺省=开，见 get_config）。
+    # 开关落库（DB 行 > 代码缺省 "1"）。缺省保持开，与 #1163 对齐的生产现值一致。
+    _set_config(db, CONFIG_ENABLED, "1" if enabled else "0")
     _set_config(db, CONFIG_INTERVAL, str(minutes))
     if libraries is not None and not excluded:
         included = set(_parse_ids(libraries))

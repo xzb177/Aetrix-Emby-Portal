@@ -376,11 +376,18 @@ def get_unified_fallback_config(db) -> dict:
 
 
 def save_unified_fallback_config(db, enabled: bool) -> dict:
-    """管理后台用（兼容保留）：A 类开关摘面板（2026-10-21）后不再落库。
+    """管理后台用：保存兜底链路统一开关（写 SystemConfig，60 秒内热生效）。
 
-    开关改走 env ENRICH_UNIFIED_FALLBACK（缺省已对齐生产现值=开）；
-    本函数只回读当前生效配置，``enabled`` 参数忽略。
+    缺省保持 "1"（开），与 #1163 对齐的生产现值一致；有库行时以库行为准。
     """
+    from backend.integrations import store
+    store.write_values(
+        db,
+        {CFG_UNIFIED_FALLBACK: "1" if enabled else "0"},
+        {CFG_UNIFIED_FALLBACK:
+         "兜底链路统一开关（链路规划 Step 2）：一个豆瓣入口，rich→多源引擎"},
+    )
+    db.commit()
     return get_unified_fallback_config(db)
 
 
@@ -497,10 +504,10 @@ def get_episode_night_config(db) -> dict:
 
 def save_episode_night_config(db, enabled: bool, start: str, end: str,
                             tz: Optional[str] = None) -> dict:
-    """管理后台用：保存单集夜间刮削的窗口配置（写 SystemConfig，60 秒内热生效）。
+    """管理后台用：保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效）。
 
-    A 类开关摘面板（2026-10-21）：``enabled`` 参数仅为兼容旧调用方保留，
-    不再落库——开关改走 env ENRICH_EPISODE_NIGHT_ONLY（缺省=开）。
+    开关落库。未设环境变量时读库，无行则缺省开（NIGHT_ONLY_DEFAULT）。
+    环境变量 ENRICH_EPISODE_NIGHT_ONLY 仍优先（摘面板前的读口径）。
     """
     from backend.integrations import store
     start = _parse_hhmm(start, NIGHT_START_DEFAULT)
@@ -508,10 +515,12 @@ def save_episode_night_config(db, enabled: bool, start: str, end: str,
     tz = _parse_tz(tz, NIGHT_TZ_DEFAULT).key
     store.write_values(
         db,
-        {CFG_NIGHT_START: start,
+        {CFG_EPISODE_NIGHT_ONLY: "1" if enabled else "0",
+         CFG_NIGHT_START: start,
          CFG_NIGHT_END: end,
          CFG_NIGHT_TZ: tz},
-        {CFG_NIGHT_START: "夜间窗口开始（HH:MM，按 enrich_night_tz 时区解释）",
+        {CFG_EPISODE_NIGHT_ONLY: "单集仅夜间刮削开关（白天只刮顶层条目）",
+         CFG_NIGHT_START: "夜间窗口开始（HH:MM，按 enrich_night_tz 时区解释）",
          CFG_NIGHT_END: "夜间窗口结束（HH:MM，按 enrich_night_tz 时区解释）",
          CFG_NIGHT_TZ: "夜间窗口时区（IANA 时区名，如 Asia/Shanghai）"},
     )
@@ -613,11 +622,6 @@ def save_episode_field_config(db, title: bool, overview: bool, still: bool) -> d
 ENRICH_WORKERS_ENV = "ENRICH_WORKERS"
 ENRICH_BATCH_ENV = "ENRICH_BATCH"
 ENRICH_TMDB_BATCH_ENV = "ENRICH_TMDB_BATCH"
-# A 类摘面板（2026-10-21）：4 个布尔调优开关的 env 名（= 配置键大写）
-ENRICH_EPISODE_QUOTA_MODE_ENV = "ENRICH_EPISODE_QUOTA_MODE"
-ENRICH_NONE_AUTO_RESCHEDULE_ENV = "ENRICH_NONE_AUTO_RESCHEDULE"
-ENRICH_FAILED_AUTO_RESCHEDULE_ENV = "ENRICH_FAILED_AUTO_RESCHEDULE"
-ENRICH_FIELD_COMPLETENESS_ENV = "ENRICH_FIELD_COMPLETENESS"
 ENRICH_MAX_ATTEMPTS_ENV = "ENRICH_MAX_ATTEMPTS"
 ENRICH_RETRY_BASE_SEC_ENV = "ENRICH_RETRY_BASE_SEC"
 ENRICH_CLAIM_LEASE_SEC_ENV = "ENRICH_CLAIM_LEASE_SEC"
@@ -627,37 +631,32 @@ CFG_ENRICH_BATCH = "enrich_batch"
 # Batch 2（2026-10-19 开关清理）：回到 env-only 的键——面板写入路径已摘，
 # 代码只读环境变量（缺省=生产现值：workers 8 / batch 200），DB 旧行忽略。
 _ENRICH_TUNING_ENV_ONLY_KEYS = frozenset({CFG_ENRICH_WORKERS, CFG_ENRICH_BATCH})
-# A 类开关摘面板（2026-10-21）：刮削调优里的 5 个布尔开关同批转 env-only——
-# 只读 env（ENRICH_TMDB_BATCH / ENRICH_EPISODE_QUOTA_MODE /
-# ENRICH_NONE_AUTO_RESCHEDULE / ENRICH_FAILED_AUTO_RESCHEDULE /
-# ENRICH_FIELD_COMPLETENESS，未设时用 specs 缺省），DB 旧行忽略、面板写入忽略。
-# 缺省已逐键对齐生产现值（5 键均=开）。env 名常量见下方 ENRICH_*_ENV。
+# enrich_tmdb_batch 仍是 env-only（面板只读）。配额制 / none 回捞 / failed 回捞 /
+# 字段级完成口径四个开关留在面板：DB 行 > 代码缺省 "1"（缺省保持开）。
 CFG_ENRICH_TMDB_BATCH = "enrich_tmdb_batch"
 CFG_ENRICH_MAX_ATTEMPTS = "enrich_max_attempts"
 CFG_ENRICH_RETRY_BASE_SEC = "enrich_retry_base_sec"
 CFG_ENRICH_CLAIM_LEASE_SEC = "enrich_claim_lease_sec"
-# Step 3 的配额制开关（flag，env-only，2026-10-21 起默认 1=开）；Step 4 的占坑位仍只可配不接入
+# Step 3 的配额制开关（flag，面板可写，默认 1=开）；Step 4 的占坑位仍只可配不接入
 CFG_ENRICH_EPISODE_DAY_QUOTA = "enrich_episode_day_quota"
 CFG_ENRICH_EPISODE_QUOTA_MODE = "enrich_episode_quota_mode"
 CFG_ENRICH_NONE_RESCHEDULE_DAYS = "enrich_none_reschedule_days"
-# Step 4 的 feature flag：none 定时自动回捞开关（env-only，2026-10-21 起默认 1=开；关时行为与 Step 4 前一致）
+# Step 4 的 feature flag：none 定时自动回捞开关（面板可写，默认 1=开；关时行为与 Step 4 前一致）
 CFG_ENRICH_NONE_AUTO_RESCHEDULE = "enrich_none_auto_reschedule"
 # Step 4 补强：none 自动回捞轮数上限（默认 6 轮；达上限的行永久保留 done，
 # 不再被 janitor 自动捞回——防搜不中的冷门条目无限空转吃 TMDB 配额）
 CFG_ENRICH_NONE_MAX_RESCHEDULES = "enrich_none_max_reschedules"
-# WS1/T1 的 feature flag：failed 定时自动回捞开关（env-only，2026-10-21 起默认 1=开；关时行为与改前完全一致）
+# WS1/T1 的 feature flag：failed 定时自动回捞开关（面板可写，默认 1=开；关时行为与改前完全一致）
 CFG_ENRICH_FAILED_AUTO_RESCHEDULE = "enrich_failed_auto_reschedule"
 CFG_ENRICH_FAILED_RESCHEDULE_DAYS = "enrich_failed_reschedule_days"
 CFG_ENRICH_FAILED_MAX_RESCHEDULES = "enrich_failed_max_reschedules"
-# Step 5 的 feature flag：字段级完成口径开关（env-only，2026-10-21 起默认 1=开；关时口径=旧"三者有其二"）
+# Step 5 的 feature flag：字段级完成口径开关（面板可写，默认 1=开；关时口径=旧"三者有其二"）
 CFG_ENRICH_FIELD_COMPLETENESS = "enrich_field_completeness"
 
-# A 类摘面板（2026-10-21）：5 个布尔调优开关并入 env-only 集合
-# （CFG 常量定义在本行上方才齐全，故在此处并集扩展）。
+# enrich_tmdb_batch 定义在上方赋值之后，这里并入 env-only。
+# 另外四个布尔开关留在面板，不进这个集合。
 _ENRICH_TUNING_ENV_ONLY_KEYS = _ENRICH_TUNING_ENV_ONLY_KEYS | frozenset({
-    CFG_ENRICH_TMDB_BATCH, CFG_ENRICH_EPISODE_QUOTA_MODE,
-    CFG_ENRICH_NONE_AUTO_RESCHEDULE, CFG_ENRICH_FAILED_AUTO_RESCHEDULE,
-    CFG_ENRICH_FIELD_COMPLETENESS,
+    CFG_ENRICH_TMDB_BATCH,
 })
 
 # (config_key, env_name, 默认值str, 类型, 下限钳制, 中文说明, 是否重启生效)
@@ -678,7 +677,7 @@ _ENRICH_TUNING_SPECS = [
      "认领租约（秒）：worker 停滞超过租约即视为死亡、由 janitor 回收", False),
     (CFG_ENRICH_EPISODE_DAY_QUOTA, None, "2000", "int", 0,
      "白天单集日配额（配额制开时生效；夜间窗口内不限；设 0 = 回到夜间禁令制）", False),
-    (CFG_ENRICH_EPISODE_QUOTA_MODE, ENRICH_EPISODE_QUOTA_MODE_ENV, "1", "flag1", None,
+    (CFG_ENRICH_EPISODE_QUOTA_MODE, None, "1", "flag1", None,
      "单集认领配额制开关（链路规划 Step 3）：1=白天单集按日配额认领（夜间不限；默认），"
      "0=夜间窗口禁令制（行为与 Step 3 前一致）", False),
     (CFG_ENRICH_NONE_RESCHEDULE_DAYS, None, "14", "int", 1,
@@ -689,7 +688,7 @@ _ENRICH_TUNING_SPECS = [
      "【Step 4】none 条目自动回捞轮数上限：达到上限的行永久保留 done，"
      "不再被 janitor 自动捞回（防搜不中的冷门条目无限空转；6 轮 × 14 天"
      "约覆盖 12 周，TMDB 滞后上架的大多数能赶上）", False),
-    (CFG_ENRICH_NONE_AUTO_RESCHEDULE, ENRICH_NONE_AUTO_RESCHEDULE_ENV, "1", "flag1", None,
+    (CFG_ENRICH_NONE_AUTO_RESCHEDULE, None, "1", "flag1", None,
      "【Step 4】none 条目定时自动回捞开关：1=开（超周期的 done+none 剧/电影由 "
      "janitor 按最旧优先、单轮 2000 条翻回 pending；资料不全 5 次后转 done+none "
      "而非 failed；默认），0=关（行为与 Step 4 前完全一致）", False),
@@ -699,11 +698,11 @@ _ENRICH_TUNING_SPECS = [
     (CFG_ENRICH_FAILED_MAX_RESCHEDULES, None, "3", "int", 1,
      "【WS1/T1】failed 条目自动回捞轮数上限：达到上限的行永久保留 failed，"
      "不再被 janitor 自动捞回（防异常风暴无限空转）", False),
-    (CFG_ENRICH_FAILED_AUTO_RESCHEDULE, ENRICH_FAILED_AUTO_RESCHEDULE_ENV, "1", "flag1", None,
+    (CFG_ENRICH_FAILED_AUTO_RESCHEDULE, None, "1", "flag1", None,
      "【WS1/T1】failed 条目定时自动回捞开关：1=开（超周期的 failed 由 janitor "
      "按最旧优先、单轮 2000 条翻回 pending，轮数上限见上一项；默认），0=关（"
      "行为与改前完全一致——failed 只进不出）", False),
-    (CFG_ENRICH_FIELD_COMPLETENESS, ENRICH_FIELD_COMPLETENESS_ENV, "1", "flag1", None,
+    (CFG_ENRICH_FIELD_COMPLETENESS, None, "1", "flag1", None,
      "【Step 5】完成口径字段级开关：1=开（核心字段齐但缺简介/类型/演员的条目"
      "进低优先级队列补一轮，priority=-10，天然排后；每条最多多跑一轮，补完"
      "无论拿到与否直接终态化，不反复重刮；默认），0=关（口径=旧的"
@@ -3028,7 +3027,7 @@ def _claim_group_atomic(db, q, now) -> list:
 # 单集认领配额制（链路规划 Step 3）
 #
 # 夜间窗口从"禁令制"改"配额制"：
-#   - feature flag enrich_episode_quota_mode（env ENRICH_EPISODE_QUOTA_MODE，2026-10-21 起默认 1=开）。
+#   - feature flag enrich_episode_quota_mode（面板可写，缺省 1=开）。
 #     关时下面逻辑全部短路，行为与 Step 3 前逐字节一致。
 #   - flag 开 + 夜间窗口内（或夜间开关根本没开）→ 单集不限量；
 #   - flag 开 + 窗口外 → 当天已认领 episode 条数 < 有效配额时才认领单集；
@@ -3588,7 +3587,7 @@ def _none_reschedulable_query(db, cutoff, max_rounds):
 def enrich_none_auto_reschedule(db) -> int:
     """Step 4 定时回捞：超周期的 done+none 条目翻回 pending（janitor 每轮顺带）。
 
-    - 总开关：``enrich_none_auto_reschedule``（env ENRICH_NONE_AUTO_RESCHEDULE，2026-10-21 起默认 1=开）。
+    - 总开关：``enrich_none_auto_reschedule``（面板可写，缺省 1=开）。
       关时直接返回 0，行为与 Step 4 前完全一致。
     - 超期口径：上次回捞（或首次终态化）时间超过
       ``enrich_none_reschedule_days``（默认 14 天）。「上次回捞时间」复用现有
@@ -3671,7 +3670,7 @@ def _failed_reschedulable_query(db, cutoff, max_rounds):
 def enrich_failed_auto_reschedule(db) -> int:
     """WS1/T1 定时回捞：超周期的 failed 条目翻回 pending（janitor 每轮顺带）。
 
-    - 总开关：``enrich_failed_auto_reschedule``（env ENRICH_FAILED_AUTO_RESCHEDULE，2026-10-21 起默认 1=开）。
+    - 总开关：``enrich_failed_auto_reschedule``（面板可写，缺省 1=开）。
       关时直接返回 0，行为与改前完全一致（failed 只进不出）。
     - failed 语义是「异常」不是「数据缺失」：轮数上限
       ``enrich_failed_max_reschedules``（默认 3）封顶，达上限的行永久保留

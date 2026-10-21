@@ -585,10 +585,11 @@ function restoreDefaultMirror() {
 const meta = ref<MetaSourcesConfig | null>(null)
 const metaLoading = ref(false)
 const metaSaving = ref(false)
-/** 本地草稿：开关、顺序、限速在改完点「保存」之前不动后端 */
-// 2026-10-21 摘面板：总开关/中文优先/TMDB-miss 兜底/逐源开关改由服务端
-// 配置控制，本页只编辑源顺序与逐源限速（逐源是否参与只读展示）。
+/** 本地草稿：总开关、TMDB-miss 兜底、顺序、限速在改完点「保存」之前不动后端。
+ * 中文优先与逐源开关仍走服务端 env，本页只读展示。 */
 const metaDraft = reactive({
+  enabled: false,
+  tmdb_miss_fallback: false,
   order: [] as string[],
   rates: {} as Record<string, number>,
 })
@@ -601,11 +602,12 @@ const sourceKeyTests = ref<Record<string, Array<{ index: number; masked: string;
 const doubanCfg = ref<DoubanConfig | null>(null)
 const doubanLoading = ref(false)
 const doubanSaving = ref(false)
-const doubanDraft = reactive({ min_interval: 1.0 })
+const doubanDraft = reactive({ enabled: false, min_interval: 1.0 })
 
 const doubanDirty = computed(() => {
   if (!doubanCfg.value) return false
   return (
+    doubanCfg.value.enabled !== doubanDraft.enabled ||
     Number(doubanCfg.value.min_interval) !== Number(doubanDraft.min_interval)
   )
 })
@@ -615,6 +617,7 @@ async function loadDouban() {
   try {
     const cfg = await fetchDoubanConfig()
     doubanCfg.value = cfg
+    doubanDraft.enabled = cfg.enabled
     doubanDraft.min_interval = Number(cfg.min_interval) || 1.0
   } catch {
     doubanCfg.value = null
@@ -626,8 +629,9 @@ async function loadDouban() {
 async function saveDouban() {
   doubanSaving.value = true
   try {
-    const cfg = await saveDoubanConfig(Number(doubanDraft.min_interval) || 1.0)
+    const cfg = await saveDoubanConfig(doubanDraft.enabled, Number(doubanDraft.min_interval) || 1.0)
     doubanCfg.value = cfg
+    doubanDraft.enabled = cfg.enabled
     doubanDraft.min_interval = Number(cfg.min_interval) || 1.0
     ElMessage.success('豆瓣配置已保存')
   } catch {
@@ -816,6 +820,8 @@ const metaDirty = computed(() => {
   const cfg = meta.value
   if (!cfg) return false
   return (
+    cfg.enabled !== metaDraft.enabled ||
+    cfg.tmdb_miss_fallback !== metaDraft.tmdb_miss_fallback ||
     cfg.order.join(',') !== metaDraft.order.join(',') ||
     metaRows.value.some((r) => {
       const rate = metaDraft.rates[r.id] ?? r.rate
@@ -831,6 +837,8 @@ async function loadMeta() {
   try {
     const cfg = await fetchMetaSources()
     meta.value = cfg
+    metaDraft.enabled = cfg.enabled
+    metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
     metaDraft.order = [...cfg.order]
     metaDraft.rates = {}
   } catch {
@@ -848,12 +856,16 @@ async function saveMeta() {
   metaSaving.value = true
   try {
     const cfg = await saveMetaSources({
+      enabled: metaDraft.enabled,
+      tmdb_miss_fallback: metaDraft.tmdb_miss_fallback,
       order: [...metaDraft.order],
       rates: Object.fromEntries(
         metaRows.value.map((r) => [r.id, Number(metaDraft.rates[r.id] ?? r.rate)]),
       ),
     })
     meta.value = cfg
+    metaDraft.enabled = cfg.enabled
+    metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
     metaDraft.order = [...cfg.order]
     metaDraft.rates = {}
     ElMessage.success(
@@ -872,6 +884,8 @@ async function saveMeta() {
 function revertMeta() {
   const cfg = meta.value
   if (!cfg) return
+  metaDraft.enabled = cfg.enabled
+  metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
   metaDraft.order = [...cfg.order]
   metaDraft.rates = {}
 }
@@ -1144,6 +1158,34 @@ onMounted(() => {
             下面的配置不会生效，但可以先配好、随时打开。
           </el-alert>
 
+          <div class="ms-switches">
+            <div class="ms-switch">
+              <el-switch v-model="metaDraft.enabled" />
+              <div>
+                <div class="ms-switch-title">启用多源补全</div>
+                <div class="ms-hint">关 = 走原来的单源链路；开 = TMDB 没命中时按顺序问其它源。默认开启</div>
+              </div>
+            </div>
+            <div class="ms-switch ms-switch-sub">
+              <el-switch
+                v-model="metaDraft.tmdb_miss_fallback"
+                :disabled="!metaDraft.enabled"
+              />
+              <div>
+                <div class="ms-switch-title">
+                  TMDB 未命中时走多源兜底
+                  <span class="ms-sub-badge">总开关的子项</span>
+                </div>
+                <div class="ms-hint">
+                  现在起降级为总开关的子项：统一兜底链（一个豆瓣入口）
+                  启用时由总开关统一控制，不再独立门控；保留键值用于回滚。
+                  未启用时保持原语义——只对<strong>中文标题的剧 / 电影</strong>生效：
+                  TMDB 搜过无命中、豆瓣也没兜上时，按上面的顺序再问其它源。默认开启
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="ms-sub"><ListOrdered :size="13" style="margin-right: 4px" />源优先级</div>
           <p class="ms-hint">
             越靠前越先问。默认把中文源（Bangumi / 豆瓣）放前面治中文命中率，
@@ -1383,7 +1425,7 @@ onMounted(() => {
         </template>
       </SectionCard>
 
-      <!-- 0.5 豆瓣（可选）：中文兜底源，默认关闭。Batch D：限流降级从媒体库页收拢到此 -->
+      <!-- 0.5 豆瓣（可选）：中文兜底源，默认开启。Batch D：限流降级从媒体库页收拢到此 -->
       <SectionCard id="card-douban" class="ms-card" title="豆瓣（可选）" :icon="BookOpen">
         <template #actions>
           <div class="ms-facts">
@@ -1394,7 +1436,7 @@ onMounted(() => {
           </div>
         </template>
         <p class="ms-hint">
-          豆瓣是<strong>可选</strong>的中文兜底源，<strong>默认关闭</strong>。
+          豆瓣是<strong>可选</strong>的中文兜底源，<strong>默认开启</strong>。
           开启后，<strong>仅在 TMDB 未命中时</strong>对含中文的标题走豆瓣搜索：
           搜中则取详情（标题 / 简介 / 评分 / 海报）写库，没搜中则保持原状。
           关闭时不发出任何豆瓣请求，中文标题也直接走 TMDB。
@@ -1416,6 +1458,15 @@ onMounted(() => {
           </template>
         </EmptyState>
         <template v-else>
+          <div class="ms-switches">
+            <div class="ms-switch">
+              <el-switch v-model="doubanDraft.enabled" />
+              <div>
+                <div class="ms-switch-title">启用豆瓣中文兜底</div>
+                <div class="ms-hint">关 = 不打任何豆瓣请求，中文标题也直接走 TMDB。默认开启</div>
+              </div>
+            </div>
+          </div>
           <div class="ms-field">
             <span class="ms-field-label">请求间隔（秒）</span>
             <el-input-number

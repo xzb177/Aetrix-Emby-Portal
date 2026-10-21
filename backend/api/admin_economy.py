@@ -207,12 +207,13 @@ ECONOMY_CONFIG_KEYS = {
     "max_pending_orders_per_user": "int",
     "invitation_reward_points": "int",
     "invitation_invitee_reward_points": "int", "invitation_rebate_percent": "int",
-    # 推广奖励（v2.44.0）：类型/金额/天数；总开关 2026-10-21 摘面板（env 治理）
+    # 推广奖励（v2.44.0）：总开关缺省开（金额/天数为 0 时不发放），留在面板落库
+    "promotion_reward_enabled": "bool",
     "promotion_reward_type": "str",
     "promotion_reward_amount": "int",
     "promotion_reward_days": "int",
-    # 流媒体加速（v2.49.0）：加速域名，点保存即生效（域名守卫侧最长 60 秒）；
-    # 总开关 2026-10-21 摘面板（env STREAM_ACCEL_ENABLED 治理，缺省开）
+    # 流媒体加速（v2.49.0）：总开关缺省开，留在面板落库；域名点保存即生效
+    "stream_accel_enabled": "bool",
     "stream_accel_domain": "str",
     # 活力值（C1 竞品借鉴）：上限/每日扣减/观影阈值/积分兑换率/观影奖励/每日获取上限/归档钳制，全部可配
     "vitality_max": "int", "vitality_daily_cost": "int",
@@ -340,7 +341,7 @@ def economy_update_settings(
         if "stream_accel_enabled" in request.settings:
             _enabled = _final("stream_accel_enabled").strip().lower() in ("1", "true", "yes", "on")
         else:
-            # 2026-10-21 摘面板：开关不再经面板写，按生效值（含 env 接管）判定
+            # 开关留在面板：请求没带时按库里的生效值（无行则缺省开）判定域名联动
             from backend.integrations import store as _store
             _enabled = _store.get_value(db, "stream_accel_enabled", "true").strip().lower() in ("1", "true", "yes", "on")
         if _enabled:

@@ -63,22 +63,36 @@ def _clear_tuning_cache():
 
 
 def _set_flag(value: str):
-    # 2026-10-21 A 类摘面板：该 flag 已 env-only（DB 行不再生效），
-    # 改经 env ENRICH_FIELD_COMPLETENESS 控制；fixture teardown 会清掉
-    import os
-    os.environ["ENRICH_FIELD_COMPLETENESS"] = value
+    _clear_tuning_cache()
+    db = SessionLocal()
+    try:
+        store.write_values(db, {FLAG: value}, {FLAG: "Step 5 测试开关"})
+        db.commit()
+    finally:
+        db.close()
+    store.invalidate(FLAG)
+    _clear_tuning_cache()
+
+
+def _drop_flag():
+    from backend import models as _models
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == FLAG
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    store.invalidate(FLAG)
     _clear_tuning_cache()
 
 
 @pytest.fixture(autouse=True)
 def _flag_off():
-    # 每个测试前把 flag 经 env 复位为 0（保证本文件内默认关）；
-    # teardown 删除 env（恢复真实世界缺省=开），防泄漏到其它测试文件。
-    import os
     _set_flag("0")
     yield
-    os.environ.pop("ENRICH_FIELD_COMPLETENESS", None)
-    _clear_tuning_cache()
+    _drop_flag()
 
 
 @pytest.fixture()

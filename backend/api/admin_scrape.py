@@ -1888,19 +1888,21 @@ def save_douban_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存豆瓣配置（保存即热生效）"""
+    """保存豆瓣配置（保存即热生效）。
+
+    总开关落库（DB 行 > 代码缺省 "1"）。缺省保持开，与 #1163 对齐的生产现值一致。
+    """
     from backend.emby_server import douban as _dbn
     from backend.integrations import store
-    # A 类开关摘面板（2026-10-21）：总开关不再落库（body.enabled 仅为兼容
-    # 旧前端保留）——改走 env DOUBAN_ENABLED（缺省=开，已对齐生产现值）；
-    # 本端点只保存请求最小间隔。返回的 enabled 为当前生效值。
     iv = max(0.0, float(body.min_interval or 0))
     store.write_values(
         db,
         {
+            _dbn.DOUBAN_ENABLED_KEY: "1" if body.enabled else "0",
             _dbn.DOUBAN_RATE_KEY: str(iv),
         },
         {
+            _dbn.DOUBAN_ENABLED_KEY: "豆瓣中文兜底总开关",
             _dbn.DOUBAN_RATE_KEY: "豆瓣请求最小间隔秒数",
         },
     )

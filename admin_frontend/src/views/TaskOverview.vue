@@ -16,6 +16,9 @@ import {
   fetchTasksOverview,
   pauseProbe,
   resumeProbe,
+  saveAutoScan,
+  saveChaseNew,
+  saveEnrichEpisodeNight,
   type TaskCard,
   type TaskCardStatus,
 } from '@/api/admin'
@@ -81,18 +84,32 @@ async function load(silent = false) {
   }
 }
 
-/** 开关切换（目前仅探测的暂停/恢复）：失败弹回原状态。
- * 定时扫描/单集夜间/追新三个功能开关已于 2026-10-21 摘面板（服务端配置
- * 控制），任务卡只展示状态、不再提供开关。 */
+/** 开关切换：失败弹回原状态。 */
 async function onToggle(card: TaskCard, val: boolean) {
   const key = card.key
   const sw = card.switch
   if (!sw) return
+  const keep = (sw.keep ?? {}) as Record<string, unknown>
   toggling.value[key] = true
   try {
-    if (key === 'probe') {
+    if (key === 'scan') {
+      await saveAutoScan(val, String(keep.time ?? '03:00'))
+    } else if (key === 'probe') {
       if (val) await resumeProbe()
       else await pauseProbe()
+    } else if (key === 'enrich') {
+      await saveEnrichEpisodeNight(
+        val,
+        String(keep.night_start ?? '02:00'),
+        String(keep.night_end ?? '06:00'),
+        String(keep.night_tz ?? 'Asia/Shanghai'),
+      )
+    } else if (key === 'chase_new') {
+      await saveChaseNew(
+        val,
+        Number(keep.interval ?? 30),
+        String(keep.excluded ?? ''),
+      )
     }
     ElMessage.success(`${card.title}已${val ? '开启' : '关闭'}`)
     await load(true)

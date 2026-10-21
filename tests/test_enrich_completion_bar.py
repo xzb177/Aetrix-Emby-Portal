@@ -74,16 +74,25 @@ BASE_OK = {"ok": True, "poster": None, "fanart": None, "external_subs": [],
 
 def test_completes_when_title_and_year_present_but_no_overview(db, monkeypatch):
     """核心复现：生产那 571 条——标题+年份齐、简介空，应判 done 而不是永久 pending"""
-    # 2026-10-21 A 类开关摘面板：字段级完成口径缺省改为开（=生产现值），
-    # 本用例验证的是「字段级口径关」时的核心完成线，按 env 显式关闭
-    monkeypatch.setenv("ENRICH_FIELD_COMPLETENESS", "0")
-    # 刮削调优有 60s 进程缓存：清掉，让本用例的 env 立即生效
-    monkeypatch.setitem(enrich_worker._enrich_tuning_cache, "cfg", None)
-    it = _item(db, name="007：女王密使", production_year=1969,
-               tmdb_id="1642")
-    _apply(db, it, dict(BASE_OK))
-    assert it.enrich_status == "done", (
-        "标题+年份+tmdb_id 齐了却因简介为空退回 pending，会让队列永不下降")
+    # 字段级完成口径缺省开。本用例验证「字段级口径关」时的核心完成线，
+    # 经保存路径关掉，结束时删掉这行。
+    enrich_worker.save_enrich_tuning_config(db, {
+        enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS: False,
+    })
+    try:
+        it = _item(db, name="007：女王密使", production_year=1969,
+                   tmdb_id="1642")
+        _apply(db, it, dict(BASE_OK))
+        assert it.enrich_status == "done", (
+            "标题+年份+tmdb_id 齐了却因简介为空退回 pending，会让队列永不下降")
+    finally:
+        from backend import models as _models
+        from backend.integrations import store as _store
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS
+        ).delete(synchronize_session=False)
+        db.commit()
+        _store.invalidate(enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS)
 
 
 def test_completes_with_title_year_and_poster(db):

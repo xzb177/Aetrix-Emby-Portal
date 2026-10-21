@@ -36,7 +36,6 @@ from backend.emby_server import enrich_worker
 init_db()
 
 _NIGHT_ENVS = (
-    enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV,
     enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
     enrich_worker.ENRICH_NIGHT_START_ENV,
     enrich_worker.ENRICH_NIGHT_END_ENV,
@@ -61,6 +60,10 @@ def db():
             synchronize_session=False)
         s.commit()
         yield s
+        s.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key.in_(_QUOTA_KEYS)).delete(
+            synchronize_session=False)
+        s.commit()
     finally:
         s.close()
 
@@ -98,16 +101,10 @@ def _make_item(db, **kw):
 
 def _enable_quota_mode(db, quota=2000, night_only=True, in_window=False,
                        monkeypatch=None):
-    """配额制：flag 开 + 配额 + 夜间开关状态；窗口判断按 in_window 固定。
-
-    2026-10-21 A 类摘面板：配额制 flag 已 env-only，改经 env 打开
-    （日配额仍走保存路径）。"""
-    if monkeypatch is not None:
-        monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV, "1")
-    else:
-        os.environ[enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV] = "1"
+    """配额制：flag 开 + 配额 + 夜间开关状态；窗口判断按 in_window 固定。"""
     enrich_worker.save_enrich_tuning_config(
-        db, {enrich_worker.CFG_ENRICH_EPISODE_DAY_QUOTA: quota})
+        db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: True,
+             enrich_worker.CFG_ENRICH_EPISODE_DAY_QUOTA: quota})
     if monkeypatch is not None:
         monkeypatch.setattr(
             enrich_worker, "_in_night_window", lambda now, s, e, tz=None: in_window)
@@ -130,8 +127,9 @@ def _mark_claimed_today(db, n):
 def test_flag_off_daytime_still_bans_episodes(db, monkeypatch):
     """flag 关 + 夜间开关开 + 窗口外 → 白天单集被跳过（禁令制，旧行为）。
 
-    配额制 flag 2026-10-21 起缺省=开（生产现值），本例显式经 env 关掉。"""
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV, "0")
+    配额制缺省已是开，本例经保存路径显式关掉。"""
+    enrich_worker.save_enrich_tuning_config(
+        db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: False})
     monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
     monkeypatch.setattr(
         enrich_worker, "_in_night_window", lambda now, s, e, tz=None: False)
@@ -254,10 +252,8 @@ def test_used_today_counts_only_today(db):
 
 # ---------- flag 存取：布尔归一化（Step 1 latent bug 回归） ----------
 
-def test_quota_mode_flag_save_bool_roundtrip(db, monkeypatch):
-    """2026-10-21 A 类摘面板：配额制 flag 已 env-only——保存路径传 True/
-    False 都不再落库，生效值只看 env（未设=缺省开）；env=0 时保存 True
-    也读到关。"""
+def test_quota_mode_flag_save_bool_roundtrip(db):
+    """布尔经保存路径落库：True 读到开，False 读到关。"""
     enrich_worker.save_enrich_tuning_config(
         db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: True})
     assert enrich_worker.enrich_tuning_value(
@@ -265,31 +261,16 @@ def test_quota_mode_flag_save_bool_roundtrip(db, monkeypatch):
     enrich_worker.save_enrich_tuning_config(
         db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: False})
     assert enrich_worker.enrich_tuning_value(
-        enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE, db) is True
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV, "0")
-    for cache in (enrich_worker._enrich_tuning_cache,):
-        cache["at"] = 0.0
-        cache["cfg"] = None
-    enrich_worker.save_enrich_tuning_config(
-        db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: True})
-    assert enrich_worker.enrich_tuning_value(
         enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE, db) is False
 
 
-def test_quota_mode_flag_save_string_roundtrip(db, monkeypatch):
-    """字符串 "1"/"0" 经保存路径同样被忽略（env-only）；env 本身的
-    "1"/"0" 解析保持原口径。"""
+def test_quota_mode_flag_save_string_roundtrip(db):
+    """字符串 "1"/"0" 存取保持原口径。"""
+    enrich_worker.save_enrich_tuning_config(
+        db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: "1"})
+    assert enrich_worker.enrich_tuning_value(
+        enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE, db) is True
     enrich_worker.save_enrich_tuning_config(
         db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: "0"})
     assert enrich_worker.enrich_tuning_value(
-        enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE, db) is True
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV, "0")
-    enrich_worker._enrich_tuning_cache["at"] = 0.0
-    enrich_worker._enrich_tuning_cache["cfg"] = None
-    assert enrich_worker.enrich_tuning_value(
         enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE, db) is False
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV, "1")
-    enrich_worker._enrich_tuning_cache["at"] = 0.0
-    enrich_worker._enrich_tuning_cache["cfg"] = None
-    assert enrich_worker.enrich_tuning_value(
-        enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE, db) is True

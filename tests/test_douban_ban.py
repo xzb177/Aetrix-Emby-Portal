@@ -370,15 +370,19 @@ def test_apply_backfill_round_no_hit_goes_none(monkeypatch):
 
 
 def test_backfill_round_uses_douban_after_unban(monkeypatch):
-    # 字段级完成口径 2026-10-21 起缺省开：开着时本例条目缺字段会先回捞
-    # 一轮而不是 done；本例只验豆瓣解封补刮，显式关掉并清调优缓存
-    monkeypatch.setenv("ENRICH_FIELD_COMPLETENESS", "0")
-    enrich_worker._enrich_tuning_cache["at"] = 0.0
-    enrich_worker._enrich_tuning_cache["cfg"] = None
     """解封后补刮轮真的会跑豆瓣兜底：-20 条目经 pre→post→apply，豆瓣命中
-    落库、状态 done、优先级清零。"""
+    落库、状态 done、优先级清零。
+
+    字段级完成口径缺省开：开着时本例条目缺字段会先回捞一轮而不是 done；
+    本例只验豆瓣解封补刮，经保存路径关掉。
+    """
+    from backend import models as _models
+    from backend.integrations import store as _store
     db = SessionLocal()
     try:
+        enrich_worker.save_enrich_tuning_config(db, {
+            enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS: False,
+        })
         item = _series(
             db, name="解封补刮",
             enrich_priority=enrich_worker.ENRICH_PRIORITY_DOUBAN_BACKFILL)
@@ -415,4 +419,11 @@ def test_backfill_round_uses_douban_after_unban(monkeypatch):
         assert fresh.enrich_priority == 0
         assert fresh.metadata_source != "none"
     finally:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS
+        ).delete(synchronize_session=False)
+        db.commit()
+        _store.invalidate(enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS)
+        enrich_worker._enrich_tuning_cache["at"] = 0.0
+        enrich_worker._enrich_tuning_cache["cfg"] = None
         db.close()

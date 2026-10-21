@@ -60,8 +60,22 @@ def _env():
     store.invalidate(dbn.DOUBAN_ENABLED_KEY)
     yield
     dbn.reset_ban()
+    _drop_switch_rows(dbn.DOUBAN_ENABLED_KEY)
     store.invalidate(FLAG)
-    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
+
+
+def _drop_switch_rows(*keys):
+    from backend import models as _models
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key.in_(keys)
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    for key in keys:
+        store.invalidate(key)
 
 
 def _flag_on():

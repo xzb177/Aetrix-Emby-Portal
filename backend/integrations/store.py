@@ -35,11 +35,19 @@ DEFAULTS_SENTINEL = object()
 
 # ---------------------------------------------------------------------------
 # A 类开关摘面板（2026-10-21 施工，用户 2026-10-19「功能开关从简」原则）：
-# 以下 59 个键管理后台不再提供开关（UI 与各面板写路径已同步摘除），
-# 只收「缺省=开」的功能开关与调优开关；缺省=关的功能开关（签到 / 群发言积分 /
-# 备用元数据 / 系统告警 / 访问守卫两项 / 后台登录人机验证 / 邮件 / 代理 /
-# 媒体库默认范围）按服主 2026-10-21 口径保留在面板、照旧落库，不在本表。
-# 取值口径全项目统一为：
+# 以下 46 个键管理后台不再提供开关（UI 与各面板写路径已同步摘除）。
+# 不在本表、仍走「DB 行 > 代码缺省」的键：
+# - 缺省=关、留在面板（服主 2026-10-21 口径）：签到 / 群发言积分 / 系统告警 /
+#   访问守卫两项 / 后台登录人机验证 / 邮件 / 代理 / 媒体库默认范围；
+#   备用元数据 altmeta_enabled 缺省关、向来无面板，只认数据库。
+# - 缺省=开、服主 2026-10-21 13:53 要求留在面板（代码缺省保持 #1163 的开，
+#   读口径回到摘面板前）：auto_scan_enabled / chase_new_enabled / douban_enabled /
+#   promotion_reward_enabled / stream_accel_enabled / meta_sources_enabled /
+#   meta_sources_tmdb_miss_fallback / enrich_episode_night_only /
+#   enrich_unified_fallback / enrich_episode_quota_mode /
+#   enrich_none_auto_reschedule / enrich_failed_auto_reschedule /
+#   enrich_field_completeness。
+# 本表取值口径：
 #   env（键名大写；显式设置且非空即接管，含 "0"/"false"）
 #   > SystemConfig 存量行（摘除前的生产现值，行不删、原样保留作次级来源）
 #   > 各消费方的代码缺省（已逐键对齐生产现值，摘除后行为零变化）。
@@ -48,7 +56,6 @@ DEFAULTS_SENTINEL = object()
 # ---------------------------------------------------------------------------
 PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("ai_enabled", "AI_ENABLED"),
-    ("auto_scan_enabled", "AUTO_SCAN_ENABLED"),
     ("backup_enabled", "BACKUP_ENABLED"),
     ("bot_cmd_bind", "BOT_CMD_BIND"),
     ("bot_cmd_checkin", "BOT_CMD_CHECKIN"),
@@ -58,18 +65,10 @@ PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("bot_redpacket_enabled", "BOT_REDPACKET_ENABLED"),
     ("captcha_protect_login", "CAPTCHA_PROTECT_LOGIN"),
     ("captcha_protect_register", "CAPTCHA_PROTECT_REGISTER"),
-    ("chase_new_enabled", "CHASE_NEW_ENABLED"),
     ("coupon_enabled", "COUPON_ENABLED"),
-    ("douban_enabled", "DOUBAN_ENABLED"),
     ("drive_direct_play_enabled", "DRIVE_DIRECT_PLAY_ENABLED"),
     ("enrich_douban_ban_downgrade", "ENRICH_DOUBAN_BAN_DOWNGRADE"),
-    ("enrich_episode_night_only", "ENRICH_EPISODE_NIGHT_ONLY"),
-    ("enrich_episode_quota_mode", "ENRICH_EPISODE_QUOTA_MODE"),
-    ("enrich_failed_auto_reschedule", "ENRICH_FAILED_AUTO_RESCHEDULE"),
-    ("enrich_field_completeness", "ENRICH_FIELD_COMPLETENESS"),
-    ("enrich_none_auto_reschedule", "ENRICH_NONE_AUTO_RESCHEDULE"),
     ("enrich_tmdb_batch", "ENRICH_TMDB_BATCH"),
-    ("enrich_unified_fallback", "ENRICH_UNIFIED_FALLBACK"),
     ("exchange_enabled", "EXCHANGE_ENABLED"),
     ("expiry_reminder_enabled", "EXPIRY_REMINDER_ENABLED"),
     ("hotlink_protection_enabled", "HOTLINK_PROTECTION_ENABLED"),
@@ -89,20 +88,16 @@ PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("meta_source_enabled_tmdb", "META_SOURCE_ENABLED_TMDB"),
     ("meta_source_enabled_tvdb", "META_SOURCE_ENABLED_TVDB"),
     ("meta_source_enabled_tvmaze", "META_SOURCE_ENABLED_TVMAZE"),
-    ("meta_sources_enabled", "META_SOURCES_ENABLED"),
     ("meta_sources_prefer_chinese", "META_SOURCES_PREFER_CHINESE"),
-    ("meta_sources_tmdb_miss_fallback", "META_SOURCES_TMDB_MISS_FALLBACK"),
     ("new_media_notify_enabled", "NEW_MEDIA_NOTIFY_ENABLED"),
     ("playback_transcode_enabled", "PLAYBACK_TRANSCODE_ENABLED"),
     ("points_audit_enabled", "POINTS_AUDIT_ENABLED"),
     ("points_transfer_enabled", "POINTS_TRANSFER_ENABLED"),
-    ("promotion_reward_enabled", "PROMOTION_REWARD_ENABLED"),
     ("redpacket_refund_enabled", "REDPACKET_REFUND_ENABLED"),
     ("register_ratelimit_enabled", "REGISTER_RATELIMIT_ENABLED"),
     ("series_merge_enabled", "SERIES_MERGE_ENABLED"),
     ("series_merge_loose_enabled", "SERIES_MERGE_LOOSE_ENABLED"),
     ("series_merge_require_year", "SERIES_MERGE_REQUIRE_YEAR"),
-    ("stream_accel_enabled", "STREAM_ACCEL_ENABLED"),
     ("teaser_enabled", "TEASER_ENABLED"),
     ("tg_bind_guide_enabled", "TG_BIND_GUIDE_ENABLED"),
     ("vitality_enabled", "VITALITY_ENABLED"),
