@@ -1,5 +1,5 @@
 <!-- 去看：底部（窄屏）/ 轻菜单（宽屏）选 Rex、SenPlayer、VidHub。
-     名字与接线员「一键导入」按钮相同（账号卡 import_schemes 的键）。
+     senplayer 这个键在按钮和提示里显示成 SenPlayer。
      选中后 location.href = scheme，不打开浏览器，也不带具体条目。 -->
 <template>
   <Teleport to="body">

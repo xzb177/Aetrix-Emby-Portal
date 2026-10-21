@@ -27,8 +27,8 @@
           </div>
           <div v-if="streak > 0 || showWorldSwitch" class="v4-loghead-actions">
             <div v-if="streak > 0" class="v4-fire" :class="{ 'm-only': showWorldSwitch }">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
-            <!-- 经典视图回世界：v-if 即 homeIsDesktop（≥1024）&& 已登录 && classic。
-                 手机不进 DOM（底栏已有「世界」）。不能靠 .m-only：它在 <1280 是显示，只在 ≥1280 display:none。 -->
+            <!-- 经典视图回世界：已登录 && classic，不看宽度。
+                 ≥1280 问候和连签另挂 .m-only，交给问候卡；按钮自己留在这一行。 -->
             <button
               v-if="showWorldSwitch"
               type="button"
@@ -125,6 +125,7 @@
                 :busy="unsealingIds.has(String(p.id))"
                 :variant="isWide ? 'cover' : 'parcel'"
                 @unseal="onUnseal"
+                @play="openParcelPicker(p)"
               />
             </div>
             <button v-if="isWide && shelfHasOverflow" type="button" class="d3-arrow r" aria-label="货架向右滚动" @click="scrollShelf(1)">›</button>
@@ -178,6 +179,7 @@
       <!-- 底部全宽：媒体库速览带（桌面专属） -->
       <LibraryBand v-if="isWide" />
     </div>
+    <PlayerSchemeSheet v-model:open="parcelPickerOpen" :title="parcelPickerTitle" />
     </template>
   </div>
 </template>
@@ -189,6 +191,7 @@ import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import ParcelBox from '@/components/panel/ParcelBox.vue'
+import PlayerSchemeSheet from '@/components/panel/PlayerSchemeSheet.vue'
 import EcgCanvas from '@/components/panel/EcgCanvas.vue'
 import PulseActivity from '@/components/panel/PulseActivity.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
@@ -210,14 +213,13 @@ const user = useUserStore()
 // 首页形态：桌面世界视图（探险地图）/ 经典视图切换（偏好按用户存 localStorage）
 const {
   worldActive: homeWorldActive,
-  isDesktop: homeIsDesktop,
   mode: homeMode,
   setMode: setHomeMode,
 } = useHomeViewMode()
-// 日志头「探险世界」：仅 ≥1024 且已登录、当前是经典视图才进入 DOM。
-// homeIsDesktop 来自 matchMedia('(min-width: 1024px)')，手机为 false，节点直接不渲染。
+// 日志头「探险世界」：已登录且当前是经典视图就进 DOM，手机和桌面都有。
+// 世界模式整页换成 WorldHome，这里不会渲染。
 const showWorldSwitch = computed(
-  () => homeIsDesktop.value && user.isLoggedIn && homeMode.value === 'classic',
+  () => user.isLoggedIn && homeMode.value === 'classic',
 )
 const { today, parcels, pulse, letter, feed } = storeToRefs(panel)
 // 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
@@ -503,6 +505,13 @@ watch(parcelList, () => {
 }, { immediate: true, flush: 'post' })
 /* 拆封中 id 集合：busy 与请求生命周期绑定（请求完成/失败才释放），替代旧的固定 600ms 释放 */
 const unsealingIds = ref(new Set<string>())
+const parcelPickerOpen = ref(false)
+const parcelPickerTitle = ref('')
+function openParcelPicker(p: ParcelItem) {
+  parcelPickerTitle.value = p.name || '神秘包裹'
+  parcelPickerOpen.value = true
+}
+
 async function onUnseal(id: string | number) {
   const key = String(id)
   if (unsealingIds.value.has(key)) return
@@ -693,38 +702,54 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   flex-shrink: 0;
 }
 
-/* 连签胶囊与「探险世界」并排。火标的上边距改由这一行承担，避免胶囊自身 margin 把行撑开。 */
+/* 连签胶囊与「探险世界」并排。火标的上边距改由这一行承担，避免胶囊自身 margin 把行撑开。
+   窄屏不换行：360/390 上连签和按钮停在同一行，按钮不另起一行。 */
 .v4-loghead-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
   margin-top: 10px;
+  max-width: 100%;
+  min-width: 0;
 }
 .v4-loghead-actions .v4-fire {
   margin-top: 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-/* 经典视图 → 探险世界。显隐只由模板 v-if（showWorldSwitch / homeIsDesktop）决定。
-   跟连签胶囊同一族的描边胶囊：墨线 + 纸底，不要实心主按钮，也不要彩色地图符号。 */
+/* 经典视图 → 探险世界。显隐只由模板 v-if（已登录且 classic）决定。
+   描边胶囊：墨线 + 透明底，不要实心深青，也不要地图符号。手机和桌面同一套。 */
 .v4-world-switch {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-sizing: border-box;
   margin: 0;
+  min-height: 44px;
   background: transparent;
   color: var(--ink, #2A2620);
   border: 1.5px solid var(--ink, #2A2620);
   border-radius: var(--paper-r-2xl, 20px);
-  padding: 7px 12px;
+  padding: 0 12px;
   font-family: inherit;
   font-size: 12px;
   font-weight: 500;
   line-height: 1.2;
   letter-spacing: 0.04em;
+  white-space: nowrap;
   cursor: pointer;
 }
 .v4-world-switch:hover {
   background: var(--ink, #2A2620);
   color: var(--paper, #F6F1E7);
+}
+.v4-world-switch:focus-visible {
+  outline: 2px solid var(--ink, #2A2620);
+  outline-offset: 2px;
 }
 /* ≥1280 日志正文已被 .m-only 收起，头上只剩这颗胶囊：去掉手机日志头的粗底边和内边距 */
 @media (min-width: 1280px) {

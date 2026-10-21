@@ -60,19 +60,20 @@
       >去看 →</button>
     </div>
   </div>
-  <PlayerSchemeSheet v-model:open="pickerOpen" :title="parcel.name || '神秘包裹'" />
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { ParcelItem } from '@/composables/usePanelApi'
-import PlayerSchemeSheet from '@/components/panel/PlayerSchemeSheet.vue'
 
 const props = withDefaults(
   defineProps<{ parcel: ParcelItem; busy?: boolean; variant?: 'parcel' | 'cover' }>(),
   { variant: 'parcel' },
 )
-const emit = defineEmits<{ (e: 'unseal', id: string | number): void }>()
+const emit = defineEmits<{
+  (e: 'unseal', id: string | number): void
+  (e: 'play'): void
+}>()
 
 const isOpen = computed(() => !!props.parcel.unsealed)
 /** 封面变体没有单独的「去看」按钮，整卡就是按钮；面单变体开封后由脚上的按钮承接。 */
@@ -81,8 +82,6 @@ const coverLabel = computed(() => {
   if (!isOpen.value) return '待拆封存，点击开封'
   return `用播放器打开${props.parcel.name || '神秘包裹'}`
 })
-const pickerOpen = ref(false)
-
 /* P-3 拆封仪式感：开封瞬间给印章一个「盖下去」的动效（一次性，动画结束自清） */
 const justOpened = ref(false)
 watch(isOpen, (now, before) => {
@@ -165,7 +164,7 @@ const arrivedText = computed(() => {
 })
 
 function openPicker() {
-  pickerOpen.value = true
+  emit('play')
 }
 
 function onKey(e: KeyboardEvent) {
