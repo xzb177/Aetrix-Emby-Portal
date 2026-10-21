@@ -14,7 +14,7 @@
           <span class="pill" v-if="streak > 0">🔥 连签 {{ streak }} 天<template v-if="streakHint"> · {{ streakHint }}</template></span>
           <button type="button" class="pill amber" v-if="pointsText" @click="goLedger">🪙 {{ pointsText }} 积分</button>
           <span class="pill" v-if="memberInfo"><span class="lv">Lv.{{ memberInfo.level }}</span> {{ memberInfo.level_name }}</span>
-          <button type="button" class="avatar" @click="goAccount" aria-label="我的账号">{{ avatarChar }}</button>
+          <button v-if="variant !== 'game'" type="button" class="avatar" @click="goAccount" aria-label="我的账号">{{ avatarChar }}</button>
         </div>
       </div>
 
