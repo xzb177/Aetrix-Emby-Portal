@@ -247,8 +247,8 @@ PlaybackInfo 的 `DirectStreamUrl` / `DirectPlayUrl` / `TranscodingUrl`、字幕
 `DeliveryUrl`、本服务自己的图片绝对地址、HLS 切片，以及 `System/Info` 的
 `LocalAddress` / `WanAddress`。顺序是：
 
-1. `EMBY_PUBLIC_URL` 已设置，并且字面以 `http://` 或 `https://` 开头：用它。不看 Host，不看转发头。尾斜杠会去掉；默认端口 `:443` / `:80` 会去掉。
-2. 否则，仅当这次 TCP 直连方允许采信转发头时，用 `X-Forwarded-Proto` 与 `X-Forwarded-Host` 的第一段（协议只接受 `http` / `https`）。允许的直连方是：`TRUSTED_PROXIES`（默认含回环 `127.0.0.0/8` 与 `::1`）、`FORWARDED_ALLOW_IPS`（精确 IP、CIDR，或显式 `*`），以及「可信代理已经把真实 IP 写回请求」的那次请求（`CloudflareIPMiddleware` 在确认对端可信并还原出地址后留下标记；还原之后 `scope["client"]` 已是用户 IP，不能再拿它判断这次头可不可信）。
+1. `EMBY_PUBLIC_URL` 已设置，并且字面以 `http://` 或 `https://` 开头：用它。不看 Host，不看转发头。只填根地址，不要带路径或查询串；代码不剥路径，`https://media.example.com/emby` 会原样留在基址里，后面再拼 `/emby/Videos/...`。尾斜杠会去掉；默认端口 `:443` / `:80` 会去掉。
+2. 否则，仅当这次 TCP 直连方允许采信转发头时，用 `X-Forwarded-Proto` 与 `X-Forwarded-Host` 的第一段（协议只接受 `http` / `https`）。允许的直连方是：`TRUSTED_PROXIES`（默认含回环 `127.0.0.0/8` 与 `::1`）、`FORWARDED_ALLOW_IPS` 里的精确 IP 或 CIDR，以及「可信代理已经把真实 IP 写回请求」的那次请求（`CloudflareIPMiddleware` 在确认对端可信并还原出地址后留下标记；还原之后 `scope["client"]` 已是用户 IP，不能再拿它判断这次头可不可信）。`*` 不在这份名单里，见下面「反代后面」。
 3. 否则用请求自己的地址（`request.base_url`）。
 
 内置的 Cloudflare 回源网段参与「真实 IP 可不可信」（`_peer_trusted`），不因此让播放地址采信 `X-Forwarded-Proto`。`流媒体加速` 开着或 `TRUST_CF_IP=true` 时，中间件才会在这些网段上还原真实 IP，还原成功后这次请求的转发头才按上一条第 2 步处理。
@@ -268,7 +268,7 @@ PlaybackInfo 的 `DirectStreamUrl` / `DirectPlayUrl` / `TranscodingUrl`、字幕
 
 #### 域名 + https（推荐）
 
-在 `.env` 写上客户端真正访问的根（不要带 `/emby`）：
+在 `.env` 写上客户端真正访问的根。只填根，不要带路径（不要带 `/emby`，也不要带查询串）：
 
 ```bash
 EMBY_PUBLIC_URL=https://media.example.com
@@ -278,7 +278,7 @@ EMBY_PUBLIC_URL=https://media.example.com
 
 #### 反代后面、不设 `EMBY_PUBLIC_URL`
 
-TLS 在 Nginx 或 Cloudflare 终结时，uvicorn 默认不采信非回环对端的 `X-Forwarded-Proto`（`FORWARDED_ALLOW_IPS` 未设置时只信 `127.0.0.1`）。容器里看到的直连方是 Docker 网关或旁边的容器，不在默认名单里，PlaybackInfo 就按 `request.base_url` 拼出 `http://…`。80 端口若只做 301 到 https，不跟随 301 的客户端（例如 SenPlayer）的 `/stream` 到不了本服务。
+TLS 在 Nginx 或 Cloudflare 终结时，启动器传给 uvicorn 的信任名单在 `FORWARDED_ALLOW_IPS` 未设置时只有回环 `127.0.0.1` 与 `::1`。容器里看到的直连方是 Docker 网关或旁边的容器，不在默认名单里，PlaybackInfo 就按 `request.base_url` 拼出 `http://…`。80 端口若只做 301 到 https，不跟随 301 的客户端（例如 SenPlayer）的 `/stream` 到不了本服务。
 
 把反代所在网段写进 `TRUSTED_PROXIES` 或 `FORWARDED_ALLOW_IPS`，并让那一跳带上 `X-Forwarded-Proto: https` 与对外 Host。网段先查再填，不要假设每台机器都是下面的示例：
 
@@ -294,7 +294,7 @@ TRUSTED_PROXIES=172.18.0.0/16
 
 本机 Nginx 反代到 `127.0.0.1` 时，回环默认就在 `TRUSTED_PROXIES` 里，不必再加网段。仓库自带的 `docker/nginx.conf` 只 `listen 80`，并且 `proxy_set_header X-Forwarded-Proto $scheme`：网页容器自己看到的是 http，它转发给 API 的协议头也是 http。前面的 Cloudflare 或宿主机 Nginx 即使已经终结了 TLS，这一跳也会把协议盖成 http。这种拓扑下，信任 `172.18.0.0/16` 得到的播放地址仍是 `http://` 加当时的 Host。要 https 播放地址，设置上一节的 `EMBY_PUBLIC_URL`。
 
-不要把 `FORWARDED_ALLOW_IPS` 设成 `*`。那样任何一个直连方伪造的协议头和 Host 都会被采信。`TRUSTED_PROXIES` 不把 `*` 当成「全部信任」，写错的网段会被忽略。
+不要写 `FORWARDED_ALLOW_IPS=*`。`*` 会让任意一个直连方用 `X-Forwarded-For` 伪造客户端 IP：限流按这个 IP 分桶，按客户端 IP 做的访问判断也会跟着被绕过；公开地址的 scheme / Host 同样能被改掉。现在 `*` 在域名守卫、公开 URL 和启动器里都被丢掉，每个进程只记一次 WARNING。`serve.py`、`serve_emby.py`、`backend/main.py`、`emby_api/main.py` 都把去掉 `*` 之后的名单显式传给 uvicorn，不让 uvicorn 自己读到环境变量里的 `*`。这一项只剩 `*`、或根本没写时，uvicorn 只信回环 `127.0.0.1,::1`。同一行里的精确 IP 和 CIDR 仍然有效。`TRUSTED_PROXIES`（默认回环）和内置 Cloudflare 网段不靠这个 `*`，写 `*` 也不会取消它们。写错的网段会被忽略，不能用 `*` 代替网段。
 
 #### 局域网 IP 直连
 
@@ -303,10 +303,10 @@ TRUSTED_PROXIES=172.18.0.0/16
 #### 校验与缓存
 
 - 启动时若设置了 `EMBY_PUBLIC_URL`，却不是以 `https://` 开头（大小写不敏感），打一条 WARNING，服务照常启动。`http://…` 运行时仍然使用，不会因为这条警告被丢掉。字面不是 `http://` 或 `https://` 开头的值，运行时当成没配。未设置不告警。
-- 域名守卫开着时（管理后台「流媒体加速」写了加速域名，或环境变量 `ENFORCE_DOMAIN` 非空），启动再检查主机是否在这份允许名单里；不在只打 WARNING，地址照样下发。真正的拦截在请求上：Host 不在名单里返回 403，所以客户端要连的域名得在这份名单里。这是域名守卫，不是播放防盗链的 Referer 白名单；Referer 白名单不参与 `EMBY_PUBLIC_URL` 的启动检查，空名单等于不检查 Referer。
+- 域名守卫的允许名单分两步：管理后台「流媒体加速」开关打开 **并且** 填了加速域名时，用那份域名；这两项没有同时满足时，才看环境变量 `ENFORCE_DOMAIN`。两边都空则守卫关闭，请求原样放行。名单非空时，启动再检查 `EMBY_PUBLIC_URL` 的主机在不在里面；不在只打 WARNING，地址照样下发。真正的拦截在请求上：Host 不在名单里返回 403，所以客户端要连的域名得在这份名单里。这是域名守卫，不是播放防盗链的 Referer 白名单；Referer 白名单不参与 `EMBY_PUBLIC_URL` 的启动检查，空名单等于不检查 Referer。
 - PlaybackInfo 把 MediaSource（含字幕 `DeliveryUrl` 里的基址）缓存 `PLAYBACKINFO_CACHE_TTL` 秒，默认 300，设 `0` 关闭。缓存键是条目、用户、设备 profile 指纹和码率上限，不含对外基址。`DirectStreamUrl` / `DirectPlayUrl` / `TranscodingUrl` 在读缓存之后按**当次**基址重拼，改地址并重启后这三条下次请求就是新基址。字幕 `DeliveryUrl` 留在缓存里的那份仍可能是旧基址，要等这次 TTL 结束。Redis 里的缓存跨重启还在。
 
-分离部署时 EA 才是播放器连接的进程，上面的变量写在 EA 那份环境里。账号卡仍由面板按服解析。详见 [EA 网关部署 · 客户端接入](./deploy-ea.md#6-客户端接入)。
+分离部署时，播放地址在出协议的进程上算，那是 EA；账号卡在 EM 进程里算（`portal.resolve_emby_base_url` 读到 `EMBY_PUBLIC_URL` 的那一步）。EA 不挂门户路由（`emby_api/main.py` 只挂协议面、搜索、挂载体检和节点身份），所以 EA 环境里的 `EMBY_PUBLIC_URL` 不会出现在账号卡上。两边都要设这个变量：Compose 的同一份 `.env` 会同时进 EM 和 EA；两台机器则各写一份，都只填根地址。EM 上若已经填了「服对外地址」或「服务入口」，账号卡可以不靠 EM 的这个变量；EA 的播放地址仍然要靠 EA 自己的 `EMBY_PUBLIC_URL`（或 EA 前面那一跳可信反代的转发头）。详见 [EA 网关部署 · 客户端接入](./deploy-ea.md#6-客户端接入)。
 
 ## 10. rclone 挂载（可选）
 

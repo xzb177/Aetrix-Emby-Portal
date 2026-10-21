@@ -81,7 +81,7 @@ cp env.example .env
 | --- | --- | --- |
 | `SECRET_KEY` | **生产必填** | JWT 签名密钥。不设置会用临时随机密钥，**每次重启所有人登录态失效**；分离部署时 EA 必须用**同一个值**。生成：`python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
 | `PORT` / `HOST` | 建议 | 面板端口，默认 `8000` / `0.0.0.0` |
-| `EMBY_PUBLIC_URL` | 上公网建议 | 播放地址的对外基址；分离部署时写在 **EA** 上，填 EA 的 https 根。账号卡先用「服管理」的对外地址，其次「服务器」页的服务入口，默认服这两项都空才用到本变量，再空则用当前请求的地址。局域网直连可以不设。详见 [Docker 部署 · 客户端对外地址](./deploy-docker.md#客户端对外地址) |
+| `EMBY_PUBLIC_URL` | 上公网建议 | 只填根地址（`https://media.example.com`，不要带路径）。分离部署时 **EM 和 EA 都要设**：播放地址用 EA 进程里的值；账号卡在 EM 进程里算（EA 不挂门户路由），默认服在「服对外地址」和「服务入口」都空时才用到 EM 的这个变量。这两项填了，账号卡可以不靠 EM 的环境变量，EA 的播放地址仍要 EA 自己的值。局域网直连可以不设。详见 [Docker 部署 · 客户端对外地址](./deploy-docker.md#客户端对外地址) |
 | `EMBY_API_PUBLIC_URL` | 分离模式建议 | 与 `EMBY_PUBLIC_URL` 同为客户端地址，用于 EM 的"请去连 EA"指引 |
 | `EM_PANEL_URL` | 可选 | EM 自己的面板地址；EA 启动时探测它是否可达 |
 | `CORS_ORIGINS` | **生产必填** | 逗号分隔的具体域名。留空等于允许所有源 |
