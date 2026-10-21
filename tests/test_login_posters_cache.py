@@ -45,12 +45,16 @@ class FakeDB:
 
 def _reset_cache():
     """每个测试前把全局缓存重置为从未刷新状态。"""
-    site._login_posters_cache = {"at": None, "items": [], "emby_base_url": ""}
+    site._login_posters_cache = {"entries": {}}
 
 
 class LoginPostersCacheTest(unittest.TestCase):
     def setUp(self):
-        # 重置缓存，避免测试间相互污染
+        # 重置缓存，避免测试间相互污染。清掉公开地址，保证 request=None 的缓存键是空串。
+        self._saved_env = {}
+        for key in ("EMBY_PUBLIC_URL", "FORWARDED_ALLOW_IPS", "TRUSTED_PROXIES"):
+            self._saved_env[key] = os.environ.get(key)
+            os.environ.pop(key, None)
         _reset_cache()
         # 兜底：确保锁在测试开始前是空闲的
         if site._login_posters_lock.locked():
@@ -67,6 +71,11 @@ class LoginPostersCacheTest(unittest.TestCase):
             except RuntimeError:
                 pass
         _reset_cache()
+        for key, value in self._saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_never_refreshed_queries_db_even_when_monotonic_small(self):
         """at=None 表示从未刷新，即使 monotonic 很小也必须查 DB。"""
@@ -121,9 +130,13 @@ class LoginPostersCacheTest(unittest.TestCase):
         stale_items = [{"id": 1, "name": "poster-1"}]
         # 预置一份已过期的旧缓存（at = now - 700 > TTL 600）
         site._login_posters_cache = {
-            "at": 1000.0 - 700,
-            "items": stale_items,
-            "emby_base_url": "http://emby.local",
+            "entries": {
+                "": {
+                    "at": 1000.0 - 700,
+                    "items": stale_items,
+                    "emby_base_url": "http://emby.local",
+                }
+            }
         }
         db = FakeDB(rows=[{"id": 2, "name": "poster-2"}])
 
@@ -143,6 +156,58 @@ class LoginPostersCacheTest(unittest.TestCase):
         # 未命中 DB，直接返回旧缓存
         self.assertEqual(db.query_obj.all_calls, 0)
         self.assertEqual(result["items"], stale_items)
+        self.assertEqual(result["emby_base_url"], "http://emby.local")
+
+    def test_cache_keyed_by_client_base_does_not_share_host(self):
+        """不同请求 Host 不能共用同一条 emby_base_url。"""
+        keys = ("EMBY_PUBLIC_URL", "FORWARDED_ALLOW_IPS", "TRUSTED_PROXIES")
+        saved = {key: os.environ.get(key) for key in keys}
+        for key in keys:
+            os.environ.pop(key, None)
+        try:
+            row = type("Row", (), {"guid": "a" * 32, "name": "海报"})()
+            db = FakeDB(rows=[row])
+
+            def resolve(_db, _realm, request):
+                return f"http://{request.headers['host']}"
+
+            with mock.patch.object(site.time, "monotonic", return_value=1000.0), \
+                    mock.patch.object(site.realms, "active_realm_id", return_value=None), \
+                    mock.patch.object(site, "resolve_emby_base_url", side_effect=resolve):
+                first = site.get_login_posters(db=db, request=_http_request("192.0.2.10"))
+                second = site.get_login_posters(db=db, request=_http_request("192.0.2.20"))
+                again = site.get_login_posters(db=db, request=_http_request("192.0.2.10"))
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(first["emby_base_url"], "http://192.0.2.10")
+        self.assertEqual(second["emby_base_url"], "http://192.0.2.20")
+        self.assertEqual(again["emby_base_url"], "http://192.0.2.10")
+        self.assertEqual(first["items"], [{"id": "a" * 32, "name": "海报"}])
+        # 两个基址各查一次库；回到第一个基址命中自己的桶
+        self.assertEqual(db.query_obj.all_calls, 2)
+
+
+def _http_request(host: str):
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/site/login-posters",
+        "raw_path": b"/api/site/login-posters",
+        "query_string": b"",
+        "headers": [(b"host", host.encode())],
+        "scheme": "http",
+        "server": ("127.0.0.1", 80),
+        "client": ("203.0.113.9", 50000),
+        "root_path": "",
+    }
+    return Request(scope)
 
 
 if __name__ == "__main__":

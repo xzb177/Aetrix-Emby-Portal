@@ -47,6 +47,7 @@ from backend.emby_server import items_list_cache as _list_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_sign
+from backend.emby_server.public_url import client_base_url
 from backend.emby_server.query_params import qlimit, qstart
 from backend.emby_server import soft_delete
 from backend.emby_server import title_beautify
@@ -143,29 +144,20 @@ def _iso(dt) -> str:
 
 
 def _base_url(request: Request) -> str:
-    return str(request.base_url).rstrip("/")
+    """客户端绝对 URL 的基址（播放、字幕、图片、HLS 共用）。
+
+    见 ``public_url.client_base_url``：优先 ``EMBY_PUBLIC_URL``，否则只在可信反代上
+    采信 ``X-Forwarded-Proto`` / ``X-Forwarded-Host``，最后才是 ``request.base_url``。
+    以前直接回显 ``request.base_url``：TLS 在 nginx 终结、对端是 Docker 网关时 scheme
+    仍是 http，SenPlayer 不跟随 80→443 的 301，DirectStreamUrl 永远打不到本服务；
+    Host 还可能是源站 IP。
+    """
+    return client_base_url(request)
 
 
 def _public_base_url(request: Request) -> str:
-    """System/Info 专用的对外地址：干净的公开地址，不带反代内部痕迹。
-
-    优先 EMBY_PUBLIC_URL 环境变量（部署方明确配的对外地址）；没配时按反代头
-    还原：协议取 X-Forwarded-Proto、主机取 X-Forwarded-Host/Host，并去掉与
-    协议对应的默认端口（https:443 / http:80，非默认端口保留）。
-    以前这里直接回显 request.base_url：TLS 在反代终结时 scheme 变 http、
-    客户端 Host 带 :443 时端口也被原样带回，严格客户端（ddPlayer 等）
-    会因为地址对不上而拒收整份服务器信息。
-    """
-    env = os.getenv("EMBY_PUBLIC_URL", "").rstrip("/")
-    if env.startswith(("http://", "https://")):
-        return env
-    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
-    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
-    if not host:
-        return str(request.base_url).rstrip("/")
-    if (proto == "https" and host.endswith(":443")) or (proto == "http" and host.endswith(":80")):
-        host = host.rsplit(":", 1)[0]
-    return f"{proto}://{host}"
+    """System/Info 的 LocalAddress / WanAddress。与 ``_base_url`` 同一套基址。"""
+    return client_base_url(request)
 
 
 def _visible_in_session(it: em.MediaItem) -> bool:
