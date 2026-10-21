@@ -1,6 +1,6 @@
 <template>
   <div class="v4-scope">
-    <!-- 探险世界：已登录且选了世界视图时，首页整屏是探险地图（手机与桌面同一张图，窄屏在地图组件里横滑）；经典视图走下面原有版式 -->
+    <!-- 探险世界：仅桌面（≥1024）且已登录、选了世界视图时，首页整屏是探险地图。手机发现页始终是下面的经典内容，地图在 /game。 -->
     <WorldHome v-if="homeWorldActive" />
     <template v-else>
     <!-- C档第2批：≥1280px 三栏仪表盘（d3-root 网格）；<1280px 保持现行单栏，移动端零变化 -->
@@ -27,13 +27,12 @@
           </div>
           <div v-if="streak > 0 || showWorldSwitch" class="v4-loghead-actions">
             <div v-if="streak > 0" class="v4-fire" :class="{ 'm-only': showWorldSwitch }">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
-            <!-- 经典视图回世界：已登录 && classic，不看宽度。
-                 ≥1280 问候和连签另挂 .m-only，交给问候卡；按钮自己留在这一行。 -->
+            <!-- 回世界：桌面切世界首页；手机去 /game，不把发现页换成同一张地图。 -->
             <button
               v-if="showWorldSwitch"
               type="button"
               class="v4-world-switch"
-              @click="setHomeMode('world')"
+              @click="goWorld"
             >探险世界</button>
           </div>
         </header>
@@ -203,7 +202,7 @@ import ContinueWatch from '@/components/panel/ContinueWatch.vue'
 import DiscoveryRightRail from '@/components/panel/DiscoveryRightRail.vue'
 import LibraryBand from '@/components/panel/LibraryBand.vue'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useServerCards } from '@/composables/useServerCards'
 import { useServerCardPrefs } from '@/composables/useServerCardPrefs'
 import { humanizeError, type FeedItem, type ParcelItem, type ParcelsData } from '@/composables/usePanelApi'
@@ -213,14 +212,22 @@ const user = useUserStore()
 // 首页形态：桌面世界视图（探险地图）/ 经典视图切换（偏好按用户存 localStorage）
 const {
   worldActive: homeWorldActive,
+  isDesktop: homeIsDesktop,
   mode: homeMode,
   setMode: setHomeMode,
 } = useHomeViewMode()
-// 日志头「探险世界」：已登录且当前是经典视图就进 DOM，手机和桌面都有。
-// 世界模式整页换成 WorldHome，这里不会渲染。
-const showWorldSwitch = computed(
-  () => user.isLoggedIn && homeMode.value === 'classic',
-)
+const router = useRouter()
+// 桌面：只在经典视图显示，点了切回世界首页。
+// 手机：发现页不消费世界模式，按钮一直在，点了去 /game。
+const showWorldSwitch = computed(() => {
+  if (!user.isLoggedIn) return false
+  if (!homeIsDesktop.value) return true
+  return homeMode.value === 'classic'
+})
+function goWorld() {
+  setHomeMode('world')
+  if (!homeIsDesktop.value) void router.push('/game')
+}
 const { today, parcels, pulse, letter, feed } = storeToRefs(panel)
 // 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
 const serverCards = useServerCards()
