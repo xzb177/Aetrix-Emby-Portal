@@ -2492,6 +2492,14 @@ def admin_delete_item(item_id: str, staff: models.WebUser = Depends(require_staf
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="条目不存在")
+    # 管理端删条目时播放侧可能还记着「文件存在」（正缓存最长 600s，且在 EA 进程）。
+    # 先摘缓存再删行；失败不影响删除本身。
+    if (getattr(item, "drive_file_id", None) or "").strip():
+        try:
+            from backend.emby_server.api import invalidate_drive_exists_for_item
+            invalidate_drive_exists_for_item(db, item)
+        except Exception:  # noqa: BLE001
+            logger.debug("删除条目时失效 Drive 存在性缓存失败", exc_info=True)
     db.query(em.MediaStream).filter(em.MediaStream.item_id == item.id).delete()
     db.query(em.UserMediaData).filter(em.UserMediaData.item_id == item.id).delete()
     db.delete(item)
