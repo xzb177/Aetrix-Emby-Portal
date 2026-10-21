@@ -543,6 +543,11 @@ class NotificationService:
                 models.SystemConfig.key.like('email_%')
             ).all()
             email_config = {cfg.key: cfg.value for cfg in email_configs}
+            # A 类开关摘面板（2026-10-21）：email_enabled 走统一口径 env > DB 存量行
+            from backend.integrations.store import switch_env_value
+            _env_email = switch_env_value('email_enabled')
+            if _env_email is not None:
+                email_config['email_enabled'] = _env_email.strip().lower()
 
             if email_config.get('email_enabled') == 'true':
                 self.channels['email'] = EmailChannel(

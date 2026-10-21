@@ -160,7 +160,8 @@ class CouponUpdateRequest(BaseModel):
 
 
 class CouponSettingsRequest(BaseModel):
-    enabled: bool
+    # 2026-10-21 摘面板后前端只发 reserve_hours；enabled 仅兼容旧调用方，可省略
+    enabled: Optional[bool] = None
     # 超时未支付的预订多久自动关单并还额度（小时，0 = 不自动清理）
     reserve_hours: Optional[int] = Field(default=None, ge=0, le=720)
 
