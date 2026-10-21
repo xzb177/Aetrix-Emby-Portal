@@ -7,25 +7,35 @@
     <div ref="d3Root" class="v4-page d3-root">
       <!-- 左栏：问候 / 锚点 / 服务器卡 / 收藏家入口 / 脉搏摘要 / 每日一封 -->
       <div class="d3-left">
-        <!-- 日志头：问候 + 封存件数 + 连签（移动端专属；桌面由问候卡接管） -->
-        <header class="v4-loghead m-only d3-ord-loghead" aria-live="polite">
-          <span class="v4-stamp">探险日志 · {{ dateLabel }}</span>
-          <h1>{{ greeting }}，{{ nickname }}</h1>
-          <p v-if="today.data && parcelTotal !== null && parcelTotal > 0">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
-          <p v-else-if="today.data && parcelTotal === 0">今天暂时没有新封存，明天再来看看。</p>
-          <div v-else-if="today.loading" class="v4-skeleton" aria-hidden="true" style="height:28px;width:70%;margin-top:10px"></div>
-          <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
-          <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
-          <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
-          <div v-if="streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
-          <!-- 经典视图回世界入口：本 header 是 m-only，≥1280px 不渲染，桌面世界入口由右栏承担。
-               手机切回经典后也要能回到地图。 -->
-          <button
-            v-if="user.isLoggedIn && homeMode === 'classic'"
-            type="button"
-            class="v4-world-switch"
-            @click="setHomeMode('world')"
-          >🗺 探险世界</button>
+        <!-- 日志头：问候 + 封存件数 + 连签（<1280 的纸版式；≥1280 正文由问候卡接管） -->
+        <header
+          class="v4-loghead d3-ord-loghead"
+          :class="{ 'm-only': !showWorldSwitch }"
+          aria-live="polite"
+        >
+          <!-- 正文只在日志头可见时出现。桌面入口打开时给正文单独挂 m-only，
+               这样 ≥1280 整段问候仍隐藏，但下面的胶囊不会被父级 display:none 一起吃掉。 -->
+          <div class="v4-loghead-main" :class="{ 'm-only': showWorldSwitch }">
+            <span class="v4-stamp">探险日志 · {{ dateLabel }}</span>
+            <h1>{{ greeting }}，{{ nickname }}</h1>
+            <p v-if="today.data && parcelTotal !== null && parcelTotal > 0">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
+            <p v-else-if="today.data && parcelTotal === 0">今天暂时没有新封存，明天再来看看。</p>
+            <div v-else-if="today.loading" class="v4-skeleton" aria-hidden="true" style="height:28px;width:70%;margin-top:10px"></div>
+            <div v-else-if="today.error" class="v4-err" style="margin-top:10px">今日概览加载失败：{{ today.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadToday(true)">重试</button></div>
+            <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
+            <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
+          </div>
+          <div v-if="streak > 0 || showWorldSwitch" class="v4-loghead-actions">
+            <div v-if="streak > 0" class="v4-fire" :class="{ 'm-only': showWorldSwitch }">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
+            <!-- 经典视图回世界：已登录 && classic，不看宽度。
+                 ≥1280 问候和连签另挂 .m-only，交给问候卡；按钮自己留在这一行。 -->
+            <button
+              v-if="showWorldSwitch"
+              type="button"
+              class="v4-world-switch"
+              @click="setHomeMode('world')"
+            >探险世界</button>
+          </div>
         </header>
 
         <!-- 个人问候卡（桌面专属） -->
@@ -115,6 +125,7 @@
                 :busy="unsealingIds.has(String(p.id))"
                 :variant="isWide ? 'cover' : 'parcel'"
                 @unseal="onUnseal"
+                @play="openParcelPicker(p)"
               />
             </div>
             <button v-if="isWide && shelfHasOverflow" type="button" class="d3-arrow r" aria-label="货架向右滚动" @click="scrollShelf(1)">›</button>
@@ -168,6 +179,7 @@
       <!-- 底部全宽：媒体库速览带（桌面专属） -->
       <LibraryBand v-if="isWide" />
     </div>
+    <PlayerSchemeSheet v-model:open="parcelPickerOpen" :title="parcelPickerTitle" />
     </template>
   </div>
 </template>
@@ -179,6 +191,7 @@ import { usePanelStore } from '@/stores/panel'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import ParcelBox from '@/components/panel/ParcelBox.vue'
+import PlayerSchemeSheet from '@/components/panel/PlayerSchemeSheet.vue'
 import EcgCanvas from '@/components/panel/EcgCanvas.vue'
 import PulseActivity from '@/components/panel/PulseActivity.vue'
 import WaxLetter from '@/components/panel/WaxLetter.vue'
@@ -203,6 +216,11 @@ const {
   mode: homeMode,
   setMode: setHomeMode,
 } = useHomeViewMode()
+// 日志头「探险世界」：已登录且当前是经典视图就进 DOM，手机和桌面都有。
+// 世界模式整页换成 WorldHome，这里不会渲染。
+const showWorldSwitch = computed(
+  () => user.isLoggedIn && homeMode.value === 'classic',
+)
 const { today, parcels, pulse, letter, feed } = storeToRefs(panel)
 // 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
 const serverCards = useServerCards()
@@ -337,12 +355,15 @@ function onShelfPointerDown(e: PointerEvent) {
   const el = parcelsEl.value
   if (!el) return
   shelfDrag = { startX: e.clientX, startScroll: el.scrollLeft, moved: false }
-  try { el.setPointerCapture(e.pointerId) } catch { /* 忽略：旧浏览器不支持 */ }
   const onMove = (ev: PointerEvent) => {
     if (!(ev.buttons & 1)) { onUp(); return }
     if (!shelfDrag) return
     const dx = ev.clientX - shelfDrag.startX
-    if (Math.abs(dx) > 6) shelfDrag.moved = true
+    if (Math.abs(dx) > 6 && !shelfDrag.moved) {
+      shelfDrag.moved = true
+      // 未拖动前不捕获指针，否则 click 会落在货架上，开封后的卡片点不开播放器
+      try { el.setPointerCapture(ev.pointerId) } catch { /* 忽略：旧浏览器不支持 */ }
+    }
     if (shelfDrag.moved) el.scrollLeft = shelfDrag.startScroll - dx
   }
   const onUp = () => {
@@ -484,6 +505,13 @@ watch(parcelList, () => {
 }, { immediate: true, flush: 'post' })
 /* 拆封中 id 集合：busy 与请求生命周期绑定（请求完成/失败才释放），替代旧的固定 600ms 释放 */
 const unsealingIds = ref(new Set<string>())
+const parcelPickerOpen = ref(false)
+const parcelPickerTitle = ref('')
+function openParcelPicker(p: ParcelItem) {
+  parcelPickerTitle.value = p.name || '神秘包裹'
+  parcelPickerOpen.value = true
+}
+
 async function onUnseal(id: string | number) {
   const key = String(id)
   if (unsealingIds.value.has(key)) return
@@ -674,21 +702,64 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
   flex-shrink: 0;
 }
 
-/* 经典视图 → 探险世界入口（仅桌面渲染，显隐由模板 v-if 控制） */
+/* 连签胶囊与「探险世界」并排。火标的上边距改由这一行承担，避免胶囊自身 margin 把行撑开。
+   窄屏不换行：360/390 上连签和按钮停在同一行，按钮不另起一行。 */
+.v4-loghead-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 100%;
+  min-width: 0;
+}
+.v4-loghead-actions .v4-fire {
+  margin-top: 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 经典视图 → 探险世界。显隐只由模板 v-if（已登录且 classic）决定。
+   描边胶囊：墨线 + 透明底，不要实心深青，也不要地图符号。手机和桌面同一套。 */
 .v4-world-switch {
-  margin-top: 12px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: var(--paper-primary); /* R98：DESIGN.md 主按钮深青 #016a71；备选深墨未采用 */
-  color: var(--paper2);
-  border: none;
-  border-radius: 999px;
-  padding: 12px 18px;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  margin: 0;
   min-height: 44px;
-  font-size: 13px;
-  font-weight: 700;
+  background: transparent;
+  color: var(--ink, #2A2620);
+  border: 1.5px solid var(--ink, #2A2620);
+  border-radius: var(--paper-r-2xl, 20px);
+  padding: 0 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
   cursor: pointer;
+}
+.v4-world-switch:hover {
+  background: var(--ink, #2A2620);
+  color: var(--paper, #F6F1E7);
+}
+.v4-world-switch:focus-visible {
+  outline: 2px solid var(--ink, #2A2620);
+  outline-offset: 2px;
+}
+/* ≥1280 日志正文已被 .m-only 收起，头上只剩这颗胶囊：去掉手机日志头的粗底边和内边距 */
+@media (min-width: 1280px) {
+  .v4-loghead:has(.v4-world-switch) {
+    padding: 0;
+    border-bottom: none;
+  }
+  .v4-loghead:has(.v4-world-switch) .v4-loghead-actions {
+    margin-top: 0;
+  }
 }
 
 /* R86：空态行内链接触控区垫到 44px（视觉不变，负 margin 抵消） */

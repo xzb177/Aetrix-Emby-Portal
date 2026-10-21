@@ -9,13 +9,17 @@
               :parcel="p"
               :busy="unsealingIds.has(String(p.id))"
               @unseal="onUnseal"
+              @play="openPicker(p)"
             />
           </div>
+          <PlayerSchemeSheet v-model:open="pickerOpen" :title="pickerTitle" />
           </div>
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue'
 import ParcelBox from '@/components/panel/ParcelBox.vue'
+import PlayerSchemeSheet from '@/components/panel/PlayerSchemeSheet.vue'
 import type { ParcelItem } from '@/composables/usePanelApi'
 
 /** 封存包裹弹层：逻辑随 sheet 搬家（数据仍归 index 持有，行为不变） */
@@ -25,6 +29,14 @@ defineProps<{
   unsealingIds: Set<string>
   onUnseal: (id: string | number) => void
 }>()
+
+const pickerOpen = ref(false)
+const pickerTitle = ref('')
+
+function openPicker(p: ParcelItem) {
+  pickerTitle.value = p.name || '神秘包裹'
+  pickerOpen.value = true
+}
 </script>
 
 <style scoped>

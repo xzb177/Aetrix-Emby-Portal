@@ -344,6 +344,7 @@ import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
+import { assignImportScheme } from '@/composables/usePlayerSchemes'
 import { useClipboard } from '@/composables/useClipboard'
 import { humanizeError } from '@/composables/usePanelApi'
 import { toUserMessage } from '@/utils/toUserMessage'
@@ -528,7 +529,8 @@ async function openScheme(url: string, appName = '播放器') {
   // R50：给 toast 一点展示时间再跳转，否则提示来不及被看到
   await nextTick()
   await new Promise((resolve) => setTimeout(resolve, 600))
-  window.location.href = finalUrl
+  // 与发现页「去看」同一跳转：只接受 App scheme，拒绝 http(s)
+  if (!assignImportScheme(finalUrl)) toast.info('播放地址无效')
 }
 
 function daysLeft(endDate?: string | null): number | null {

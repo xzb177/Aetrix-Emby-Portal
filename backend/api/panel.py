@@ -296,22 +296,6 @@ def _streak(db: Session, user_id: int) -> int:
     return rec.streak if rec and rec.streak else 0
 
 
-def _emby_base_url(db: Session) -> str:
-    """复用现有深链能力：Emby 服务器地址"""
-    try:
-        from backend.emby_server.portal import resolve_emby_base_url
-        return resolve_emby_base_url(db) or ""
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _item_deep_link(db: Session, item_id: int) -> str:
-    base = _emby_base_url(db)
-    if not base:
-        return ""
-    return f"{base}/web/index.html#!/item?id={item_id}"
-
-
 # ==================== 1. GET /api/panel/today ====================
 
 @router.get("/today")
@@ -426,8 +410,6 @@ def panel_parcels(
         models.PanelUnseal.user_id == user.id,
         models.PanelUnseal.item_id.in_(parcel_id_list)).all()} if parcel_id_list else set()
 
-    # r20: base URL 循环外解析一次（原逐条调 resolve_emby_base_url，5 条=5 次重复查询）
-    base_url = _emby_base_url(db)
     parcels = []
     for it in items:
         parcels.append({
@@ -438,7 +420,8 @@ def panel_parcels(
             "video_resolution": getattr(it, "video_resolution", None),
             "added_at": it.date_added.isoformat() if it.date_added else None,
             "unsealed": it.id in unsealed_ids,
-            "deep_link": f"{base_url}/web/index.html#!/item?id={it.id}" if base_url else "",
+            # 播放改走账号卡 import_schemes。不再下发 Emby 网页地址，避免地址栏泄露。
+            "deep_link": "",
         })
     return _ok({"parcels": parcels})
 
@@ -486,7 +469,7 @@ def panel_unseal(
             "name": item.name,
             "item_type": item.item_type,
             "production_year": item.production_year,
-            "deep_link": _item_deep_link(db, item.id),
+            "deep_link": "",
         },
     })
 

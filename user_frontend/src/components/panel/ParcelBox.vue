@@ -3,10 +3,10 @@
   <div
     v-if="props.variant === 'cover'"
     class="d3-parcel d3-hover"
-    :class="{ 'is-busy': busy, 'no-link': isOpen && !parcel.deep_link }"
-    :role="isOpen ? undefined : 'button'"
-    :tabindex="isOpen ? undefined : '0'"
-    :aria-label="isOpen ? undefined : '待拆封存，点击开封'"
+    :class="{ 'is-busy': busy }"
+    :role="cardIsButton ? 'button' : undefined"
+    :tabindex="cardIsButton ? 0 : undefined"
+    :aria-label="coverLabel"
     @click="onTap"
     @keydown="onKey"
   >
@@ -25,7 +25,7 @@
   <div
     v-else
     class="v4-parcel"
-    :class="{ opened: isOpen, 'is-busy': busy, 'no-link': isOpen && !parcel.deep_link, 'just-opened': justOpened }"
+    :class="{ opened: isOpen, 'is-busy': busy, 'just-opened': justOpened }"
     :role="isOpen ? undefined : 'button'"
     :tabindex="isOpen ? undefined : '0'"
     :aria-label="isOpen ? undefined : '待拆封存，点击开封'"
@@ -51,15 +51,13 @@
     </div>
     <div class="v4-parcel-foot">
       <span v-if="!isOpen" class="v4-parcel-hint">点一下开封</span>
-      <a
-        v-else-if="parcel.deep_link"
+      <button
+        v-else
+        type="button"
         class="v4-parcel-go"
-        :href="parcel.deep_link"
-        target="_blank"
-        rel="noopener"
         aria-label="去播放器看"
-        @click.stop
-      >去看 →</a>
+        @click.stop="openPicker"
+      >去看 →</button>
     </div>
   </div>
 </template>
@@ -72,10 +70,18 @@ const props = withDefaults(
   defineProps<{ parcel: ParcelItem; busy?: boolean; variant?: 'parcel' | 'cover' }>(),
   { variant: 'parcel' },
 )
-const emit = defineEmits<{ (e: 'unseal', id: string | number): void }>()
+const emit = defineEmits<{
+  (e: 'unseal', id: string | number): void
+  (e: 'play'): void
+}>()
 
 const isOpen = computed(() => !!props.parcel.unsealed)
-
+/** 封面变体没有单独的「去看」按钮，整卡就是按钮；面单变体开封后由脚上的按钮承接。 */
+const cardIsButton = computed(() => props.variant === 'cover')
+const coverLabel = computed(() => {
+  if (!isOpen.value) return '待拆封存，点击开封'
+  return `用播放器打开${props.parcel.name || '神秘包裹'}`
+})
 /* P-3 拆封仪式感：开封瞬间给印章一个「盖下去」的动效（一次性，动画结束自清） */
 const justOpened = ref(false)
 watch(isOpen, (now, before) => {
@@ -157,13 +163,12 @@ const arrivedText = computed(() => {
   return `${d.getMonth() + 1}月${d.getDate()}日 ${hm} 到货`
 })
 
-function goPlayer() {
-  const link = props.parcel.deep_link
-  if (typeof link === 'string' && link) window.open(link, '_blank', 'noopener')
+function openPicker() {
+  emit('play')
 }
 
 function onKey(e: KeyboardEvent) {
-  if ((e.target as HTMLElement).closest('a')) return
+  if ((e.target as HTMLElement).closest('button, a')) return
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault()
     onTap()
@@ -172,10 +177,8 @@ function onKey(e: KeyboardEvent) {
 
 function onTap() {
   if (isOpen.value) {
-    // R29：开封但无跳转链接时整卡不可点，直接 return
-    if (!props.parcel.deep_link) return
-    // 已开封：整卡点进播放器（与"去看 →"同一跳转，新开标签页）
-    goPlayer()
+    // 已开封：整卡与「去看 →」都打开播放器选择，不走网页地址
+    openPicker()
     return
   }
   if (props.busy) return
@@ -204,8 +207,6 @@ function onTap() {
 }
 .v4-parcel:not(.opened) { border-style: dashed; }
 .v4-parcel:active { transform: scale(0.96); }
-/* R29：开封但无跳转链接时整卡不可点 */
-.v4-parcel.no-link { cursor: default; }
 .v4-parcel.is-busy { pointer-events: none; opacity: 0.75; }
 /* 印章：右上角旋转小圆章 */
 .v4-parcel-stamp {
@@ -280,10 +281,15 @@ function onTap() {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
   font-size: 12px;
   font-weight: 700;
   color: var(--red);
-  text-decoration: none;
+  cursor: pointer;
   animation: v4-fadein 0.4s ease 0.1s both;
 }
 .v4-parcel.just-opened .v4-parcel-stamp {
