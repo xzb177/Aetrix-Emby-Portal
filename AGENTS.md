@@ -10,11 +10,12 @@
    - 管理端：`cd admin_frontend && npm run type-check && npm run build`
    - 用户端：`cd user_frontend && npm run type-check && npm run build`
 3. 推送分支，创建面向 `main` 的 PR。
-4. 等待 4 项必需状态检查全部通过后再合并：
+4. 等待下列状态检查全部通过后再合并：
    - 前端 · user_frontend
    - 前端 · admin_frontend
    - 后端 · 冒烟测试
    - 后端 · 部署自检（真起服务 + 真发 HTTP）
+   - 后端 · PG 兼容冒烟
 5. 合并后删除分支，并把 `main` 同步回本地。
 
 ## 例外

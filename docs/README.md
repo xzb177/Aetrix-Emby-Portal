@@ -87,6 +87,8 @@
         · Redis（可选）· ffmpeg（转码，装在 EA 那台）
 ```
 
+上图是裸机、由 EM 进程自己托管前端静态文件时的样子。自建 `docker-compose.yml` 不托管静态文件：页面在 `aetrix-web`（宿主机 8081），数据库是编排里的 PostgreSQL 16。
+
 ## 为什么两个服务都必须是单进程
 
 `serve.py` 与 `serve_emby.py` 都固定 `workers=1`。HLS 转码的 ffmpeg 子进程管理与内存态会话都在进程内闭环，多 worker 会让"谁在转码、谁的会话还有效"分散到不同进程，出现重复 fork 与进程泄漏。**不要给任一个服务开多 worker**，横向扩展请按站点拆分。

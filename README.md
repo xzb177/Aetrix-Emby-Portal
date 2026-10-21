@@ -73,7 +73,7 @@ POSTGRES_PASSWORD=<自定义数据库密码>
 | --- | --- |
 | `aetrix-api` | EM 面板 API（只提供接口，不提供网页） |
 | `aetrix-ea` | EA Emby 协议网关 |
-| `aetrix-worker` | 扫描、刮削、转码等后台任务 |
+| `aetrix-worker` | 维护、刮削补全、到期提醒、定时扫描、追新、Redis 扫描队列 |
 | `postgres` | 数据库 |
 | `redis` | 缓存与队列 |
 

@@ -232,6 +232,10 @@ server {
 
 > 证书必须被客户端信任：自签证书在部分播放器上会被直接拒绝，表现为"服务器无法连接"。建议用 Let's Encrypt 等受信证书。
 
+自建 Docker 不要照抄 `127.0.0.1:8001`。EA 容器内仍是 8001，发布到宿主机的是 `127.0.0.1:8002`（`EA_INTERNAL_PORT`）。反代的 `proxy_pass` 写成 `http://127.0.0.1:8002`。
+
+`docker-compose.frontend.yml` 的 nginx 把 `/emby/` 转到面板容器 `aetrix-api:8000`，不是转到 `aetrix-ea`。默认 `ENABLE_EMBY_GATEWAY=true` 时面板自己有协议面，所以网页播放仍可用。把 `ENABLE_EMBY_GATEWAY` 设为 `false` 之后，若还要网页里的 `/emby/`，需要把 `BACKEND_HOST` 指到 EA，或给 `/emby/` 单独写一条转到 `aetrix-ea:8001` 的规则。仓库里的默认 nginx 模板没有这条单独规则。
+
 ## 6. 客户端接入
 
 1. 客户端「服务器地址」填 `EMBY_PUBLIC_URL` 指向的地址（如 `https://emby.example.com`），**不要带 `/emby` 后缀**——客户端自己会拼协议路径。
