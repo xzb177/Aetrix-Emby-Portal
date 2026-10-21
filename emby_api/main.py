@@ -158,6 +158,12 @@ async def lifespan(app: FastAPI):
     ensure_paired_with_em()
     logger.info("✅ 已确认与 EM 配对（共享密钥 + 共享库）")
 
+    try:
+        from backend.emby_server.public_url import warn_public_url_on_startup
+        warn_public_url_on_startup()
+    except Exception:
+        logger.warning("EMBY_PUBLIC_URL 启动校验失败，服务继续启动", exc_info=True)
+
     _claim_identity()
     await _probe_panel()
 

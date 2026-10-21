@@ -1,12 +1,12 @@
 <template>
   <div class="world-root" :class="[`dp-${daypart}`, { 'is-game': variant === 'game' }]">
-    <div class="game-goalbar" v-if="variant === 'game' && !isMobile">
+    <div class="game-goalbar" v-if="variant === 'game'">
       <div class="m-goal-text">今日探险 <b>{{ questDoneCount }}/{{ quests.length }}</b><template v-if="questNextLabel"> · 还差：{{ questNextLabel }}</template><template v-else> · 全部完成 ✓</template></div>
       <div class="m-goal-bar"><i :style="{ width: questPercent + '%' }"></i></div>
     </div>
 
-    <div class="world-col" v-if="!isMobile">
-      <div class="world">
+    <div class="world-col">
+      <div class="map-frame">
       <div class="hud">
         <span class="brand">Aetrix<b>.</b></span>
         <span class="worldname">🗺 探险世界</span>
@@ -14,7 +14,7 @@
           <span class="pill" v-if="streak > 0">🔥 连签 {{ streak }} 天<template v-if="streakHint"> · {{ streakHint }}</template></span>
           <button type="button" class="pill amber" v-if="pointsText" @click="goLedger">🪙 {{ pointsText }} 积分</button>
           <span class="pill" v-if="memberInfo"><span class="lv">Lv.{{ memberInfo.level }}</span> {{ memberInfo.level_name }}</span>
-          <button type="button" class="avatar" @click="goAccount" aria-label="我的账号">{{ avatarChar }}</button>
+          <button v-if="variant !== 'game'" type="button" class="avatar" @click="goAccount" aria-label="我的账号">{{ avatarChar }}</button>
         </div>
       </div>
 
@@ -29,6 +29,8 @@
 
       <button type="button" class="classic" v-if="variant === 'home'" @click="toClassic">经典视图 ⇄</button>
 
+      <div class="world-scroll" role="region" aria-label="探险地图，可左右滑动">
+      <div class="world">
       <WorldCanvas
         :subs="anchorSubs"
         :on="anchorHandlers"
@@ -39,13 +41,11 @@
         :avatar-char="avatarChar"
         :show-quest-path="showQuestPath"
       />
-      <WorldMarks
-        :sub-for="subFor"
-        :status-for="statusFor"
-        :selected-key="selectedKey"
-        :select-facility="selectFacility"
-      />
       </div>
+      </div>
+      <p class="map-scroll-hint">左右滑动，看完整营地</p>
+      </div>
+      <WorldMarks :open-region-key="openRegionKey" :open-region="onRegionClick" />
       <WorldPanels
         :feed-items="feedItems"
         :feed-state="feedState"
@@ -55,41 +55,15 @@
       />
     </div>
 
-    <MobileScroll
-      v-else
-      :greeting-text="greetingText"
-      :nickname="nickname"
-      :daypart-line="daypartLine"
-      :streak="streak"
-      :streak-hint="streakHint"
-      :points-text="pointsText"
-      :member-info="memberInfo"
-      :quests="quests"
-      :quest-percent="questPercent"
-      :quest-done-count="questDoneCount"
-      :quest-next-label="questNextLabel"
-      :on-quest="onQuest"
-      :sub-for="subFor"
-      :status-for="statusFor"
-      :selected-key="selectedKey"
-      :select-facility="selectFacility"
-      :anchor-subs="anchorSubs"
-      :anchor-on="anchorHandlers"
-      :fortune-drew="fortuneDrew"
-      :remaining="remaining"
-      :has-letter="hasLetter"
-      :letter-read="letterRead"
-      :explored-count="exploredCount"
-      :explored-total="exploredTotal"
-      :explored-next="exploredNext"
-    />
-
     <div class="w-overlay" v-if="overlay !== 'none'" @click.self="closeOverlay">
-      <div class="w-sheet" :class="{ 'is-stele': overlay === 'stele' }" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl"
+      <div class="w-sheet" :class="{ 'is-stele': overlay === 'stele', 'is-region': overlay === 'region' }" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl"
+           :id="overlay === 'region' ? 'region-sheet' : undefined"
+           :aria-labelledby="overlay !== 'stele' ? 'w-sheet-title' : undefined"
+           :aria-label="overlay === 'stele' ? '观影碑' : undefined"
            @touchstart="onSheetTouchStart" @touchend="onSheetTouchEnd">
         <div class="w-grip" aria-hidden="true"></div>
         <div class="w-sheet-head" v-if="overlay !== 'stele'">
-          <span class="w-sheet-title">{{ sheetTitle }}</span>
+          <span class="w-sheet-title" id="w-sheet-title">{{ sheetTitle }}</span>
           <button type="button" class="w-sheet-close" @click="closeOverlay" aria-label="关闭">✕</button>
         </div>
         <ParcelsSheet
@@ -119,6 +93,15 @@
           :fortune-drawing="fortuneDrawing"
           @draw="drawFortune"
         />
+        <RegionSheet
+          v-else-if="overlay === 'region'"
+          :lead="regionLead"
+          :facilities="regionFacilities"
+          :sub-for="subFor"
+          :status-for="statusFor"
+          :selected-key="selectedKey"
+          @select="selectFromRegion"
+        />
       </div>
     </div>
   </div>
@@ -134,11 +117,11 @@ import type { ParcelItem, ParcelsData } from '@/composables/usePanelApi'
 import { memberApi } from '@/api/economy'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
 import { useToast } from '@/composables/useToast'
-import { gameFacilities, type GameFacility } from '@/config/game'
+import { gameFacilities, gameFacilityGroups, type GameFacility } from '@/config/game'
 import WorldCanvas, { type WorldAnchorSubs, type WorldAnchorHandlers } from './WorldCanvas.vue'
 import WorldMarks from './WorldMarks.vue'
 import WorldPanels from './WorldPanels.vue'
-import MobileScroll from './MobileScroll.vue'
+import RegionSheet from './RegionSheet.vue'
 import ParcelsSheet from './overlays/ParcelsSheet.vue'
 import LetterSheet from './overlays/LetterSheet.vue'
 import SteleSheet from './overlays/SteleSheet.vue'
@@ -165,17 +148,11 @@ const { today, parcels, pulse, letter, board, collector } = storeToRefs(panel)
 /* ---------- 本地状态 ---------- */
 const memberRaw = ref<Record<string, unknown> | null>(null)
 
-const overlay = ref<'none' | 'parcels' | 'letter' | 'stele' | 'board' | 'wall' | 'fortune'>('none')
+const overlay = ref<'none' | 'parcels' | 'letter' | 'stele' | 'board' | 'wall' | 'fortune' | 'region'>('none')
+const regionKey = ref<string | null>(null)
 const unsealingIds = ref(new Set<string>())
 const sheetEl = ref<HTMLElement | null>(null)
 let lastTrigger: HTMLElement | null = null
-
-/* ---------- 响应式断点：≤1023px 走手机长卷轴 ---------- */
-const isMobile = ref(false)
-let mobileMql: MediaQueryList | null = null
-function syncMobile() {
-  isMobile.value = mobileMql?.matches ?? false
-}
 
 /* ---------- 基础数据 ---------- */
 const todayD = computed<Record<string, unknown>>(
@@ -598,7 +575,7 @@ function openFortune() {
   openOverlaySheet('fortune')
 }
 
-/* ---------- 建筑锚点绑定（WorldCanvas / MobileScroll 共用） ---------- */
+/* ---------- 建筑锚点绑定 ---------- */
 const anchorSubs = computed<WorldAnchorSubs>(() => ({
   cinema: cinemaSub.value,
   parcels: parcelsSub.value,
@@ -625,12 +602,43 @@ const anchorHandlers: WorldAnchorHandlers = {
   fortune: openFortune,
 }
 
-/* ---------- 设施 pin（WorldMarks / MobileScroll 共用） ---------- */
+/* ---------- 设施 pin（分区抽屉） ---------- */
 const selectedKey = ref<string | null>(null)
 
 function selectFacility(f: GameFacility) {
   selectedKey.value = f.key
   void router.push(f.path)
+}
+
+const openRegionKey = computed(() => (overlay.value === 'region' ? regionKey.value : null))
+
+const regionGroup = computed(() => gameFacilityGroups.find((g) => g.key === regionKey.value) ?? null)
+
+const regionFacilities = computed(() =>
+  gameFacilities
+    .filter((f) => f.group === regionKey.value && f.enabled !== false)
+    .sort((a, b) => a.order - b.order),
+)
+
+const regionLead = computed(() => regionGroup.value?.sub ?? '')
+
+function onRegionClick(key: string) {
+  if (overlay.value === 'region' && regionKey.value === key) {
+    closeOverlay()
+    return
+  }
+  lastTrigger = document.activeElement as HTMLElement | null
+  regionKey.value = key
+  overlay.value = 'region'
+  nextTick(() => {
+    const closeBtn = sheetEl.value?.querySelector<HTMLElement>('.w-sheet-close')
+    try { (closeBtn ?? sheetEl.value)?.focus() } catch { /* 静默 */ }
+  })
+}
+
+function selectFromRegion(f: GameFacility) {
+  closeOverlay()
+  selectFacility(f)
 }
 
 /** 设施副标题：guideTip ?? desc（与旧桌面锚点文案口径一致，不编造） */
@@ -646,13 +654,6 @@ function statusFor(f: GameFacility): 'todo' | 'done' | undefined {
   if (f.key === 'checkin') return quest.checkinDone.value ? 'done' : 'todo'
   return undefined
 }
-
-const enabledFacilities = computed(() =>
-  gameFacilities.filter((f) => f.enabled !== false).sort((a, b) => a.order - b.order),
-)
-const exploredCount = computed(() => enabledFacilities.value.filter((f) => statusFor(f) === 'done').length)
-const exploredTotal = computed(() => enabledFacilities.value.length)
-const exploredNext = computed(() => enabledFacilities.value.find((f) => statusFor(f) !== 'done')?.name ?? '')
 
 /* ---------- 弹层 ---------- */
 function openParcels() {
@@ -683,6 +684,7 @@ function openOverlaySheet(kind: 'stele' | 'board' | 'wall' | 'fortune') {
 
 function closeOverlay() {
   overlay.value = 'none'
+  regionKey.value = null
   nextTick(() => {
     if (lastTrigger && document.contains(lastTrigger)) {
       lastTrigger.focus()
@@ -699,6 +701,7 @@ const sheetTitle = computed(() => {
     case 'board': return '📢 服主告示牌'
     case 'wall': return '💬 到此一游'
     case 'fortune': return '🎋 每日一签'
+    case 'region': return regionGroup.value ? `${regionGroup.value.icon} ${regionGroup.value.title}` : '营地分区'
     default: return ''
   }
 })
@@ -780,17 +783,39 @@ async function loadMember() {
   }
 }
 
+function focusableInSheet(): HTMLElement[] {
+  const root = sheetEl.value
+  if (!root) return []
+  return [...root.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1)
+}
+
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && overlay.value !== 'none') closeOverlay()
+  if (overlay.value === 'none') return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeOverlay()
+    return
+  }
+  if (e.key !== 'Tab' || overlay.value !== 'region') return
+  const nodes = focusableInSheet()
+  if (nodes.length === 0) return
+  const first = nodes[0]
+  const last = nodes[nodes.length - 1]
+  const active = document.activeElement
+  if (e.shiftKey && (active === first || active === sheetEl.value)) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
 }
 
 watch(letterDateKey, () => refreshLetterRead())
 watch(userId, () => refreshLetterRead())
 
 onMounted(() => {
-  mobileMql = window.matchMedia('(max-width: 1023px)')
-  syncMobile()
-  mobileMql.addEventListener('change', syncMobile)
   void panel.loadHome()
   void panel.loadCollector()
   void quest.loadCheckin()
@@ -805,26 +830,40 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
-  mobileMql?.removeEventListener('change', syncMobile)
-  mobileMql = null
 })
 </script>
 
 <style scoped>
 .world-root {
   height: 100dvh;
+  box-sizing: border-box;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  overflow: auto;
+  padding: 12px 0 20px;
   background: var(--paper-canvas);
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--paper-ink-deep);
 }
 .world-col {
   position: relative;
-  width: min(1120px, 94vw);
+  /* 首页地图与 /game 同一画布宽：min(1500px, 94vw)，按 1568:882 等比放大，不再缩成居中小卡 */
+  width: min(1500px, 94vw);
   margin: 0 auto;
+  flex: 0 0 auto;
   container-type: inline-size;
+}
+/* 问候/顶栏叠在地图上。定位参照这层，比画布边框外缘再进 1px，和原先叠在 .world 内缘时对齐。 */
+.map-frame {
+  position: relative;
+}
+.world-scroll {
+  min-width: 0;
+}
+.map-scroll-hint {
+  display: none;
 }
 .world {
   position: relative;
@@ -867,6 +906,7 @@ onUnmounted(() => {
 .world-root.is-game {
   height: auto;
   display: block;
+  overflow: visible;
   padding: 16px 0;
 }
 .world-root.is-game .world-col {
@@ -875,9 +915,9 @@ onUnmounted(() => {
 /* HUD */
 .hud {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: 1px;
+  left: 1px;
+  right: 1px;
   height: 4.17cqw;
   display: flex;
   align-items: center;
@@ -939,8 +979,8 @@ onUnmounted(() => {
 /* 问候卡 */
 .hello {
   position: absolute;
-  left: 1.53cqw;
-  top: 5.42cqw;
+  left: calc(1.53cqw + 1px);
+  top: calc(5.42cqw + 1px);
   z-index: 30;
   background: var(--paper-card-soft);
   border: 1px solid var(--paper-hairline);
@@ -976,8 +1016,8 @@ onUnmounted(() => {
 /* 经典视图切换 */
 .classic {
   position: absolute;
-  right: 1.53cqw;
-  top: 5.42cqw;
+  right: calc(1.53cqw + 1px);
+  top: calc(5.42cqw + 1px);
   z-index: 30;
   background: var(--paper-card-soft);
   border: 1px solid var(--paper-hairline);
@@ -1046,6 +1086,9 @@ onUnmounted(() => {
   font-size: 13px;
   line-height: 1;
 }
+.w-sheet.is-region {
+  width: min(760px, calc(100vw - 48px));
+}
 .w-sheet-close:focus-visible,
 .classic:focus-visible,
 .hud .pill:focus-visible,
@@ -1054,9 +1097,113 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 @media (max-width: 1023px) {
+  /* 窄屏：整页可滚，地图单独横滑。画布保持桌面那套 cqw 比例（约 1340px，小字 ≥11px），
+     标签间距不用另算，也不会挤成一团或盖住房子。 */
   .world-root {
     display: block;
-    height: 100dvh;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    padding: 8px 12px calc(16px + var(--au-dock-space, 0px));
+  }
+  .world-root.is-game {
+    padding: 0 12px 8px;
+    overflow: visible;
+  }
+  .world-root.is-game .world-col,
+  .world-col {
+    width: 100%;
+    min-width: 0;
+    container-type: normal;
+  }
+  .game-goalbar {
+    width: 100%;
+  }
+  .map-frame {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .hud,
+  .hello,
+  .classic {
+    position: static;
+    top: auto;
+    left: auto;
+    right: auto;
+    height: auto;
+    max-width: none;
+  }
+  .hud {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 4px 0 8px;
+    background: transparent;
+  }
+  .hud .brand { font-size: 16px; }
+  .hud .worldname {
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    padding: 4px 10px;
+  }
+  .hud .right {
+    margin-left: auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .hud .pill {
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+  .hud button.pill { min-height: 44px; }
+  .hud .avatar {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .hello {
+    margin: 0 0 8px;
+    padding: 12px 14px;
+    border-radius: 16px;
+  }
+  .hello .d { font-size: 12px; letter-spacing: 0.04em; }
+  .hello h2 { font-size: 16px; margin: 4px 0 2px; }
+  .hello p { font-size: 14px; }
+  .classic {
+    align-self: flex-end;
+    margin: 0 0 8px;
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 12px;
+  }
+  .world-scroll {
+    order: 5;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: 100%;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pan-y;
+    scrollbar-width: thin;
+    border-radius: 16px;
+  }
+  .world {
+    width: 1340px;
+    max-width: none;
+    container-type: inline-size;
+    border-radius: 16px;
+  }
+  .map-scroll-hint {
+    display: block;
+    order: 4;
+    margin: 0 0 8px;
+    font-size: 12px;
+    line-height: 1.33;
+    color: var(--paper-ink-soft);
   }
   .w-grip {
     display: block;
@@ -1072,9 +1219,22 @@ onUnmounted(() => {
   }
   .w-sheet {
     width: 100%;
-    max-height: 70dvh;
+    max-height: 78dvh;
     border-radius: 16px 16px 0 0;
     border-bottom: none;
+    overflow-y: auto;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  }
+  .w-sheet-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--paper-card-soft);
+    padding-bottom: 8px;
+  }
+  .w-sheet-close {
+    width: 44px;
+    height: 44px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

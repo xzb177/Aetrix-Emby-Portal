@@ -164,6 +164,7 @@ def test_untrusted_peer_cannot_spoof_cf_header(monkeypatch):
     import asyncio
     monkeypatch.setenv("TRUST_CF_IP", "true")
     monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
     scope = _scope(client=("5.6.7.8", 4000))
     scope["headers"].append((b"cf-connecting-ip", b"9.9.9.9"))
     scope["headers"].append((b"x-forwarded-for", b"9.9.9.9"))
@@ -175,6 +176,7 @@ def test_untrusted_peer_cannot_become_loopback(monkeypatch):
     import asyncio
     monkeypatch.setenv("TRUST_CF_IP", "true")
     monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
     scope = _scope(client=("5.6.7.8", 4000))
     scope["headers"].append((b"cf-connecting-ip", b"127.0.0.1"))
     _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
@@ -222,6 +224,7 @@ def test_cloudflare_ranges_override(monkeypatch):
     import asyncio
     monkeypatch.setenv("TRUST_CF_IP", "true")
     monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
     monkeypatch.setenv("CLOUDFLARE_IP_RANGES", "10.9.0.0/16")
     scope = _scope(client=CF_PEER)  # 覆盖后官方网段不再可信
     scope["headers"].append((b"cf-connecting-ip", b"9.9.9.9"))
@@ -231,3 +234,20 @@ def test_cloudflare_ranges_override(monkeypatch):
     scope["headers"].append((b"cf-connecting-ip", b"9.9.9.9"))
     _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
     assert out["client"][0] == "9.9.9.9"
+
+
+def test_forwarded_allow_ips_peer_trusts_xff_not_cf_header(monkeypatch):
+    """FORWARDED_ALLOW_IPS 与 TRUSTED_PROXIES 同一份可信名单：采信 XFF，不采信 CF 头。"""
+    import asyncio
+    monkeypatch.setenv("TRUST_CF_IP", "true")
+    monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "198.51.100.40")
+    scope = _scope(client=("198.51.100.40", 4000))
+    scope["headers"].append((b"cf-connecting-ip", b"9.9.9.9"))
+    scope["headers"].append((b"x-forwarded-for", b"8.8.8.8"))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "8.8.8.8"
+    scope = _scope(client=("198.51.100.41", 4000))
+    scope["headers"].append((b"x-forwarded-for", b"8.8.8.8"))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "198.51.100.41"

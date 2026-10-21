@@ -5,8 +5,8 @@
      标题=series_name ?? name；副标题=第N集·还剩X / 已看X（由
      position_ticks/duration_ticks 算出）；进度条=progress（0–100）。
      封面用字排封面（本站不展示海报，用户 2026-10-14 口径）。
-     点击卡片：Emby 网页深链（与包裹卡「去看」同口径，新开标签页）；
-     拉不到 EA 地址时卡片不可点，不造死链。 -->
+     点击卡片：播放器选择（Rex / SenPlayer / VidHub，与包裹「去看」同口径），
+     不打开 Emby 网页。 -->
 <template>
   <section id="disc-watch" aria-label="继续观看">
     <div class="d3-sec-head">
@@ -30,7 +30,7 @@
         type="button"
         class="d3-watch d3-hover"
         :aria-label="`继续看${watchTitle(w)}`"
-        @click="openItem(w)"
+        @click="openPicker(w)"
       >
         <div class="d3-cover" :class="toneOf(w)">
           <div class="d3-cov-k">{{ kickerOf(w) }}</div>
@@ -43,20 +43,24 @@
         </div>
       </button>
     </div>
+    <PlayerSchemeSheet v-model:open="pickerOpen" :title="pickerTitle" />
   </section>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { embyApi, type PortalResumeItem } from '@/api'
-import { ensureEmbyBase, TICKS_PER_SECOND } from '@/api/emby'
+import { TICKS_PER_SECOND } from '@/api/emby'
 import { useUserStore } from '@/stores/user'
 import { humanizeError } from '@/composables/usePanelApi'
+import PlayerSchemeSheet from '@/components/panel/PlayerSchemeSheet.vue'
 
 const user = useUserStore()
 const items = ref<PortalResumeItem[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+const pickerOpen = ref(false)
+const pickerTitle = ref('')
 
 async function load(force = false) {
   if (!force && items.value.length > 0) return
@@ -112,11 +116,9 @@ function subOf(w: PortalResumeItem): string {
   if (dur > 0) return `已看${fmtMins(pos)}`
   return '上次看到这里'
 }
-/** 点击进 Emby 网页深链（包裹卡同口径）；无 EA 地址时不跳转 */
-async function openItem(w: PortalResumeItem) {
-  const base = await ensureEmbyBase()
-  if (!base) return
-  const id = w.episode_id || w.id
-  window.open(`${base}/web/index.html#!/item?id=${encodeURIComponent(String(id))}`, '_blank', 'noopener')
+/** 打开播放器选择。不拼 Emby 网页地址，也不把条目 id 写进 scheme。 */
+function openPicker(w: PortalResumeItem) {
+  pickerTitle.value = watchTitle(w)
+  pickerOpen.value = true
 }
 </script>

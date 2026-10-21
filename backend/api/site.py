@@ -21,6 +21,7 @@ from backend import realms
 from backend.database import get_db
 from backend.emby_server.models import MediaItem
 from backend.emby_server.portal import resolve_emby_base_url
+from backend.emby_server.public_url import client_base_url
 from backend.integrations import branding as branding_capability
 from backend.tg_bind import get_bot_username
 
@@ -58,10 +59,58 @@ _LOGIN_POSTERS_TTL = 600
 # 失败负缓存：DB 抖动期间留 30 秒窗口，避免每个请求都重打全表随机查询
 _LOGIN_POSTERS_FAIL_TTL = 30
 # at 初值用 None 表示"从未刷新"：monotonic() 起点是系统启动时刻，
-# 用 0.0 会在开机不足 TTL 时误判缓存新鲜，导致登录页持续空白
-_login_posters_cache: dict = {"at": None, "items": [], "emby_base_url": ""}
+# 用 0.0 会在开机不足 TTL 时误判缓存新鲜，导致登录页持续空白。
+# 按客户端基址分桶：全局一份会把第一个请求的 Host 写进 emby_base_url，
+# TTL 内所有人拿到同一个源站地址。条目列表仍按桶缓存，地址解析口径不变。
+_LOGIN_POSTERS_MAX_KEYS = 32
+_login_posters_cache: dict = {"entries": {}}
 # single-flight 锁：TTL 到期瞬间只放一个线程去刷，其余直接返回旧缓存
 _login_posters_lock = threading.Lock()
+
+
+def _poster_cache_key(request: Request | None) -> str:
+    """缓存键是客户端基址，不是请求 Host 本身。"""
+    try:
+        return client_base_url(request) or ""
+    except Exception:
+        return ""
+
+
+def _poster_entries() -> dict:
+    entries = _login_posters_cache.get("entries")
+    if not isinstance(entries, dict):
+        entries = {}
+        _login_posters_cache["entries"] = entries
+    return entries
+
+
+def _poster_fresh(entry: dict, now: float) -> bool:
+    at = entry.get("at")
+    if at is None:
+        return False
+    ttl = _LOGIN_POSTERS_TTL if entry.get("items") else _LOGIN_POSTERS_FAIL_TTL
+    return now - at < ttl
+
+
+def _poster_payload(entry: dict | None) -> dict:
+    if not entry:
+        return {"items": [], "emby_base_url": ""}
+    return {
+        "items": entry.get("items") or [],
+        "emby_base_url": entry.get("emby_base_url") or "",
+    }
+
+
+def _remember_poster_entry(key: str, entry: dict) -> None:
+    entries = _poster_entries()
+    entries[key] = entry
+    overflow = len(entries) - _LOGIN_POSTERS_MAX_KEYS
+    if overflow <= 0:
+        return
+    oldest = sorted(entries, key=lambda k: entries[k].get("at") or 0)[:overflow]
+    for stale_key in oldest:
+        if stale_key != key:
+            entries.pop(stale_key, None)
 
 
 @site_router.get("/login-posters")
@@ -76,34 +125,25 @@ def get_login_posters(db: Session = Depends(get_db), request: Request = None):
     同源（``resolve_emby_base_url``）：登录页未登录拿不到 EA 地址，
     前端据此拼出 EA 上的海报直链，避免相对路径被反代到错误的后端。
     """
+    key = _poster_cache_key(request)
     now = time.monotonic()
-    at = _login_posters_cache["at"]
-    # 命中缓存（含失败后的负缓存窗口）直接返回
-    if at is not None:
-        ttl = _LOGIN_POSTERS_TTL if _login_posters_cache["items"] else _LOGIN_POSTERS_FAIL_TTL
-        if now - at < ttl:
-            return {
-                "items": _login_posters_cache["items"],
-                "emby_base_url": _login_posters_cache["emby_base_url"],
-            }
-    # single-flight：拿不到锁说明已有线程在刷，直接返回旧缓存
-    # （哪怕已过期，旧海报也比并发打爆 DB 好）
+    entry = _poster_entries().get(key)
+    # 命中本基址的缓存（含失败后的负缓存窗口）直接返回
+    if entry is not None and _poster_fresh(entry, now):
+        return _poster_payload(entry)
+    # single-flight：拿不到锁说明已有线程在刷，直接返回这一桶的旧缓存
+    # （哪怕已过期，旧海报也比并发打爆 DB 好）。不能把别的 Host 的地址拿来顶上。
     if not _login_posters_lock.acquire(blocking=False):
-        return {
-            "items": _login_posters_cache["items"],
-            "emby_base_url": _login_posters_cache["emby_base_url"],
-        }
+        return _poster_payload(_poster_entries().get(key))
     try:
         # 拿锁后二次检查：等待期间可能已被别的线程刷过
         now = time.monotonic()
-        at = _login_posters_cache["at"]
-        if at is not None:
-            ttl = _LOGIN_POSTERS_TTL if _login_posters_cache["items"] else _LOGIN_POSTERS_FAIL_TTL
-            if now - at < ttl:
-                return {
-                    "items": _login_posters_cache["items"],
-                    "emby_base_url": _login_posters_cache["emby_base_url"],
-                }
+        entry = _poster_entries().get(key)
+        if entry is not None and _poster_fresh(entry, now):
+            return _poster_payload(entry)
+        if entry is None:
+            entry = {"at": None, "items": [], "emby_base_url": ""}
+            _remember_poster_entry(key, entry)
         try:
             rows = (
                 db.query(MediaItem.guid, MediaItem.name)
@@ -133,14 +173,11 @@ def get_login_posters(db: Session = Depends(get_db), request: Request = None):
         except Exception:
             logger.exception("login-posters 查询失败")
             # 失败也推进 at（保留旧 items）：负缓存 30 秒，避免 DB 抖动期故障放大
-            _login_posters_cache["at"] = now
-            return {
-                "items": _login_posters_cache["items"],
-                "emby_base_url": _login_posters_cache["emby_base_url"],
-            }
-        _login_posters_cache["at"] = now
-        _login_posters_cache["items"] = items
-        _login_posters_cache["emby_base_url"] = emby_base_url
+            entry["at"] = now
+            return _poster_payload(entry)
+        entry["at"] = now
+        entry["items"] = items
+        entry["emby_base_url"] = emby_base_url
         return {"items": items, "emby_base_url": emby_base_url}
     finally:
         _login_posters_lock.release()

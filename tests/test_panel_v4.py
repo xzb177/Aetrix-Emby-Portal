@@ -266,6 +266,8 @@ def test_unseal_idempotent(db, user):
     assert d1["code"] == 0
     assert d1["data"]["unsealed"] is True
     assert d1["data"]["already"] is False
+    assert d1["data"]["item"]["deep_link"] == ""
+    assert "index.html" not in d1["data"]["item"]["deep_link"]
 
     r2 = client.post(f"/api/panel/parcels/{item_id}/unseal")
     assert r2.json()["data"]["already"] is True
@@ -395,6 +397,9 @@ def test_parcels_envelope_contract(db, user):
     assert isinstance(data["parcels"], list)
     for p in data["parcels"]:
         assert "unsealed" in p and "deep_link" in p
+        # 网页深链已撤：字段留着给旧客户端，值必须是空串
+        assert p["deep_link"] == ""
+        assert "index.html" not in p["deep_link"]
 
 
 def test_today_unsealed_count_contract(db, user):

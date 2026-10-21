@@ -1,7 +1,8 @@
 // user_frontend/src/composables/useHomeViewMode.ts
 // 用户端首页桌面形态偏好：'world'（探险世界地图式首页）| 'classic'（现有列表式首页）
 // 存储键：aetrix:home-view:v1（登录用户追加 :u{userId} 后缀），存 JSON { mode }
-// 默认 'world'；手机端（<1024px）永远走经典视图，不消费 worldActive（本文件只管状态，不管渲染）
+// 默认 'world'。世界首页只替换桌面（≥1024）发现页。
+// 手机发现页永远是经典内容；世界地图在 /game，避免两个 Tab 变成同一页。
 import { ref, watch, computed } from 'vue'
 import { useUserStore } from '@/stores/user'
 
@@ -77,6 +78,8 @@ export function useHomeViewMode() {
   const userStore = useUserStore()
   ensureLoaded(userStore.user?.id)
   startIdWatcherOnce()
-  const worldActive = computed(() => mode.value === 'world' && isDesktop.value && userStore.isLoggedIn)
+  const worldActive = computed(
+    () => mode.value === 'world' && isDesktop.value && userStore.isLoggedIn,
+  )
   return { mode, setMode, isDesktop, worldActive }
 }

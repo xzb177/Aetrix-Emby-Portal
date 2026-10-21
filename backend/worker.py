@@ -265,6 +265,12 @@ def main() -> int:
         logger.exception("数据库初始化失败，worker 拒绝启动")
         return 1
 
+    try:
+        from backend.emby_server.public_url import warn_public_url_on_startup
+        warn_public_url_on_startup()
+    except Exception:
+        logger.warning("EMBY_PUBLIC_URL 启动校验失败，服务继续启动", exc_info=True)
+
     # 配置自愈（backend/config_self_heal.py）：只补缺失、不覆盖；失败只记日志，不阻断启动
     try:
         from backend import config_self_heal

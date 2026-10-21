@@ -16,7 +16,9 @@
    - 「流媒体加速」开关打开时自动启用；否则看环境变量 ``TRUST_CF_IP=true``
      （默认关闭，不信任任何代理头）；
    - **只有 TCP 直连对端是可信代理时才读代理头**（安全修复 H4）：Cloudflare 官方网段
-     （内置，可用 ``CLOUDFLARE_IP_RANGES`` 覆盖）、本机回环、``TRUSTED_PROXIES`` 里的网段。
+     （内置，可用 ``CLOUDFLARE_IP_RANGES`` 覆盖），以及与客户端公开地址同一份名单
+     （``peer_honors_forwarded_headers``：本机回环、``TRUSTED_PROXIES``、
+     ``FORWARDED_ALLOW_IPS``）。
      直连源站的请求带 ``CF-Connecting-IP: 127.0.0.1`` 不再生效；
    - 优先 ``CF-Connecting-IP``，回退 ``X-Forwarded-For`` **最后一段**（最近一跳代理追加的，
      首段是客户端可伪造的）；
@@ -211,8 +213,50 @@ def _cloudflare_networks() -> list:
     return nets
 
 
+def _forwarded_allow_ips() -> list[str]:
+    raw = os.getenv("FORWARDED_ALLOW_IPS", "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _ip_in_cidr_list(ip: str, parts: list[str]) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for part in parts:
+        if "/" not in part:
+            continue
+        try:
+            if addr in ipaddress.ip_network(part, strict=False):
+                return True
+        except (ValueError, TypeError):
+            continue
+    return False
+
+
+def peer_honors_forwarded_headers(ip: str) -> bool:
+    """直连 IP 是否允许采信转发头。公开 URL 与域名守卫共用这一份。
+
+    - ``TRUSTED_PROXIES``（含默认回环）：与限流同一份名单，支持 CIDR。
+    - ``FORWARDED_ALLOW_IPS``：与 uvicorn 同一变量。精确 IP、CIDR，或显式 ``*``
+      （``*`` 是部署方自己打开的，默认不信任所有对端）。
+    """
+    if not ip:
+        return False
+    allows = _forwarded_allow_ips()
+    if "*" in allows:
+        return True
+    if ip in allows:
+        return True
+    if _ip_in_cidr_list(ip, allows):
+        return True
+    from backend.ratelimit import _is_trusted_proxy
+
+    return _is_trusted_proxy(ip)
+
+
 def _peer_trusted(peer: str) -> bool:
-    """TCP 直连对端是否可信：Cloudflare 网段 / 回环 / TRUSTED_PROXIES"""
+    """TCP 直连对端是否可信：Cloudflare 网段，或 ``peer_honors_forwarded_headers``。"""
     try:
         addr = ipaddress.ip_address(peer)
     except ValueError:
@@ -220,9 +264,7 @@ def _peer_trusted(peer: str) -> bool:
     for net in _cloudflare_networks():
         if addr.version == net.version and addr in net:
             return True
-    from backend.ratelimit import _is_trusted_proxy
-
-    return _is_trusted_proxy(peer)
+    return peer_honors_forwarded_headers(peer)
 
 
 def _peer_is_cloudflare(peer: str) -> bool:

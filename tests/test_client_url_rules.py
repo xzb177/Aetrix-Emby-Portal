@@ -78,13 +78,17 @@ def test_resolve_returns_just_the_url(monkeypatch):
 
 # ==================== 请求地址怎么推出来 ====================
 
-def test_request_base_url_keeps_scheme_and_host():
+def test_request_base_url_keeps_scheme_and_host(monkeypatch):
+    """没配 EMBY_PUBLIC_URL、对端也不可信时，仍用请求自己的 scheme + Host"""
+    monkeypatch.delenv("EMBY_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
     assert portal._request_base_url(_request("https", "media.example.com")) == \
         "https://media.example.com"
 
 
-def test_request_base_url_refuses_non_http_and_missing_request():
+def test_request_base_url_refuses_non_http_and_missing_request(monkeypatch):
     """非 http(s) 的 scheme 与「没有请求」都算推断不出来（宁可回到占位，也不下发一个坏地址）"""
+    monkeypatch.delenv("EMBY_PUBLIC_URL", raising=False)
     assert portal._request_base_url(_request(scheme="ftp")) == ""
     assert portal._request_base_url(None) == ""
     assert portal._request_base_url(object()) == ""

@@ -13,15 +13,15 @@ from backend.emby_server.portal import _vidhub_import_link, VIDHUB_IMPORT_URL
 
 
 def test_uses_vidhub_scheme():
-    got = _vidhub_import_link("https://emby.135505.autos", "emby_1_a82c3e")
+    got = _vidhub_import_link("https://emby.example.com", "emby_1_a82c3e")
     assert got.startswith(VIDHUB_IMPORT_URL + "?type=emby&")
     assert VIDHUB_IMPORT_URL == "vidhub://import", got
 
 
 def test_https_without_port_defaults_to_443():
-    got = _vidhub_import_link("https://emby.135505.autos", "emby_1_a82c3e")
+    got = _vidhub_import_link("https://emby.example.com", "emby_1_a82c3e")
     assert got == (
-        "vidhub://import?type=emby&scheme=https&host=emby.135505.autos"
+        "vidhub://import?type=emby&scheme=https&host=emby.example.com"
         "&port=443&username=emby_1_a82c3e"
     ), got
 
@@ -44,7 +44,7 @@ def test_explicit_port_is_kept():
 
 
 def test_username_is_url_encoded():
-    got = _vidhub_import_link("https://emby.135505.autos", "user name+1")
+    got = _vidhub_import_link("https://emby.example.com", "user name+1")
     assert "&username=user%20name%2B1" in got, got
 
 

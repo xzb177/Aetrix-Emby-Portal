@@ -142,6 +142,13 @@ async def lifespan(app: FastAPI):
         logger.exception("数据库初始化失败，服务拒绝启动")
         raise
 
+    # EMBY_PUBLIC_URL 不合规只告警：http 或域名守卫不允许的主机不能把进程打挂。
+    try:
+        from backend.emby_server.public_url import warn_public_url_on_startup
+        warn_public_url_on_startup()
+    except Exception:
+        logger.warning("EMBY_PUBLIC_URL 启动校验失败，服务继续启动", exc_info=True)
+
     # 配置自愈（backend/config_self_heal.py，借鉴 twilight-kotomi）：
     # env.example / 代码默认值 → .env / system_configs，只补缺失、不覆盖；
     # 失败只记日志，不阻断启动。
