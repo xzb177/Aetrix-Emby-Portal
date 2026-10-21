@@ -960,11 +960,27 @@ else:
 
 
 if __name__ == "__main__":
+    import logging
+
     import uvicorn
+
+    try:
+        try:
+            from backend.domain_guard import uvicorn_proxy_kwargs
+        except ImportError:
+            from domain_guard import uvicorn_proxy_kwargs
+
+        proxy_kwargs = uvicorn_proxy_kwargs()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "构造代理头信任名单失败，uvicorn 只信回环", exc_info=True
+        )
+        proxy_kwargs = {"proxy_headers": True, "forwarded_allow_ips": "127.0.0.1,::1"}
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="info"
+        log_level="info",
+        **proxy_kwargs,
     )

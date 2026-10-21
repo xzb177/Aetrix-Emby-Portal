@@ -551,8 +551,19 @@ async def web_player_index():
 
 
 if __name__ == "__main__":
+    import logging
+
     import uvicorn
 
+    try:
+        from backend.domain_guard import uvicorn_proxy_kwargs
+
+        proxy_kwargs = uvicorn_proxy_kwargs()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "构造代理头信任名单失败，uvicorn 只信回环", exc_info=True
+        )
+        proxy_kwargs = {"proxy_headers": True, "forwarded_allow_ips": "127.0.0.1,::1"}
     uvicorn.run(
         "emby_api.main:app",
         host=os.getenv("HOST", "0.0.0.0"),
@@ -560,4 +571,6 @@ if __name__ == "__main__":
         log_level=os.getenv("LOG_LEVEL", "info"),
         # 单进程：转码子进程与会话管理在同一进程内闭环，多 worker 会重复 fork
         workers=1,
+        # 显式传入，避免 uvicorn 自己读到 FORWARDED_ALLOW_IPS=*
+        **proxy_kwargs,
     )

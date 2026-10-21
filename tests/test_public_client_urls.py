@@ -148,12 +148,18 @@ def test_untrusted_peer_cannot_forge_https_or_host(monkeypatch):
     assert not base.startswith("https://")
 
 
-def test_star_forwarded_allow_is_explicit_not_default(monkeypatch):
+def test_star_forwarded_allow_is_ignored_for_public_url(monkeypatch):
+    """``*`` 不能改写公开 URL 的 scheme/host，也不能让点名函数信任任意对端。"""
+    from backend.domain_guard import peer_honors_forwarded_headers
+
     _clear_public_env(monkeypatch)
     req = _request(client="198.51.100.8", forwarded_proto="https", forwarded_host="emby.example.com")
     assert client_base_url(req).startswith("http://")
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
-    assert client_base_url(req) == "https://emby.example.com"
+    assert peer_honors_forwarded_headers("198.51.100.8") is False
+    base = client_base_url(req)
+    assert base == f"http://{ORIGIN_IP}"
+    assert "emby.example.com" not in base
 
 
 def test_restored_real_ip_still_trusts_forwarded_proto(monkeypatch):
