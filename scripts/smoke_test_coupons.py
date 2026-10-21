@@ -583,10 +583,11 @@ r = client.delete(f"/api/admin/economy/coupons/{unused.id}", headers=ADMIN_H)
 check("从没用过的券可以删", r.status_code == 200, f"{r.status_code} {r.text[:120]}")
 check("删除后库里查不到", coupon_row("MIN200") is None)
 
-# 总开关
+# 总开关（2026-10-21 A 类开关摘面板：改走 env COUPON_ENABLED，面板只改预订时限）
+os.environ["COUPON_ENABLED"] = "false"
 r = client.put("/api/admin/economy/coupons/settings", headers=ADMIN_H,
-               json={"enabled": False, "reserve_hours": 48})
-check("关闭总开关并设置预订时限",
+               json={"reserve_hours": 48})
+check("env 关闭总开关 + 面板设置预订时限",
       r.status_code == 200 and r.json()["enabled"] is False
       and r.json()["reserve_hours"] == 48, f"{r.status_code} {r.text[:120]}")
 r = client.get("/api/user/economy/payment/coupon/config", headers=USER_H)
@@ -599,9 +600,10 @@ r = client.post("/api/user/economy/payment/order", headers=USER_H, json={
     "kind": "recharge", "item_id": pkg_id, "payment_method": "alipay", "coupon_code": "CUT5",
 })
 check("关闭后带券下单也被拒", r.status_code == 400, f"{r.status_code} {r.text[:100]}")
+os.environ.pop("COUPON_ENABLED", None)  # 恢复缺省（开）
 r = client.put("/api/admin/economy/coupons/settings", headers=ADMIN_H,
-               json={"enabled": True, "reserve_hours": 24})
-check("重新开启成功", r.status_code == 200 and r.json()["enabled"] is True)
+               json={"reserve_hours": 24})
+check("去掉 env 后恢复开启", r.status_code == 200 and r.json()["enabled"] is True)
 r = client.get("/api/admin/economy/coupons/settings", headers=ADMIN_H)
 check("设置里能看到当前占用中的预订数",
       r.status_code == 200 and "active_usage" in r.json(), r.text[:120])

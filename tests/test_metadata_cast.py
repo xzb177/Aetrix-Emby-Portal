@@ -245,8 +245,11 @@ def test_enrich_apply_without_credits_writes_nothing(db):
     assert db.query(em.EmbyPerson).count() == 0
 
 
-def test_enrich_apply_cast_failure_does_not_break_main_flow(db):
+def test_enrich_apply_cast_failure_does_not_break_main_flow(db, monkeypatch):
     """演员落库抛异常也不该影响主流程（条目照常 done）。"""
+    # 2026-10-21 A 类开关摘面板：字段级完成口径缺省改为开（=生产现值），
+    # 本用例验证的是「字段级口径关」时的核心完成线，按 env 显式关闭
+    monkeypatch.setenv("ENRICH_FIELD_COMPLETENESS", "0")
     item = _make_item(db, tmdb_id="123", name="主流程")
     with mock.patch(
         "backend.emby_server.tmdb.cast_list", side_effect=RuntimeError("boom")):

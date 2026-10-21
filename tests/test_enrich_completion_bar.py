@@ -72,8 +72,11 @@ BASE_OK = {"ok": True, "poster": None, "fanart": None, "external_subs": [],
            "error": None}
 
 
-def test_completes_when_title_and_year_present_but_no_overview(db):
+def test_completes_when_title_and_year_present_but_no_overview(db, monkeypatch):
     """核心复现：生产那 571 条——标题+年份齐、简介空，应判 done 而不是永久 pending"""
+    # 2026-10-21 A 类开关摘面板：字段级完成口径缺省改为开（=生产现值），
+    # 本用例验证的是「字段级口径关」时的核心完成线，按 env 显式关闭
+    monkeypatch.setenv("ENRICH_FIELD_COMPLETENESS", "0")
     it = _item(db, name="007：女王密使", production_year=1969,
                tmdb_id="1642")
     _apply(db, it, dict(BASE_OK))

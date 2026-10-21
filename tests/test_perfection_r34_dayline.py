@@ -80,7 +80,9 @@ def test_today_start_is_shanghai_midnight_utc_frame():
     assert (sh.hour, sh.minute, sh.second, sh.microsecond) == (0, 0, 0, 0)
 
 
-def test_checkin_writes_shanghai_day_start(db):
+def test_checkin_writes_shanghai_day_start(db, monkeypatch):
+    # 2026-10-21 A 类开关摘面板：开关改走 env，签到缺省关，测试按 env 打开
+    monkeypatch.setenv("CHECKIN_ENABLED", "true")
     u = _make_user(db)
     economy._do_checkin_core(db, u)
     rec = db.query(models.CheckinRecord).filter(
@@ -88,7 +90,9 @@ def test_checkin_writes_shanghai_day_start(db):
     assert rec.checkin_date == _shanghai_today_start_utc()
 
 
-def test_checkin_duplicate_still_rejected(db):
+def test_checkin_duplicate_still_rejected(db, monkeypatch):
+    # 2026-10-21 A 类开关摘面板：开关改走 env，签到缺省关，测试按 env 打开
+    monkeypatch.setenv("CHECKIN_ENABLED", "true")
     u = _make_user(db, username="u2")
     economy._do_checkin_core(db, u)
     with pytest.raises(HTTPException) as ei:

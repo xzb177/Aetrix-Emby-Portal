@@ -254,9 +254,11 @@ check("同一用户累计两条站内信（7 天档 + 3 天档）",
 
 print("\n--- 开关与档位：可配、写错不致命 ---")
 
-r = client.put("/api/admin/economy/expiry-reminders/settings", headers=ADMIN_H,
-               json={"settings": {"expiry_reminder_enabled": False}})
-check("面板可关闭到期提醒", r.status_code == 200 and r.json()["status"]["enabled"] is False,
+# 2026-10-21 A 类开关摘面板：到期提醒总开关改走 env EXPIRY_REMINDER_ENABLED，
+# 面板只改档位等正经配置；这里按 env 关闭，并确认面板只读口径如实回显
+os.environ["EXPIRY_REMINDER_ENABLED"] = "false"
+r = client.get("/api/admin/economy/expiry-reminders", headers=ADMIN_H)
+check("env 关闭到期提醒后面板如实回显", r.status_code == 200 and r.json().get("enabled") is False,
       f"status={r.status_code} {r.text[:120]}")
 
 with SessionLocal() as db:
@@ -276,8 +278,9 @@ check("关闭后不发送任何提醒",
       off["enabled"] is False and off["reminded"] == 0 and off["expired_notified"] == 0, str(off))
 check("关闭后不落站内信", station_messages(off_user) == [])
 
+os.environ.pop("EXPIRY_REMINDER_ENABLED", None)  # 恢复缺省（开）
 r = client.put("/api/admin/economy/expiry-reminders/settings", headers=ADMIN_H,
-               json={"settings": {"expiry_reminder_enabled": True, "expiry_reminder_days": "14,2"}})
+               json={"settings": {"expiry_reminder_days": "14,2"}})
 check("面板可改档位", r.status_code == 200 and r.json()["status"]["thresholds"] == [14, 2],
       str(r.json().get("status", {}).get("thresholds")))
 

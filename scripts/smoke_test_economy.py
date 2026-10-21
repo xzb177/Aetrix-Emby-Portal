@@ -8,6 +8,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 不写死库文件名：交给 backend.database 解析（新装 aetrix_unified.db，老部署沿用原库）
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
+# 2026-10-21 A 类开关摘面板：签到缺省关（服主保持关），本冒烟验证签到链路，按 env 显式打开
+os.environ["CHECKIN_ENABLED"] = "true"
 
 from datetime import datetime, timedelta
 from decimal import Decimal

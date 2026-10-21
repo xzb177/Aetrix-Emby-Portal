@@ -56,6 +56,15 @@ def _ids(db):
     return {lib.id for lib in db.query(em.Library).all()}
 
 
+def _write_default(monkeypatch, db, enabled, library_ids):
+    """A 类开关摘面板（2026-10-21）后：默认范围总开关改走 env
+    LIBRARY_SCOPE_DEFAULT_ENABLED，面板只保存可见库清单。测试里先按 env 设开关，
+    再写清单，与生产口径一致。"""
+    monkeypatch.setenv("LIBRARY_SCOPE_DEFAULT_ENABLED", "1" if enabled else "0")
+    store.invalidate()
+    return library_scope.write_default(db, enabled, library_ids)
+
+
 # ==================== 1. 默认不打断现有行为 ====================
 
 
@@ -90,12 +99,12 @@ def test_broken_config_is_treated_as_unconfigured(db):
 # ==================== 2. 服务器默认范围 ====================
 
 
-def test_default_scope_restricts_normal_users(db):
+def test_default_scope_restricts_normal_users(db, monkeypatch):
     _library(db, "电影")
     staff_lib = _library(db, "内部")
     user = _user(db)
 
-    library_scope.write_default(db, True, [staff_lib.id])
+    _write_default(monkeypatch, db, True, [staff_lib.id])
     db.commit()
 
     open_lib_id = list(_ids(db) - {staff_lib.id})[0]
@@ -105,28 +114,28 @@ def test_default_scope_restricts_normal_users(db):
     assert library_scope.library_allowed(db, user, None) is True, "没归到库的条目放行"
 
 
-def test_staff_exempt(db):
+def test_staff_exempt(db, monkeypatch):
     """工作人员排障要看到全部库，与防共享对管理员豁免同一个理由"""
     _library(db, "电影")
     staff_lib = _library(db, "内部")
     boss = _user(db, "boss", is_staff=True)
 
-    library_scope.write_default(db, True, [staff_lib.id])
+    _write_default(monkeypatch, db, True, [staff_lib.id])
     db.commit()
 
     assert library_scope.effective_ids(db, boss) is None
 
 
-def test_default_off_means_everything_visible(db):
+def test_default_off_means_everything_visible(db, monkeypatch):
     """关掉 = 恢复到全部可见（不是「一个都看不到」）"""
     lib = _library(db, "电影")
     _library(db, "剧集")
     user = _user(db)
 
-    library_scope.write_default(db, True, [lib.id])
+    _write_default(monkeypatch, db, True, [lib.id])
     assert library_scope.effective_ids(db, user) == {lib.id}
 
-    library_scope.write_default(db, False, [lib.id])
+    _write_default(monkeypatch, db, False, [lib.id])
     db.commit()
     assert library_scope.effective_ids(db, user) is None
 
@@ -134,20 +143,20 @@ def test_default_off_means_everything_visible(db):
 # ==================== 3. 空列表不能等于全部隐藏 ====================
 
 
-def test_enabling_with_no_library_is_rejected(db):
+def test_enabling_with_no_library_is_rejected(db, monkeypatch):
     """开开关却一个库都没勾 = 配置错误，必须报错而不是把全站媒体库清空"""
     _library(db, "电影")
     with pytest.raises(ValueError):
-        library_scope.write_default(db, True, [])
-    # 被拒之后配置保持原样（关闭）
-    assert library_scope.default_policy(db)["enabled"] is False
+        _write_default(monkeypatch, db, True, [])
+    # 被拒之后清单保持原样（空）；开关本身在 env，不由这次写入决定
+    assert library_scope.default_policy(db)["library_ids"] == []
 
 
-def test_enabled_but_all_libraries_deleted_falls_back(db):
+def test_enabled_but_all_libraries_deleted_falls_back(db, monkeypatch):
     """开着开关，但选中的库被删光 → 退回不过滤，不能变成一个都看不到"""
     lib = _library(db, "电影")
     user = _user(db)
-    library_scope.write_default(db, True, [lib.id])
+    _write_default(monkeypatch, db, True, [lib.id])
     db.delete(lib)
     db.commit()
     store.invalidate()
@@ -157,20 +166,20 @@ def test_enabled_but_all_libraries_deleted_falls_back(db):
     assert payload["default"]["active"] is False, "后台要看得见「没生效」这件事"
 
 
-def test_unknown_library_ids_are_dropped_on_write(db):
+def test_unknown_library_ids_are_dropped_on_write(db, monkeypatch):
     """写入时就把已删掉的库 id 剔干净：配置里留一堆死 id 只会在后台显示成
     「已删除的库 #7」；只剩死 id 还要启用 = 一个有效库都没有，直接拒绝"""
     keep = _library(db, "电影")
     user = _user(db)
 
     # 混入不存在的 id：只留真实存在的那一个
-    applied = library_scope.write_default(db, True, [keep.id, 99999])
+    applied = _write_default(monkeypatch, db, True, [keep.id, 99999])
     assert applied["library_ids"] == [keep.id]
     assert library_scope.effective_ids(db, user) == {keep.id}
 
     # 全是不存在的 id：拒绝——这次写入一个字节都不落库，原配置原样不动
     with pytest.raises(ValueError):
-        library_scope.write_default(db, True, [99999])
+        _write_default(monkeypatch, db, True, [99999])
     assert library_scope.default_policy(db)["enabled"] is True, "被拒之后原配置不动"
     with pytest.raises(ValueError):
         library_scope.write_user_override(db, user.id, True, [99999])
@@ -179,13 +188,13 @@ def test_unknown_library_ids_are_dropped_on_write(db):
 # ==================== 4. 用户单独覆盖 ====================
 
 
-def test_user_override_beats_default(db):
+def test_user_override_beats_default(db, monkeypatch):
     default_lib = _library(db, "电影")
     _library(db, "剧集")
     mine = _library(db, "内部")
     user = _user(db)
 
-    library_scope.write_default(db, True, [default_lib.id])
+    _write_default(monkeypatch, db, True, [default_lib.id])
     library_scope.write_user_override(db, user.id, True, [mine.id])
     db.commit()
 
@@ -195,12 +204,12 @@ def test_user_override_beats_default(db):
     assert library_scope.effective_ids(db, other) == {default_lib.id}
 
 
-def test_turning_override_off_returns_to_default(db):
+def test_turning_override_off_returns_to_default(db, monkeypatch):
     default_lib = _library(db, "电影")
     mine = _library(db, "内部")
     user = _user(db)
 
-    library_scope.write_default(db, True, [default_lib.id])
+    _write_default(monkeypatch, db, True, [default_lib.id])
     library_scope.write_user_override(db, user.id, True, [mine.id])
     library_scope.write_user_override(db, user.id, False, [mine.id])
     db.commit()
@@ -212,12 +221,12 @@ def test_turning_override_off_returns_to_default(db):
     assert kept["libraries"] == [mine.id]
 
 
-def test_removing_override_fully_returns_to_default(db):
+def test_removing_override_fully_returns_to_default(db, monkeypatch):
     default_lib = _library(db, "电影")
     mine = _library(db, "内部")
     user = _user(db)
 
-    library_scope.write_default(db, True, [default_lib.id])
+    _write_default(monkeypatch, db, True, [default_lib.id])
     library_scope.write_user_override(db, user.id, True, [mine.id])
     db.commit()
     assert library_scope.remove_user_override(db, user.id)["removed"] is True
@@ -226,12 +235,12 @@ def test_removing_override_fully_returns_to_default(db):
     assert library_scope.effective_ids(db, user) == {default_lib.id}
 
 
-def test_override_with_deleted_libraries_falls_back_to_default(db):
+def test_override_with_deleted_libraries_falls_back_to_default(db, monkeypatch):
     """个人覆盖选的库被删光 → 回落服务器默认，而不是「一个都看不到」"""
     default_lib = _library(db, "电影")
     mine = _library(db, "内部")
     user = _user(db)
-    library_scope.write_default(db, True, [default_lib.id])
+    _write_default(monkeypatch, db, True, [default_lib.id])
     library_scope.write_user_override(db, user.id, True, [mine.id])
     db.delete(mine)
     db.commit()
@@ -260,7 +269,7 @@ def test_override_on_top_of_default_off(db):
 # ==================== 5. 接入点：客户端媒体库列表 ====================
 
 
-def test_user_views_hides_out_of_scope_libraries(db):
+def test_user_views_hides_out_of_scope_libraries(db, monkeypatch):
     """``user_views`` 是客户端媒体库列表的唯一出口，必须照可见范围过滤"""
     open_lib = _library(db, "电影", is_enabled=True)
     secret_lib = _library(db, "内部", is_enabled=True)
@@ -271,7 +280,7 @@ def test_user_views_hides_out_of_scope_libraries(db):
     names = {i["Name"] for i in emby_api.user_views("me", user=user, db=db)["Items"]}
     assert names == {"电影", "内部"}
 
-    library_scope.write_default(db, True, [open_lib.id])
+    _write_default(monkeypatch, db, True, [open_lib.id])
     db.commit()
     names = {i["Name"] for i in emby_api.user_views("me", user=user, db=db)["Items"]}
     assert names == {"电影"}, "停用的库不该出现，没选中的也不该出现"
@@ -282,11 +291,11 @@ def test_user_views_hides_out_of_scope_libraries(db):
     assert names == {"电影", "内部"}
 
 
-def test_user_views_applies_user_override(db):
+def test_user_views_applies_user_override(db, monkeypatch):
     open_lib = _library(db, "电影")
     secret_lib = _library(db, "内部")
     user = _user(db)
-    library_scope.write_default(db, True, [open_lib.id])
+    _write_default(monkeypatch, db, True, [open_lib.id])
     library_scope.write_user_override(db, user.id, True, [secret_lib.id])
     db.commit()
 
@@ -311,7 +320,7 @@ def _movie(db, lib, title):
     return row
 
 
-def test_scope_query_filters_by_library(db):
+def test_scope_query_filters_by_library(db, monkeypatch):
     """条目查询的过滤语义：不在名单里的库里的条目不出现在列表/搜索里，
     没归库的条目（library_id IS NULL）一并放行，与 nodes 同一口径"""
     from backend import library_scope as ls
@@ -321,7 +330,7 @@ def test_scope_query_filters_by_library(db):
     shown = _movie(db, open_lib, "公开片")
     hidden = _movie(db, secret_lib, "内部片")
     user = _user(db)
-    library_scope.write_default(db, True, [open_lib.id])
+    _write_default(monkeypatch, db, True, [open_lib.id])
     db.commit()
 
     allowed = ls.effective_ids(db, user)
@@ -337,14 +346,14 @@ def test_scope_query_filters_by_library(db):
     assert shown.id != hidden.id
 
 
-def test_item_allowed_by_library(db):
+def test_item_allowed_by_library(db, monkeypatch):
     """按条目判定（详情/播放前的单点检查用同一份口径）"""
     open_lib = _library(db, "电影")
     secret_lib = _library(db, "内部")
     _movie(db, open_lib, "公开片")
     secret = _movie(db, secret_lib, "内部片")
     user = _user(db)
-    library_scope.write_default(db, True, [open_lib.id])
+    _write_default(monkeypatch, db, True, [open_lib.id])
     db.commit()
 
     assert library_scope.item_allowed(db, user, secret) is False
@@ -355,11 +364,11 @@ def test_item_allowed_by_library(db):
 # ==================== 7. 管理端 payload ====================
 
 
-def test_policy_payload_reports_state(db):
+def test_policy_payload_reports_state(db, monkeypatch):
     open_lib = _library(db, "电影")
     secret_lib = _library(db, "内部")
     user = _user(db)
-    library_scope.write_default(db, True, [open_lib.id])
+    _write_default(monkeypatch, db, True, [open_lib.id])
     library_scope.write_user_override(db, user.id, True, [secret_lib.id])
     db.commit()
 

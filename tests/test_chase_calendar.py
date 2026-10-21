@@ -54,6 +54,15 @@ def _user(db, username="alice", **kw):
     return row
 
 
+def _write_default(monkeypatch, db, enabled, library_ids):
+    """A 类开关摘面板（2026-10-21）后：默认范围总开关改走 env
+    LIBRARY_SCOPE_DEFAULT_ENABLED，面板只保存可见库清单。测试里先按 env 设开关，
+    再写清单，与生产口径一致。"""
+    monkeypatch.setenv("LIBRARY_SCOPE_DEFAULT_ENABLED", "1" if enabled else "0")
+    store.invalidate()
+    return library_scope.write_default(db, enabled, library_ids)
+
+
 def _library(db, name, **kw):
     row = em.Library(guid=f"guid-{name}", name=name, **kw)
     db.add(row)
@@ -330,14 +339,14 @@ def test_item_carries_library_name(db):
 # ==================== 5. 可见范围 ====================
 
 
-def test_library_scope_is_applied(db):
+def test_library_scope_is_applied(db, monkeypatch):
     """不可见的库里上了新片，日历里也不能出现"""
     open_lib = _library(db, "电影")
     secret_lib = _library(db, "内部")
     user = _user(db)
     _item(db, open_lib, "公开片", added=datetime(2026, 10, 2, 10, 0))
     _item(db, secret_lib, "内部片", added=datetime(2026, 10, 2, 11, 0))
-    library_scope.write_default(db, True, [open_lib.id])
+    _write_default(monkeypatch, db, True, [open_lib.id])
     db.commit()
 
     payload = _call(db, user, start="2026-10-01", end="2026-10-31")
@@ -345,12 +354,12 @@ def test_library_scope_is_applied(db):
     assert [i["Name"] for i in payload["days"][0]["items"]] == ["公开片"]
 
 
-def test_staff_sees_every_library(db):
+def test_staff_sees_every_library(db, monkeypatch):
     open_lib = _library(db, "电影")
     secret_lib = _library(db, "内部")
     boss = _user(db, "boss", is_staff=True)
     _item(db, secret_lib, "内部片", added=datetime(2026, 10, 2, 11, 0))
-    library_scope.write_default(db, True, [open_lib.id])
+    _write_default(monkeypatch, db, True, [open_lib.id])
     db.commit()
 
     payload = _call(db, boss, start="2026-10-01", end="2026-10-31")
