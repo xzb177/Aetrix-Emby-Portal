@@ -14,64 +14,125 @@
     <circle class="waypoint" cx="196" cy="600" r="7"/>
     <circle class="waypoint" cx="700" cy="600" r="7"/>
     </svg>
-    <button type="button" class="mark m-cinema" style="left: 28.83%; top: 65.46%;" @click="on.cinema" aria-label="梦幻影院">
-      <AnchorArt art="cinema" class="pin art-cinema" />
-      <span class="name">梦幻影院</span>
-      <span class="sub">{{ subs.cinema }}</span>
-    </button>
-    <button type="button" class="mark m-parcels" style="left: 44.64%; top: 68.63%;" @click="on.parcels" aria-label="封存驿站">
-      <span class="dot" v-if="remaining > 0">{{ remaining }}</span>
-      <AnchorArt art="parcels" class="pin art-parcels" />
-      <span class="name">封存驿站</span>
-      <span class="sub">{{ subs.parcels }}</span>
-    </button>
-    <button type="button" class="mark m-lighthouse lighthouse" style="left: 82.3%; top: 62.5%;" @click="on.lighthouse" aria-label="传送灯塔">
-      <AnchorArt art="lighthouse" class="pin art-lighthouse" />
-      <span class="name">传送灯塔</span>
-      <span class="sub">{{ subs.lighthouse }}</span>
-    </button>
-    <button type="button" class="mark m-shop" style="left: 36.10%; top: 83.14%;" @click="on.shop" aria-label="补给站">
-      <AnchorArt art="shop" class="pin art-shop" />
-      <span class="name">补给站</span>
-    </button>
-    <button type="button" class="mark m-collector" style="left: 12.50%; top: 68.63%;" @click="on.collector" aria-label="收藏家小屋">
-      <AnchorArt art="collector" class="pin art-collector" />
-      <span class="name">收藏家小屋</span>
-      <span class="sub">{{ subs.collector }}</span>
-    </button>
-    <button type="button" class="mark m-post" style="left: 17.35%; top: 47.54%;" @click="on.post" aria-label="邮局">
-      <span class="dot" v-if="hasLetter && !letterRead">1</span>
-      <AnchorArt art="post" class="pin art-post" />
-      <span class="name">邮局</span>
-      <span class="sub">{{ subs.post }}</span>
-    </button>
-    <button type="button" class="mark m-gamehall" style="left: 56.12%; top: 82.24%;" @click="on.gamehall" aria-label="游戏大厅">
-      <AnchorArt art="gamehall" class="pin art-gamehall" />
-      <span class="name">游戏大厅</span>
-    </button>
-    <button type="button" class="mark m-stele" style="left: 51.40%; top: 41.42%;" @click="on.stele" aria-label="观影碑">
-      <AnchorArt art="stele" class="pin art-stele" />
-      <span class="name">观影碑</span>
-      <span class="sub">{{ subs.stele }}</span>
-    </button>
-    <button type="button" class="mark m-board" style="left: 27%; top: 82.5%;" @click="on.board" aria-label="告示牌">
-      <AnchorArt art="board" class="pin art-board" />
-      <span class="name">告示牌</span>
-      <span class="sub">{{ subs.board }}</span>
-    </button>
-    <button type="button" class="mark m-wall" style="left: 76.8%; top: 44%;" @click="on.wall" aria-label="留言墙">
-      <AnchorArt art="wall" class="pin art-wall" />
-      <span class="name">留言墙</span>
-      <span class="sub">{{ subs.wall }}</span>
-    </button>
-    <button type="button" class="mark m-fortune" style="left: 67.09%; top: 66.36%;" :class="{ 'fortune-pending': !fortuneDrew }" @click="on.fortune" aria-label="抽签亭">
-      <AnchorArt art="fortune" class="pin art-fortune" />
-      <span class="name">抽签亭</span>
-      <span class="sub">{{ subs.fortune }}</span>
-    </button>
-    <div class="player m-player" style="left: 49%; top: 88%;">
-      <div class="tok">{{ avatarChar }}</div>
-      <span class="who">你在这里</span>
+    <!-- 锚点盒不设 transform / z-index。建筑与标签是兄弟层：标签 z-index 更高，才能盖过后面的房子。 -->
+    <div class="spot s-cinema" style="left: 28.83%; top: 65.46%;">
+      <button type="button" class="mark pin-hit" @click="on.cinema" aria-label="梦幻影院">
+        <AnchorArt art="cinema" class="pin art-cinema" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">梦幻影院</span><span class="sub">{{ subs.cinema }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.cinema">
+        <span class="name">梦幻影院</span>
+        <span class="sub">{{ subs.cinema }}</span>
+      </div>
+    </div>
+    <div class="spot s-parcels" style="left: 44.64%; top: 68.63%;">
+      <button type="button" class="mark pin-hit" @click="on.parcels" aria-label="封存驿站">
+        <span class="dot" v-if="remaining > 0">{{ remaining }}</span>
+        <AnchorArt art="parcels" class="pin art-parcels" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">封存驿站</span><span class="sub">{{ subs.parcels }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.parcels">
+        <span class="name">封存驿站</span>
+        <span class="sub">{{ subs.parcels }}</span>
+      </div>
+    </div>
+    <div class="spot s-lighthouse" style="left: 82.3%; top: 62.5%;">
+      <button type="button" class="mark pin-hit lighthouse" @click="on.lighthouse" aria-label="传送灯塔">
+        <AnchorArt art="lighthouse" class="pin art-lighthouse" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">传送灯塔</span><span class="sub">{{ subs.lighthouse }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.lighthouse">
+        <span class="name">传送灯塔</span>
+        <span class="sub">{{ subs.lighthouse }}</span>
+      </div>
+    </div>
+    <div class="spot s-shop" style="left: 36.10%; top: 83.14%;">
+      <button type="button" class="mark pin-hit" @click="on.shop" aria-label="补给站">
+        <AnchorArt art="shop" class="pin art-shop" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">补给站</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.shop">
+        <span class="name">补给站</span>
+      </div>
+    </div>
+    <div class="spot s-collector" style="left: 12.50%; top: 68.63%;">
+      <button type="button" class="mark pin-hit" @click="on.collector" aria-label="收藏家小屋">
+        <AnchorArt art="collector" class="pin art-collector" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">收藏家小屋</span><span class="sub">{{ subs.collector }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.collector">
+        <span class="name">收藏家小屋</span>
+        <span class="sub">{{ subs.collector }}</span>
+      </div>
+    </div>
+    <div class="spot s-post" style="left: 17.35%; top: 47.54%;">
+      <button type="button" class="mark pin-hit" @click="on.post" aria-label="邮局">
+        <span class="dot" v-if="hasLetter && !letterRead">1</span>
+        <AnchorArt art="post" class="pin art-post" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">邮局</span><span class="sub">{{ subs.post }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.post">
+        <span class="name">邮局</span>
+        <span class="sub">{{ subs.post }}</span>
+      </div>
+    </div>
+    <div class="spot s-gamehall" style="left: 56.12%; top: 82.24%;">
+      <button type="button" class="mark pin-hit" @click="on.gamehall" aria-label="游戏大厅">
+        <AnchorArt art="gamehall" class="pin art-gamehall" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">游戏大厅</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.gamehall">
+        <span class="name">游戏大厅</span>
+      </div>
+    </div>
+    <div class="spot s-stele" style="left: 51.40%; top: 41.42%;">
+      <button type="button" class="mark pin-hit" @click="on.stele" aria-label="观影碑">
+        <AnchorArt art="stele" class="pin art-stele" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">观影碑</span><span class="sub">{{ subs.stele }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.stele">
+        <span class="name">观影碑</span>
+        <span class="sub">{{ subs.stele }}</span>
+      </div>
+    </div>
+    <div class="spot s-board" style="left: 27%; top: 82.5%;">
+      <button type="button" class="mark pin-hit" @click="on.board" aria-label="告示牌">
+        <AnchorArt art="board" class="pin art-board" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">告示牌</span><span class="sub">{{ subs.board }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.board">
+        <span class="name">告示牌</span>
+        <span class="sub">{{ subs.board }}</span>
+      </div>
+    </div>
+    <div class="spot s-wall" style="left: 76.8%; top: 44%;">
+      <button type="button" class="mark pin-hit" @click="on.wall" aria-label="留言墙">
+        <AnchorArt art="wall" class="pin art-wall" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">留言墙</span><span class="sub">{{ subs.wall }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.wall">
+        <span class="name">留言墙</span>
+        <span class="sub">{{ subs.wall }}</span>
+      </div>
+    </div>
+    <div class="spot s-fortune" style="left: 67.09%; top: 66.36%;">
+      <button type="button" class="mark pin-hit" :class="{ 'fortune-pending': !fortuneDrew }" @click="on.fortune" aria-label="抽签亭">
+        <AnchorArt art="fortune" class="pin art-fortune" />
+        <span class="lab-spacer" aria-hidden="true"><span class="name">抽签亭</span><span class="sub">{{ subs.fortune }}</span></span>
+      </button>
+      <div class="mark lab-hit" aria-hidden="true" @click="on.fortune">
+        <span class="name">抽签亭</span>
+        <span class="sub">{{ subs.fortune }}</span>
+      </div>
+    </div>
+    <div class="spot s-player" style="left: 49%; top: 88%;">
+      <div class="player pin-hit">
+        <div class="tok">{{ avatarChar }}</div>
+        <span class="lab-spacer" aria-hidden="true"><span class="who">你在这里</span></span>
+      </div>
+      <div class="lab-hit player-lab" aria-hidden="true">
+        <span class="who">你在这里</span>
+      </div>
     </div>
     <div class="night-veil" aria-hidden="true"><svg class="veil-moon moon-d" viewBox="-34 -34 68 68" aria-hidden="true"><path d="M15.5 -26.8 A31 31 0 1 0 15.5 26.8 A28 28 0 1 1 15.5 -26.8 Z" fill="#f7f0cf" stroke="#a06c24" stroke-width="1.6" stroke-linejoin="round" transform="rotate(-18)"/></svg><svg class="veil-moon moon-m" viewBox="-34 -34 68 68" aria-hidden="true"><path d="M15.5 -26.8 A31 31 0 1 0 15.5 26.8 A28 28 0 1 1 15.5 -26.8 Z" fill="#f7f0cf" stroke="#a06c24" stroke-width="1.6" stroke-linejoin="round" transform="rotate(-18)"/></svg></div>
   </div>
@@ -130,17 +191,69 @@ defineProps<{
   width: 100%;
   height: 100%;
 }
-.mark {
+/* 锚点不建立层叠上下文。建筑 z-index 较低，标签较高，标签画在所有建筑之上。
+   建筑按钮里用不可见占位把房子顶到标签上方，可见标签是兄弟元素，才能盖过别的房子。 */
+.spot {
   position: absolute;
-  z-index: 20;
-  transform: translate(-50%, -100%);
-  text-align: center;
-  cursor: pointer;
+  width: 0;
+  height: 0;
+}
+/* 副标题比房子宽时，标签让开相邻建筑：影院改到屋顶上方，邮局左移，补给站右移，留言墙改到灯塔右侧 */
+.spot.s-cinema { --lab-x: 0.8cqw; --lab-y: -16cqw; }
+.spot.s-post { --lab-x: -1.2cqw; }
+.spot.s-shop { --lab-x: 2.8cqw; }
+.spot.s-wall { --lab-x: 12.4cqw; --lab-y: -10.6cqw; }
+.pin-hit,
+.lab-hit {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  margin: 0;
+  padding: 0;
   background: none;
   border: none;
-  padding: 0;
   font: inherit;
   color: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.pin-hit {
+  z-index: 6;
+  transform: translate(-50%, 0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 占位文字不接收点击，避免看不见的标签槽挡住旁边的房子 */
+  pointer-events: none;
+}
+.pin-hit .pin,
+.pin-hit .dot {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.pin-hit:focus-visible {
+  outline: none;
+}
+.pin-hit:focus-visible .pin {
+  outline: 2px solid var(--paper-teal);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.lab-hit {
+  z-index: 8;
+  transform: translate(calc(-50% + var(--lab-x, 0px)), var(--lab-y, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: max-content;
+  pointer-events: auto;
+}
+.lab-spacer {
+  visibility: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
 }
 .mark .pin {
   margin: 0 auto;
@@ -193,15 +306,19 @@ defineProps<{
   padding: 0.21cqw 0.69cqw;
   letter-spacing: 0.03cqw;
   white-space: nowrap;
+  overflow: visible;
 }
 .mark .sub {
   display: block;
   margin-top: 0.28cqw;
   font-size: 0.83cqw;
+  line-height: 1.35;
   color: var(--paper-ink-soft);
   background: var(--paper-card-soft);
   border-radius: 0.42cqw;
   padding: 0.07cqw 0.56cqw;
+  white-space: nowrap;
+  overflow: visible;
 }
 .mark .dot {
   position: absolute;
@@ -221,14 +338,22 @@ defineProps<{
   border: 2px solid var(--paper-card-soft);
   z-index: 2;
 }
-.mark:hover .pin {
+.spot:hover .pin {
   transform: translateY(-0.21cqw);
 }
 .player {
-  position: absolute;
-  z-index: 25;
-  transform: translate(-50%, -100%);
   text-align: center;
+  cursor: default;
+}
+.player.pin-hit {
+  z-index: 7;
+  cursor: default;
+  pointer-events: none;
+}
+.player-lab {
+  z-index: 8;
+  cursor: default;
+  pointer-events: none;
 }
 .player .tok {
   width: 2.78cqw;
@@ -254,7 +379,7 @@ defineProps<{
   border-radius: 99px;
   display: inline-block;
 }
-.mark.fortune-pending .pin { animation: fortunePulse 2.2s ease-in-out infinite; }
+.pin-hit.fortune-pending .pin { animation: fortunePulse 2.2s ease-in-out infinite; }
 @keyframes fortunePulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 
 
@@ -298,7 +423,8 @@ defineProps<{
 }
 @media (prefers-reduced-motion: reduce) {
   .mark .pin { transition: none; }
-  .mark.fortune-pending .pin { animation: none; }
+  .pin-hit.fortune-pending .pin { animation: none; }
+  .spot:hover .pin { transform: none; }
   .trail-quest { transition: none; }
 }
 
