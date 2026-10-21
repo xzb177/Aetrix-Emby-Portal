@@ -51,7 +51,7 @@ function cacheUserId(): number | null {
   return useUserStore().user?.id ?? null
 }
 
-/** 账号卡 import_schemes。失败不写入缓存，下次再拉；缓存按用户 id 分开，换号不串。 */
+/** 账号卡 import_schemes。失败或空列表不写入缓存，下次再拉；缓存按用户 id 分开，换号不串。 */
 export function loadImportSchemes(force = false): Promise<PlayerScheme[]> {
   const userId = cacheUserId()
   if (cached && cached.userId !== userId) cached = null
@@ -62,7 +62,7 @@ export function loadImportSchemes(force = false): Promise<PlayerScheme[]> {
     .getAccountCard()
     .then((card: AccountCard) => {
       const schemes = listImportSchemes(card?.import_schemes)
-      if (cacheUserId() === userId) cached = { userId, schemes }
+      if (schemes.length > 0 && cacheUserId() === userId) cached = { userId, schemes }
       return schemes
     })
     .catch(() => [] as PlayerScheme[])

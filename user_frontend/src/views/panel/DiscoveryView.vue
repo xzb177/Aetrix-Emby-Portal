@@ -225,8 +225,11 @@ const showWorldSwitch = computed(() => {
   return homeMode.value === 'classic'
 })
 function goWorld() {
+  if (!homeIsDesktop.value) {
+    void router.push('/game')
+    return
+  }
   setHomeMode('world')
-  if (!homeIsDesktop.value) void router.push('/game')
 }
 const { today, parcels, pulse, letter, feed } = storeToRefs(panel)
 // 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
