@@ -4285,6 +4285,33 @@ def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
     return parents == refs_series + refs_season
 
 
+def _evict_gone_drive_files(db, library, gone: list) -> None:
+    """来源里已经没有的 Drive 文件：摘掉播放侧存在性正缓存。
+
+    播放在 EA 容器，扫描在别的容器，失效走 Redis 墓碑（见 api.invalidate）。
+    任何失败都不许打断清理。
+    """
+    if not gone:
+        return
+    try:
+        from types import SimpleNamespace
+
+        from backend.emby_server.api import invalidate_drive_exists_for_item
+    except Exception:  # noqa: BLE001
+        logger.debug("加载 Drive 存在性缓存失效入口失败", exc_info=True)
+        return
+    for file_path, file_id in gone:
+        try:
+            invalidate_drive_exists_for_item(
+                db, SimpleNamespace(
+                    file_path=file_path or "",
+                    drive_file_id=file_id,
+                    library=library,
+                ))
+        except Exception:  # noqa: BLE001
+            logger.debug("扫描失效存在性缓存失败 file=%s", file_id, exc_info=True)
+
+
 def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     """清理「来源里已经没有」的条目，返回删除条数
 
@@ -4329,6 +4356,7 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 emby_models.MediaItem.guid,
                 emby_models.MediaItem.item_type,
                 emby_models.MediaItem.file_path,
+                emby_models.MediaItem.drive_file_id,
             )
             .where(
                 emby_models.MediaItem.library_id == library.id,
@@ -4344,7 +4372,8 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
         last_id = rows[-1][0]
         walked += len(rows)
         doomed: list[int] = []
-        for item_id, guid, item_type, file_path in rows:
+        gone_drive: list[tuple] = []
+        for item_id, guid, item_type, file_path, drive_file_id in rows:
             if guid in seen_guids:
                 continue
             if item_type in ("movie", "episode"):
@@ -4353,6 +4382,10 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 if file_path and mount_lib.media_exists(file_path, db, library):
                     continue  # 其他来源（路径 / 挂载）的文件
                 doomed.append(item_id)
+                fid = (drive_file_id or "").strip()
+                if fid:
+                    # 文件确认不在来源里：立刻摘存在性正缓存，不必等库行写完
+                    gone_drive.append((file_path, fid))
             elif item_type == "season":
                 has_children = db.query(emby_models.MediaItem.id).filter(
                     emby_models.MediaItem.parent_id == item_id
@@ -4365,6 +4398,8 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 ).first()
                 if not has_children:
                     doomed.append(item_id)
+        if gone_drive:
+            _evict_gone_drive_files(db, library, gone_drive)
         if doomed:
             if _soft_delete.soft_delete_enabled():
                 # 只标记：从属数据（播放进度 / 收藏 / 分面）留着，文件回来就能恢复

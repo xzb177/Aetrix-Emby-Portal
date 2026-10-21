@@ -3864,7 +3864,14 @@ def _drive_exists_http_get(url, *, params, headers, timeout):
 #: TTL（2026-10-21 owner 拍板 60s→600s）：环境变量 DRIVE_EXISTS_CACHE_TTL_SEC
 #: （默认 600；0=关闭正缓存，每次都真实 files.get）。调参项只走 env，不进后台。
 #: 每次调用时读 env（一次 os.getenv，纳秒级），改 env 重启即生效、测试可 monkeypatch。
+#: 删除失效（同日追加）：正缓存拉到 600s 后，文件已在网盘删掉但库还没扫完时，
+#: 播放器会一直 302 到死链。扫描确认丢失 / 管理端删条目 / 补开分享见到 404
+#: 时摘掉这条缓存；EA 与扫描分进程，摘除记在 Redis 墓碑上，Redis 挂了只清本进程。
+#: 另外：同一客户端在短窗口内用相同 Range 起始再请求，当成播放器在谷歌 404 后
+#: 的重试，跳过缓存复验。起始字节变了（拖动 / 下一段）仍走缓存。
 _DRIVE_EXISTS_CACHE_TTL_DEFAULT = 600
+#: 同起始 Range 复验窗口默认秒数（0=关闭）。env DRIVE_EXISTS_RETRY_WINDOW_SEC。
+_DRIVE_EXISTS_RETRY_WINDOW_DEFAULT = 15
 #: 字典上限：超过即先清过期条目，仍超则整体清空（防无限增长）
 _DRIVE_EXISTS_CACHE_MAX = 10000
 _drive_exists_cache: dict = {}
@@ -3877,25 +3884,142 @@ def drive_exists_cache_ttl() -> int:
                    0, 86400)
 
 
+def drive_exists_retry_window() -> int:
+    """同起始 Range 复验窗口（秒）：env DRIVE_EXISTS_RETRY_WINDOW_SEC，默认 15，0=关闭。"""
+    return env_int("DRIVE_EXISTS_RETRY_WINDOW_SEC",
+                   _DRIVE_EXISTS_RETRY_WINDOW_DEFAULT, 0, 600)
+
+
+#: 跨进程墓碑：file_id 全局唯一，扫描/管理端不一定解析得出和播放侧相同的 drive_id。
+_DRIVE_EXISTS_INVAL_PREFIX = "aetrix:drive_exists:inv:"
+#: 跨进程重试记号（值是身份+文件+Range 起始的哈希，不落用户 id 明文）。
+_DRIVE_EXISTS_RETRY_PREFIX = "aetrix:drive_exists:retry:"
+_drive_exists_retry: dict = {}
+_drive_exists_retry_lock = threading.Lock()
+_DRIVE_EXISTS_RETRY_MAX = 10000
+
+
+def _drive_exists_redis():
+    """EA / 扫描 / 面板分进程时共用的 Redis。未启用或导入失败 → None。"""
+    try:
+        from backend.database import redis_client
+        return redis_client
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _exists_inval_key(file_id: str) -> str:
+    return _DRIVE_EXISTS_INVAL_PREFIX + file_id
+
+
+def _exists_tombstone(file_id: str) -> bool:
+    """别的进程宣布这个文件已失效。Redis 不可用 → False（只信本进程缓存）。"""
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return False
+        return bool(rc.exists(_exists_inval_key(file_id)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _publish_exists_tombstone(file_id: str) -> None:
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return
+        ttl = drive_exists_cache_ttl()
+        # 盖住当前正缓存可能残留的寿命；缓存关着时仍留默认窗口，避免刚删的条目被旧进程续上
+        ex = ttl if ttl > 0 else _DRIVE_EXISTS_CACHE_TTL_DEFAULT
+        rc.set(_exists_inval_key(file_id), "1", ex=int(ex))
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive 存在性缓存墓碑写 Redis 失败", exc_info=True)
+
+
+def _clear_exists_tombstone(file_id: str) -> None:
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return
+        rc.delete(_exists_inval_key(file_id))
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive 存在性缓存墓碑清除失败", exc_info=True)
+
+
+def _drop_local_exists(drive_id: str | None, file_id: str) -> None:
+    """摘本进程正缓存。drive_id 为空时摘掉该 file_id 的每一条。"""
+    with _drive_exists_cache_lock:
+        if drive_id:
+            _drive_exists_cache.pop((drive_id, file_id), None)
+            return
+        for key in [k for k in _drive_exists_cache if len(k) == 2 and k[1] == file_id]:
+            _drive_exists_cache.pop(key, None)
+
+
+def invalidate_drive_exists_cache(drive_id: str | None, file_id: str) -> None:
+    """摘掉 (drive_id, file_id) 的存在性正缓存，并通知其他进程。
+
+    Redis 不可用时只清本进程，不抛异常（播放/扫描热路径）。
+    file_id 为空直接返回。drive_id 为空则按 file_id 摘掉本进程全部匹配项，
+    墓碑仍按 file_id 发（Drive file id 全局唯一）。
+    """
+    file_id = (file_id or "").strip()
+    if not file_id:
+        return
+    drive_id = (drive_id or "").strip() or None
+    try:
+        _drop_local_exists(drive_id, file_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive 存在性缓存本进程摘除失败", exc_info=True)
+    _publish_exists_tombstone(file_id)
+
+
+def invalidate_drive_exists_for_item(db, item) -> None:
+    """条目已确认不在（扫描丢失 / 管理端删除 / 分享 404）。永不抛。"""
+    try:
+        file_id = (getattr(item, "drive_file_id", None) or "").strip()
+        if not file_id:
+            return
+        drive_id = None
+        try:
+            drive_id = _drive_mount_id_for_item(db, item)
+        except Exception:  # noqa: BLE001
+            drive_id = None
+        invalidate_drive_exists_cache(drive_id, file_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("按条目失效 Drive 存在性缓存失败", exc_info=True)
+
+
 def _drive_exists_cache_hit(drive_id: str, file_id: str) -> bool:
-    """正缓存命中（TTL 内已判定存在）→ True；否则 False。TTL=0 恒 False。"""
+    """正缓存命中（TTL 内已判定存在，且没有跨进程墓碑）→ True。TTL=0 恒 False。"""
     if drive_exists_cache_ttl() <= 0:
         return False
     now = time.monotonic()
     key = (drive_id, file_id)
     with _drive_exists_cache_lock:
         exp = _drive_exists_cache.get(key)
-        if exp is not None:
-            if exp > now:
-                return True
-            del _drive_exists_cache[key]
-    return False
+        if exp is None or exp <= now:
+            if exp is not None:
+                del _drive_exists_cache[key]
+            return False
+    # 锁外问 Redis：别的容器已经宣布这个文件没了
+    if _exists_tombstone(file_id):
+        try:
+            _drop_local_exists(drive_id, file_id)
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+    return True
 
 
 def _drive_exists_cache_put(drive_id: str, file_id: str) -> None:
-    """files.get 200 后写入正缓存（只在成功路径调用；TTL=0 不写）。"""
+    """files.get 200 后写入正缓存（只在成功路径调用；TTL=0 不写）。
+
+    同时摘掉墓碑：文件又被确认存在，别的进程的「已删除」宣告作废。
+    """
     ttl = drive_exists_cache_ttl()
     if ttl <= 0:
+        _clear_exists_tombstone(file_id)
         return
     with _drive_exists_cache_lock:
         if len(_drive_exists_cache) >= _DRIVE_EXISTS_CACHE_MAX:
@@ -3907,6 +4031,124 @@ def _drive_exists_cache_put(drive_id: str, file_id: str) -> None:
             if len(_drive_exists_cache) >= _DRIVE_EXISTS_CACHE_MAX:
                 _drive_exists_cache.clear()
         _drive_exists_cache[(drive_id, file_id)] = time.monotonic() + ttl
+    _clear_exists_tombstone(file_id)
+
+
+def _range_start_token(header: str | None):
+    """Range 起始位置。无头与 bytes=0- 不是同一次请求；只比较起始，不比较结束。
+
+    - 无 / 空 → ("absent",)
+    - bytes=START-... → ("start", START)
+    - bytes=-SUFFIX → ("suffix", SUFFIX)
+    - 认不出 → ("raw", 原文)（两次一模一样的怪请求仍能对上）
+    """
+    if header is None:
+        return ("absent",)
+    text = str(header).strip()
+    if not text:
+        return ("absent",)
+    first = text.split(",", 1)[0].strip()
+    if not first.lower().startswith("bytes="):
+        return ("raw", text)
+    spec = first.split("=", 1)[1].strip()
+    if spec.startswith("-"):
+        num = spec[1:].strip()
+        if num.isdigit():
+            return ("suffix", int(num))
+        return ("raw", text)
+    start = spec.split("-", 1)[0].strip()
+    if start.isdigit():
+        return ("start", int(start))
+    return ("raw", text)
+
+
+def _stream_client_identity(request, user) -> str:
+    """重试身份：设备优先，其次播放会话，最后用户。
+
+    流地址本身不带 PlaySessionId；Emby 客户端通常仍带 DeviceId 头或查询参数。
+    都没有时用用户 id，避免两个用户抢同一文件时互相当成重试。
+    """
+    headers = getattr(request, "headers", None)
+    params = getattr(request, "query_params", None)
+    auth = parse_emby_authorization(headers.get("X-Emby-Authorization") if headers else None)
+    device = (auth.get("DeviceId") or "")
+    if headers is not None and not device:
+        device = (headers.get("X-Emby-Device-Id") or headers.get("X-Device-Id") or "")
+    if params is not None and not device:
+        device = params.get("DeviceId") or ""
+    device = str(device or "").strip()
+    if device:
+        return "dev:" + device[:100]
+    session = ""
+    if params is not None:
+        session = str(params.get("PlaySessionId") or "").strip()
+    if session:
+        return "ses:" + session[:64]
+    uid = getattr(user, "id", None)
+    if uid is not None:
+        return f"user:{uid}"
+    return "anon"
+
+
+def _retry_redis_key(identity: str, file_id: str, token) -> str:
+    raw = f"{identity}\x1f{file_id}\x1f{token!r}".encode()
+    return _DRIVE_EXISTS_RETRY_PREFIX + hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _retry_seen_redis(identity: str, file_id: str, token, window: int) -> bool:
+    """别的进程在窗口内见过同一请求 → True。Redis 不可用 → False。"""
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return False
+        key = _retry_redis_key(identity, file_id, token)
+        created = rc.set(key, "1", nx=True, ex=int(window))
+        if created:
+            return False
+        try:
+            rc.expire(key, int(window))
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def drive_exists_rapid_retry(request, user, file_id: str) -> bool:
+    """同一客户端、同一文件、相同 Range 起始，在窗口内又来了一次 → True。
+
+    第一次只登记，不当重试。起始字节不同（拖动、下一段）→ False，缓存继续有效。
+    窗口 0 或任何异常 → False，播放照旧走缓存。Redis 挂了只看本进程。
+    """
+    try:
+        file_id = (file_id or "").strip()
+        window = drive_exists_retry_window()
+        if window <= 0 or not file_id:
+            return False
+        headers = getattr(request, "headers", None)
+        token = _range_start_token(headers.get("Range") if headers else None)
+        identity = _stream_client_identity(request, user)
+        local_key = (identity, file_id, token)
+        now = time.monotonic()
+        local_hit = False
+        with _drive_exists_retry_lock:
+            prev = _drive_exists_retry.get(local_key)
+            _drive_exists_retry[local_key] = now
+            if len(_drive_exists_retry) > _DRIVE_EXISTS_RETRY_MAX:
+                cutoff = now - window
+                for key, ts in [kv for kv in _drive_exists_retry.items() if kv[1] < cutoff]:
+                    _drive_exists_retry.pop(key, None)
+                if len(_drive_exists_retry) > _DRIVE_EXISTS_RETRY_MAX:
+                    _drive_exists_retry.clear()
+                    _drive_exists_retry[local_key] = now
+            if prev is not None and 0 <= (now - prev) <= window:
+                local_hit = True
+        return local_hit or _retry_seen_redis(identity, file_id, token, window)
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive 存在性缓存重试判定失败", exc_info=True)
+        return False
+
+
 #: 单次 files.get 超时（秒）：只做存在性判定，不许引入新的长等待。
 _DRIVE_EXISTS_TIMEOUT = 3.0
 _DRIVE_FILE_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
@@ -3951,22 +4193,27 @@ def _drive_mount_id_for_item(db: Session, item: em.MediaItem) -> Optional[str]:
     return provider.drive_id or None
 
 
-def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
+def _drive_file_exists_sync(drive_id: str, file_id: str,
+                            force_recheck: bool = False) -> None:
     """同步：一次 files.get 判定存在性。只在 _DRIVE_EXISTS_EXECUTOR 里调用。
 
     404 抛 _DriveFileGone；其他失败抛 _DriveFileUnavailable。永不碰 db。
     凭据走 ``drive_changes.get_token_for_drive``（全项目唯一入口，含
     个人盘 OAuth 与共享盘 SA 轮换）；401 时按 token 值失效内外两层缓存。
     正缓存（TTL 见 drive_exists_cache_ttl，默认 600s）命中时直接返回（A-P2-3）；404 不缓存。
+    ``force_recheck``：播放器用相同 Range 起始在短窗口内又来了一次，跳过正缓存
+    重新 files.get。404 时摘掉缓存（含跨进程墓碑）；200 时刷新缓存。
     """
     from backend.emby_server import playback_risk
-    if _drive_exists_cache_hit(drive_id, file_id):
+    if not force_recheck and _drive_exists_cache_hit(drive_id, file_id):
         playback_risk.bump("exists_cache_hit")
         return
     playback_risk.bump("exists_cache_miss")
     try:
         _drive_file_exists_remote(drive_id, file_id)
     except _DriveFileGone:
+        # 跳过缓存复验得到 404 时，旧的正缓存条目还在，必须摘掉，否则下一次非重试仍 302
+        invalidate_drive_exists_cache(drive_id, file_id)
         playback_risk.bump("exists_404")
         raise
     except _DriveFileUnavailable:
@@ -4011,7 +4258,7 @@ def _drive_file_exists_remote(drive_id: str, file_id: str) -> None:
 
 
 async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
-                                      file_id: str) -> None:
+                                      file_id: str, force_recheck: bool = False) -> None:
     """drive 直链 302 前的便宜存在性校验（P0，2026-10-18）。
 
     先经 run_db 做一次毫秒级挂载解析（拿 drive_id；解析失败返回 None
@@ -4040,7 +4287,8 @@ async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(
-            _DRIVE_EXISTS_EXECUTOR, _drive_file_exists_sync, drive_id, file_id)
+            _DRIVE_EXISTS_EXECUTOR, _drive_file_exists_sync,
+            drive_id, file_id, bool(force_recheck))
     except _DriveFileGone as exc:
         raise HTTPException(status_code=404, detail=f"媒体来源不可用：{exc}")
     except _DriveFileUnavailable as exc:
@@ -4293,7 +4541,11 @@ async def video_stream(
         _strategy.drive_direct_play_enabled, db)
     _fast302 = False
     if _drive_switch_on:
-        _fast302 = await _ensure_drive_file_playable(db, item, _fid)
+        # 相同起始 Range 的短时重试：播放器多半是谷歌 404 之后又来了一次，
+        # 正缓存不能再把死链 302 出去。拖动 / 下一段起始字节不同，不进这里。
+        _force = drive_exists_rapid_retry(request, user, _fid)
+        _fast302 = await _ensure_drive_file_playable(
+            db, item, _fid, force_recheck=_force)
     if _fast302:
         _pt.mark("drive_exists_check")
         _pt.done()

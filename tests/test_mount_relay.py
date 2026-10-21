@@ -188,7 +188,7 @@ def test_drive_item_with_fid_still_302_first(monkeypatch):
     _stub_common(monkeypatch, item, target)
     monkeypatch.setattr(_strategy, "drive_direct_play_enabled", lambda db: True)
 
-    async def _exists_ok(db, it, fid):
+    async def _exists_ok(db, it, fid, force_recheck=False):
         assert fid == FID
         return True
 

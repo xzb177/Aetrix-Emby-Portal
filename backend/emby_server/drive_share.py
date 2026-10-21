@@ -105,7 +105,8 @@ def ensure_shared(file_id: str, bearer_token: str | None) -> str:
     """给单个 Drive 文件补开 anyone reader 权限。
 
     返回 'ok'（本次创建）/ 'already'（已分享，409 幂等确认）/
-    'rate_limited'（配额/限流，调用方退避）/ 'failed'（其它，一律不抛异常）。
+    'rate_limited'（配额/限流，调用方退避）/ 'not_found'（404，文件已不在）/
+    'failed'（其它，一律不抛异常）。
     """
     if not file_id or not bearer_token:
         return "failed"
@@ -129,12 +130,58 @@ def ensure_shared(file_id: str, bearer_token: str | None) -> str:
         pass
     if code in (200, 201):
         return "ok"
+    if code == 404:
+        # 文件已删/不可见。调用方据此摘掉播放侧存在性正缓存（否则 600s 内仍 302 到死链）。
+        return "not_found"
     if code == 409:
         # 文件已有相同权限：幂等确认，不再补查，省一次调用。
         return "already"
     if code in (403, 429) and _is_rate_limit_body(resp):
         return "rate_limited"
     return "failed"
+
+
+def _invalidate_gone_file(item_id, file_id, db=None) -> None:
+    """补开分享见到 404：摘掉该文件的存在性正缓存。永不抛。
+
+    巡检把当前会话传进来；队列线程没有会话时自己开一个短会话解析 drive_id。
+    解析失败仍按 file_id 发墓碑（本进程一定摘掉）。
+    """
+    fid = str(file_id or "").strip()
+    if not fid:
+        return
+    own = None
+    try:
+        from backend.emby_server.api import (
+            invalidate_drive_exists_cache, invalidate_drive_exists_for_item)
+    except Exception:  # noqa: BLE001
+        logger.debug("加载 Drive 存在性缓存失效入口失败", exc_info=True)
+        return
+    try:
+        if db is None and item_id:
+            from backend.database import SessionLocal
+            own = SessionLocal()
+            db = own
+        item = None
+        if db is not None and item_id:
+            from backend.emby_server import models as em
+            item = db.get(em.MediaItem, int(item_id))
+        if item is not None:
+            invalidate_drive_exists_for_item(db, item)
+        else:
+            invalidate_drive_exists_cache(None, fid)
+    except Exception:  # noqa: BLE001
+        logger.debug("drive-share 404 失效存在性缓存失败 file=%s", fid, exc_info=True)
+        try:
+            invalidate_drive_exists_cache(None, fid)
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        if own is not None:
+            try:
+                own.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _mark_share_result(item_id: int, ok: bool) -> None:
@@ -181,6 +228,8 @@ def _process_one_share(item_id: int, file_id: str) -> str:
             return outcome
         # 超过重试上限：标记失败，交巡检次日再捞，不在队列里死磕。
         outcome = "failed"
+    if outcome == "not_found":
+        _invalidate_gone_file(item_id, file_id)
     _mark_share_result(item_id, outcome in ("ok", "already"))
     with _lock:
         # 终态清理该文件的重试计数：成功/失败都不再需要；同一 file_id 将来
@@ -321,6 +370,8 @@ def drive_share_patrol(db, limit: int = _PATROL_LIMIT) -> int:
                 _BACKOFF_MIN_SEC, _BACKOFF_MAX_SEC)
             logger.warning("drive-share 巡检撞限流，本轮收手")
             break
+        if outcome == "not_found":
+            _invalidate_gone_file(item_id, file_id, db=db)
         try:
             item = db.get(em.MediaItem, int(item_id))
             if item is not None:
