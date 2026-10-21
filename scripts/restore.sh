@@ -11,7 +11,7 @@ NC='\033[0m'
 
 # 容器 / 库 / 账号名跟着项目品牌统一，但**全部可用环境变量覆盖**：
 # 沿用旧栈命名（改名前的容器 / 库 / 账号）的部署，设一下这三个就能继续用。
-DB_CONTAINER="${DB_CONTAINER:-aetrix_postgres}"
+DB_CONTAINER="${DB_CONTAINER:-aetrix-postgres}"
 DB_USER="${DB_USER:-aetrix}"
 DB_NAME="${DB_NAME:-aetrix}"
 

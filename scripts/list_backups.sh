@@ -5,7 +5,10 @@
 # This script lists all available database backups
 #
 
-BACKUP_DIR="${BACKUP_DIR:-/root/Aetrix-Portal/backups}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+# 与 scripts/backup_db.sh 同一默认：仓库 backups/（可用 BACKUP_DIR 覆盖）
+BACKUP_DIR="${BACKUP_DIR:-$ROOT_DIR/backups}"
 
 # Colors for output
 GREEN='\033[0;32m'
