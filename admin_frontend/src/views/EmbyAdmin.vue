@@ -1027,13 +1027,13 @@ const queueActiveCount = computed(
 )
 const enabledLibCount = computed(() => libraries.value.filter((l) => l.is_enabled).length)
 
-/** 跳到「元数据来源」页手动识别/绑定。
- * 注意：这里只有库、没有具体条目，不许把库编号当 item_id 传过去——
- * 接收页会把它当条目编号预选出一个假的「条目 #库编号」，后续 bind-tmdb
- * 按条目查库，轻则报「条目不存在」、重则误绑编号相同的另一条目
- * （2026-10-21 系统清点实锤）。条目在目标页搜索选取。 */
-function goIdentify(_l: EmbyLibrary) {
-  router.push({ name: 'MetadataSources' })
+/** 跳到「元数据来源」页的未识别工作台：带的是库编号本尊（library_id），
+ * 目标页按这个库列出还没识别上的条目，管理员逐条选中走手动识别。
+ * 旧做法把库编号当 item_id 传、接收页伪造「条目 #库编号」预选，轻则报
+ * 「条目不存在」、重则误绑编号相同的另一条目（2026-10-21 系统清点实锤），
+ * 发送端与接收端都已整段删除，不许再复活。 */
+function goIdentify(l: EmbyLibrary) {
+  router.push({ name: 'MetadataSources', query: { library_id: String(l.id) } })
 }
 
 // ==================== 单集夜间刮削 ====================

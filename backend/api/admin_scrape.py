@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -1446,6 +1446,54 @@ def search_items_for_bind(
             }
             for r in rows
         ]
+    }
+
+
+@admin_emby_router.get("/libraries/{library_id}/unidentified")
+def list_unidentified_items(
+    library_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """按库「未识别工作台」：列出该库还没识别上的顶层条目（分页）。
+
+    未识别口径与补全链路一致：顶层条目（movie/series）+ 无 tmdb_id；
+    可见口径显式过滤软删与已合并行（merged 不靠 ORM 钩子，必须自己加）。
+    逐条识别走现成链路：/scrape/tmdb/search 搜候选 → /scrape/items/{id}/bind-tmdb
+    绑定；绑定成功后条目有了 tmdb_id，自然从本列表消失。
+    """
+    lib = db.query(em.Library).filter(em.Library.id == library_id).first()
+    if lib is None:
+        raise HTTPException(status_code=404, detail="媒体库不存在")
+    query = db.query(em.MediaItem).filter(
+        em.MediaItem.library_id == library_id,
+        em.MediaItem.item_type.in_(("movie", "series")),
+        em.MediaItem.tmdb_id.is_(None),
+        em.MediaItem.deleted_at.is_(None),
+        em.MediaItem.merged_into_id.is_(None),
+    )
+    total = query.count()
+    rows = (query.order_by(em.MediaItem.id.desc())
+            .offset((page - 1) * page_size).limit(page_size).all())
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "name": r.name,
+                "year": r.production_year,
+                "item_type": r.item_type,
+                "tmdb_id": r.tmdb_id,
+                "metadata_locked": bool(r.metadata_locked),
+                "metadata_source": r.metadata_source,
+                "enrich_status": r.enrich_status,
+            }
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
 
 
