@@ -115,6 +115,19 @@ const zones = computed<Zone[]>(() =>
   font-weight: 400;
   color: var(--paper-ink-soft, #6d675c);
 }
+@media (max-width: 1023px) {
+  /* 五个分区：两行（3+2），全部露在视口里，不被底栏裁掉 */
+  .region-rail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .region-btn {
+    min-height: 44px;
+    padding: 8px;
+  }
+  .region-en { letter-spacing: 0.04em; }
+}
 @media (prefers-reduced-motion: reduce) {
   .region-btn {
     transition: none;

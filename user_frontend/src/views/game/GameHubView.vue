@@ -173,6 +173,14 @@ onMounted(async () => {
   padding-bottom: calc(var(--tabbar-h, 56px) + 36px + env(safe-area-inset-bottom));
 }
 
+@media (max-width: 1023px) {
+  /* 地图横滑留在这一栏里，不把整页撑出屏幕 */
+  .game-world {
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
 /* 桌面 /game：地图脱离 375px 窄栏全宽展开（日志头/状态条仍居中栏宽）
    居中用负 margin 而非 transform：transform 会成为内部 position:fixed 弹层的定位基准，导致弹层错位 */
 @media (min-width: 1024px) {

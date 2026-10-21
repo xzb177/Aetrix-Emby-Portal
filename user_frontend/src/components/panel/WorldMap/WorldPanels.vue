@@ -178,4 +178,38 @@ defineProps<{
   border-radius: 99px;
   transition: width .3s ease;
 }
+@media (max-width: 1023px) {
+  .world-panels {
+    flex-direction: column;
+  }
+  .feed,
+  .quest {
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .feed h4,
+  .quest h4 {
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+  }
+  .feed li {
+    font-size: 14px;
+    padding: 8px 0;
+  }
+  .quest .q {
+    font-size: 14px;
+    min-height: 44px;
+    padding: 8px 0;
+    gap: 8px;
+  }
+  .quest .box {
+    width: 18px;
+    height: 18px;
+    font-size: 12px;
+    border-radius: 6px;
+  }
+  .quest .q .rw { font-size: 12px; }
+  .quest .bar { height: 3px; margin-top: 8px; }
+}
 </style>

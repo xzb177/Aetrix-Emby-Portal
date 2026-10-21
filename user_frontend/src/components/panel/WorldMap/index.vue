@@ -1,12 +1,12 @@
 <template>
   <div class="world-root" :class="[`dp-${daypart}`, { 'is-game': variant === 'game' }]">
-    <div class="game-goalbar" v-if="variant === 'game' && !isMobile">
+    <div class="game-goalbar" v-if="variant === 'game'">
       <div class="m-goal-text">今日探险 <b>{{ questDoneCount }}/{{ quests.length }}</b><template v-if="questNextLabel"> · 还差：{{ questNextLabel }}</template><template v-else> · 全部完成 ✓</template></div>
       <div class="m-goal-bar"><i :style="{ width: questPercent + '%' }"></i></div>
     </div>
 
-    <div class="world-col" v-if="!isMobile">
-      <div class="world">
+    <div class="world-col">
+      <div class="map-frame">
       <div class="hud">
         <span class="brand">Aetrix<b>.</b></span>
         <span class="worldname">🗺 探险世界</span>
@@ -29,6 +29,8 @@
 
       <button type="button" class="classic" v-if="variant === 'home'" @click="toClassic">经典视图 ⇄</button>
 
+      <div class="world-scroll" role="region" aria-label="探险地图，可左右滑动">
+      <div class="world">
       <WorldCanvas
         :subs="anchorSubs"
         :on="anchorHandlers"
@@ -40,6 +42,9 @@
         :show-quest-path="showQuestPath"
       />
       </div>
+      </div>
+      <p class="map-scroll-hint">左右滑动，看完整营地</p>
+      </div>
       <WorldMarks :open-region-key="openRegionKey" :open-region="onRegionClick" />
       <WorldPanels
         :feed-items="feedItems"
@@ -49,35 +54,6 @@
         :on-quest="onQuest"
       />
     </div>
-
-    <MobileScroll
-      v-else
-      :greeting-text="greetingText"
-      :nickname="nickname"
-      :daypart-line="daypartLine"
-      :streak="streak"
-      :streak-hint="streakHint"
-      :points-text="pointsText"
-      :member-info="memberInfo"
-      :quests="quests"
-      :quest-percent="questPercent"
-      :quest-done-count="questDoneCount"
-      :quest-next-label="questNextLabel"
-      :on-quest="onQuest"
-      :sub-for="subFor"
-      :status-for="statusFor"
-      :selected-key="selectedKey"
-      :select-facility="selectFacility"
-      :anchor-subs="anchorSubs"
-      :anchor-on="anchorHandlers"
-      :fortune-drew="fortuneDrew"
-      :remaining="remaining"
-      :has-letter="hasLetter"
-      :letter-read="letterRead"
-      :explored-count="exploredCount"
-      :explored-total="exploredTotal"
-      :explored-next="exploredNext"
-    />
 
     <div class="w-overlay" v-if="overlay !== 'none'" @click.self="closeOverlay">
       <div class="w-sheet" :class="{ 'is-stele': overlay === 'stele', 'is-region': overlay === 'region' }" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl"
@@ -146,7 +122,6 @@ import WorldCanvas, { type WorldAnchorSubs, type WorldAnchorHandlers } from './W
 import WorldMarks from './WorldMarks.vue'
 import WorldPanels from './WorldPanels.vue'
 import RegionSheet from './RegionSheet.vue'
-import MobileScroll from './MobileScroll.vue'
 import ParcelsSheet from './overlays/ParcelsSheet.vue'
 import LetterSheet from './overlays/LetterSheet.vue'
 import SteleSheet from './overlays/SteleSheet.vue'
@@ -178,13 +153,6 @@ const regionKey = ref<string | null>(null)
 const unsealingIds = ref(new Set<string>())
 const sheetEl = ref<HTMLElement | null>(null)
 let lastTrigger: HTMLElement | null = null
-
-/* ---------- 响应式断点：≤1023px 走手机长卷轴 ---------- */
-const isMobile = ref(false)
-let mobileMql: MediaQueryList | null = null
-function syncMobile() {
-  isMobile.value = mobileMql?.matches ?? false
-}
 
 /* ---------- 基础数据 ---------- */
 const todayD = computed<Record<string, unknown>>(
@@ -607,7 +575,7 @@ function openFortune() {
   openOverlaySheet('fortune')
 }
 
-/* ---------- 建筑锚点绑定（WorldCanvas / MobileScroll 共用） ---------- */
+/* ---------- 建筑锚点绑定 ---------- */
 const anchorSubs = computed<WorldAnchorSubs>(() => ({
   cinema: cinemaSub.value,
   parcels: parcelsSub.value,
@@ -634,7 +602,7 @@ const anchorHandlers: WorldAnchorHandlers = {
   fortune: openFortune,
 }
 
-/* ---------- 设施 pin（WorldMarks / MobileScroll 共用） ---------- */
+/* ---------- 设施 pin（分区抽屉） ---------- */
 const selectedKey = ref<string | null>(null)
 
 function selectFacility(f: GameFacility) {
@@ -686,13 +654,6 @@ function statusFor(f: GameFacility): 'todo' | 'done' | undefined {
   if (f.key === 'checkin') return quest.checkinDone.value ? 'done' : 'todo'
   return undefined
 }
-
-const enabledFacilities = computed(() =>
-  gameFacilities.filter((f) => f.enabled !== false).sort((a, b) => a.order - b.order),
-)
-const exploredCount = computed(() => enabledFacilities.value.filter((f) => statusFor(f) === 'done').length)
-const exploredTotal = computed(() => enabledFacilities.value.length)
-const exploredNext = computed(() => enabledFacilities.value.find((f) => statusFor(f) !== 'done')?.name ?? '')
 
 /* ---------- 弹层 ---------- */
 function openParcels() {
@@ -855,9 +816,6 @@ watch(letterDateKey, () => refreshLetterRead())
 watch(userId, () => refreshLetterRead())
 
 onMounted(() => {
-  mobileMql = window.matchMedia('(max-width: 1023px)')
-  syncMobile()
-  mobileMql.addEventListener('change', syncMobile)
   void panel.loadHome()
   void panel.loadCollector()
   void quest.loadCheckin()
@@ -872,8 +830,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
-  mobileMql?.removeEventListener('change', syncMobile)
-  mobileMql = null
 })
 </script>
 
@@ -898,6 +854,16 @@ onUnmounted(() => {
   margin: 0 auto;
   flex: 0 0 auto;
   container-type: inline-size;
+}
+/* 问候/顶栏叠在地图上。定位参照这层，比画布边框外缘再进 1px，和原先叠在 .world 内缘时对齐。 */
+.map-frame {
+  position: relative;
+}
+.world-scroll {
+  min-width: 0;
+}
+.map-scroll-hint {
+  display: none;
 }
 .world {
   position: relative;
@@ -949,9 +915,9 @@ onUnmounted(() => {
 /* HUD */
 .hud {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: 1px;
+  left: 1px;
+  right: 1px;
   height: 4.17cqw;
   display: flex;
   align-items: center;
@@ -1013,8 +979,8 @@ onUnmounted(() => {
 /* 问候卡 */
 .hello {
   position: absolute;
-  left: 1.53cqw;
-  top: 5.42cqw;
+  left: calc(1.53cqw + 1px);
+  top: calc(5.42cqw + 1px);
   z-index: 30;
   background: var(--paper-card-soft);
   border: 1px solid var(--paper-hairline);
@@ -1050,8 +1016,8 @@ onUnmounted(() => {
 /* 经典视图切换 */
 .classic {
   position: absolute;
-  right: 1.53cqw;
-  top: 5.42cqw;
+  right: calc(1.53cqw + 1px);
+  top: calc(5.42cqw + 1px);
   z-index: 30;
   background: var(--paper-card-soft);
   border: 1px solid var(--paper-hairline);
@@ -1131,11 +1097,113 @@ onUnmounted(() => {
   outline-offset: 2px;
 }
 @media (max-width: 1023px) {
+  /* 窄屏：整页可滚，地图单独横滑。画布保持桌面那套 cqw 比例（约 1340px，小字 ≥11px），
+     标签间距不用另算，也不会挤成一团或盖住房子。 */
   .world-root {
     display: block;
-    height: 100dvh;
-    overflow: hidden;
-    padding: 0;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    padding: 8px 12px calc(16px + var(--au-dock-space, 0px));
+  }
+  .world-root.is-game {
+    padding: 0 12px 8px;
+    overflow: visible;
+  }
+  .world-root.is-game .world-col,
+  .world-col {
+    width: 100%;
+    min-width: 0;
+    container-type: normal;
+  }
+  .game-goalbar {
+    width: 100%;
+  }
+  .map-frame {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .hud,
+  .hello,
+  .classic {
+    position: static;
+    top: auto;
+    left: auto;
+    right: auto;
+    height: auto;
+    max-width: none;
+  }
+  .hud {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 4px 0 8px;
+    background: transparent;
+  }
+  .hud .brand { font-size: 16px; }
+  .hud .worldname {
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    padding: 4px 10px;
+  }
+  .hud .right {
+    margin-left: auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .hud .pill {
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+  .hud button.pill { min-height: 44px; }
+  .hud .avatar {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .hello {
+    margin: 0 0 8px;
+    padding: 12px 14px;
+    border-radius: 16px;
+  }
+  .hello .d { font-size: 12px; letter-spacing: 0.04em; }
+  .hello h2 { font-size: 16px; margin: 4px 0 2px; }
+  .hello p { font-size: 14px; }
+  .classic {
+    align-self: flex-end;
+    margin: 0 0 8px;
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 12px;
+  }
+  .world-scroll {
+    order: 5;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: 100%;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pan-y;
+    scrollbar-width: thin;
+    border-radius: 16px;
+  }
+  .world {
+    width: 1340px;
+    max-width: none;
+    container-type: inline-size;
+    border-radius: 16px;
+  }
+  .map-scroll-hint {
+    display: block;
+    order: 4;
+    margin: 0 0 8px;
+    font-size: 12px;
+    line-height: 1.33;
+    color: var(--paper-ink-soft);
   }
   .w-grip {
     display: block;
@@ -1151,9 +1219,22 @@ onUnmounted(() => {
   }
   .w-sheet {
     width: 100%;
-    max-height: 70dvh;
+    max-height: 78dvh;
     border-radius: 16px 16px 0 0;
     border-bottom: none;
+    overflow-y: auto;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  }
+  .w-sheet-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--paper-card-soft);
+    padding-bottom: 8px;
+  }
+  .w-sheet-close {
+    width: 44px;
+    height: 44px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
