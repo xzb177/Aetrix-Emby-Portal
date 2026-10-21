@@ -64,7 +64,7 @@ def get_config(db: Session) -> dict:
         [CONFIG_ENABLED, CONFIG_TIME, CONFIG_LAST_RUN],
         {CONFIG_ENABLED: "1", CONFIG_TIME: DEFAULT_TIME, CONFIG_LAST_RUN: ""},  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
     )
-    enabled = vals[CONFIG_ENABLED].strip() == "1"
+    enabled = vals[CONFIG_ENABLED].strip().lower() in ("1", "true", "yes", "on")
     time_str = parse_time(vals[CONFIG_TIME]) or DEFAULT_TIME
     return {
         "enabled": enabled,

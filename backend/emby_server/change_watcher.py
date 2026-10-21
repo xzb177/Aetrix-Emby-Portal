@@ -792,7 +792,8 @@ def _watcher_loop() -> None:
         try:
             db = SessionLocal()
             try:
-                enabled = _get_config(db, CONFIG_ENABLED, "1") == "1"
+                enabled = _get_config(db, CONFIG_ENABLED, "1").strip().lower() in (
+                    "1", "true", "yes", "on")
                 interval = _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL)))
             finally:
                 db.close()
@@ -812,7 +813,8 @@ def get_config(db: Session) -> dict:
     因为老前端还在读它——给一个非空值会让老前端把排除清单当成包含清单用。
     """
     return {
-        "enabled": _get_config(db, CONFIG_ENABLED, "1") == "1",
+        "enabled": _get_config(db, CONFIG_ENABLED, "1").strip().lower() in (
+            "1", "true", "yes", "on"),
         "interval": _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL))),
         "excluded": ",".join(str(i) for i in resolve_excluded(db)),
         "libraries": "",

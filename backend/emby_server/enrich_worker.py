@@ -360,7 +360,8 @@ def _unified_fallback_flag_on() -> bool:
     from backend.integrations import store
     _db = SessionLocal()
     try:
-        return store.get_value(_db, CFG_UNIFIED_FALLBACK, "1") == "1"
+        return store.get_value(_db, CFG_UNIFIED_FALLBACK, "1").strip().lower() in (
+            "1", "true", "yes", "on")
     except Exception:  # noqa: BLE001 — 读不到就当关着，行为与现状一致
         return False
     finally:
@@ -371,7 +372,8 @@ def get_unified_fallback_config(db) -> dict:
     """管理后台用：兜底链路统一开关（只读）。"""
     from backend.integrations import store
     return {
-        "enabled": store.get_value(db, CFG_UNIFIED_FALLBACK, "1") == "1",  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
+        "enabled": store.get_value(db, CFG_UNIFIED_FALLBACK, "1").strip().lower() in (
+            "1", "true", "yes", "on"),  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
     }
 
 
@@ -467,7 +469,8 @@ def _episode_night_config(db=None) -> dict:
                 try:
                     from backend.integrations import store
                     enabled = store.read_value(
-                        db, CFG_EPISODE_NIGHT_ONLY, "1") == "1"
+                        db, CFG_EPISODE_NIGHT_ONLY, "1").strip().lower() in (
+                        "1", "true", "yes", "on")
                 except Exception:  # noqa: BLE001 — 读库失败就按默认关，不挡抢单
                     logger.warning("单集夜间配置读库失败，按默认关闭", exc_info=True)
         start = _parse_hhmm(env_start or None, NIGHT_START_DEFAULT)

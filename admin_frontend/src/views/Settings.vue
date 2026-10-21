@@ -714,6 +714,8 @@ async function saveGroupCore(group: Group): Promise<boolean> {
       const n = Number.parseInt(raw === '' ? '0' : raw, 10)
       payload[f.key] = String(Number.isFinite(n) && n >= 0 ? n : 0)
     } else if (f.type === 'bool') {
+      // 空/未设置不能落成 'true'：不传该键，读取侧回退各键自己的代码缺省
+      if (raw === '') continue
       payload[f.key] = raw === 'false' ? 'false' : 'true'
     } else {
       payload[f.key] = raw
