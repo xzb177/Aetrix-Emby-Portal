@@ -979,7 +979,12 @@ def prewarm_images(*payloads, extra=()) -> int:
     写事务里的 ``_set_image`` 是 ``allow_download=False``：只认已经在本地的那份。所以只要
     要调 ``apply`` / ``apply_images``，就应在**写事务之前**调一次这里。预热失败或被并发旋钮
     挡住（``image_store._STATS["throttled"]``）只是「这轮不本地化」，取图时会按需补一份。
+
+    刮削期预热默认关（``EMBY_IMAGE_PREWARM``，见 ``image_store.prewarm_enabled``）：
+    关时本函数直接返回 0、零下载，刮削只落远程地址，图等取图时按需落盘。
     """
+    if not image_store.prewarm_enabled():
+        return 0
     try:
         urls = [url for _kind, url in image_specs(*payloads)]
         urls += [str(u) for u in extra if u]

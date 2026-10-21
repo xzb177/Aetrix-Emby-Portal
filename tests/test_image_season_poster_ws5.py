@@ -140,6 +140,9 @@ class TestSeasonPosterClient:
 class TestSeasonPostersIO:
     def test_only_imageless_seasons_fetched(self, monkeypatch, db,
                                            series_with_seasons):
+        # 本用例测的是「预热开」时的 IO 行为；刮削期预热默认关
+        # （EMBY_IMAGE_PREWARM），见 test_image_backfill_patrol
+        monkeypatch.setenv("EMBY_IMAGE_PREWARM", "1")
         series, s1, s2 = series_with_seasons
         seen = []
         monkeypatch.setattr(

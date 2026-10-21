@@ -2238,7 +2238,10 @@ def _enrich_season_posters_io(db, snapshot: Any, fetched: dict) -> None:
         if url:
             got[int(season_id)] = url
     if got:
-        image_store.prewarm(got.values())
+        # 刮削期预热默认关（EMBY_IMAGE_PREWARM）：关时只落远程地址
+        # （_apply_season_posters 照常写 primary_image_url），图按需落盘
+        if image_store.prewarm_enabled():
+            image_store.prewarm(got.values())
         fetched["season_posters"] = got
         progress.note_stage("enrich_season_posters", len(got))
 
@@ -3341,6 +3344,8 @@ _DRIVE_SHARE_PATROL_PER_ROUND = 150
 # 翻回 pending 让 worker 真刮。判别与翻回口径见 fake_done_patrol。
 _FAKE_DONE_PATROL_EVERY_ROUNDS = 30
 _FAKE_DONE_PATROL_PER_ROUND = 1000
+_IMAGE_BACKFILL_PER_ROUND = 60  # 图片补下载单轮硬上限（条）：每轮 janitor 都跑，涓流推进
+_IMAGE_BACKFILL_COOLDOWN_SEC = 1800  # 下载失败的条目进程内冷却，半小时内不重复磨
 
 
 def _parity_patrol_candidates(db):
@@ -3450,6 +3455,17 @@ def _janitor_loop() -> None:
                     if nfd:
                         logger.info("补全 janitor 假完成巡检翻回 %d 条"
                                     "（done → pending）", nfd)
+                # 图片后台补下载（2026-10-21）：刮削期预热默认关后条目只有
+                # 远程地址，靠这里每轮涓流落盘（新入库优先），用户打开时图
+                # 基本现成；EMBY_IMAGE_BACKFILL=0 可关（退回纯按需）。
+                try:
+                    nib = image_backlog_patrol(db)
+                except Exception:
+                    logger.warning("补全 janitor 图片补下载巡检异常",
+                                   exc_info=True)
+                    nib = 0
+                if nib:
+                    logger.info("补全 janitor 图片补下载 %d 条", nib)
                 # Drive 链接分享巡检（2026-10-19 播放事故治本）：主路径漏网/失败兜底。
                 # 默认开、无面板开关；每 120 轮（约 2 小时）一次、单轮硬上限 150 文件。
                 if patrol_round % _DRIVE_SHARE_PATROL_EVERY_ROUNDS == 0:
@@ -3747,6 +3763,95 @@ def fake_done_patrol(db) -> int:
         logger.info("假完成巡检：%d 条 done 无刮削证据条目翻回 pending"
                     "（priority=50）", n)
     return n
+
+
+_IMAGE_BACKFILL_TRIED: dict = {}
+
+
+def image_backlog_patrol(db) -> int:
+    """图片后台补下载巡检：只有远程地址、本地还没图的条目涓流落盘（janitor 顺带）。
+
+    刮削期预热默认关（``EMBY_IMAGE_PREWARM``）后，刮削只落远程地址；本巡检
+    在后台把图补下好，用户打开时基本是现成的，不必等第一次取图现下。
+    取图时的按需自愈仍是最后兜底，本巡检漏掉/没下到的图不影响展示。
+
+    - 候选口径：可见未合并行，海报（primary_image_url 有、poster_path 空）
+      或背景（backdrop_image_url 有、backdrop_path 空）缺本地图。
+      poster_path 非空的行已有本地图（缓存或 sidecar 本地图），不动。
+    - 新入库优先（id 倒序）：刚入库的片子最可能马上被打开。
+    - 单轮硬上限 ``_IMAGE_BACKFILL_PER_ROUND`` 条；下载走
+      ``image_store.prewarm``（全局信号量有界、非阻塞，抢不到名额本轮
+      跳过、下轮再来），下完 ``localize(allow_download=False)`` 回读路径写回。
+    - 下载失败的条目进程内冷却 ``_IMAGE_BACKFILL_COOLDOWN_SEC`` 秒，
+      不每轮重复磨同一批坏地址；冷却表只在内存里，进程重启即清零。
+    - 本地化总开关或 ``EMBY_IMAGE_BACKFILL=0`` 时整轮跳过。
+    返回本轮实际补好本地图的条数（至少一张落盘计一条）。
+    """
+    from sqlalchemy import and_, or_
+
+    from backend.emby_server import image_store
+
+    if not image_store.enabled() or not image_store.backfill_enabled():
+        return 0
+    now = time.time()
+    if len(_IMAGE_BACKFILL_TRIED) > 10000:
+        for key in [k for k, ts in _IMAGE_BACKFILL_TRIED.items()
+                    if now - ts > _IMAGE_BACKFILL_COOLDOWN_SEC]:
+            _IMAGE_BACKFILL_TRIED.pop(key, None)
+    poster_missing = and_(em.MediaItem.primary_image_url.isnot(None),
+                          em.MediaItem.primary_image_url != "",
+                          or_(em.MediaItem.poster_path.is_(None),
+                              em.MediaItem.poster_path == ""))
+    backdrop_missing = and_(em.MediaItem.backdrop_image_url.isnot(None),
+                            em.MediaItem.backdrop_image_url != "",
+                            or_(em.MediaItem.backdrop_path.is_(None),
+                                em.MediaItem.backdrop_path == ""))
+    rows = (db.query(em.MediaItem)
+            .filter(em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None),
+                    or_(poster_missing, backdrop_missing))
+            .order_by(em.MediaItem.id.desc())
+            .limit(_IMAGE_BACKFILL_PER_ROUND * 4)
+            .all())
+    batch = []
+    for row in rows:
+        tried_at = _IMAGE_BACKFILL_TRIED.get(row.id)
+        if tried_at is not None and now - tried_at < _IMAGE_BACKFILL_COOLDOWN_SEC:
+            continue
+        batch.append(row)
+        if len(batch) >= _IMAGE_BACKFILL_PER_ROUND:
+            break
+    if not batch:
+        return 0
+    urls = []
+    for row in batch:
+        if row.primary_image_url and not row.poster_path:
+            urls.append(row.primary_image_url)
+        if row.backdrop_image_url and not row.backdrop_path:
+            urls.append(row.backdrop_image_url)
+    image_store.prewarm(urls)
+    filled = 0
+    for row in batch:
+        got = False
+        if row.primary_image_url and not row.poster_path:
+            local = image_store.localize(row.primary_image_url,
+                                         allow_download=False)
+            if local:
+                row.poster_path = local
+                got = True
+        if row.backdrop_image_url and not row.backdrop_path:
+            local = image_store.localize(row.backdrop_image_url,
+                                         allow_download=False)
+            if local:
+                row.backdrop_path = local
+                got = True
+        if got:
+            filled += 1
+        else:
+            _IMAGE_BACKFILL_TRIED[row.id] = now
+    if filled:
+        db.commit()
+    return filled
 
 
 def none_stock_stats(db) -> dict:
