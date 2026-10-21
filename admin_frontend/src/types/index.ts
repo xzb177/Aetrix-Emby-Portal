@@ -133,6 +133,37 @@ export interface PlayLinesSnapshot {
   default_line: string
 }
 
+/** 播放风控看板（/api/admin/playback/risk，只读） */
+export interface PlayRiskItem {
+  item_id: number
+  name: string | null
+  series_name: string | null
+  is_drive: boolean
+  /** 同时在播的不同用户数 */
+  viewers: number
+  sessions: number
+  /** viewers ≥ stack_threshold：同一文件叠播 */
+  stacked: boolean
+}
+
+export interface PlayRiskSnapshot {
+  /** all_processes = Redis 全进程合计；process = 仅面板本进程 */
+  scope: 'all_processes' | 'process'
+  since: number | null
+  counters: Record<
+    'redirect_302' | 'exists_cache_hit' | 'exists_cache_miss' | 'exists_404' | 'exists_503' | 'drive_403' | 'drive_429',
+    number
+  >
+  exists_cache_hit_rate: number | null
+  exists_cache_ttl_sec: number | null
+  active_sessions: number | null
+  window_seconds: number
+  stack_threshold: number
+  stacked_items: number
+  top_items: PlayRiskItem[]
+  error?: boolean
+}
+
 export interface LoginResponse {
   access_token: string
   refresh_token: string

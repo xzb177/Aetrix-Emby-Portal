@@ -3861,13 +3861,26 @@ def _drive_exists_http_get(url, *, params, headers, timeout):
 #: 存在性判定不依赖 token 值——SA 轮换/换取不影响缓存有效性，无需失效。
 #: 404 不缓存（文件删后恢复应可播）；401/超时/5xx 等异常不缓存
 #: （401 毒化失效依赖每次真实判定；异常结果不值得信任）。
-_DRIVE_EXISTS_CACHE_TTL = 60.0
+#: TTL（2026-10-21 owner 拍板 60s→600s）：环境变量 DRIVE_EXISTS_CACHE_TTL_SEC
+#: （默认 600；0=关闭正缓存，每次都真实 files.get）。调参项只走 env，不进后台。
+#: 每次调用时读 env（一次 os.getenv，纳秒级），改 env 重启即生效、测试可 monkeypatch。
+_DRIVE_EXISTS_CACHE_TTL_DEFAULT = 600
+#: 字典上限：超过即先清过期条目，仍超则整体清空（防无限增长）
+_DRIVE_EXISTS_CACHE_MAX = 10000
 _drive_exists_cache: dict = {}
 _drive_exists_cache_lock = threading.Lock()
 
 
+def drive_exists_cache_ttl() -> int:
+    """存在性正缓存 TTL（秒）：env DRIVE_EXISTS_CACHE_TTL_SEC，默认 600，0=关闭。"""
+    return env_int("DRIVE_EXISTS_CACHE_TTL_SEC", _DRIVE_EXISTS_CACHE_TTL_DEFAULT,
+                   0, 86400)
+
+
 def _drive_exists_cache_hit(drive_id: str, file_id: str) -> bool:
-    """正缓存命中（60s 内已判定存在）→ True；否则 False。"""
+    """正缓存命中（TTL 内已判定存在）→ True；否则 False。TTL=0 恒 False。"""
+    if drive_exists_cache_ttl() <= 0:
+        return False
     now = time.monotonic()
     key = (drive_id, file_id)
     with _drive_exists_cache_lock:
@@ -3880,15 +3893,20 @@ def _drive_exists_cache_hit(drive_id: str, file_id: str) -> bool:
 
 
 def _drive_exists_cache_put(drive_id: str, file_id: str) -> None:
-    """files.get 200 后写入正缓存（只在成功路径调用）。"""
+    """files.get 200 后写入正缓存（只在成功路径调用；TTL=0 不写）。"""
+    ttl = drive_exists_cache_ttl()
+    if ttl <= 0:
+        return
     with _drive_exists_cache_lock:
-        if len(_drive_exists_cache) > 10000:
-            # 防无限增长：清掉已过期条目（常态字典很小，不触发）
+        if len(_drive_exists_cache) >= _DRIVE_EXISTS_CACHE_MAX:
+            # 防无限增长：先清过期条目；TTL 拉长到 600s 后仍可能全是活条目，
+            # 这时整体清空（最坏只是多打几次 files.get，不影响正确性）
             now = time.monotonic()
             for k in [k for k, e in _drive_exists_cache.items() if e <= now]:
                 del _drive_exists_cache[k]
-        _drive_exists_cache[(drive_id, file_id)] = (
-            time.monotonic() + _DRIVE_EXISTS_CACHE_TTL)
+            if len(_drive_exists_cache) >= _DRIVE_EXISTS_CACHE_MAX:
+                _drive_exists_cache.clear()
+        _drive_exists_cache[(drive_id, file_id)] = time.monotonic() + ttl
 #: 单次 files.get 超时（秒）：只做存在性判定，不许引入新的长等待。
 _DRIVE_EXISTS_TIMEOUT = 3.0
 _DRIVE_FILE_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
@@ -3939,11 +3957,27 @@ def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
     404 抛 _DriveFileGone；其他失败抛 _DriveFileUnavailable。永不碰 db。
     凭据走 ``drive_changes.get_token_for_drive``（全项目唯一入口，含
     个人盘 OAuth 与共享盘 SA 轮换）；401 时按 token 值失效内外两层缓存。
-    60s 正缓存命中时直接返回（A-P2-3）；404 不缓存。
+    正缓存（TTL 见 drive_exists_cache_ttl，默认 600s）命中时直接返回（A-P2-3）；404 不缓存。
     """
-    from backend.emby_server import drive_auth, drive_changes
+    from backend.emby_server import playback_risk
     if _drive_exists_cache_hit(drive_id, file_id):
+        playback_risk.bump("exists_cache_hit")
         return
+    playback_risk.bump("exists_cache_miss")
+    try:
+        _drive_file_exists_remote(drive_id, file_id)
+    except _DriveFileGone:
+        playback_risk.bump("exists_404")
+        raise
+    except _DriveFileUnavailable:
+        playback_risk.bump("exists_503")
+        raise
+
+
+def _drive_file_exists_remote(drive_id: str, file_id: str) -> None:
+    """真实 files.get（缓存未命中时）：成功写正缓存，失败抛异常。"""
+    from backend.emby_server import drive_auth, drive_changes
+    from backend.emby_server import playback_risk
     try:
         token = drive_changes.get_token_for_drive(drive_id)
     except drive_changes.DriveAuthError as exc:
@@ -3963,6 +3997,7 @@ def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 — 超时/网络异常一律转 503
         raise _DriveFileUnavailable(f"files.get 调用失败：{exc}") from exc
+    playback_risk.note_drive_status(resp.status_code)
     if resp.status_code == 404:
         raise _DriveFileGone(f"Drive 文件已不存在：{file_id}")
     if resp.status_code == 401:
@@ -4200,6 +4235,9 @@ def _observe_traffic(response):
     面板上的「出流量」就会虚高——宁可口径窄，也不能给一个偏大的数。
     """
     line_stats.record_request()
+    if getattr(response, "status_code", None) == 302:
+        from backend.emby_server import playback_risk
+        playback_risk.bump("redirect_302")
     iterator = getattr(response, "body_iterator", None)
     if iterator is None:
         return response

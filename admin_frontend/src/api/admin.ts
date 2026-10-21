@@ -29,6 +29,7 @@ import type {
   PlaybackPolicy,
   PlaybackRuntime,
   PlayLinesSnapshot,
+  PlayRiskSnapshot,
   EaMountHealth,
   RemoteServerRow,
   ServerKind,
@@ -1891,6 +1892,9 @@ export const fetchPlaybackPolicy = () =>
 // 灰度发布（0% 流量影子评估）本期不做，所以也没有对应的开关。
 
 export const fetchPlayLines = () => get<PlayLinesSnapshot>('/playback/lines')
+
+/** 播放风控看板：叠播 Top10 + Drive 调用计数（只读） */
+export const fetchPlayRisk = () => get<PlayRiskSnapshot>('/playback/risk')
 
 export const updatePlaybackPolicy = (policy: Partial<PlaybackPolicy>) =>
   put<{ success: boolean; applied: Record<string, string>; policy: PlaybackPolicy }>(

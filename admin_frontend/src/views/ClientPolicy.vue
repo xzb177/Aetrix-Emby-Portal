@@ -20,7 +20,7 @@ import {
 } from 'lucide-vue-next'
 import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
-  fetchPlayLines, fetchPlaybackPolicy,
+  fetchPlayLines, fetchPlayRisk, fetchPlaybackPolicy,
   updatePlaybackPolicy,
 } from '@/api/admin'
 import { fmtBytes } from '@/composables/useDangerOps'
@@ -28,7 +28,7 @@ import { fmtBytes } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type {
   PlaybackPolicy, PlaybackRuntime,
-  PlayLinesSnapshot,
+  PlayLinesSnapshot, PlayRiskSnapshot,
 } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import NoticePanel from '@/components/NoticePanel.vue'
@@ -67,14 +67,16 @@ async function load() {
   loading.value = true
   loadError.value = false
   try {
-    const [p, s, ln] = await Promise.all([
+    const [p, s, ln, rk] = await Promise.all([
       fetchPlaybackPolicy(),
       fetchEconomySettings().catch(() => null),
       fetchPlayLines().catch(() => null),
+      fetchPlayRisk().catch(() => null),
     ])
     policy.value = p.policy
     runtime.value = p.runtime
     playLines.value = ln
+    playRisk.value = rk
     opsError.value = !s
     if (s) {
       ops.value = {
@@ -99,6 +101,29 @@ onMounted(load)
 // 只回答“这会儿每条线路怎么样”：能不能用、是不是在降级、有多少人多少流量、效果如何。
 
 const playLines = ref<PlayLinesSnapshot | null>(null)
+
+// ==================== 播放风控看板（只读） ====================
+// 同一文件多人同时播（叠播）最容易被谷歌 usercontent 限速；Drive API 403/429
+// 说明配额/风控在收紧。这里只展示，不改任何配置（调参走 env）。
+const playRisk = ref<PlayRiskSnapshot | null>(null)
+const riskHitRate = computed(() => {
+  const r = playRisk.value?.exists_cache_hit_rate
+  return r == null ? '—' : `${Math.round(r * 100)}%`
+})
+const riskScopeLabel = computed(() =>
+  playRisk.value?.scope === 'all_processes' ? '全进程合计（Redis）' : '仅面板本进程（Redis 不可用）',
+)
+const riskSince = computed(() => {
+  const t = playRisk.value?.since
+  return t ? new Date(t * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'
+})
+const riskDriveErrors = computed(() =>
+  (playRisk.value?.counters.drive_403 ?? 0) + (playRisk.value?.counters.drive_429 ?? 0),
+)
+function riskItemName(it: PlayRiskSnapshot['top_items'][number]) {
+  const n = it.name || `#${it.item_id}`
+  return it.series_name ? `${it.series_name} · ${n}` : n
+}
 
 /** 本机文件整文件直发 / 转码拉流不走本服务响应体，流量口径不包含它们 */
 const lineBytesHint = '流量 = 本进程经手的出流量（不含转码时 ffmpeg 的拉流与整文件直发）'
@@ -362,6 +387,45 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       />
     </SectionCard>
 
+    <!-- 播放风控看板（2026-10-21）：叠播 + Drive 调用计数，只读 -->
+    <SectionCard
+      title="播放风控"
+      :icon="AlertTriangle"
+      :meta="playRisk ? riskScopeLabel : (loading ? '加载中…' : '')"
+      description="同一文件多人同时播（叠播）最容易被谷歌限速；Drive 403/429 说明配额或风控在收紧。只读，调参走环境变量。"
+    >
+      <template v-if="playRisk">
+        <div class="tile-grid">
+          <StatTile label="正在播放" :value="playRisk.active_sessions ?? '—'" :hint="`${Math.round(playRisk.window_seconds / 60)} 分钟内有上报`" />
+          <StatTile label="叠播文件" :value="playRisk.stacked_items" :tone="playRisk.stacked_items > 0 ? 'warn' : 'plain'" :hint="`同时 ≥${playRisk.stack_threshold} 人`" />
+          <StatTile label="302 跳转" :value="playRisk.counters.redirect_302" />
+          <StatTile label="存在性检查命中率" :value="riskHitRate" :hint="`命中 ${playRisk.counters.exists_cache_hit} / 实查 ${playRisk.counters.exists_cache_miss}；缓存 ${playRisk.exists_cache_ttl_sec ?? '—'}s`" />
+          <StatTile label="文件不存在（404）" :value="playRisk.counters.exists_404" :tone="playRisk.counters.exists_404 > 0 ? 'warn' : 'plain'" />
+          <StatTile label="暂不可用（503）" :value="playRisk.counters.exists_503" :tone="playRisk.counters.exists_503 > 0 ? 'warn' : 'plain'" />
+          <StatTile label="Drive 403 / 429" :value="`${playRisk.counters.drive_403} / ${playRisk.counters.drive_429}`" :tone="riskDriveErrors > 0 ? 'danger' : 'plain'" />
+        </div>
+        <p class="cp-hint">计数起点：{{ riskSince }}（{{ riskScopeLabel }}）</p>
+        <div v-if="playRisk.top_items.length" class="risk-list">
+          <div class="cache-list-head">同时在播 Top {{ playRisk.top_items.length }}</div>
+          <div v-for="it in playRisk.top_items" :key="it.item_id" class="risk-row" :class="{ 'is-stacked': it.stacked }">
+            <span class="risk-name">{{ riskItemName(it) }}</span>
+            <span v-if="!it.is_drive" class="au-badge au-badge-muted">非 Drive</span>
+            <span class="au-badge" :class="it.stacked ? 'au-badge-amber' : 'au-badge-muted'">
+              {{ it.viewers }} 人{{ it.stacked ? ' · 叠播' : '' }}
+            </span>
+          </div>
+        </div>
+        <p v-else class="cp-hint">现在没有正在播放的会话。</p>
+      </template>
+      <EmptyState
+        v-else-if="!loading"
+        compact
+        :icon="AlertTriangle"
+        title="播放风控数据读取失败"
+        description="不影响播放；点右上角「刷新」重试。"
+      />
+    </SectionCard>
+
     <!-- Drive 302 直链状态（#957；开关已摘面板，服务端配置控制） -->
     <SectionCard title="Drive 302 直链" :icon="Zap">
       <template #actions>
@@ -504,6 +568,25 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
   color: var(--au-text-3);
 }
 .line-key { display: inline-block; min-width: 64px; color: var(--au-text-2); font-weight: 500; }
+
+/* ===== 播放风控 ===== */
+.risk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--au-border);
+}
+.risk-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--au-text-2);
+}
+.risk-row.is-stacked .risk-name { color: var(--au-text); font-weight: 600; }
+.risk-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ===== 本地缓存条目 ===== */
 .cache-list {

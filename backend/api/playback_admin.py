@@ -11,6 +11,9 @@
 
 - ``GET  /api/admin/playback/lines``：单路径快照——播放流量（本进程请求数/出流量）、
   本地缓存层状态（启用/命中率/占用）。**纯只读**。
+- ``GET  /api/admin/playback/risk``：播放风控看板（2026-10-21）——正在播会话数、
+  同一文件同时在播人数 Top10（≥2 标叠播）、302 次数、Drive 存在性检查
+  命中/未命中/404/503、Drive API 403/429。**纯只读**，口径见 playback_risk。
 
 VPS 本地缓存（播放线路「本地缓存」）段落已随 #957/#958/#959 删除（本地缓存整套移除）——
 本文件当前仅实现 /lines 与 /policy。
@@ -33,7 +36,7 @@ from backend import playback_policy
 from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 from backend.ratelimit import get_client_ip
-from backend.emby_server import line_health, mount_health
+from backend.emby_server import line_health, mount_health, playback_risk
 from backend.emby_server.streaming import (
     active_transcode_ids,
     transcode_capacity,
@@ -67,6 +70,15 @@ def get_play_lines(
 ):
     """单路径播放可观测快照（流量 / 本地缓存层 / CDN 域名状态）"""
     return line_health.snapshot(db)
+
+
+@router.get("/risk")
+def get_play_risk(
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """播放风控看板（只读）：叠播 Top10 + Drive 调用计数"""
+    return playback_risk.snapshot(db)
 
 
 @router.get("/policy")

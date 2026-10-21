@@ -122,6 +122,11 @@ def ensure_shared(file_id: str, bearer_token: str | None) -> str:
         code = int(resp.status_code)
     except Exception:
         return "failed"
+    try:
+        from backend.emby_server import playback_risk
+        playback_risk.note_drive_status(code)
+    except Exception:  # noqa: BLE001 — 观测点永不影响补开分享
+        pass
     if code in (200, 201):
         return "ok"
     if code == 409:
