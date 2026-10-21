@@ -1115,9 +1115,12 @@ export const scanAllLibraries = () =>
     queued_count: number
     already_count: number
     skipped_count: number
+    forwarded_count: number
     queued: Array<{ id: number; name: string }>
     already: Array<{ id: number; name: string; state?: string }>
     skipped: Array<{ id: number; name: string; reason?: string }>
+    forwarded: Array<{ id: number; name: string; node_name?: string }>
+    failed: Array<{ id: number; name: string; node_name?: string; error?: string }>
     message?: string
   }>('/emby/scan/all')
 

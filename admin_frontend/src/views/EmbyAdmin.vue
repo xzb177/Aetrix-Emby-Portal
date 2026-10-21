@@ -900,9 +900,17 @@ async function scanAll() {
   try {
     const res = await scanAllLibraries()
     const parts = [`已加入 ${res.queued_count} 个库的扫描队列`]
+    if (res.forwarded_count > 0) parts.push(`${res.forwarded_count} 个已转发给归属节点`)
     if (res.already_count > 0) parts.push(`${res.already_count} 个正在扫/已在队列（已跳过）`)
     if (res.skipped_count > 0) parts.push(`${res.skipped_count} 个已停用/虚拟（已跳过）`)
-    ElMessage.success(parts.join('，'))
+    if (res.failed.length > 0) {
+      // 转发失败必须露出来：只报成功会让管理员以为所有库都扫上了
+      // （2026-10-21 系统清点：此前提示把 failed 整个藏掉）
+      parts.push(`${res.failed.length} 个转发失败：${res.failed.map((f) => f.name).join('、')}`)
+      ElMessage.warning(parts.join('，'))
+    } else {
+      ElMessage.success(parts.join('，'))
+    }
   } catch (e: any) {
     ElMessage.error(toAdminError(e, '一键扫描失败'))
   }
@@ -1019,9 +1027,13 @@ const queueActiveCount = computed(
 )
 const enabledLibCount = computed(() => libraries.value.filter((l) => l.is_enabled).length)
 
-/** 跳到「元数据来源」页并带上条目 ID：对方 onMounted 会自动填入并选中，跳过「搜条目」一步 */
-function goIdentify(l: EmbyLibrary) {
-  router.push({ name: 'MetadataSources', query: { item_id: String(l.id) } })
+/** 跳到「元数据来源」页手动识别/绑定。
+ * 注意：这里只有库、没有具体条目，不许把库编号当 item_id 传过去——
+ * 接收页会把它当条目编号预选出一个假的「条目 #库编号」，后续 bind-tmdb
+ * 按条目查库，轻则报「条目不存在」、重则误绑编号相同的另一条目
+ * （2026-10-21 系统清点实锤）。条目在目标页搜索选取。 */
+function goIdentify(_l: EmbyLibrary) {
+  router.push({ name: 'MetadataSources' })
 }
 
 // ==================== 单集夜间刮削 ====================
