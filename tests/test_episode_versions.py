@@ -131,7 +131,7 @@ def test_merge_is_idempotent(db):
     db.commit()
     # 已收敛的组（仅主记录未合并）直接跳过：第二轮无事可做，全零
     assert stats == {"groups": 0, "merged": 0, "promoted": 0,
-                     "unmerged_orphans": 0}
+                     "unmerged_orphans": 0, "repointed_orphans": 0}
 
 
 def test_merge_second_run_skips_converged_groups(db):
@@ -212,7 +212,7 @@ def test_merge_disabled_by_env(db, monkeypatch):
     stats = ev.merge_episode_versions(db, library_id=1)
     db.commit()
     assert stats == {"groups": 0, "merged": 0, "promoted": 0,
-                     "unmerged_orphans": 0}
+                     "unmerged_orphans": 0, "repointed_orphans": 0}
 
 
 def test_get_version_group(db):

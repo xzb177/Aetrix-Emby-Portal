@@ -2398,7 +2398,7 @@ def admin_merge_episode_versions(
     #（不传库 = 全库，取全部启用库；与提交同事务）
     from backend.emby_server import items_dedup_cache as _idc
     from backend.emby_server import models as _em
-    if any(stats.get(k) for k in ("groups", "merged", "promoted", "unmerged_orphans")):
+    if any(stats.get(k) for k in ("groups", "merged", "promoted", "unmerged_orphans", "repointed_orphans")):
         _libs = [library_id] if library_id else [
             r[0] for r in db.query(_em.Library.id)
             .filter(_em.Library.is_enabled == True).all()]  # noqa: E712

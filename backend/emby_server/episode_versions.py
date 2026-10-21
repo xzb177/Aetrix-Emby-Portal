@@ -98,6 +98,40 @@ def _group_key(item: Any) -> Optional[Tuple[int, int, int, int]]:
     return (int(library_id), int(series_id), int(season), int(episode))
 
 
+def _live_merge_root_id(db, start_id: int) -> Optional[int]:
+    """沿 merged_into_id 链找存活根：未删除且自身未被合并的行 id。
+
+    链中行已删但改指了下游时继续跟随；链断（行不存在 / 已删且无下游 /
+    成环 / 超深）返回 None。孤儿回收改指用：主集被画质选主换人合并掉后，
+    指向它的跟随集应改指换人后的存活主集，而不是被清标永久再滞留
+    （双份治理 531 集再滞留实锤根因）。
+
+    链中行可能已被软删：查询必须走 soft_delete.include_deleted() 放行，
+    否则全局隐藏钩子让已删行整行不可见、链在第一跳就断（存活与否由本
+    函数逐行查 deleted_at/merged_into_id 字段判定，不靠查询可见性）。
+    """
+    from backend.emby_server import models as em
+    from backend.emby_server import soft_delete as _sd
+
+    MI = em.MediaItem
+    seen = set()
+    cur: Optional[int] = start_id
+    with _sd.include_deleted():
+        while cur is not None and cur not in seen and len(seen) <= 64:
+            seen.add(cur)
+            row = (
+                db.query(MI.deleted_at, MI.merged_into_id)
+                .filter(MI.id == cur)
+                .first()
+            )
+            if row is None:
+                return None
+            if row[0] is None and row[1] is None:
+                return cur
+            cur = row[1]
+    return None
+
+
 def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, int]:
     """合并单集多版本。
 
@@ -105,17 +139,20 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
     - 可见行（``deleted_at IS NULL``）中选主记录，其余 ``merged_into_id`` 指向主记录
     - 主记录被删后：孤儿回收先解散合并，下一轮重新选主（最终一致，至多多一轮；
       详见 having 条件的注释）
-    - 组内只剩一行且被合并过（孤儿）：解除合并，恢复独立
+    - 孤儿的合并目标只是被合并到下游（未删）时：沿链改指存活根，保住
+      版本关系；链断（目标已删且无存活根）才解除合并，恢复独立
 
     幂等：重复调用结果不变。只写 ``merged_into_id``，不动其他字段。
 
-    返回 ``{"groups": 组数, "merged": 合并的版本数, "promoted": 晋升数}``。
+    返回 ``{"groups": 组数, "merged": 合并的版本数, "promoted": 晋升数,
+    "unmerged_orphans": 链断解散数, "repointed_orphans": 改指存活根数}``。
     """
     from sqlalchemy import case as _case
     from sqlalchemy import func as _func
     from backend.emby_server import models as em
 
-    stats = {"groups": 0, "merged": 0, "promoted": 0, "unmerged_orphans": 0}
+    stats = {"groups": 0, "merged": 0, "promoted": 0, "unmerged_orphans": 0,
+             "repointed_orphans": 0}
     if not EPISODE_VERSIONS_ENABLED:
         return stats
 
@@ -183,8 +220,9 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
                 series_id, season_number, episode_number, primary.id, len(rows),
             )
 
-    # 孤儿回收：merged_into_id 指向已删除/已合并行的，解除合并恢复独立
-    # （主记录被物理删除或自身又被合并的极端情况）
+    # 孤儿回收：merged_into_id 指向已删除/已合并行的，先沿 merged_into 链
+    # 找存活根改指（目标只是被合并到下游，如主集被画质选主换人）；链断
+    # （目标已删且无存活根）才解除合并恢复独立。
     orphans = (
         db.query(MI)
         .filter(
@@ -208,12 +246,24 @@ def merge_episode_versions(db, library_id: Optional[int] = None) -> Dict[str, in
         )
         alive = {row[0] for row in primaries}
         for r in orphan_rows:
-            if r.merged_into_id not in alive:
+            if r.merged_into_id in alive:
+                continue
+            root_id = _live_merge_root_id(db, r.merged_into_id)
+            if root_id is not None:
+                # 目标未死、只是被合并到下游：改指存活根，版本关系不断裂。
+                # 旧行为直接清标，跟随集从此永久再滞留（531 集实锤）。
+                r.merged_into_id = root_id
+                stats["repointed_orphans"] += 1
+                logger.info(
+                    "单集多版本孤儿改指存活根：条目 %s -> %s（%s）",
+                    r.id, root_id, r.file_path,
+                )
+            else:
                 r.merged_into_id = None
                 stats["unmerged_orphans"] += 1
                 logger.info("单集多版本孤儿恢复独立：条目 %s（%s）", r.id, r.file_path)
 
-    if stats["groups"] or stats["unmerged_orphans"]:
+    if stats["groups"] or stats["unmerged_orphans"] or stats["repointed_orphans"]:
         logger.info("单集多版本合并完成：%s", stats)
     return stats
 
