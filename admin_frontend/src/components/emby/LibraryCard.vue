@@ -102,7 +102,7 @@ const emit = defineEmits<{
       <el-button size="small" plain title="全量扫描：强制重处理该库每个文件，无视增量记录。出问题、修 bug 后才用，慢。" @click="emit('scan-full')">
         <RefreshCcw :size="13" />全量扫描
       </el-button>
-      <el-button size="small" plain title="刷新已有条目的元数据（不扫描新文件）" @click="emit('rescrape')">
+      <el-button size="small" plain title="刷新元数据：完整扫描该库并重新刮削（会发现新文件入库，也会清理已缺失的文件）" @click="emit('rescrape')">
         <RefreshCw :size="13" />刷新元数据
       </el-button>
       <el-button size="small" plain title="手动识别：跳到「元数据来源」页直接绑定 TMDB / IMDb ID" @click="emit('identify')">
