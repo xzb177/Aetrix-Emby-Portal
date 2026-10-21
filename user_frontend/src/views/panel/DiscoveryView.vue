@@ -1,6 +1,6 @@
 <template>
   <div class="v4-scope">
-    <!-- 桌面「探险世界」：≥1024px + 已登录 + 用户选了世界视图时，首页整屏变探险地图；其余情况（手机/经典视图）走下面原有版式，一行不改 -->
+    <!-- 探险世界：已登录且选了世界视图时，首页整屏是探险地图（手机与桌面同一张图，窄屏在地图组件里横滑）；经典视图走下面原有版式 -->
     <WorldHome v-if="homeWorldActive" />
     <template v-else>
     <!-- C档第2批：≥1280px 三栏仪表盘（d3-root 网格）；<1280px 保持现行单栏，移动端零变化 -->
@@ -18,11 +18,10 @@
           <p v-else-if="today.data">今天的新封存数还没算出来 —— 看看下面的货架上有啥。</p>
           <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
           <div v-if="streak > 0" class="v4-fire">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
-          <!-- 经典视图回世界入口：视口 1024–1279px + 已登录 + 经典视图时出现；
-               ≥1280px 时本 header（m-only）display:none 不渲染，桌面世界入口
-               由右栏「世界」卡片承担 -->
+          <!-- 经典视图回世界入口：本 header 是 m-only，≥1280px 不渲染，桌面世界入口由右栏承担。
+               手机切回经典后也要能回到地图。 -->
           <button
-            v-if="homeIsDesktop && user.isLoggedIn && homeMode === 'classic'"
+            v-if="user.isLoggedIn && homeMode === 'classic'"
             type="button"
             class="v4-world-switch"
             @click="setHomeMode('world')"
@@ -201,7 +200,6 @@ const user = useUserStore()
 // 首页形态：桌面世界视图（探险地图）/ 经典视图切换（偏好按用户存 localStorage）
 const {
   worldActive: homeWorldActive,
-  isDesktop: homeIsDesktop,
   mode: homeMode,
   setMode: setHomeMode,
 } = useHomeViewMode()
