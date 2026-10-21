@@ -430,6 +430,15 @@ def merge_group(db, group: List) -> int:
             "多版本合并：%s (id=%d) → 主记录 %s (id=%d)",
             item.name, item.id, primary.name, primary.id,
         )
+    if merged and any(getattr(it, "item_type", None) == "series" for it in group):
+        # 集跟随收敛点（双份治理根治）：series 组合并后，被合并 series 的集
+        # 一并跟随主 series（同集指主集 / 无对应集 reparent）。严格通道
+        # （同 tmdb）与宽松通道共用此收尾——此前只有宽松通道在 merge_group
+        # 之后显式调 _follow_series_episodes，严格通道只搬剧不搬集，集被
+        # 永久滞留在被合并 series 名下（全库 8 万+ 滞留集即此来源）。
+        # 幂等：_follow_series_episodes 只处理未合并的可见集，重复调用无副作用；
+        # 选主口径与本函数一致（dedup.pick_primary 纯评分，不依赖合并状态）。
+        _follow_series_episodes(db, group)
     return merged
 
 
@@ -585,7 +594,8 @@ def _merge_once() -> Tuple[int, int]:
                     try:
                         merged = merge_group(db, loose_group)
                         if merged:
-                            _follow_series_episodes(db, loose_group)
+                            # 集跟随已收敛进 merge_group 末尾（严格/宽松共用），
+                            # 此处不再单独调用，避免双调。
                             for _it in loose_group:
                                 _lid = getattr(_it, "library_id", None)
                                 if _lid:
@@ -610,7 +620,8 @@ def _merge_once() -> Tuple[int, int]:
                 # （含纯孤儿回收：groups=0 但 unmerged_orphans>0）都要提交，
                 # 否则变更在 db.close() 时被回滚、孤儿永远恢复不了。
                 if any(ev_stats.get(k) for k in
-                       ("groups", "merged", "promoted", "unmerged_orphans")):
+                       ("groups", "merged", "promoted", "unmerged_orphans",
+                        "repointed_orphans")):
                     db.commit()
                     total_merged += ev_stats.get("merged", 0)
                     logger.info("单集多版本合并：%s", ev_stats)

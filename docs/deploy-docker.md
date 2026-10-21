@@ -93,7 +93,7 @@ docker compose -f docker-compose.yml -f docker-compose.frontend.yml ps
 |---|---|---|
 | 网页（用户端 + 管理后台） | `http://<主机IP>:8081`，后台在 `/admin/` | 经 `aetrix-web`（nginx）访问 |
 | 后端 API | `http://<主机IP>:8000` | 只提供接口，不提供网页（直接开根路径看不到页面是正常的） |
-| Emby 协议面（EA） | 第三方客户端填网页地址即可（`/emby` 由 nginx 转发）；本机调试可用 `http://127.0.0.1:8002` | EA 的宿主机端口只绑 `127.0.0.1`，默认 `EA_INTERNAL_PORT=8002`，不直接对公网开放 |
+| Emby 协议面 | `http://<主机IP>:8000` | 默认 `ENABLE_EMBY_GATEWAY=true` 时，播放器填这个地址，不要加 `/emby`，不要填 `:8081`。`:8081` 的 nginx 只反代 `/emby/` 前缀，根路径是网页。EA 的宿主机映射是 `127.0.0.1:8002`（容器内 8001），只给本机反代用，不要暴露到公网 |
 
 想改端口：改编排文件里的 `ports`（后端在 `docker-compose.yml` 的 `aetrix-api`，
 网页在 `docker-compose.frontend.yml` 的 `aetrix-web`），改完重新 `up -d`。
@@ -198,8 +198,7 @@ docker compose exec postgres pg_dump -U aetrix aetrix > backup-$(date +%F).sql
 恢复与更多运维细节（定时备份、恢复演练、旧 SQLite 部署的备份方式）见
 [运维 · 备份 · 排错](./operations.md)。
 
-> 后台设置里的「数据库定时备份」只对 SQLite 生效；跑 PostgreSQL 时它会明确跳过，
-> 给不了 PG 备份——PG 请用上面的脚本配一条定时任务，别被「备份已开启」误导。
+> 后台「数据库定时备份」在 PostgreSQL 上会调用容器内的 `pg_dump`（custom 格式，见[运维手册](./operations.md)）。它不能代替更新前的 `scripts/backup_db.sh`。第 7 节已经说明：`update.sh` 不备份 PostgreSQL。
 
 ## 9. 反向代理与 HTTPS
 

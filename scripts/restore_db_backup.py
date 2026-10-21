@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""SQLite 备份恢复脚本（配合 backend/emby_server/db_backup.py 的定时备份）。
+"""SQLite 备份恢复脚本（只适用于 SQLite 的 *.db.gz；不恢复 PostgreSQL）。
 
 恢复步骤：
   1. 先停掉应用容器（否则恢复中的文件替换可能与正在写的进程冲突）：
-       docker compose stop api worker ea   # 按你的实际服务名调整
+       docker compose stop aetrix-api aetrix-worker aetrix-ea
   2. 跑本脚本，按提示选一个备份恢复：
        python3 scripts/restore_db_backup.py [--db /data/aetrix_unified.db] [--yes]
   3. 重启容器：

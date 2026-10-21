@@ -6,6 +6,9 @@
 #
 # Usage: ./restore_db.sh <database_name> <backup_file>
 #
+# 默认连接宿主机 PostgreSQL。示例库名来自旧拆分栈，不要用于现行的
+# aetrix-postgres 容器，除非调用者改完 DB_HOST、DB_USER、DB_NAME 并接受删库。
+#
 
 set -e
 
