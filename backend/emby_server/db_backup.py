@@ -1,4 +1,4 @@
-"""数据库定时备份：SQLite 在线备份 + gzip 压缩 + 按天轮转 + daemon 调度
+"""数据库定时备份：SQLite 在线备份与 PostgreSQL pg_dump + gzip 压缩 + 按天轮转 + daemon 调度
 
 要解决的问题：生产库是 SQLite 单文件，一旦损坏 / 误删 / 宿主机故障，
 订单、积分、订阅全丢。之前备份脚本全是 PostgreSQL 口径（pg_dump），
@@ -24,8 +24,9 @@
   - 写前查磁盘余量——备份与主库同卷，写到一半 ENOSPC 会把主库一起写挂。
   - ``CONFIG_LAST_RUN`` 只在**成功后**写——先占位会让失败变成"今天已跑过"，当天永不重试。
   - ``sweep_stale_temp_files()`` 回收强杀残留的未压缩全库副本。
-- 非 SQLite 部署：``get_config()`` 返回 ``supported: false`` 且调度线程不启动，
-  不静默假装有备份（pg/mysql 请用各自原生工具，本模块只管 sqlite）。
+- 非 SQLite / PostgreSQL 部署（例如 MySQL）：``get_config()`` 返回 ``supported: false``
+  且调度线程不启动，不静默假装有备份。SQLite 与 PostgreSQL 都走内置备份
+  （PG 为 ``pg_dump``，见 ``_run_pg_backup_locked``）；MySQL 请用原生工具。
 - 调度：worker / EM 启动时 ``start_backup_scheduler()`` 起 daemon 线程，
   每 60 秒检查一次；到点且当天没跑过就执行。任何异常只记日志，线程永不退出。
 """
@@ -471,8 +472,8 @@ def _tick() -> None:
         if not cfg["enabled"]:
             return
         if not cfg.get("supported", True):
-            # 非 SQLite 部署：不跑，但要在日志里说清楚（默认开关是开的，
-            # 否则管理员会以为"开关打开 = 有备份"，实际每天都静默失败）
+            # 非 SQLite/PG 部署：不跑（PostgreSQL 的 supported 为真，会走 pg_dump）。
+            # 默认开关是开的，否则管理员会以为"开关打开 = 有备份"，实际每天都静默失败。
             return
         now = datetime.now()
         if not _should_run_today(now, cfg["time"], cfg["last_run"]):
