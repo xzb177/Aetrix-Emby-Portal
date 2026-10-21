@@ -6,6 +6,8 @@
 - **落盘**：写入原子（不留 .part）、内容一致、同一张图只下载一次、并发只下载一次
 - **写事务里绝不下载**（v2.42.9）：下载统一在 IO 阶段（`prewarm_images`），写库阶段只落字段；
   没预热上的图只落远程地址，交给取图时的按需自愈
+- **预热默认关**（v2.54.0，`EMBY_IMAGE_PREWARM=1` 才开）：默认刮削只落远程地址，
+  由后台补下载巡检（`image_backlog_patrol`）涓流落盘；显式开预热时 IO 阶段照旧下载
 - **失败回退**：源站 404/超时/非图片内容 → 不落盘、不改条目、接口照旧走原来的代理路径
 - **自愈**：本地缓存被清掉（/tmp 重启清空、维护淘汰）后，取图时按需重新落一份并记住路径
 - **优先级**：本地化过的图优先走本地；用户自己放的封面（不在缓存目录里）不受影响
@@ -137,6 +139,9 @@ AUTH_FAIL["on"] = False
 check("失败不会留下半张图", not [n for n in os.listdir(IMAGE_DIR) if ".part" in n])
 
 # ==================== 3. 刮削时本地化（IO 阶段预热 → 写库只落字段）====================
+# 注（本轮 PR 起）：刮削期预热默认关（EMBY_IMAGE_PREWARM=1 才开）。本节先显式开启，
+# 覆盖"开预热"路径；默认关的行为见 3b。失败回退/自愈/开关等节不受影响。
+os.environ["EMBY_IMAGE_PREWARM"] = "1"
 lib = em.Library(guid="i" * 32, name="图片本地化库", collection_type="movies", paths="")
 db.add(lib)
 db.commit()
@@ -167,6 +172,26 @@ check("背景图同样本地化",
 chain = emby_api._image_chain(item, "Primary", db)
 check("取图链路优先走本地（缓存目录里的那份）", chain and chain[0] == item.poster_path,
       str(chain[:2]))
+
+# ==================== 3b. 默认行为：预热关（本轮 PR 起的默认） ====================
+os.environ["EMBY_IMAGE_PREWARM"] = "0"
+downloads.clear()
+default_hit = {**hit, "id": 999004, "poster_path": "/poster4.jpg",
+               "backdrop_path": "/backdrop4.jpg"}
+check("默认不预热：IO 阶段一张都不下载",
+      tmdb.prewarm_images(default_hit) == 0 and downloads == [],
+      f"下载 {len(downloads)} 次")
+defitem = em.MediaItem(guid="i" * 31 + "8", library_id=lib.id, item_type="movie",
+                       name="默认不预热的片")
+db.add(defitem)
+db.commit()
+tmdb.tmdb_client.apply(defitem, default_hit, "movie")
+db.commit()
+check("默认不预热：写库只落远程地址，海报/背景都不落本地（交给后台补下载巡检）",
+      defitem.primary_image_url.endswith("/poster4.jpg")
+      and not defitem.poster_path and not defitem.backdrop_path,
+      f"poster_path={defitem.poster_path!r} backdrop_path={defitem.backdrop_path!r}")
+os.environ["EMBY_IMAGE_PREWARM"] = "1"
 
 # 没预热过的图：写库阶段不下载，只落远程地址——由取图时的按需自愈补上（见第 4 节）
 bare = em.MediaItem(guid="i" * 31 + "9", library_id=lib.id, item_type="movie",
