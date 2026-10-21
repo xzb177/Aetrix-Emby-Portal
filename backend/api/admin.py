@@ -1628,7 +1628,11 @@ def get_stats_overview(
     ).count()
 
     # 自建 Emby 实时数据（低 IO：直接读本地表，不扫媒体库）
-    total_items = soft_delete.count_visible(db)
+    # 与 portal.admin_overview 同口径：合并副本用户看不见，必须显式剔除
+    # （count_visible 只靠 ORM 钩子挡软删行，merged_into_id 没有全局过滤；
+    # 2026-10-21 系统清点：此处曾多算 32,249 条合并副本）
+    total_items = soft_delete.count_visible(
+        db, em.MediaItem.merged_into_id.is_(None))
     active_sessions = db.query(em.PlaybackSession).filter(
         em.PlaybackSession.ended_at.is_(None)
     ).count()
