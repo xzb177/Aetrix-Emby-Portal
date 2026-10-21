@@ -296,6 +296,8 @@ TRUSTED_PROXIES=172.18.0.0/16
 
 不要写 `FORWARDED_ALLOW_IPS=*`。`*` 会让任意一个直连方用 `X-Forwarded-For` 伪造客户端 IP：限流按这个 IP 分桶，按客户端 IP 做的访问判断也会跟着被绕过；公开地址的 scheme / Host 同样能被改掉。现在 `*` 在域名守卫、公开 URL 和启动器里都被丢掉，每个进程只记一次 WARNING。`serve.py`、`serve_emby.py`、`backend/main.py`、`emby_api/main.py` 都把去掉 `*` 之后的名单显式传给 uvicorn，不让 uvicorn 自己读到环境变量里的 `*`。这一项只剩 `*`、或根本没写时，uvicorn 只信回环 `127.0.0.1,::1`。同一行里的精确 IP 和 CIDR 仍然有效。`TRUSTED_PROXIES`（默认回环）和内置 Cloudflare 网段不靠这个 `*`，写 `*` 也不会取消它们。写错的网段会被忽略，不能用 `*` 代替网段。
 
+**升级（#1172 之后）**：原来写成 `FORWARDED_ALLOW_IPS=*` 的部署，升级后 uvicorn 只信回环，网关发来的转发头不再被采信。把 `*` 换成网关的精确 IP 或网段，例如 `FORWARDED_ALLOW_IPS=172.18.0.0/16`，或把同一网段写进 `TRUSTED_PROXIES`。网段先用上面的 `docker network inspect` 查，不要假设每台机器都是这个示例。两项都不改、又没有设置 `EMBY_PUBLIC_URL` 时，播放地址回退成 `http://`。限流只在直连方属于 `TRUSTED_PROXIES` 时才读 `X-Real-IP` / `X-Forwarded-For`；网关不在默认回环里，每个用户的 IP 都会变成网关地址，正常用户共用一个限流桶。
+
 #### 局域网 IP 直连
 
 播放器直接连 `http://192.0.2.10:8000` 这类地址、前面没有反代时，什么都不用设。对端是客户端自己，不在可信代理里，伪造的转发头会被忽略，播放地址和账号卡（默认服、服地址与服务入口都空着）都落回这次请求的地址。
