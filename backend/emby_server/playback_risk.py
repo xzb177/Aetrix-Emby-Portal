@@ -8,10 +8,13 @@ usercontent 直链」，字节不经本机。真正可能触发谷歌风控的�
 
 计数口径：
 - 进程内计数（重启清零）始终记；
-- Redis 可用时同时 HINCRBY 到 ``REDIS_KEY``（EA / 面板分进程部署时，
-  管理端读的是全进程合计）。Redis 不可用时管理端只能看到本进程数字，
-  返回体 ``scope`` 字段如实标明，不谎报。
-- 任何异常永不抛给调用方（热路径上调用）。
+- Redis 回写不在请求路径上做。``bump`` 只加内存和待刷增量，后台线程按
+  ``FLUSH_INTERVAL_SEC`` 批量 HINCRBY 到 ``REDIS_KEY``（EA 单 worker，
+  同步 Redis 会堵住之后每一个请求）。Redis 不可用或写入失败时请求不受影响：
+  未启用则丢掉这批增量（内存合计还在），写入异常则把增量加回待刷队列。
+  管理端读的是全进程合计；读不到时只能看到本进程数字，返回体 ``scope``
+  字段如实标明，不谎报。
+- 任何异常永不抛给调用方。
 """
 from __future__ import annotations
 
@@ -42,8 +45,14 @@ ACTIVE_WINDOW_SEC = 120
 STACK_THRESHOLD = 2
 
 _counters = {name: 0 for name in COUNTER_NAMES}
+#: 尚未刷到 Redis 的增量。请求路径只动这块内存。
+_pending = {name: 0 for name in COUNTER_NAMES}
 _lock = threading.Lock()
 _started_at = time.time()
+#: 后台批量回写间隔。不进 env：调它不改变计数口径，只改变跨进程可见的延迟。
+FLUSH_INTERVAL_SEC = 2.0
+_flusher_started = False
+_flusher_lock = threading.Lock()
 
 
 def _redis():
@@ -56,21 +65,76 @@ def _redis():
 
 
 def bump(name: str, n: int = 1) -> None:
-    """计数 +n（进程内 + Redis 尽力而为）。永不抛异常。"""
-    if name not in _counters:
+    """计数 +n。只动进程内内存，Redis 交给后台批量刷。永不抛异常。"""
+    if name not in _counters or not n:
         return
     try:
         with _lock:
             _counters[name] += n
+            _pending[name] += n
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        _ensure_flusher()
     except Exception:  # noqa: BLE001
         pass
+
+
+def _flush_once() -> None:
+    """把待刷增量一次性 HINCRBY 出去。Redis 未启用则丢掉这批；失败则加回。
+
+    调用方（后台线程或测试）之外不要在请求路径上调用。永不抛。
+    """
+    batch: dict[str, int] = {}
+    with _lock:
+        for name in COUNTER_NAMES:
+            n = _pending[name]
+            if n:
+                batch[name] = n
+                _pending[name] = 0
+    if not batch:
+        return
+    sent: list[str] = []
     try:
         rc = _redis()
-        if rc is not None:
+        if rc is None:
+            return
+        for name, n in batch.items():
             rc.hincrby(REDIS_KEY, name, n)
+            sent.append(name)
+        try:
             rc.hsetnx(REDIS_KEY, REDIS_STARTED_FIELD, int(time.time()))
-    except Exception:  # noqa: BLE001 — Redis 抖动不影响播放
-        pass
+        except Exception:  # noqa: BLE001 — 计数已写入，起始时间丢了下次再补
+            logger.debug("playback_risk 写 started_at 失败", exc_info=True)
+    except Exception:  # noqa: BLE001 — Redis 抖动只留在后台线程
+        logger.debug("playback_risk Redis 批量回写失败", exc_info=True)
+        with _lock:
+            for name, n in batch.items():
+                if name not in sent:
+                    _pending[name] += n
+
+
+def _flush_loop() -> None:
+    while True:
+        time.sleep(FLUSH_INTERVAL_SEC)
+        try:
+            _flush_once()
+        except Exception:  # noqa: BLE001
+            logger.debug("playback_risk 后台刷写异常", exc_info=True)
+
+
+def _ensure_flusher() -> None:
+    """第一次 bump 时拉起守护线程。请求路径到此为止，不再碰 Redis。"""
+    global _flusher_started
+    if _flusher_started:
+        return
+    with _flusher_lock:
+        if _flusher_started:
+            return
+        threading.Thread(
+            target=_flush_loop, name="playback-risk-flush", daemon=True,
+        ).start()
+        _flusher_started = True
 
 
 def note_drive_status(code) -> None:
@@ -91,11 +155,12 @@ def process_counters() -> dict:
 
 
 def reset() -> None:
-    """清零（单元测试隔离用；只清进程内）。"""
+    """清零（单元测试隔离用；只清进程内，含尚未刷出的增量）。"""
     global _started_at
     with _lock:
         for k in _counters:
             _counters[k] = 0
+            _pending[k] = 0
     _started_at = time.time()
 
 

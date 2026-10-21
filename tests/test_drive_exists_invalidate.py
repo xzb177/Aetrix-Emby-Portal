@@ -24,6 +24,7 @@ from starlette.requests import Request
 
 from backend import models
 from backend.emby_server import api, drive_auth, drive_share as dsh
+from backend.emby_server import playback_risk
 from backend.emby_server import models as em
 from backend.emby_server import playback_strategy as strategy
 from backend.emby_server import scanner
@@ -60,6 +61,10 @@ class FakeRedis:
         self._check()
         return key in self.store
 
+    def get(self, key):
+        self._check()
+        return self.store.get(key)
+
 
 def _req(range_header=None, device=None, session=None):
     headers = []
@@ -87,6 +92,7 @@ def _user(uid=7):
 @pytest.fixture(autouse=True)
 def _iso(monkeypatch):
     monkeypatch.setattr(api, "_drive_exists_redis", lambda: None)
+    monkeypatch.setattr(playback_risk, "_ensure_flusher", lambda: None)
     api._drive_exists_cache.clear()
     api._drive_exists_retry.clear()
     yield
@@ -249,19 +255,34 @@ def test_share_worker_404_evicts(monkeypatch):
     assert seen == [(9, "fid-q")]
 
 
+def _age_retries(sec=1.0):
+    """把登记时间往前拨。1s 已过开播连发（0.3s），仍在默认 15s 复验窗口内。"""
+    for key in list(api._drive_exists_retry):
+        api._drive_exists_retry[key] -= sec
+
+
 # ---------- 重试复验 ----------
 
-def test_retry_window_env(monkeypatch):
+def test_retry_window_env(monkeypatch, caplog):
+    """窗口在启动时解析。负数=关闭；非法值 warning 不进播放热路径。"""
+    import logging
     monkeypatch.delenv("DRIVE_EXISTS_RETRY_WINDOW_SEC", raising=False)
-    assert api.drive_exists_retry_window() == 15
-    monkeypatch.setenv("DRIVE_EXISTS_RETRY_WINDOW_SEC", "abc")
-    assert api.drive_exists_retry_window() == 15
+    assert api._drive_exists_retry_window_from_env() == 15
     monkeypatch.setenv("DRIVE_EXISTS_RETRY_WINDOW_SEC", "0")
-    assert api.drive_exists_retry_window() == 0
+    assert api._drive_exists_retry_window_from_env() == 0
     monkeypatch.setenv("DRIVE_EXISTS_RETRY_WINDOW_SEC", "-3")
-    assert api.drive_exists_retry_window() == 0
+    assert api._drive_exists_retry_window_from_env() == 0
     monkeypatch.setenv("DRIVE_EXISTS_RETRY_WINDOW_SEC", "99999")
-    assert api.drive_exists_retry_window() == 600
+    assert api._drive_exists_retry_window_from_env() == 600
+    monkeypatch.setenv("DRIVE_EXISTS_RETRY_WINDOW_SEC", "abc")
+    with caplog.at_level(logging.WARNING):
+        assert api._drive_exists_retry_window_from_env() == 15
+    assert any("DRIVE_EXISTS_RETRY_WINDOW_SEC" in r.message for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            api.drive_exists_retry_window()
+    assert not any("DRIVE_EXISTS_RETRY_WINDOW_SEC" in r.message for r in caplog.records)
 
 
 def test_same_range_is_retry_seek_is_not():
@@ -271,7 +292,12 @@ def test_same_range_is_retry_seek_is_not():
     # 下一段 / 拖动：起始字节变了，不算重试
     assert api.drive_exists_rapid_retry(
         _req("bytes=1048576-2097151", device="devA"), user, fid) is False
-    # 同一设备把刚才那个起始又要了一次
+    # 非 0 起始的重复立刻算重试
+    assert api.drive_exists_rapid_retry(
+        _req("bytes=1048576-2097151", device="devA"), user, fid) is True
+    # 开播连发的 bytes=0- 不算重试，时间戳停在第一次
+    assert api.drive_exists_rapid_retry(_req("bytes=0-", device="devA"), user, fid) is False
+    _age_retries(1.0)
     assert api.drive_exists_rapid_retry(_req("bytes=0-", device="devA"), user, fid) is True
     # 另一台设备从 0 开始，是它自己的第一次
     assert api.drive_exists_rapid_retry(_req("bytes=0-", device="devB"), user, fid) is False
@@ -293,7 +319,7 @@ def test_retry_window_expiry_and_zero_disables(monkeypatch):
     for key in list(api._drive_exists_retry):
         api._drive_exists_retry[key] -= 100
     assert api.drive_exists_rapid_retry(req, user, fid) is False
-    monkeypatch.setenv("DRIVE_EXISTS_RETRY_WINDOW_SEC", "0")
+    monkeypatch.setattr(api, "_retry_window_sec", 0)
     assert api.drive_exists_rapid_retry(req, user, fid) is False
     assert api.drive_exists_rapid_retry(req, user, fid) is False
 
@@ -305,10 +331,20 @@ def test_retry_seen_across_process_via_redis(monkeypatch):
     req = _req("bytes=0-", device="devA")
     assert api.drive_exists_rapid_retry(req, user, "file-xproc") is False
     api._drive_exists_retry.clear()  # 另一个 EA worker 没有本进程记忆
+    # 开播连发：Redis 里的时间戳还很新，不当重试
+    assert api.drive_exists_rapid_retry(req, user, "file-xproc") is False
+    for key, val in list(fake.store.items()):
+        if str(key).startswith(api._DRIVE_EXISTS_RETRY_PREFIX):
+            fake.store[key] = f"{time.time() - 1:.6f}"
+    api._drive_exists_retry.clear()
     assert api.drive_exists_rapid_retry(req, user, "file-xproc") is True
     # 起始不同：另一把钥匙，即使 Redis 在也不算重试
     assert api.drive_exists_rapid_retry(
         _req("bytes=4096-", device="devA"), user, "file-xproc") is False
+    api._drive_exists_retry.clear()
+    # 非 0 起始的重复立刻算重试（不走 300ms 连发豁免）
+    assert api.drive_exists_rapid_retry(
+        _req("bytes=4096-", device="devA"), user, "file-xproc") is True
 
 
 def test_retry_redis_down_uses_local(monkeypatch):
@@ -316,6 +352,8 @@ def test_retry_redis_down_uses_local(monkeypatch):
     user = _user()
     req = _req("bytes=0-", device="devA")
     assert api.drive_exists_rapid_retry(req, user, "file-local") is False
+    assert api.drive_exists_rapid_retry(req, user, "file-local") is False
+    _age_retries(1.0)
     assert api.drive_exists_rapid_retry(req, user, "file-local") is True
 
 
@@ -330,6 +368,7 @@ def test_force_recheck_refetches_seek_does_not(monkeypatch):
         _req("bytes=1048576-", device="devA"), user, "file-force") is False
     api._drive_file_exists_sync(DRIVE, "file-force")  # 拖动仍走缓存
     assert len(calls) == 1
+    _age_retries(1.0)
     assert api.drive_exists_rapid_retry(
         _req("bytes=0-", device="devA"), user, "file-force") is True
     api._drive_file_exists_sync(DRIVE, "file-force", force_recheck=True)
@@ -399,7 +438,8 @@ def test_video_stream_retry_rechecks_seek_does_not(monkeypatch):
     # 下一段：缓存命中，不再 files.get
     resp = asyncio.run(once("bytes=1048576-", "player-1"))
     assert resp.status_code == 302 and len(calls) == 1
-    # 同一起始又来：复验
+    # 过了开播连发，同一起始又来：复验
+    _age_retries(1.0)
     resp = asyncio.run(once("bytes=0-", "player-1"))
     assert resp.status_code == 302 and len(calls) == 2
     # 别的设备同一起始：它的第一次，缓存仍有效
@@ -424,6 +464,7 @@ def test_video_stream_retry_404_evicts(monkeypatch):
 
     resp = asyncio.run(once("bytes=0-"))
     assert resp.status_code == 302 and len(calls) == 1
+    _age_retries(1.0)
     with pytest.raises(Exception) as exc:
         asyncio.run(once("bytes=0-"))
     assert getattr(exc.value, "status_code", None) == 404

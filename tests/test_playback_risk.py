@@ -4,6 +4,7 @@ import os
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -24,6 +25,8 @@ FID = "fileX"
 @pytest.fixture(autouse=True)
 def _iso(monkeypatch):
     monkeypatch.setattr(playback_risk, "_redis", lambda: None)
+    # 测试里不拉后台线程，刷写由用例直接调 _flush_once。
+    monkeypatch.setattr(playback_risk, "_ensure_flusher", lambda: None)
     playback_risk.reset()
     api._drive_exists_cache.clear()
     monkeypatch.setattr(drive_changes, "get_token_for_drive",
@@ -44,19 +47,27 @@ def _http(monkeypatch, code):
     return calls
 
 
-def test_ttl_env_default_and_bounds(monkeypatch):
+def test_ttl_env_default_and_bounds(monkeypatch, caplog):
+    """解析在启动时做一次。热路径读缓存值，非法值不会每次播放再 warning。"""
     monkeypatch.delenv("DRIVE_EXISTS_CACHE_TTL_SEC", raising=False)
-    assert api.drive_exists_cache_ttl() == 600
-    monkeypatch.setenv("DRIVE_EXISTS_CACHE_TTL_SEC", "abc")
-    assert api.drive_exists_cache_ttl() == 600
+    assert api._drive_exists_cache_ttl_from_env() == 600
     monkeypatch.setenv("DRIVE_EXISTS_CACHE_TTL_SEC", "-5")
-    assert api.drive_exists_cache_ttl() == 0
+    assert api._drive_exists_cache_ttl_from_env() == 0
     monkeypatch.setenv("DRIVE_EXISTS_CACHE_TTL_SEC", "120")
-    assert api.drive_exists_cache_ttl() == 120
+    assert api._drive_exists_cache_ttl_from_env() == 120
+    monkeypatch.setenv("DRIVE_EXISTS_CACHE_TTL_SEC", "abc")
+    with caplog.at_level(logging.WARNING):
+        assert api._drive_exists_cache_ttl_from_env() == 600
+    assert any("DRIVE_EXISTS_CACHE_TTL_SEC" in r.message for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        for _ in range(5):
+            api.drive_exists_cache_ttl()
+    assert not any("DRIVE_EXISTS_CACHE_TTL_SEC" in r.message for r in caplog.records)
 
 
 def test_cache_hit_miss_counted(monkeypatch):
-    monkeypatch.delenv("DRIVE_EXISTS_CACHE_TTL_SEC", raising=False)
+    monkeypatch.setattr(api, "_cache_ttl_sec", 600)
     calls = _http(monkeypatch, 200)
     for _ in range(3):
         api._drive_file_exists_sync(DRIVE, FID)
@@ -66,7 +77,7 @@ def test_cache_hit_miss_counted(monkeypatch):
 
 
 def test_cache_entry_uses_env_ttl(monkeypatch):
-    monkeypatch.setenv("DRIVE_EXISTS_CACHE_TTL_SEC", "600")
+    monkeypatch.setattr(api, "_cache_ttl_sec", 600)
     _http(monkeypatch, 200)
     api._drive_file_exists_sync(DRIVE, FID)
     import time
@@ -75,7 +86,7 @@ def test_cache_entry_uses_env_ttl(monkeypatch):
 
 
 def test_ttl_zero_disables_cache(monkeypatch):
-    monkeypatch.setenv("DRIVE_EXISTS_CACHE_TTL_SEC", "0")
+    monkeypatch.setattr(api, "_cache_ttl_sec", 0)
     calls = _http(monkeypatch, 200)
     api._drive_file_exists_sync(DRIVE, FID)
     api._drive_file_exists_sync(DRIVE, FID)
@@ -106,6 +117,51 @@ def test_cache_size_bound(monkeypatch):
     for i in range(12):
         api._drive_exists_cache_put(DRIVE, f"f{i}")
     assert len(api._drive_exists_cache) <= 5
+
+
+class _Redis:
+    def __init__(self, boom=False):
+        self.ops = []
+        self.boom = boom
+
+    def hincrby(self, key, name, n):
+        if self.boom:
+            raise RuntimeError("slow redis")
+        self.ops.append(("hincrby", key, name, n))
+
+    def hsetnx(self, key, field, val):
+        if self.boom:
+            raise RuntimeError("slow redis")
+        self.ops.append(("hsetnx", key, field, val))
+
+
+def test_bump_accumulates_until_flush(monkeypatch):
+    rc = _Redis()
+    monkeypatch.setattr(playback_risk, "_redis", lambda: rc)
+    playback_risk.bump("redirect_302")
+    playback_risk.bump("redirect_302", 2)
+    assert rc.ops == []
+    assert playback_risk.process_counters()["redirect_302"] == 3
+    playback_risk._flush_once()
+    assert ("hincrby", playback_risk.REDIS_KEY, "redirect_302", 3) in rc.ops
+    rc.ops.clear()
+    playback_risk._flush_once()
+    assert rc.ops == []
+
+
+def test_flush_redis_missing_drops_pending():
+    playback_risk.bump("exists_404")
+    playback_risk._flush_once()
+    assert playback_risk._pending["exists_404"] == 0
+    assert playback_risk.process_counters()["exists_404"] == 1
+
+
+def test_flush_redis_error_does_not_raise(monkeypatch):
+    monkeypatch.setattr(playback_risk, "_redis", lambda: _Redis(boom=True))
+    playback_risk.bump("drive_429", 4)
+    playback_risk._flush_once()
+    assert playback_risk._pending["drive_429"] == 4
+    assert playback_risk.process_counters()["drive_429"] == 4
 
 
 def test_observe_traffic_counts_302():

@@ -3862,8 +3862,9 @@ def _drive_exists_http_get(url, *, params, headers, timeout):
 #: 404 不缓存（文件删后恢复应可播）；401/超时/5xx 等异常不缓存
 #: （401 毒化失效依赖每次真实判定；异常结果不值得信任）。
 #: TTL（2026-10-21 owner 拍板 60s→600s）：环境变量 DRIVE_EXISTS_CACHE_TTL_SEC
-#: （默认 600；0=关闭正缓存，每次都真实 files.get）。调参项只走 env，不进后台。
-#: 每次调用时读 env（一次 os.getenv，纳秒级），改 env 重启即生效、测试可 monkeypatch。
+#: （默认 600；0 或负数=关闭正缓存，每次都真实 files.get）。调参项只走 env，不进后台。
+#: 启动时读一次：非法值的 warning 只打在进程起来的时候，播放热路径不再碰 env。
+#: 改 env 需重启。负数由 env_int 钳到 0，即关闭。
 #: 删除失效（同日追加）：正缓存拉到 600s 后，文件已在网盘删掉但库还没扫完时，
 #: 播放器会一直 302 到死链。扫描确认丢失 / 管理端删条目 / 补开分享见到 404
 #: 时摘掉这条缓存；EA 与扫描分进程，摘除记在 Redis 墓碑上，Redis 挂了只清本进程。
@@ -3878,16 +3879,31 @@ _drive_exists_cache: dict = {}
 _drive_exists_cache_lock = threading.Lock()
 
 
-def drive_exists_cache_ttl() -> int:
-    """存在性正缓存 TTL（秒）：env DRIVE_EXISTS_CACHE_TTL_SEC，默认 600，0=关闭。"""
+def _drive_exists_cache_ttl_from_env() -> int:
+    """解析 DRIVE_EXISTS_CACHE_TTL_SEC。非法值 warning 一次并回落默认；负数钳成 0（关闭）。"""
     return env_int("DRIVE_EXISTS_CACHE_TTL_SEC", _DRIVE_EXISTS_CACHE_TTL_DEFAULT,
                    0, 86400)
 
 
-def drive_exists_retry_window() -> int:
-    """同起始 Range 复验窗口（秒）：env DRIVE_EXISTS_RETRY_WINDOW_SEC，默认 15，0=关闭。"""
+def _drive_exists_retry_window_from_env() -> int:
+    """解析 DRIVE_EXISTS_RETRY_WINDOW_SEC。非法值 warning 一次并回落默认；负数钳成 0（关闭）。"""
     return env_int("DRIVE_EXISTS_RETRY_WINDOW_SEC",
                    _DRIVE_EXISTS_RETRY_WINDOW_DEFAULT, 0, 600)
+
+
+# 模块导入即进程启动：非法 env 的 warning 只发生在这里，热路径读下面两个整数。
+_cache_ttl_sec = _drive_exists_cache_ttl_from_env()
+_retry_window_sec = _drive_exists_retry_window_from_env()
+
+
+def drive_exists_cache_ttl() -> int:
+    """存在性正缓存 TTL（秒）。启动时已解析，默认 600，0=关闭。"""
+    return _cache_ttl_sec
+
+
+def drive_exists_retry_window() -> int:
+    """同起始 Range 复验窗口（秒）。启动时已解析，默认 15，0=关闭。"""
+    return _retry_window_sec
 
 
 #: 跨进程墓碑：file_id 全局唯一，扫描/管理端不一定解析得出和播放侧相同的 drive_id。
@@ -3897,6 +3913,12 @@ _DRIVE_EXISTS_RETRY_PREFIX = "aetrix:drive_exists:retry:"
 _drive_exists_retry: dict = {}
 _drive_exists_retry_lock = threading.Lock()
 _DRIVE_EXISTS_RETRY_MAX = 10000
+#: 开播连发窗口。播放器起播时经常在一两百毫秒内连打几次 bytes=0-
+#: （探测 bytes=0-1 和真正的 GET，起始字节都是 0）。谷歌 404 之后的重试
+#: 至少要多一次 HTTP 往返，几乎总是超过 300ms，并且仍落在复验窗口里。
+#: 只对起始字节 0 生效；锚在第一次请求上，连发不把时间戳往后滑。
+#: 不进 env：再放宽会把很快返回的 404 重试也吞掉。
+_DRIVE_EXISTS_START_BURST_SEC = 0.3
 
 
 def _drive_exists_redis():
@@ -4095,15 +4117,47 @@ def _retry_redis_key(identity: str, file_id: str, token) -> str:
     return _DRIVE_EXISTS_RETRY_PREFIX + hashlib.sha256(raw).hexdigest()[:32]
 
 
+def _parse_retry_ts(raw):
+    """Redis 里存的是第一次见到该请求的 unix 时间。旧值 ``"1"`` / 坏值 → None。"""
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opening_burst(token, age: float) -> bool:
+    """起始字节 0、且距第一次请求还不到开播连发窗口。"""
+    return (
+        token == ("start", 0)
+        and 0 <= age < _DRIVE_EXISTS_START_BURST_SEC
+    )
+
+
 def _retry_seen_redis(identity: str, file_id: str, token, window: int) -> bool:
-    """别的进程在窗口内见过同一请求 → True。Redis 不可用 → False。"""
+    """别的进程在窗口内见过同一请求 → True。Redis 不可用 → False。
+
+    值是第一次见到的 unix 时间。bytes=0- 且年龄还在开播连发窗口内 → False，
+    也不刷新 TTL（锚留在第一次）。读不到时间戳（升级前写下的 ``"1"``）宁可
+    当成重试，多打一次 files.get。
+    """
     try:
         rc = _drive_exists_redis()
         if rc is None:
             return False
         key = _retry_redis_key(identity, file_id, token)
-        created = rc.set(key, "1", nx=True, ex=int(window))
+        now = time.time()
+        created = rc.set(key, f"{now:.6f}", nx=True, ex=int(window))
         if created:
+            return False
+        raw = rc.get(key)
+        if raw is None:
+            return False
+        ts = _parse_retry_ts(raw)
+        if ts is not None and _opening_burst(token, now - ts):
             return False
         try:
             rc.expire(key, int(window))
@@ -4118,6 +4172,8 @@ def drive_exists_rapid_retry(request, user, file_id: str) -> bool:
     """同一客户端、同一文件、相同 Range 起始，在窗口内又来了一次 → True。
 
     第一次只登记，不当重试。起始字节不同（拖动、下一段）→ False，缓存继续有效。
+    开播时极短间隔内重复的 bytes=0- 也不当重试（见 ``_DRIVE_EXISTS_START_BURST_SEC``），
+    并且不把登记时间往后滑，这样窗口内稍晚的真正重试仍能对上第一次。
     窗口 0 或任何异常 → False，播放照旧走缓存。Redis 挂了只看本进程。
     """
     try:
@@ -4133,16 +4189,20 @@ def drive_exists_rapid_retry(request, user, file_id: str) -> bool:
         local_hit = False
         with _drive_exists_retry_lock:
             prev = _drive_exists_retry.get(local_key)
-            _drive_exists_retry[local_key] = now
-            if len(_drive_exists_retry) > _DRIVE_EXISTS_RETRY_MAX:
-                cutoff = now - window
-                for key, ts in [kv for kv in _drive_exists_retry.items() if kv[1] < cutoff]:
-                    _drive_exists_retry.pop(key, None)
+            if prev is not None and _opening_burst(token, now - prev):
+                # 连发：保持第一次的时间戳，本进程也不算重试。
+                pass
+            else:
+                _drive_exists_retry[local_key] = now
                 if len(_drive_exists_retry) > _DRIVE_EXISTS_RETRY_MAX:
-                    _drive_exists_retry.clear()
-                    _drive_exists_retry[local_key] = now
-            if prev is not None and 0 <= (now - prev) <= window:
-                local_hit = True
+                    cutoff = now - window
+                    for key, ts in [kv for kv in _drive_exists_retry.items() if kv[1] < cutoff]:
+                        _drive_exists_retry.pop(key, None)
+                    if len(_drive_exists_retry) > _DRIVE_EXISTS_RETRY_MAX:
+                        _drive_exists_retry.clear()
+                        _drive_exists_retry[local_key] = now
+                if prev is not None and 0 <= (now - prev) <= window:
+                    local_hit = True
         return local_hit or _retry_seen_redis(identity, file_id, token, window)
     except Exception:  # noqa: BLE001
         logger.debug("Drive 存在性缓存重试判定失败", exc_info=True)
