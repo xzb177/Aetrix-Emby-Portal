@@ -24,9 +24,9 @@ from backend.emby_server import models as em
 from backend.emby_server import portal
 from backend.emby_server.public_url import client_base_url, configured_public_url
 
-ORIGIN_IP = "15.204.95.101"
-PUBLIC = "https://cdn.135505.autos"
-ORIGIN_HOST = "emby.135505.autos"
+ORIGIN_IP = "192.0.2.10"
+PUBLIC = "https://media.example.com"
+ORIGIN_HOST = "origin.example.com"
 
 
 def _request(
@@ -200,13 +200,13 @@ def test_image_and_import_links_use_public_url_not_origin(monkeypatch):
     vidhub = portal._vidhub_import_link(url, "emby_user")
     sen = portal._senplayer_import_link(url, "emby_user")
     for link in (rex, vidhub, sen):
-        assert "cdn.135505.autos" in link
+        assert "media.example.com" in link
         assert ORIGIN_IP not in link
         assert ORIGIN_HOST not in link
     for link in (rex, vidhub):
         assert parse_qs(urlsplit(link).query)["scheme"] == ["https"]
-        assert parse_qs(urlsplit(link).query)["host"] == ["cdn.135505.autos"]
-    assert "address=https://cdn.135505.autos" in unquote(sen)
+        assert parse_qs(urlsplit(link).query)["host"] == ["media.example.com"]
+    assert "address=https://media.example.com" in unquote(sen)
 
 
 def test_import_scheme_is_https_behind_trusted_proxy_without_public_url(monkeypatch):
@@ -431,3 +431,145 @@ def test_playback_info_ignores_forged_https_from_untrusted_peer(monkeypatch, app
     assert src["DirectStreamUrl"].startswith(f"http://{ORIGIN_IP}/")
     assert "evil.example" not in src["DirectStreamUrl"]
     assert src["TranscodingUrl"].startswith(f"http://{ORIGIN_IP}/")
+
+
+def test_hls_playlist_urls_use_public_base(monkeypatch, tmp_path):
+    monkeypatch.setenv("EMBY_PUBLIC_URL", PUBLIC)
+    (tmp_path / "master.m3u8").write_text(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\nseg-000.ts\n#EXTINF:4.0,\nseg-001.m4s\n",
+        encoding="utf-8",
+    )
+    req = _request(
+        host=ORIGIN_IP,
+        client="203.0.113.9",
+        forwarded_host="attacker.example",
+    )
+    guid = "d" * 32
+    text = emby_api._rewrite_playlist(
+        str(tmp_path), emby_api._base_url(req), guid, "sess-1", api_key="tok",
+    )
+    assert f"{PUBLIC}/emby/videos/{guid}/seg-000.ts?" in text
+    assert f"{PUBLIC}/emby/videos/{guid}/seg-001.m4s?" in text
+    assert ORIGIN_IP not in text
+    assert ORIGIN_HOST not in text
+    assert "attacker.example" not in text
+
+
+def test_forged_xfh_from_untrusted_peer_is_ignored(monkeypatch):
+    _clear_public_env(monkeypatch)
+    req = _request(
+        scheme="http",
+        host=ORIGIN_IP,
+        client="203.0.113.50",
+        forwarded_host="attacker.example",
+    )
+    assert client_base_url(req) == f"http://{ORIGIN_IP}"
+
+
+def test_forged_xfh_from_trusted_peer_is_honored(monkeypatch):
+    _clear_public_env(monkeypatch)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "192.0.2.50")
+    req = _request(
+        scheme="http",
+        host=ORIGIN_IP,
+        client="192.0.2.50",
+        forwarded_proto="https",
+        forwarded_host="media.example.com",
+    )
+    assert client_base_url(req) == "https://media.example.com"
+
+
+def test_domain_guard_shares_forwarded_allow_list(monkeypatch):
+    from backend.domain_guard import _peer_trusted, peer_honors_forwarded_headers
+
+    _clear_public_env(monkeypatch)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "198.51.100.40")
+    assert peer_honors_forwarded_headers("198.51.100.40") is True
+    assert _peer_trusted("198.51.100.40") is True
+    assert peer_honors_forwarded_headers("198.51.100.41") is False
+    assert _peer_trusted("198.51.100.41") is False
+    # Cloudflare 网段仍由域名守卫单独放行，不因此变成「可采信转发头」
+    assert _peer_trusted("104.16.0.1") is True
+    assert peer_honors_forwarded_headers("104.16.0.1") is False
+    req = _request(
+        client="198.51.100.40",
+        host=ORIGIN_IP,
+        forwarded_proto="https",
+        forwarded_host="media.example.com",
+    )
+    assert client_base_url(req) == "https://media.example.com"
+
+
+def _silence_accel_db(monkeypatch):
+    monkeypatch.setattr("backend.domain_guard._accel_db_config", lambda: (None, None))
+
+
+def test_startup_warns_when_public_url_is_not_https(monkeypatch, caplog):
+    import logging
+
+    from backend.emby_server.public_url import warn_public_url_on_startup
+
+    _silence_accel_db(monkeypatch)
+    monkeypatch.delenv("ENFORCE_DOMAIN", raising=False)
+    monkeypatch.setenv("EMBY_PUBLIC_URL", "http://media.example.com")
+    with caplog.at_level(logging.WARNING):
+        warn_public_url_on_startup()
+    assert any("必须以 https:// 开头" in r.getMessage() for r in caplog.records)
+
+
+def test_startup_warns_when_public_host_not_allowed(monkeypatch, caplog):
+    import logging
+
+    from backend.emby_server.public_url import warn_public_url_on_startup
+
+    _silence_accel_db(monkeypatch)
+    monkeypatch.setenv("ENFORCE_DOMAIN", "stream.example.com")
+    monkeypatch.setenv("EMBY_PUBLIC_URL", "https://media.example.com")
+    with caplog.at_level(logging.WARNING):
+        warn_public_url_on_startup()
+    assert any("主机不在域名守卫白名单内" in r.getMessage() for r in caplog.records)
+
+
+def test_startup_silent_when_https_and_allowed(monkeypatch, caplog):
+    import logging
+
+    from backend.emby_server.public_url import warn_public_url_on_startup
+
+    _silence_accel_db(monkeypatch)
+    monkeypatch.setenv("ENFORCE_DOMAIN", "media.example.com")
+    monkeypatch.setenv("EMBY_PUBLIC_URL", "https://media.example.com/")
+    with caplog.at_level(logging.WARNING):
+        warn_public_url_on_startup()
+    assert not [r for r in caplog.records if "EMBY_PUBLIC_URL" in r.getMessage()]
+
+
+def test_startup_unset_does_not_warn(monkeypatch, caplog):
+    import logging
+
+    from backend.emby_server.public_url import warn_public_url_on_startup
+
+    monkeypatch.delenv("EMBY_PUBLIC_URL", raising=False)
+
+    def boom():
+        raise RuntimeError("guard down")
+
+    monkeypatch.setattr("backend.domain_guard._get_allowed_hosts", boom)
+    with caplog.at_level(logging.WARNING):
+        warn_public_url_on_startup()
+    assert not [r for r in caplog.records if "EMBY_PUBLIC_URL" in r.getMessage()]
+
+
+def test_startup_warning_never_raises(monkeypatch, caplog):
+    import logging
+
+    from backend.emby_server.public_url import warn_public_url_on_startup
+
+    monkeypatch.setenv("EMBY_PUBLIC_URL", "https://media.example.com")
+
+    def boom():
+        raise RuntimeError("guard down")
+
+    monkeypatch.setattr("backend.domain_guard._get_allowed_hosts", boom)
+    with caplog.at_level(logging.WARNING):
+        warn_public_url_on_startup()
+    assert any("域名守卫校验失败" in r.getMessage() for r in caplog.records)

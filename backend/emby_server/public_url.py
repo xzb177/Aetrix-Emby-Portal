@@ -16,10 +16,13 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from urllib.parse import urlsplit, urlunsplit
 
 from starlette.requests import Request
+
+logger = logging.getLogger(__name__)
 
 _HTTP = ("http://", "https://")
 
@@ -118,47 +121,52 @@ def _peer_host(request: Request) -> str:
 
 
 def _peer_in_forwarded_allow_range(ip: str) -> bool:
-    """直连 IP 是否允许我们采信转发头。
+    """直连 IP 是否允许我们采信转发头。与域名守卫同一份名单。"""
+    from backend.domain_guard import peer_honors_forwarded_headers
 
-    - ``TRUSTED_PROXIES``（含默认回环）：与限流同一份名单，支持 CIDR。
-    - ``FORWARDED_ALLOW_IPS``：与 uvicorn 同一变量。精确 IP、CIDR，或显式 ``*``
-      （``*`` 是部署方自己打开的，默认不信任所有对端）。
+    return peer_honors_forwarded_headers(ip)
+
+
+def warn_public_url_on_startup() -> None:
+    """校验 ``EMBY_PUBLIC_URL``。不合规只记 WARNING，绝不因此拒绝启动。
+
+    未设置不告警。已设置时必须以 ``https://`` 开头，并且在域名守卫开着
+    （``_get_allowed_hosts()`` 非空）时，主机落在那份允许名单里。
     """
-    if not ip:
-        return False
-    allows = _forwarded_allow_ips()
-    if "*" in allows:
-        return True
-    if ip in allows:
-        return True
-    if _ip_in_cidr_list(ip, allows):
-        return True
-    from backend.ratelimit import _is_trusted_proxy
-
-    return _is_trusted_proxy(ip)
-
-
-def _forwarded_allow_ips() -> list[str]:
-    raw = os.getenv("FORWARDED_ALLOW_IPS", "")
-    return [part.strip() for part in raw.split(",") if part.strip()]
-
-
-def _ip_in_cidr_list(ip: str, parts: list[str]) -> bool:
-    import ipaddress
-
     try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    for part in parts:
-        if "/" not in part:
-            continue
+        raw = os.getenv("EMBY_PUBLIC_URL", "").strip()
+        if not raw:
+            return
+        reasons: list[str] = []
+        if not raw.lower().startswith("https://"):
+            reasons.append("必须以 https:// 开头")
+        host = _public_url_hostname(raw)
         try:
-            if addr in ipaddress.ip_network(part, strict=False):
-                return True
-        except (ValueError, TypeError):
-            continue
-    return False
+            from backend import domain_guard
+
+            allowed = domain_guard._get_allowed_hosts()
+        except Exception:
+            logger.warning("EMBY_PUBLIC_URL 域名守卫校验失败，服务继续启动", exc_info=True)
+            allowed = None
+        if allowed is not None and host not in allowed:
+            reasons.append("主机不在域名守卫白名单内")
+        if reasons:
+            shown = raw if len(raw) <= 200 else raw[:200] + "…"
+            logger.warning(
+                "EMBY_PUBLIC_URL 不合规（%s），继续启动: %s",
+                "；".join(reasons),
+                shown,
+            )
+    except Exception:
+        logger.warning("EMBY_PUBLIC_URL 启动校验失败，服务继续启动", exc_info=True)
+
+
+def _public_url_hostname(raw: str) -> str:
+    try:
+        host = urlsplit(raw).hostname or ""
+    except ValueError:
+        return ""
+    return host.strip().lower()
 
 
 def _host_ok(host: str) -> bool:
