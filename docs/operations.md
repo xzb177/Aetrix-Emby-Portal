@@ -138,10 +138,7 @@ sudo systemctl start aetrix
 
 ### PostgreSQL（v2.42.0 起的默认）
 
-> ⚠️ **后台那个「数据库定时备份」开关只管 SQLite。** 跑 PostgreSQL 时它照常按点调度，
-> 但会明确跳过（`backend/emby_server/db_backup.py` 只做 SQLite 文件级备份）——
-> 也就是说**它给不了你任何 PG 备份**。PG 必须另外配一条 pg_dump 定时任务，
-> 否则「备份已开启」只是个心理安慰。
+> worker 里的定时备份对 PostgreSQL 会调用容器内的 `pg_dump`（custom 格式），文件在 `PG_BACKUP_DIR`（默认 `/var/backups/aetrix`，卷 `aetrix_backups`），默认每天 03:00、保留 7 天。这不能代替更新前的 `scripts/backup_db.sh`。`update.sh` 仍然只尝试备份 SQLite。调度产出的 `.dump.gz` 不能用 `scripts/restore.sh` 恢复（那个脚本走 `psql`，只适合 `backup_db.sh` 的纯 SQL）。
 
 ```bash
 # 手动备份（在服务器上，仓库根目录）
@@ -456,22 +453,23 @@ v2.1.0 起已启用 WAL 与 `busy_timeout`，正常不会再出现。若仍出�
 - 症状对照：`403 播放地址指向受保护的内部地址`＝重定向目标被判为内网（或开了严格开关）；
   `502 源站不可达`＝真的连不上（先按上一节排查挂载）。
 
-### 存储来源只有三种，类型由路径前缀决定
+### 存储来源有四种，类型由路径前缀决定
 
-v2.42.12 起挂载只剩三种，后台**不再有类型下拉**——路径的前缀就是类型：
+挂载有四种。表单里的类型按钮会补上路径前缀，前缀就是类型（v2.42.12 起删掉了更早的一批类型；`drive:` 是之后按同一套前缀加的 API 直读，不是把当年下线的原生类型加回来）：
 
 | 路径写法 | 类型 | 说明 |
 |---|---|---|
 | `/mnt/media/movies` | 本地硬盘 | 本机目录，**任何绝对路径都行**（`/media` 只是约定）；里面的 `.strm` 小文件照样扫成直链 |
 | `115:/0` | 115 网盘 | Cookie 型 API 直读网盘；目录 ID `0` = 根目录 |
 | `rclone:gdrive/Movies` | rclone | 任意后端，格式是 rclone 自己的 `remote:路径` |
+| `drive:<共享盘 ID>` | Google Drive API | 个人盘写成 `drive:myDrive:<rclone remote 名>`。列目录不经过 rclone 挂载，实现在 `mount_drive.py` |
 
 没有前缀的路径（例如 `s3://x`、`gdrive:Movies`）保存时会直接报 400 并提示正确写法——
 **宁可当场报错，也别静默存成一种错的来源**。
 
 > 以前还有 WebDAV / AList / S3 / 阿里云盘 / 夸克 / OneDrive / Google Drive 原生 等类型，
-> 都已删除（代码、界面、表一并移除）。**它们现在都应该改走 rclone**：这类后端 rclone
-> 全都支持，粘一份 rclone.conf 就能接，不用面板替你保管凭据。
+> 都已删除（代码、界面、表一并移除）。**除了上表的 `drive:` 以外，它们现在都应该改走 rclone**：这类后端 rclone
+> 全都支持，粘一份 rclone.conf 就能接，不用面板替你保管凭据。`drive:` 不走 rclone 挂载。
 
 **老机器升级后会多出三张没人读写的表**：`rclone_remotes`（以前面板自己生成
 rclone.conf 的记录）、`service_account_files`（Google Drive 服务账号元数据）、

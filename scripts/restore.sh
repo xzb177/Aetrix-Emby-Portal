@@ -1,5 +1,6 @@
 #!/bin/bash
 # Aetrix Emby Portal - Database Restore Script
+# 脚本把 SQL 灌进当前库，不执行 dropdb；目标库已有表时，CREATE TABLE 会报错。
 
 set -e
 

@@ -74,7 +74,7 @@ Start the backend:
 | --- | --- |
 | `aetrix-api` | EM portal API (API only — it does not serve web pages) |
 | `aetrix-ea` | EA Emby protocol gateway |
-| `aetrix-worker` | Background jobs: scanning, scraping, transcoding |
+| `aetrix-worker` | Maintenance, metadata enrichment, expiry reminders, scheduled scans, new-release watching, Redis scan queue |
 | `postgres` | Database |
 | `redis` | Cache and queue |
 
