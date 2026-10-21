@@ -45,9 +45,11 @@ import {
   fetchTmdbKeys,
   fetchTmdbMirror,
   fetchDoubanBanDowngrade,
+  fetchLibraries,
   fetchTmdbLanguage,
   fetchTmdbPosterLanguage,
   fetchTmdbKeyCooldowns,
+  fetchUnidentifiedItems,
   lockItemMetadata,
   previewTmdb,
   probeMetaSources,
@@ -70,6 +72,7 @@ import {
 } from '@/api/admin'
 import type {
   ItemSearchResult,
+  UnidentifiedItem,
   EnrichProgress,
   MetaSourceKeyRow,
   MetaSourceOutcome,
@@ -90,12 +93,15 @@ import type {
   TmdbPosterLanguageStatus,
   TmdbKeyCooldowns,
 } from '@/api/admin'
+import type { EmbyLibrary } from '@/types'
 import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import './MetadataSources.css'
 
 // ==================== 手动绑定 TMDB ====================
 
-// P1 入口前移：媒体库列表的「识别」按钮跳过来时会带 ?item_id=xxx
+// 入口：媒体库卡片的「识别」按钮带 ?library_id=xxx 跳进来，落到下方「未识别工作台」。
+// 旧的 ?item_id= 预选已整段删除——它把库编号当条目编号，接收端还会伪造一个
+// 「条目 #N」选中，重则把另一部片误绑上去（2026-10-21 系统清点实锤），不许复活。
 const route = useRoute()
 
 // --- 手动绑定卡片折叠（默认收起，状态存 localStorage） ---
@@ -152,6 +158,70 @@ function clearBindSelection() {
   bindPreview.value = null
   tmdbCandidates.value = []
   tmdbSearched.value = false
+}
+
+// ==================== 未识别工作台（按库） ====================
+// 列出所选库还没识别上的顶层条目（无 tmdb_id），点一条就选中到「手动绑定 TMDB」
+// 卡走现成识别流（搜候选 → 预览 → 绑定，校验口径与手动绑定完全一致，不另起一套）。
+const wsLibraries = ref<EmbyLibrary[]>([])
+const wsLibraryId = ref<number | null>(null)
+const wsItems = ref<UnidentifiedItem[]>([])
+const wsTotal = ref(0)
+const wsPage = ref(1)
+const WS_PAGE_SIZE = 20
+const wsLoading = ref(false)
+
+async function loadWsLibraries() {
+  try {
+    const res = await fetchLibraries()
+    wsLibraries.value = res.libraries
+  } catch {
+    // 库列表拉不到时工作台只显示空态，不挡页面其它卡
+  }
+}
+
+async function loadUnidentified() {
+  const libId = wsLibraryId.value
+  if (!libId) { wsItems.value = []; wsTotal.value = 0; return }
+  wsLoading.value = true
+  try {
+    const res = await fetchUnidentifiedItems(libId, wsPage.value, WS_PAGE_SIZE)
+    wsItems.value = res.items
+    wsTotal.value = res.total
+  } catch (e: any) {
+    ElMessage.error(toAdminError(e, '读取未识别条目失败'))
+  } finally {
+    wsLoading.value = false
+  }
+}
+
+function onWsLibraryChange() {
+  wsPage.value = 1
+  loadUnidentified().catch(() => undefined)
+}
+
+function onWsPageChange(p: number) {
+  wsPage.value = p
+  loadUnidentified().catch(() => undefined)
+}
+
+/** 从工作台选中一条 → 喂给手动绑定卡的现成选择流，展开并滚到绑定卡 */
+function pickUnidentified(item: UnidentifiedItem) {
+  selectBindItem(item)
+  bindCardCollapsed.value = false
+  localStorage.setItem('aetrix_bind_tmdb_collapsed', '0')
+  nextTick(() => {
+    document.getElementById('card-bind')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  })
+}
+
+/** 绑定成功后把该条从工作台列表摘掉（它已有 tmdb_id，不再是未识别） */
+function dropFromUnidentified(itemId: number) {
+  const idx = wsItems.value.findIndex((r) => r.id === itemId)
+  if (idx >= 0) {
+    wsItems.value.splice(idx, 1)
+    wsTotal.value = Math.max(0, wsTotal.value - 1)
+  }
 }
 
 // ==================== 元数据锁定（P3，Emby 式手动识别） =============// 锁定 = 自动补全（enrich）不再碰这条，防止自动刷新覆盖手动整理成果。
@@ -230,6 +300,7 @@ async function doBindCandidate(c: TmdbCandidate) {
     bindNotes.value = [`「${res.item.name}」：${res.notes.join('；')}`]
     bindPreview.value = null
     if (res.item.tmdb_id != null) item.tmdb_id = res.item.tmdb_id
+    dropFromUnidentified(item.id)
     ElMessage.success('已绑定并补全元数据')
   } catch (e: any) {
     ElMessage.error(toAdminError(e, '绑定失败'))
@@ -272,6 +343,7 @@ async function doBindTmdb() {
     const res: TmdbBindResult = await bindTmdb(id, tid, true, bindMode.value)
     bindNotes.value = [`「${res.item.name}」：${res.notes.join('；')}`]
     bindPreview.value = null
+    dropFromUnidentified(id)
     ElMessage.success('已绑定并补全元数据')
   } catch (e: any) {
     ElMessage.error(toAdminError(e, '绑定失败'))
@@ -1041,24 +1113,16 @@ onMounted(() => {
       el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
   }
-  // P1 入口前移：媒体库列表的「识别」按钮跳过来时带 ?item_id=xxx，
-  // 直接填入条目 ID 并选中，跳过「搜条目」一步（深链刷新页面也要生效）
-  const deepItemId = Number(route.query.item_id)
-  if (deepItemId) {
-    bindCardCollapsed.value = false
-    localStorage.setItem('aetrix_bind_tmdb_collapsed', '0')
-    bindItemId.value = String(deepItemId)
-    bindSelectedItem.value = {
-      id: deepItemId,
-      name: `条目 #${deepItemId}`,
-      year: null,
-      item_type: '',
-      tmdb_id: null,
-      metadata_locked: false,
+  // 未识别工作台：媒体库卡片「识别」带 ?library_id=xxx 跳进来时，
+  // 库列表到位后预选这个库并直接拉它的未识别条目（深链刷新也要生效）
+  loadWsLibraries().then(() => {
+    const deepLibId = Number(route.query.library_id)
+    if (deepLibId && wsLibraries.value.some((l) => l.id === deepLibId)) {
+      wsLibraryId.value = deepLibId
+      wsPage.value = 1
+      loadUnidentified().catch(() => undefined)
     }
-    bindPreview.value = null
-    bindNotes.value = []
-  }
+  }).catch(() => undefined)
 })
 </script>
 
@@ -1774,8 +1838,60 @@ onMounted(() => {
         </AdvancedSettings>
       </SectionCard>
       </div>
+      <!-- 1.5 未识别工作台（按库）：媒体库卡片「识别」的落点，逐条带到下方绑定卡识别 -->
+      <SectionCard class="ms-card" title="未识别工作台" :icon="Search">
+        <p class="ms-hint">
+          按库列出还没识别上的条目（没有 TMDB ID 的顶层剧 / 电影）。点条目后面的「识别」
+          会把它带到下方「手动绑定 TMDB」卡，搜候选、一键绑定；绑定成功后条目自动从本表消失。
+        </p>
+        <div class="ms-actions">
+          <el-select
+            v-model="wsLibraryId"
+            placeholder="选择媒体库"
+            style="width: 220px"
+            @change="onWsLibraryChange"
+          >
+            <el-option v-for="l in wsLibraries" :key="l.id" :label="l.name" :value="l.id" />
+          </el-select>
+          <el-button size="small" :loading="wsLoading" :disabled="!wsLibraryId" @click="loadUnidentified">
+            刷新
+          </el-button>
+          <span v-if="wsLibraryId" class="ms-hint">共 {{ wsTotal }} 条未识别</span>
+        </div>
+        <div v-if="wsItems.length" class="ms-results">
+          <div
+            v-for="item in wsItems"
+            :key="item.id"
+            class="ms-result"
+            :class="{ 'is-selected': bindSelectedItem?.id === item.id, 'is-locked': item.metadata_locked }"
+          >
+            <span class="ms-result-name">
+              {{ item.name }}
+              <Lock v-if="item.metadata_locked" :size="13" class="lock-mark" />
+            </span>
+            <span v-if="item.year" class="ms-hint">（{{ item.year }}）</span>
+            <span class="ms-hint">{{ item.item_type === 'series' ? '剧集' : '电影' }}</span>
+            <span class="mini-badge warn">未绑定</span>
+            <el-button size="small" type="primary" plain @click="pickUnidentified(item)">
+              识别
+            </el-button>
+          </div>
+        </div>
+        <div v-else-if="wsLibraryId && !wsLoading" class="ms-hint">
+          这个库没有未识别条目，全部条目都绑上了。
+        </div>
+        <el-pagination
+          v-if="wsTotal > WS_PAGE_SIZE"
+          style="margin-top: 12px"
+          layout="prev, pager, next"
+          :total="wsTotal"
+          :page-size="WS_PAGE_SIZE"
+          :current-page="wsPage"
+          @current-change="onWsPageChange"
+        />
+      </SectionCard>
       <!-- 2. 手动绑定 TMDB（默认折叠） -->
-      <SectionCard class="ms-card" title="手动绑定 TMDB" :icon="Wand2">
+      <SectionCard id="card-bind" class="ms-card" title="手动绑定 TMDB" :icon="Wand2">
         <template #actions>
           <el-button size="small" text :aria-expanded="!bindCardCollapsed" @click="toggleBindCard">
             <ChevronDown :size="14" class="ms-chevron" :class="{ 'is-open': !bindCardCollapsed }" />

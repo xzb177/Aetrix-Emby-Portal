@@ -105,7 +105,7 @@ const emit = defineEmits<{
       <el-button size="small" plain title="刷新元数据：完整扫描该库并重新刮削（会发现新文件入库，也会清理已缺失的文件）" @click="emit('rescrape')">
         <RefreshCw :size="13" />刷新元数据
       </el-button>
-      <el-button size="small" plain title="手动识别：跳到「元数据来源」页直接绑定 TMDB / IMDb ID" @click="emit('identify')">
+      <el-button size="small" plain title="手动识别：打开该库的未识别工作台，逐条绑定 TMDB / IMDb ID" @click="emit('identify')">
         <Search :size="13" />识别
       </el-button>
       <el-button size="small" plain @click="emit('settings')">

@@ -1605,6 +1605,17 @@ export interface ItemSearchResult {
 export const searchItemsForBind = (q: string, year?: number | null) =>
   get<{ items: ItemSearchResult[] }>(`${E}/items/search`, { q, ...(year ? { year } : {}) })
 
+/** 未识别工作台的一行：与 ItemSearchResult 同形（可直接喂给绑定流的选条目），另带来源/补全状态 */
+export interface UnidentifiedItem extends ItemSearchResult {
+  metadata_source: string | null
+  enrich_status: string | null
+}
+
+/** 按库列出还没识别上的顶层条目（无 tmdb_id、可见口径），分页 */
+export const fetchUnidentifiedItems = (libraryId: number, page = 1, pageSize = 20) =>
+  get<{ items: UnidentifiedItem[]; total: number; page: number; page_size: number }>(
+    `${E}/libraries/${libraryId}/unidentified`, { page, page_size: pageSize })
+
 /** TMDB 预览：绑定前先看清「这到底是哪部片」，只读不写库 */
 export const previewTmdb = (id: number, tmdbId: string) =>
   get<TmdbPreview>(`${E}/scrape/items/${id}/tmdb-preview`, { tmdb_id: tmdbId })
