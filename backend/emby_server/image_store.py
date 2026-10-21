@@ -15,6 +15,9 @@
 
 ======================  ==========================================================
 ``EMBY_LOCALIZE_IMAGES``  ``0`` 关闭（默认开启）
+``EMBY_IMAGE_PREWARM``    刮削期图片预热（默认**关闭**）：关时刮削只落远程地址、
+                          图由后台补下载巡检涓流落盘；``1`` 恢复刮削时预下载全量图
+``EMBY_IMAGE_BACKFILL``   后台补下载巡检（默认开启）：``0`` 关掉后图只剩取图时按需下载
 ``EMBY_IMAGE_DIR``        图片缓存目录（默认 ``<EMBY_TRANSCODE_DIR>/images``）
 ``EMBY_IMAGE_CACHE_MB``   缓存上限，默认 2048 MB
 ``EMBY_IMAGE_GRACE_SECONDS`` 新增文件保护期，默认 3600 秒（刚落盘、还没写库的文件不被清理）
@@ -572,6 +575,29 @@ def pick_dim(*values) -> int | None:
 
 def enabled() -> bool:
     return _env_flag("EMBY_LOCALIZE_IMAGES", True)
+
+
+def prewarm_enabled() -> bool:
+    """刮削期是否预热图片（``EMBY_IMAGE_PREWARM``，默认关）
+
+    预热是把双刃剑：图提前落盘、首看不卡，但每刮一条都要把它的海报/背景/头像
+    全下载一遍——生产采样图片约占电影条目刮削耗时的九成，而刮完没人看的图
+    这份下载就白付了。默认关：刮削只落远程地址，图等第一次有人取时按需落盘
+    （``media_routes`` 的 localize 自愈），看过的图与预热过的没有区别。
+    显式修复路径（ ``tmdb.refresh_images`` ）不走这个开关：那是图已丢、有人
+    正在等的定向修复，仍旧先落盘再落字段。
+    """
+    return _env_flag("EMBY_IMAGE_PREWARM", False)
+
+
+def backfill_enabled() -> bool:
+    """后台补下载巡检开关（``EMBY_IMAGE_BACKFILL``，默认开）
+
+    预热关掉后新条目只有远程地址，靠 enrich janitor 的补下载巡检在后台
+    涓流落盘（新入库优先），用户打开时图基本已是现成的。关掉它则退回
+    纯按需：图等第一次有人取时才下载落盘。
+    """
+    return _env_flag("EMBY_IMAGE_BACKFILL", True)
 
 
 def image_dir() -> str:

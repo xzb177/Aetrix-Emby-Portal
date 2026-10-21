@@ -153,8 +153,14 @@ def test_image_specs_is_the_single_source_of_the_urls():
 # ==================== 5. 补全 worker：IO 阶段真的预热了 ====================
 
 def test_enrich_fetch_prewarms_the_images_it_will_apply(monkeypatch, downloads):
-    """处方 9 点名的那条路：_enrich_fetch（IO）预热 → _enrich_apply（写库）只落字段"""
+    """处方 9 点名的那条路：_enrich_fetch（IO）预热 → _enrich_apply（写库）只落字段
+
+    2026-10-21 起刮削期预热默认关（EMBY_IMAGE_PREWARM），本用例测的是显式
+    打开后的老行为；默认关时零下载由 test_image_backfill_patrol 覆盖。
+    """
     from backend.emby_server import enrich_worker, scanner as sc
+
+    monkeypatch.setenv("EMBY_IMAGE_PREWARM", "1")
 
     monkeypatch.setattr(TmdbClient, "configured", property(lambda self: True))
     monkeypatch.setattr(
