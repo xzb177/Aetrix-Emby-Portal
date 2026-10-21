@@ -236,6 +236,70 @@ def test_cloudflare_ranges_override(monkeypatch):
     assert out["client"][0] == "9.9.9.9"
 
 
+def test_star_forwarded_allow_does_not_trust_forged_client_ip(monkeypatch, caplog):
+    """FORWARDED_ALLOW_IPS=* 不能让任意对端伪造客户端 IP。显式 IP/CIDR 与 CF 网段仍有效。"""
+    import asyncio
+    import logging
+
+    from backend import domain_guard
+
+    domain_guard._wildcard_warned = False
+    monkeypatch.setenv("TRUST_CF_IP", "true")
+    monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    scope = _scope(client=("198.51.100.8", 4000))
+    scope["headers"].append((b"cf-connecting-ip", b"192.0.2.9"))
+    scope["headers"].append((b"x-forwarded-for", b"192.0.2.9"))
+    with caplog.at_level(logging.WARNING):
+        _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+        _, _, again = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "198.51.100.8"
+    assert again["client"][0] == "198.51.100.8"
+    warnings = [r for r in caplog.records if "FORWARDED_ALLOW_IPS" in r.getMessage()]
+    assert len(warnings) == 1
+
+    # 同一行里的显式 CIDR 仍然点名生效；* 不会把名单外面的对端也放进来。
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*,198.51.100.0/24")
+    monkeypatch.setenv("TRUSTED_PROXIES", "203.0.113.0/24")
+    scope = _scope(client=("198.51.100.8", 4000))
+    scope["headers"].append((b"x-forwarded-for", b"192.0.2.9"))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "192.0.2.9"
+    scope = _scope(client=("203.0.113.10", 4000))
+    scope["headers"].append((b"x-forwarded-for", b"192.0.2.9"))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "192.0.2.9"
+    scope = _scope(client=("192.0.2.8", 4000))
+    scope["headers"].append((b"x-forwarded-for", b"192.0.2.9"))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "192.0.2.8"
+
+    # Cloudflare 网段不依赖 FORWARDED_ALLOW_IPS，* 既不扩大也不取消它。
+    monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    monkeypatch.setenv("CLOUDFLARE_IP_RANGES", "198.51.100.0/24")
+    scope = _scope(client=("198.51.100.8", 4000))
+    scope["headers"].append((b"cf-connecting-ip", b"192.0.2.9"))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "192.0.2.9"
+
+
+def test_forwarded_allow_cidr_trusts_xff(monkeypatch):
+    """FORWARDED_ALLOW_IPS 的 CIDR（没有 *）仍然采信 XFF。"""
+    import asyncio
+    monkeypatch.setenv("TRUST_CF_IP", "true")
+    monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "198.51.100.0/24")
+    scope = _scope(client=("198.51.100.8", 4000))
+    scope["headers"].append((b"x-forwarded-for", b"192.0.2.9"))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "192.0.2.9"
+    scope = _scope(client=("192.0.2.8", 4000))
+    scope["headers"].append((b"x-forwarded-for", b"192.0.2.9"))
+    _, _, out = asyncio.run(_run(CloudflareIPMiddleware, scope))
+    assert out["client"][0] == "192.0.2.8"
+
+
 def test_forwarded_allow_ips_peer_trusts_xff_not_cf_header(monkeypatch):
     """FORWARDED_ALLOW_IPS 与 TRUSTED_PROXIES 同一份可信名单：采信 XFF，不采信 CF 头。"""
     import asyncio

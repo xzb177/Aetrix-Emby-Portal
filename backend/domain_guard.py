@@ -16,9 +16,11 @@
    - 「流媒体加速」开关打开时自动启用；否则看环境变量 ``TRUST_CF_IP=true``
      （默认关闭，不信任任何代理头）；
    - **只有 TCP 直连对端是可信代理时才读代理头**（安全修复 H4）：Cloudflare 官方网段
-     （内置，可用 ``CLOUDFLARE_IP_RANGES`` 覆盖），以及与客户端公开地址同一份名单
+     （内置，可用 ``CLOUDFLARE_IP_RANGES`` 覆盖），以及与客户端公开地址同一份点名名单
      （``peer_honors_forwarded_headers``：本机回环、``TRUSTED_PROXIES``、
-     ``FORWARDED_ALLOW_IPS``）。
+     ``FORWARDED_ALLOW_IPS`` 里的精确 IP / CIDR）。
+     ``FORWARDED_ALLOW_IPS=*`` **不**让任意对端改写客户端 IP（限流、审计会一起中招）；
+     那个通配只留给公开 URL 的 scheme/host 推断，与 uvicorn 对齐。见到 ``*`` 记一次 WARNING。
      直连源站的请求带 ``CF-Connecting-IP: 127.0.0.1`` 不再生效；
    - 优先 ``CF-Connecting-IP``，回退 ``X-Forwarded-For`` **最后一段**（最近一跳代理追加的，
      首段是客户端可伪造的）；
@@ -213,9 +215,37 @@ def _cloudflare_networks() -> list:
     return nets
 
 
+# ``*`` 只警告一次：热路径每个请求都会读这份名单。
+_wildcard_warned = False
+
+
 def _forwarded_allow_ips() -> list[str]:
     raw = os.getenv("FORWARDED_ALLOW_IPS", "")
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    _note_forwarded_wildcard(parts)
+    return parts
+
+
+def _note_forwarded_wildcard(parts: list[str]) -> None:
+    """``*`` 不会让域名守卫信任所有对端；提醒一次，避免运维以为和 uvicorn 完全同一语义。"""
+    global _wildcard_warned
+    if _wildcard_warned or "*" not in parts:
+        return
+    _wildcard_warned = True
+    logger.warning(
+        "FORWARDED_ALLOW_IPS 含 *：域名守卫不会因此采信任意对端的转发头"
+        "（客户端 IP 只认显式 IP/CIDR、TRUSTED_PROXIES 与 Cloudflare 网段）。"
+        "未设置 EMBY_PUBLIC_URL 时，公开 URL 的 scheme/host 仍把 * 视为全信任。"
+    )
+
+
+def forwarded_allow_wildcard() -> bool:
+    """部署方是否写了 ``FORWARDED_ALLOW_IPS=*``。
+
+    只给公开 URL 的 scheme/host 推断用。域名守卫改写 ``scope["client"]`` 时必须忽略它，
+    否则任意直连方都能伪造客户端 IP。
+    """
+    return "*" in _forwarded_allow_ips()
 
 
 def _ip_in_cidr_list(ip: str, parts: list[str]) -> bool:
@@ -235,17 +265,20 @@ def _ip_in_cidr_list(ip: str, parts: list[str]) -> bool:
 
 
 def peer_honors_forwarded_headers(ip: str) -> bool:
-    """直连 IP 是否允许采信转发头。公开 URL 与域名守卫共用这一份。
+    """直连 IP 是否在点名名单里，因而允许采信转发头。
+
+    域名守卫（改写客户端 IP）与公开 URL（拼 scheme/host）共用这一份点名名单，不含 ``*``：
 
     - ``TRUSTED_PROXIES``（含默认回环）：与限流同一份名单，支持 CIDR。
-    - ``FORWARDED_ALLOW_IPS``：与 uvicorn 同一变量。精确 IP、CIDR，或显式 ``*``
-      （``*`` 是部署方自己打开的，默认不信任所有对端）。
+    - ``FORWARDED_ALLOW_IPS`` 里的精确 IP 与 CIDR。
+
+    ``*`` **不是**「信任所有对端」。把它算进去的话，任何一个直连方都能用
+    ``X-Forwarded-For`` 改写 ``scope["client"]``。公开 URL 若要跟随 uvicorn
+    把显式 ``*`` 当成全信任，走 :func:`forwarded_allow_wildcard`，不要改这里。
     """
     if not ip:
         return False
-    allows = _forwarded_allow_ips()
-    if "*" in allows:
-        return True
+    allows = [part for part in _forwarded_allow_ips() if part != "*"]
     if ip in allows:
         return True
     if _ip_in_cidr_list(ip, allows):
