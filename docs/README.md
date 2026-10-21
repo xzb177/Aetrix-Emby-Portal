@@ -11,7 +11,7 @@
 | 你想做什么 | 看哪篇 |
 | --- | --- |
 | **第一次部署，从零跑起来** | **[新手指南](./新手指南.md)** ← 推荐从这里开始 |
-| 用 Docker 部署，想配 HTTPS / 反向代理 / 多机拆分 | [Docker 部署](./deploy-docker.md) |
+| 用 Docker 部署，想配 HTTPS / 反向代理 / 客户端对外地址 / 多机拆分 | [Docker 部署](./deploy-docker.md)（对外地址见[这一节](./deploy-docker.md#客户端对外地址)） |
 | 了解有哪些功能、边界在哪 | [能力清单](./capabilities.md) |
 | 日常维护、备份、出问题了怎么查 | [运维手册](./operations.md) |
 | 扫描慢 / 内存高 / 数据库太大 | [性能调优](./performance.md) |

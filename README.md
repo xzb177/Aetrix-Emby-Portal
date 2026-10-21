@@ -183,7 +183,7 @@ PR 流程：从分支提交 → 发起 PR → CI 全绿 → 合并。
 | 文档 | 内容 |
 | --- | --- |
 | [docs/README.md](docs/README.md) | 文档中心，从这里开始 |
-| [docs/deploy-docker.md](docs/deploy-docker.md) | docker compose 部署 |
+| [docs/deploy-docker.md](docs/deploy-docker.md) | docker compose 部署（含[客户端对外地址](docs/deploy-docker.md#客户端对外地址)） |
 | [docs/deploy-em.md](docs/deploy-em.md) | EM 面板部署与配置 |
 | [docs/deploy-ea.md](docs/deploy-ea.md) | EA 网关部署与分离部署 |
 | [docs/operations.md](docs/operations.md) | 运维、备份与排障 |
