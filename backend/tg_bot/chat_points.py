@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.api import economy
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 def _get_str_config(db: Session, key: str, default: str = "") -> str:
     """读取字符串类型 SystemConfig。"""
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value(key)
+    if _env_v is not None:
+        return _env_v
     cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     return cfg.value if cfg else default
 
@@ -41,6 +46,11 @@ def _batch_configs(db: Session, defaults: dict[str, str]) -> dict[str, str]:
     result = dict(defaults)
     for k, v in rows:
         result[k] = v
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    for k in result:
+        _env_v = _switch_env_value(k)
+        if _env_v is not None:
+            result[k] = _env_v
     return result
 
 

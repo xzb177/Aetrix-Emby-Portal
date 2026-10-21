@@ -39,7 +39,7 @@ import { fetchEconomySettings, updateEconomySettings, type EconomySettings } fro
 import {
   fetchHotlinkConfig, updateHotlinkConfig, type HotlinkConfigPayload,
   type HotlinkConfigGet, fetchItemsDedupCacheConfig, updateItemsDedupCacheConfig,
-  type ItemsDedupCacheConfigPayload,
+  type ItemsDedupCacheConfigPayload, type ItemsDedupCacheConfig,
 } from '@/api/economy'
 import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
@@ -101,7 +101,6 @@ const GROUPS: Group[] = [
     desc: '签到基础积分与连签加成规则（积分仅限公益服用户）',
     icon: CalendarCheck,
     fields: [
-      { key: 'checkin_enabled', label: '启用签到', type: 'bool', hint: '关闭后用户端签到入口隐藏，已发放的积分不受影响' },
       { key: 'checkin_base_points', label: '基础积分', type: 'int', suffix: '积分/次', hint: '未设置随机范围时的默认值' },
       { key: 'checkin_base_min', label: '基础积分下限', type: 'int', suffix: '积分/次', hint: '随机范围下限，默认跟随基础积分', advanced: true },
       { key: 'checkin_base_max', label: '基础积分上限', type: 'int', suffix: '积分/次', hint: '随机范围上限，与下限相同=固定值', advanced: true },
@@ -118,7 +117,6 @@ const GROUPS: Group[] = [
     desc: '公益服活力值：每日 00:00 自动扣减，低于阈值限制观影，签到/积分可恢复',
     icon: Zap,
     fields: [
-      { key: 'vitality_enabled', label: '启用活力值', type: 'bool', hint: '关闭后不再每日扣减，公益服账号不会因此被限制' },
       { key: 'vitality_max', label: '活力上限', type: 'int', suffix: '点', hint: '活力值上限，默认 14' },
       { key: 'vitality_daily_cost', label: '每日扣减', type: 'int', suffix: '点/天', hint: '每天 00:00 自动扣除' },
       { key: 'vitality_limit_threshold', label: '观影阈值', type: 'int', suffix: '点', hint: '低于此值限制观影' },
@@ -131,10 +129,9 @@ const GROUPS: Group[] = [
   {
     id: 'exchange',
     title: '兑换码 · 求片',
-    desc: '兑换开关与用户每日求片上限',
+    desc: '卡码默认套餐与用户每日求片上限',
     icon: TicketCheck,
     fields: [
-      { key: 'exchange_enabled', label: '启用兑换', type: 'bool', hint: '关闭后兑换码无法使用，求片功能一并关闭' },
       {
         key: 'code_default_plan_id',
         label: '卡码默认套餐',
@@ -194,16 +191,9 @@ const GROUPS: Group[] = [
     desc: '邀请奖励与下级消费返利比例',
     icon: UserPlus,
     fields: [
-      { key: 'invitation_enabled', label: '启用邀请', type: 'bool', hint: '关闭后邀请链接失效，不再产生新的奖励和返利' },
       { key: 'invitation_reward_points', label: '邀请人奖励', type: 'int', suffix: '积分', hint: '每成功邀请一人，邀请人拿到的积分。推荐值：100' },
       { key: 'invitation_invitee_reward_points', label: '被邀请人奖励', type: 'int', suffix: '积分', hint: '新人用邀请链接注册时多拿的积分。推荐值：50', advanced: true },
       { key: 'invitation_rebate_percent', label: '消费返利', type: 'int', suffix: '%', hint: '下级充值/消费时邀请人可得的比例', advanced: true },
-      {
-        key: 'promotion_reward_enabled',
-        label: '推广奖励',
-        type: 'bool',
-        hint: '邀请成功后在双向积分之外「另发」一笔；默认关闭，不打开就不会发',
-      },
       {
         key: 'promotion_reward_type',
         label: '推广奖励类型',
@@ -221,10 +211,9 @@ const GROUPS: Group[] = [
   {
     id: 'stream_accel',
     title: '流媒体加速',
-    desc: '一键开启：强制域名访问（防 IP 直连） + 自动信任 CF 真实 IP + 播放地址统一用加速域名',
+    desc: '播放地址统一用加速域名（强制域名访问 + 自动信任 CF 真实 IP 由服务端开关控制）',
     icon: Rocket,
     fields: [
-      { key: 'stream_accel_enabled', label: '启用加速', type: 'bool', hint: '打开后只能用加速域名访问，IP 直连会被拒绝' },
       {
         key: 'stream_accel_domain',
         label: '加速域名',
@@ -239,9 +228,6 @@ const GROUPS: Group[] = [
     desc: '同部剧因标题虚词差异被拆成多条时自动合并（TMDB 编号 + 宽松标题识别，有生死守卫）；存量无 TMDB 编号的剧集也会尝试宽松重识别',
     icon: Layers,
     fields: [
-      { key: 'series_merge_enabled', label: '启用同剧合并', type: 'bool', hint: '关闭后扫描宽松复用与自动合并全停，严格去重不受影响' },
-      { key: 'series_merge_loose_enabled', label: '宽松通道', type: 'bool', hint: '按去虚词标题识别同剧；关掉只走 TMDB 编号通道' },
-      { key: 'series_merge_require_year', label: '年份强校验', type: 'bool', hint: '打开时组合并要求年份齐全且相差不超过 1 年' },
       { key: 'series_merge_interval_sec', label: '合并间隔', type: 'int', suffix: '秒', hint: '最短 3600 秒；扫描完成后会自动提前跑一轮' },
       { key: 'series_merge_batch_limit', label: '每轮组数上限', type: 'int', hint: '单轮最多处理的合并组数' },
     ],
@@ -297,7 +283,6 @@ const reg = reactive({
   mode: 'open',
   message: '',
   legacyCode: false,
-  ratelimitEnabled: true,
   ratelimitMax: 5,
   ratelimitWindow: 3600,
 })
@@ -309,14 +294,12 @@ const regFormRef = ref<FormInstance>()
 const regOriginal = ref({
   mode: 'open',
   message: '',
-  ratelimitEnabled: true,
   ratelimitMax: 5,
   ratelimitWindow: 3600,
 })
 const regDirty = computed(() =>
   reg.mode !== regOriginal.value.mode
   || reg.message !== regOriginal.value.message
-  || reg.ratelimitEnabled !== regOriginal.value.ratelimitEnabled
   || reg.ratelimitMax !== regOriginal.value.ratelimitMax
   || reg.ratelimitWindow !== regOriginal.value.ratelimitWindow,
 )
@@ -324,7 +307,6 @@ function snapshotReg() {
   regOriginal.value = {
     mode: reg.mode,
     message: reg.message,
-    ratelimitEnabled: reg.ratelimitEnabled,
     ratelimitMax: reg.ratelimitMax,
     ratelimitWindow: reg.ratelimitWindow,
   }
@@ -522,10 +504,6 @@ async function load() {
     reg.mode = registration.mode === 'code' ? 'open' : registration.mode
     reg.legacyCode = registration.mode === 'code'
     reg.message = registration.message || ''
-    // 注册限流（C5）：后端带默认值下发，做类型保护后赋值
-    reg.ratelimitEnabled = typeof registration.ratelimit_enabled === 'boolean'
-      ? registration.ratelimit_enabled
-      : true
     reg.ratelimitMax = typeof registration.ratelimit_max === 'number' && Number.isFinite(registration.ratelimit_max)
       ? Math.floor(registration.ratelimit_max)
       : 5
@@ -559,12 +537,11 @@ onMounted(async () => {
 /** ==================== 防盗链卡片（独立 endpoint，非通用分组） ==================== */
 /** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400），
  * 通用分组的 int 字段只有 min=0 的粗校验，装不下。 */
-const hotlink = reactive({ enabled: true, play_sign_ttl: 900, allowed_referers: '' })
-const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, allowed_referers: '' })
+const hotlink = reactive({ play_sign_ttl: 900, allowed_referers: '' })
+const hotlinkOriginal = reactive({ play_sign_ttl: 900, allowed_referers: '' })
 const hotlinkLoading = ref(false)
 
 function applyHotlink(data: HotlinkConfigGet) {
-  hotlink.enabled = !!data.enabled
   hotlink.play_sign_ttl = Number(data.play_sign_ttl) || 900
   // 后端回包是归一化后的域名数组；编辑态存逗号分隔串
   hotlink.allowed_referers = Array.isArray(data.allowed_referers)
@@ -585,8 +562,7 @@ async function loadHotlink() {
 }
 
 const hotlinkDirty = computed(() =>
-  hotlink.enabled !== hotlinkOriginal.enabled
-  || hotlink.play_sign_ttl !== hotlinkOriginal.play_sign_ttl
+hotlink.play_sign_ttl !== hotlinkOriginal.play_sign_ttl
   || hotlink.allowed_referers !== hotlinkOriginal.allowed_referers,
 )
 
@@ -598,7 +574,6 @@ async function saveHotlinkCore(): Promise<boolean> {
     return false
   }
   const payload: HotlinkConfigPayload = {
-    enabled: hotlink.enabled,
     play_sign_ttl: hotlink.play_sign_ttl,
     allowed_referers: hotlink.allowed_referers,
   }
@@ -613,12 +588,11 @@ async function saveHotlinkCore(): Promise<boolean> {
 
 /** ==================== 列表去重缓存卡片（独立 endpoint，非通用分组） ==================== */
 /** 与防盗链卡片同构：TTL/条目上限需要前后端双重范围校验，通用分组装不下。 */
-const itemsDedupCache = reactive({ enabled: true, ttl_seconds: 60, max_entries: 2000 })
-const itemsDedupCacheOriginal = reactive({ enabled: true, ttl_seconds: 60, max_entries: 2000 })
+const itemsDedupCache = reactive({ ttl_seconds: 60, max_entries: 2000 })
+const itemsDedupCacheOriginal = reactive({ ttl_seconds: 60, max_entries: 2000 })
 const itemsDedupCacheLoading = ref(false)
 
-function applyItemsDedupCache(data: ItemsDedupCacheConfigPayload & { defaults?: ItemsDedupCacheConfigPayload }) {
-  itemsDedupCache.enabled = data.enabled !== false
+function applyItemsDedupCache(data: ItemsDedupCacheConfig) {
   itemsDedupCache.ttl_seconds = Number(data.ttl_seconds) || 60
   itemsDedupCache.max_entries = Number(data.max_entries) || 2000
   Object.assign(itemsDedupCacheOriginal, itemsDedupCache)
@@ -636,8 +610,7 @@ async function loadItemsDedupCache() {
 }
 
 const itemsDedupCacheDirty = computed(() =>
-  itemsDedupCache.enabled !== itemsDedupCacheOriginal.enabled
-  || itemsDedupCache.ttl_seconds !== itemsDedupCacheOriginal.ttl_seconds
+itemsDedupCache.ttl_seconds !== itemsDedupCacheOriginal.ttl_seconds
   || itemsDedupCache.max_entries !== itemsDedupCacheOriginal.max_entries,
 )
 
@@ -653,7 +626,6 @@ async function saveItemsDedupCacheCore(): Promise<boolean> {
     return false
   }
   const payload: ItemsDedupCacheConfigPayload = {
-    enabled: itemsDedupCache.enabled,
     ttl_seconds: itemsDedupCache.ttl_seconds,
     max_entries: itemsDedupCache.max_entries,
   }
@@ -778,7 +750,6 @@ async function saveRegistrationCore(): Promise<boolean> {
     await updateRegistrationSettings({
       mode: reg.mode,
       message: reg.message,
-      ratelimit_enabled: reg.ratelimitEnabled,
       ratelimit_max: rlMax,
       ratelimit_window: rlWindow,
     })
@@ -1103,19 +1074,13 @@ watch(
               <el-form-item v-if="reg.mode === 'closed'" label="关闭提示" prop="message">
                 <el-input v-model="reg.message" type="textarea" :rows="2" placeholder="展示给无法注册的用户…" />
               </el-form-item>
-              <el-form-item label="新用户注册限流">
-                <div class="field-stack">
-                  <el-switch v-model="reg.ratelimitEnabled" active-text="启用" inactive-text="关闭" />
-                  <span class="field-hint">按 IP 限制新用户注册频率，防批量注册。关闭后同一 IP 可无限制注册。</span>
-                </div>
-              </el-form-item>
-              <el-form-item v-if="reg.ratelimitEnabled" label="窗口内最大注册次数" prop="ratelimitMax">
+              <el-form-item label="窗口内最大注册次数" prop="ratelimitMax">
                 <div class="field-stack">
                   <el-input-number v-model="reg.ratelimitMax" :min="1" :max="10000" :step="1" />
                   <span class="field-hint">同一 IP 在一个时间窗口内最多可注册次数（默认 5）</span>
                 </div>
               </el-form-item>
-              <el-form-item v-if="reg.ratelimitEnabled" label="限流时间窗口（秒）" prop="ratelimitWindow">
+              <el-form-item label="限流时间窗口（秒）" prop="ratelimitWindow">
                 <div class="field-stack">
                   <el-input-number v-model="reg.ratelimitWindow" :min="60" :max="86400" :step="60" />
                   <span class="field-hint">滑动窗口长度，单位秒（默认 3600，即 1 小时）</span>
@@ -1275,7 +1240,7 @@ watch(
             id="group-hotlink"
             title="防盗链"
             :icon="ShieldCheck"
-            description="播放签名校验总开关 + 签名有效期。播放链接带 15 分钟签名与来路检查，防止盗链。"
+            description="播放签名有效期与来路检查。播放链接带 15 分钟签名与来路检查，防止盗链（总开关由服务端配置控制）。"
             :tone="hotlinkDirty ? 'accent' : 'default'"
             class="group-card"
           >
@@ -1284,14 +1249,6 @@ watch(
             </template>
 
             <el-form label-position="top" class="field-form field-grid">
-              <el-form-item label="启用防盗链">
-                <div class="field-stack">
-                  <div class="field-control">
-                    <el-switch v-model="hotlink.enabled" />
-                  </div>
-                  <span class="field-hint">关闭后播放端点跳过播放签名校验（兼容老客户端）</span>
-                </div>
-              </el-form-item>
               <el-form-item label="播放签名有效期">
                 <div class="field-stack">
                   <div class="field-control">
@@ -1339,14 +1296,6 @@ watch(
             </template>
 
             <el-form label-position="top" class="field-form field-grid">
-              <el-form-item label="启用列表去重缓存">
-                <div class="field-stack">
-                  <div class="field-control">
-                    <el-switch v-model="itemsDedupCache.enabled" />
-                  </div>
-                  <span class="field-hint">关闭后列表接口走原计算路径（与未上线缓存时一致）</span>
-                </div>
-              </el-form-item>
               <el-form-item label="缓存有效期">
                 <div class="field-stack">
                   <div class="field-control">

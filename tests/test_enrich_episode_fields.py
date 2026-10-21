@@ -288,6 +288,11 @@ def test_fetch_episode_tmdb_still_off_skips_prewarm(monkeypatch):
 
 def _enable_night_only(monkeypatch, in_window: bool):
     monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
+    # 配额制 2026-10-21 起缺省开：开着时白天配额内单集照样可认领，
+    # 会盖住夜间门；本文件验夜间门/分项的优先级，显式关掉配额制
+    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV, "0")
+    enrich_worker._enrich_tuning_cache["at"] = 0.0
+    enrich_worker._enrich_tuning_cache["cfg"] = None
     monkeypatch.setattr(
         enrich_worker, "_in_night_window", lambda *a, **k: in_window)
 
@@ -308,8 +313,16 @@ def test_night_gate_takes_precedence_over_fields(db, monkeypatch):
     assert ep.enrich_status == "pending"
 
 
-def test_fields_apply_when_night_gate_off(db):
-    """夜间总开关关（默认）：单集正常被抢，分项开关在写库阶段才起作用"""
+def test_fields_apply_when_night_gate_off(db, monkeypatch):
+    """夜间总开关关：单集正常被抢，分项开关在写库阶段才起作用。
+
+    2026-10-21 起夜间开关缺省=开（生产现值），本例显式经 env 关掉，
+    并清夜间/调优两个 TTL 缓存（上一例的缓存会盖住新值）。"""
+    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "0")
+    enrich_worker._night_cfg_cache["at"] = 0.0
+    enrich_worker._night_cfg_cache["cfg"] = None
+    enrich_worker._enrich_tuning_cache["at"] = 0.0
+    enrich_worker._enrich_tuning_cache["cfg"] = None
     ep = _make_item(db, item_type="episode", name="S01E01", series_id=999)
     claimed = enrich_worker._claim_batch(db, 10)
     assert {c.id for c in claimed} == {ep.id}

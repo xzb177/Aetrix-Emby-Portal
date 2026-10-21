@@ -166,10 +166,11 @@ def write_config(db: Session, *, enabled: bool, ttl_seconds: int,
     if not (MAX_ENTRIES_MIN <= mx <= MAX_ENTRIES_MAX):
         raise ValueError(f"缓存条目上限需在 {MAX_ENTRIES_MIN}~{MAX_ENTRIES_MAX} 之间")
     from backend import config_service
+    # A 类开关摘面板（2026-10-21）：enabled 参数仅为兼容旧调用方保留，不再落库
+    # ——开关改走 env ITEMS_DEDUP_CACHE_ENABLED（缺省=开，见 ENABLED_DEFAULT）。
     config_service.save_config(
         db,
         {
-            CFG_ENABLED: bool(enabled),
             CFG_TTL_SECONDS: ttl,
             CFG_MAX_ENTRIES: mx,
         },

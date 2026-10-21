@@ -1891,21 +1891,21 @@ def save_douban_config(
     """保存豆瓣配置（保存即热生效）"""
     from backend.emby_server import douban as _dbn
     from backend.integrations import store
-    enabled = body.enabled
+    # A 类开关摘面板（2026-10-21）：总开关不再落库（body.enabled 仅为兼容
+    # 旧前端保留）——改走 env DOUBAN_ENABLED（缺省=开，已对齐生产现值）；
+    # 本端点只保存请求最小间隔。返回的 enabled 为当前生效值。
     iv = max(0.0, float(body.min_interval or 0))
     store.write_values(
         db,
         {
-            _dbn.DOUBAN_ENABLED_KEY: "1" if enabled else "0",
             _dbn.DOUBAN_RATE_KEY: str(iv),
         },
         {
-            _dbn.DOUBAN_ENABLED_KEY: "豆瓣（可选）总开关（中文标题 TMDB 未命中时走豆瓣兜底）",
             _dbn.DOUBAN_RATE_KEY: "豆瓣请求最小间隔秒数",
         },
     )
     db.commit()
-    return {"success": True, "enabled": enabled, "min_interval": iv}
+    return {"success": True, "enabled": _dbn.enabled(db), "min_interval": iv}
 
 
 # ==================== 备用链路限速（配置瘦身第 3 批） ====================

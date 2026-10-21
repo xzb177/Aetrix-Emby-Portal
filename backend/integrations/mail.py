@@ -16,7 +16,6 @@ SPEC = {
     "group": "邮件与消息",
     "docs_hint": "端口 465 走 SSL，其余端口走 STARTTLS（例如 587）。",
     "fields": [
-        {"key": "email_enabled", "label": "启用邮件通知", "type": "bool", "default": "false"},
         {"key": "email_smtp_host", "label": "SMTP 服务器", "type": "str", "required": True,
          "placeholder": "smtp.example.com"},
         {"key": "email_smtp_port", "label": "端口", "type": "int", "default": "587"},
@@ -29,6 +28,9 @@ SPEC = {
     "test_label": "发送测试邮件",
 }
 
+# A 类开关摘面板（2026-10-21）：email_enabled 不再出现在能力表单里，改走
+# env EMAIL_ENABLED（缺省关，与原表单缺省一致）；卡片状态判定仍需读到该键。
+EXTRA_READ_KEYS = {"email_enabled": "false"}
 CONFIG_KEYS = ("email_enabled", "email_smtp_host", "email_smtp_port", "email_smtp_user",
                "email_smtp_password", "email_from_name", "email_from_email")
 

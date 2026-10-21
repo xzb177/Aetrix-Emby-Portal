@@ -24,6 +24,7 @@ from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.database import get_db
 from backend.integrations import telegram as tg_integration
 from backend.api.user import get_current_user
@@ -38,6 +39,10 @@ CODE_TTL_SECONDS = 600
 
 def _cfg(db: Session, key: str, default: Any) -> Any:
     """读取 SystemConfig，取不到返回默认值。"""
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value(key)
+    if _env_v is not None:
+        return _env_v
     row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     if row is None:
         return default

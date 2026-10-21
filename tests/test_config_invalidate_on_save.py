@@ -116,13 +116,18 @@ def test_expiry_reminder_settings_invalidate(db, admin_user):
         db,
         admin_user,
     )
+    # 2026-10-21 A 类摘面板：面板只剩提醒档位可写；开关 expiry_reminder_enabled
+    # 传进来必须被忽略（改走 env），档位写入后热缓存立即失效读到新值
     _prime(db, "expiry_reminder_enabled", "")
+    _prime(db, "expiry_reminder_days", "7,3,1")
     r = TestClient(app).put(
         "/api/admin/economy/expiry-reminders/settings",
-        json={"settings": {"expiry_reminder_enabled": True}},
+        json={"settings": {"expiry_reminder_enabled": True,
+                           "expiry_reminder_days": "5,1"}},
     )
     assert r.status_code == 200
-    assert store.get_value(db, "expiry_reminder_enabled", "") == "true"
+    assert store.get_value(db, "expiry_reminder_enabled", "") == ""
+    assert store.get_value(db, "expiry_reminder_days", "") == "5,1"
 
 
 def test_coupon_settings_invalidate(db, admin_user):
@@ -136,13 +141,15 @@ def test_coupon_settings_invalidate(db, admin_user):
         db,
         admin_user,
     )
+    # 2026-10-21 A 类摘面板：enabled 不再经面板写（传 False 必须被忽略，
+    # 存量值保持不动）；reserve_hours 照常写且热缓存立即失效
     _prime(db, coupons.CONFIG_ENABLED, "true")
     r = TestClient(app).put(
         "/api/admin/economy/coupons/settings",
         json={"enabled": False, "reserve_hours": 48},
     )
     assert r.status_code == 200
-    assert store.get_value(db, coupons.CONFIG_ENABLED, "true") == "false"
+    assert store.get_value(db, coupons.CONFIG_ENABLED, "true") == "true"
     assert store.get_value(db, coupons.CONFIG_RESERVE_HOURS, "") == "48"
 
 

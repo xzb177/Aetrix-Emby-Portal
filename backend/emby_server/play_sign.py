@@ -133,8 +133,9 @@ def write_config(db: Session, *, enabled: bool, play_sign_ttl: int) -> dict:
     """
     from backend import config_service
 
+    # A 类开关摘面板（2026-10-21）：enabled 参数仅为兼容旧调用方保留，不再落库
+    # ——开关改走 env HOTLINK_PROTECTION_ENABLED（缺省=开，见 HOTLINK_DEFAULT）。
     values = {
-        CONFIG_HOTLINK_ENABLED: "true" if bool(enabled) else "false",
         CONFIG_PLAY_SIGN_TTL: play_sign_ttl,
     }
     config_service.save_config(db, values, schema="hotlink",

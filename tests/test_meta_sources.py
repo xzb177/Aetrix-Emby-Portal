@@ -467,6 +467,11 @@ def test_view_lists_all_sources_in_order_with_masks_only(db):
     cfg.write_config(db, enabled=True, prefer_chinese=False,
                      order=["douban", "bangumi"], toggles={}, rates={},
                      keys={"tmdb": ["abcdef1234"]})
+    # 2026-10-21 A 类摘面板：prefer_chinese 不再经 write_config 写，
+    # 直接种存量行 "0" 表达「不优先中文」
+    from backend.integrations import store as _store
+    _store.write_values(db, {cfg.CONFIG_PREFER_CN: "0"}, {})
+    db.commit()
     cfg.invalidate()
     view = _view(db)
 
@@ -485,7 +490,12 @@ def test_view_lists_all_sources_in_order_with_masks_only(db):
 def test_view_marks_disabled_and_keyless_sources(db):
     from backend.emby_server.metasources import config as cfg
 
-    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={"tvmaze": False})
+    # 2026-10-21 A 类摘面板：逐源开关不再经 write_config 的 toggles 写，
+    # 直接种存量行表达关闭
+    from backend.integrations import store as _store
+    _store.write_values(
+        db, {cfg.CONFIG_SOURCE_ENABLED.format(id="tvmaze"): "0"}, {})
+    db.commit()
     cfg.invalidate()
     rows = {r["id"]: r for r in _view(db)["sources"]}
     assert rows["tvmaze"]["skipped_reason"] == "已在后台关闭"
@@ -497,8 +507,11 @@ def test_view_marks_disabled_and_keyless_sources(db):
 def test_view_active_count_counts_only_participating_sources(db):
     from backend.emby_server.metasources import config as cfg
 
-    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[],
-                     toggles={"douban": False, "anilist": False, "tvmaze": False})
+    from backend.integrations import store as _store
+    _store.write_values(
+        db, {cfg.CONFIG_SOURCE_ENABLED.format(id=s): "0"
+             for s in ("douban", "anilist", "tvmaze")}, {})
+    db.commit()
     cfg.invalidate()
     # 可参与 = 7 - 关掉的 3 - 缺密钥的 3（omdb/tvdb/tmdb）
     assert _view(db)["active_count"] == 1
@@ -519,7 +532,8 @@ def test_saving_config_does_not_wipe_key_pool(db):
     assert rows["omdb"]["key_count"] == 1
     assert rows["omdb"]["rate"] == 2.5
     assert [r["id"] for r in _view(db)["sources"]][:2] == ["omdb", "douban"]
-    assert rows["tvmaze"]["enabled"] is False
+    # 2026-10-21 A 类摘面板：保存里的 toggles 不再生效，tvmaze 保持参与
+    assert rows["tvmaze"]["enabled"] is True
     assert rows["douban"]["position"] == 2
 
 
@@ -618,17 +632,22 @@ def test_collect_result_round_trips_through_dict():
 
 def test_tmdb_miss_fallback_defaults_off_and_round_trips(db):
     from backend.emby_server.metasources import config as cfg
+    from backend.integrations import store as _store
 
-    # 没写过 = 关（默认保持原来的链路）
+    # 2026-10-21 A 类摘面板现值对齐：没写过 = 开（缺省=生产现值）；
+    # write_config 不再写该开关（传 False 也保持开）
     cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={})
-    assert cfg.read_config(db, ms_sources.SPECS).tmdb_miss_fallback is False
-
-    cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={},
-                     tmdb_miss_fallback=True)
     assert cfg.read_config(db, ms_sources.SPECS).tmdb_miss_fallback is True
 
     cfg.write_config(db, enabled=True, prefer_chinese=True, order=[], toggles={},
                      tmdb_miss_fallback=False)
+    cfg.invalidate()
+    assert cfg.read_config(db, ms_sources.SPECS).tmdb_miss_fallback is True
+
+    # 关要种存量行 "0"（或 env META_SOURCES_TMDB_MISS_FALLBACK=0）
+    _store.write_values(db, {cfg.CONFIG_TMDB_MISS_FALLBACK: "0"}, {})
+    db.commit()
+    cfg.invalidate()
     assert cfg.read_config(db, ms_sources.SPECS).tmdb_miss_fallback is False
 
 
@@ -663,6 +682,8 @@ def test_save_meta_sources_carries_fallback_flag(db):
     """前端保存的那张卡把开关传下来、写进库、视图再吐出来 —— 全链路通"""
     from backend.api import admin_scrape
 
+    # 2026-10-21 A 类摘面板：保存不再携带该开关（传 True/False 都不落库），
+    # 视图回显的是存量行 / 缺省（开）
     view = admin_scrape.save_meta_sources(
         admin_scrape.MetaSourcesSaveRequest(enabled=True, prefer_chinese=True,
                                             tmdb_miss_fallback=True,
@@ -673,6 +694,17 @@ def test_save_meta_sources_carries_fallback_flag(db):
     view = admin_scrape.save_meta_sources(
         admin_scrape.MetaSourcesSaveRequest(enabled=True, prefer_chinese=True,
                                             tmdb_miss_fallback=False,
+                                            order=[], toggles={}, rates={}),
+        staff=None, db=db)
+    assert view["tmdb_miss_fallback"] is True
+
+    from backend.emby_server.metasources import config as cfg
+    from backend.integrations import store as _store
+    _store.write_values(db, {cfg.CONFIG_TMDB_MISS_FALLBACK: "0"}, {})
+    db.commit()
+    cfg.invalidate()
+    view = admin_scrape.save_meta_sources(
+        admin_scrape.MetaSourcesSaveRequest(enabled=True, prefer_chinese=True,
                                             order=[], toggles={}, rates={}),
         staff=None, db=db)
     assert view["tmdb_miss_fallback"] is False

@@ -179,8 +179,6 @@ def _task_scan(db: Session) -> dict:
     card = _card(
         "scan", "媒体库扫描", status, status_text, summary,
         metrics=metrics, last_run=last_run, last_run_label="最近一轮跑完",
-        switch={"label": "定时扫描", "enabled": bool(auto.get("enabled")),
-                "keep": {"time": auto.get("time") or "03:00"}},
         link="/emby",
     )
     card["libraries"] = lib_rows
@@ -301,10 +299,6 @@ def _task_enrich(db: Session) -> dict:
     return _card(
         "enrich", "元数据刮削", status, status_text, summary,
         metrics=metrics,
-        switch={"label": "单集夜间刮削", "enabled": night_enabled,
-                "keep": {"night_start": night.get("night_start") or "02:00",
-                         "night_end": night.get("night_end") or "06:00",
-                         "night_tz": night.get("night_tz") or "Asia/Shanghai"}},
         link="/metadata-sources",
     )
 
@@ -401,9 +395,6 @@ def _task_chase_new(db: Session) -> dict:
         "chase_new", "追新（新资源监听）", status, status_text, summary,
         metrics=metrics, last_run=latest.started_at.isoformat() if latest and latest.started_at else None,
         last_run_label="最近一次检查",
-        switch={"label": "追新开关", "enabled": enabled,
-                "keep": {"interval": interval,
-                         "excluded": cfg.get("excluded") or ""}},
         link="/emby",
     )
 

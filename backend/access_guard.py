@@ -102,11 +102,13 @@ MODES = (MODE_BLOCK, MODE_ALLOW)
 #: ``policy_payload`` 返回的是短名（也是页面上那几个字段名），所以写回也必须是
 #: 短名；两边的名字必须在这里对上。用短名当 SystemConfig 键写出去会得到一个
 #: 没人读的行，而前端读回短名时全是空——「存不进去也看不出来」。
+# A 类开关摘面板（2026-10-21）：ua_enabled / region_enabled 不再经面板写——
+# 改走 env ACCESS_GUARD_UA_ENABLED / ACCESS_GUARD_REGION_ENABLED（缺省关，
+# 与生产现值一致）；本表只剩名单/模式类字段。读取口径不变（load_rules
+# 仍读全部 CONFIG_* 键，policy_payload 照旧回显两个开关的生效值）。
 FIELD_TO_KEY = {
-    "ua_enabled": CONFIG_UA_ENABLED,
     "ua_allow": CONFIG_UA_ALLOW,
     "ua_deny": CONFIG_UA_DENY,
-    "region_enabled": CONFIG_REGION_ENABLED,
     "region_mode": CONFIG_REGION_MODE,
     "region_countries": CONFIG_REGION_COUNTRIES,
     "region_keywords": CONFIG_REGION_KEYWORDS,
@@ -705,9 +707,7 @@ def write_policy(db, values: dict) -> dict:
         key = FIELD_TO_KEY.get(field)
         if key is None:
             continue
-        if key in (CONFIG_UA_ENABLED, CONFIG_REGION_ENABLED):
-            applied[key] = "true" if _bool(value) else "false"
-        elif key == CONFIG_REGION_MODE:
+        if key == CONFIG_REGION_MODE:
             text = str(value or "").strip().lower()
             if text not in MODES:
                 continue

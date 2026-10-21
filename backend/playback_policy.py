@@ -32,12 +32,12 @@ CONFIG_TRANSCODE_ENABLED = "playback_transcode_enabled"
 CONFIG_MAX_TRANSCODES = "playback_max_concurrent_transcodes"
 
 # 键 → 类型（设置页与 PUT 接口共用一份，避免两边各写一套白名单）
+# A 类开关摘面板（2026-10-21）：playback_transcode_enabled 与
+# drive_direct_play_enabled 不再经面板写——改走 env
+# PLAYBACK_TRANSCODE_ENABLED / DRIVE_DIRECT_PLAY_ENABLED（缺省均开，
+# 与 POLICY_DEFAULTS 一致）；本表只剩并发转码上限（数值）。
 POLICY_KEYS = {
-    CONFIG_TRANSCODE_ENABLED: "bool",
     CONFIG_MAX_TRANSCODES: "int",
-    # Drive 302 直链总开关（#957，playback_strategy.KEY_DRIVE_DIRECT_PLAY 定义，
-    # video_stream 读它决定 302/410；键名本身就是页面字段名，无需短名映射）
-    KEY_DRIVE_DIRECT_PLAY: "bool",
 }
 
 # 各键的出厂默认值（字符串形态，与 _config_bool / _config_int 的缺省语义一致）。
@@ -51,9 +51,7 @@ POLICY_DEFAULTS = {
 # 页面字段短名 → SystemConfig 键（GET policy_payload 返回短名，PUT 必须认短名；
 # 2026-10-17 实锤：前端一直送短名，write_policy 只认长键名导致保存静默失效）
 FIELD_TO_KEY = {
-    "transcode_enabled": CONFIG_TRANSCODE_ENABLED,
     "max_concurrent_transcodes": CONFIG_MAX_TRANSCODES,
-    "drive_direct_play_enabled": KEY_DRIVE_DIRECT_PLAY,
 }
 
 

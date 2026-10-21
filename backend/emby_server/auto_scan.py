@@ -62,7 +62,7 @@ def get_config(db: Session) -> dict:
     vals = store.read_values(
         db,
         [CONFIG_ENABLED, CONFIG_TIME, CONFIG_LAST_RUN],
-        {CONFIG_ENABLED: "0", CONFIG_TIME: DEFAULT_TIME, CONFIG_LAST_RUN: ""},
+        {CONFIG_ENABLED: "1", CONFIG_TIME: DEFAULT_TIME, CONFIG_LAST_RUN: ""},  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
     )
     enabled = vals[CONFIG_ENABLED].strip() == "1"
     time_str = parse_time(vals[CONFIG_TIME]) or DEFAULT_TIME
@@ -74,15 +74,18 @@ def get_config(db: Session) -> dict:
 
 
 def save_config(db: Session, enabled: bool, time_str: str) -> dict:
-    """保存定时扫描配置；时间格式非法时抛 ValueError（接口转 400）。"""
+    """保存定时扫描配置；时间格式非法时抛 ValueError（接口转 400）。
+
+    A 类开关摘面板（2026-10-21）：``enabled`` 参数仅为兼容旧调用方保留，
+    不再落库——开关改走 env AUTO_SCAN_ENABLED（缺省=开，见 get_config）。
+    """
     parsed = parse_time(time_str)
     if parsed is None:
         raise ValueError(f"时间格式非法，应为 HH:MM（24 小时制），收到：{time_str!r}")
     store.write_values(
         db,
-        {CONFIG_ENABLED: "1" if enabled else "0", CONFIG_TIME: parsed},
+        {CONFIG_TIME: parsed},
         {
-            CONFIG_ENABLED: "定时扫描开关（元数据与刮削）",
             CONFIG_TIME: "定时扫描每天执行时间（HH:MM，服务器本地时间）",
         },
     )

@@ -295,15 +295,22 @@ def test_resolve_geo_treats_placeholder_as_unknown(monkeypatch):
 
 
 def test_write_policy_roundtrip(db):
+    # 2026-10-21 A 类摘面板：ua_enabled / region_enabled 不再经 write_policy 写
+    # （改走 env ACCESS_GUARD_UA_ENABLED / ACCESS_GUARD_REGION_ENABLED 或存量
+    # 配置行）；write_policy 只写名单与模式，开关传进来必须被忽略。
+    db.add(models.SystemConfig(key=ag.CONFIG_UA_ENABLED, value="true"))
+    db.add(models.SystemConfig(key=ag.CONFIG_REGION_ENABLED, value="1"))
+    db.commit()
     applied = ag.write_policy(db, {
-        "ua_enabled": True,
+        "ua_enabled": False,
         "ua_deny": "Googlebot, badbot",
-        "region_enabled": "1",
+        "region_enabled": "0",
         "region_mode": "allow",
         "region_countries": "中国",
     })
     db.commit()
-    assert applied[ag.CONFIG_UA_ENABLED] == "true"
+    assert ag.CONFIG_UA_ENABLED not in applied
+    assert ag.CONFIG_REGION_ENABLED not in applied
     assert applied[ag.CONFIG_UA_DENY] == "googlebot,badbot"
 
     payload = ag.policy_payload(db)
@@ -322,11 +329,11 @@ def test_write_policy_invalidates_the_shared_store_cache(db):
     否则「保存成功」之后读回来还是旧值。缓存以 **key** 为索引、不区分数据库，
     这条用例也顺带钉住了本模块不会把别的内存库测试带偏。
     """
-    assert ag.policy_payload(db)["ua_enabled"] is False
-    ag.write_policy(db, {"ua_enabled": True})
+    assert ag.policy_payload(db)["ua_deny"] == []
+    ag.write_policy(db, {"ua_deny": "Googlebot"})
     db.commit()
     # 不等 TTL，直接读
-    assert ag.policy_payload(db)["ua_enabled"] is True
+    assert ag.policy_payload(db)["ua_deny"] == ["googlebot"]
 
 
 def test_write_policy_accepts_the_short_names_the_frontend_sends(db):
@@ -338,8 +345,11 @@ def test_write_policy_accepts_the_short_names_the_frontend_sends(db):
     单元测试当时全用全名调用，把这个洞完整地漏了过去；是端到端跑真实前端
     请求体才暴露的。
     """
+    db.add(models.SystemConfig(key=ag.CONFIG_UA_ENABLED, value="true"))
+    db.add(models.SystemConfig(key=ag.CONFIG_REGION_ENABLED, value="true"))
+    db.commit()
     payload = ag.policy_payload(db)
-    # 页面拿到的就是 policy_payload 的键，原样回传
+    # 页面拿到的就是 policy_payload 的键，原样回传（含已摘面板的开关字段）
     applied = ag.write_policy(db, {
         "ua_enabled": True,
         "ua_deny": "Googlebot, SemrushBot",
@@ -349,7 +359,8 @@ def test_write_policy_accepts_the_short_names_the_frontend_sends(db):
     })
     db.commit()
     assert applied, "短名写入必须真的生效，不能静默丢弃"
-    assert applied[ag.CONFIG_UA_ENABLED] == "true"
+    # 开关字段 2026-10-21 起被忽略（不在 applied 里），名单/模式照常落库
+    assert ag.CONFIG_UA_ENABLED not in applied
     assert applied[ag.CONFIG_UA_DENY] == "googlebot,semrushbot"
 
     after = ag.policy_payload(db)
@@ -386,19 +397,17 @@ def test_write_policy_rejects_unknown_keys_and_bad_mode(db):
 
 
 def test_write_policy_ignores_blank_values(db):
-    """只给开关不给关键词时，关键词写空串（= 清空），不报错"""
-    applied = ag.write_policy(db, {"ua_enabled": "true"})
+    """关键词给空白时写空串（= 清空），不报错"""
+    applied = ag.write_policy(db, {"ua_deny": "   "})
     db.commit()
-    assert applied == {ag.CONFIG_UA_ENABLED: "true"}
+    assert applied == {ag.CONFIG_UA_DENY: ""}
 
 
 def test_preview_reports_block_with_reason(db, monkeypatch):
     from backend.integrations import geoip
 
-    ag.write_policy(db, {
-        "ua_enabled": "true",
-        "ua_deny": "Googlebot",
-    })
+    db.add(models.SystemConfig(key=ag.CONFIG_UA_ENABLED, value="true"))
+    ag.write_policy(db, {"ua_deny": "Googlebot"})
     db.commit()
     assert ag.preview(db, ip="1.1.1.1", user_agent="Googlebot/2.1")["blocked"] is True
     assert ag.preview(db, ip="1.1.1.1", user_agent="Chrome/120")["blocked"] is False
@@ -408,8 +417,8 @@ def test_preview_region_shows_resolved_location(db, monkeypatch):
     """试跑要真的调地理库并把国家/地区回显出来，否则管理员无从确认规则写得对不对"""
     from backend.integrations import geoip
 
+    db.add(models.SystemConfig(key=ag.CONFIG_REGION_ENABLED, value="true"))
     ag.write_policy(db, {
-        "region_enabled": "true",
         "region_mode": "allow",
         "region_countries": "中国",
     })

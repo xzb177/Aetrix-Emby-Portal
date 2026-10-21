@@ -158,7 +158,12 @@ def test_tick_runs_once_per_day(db, fake_db_file, monkeypatch):
 
 
 def test_tick_disabled_skips(db, fake_db_file, monkeypatch):
-    db_backup.save_config(db, False, "03:00", 7)
+    # 2026-10-21 A 类摘面板：save_config 不再写开关，关备份直接种存量行
+    from backend import models as _models
+    from backend.integrations import store as _store
+    db.add(_models.SystemConfig(key=db_backup.CONFIG_ENABLED, value="0"))
+    db.commit()
+    _store.invalidate(db_backup.CONFIG_ENABLED)
     monkeypatch.setattr(db_backup, "SessionLocal", lambda: db)
     called = []
     monkeypatch.setattr(db_backup, "run_backup_now",

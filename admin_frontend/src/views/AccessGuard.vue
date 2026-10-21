@@ -131,10 +131,8 @@ async function save() {
   saving.value = true
   try {
     const res = await saveAccessGuardPolicy({
-      ua_enabled: d.ua_enabled,
       ua_allow: norm(uaAllowText.value),
       ua_deny: norm(uaDenyText.value),
-      region_enabled: d.region_enabled,
       region_mode: d.region_mode,
       region_countries: norm(countryText.value),
       region_keywords: norm(keywordText.value),
@@ -303,7 +301,6 @@ const testSummary = computed(() => {
         <div class="ag-block">
           <div class="ag-block-head">
             <h4 class="ag-block-title"><Fingerprint :size="15" />UA 关键词</h4>
-            <el-switch v-model="draft.ua_enabled" active-text="启用" inactive-text="关闭" />
           </div>
           <p class="ag-hint">
             按 <code>User-Agent</code> 做<strong>子串</strong>匹配（大小写不敏感）。
@@ -345,7 +342,6 @@ const testSummary = computed(() => {
         <div class="ag-block">
           <div class="ag-block-head">
             <h4 class="ag-block-title"><Globe2 :size="15" />IP 归属地</h4>
-            <el-switch v-model="draft.region_enabled" active-text="启用" inactive-text="关闭" />
           </div>
           <p class="ag-hint">
             归属地来自「IP 与地理位置」能力。<strong>查不到就放行</strong>——

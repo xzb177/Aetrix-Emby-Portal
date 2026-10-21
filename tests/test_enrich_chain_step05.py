@@ -485,19 +485,27 @@ class TestAdminApi:
             staff = SimpleNamespace(is_superuser=True)
             got = admin_scrape.get_douban_ban_downgrade(staff=staff, db=db)
             assert got["success"] is True
-            assert got["enabled"] is False  # 默认关
+            assert got["enabled"] is False  # 本文件 fixture 预置行 "0"
             assert got["banned"] is False
+            # 2026-10-21 A 类摘面板：PUT 不再写库（开关改走 env
+            # ENRICH_DOUBAN_BAN_DOWNGRADE / 存量行），只回读当前生效值
             saved = admin_scrape.save_douban_ban_downgrade(
                 admin_scrape._DoubanBanDowngradeBody(enabled=True),
                 staff=staff, db=db)
-            assert saved["enabled"] is True
-            # 开关写进 SystemConfig 后 worker 读得到
+            assert saved["enabled"] is False
             store.invalidate(FLAG)
+            assert ew._douban_ban_downgrade_flag_on() is False
+            # 存量行改成 "1" 后 GET 与 worker 都读到开，PUT 依旧不落库
+            store.write_values(db, {FLAG: "1"}, {FLAG: "Step 0.5 测试开关"})
+            db.commit()
+            store.invalidate(FLAG)
+            got2 = admin_scrape.get_douban_ban_downgrade(staff=staff, db=db)
+            assert got2["enabled"] is True
             assert ew._douban_ban_downgrade_flag_on() is True
             saved2 = admin_scrape.save_douban_ban_downgrade(
                 admin_scrape._DoubanBanDowngradeBody(enabled=False),
                 staff=staff, db=db)
-            assert saved2["enabled"] is False
+            assert saved2["enabled"] is True
         finally:
             db.close()
         store.invalidate(FLAG)

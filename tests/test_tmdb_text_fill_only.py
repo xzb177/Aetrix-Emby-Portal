@@ -251,12 +251,17 @@ def _db_item(**kw):
         db.close()
 
 
-def test_none_terminal_writes_last_scraped_at():
+def test_none_terminal_writes_last_scraped_at(monkeypatch):
     """搜过无命中（但 TMDB 未配置→走 _incomplete=False 路径）终态写戳。
 
     fetched 为空：series 无 tmdb_id、无命中 → metadata_source='none' →
     终态 done。last_scraped_at 必须有值（与「从未跑过」区分）。
     """
+    # 字段级完成口径（Step 5）2026-10-21 起缺省开：开着时缺简介会先低优先
+    # 回捞一轮；本例验经典终态写戳，显式关掉并清调优缓存
+    monkeypatch.setenv("ENRICH_FIELD_COMPLETENESS", "0")
+    ew._enrich_tuning_cache["at"] = 0.0
+    ew._enrich_tuning_cache["cfg"] = None
     item_id = _db_item(production_year=2020)  # 标题+年份=核心字段齐→走终态
     db = _LocalSession()
     try:

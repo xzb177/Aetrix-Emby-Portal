@@ -161,7 +161,7 @@ def enabled(db: Any) -> bool:
     """豆瓣总开关（默认关；读不到配置时 fail-closed，不打豆瓣）。"""
     from backend.integrations import store
     try:
-        v = store.get_value(db, DOUBAN_ENABLED_KEY, "0")
+        v = store.get_value(db, DOUBAN_ENABLED_KEY, "1")  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
     except Exception:
         return False
     if isinstance(v, str):

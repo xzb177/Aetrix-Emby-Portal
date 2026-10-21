@@ -33,8 +33,9 @@ def test_parse_time_ok():
 
 
 def test_config_defaults(db):
+    # 2026-10-21 A 类摘面板现值对齐：enabled 缺省翻为开（生产现值）
     cfg = auto_scan.get_config(db)
-    assert cfg == {"enabled": False, "time": "03:00", "last_run": ""}
+    assert cfg == {"enabled": True, "time": "03:00", "last_run": ""}
 
 
 def test_save_and_get(db):

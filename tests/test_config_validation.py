@@ -40,7 +40,7 @@ def _cfg(s, key):
     ("points_transfer_min", 0),
     ("redpacket_fee_pct", 1.5),
     ("chat_points_daily_cap", True),
-    ("chat_points_enabled", "maybe"),
+    ("welfare_require_tg_bind", "maybe"),  # 2026-10-21：原 chat_points_enabled 已摘面板，换保留 bool 键
     ("recharge_ratio", "-1"),
     ("recharge_quick_amounts", "10,abc"),
     ("lottery_draw_interval_sec", "5"),
@@ -64,12 +64,15 @@ def test_welfare_config_invalid_writes_nothing(db):
 def test_welfare_config_accepts_valid_and_empty_unsets(db):
     s, admin = db
     welfare_admin.welfare_config_set(
-        {"points_transfer_fee_pct": 3, "chat_points_enabled": True, "lottery_enabled": False,
+        {"points_transfer_fee_pct": 3, "welfare_require_tg_bind": True,
+         "lottery_require_group_member": False,
          "recharge_ratio": "1.5", "chat_points_group_ids": "-100,-200"},
         current_admin=admin, db=s)
     assert _cfg(s, "points_transfer_fee_pct") == "3"
-    assert _cfg(s, "chat_points_enabled") == "true"
-    assert _cfg(s, "lottery_enabled") == "0"
+    # 2026-10-21：原 chat_points_enabled / lottery_enabled 已摘面板，
+    # 换保留的 digit 风格 bool 键（存 "1"/"0"）
+    assert _cfg(s, "welfare_require_tg_bind") == "1"
+    assert _cfg(s, "lottery_require_group_member") == "0"
     assert _cfg(s, "recharge_ratio") == "1.5"
     assert _cfg(s, "chat_points_group_ids") == "-100,-200"
     welfare_admin.welfare_config_set({"points_transfer_fee_pct": ""}, current_admin=admin, db=s)

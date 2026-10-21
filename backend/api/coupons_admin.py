@@ -202,8 +202,9 @@ def update_coupon_settings(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """总开关（关闭后不能再填码，已下的单不受影响）与预订超时清理时限"""
-    values = {coupons.CONFIG_ENABLED: "true" if request.enabled else "false"}
+    """预订超时清理时限（总开关 2026-10-21 摘面板：request.enabled 仅为兼容
+    旧前端保留、不再落库——开关改走 env COUPON_ENABLED，缺省=开）"""
+    values = {}
     if request.reserve_hours is not None:
         values[coupons.CONFIG_RESERVE_HOURS] = str(int(request.reserve_hours))
     # 配置瘦身第 4 批 4-4：走统一写入通道（校验→落库→写时失效）；
@@ -216,7 +217,7 @@ def update_coupon_settings(
     db.commit()
     return {
         "success": True,
-        "enabled": request.enabled,
+        "enabled": coupons.enabled(db),
         "reserve_hours": request.reserve_hours if request.reserve_hours is not None
         else coupons.reserve_hours(db),
     }

@@ -65,7 +65,6 @@ import {
   saveEnrichEpisodeNight,
   saveEnrichEpisodeFields,
   saveEnrichTuning,
-  saveUnifiedFallback,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
@@ -634,7 +633,7 @@ async function toggleChase(on: boolean) {
   else ids.delete(libForm.id)
   chaseLibSaving.value = true
   try {
-    const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','))
+    const res = await saveChaseNew(cfg.interval, [...ids].sort((a, b) => a - b).join(','))
     chaseNew.value = normalizeChase(res)
     libForm.chase = on
     // 自动发现新增文件是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
@@ -979,7 +978,7 @@ async function saveChaseNewAction() {
   if (!chaseNew.value) return
   chaseNewSaving.value = true
   try {
-    const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded)
+    const res = await saveChaseNew(chaseNew.value.interval, chaseNew.value.excluded)
     chaseNew.value = normalizeChase(res)
     ElMessage.success(res.enabled ? '自动发现新增文件已开启（每 ' + res.interval + ' 分钟）' : '自动发现新增文件已关闭')
   } catch (e: any) {
@@ -993,7 +992,7 @@ async function saveAutoScanAction() {
   if (!autoScan.value) return
   autoScanSaving.value = true
   try {
-    const res = await saveAutoScan(autoScan.value.enabled, autoScan.value.time)
+    const res = await saveAutoScan(autoScan.value.time)
     autoScan.value = { enabled: res.enabled, time: res.time, last_run: res.last_run }
     ElMessage.success(`定时扫描已${res.enabled ? `开启（每天 ${res.time}）` : '关闭'}`)
   } catch (e: any) {
@@ -1077,7 +1076,6 @@ async function saveEnrichEpisodeNightAction() {
   episodeNightSaving.value = true
   try {
     const res = await saveEnrichEpisodeNight(
-      episodeNight.value.enabled,
       episodeNight.value.night_start,
       episodeNight.value.night_end,
       episodeNight.value.night_tz || 'Asia/Shanghai',
@@ -1134,18 +1132,20 @@ const enrichTuningSaving = ref(false)
 const enrichTuningError = ref(false)
 // 本地编辑态：整数项用字符串（原样展示库里存的值），开关项用布尔
 const tuningDraft = ref<Record<string, string>>({})
-const tmdbBatchDraft = ref(true)
-/** Batch 2（开关清理）：env-only 键——面板只读，不参与保存 */
-const TUNING_ENV_ONLY_KEYS = ['enrich_workers', 'enrich_batch']
-// 单集认领：日配额制：开关 + 日配额（专用区块，不进上面的通用表）
-const quotaModeDraft = ref(false)
+/** Batch 2（开关清理）+ 2026-10-21 A 类摘面板：env-only 键——面板只读，不参与保存。
+ * 后五个是布尔开关类（原在专用区块/通用表里是开关），摘面板后与线程数/批次
+ * 一样只读展示生效值，开/关改服务端配置（env）。 */
+const TUNING_ENV_ONLY_KEYS = [
+  'enrich_workers', 'enrich_batch',
+  'enrich_tmdb_batch', 'enrich_episode_quota_mode', 'enrich_none_auto_reschedule',
+  'enrich_failed_auto_reschedule', 'enrich_field_completeness',
+]
+// 单集认领：日配额制：日配额（专用区块；配额制开关已摘面板，只读展示）
 const dayQuotaDraft = ref('2000')
-// 搜不到的条目定时回捞：开关 + 回捞周期 + 轮数上限（专用区块，不进上面的通用表）
-const noneRsEnabledDraft = ref(false)
+// 搜不到的条目定时回捞：回捞周期 + 轮数上限（专用区块；回捞开关已摘面板）
 const noneRsDaysDraft = ref('14')
 const noneRsMaxRoundsDraft = ref('6')
-// 刮削完成口径（按字段判定）：开关（专用区块，不进上面的通用表）
-const fcEnabledDraft = ref(false)
+// 刮削完成口径（按字段判定）：开关已摘面板，专用区块只展示生效状态
 /** 配额制两个 key 在通用表里不重复展示 */
 const TUNING_QUOTA_KEYS = ['enrich_episode_quota_mode', 'enrich_episode_day_quota']
 /** Step 4 三个 key 在通用表里不重复展示（专用区块） */
@@ -1174,6 +1174,9 @@ const TUNING_LABELS: Record<string, string> = {
   enrich_none_reschedule_days: 'none 回捞周期（天）',
   enrich_none_max_reschedules: 'none 回捞轮数上限',
   enrich_none_auto_reschedule: 'none 定时回捞开关',
+  enrich_failed_auto_reschedule: '异常终态定时回捞开关',
+  enrich_episode_quota_mode: '单集认领配额制开关',
+  enrich_field_completeness: '字段级完成口径开关',
 }
 // Step 1 的占坑位已在 Step 4 接入（回捞周期现在真实生效，不再占坑）
 
@@ -1185,13 +1188,9 @@ async function loadEnrichTuningConfig() {
     const d: Record<string, string> = {}
     for (const k of t.order || []) d[k] = t.raw?.[k] ?? t.defaults?.[k] ?? ''
     tuningDraft.value = d
-    tmdbBatchDraft.value = t.values?.enrich_tmdb_batch !== false
-    quotaModeDraft.value = t.values?.enrich_episode_quota_mode === true
     dayQuotaDraft.value = t.raw?.enrich_episode_day_quota ?? t.defaults?.enrich_episode_day_quota ?? '2000'
-    noneRsEnabledDraft.value = t.values?.enrich_none_auto_reschedule === true
     noneRsDaysDraft.value = t.raw?.enrich_none_reschedule_days ?? t.defaults?.enrich_none_reschedule_days ?? '14'
     noneRsMaxRoundsDraft.value = t.raw?.enrich_none_max_reschedules ?? t.defaults?.enrich_none_max_reschedules ?? '6'
-    fcEnabledDraft.value = t.values?.enrich_field_completeness === true
   } catch {
     enrichTuning.value = null // 出错不挡页面其它内容
     enrichTuningError.value = true
@@ -1209,25 +1208,17 @@ async function saveEnrichTuningAction() {
     const values: Record<string, string | boolean> = { ...tuningDraft.value }
     // env-only 键面板不可写，不下发（后端也会忽略）
     for (const k of TUNING_ENV_ONLY_KEYS) delete values[k]
-    values.enrich_tmdb_batch = tmdbBatchDraft.value
-    values.enrich_episode_quota_mode = quotaModeDraft.value
     values.enrich_episode_day_quota = dayQuotaDraft.value
-    values.enrich_none_auto_reschedule = noneRsEnabledDraft.value
     values.enrich_none_reschedule_days = noneRsDaysDraft.value
     values.enrich_none_max_reschedules = noneRsMaxRoundsDraft.value
-    values.enrich_field_completeness = fcEnabledDraft.value
     const res = await saveEnrichTuning(values)
     enrichTuning.value = res
     const d: Record<string, string> = {}
     for (const k of res.order || []) d[k] = res.raw?.[k] ?? res.defaults?.[k] ?? ''
     tuningDraft.value = d
-    tmdbBatchDraft.value = res.values?.enrich_tmdb_batch !== false
-    quotaModeDraft.value = res.values?.enrich_episode_quota_mode === true
     dayQuotaDraft.value = res.raw?.enrich_episode_day_quota ?? res.defaults?.enrich_episode_day_quota ?? '2000'
-    noneRsEnabledDraft.value = res.values?.enrich_none_auto_reschedule === true
     noneRsDaysDraft.value = res.raw?.enrich_none_reschedule_days ?? res.defaults?.enrich_none_reschedule_days ?? '14'
     noneRsMaxRoundsDraft.value = res.raw?.enrich_none_max_reschedules ?? res.defaults?.enrich_none_max_reschedules ?? '6'
-    fcEnabledDraft.value = res.values?.enrich_field_completeness === true
     ElMessage.success('刮削性能参数已保存（60 秒内热生效；线程数/批次/DB 池改环境变量后重启对应进程）')
     // 参数变了，存量计数里的周期/可捞回数可能跟着变，刷新一次只读展示
     loadEnrichNoneStats().catch(() => undefined)
@@ -1305,7 +1296,6 @@ const fieldMissingText = computed(() => {
 
 /** 一个豆瓣入口：豆瓣 rich（CJK 专属）→ 多源引擎（含豆瓣源）。关 = 回滚到原行为 */
 const unifiedFallback = ref<UnifiedFallbackConfig | null>(null)
-const unifiedFallbackSaving = ref(false)
 const unifiedFallbackError = ref(false)
 
 async function loadUnifiedFallbackConfig() {
@@ -1318,18 +1308,6 @@ async function loadUnifiedFallbackConfig() {
   }
 }
 
-async function saveUnifiedFallbackAction() {
-  if (!unifiedFallback.value) return
-  unifiedFallbackSaving.value = true
-  try {
-    unifiedFallback.value = await saveUnifiedFallback(unifiedFallback.value.enabled)
-    ElMessage.success('兜底链路统一已保存，60 秒内生效')
-  } catch (e: any) {
-    ElMessage.error(toAdminError(e, '保存失败'))
-  } finally {
-    unifiedFallbackSaving.value = false
-  }
-}
 const rescrapeVisible = ref(false)
 const rescrapeTarget = ref<EmbyLibrary | null>(null)
 const rescrapePolicy = ref<'missing_only' | 'all'>('missing_only')
@@ -1939,14 +1917,13 @@ function typeLabel(t: string): string {
                 每天到点自动扫描所有启用库（增量，没变化的跳过）
               </p>
               <div v-if="autoScan" class="scrape-actions">
-                <el-switch v-model="autoScan.enabled" active-text="开启" inactive-text="关闭" />
+                <span class="au-badge" :class="autoScan.enabled ? 'au-badge-green' : 'au-badge-muted'">{{ autoScan.enabled ? '已开启' : '已关闭' }}</span>
                 <el-time-picker
                   v-model="autoScan.time"
                   format="HH:mm"
                   value-format="HH:mm"
                   placeholder="每天几点"
                   style="width: 130px"
-                  :disabled="!autoScan.enabled"
                 />
                 <el-button type="primary" size="small" :loading="autoScanSaving" @click="saveAutoScanAction">
                   保存
@@ -1970,13 +1947,12 @@ function typeLabel(t: string): string {
                 每隔 N 分钟检查新文件，发现即自动扫描刮削
               </p>
               <div v-if="chaseNew" class="scrape-actions">
-                <el-switch v-model="chaseNew.enabled" active-text="开启" inactive-text="关闭" />
+                <span class="au-badge" :class="chaseNew.enabled ? 'au-badge-green' : 'au-badge-muted'">{{ chaseNew.enabled ? '已开启' : '已关闭' }}</span>
                 <el-input-number
                   v-model="chaseNew.interval"
                   :min="5" :max="120" :step="5"
                   placeholder="分钟"
                   style="width: 130px"
-                  :disabled="!chaseNew.enabled"
                 />
                 <span class="drawer-hint">分钟</span>
                 <el-button type="primary" size="small" :loading="chaseNewSaving" @click="saveChaseNewAction">
@@ -2050,12 +2026,7 @@ function typeLabel(t: string): string {
                 打开后，白天只刮顶层条目（电影 / 剧集），单集留到夜间窗口再刮，避免单集挤占白天的刮削资源（保存后 60 秒内生效；时间按所选时区解释，窗口支持跨午夜）
               </p>
               <div v-if="episodeNight" class="scrape-actions">
-                <el-switch
-                  v-model="episodeNight.enabled"
-                  active-text="开启"
-                  inactive-text="关闭"
-                  aria-label="单集仅夜间刮削开关"
-                />
+                <span class="au-badge" :class="episodeNight.enabled ? 'au-badge-green' : 'au-badge-muted'">{{ episodeNight.enabled ? '已开启' : '已关闭' }}</span>
                 <el-time-picker
                   v-model="episodeNight.night_start"
                   format="HH:mm"
@@ -2151,12 +2122,7 @@ function typeLabel(t: string): string {
                 打开后，夜间窗口的含义从"白天禁刮单集"改为"白天单集按日配额认领、夜间不限"：窗口内不限量，窗口外每天最多认领日配额条单集，用尽后当天只认领顶层条目（电影 / 剧集）。保存后 60 秒内生效。
               </p>
               <div v-if="enrichTuning" class="scrape-actions">
-                <el-switch
-                  v-model="quotaModeDraft"
-                  active-text="配额制开"
-                  inactive-text="禁令制"
-                  aria-label="单集认领配额制开关"
-                />
+                <span class="au-badge" :class="enrichTuning.values?.enrich_episode_quota_mode ? 'au-badge-green' : 'au-badge-muted'">{{ enrichTuning.values?.enrich_episode_quota_mode ? '配额制开' : '禁令制' }}</span>
                 <span class="chase-muted">白天单集日配额</span>
                 <el-input
                   v-model="dayQuotaDraft"
@@ -2187,12 +2153,7 @@ function typeLabel(t: string): string {
                 打开后，「搜过、没有」的条目（done + metadata_source='none'）不再是永久终态：超过回捞周期后由 janitor 按最旧优先、单轮 2000 条翻回 pending 重新补搜（清 TMDB 搜索阴性缓存）；资料不全 5 次后也转 done+none 等回捞，不再进 failed。每条最多回捞指定轮数，达上限后永久保留 done（防冷门条目无限空转）。保存后 60 秒内生效。
               </p>
               <div v-if="enrichTuning" class="scrape-actions">
-                <el-switch
-                  v-model="noneRsEnabledDraft"
-                  active-text="回捞开"
-                  inactive-text="回捞关"
-                  aria-label="none 定时回捞开关"
-                />
+                <span class="au-badge" :class="enrichTuning.values?.enrich_none_auto_reschedule ? 'au-badge-green' : 'au-badge-muted'">{{ enrichTuning.values?.enrich_none_auto_reschedule ? '回捞开' : '回捞关' }}</span>
                 <span class="chase-muted">回捞周期</span>
                 <el-input
                   v-model="noneRsDaysDraft"
@@ -2210,8 +2171,8 @@ function typeLabel(t: string): string {
                 <el-button type="primary" size="small" :loading="enrichTuningSaving" @click="saveEnrichTuningAction">
                   保存
                 </el-button>
-                <span class="chase-state" :class="{ 'is-on': noneRsEnabledDraft }">
-                  {{ noneRsEnabledDraft ? '回捞已开启' : '回捞关闭（行为与 Step 4 前一致）' }}
+                <span class="chase-state" :class="{ 'is-on': enrichTuning.values?.enrich_none_auto_reschedule }">
+                  {{ enrichTuning.values?.enrich_none_auto_reschedule ? '回捞已开启' : '回捞关闭（行为与 Step 4 前一致）' }}
                 </span>
               </div>
               <div v-else-if="enrichTuningError" class="drawer-hint drawer-hint--after">
@@ -2239,17 +2200,12 @@ function typeLabel(t: string): string {
                 打开后，「标题/年份/海报三者有其二」升级为字段级口径：核心字段齐但缺简介/类型/演员的条目不再直接 done，而是进低优先级队列（priority=-10，主队列优先认领，不饿死主队列）补一轮；每条最多多跑一轮，补完无论拿到与否直接终态化，不反复重刮。保存后 60 秒内生效。
               </p>
               <div v-if="enrichTuning" class="scrape-actions">
-                <el-switch
-                  v-model="fcEnabledDraft"
-                  active-text="字段级开"
-                  inactive-text="字段级关"
-                  aria-label="字段级完成口径开关"
-                />
+                <span class="au-badge" :class="enrichTuning.values?.enrich_field_completeness ? 'au-badge-green' : 'au-badge-muted'">{{ enrichTuning.values?.enrich_field_completeness ? '字段级开' : '字段级关' }}</span>
                 <el-button type="primary" size="small" :loading="enrichTuningSaving" @click="saveEnrichTuningAction">
                   保存
                 </el-button>
-                <span class="chase-state" :class="{ 'is-on': fcEnabledDraft }">
-                  {{ fcEnabledDraft ? '字段级口径已开启' : '字段级口径关闭（口径=旧"三者有其二"）' }}
+                <span class="chase-state" :class="{ 'is-on': enrichTuning.values?.enrich_field_completeness }">
+                  {{ enrichTuning.values?.enrich_field_completeness ? '字段级口径已开启' : '字段级口径关闭（口径=旧"三者有其二"）' }}
                 </span>
               </div>
               <div v-else-if="enrichTuningError" class="drawer-hint drawer-hint--after">
@@ -2276,15 +2232,8 @@ function typeLabel(t: string): string {
               <div v-if="enrichTuning" class="tuning-list">
                 <div v-for="k in tuningOrderShown" :key="k" class="tuning-row">
                   <span class="tuning-label">{{ TUNING_LABELS[k] || k }}</span>
-                  <el-switch
-                    v-if="k === 'enrich_tmdb_batch'"
-                    v-model="tmdbBatchDraft"
-                    active-text="批量"
-                    inactive-text="逐条"
-                    :aria-label="TUNING_LABELS[k]"
-                  />
                   <el-input
-                    v-else-if="!TUNING_ENV_ONLY_KEYS.includes(k)"
+                    v-if="!TUNING_ENV_ONLY_KEYS.includes(k)"
                     v-model="tuningDraft[k]"
                     style="width: 130px"
                     :aria-label="TUNING_LABELS[k]"
@@ -2340,15 +2289,8 @@ function typeLabel(t: string): string {
                 一个豆瓣入口：TMDB 未命中后，豆瓣 rich 兜底（中文标题专属）→ 多源引擎（含豆瓣源），不再有两套豆瓣打法；多源兜底只看多源总开关（原独立开关降级为子项）。关闭 = 回滚到原来的分支行为（保存后 60 秒内生效）
               </p>
               <div v-if="unifiedFallback" class="scrape-actions">
-                <el-switch
-                  v-model="unifiedFallback.enabled"
-                  active-text="开启"
-                  inactive-text="关闭"
-                  aria-label="兜底链路统一开关"
-                />
-                <el-button type="primary" size="small" :loading="unifiedFallbackSaving" @click="saveUnifiedFallbackAction">
-                  保存
-                </el-button>
+                <span class="au-badge" :class="unifiedFallback.enabled ? 'au-badge-green' : 'au-badge-muted'">{{ unifiedFallback.enabled ? '已开启' : '已关闭' }}</span>
+                <span class="drawer-hint">开关由服务端配置控制（默认开启）</span>
               </div>
               <div v-else-if="unifiedFallbackError" class="drawer-hint drawer-hint--after">
                 读取失败

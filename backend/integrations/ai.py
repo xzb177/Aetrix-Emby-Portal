@@ -34,7 +34,6 @@ SPEC = {
     "group": "AI 与智能",
     "docs_hint": "OpenAI 兼容接口：Base URL 通常以 /v1 结尾。密钥一行一个，会轮换使用。",
     "fields": [
-        {"key": "ai_enabled", "label": "启用 AI 能力", "type": "bool", "default": "true"},
         {"key": "ai_base_url", "label": "API 端点（Base URL）", "type": "str",
          "default": "https://api.openai.com/v1", "required": True,
          "placeholder": "https://api.openai.com/v1"},
@@ -57,6 +56,12 @@ SPEC = {
 
 _FIELD_KEYS = [f["key"] for f in SPEC["fields"]]
 _FIELD_DEFAULTS = {f["key"]: (f.get("default") or "") for f in SPEC["fields"]}
+# 能力框架的卡片状态判定仍需读到该键（integrations.raw_values_many 据此补读）
+EXTRA_READ_KEYS = {"ai_enabled": "true"}
+# A 类开关摘面板（2026-10-21）：ai_enabled 不再出现在能力表单里，但仍是
+# 运行时开关——改走 env AI_ENABLED（缺省开），读取集合保留该键。
+_FIELD_KEYS = _FIELD_KEYS + ["ai_enabled"]
+_FIELD_DEFAULTS = {**_FIELD_DEFAULTS, "ai_enabled": "true"}
 
 # 轮换用；读取配置不再走这个锁（配置是批量查的）
 _lock = threading.Lock()

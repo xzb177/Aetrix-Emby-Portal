@@ -158,17 +158,22 @@ def test_migration_list_has_new_columns():
 def test_failed_tuning_specs_registered(db):
     specs = {k: (default, kind) for k, _, default, kind, _, _, _
              in enrich_worker._ENRICH_TUNING_SPECS}
-    assert specs[enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE] == ("0", "flag1")
+    # 2026-10-21 A 类摘面板现值对齐：生产现值为开，spec 缺省由 "0" 翻 "1"
+    assert specs[enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE] == ("1", "flag1")
     assert specs[enrich_worker.CFG_ENRICH_FAILED_RESCHEDULE_DAYS] == ("30", "int")
     assert specs[enrich_worker.CFG_ENRICH_FAILED_MAX_RESCHEDULES] == ("3", "int")
     cfg = enrich_worker.get_enrich_tuning_config(db)["values"]
-    assert cfg[enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE] is False
+    assert cfg[enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE] is True
     assert cfg[enrich_worker.CFG_ENRICH_FAILED_RESCHEDULE_DAYS] == 30
     assert cfg[enrich_worker.CFG_ENRICH_FAILED_MAX_RESCHEDULES] == 3
 
 
-def test_failed_reschedule_switch_off_is_noop(db):
-    """开关默认关：直接返回 0，不碰任何行（行为与改前一致）"""
+def test_failed_reschedule_switch_off_is_noop(db, monkeypatch):
+    """开关关（2026-10-21 后经 env ENRICH_FAILED_AUTO_RESCHEDULE=0 控制）：
+    直接返回 0，不碰任何行"""
+    monkeypatch.setenv("ENRICH_FAILED_AUTO_RESCHEDULE", "0")
+    enrich_worker._enrich_tuning_cache["at"] = 0.0
+    enrich_worker._enrich_tuning_cache["cfg"] = None
     it = _make_item(db, enrich_status="failed", enrich_attempts=5)
     n = enrich_worker.enrich_failed_auto_reschedule(db)
     assert n == 0
@@ -177,9 +182,9 @@ def test_failed_reschedule_switch_off_is_noop(db):
 
 
 def _enable_failed_reschedule(db):
-    # 走面板同一保存路径（写库 + 清进程缓存），否则 60s TTL 缓存会盖住新值
+    # 2026-10-21 A 类摘面板：开关已 env-only 且缺省=开（生产现值），保存路径
+    # 不再写它；这里只保存仍可写的周期/上限（保存会清进程缓存）
     enrich_worker.save_enrich_tuning_config(db, {
-        enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE: "1",
         enrich_worker.CFG_ENRICH_FAILED_RESCHEDULE_DAYS: "30",
         enrich_worker.CFG_ENRICH_FAILED_MAX_RESCHEDULES: "3",
     })

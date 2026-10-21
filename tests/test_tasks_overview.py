@@ -132,8 +132,8 @@ def test_scan_card_reflects_running_library(db, seed):
     assert lib1["last_status"] == "running"
     lib2 = next(l for l in card["libraries"] if l["name"] == "剧集库")
     assert lib2["last_status"] == "success"
-    # 定时扫描开关信息在
-    assert card["switch"]["label"] == "定时扫描"
+    # 2026-10-21 A 类摘面板：定时扫描开关已摘除，卡片不再带 switch
+    assert card["switch"] is None
 
 
 def test_probe_card_counts_and_fail_rate(db, seed):
@@ -157,7 +157,8 @@ def test_enrich_card_backlog(db, seed):
 
 def test_chase_new_card(db, seed):
     card = _by_key(_call(db))["chase_new"]
-    assert card["switch"]["enabled"] is True
+    # 2026-10-21 A 类摘面板：追新开关已摘除，卡片不再带 switch
+    assert card["switch"] is None
     metrics = {m["label"]: m["value"] for m in card["metrics"]}
     assert metrics["上次发现"] == "7 个新文件"
 

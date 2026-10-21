@@ -38,7 +38,9 @@ class TestHotlinkSchemaRegistered:
 
         specs = config_service.SCHEMAS.get("hotlink")
         assert specs is not None
-        assert specs["hotlink_protection_enabled"] == ("bool",)
+        # 2026-10-21 A 类摘面板：hotlink_protection_enabled 已摘除注册表
+        # （改走 env HOTLINK_PROTECTION_ENABLED，默认开）
+        assert "hotlink_protection_enabled" not in specs
         assert specs["play_sign_ttl_seconds"] == ("int", 60, 86400)
         assert specs["play_allowed_referers"] == ("raw",)
 
@@ -76,19 +78,27 @@ class TestWriteConfigViaUnifiedChannel:
         from backend import models
         from backend.emby_server import play_sign
 
+        # 2026-10-21 A 类摘面板：write_config 的 enabled 参数保留但忽略，
+        # 不落库；payload 的 enabled 是当前生效值（缺省开）
         payload = play_sign.write_config(db, enabled=False, play_sign_ttl=1800)
-        assert payload["enabled"] is False
+        assert payload["enabled"] is True
         assert payload["play_sign_ttl"] == 1800
-        # 落库口径：开关存 "false"、TTL 存 "1800"，新行带 description
         row = db.query(models.SystemConfig).filter(
             models.SystemConfig.key == play_sign.CONFIG_HOTLINK_ENABLED).first()
-        assert row.value == "false" and row.description
+        assert row is None
         row2 = db.query(models.SystemConfig).filter(
             models.SystemConfig.key == play_sign.CONFIG_PLAY_SIGN_TTL).first()
         assert row2.value == "1800" and row2.description
         # 热读即时生效（统一通道写时已失效）
-        assert play_sign.hotlink_enabled(db) is False
+        assert play_sign.hotlink_enabled(db) is True
         assert play_sign.play_sign_ttl_seconds(db) == 1800
+        # 存量行关掉后读口径反映关
+        db.add(models.SystemConfig(
+            key=play_sign.CONFIG_HOTLINK_ENABLED, value="false"))
+        db.commit()
+        from backend.integrations import store as _store
+        _store.invalidate(play_sign.CONFIG_HOTLINK_ENABLED)
+        assert play_sign.hotlink_enabled(db) is False
 
     def test_ttl_validation_unchanged(self, db):
         from backend.emby_server import play_sign
@@ -127,7 +137,15 @@ class TestWriteConfigViaUnifiedChannel:
         from backend import models
         from backend.emby_server import play_sign
 
+        # 2026-10-21 A 类摘面板：write_config 不再写开关行；word 风格的
+        # 读口径保留——存量行写 "false"/"true" 都能被正确读出
         play_sign.write_config(db, enabled=True, play_sign_ttl=900)
         row = db.query(models.SystemConfig).filter(
             models.SystemConfig.key == play_sign.CONFIG_HOTLINK_ENABLED).first()
-        assert row.value == "true"  # 与旧实现一致，不是 "1"
+        assert row is None
+        db.add(models.SystemConfig(
+            key=play_sign.CONFIG_HOTLINK_ENABLED, value="true"))
+        db.commit()
+        from backend.integrations import store as _store
+        _store.invalidate(play_sign.CONFIG_HOTLINK_ENABLED)
+        assert play_sign.hotlink_enabled(db) is True

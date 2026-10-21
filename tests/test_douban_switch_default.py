@@ -122,10 +122,11 @@ def _series_item(**kw):
 
 class TestSwitchDefault:
     def test_enabled_default_off_without_config(self):
-        """无配置行时 enabled() 返回 False（默认关）。"""
+        """无配置行时 enabled() 返回 True（2026-10-21 现值对齐：缺省=开，
+        与生产现值一致；关要种行 "0" 或设 env DOUBAN_ENABLED=0）。"""
         db = _fresh_session_without_config_row()
         try:
-            assert dbn.enabled(db) is False
+            assert dbn.enabled(db) is True
         finally:
             db.close()
 

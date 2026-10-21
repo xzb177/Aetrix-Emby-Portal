@@ -698,7 +698,7 @@ def _check_once() -> None:
     fatal_error = ""
     ran = False
     try:
-        if _get_config(db, CONFIG_ENABLED, "0") != "1":
+        if _get_config(db, CONFIG_ENABLED, "1") != "1":
             return
         ran = True
         interval = _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL)))
@@ -792,7 +792,7 @@ def _watcher_loop() -> None:
         try:
             db = SessionLocal()
             try:
-                enabled = _get_config(db, CONFIG_ENABLED, "0") == "1"
+                enabled = _get_config(db, CONFIG_ENABLED, "1") == "1"
                 interval = _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL)))
             finally:
                 db.close()
@@ -812,7 +812,7 @@ def get_config(db: Session) -> dict:
     因为老前端还在读它——给一个非空值会让老前端把排除清单当成包含清单用。
     """
     return {
-        "enabled": _get_config(db, CONFIG_ENABLED, "0") == "1",
+        "enabled": _get_config(db, CONFIG_ENABLED, "1") == "1",
         "interval": _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL))),
         "excluded": ",".join(str(i) for i in resolve_excluded(db)),
         "libraries": "",
@@ -831,7 +831,8 @@ def save_config(db: Session, enabled: bool, interval: int,
 
     """
     minutes = _parse_interval(str(interval))
-    _set_config(db, CONFIG_ENABLED, "1" if enabled else "0")
+    # A 类开关摘面板（2026-10-21）：enabled 参数仅为兼容旧调用方保留，不再落库
+    # ——开关改走 env CHASE_NEW_ENABLED（缺省=开，见 get_config）。
     _set_config(db, CONFIG_INTERVAL, str(minutes))
     if libraries is not None and not excluded:
         included = set(_parse_ids(libraries))

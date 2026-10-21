@@ -369,7 +369,12 @@ def test_apply_backfill_round_no_hit_goes_none(monkeypatch):
         db.close()
 
 
-def test_backfill_round_uses_douban_after_unban():
+def test_backfill_round_uses_douban_after_unban(monkeypatch):
+    # 字段级完成口径 2026-10-21 起缺省开：开着时本例条目缺字段会先回捞
+    # 一轮而不是 done；本例只验豆瓣解封补刮，显式关掉并清调优缓存
+    monkeypatch.setenv("ENRICH_FIELD_COMPLETENESS", "0")
+    enrich_worker._enrich_tuning_cache["at"] = 0.0
+    enrich_worker._enrich_tuning_cache["cfg"] = None
     """解封后补刮轮真的会跑豆瓣兜底：-20 条目经 pre→post→apply，豆瓣命中
     落库、状态 done、优先级清零。"""
     db = SessionLocal()

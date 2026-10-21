@@ -57,9 +57,10 @@ TYPE_LABELS = {
     TYPE_DAYS: "有效期（天）",
 }
 
-#: 出厂默认：关闭 + 0 + 0 —— 升级上来的部署不会因此多发一分钱
+#: 出厂默认：开关开 + 0 + 0（金额/天数为 0 时不发任何奖励；
+#: 2026-10-21 摘面板对齐：开关缺省由关改为开，与生产现值一致）
 DEFAULTS: dict[str, str] = {
-    CONFIG_ENABLED: "false",
+    CONFIG_ENABLED: "true",
     CONFIG_TYPE: TYPE_BALANCE,
     CONFIG_AMOUNT: "0",
     CONFIG_DAYS: "0",

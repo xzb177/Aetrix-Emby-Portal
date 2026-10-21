@@ -122,12 +122,24 @@ def test_fake_done_patrol_flips_only_fake_done(db):
     assert enrich_worker.fake_done_patrol(db) == 0
 
 
-def test_enrich_apply_done_implies_scraped_at(db):
+def _pin_classic_completeness(monkeypatch):
+    """关掉字段级完成口径（Step 5）：该 flag 2026-10-21 起 env-only 且
+    缺省=开（生产现值）；验经典终态不变量的用例显式关掉它并清调优缓存。"""
+    monkeypatch.setenv("ENRICH_FIELD_COMPLETENESS", "0")
+    # none 定时回捞同样 env-only 且缺省开：开着时 none 终态会排下次回捞
+    # （enrich_next_retry_at 非空），经典终态断言需一并关掉
+    monkeypatch.setenv("ENRICH_NONE_AUTO_RESCHEDULE", "0")
+    enrich_worker._enrich_tuning_cache["at"] = 0.0
+    enrich_worker._enrich_tuning_cache["cfg"] = None
+
+
+def test_enrich_apply_done_implies_scraped_at(db, monkeypatch):
     """终态不变量：done 必须蕴含 last_scraped_at 非空（假完成修复）。
 
     预置 tmdb_id、本轮无命中无 details 落库的行，旧终态会落成
     done + 证据双空；现在终态补记本次执行时间作为刮削证据。
     """
+    _pin_classic_completeness(monkeypatch)
     it = _make_item(db, item_type="movie", tmdb_id="999",
                     overview="已有简介", last_scraped_at=None,
                     metadata_source=None)
@@ -184,12 +196,13 @@ def test_recover_crashed(db):
         em.MediaItem.enrich_status == "enriching").count() == 0
 
 
-def test_enrich_apply_writes_subtitles(db):
+def test_enrich_apply_writes_subtitles(db, monkeypatch):
     """字幕落库：外挂字幕写入 MediaStream，旧字幕先清
 
     条目预置 tmdb_id + overview：未刮干净的条目现在会退回 pending（可重试），
     这条只验字幕，故给它完整元数据以走 done 分支。
     """
+    _pin_classic_completeness(monkeypatch)
     it = _make_item(db, item_type="movie", tmdb_id="999", overview="已有简介")
     # 先放一条旧字幕
     db.add(em.MediaStream(item_id=it.id, stream_index=0,
@@ -299,8 +312,9 @@ def test_claim_batch_sets_claimed_at(db):
     assert -5 < delta < 30
 
 
-def test_enrich_apply_clears_claimed_at(db):
+def test_enrich_apply_clears_claimed_at(db, monkeypatch):
     """补全完成释放租约：enriching 停留期间之外不占着 claim 时间戳"""
+    _pin_classic_completeness(monkeypatch)
     it = _make_item(db, item_type="movie", tmdb_id="999", overview="已有简介",
                     enrich_status="enriching", enrich_claimed_at=datetime.now())
     fetched = {"poster": None, "fanart": None, "external_subs": [],
@@ -606,8 +620,9 @@ def test_retry_unmatched_purges_search_cache(db, tmp_path, monkeypatch):
     assert not os.path.exists(path), "重试入队必须同时清掉旧缓存"
 
 
-def test_apply_terminal_done_for_searched_without_hit(db):
+def test_apply_terminal_done_for_searched_without_hit(db, monkeypatch):
     """处方 5：TMDB 搜过且无高置信命中 → 终态 done + none，不再退回 pending"""
+    _pin_classic_completeness(monkeypatch)
     it = _make_item(db, item_type="series", name="注定搜不到的剧")
     fetched = {"ok": True, "poster": None, "fanart": None, "external_subs": [],
                "nfo_data": None, "tmdb_hit": None, "tmdb_details": None,
@@ -688,6 +703,15 @@ def test_fetch_skips_alt_fallback_when_tmdb_configured(db, monkeypatch):
     monkeypatch.setattr(altmeta, "search", _boom_search)
     monkeypatch.setattr(altmeta, "search_bangumi", _boom_bgm)
     monkeypatch.setattr(altmeta, "enabled", lambda db: True)
+    # 本例验的是统一兜底链关闭时的旧分支快速失败；该开关 2026-10-21 起
+    # 缺省=开（生产现值），显式经 env 关掉并清 store 缓存
+    monkeypatch.setenv("ENRICH_UNIFIED_FALLBACK", "0")
+    # 多源总开关同理：2026-10-21 起缺省=开（生产现值），开着时 TMDB 无命中
+    # 会走多源引擎（其 Bangumi 源同样调 altmeta.search_bangumi），本例的
+    # 「零兜底调用」前提是总开关也关
+    monkeypatch.setenv("META_SOURCES_ENABLED", "0")
+    from backend.integrations import store as _store
+    _store.invalidate("enrich_unified_fallback", "meta_sources_enabled")
 
     it = _make_item(db, item_type="series", name="快失败父级", file_path="")
     from backend.emby_server import scanner as _sc
@@ -989,6 +1013,10 @@ def test_should_multisource_on_tmdb_miss_switch_off(db):
         db.add(SystemConfig(key="meta_sources_enabled", value="0"))
     db.commit()
 
+    # 直写行绕过了 store 缓存：把相关键的缓存作废，读到本行新值
+    from backend.integrations import store as _store
+    _store.invalidate("meta_sources_enabled", "enrich_unified_fallback",
+                      "meta_sources_tmdb_miss_fallback")
     it = _make_item(db, item_type="series", name="中文剧集", file_path=None)
     assert ew._should_multisource_on_tmdb_miss(it, "series") is False
 

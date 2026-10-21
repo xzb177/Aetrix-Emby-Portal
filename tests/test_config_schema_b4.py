@@ -31,7 +31,9 @@ class TestNewKinds:
 class TestFamilySchemas:
     def test_alerts_schema(self):
         s = config_schema.ALERTS_CONFIG_SCHEMA
-        assert normalize("system_alerts_enabled", s["system_alerts_enabled"], True) == "1"
+        # 2026-10-21 A 类摘面板：system_alerts_enabled 已摘除（改走 env
+        # SYSTEM_ALERTS_ENABLED，默认关），注册表里不许再出现
+        assert "system_alerts_enabled" not in s
         assert normalize("alert_check_interval_sec", s["alert_check_interval_sec"], 300) == "300"
         with pytest.raises(ConfigValueError):
             normalize("alert_check_interval_sec", s["alert_check_interval_sec"], 59)
@@ -41,7 +43,8 @@ class TestFamilySchemas:
 
     def test_reminders_schema(self):
         s = config_schema.REMINDERS_CONFIG_SCHEMA
-        assert normalize("expiry_reminder_enabled", s["expiry_reminder_enabled"], True) == "true"
+        # 2026-10-21 A 类摘面板：expiry_reminder_enabled 已摘除（env 控制）
+        assert "expiry_reminder_enabled" not in s
         assert normalize("expiry_reminder_days", s["expiry_reminder_days"], "7,3,1") == "7,3,1"
         # 2026-10-17 第 4 批 4-4 裁决：days 今天端点原文存储、从不拒绝（读侧宽容），
         # 注册为 ("str",) 与今天逐字一致，非法档位不再整批拒绝。
@@ -49,7 +52,8 @@ class TestFamilySchemas:
 
     def test_coupons_schema(self):
         s = config_schema.COUPONS_CONFIG_SCHEMA
-        assert normalize("coupon_enabled", s["coupon_enabled"], False) == "false"
+        # 2026-10-21 A 类摘面板：coupon_enabled 已摘除（env 控制，默认开）
+        assert "coupon_enabled" not in s
         assert normalize("coupon_reserve_hours", s["coupon_reserve_hours"], 24) == "24"
         assert normalize("coupon_reserve_hours", s["coupon_reserve_hours"], 0) == "0"
         with pytest.raises(ConfigValueError):
@@ -60,7 +64,8 @@ class TestFamilySchemas:
         assert normalize("registration_mode", s["registration_mode"], "closed") == "closed"
         with pytest.raises(ConfigValueError):
             normalize("registration_mode", s["registration_mode"], "invite")
-        assert normalize("register_ratelimit_enabled", s["register_ratelimit_enabled"], True) == "true"
+        # 2026-10-21 A 类摘面板：register_ratelimit_enabled 已摘除（env 控制）
+        assert "register_ratelimit_enabled" not in s
         assert normalize("register_ratelimit_max", s["register_ratelimit_max"], 5) == "5"
         with pytest.raises(ConfigValueError):
             normalize("register_ratelimit_max", s["register_ratelimit_max"], 0)

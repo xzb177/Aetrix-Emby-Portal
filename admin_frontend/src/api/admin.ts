@@ -161,7 +161,6 @@ export const fetchRegistrationSettings = () => get<RegistrationSettings>('/setti
 export const updateRegistrationSettings = (data: {
   mode: string
   message?: string
-  ratelimit_enabled?: boolean
   ratelimit_max?: number
   ratelimit_window?: number
 }) => put<{ success: boolean }>('/settings/registration', data)
@@ -524,7 +523,7 @@ type LibraryScopeResult = {
 
 export const fetchLibraryScope = () => get<LibraryScopeResponse>('/library-scope')
 
-export const saveLibraryScopeDefault = (data: { enabled: boolean; library_ids: number[] }) =>
+export const saveLibraryScopeDefault = (data: { library_ids: number[] }) =>
   put<LibraryScopeResult>('/library-scope', data)
 
 export const saveLibraryScopeUser = (
@@ -1288,9 +1287,8 @@ export interface EnrichEpisodeNightConfig {
 export const fetchEnrichEpisodeNight = () =>
   get<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`)
 
-export const saveEnrichEpisodeNight = (enabled: boolean, night_start: string, night_end: string, night_tz: string) =>
+export const saveEnrichEpisodeNight = (night_start: string, night_end: string, night_tz: string) =>
   put<EnrichEpisodeNightConfig>(`${E}/scrape/enrich-episode-night`, {
-    enabled,
     night_start,
     night_end,
     night_tz,
@@ -1459,8 +1457,8 @@ export interface DoubanConfig {
   min_interval: number
 }
 export const fetchDoubanConfig = () => get<DoubanConfig>(`${E}/scrape/douban-config`)
-export const saveDoubanConfig = (enabled: boolean, min_interval: number) =>
-  put<DoubanConfig>(`${E}/scrape/douban-config`, { enabled, min_interval })
+export const saveDoubanConfig = (min_interval: number) =>
+  put<DoubanConfig>(`${E}/scrape/douban-config`, { min_interval })
 
 /** 豆瓣限流降级：限流期跳过豆瓣走多源兜底 */
 export interface DoubanBanDowngradeConfig {
@@ -1472,9 +1470,6 @@ export interface DoubanBanDowngradeConfig {
 export const fetchDoubanBanDowngrade = () =>
   get<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`)
 
-export const saveDoubanBanDowngrade = (enabled: boolean) =>
-  put<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`, { enabled })
-
 /** 兜底链路统一：一个豆瓣入口（豆瓣 rich → 多源引擎含豆瓣源） */
 export interface UnifiedFallbackConfig {
   success: boolean
@@ -1483,16 +1478,9 @@ export interface UnifiedFallbackConfig {
 export const fetchUnifiedFallback = () =>
   get<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`)
 
-export const saveUnifiedFallback = (enabled: boolean) =>
-  put<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`, { enabled })
-
-/** 保存总开关 / 中文优先 / TMDB-miss 兜底开关 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
+/** 保存源顺序 / 逐源限速（**不动密钥池**；开关类已摘面板，由服务端配置控制） */
 export const saveMetaSources = (data: {
-  enabled: boolean
-  prefer_chinese: boolean
-  tmdb_miss_fallback: boolean
   order: string[]
-  toggles: Record<string, boolean>
   rates: Record<string, number>
 }) => put<MetaSourcesConfig>(`${E}/scrape/meta-sources`, data)
 
@@ -1811,11 +1799,11 @@ export interface ChaseNewConfig {
 }
 
 export const fetchChaseNew = () => get<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`)
-export const saveChaseNew = (enabled: boolean, interval: number, excluded: string) =>
-  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { enabled, interval, excluded })
+export const saveChaseNew = (interval: number, excluded: string) =>
+  put<{ success: boolean } & ChaseNewConfig>(`${E}/scrape/chase-new`, { interval, excluded })
 
-export const saveAutoScan = (enabled: boolean, time: string) =>
-  put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { enabled, time })
+export const saveAutoScan = (time: string) =>
+  put<{ success: boolean } & AutoScanConfig>(`${E}/scrape/auto-scan`, { time })
 
 export interface BackupFile { name: string; size: number; created_at: string }
 export interface BackupConfig {
@@ -1834,8 +1822,8 @@ export const fetchBackupConfig = () =>
   get<{ success: boolean } & BackupConfig>(`/system/backup`)
 
 /** 保存数据库备份配置：立即生效，无需重启；非法时后端 400 */
-export const saveBackupConfig = (enabled: boolean, time: string, keep_days: number) =>
-  put<{ success: boolean } & BackupConfig>(`/system/backup`, { enabled, time, keep_days })
+export const saveBackupConfig = (time: string, keep_days: number) =>
+  put<{ success: boolean } & BackupConfig>(`/system/backup`, { time, keep_days })
 
 /** 立即手动备份一次 */
 export const runBackupNow = () =>

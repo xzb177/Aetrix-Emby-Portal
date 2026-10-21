@@ -34,9 +34,6 @@ SPEC = {
          "options": ["none", "turnstile", "recaptcha", "hcaptcha"]},
         {"key": "captcha_site_key", "label": "站点密钥（Site Key）", "type": "str", "default": ""},
         {"key": "captcha_secret_key", "label": "私钥（Secret Key）", "type": "secret", "default": ""},
-        {"key": "captcha_protect_login", "label": "保护用户端登录", "type": "bool", "default": "true"},
-        {"key": "captcha_protect_register", "label": "保护用户端注册", "type": "bool", "default": "true"},
-        {"key": "captcha_protect_admin_login", "label": "保护管理后台登录", "type": "bool", "default": "false"},
     ],
     "test_label": "测试密钥",
 }
@@ -61,6 +58,22 @@ ACTIONS: tuple[str, ...] = ("login", "register", "admin_login")
 
 _FIELD_DEFAULTS = {f["key"]: (f.get("default") or "") for f in SPEC["fields"]}
 _FIELD_KEYS = [f["key"] for f in SPEC["fields"]]
+# A 类开关摘面板（2026-10-21）：三个保护动作开关不再出现在能力表单里，
+# 改走 env CAPTCHA_PROTECT_LOGIN / _REGISTER / _ADMIN_LOGIN；缺省与原
+# 表单缺省（=生产现值）一致：登录/注册开、管理后台登录关。读取集合保留。
+# 能力框架的原始值读取补读（卡片/挂件口径与运行时一致）
+EXTRA_READ_KEYS = {
+    "captcha_protect_login": "true",
+    "captcha_protect_register": "true",
+    "captcha_protect_admin_login": "false",
+}
+_PROTECT_DEFAULTS = {
+    "captcha_protect_login": "true",
+    "captcha_protect_register": "true",
+    "captcha_protect_admin_login": "false",
+}
+_FIELD_KEYS = _FIELD_KEYS + list(_PROTECT_DEFAULTS)
+_FIELD_DEFAULTS = {**_FIELD_DEFAULTS, **_PROTECT_DEFAULTS}
 
 
 def _config(db: Session) -> dict:

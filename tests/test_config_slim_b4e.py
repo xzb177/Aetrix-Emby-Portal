@@ -64,7 +64,10 @@ def test_registry_covers_all_economy_keys():
     assert config_schema.ECONOMY_CONFIG_SCHEMA["series_merge_interval_sec"] == ("int", 3600, 604800)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["series_merge_batch_limit"] == ("int", 10, 100000)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["checkin_base_points"] == ("int", 0, 10 ** 9)
-    assert config_schema.ECONOMY_CONFIG_SCHEMA["checkin_enabled"] == ("bool",)
+    # 2026-10-21 A 类摘面板：checkin_enabled 等开关已摘除注册表（env 控制）；
+    # 保留的 bool 键以 B 类 recharge_enabled 为代表抽查
+    assert "checkin_enabled" not in config_schema.ECONOMY_CONFIG_SCHEMA
+    assert config_schema.ECONOMY_CONFIG_SCHEMA["recharge_enabled"] == ("bool",)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["payment_gateway_url"] == ("raw",)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["payment_partner_key"] == ("raw",)
     assert "economy" in __import__("backend.config_service", fromlist=["x"]).SCHEMAS
@@ -73,21 +76,21 @@ def test_registry_covers_all_economy_keys():
 # ---------- 2. 存库字节逐字一致 ----------
 
 def test_byte_exact_bool_and_int(db):
+    # 2026-10-21 A 类摘面板后改用保留键做向量：bool 以 B 类 recharge_enabled /
+    # subscription_required 为代表（原 checkin/exchange/promotion 三键已摘除）
     s, admin = db
     res = _save(s, admin, {
-        "checkin_enabled": True, "exchange_enabled": False,
-        "promotion_reward_enabled": 1,  # int 1 存 "1"（旧口径的 digit 直通）
+        "recharge_enabled": True, "subscription_required": False,
+        "invitation_reward_points": 1,  # int 1 存 "1"
         "checkin_base_points": "007",  # 归一化成 "7"
         "invitation_reward_points": " 5 ",
     })
-    assert _row(s, "checkin_enabled").value == "true"
-    assert _row(s, "exchange_enabled").value == "false"
-    assert _row(s, "promotion_reward_enabled").value == "1"
-    assert _row(s, "checkin_base_points").value == "7"
+    assert _row(s, "recharge_enabled").value == "true"
+    assert _row(s, "subscription_required").value == "false"
     assert _row(s, "invitation_reward_points").value == "5"
-    assert res["changed"] == ["checkin_enabled", "exchange_enabled",
-                              "promotion_reward_enabled", "checkin_base_points",
-                              "invitation_reward_points"]
+    assert _row(s, "checkin_base_points").value == "7"
+    assert res["changed"] == ["recharge_enabled", "subscription_required",
+                              "invitation_reward_points", "checkin_base_points"]
 
 
 def test_str_raw_empty_stored_not_deleted(db):
@@ -135,12 +138,12 @@ def test_secret_masked_in_audit(db, monkeypatch):
     monkeypatch.setattr(admin_economy, "_audit",
                         lambda db_, admin_, action, ttype=None, tid=None, details=None, ip=None:
                         calls.append((action, details)))
-    _save(s, admin, {"payment_partner_key": "topsecret", "checkin_enabled": True})
+    _save(s, admin, {"payment_partner_key": "topsecret", "invitation_reward_points": "5"})
     assert calls, "审计必须被调用"
     action, details = calls[-1]
     assert action == "economy_update_settings"
     assert details["payment_partner_key"] == "(已更新)"
-    assert details["checkin_enabled"] == "true"
+    assert details["invitation_reward_points"] == "5"
     assert "topsecret" not in str(calls)
 
 
@@ -167,9 +170,9 @@ def test_invalid_rejected_atomically(db):
 
 def test_unknown_key_ignored(db):
     s, admin = db
-    res = _save(s, admin, {"no_such_key": "1", "checkin_enabled": True})
+    res = _save(s, admin, {"no_such_key": "1", "invitation_reward_points": "5"})
     assert res["success"] is True
-    assert res["changed"] == ["checkin_enabled"]
+    assert res["changed"] == ["invitation_reward_points"]
     assert _row(s, "no_such_key") is None
 
 

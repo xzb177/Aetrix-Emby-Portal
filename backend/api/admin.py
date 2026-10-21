@@ -684,9 +684,8 @@ def set_registration_mode(
         "registration_mode": request.mode,
         "registration_closed_message": request.message,
     }
-    if request.ratelimit_enabled is not None:
-        values["register_ratelimit_enabled"] = (
-            "true" if request.ratelimit_enabled else "false")
+    # A 类开关摘面板（2026-10-21）：ratelimit_enabled 不再落库——开关改走
+    # env REGISTER_RATELIMIT_ENABLED（缺省=开）；max/window 仍可经面板改。
     if request.ratelimit_max is not None:
         values["register_ratelimit_max"] = str(request.ratelimit_max)
     if request.ratelimit_window is not None:
@@ -699,8 +698,6 @@ def set_registration_mode(
     config_service.save_config(db, values, schema="registration")
     db.commit()
     audit_details = {"mode": request.mode}
-    if request.ratelimit_enabled is not None:
-        audit_details["ratelimit_enabled"] = request.ratelimit_enabled
     if request.ratelimit_max is not None:
         audit_details["ratelimit_max"] = request.ratelimit_max
     if request.ratelimit_window is not None:
@@ -735,12 +732,9 @@ def get_registration_mode(
     mode = _normalize_registration_mode(values.get("registration_mode"))
     message = values.get("registration_closed_message") or ""
 
-    ratelimit_enabled = True
-    enabled_raw = values.get("register_ratelimit_enabled")
-    if enabled_raw is not None:
-        normalized = enabled_raw.strip().lower()
-        if normalized in ("true", "false"):
-            ratelimit_enabled = normalized == "true"
+    # 与注册接口同口径（含 env 接管）：走 emby_portal 的统一读取
+    from backend.api.emby_portal import _get_register_ratelimit
+    ratelimit_enabled = _get_register_ratelimit(db)[0]
 
     ratelimit_max = 5
     max_raw = values.get("register_ratelimit_max")

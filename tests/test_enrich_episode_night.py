@@ -120,9 +120,10 @@ def test_in_night_window_cross_midnight():
 # ---------- _episode_night_config ----------
 
 def test_night_config_default_off(db):
-    """默认关闭：不读库、不设环境变量时 enabled=False"""
+    """缺省值：2026-10-21 现值对齐后，不读库、不设环境变量时
+    enabled=True（生产现值=开）；关要设 env 或种行 "0"。"""
     cfg = enrich_worker._episode_night_config(db)
-    assert cfg["enabled"] is False
+    assert cfg["enabled"] is True
     assert cfg["night_start"] == "02:00"
     assert cfg["night_end"] == "06:00"
     assert cfg["from_env"] is False
@@ -189,6 +190,11 @@ def test_night_config_ttl_cache(db, monkeypatch):
 def _enable_night_only(monkeypatch, in_window: bool):
     """打开开关，并固定窗口判断结果"""
     monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
+    # 配额制 2026-10-21 起缺省开：开着时白天配额内单集可认领、夜间门
+    # 不再独占；本文件验禁令制口径，显式关掉配额制
+    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_QUOTA_MODE_ENV, "0")
+    enrich_worker._enrich_tuning_cache["at"] = 0.0
+    enrich_worker._enrich_tuning_cache["cfg"] = None
     monkeypatch.setattr(
         enrich_worker, "_in_night_window", lambda now, s, e, tz=None: in_window)
 
@@ -257,6 +263,14 @@ def test_public_config_field_names_match_frontend(db):
 def test_save_returns_frontend_compatible_fields(db):
     """save_episode_night_config 的返回值同样必须带 night_start/night_end，
     否则保存后前端界面立刻变空。"""
+    # 2026-10-21 A 类摘面板：save 的 enabled 参数已忽略，返回值 enabled 是
+    # 生效值；先把开关行种成 "1" 保证生效值为开（同文件前面的用例留过 "0"）
+    from backend.integrations import store as _store
+    _store.write_values(db, {enrich_worker.CFG_EPISODE_NIGHT_ONLY: "1"}, {})
+    db.commit()
+    _store.invalidate(enrich_worker.CFG_EPISODE_NIGHT_ONLY)
+    enrich_worker._night_cfg_cache["at"] = 0.0
+    enrich_worker._night_cfg_cache["cfg"] = None
     try:
         cfg = enrich_worker.save_episode_night_config(db, True, "22:00", "06:00")
         assert cfg["enabled"] is True
@@ -264,6 +278,10 @@ def test_save_returns_frontend_compatible_fields(db):
         assert cfg["night_end"] == "06:00"
         assert "start" not in cfg and "end" not in cfg
     finally:
-        # 清理：关闭开关，避免 SystemConfig 污染后续测试文件
-        # （test_enrich_worker.py 共用同一临时库，开关开着会跳过单集）
+        # 清理：把开关行种回 "0"，避免 SystemConfig 污染后续测试文件
+        _store.write_values(db, {enrich_worker.CFG_EPISODE_NIGHT_ONLY: "0"}, {})
+        db.commit()
+        _store.invalidate(enrich_worker.CFG_EPISODE_NIGHT_ONLY)
+        enrich_worker._night_cfg_cache["at"] = 0.0
+        enrich_worker._night_cfg_cache["cfg"] = None
         enrich_worker.save_episode_night_config(db, False, "02:00", "06:00")

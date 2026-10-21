@@ -124,7 +124,7 @@ CFG_EPISODE_NIGHT_ONLY = "enrich_episode_night_only"
 CFG_NIGHT_START = "enrich_night_start"
 CFG_NIGHT_END = "enrich_night_end"
 CFG_NIGHT_TZ = "enrich_night_tz"
-NIGHT_ONLY_DEFAULT = False
+NIGHT_ONLY_DEFAULT = True  # 2026-10-21 摘面板对齐：生产现值=开（system_configs 行=1）
 NIGHT_START_DEFAULT = "02:00"
 NIGHT_END_DEFAULT = "06:00"
 NIGHT_TZ_DEFAULT = "Asia/Shanghai"
@@ -328,15 +328,11 @@ def get_douban_ban_downgrade_config(db) -> dict:
 
 
 def save_douban_ban_downgrade_config(db, enabled: bool) -> dict:
-    """管理后台用：保存豆瓣封禁降级开关（写 SystemConfig，60 秒内热生效）。"""
-    from backend.integrations import store
-    store.write_values(
-        db,
-        {CFG_DOUBAN_BAN_DOWNGRADE: "1" if enabled else "0"},
-        {CFG_DOUBAN_BAN_DOWNGRADE:
-         "豆瓣封禁降级开关（链路规划 Step 0.5）：封禁期跳过豆瓣走多源兜底"},
-    )
-    db.commit()
+    """管理后台用（兼容保留）：A 类开关摘面板（2026-10-21）后不再落库。
+
+    开关改走 env ENRICH_DOUBAN_BAN_DOWNGRADE（缺省开，与原出厂缺省一致）；
+    本函数只回读当前生效配置，``enabled`` 参数忽略。
+    """
     return get_douban_ban_downgrade_config(db)
 
 
@@ -364,7 +360,7 @@ def _unified_fallback_flag_on() -> bool:
     from backend.integrations import store
     _db = SessionLocal()
     try:
-        return store.get_value(_db, CFG_UNIFIED_FALLBACK, "0") == "1"
+        return store.get_value(_db, CFG_UNIFIED_FALLBACK, "1") == "1"
     except Exception:  # noqa: BLE001 — 读不到就当关着，行为与现状一致
         return False
     finally:
@@ -375,20 +371,16 @@ def get_unified_fallback_config(db) -> dict:
     """管理后台用：兜底链路统一开关（只读）。"""
     from backend.integrations import store
     return {
-        "enabled": store.get_value(db, CFG_UNIFIED_FALLBACK, "0") == "1",
+        "enabled": store.get_value(db, CFG_UNIFIED_FALLBACK, "1") == "1",  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
     }
 
 
 def save_unified_fallback_config(db, enabled: bool) -> dict:
-    """管理后台用：保存兜底链路统一开关（写 SystemConfig，60 秒内热生效）。"""
-    from backend.integrations import store
-    store.write_values(
-        db,
-        {CFG_UNIFIED_FALLBACK: "1" if enabled else "0"},
-        {CFG_UNIFIED_FALLBACK:
-         "兜底链路统一开关（链路规划 Step 2）：一个豆瓣入口，rich→多源引擎"},
-    )
-    db.commit()
+    """管理后台用（兼容保留）：A 类开关摘面板（2026-10-21）后不再落库。
+
+    开关改走 env ENRICH_UNIFIED_FALLBACK（缺省已对齐生产现值=开）；
+    本函数只回读当前生效配置，``enabled`` 参数忽略。
+    """
     return get_unified_fallback_config(db)
 
 
@@ -468,7 +460,7 @@ def _episode_night_config(db=None) -> dict:
                 try:
                     from backend.integrations import store
                     enabled = store.read_value(
-                        db, CFG_EPISODE_NIGHT_ONLY, "0") == "1"
+                        db, CFG_EPISODE_NIGHT_ONLY, "1") == "1"
                 except Exception:  # noqa: BLE001 — 读库失败就按默认关，不挡抢单
                     logger.warning("单集夜间配置读库失败，按默认关闭", exc_info=True)
         start = _parse_hhmm(env_start or None, NIGHT_START_DEFAULT)
@@ -505,19 +497,21 @@ def get_episode_night_config(db) -> dict:
 
 def save_episode_night_config(db, enabled: bool, start: str, end: str,
                             tz: Optional[str] = None) -> dict:
-    """管理后台用：保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效）"""
+    """管理后台用：保存单集夜间刮削的窗口配置（写 SystemConfig，60 秒内热生效）。
+
+    A 类开关摘面板（2026-10-21）：``enabled`` 参数仅为兼容旧调用方保留，
+    不再落库——开关改走 env ENRICH_EPISODE_NIGHT_ONLY（缺省=开）。
+    """
     from backend.integrations import store
     start = _parse_hhmm(start, NIGHT_START_DEFAULT)
     end = _parse_hhmm(end, NIGHT_END_DEFAULT)
     tz = _parse_tz(tz, NIGHT_TZ_DEFAULT).key
     store.write_values(
         db,
-        {CFG_EPISODE_NIGHT_ONLY: "1" if enabled else "0",
-         CFG_NIGHT_START: start,
+        {CFG_NIGHT_START: start,
          CFG_NIGHT_END: end,
          CFG_NIGHT_TZ: tz},
-        {CFG_EPISODE_NIGHT_ONLY: "单集仅夜间刮削开关（白天只刮顶层条目）",
-         CFG_NIGHT_START: "夜间窗口开始（HH:MM，按 enrich_night_tz 时区解释）",
+        {CFG_NIGHT_START: "夜间窗口开始（HH:MM，按 enrich_night_tz 时区解释）",
          CFG_NIGHT_END: "夜间窗口结束（HH:MM，按 enrich_night_tz 时区解释）",
          CFG_NIGHT_TZ: "夜间窗口时区（IANA 时区名，如 Asia/Shanghai）"},
     )
@@ -619,6 +613,11 @@ def save_episode_field_config(db, title: bool, overview: bool, still: bool) -> d
 ENRICH_WORKERS_ENV = "ENRICH_WORKERS"
 ENRICH_BATCH_ENV = "ENRICH_BATCH"
 ENRICH_TMDB_BATCH_ENV = "ENRICH_TMDB_BATCH"
+# A 类摘面板（2026-10-21）：4 个布尔调优开关的 env 名（= 配置键大写）
+ENRICH_EPISODE_QUOTA_MODE_ENV = "ENRICH_EPISODE_QUOTA_MODE"
+ENRICH_NONE_AUTO_RESCHEDULE_ENV = "ENRICH_NONE_AUTO_RESCHEDULE"
+ENRICH_FAILED_AUTO_RESCHEDULE_ENV = "ENRICH_FAILED_AUTO_RESCHEDULE"
+ENRICH_FIELD_COMPLETENESS_ENV = "ENRICH_FIELD_COMPLETENESS"
 ENRICH_MAX_ATTEMPTS_ENV = "ENRICH_MAX_ATTEMPTS"
 ENRICH_RETRY_BASE_SEC_ENV = "ENRICH_RETRY_BASE_SEC"
 ENRICH_CLAIM_LEASE_SEC_ENV = "ENRICH_CLAIM_LEASE_SEC"
@@ -628,6 +627,11 @@ CFG_ENRICH_BATCH = "enrich_batch"
 # Batch 2（2026-10-19 开关清理）：回到 env-only 的键——面板写入路径已摘，
 # 代码只读环境变量（缺省=生产现值：workers 8 / batch 200），DB 旧行忽略。
 _ENRICH_TUNING_ENV_ONLY_KEYS = frozenset({CFG_ENRICH_WORKERS, CFG_ENRICH_BATCH})
+# A 类开关摘面板（2026-10-21）：刮削调优里的 5 个布尔开关同批转 env-only——
+# 只读 env（ENRICH_TMDB_BATCH / ENRICH_EPISODE_QUOTA_MODE /
+# ENRICH_NONE_AUTO_RESCHEDULE / ENRICH_FAILED_AUTO_RESCHEDULE /
+# ENRICH_FIELD_COMPLETENESS，未设时用 specs 缺省），DB 旧行忽略、面板写入忽略。
+# 缺省已逐键对齐生产现值（5 键均=开）。env 名常量见下方 ENRICH_*_ENV。
 CFG_ENRICH_TMDB_BATCH = "enrich_tmdb_batch"
 CFG_ENRICH_MAX_ATTEMPTS = "enrich_max_attempts"
 CFG_ENRICH_RETRY_BASE_SEC = "enrich_retry_base_sec"
@@ -648,6 +652,14 @@ CFG_ENRICH_FAILED_MAX_RESCHEDULES = "enrich_failed_max_reschedules"
 # Step 5 的 feature flag：字段级完成口径开关（默认 0=关，关时口径=旧"三者有其二"）
 CFG_ENRICH_FIELD_COMPLETENESS = "enrich_field_completeness"
 
+# A 类摘面板（2026-10-21）：5 个布尔调优开关并入 env-only 集合
+# （CFG 常量定义在本行上方才齐全，故在此处并集扩展）。
+_ENRICH_TUNING_ENV_ONLY_KEYS = _ENRICH_TUNING_ENV_ONLY_KEYS | frozenset({
+    CFG_ENRICH_TMDB_BATCH, CFG_ENRICH_EPISODE_QUOTA_MODE,
+    CFG_ENRICH_NONE_AUTO_RESCHEDULE, CFG_ENRICH_FAILED_AUTO_RESCHEDULE,
+    CFG_ENRICH_FIELD_COMPLETENESS,
+})
+
 # (config_key, env_name, 默认值str, 类型, 下限钳制, 中文说明, 是否重启生效)
 # 类型：workers=io_bound 线程口径（正整数→max(1,min(v,16))，缺省 8）；
 #       int=整数下限钳制；flag1=是否为 "1"（口径照抄现状）。
@@ -666,7 +678,7 @@ _ENRICH_TUNING_SPECS = [
      "认领租约（秒）：worker 停滞超过租约即视为死亡、由 janitor 回收", False),
     (CFG_ENRICH_EPISODE_DAY_QUOTA, None, "2000", "int", 0,
      "白天单集日配额（配额制开时生效；夜间窗口内不限；设 0 = 回到夜间禁令制）", False),
-    (CFG_ENRICH_EPISODE_QUOTA_MODE, None, "0", "flag1", None,
+    (CFG_ENRICH_EPISODE_QUOTA_MODE, ENRICH_EPISODE_QUOTA_MODE_ENV, "1", "flag1", None,
      "单集认领配额制开关（链路规划 Step 3）：1=白天单集按日配额认领（夜间不限），"
      "0=夜间窗口禁令制（默认，行为与 Step 3 前一致）", False),
     (CFG_ENRICH_NONE_RESCHEDULE_DAYS, None, "14", "int", 1,
@@ -677,7 +689,7 @@ _ENRICH_TUNING_SPECS = [
      "【Step 4】none 条目自动回捞轮数上限：达到上限的行永久保留 done，"
      "不再被 janitor 自动捞回（防搜不中的冷门条目无限空转；6 轮 × 14 天"
      "约覆盖 12 周，TMDB 滞后上架的大多数能赶上）", False),
-    (CFG_ENRICH_NONE_AUTO_RESCHEDULE, None, "0", "flag1", None,
+    (CFG_ENRICH_NONE_AUTO_RESCHEDULE, ENRICH_NONE_AUTO_RESCHEDULE_ENV, "1", "flag1", None,
      "【Step 4】none 条目定时自动回捞开关：1=开（超周期的 done+none 剧/电影由 "
      "janitor 按最旧优先、单轮 2000 条翻回 pending；资料不全 5 次后转 done+none "
      "而非 failed），0=关（默认，行为与 Step 4 前完全一致）", False),
@@ -687,11 +699,11 @@ _ENRICH_TUNING_SPECS = [
     (CFG_ENRICH_FAILED_MAX_RESCHEDULES, None, "3", "int", 1,
      "【WS1/T1】failed 条目自动回捞轮数上限：达到上限的行永久保留 failed，"
      "不再被 janitor 自动捞回（防异常风暴无限空转）", False),
-    (CFG_ENRICH_FAILED_AUTO_RESCHEDULE, None, "0", "flag1", None,
+    (CFG_ENRICH_FAILED_AUTO_RESCHEDULE, ENRICH_FAILED_AUTO_RESCHEDULE_ENV, "1", "flag1", None,
      "【WS1/T1】failed 条目定时自动回捞开关：1=开（超周期的 failed 由 janitor "
      "按最旧优先、单轮 2000 条翻回 pending，轮数上限见上一项），0=关（默认，"
      "行为与改前完全一致——failed 只进不出）", False),
-    (CFG_ENRICH_FIELD_COMPLETENESS, None, "0", "flag1", None,
+    (CFG_ENRICH_FIELD_COMPLETENESS, ENRICH_FIELD_COMPLETENESS_ENV, "1", "flag1", None,
      "【Step 5】完成口径字段级开关：1=开（核心字段齐但缺简介/类型/演员的条目"
      "进低优先级队列补一轮，priority=-10，天然排后；每条最多多跑一轮，补完"
      "无论拿到与否直接终态化，不反复重刮），0=关（默认，口径=旧的"

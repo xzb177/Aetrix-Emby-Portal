@@ -57,7 +57,6 @@ const saving = ref(false)
 const loadError = ref(false)
 
 /** 本地草稿：改完点「保存」才写后端，不动后端就不算改 */
-const draftEnabled = ref(false)
 const draftIds = ref<number[]>([])
 const filter = ref('')
 
@@ -75,7 +74,7 @@ const sameIds = (a: number[], b: number[]) => {
 const dirty = computed(() => {
   const cur = data.value?.default
   if (!cur) return false
-  return cur.enabled !== draftEnabled.value || !sameIds(cur.library_ids, draftIds.value)
+  return !sameIds(cur.library_ids, draftIds.value)
 })
 
 /** 当前草稿勾选的库（用来在列表里画出「已选」以及算条数） */
@@ -122,7 +121,6 @@ async function load() {
   loadError.value = false
   try {
     data.value = await fetchLibraryScope()
-    draftEnabled.value = data.value.default.enabled
     draftIds.value = [...data.value.default.library_ids]
   } catch {
     // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
@@ -146,12 +144,10 @@ async function saveDefault() {
   saving.value = true
   try {
     const res = await saveLibraryScopeDefault({
-      enabled: draftEnabled.value,
       library_ids: draftIds.value,
     })
     data.value = { ...(data.value as LibraryScopeResponse), ...res.policy }
     // 以后端返回的**真实生效值**回填（非法输入后端会 400，不会存半个坏配置）
-    draftEnabled.value = res.policy.default.enabled
     draftIds.value = [...res.policy.default.library_ids]
     ElMessage.success('默认可见范围已保存并立即生效')
   } catch {
@@ -163,7 +159,6 @@ async function saveDefault() {
 
 function revert() {
   if (!data.value) return
-  draftEnabled.value = data.value.default.enabled
   draftIds.value = [...data.value.default.library_ids]
 }
 
@@ -364,16 +359,13 @@ async function removeOverride(row: { username: string; user_id: number }) {
           </p>
 
           <div class="ls-switch-row">
-            <el-switch
-              v-model="draftEnabled"
-              :disabled="!canWrite"
-              active-text="限定可见范围"
-              inactive-text="不限制（全部可见）"
-            />
-            <span v-if="draftEnabled" class="au-badge au-badge-amber">已勾选 {{ draftIds.length }} 个媒体库</span>
+            <span class="au-badge" :class="data.default.enabled ? 'au-badge-amber' : 'au-badge-muted'">
+              {{ data.default.enabled ? '范围限定已开启（服务端控制）' : '当前不限制（全部可见）' }}
+            </span>
+            <span class="au-badge au-badge-amber">已勾选 {{ draftIds.length }} 个媒体库</span>
           </div>
 
-          <div v-show="draftEnabled" class="ls-pick">
+          <div class="ls-pick">
             <div class="ls-pick-head">
               <el-input v-model="filter" class="f-search" placeholder="筛选媒体库名称" clearable size="small" />
               <el-button size="small" :disabled="!canWrite || !visibleOptions.length" @click="toggleAll">

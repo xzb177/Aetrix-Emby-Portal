@@ -20,8 +20,6 @@ SPEC = {
     "group": "网络与安全",
     "docs_hint": "留空端口按协议默认（http=8080 / https=443 / socks5=1080）。",
     "fields": [
-        {"key": "proxy_enabled", "label": "启用代理", "type": "bool", "default": "false",
-         "hint": "关闭后立即清掉进程代理，恢复直连"},
         {"key": "proxy_scheme", "label": "代理协议", "type": "select", "default": "http",
          "options": ["http", "https", "socks5", "socks5h"]},
         {"key": "proxy_host", "label": "代理地址", "type": "str", "required": True,
@@ -36,6 +34,9 @@ SPEC = {
 }
 
 _DEFAULT_PORT = {"http": 8080, "https": 443, "socks5": 1080, "socks5h": 1080}
+# A 类开关摘面板（2026-10-21）：proxy_enabled 不再出现在能力表单里，改走
+# env PROXY_ENABLED（缺省关，与原表单缺省一致）；卡片状态判定仍需读到该键。
+EXTRA_READ_KEYS = {"proxy_enabled": "false"}
 ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
             "http_proxy", "https_proxy", "all_proxy", "no_proxy")
 

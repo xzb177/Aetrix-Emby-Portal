@@ -197,8 +197,16 @@ def test_incomplete_backs_off_instead_of_reset(db):
     assert 30 < delta <= 90, delta  # 基数 60s 退避
 
 
-def test_incomplete_fails_after_max_attempts(db):
-    """资料不全 5 次后转 failed，不再无限空转"""
+def test_incomplete_fails_after_max_attempts(db, monkeypatch):
+    """资料不全 5 次后转 failed，不再无限空转。
+
+    前提是 none 定时回捞关：该 flag 2026-10-21 起缺省开（生产现值），
+    开着时 5 次后转 done+none 等回捞（Step 4 语义）；本例验关时旧口径，
+    显式经 env 关掉并清调优缓存。"""
+    from backend.emby_server import enrich_worker as _ew
+    monkeypatch.setenv("ENRICH_NONE_AUTO_RESCHEDULE", "0")
+    _ew._enrich_tuning_cache["at"] = 0.0
+    _ew._enrich_tuning_cache["cfg"] = None
     item = _make_item(db, item_type="movie", enrich_status="pending")
     _apply_incomplete(db, item, 4)  # 第 5 次
     assert item.enrich_status == "failed", item.enrich_status

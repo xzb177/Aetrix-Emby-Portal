@@ -429,7 +429,11 @@ def get_config(db: Session) -> dict:
 
 
 def save_config(db: Session, enabled: bool, time_str: str, keep_days: int) -> dict:
-    """保存备份配置；非法时抛 ValueError（接口转 400）。"""
+    """保存备份配置；非法时抛 ValueError（接口转 400）。
+
+    A 类开关摘面板（2026-10-21）：``enabled`` 参数仅为兼容旧调用方保留，
+    不再落库——开关改走 env BACKUP_ENABLED（缺省=开，见 DEFAULT_ENABLED）。
+    """
     parsed = parse_time(time_str)
     if parsed is None:
         raise ValueError(f"时间格式非法，应为 HH:MM（24 小时制），收到：{time_str!r}")
@@ -438,12 +442,10 @@ def save_config(db: Session, enabled: bool, time_str: str, keep_days: int) -> di
     store.write_values(
         db,
         {
-            CONFIG_ENABLED: "1" if enabled else "0",
             CONFIG_TIME: parsed,
             CONFIG_KEEP_DAYS: str(keep_days),
         },
         {
-            CONFIG_ENABLED: "数据库定时备份开关",
             CONFIG_TIME: "数据库备份每天执行时间（HH:MM，服务器本地时间）",
             CONFIG_KEEP_DAYS: "数据库备份保留天数（1~30）",
         },
