@@ -245,7 +245,7 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
     # 2. 定时扫描
     from backend.emby_server import auto_scan
     items.extend([
-        (auto_scan.CONFIG_ENABLED, "0", "定时扫描开关（元数据与刮削）"),
+        (auto_scan.CONFIG_ENABLED, "1", "定时扫描开关（元数据与刮削）"),
         (auto_scan.CONFIG_TIME, auto_scan.DEFAULT_TIME, "定时扫描每天执行时间（HH:MM）"),
     ])
 
@@ -268,7 +268,7 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
     # 5. 追新（chase-new）：只收用户配置项，last_check / last_found 是运行时水位，job 自己会写
     from backend.emby_server import change_watcher
     items.extend([
-        (change_watcher.CONFIG_ENABLED, "0", "追新开关（老剧出新集自动入库）"),
+        (change_watcher.CONFIG_ENABLED, "1", "追新开关（老剧出新集自动入库）"),
         (change_watcher.CONFIG_INTERVAL, str(change_watcher.DEFAULT_INTERVAL), "追新轮询间隔（分钟）"),
         (change_watcher.CONFIG_LIBRARIES, "", "追新库过滤（留空=全部库）"),
     ])
@@ -289,7 +289,7 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
     from backend.emby_server.metasources import config as ms_config
     from backend.emby_server.metasources import sources as ms_sources
     items.extend([
-        (ms_config.CONFIG_ENABLED, "0",
+        (ms_config.CONFIG_ENABLED, "1",
          "多源元数据补全总开关（关闭 = 只用原来的 NFO/TMDB/豆瓣链路）"),
         (ms_config.CONFIG_PREFER_CN, "1", "中文信息优先（标题与简介）"),
         (ms_config.CONFIG_ORDER,

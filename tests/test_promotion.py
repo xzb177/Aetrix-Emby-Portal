@@ -106,8 +106,10 @@ def _points_logs(db, user_id, type_):
 # ===========================================================================
 
 def test_promotion_defaults_are_off(db):
+    # 2026-10-21 A 类摘面板现值对齐：enabled 缺省翻为开（生产现值），
+    # 但金额/天数仍为 0 → 实际不发放（active 口径不变）
     cfg = promotion.config(db)
-    assert cfg["enabled"] is False
+    assert cfg["enabled"] is True
     assert cfg["amount"] == 0
     assert cfg["days"] == 0
     # 开关关着 → 后台必须显示「没在发」，不能看起来像已开启
@@ -629,7 +631,7 @@ def test_system_config_defaults_include_promotion_keys():
     for key in (promotion.CONFIG_ENABLED, promotion.CONFIG_TYPE,
                 promotion.CONFIG_AMOUNT, promotion.CONFIG_DAYS):
         assert key in defaults
-    assert defaults[promotion.CONFIG_ENABLED] == "false"   # 出厂即关闭
+    assert defaults[promotion.CONFIG_ENABLED] == "true"   # 2026-10-21 对齐生产现值（金额 0 兜底不发放）
     assert defaults[promotion.CONFIG_AMOUNT] == "0"
     assert defaults[promotion.CONFIG_DAYS] == "0"
 

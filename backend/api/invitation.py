@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.database import get_db
 from backend.api.user import get_current_user
 from backend.api.economy import _add_points
@@ -44,6 +45,10 @@ def _generate_invite_code(db: Session) -> str:
 
 
 def _get_config(db: Session, key: str, default: str) -> str:
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value(key)
+    if _env_v is not None:
+        return _env_v
     config = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     return config.value if config and config.value is not None else default
 

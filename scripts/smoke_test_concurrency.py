@@ -119,6 +119,8 @@ with SessionLocal() as db:
     alice_id, bob_id, inviter_id, invitee_id = alice.id, bob.id, inviter.id, invitee.id
     # 2026-10-09 签到合并后积分仅限公益服用户：bob 用于签到测试，设为公益服
     db.query(models.WebUser).filter(models.WebUser.id == bob_id).update({"is_welfare": True})
+    # 2026-10-21：签到缺省改为关（服主保持关），开关仍在面板/DB——本冒烟按 DB 行打开
+    db.add(models.SystemConfig(key="checkin_enabled", value="true"))
     db.commit()
 
     db.add(models.ExchangeCode(

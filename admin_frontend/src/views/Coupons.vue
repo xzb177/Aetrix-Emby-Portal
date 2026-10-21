@@ -583,10 +583,10 @@ async function saveSettings() {
   settingsSaving.value = true
   try {
     const res = await updateCouponSettings({
-      enabled: enabled.value,
       reserve_hours: Number(reserveHours.value || 0),
     })
-    ElMessage.success(enabled.value ? '优惠券已开启' : '优惠券已关闭（用户端不再显示优惠码入口）')
+    enabled.value = res.enabled
+    ElMessage.success('设置已保存')
     reserveHours.value = res.reserve_hours
   } catch (e: unknown) {
     ElMessage.error(toAdminError(e, '保存失败'))
@@ -645,9 +645,9 @@ onMounted(() => {
         <div class="setting">
           <div class="setting-text">
             <span class="setting-label">优惠券功能</span>
-            <span class="setting-hint">关闭后用户端不再显示优惠码入口，已下的单不受影响</span>
+            <span class="setting-hint">当前状态由服务端配置控制（面板不再提供开关）</span>
           </div>
-          <el-switch v-model="enabled" active-text="开启" inactive-text="关闭" />
+          <span class="au-badge" :class="enabled ? 'au-badge-green' : 'au-badge-muted'">{{ enabled ? '已开启' : '已关闭' }}</span>
         </div>
         <div class="setting">
           <div class="setting-text">

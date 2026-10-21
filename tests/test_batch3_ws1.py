@@ -158,26 +158,40 @@ def test_migration_list_has_new_columns():
 def test_failed_tuning_specs_registered(db):
     specs = {k: (default, kind) for k, _, default, kind, _, _, _
              in enrich_worker._ENRICH_TUNING_SPECS}
-    assert specs[enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE] == ("0", "flag1")
+    # 2026-10-21 A 类摘面板现值对齐：生产现值为开，spec 缺省由 "0" 翻 "1"
+    assert specs[enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE] == ("1", "flag1")
     assert specs[enrich_worker.CFG_ENRICH_FAILED_RESCHEDULE_DAYS] == ("30", "int")
     assert specs[enrich_worker.CFG_ENRICH_FAILED_MAX_RESCHEDULES] == ("3", "int")
     cfg = enrich_worker.get_enrich_tuning_config(db)["values"]
-    assert cfg[enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE] is False
+    assert cfg[enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE] is True
     assert cfg[enrich_worker.CFG_ENRICH_FAILED_RESCHEDULE_DAYS] == 30
     assert cfg[enrich_worker.CFG_ENRICH_FAILED_MAX_RESCHEDULES] == 3
 
 
 def test_failed_reschedule_switch_off_is_noop(db):
-    """开关默认关：直接返回 0，不碰任何行（行为与改前一致）"""
-    it = _make_item(db, enrich_status="failed", enrich_attempts=5)
-    n = enrich_worker.enrich_failed_auto_reschedule(db)
-    assert n == 0
-    db.refresh(it)
-    assert it.enrich_status == "failed"
+    """开关关掉后直接返回 0，不碰任何行。缺省是开，本例经保存路径显式关掉。"""
+    enrich_worker.save_enrich_tuning_config(db, {
+        enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE: False,
+    })
+    try:
+        it = _make_item(db, enrich_status="failed", enrich_attempts=5)
+        n = enrich_worker.enrich_failed_auto_reschedule(db)
+        assert n == 0
+        db.refresh(it)
+        assert it.enrich_status == "failed"
+    finally:
+        from backend import models as _models
+        from backend.integrations import store as _store
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE
+        ).delete(synchronize_session=False)
+        db.commit()
+        _store.invalidate(enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE)
+        enrich_worker._enrich_tuning_cache["at"] = 0.0
+        enrich_worker._enrich_tuning_cache["cfg"] = None
 
 
 def _enable_failed_reschedule(db):
-    # 走面板同一保存路径（写库 + 清进程缓存），否则 60s TTL 缓存会盖住新值
     enrich_worker.save_enrich_tuning_config(db, {
         enrich_worker.CFG_ENRICH_FAILED_AUTO_RESCHEDULE: "1",
         enrich_worker.CFG_ENRICH_FAILED_RESCHEDULE_DAYS: "30",

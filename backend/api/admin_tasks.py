@@ -402,8 +402,7 @@ def _task_chase_new(db: Session) -> dict:
         metrics=metrics, last_run=latest.started_at.isoformat() if latest and latest.started_at else None,
         last_run_label="最近一次检查",
         switch={"label": "追新开关", "enabled": enabled,
-                "keep": {"interval": interval,
-                         "excluded": cfg.get("excluded") or ""}},
+                "keep": {"interval": interval, "excluded": cfg.get("excluded") or ""}},
         link="/emby",
     )
 

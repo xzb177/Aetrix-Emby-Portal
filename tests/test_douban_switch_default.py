@@ -68,9 +68,22 @@ def _env():
     store.invalidate(ew.CFG_DOUBAN_BAN_DOWNGRADE)
     yield
     dbn.reset_ban()
-    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
-    store.invalidate(ew.CFG_UNIFIED_FALLBACK)
+    _drop_switch_rows(dbn.DOUBAN_ENABLED_KEY, ew.CFG_UNIFIED_FALLBACK)
     store.invalidate(ew.CFG_DOUBAN_BAN_DOWNGRADE)
+
+
+def _drop_switch_rows(*keys):
+    from backend import models as _models
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key.in_(keys)
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    for key in keys:
+        store.invalidate(key)
 
 
 def _fresh_session_without_config_row():
@@ -122,10 +135,11 @@ def _series_item(**kw):
 
 class TestSwitchDefault:
     def test_enabled_default_off_without_config(self):
-        """无配置行时 enabled() 返回 False（默认关）。"""
+        """无配置行时 enabled() 返回 True（2026-10-21 现值对齐：缺省=开，
+        与生产现值一致；关要种行 "0" 或设 env DOUBAN_ENABLED=0）。"""
         db = _fresh_session_without_config_row()
         try:
-            assert dbn.enabled(db) is False
+            assert dbn.enabled(db) is True
         finally:
             db.close()
 

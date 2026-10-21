@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import models, register_channel
+from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.db_retry import commit_with_retry
 from backend.authlog import client_ip as log_ip, record_event, user_agent
 from backend import share_guard
@@ -277,6 +278,10 @@ def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
         values = {r.key: r.value for r in rows if r.value}
     except Exception:
         values = {}
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value("register_ratelimit_enabled")
+    if _env_v is not None:
+        values["register_ratelimit_enabled"] = _env_v
     if "register_ratelimit_enabled" in values:
         enabled = values["register_ratelimit_enabled"].strip().lower() == "true"
     try:

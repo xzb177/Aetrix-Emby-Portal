@@ -188,20 +188,8 @@ const handleCancel = async (row: { id: number; title: string }) => {
   }
 }
 
-// 功能开关
-const config = ref({ lottery_enabled: '1', lottery_group_ids: '', lottery_auto_draw_enabled: '1', lottery_draw_interval_sec: '60', lottery_notify_winners: '1', lottery_require_group_member: '1', lottery_min_account_age_days: '0', lottery_max_joins_per_day: '0' })
-const lotteryEnabled = computed({
-  get: () => config.value.lottery_enabled === '1',
-  set: (v: boolean) => { config.value.lottery_enabled = v ? '1' : '0' }
-})
-const autoDrawEnabled = computed({
-  get: () => config.value.lottery_auto_draw_enabled === '1',
-  set: (v: boolean) => { config.value.lottery_auto_draw_enabled = v ? '1' : '0' }
-})
-const notifyWinners = computed({
-  get: () => config.value.lottery_notify_winners === '1',
-  set: (v: boolean) => { config.value.lottery_notify_winners = v ? '1' : '0' }
-})
+// 抽奖配置（总开关/自动开奖/开奖通知已于 2026-10-21 摘面板，改由服务端配置控制）
+const config = ref({ lottery_group_ids: '', lottery_draw_interval_sec: '60', lottery_require_group_member: '1', lottery_min_account_age_days: '0', lottery_max_joins_per_day: '0' })
 // 三重门·参赛资格：参赛者必须在 TG 群里
 const requireGroupMember = computed({
   get: () => config.value.lottery_require_group_member !== '0',
@@ -212,11 +200,8 @@ const loadConfig = async () => {
     const res: any = await fetchWelfareConfig()
     const data = res?.data ?? res ?? {}
     config.value = {
-      lottery_enabled: data.lottery_enabled === '1' ? '1' : '0',
       lottery_group_ids: data.lottery_group_ids ?? '',
-      lottery_auto_draw_enabled: data.lottery_auto_draw_enabled === '0' ? '0' : '1',
       lottery_draw_interval_sec: data.lottery_draw_interval_sec ?? '60',
-      lottery_notify_winners: data.lottery_notify_winners === '0' ? '0' : '1',
       lottery_require_group_member: data.lottery_require_group_member === '0' ? '0' : '1',
       lottery_min_account_age_days: data.lottery_min_account_age_days ?? '0',
       lottery_max_joins_per_day: data.lottery_max_joins_per_day ?? '0'
@@ -237,11 +222,8 @@ const saveConfig = async () => {
   savingConfig.value = true
   try {
     await saveWelfareConfig({
-      lottery_enabled: config.value.lottery_enabled,
       lottery_group_ids: config.value.lottery_group_ids,
-      lottery_auto_draw_enabled: config.value.lottery_auto_draw_enabled,
       lottery_draw_interval_sec: String(interval),
-      lottery_notify_winners: config.value.lottery_notify_winners,
       lottery_require_group_member: config.value.lottery_require_group_member,
       lottery_min_account_age_days: String(minAge),
       lottery_max_joins_per_day: String(maxJoins)
@@ -293,26 +275,15 @@ onMounted(() => {
       </DataTable>
     </SectionCard>
 
-    <SectionCard title="功能开关" :icon="Settings2" meta="总开关与允许群ID 两行配置">
+    <SectionCard title="功能开关" :icon="Settings2" meta="允许群与开奖规则配置">
       <el-form :label-position="isPhone ? 'top' : 'right'" label-width="220px">
-        <el-form-item label="群抽奖总开关（关闭后不可新建活动）">
-          <el-switch v-model="lotteryEnabled" />
-        </el-form-item>
         <el-form-item label="允许群ID">
           <el-input v-model="config.lottery_group_ids" placeholder="逗号分隔的群 chat_id，空=不限制" class="field-md" />
-        </el-form-item>
-        <el-form-item label="自动开奖">
-          <el-switch v-model="autoDrawEnabled" />
-          <span class="field-hint">关闭后到期活动不再自动开奖，只能手动开奖</span>
         </el-form-item>
         <el-form-item label="扫描间隔">
           <el-input v-model="config.lottery_draw_interval_sec" class="field-sm" />
           <span class="field-suffix">秒</span>
           <span class="field-hint">每隔多少秒扫描一次到期活动，默认 60，最小 30</span>
-        </el-form-item>
-        <el-form-item label="开奖通知">
-          <el-switch v-model="notifyWinners" />
-          <span class="field-hint">开奖后在群里公布中奖名单并私聊通知中奖者</span>
         </el-form-item>
         <el-form-item label="参赛资格：必须在群里">
           <el-switch v-model="requireGroupMember" />

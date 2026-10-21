@@ -79,7 +79,8 @@ def test_checkin_empty_means_unset(db):
 def test_checkin_penalty_never_reduces_balance(db):
     # 基础 1 分、100% 触发惩罚 5 分：奖励钳到 0，签到不能倒扣余额
     s, admin = db
-    for k, v in {"checkin_base_min": "1", "checkin_base_max": "1", "checkin_streak_bonus": "0",
+    for k, v in {"checkin_enabled": "true",  # 2026-10-21 起缺省关（保持关），本例显式种开
+                 "checkin_base_min": "1", "checkin_base_max": "1", "checkin_streak_bonus": "0",
                  "checkin_penalty_pct": "100", "checkin_penalty_min": "5", "checkin_penalty_max": "5"}.items():
         s.add(models.SystemConfig(key=k, value=v))
     u = models.WebUser(username="pen", password_hash="x", is_welfare=True, points=3, vitality=14)

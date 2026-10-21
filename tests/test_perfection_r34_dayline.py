@@ -81,6 +81,8 @@ def test_today_start_is_shanghai_midnight_utc_frame():
 
 
 def test_checkin_writes_shanghai_day_start(db):
+    # 2026-10-21 起签到缺省关（服主保持关），开关仍在面板/DB：本例按 DB 行打开
+    _set_cfg(db, "checkin_enabled", "true")
     u = _make_user(db)
     economy._do_checkin_core(db, u)
     rec = db.query(models.CheckinRecord).filter(
@@ -89,6 +91,8 @@ def test_checkin_writes_shanghai_day_start(db):
 
 
 def test_checkin_duplicate_still_rejected(db):
+    # 2026-10-21 起签到缺省关（服主保持关），开关仍在面板/DB：本例按 DB 行打开
+    _set_cfg(db, "checkin_enabled", "true")
     u = _make_user(db, username="u2")
     economy._do_checkin_core(db, u)
     with pytest.raises(HTTPException) as ei:
