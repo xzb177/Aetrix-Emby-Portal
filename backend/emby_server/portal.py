@@ -33,6 +33,7 @@ from backend.database import get_db, SessionLocal
 
 from backend.emby_server import models as em
 from backend.emby_server import nodes as node_lib
+from backend.emby_server.public_url import client_base_url, configured_public_url
 from backend.emby_server.api import (
     TICKS, SERVER_ID, item_guid_for,
     _base_url, _item_dto, _library_scope, _prefetch_list_data, _scope_items,
@@ -135,13 +136,15 @@ def _request_base_url(request: Request | None) -> str:
       面板上）会被判成「只有这台机器自己能连」而报红——测试部署第一眼看到的就是它；
     - 用户端账号卡真的把 localhost 下发下去，用户照抄进播放器就连不上。
 
-    取请求自己的 scheme + Host（uvicorn 默认信任本机反向代理的
-    ``X-Forwarded-Proto`` / ``X-Forwarded-Host``，所以反代后面拿到的也是对外那一个）。
+    与协议面同一套基址（``client_base_url``）：``EMBY_PUBLIC_URL`` 优先；没配时
+    只在可信反代上采信 ``X-Forwarded-Proto`` / ``X-Forwarded-Host``，否则用请求自己的
+    scheme + Host。uvicorn 默认不信任 Docker 网关的转发头，不能靠 ``request.base_url``
+    在 TLS 终结后面拿到 https。
     """
     if request is None:
         return ""
     try:
-        base = str(request.base_url).rstrip("/")
+        base = client_base_url(request)
     except Exception:  # noqa: BLE001 — 拿不到地址就当作没推断出来
         return ""
     return base if base.startswith(("http://", "https://")) else ""
@@ -166,7 +169,7 @@ def resolve_emby_base_url_with_source(
     if realm_id is not None and db is not None and realm_id != realms.legacy_realm_id(db):
         # 非默认服还没配自己的地址：不能回退到默认服的地址（那会把用户导到别的服）
         return "", URL_SOURCE_NONE
-    env = os.getenv("EMBY_PUBLIC_URL", "").rstrip("/")
+    env = configured_public_url()
     if env:
         return env, URL_SOURCE_ENV
     inferred = _request_base_url(request)
