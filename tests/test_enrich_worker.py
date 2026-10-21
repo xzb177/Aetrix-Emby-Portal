@@ -263,6 +263,26 @@ def test_get_progress_counts_visible_only(db):
     assert p["enrich"]["done"] == 1
 
 
+def test_get_progress_probe_counts_visible_probe_types_only(db):
+    """进度接口 probe 段同口径：只数可见行、只数探测对象类型。
+
+    回归 2026-10-21 系统清点：probe 段无过滤全表分组，生产 failed 多 34、
+    skipped 多 30,227（软删行/合并副本/非探测类型被一并算入）；任务总览的
+    probe 卡（probe_worker.status_snapshot）口径是对的，这边漏修。
+    """
+    # 可见 + 探测类型：1 failed、1 skipped
+    _make_item(db, probe_status="failed")
+    _make_item(db, item_type="episode", probe_status="skipped")
+    # 合并副本 / 软删行：不计
+    _make_item(db, probe_status="failed", merged_into_id=999)
+    _make_item(db, probe_status="skipped", deleted_at=datetime.now())
+    # 非探测类型（series 等）：不计（与 status_snapshot 限 movie/episode 对齐）
+    _make_item(db, item_type="series", probe_status="failed")
+    p = enrich_worker.get_progress()
+    assert p["probe"].get("failed", 0) == 1
+    assert p["probe"].get("skipped", 0) == 1
+
+
 # ==================== claim 租约 + janitor（v2.42.9）====================
 
 

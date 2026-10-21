@@ -4645,9 +4645,17 @@ def get_progress(light: bool = False) -> dict:
             em.MediaItem.enrich_next_retry_at.isnot(None)).scalar() or 0
         probe_by_status = {}
         if not light:
+            # 与 enrich 段、probe_worker.status_snapshot 同口径：只数可见行，
+            # 且只数探测对象类型。此前无任何过滤，软删行/合并副本/非探测
+            # 类型一并计入（2026-10-21 系统清点：failed 多 34、skipped
+            # 多 30,227 的幻影数）。
+            from backend.emby_server.probe_worker import PROBE_ITEM_TYPES
             pq = db.query(em.MediaItem.probe_status,
-                          _func.count(em.MediaItem.id)).group_by(
-                              em.MediaItem.probe_status).all()
+                          _func.count(em.MediaItem.id)).filter(
+                              *_visible,
+                              em.MediaItem.item_type.in_(
+                                  PROBE_ITEM_TYPES)).group_by(
+                                      em.MediaItem.probe_status).all()
             probe_by_status = {s or "unknown": c for s, c in pq}
         return {
             "enrich": {

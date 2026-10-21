@@ -206,3 +206,34 @@ def test_dashboard_days_clamped_to_90_over_http(admin, dash_client):
         assert len(trend["series"]) == 90
     finally:
         del app.dependency_overrides[get_current_admin]
+
+
+def test_stats_overview_total_items_excludes_merged_copies(admin, db):
+    """总条目数只数可见行：合并副本不得计入。
+
+    回归 2026-10-21 系统清点：get_stats_overview 用 count_visible 无过滤，
+    生产显示 208,804 vs 真实 176,555，多算 32,249 条 merged_into_id 非空
+    的合并副本（与 portal.admin_overview 的 176,555 自相矛盾）。
+    """
+    import uuid
+    from datetime import datetime
+
+    from backend.api.admin import get_stats_overview
+    from backend.emby_server import models as em
+
+    db.query(em.MediaItem).delete()
+    db.commit()
+
+    def _mk(**kw):
+        it = em.MediaItem(
+            guid=uuid.uuid4().hex, library_id=1, item_type="movie",
+            name="清点", file_path="/tmp/x.mp4", enrich_status="done", **kw)
+        db.add(it)
+        db.commit()
+        return it
+
+    _mk()                                   # 可见行：计入
+    _mk(merged_into_id=999)                 # 合并副本：不计
+    _mk(deleted_at=datetime.now())          # 软删行：不计
+    out = get_stats_overview(admin, db)
+    assert out["emby"]["total_items"] == 1
