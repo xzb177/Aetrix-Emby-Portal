@@ -353,12 +353,15 @@ function onShelfPointerDown(e: PointerEvent) {
   const el = parcelsEl.value
   if (!el) return
   shelfDrag = { startX: e.clientX, startScroll: el.scrollLeft, moved: false }
-  try { el.setPointerCapture(e.pointerId) } catch { /* 忽略：旧浏览器不支持 */ }
   const onMove = (ev: PointerEvent) => {
     if (!(ev.buttons & 1)) { onUp(); return }
     if (!shelfDrag) return
     const dx = ev.clientX - shelfDrag.startX
-    if (Math.abs(dx) > 6) shelfDrag.moved = true
+    if (Math.abs(dx) > 6 && !shelfDrag.moved) {
+      shelfDrag.moved = true
+      // 未拖动前不捕获指针，否则 click 会落在货架上，开封后的卡片点不开播放器
+      try { el.setPointerCapture(ev.pointerId) } catch { /* 忽略：旧浏览器不支持 */ }
+    }
     if (shelfDrag.moved) el.scrollLeft = shelfDrag.startScroll - dx
   }
   const onUp = () => {

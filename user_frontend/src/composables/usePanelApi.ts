@@ -58,6 +58,7 @@ export interface ParcelItem {
   arrived_at?: string
   added_at?: string
   unsealed?: boolean
+  /** 历史字段。后端固定空串，前端不得当作播放地址。 */
   deep_link?: string
   [k: string]: unknown
 }
