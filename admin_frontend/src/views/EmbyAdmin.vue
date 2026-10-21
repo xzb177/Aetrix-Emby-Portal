@@ -919,7 +919,7 @@ async function scanAll() {
 }
 
 // ==================== 元数据与刮削 ====================
-// 定时扫描：开关 + 每天几点扫，全部由用户在后台决定（默认关闭）
+// 定时扫描：开关 + 每天几点扫（默认开启）
 const autoScan = ref<AutoScanConfig | null>(null)
 const autoScanSaving = ref(false)
 
@@ -937,7 +937,7 @@ async function loadAutoScanConfig() {
   }
 }
 
-// 自动发现新增文件：开关 + 轮询间隔（分钟），默认关闭
+// 自动发现新增文件：开关 + 轮询间隔（分钟），默认开启
 const chaseNew = ref<ChaseNewConfig | null>(null)
 /** 自动发现新增文件配置读取失败（区分「读取中」与「读不到」，两者给的提示不一样） */
 const chaseNewError = ref(false)
@@ -1134,9 +1134,8 @@ const enrichTuningSaving = ref(false)
 const enrichTuningError = ref(false)
 // 本地编辑态：整数项用字符串（原样展示库里存的值），开关项用布尔
 const tuningDraft = ref<Record<string, string>>({})
-const tmdbBatchDraft = ref(true)
-/** Batch 2（开关清理）：env-only 键——面板只读，不参与保存 */
-const TUNING_ENV_ONLY_KEYS = ['enrich_workers', 'enrich_batch']
+/** env-only 键——面板只读，不参与保存。TMDB 批量开关仍走环境变量。 */
+const TUNING_ENV_ONLY_KEYS = ['enrich_workers', 'enrich_batch', 'enrich_tmdb_batch']
 // 单集认领：日配额制：开关 + 日配额（专用区块，不进上面的通用表）
 const quotaModeDraft = ref(false)
 const dayQuotaDraft = ref('2000')
@@ -1174,6 +1173,9 @@ const TUNING_LABELS: Record<string, string> = {
   enrich_none_reschedule_days: 'none 回捞周期（天）',
   enrich_none_max_reschedules: 'none 回捞轮数上限',
   enrich_none_auto_reschedule: 'none 定时回捞开关',
+  enrich_failed_auto_reschedule: '异常终态定时回捞开关',
+  enrich_episode_quota_mode: '单集认领配额制开关',
+  enrich_field_completeness: '字段级完成口径开关',
 }
 // Step 1 的占坑位已在 Step 4 接入（回捞周期现在真实生效，不再占坑）
 
@@ -1185,7 +1187,6 @@ async function loadEnrichTuningConfig() {
     const d: Record<string, string> = {}
     for (const k of t.order || []) d[k] = t.raw?.[k] ?? t.defaults?.[k] ?? ''
     tuningDraft.value = d
-    tmdbBatchDraft.value = t.values?.enrich_tmdb_batch !== false
     quotaModeDraft.value = t.values?.enrich_episode_quota_mode === true
     dayQuotaDraft.value = t.raw?.enrich_episode_day_quota ?? t.defaults?.enrich_episode_day_quota ?? '2000'
     noneRsEnabledDraft.value = t.values?.enrich_none_auto_reschedule === true
@@ -1209,7 +1210,6 @@ async function saveEnrichTuningAction() {
     const values: Record<string, string | boolean> = { ...tuningDraft.value }
     // env-only 键面板不可写，不下发（后端也会忽略）
     for (const k of TUNING_ENV_ONLY_KEYS) delete values[k]
-    values.enrich_tmdb_batch = tmdbBatchDraft.value
     values.enrich_episode_quota_mode = quotaModeDraft.value
     values.enrich_episode_day_quota = dayQuotaDraft.value
     values.enrich_none_auto_reschedule = noneRsEnabledDraft.value
@@ -1221,7 +1221,6 @@ async function saveEnrichTuningAction() {
     const d: Record<string, string> = {}
     for (const k of res.order || []) d[k] = res.raw?.[k] ?? res.defaults?.[k] ?? ''
     tuningDraft.value = d
-    tmdbBatchDraft.value = res.values?.enrich_tmdb_batch !== false
     quotaModeDraft.value = res.values?.enrich_episode_quota_mode === true
     dayQuotaDraft.value = res.raw?.enrich_episode_day_quota ?? res.defaults?.enrich_episode_day_quota ?? '2000'
     noneRsEnabledDraft.value = res.values?.enrich_none_auto_reschedule === true
@@ -1330,6 +1329,7 @@ async function saveUnifiedFallbackAction() {
     unifiedFallbackSaving.value = false
   }
 }
+
 const rescrapeVisible = ref(false)
 const rescrapeTarget = ref<EmbyLibrary | null>(null)
 const rescrapePolicy = ref<'missing_only' | 'all'>('missing_only')
@@ -1976,7 +1976,6 @@ function typeLabel(t: string): string {
                   :min="5" :max="120" :step="5"
                   placeholder="分钟"
                   style="width: 130px"
-                  :disabled="!chaseNew.enabled"
                 />
                 <span class="drawer-hint">分钟</span>
                 <el-button type="primary" size="small" :loading="chaseNewSaving" @click="saveChaseNewAction">
@@ -2276,15 +2275,8 @@ function typeLabel(t: string): string {
               <div v-if="enrichTuning" class="tuning-list">
                 <div v-for="k in tuningOrderShown" :key="k" class="tuning-row">
                   <span class="tuning-label">{{ TUNING_LABELS[k] || k }}</span>
-                  <el-switch
-                    v-if="k === 'enrich_tmdb_batch'"
-                    v-model="tmdbBatchDraft"
-                    active-text="批量"
-                    inactive-text="逐条"
-                    :aria-label="TUNING_LABELS[k]"
-                  />
                   <el-input
-                    v-else-if="!TUNING_ENV_ONLY_KEYS.includes(k)"
+                    v-if="!TUNING_ENV_ONLY_KEYS.includes(k)"
                     v-model="tuningDraft[k]"
                     style="width: 130px"
                     :aria-label="TUNING_LABELS[k]"

@@ -251,26 +251,39 @@ def _db_item(**kw):
         db.close()
 
 
-def test_none_terminal_writes_last_scraped_at():
+def test_none_terminal_writes_last_scraped_at(monkeypatch):
     """搜过无命中（但 TMDB 未配置→走 _incomplete=False 路径）终态写戳。
 
     fetched 为空：series 无 tmdb_id、无命中 → metadata_source='none' →
     终态 done。last_scraped_at 必须有值（与「从未跑过」区分）。
     """
-    item_id = _db_item(production_year=2020)  # 标题+年份=核心字段齐→走终态
-    db = _LocalSession()
+    # 字段级完成口径缺省开：开着时缺简介会先低优先回捞一轮；
+    # 本例验经典终态写戳，经保存路径关掉，结束时删掉这行。
+    from backend import models as _models
+    from backend.integrations import store as _store
+    s = _LocalSession()
     try:
-        item = db.query(em.MediaItem).filter(
+        ew.save_enrich_tuning_config(
+            s, {ew.CFG_ENRICH_FIELD_COMPLETENESS: False})
+        item_id = _db_item(production_year=2020)  # 标题+年份=核心字段齐→走终态
+        item = s.query(em.MediaItem).filter(
             em.MediaItem.id == item_id).first()
         assert item.last_scraped_at is None
-        ew._enrich_apply(db, item, {})
-        db.commit()
-        db.refresh(item)
+        ew._enrich_apply(s, item, {})
+        s.commit()
+        s.refresh(item)
         assert item.enrich_status == "done"
         assert item.metadata_source == "none"
         assert isinstance(item.last_scraped_at, datetime)
     finally:
-        db.close()
+        s.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == ew.CFG_ENRICH_FIELD_COMPLETENESS
+        ).delete(synchronize_session=False)
+        s.commit()
+        s.close()
+        _store.invalidate(ew.CFG_ENRICH_FIELD_COMPLETENESS)
+        ew._enrich_tuning_cache["at"] = 0.0
+        ew._enrich_tuning_cache["cfg"] = None
 
 
 def test_normal_done_does_not_rewrite_existing_stamp():

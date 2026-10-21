@@ -295,7 +295,6 @@ async function saveBackup() {
   backupSaving.value = true
   try {
     backup.value = await saveBackupConfig(
-      backup.value.enabled,
       backup.value.time.trim(),
       Math.max(1, Math.min(30, Math.round(backup.value.keep_days) || 7)),
     )
@@ -599,7 +598,7 @@ onMounted(() => {
       <SectionCard title="数据库备份" :icon="Database" :meta="`上次执行 ${backup?.last_run || '—'}`">
         <div v-if="backup" class="backup-form">
           <div class="backup-row">
-            <el-switch v-model="backup.enabled" active-text="定时备份" />
+            <span class="au-badge" :class="backup.enabled ? 'au-badge-green' : 'au-badge-muted'">{{ backup.enabled ? '定时备份已开启' : '定时备份已关闭' }}</span>
             <el-time-picker
               v-model="backup.time"
               format="HH:mm"

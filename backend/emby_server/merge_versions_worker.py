@@ -43,7 +43,8 @@ MERGE_VERSIONS_BATCH_LIMIT = env_int(
     "MERGE_VERSIONS_BATCH_LIMIT", 1000, 10, 100000
 )
 
-# Q3 同剧合并配置缺省（DB system_configs 行 > 环境变量 > 这里）。
+# Q3 同剧合并配置缺省（2026-10-21 摘面板后：环境变量 > DB 存量行 > 这里，
+# 统一口径见 integrations.store 的摘面板开关表）。
 # DB 键用小写（与 ECONOMY_CONFIG_KEYS 注册一致），环境变量用大写。
 _SERIES_MERGE_DEFAULTS = {
     "series_merge_enabled": "1",
@@ -55,7 +56,7 @@ _SERIES_MERGE_DEFAULTS = {
 
 
 def series_merge_config(db) -> dict:
-    """同剧合并有效配置：DB system_configs（60 秒 TTL 热读）> 环境变量 > 代码缺省。
+    """同剧合并有效配置：环境变量 > DB system_configs 存量行（60 秒 TTL 热读）> 代码缺省。
 
     供扫描器 D2（宽松复用）与 worker D3（宽松合并通道）共用，保证两处读到
     同一份开关。返回 {"enabled", "loose_enabled", "require_year",
@@ -649,7 +650,7 @@ def _merge_once() -> Tuple[int, int]:
 
 
 def _current_interval_sec() -> float:
-    """本轮等待间隔：DB 配置 > 环境变量 > 代码缺省（读失败回模块常量）。"""
+    """本轮等待间隔：环境变量 > DB 存量行 > 代码缺省（读失败回模块常量）。"""
     try:
         from backend.database import SessionLocal
 

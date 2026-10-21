@@ -26,6 +26,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations.store import switch_env_value as _switch_env_value
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +409,15 @@ CONFIG_NOTIFY_VOTERS = "media_seek_notify_voters"
 
 def _get_bool(db: Session, key: str, default: bool = True) -> bool:
     """读布尔配置：'1'/'true' 为开，'0'/'false' 为关；缺省/脏值回 default"""
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value(key)
+    if _env_v is not None:
+        raw = str(_env_v).strip().lower()
+        if raw in ("1", "true", "yes", "on"):
+            return True
+        if raw in ("0", "false", "no", "off"):
+            return False
+        return default
     cfg = db.query(models.SystemConfig).filter(
         models.SystemConfig.key == key
     ).first()

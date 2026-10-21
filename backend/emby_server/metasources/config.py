@@ -8,9 +8,9 @@
 
 | SystemConfig 键 | 含义 | 默认 |
 |---|---|---|
-| ``meta_sources_enabled`` | 总开关（关掉 = 完全走原来的 NFO → TMDB → 豆瓣/Bangumi 链路） | 0 |
+| ``meta_sources_enabled`` | 总开关（关掉 = 完全走原来的 NFO → TMDB → 豆瓣/Bangumi 链路） | 1（2026-10-21 摘面板对齐生产现值） |
 | ``meta_sources_prefer_chinese`` | 中文信息优先 | 1 |
-| ``meta_sources_tmdb_miss_fallback`` | TMDB-miss 时走多源兜底：多源总开关的子项（链路规划 Step 2 起，统一兜底链启用时由总开关统一控制，保留键值） | 0 |
+| ``meta_sources_tmdb_miss_fallback`` | TMDB-miss 时走多源兜底：多源总开关的子项（链路规划 Step 2 起，统一兜底链启用时由总开关统一控制，保留键值） | 1（2026-10-21 摘面板对齐生产现值） |
 | ``meta_sources_order`` | 源顺序（JSON 数组，**只有这里出现的源会被采集**） | DEFAULT_ORDER |
 | ``meta_source_enabled_{id}`` | 单源开关 | 默认见 DEFAULT_ORDER（都开） |
 | ``meta_source_keys_{id}`` | 该源的密钥池（逗号分隔，与 TMDB 那套同一个拆分口径） | 空 |
@@ -155,10 +155,10 @@ def read_config(db, specs: list) -> Snapshot:
             rate=_rate(cfg(CONFIG_SOURCE_RATE.format(id=source_id), "")),
         ))
     return Snapshot(
-        enabled=_truthy(cfg(CONFIG_ENABLED, ""), False),
+        enabled=_truthy(cfg(CONFIG_ENABLED, ""), True),  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
         prefer_chinese=_truthy(cfg(CONFIG_PREFER_CN, ""), True),
         sources=sources,
-        tmdb_miss_fallback=_truthy(cfg(CONFIG_TMDB_MISS_FALLBACK, ""), False),
+        tmdb_miss_fallback=_truthy(cfg(CONFIG_TMDB_MISS_FALLBACK, ""), True),  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
     )
 
 
@@ -185,35 +185,30 @@ def _rate(raw: str) -> float:
         return DEFAULT_RATE
 
 
-def write_config(db, *, enabled: bool, prefer_chinese: bool,
-                 order: list[str], toggles: dict[str, bool],
+def write_config(db, *, enabled: bool = True, prefer_chinese: bool = True,
+                 order: list[str], toggles: dict[str, bool] | None = None,
                  keys: Optional[dict] = None,
                  rates: Optional[dict] = None,
                  tmdb_miss_fallback: Optional[bool] = None) -> int:
-    """保存配置（总开关 / 中文优先 / 顺序 / 每源开关 / 密钥池 / 限速 / TMDB-miss 兜底开关），立即热生效
+    """保存配置（总开关 / TMDB-miss 兜底 / 顺序 / 密钥池 / 限速），立即热生效。
 
-    ``keys`` / ``rates`` 是可选的：**只在字典里出现的源才写**，这样「改一下开关」
-    不会顺手把密钥池洗掉（密钥原文从不上前端，全靠这一层保留）。
+    总开关与 TMDB-miss 兜底留在面板、落库（DB 行 > 代码缺省开）。
+    ``tmdb_miss_fallback`` 不传时不写该键（保持库里原值）。
+    中文优先与逐源开关仍走 env（``prefer_chinese`` / ``toggles`` 不落库）。
 
-    ``tmdb_miss_fallback`` 同理：**不传时不写该键**（保持库里原值），防止
-    逐源改开关 / 增删密钥这类操作顺手把它关掉；传了就按值写。
+    ``keys`` / ``rates`` 只在字典里出现的源才写，「改一下顺序」不会顺手
+    把密钥池洗掉（密钥原文从不上前端，全靠这一层保留）。
     """
     from backend.integrations import store
 
     values = {
         CONFIG_ENABLED: "1" if enabled else "0",
-        CONFIG_PREFER_CN: "1" if prefer_chinese else "0",
         CONFIG_ORDER: json.dumps(list(order), ensure_ascii=False),
     }
     descriptions = {
         CONFIG_ENABLED: "多源元数据补全总开关（关闭 = 只用原来的 NFO/TMDB/豆瓣链路）",
-        CONFIG_PREFER_CN: "中文信息优先（同等条件下优先采用中文标题与简介）",
         CONFIG_ORDER: "元数据源采集顺序（JSON 数组，靠前的源先取，字段按序填充）",
     }
-    for source_id, on in (toggles or {}).items():
-        key = CONFIG_SOURCE_ENABLED.format(id=source_id)
-        values[key] = "1" if on else "0"
-        descriptions[key] = f"元数据源「{source_id}」开关"
     for source_id, pool in (keys or {}).items():
         # 接受两种形态：原始字符串（后台批量粘贴）或已拆好的列表（接口内部）
         items = list(pool) if isinstance(pool, (list, tuple)) else _split_keys(pool)

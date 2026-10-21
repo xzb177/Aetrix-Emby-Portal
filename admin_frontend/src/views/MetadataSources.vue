@@ -61,7 +61,6 @@ import {
   saveDoubanConfig,
   saveMetaSources,
   saveTmdbMirror,
-  saveDoubanBanDowngrade,
   saveTmdbLanguage,
   saveTmdbPosterLanguage,
   saveTmdbKeyCooldowns,
@@ -586,13 +585,12 @@ function restoreDefaultMirror() {
 const meta = ref<MetaSourcesConfig | null>(null)
 const metaLoading = ref(false)
 const metaSaving = ref(false)
-/** 本地草稿：开关、顺序、限速在改完点「保存」之前不动后端 */
+/** 本地草稿：总开关、TMDB-miss 兜底、顺序、限速在改完点「保存」之前不动后端。
+ * 中文优先与逐源开关仍走服务端 env，本页只读展示。 */
 const metaDraft = reactive({
   enabled: false,
-  prefer_chinese: true,
   tmdb_miss_fallback: false,
   order: [] as string[],
-  toggles: {} as Record<string, boolean>,
   rates: {} as Record<string, number>,
 })
 /** 哪个源的密钥框是张开的（默认收起，否则页面太长） */
@@ -645,7 +643,6 @@ async function saveDouban() {
 
 // ==================== 豆瓣限流降级（Batch D 入口收敛：从「媒体库 → 定时与刮削」收拢到此） ====================
 const banDowngrade = ref<DoubanBanDowngradeConfig | null>(null)
-const banDowngradeSaving = ref(false)
 const banDowngradeError = ref(false)
 
 async function loadBanDowngrade() {
@@ -655,19 +652,6 @@ async function loadBanDowngrade() {
   } catch {
     banDowngrade.value = null
     banDowngradeError.value = true
-  }
-}
-
-async function saveBanDowngradeAction() {
-  if (!banDowngrade.value) return
-  banDowngradeSaving.value = true
-  try {
-    banDowngrade.value = await saveDoubanBanDowngrade(banDowngrade.value.enabled)
-    ElMessage.success('豆瓣限流降级已保存，60 秒内生效')
-  } catch (e: any) {
-    ElMessage.error(toAdminError(e, '保存失败'))
-  } finally {
-    banDowngradeSaving.value = false
   }
 }
 
@@ -837,13 +821,11 @@ const metaDirty = computed(() => {
   if (!cfg) return false
   return (
     cfg.enabled !== metaDraft.enabled ||
-    cfg.prefer_chinese !== metaDraft.prefer_chinese ||
     cfg.tmdb_miss_fallback !== metaDraft.tmdb_miss_fallback ||
     cfg.order.join(',') !== metaDraft.order.join(',') ||
     metaRows.value.some((r) => {
-      const on = metaDraft.toggles[r.id] ?? r.enabled
       const rate = metaDraft.rates[r.id] ?? r.rate
-      return on !== r.enabled || rate !== r.rate
+      return rate !== r.rate
     })
   )
 })
@@ -856,20 +838,14 @@ async function loadMeta() {
     const cfg = await fetchMetaSources()
     meta.value = cfg
     metaDraft.enabled = cfg.enabled
-    metaDraft.prefer_chinese = cfg.prefer_chinese
     metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
     metaDraft.order = [...cfg.order]
-    metaDraft.toggles = {}
     metaDraft.rates = {}
   } catch {
     meta.value = null
   } finally {
     metaLoading.value = false
   }
-}
-
-function sourceToggle(row: MetaSourceRow): boolean {
-  return metaDraft.toggles[row.id] ?? row.enabled
 }
 
 function sourceRate(row: MetaSourceRow): number {
@@ -881,27 +857,21 @@ async function saveMeta() {
   try {
     const cfg = await saveMetaSources({
       enabled: metaDraft.enabled,
-      prefer_chinese: metaDraft.prefer_chinese,
       tmdb_miss_fallback: metaDraft.tmdb_miss_fallback,
       order: [...metaDraft.order],
-      toggles: Object.fromEntries(
-        metaRows.value.map((r) => [r.id, metaDraft.toggles[r.id] ?? r.enabled]),
-      ),
       rates: Object.fromEntries(
         metaRows.value.map((r) => [r.id, Number(metaDraft.rates[r.id] ?? r.rate)]),
       ),
     })
     meta.value = cfg
     metaDraft.enabled = cfg.enabled
-    metaDraft.prefer_chinese = cfg.prefer_chinese
     metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
     metaDraft.order = [...cfg.order]
-    metaDraft.toggles = {}
     metaDraft.rates = {}
     ElMessage.success(
       cfg.enabled
         ? `已保存并生效：${cfg.active_count} 个源参与采集`
-        : '已保存：多源补全已关闭，补全走原来的 NFO / TMDB / 豆瓣链路',
+        : '已保存（多源总开关当前关闭，配置会在开启后生效）',
     )
   } catch {
     /* 拦截器已提示 */
@@ -915,10 +885,8 @@ function revertMeta() {
   const cfg = meta.value
   if (!cfg) return
   metaDraft.enabled = cfg.enabled
-  metaDraft.prefer_chinese = cfg.prefer_chinese
   metaDraft.tmdb_miss_fallback = cfg.tmdb_miss_fallback
   metaDraft.order = [...cfg.order]
-  metaDraft.toggles = {}
   metaDraft.rates = {}
 }
 
@@ -1195,17 +1163,7 @@ onMounted(() => {
               <el-switch v-model="metaDraft.enabled" />
               <div>
                 <div class="ms-switch-title">启用多源补全</div>
-                <div class="ms-hint">关 = 走原来的单源链路；开 = TMDB 没命中时按顺序问其它源</div>
-              </div>
-            </div>
-            <div class="ms-switch">
-              <el-switch v-model="metaDraft.prefer_chinese" />
-              <div>
-                <div class="ms-switch-title">中文信息优先</div>
-                <div class="ms-hint">
-                  只影响<strong>标题与简介</strong>：中文源的文案压过优先级更高但给英文的源；
-                  类型、评分、海报、外部 ID 仍按顺序取
-                </div>
+                <div class="ms-hint">关 = 走原来的单源链路；开 = TMDB 没命中时按顺序问其它源。默认开启</div>
               </div>
             </div>
             <div class="ms-switch ms-switch-sub">
@@ -1222,7 +1180,7 @@ onMounted(() => {
                   现在起降级为总开关的子项：统一兜底链（一个豆瓣入口）
                   启用时由总开关统一控制，不再独立门控；保留键值用于回滚。
                   未启用时保持原语义——只对<strong>中文标题的剧 / 电影</strong>生效：
-                  TMDB 搜过无命中、豆瓣也没兜上时，按上面的顺序再问其它源
+                  TMDB 搜过无命中、豆瓣也没兜上时，按上面的顺序再问其它源。默认开启
                 </div>
               </div>
             </div>
@@ -1247,7 +1205,7 @@ onMounted(() => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in metaRows" :key="row.id" :class="{ 'ms-off': !sourceToggle(row) }">
+              <tr v-for="row in metaRows" :key="row.id" :class="{ 'ms-off': !row.enabled }">
                 <td>
                   <div class="ms-order-cell">
                     <span class="ms-pos">{{ draftPosition(row) + 1 }}</span>
@@ -1278,10 +1236,7 @@ onMounted(() => {
                   <div v-if="row.skipped_reason" class="ms-note warn">{{ row.skipped_reason }}</div>
                 </td>
                 <td class="ms-toggle-cell">
-                  <el-switch
-                    :model-value="sourceToggle(row)"
-                    @update:model-value="(v: string | number | boolean) => (metaDraft.toggles[row.id] = Boolean(v))"
-                  />
+                  <span class="mini-badge" :class="row.enabled ? 'ok' : 'warn'">{{ row.enabled ? '参与' : '未参与' }}</span>
                 </td>
                 <td class="ms-rate-cell">
                   <span class="ms-cell-label">限速</span>
@@ -1291,7 +1246,7 @@ onMounted(() => {
                     size="small"
                     :min="0"
                     :step="0.5"
-                    :disabled="!sourceToggle(row)"
+                    :disabled="!row.enabled"
                     @update:model-value="(v: string | number) => (metaDraft.rates[row.id] = Number(v))"
                   >
                     <template #append>秒</template>
@@ -1470,7 +1425,7 @@ onMounted(() => {
         </template>
       </SectionCard>
 
-      <!-- 0.5 豆瓣（可选）：中文兜底源，默认关闭。Batch D：限流降级从媒体库页收拢到此 -->
+      <!-- 0.5 豆瓣（可选）：中文兜底源，默认开启。Batch D：限流降级从媒体库页收拢到此 -->
       <SectionCard id="card-douban" class="ms-card" title="豆瓣（可选）" :icon="BookOpen">
         <template #actions>
           <div class="ms-facts">
@@ -1481,7 +1436,7 @@ onMounted(() => {
           </div>
         </template>
         <p class="ms-hint">
-          豆瓣是<strong>可选</strong>的中文兜底源，<strong>默认关闭</strong>。
+          豆瓣是<strong>可选</strong>的中文兜底源，<strong>默认开启</strong>。
           开启后，<strong>仅在 TMDB 未命中时</strong>对含中文的标题走豆瓣搜索：
           搜中则取详情（标题 / 简介 / 评分 / 海报）写库，没搜中则保持原状。
           关闭时不发出任何豆瓣请求，中文标题也直接走 TMDB。
@@ -1508,7 +1463,7 @@ onMounted(() => {
               <el-switch v-model="doubanDraft.enabled" />
               <div>
                 <div class="ms-switch-title">启用豆瓣中文兜底</div>
-                <div class="ms-hint">关 = 不打任何豆瓣请求，中文标题也直接走 TMDB（默认）</div>
+                <div class="ms-hint">关 = 不打任何豆瓣请求，中文标题也直接走 TMDB。默认开启</div>
               </div>
             </div>
           </div>
@@ -1541,8 +1496,7 @@ onMounted(() => {
             期间命中从严（标题 + 年份都对上才落库，宁可没命中也不乱认）。解封后自动恢复原顺序（保存后 60 秒内生效）。
           </p>
           <div v-if="banDowngrade" class="ms-actions">
-            <el-switch v-model="banDowngrade.enabled" active-text="开启" inactive-text="关闭" aria-label="豆瓣限流降级开关" />
-            <el-button type="primary" size="small" :loading="banDowngradeSaving" @click="saveBanDowngradeAction">保存</el-button>
+            <span class="mini-badge" :class="banDowngrade.enabled ? 'ok' : 'warn'">降级{{ banDowngrade.enabled ? '已开启' : '未开启' }}（服务端配置控制）</span>
             <span class="mini-badge" :class="banDowngrade.banned ? 'warn' : 'ok'">
               {{ banDowngrade.banned ? `限流中（剩余约 ${Math.round(banDowngrade.ban_remaining_sec)} 秒），降级${banDowngrade.enabled ? '生效中' : '未开启'}` : '豆瓣正常' }}
             </span>

@@ -34,9 +34,10 @@ CONFIG_POST_TITLE = "teaser_post_title"
 CONFIG_POST_DESC = "teaser_post_desc"
 CONFIG_POST_LINK = "teaser_post_link"
 
-#: 写白名单：超出这 7 个键的一律拒绝（不是忽略，是 400 —— 配错了要让人知道）
+#: 写白名单：超出这 6 个键的一律拒绝（不是忽略，是 400 —— 配错了要让人知道）
+#: A 类开关摘面板（2026-10-21）：teaser_enabled 不再经面板写——改走 env
+#: TEASER_ENABLED（缺省开，与下方读缺省一致）。
 WRITABLE_KEYS = (
-    CONFIG_ENABLED,
     CONFIG_REVEAL_AT,
     CONFIG_PRE_TITLE,
     CONFIG_PRE_SUBTITLE,
@@ -166,8 +167,6 @@ def write_admin(db, values: dict) -> dict:
         raise ValueError(f"未知配置项: {', '.join(unknown)}")
 
     payload: dict[str, str] = {}
-    if CONFIG_ENABLED in values:
-        payload[CONFIG_ENABLED] = "1" if _truthy(values[CONFIG_ENABLED], True) else "0"
     if CONFIG_REVEAL_AT in values:
         raw = str(values[CONFIG_REVEAL_AT] or "").strip()
         if raw and _parse_reveal_at(raw) is None:

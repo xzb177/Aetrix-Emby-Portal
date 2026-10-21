@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 admin_reminders_router = APIRouter(prefix="/api/admin", tags=["管理后台·到期提醒"])
 
 # 可由面板改写的配置项白名单（其余键一律忽略）
-REMINDER_CONFIG_KEYS = (reminders.CONFIG_ENABLED, reminders.CONFIG_DAYS)
+# A 类开关摘面板（2026-10-21）：expiry_reminder_enabled 不再经面板写——
+# 改走 env EXPIRY_REMINDER_ENABLED（缺省=开）；面板只剩提醒档位。
+REMINDER_CONFIG_KEYS = (reminders.CONFIG_DAYS,)
 
 
 class ReminderSettingsRequest(BaseModel):
@@ -61,9 +63,8 @@ def update_expiry_reminder_settings(
         if key not in REMINDER_CONFIG_KEYS:
             continue
         if key == reminders.CONFIG_ENABLED:
-            # 保留今天口径：bool(value) 强转（字符串 "false" 也是 truthy → 存 "true"）
-            values[key] = "true" if bool(value) else "false"
-            changed[key] = bool(value)
+            # 摘面板后忽略（见 REMINDER_CONFIG_KEYS 注释），不再落库
+            continue
         else:
             text = "" if value is None else str(value).strip()
             values[key] = text

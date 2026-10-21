@@ -332,7 +332,7 @@ export const fetchCouponUsages = (params: { limit?: number; coupon_id?: number }
 
 export const fetchCouponSettings = () => get<CouponSettings>('/economy/coupons/settings')
 
-export const updateCouponSettings = (data: { enabled: boolean; reserve_hours?: number }) =>
+export const updateCouponSettings = (data: { reserve_hours?: number }) =>
   put<{ success: boolean; enabled: boolean; reserve_hours: number }>('/economy/coupons/settings', data)
 
 // ==================== 邀请与积分 ====================
@@ -363,13 +363,13 @@ export const updateEconomySettings = (settings: EconomySettings) =>
 // 配置读取唯一实现：backend/emby_server/play_sign.py
 
 export interface HotlinkConfigPayload {
-  enabled: boolean
   play_sign_ttl: number
   /** Referer 白名单（逗号分隔域名），不传则后端不改 */
   allowed_referers?: string
 }
 
 export interface HotlinkConfig extends HotlinkConfigPayload {
+  enabled: boolean
   defaults: { enabled: boolean; play_sign_ttl: number }
 }
 
@@ -388,13 +388,13 @@ export const updateHotlinkConfig = (payload: HotlinkConfigPayload) =>
 // 配置读取唯一实现：backend/emby_server/items_dedup_cache.py
 
 export interface ItemsDedupCacheConfigPayload {
-  enabled: boolean
   ttl_seconds: number
   max_entries: number
 }
 
 export interface ItemsDedupCacheConfig extends ItemsDedupCacheConfigPayload {
-  defaults: ItemsDedupCacheConfigPayload
+  enabled: boolean
+  defaults: ItemsDedupCacheConfigPayload & { enabled: boolean }
 }
 
 export const fetchItemsDedupCacheConfig = () =>
@@ -441,7 +441,7 @@ export interface ReminderRunSummary {
 export const fetchReminderStatus = () => get<ReminderStatus>('/economy/expiry-reminders')
 
 export const updateReminderSettings = (
-  settings: { expiry_reminder_enabled?: boolean; expiry_reminder_days?: string }
+  settings: { expiry_reminder_days?: string }
 ) =>
   put<{ success: boolean; settings: Record<string, unknown>; status: ReminderStatus }>(
     '/economy/expiry-reminders/settings', { settings }

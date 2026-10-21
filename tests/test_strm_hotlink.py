@@ -170,7 +170,9 @@ class TestPlaySignConfig:
         _set_config(db, play_sign.CONFIG_PLAY_SIGN_TTL, "not-a-number")
         assert play_sign.play_sign_ttl_seconds(db) == 900  # 非法回落默认
 
-    def test_write_config_roundtrip(self, db):
+    def test_write_config_roundtrip(self, db, monkeypatch):
+        # 2026-10-21 A 类开关摘面板：开关改走 env，测试按 env 设置
+        monkeypatch.setenv("HOTLINK_PROTECTION_ENABLED", "false")
         from backend import models
         from backend.emby_server import play_sign
 
@@ -178,13 +180,16 @@ class TestPlaySignConfig:
         assert payload["enabled"] is False
         assert payload["play_sign_ttl"] == 1800
         assert payload["defaults"] == {"enabled": True, "play_sign_ttl": 900}
-        # 落库 + description
+        # 摘面板后开关不再落库（enabled 参数仅兼容保留），生效值来自 env
         row = db.query(models.SystemConfig).filter(
             models.SystemConfig.key == play_sign.CONFIG_HOTLINK_ENABLED).first()
-        assert row.value == "false"
-        assert row.description
-        # 热读即时生效（write_config 内已 invalidate）
+        assert row is None
         assert play_sign.hotlink_enabled(db) is False
+        # TTL 仍正常落库 + description
+        ttl_row = db.query(models.SystemConfig).filter(
+            models.SystemConfig.key == play_sign.CONFIG_PLAY_SIGN_TTL).first()
+        assert ttl_row is not None and ttl_row.value == "1800"
+        assert ttl_row.description
 
     def test_write_config_rejects_out_of_range(self, db):
         from backend.emby_server import play_sign

@@ -271,44 +271,29 @@ WELFARE_CONFIG_KEYS = {
     # C4 商店改造：快捷金额
     "recharge_quick_amounts": "10,30,50,100,200",
     # B4 TG Bot 总控：总开关、群白名单、限流、各命令开关、红包开关
-    "bot_enabled": "true",
     "bot_group_ids": "",
     "bot_rate_limit_seconds": "3",
     "bot_group_rate_limit": "20",
-    "bot_cmd_checkin": "true",
-    "bot_cmd_points": "true",
-    "bot_cmd_redeem": "true",
-    "bot_cmd_bind": "true",
-    "bot_redpacket_enabled": "true",
     "redpacket_fee_pct": "5",
     "redpacket_send_limit_7d": "20",
     "redpacket_recv_limit_7d": "10",
     # 红包过期自动退款：总开关 + 扫描间隔（秒，最小 60）
-    "redpacket_refund_enabled": "true",
     "redpacket_refund_interval_sec": "300",
     # TG 门禁：公益服能力（签到/积分/红包/抽奖）是否要求绑定 Telegram
     "welfare_require_tg_bind": "1",
     # 群抽奖：总开关默认开（关闭后不可新建活动），允许群逗号分隔、空=不限制
-    "lottery_enabled": "1",
     "lottery_group_ids": "",
     # 群抽奖自动开奖：总开关默认开，扫描间隔默认 60 秒（最小 30），开奖通知默认开
-    "lottery_auto_draw_enabled": "1",
     "lottery_draw_interval_sec": "60",
-    "lottery_notify_winners": "1",
     # 三重门：身份门（参赛者必须在 TG 群里，默认开）/ 资格门（新号限制天数、每日参加上限，默认 0=不限制）
     "lottery_require_group_member": "1",
     "lottery_min_account_age_days": "0",
     "lottery_max_joins_per_day": "0",
     # 注册后 TG 绑定引导页总开关
-    "tg_bind_guide_enabled": "1",
     # 求片 v2：总开关 / 附议 / 附议者入库通知（默认全开）
-    "media_seek_enabled": "1",
-    "media_seek_vote_enabled": "1",
-    "media_seek_notify_voters": "1",
-# M1 群发言积分：总开关默认关闭，服主手动开启
+# M1 群发言积分：总开关默认关闭，服主手动开启（默认关的开关保留面板，2026-10-21）
     "chat_points_enabled": "false",
     # C2 积分转账：总开关默认开启，手续费/限额可配（0=不收/不限）
-    "points_transfer_enabled": "1",
     "points_transfer_fee_pct": "5",
     "points_transfer_min": "1",
     "points_transfer_max": "0",

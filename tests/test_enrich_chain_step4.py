@@ -73,6 +73,20 @@ def _set_flag(value: str):
     _clear_tuning_cache()
 
 
+def _drop_flag():
+    from backend import models as _models
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == FLAG
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    store.invalidate(FLAG)
+    _clear_tuning_cache()
+
+
 def _set_max_rounds(value: str):
     _clear_tuning_cache()
     db = SessionLocal()
@@ -87,13 +101,10 @@ def _set_max_rounds(value: str):
 
 @pytest.fixture(autouse=True)
 def _flag_off():
-    # 每个测试前后都把 flag 复位为 0、轮数上限复位为默认值 6：既保证本文件内
-    # 默认关，也防止 _flag_on() / _set_max_rounds() 的值泄漏到本文件之后的
-    # 其它测试文件（SystemConfig 是落库的，跨文件共享同一个 DB 会话工厂）。
     _set_flag("0")
     _set_max_rounds("6")
     yield
-    _set_flag("0")
+    _drop_flag()
     _set_max_rounds("6")
 
 
@@ -318,12 +329,15 @@ def test_none_stock_stats(db):
 # ================= Step 4 补强：轮数上限 + 锁定跳过 =================
 
 def test_none_tuning_specs_registered(db):
-    """新键注册：周期默认 14、轮数上限默认 6、开关默认关（面板同口径）"""
+    """新键注册：周期默认 14、轮数上限默认 6。
+
+    开关 spec 缺省 2026-10-21 现值对齐后为 "1"（生产现值=开）；本文件
+    fixture 写库强制关，故 cfg 读到 False（库行优先于 spec 缺省）。"""
     specs = {k: (default, kind) for k, _, default, kind, _, _, _
              in ew._ENRICH_TUNING_SPECS}
     assert specs[ew.CFG_ENRICH_NONE_RESCHEDULE_DAYS] == ("14", "int")
     assert specs[ew.CFG_ENRICH_NONE_MAX_RESCHEDULES] == ("6", "int")
-    assert specs[ew.CFG_ENRICH_NONE_AUTO_RESCHEDULE] == ("0", "flag1")
+    assert specs[ew.CFG_ENRICH_NONE_AUTO_RESCHEDULE] == ("1", "flag1")
     cfg = ew.get_enrich_tuning_config(db)["values"]
     assert cfg[ew.CFG_ENRICH_NONE_RESCHEDULE_DAYS] == 14
     assert cfg[ew.CFG_ENRICH_NONE_MAX_RESCHEDULES] == 6

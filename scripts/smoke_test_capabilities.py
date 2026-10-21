@@ -196,6 +196,30 @@ staff_id, user_id = staff.id, user.id
 db.close()
 
 ADMIN_H = {"Authorization": f"Bearer {create_access_token(staff_id, {'username': 'staff'})}"}
+
+
+# 2026-10-21 A 类开关摘面板：能力页里缺省开的开关（ai_enabled /
+# captcha_protect_login / captcha_protect_register）不再经面板落库，改走 env；
+# 缺省关的（proxy_enabled / email_enabled / captcha_protect_admin_login）
+# 按服主口径保留在面板，照旧 PUT 落库（辅助函数按开关表自动区分）。冒烟里仍按
+# 「保存一次配置」来驱动：开关键改设 env，其余字段照常 PUT（PUT 会触发能力
+# 重新应用，如代理环境变量的写入/清理）。
+from backend.integrations.store import PANEL_REMOVED_SWITCHES as _PANEL_SWITCHES  # noqa: E402
+
+_SWITCH_ENV = dict(_PANEL_SWITCHES)
+
+
+def cap_put(url, headers=None, json=None):
+    body = dict(json or {})
+    values = dict(body.get("values") or {})
+    for key in list(values):
+        if key in _SWITCH_ENV:
+            raw = values.pop(key)
+            on = raw is True or str(raw).strip().lower() in ("1", "true", "yes", "on")
+            os.environ[_SWITCH_ENV[key]] = "true" if on else "false"
+    invalidate()
+    body["values"] = values
+    return client.put(url, headers=headers, json=body)
 USER_H = {"Authorization": f"Bearer {create_access_token(user_id, {'username': 'user'})}"}
 
 
@@ -238,7 +262,7 @@ check("未知能力返回 404", r.status_code == 404, f"HTTP {r.status_code}")
 
 # ==================== 2. 网络代理 ====================
 
-r = client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
+r = cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
     "proxy_enabled": True, "proxy_scheme": "socks5", "proxy_host": "127.0.0.1",
     "proxy_port": "1080", "proxy_username": "u ser", "proxy_password": "p@ss word",
     "proxy_no_proxy": "localhost,127.0.0.1,10.0.0.5",
@@ -259,19 +283,19 @@ check("代理密码只回掩码", values["proxy_password"] == "******", str(valu
 check("非密钥字段原样回显", values["proxy_host"] == "127.0.0.1")
 
 # 提交 ****** 不应覆盖已有密码
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
     "proxy_password": "******", "proxy_host": "127.0.0.1"}})
 check("提交掩码不覆盖已有密钥",
       proxy_cap._read(SessionLocal(), "proxy_password") == "p@ss word")
 
 # 留空 = 显式清除（否则密钥只换不撤：代理密码改了、Bot Token 不想用了都删不掉）
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H,
            json={"values": {"proxy_password": ""}})
 check("留空即清除已保存的密钥",
       proxy_cap._read(SessionLocal(), "proxy_password") == "")
 check("只提交一个字段不会顺带清掉别的字段",
       proxy_cap._read(SessionLocal(), "proxy_host") == "127.0.0.1")
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H,
            json={"values": {"proxy_password": "p@ss word"}})   # 复原，后面还要用
 
 # 真实测试：假出口证明请求确实发出去了
@@ -290,7 +314,7 @@ check("代理不可达时如实报错", r.status_code == 200 and not r.json()["o
 restore_httpx()
 
 # 关闭后必须清干净（否则以后的出站请求还会去找代理）
-r = client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
+r = cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H,
                json={"values": {"proxy_enabled": False}})
 check("关闭代理后环境变量被清空",
       all(os.environ.get(k) is None for k in proxy_cap.ENV_KEYS),
@@ -310,7 +334,7 @@ check("未配置时不要求验证（不锁门）", r.json()["enabled"] is False
 r = client.post("/api/user/auth/login", json={"username": f"cap_usr{suf}", "password": "pass12345"})
 check("未配置人机验证时登录照常可用", r.status_code == 200, f"HTTP {r.status_code}")
 
-client.put("/api/admin/capabilities/captcha", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/captcha", headers=ADMIN_H, json={"values": {
     "captcha_provider": "turnstile", "captcha_site_key": "site-key-123",
     "captcha_secret_key": "secret-key-456",
     "captcha_protect_login": True, "captcha_protect_register": True,
@@ -360,7 +384,7 @@ check("注册也受保护", r.status_code == 400 and "人机验证" in r.json()[
       f"HTTP {r.status_code} {r.text[:120]}")
 
 # ---- 管理后台登录：站点最值钱的入口，同一道闸 ----
-client.put("/api/admin/capabilities/captcha", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/captcha", headers=ADMIN_H, json={"values": {
     "captcha_protect_admin_login": True}})
 use_routes({"siteverify": lambda m, u, k: FakeResponse(200, {"success": True})})
 
@@ -380,7 +404,7 @@ r = client.post("/api/admin/auth/login", json={"username": f"cap_stf{suf}",
                                                "captcha_token": "good-token"})
 check("后台登录带有效令牌时放行", r.status_code == 200, f"HTTP {r.status_code} {r.text[:120]}")
 
-client.put("/api/admin/capabilities/captcha", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/captcha", headers=ADMIN_H,
            json={"values": {"captcha_protect_admin_login": False}})
 r = client.post("/api/admin/auth/login", json={"username": f"cap_stf{suf}", "password": "pass12345"})
 check("关掉后台保护后不用令牌也能登", r.status_code == 200, f"HTTP {r.status_code}")
@@ -399,7 +423,7 @@ check("私钥有效时报成功", r.json()["ok"] is True, r.json().get("message"
 restore_httpx()
 
 # 关掉保护：登录必须立刻恢复可用（能力要能一键退场）
-client.put("/api/admin/capabilities/captcha", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/captcha", headers=ADMIN_H,
            json={"values": {"captcha_provider": "none"}})
 r = client.post("/api/user/auth/login", json={"username": f"cap_usr{suf}", "password": "pass12345"})
 check("关闭人机验证后登录立刻恢复", r.status_code == 200, f"HTTP {r.status_code}")
@@ -411,7 +435,7 @@ check("关闭后挂件不再启用且不下发站点密钥",
 
 # ==================== 4. 邮件与模板 ====================
 
-client.put("/api/admin/capabilities/mail", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/mail", headers=ADMIN_H, json={"values": {
     "email_enabled": True, "email_smtp_host": "smtp.example.com", "email_smtp_port": "465",
     "email_smtp_user": "noreply@example.com", "email_smtp_password": "smtp-secret",
     "email_from_name": "云海 Emby", "email_from_email": "notice@example.com",
@@ -451,7 +475,7 @@ check("投递失败时如实上报原因",
 smtplib.SMTP = _ORIGINAL_SMTP
 smtplib.SMTP_SSL = _ORIGINAL_SMTP_SSL
 
-client.put("/api/admin/capabilities/mail", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/mail", headers=ADMIN_H,
            json={"values": {"email_enabled": False}})
 service = notifications.get_notification_service()
 check("关掉邮件后渠道立刻退场", "email" not in service.channels)
@@ -464,7 +488,7 @@ check("「关了但配过」与「从没配」能区分开",
 
 # ==================== 5. Telegram ====================
 
-client.put("/api/admin/capabilities/telegram", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/telegram", headers=ADMIN_H,
            json={"values": {"telegram_bot_token": "123456:ABC-DEF"}})
 service = notifications.get_notification_service()
 check("保存 Token 后 Telegram 渠道立刻生效",
@@ -495,7 +519,7 @@ check("未配置时用户端看不到助手入口", r.status_code == 200 and r.j
 r = client.post("/api/user/ai/ask", headers=USER_H, json={"question": "你好"})
 check("未配置时提问得到 503（而不是 500）", r.status_code == 503, f"HTTP {r.status_code}")
 
-client.put("/api/admin/capabilities/ai", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/ai", headers=ADMIN_H, json={"values": {
     "ai_enabled": True, "ai_base_url": "https://api.example.com/v1",
     "ai_api_keys": "key-one\nkey-two", "ai_model": "demo-model",
     "ai_system_prompt": "你是客服", "ai_daily_limit": "2",
@@ -574,12 +598,12 @@ r = client.post("/api/user/ai/ask", headers=USER_H, json={"question": "上游挂
 check("上游报错时把状态码透给用户",
       r.status_code == 502 and "500" in r.json()["detail"], f"HTTP {r.status_code} {r.text[:140]}")
 
-client.put("/api/admin/capabilities/ai", headers=ADMIN_H, json={"values": {"ai_enabled": False}})
+cap_put("/api/admin/capabilities/ai", headers=ADMIN_H, json={"values": {"ai_enabled": False}})
 r = client.get("/api/user/ai/status", headers=USER_H)
 check("关闭 AI 后用户端入口消失", r.json()["enabled"] is False, r.text[:140])
 
 # ---- 配额落库：多进程/多会话共用同一份计数，且绝不超过上限 ----
-client.put("/api/admin/capabilities/ai", headers=ADMIN_H, json={"values": {"ai_enabled": True}})
+cap_put("/api/admin/capabilities/ai", headers=ADMIN_H, json={"values": {"ai_enabled": True}})
 clear_ai_usage(user_id)
 
 db = SessionLocal()
@@ -634,7 +658,7 @@ check("未配置时不做任何查询", geoip_cap.region_of(db, "8.8.8.8") == ""
 db.close()
 
 use_routes({})
-client.put("/api/admin/capabilities/geoip", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/geoip", headers=ADMIN_H, json={"values": {
     "geoip_provider": "tencent", "geoip_tencent_key": "tx-key", "geoip_cache_hours": "24",
 }})
 check("保存后没有触发外部查询", FakeHttpxClient.calls == [], str(FakeHttpxClient.calls[:2]))
@@ -691,7 +715,7 @@ check("后台日志接口返回归属地", bool(logs) and logs[0].get("region") 
 restore_httpx()
 
 # 切换提供方：apply 必须让缓存的提供方立刻失效（否则保存后要等 30 秒）
-client.put("/api/admin/capabilities/geoip", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/geoip", headers=ADMIN_H,
            json={"values": {"geoip_provider": "mmdb", "geoip_mmdb_path": "/tmp/not-there.mmdb"}})
 db = SessionLocal()
 check("保存后提供方缓存立刻失效", geoip_cap.provider(db) == "mmdb", geoip_cap.provider(db))
@@ -704,7 +728,7 @@ db.close()
 
 # ==================== 8. 保存边界 ====================
 
-r = client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
+r = cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
     "proxy_enabled": True, "proxy_host": "10.0.0.9",
     "proxy_scheme": "不是协议",          # 非法枚举 → 回落到默认值
     "proxy_port": "abc",                 # 非法整数 → 回落默认
@@ -734,7 +758,7 @@ check("品牌信息是公开端点（未登录可读）", r.status_code == 200, 
 check("未配置时回落到默认站名",
       r.json()["site_name"] == "Aetrix" and r.json()["theme_color"] == "#22d3ee", r.text[:160])
 
-client.put("/api/admin/capabilities/branding", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/branding", headers=ADMIN_H, json={"values": {
     "site_name": "云海影库", "site_logo_url": "https://cdn.example.com/logo.png",
     "site_theme_color": "#f43f5e", "site_seo_title": "云海影库 · 在线观影",
     "site_seo_description": "一个自建影视站", "site_seo_keywords": "emby,影视",
@@ -757,7 +781,7 @@ check("硬调测试接口也只会如实说「不支持测试」",
       r.text[:140])
 
 # 主题色与 Logo 会被写进页面，必须校验格式（否则等于把任意 CSS / 任意协议交给后台表单）
-client.put("/api/admin/capabilities/branding", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/branding", headers=ADMIN_H, json={"values": {
     "site_theme_color": "red; background: url(evil)", "site_logo_url": "javascript:alert(1)",
 }})
 brand = client.get("/api/site/branding").json()
@@ -766,7 +790,7 @@ check("非法主题色回落默认值（不把任意 CSS 写进页面）",
 check("非 http(s) / 站内相对路径的 Logo 被忽略",
       brand["logo_url"] == "", brand["logo_url"])
 
-client.put("/api/admin/capabilities/branding", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/branding", headers=ADMIN_H,
            json={"values": {"site_theme_color": "#0ea5e9", "site_logo_url": "/logo.png"}})
 brand = client.get("/api/site/branding").json()
 check("合法主题色与站内相对路径都按原样下发",
@@ -782,7 +806,7 @@ check("主题色同步给后台卡片状态",
 # 管理员配过的代理必须能在重启后自己回来（否则一次重启就把出站请求打回直连了）。
 from backend import integrations  # noqa: E402 — 与前面同一模块，这里显式引用以表明检查目标
 
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
     "proxy_enabled": True, "proxy_host": "10.9.9.9", "proxy_scheme": "http", "proxy_port": "3128",
     "proxy_username": "", "proxy_password": "",   # 清掉凭据，断言 URL 更好读
 }})
@@ -794,7 +818,7 @@ db.close()
 check("启动落地能把代理重新写回环境",
       os.environ.get("HTTP_PROXY") == "http://10.9.9.9:3128", os.environ.get("HTTP_PROXY", ""))
 
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H,
            json={"values": {"proxy_enabled": False}})
 for key in proxy_cap.ENV_KEYS:
     os.environ.pop(key, None)
@@ -862,7 +886,7 @@ class _FakeProxy(socketserver.ThreadingTCPServer):
 _TMDB_ENV_BACKUP = {k: os.environ.get(k) for k in ("TMDB_API_KEY", "TMDB_API_KEYS")}
 
 # 直连状态：建好的会话不带代理，且「代理没变」时不会反复重建连接池
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {"proxy_enabled": False}})
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {"proxy_enabled": False}})
 os.environ.pop("TMDB_API_KEYS", None)
 os.environ["TMDB_API_KEY"] = "smoke-tmdb-key"
 tmdb = tmdb_mod.TmdbClient()
@@ -880,7 +904,7 @@ proxy_port = proxy_server.server_address[1]
 threading.Thread(target=proxy_server.serve_forever, daemon=True).start()
 
 # 管理员保存代理：下一次请求前必须重建会话，并且新的连接池真的指向新代理
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
     "proxy_enabled": True, "proxy_scheme": "http", "proxy_host": "127.0.0.1",
     "proxy_port": str(proxy_port), "proxy_username": "", "proxy_password": "",
     "proxy_no_proxy": "localhost,127.0.0.1",
@@ -919,7 +943,7 @@ proxy_server.shutdown()
 proxy_server.server_close()
 
 # 启动落地路径（apply_all）改的代理同样要能被察觉：那条路径不经过保存接口
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H,
            json={"values": {"proxy_port": "18081"}})
 before_apply = tmdb.session
 db = SessionLocal()
@@ -932,7 +956,7 @@ check("重建后的会话跟随 apply_all 写的代理",
       str(_session_proxies(tmdb.session)))
 
 # 关掉代理：下一次请求前回到直连（不能一直挂着旧代理）
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
+cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H,
            json={"values": {"proxy_enabled": False}})
 tmdb._ensure_session()
 check("关闭代理后刮削会话回到直连", _session_proxies(tmdb.session) == set(),
@@ -943,7 +967,7 @@ singleton = tmdb_mod.tmdb_client
 if singleton.session is None:
     print("SKIP  进程级单例跟随代理 — 本进程启动时未配 TMDB 密钥")
 else:
-    client.put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
+    cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
         "proxy_enabled": True, "proxy_scheme": "http", "proxy_host": "127.0.0.1",
         "proxy_port": "18082", "proxy_username": "", "proxy_password": "",
     }})

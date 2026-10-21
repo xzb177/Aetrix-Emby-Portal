@@ -75,7 +75,7 @@ def get_config(db) -> dict:
 
     vals = store.read_values(
         db, [CONFIG_ENABLED, CONFIG_DOMAIN],
-        {CONFIG_ENABLED: "false", CONFIG_DOMAIN: ""},
+        {CONFIG_ENABLED: "true", CONFIG_DOMAIN: ""},  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
     )
     return {
         "enabled": _is_true(vals[CONFIG_ENABLED]),

@@ -36,6 +36,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models, realms
+from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,10 @@ MESSAGE_TYPE = "subscription"
 
 
 def _config_value(db: Session, key: str) -> Optional[str]:
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value(key)
+    if _env_v is not None:
+        return _env_v
     row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     return row.value if row else None
 

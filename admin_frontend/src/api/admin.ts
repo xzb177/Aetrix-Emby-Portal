@@ -161,7 +161,6 @@ export const fetchRegistrationSettings = () => get<RegistrationSettings>('/setti
 export const updateRegistrationSettings = (data: {
   mode: string
   message?: string
-  ratelimit_enabled?: boolean
   ratelimit_max?: number
   ratelimit_window?: number
 }) => put<{ success: boolean }>('/settings/registration', data)
@@ -1472,9 +1471,6 @@ export interface DoubanBanDowngradeConfig {
 export const fetchDoubanBanDowngrade = () =>
   get<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`)
 
-export const saveDoubanBanDowngrade = (enabled: boolean) =>
-  put<DoubanBanDowngradeConfig>(`${E}/scrape/douban-ban-downgrade`, { enabled })
-
 /** 兜底链路统一：一个豆瓣入口（豆瓣 rich → 多源引擎含豆瓣源） */
 export interface UnifiedFallbackConfig {
   success: boolean
@@ -1486,13 +1482,11 @@ export const fetchUnifiedFallback = () =>
 export const saveUnifiedFallback = (enabled: boolean) =>
   put<UnifiedFallbackConfig>(`${E}/scrape/unified-fallback`, { enabled })
 
-/** 保存总开关 / 中文优先 / TMDB-miss 兜底开关 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
+/** 保存总开关 / TMDB-miss 兜底 / 源顺序 / 逐源限速（**不动密钥池**；中文优先与逐源开关仍走 env） */
 export const saveMetaSources = (data: {
   enabled: boolean
-  prefer_chinese: boolean
   tmdb_miss_fallback: boolean
   order: string[]
-  toggles: Record<string, boolean>
   rates: Record<string, number>
 }) => put<MetaSourcesConfig>(`${E}/scrape/meta-sources`, data)
 
@@ -1834,8 +1828,8 @@ export const fetchBackupConfig = () =>
   get<{ success: boolean } & BackupConfig>(`/system/backup`)
 
 /** 保存数据库备份配置：立即生效，无需重启；非法时后端 400 */
-export const saveBackupConfig = (enabled: boolean, time: string, keep_days: number) =>
-  put<{ success: boolean } & BackupConfig>(`/system/backup`, { enabled, time, keep_days })
+export const saveBackupConfig = (time: string, keep_days: number) =>
+  put<{ success: boolean } & BackupConfig>(`/system/backup`, { time, keep_days })
 
 /** 立即手动备份一次 */
 export const runBackupNow = () =>

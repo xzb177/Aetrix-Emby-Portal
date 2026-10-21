@@ -74,14 +74,25 @@ def _set_flag(value: str):
     _clear_tuning_cache()
 
 
+def _drop_flag():
+    from backend import models as _models
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == FLAG
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    store.invalidate(FLAG)
+    _clear_tuning_cache()
+
+
 @pytest.fixture(autouse=True)
 def _flag_off():
-    # 每个测试前后都把 flag 复位为 0：既保证本文件内默认关，
-    # 也防止 "1" 泄漏到本文件之后的其它测试文件
-    #（SystemConfig 是落库的，跨文件共享同一个 DB 会话工厂）。
     _set_flag("0")
     yield
-    _set_flag("0")
+    _drop_flag()
 
 
 @pytest.fixture()

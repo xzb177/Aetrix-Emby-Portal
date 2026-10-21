@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 from backend import models
+from backend.integrations.store import switch_env_value as _switch_env_value
 
-# 配置键 → 默认值（与 backend/api/welfare_admin.py 的 WELFARE_CONFIG_KEYS 保持一致）
+# 配置键 → 默认值（2026-10-21 摘面板后 bot_* 开关的缺省以本表为准；
+# 面板注册表 WELFARE_CONFIG_KEYS 已不再含这些开关）
 DEFAULTS: dict[str, str] = {
     # 总开关：关闭后 Bot 不响应任何消息（poller 继续跑）
     "bot_enabled": "true",
@@ -51,6 +53,11 @@ def read_bot_config(db) -> dict[str, str]:
     for k, v in rows:
         # value 为 NULL 时回退默认值，避免判定函数拿到 None
         result[k] = v if v is not None else DEFAULTS[k]
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    for k in result:
+        _env_v = _switch_env_value(k)
+        if _env_v is not None:
+            result[k] = _env_v
     return result
 
 

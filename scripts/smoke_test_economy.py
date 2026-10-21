@@ -32,6 +32,13 @@ def check(name, cond):
 def main():
     init_db()
     db = SessionLocal()
+    # 2026-10-21：签到缺省改为关（服主保持关），开关仍在面板/DB——本冒烟按 DB 行打开
+    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == "checkin_enabled").first()
+    if row:
+        row.value = "true"
+    else:
+        db.add(models.SystemConfig(key="checkin_enabled", value="true"))
+    db.commit()
     now = datetime.now()
 
     # ---- 准备测试用户（唯一后缀避免与现有数据冲突） ----

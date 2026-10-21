@@ -186,13 +186,13 @@ async def economy_adjust_points(
 # ---------- 经济系统设置 ----------
 
 ECONOMY_CONFIG_KEYS = {
+    # checkin_enabled：默认关的功能开关保留面板（2026-10-21 服主口径）
     "checkin_enabled": "bool", "checkin_base_points": "int", "checkin_streak_bonus": "int",
     "checkin_streak_max_bonus": "int",
     # 签到随机基础分 / 惩罚（economy._checkin_rules 读取；留空=回退到 checkin_base_points / 默认值）
     "checkin_base_min": "int", "checkin_base_max": "int",
     "checkin_penalty_pct": "int", "checkin_penalty_min": "int", "checkin_penalty_max": "int",
     "media_seek_daily_limit": "int",  # 用户每日求片上限（用户端硬性校验）
-    "exchange_enabled": "bool",
     "code_default_plan_id": "int",  # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取）
     "recharge_enabled": "bool", "subscription_purchase_enabled": "bool",
     "payment_gateway_url": "str", "payment_partner_id": "str",
@@ -205,28 +205,26 @@ ECONOMY_CONFIG_KEYS = {
     "device_limit_per_user": "int", "device_limit_auto_evict": "bool",
     "login_log_retention_days": "int",
     "max_pending_orders_per_user": "int",
-    "invitation_enabled": "bool", "invitation_reward_points": "int",
+    "invitation_reward_points": "int",
     "invitation_invitee_reward_points": "int", "invitation_rebate_percent": "int",
-    # 推广奖励（v2.44.0）：默认全关/全 0，管理员不手动开就不发
+    # 推广奖励（v2.44.0）：总开关缺省开（金额/天数为 0 时不发放），留在面板落库
     "promotion_reward_enabled": "bool",
     "promotion_reward_type": "str",
     "promotion_reward_amount": "int",
     "promotion_reward_days": "int",
-    # 流媒体加速（v2.49.0）：一个开关 + 一个域名，点保存即生效（域名守卫侧最长 60 秒）
+    # 流媒体加速（v2.49.0）：总开关缺省开，留在面板落库；域名点保存即生效
     "stream_accel_enabled": "bool",
     "stream_accel_domain": "str",
     # 活力值（C1 竞品借鉴）：上限/每日扣减/观影阈值/积分兑换率/观影奖励/每日获取上限/归档钳制，全部可配
-    "vitality_enabled": "bool", "vitality_max": "int", "vitality_daily_cost": "int",
+    "vitality_max": "int", "vitality_daily_cost": "int",
     "vitality_limit_threshold": "int", "vitality_point_cost": "int",
     "vitality_watch_reward": "int", "vitality_daily_gain_limit": "int",
     "vitality_archive_clamp": "int",
-    # C3 流水审计：积分流水 hash 链总开关（默认开；关闭后新流水不写 hash）
-    "points_audit_enabled": "bool",
-    # Q3 同剧合并：宽松归一化自动合并拆条 series（默认全开；间隔下限 3600 秒，
-    # 上限 604800 秒；每轮组数上限 10~100000）。DB 行 > 环境变量 > 代码缺省，
-    # 读取侧见 merge_versions_worker.series_merge_config。
-    "series_merge_enabled": "bool", "series_merge_loose_enabled": "bool",
-    "series_merge_require_year": "bool",
+    # C3 流水审计开关（points_audit_enabled）与 Q3 同剧合并三开关
+    # （series_merge_*）均已于 2026-10-21 摘面板（env 治理，缺省开）；
+    # 此处只剩同剧合并的间隔/组数上限两个数值（间隔下限 3600 秒，
+    # 上限 604800 秒；每轮组数上限 10~100000），读取侧见
+    # merge_versions_worker.series_merge_config。
     "series_merge_interval_sec": "int", "series_merge_batch_limit": "int",
 }
 
@@ -340,7 +338,12 @@ def economy_update_settings(
             row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
             return row.value if row and row.value else ""
 
-        _enabled = _final("stream_accel_enabled").strip().lower() in ("1", "true", "yes", "on")
+        if "stream_accel_enabled" in request.settings:
+            _enabled = _final("stream_accel_enabled").strip().lower() in ("1", "true", "yes", "on")
+        else:
+            # 开关留在面板：请求没带时按库里的生效值（无行则缺省开）判定域名联动
+            from backend.integrations import store as _store
+            _enabled = _store.get_value(db, "stream_accel_enabled", "true").strip().lower() in ("1", "true", "yes", "on")
         if _enabled:
             try:
                 _sa.validate_domain(_final("stream_accel_domain"))

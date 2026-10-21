@@ -23,8 +23,6 @@ import {
   fetchInvitations,
   fetchPointsLogs,
   fetchEconomyStats,
-  fetchEconomySettings,
-  updateEconomySettings,
   verifyPointsAudit,
   adjustUserPoints,
   type InvitationRow,
@@ -83,32 +81,11 @@ const logColumns: DataColumn[] = [
 ]
 
 // ===== C3 流水审计 =====
-/** hash 链总开关（字符串 'true'/'false'，与经济设置其它布尔项一致） */
-const auditEnabled = ref('true')
-const auditSaving = ref(false)
+// 审计开关（points_audit_enabled）已于 2026-10-21 摘面板，改由服务端配置
+// 控制；本页只保留逐条核验工具。
 const verifyUserId = ref<number | undefined>(undefined)
 const verifyLoading = ref(false)
 const verifyResult = ref<PointsAuditResult | null>(null)
-
-async function loadAuditSettings() {
-  try {
-    const res = await fetchEconomySettings()
-    auditEnabled.value = res.settings.points_audit_enabled ?? 'true'
-  } catch {
-    /* 读不到就保持默认开，拦截器已提示 */
-  }
-}
-
-async function toggleAudit(v: boolean) {
-  auditSaving.value = true
-  try {
-    await updateEconomySettings({ points_audit_enabled: v ? 'true' : 'false' })
-    auditEnabled.value = v ? 'true' : 'false'
-    ElMessage.success(v ? '流水审计已开启，新流水将写入 hash 链' : '流水审计已关闭，新流水不再写 hash')
-  } finally {
-    auditSaving.value = false
-  }
-}
 
 async function handleVerify() {
   if (!verifyUserId.value) {
@@ -509,7 +486,6 @@ function reloadAll() {
   load()
   loadCodes()
   loadPromotion()
-  loadAuditSettings()
 }
 
 onMounted(reloadAll)
@@ -700,16 +676,6 @@ onMounted(reloadAll)
       :icon="ShieldCheck"
       description="每笔积分流水写入时链接上一条的 hash，形成防篡改链。关闭后新流水不再写 hash（历史记录不受影响）；核验会逐条重算，发现篡改或断链即报警。"
     >
-      <div class="audit-row">
-        <el-switch
-          :model-value="auditEnabled === 'true'"
-          :loading="auditSaving"
-          active-text="开启"
-          inactive-text="关闭"
-          @update:model-value="(v: string | number | boolean) => toggleAudit(v === true)"
-        />
-        <span class="faint">流水防篡改开关（points_audit_enabled）</span>
-      </div>
       <div class="audit-verify">
         <el-select
           v-model="verifyUserId"

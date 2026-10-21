@@ -698,7 +698,7 @@ def _check_once() -> None:
     fatal_error = ""
     ran = False
     try:
-        if _get_config(db, CONFIG_ENABLED, "0") != "1":
+        if _get_config(db, CONFIG_ENABLED, "1") != "1":
             return
         ran = True
         interval = _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL)))
@@ -792,7 +792,8 @@ def _watcher_loop() -> None:
         try:
             db = SessionLocal()
             try:
-                enabled = _get_config(db, CONFIG_ENABLED, "0") == "1"
+                enabled = _get_config(db, CONFIG_ENABLED, "1").strip().lower() in (
+                    "1", "true", "yes", "on")
                 interval = _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL)))
             finally:
                 db.close()
@@ -812,7 +813,8 @@ def get_config(db: Session) -> dict:
     因为老前端还在读它——给一个非空值会让老前端把排除清单当成包含清单用。
     """
     return {
-        "enabled": _get_config(db, CONFIG_ENABLED, "0") == "1",
+        "enabled": _get_config(db, CONFIG_ENABLED, "1").strip().lower() in (
+            "1", "true", "yes", "on"),
         "interval": _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL))),
         "excluded": ",".join(str(i) for i in resolve_excluded(db)),
         "libraries": "",
@@ -831,6 +833,7 @@ def save_config(db: Session, enabled: bool, interval: int,
 
     """
     minutes = _parse_interval(str(interval))
+    # 开关落库（DB 行 > 代码缺省 "1"）。缺省保持开，与 #1163 对齐的生产现值一致。
     _set_config(db, CONFIG_ENABLED, "1" if enabled else "0")
     _set_config(db, CONFIG_INTERVAL, str(minutes))
     if libraries is not None and not excluded:
