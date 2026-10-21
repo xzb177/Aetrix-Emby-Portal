@@ -39,13 +39,8 @@
         :avatar-char="avatarChar"
         :show-quest-path="showQuestPath"
       />
-      <WorldMarks
-        :sub-for="subFor"
-        :status-for="statusFor"
-        :selected-key="selectedKey"
-        :select-facility="selectFacility"
-      />
       </div>
+      <WorldMarks :open-region-key="openRegionKey" :open-region="onRegionClick" />
       <WorldPanels
         :feed-items="feedItems"
         :feed-state="feedState"
@@ -85,11 +80,14 @@
     />
 
     <div class="w-overlay" v-if="overlay !== 'none'" @click.self="closeOverlay">
-      <div class="w-sheet" :class="{ 'is-stele': overlay === 'stele' }" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl"
+      <div class="w-sheet" :class="{ 'is-stele': overlay === 'stele', 'is-region': overlay === 'region' }" role="dialog" aria-modal="true" tabindex="-1" ref="sheetEl"
+           :id="overlay === 'region' ? 'region-sheet' : undefined"
+           :aria-labelledby="overlay !== 'stele' ? 'w-sheet-title' : undefined"
+           :aria-label="overlay === 'stele' ? '观影碑' : undefined"
            @touchstart="onSheetTouchStart" @touchend="onSheetTouchEnd">
         <div class="w-grip" aria-hidden="true"></div>
         <div class="w-sheet-head" v-if="overlay !== 'stele'">
-          <span class="w-sheet-title">{{ sheetTitle }}</span>
+          <span class="w-sheet-title" id="w-sheet-title">{{ sheetTitle }}</span>
           <button type="button" class="w-sheet-close" @click="closeOverlay" aria-label="关闭">✕</button>
         </div>
         <ParcelsSheet
@@ -119,6 +117,15 @@
           :fortune-drawing="fortuneDrawing"
           @draw="drawFortune"
         />
+        <RegionSheet
+          v-else-if="overlay === 'region'"
+          :lead="regionLead"
+          :facilities="regionFacilities"
+          :sub-for="subFor"
+          :status-for="statusFor"
+          :selected-key="selectedKey"
+          @select="selectFromRegion"
+        />
       </div>
     </div>
   </div>
@@ -134,10 +141,11 @@ import type { ParcelItem, ParcelsData } from '@/composables/usePanelApi'
 import { memberApi } from '@/api/economy'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
 import { useToast } from '@/composables/useToast'
-import { gameFacilities, type GameFacility } from '@/config/game'
+import { gameFacilities, gameFacilityGroups, type GameFacility } from '@/config/game'
 import WorldCanvas, { type WorldAnchorSubs, type WorldAnchorHandlers } from './WorldCanvas.vue'
 import WorldMarks from './WorldMarks.vue'
 import WorldPanels from './WorldPanels.vue'
+import RegionSheet from './RegionSheet.vue'
 import MobileScroll from './MobileScroll.vue'
 import ParcelsSheet from './overlays/ParcelsSheet.vue'
 import LetterSheet from './overlays/LetterSheet.vue'
@@ -165,7 +173,8 @@ const { today, parcels, pulse, letter, board, collector } = storeToRefs(panel)
 /* ---------- 本地状态 ---------- */
 const memberRaw = ref<Record<string, unknown> | null>(null)
 
-const overlay = ref<'none' | 'parcels' | 'letter' | 'stele' | 'board' | 'wall' | 'fortune'>('none')
+const overlay = ref<'none' | 'parcels' | 'letter' | 'stele' | 'board' | 'wall' | 'fortune' | 'region'>('none')
+const regionKey = ref<string | null>(null)
 const unsealingIds = ref(new Set<string>())
 const sheetEl = ref<HTMLElement | null>(null)
 let lastTrigger: HTMLElement | null = null
@@ -633,6 +642,37 @@ function selectFacility(f: GameFacility) {
   void router.push(f.path)
 }
 
+const openRegionKey = computed(() => (overlay.value === 'region' ? regionKey.value : null))
+
+const regionGroup = computed(() => gameFacilityGroups.find((g) => g.key === regionKey.value) ?? null)
+
+const regionFacilities = computed(() =>
+  gameFacilities
+    .filter((f) => f.group === regionKey.value && f.enabled !== false)
+    .sort((a, b) => a.order - b.order),
+)
+
+const regionLead = computed(() => regionGroup.value?.sub ?? '')
+
+function onRegionClick(key: string) {
+  if (overlay.value === 'region' && regionKey.value === key) {
+    closeOverlay()
+    return
+  }
+  lastTrigger = document.activeElement as HTMLElement | null
+  regionKey.value = key
+  overlay.value = 'region'
+  nextTick(() => {
+    const closeBtn = sheetEl.value?.querySelector<HTMLElement>('.w-sheet-close')
+    try { (closeBtn ?? sheetEl.value)?.focus() } catch { /* 静默 */ }
+  })
+}
+
+function selectFromRegion(f: GameFacility) {
+  closeOverlay()
+  selectFacility(f)
+}
+
 /** 设施副标题：guideTip ?? desc（与旧桌面锚点文案口径一致，不编造） */
 function subFor(f: GameFacility): string {
   return f.guideTip || f.desc
@@ -683,6 +723,7 @@ function openOverlaySheet(kind: 'stele' | 'board' | 'wall' | 'fortune') {
 
 function closeOverlay() {
   overlay.value = 'none'
+  regionKey.value = null
   nextTick(() => {
     if (lastTrigger && document.contains(lastTrigger)) {
       lastTrigger.focus()
@@ -699,6 +740,7 @@ const sheetTitle = computed(() => {
     case 'board': return '📢 服主告示牌'
     case 'wall': return '💬 到此一游'
     case 'fortune': return '🎋 每日一签'
+    case 'region': return regionGroup.value ? `${regionGroup.value.icon} ${regionGroup.value.title}` : '营地分区'
     default: return ''
   }
 })
@@ -780,8 +822,33 @@ async function loadMember() {
   }
 }
 
+function focusableInSheet(): HTMLElement[] {
+  const root = sheetEl.value
+  if (!root) return []
+  return [...root.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+    .filter((el) => !el.hasAttribute('disabled') && el.tabIndex !== -1)
+}
+
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && overlay.value !== 'none') closeOverlay()
+  if (overlay.value === 'none') return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closeOverlay()
+    return
+  }
+  if (e.key !== 'Tab' || overlay.value !== 'region') return
+  const nodes = focusableInSheet()
+  if (nodes.length === 0) return
+  const first = nodes[0]
+  const last = nodes[nodes.length - 1]
+  const active = document.activeElement
+  if (e.shiftKey && (active === first || active === sheetEl.value)) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
 }
 
 watch(letterDateKey, () => refreshLetterRead())
@@ -813,17 +880,23 @@ onUnmounted(() => {
 <style scoped>
 .world-root {
   height: 100dvh;
+  box-sizing: border-box;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  overflow: auto;
+  padding: 12px 0 20px;
   background: var(--paper-canvas);
   font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--paper-ink-deep);
 }
 .world-col {
   position: relative;
-  width: min(1120px, 94vw);
+  /* 首页地图与 /game 同一画布宽：min(1500px, 94vw)，按 1568:882 等比放大，不再缩成居中小卡 */
+  width: min(1500px, 94vw);
   margin: 0 auto;
+  flex: 0 0 auto;
   container-type: inline-size;
 }
 .world {
@@ -867,6 +940,7 @@ onUnmounted(() => {
 .world-root.is-game {
   height: auto;
   display: block;
+  overflow: visible;
   padding: 16px 0;
 }
 .world-root.is-game .world-col {
@@ -1046,6 +1120,9 @@ onUnmounted(() => {
   font-size: 13px;
   line-height: 1;
 }
+.w-sheet.is-region {
+  width: min(760px, calc(100vw - 48px));
+}
 .w-sheet-close:focus-visible,
 .classic:focus-visible,
 .hud .pill:focus-visible,
@@ -1057,6 +1134,8 @@ onUnmounted(() => {
   .world-root {
     display: block;
     height: 100dvh;
+    overflow: hidden;
+    padding: 0;
   }
   .w-grip {
     display: block;
