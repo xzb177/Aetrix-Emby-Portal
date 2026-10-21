@@ -95,7 +95,6 @@ async function saveTeaser() {
   teaserSaving.value = true
   try {
     teaser.value = await saveTeaserConfig({
-      teaser_enabled: t.enabled,
       teaser_reveal_at: t.reveal_at,
       teaser_pre_title: t.pre_title,
       teaser_pre_subtitle: t.pre_subtitle,
@@ -240,9 +239,6 @@ function fmtDate(s: string): string {
       </p>
       <div v-if="teaser" class="teaser-form">
         <el-form label-position="top">
-          <el-form-item label="显示这张卡">
-            <el-switch v-model="teaser.enabled" active-text="显示" inactive-text="隐藏" />
-          </el-form-item>
           <el-form-item label="揭晓时间（服务器时间）">
             <el-date-picker
               v-model="teaser.reveal_at"

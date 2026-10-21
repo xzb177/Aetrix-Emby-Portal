@@ -284,13 +284,15 @@ def test_series_merge_config_defaults(db):
 
 
 def test_series_merge_config_db_over_env(db, monkeypatch):
+    # 2026-10-21 A 类摘面板后口径反转：开关类键统一 env > DB 存量行 >
+    # 缺省（integrations.store 的 switch 钩子），服主关开关走 env 才算数
     import backend.models as bmodels
     db.add(bmodels.SystemConfig(key="series_merge_enabled", value="0"))
     db.commit()
     _store._ttl_cache.clear()
     monkeypatch.setenv("SERIES_MERGE_ENABLED", "1")
     cfg = mvw.series_merge_config(db)
-    assert cfg["enabled"] is False, "DB 行优先于环境变量"
+    assert cfg["enabled"] is True, "env 优先于 DB 行（摘面板后统一口径）"
 
 
 def test_series_merge_config_env_fallback(db, monkeypatch):

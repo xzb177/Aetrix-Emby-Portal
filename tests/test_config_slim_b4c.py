@@ -57,23 +57,33 @@ def test_reminders_enabled_and_days_raw(db):
     # days 含非法档位也不拒绝（今天端点原文存储、读侧宽容，逐字保留）
     config_service.save_config(
         db,
-        {"expiry_reminder_enabled": "true", "expiry_reminder_days": "7,x,3"},
+        {"expiry_reminder_days": "7,x,3"},
         schema="reminders",
     )
     db.commit()
-    assert store.get_value(db, "expiry_reminder_enabled", "nope") == "true"
     assert _row(db, "expiry_reminder_days").value == "7,x,3"
+    # 2026-10-21 A 类摘面板：expiry_reminder_enabled 已摘除注册表，
+    # 再经统一通道写必须整批拒绝（未知键）
+    with pytest.raises(config_schema.ConfigValueError):
+        config_service.save_config(
+            db, {"expiry_reminder_enabled": "true"}, schema="reminders")
+    db.rollback()
 
 
 # ---------- coupons：word 风格 + int 范围 ----------
 
 def test_coupons_roundtrip(db):
+    # 2026-10-21 A 类摘面板：coupon_enabled 已摘除注册表（env 控制），
+    # 本家族只剩 coupon_reserve_hours 可写
     config_service.save_config(
-        db, {"coupon_enabled": "true", "coupon_reserve_hours": 5}, schema="coupons"
+        db, {"coupon_reserve_hours": 5}, schema="coupons"
     )
     db.commit()
-    assert store.get_value(db, "coupon_enabled", "nope") == "true"
     assert _row(db, "coupon_reserve_hours").value == "5"
+    with pytest.raises(config_schema.ConfigValueError):
+        config_service.save_config(
+            db, {"coupon_enabled": "true"}, schema="coupons")
+    db.rollback()
 
 
 def test_coupons_reject_out_of_range_atomic(db):
@@ -89,15 +99,19 @@ def test_coupons_reject_out_of_range_atomic(db):
 # ---------- welfare：digit 风格布尔必须存 "1"/"0"（与今天逐字一致） ----------
 
 def test_welfare_digit_bool_style(db):
-    config_service.save_config(db, {"lottery_enabled": True}, schema="welfare")
+    # 2026-10-21 A 类摘面板：lottery_enabled 已摘除，改用保留的 B 类
+    # lottery_require_group_member（同为 digit 风格）
+    config_service.save_config(db, {"lottery_require_group_member": True}, schema="welfare")
     db.commit()
-    assert _row(db, "lottery_enabled").value == "1"
+    assert _row(db, "lottery_require_group_member").value == "1"
 
 
 def test_welfare_word_bool_style(db):
-    config_service.save_config(db, {"bot_enabled": True}, schema="welfare")
+    # 2026-10-21 A 类摘面板：welfare 家族的 word 风格 bool 键已全数摘除，
+    # word 风格向量改到 economy 家族的保留键 recharge_enabled（B 类）
+    config_service.save_config(db, {"recharge_enabled": True}, schema="economy")
     db.commit()
-    assert _row(db, "bot_enabled").value == "true"
+    assert _row(db, "recharge_enabled").value == "true"
 
 
 def test_welfare_group_ids_raw(db):

@@ -17,7 +17,8 @@ def _reset_enrich_worker_caches():
     except Exception:
         yield
         return
-    for _name in ("_douban_cfg_cache", "_altmeta_cfg_cache", "_night_cfg_cache"):
+    for _name in ("_douban_cfg_cache", "_altmeta_cfg_cache", "_night_cfg_cache",
+                  "_enrich_tuning_cache"):
         _c = getattr(ew, _name, None)
         if isinstance(_c, dict):
             _c.clear()

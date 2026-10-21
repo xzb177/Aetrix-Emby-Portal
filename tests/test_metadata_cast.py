@@ -245,14 +245,28 @@ def test_enrich_apply_without_credits_writes_nothing(db):
     assert db.query(em.EmbyPerson).count() == 0
 
 
-def test_enrich_apply_cast_failure_does_not_break_main_flow(db):
+def test_enrich_apply_cast_failure_does_not_break_main_flow(db, monkeypatch):
     """演员落库抛异常也不该影响主流程（条目照常 done）。"""
-    item = _make_item(db, tmdb_id="123", name="主流程")
-    with mock.patch(
-        "backend.emby_server.tmdb.cast_list", side_effect=RuntimeError("boom")):
-        enrich_worker._enrich_apply(db, item, _fetched_with_cast(2))
-    db.commit()
-    assert item.enrich_status == "done"
+    # 字段级完成口径缺省开。本用例验证「字段级口径关」时的核心完成线，
+    # 经保存路径关掉，结束时删掉这行。
+    enrich_worker.save_enrich_tuning_config(db, {
+        enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS: False,
+    })
+    try:
+        item = _make_item(db, tmdb_id="123", name="主流程")
+        with mock.patch(
+            "backend.emby_server.tmdb.cast_list", side_effect=RuntimeError("boom")):
+            enrich_worker._enrich_apply(db, item, _fetched_with_cast(2))
+        db.commit()
+        assert item.enrich_status == "done"
+    finally:
+        from backend import models as _models
+        from backend.integrations import store as _store
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS
+        ).delete(synchronize_session=False)
+        db.commit()
+        _store.invalidate(enrich_worker.CFG_ENRICH_FIELD_COMPLETENESS)
 
 
 # ---------- EA：People / Countries / Languages ----------

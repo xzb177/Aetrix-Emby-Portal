@@ -197,12 +197,28 @@ def test_incomplete_backs_off_instead_of_reset(db):
     assert 30 < delta <= 90, delta  # 基数 60s 退避
 
 
-def test_incomplete_fails_after_max_attempts(db):
-    """资料不全 5 次后转 failed，不再无限空转"""
-    item = _make_item(db, item_type="movie", enrich_status="pending")
-    _apply_incomplete(db, item, 4)  # 第 5 次
-    assert item.enrich_status == "failed", item.enrich_status
-    assert item.enrich_attempts == 5
+def test_incomplete_fails_after_max_attempts(db, monkeypatch):
+    """资料不全 5 次后转 failed，不再无限空转。
+
+    前提是 none 定时回捞关：该 flag 缺省开，开着时 5 次后转 done+none
+    等回捞（Step 4 语义）；本例经保存路径关掉。"""
+    from backend.emby_server import enrich_worker as _ew
+    from backend import models as _models
+    from backend.integrations import store as _store
+    _ew.save_enrich_tuning_config(db, {_ew.CFG_ENRICH_NONE_AUTO_RESCHEDULE: False})
+    try:
+        item = _make_item(db, item_type="movie", enrich_status="pending")
+        _apply_incomplete(db, item, 4)  # 第 5 次
+        assert item.enrich_status == "failed", item.enrich_status
+        assert item.enrich_attempts == 5
+    finally:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == _ew.CFG_ENRICH_NONE_AUTO_RESCHEDULE
+        ).delete(synchronize_session=False)
+        db.commit()
+        _store.invalidate(_ew.CFG_ENRICH_NONE_AUTO_RESCHEDULE)
+        _ew._enrich_tuning_cache["at"] = 0.0
+        _ew._enrich_tuning_cache["cfg"] = None
 
 
 def test_incomplete_second_round_backoff_doubles(db):

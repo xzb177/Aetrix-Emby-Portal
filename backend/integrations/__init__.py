@@ -75,11 +75,19 @@ def raw_values_many(db: Session, slugs: Iterable[str]) -> dict[str, dict]:
     """一次查询取回多个能力的原始值（含密钥明文，仅供后端内部使用）"""
     specs = {slug: _spec(slug) for slug in slugs}
     defaults: dict[str, str] = {}
-    for spec in specs.values():
+    extras: dict[str, dict[str, str]] = {}
+    for slug, spec in specs.items():
         defaults.update(_defaults_for(spec["fields"]))
+        # 模块可声明 EXTRA_READ_KEYS：不在表单字段里、但卡片状态判定仍要读的键
+        # （2026-10-21 摘面板后，各能力的 *_enabled 开关属此类：env 治理、
+        # 不进表单，但「是否启用」徽标要按生效值显示）。
+        extra = dict(getattr(_module(slug), "EXTRA_READ_KEYS", {}) or {})
+        extras[slug] = extra
+        defaults.update(extra)
     values = store.read_values(db, list(defaults), defaults)
     return {
-        slug: {f["key"]: values[f["key"]] for f in spec["fields"]}
+        slug: {**{f["key"]: values[f["key"]] for f in spec["fields"]},
+               **{k: values[k] for k in extras[slug]}}
         for slug, spec in specs.items()
     }
 

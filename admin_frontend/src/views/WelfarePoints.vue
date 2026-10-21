@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowLeftRight, Bot, Coins, Gift, KeyRound, MessageCircle, MessageSquareDashed, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
+import { ArrowLeftRight, Bot, Coins, Gift, KeyRound, MessageCircle, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
@@ -37,19 +37,12 @@ const redpacketFields = [
   { key: 'redpacket_refund_interval_sec', label: '退款扫描间隔', hint: '每隔多少秒扫描一次过期红包，默认 300，最小 60', suffix: '秒' },
 ]
 
-const redpacketRefundEnabled = boolSwitch('redpacket_refund_enabled')
-
 const transferFields = [
   { key: 'points_transfer_fee_pct', label: '手续费', hint: '按转账金额比例收取，默认 5，填 0 不收', suffix: '%' },
   { key: 'points_transfer_min', label: '单笔最小', hint: '默认 1', suffix: '积分' },
   { key: 'points_transfer_max', label: '单笔最大', hint: '默认 0 表示不限', suffix: '积分' },
   { key: 'points_transfer_daily_cap', label: '每日转出上限', hint: '默认 0 表示不限', suffix: '积分/天' },
 ]
-
-const transferEnabled = computed({
-  get: () => (form.value['points_transfer_enabled'] ?? '1') === '1',
-  set: (v: boolean) => { form.value['points_transfer_enabled'] = v ? '1' : '0' },
-})
 
 const earnRedeemFields = [
   { key: 'points_chat_daily_cap', label: '发言每日上限', hint: '默认 20', suffix: '积分/天' },
@@ -61,28 +54,6 @@ const tgBindEnabled = computed({
   get: () => (form.value['welfare_require_tg_bind'] ?? '1') === '1',
   set: (v: boolean) => { form.value['welfare_require_tg_bind'] = v ? '1' : '0' },
 })
-
-const tgGuideEnabled = computed({
-  get: () => (form.value['tg_bind_guide_enabled'] ?? '1') === '1',
-  set: (v: boolean) => { form.value['tg_bind_guide_enabled'] = v ? '1' : '0' },
-})
-
-// B4 TG Bot 总控：true/false 开关统一用辅助函数生成
-function boolSwitch(key: string, dflt = 'true') {
-  return computed({
-    get: () => (form.value[key] ?? dflt) === 'true',
-    set: (v: boolean) => { form.value[key] = v ? 'true' : 'false' },
-  })
-}
-
-const botEnabled = boolSwitch('bot_enabled')
-const botRedpacketEnabled = boolSwitch('bot_redpacket_enabled')
-const botCmdSwitches = [
-  { key: 'bot_cmd_checkin', label: '/checkin' },
-  { key: 'bot_cmd_points', label: '/points' },
-  { key: 'bot_cmd_redeem', label: '/redeem' },
-  { key: 'bot_cmd_bind', label: '/bind' },
-].map((s) => ({ ...s, model: boolSwitch(s.key) }))
 
 const botFields = [
   { key: 'bot_group_ids', label: '启用群 ID', hint: '逗号分隔的 TG 群 id，空=所有群都启用 Bot', suffix: '' },
@@ -105,21 +76,11 @@ const chatPointsFields = [
   { key: 'chat_points_points_per_day', label: '兑换参考比例', hint: '多少积分兑 1 天（仅展示说明），默认 100', suffix: '积分/天' },
 ]
 
+// 默认关闭的功能开关保留在面板（2026-10-21 服主口径：默认开的开关摘面板走 env，默认关的留面板）
 const chatPointsEnabled = computed({
   get: () => form.value['chat_points_enabled'] === 'true',
   set: (v: boolean) => { form.value['chat_points_enabled'] = v ? 'true' : 'false' },
 })
-
-// v2 求片：总开关 / 附议 / 附议者通知（'1' 为开）
-function seekBoolSwitch(key: string) {
-  return computed({
-    get: () => (form.value[key] ?? '1') === '1',
-    set: (v: boolean) => { form.value[key] = v ? '1' : '0' },
-  })
-}
-const mediaSeekEnabled = seekBoolSwitch('media_seek_enabled')
-const mediaSeekVoteEnabled = seekBoolSwitch('media_seek_vote_enabled')
-const mediaSeekNotifyVoters = seekBoolSwitch('media_seek_notify_voters')
 
 // r40：查看权限解锁价格（emby_view_unlock_points / emby_view_unlock_days，
 // 后端 GET/PUT /api/admin/emby/view-unlock；此前有接口无后台入口）
@@ -228,10 +189,6 @@ onMounted(load)
         description="红包手续费与 7 天频率限制"
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
-          <el-form-item label="过期自动退款">
-            <el-switch v-model="redpacketRefundEnabled" />
-            <span class="field-hint">关闭后过期红包不再自动退款；默认开启</span>
-          </el-form-item>
           <el-form-item v-for="f in redpacketFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" class="field-input" />
             <span class="field-suffix">{{ f.suffix }}</span>
@@ -243,13 +200,9 @@ onMounted(load)
       <SectionCard
         title="积分转账"
         :icon="ArrowLeftRight"
-        description="用户间积分转账的开关、手续费与限额"
+        description="用户间积分转账的手续费与限额"
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
-          <el-form-item label="功能开关">
-            <el-switch v-model="transferEnabled" />
-            <span class="field-hint">关闭后用户端隐藏转账入口，后端接口拒绝</span>
-          </el-form-item>
           <el-form-item v-for="f in transferFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" class="field-input" />
             <span class="field-suffix">{{ f.suffix }}</span>
@@ -268,31 +221,15 @@ onMounted(load)
             <el-switch v-model="tgBindEnabled" />
             <span class="field-hint">开启后未绑定用户无法使用公益服写操作；老用户有 7 天宽限期；Bot 故障时可关闭降级</span>
           </el-form-item>
-          <el-form-item label="引导页">
-            <el-switch v-model="tgGuideEnabled" />
-            <span class="field-hint">开启后，新用户注册成功将进入 TG 绑定引导页，未完成绑定前无法使用面板</span>
-          </el-form-item>
         </el-form>
       </SectionCard>
 
       <SectionCard
         title="TG Bot 总控"
         :icon="Bot"
-        description="Bot 总开关、群白名单、限流与各功能开关（B4）"
+        description="Bot 启用群白名单与限流（各功能开关由服务端配置控制）"
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
-          <el-form-item label="总开关">
-            <el-switch v-model="botEnabled" />
-            <span class="field-hint">关闭后 Bot 不响应任何消息（轮询继续跑）；默认开启</span>
-          </el-form-item>
-          <el-form-item label="红包功能">
-            <el-switch v-model="botRedpacketEnabled" />
-            <span class="field-hint">关闭后 /redpacket 与抢红包按钮均提示已关闭；后端红包接口不受影响</span>
-          </el-form-item>
-          <el-form-item v-for="s in botCmdSwitches" :key="s.key" :label="s.label">
-            <el-switch v-model="s.model.value" />
-            <span class="field-hint">关闭后该命令回复"该功能已关闭"</span>
-          </el-form-item>
           <el-form-item v-for="f in botFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" class="field-input" />
             <span class="field-suffix">{{ f.suffix }}</span>
@@ -372,26 +309,6 @@ onMounted(load)
         </el-form>
       </SectionCard>
 
-      <SectionCard
-        title="求片 v2"
-        :icon="MessageSquareDashed"
-        description="求片总开关、附议与附议者通知，默认全开"
-      >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
-          <el-form-item label="求片总开关">
-            <el-switch v-model="mediaSeekEnabled" />
-            <span class="field-hint">关闭后用户不能提交求片（只读列表不受影响），默认开启</span>
-          </el-form-item>
-          <el-form-item label="附议开关">
-            <el-switch v-model="mediaSeekVoteEnabled" />
-            <span class="field-hint">用户可对他人的求片附议 +1，默认开启</span>
-          </el-form-item>
-          <el-form-item label="通知附议者">
-            <el-switch v-model="mediaSeekNotifyVoters" />
-            <span class="field-hint">求片入库时除求片者外也通知附议者，默认开启</span>
-          </el-form-item>
-        </el-form>
-      </SectionCard>
     </div>
   </div>
 </template>

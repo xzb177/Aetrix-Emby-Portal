@@ -29,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.api import economy
 
 logger = logging.getLogger(__name__)
@@ -331,6 +332,10 @@ REFUND_INTERVAL_MIN_SEC = 60
 
 def _get_str_config(db: Session, key: str, default: str) -> str:
     """读 SystemConfig 字符串配置（读不到则用默认值）"""
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value(key)
+    if _env_v is not None:
+        return _env_v
     cfg = db.query(models.SystemConfig).filter(
         models.SystemConfig.key == key).first()
     return str(cfg.value) if cfg and cfg.value is not None else default

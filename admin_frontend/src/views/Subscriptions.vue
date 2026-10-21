@@ -189,19 +189,6 @@ async function loadReminders() {
   }
 }
 
-async function toggleReminders(enabled: boolean) {
-  reminderSaving.value = true
-  try {
-    const res = await updateReminderSettings({ expiry_reminder_enabled: enabled })
-    reminders.value = res.status
-    ElMessage.success(enabled ? '到期提醒已开启' : '到期提醒已关闭')
-  } catch {
-    await loadReminders()
-  } finally {
-    reminderSaving.value = false
-  }
-}
-
 async function saveReminderDays() {
   reminderSaving.value = true
   try {
@@ -222,7 +209,7 @@ async function runReminderPass(dryRun: boolean) {
   try {
     const res = await runReminders(dryRun)
     if (!res.enabled) {
-      ElMessage.warning('到期提醒未开启，请先打开开关')
+      ElMessage.warning('到期提醒未开启（由服务端配置控制）')
     } else if (dryRun) {
       ElMessage.info(res.due.length ? `待发 ${res.due.length} 条（未发送）` : '当前没有待发的提醒')
     } else if (res.reminded + res.expired_notified === 0) {
@@ -347,12 +334,6 @@ async function submit() {
         </span>
       </template>
       <template #actions>
-        <el-switch
-          :model-value="reminders?.enabled ?? false"
-          :loading="reminderSaving"
-          aria-label="到期提醒开关"
-          @change="(v: string | number | boolean) => toggleReminders(Boolean(v))"
-        />
         <el-button size="small" :loading="reminderRunning" @click="runReminderPass(true)">预览</el-button>
         <el-button
           size="small"

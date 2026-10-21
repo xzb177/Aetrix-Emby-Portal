@@ -9,9 +9,10 @@
 所有交给客户端的绝对地址都走 ``client_base_url``，只此一套：
 
 1. ``EMBY_PUBLIC_URL`` 已设且是 http(s) → 用它，不看 Host、不看转发头。
-2. 否则仅当 TCP 直连方在可信范围（``TRUSTED_PROXIES``，或显式的
-   ``FORWARDED_ALLOW_IPS``）时，才采信 ``X-Forwarded-Proto`` /
-   ``X-Forwarded-Host``。
+2. 否则仅当 TCP 直连方在可信范围时，才采信 ``X-Forwarded-Proto`` /
+   ``X-Forwarded-Host``。可信范围是 ``TRUSTED_PROXIES`` 与
+   ``FORWARDED_ALLOW_IPS`` 里的精确 IP / CIDR，和域名守卫同一份点名名单。
+   ``*`` 一律忽略：它不能让任意对端改写 scheme/host，也不能改写客户端 IP。
 3. 否则 ``request.base_url``。
 """
 from __future__ import annotations
@@ -121,7 +122,7 @@ def _peer_host(request: Request) -> str:
 
 
 def _peer_in_forwarded_allow_range(ip: str) -> bool:
-    """直连 IP 是否允许我们采信转发头。与域名守卫同一份名单。"""
+    """直连 IP 是否允许采信转发头来拼公开 URL。与域名守卫同一份点名名单，不含 ``*``。"""
     from backend.domain_guard import peer_honors_forwarded_headers
 
     return peer_honors_forwarded_headers(ip)

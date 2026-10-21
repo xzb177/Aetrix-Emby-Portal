@@ -216,7 +216,9 @@ def test_config_defaults(clean_config):
         db.close()
 
 
-def test_write_config_validation(clean_config):
+def test_write_config_validation(clean_config, monkeypatch):
+    # 2026-10-21 A 类开关摘面板：开关改走 env，测试按 env 设置
+    monkeypatch.setenv("ITEMS_DEDUP_CACHE_ENABLED", "0")
     db = _test_db()
     try:
         with pytest.raises(ValueError):
@@ -244,7 +246,9 @@ def test_put_get_roundtrip(fake_backend, clean_config):
         db.close()
 
 
-def test_disabled_or_ttl_zero_bypass(fake_backend, clean_config):
+def test_disabled_or_ttl_zero_bypass(fake_backend, clean_config, monkeypatch):
+    # 2026-10-21 A 类开关摘面板：开关改走 env，测试按 env 设置
+    monkeypatch.setenv("ITEMS_DEDUP_CACHE_ENABLED", "0")
     db = _test_db()
     try:
         idc.write_config(db, enabled=False, ttl_seconds=60, max_entries=2000)

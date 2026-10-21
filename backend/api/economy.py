@@ -40,6 +40,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from backend import coupons, models, realms, vitality as _vitality
+from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.database import get_db
 from backend.api.user import get_current_user
 from backend.ratelimit import check_rate_limit, client_ip
@@ -57,6 +58,10 @@ bearer_scheme_deps = None  # reserved
 # ==================== 配置中心工具 ====================
 
 def _get_config(db: Session, key: str, default: str) -> str:
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value(key)
+    if _env_v is not None:
+        return _env_v
     config = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
     return config.value if config and config.value is not None else default
 
@@ -362,7 +367,7 @@ def _checkin_rules(db: Session) -> dict:
     if penalty_min > penalty_max:
         penalty_min, penalty_max = penalty_max, penalty_min
     return {
-        "enabled": _get_bool_config(db, "checkin_enabled", True),
+        "enabled": _get_bool_config(db, "checkin_enabled", False),  # 2026-10-21：用户拍板保持关，缺省=关
         "base_points": base_points,
         "base_min": base_min,
         "base_max": base_max,

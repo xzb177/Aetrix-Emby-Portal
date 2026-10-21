@@ -63,6 +63,24 @@ def _clear_night_cfg_cache():
               enrich_worker.ENRICH_NIGHT_START_ENV,
               enrich_worker.ENRICH_NIGHT_END_ENV):
         os.environ.pop(k, None)
+    from backend import models as _models
+    from backend.integrations import store as _store
+    s = SessionLocal()
+    try:
+        s.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key.in_([
+                enrich_worker.CFG_EPISODE_NIGHT_ONLY,
+                enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE,
+            ])).delete(synchronize_session=False)
+        s.commit()
+    except Exception:
+        s.rollback()
+    finally:
+        s.close()
+    _store.invalidate(enrich_worker.CFG_EPISODE_NIGHT_ONLY,
+                      enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE)
+    enrich_worker._enrich_tuning_cache["at"] = 0.0
+    enrich_worker._enrich_tuning_cache["cfg"] = None
 
 
 def _make_item(db, **kw):
@@ -120,9 +138,10 @@ def test_in_night_window_cross_midnight():
 # ---------- _episode_night_config ----------
 
 def test_night_config_default_off(db):
-    """默认关闭：不读库、不设环境变量时 enabled=False"""
+    """缺省值：2026-10-21 现值对齐后，不读库、不设环境变量时
+    enabled=True（生产现值=开）；关要设 env 或种行 "0"。"""
     cfg = enrich_worker._episode_night_config(db)
-    assert cfg["enabled"] is False
+    assert cfg["enabled"] is True
     assert cfg["night_start"] == "02:00"
     assert cfg["night_end"] == "06:00"
     assert cfg["from_env"] is False
@@ -186,16 +205,18 @@ def test_night_config_ttl_cache(db, monkeypatch):
 
 # ---------- _claim_batch ----------
 
-def _enable_night_only(monkeypatch, in_window: bool):
-    """打开开关，并固定窗口判断结果"""
+def _enable_night_only(db, monkeypatch, in_window: bool):
+    """打开夜间开关，并固定窗口判断结果。配额制缺省开会盖住夜间禁令，显式关掉。"""
     monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
+    enrich_worker.save_enrich_tuning_config(
+        db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: False})
     monkeypatch.setattr(
         enrich_worker, "_in_night_window", lambda now, s, e, tz=None: in_window)
 
 
 def test_claim_batch_daytime_skips_episodes(db, monkeypatch):
     """白天（不在窗口内）：单集被跳过，只抢到电影/剧集"""
-    _enable_night_only(monkeypatch, in_window=False)
+    _enable_night_only(db, monkeypatch, in_window=False)
     _make_item(db, item_type="movie", name="电影A")
     ep = _make_item(db, item_type="episode", name="S01E01", series_id=999)
     claimed = enrich_worker._claim_batch(db, 10)
@@ -210,7 +231,7 @@ def test_claim_batch_daytime_skips_episodes(db, monkeypatch):
 
 def test_claim_batch_night_includes_episodes(db, monkeypatch):
     """夜间（在窗口内）：单集正常被抢"""
-    _enable_night_only(monkeypatch, in_window=True)
+    _enable_night_only(db, monkeypatch, in_window=True)
     ep = _make_item(db, item_type="episode", name="S01E01", series_id=999)
     claimed = enrich_worker._claim_batch(db, 10)
     assert {c.id for c in claimed} == {ep.id}
@@ -227,7 +248,7 @@ def test_claim_batch_disabled_includes_episodes(db):
 
 def test_claim_batch_daytime_series_group_excludes_episodes(db, monkeypatch):
     """白天：同一部剧的组被选中（剧集本身 pending），但组内单集不被认领"""
-    _enable_night_only(monkeypatch, in_window=False)
+    _enable_night_only(db, monkeypatch, in_window=False)
     series = _make_item(db, item_type="series", name="剧A")
     ep1 = _make_item(db, item_type="episode", name="S01E01", series_id=series.id)
     ep2 = _make_item(db, item_type="episode", name="S01E02", series_id=series.id)
@@ -264,6 +285,12 @@ def test_save_returns_frontend_compatible_fields(db):
         assert cfg["night_end"] == "06:00"
         assert "start" not in cfg and "end" not in cfg
     finally:
-        # 清理：关闭开关，避免 SystemConfig 污染后续测试文件
-        # （test_enrich_worker.py 共用同一临时库，开关开着会跳过单集）
-        enrich_worker.save_episode_night_config(db, False, "02:00", "06:00")
+        from backend import models as _models
+        from backend.integrations import store as _store
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key == enrich_worker.CFG_EPISODE_NIGHT_ONLY
+        ).delete(synchronize_session=False)
+        db.commit()
+        _store.invalidate(enrich_worker.CFG_EPISODE_NIGHT_ONLY)
+        enrich_worker._night_cfg_cache["at"] = 0.0
+        enrich_worker._night_cfg_cache["cfg"] = None

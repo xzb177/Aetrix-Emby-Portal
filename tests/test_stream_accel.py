@@ -84,7 +84,8 @@ def test_rewrite_url_domain_empty():
 # ---------- 3. 配置读写 ----------
 
 def test_get_config_defaults(db):
-    assert sa.get_config(db) == {"enabled": False, "domain": ""}
+    # 2026-10-21 A 类摘面板现值对齐：enabled 缺省翻为开（生产现值）
+    assert sa.get_config(db) == {"enabled": True, "domain": ""}
 
 
 def test_get_effective_domain_disabled(db):

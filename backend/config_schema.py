@@ -112,34 +112,19 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "welfare_request_monthly": ("int", 0, 10000),
     "recharge_ratio": ("float", 0.0001, 1000000),
     "recharge_quick_amounts": ("int_list", 1, 1000000),
-    "bot_enabled": ("bool",),
     "bot_rate_limit_seconds": ("int", 0, 3600),
     "bot_group_rate_limit": ("int", 0, 100000),
-    "bot_cmd_checkin": ("bool",),
-    "bot_cmd_points": ("bool",),
-    "bot_cmd_redeem": ("bool",),
-    "bot_cmd_bind": ("bool",),
-    "bot_redpacket_enabled": ("bool",),
     "redpacket_fee_pct": ("int", 0, 100),
     "redpacket_send_limit_7d": ("int", 0, 100000),
     "redpacket_recv_limit_7d": ("int", 0, 100000),
-    "redpacket_refund_enabled": ("bool",),
     "redpacket_refund_interval_sec": ("int", 60, 86400),
     # 2026-10-17 第 4 批 4-4：以下 9 键在 WELFARE_CONFIG_KEYS 里的默认值是 "1"/"0"，
     # 端点现行的 normalize 按 ("bool", "digit") 存 "1"/"0"。风格必须跟键走，
     # 注册为 digit 才能与今天逐字一致（读侧 lottery.py 等是宽容口径，本应无感，
     # 但存字节必须相同）。
     "welfare_require_tg_bind": ("bool", "digit"),
-    "lottery_enabled": ("bool", "digit"),
-    "lottery_auto_draw_enabled": ("bool", "digit"),
     "lottery_draw_interval_sec": ("int", 30, 86400),
-    "lottery_notify_winners": ("bool", "digit"),
-    "tg_bind_guide_enabled": ("bool", "digit"),
-    "media_seek_enabled": ("bool", "digit"),
-    "media_seek_vote_enabled": ("bool", "digit"),
-    "media_seek_notify_voters": ("bool", "digit"),
-    "chat_points_enabled": ("bool",),
-    "points_transfer_enabled": ("bool", "digit"),
+    "chat_points_enabled": ("bool",),  # 默认关的功能开关保留面板（2026-10-21）
     "points_transfer_fee_pct": ("int", 0, 100),
     "points_transfer_min": ("int", 1, _BIG),
     "points_transfer_max": ("int", 0, _BIG),
@@ -166,7 +151,7 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
 # 注意：alert_check_interval_sec 的钳制（60~86400）保留在端点层（业务行为不变），
 # 注册表范围与钳制边界对齐；save_config 只是纵深防御。
 ALERTS_CONFIG_SCHEMA: dict[str, tuple] = {
-    "system_alerts_enabled": ("bool", "digit"),
+    "system_alerts_enabled": ("bool", "digit"),  # 默认关的功能开关保留面板（2026-10-21）
     "alert_check_interval_sec": ("int", 60, 86400),
     "webhook_alert_url": ("str",),
     "webhook_alert_secret": ("str",),
@@ -178,14 +163,12 @@ ALERTS_CONFIG_SCHEMA: dict[str, tuple] = {
 # ("int_list", 1, 365) 会把今天能存的值变成 400，是行为变化；宽容归一又会改动
 # 存值。零行为变化要求原文直存，故注册为 ("str",)。
 REMINDERS_CONFIG_SCHEMA: dict[str, tuple] = {
-    "expiry_reminder_enabled": ("bool", "word"),
     "expiry_reminder_days": ("str",),
 }
 
 # 优惠券（coupons_admin.update_coupon_settings；reserve_hours 端点层已有
 # Pydantic Field(ge=0, le=720)，注册表范围与之一致；0=不自动清理）
 COUPONS_CONFIG_SCHEMA: dict[str, tuple] = {
-    "coupon_enabled": ("bool", "word"),
     "coupon_reserve_hours": ("int", 0, 720),
 }
 
@@ -194,7 +177,6 @@ COUPONS_CONFIG_SCHEMA: dict[str, tuple] = {
 REGISTRATION_CONFIG_SCHEMA: dict[str, tuple] = {
     "registration_mode": ("enum", ("open", "closed")),
     "registration_closed_message": ("str",),
-    "register_ratelimit_enabled": ("bool", "word"),
     "register_ratelimit_max": ("int", 1, _BIG),
     "register_ratelimit_window": ("int", 60, _BIG),
 }
@@ -209,11 +191,10 @@ VIEW_UNLOCK_CONFIG_SCHEMA: dict[str, tuple] = {
 # config_service 统一编排层。用户 2026-10-17 18:29 拍板：防盗链保留，
 # 此前搁置的 play_sign config_service 迁移恢复排期。）
 # - play_sign_ttl_seconds 范围 60~86400 与 play_sign.PLAY_TTL_MIN/MAX 同口径；
-# - hotlink_protection_enabled 存 "true"/"false"（word 风格，旧 write_config 同口径）；
+# - hotlink_protection_enabled 已于 2026-10-21 摘面板（env 治理），不在本表；
 # - play_allowed_referers 用 ("raw",)：逗号拼接的归一化域名串，空串也存行
 #   （旧 write_allowed_referers 同口径：空白名单落库 ""，读侧空=不检查）。
 HOTLINK_CONFIG_SCHEMA: dict[str, tuple] = {
-    "hotlink_protection_enabled": ("bool",),
     "play_sign_ttl_seconds": ("int", 60, 86400),
     "play_allowed_referers": ("raw",),
 }
@@ -221,7 +202,6 @@ HOTLINK_CONFIG_SCHEMA: dict[str, tuple] = {
 # 列表去重缓存（2026-10-18）：Emby 列表接口 dropped 集合的服务端缓存。
 # enabled 默认开（纯性能优化、零行为变化）；ttl=0 或关 = 旧路径。
 ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {
-    "items_dedup_cache_enabled": ("bool",),
     "items_dedup_cache_ttl_seconds": ("int", 10, 3600),
     "items_dedup_cache_max_entries": ("int", 100, 20000),
 }
@@ -244,7 +224,6 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "checkin_penalty_pct": ("int", 0, 100),
     "checkin_penalty_min": ("int", 0, _BIG), "checkin_penalty_max": ("int", 0, _BIG),
     "media_seek_daily_limit": ("int", 0, _BIG),
-    "exchange_enabled": ("bool",),
     # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取；无行=按服自动推导）
     "code_default_plan_id": ("int", 0, _BIG),
     "recharge_enabled": ("bool",), "subscription_purchase_enabled": ("bool",),
@@ -256,7 +235,7 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "device_limit_per_user": ("int", 0, _BIG), "device_limit_auto_evict": ("bool",),
     "login_log_retention_days": ("int", 0, _BIG),
     "max_pending_orders_per_user": ("int", 0, _BIG),
-    "invitation_enabled": ("bool",), "invitation_reward_points": ("int", 0, _BIG),
+    "invitation_reward_points": ("int", 0, _BIG),
     "invitation_invitee_reward_points": ("int", 0, _BIG),
     "invitation_rebate_percent": ("int", 0, 100),
     "promotion_reward_enabled": ("bool",),
@@ -265,16 +244,13 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "promotion_reward_days": ("int", 0, _BIG),
     "stream_accel_enabled": ("bool",),
     "stream_accel_domain": ("raw",),
-    "vitality_enabled": ("bool",), "vitality_max": ("int", 0, _BIG),
     "vitality_daily_cost": ("int", 0, _BIG),
+    "vitality_max": ("int", 0, _BIG),
     "vitality_limit_threshold": ("int", 0, _BIG),
     "vitality_point_cost": ("int", 0, _BIG),
     "vitality_watch_reward": ("int", 0, _BIG),
     "vitality_daily_gain_limit": ("int", 0, _BIG),
     "vitality_archive_clamp": ("int", 0, _BIG),
-    "points_audit_enabled": ("bool",),
-    "series_merge_enabled": ("bool",), "series_merge_loose_enabled": ("bool",),
-    "series_merge_require_year": ("bool",),
     "series_merge_interval_sec": ("int", 3600, 604800),
     "series_merge_batch_limit": ("int", 10, 100000),
 }

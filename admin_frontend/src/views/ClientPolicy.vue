@@ -213,13 +213,16 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
     <SectionCard title="转码与清晰度" :icon="Tv" description="控制服务端转码：省 CPU / 省上行与兼容性之间的取舍。">
       <div class="cp-field">
         <div class="cp-field-main">
-          <label class="cp-label" for="cp-transcode">允许服务端转码</label>
+          <label class="cp-label">允许服务端转码</label>
           <p class="cp-hint">
-            关闭后只放直连 / 直接播放：省 CPU 与上行，但客户端兼容性会变差
+            当前状态由服务端配置控制（面板不再提供开关）。关闭时只放直连 /
+            直接播放：省 CPU 与上行，但客户端兼容性会变差
             （网页端播放器遇到不支持的编码会播不了）。
           </p>
         </div>
-        <el-switch id="cp-transcode" v-model="policy.transcode_enabled" :disabled="!isSuper" />
+        <span class="au-badge" :class="policy.transcode_enabled ? 'au-badge-green' : 'au-badge-muted'">
+          {{ policy.transcode_enabled ? '已开启' : '已关闭' }}
+        </span>
       </div>
 
       <div class="cp-field">
@@ -359,7 +362,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       />
     </SectionCard>
 
-    <!-- Drive 302 直链总开关（#957 的回滚闸） -->
+    <!-- Drive 302 直链状态（#957；开关已摘面板，服务端配置控制） -->
     <SectionCard title="Drive 302 直链" :icon="Zap">
       <template #actions>
         <span class="au-badge" :class="policy.drive_direct_play_enabled ? 'au-badge-green' : 'au-badge-muted'">
@@ -369,14 +372,13 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
 
       <div class="cp-field">
         <div class="cp-field-main">
-          <label class="cp-label" for="cp-drive-direct">Drive 文件 302 直链</label>
+          <label class="cp-label">Drive 文件 302 直链</label>
           <p class="cp-hint">
-            打开（默认）：Drive 文件直接 302 到谷歌直链，播放器自拉，字节不经服务器。
-            关闭：Drive 文件播放返回 410。这是 302 上线期的回滚闸——如果大量用户
-            报播放 403（分享权限还没开完），可临时关闭止血。
+            开启（默认）：Drive 文件直接 302 到谷歌直链，播放器自拉，字节不经服务器。
+            关闭时 Drive 文件播放返回 410。当前状态由服务端配置控制（面板不再
+            提供开关）；如大量用户报播放 403（分享权限还没开完），改服务端配置关闭止血。
           </p>
         </div>
-        <el-switch id="cp-drive-direct" v-model="policy.drive_direct_play_enabled" :disabled="!isSuper" />
       </div>
 
       <template #footer>

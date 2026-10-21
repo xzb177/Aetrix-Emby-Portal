@@ -84,7 +84,7 @@ async function load(silent = false) {
   }
 }
 
-/** 开关切换：走各任务已有的保存接口，失败弹回原状态 */
+/** 开关切换：失败弹回原状态。 */
 async function onToggle(card: TaskCard, val: boolean) {
   const key = card.key
   const sw = card.switch

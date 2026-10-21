@@ -70,6 +70,9 @@ def test_redeem_unbound(db):
 
 
 def test_checkin_success(db):
+    # 签到开关 2026-10-21 起缺省关（用户拍板保持关），成功路径显式种开
+    db.add(models.SystemConfig(key="checkin_enabled", value="true"))
+    db.commit()
     user = _make_user(db, username="u4", tg_id=910004, is_welfare=True)
     text = handlers.handle_checkin(db, {"id": 910004}, 910004, "")
     assert "签到成功" in text
@@ -79,12 +82,18 @@ def test_checkin_success(db):
 
 
 def test_checkin_vitality_gained(db):
+    # 签到开关 2026-10-21 起缺省关（用户拍板保持关），成功路径显式种开
+    db.add(models.SystemConfig(key="checkin_enabled", value="true"))
+    db.commit()
     user = _make_user(db, username="u5", tg_id=910005, is_welfare=True)
     text = handlers.handle_checkin(db, {"id": 910005}, 910005, "")
     assert "⚡ 活力值 +1" in text
 
 
 def test_checkin_duplicate(db):
+    # 签到开关 2026-10-21 起缺省关（用户拍板保持关），成功路径显式种开
+    db.add(models.SystemConfig(key="checkin_enabled", value="true"))
+    db.commit()
     user = _make_user(db, username="u6", tg_id=910006, is_welfare=True)
     handlers.handle_checkin(db, {"id": 910006}, 910006, "")
     text = handlers.handle_checkin(db, {"id": 910006}, 910006, "")
@@ -142,6 +151,8 @@ def test_redeem_points_success(db):
 def test_router_dispatch_checkin(db):
     """router.commands 注册了 /checkin：走 dispatch 全链路可签到。"""
     from backend.tg_bot import sender
+    db.add(models.SystemConfig(key="checkin_enabled", value="true"))
+    db.commit()
     _make_user(db, username="u13", tg_id=910013, is_welfare=True)
     update = {
         "update_id": 13,

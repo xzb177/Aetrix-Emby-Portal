@@ -185,8 +185,10 @@ def test_save_load_roundtrip(db):
     })
     assert out["values"][enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == 120
     assert out["raw"][enrich_worker.CFG_ENRICH_RETRY_BASE_SEC] == "120"
-    assert out["values"][enrich_worker.CFG_ENRICH_TMDB_BATCH] is False
-    assert out["raw"][enrich_worker.CFG_ENRICH_TMDB_BATCH] == "0"
+    # 2026-10-21 A 类摘面板：tmdb_batch 已 env-only，保存传 False 被忽略，
+    # 生效值保持缺省开（生产现值）
+    assert out["values"][enrich_worker.CFG_ENRICH_TMDB_BATCH] is True
+    assert out["raw"][enrich_worker.CFG_ENRICH_TMDB_BATCH] == "1"
     assert out["values"][enrich_worker.CFG_ENRICH_EPISODE_DAY_QUOTA] == 1500
     # 没碰的项保持默认
     assert out["values"][enrich_worker.CFG_ENRICH_MAX_ATTEMPTS] == 5
@@ -214,7 +216,10 @@ def test_env_only_keys_panel_write_ignored(db):
     })
     assert out["values"][enrich_worker.CFG_ENRICH_WORKERS] == 8
     assert out["values"][enrich_worker.CFG_ENRICH_BATCH] == 200
-    assert out["env_only"] == [enrich_worker.CFG_ENRICH_WORKERS, enrich_worker.CFG_ENRICH_BATCH]
+    assert set(out["env_only"]) == {
+        enrich_worker.CFG_ENRICH_WORKERS, enrich_worker.CFG_ENRICH_BATCH,
+        enrich_worker.CFG_ENRICH_TMDB_BATCH,
+    }
     from backend import models as _models
     rows = db.query(_models.SystemConfig).filter(
         _models.SystemConfig.key.in_(

@@ -12,7 +12,8 @@
 
 ## 默认关闭
 
-``promotion_reward_enabled`` 出厂 ``false``，且金额/天数出厂都是 0。
+``promotion_reward_enabled`` 缺省 ``true``（与生产现值一致），金额/天数出厂都是 0，
+所以即使开关开着也不会发出奖励。
 **邀请成功不会自动发任何东西**——这是「自动执行一律默认关、由管理员手动开」
 那条纪律在本期唯一的落点（本期没有其它自动处置动作）。
 
@@ -57,9 +58,10 @@ TYPE_LABELS = {
     TYPE_DAYS: "有效期（天）",
 }
 
-#: 出厂默认：关闭 + 0 + 0 —— 升级上来的部署不会因此多发一分钱
+#: 出厂默认：开关开 + 0 + 0（金额/天数为 0 时不发任何奖励；
+#: 2026-10-21 摘面板对齐：开关缺省由关改为开，与生产现值一致）
 DEFAULTS: dict[str, str] = {
-    CONFIG_ENABLED: "false",
+    CONFIG_ENABLED: "true",
     CONFIG_TYPE: TYPE_BALANCE,
     CONFIG_AMOUNT: "0",
     CONFIG_DAYS: "0",

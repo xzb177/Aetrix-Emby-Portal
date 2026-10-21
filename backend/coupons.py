@@ -31,6 +31,7 @@ from sqlalchemy import func, insert, literal, select
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.integrations.store import switch_env_value as _switch_env_value
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,10 @@ def _money(value) -> Decimal:
 
 def enabled(db: Session) -> bool:
     """优惠券功能是否开启（缺省开启：没配过就是开）"""
+    # A 类摘面板开关（2026-10-21）：env 显式设置即接管，口径见 integrations.store
+    _env_v = _switch_env_value(CONFIG_ENABLED)
+    if _env_v is not None:
+        return str(_env_v).strip().lower() == "true"
     row = db.query(models.SystemConfig).filter(
         models.SystemConfig.key == CONFIG_ENABLED).first()
     if row is None or row.value is None or str(row.value).strip() == "":

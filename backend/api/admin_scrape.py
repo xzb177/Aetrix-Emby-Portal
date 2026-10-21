@@ -1888,24 +1888,26 @@ def save_douban_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存豆瓣配置（保存即热生效）"""
+    """保存豆瓣配置（保存即热生效）。
+
+    总开关落库（DB 行 > 代码缺省 "1"）。缺省保持开，与 #1163 对齐的生产现值一致。
+    """
     from backend.emby_server import douban as _dbn
     from backend.integrations import store
-    enabled = body.enabled
     iv = max(0.0, float(body.min_interval or 0))
     store.write_values(
         db,
         {
-            _dbn.DOUBAN_ENABLED_KEY: "1" if enabled else "0",
+            _dbn.DOUBAN_ENABLED_KEY: "1" if body.enabled else "0",
             _dbn.DOUBAN_RATE_KEY: str(iv),
         },
         {
-            _dbn.DOUBAN_ENABLED_KEY: "豆瓣（可选）总开关（中文标题 TMDB 未命中时走豆瓣兜底）",
+            _dbn.DOUBAN_ENABLED_KEY: "豆瓣中文兜底总开关",
             _dbn.DOUBAN_RATE_KEY: "豆瓣请求最小间隔秒数",
         },
     )
     db.commit()
-    return {"success": True, "enabled": enabled, "min_interval": iv}
+    return {"success": True, "enabled": _dbn.enabled(db), "min_interval": iv}
 
 
 # ==================== 备用链路限速（配置瘦身第 3 批） ====================

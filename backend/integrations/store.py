@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any, Iterable, Mapping, Optional
@@ -31,6 +32,104 @@ from sqlalchemy.orm import Session
 from backend import models
 
 DEFAULTS_SENTINEL = object()
+
+# ---------------------------------------------------------------------------
+# A 类开关摘面板（2026-10-21 施工，用户 2026-10-19「功能开关从简」原则）：
+# 以下 46 个键管理后台不再提供开关（UI 与各面板写路径已同步摘除）。
+# 不在本表、仍走「DB 行 > 代码缺省」的键：
+# - 缺省=关、留在面板（服主 2026-10-21 口径）：签到 / 群发言积分 / 系统告警 /
+#   访问守卫两项 / 后台登录人机验证 / 邮件 / 代理 / 媒体库默认范围；
+#   备用元数据 altmeta_enabled 缺省关、向来无面板，只认数据库。
+# - 缺省=开、服主 2026-10-21 13:53 要求留在面板（代码缺省保持 #1163 的开，
+#   读口径回到摘面板前）：auto_scan_enabled / chase_new_enabled / douban_enabled /
+#   promotion_reward_enabled / stream_accel_enabled / meta_sources_enabled /
+#   meta_sources_tmdb_miss_fallback / enrich_episode_night_only /
+#   enrich_unified_fallback / enrich_episode_quota_mode /
+#   enrich_none_auto_reschedule / enrich_failed_auto_reschedule /
+#   enrich_field_completeness。
+# 本表取值口径：
+#   env（键名大写；显式设置且非空即接管，含 "0"/"false"）
+#   > SystemConfig 存量行（摘除前的生产现值，行不删、原样保留作次级来源）
+#   > 各消费方的代码缺省（已逐键对齐生产现值，摘除后行为零变化）。
+# env 名逐个写明：tests/test_perfection_r44_envdoc.py 的 INDIRECT_READS
+# 以本表为动态读取证据（key.upper() 动态拼名，静态扫描抓不到）。
+# ---------------------------------------------------------------------------
+PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
+    ("ai_enabled", "AI_ENABLED"),
+    ("backup_enabled", "BACKUP_ENABLED"),
+    ("bot_cmd_bind", "BOT_CMD_BIND"),
+    ("bot_cmd_checkin", "BOT_CMD_CHECKIN"),
+    ("bot_cmd_points", "BOT_CMD_POINTS"),
+    ("bot_cmd_redeem", "BOT_CMD_REDEEM"),
+    ("bot_enabled", "BOT_ENABLED"),
+    ("bot_redpacket_enabled", "BOT_REDPACKET_ENABLED"),
+    ("captcha_protect_login", "CAPTCHA_PROTECT_LOGIN"),
+    ("captcha_protect_register", "CAPTCHA_PROTECT_REGISTER"),
+    ("coupon_enabled", "COUPON_ENABLED"),
+    ("drive_direct_play_enabled", "DRIVE_DIRECT_PLAY_ENABLED"),
+    ("enrich_douban_ban_downgrade", "ENRICH_DOUBAN_BAN_DOWNGRADE"),
+    ("enrich_tmdb_batch", "ENRICH_TMDB_BATCH"),
+    ("exchange_enabled", "EXCHANGE_ENABLED"),
+    ("expiry_reminder_enabled", "EXPIRY_REMINDER_ENABLED"),
+    ("hotlink_protection_enabled", "HOTLINK_PROTECTION_ENABLED"),
+    ("invitation_enabled", "INVITATION_ENABLED"),
+    ("items_dedup_cache_enabled", "ITEMS_DEDUP_CACHE_ENABLED"),
+    ("items_list_cache_enabled", "ITEMS_LIST_CACHE_ENABLED"),
+    ("lottery_auto_draw_enabled", "LOTTERY_AUTO_DRAW_ENABLED"),
+    ("lottery_enabled", "LOTTERY_ENABLED"),
+    ("lottery_notify_winners", "LOTTERY_NOTIFY_WINNERS"),
+    ("media_seek_enabled", "MEDIA_SEEK_ENABLED"),
+    ("media_seek_notify_voters", "MEDIA_SEEK_NOTIFY_VOTERS"),
+    ("media_seek_vote_enabled", "MEDIA_SEEK_VOTE_ENABLED"),
+    ("meta_source_enabled_anilist", "META_SOURCE_ENABLED_ANILIST"),
+    ("meta_source_enabled_bangumi", "META_SOURCE_ENABLED_BANGUMI"),
+    ("meta_source_enabled_douban", "META_SOURCE_ENABLED_DOUBAN"),
+    ("meta_source_enabled_omdb", "META_SOURCE_ENABLED_OMDB"),
+    ("meta_source_enabled_tmdb", "META_SOURCE_ENABLED_TMDB"),
+    ("meta_source_enabled_tvdb", "META_SOURCE_ENABLED_TVDB"),
+    ("meta_source_enabled_tvmaze", "META_SOURCE_ENABLED_TVMAZE"),
+    ("meta_sources_prefer_chinese", "META_SOURCES_PREFER_CHINESE"),
+    ("new_media_notify_enabled", "NEW_MEDIA_NOTIFY_ENABLED"),
+    ("playback_transcode_enabled", "PLAYBACK_TRANSCODE_ENABLED"),
+    ("points_audit_enabled", "POINTS_AUDIT_ENABLED"),
+    ("points_transfer_enabled", "POINTS_TRANSFER_ENABLED"),
+    ("redpacket_refund_enabled", "REDPACKET_REFUND_ENABLED"),
+    ("register_ratelimit_enabled", "REGISTER_RATELIMIT_ENABLED"),
+    ("series_merge_enabled", "SERIES_MERGE_ENABLED"),
+    ("series_merge_loose_enabled", "SERIES_MERGE_LOOSE_ENABLED"),
+    ("series_merge_require_year", "SERIES_MERGE_REQUIRE_YEAR"),
+    ("teaser_enabled", "TEASER_ENABLED"),
+    ("tg_bind_guide_enabled", "TG_BIND_GUIDE_ENABLED"),
+    ("vitality_enabled", "VITALITY_ENABLED"),
+)
+
+#: 已摘面板开关的 DB 键集合（消费方判定用）
+PANEL_REMOVED_SWITCH_KEYS = frozenset(k for k, _ in PANEL_REMOVED_SWITCHES)
+_PANEL_REMOVED_ENV_NAMES = dict(PANEL_REMOVED_SWITCHES)
+
+
+def switch_env_value(key: str) -> Optional[str]:
+    """已摘面板开关的文件配置值：env 显式设置（非空）时返回原文，否则 None。
+
+    非摘面板键一律返回 None（口径不变）。直接 ORM 读取的消费方（少数本地
+    小助手）也统一走这里判定，保证全仓只有这一套 env 接管口径。
+    """
+    env_name = _PANEL_REMOVED_ENV_NAMES.get(key)
+    if env_name is None:
+        return None
+    v = os.getenv(env_name)
+    if v is None or v.strip() == "":
+        return None
+    return v
+
+
+def _apply_switch_env(out: dict, key_list) -> None:
+    """给一批读结果叠加 env 接管（摘面板开关专用，内部用）。"""
+    for key in key_list:
+        env_v = switch_env_value(key)
+        if env_v is not None:
+            out[key] = env_v
+
 
 
 def read_values(
@@ -55,6 +154,7 @@ def read_values(
             continue
         default = (defaults or {}).get(key, DEFAULTS_SENTINEL)
         out[key] = "" if default is DEFAULTS_SENTINEL or default is None else str(default)
+    _apply_switch_env(out, key_list)
     return out
 
 
@@ -156,6 +256,7 @@ def get_values(db: Session, keys: Iterable[str],
             continue
         default = (defaults or {}).get(key, DEFAULTS_SENTINEL)
         out[key] = "" if default is DEFAULTS_SENTINEL or default is None else str(default)
+    _apply_switch_env(out, key_list)
     return out
 
 

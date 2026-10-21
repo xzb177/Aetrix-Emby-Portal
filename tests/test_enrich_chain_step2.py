@@ -75,9 +75,23 @@ def _env():
     yield
     dbn.reset_ban()
     ms_config.invalidate()
-    store.invalidate(FLAG)
+    _drop_switch_rows(FLAG, dbn.DOUBAN_ENABLED_KEY)
     store.invalidate(BAN_FLAG)
-    store.invalidate(dbn.DOUBAN_ENABLED_KEY)
+
+
+def _drop_switch_rows(*keys):
+    """关掉的开关行必须删掉：缺省已是开，留下 "0" 会让后面的测试读到关。"""
+    from backend import models as _models
+    db = SessionLocal()
+    try:
+        db.query(_models.SystemConfig).filter(
+            _models.SystemConfig.key.in_(keys)
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    for key in keys:
+        store.invalidate(key)
 
 
 def _flag_on():
