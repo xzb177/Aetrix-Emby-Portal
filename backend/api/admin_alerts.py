@@ -192,9 +192,9 @@ def update_alert_settings(
     changed: dict = {}
     values: dict = {}  # 实际落库的 {SystemConfig 键: 待校验值}（走 config_service 统一通道）
 
-    # A 类开关摘面板（2026-10-21）：总开关不再经面板写（req.enabled 仅为兼容
-    # 旧前端保留）——改走 env SYSTEM_ALERTS_ENABLED，用户拍板默认保持关；
-    # system_alerts.enabled() 的 env/DB 任一为真口径不变，存量行仍作次级来源。
+    if req.enabled is not None:
+        values[system_alerts.MASTER_SWITCH_KEY] = req.enabled
+        changed["system_alerts_enabled"] = "1" if req.enabled else "0"
 
     if req.check_interval_sec is not None:
         # R16 P1-1：钳制 60~86400 保留在端点层（业务行为不变）；注册表范围与钳制边界对齐
@@ -221,6 +221,7 @@ def update_alert_settings(
         config_service.save_config(
             db, values, schema="alerts",
             descriptions={
+                system_alerts.MASTER_SWITCH_KEY: "系统告警总开关（1=开，0=关）",
                 system_alerts.INTERVAL_KEY: "系统告警检查间隔（秒），60~86400",
                 "webhook_alert_url": "告警 webhook 通知 URL（可选）",
                 "webhook_alert_secret": "告警 webhook HMAC 签名密钥（可选）",

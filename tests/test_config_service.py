@@ -91,11 +91,9 @@ class TestSaveConfigWrite:
         assert store.get_value(db, "alert_check_interval_sec") == "300"
 
     def test_bool_digit_style_preserved(self, db):
-        # 2026-10-21 A 类摘面板：原向量 system_alerts_enabled 已摘除注册表，
-        # 改用仍保留的 digit 风格键 welfare_require_tg_bind（welfare 家族）
-        config_service.save_config(db, {"welfare_require_tg_bind": True}, schema="welfare")
+        config_service.save_config(db, {"system_alerts_enabled": True}, schema="alerts")
         db.commit()
-        assert _row(db, "welfare_require_tg_bind").value == "1"
+        assert _row(db, "system_alerts_enabled").value == "1"
 
     def test_empty_string_deletes_row(self, db):
         # 统一通道的「未设置」语义：空串=删行（与 economy/welfare 口径一致）

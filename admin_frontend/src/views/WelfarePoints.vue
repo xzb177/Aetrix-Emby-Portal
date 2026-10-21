@@ -76,6 +76,12 @@ const chatPointsFields = [
   { key: 'chat_points_points_per_day', label: '兑换参考比例', hint: '多少积分兑 1 天（仅展示说明），默认 100', suffix: '积分/天' },
 ]
 
+// 默认关闭的功能开关保留在面板（2026-10-21 服主口径：默认开的开关摘面板走 env，默认关的留面板）
+const chatPointsEnabled = computed({
+  get: () => form.value['chat_points_enabled'] === 'true',
+  set: (v: boolean) => { form.value['chat_points_enabled'] = v ? 'true' : 'false' },
+})
+
 // r40：查看权限解锁价格（emby_view_unlock_points / emby_view_unlock_days，
 // 后端 GET/PUT /api/admin/emby/view-unlock；此前有接口无后台入口）
 const viewUnlock = ref({ points: 0, days: 0 })
@@ -288,9 +294,13 @@ onMounted(load)
       <SectionCard
         title="群发言积分"
         :icon="MessageCircle"
-        description="Bot 统计群发言赚积分的计分规则"
+        description="Bot 统计群发言赚积分，总开关默认关闭"
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+          <el-form-item label="总开关">
+            <el-switch v-model="chatPointsEnabled" />
+            <span class="field-hint">关闭时 bot 不统计任何发言，默认关闭</span>
+          </el-form-item>
           <el-form-item v-for="f in chatPointsFields" :key="f.key" :label="f.label">
             <el-input v-model="form[f.key]" class="field-input" />
             <span class="field-suffix">{{ f.suffix }}</span>

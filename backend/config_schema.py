@@ -124,6 +124,7 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 但存字节必须相同）。
     "welfare_require_tg_bind": ("bool", "digit"),
     "lottery_draw_interval_sec": ("int", 30, 86400),
+    "chat_points_enabled": ("bool",),  # 默认关的功能开关保留面板（2026-10-21）
     "points_transfer_fee_pct": ("int", 0, 100),
     "points_transfer_min": ("int", 1, _BIG),
     "points_transfer_max": ("int", 0, _BIG),
@@ -150,6 +151,7 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
 # 注意：alert_check_interval_sec 的钳制（60~86400）保留在端点层（业务行为不变），
 # 注册表范围与钳制边界对齐；save_config 只是纵深防御。
 ALERTS_CONFIG_SCHEMA: dict[str, tuple] = {
+    "system_alerts_enabled": ("bool", "digit"),  # 默认关的功能开关保留面板（2026-10-21）
     "alert_check_interval_sec": ("int", 60, 86400),
     "webhook_alert_url": ("str",),
     "webhook_alert_secret": ("str",),
@@ -216,7 +218,7 @@ ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {
 #   而不是删行）；复合校验（stream_accel 开关+域名联动、签到上下限、活力阈值）
 #   保留在端点层，注册表只表达"类型+范围"。
 ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
-    "checkin_base_points": ("int", 0, _BIG),
+    "checkin_enabled": ("bool",), "checkin_base_points": ("int", 0, _BIG),
     "checkin_streak_bonus": ("int", 0, _BIG), "checkin_streak_max_bonus": ("int", 0, _BIG),
     "checkin_base_min": ("int", 0, _BIG), "checkin_base_max": ("int", 0, _BIG),
     "checkin_penalty_pct": ("int", 0, 100),

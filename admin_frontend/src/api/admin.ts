@@ -523,7 +523,7 @@ type LibraryScopeResult = {
 
 export const fetchLibraryScope = () => get<LibraryScopeResponse>('/library-scope')
 
-export const saveLibraryScopeDefault = (data: { library_ids: number[] }) =>
+export const saveLibraryScopeDefault = (data: { enabled: boolean; library_ids: number[] }) =>
   put<LibraryScopeResult>('/library-scope', data)
 
 export const saveLibraryScopeUser = (

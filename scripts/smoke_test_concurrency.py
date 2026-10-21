@@ -23,8 +23,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["DATABASE_TYPE"] = "sqlite"
 os.environ["REDIS_ENABLED"] = "false"
 os.environ["SECRET_KEY"] = "e2e-test-secret-key-not-for-production"
-# 2026-10-21 A 类开关摘面板：签到缺省关（服主保持关），本冒烟验证签到链路，按 env 显式打开
-os.environ["CHECKIN_ENABLED"] = "true"
 
 DB = os.path.join(tempfile.mkdtemp(), "concurrency.db")
 os.environ["DATABASE_URL"] = f"sqlite:///{DB}"
@@ -121,6 +119,8 @@ with SessionLocal() as db:
     alice_id, bob_id, inviter_id, invitee_id = alice.id, bob.id, inviter.id, invitee.id
     # 2026-10-09 签到合并后积分仅限公益服用户：bob 用于签到测试，设为公益服
     db.query(models.WebUser).filter(models.WebUser.id == bob_id).update({"is_welfare": True})
+    # 2026-10-21：签到缺省改为关（服主保持关），开关仍在面板/DB——本冒烟按 DB 行打开
+    db.add(models.SystemConfig(key="checkin_enabled", value="true"))
     db.commit()
 
     db.add(models.ExchangeCode(

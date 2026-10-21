@@ -198,8 +198,10 @@ db.close()
 ADMIN_H = {"Authorization": f"Bearer {create_access_token(staff_id, {'username': 'staff'})}"}
 
 
-# 2026-10-21 A 类开关摘面板：能力页的总开关（proxy_enabled / email_enabled /
-# ai_enabled / captcha_protect_* 等）不再经面板落库，改走 env。冒烟里仍按
+# 2026-10-21 A 类开关摘面板：能力页里缺省开的开关（ai_enabled /
+# captcha_protect_login / captcha_protect_register）不再经面板落库，改走 env；
+# 缺省关的（proxy_enabled / email_enabled / captcha_protect_admin_login）
+# 按服主口径保留在面板，照旧 PUT 落库（辅助函数按开关表自动区分）。冒烟里仍按
 # 「保存一次配置」来驱动：开关键改设 env，其余字段照常 PUT（PUT 会触发能力
 # 重新应用，如代理环境变量的写入/清理）。
 from backend.integrations.store import PANEL_REMOVED_SWITCHES as _PANEL_SWITCHES  # noqa: E402
@@ -735,14 +737,7 @@ r = cap_put("/api/admin/capabilities/proxy", headers=ADMIN_H, json={"values": {
 check("非法枚举回落默认值", get_config("proxy_scheme") == "http", str(get_config("proxy_scheme")))
 check("非法整数回落默认值", get_config("proxy_port") == "0", str(get_config("proxy_port")))
 check("未声明的字段被忽略", get_config("evil_key") is None)
-# 2026-10-21 A 类开关摘面板后能力表单里已无布尔字段：规整逻辑直接验，
-# 并确认面板即便收到开关键也不落库（开关只认 env）
-from backend.integrations import _coerce as _cap_coerce  # noqa: E402
-check("布尔字段按真值规整",
-      _cap_coerce({"type": "bool"}, "on") == "true" and _cap_coerce({"type": "bool"}, False) == "false")
-client.put("/api/admin/capabilities/proxy", headers=ADMIN_H,
-           json={"values": {"proxy_enabled": True, "proxy_host": "10.0.0.9"}})
-check("摘面板开关键不经面板落库", get_config("proxy_enabled") is None, str(get_config("proxy_enabled")))
+check("布尔字段按真值规整", get_config("proxy_enabled") == "true", str(get_config("proxy_enabled")))
 
 db = SessionLocal()
 rows = db.query(models.AdminLog).filter(models.AdminLog.action == "capability_update") \

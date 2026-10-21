@@ -40,7 +40,7 @@ def _cfg(s, key):
     ("points_transfer_min", 0),
     ("redpacket_fee_pct", 1.5),
     ("chat_points_daily_cap", True),
-    ("welfare_require_tg_bind", "maybe"),  # 2026-10-21：原 chat_points_enabled 已摘面板，换保留 bool 键
+    ("chat_points_enabled", "maybe"),
     ("recharge_ratio", "-1"),
     ("recharge_quick_amounts", "10,abc"),
     ("lottery_draw_interval_sec", "5"),

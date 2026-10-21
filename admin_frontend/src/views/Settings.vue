@@ -101,6 +101,7 @@ const GROUPS: Group[] = [
     desc: '签到基础积分与连签加成规则（积分仅限公益服用户）',
     icon: CalendarCheck,
     fields: [
+      { key: 'checkin_enabled', label: '启用签到', type: 'bool', hint: '关闭后用户端签到入口隐藏，已发放的积分不受影响' },
       { key: 'checkin_base_points', label: '基础积分', type: 'int', suffix: '积分/次', hint: '未设置随机范围时的默认值' },
       { key: 'checkin_base_min', label: '基础积分下限', type: 'int', suffix: '积分/次', hint: '随机范围下限，默认跟随基础积分', advanced: true },
       { key: 'checkin_base_max', label: '基础积分上限', type: 'int', suffix: '积分/次', hint: '随机范围上限，与下限相同=固定值', advanced: true },

@@ -64,9 +64,8 @@ def test_registry_covers_all_economy_keys():
     assert config_schema.ECONOMY_CONFIG_SCHEMA["series_merge_interval_sec"] == ("int", 3600, 604800)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["series_merge_batch_limit"] == ("int", 10, 100000)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["checkin_base_points"] == ("int", 0, 10 ** 9)
-    # 2026-10-21 A 类摘面板：checkin_enabled 等开关已摘除注册表（env 控制）；
-    # 保留的 bool 键以 B 类 recharge_enabled 为代表抽查
-    assert "checkin_enabled" not in config_schema.ECONOMY_CONFIG_SCHEMA
+    # checkin_enabled 缺省关，按服主 2026-10-21 口径保留面板与注册表
+    assert config_schema.ECONOMY_CONFIG_SCHEMA["checkin_enabled"] == ("bool",)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["recharge_enabled"] == ("bool",)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["payment_gateway_url"] == ("raw",)
     assert config_schema.ECONOMY_CONFIG_SCHEMA["payment_partner_key"] == ("raw",)

@@ -31,9 +31,7 @@ class TestNewKinds:
 class TestFamilySchemas:
     def test_alerts_schema(self):
         s = config_schema.ALERTS_CONFIG_SCHEMA
-        # 2026-10-21 A 类摘面板：system_alerts_enabled 已摘除（改走 env
-        # SYSTEM_ALERTS_ENABLED，默认关），注册表里不许再出现
-        assert "system_alerts_enabled" not in s
+        assert normalize("system_alerts_enabled", s["system_alerts_enabled"], True) == "1"
         assert normalize("alert_check_interval_sec", s["alert_check_interval_sec"], 300) == "300"
         with pytest.raises(ConfigValueError):
             normalize("alert_check_interval_sec", s["alert_check_interval_sec"], 59)

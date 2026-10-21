@@ -35,7 +35,10 @@ DEFAULTS_SENTINEL = object()
 
 # ---------------------------------------------------------------------------
 # A 类开关摘面板（2026-10-21 施工，用户 2026-10-19「功能开关从简」原则）：
-# 以下 69 个键管理后台不再提供开关（UI 与各面板写路径已同步摘除），
+# 以下 59 个键管理后台不再提供开关（UI 与各面板写路径已同步摘除），
+# 只收「缺省=开」的功能开关与调优开关；缺省=关的功能开关（签到 / 群发言积分 /
+# 备用元数据 / 系统告警 / 访问守卫两项 / 后台登录人机验证 / 邮件 / 代理 /
+# 媒体库默认范围）按服主 2026-10-21 口径保留在面板、照旧落库，不在本表。
 # 取值口径全项目统一为：
 #   env（键名大写；显式设置且非空即接管，含 "0"/"false"）
 #   > SystemConfig 存量行（摘除前的生产现值，行不删、原样保留作次级来源）
@@ -44,10 +47,7 @@ DEFAULTS_SENTINEL = object()
 # 以本表为动态读取证据（key.upper() 动态拼名，静态扫描抓不到）。
 # ---------------------------------------------------------------------------
 PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
-    ("access_guard_region_enabled", "ACCESS_GUARD_REGION_ENABLED"),
-    ("access_guard_ua_enabled", "ACCESS_GUARD_UA_ENABLED"),
     ("ai_enabled", "AI_ENABLED"),
-    ("altmeta_enabled", "ALTMETA_ENABLED"),
     ("auto_scan_enabled", "AUTO_SCAN_ENABLED"),
     ("backup_enabled", "BACKUP_ENABLED"),
     ("bot_cmd_bind", "BOT_CMD_BIND"),
@@ -56,16 +56,12 @@ PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("bot_cmd_redeem", "BOT_CMD_REDEEM"),
     ("bot_enabled", "BOT_ENABLED"),
     ("bot_redpacket_enabled", "BOT_REDPACKET_ENABLED"),
-    ("captcha_protect_admin_login", "CAPTCHA_PROTECT_ADMIN_LOGIN"),
     ("captcha_protect_login", "CAPTCHA_PROTECT_LOGIN"),
     ("captcha_protect_register", "CAPTCHA_PROTECT_REGISTER"),
     ("chase_new_enabled", "CHASE_NEW_ENABLED"),
-    ("chat_points_enabled", "CHAT_POINTS_ENABLED"),
-    ("checkin_enabled", "CHECKIN_ENABLED"),
     ("coupon_enabled", "COUPON_ENABLED"),
     ("douban_enabled", "DOUBAN_ENABLED"),
     ("drive_direct_play_enabled", "DRIVE_DIRECT_PLAY_ENABLED"),
-    ("email_enabled", "EMAIL_ENABLED"),
     ("enrich_douban_ban_downgrade", "ENRICH_DOUBAN_BAN_DOWNGRADE"),
     ("enrich_episode_night_only", "ENRICH_EPISODE_NIGHT_ONLY"),
     ("enrich_episode_quota_mode", "ENRICH_EPISODE_QUOTA_MODE"),
@@ -80,7 +76,6 @@ PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("invitation_enabled", "INVITATION_ENABLED"),
     ("items_dedup_cache_enabled", "ITEMS_DEDUP_CACHE_ENABLED"),
     ("items_list_cache_enabled", "ITEMS_LIST_CACHE_ENABLED"),
-    ("library_scope_default_enabled", "LIBRARY_SCOPE_DEFAULT_ENABLED"),
     ("lottery_auto_draw_enabled", "LOTTERY_AUTO_DRAW_ENABLED"),
     ("lottery_enabled", "LOTTERY_ENABLED"),
     ("lottery_notify_winners", "LOTTERY_NOTIFY_WINNERS"),
@@ -102,14 +97,12 @@ PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("points_audit_enabled", "POINTS_AUDIT_ENABLED"),
     ("points_transfer_enabled", "POINTS_TRANSFER_ENABLED"),
     ("promotion_reward_enabled", "PROMOTION_REWARD_ENABLED"),
-    ("proxy_enabled", "PROXY_ENABLED"),
     ("redpacket_refund_enabled", "REDPACKET_REFUND_ENABLED"),
     ("register_ratelimit_enabled", "REGISTER_RATELIMIT_ENABLED"),
     ("series_merge_enabled", "SERIES_MERGE_ENABLED"),
     ("series_merge_loose_enabled", "SERIES_MERGE_LOOSE_ENABLED"),
     ("series_merge_require_year", "SERIES_MERGE_REQUIRE_YEAR"),
     ("stream_accel_enabled", "STREAM_ACCEL_ENABLED"),
-    ("system_alerts_enabled", "SYSTEM_ALERTS_ENABLED"),
     ("teaser_enabled", "TEASER_ENABLED"),
     ("tg_bind_guide_enabled", "TG_BIND_GUIDE_ENABLED"),
     ("vitality_enabled", "VITALITY_ENABLED"),

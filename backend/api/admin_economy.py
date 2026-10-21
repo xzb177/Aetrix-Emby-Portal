@@ -186,7 +186,8 @@ async def economy_adjust_points(
 # ---------- 经济系统设置 ----------
 
 ECONOMY_CONFIG_KEYS = {
-    "checkin_base_points": "int", "checkin_streak_bonus": "int",
+    # checkin_enabled：默认关的功能开关保留面板（2026-10-21 服主口径）
+    "checkin_enabled": "bool", "checkin_base_points": "int", "checkin_streak_bonus": "int",
     "checkin_streak_max_bonus": "int",
     # 签到随机基础分 / 惩罚（economy._checkin_rules 读取；留空=回退到 checkin_base_points / 默认值）
     "checkin_base_min": "int", "checkin_base_max": "int",

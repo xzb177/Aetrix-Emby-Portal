@@ -291,7 +291,8 @@ WELFARE_CONFIG_KEYS = {
     "lottery_max_joins_per_day": "0",
     # 注册后 TG 绑定引导页总开关
     # 求片 v2：总开关 / 附议 / 附议者入库通知（默认全开）
-# M1 群发言积分：总开关默认关闭，服主手动开启
+# M1 群发言积分：总开关默认关闭，服主手动开启（默认关的开关保留面板，2026-10-21）
+    "chat_points_enabled": "false",
     # C2 积分转账：总开关默认开启，手续费/限额可配（0=不收/不限）
     "points_transfer_fee_pct": "5",
     "points_transfer_min": "1",

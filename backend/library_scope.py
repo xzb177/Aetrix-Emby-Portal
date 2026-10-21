@@ -286,16 +286,13 @@ def write_default(db: Session, enabled: bool, library_ids) -> dict:
     # 写入时就把不存在的 id 剔掉：配置里存一堆已删除的库 id，
     # 除了让 payload 显示成「已删除的库 #7」之外毫无意义。
     ids = _resolve(db, _normalize_ids(library_ids))
-    # 2026-10-21 摘面板后 enabled 参数不再代表开关状态（开关在服务端配置里）：
-    # 守卫改按「当前生效的开关」判定——开着却存空清单仍拒绝。
-    if _truthy(_raw(db, CONFIG_DEFAULT_ENABLED)) and not ids:
-        raise ValueError("默认范围已开启，至少要勾选一个存在的媒体库")
-    # A 类开关摘面板（2026-10-21）：服务器默认总开关不再落库——改走 env
-    # LIBRARY_SCOPE_DEFAULT_ENABLED（缺省关，与出厂缺省 "0" 及生产现值一致）；
-    # 面板只保存可见库清单。返回的 enabled 为当前生效值（供前端回显）。
+    if enabled and not ids:
+        raise ValueError("启用默认范围至少要勾选一个存在的媒体库")
+    if not ids:
+        enabled = False
+    _write_single(db, CONFIG_DEFAULT_ENABLED, "1" if enabled else "0")
     _write_single(db, CONFIG_DEFAULT_LIBRARIES, json.dumps(ids, ensure_ascii=False))
-    effective = _truthy(_raw(db, CONFIG_DEFAULT_ENABLED))
-    return {"enabled": effective, "library_ids": ids}
+    return {"enabled": enabled, "library_ids": ids}
 
 
 def _normalize_ids(library_ids) -> list[int]:

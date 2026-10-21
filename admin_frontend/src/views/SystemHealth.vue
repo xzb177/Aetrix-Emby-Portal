@@ -161,7 +161,7 @@ function scrollToAlerts() {
 const alertSettings = ref<AlertSettings | null>(null)
 const alertSettingsSaving = ref(false)
 /** 设置表单（与展示分离，避免未保存污染） */
-const alertForm = ref({ check_interval_sec: 600, webhook_url: '' })
+const alertForm = ref({ enabled: false, check_interval_sec: 600, webhook_url: '' })
 /** 高级设置折叠：默认收起（el-collapse v-model 为空数组即全收；配置瘦身第 3b 批） */
 const alertAdvOpen = ref<string[]>([])
 /** webhook 密钥：只用于提交，后端不回显 */
@@ -329,6 +329,7 @@ async function loadAlertSettings() {
     const s = await fetchAlertSettings()
     alertSettings.value = s
     alertForm.value = {
+      enabled: !!s.enabled,
       check_interval_sec: s.check_interval_sec ?? 600,
       webhook_url: s.webhook_url ?? '',
     }
@@ -366,7 +367,8 @@ async function loadAlerts() {
 /** 保存告警设置：只提交变更字段（secret 为空不传，避免清空） */
 async function onSaveAlertSettings() {
   const s = alertSettings.value
-  const payload: { check_interval_sec?: number; webhook_url?: string; webhook_secret?: string } = {}
+  const payload: { enabled?: boolean; check_interval_sec?: number; webhook_url?: string; webhook_secret?: string } = {}
+  if (!s || alertForm.value.enabled !== !!s.enabled) payload.enabled = alertForm.value.enabled
   const iv = Math.max(60, Math.min(86400, Math.round(alertForm.value.check_interval_sec) || 600))
   if (!s || iv !== s.check_interval_sec) payload.check_interval_sec = iv
   if (!s || alertForm.value.webhook_url !== (s.webhook_url ?? '')) payload.webhook_url = alertForm.value.webhook_url.trim()
@@ -635,6 +637,9 @@ onMounted(() => {
       <!-- 设置 -->
       <div class="alert-block">
         <div class="alert-block-title">设置</div>
+        <div class="alert-settings-row">
+          <el-switch v-model="alertForm.enabled" active-text="总开关" />
+        </div>
         <!-- 高级设置：检查间隔（一辈子不用碰的低频项，默认收起；配置瘦身第 3b 批） -->
         <el-collapse v-model="alertAdvOpen" class="alert-advanced">
           <el-collapse-item name="advanced" title="高级设置（1）">
@@ -654,7 +659,7 @@ onMounted(() => {
         </div>
         <div v-if="alertSettings" class="alert-secret-hint muted">
           密钥状态：{{ alertSettings.webhook_secret_set ? '已设置' : '未设置' }}
-          <span> · 总开关由服务端配置控制（默认关闭）</span>
+          <span v-if="alertSettings.enabled_source === 'env'"> · 总开关由环境变量控制，页面开关不生效</span>
         </div>
         <div class="alert-actions">
           <el-select v-model="alertTestChannel" class="w-channel">
