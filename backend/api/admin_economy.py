@@ -310,13 +310,25 @@ def economy_get_settings(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
+    from backend.promotion import CONFIG_ENABLED as _promo_enabled
+    from backend.promotion import DEFAULTS as _promo_defaults
+
+    # 缺行时这两个开关回代码缺省（开）。其余键仍回空串，由各读取方自己兜底。
+    missing_on = {
+        _promo_enabled: _promo_defaults[_promo_enabled],
+        "stream_accel_enabled": "true",
+    }
     result = {}
     for key, value_type in ECONOMY_CONFIG_KEYS.items():
         config = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
         if value_type == "secret":
             result[key] = "******" if (config and config.value) else ""
+        elif config is not None:
+            result[key] = config.value
+        elif key in missing_on:
+            result[key] = missing_on[key]
         else:
-            result[key] = config.value if config else ""
+            result[key] = ""
     return {"settings": result}
 
 

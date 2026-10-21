@@ -68,8 +68,7 @@ def _clear_night_cfg_cache(db):
     def _clean():
         enrich_worker._night_cfg_cache["at"] = 0.0
         enrich_worker._night_cfg_cache["cfg"] = None
-        for k in (enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
-                  enrich_worker.ENRICH_NIGHT_START_ENV,
+        for k in (enrich_worker.ENRICH_NIGHT_START_ENV,
                   enrich_worker.ENRICH_NIGHT_END_ENV,
                   enrich_worker.ENRICH_NIGHT_TZ_ENV):
             os.environ.pop(k, None)
@@ -156,7 +155,6 @@ def test_in_night_window_accepts_zoneinfo():
 # ---------- _episode_night_config ----------
 
 def test_config_tz_from_env(db):
-    os.environ[enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV] = "1"
     os.environ[enrich_worker.ENRICH_NIGHT_TZ_ENV] = "America/New_York"
     cfg = enrich_worker._episode_night_config(db)
     assert cfg["from_env"] is True

@@ -109,14 +109,11 @@ _ALIAS_INDEX_TTL = env_int("ENRICH_ALIAS_INDEX_TTL", 300, 30)
 _ALIAS_INDEX_MAX = env_int("ENRICH_ALIAS_INDEX_MAX", 50000, 1000)
 _alias_index: dict = {"rows": None, "at": 0.0}
 
-# ---- 单集夜间刮削（env 开关，缺省 1=开，与生产现值一致） ----
-# ENRICH_EPISODE_NIGHT_ONLY=1 时，白天只刮顶层条目（movie/series/season），
-# 单集（episode）只在夜间窗口 [ENRICH_NIGHT_START, ENRICH_NIGHT_END) 内刮削。
+# ---- 单集夜间刮削（开关只认管理后台/数据库，缺省开，与生产现值一致） ----
+# 开关开时，白天只刮顶层条目（movie/series/season），单集只在夜间窗口内刮削。
 # 目的：白天优先把电影/剧集本身的元数据补出来，单集留到低峰期再补。
-# 口径：环境变量优先；未设置时读 SystemConfig（管理后台可配，60 秒缓存热生效，
-# 无需重启）。时间按可配置时区（enrich_night_tz，默认 Asia/Shanghai）解释，
-# 不再是服务器本地时间；窗口支持跨午夜（如 22:00-06:00）。
-ENRICH_EPISODE_NIGHT_ONLY_ENV = "ENRICH_EPISODE_NIGHT_ONLY"
+# 开关不读环境变量。窗口开始/结束/时区仍可被环境变量覆盖；未设置时读
+# SystemConfig（60 秒缓存热生效）。时间默认 Asia/Shanghai，窗口可跨午夜。
 ENRICH_NIGHT_START_ENV = "ENRICH_NIGHT_START"
 ENRICH_NIGHT_END_ENV = "ENRICH_NIGHT_END"
 ENRICH_NIGHT_TZ_ENV = "ENRICH_NIGHT_TZ"
@@ -264,7 +261,8 @@ def _douban_ban_downgrade_flag_on() -> bool:
     from backend.integrations import store
     _db = SessionLocal()
     try:
-        return store.get_value(_db, CFG_DOUBAN_BAN_DOWNGRADE, "1") == "1"
+        return store.get_value(_db, CFG_DOUBAN_BAN_DOWNGRADE, "1").strip().lower() in (
+            "1", "true", "yes", "on")
     except Exception:  # noqa: BLE001 — 读不到就当关着，行为与现状一致
         return False
     finally:
@@ -321,7 +319,8 @@ def get_douban_ban_downgrade_config(db) -> dict:
     from backend.emby_server import douban as _dbn
     remaining = max(0.0, _dbn.ban_remaining())
     return {
-        "enabled": store.get_value(db, CFG_DOUBAN_BAN_DOWNGRADE, "1") == "1",
+        "enabled": store.get_value(db, CFG_DOUBAN_BAN_DOWNGRADE, "1").strip().lower() in (
+            "1", "true", "yes", "on"),
         "banned": remaining > 0,
         "ban_remaining_sec": round(remaining, 1),
     }
@@ -440,39 +439,30 @@ def _in_night_window(now: datetime, start: str, end: str,
 
 
 def _episode_night_config(db=None) -> dict:
-    """单集夜间刮削的有效配置（环境变量优先，否则读 SystemConfig）。
+    """单集夜间刮削的有效配置。开关只认数据库/管理后台，无行用代码缺省。
 
-    db 可空：传了 db 才读库；60 秒 TTL 缓存，管理后台保存后最多 60 秒生效。
-    返回 {"enabled": bool, "night_start": "HH:MM", "night_end": "HH:MM",
-           "night_tz": "Asia/Shanghai", "from_env": bool, "in_window": bool}
-    （字段名与管理后台前端 EnrichEpisodeNightConfig 接口保持一致）
+    窗口的开始/结束/时区仍可被环境变量覆盖。db 可空：传了才读库。
+    60 秒 TTL 缓存。返回字段与管理后台 EnrichEpisodeNightConfig 一致。
     """
     now_ts = time.monotonic()
     cached = _night_cfg_cache["cfg"]
     if cached is not None and now_ts - _night_cfg_cache["at"] < _NIGHT_CFG_TTL_SEC:
         cfg = dict(cached)
     else:
-        env_enabled = (os.getenv(ENRICH_EPISODE_NIGHT_ONLY_ENV) or "").strip().lower()
         env_start = (os.getenv(ENRICH_NIGHT_START_ENV) or "").strip()
         env_end = (os.getenv(ENRICH_NIGHT_END_ENV) or "").strip()
         env_tz = (os.getenv(ENRICH_NIGHT_TZ_ENV) or "").strip()
-        # 任一环境变量被设置（含显式 "0"）即视为 env 接管：后台改了也不生效，
-        # from_env=True 让管理后台显示提示，避免用户困惑。
-        from_env = bool(env_enabled) or bool(env_start) or bool(env_end) or bool(env_tz)
-        if env_enabled not in {"", "0", "false", "no", "off"}:
-            enabled = True
-        elif env_enabled in {"0", "false", "no", "off"}:
-            enabled = False
-        else:
-            enabled = NIGHT_ONLY_DEFAULT
-            if db is not None:
-                try:
-                    from backend.integrations import store
-                    enabled = store.read_value(
-                        db, CFG_EPISODE_NIGHT_ONLY, "1").strip().lower() in (
-                        "1", "true", "yes", "on")
-                except Exception:  # noqa: BLE001 — 读库失败就按默认关，不挡抢单
-                    logger.warning("单集夜间配置读库失败，按默认关闭", exc_info=True)
+        # 窗口环境变量被设置（含显式值）即视为窗口被 env 接管。开关本身不看 env。
+        from_env = bool(env_start) or bool(env_end) or bool(env_tz)
+        enabled = NIGHT_ONLY_DEFAULT
+        if db is not None:
+            try:
+                from backend.integrations import store
+                enabled = store.read_value(
+                    db, CFG_EPISODE_NIGHT_ONLY, "1").strip().lower() in (
+                    "1", "true", "yes", "on")
+            except Exception:  # noqa: BLE001 — 读库失败就按代码缺省，不挡抢单
+                logger.warning("单集夜间配置读库失败，按默认关闭", exc_info=True)
         start = _parse_hhmm(env_start or None, NIGHT_START_DEFAULT)
         end = _parse_hhmm(env_end or None, NIGHT_END_DEFAULT)
         tz = _parse_tz(env_tz or None, NIGHT_TZ_DEFAULT).key
@@ -509,8 +499,7 @@ def save_episode_night_config(db, enabled: bool, start: str, end: str,
                             tz: Optional[str] = None) -> dict:
     """管理后台用：保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效）。
 
-    开关落库。未设环境变量时读库，无行则缺省开（NIGHT_ONLY_DEFAULT）。
-    环境变量 ENRICH_EPISODE_NIGHT_ONLY 仍优先（摘面板前的读口径）。
+    开关落库。读的时候只认库，无行则缺省开（NIGHT_ONLY_DEFAULT）。
     """
     from backend.integrations import store
     start = _parse_hhmm(start, NIGHT_START_DEFAULT)
@@ -566,7 +555,8 @@ def _episode_field_config(db=None) -> dict:
             try:
                 from backend.integrations import store
                 return store.read_value(
-                    db, cfg_key, "1" if default else "0") == "1"
+                    db, cfg_key, "1" if default else "0").strip().lower() in (
+                    "1", "true", "yes", "on")
             except Exception:  # noqa: BLE001 — 读库失败就按默认（全开），不挡刮削
                 logger.warning("单集分项开关读库失败，按默认全开", exc_info=True)
         return default
