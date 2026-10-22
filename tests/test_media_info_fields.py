@@ -119,3 +119,43 @@ def test_external_urls_empty_when_no_ids():
         metadata_source=None,
     )
     assert _api()._external_urls(item) == []
+
+
+def _stream_ns(**over):
+    base = dict(
+        stream_index=0, stream_type="Video", codec="h264", language="jpn",
+        display_title=None, title=None, is_default=False, is_forced=False,
+        is_external=False, channels=None, bit_rate=6202000,
+        frame_rate=None, video_range="SDR", profile=None, level=None,
+        pixel_format=None, aspect_ratio=None, bit_depth=None,
+        sample_rate=None, channel_layout=None, sample_format=None,
+    )
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+def test_stream_dto_numeric_fields_are_numbers_not_strings():
+    """回归：Hills（Dart）报 type 'String' is not a subtype of type 'num?'。
+
+    frame_rate/level 在库里存字符串（ffprobe 原始值 / str(level)），但 Emby
+    协议里 FrameRate/Level 是数字，Dart 客户端按 num? 强转拿到字符串整页崩。
+    _stream_dto 下发时必须转成 JSON 数字。
+    """
+    item = SimpleNamespace(bitrate=6202000, width=1920, height=1080, guid="g" * 32)
+    dto = _api()._stream_dto(
+        _stream_ns(frame_rate="30000/1001", level="51"), "http://t", item, "")
+    assert isinstance(dto["FrameRate"], float) and dto["FrameRate"] == 29.97, dto
+    assert isinstance(dto["Level"], int) and dto["Level"] == 51, dto
+
+    dto = _api()._stream_dto(
+        _stream_ns(frame_rate="29.970003", level="40"), "http://t", item, "")
+    assert dto["FrameRate"] == 29.97 and not isinstance(dto["FrameRate"], str), dto
+    assert dto["Level"] == 40, dto
+
+
+def test_stream_dto_omits_unparseable_numeric_fields():
+    """转不动的脏值宁可不发，也不能发字符串把强类型客户端打崩。"""
+    item = SimpleNamespace(bitrate=0, width=1920, height=1080, guid="g" * 32)
+    dto = _api()._stream_dto(
+        _stream_ns(frame_rate="N/A", level=""), "http://t", item, "")
+    assert "FrameRate" not in dto and "Level" not in dto, dto
