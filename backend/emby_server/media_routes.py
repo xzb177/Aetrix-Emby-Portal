@@ -357,6 +357,23 @@ def item_thumbnails(item_id: str, request: Request,
     return {"TotalRecordCount": len(thumbs)}
 
 
+@emby_router.get("/emby/Items/{item_id}/ThumbnailSet")
+@emby_router.get("/Items/{item_id}/ThumbnailSet")
+def item_thumbnail_set(item_id: str,
+                       user: models.WebUser = Depends(get_emby_user),
+                       db: Session = Depends(get_db)):
+    """进度条预览图集（trickplay 的 ThumbnailSet 形态）。
+
+    Hills 等客户端拖动进度条时调这个端点，此前 404（2026-10-22 晚实测 3 次）。
+    我方的预览图是 thumbnail_worker 的独立 JPG 序列（走 /Thumbnails/{index}），
+    没有 ThumbnailSet 形态的图集数据 —— 这里返回合法空集（与全站列表端点
+    同构的 QueryResult 形状），让客户端按「无预览图」降级，而不是报错。
+    不编造图集条目：造假数据会让客户端去拉不存在的图片，变成新的 404。
+    """
+    item = _require_visible_item(db, user, item_id)
+    return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
 # ---------------------------------------------------------------------------
 # 多版本（对标 StrmAssistant #4 MergeMultiVersionTask）
 # ---------------------------------------------------------------------------
@@ -426,6 +443,37 @@ def item_intro_markers(item_id: str,
     item = _require_visible_item(db, user, item_id)
     markers = _im.get_markers(db, item.id)
     return {"Markers": markers, "Chapters": _im.to_chapters(markers)}
+
+
+# Emby 4.8 的片段接口：支持「跳过片头」的客户端不读 IntroMarkers，
+# 只认 /MediaSegments/{item_id}（2026-10-22 晚实测 404×2）。数据是同一份
+# （intro_marker 表），这里只做结构映射；没有标记就返回空集，不报错。
+_MEDIA_SEGMENT_TYPES = {"intro": "Intro", "outro": "Outro", "credits": "Credits"}
+
+
+@emby_router.get("/emby/MediaSegments/{item_id}")
+@emby_router.get("/MediaSegments/{item_id}")
+def item_media_segments(item_id: str,
+                        user: models.WebUser = Depends(get_emby_user),
+                        db: Session = Depends(get_db)):
+    """片头片尾片段（MediaSegments 结构）：由 IntroMarkers 数据映射而来。"""
+    from backend.emby_server import intro_marker as _im
+    from backend.emby_server.api import _guid_of
+
+    item = _require_visible_item(db, user, item_id)
+    segments = []
+    for m in _im.get_markers(db, item.id):
+        seg_type = _MEDIA_SEGMENT_TYPES.get(m["marker_type"])
+        if seg_type is None:
+            continue
+        segments.append({
+            "Id": _guid_of("MediaSegment", f"{item.guid}:{m['marker_type']}"),
+            "ItemId": item.guid,
+            "Type": seg_type,
+            "StartTicks": m["start_ms"] * 10000,  # ms → ticks
+            "EndTicks": m["end_ms"] * 10000,
+        })
+    return {"Items": segments, "TotalRecordCount": len(segments), "StartIndex": 0}
 
 
 @emby_router.post("/emby/Items/{item_id}/IntroMarkers")
