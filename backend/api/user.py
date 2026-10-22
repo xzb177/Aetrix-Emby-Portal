@@ -4,6 +4,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
@@ -1135,13 +1136,22 @@ async def preview_membership_code(
     """预检卡码：不核销，仅告知类型与天数
 
     用 POST 而非 GET，避免卡码出现在访问日志与浏览器历史中；
-    限速与核销同口径，防止靠枚举探测卡码。
+    限速防枚举探测卡码。额度比核销宽（60 次/分钟）：前端输入时自动
+    预检，用户打字/粘贴改几下就会触发多次，20 次太容易误伤。
+
+    计数与拦截分离：先计数，再看预检结果——命中「明确无效」（已被
+    使用/已停用/已过期/不存在/指名他人）的码，状态已经确定，直接
+    返回业务文案，不许被 429 盖掉（用户拿一张用掉的码反复试，看到的
+    应该是「该注册码已被使用」，而不是「操作过于频繁」）。
     """
-    allowed, _ = check_rate_limit(f"code_preview:{current_user.id}", 20, 60)
+    allowed, _ = check_rate_limit(f"code_preview:{current_user.id}", 60, 60)
+    result = codes.preview_code(db, req.code, current_user.username)
+    if result.get("error_code") in codes.CLEARLY_INVALID_CODE_ERRORS:
+        return result
     if not allowed:
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
 
-    return codes.preview_code(db, req.code, current_user.username)
+    return result
 
 
 @user_router.post("/membership/redeem")
@@ -1158,6 +1168,16 @@ def redeem_membership_code(
     """
     allowed, _ = check_rate_limit(f"code_redeem:{current_user.id}", 10, 60)
     if not allowed:
+        # 限流拒绝也要先分清这张码是不是「明确无效」：状态已确定的码
+        # （已被使用/已停用/已过期/不存在/指名他人/自己已用过）直接给
+        # 业务文案+机器码，不让 429 把真原因盖掉。只读判定，不核销。
+        invalid = codes.classify_invalid_code(db, current_user, req.code)
+        if invalid is not None:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": invalid["message"],
+                         "error_code": invalid["error_code"]},
+            )
         raise HTTPException(status_code=429, detail="操作过于频繁，请稍后再试")
 
     if not current_user.is_active:
@@ -1168,7 +1188,10 @@ def redeem_membership_code(
         # 失败路径要把事务收干净：redeem_code 里可能已经动过会话（占位 / 封禁），
         # 不回滚就交给 get_db 的 close() 会让错误更难查
         db.rollback()
-        raise HTTPException(status_code=400, detail=result.get("message") or "卡码无效")
+        content = {"detail": result.get("message") or "卡码无效"}
+        if result.get("error_code"):
+            content["error_code"] = result["error_code"]
+        return JSONResponse(status_code=400, content=content)
     # 卡码消耗与会员天数由这里统一提交（codes 里不再自己 commit）：
     # 两阶段提交不一致会导致「码烧了、会员没到账」或反过来（见 backend/codes.py 的说明）
     commit_with_retry(db, label="卡码核销")
