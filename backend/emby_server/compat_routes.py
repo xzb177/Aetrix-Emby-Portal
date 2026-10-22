@@ -51,6 +51,7 @@ from backend.emby_server.api import (
     SERVER_VERSION,
     _base_url,
     _empty_items,
+    _filters_payload,
     _guid_of,
     _now_playing_dto,
     item_guid_for,
@@ -548,6 +549,48 @@ def remove_favorite(item_id: str, user_id: str,
     return _set_favorite(db, user, item_id, False)
 
 
+# ---- 从继续观看隐藏（HideFromResume）----
+
+def _set_hide_from_resume(db: Session, user: models.WebUser, item_id: str) -> dict:
+    """落「从继续观看隐藏」标记。
+
+    进度只写在单集行上、Resume 又把单集折叠成剧集展示（见 api.get_resume），
+    所以客户端对剧集卡片点隐藏时传来的是剧集 guid：只标记剧集行自己的
+    UserMediaData 没有任何行可排除，必须把该剧全部单集的进度行一并标记。
+    标记不动 playback_position_ticks —— 取消隐藏没有对应端点，进度数据保留，
+    与官方「隐藏只是不展示」的语义一致。
+    """
+    item = _require_visible_item(db, user, item_id)
+    umd = db.query(em.UserMediaData).filter(
+        em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
+    ).first()
+    if not umd:
+        umd = em.UserMediaData(user_id=user.id, item_id=item.id)
+        db.add(umd)
+    umd.hide_from_resume = True
+    if item.item_type == "series":
+        ep_ids = [r[0] for r in db.query(em.MediaItem.id).filter(
+            em.MediaItem.series_id == item.id,
+            em.MediaItem.item_type == "episode",
+        ).all()]
+        if ep_ids:
+            db.query(em.UserMediaData).filter(
+                em.UserMediaData.user_id == user.id,
+                em.UserMediaData.item_id.in_(ep_ids),
+            ).update({em.UserMediaData.hide_from_resume: True},
+                     synchronize_session=False)
+    db.commit()
+    return _user_data_dto(umd, item.guid, _run_time_ticks(item))
+
+
+@emby_router.post("/emby/Users/{user_id}/Items/{item_id}/HideFromResume")
+@emby_router.post("/Users/{user_id}/Items/{item_id}/HideFromResume")
+def hide_from_resume(item_id: str, user_id: str,
+                     user: models.WebUser = Depends(get_emby_user),
+                     db: Session = Depends(get_db)):
+    return _set_hide_from_resume(db, user, item_id)
+
+
 # ---- 相似推荐 ----
 
 @emby_router.get("/emby/Items/{item_id}/Similar")
@@ -616,7 +659,12 @@ def local_trailers(item_id: str, user: models.WebUser = Depends(get_emby_user)):
 
 @emby_router.get("/emby/Items/{item_id}/SpecialFeatures")
 @emby_router.get("/Items/{item_id}/SpecialFeatures")
-def special_features(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+@emby_router.get("/emby/Users/{user_id}/Items/{item_id}/SpecialFeatures")
+@emby_router.get("/Users/{user_id}/Items/{item_id}/SpecialFeatures")
+def special_features(item_id: str, user_id: str = "",
+                     user: models.WebUser = Depends(get_emby_user)):
+    # 部分客户端只走带用户前缀的形态（与 Intros / PlaybackInfo 的双形态同理）：
+    # 此前只有无前缀形态，带前缀请求直接 404（2026-10-22 晚实测 7 次）。
     return _empty_items()
 
 
@@ -720,6 +768,33 @@ def genre_by_name(name: str, user: models.WebUser = Depends(get_emby_user)):
 @emby_router.get("/Studios")
 def studios_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
     return _named_items("Studio", _menu_names(db, facets.KIND_STUDIO, em.MediaItem.studios))
+
+
+# ---- 筛选分面列表（年份 / 标签 / 分级）----
+#
+# Items 列表的 Years=/Tags=/OfficialRatings= 过滤参数早已实现，缺的只是给
+# 筛选面板供数的三个列表端点 —— 带分面筛选 UI 的客户端（Hills 等）打开库内
+# 筛选时先拉这三个端点，此前全部 404（2026-10-22 晚各实测 7 次），筛选面板
+# 直接残缺。取值直接复用 Items/Filters 的同一份聚合（_filters_payload，
+# 带缓存与 facets 关联表口径），保证「面板里选得到的」与「Filters 报的」一致。
+
+@emby_router.get("/emby/Years")
+@emby_router.get("/Years")
+def years_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    return _named_items("Year", [str(y) for y in _filters_payload(db)["Years"]])
+
+
+@emby_router.get("/emby/Tags")
+@emby_router.get("/Tags")
+def tags_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    return _named_items("Tag", _filters_payload(db)["Tags"])
+
+
+@emby_router.get("/emby/OfficialRatings")
+@emby_router.get("/OfficialRatings")
+def official_ratings_list(user: models.WebUser = Depends(get_emby_user),
+                          db: Session = Depends(get_db)):
+    return _named_items("OfficialRating", _filters_payload(db)["OfficialRatings"])
 
 
 @emby_router.get("/emby/Persons")
@@ -863,3 +938,53 @@ def library_refresh(request: Request,
     return {"success": True, "libraries": queued, "already": already}
 
 
+
+
+# ==================== 弹幕插件空兼容 / 品牌 Logo（2026-10-22 兼容补齐）====================
+#
+# G7：国区客户端（Hills / Streama 系）的弹幕加载走 Danmu 插件约定路径
+# ``/api/danmu/{item_id}``（含 ``/raw`` 原始 XML 形态），挂在 /emby 前缀下。
+# 本服务没有弹幕功能，此前每次播放先撞一次 404（2026-10-22 晚实测 9 次）。
+# 这里只做「合法空弹幕」承接：返回可解析的空弹幕文档（bilibili 风格 XML，
+# 根元素 <i> 下零条 <d>），客户端拿到就是「这部片没弹幕」，不再报错重试。
+# 不实现弹幕的抓取 / 存储 / 下发，那是独立产品功能，不在本兼容范围内。
+
+_EMPTY_DANMU_XML = '<?xml version="1.0" encoding="utf-8"?><i></i>'
+
+
+@emby_router.get("/emby/api/danmu/{item_id}")
+@emby_router.get("/api/danmu/{item_id}")
+@emby_router.get("/emby/api/danmu/{item_id}/raw")
+@emby_router.get("/api/danmu/{item_id}/raw")
+def danmu_empty(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return Response(content=_EMPTY_DANMU_XML,
+                    media_type="text/xml; charset=utf-8")
+
+
+# G10：GET /Branding/Logo —— 个别客户端拿它当服务器图标，此前 404（实测 2 次）。
+# 本服务没有单独的台标图资源：仓库里有现成站点图标（user_frontend 的
+# favicon.ico，全量部署形态下存在）就发它；后端独立镜像（Dockerfile.backend
+# 白名单 COPY 不含 user_frontend）没有该文件时，降级为 1×1 透明 PNG 的
+# 200 响应 —— 对客户端而言是「有图但为空」，不再把服务器图标位打成错误。
+
+_LOGO_FALLBACK_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+@emby_router.get("/emby/Branding/Logo")
+@emby_router.get("/Branding/Logo")
+def branding_logo(user: models.WebUser = Depends(get_emby_user)):
+    import base64
+    from pathlib import Path
+
+    favicon = (Path(__file__).resolve().parents[2]
+               / "user_frontend" / "public" / "favicon.ico")
+    if favicon.is_file():
+        # 不走 streaming.serve_file：它按媒体文件猜类型，会把 .ico 报成
+        # video/mp4（实测），客户端同样会当坏图。这里显式给 image/x-icon。
+        return Response(content=favicon.read_bytes(),
+                        media_type="image/x-icon")
+    return Response(content=base64.b64decode(_LOGO_FALLBACK_PNG_B64),
+                    media_type="image/png")

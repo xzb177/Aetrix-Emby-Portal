@@ -453,6 +453,9 @@ class UserMediaData(Base):
     play_count = Column(Integer, default=0)
     played = Column(Boolean, default=False)
     is_favorite = Column(Boolean, default=False)
+    # 「从继续观看隐藏」（客户端 HideFromResume）：只影响 Resume 列表，
+    # 不动播放进度本身。老库靠 database 的 ORM 列对账自动补列（默认 0）。
+    hide_from_resume = Column(Boolean, default=False)
     last_played_at = Column(DateTime)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

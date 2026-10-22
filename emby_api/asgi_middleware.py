@@ -69,6 +69,38 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+class DoubleEmbyPrefixMiddleware:
+    """双重 /emby 前缀归一化（纯 ASGI，只改 scope 的 path，原样透传）。
+
+    部分客户端自己会拼 /emby 前缀，用户在地址栏又填了带 /emby 的服务地址，
+    请求就变成 /emby/emby/... 全部 404（2026-10-22 晚实测 10 次）。这不是
+    客户端一家的错，服务端做一层容错最划算：在进任何业务中间件 / 路由前
+    把重复的 /emby/ 前缀折叠成一层。只折叠紧邻的重复段，正常路径零影响。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            path = scope.get("path", "")
+            collapsed = path
+            while collapsed.startswith("/emby/emby/"):
+                collapsed = "/emby/" + collapsed[len("/emby/emby/"):]
+            if collapsed == "/emby/emby":
+                collapsed = "/emby"
+            if collapsed != path:
+                scope["path"] = collapsed
+                raw = scope.get("raw_path")
+                if raw:
+                    while raw.startswith(b"/emby/emby/"):
+                        raw = b"/emby/" + raw[len(b"/emby/emby/"):]
+                    if raw == b"/emby/emby":
+                        raw = b"/emby"
+                    scope["raw_path"] = raw
+        await self.app(scope, receive, send)
+
+
 class ForegroundActivityMiddleware:
     """前台活跃打点中间件——/emby/ 用户路径经过即记录，供 maintenance 重活让路；纯 ASGI，只读 scope[path]，不包 send，零拷贝零开销；任何异常永不影响主链路。"""
 

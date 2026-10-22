@@ -2665,6 +2665,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         c = {
             "SortName": em.MediaItem.sort_name, "Name": em.MediaItem.name,
             "DateCreated": em.MediaItem.date_added, "ProductionYear": em.MediaItem.production_year,
+            # PremiereDate：Infuse / SenPlayer 等的常用默认排序。此前映射表缺它，
+            # 未知键被整段丢弃后静默回退按名称排序（用户体感「排序选了没效果」）。
+            "PremiereDate": em.MediaItem.premiere_date,
             "CommunityRating": em.MediaItem.community_rating,
             "DateLastContentAdded": _date_last_content_added,
         }.get(key)
@@ -2937,6 +2940,8 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                 em.UserMediaData.user_id == user.id,
                 em.UserMediaData.playback_position_ticks > 0,
                 em.UserMediaData.played == False,  # noqa: E712
+                # 客户端 HideFromResume 标记过的条目不再出现在继续观看里
+                em.UserMediaData.hide_from_resume == False,  # noqa: E712
                 em.MediaItem.item_type.in_(["movie", "series", "episode"]),
                 em.MediaItem.is_hidden == False,  # noqa: E712
                 # 副本绝不能占 Resume 的 limit 名额：合并 worker 不搬运播放记录，

@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 # 纯 ASGI 中间件（中转零拷贝优化）：替代原来的 @app.middleware("http")
 from emby_api.asgi_middleware import (
+    DoubleEmbyPrefixMiddleware,
     EaBodyLimitMiddleware,
     EaRateLimitMiddleware,
     ForegroundActivityMiddleware,
@@ -395,6 +396,10 @@ app.add_middleware(DownloadGuardMiddleware)
 # DomainGuard 再用它判断内网健康检查例外。
 app.add_middleware(DomainGuardMiddleware)
 app.add_middleware(CloudflareIPMiddleware)
+
+# 双重 /emby 前缀归一化：注册在最外层（CORS 除外），路径先折叠再进其余中间件
+# 与路由 —— 客户端自拼 /emby + 用户又填带 /emby 的地址时不再整串 404。
+app.add_middleware(DoubleEmbyPrefixMiddleware)
 
 # CORS 最后注册 = 最外层（见上文注释）
 if _cors_origins:
