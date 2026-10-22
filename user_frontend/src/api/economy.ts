@@ -182,8 +182,29 @@ export interface VitalityStatus {
   suspended: boolean
 }
 
+/** 本地登录态里缓存的用户信息是否明确标记为公益服用户：
+ * true = 是；false = 明确不是；null = 没标记（老登录态），以服务端为准。 */
+function cachedUserIsWelfare(): boolean | null {
+  try {
+    const raw = localStorage.getItem('user')
+    if (!raw) return null
+    const u = JSON.parse(raw) as { is_welfare?: unknown }
+    return typeof u.is_welfare === 'boolean' ? u.is_welfare : null
+  } catch {
+    return null
+  }
+}
+
 export const vitalityApi = {
-  status: () => api.get<never, VitalityStatus>('/api/user/economy/vitality'),
+  status: () => {
+    // 活力值仅限公益服用户：本地已明确知道不是时直接跳过网络请求——
+    // 所有调用点本来就把失败当「不适用」隐藏，省掉这次注定 403 的往返
+    //（开服当晚该接口在服务端刷了 111 条 403）。标记缺失时不拦，照常问服务端。
+    if (cachedUserIsWelfare() === false) {
+      return Promise.reject(new Error('vitality: not applicable for this user'))
+    }
+    return api.get<never, VitalityStatus>('/api/user/economy/vitality')
+  },
   recharge: (points: number) =>
     api.post<never, { success: boolean; vitality_gained: number; points_spent: number; vitality: number; points_balance: number }>('/api/user/economy/vitality/recharge', { points }),
 }

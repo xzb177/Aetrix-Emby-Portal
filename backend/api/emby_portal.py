@@ -96,6 +96,9 @@ class UserOut(BaseModel):
     is_active: bool = True
     # 是否管理员：用户端据此显示「管理后台」入口（管理后台与门户同一套 JWT）
     is_staff: bool = False
+    # 是否公益服用户：活力值等公益专属功能只对这类用户开放，用户端据此
+    # 决定要不要发那些专属请求（非公益用户发了必 403，白跑一趟还刷日志）
+    is_welfare: bool = False
     # 付费墙是否开启（开启且非会员时播放会被拦截）；公益服恒为 false
     subscription_required: bool = False
     # 站点是否允许下载 + 每用户设备上限（0 表示不限）
@@ -147,6 +150,7 @@ def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
         is_vip=is_vip,
         is_active=user.is_active,
         is_staff=bool(user.is_staff),
+        is_welfare=bool(getattr(user, "is_welfare", False)),
         subscription_required=requires_sub,
         download_allowed=download_allowed(db) if db is not None else True,
         device_limit=device_limit(db) if db is not None else 0,
