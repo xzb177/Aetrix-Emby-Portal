@@ -75,6 +75,15 @@ def check_rate_limit(key: str, max_events: int, window_seconds: float) -> tuple[
     return _limiter.check(key, max_events, window_seconds)
 
 
+def reset_rate_limit(key: str) -> None:
+    """模块级便捷入口：清掉某个键的全部计数（与 check_rate_limit 配对）。
+
+    用于「成功后退还额度」语义（如注册成功后 reset register:{ip}）：
+    失败尝试保留计数防爆破，成功不占后来者的额度。
+    """
+    _limiter.reset(key)
+
+
 # ============ 网关限流规则表（横切能力只许一套）============
 # backend/main.py（EM）与 emby_api/asgi_middleware.py（EA）的限流中间件共用此表，
 # 不许各自手写一份——否则一处改了限额另一处会静默漂移（r38 实证：EA 侧曾漏跟进）。
@@ -82,8 +91,17 @@ def check_rate_limit(key: str, max_events: int, window_seconds: float) -> tuple[
 API_RATE_LIMITS = [
     ("/api/health", 0, 0),              # 健康检查：不限流
     ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
-    ("/api/admin/emby/login", 10, 10),  # 登录：每分钟 10 次（防暴力破解）
-    ("/api/user/login", 10, 10),
+    # 登录专档必须是**真实路由**：用户登录是 /api/user/auth/login、管理员登录是
+    # /api/admin/auth/login。旧条目写的是 /api/user/login 与 /api/admin/emby/login，
+    # 路由表里根本没有这两个路径 → 永远命中不到（死条目），登录请求实际落进
+    # 下面的 /api/ 通用档（120/分钟），专档的 10 次/分钟从未生效。
+    ("/api/user/auth/login", 10, 10),   # 用户登录：每分钟 10 次/IP（防暴力破解）
+    ("/api/admin/auth/login", 10, 10),  # 管理员登录：每分钟 10 次/IP（防暴力破解）
+    # 公开/认证前置路径拆独立桶（中间件的计数键含命中的前缀，拆条目即拆桶）：
+    # 注册页一打开就要打 captcha/register-config/branding 等一串接口，混在
+    # /api/ 通用桶里时，任何来源的流量高峰都会把注册链路连坐限流（429）。
+    ("/api/user/auth/", 60, 300),       # 认证前置：captcha/注册配置/注册/刷新令牌
+    ("/api/site/", 120, 600),           # 站点公开信息：branding/海报等每次页面加载都调
     ("/api/admin/", 60, 300),           # 管理接口：未认证 60，认证 300
     ("/api/", 120, 600),               # 普通 API：未认证 120，认证 600
 ]

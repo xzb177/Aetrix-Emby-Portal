@@ -34,7 +34,7 @@ from backend.subscriptions import (
     realm_access_note,
     realm_requires_subscription,
 )
-from backend.ratelimit import check_rate_limit, client_ip
+from backend.ratelimit import check_rate_limit, client_ip, reset_rate_limit
 # 人机验证（能力中心）：用户端登录/注册与后台登录共用同一个守卫（含安全日志）
 from backend.integrations import captcha
 from backend.security import (
@@ -303,8 +303,9 @@ def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
 def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     """注册新用户（用户名唯一，密码 bcrypt 存储，自动生成自建 Emby 凭据）"""
     rl_enabled, rl_max, rl_window = _get_register_ratelimit(db)
+    rl_key = f"register:{client_ip(request)}"
     if rl_enabled:
-        allowed, retry_after = check_rate_limit(f"register:{client_ip(request)}", rl_max, rl_window)
+        allowed, retry_after = check_rate_limit(rl_key, rl_max, rl_window)
         if not allowed:
             raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
     # 人机验证（能力中心）：未配置 / 未开保护时直接放行；失败一律 400 + 安全日志
@@ -377,6 +378,11 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
                            exc_info=True)
 
     logger.info("新用户注册: %s (id=%s, mode=%s)", username, user.id, reg_mode)
+    # 计数语义：注册成功后退还该 IP 的注册限流计数，失败尝试（验证码错 /
+    # 用户名已存在 / 邮箱已注册等）保留计数防爆破。否则同一 NAT 出口下
+    # 一个人注册成功，就把同出口后来者的 5 次/小时额度白白烧掉一格。
+    if rl_enabled:
+        reset_rate_limit(rl_key)
     return _issue_auth_response(user, db, plain_password=req.password)
 
 
