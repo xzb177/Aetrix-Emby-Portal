@@ -168,13 +168,15 @@ async def lifespan(app: FastAPI):
     _claim_identity()
     await _probe_panel()
 
-    # 崩溃残留的收尾 + 长期运行的后台维护（扫描标志 / 过期会话 / 转码目录 / 字幕缓存）。
-    # 同一套库可能同时被 EM 与多台 EA 打开，这里做的是幂等且带阈值判断的清理。
+    # 崩溃残留的收尾 + 长期运行的后台维护（过期会话 / 转码目录 / 字幕缓存）。
     # r43：EA 是播放前台进程，janitor 只跑轻量清理（heavy=False），图片/缩略图/
     # 分类回填等重活由 worker 进程做——原来两边每 600 秒各跑一整套，纯浪费不说，
     # 还跟播放请求抢 DB/磁盘/CPU。
+    # 扫描收尾三件套（复位/收尾/续扫）同理只归 worker：scan_owner=False。
+    # 2026-10-22 事故实证：EA 无门槛跑三件套与 worker 撞车，每次重启成对
+    # 产生两条 resume 流水、互相掐断对方刚续上的扫描（见 maintenance 文档）。
     try:
-        maintenance.run_startup_maintenance()
+        maintenance.run_startup_maintenance(scan_owner=False)
         maintenance.start_janitor(heavy=False)
     except Exception as exc:  # noqa: BLE001 — 维护失败不影响出流
         logger.warning("启动维护失败（可忽略）: %s", exc)

@@ -400,11 +400,17 @@ _JANITOR_STARTED = False
 _JANITOR_LOCK = threading.Lock()
 
 
-def run_startup_maintenance() -> dict:
+def run_startup_maintenance(scan_owner: bool = True) -> dict:
     """启动时的一次性维护（必须在 init_db 之后调用）
 
     不抛异常：任何一项失败都只记日志，绝不阻塞服务启动——「带病启动」在这里是**对的**，
     因为维护没做完不会让服务不可用，而启动失败会让整个站点挂掉。
+
+    ``scan_owner``：扫描收尾三件套（复位残留标志 / 收尾中断流水 / 自动续扫）
+    只许真正执行扫描的进程做（worker；单体模式下是 main 本人）。EA 播放前台
+    必须传 False——2026-10-22 事故实证：EA 与 worker 启动时各跑一遍三件套，
+    EA 先续上的扫描十几秒后被 worker 的收尾当成残留掐掉再续一遍，每次重启
+    成对产生两条 resume 流水，巨型库的扫描永远跑不完并堵死全站扫描队列。
     """
     from backend.database import SessionLocal
 
@@ -416,24 +422,25 @@ def run_startup_maintenance() -> dict:
               "item_facets_ready": False}
     db = SessionLocal()
     try:
-        result["scan_flags_reset"] = reset_stale_scan_flags(db)
-        # 刚被复位坐实打断的库（状态已记 interrupted 且不在扫）：它们的
-        # running 流水就是被打断的那一轮，收尾时不受 6 小时阈值限制。
-        from backend.emby_server import scanner as _scanner
-        _interrupted_lib_ids = [
-            lib.id for lib in db.query(em.Library).filter(
-                em.Library.scan_status == _scanner.SCAN_STATUS_INTERRUPTED,
-                em.Library.is_scanning == False,  # noqa: E712
-            ).all()
-        ]
-        result["scan_runs_closed"] = close_stale_scan_runs(
-            db, library_ids=_interrupted_lib_ids)
-        # 复位刚把被重启打断的库收尾成 interrupted：紧接着自动续扫，
-        # 不等管理员发现失败牌再手动点（续扫失败不影响其余维护项）。
-        try:
-            result["scan_resumed"] = resume_interrupted_scans(db)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("启动维护（自动续扫）失败: %s", exc)
+        if scan_owner:
+            result["scan_flags_reset"] = reset_stale_scan_flags(db)
+            # 刚被复位坐实打断的库（状态已记 interrupted 且不在扫）：它们的
+            # running 流水就是被打断的那一轮，收尾时不受 6 小时阈值限制。
+            from backend.emby_server import scanner as _scanner
+            _interrupted_lib_ids = [
+                lib.id for lib in db.query(em.Library).filter(
+                    em.Library.scan_status == _scanner.SCAN_STATUS_INTERRUPTED,
+                    em.Library.is_scanning == False,  # noqa: E712
+                ).all()
+            ]
+            result["scan_runs_closed"] = close_stale_scan_runs(
+                db, library_ids=_interrupted_lib_ids)
+            # 复位刚把被重启打断的库收尾成 interrupted：紧接着自动续扫，
+            # 不等管理员发现失败牌再手动点（续扫失败不影响其余维护项）。
+            try:
+                result["scan_resumed"] = resume_interrupted_scans(db)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("启动维护（自动续扫）失败: %s", exc)
         result["sessions_reaped"] = reap_stale_playback_sessions(db, stale_minutes=1)
         # 升级上来的老库：分类关联表刚建出来时是空的，这里补上（按 id 水位增量）。
         # 补不完也不影响启动：筛选路径会退回旧的全表匹配并接着补。
