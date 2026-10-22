@@ -957,6 +957,35 @@ def _external_urls(item: em.MediaItem) -> list:
     return urls
 
 
+def _emby_num(val):
+    """把库里以字符串存的数值型流字段转回 JSON 数字，转不动返回 None（不发该字段）。
+
+    frame_rate / level 在流表里是 String 列：frame_rate 存的是 ffprobe 原始
+    avg_frame_rate（如 "30000/1001"、"29.970003"），level 存的是 str(level)
+    （如 "51"）。但 Emby 协议里 FrameRate / Level 都是数字，Dart 客户端
+    （Hills 等）按 num? 强转，拿到字符串直接抛
+    "type 'String' is not a subtype of type 'num?' in type cast"，
+    条目详情/播放信息整页打不开。这里在下发边界统一转数字：
+    分数按除法算（30000/1001 ≈ 29.97），整数串回 int，小数串回 float。
+    """
+    if val is None or val == "":
+        return None
+    if isinstance(val, (int, float)):
+        return val
+    text = str(val).strip()
+    try:
+        if "/" in text:
+            num, _, den = text.partition("/")
+            f = float(num) / float(den)
+            return round(f, 3) if f else None
+        f = float(text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if f == int(f):
+        return int(f)
+    return round(f, 3)
+
+
 def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = None,
                 auth_qs: str = "") -> dict:
     # ffprobe 的 video stream 经常不单独给 bitrate（尤其是远程 HEVC 文件），
@@ -985,6 +1014,10 @@ def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = No
         ("sample_format", "SampleFormat"),
     ):
         val = getattr(s, attr, None)
+        if key in ("FrameRate", "Level"):
+            # 协议里是数字、库里存的是字符串，必须转（见 _emby_num）；
+            # 转不动就不发这个字段，宁可缺行也不能发字符串把客户端打崩
+            val = _emby_num(val)
         if val not in (None, ""):
             dto[key] = val
     if is_video and item.width and item.height:
