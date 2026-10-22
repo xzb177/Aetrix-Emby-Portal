@@ -29,7 +29,7 @@
 
       <button type="button" class="classic" v-if="variant === 'home'" @click="toClassic">经典视图 ⇄</button>
 
-      <div class="world-scroll" role="region" aria-label="探险地图，可左右滑动">
+      <div class="world-scroll" ref="worldScrollEl" role="region" aria-label="探险地图，可左右滑动">
       <div class="world">
       <WorldCanvas
         :subs="anchorSubs"
@@ -815,7 +815,18 @@ function onKeydown(e: KeyboardEvent) {
 watch(letterDateKey, () => refreshLetterRead())
 watch(userId, () => refreshLetterRead())
 
+const worldScrollEl = ref<HTMLElement | null>(null)
+
 onMounted(() => {
+  // 地图打开先停在营地一段：画布 1340px 宽、手机上要横滑，默认停在最左端
+  // 时首屏只有空夜空（2026-10-22 用户截图实证）。居中到画布中段的建筑群；
+  // 桌面端画布完整可见、无溢出时 scrollWidth≈clientWidth，自然无操作。
+  void nextTick(() => {
+    const el = worldScrollEl.value
+    if (el && el.scrollWidth > el.clientWidth) {
+      el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2
+    }
+  })
   void panel.loadHome()
   void panel.loadCollector()
   void quest.loadCheckin()
@@ -1138,12 +1149,16 @@ onUnmounted(() => {
   }
   .hud {
     flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
     padding: 4px 0 8px;
     background: transparent;
   }
   .hud .brand { font-size: 16px; }
   .hud .worldname {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
     font-size: 12px;
     letter-spacing: 0.04em;
     padding: 4px 10px;
@@ -1154,11 +1169,17 @@ onUnmounted(() => {
     justify-content: flex-end;
     gap: 6px;
   }
+  /* 一排胶囊统一 40px 高、垂直居中：此前只有积分按钮（button）被
+     min-height 撑到 44px，其余 span 胶囊约 30px，一排高低不齐像错位
+     （2026-10-22 用户截图）。统一高度后整排对齐。 */
   .hud .pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
     font-size: 12px;
     padding: 6px 10px;
   }
-  .hud button.pill { min-height: 44px; }
+  .hud button.pill { min-height: 40px; }
   .hud .avatar {
     width: 44px;
     height: 44px;
