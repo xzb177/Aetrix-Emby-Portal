@@ -24,7 +24,7 @@ from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.pinyin_sort import make_sort_name
 
-from sqlalchemy import func, inspect, select, text, tuple_
+from sqlalchemy import func, inspect, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -117,6 +117,14 @@ REMOVAL_MAX_RATIO = env_float("SCAN_REMOVAL_MAX_RATIO", 0.5, 0.0)
 #: 绝对阈值：小库也要有下限保护（库里总共就 10 条，删 6 条就已经是“全没了”）
 REMOVAL_MAX_ABSOLUTE = env_int("SCAN_REMOVAL_MAX_ABSOLUTE", 20, 1, 1000000)
 
+# ==================== 缺失宽限（2026-10-24，FMBY 学习批一 #6）====================
+# 魂「对外部变化克制」：单次观测不作数。上面的删除保护管的是「整库级」
+# 事故（来源整体不可用时一条都不删）；这里管的是「单条级」抖动：
+# 单个文件这一轮没看到（挂载抖动、目录半读、网盘短暂抽风），不许当轮就
+# 下架——先记 missing_count 累计，连续缺失达到这个轮数才真正软删除。
+# 文件重新出现即清零。设 1 = 回到旧行为（确认缺失即下架）。
+MISSING_GRACE_SCANS = env_int("SCAN_MISSING_GRACE_SCANS", 3, 1, 1000)
+
 
 def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, int]:
     """能不能开始清理 → ``(能不能, 不能的原因, 库内文件类条目数)``
@@ -153,7 +161,7 @@ def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, i
     return True, "", total
 
 # 上一次清理阶段的决策（健康检查与测试用：有没有走快速路径、走过多少条、耗时）
-_CLEANUP_LAST: dict = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_ms": 0.0,
+_CLEANUP_LAST: dict = {"fast_path": False, "walked": 0, "removed": 0, "graced": 0, "elapsed_ms": 0.0,
                        # skipped = 删除保护拦下了本轮清理的原因（空串 = 没拦）
                        # 调用点用 .get("skipped") 读，所以这个键**必须一开始就存在**，
                        # 否则读出来恒为空、“被拦了”这件事就永远传不到接口/前端。
@@ -4234,26 +4242,42 @@ def _purge_items(db: Session, item_ids: list) -> None:
 def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
     """快速路径：一眼判断「这一轮不可能有要清理的条目」
 
-    两个条件都成立才返回 True，都只是计数查询（走索引），比遍历整库便宜两个数量级：
+    三个条件都成立才返回 True，都只是计数查询（走索引），比遍历整库便宜两个数量级：
 
     1. **文件类条目数 == 本次扫描见到的文件数**：说明每个文件都有行，库里也没有多余的
        （来源里已经没有的）文件类条目；
     2. **剧/季行数 == 被引用的剧数 + 被引用的季数**：说明没有「没有子条目的剧或季」残留
-       （剧被 season/episode 的 ``series_id`` 引用，季被 episode 的 ``parent_id`` 引用）。
+       （剧被 season/episode 的 ``series_id`` 引用，季被 episode 的 ``parent_id`` 引用）；
+    3. **没有挂着缺失计数的条目**（批一 #6 缺失宽限）：有的话遍历要负责清零/累计，
+       不能跳过。
 
     任何一个不成立就退回遍历——**宁可多花时间，也不能漏掉该删的条目**。
     实测十万条目（剧集库，稳定无删除）：这里约 40 ms，遍历整库约 2.2 s。
     """
-    file_backed = int(db.execute(
+    # 一条查询同时拿文件类条目数与「挂着缺失计数的条目数」（批一 #6）：
+    # 快速路径的立身之本是便宜，不许为宽限多加一次往返（资源预算冒烟
+    # 对条目表 SELECT 次数有硬上限）。missing_count 只会落在 movie/episode
+    # 上（宽限只管文件类条目），折进这条计数不丢信息。
+    _fb_row = db.execute(
         text(
-            "SELECT COUNT(*) FROM emby_items "
+            "SELECT COUNT(*), "
+            "COALESCE(SUM(CASE WHEN missing_count > 0 THEN 1 ELSE 0 END), 0) "
+            "FROM emby_items "
             "WHERE library_id = :lib AND item_type IN ('movie', 'episode') "
             "AND deleted_at IS NULL"
         ),
         {"lib": library.id},
-    ).scalar() or 0)
+    ).first()
+    file_backed = int(_fb_row[0] or 0)
+    pending_grace = int(_fb_row[1] or 0)
     if file_backed != len(seen_guids):
         return False                      # 条数与文件数对不上：可能有已消失的条目
+    # 缺失宽限（批一 #6）：有条目正挂着缺失计数时不能走快速路径——
+    # 遍历要负责给「文件回来了」的条目清零、给「还缺着」的累计计数；
+    # 跳过遍历会让计数永远停在旧值，下一次单轮缺失就直接越线下架。
+    # 必须放在下面两个提前 return 之前查，否则电影库/空库永远轮不到。
+    if pending_grace:
+        return False
     if not file_backed:
         return True                       # 空库：本来就没有可清理的
     parents = int(db.execute(
@@ -4312,6 +4336,36 @@ def _evict_gone_drive_files(db, library, gone: list) -> None:
             logger.debug("扫描失效存在性缓存失败 file=%s", file_id, exc_info=True)
 
 
+def _apply_missing_resets(db: Session, item_ids: list[int]) -> None:
+    """缺失计数清零（批一 #6）：文件重新出现的条目，旧账一笔勾销。"""
+    for i in range(0, len(item_ids), SQL_IN_CHUNK):
+        chunk = item_ids[i:i + SQL_IN_CHUNK]
+        db.execute(
+            update(emby_models.MediaItem)
+            .where(emby_models.MediaItem.id.in_(chunk))
+            .values(missing_count=0, missing_since=None)
+        )
+
+
+def _apply_missing_grace(db: Session, item_ids: list[int]) -> None:
+    """缺失计数 +1（批一 #6）：首次缺失记下时刻，后续只累计次数。
+
+    一条 SQL 统一自增：每个 id 本轮至多出现一次（遍历按 id 单趟），
+    不存在同批重复累计。
+    """
+    now = datetime.now()
+    for i in range(0, len(item_ids), SQL_IN_CHUNK):
+        chunk = item_ids[i:i + SQL_IN_CHUNK]
+        db.execute(
+            update(emby_models.MediaItem)
+            .where(emby_models.MediaItem.id.in_(chunk))
+            .values(
+                missing_count=emby_models.MediaItem.missing_count + 1,
+                missing_since=func.coalesce(emby_models.MediaItem.missing_since, now),
+            )
+        )
+
+
 def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     """清理「来源里已经没有」的条目，返回删除条数
 
@@ -4326,11 +4380,14 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
       全部留着——误删一部片还能连播放进度与收藏一起回来。物理删除仍会做，但只针对
       「已经隐藏很久」的条目（`MEDIA_SOFT_DELETE_PURGE_DAYS`，默认 30 天），
       否则表会无限涨。把 `MEDIA_SOFT_DELETE=0` 就完全回到硬删。
+    - **缺失宽限**（2026-10-24 批一 #6）：确认缺失先累计 `missing_count`，
+      连续缺失 `SCAN_MISSING_GRACE_SCANS` 轮（默认 3）才下架；文件回来即清零。
+      与删除保护分工：保护管整库级事故，宽限管单条级抖动。
     """
     global _CLEANUP_LAST
     started = time.perf_counter()
-    _CLEANUP_LAST = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_ms": 0.0,
-                     "skipped": ""}
+    _CLEANUP_LAST = {"fast_path": False, "walked": 0, "removed": 0, "graced": 0,
+                     "elapsed_ms": 0.0, "skipped": ""}
     if _no_removals_possible(db, library, seen_guids):
         elapsed = (time.perf_counter() - started) * 1000
         _CLEANUP_LAST.update(fast_path=True, elapsed_ms=elapsed)
@@ -4347,6 +4404,7 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
         logger.error("清理阶段已中止（删除保护）：%s", why)
         return 0
     removed = 0
+    graced = 0
     walked = 0
     last_id = 0
     while True:
@@ -4357,6 +4415,7 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 emby_models.MediaItem.item_type,
                 emby_models.MediaItem.file_path,
                 emby_models.MediaItem.drive_file_id,
+                emby_models.MediaItem.missing_count,
             )
             .where(
                 emby_models.MediaItem.library_id == library.id,
@@ -4373,19 +4432,33 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
         walked += len(rows)
         doomed: list[int] = []
         gone_drive: list[tuple] = []
-        for item_id, guid, item_type, file_path, drive_file_id in rows:
+        grace_ids: list[int] = []
+        reset_ids: list[int] = []
+        for item_id, guid, item_type, file_path, drive_file_id, missing_count in rows:
+            missing_count = missing_count or 0
             if guid in seen_guids:
+                # 文件回来了：缺失计数清零（批一 #6），别让旧账害它下次单轮缺失就越线
+                if missing_count > 0:
+                    reset_ids.append(item_id)
                 continue
             if item_type in ("movie", "episode"):
                 # 本机路径与远程挂载都查：命中的说明是别的来源的文件，保留；
                 # 查不到（挂载已删/已停用）才当删除处理。
                 if file_path and mount_lib.media_exists(file_path, db, library):
+                    if missing_count > 0:
+                        reset_ids.append(item_id)  # 文件在别的来源活着，同样清零
                     continue  # 其他来源（路径 / 挂载）的文件
-                doomed.append(item_id)
-                fid = (drive_file_id or "").strip()
-                if fid:
-                    # 文件确认不在来源里：立刻摘存在性正缓存，不必等库行写完
-                    gone_drive.append((file_path, fid))
+                # 确认缺失：先过宽限（批一 #6），连续缺失达到阈值才下架；
+                # 宽限期内条目保持可见——单轮抖动不作数（魂：对外部变化克制）。
+                if missing_count + 1 >= MISSING_GRACE_SCANS:
+                    doomed.append(item_id)
+                    fid = (drive_file_id or "").strip()
+                    if fid:
+                        # 真正判缺了才摘存在性正缓存：宽限期内不摘，
+                        # 文件可能只是暂时读不到，摘了会害播放白查一趟来源
+                        gone_drive.append((file_path, fid))
+                else:
+                    grace_ids.append(item_id)
             elif item_type == "season":
                 has_children = db.query(emby_models.MediaItem.id).filter(
                     emby_models.MediaItem.parent_id == item_id
@@ -4398,6 +4471,11 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 ).first()
                 if not has_children:
                     doomed.append(item_id)
+        if reset_ids:
+            _apply_missing_resets(db, reset_ids)
+        if grace_ids:
+            _apply_missing_grace(db, grace_ids)
+            graced += len(grace_ids)
         if gone_drive:
             _evict_gone_drive_files(db, library, gone_drive)
         if doomed:
@@ -4408,6 +4486,7 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
             else:
                 _purge_items(db, doomed)
                 removed += len(doomed)
+        if doomed or grace_ids or reset_ids:
             db.commit()  # 一批一次提交：与扫描主体同一套资源口径
     if _soft_delete.soft_delete_enabled():
         try:
@@ -4415,7 +4494,7 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
         except Exception as exc:  # noqa: BLE001 — 回收失败不影响本轮清理结果
             db.rollback()
             logger.warning("软删除回收失败 library_id=%s: %s", library.id, exc)
-    _CLEANUP_LAST.update(walked=walked, removed=removed,
+    _CLEANUP_LAST.update(walked=walked, removed=removed, graced=graced,
                          elapsed_ms=(time.perf_counter() - started) * 1000)
     return removed
 

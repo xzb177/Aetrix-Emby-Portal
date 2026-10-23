@@ -874,6 +874,13 @@ def _auto_migrate():
             ("drive_share_ok", "BOOLEAN", "NULL"),
             ("drive_share_checked_at", "DATETIME", "NULL"),
         ]),
+        # 缺失宽限（2026-10-24，FMBY 学习批一 #6）：emby_items 加
+        # missing_since / missing_count。老库补列后 missing_count=0
+        # （= 从未缺失），与升级前行为衔接：下一轮清理起开始累计。
+        ("emby_items", [
+            ("missing_since", "DATETIME", "NULL"),
+            ("missing_count", "INTEGER", "0"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

@@ -331,6 +331,16 @@ class MediaItem(Base):
     # NULL = 正常可见；非 NULL = 已下架。读路径由 backend/emby_server/soft_delete.py
     # 的全局 ORM 过滤器自动挡掉，文件重新出现时扫描器会把它清空（连播放进度一起回来）。
     deleted_at = Column(DateTime, default=None)
+    # 缺失宽限（2026-10-24，FMBY 学习批一 #6 / 魂「对外部变化克制」）：
+    # 清理阶段确认文件不在来源里时不再当轮下架，先累计缺失次数：
+    # missing_since = 首次确认缺失的时刻，missing_count = 连续缺失轮数；
+    # 达到 SCAN_MISSING_GRACE_SCANS（默认 3 轮）才真正写 deleted_at。
+    # 文件重新出现即清零。单次观测（挂载抖动/目录半读）不作数，防误删。
+    missing_since = Column(DateTime, default=None)
+    # server_default 必须有：仓库里存在绕过 ORM 的裸 SQL/Core 直插
+    # （如搜索测试的批量 INSERT），只靠 Python 侧 default 时直插会撞
+    # NOT NULL——2026-10-24 CI 实证（test_search_pinyin_initials）。
+    missing_count = Column(Integer, default=0, server_default="0", nullable=False)
     # 多版本合并（对标 StrmAssistant MergeMultiVersionTask）：
     # 同 tmdb_id/imdb_id 的重复条目合并为一条，主记录为 NULL，
     # 被合并的条目指向主记录 id。API 列表默认过滤掉被合并的，
