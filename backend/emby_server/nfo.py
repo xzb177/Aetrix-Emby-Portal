@@ -142,6 +142,33 @@ def _parse_streamdetails(root):
     return out
 
 
+def _pick_thumb(root: ET.Element) -> str:
+    """Kodi 海报：``<thumb aspect="poster">URL</thumb>``（可多个）。
+
+    取 aspect 为 poster（或未标 aspect）的第一个非空值；只认 http(s) 地址，
+    相对路径在网盘语境里取不到，写进去只会变成坏图。
+    """
+    for t in root.findall("thumb"):
+        if (t.get("aspect") or "poster").lower() != "poster":
+            continue
+        value = (t.text or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return ""
+
+
+def _pick_fanart(root: ET.Element) -> str:
+    """Kodi 背景图：``<fanart><thumb>URL</thumb></fanart>``，取第一个 http(s) 值。"""
+    fanart = root.find("fanart")
+    if fanart is None:
+        return ""
+    for t in fanart.findall("thumb"):
+        value = (t.text or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return ""
+
+
 def parse_nfo(text: str) -> Optional[Dict[str, Any]]:
     """解析 NFO 文本 → 元数据 dict；解析失败或没有可用字段返回 None。"""
     if not text or not isinstance(text, str):
@@ -171,6 +198,9 @@ def parse_nfo(text: str) -> Optional[Dict[str, Any]]:
         "tmdb_id": _pick_id(root, "tmdb"),
         "imdb_id": _pick_id(root, "imdb"),
         "tvdb_id": _pick_id(root, "tvdb"),
+        # 本地自带图（整理工具常把海报/背景地址写进 NFO）：落库只填空缺
+        "poster": _pick_thumb(root),
+        "fanart": _pick_fanart(root),
     }
     # 媒体流信息（fileinfo/streamdetails）：NFO 优先于文件名解析
     data["streamdetails"] = _parse_streamdetails(root)
@@ -219,6 +249,16 @@ def apply_nfo(item: Any, data: Dict[str, Any], kind: str,
             item.tmdb_id = str(data["tmdb_id"])
         if data.get("imdb_id"):
             item.imdb_id = data["imdb_id"]
+        # NFO 自带海报/背景地址：只填空缺——side 本地图与 TMDB 图在本轮
+        # 前面的阶段已处理（B 方案：图以它们为准），这里只兜「都没有」。
+        if data.get("poster") and not (
+                getattr(item, "poster_path", None)
+                or getattr(item, "primary_image_url", None)):
+            item.primary_image_url = data["poster"]
+        if data.get("fanart") and not (
+                getattr(item, "backdrop_path", None)
+                or getattr(item, "backdrop_image_url", None)):
+            item.backdrop_image_url = data["fanart"]
         item.last_scraped_at = datetime.now()
         # 文字来自本地 NFO（用户自己整理的，最权威）
         item.metadata_source = "nfo"
