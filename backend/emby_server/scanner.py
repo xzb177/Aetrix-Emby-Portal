@@ -4880,6 +4880,10 @@ def interrupted_resume_prefixes(db: Session, library_id: int) -> Optional[list]:
     续扫方（maintenance.resume_interrupted_scans）据此决定定向续还是整库续：
     返回 None = 整库续（整库扫描被打断、或老流水没记范围时的既有口径）。
     读不出来（没流水 / stats 损坏）一律 None 回退整库，不许抛。
+
+    范围落点两代兼容（批一 #7）：新流水先读检查点列 ``state_json``
+    （begin_scan 专属落点、收尾永不覆写）；它为空/损坏/没记范围时回退
+    ``stats`` 里的 resume_scope（老流水的落点，升级前只有这一处）。
     """
     try:
         run = (
@@ -4891,13 +4895,40 @@ def interrupted_resume_prefixes(db: Session, library_id: int) -> Optional[list]:
         )
         if run is None:
             return None
-        scope = decode_scan_stats(getattr(run, "stats", None)).get("resume_scope") or {}
+        scope = decode_scan_stats(getattr(run, "state_json", None)).get("resume_scope") or {}
+        if not scope.get("targeted"):
+            scope = decode_scan_stats(getattr(run, "stats", None)).get("resume_scope") or {}
         if not scope.get("targeted"):
             return None
         prefixes = [str(p) for p in (scope.get("limit_prefixes") or []) if p]
         return prefixes or None
     except Exception:  # noqa: BLE001 — 回退整库续是安全侧
         return None
+
+
+#: 跨进程防重的部分唯一索引名（models.ScanRun.__table_args__ 与
+#: database._migrate_scan_run_single_running 同名，三处必须一致）
+SCAN_RUN_SINGLE_INDEX = "uq_scan_runs_one_running"
+
+
+def _is_single_running_violation(exc: IntegrityError) -> bool:
+    """这次 IntegrityError 是不是撞了「同库只许一条 running 流水」的索引。
+
+    PG 文案带约束名：``duplicate key value violates unique constraint
+    "uq_scan_runs_one_running"``——认名最准。SQLite 不报索引名、只报
+    ``UNIQUE constraint failed: emby_scan_runs.library_id``（实测 3.45）：
+    begin_scan 这次提交里 emby_scan_runs 上的唯一约束只有这一条索引，
+    「表名 + 唯一冲突」即是它。两条都不命中（别的表冲突 / NOT NULL /
+    外键）说明别处数据算错了，仍走「吞掉只记 warning」的老口径，
+    不能误升级成 ScanInProgress 把真问题藏起来。
+
+    只看驱动原始报错（``exc.orig``），不看 SQLAlchemy 拼的全文——全文里
+    带的 SQL 语句本身就含表名，会把别的约束的锅也算到这张表头上。
+    """
+    haystack = str(getattr(exc, "orig", "") or "")
+    if SCAN_RUN_SINGLE_INDEX in haystack:
+        return True
+    return "emby_scan_runs" in haystack and _is_unique_violation(exc)
 
 
 def begin_scan(db: Session, library: emby_models.Library,
@@ -4908,9 +4939,18 @@ def begin_scan(db: Session, library: emby_models.Library,
     独立提交一次：扫描过程中进程被杀，库里也能看出「上一轮在跑」以及是谁触发的。
     状态写不进去不影响扫描本身（只是这次没有流水）。
 
-    ``snapshot`` 给了且是定向扫描时，把范围记进流水的 stats（resume_scope）：
-    流水收尾只动 status/error、不动 stats，被打断后范围还在，续扫读它。
-    对外流水结构（_scan_metrics）是白名单提取，这个键不会漏到管理端。
+    ``snapshot`` 给了且是定向扫描时，把范围记进流水的 stats（resume_scope，
+    老落点）与 state_json（检查点专属落点，批一 #7）：流水收尾只动
+    status/error、不动 stats，被打断后范围还在，续扫先读 state_json、
+    再回退 stats。对外流水结构（_scan_metrics）是白名单提取，
+    这两个键都不会漏到管理端。
+
+    **跨进程防重（批一 #7）**：插入的 running 流水撞上「同库只许一条
+    running」的部分唯一索引时，说明另一个进程（worker / EA）已在扫这个
+    库——抛 ``ScanInProgress``，与进程内 ``_acquire_scan`` 同一个异常，
+    队列层按「重复任务拒绝」的现成口径处理。其余写库失败（抖动、锁、
+    别的约束）维持老口径：吞掉只记 warning，本轮照常扫、只是没流水。
+    ``SCAN_RUN_KEEP=0``（不开流水）时没有行可撞，防重只剩进程内一层。
     """
     library.is_scanning = True
     library.scan_status = SCAN_STATUS_RUNNING
@@ -4924,10 +4964,19 @@ def begin_scan(db: Session, library: emby_models.Library,
                                   started_at=datetime.now())
         scope = _resume_scope_of(snapshot)
         if scope is not None:
-            run.stats = encode_scan_stats({"resume_scope": scope})
+            encoded_scope = encode_scan_stats({"resume_scope": scope})
+            run.stats = encoded_scope
+            run.state_json = encoded_scope
         db.add(run)
     try:
         commit_with_retry(db, label="扫描开始状态")
+    except IntegrityError as exc:
+        db.rollback()
+        if _is_single_running_violation(exc):
+            raise ScanInProgress(
+                f"媒体库 {library.id} 正在扫描中（其他进程已在扫描）") from exc
+        logger.warning("写入扫描开始状态失败: %s", exc)
+        return None
     except Exception as exc:  # noqa: BLE001 — 状态写不进去也要照常扫描
         logger.warning("写入扫描开始状态失败: %s", exc)
         db.rollback()

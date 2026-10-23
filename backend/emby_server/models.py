@@ -620,7 +620,24 @@ class ScanRun(Base):
     finished_at = Column(DateTime)
     duration_ms = Column(Integer)
     stats = Column(Text)          # JSON，与 Library.scan_stats 同一份编码
+    # 检查点专属落点（FMBY 学习批一 #7）：定向扫描的续扫范围（resume_scope）。
+    # 以前借住 stats，但 stats 在收尾时会被整轮统计覆写，范围只能靠白名单
+    # 夹带续命；这一列只由 begin_scan 写、收尾永不触碰，被打断后
+    # interrupted_resume_prefixes 先读它、老行（无此列值）再回退 stats。
+    state_json = Column(Text)     # JSON，编码与 stats 同一套（encode_scan_stats）
     error = Column(String(500))   # partial / failed 的原因摘要
+
+    __table_args__ = (
+        # 跨进程防重（FMBY 学习批一 #7）：同库同时只许一条 running 流水。
+        # worker 与 EA 是两个进程，各自的进程内互斥（scanner._acquire_scan）
+        # 挡不住跨进程同扫一个库，最后一道闸落在库层：begin_scan 插入撞上
+        # 这条部分唯一索引 → 抛 ScanInProgress（见 scanner.begin_scan）。
+        # 存量库由 database._migrate_scan_run_single_running 先收尾同库重复
+        # 的僵尸 running 行再补建同名索引（顺序反了 CREATE INDEX 会失败）。
+        Index("uq_scan_runs_one_running", "library_id", unique=True,
+              sqlite_where=text("status = 'running'"),
+              postgresql_where=text("status = 'running'")),
+    )
 
 
 class EnrichFlipEvent(Base):
