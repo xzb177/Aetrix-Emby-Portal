@@ -1273,6 +1273,67 @@ def _collect_multisource_guarded(item: Any, kind: str, result: dict) -> bool:
         _MULTISOURCE_SEMAPHORE.release()
 
 
+def _tmdb_stage_missing_fields(item: Any, result: dict) -> list:
+    """TMDB 阶段结束后仍缺哪些「多源能补」的字段（海报/简介/类型/评分）。
+
+    在 IO 阶段预测写库后的状态：条目现有值 + 本轮 side 图 / NFO / TMDB
+    将落的值都算「有」。字段口径与 ``metasources.engine.apply_to_item``
+    能落的字段对齐（演员表引擎不采，不列入，免得为补不到的字段白问一轮）。
+    """
+    missing: list = []
+    details = result.get("tmdb_details") or {}
+    hit = result.get("tmdb_hit") or {}
+    nfo = result.get("nfo_data") or {}
+    # 海报：已有图 / side 本地图 / TMDB 详情或命中的 poster_path 任一有即可
+    if not (getattr(item, "poster_path", None)
+            or getattr(item, "primary_image_url", None)
+            or result.get("poster")
+            or details.get("poster_path") or hit.get("poster_path")):
+        missing.append("poster")
+    # 简介：条目 / NFO / TMDB 详情 / 命中任一有即可
+    if not ((getattr(item, "overview", "") or "").strip() or nfo.get("plot")
+            or (details.get("overview") or "").strip()
+            or (hit.get("overview") or "").strip()):
+        missing.append("overview")
+    # 类型：条目 / NFO / TMDB 详情（genres 是 [{"name": ...}] 列表）任一有即可
+    if not ((getattr(item, "genres", "") or "").strip() or nfo.get("genres")
+            or details.get("genres")):
+        missing.append("genres")
+    # 评分：条目 / NFO / TMDB 详情 vote_average 任一有即可
+    if (getattr(item, "community_rating", None) is None
+            and nfo.get("rating") is None
+            and details.get("vote_average") is None):
+        missing.append("rating")
+    return missing
+
+
+def _should_multisource_fill_missing(item: Any, kind: str, result: dict) -> bool:
+    """TMDB 已认出但仍缺字段时，是否问一轮多源补缺。
+
+    与 TMDB-miss 兜底的区别：那条是「没认出」时走识别；这条是「认出了
+    但不全」时走补缺（用户 2026-10-23 口径：本地/网盘有元数据优先加载，
+    没有就从多源获取——认出后缺海报/简介同样算「没有」，要去其他源补）。
+    门控：
+    - 只认 series/movie（与兜底同口径）；本轮已采过多源就不重复问；
+    - 必须已识别：本轮 TMDB 命中，或已有 tmdb_id（条目自带 / NFO 给的 /
+      本轮落的任一来源）——没认出的条目走 miss 兜底，不归这里管；
+    - 预测写库后仍缺至少一个可补字段才问，字段全齐不烧请求；
+    - 多源总开关关着不问（口径与 ``_multisource_master_on`` 一致）。
+    """
+    if kind not in ("series", "movie"):
+        return False
+    if result.get("multisource"):
+        return False
+    identified = bool(
+        result.get("tmdb_hit") or result.get("tmdb_id")
+        or getattr(item, "tmdb_id", None))
+    if not identified:
+        return False
+    if not _tmdb_stage_missing_fields(item, result):
+        return False
+    return _multisource_master_on()
+
+
 def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
                        result: dict) -> None:
     """单集 TMDB 补全（v2.50.0）：父级剧有 tmdb_id 时，拉取本集的标题/简介/剧照。
@@ -2015,6 +2076,21 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
         result["ok"] = False
         result["error"] = str(exc)[:200]
 
+    # 3.5 多源补缺（用户 2026-10-23 口径：本地/网盘没有就从多源获取）：
+    # TMDB 已认出（命中或已有 tmdb_id）但海报/简介/类型/评分仍缺时，问一轮
+    # 多源引擎补缺——结果放进 result["multisource"]，与 miss 兜底共用写库
+    # 阶段的落库点（apply_to_item 只填空缺），补到的海报还能赶上下面这轮
+    # 图片预热。本轮抓取已失败（ok=False）时不问，失败轮次不额外烧请求。
+    if result.get("ok", True):
+        try:
+            if _should_multisource_fill_missing(item, kind, result):
+                if _collect_multisource_guarded(item, kind, result):
+                    progress.note_stage("enrich_multisource_fill")
+                else:
+                    progress.note_stage("enrich_multisource_fill_skip")
+        except Exception:  # noqa: BLE001 — 补缺失败不影响主流程
+            progress.note_stage("enrich_multisource_fill_skip")
+
     # 4. 图片预热（IO 阶段）：把这次要落的图先下到本地，写库阶段就只落字段
     #    （v2.42.9：以前 _enrich_apply → apply → _set_image → localize 在**写事务里**
     #    真的发 HTTP，一张图超时 15s 就把数据库写锁攥 15s，违反本模块自己的声明；
@@ -2697,7 +2773,9 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             logger.debug("兜底落库失败 %s: %s", getattr(item, "name", ""), exc)
             alt_hit = None
 
-    # Phase 6b：多源归并结果落库（与豆瓣兜底同一个位置——都只在 TMDB 没命中时发生）。
+    # Phase 6b：多源归并结果落库（与豆瓣兜底同一个位置）。result["multisource"]
+    # 有两个来源：TMDB 没命中时的兜底采集，以及 TMDB 已认出但缺字段时的补缺
+    # 采集（_should_multisource_fill_missing，2026-10-23 新增）。
     # 只补缺项；用户主动「修复」时允许覆盖（fill_missing_only 跟 needs_repair 反向）。
     multi = fetched.get("multisource")
     multi_fields = (multi or {}).get("fields") or {}
