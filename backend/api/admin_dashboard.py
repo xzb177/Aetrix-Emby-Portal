@@ -2,8 +2,9 @@
 """管理后台仪表盘聚合接口。
 
 背景（2026-10-18 面板体检）：面板前端在 AWS 悉尼、后端在美国 VPS，
-每次 API 调用固定多约 1 秒跨洋耗时；仪表盘首屏一次扇出 8 个接口，
-最慢一路决定首屏就绪。本接口把 8 路数据一次返回，前端只跑一趟。
+每次 API 调用固定多约 1 秒跨洋耗时；仪表盘首屏一次扇出多个接口，
+最慢一路决定首屏就绪。本接口把各路数据一次返回，前端只跑一趟。
+（2026-10-23 新增第 9 路 detail：数据明细 7 表，见 get_detail_tables。）
 
 设计口径（与 #1073 同手法）：
 - 内部 ThreadPoolExecutor 并行采集，每个采集器持独立 SessionLocal
@@ -50,6 +51,7 @@ _JOBS: list[tuple[str, str]] = [
     ("realms", "realms_overview"),
     ("backend_services", "get_services_status"),
     ("trend", "get_stats_trend"),
+    ("detail", "get_detail_tables"),
 ]
 
 
@@ -104,6 +106,7 @@ def _collect(admin_id: int, days: int) -> dict:
         "realms_overview": lambda a, d: realms_overview(a, d),
         "get_services_status": lambda a, d: get_services_status(a, d),
         "get_stats_trend": lambda a, d: get_stats_trend(days, a, d),
+        "get_detail_tables": lambda a, d: get_detail_tables(a, d),
     }
     parts: dict[str, Any] = {}
     ex = ThreadPoolExecutor(max_workers=len(_JOBS), thread_name_prefix="dashagg")
@@ -157,3 +160,231 @@ def dashboard_overview(
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
         "parts": parts,
     }
+
+
+# ==================== 数据明细（2026-10-23 用户要求补表） ====================
+# 仪表盘原先只有播放排行/热门内容两张表，用户反馈「数据表有点少」。
+# 这里一次给齐 7 张明细表，前端集中在一个「数据明细」区页签切换，
+# 不往页面各处铺。全部走既有数据的有界查询（每表 ≤ 14 行），
+# 作为聚合接口的第 9 个 part（detail）随 overview 一次返回。
+
+_DETAIL_ROW_LIMIT = 10
+
+
+def _iso(dt: Any) -> str:
+    return dt.isoformat(timespec="seconds") if hasattr(dt, "isoformat") else ""
+
+
+def get_detail_tables(admin: Any, db: Session) -> dict:
+    """7 张仪表盘明细表（见上）。单表查询失败不拖垮其余表：调用方
+    (_call_one) 已有整 part 降级；这里对每张表再兜一层，坏表返回空列表。"""
+    from datetime import timedelta
+
+    from sqlalchemy import case, func
+
+    from backend import models
+    from backend.emby_server import models as em
+
+    out: dict[str, list] = {}
+
+    def _safe(key: str, fn: Callable[[], list]) -> None:
+        try:
+            out[key] = fn()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("仪表盘明细表 [%s] 采集失败: %s", key, e)
+            out[key] = []
+
+    def _recent_users() -> list:
+        rows = (
+            db.query(models.WebUser)
+            .order_by(models.WebUser.created_at.desc(), models.WebUser.id.desc())
+            .limit(_DETAIL_ROW_LIMIT)
+            .all()
+        )
+        return [
+            {
+                "username": u.username,
+                "created_at": _iso(u.created_at),
+                "channel": u.register_channel or "",
+                "is_welfare": bool(u.is_welfare),
+            }
+            for u in rows
+        ]
+
+    def _recent_orders() -> list:
+        merged: list[dict] = []
+        subs = (
+            db.query(models.SubscriptionOrder, models.WebUser.username)
+            .join(models.WebUser, models.WebUser.id == models.SubscriptionOrder.user_id)
+            .order_by(models.SubscriptionOrder.created_at.desc())
+            .limit(_DETAIL_ROW_LIMIT)
+            .all()
+        )
+        for o, uname in subs:
+            merged.append({
+                "username": uname,
+                "item": o.item_name or "订阅",
+                "kind": "订阅",
+                "amount": float(o.amount or 0),
+                "status": o.status or "",
+                "created_at": _iso(o.created_at),
+            })
+        recs = (
+            db.query(models.RechargeOrder, models.WebUser.username,
+                     models.RechargePackage.name)
+            .join(models.WebUser, models.WebUser.id == models.RechargeOrder.user_id)
+            .outerjoin(models.RechargePackage,
+                       models.RechargePackage.id == models.RechargeOrder.package_id)
+            .order_by(models.RechargeOrder.created_at.desc())
+            .limit(_DETAIL_ROW_LIMIT)
+            .all()
+        )
+        for o, uname, pkg_name in recs:
+            merged.append({
+                "username": uname,
+                "item": pkg_name or "能量充值",
+                "kind": "充值",
+                "amount": float(o.price or 0),
+                "status": o.status or "",
+                "created_at": _iso(o.created_at),
+            })
+        merged.sort(key=lambda r: r["created_at"], reverse=True)
+        return merged[:_DETAIL_ROW_LIMIT]
+
+    def _library_rows() -> list:
+        # 内容统计与刮削进度同出一趟分组查询（ORM 口径：软删除由全局
+        # 钩子过滤，合并副本显式排除，与队列口径一致）
+        rows = (
+            db.query(
+                em.MediaItem.library_id,
+                em.MediaItem.item_type,
+                func.count(em.MediaItem.id),
+                func.sum(case(
+                    (em.MediaItem.tmdb_id.isnot(None) & (em.MediaItem.tmdb_id != ""), 1),
+                    else_=0)),
+            )
+            .filter(em.MediaItem.merged_into_id.is_(None))
+            .group_by(em.MediaItem.library_id, em.MediaItem.item_type)
+            .all()
+        )
+        lib_names = {l.id: l.name for l in db.query(em.Library).all()}
+        per_lib: dict[int, dict] = {}
+        for lib_id, item_type, cnt, with_tmdb in rows:
+            entry = per_lib.setdefault(lib_id, {
+                "library": lib_names.get(lib_id, f"库 {lib_id}"),
+                "movies": 0, "shows": 0, "episodes": 0, "total": 0,
+                "enriched": 0, "pending": 0,
+            })
+            cnt = int(cnt or 0)
+            entry["total"] += cnt
+            if item_type == "movie":
+                entry["movies"] += cnt
+                entry["enriched"] += int(with_tmdb or 0)
+            elif item_type == "series":
+                entry["shows"] += cnt
+                entry["enriched"] += int(with_tmdb or 0)
+            elif item_type == "episode":
+                entry["episodes"] += cnt
+        for entry in per_lib.values():
+            entry["pending"] = entry["movies"] + entry["shows"] - entry["enriched"]
+        return sorted(per_lib.values(), key=lambda r: r["total"], reverse=True)
+
+    _library_cache: list = []
+
+    def _library_stats() -> list:
+        _library_cache.extend(_library_rows())
+        return [
+            {k: r[k] for k in ("library", "movies", "shows", "episodes", "total")}
+            for r in _library_cache
+        ]
+
+    def _enrich_progress() -> list:
+        rows = _library_cache or _library_rows()
+        return [
+            {k: r[k] for k in ("library", "enriched", "pending")}
+            for r in rows
+        ]
+
+    def _points_flow() -> list:
+        rows = (
+            db.query(models.PointsLog, models.WebUser.username)
+            .join(models.WebUser, models.WebUser.id == models.PointsLog.user_id)
+            .order_by(models.PointsLog.created_at.desc(), models.PointsLog.id.desc())
+            .limit(_DETAIL_ROW_LIMIT)
+            .all()
+        )
+        return [
+            {
+                "username": uname,
+                "type": log.type or "",
+                "amount": int(log.amount or 0),
+                "description": log.description or "",
+                "created_at": _iso(log.created_at),
+            }
+            for log, uname in rows
+        ]
+
+    def _seek_hot() -> list:
+        rows = (
+            db.query(
+                models.MovieRequest.movie_name,
+                models.MovieRequest.type,
+                func.count(models.MovieRequest.id),
+                func.sum(case((models.MovieRequest.status == "pending", 1), else_=0)),
+            )
+            .group_by(models.MovieRequest.movie_name, models.MovieRequest.type)
+            .order_by(func.count(models.MovieRequest.id).desc())
+            .limit(_DETAIL_ROW_LIMIT)
+            .all()
+        )
+        return [
+            {
+                "title": name,
+                "media_type": mtype or "",
+                "count": int(cnt or 0),
+                "pending": int(pending or 0),
+            }
+            for name, mtype, cnt, pending in rows
+        ]
+
+    def _activity_days() -> list:
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        start = today - timedelta(days=6)
+        play_rows = (
+            db.query(func.date(em.PlaybackSession.start_time),
+                     func.count(em.PlaybackSession.id),
+                     func.count(func.distinct(em.PlaybackSession.user_id)))
+            .filter(em.PlaybackSession.start_time >= start)
+            .group_by(func.date(em.PlaybackSession.start_time))
+            .all()
+        )
+        plays = {str(d): (int(c or 0), int(u or 0)) for d, c, u in play_rows}
+        news = {
+            str(d): int(c or 0)
+            for d, c in db.query(func.date(models.WebUser.created_at),
+                                 func.count(models.WebUser.id))
+            .filter(models.WebUser.created_at >= start)
+            .group_by(func.date(models.WebUser.created_at))
+            .all()
+        }
+        days = []
+        for i in range(7):
+            day = start + timedelta(days=i)
+            key = day.strftime("%Y-%m-%d")
+            play_count, active_users = plays.get(key, (0, 0))
+            days.append({
+                "date": key,
+                "active_users": active_users,
+                "plays": play_count,
+                "new_users": news.get(key, 0),
+            })
+        return days
+
+    _safe("recent_users", _recent_users)
+    _safe("recent_orders", _recent_orders)
+    _safe("library_stats", _library_stats)
+    _safe("enrich_progress", _enrich_progress)
+    _safe("points_flow", _points_flow)
+    _safe("seek_hot", _seek_hot)
+    _safe("activity_days", _activity_days)
+    return out

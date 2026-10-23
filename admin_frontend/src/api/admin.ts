@@ -824,8 +824,19 @@ export const fetchLogs = (params: { limit?: number; action_filter?: string } = {
 
 export const fetchOverview = () => get<OverviewStats>('/stats/overview')
 
+/** 仪表盘数据明细（2026-10-23 新增 detail part：7 张表，前端集中一区页签切换） */
+export interface DashboardDetailTables {
+  recent_users: Array<{ username: string; created_at: string; channel: string; is_welfare: boolean }>
+  recent_orders: Array<{ username: string; item: string; kind: string; amount: number; status: string; created_at: string }>
+  library_stats: Array<{ library: string; movies: number; shows: number; episodes: number; total: number }>
+  enrich_progress: Array<{ library: string; enriched: number; pending: number }>
+  points_flow: Array<{ username: string; type: string; amount: number; description: string; created_at: string }>
+  seek_hot: Array<{ title: string; media_type: string; count: number; pending: number }>
+  activity_days: Array<{ date: string; active_users: number; plays: number; new_users: number }>
+}
+
 /**
- * 仪表盘聚合：一次拿回首屏 8 路数据（后端 GET /api/admin/dashboard/overview）。
+ * 仪表盘聚合：一次拿回首屏各路数据（后端 GET /api/admin/dashboard/overview）。
  * parts 里某一项为 null 表示该采集失败——语义与原先逐个调用的 soft() 兜底一致，
  * 前端按同样规则点名并给重试。聚合本身失败时调用方应回退逐个调用。
  */
@@ -841,6 +852,7 @@ export interface DashboardAggregate {
     realms: RealmOverview | null
     backend_services: { success: boolean; services: BackendServiceStatus[] } | null
     trend: TrendStats | null
+    detail: DashboardDetailTables | null
   }
 }
 export const fetchDashboardAggregate = (days = 14) =>
