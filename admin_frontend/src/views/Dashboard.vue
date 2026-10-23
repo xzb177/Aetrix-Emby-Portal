@@ -986,7 +986,7 @@ function serviceRoleLabel(role: string): string {
 .detail-table th {
   text-align: left;
   font-weight: 500;
-  color: var(--au-text-secondary);
+  color: var(--au-text-2);
   padding: 6px 8px;
   border-bottom: 1px solid var(--au-border);
 }
