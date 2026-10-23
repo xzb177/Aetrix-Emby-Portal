@@ -27,6 +27,11 @@ _ITEM_INDEXES = {
     "idx_item_browse_sort": ["item_type", "sort_name", "id"],
     # P0（2026-10-17）：Recursive=true 无类型过滤时首列用不上，补 (sort_name, id) 部分索引
     "idx_item_browse_sort_all": ["sort_name", "id"],
+    # 2026-10-23：补全进度统计按 enrich_claimed_at 计数，无索引全表扫（压测实锤）
+    "idx_item_enrich_claimed": ["enrich_claimed_at"],
+    # 2026-10-23：抢单去重聚合部分覆盖索引；SQLite 下 INCLUDE 列并进键列
+    "idx_item_enrich_claim_cover": ["enrich_status", "enrich_next_retry_at",
+                                    "series_id", "date_added", "library_id"],
 }
 
 
@@ -38,6 +43,7 @@ def _engine(tmp_path):
             "probe_priority INTEGER, probe_next_retry_at TEXT, enrich_status TEXT, enrich_next_retry_at TEXT, "
             "enrich_priority INTEGER, merged_into_id INTEGER, date_added TEXT, "
             "item_type TEXT, library_id INTEGER, deleted_at TEXT, drive_file_id TEXT, "
+            "series_id INTEGER, enrich_claimed_at TEXT, "
             "sort_name TEXT, is_hidden BOOLEAN)"
         ))
         conn.execute(text("CREATE TABLE emby_people (id INTEGER PRIMARY KEY, name TEXT)"))
@@ -63,6 +69,9 @@ def test_spec_table_covers_all_seven_in_restored_order():
         "idx_item_original_title_trgm",
         "idx_item_sort_name_trgm",
         "idx_item_aliases_trgm",
+        # 2026-10-23：补全进度统计 + 抢单去重聚合（压测实锤，生产已手工先行）
+        "idx_item_enrich_claimed",
+        "idx_item_enrich_claim_cover",
     ]
 
 
@@ -152,7 +161,7 @@ def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys
     # person_tmdb_id 列不存在 → 静默跳过
     assert _indexes(eng, "emby_people") == {}
     first = capsys.readouterr().out
-    assert first.count("已迁移") == 9
+    assert first.count("已迁移") == 11
 
     # 第二次：全部已存在，不再建、不再打日志
     database._ensure_legacy_indexes(tables)
@@ -174,3 +183,36 @@ def test_missing_table_is_skipped(tmp_path, monkeypatch):
     database._ensure_legacy_indexes(set())
     assert _indexes(eng, "emby_items") == {}
     eng.dispose()
+
+
+def test_enrich_claim_cover_spec_and_pg_render():
+    """2026-10-23：部分覆盖索引——spec 带 where 与第 8 元 include，
+    models.py 声明与 _LEGACY_INDEXES 同名同谓词同 INCLUDE 列；
+    PG 编译渲染出 INCLUDE + WHERE（生产手工先行版与代码版定义一致）。"""
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    from backend.emby_server import models as em
+
+    specs = {s[1]: s for s in database._LEGACY_INDEXES
+             if s[1] in ("idx_item_enrich_claimed", "idx_item_enrich_claim_cover")}
+    assert set(specs) == {"idx_item_enrich_claimed", "idx_item_enrich_claim_cover"}
+    cover = specs["idx_item_enrich_claim_cover"]
+    assert cover[2] == "enrich_status, enrich_next_retry_at"
+    assert cover[5] == "deleted_at IS NULL AND merged_into_id IS NULL"
+    assert cover[6] is None
+    assert cover[7] == "series_id, date_added, library_id"
+
+    model_ixs = {ix.name: ix for ix in em.MediaItem.__table__.indexes
+                 if ix.name in specs}
+    assert set(model_ixs) == set(specs)
+    ix = model_ixs["idx_item_enrich_claim_cover"]
+    assert [c.name for c in ix.columns] == ["enrich_status", "enrich_next_retry_at"]
+    pg = ix.dialect_options.get("postgresql", {})
+    assert str(pg.get("where")).strip() == cover[5]
+    assert list(pg.get("include")) == ["series_id", "date_added", "library_id"]
+    ddl = str(CreateIndex(ix).compile(dialect=postgresql.dialect()))
+    assert "INCLUDE (series_id, date_added, library_id)" in ddl
+    assert "WHERE deleted_at IS NULL AND merged_into_id IS NULL" in ddl
+    claimed = model_ixs["idx_item_enrich_claimed"]
+    assert [c.name for c in claimed.columns] == ["enrich_claimed_at"]
