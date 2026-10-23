@@ -128,9 +128,7 @@ def test_video_stream_source_has_no_google_direct_call():
     assert "target.direct" not in code
     # 白名单：每处 302 第一个位置参数（URL 来源表达式）的源码文本
     _WHITELIST_302_URL_SOURCES = {
-        # Drive 302（快路径 + 回落）：2026-10-23 起经 drive_final_location
-        # 服务端跟链，只下发最终地址，不再直接下发 usercontent 永久入口
-        "await drive_final_location(_fid)",
+        "drive_usercontent_download_url(_fid)",  # Drive 直链（快路径 + 回落）
         "direct_url",  # 对象存储签名直链（← _strategy.maybe_direct_url）
     }
     sources = []

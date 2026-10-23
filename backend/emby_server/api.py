@@ -77,6 +77,7 @@ from backend.emby_server.streaming import (
     get_transcode,
     transcode_capacity,
     serve_file,
+    serve_drive_relay_async,
     touch_transcode,
     serve_image,
     start_transcode,
@@ -4644,6 +4645,20 @@ async def video_stream(
     _fid = (getattr(item, "drive_file_id", "") or "").strip()
     _drive_switch_on = bool(_fid) and await run_db(
         _strategy.drive_direct_play_enabled, db)
+    if _drive_switch_on and await run_db(_strategy.drive_relay_enabled, db):
+        _relay_drive_id = await run_db(_drive_mount_id_for_item, db, item)
+        if _relay_drive_id:
+            # Drive SA 中继（2026-10-23 额度应急）：字节过服务器转发，
+            # file_id 不出门、不走公开下载池；存在性由上游取流本身
+            # 回答（文件没了上游 404 透传），不再单跑存在性校验。
+            play_sign.audit_play(db, user, item, request,
+                                 via="stream", result="drive_relay")
+            _pt.mark("relay")
+            return _observe_traffic(
+                await serve_drive_relay_async(
+                    request, _relay_drive_id, _fid,
+                    media_type=media_type, pt=_pt),
+                _fid, item)
     _fast302 = False
     if _drive_switch_on:
         # 相同起始 Range 的短时重试：播放器多半是谷歌 404 之后又来了一次，
@@ -4654,9 +4669,9 @@ async def video_stream(
     if _fast302:
         _pt.mark("drive_exists_check")
         _pt.done()
-        from backend.emby_server.streaming import drive_final_location
+        from backend.emby_server.drive_auth import drive_usercontent_download_url
         return _observe_traffic(
-            RedirectResponse(await drive_final_location(_fid), status_code=302,
+            RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
                              headers=_strategy.DIRECT_REDIRECT_HEADERS))
     target = await run_db(_play_target, db, item)
     _pt.mark("play_target")
@@ -4666,11 +4681,11 @@ async def video_stream(
         # 回落分支：快路径未命中（挂载解析失败等）时仍走原 _play_target，
         # 这里保留原 drive 302 语义（_fid + 开关）。
         if _drive_switch_on:
-            from backend.emby_server.streaming import drive_final_location
+            from backend.emby_server.drive_auth import drive_usercontent_download_url
             _pt.mark("drive_direct_302")
             _pt.done()
             return _observe_traffic(
-                RedirectResponse(await drive_final_location(_fid), status_code=302,
+                RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
         direct_url = await run_db(
             _strategy.maybe_direct_url, db, getattr(item, "drive_file_id", None))
