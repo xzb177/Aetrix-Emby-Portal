@@ -83,8 +83,16 @@ def db():
     models.Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine, autoflush=False, future=True)
     session = SessionLocal()
-    yield session
-    session.close()
+    # store 热读缓存是进程级全局的（60 秒 TTL）：不失效的话全量跑时
+    # 别的用例缓存过的 promotion_* 值会串进本文件（单跑不复现）
+    from backend.integrations import store
+
+    store.invalidate()
+    try:
+        yield session
+    finally:
+        session.close()
+        store.invalidate()
 
 
 def _seed_promotion_global(db, amount="100"):
