@@ -55,7 +55,7 @@ def test_season_episodes_returns_list(monkeypatch):
     monkeypatch.setattr(client, "_get", lambda path, params: _mock_season_response())
     # 禁用磁盘缓存，避免测试污染
     monkeypatch.setattr(tmdb_mod.tmdb_cache, "load_details", lambda *a: (False, None))
-    monkeypatch.setattr(tmdb_mod.tmdb_cache, "save_details", lambda *a: True)
+    monkeypatch.setattr(tmdb_mod.tmdb_cache, "save_details", lambda *a, **k: True)
 
     eps = client.season_episodes("12345", 1)
     assert eps is not None
@@ -73,7 +73,7 @@ def test_find_episode_by_number(monkeypatch):
     client = _client(monkeypatch)
     monkeypatch.setattr(client, "_get", lambda path, params: _mock_season_response())
     monkeypatch.setattr(tmdb_mod.tmdb_cache, "load_details", lambda *a: (False, None))
-    monkeypatch.setattr(tmdb_mod.tmdb_cache, "save_details", lambda *a: True)
+    monkeypatch.setattr(tmdb_mod.tmdb_cache, "save_details", lambda *a, **k: True)
 
     ep = client.find_episode("12345", 1, 1)
     assert ep is not None
