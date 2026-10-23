@@ -1164,9 +1164,12 @@ onUnmounted(() => {
     padding: 4px 10px;
   }
   .hud .right {
-    margin-left: auto;
+    /* 独占第二行并左对齐：margin-left:auto 会把换行后的整组胶囊推向右侧，
+       与第一行左对齐的品牌/世界名错成之字形（2026-10-23 用户截图） */
+    margin-left: 0;
+    flex: 1 1 100%;
     flex-wrap: wrap;
-    justify-content: flex-end;
+    justify-content: flex-start;
     gap: 6px;
   }
   /* 一排胶囊统一 40px 高、垂直居中：此前只有积分按钮（button）被
