@@ -4254,28 +4254,28 @@ def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
     任何一个不成立就退回遍历——**宁可多花时间，也不能漏掉该删的条目**。
     实测十万条目（剧集库，稳定无删除）：这里约 40 ms，遍历整库约 2.2 s。
     """
-    file_backed = int(db.execute(
+    # 一条查询同时拿文件类条目数与「挂着缺失计数的条目数」（批一 #6）：
+    # 快速路径的立身之本是便宜，不许为宽限多加一次往返（资源预算冒烟
+    # 对条目表 SELECT 次数有硬上限）。missing_count 只会落在 movie/episode
+    # 上（宽限只管文件类条目），折进这条计数不丢信息。
+    _fb_row = db.execute(
         text(
-            "SELECT COUNT(*) FROM emby_items "
+            "SELECT COUNT(*), "
+            "COALESCE(SUM(CASE WHEN missing_count > 0 THEN 1 ELSE 0 END), 0) "
+            "FROM emby_items "
             "WHERE library_id = :lib AND item_type IN ('movie', 'episode') "
             "AND deleted_at IS NULL"
         ),
         {"lib": library.id},
-    ).scalar() or 0)
+    ).first()
+    file_backed = int(_fb_row[0] or 0)
+    pending_grace = int(_fb_row[1] or 0)
     if file_backed != len(seen_guids):
         return False                      # 条数与文件数对不上：可能有已消失的条目
     # 缺失宽限（批一 #6）：有条目正挂着缺失计数时不能走快速路径——
     # 遍历要负责给「文件回来了」的条目清零、给「还缺着」的累计计数；
     # 跳过遍历会让计数永远停在旧值，下一次单轮缺失就直接越线下架。
     # 必须放在下面两个提前 return 之前查，否则电影库/空库永远轮不到。
-    pending_grace = int(db.execute(
-        text(
-            "SELECT COUNT(*) FROM emby_items "
-            "WHERE library_id = :lib AND deleted_at IS NULL "
-            "AND missing_count > 0"
-        ),
-        {"lib": library.id},
-    ).scalar() or 0)
     if pending_grace:
         return False
     if not file_backed:
