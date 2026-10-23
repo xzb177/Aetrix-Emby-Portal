@@ -147,3 +147,60 @@ def test_relay_no_token_503(monkeypatch):
             _fake_request(), "DRIVE9", "FID123"))
     assert ei.value.status_code == 503
     assert calls == []
+
+
+# ---------- video_stream 接线（回归：中继分支不得引用不存在的符号） ----------
+
+def test_video_stream_relay_branch_wiring(monkeypatch):
+    """中继开关开 + 挂载解析出 drive_id → video_stream 走中继分支返回。
+
+    2026-10-23 首版接线引用了不存在的 play_sign.audit_play，生产实播
+    500——本用例把 api 侧接线整体桩通跑一遍，同类错误必须在这里红。
+    """
+    import os
+
+    os.environ.setdefault("DATABASE_TYPE", "sqlite")
+    os.environ.setdefault("REDIS_ENABLED", "false")
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    from backend.emby_server import api
+
+    item = SimpleNamespace(
+        drive_file_id="FID123", container="mkv", file_path="mount://3/x.mkv")
+    monkeypatch.setattr(api, "_require_visible_item",
+                        lambda db, user, item_id: item)
+    monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
+    monkeypatch.setattr(api, "_drive_mount_id_for_item",
+                        lambda db, it: "DRIVE9")
+    monkeypatch.setattr(api, "_observe_traffic",
+                        lambda resp, key, it: resp)
+
+    seen = {}
+
+    async def fake_relay(request, drive_id, file_id, media_type="video/mp4", pt=None):
+        seen.update(drive_id=drive_id, file_id=file_id, media_type=media_type)
+        return Response(content=b"x", media_type="video/mp4")
+
+    monkeypatch.setattr(api, "serve_drive_relay_async", fake_relay)
+
+    def fake_get(db, key, default="", **kwargs):
+        if key == _strategy.KEY_DRIVE_DIRECT_PLAY:
+            return "true"
+        if key == _strategy.KEY_DRIVE_RELAY:
+            return "true"
+        return default
+
+    monkeypatch.setattr(_strategy.store, "get_value", fake_get)
+    monkeypatch.setattr(api.play_sign, "check_referer",
+                        lambda request, db: None)
+
+    scope = {"type": "http", "method": "GET", "path": "/Videos/item/stream",
+             "raw_path": b"/Videos/item/stream", "query_string": b"",
+             "headers": [], "scheme": "http", "server": ("testserver", 80),
+             "client": ("testclient", 50000), "root_path": ""}
+    resp = _run(api.video_stream("item", Request(scope), object(), object()))
+    assert resp.status_code == 200
+    assert seen == {"drive_id": "DRIVE9", "file_id": "FID123",
+                    "media_type": "video/mkv"}
