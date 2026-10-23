@@ -121,6 +121,12 @@ with SessionLocal() as db:
     db.query(models.WebUser).filter(models.WebUser.id == bob_id).update({"is_welfare": True})
     # 2026-10-21：签到缺省改为关（服主保持关），开关仍在面板/DB——本冒烟按 DB 行打开
     db.add(models.SystemConfig(key="checkin_enabled", value="true"))
+    # 2026-10-23 去重 #3：邀请人奖励只由推广发放——冒烟按推广口径种配置
+    # （开、余额型、100 分），下方邀请幂等节的「邀请者 +100」期望由此而来
+    db.add(models.SystemConfig(key="promotion_reward_enabled", value="true"))
+    db.add(models.SystemConfig(key="promotion_reward_type", value="balance"))
+    db.add(models.SystemConfig(key="promotion_reward_amount", value="100"))
+    db.add(models.SystemConfig(key="promotion_reward_days", value="0"))
     db.commit()
 
     db.add(models.ExchangeCode(
