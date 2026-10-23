@@ -179,7 +179,9 @@ def test_body_limit_middleware_in_both_apps():
 def test_download_paths_redirect_drive_to_usercontent():
     """下载 / 拉文件两个端点：中继删除后不再做服务端代理转发。
 
-    Drive 条目 302 到谷歌 usercontent 直链（凭据不再经服务器）；
+    Drive 条目 302 直出（凭据不再经服务器）；2026-10-23 防盗链起，
+    302 目标经 drive_final_location_sync 服务端跟链，只下发最终地址，
+    不再直接下发带 file_id 的 usercontent 永久入口；
     结构性护栏：两个文件里不许再出现 serve_remote 调用。
     """
     import ast
@@ -190,7 +192,7 @@ def test_download_paths_redirect_drive_to_usercontent():
         src = open(path).read()
         assert "can_redirect_direct" not in src, path
         assert "status_code=302" in src, path
-        assert "drive_usercontent_download_url" in src, path
+        assert "drive_final_location_sync" in src, path
         tree = ast.parse(src)
         calls = [
             n.func.id for n in ast.walk(tree)
