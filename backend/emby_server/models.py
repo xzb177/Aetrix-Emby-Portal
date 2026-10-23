@@ -122,6 +122,18 @@ class MediaItem(Base):
         # 开销（探测队列的 idx_item_probe 就是为此建的，补全队列当时漏了）。
         Index("idx_item_enrich", "enrich_status", "enrich_next_retry_at",
               "enrich_priority"),
+        # 补全进度统计（2026-10-23 压测实锤）：进度快照按 enrich_claimed_at >=
+        # 今天逐类型计数，没有索引时每条都是 Parallel Seq Scan（cost 约 5.5 万、
+        # 每分钟数十次），能拖住近 1 个核。等价 DDL：
+        # CREATE INDEX idx_item_enrich_claimed ON emby_items (enrich_claimed_at)
+        Index("idx_item_enrich_claimed", "enrich_claimed_at"),
+        # 抢单去重聚合（同日实锤）：_claim_batch 的按剧去重子查询
+        # GROUP BY coalesce(series_id, id)，原先走单列状态索引位图扫 7.8 万行
+        # （含已软删/已合并的死行）。部分索引只含活行（约 2.4 万），INCLUDE
+        # 带上聚合要的三列供 index-only 扫描。非 PG 方言忽略 include/where。
+        Index("idx_item_enrich_claim_cover", "enrich_status", "enrich_next_retry_at",
+              postgresql_include=["series_id", "date_added", "library_id"],
+              postgresql_where=text("deleted_at IS NULL AND merged_into_id IS NULL")),
         # 追新日历：按「入库时间落在某月」取条目（date_added BETWEEN 起 止）。
         # 没有索引时这是一张全表扫 + filesort，条目量上万后打开日历要几秒。
         # 复合第二列带上 item_type：日历的类型筛选（电影 / 剧集 / 单集）

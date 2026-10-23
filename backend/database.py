@@ -1102,6 +1102,25 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     ("emby_items", "idx_item_aliases_trgm", "aliases gin_trgm_ops", "aliases",
      "  已迁移: emby_items.idx_item_aliases_trgm（搜索 trigram GIN 索引）",
      None, "gin"),
+    # 补全进度统计（2026-10-23 压测实锤）：进度快照按 enrich_claimed_at >= 今天
+    # 逐类型计数，无索引时每条都是 Parallel Seq Scan（cost 约 5.5 万、每分钟
+    # 数十次）。等价 DDL：CREATE INDEX idx_item_enrich_claimed
+    # ON emby_items (enrich_claimed_at)。回滚：DROP INDEX idx_item_enrich_claimed。
+    ("emby_items", "idx_item_enrich_claimed", "enrich_claimed_at", "enrich_claimed_at",
+     "  已迁移: emby_items.idx_item_enrich_claimed（补全进度统计索引）"),
+    # 抢单去重聚合（同日实锤）：_claim_batch 子查询 GROUP BY coalesce(series_id,
+    # id) 原走单列状态索引位图扫 7.8 万行（含已软删/已合并死行）。部分索引只含
+    # 活行（约 2.4 万），INCLUDE 三列供 index-only 聚合；非 PG 方言把 INCLUDE
+    # 列并进键列（覆盖语义等价）。等价 DDL：CREATE INDEX
+    # idx_item_enrich_claim_cover ON emby_items (enrich_status,
+    # enrich_next_retry_at) INCLUDE (series_id, date_added, library_id)
+    # WHERE deleted_at IS NULL AND merged_into_id IS NULL。
+    # 回滚：DROP INDEX idx_item_enrich_claim_cover。
+    ("emby_items", "idx_item_enrich_claim_cover", "enrich_status, enrich_next_retry_at",
+     None,
+     "  已迁移: emby_items.idx_item_enrich_claim_cover（抢单去重聚合部分覆盖索引）",
+     "deleted_at IS NULL AND merged_into_id IS NULL", None,
+     "series_id, date_added, library_id"),
 )
 
 
@@ -1166,14 +1185,19 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
                   required_column: Optional[str], message: str,
                   where: Optional[str] = None,
-                  using: Optional[str] = None) -> None:
+                  using: Optional[str] = None,
+                  include: Optional[str] = None) -> None:
     """给老库补一条索引（幂等）：表不存在 / 依赖列不存在 / 索引已在 → 什么都不做
 
     ``where`` 为 None 时 DDL 与以前逐字节一致；给出时建部分索引
     （``CREATE INDEX ... WHERE <where>``）。
 
     ``using`` 为 None 时行为不变；给出时建 ``USING <using>`` 索引，
-    且仅 PostgreSQL 支持，非 PostgreSQL 方言直接返回。"""
+    且仅 PostgreSQL 支持，非 PostgreSQL 方言直接返回。
+
+    ``include`` 为 None 时行为不变；给出时 PG 建覆盖索引
+    （``CREATE INDEX ... ({columns}) INCLUDE ({include})``），其余方言
+    把 include 列并进键列，覆盖语义等价。"""
     from sqlalchemy import inspect, text
 
     if using is not None and engine.dialect.name != "postgresql":
@@ -1190,10 +1214,17 @@ def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
         return
     with engine.begin() as conn:
         if using is None:
-            if where is None:
-                conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
-            else:
-                conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns}) WHERE {where}"))
+            ddl_columns = columns
+            include_clause = ""
+            if include is not None:
+                if engine.dialect.name == "postgresql":
+                    include_clause = f" INCLUDE ({include})"
+                else:
+                    ddl_columns = f"{columns}, {include}"
+            ddl = f"CREATE INDEX {name} ON {table} ({ddl_columns}){include_clause}"
+            if where is not None:
+                ddl += f" WHERE {where}"
+            conn.execute(text(ddl))
         else:
             if where is None:
                 conn.execute(text(f"CREATE INDEX {name} ON {table} USING {using} ({columns})"))
@@ -1215,6 +1246,15 @@ def _ensure_legacy_indexes(existing_tables: set) -> None:
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠️ pg_trgm 扩展安装跳过: {exc}")
+        # pg_stat_statements：慢查询归因（2026-10-23 压测后补）。扩展本体在
+        # 这里幂等装；统计视图要等 postgres 以 shared_preload_libraries 加载
+        # 它才可查——仓库 docker-compose.yml 的 postgres 启动参数已带，
+        # 非 compose 部署需运维自行加上。装不上不拦启动（与 pg_trgm 同款）。
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ pg_stat_statements 扩展安装跳过: {exc}")
     for spec in _LEGACY_INDEXES:
         _ensure_index(existing_tables, *spec)
 
