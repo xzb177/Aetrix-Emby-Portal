@@ -30,9 +30,14 @@ init_db()
 
 @pytest.fixture(autouse=True)
 def _reset_ban():
+    # 批一 #8：_trip_ban 会同步喂统一熔断注册表，进程全局状态一并复位，
+    # 不许把开着的断路器漏给同进程的其他测试文件
+    from backend.emby_server.metasources import breaker as provider_breaker
     dbn.reset_ban()
+    provider_breaker.reset_all()
     yield
     dbn.reset_ban()
+    provider_breaker.reset_all()
 
 
 class _Resp(io.BytesIO):

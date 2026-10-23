@@ -54,11 +54,18 @@ class _Hit:
 @pytest.fixture(autouse=True)
 def _isolate_registry():
     """每个用例把自己的假源装进 ``SPEC_BY_ID``（引擎就是从那里找“怎么问这个源”），
-    用完恢复 —— 不污染同文件里直接用真实源清单的用例"""
+    用完恢复 —— 不污染同文件里直接用真实源清单的用例。
+
+    熔断状态同理复位（批一 #8）：本文件跨用例复用 a/en/zh 这些假源 id，
+    失败计数若不复位会跨用例累计、把后面的源误熔断掉。
+    """
+    from backend.emby_server.metasources import breaker as ms_breaker
+    ms_breaker.reset_all()
     original = dict(ms_sources.SPEC_BY_ID)
     yield
     ms_sources.SPEC_BY_ID.clear()
     ms_sources.SPEC_BY_ID.update(original)
+    ms_breaker.reset_all()
 
 
 def _spec(source_id: str, label: str, *, lang: str = "en",

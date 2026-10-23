@@ -28,6 +28,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+from urllib.error import HTTPError
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,19 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 
 
 class SourceError(RuntimeError):
-    """这一源这次失败了（引擎会隔离掉，不影响其它源）"""
+    """这一源这次失败了（引擎会隔离掉，不影响其它源）
+
+    ``status``：HTTP 失败时的状态码（熔断按它识别 403/429 立即开断，
+    见 metasources.breaker）；``count_failure=False`` 表示这不是源的
+    问题（没配密钥这类预检失败），不许喂给熔断计数——否则管理员没填
+    key 也能把源「熔断」掉，观测面就全是假警报。
+    """
+
+    def __init__(self, message: str = "", *, status: Optional[int] = None,
+                 count_failure: bool = True):
+        super().__init__(message)
+        self.status = status
+        self.count_failure = count_failure
 
 
 @dataclass
@@ -94,7 +107,9 @@ def _http_json(url: str, *, headers: Optional[dict] = None, data: Optional[bytes
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", "ignore")
     except Exception as exc:  # noqa: BLE001 — 统一成 SourceError，交给引擎隔离
-        raise SourceError(f"{type(exc).__name__}: {exc}") from exc
+        # HTTP 状态码单独挂在异常上（文案保持原口径）：熔断靠它认 403/429
+        status = exc.code if isinstance(exc, HTTPError) else None
+        raise SourceError(f"{type(exc).__name__}: {exc}", status=status) from exc
     try:
         return json.loads(body)
     except ValueError as exc:
@@ -145,7 +160,7 @@ def search_tmdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
 
     gate.acquire()
     if not tmdb_lib.tmdb_client.configured:
-        raise SourceError("没有可用的 TMDB 密钥")
+        raise SourceError("没有可用的 TMDB 密钥", count_failure=False)
     raw = tmdb_lib.tmdb_client.search(title, year, kind)
     if not raw:
         return None
@@ -162,7 +177,7 @@ def find_tmdb_by_imdb(imdb_id: str, year: Optional[int], kind: str, *, pool, gat
 
     gate.acquire()
     if not tmdb_lib.tmdb_client.configured:
-        raise SourceError("没有可用的 TMDB 密钥")
+        raise SourceError("没有可用的 TMDB 密钥", count_failure=False)
     found = tmdb_lib.tmdb_client.find_by_imdb(imdb_id) or {}
     key = "movie_results" if kind == "movie" else "tv_results"
     for raw in found.get(key) or []:
@@ -382,7 +397,7 @@ def search_omdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
         return None               # OMDb 不索引剧集，剧集条目直接不查
     key = pool.pick_any()
     if not key:
-        raise SourceError("没有可用的 OMDb 密钥")
+        raise SourceError("没有可用的 OMDb 密钥", count_failure=False)
     gate.acquire()
     params = {"apikey": key, "t": (title or "").strip()}
     if year:
@@ -460,7 +475,7 @@ def search_tvdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
         return None               # v4 的 search 只覆盖剧集
     key = pool.pick_any()
     if not key:
-        raise SourceError("没有可用的 TheTVDB 密钥")
+        raise SourceError("没有可用的 TheTVDB 密钥", count_failure=False)
     gate.acquire()
     query = f"{title} {year}".strip() if year else (title or "").strip()
     url = f"{TVDB_SEARCH}?query={urllib.parse.quote(query)}&limit=5"

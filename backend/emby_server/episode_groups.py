@@ -71,7 +71,7 @@ def get_episode_groups(tmdb_id: str) -> list[dict]:
     result = [g for g in out if g["id"]]
     # 写缓存
     try:
-        tmdb_cache.save_details("episode_groups", tmdb_id, result, "en-US")
+        tmdb_cache.save_details("episode_groups", tmdb_id, result, "en-US", raw=result)
     except Exception:
         pass
     return result
@@ -105,7 +105,7 @@ def get_episode_group_detail(group_id: str) -> Optional[dict]:
         return None
     if data:
         try:
-            tmdb_cache.save_details("episode_group", group_id, data, "en-US")
+            tmdb_cache.save_details("episode_group", group_id, data, "en-US", raw=data)
         except Exception:
             pass
     return data
