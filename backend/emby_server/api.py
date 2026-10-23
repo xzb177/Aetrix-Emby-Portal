@@ -4651,8 +4651,7 @@ async def video_stream(
             # Drive SA 中继（2026-10-23 额度应急）：字节过服务器转发，
             # file_id 不出门、不走公开下载池；存在性由上游取流本身
             # 回答（文件没了上游 404 透传），不再单跑存在性校验。
-            play_sign.audit_play(db, user, item, request,
-                                 via="stream", result="drive_relay")
+            # 观测口径与直链快路径一致（_observe_traffic + play-timing）。
             _pt.mark("relay")
             return _observe_traffic(
                 await serve_drive_relay_async(
