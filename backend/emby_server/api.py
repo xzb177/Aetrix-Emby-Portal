@@ -4656,8 +4656,7 @@ async def video_stream(
             return _observe_traffic(
                 await serve_drive_relay_async(
                     request, _relay_drive_id, _fid,
-                    media_type=media_type, pt=_pt),
-                _fid, item)
+                    media_type=media_type, pt=_pt))
     _fast302 = False
     if _drive_switch_on:
         # 相同起始 Range 的短时重试：播放器多半是谷歌 404 之后又来了一次，

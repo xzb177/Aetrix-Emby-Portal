@@ -174,8 +174,9 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
     monkeypatch.setattr(api, "_drive_mount_id_for_item",
                         lambda db, it: "DRIVE9")
-    monkeypatch.setattr(api, "_observe_traffic",
-                        lambda resp, key, it: resp)
+    # _observe_traffic 真实签名只有一个参数（response）；桩必须同签名，
+    # 否则接线里多传参数这种错会被桩掩盖（2026-10-23 二次实播 500 教训）。
+    monkeypatch.setattr(api, "_observe_traffic", lambda resp: resp)
 
     seen = {}
 
