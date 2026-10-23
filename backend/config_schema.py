@@ -218,7 +218,7 @@ ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {
 #   而不是删行）；复合校验（stream_accel 开关+域名联动、签到上下限、活力阈值）
 #   保留在端点层，注册表只表达"类型+范围"。
 ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
-    "checkin_enabled": ("bool",), "checkin_base_points": ("int", 0, _BIG),
+    "checkin_enabled": ("bool",),
     "checkin_streak_bonus": ("int", 0, _BIG), "checkin_streak_max_bonus": ("int", 0, _BIG),
     "checkin_base_min": ("int", 0, _BIG), "checkin_base_max": ("int", 0, _BIG),
     "checkin_penalty_pct": ("int", 0, 100),
@@ -235,7 +235,6 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "device_limit_per_user": ("int", 0, _BIG), "device_limit_auto_evict": ("bool",),
     "login_log_retention_days": ("int", 0, _BIG),
     "max_pending_orders_per_user": ("int", 0, _BIG),
-    "invitation_reward_points": ("int", 0, _BIG),
     "invitation_invitee_reward_points": ("int", 0, _BIG),
     "invitation_rebate_percent": ("int", 0, 100),
     "promotion_reward_enabled": ("bool",),

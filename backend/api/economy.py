@@ -351,15 +351,16 @@ def _checkin_rules(db: Session) -> dict:
     """签到奖励规则（管理端 SystemConfig 可调）
 
     2026-10-09 合并公益服签到后的统一规则：
-    - 基础积分：checkin_base_min ~ checkin_base_max 随机；
-      未配置 min/max 时回退到 checkin_base_points（默认 5~5 = 固定 5 分，旧行为不变）
+    - 基础积分：checkin_base_min ~ checkin_base_max 随机；未配置时默认
+      5~5 = 固定 5 分（2026-10-23 去重：原 checkin_base_points 单值键退役，
+      它只在未配范围时当回退、配了范围即被架空，一值三字段只留范围一对）
     - 连签加成：streak_bonus * (streak-1)，封顶 streak_max_bonus
     - 惩罚：penalty_pct% 概率扣 penalty_min ~ penalty_max（默认 0 = 关闭，旧行为不变）
     - 积分仅发放给公益服用户（is_welfare=True）；其他用户签到只记录连签
     """
-    base_points = _get_int_config(db, "checkin_base_points", 5)
-    base_min = _get_int_config(db, "checkin_base_min", base_points)
-    base_max = _get_int_config(db, "checkin_base_max", base_points)
+    base_min = _get_int_config(db, "checkin_base_min", 5)
+    base_max = _get_int_config(db, "checkin_base_max", 5)
+    base_points = base_min
     if base_min > base_max:
         base_min, base_max = base_max, base_min
     penalty_min = _get_int_config(db, "checkin_penalty_min", 1)
