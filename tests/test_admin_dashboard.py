@@ -1,7 +1,8 @@
 """GET /api/admin/dashboard/overview 仪表盘聚合接口。
 
-- 8 个首屏 part 一次返回：overview / playback / economy / libraries /
-  servers / realms / backend_services / trend。
+- 9 个首屏 part 一次返回：overview / playback / economy / libraries /
+  servers / realms / backend_services / trend / detail（2026-10-23 新增，
+  数据明细 7 表，builder 在 admin_dashboard 本模块）。
 - 口径断言：每个 part 与直接调用原 handler 的结果逐字段相等
   （失败时同样为 None——与前端原 soft() 兜底一致）。
 - 降级：单个采集抛异常时，该 part 为 None，其余不受影响。
@@ -58,10 +59,10 @@ def admin(db):
 
 
 def _direct_parts(admin, days=14):
-    """单线程直接调用 8 个原 handler，失败记 None（与聚合的降级口径对齐）。
+    """单线程直接调用各原 handler，失败记 None（与聚合的降级口径对齐）。
 
     调用清单从 admin_dashboard._JOBS 派生：_JOBS 增减 part 时这里自动跟进；
-    8 个 part 名的 tripwire 断言见 test_collect_matches_direct_handlers。
+    part 名的 tripwire 断言见 test_collect_matches_direct_handlers。
     """
     from backend.api.admin import get_playback_stats, get_stats_overview
     from backend.api.admin_economy import economy_stats, get_stats_trend
@@ -80,6 +81,7 @@ def _direct_parts(admin, days=14):
         "realms_overview": lambda: realms_overview(admin, db),
         "get_services_status": lambda: get_services_status(admin, db),
         "get_stats_trend": lambda: get_stats_trend(days, admin, db),
+        "get_detail_tables": lambda: admin_dashboard.get_detail_tables(admin, db),
     }
     try:
         out = {}
@@ -111,7 +113,7 @@ def test_collect_matches_direct_handlers(admin):
     want = _direct_parts(admin, 14)
     assert set(got.keys()) == {
         "overview", "playback", "economy", "libraries",
-        "servers", "realms", "backend_services", "trend",
+        "servers", "realms", "backend_services", "trend", "detail",
     }
     for key in want:
         if key == "backend_services":
@@ -157,7 +159,7 @@ def test_endpoint_shape(admin):
     assert "fetched_at" in resp
     assert set(resp["parts"].keys()) == {
         "overview", "playback", "economy", "libraries",
-        "servers", "realms", "backend_services", "trend",
+        "servers", "realms", "backend_services", "trend", "detail",
     }
     # days 越界被钳制，不抛错
     admin_dashboard._dash_cache.clear()
@@ -237,3 +239,83 @@ def test_stats_overview_total_items_excludes_merged_copies(admin, db):
     _mk(deleted_at=datetime.now())          # 软删行：不计
     out = get_stats_overview(admin, db)
     assert out["emby"]["total_items"] == 1
+
+
+def test_detail_tables_content(admin, db):
+    """detail part（2026-10-23 数据明细 7 表）：口径逐表钉住。
+
+    - library_stats / enrich_progress：合并副本不计、软删不计；
+      enriched 只数 movie/series 且 tmdb_id 非空。
+    - 其余表：行数有界、字段齐、排序按时间/热度倒序。
+    """
+    import uuid
+    from datetime import datetime
+
+    from backend import models as m
+    from backend.emby_server import models as em
+
+    for tbl in (em.MediaItem, em.Library, em.PlaybackSession,
+                m.PointsLog, m.MovieRequest, m.SubscriptionOrder):
+        db.query(tbl).delete()
+    db.commit()
+
+    lib = em.Library(guid=uuid.uuid4().hex, name="电影库")
+    db.add(lib)
+    db.commit()
+    db.refresh(lib)
+
+    def _mk(item_type, tmdb=None, **kw):
+        it = em.MediaItem(
+            guid=uuid.uuid4().hex, library_id=lib.id, item_type=item_type,
+            name="片", file_path="/tmp/x.mp4", tmdb_id=tmdb, **kw)
+        db.add(it)
+        db.commit()
+        return it
+
+    _mk("movie", tmdb="11")
+    _mk("movie")                       # 待刮
+    _mk("series", tmdb="22")
+    _mk("episode")
+    _mk("episode")
+    _mk("movie", tmdb="33", merged_into_id=999)   # 合并副本：不计
+    _mk("movie", deleted_at=datetime.now())       # 软删：不计
+
+    u2 = m.WebUser(username="detailuser", password_hash="x", is_active=True)
+    db.add(u2)
+    db.commit()
+    db.refresh(u2)
+    db.add(m.PointsLog(user_id=u2.id, amount=5, type="checkin",
+                       description="每日签到"))
+    db.add(m.MovieRequest(user_id=u2.id, movie_name="热门片", type="movie",
+                          status="pending"))
+    db.add(m.MovieRequest(user_id=u2.id, movie_name="热门片", type="movie",
+                          status="done"))
+    db.add(m.MovieRequest(user_id=u2.id, movie_name="冷门片", type="movie",
+                          status="pending"))
+    db.add(m.SubscriptionOrder(order_id="SO-DETAIL-1", user_id=u2.id,
+                               plan_id=1, item_name="远行执照", amount=45,
+                               status="paid"))
+    item = db.query(em.MediaItem).first()
+    db.add(em.PlaybackSession(session_key=uuid.uuid4().hex, user_id=u2.id,
+                              item_id=item.id, start_time=datetime.now()))
+    db.commit()
+
+    out = admin_dashboard.get_detail_tables(admin, db)
+
+    assert out["library_stats"] == [{
+        "library": "电影库", "movies": 2, "shows": 1, "episodes": 2, "total": 5,
+    }]
+    assert out["enrich_progress"] == [{
+        "library": "电影库", "enriched": 2, "pending": 1,
+    }]
+    assert out["recent_users"][0]["username"] == "detailuser"
+    assert out["recent_orders"][0]["item"] == "远行执照"
+    assert out["recent_orders"][0]["kind"] == "订阅"
+    assert out["points_flow"][0]["amount"] == 5
+    assert out["seek_hot"][0] == {
+        "title": "热门片", "media_type": "movie", "count": 2, "pending": 1,
+    }
+    assert len(out["activity_days"]) == 7
+    today = out["activity_days"][-1]
+    assert today["plays"] == 1 and today["active_users"] == 1
+    assert today["new_users"] >= 1
