@@ -202,7 +202,11 @@ check("管理端列表里的 last_scan 与库内一致",
 # ==================== 3. 重扫：覆盖上一轮（不是累加） ====================
 print("\n=== 3. 重扫：覆盖上一轮 ===")
 os.remove(movie_path(0))
-second = scan()
+# 缺失宽限（2026-10-24 批一 #6）：连扫满宽限轮数才计入 removed，
+# 下面的快照断言全部看最后一轮（中间轮条目仍在、removed=0）
+second = None
+for _ in range(sc.MISSING_GRACE_SCANS):
+    second = scan()
 snap2 = snapshot()
 check("重扫：删掉的文件计入 removed", second["removed"] == 1 and snap2["stats"].get("removed") == 1,
       f"removed={second['removed']} / 落库 {snap2['stats'].get('removed')}")
@@ -255,7 +259,11 @@ with Session() as db:
     lib.paths = lib_dir
     db.commit()
 
-fourth = scan()
+# 被跳过的那轮清理从未给消失条目计过缺失数（清理压根没跑），
+# 恢复后同样要走满宽限轮数才下架——逐轮累计，最后一轮的快照才作数
+fourth = None
+for _ in range(sc.MISSING_GRACE_SCANS):
+    fourth = scan()
 snap4 = snapshot()
 check("来源恢复后：状态回到 success", snap4["status"] == "success", str(snap4["status"]))
 check("来源恢复后：补上上一轮被跳过的清理",

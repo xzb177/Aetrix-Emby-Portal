@@ -367,10 +367,16 @@ real_cleanup_batch = sc.CLEANUP_BATCH
 sc.SCAN_BATCH = 4
 sc.CLEANUP_BATCH = 4        # 清理阶段的批大小也要小于待清理条目数，才能真的跨批
 try:
-    db = Session()
-    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
-    second = sc.scan_library_sync(db, lib)
-    db.close()
+    # 缺失宽限（2026-10-24 批一 #6）：文件消失要连扫满宽限轮数才下架。
+    # 小批设置罩住每一轮（验的仍是「游标跨批 + 清理正确」），
+    # removed 累计必须恰为 1——少了是清理坏了，多了是误删。
+    total_removed = 0
+    for _ in range(sc.MISSING_GRACE_SCANS):
+        db = Session()
+        lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+        total_removed += sc.scan_library_sync(db, lib)["removed"]
+        db.close()
+    second = {"removed": total_removed}
 finally:
     sc.SCAN_BATCH = real_batch
     sc.CLEANUP_BATCH = real_cleanup_batch
