@@ -1308,8 +1308,11 @@ watch(
             </el-form>
           </SectionCard>
 
-          <!-- 列表去重缓存 -->
+          <!-- 列表去重缓存：独立卡片，归「播放与风控」段（左侧导航入口
+               也是这么挂的）。此前漏写 v-if，在每个段落里各渲染了一份
+               （全页共 4 份重复卡），2026-10-23 修复 -->
           <SectionCard
+            v-if="sec.id === 'playback'"
             id="group-items-dedup-cache"
             title="列表去重缓存"
             :icon="Zap"
