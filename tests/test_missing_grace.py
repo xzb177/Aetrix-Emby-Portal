@@ -130,6 +130,24 @@ def test_pending_grace_blocks_fast_path(db):
     assert scanner._no_removals_possible(db, lib, seen_all) is True
 
 
+def test_raw_insert_without_missing_count_defaults_to_zero(db):
+    """裸 SQL 直插不给 missing_count 也必须成功、读回 0。
+
+    回归钉（2026-10-24 CI 实证）：missing_count 只写 Python 侧 default
+    时，绕过 ORM 的批量直插（test_search_pinyin_initials 同款）会撞
+    NOT NULL 整批失败。列上必须带 server_default。
+    """
+    lib = _lib(db)
+    db.execute(text(
+        "INSERT INTO emby_items (guid, library_id, item_type, name) "
+        "VALUES ('raw-1', :l, 'movie', 'raw-1')"), {"l": lib.id})
+    db.commit()
+    row = db.execute(text(
+        "SELECT missing_count, missing_since FROM emby_items "
+        "WHERE guid = 'raw-1'")).first()
+    assert row[0] == 0 and row[1] is None
+
+
 def test_grace_one_is_legacy_behavior(db, monkeypatch):
     monkeypatch.setattr(scanner, "MISSING_GRACE_SCANS", 1)
     lib, items = _seed_library(db)

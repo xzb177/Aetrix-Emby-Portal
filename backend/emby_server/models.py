@@ -337,7 +337,10 @@ class MediaItem(Base):
     # 达到 SCAN_MISSING_GRACE_SCANS（默认 3 轮）才真正写 deleted_at。
     # 文件重新出现即清零。单次观测（挂载抖动/目录半读）不作数，防误删。
     missing_since = Column(DateTime, default=None)
-    missing_count = Column(Integer, default=0, nullable=False)
+    # server_default 必须有：仓库里存在绕过 ORM 的裸 SQL/Core 直插
+    # （如搜索测试的批量 INSERT），只靠 Python 侧 default 时直插会撞
+    # NOT NULL——2026-10-24 CI 实证（test_search_pinyin_initials）。
+    missing_count = Column(Integer, default=0, server_default="0", nullable=False)
     # 多版本合并（对标 StrmAssistant MergeMultiVersionTask）：
     # 同 tmdb_id/imdb_id 的重复条目合并为一条，主记录为 NULL，
     # 被合并的条目指向主记录 id。API 列表默认过滤掉被合并的，
