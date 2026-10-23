@@ -427,7 +427,17 @@ class CacheManager:
     ``_MEMORY_CACHE_MAX``，存 (value, expire_at)，读时校验过期、
     写满时先清过期条目再按 FIFO 淘汰最老的。Redis 故障时也不会
     无限增长吃掉内存。
+
+    域 scope（FMBY 批一 #10，借鉴其 Redis 按域分片）：``get/set/delete/
+    exists`` 可带 ``domain=``——带域写入的键落 ``rb:d:<域>:<原键>``
+    命名空间，读取先查新键、未命中回退旧的无域键（老键不迁移、靠
+    TTL 自然消亡）；不带 ``domain`` 的调用与从前逐字节一致，老调用方
+    语义不变。整域失效走 :meth:`invalidate_domain`。
     """
+
+    #: 起步四域：浏览 / 条目 / 播放 / 资源（域只是键命名空间，不改变值语义；
+    #: 新域只要是合法 slug 即可用，不必改这张表——表是给人看的清单）
+    DOMAINS = ("browse", "items", "playback", "assets")
 
     # 修复 E-P1-2：内存缓存被多线程共享，dict 与 FIFO order 必须原子更新
     _memory_cache: dict = {}
@@ -490,35 +500,98 @@ class CacheManager:
                 order.append(key)
             cache[key] = (value, expire_at)
 
-    @staticmethod
-    def get(key: str) -> Optional[str]:
-        """获取缓存（Redis 熔断 / 故障时走内存）"""
-        value = redis_call(lambda r: r.get(f"rb:{key}"), _MISSING)
-        if value is not _MISSING:
-            return value
-        return CacheManager._memory_get(key)
+    # ---------------- 域 scope（#10） ----------------
 
     @staticmethod
-    def set(key: str, value: str, ttl: int = 300) -> bool:
-        """设置缓存"""
-        ok = redis_call(lambda r: r.setex(f"rb:{key}", ttl, value), _MISSING)
-        if ok is not _MISSING:
-            return ok
-        CacheManager._memory_set(key, value, ttl)
-        return True
+    def _validate_domain(domain: Optional[str]) -> Optional[str]:
+        """域 slug 校验：None 原样返回；非法 slug 直接抛错（防打错域静默失效）。"""
+        if domain is None:
+            return None
+        d = str(domain).strip().lower()
+        if not d or not d.isascii() or not all(
+                c.isalnum() or c in "_-" for c in d):
+            raise ValueError(f"非法缓存域: {domain!r}")
+        return d
 
     @staticmethod
-    def delete(key: str) -> bool:
-        """删除缓存"""
-        res = redis_call(lambda r: r.delete(f"rb:{key}") > 0, _MISSING)
-        if res is not _MISSING:
-            return res
-        if key in CacheManager._memory_cache:
+    def _scoped(key: str, domain: Optional[str]) -> str:
+        """逻辑键：带域时 ``d:<域>:<原键>``（Redis 后缀与内存回退共用同一形）。"""
+        return f"d:{domain}:{key}" if domain else key
+
+    @staticmethod
+    def _memory_delete(key: str) -> bool:
+        with CacheManager._memory_cache_lock:
+            if key not in CacheManager._memory_cache:
+                return False
             del CacheManager._memory_cache[key]
             try:
                 CacheManager._memory_cache_order.remove(key)
             except ValueError:
                 pass
+            return True
+
+    @staticmethod
+    def get(key: str, *, domain: Optional[str] = None) -> Optional[str]:
+        """获取缓存（Redis 熔断 / 故障时走内存）
+
+        带 ``domain`` 时先查域内新键，未命中回退旧无域键（迁移期双读，
+        老键靠 TTL 自然消亡）；不带 domain 与从前一致。
+        """
+        domain = CacheManager._validate_domain(domain)
+        if domain is None:
+            value = redis_call(lambda r: r.get(f"rb:{key}"), _MISSING)
+            if value is not _MISSING:
+                return value
+            return CacheManager._memory_get(key)
+        scoped = CacheManager._scoped(key, domain)
+        value = redis_call(lambda r: r.get(f"rb:{scoped}"), _MISSING)
+        if value is not _MISSING:
+            if value is not None:
+                return value
+            # Redis 可达、新键未命中 → 回退旧键
+            legacy = redis_call(lambda r: r.get(f"rb:{key}"), _MISSING)
+            return legacy if legacy is not _MISSING else None
+        # Redis 不可用 → 内存回退：同样先新键后旧键
+        hit = CacheManager._memory_get(scoped)
+        if hit is not None:
+            return hit
+        return CacheManager._memory_get(key)
+
+    @staticmethod
+    def set(key: str, value: str, ttl: int = 300, *,
+            domain: Optional[str] = None) -> bool:
+        """设置缓存。带 ``domain`` 时只写入域命名空间（新键）。"""
+        domain = CacheManager._validate_domain(domain)
+        logical = CacheManager._scoped(key, domain)
+        ok = redis_call(lambda r: r.setex(f"rb:{logical}", ttl, value), _MISSING)
+        if ok is not _MISSING:
+            return ok
+        CacheManager._memory_set(logical, value, ttl)
+        return True
+
+    @staticmethod
+    def delete(key: str, *, domain: Optional[str] = None) -> bool:
+        """删除缓存。带 ``domain`` 时域内新键与旧无域键一并删（读路径
+        双读，删除必须把两边都清掉，否则旧键会把已删的值又读回来）。"""
+        domain = CacheManager._validate_domain(domain)
+        if domain is None:
+            res = redis_call(lambda r: r.delete(f"rb:{key}") > 0, _MISSING)
+            if res is not _MISSING:
+                return res
+            if key in CacheManager._memory_cache:
+                del CacheManager._memory_cache[key]
+                try:
+                    CacheManager._memory_cache_order.remove(key)
+                except ValueError:
+                    pass
+            return True
+        scoped = CacheManager._scoped(key, domain)
+        res = redis_call(lambda r: r.delete(f"rb:{scoped}", f"rb:{key}") > 0,
+                         _MISSING)
+        if res is not _MISSING:
+            return res
+        CacheManager._memory_delete(scoped)
+        CacheManager._memory_delete(key)
         return True
 
     @staticmethod
@@ -534,12 +607,55 @@ class CacheManager:
         return 0
 
     @staticmethod
-    def exists(key: str) -> bool:
-        """检查缓存是否存在"""
-        res = redis_call(lambda r: r.exists(f"rb:{key}") > 0, _MISSING)
+    def exists(key: str, *, domain: Optional[str] = None) -> bool:
+        """检查缓存是否存在（带 domain 时新键、旧键任一存在即 True）。"""
+        domain = CacheManager._validate_domain(domain)
+        if domain is None:
+            res = redis_call(lambda r: r.exists(f"rb:{key}") > 0, _MISSING)
+            if res is not _MISSING:
+                return res
+            return CacheManager._memory_get(key) is not None
+        scoped = CacheManager._scoped(key, domain)
+        res = redis_call(
+            lambda r: (r.exists(f"rb:{scoped}") or r.exists(f"rb:{key}")) > 0,
+            _MISSING)
         if res is not _MISSING:
             return res
-        return CacheManager._memory_get(key) is not None
+        return (CacheManager._memory_get(scoped) is not None
+                or CacheManager._memory_get(key) is not None)
+
+    @staticmethod
+    def invalidate_domain(domain: str) -> int:
+        """按域失效：删掉该域全部带 scope 的键，返回删除数。
+
+        只动 ``rb:d:<域>:*`` 命名空间——无域旧键与其它域不受影响。
+        Redis 与内存回退都清（同一进程可能在 Redis 故障窗口攒下内存条目）；
+        Redis 不可用时返回内存侧的删除数（best-effort，与 delete_pattern 同口径）。
+        """
+        domain = CacheManager._validate_domain(domain)
+        if domain is None:
+            raise ValueError("domain 不能为空")
+        prefix = f"d:{domain}:"
+        count = 0
+
+        def _del(r):
+            keys = r.keys(f"rb:{prefix}*")
+            return r.delete(*keys) if keys else 0
+
+        res = redis_call(_del, _MISSING)
+        if res is not _MISSING:
+            count += int(res or 0)
+        with CacheManager._memory_cache_lock:
+            doomed = [k for k in CacheManager._memory_cache
+                      if k.startswith(prefix)]
+            for k in doomed:
+                del CacheManager._memory_cache[k]
+                try:
+                    CacheManager._memory_cache_order.remove(k)
+                except ValueError:
+                    pass
+            count += len(doomed)
+        return count
 
 
 cache = CacheManager()
