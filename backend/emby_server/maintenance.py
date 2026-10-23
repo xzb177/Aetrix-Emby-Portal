@@ -133,7 +133,8 @@ def resume_interrupted_scans(db) -> int:
     """把「已中断」的库重新入队续扫（启动维护在复位/收尾之后调用）
 
     被进程重启打断的扫描数据没坏、任务也没错，缺的只是一次重新执行：
-    逐库增量入队（trigger=resume），让它自己接着跑完，管理员不用再手动点。
+    逐库按被打断那轮的范围入队（trigger=resume）——定向扫描定向续、
+    整库扫描整库增量续，让它自己接着跑完，管理员不用再手动点。
     已在本进程队列里 / 已推入 Redis 队列的库跳过——队列本身有去重，
     这里再挡一道，避免 API 与 worker 两个进程启动时各入一次。
     单库入队失败只记日志，不拖累其他库，也不阻塞启动。
@@ -153,7 +154,18 @@ def resume_interrupted_scans(db) -> int:
         try:
             if scan_queue.is_busy(lib.id):
                 continue
-            scan_queue.enqueue(lib, trigger="resume", force_full=False)
+            # 被打断的那轮若是定向扫描（Drive Changes 只扫几个变化目录），
+            # 续扫必须还是定向：整库续会把几分钟的增量续成几天走不完的
+            # 全量遍历（2026-10-22 国产剧实证：增量被打断后整库续了 15 次
+            # 都没走完）。范围记在被打断流水的 stats 里（begin_scan 落的），
+            # 读不到（整库扫描 / 老流水）才回退整库增量续——既有口径不变。
+            prefixes = scanner.interrupted_resume_prefixes(db, lib.id)
+            if prefixes:
+                scan_queue.enqueue_targeted(lib, prefixes, trigger="resume")
+                logger.info("定向续扫：库 id=%s 沿被打断范围续 %d 个目录",
+                            lib.id, len(prefixes))
+            else:
+                scan_queue.enqueue(lib, trigger="resume", force_full=False)
             resumed.append(lib.id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("自动续扫入队失败：库 id=%s: %s", lib.id, exc)

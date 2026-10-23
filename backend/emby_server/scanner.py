@@ -4463,7 +4463,11 @@ SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scr
                    "removal_guard",
                    # 定向扫描标记：清理跳过是预期行为，finish_scan 据此不判 partial
                    #（v2.56.x 修复"没有可用来源"误报）
-                   "targeted_scan")
+                   "targeted_scan",
+                   # 定向扫描的范围（limit_prefixes）：begin_scan 开跑时记下，
+                   # 被重启打断后自动续扫据它定向续、不放大成整库遍历；
+                   # 只在流水 stats 里流转，_scan_metrics 不提取、不对外
+                   "resume_scope")
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
@@ -4574,6 +4578,18 @@ def encode_scan_stats(stats: Optional[dict]) -> Optional[str]:
             out["removal_guard"] = str(out.get("removal_guard") or "")[:500]
         if "sources" in out:
             out["sources"] = _encode_scan_sources(out.get("sources"))
+        if "resume_scope" in out:
+            # 只留定向范围本身：前缀逐个截断、条数封顶，坏形状直接丢弃
+            scope = out.get("resume_scope")
+            if isinstance(scope, dict) and scope.get("targeted"):
+                out["resume_scope"] = {
+                    "targeted": True,
+                    "limit_prefixes": [
+                        str(p)[:1000] for p in (scope.get("limit_prefixes") or [])
+                    ][:200],
+                }
+            else:
+                out.pop("resume_scope", None)
         return json.dumps(out, ensure_ascii=False, sort_keys=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning("序列化扫描统计失败: %s", exc)
@@ -4760,12 +4776,62 @@ def _write_scan_state(db: Session, library: emby_models.Library, status: str,
         db.rollback()
 
 
+def _resume_scope_of(snapshot) -> Optional[dict]:
+    """从快照里提取「被打断后该按什么范围续扫」，整库扫描返回 None。
+
+    定向扫描（Drive Changes 触发，只扫几个变化目录）被重启打断时，续扫必须
+    还是定向——历史上续扫不分青红皂白整库重走，一次几分钟的增量能被续成
+    几天走不完的全量遍历（2026-10-22 国产剧实证）。范围只在定向时才记：
+    整库扫描本来就该整库续，记了反而多一层出错面。
+    """
+    try:
+        if snapshot is None or not getattr(snapshot, "targeted", False):
+            return None
+        prefixes = [str(p) for p in (getattr(snapshot, "limit_prefixes", ()) or ()) if p]
+        if not prefixes:
+            return None
+        return {"targeted": True, "limit_prefixes": prefixes}
+    except Exception:  # noqa: BLE001 — 取范围失败绝不拖累扫描本身
+        return None
+
+
+def interrupted_resume_prefixes(db: Session, library_id: int) -> Optional[list]:
+    """该库最近一条「已中断」流水里记下的定向续扫范围；没有就返回 None。
+
+    续扫方（maintenance.resume_interrupted_scans）据此决定定向续还是整库续：
+    返回 None = 整库续（整库扫描被打断、或老流水没记范围时的既有口径）。
+    读不出来（没流水 / stats 损坏）一律 None 回退整库，不许抛。
+    """
+    try:
+        run = (
+            db.query(emby_models.ScanRun)
+            .filter(emby_models.ScanRun.library_id == library_id,
+                    emby_models.ScanRun.status == SCAN_STATUS_INTERRUPTED)
+            .order_by(emby_models.ScanRun.id.desc())
+            .first()
+        )
+        if run is None:
+            return None
+        scope = decode_scan_stats(getattr(run, "stats", None)).get("resume_scope") or {}
+        if not scope.get("targeted"):
+            return None
+        prefixes = [str(p) for p in (scope.get("limit_prefixes") or []) if p]
+        return prefixes or None
+    except Exception:  # noqa: BLE001 — 回退整库续是安全侧
+        return None
+
+
 def begin_scan(db: Session, library: emby_models.Library,
-               trigger: str = "manual") -> Optional[int]:
+               trigger: str = "manual",
+               snapshot=None) -> Optional[int]:
     """标记扫描开始，并开一条扫描流水，返回它 id
 
     独立提交一次：扫描过程中进程被杀，库里也能看出「上一轮在跑」以及是谁触发的。
     状态写不进去不影响扫描本身（只是这次没有流水）。
+
+    ``snapshot`` 给了且是定向扫描时，把范围记进流水的 stats（resume_scope）：
+    流水收尾只动 status/error、不动 stats，被打断后范围还在，续扫读它。
+    对外流水结构（_scan_metrics）是白名单提取，这个键不会漏到管理端。
     """
     library.is_scanning = True
     library.scan_status = SCAN_STATUS_RUNNING
@@ -4777,6 +4843,9 @@ def begin_scan(db: Session, library: emby_models.Library,
         run = emby_models.ScanRun(library_id=library.id, status=SCAN_STATUS_RUNNING,
                                   trigger=normalize_scan_trigger(trigger),
                                   started_at=datetime.now())
+        scope = _resume_scope_of(snapshot)
+        if scope is not None:
+            run.stats = encode_scan_stats({"resume_scope": scope})
         db.add(run)
     try:
         commit_with_retry(db, label="扫描开始状态")
@@ -4973,7 +5042,7 @@ def scan_library_sync(db: Session, library: emby_models.Library,
     # 先在**进程内**占位（重复任务会在这一步被拒绝，不会写库、也不会启动扫描），再写库状态
     _acquire_scan(snap.library_id)
     try:
-        run_id = begin_scan(db, library, trigger)
+        run_id = begin_scan(db, library, trigger, snapshot=snap)
         started = time.perf_counter()
         try:
             stats = _scan_library_body(db, library, snap)
