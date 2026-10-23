@@ -37,13 +37,20 @@ import logging
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
+from backend.emby_server.metasources import breaker as provider_breaker
 from backend.emby_server.tmdb import _YEAR_TAIL_RE
 
 logger = logging.getLogger(__name__)
+
+
+def _breaker_status_of(exc: Exception) -> Optional[int]:
+    """urllib 异常 → HTTP 状态码（熔断认 403/429 用）；非 HTTP 失败给 None。"""
+    return exc.code if isinstance(exc, urllib.error.HTTPError) else None
 
 SUGGEST_URL = "https://movie.douban.com/j/subject_suggest"
 BANGUMI_SEARCH_URL = "https://api.bgm.tv/search/subject"
@@ -140,6 +147,11 @@ def search(title: str, year: Optional[int] = None, kind: str = "series",
     q = (title or "").strip()
     if not q:
         return None
+    # 熔断（批一 #8）：本模块的异常一律吞成 None，上层分不清「没搜到」
+    # 与「源坏了」——成败只能在这一层喂 breaker（见 breaker 的喂数口径）
+    if not provider_breaker.allow("douban"):
+        logger.debug("[altmeta] 豆瓣熔断中，跳过搜索 %r", q)
+        return None
     _limiter.acquire(min_interval)
     url = f"{SUGGEST_URL}?q={urllib.parse.quote(q)}"
     try:
@@ -147,8 +159,11 @@ def search(title: str, year: Optional[int] = None, kind: str = "series",
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8", "ignore"))
     except Exception as exc:  # noqa: BLE001 — 网络/反爬失败不应中断补全
+        provider_breaker.record_failure(
+            "douban", status=_breaker_status_of(exc), error=str(exc))
         logger.debug("[altmeta] 豆瓣搜索失败 %r: %s", q, exc)
         return None
+    provider_breaker.record_success("douban")   # 拿到合法响应 = 源活着
     if not isinstance(data, list) or not data:
         return None
     hit = data[0]
@@ -255,6 +270,9 @@ def search_bangumi(title: str, year: Optional[int] = None, kind: str = "series",
     q = re.sub(r"\s+", " ", _YEAR_TAIL_RE.sub(" ", q)).strip(" -_.()（）")
     if not q:
         return None
+    if not provider_breaker.allow("bangumi"):   # 熔断喂数口径同豆瓣（见上）
+        logger.debug("[altmeta] Bangumi 熔断中，跳过搜索 %r", q)
+        return None
     _bgm_limiter.acquire(min_interval)
     url = f"{BANGUMI_SEARCH_URL}/{urllib.parse.quote(q)}"
     try:
@@ -262,8 +280,11 @@ def search_bangumi(title: str, year: Optional[int] = None, kind: str = "series",
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8", "ignore"))
     except Exception as exc:  # noqa: BLE001 — 网络/限流失败不应中断补全
+        provider_breaker.record_failure(
+            "bangumi", status=_breaker_status_of(exc), error=str(exc))
         logger.debug("[altmeta] Bangumi 搜索失败 %r: %s", q, exc)
         return None
+    provider_breaker.record_success("bangumi")  # 拿到合法响应 = 源活着
     items = (data or {}).get("list") or []
     want = _clean(q)
     for it in items[:5]:

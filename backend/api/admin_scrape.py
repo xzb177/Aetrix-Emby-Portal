@@ -629,12 +629,14 @@ def _meta_sources_view(db: Session, snapshot=None) -> dict:
 
     **密钥原文不出这个函数**：每把只给掩码、冷却剩余秒数与原因。
     """
+    from backend.emby_server.metasources import breaker as ms_breaker
     from backend.emby_server.metasources import config as ms_config
     from backend.emby_server.metasources import keypool as ms_keypool
     from backend.emby_server.metasources import sources as ms_sources
 
     snapshot = snapshot if snapshot is not None else ms_config.read_config(db, ms_sources.SPECS)
     order = [s.id for s in snapshot.sources]
+    breaker_view = ms_breaker.status()   # 熔断状态（批一 #8）：每源一行带上
     rows = []
     for position, source_cfg in enumerate(snapshot.sources, start=1):
         spec = ms_sources.SPEC_BY_ID.get(source_cfg.id)
@@ -675,6 +677,9 @@ def _meta_sources_view(db: Session, snapshot=None) -> dict:
             # 豆瓣的开关/间隔在下方豆瓣卡里统一设置（单一存储 douban_enabled /
             # douban_min_interval），源表这一行只展示状态、不再给第二个间隔输入框
             "managed_by_card": source_cfg.id == "douban",
+            # 熔断状态：None = 从没记过账（一直健康或还没跑过）；有值时含
+            # state（closed/open/half_open）/连续失败数/剩余冷却秒/最近错误
+            "breaker": breaker_view.get(source_cfg.id),
         })
     return {
         "enabled": snapshot.enabled,

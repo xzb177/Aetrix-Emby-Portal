@@ -60,9 +60,14 @@ def _no_env(monkeypatch):
     # 不清的话用例是否经过 preferred_language() 取决于别的测试文件有没有
     # 把缓存煨热 → 顺序相关的时绿时红。这里用产品自带的失效入口清掉。
     tmdb_mod.invalidate_language()
+    # 熔断注册表是进程全局（批一 #8）：本文件会模拟全 key 冷却/429，
+    # 失败计数不复位会跨用例把熔断喂开、误伤后面的用例
+    from backend.emby_server.metasources import breaker as provider_breaker
+    provider_breaker.reset_all()
     yield slept
     tmdb_mod.invalidate_settings()
     tmdb_mod.invalidate_language()
+    provider_breaker.reset_all()
 
 
 def _client(keys, answer=None) -> tmdb_mod.TmdbClient:

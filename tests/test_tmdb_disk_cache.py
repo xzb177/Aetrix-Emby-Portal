@@ -280,3 +280,51 @@ def test_cache_disabled_by_env(cache_dir, monkeypatch):
     assert client2.search("剧", 2023, "series") is not None
     assert calls1 and calls2, "缓存关闭时每次都真的请求"
     assert tmdb_cache.stats()["writes"] == writes_before, "关闭时一个文件都不该写"
+
+
+# ---------------------------------------------------------------------------
+# 双份快照 + 命中计数（2026-10-24，FMBY 学习批一 #8）
+# ---------------------------------------------------------------------------
+
+def test_envelope_keeps_normalized_raw_and_hit_count(cache_dir):
+    """归一化载荷 + 原始响应双份都在信封里；命中累计随每次读 +1"""
+    raw = {"results": [{"id": 1, "name": "漫长的季节"}], "page": 1, "total_pages": 1}
+    tmdb_cache.save_search("tv", "漫长的季节", 2023, [{"id": 1}], raw=raw)
+
+    hit, envelope = tmdb_cache.load_entry("tv", "漫长的季节", 2023, kind="search")
+    assert hit
+    assert envelope["v"] == [{"id": 1}]            # 归一化那份
+    assert envelope["raw"] == raw                  # 原始那份，一字不差
+    assert envelope["hits"] == 1                   # 这次读是第 1 次命中
+
+    tmdb_cache.load_search("tv", "漫长的季节", 2023)
+    hit, envelope = tmdb_cache.load_entry("tv", "漫长的季节", 2023, kind="search")
+    assert envelope["hits"] == 3                   # 每次命中都累计（load_entry 自身也算）
+
+
+def test_oversized_raw_is_stored_truncated_and_marked(cache_dir, monkeypatch):
+    """原始响应超单条上限 → 只存截断标记（注明截断 + 原始字节数），不撑爆缓存盘"""
+    monkeypatch.setenv("EMBY_TMDB_CACHE_RAW_MAX_KB", "1")   # 上限 1 KB
+    big_raw = {"overview": "x" * 5000}
+    tmdb_cache.save_details("movie", "999", {"id": 999, "title": "大片"}, raw=big_raw)
+
+    hit, envelope = tmdb_cache.load_entry("movie", "999", kind="details")
+    assert hit
+    assert envelope["v"] == {"id": 999, "title": "大片"}     # 归一化那份不受影响
+    stored = envelope["raw"]
+    assert stored["_truncated"] is True                     # 截断必须注明
+    assert stored["_bytes"] > 1024
+    assert stored["head"]                                    # 留了开头节选
+
+
+def test_legacy_envelope_without_raw_still_reads(cache_dir):
+    """老信封（只有 at/v）照样命中：hits 按 0 起、raw 为 None，命中后补上计数键"""
+    path = tmdb_cache._key_path("movie", "278", 0)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"at": time.time(), "v": {"id": 278, "title": "肖申克的救赎"}}, f)
+
+    hit, payload = tmdb_cache.load_details("movie", "278")
+    assert hit and payload["id"] == 278
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f)["hits"] == 1                    # 命中后计数键已补上

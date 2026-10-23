@@ -22,6 +22,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
+from backend.emby_server.metasources import breaker as provider_breaker
+
 logger = logging.getLogger(__name__)
 
 SUGGEST_URL = "https://movie.douban.com/j/subject_suggest"
@@ -105,6 +107,11 @@ def _trip_ban(reason: str) -> None:
     if fresh:
         logger.warning("[douban] 疑似被封禁（%s），第 %d 次，冷却 %ds",
                        reason, _ban_strikes, int(cooldown))
+    # 同步进统一熔断注册表（批一 #8）：本模块的封禁（900 秒起、指数退避）
+    # 比熔断的快速冷却（60 秒）严得多、继续当主闸；注册表那份只为统一
+    # 观测面能看见豆瓣在坏，且 altmeta 那条路径（不查本封禁）还有总闸。
+    # 封禁码（403/418/429）与验证码页都属「源明确拒绝」→ 按 403 记快速熔断
+    provider_breaker.record_failure("douban", status=403, error=reason)
 
 
 def _note_success() -> None:
@@ -112,6 +119,7 @@ def _note_success() -> None:
     global _ban_strikes
     with _lock:
         _ban_strikes = 0
+    provider_breaker.record_success("douban")
 
 
 class _RateLimiter:

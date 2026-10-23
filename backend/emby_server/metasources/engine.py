@@ -24,10 +24,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from backend.emby_server.metasources import config as cfg_mod
+from backend.emby_server.metasources import breaker, config as cfg_mod
 from backend.emby_server.metasources import keypool, sources
 
 logger = logging.getLogger(__name__)
+
+#: 在自己的请求层喂熔断的源，引擎不再重复喂（否则一次失败记两笔）：
+#: tmdb 由 TmdbClient._get 按请求喂；douban / bangumi 由 altmeta 的
+#: HTTP 层喂（异常在那里被吞成 None，引擎层分不清成败）。
+_SELF_FEEDING = {"tmdb", "douban", "bangumi"}
 
 # 会被「按序填充」的字段（外部 ID 是合并，不是取第一个）
 MERGE_FIELDS = ("title", "original_title", "overview", "genres", "rating", "year", "poster")
@@ -129,15 +134,41 @@ def _douban_banned_now() -> bool:
 
 
 def _fetch_one(source_cfg, title: str, year: Optional[int], kind: str) -> Optional[sources.Hit]:
-    """问一个源；失败抛 ``SourceError``（由调用方隔离）"""
+    """问一个源；失败抛 ``SourceError``（由调用方隔离）
+
+    成败顺手喂熔断（``breaker``）：自喂的源（``_SELF_FEEDING``）跳过，
+    预检失败（没配密钥这类 ``count_failure=False``）不喂——那不是源的错。
+    """
+    feeding = source_cfg.id not in _SELF_FEEDING
     spec = sources.SPEC_BY_ID.get(source_cfg.id)
     if spec is None:
-        raise sources.SourceError("未知数据源")
+        if feeding:
+            breaker.release_probe(source_cfg.id)   # 没发请求：归还半开名额
+        raise sources.SourceError("未知数据源", count_failure=False)
     pool = keypool.pool_for(source_cfg.id, source_cfg.keys)
     gate = keypool.RateGate(source_cfg.id, source_cfg.rate)
     if spec.requires_key and not pool.usable:
-        raise sources.SourceError("没有可用密钥")
-    return spec.search(title, year, kind, pool=pool, gate=gate)
+        if feeding:
+            breaker.release_probe(source_cfg.id)   # 同上
+        raise sources.SourceError("没有可用密钥", count_failure=False)
+    try:
+        hit = spec.search(title, year, kind, pool=pool, gate=gate)
+    except sources.SourceError as exc:
+        if feeding:
+            if exc.count_failure:
+                breaker.record_failure(source_cfg.id, status=exc.status, error=str(exc))
+            else:
+                # 预检类失败不计数，但半开名额是引擎刚领的，必须归还
+                breaker.release_probe(source_cfg.id)
+        raise
+    except Exception as exc:  # noqa: BLE001 — 与引擎的隔离口径一致，计数后原样上抛
+        if feeding:
+            breaker.record_failure(source_cfg.id, error=f"{type(exc).__name__}: {exc}")
+        raise
+    if feeding:
+        # 返回 Hit 或 None（合法地没搜到）都算源活着
+        breaker.record_success(source_cfg.id)
+    return hit
 
 
 def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
@@ -201,6 +232,19 @@ def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
         if time.monotonic() - started > COLLECT_TIMEOUT:
             result.outcomes.append(SourceOutcome(
                 source_cfg.id, label, False, skipped="本轮时间预算用尽，后面的源没问"))
+            continue
+        # 熔断（批一 #8）：源连续失败开断后，自动采集直接跳过、不再逐条撞；
+        # 冷却到期由 breaker.allow 放行一个探测请求试水。检查点必须紧贴
+        # 发请求处：allow 在半开期会领走唯一的探测名额，领了又不发
+        # （被上面任何一道 continue 截住）名额就漏了、源再也等不到探测。
+        # 与豆瓣封禁同一口径：只拦自动采集，试采集（only）是人工探针——
+        # 它打成功了熔断自然解除，失败了重新计时，比干等冷却更有用。
+        # 自喂的源（_SELF_FEEDING）不在这里查：它们的请求层自己查
+        # （在这里先领走探测名额、请求层再查就会自己把自己挡住）。
+        if only is None and source_cfg.id not in _SELF_FEEDING \
+                and not breaker.allow(source_cfg.id):
+            result.outcomes.append(SourceOutcome(
+                source_cfg.id, label, False, skipped="源熔断中，已跳过"))
             continue
         began = time.monotonic()
         asked += 1
