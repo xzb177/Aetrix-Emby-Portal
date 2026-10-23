@@ -89,12 +89,12 @@ def download_item(item_id: str, request: Request,
     ensure_download_allowed(db, user, request=request)
     target = _play_target(db, item)
     if target.kind == "url":
-        # Drive 条目 302 到服务端跟链后的最终地址（2026-10-23 防盗链：
-        # 不再下发带 file_id 的 usercontent 永久入口，见 streaming.drive_final_location）
+        # 最简播放（SEAM-3，中继已删）：Drive 条目 302 到谷歌 usercontent
+        # 直链下载；rebase 到世界窗口定稿后按其处置更新。
         _fid = (getattr(item, "drive_file_id", "") or "").strip()
         if _fid:
-            from backend.emby_server.streaming import drive_final_location_sync
-            return RedirectResponse(drive_final_location_sync(_fid), status_code=302)
+            from backend.emby_server.drive_auth import drive_usercontent_download_url
+            return RedirectResponse(drive_usercontent_download_url(_fid), status_code=302)
         raise HTTPException(status_code=410, detail="relay removed")
     return FileResponse(target.value, filename=os.path.basename(target.value))
 

@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 #: 服务器退出字节通道；关闭时行为与旧中继路径完全一致（回滚兜底）。
 #: 默认开。
 KEY_DRIVE_DIRECT_PLAY = "drive_direct_play_enabled"
+#: Drive SA 中继（2026-10-23 额度应急）：开启时 Drive 条目改走服务端
+#: 中继（SA 凭据取流、字节过服务器），不经公开下载池、file_id 不出门。
+#: 默认关；与直链开关并存，中继优先（直链开关关时整体回旧路径）。
+KEY_DRIVE_RELAY = "drive_relay_enabled"
 #: IntroDB 自动片头片尾（2026-10-17 用户拍板学 raisemby）：开启时播放信息
 #: 组装 Chapters 会把众包库 api.introdb.app 的分段并入手打标记。默认开。
 KEY_INTRODB_ENABLED = "introdb_enabled"
@@ -123,6 +127,22 @@ def drive_direct_play_enabled(db: Session) -> bool:
         logger.warning("drive_direct_play_enabled 读取失败，回默认开", exc_info=True)
         return True
     return raw not in ("0", "false", "no", "off")
+
+
+def drive_relay_enabled(db: Session) -> bool:
+    """Drive SA 中继开关（默认关）。
+
+    开启时 video_stream 对有 drive_file_id 的条目改走服务端中继
+    （serve_drive_relay_async）：SA 凭据取流、字节过服务器，既绕开
+    公开下载池的共用额度，也不再把 file_id 下发给客户端。读失败
+    fail-safe 回默认关——中继是新路，开关读不到时不贸然改道。
+    """
+    try:
+        raw = (store.get_value(db, KEY_DRIVE_RELAY, "false") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB 场景下保默认
+        logger.warning("drive_relay_enabled 读取失败，回默认关", exc_info=True)
+        return False
+    return raw not in ("0", "false", "no", "off", "")
 # ---------------------------------------------------------------------------
 # 可观测：直链/回落计数（进程内，重启清零；与 prewarm 计数同口径）
 # ---------------------------------------------------------------------------
