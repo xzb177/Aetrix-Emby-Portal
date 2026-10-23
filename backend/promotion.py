@@ -1,14 +1,22 @@
-"""推广奖励（v2.44.0 第一阶段）：邀请成功后另发的一笔，阈值全走配置
+"""推广奖励（v2.44.0 第一阶段）：邀请成功后给邀请人的那一笔，阈值全走配置
 
-## 与既有邀请奖励的关系（不要合并成一套）
+## 与邀请奖励的关系（2026-10-23 去重后：本模块是唯一发放方）
 
-注册带邀请码时，``backend/api/invitation.py`` 已经在发**双向积分奖励**
-（``invitation_reward_points`` / ``invitation_invitee_reward_points``），
-那回答的是「邀请这件事本身给不给回报」。
+此前邀请成功会发两笔邀请人奖励：``invitation.py`` 按
+``invitation_reward_points`` 发一笔、本模块按 ``promotion_reward_amount``
+再发一笔——同一个事件、两套配置、两套账，管理员在同一张卡上看到两个
+「邀请奖励」字段（运营参数去重 #3，用户拍板合并）。
 
-本模块回答的是另一个问题：**这一期的推广激励给多少**。它必须能独立开关、
-独立调数值，否则「调推广力度」会连带改动老的邀请奖励口径，两个语义缠在一起。
-所以：独立的四个配置键、独立的落表（``promotion_rewards``）、独立的明细接口。
+合并后口径：
+- **邀请人奖励只从本模块发**：数值 = 码上专属奖励（``InvitationCode.
+  reward_points > 0``，渠道码用）优先，否则按本模块配置（余额积分
+  ``promotion_reward_amount`` 或会员天数 ``promotion_reward_days``）。
+- ``invitation_reward_points`` 键退役（配置注册表/后台字段/库行一并清）。
+- 不是重复的部分不动：被邀请人奖励 ``invitation_invitee_reward_points``
+  与消费返利 ``invitation_rebate_percent`` 仍在 ``invitation.py`` 发放
+  （对象/事件都不同）；邀请关系与经验值也仍归 invitation 管。
+- 本模块的落表（``promotion_rewards``）与明细接口保留，是邀请人奖励
+  的唯一明细。
 
 ## 默认关闭
 
@@ -167,7 +175,16 @@ def grant(db: Session, inviter: models.WebUser, invitee: models.WebUser,
         cfg = config(db)
         if not cfg["enabled"]:
             return None
-        value = cfg["amount"] if cfg["reward_type"] == TYPE_BALANCE else cfg["days"]
+        # 码上专属奖励（渠道码）优先于全局配置，恒为余额积分（r31 语义，
+        # 2026-10-23 去重后改由本模块发放）；不绕过本开关——开关关着
+        # 就是邀请人奖励整体关着，不存在第二条发放路径。
+        override = int(getattr(code, "reward_points", 0) or 0)
+        if override > 0:
+            reward_type = TYPE_BALANCE
+            value = override
+        else:
+            reward_type = cfg["reward_type"]
+            value = cfg["amount"] if reward_type == TYPE_BALANCE else cfg["days"]
         if value <= 0:
             return None
 
@@ -179,7 +196,7 @@ def grant(db: Session, inviter: models.WebUser, invitee: models.WebUser,
             return None
 
         realm_id = None
-        if cfg["reward_type"] == TYPE_DAYS:
+        if reward_type == TYPE_DAYS:
             from backend import codes
 
             # 归属服 = 当前服（realm_id 传 None）；天发到了哪一服要记进明细，
@@ -196,12 +213,13 @@ def grant(db: Session, inviter: models.WebUser, invitee: models.WebUser,
             inviter_id=inviter.id,
             invitee_id=invitee.id,
             code_id=getattr(code, "id", None),
-            reward_type=cfg["reward_type"],
+            reward_type=reward_type,
             reward_value=value,
             realm_id=realm_id,
             config_snapshot=json.dumps(
-                {"enabled": True, "type": cfg["reward_type"],
-                 "amount": cfg["amount"], "days": cfg["days"]},
+                {"enabled": True, "type": reward_type,
+                 "amount": cfg["amount"], "days": cfg["days"],
+                 "code_override": override},
                 ensure_ascii=False,
             )[:500],
         )

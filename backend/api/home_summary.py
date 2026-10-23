@@ -101,10 +101,13 @@ def _invite(db: Session, user: models.WebUser) -> dict:
         models.InvitationCode.is_active == True,  # noqa: E712
     ).first()
     if not code:
+        # reward_points=0 = 跟随全局（推广配置）：个人码不做数值快照，
+        # 否则全局改价对已生成的个人码不生效（2026-10-23 去重时清的账：
+        # 生产 299 张个人码都带着生成当时的快照值，与渠道码专属奖励混淆）
         code = models.InvitationCode(
             code=_generate_invite_code(db),
             user_id=user.id,
-            reward_points=get_invite_config(db)["reward_points"],
+            reward_points=0,
         )
         db.add(code)
         db.commit()

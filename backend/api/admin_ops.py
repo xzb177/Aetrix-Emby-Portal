@@ -1028,7 +1028,8 @@ class InvitationCodeGenerateRequest(BaseModel):
     max_uses: int = Field(default=100, ge=0, le=100000)
     expires_days: int = Field(default=0, ge=0, le=3650)
     whitelist: str = ""
-    # 本批码的专属奖励（积分）：0/不填 = 跟随全局 invitation_reward_points（r31 起接通）
+    # 本批码的专属奖励（积分）：0/不填 = 跟随推广配置 promotion_reward_amount
+    # （r31 起接通；2026-10-23 去重后由 promotion.grant 统一发放）
     reward_points: Optional[int] = Field(default=None, ge=0, le=1000000)
 
 

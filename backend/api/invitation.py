@@ -65,10 +65,22 @@ def _get_bool_config(db: Session, key: str, default: bool) -> bool:
 
 
 def get_invite_config(db: Session) -> dict:
-    """邀请配置（管理端 SystemConfig 可调）"""
+    """邀请配置（管理端 SystemConfig 可调）
+
+    ``reward_points`` 只是展示口径（用户端「邀请一人得多少」）：2026-10-23
+    去重后邀请人奖励由 promotion 唯一发放，这里回显它的余额数值
+    （类型为会员天数或开关关着时回 0）；实际发放见 promotion.grant，
+    码上专属奖励优先于全局配置。``invitation_reward_points`` 键已退役。
+    """
+    from backend import promotion as _promotion
+
+    promo = _promotion.config(db)
+    reward_points = promo["amount"] if (
+        promo["enabled"] and promo["reward_type"] == _promotion.TYPE_BALANCE
+    ) else 0
     return {
         "enabled": _get_bool_config(db, "invitation_enabled", True),
-        "reward_points": _get_int_config(db, "invitation_reward_points", 100),
+        "reward_points": reward_points,
         "invitee_reward_points": _get_int_config(db, "invitation_invitee_reward_points", 50),
         "rebate_percent": _get_int_config(db, "invitation_rebate_percent", 10),
     }
@@ -167,29 +179,16 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
         logger.info("邀请码名额并发占位失败: code=%s user=%s", code_str, user.id)
         return {"applied": False}
 
-    # P0（r31 修复）：邀请者奖励按「码 > 全局」取值——InvitationCode.reward_points
-    # 是每码一份的能力字段（与 max_uses/expires_at/whitelist 同级），此前只写不读：
-    # apply_invitation 永远按全局 config 发奖，后台 DTO 却把它展示为「奖励」，
-    # 批量码恒为 0 误导管理员。>0 = 本码专属奖励；0/空 = 跟随全局 invitation_reward_points。
-    inviter_reward = int(code.reward_points or 0)
-    if inviter_reward <= 0:
-        inviter_reward = config["reward_points"]
-
-    # 记录邀请关系
+    # 记录邀请关系（reward_points 先占位，promotion 发放后回填实际数值）
     record = models.InvitationRecord(
         inviter_id=inviter.id,
         invitee_id=user.id,
         code_id=code.id,
-        reward_points=inviter_reward,
+        reward_points=0,
     )
     db.add(record)
 
-    # 邀请者奖励
-    inviter_balance = _add_points(
-        db, inviter, inviter_reward, "invite",
-        f"成功邀请用户 {user.username}", f"invite:{user.id}",
-    )
-    # 被邀请者奖励
+    # 被邀请者奖励（邀请人奖励在下面由 promotion 唯一发放，见其 grant）
     invitee_balance = _add_points(
         db, user, config["invitee_reward_points"], "invitee",
         f"使用邀请码 {code_str} 注册", f"invited_by:{inviter.id}",
@@ -203,12 +202,16 @@ def apply_invitation(db: Session, user: models.WebUser, invite_code: str) -> dic
     except Exception:  # noqa: BLE001
         logger.exception("邀请经验累加失败: inviter=%s", inviter.id)
 
-    # 推广奖励（v2.44.0）：独立开关、独立阈值，**默认关闭** → 这里返回 None，
-    # 既有行为逐字不变。它不 flush：下面这一次 flush 会把邀请关系、双向积分、
-    # 推广奖励一起落盘，任何一处冲突都整体回滚。
+    # 邀请人奖励（2026-10-23 去重后由 promotion 唯一发放）：数值 = 码上
+    # 专属奖励优先、否则推广配置（余额积分或会员天数）。它不 flush：
+    # 下面这一次 flush 会把邀请关系、被邀请人奖励、邀请人奖励一起落盘，
+    # 任何一处冲突都整体回滚。发放值回填进邀请关系记录，口径与明细一致。
     from backend import promotion as promotion_rewards
 
-    promotion_rewards.grant(db, inviter, user, code)
+    granted = promotion_rewards.grant(db, inviter, user, code)
+    inviter_reward = int(granted.reward_value) if granted else 0
+    record.reward_points = inviter_reward
+    inviter_balance = int(inviter.points or 0)
 
     try:
         # 唯一索引 invitee_id 兜底：并发重复调用时让冲突在此暴露并整体回滚，
