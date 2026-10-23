@@ -124,16 +124,12 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 但存字节必须相同）。
     "welfare_require_tg_bind": ("bool", "digit"),
     "lottery_draw_interval_sec": ("int", 30, 86400),
-    "chat_points_enabled": ("bool",),  # 默认关的功能开关保留面板（2026-10-21）
+    # chat_points_* 已于 2026-10-23 去重退役（机器人那套群发言积分，
+    # 与 points_chat_* 重复），此处不再登记
     "points_transfer_fee_pct": ("int", 0, 100),
     "points_transfer_min": ("int", 1, _BIG),
     "points_transfer_max": ("int", 0, _BIG),
     "points_transfer_daily_cap": ("int", 0, _BIG),
-    "chat_points_per_message": ("int", 0, 100000),
-    "chat_points_min_len": ("int", 0, 10000),
-    "chat_points_minute_window": ("int", 0, 86400),
-    "chat_points_daily_cap": ("int", 0, _BIG),
-    "chat_points_points_per_day": ("int", 0, _BIG),
     # 2026-10-17 第 4 批 4-2：补上 WELFARE_CONFIG_KEYS 里漏登记的 3 个
     # （读侧 lottery.py 有明确口径：bool 默认开、int max(0,·) 钳制）
     "lottery_require_group_member": ("bool", "digit"),
@@ -143,7 +139,7 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 存字符串）。注册为 ("str",) 与今天逐字一致：原文直存，None/空串→删行
     # （读侧 _get_str_config 缺行/空行都回默认 ""，等价）。
     "bot_group_ids": ("str",),
-    "chat_points_group_ids": ("str",),
+
     "lottery_group_ids": ("str",),
 }
 
