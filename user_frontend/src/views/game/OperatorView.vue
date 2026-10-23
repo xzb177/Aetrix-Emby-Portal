@@ -97,7 +97,7 @@
                 <div class="realm-head">
                   <strong>{{ r.name }}</strong>
                   <span v-if="r.is_free" class="badge free">公益服</span>
-                  <span v-else-if="r.subscribed" class="badge ok">{{ daysLeftText(r.end_date) }}</span>
+                  <span v-else-if="r.subscribed" class="badge ok">{{ daysLeftText(r) }}</span>
                   <span v-else class="badge off">未开通</span>
                 </div>
                 <div v-if="r.view_granted" class="realm-url">
@@ -533,17 +533,20 @@ async function openScheme(url: string, appName = '播放器') {
   if (!assignImportScheme(finalUrl)) toast.info('播放地址无效')
 }
 
-function daysLeft(endDate?: string | null): number | null {
-  if (!endDate) return 0
-  const t = new Date(endDate).getTime()
+function daysLeft(r: AccountRealmCard): number | null {
+  // 剩余天数以后端下发的 days_left 为准（与「我的」页同口径）；后端没给才回退自算
+  // （自算曾把 UTC 裸时间戳按本地时间再解释，与后端差 1 天，2026-10-23 统一口径）
+  if (typeof r.days_left === 'number') return r.days_left
+  if (!r.end_date) return 0
+  const t = new Date(r.end_date).getTime()
   // R50：非法日期返回 null（模板显示"—"），不再渲染 NaN
   if (!isFinite(t)) return null
   return Math.max(0, Math.ceil((t - Date.now()) / 86400000))
 }
 
 /** R50：会员剩余天数文案（daysLeft 只调一次；null → "—" 不显示"会员已到期"） */
-function daysLeftText(endDate?: string | null): string {
-  const d = daysLeft(endDate)
+function daysLeftText(r: AccountRealmCard): string {
+  const d = daysLeft(r)
   if (d === null) return EMPTY_DASH
   return d > 0 ? `会员剩 ${d} 天` : '会员已到期'
 }
