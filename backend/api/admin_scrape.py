@@ -672,6 +672,9 @@ def _meta_sources_view(db: Session, snapshot=None) -> dict:
             "keys_legacy": source_cfg.keys_legacy,
             # TMDB 的密钥池在 6a 那张卡片里（单一入口），这里不再重复给输入框
             "key_entry": "pool_card" if source_cfg.id == "tmdb" else "inline",
+            # 豆瓣的开关/间隔在下方豆瓣卡里统一设置（单一存储 douban_enabled /
+            # douban_min_interval），源表这一行只展示状态、不再给第二个间隔输入框
+            "managed_by_card": source_cfg.id == "douban",
         })
     return {
         "enabled": snapshot.enabled,

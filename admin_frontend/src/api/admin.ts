@@ -1436,6 +1436,8 @@ export interface MetaSourceRow {
   keys_legacy?: boolean
   /** 密钥在哪里填：inline = 本卡片行内输入；pool_card = 在下面的密钥池卡片里（TMDB） */
   key_entry?: 'inline' | 'pool_card'
+  /** true = 开关/间隔由下方专属卡片统一设置（豆瓣），源表行只展示状态 */
+  managed_by_card?: boolean
 }
 
 export interface MetaSourcesConfig {

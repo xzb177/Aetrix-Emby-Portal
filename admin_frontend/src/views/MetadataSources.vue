@@ -1246,11 +1246,12 @@ onMounted(() => {
                     size="small"
                     :min="0"
                     :step="0.5"
-                    :disabled="!row.enabled"
+                    :disabled="!row.enabled || row.managed_by_card"
                     @update:model-value="(v: string | number) => (metaDraft.rates[row.id] = Number(v))"
                   >
                     <template #append>秒</template>
                   </el-input>
+                  <div v-if="row.managed_by_card" class="ms-note">间隔在下方豆瓣卡统一设置</div>
                 </td>
                 <td class="ms-keys-cell">
                   <span class="ms-cell-label">密钥</span>
@@ -1477,7 +1478,7 @@ onMounted(() => {
               size="small"
               style="width: 140px"
             />
-            <span class="ms-hint">两次豆瓣请求之间的最小间隔，防反爬封 IP（默认 1.0）</span>
+            <span class="ms-hint">两次豆瓣请求之间的最小间隔，防反爬封 IP（默认 2.5）</span>
           </div>
           <div class="ms-actions">
             <el-button
