@@ -64,7 +64,8 @@ const botFields = [
 const welfareFields = [
   { key: 'welfare_grace_days', label: '到期保留天数', hint: '到期后可登录但不可播放，默认 7', suffix: '天' },
   { key: 'welfare_inactive_days', label: '未活跃禁用天数', hint: '默认 30', suffix: '天' },
-  { key: 'welfare_request_monthly', label: '公益求片额度', hint: '默认 3', suffix: '次/月' },
+  // 公益求片额度（welfare_request_monthly）已于 2026-10-23 去重 #5 移到
+  // 运营参数「兑换码 · 求片」卡，与每日上限、付费月限放一起
 ]
 
 // 群发言积分（chat_points_*）已于 2026-10-23 去重退役：发言积分只保留
@@ -244,7 +245,7 @@ onMounted(load)
       <SectionCard
         title="公益服规则"
         :icon="Settings2"
-        description="到期保留、未活跃禁用、求片额度"
+        description="到期保留、未活跃禁用（求片额度在运营参数里统一设置）"
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
           <el-form-item v-for="f in welfareFields" :key="f.key" :label="f.label">

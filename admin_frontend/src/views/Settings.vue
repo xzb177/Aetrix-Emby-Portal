@@ -129,7 +129,7 @@ const GROUPS: Group[] = [
   {
     id: 'exchange',
     title: '兑换码 · 求片',
-    desc: '卡码默认套餐与用户每日求片上限',
+    desc: '卡码默认套餐与求片额度（日限 + 公益/付费月限都在这一张卡）',
     icon: TicketCheck,
     fields: [
       {
@@ -146,6 +146,22 @@ const GROUPS: Group[] = [
         type: 'int',
         suffix: '条/天',
         hint: '用户端提交求片时的硬性限额，未设置时默认 5 条',
+      },
+      {
+        // 2026-10-23 去重 #5：两个月限原先散在公益页（付费月限甚至没有
+        // 后台入口），与日限收进同一张卡；后端键与 media_seek 消费不变
+        key: 'welfare_request_monthly',
+        label: '公益服每月求片上限',
+        type: 'int',
+        suffix: '条/月',
+        hint: '公益服用户每月最多求片条数，未设置时默认 3 条',
+      },
+      {
+        key: 'paid_request_monthly',
+        label: '付费服每月求片上限',
+        type: 'int',
+        suffix: '条/月',
+        hint: '付费用户每月最多求片条数，未设置时默认 10 条',
       },
     ],
   },
