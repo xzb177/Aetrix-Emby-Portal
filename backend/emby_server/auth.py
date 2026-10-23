@@ -80,13 +80,20 @@ def verify_and_migrate_emby_password(db: Session, user: models.WebUser, password
     return True
 
 
-def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None) -> Optional[str]:
-    """确保用户拥有自建 Emby 登录凭据；只在缺失/不匹配/旧格式时更新。"""
+def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None,
+                            fill_only: bool = False) -> Optional[str]:
+    """确保用户拥有自建 Emby 登录凭据；只在缺失/不匹配/旧格式时更新。
+
+    fill_only=True（门户登录专用）：emby_password 已有值时绝不覆盖——
+    用户在接线员页显式设置的播放密码曾被每次网站登录用门户密码顶掉，
+    播放器攥着旧凭据拿 401（能进界面、资源数量不显示，2026-10-23 修）。
+    显式设置播放密码走 set_emby_password（不带 fill_only），不受影响。
+    """
     changed = False
     if not user.emby_username:
         user.emby_username = f"emby_{user.id}_{uuid.uuid4().hex[:6]}"
         changed = True
-    if password is not None:
+    if password is not None and not (fill_only and user.emby_password):
         # 门户登录会频繁调用本函数：相同的新格式哈希不应每次都重新 bcrypt，
         # 否则登录一次就产生一次昂贵哈希并迫使所有旧客户端重新走同步。
         same = bool(user.emby_password) and verify_emby_password(password, user.emby_password)
