@@ -509,6 +509,10 @@ def _user_realm_cards(user: models.WebUser, db: Session,
             "is_free": free,
             "access_note": realms.access_note_of(db, realm.id),
             "end_date": sub.end_date.isoformat() if sub and sub.end_date else None,
+            # 剩余天数由后端按下发口径算好（与 api/user.py 的 days_left 同公式：
+            # 精确差向下取整），前端直接显示不许自算——前端曾用「补到当天
+            # 23:59:59 再向上取整」自算，与「我的」页差 1~2 天（2026-10-23 修）
+            "days_left": max(0, (sub.end_date - now).days) if sub and sub.end_date else None,
             "plan_name": (sub.plan.name if sub and sub.plan else ""),
             "is_default": realm.id == realms.legacy_realm_id(db),
         })

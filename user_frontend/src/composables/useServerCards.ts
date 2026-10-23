@@ -134,7 +134,10 @@ function buildPaidCard(
 ): ServerCardItem {
   const endDate = realm.end_date ?? null
   const endTs = parseEndOfDay(endDate)
-  const daysLeft = endTs === null ? null : Math.ceil((endTs - Date.now()) / DAY_MS)
+  // 剩余天数以后端下发的 days_left 为准（与「我的」页同口径）；后端没给才回退旧自算
+  // （旧自算「补到当天 23:59:59 + 向上取整」比后端多 1~2 天，2026-10-23 统一口径）
+  const legacyDaysLeft = endTs === null ? null : Math.ceil((endTs - Date.now()) / DAY_MS)
+  const daysLeft = typeof realm.days_left === 'number' ? realm.days_left : legacyDaysLeft
   const subscribed = !!realm.subscribed
   const planName = realm.plan_name ?? ''
   const endText = toHumanDate(endDate)
@@ -144,7 +147,14 @@ function buildPaidCard(
   let footer: string
   let to: string
 
-  if (subscribed && daysLeft !== null && daysLeft <= 0) {
+  if (
+    subscribed &&
+    daysLeft !== null &&
+    daysLeft <= 0 &&
+    // 后端 days_left=0 是「今天到期、仍可用」，不能误判已过期；须到期日当天也已过完才算过期
+    endTs !== null &&
+    endTs <= Date.now()
+  ) {
     // 已过期：引导续费
     state = 'expired'
     badge = COPY.badgeExpired

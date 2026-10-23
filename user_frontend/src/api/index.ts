@@ -310,6 +310,8 @@ export interface AccountRealmCard {
   is_free?: boolean
   access_note?: string
   end_date: string | null
+  /** 后端统一口径算好的剩余天数（与「我的」页 days_left 同公式）；前端直接用，不自算 */
+  days_left?: number | null
   plan_name: string
   is_default: boolean
   /** 该服的查看权限（没权限时 base_url 置空） */
