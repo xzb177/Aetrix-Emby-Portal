@@ -485,6 +485,82 @@ async def resolve_drive_final_url(
 
 
 # ---------------------------------------------------------------------------
+# Drive 302 目标：服务端跟链后的最终地址（2026-10-23 防盗链定版）
+# ---------------------------------------------------------------------------
+# 此前三处 302（video_stream / Download / File）直接把 usercontent 地址
+# 下发给客户端：URL 里 drive_file_id 明文 + 拼法公开固定 + 文件是
+# anyone reader —— 等于把可反复换字节的「永久入口」发给了客户端，
+# play_sign 的 900 秒只守本站一跳（审计 playback-address-exposure-
+# audit-20261023【高】）。改法（学随影）：服务端先跟链（只取响应头、
+# 不下载字节）拿到短命的最终地址，只下发最终地址；解析失败/超时才
+# 回落 legacy 地址保播放，并记 warning 留痕。
+# 最终地址进程内缓存 300 秒：热门片重复点播不重复跟链，不给起播加延迟。
+
+_FINAL_URL_CACHE: dict[str, tuple[str, float]] = {}
+_FINAL_URL_CACHE_LOCK = threading.Lock()
+_FINAL_URL_CACHE_TTL = 300.0
+_FINAL_URL_CACHE_MAX = 1024
+_FINAL_URL_RESOLVE_TIMEOUT = 8.0
+
+
+def _final_url_cache_get(file_id: str) -> str | None:
+    now = time.monotonic()
+    with _FINAL_URL_CACHE_LOCK:
+        hit = _FINAL_URL_CACHE.get(file_id)
+        if hit and hit[1] > now:
+            return hit[0]
+        if hit:
+            _FINAL_URL_CACHE.pop(file_id, None)
+    return None
+
+
+def _final_url_cache_put(file_id: str, url: str) -> None:
+    with _FINAL_URL_CACHE_LOCK:
+        if len(_FINAL_URL_CACHE) >= _FINAL_URL_CACHE_MAX:
+            oldest = min(_FINAL_URL_CACHE, key=lambda k: _FINAL_URL_CACHE[k][1])
+            _FINAL_URL_CACHE.pop(oldest, None)
+        _FINAL_URL_CACHE[file_id] = (url, time.monotonic() + _FINAL_URL_CACHE_TTL)
+
+
+async def drive_final_location(file_id: str) -> str:
+    """给客户端的 Drive 302 目标（最终地址优先，legacy 回落）。永不抛异常。"""
+    fid = (file_id or "").strip()
+    if not fid:
+        return ""
+    cached = _final_url_cache_get(fid)
+    if cached:
+        return cached
+    from backend.emby_server.drive_auth import drive_usercontent_download_url
+    legacy = drive_usercontent_download_url(fid)
+    try:
+        final = await asyncio.wait_for(
+            resolve_drive_final_url(legacy), timeout=_FINAL_URL_RESOLVE_TIMEOUT)
+    except Exception:
+        final = None
+    if final:
+        _final_url_cache_put(fid, final)
+        return final
+    logger.warning("Drive 最终地址解析失败，回落 legacy 302: file_id=%s", fid)
+    return legacy
+
+
+def drive_final_location_sync(file_id: str) -> str:
+    """drive_final_location 的同步版（Download / File 等同步路由用）。
+
+    同步路由跑在线程池里、无事件循环，直接 asyncio.run 一次；
+    异常时回落 legacy 地址，永不抛。
+    """
+    try:
+        return asyncio.run(drive_final_location(file_id))
+    except Exception:
+        try:
+            from backend.emby_server.drive_auth import drive_usercontent_download_url
+            return drive_usercontent_download_url((file_id or "").strip())
+        except Exception:
+            return ""
+
+
+# ---------------------------------------------------------------------------
 # 远程挂载专用中继（2026-10-17：中继全删 P1 回归修复，用户拍板）
 # ---------------------------------------------------------------------------
 # 只服务远程挂载条目（115 / rclone 等 ``mount://`` 路径解析出的
