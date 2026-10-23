@@ -1241,7 +1241,8 @@ def _fallback_unified(item: Any, kind: str, result: dict,
     不另起一套 flag 或判断。
 
     反风控：引擎内豆瓣源走 ``altmeta.search``（单条目单次请求），与原轻量直调
-    同口径；引擎自带逐源限速（``meta_source_rate_douban``，默认 1.0s），
+    同口径；引擎对豆瓣源的逐源限速与豆瓣卡共用 ``douban_min_interval``
+    （2026-10-23 去重，旧键 ``meta_source_rate_douban`` 已废弃），
     不改任何限流/超时/退避参数。
     """
     from backend.emby_server.tmdb import tmdb_client

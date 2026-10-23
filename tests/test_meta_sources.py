@@ -510,7 +510,10 @@ def test_view_active_count_counts_only_participating_sources(db):
     from backend.integrations import store as _store
     _store.write_values(
         db, {cfg.CONFIG_SOURCE_ENABLED.format(id=s): "0"
-             for s in ("douban", "anilist", "tvmaze")}, {})
+             for s in ("anilist", "tvmaze")}, {})
+    # 豆瓣开关已收口到单一存储 douban_enabled（2026-10-23 去重），
+    # 不再认 meta_source_enabled_douban
+    _store.write_values(db, {"douban_enabled": "0"}, {})
     db.commit()
     cfg.invalidate()
     # 可参与 = 7 - 关掉的 3 - 缺密钥的 3（omdb/tvdb/tmdb）

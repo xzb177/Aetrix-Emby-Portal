@@ -16,6 +16,13 @@
 | ``meta_source_keys_{id}`` | 该源的密钥池（逗号分隔，与 TMDB 那套同一个拆分口径） | 空 |
 | ``meta_source_rate_{id}`` | 该源两次请求的最小间隔秒数（0 = 不限速） | 1.0 |
 
+**豆瓣例外（2026-10-23 去重）**：豆瓣的开关与间隔只有一处存储——
+``douban_enabled`` / ``douban_min_interval``（豆瓣卡与老豆瓣腿共用）。
+``meta_source_enabled_douban`` / ``meta_source_rate_douban`` 不再读写：
+快照里豆瓣的 enabled/rate 直接取豆瓣那两个键，界面源表对豆瓣行只展示
+状态、间隔去豆瓣卡改。此前两处各存一份（生产里 1.0 vs 2.5 已经不一致），
+改一处不生效另一处，是明确的重复功能。
+
 密钥与速率**逐源**而不是全局：Bangumi 有 UA 礼仪、TMDB 有配额、TVmaze 没限制，
 用同一个间隔要么把快的源拖慢、要么把慢的源打挂。
 """
@@ -143,16 +150,28 @@ def read_config(db, specs: list) -> Snapshot:
         if spec is None:
             continue
         keys, keys_legacy, key_storage = _keys_for(db, cfg, source_id)
+        if source_id == "douban":
+            # 豆瓣开关/间隔单一存储（见模块头注）：取豆瓣自己的两个键，
+            # 不再读 meta_source_enabled_douban / meta_source_rate_douban。
+            from backend.emby_server import douban as _douban
+
+            src_enabled = _douban.enabled(db) if db is not None else True
+            src_rate = (_douban.min_interval(db) if db is not None
+                        else _douban.DEFAULT_MIN_INTERVAL)
+        else:
+            src_enabled = _truthy(
+                cfg(CONFIG_SOURCE_ENABLED.format(id=source_id), ""), True)
+            src_rate = _rate(cfg(CONFIG_SOURCE_RATE.format(id=source_id), ""))
         sources.append(SourceConfig(
             id=spec.id,
             label=spec.label,
-            enabled=_truthy(cfg(CONFIG_SOURCE_ENABLED.format(id=source_id), ""), True),
+            enabled=src_enabled,
             requires_key=bool(spec.requires_key),
             lang=spec.lang,
             keys=keys,
             keys_legacy=keys_legacy,
             key_storage=key_storage,
-            rate=_rate(cfg(CONFIG_SOURCE_RATE.format(id=source_id), "")),
+            rate=src_rate,
         ))
     return Snapshot(
         enabled=_truthy(cfg(CONFIG_ENABLED, ""), True),  # 2026-10-21 摘面板对齐：缺省=生产现值（开）
@@ -226,9 +245,17 @@ def write_config(db, *, enabled: bool = True, prefer_chinese: bool = True,
         # 已废弃的分叉键：从「本轮要写的键」里拿掉，函数层面就不可能再写它
         values.pop(LEGACY_KEY_CONFIG[source_id], None)
     for source_id, raw_rate in (rates or {}).items():
-        key = CONFIG_SOURCE_RATE.format(id=source_id)
+        if source_id == "douban":
+            # 豆瓣间隔单一存储：写 douban_min_interval，不写已废弃的
+            # meta_source_rate_douban（读侧也不再读它）。
+            from backend.emby_server.douban import DOUBAN_RATE_KEY
+
+            key = DOUBAN_RATE_KEY
+            descriptions[key] = "豆瓣请求最小间隔秒数（豆瓣卡与多源表共用此一处）"
+        else:
+            key = CONFIG_SOURCE_RATE.format(id=source_id)
+            descriptions[key] = f"元数据源「{source_id}」请求最小间隔秒数（0 = 不限速）"
         values[key] = str(_rate(raw_rate))
-        descriptions[key] = f"元数据源「{source_id}」请求最小间隔秒数（0 = 不限速）"
     if tmdb_miss_fallback is not None:
         values[CONFIG_TMDB_MISS_FALLBACK] = "1" if tmdb_miss_fallback else "0"
         descriptions[CONFIG_TMDB_MISS_FALLBACK] = (
