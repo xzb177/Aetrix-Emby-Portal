@@ -5041,6 +5041,15 @@ def scan_library_sync(db: Session, library: emby_models.Library,
     snap = snapshot or LibrarySnapshot.of(library)
     # 先在**进程内**占位（重复任务会在这一步被拒绝，不会写库、也不会启动扫描），再写库状态
     _acquire_scan(snap.library_id)
+    # 让路配额（2026-10-23）：本轮开扫重置配额时钟；定向扫描（新片入库）
+    # 全程豁免让路——只扫几个变化目录、用户正等着上架，进来就跑完。
+    try:
+        from backend.emby_server import foreground_activity as _fg
+
+        _fg.reset_yield_clock()
+        _fg.set_yield_exempt(bool(getattr(snap, "targeted", False)))
+    except Exception:  # noqa: BLE001 — 让路记账失败绝不拖累扫描本身
+        pass
     try:
         run_id = begin_scan(db, library, trigger, snapshot=snap)
         started = time.perf_counter()
@@ -5064,6 +5073,12 @@ def scan_library_sync(db: Session, library: emby_models.Library,
     finally:
         # 无论成功、失败还是生成器被提前关闭，都释放进程内占位，否则这个库再也扫不动
         _release_scan(snap.library_id)
+        try:
+            from backend.emby_server import foreground_activity as _fg
+
+            _fg.set_yield_exempt(False)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---- enrich_status 统一写入点（P2-1/P2-3/P3-1，2026-10-11 round3-p2p3）----

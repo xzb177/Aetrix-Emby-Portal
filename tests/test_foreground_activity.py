@@ -108,53 +108,158 @@ class TestForegroundRedis:
         assert fa.maybe_yield_for_foreground("scan") == 0.0
 
 
+class FakeClock:
+    """可控时钟：monotonic 只靠 sleep/advance 推进，测试里时间完全确定。"""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def time(self):
+        return self.now
+
+    def advance(self, seconds):
+        """模拟干活耗时（不算睡眠）。"""
+        self.now += seconds
+
+
+def _yield_env(monkeypatch, clock, ago=1.0, **env):
+    """让路测试脚手架：假时钟 + 前台活跃度 + 默认配额参数（可覆盖）。"""
+    monkeypatch.setattr(fa, "time", clock)
+    if callable(ago):
+        monkeypatch.setattr(fa, "seconds_since_redis_activity", ago)
+    else:
+        monkeypatch.setattr(
+            fa, "seconds_since_redis_activity", lambda *a, **k: ago)
+    defaults = {
+        "SCAN_FOREGROUND_YIELD": "1",
+        "SCAN_FOREGROUND_WINDOW_S": "15",
+        "SCAN_FOREGROUND_SLEEP_S": "5",
+        "SCAN_FOREGROUND_MAX_YIELD_S": "45",
+        "SCAN_FOREGROUND_WORK_MIN_S": "60",
+        "SCAN_FOREGROUND_YIELD_RATIO": "0.25",
+    }
+    defaults.update(env)
+    for key, value in defaults.items():
+        monkeypatch.setenv(key, value)
+    fa.reset_for_tests()
+
+
 class TestMaybeYield:
-    def test_yields_while_foreground_active(self, monkeypatch):
-        sleeps = []
-        monkeypatch.setattr(fa.time, "sleep", lambda s: sleeps.append(s))
-        # 前两次检查"刚活跃"，第三次"安静了"
+    def test_yields_until_foreground_quiet(self, monkeypatch):
+        clock = FakeClock()
+        # 前两次检查"刚活跃"，第三次"安静了"→ 提前结束让路
         seq = iter([1.0, 1.0, 999.0])
-        monkeypatch.setattr(fa, "seconds_since_redis_activity", lambda *a, **k: next(seq))
-        monkeypatch.setenv("SCAN_FOREGROUND_YIELD", "1")
-        monkeypatch.setenv("SCAN_FOREGROUND_WINDOW_S", "120")
-        monkeypatch.setenv("SCAN_FOREGROUND_SLEEP_S", "5")
-        monkeypatch.setenv("SCAN_FOREGROUND_MAX_YIELD_S", "900")
+        _yield_env(monkeypatch, clock, ago=lambda *a, **k: next(seq),
+                   SCAN_FOREGROUND_WORK_MIN_S="20")
+        fa.reset_yield_clock()
+        clock.advance(20)  # 干满 20 秒 → 配额 = 20×0.25 = 5…用 seq 前两拍
+        # 配额 5 秒只够睡一拍；放大 ratio 让 seq 走完两拍再安静
+        monkeypatch.setenv("SCAN_FOREGROUND_YIELD_RATIO", "1.0")
         yielded = fa.maybe_yield_for_foreground("scan")
         assert yielded == 10.0
-        assert sleeps == [5.0, 5.0]
+        assert clock.sleeps == [5.0, 5.0]
 
     def test_no_yield_when_quiet(self, monkeypatch):
-        sleeps = []
-        monkeypatch.setattr(fa.time, "sleep", lambda s: sleeps.append(s))
-        monkeypatch.setattr(fa, "seconds_since_redis_activity", lambda *a, **k: 999.0)
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=999.0)
+        fa.reset_yield_clock()
+        clock.advance(120)  # 干够了，但前台安静 → 不让
         assert fa.maybe_yield_for_foreground("scan") == 0.0
-        assert sleeps == []
+        assert clock.sleeps == []
 
     def test_no_yield_when_never_noted(self, monkeypatch):
-        sleeps = []
-        monkeypatch.setattr(fa.time, "sleep", lambda s: sleeps.append(s))
-        monkeypatch.setattr(fa, "seconds_since_redis_activity", lambda *a, **k: None)
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=None)
+        fa.reset_yield_clock()
+        clock.advance(120)
         assert fa.maybe_yield_for_foreground("scan") == 0.0
-        assert sleeps == []
+        assert clock.sleeps == []
 
     def test_disabled_by_env(self, monkeypatch):
-        sleeps = []
-        monkeypatch.setattr(fa.time, "sleep", lambda s: sleeps.append(s))
-        monkeypatch.setattr(fa, "seconds_since_redis_activity", lambda *a, **k: 1.0)
-        monkeypatch.setenv("SCAN_FOREGROUND_YIELD", "0")
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=1.0, SCAN_FOREGROUND_YIELD="0")
+        fa.reset_yield_clock()
+        clock.advance(120)
         assert fa.maybe_yield_for_foreground("scan") == 0.0
-        assert sleeps == []
+        assert clock.sleeps == []
 
     def test_respects_max_cap(self, monkeypatch):
-        sleeps = []
-        monkeypatch.setattr(fa.time, "sleep", lambda s: sleeps.append(s))
-        monkeypatch.setattr(fa, "seconds_since_redis_activity", lambda *a, **k: 1.0)
-        monkeypatch.setenv("SCAN_FOREGROUND_YIELD", "1")
-        monkeypatch.setenv("SCAN_FOREGROUND_SLEEP_S", "5")
-        monkeypatch.setenv("SCAN_FOREGROUND_MAX_YIELD_S", "12")
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=1.0,
+                   SCAN_FOREGROUND_MAX_YIELD_S="12",
+                   SCAN_FOREGROUND_YIELD_RATIO="1.0")
+        fa.reset_yield_clock()
+        clock.advance(600)  # 干了 600 秒，ratio 配额 600 → 被绝对上限 12 钳住
         yielded = fa.maybe_yield_for_foreground("scan")
         assert yielded == 12.0
-        assert sleeps == [5.0, 5.0, 2.0]
+        assert clock.sleeps == [5.0, 5.0, 2.0]
+
+
+class TestYieldQuota:
+    """让路配额制（2026-10-23 用户拍板）：干满才许让、让 ≤ 干的 25%。"""
+
+    def test_first_call_only_starts_clock(self, monkeypatch):
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=1.0)
+        # 本线程第一次调用：只起时钟，前台再活跃也不让
+        assert fa.maybe_yield_for_foreground("scan") == 0.0
+        assert clock.sleeps == []
+
+    def test_no_yield_before_work_min(self, monkeypatch):
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=1.0)
+        fa.reset_yield_clock()
+        clock.advance(59)  # 差 1 秒没干满
+        assert fa.maybe_yield_for_foreground("scan") == 0.0
+        assert clock.sleeps == []
+
+    def test_yield_capped_at_quarter_of_work(self, monkeypatch):
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=1.0)
+        fa.reset_yield_clock()
+        clock.advance(60)  # 干 60 秒 → 最多让 60×0.25 = 15 秒
+        yielded = fa.maybe_yield_for_foreground("scan")
+        assert yielded == 15.0
+        assert clock.sleeps == [5.0, 5.0, 5.0]
+
+    def test_segment_restarts_after_yield(self, monkeypatch):
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=1.0)
+        fa.reset_yield_clock()
+        clock.advance(60)
+        assert fa.maybe_yield_for_foreground("scan") == 15.0
+        # 刚让完：下一个干活时段重新计时，立即再调不许再让
+        assert fa.maybe_yield_for_foreground("scan") == 0.0
+        clock.advance(60)
+        assert fa.maybe_yield_for_foreground("scan") == 15.0
+
+    def test_exempt_never_yields(self, monkeypatch):
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=1.0)
+        fa.reset_yield_clock()
+        fa.set_yield_exempt(True)  # 定向扫描：完全不让
+        clock.advance(3600)
+        assert fa.maybe_yield_for_foreground("scan") == 0.0
+        assert clock.sleeps == []
+        fa.set_yield_exempt(False)
+        assert fa.maybe_yield_for_foreground("scan") > 0
+
+    def test_reset_for_tests_clears_yield_state(self, monkeypatch):
+        clock = FakeClock()
+        _yield_env(monkeypatch, clock, ago=1.0)
+        fa.reset_yield_clock()
+        clock.advance(600)
+        fa.reset_for_tests()  # 清零后回到「第一次调用只起时钟」
+        assert fa.maybe_yield_for_foreground("scan") == 0.0
+        assert clock.sleeps == []
 
 
 class TestCrossProcessVisibility:
