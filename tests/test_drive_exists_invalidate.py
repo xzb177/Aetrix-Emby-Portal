@@ -29,6 +29,14 @@ from backend.emby_server import models as em
 from backend.emby_server import playback_strategy as strategy
 from backend.emby_server import scanner
 
+
+@pytest.fixture(autouse=True)
+def _grace_single_pass(monkeypatch):
+    # 存在性缓存摘除挂在「真正判缺」那一刻；缺失宽限（批一 #6）默认
+    # 3 轮才判缺，本文件测摘除本身，压到 1 轮隔离变量
+    monkeypatch.setattr(scanner, "MISSING_GRACE_SCANS", 1)
+
+
 DRIVE = "0ASharedDrive"
 FID = "fileGone1"
 
