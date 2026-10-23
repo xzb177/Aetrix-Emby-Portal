@@ -171,7 +171,9 @@ def _issue_auth_response(
     保证“门户账号即 Emby 账号”——用户无需另行设置即可在 Infuse 等客户端登录。
     """
     if plain_password:
-        ensure_emby_credentials(db, user, password=plain_password)
+        # fill_only：登录只给「还没有播放密码」的用户补齐（老数据迁移口径），
+        # 已有播放密码（含用户在接线员页自设的）不被门户登录覆盖
+        ensure_emby_credentials(db, user, password=plain_password, fill_only=True)
     else:
         ensure_emby_credentials(db, user)
     access = create_access_token(user.id, {"username": user.username},

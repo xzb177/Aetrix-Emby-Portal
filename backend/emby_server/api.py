@@ -1451,6 +1451,12 @@ def authenticate_by_name(
             or_(models.WebUser.emby_username == username, models.WebUser.username == username)
         ).first()
 
+    # 日志用：这次登录名命中的是自建 Emby 用户名还是门户用户名（只记类型不记值）。
+    # 此前日志恒记门户用户名，「接线员随机账号登录异常」类报告无法用日志定案（2026-10-23）
+    matched_via = None
+    if user is not None:
+        matched_via = "emby_username" if user.emby_username == username else "username"
+
     from backend.emby_server.auth import issue_token, verify_and_migrate_emby_password
 
     def _auth_fail(detail: str = "用户名或密码错误"):
@@ -1459,7 +1465,8 @@ def authenticate_by_name(
         record_event(
             db, username=username, user_id=user.id if user else None, ip=ip,
             agent=request.headers.get("user-agent"), success=False,
-            reason="emby_login_failed", detail=detail,
+            reason="emby_login_failed",
+            detail=f"{detail}（via={matched_via}）" if matched_via else detail,
         )
         # 对齐官方 Emby：认证失败返回 401 空 body。
         # 曾返回 {"error": "InvalidUsernameOrPassword"} JSON，官方 iOS 客户端会尝试
@@ -1498,7 +1505,7 @@ def authenticate_by_name(
     record_event(
         db, username=user.username, user_id=user.id, ip=ip,
         agent=request.headers.get("user-agent"), success=True, reason="emby_login",
-        detail=f"{auth.get('Client') or 'Emby Client'} / {token_row.device_id}",
+        detail=f"{auth.get('Client') or 'Emby Client'} / {token_row.device_id} / via={matched_via}",
     )
     # 防共享·跨城市轨迹（默认 off，不判定也不写库）。命中 enforce 时账号已被停用、
     # 刚签发的令牌也已吊销，所以直接拒绝本次登录而不是「登进去发现不能用」
