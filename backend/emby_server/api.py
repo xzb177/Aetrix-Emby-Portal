@@ -4654,9 +4654,9 @@ async def video_stream(
     if _fast302:
         _pt.mark("drive_exists_check")
         _pt.done()
-        from backend.emby_server.streaming import drive_final_location
+        from backend.emby_server.drive_auth import drive_usercontent_download_url
         return _observe_traffic(
-            RedirectResponse(await drive_final_location(_fid), status_code=302,
+            RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
                              headers=_strategy.DIRECT_REDIRECT_HEADERS))
     target = await run_db(_play_target, db, item)
     _pt.mark("play_target")
@@ -4666,11 +4666,11 @@ async def video_stream(
         # 回落分支：快路径未命中（挂载解析失败等）时仍走原 _play_target，
         # 这里保留原 drive 302 语义（_fid + 开关）。
         if _drive_switch_on:
-            from backend.emby_server.streaming import drive_final_location
+            from backend.emby_server.drive_auth import drive_usercontent_download_url
             _pt.mark("drive_direct_302")
             _pt.done()
             return _observe_traffic(
-                RedirectResponse(await drive_final_location(_fid), status_code=302,
+                RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
         direct_url = await run_db(
             _strategy.maybe_direct_url, db, getattr(item, "drive_file_id", None))
