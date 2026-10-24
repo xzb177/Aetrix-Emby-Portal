@@ -1752,6 +1752,59 @@ export const rerunIdentifyReviewTask = (taskId: number) =>
   post<{ success: boolean; task: IdentifyReviewTask }>(
     `${E}/identify-review/tasks/${taskId}/rerun`)
 
+/** 上游源（FMBY 学习 #25 25-1：只做源管理，不做聚合/探活/播放接入）。
+ *  响应永不出凭据原文，只出 has_secret；新建恒为关闭，启用走单独端点。 */
+export interface UpstreamSource {
+  id: number
+  name: string
+  source_type: 'emby' | 'jellyfin'
+  base_url: string
+  auth_method: 'password' | 'api_key'
+  username: string | null
+  has_secret: boolean
+  extra_headers: Record<string, string>
+  user_agent: string | null
+  referer: string | null
+  enabled: boolean
+  credential_scope: string
+  health_status: 'unknown' | 'healthy' | 'unhealthy'
+  last_checked_at: string | null
+  note: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface UpstreamSourceInput {
+  name: string
+  source_type: 'emby' | 'jellyfin'
+  base_url: string
+  auth_method: 'password' | 'api_key'
+  username?: string | null
+  secret?: string | null
+  extra_headers?: Record<string, string> | null
+  user_agent?: string | null
+  referer?: string | null
+  note?: string | null
+}
+
+export const fetchUpstreamSources = () =>
+  get<{ items: UpstreamSource[] }>(`${E}/upstream-sources`)
+
+export const createUpstreamSource = (input: UpstreamSourceInput) =>
+  post<UpstreamSource>(`${E}/upstream-sources`, input)
+
+export const updateUpstreamSource = (id: number, input: Partial<UpstreamSourceInput>) =>
+  put<UpstreamSource>(`${E}/upstream-sources/${id}`, input)
+
+export const enableUpstreamSource = (id: number) =>
+  post<UpstreamSource>(`${E}/upstream-sources/${id}/enable`, {})
+
+export const disableUpstreamSource = (id: number) =>
+  post<UpstreamSource>(`${E}/upstream-sources/${id}/disable`, {})
+
+export const deleteUpstreamSource = (id: number) =>
+  del<{ success: boolean }>(`${E}/upstream-sources/${id}`)
+
 
 /** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
 export interface EnrichStageStat {

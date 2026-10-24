@@ -67,6 +67,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'metadata-sources', name: 'MetadataSources', component: () => import('@/views/MetadataSources.vue'), meta: { title: '元数据来源' } },
       // 识别审查（批二 #15）：低置信识别的人工处置队列，与元数据来源同组
       { path: 'identify-review', name: 'IdentifyReview', component: () => import('@/views/IdentifyReview.vue'), meta: { title: '识别审查' } },
+      // 上游源（FMBY #25 25-1）：只做源管理，聚合/探活/播放接入是后续步骤
+      { path: 'upstream-sources', name: 'UpstreamSources', component: () => import('@/views/UpstreamSources.vue'), meta: { title: '上游源' } },
       // 「存储来源」独立页已于 v2.42.15 撒销：挂载建在「添加服务器」弹窗里（按服务器配置），
       // 目录浏览 / 体检 / 编辑都已搬过去。旧地址跳到服务器页，别人的书签不至于 404。
       { path: 'mounts', redirect: '/servers' },
