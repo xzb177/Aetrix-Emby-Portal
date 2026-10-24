@@ -69,7 +69,33 @@ const planForm = ref({
   features: '', is_active: true, is_popular: false, sort_order: 0,
   points_price: null as number | null,
   realm_id: null as number | null,
+  // 订阅分档权益（留空 = 不声明，跟随全站默认）；键与区间以后端
+  // backend/entitlements.py 的注册表为准，保存时服务端 validate 是最终裁判
+  ent_seek: null as number | null,
+  ent_concurrent: null as number | null,
 })
+
+/** 权益数字校验：留空放行，填了必须是区间内整数（与后端注册表同口径） */
+function entRangeRule(min: number, max: number, label: string) {
+  return {
+    validator: (_rule: unknown, value: number | null, callback: (e?: Error) => void) => {
+      if (value == null || (Number.isInteger(value) && value >= min && value <= max)) {
+        callback()
+        return
+      }
+      callback(new Error(`${label}需在 ${min}–${max} 之间，或留空跟随全站默认`))
+    },
+    trigger: 'blur',
+  }
+}
+
+/** 权益组装：两项全空 → null（不声明）；填了的才进对象 */
+function buildPlanEntitlements(f: { ent_seek: number | null; ent_concurrent: number | null }): Record<string, number> | null {
+  const out: Record<string, number> = {}
+  if (f.ent_seek != null) out.media_seek_monthly_limit = f.ent_seek
+  if (f.ent_concurrent != null) out.concurrent_streams = f.ent_concurrent
+  return Object.keys(out).length ? out : null
+}
 const planRules: FormRules = {
   name: [
     { required: true, message: '请输入套餐名称', trigger: 'blur' },
@@ -85,6 +111,8 @@ const planRules: FormRules = {
     { type: 'number', min: 1, max: 3650, message: '时长需在 1–3650 天之间', trigger: 'blur' },
   ],
   sort_order: [{ type: 'number', min: 0, message: '排序不能为负数', trigger: 'blur' }],
+  ent_seek: [entRangeRule(1, 1000, '每月求片上限')],
+  ent_concurrent: [entRangeRule(1, 20, '可同时播放路数')],
 }
 
 /** 校验失败时滚动到第一个错误项 */
@@ -104,6 +132,8 @@ function openPlanCreate() {
     is_active: true, is_popular: false, sort_order: 0,
     points_price: null,
     realm_id: realm.activeId,
+    ent_seek: null,
+    ent_concurrent: null,
   }
   planVisible.value = true
 }
@@ -121,6 +151,9 @@ function openPlanEdit(row: PlanRowFull) {
     is_popular: row.is_popular,
     sort_order: row.sort_order,
     realm_id: row.realm_id ?? realm.activeId,
+    // 权益回填：按存量 entitlements 逐键填，缺键留空（= 不声明）
+    ent_seek: row.entitlements?.media_seek_monthly_limit ?? null,
+    ent_concurrent: row.entitlements?.concurrent_streams ?? null,
   }
   planVisible.value = true
 }
@@ -140,6 +173,7 @@ async function savePlan() {
     points_price: f.points_price ?? null,
     duration_days: f.duration_days,
     features: f.features.split('\n').map(s => s.trim()).filter(Boolean),
+    entitlements: buildPlanEntitlements(f),
     is_active: f.is_active,
     is_popular: f.is_popular,
     sort_order: f.sort_order,
@@ -414,6 +448,17 @@ onMounted(load)
         <el-form-item label="特性" prop="features">
           <el-input v-model="planForm.features" type="textarea" :rows="3" placeholder="每行一条，如：4K 原画" />
         </el-form-item>
+        <div class="form-grid">
+          <el-form-item label="每月求片上限" prop="ent_seek">
+            <el-input-number v-model="planForm.ent_seek" :min="1" :max="1000" placeholder="留空 = 跟随全站默认" class="w-full" />
+          </el-form-item>
+          <el-form-item label="可同时播放路数" prop="ent_concurrent">
+            <el-input-number v-model="planForm.ent_concurrent" :min="1" :max="20" placeholder="留空 = 跟随全站默认" class="w-full" />
+          </el-form-item>
+        </div>
+        <p class="field-help">
+          权益：只对买了这个套餐的用户生效，商店里的权益文案会按这里的值自动生成；两项都留空 = 不做分档，跟随全站默认。同时播放路数还需在「防共享」里把处置档位切到记录/拦截才会真正限路。
+        </p>
         <el-form-item label="排序" prop="sort_order"><el-input-number v-model="planForm.sort_order" :min="0" class="w-full" /></el-form-item>
         <el-form-item label="选项">
           <el-checkbox v-model="planForm.is_active">上架</el-checkbox>

@@ -1149,6 +1149,8 @@ def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db))
     """
     if not _get_bool_config(db, "subscription_purchase_enabled", True):
         return {"enabled": False, "plans": []}
+    from backend import entitlements as _entitlements
+
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
     query = realms.scope(db.query(models.SubscriptionPlan),
                          models.SubscriptionPlan.realm_id, scope_id)
@@ -1167,6 +1169,9 @@ def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db))
                 "id": p.id, "name": p.name, "description": p.description,
                 "price": float(p.price), "duration_days": p.duration_days,
                 "features": p.features, "is_popular": p.is_popular,
+                # 订阅分档权益（经判定单口 parse 归一：未声明即 {}，坏值剔除）；
+                # 用户端商店据此自动生成权益文案行，展示永远等于实际生效值
+                "entitlements": _entitlements.parse_entitlements(p.entitlements),
                 "realm_id": p.realm_id,
                 "realm_name": (p.realm.name if p.realm else ""),
                 "points_price": (float(p.points_price) if p.points_price is not None else None),
