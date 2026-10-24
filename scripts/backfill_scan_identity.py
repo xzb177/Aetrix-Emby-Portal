@@ -6,6 +6,11 @@
 其中 scan 列由扫描器写库点落库（见 scanner.py `_process_one`）。
 存量条目这两列为 NULL，PR-3 的认亲层读存量 scan 列前需要先回填。
 
+**本脚本只回填 scan_title / scan_year**：content_hash 与 identity_json
+离线算不出来（哈希来自列举时源端元数据），不由本脚本碰——它们随
+PR-2 落地后的下一轮扫描自然收敛（列举带哈希的源写新值，拿不到的
+源保持 NULL）；本脚本跑过之后存量行的 content_hash 原样不动。
+
 **只算路径、不读任何外部服务**：回填逻辑与扫描器写库点共用同一入口
 （`parse_media_filename` + episode 走 `_series_name_of`），结果逐字一致。
 增量安全 + 幂等：只处理 scan_title 为 NULL 且 file_path 非空的文件行
