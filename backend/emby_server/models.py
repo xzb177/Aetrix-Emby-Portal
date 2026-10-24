@@ -864,6 +864,18 @@ UPSTREAM_AUTH_METHODS = ("password", "api_key")
 UPSTREAM_CREDENTIAL_SCOPES = ("source", "user")
 UPSTREAM_HEALTH_STATUSES = ("unknown", "healthy", "unhealthy")
 
+#: BYOS 用户存储绑定（P1）：provider 枚举全仓唯一定义点，首批只列
+#: drive、pan115，其余后加；枚举与约束同源（FMBY reason_code 漂移
+#: 教训），不许在别处手写字符串。drive 的绑定验证随 P2（OAuth）
+#: 上线，P1 的创建口只接受 pan115（见 user_bindings）。
+USER_STORAGE_PROVIDERS = ("drive", "pan115")
+#: 绑定状态：active（验活通过）/ invalid（凭据错或被限）/
+#: expired（登录态过期）。未验活不置 active（设计稿 §3.2）。
+USER_STORAGE_BINDING_STATUSES = ("active", "invalid", "expired")
+#: 绑定失效三档（照抄定稿 BYOS-4 语义）：凭据错 / 过期 / 风控。
+#: last_error_kind 只许写这三个值，不许统一写“绑定失败”。
+USER_STORAGE_BINDING_ERROR_KINDS = ("auth_error", "expired", "throttled")
+
 
 class UpstreamSource(Base):
     """上游源（FMBY 学习 #25 25-1：只做源管理，不做聚合/探活/播放接入）。
@@ -1073,6 +1085,14 @@ class MountCredential(Base):
     （凭据错 / 过期 / 风控），不许统一写“绑定失败”。
     地基阶段只建表、不迁移任何现存凭据（115 Cookie、SA 引用迁入
     是第 4 步），旧凭据路径保持唯一权威。
+
+    BYOS P1 补充：绑定凭据行不附属于任何挂载（凭据归用户账号，
+    不归挂载行），故 mount_id 可空（NULL）。唯一约束
+    （mount_id, scope, owner_user_id）在 PG/SQLite 里对 NULL 行
+    天然豁免（NULL 互不相等），于是挂载附属行仍受“一挂载一 scope
+    一用户一行”约束，绑定行则一绑定一行、不受其限——P1 前该约束
+    曾使同一用户第二个绑定直接报 UNIQUE 冲突（实测），改可空是
+    修正而非放宽：挂载附属行的约束语义逐字不变。
     """
 
     __tablename__ = "mount_credentials"
@@ -1087,12 +1107,60 @@ class MountCredential(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    mount_id = Column(Integer, nullable=False)
+    mount_id = Column(Integer, nullable=True)  # BYOS 绑定行：NULL（不附属挂载）
     scope = Column(String(20), nullable=False, default="source")
     owner_user_id = Column(Integer, nullable=True)  # scope=user 时必填
     sealed_credential = Column(Text)
     key_id = Column(String(64))
     status = Column(String(20), default="active")
+    last_verified_at = Column(DateTime)
+    last_error_kind = Column(String(100))
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class UserStorageBinding(Base):
+    """BYOS 用户存储绑定（P1：绑定管理 + 115 直链播放）。
+
+    一行 = 一个用户绑的一个网盘账号（用户-facing 的绑定记录）。
+    凭据密文本体**不**存在本表：只存 ``credential_id`` 指向
+    ``mount_credentials`` 的一行（scope=user、owner_user_id=本用户），
+    密封、key_id 信封、状态机都在凭据行——不另起第三套秘密存储
+    （挂载稿 §4.2 拼法：绑定行引用凭据行）。
+
+    - provider：USER_STORAGE_PROVIDERS 单点枚举（首批 drive/pan115）；
+    - account_label：用户自己起的名字，仅展示用；同一用户同一
+      provider 下不重复（唯一约束），不同 provider 可重名；
+    - status：active 须经验证后才置（绑完先验活，见 user_bindings）；
+      invalid（凭据错/被限）/ expired（登录态过期）；
+    - last_error_kind：三档（auth_error / expired / throttled），
+      文案见 user_bindings.BINDING_ERROR_MESSAGES，不许统一写
+      “绑定失败”；
+    - 解绑 = 删本行 + 其凭据行，不留残留（user_bindings
+      .delete_binding，单事务）；
+    - 本表不存任何凭据原文与密封值：接口与日志只出 has_credential
+      布尔值，credential_id 是内部行号、不进用户端响应。
+    """
+
+    __tablename__ = "user_storage_bindings"
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("provider", USER_STORAGE_PROVIDERS),
+                        name="ck_user_storage_binding_provider"),
+        CheckConstraint(_in_sql("status", USER_STORAGE_BINDING_STATUSES),
+                        name="ck_user_storage_binding_status"),
+        UniqueConstraint("user_id", "provider", "account_label",
+                         name="uq_user_storage_binding_label"),
+        Index("ix_user_storage_bindings_user", "user_id"),
+        Index("ix_user_storage_bindings_credential", "credential_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("web_users.id"), nullable=False)
+    provider = Column(String(20), nullable=False)
+    account_label = Column(String(100), nullable=False)
+    credential_id = Column(Integer, ForeignKey("mount_credentials.id"),
+                           nullable=False)
+    status = Column(String(20), nullable=False, default="invalid")
     last_verified_at = Column(DateTime)
     last_error_kind = Column(String(100))
     created_at = Column(DateTime, default=datetime.now)

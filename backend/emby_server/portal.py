@@ -641,6 +641,91 @@ def set_play_line_pref(req: dict,
     return {"line": "relay"}
 
 
+# ==================== BYOS 用户存储绑定（P1） ====================
+# 绑定是用户自己的网盘账号：建绑即验活（115）、解绑删行 + 凭据行、
+# 失效分三档文案。响应永远不含凭据原文与密封值（见 user_bindings）。
+# Drive 绑定随 P2（OAuth）上线，P1 创建口只接受 pan115。
+
+
+class StorageBindingCreate(BaseModel):
+    provider: str
+    account_label: str
+    credential: str
+
+
+def _binding_error_status(exc) -> int:
+    if exc.kind == "not_found":
+        return 404
+    if exc.kind == "transient":
+        return 502
+    return 400
+
+
+@user_emby_router.get("/storage-bindings")
+def list_storage_bindings(
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """本人存储绑定列表（只出自己的行，不含任何凭据材料）。"""
+    from backend.emby_server import user_bindings
+
+    return {"bindings": user_bindings.list_bindings(db, request_user.id)}
+
+
+@user_emby_router.post("/storage-bindings", status_code=201)
+def create_storage_binding(
+        body: StorageBindingCreate,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """建绑 + 同步验活（P1 仅 pan115）。
+
+    验活通过返回 status=active；验活失败属三档内时仍 201 返回该行
+    （status=invalid/expired + error_message），由客户端展示重绑
+    引导——失效要响亮，不静默；一过性失败 502 且不落行。
+    """
+    from backend.emby_server import user_bindings
+
+    try:
+        binding = user_bindings.create_binding(
+            db, request_user.id, body.provider,
+            body.account_label, body.credential)
+    except user_bindings.BindingError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return user_bindings.serialize_binding(binding)
+
+
+@user_emby_router.delete("/storage-bindings/{binding_id}")
+def delete_storage_binding(
+        binding_id: int,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """解绑：删绑定行 + 其凭据行（非本人行按不存在处理）。"""
+    from backend.emby_server import user_bindings
+
+    try:
+        user_bindings.delete_binding(db, request_user.id, binding_id)
+    except user_bindings.BindingError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return {"success": True}
+
+
+@user_emby_router.post("/storage-bindings/{binding_id}/verify")
+def verify_storage_binding(
+        binding_id: int,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """重验绑定（失效后恢复口）：通过回 active，失败落三档态。"""
+    from backend.emby_server import user_bindings
+
+    try:
+        binding = user_bindings.verify_binding(db, request_user.id, binding_id)
+    except user_bindings.BindingError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return user_bindings.serialize_binding(binding)
+
+
 @user_emby_router.get("/resume")
 def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db),
