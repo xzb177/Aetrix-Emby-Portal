@@ -3417,7 +3417,11 @@ def _read_nfo_cached(ctx: "_ScanContext", scan_file: "ScanFile",
                     with open(local_path, "r", encoding="utf-8-sig", errors="ignore") as f:
                         text = f.read()
                 else:
-                    text = scan_file.provider.read_text(mount_rel)
+                    # 阶段 2 拆分：NFO 读走旁挂文本过渡口（MountProvider
+                    # 子类走新口，duck-type 旧提供者回落 read_text，见
+                    # mounts.read_sidecar_text_from 的过渡口径）。
+                    text = mount_lib.read_sidecar_text_from(
+                        scan_file.provider, mount_rel)
                 ctx.nfo_cache[key] = nfo_lib.parse_nfo(text)
         except Exception:  # noqa: BLE001 — 单个 NFO 读不到就当没有
             ctx.nfo_cache[key] = None
