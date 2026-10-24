@@ -2600,8 +2600,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             query = query.filter(~em.MediaItem.item_type.in_(mapped))
 
     if search:
-        # SQL 预筛：标题族 + 别名族，并把繁简/发布标签变体一起放进来，
-        # 精排交给 rank_items（完全匹配 > 前缀 > 别名 > 分类 > 模糊）。
+        # SQL 预筛：标题族 + 别名族 + 拼音派生族，并把繁简/发布标签变体
+        # 一起放进来，精排交给 rank_items（完全匹配 > 前缀 > 别名 > 拼音 >
+        # 分类 > 模糊）。
         clauses = []
         for variant in search_variants(search):
             like = f"%{variant}%"
@@ -2610,6 +2611,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                 em.MediaItem.original_title.ilike(like),
                 em.MediaItem.sort_name.ilike(like),
                 em.MediaItem.aliases.ilike(like),
+                # 拼音派生字段（批二 #16）：全拼/首字母打法靠这两列捞候选
+                em.MediaItem.pinyin_full.ilike(like),
+                em.MediaItem.pinyin_initials.ilike(like),
             ])
         if clauses:
             query = query.filter(or_(*clauses))

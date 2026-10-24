@@ -167,6 +167,13 @@ class MediaItem(Base):
               postgresql_using="gin", postgresql_ops={"sort_name": "gin_trgm_ops"}),
         Index("idx_item_aliases_trgm", "aliases",
               postgresql_using="gin", postgresql_ops={"aliases": "gin_trgm_ops"}),
+        # 拼音搜索字段同款 trigram 索引（2026-10-24，批二 #16）：预筛对
+        # pinyin_full / pinyin_initials 做 ILIKE 包含，与上面四列同一基建。
+        Index("idx_item_pinyin_full_trgm", "pinyin_full",
+              postgresql_using="gin", postgresql_ops={"pinyin_full": "gin_trgm_ops"}),
+        Index("idx_item_pinyin_initials_trgm", "pinyin_initials",
+              postgresql_using="gin",
+              postgresql_ops={"pinyin_initials": "gin_trgm_ops"}),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -202,6 +209,15 @@ class MediaItem(Base):
     tmdb_loose_repair_at = Column(DateTime, default=None)
     # 多别名（逗号分隔）：TMDB 的 also known as / 原名等，供中英文与繁简搜索命中
     aliases = Column(Text, default="")
+    # 拼音搜索派生字段（2026-10-24，FMBY 学习批二 #16）：由 name 生成的
+    # 全拼 / 首字母紧凑键（「流浪地球」→ liulangdiqiu / lldq），供搜索预筛
+    # 与精排的拼音层使用。派生数据、不许人工维护：落库钩子
+    # fill_item_pinyin_fields 按 name 重算（见本文件后段），存量由
+    # scripts/backfill_pinyin_search_fields.py 回填。与 sort_name 分工：
+    # sort_name 是排序键，首字母只是寄生其上的旧搜索通道；这两列是搜索
+    # 的正式落点，不受 PINYIN_SORT_ENABLED 开关影响。
+    pinyin_full = Column(Text)
+    pinyin_initials = Column(Text)
     # v2.51.0 演员刮削：TMDB details 的 origin_country / spoken_languages，
     # EA 详情页 Countries / Languages 用。逗号分隔；老库补列后为空串（= 以前的 []）。
     countries = Column(Text, default="")
@@ -456,6 +472,35 @@ def sanitize_stream_strings(target: "MediaStream") -> "MediaStream":
 event.listen(
     MediaStream, "before_insert",
     lambda mapper, connection, target: sanitize_stream_strings(target),
+)
+
+
+def fill_item_pinyin_fields(target: "MediaItem") -> "MediaItem":
+    """按 name 重算拼音搜索派生字段（pinyin_full / pinyin_initials）。
+
+    派生字段的唯一事实来源是 name：任何 ORM 写入（扫描入库/刮削改名/
+    手动整理）在落库前统一重算，字段与标题永不漂移；生成走
+    pinyin_sort.make_pinyin_fields（带 lru_cache，同名重算近零成本），
+    与存量回填脚本共用同一入口。惰性 import 与 tmdb.py 引用
+    make_sort_name 同款，避免模型层加载顺序问题。Core 直插/直改不走
+    本钩子（与 sanitize_stream_strings 的覆盖面一致），靠回填脚本兜底。
+    """
+    from backend.emby_server.pinyin_sort import make_pinyin_fields
+
+    full, initials = make_pinyin_fields(target.name or "")
+    target.pinyin_full = full
+    target.pinyin_initials = initials
+    return target
+
+
+# 条目落库收口：insert 与改名 update 都要让拼音派生字段跟随 name。
+event.listen(
+    MediaItem, "before_insert",
+    lambda mapper, connection, target: fill_item_pinyin_fields(target),
+)
+event.listen(
+    MediaItem, "before_update",
+    lambda mapper, connection, target: fill_item_pinyin_fields(target),
 )
 
 
