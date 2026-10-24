@@ -641,10 +641,12 @@ def set_play_line_pref(req: dict,
     return {"line": "relay"}
 
 
-# ==================== BYOS 用户存储绑定（P1） ====================
+# ==================== BYOS 用户存储绑定（P1 + P2） ====================
 # 绑定是用户自己的网盘账号：建绑即验活（115）、解绑删行 + 凭据行、
 # 失效分三档文案。响应永远不含凭据原文与密封值（见 user_bindings）。
-# Drive 绑定随 P2（OAuth）上线，P1 创建口只接受 pan115。
+# Drive 绑定走 P2 OAuth（下两口）：start 建 state 行并返回 Google
+# 授权地址，callback 凭 state 单次验讫换 token + 验活后建双行；
+# 凭据 POST 创建口仍只接受 pan115（Drive 不收明文凭据）。
 
 
 class StorageBindingCreate(BaseModel):
@@ -721,6 +723,58 @@ def verify_storage_binding(
     try:
         binding = user_bindings.verify_binding(db, request_user.id, binding_id)
     except user_bindings.BindingError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return user_bindings.serialize_binding(binding)
+
+
+class DriveOAuthStart(BaseModel):
+    account_label: str
+
+
+@user_emby_router.post("/storage-bindings/drive/oauth/start")
+def start_drive_oauth_binding(
+        body: DriveOAuthStart,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """开始 Drive 授权：建 state 行、返回 Google 授权地址。
+
+    此时不建绑定行与凭据行（绑完先验活）；前端引导用户去授权地址
+    完成 Google 同意，Google 再把浏览器带回 callback 口。服务器
+    应用凭据 / 对外地址未配时响亮 400（部署者先配好，不猜）。
+    """
+    from backend.emby_server import drive_oauth
+
+    try:
+        return drive_oauth.start_drive_oauth(
+            db, request_user.id, body.account_label)
+    except drive_oauth.DriveOAuthError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+
+
+@user_emby_router.get("/storage-bindings/drive/oauth/callback")
+def callback_drive_oauth_binding(
+        code: str = "",
+        state: str = "",
+        error: str = "",
+        db: Session = Depends(get_db)):
+    """Drive 授权回调：凭 state 单次验讫换 token + 验活后建双行。
+
+    本口不依赖用户会话——授权方是 state 行（256 位随机、单次有效、
+    10 分钟过期，行里绑定 user_id）；Google 拒授权（error 参数）
+    时直接 400，不落行。换 token / 验活属三档内时返回 200 + 失败态
+    绑定行（与 P1 的 201 + status 同口径）；一过性失败 502 且不落行
+    （授权码本身也是一次性，须重新走授权）。
+    """
+    from backend.emby_server import drive_oauth, user_bindings
+
+    if error:
+        raise HTTPException(
+            status_code=400, detail=f"Google 授权失败：{error}")
+    try:
+        binding = drive_oauth.complete_drive_oauth(db, state, code)
+    except drive_oauth.DriveOAuthError as exc:
         raise HTTPException(
             status_code=_binding_error_status(exc), detail=exc.message) from exc
     return user_bindings.serialize_binding(binding)
