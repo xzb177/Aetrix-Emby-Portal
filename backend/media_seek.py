@@ -25,7 +25,7 @@ from typing import Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import entitlements, models
 from backend.integrations.store import switch_env_value as _switch_env_value
 
 logger = logging.getLogger(__name__)
@@ -123,9 +123,22 @@ def _monthly_limit_value(db: Session, key: str, default: int) -> int:
 
 
 def monthly_limit(db: Session, user) -> int:
-    """该用户的月度求片上限：公益服走 welfare_request_monthly，其余走 paid_request_monthly"""
+    """该用户的月度求片上限（判定顺序钉死，设计 §3.2）：
+
+    1. 公益口径优先且不变：welfare 用户永远走 ``welfare_request_monthly``
+       （默认 3）——**即使他买了声明更高月度额度的套餐，也仍走公益口径**。
+       这是一期有意保留的语义（红线「公益口径不动」的直接推论），不是 bug；
+       将来若要改成「取两者较高」，是单独的产品决策，不许在此顺手改。
+    2. 非 welfare：当前套餐在权益表里声明了 ``media_seek_monthly_limit``
+       就用声明值（经 backend/entitlements 单口读，不许在此私自判套餐）。
+    3. 没声明（无订阅/缺键/值非法）回落现行 paid 口径
+       ``paid_request_monthly``（默认 10），与没有权益表时逐字一致。
+    """
     if _is_welfare_active(user):
         return _monthly_limit_value(db, CONFIG_MONTHLY_WELFARE, DEFAULT_MONTHLY_WELFARE)
+    entitled = entitlements.get_user_entitlement(db, user, "media_seek_monthly_limit")
+    if entitled is not None:
+        return entitled
     return _monthly_limit_value(db, CONFIG_MONTHLY_PAID, DEFAULT_MONTHLY_PAID)
 
 
