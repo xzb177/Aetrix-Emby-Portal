@@ -10,7 +10,7 @@
 | 源 | 要 key | 中文 | 简介 | 评分 | 备注 |
 |---|---|---|---|---|---|
 | Bangumi | 否 | 强 | 有 | 有 | 中文番剧最准；公开接口，UA 礼仪限速 |
-| 豆瓣 | 否 | 强 | **没有** | **没有** | subject_suggest 只给标题/年份/海报/ID |
+| 豆瓣 | 否 | 强 | Frodo 有 | Frodo 有 | subject_suggest 只给标题/年份/海报/ID；Frodo 兜底才有简介/评分 |
 | AniList | 否 | 中 | 有 | 有 | GraphQL，动漫覆盖好，中文标题是 native title |
 | TVmaze | 否 | 弱 | 有 | 有 | 英文剧集强，中文片名常常搜不到 |
 | OMDb | **是** | 弱 | 有 | 有 | 只有电影；剧集直接不参与 |
@@ -209,7 +209,7 @@ def _number(value) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# 2. 豆瓣：复用 altmeta（subject_suggest，没有简介与评分）
+# 2. 豆瓣：suggest（altmeta）主路 + Frodo 兜底（能带回简介 / 评分）
 # ---------------------------------------------------------------------------
 
 def search_douban(title: str, year: Optional[int], kind: str, *, pool, gate) -> Optional[Hit]:
@@ -217,17 +217,39 @@ def search_douban(title: str, year: Optional[int], kind: str, *, pool, gate) -> 
 
     gate.acquire()
     hit = altmeta.search(title, year, kind, min_interval=0.0)
-    if not hit:
+    if hit:
+        return Hit(
+            source="douban",
+            title=str(hit.get("title") or ""),
+            overview="",            # subject_suggest 不给简介（如实留空）
+            rating=None,            # 同理不给评分
+            year=_year_of(hit.get("year")),
+            poster=str(hit.get("image") or "") or None,
+            lang="zh",
+            external_ids={"douban": str(hit.get("id") or "")} if hit.get("id") else {},
+        )
+    # Frodo 兜底（批二 #14）：suggest 没命中时再问 Frodo 片名搜——它走
+    # 移动端接口（suggest 在机房出口恒空时 Frodo 仍有机会），且命中后
+    # 能带回简介 / 评分（suggest 结构性给不了）。置信门槛在
+    # douban_frodo.search_by_title 里（标题一致 + 年份相等 + 类型对
+    # 位），与本文件其它源同一口径：宁可漏也不错配。熔断是它自己的
+    # douban_frodo 源名，失败只熔断它自己，不牵连 suggest 腿。
+    from backend.emby_server.metasources import douban_frodo
+
+    found = douban_frodo.search_by_title(title, year, kind)
+    if not found:
         return None
     return Hit(
         source="douban",
-        title=str(hit.get("title") or ""),
-        overview="",            # subject_suggest 不给简介（如实留空）
-        rating=None,            # 同理不评分
-        year=_year_of(hit.get("year")),
-        poster=str(hit.get("image") or "") or None,
+        title=str(found.get("title") or ""),
+        original_title=str(found.get("original_title") or ""),
+        overview=str(found.get("overview") or ""),
+        genres=[str(g) for g in (found.get("genres") or [])],
+        rating=found.get("rating"),
+        year=found.get("year"),
+        poster=str(found.get("image") or "") or None,
         lang="zh",
-        external_ids={"douban": str(hit.get("id") or "")} if hit.get("id") else {},
+        external_ids={"douban": str(found.get("id") or "")} if found.get("id") else {},
     )
 
 
@@ -524,7 +546,7 @@ SPECS: list = [
     SourceSpec("bangumi", "Bangumi（番组）", False, "zh",
                "中文番剧最准；公开接口，按 UA 礼仪限速", search_bangumi),
     SourceSpec("douban", "豆瓣", False, "zh",
-               "中文剧命中率高；subject_suggest 只给标题/年份/海报，没有简介与评分", search_douban),
+               "中文剧命中率高；subject_suggest 只给标题/年份/海报，Frodo 兜底可带回简介与评分", search_douban),
     SourceSpec("anilist", "AniList", False, "zh",
                "动漫覆盖好，简介与评分齐全；GraphQL 公开接口", search_anilist),
     SourceSpec("tvmaze", "TVmaze", False, "en",

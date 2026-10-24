@@ -173,7 +173,8 @@ def _fetch_one(source_cfg, title: str, year: Optional[int], kind: str) -> Option
 
 def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
             *, limit: Optional[int] = None, only: Optional[str] = None,
-            ignore_switch: bool = False, snapshot=None) -> CollectResult:
+            ignore_switch: bool = False, snapshot=None,
+            imdb_id: Optional[str] = None) -> CollectResult:
     """按配置顺序采集一条，返回归并后的字段与逐源结果
 
     总开关关掉时**直接返回空结果**（调用方据此走原来的 NFO → TMDB → 豆瓣链路），
@@ -270,6 +271,8 @@ def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
                                              elapsed_ms=elapsed))
 
     _relay_tmdb(result, hits, targets, title, year, kind, only=only)
+    _relay_douban(result, hits, targets, title, year, kind,
+                  only=only, db=db, imdb_id=imdb_id)
     _merge(result, hits)
     return result
 
@@ -342,6 +345,70 @@ def _relay_tmdb(result: CollectResult, hits: list, targets: list,
         result.outcomes.append(SourceOutcome(
             "tmdb", "TMDB（IMDb 接力）", True, hit=True,
             elapsed_ms=int((time.monotonic() - began) * 1000)))
+
+
+def _relay_douban(result: CollectResult, hits: list, targets: list,
+                  title: str, year: Optional[int], kind: str, *,
+                  only: Optional[str], db, imdb_id: Optional[str]) -> None:
+    """IMDb → 豆瓣桥（FMBY 学习批二 #14，魂 1：身份与证据先行）。
+
+    FMBY 的豆瓣通道用 IMDb 编号在 TMDB 与豆瓣之间搭桥对齐身份——先用
+    编号认亲，再谈搬文案。本桥是 ``_relay_tmdb`` 的镜像：任一源已经给
+    出豆瓣 id 就不桥；编号来源的可信度规则与 TMDB 桥二完全一致
+    （条目自身 ``imdb_id`` 最可信；其它源带回的编号必须过标题一致性
+    门，防模糊命中的错编号被「转正」成错绑）。桥本身只认编号、不做
+    片名搜——片名兜底在豆瓣源自己的 Frodo 搜里（见 sources.search_douban）。
+
+    闸门口径与采集主循环里的豆瓣源一致：豆瓣没进本轮目标 / 已关 /
+    总开关关 / 全局封禁期，一律不桥（封禁期零豆瓣请求是反风控红线）。
+    Frodo 腿自身的熔断在 ``douban_frodo`` 模块内（``douban_frodo``
+    源名），桥失败一律静默——桥是增益，不是主链。
+    """
+    if only is not None:
+        return
+    if any(h.external_ids.get("douban") for h in hits):
+        return
+    douban_cfg = next((s for s in targets if s.id == "douban"), None)
+    if douban_cfg is None or not douban_cfg.enabled:
+        return
+    # db 为 None 时开关状态已编码在快照里（read_config 的口径），不再重查
+    if db is not None and not _douban_switch_on(db):
+        return
+    if _douban_banned_now():
+        return
+    imdb = str(imdb_id or "").strip()
+    if not imdb:
+        known_titles = [title] + [h.original_title for h in hits if h.original_title]
+        imdb = next((h.external_ids.get("imdb") for h in hits
+                     if h.external_ids.get("imdb")
+                     and any(sources._title_consistent(t, h.title)
+                             for t in known_titles)), None) or ""
+    if not imdb:
+        return
+    began = time.monotonic()
+    try:
+        from backend.emby_server.metasources import douban_frodo
+
+        found = douban_frodo.find_by_imdb(imdb, year, kind)
+    except Exception:  # noqa: BLE001 — 桥失败不影响已采到的结果
+        return
+    if not found or not found.get("id"):
+        return
+    hits.append(sources.Hit(
+        source="douban",
+        title=str(found.get("title") or ""),
+        original_title=str(found.get("original_title") or ""),
+        overview=str(found.get("overview") or ""),
+        genres=[str(g) for g in (found.get("genres") or [])],
+        rating=found.get("rating"),
+        year=found.get("year"),
+        poster=str(found.get("image") or "") or None,
+        lang="zh",
+        external_ids={"douban": str(found["id"]), "imdb": imdb},
+    ))
+    result.outcomes.append(SourceOutcome(
+        "douban", "豆瓣（IMDb 桥）", True, hit=True,
+        elapsed_ms=int((time.monotonic() - began) * 1000)))
 
 
 def _merge(result: CollectResult, hits: list) -> None:
