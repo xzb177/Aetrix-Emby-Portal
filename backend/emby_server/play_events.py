@@ -85,6 +85,7 @@ def play_event_stats() -> dict:
 
 def note_play_start(*, provider: str = "unknown", mount_id=None,
                     user_id=None, item_id=None, method: Optional[str] = None,
+                    variant: Optional[str] = None,
                     result: str = "ok", error_kind: Optional[str] = None,
                     resolve_ms: Optional[int] = None,
                     total_ms: Optional[int] = None) -> None:
@@ -104,6 +105,10 @@ def note_play_start(*, provider: str = "unknown", mount_id=None,
             "user_id": user_id,
             "item_id": item_id,
             "method": (method or None) and method[:30],
+            # 变体维度（FMBY 批二 #11 PR-2）：事件带上实际走的变体名，
+            # 老调用方不传时为 None，与升级前逐字一致；聚合读口仍按
+            # provider × mount_id 分组，variant 只作筛选维度，不改分组键。
+            "variant": (variant or None) and variant[:30],
             "result": "error" if result == "error" else "ok",
             "error_kind": (error_kind or None) and error_kind[:40],
             "resolve_ms": None if resolve_ms is None else max(0, int(resolve_ms)),

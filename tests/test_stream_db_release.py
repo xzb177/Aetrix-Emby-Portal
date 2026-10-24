@@ -132,7 +132,11 @@ def test_video_stream_closes_session_before_body(monkeypatch, tmp_path):
         return StreamingResponse(gen())
 
     monkeypatch.setattr(api, "serve_file", fake_serve_file)
-    req = types.SimpleNamespace(headers={}, url=types.SimpleNamespace(path="/emby/Videos/g1/stream"))
+    # #1220 修：真实 Starlette 请求一定有 query_params；此前桩缺该属性，
+    # 在 video_stream 新读变体参数后触发 AttributeError。补齐后桩与
+    # 真实请求形状一致（本用例不带变体，走老路径）。
+    req = types.SimpleNamespace(headers={}, query_params={},
+                                url=types.SimpleNamespace(path="/emby/Videos/g1/stream"))
     user = types.SimpleNamespace(id=1)
 
     async def go():
