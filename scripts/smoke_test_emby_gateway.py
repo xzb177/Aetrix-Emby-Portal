@@ -378,36 +378,10 @@ r = client.get(f"/emby/Items/{movie_guid}/File?api_key={bob_token}")
 assert r.status_code == 403, f"非会员取原始文件应 403，got {r.status_code}"
 ok("非会员字幕/拉流/原始文件同为 403（付费墙覆盖新端点）")
 
-# ---- HLS 变体地址必须自带 api_key（hls.js 子请求不带认证头）----
-if shutil.which("ffmpeg"):
-    r = client.get(f"/emby/videos/{movie_guid}/master.m3u8?VideoBitrate=2000000&api_key={token}")
-    if r.status_code == 503:
-        print("SKIP HLS 变体（转码服务暂不可用，503）")
-    else:
-        assert r.status_code == 200 and "m3u8" in r.text, r.text[:200]
-        assert "api_key=" in r.text, "HLS 变体地址缺少 api_key，子请求会 401"
-        variant = [ln for ln in r.text.splitlines() if ln.startswith("http")][0]
-        r2 = client.get(variant)  # 故意不带任何认证头
-        if r2.status_code == 503:
-            print("SKIP HLS 变体请求（转码进程未就绪，503）")
-        else:
-            assert r2.status_code == 200, f"HLS 变体请求应免额外认证头，got {r2.status_code}"
-            ok("HLS 变体地址自带 api_key 且免额外认证头")
-else:
-    print("SKIP HLS 变体（沙箱无 ffmpeg）")
-
-# ---- 播放列表重写（纯函数，不依赖 ffmpeg）----
-from backend.emby_server.api import _rewrite_playlist  # noqa: E402
-
-pl_dir = tempfile.mkdtemp(prefix="gwpl_")
-with open(os.path.join(pl_dir, "master.m3u8"), "w", encoding="utf-8") as f:
-    f.write("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg00001.ts\n")
-rewritten = _rewrite_playlist(pl_dir, "http://h", "GUID", "SESS", "TOK")
-assert "seg00001.ts?session=SESS&api_key=TOK" in rewritten, rewritten
-rewritten_no_key = _rewrite_playlist(pl_dir, "http://h", "GUID", "SESS")
-assert "api_key" not in rewritten_no_key, rewritten_no_key
-ok("播放列表重写带上 session 与 api_key（旧实现只有 session，切片 401）")
-shutil.rmtree(pl_dir, ignore_errors=True)
+# ---- 转码删除后：HLS 变体地址一律 404（不再起转码、不再下发 m3u8）----
+r = client.get(f"/emby/videos/{movie_guid}/master.m3u8?VideoBitrate=2000000&api_key={bob_token}")
+assert r.status_code == 404, f"转码地址应 404，got {r.status_code} {r.text[:120]}"
+ok("HLS 变体地址已删除（master.m3u8 → 404）")
 
 # ---- 登出：token 失效 ----
 r = client.post("/emby/Sessions/Logout", headers=H)

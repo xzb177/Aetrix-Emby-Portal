@@ -231,8 +231,7 @@ def _probe_disk() -> dict:
         from backend.emby_server import maintenance
         rep = maintenance.resource_report()
         free_pct = rep.get("disk_free_percent")
-        m = {"disk_free_percent": free_pct,
-             "transcode_sessions": rep.get("transcode_sessions", 0)}
+        m = {"disk_free_percent": free_pct}
         if free_pct is not None and float(free_pct) < THRESHOLDS["disk_free_warn"]():
             return _warn("disk", f"磁盘余量偏低（{float(free_pct):.0f}% 剩余）", m)
         return _ok("disk", m, "磁盘余量正常")

@@ -221,8 +221,7 @@ def test_check_all_fires_and_resolves(monkeypatch, db, _clean_alerts):
     monkeypatch.setattr(_ntf, "notify_staff_users", _fake_notify_staff)
 
     bad = _subs(disk={"status": "warn",
-                      "metrics": {"disk_free_percent": 5.0,
-                                  "transcode_sessions": 0}})
+                      "metrics": {"disk_free_percent": 5.0}})
     import backend.emby_server.observability as _obs
     monkeypatch.setattr(_obs, "probe_subsystems", lambda db: bad)
 

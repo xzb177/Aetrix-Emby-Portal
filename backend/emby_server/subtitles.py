@@ -18,10 +18,12 @@ from fastapi import HTTPException, Response
 
 logger = logging.getLogger(__name__)
 
+# 注意：这里的 FFMPEG 只用于内封字幕轨抽取为 WebVTT（非视频转码），
+# 转码删除后仍保留；字幕烧录（把字幕烧进视频流）本服务从未实现。
 FFMPEG = os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")
 SUB_CACHE_DIR = os.getenv(
     "EMBY_SUBTITLE_DIR",
-    os.path.join(os.getenv("EMBY_TRANSCODE_DIR", "/tmp/emby_transcode"), "subs"),
+    os.path.join(os.getenv("EMBY_CACHE_DIR", "/tmp/aetrix_cache"), "subs"),
 )
 
 # 文本类字幕编码名（可转换为 VTT）；图片类（PGS/VobSub）无法转文本

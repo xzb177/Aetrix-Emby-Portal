@@ -19,7 +19,6 @@ import logging
 import os
 import random
 import secrets
-import shutil
 import threading
 import time
 import urllib.parse
@@ -54,7 +53,7 @@ from backend.emby_server.query_params import qlimit, qstart
 from backend.emby_server import soft_delete
 from backend.emby_server import title_beautify
 from backend.emby_server import missing_episodes as _missing_episodes
-from backend.emby_server.playback_security import safe_child_name
+
 from backend.emby_server import identity_gate, subtitles as subs
 from backend.emby_server.auth import (
     _token_from_request,
@@ -75,25 +74,9 @@ from backend.emby_server.search import (
     search_variants,
 )
 from backend.emby_server.streaming import (
-    active_transcode_ids,
-    get_transcode,
-    transcode_capacity,
     serve_file,
     serve_drive_relay_async,
-    touch_transcode,
     serve_image,
-    start_transcode,
-    find_transcodes,
-    stop_all_transcodes,
-    stop_all_transcodes_async,
-    stop_transcode,
-    stop_transcode_async,
-    stop_transcodes_for,
-    stop_transcodes_for_async,
-    stop_user_transcodes,
-    stop_user_transcodes_async,
-    transcode_alive,
-    wait_for_file,
 )
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 
@@ -111,9 +94,9 @@ SERVER_ID = os.getenv("EMBY_SERVER_ID", "aetrix-emby-server")
 def item_guid_for(db: Session, item_id) -> Optional[str]:
     """播放会话的 ``item_id`` → 条目 guid
 
-    转码会话在 ``streaming._TRANSCODE_PROCS`` 里按 guid 记（那个 uuid 只出现在 HLS 播放列表的
-    ``?session=`` 上），而「结束播放」手上只有播放会话的 ``item_id``；两者之间需要这一座桥。
-    旧实现在那里直接拿播放会话键去 pop，键对不上，等于什么都没停到。
+    「结束播放」手上只有播放会话的 ``item_id``，而需要按条目 guid
+    定位条目；两者之间需要这一座桥。（转码删除前这里还解释过转码
+    会话注册表与播放会话键对不上的旧坑，转码删除后该注册表已不存在。）
     """
     if not item_id:
         return None
@@ -1227,11 +1210,10 @@ def _effective_bitrate(item) -> int | None:
 
 def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
                   auth_qs: str = "", synthesize: bool = False, user=None) -> dict:
-    # 转码能力申报走单口（批二 #11 play_variants.transcode_allowed）：
-    # 此前这里硬编码 True，PlaybackInfo 面会被 handler 用策略覆写、详情
-    # DTO 面不会——两面申报不一致。db 缺失时无从核策略，按「不宣称」处理。
-    _supports_transcoding = (
-        play_variants.transcode_allowed(db, user) if db is not None else False)
+    # 转码删除（2026-10-24）：服务端不再转码，申报恒 False。
+    # 历史上这里硬编码 True，PlaybackInfo 面会被策略覆写、详情 DTO 面
+    # 不会，两面申报不一致；删除后两面统一为 False。
+    _supports_transcoding = False
     dto = {
         "Id": item.guid,
         "Name": item.name,
@@ -1291,8 +1273,9 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
     if item.audio_codec:
         dto["AudioCodec"] = item.audio_codec
     # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
-    # 注：DirectStreamUrl / TranscodingUrl 由调用方（playback_info）在拿到 _play_target 后
+    # 注：DirectStreamUrl 由调用方（playback_info）在拿到 _play_target 后
     # 拼装，CDN 域名改写也在那一层完成（这里只管字幕 DeliveryUrl）。
+    # 转码删除后不再有 TranscodingUrl。
     return _strip_nulls(dto)
 
 
@@ -1757,7 +1740,7 @@ def _policy_dto(user: models.WebUser) -> dict:
         "EnableContentDownloading": True,
         "EnableMediaPlayback": True,
         "EnableAudioPlaybackTranscoding": True,
-        "EnableVideoPlaybackTranscoding": bool(getattr(user, "enable_video_transcoding", True)),
+        "EnableVideoPlaybackTranscoding": False,
         "EnablePlaybackRemuxing": True,
         "ForceRemoteSourceTranscoding": False,
         "EnableSyncTranscoding": True,
@@ -4604,10 +4587,8 @@ async def playback_info(
         (device_profile.get("MaxStreamingBitrate") or 0)
     ) or 120_000_000
     # 2026-10 简化：删除服务端码率钳制，客户端要多少给多少（学 Linger 薄服务器思路）
-    # 转码许可走判定单口（批二 #11 play_variants.transcode_allowed）：
-    # (策略开关 or staff) 且用户个人转码开关开——与详情 DTO 的申报同源，
-    # 不许再在这里另拼一份条件。
-    allow_transcode = await run_db(play_variants.transcode_allowed, db, user)
+    # 转码删除（2026-10-24）：服务端不再转码，PlaybackInfo 不再下发
+    # TranscodingUrl，SupportsTranscoding 恒 False。
 
     # PlaybackInfo 短期缓存（5 分钟）：同一部片子短时间内重复请求直接走 Redis，
     # 省掉 _media_source 的 DB 查询。PlaySessionId 和 api_key 每次重新生成，不进缓存。
@@ -4673,33 +4654,30 @@ async def playback_info(
     stream_url = (
         f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}{key_qs}{signed_qs}"
     )
-    transcoding_url = (
-        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}{key_qs}{signed_qs}"
-    )
     # 统一播放 URL 改写（横切能力只许一套）：流节点 > 加速域名 > 原样。
     # 签名查询串原样保留，流节点用同一 SECRET_KEY 验签。
     # 最简播放（2026-10-16 用户拍板）：Drive 条目且直链开关开启时，跳过
     # 流节点/加速域名改写——DirectStreamUrl 保持本机 /stream，
     # 由 video_stream 直接 302 到谷歌直链，字节不经任何中间层。
+    # 转码删除后不再构建 TranscodingUrl，改写链只改写播放 URL。
     from backend.emby_server import playback_strategy as _ps2
     _dd_fid = (getattr(item, "drive_file_id", "") or "").strip()
     if _dd_fid and _ps2.drive_direct_play_enabled(db):
         pass  # 直链播放：跳过改写即可（本分支 _rewrite_src 已无其他消费方）
     else:
         from backend.emby_server import stream_accel
-        stream_url, transcoding_url, _ = stream_accel.rewrite_playback_urls_unified(
-            db, stream_url, transcoding_url, base)
+        stream_url, _ = stream_accel.rewrite_playback_urls_unified(
+            db, stream_url, base)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
-        "SupportsTranscoding": allow_transcode,
+        "SupportsTranscoding": False,
         # r50：补 DirectPlayUrl（此前恒缺，SupportsDirectPlay=True 却无对应地址）。
         # 本架构直放与直接串流是同一条 302（video_stream 302 到网盘直链），故同值。
         "DirectPlayUrl": stream_url,
         "DirectStreamUrl": stream_url,
     })
-    if allow_transcode:
-        media_source["TranscodingUrl"] = transcoding_url
+    media_source.pop("TranscodingUrl", None)
 
     sources = [media_source]
     _variants = []
@@ -4714,14 +4692,12 @@ async def playback_info(
                 await run_db(_drive_mount_id_for_item, db, item)) is not None
         _variants = await run_db(
             play_variants.list_variants, db, item,
-            allow_transcode=allow_transcode,
             drive_mount_locatable=_drive_mount_ok)
         if len(_variants) > 1:
             sources = play_variants.build_media_sources(
                 media_source, _variants, guid=item.guid,
-                stream_url=stream_url, transcoding_url=transcoding_url,
-                direct_stream_ok=bool(direct),
-                allow_transcode=allow_transcode)
+                stream_url=stream_url,
+                direct_stream_ok=bool(direct))
 
     # 阶段 3 一等会话（默认关）：开时 PlaySessionId 不再是每次现生成的随机
     # 票据，而是服务端在 PlaybackInfo 时预建的会话 id——上报侧 session_key
@@ -4785,17 +4761,15 @@ def _available_variant_names(db: Session, item: em.MediaItem,
                              user) -> list:
     """video_stream 按变体取流用的可用变体名（与 playback_info 同口径）。
 
-    转码许可走 play_variants.transcode_allowed 单口；Drive 挂载可定位
-    走 _drive_mount_id_for_item 一次主键查询；清单阶段不真解析直链。
-    只在客户端带了变体时才调用——无变体老路径不增加这次查询成本。
+    Drive 挂载可定位走 _drive_mount_id_for_item 一次主键查询；
+    清单阶段不真解析直链。只在客户端带了变体时才调用——无变体
+    老路径不增加这次查询成本。
     """
-    allow_transcode = play_variants.transcode_allowed(db, user)
     locatable = False
     if (getattr(item, "drive_file_id", "") or "").strip():
         locatable = _drive_mount_id_for_item(db, item) is not None
     return [v.name for v in play_variants.list_variants(
-        db, item, allow_transcode=allow_transcode,
-        drive_mount_locatable=locatable)]
+        db, item, drive_mount_locatable=locatable)]
 
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
@@ -4853,20 +4827,9 @@ async def video_stream(
         if _variant_error == 409:
             raise HTTPException(
                 status_code=409, detail="播放变体当前不可用，请选择其他变体")
-    # 转码变体不走 video_stream 的字节分支：它就是转码路径（video_hls），
-    # 在这里 302 到 master.m3u8，查询串原样保留（鉴权签名在里面），
-    # 缺 MediaSourceId 时补一个；不是静默改走，而是所选变体自己的入口。
-    if _requested_variant == play_variants.TRANSCODE_HLS:
-        _pt.done()
-        _hls_qs = str(request.url.query)
-        _hls_url = f"/emby/videos/{item.guid}/master.m3u8"
-        if _hls_qs:
-            _hls_url += f"?{_hls_qs}"
-            if "MediaSourceId=" not in _hls_qs:
-                _hls_url += f"&MediaSourceId={item.guid}:{play_variants.TRANSCODE_HLS}"
-        else:
-            _hls_url += f"?MediaSourceId={item.guid}:{play_variants.TRANSCODE_HLS}"
-        return _observe_traffic(RedirectResponse(_hls_url, status_code=302))
+    # 转码删除（2026-10-24）：不再有 transcode_hls 变体分支；客户端
+    # 若仍带 transcode_hls 变体，上面 resolve_requested_variant 已按
+    # 「不在四变体枚举里」报 404，不会落到这里。
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有 drive_file_id）
     # 且 drive_direct_play_enabled 开关开启时，直接 302 到谷歌 usercontent
@@ -5020,157 +4983,21 @@ async def video_hls(
     user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
-    # SenPlayer 等客户端按 Emby 约定拼 /emby/videos/{id}/stream.{ext} 取流；
-    # stream.* 是直接流不是转码路径。若被 catch-all 误收会起 ffmpeg 返 m3u8，
-    # 客户端等视频字节流等不到就一直转圈。一律转交直连处理（放最前，避免
-    # 与 video_stream 重复做可见性校验；双层 release_db 关闭会话是幂等的）。
+    """转码地址瘦身（2026-10-24 转码删除）：只保留 stream.* 直连委托。
+
+    SenPlayer 等客户端按 Emby 约定拼 /emby/videos/{id}/stream.{ext} 取流，
+    这条通配路由必须继续把它转交 video_stream；其余一切路径（master.m3u8、
+    切片、会话地址）都是已删除的转码路径，一律 404，不再起 ffmpeg。
+    """
+    # stream.* 是直接流不是转码路径；转交 video_stream 做完整鉴权与取流。
     if transcode_path.startswith("stream."):
         return await video_stream(item_id, request, user, db)
-    # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
-    from backend.emby_server.async_db import run_db
-    # 安全修复（P0 / H1）：条目必须在用户可见的库范围内（统一 helper）
-    item = await run_db(_require_visible_item, db, user, item_id)
-    base = _base_url(request)
-    q = request.query_params
+    raise HTTPException(status_code=404, detail="服务端转码已移除，请使用直连播放")
 
-    # 已存在的转码会话：直接回放列表/切片
-    # 注意：切片请求走 session 票据校验（HLS 播放器无法对切片附加 api_key），
-    # 会话本身只在建立转码（master.m3u8 首次请求）时经过完整鉴权创建。
-    # H2：子请求沿用本次请求的签名 / Emby token；门户 JWT 不回显进播放列表
-    auth_qs = _echo_auth_qs(request)
-    existing = q.get("session")
-    if existing and get_transcode(existing):
-        info = get_transcode(existing)
-        # S6：客户端还在拉播放列表 / 切片 = 还有人在看（闲置回收按它判定）
-        touch_transcode(existing)
-        try:
-            file_path = safe_child_name(info["dir"], transcode_path)
-            playlist = safe_child_name(info["dir"], "master.m3u8")
-        except ValueError:
-            raise HTTPException(status_code=404, detail="Invalid transcode path")
-        if transcode_path.endswith(".m3u8"):
-            # ffmpeg 写完首个切片才落盘播放列表；直接返回空列表会让播放器判定播放失败
-            await wait_for_file(playlist, timeout=15.0)
-            if not os.path.isfile(playlist):
-                if not transcode_alive(existing):
-                    raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
-                raise HTTPException(status_code=504, detail="转码尚未产出播放列表")
-            # S3：重写要读 CDN 配置（同步 DB）与磁盘上的播放列表：放线程池
-            content = await run_db(_rewrite_playlist, info["dir"], base, item.guid, existing,
-                                   db=db, auth_qs=auth_qs)
-            return Response(
-                content, media_type="application/vnd.apple.mpegurl",
-                # 播放列表绝不进 CDN/浏览器缓存：内容随时变（会话回收后失效）
-                headers={"Cache-Control": cdn.NO_STORE},
-            )
-        # 客户端请求切片往往早于 ffmpeg 写出，短暂等待而非立即 404
-        if not await wait_for_file(file_path, timeout=12.0):
-            if not transcode_alive(existing):
-                raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
-            raise HTTPException(status_code=404, detail="Segment not ready")
-        media_type = "video/mp2t" if transcode_path.endswith(".ts") else "application/octet-stream"
-        # 分片是 CDN 缓存的全部意义所在：ffmpeg 写完就不变，边缘放多久都安全。
-        # （CDN 未启用时浏览器也能短缓存热点，无副作用。）
-        return FileResponse(file_path, media_type=media_type,
-                            headers={"Cache-Control": cdn.SEGMENT_CACHE_HEADER})
-
-    # 新转码请求（付费墙 + 客户端与转码策略：建立会话前校验）
-    # S3：整段准备（策略校验的同步 DB、115 取直链的同步 HTTP、本地缓存查询/入队、
-    # 起 ffmpeg 的 Popen）一次性扔进线程池——旧实现直接在事件循环上做，115 慢的时候
-    # 单 worker 的 EA 整个卡住最长 20s+，所有人的播放 / 列表都停。
-    content = await run_db(_prepare_new_transcode, db, user, item, request, base, auth_qs)
-    return Response(content=content, media_type="application/vnd.apple.mpegurl")
-
-
-def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
-                           auth_qs: str) -> str:
-    """建立一次新的 HLS 转码会话，返回 master 播放列表文本（同步，必须在线程里调）
-
-    包含：防盗链 / 付费墙 / 客户端与转码策略校验、码率归档、播放目标解析（可能是
-    115 取直链等同步网络调用）、本地缓存线路查询与入队、转码缓存复用或起 ffmpeg、
-    子请求鉴权串与 CDN 改写。
-    """
-    q = request.query_params
-    # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）；
-    # 切片子请求走 session 票据，不经过这里。
-    play_sign.check_referer(request, db)
-    ensure_playback_allowed(db, user)
-    # 并发上限按**本机**正在跑的转码数判定：分离部署时 EA 就是那台播放节点
-    playback_policy.ensure_transcode_allowed(
-        db, user, running=len(active_transcode_ids()), capacity=transcode_capacity(),
-    )
-    if not shutil.which(os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")):
-        raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法转码；请使用直连播放")
-    # 2026-10 简化：删除服务端码率钳制，客户端要多少转多少
-    video_bitrate = int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000)
-    height = int(q.get("Height") or 0) or None
-    # 2026-10 简化：删除服务端三档转码。客户端要多少码率/分辨率就转多少，
-    # 只在源片分辨率低于请求时不做无意义的上采样（学 Linger 薄服务器思路）。
-    from backend.emby_server import transcode as transcode_mod
-    height = transcode_mod.clamp_to_source(height, getattr(item, "height", None))
-    start_ticks = int(q.get("PositionTicks") or 0)
-    start_seconds = start_ticks / TICKS
-    target = _play_target(db, item)
-    # 转码的拉流字节由 ffmpeg 进程走，不经过本服务的响应体，
-    # 所以这里只记请求不记流量（面板上已标明流量口径不含转码拉流）。
-    line_stats.record_request()
-    # 按需转码 P1：缓存命中直接复用，不再起 ffmpeg；
-    # 2 路硬限制超了就 503，让客户端降级走直连
-    fingerprint = getattr(item, "file_fingerprint", None)
-    cached_dir = transcode_mod.find_cache(item.guid, video_bitrate, height, fingerprint)
-    if cached_dir:
-        session_id = transcode_mod.register_cache_session(
-            cached_dir, user_id=user.id, item_guid=item.guid,
-            video_bitrate=video_bitrate, height=height)
-    else:
-        # D-P1-1：用 transcode_slot() 保证"检查→启动"原子，
-        # 突发请求不会绕过并发上限打满 CPU。
-        with transcode_mod.transcode_slot():
-            session_id = start_transcode(
-                target.value, start_seconds, video_bitrate, height,
-                user_id=user.id, item_guid=item.guid, input_headers=target.headers,
-                cache_key=transcode_mod.cache_key(item.guid, video_bitrate, height, fingerprint),
-                fingerprint=fingerprint,
-            )
-    # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
-    # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
-    if not auth_qs:
-        # 首次请求是 header 里的 JWT（无签名 / 无 Emby token）：给子请求签一把短期播放签名
-        auth_qs = _url_auth_qs(db, request, user, item.guid)
-    variant_url = (
-        f"{base}/emby/videos/{item.guid}/main.m3u8"
-        f"?session={session_id}&{auth_qs}"
-    )
-    return f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n"
-
-
-def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,  # noqa: D401
-                     api_key: str = "", db: Session = None, auth_qs: str = "") -> str:
-    """重写 ffmpeg 播放列表：切片指向本服务，并带上 session 票据与 api_key
-
-    不带 api_key 时播放器对切片子请求不会附加认证头，会直接 401。
-    """
-    master = os.path.join(out_dir, "master.m3u8")
-    if not os.path.isfile(master):
-        return "#EXTM3U\n"
-    with open(master, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
-    if auth_qs:
-        suffix = f"&{auth_qs}"
-    else:
-        suffix = f"&api_key={urllib.parse.quote(api_key)}" if api_key else ""
-    seg_base = base
-    lines = []
-    for line in content.splitlines():
-        if line.endswith((".ts", ".m4s", ".aac", ".vtt")):
-            lines.append(f"{seg_base}/emby/videos/{item_guid_value}/{line}?session={session_id}{suffix}")
-        else:
-            lines.append(line)
-    return "\n".join(lines) + "\n"
 
 # ==================== 拆分说明（v2.13.0）====================
 # 本文件原先 2100+ 行，已按关注点拆出三个模块（路由注册顺序与拆分前完全一致）：
-#   - media_routes.py  图片投递 / 下载 / hls1
+#   - media_routes.py  图片投递 / 下载（hls1 转码入口已随转码删除移除）
 #   - compat_routes.py 会话上报与协议补齐端点
 #   - stream_routes.py 播放流容器变体 / 原始文件 / 字幕投递 / HLS 通配
 # 三者把路由注册到上面这个 emby_router 上（由 backend/main.py 与 emby_api/main.py 导入触发）。

@@ -136,7 +136,7 @@ r = client.get(f"/emby/Items/{item_guid}/Download", headers=free_h)
 check("非会员下载 → 403", r.status_code == 403, str(r.status_code))
 
 r = client.get(f"/emby/videos/{item_guid}/master.m3u8", headers=free_h)
-check("非会员新建转码会话 → 403（先于 ffmpeg 可用性检查）", r.status_code == 403, str(r.status_code))
+check("转码地址已删除 → 404（不再走付费墙/转码）", r.status_code == 404, str(r.status_code))
 
 r = client.get(f"/emby/Items/{item_guid}/Download", headers=member_h)
 check("会员下载放行", r.status_code == 200, str(r.status_code))

@@ -4,8 +4,8 @@
 
 1. ``GET /Sessions``（含 ``/emby/Sessions``）**没有任何鉴权**，返回全站所有未结束会话：
    用户名 / 设备 / 客户端 / IP / 正在播放的条目；
-2. ``DELETE /Sessions/{key}``（含 ``/emby/Sessions/{key}``）**同样没有鉴权**，并且会调用
-   ``stop_transcode()`` —— 匿名即可把任意用户踢下线；
+2. ``DELETE /Sessions/{key}``（含 ``/emby/Sessions/{key}``）**同样没有鉴权**，并且历史实现会调用
+   已删除的 ``stop_transcode()`` —— 匿名即可把任意用户踢下线；
 3. 客户端没带 ``PlaySessionId`` 时，会话键回退成 ``{user.id}-{item.guid[:16]}``，而
    ``item.guid`` 就是客户端可见的条目 id：会话键可以被公开算出来。
 
@@ -41,7 +41,6 @@ from backend.emby_server import api as emby_api
 from backend.emby_server import compat_routes
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization
-from backend.emby_server.streaming import stop_transcodes_for
 from backend.security import SECRET_KEY
 
 logger = logging.getLogger(__name__)
@@ -184,12 +183,9 @@ def stop_session_checked(
             raise HTTPException(status_code=403, detail="只能结束自己的播放会话")
         admin_roles.ensure_admin_allowed(request, user)
 
-    # 转码会话按「用户 + 条目 guid」反查（播放会话键与转码 uuid 不是一回事，
-    # 旧写法 stop_transcode(session_key) 永远匹配不上）
-    item_guid = emby_api.item_guid_for(db, session.item_id)
+    # 转码删除后结束会话不再需要停转码进程（已无转码会话存在）。
     session.ended_at = datetime.now()
     db.commit()
-    stop_transcodes_for(session.user_id, item_guid)
     return {"success": True}
 
 

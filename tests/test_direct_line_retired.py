@@ -130,13 +130,8 @@ def test_video_stream_source_has_no_google_direct_call():
     _WHITELIST_302_URL_SOURCES = {
         "drive_usercontent_download_url(_fid)",  # Drive 直链（快路径 + 回落）
         "direct_url",  # 对象存储签名直链（← _strategy.maybe_direct_url）
-        # #1220 修：转码变体（transcode_hls）302 到本站内 HLS 入口
-        # master.m3u8，不是外部门直链——它不走谷歌 usercontent、不走
-        # 对象存储签名、不绕中继与鉴权（查询串原样保留、缺 MediaSourceId
-        # 时补变体后缀），且只有客户端选了转码变体并通过可用性校验
-        # （transcode_allowed）时才到达该分支。把它列入白名单不削弱
-        # 本护栏：任何新增的外部门直链变量仍不在白名单里，照样红。
-        "_hls_url",
+        # 注 2026-10-24：#1220 的转码变体 HLS 分支已随转码全面删除而移除，
+        # 本白名单不再含 _hls_url；任何新增的外部门直链变量仍不在白名单里，照样红。
     }
     sources = []
     for node in ast.walk(tree):

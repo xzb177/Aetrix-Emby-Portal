@@ -502,10 +502,8 @@ def _check_disk(subs: dict, rule) -> Optional[tuple[str, str, dict]]:
     thr = 10.0 if rule.threshold is None else float(rule.threshold)
     if float(free_pct) < thr:
         return (f"磁盘空间不足：仅剩 {float(free_pct):.1f}%",
-                f"磁盘余量 {float(free_pct):.1f}%（阈值 {thr:g}%），"
-                f"转码会话 {m.get('transcode_sessions', 0)} 个。请及时清理。",
-                {"disk_free_percent": free_pct,
-                 "transcode_sessions": m.get("transcode_sessions", 0)})
+                f"磁盘余量 {float(free_pct):.1f}%（阈值 {thr:g}%）。请及时清理。",
+                {"disk_free_percent": free_pct})
     return None
 
 

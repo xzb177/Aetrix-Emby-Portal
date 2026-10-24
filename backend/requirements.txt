@@ -26,7 +26,8 @@ httpx>=0.25.0
 Pillow>=10.4.0
 pyvips>=2.2  # 缩略图引擎优先用 libvips（容器内需 apt 装 libvips42）；缺席时静默退回 Pillow
 
-# 转码（外部二进制，需系统安装 ffmpeg）
+# 探测与抽取（外部二进制，需系统安装 ffmpeg 包：内含 ffprobe 探测、
+# 内封字幕抽取、缩略图抽帧；服务端视频转码已删除，不再用 ffmpeg 编码）
 # ffmpeg 由宿主系统/Docker 镜像提供
 
 # 监控

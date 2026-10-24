@@ -619,7 +619,7 @@ class PlayStartEvent(Base):
     method = Column(String(30))
     # 实际走的变体名（FMBY 批二 #11 PR-2，见 play_events.note_play_start
     # 的 variant 参数）：drive_relay / drive_direct / mount_relay /
-    # local_file / transcode_hls；老事件与无变体调用为 NULL。
+    # local_file；转码删除后不再有 transcode_hls。老事件与无变体调用为 NULL。
     variant = Column(String(30))
     result = Column(String(16), nullable=False, default="ok")  # ok / error
     # 错误分类：auth（凭据失效 503）/ mount_unavailable（挂载不可用 404）/

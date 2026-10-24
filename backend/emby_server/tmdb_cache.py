@@ -31,7 +31,7 @@
 
 ==========================  ==================================================
 ``EMBY_TMDB_CACHE``          ``0`` 关闭（默认开启）
-``EMBY_TMDB_CACHE_DIR``      缓存目录（默认 ``<EMBY_TRANSCODE_DIR>/tmdb``）
+``EMBY_TMDB_CACHE_DIR``      缓存目录（默认 ``<EMBY_CACHE_DIR>/tmdb``）
 ``EMBY_TMDB_CACHE_MB``       容量上限，默认 256 MB；0 = 不限
 ``EMBY_TMDB_TTL_SEARCH``     search 命中 TTL 秒，默认 7 天
 ``EMBY_TMDB_TTL_NEGATIVE``   search 阴性 TTL 秒，默认 24 小时
@@ -63,8 +63,9 @@ def _env_flag(name: str, default: str = "1") -> bool:
 # 配置全部**动态**读 env：测试可以用 monkeypatch.setenv 逐例改，无需重新导入；
 # 代价只是每次多几个 os.getenv（相对一次文件 IO 可忽略）。
 def _cfg_dir() -> str:
+    # 转码删除后 TMDB 缓存不再复用转码根目录：默认落独立缓存根。
     return (os.getenv("EMBY_TMDB_CACHE_DIR", "").strip()
-            or os.path.join(os.getenv("EMBY_TRANSCODE_DIR", "/tmp/emby_transcode"),
+            or os.path.join(os.getenv("EMBY_CACHE_DIR", "/tmp/aetrix_cache"),
                             "tmdb"))
 
 

@@ -34,7 +34,6 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from backend import models
-from backend import playback_policy
 from backend.database import Base
 from backend.emby_server import api, mounts as mount_lib
 from backend.emby_server import models as em
@@ -106,11 +105,9 @@ def _drive_item(guid):
 
 
 def _stub_switches(monkeypatch, *, dd="true", relay="true",
-                   transcode=True, mount_ok=True):
+                   mount_ok=True):
     monkeypatch.setattr(api, "_drive_mount_id_for_item",
                         lambda db_, it: "drive-x" if mount_ok else None)
-    monkeypatch.setattr(playback_policy, "transcode_enabled",
-                        lambda db_: transcode)
     real_get = playback_strategy.store.get_value
 
     def fake_get(db_, key, default="", **kwargs):
@@ -152,36 +149,31 @@ def _events(db):
 def test_phase0_drive_dual_on_lists_relay_first(db, monkeypatch):
     _stub_switches(monkeypatch)
     names = [v.name for v in play_variants.list_variants(
-        db, _drive_item("g0-drive"), allow_transcode=True,
-        drive_mount_locatable=True)]
-    assert names == ["drive_relay", "drive_direct", "transcode_hls"]
+        db, _drive_item("g0-drive"), drive_mount_locatable=True)]
+    assert names == ["drive_relay", "drive_direct"]
 
 
 def test_phase0_drive_relay_off_or_unlocatable_lists_direct_first(
         db, monkeypatch):
     _stub_switches(monkeypatch, relay="false")
     names = [v.name for v in play_variants.list_variants(
-        db, _drive_item("g0-norelay"), allow_transcode=True,
-        drive_mount_locatable=True)]
-    assert names == ["drive_direct", "transcode_hls"]
+        db, _drive_item("g0-norelay"), drive_mount_locatable=True)]
+    assert names == ["drive_direct"]
     names2 = [v.name for v in play_variants.list_variants(
-        db, _drive_item("g0-nomount"), allow_transcode=True,
-        drive_mount_locatable=False)]
-    assert names2 == ["drive_direct", "transcode_hls"]
+        db, _drive_item("g0-nomount"), drive_mount_locatable=False)]
+    assert names2 == ["drive_direct"]
 
 
 def test_phase0_mount_and_local_lists(db, monkeypatch):
     _stub_switches(monkeypatch)
     mount_names = [v.name for v in play_variants.list_variants(
-        db, _item("g0-mount", file_path="mount://7/剧集/a.mkv"),
-        allow_transcode=True)]
-    assert mount_names == ["mount_relay", "transcode_hls"]
+        db, _item("g0-mount", file_path="mount://7/剧集/a.mkv"))]
+    assert mount_names == ["mount_relay"]
     local_names = [v.name for v in play_variants.list_variants(
-        db, _item("g0-local"), allow_transcode=True)]
-    assert local_names == ["local_file", "transcode_hls"]
-    no_trans = [v.name for v in play_variants.list_variants(
-        db, _item("g0-notrans"), allow_transcode=False)]
-    assert "transcode_hls" not in no_trans
+        db, _item("g0-local"))]
+    assert local_names == ["local_file"]
+    # 转码删除后：任何条目的清单里都不再有 transcode_hls
+    assert "transcode_hls" not in mount_names + local_names
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +196,7 @@ def test_parse_variant_param_wins_and_suffix_fallback():
 
 
 def test_resolve_variant_statuses():
-    available = ["drive_relay", "drive_direct", "transcode_hls"]
+    available = ["drive_relay", "drive_direct"]
     assert play_variants.resolve_requested_variant({}, available) == (None, None)
     assert play_variants.resolve_requested_variant(
         {"variant": "drive_direct"}, available) == ("drive_direct", None)
@@ -406,14 +398,14 @@ def test_forced_local_file_records_variant_event(db, monkeypatch, tmp_path):
     assert rows[0].variant == "local_file"
 
 
-def test_forced_transcode_redirects_to_hls_master(db, monkeypatch):
+def test_forced_transcode_now_404(db, monkeypatch):
+    # 转码删除后：transcode_hls 已不是合法变体名，点它 → 404，不再 302 到 HLS
     _stub_switches(monkeypatch)
     item = _drive_item("g1-transcode")
-    resp = _call_stream(monkeypatch, db, _user(), item,
-                        query=b"variant=transcode_hls&uid=9")
-    assert resp.status_code == 302
-    assert "/master.m3u8" in resp.headers["location"]
-    assert "uid=9" in resp.headers["location"]
+    with pytest.raises(HTTPException) as excinfo:
+        _call_stream(monkeypatch, db, _user(), item,
+                     query=b"variant=transcode_hls&uid=9")
+    assert excinfo.value.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +444,7 @@ def test_variant_suffix_mismatch_404(db, monkeypatch):
 def test_forced_variant_wrong_branch_409(db, monkeypatch):
     _stub_switches(monkeypatch)
     # 挂载条目点本机文件：清单里有 local_file 吗？没有（挂载清单只有
-    # mount_relay + transcode），所以这里先是 409；下面这条是另一层：
+    # mount_relay），所以这里先是 409；下面这条是另一层：
     # 挂载条目点 mount_relay，但解析回的却是本机文件目标 → 409
     item = _item("g1-wrongbranch", file_path="mount://7/剧集/a.mkv")
     monkeypatch.setattr(
