@@ -36,7 +36,7 @@ _MEDIA_ENDPOINTS = [
     (stream_routes, "video_subtitle_offset"),
     (stream_routes, "video_hls_upper"),
     (media_routes, "download_item"),
-    (media_routes, "video_hls1"),
+    # video_hls1 已随 2026-10-24 转码删除移除（HLS 转码入口不再存在），不在上表。
     (mount_routes, "mounted_item_file"),
 ]
 

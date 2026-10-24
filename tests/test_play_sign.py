@@ -200,8 +200,9 @@ class TestWiring:
         assert "&uid=" in content and "&exp=" in content and "&sign=" in content
         # 三个播放路由走签名优先的鉴权依赖
         assert content.count("Depends(get_play_user)") == 3
-        # 防盗链检查挂在两个播放入口
-        assert content.count("play_sign.check_referer") == 2
+        # 防盗链检查挂在 video_stream（video_hls 转交 video_stream，
+        # 同一检查点覆盖两个入口）
+        assert content.count("play_sign.check_referer") == 1
 
     def test_auth_wiring(self):
         with open("backend/emby_server/auth.py", encoding="utf-8") as f:
