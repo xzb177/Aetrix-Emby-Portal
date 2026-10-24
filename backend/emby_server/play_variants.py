@@ -93,7 +93,8 @@ def variants_enabled() -> bool:
 
 
 def list_variants(db: Session, item, *,
-                  drive_mount_locatable: bool = False) -> list[Variant]:
+                  drive_mount_locatable: bool = False,
+                  mount_can_generate_play_target: bool | None = None) -> list[Variant]:
     """按条目算可用变体清单（唯一判定口），第一条恒为现行主线变体。
 
     排序即兼容：第一条就是今天 video_stream 自动判定实际会走的那条
@@ -111,6 +112,11 @@ def list_variants(db: Session, item, *,
 
     ``drive_mount_locatable`` 由调用方用 ``_drive_mount_id_for_item``
     （一次主键查询）算好传进来——本模块不反向依赖 api.py。
+
+    ``mount_can_generate_play_target`` 由调用方按条目挂载行的类型派生
+    能力算好传进来（一次主键查询，见 api._mount_can_generate_play_target）：
+    False 时挂载中继不进清单（清单第 2 项能力门控）；None 时保持旧行为
+    （调用方未提供能力信号时，不因查不到挂载就把变体扣掉）。
     """
     fid = (getattr(item, "drive_file_id", "") or "").strip()
     file_path = getattr(item, "file_path", "") or ""
@@ -121,7 +127,10 @@ def list_variants(db: Session, item, *,
         else:
             names += [DRIVE_DIRECT]
     elif mount_lib.is_mount_path(file_path):
-        names.append(MOUNT_RELAY)
+        # 清单第 2 项能力门控：声明 can_generate_play_target=False 的源
+        # 不进变体清单；None = 未提供信号，保持旧行为。
+        if mount_can_generate_play_target is not False:
+            names.append(MOUNT_RELAY)
     else:
         names.append(LOCAL_FILE)
     return [_VARIANTS[n] for n in names]

@@ -821,8 +821,10 @@ class MountProvider:
     # ---- 能力 ----
     # FMBY 批三 #23（阶段 2 骨架）：五能力位声明。语义是「保证」不是
     # 「尽力」——声明 True 的能力，上层可以无条件编排；不能保证的声明
-    # False，哪怕现行某条路碰巧能走通。声明只描述能力，不改变任何分支
-    # 行为；上层按能力门控是后续阶段的事，本阶段不加任何门控。
+    # False，哪怕现行某条路碰巧能走通。
+    # 清单第 2 项起声明即门控：扫描（mount_sources.read_library_sources）、
+    # 变体清单（play_variants.list_variants）、刷新重试
+    # （refresh_credentials_if_supported）按本声明编排，不再只描述不执法。
     # 旧 capabilities() 曾返回 {"browse", "local"} 且在 af2769a2 上全仓
     # 零调用方（生产与测试均无调用），属于死代码，本次直接替换为五能力位
     # 结构，不保留旧 dict 形态。
@@ -851,9 +853,6 @@ class MountProvider:
         """
         raise NotImplementedError
 
-    def resolve(self, rel: str) -> PlayTarget:  # pragma: no cover - 由子类实现
-        raise NotImplementedError
-
     def read_text(self, rel: str) -> str:  # pragma: no cover - 由子类实现
         raise NotImplementedError
 
@@ -864,25 +863,25 @@ class MountProvider:
     # - open_range：搬字节，只按 Range 取段，不换链给客户端；
     # - read_sidecar_text：文本旁挂（NFO / 字幕 / .strm 内容）；
     # - refresh_credentials：凭据刷新，单独一口。
-    # 兼容：resolve() 仍保留（既有子类实现换链的位置，也是旧调用方
-    # 的入口）；read_text() 仍保留为旁挂文本的旧名。resolve_final 的
+    # 清单第 2 项：旧 ``resolve()`` 已删——换链实现全部迁入各子类的
+    # ``resolve_play_target``，旧调用方已全部迁移（全仓 grep 零调用方）；
+    # ``read_text()`` 仍保留为旁挂文本的旧名。resolve_final 的
     # 语义逐字不变，只是 .strm 那条路现在显式走旁挂口，不再藏在换链里。
 
-    def resolve_play_target(self, rel: str) -> PlayTarget:
+    def resolve_play_target(self, rel: str) -> PlayTarget:  # pragma: no cover - 由子类实现
         """换链口：返回文件的播放链（PlayTarget），不读文件内容。
 
         .strm 语义不在这里：.strm 要内容解析走 ``resolve_final``。
-        既有子类实现换链的位置是 ``resolve()``，本口默认委托给它；
-        新提供者可直接覆写本口（此时旧 ``resolve()`` 调用方仍走基类
-        实现，不会静默拿到新口的行为——新口与旧口不要各写一份实现）。
+        子类直接覆写本口实现换链；未覆写的提供者调本口即
+        ``NotImplementedError``，不许静默回落到别的实现。
         """
-        return self.resolve(rel)
+        raise NotImplementedError
 
     def read_sidecar_text(self, rel: str) -> str:
         """文本旁挂口（NFO / 字幕 / .strm 内容）。
 
         默认走既有 ``read_text``，覆写了 ``read_text`` 的子类行为原样
-        保留；新调用方一律用本口，能力门控（后续阶段）只认
+        保留；新调用方一律用本口，能力门控只认
         ``can_read_sidecar``。图片旁挂不走本口，走 ``open_range``
         的 display-asset 语义（按段取字节）。
         """
@@ -915,6 +914,24 @@ class MountProvider:
         """凭据刷新口：有真实刷新路径返回 True（失败抛 MountAuthError），
         无刷新路径返回 False（不是错误，调用方据此不重试刷新）。"""
         return False
+
+    def refresh_credentials_if_supported(self) -> bool:
+        """刷新重试唯一入口（清单第 2 项能力门控，横切只许一套）。
+
+        先查 ``can_refresh_credentials`` 再刷新：声明 False 的提供者
+        直接回 False，不调 ``refresh_credentials``、不重试——静态凭据
+        （115 Cookie / rclone conf / 本机无凭据）重试刷新毫无意义，
+        只会把一次凭据错刷成多次。声明 True 的提供者调其
+        ``refresh_credentials()``（失败抛 ``MountAuthError``，调用方按
+        既有口径处理）。刷新重试不许绕过本口另写一套。
+        """
+        try:
+            caps = self.capabilities()
+        except Exception:  # noqa: BLE001 — 声明都读不到的提供者按无刷新能力处理
+            return False
+        if not caps.can_refresh_credentials:
+            return False
+        return self.refresh_credentials()
 
     def resolve_final(self, rel: str) -> PlayTarget:
         """播放真正使用的解析入口：.strm 先取文件内容，再当直链播
@@ -1106,7 +1123,7 @@ class LocalMount(MountProvider):
                 + ("..." if len(walk_errors) > 5 else "")
             )
 
-    def resolve(self, rel: str) -> PlayTarget:
+    def resolve_play_target(self, rel: str) -> PlayTarget:
         root = self._require_path()
         try:
             path = safe_local_path(root, (rel or "/").lstrip("/"))
@@ -1292,7 +1309,7 @@ class Pan115Mount(MountProvider):
                 }
         raise MountError(f"115 上找不到文件: {rel}")
 
-    def resolve(self, rel: str) -> PlayTarget:
+    def resolve_play_target(self, rel: str) -> PlayTarget:
         entry = self._locate(rel)
         if not entry.get("pickcode"):
             raise MountError(f"115 未返回该文件的 pickcode: {rel}")
@@ -1326,7 +1343,7 @@ class Pan115Mount(MountProvider):
         return PlayTarget(stored.kind, stored.value, headers)
 
     def read_text(self, rel: str) -> str:
-        target = self.resolve(rel)
+        target = self.resolve_play_target(rel)
         client = _shared_http_client("pan115")
         resp = client.get(target.value, headers=target.headers)
         if resp.status_code >= 400:
@@ -1576,7 +1593,7 @@ class RemoteMount(MountProvider):
 
     def read_text(self, rel: str) -> str:
         """默认实现：解析成直链后把内容当文本读（用于 .strm 与字幕）"""
-        target = self.resolve(rel)
+        target = self.resolve_play_target(rel)
         resp = self._request("GET", target.value, headers=target.headers)
         return resp.content.decode("utf-8", errors="ignore")
 
@@ -1902,30 +1919,25 @@ def explain_local_path_failure(path: str) -> str:
     return "目录不存在或不可读"
 
 
-def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dict]]:
-    """把媒体库的 ``paths`` + 挂载解析成扫描来源
+def build_library_sources(local_paths, mount_subpaths, mount_ids, db: Session,
+                          library=None, *, enforce_can_list: bool = False,
+                          ) -> tuple[list[LibrarySource], list[dict]]:
+    """把已拆好的来源输入解析成扫描来源（旧列解析与新表读取共用，唯一实现）。
 
-    ``paths`` 里除了本机目录，还可以写 ``mount://<挂载 id>/<子目录>``（例如
-    ``mount://2/video/剧集/动漫剧``），表示只扫描该挂载下的这个子目录。
+    - ``local_paths``：本机目录原文列表；
+    - ``mount_subpaths``：``[(原文标签, 挂载 id, 子目录)]``；
+    - ``mount_ids``：整挂载来源的挂载 id 列表；子目录胜出过滤在本函数内做，
+      与旧行为逐字一致：同挂载既有子目录行又有整挂载行时只留子目录行
+      （2026-09-26 演唱会事故教训），没有子目录的库仍按整挂载扫；
+    - ``enforce_can_list``：True 时按能力门控——``can_list=False`` 的挂载
+      不进扫描（记 failed，不静默跳过）；False 时保持旧行为（旧函数与
+      回落路径用，不执法）。
 
-    返回 ``(可用来源, 不可用来源)``：不可用来源（路径不存在 / 账号失效 / 网络不通）
-    会记进 ``failed``，扫描器据此**跳过清理阶段**，避免把「读不到」当成「文件已删除」。
+    返回 ``(可用来源, 不可用来源)``：不可用来源会记进 ``failed``，扫描器
+    据此**跳过清理阶段**，避免把「读不到」当成「文件已删除」。
     """
     sources: list[LibrarySource] = []
     failed: list[dict] = []
-
-    # 先把 paths 拆成「本机目录」和「mount:// 子目录」两类
-    local_paths: list[str] = []
-    mount_subpaths: list[tuple[str, int, str]] = []  # (原文, 挂载 id, 子目录)
-    for raw in (getattr(library, "paths", "") or "").split(","):
-        path = raw.strip()
-        if not path:
-            continue
-        parsed = parse_mount_path(path)
-        if parsed is not None:
-            mount_subpaths.append((path, parsed[0], parsed[1]))
-        else:
-            local_paths.append(path)
 
     for path in local_paths:
         if not os.path.isdir(path):
@@ -1935,7 +1947,6 @@ def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dic
             continue
         sources.append(LibrarySource(label=path, kind="local", path=path))
 
-    mount_ids = parse_mount_ids(library)
     # 一个库可能同时留下旧字段：paths 写了 mount://<id>/<子目录>，
     # mount_ids 又保留了同一个挂载 id。子目录来源已经代表这个挂载，
     # 再追加 mount_ids 的根来源会把整个云盘也扫进去（严重时把别的库内容
@@ -1960,6 +1971,16 @@ def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dic
             return
         try:
             provider = build_provider(mount, db, library)
+            if enforce_can_list:
+                try:
+                    caps = provider.capabilities()
+                except Exception as exc:  # noqa: BLE001 — 声明都读不到的挂载按不可用处理
+                    failed.append({"label": label, "reason": f"能力声明读取失败: {exc}"})
+                    return
+                if not caps.can_list:
+                    failed.append({"label": label,
+                                   "reason": f"挂载「{mount.name}」声明 can_list=False，能力门控跳过扫描"})
+                    return
             if subpath.strip("/"):
                 # 子目录必须真实存在，否则这个来源不可用（扫描器会跳过清理，避免误删条目）
                 provider.list_dir(subpath)
@@ -1977,6 +1998,34 @@ def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dic
         _mount_source(mount_label(mounts.get(mount_id)) if mounts.get(mount_id) else f"挂载 #{mount_id}",
                       mount_id, "/")
     return sources, failed
+
+
+def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dict]]:
+    """把媒体库的 ``paths`` + 挂载解析成扫描来源（旧列解析）。
+
+    ``paths`` 里除了本机目录，还可以写 ``mount://<挂载 id>/<子目录>``（例如
+    ``mount://2/video/剧集/动漫剧``），表示只扫描该挂载下的这个子目录。
+
+    本函数是回落路径与双读基线：新表读取走
+    ``mount_sources.read_library_sources``，新表读不到时回落到这里；
+    双读校验（``compare_library_sources``）以本函数的输出为旧侧基线。
+    不执法能力门控（门控只在新表读取里开）。
+    """
+    # 先把 paths 拆成「本机目录」和「mount:// 子目录」两类
+    local_paths: list[str] = []
+    mount_subpaths: list[tuple[str, int, str]] = []  # (原文, 挂载 id, 子目录)
+    for raw in (getattr(library, "paths", "") or "").split(","):
+        path = raw.strip()
+        if not path:
+            continue
+        parsed = parse_mount_path(path)
+        if parsed is not None:
+            mount_subpaths.append((path, parsed[0], parsed[1]))
+        else:
+            local_paths.append(path)
+
+    return build_library_sources(local_paths, mount_subpaths,
+                                 parse_mount_ids(library), db, library)
 
 
 def check_mount_subpath(db: Session, mount_id: int, rel: str) -> None:

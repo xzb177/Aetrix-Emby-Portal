@@ -32,6 +32,7 @@ from backend.db_retry import commit_with_retry, deadlock_backoff, is_deadlock, r
 from backend.emby_server import disc_filter
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import mount_sources
 from backend.emby_server import nfo as nfo_lib
 # 软删除（v2.48.0）：清理阶段默认只标记 deleted_at，物理删除留给过期回收
 from backend.emby_server import soft_delete as _soft_delete
@@ -2295,7 +2296,8 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
     「这轮一共几个来源、哪个一条都没扫到」在后台要能一眼看见（见 scan_result_payload）。
     明细在生成器收尾时补写：调用方中途退出也拿得到。
     """
-    sources, failed = mount_lib.library_sources(library, db)
+    # 清单第 2 项：扫描来源解析改读新表（无行时回落旧列并记警告，见 mount_sources）。
+    sources, failed = mount_sources.read_library_sources(db, library)
     unavailable = []
     for item in failed:
         logger.warning("媒体库「%s」来源不可用：%s（%s）", snap.name, item["label"], item["reason"])

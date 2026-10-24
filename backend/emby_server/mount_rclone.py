@@ -657,7 +657,7 @@ class RcloneMount(RemoteMount):
             "mode": self.mode,
         }
 
-    def resolve(self, rel: str) -> PlayTarget:
+    def resolve_play_target(self, rel: str) -> PlayTarget:
         if self.mode == MODE_CLI:
             url = self._cli_link(rel)
             if not url:
