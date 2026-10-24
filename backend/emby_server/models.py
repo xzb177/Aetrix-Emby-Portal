@@ -472,6 +472,13 @@ class UserMediaData(Base):
     user_id = Column(Integer, ForeignKey("web_users.id"), nullable=False)
     item_id = Column(Integer, ForeignKey("emby_items.id"), nullable=False)
     playback_position_ticks = Column(BigInteger, default=0)
+    # 历史最远进度（FMBY 学习批一 #4「进度双记」）：与 playback_position_ticks
+    # 并存——position 是当前位置（拖回去重看会变小），max 是本轮观看的最远点，
+    # 只增不减；完播/手动标记已看时与 position 一起清零（同一轮观看口径）。
+    # 可空：NULL = 这行还没被双记写过（升级前老数据 / 迁移刚补列），
+    # 读与算一律回退 playback_position_ticks，不靠回填（见 compat_routes 的
+    # effective_max_position_ticks）。老库靠 database._auto_migrate 补列。
+    max_position_ticks = Column(BigInteger)
     play_count = Column(Integer, default=0)
     played = Column(Boolean, default=False)
     is_favorite = Column(Boolean, default=False)
