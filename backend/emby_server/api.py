@@ -4814,8 +4814,13 @@ async def video_stream(
     # 逐字一致（老客户端行为不变）。租约已在上面按条目占过一次，
     # 租约 id 不含变体（stream_limits._lease_id），同条目两变体只占一额。
     _requested_variant = None
+    # #1220 CI 修：变体参数是可选特性，读不到查询串时按“没带变体”
+    # 走老路径，不许让整个流端点崩掉。真实 FastAPI 请求一定有
+    # query_params（本模块多处同款直读）；这里只兜底鸭子类型调用方
+    # （如测试桩）缺该属性的情况，真实请求行为逐字不变。
+    _variant_qs = getattr(request, "query_params", None) or {}
     _variant_name, _variant_mismatch = play_variants.parse_requested_variant(
-        request.query_params)
+        _variant_qs)
     if _variant_mismatch:
         raise HTTPException(
             status_code=404, detail="播放变体不存在：variant 与 MediaSourceId 不一致")
@@ -4824,7 +4829,7 @@ async def video_stream(
             _available_variant_names, db, item, user)
         _requested_variant, _variant_error = (
             play_variants.resolve_requested_variant(
-                request.query_params, _available_names))
+                _variant_qs, _available_names))
         if _variant_error == 404:
             raise HTTPException(status_code=404, detail="播放变体不存在")
         if _variant_error == 409:
