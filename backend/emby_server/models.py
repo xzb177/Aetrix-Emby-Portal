@@ -1465,3 +1465,122 @@ class VariantAvailability(Base):
     last_checked_at = Column(DateTime, default=None)
     last_success_at = Column(DateTime, default=None)
     updated_at = Column(DateTime, default=datetime.now)
+
+
+class RoleTemplate(Base):
+    """角色模板（FMBY 挂载-7 照抄：三层路径授权之一）。
+
+    模板本身只是一个名字 + 种子标记，不直接含任何权限数字；真正的
+    路径授权在 ``RoleTemplateSourcePathGrant`` 行里。种子三档照抄
+    FMBY：User / RestrictedUser / Admin（见 path_auth.ensure_seed_templates，
+    幂等建种，不 wired 进 init_db——接线是管理端落点时的后续项）。
+    用户与模板的归属走 ``UserRoleTemplate`` 映射表（一个用户至多一个
+    模板，简单口径；多模板叠加是后续项，不在本 PR 展开）。
+    """
+
+    __tablename__ = "role_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False)
+    description = Column(String(500), default="")
+    is_seed = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class UserRoleTemplate(Base):
+    """用户 ↔ 角色模板归属（一用户至多一行，见 RoleTemplate docstring）。"""
+
+    __tablename__ = "user_role_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, unique=True, nullable=False, index=True)
+    role_template_id = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class RoleTemplateSourcePathGrant(Base):
+    """角色模板级路径授权（FMBY role_template_source_path_grants）。
+
+    一行 = 该模板对某挂载的某子路径前缀放行。path_prefix 与
+    stream_limits 的 prefix 同口径（带前导 /、无尾随 /，根为 "/"）。
+    无外键（照 library_sources 先例：挂载删了行留着供追溯）。
+    """
+
+    __tablename__ = "role_template_source_path_grants"
+
+    __table_args__ = (
+        UniqueConstraint("role_template_id", "mount_id", "path_prefix",
+                         name="uq_role_tpl_grant"),
+        Index("ix_role_tpl_grant_tpl", "role_template_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    role_template_id = Column(Integer, nullable=False)
+    mount_id = Column(Integer, nullable=False)
+    path_prefix = Column(String(1024), nullable=False, default="/")
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class UserSourcePathGrant(Base):
+    """用户级路径授权（FMBY user_source_path_grants），与模板层同口径。"""
+
+    __tablename__ = "user_source_path_grants"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "mount_id", "path_prefix",
+                         name="uq_user_path_grant"),
+        Index("ix_user_path_grant_user", "user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    mount_id = Column(Integer, nullable=False)
+    path_prefix = Column(String(1024), nullable=False, default="/")
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class LibraryAccessGrant(Base):
+    """库级路径授权（FMBY library_access_grants），与模板层同口径。
+
+    一行 = 该库对某挂载的某子路径前缀放行。判定取条目所属库
+    （MediaItem.library_id），不是播放请求里带的库参数。
+    """
+
+    __tablename__ = "library_access_grants"
+
+    __table_args__ = (
+        UniqueConstraint("library_id", "mount_id", "path_prefix",
+                         name="uq_library_access_grant"),
+        Index("ix_library_access_grant_lib", "library_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(Integer, nullable=False)
+    mount_id = Column(Integer, nullable=False)
+    path_prefix = Column(String(1024), nullable=False, default="/")
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class SourcePathPolicy(Base):
+    """源路径限流策略（FMBY source_path_policies，照抄字段）。
+
+    接管 stream_limits 的策略来源：表里有行就用表行，表空才回落
+    旧 system_configs JSON（兼容期，见 stream_limits.load_policies）。
+    priority 只定返回顺序（高在前），执法仍是“命中策略全部生效”
+    （与现行配置口径逐字一致，不另起最长前缀胜出语义）。
+    """
+
+    __tablename__ = "source_path_policies"
+
+    __table_args__ = (
+        UniqueConstraint("mount_id", "path_prefix",
+                         name="uq_source_path_policy"),
+        Index("ix_source_path_policy_mount", "mount_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mount_id = Column(Integer, nullable=False)
+    path_prefix = Column(String(1024), nullable=False, default="/")
+    priority = Column(Integer, default=0)
+    max_concurrent_streams = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)

@@ -17,13 +17,19 @@
 - 获取走一段 Lua 原子完成「清过期 → 已有租约刷新放行 → 未满占位 → 满则拒」，
   避免两进程并发时一起读到未满、一起放行。
 
-策略配置（默认无策略 = 不限 = 零行为变化）：
-- system_configs 键 ``stream_path_limits``，JSON 数组，每项
+策略来源（清单第 15 项：表接管 + 配置兼容期）：
+- 首选 ``source_path_policies`` 表（FMBY 字段：mount_id / path_prefix /
+  priority / max_concurrent_streams）；表里有行就用表行，表空才回落
+  旧 system_configs 键 ``stream_path_limits``（JSON 数组，每项
   ``{"mount_id": 3, "prefix": "/电影", "max_streams": 2}``；prefix 与
-  parse_mount_path 的 rel 同口径（带前导 /），"/" 表示整个挂载。
-- 读取走全仓唯一的热读口径 store.get_value（60s TTL 缓存）；坏 JSON / 坏行
-  一律按无策略放行并告警——配置写错不许打挂播放。调参只走配置行，不做
-  管理后台页面（功能开关从简）。
+  parse_mount_path 的 rel 同口径（带前导 /），"/" 表示整个挂载）。
+- 表读走进程内 60 秒 TTL 缓存（与 store.get_value 的 60 秒口径对齐；
+  高频流请求每 Range 都调 acquire，不缓存就是每请求一次 DB 查询）。
+  坏 JSON / 坏行一律按无策略放行并告警——配置写错不许打挂播放。
+  旧配置仍可读（兼容期）；首批原样导入走 :func:`import_config_policies`
+  （幂等，只补缺失行、不删行），导入触发点是管理端接线时的后续项。
+- 租约键口径不变（``mount_id:prefix`` 摘要），只换策略来源；执法
+  语义不变：命中策略全部生效（priority 只定返回顺序）。
 - 租约 TTL 走 env ``STREAM_LIMIT_LEASE_TTL_SEC``（默认 600，钳 30–3600）。
 
 fail-open：Redis 不可用或脚本异常时告警后放行。限流是保护网盘的护栏，不是
@@ -122,10 +128,96 @@ def parse_policies(raw: object) -> list[StreamPathPolicy]:
     return policies
 
 
-def load_policies(db) -> list[StreamPathPolicy]:
-    """经 store.get_value 热读策略（全仓唯一带缓存的配置读法）。"""
+#: 表策略进程内缓存 TTL（秒）：与 store.get_value 的 60 秒口径对齐。
+_TABLE_CACHE_TTL_SEC = 60.0
+_table_cache: dict = {"at": 0.0, "rows": []}
+
+
+def clear_table_policy_cache() -> None:
+    """清表策略缓存（测试 / 管理端改表后立即生效用）。"""
+    _table_cache["at"] = 0.0
+    _table_cache["rows"] = []
+
+
+def _load_table_policies(db) -> list[StreamPathPolicy]:
+    """读 source_path_policies 表行（60 秒缓存）；表空返回 []。
+
+    缓存只按时间失效，不按 db 会话区分——生产单库单真相，与 store
+    的进程内缓存同一口径；测试里改表后须调 clear_table_policy_cache。
+    """
+    from backend.emby_server import models as em
+
+    now = time.monotonic()
+    if now - _table_cache["at"] < _TABLE_CACHE_TTL_SEC:
+        return list(_table_cache["rows"])
+    rows = (db.query(em.SourcePathPolicy)
+            .order_by(em.SourcePathPolicy.priority.desc(),
+                      em.SourcePathPolicy.path_prefix)
+            .all())
+    policies = []
+    for row in rows:
+        prefix = _normalize_prefix(row.path_prefix)
+        try:
+            max_streams = int(row.max_concurrent_streams)
+        except (TypeError, ValueError):
+            continue
+        if prefix is None or max_streams < 1:
+            continue
+        policies.append(StreamPathPolicy(int(row.mount_id), prefix,
+                                         max_streams))
+    _table_cache["at"] = now
+    _table_cache["rows"] = policies
+    return list(policies)
+
+
+def import_config_policies(db) -> dict:
+    """把旧 system_configs 策略原样导入成表行（幂等）。
+
+    只补（mount_id, prefix）缺失的行，不删、不改已有行；返回
+    ``{"imported": n, "skipped": m}``。坏配置行按 parse_policies
+    口径跳过。导入本身不切换策略来源——表里有行后下一次
+    load_policies 自然用表行（见 load_policies）。
+    """
+    from backend.emby_server import models as em
     from backend.integrations import store
 
+    imported = 0
+    skipped = 0
+    for policy in parse_policies(store.get_value(db, POLICIES_KEY, "")):
+        existing = (db.query(em.SourcePathPolicy)
+                    .filter(em.SourcePathPolicy.mount_id == policy.mount_id,
+                            em.SourcePathPolicy.path_prefix == policy.prefix)
+                    .first())
+        if existing is not None:
+            skipped += 1
+            continue
+        db.add(em.SourcePathPolicy(
+            mount_id=policy.mount_id, path_prefix=policy.prefix,
+            priority=0, max_concurrent_streams=policy.max_streams))
+        imported += 1
+    if imported:
+        db.commit()
+        clear_table_policy_cache()
+    return {"imported": imported, "skipped": skipped}
+
+
+def load_policies(db) -> list[StreamPathPolicy]:
+    """策略来源：表优先、配置回落（清单第 15 项兼容期口径）。
+
+    表里有行 → 用表行（不再读配置）；表空 → 经 store.get_value
+    热读旧配置；表读异常 → 告警后回落旧配置（fail-open，与本模块
+    一贯取舍一致：限流是护栏不是前置依赖）。
+    """
+    from backend.integrations import store
+
+    try:
+        table_policies = _load_table_policies(db)
+    except Exception:  # noqa: BLE001 — 表读失败回落配置，不许打挂播放
+        logger.warning("source_path_policies 表读失败，回落旧配置",
+                       exc_info=True)
+        table_policies = []
+    if table_policies:
+        return table_policies
     return parse_policies(store.get_value(db, POLICIES_KEY, ""))
 
 
