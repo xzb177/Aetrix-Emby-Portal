@@ -179,6 +179,10 @@ def start_health_sync_daemon(session_factory=None, store=None,
                     db = session_factory()
                     try:
                         result = sync_health_to_pg(db, store)
+                        # set_health_status 只 flush 不 commit：守护线程的会话
+                        # 在 close 时会回滚，不提交则 PG 永远看不到本轮写入
+                        #（此前守护测试只在同连接事务窗口内偶然读到，属竞态）。
+                        db.commit()
                         logger.info("上游健康同步完成：%s", result)
                     finally:
                         db.close()

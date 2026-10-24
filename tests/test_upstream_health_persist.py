@@ -212,6 +212,47 @@ def test_daemon_syncs_when_enabled(db_factory, monkeypatch):
         thread.join(timeout=5)
 
 
+def test_daemon_write_persists_after_stop(db_factory, monkeypatch):
+    """回归：守护写库必须提交，停守护后新会话仍读得到。
+
+    旧实现只 flush 不 commit：守护会话 close 即回滚，PG 永远看不到
+    写入；旧守护测试只在同连接事务窗口内偶然读到，属竞态（CI 与
+    本地各复现过一次 5 秒跑满仍 healthy）。
+    """
+    _enable(monkeypatch)
+    session = db_factory()
+    row = _row(session, "源 A", health_status="healthy")
+    row_id = row.id
+    session.commit()
+    session.close()
+    store = _store_with({str(row_id): uh.STATE_UNAVAILABLE})
+    thread, stop = uhp.start_health_sync_daemon(
+        session_factory=db_factory, store=store, interval_sec=0.05)
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            probe = db_factory()
+            try:
+                current = probe.query(em.UpstreamSource).filter(
+                    em.UpstreamSource.id == row_id).first().health_status
+            finally:
+                probe.close()
+            if current == "unhealthy":
+                break
+            time.sleep(0.05)
+        assert current == "unhealthy"
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    # 守护已停、会话已关：新会话读到的仍是提交后的值，不是回滚前的影子。
+    fresh = db_factory()
+    try:
+        assert fresh.query(em.UpstreamSource).filter(
+            em.UpstreamSource.id == row_id).first().health_status == "unhealthy"
+    finally:
+        fresh.close()
+
+
 def test_daemon_does_nothing_when_disabled(db_factory, monkeypatch):
     monkeypatch.setenv("UPSTREAM_HEALTH_PG_SYNC_ENABLED", "0")
     session = db_factory()
