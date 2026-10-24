@@ -1108,7 +1108,8 @@ def _collect_multisource(item: Any, kind: str, result: dict) -> bool:
         return False
     try:
         collected = ms_engine.collect(
-            None, item.name or "", item.production_year, kind, snapshot=snapshot)
+            None, item.name or "", item.production_year, kind, snapshot=snapshot,
+            imdb_id=(getattr(item, "imdb_id", None) or None))
     except Exception as exc:  # noqa: BLE001 — 多源失败不影响主流程
         logger.debug("多源采集失败 %s: %s", getattr(item, "name", ""), exc)
         result["multisource_error"] = str(exc)[:200]
