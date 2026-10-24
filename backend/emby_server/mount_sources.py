@@ -368,6 +368,24 @@ def read_library_sources(db, library):
     sources, built_failed = build_library_sources(
         local_paths, mount_subpaths, mount_ids, db, library,
         enforce_can_list=True)
+    # 身份锚（清单第 8 项）：把新表行 id 挂到扫描来源上，供入库写 item.source_id。
+    # 只按启用行建表（停用行不在 sources 里，不会误挂）；旧列回落路径（legacy
+    # _library_sources）不走这里，来源的 source_row_id 保持 None。
+    row_ids: dict = {}
+    for row in rows:
+        if not getattr(row, "is_enabled", True):
+            continue
+        if row.mount_id is None:
+            row_ids.setdefault(("local", row.sub_path), row.id)
+        else:
+            row_ids.setdefault(("mount", row.mount_id, row.sub_path or "/"),
+                               row.id)
+    for src in sources:
+        if src.kind == "local":
+            src.source_row_id = row_ids.get(("local", src.path))
+        elif src.mount is not None:
+            src.source_row_id = row_ids.get(
+                ("mount", src.mount.id, src.subpath or "/"))
     return sources, failed + built_failed
 
 

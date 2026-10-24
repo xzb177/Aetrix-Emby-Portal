@@ -1694,6 +1694,9 @@ class LibrarySource:
     mount: Any = None              # StorageMount（kind=mount）
     provider: Optional[MountProvider] = None
     subpath: str = "/"             # kind=mount 时只扫描挂载下的这个子目录（"/" = 整个挂载）
+    #: 新表 library_sources 行 id（清单第 8 项身份锚：入库写 item.source_id 用）。
+    #: 旧列回落路径没有行，恒为 None；扫描器只在有行 id 时写锚，绝不反查补写。
+    source_row_id: Optional[int] = None
 
 
 #: 库 id 的合理上限（SQLite/PG 主键都是 64 位整数）：粘进来的超长数字串直接丢掉
@@ -2228,7 +2231,8 @@ def _reattach_cached_target(provider, stored: PlayTarget, rel: str) -> PlayTarge
     return provider.reattach_play_target(stored)
 
 
-def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> PlayTarget:
+def resolve_play_target(file_path: Optional[str], db: Session, library=None, *,
+                        anchor_mount=None) -> PlayTarget:
     """把条目的 ``file_path`` 解析成播放/探测目标
 
     - 本机路径（含 ``.strm``）→ 直接读文件，strm 读内容是直链；
@@ -2236,6 +2240,11 @@ def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> 
 
     条目没有路径时（虚拟库聚合条目、容器类型、源文件被删后重扫前的残留行）
     明确报 MountError → 上层转成 404，而不是让 ``.lower()`` 抛 500。
+
+    ``anchor_mount``（清单第 8 项身份锚双读）：调用方按身份锚定位到的挂载。
+    只有当它与路径解析出的挂载 id 一致且启用时才采用（跳过一次 load_mount
+    查询）；不一致 / 停用 / 为空时一律走现行路径——锚只确认挂载身份，绝不把
+    播放重定向到路径之外的挂载，rel 仍取自 file_path。
     """
     if not file_path:
         raise MountError("该条目没有可播放的媒体路径（虚拟库聚合条目或源文件已丢失）")
@@ -2243,7 +2252,13 @@ def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> 
     if parsed is None:
         return local_play_target(file_path)
     mount_id, rel = parsed
-    mount = load_mount(db, mount_id)
+    mount = None
+    if (anchor_mount is not None
+            and getattr(anchor_mount, "id", None) == mount_id
+            and getattr(anchor_mount, "is_enabled", False)):
+        mount = anchor_mount
+    if mount is None:
+        mount = load_mount(db, mount_id)
     if mount is None:
         raise MountError(f"挂载 #{mount_id} 不存在（该条目来自已删除的挂载）")
     if not mount.is_enabled:
