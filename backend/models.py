@@ -314,6 +314,9 @@ class SubscriptionPlan(Base):
     points_price = Column(Numeric(10, 2), nullable=True)
     duration_days = Column(Integer, nullable=False)
     features = Column(JSON)  # 特性列表
+    # 订阅分档权益表：{权益键: 值}，NULL/缺键 = 该项跟随全站默认（判定单口见 backend/entitlements.py）。
+    # 注意：JSON 列原地改键不触发脏标记，写路径必须整对象重新赋值，不许 plan.entitlements[key] = v。
+    entitlements = Column(JSON)
     # 属于哪个服：套餐一个服一个（见 ServerRealm）。同一套餐只卖给该服的用户。
     realm_id = Column(Integer, ForeignKey('server_realms.id'), nullable=True)
     is_active = Column(Boolean, default=True)

@@ -788,6 +788,13 @@ def _grant_subscription(db: Session, user: models.WebUser, plan: models.Subscrip
             )
             db.add(subscription)
             db.flush()
+    # 订阅分档权益（PR-1）：该用户的当前套餐可能已变（新建/顺延/换档），
+    # 清掉他的权益解析缓存；同进程立即生效，跨进程靠 60 秒 TTL 兜底
+    #（见 backend/entitlements.py）。本函数是购买/兑换/管理员发放/自动
+    # 续订的共同发放口，挂在这里即全覆盖。
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate(user_id=user.id)
     return subscription
 
 

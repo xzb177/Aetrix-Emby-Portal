@@ -228,6 +228,12 @@ async def extend_subscription(
         subscription.updated_at = datetime.now()
         db.commit()
 
+        # 订阅分档权益（PR-1）：到期时间变了，清该用户的权益解析缓存
+        # （缓存条目自带 end_date 本也会判过期，这里显式失效保持口径统一）
+        from backend import entitlements as _entitlements
+
+        _entitlements.invalidate(user_id=subscription.user_id)
+
         _audit(db, admin_id, "extend_subscription", "subscription",
                subscription.id, {"days": request.days})
         db.commit()
@@ -1777,6 +1783,11 @@ def economy_create_plan(
     db.add(plan)
     db.commit()
     db.refresh(plan)
+    # 订阅分档权益（PR-1）：套餐集合变了，清权益快照缓存（判定单口见
+    # backend/entitlements.py；跨进程靠 60 秒 TTL 兜底）
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate()
     _audit(db, current_admin, "economy_create_plan", "plan", plan.id,
            {"name": plan.name, "price": float(plan.price), "realm_id": realm_id,
             "points_price": (float(plan.points_price) if plan.points_price is not None else None)})
@@ -1815,6 +1826,12 @@ def economy_update_plan(
     plan.updated_at = datetime.now()
     db.commit()
 
+    # 订阅分档权益（PR-1）：套餐内容变了，清权益快照缓存（权益值走快照，
+    # 用户解析缓存存的是 plan_id，不必逐个清用户）
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate()
+
     _audit(db, current_admin, "economy_update_plan", "plan", plan.id)
     db.commit()
     return {"success": True}
@@ -1838,11 +1855,19 @@ def economy_delete_plan(
     if in_use:
         plan.is_active = False
         db.commit()
+        # 订阅分档权益（PR-1）：套餐停用，清权益快照缓存
+        from backend import entitlements as _entitlements
+
+        _entitlements.invalidate()
         return {"success": True, "soft_deleted": True,
                 "message": "套餐已有订单引用，已停用而非删除"}
 
     db.delete(plan)
     db.commit()
+    # 订阅分档权益（PR-1）：套餐被删，清权益快照缓存
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate()
     _audit(db, current_admin, "economy_delete_plan", "plan", plan_id)
     db.commit()
     return {"success": True}

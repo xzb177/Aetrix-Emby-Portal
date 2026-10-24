@@ -822,6 +822,12 @@ def _auto_migrate():
             # P2 统一货币体系：套餐积分价。老库补列后为 NULL（不支持积分购买），与升级前行为一致。
             ("points_price", "NUMERIC(10, 2)", "NULL"),
         ]),
+        # 订阅分档权益表（PR-1）：与上一条同表分开追加（本函数的列表纪律）。
+        # 老库补列后为 NULL（未声明任何权益），全部权益回退现行全局配置，
+        # 行为与升级前完全一致（判定单口见 backend/entitlements.py）。
+        ("subscription_plans", [
+            ("entitlements", "JSON", "NULL"),
+        ]),
         # P4 会员等级订阅折扣：老库补列后为 0（无折扣），与升级前行为一致；
         # migrate_discount_pct 会按等级回填默认值。
         ("member_levels", [

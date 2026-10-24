@@ -261,6 +261,12 @@ def grant_membership_days(db: Session, user: models.WebUser, days: int,
         )
         db.add(sub)
     db.flush()   # 拿主键；提交由调用方负责（与 economy._grant_subscription 同一口径）
+    # 订阅分档权益（PR-1）：本函数是卡码核销/邀请奖励发天的发放口（不走
+    # _grant_subscription），同样要清该用户的权益解析缓存（见
+    # backend/entitlements.py；跨进程靠 60 秒 TTL 兜底）。
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate(user_id=user.id)
     return sub
 
 
