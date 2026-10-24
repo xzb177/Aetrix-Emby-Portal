@@ -53,7 +53,7 @@ from backend.emby_server import soft_delete
 from backend.emby_server import title_beautify
 from backend.emby_server import missing_episodes as _missing_episodes
 from backend.emby_server.playback_security import safe_child_name
-from backend.emby_server import subtitles as subs
+from backend.emby_server import identity_gate, subtitles as subs
 from backend.emby_server.auth import (
     _token_from_request,
     get_emby_user,
@@ -1851,6 +1851,16 @@ def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
 def _library_item_count(db, lib) -> int:
     """媒体库条目数：优先用扫描结束时写入的缓存；为 None（扫描未完成/失败过）
     时实时计数，口径与扫描器一致（只计 movie/series）。"""
+    if identity_gate.gate_enabled():
+        # 身份门开时缓存列是全量口径（含未绑定条目），Views 的 ChildCount
+        # 必须与点进去的列表同口径，只数已绑定行——走实时计数（与本函数
+        # 缓存为空时的既有回退同路径、同成本），不能用缓存列。
+        return soft_delete.count_visible(
+            db,
+            em.MediaItem.library_id == lib.id,
+            em.MediaItem.item_type.in_(["movie", "series"]),
+            identity_gate.identity_clause(),
+        )
     if lib.item_count is not None:
         return lib.item_count
     # count_visible 而非 Query.count()：后者数得到已下架的条目（软删除可见性过滤
@@ -2024,6 +2034,10 @@ def get_suggestions(user_id: str,
             em.MediaItem.is_hidden == False,  # noqa: E712
         )
     )
+    if identity_gate.gate_enabled():
+        # 身份门（货架面）：推荐是系统主动枚举，未绑定条目不进；latest 与
+        # popular 都从 base_q 派生，一处挂载两路同口径。
+        base_q = base_q.filter(identity_gate.identity_clause())
     base_q = _scope_items(base_q, allowed)
     latest = (
         base_q.order_by(em.MediaItem.date_added.desc().nullslast(),
@@ -2480,6 +2494,16 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     if (q.get("HasAnyProviderId") or "").lower() == "true":
         query = query.filter(or_(em.MediaItem.tmdb_id.isnot(None),
                                  em.MediaItem.imdb_id.isnot(None)))
+
+    # 身份准入货架（案 A，一期）：门开时「货架面」只露已绑定条目。挂在
+    # 基础查询上，去重层（dropped/primary 恒为本 query 的子集）与随机分支
+    # 自然同口径，组内选主只会落在已绑定成员上。拆面纪律（钉死，勿扩）：
+    # 带 SearchTerm 是搜索面——不挂（FMBY 实测「浏览严、搜索宽」）；
+    # Ids 直查与 AnyProviderIdEquals 编号查是点名/直达——不挂，
+    # 凭 guid/编号直达未绑定条目照常（老收藏与在播不断）。
+    if (identity_gate.gate_enabled() and not ids and not search
+            and not _prov_conds):
+        query = query.filter(identity_gate.identity_clause())
 
     if not ids:
         # 单集多版本：被合并的版本不独立出现在列表里（与 get_episodes 同口径）。
@@ -3024,6 +3048,10 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
         # 先查 16 条再内存去重时，若最新 16 条全是副本会返回空数组。
         em.MediaItem.merged_into_id.is_(None),
     )
+    if identity_gate.gate_enabled():
+        # 身份门（货架面）：与上面的副本过滤同理，必须进 SQL——未绑定
+        # 条目先占 limit 名额再被剔除会让「最新」列表缩水。
+        q = q.filter(identity_gate.identity_clause())
     parent_id = request.query_params.get("ParentId")
     if parent_id:
         lib = db.query(em.Library).filter(em.Library.guid == parent_id).first()
@@ -3052,12 +3080,22 @@ def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = De
     # 总数也走 Core 的 COUNT(*)（不再让 ORM 把实体包一层子查询）。
     # 计数同样按可见范围收：否则客户端导航栏显示 120 部、点进去只有 40 部。
     allowed = _library_scope(db, user)
+    # 身份门（货架面）：计数必须与列表同口径，未绑定条目不计——否则
+    # 导航栏写 120 部、点进去只有 40 部。口径定死为「已绑定行数」（沿用
+    # 本端点既有的行数语义、只加身份维度；episode/season 按判据跟随
+    # series）；与列表 TotalRecordCount 的「代表组数」完全同源留待三期
+    # 与代表逻辑一起收，本期不在此先行。
+    _gate_clause = (identity_gate.identity_clause()
+                    if identity_gate.gate_enabled() else None)
+    _by_type_q = db.query(em.MediaItem.item_type, func.count()).filter(
+        em.MediaItem.is_hidden == False)  # noqa: E712
+    _total_q = db.query(func.count()).select_from(em.MediaItem).filter(
+        em.MediaItem.is_hidden == False)  # noqa: E712
+    if _gate_clause is not None:
+        _by_type_q = _by_type_q.filter(_gate_clause)
+        _total_q = _total_q.filter(_gate_clause)
     by_type = dict(
-        _scope_items(
-            db.query(em.MediaItem.item_type, func.count())
-            .filter(em.MediaItem.is_hidden == False),  # noqa: E712
-            allowed,
-        )
+        _scope_items(_by_type_q, allowed)
         .group_by(em.MediaItem.item_type)
         .all()
     )
@@ -3066,11 +3104,7 @@ def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = De
         "MovieCount": int(by_type.get("movie", 0)),
         "SeriesCount": int(by_type.get("series", 0)),
         "EpisodeCount": int(by_type.get("episode", 0)),
-        "ItemCount": int(_scope_items(
-            db.query(func.count()).select_from(em.MediaItem)
-            .filter(em.MediaItem.is_hidden == False),  # noqa: E712
-            allowed,
-        ).scalar() or 0),
+        "ItemCount": int(_scope_items(_total_q, allowed).scalar() or 0),
         "AlbumCount": 0, "SongCount": 0, "ArtistCount": 0, "AlbumArtistCount": 0,
         "MusicVideoCount": 0, "TrailerCount": 0, "BoxSetCount": 0, "BookCount": 0,
     }

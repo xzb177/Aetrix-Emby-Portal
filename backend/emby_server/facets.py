@@ -34,6 +34,7 @@ from sqlalchemy import event, false, func, insert, inspect as sa_inspect, select
 from sqlalchemy.orm import Session
 
 from backend import models
+from backend.emby_server import identity_gate
 from backend.emby_server import models as em
 from backend.emby_server.env_util import env_float, env_int
 
@@ -292,6 +293,10 @@ def count_virtual_items(db: Session, library) -> int:
             em.MediaItem.item_type.in_(["movie", "series"]),
         )
     )
+    if identity_gate.gate_enabled():
+        # 身份门（货架面）：虚拟库计数与真实库 ChildCount 同口径，
+        # 只数已绑定行，否则虚拟库上写着的数点进去对不上。
+        base = base.filter(identity_gate.identity_clause())
     if ready(db):
         condition = candidate_condition(KIND_PLATFORM, [platform], db)
         if condition is None:
