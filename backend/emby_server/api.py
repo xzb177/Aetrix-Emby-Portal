@@ -43,6 +43,7 @@ from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import items_dedup_cache as _dedup_cache
 from backend.emby_server import items_list_cache as _list_cache
+from backend.emby_server import list_projection
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_session
@@ -1926,9 +1927,26 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
     # 三方客户端整条解析失败，ddPlayer 即为其一）。历史迁移库的 created_at
     # 可能为 NULL：先回退该库内最早入库条目的 date_added（与条目数同一口径），
     # 空库再回退固定常量——保证每个条目恒带 DateCreated。
+    # 列表投影读模型（清单第 16 项试点）：非虚拟库的三值走投影表；
+    # 身份门开、开关关、缺行、过期、读错任一 → 整包现行路径（见 list_projection）。
+    # 投影行是全量口径，身份门开时 ChildCount 必须按身份过滤现算，不能用。
+    _proj = None
+    if list_projection.enabled() and not identity_gate.gate_enabled():
+        _proj_ids = [lib.id for lib in libs
+                     if not bool(getattr(lib, "is_virtual", False))]
+        _proj = list_projection.load_projection(db, _proj_ids)
+        if _proj is None and _proj_ids:
+            logger.warning("媒体库列表投影不可用（缺行/过期/读错），整包回落现算")
     need_earliest = [lib.id for lib in libs if not lib.created_at]
     _lib_earliest_added: dict = {}
-    if need_earliest:
+    if _proj is not None:
+        _lib_earliest_added = {
+            lib.id: _proj[lib.id].earliest_added
+            for lib in libs
+            if not lib.created_at and lib.id in _proj
+            and _proj[lib.id].earliest_added is not None
+        }
+    elif need_earliest:
         rows = (
             db.query(em.MediaItem.library_id, func.min(em.MediaItem.date_added))
             .filter(
@@ -1952,9 +1970,9 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
             continue
         # 媒体库封面：有 cover_path 才给 Primary 标记，客户端才会去拉 /Images/Primary
         cover_path = getattr(lib, "cover_path", None)
-        cover_tag = _library_cover_tag(cover_path)
+        cover_tag = _proj[lib.id].cover_tag if (_proj is not None and not is_virtual) else _library_cover_tag(cover_path)
         image_tags = {"Primary": cover_tag} if cover_path else {}
-        child_count = count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib)
+        child_count = count_virtual_items(db, lib) if is_virtual else (_proj[lib.id].child_count if _proj is not None else _library_item_count(db, lib))
         # 虚拟库跨电影/剧集聚合，统一按 mixed 上报，客户端才能正常当普通文件夹浏览
         collection_type = "mixed" if is_virtual else lib.collection_type
         # 字段集对照官方 CollectionFolder BaseItemDto（Jellyfin DtoService，

@@ -1254,6 +1254,40 @@ class ChaseSourceState(Base):
     last_error = Column(Text)
 
 
+class LibraryListProjection(Base):
+    """媒体库列表投影行（FMBY 列表投影读模型，清单第 16 项试点）。
+
+    一行 = 一个非虚拟启用库在 user_views 列表页上现算的那三个值：
+    条目数（ChildCount）、最早入库时间（DateCreated 回退源）、封面 tag。
+    读侧只读本表（一次 IN 查询），不现算；写侧由周期重建工人
+    （见 list_projection）统一刷新，不由任何写路径（扫描/入库/绑定）
+    逐个打脏——试点期零写路径改动。
+
+    最终一致、延迟可观测：computed_at 是本行算出的时刻；读路径按
+    LIST_PROJECTION_MAX_STALE_SEC 判过期，过期/缺行/读错一律回落
+    现算并记警告，绝不静默出旧数（FMBY #19 实测教训：投影延迟肉眼
+    可见，界面不许假装实时）。
+
+    无外键（照 LibrarySource 先例）：库删了行由重建清理，不靠级联。
+    新表由 init_db 的 create_all 建出，不走 _auto_migrate（该函数只补
+    已有表的列，见 database.py 注释“新表由 create_all 建，不在此列”）。
+    """
+
+    __tablename__ = "emby_library_list_projection"
+
+    __table_args__ = (
+        UniqueConstraint("library_id", name="uq_library_list_projection_library"),
+        Index("ix_library_list_projection_library", "library_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(Integer, nullable=False)
+    child_count = Column(Integer, nullable=False, default=0)
+    earliest_added = Column(DateTime, nullable=True)
+    cover_tag = Column(String(64), nullable=False, default="1")
+    computed_at = Column(DateTime, nullable=False, default=datetime.now)
+
+
 __all__ = [
     "Library",
     "ScanRun",
