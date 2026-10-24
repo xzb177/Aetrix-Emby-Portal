@@ -997,6 +997,13 @@ def _auto_migrate():
             ("missing_since", "DATETIME", "NULL"),
             ("missing_count", "INTEGER", "0"),
         ]),
+        # 扫描检查点专属落点（2026-10-24，FMBY 学习批一 #7）：emby_scan_runs
+        # 加 state_json（定向扫描的续扫范围）。老库补列后为 NULL，
+        # interrupted_resume_prefixes 读不到就回退 stats 里的 resume_scope
+        # （老流水的既有落点），行为与升级前完全一致。
+        ("emby_scan_runs", [
+            ("state_json", "TEXT", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
@@ -1059,6 +1066,7 @@ def _auto_migrate():
     _ensure_lottery_g1_tables(existing_tables)
     _migrate_redpacket_claim_unique(existing_tables)
     _migrate_redpacket_idempotency_unique(existing_tables)
+    _migrate_scan_run_single_running(existing_tables)
     _migrate_panel_unseal_fk(existing_tables)
     _migrate_exchange_discount_credit_fk(existing_tables)
     _resurrect_soft_deleted(existing_tables)
@@ -1450,6 +1458,85 @@ def _migrate_redpacket_idempotency_unique(existing_tables: set) -> None:
             "UNIQUE (idempotency_key)"
         ))
     print("  🔧 已迁移: red_packets 唯一约束 (idempotency_key)")
+
+
+def _migrate_scan_run_single_running(existing_tables: set) -> None:
+    """emby_scan_runs 同库只许一条 running 流水（跨进程防重，FMBY 学习批一 #7）
+
+    worker 与 EA 是两个进程：进程内互斥（scanner._acquire_scan）挡不住跨
+    进程同扫一个库，最后一道闸落在库层——部分唯一索引
+    ``(library_id) WHERE status = 'running'``，begin_scan 撞上它抛
+    ScanInProgress。新库由模型 ``__table_args__`` 的同名索引经 create_all
+    直接建，这里只管存量库。
+
+    **安全序不能反**：
+    1. 先收尾存量僵尸——同库多条 running 只留最新一条（id 最大 = 最近
+       开跑），其余收尾成 interrupted（被打断，不是失败；与
+       maintenance.close_stale_scan_runs 的收尾口径一致），只动 running
+       行，跑过一次后每库至多一条、这步自然空转（幂等）；
+    2. 再建索引——反过来 CREATE UNIQUE INDEX 会被存量重复行直接顶失败。
+    索引创建失败也只记 warning 不崩启动（与 uq_alert_rules_event_type
+    同口径）：那时跨进程防重退回进程内防线，行为不比升级前差。
+    MySQL 不支持部分索引，跳过（同上退回进程内防线）。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_scan_runs" not in existing_tables:
+        return
+    if engine.dialect.name not in ("sqlite", "postgresql"):
+        print("  ⚠️ 当前方言不支持部分唯一索引，emby_scan_runs 跨进程防重跳过（保留进程内防线）")
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_scan_runs")}
+    if "uq_scan_runs_one_running" in names:
+        return
+
+    # 第一步：收尾同库重复的 running 流水（这一步在建索引之前，顺序不能反）
+    from backend.emby_server import models as emby_models
+
+    session = Session(bind=engine)
+    closed = 0
+    try:
+        # 按 (库, id 倒序) 取行：每库先出现的是 id 最大 = 最近开跑的一条，留它；
+        # 其余都是更早的僵尸，收尾成 interrupted
+        rows = (
+            session.query(emby_models.ScanRun)
+            .filter(emby_models.ScanRun.status == "running")
+            .order_by(emby_models.ScanRun.library_id, emby_models.ScanRun.id.desc())
+            .all()
+        )
+        seen: set = set()
+        now = datetime.now()
+        for run in rows:
+            if run.library_id in seen:
+                run.status = "interrupted"
+                run.finished_at = now
+                run.error = (run.error or "迁移收尾：同库多条运行中流水，只保留最新一条")[:500]
+                closed += 1
+            else:
+                seen.add(run.library_id)
+        if closed:
+            session.commit()
+            print(f"  🔧 已迁移: emby_scan_runs 收尾 {closed} 条同库重复的运行中流水（只留最新一条）")
+    except Exception as exc:  # noqa: BLE001 — 收尾失败不许连累启动（协调员补强）
+        # 与下方建索引失败同口径：只告警、跳过——跨进程防重退回进程内
+        # 防线，行为不比升级前差；异常时 session 里可能有未提交的收尾
+        # 改动，close 前先 rollback，别把半截状态留给连接池里的下个用户。
+        session.rollback()
+        print(f"  ⚠️ emby_scan_runs 僵尸流水收尾跳过: {exc}")
+    finally:
+        session.close()
+
+    # 第二步：建部分唯一索引
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX uq_scan_runs_one_running "
+                "ON emby_scan_runs (library_id) WHERE status = 'running'"
+            ))
+        print("  🔧 已迁移: emby_scan_runs 同库单运行唯一索引 (library_id WHERE status='running')")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️ emby_scan_runs 同库单运行唯一索引创建跳过: {exc}")
 
 
 def _migrate_panel_unseal_fk(existing_tables: set) -> None:
