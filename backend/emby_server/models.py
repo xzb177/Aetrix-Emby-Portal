@@ -818,6 +818,103 @@ class IdentifyReviewTask(Base):
     )
 
 
+#: 上游源（FMBY 学习 #25 25-1）的 source_type / auth_method /
+#: credential_scope / health_status 允许值——**全仓唯一定义点**。下方
+#: UpstreamSource 的 CheckConstraint SQL 直接由这四个元组拼出，
+#: upstream_sources 的代码校验也只读这四个元组：约束与枚举同源、永不
+#: 漂移（FMBY 自己在 reason_code 上栽过漂移 bug 的教训，见上）。
+#: 新增取值只许改这里。
+#:
+#: 证据口径（2026-10-24 追加，见 upstream_sources 模块头）：
+#: - source_type：第六阶段实测只建过 Emby 型；jellyfin 列入是用户
+#:   2026-10-24 亲定的首批口径（Emby/Jellyfin 同 API 族），非第六阶段
+#:   单独实测；apple_cms 明确后置（第六阶段只见其许可证项，目录同步
+#:   与播放均未实测），不在允许集里——传它直接被拒。
+#: - auth_method：第六阶段实测是账号密码密封；api_key 是 Emby 协议的
+#:   标准形态、未在第六阶段上游建源时单独实测，列入但报告里标待复验。
+#: - credential_scope：只有一个取值 source（源级一把凭据）。按用户映射
+#:   的凭据模型在第六阶段无任何证据，不许悄悄定死：它不是允许值，
+#:   将来裁定后先改这里再谈实现，代码里不许留第二套凭据路径。
+#: - health_status：占位字段（探活是 25-3 的活），取值集先定死，25-3
+#:   的工人只许写这三个值，不许自造第四种状态。
+UPSTREAM_SOURCE_TYPES = ("emby", "jellyfin")
+UPSTREAM_AUTH_METHODS = ("password", "api_key")
+UPSTREAM_CREDENTIAL_SCOPES = ("source",)
+UPSTREAM_HEALTH_STATUSES = ("unknown", "healthy", "unhealthy")
+
+
+class UpstreamSource(Base):
+    """上游源（FMBY 学习 #25 25-1：只做源管理，不做聚合/探活/播放接入）。
+
+    学的是 FMBY 第六阶段实测的上游源形态（只学机制、不抄闭源代码）：
+    一行 = 一个别人的媒体服务（Emby/Jellyfin 型），字段与 FMBY 实测的
+    ``upstream_sources`` 表对齐：source_type、base_url、auth_method、
+    sealed_secret（密封凭据）、extra_headers_json、user_agent、referer。
+    FMBY 那张表在第六阶段实测里没有 enabled / 健康状态列——本表的
+    enabled 与 health_status 是我方治理面补的字段（默认关、状态未知），
+    不是 FMBY 实测值，报告里已显式标出，25-3 探活工人只许写
+    UPSTREAM_HEALTH_STATUSES 里的值。
+
+    凭据纪律（魂 1 + 凭据不外泄）：
+    - 凭据只存密封值（``sealed_secret``，Fernet 密封，密钥派生自
+      SECRET_KEY），接口与日志永远只出 ``has_secret`` 布尔值，不出
+      凭据原文、不出密封值本身；
+    - 源级一把凭据（credential_scope 恒为 ``source``）：一个源配一份
+      管理员录入的凭据，替全站向该上游请求；按用户映射的模型在
+      FMBY 第六阶段无证据，属待裁定项，不在本表留第二套路径；
+    - 密封密钥随 SECRET_KEY 走：SECRET_KEY 一旦更换，旧密封值解不开，
+      视为凭据失效、管理员须重录，绝不静默回落明文或空凭据。
+
+    默认关：新建源 ``enabled`` 恒为 False（创建接口不接受 enabled 入参），
+    启用是单独的显式动作；关着的源对全站行为逐字无影响——25-2 聚合
+    工人与 25-4 播放接入将来只许读 enabled 的源，关着的源连目录都
+    不许拉（该约束由调用方落实，本表只保证默认值）。
+
+    不加外键（照 ScanRun 先例）：25-2/25-3 落地后，源删了，目录与
+    线路行要留着供追溯与对账，删源时是否联动清理由 25-2/25-3 的
+    设计定，本步删源只删本行（见 upstream_sources.delete_source）。
+    """
+
+    __tablename__ = "upstream_sources"
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("source_type", UPSTREAM_SOURCE_TYPES),
+                        name="ck_upstream_source_type"),
+        CheckConstraint(_in_sql("auth_method", UPSTREAM_AUTH_METHODS),
+                        name="ck_upstream_auth_method"),
+        CheckConstraint(_in_sql("credential_scope", UPSTREAM_CREDENTIAL_SCOPES),
+                        name="ck_upstream_credential_scope"),
+        CheckConstraint(_in_sql("health_status", UPSTREAM_HEALTH_STATUSES),
+                        name="ck_upstream_health_status"),
+        Index("ix_upstream_sources_enabled", "enabled"),
+        Index("ix_upstream_sources_type", "source_type"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(80), unique=True, nullable=False)
+    source_type = Column(String(20), nullable=False)  # emby / jellyfin
+    base_url = Column(String(500), nullable=False)  # 已归一化：去尾斜杠
+    auth_method = Column(String(20), nullable=False, default="password")
+    username = Column(String(200))  # password 形态必填；api_key 形态为空
+    # 密封凭据（Fernet，见 upstream_sources.seal_secret）：密码形态存密码、
+    # api_key 形态存 api_key；为空 = 该源未配凭据（匿名访问上游）。
+    sealed_secret = Column(Text)
+    # 附加请求头 JSON（对象，键值均为字符串），25-2/25-4 向该上游发请求
+    # 时原样带上；不是凭据通道——凭据只走 sealed_secret。
+    extra_headers_json = Column(Text)
+    user_agent = Column(String(300))
+    referer = Column(String(500))
+    # 我方治理字段（非 FMBY 实测列）：默认关；健康状态占位，探活是 25-3。
+    enabled = Column(Boolean, nullable=False, default=False)
+    credential_scope = Column(String(20), nullable=False, default="source")
+    health_status = Column(String(20), nullable=False, default="unknown")
+    last_checked_at = Column(DateTime)  # 25-3 探活工人写，25-1 不写
+    note = Column(String(500))
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+
+
 class EnrichFlipEvent(Base):
     """enrich done→pending 批量翻转的告警事件（v2.55.x）
 
