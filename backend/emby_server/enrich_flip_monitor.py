@@ -163,32 +163,3 @@ def flip_count_last_hours(db, hours: int = 1,
         return 0
 
 
-def recent_flip_events(db, limit: int = 20) -> list[dict[str, Any]]:
-    """最近的翻转告警事件（管理端/排查询用）。"""
-    try:
-        rows = (
-            db.query(em.EnrichFlipEvent)
-            .order_by(em.EnrichFlipEvent.id.desc())
-            .limit(max(1, min(limit, 100)))
-            .all()
-        )
-        out = []
-        for r in rows:
-            try:
-                details = json.loads(r.details or "{}")
-            except Exception:  # noqa: BLE001
-                details = {}
-            out.append({
-                "id": r.id,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "library_id": r.library_id,
-                "scan_run_id": r.scan_run_id,
-                "trigger": r.trigger,
-                "flip_count": r.flip_count,
-                "threshold": r.threshold,
-                "details": details,
-            })
-        return out
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("查询 enrich 翻转事件失败: %s", exc)
-        return []

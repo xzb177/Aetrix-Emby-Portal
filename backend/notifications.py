@@ -590,14 +590,6 @@ class NotificationService:
         finally:
             db.close()
 
-    def reload_config(self):
-        """重新加载配置"""
-        self._config_loaded = False
-        self._load_channels_from_config()
-
-    def add_channel(self, name: str, channel: NotificationChannel):
-        """添加通知渠道"""
-        self.channels[name] = channel
 
     async def send(self, user_id: int, title: str, content: str,
                    channels: Optional[List[str]] = None,

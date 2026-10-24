@@ -412,12 +412,6 @@ def mark_failed(db: Session, command: PlaybackControlCommand, error: str):
     return transition(db, command, STATUS_FAILED)
 
 
-def mark_timeout(db: Session, command: PlaybackControlCommand):
-    """超时：超时判失败不判成功，恢复联网不补发旧命令。"""
-    command.error = "命令执行超时"
-    return transition(db, command, STATUS_TIMEOUT)
-
-
 def timeout_stale_commands(db: Session, timeout_sec: int | None = None,
                            now: datetime | None = None) -> int:
     """把超时的未终态命令批量判 timeout，返回处理条数。"""

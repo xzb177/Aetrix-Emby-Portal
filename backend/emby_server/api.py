@@ -433,25 +433,6 @@ def _series_source_dir(item, db):
             return "/".join(parts[:i])
     return _parent_dir(fp)
 
-def _series_siblings(item, db):
-    if item.item_type != "series":
-        return []
-    src = _series_source_dir(item, db)
-    if not src:
-        return []
-    cands = (
-        db.query(em.MediaItem)
-        .filter(
-            em.MediaItem.library_id == item.library_id,
-            em.MediaItem.item_type == "series",
-            em.MediaItem.name == item.name,
-            em.MediaItem.is_hidden == False,
-        )
-        .order_by(em.MediaItem.id)
-        .all()
-    )
-    return [s for s in cands if _series_source_dir(s, db) == src]
-
 
 def _version_siblings(item, db):
     """找同一电影的所有版本：同库、同目录、**同主文件名**的 movie 条目。
@@ -3242,10 +3223,6 @@ def _filters_payload(db: Session) -> dict:
 @emby_router.get("/Items/Filters2")
 def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
     return _filters_payload(db)
-
-
-
-
 
 
 @json_route(emby_router, "/emby/Items/{item_id}", "/Items/{item_id}", "/emby/Users/{user_id}/Items/{item_id}", "/Users/{user_id}/Items/{item_id}")

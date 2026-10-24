@@ -42,11 +42,3 @@ async def _monitor_loop() -> None:
             consecutive = 0
 
 
-def start_loop_monitor() -> None:
-    """在 lifespan 里调用，启动监控任务（幂等）"""
-    global _monitor_task
-    if _monitor_task is not None and not _monitor_task.done():
-        return
-    _monitor_task = asyncio.create_task(_monitor_loop())
-    logger.info("事件循环健康监控已启动（lag > %.1fs 告警）", LAG_WARN_SECONDS)
-
