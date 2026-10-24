@@ -838,6 +838,13 @@ def _auto_migrate():
         ]),
         ("storage_mounts", [
             ("realm_id", "INTEGER", "NULL"),
+            # FMBY 挂载模型地基（清单第 1 项）：五能力位声明列，老库补列
+            # 后为 0（未声明），回填按 mount_type 派生；只声明、不执法。
+            ("can_list", "BOOLEAN", "0"),
+            ("can_random_read", "BOOLEAN", "0"),
+            ("can_read_sidecar", "BOOLEAN", "0"),
+            ("can_generate_play_target", "BOOLEAN", "0"),
+            ("can_refresh_credentials", "BOOLEAN", "0"),
         ]),
         # v2.6.19 求片可以转交外部服务（MoviePilot 订阅 / qBittorrent 加种）：
         # 把「交给谁、成没成、为什么没成」落库，否则面板只能显示一句模糊的失败

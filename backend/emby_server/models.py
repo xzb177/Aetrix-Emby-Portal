@@ -850,14 +850,18 @@ class IdentifyReviewTask(Base):
 #:   与播放均未实测），不在允许集里——传它直接被拒。
 #: - auth_method：第六阶段实测是账号密码密封；api_key 是 Emby 协议的
 #:   标准形态、未在第六阶段上游建源时单独实测，列入但报告里标待复验。
-#: - credential_scope：只有一个取值 source（源级一把凭据）。按用户映射
-#:   的凭据模型在第六阶段无任何证据，不许悄悄定死：它不是允许值，
-#:   将来裁定后先改这里再谈实现，代码里不许留第二套凭据路径。
+#: - credential_scope：源级一把（source）与用户映射（user）两个取值。
+#:   user 取值由 2026-10-24 用户亲令“那个项目怎么做的，咱们照抄”
+#:   显式重开（照抄定稿：BYOS-1 OAuth 先行、挂载稿 §4.2 凭据归两处），
+#:   25-1 原话“按用户映射无证据不许悄悄定死”至此解除——重开走的是
+#:   用户裁定，不是悄悄定死。默认仍为 source（upstream_sources
+#:   创建口默认值不变），user 行只由挂载凭据表（mount_credentials）
+#:   与 BYOS 绑定线使用。
 #: - health_status：占位字段（探活是 25-3 的活），取值集先定死，25-3
 #:   的工人只许写这三个值，不许自造第四种状态。
 UPSTREAM_SOURCE_TYPES = ("emby", "jellyfin")
 UPSTREAM_AUTH_METHODS = ("password", "api_key")
-UPSTREAM_CREDENTIAL_SCOPES = ("source",)
+UPSTREAM_CREDENTIAL_SCOPES = ("source", "user")
 UPSTREAM_HEALTH_STATUSES = ("unknown", "healthy", "unhealthy")
 
 
@@ -1004,8 +1008,94 @@ class StorageMount(Base):
     last_checked_at = Column(DateTime)
     last_check_ok = Column(Boolean)
     last_check_message = Column(String(300))
+    # 五能力位声明（FMBY 挂载模型地基，2026-10-24 清单第 1 项）。
+    # 只声明、不执法：上层按能力门控是清单第 2 项，另开 PR；本步任何
+    # 消费方都不许读这五列做分支判断，行为与今天逐字一致。列值由
+    # 回填按 mount_type 从 ProviderCapabilities 声明派生（见
+    # mount_sources.capabilities_for_mount_type），不是用户手填；
+    # 老库补列走 database._auto_migrate（BOOLEAN 默认 0）。
+    can_list = Column(Boolean, default=False)
+    can_random_read = Column(Boolean, default=False)
+    can_read_sidecar = Column(Boolean, default=False)
+    can_generate_play_target = Column(Boolean, default=False)
+    can_refresh_credentials = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class LibrarySource(Base):
+    """媒体库来源行（FMBY 挂载模型地基，清单第 1 项：建源表）。
+
+    一行 = 一个库的一个来源：挂载 + 子目录，或本机目录。
+    与 mounts.LibrarySource（扫描来源 dataclass）同名但不同物：本类是
+    落库的 ORM 行，那个是扫描期内存对象；新模块一律用 em.LibrarySource
+    限定引用，不许裸 import 混用。
+
+    不变量（模型层，不是消费方过滤）：同一库下（mount_id, sub_path）
+    不重复——paths 子目录与 mount_ids 整挂载并存的危险组合在模型层
+    即不可能（回填时子目录行胜出并记警告，见 mount_sources）。
+    mount_id 为空 = 本机目录行，sub_path 存本机路径。无外键（照
+    upstream_sources 先例：源删了行留着供追溯，删源联动清理另议）。
+    NULL mount_id 在 PG/SQLite 唯一约束里互不相等，故本机行的去重
+    靠回填幂等（按三元组查已存在再插），不靠约束兜底。
+    """
+
+    __tablename__ = "library_sources"
+
+    __table_args__ = (
+        UniqueConstraint("library_id", "mount_id", "sub_path",
+                         name="uq_library_sources_library_mount_subpath"),
+        Index("ix_library_sources_library", "library_id"),
+        Index("ix_library_sources_mount", "mount_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(Integer, nullable=False)
+    mount_id = Column(Integer, nullable=True)  # 空 = 本机目录
+    sub_path = Column(String(1024), nullable=False, default="/")
+    include_paths = Column(Text, default="")
+    exclude_paths = Column(Text, default="")
+    scan_priority = Column(Integer, default=0)
+    enable_detail_prefetch = Column(Boolean, default=False)
+    is_enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class MountCredential(Base):
+    """挂载凭据行（FMBY 挂载模型地基，清单第 1 项：凭据分家）。
+
+    一行 = 一个挂载的一份凭据：scope=source（服级共享）或 scope=user
+    （用户绑定，owner_user_id 为绑定用户）。凭据本体只存 25-1 密封值
+    （Fernet，见 upstream_sources.seal_secret）；key_id 是信封密钥编号：
+    地基阶段记 25-1 密封方案标识（fernet-v1），KEK 文件信封
+    （key_id → MOUNT_KEK_DIR 下密钥文件）是清单第 4 步，另开 PR。
+    status：active / invalid / expired；last_error_kind 分三档
+    （凭据错 / 过期 / 风控），不许统一写“绑定失败”。
+    地基阶段只建表、不迁移任何现存凭据（115 Cookie、SA 引用迁入
+    是第 4 步），旧凭据路径保持唯一权威。
+    """
+
+    __tablename__ = "mount_credentials"
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("scope", UPSTREAM_CREDENTIAL_SCOPES),
+                        name="ck_mount_credential_scope"),
+        UniqueConstraint("mount_id", "scope", "owner_user_id",
+                         name="uq_mount_credentials_mount_scope_owner"),
+        Index("ix_mount_credentials_mount", "mount_id"),
+        Index("ix_mount_credentials_owner", "owner_user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mount_id = Column(Integer, nullable=False)
+    scope = Column(String(20), nullable=False, default="source")
+    owner_user_id = Column(Integer, nullable=True)  # scope=user 时必填
+    sealed_credential = Column(Text)
+    key_id = Column(String(64))
+    status = Column(String(20), default="active")
+    last_verified_at = Column(DateTime)
+    last_error_kind = Column(String(100))
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class Pan115Account(Base):
