@@ -33,6 +33,7 @@ from backend.emby_server import disc_filter
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import mount_sources
+from backend.emby_server import scan_snapshots
 from backend.emby_server import nfo as nfo_lib
 # 软删除（v2.48.0）：清理阶段默认只标记 deleted_at，物理删除留给过期回收
 from backend.emby_server import soft_delete as _soft_delete
@@ -2475,6 +2476,15 @@ class _ScanContext:
     # 到期调度：目录 → 本轮判定（first/changed/due/not_due/None），一轮只判一次
     # （同一目录的文件可能跨批次，判定与统计计数都以第一次为准）
     dir_decisions: dict = field(default_factory=dict)
+    # 按源快照层（任务清单第 11 项）：目录 → 所属源行 id（解析不到的不在内，
+    # 走旧 ScanDirState 路径）；目录 → (指纹, next_due_at, 项数)；目录 → 本轮
+    # 清单项数；目录 → (源 id, 指纹, 项数, 判定, 到期时刻)，随批次提交写回
+    snapshot_resolved: dict = field(default_factory=dict)
+    snapshot_states: dict = field(default_factory=dict)
+    snapshot_counts: dict = field(default_factory=dict)
+    dirty_snapshots: dict = field(default_factory=dict)
+    # 本轮扫描已取过的源行 [(id, mount_id, sub_path)]，None = 还没取过
+    snapshot_source_rows: Optional[list] = None
     # 列举失败的远程目录（读不到就别拿空列表当“目录没变”）
     dir_list_failed: set = field(default_factory=set)
     # NFO：已解析的 NFO 缓存（含阴性缓存），key 见 _read_nfo_cached
@@ -2596,12 +2606,17 @@ def _dir_recheck_after() -> timedelta:
 
 def _dir_decision(ctx: "_ScanContext", dir_key: str,
                   fingerprint: Optional[str],
-                  stored: Optional[tuple]) -> Optional[str]:
-    """目录本轮的到期判定（批二 #12）。返回 None = 到期层不参与本目录，
-    走旧的完整核对深度（增量关 / 指纹缺失 / 定向扫描 / 到期层关）。
+                  stored: Optional[tuple],
+                  entry_count: Optional[int] = None) -> Optional[str]:
+    """目录本轮的到期判定（批二 #12；任务清单第 11 项加按源快照层）。
+
+    返回 None = 到期层不参与本目录，走旧的完整核对深度（增量关 /
+    指纹缺失 / 定向扫描 / 到期层关）。
 
     每个目录每轮只判一次，结果缓存在 ctx.dir_decisions，统计也只计一次。
-    ``stored`` 是 _load_dir_states 给的 (指纹, next_due_at)。
+    ``stored`` 是 (指纹, next_due_at)，按源快照层传 (指纹, next_due_at,
+    项数) 时多一条：项数对不上也算 changed（清单项数变了，指纹再像
+    也不能跳过——项数是零成本的前置校验）。
     """
     if dir_key in ctx.dir_decisions:
         return ctx.dir_decisions[dir_key]
@@ -2612,6 +2627,9 @@ def _dir_decision(ctx: "_ScanContext", dir_key: str,
         if stored is None:
             decision = "first"
         elif stored[0] != fingerprint:
+            decision = "changed"
+        elif (entry_count is not None and len(stored) > 2
+                and stored[2] is not None and stored[2] != entry_count):
             decision = "changed"
         elif stored[1] is None or stored[1] <= datetime.now():
             decision = "due"
@@ -2764,6 +2782,92 @@ def _store_dir_states(db: Session, ctx: "_ScanContext") -> None:
             row.next_due_at = due_at
             row.last_decision = decision
             row.updated_at = now
+
+
+def _load_snapshot_states(db: Session, ctx: "_ScanContext", dir_keys: list) -> None:
+    """本批目录的按源快照状态（任务清单第 11 项）。
+
+    只解析到源行的目录进快照层：ctx.snapshot_resolved 记 dir_key → 源行 id，
+    ctx.snapshot_states 记 dir_key → (指纹, next_due_at, 项数)（无快照行
+    的不记，判定走 first）。解析不到、读表失败、开关关闭时两字典都空，
+    调用方一律走旧 ScanDirState 路径（fail-closed）。
+    """
+    ctx.snapshot_resolved = {}
+    ctx.snapshot_states = {}
+    if ctx.snapshot_source_rows is None:
+        ctx.snapshot_source_rows = scan_snapshots.load_source_rows(db, ctx.lib_id)
+    rows = ctx.snapshot_source_rows
+    if not rows:
+        return
+    resolved: dict = {}
+    for key in dict.fromkeys(k for k in dir_keys if k):
+        source_id = scan_snapshots.resolve_source_id(rows, key)
+        if source_id is not None:
+            resolved[key] = source_id
+    if not resolved:
+        return
+    ctx.snapshot_resolved = resolved
+    found = scan_snapshots.load_snapshots(db, ctx.lib_id, list(resolved.keys()))
+    for key in resolved:
+        if key in found:
+            fp, count, due = found[key]
+            ctx.snapshot_states[key] = (fp, due, count)
+
+
+def _dir_listing_count(ctx: "_ScanContext", scan_file: "ScanFile") -> Optional[int]:
+    """目录本轮清单项数（零额外 IO：只读已缓存的列举结果）。
+
+    本机读模块级目录缓存；挂载读 _mount_names 的预热缓存。列举失败
+    回 None（调用方不拿项数做判定，退回指纹单一路）。
+    """
+    key = _dir_key_of(scan_file)
+    if scan_file.local_dir:
+        try:
+            return len(_list_dir_cached(scan_file.local_dir))
+        except OSError:
+            return None
+    if key in ctx.dir_list_failed:
+        return None
+    entries = _mount_names(ctx, scan_file)
+    if key in ctx.dir_list_failed:
+        return None
+    return len(entries)
+
+
+def _record_snapshot(ctx: "_ScanContext", dir_key: str, decision: str,
+                     due_at: Optional[datetime] = None) -> None:
+    """把目录本轮的快照写回决定记进 ctx，批次收尾时随 _store_snapshots 写回。
+
+    只对解析到源行的目录记；due_at 缺省 = now + 周期（与 _schedule_dir
+    同口径）；not_due 的调用方须把原到期时刻传进来（不许越推越远）。
+    """
+    if decision is None:
+        return
+    source_id = ctx.snapshot_resolved.get(dir_key)
+    if source_id is None:
+        return
+    fingerprint = ctx.dir_fingerprints.get(dir_key)
+    if fingerprint is None:
+        return
+    if due_at is None:
+        due_at = datetime.now() + _dir_recheck_after()
+    ctx.dirty_snapshots[dir_key] = (
+        source_id, fingerprint, ctx.snapshot_counts.get(dir_key),
+        decision, due_at)
+
+
+def _store_snapshots(db: Session, ctx: "_ScanContext") -> None:
+    """把本批快照写回（与条目在同一个事务里提交；旧表双写不受影响）。
+
+    directory_path 与 dir_key 同值（本机绝对路径 / mount://<id>/<rel>）。
+    假 ctx（部分测试用 SimpleNamespace/_Ctx 替身，只带旧属性）没有
+    dirty_snapshots 时直接返回——快照层缺席不许拖垮提交路径。
+    """
+    dirty = getattr(ctx, "dirty_snapshots", None)
+    if not dirty:
+        return
+    ctx.dirty_snapshots = {}
+    scan_snapshots.store_snapshots(db, ctx.lib_id, dirty, datetime.now())
 
 
 def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: Optional[str],
@@ -4010,6 +4114,13 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     stored_states = _load_dir_states(
         db, ctx.lib_id, [_dir_key_of(p.scan_file) for p in prepared]
     ) if _incremental_on(ctx) else {}
+    # 按源快照层（任务清单第 11 项）：解析到源行的目录以快照为准，
+    # 解析不到/开关关闭时两字典为空，循环里一律走旧路径。
+    if _incremental_on(ctx) and scan_snapshots.snapshots_enabled():
+        _load_snapshot_states(db, ctx, [_dir_key_of(p.scan_file) for p in prepared])
+    else:
+        ctx.snapshot_resolved = {}
+        ctx.snapshot_states = {}
 
     policy = ctx.snap.scrape_policy
     # r60：_attach_known_items 已在批次开头（改名识别之前）执行，
@@ -4046,10 +4157,20 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         fingerprint = _dir_fingerprint(ctx, scan_file) if _incremental_on(ctx) else None
         stored = stored_states.get(dir_key)
         stored_fp = stored[0] if stored else None
+        # 按源快照层：解析到源行的目录，快照（指纹 + 项数 + 到期）为准；
+        # 无快照行时 stored=None → 判定 first，完整处理一次并写快照。
+        listing_count = None
+        if dir_key in ctx.snapshot_resolved:
+            snap_stored = ctx.snapshot_states.get(dir_key)
+            stored = snap_stored
+            stored_fp = stored[0] if stored else None
+            listing_count = _dir_listing_count(ctx, scan_file) if fingerprint else None
+            ctx.snapshot_counts[dir_key] = listing_count
         # 到期调度（批二 #12）：先判这个目录本轮的核对深度。未到期且指纹没变
         # → 只跑安全检查、推迟到期类判定（defer_scrape）；判定为 None（到期层
         # 不参与）或 first/changed/due → 走下面原有的完整判定，一字不差。
-        decision = _dir_decision(ctx, dir_key, fingerprint, stored) if fingerprint else None
+        decision = _dir_decision(ctx, dir_key, fingerprint, stored,
+                                 entry_count=listing_count) if fingerprint else None
         if decision == "not_due" and _can_skip_file(
                 ctx, item, pending, fingerprint, stored_fp, defer_scrape=True):
             pending.skipped = True
@@ -4060,6 +4181,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
             # 只记判定供查：保留原到期时刻，不许把排期越推越远
             _schedule_dir(ctx, dir_key, "not_due", due_at=stored[1])
+            _record_snapshot(ctx, dir_key, "not_due", due_at=stored[1])
             continue
         if _can_skip_file(ctx, item, pending, fingerprint, stored_fp):
             pending.skipped = True
@@ -4070,11 +4192,13 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             if decision is not None:
                 # 到期重验过但指纹没变：指纹不在 dirty 里，靠排期集推进到期时刻
                 _schedule_dir(ctx, dir_key, decision)
+                _record_snapshot(ctx, dir_key, decision)
             continue
         if fingerprint:
             ctx.dirty_dirs[dir_key] = fingerprint   # 这个目录这批真处理了 → 提交时写回指纹
         if decision is not None:
             _schedule_dir(ctx, dir_key, decision)   # 完整处理过 → 重新排期
+            _record_snapshot(ctx, dir_key, decision)
         pending.probe_needed = bool(is_new or needs_probe(item, scan_file.stored_path,
                                                              scan_file.size))
         if SCAN_LAYERED and not pending.fast_skipped:
@@ -4308,6 +4432,7 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session, process_one,
                 for p in prepared:
                     process_one(p.scan_file, p)
                 _store_dir_states(db, ctx)   # 增量扫描：这批真处理过的目录指纹随本次提交写回
+                _store_snapshots(db, ctx)      # 按源快照：与指纹同事务写回
                 outcome = commit_batch()
             except OperationalError as exc:
                 # PG 死锁（40P01）：enrich worker 的批量认领
