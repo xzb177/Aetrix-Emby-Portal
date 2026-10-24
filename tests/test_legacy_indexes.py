@@ -69,6 +69,10 @@ def test_spec_table_covers_all_seven_in_restored_order():
         "idx_item_original_title_trgm",
         "idx_item_sort_name_trgm",
         "idx_item_aliases_trgm",
+        # 2026-10-24：拼音搜索字段 trigram GIN 索引（批二 #16，PR #1212；
+        # pinyin_full / pinyin_initials 两列，与 R7 四列同一基建、PG 专属）
+        "idx_item_pinyin_full_trgm",
+        "idx_item_pinyin_initials_trgm",
         # 2026-10-23：补全进度统计 + 抢单去重聚合（压测实锤，生产已手工先行）
         "idx_item_enrich_claimed",
         "idx_item_enrich_claim_cover",
@@ -82,7 +86,8 @@ def test_trgm_specs_are_pg_only_and_render_gin_ddl():
     from sqlalchemy.schema import CreateIndex
 
     trgm_specs = [s for s in database._LEGACY_INDEXES if s[1].endswith("_trgm")]
-    assert len(trgm_specs) == 4
+    # R7 原四列 + 2026-10-24 拼音两列（批二 #16，PR #1212）
+    assert len(trgm_specs) == 6
     for spec in trgm_specs:
         table, name, columns, required_column, message, where, using = spec
         assert table == "emby_items"
