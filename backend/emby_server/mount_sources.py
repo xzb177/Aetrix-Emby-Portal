@@ -9,11 +9,12 @@
    差异只报不拦。
 4. 凭据密封：复用 25-1 ``seal_secret``；KEK 目录只从配置读。
 
-**非权威声明**：本模块不改变任何消费方行为。开关默认关（本模块
-根本没有开关——它只是不被任何热路径调用）；旧 ``paths`` /
-``mount_ids`` 列仍是唯一权威，来源解析、扫描、播放一律不读新表。
-能力门控是清单第 2 项、凭据迁移是第 4 项、断旧路是第 20 项，
-均另开 PR，本模块不许提前做其中任何一项。
+**权威切换（清单第 2 项）**：来源解析的权威从旧列切到新表——扫描、
+追新、探针、监听、Drive Changes 与管理端保存一律经本模块读/写新表；
+新表无行或读表失败时显式记警告并回落旧 ``paths`` / ``mount_ids``
+解析（回落不是静默失败）；旧列在双写期由反向同步维持，供旧代码与
+回滚读。能力门控在本模块的读取里落地（``can_list``）；凭据迁移是
+第 4 项、断旧路是第 20 项，均另开 PR，本模块不许提前做其中任何一项。
 
 命名注意：``models.LibrarySource``（落库 ORM 行）与
 ``mounts.LibrarySource``（扫描期 dataclass）同名不同物；本模块一律
@@ -24,9 +25,13 @@ from __future__ import annotations
 
 import logging
 import os
+from types import SimpleNamespace
 
 from backend.emby_server import models as em
 from backend.emby_server import upstream_sources as ups
+from backend.emby_server.mounts import (
+    build_library_sources,
+)
 from backend.emby_server.mounts import (
     library_sources as legacy_library_sources,
 )
@@ -268,3 +273,143 @@ def compare_library_sources(db, library) -> dict:
         "failed": failed,
         "warnings": [],
     }
+
+
+# ---------------------------------------------------------------- 来源切表（清单第 2 项）
+
+def new_table_rows(db, library) -> list[dict] | None:
+    """新表来源行（无回落）：有行时回行列表，无行 / 读表失败 /
+    db 为 None 时回 None 并记警告——调用方回落旧列解析。
+
+    返回 ``[{mount_id, sub_path, is_enabled}]``（新表 id 顺序）。
+    需要“回落即派生”的调用方用 ``read_source_rows``。
+    """
+    if db is None:
+        logger.warning("库 id=%s 无 db 会话，来源行回落旧 paths/mount_ids",
+                       getattr(library, "id", "?"))
+        return None
+    try:
+        rows = db.query(em.LibrarySource).filter(
+            em.LibrarySource.library_id == library.id).order_by(
+            em.LibrarySource.id).all()
+    except Exception as exc:  # noqa: BLE001 — 表缺失/旧夹具都回落旧配置
+        logger.warning("库 id=%s 新表来源行读取失败，回落旧 paths/mount_ids：%s",
+                       getattr(library, "id", "?"), exc)
+        return None
+    if not rows:
+        logger.warning("库 id=%s 新表无来源行，回落旧 paths/mount_ids（回填未跑或已回滚）",
+                       getattr(library, "id", "?"))
+        return None
+    return [{"mount_id": row.mount_id, "sub_path": row.sub_path,
+             "is_enabled": bool(getattr(row, "is_enabled", True))}
+            for row in rows]
+
+
+def read_source_rows(db, library) -> list[dict]:
+    """库的来源行（新表优先，旧配置派生回落）。
+
+    返回 ``[{mount_id, sub_path, is_enabled}]``（行顺序 = 新表 id 顺序，
+    或派生顺序）。新表无行、读表失败、db 为 None 时，一律回落旧
+    ``paths`` / ``mount_ids`` 派生（``derive_source_rows``，子目录胜出
+    口径与旧解析逐字一致）并记警告——回落是显式的，不是静默失败。
+    追新 / 探针 / 监听 / Drive Changes 的来源枚举走本函数，不许各自
+    再拆一次旧列。
+    """
+    rows = new_table_rows(db, library)
+    if rows is not None:
+        return rows
+    derived, warnings = derive_source_rows(library)
+    for warning in warnings:
+        logger.warning(warning)
+    return [{"mount_id": row["mount_id"], "sub_path": row["sub_path"],
+             "is_enabled": True} for row in derived]
+
+
+def read_library_sources(db, library):
+    """切表后的扫描来源解析唯一入口（清单第 2 项）。
+
+    新表有行 → 按行建来源（本机行 / 挂载子目录行 / 挂载根行），经
+    ``build_library_sources(enforce_can_list=True)`` 做可用性判定与
+    能力门控：``can_list=False`` 的挂载记 failed、不进扫描；
+    ``is_enabled=False`` 的行同样记 failed（停用来源的条目不许被
+    当成“已删除”清理掉，与旧 failed 口径一致）。
+    新表无行或读表失败 → 记警告后回落旧 ``library_sources()``
+    （旧列解析，不执法门控）——回落是显式的，不是静默改走别源。
+    输出顺序与旧解析逐字一致：本机行、挂载子目录行、挂载根行。
+    """
+    try:
+        rows = db.query(em.LibrarySource).filter(
+            em.LibrarySource.library_id == library.id).order_by(
+            em.LibrarySource.id).all()
+    except Exception as exc:  # noqa: BLE001 — 表缺失即回落旧解析
+        logger.warning("库 id=%s 新表来源行读取失败，回落旧 paths/mount_ids：%s",
+                       getattr(library, "id", "?"), exc)
+        return legacy_library_sources(library, db)
+    if not rows:
+        logger.warning("库 id=%s 新表无来源行，回落旧 paths/mount_ids（回填未跑或已回滚）",
+                       getattr(library, "id", "?"))
+        return legacy_library_sources(library, db)
+    local_paths: list[str] = []
+    mount_subpaths: list[tuple[str, int, str]] = []
+    mount_ids: list[int] = []
+    failed: list[dict] = []
+    for row in rows:
+        if not getattr(row, "is_enabled", True):
+            label = row.sub_path if row.mount_id is None else f"mount://{row.mount_id}{row.sub_path}"
+            failed.append({"label": label, "reason": "来源已在新表停用（is_enabled=False），本轮跳过"})
+            continue
+        if row.mount_id is None:
+            local_paths.append(row.sub_path)
+        elif (row.sub_path or "/") == "/":
+            mount_ids.append(row.mount_id)
+        else:
+            mount_subpaths.append((f"mount://{row.mount_id}{row.sub_path}",
+                                   row.mount_id, row.sub_path))
+    sources, built_failed = build_library_sources(
+        local_paths, mount_subpaths, mount_ids, db, library,
+        enforce_can_list=True)
+    return sources, failed + built_failed
+
+
+def reverse_sync_legacy_columns(rows, submitted_paths) -> tuple[str, str]:
+    """来源行 + 提交顺序 → 旧列（paths, mount_ids）字符串（双写期反向同步）。
+
+    paths 列 = 提交顺序原样（不重排：管理端回显与旧存储顺序一致，
+    重排会打乱界面顺序）；mount_ids 列 = 派生后存活的根行（子目录胜出
+    被过滤掉的根行不再出现）。旧解析在同步后的列上复原同一来源集合
+    （输出顺序仍按旧规则：本机、子目录、整挂载，与字符串顺序无关）。
+    """
+    root_ids = [str(row["mount_id"]) for row in rows
+                if row["mount_id"] is not None and (row["sub_path"] or "/") == "/"]
+    return ",".join(submitted_paths), ",".join(root_ids)
+
+
+def write_library_sources(db, library, paths, mount_ids) -> dict:
+    """管理端保存库：只写新表，旧列反向同步（清单第 2 项，双写期）。
+
+    - ``paths`` / ``mount_ids`` 是提交的旧形态值（调用方已校验）；
+    - 按 ``derive_source_rows`` 口径派生行（子目录胜出、危险组合只记
+      警告），删掉该库全部旧行后重插；
+    - 旧 ``paths`` / ``mount_ids`` 列由 ``reverse_sync_legacy_columns``
+      回写，供旧代码与回滚读——旧列不再是权威，只是双写期的影子。
+    调用方须保证 ``library.id`` 已落库（新建库先 flush），写完后提交。
+    返回 ``{rows, warnings, paths, mount_ids}``。
+    """
+    shim = SimpleNamespace(paths=",".join(paths),
+                           mount_ids=",".join(str(i) for i in mount_ids),
+                           name=getattr(library, "name", None),
+                           id=getattr(library, "id", None))
+    derived, warnings = derive_source_rows(shim)
+    for warning in warnings:
+        logger.warning(warning)
+    db.query(em.LibrarySource).filter(
+        em.LibrarySource.library_id == library.id).delete()
+    for row in derived:
+        db.add(em.LibrarySource(library_id=library.id,
+                                mount_id=row["mount_id"],
+                                sub_path=row["sub_path"]))
+    legacy_paths, legacy_mount_ids = reverse_sync_legacy_columns(derived, paths)
+    library.paths = legacy_paths
+    library.mount_ids = legacy_mount_ids
+    return {"rows": len(derived), "warnings": warnings,
+            "paths": legacy_paths, "mount_ids": legacy_mount_ids}

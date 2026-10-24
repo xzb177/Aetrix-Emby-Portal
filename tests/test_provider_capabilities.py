@@ -92,7 +92,8 @@ def test_rclone_capabilities_both_modes():
 # 协议四口：resolve_play_target（换链）/ open_range（搬字节）/
 # read_sidecar_text（文本旁挂）/ refresh_credentials（凭据刷新）。
 # 钉死点：resolve_final 的 .strm 耦合显式走旁挂口，不靠默认兜底；
-# 旧 read_text / resolve 入口保留，duck-type 旧提供者不被静默打断。
+# 清单第 2 项：旧 resolve 已删，换链一律走 resolve_play_target；
+# 旧 read_text 名保留，duck-type 旁挂不被静默打断。
 
 
 class _SpyProvider(MountProvider):
@@ -102,7 +103,7 @@ class _SpyProvider(MountProvider):
         self.resolve_calls = []
         self.sidecar_calls = []
 
-    def resolve(self, rel):
+    def resolve_play_target(self, rel):
         self.resolve_calls.append(rel)
         return mnt.PlayTarget("url", "http://x/f", {})
 
@@ -275,22 +276,40 @@ def test_refresh_credentials_matrix(monkeypatch):
         drive.refresh_credentials()
 
 
-def test_capabilities_has_no_production_callers_yet():
-    """骨架阶段的死代码钉死：af2769a2 上 capabilities() 全仓零调用方。
+def test_capabilities_callers_are_only_the_gates():
+    """清单第 2 项：能力声明不再是死代码——调用方只许是门控点。
 
-    本断言只扫 backend/emby_server（生产代码），不扫 tests/。后续阶段
-    一旦有上层开始按能力编排，本测试必须随之改成“调用方清单”断言，
-    不许悄悄删掉不断言。
+    骨架阶段（af2769a2）的“零调用方”断言已被本阶段取代：上层开始按
+    能力编排时，本测试按原文要求改成“调用方清单”断言（不是悄悄删）。
+    清单外新增调用方必须先更新本断言（说明新门控点），不许悄悄加。
+    本断言只扫 backend/emby_server（生产代码），不扫 tests/。
     """
     root = Path(__file__).resolve().parents[1] / "backend" / "emby_server"
     callers = []
     for path in root.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and node.attr == "capabilities":
-                # 定义行是 FunctionDef，不是 Attribute 调用；这里只抓调用。
-                callers.append(f"{path.name}:{node.lineno}")
-    # 注意：ast.Attribute 也会命中 `def capabilities` 之外的属性访问；
-    # 本仓生产代码里 capabilities 只出现在定义处，调用应为零。
-    # 若未来有调用方，本测试失败即提醒更新骨架口径。
-    assert callers == [], callers
+        func_stack: list[str] = []
+
+        class _Visitor(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):
+                func_stack.append(node.name)
+                self.generic_visit(node)
+                func_stack.pop()
+
+            def visit_AsyncFunctionDef(self, node):
+                func_stack.append(node.name)
+                self.generic_visit(node)
+                func_stack.pop()
+
+            def visit_Attribute(self, node):
+                if node.attr == "capabilities":
+                    # 取最外层函数名：门控闭包 _mount_source 算进
+                    # build_library_sources，不单列。
+                    callers.append((path.name, func_stack[0] if func_stack else "<module>"))
+                self.generic_visit(node)
+
+        _Visitor().visit(tree)
+    assert sorted(callers) == [
+        ("mounts.py", "build_library_sources"),
+        ("mounts.py", "refresh_credentials_if_supported"),
+    ], callers

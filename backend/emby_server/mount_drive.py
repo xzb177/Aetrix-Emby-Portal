@@ -632,7 +632,7 @@ class DriveMount(RemoteMount):
         except MountError:
             return False  # 与基类一致：列举失败按不存在
 
-    def resolve(self, rel: str) -> PlayTarget:
+    def resolve_play_target(self, rel: str) -> PlayTarget:
         """探测/.strm 读取用的解析：usercontent 直链 + Bearer 头（不下发客户端）。
 
         正常播放不走这里：带 drive_file_id 的条目在 api 层直接 302。

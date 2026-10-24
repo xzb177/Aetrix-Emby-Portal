@@ -4355,6 +4355,28 @@ def _drive_mount_id_for_item(db: Session, item: em.MediaItem) -> Optional[str]:
     return provider.drive_id or None
 
 
+def _mount_can_generate_play_target(db: Session, item: em.MediaItem) -> Optional[bool]:
+    """条目挂载的换链能力（清单第 2 项能力门控，变体清单用）。
+
+    只接受 file_path 是 mount:// 前缀的条目：挂载行按类型派生能力
+    （mount_sources.capabilities_for_mount_type，与各 provider 的
+    capabilities() 声明逐字一致）；挂载不存在或条目非 mount:// 时回
+    None（调用方保持旧行为，不因查不到挂载就把变体扣掉）。
+    同步、只做一次主键查询，调用方经 run_db 走线程池。
+    """
+    from backend.emby_server import mount_sources
+
+    parsed = mount_lib.parse_mount_path(getattr(item, "file_path", "") or "")
+    if parsed is None:
+        return None
+    mount = db.query(em.StorageMount).filter(
+        em.StorageMount.id == parsed[0]).first()
+    if mount is None:
+        return None
+    return mount_sources.capabilities_for_mount_type(
+        mount.mount_type).get("can_generate_play_target")
+
+
 def _drive_file_exists_sync(drive_id: str, file_id: str,
                             force_recheck: bool = False) -> None:
     """同步：一次 files.get 判定存在性。只在 _DRIVE_EXISTS_EXECUTOR 里调用。
@@ -4690,9 +4712,13 @@ async def playback_info(
         if _dd_fid:
             _drive_mount_ok = (
                 await run_db(_drive_mount_id_for_item, db, item)) is not None
+        # 清单第 2 项能力门控：挂载换链能力进变体清单判定。
+        _mount_can_generate = await run_db(
+            _mount_can_generate_play_target, db, item)
         _variants = await run_db(
             play_variants.list_variants, db, item,
-            drive_mount_locatable=_drive_mount_ok)
+            drive_mount_locatable=_drive_mount_ok,
+            mount_can_generate_play_target=_mount_can_generate)
         if len(_variants) > 1:
             sources = play_variants.build_media_sources(
                 media_source, _variants, guid=item.guid,

@@ -1010,7 +1010,12 @@ def _library_drive_prefixes(db) -> list[tuple[int, str, str]]:
     for lib in libs:
         if getattr(lib, "is_virtual", False):
             continue
-        for raw in (getattr(lib, "paths", "") or "").split(","):
+        # 清单第 2 项：来源枚举改读新表行（无行时回落旧配置派生，停用的行
+        # 跳过）；行转回旧形态字符串，后续分支一字不动。
+        from backend.emby_server import mount_sources as _ms
+        _raws = [f"mount://{r['mount_id']}{r['sub_path']}" if r["mount_id"] is not None else r["sub_path"]
+                 for r in _ms.read_source_rows(db, lib) if r.get("is_enabled", True)]
+        for raw in _raws:
             path = raw.strip()
             if not path:
                 continue
@@ -1130,7 +1135,12 @@ def _library_fs_prefixes(db) -> dict[tuple[int, str], str]:
     for lib in libs:
         if getattr(lib, "is_virtual", False):
             continue
-        for raw in (getattr(lib, "paths", "") or "").split(","):
+        # 清单第 2 项：来源枚举改读新表行（无行时回落旧配置派生，停用的行
+        # 跳过）；行转回旧形态字符串，后续分支一字不动。
+        from backend.emby_server import mount_sources as _ms
+        _raws = [f"mount://{r['mount_id']}{r['sub_path']}" if r["mount_id"] is not None else r["sub_path"]
+                 for r in _ms.read_source_rows(db, lib) if r.get("is_enabled", True)]
+        for raw in _raws:
             path = raw.strip()
             if not path:
                 continue

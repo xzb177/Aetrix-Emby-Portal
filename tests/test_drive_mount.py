@@ -238,7 +238,7 @@ def test_resolve_usercontent_url(monkeypatch):
         drive_auth, "drive_auth_headers",
         lambda url, key=None: {"Authorization": "Bearer T"})
     provider = DriveMount(_mount())
-    target = provider.resolve("/MoviePilot/演唱会/演唱会A.mkv")
+    target = provider.resolve_play_target("/MoviePilot/演唱会/演唱会A.mkv")
     assert target.kind == "url"
     assert "id=V1" in target.value
     assert target.headers["Authorization"] == "Bearer T"
@@ -420,7 +420,7 @@ def test_resolve_duplicate_folder_file(_dup_drive, monkeypatch):
         drive_auth, "drive_auth_headers",
         lambda url, key=None: {"Authorization": "Bearer T"})
     provider = DriveMount(_mount())
-    target = provider.resolve(DUP_FILE_REL)
+    target = provider.resolve_play_target(DUP_FILE_REL)
     assert target.kind == "url" and "id=V_S5E9" in target.value
 
 
@@ -554,7 +554,7 @@ def test_resolve_second_duplicate_file(_dup2_drive, monkeypatch):
         drive_auth, "drive_auth_headers",
         lambda url, key=None: {"Authorization": "Bearer T"})
     provider = DriveMount(_mount())
-    target = provider.resolve(DUP2_FILE_REL)
+    target = provider.resolve_play_target(DUP2_FILE_REL)
     assert target.kind == "url" and "id=V_TGT" in target.value
 
 

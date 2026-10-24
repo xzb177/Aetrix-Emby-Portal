@@ -102,14 +102,14 @@ def _mount(mount_id=7, mount_type="pan115", config=None, enabled=True, path=""):
 
 
 class _CountingProvider(mnt.MountProvider):
-    """计数型假提供者：resolve 调一次计数 +1，返回可配的 PlayTarget。"""
+    """计数型假提供者：换链口调一次计数 +1，返回可配的 PlayTarget。"""
 
     calls = 0
     headers = {"User-Agent": "counting-ua"}
     url = "https://example.com/v/a.mkv"
     kind_value = "url"
 
-    def resolve(self, rel):
+    def resolve_play_target(self, rel):
         type(self).calls += 1
         return mnt.PlayTarget(self.kind_value, self.url, dict(self.headers))
 
@@ -133,7 +133,7 @@ def test_second_resolve_hits_cache(counting):
     db = _FakeDB([mount])
     t1 = mnt.resolve_play_target("mount://7/电影/a.mkv", db)
     t2 = mnt.resolve_play_target("mount://7/电影/a.mkv", db)
-    assert counting.calls == 1, "第二次解析必须命中缓存，不许再调 provider.resolve"
+    assert counting.calls == 1, "第二次解析必须命中缓存，不许再调 provider.resolve_play_target"
     assert (t2.kind, t2.value) == (t1.kind, t1.value) == ("url", counting.url)
     assert mnt.resolve_cache_stats()["hits"] == 1
 
@@ -301,7 +301,7 @@ def test_drive_bearer_is_reattached_fresh_never_cached(drive):
 # ---------------- STRM 目标：Bearer 现挂 ----------------
 
 class _StrmProvider(mnt.MountProvider):
-    """read_text 给一条 Drive 直链内容；resolve 对 .strm 根本不该被调。"""
+    """read_text 给一条 Drive 直链内容；换链口对 .strm 根本不该被调。"""
 
     reads = 0
 
@@ -309,8 +309,8 @@ class _StrmProvider(mnt.MountProvider):
         type(self).reads += 1
         return "https://drive.google.com/uc?id=STRMFID&export=download\n"
 
-    def resolve(self, rel):  # pragma: no cover - 被调到就是错
-        raise AssertionError("STRM 走 resolve_final 的内容解析，不许调 resolve")
+    def resolve_play_target(self, rel):  # pragma: no cover - 被调到就是错
+        raise AssertionError("STRM 走 resolve_final 的内容解析，不许调换链口")
 
 
 def test_strm_bearer_reattached_on_hit(monkeypatch):

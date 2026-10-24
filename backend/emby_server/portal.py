@@ -58,6 +58,7 @@ from backend.emby_server.scanner import (
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import mount_sources
 # 扫描队列（v2.27.0）：按远程挂载串行化 + 并发上限 + 排队状态/进度，见 scan_queue.py
 from backend.emby_server import reachability
 from backend.emby_server import scan_queue
@@ -1881,6 +1882,9 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
         fs_watch=bool(req.fs_watch),
     )
     db.add(lib)
+    db.flush()  # 落 id，供新表行引用
+    # 清单第 2 项：保存只写新表，旧列反向同步（双写期）
+    mount_sources.write_library_sources(db, lib, req.paths, req.mount_ids)
     db.commit()
     db.refresh(lib)
     return {"success": True, "id": lib.id, "guid": lib.guid}
@@ -2005,6 +2009,13 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
     if req.mount_ids is not None:
         _validate_library_sources(db, [], req.mount_ids)
         lib.mount_ids = _mount_ids_field(db, req.mount_ids)
+    if req.path_entries is not None or req.paths is not None or req.mount_ids is not None:
+        # 清单第 2 项：保存只写新表，旧列反向同步（双写期）。从合并后的
+        # 旧列派生（子目录胜出）：只改 paths 也可能挤掉旧 mount_ids 根行，
+        # 与旧解析的子目录胜出过滤口径一致。
+        mount_sources.write_library_sources(
+            db, lib, mount_lib.split_library_paths(lib.paths),
+            mount_lib.parse_mount_ids(lib))
     if req.is_enabled is not None:
         lib.is_enabled = req.is_enabled
     if req.scrape_policy is not None:
