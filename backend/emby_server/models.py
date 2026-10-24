@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -685,6 +686,72 @@ class ScanRun(Base):
         Index("uq_scan_runs_one_running", "library_id", unique=True,
               sqlite_where=text("status = 'running'"),
               postgresql_where=text("status = 'running'")),
+    )
+
+
+#: 识别审查队列（FMBY 学习批二 #15）的 reason / status 允许值——**全仓唯一
+#: 定义点**。下方 IdentifyReviewTask 的 CheckConstraint SQL 直接由这两个元组
+#: 拼出，identify_review 的代码校验也只读这两个元组：约束与枚举同源、永不
+#: 漂移。FMBY 自己在这条链上栽过：入队写的 reason_code 不在 DB CHECK 允许
+#: 集里，「识别→审核」整条链静默断裂——本仓用同源生成从结构上堵死这坑。
+#: 新增取值只许改这里（约束随之下轮建表/迁移生效，代码校验立即生效）。
+IDENTIFY_REVIEW_REASONS = ("no_confident_match",)
+IDENTIFY_REVIEW_STATUSES = ("pending", "bound", "ignored", "requeued")
+
+
+def _in_sql(column: str, values: tuple) -> str:
+    """把允许值元组拼成 CHECK 约束用的 IN (...) SQL 片段（值均为内部常量）。"""
+    return f"{column} IN ({', '.join(repr(v) for v in values)})"
+
+
+class IdentifyReviewTask(Base):
+    """低置信度识别的人工审查队列（FMBY 学习批二 #15；魂 1 身份与证据先行、
+    魂 6 状态集中维护）。
+
+    TMDB 真的搜过、有候选、但无一过置信线（search 返回 None）的条目，旧
+    口径直接终态 none、候选当场丢弃——管理员事后想人工认片，手里什么都
+    不剩。开启审查队列（env IDENTIFY_REVIEW_QUEUE_ENABLED=1）后，这类条目
+    在终态化的同一事务里入队：候选与分数的证据快照（evidence_json）随行
+    保存，管理员在后台逐条处置（绑定到指定 TMDB / 忽略 / 重跑识别）。
+
+    不加外键（照 ScanRun 先例）：条目删掉后审查行留着供追溯，条目名/年份
+    在入队时快照进本行，列表不必回查条目表。
+    """
+
+    __tablename__ = "emby_identify_review_tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+    item_id = Column(Integer, nullable=False, index=True)  # emby_items.id（非 guid）
+    # 入队时条目快照：管理员列表直接可读，条目改名/删除不影响追溯
+    item_name = Column(String(500))
+    item_type = Column(String(20))       # series / movie
+    item_year = Column(Integer)
+    # 取值只许出自 IDENTIFY_REVIEW_REASONS / IDENTIFY_REVIEW_STATUSES，
+    # 约束 SQL 由同元组拼出（见上方注释），代码与 DB 永不漂移。
+    reason = Column(String(40), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    # 证据快照 JSON：{query, kind, searched_year, captured_at,
+    # candidates: [{tmdb_id, title, original_title, year, tier, rank,
+    # popularity, poster_path}]}——tier 为 null 即被置信线拒掉的候选。
+    evidence_json = Column(Text)
+    resolved_by = Column(Integer)        # web_users.id（处置管理员）
+    resolved_at = Column(DateTime)
+    resolved_tmdb_id = Column(String(32))  # status=bound 时绑定的 TMDB ID
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("reason", IDENTIFY_REVIEW_REASONS),
+                        name="ck_identify_review_reason"),
+        CheckConstraint(_in_sql("status", IDENTIFY_REVIEW_STATUSES),
+                        name="ck_identify_review_status"),
+        # 幂等闸：同一条目同时只许一条 pending——重复识别收尾时更新既有行
+        # 的证据，不许堆多条 pending（与 uq_scan_runs_one_running 同款）。
+        Index("uq_identify_review_one_pending", "item_id", unique=True,
+              sqlite_where=text("status = 'pending'"),
+              postgresql_where=text("status = 'pending'")),
+        Index("ix_identify_review_status_created", "status", "created_at"),
     )
 
 

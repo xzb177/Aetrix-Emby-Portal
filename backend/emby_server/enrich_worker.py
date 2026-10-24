@@ -2864,6 +2864,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                     # 网络抖动被吞成搜不到时根本查不出（问题一的可见性缺口）
                     logger.info("TMDB 搜过无高置信命中（终态 none）id=%s name=%r year=%s",
                                 item.id, item.name, item.production_year)
+                    # FMBY 批二 #15：低置信人工审查队列（默认关）。TMDB 有
+                    # 候选但无一过线 = 拿不准，不硬认也不丢弃——同事务入队
+                    # 留证据等管理员处置。入队写失败会抛 ReviewEnqueueError
+                    # 让整个写库阶段回滚走失败/重试，绝不静默丢证据（纪律②）。
+                    from backend.emby_server import identify_review as _irev
+                    _irev.maybe_enqueue_terminal_none(db, item, tmdb_client)
             else:
                 _incomplete = True
         else:
