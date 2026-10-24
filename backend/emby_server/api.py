@@ -4395,6 +4395,28 @@ def _mount_can_generate_play_target(db: Session, item: em.MediaItem) -> Optional
         mount.mount_type).get("can_generate_play_target")
 
 
+def _user115_direct_available(db: Session, item: em.MediaItem,
+                              user) -> bool:
+    """BYOS P1 绑定直链可用性（变体清单与取流校验共用，同口径）。
+
+    同时满足才 True：条目是 mount:// 路径、挂载类型为 115、该用户
+    有 active 的 pan115 绑定。同步、两次主键级查询，调用方经 run_db
+    走线程池。清单阶段不真解析直链；无绑定用户恒 False，行为与
+    今天逐字一致。
+    """
+    from backend.emby_server import user_bindings
+
+    parsed = mount_lib.parse_mount_path(getattr(item, "file_path", "") or "")
+    if parsed is None:
+        return False
+    mount = db.query(em.StorageMount).filter(
+        em.StorageMount.id == parsed[0]).first()
+    if mount is None or mount.mount_type != mount_lib.MOUNT_PAN115:
+        return False
+    return user_bindings.get_active_binding(
+        db, getattr(user, "id", None), "pan115") is not None
+
+
 def _drive_file_exists_sync(drive_id: str, file_id: str,
                             force_recheck: bool = False) -> None:
     """同步：一次 files.get 判定存在性。只在 _DRIVE_EXISTS_EXECUTOR 里调用。
@@ -4733,10 +4755,15 @@ async def playback_info(
         # 清单第 2 项能力门控：挂载换链能力进变体清单判定。
         _mount_can_generate = await run_db(
             _mount_can_generate_play_target, db, item)
+        # BYOS P1：绑定直链信号（该用户有 active 的 pan115 绑定且
+        # 条目挂载为 115 时，清单追加 byos115_direct）。
+        _user115_ok = await run_db(
+            _user115_direct_available, db, item, user)
         _variants = await run_db(
             play_variants.list_variants, db, item,
             drive_mount_locatable=_drive_mount_ok,
-            mount_can_generate_play_target=_mount_can_generate)
+            mount_can_generate_play_target=_mount_can_generate,
+            user115_direct_available=_user115_ok)
         if len(_variants) > 1:
             sources = play_variants.build_media_sources(
                 media_source, _variants, guid=item.guid,
@@ -4813,7 +4840,8 @@ def _available_variant_names(db: Session, item: em.MediaItem,
     if (getattr(item, "drive_file_id", "") or "").strip():
         locatable = _drive_mount_id_for_item(db, item) is not None
     return [v.name for v in play_variants.list_variants(
-        db, item, drive_mount_locatable=locatable)]
+        db, item, drive_mount_locatable=locatable,
+        user115_direct_available=_user115_direct_available(db, item, user))]
 
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
@@ -4941,6 +4969,39 @@ async def video_stream(
         from backend.emby_server.drive_auth import drive_usercontent_download_url
         return _observe_traffic(
             RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
+                             headers=_strategy.DIRECT_REDIRECT_HEADERS))
+    if _requested_variant == play_variants.BYOS115_DIRECT:
+        # BYOS P1：绑定用户自己的 115 直链——按绑定凭据现签现发 302，
+        # 播放器自拉，字节不过服务器。签名验签 / 来路检查 / 限流闸门
+        # 已在上面走过；起播打点与 302 观测与直链分支同口径。
+        from backend.emby_server import user_bindings as _ub
+        _byos_t0 = time.perf_counter()
+        try:
+            _byos_url = await run_db(
+                _ub.resolve_user115_direct_url, db,
+                getattr(user, "id", None), item)
+        except _ub.BindingError as exc:
+            # 凭据失效三档：resolver 已落失败态，这里只报 409 + 文案，
+            # 不静默回落共享中继；一过性/无绑定按通用句报 409。
+            _note_play_start_safe(
+                item, user_id=getattr(user, "id", None),
+                method="byos115_direct",
+                variant=play_variants.BYOS115_DIRECT,
+                result="error", error_kind=exc.kind,
+                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+            _detail = exc.message if exc.kind in (
+                "auth_error", "expired", "throttled") else \
+                "播放变体当前不可用：byos115_direct"
+            raise HTTPException(status_code=409, detail=_detail) from exc
+        _pt.mark("byos115_direct")
+        _pt.done()
+        _note_play_start_safe(
+            item, user_id=getattr(user, "id", None),
+            method="byos115_direct", variant=play_variants.BYOS115_DIRECT,
+            result="ok",
+            resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+        return _observe_traffic(
+            RedirectResponse(_byos_url, status_code=302,
                              headers=_strategy.DIRECT_REDIRECT_HEADERS))
     if _requested_variant is not None:
         target = await run_db(_play_target, db, item,

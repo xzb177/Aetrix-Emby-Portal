@@ -726,7 +726,12 @@ def cached_listing(fn: Callable) -> Callable:
 
     @functools.wraps(fn)
     def wrapper(self, rel: str = "/", fresh: bool = False):
-        if fresh or MOUNT_LIST_CACHE_SECONDS <= 0:
+        # BYOS 隔离：带绑定凭据的提供者实例（_byos_no_cache）永不读写
+        # 共享目录缓存——缓存键只有挂载 id + 配置，不含凭据；同一挂载
+        # 行在共享凭据与用户绑定凭据下会算出同一键，复用即跨用户串
+        # 目录（名、cid、pickcode 皆属列出它的那个账号）。
+        if (fresh or MOUNT_LIST_CACHE_SECONDS <= 0
+                or getattr(self, "_byos_no_cache", False)):
             return _call_remote(self, fn, rel)
         key = _list_cache_key(self, fn.__name__, rel)
         hit = _cache_get(key)
@@ -1150,8 +1155,17 @@ class Pan115Mount(MountProvider):
     kind = "remote"
     mount_type = MOUNT_PAN115
 
-    def __init__(self, mount, db=None, library=None):
+    def __init__(self, mount, db=None, library=None, cookie_override=None):
         super().__init__(mount, db, library)
+        # BYOS 绑定凭据：调用方（user_bindings）传入该用户自己的
+        # Cookie 后，本实例只用它（不读挂载配置/账号档/服务器级
+        # Cookie），且永不读写共享目录缓存（见 cached_listing 的
+        # _byos_no_cache 分支）——凭据绝不跨用户复用。
+        self._cookie_override = (
+            transfer115.normalize_cookie(cookie_override)
+            if cookie_override else None
+        )
+        self._byos_no_cache = self._cookie_override is not None
         self.root_cid = str(self.config.get("cid") or "0")
         # rel → cid / pickcode 缓存（只在本次提供者实例内，不跨请求）
         self._cid_cache: dict[str, str] = {"": self.root_cid, "/": self.root_cid}
@@ -1168,6 +1182,8 @@ class Pan115Mount(MountProvider):
 
     # ---- Cookie ----
     def _cookie(self) -> str:
+        if self._cookie_override:
+            return self._cookie_override
         account_id = self.config.get("account_id")
         try:
             account_id = int(account_id) if account_id not in (None, "", "0") else None
@@ -1190,6 +1206,10 @@ class Pan115Mount(MountProvider):
 
     def _ua(self) -> str:
         """这个挂载发 115 请求时用的 UA（与 Cookie 同一套账号优先级）"""
+        if self._cookie_override:
+            # 绑定凭据实例不用挂载的账号 UA（那是另一个账号的设备
+            # 身份），回服务器级默认 UA。
+            return ""
         if self.db is None:
             return ""
         try:

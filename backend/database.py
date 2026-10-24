@@ -1112,6 +1112,7 @@ def _auto_migrate():
     _migrate_scan_run_single_running(existing_tables)
     _migrate_panel_unseal_fk(existing_tables)
     _migrate_exchange_discount_credit_fk(existing_tables)
+    _relax_mount_credential_mount_id(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
@@ -1674,6 +1675,37 @@ def _migrate_exchange_discount_credit_fk(existing_tables: set) -> None:
                 "ALTER COLUMN exchange_code_id DROP NOT NULL"
             ))
             print("  🔧 已迁移: exchange_discount_credits.exchange_code_id 放宽为可空")
+
+
+def _relax_mount_credential_mount_id(existing_tables: set) -> None:
+    """BYOS P1：mount_credentials.mount_id 放宽为可空（仅 PG 老库）。
+
+    #1230 建表时 mount_id 是 NOT NULL；BYOS 绑定凭据行不附属任何
+    挂载（mount_id=NULL），否则同一用户第二个绑定即撞（mount_id,
+    scope, owner_user_id）唯一约束。NULL 行在 PG 唯一约束里互不
+    相等，故挂载附属行的约束语义逐字不变。
+
+    幂等：列已可空时直接返回；SQLite 跳过（新鲜库由 create_all 按
+    模型建表；SQLite 不支持 DROP NOT NULL，且开发库可重建）。
+    """
+    from sqlalchemy import text
+
+    if "mount_credentials" not in existing_tables:
+        return
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        is_nullable = conn.execute(text(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name='mount_credentials' "
+            "AND column_name='mount_id'"
+        )).scalar()
+        if is_nullable == "NO":
+            conn.execute(text(
+                "ALTER TABLE mount_credentials "
+                "ALTER COLUMN mount_id DROP NOT NULL"
+            ))
+            print("  🔧 已迁移: mount_credentials.mount_id 放宽为可空（BYOS 绑定行）")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:

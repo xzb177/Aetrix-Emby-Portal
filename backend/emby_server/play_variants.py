@@ -61,6 +61,11 @@ DRIVE_RELAY = "drive_relay"
 DRIVE_DIRECT = "drive_direct"
 MOUNT_RELAY = "mount_relay"
 LOCAL_FILE = "local_file"
+#: BYOS P1：绑定用户自己的 115 直链（服务端按绑定凭据现签现发
+#: 302，播放器自拉，字节不过服务器）。只在该用户有 active 的
+#: pan115 绑定且条目挂载为 115 时才进清单；第一条仍恒为现行
+#: 主线变体（mount_relay），老客户端行为不变。
+BYOS115_DIRECT = "byos115_direct"
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,9 @@ _VARIANTS: dict[str, Variant] = {
     DRIVE_DIRECT: Variant(DRIVE_DIRECT, "Drive 直链", "Http", True, False),
     MOUNT_RELAY: Variant(MOUNT_RELAY, "挂载中继", "Http", False, True),
     LOCAL_FILE: Variant(LOCAL_FILE, "本地文件", "File", False, False),
+    # is_remote=True（客户端从 115 自拉）/ needs_relay=False
+    # （字节不过服务器，零服务器带宽）——与 drive_direct 同形。
+    BYOS115_DIRECT: Variant(BYOS115_DIRECT, "我的 115 直链", "Http", True, False),
 }
 
 
@@ -94,7 +102,8 @@ def variants_enabled() -> bool:
 
 def list_variants(db: Session, item, *,
                   drive_mount_locatable: bool = False,
-                  mount_can_generate_play_target: bool | None = None) -> list[Variant]:
+                  mount_can_generate_play_target: bool | None = None,
+                  user115_direct_available: bool = False) -> list[Variant]:
     """按条目算可用变体清单（唯一判定口），第一条恒为现行主线变体。
 
     排序即兼容：第一条就是今天 video_stream 自动判定实际会走的那条
@@ -131,6 +140,11 @@ def list_variants(db: Session, item, *,
         # 不进变体清单；None = 未提供信号，保持旧行为。
         if mount_can_generate_play_target is not False:
             names.append(MOUNT_RELAY)
+        # BYOS P1：调用方已算好“该用户有 active 的 pan115 绑定且
+        # 条目挂载为 115”时，追加绑定直链（排在主线之后，第一条
+        # 仍是现行主线，老客户端无感）。清单阶段不真解析直链。
+        if user115_direct_available:
+            names.append(BYOS115_DIRECT)
     else:
         names.append(LOCAL_FILE)
     return [_VARIANTS[n] for n in names]
