@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""播放实时总线（FMBY 播放全换阶段 5，#24 前半，只做 stop）。
+"""播放实时总线（FMBY 播放全换阶段 5，#24 前半；阶段 8 PR-1 扩 pause / resume / seek）。
 
 FMBY 形态（深挖报告第 4 节、B3 报告 #24 节）：
 - 事实源是“快照 + 事件”两件套，不是 DB 会话表本身：快照给断线重连
@@ -21,6 +21,14 @@ FMBY 形态（深挖报告第 4 节、B3 报告 #24 节）：
 - 302 / 直链变体的 stop 回执必须是 best_effort：会话行可以标记
   结束，但已经发出去的签名直链在过期前无法召回，不许显示“已停止”
   冒充已停。
+- 阶段 8 PR-1（pause / resume / seek，记账路径）：中继 Range 流路径
+  经核查不校验会话状态（streaming.py 的中继取流只认 drive_id /
+  file_id + 盘凭据，无 session_key、无 ended_at 门控），因此新命令
+  不许照抄 stop 的 enforced 语义——三者 outcome 一律 recorded：
+  会话行已写 + progress 事件已发，播放器未接命令（SendCommand 通道
+  是后续 PR 的活，本 PR 不做通道）。recorded 不是 best_effort：
+  best_effort 是“直链已发出无法召回”，recorded 是“播放器没通道，
+  根本没发过去”，两者绝不许混用。
 
 开关：PLAYBACK_BUS_ENABLED，默认关（与 PLAY_VARIANTS_ENABLED、
 PLAY_SESSION_FIRST_CLASS_ENABLED 同口径，进程启动时读一次，改动
@@ -294,10 +302,10 @@ _ALLOWED_TRANSITIONS = {
     STATUS_REJECTED: set(),
 }
 
-# 本阶段唯一支持的命令。其他命令（pause / seek / message 等）必须
-# 明确拒绝，不静默忽略、不假装执行——阶段 8 之前没有播放器接收通道，
-# 发出去没回音就是假遥控。
-ALLOWED_COMMANDS = ("stop",)
+# 阶段 8 PR-1 起支持的命令：stop（原有）+ pause / resume / seek
+# （记账路径）。volume / mute / message / next / previous 仍明确拒绝，
+# 不静默忽略、不假装执行——无播放器通道时发出去没回音就是假遥控。
+ALLOWED_COMMANDS = ("stop", "pause", "resume", "seek")
 
 # stop 回执的诚实 outcome：
 # - enforced：服务端经手字节（中继 / 挂载中继 / 本地文件）；
@@ -305,10 +313,16 @@ ALLOWED_COMMANDS = ("stop",)
 #   会话结束即停播，可断言；
 # - best_effort：302 / 直链变体，会话行已标记结束，但已发出的签名
 #   直链在过期前无法召回，不许显示“已停止”冒充已停；
-# - already_ended：目标会话执行前已结束，命令无事可做。
+# - already_ended：目标会话执行前已结束，命令无事可做；
+# - recorded（阶段 8 PR-1 新值）：pause / resume / seek 的唯一终态
+#   outcome——会话行已写 + progress 事件已发，但播放器没有接收通道，
+#   命令根本没发到播放器。绝不许复用 best_effort（其定义是“直链已
+#   发出无法召回”，与“没通道没发过去”是两回事），绝不许写 completed
+#   冒充播放器已照做。
 OUTCOME_ENFORCED = "enforced"
 OUTCOME_BEST_EFFORT = "best_effort"
 OUTCOME_ALREADY_ENDED = "already_ended"
+OUTCOME_RECORDED = "recorded"
 
 # 服务端经手字节的变体（stop 可断言）；其余一律 best_effort，不多 claim。
 _ENFORCED_VARIANTS = {"drive_relay", "mount_relay", "local_file"}
@@ -335,6 +349,10 @@ class PlaybackControlCommand(Base):
     session_key = Column(String(64), index=True)
     device_id = Column(String(100))
     command = Column(String(30))
+    # 阶段 8 PR-1：命令参数（JSON 文本）。seek 的目标 ticks、后续 volume
+    # 的音量值、message 的文本都放这里；无参数的命令存 NULL。老库升级
+    # 走 database._auto_migrate 补列（create_all 不改已建的表）。
+    payload = Column(Text)
     status = Column(String(20), default=STATUS_PENDING)
     outcome = Column(String(20))
     requested_by = Column(Integer)
@@ -345,18 +363,49 @@ class PlaybackControlCommand(Base):
     error = Column(Text)
 
 
+def _validate_payload(command: str, payload) -> dict | None:
+    """按命令名校验参数结构，非法回 ValueError（调用方转 400）。
+
+    - stop / pause / resume：不接受参数，非空即非法；
+    - seek：必须带 position_ticks（整数，bool 不算）；负数只 clamp 到 0，
+      不编造上限（服务端时长来源未核，超片长由播放器侧 clamp）。
+    返回归一化后的参数 dict，无参数回 None（存 NULL）。
+    """
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ValueError("命令参数必须是对象")
+    if command in ("stop", "pause", "resume"):
+        if payload:
+            raise ValueError(f"{command} 不接受参数")
+        return None
+    if command == "seek":
+        if "position_ticks" not in payload:
+            raise ValueError("seek 必须带 position_ticks")
+        ticks = payload["position_ticks"]
+        if isinstance(ticks, bool) or not isinstance(ticks, int):
+            raise ValueError("seek 的 position_ticks 必须是整数")
+        return {"position_ticks": max(0, ticks)}
+    raise ValueError(f"未知的命令参数校验：{command}")
+
+
 def create_command(db: Session, *, session_key: str, command: str,
-                   requested_by=None, device_id=None) -> PlaybackControlCommand:
+                   requested_by=None, device_id=None,
+                   payload=None) -> PlaybackControlCommand:
     """建一条命令（pending）。不支持的命令抛 UnsupportedCommandError
-    且不写行——拒绝必须明确，不能留一条假装执行过的记录。"""
+    且不写行——拒绝必须明确，不能留一条假装执行过的记录。非法参数
+    抛 ValueError 且不写行（调用方转 400）。"""
     if command not in ALLOWED_COMMANDS:
         raise UnsupportedCommandError(
             f"仅支持的命令：{', '.join(ALLOWED_COMMANDS)}；不支持：{command}")
+    normalized = _validate_payload(command, payload)
     row = PlaybackControlCommand(
         command_id=secrets.token_hex(16),
         session_key=session_key,
         device_id=(device_id or "")[:100] or None,
         command=command,
+        payload=(json.dumps(normalized, ensure_ascii=False)
+                 if normalized is not None else None),
         status=STATUS_PENDING,
         requested_by=requested_by,
     )
@@ -401,7 +450,8 @@ def mark_delivered(db: Session, command: PlaybackControlCommand):
 def mark_completed(db: Session, command: PlaybackControlCommand,
                    outcome: str):
     """完成：执行结束，outcome 必须诚实（enforced / best_effort /
-    already_ended），不许用 completed 冒充 best_effort 已停。"""
+    already_ended / recorded），不许用 completed 冒充 best_effort 已停，
+    更不许用 completed 冒充播放器已照做。"""
     command.outcome = outcome
     return transition(db, command, STATUS_COMPLETED)
 
@@ -492,13 +542,74 @@ def execute_stop(db: Session, command: PlaybackControlCommand,
     return mark_completed(db, command, outcome)
 
 
+def execute_state_command(db: Session, command: PlaybackControlCommand,
+                          publish_client=None) -> PlaybackControlCommand:
+    """执行一条 pause / resume / seek 命令（调用前须已是 sent 或 delivered 状态）。
+
+    与 stop 共用同一会话解析（play_session.resolve_session，先一等
+    会话 id 后旧 session_key），不自创新定位语义。查不到会话判 failed
+    （session_not_found）；已结束回 already_ended；否则只写会话行
+    （pause 写 is_paused=True、resume 写 False、seek 写 position_ticks）
+    + 尽力发 progress 事件，终态 outcome 一律 recorded——中继流路径
+    不校验会话状态（见模块 docstring），新命令没有 enforced 的份，
+    播放器通道（SendCommand）是后续 PR 的活。
+
+    注意（PR-2 的活，本 PR 不修）：执行时不校验命令带的 device_id
+    与会话 device_id 是否一致；无 PlaySessionId 时的回落键不含设备
+    维度，两台设备播同一条目可能撞键打错设备——风险登记在 PR 描述里。
+    """
+    if command.status not in (STATUS_SENT, STATUS_DELIVERED):
+        raise ValueError(
+            f"状态命令只能在 sent / delivered 状态执行，当前：{command.status}")
+    if command.command not in ("pause", "resume", "seek"):
+        raise UnsupportedCommandError(
+            f"本函数只执行 pause / resume / seek，不执行：{command.command}")
+    from backend.emby_server import play_session as _ps
+
+    session = _ps.resolve_session(db, command.session_key)
+    if session is None:
+        return mark_failed(db, command, "session_not_found")
+    if session.ended_at is not None:
+        return mark_completed(db, command, OUTCOME_ALREADY_ENDED)
+    if command.command == "pause":
+        session.is_paused = True
+    elif command.command == "resume":
+        session.is_paused = False
+    else:  # seek：参数已在建命令时校验并 clamp，执行时只读存量值
+        try:
+            target = (json.loads(command.payload or "{}")
+                      .get("position_ticks", 0))
+        except Exception:  # noqa: BLE001 — 存量损坏按 0 计，不炸命令
+            target = 0
+        session.position_ticks = max(0, int(target))
+    db.commit()
+    try:
+        publish_event(build_event(
+            EVENT_PROGRESS,
+            session_id=session.server_session_id or session.session_key,
+            user_id=session.user_id, item_id=session.item_id,
+            variant=session.variant, device_id=session.device_id,
+            position_ticks=session.position_ticks,
+            is_paused=session.is_paused,
+        ), client=publish_client)
+    except Exception:  # noqa: BLE001 — 发布失败不影响命令完成
+        logger.warning("状态命令的 progress 事件发布失败（靠快照补齐）",
+                       exc_info=True)
+    return mark_completed(db, command, OUTCOME_RECORDED)
+
+
 def command_to_dict(command: PlaybackControlCommand) -> dict:
     """命令行序列化（管理端读数用；不含任何凭据）。"""
+    try:
+        payload = json.loads(command.payload) if command.payload else None
+    except Exception:  # noqa: BLE001 — 存量损坏按无参数读，不炸读数
+        payload = None
     return {
         "command_id": command.command_id,
         "session_key": command.session_key,
         "device_id": command.device_id,
         "command": command.command,
+        "payload": payload,
         "status": command.status,
         "outcome": command.outcome,
         "requested_by": command.requested_by,

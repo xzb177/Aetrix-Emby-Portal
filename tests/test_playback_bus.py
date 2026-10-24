@@ -201,12 +201,12 @@ def test_command_direct_pending_to_completed_rejected(db):
         bus.mark_completed(db, cmd, bus.OUTCOME_ENFORCED)
 
 
-def test_non_stop_command_rejected_without_row(db):
+def test_unsupported_command_rejected_without_row(db):
     with pytest.raises(bus.UnsupportedCommandError):
-        bus.create_command(db, session_key="s1", command="pause")
+        bus.create_command(db, session_key="s1", command="volume")
     assert db.query(bus.PlaybackControlCommand).count() == 0
     with pytest.raises(bus.UnsupportedCommandError):
-        bus.create_command(db, session_key="s1", command="seek")
+        bus.create_command(db, session_key="s1", command="message")
 
 
 def test_timeout_sweep_only_stale_non_terminal(db):
@@ -329,7 +329,7 @@ def test_admin_post_stop_direct_carries_best_effort_note(client, db, monkeypatch
 def test_admin_post_non_stop_rejected_with_allowed_set(client, db, monkeypatch):
     _enable_bus(monkeypatch)
     r = client.post("/api/admin/playback-bus/commands",
-                    json={"session_key": "s1", "command": "pause"})
+                    json={"session_key": "s1", "command": "volume"})
     assert r.status_code == 400, r.text
     assert "stop" in r.json()["detail"]
     assert db.query(bus.PlaybackControlCommand).count() == 0
@@ -374,3 +374,129 @@ def test_admin_list_commands(client, db):
     r = client.get("/api/admin/playback-bus/commands")
     assert r.status_code == 200
     assert len(r.json()) == 1
+
+
+# ---------------------------------------------------------------- 阶段 8 PR-1：pause / resume / seek 记账路径
+
+def test_payload_validation_rejected_without_row(db):
+    with pytest.raises(ValueError):
+        bus.create_command(db, session_key="s1", command="seek")
+    with pytest.raises(ValueError):
+        bus.create_command(db, session_key="s1", command="seek",
+                           payload={"position_ticks": "123"})
+    with pytest.raises(ValueError):
+        bus.create_command(db, session_key="s1", command="seek",
+                           payload={"position_ticks": True})
+    with pytest.raises(ValueError):
+        bus.create_command(db, session_key="s1", command="pause",
+                           payload={"position_ticks": 1})
+    with pytest.raises(ValueError):
+        bus.create_command(db, session_key="s1", command="stop",
+                           payload={"x": 1})
+    assert db.query(bus.PlaybackControlCommand).count() == 0
+
+
+def test_seek_negative_ticks_clamped_to_zero(db):
+    cmd = bus.create_command(db, session_key="s1", command="seek",
+                             payload={"position_ticks": -500})
+    assert bus.command_to_dict(cmd)["payload"] == {"position_ticks": 0}
+
+
+def _run_state_command(db, cmd, fake_redis=None):
+    bus.mark_sent(db, cmd)
+    bus.mark_delivered(db, cmd)
+    return bus.execute_state_command(db, cmd, publish_client=fake_redis)
+
+
+def test_execute_pause_and_resume_write_flag_and_recorded(
+        db, monkeypatch, fake_redis):
+    _enable_bus(monkeypatch)
+    pubsub = bus.subscribe(client=fake_redis)
+    _session_row(db, "s1", variant="drive_relay")
+    cmd = bus.create_command(db, session_key="s1", command="pause")
+    out = _run_state_command(db, cmd, fake_redis)
+    assert out.status == bus.STATUS_COMPLETED
+    assert out.outcome == bus.OUTCOME_RECORDED
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.is_paused is True
+    msg = pubsub.get_message()
+    assert msg is not None
+    payload = json.loads(msg["data"])
+    assert payload["type"] == "progress" and payload["is_paused"] is True
+    cmd2 = bus.create_command(db, session_key="s1", command="resume")
+    out2 = _run_state_command(db, cmd2, fake_redis)
+    assert out2.outcome == bus.OUTCOME_RECORDED
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.is_paused is False
+
+
+def test_execute_seek_writes_position_and_progress_event(
+        db, monkeypatch, fake_redis):
+    _enable_bus(monkeypatch)
+    pubsub = bus.subscribe(client=fake_redis)
+    _session_row(db, "s1", variant="drive_direct")
+    cmd = bus.create_command(db, session_key="s1", command="seek",
+                             payload={"position_ticks": 123456})
+    out = _run_state_command(db, cmd, fake_redis)
+    assert out.status == bus.STATUS_COMPLETED
+    assert out.outcome == bus.OUTCOME_RECORDED
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.position_ticks == 123456
+    msg = pubsub.get_message()
+    payload = json.loads(msg["data"])
+    assert payload["type"] == "progress"
+    assert payload["position_ticks"] == 123456
+
+
+def test_execute_state_command_already_ended_and_missing(db):
+    _session_row(db, "s1", variant="drive_relay", ended=True)
+    cmd = bus.create_command(db, session_key="s1", command="pause")
+    out = _run_state_command(db, cmd)
+    assert out.status == bus.STATUS_COMPLETED
+    assert out.outcome == bus.OUTCOME_ALREADY_ENDED
+    cmd2 = bus.create_command(db, session_key="ghost", command="seek",
+                              payload={"position_ticks": 10})
+    out2 = _run_state_command(db, cmd2)
+    assert out2.status == bus.STATUS_FAILED
+    assert out2.error == "session_not_found"
+
+
+def test_execute_state_command_requires_sent_or_delivered(db):
+    cmd = bus.create_command(db, session_key="s1", command="pause")
+    with pytest.raises(ValueError):
+        bus.execute_state_command(db, cmd)
+    cmd2 = bus.create_command(db, session_key="s1", command="stop")
+    bus.mark_sent(db, cmd2)
+    with pytest.raises(bus.UnsupportedCommandError):
+        bus.execute_state_command(db, cmd2)
+
+
+def test_admin_post_pause_end_to_end_recorded_note(client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    r = client.post("/api/admin/playback-bus/commands",
+                    json={"session_key": "s1", "command": "pause"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == bus.STATUS_COMPLETED
+    assert body["outcome"] == bus.OUTCOME_RECORDED
+    assert "未直接作用于播放器" in body.get("note", "")
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.is_paused is True
+
+
+def test_admin_post_seek_bad_payload_400_no_row(client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    r = client.post("/api/admin/playback-bus/commands",
+                    json={"session_key": "s1", "command": "seek",
+                          "payload": {}})
+    assert r.status_code == 400, r.text
+    assert db.query(bus.PlaybackControlCommand).count() == 0
+    r2 = client.post("/api/admin/playback-bus/commands",
+                     json={"session_key": "s1", "command": "seek",
+                           "payload": {"position_ticks": 777}})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["payload"] == {"position_ticks": 777}
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.position_ticks == 777
