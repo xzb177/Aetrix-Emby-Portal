@@ -542,6 +542,20 @@ def main() -> int:
                 logger.info("变体可用性探活未开启，探活工人不启动")
         except Exception as e:
             logger.warning(f"启动变体可用性探活工人失败（可忽略）: {e}")
+        # Drive 用户凭据维护工人（BYOS P2，清单第 9 项）：仅开关开时启动；
+        # 关时不扫任何凭据行，全站行为逐字不变；启动即跑一轮 + 周期跑，
+        # 只扫 provider=drive 的用户绑定行，scope=source 行（SA 池等）
+        # 永远不进本循环（分账铁律）。
+        try:
+            from backend.emby_server import drive_oauth
+
+            if drive_oauth.start_drive_cred_maintenance_worker(_shutdown_event):
+                started.append("drive_cred_maintenance")
+                logger.info("✅ Drive 用户凭据维护工人已启动")
+            else:
+                logger.info("Drive 用户凭据维护未开启，维护工人不启动")
+        except Exception as e:
+            logger.warning(f"启动 Drive 凭据维护工人失败（可忽略）: {e}")
 
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:

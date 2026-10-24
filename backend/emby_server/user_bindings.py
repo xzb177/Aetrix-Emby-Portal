@@ -215,10 +215,13 @@ def create_binding(db: Session, user_id: int, provider: str,
     if provider not in em.USER_STORAGE_PROVIDERS:
         raise BindingError("validation", f"不支持的 provider：{provider}")
     if provider == PROVIDER_DRIVE:
-        # P1 不做 Drive OAuth：存一个验不活的 Drive 凭据行会违反
+        # Drive 不收明文凭据：唯一建绑口是 OAuth start/callback
+        # （见 drive_oauth），存一个验不活的 Drive 凭据行会违反
         # “绑完先验活”，故明确拒绝、不落行。
         raise BindingError(
-            "unsupported", "Drive 绑定随 P2（OAuth）上线，P1 仅支持 115 绑定。")
+            "unsupported",
+            "Drive 绑定请走 OAuth 授权：POST /storage-bindings/drive/oauth/start，"
+            "本口只接受 115 绑定。")
     label = (account_label or "").strip()
     if not label or len(label) > 100:
         raise BindingError("validation", "account_label 需为 1–100 字。")
@@ -303,8 +306,13 @@ def verify_binding(db: Session, user_id: int,
     if binding is None:
         raise BindingError("not_found", "绑定不存在或不属于当前用户。")
     if binding.provider != PROVIDER_PAN115:
-        raise BindingError(
-            "unsupported", "该 provider 的重验随 P2 上线，P1 仅支持 115。")
+        if binding.provider == PROVIDER_DRIVE:
+            # P2：Drive 重验 = 强制刷新 + 验活（drive_oauth，局部导入
+            # 防循环：drive_oauth 顶层导入本模块）。
+            from backend.emby_server import drive_oauth
+
+            return drive_oauth.refresh_drive_binding(db, user_id, binding_id)
+        raise BindingError("unsupported", "该 provider 不支持重验。")
     cred = _credential_of(db, binding)
     try:
         cookie = unseal_secret(cred.sealed_credential or "")

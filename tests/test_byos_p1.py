@@ -213,10 +213,12 @@ def test_create_binding_limit_from_config(db, monkeypatch):
 
 
 def test_create_binding_drive_rejected_in_p1(db):
+    # P2 已上线：Drive 仍不收明文凭据，拒绝文案改为指引 OAuth 口
+    # （行为不变：kind=unsupported、不落行）。
     with pytest.raises(ub.BindingError) as excinfo:
         ub.create_binding(db, 7, "drive", "盘", "whatever")
     assert excinfo.value.kind == "unsupported"
-    assert "P2" in excinfo.value.message
+    assert "oauth/start" in excinfo.value.message
     assert db.query(em.UserStorageBinding).count() == 0
 
 

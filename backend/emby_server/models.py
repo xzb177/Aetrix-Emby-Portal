@@ -1622,3 +1622,23 @@ class SourcePathPolicy(Base):
     priority = Column(Integer, default=0)
     max_concurrent_streams = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
+class DriveOAuthState(Base):
+    """Drive OAuth 授权会话（P2：单次有效、短 TTL 的 state 行）。
+
+    - state 本体不入库，只存 sha256 哈希（回调拿 state 来对哈希，
+      库泄露也推不出可用 state）；
+    - code_verifier（PKCE）密封存（seal_secret，与凭据同款密封）；
+    - 行在首次使用后即删（无论成败），过期行由完成时判定 + 下次
+      授权不复用；无外键（短命行，用户删号中途不卡删号顺序）；
+    - 新表由 init_db 的 create_all 建出（与 #1235 投影表同口径）。
+    """
+
+    __tablename__ = "drive_oauth_states"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    state_hash = Column(String(64), unique=True, nullable=False)
+    user_id = Column(Integer, nullable=False)
+    account_label = Column(String(100), nullable=False)
+    sealed_verifier = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+    expires_at = Column(DateTime)
