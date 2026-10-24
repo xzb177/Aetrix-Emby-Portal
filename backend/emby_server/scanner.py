@@ -128,6 +128,26 @@ REMOVAL_MAX_ABSOLUTE = env_int("SCAN_REMOVAL_MAX_ABSOLUTE", 20, 1, 1000000)
 MISSING_GRACE_SCANS = env_int("SCAN_MISSING_GRACE_SCANS", 3, 1, 1000)
 
 
+# ==================== 清单可信度守卫（FMBY 扫描域，清单第 12 项）====================
+# FMBY 形态：直系文件凭空消失先怀疑上游抖动、整轮中止不误删。
+# 与上面两道闸分工：预算管「来源整体不可用」（全库一条都不删），宽限管
+# 「单条级抖动」（单条累计多轮才下架）；这里管「某个目录抖动」——只拦该
+# 目录的删除，其余目录正常清理。
+# 触发条件（同时满足才拦）：
+# - 开关开（默认开；关时行为与现行逐字一致）；
+# - 该目录直系文件类条目数达到最小规模（小目录单条删减就会把比例冲得
+#   很高，不值得怀疑——交给缺失宽限）；
+# - 本轮确认缺失（未见 + 其他来源也读不到，与清理主循环同一口径）占
+#   直系总数比例严格大于阈值。
+# 拦下后的行为：该目录未见行本轮不累计 missing_count、不下架、不摘缓存，
+# 只记警告；已见行照常清零（它们是本轮真实列到的，不受怀疑）。
+# 数值来源：阈值 0.5 沿用整库预算 REMOVAL_MAX_RATIO 的先例；最小规模 10
+# 与比例 0.5 均为我方起步值，非 FMBY 实测常量（FMBY 的阈值常量未实测到）。
+CREDIBILITY_GUARD_ENABLED = env_int("SCAN_CREDIBILITY_GUARD_ENABLED", 1, 0, 1)
+CREDIBILITY_MAX_RATIO = env_float("SCAN_CREDIBILITY_MAX_RATIO", 0.5, 0.0)
+CREDIBILITY_MIN_DIR_ENTRIES = env_int("SCAN_CREDIBILITY_MIN_DIR_ENTRIES", 10, 1, 1000000)
+
+
 def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, int]:
     """能不能开始清理 → ``(能不能, 不能的原因, 库内文件类条目数)``
 
@@ -167,7 +187,9 @@ _CLEANUP_LAST: dict = {"fast_path": False, "walked": 0, "removed": 0, "graced": 
                        # skipped = 删除保护拦下了本轮清理的原因（空串 = 没拦）
                        # 调用点用 .get("skipped") 读，所以这个键**必须一开始就存在**，
                        # 否则读出来恒为空、“被拦了”这件事就永远传不到接口/前端。
-                       "skipped": ""}
+                       "skipped": "",
+                       # credibility_guarded = 本轮被清单可信度守卫拦下的目录（空 = 没拦）
+                       "credibility_guarded": []}
 
 # ==================== 扫描限速（播放优先）====================
 # 扫描跑在 API 进程的后台线程里，而 POSIX 的 nice 是**进程级**的：直接给本进程降优先级，
@@ -4669,10 +4691,77 @@ def _apply_missing_grace(db: Session, item_ids: list[int]) -> None:
         )
 
 
+def _parent_dir_of(file_path):
+    """直系目录：file_path 去掉最后一段。
+
+    无路径/裸文件名（无斜杠）→ None，不进守卫统计：它们不属于任何真实
+    目录，硬归成一处会把毫不相关的行算成一个“目录”而误拦。
+    """
+    if not file_path:
+        return None
+    parent = posixpath.dirname(file_path)
+    return parent or None
+
+
+def _credibility_guarded_dirs(db: Session, library, seen_guids: set,
+                              exists_cache: dict) -> set:
+    """统计每目录直系消失比例，返回超阈目录集合（清单第 12 项）。
+
+    只统计文件类行（movie/episode）且有真实父目录的行；剧/季行不进统计
+    （它们的“消失”是派生的无子条目，不是清单证据）。
+    确认缺失口径与清理主循环逐字一致：未见 + 其他来源也读不到。
+    本轮 media_exists 的判定结果写进 exists_cache 供主循环复用——统计与
+    主循环共用一次判定，不翻倍查来源。
+    """
+    totals: dict = {}
+    missing: dict = {}
+    last_id = 0
+    while True:
+        rows = db.execute(
+            select(
+                emby_models.MediaItem.id,
+                emby_models.MediaItem.guid,
+                emby_models.MediaItem.item_type,
+                emby_models.MediaItem.file_path,
+                emby_models.MediaItem.drive_file_id,
+                emby_models.MediaItem.missing_count,
+            )
+            .where(
+                emby_models.MediaItem.library_id == library.id,
+                emby_models.MediaItem.id > last_id,
+                emby_models.MediaItem.deleted_at.is_(None),
+            )
+            .order_by(emby_models.MediaItem.id)
+            .limit(CLEANUP_BATCH)
+        ).all()
+        if not rows:
+            break
+        last_id = rows[-1][0]
+        for item_id, guid, item_type, file_path, drive_file_id, missing_count in rows:
+            if item_type not in ("movie", "episode"):
+                continue
+            parent = _parent_dir_of(file_path)
+            if parent is None:
+                continue
+            totals[parent] = totals.get(parent, 0) + 1
+            if guid in seen_guids:
+                continue
+            alive = mount_lib.media_exists(file_path, db, library)
+            exists_cache[item_id] = alive
+            if not alive:
+                missing[parent] = missing.get(parent, 0) + 1
+    guarded = set()
+    for parent, total in totals.items():
+        gone = missing.get(parent, 0)
+        if total >= CREDIBILITY_MIN_DIR_ENTRIES and gone / total > CREDIBILITY_MAX_RATIO:
+            guarded.add(parent)
+    return guarded
+
+
 def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     """清理「来源里已经没有」的条目，返回删除条数
 
-    三个刻意的选择：
+    四个刻意的选择（前三条见下，第四条为清单第 12 项新增）：
 
     - **快速路径**：稳定库（每个文件都有行、没有多余行、没有无子条目的剧/季）根本不必
       遍历整库，两次计数就能证明「没有可清理的条目」；任何一条对不上就退回遍历。
@@ -4686,11 +4775,13 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     - **缺失宽限**（2026-10-24 批一 #6）：确认缺失先累计 `missing_count`，
       连续缺失 `SCAN_MISSING_GRACE_SCANS` 轮（默认 3）才下架；文件回来即清零。
       与删除保护分工：保护管整库级事故，宽限管单条级抖动。
+    - **清单可信度守卫**（清单第 12 项）：某目录直系消失超阈时，本轮不删
+      该目录的条目、不计缺失轮次，只记警告；其余目录正常清理。
     """
     global _CLEANUP_LAST
     started = time.perf_counter()
     _CLEANUP_LAST = {"fast_path": False, "walked": 0, "removed": 0, "graced": 0,
-                     "elapsed_ms": 0.0, "skipped": ""}
+                     "elapsed_ms": 0.0, "skipped": "", "credibility_guarded": []}
     if _no_removals_possible(db, library, seen_guids):
         elapsed = (time.perf_counter() - started) * 1000
         _CLEANUP_LAST.update(fast_path=True, elapsed_ms=elapsed)
@@ -4706,6 +4797,18 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                              elapsed_ms=(time.perf_counter() - started) * 1000)
         logger.error("清理阶段已中止（删除保护）：%s", why)
         return 0
+    # 清单可信度守卫：先统计、再清理——被拦目录的未见行本轮不做任何变更
+    guarded_dirs: set = set()
+    exists_cache: dict = {}
+    if CREDIBILITY_GUARD_ENABLED:
+        guarded_dirs = _credibility_guarded_dirs(db, library, seen_guids, exists_cache)
+        if guarded_dirs:
+            _CLEANUP_LAST["credibility_guarded"] = sorted(guarded_dirs)
+            logger.warning(
+                "清单可信度守卫：%d 个目录直系消失超阈，本轮不删这些目录的条目、"
+                "不计缺失轮次：%s",
+                len(guarded_dirs), sorted(guarded_dirs),
+            )
     removed = 0
     graced = 0
     walked = 0
@@ -4745,9 +4848,22 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                     reset_ids.append(item_id)
                 continue
             if item_type in ("movie", "episode"):
+                # 清单可信度守卫（清单第 12 项）：被拦目录的未见行本轮不做任何
+                # 变更——不累计、不下架；已见行照常走下面的清零分支。
+                if guid not in seen_guids:
+                    _parent = _parent_dir_of(file_path)
+                    if _parent is not None and _parent in guarded_dirs:
+                        continue
                 # 本机路径与远程挂载都查：命中的说明是别的来源的文件，保留；
-                # 查不到（挂载已删/已停用）才当删除处理。
-                if file_path and mount_lib.media_exists(file_path, db, library):
+                # 查不到（挂载已删/已停用）才当删除处理。守卫统计已查过的行
+                # 复用判定，不翻倍查来源；守卫关时缓存为空，走现行直查。
+                if item_id in exists_cache:
+                    _alive = exists_cache[item_id]
+                elif file_path:
+                    _alive = mount_lib.media_exists(file_path, db, library)
+                else:
+                    _alive = False
+                if file_path and _alive:
                     if missing_count > 0:
                         reset_ids.append(item_id)  # 文件在别的来源活着，同样清零
                     continue  # 其他来源（路径 / 挂载）的文件
@@ -6222,6 +6338,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
         if _CLEANUP_LAST.get("skipped"):
             stats["removal_guard"] = _CLEANUP_LAST["skipped"]
             stats["removal_skipped"] = True
+        if _CLEANUP_LAST.get("credibility_guarded"):
+            stats["credibility_guard"] = _CLEANUP_LAST["credibility_guarded"]
 
     # WS1：显式可见口径 —— merged_into_id 无全局过滤，必须显式剔除合并副本
     #（与 portal.admin_overview 同类；索引齐全，仍是单条 COUNT 查询）
