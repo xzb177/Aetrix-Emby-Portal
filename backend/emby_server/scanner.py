@@ -4334,6 +4334,14 @@ def _evict_gone_drive_files(db, library, gone: list) -> None:
                 ))
         except Exception:  # noqa: BLE001
             logger.debug("扫描失效存在性缓存失败 file=%s", file_id, exc_info=True)
+        # 批一 #1：同点位连带清解析结果缓存——文件已确认不在，解析快照
+        # 不许再留（否则 TTL 内播放还会拿到这条已消失文件的直链）。
+        try:
+            from backend.emby_server.mounts import (
+                invalidate_resolve_cache_for_path)
+            invalidate_resolve_cache_for_path(file_path)
+        except Exception:  # noqa: BLE001
+            logger.debug("扫描失效解析缓存失败 file=%s", file_id, exc_info=True)
 
 
 def _apply_missing_resets(db: Session, item_ids: list[int]) -> None:

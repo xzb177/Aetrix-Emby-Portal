@@ -654,6 +654,13 @@ class RcloneMount(RemoteMount):
             return PlayTarget("url", url, {"User-Agent": mount_lib.MOUNT_UA})
         return PlayTarget("url", self._rc_play_url(rel), self._rc_headers())
 
+    # 解析缓存的凭据拆分（定稿 §6 的判断，写明在此）：本提供者的头是配置级
+    # UA 与 rclone serve 的 Basic 认证——都来自挂载配置、不是逐请求凭据，
+    # 且挂载配置指纹已进解析缓存的键，配置一改键即变、旧条目自然不命中，
+    # 所以整头随缓存走是安全的，不必拆。
+    def cacheable_play_target(self, target: PlayTarget) -> Optional[PlayTarget]:
+        return PlayTarget(target.kind, target.value, dict(target.headers or {}))
+
     def read_text(self, rel: str) -> str:
         if self.mode == MODE_CLI:
             return self._cli(["cat", self._target(rel)]).decode("utf-8", "ignore")

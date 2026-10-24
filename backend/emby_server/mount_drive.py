@@ -42,6 +42,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import FrozenSet, Iterator, Optional
+from urllib.parse import parse_qsl, urlparse
 
 from backend.emby_server import disc_filter, drive_auth, drive_changes
 from backend.emby_server import mounts as mount_lib
@@ -81,6 +82,19 @@ def _parse_mod_ts(value: object) -> float:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
+
+
+def _file_id_from_url(url: str) -> Optional[str]:
+    """usercontent 直链 → file_id（``id`` 查询参数）；解析不出返回 None。
+
+    解析缓存命中后现挂 Bearer 时还原亲和键用：``resolve`` 当初以 file_id 为
+    亲和键取 token，url 里就带着它。拿不到时返回 None，``drive_auth_headers``
+    会退回以 url 本身为亲和键（与 STRM 路径同口径）。
+    """
+    try:
+        return dict(parse_qsl(urlparse(url or "").query)).get("id") or None
+    except Exception:  # noqa: BLE001 — 亲和键还原是尽力而为，不许打断播放
+        return None
 
 
 class _PathDeadEnd(MountError):
@@ -609,6 +623,21 @@ class DriveMount(RemoteMount):
         url = drive_auth.drive_usercontent_download_url(entry.file_id)
         return PlayTarget(
             "url", url, drive_auth.drive_auth_headers(url, entry.file_id))
+
+    # 解析缓存的凭据拆分：Bearer 每次经 drive_auth 现取（SA 轮换与 401 按值
+    # 失效都在那一层维护），缓存里只留 url 本身。现挂时把亲和键还原成
+    # file_id——它就写在 usercontent 直链的 id 参数里，与 resolve() 当初
+    # 传的亲和键一致，不会把某个 SA 钉进缓存反复用。
+    def cacheable_play_target(self, target: PlayTarget) -> Optional[PlayTarget]:
+        headers = dict(target.headers or {})
+        headers.pop("Authorization", None)
+        return PlayTarget(target.kind, target.value, headers)
+
+    def reattach_play_target(self, stored: PlayTarget) -> PlayTarget:
+        headers = dict(stored.headers or {})
+        headers.update(drive_auth.drive_auth_headers(
+            stored.value, _file_id_from_url(stored.value)))
+        return PlayTarget(stored.kind, stored.value, headers)
 
 
 PROVIDERS = {MOUNT_DRIVE: DriveMount}
