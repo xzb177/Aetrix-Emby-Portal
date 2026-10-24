@@ -1003,6 +1003,15 @@ def _auto_migrate():
             ("missing_since", "DATETIME", "NULL"),
             ("missing_count", "INTEGER", "0"),
         ]),
+        # 拼音搜索派生字段（2026-10-24，FMBY 学习批二 #16）：emby_items 加
+        # pinyin_full / pinyin_initials（由 name 生成的全拼/首字母紧凑键）。
+        # 老库补列后为 NULL：搜索拼音层对 NULL 天然不命中，行为与升级前
+        # 一致；存量由 scripts/backfill_pinyin_search_fields.py 回填，新
+        # 写入走 models 的落库钩子自动生成。
+        ("emby_items", [
+            ("pinyin_full", "TEXT", "NULL"),
+            ("pinyin_initials", "TEXT", "NULL"),
+        ]),
         # 扫描检查点专属落点（2026-10-24，FMBY 学习批一 #7）：emby_scan_runs
         # 加 state_json（定向扫描的续扫范围）。老库补列后为 NULL，
         # interrupted_resume_prefixes 读不到就回退 stats 里的 resume_scope
@@ -1245,6 +1254,16 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
      None, "gin"),
     ("emby_items", "idx_item_aliases_trgm", "aliases gin_trgm_ops", "aliases",
      "  已迁移: emby_items.idx_item_aliases_trgm（搜索 trigram GIN 索引）",
+     None, "gin"),
+    # 拼音搜索字段的 trigram 索引（2026-10-24，批二 #16）：与上面四列同一
+    # 基建、同一幂等口径，索引名与 models.__table_args__ 声明同名。
+    ("emby_items", "idx_item_pinyin_full_trgm", "pinyin_full gin_trgm_ops",
+     "pinyin_full",
+     "  已迁移: emby_items.idx_item_pinyin_full_trgm（搜索 trigram GIN 索引）",
+     None, "gin"),
+    ("emby_items", "idx_item_pinyin_initials_trgm",
+     "pinyin_initials gin_trgm_ops", "pinyin_initials",
+     "  已迁移: emby_items.idx_item_pinyin_initials_trgm（搜索 trigram GIN 索引）",
      None, "gin"),
     # 补全进度统计（2026-10-23 压测实锤）：进度快照按 enrich_claimed_at >= 今天
     # 逐类型计数，无索引时每条都是 Parallel Seq Scan（cost 约 5.5 万、每分钟

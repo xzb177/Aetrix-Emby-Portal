@@ -8,6 +8,9 @@
 - **归一化**：NFKC（全角→半角）、大小写、标点与空白、繁→简。
   繁简转换依赖 `zhconv`（缺失时退化为不做转换，并只告警一次，不影响搜索可用性）。
 - **多别名**：name / original_title / aliases / sort_name / tags / studios / genres。
+- **拼音**：name 的派生键 pinyin_full / pinyin_initials（落库字段，见
+  pinyin_sort.make_pinyin_fields），全拼与首字母两种打法都能命中中文
+  标题；拼音层分值低于原文各层，只做加分项（TIER_PINYIN_*）。
 - **排序**：完全匹配 > 前缀 > 词边界前缀 > 子串 > 别名 > 分类元数据 > 模糊相似。
 - **演员**：当前数据模型还没有演职员表，因此不做演员加权（留了 `_cast_score` 挂点，
   等 cast 落库后接上即可，不会影响现有排序语义）。
@@ -30,6 +33,8 @@ TIER_TITLE_WORD = 80        # 词边界前缀（"rick" 命中 "Rick and Morty"�
 TIER_TITLE_CONTAINS = 70    # 标题包含查询
 TIER_ALIAS_EXACT = 65       # 别名 / 原名完全相等
 TIER_ALIAS_CONTAINS = 55    # 别名 / 原名包含
+TIER_PINYIN_EXACT = 52      # 拼音派生键（全拼/首字母）与查询紧凑串完全相等
+TIER_PINYIN_CONTAINS = 45   # 拼音派生键包含查询紧凑串
 TIER_META = 40              # 类型 / 工作室 / 标签命中
 TIER_FUZZY = 25             # difflib 相似度达到阈值
 TIER_NONE = 0
@@ -237,6 +242,28 @@ def score_item(item, term: str) -> tuple[int, str]:
                 s = exact
             elif term_n in value_n or (term_c and term_c in normalize_compact(value)):
                 s = contains
+            else:
+                s = TIER_NONE
+            if s > best:
+                best, level = s, label
+
+    # 2.5) 拼音族：全拼 / 首字母派生字段（pinyin_full / pinyin_initials，
+    # 2026-10-24 批二 #16），只与查询的紧凑形式比较（字段本身即紧凑串）。
+    # 定位是加分项：分值低于标题族与别名族的任何命中，原文搜索的结果与
+    # 排序语义不变；中文查询的紧凑形式含中文字符，永远不会命中纯
+    # a-z0-9 的拼音字段，天然无扰。首字母另有 sort_name 旧通道在标题族
+    # 里计分，两边取 max，现行首字母排序行为不回退。
+    if term_c:
+        for field, label in ((getattr(item, "pinyin_full", None), "pinyin_full"),
+                             (getattr(item, "pinyin_initials", None), "pinyin_initials")):
+            if not field:
+                continue
+            if field == term_c:
+                s = TIER_PINYIN_EXACT
+            elif field.startswith(term_c):
+                s = TIER_PINYIN_EXACT - 2
+            elif term_c in field:
+                s = TIER_PINYIN_CONTAINS
             else:
                 s = TIER_NONE
             if s > best:
