@@ -3823,6 +3823,7 @@ def mark_played(item_id: str, user_id: str,
     umd.play_count = (umd.play_count or 0) + 1
     umd.last_played_at = datetime.now()
     umd.playback_position_ticks = 0
+    umd.max_position_ticks = 0  # 进度双记：与断点一起清零（批一 #4）
     db.commit()
     return _user_data_dto(umd, item.guid, _run_time_ticks(item))
 
@@ -3840,6 +3841,7 @@ def mark_unplayed(item_id: str, user_id: str,
         umd.played = False
         umd.play_count = 0
         umd.playback_position_ticks = 0
+        umd.max_position_ticks = 0  # 进度双记：与断点一起清零（批一 #4）
         db.commit()
     return _user_data_dto(umd, item.guid, _run_time_ticks(item))
 

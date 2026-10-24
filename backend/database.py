@@ -1004,6 +1004,13 @@ def _auto_migrate():
         ("emby_scan_runs", [
             ("state_json", "TEXT", "NULL"),
         ]),
+        # 进度双记（2026-10-24，FMBY 学习批一 #4）：emby_user_media_data 加
+        # max_position_ticks（历史最远进度，与 playback_position_ticks 并存）。
+        # 老库补列后为 NULL（= 还没双记过），读/算回退 playback_position_ticks，
+        # 行为与升级前一致；新上报经 _apply_play_progress 只增不减地维护。
+        ("emby_user_media_data", [
+            ("max_position_ticks", "BIGINT", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

@@ -251,18 +251,38 @@ def _get_or_create_umd(db: Session, user: models.WebUser, item: em.MediaItem) ->
     return umd
 
 
+def effective_max_position_ticks(umd: em.UserMediaData) -> int:
+    """这行「历史最远看到哪」的有效值（进度双记，FMBY 学习批一 #4）。
+
+    ``max_position_ticks`` 为 NULL = 这行还没被双记写过（升级前老数据），
+    回退 ``playback_position_ticks``——老数据在第一次新上报前，最远点就等于
+    当时的断点。不做批量回填：靠下一次真实进度上报在 _apply_play_progress
+    里以旧 position 为基线自然长出来，心跳不写库的口径不因此被打破。
+    """
+    if umd.max_position_ticks is not None:
+        return int(umd.max_position_ticks)
+    return int(umd.playback_position_ticks or 0)
+
+
 def _apply_play_progress(umd: em.UserMediaData, pos: int, finished: bool) -> None:
     """把一次进度落到 UserMediaData 行上（Progress 与 Stopped 共用；调用方负责 commit）。
 
-    finished（90% 口径）时标已看并清零断点；played 已标时 play_count 不重复加。
+    进度双记：position 记当前位置（可变小），max_position 记本轮最远点、
+    只增不减（基线是 effective_max_position_ticks，老数据回退旧 position）。
+    finished（90% 口径）时标已看并清零断点——max 与 position 一起清零，
+    与现行清零口径对齐（同一轮观看结束，下一轮从零重新累计）；
+    played 已标时 play_count 不重复加。
     """
+    base_max = effective_max_position_ticks(umd)
     umd.playback_position_ticks = pos
+    umd.max_position_ticks = max(base_max, pos)
     umd.last_played_at = datetime.now()
     if finished:
         if not umd.played:
             umd.play_count = (umd.play_count or 0) + 1
         umd.played = True
         umd.playback_position_ticks = 0
+        umd.max_position_ticks = 0
 
 
 def _record_playing(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
