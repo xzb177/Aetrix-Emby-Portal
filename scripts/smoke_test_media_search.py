@@ -311,6 +311,14 @@ try:
 
     # 探测缓存：文件没变，重扫不应再探测
     db.refresh(lib)
+    # #12 到期调度（默认开）：首扫后目录的 next_due_at 在未来，未到期重扫会
+    # 整段跳过、只记 unchanged，不走完整核对——本段验的是「到期后重扫」的
+    # 探测缓存与更新计数，先把本库各目录的到期时刻拨到过去，让这次重扫走
+    # due 完整核对路径（与生产里目录到期后的行为一致）。
+    db.query(em.ScanDirState).filter(
+        em.ScanDirState.library_id == lib.id
+    ).update({em.ScanDirState.next_due_at: datetime.now() - timedelta(minutes=1)})
+    db.commit()
     stats2 = sc.scan_library_sync(db, lib, sc.LibrarySnapshot.of(lib))
     sc.probe_metadata = _real_probe
     check("重扫不重复探测（文件未变）", stats2["probed"] == 0, str(stats2))
