@@ -145,6 +145,52 @@ def list_variants(db: Session, item, *, allow_transcode: bool,
     return [_VARIANTS[n] for n in names]
 
 
+def parse_requested_variant(query_params) -> tuple:
+    """从 video_stream 请求里读客户端选的变体（PR-2，纯函数、不碰 DB）。
+
+    读两个双保险位（PR-1 下发时同时打上）：``variant`` 参数优先，
+    没有参数时读 ``MediaSourceId`` 的 ``{guid}:{variant}`` 后缀。
+    返回 ``(name_or_None, mismatch_bool)``：两者都出现且不一致时
+    mismatch=True（身份对不上，调用方按 404 处理），只出现一个时
+    以那个为准；两个都没有时 name=None（老客户端，走原判定）。
+    """
+    raw_variant = query_params.get("variant")
+    variant = (raw_variant or "").strip() or None
+    msid = query_params.get("MediaSourceId") or ""
+    suffix = None
+    if ":" in msid:
+        suffix = msid.rsplit(":", 1)[1].strip() or None
+    if variant and suffix and variant != suffix:
+        return None, True
+    return variant or suffix, False
+
+
+def resolve_requested_variant(query_params, available_names) -> tuple:
+    """校验客户端选的变体（PR-2，纯函数、不碰 DB）。
+
+    返回 ``(variant_or_None, error_status_or_None)``：
+    - ``(None, None)``：没带变体，走原判定；
+    - ``(name, None)``：带了且在可用清单里；
+    - ``(None, 404)``：名字不在五变体枚举里，或 variant 参数与
+      MediaSourceId 后缀不一致（身份对不上）；
+    - ``(None, 409)``：名字是已知变体，但该条目当下不可用——调用方
+      必须明确报错，**不许静默改走默认条**（静默改走会让客户端的
+      选择权变成假的，也会让打点口径说谎）。
+    待复验标注（迁移方案 §七）：变体回落语义等 FMBY 数值未实测到，
+    本函数不编任何 FMBY 阈值，只做「在清单里 / 不在清单里」判定。
+    """
+    name, mismatch = parse_requested_variant(query_params)
+    if mismatch:
+        return None, 404
+    if name is None:
+        return None, None
+    if name not in _VARIANTS:
+        return None, 404
+    if name not in list(available_names):
+        return None, 409
+    return name, None
+
+
 def variantize_url(url: str, guid: str, variant_name: str) -> str:
     """给播放 URL 打上变体标记：MediaSourceId 带后缀 + variant 参数双保险。
 

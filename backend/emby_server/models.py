@@ -595,8 +595,14 @@ class PlayStartEvent(Base):
     provider = Column(String(30), nullable=False, default="unknown")
     mount_id = Column(Integer)
     # 分发方式：relay（Drive SA 中继）/ direct_302（Drive 快路径直链）/
-    # resolve（回落 _play_target 解析，含 mount 中继与本机文件的调度尝试）
+    # resolve（回落 _play_target 解析，含 mount 中继与本机文件的调度尝试）/
+    # mount_relay / local_file（PR-2 按变体取流时 _play_target 的调度尝试
+    # 按所选变体记，不再一律记 resolve；无变体参数时仍记 resolve）
     method = Column(String(30))
+    # 实际走的变体名（FMBY 批二 #11 PR-2，见 play_events.note_play_start
+    # 的 variant 参数）：drive_relay / drive_direct / mount_relay /
+    # local_file / transcode_hls；老事件与无变体调用为 NULL。
+    variant = Column(String(30))
     result = Column(String(16), nullable=False, default="ok")  # ok / error
     # 错误分类：auth（凭据失效 503）/ mount_unavailable（挂载不可用 404）/
     # upstream_<状态码>（中继上游错误）/ resolve_error（未分类解析异常）

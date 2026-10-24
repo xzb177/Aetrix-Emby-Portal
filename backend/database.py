@@ -1033,6 +1033,13 @@ def _auto_migrate():
         ("emby_user_media_data", [
             ("max_position_ticks", "BIGINT", "NULL"),
         ]),
+        # 按变体取流（2026-10-24，FMBY 学习批二 #11 PR-2）：起播事件表加
+        # variant（实际走的变体名）。老库补列后为 NULL（= 老事件/无变体
+        # 调用），聚合读口仍按 provider × mount_id 分组，variant 只作
+        # 筛选维度，行为与升级前一致。
+        ("emby_play_start_events", [
+            ("variant", "VARCHAR(30)", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

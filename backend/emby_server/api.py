@@ -4499,8 +4499,14 @@ def _note_play_start_safe(item: em.MediaItem, **kwargs) -> None:
         pass
 
 
-def _play_target(db: Session, item: em.MediaItem):
+def _play_target(db: Session, item: em.MediaItem, *, variant=None):
     """把条目的 ``file_path`` 解析成播放目标（本机文件 或 挂载直链）
+
+    ``variant``（FMBY 批二 #11 PR-2，关键字专属、可选）：video_stream
+    按变体取流时传进来，调度事件按所选变体记（mount_relay / local_file
+    不再一律记 resolve）；不传时行为与升级前逐字一致。签名仍可按
+    ``(db, item)`` 两参调用（多处桩替身共用），解析事件仍不带 user_id。
+    
 
     挂载来源（115 / WebDAV / AList / STRM）解析失败时给出明确状态码，不抛 500：
 
@@ -4517,23 +4523,28 @@ def _play_target(db: Session, item: em.MediaItem):
         target = mount_lib.resolve_play_target(item.file_path, db, item.library)
     except mount_lib.MountAuthError as exc:
         _note_play_start_safe(
-            item, method="resolve", result="error", error_kind="auth",
+            item, method="resolve", variant=variant, result="error",
+            error_kind="auth",
             resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         raise HTTPException(status_code=503, detail=f"媒体来源凭据失效：{exc}")
     except mount_lib.MountError as exc:
         _note_play_start_safe(
-            item, method="resolve", result="error",
+            item, method="resolve", variant=variant, result="error",
             error_kind="mount_unavailable",
             resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         raise HTTPException(status_code=404, detail=f"媒体来源不可用：{exc}")
     except Exception:
         _note_play_start_safe(
-            item, method="resolve", result="error",
+            item, method="resolve", variant=variant, result="error",
             error_kind="resolve_error",
             resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         raise
+    # 按变体取流的成功事件按所选变体记（mount_relay / local_file），
+    # 无变体参数时仍记 resolve；错误事件一律记 resolve（见上）。
+    _ok_method = variant if variant in (
+        play_variants.MOUNT_RELAY, play_variants.LOCAL_FILE) else "resolve"
     _note_play_start_safe(
-        item, method="resolve", result="ok",
+        item, method=_ok_method, variant=variant, result="ok",
         resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
     return target
 
@@ -4752,6 +4763,23 @@ def _observe_traffic(response):
     return response
 
 
+def _available_variant_names(db: Session, item: em.MediaItem,
+                             user) -> list:
+    """video_stream 按变体取流用的可用变体名（与 playback_info 同口径）。
+
+    转码许可走 play_variants.transcode_allowed 单口；Drive 挂载可定位
+    走 _drive_mount_id_for_item 一次主键查询；清单阶段不真解析直链。
+    只在客户端带了变体时才调用——无变体老路径不增加这次查询成本。
+    """
+    allow_transcode = play_variants.transcode_allowed(db, user)
+    locatable = False
+    if (getattr(item, "drive_file_id", "") or "").strip():
+        locatable = _drive_mount_id_for_item(db, item) is not None
+    return [v.name for v in play_variants.list_variants(
+        db, item, allow_transcode=allow_transcode,
+        drive_mount_locatable=locatable)]
+
+
 @emby_router.get("/emby/Videos/{item_id}/stream")
 @emby_router.get("/Videos/{item_id}/stream")
 @release_db_before_response
@@ -4779,6 +4807,43 @@ async def video_stream(
     # 起播占租约、超限 429；无策略时零行为变化。
     await run_db(_enforce_stream_limit, db, request, user, item, item_id)
     _pt.mark("auth_stream_limit")
+    # 按变体取流（FMBY 批二 #11 PR-2）：客户端带了变体（variant 参数 /
+    # MediaSourceId 后缀）时，只执行该变体的分支。变体未知报 404、
+    # 已知但该条目当下不可用报 409，两种情况都不许静默改走默认条；
+    # 没带变体时 _requested_variant 为 None，下面各分支条件与升级前
+    # 逐字一致（老客户端行为不变）。租约已在上面按条目占过一次，
+    # 租约 id 不含变体（stream_limits._lease_id），同条目两变体只占一额。
+    _requested_variant = None
+    _variant_name, _variant_mismatch = play_variants.parse_requested_variant(
+        request.query_params)
+    if _variant_mismatch:
+        raise HTTPException(
+            status_code=404, detail="播放变体不存在：variant 与 MediaSourceId 不一致")
+    if _variant_name is not None:
+        _available_names = await run_db(
+            _available_variant_names, db, item, user)
+        _requested_variant, _variant_error = (
+            play_variants.resolve_requested_variant(
+                request.query_params, _available_names))
+        if _variant_error == 404:
+            raise HTTPException(status_code=404, detail="播放变体不存在")
+        if _variant_error == 409:
+            raise HTTPException(
+                status_code=409, detail="播放变体当前不可用，请选择其他变体")
+    # 转码变体不走 video_stream 的字节分支：它就是转码路径（video_hls），
+    # 在这里 302 到 master.m3u8，查询串原样保留（鉴权签名在里面），
+    # 缺 MediaSourceId 时补一个；不是静默改走，而是所选变体自己的入口。
+    if _requested_variant == play_variants.TRANSCODE_HLS:
+        _pt.done()
+        _hls_qs = str(request.url.query)
+        _hls_url = f"/emby/videos/{item.guid}/master.m3u8"
+        if _hls_qs:
+            _hls_url += f"?{_hls_qs}"
+            if "MediaSourceId=" not in _hls_qs:
+                _hls_url += f"&MediaSourceId={item.guid}:{play_variants.TRANSCODE_HLS}"
+        else:
+            _hls_url += f"?MediaSourceId={item.guid}:{play_variants.TRANSCODE_HLS}"
+        return _observe_traffic(RedirectResponse(_hls_url, status_code=302))
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有 drive_file_id）
     # 且 drive_direct_play_enabled 开关开启时，直接 302 到谷歌 usercontent
@@ -4792,9 +4857,16 @@ async def video_stream(
     _fid = (getattr(item, "drive_file_id", "") or "").strip()
     _drive_switch_on = bool(_fid) and await run_db(
         _strategy.drive_direct_play_enabled, db)
-    if _drive_switch_on and await run_db(_strategy.drive_relay_enabled, db):
+    if (_drive_switch_on and await run_db(_strategy.drive_relay_enabled, db)
+            and (_requested_variant is None
+                 or _requested_variant == play_variants.DRIVE_RELAY)):
         _evt_t0 = time.perf_counter()
         _relay_drive_id = await run_db(_drive_mount_id_for_item, db, item)
+        if _requested_variant == play_variants.DRIVE_RELAY and not _relay_drive_id:
+            # 校验时可定位、执行时已不可定位（挂载被停用等竞态）：
+            # 报 409，不许回落到直链或 _play_target（那是静默改走）。
+            raise HTTPException(
+                status_code=409, detail="播放变体当前不可用：drive_relay")
         if _relay_drive_id:
             # Drive SA 中继（2026-10-23 额度应急）：字节过服务器转发，
             # file_id 不出门、不走公开下载池；存在性由上游取流本身
@@ -4807,6 +4879,7 @@ async def video_stream(
             # 起播打点（批一 #2）：中继首响应回来即记一条，成败看上游状态码
             _note_play_start_safe(
                 item, user_id=getattr(user, "id", None), method="relay",
+                variant=play_variants.DRIVE_RELAY,
                 result="error" if _relay_resp.status_code >= 400 else "ok",
                 error_kind=(f"upstream_{_relay_resp.status_code}"
                             if _relay_resp.status_code >= 400 else None),
@@ -4820,20 +4893,44 @@ async def video_stream(
         _force = drive_exists_rapid_retry(request, user, _fid)
         _fast302 = await _ensure_drive_file_playable(
             db, item, _fid, force_recheck=_force)
+    if _requested_variant == play_variants.DRIVE_DIRECT and not _fast302:
+        # 校验时可定位、执行时已不可定位（挂载被停用等竞态）：
+        # 报 409，不许回落到 _play_target 的通用分支（那是静默改走）。
+        # 文件没了/凭据失效时 _ensure 已直接抛 404/503，不走这里。
+        raise HTTPException(
+            status_code=409, detail="播放变体当前不可用：drive_direct")
     if _fast302:
         _pt.mark("drive_exists_check")
         _pt.done()
         # 起播打点（批一 #2）：存在性校验通过、302 直链下发记一条
         _note_play_start_safe(
             item, user_id=getattr(user, "id", None), method="direct_302",
+            variant=play_variants.DRIVE_DIRECT,
             result="ok",
             resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         from backend.emby_server.drive_auth import drive_usercontent_download_url
         return _observe_traffic(
             RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
                              headers=_strategy.DIRECT_REDIRECT_HEADERS))
-    target = await run_db(_play_target, db, item)
+    if _requested_variant is not None:
+        target = await run_db(_play_target, db, item,
+                              variant=_requested_variant)
+    else:
+        target = await run_db(_play_target, db, item)
     _pt.mark("play_target")
+    # 按变体取流的不变量：走到这里的只能是挂载中继 / 本机文件两种
+    # 变体（Drive 两条与转码已在前面返回）；走到这里说明其分支已消失
+    # （开关/挂载竞态），报 409，不许按通用分支静默改走。
+    if _requested_variant not in (
+            None, play_variants.MOUNT_RELAY, play_variants.LOCAL_FILE):
+        raise HTTPException(
+            status_code=409, detail="播放变体当前不可用")
+    if _requested_variant == play_variants.MOUNT_RELAY and target.kind != "url":
+        raise HTTPException(
+            status_code=409, detail="播放变体当前不可用：mount_relay")
+    if _requested_variant == play_variants.LOCAL_FILE and target.kind == "url":
+        raise HTTPException(
+            status_code=409, detail="播放变体当前不可用：local_file")
     if target.kind == "url":
         # 播放策略能力：对象存储直链名单命中时 302 到对象存储；Drive 条目
         # 直接 302 到谷歌 usercontent 直链。判定逻辑见 playback_strategy。
@@ -4848,7 +4945,8 @@ async def video_stream(
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
         direct_url = await run_db(
             _strategy.maybe_direct_url, db, getattr(item, "drive_file_id", None))
-        if direct_url:
+        # 按变体取流时不走对象存储直链分支（那不是所选变体的分支）。
+        if direct_url and _requested_variant is None:
             _pt.mark("direct_302")
             _pt.done()
             return _observe_traffic(
