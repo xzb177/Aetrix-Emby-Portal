@@ -2466,6 +2466,13 @@ class _ScanContext:
     dir_fingerprints: dict = field(default_factory=dict)
     # 本批处理过的目录（目录 → 当前指纹），批次提交时写回
     dirty_dirs: dict = field(default_factory=dict)
+    # 到期调度（批二 #12）：目录 → (next_due_at, 本轮判定)，随批次提交写回；
+    # 与 dirty_dirs 分开是因为「到期重验过但指纹没变」的目录不在 dirty 里，
+    # 却同样要推进 next_due_at
+    dirty_dir_schedule: dict = field(default_factory=dict)
+    # 到期调度：目录 → 本轮判定（first/changed/due/not_due/None），一轮只判一次
+    # （同一目录的文件可能跨批次，判定与统计计数都以第一次为准）
+    dir_decisions: dict = field(default_factory=dict)
     # 列举失败的远程目录（读不到就别拿空列表当“目录没变”）
     dir_list_failed: set = field(default_factory=set)
     # NFO：已解析的 NFO 缓存（含阴性缓存），key 见 _read_nfo_cached
@@ -2530,6 +2537,109 @@ def _incremental_on(ctx: "_ScanContext") -> bool:
     return SCAN_INCREMENTAL and getattr(snap, "incremental_scan", True) is not False
 
 
+# ==================== 到期调度：清单指纹 v2 + next_due_at（FMBY 学习批二 #12）====================
+# 学的是 FMBY 的扫描调度：每个目录存一份**清单指纹**，扫描由「到期」驱动——
+# 不是每轮都把每个目录按同一深度重验一遍。
+#
+# 在上面这套增量（L1 文件指纹秒跳 + 目录指纹跳过）之上再分一层（魂 3：调度与
+# 数据面分离——调度只决定「核对深度」，枚举/入库/清理这些数据面一律不感知
+# 到期）：
+#
+#   清单指纹（v2）：指纹从旧的弱启发式（本机 mtime:项数 / 挂载 项数:总字节:摘要）
+#   升级为对**清单内容**的哈希：本机 = 目录 mtime + 全部条目名，挂载 = 每条目的
+#   名/大小/远端 ModTime。输入全部来自列举时本来就拿到的元数据，不为算指纹
+#   逐个打开文件。格式带 ``v2:`` 前缀：升级后存量指纹必然对不上，首轮按
+#   「指纹变了」完整处理一次（L1 文件级秒跳仍在，成本有界），之后恢复增量。
+#
+#   到期调度：每个目录在 ScanDirState 里多一份排期（next_due_at + last_decision）：
+#     first    —— 第一次见到：完整处理，处理完排期（now + 周期）；
+#     changed  —— 清单指纹变了：完整处理，处理完重新排期；
+#     due      —— 指纹没变但已到期：走完整核对（含到期重刮判定），核对完推进排期；
+#     not_due  —— 指纹没变且未到期：整段跳过，只跑不带 IO 的安全检查（条目在、
+#                 没下架、没报修、大小没变），到期重刮这类「到期才做」的判定
+#                 推迟到 next_due_at；安全检查不过的文件照常完整处理。
+#   周期由 SCAN_DIR_RECHECK_SEC 定（默认 24 小时）；SCAN_DIR_DUE_SCHEDULING=0
+#   整体关掉到期层（指纹 v2 仍生效，核对深度与旧行为逐字一致）。
+#
+# 与其它增量机制的关系（别造两套增量互相打架）：
+#   - L1 文件指纹秒跳在更前面：enrich 已补全的文件先被它拦下，根本走不到
+#     目录判定——到期层管的是「还没被 L1 拦下」的那些文件所在目录的深度。
+#   - Drive Changes 增量（定向扫描，snap.targeted）：事件驱动的条目级更新，
+#     只看部分目录——到期层**不参与**（定向扫描不判到期、不写排期），它写回的
+#     指纹仍是「扫描当时清单」的事实，下一次整库扫描按清单现状判定即可。
+#   - 清理阶段（缺失宽限 #1201）：到期层只动「处理深度」，枚举一根汗毛不碰，
+#     seen_guids 永远完整；清理内部顺序也原样——清单可信度守卫
+#     （_removal_budget）先判、missing 计数判缺在后（魂 5：对外部变化克制）。
+#     尤其不许因为目录「未到期」就剪枝枚举：看不到的文件会被清理当成已删除。
+#
+# 可观测：每轮扫描统计带 dirs_new / dirs_changed / dirs_due / dirs_not_due
+# 四个计数（经 _scan_metrics 对外），加上 ScanDirState 里的 next_due_at /
+# last_decision 两列，「哪个目录何时到期、为何触发」在管理面与库里都可查。
+
+
+def _dir_due_enabled() -> bool:
+    """到期调度总开关（批二 #12）：1=开（默认）。运行时读环境变量，
+    供测试中途开关（与 _fast_skip_enabled 同口径）。"""
+    return (os.getenv("SCAN_DIR_DUE_SCHEDULING", "1") or "1").strip().lower() \
+        not in {"0", "false", "no", "off"}
+
+
+def _dir_recheck_after() -> timedelta:
+    """到期周期：目录完整核对后，隔多久再到期重验一次。
+
+    默认 24 小时；钳制 5 分钟～30 天（env_int 统一口径，非法值回落默认）。
+    """
+    return timedelta(seconds=env_int("SCAN_DIR_RECHECK_SEC", 86400, 300, 2592000))
+
+
+def _dir_decision(ctx: "_ScanContext", dir_key: str,
+                  fingerprint: Optional[str],
+                  stored: Optional[tuple]) -> Optional[str]:
+    """目录本轮的到期判定（批二 #12）。返回 None = 到期层不参与本目录，
+    走旧的完整核对深度（增量关 / 指纹缺失 / 定向扫描 / 到期层关）。
+
+    每个目录每轮只判一次，结果缓存在 ctx.dir_decisions，统计也只计一次。
+    ``stored`` 是 _load_dir_states 给的 (指纹, next_due_at)。
+    """
+    if dir_key in ctx.dir_decisions:
+        return ctx.dir_decisions[dir_key]
+    decision: Optional[str] = None
+    snap = getattr(ctx, "snap", None)
+    if (_incremental_on(ctx) and _dir_due_enabled()
+            and not getattr(snap, "targeted", False) and fingerprint):
+        if stored is None:
+            decision = "first"
+        elif stored[0] != fingerprint:
+            decision = "changed"
+        elif stored[1] is None or stored[1] <= datetime.now():
+            decision = "due"
+        else:
+            decision = "not_due"
+    ctx.dir_decisions[dir_key] = decision
+    if decision == "first":
+        ctx.stats["dirs_new"] = ctx.stats.get("dirs_new", 0) + 1
+    elif decision == "changed":
+        ctx.stats["dirs_changed"] = ctx.stats.get("dirs_changed", 0) + 1
+    elif decision == "due":
+        ctx.stats["dirs_due"] = ctx.stats.get("dirs_due", 0) + 1
+    elif decision == "not_due":
+        ctx.stats["dirs_not_due"] = ctx.stats.get("dirs_not_due", 0) + 1
+    return decision
+
+
+def _schedule_dir(ctx: "_ScanContext", dir_key: str, decision: str,
+                  due_at: Optional[datetime] = None) -> None:
+    """把目录本轮的排期决定记进 ctx，批次收尾时随 _store_dir_states 写回。
+
+    due_at 缺省 = now + 周期（刚完整核对/处理过）；not_due 的跳过要保留原
+    到期时刻（只记判定供查，不许把排期越推越远），由调用方把原值传进来。
+    """
+    ctx.dirty_dir_schedule[dir_key] = (
+        due_at if due_at is not None else datetime.now() + _dir_recheck_after(),
+        decision,
+    )
+
+
 # 分层扫描 L1/L2 总开关（v2.40.0）：1=开（默认）。
 # 开：Phase 1 只做文件发现+指纹+极简入库（秒级可见），side/NFO/TMDB 全部
 #     交给后台 enrich_worker 补全；关：回到旧行为（Phase 1 内联做完所有事）。
@@ -2560,7 +2670,14 @@ def _dir_key_of(scan_file: "ScanFile") -> str:
 
 
 def _dir_fingerprint(ctx: "_ScanContext", scan_file: "ScanFile") -> Optional[str]:
-    """目录指纹（拿不到返回 None：这个目录这一次不走增量捷径）"""
+    """目录清单指纹 v2（拿不到返回 None：这个目录这一次不走增量捷径）
+
+    v2 起指纹是**清单内容**的哈希（格式 ``v2:<md5>``），不再是旧的弱启发式
+    （本机 mtime:项数 / 挂载 项数:总字节:摘要）：同项数同总大小的改名、等尺寸
+    替换在旧口径下都可能漏检，v2 对清单逐条序列化后哈希，清单变指纹必变。
+    输入全部来自列举元数据（本机 os.listdir 的名字 + 目录 mtime；挂载条目的
+    名/大小/远端 ModTime），不为算指纹逐个打开文件。
+    """
     key = _dir_key_of(scan_file)
     if key in ctx.dir_fingerprints:
         return ctx.dir_fingerprints[key]
@@ -2568,70 +2685,95 @@ def _dir_fingerprint(ctx: "_ScanContext", scan_file: "ScanFile") -> Optional[str
     if scan_file.local_dir:
         try:
             listing = _list_dir_cached(scan_file.local_dir)
-            value = f"{os.stat(scan_file.local_dir).st_mtime_ns}:{len(listing)}"
+            payload = (f"{os.stat(scan_file.local_dir).st_mtime_ns}\n"
+                       + "\n".join(sorted(listing)))
+            value = "v2:" + hashlib.md5(payload.encode("utf-8")).hexdigest()
         except OSError:
             value = None
     elif key not in ctx.dir_list_failed:
         entries = _mount_names(ctx, scan_file)
         if key not in ctx.dir_list_failed:
-            # P2 修复（完美审查 C-P2-3）：目录指纹混入各文件的远端 ModTime 摘要——
-            # 否则同尺寸替换只改单个文件时 len:sum(sizes) 不变，_can_skip_file
-            # 直接放行整目录（L1 文件指纹修了也没用）。无 ModTime 的提供方
-            # mod_ts 全 0，摘要退化为"名字+尺寸"仍是确定性的。
-            mod_part = "|".join(
+            # 挂载清单序列化（名/大小/远端 ModTime 逐条）：P2 修复（完美审查
+            # C-P2-3）的口径整体保留——同尺寸替换只改单个文件时，ModTime 变
+            # 指纹必变；无 ModTime 的提供方 mod_ts 全 0，退化为"名字+尺寸"，
+            # 仍是确定性的。v2 与旧格式的差别只在不再截断摘要、不再混入
+            # 项数/总字节这类可碰撞的聚合量。
+            payload = "\n".join(
                 f"{e.name}:{int(e.size or 0)}:"
                 f"{float(getattr(e, 'mod_ts', 0.0) or 0.0):.0f}"
                 for e in sorted(entries, key=lambda x: x.name)
             )
-            mod_digest = hashlib.md5(mod_part.encode("utf-8")).hexdigest()[:16]
-            value = (f"{len(entries)}:{sum(int(e.size or 0) for e in entries)}"
-                     f":{mod_digest}")
+            value = "v2:" + hashlib.md5(payload.encode("utf-8")).hexdigest()
     ctx.dir_fingerprints[key] = value
     return value
 
 
 def _load_dir_states(db: Session, lib_id: int, dir_keys: list) -> dict:
-    """一批目录的已存指纹（分片查，只取两个列）"""
+    """一批目录的已存状态（分片查）：dir_key → (指纹, next_due_at)
+
+    批二 #12 起连排期一起取回：到期判定要在 prepare 里当场做，不能逐目录
+    再查一次库。
+    """
     found: dict = {}
     unique = list(dict.fromkeys(k for k in dir_keys if k))
     for chunk in _chunks(unique, SQL_IN_CHUNK):
         for row in db.query(emby_models.ScanDirState.dir_key,
-                            emby_models.ScanDirState.fingerprint).filter(
+                            emby_models.ScanDirState.fingerprint,
+                            emby_models.ScanDirState.next_due_at).filter(
             emby_models.ScanDirState.library_id == lib_id,
             emby_models.ScanDirState.dir_key.in_(chunk),
         ):
-            found[row.dir_key] = row.fingerprint
+            found[row.dir_key] = (row.fingerprint, row.next_due_at)
     return found
 
 
 def _store_dir_states(db: Session, ctx: "_ScanContext") -> None:
-    """把本批处理过的目录指纹写回（与条目在同一个事务里提交）"""
+    """把本批处理过的目录指纹与排期写回（与条目在同一个事务里提交）
+
+    指纹（ctx.dirty_dirs）与排期（ctx.dirty_dir_schedule）是两个独立的脏集：
+    到期重验过但指纹没变的目录只在排期集里，只推进 next_due_at / last_decision，
+    不动指纹。
+    """
     dirty, ctx.dirty_dirs = ctx.dirty_dirs, {}
-    if not dirty:
+    schedule, ctx.dirty_dir_schedule = ctx.dirty_dir_schedule, {}
+    if not dirty and not schedule:
         return
+    keys = list(dict.fromkeys([*dirty.keys(), *schedule.keys()]))
     existing: dict = {}
-    for chunk in _chunks(list(dirty.keys()), SQL_IN_CHUNK):
+    for chunk in _chunks(keys, SQL_IN_CHUNK):
         for row in db.query(emby_models.ScanDirState).filter(
             emby_models.ScanDirState.library_id == ctx.lib_id,
             emby_models.ScanDirState.dir_key.in_(chunk),
         ):
             existing[row.dir_key] = row
     now = datetime.now()
-    for dir_key, fingerprint in dirty.items():
+    for dir_key in keys:
         row = existing.get(dir_key)
         if row is None:
-            db.add(emby_models.ScanDirState(library_id=ctx.lib_id, dir_key=dir_key,
-                                            fingerprint=fingerprint, updated_at=now))
-        elif row.fingerprint != fingerprint:
-            row.fingerprint = fingerprint
+            row = emby_models.ScanDirState(library_id=ctx.lib_id, dir_key=dir_key,
+                                           fingerprint=dirty.get(dir_key),
+                                           updated_at=now)
+            db.add(row)
+        if dir_key in dirty and row.fingerprint != dirty[dir_key]:
+            row.fingerprint = dirty[dir_key]
+            row.updated_at = now
+        if dir_key in schedule:
+            due_at, decision = schedule[dir_key]
+            row.next_due_at = due_at
+            row.last_decision = decision
             row.updated_at = now
 
 
 def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: Optional[str],
-                   stored_fingerprint: Optional[str]) -> bool:
+                   stored_fingerprint: Optional[str], defer_scrape: bool = False) -> bool:
     """这个文件能不能不做任何写库工作（只记一笔）
 
     任何一条不满足都退回完整处理——宁可多做，不能漏文件或漏元数据。
+
+    defer_scrape（批二 #12 到期调度）：目录未到期时传 True——只推迟下面两处
+    「到期才做」的刮削判定（到期重刮 / 详情补齐 / 父剧未刮），其余安全检查
+    （条目存在、未下架、指纹一致、探针、报修、层级）一条不少。推迟有界：
+    目录 next_due_at 一到，重验走完整判定，这些活一件不会少。
     """
     if not _incremental_on(ctx) or item is None or not fingerprint:
         return False
@@ -2649,12 +2791,12 @@ def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: 
     # 另外只有**电影 / 剧集**参与刮削（写库循环里是 item_type in ("series", "movie")）：
     # 集与季根本没有 tmdb_id，`should_scrape` 对它们恒等于「缺元数据 → 要刮」，落到这里就是
     # 「配了 TMDB 的剧集库每轮重扫都得完整处理每一集」——增量扫描对这个最常见的库型等于关掉。
-    if _tmdb.tmdb_client.configured and pending.item_type in ("series", "movie"):
+    if not defer_scrape and _tmdb.tmdb_client.configured and pending.item_type in ("series", "movie"):
         if should_scrape(item, ctx.snap.scrape_policy):
             return False                 # 到期重刮 / all 策略 / 缺元数据
         if item.tmdb_id and not (item.imdb_id and item.aliases):
             return False                 # 与循环里的 need_details 一致：详情还没补齐
-    if (pending.item_type == "episode" and _tmdb.tmdb_client.configured
+    if (not defer_scrape and pending.item_type == "episode" and _tmdb.tmdb_client.configured
             and pending.series_guid):
         # B 方案补全：父 series 从没走过 TMDB（无 tmdb_id 且无尝试记录）时不能跳过——
         # episode 隐式创建的 series 平时走不到 TMDB 搜索分支，跳过了就永远刮不到。
@@ -3896,15 +4038,37 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         # 目录没变、库里这一行也是最新的 → 不做任何逐文件工作（guid 已在上面记进 seen_guids）
         dir_key = _dir_key_of(scan_file)
         fingerprint = _dir_fingerprint(ctx, scan_file) if _incremental_on(ctx) else None
-        if _can_skip_file(ctx, item, pending, fingerprint, stored_states.get(dir_key)):
+        stored = stored_states.get(dir_key)
+        stored_fp = stored[0] if stored else None
+        # 到期调度（批二 #12）：先判这个目录本轮的核对深度。未到期且指纹没变
+        # → 只跑安全检查、推迟到期类判定（defer_scrape）；判定为 None（到期层
+        # 不参与）或 first/changed/due → 走下面原有的完整判定，一字不差。
+        decision = _dir_decision(ctx, dir_key, fingerprint, stored) if fingerprint else None
+        if decision == "not_due" and _can_skip_file(
+                ctx, item, pending, fingerprint, stored_fp, defer_scrape=True):
+            pending.skipped = True
+            # 计数口径与下面的完整核对跳过不同：那里是「全深度核对过、确认
+            # 没变」，照旧 updated + unchanged 各计一次；这里是「未到期、
+            # 只跑了安全检查」——没有真核对过内容，只计 unchanged，
+            # 保住「updated + unchanged 不重复计同一个文件」的统计口径。
+            ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
+            # 只记判定供查：保留原到期时刻，不许把排期越推越远
+            _schedule_dir(ctx, dir_key, "not_due", due_at=stored[1])
+            continue
+        if _can_skip_file(ctx, item, pending, fingerprint, stored_fp):
             pending.skipped = True
             # updated 照旧计一次（对用户来说这个条目本轮确实重新核对过），
             # 另外单独记 unchanged，方便看“增量到底省了多少”
             ctx.stats["updated"] = ctx.stats.get("updated", 0) + 1
             ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
+            if decision is not None:
+                # 到期重验过但指纹没变：指纹不在 dirty 里，靠排期集推进到期时刻
+                _schedule_dir(ctx, dir_key, decision)
             continue
         if fingerprint:
             ctx.dirty_dirs[dir_key] = fingerprint   # 这个目录这批真处理了 → 提交时写回指纹
+        if decision is not None:
+            _schedule_dir(ctx, dir_key, decision)   # 完整处理过 → 重新排期
         pending.probe_needed = bool(is_new or needs_probe(item, scan_file.stored_path,
                                                              scan_file.size))
         if SCAN_LAYERED and not pending.fast_skipped:
@@ -4544,6 +4708,8 @@ SCAN_RUN_KEEP = env_int("EMBY_SCAN_HISTORY", 20, 1, 10000)
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
 SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scraped",
                    "repaired", "unchanged", "resurrected", "removal_skipped",
+                   # 到期调度（批二 #12）：目录判定计数，不进白名单落不了库
+                   "dirs_new", "dirs_changed", "dirs_due", "dirs_not_due",
                    "failed_roots", "duplicate_files", "duration_ms", "sources",
                    # 删除保护拦截原因：finish_scan 的 error 兜底链 + _scan_metrics
                    # 对外口径都依赖它，不进白名单就落不了库（v2.55.x 修复）

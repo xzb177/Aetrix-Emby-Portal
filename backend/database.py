@@ -1019,6 +1019,13 @@ def _auto_migrate():
         ("emby_scan_runs", [
             ("state_json", "TEXT", "NULL"),
         ]),
+        # 目录到期调度（2026-10-24，FMBY 学习批二 #12）：emby_scan_dirs 加
+        # next_due_at / last_decision。老库补列后为 NULL（= 没有排期，
+        # 按「已到期」处理：走完整核对后才开始排期），行为与升级前一致。
+        ("emby_scan_dirs", [
+            ("next_due_at", "DATETIME", "NULL"),
+            ("last_decision", "VARCHAR(32)", "NULL"),
+        ]),
         # 进度双记（2026-10-24，FMBY 学习批一 #4）：emby_user_media_data 加
         # max_position_ticks（历史最远进度，与 playback_position_ticks 并存）。
         # 老库补列后为 NULL（= 还没双记过），读/算回退 playback_position_ticks，

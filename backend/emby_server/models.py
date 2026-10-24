@@ -663,16 +663,24 @@ class ItemFacet(Base):
 
 
 class ScanDirState(Base):
-    """增量扫描的目录指纹（v2.17.0）
+    """增量扫描的目录指纹（v2.17.0；清单指纹 + 到期调度 v2.62.0）
 
     「追新」场景里绝大多数目录一个文件都没动过，但重扫会把里面每个文件重走一遍：
     找本地图片、找外挂字幕、重建外挂字幕轨、提交事务（实测 2000 个文件的重扫 ≈ 冷扫
     的 95%，约 4 条 SQL + 1 次 commit / 文件）。
 
-    这里按目录存一份指纹：本机是 ``目录 mtime_ns : 目录项数``，挂载是 ``目录项数 : 总字节数``。
-    指纹没变的目录直接跳过逐文件的活，只把 guid 记进 ``seen_guids`` 并确认库里那一行
+    这里按目录存一份**清单指纹**（``fingerprint``，格式 ``v2:<md5>``）：对目录清单的
+    元数据（本机：目录 mtime + 全部条目名；挂载：每条目的名/大小/远端 ModTime）
+    做哈希——只用列举时本来就拿到的元数据，不为算指纹逐个打开文件。指纹没变的
+    目录直接跳过逐文件的活，只把 guid 记进 ``seen_guids`` 并确认库里那一行
     存在且不需要重探/重刮——库中缺行、大小变了、要补图补详情都照旧完整处理，
     所以“跳过”永远不会漏掉还没入库的文件。详见 `scanner` 的增量扫描小节。
+
+    **到期调度**（FMBY 学习批二 #12）：``next_due_at`` 是这个目录下一次「到期
+    重验」的时间，``last_decision`` 是最近一轮对它下的判定（first / changed /
+    due / not_due）。未到期且清单未变的目录整段跳过（连到期重刮这类「到期才做」
+    的判定都推迟）；到期后走完整核对，核对完把 next_due_at 往后推一个周期。
+    两个字段让「哪个目录何时到期、为何触发」在库里直接可查。
     """
 
     __tablename__ = "emby_scan_dirs"
@@ -687,6 +695,10 @@ class ScanDirState(Base):
     dir_key = Column(String(1000), nullable=False)
     fingerprint = Column(String(128), nullable=False)
     updated_at = Column(DateTime, default=datetime.now)
+    # 到期调度（批二 #12）：NULL = 还没排期（按已到期处理，先完整核对再排期）
+    next_due_at = Column(DateTime, default=None)
+    # 最近一轮的目录判定：first / changed / due / not_due（可观测，见 scanner）
+    last_decision = Column(String(32), default=None)
 
 
 class ScanRun(Base):
