@@ -528,6 +528,21 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动媒体库列表投影重建工人失败（可忽略）: {e}")
 
+        # 变体可用性探活工人（FMBY 播放阶段 4，清单第 4 项）：仅开关开时启动；
+        # 关时不发任何请求、不写任何状态，全站行为逐字不变。本阶段只落库 +
+        # 只探活，不接调度（list_variants / video_stream 选路一律不动），
+        # 可用性表只是“看得见的状态”，调度按它过滤是阶段 6/7 的事。
+        try:
+            from backend.emby_server import variant_availability
+
+            if variant_availability.start_probe_worker(_shutdown_event):
+                started.append("variant_availability_probe")
+                logger.info("✅ 变体可用性探活工人已启动")
+            else:
+                logger.info("变体可用性探活未开启，探活工人不启动")
+        except Exception as e:
+            logger.warning(f"启动变体可用性探活工人失败（可忽略）: {e}")
+
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
             from backend.emby_server import scan_queue

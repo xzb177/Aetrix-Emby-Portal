@@ -1418,3 +1418,42 @@ class DirectoryScanSnapshot(Base):
     # 下一次到期重验时刻（NULL = 还没排期，按已到期处理）
     next_due_at = Column(DateTime, default=None)
     updated_at = Column(DateTime, default=datetime.now)
+
+
+class VariantAvailability(Base):
+    """变体级可用性（任务清单第 4 项：播放阶段 4 可用性落库）。
+
+    FMBY ``upstream_playback_variants`` 的 ``availability_status`` +
+    ``last_checked_at`` 在我方的落点：变体在 ``play_variants.py`` 里是
+    静态 dataclass、没有 DB 行可加列，所以只能新表（不在既有变体模型
+    上加列——那里根本没有行）。
+
+    行键 ``variant_key``：Drive 两条变体全局一行（走全局 SA 池与全局
+    中继路径）；挂载中继按挂载分行（``mount_relay:<mount_id>``），某
+    挂载的凭据挂了不等于别的挂载也挂了；``local_file`` 不建行（无远端
+    路径可探，无记录当可用）。不加外键（照 ScanRun / PlayStartEvent
+    先例）：条目/挂载删掉后可用性行留着，调度口按“无记录当可用”处理，
+    不因外键级联丢状态。
+
+    状态语义见 ``variant_availability`` 模块：无记录当可用、Unknown
+    不覆盖已知、成功复位、连续失败达阈值才翻 unavailable。
+    新表由 ``init_db`` 的 ``create_all`` 建出（与 #1235 投影表同口径，
+    老库无需 ``_auto_migrate`` 段）。
+    """
+
+    __tablename__ = "variant_availability"
+
+    __table_args__ = (
+        UniqueConstraint("variant_key", name="uq_variant_availability_key"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    variant_key = Column(String(80), nullable=False, index=True)
+    availability_status = Column(String(16), nullable=False, default="available")
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+    last_error_kind = Column(String(40), default=None)
+    # 首次翻为 unavailable 的时刻（成功复位时清空，之后继续失败不刷新）
+    unavailable_since = Column(DateTime, default=None)
+    last_checked_at = Column(DateTime, default=None)
+    last_success_at = Column(DateTime, default=None)
+    updated_at = Column(DateTime, default=datetime.now)
