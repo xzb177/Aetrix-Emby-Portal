@@ -18,6 +18,7 @@ from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server import facets
+from backend.emby_server import playback_bus
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.query_params import qint, qlimit, qstart
 from backend.emby_server.scanner import (
@@ -246,6 +247,24 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
     # 发现页实时动态流埋点：新会话=开始看，ended=看完（只加写入调用，不改上报行为）
     _note_play_feed(db, item, started=(new_session and not ended),
                     finished=bool(ended and not was_ended))
+    # 播放实时总线接线（FMBY #24，唯一发布点 = 写库后发）：
+    # 新会话且非结束 → started；结束上报 → ended；其余写库 → progress。
+    # 节流未写库（本函数提前返回处）不发；防共享拦下（session 为 None）
+    # 在前面已返回，不发；起播打点处（api.py note_play_start）不发，
+    # 同一事件绝不两处重复发。发布失败永不抛、不阻断上报
+    # （playback_bus.publish_event 内部保证）。
+    if new_session and not ended:
+        _bus_event = playback_bus.EVENT_STARTED
+    elif ended:
+        _bus_event = playback_bus.EVENT_ENDED
+    else:
+        _bus_event = playback_bus.EVENT_PROGRESS
+    playback_bus.publish_event(playback_bus.build_event(
+        _bus_event,
+        session_id=session.server_session_id or session.session_key,
+        user_id=session.user_id, item_id=session.item_id,
+        variant=session.variant, device_id=session.device_id,
+        position_ticks=session.position_ticks, is_paused=session.is_paused))
     return session, True
 
 

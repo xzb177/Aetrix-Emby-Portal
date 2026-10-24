@@ -25,9 +25,10 @@ FMBY 形态（深挖报告第 4 节、B3 报告 #24 节）：
 开关：PLAYBACK_BUS_ENABLED，默认关（与 PLAY_VARIANTS_ENABLED、
 PLAY_SESSION_FIRST_CLASS_ENABLED 同口径，进程启动时读一次，改动
 需重启）。关时发布、快照、命令入口全部不执行，全站行为逐字不变。
-本模块只写新文件；发布点接线（_upsert_session / 起播 / 停播处调
-publish_event）与管理路由挂载见报告里的精确接线行，由父代理在
-删除 PR 落地后统一接线——本 PR 不改任何既有文件里的播放热路径。
+接线（#24 接线 PR 已落地）：唯一发布点是 compat_routes._upsert_session
+写库后发（started / progress / ended），起播打点处不发、不重复发；
+管理路由挂载见 backend/main.py；快照工人由 backend/worker.py 在
+开关开时启动。开关关时发布、快照、命令入口全部不执行。
 
 发布失败永不拖播放：publish_event / run_snapshot_once 内部只记
 warning、不抛异常（与 play_events 的永不抛、upstream_health 的
@@ -299,7 +300,8 @@ _ALLOWED_TRANSITIONS = {
 ALLOWED_COMMANDS = ("stop",)
 
 # stop 回执的诚实 outcome：
-# - enforced：服务端经手字节（中继 / 挂载中继 / 本地文件 / 转码），
+# - enforced：服务端经手字节（中继 / 挂载中继 / 本地文件）；
+#   转码变体已随 #1228 删除，不再是 enforced 口径（未知变体恒 best_effort）；
 #   会话结束即停播，可断言；
 # - best_effort：302 / 直链变体，会话行已标记结束，但已发出的签名
 #   直链在过期前无法召回，不许显示“已停止”冒充已停；
@@ -309,7 +311,7 @@ OUTCOME_BEST_EFFORT = "best_effort"
 OUTCOME_ALREADY_ENDED = "already_ended"
 
 # 服务端经手字节的变体（stop 可断言）；其余一律 best_effort，不多 claim。
-_ENFORCED_VARIANTS = {"drive_relay", "mount_relay", "local_file", "transcode_hls"}
+_ENFORCED_VARIANTS = {"drive_relay", "mount_relay", "local_file"}
 
 
 class UnsupportedCommandError(ValueError):

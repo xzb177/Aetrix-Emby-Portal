@@ -76,6 +76,7 @@ from backend.emby_server import facets  # noqa: F401
 # 这里的顺序（media → compat → stream）与拆分前的定义顺序一致，不能调换。
 from backend.emby_server import media_routes  # noqa: F401
 from backend.emby_server import compat_routes  # noqa: F401
+from backend.emby_server import playback_bus_admin
 from backend.emby_server import stream_routes  # noqa: F401
 from backend.emby_server.image_routes import install_image_routes
 from backend.emby_server.mount_routes import install_mount_routes
@@ -794,6 +795,11 @@ app.include_router(admins_router)
 app.include_router(setup_router)
 # 播放与客户端策略（v2.26.0）：转码开关 / 并发上限 / 码率上限 / 客户端准入，见 backend/api/playback_admin.py
 app.include_router(playback_admin_router)
+# 播放实时总线管理端（FMBY #24 接线）：命令表 + 快照读数；总线仍默认关，
+# 关时发命令回 503、不执行（见 backend/emby_server/playback_bus_admin.py）。
+# 挂载即导入模型，lifespan 的 init_db create_all 随既有表建出
+# playback_control_commands 新表（部署时须亲验新表已建出）。
+app.include_router(playback_bus_admin.router)
 # 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
 app.include_router(library_cover_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
