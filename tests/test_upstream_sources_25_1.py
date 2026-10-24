@@ -7,8 +7,9 @@
 ② 凭据密封：库里只存 Fernet 密封值，接口与日志只出 has_secret；
 ③ 默认关：新建恒关闭，启用是单独动作；关着的源对全站无影响
    （本文件用「播放/解析代码不 import 本模块」静态钉死无接线）；
-④ 证据分界：苹果 CMS 型直接被拒；凭据模型只许源级一把
-   （credential_scope 元组恒为 ("source",)，按用户映射不是允许值）。
+④ 证据分界：苹果 CMS 型直接被拒；凭据 scope 默认源级一把，
+   user 取值由 2026-10-24 用户亲令照抄显式重开（挂载凭据表用），
+   "per_user" 仍不是允许值。
 """
 
 from types import SimpleNamespace
@@ -90,8 +91,12 @@ def test_apple_cms_rejected_by_module(db):
         _create(db, name="CMS 源", source_type="apple_cms")
 
 
-def test_credential_scope_pinned_to_source_only():
-    assert ups.CREDENTIAL_SCOPES == ("source",)
+def test_credential_scope_enum_source_and_user():
+    # 2026-10-24 用户亲令照抄重开 user 取值（挂载凭据表用）；
+    # 默认仍为 source（见 create_source 默认值），per_user 仍被拒
+    # （见 test_illegal_auth_and_scope_and_health_rejected_by_db）。
+    assert ups.CREDENTIAL_SCOPES == ("source", "user")
+    assert em.UPSTREAM_CREDENTIAL_SCOPES == ("source", "user")
 
 
 # ---------- 凭据密封 ----------
