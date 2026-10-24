@@ -9,7 +9,8 @@
    无签时回退原有 token/JWT 鉴权，老客户端不受影响。
 
 2. **token 有效期**：
-   新签发的 ``emby_api_tokens`` 默认 30 天有效（``expires_at``）；
+   新签发的 ``emby_api_tokens`` 默认 30 天有效（``expires_at``，env
+   ``EMBY_TOKEN_TTL_DAYS`` 可配，见阶段 3 的 TTL 评估结论）；
    校验时过期视为无效，要求重新登录；历史 token 的 ``expires_at`` 为空
    视为永不过期（不强制全员重新登录）。janitor 定期清理过期行。
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -37,8 +39,16 @@ logger = logging.getLogger(__name__)
 
 # 播放签名默认有效期：15 分钟
 SIGN_TTL_SECONDS = 900
-# 新签发 token 默认有效期：30 天
-TOKEN_TTL_DAYS = 30
+# 新签发 token 默认有效期：30 天（env EMBY_TOKEN_TTL_DAYS 可配）。
+# 阶段 3 TTL 评估结论：FMBY 兼容会话的 180 天是闭源反推值、未经我方
+# 真实播放器隔期复验，且被盗令牌窗口会放大 6 倍；默认值保持 30 天不变，
+# 180 天只作为服主自担风险的可选项（改 env 后重启生效），不写进默认。
+try:
+    TOKEN_TTL_DAYS = int(os.getenv("EMBY_TOKEN_TTL_DAYS", "30"))
+except ValueError:
+    TOKEN_TTL_DAYS = 30
+if TOKEN_TTL_DAYS < 1:
+    TOKEN_TTL_DAYS = 1
 # 防盗链白名单配置键（SystemConfig）
 CONFIG_ALLOWED_REFERERS = "play_allowed_referers"
 

@@ -46,6 +46,7 @@ from backend.emby_server import items_dedup_cache as _dedup_cache
 from backend.emby_server import items_list_cache as _list_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import play_session
 from backend.emby_server import play_sign
 from backend.emby_server import play_variants
 from backend.emby_server.public_url import client_base_url
@@ -4701,6 +4702,7 @@ async def playback_info(
         media_source["TranscodingUrl"] = transcoding_url
 
     sources = [media_source]
+    _variants = []
     if play_variants.variants_enabled():
         # 变体清单下发（批二 #11）：可用性只看开关 + 条目静态属性 +
         # Drive 挂载可定位（一次主键查询），不在清单阶段真解析直链
@@ -4721,11 +4723,27 @@ async def playback_info(
                 direct_stream_ok=bool(direct),
                 allow_transcode=allow_transcode)
 
+    # 阶段 3 一等会话（默认关）：开时 PlaySessionId 不再是每次现生成的随机
+    # 票据，而是服务端在 PlaybackInfo 时预建的会话 id——上报侧 session_key
+    # 与 PlaybackInfo 侧是同一身份，管理员在“已起播未上报”窗口内已有目标
+    # 可打；预建失败绝不能打断 PlaybackInfo，回落旧随机票据。关时逐字旧行为。
+    _play_session_id = secrets.token_hex(8)
+    if play_session.first_class_enabled():
+        try:
+            _auth = parse_emby_authorization(
+                request.headers.get("X-Emby-Authorization"))
+            _sess = await run_db(
+                play_session.create_session, db, user, item,
+                variant=(_variants[0].name if _variants else None),
+                device_id=_auth.get("DeviceId") or None)
+            _play_session_id = _sess.server_session_id
+        except Exception:  # noqa: BLE001 — 预建失败只回落，不阻断播放
+            _play_session_id = secrets.token_hex(8)
     _pt.done()
     return _strip_nulls({
         "MediaSources": sources,
         # 每次播放会话一个独立票据，客户端据此上报进度
-        "PlaySessionId": secrets.token_hex(8),
+        "PlaySessionId": _play_session_id,
         "ErrorCode": None,
     })
 

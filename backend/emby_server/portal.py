@@ -1256,14 +1256,12 @@ async def stop_my_session(session_key: str,
     """结束自己的播放会话（同时释放转码进程）"""
     def _end_session() -> tuple:
         "结束会话的同步段：查会话 / 取条目 guid / 写结束时间（下放线程池）"
-        session = (
-            db.query(em.PlaybackSession)
-            .filter(
-                em.PlaybackSession.session_key == session_key,
-                em.PlaybackSession.user_id == request_user.id,
-            )
-            .first()
-        )
+        # 阶段 3：一等会话 id 与旧 session_key 都接受，但仍只许停自己的。
+        from backend.emby_server import play_session as _ps
+
+        session = _ps.resolve_session(db, session_key)
+        if session is not None and session.user_id != request_user.id:
+            session = None
         if not session:
             raise HTTPException(status_code=404, detail="播放会话不存在")
         ended = (session.user_id, item_guid_for(db, session.item_id))
@@ -2548,9 +2546,10 @@ def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session =
 async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     def _end_session() -> tuple | None:
         """查会话 / 写结束时间（同步段下放线程池），返回要停的转码定位信息"""
-        session = db.query(em.PlaybackSession).filter(
-            em.PlaybackSession.session_key == session_key
-        ).first()
+        # 阶段 3：一等会话 id 与旧 session_key 都接受（先按 server id 查）。
+        from backend.emby_server import play_session as _ps
+
+        session = _ps.resolve_session(db, session_key)
         if not session:
             return None
         ended = (session.user_id, item_guid_for(db, session.item_id))
