@@ -20,6 +20,8 @@ export interface PlanRowFull {
   points_price: number | null
   duration_days: number
   features: string[] | null
+  /** 订阅分档权益表 {权益键: 值}；null/缺键 = 该项跟随全站默认（键与区间见后端 backend/entitlements.py） */
+  entitlements?: Record<string, number> | null
   is_active: boolean
   is_popular: boolean
   sort_order: number

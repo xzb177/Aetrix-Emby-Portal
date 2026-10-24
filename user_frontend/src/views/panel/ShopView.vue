@@ -166,6 +166,7 @@
             </div>
             <div class="detail" :id="`plan-detail-${plan.id}`">
               <div class="kv"><span>有效期</span><b>{{ plan.duration_days != null ? `${plan.duration_days} 天` : '以购买页为准' }}</b></div>
+              <div class="kv" v-for="(line, i) in entitlementLines(plan)" :key="`ent-${i}`"><span>{{ line }}</span><span></span></div>
               <div class="kv" v-for="(f, i) in plan.features || []" :key="i"><span>{{ f }}</span><span></span></div>
               <div v-if="memberDiscountPct > 0" class="kv"><span>{{ memberLevelName }}折扣</span><b>已享 {{ (100 - memberDiscountPct) / 10 }} 折</b></div>
               <div class="kv"><span>到期后</span><span>自动失效；可在「我的会员」开启能量自动续订</span></div>
@@ -783,6 +784,16 @@ function waxText(plan: SubscriptionPlan): string {
   if (plan.duration_days >= 300) return '年\n照'
   if (plan.duration_days >= 80) return '季\n照'
   return '月\n照'
+}
+/* 权益文案行：由套餐权益表自动生成（模板全站只此一份，与后端
+   backend/entitlements.py 注册表对应）——声明了才出现、数值与权益表
+   逐字一致；未声明任何权益的套餐不生成行，页面与无权益时完全相同 */
+function entitlementLines(plan: SubscriptionPlan): string[] {
+  const ent = plan.entitlements || {}
+  const lines: string[] = []
+  if (ent.media_seek_monthly_limit != null) lines.push(`每月可求片 ${ent.media_seek_monthly_limit} 部`)
+  if (ent.concurrent_streams != null) lines.push(`可同时播放 ${ent.concurrent_streams} 路`)
+  return lines
 }
 /* 执照名：后端配置名原样展示（R28：旧注释"去掉订阅/会员等现实词"与实现不符，已按实现修正，不改行为） */
 function licenseName(plan: SubscriptionPlan): string {

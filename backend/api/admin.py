@@ -1728,6 +1728,10 @@ class PlanUpsertRequest(BaseModel):
     # 套餐一个服一个：留空时归到面板当前服
     realm_id: Optional[int] = None
     points_price: Optional[float] = Field(default=None, ge=0, description="积分价；为空表示不支持积分购买")
+    # 订阅分档权益表 {权益键: 整数值}；键与合法区间以 backend/entitlements.py
+    # 的注册表为准（写路径 validate 校验）。None / 空对象 = 不声明任何权益，
+    # 该套餐用户全部回退现行全站默认，落库存 NULL 不存空对象。
+    entitlements: Optional[dict] = None
 
 
 @admin_router.get("/economy/plans")
@@ -1750,7 +1754,8 @@ def economy_list_plans(
         {
             "id": p.id, "name": p.name, "description": p.description,
             "price": float(p.price), "duration_days": p.duration_days,
-            "features": p.features, "is_active": p.is_active,
+            "features": p.features, "entitlements": p.entitlements,
+            "is_active": p.is_active,
             "is_popular": p.is_popular, "sort_order": p.sort_order,
             "realm_id": p.realm_id,
             "realm_name": (p.realm.name if p.realm else ""),
@@ -1772,6 +1777,14 @@ def economy_create_plan(
     realm_id = request.realm_id or realms.active_realm_id(db)
     if not realms.get_realm(db, realm_id):
         raise HTTPException(status_code=400, detail=f"服不存在: #{realm_id}")
+    # 权益写路径校验只许走判定单口的 validate：未知键 / 非整数 / 越界一律
+    # 400 且不落库（校验在建行之前，坏配置连半行都不许存）
+    from backend import entitlements as _entitlements
+
+    try:
+        plan_entitlements = _entitlements.validate_entitlements(request.entitlements)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     plan = models.SubscriptionPlan(
         name=request.name, description=request.description,
         price=Decimal(str(request.price)), duration_days=request.duration_days,
@@ -1779,18 +1792,19 @@ def economy_create_plan(
         is_popular=request.is_popular, sort_order=request.sort_order,
         realm_id=realm_id,
         points_price=(Decimal(str(request.points_price)) if request.points_price is not None else None),
+        # 全空权益存 NULL 不存空对象（与「未声明」存量口径一致）
+        entitlements=plan_entitlements or None,
     )
     db.add(plan)
     db.commit()
     db.refresh(plan)
     # 订阅分档权益（PR-1）：套餐集合变了，清权益快照缓存（判定单口见
     # backend/entitlements.py；跨进程靠 60 秒 TTL 兜底）
-    from backend import entitlements as _entitlements
-
     _entitlements.invalidate()
     _audit(db, current_admin, "economy_create_plan", "plan", plan.id,
            {"name": plan.name, "price": float(plan.price), "realm_id": realm_id,
-            "points_price": (float(plan.points_price) if plan.points_price is not None else None)})
+            "points_price": (float(plan.points_price) if plan.points_price is not None else None),
+            "entitlements": plan_entitlements or None})
     db.commit()
     return {"success": True, "id": plan.id}
 
@@ -1808,12 +1822,22 @@ def economy_update_plan(
     if not plan:
         raise HTTPException(status_code=404, detail="套餐不存在")
 
+    # 权益校验在改任何字段之前：非法权益 400，套餐保持原样一个字段都不动
+    from backend import entitlements as _entitlements
+
+    try:
+        plan_entitlements = _entitlements.validate_entitlements(request.entitlements)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     plan.name = request.name
     plan.description = request.description
     plan.price = Decimal(str(request.price))
     plan.points_price = Decimal(str(request.points_price)) if request.points_price is not None else None
     plan.duration_days = request.duration_days
     plan.features = request.features
+    # JSON 列必须整对象重新赋值（原地改键不触发脏标记）；全空存 NULL
+    plan.entitlements = plan_entitlements or None
     plan.is_active = request.is_active
     plan.is_popular = request.is_popular
     plan.sort_order = request.sort_order
@@ -1828,11 +1852,10 @@ def economy_update_plan(
 
     # 订阅分档权益（PR-1）：套餐内容变了，清权益快照缓存（权益值走快照，
     # 用户解析缓存存的是 plan_id，不必逐个清用户）
-    from backend import entitlements as _entitlements
-
     _entitlements.invalidate()
 
-    _audit(db, current_admin, "economy_update_plan", "plan", plan.id)
+    _audit(db, current_admin, "economy_update_plan", "plan", plan.id,
+           {"entitlements": plan_entitlements or None})
     db.commit()
     return {"success": True}
 
