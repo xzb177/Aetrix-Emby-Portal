@@ -231,15 +231,15 @@ def test_stream_accel_node_failure_warns(monkeypatch, caplog):
     from backend.emby_server import stream_accel as sa
     from backend.emby_server import stream_nodes as sn
 
-    def _boom(db, stream_url, transcoding_url, base):
+    def _boom(db, stream_url, base):
         raise RuntimeError("db gone")
 
     monkeypatch.setattr(sn, "rewrite_playback_urls", _boom)
     monkeypatch.setattr(sa, "get_effective_domain", lambda db: "")
     with caplog.at_level("WARNING", logger="backend.emby_server.stream_accel"):
         out = sa.rewrite_playback_urls_unified(
-            None, "https://base/x.mp4", "https://base/x.m3u8", "https://base")
-    assert out[2] is None  # 回落：无改写
+            None, "https://base/x.mp4", "https://base")
+    assert out[1] is None  # 回落：无改写（新返回二元组 (url, source)，source 为 None）
     assert any("流节点改写跳过" in r.getMessage() for r in caplog.records)
 
 

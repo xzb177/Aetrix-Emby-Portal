@@ -90,7 +90,6 @@ PANEL_REMOVED_SWITCHES: tuple[tuple[str, str], ...] = (
     ("meta_source_enabled_tvmaze", "META_SOURCE_ENABLED_TVMAZE"),
     ("meta_sources_prefer_chinese", "META_SOURCES_PREFER_CHINESE"),
     ("new_media_notify_enabled", "NEW_MEDIA_NOTIFY_ENABLED"),
-    ("playback_transcode_enabled", "PLAYBACK_TRANSCODE_ENABLED"),
     ("points_audit_enabled", "POINTS_AUDIT_ENABLED"),
     ("points_transfer_enabled", "POINTS_TRANSFER_ENABLED"),
     ("redpacket_refund_enabled", "REDPACKET_REFUND_ENABLED"),

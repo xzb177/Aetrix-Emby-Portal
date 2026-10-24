@@ -28,15 +28,8 @@ from backend.emby_server.scanner import (
 )
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.streaming import (
-    get_transcode,
     serve_file,
     serve_image,
-    start_transcode,
-    stop_all_transcodes,
-    stop_transcodes_for,
-    stop_user_transcodes,
-    transcode_alive,
-    wait_for_file,
 )
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -456,12 +449,9 @@ def stop_session(session_key: str, db: Session = Depends(get_db),
     if session:
         if session.user_id != user.id and not getattr(user, "is_staff", False):
             raise HTTPException(status_code=403, detail="无权操作他人的播放会话")
-        # 转码会话按「用户 + 条目 guid」反查：播放会话键与转码 uuid 不是一回事
-        # （旧写法 stop_transcode(session_key) 永远匹配不上，进程其实没被停）
-        user_id, item_guid = session.user_id, item_guid_for(db, session.item_id)
+        # 转码删除后结束会话不再需要停转码进程（已无转码会话存在）。
         session.ended_at = datetime.now()
         db.commit()
-        stop_transcodes_for(user_id, item_guid)
     return {"success": True}
 
 
@@ -955,7 +945,10 @@ def activity_log(user: models.WebUser = Depends(get_emby_user)):
     return _empty_items()
 
 
-# ---- 转码释放 / 库刷新 ----
+# ---- 转码释放（已删除，保留协议空壳） / 库刷新 ----
+# 转码删除（2026-10-24）：服务端不再有转码会话。Emby 客户端在停止播放
+# 时仍会按协议调用 ActiveEncodings 删除端点；保留 204 空壳只是为了
+# 不让客户端把“停播”误判为失败，这里不再释放任何东西。
 
 @emby_router.delete("/emby/Videos/ActiveEncodings")
 @emby_router.delete("/Videos/ActiveEncodings")
@@ -963,11 +956,7 @@ def activity_log(user: models.WebUser = Depends(get_emby_user)):
 @emby_router.post("/Videos/ActiveEncodings/Delete")
 def delete_active_encodings(request: Request,
                             user: models.WebUser = Depends(get_emby_user)):
-    # 管理员释放全部转码，普通用户只能释放自己的（避免互相踢掉播放）；
-    # 只读审计角色（v2.26.0）不算「管理员」：它只能释放自己的转码
-    is_admin = user.is_staff and admin_roles.can_write(user)
-    count = stop_all_transcodes() if is_admin else stop_user_transcodes(user.id)
-    logger.info("释放转码会话 user=%s count=%s", user.id, count)
+    logger.info("释放转码会话（空壳，转码已删除） user=%s", user.id)
     return Response(status_code=204)
 
 

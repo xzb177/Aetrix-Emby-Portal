@@ -55,12 +55,6 @@ from backend.emby_server.scanner import (
     scan_result_payload,
     scan_runs_payload,
 )
-# 本文件里这几个路由都是 async def，所以必须用异步变体：同步的 stop_transcode 会
-# terminate 子进程、等它退出（最坏 5 秒）、再递归删分片目录，放在事件循环上等于把全站卡住。
-from backend.emby_server.streaming import (
-    stop_all_transcodes_async,
-    stop_transcodes_for_async,
-)
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import mounts as mount_lib
@@ -1269,10 +1263,8 @@ async def stop_my_session(session_key: str,
         db.commit()
         return ended
 
-    ended_user_id, ended_item = await run_in_threadpool(_end_session)
-    # 按「用户 + 条目 guid」反查转码会话：播放会话键（PlaySessionId）与转码会话 id（uuid）
-    # 不是同一个东西，旧实现拿前者去 pop 等于什么都没停到（见 streaming.find_transcodes）。
-    await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
+    await run_in_threadpool(_end_session)
+    # 转码删除后结束会话不再需要停转码进程（已无转码会话存在）。
     return {"success": True}
 
 
@@ -2557,16 +2549,8 @@ async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(r
         db.commit()
         return ended
 
-    ended = await run_in_threadpool(_end_session)
-    if ended:
-        await stop_transcodes_for_async(ended[0], item_guid=ended[1])
+    await run_in_threadpool(_end_session)
     return {"success": True}
-
-
-@admin_emby_router.post("/transcodes/stop-all")
-async def admin_stop_all_transcodes(staff: models.WebUser = Depends(require_staff)):
-    count = await stop_all_transcodes_async()
-    return {"success": True, "stopped": count}
 
 
 # ==================== 存储挂载（已拆出） ====================

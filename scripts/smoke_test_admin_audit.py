@@ -246,10 +246,8 @@ check("动作名区分「改」与「建」",
       (latest() or {}).get("action") == "emby_update_library", str((latest() or {}).get("action")))
 
 r = client.post("/api/admin/emby/transcodes/stop-all", headers=H_ADMIN)
-check("停全站转码 → 200", r.status_code == 200, f"HTTP {r.status_code}")
-check("停转码也留下审计（以前查不到是谁停的）",
-      (latest() or {}).get("action") == "emby_stop_all_transcodes",
-      str((latest() or {}).get("action")))
+check("已删除的停全站转码端点 → 404（转码删除后不再存在）",
+      r.status_code == 404, f"HTTP {r.status_code}")
 
 # ==================== 4. 请求体里的密钥绝不进审计 ====================
 print("\n=== 4. 请求体（Cookie 等密钥）不进审计 ===")
@@ -298,7 +296,8 @@ r = client.post("/api/admin/emby/libraries", headers={"Authorization": "Bearer n
                 json={"name": "坏令牌", "paths": [library_dir]})
 check("坏令牌写 → 401/403", r.status_code in (401, 403), f"HTTP {r.status_code}")
 
-r = client.post("/api/admin/emby/transcodes/stop-all", headers=H_VIEWER)
+r = client.post("/api/admin/emby/libraries", headers=H_VIEWER,
+                json={"name": "只读探针库", "paths": [library_dir]})
 check("只读管理员（viewer）写 → 403", r.status_code == 403, f"HTTP {r.status_code}")
 
 check("以上全部没有写审计（审计里不该出现「匿名管理员」）", len(admin_logs()) == before,

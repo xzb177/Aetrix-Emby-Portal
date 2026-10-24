@@ -61,7 +61,6 @@ const EVIDENCE_KEY_LABEL: Record<string, string> = {
   status: '状态',
   disk_free_percent: '磁盘剩余%',
   disk_free_percent_raw: '磁盘剩余（原始值）',
-  transcode_sessions: '转码中',
   pending_ready: '待探测',
   retrying: '重试中',
   running: '运行中',

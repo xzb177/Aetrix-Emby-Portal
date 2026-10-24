@@ -36,50 +36,45 @@ def memdb():
     session.close()
 
 
-def test_write_policy_short_names_take_effect(memdb):
-    """前端实际送的短名必须写入（r28 实锤：此前 applied={} 静默失效）。
+def test_write_policy_transcode_keys_ignored(memdb):
+    """转码删除后：策略白名单为空，任何转码键写进来都被忽略。
 
-    2026-10-21 A 类摘面板：transcode_enabled 不再经 write_policy 写
-    （改走 env PLAYBACK_TRANSCODE_ENABLED / 存量行），短名里只有
-    max_concurrent_transcodes 落库；转码开关的生效值由存量行决定。"""
+    （r28 实锤的短名写入口径已随转码删除作废：POLICY_KEYS 为空，
+    write_policy 不再接受任何键；payload 只剩 drive_direct_play_enabled。）"""
     applied = pp.write_policy(memdb, {
         "transcode_enabled": False,
         "max_concurrent_transcodes": 5,
     })
     memdb.commit()
-    assert applied == {"playback_max_concurrent_transcodes": "5"}
-    assert pp.transcode_enabled(memdb) is True  # 未写行 → 缺省开
-    assert pp.max_transcodes(memdb) == 5
+    assert applied == {}
 
     payload = pp.policy_payload(memdb)
-    assert payload["transcode_enabled"] is True
-    assert payload["max_concurrent_transcodes"] == 5
-    # 存量行关掉后读口径立即反映
+    assert "transcode_enabled" not in payload
+    assert "max_concurrent_transcodes" not in payload
+    assert payload["drive_direct_play_enabled"] is True
+    # 存量转码行即使还在库里，读口径也不再反映它
     memdb.add(app_models.SystemConfig(
         key="playback_transcode_enabled", value="false"))
     memdb.commit()
     store.invalidate("playback_transcode_enabled")
-    assert pp.transcode_enabled(memdb) is False
-    assert pp.policy_payload(memdb)["transcode_enabled"] is False
+    assert "transcode_enabled" not in pp.policy_payload(memdb)
     # 2026-10-17 瘦身：客户端名单已删除，payload 不再含这两字段
     assert "blocked_agents" not in payload
     assert "allowed_agents" not in payload
 
 
-def test_write_policy_long_keys_still_compatible(memdb):
-    """数值键长名仍生效；开关长名 2026-10-21 起被忽略（摘面板）。"""
+def test_write_policy_long_keys_ignored(memdb):
+    """转码删除后：长键名同样不在白名单里，一律忽略。"""
     applied = pp.write_policy(memdb, {"playback_max_concurrent_transcodes": "7"})
     memdb.commit()
-    assert applied == {"playback_max_concurrent_transcodes": "7"}
-    assert pp.max_transcodes(memdb) == 7
+    assert applied == {}
     applied = pp.write_policy(memdb, {"playback_transcode_enabled": "false"})
     memdb.commit()
     assert applied == {}
-    assert pp.transcode_enabled(memdb) is True
 
 
 def test_write_policy_ignores_unknown_keys(memdb):
-    # transcode_enabled 2026-10-21 起与未知键同等对待：忽略不落库
+    # 转码删除后：转码键与未知键同等对待，忽略不落库
     applied = pp.write_policy(memdb, {"no_such_key": "x", "transcode_enabled": True})
     memdb.commit()
     assert applied == {}

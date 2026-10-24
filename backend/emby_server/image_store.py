@@ -18,7 +18,7 @@
 ``EMBY_IMAGE_PREWARM``    刮削期图片预热（默认**关闭**）：关时刮削只落远程地址、
                           图由后台补下载巡检涓流落盘；``1`` 恢复刮削时预下载全量图
 ``EMBY_IMAGE_BACKFILL``   后台补下载巡检（默认开启）：``0`` 关掉后图只剩取图时按需下载
-``EMBY_IMAGE_DIR``        图片缓存目录（默认 ``<EMBY_TRANSCODE_DIR>/images``）
+``EMBY_IMAGE_DIR``        图片缓存目录（默认 ``<EMBY_CACHE_DIR>/images``）
 ``EMBY_IMAGE_CACHE_MB``   缓存上限，默认 2048 MB
 ``EMBY_IMAGE_GRACE_SECONDS`` 新增文件保护期，默认 3600 秒（刚落盘、还没写库的文件不被清理）
 ``EMBY_IMAGE_TIMEOUT``    单张图下载超时（秒），默认 15
@@ -601,9 +601,10 @@ def backfill_enabled() -> bool:
 
 
 def image_dir() -> str:
+    # 转码删除后图片缓存不再复用转码根目录：默认落独立缓存根。
     root = os.getenv("EMBY_IMAGE_DIR", "").strip()
     if not root:
-        base = os.getenv("EMBY_TRANSCODE_DIR", "/tmp/emby_transcode")
+        base = os.getenv("EMBY_CACHE_DIR", "/tmp/aetrix_cache")
         root = os.path.join(base, "images")
     return root
 

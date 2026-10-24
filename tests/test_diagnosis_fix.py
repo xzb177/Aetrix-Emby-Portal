@@ -109,22 +109,21 @@ def test_whitelist_only_safe_rules():
 
 def test_disk_space_fix_removes_orphans_end_to_end(db, admin, tmp_path,
                                                   monkeypatch):
-    from backend.emby_server import maintenance
+    # 转码删除后：磁盘清理只做过期字幕缓存淘汰。造两个过期字幕文件
+    # 与一个新鲜文件，验证只清过期的、新鲜的不动。
+    import time as _time
 
-    # 造两个遗留转码目录（不在跑、非共享目录）
-    for name in ("old_sess_1", "old_sess_2"):
-        d = tmp_path / name
-        d.mkdir()
-        (d / "seg0.ts").write_bytes(b"x" * 16)
-    (tmp_path / "keep_alive").mkdir()  # 假装是在跑的会话
+    old = _time.time() - 10 * 86400
+    for name in ("old_1.vtt", "old_2.vtt"):
+        f = tmp_path / name
+        f.write_text("WEBVTT\n", encoding="utf-8")
+        import os as _os
+        _os.utime(f, (old, old))
+    (tmp_path / "fresh.vtt").write_text("WEBVTT\n", encoding="utf-8")
 
-    monkeypatch.setattr(maintenance, "_transcode_root",
-                        lambda: str(tmp_path))
-    monkeypatch.setattr(
-        "backend.emby_server.streaming.active_transcode_ids",
-        lambda: {"keep_alive"})
-    monkeypatch.setenv("DIAG_FIX_TRANSCODE_MIN_AGE_SEC", "0")
-    monkeypatch.setenv("DIAG_FIX_SUBTITLE_CACHE", "0")  # 本用例只测转码清理
+    monkeypatch.setattr("backend.emby_server.subtitles.SUB_CACHE_DIR",
+                        str(tmp_path))
+    monkeypatch.setenv("DIAG_FIX_SUBTITLE_CACHE", "1")
 
     out = admin_diagnosis.fix_diagnosis_rule(
         DiagnosisFixRequest(rule_id="disk_space", confirm=True),
@@ -132,10 +131,10 @@ def test_disk_space_fix_removes_orphans_end_to_end(db, admin, tmp_path,
 
     assert out["ok"] is True
     assert out["rule_id"] == "disk_space"
-    assert out["result"]["removed_transcode_dirs"] == 2
-    assert not (tmp_path / "old_sess_1").exists()
-    assert not (tmp_path / "old_sess_2").exists()
-    assert (tmp_path / "keep_alive").exists()  # 在跑的没动
+    assert out["result"]["removed_subtitle_files"] == 2
+    assert not (tmp_path / "old_1.vtt").exists()
+    assert not (tmp_path / "old_2.vtt").exists()
+    assert (tmp_path / "fresh.vtt").exists()  # 新鲜的没动
 
     audit = _last_audit(db, admin)
     assert audit is not None
@@ -182,7 +181,7 @@ def test_fix_failure_returns_structured_error(db, admin, monkeypatch):
     def boom(**kwargs):
         raise RuntimeError("磁盘只读，删不动")
 
-    monkeypatch.setattr(maintenance, "cleanup_transcode_orphans", boom)
+    monkeypatch.setattr(maintenance, "prune_subtitle_cache", boom)
 
     out = admin_diagnosis.fix_diagnosis_rule(
         DiagnosisFixRequest(rule_id="disk_space", confirm=True),
@@ -199,11 +198,11 @@ def test_fix_failure_returns_structured_error(db, admin, monkeypatch):
 # ---------------------------------------------------------------- 8. 阈值可配
 
 def test_fix_thresholds_configurable(monkeypatch):
-    assert diagnosis_fix.get_fix_threshold("transcode_min_age_sec") == 3600.0
-    monkeypatch.setenv("DIAG_FIX_TRANSCODE_MIN_AGE_SEC", "60")
-    assert diagnosis_fix.get_fix_threshold("transcode_min_age_sec") == 60.0
-    monkeypatch.setenv("DIAG_FIX_TRANSCODE_MIN_AGE_SEC", "not-a-number")
-    assert diagnosis_fix.get_fix_threshold("transcode_min_age_sec") == 3600.0
+    assert diagnosis_fix.get_fix_threshold("subtitle_cache") == 1.0
+    monkeypatch.setenv("DIAG_FIX_SUBTITLE_CACHE", "0")
+    assert diagnosis_fix.get_fix_threshold("subtitle_cache") == 0.0
+    monkeypatch.setenv("DIAG_FIX_SUBTITLE_CACHE", "not-a-number")
+    assert diagnosis_fix.get_fix_threshold("subtitle_cache") == 1.0
 
 
 # ---------------------------------------------------------------- 9. workers 修复

@@ -2,7 +2,8 @@
 
 背景：iOS 客户端（Lenna/SenPlayer）请求播放时 URL 带扩展名，
 如 /emby/videos/{id}/stream.mkv。若无此路由，请求会被
-/{transcode_path:path}（HLS catch-all）误接收，导致 ffmpeg 误启动。
+/{transcode_path:path} 通配路由接收（转码删除后该通配只把 stream.*
+转交直连、其余一律 404，不再起 ffmpeg）。
 """
 import asyncio
 import inspect
@@ -38,14 +39,14 @@ def test_all_four_extension_routes_registered():
 
 
 def test_extension_routes_defined_before_catch_all():
-    """FastAPI 按定义顺序匹配：扩展名路由必须在 /{transcode_path:path} 之前。"""
+    """FastAPI 按定义顺序匹配：扩展名路由必须在通配路由之前。"""
     paths = _route_paths()
     for ext in EXPECTED_ROUTES:
         ext_idx = paths.index(ext)
         for catch in CATCH_ALL_ROUTES:
             if catch in paths:
                 assert ext_idx < paths.index(catch), (
-                    f"{ext} 必须在 {catch} 之前定义，否则会被 HLS catch-all 抢走"
+                    f"{ext} 必须在 {catch} 之前定义，否则会被通配路由抢走"
                 )
 
 
@@ -79,27 +80,22 @@ def test_video_stream_ext_delegates_to_video_stream(monkeypatch):
 
 def test_video_hls_stream_dot_prefix_delegates_to_video_stream(monkeypatch):
     """video_hls 的 catch-all 收到 stream.*（如 stream.strm）时，必须转交
-    直连处理，绝不能起转码。
+    直连处理。
 
     回归：SenPlayer 按 Emby 约定拼 /emby/videos/{id}/stream.strm 取流，
     曾掉进 video_hls 被误判为新建转码请求，ffmpeg 起来返 m3u8，
-    客户端等视频字节流等不到，一直转圈。
+    客户端等视频字节流等不到，一直转圈。转码删除后该通配只做委托，
+    其余路径一律 404。
     """
     from unittest.mock import MagicMock
 
     stream_calls = []
-    transcode_calls = []
 
     async def fake_video_stream(item_id, request, user, db):
         stream_calls.append((item_id, request, user, db))
         return "STREAM_RESULT"
 
-    async def fake_prepare(*args, **kwargs):
-        transcode_calls.append(args)
-        return "M3U8"
-
     monkeypatch.setattr(api, "video_stream", fake_video_stream)
-    monkeypatch.setattr(api, "_prepare_new_transcode", fake_prepare)
 
     sentinel_request, sentinel_user = object(), object()
     sentinel_db = MagicMock()
@@ -111,25 +107,13 @@ def test_video_hls_stream_dot_prefix_delegates_to_video_stream(monkeypatch):
         assert result == "STREAM_RESULT", f"{transcode_path} 未转交直连"
 
     assert len(stream_calls) == 3
-    assert transcode_calls == [], "stream.* 绝不能触发 _prepare_new_transcode"
 
 
-def test_video_hls_non_stream_path_still_transcodes(monkeypatch):
-    """守卫不能误伤正常转码路径：master.m3u8 这类仍走转码流程。"""
+def test_video_hls_non_stream_path_now_404(monkeypatch):
+    """转码删除后：master.m3u8 这类已删除的转码路径一律 404。"""
     from unittest.mock import MagicMock
+    from fastapi import HTTPException
     from starlette.requests import Request
-
-    async def fake_prepare(*args, **kwargs):
-        return "M3U8"
-
-    monkeypatch.setattr(api, "_prepare_new_transcode", fake_prepare)
-    # video_hls 在函数体内 from backend.emby_server.async_db import run_db，
-    # 要 patch 源模块才够得着
-    import backend.emby_server.async_db as async_db
-
-    async def fake_run_db(fn, *args, **kwargs):
-        return MagicMock()
-    monkeypatch.setattr(async_db, "run_db", fake_run_db)
 
     scope = {
         "type": "http", "method": "GET",
@@ -137,12 +121,12 @@ def test_video_hls_non_stream_path_still_transcodes(monkeypatch):
         "query_string": b"", "headers": [],
     }
     request = Request(scope)
-    sentinel_db = MagicMock()
-    result = asyncio.run(
-        api.video_hls("item123", "master.m3u8", request,
-                      MagicMock(), sentinel_db)
-    )
-    assert result is not None
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            api.video_hls("item123", "master.m3u8", request,
+                          MagicMock(), MagicMock())
+        )
+    assert excinfo.value.status_code == 404
 
 
 def test_is_segment_path_stream_strm():

@@ -124,12 +124,7 @@ async def lifespan(app: FastAPI):
         logger.info("AETRIX_ROLE=api：API 模式，后台任务由 worker 进程负责，这里跳过启动")
 
     logger.info(f"📊 数据库类型: {DATABASE_TYPE}")
-    # Hardware transcode detection (Linger): one-frame self-test at startup
-    try:
-        from backend.emby_server import hwaccel as _hwaccel
-        _hwaccel.detect_hardware()
-    except Exception as e:
-        logger.warning(f"HW transcode check failed, using software: {e}")
+    # 转码删除（2026-10-24）：启动时不再做硬件转码自测（hwaccel 已删）。
 
     # JWT 密钥是 EM/EA 认证与节点配对的根信任。未配置或过短时必须 fail-closed，
     # 不能让服务用导入期随机值带病上线。
@@ -300,7 +295,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # 关闭时：先收掉子进程与临时文件，避免 ffmpeg 变成孤儿继续吃 CPU/磁盘
+    # 关闭时：跑退出收尾（转码删除后收尾已是空操作，保留调用点做兼容）
     logger.info("👋 Aetrix Portal 正在关闭...")
     try:
         maintenance.shutdown_cleanup()

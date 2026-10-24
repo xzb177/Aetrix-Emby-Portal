@@ -61,9 +61,9 @@ def record_request(line: str = "") -> None:
 def record_bytes(count: int, line: str = "") -> None:
     """记一次出流量（``count<=0`` 忽略）
 
-    口径：**本服务响应体里真正吐出去的字节**。不包含 ffmpeg 转码时的拉流，
-    也不包含 StarletteFileResponse 整文件直发（它不走 body_iterator，
-    宁可少算也不按 Content-Length 虚报）。
+    口径：**本服务响应体里真正吐出去的字节**。不包含
+    StarletteFileResponse 整文件直发（它不走 body_iterator，
+    宁可少算也不按 Content-Length 虚报）。（转码删除后不再有转码拉流。）
     """
     if count <= 0:
         return

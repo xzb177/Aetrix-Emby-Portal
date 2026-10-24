@@ -22,7 +22,6 @@ from backend.emby_server import facets as _facets  # noqa: E402
 from backend.emby_server import image_store as _image_store  # noqa: E402
 from backend.emby_server import maintenance as maint  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
-from backend.emby_server import streaming as _streaming  # noqa: E402
 from backend.emby_server import tmdb_cache as _tmdb_cache  # noqa: E402
 
 
@@ -50,11 +49,9 @@ def _patch_sections(monkeypatch):
         return _fn
 
     # ---- 轻量（EA 保留）----
-    monkeypatch.setattr(_streaming, "reap_stale_transcodes", _rec(light_calls, "reap_stale_transcodes"))
     monkeypatch.setattr(maint, "reap_stale_playback_sessions", _rec(light_calls, "reap_stale_playback_sessions"))
     monkeypatch.setattr(maint, "prune_playback_sessions", _rec(light_calls, "prune_playback_sessions"))
     monkeypatch.setattr(maint, "purge_expired_emby_tokens", _rec(light_calls, "purge_expired_emby_tokens"))
-    monkeypatch.setattr(maint, "cleanup_transcode_orphans", _rec(light_calls, "cleanup_transcode_orphans"))
     monkeypatch.setattr(maint, "prune_subtitle_cache", _rec(light_calls, "prune_subtitle_cache"))
     monkeypatch.setattr(maint, "_idle_gc_if_quiet", _rec(light_calls, "idle_gc", ret=1))
     # ---- 重活（EA 跳过）----

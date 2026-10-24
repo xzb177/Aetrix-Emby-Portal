@@ -90,7 +90,6 @@ def rig(monkeypatch):
     monkeypatch.setattr(mt, "resume_interrupted_scans", _count("resume", 0))
     monkeypatch.setattr(mt, "reap_stale_playback_sessions", lambda *a, **k: 0)
     monkeypatch.setattr(mt, "facets", _FacetsStub())
-    monkeypatch.setattr(mt, "cleanup_transcode_orphans", lambda *a, **k: 0)
     monkeypatch.setattr(mt, "prune_subtitle_cache", lambda *a, **k: 0)
     monkeypatch.setattr(_dbmod, "SessionLocal", lambda: _DummySession())
     import backend.emby_server.tmdb_cache as _tc

@@ -66,7 +66,7 @@ def test_healthy_when_everything_fine(db, monkeypatch):
     monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: 20 if s == "done" else 0)
     monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
     monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
-                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+                        lambda: {"disk_free_percent": 80.0})
     res = health_report.collect(db)
     assert res["level"] == "ok", res
     assert res["status"] == "healthy"
@@ -79,7 +79,7 @@ def test_warns_on_high_probe_failure_rate(db, monkeypatch):
     monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: 20 if s == "done" else 0)
     monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
     monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
-                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+                        lambda: {"disk_free_percent": 80.0})
     res = health_report.collect(db)
     assert res["level"] == "warn", res
     assert any(i["key"] == "probe" for i in res["issues"]), res
@@ -92,7 +92,7 @@ def test_down_on_enqueue_backlog(db, monkeypatch):
     monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: counts.get(s, 0))
     monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
     monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
-                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+                        lambda: {"disk_free_percent": 80.0})
     res = health_report.collect(db)
     assert res["level"] == "down", res
     assert res["status"] == "unhealthy"
@@ -106,7 +106,7 @@ def test_warns_on_library_scan_failure(db, monkeypatch):
     monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {
         "failed": 1, "last_failed": [{"name": "动漫", "error": "timed out"}]})
     monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
-                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+                        lambda: {"disk_free_percent": 80.0})
     res = health_report.collect(db)
     assert res["level"] == "warn", res
     assert any("动漫" in i["message"] for i in res["issues"]), res
@@ -118,7 +118,7 @@ def test_small_sample_does_not_warn(db, monkeypatch):
     monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: 1 if s == "done" else 0)
     monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
     monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
-                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+                        lambda: {"disk_free_percent": 80.0})
     res = health_report.collect(db)
     assert res["level"] == "ok", res
 
@@ -145,7 +145,7 @@ def _big_backlog(monkeypatch):
     monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: counts.get(s, 0))
     monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
     monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
-                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+                        lambda: {"disk_free_percent": 80.0})
 
 
 def test_no_false_down_when_counter_empty(db, monkeypatch):
@@ -308,7 +308,7 @@ def test_collect_no_scan_issue_for_interrupted(db, monkeypatch):
     monkeypatch.setattr(health_report, "_count", lambda db, t, s: 20 if s == "done" else 0)
     monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: 20 if s == "done" else 0)
     monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
-                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+                        lambda: {"disk_free_percent": 80.0})
     _lib_with_scan_status(db, "中断库", "interrupted")
     res = health_report.collect(db)
     assert not any(i["key"] == "scan" for i in res["issues"]), res
