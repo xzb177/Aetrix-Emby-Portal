@@ -23,6 +23,8 @@ _ITEM_INDEXES = {
     "idx_item_added": ["date_added", "item_type"],
     "idx_item_lib_deleted": ["library_id", "deleted_at"],
     "idx_item_drive_file_id": ["drive_file_id"],
+    # 远端身份四件套（#13 PR-1）：PR-3 认亲层按 content_hash 批量查条目
+    "idx_item_content_hash": ["content_hash"],
     # R2（/emby/Items 默认浏览部分索引）：WHERE is_hidden=false AND deleted_at IS NULL
     "idx_item_browse_sort": ["item_type", "sort_name", "id"],
     # P0（2026-10-17）：Recursive=true 无类型过滤时首列用不上，补 (sort_name, id) 部分索引
@@ -44,7 +46,7 @@ def _engine(tmp_path):
             "enrich_priority INTEGER, merged_into_id INTEGER, date_added TEXT, "
             "item_type TEXT, library_id INTEGER, deleted_at TEXT, drive_file_id TEXT, "
             "series_id INTEGER, enrich_claimed_at TEXT, "
-            "sort_name TEXT, is_hidden BOOLEAN)"
+            "sort_name TEXT, is_hidden BOOLEAN, content_hash TEXT)"
         ))
         conn.execute(text("CREATE TABLE emby_people (id INTEGER PRIMARY KEY, name TEXT)"))
     return eng
@@ -59,6 +61,8 @@ def test_spec_table_covers_all_seven_in_restored_order():
     assert names == [
         "idx_item_probe", "idx_item_probe_retry", "idx_item_enrich", "idx_item_added",
         "idx_item_lib_deleted", "idx_item_drive_file_id",
+        # 远端身份四件套（#13 PR-1）：PR-3 认亲层按 content_hash 批量查条目
+        "idx_item_content_hash",
         "idx_item_merged_into_id", "idx_person_item_tmdb",
         # R2：/emby/Items 默认浏览部分索引（spec 表末尾追加）
         "idx_item_browse_sort",
@@ -166,7 +170,7 @@ def test_creates_missing_indexes_and_is_idempotent(tmp_path, monkeypatch, capsys
     # person_tmdb_id 列不存在 → 静默跳过
     assert _indexes(eng, "emby_people") == {}
     first = capsys.readouterr().out
-    assert first.count("已迁移") == 11
+    assert first.count("已迁移") == 12
 
     # 第二次：全部已存在，不再建、不再打日志
     database._ensure_legacy_indexes(tables)

@@ -5982,6 +5982,16 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                 item.original_title = parsed["name"]
                 item.sort_name = make_sort_name(parsed["name"])
                 item.production_year = parsed["year"]
+                # 远端身份四件套（#13 PR-1）：scan 身份落库快照，与 name/
+                # production_year 同点位写（建行与认亲更新共用此分支）。
+                # episode 行存剧名（_series_name_of 产物），季/集号读现行列；
+                # 解析不出标题时留 NULL（= 身份未知），不写空串占位。
+                if item_type == "episode":
+                    _scan_title = _pending.series_name or parsed["name"]
+                else:
+                    _scan_title = parsed["name"]
+                item.scan_title = _scan_title or None
+                item.scan_year = parsed["year"]
                 item.file_path = full_path
                 # v2.52.0: 改名/移动的行，guid 跟着新路径走（保持 guid=path 派生不变式）；
                 # 元数据（TMDB/刮削/播放进度）都在同一行上，全保留。
