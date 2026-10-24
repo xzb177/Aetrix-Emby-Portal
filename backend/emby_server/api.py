@@ -47,6 +47,7 @@ from backend.emby_server import items_list_cache as _list_cache
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_sign
+from backend.emby_server import play_variants
 from backend.emby_server.public_url import client_base_url
 from backend.emby_server.query_params import qlimit, qstart
 from backend.emby_server import soft_delete
@@ -707,8 +708,18 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                     "SeriesName": item.series.name if item.series else None,
                     "IndexNumber": item.season_number})
     if full:
+        # 详情面 MediaSource 的转码申报须与 PlaybackInfo 同源（批二 #11）：
+        # 单口要用户本人（策略 or staff 且个人开关），按 user_id 取行传入；
+        # 详情是单条目路径，多一次主键查询可接受。取不到就传 None（按策略值）。
+        _src_user = None
+        try:
+            _src_user = db.query(models.WebUser).filter(
+                models.WebUser.id == user_id).first()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("详情 MediaSource 用户查询失败 user_id=%s: %s",
+                           user_id, exc)
         dto["MediaSources"] = [_media_source(item, base, api_key, db, auth_qs,
-                                             synthesize=True)]
+                                             synthesize=True, user=_src_user)]
         dto["MediaSourceCount"] = 1
         # 片头片尾标记 → Chapters：复用 MediaSource 里已算好的（_chapters_for_item
         # 同一套口径），不重复跑两次 intro 管道
@@ -1214,7 +1225,12 @@ def _effective_bitrate(item) -> int | None:
 
 
 def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
-                  auth_qs: str = "", synthesize: bool = False) -> dict:
+                  auth_qs: str = "", synthesize: bool = False, user=None) -> dict:
+    # 转码能力申报走单口（批二 #11 play_variants.transcode_allowed）：
+    # 此前这里硬编码 True，PlaybackInfo 面会被 handler 用策略覆写、详情
+    # DTO 面不会——两面申报不一致。db 缺失时无从核策略，按「不宣称」处理。
+    _supports_transcoding = (
+        play_variants.transcode_allowed(db, user) if db is not None else False)
     dto = {
         "Id": item.guid,
         "Name": item.name,
@@ -1232,7 +1248,7 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         "Bitrate": _effective_bitrate(item) or None,
         "SupportsDirectPlay": True,
         "SupportsDirectStream": True,
-        "SupportsTranscoding": True,
+        "SupportsTranscoding": _supports_transcoding,
         "IsRemote": False,
         # 官方 MediaSourceInfo 的非空值类型/集合字段（对照
         # MediaBrowser.Model/Dto/MediaSourceInfo.cs，均在构造器里初始化，序列化恒发）。
@@ -4576,8 +4592,10 @@ async def playback_info(
         (device_profile.get("MaxStreamingBitrate") or 0)
     ) or 120_000_000
     # 2026-10 简化：删除服务端码率钳制，客户端要多少给多少（学 Linger 薄服务器思路）
-    # 转码开关：关掉就按「只能直连」答复，客户端会直接走直连（而不是拿到一个必 403 的地址）
-    allow_transcode = (await run_db(playback_policy.transcode_enabled, db) or bool(user.is_staff)) and bool(getattr(user, "enable_video_transcoding", True))
+    # 转码许可走判定单口（批二 #11 play_variants.transcode_allowed）：
+    # (策略开关 or staff) 且用户个人转码开关开——与详情 DTO 的申报同源，
+    # 不许再在这里另拼一份条件。
+    allow_transcode = await run_db(play_variants.transcode_allowed, db, user)
 
     # PlaybackInfo 短期缓存（5 分钟）：同一部片子短时间内重复请求直接走 Redis，
     # 省掉 _media_source 的 DB 查询。PlaySessionId 和 api_key 每次重新生成，不进缓存。
@@ -4602,7 +4620,7 @@ async def playback_info(
     if cached_source is None:
         _pt.mark("cache_miss")
         # _media_source 读 item.streams（懒加载关系），必须在线程池里，不能直接在事件循环上碰
-        media_source = await run_db(_media_source, item, base, "", db)
+        media_source = await run_db(_media_source, item, base, "", db, user=user)
         _pt.mark("media_source")
         if cache_key and cache_ttl > 0:
             try:
@@ -4671,9 +4689,30 @@ async def playback_info(
     if allow_transcode:
         media_source["TranscodingUrl"] = transcoding_url
 
+    sources = [media_source]
+    if play_variants.variants_enabled():
+        # 变体清单下发（批二 #11）：可用性只看开关 + 条目静态属性 +
+        # Drive 挂载可定位（一次主键查询），不在清单阶段真解析直链
+        #（与 #1205 解析缓存正交）。第一条恒为现行主线变体，只取第一
+        # 条的老客户端无感；可用变体只有一条时保持原单源下发不变样。
+        _drive_mount_ok = False
+        if _dd_fid:
+            _drive_mount_ok = (
+                await run_db(_drive_mount_id_for_item, db, item)) is not None
+        _variants = await run_db(
+            play_variants.list_variants, db, item,
+            allow_transcode=allow_transcode,
+            drive_mount_locatable=_drive_mount_ok)
+        if len(_variants) > 1:
+            sources = play_variants.build_media_sources(
+                media_source, _variants, guid=item.guid,
+                stream_url=stream_url, transcoding_url=transcoding_url,
+                direct_stream_ok=bool(direct),
+                allow_transcode=allow_transcode)
+
     _pt.done()
     return _strip_nulls({
-        "MediaSources": [media_source],
+        "MediaSources": sources,
         # 每次播放会话一个独立票据，客户端据此上报进度
         "PlaySessionId": secrets.token_hex(8),
         "ErrorCode": None,

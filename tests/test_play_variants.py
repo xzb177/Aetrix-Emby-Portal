@@ -1,0 +1,286 @@
+# -*- coding: utf-8 -*-
+"""播放变体清单下发（FMBY 批二 #11 PR-1，backend/emby_server/play_variants.py）。
+
+钉住的口径（定稿 reports/fmby-b2-item11-variants-plan-20261024.md §四/§五）：
+- 开关关（默认）：PlaybackInfo 与改前逐字一致——单源、Id=guid、
+  URL 不带 variant 参数、SupportsTranscoding 由单口现算覆写；
+- 开关开：按条目真实可用变体多源下发，第一条恒为现行主线变体，
+  Id 带 ``:{variant}`` 后缀、URL 带 variant 参数双保险；
+- 变体集合按条目类型正确：Drive 条目（双开+挂载可定位）中继+直链
+  +转码 / 中继关只剩直链+转码；挂载条目中继+转码；本地条目本地+转码；
+- 申报诚实且两面同源：allow_transcode 关时清单无转码变体、每条
+  SupportsTranscoding 为假，且 _media_source（详情 DTO 同函数）
+  同步为假——不许 PlaybackInfo 面与详情面各说各话；
+- 缓存不串用户：同一条目两名用户各自的签名 uid 互不串。
+
+全部离线：DB 用内存 SQLite，可见性/付费墙/探测入队/域名改写/Drive
+挂载定位全部桩掉，开关读数走 monkeypatch（与 test_drive_direct_play
+的 store 桩同口径）。
+"""
+import os
+
+os.environ.setdefault("DATABASE_TYPE", "sqlite")
+os.environ.setdefault("REDIS_ENABLED", "false")
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from starlette.requests import Request
+
+from backend import playback_policy
+from backend.database import Base
+from backend.emby_server import api, play_variants, probe_worker, stream_accel
+from backend.emby_server import models as em
+from backend.emby_server import playback_strategy
+
+FID = "1eXUpWksxfCCrIZUye8lo24JGXyr_2ZQO"
+
+
+@pytest.fixture()
+def db():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+        engine.dispose()
+
+
+def _request():
+    scope = {"type": "http", "method": "GET",
+             "path": "/Items/x/PlaybackInfo",
+             "raw_path": b"/Items/x/PlaybackInfo", "query_string": b"",
+             "headers": [], "scheme": "http", "server": ("testserver", 80),
+             "client": ("testclient", 50000), "root_path": ""}
+    return Request(scope)
+
+
+def _user(uid=101, **kw):
+    base = {"id": uid, "is_staff": False, "enable_video_transcoding": True}
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _item(guid, *, file_path="/data/movie.mkv", drive_file_id="", **kw):
+    item = em.MediaItem()
+    item.guid = guid
+    item.name = kw.pop("name", "测试片")
+    item.file_path = file_path
+    item.drive_file_id = drive_file_id
+    item.item_type = kw.pop("item_type", "movie")
+    item.size = kw.pop("size", 1_000_000_000)
+    item.duration_ticks = kw.pop("duration_ticks", 36_000_000_000)
+    item.bitrate = kw.pop("bitrate", 2_000_000)
+    for k, v in kw.items():
+        setattr(item, k, v)
+    return item
+
+
+def _call_pi(monkeypatch, db, user, item, *, variants_on,
+             transcode=True, dd="true", relay="true", mount_ok=True):
+    monkeypatch.setattr(api, "_require_visible_item",
+                        lambda db_, u_, iid: item)
+    monkeypatch.setattr(api, "ensure_playback_allowed",
+                        lambda db_, u_: None)
+    monkeypatch.setattr(probe_worker, "maybe_enqueue",
+                        lambda db_, it: None)
+    monkeypatch.setattr(
+        stream_accel, "rewrite_playback_urls_unified",
+        lambda db_, s, t, base: (s, t, None))
+    monkeypatch.setattr(api, "_drive_mount_id_for_item",
+                        lambda db_, it: "drive-x" if mount_ok else None)
+    monkeypatch.setattr(play_variants, "_ENABLED", variants_on)
+    monkeypatch.setattr(playback_policy, "transcode_enabled",
+                        lambda db_: transcode)
+    real_get = playback_strategy.store.get_value
+
+    def fake_get(db_, key, default="", **kwargs):
+        if key == playback_strategy.KEY_DRIVE_DIRECT_PLAY:
+            return dd
+        if key == playback_strategy.KEY_DRIVE_RELAY:
+            return relay
+        return real_get(db_, key, default, **kwargs)
+
+    monkeypatch.setattr(playback_strategy.store, "get_value", fake_get)
+    return asyncio.run(api.playback_info(
+        item.guid, _request(), user_id="", user=user, db=db))
+
+
+def _drive_item(guid):
+    return _item(guid, file_path="mount://3/电影/测试片.mkv",
+                 drive_file_id=FID)
+
+
+# ---------------------------------------------------------------------------
+# 开关关：与改前逐字一致（对照组）
+# ---------------------------------------------------------------------------
+
+def test_switch_off_single_source_legacy_shape(db, monkeypatch):
+    item = _drive_item("guid-off-1")
+    user = _user()
+    resp = _call_pi(monkeypatch, db, user, item, variants_on=False)
+    sources = resp["MediaSources"]
+    assert len(sources) == 1
+    src = sources[0]
+    assert src["Id"] == item.guid
+    assert "variant=" not in src["DirectStreamUrl"]
+    assert f"MediaSourceId={item.guid}&" in src["DirectStreamUrl"]
+    # 单口现算覆写：策略开 → 申报可转码且带 TranscodingUrl（与改前同口径）
+    assert src["SupportsTranscoding"] is True
+    assert src["TranscodingUrl"]
+    assert src["SupportsDirectStream"] is True
+
+
+def test_switch_off_cache_hit_same_and_users_isolated(db, monkeypatch):
+    item = _drive_item("guid-off-2")
+    r1 = _call_pi(monkeypatch, db, _user(101), item, variants_on=False)
+    r2 = _call_pi(monkeypatch, db, _user(101), item, variants_on=False)
+    r3 = _call_pi(monkeypatch, db, _user(202), item, variants_on=False)
+    s1 = dict(r1["MediaSources"][0])
+    s2 = dict(r2["MediaSources"][0])
+    assert s1 == s2  # 缓存命中不改基础体与 URL（同用户同签名输入）
+    url3 = r3["MediaSources"][0]["DirectStreamUrl"]
+    assert "uid=202" in url3 and "uid=101" not in url3  # 签名不串用户
+
+
+# ---------------------------------------------------------------------------
+# 开关开：变体集合按条目类型正确、主线第一
+# ---------------------------------------------------------------------------
+
+def test_drive_item_variants_relay_first(db, monkeypatch):
+    item = _drive_item("guid-on-drive")
+    resp = _call_pi(monkeypatch, db, _user(), item, variants_on=True)
+    sources = resp["MediaSources"]
+    assert [s["Id"] for s in sources] == [
+        f"{item.guid}:drive_relay",
+        f"{item.guid}:drive_direct",
+        f"{item.guid}:transcode_hls",
+    ]
+    first = sources[0]
+    assert "variant=drive_relay" in first["DirectStreamUrl"]
+    assert f"MediaSourceId={item.guid}:drive_relay" in first["DirectStreamUrl"]
+    assert first["Name"].endswith("Drive 中继")
+    direct = sources[1]
+    assert direct["IsRemote"] is True
+    assert "variant=drive_direct" in direct["DirectStreamUrl"]
+    trans = sources[2]
+    assert trans["SupportsDirectPlay"] is False
+    assert trans["SupportsTranscoding"] is True
+    assert "DirectStreamUrl" not in trans
+    assert "variant=transcode_hls" in trans["TranscodingUrl"]
+
+
+def test_drive_item_variants_relay_off(db, monkeypatch):
+    item = _drive_item("guid-on-drive-norelay")
+    resp = _call_pi(monkeypatch, db, _user(), item, variants_on=True,
+                    relay="false")
+    ids = [s["Id"] for s in resp["MediaSources"]]
+    assert ids == [f"{item.guid}:drive_direct",
+                   f"{item.guid}:transcode_hls"]
+
+
+def test_drive_item_variants_mount_not_locatable(db, monkeypatch):
+    item = _drive_item("guid-on-drive-nomount")
+    resp = _call_pi(monkeypatch, db, _user(), item, variants_on=True,
+                    mount_ok=False)
+    ids = [s["Id"] for s in resp["MediaSources"]]
+    assert ids == [f"{item.guid}:drive_direct",
+                   f"{item.guid}:transcode_hls"]
+
+
+def test_mount_item_variants(db, monkeypatch):
+    item = _item("guid-on-mount", file_path="mount://7/剧集/a.mkv")
+    resp = _call_pi(monkeypatch, db, _user(), item, variants_on=True)
+    ids = [s["Id"] for s in resp["MediaSources"]]
+    assert ids == [f"{item.guid}:mount_relay",
+                   f"{item.guid}:transcode_hls"]
+
+
+def test_local_item_variants(db, monkeypatch):
+    item = _item("guid-on-local", file_path="/data/movie.mkv")
+    resp = _call_pi(monkeypatch, db, _user(), item, variants_on=True)
+    sources = resp["MediaSources"]
+    assert [s["Id"] for s in sources] == [
+        f"{item.guid}:local_file", f"{item.guid}:transcode_hls"]
+    assert sources[0]["Protocol"] == "File"
+    assert "variant=local_file" in sources[0]["DirectStreamUrl"]
+
+
+# ---------------------------------------------------------------------------
+# allow_transcode 关：无转码变体 + 两面申报同步为假
+# ---------------------------------------------------------------------------
+
+def test_transcode_off_variants_and_detail_face(db, monkeypatch):
+    item = _drive_item("guid-off-transcode")
+    user = _user()
+    resp = _call_pi(monkeypatch, db, user, item, variants_on=True,
+                    transcode=False)
+    sources = resp["MediaSources"]
+    assert [s["Id"] for s in sources] == [
+        f"{item.guid}:drive_relay", f"{item.guid}:drive_direct"]
+    for src in sources:
+        assert src["SupportsTranscoding"] is False
+        assert "TranscodingUrl" not in src
+    # 详情面（_item_dto 嵌的就是 _media_source）同源同值：同步为假
+    detail_src = api._media_source(item, "http://testserver", "", db,
+                                   user=user)
+    assert detail_src["SupportsTranscoding"] is False
+
+
+def test_transcode_single_mouth_staff_and_policy(db, monkeypatch):
+    item = _item("guid-mouth", file_path="/data/m.mkv")
+    monkeypatch.setattr(playback_policy, "transcode_enabled",
+                        lambda db_: False)
+    # 策略关 + 普通用户 + 个人开关开 → 假
+    assert play_variants.transcode_allowed(db, _user()) is False
+    # 策略关 + staff → 真（历史口径：staff 豁免策略）
+    assert play_variants.transcode_allowed(db, _user(is_staff=True)) is True
+    # 策略关 + staff 但个人开关关 → 假
+    assert play_variants.transcode_allowed(
+        db, _user(is_staff=True, enable_video_transcoding=False)) is False
+    # _media_source 与单口同值（详情面不再硬编码 True）
+    src = api._media_source(item, "http://testserver", "", db,
+                            user=_user(is_staff=True))
+    assert src["SupportsTranscoding"] is True
+    src2 = api._media_source(item, "http://testserver", "", db,
+                             user=_user())
+    assert src2["SupportsTranscoding"] is False
+
+
+# ---------------------------------------------------------------------------
+# list_variants / variantize_url 单元口径
+# ---------------------------------------------------------------------------
+
+def test_list_variants_drive_direct_off_falls_back_to_path(db, monkeypatch):
+    real_get = playback_strategy.store.get_value
+
+    def fake_get(db_, key, default="", **kwargs):
+        if key == playback_strategy.KEY_DRIVE_DIRECT_PLAY:
+            return "false"
+        return real_get(db_, key, default, **kwargs)
+
+    monkeypatch.setattr(playback_strategy.store, "get_value", fake_get)
+    mount_item = _drive_item("guid-fallback-mount")
+    names = [v.name for v in play_variants.list_variants(
+        db, mount_item, allow_transcode=False, drive_mount_locatable=True)]
+    assert names == ["mount_relay"]
+
+
+def test_variantize_url():
+    url = ("http://h/emby/Videos/g1/stream?static=true"
+           "&MediaSourceId=g1&uid=1&exp=2&sign=abc")
+    out = play_variants.variantize_url(url, "g1", "drive_relay")
+    assert "MediaSourceId=g1:drive_relay" in out
+    assert out.endswith("&variant=drive_relay")
+    assert "sign=abc" in out  # 签名串原样保留
