@@ -34,6 +34,7 @@ from backend import models as base_models
 from backend.database import SessionLocal
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import mount_sources
 from backend.emby_server import mount_rclone
 from backend.emby_server import mount_drive  # noqa: F401 — 导入即注册 drive 提供者
 from backend.emby_server import scan_queue
@@ -292,7 +293,42 @@ def _parse_interval(raw: str) -> int:
 
 
 def _library_local_paths(library, db: Session) -> list[str]:
-    """获取库的本机可读路径（local 类型挂载 + paths 里的本机目录）"""
+    """获取库的本机可读路径（local 类型挂载 + paths 里的本机目录）
+
+    清单第 2 项：新表有行时按行算（本机行直接取子目录；local 类型挂载
+    行取挂载根 + 子目录——旧分支用的 mount_path/local_path 列在模型里
+    根本不存在，那条路实际是死的，本实现按 mount.path 修通）；
+    新表无行时回落旧列解析（下半段 verbatim，统一解析口径的测试钉住
+    它：split_library_paths + parse_mount_ids 不许各自再写一份）。
+    """
+    rows = mount_sources.new_table_rows(db, library)
+    if rows is not None:
+        paths: list[str] = []
+        row_mount_ids = [row["mount_id"] for row in rows if row["mount_id"] is not None]
+        mounts = {}
+        if row_mount_ids and db is not None:
+            mounts = {m.id: m for m in db.query(em.StorageMount).filter(
+                em.StorageMount.id.in_(row_mount_ids)).all()}
+        for row in rows:
+            if not row.get("is_enabled", True):
+                continue
+            if row["mount_id"] is None:
+                if row["sub_path"] and os.path.isdir(row["sub_path"]):
+                    paths.append(row["sub_path"])
+                continue
+            mount = mounts.get(row["mount_id"])
+            if mount is None or getattr(mount, "mount_type", "") != "local":
+                continue
+            if not getattr(mount, "is_enabled", False):
+                continue
+            root = (getattr(mount, "path", "") or "").strip()
+            if not root:
+                continue
+            sub = (row["sub_path"] or "/")
+            candidate = root if sub == "/" else os.path.join(root, sub.lstrip("/"))
+            if os.path.isdir(candidate):
+                paths.append(candidate)
+        return paths
     paths = []
     # paths 里的本机目录（非 mount:// 开头）——走 mounts 的统一拆法（全角逗号/去空/去重）
     for p in mount_lib.split_library_paths(getattr(library, "paths", "")):
@@ -321,7 +357,16 @@ def _library_mount_sources(library, db: Session) -> list[tuple[int, str]]:
     追新必须覆盖**远程**媒体源。生产实测全部库都是 ``mount://3/MoviePilot/...``
     （rclone RC），只查本机目录的旧实现等于一个库都没看——线程在跑、
     last_check 在更新，却永远发现不了新资源。
+
+    清单第 2 项：新表有行时按行算（挂载根行 sub_path="/" 也算——旧实现
+    只读 paths 里的 mount:// 条目，mount_ids 根挂载一直漏网，本实现
+    补上）；新表无行时回落旧列解析（下半段 verbatim）。
     """
+    rows = mount_sources.new_table_rows(db, library)
+    if rows is not None:
+        return [(row["mount_id"], row["sub_path"])
+                for row in rows
+                if row["mount_id"] is not None and row.get("is_enabled", True)]
     sources: list[tuple[int, str]] = []
     # 与扫描/监听同一个拆法（mounts.split_library_paths），不再自己 split(",")
     for p in mount_lib.split_library_paths(getattr(library, "paths", "")):

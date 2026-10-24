@@ -369,7 +369,7 @@ check("只枚举媒体文件", walked == ["/Local.Movie.2024.1080p.mkv", "/Sub/L
 check("目录浏览列出子项",
       {e.name for e in local_provider.list_dir("/")} == {"Local.Movie.2024.1080p.mkv", "Sub", "notes.txt"},
       str([e.name for e in local_provider.list_dir("/")]))
-target = local_provider.resolve("/Local.Movie.2024.1080p.mkv")
+target = local_provider.resolve_play_target("/Local.Movie.2024.1080p.mkv")
 check("本机挂载解析成本机文件",
       target.kind == "local" and target.value.endswith("Local.Movie.2024.1080p.mkv"))
 check("本机挂载存在性判断",
@@ -424,11 +424,11 @@ check("STRM 内容解析（BOM / 注释 / 空行）",
       mnt.strm_url("\ufeff#c\n\nhttps://a.example.com/x.mkv\n") == "https://a.example.com/x.mkv")
 check("STRM 容器取自直链", mnt.strm_container("https://a.example.com/x.mkv") == "mkv")
 check("STRM 认不出扩展名时退回 strm", mnt.strm_container("https://a.example.com/play?id=1") == "strm")
-strm_target = mnt.build_provider(strm_mount).resolve("/Strm.Movie.2022.1080p.strm")
+strm_target = mnt.build_provider(strm_mount).resolve_play_target("/Strm.Movie.2022.1080p.strm")
 check("STRM 挂载解析成直链",
       strm_target.kind == "url" and strm_target.value.endswith("movie.mkv"), strm_target.value)
 try:
-    mnt.build_provider(strm_mount).resolve("/Broken.strm")
+    mnt.build_provider(strm_mount).resolve_play_target("/Broken.strm")
     check("没有直链的 STRM 报错", False)
 except mnt.MountError as exc:
     check("没有直链的 STRM 报错", "没有可用的直链" in str(exc), str(exc))
@@ -508,7 +508,7 @@ pan_files = sorted(f.rel for f in pan.walk_media())
 check("115 递归枚举媒体（跳过目录与文本文件）",
       pan_files == ["/电影/Alpha.Target.2024.1080p.NF.WEB-DL.mkv", "/电影/Beta.S01E01.1080p.mkv"],
       str(pan_files))
-pan_target = pan.resolve("/电影/Alpha.Target.2024.1080p.NF.WEB-DL.mkv")
+pan_target = pan.resolve_play_target("/电影/Alpha.Target.2024.1080p.NF.WEB-DL.mkv")
 check("115 解析成下载直链",
       pan_target.kind == "url" and pan_target.value.endswith("pc-alpha"), pan_target.value)
 check("115 直链带 UA / Referer / Cookie（仅本机使用）",
@@ -528,7 +528,7 @@ FAKE.auth_fail = False
 
 os.environ.pop("PAN115_COOKIE", None)
 try:
-    mnt.build_provider(_mount("无 Cookie", "115")).resolve("/电影/x.mkv")
+    mnt.build_provider(_mount("无 Cookie", "115")).resolve_play_target("/电影/x.mkv")
     check("未配置 Cookie 时报凭据错误", False)
 except mnt.MountAuthError as exc:
     check("未配置 Cookie 时报凭据错误", "Cookie" in str(exc), str(exc))
@@ -802,9 +802,9 @@ check("rclone RC 递归枚举媒体",
 # rc-serve 用方括号把 remote 名与本机目录区分开（见 mount_rclone._rc_play_url）：
 # 写成 /gdrive:Movies/x 会被当成叫「gdrive:Movies」的本机目录而 404。
 check("rclone RC 播放地址走 rc-serve（remote 名要套方括号）",
-      rc.resolve("/A.Movie.2024.mkv").value
+      rc.resolve_play_target("/A.Movie.2024.mkv").value
       == "http://127.0.0.1:5572/[gdrive:Movies]/A.Movie.2024.mkv",
-      rc.resolve("/A.Movie.2024.mkv").value)
+      rc.resolve_play_target("/A.Movie.2024.mkv").value)
 check(".strm 在 rclone 挂载里也按内容解析",
       rc.resolve_final("/Link.strm").value == FAKE.rclone_strm_body,
       rc.resolve_final("/Link.strm").value)
@@ -821,7 +821,7 @@ auth_mount = _mount("rclone rc 认证", "rclone",
                     config={**RC_CONFIG, "rc_user": "u", "rc_pass": "secret-rc"})
 check("rclone RC 带认证可访问", mnt.test_mount(auth_mount)["ok"], str(mnt.test_mount(auth_mount)))
 check("rclone RC 播放地址带 Basic 认证头",
-      mnt.build_provider(auth_mount).resolve("/A.Movie.2024.mkv")
+      mnt.build_provider(auth_mount).resolve_play_target("/A.Movie.2024.mkv")
       .headers.get("Authorization", "").startswith("Basic "))
 check("rclone RC 认证失败识别为凭据问题",
       mnt.test_mount(rc_mount).get("auth_error") is True)
@@ -836,8 +836,8 @@ check("rclone CLI 递归枚举媒体",
       sorted(f.rel for f in cli.walk_media()) == ["/A.Movie.2024.mkv", "/Link.strm", "/Sub/B.mkv"],
       str(sorted(f.rel for f in cli.walk_media())))
 check("rclone CLI 用 link 取直链",
-      cli.resolve("/A.Movie.2024.mkv").value == "https://cdn.example.com/rclone/linked",
-      cli.resolve("/A.Movie.2024.mkv").value)
+      cli.resolve_play_target("/A.Movie.2024.mkv").value == "https://cdn.example.com/rclone/linked",
+      cli.resolve_play_target("/A.Movie.2024.mkv").value)
 check("rclone CLI 读 .strm 用 cat",
       cli.resolve_final("/Link.strm").value == FAKE.rclone_strm_body,
       cli.resolve_final("/Link.strm").value)
@@ -845,7 +845,7 @@ check("rclone CLI 也能列出 remote",
       mount_rclone.list_remotes(mode="cli", bin_path=FakeRcloneCLI.RCLONE_PATH)
       == ["gdrive:", "onedrive:", "s3:"])
 try:
-    cli.resolve("/nolink.mkv")
+    cli.resolve_play_target("/nolink.mkv")
     check("rclone CLI 后端不支持公开链接时提示改用 rc 模式", False)
 except mnt.MountError as exc:
     check("rclone CLI 后端不支持公开链接时提示改用 rc 模式", "rc 模式" in str(exc), str(exc))

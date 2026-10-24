@@ -119,14 +119,31 @@ def _now() -> float:
 
 # ==================== 目标路径计算（只算本机路径，不写死）====================
 
-def local_paths_for_library(library) -> tuple[str, ...]:
+def local_paths_for_library(library, db=None) -> tuple[str, ...]:
     """这个库要监听哪些**本机目录**
 
     从媒体库配置动态算：``paths`` 里的绝对路径 + 绑定的 local 挂载根。
     远程挂载（``mount://`` / ``115:/`` / ``rclone:``）拿不到可靠的事件源，**不监听**
     ——它们继续由轮询追新兜底。
+
+    清单第 2 项：传了 db 且新表有行时按本机行算（只取 mount_id 为空的行，
+    挂载行一律不监听，与旧口径一致）；否则走旧列解析（db=None 的调用方
+    与新表无行的库都走这条）。
     """
     from backend.emby_server import mounts as mount_lib
+
+    if db is not None:
+        from backend.emby_server import mount_sources
+        rows = mount_sources.new_table_rows(db, library)
+        if rows is not None:
+            new_out: list[str] = []
+            for row in rows:
+                if row["mount_id"] is not None or not row.get("is_enabled", True):
+                    continue
+                sub = row["sub_path"] or ""
+                if sub.startswith("/"):
+                    new_out.append(sub.rstrip("/") or "/")
+            return tuple(dict.fromkeys(new_out))
 
     out: list[str] = []
     for raw in mount_lib.split_library_paths(getattr(library, "paths", "")):
@@ -443,7 +460,7 @@ def _expected_libraries() -> dict:
         for lib in libs:
             if getattr(lib, "fs_watch", True) is False or lib.id in excluded:
                 continue
-            paths = local_paths_for_library(lib)
+            paths = local_paths_for_library(lib, db)
             if not paths:
                 continue            # 纯远程来源的库本来就不监听（与 sync_from_db 同口径）
             wanted[lib.id] = paths
@@ -517,7 +534,7 @@ def _sync_from_db() -> dict:
             excluded = set(change_watcher.resolve_excluded(db))
             libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()
             wanted = {
-                lib.id: local_paths_for_library(lib)
+                lib.id: local_paths_for_library(lib, db)
                 for lib in libs
                 if getattr(lib, "fs_watch", True) is not False and lib.id not in excluded
             }
