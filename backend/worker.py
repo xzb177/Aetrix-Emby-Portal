@@ -514,6 +514,20 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动播放总线快照工人失败（可忽略）: {e}")
 
+        # 媒体库列表投影重建工人（FMBY 列表投影读模型试点）：仅开关开时启动；
+        # 关时不启动，读路径走现行现算，全站行为逐字不变。行落 PG 表，
+        # api/ea 任一进程读到的都是同一份；单次重建失败只记警告、不停循环。
+        try:
+            from backend.emby_server import list_projection
+
+            if list_projection.start_projection_worker(_shutdown_event):
+                started.append("list_projection")
+                logger.info("✅ 媒体库列表投影重建工人已启动")
+            else:
+                logger.info("媒体库列表投影未开启，重建工人不启动")
+        except Exception as e:
+            logger.warning(f"启动媒体库列表投影重建工人失败（可忽略）: {e}")
+
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
             from backend.emby_server import scan_queue
