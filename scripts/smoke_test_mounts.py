@@ -263,8 +263,11 @@ class FakeRcloneCLI:
 
         args = [str(a) for a in command]
         self.calls.append(args)
-        sub = args[1] if len(args) > 1 else ""
-        target = args[2] if len(args) > 2 else ""
+        # 真 rclone 的 flag 可出现在子命令与目标之间（如 lsjson --hash <target>），
+        # 假实现按位置取参会把 --hash 当成目标；先跳过 --flag 再取子命令与目标。
+        rest = [a for a in args[1:] if not a.startswith("--")]
+        sub = rest[0] if rest else ""
+        target = rest[1] if len(rest) > 1 else ""
         if self.mode == "auth_fail":
             return FakeCompleted(1, b"", b"Failed to create file system: Unauthorized: 401 invalid_grant")
         if sub == "listremotes":

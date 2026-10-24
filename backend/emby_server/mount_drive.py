@@ -65,8 +65,11 @@ logger = logging.getLogger(__name__)
 FOLDER_MIME = "application/vnd.google-apps.folder"
 #: files.list 端点（与 drive_changes 同一地址）
 FILES_URL = "https://www.googleapis.com/drive/v3/files"
-#: 列目录取的字段：含 modifiedTime（扫描器文件指纹要用）
-_LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed)"
+#: 列目录取的字段：含 modifiedTime（扫描器文件指纹要用）与
+#: md5Checksum/etag/headRevisionId/version（#13 PR-2：内容校验和与
+#: 修订证据，随列举零额外请求返回，不逐文件发 files.get）。
+_LIST_FIELDS = ("nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed,"
+                "md5Checksum,etag,headRevisionId,version)")
 _PAGE_SIZE = 1000
 #: 单次列举内钉住 SA 时 token 的最小剩余寿命（秒）：超大目录枚举可能耗时久，
 #: 索取长寿 token；万一中途仍 401，由同 SA 刷新续跑（Google 的 pageToken
@@ -416,6 +419,13 @@ class DriveMount(RemoteMount):
                 # 与 rclone 挂载同一条约定，扫描器靠它区分文件身份
                 file_id="" if is_dir else item_id,
                 mod_ts=_parse_mod_ts(item.get("modifiedTime")),
+                # #13 PR-2：Drive 元数据自带的校验和与修订证据（零额外请求）；
+                # 目录与无 md5 的文件（Google 原生文档等）为空串 → 写库落 NULL。
+                content_hash="" if is_dir else str(item.get("md5Checksum") or ""),
+                content_hash_algo="md5" if (not is_dir and item.get("md5Checksum")) else "",
+                etag="" if is_dir else str(item.get("etag") or ""),
+                revision="" if is_dir else str(
+                    item.get("headRevisionId") or item.get("version") or ""),
             ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
@@ -464,10 +474,11 @@ class DriveMount(RemoteMount):
             return (parent + "/" + name) if parent != "/" else ("/" + name)
 
         # ---- 第一遍：按 folder id 并行 BFS，收齐文件 ----
-        # 条目：(rel 文本, file_id, 文件名, 大小, mod_ts, 分支键)
+        # 条目：(rel 文本, file_id, 文件名, 大小, mod_ts, 分支键,
+        #        content_hash, content_hash_algo, etag, revision)
         # 分支键 = 从 root 到父目录的 folder id 元组：真撞时排序用，
         # 保证多次扫描的改名结果确定一致。
-        collected: list[tuple[str, str, str, int, float, tuple]] = []
+        collected: list[tuple[str, str, str, int, float, tuple, str, str, str, str]] = []
         seen_folders: set[str] = {root_fid}
         walk_errors: list[str] = []
         current: list[tuple[str, str, int, tuple]] = [(root_fid, root_rel, 0, (root_fid,))]
@@ -514,17 +525,19 @@ class DriveMount(RemoteMount):
                         collected.append((
                             _child_rel(dpath, entry.name), entry.file_id,
                             entry.name, entry.size, entry.mod_ts, bkey,
+                            entry.content_hash, entry.content_hash_algo,
+                            entry.etag, entry.revision,
                         ))
 
         # ---- 第二遍：按 rel 文本分组，真撞的文件确定性改名 ----
         # 同 (rel, file_id) 重复出现（网盘侧重复条目/分页异常）按重复去重，
         # 与基类 seen_files 同语义。
         by_rel: dict[str, dict[str, tuple]] = _defaultdict(dict)
-        for rel, file_id, name, size, mod_ts, bkey in collected:
-            by_rel[rel].setdefault(file_id, (name, size, mod_ts, bkey))
+        for rel, file_id, name, size, mod_ts, bkey, chash, calgo, etag, rev in collected:
+            by_rel[rel].setdefault(file_id, (name, size, mod_ts, bkey, chash, calgo, etag, rev))
         for rel in sorted(by_rel):
             members = sorted(by_rel[rel].items(), key=lambda kv: (kv[1][3], kv[0]))
-            for idx, (file_id, (name, size, mod_ts, _bkey)) in enumerate(members):
+            for idx, (file_id, (name, size, mod_ts, _bkey, chash, calgo, etag, rev)) in enumerate(members):
                 if idx == 0:
                     out_name, out_rel = name, rel
                 else:
@@ -537,6 +550,8 @@ class DriveMount(RemoteMount):
                     rel=out_rel, name=out_name, size=size,
                     is_strm=mount_lib._is_strm_name(out_name),
                     file_id=file_id, mod_ts=mod_ts,
+                    content_hash=chash, content_hash_algo=calgo,
+                    etag=etag, revision=rev,
                 )
         if walk_errors:
             # 生成器收尾时抛：已产出的文件照常处理，上层按来源不可用处理并

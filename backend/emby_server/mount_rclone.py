@@ -404,6 +404,22 @@ def _rc_list_items(rc_url: str, fs: str, remote: str, *, username: str = "",
     return [i for i in ((body or {}).get("list") or []) if isinstance(i, dict)]
 
 
+def _pick_hash(hashes: dict) -> tuple[str, str]:
+    """从 rclone Hashes 字典挑一个校验和（#13 PR-2）。
+
+    偏好 md5 > sha1 > sha256：md5 与 Drive md5Checksum 同口径，
+    跨源比对时算法一致才有意义；空 dict / 全空值回 ("", "")，
+    调用方按缺位处理（写库落 NULL）。
+    """
+    if not isinstance(hashes, dict):
+        return "", ""
+    for algo in ("md5", "sha1", "sha256"):
+        value = hashes.get(algo) or ""
+        if value:
+            return str(value), algo
+    return "", ""
+
+
 class RcloneMount(RemoteMount):
     """rclone 挂载（rc 模式 / cli 模式）"""
 
@@ -549,7 +565,12 @@ class RcloneMount(RemoteMount):
         return run_rclone(args, bin_path=self.bin_path, config=self.config_path)
 
     def _cli_lsjson(self, rel: str) -> list[dict]:
-        out = self._cli(["lsjson", self._target(rel)])
+        # #13 PR-2：CLI 模式加 --hash，让 lsjson 带回后端已存的校验和
+        # （Drive 后端直接取存量 md5，不下载文件体、不新增请求轮次）。
+        # RC 模式没有可用 opt（PR-1 实测：operations/list 的 hash:true 被
+        # 忽略、hashTypes 直接报错），故 RC 侧一律不取哈希、走 null 分支，
+        # 绝不为 RC 编一个不存在的参数。
+        out = self._cli(["lsjson", "--hash", self._target(rel)])
         try:
             data = json.loads(out.decode("utf-8", "ignore") or "[]")
         except json.JSONDecodeError as exc:
@@ -586,7 +607,11 @@ class RcloneMount(RemoteMount):
              "ModTime": str(i.get("ModTime") or ""),
              # Drive file_id（rclone lsjson 的 ID 字段）：改名/移动不变，
              # 扫描器用它做文件身份。非 Drive 后端为空串。
-             "ID": str(i.get("ID") or "")}
+             "ID": str(i.get("ID") or ""),
+             # #13 PR-2：CLI --hash 带回的后端校验和（{algo: hex}）；
+             # RC 模式的 /operations/list 不带 Hashes，这里恒为空 dict，
+             # 下游按缺位处理（写库落 NULL），不为 RC 编造哈希。
+             "Hashes": dict(i.get("Hashes") or {}) if isinstance(i.get("Hashes"), dict) else {}}
             for i in items
         ]
 
@@ -617,12 +642,16 @@ class RcloneMount(RemoteMount):
             if not name:
                 continue
             child_rel = f"{base_rel}/{name}" if base_rel != "/" else f"/{name}"
+            # #13 PR-2：目录的哈希恒为空；文件的哈希按 md5 > sha1 > sha256
+            # 偏好取（RC 模式无 Hashes → ("", "") → 写库落 NULL）。
+            _hash, _algo = ("", "") if item["IsDir"] else _pick_hash(item.get("Hashes") or {})
             entries.append(MountEntry(
                 name=name, rel=child_rel, is_dir=item["IsDir"],
                 size=item["Size"], entry_id=item["Path"] if item["IsDir"] else "",
                 mod_ts=parse_mod_ts(item.get("ModTime")),
                 # 文件稳定 ID：目录为空串（entry_id 已覆盖目录标识）
                 file_id="" if item["IsDir"] else item.get("ID", ""),
+                content_hash=_hash, content_hash_algo=_algo,
             ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries

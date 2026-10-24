@@ -311,6 +311,18 @@ class MountFile:
     #: ModTime 解析值；扫描器把它混入文件指纹，同尺寸内容替换也能被增量扫描发现
     #: （完美审查 C-P2-3）。
     mod_ts: float = 0.0
+    #: 内容校验和（#13 PR-2：远端身份四件套采集透传）。
+    #: Drive 取 files.list 的 md5Checksum；rclone CLI 取 lsjson --hash 的
+    #: Hashes（偏好 md5 > sha1 > sha256）；拿不到记 ""，写库时落 NULL，
+    #: 绝不猜值、绝不拿尺寸/时间冒充。
+    content_hash: str = ""
+    #: content_hash 的算法名（"md5"/"sha1"/"sha256"）；无哈希时为空串。
+    content_hash_algo: str = ""
+    #: Drive files.list 的 etag（内容变化标识；非 Drive 源为空串）。
+    etag: str = ""
+    #: Drive 修订标识（优先 headRevisionId，无则 version；非 Drive 源为空串）。
+    #: 只进 identity_json 证据快照，不单独成列。
+    revision: str = ""
 
 
 @dataclass
@@ -331,6 +343,14 @@ class MountEntry:
     #: 之前追新为此绕开公共通道直接读 rclone 原始 JSON 的 ModTime，等于自带一条
     #: 无限流的旁路（2026-10 rclone 请求风暴）。带在条目上，公共通道就能直接复用。
     mod_ts: float = 0.0
+    #: 内容校验和与算法（#13 PR-2，同 MountFile.content_hash 语义）：
+    #: 目录为空串；拿不到的源（115 sha1 未实测、rclone RC 无可用 opt）为空串，
+    #: 写库时落 NULL，绝不猜值。
+    content_hash: str = ""
+    content_hash_algo: str = ""
+    #: Drive etag / 修订标识（同 MountFile.etag / revision 语义；非 Drive 源为空串）。
+    etag: str = ""
+    revision: str = ""
 
 
 @dataclass
@@ -1293,6 +1313,11 @@ class Pan115Mount(MountProvider):
                 if os.path.splitext(name)[1].lower() not in REMOTE_MEDIA_EXTS:
                     continue
                 self._pick_cache[child_rel] = str(item.get("pickcode") or "")
+                # #13 PR-2：115 不填 content_hash——115 的 sha1 是否真实返回
+                # 至今未实测（生产无 115 挂载、密封的用户凭据绝不能挪来探测），
+                # 在拿到一条真实 /files 响应定生死前，115 的哈希一律按缺位
+                # （MountFile 默认空串 → 写库落 NULL），绝不拿 pickcode 或
+                # 其他字段冒充哈希；身份靠 fid 层（PR-3 泛化），不影响主线。
                 yield MountFile(rel=child_rel, name=name,
                                 size=int(item.get("size") or 0), is_strm=_is_strm_name(name))
 
@@ -1601,7 +1626,12 @@ class RemoteMount(MountProvider):
                                         file_id=getattr(entry, "file_id", "") or "",
                                         # P2（完美审查 C-P2-3）：把远端 ModTime 透给扫描器，
                                         # 用于文件指纹/目录指纹，同尺寸替换可检出。
-                                        mod_ts=getattr(entry, "mod_ts", 0.0) or 0.0)
+                                        mod_ts=getattr(entry, "mod_ts", 0.0) or 0.0,
+                                        # #13 PR-2：内容校验和与证据槽透传（拿不到的源为空串）。
+                                        content_hash=getattr(entry, "content_hash", "") or "",
+                                        content_hash_algo=getattr(entry, "content_hash_algo", "") or "",
+                                        etag=getattr(entry, "etag", "") or "",
+                                        revision=getattr(entry, "revision", "") or "")
         if walk_errors:
             # 生成器收尾时抛：已产出的文件照常处理，上层 _guarded 会把错误记进
             # failed_roots 并跳过清理阶段，避免误删这些子目录下的条目。

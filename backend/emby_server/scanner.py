@@ -2068,6 +2068,12 @@ class ScanFile:
     #: 远端挂载的最后修改时间（Unix 秒；拿不到记 0.0）——rclone ModTime 解析值，
     #: 混入文件指纹/目录指纹用（完美审查 C-P2-3：同尺寸内容替换的检出依据）。
     remote_mod_ts: float = 0.0
+    #: 内容校验和与算法（#13 PR-2：列举透传，拿不到记 ""；写库时落 NULL）。
+    content_hash: str = ""
+    content_hash_algo: str = ""
+    #: Drive etag / 修订标识（#13 PR-2：只进 identity_json 证据快照，不单独成列）。
+    etag: str = ""
+    revision: str = ""
     provider: Any = None
     local_target: Any = None      # 本机可读来源的播放目标（strm 的直链在这里）
     _target: Any = None
@@ -2210,6 +2216,11 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
                 # v2.55.x A'：本机可读挂载的 .strm，挂载层没给 ID 时从直链解析兜底
                 file_id=getattr(mount_file, "file_id", "") or _drive_file_id_from_url(target.value),
                 source_row_id=getattr(src, "source_row_id", None),
+                # #13 PR-2：本机可读挂载的 MountFile 一般无哈希，默认空串即可。
+                content_hash=getattr(mount_file, "content_hash", "") or "",
+                content_hash_algo=getattr(mount_file, "content_hash_algo", "") or "",
+                etag=getattr(mount_file, "etag", "") or "",
+                revision=getattr(mount_file, "revision", "") or "",
             )
             continue
         container = os.path.splitext(mount_file.name)[1].lstrip(".").lower()
@@ -2223,6 +2234,11 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
             source_row_id=getattr(src, "source_row_id", None),
             # P2（完美审查 C-P2-3）：远端 ModTime 进指纹，同尺寸替换可检出。
             remote_mod_ts=getattr(mount_file, "mod_ts", 0.0) or 0.0,
+            # #13 PR-2：内容校验和与证据槽透传（拿不到的源为空串 → 写库落 NULL）。
+            content_hash=getattr(mount_file, "content_hash", "") or "",
+            content_hash_algo=getattr(mount_file, "content_hash_algo", "") or "",
+            etag=getattr(mount_file, "etag", "") or "",
+            revision=getattr(mount_file, "revision", "") or "",
         )
 
 
@@ -5891,6 +5907,36 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
 
 
 
+def _apply_scan_identity(item, scan_file) -> None:
+    """写库点落内容校验和与证据快照（#13 PR-2，纯写、不改变任何判定）。
+
+    规则（与 drive_file_id 的 ``if _fid:`` 口径一致）：
+    - 本轮列举给了哈希才写列；没给（115 sha1 未实测、rclone RC 无可用
+      opt、本机文件）时**不清除**已有值——缺位 = 身份未知，落 NULL 只
+      发生在新行第一次写（列默认 NULL），绝不拿空串占位、绝不猜值。
+    - identity_json 只组装本轮实际拿到的证据键（present-only，键按
+      字母序）；本轮零证据时不动已有快照（不把旧证据洗成空）。
+    """
+    _hash = getattr(scan_file, "content_hash", "") or ""
+    if _hash:
+        item.content_hash = _hash
+        item.content_hash_algo = getattr(scan_file, "content_hash_algo", "") or ""
+    evidence: dict[str, str] = {}
+    if _hash:
+        evidence["content_hash"] = _hash
+        _algo = getattr(scan_file, "content_hash_algo", "") or ""
+        if _algo:
+            evidence["content_hash_algo"] = _algo
+    _etag = getattr(scan_file, "etag", "") or ""
+    if _etag:
+        evidence["etag"] = _etag
+    _rev = getattr(scan_file, "revision", "") or ""
+    if _rev:
+        evidence["revision"] = _rev
+    if evidence:
+        item.identity_json = json.dumps(evidence, sort_keys=True, ensure_ascii=False)
+
+
 def _scan_library_body(db: Session, library: emby_models.Library,
                        snap: LibrarySnapshot) -> dict:
     """一轮扫描的主体（不含进程内互斥与结果落库，见 scan_library_sync）"""
@@ -6038,6 +6084,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                 _src_row_id = getattr(scan_file, "source_row_id", None)
                 if _src_row_id is not None:
                     item.source_id = _src_row_id
+                # #13 PR-2：内容校验和与证据快照（纯写；scan_title/scan_year 语义不动）。
+                _apply_scan_identity(item, scan_file)
                 item.container = scan_file.container or os.path.splitext(fname)[1].lstrip(".")
                 # 分层扫描：文件指纹落库（下次秒跳的依据）；补全状态标记。
                 # layered=本轮只做 L1 极简入库 → pending，等后台 enrich_worker；
