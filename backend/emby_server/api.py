@@ -39,6 +39,7 @@ from backend.emby_server.async_db import release_db_before_response
 from backend.emby_server import facets
 from backend.emby_server.fastjson import json_route
 from backend.emby_server import image_store
+from backend.emby_server import item_anchor
 from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import items_dedup_cache as _dedup_cache
@@ -4543,7 +4544,24 @@ def _play_target(db: Session, item: em.MediaItem, *, variant=None):
     """
     _evt_t0 = time.perf_counter()
     try:
-        target = mount_lib.resolve_play_target(item.file_path, db, item.library)
+        # 身份锚双读（清单第 8 项）：先按 (source_id, provider_file_id) 定位挂载，
+        # 锚失败时回落现行 mount:// 解析——回落是第二路，行为与今天逐字一致。
+        # 锚解析本身异常（如桩替身缺字段）不计数、不阻断，直接走路径解析，
+        # 真正的 DB 故障由路径解析原样抛出。
+        _anchor_mount = None
+        try:
+            _anchor_mount, _anchor_reason = item_anchor.resolve_anchor(db, item)
+        except Exception:  # noqa: BLE001 — 锚只是第一路，路径解析才是权威
+            _anchor_mount, _anchor_reason = None, None
+        if _anchor_mount is not None:
+            item_anchor.note_anchor_used()
+            target = mount_lib.resolve_play_target(
+                item.file_path, db, item.library, anchor_mount=_anchor_mount)
+        else:
+            if _anchor_reason is not None and mount_lib.is_mount_path(
+                    getattr(item, "file_path", "") or ""):
+                item_anchor.note_fallback(_anchor_reason)
+            target = mount_lib.resolve_play_target(item.file_path, db, item.library)
     except mount_lib.MountAuthError as exc:
         _note_play_start_safe(
             item, method="resolve", variant=variant, result="error",

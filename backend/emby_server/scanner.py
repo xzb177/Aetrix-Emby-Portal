@@ -2039,6 +2039,9 @@ class ScanFile:
     rel: str = ""
     # Drive file_id（改名/移动不变）：扫描器用它识别改名
     file_id: str = ""
+    #: 新表 library_sources 行 id（清单第 8 项身份锚：入库写 item.source_id 用）。
+    #: 旧列回落扫描没有行 id，恒为 None；写盘点只在有行 id 时写锚，绝不清除已有锚。
+    source_row_id: Optional[int] = None
     mtime_ns: Optional[int] = None  # 本机文件=st_mtime_ns；远程挂载无mtime，记None
     #: 远端挂载的最后修改时间（Unix 秒；拿不到记 0.0）——rclone ModTime 解析值，
     #: 混入文件指纹/目录指纹用（完美审查 C-P2-3：同尺寸内容替换的检出依据）。
@@ -2099,7 +2102,8 @@ def _drive_file_id_from_url(url: str) -> str:
         return ""
 
 
-def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
+def _local_dir_files(root: str, failed_roots: list,
+                     source_row_id: Optional[int] = None) -> Iterator[ScanFile]:
     """本机目录：与历史行为一致，直接 os.walk 真实文件"""
     for dirpath, _dirnames, filenames in os.walk(
         root,
@@ -2136,6 +2140,7 @@ def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
                 mtime_ns=_mtime_ns,
                 # v2.55.x A'：纸条直链里的 Drive ID 原地落库（target 已在内存，无新增 IO）
                 file_id=_drive_file_id_from_url(target.value),
+                source_row_id=source_row_id,
             )
 
 
@@ -2182,6 +2187,7 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
                 mount_id=mount_id, rel=rel, provider=provider, local_target=target,
                 # v2.55.x A'：本机可读挂载的 .strm，挂载层没给 ID 时从直链解析兜底
                 file_id=getattr(mount_file, "file_id", "") or _drive_file_id_from_url(target.value),
+                source_row_id=getattr(src, "source_row_id", None),
             )
             continue
         container = os.path.splitext(mount_file.name)[1].lstrip(".").lower()
@@ -2192,6 +2198,7 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
             local_dir=None, dir_rel=dir_rel, size=mount_file.size,
             container=container, mount_id=mount_id, rel=rel, provider=provider,
             file_id=getattr(mount_file, "file_id", "") or "",
+            source_row_id=getattr(src, "source_row_id", None),
             # P2（完美审查 C-P2-3）：远端 ModTime 进指纹，同尺寸替换可检出。
             remote_mod_ts=getattr(mount_file, "mod_ts", 0.0) or 0.0,
         )
@@ -2317,7 +2324,9 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
             if src.kind == "local":
                 yield src.label, _watch_empty_source(
                     src.label, src,
-                    _prefix_filter(_local_dir_files(src.path, failed_roots), prefixes),
+                    _prefix_filter(_local_dir_files(
+                        src.path, failed_roots,
+                        getattr(src, "source_row_id", None)), prefixes),
                     db, library.id, failed_roots, check_empty)
                 continue
 
@@ -5895,6 +5904,14 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                 _fid = getattr(scan_file, "file_id", "") or ""
                 if _fid:
                     item.drive_file_id = _fid
+                    # 身份锚（清单第 8 项）：Drive/rclone 的 file_id 双写 provider_file_id；
+                    # 115/本机没有稳定 file_id，provider_file_id 留空，绝不猜。
+                    item.provider_file_id = _fid
+                # 身份锚 source_id：只在本次扫描带新表行 id 时写（来源换了行 id 就跟到新行）；
+                # 旧列回落扫描没有行 id，不清除已有锚（锚可能仍有效，回落路径会验证）。
+                _src_row_id = getattr(scan_file, "source_row_id", None)
+                if _src_row_id is not None:
+                    item.source_id = _src_row_id
                 item.container = scan_file.container or os.path.splitext(fname)[1].lstrip(".")
                 # 分层扫描：文件指纹落库（下次秒跳的依据）；补全状态标记。
                 # layered=本轮只做 L1 极简入库 → pending，等后台 enrich_worker；

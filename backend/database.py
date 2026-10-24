@@ -998,6 +998,13 @@ def _auto_migrate():
             ("drive_share_ok", "BOOLEAN", "NULL"),
             ("drive_share_checked_at", "DATETIME", "NULL"),
         ]),
+        # 身份锚（清单第 8 项）：emby_items 加 source_id / provider_file_id。
+        # 老库补列后为 NULL（= 尚未锚定，播放走现行 mount:// 解析并计回落）；
+        # 新入库只写扫描时能确定的，行为与升级前一致。
+        ("emby_items", [
+            ("source_id", "INTEGER", "NULL"),
+            ("provider_file_id", "VARCHAR(128)", "NULL"),
+        ]),
         # 缺失宽限（2026-10-24，FMBY 学习批一 #6）：emby_items 加
         # missing_since / missing_count。老库补列后 missing_count=0
         # （= 从未缺失），与升级前行为衔接：下一轮清理起开始累计。

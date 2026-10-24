@@ -230,6 +230,14 @@ class MediaItem(Base):
     # Scanner matches existing items by it: rename/move only updates
     # path, never deletes the record or loses metadata.
     drive_file_id = Column(String(64), index=True)
+    # 身份锚（清单第 8 项，挂载模型第 3 步）：条目自身身份，不再只靠 mount:// 字符串。
+    # source_id 指向 library_sources 行（无外键：源行被管理端删了重插后锚悬空，
+    # 播放回落现行 mount:// 解析，见 item_anchor）；provider_file_id 是供应商侧文件 id
+    # （Drive 即 drive_file_id、rclone 即远端 id（若有），115/本机为空）。
+    # 两列均可空：老库补列后为空；新入库只写扫描时能确定的，不确定的留空绝不猜；
+    # 存量回填是后续批次的事，本 PR 不写回填。
+    source_id = Column(Integer, nullable=True)
+    provider_file_id = Column(String(128), nullable=True)
     # Drive 链接分享（2026-10-19 播放事故治本）：播放 302 是 usercontent 匿名
     # 直链，要求文件有 anyone reader 权限。新文件入库后 drive_share 模块异步
     # 补开；enrich janitor 巡检兜底。NULL=尚未确认，True=已确认，False=待重试。
