@@ -238,6 +238,19 @@ class MediaItem(Base):
     # 存量回填是后续批次的事，本 PR 不写回填。
     source_id = Column(Integer, nullable=True)
     provider_file_id = Column(String(128), nullable=True)
+    # 远端身份四件套（清单第 10 项 #13，PR-1）：扫描期落库的身份证据列。
+    # scan_title/scan_year 只许扫描器写（建行与认亲更新共用写库点），刮削与
+    # 管理端不许碰（与 file_path 同性质：刮削会改 name/production_year，但
+    # scan 列是入库时的解析快照）。episode 行的 scan_title 存剧名
+    # （_series_name_of 产物），季/集号读现行 season_number/episode_number 列。
+    # content_hash/content_hash_algo 由 PR-2 采集透传后落库，本 PR 只建列；
+    # identity_json 为证据快照（Text 存 JSON，与 external_ids 同口径），
+    # 认亲热路径只读列、不读它。NULL = 身份未知，不假装有。
+    scan_title = Column(String(300), nullable=True)
+    scan_year = Column(Integer, nullable=True)
+    content_hash = Column(String(40), nullable=True, index=True)
+    content_hash_algo = Column(String(16), nullable=True)
+    identity_json = Column(Text, nullable=True)
     # Drive 链接分享（2026-10-19 播放事故治本）：播放 302 是 usercontent 匿名
     # 直链，要求文件有 anyone reader 权限。新文件入库后 drive_share 模块异步
     # 补开；enrich janitor 巡检兜底。NULL=尚未确认，True=已确认，False=待重试。

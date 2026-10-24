@@ -1049,6 +1049,15 @@ def _auto_migrate():
         ("emby_play_start_events", [
             ("variant", "VARCHAR(30)", "NULL"),
         ]),
+        # 远端身份四件套（清单第 10 项 #13，PR-1）：emby_items 加 scan 身份列。
+        # 老库补列后为 NULL（= 身份未知），认亲层无键跳过该层，行为与升级前一致。
+        ("emby_items", [
+            ("scan_title", "VARCHAR(300)", "NULL"),
+            ("scan_year", "INTEGER", "NULL"),
+            ("content_hash", "VARCHAR(40)", "NULL"),
+            ("content_hash_algo", "VARCHAR(16)", "NULL"),
+            ("identity_json", "TEXT", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
@@ -1231,6 +1240,9 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     # v2.52.0：改名/移动检测按 drive_file_id 批量查条目，没有索引就是全表扫
     ("emby_items", "idx_item_drive_file_id", "drive_file_id", None,
      "  已迁移: emby_items.idx_item_drive_file_id"),
+    # 远端身份四件套（#13 PR-1）：PR-3 的 content_hash 认亲层按 hash 批量查条目
+    ("emby_items", "idx_item_content_hash", "content_hash", None,
+     "  已迁移: emby_items.idx_item_content_hash"),
     # StrmAssistant 打磨 R2（PR #406）：get_alternate_versions() 按 merged_into_id 查版本，
     # 详情页每次打开都触发；models.py 的 index=True 只对 create_all 新建表生效，
     # 老库升级上来没有索引就是全表扫（40 万行约 0.5-2 秒/次，拖慢播放链路）
