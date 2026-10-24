@@ -1464,6 +1464,31 @@ class VariantAvailability(Base):
     unavailable_since = Column(DateTime, default=None)
     last_checked_at = Column(DateTime, default=None)
     last_success_at = Column(DateTime, default=None)
+class EnrichStageRecord(Base):
+    """刮削两段式段记录（清单第 13 项，FMBY #17）。
+
+    一条条目一行（item_id 唯一）：识别段写 ``identified``、补资料段写
+    ``filled``，状态集中维护、后段覆盖前段。只存绑定与证据，不存资料
+    本体（资料仍在 MediaItem 各列）。
+
+    - provider / external_id：识别段定的身份（tmdb / imdb + 编号）；
+    - confidence：``explicit``（条目自带 / NFO 给的身份）或 ``search``
+      （搜索命中），不编数字分数；
+    - evidence_json：识别当刻的证据快照（来源、详情有无、标题等），
+      审查与回落率对账看的就是它；
+    - 无外键（照 LibrarySource 先例，条目删了由重建清理）；新表由
+      init_db 的 create_all 建出（老库升级同口径）。
+    """
+
+    __tablename__ = "enrich_stage_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, nullable=False, unique=True, index=True)
+    stage = Column(String(20), nullable=False, default="identified")
+    provider = Column(String(20))
+    external_id = Column(String(32))
+    confidence = Column(String(20))
+    evidence_json = Column(Text)
     updated_at = Column(DateTime, default=datetime.now)
 
 

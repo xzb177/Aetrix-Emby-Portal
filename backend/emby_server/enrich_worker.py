@@ -4405,6 +4405,72 @@ def _inherit_parent_info(db, item: Any) -> Optional[dict]:
     return {"series_id": series.id, "tmdb_id": series.tmdb_id}
 
 
+def _enrich_apply_two_stage(db, item: Any, fetched: dict) -> None:
+    """两段写库（清单第 13 项，FMBY #17）：识别提交 → 补资料提交。
+
+    只在任一段开关开时由 _process_item 调用；开关全关时不进本函数，
+    现行 _enrich_apply 逐字不变。
+
+    - 识别段开：先定身份绑定并独立提交（db.commit），补资料失败不回滚
+      身份；识别异常时回滚并回落现行写库（不改变失败语义）。
+    - 补资料段开且已绑定：只填空缺（+ Frodo 缺口），成功后走 done 收尾；
+      补资料异常时回滚并把本条打回 pending（身份已落库，只重试补资料）。
+    - 补资料段开但未绑定：不进补资料段，回落现行写库（审查 / none 终态
+      由现行路径接管，不在此伪造）。
+    - 识别段开、补资料段关：身份落库后本条回 pending，等补资料段认领。
+    """
+    from backend.emby_server import identify_two_stage as ts
+
+    had_tmdb = bool(getattr(item, "tmdb_id", None))
+    bound = bool(getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None))
+    if ts.identify_enabled():
+        try:
+            res = ts.apply_identity(db, item, fetched)
+            if res is not None:
+                bound = True
+            db.commit()  # 识别段独立提交
+        except Exception as exc:  # noqa: BLE001 — 识别段异常不改变失败语义
+            logger.warning("识别段失败，回落现行写库 id=%s: %s", item.id, exc)
+            db.rollback()
+            _enrich_apply(db, item, fetched)
+            return
+    if ts.fill_enabled():
+        if not bound:
+            _enrich_apply(db, item, fetched)
+            return
+        try:
+            ts.apply_fill(db, item, fetched)
+        except Exception as exc:  # noqa: BLE001 — 补资料失败只重试补资料
+            logger.warning("补资料段失败，本条回 pending id=%s: %s", item.id, exc)
+            db.rollback()
+            item.enrich_status = "pending"
+            item.enrich_next_retry_at = datetime.now() + timedelta(
+                seconds=ts.unfilled_retry_sec())
+            item.enrich_claimed_at = None
+            item.enrich_claim_token = None
+            return
+        item.enrich_status = "done"
+        item.enrich_attempts = 0
+        item.enrich_last_error = None
+        item.enrich_next_retry_at = None
+        if not getattr(item, "last_scraped_at", None):
+            item.last_scraped_at = datetime.now()
+        item.enrich_claimed_at = None
+        item.enrich_claim_token = None
+        item.enrich_priority = 0
+        if getattr(item, "item_type", "") == "series" and getattr(
+                item, "tmdb_id", None) and not had_tmdb:
+            fetched["_parent_tmdb_newly_acquired"] = item.id
+        _maybe_queue_probe(db, item)
+        return
+    # 识别段开、补资料段关：身份已落库，本条回 pending 等补资料段认领。
+    item.enrich_status = "pending"
+    item.enrich_next_retry_at = datetime.now() + timedelta(
+        seconds=ts.unfilled_retry_sec())
+    item.enrich_claimed_at = None
+    item.enrich_claim_token = None
+
+
 def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
     """处理一条已抢到的条目：IO 阶段 → 写库阶段。
 
@@ -4467,7 +4533,12 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
             logger.info("补全写库跳过（认领已失效）id=%s", item_id)
             db.rollback()
             return "skip"
-        _enrich_apply(db, fresh, fetched)
+        from backend.emby_server import identify_two_stage as _ts
+
+        if _ts.any_enabled():
+            _enrich_apply_two_stage(db, fresh, fetched)
+        else:
+            _enrich_apply(db, fresh, fetched)
         _st = (fresh.enrich_status or "")
         outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
         db.commit()
