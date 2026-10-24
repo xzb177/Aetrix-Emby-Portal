@@ -65,6 +65,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'library-scope', name: 'LibraryScope', component: () => import('@/views/LibraryScope.vue'), meta: { title: '媒体库可见范围' } },
       // 元数据来源（Phase 6）：条目级的元数据纠偏与补全进度，从「媒体库」页迁到这里
       { path: 'metadata-sources', name: 'MetadataSources', component: () => import('@/views/MetadataSources.vue'), meta: { title: '元数据来源' } },
+      // 识别审查（批二 #15）：低置信识别的人工处置队列，与元数据来源同组
+      { path: 'identify-review', name: 'IdentifyReview', component: () => import('@/views/IdentifyReview.vue'), meta: { title: '识别审查' } },
       // 「存储来源」独立页已于 v2.42.15 撒销：挂载建在「添加服务器」弹窗里（按服务器配置），
       // 目录浏览 / 体检 / 编辑都已搬过去。旧地址跳到服务器页，别人的书签不至于 404。
       { path: 'mounts', redirect: '/servers' },

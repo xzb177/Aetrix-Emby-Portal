@@ -1672,6 +1672,86 @@ export const unlockItemMetadata = (id: number) =>
 export const fetchItemLockStatus = (id: number) =>
   get<ItemLockResult>(`${E}/scrape/items/${id}`)
 
+// ==================== 低置信识别人工审查队列（批二 #15） ====================
+// 自动刮削在 TMDB 真搜过、有候选但无一过置信线时，条目连同当时的候选证据
+// 排进审查队列（后端 emby_identify_review_tasks，开关 IDENTIFY_REVIEW_QUEUE_ENABLED），
+// 管理员在「识别审查」页逐条处置：绑定 / 忽略 / 重跑。后端路由与状态流转
+// 是唯一实现（backend/api/admin_identify_review.py），这里只做调用封装。
+
+/** 审查行状态：pending 待处置；bound / ignored / requeued 是处置结果 */
+export type IdentifyReviewStatus = 'pending' | 'bound' | 'ignored' | 'requeued'
+
+/** 证据快照里的一个候选：识别当刻 TMDB 搜到、但没过置信线的那些 */
+export interface IdentifyReviewCandidate {
+  tmdb_id: number | null
+  title: string
+  original_title: string
+  /** TMDB 的四位年份字符串，可能为空串 */
+  year: string
+  /** 置信档（打分 tier：2 精确 / 1.5 / 1.2 / 1 模糊），被拒候选可能为 null */
+  tier: number | null
+  /** 档内排序分（rank），可能为 null */
+  rank: number | null
+  popularity: number | null
+  poster_path: string | null
+}
+
+/** 入队时的证据快照（只有详情接口带） */
+export interface IdentifyReviewEvidence {
+  query?: string
+  kind?: string
+  searched_year?: number | null
+  captured_at?: string
+  candidates?: IdentifyReviewCandidate[]
+}
+
+/** 审查队列一行（列表与详情同形，详情多 evidence；item_* 是条目当前状态） */
+export interface IdentifyReviewTask {
+  id: number
+  item_id: number
+  /** 入队时的条目名 / 年份快照（条目后来改名也不影响这行说什么） */
+  item_name: string | null
+  item_type: string | null
+  item_year: number | null
+  reason: string
+  status: IdentifyReviewStatus
+  created_at: string | null
+  updated_at: string | null
+  resolved_by: number | null
+  resolved_at: string | null
+  resolved_tmdb_id: string | null
+  item_exists: boolean
+  item_tmdb_id: string | number | null
+  item_enrich_status: string | null
+  item_metadata_source: string | null
+  evidence?: IdentifyReviewEvidence
+}
+
+/** 审查队列分页列表（status 不传 = 全部状态，最新在前） */
+export const fetchIdentifyReviewTasks = (status?: string, page = 1, pageSize = 20) =>
+  get<{ items: IdentifyReviewTask[]; total: number; page: number; page_size: number }>(
+    `${E}/identify-review/tasks`, { page, page_size: pageSize, ...(status ? { status } : {}) })
+
+/** 审查任务详情（含入队时的证据快照：候选与分数） */
+export const fetchIdentifyReviewTask = (taskId: number) =>
+  get<IdentifyReviewTask>(`${E}/identify-review/tasks/${taskId}`)
+
+/** 处置：绑定到选定的 TMDB（后端复用手动绑定的唯一实现 bind_tmdb_id，
+ *  tmdb_id 也支持 tt 开头的 IMDb ID）；重复处置后端返回 409 */
+export const bindIdentifyReviewTask = (taskId: number, tmdbId: string) =>
+  post<{ success: boolean; task: IdentifyReviewTask; bind: TmdbBindResult }>(
+    `${E}/identify-review/tasks/${taskId}/bind`, { tmdb_id: tmdbId })
+
+/** 处置：忽略（条目保持现状，审查行落 ignored 留痕） */
+export const ignoreIdentifyReviewTask = (taskId: number) =>
+  post<{ success: boolean; task: IdentifyReviewTask }>(
+    `${E}/identify-review/tasks/${taskId}/ignore`)
+
+/** 处置：重跑识别（条目重新排入补全队列，审查行落 requeued） */
+export const rerunIdentifyReviewTask = (taskId: number) =>
+  post<{ success: boolean; task: IdentifyReviewTask }>(
+    `${E}/identify-review/tasks/${taskId}/rerun`)
+
 
 /** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
 export interface EnrichStageStat {

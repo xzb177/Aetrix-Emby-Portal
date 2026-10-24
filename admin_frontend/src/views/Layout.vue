@@ -151,6 +151,8 @@ const navGroups: NavGroup[] = [
       { path: '/library-scope', label: '可见范围', icon: Eye },
       // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
       { path: '/metadata-sources', label: '元数据来源', icon: Database },
+      // 识别审查：自动刮削认不准（有候选没过置信线）的条目带证据排队，人工在这里处置
+      { path: '/identify-review', label: '识别审查', icon: ListChecks },
       { path: '/pan115', label: '115 账号', icon: Cloud },
       { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
     ],

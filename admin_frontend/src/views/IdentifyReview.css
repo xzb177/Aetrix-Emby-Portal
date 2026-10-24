@@ -1,0 +1,160 @@
+/* 识别审查页（批二 #15）：类名与口径照同组「元数据来源」页的 MetadataSources.css，
+   前缀 ir-；次级文字用 --au-text-2，只用 aurora.css 既有令牌，不自创变量。 */
+
+.ir-card > .au-section__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ir-hint {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--au-text-2);
+  line-height: 1.8;
+}
+
+.ir-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ir-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ir-skeleton .au-skeleton {
+  height: 14px;
+  border-radius: var(--au-r-sm);
+}
+.ir-skeleton .au-skeleton:nth-child(2) { width: 82%; }
+.ir-skeleton .au-skeleton:nth-child(3) { width: 64%; }
+
+/* 队列行：与未识别工作台的 ms-result 同形 */
+.ir-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ir-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--font-size-xs);
+  line-height: 1.7;
+}
+
+.ir-result-name {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--au-text);
+}
+
+.ir-row-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 详情抽屉 */
+.ir-detail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ir-detail-name {
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  color: var(--au-text);
+}
+
+.ir-detail-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: var(--font-size-xs);
+  color: var(--au-text-2);
+}
+
+.ir-step {
+  margin-top: 16px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--au-primary);
+}
+
+/* 候选证据墙：与手动绑定页的 tmdb-candidate 同形，抽屉里单列 */
+.ir-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.ir-candidate {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-bg-soft);
+}
+
+.ir-poster {
+  flex: 0 0 72px;
+  width: 72px;
+}
+
+.ir-poster img {
+  display: block;
+  width: 72px;
+  height: 108px;
+  object-fit: cover;
+  border-radius: calc(var(--au-r-sm) / 2);
+  background: var(--au-violet-soft);
+}
+
+.ir-poster-empty {
+  width: 72px;
+  height: 108px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: calc(var(--au-r-sm) / 2);
+  background: var(--au-violet-soft);
+  color: var(--au-text-2);
+  font-size: var(--font-size-xs);
+}
+
+.ir-candidate-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ir-candidate-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--au-text);
+}
+
+.ir-candidate-meta {
+  font-size: var(--font-size-xs);
+  color: var(--au-text-2);
+}
+
+.ir-candidate-info .el-button {
+  align-self: flex-start;
+  margin-top: auto;
+}
