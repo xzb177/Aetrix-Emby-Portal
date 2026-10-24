@@ -130,7 +130,15 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
         em.PlaybackSession.session_key == session_key
     ).first()
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
-    new_session = session is None
+    # 阶段 3 一等会话：PlaybackInfo 预建的行（awaiting_first_report）在首次
+    # 上报时仍须走一次 share_guard 判定——行已存在绝不等于判定已通过，
+    # 否则预建会话会悄悄绕过同播/跨城市拦截。旧行本列恒 False，行为不变。
+    precreated = bool(
+        session is not None
+        and getattr(session, "awaiting_first_report", False)
+        and session.ended_at is None
+    )
+    new_session = session is None or precreated
     if session is not None and session.ended_at is not None and not ended:
         # 同一会话键的新一轮播放（客户端复用了旧键 / 确定性键命中了已结束行）：
         # 复活该行并重新走一次判定。否则这次播放既不会被计入并发、也不会被
@@ -161,13 +169,24 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
             verdict = share_guard.note_session(db, user, session_key, ip, commit=False)
             if verdict and verdict.get("blocked"):
                 logger.info("同播拦截：user=%s session=%s", user.id, session_key)
+                if precreated:
+                    # 预建行被拦下：置 ended，不留幻影活会话（旧路径无此行）。
+                    session.ended_at = datetime.now()
+                    session.awaiting_first_report = False
                 db.commit()
                 return None, False
             verdict = share_guard.note_activity(db, user, ip, commit=False)
             if verdict and verdict.get("blocked"):
                 logger.info("跨城市停用后拒绝建会话：user=%s", user.id)
+                if precreated:
+                    session.ended_at = datetime.now()
+                    session.awaiting_first_report = False
                 db.commit()
                 return None, False
+        if precreated:
+            # 判定已通过：清零待首次上报标志（末尾统一提交时落库；本分支
+            # new_session=True 故 material 恒真，不会走节流提前返回）。
+            session.awaiting_first_report = False
         if session is None:
             # 真·新会话：建行；上面复活分支走进来时复用旧行，不另建
             session = em.PlaybackSession(
@@ -214,6 +233,9 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
             return session, False
 
     session.device_name = auth.get("Device") or session.device_name
+    if not getattr(session, "device_id", None):
+        # 阶段 3：上报时补设备稳定标识（预建行只在 PlaybackInfo 能拿到时才填）。
+        session.device_id = (auth.get("DeviceId") or "")[:100] or None
     session.client_name = auth.get("Client") or session.client_name
     session.client_version = auth.get("Version") or session.client_version
     session.remote_addr = request.client.host if request.client else session.remote_addr

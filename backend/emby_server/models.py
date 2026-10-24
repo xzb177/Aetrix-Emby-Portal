@@ -550,6 +550,24 @@ class PlaybackSession(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_key = Column(String(64), unique=True, index=True)
+    # 阶段 3 一等会话（FMBY 播放全换）：服务端在 PlaybackInfo 时签发的一等
+    # 会话 id。开关开时它同时写进 session_key（客户端上报、停播、租约身份
+    # 都按这个键走，旧路径不用改键）；开关关时本列为空、行为与旧版逐字一致。
+    # 老库靠 database 的 ORM 列对账自动补列（可空，老行留空 = 旧会话）。
+    server_session_id = Column(String(64), unique=True, index=True)
+    # PlaybackInfo 时确定的变体（第一条 = 现行主线）；变体切换仍由 #1208
+    # 起播打点按次记录，不靠事后改会话行（客户端不回传变体选择）。
+    variant = Column(String(50))
+    # 设备稳定标识（X-Emby-Authorization DeviceId）：租约归属的推导键。
+    # 流限流的身份口径（api._stream_client_identity）是“设备优先，其次
+    # PlaySessionId，最后用户”；服务端签发会话时身份即 ses:<server_id>，
+    # 客户端回传 PlaySessionId 的流请求租约就归属到这个会话。
+    device_id = Column(String(100))
+    lease_identity = Column(String(110))
+    # 预建会话待首次上报：PlaybackInfo 预建的行在首次 Playing/Progress
+    # 上报前不得跳过 share_guard 判定（见 compat_routes._upsert_session）。
+    # 判定通过后由上报路径清零；开关关时本列恒 False，旧行为不变。
+    awaiting_first_report = Column(Boolean, default=False)
     user_id = Column(Integer, ForeignKey("web_users.id"))
     item_id = Column(Integer, ForeignKey("emby_items.id"))
     device_name = Column(String(100))

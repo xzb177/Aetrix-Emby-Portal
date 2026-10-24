@@ -173,11 +173,10 @@ def stop_session_checked(
     通过 Emby 接口绕道写（踢人下线、顺带停转码），后台那层角色就等于没做。
     停自己的会话不受影响（客户端自己的行为）。
     """
-    session = (
-        db.query(em.PlaybackSession)
-        .filter(em.PlaybackSession.session_key == session_key)
-        .first()
-    )
+    # 阶段 3：一等会话 id 与旧 session_key 都接受（先按 server id 查）。
+    from backend.emby_server import play_session as _ps
+
+    session = _ps.resolve_session(db, session_key)
     if session is None:
         raise HTTPException(status_code=404, detail="播放会话不存在")
     if session.user_id != user.id:

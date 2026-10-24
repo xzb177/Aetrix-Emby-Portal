@@ -185,6 +185,21 @@ def revoke_device_tokens(db: Session, user_id: int, device_id: str) -> int:
     return int(count or 0)
 
 
+def revoke_single_token(db: Session, user_id: int, token_id: int) -> bool:
+    """阶段 3（#22）：单令牌吊销——只吊销指定用户的一行兼容层令牌，
+    不碰该用户其它令牌、不碰门户 JWT 会话。返回是否命中一行。"""
+    from backend.emby_server import models as em
+
+    count = (
+        db.query(em.EmbyApiToken)
+        .filter(em.EmbyApiToken.id == token_id,
+                em.EmbyApiToken.user_id == user_id)
+        .update({"is_revoked": True}, synchronize_session=False)
+    )
+    db.commit()
+    return bool(count)
+
+
 def remove_device(db: Session, user_id: int, device_id: str, revoke_tokens: bool = True) -> bool:
     """移除设备；默认同时吊销该设备已签发的 Emby 令牌（即踢下线）"""
     from backend.emby_server import models as em
