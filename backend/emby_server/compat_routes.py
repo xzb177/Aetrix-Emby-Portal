@@ -59,6 +59,7 @@ from backend.emby_server.api import (
     _query_result,
     _require_visible_item,
     _run_time_ticks,
+    _stream_client_identity,
     _user_data_dto,
     user_views,
 )
@@ -317,6 +318,18 @@ def _record_stopped(request: Request, user: models.WebUser, db: Session, body: d
     umd = _get_or_create_umd(db, user, item)
     _apply_play_progress(umd, pos, finished)
     db.commit()
+    # 批一 #3：尽力提前释放「挂载+路径前缀」播放路数租约（stream_limits）。
+    # 只是提前量：客户端不发 Stopped 也没关系，租约靠 TTL 到期收敛；
+    # release 本身永不抛，这里再套一层保险，不许影响 Stopped 主流程。
+    try:
+        from backend.emby_server import stream_limits
+
+        stream_limits.release(
+            db, _stream_client_identity(request, user),
+            str(body.get("ItemId") or ""),
+            getattr(item, "file_path", "") or "")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @emby_router.post("/emby/Sessions/Playing")

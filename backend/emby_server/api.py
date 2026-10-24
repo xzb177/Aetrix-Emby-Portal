@@ -4268,6 +4268,22 @@ class _DriveFileUnavailable(Exception):
     """files.get 非 404 失败（超时/5xx/凭据问题）→ 上层转 HTTP 503"""
 
 
+def _enforce_stream_limit(db: Session, request, user, item: em.MediaItem,
+                          item_id: str) -> None:
+    """按「挂载+路径前缀」限同时播放路数（FMBY 批一 #3，stream_limits）。
+
+    无策略命中时零开销放行；超限抛 429 + 人话原因，不许静默失败。
+    计数在 Redis 里跨进程一致，租约式占位（细节见 stream_limits 模块）。
+    """
+    from backend.emby_server import stream_limits
+
+    reason = stream_limits.acquire(
+        db, _stream_client_identity(request, user), str(item_id or ""),
+        getattr(item, "file_path", "") or "")
+    if reason is not None:
+        raise HTTPException(status_code=429, detail=reason)
+
+
 def _drive_mount_id_for_item(db: Session, item: em.MediaItem) -> Optional[str]:
     """drive 直链快路径用的 drive_id；其他情况返回 None（调用方回落原路径）。
 
@@ -4632,6 +4648,10 @@ async def video_stream(
     # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）
     await run_db(play_sign.check_referer, request, db)
     _pt.mark("auth_referer")
+    # 按挂载+路径前缀限同时播放路数（FMBY 批一 #3）：四分支共用此一处闸门，
+    # 起播占租约、超限 429；无策略时零行为变化。
+    await run_db(_enforce_stream_limit, db, request, user, item, item_id)
+    _pt.mark("auth_stream_limit")
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有 drive_file_id）
     # 且 drive_direct_play_enabled 开关开启时，直接 302 到谷歌 usercontent
