@@ -45,6 +45,7 @@ from backend.emby_server.mounts import (
     MountEntry,
     MountError,
     PlayTarget,
+    ProviderCapabilities,
     RemoteMount,
     cached_listing,
     parse_mod_ts,
@@ -438,6 +439,19 @@ class RcloneMount(RemoteMount):
         self.healed_from = ""
 
     # ---- 目标路径 ----
+
+    def capabilities(self) -> ProviderCapabilities:
+        # rclone（rc 与 cli 同一声明）：列举 / 换链 / 文本旁挂是真能力；
+        # 按段读在 open_range 语义下也是真能力——rc-serve 直链与 cli
+        # 公开直链都走 Range GET，上游回 200 时 open_range 本地切片兜底，
+        # 正确性有保证。cli 模式的残留代价只是性能：上游无视 Range 时
+        # 会整段拉取再切片，运行时 Range 验证（验 206、不过降级告警）
+        # 是后续项，不在本阶段假装已做；凭据是静态 conf / Basic，
+        # 没有刷新路径。
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=False,
+        )
 
     def _require_fs(self) -> str:
         if not self.fs:

@@ -52,6 +52,7 @@ from backend.emby_server.mounts import (
     MountEntry,
     MountError,
     PlayTarget,
+    ProviderCapabilities,
     RemoteMount,
     cached_listing,
 )
@@ -133,6 +134,25 @@ class DriveMount(RemoteMount):
         self._fid_cache: dict[str, str] = {"/": self.root_id}
 
     # ---- 凭据与列举 ----
+
+    def refresh_credentials(self) -> bool:
+        """Drive 凭据刷新：走 _token(force_refresh=True)，即 drive_changes
+        唯一入口（共享盘再轮换一次 / 个人盘 OAuth 刷新）。成功返回 True，
+        失败抛 MountAuthError（_token 的翻译口径）。"""
+        self._token(force_refresh=True)
+        return True
+
+    def capabilities(self) -> ProviderCapabilities:
+        # Drive：列举 / 按段读（usercontent 直链 + Bearer Range，探测现行
+        # 就是这么用的）/ 文本旁挂 / 换链全是真能力；凭据可刷新——
+        # _token(force_refresh=True) 走 drive_changes 唯一入口。
+        # 注意：正常播放主线不走本提供者的 resolve（带 drive_file_id 的
+        # 条目在 api 层直接 302），能力声明说的是提供者本身的能力，
+        # 不是播放主线的路由选择，两者不要混淆。
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=True,
+        )
 
     def _token(self, force_refresh: bool = False) -> str:
         """按盘取凭据（共享盘 SA 轮换 / 个人盘 OAuth），取不到按凭据错误报"""

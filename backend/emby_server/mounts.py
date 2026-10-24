@@ -758,6 +758,54 @@ def list_dir_uncached(provider, rel: str = "/") -> list:
     return _call_remote(provider, impl, rel)
 
 
+@dataclass
+class ProviderCapabilities:
+    """提供者五能力位声明（FMBY 批三 #23，魂 4 能力声明式扩展的地基）。
+
+    - ``can_list``：能列目录 / 遍历媒体（list_dir / walk_media 可用）。
+    - ``can_random_read``：能按段取字节。语义是 open_range 能向调用方
+      交出正确的 [start, end) 字节：本机 seek 直读，或远程 Range GET；
+      上游回 200（无视 Range）时 open_range 在本地切片兜底，正确性仍
+      有保证，只是多拉了整段字节（性能代价，不是正确性缺口）。
+    - ``can_read_sidecar``：能读文本旁挂（NFO / 字幕 / .strm 内容）。
+      注意粒度：本位只管文本旁挂；图片旁挂走 display-asset 语义
+      （open_range 取字节），不由本位宣称。
+    - ``can_generate_play_target``：能换链（resolve_play_target 可用）。
+    - ``can_refresh_credentials``：凭据可刷新（refresh_credentials 可用
+      且有真实刷新路径；静态凭据 / 无凭据的提供者声明 False）。
+    """
+
+    can_list: bool = False
+    can_random_read: bool = False
+    can_read_sidecar: bool = False
+    can_generate_play_target: bool = False
+    can_refresh_credentials: bool = False
+
+    def as_dict(self) -> dict:
+        return {
+            "can_list": self.can_list,
+            "can_random_read": self.can_random_read,
+            "can_read_sidecar": self.can_read_sidecar,
+            "can_generate_play_target": self.can_generate_play_target,
+            "can_refresh_credentials": self.can_refresh_credentials,
+        }
+
+
+def read_sidecar_text_from(provider, rel: str) -> str:
+    """旁挂文本读取的过渡口：优先走提供者的 ``read_sidecar_text`` 新口；
+    只实现旧 ``read_text`` 的 duck-type 提供者（扫描器历史上的假提供者
+    与第三方提供者都属此类）回落到 ``read_text``。
+
+    扫描器对 provider 一直是 duck-type 调用（list_dir / read_text 都不
+    要求继承 MountProvider），直接改口会静默打断这类提供者，故过渡口
+    必须保留回落；MountProvider 子类永远走新口。
+    """
+    read = getattr(provider, "read_sidecar_text", None)
+    if callable(read):
+        return read(rel)
+    return provider.read_text(rel)
+
+
 class MountProvider:
     """挂载提供者基类"""
 
@@ -771,14 +819,22 @@ class MountProvider:
         self.config = parse_config(mount)
 
     # ---- 能力 ----
+    # FMBY 批三 #23（阶段 2 骨架）：五能力位声明。语义是「保证」不是
+    # 「尽力」——声明 True 的能力，上层可以无条件编排；不能保证的声明
+    # False，哪怕现行某条路碰巧能走通。声明只描述能力，不改变任何分支
+    # 行为；上层按能力门控是后续阶段的事，本阶段不加任何门控。
+    # 旧 capabilities() 曾返回 {"browse", "local"} 且在 af2769a2 上全仓
+    # 零调用方（生产与测试均无调用），属于死代码，本次直接替换为五能力位
+    # 结构，不保留旧 dict 形态。
 
     @property
     def local_root(self) -> Optional[str]:
         """本机可读时的根目录（远程挂载返回 None）"""
         return None
 
-    def capabilities(self) -> dict:
-        return {"browse": True, "local": self.local_root is not None}
+    def capabilities(self) -> "ProviderCapabilities":
+        """本提供者的能力声明；未知提供者默认全 False（保守口径）。"""
+        return ProviderCapabilities()
 
     # ---- 接口 ----
 
@@ -801,16 +857,76 @@ class MountProvider:
     def read_text(self, rel: str) -> str:  # pragma: no cover - 由子类实现
         raise NotImplementedError
 
+    # ---- 协议分离（FMBY 批三 #23 阶段 2 之二步）----
+    # 旧 resolve 一个函数混了四件事：定位 / 取凭据 / 铸链 / 读旁挂。
+    # 拆开后四口各管一件事，上层按能力声明编排时不再靠类型特例猜：
+    # - resolve_play_target：换链，只回 PlayTarget，不读文件内容；
+    # - open_range：搬字节，只按 Range 取段，不换链给客户端；
+    # - read_sidecar_text：文本旁挂（NFO / 字幕 / .strm 内容）；
+    # - refresh_credentials：凭据刷新，单独一口。
+    # 兼容：resolve() 仍保留（既有子类实现换链的位置，也是旧调用方
+    # 的入口）；read_text() 仍保留为旁挂文本的旧名。resolve_final 的
+    # 语义逐字不变，只是 .strm 那条路现在显式走旁挂口，不再藏在换链里。
+
+    def resolve_play_target(self, rel: str) -> PlayTarget:
+        """换链口：返回文件的播放链（PlayTarget），不读文件内容。
+
+        .strm 语义不在这里：.strm 要内容解析走 ``resolve_final``。
+        既有子类实现换链的位置是 ``resolve()``，本口默认委托给它；
+        新提供者可直接覆写本口（此时旧 ``resolve()`` 调用方仍走基类
+        实现，不会静默拿到新口的行为——新口与旧口不要各写一份实现）。
+        """
+        return self.resolve(rel)
+
+    def read_sidecar_text(self, rel: str) -> str:
+        """文本旁挂口（NFO / 字幕 / .strm 内容）。
+
+        默认走既有 ``read_text``，覆写了 ``read_text`` 的子类行为原样
+        保留；新调用方一律用本口，能力门控（后续阶段）只认
+        ``can_read_sidecar``。图片旁挂不走本口，走 ``open_range``
+        的 display-asset 语义（按段取字节）。
+        """
+        return self.read_text(rel)
+
+    def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
+        """按段取字节口：返回文件 [start, end) 的字节（end 为 None 读到尾）。
+
+        本机挂载：seek 直读。远程挂载：子类覆写（换链 + Range GET）。
+        注意：本口读的是文件本身；.strm 文件读到的是 .strm 文本，
+        不是它指向的目标——目标解析是 ``resolve_final`` 的事。
+        """
+        if start < 0 or (end is not None and end <= start):
+            raise MountError(f"无效的取段范围: start={start} end={end}")
+        root = self.local_root
+        if root is not None:
+            try:
+                path = safe_local_path(root, (rel or "/").lstrip("/"))
+            except ValueError as exc:
+                raise MountError(str(exc)) from exc
+            try:
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    return f.read() if end is None else f.read(end - start)
+            except OSError as exc:
+                raise MountError(f"按段读取失败: {rel} ({exc})") from exc
+        raise MountError("该提供者不支持按段取字节")
+
+    def refresh_credentials(self) -> bool:
+        """凭据刷新口：有真实刷新路径返回 True（失败抛 MountAuthError），
+        无刷新路径返回 False（不是错误，调用方据此不重试刷新）。"""
+        return False
+
     def resolve_final(self, rel: str) -> PlayTarget:
         """播放真正使用的解析入口：.strm 先取文件内容，再当直链播
 
         STRM 在**任何**挂载里都按内容解析（本机 / 115 / WebDAV / AList / 云盘），
-        否则客户端会收到一个文本文件。为此不得不看文件内容时才走 ``read_text``，
-        避免与 ``resolve``（只拿文件本身的地址）互相递归。
+        否则客户端会收到一个文本文件。为此不得不看文件内容时才走
+        ``read_sidecar_text``（旁挂口），避免与换链口互相递归。
+        非 .strm 直接走换链口。
         """
         if _is_strm_name(rel):
-            return _strm_play_target(self.read_text(rel), rel)
-        return self.resolve(rel)
+            return _strm_play_target(self.read_sidecar_text(rel), rel)
+        return self.resolve_play_target(rel)
 
     # ---- 解析结果缓存的凭据拆分（FMBY 批一 #1）----
     # ``resolve_play_target`` 会把解析结果按 (挂载, 类型, 配置指纹, rel) 缓存
@@ -892,6 +1008,14 @@ class LocalMount(MountProvider):
     @property
     def local_root(self) -> Optional[str]:
         return self.path or None
+
+    def capabilities(self) -> ProviderCapabilities:
+        # 本机目录：列举 / 按段读（seek）/ 文本旁挂 / 换链（本机路径）
+        # 全是真能力；无凭据可刷新。
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=False,
+        )
 
     def _require_path(self) -> str:
         if not self.path:
@@ -1015,6 +1139,15 @@ class Pan115Mount(MountProvider):
         # rel → cid / pickcode 缓存（只在本次提供者实例内，不跨请求）
         self._cid_cache: dict[str, str] = {"": self.root_cid, "/": self.root_cid}
         self._pick_cache: dict[str, str] = {}
+
+    def capabilities(self) -> ProviderCapabilities:
+        # 115：列举 / 按段读（下载直链 Range，见 open_range）/ 文本旁挂 /
+        # 换链全是真能力；Cookie 是静态凭据、过期只报 MountAuthError，
+        # 没有刷新路径——这是全仓唯一确定的否定声明。
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=False,
+        )
 
     # ---- Cookie ----
     def _cookie(self) -> str:
@@ -1199,6 +1332,28 @@ class Pan115Mount(MountProvider):
         if resp.status_code >= 400:
             raise MountError(f"读取 115 文件失败: HTTP {resp.status_code}")
         return resp.content.decode("utf-8", errors="ignore")
+
+    def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
+        """115 按段取字节：换链 + Range GET（与 RemoteMount 同款切片兜底，
+        复用既有远程 IO 名额；115 不继承 RemoteMount，故单写一份）。"""
+        if start < 0 or (end is not None and end <= start):
+            raise MountError(f"无效的取段范围: start={start} end={end}")
+        target = self.resolve_play_target(rel)
+        range_header = (
+            f"bytes={start}-" if end is None else f"bytes={start}-{end - 1}"
+        )
+        headers = dict(target.headers or {})
+        headers["Range"] = range_header
+        client = _shared_http_client("pan115")
+        with remote_io_slot():
+            resp = client.get(target.value, headers=headers)
+        if resp.status_code >= 400:
+            raise MountError(
+                f"按段读取 115 文件失败: HTTP {resp.status_code}")
+        body = resp.content or b""
+        if resp.status_code == 206:
+            return body
+        return body[start:end] if end is not None else body[start:]
 
 
 # 模块级共享 HTTP 客户端池：按 (base, timeout) 复用连接，避免扫描时
@@ -1424,6 +1579,33 @@ class RemoteMount(MountProvider):
         target = self.resolve(rel)
         resp = self._request("GET", target.value, headers=target.headers)
         return resp.content.decode("utf-8", errors="ignore")
+
+    def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
+        """远程按段取字节：换链 + Range GET，复用既有远程 IO 名额。
+
+        上游回 206 直接返回；上游回 200（无视 Range）时在本地按段切片
+        兜底——调用方拿到的字节一定是 [start, end)，正确性有保证，
+        代价是多拉了整段字节。网络请求只包在 remote_io_slot 里，
+        不另起第二套限流。
+        """
+        if start < 0 or (end is not None and end <= start):
+            raise MountError(f"无效的取段范围: start={start} end={end}")
+        target = self.resolve_play_target(rel)
+        range_header = (
+            f"bytes={start}-" if end is None else f"bytes={start}-{end - 1}"
+        )
+        headers = dict(target.headers or {})
+        headers["Range"] = range_header
+        with remote_io_slot():
+            resp = self._request("GET", target.value, headers=headers)
+        if resp.status_code >= 400:
+            raise MountError(
+                f"按段读取失败: {rel} (HTTP {resp.status_code})")
+        body = resp.content or b""
+        if resp.status_code == 206:
+            return body
+        # 200 或其他 2xx：上游无视 Range，本地切片兜底。
+        return body[start:end] if end is not None else body[start:]
 
 
 _PROVIDERS = {
