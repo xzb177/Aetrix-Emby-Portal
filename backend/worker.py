@@ -244,6 +244,38 @@ def _start_heartbeat_thread(redis_client) -> threading.Thread:
     return t
 
 
+_playback_bus_snapshot_thread: threading.Thread | None = None
+
+
+def start_playback_bus_snapshot(stop_event=None) -> bool:
+    """播放实时总线快照工人（FMBY #24 接线）。
+
+    仅在 PLAYBACK_BUS_ENABLED=1 时启动一根 daemon 线程跑
+    run_snapshot_loop；关时返回 False、不启动、不写快照，全站行为
+    逐字不变。幂等：已有存活线程时直接返回 True，不重复启动。
+    stop_event 供测试与优雅关闭；默认用 worker 的 _shutdown_event。
+    """
+    global _playback_bus_snapshot_thread
+    from backend.emby_server import playback_bus
+
+    if not playback_bus.bus_enabled():
+        return False
+    alive = _playback_bus_snapshot_thread
+    if alive is not None and alive.is_alive():
+        return True
+    from backend.database import SessionLocal
+
+    t = threading.Thread(
+        target=playback_bus.run_snapshot_loop,
+        args=(SessionLocal,),
+        kwargs={"stop_event": stop_event if stop_event is not None else _shutdown_event},
+        daemon=True, name="playback-bus-snapshot",
+    )
+    t.start()
+    _playback_bus_snapshot_thread = t
+    return True
+
+
 def main() -> int:
     """Worker 主入口"""
     logger.info("🚀 Aetrix Worker 正在启动...")
@@ -469,6 +501,18 @@ def main() -> int:
                 logger.info("本机目录实时监听未启用，已降级为定时扫描")
         except Exception as e:
             logger.warning(f"启动目录监听失败（已降级为定时扫描）: {e}")
+
+        # 播放实时总线快照工人（FMBY #24 接线）：仅开关开时启动；
+        # 关时不启动、不写快照，全站行为逐字不变。worker 进程持有
+        # Redis 单实例锁，快照只由本进程写，无双跑风险。
+        try:
+            if start_playback_bus_snapshot():
+                started.append("playback_bus_snapshot")
+                logger.info("✅ 播放总线快照工人已启动")
+            else:
+                logger.info("播放实时总线未开启，快照工人不启动")
+        except Exception as e:
+            logger.warning(f"启动播放总线快照工人失败（可忽略）: {e}")
 
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:

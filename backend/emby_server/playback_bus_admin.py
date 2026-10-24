@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """播放实时总线管理端入口（FMBY #24 前半，只做 stop）。
 
-注意：本模块定义了路由但本 PR 不挂载——挂载必须改 backend/main.py
-（在删除 PR 同时施工的文件之外，但为避免与在飞 PR 的接线冲突，
-挂载行见报告，由父代理在删除 PR 落地后统一接线）。未挂载前本
-模块不产生任何线上行为；挂载后总线仍默认关（PLAYBACK_BUS_ENABLED=0），
-关时发命令回 503、不执行、不写命令行。
+注意：本模块的路由由 backend/main.py 管理路由区挂载（#24 接线 PR）。
+总线仍默认关（PLAYBACK_BUS_ENABLED=0），关时发命令回 503、不执行、
+不写命令行。
 
 端点：
 - POST /api/admin/playback-bus/commands：发一条命令（本阶段只许 stop，
