@@ -1304,3 +1304,49 @@ __all__ = [
     "ChaseRun",
     "ChaseSourceState",
 ]
+
+
+class DirectoryScanSnapshot(Base):
+    """按源维度的目录扫描快照（任务清单第 11 项：扫描目录指纹）。
+
+    FMBY ``directory_scan_snapshots`` 形态：``library_source_id``、
+    ``directory_path``、``listing_fingerprint``、``entry_count``、
+    ``last_scan_at``、``last_refresh_at``、``next_due_at``。
+
+    与旧 ``ScanDirState``（``emby_scan_dirs``，``library_id + dir_key``）
+    的关系：同一个判定（first / changed / due / not_due），同一套周期
+    （``SCAN_DIR_RECHECK_SEC``）与总开关（``SCAN_DIR_DUE_SCHEDULING``），
+    不另起第二套增量语义；快照是按源维度的权威记录，同一库多源时各源
+    目录互不干扰；旧表继续双写、作为解析不到源行的目录的回落。
+
+    两点与 FMBY 原形的偏差（有意为之，见 ``scan_snapshots`` 模块）：
+    1. 多带一列 ``library_id``：我方管理端保存库时删掉源行重插（源行 id
+       会变），只凭源 id 查快照会在每次保存后 orphan；按（库，路径）
+       查到旧行时认领（把源 id 更新为当前行），快照不因保存而丢。
+    2. 两道唯一约束并存：FMBY 的（源，路径）+ 稳定性的（库，路径）——
+       同一库同一路径在任一时刻只归一个源（最长前缀匹配），两约束不冲突。
+    """
+
+    __tablename__ = "directory_scan_snapshots"
+
+    __table_args__ = (
+        UniqueConstraint("library_source_id", "directory_path",
+                         name="uq_dir_scan_snapshot_source"),
+        UniqueConstraint("library_id", "directory_path",
+                         name="uq_dir_scan_snapshot_library"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_source_id = Column(Integer, nullable=False, index=True)
+    library_id = Column(Integer, nullable=False, index=True)
+    # 与扫描器 dir_key 同值：本机绝对路径，或 mount://<挂载 id>/<相对路径>
+    directory_path = Column(String(1000), nullable=False)
+    listing_fingerprint = Column(String(128), nullable=False)
+    entry_count = Column(Integer, nullable=False, default=0)
+    # 最近一次见到该目录清单（哪怕判定是未到期跳过，也算见过清单）
+    last_scan_at = Column(DateTime, default=None)
+    # 最近一次对该目录做完整核对（first / changed / due 判定）
+    last_refresh_at = Column(DateTime, default=None)
+    # 下一次到期重验时刻（NULL = 还没排期，按已到期处理）
+    next_due_at = Column(DateTime, default=None)
+    updated_at = Column(DateTime, default=datetime.now)
