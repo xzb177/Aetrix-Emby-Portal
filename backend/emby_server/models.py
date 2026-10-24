@@ -511,6 +511,47 @@ class PlaybackSession(Base):
     ended_at = Column(DateTime)
 
 
+class PlayStartEvent(Base):
+    """起播事件打点（FMBY 学习批一 #2，对齐 FMBY 的 playback_start_events）
+
+    每次「起播尝试」在调度层记一行：用的哪家源（provider / mount_id）、
+    走的哪条分发（method）、解析耗时（resolve_ms）、成败与错误类型。
+    管理端按 provider × error_kind 聚合后能回答「起播慢是慢在哪家网盘、
+    失败是哪类错误」——此前耗时只在 [play-timing] 日志里、计数只在
+    line_stats 进程内，都没法事后聚合。
+
+    写入走 play_events 的进程内队列 + 后台批量落库：起播热路径只做
+    一次 put_nowait，写库失败静默丢弃，绝不拖慢起播本身。
+
+    不加外键（照 ScanRun 先例）：条目/用户/挂载删掉后事件行要留着供
+    统计，聚合时按 mount_id 尽力补挂载名，补不到不影响计数。
+    """
+
+    __tablename__ = "emby_play_start_events"
+    __table_args__ = (
+        Index("ix_play_start_events_provider_created", "provider", "created_at"),
+        Index("ix_play_start_events_result_created", "result", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    user_id = Column(Integer)          # 发起播放的用户（解析事件经共用函数时可能为空）
+    item_id = Column(Integer)          # emby_items.id（数值主键，非 guid）
+    # 源维度：drive（Drive 直链/中继快路径）/ mount（挂载解析，细类看 mount_id
+    # 关联的 StorageMount.mount_type）/ local（本机文件）/ unknown
+    provider = Column(String(30), nullable=False, default="unknown")
+    mount_id = Column(Integer)
+    # 分发方式：relay（Drive SA 中继）/ direct_302（Drive 快路径直链）/
+    # resolve（回落 _play_target 解析，含 mount 中继与本机文件的调度尝试）
+    method = Column(String(30))
+    result = Column(String(16), nullable=False, default="ok")  # ok / error
+    # 错误分类：auth（凭据失效 503）/ mount_unavailable（挂载不可用 404）/
+    # upstream_<状态码>（中继上游错误）/ resolve_error（未分类解析异常）
+    error_kind = Column(String(40))
+    resolve_ms = Column(Integer)       # 解析/调度段耗时（毫秒）
+    total_ms = Column(Integer)         # 预留：整段起播耗时（本期未填）
+
+
 class WorldWallPost(Base):
     """探险世界 · 到此一游留言墙"""
     __tablename__ = "world_wall_posts"
