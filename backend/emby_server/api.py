@@ -4910,6 +4910,12 @@ async def video_stream(
     _fid = (getattr(item, "drive_file_id", "") or "").strip()
     _drive_switch_on = bool(_fid) and await run_db(
         _strategy.drive_direct_play_enabled, db)
+    # 播放阶段 6 按可用性换线：只影响下面无变体请求的 Drive 默认路线；
+    # 显式变体请求与挂载/本机路线不受换线影响。关时 _switch_on 为
+    # False，后面所有换线分支都不进，选路与今天逐字一致。
+    from backend.emby_server import variant_switch as _variant_switch
+    _switch_on = _variant_switch.switch_enabled()
+    _switch_attempted = False
     if (_drive_switch_on and await run_db(_strategy.drive_relay_enabled, db)
             and (_requested_variant is None
                  or _requested_variant == play_variants.DRIVE_RELAY)):
@@ -4921,31 +4927,109 @@ async def video_stream(
             raise HTTPException(
                 status_code=409, detail="播放变体当前不可用：drive_relay")
         if _relay_drive_id:
-            # Drive SA 中继（2026-10-23 额度应急）：字节过服务器转发，
-            # file_id 不出门、不走公开下载池；存在性由上游取流本身
-            # 回答（文件没了上游 404 透传），不再单跑存在性校验。
-            # 观测口径与直链快路径一致（_observe_traffic + play-timing）。
-            _pt.mark("relay")
-            _relay_resp = await serve_drive_relay_async(
-                request, _relay_drive_id, _fid,
-                media_type=media_type, pt=_pt)
-            # 起播打点（批一 #2）：中继首响应回来即记一条，成败看上游状态码
-            _note_play_start_safe(
-                item, user_id=getattr(user, "id", None), method="relay",
-                variant=play_variants.DRIVE_RELAY,
-                result="error" if _relay_resp.status_code >= 400 else "ok",
-                error_kind=(f"upstream_{_relay_resp.status_code}"
-                            if _relay_resp.status_code >= 400 else None),
-                resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
-            return _observe_traffic(_relay_resp)
+            # 阶段 6 换线首选（只针对无变体请求）：先读可用性表——
+            # 中继不可用且直链可用时直接跳过中继走直链；两条都不可用
+            # 时明确 409，不试死线。显式变体请求不进这里（客户端选
+            # 了就是选了，换线不许替它改主意）。
+            _skip_relay = False
+            if _switch_on and _requested_variant is None:
+                _first, _avail, _ = await run_db(
+                    _variant_switch.drive_route_choice, db)
+                if _first is None:
+                    # 路由决策失败事件（未实际发中继请求，见 error_kind）：
+                    # 两条都不可用，明确失败，不试死线。
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None),
+                        method="relay", variant=play_variants.DRIVE_RELAY,
+                        result="error", error_kind="all_variants_unavailable",
+                        resolve_ms=int(
+                            (time.perf_counter() - _evt_t0) * 1000))
+                    raise HTTPException(
+                        status_code=409,
+                        detail="播放变体均不可用：drive_relay、drive_direct"
+                               "（可用性表）")
+                if _first[0] != play_variants.DRIVE_RELAY:
+                    _skip_relay = True
+                    _switch_attempted = True
+                    logger.warning(
+                        "变体切换：drive_relay 在可用性表中不可用，起播直接走 "
+                        "drive_direct item=%s", getattr(item, "id", "?"))
+            if not _skip_relay:
+                # Drive SA 中继（2026-10-23 额度应急）：字节过服务器转发，
+                # file_id 不出门、不走公开下载池；存在性由上游取流本身
+                # 回答（文件没了上游 404 透传），不再单跑存在性校验。
+                # 观测口径与直链快路径一致（_observe_traffic + play-timing）。
+                _pt.mark("relay")
+                try:
+                    _relay_resp = await serve_drive_relay_async(
+                        request, _relay_drive_id, _fid,
+                        media_type=media_type, pt=_pt)
+                except HTTPException as exc:
+                    # 阶段 6 换线失败重试点：只有上游 502（远端不可用）
+                    # 可换线；403（轮换后仍失败）/503（取不到凭据）/
+                    # 404（目标没了）原样抛，不记变体的账、不换线。
+                    # 中继失败本身先记一条 error 事件（method=relay），
+                    # 再决定换线还是原样抛——换线成功时后面还有直链的
+                    # ok 事件，两条事件拼出一次完整切换。
+                    if (_switch_on and _requested_variant is None
+                            and _variant_switch.is_switch_eligible_relay_status(
+                                exc.status_code)):
+                        _note_play_start_safe(
+                            item, user_id=getattr(user, "id", None),
+                            method="relay",
+                            variant=play_variants.DRIVE_RELAY,
+                            result="error", error_kind="upstream_502",
+                            resolve_ms=int(
+                                (time.perf_counter() - _evt_t0) * 1000))
+                        _, _avail2, _ = await run_db(
+                            _variant_switch.drive_route_choice, db)
+                        if play_variants.DRIVE_DIRECT not in [
+                                name for name, _ in _avail2]:
+                            raise HTTPException(
+                                status_code=409,
+                                detail="变体切换失败：drive_relay 上游不可用，"
+                                       "且 drive_direct 在可用性表中不可用"
+                                       ) from exc
+                        _switch_attempted = True
+                        logger.warning(
+                            "变体切换：drive_relay 上游 502，改走 "
+                            "drive_direct item=%s", getattr(item, "id", "?"))
+                    else:
+                        raise
+                else:
+                    # 起播打点（批一 #2）：中继首响应回来即记一条，成败看上游状态码
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None), method="relay",
+                        variant=play_variants.DRIVE_RELAY,
+                        result="error" if _relay_resp.status_code >= 400 else "ok",
+                        error_kind=(f"upstream_{_relay_resp.status_code}"
+                                    if _relay_resp.status_code >= 400 else None),
+                        resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+                    return _observe_traffic(_relay_resp)
     _fast302 = False
     _evt_t0 = time.perf_counter()
     if _drive_switch_on:
         # 相同起始 Range 的短时重试：播放器多半是谷歌 404 之后又来了一次，
         # 正缓存不能再把死链 302 出去。拖动 / 下一段起始字节不同，不进这里。
         _force = drive_exists_rapid_retry(request, user, _fid)
-        _fast302 = await _ensure_drive_file_playable(
-            db, item, _fid, force_recheck=_force)
+        try:
+            _fast302 = await _ensure_drive_file_playable(
+                db, item, _fid, force_recheck=_force)
+        except HTTPException as exc:
+            # 阶段 6：换线后直链仍失败，原因要带上切换上下文，不许
+            # 把一次切换失败读成普通的直链失败。
+            if _switch_attempted:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail="变体切换后仍失败（drive_relay→drive_direct）："
+                           f"{exc.detail}") from exc
+            raise
+    if _switch_attempted and not _fast302:
+        # 阶段 6：换线已发生、直链又没 materialize（挂载不可定位，
+        # _ensure 回 None）——不许悄悄落到后面的通用分支，明确失败。
+        raise HTTPException(
+            status_code=409,
+            detail="变体切换后仍失败（drive_relay→drive_direct）：挂载不可定位")
     if _requested_variant == play_variants.DRIVE_DIRECT and not _fast302:
         # 校验时可定位、执行时已不可定位（挂载被停用等竞态）：
         # 报 409，不许回落到 _play_target 的通用分支（那是静默改走）。
