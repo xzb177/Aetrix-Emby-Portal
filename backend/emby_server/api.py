@@ -4420,6 +4420,31 @@ async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
     return True
 
 
+def _note_play_start_safe(item: em.MediaItem, **kwargs) -> None:
+    """起播事件打点的安全调用口（FMBY 批一 #2）。
+
+    从条目推导源维度后调 play_events.note_play_start。打点模块本身永不抛，
+    这里再套一层保险：钩子处任何意外都不许影响起播（测试钉住这一条）。
+    """
+    try:
+        from backend.emby_server import play_events
+
+        file_path = getattr(item, "file_path", "") or ""
+        if mount_lib.is_mount_path(file_path):
+            parsed = mount_lib.parse_mount_path(file_path)
+            provider = "mount"
+            mount_id = parsed[0] if parsed else None
+        elif (getattr(item, "drive_file_id", "") or "").strip():
+            provider, mount_id = "drive", None
+        else:
+            provider, mount_id = "local", None
+        play_events.note_play_start(
+            provider=provider, mount_id=mount_id,
+            item_id=getattr(item, "id", None), **kwargs)
+    except Exception:  # noqa: BLE001 — 打点不许打断起播，见 play_events 铁律
+        pass
+
+
 def _play_target(db: Session, item: em.MediaItem):
     """把条目的 ``file_path`` 解析成播放目标（本机文件 或 挂载直链）
 
@@ -4427,13 +4452,36 @@ def _play_target(db: Session, item: em.MediaItem):
 
     - 挂载被删除 / 停用 → 404（该条目需要重新扫描或重新绑定挂载）
     - 凭据失效（Cookie / 令牌 / 密码）→ 503（可修，修好后重试即可）
+
+    起播打点（批一 #2）：解析段的成败/耗时/错误类型在此收口记一条事件
+    （method=resolve）。**不给本函数加 user 参数**：它被多处桩替身与下载
+    端点共用，签名冻结；解析事件因此不带 user_id（快路径事件在
+    video_stream 里记，带 user_id）。
     """
+    _evt_t0 = time.perf_counter()
     try:
-        return mount_lib.resolve_play_target(item.file_path, db, item.library)
+        target = mount_lib.resolve_play_target(item.file_path, db, item.library)
     except mount_lib.MountAuthError as exc:
+        _note_play_start_safe(
+            item, method="resolve", result="error", error_kind="auth",
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         raise HTTPException(status_code=503, detail=f"媒体来源凭据失效：{exc}")
     except mount_lib.MountError as exc:
+        _note_play_start_safe(
+            item, method="resolve", result="error",
+            error_kind="mount_unavailable",
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         raise HTTPException(status_code=404, detail=f"媒体来源不可用：{exc}")
+    except Exception:
+        _note_play_start_safe(
+            item, method="resolve", result="error",
+            error_kind="resolve_error",
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+        raise
+    _note_play_start_safe(
+        item, method="resolve", result="ok",
+        resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+    return target
 
 
 @emby_router.post("/emby/Items/{item_id}/PlaybackInfo")
@@ -4668,6 +4716,7 @@ async def video_stream(
     _drive_switch_on = bool(_fid) and await run_db(
         _strategy.drive_direct_play_enabled, db)
     if _drive_switch_on and await run_db(_strategy.drive_relay_enabled, db):
+        _evt_t0 = time.perf_counter()
         _relay_drive_id = await run_db(_drive_mount_id_for_item, db, item)
         if _relay_drive_id:
             # Drive SA 中继（2026-10-23 额度应急）：字节过服务器转发，
@@ -4675,11 +4724,19 @@ async def video_stream(
             # 回答（文件没了上游 404 透传），不再单跑存在性校验。
             # 观测口径与直链快路径一致（_observe_traffic + play-timing）。
             _pt.mark("relay")
-            return _observe_traffic(
-                await serve_drive_relay_async(
-                    request, _relay_drive_id, _fid,
-                    media_type=media_type, pt=_pt))
+            _relay_resp = await serve_drive_relay_async(
+                request, _relay_drive_id, _fid,
+                media_type=media_type, pt=_pt)
+            # 起播打点（批一 #2）：中继首响应回来即记一条，成败看上游状态码
+            _note_play_start_safe(
+                item, user_id=getattr(user, "id", None), method="relay",
+                result="error" if _relay_resp.status_code >= 400 else "ok",
+                error_kind=(f"upstream_{_relay_resp.status_code}"
+                            if _relay_resp.status_code >= 400 else None),
+                resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+            return _observe_traffic(_relay_resp)
     _fast302 = False
+    _evt_t0 = time.perf_counter()
     if _drive_switch_on:
         # 相同起始 Range 的短时重试：播放器多半是谷歌 404 之后又来了一次，
         # 正缓存不能再把死链 302 出去。拖动 / 下一段起始字节不同，不进这里。
@@ -4689,6 +4746,11 @@ async def video_stream(
     if _fast302:
         _pt.mark("drive_exists_check")
         _pt.done()
+        # 起播打点（批一 #2）：存在性校验通过、302 直链下发记一条
+        _note_play_start_safe(
+            item, user_id=getattr(user, "id", None), method="direct_302",
+            result="ok",
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         from backend.emby_server.drive_auth import drive_usercontent_download_url
         return _observe_traffic(
             RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
