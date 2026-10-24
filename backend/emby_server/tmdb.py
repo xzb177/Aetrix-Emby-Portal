@@ -1823,6 +1823,43 @@ class TmdbClient:
             return []
         return [hit for hit in list(results or [])[:limit] if isinstance(hit, dict)]
 
+    def scored_candidates(self, name: str, year: Optional[int], kind: str,
+                          limit: int = 8) -> list[dict]:
+        """带置信分数的候选快照（低置信人工审查队列的证据，批二 #15）。
+
+        与 ``search()`` 的区别：不裁剪、不挑赢家——把原始候选连同各自的
+        ``_hit_score`` 分数（tier/rank，被置信线拒掉的 tier=None）一起
+        返回，管理员处置时看的就是识别当刻「有哪些候选、为什么没过线」。
+        只走 ``_search_raw``（两级缓存，识别刚搜过通常命中），失败返回
+        空表（证据抓取失败由调用方按「无证据」处理，不许拖垮识别收尾）。
+        """
+        query = _clean_query(name) or (name or "").strip()
+        if not query:
+            return []
+        try:
+            results = self._search_raw(query, year, kind)
+        except Exception as exc:  # noqa: BLE001 — 证据抓取失败返回空表（见 docstring）
+            logger.warning("TMDB 带分数候选抓取失败 q=%r: %s", query, exc)
+            return []
+        out: list[dict] = []
+        for hit in list(results or [])[:limit]:
+            if not isinstance(hit, dict):
+                continue
+            sc = _hit_score(name, query, hit, True, year=year)
+            out.append({
+                "tmdb_id": hit.get("id"),
+                "title": hit.get("title") or hit.get("name") or "",
+                "original_title": (hit.get("original_title")
+                                   or hit.get("original_name") or ""),
+                "year": (hit.get("release_date")
+                         or hit.get("first_air_date") or "")[:4],
+                "tier": sc[0] if sc else None,
+                "rank": sc[1] if sc else None,
+                "popularity": hit.get("popularity"),
+                "poster_path": hit.get("poster_path"),
+            })
+        return out
+
     def details(self, tmdb_id: str, kind: str) -> Optional[dict]:
         """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用。
 
