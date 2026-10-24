@@ -168,6 +168,17 @@ def _invalidate_gone_file(item_id, file_id, db=None) -> None:
             item = db.get(em.MediaItem, int(item_id))
         if item is not None:
             invalidate_drive_exists_for_item(db, item)
+            # 批一 #1：同点位连带清解析结果缓存（文件已确认 404，解析
+            # 快照不许再留）。该函数本身永不抛，这里仍套一层保险，不让
+            # 连带动作触发外层 except 的重复失效路径。
+            try:
+                from backend.emby_server.mounts import (
+                    invalidate_resolve_cache_for_path)
+                invalidate_resolve_cache_for_path(
+                    getattr(item, "file_path", ""))
+            except Exception:  # noqa: BLE001
+                logger.debug("drive-share 404 失效解析缓存失败 file=%s",
+                             fid, exc_info=True)
         else:
             invalidate_drive_exists_cache(None, fid)
     except Exception:  # noqa: BLE001

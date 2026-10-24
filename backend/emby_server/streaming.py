@@ -590,6 +590,15 @@ async def serve_mount_relay_async(
                     # 后续播放反复 403/502 却无日志可查。
                     logger.warning("115 直链缓存失效失败 pickcode=%s: %s",
                                    _pickcode, exc)
+                # 批一 #1 连带：解析结果缓存里还留着同一条死链，只清换链
+                # 缓存不够——不连带清，死链会被解析缓存续命最多一个 TTL。
+                try:
+                    from backend.emby_server.mounts import (
+                        invalidate_resolve_cache_by_pickcode)
+                    invalidate_resolve_cache_by_pickcode(_pickcode)
+                except Exception as exc:
+                    logger.warning("115 解析缓存连带失效失败 pickcode=%s: %s",
+                                   _pickcode, exc)
         if resp.status_code >= 400:
             status = resp.status_code
             await resp.aclose()

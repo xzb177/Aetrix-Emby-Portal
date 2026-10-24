@@ -812,6 +812,30 @@ class MountProvider:
             return _strm_play_target(self.read_text(rel), rel)
         return self.resolve(rel)
 
+    # ---- 解析结果缓存的凭据拆分（FMBY 批一 #1）----
+    # ``resolve_play_target`` 会把解析结果按 (挂载, 类型, 配置指纹, rel) 缓存
+    # ``RESOLVE_TARGET_CACHE_TTL_SEC`` 秒，省掉每次播放重走的逐级列目录 /
+    # 子进程换链。凭据头（Cookie / Authorization）**禁止进缓存值**：凭据状态
+    # 只归既有唯一入口维护（115 的 ``transfer115.resolve_cookie``、Drive 的
+    # ``drive_auth``），缓存里存一份凭据等于第二套状态，轮换 / 401 按值失效
+    # 之后必然漂移——正是 2026-10-11 全局 token 缓存架空 SA 轮询事故的同款
+    # 形态。所以子类把「解析」与「挂凭据」拆成两段：``cacheable_play_target``
+    # 返回剥掉凭据头的可缓存副本（无法安全缓存时返回 None），
+    # ``reattach_play_target`` 在缓存命中后现挂凭据。
+    # 默认实现取保守口径：headers 里含凭据头就**不缓存**——没覆写的提供者
+    # 最多是没收益，绝不许把凭据漏进缓存。
+
+    def cacheable_play_target(self, target: PlayTarget) -> Optional[PlayTarget]:
+        """解析结果进缓存前的脱凭据副本；不可安全缓存返回 None。"""
+        headers = dict(target.headers or {})
+        if any(name in headers for name in ("Cookie", "Authorization")):
+            return None
+        return PlayTarget(target.kind, target.value, headers)
+
+    def reattach_play_target(self, stored: PlayTarget) -> PlayTarget:
+        """缓存命中后现挂凭据；默认无凭据可挂，返回一份拷贝（缓存对象不外借）。"""
+        return PlayTarget(stored.kind, stored.value, dict(stored.headers or {}))
+
     # ---- 公共实现 ----
 
     def exists(self, rel: str) -> bool:
@@ -1154,6 +1178,19 @@ class Pan115Mount(MountProvider):
             "Cookie": self._cookie(),
             "X-Pickcode": pickcode_115,
         })
+
+    # 解析缓存的凭据拆分：Cookie 每次现取（``transfer115.resolve_cookie`` 是
+    # 唯一状态入口），缓存里只留 UA / Referer 与 X-Pickcode——X-Pickcode 不是
+    # 凭据，是失效钥匙：中继收到上游 403/404/410 时靠它连带清解析缓存。
+    def cacheable_play_target(self, target: PlayTarget) -> Optional[PlayTarget]:
+        headers = dict(target.headers or {})
+        headers.pop("Cookie", None)
+        return PlayTarget(target.kind, target.value, headers)
+
+    def reattach_play_target(self, stored: PlayTarget) -> PlayTarget:
+        headers = dict(stored.headers or {})
+        headers["Cookie"] = self._cookie()
+        return PlayTarget(stored.kind, stored.value, headers)
 
     def read_text(self, rel: str) -> str:
         target = self.resolve(rel)
@@ -1779,6 +1816,167 @@ def load_mount(db: Session, mount_id: int):
     return db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
 
 
+# ==================== 解析结果缓存（FMBY 批一 #1）====================
+# ``resolve_play_target`` 的输出（kind + 直链 + 静态头）按 (挂载, 类型,
+# 配置指纹, rel) 在进程内缓存 ``RESOLVE_TARGET_CACHE_TTL_SEC`` 秒（默认 600，
+# 0 = 关闭；启动时读一次，热路径不碰 env）。动机：播放器一次播放 = 多次
+# stream 请求（起播探测 + 每个 Range 分片），此前每次请求都要重走一遍解析
+# ——115 逐级列目录、rclone CLI 每次拉一个子进程、STRM 每次读文件内容。
+# 学的是 FMBY 的 remote_target_cache：调度层（换链/选路）加带过期的缓存，
+# 数据面（中继取流）一行不动。
+#
+# 硬约束（定稿 §3，防 2026-10-11 全局 token 缓存架空 SA 轮询事故重演）：
+# - **凭据头禁止进缓存值**：Cookie / Authorization 一律经提供者的
+#   ``cacheable_play_target`` 剥掉、命中后经 ``reattach_play_target`` 现挂，
+#   凭据状态仍只归既有唯一入口维护（魂 6）。STRM 目标的 Bearer 在本层统一
+#   剥/挂（它由 ``_strm_play_target`` 拼、亲和键就是 url 本身，与提供者无关）。
+# - ``X-Pickcode`` 随缓存保留：它不是凭据，是 115 的失效钥匙（中继 403/
+#   404/410 时靠它反查连带清本缓存，见 ``invalidate_resolve_cache_by_pickcode``）。
+# - 缓存的是「解析结果快照」，不是「文件仍在」的断言——存在性另有正缓存
+#   与墓碑，不在这里重复担保。同路径换文件靠 TTL 自然收敛 + 115 的 403
+#   连带失效兜底，最多陈旧一个 TTL，这是本项接受的已知窗口。
+# - 进程内 dict（与 115 换链缓存 / 目录缓存同口径）：api 与 ea 两进程各
+#   一份、失效不广播，靠 TTL 收敛；要跨进程共享须先保证凭据已拆出，再迁
+#   CacheManager 的 playback 域，另行立项。
+RESOLVE_TARGET_CACHE_TTL_SEC = env_int("RESOLVE_TARGET_CACHE_TTL_SEC", 600, 0, 3600)
+#: 上限与 Drive 存在性正缓存同数（10000）；满员先清过期、仍满整体清空。
+RESOLVE_TARGET_CACHE_MAX = 10000
+
+# 模块级直接初始化，不许懒初始化（同 _pan115_url_cache_lock 的口径）。
+_RESOLVE_CACHE: dict = {}
+_RESOLVE_CACHE_LOCK = threading.Lock()
+_RESOLVE_CACHE_STATS = {"hits": 0, "misses": 0, "expired": 0, "evictions": 0}
+
+
+def resolve_cache_stats() -> dict:
+    """解析缓存命中情况（健康检查 / 测试用）"""
+    with _RESOLVE_CACHE_LOCK:
+        return {**_RESOLVE_CACHE_STATS, "entries": len(_RESOLVE_CACHE),
+                "ttl_seconds": RESOLVE_TARGET_CACHE_TTL_SEC}
+
+
+def reset_resolve_cache() -> None:
+    """清空解析缓存与计数（测试隔离用，照 #1203 熔断 ``reset_all`` 先例）。"""
+    with _RESOLVE_CACHE_LOCK:
+        _RESOLVE_CACHE.clear()
+        for name in _RESOLVE_CACHE_STATS:
+            _RESOLVE_CACHE_STATS[name] = 0
+
+
+def _resolve_cache_key(provider, rel: str) -> tuple:
+    """缓存键 = (挂载 id, 类型, 配置指纹, rel)，与目录缓存同法（mounts._list_cache_key）。
+
+    配置指纹进键：挂载改配置 / 换 Cookie 后指纹变，旧条目自然打不中，无需
+    主动清理。键里**不许**放 user_id / token / Cookie——解析结果与用户无关
+    （权限在播放入口已先行判定），放用户维度只会把命中率打碎。
+    """
+    mount = getattr(provider, "mount", None)
+    return (
+        getattr(mount, "id", None),
+        (getattr(mount, "mount_type", "") or "").strip(),
+        _config_fingerprint(provider),
+        rel or "/",
+    )
+
+
+def _resolve_cache_get(key: tuple) -> Optional[PlayTarget]:
+    """取缓存（命中返回缓存里的脱凭据副本；过期顺手删并当未命中）。TTL=0 恒未命中。"""
+    if RESOLVE_TARGET_CACHE_TTL_SEC <= 0:
+        return None
+    now = time.monotonic()
+    with _RESOLVE_CACHE_LOCK:
+        row = _RESOLVE_CACHE.get(key)
+        if row is not None and row[0] > now:
+            _RESOLVE_CACHE_STATS["hits"] += 1
+            return row[1]
+        if row is not None:
+            _RESOLVE_CACHE.pop(key, None)
+            _RESOLVE_CACHE_STATS["expired"] += 1
+        _RESOLVE_CACHE_STATS["misses"] += 1
+        return None
+
+
+def _resolve_cache_put(key: tuple, stored: Optional[PlayTarget]) -> None:
+    if stored is None or RESOLVE_TARGET_CACHE_TTL_SEC <= 0:
+        return
+    now = time.monotonic()
+    with _RESOLVE_CACHE_LOCK:
+        if len(_RESOLVE_CACHE) >= RESOLVE_TARGET_CACHE_MAX:
+            # 防无限增长：先清过期条目；仍满则整体清空（与存在性正缓存同
+            # 口径；最坏只是多走几次解析，不影响正确性）
+            for k in [k for k, row in _RESOLVE_CACHE.items() if row[0] <= now]:
+                _RESOLVE_CACHE.pop(k, None)
+            if len(_RESOLVE_CACHE) >= RESOLVE_TARGET_CACHE_MAX:
+                _RESOLVE_CACHE.clear()
+            _RESOLVE_CACHE_STATS["evictions"] += 1
+        _RESOLVE_CACHE[key] = (now + RESOLVE_TARGET_CACHE_TTL_SEC, stored)
+
+
+def invalidate_resolve_cache(mount_id: Optional[int] = None,
+                             rel: Optional[str] = None) -> None:
+    """清解析缓存：mount_id + rel 只清一条；只给 mount_id 清整个挂载；都不给全清。"""
+    with _RESOLVE_CACHE_LOCK:
+        if mount_id is None and rel is None:
+            _RESOLVE_CACHE.clear()
+            return
+        for key in [k for k in _RESOLVE_CACHE
+                    if (mount_id is None or k[0] == mount_id)
+                    and (rel is None or k[3] == rel)]:
+            _RESOLVE_CACHE.pop(key, None)
+
+
+def invalidate_resolve_cache_by_pickcode(pickcode: str) -> None:
+    """按 X-Pickcode 反查清解析缓存（115 中继上游 403/404/410 时连带调用）。
+
+    只清 115 换链缓存不够：解析缓存里还留着同一条死链，不连带清会被它
+    续命最多一个 TTL。永不抛——失效失败最多多留 TTL 秒陈旧。
+    """
+    if not pickcode:
+        return
+    with _RESOLVE_CACHE_LOCK:
+        for key in [k for k, row in _RESOLVE_CACHE.items()
+                    if (row[1].headers or {}).get("X-Pickcode") == pickcode]:
+            _RESOLVE_CACHE.pop(key, None)
+
+
+def invalidate_resolve_cache_for_path(file_path: Optional[str]) -> None:
+    """按条目 ``file_path`` 清一条解析缓存（扫描确认丢失 / 管理端删条目 /
+    分享补开见 404 时，在 ``invalidate_drive_exists_for_item`` 的调用点同点位
+    连带调用）。非挂载路径直接跳过；永不抛，不许打断调用方的主流程。"""
+    try:
+        parsed = parse_mount_path(file_path)
+        if parsed is None:
+            return
+        invalidate_resolve_cache(parsed[0], parsed[1])
+    except Exception:  # noqa: BLE001 — 失效是尽力而为，TTL 兜底
+        logger.debug("解析缓存按路径失效失败 path=%s", file_path, exc_info=True)
+
+
+def _stored_play_target(provider, target: PlayTarget, rel: str) -> Optional[PlayTarget]:
+    """解析结果进缓存前的脱凭据副本；不可安全缓存返回 None。
+
+    .strm 目标的凭据只有 ``_strm_play_target`` 拼的 Drive Bearer（亲和键是
+    url 本身），与提供者无关，在这一层统一剥；其余目标交给提供者自己的
+    ``cacheable_play_target`` 拆分。
+    """
+    if _is_strm_name(rel):
+        headers = dict(target.headers or {})
+        headers.pop("Authorization", None)
+        return PlayTarget(target.kind, target.value, headers)
+    return provider.cacheable_play_target(target)
+
+
+def _reattach_cached_target(provider, stored: PlayTarget, rel: str) -> PlayTarget:
+    """缓存命中后现挂凭据，返回一份新 PlayTarget（缓存里的对象不外借）。"""
+    if _is_strm_name(rel):
+        headers = dict(stored.headers or {})
+        from backend.emby_server import drive_auth
+        # 与 _strm_play_target 当初的拼法逐字一致：亲和键缺省就是 url 本身
+        headers.update(drive_auth.drive_auth_headers(stored.value))
+        return PlayTarget(stored.kind, stored.value, headers)
+    return provider.reattach_play_target(stored)
+
+
 def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> PlayTarget:
     """把条目的 ``file_path`` 解析成播放/探测目标
 
@@ -1799,9 +1997,17 @@ def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> 
         raise MountError(f"挂载 #{mount_id} 不存在（该条目来自已删除的挂载）")
     if not mount.is_enabled:
         raise MountError(f"挂载「{mount.name}」已停用")
-    target = build_provider(mount, db, library).resolve_final(rel)
+    provider = build_provider(mount, db, library)
+    # 解析缓存的查询必须排在 load_mount + is_enabled 检查**之后**：停用挂载
+    # 不许被 TTL 内的缓存残量短路（定稿 §5 的失效矩阵钉死这一条顺序）。
+    cache_key = _resolve_cache_key(provider, rel)
+    stored = _resolve_cache_get(cache_key)
+    if stored is not None:
+        return _reattach_cached_target(provider, stored, rel)
+    target = provider.resolve_final(rel)
     if target.kind == "url":
         target.value = validate_remote_url(target.value)
+        _resolve_cache_put(cache_key, _stored_play_target(provider, target, rel))
     return target
 
 

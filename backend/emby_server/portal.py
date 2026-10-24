@@ -2504,6 +2504,13 @@ def admin_delete_item(item_id: str, staff: models.WebUser = Depends(require_staf
             invalidate_drive_exists_for_item(db, item)
         except Exception:  # noqa: BLE001
             logger.debug("删除条目时失效 Drive 存在性缓存失败", exc_info=True)
+    # 批一 #1：同点位连带清解析结果缓存（不限 Drive 挂载，115/rclone 同理；
+    # 不放在上面的 drive_file_id 守卫里，否则非 Drive 条目删了缓存还留一个 TTL）。
+    try:
+        from backend.emby_server.mounts import invalidate_resolve_cache_for_path
+        invalidate_resolve_cache_for_path(getattr(item, "file_path", ""))
+    except Exception:  # noqa: BLE001
+        logger.debug("删除条目时失效解析缓存失败", exc_info=True)
     db.query(em.MediaStream).filter(em.MediaStream.item_id == item.id).delete()
     db.query(em.UserMediaData).filter(em.UserMediaData.item_id == item.id).delete()
     db.delete(item)
