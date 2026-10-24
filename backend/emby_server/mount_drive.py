@@ -12,7 +12,9 @@
   风控安全退避。本模块不自带第二套轮换/重试/限流实现。
 - 文件的 Drive id 直接透传成 ``MountEntry.file_id`` → 扫描器写
   ``item.drive_file_id`` → 播放走 302 直链分支（与 rclone 挂载的条目完全同构）。
-  ``resolve()`` 只剩探测（ffprobe）与 .strm 内容读取在用。
+  探测（ffprobe）与 .strm 内容读取走四口（resolve_play_target /
+  open_range / read_sidecar_text / refresh_credentials）；旧 ``resolve()``
+  已随来源切表删除。
 
 路径与配置：
 

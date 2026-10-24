@@ -181,27 +181,10 @@ def _cache_ttl(db: Session) -> float:
     return max(0, hours) * 3600
 
 
-def clear_cache() -> int:
-    count = len(_cache)
-    _cache.clear()
-    return count
-
-
 def region_of(db: Session, ip: str) -> str:
     """只取地区串（查不到返回空串），给日志列表批量用"""
     result = lookup(db, ip)
     return result.get("region", "") if result.get("ok") else ""
-
-
-def country_of(db: Session, ip: str) -> str:
-    """只取国家/地区名（查不到返回空串）
-
-    给「只允许国内访问」这类**国家级**判定用。与 :func:`region_of` 分开而不是
-    并成一个函数，是因为两者的失败语义不同：国家级判定一旦把「查不到」当成
-    「在境外」，没配地理库的部署会把自己人全拦在门外。
-    """
-    result = lookup(db, ip)
-    return str(result.get("country") or "").strip() if result.get("ok") else ""
 
 
 def test(db: Session, payload: dict) -> dict:

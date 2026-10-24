@@ -233,48 +233,6 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
     }
 
 
-def get_packet(db: Session, packet_id: int, user: models.WebUser | None = None) -> dict:
-    """红包详情"""
-    packet = db.query(models.RedPacket).filter(
-        models.RedPacket.id == packet_id).first()
-    if packet is None:
-        raise ValueError("红包不存在")
-
-    claims = db.query(models.RedPacketClaim).filter(
-        models.RedPacketClaim.packet_id == packet_id
-    ).order_by(models.RedPacketClaim.id).all()
-
-    user_ids = {c.user_id for c in claims} | {packet.sender_id}
-    users = {u.id: u.username for u in db.query(models.WebUser).filter(
-        models.WebUser.id.in_(user_ids)).all()} if user_ids else {}
-
-    claimed_by_me = False
-    if user is not None:
-        claimed_by_me = any(c.user_id == user.id for c in claims)
-
-    return {
-        "id": packet.id,
-        "sender_id": packet.sender_id,
-        "sender_name": users.get(packet.sender_id, "未知"),
-        "total_amount": packet.total_amount,
-        "total_count": packet.total_count,
-        "remaining_amount": packet.remaining_amount,
-        "remaining_count": packet.remaining_count,
-        "expires_at": packet.expires_at.isoformat() if packet.expires_at else None,
-        "created_at": packet.created_at.isoformat() if packet.created_at else None,
-        "claimed_by_me": claimed_by_me,
-        "claims": [
-            {
-                "user_id": c.user_id,
-                "username": users.get(c.user_id, "未知"),
-                "amount": c.amount,
-                "created_at": c.created_at.isoformat() if c.created_at else None,
-            }
-            for c in claims
-        ],
-    }
-
-
 def refund_expired(db: Session) -> int:
     """过期红包退款（供定时任务调用）：剩余积分退回发送者。
 

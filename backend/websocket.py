@@ -88,10 +88,6 @@ class ConnectionManager:
             for user_id in self.channel_subscribers[channel]:
                 await self.send_personal(message, user_id)
 
-    async def broadcast_to_all(self, message: dict):
-        """广播给所有连接"""
-        for user_id in list(self.active_connections.keys()):
-            await self.send_personal(message, user_id)
 
     def get_online_count(self) -> int:
         """获取在线用户数"""

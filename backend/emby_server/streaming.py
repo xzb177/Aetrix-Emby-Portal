@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-
 def _drive_alt_media_file_id(url: str) -> Optional[str]:
     """从 Drive alt=media URL 提取 file_id。
 
@@ -287,14 +286,6 @@ def serve_file(path: str, request: Request, media_type: str = "video/mp4",
     )
 
 
-def headers_arg(headers: Optional[dict]) -> list[str]:
-    """把请求头转成 ffprobe 的 ``-headers`` 参数（Cookie / 令牌不出服务器）"""
-    if not headers:
-        return []
-    joined = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
-    return ["-headers", joined]
-
-
 # A-P2-2 DNS pinning 共享缓存（async 路径）：host -> [ip, ...]，TTL 300 秒。
 # 只有经 ``_next_redirect`` 校验通过的重定向目标才会写入；每次建连时查。
 # 总开关 EMBY_DNS_PINNING 在 transport 层实时检查，关掉即回退到正常 DNS。
@@ -302,16 +293,6 @@ from backend.emby_server.dns_pinning import PinningCache as _PinningCache
 from backend.emby_server.dns_pinning import dns_pinning_enabled
 
 _PINNING_CACHE = _PinningCache(ttl=300.0)
-
-def _env_number(name: str, default: float, lo: float, hi: float, cast=float):
-    """读数值型环境变量并夹到 [lo, hi]；非法值回落默认值（不让一个手误拖垮启动）"""
-    raw = os.getenv(name, "")
-    try:
-        value = cast(raw) if str(raw).strip() else cast(default)
-    except (TypeError, ValueError):
-        logger.warning("环境变量 %s=%r 不是合法数值，使用默认值 %s", name, raw, default)
-        value = cast(default)
-    return max(cast(lo), min(cast(hi), value))
 
 
 def _env_flag(name: str, default: bool) -> bool:

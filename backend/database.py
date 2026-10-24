@@ -355,11 +355,6 @@ def get_redis() -> Optional["redis.Redis"]:
     return client
 
 
-def redis_degraded() -> bool:
-    """配置了 Redis 但当前用不了（启动未连上 / 熔断中）——限流应改用进程内计数"""
-    return REDIS_ENABLED and (redis_client is None or redis_breaker.state == "open")
-
-
 _MISSING = object()
 
 

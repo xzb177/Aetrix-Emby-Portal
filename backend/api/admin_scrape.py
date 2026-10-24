@@ -572,36 +572,6 @@ def _read_sibling_text(
     return None
 
 
-def _discover_nfo(db: Session, item: em.MediaItem) -> Optional[dict]:
-    """给条目找 NFO（电影/剧集优先；季/集按 NFO 能力处理）"""
-    kind = item.item_type
-    if kind == "movie":
-        stem = posixpath.splitext(posixpath.basename(item.file_path or ""))[0]
-        cands = [f"{stem}.nfo", "movie.nfo"] if stem else ["movie.nfo"]
-        text = _read_sibling_text(db, item.file_path, cands)
-    elif kind == "series":
-        # 用第一集定位剧集目录：tvshow.nfo 在剧集目录（或季目录的父级）
-        ep = (
-            db.query(em.MediaItem)
-            .filter(em.MediaItem.series_id == item.id, em.MediaItem.item_type == "episode")
-            .first()
-        )
-        text = _read_sibling_text(db, ep.file_path if ep else None, ["tvshow.nfo"], parent_levels=1)
-    elif kind == "episode":
-        stem = posixpath.splitext(posixpath.basename(item.file_path or ""))[0]
-        text = _read_sibling_text(db, item.file_path, [f"{stem}.nfo"] if stem else [])
-    elif kind == "season":
-        ep = (
-            db.query(em.MediaItem)
-            .filter(em.MediaItem.parent_id == item.id, em.MediaItem.item_type == "episode")
-            .first()
-        )
-        text = _read_sibling_text(db, ep.file_path if ep else None, ["season.nfo"])
-    else:
-        return None
-    return nfo_lib.parse_nfo(text) if text else None
-
-
 # ==================== 多源元数据（Phase 6b） ====================
 
 class MetaSourcesSaveRequest(BaseModel):
@@ -1116,7 +1086,6 @@ def get_chase_new(
     result["alerts"] = alerts
     result["total_found"] = total_found
     return result
-
 
 
 @admin_emby_router.put("/scrape/chase-new")

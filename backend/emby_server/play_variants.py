@@ -13,8 +13,8 @@ false，因为它服务端不转码）。
 ``drive_relay``（Drive SA 中继，字节过服务器）/ ``drive_direct``
 （Drive 302 直链，客户端自拉）/ ``mount_relay``（挂载中继，115/
 WebDAV/AList/STRM 走 provider 凭据代理）/ ``local_file``（本机文件
-直出）。服务端转码已随转码删除整套移除（2026-10-24）：不再有
-``transcode_hls`` 变体，``SupportsTranscoding`` 全面恒 false。
+直出）。服务端转码已随转码删除整套移除（2026-10-24），
+``SupportsTranscoding`` 全面恒 false。
 FMBY 有的「先转存」「云端转码流」我方**没有**，枚举里不许
 虚列——列了就是虚报。
 
