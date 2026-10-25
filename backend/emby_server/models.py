@@ -1710,6 +1710,34 @@ class LibraryListProjection(Base):
     computed_at = Column(DateTime, nullable=False, default=datetime.now)
 
 
+class LibraryListProjectionStaging(Base):
+    """媒体库列表投影的 staging 表（清单第 20 项：整库重建走 staging 切换）。
+
+    与 :class:`LibraryListProjection` 同形，但读侧**永远不读本表**：
+    重建先把全量新行写进本表（build_staging），校验覆盖后
+    switch_to_staging 一步替换 live 行。好处两点：①计算期间 live 行
+    一行不动，失败/覆盖不全时旧投影原样保留；②切换是末尾一次
+    删 + 插，不存在新旧混用的中间态。
+    staging 行在切换后保留（即最近一次成功构建的快照，供诊断），
+    下一次构建先清空再写，不依赖旧 staging 内容。
+    新表由 init_db 的 create_all 建出，不走 _auto_migrate。
+    """
+
+    __tablename__ = "emby_library_list_projection_staging"
+
+    __table_args__ = (
+        UniqueConstraint("library_id", name="uq_library_list_projection_staging_library"),
+        Index("ix_library_list_projection_staging_library", "library_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    library_id = Column(Integer, nullable=False)
+    child_count = Column(Integer, nullable=False, default=0)
+    earliest_added = Column(DateTime, nullable=True)
+    cover_tag = Column(String(64), nullable=False, default="1")
+    computed_at = Column(DateTime, nullable=False, default=datetime.now)
+
+
 class MediaItemArtworkOverride(Base):
     """条目图片人工覆盖（媒体库学习 L2）。
 
