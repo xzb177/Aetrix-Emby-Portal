@@ -588,20 +588,14 @@ def _apply_refresh_failure(db: Session, binding: em.UserStorageBinding,
         ub._mark_failed(db, binding, kind)
 
 
-def get_user_drive_access_token(db: Session, user_id: int,
-                                http_post=None) -> str:
-    """该用户 Drive 令牌唯一口（播放 / 扫描 / 工人共用，不许各写一套）。
+def get_binding_drive_access_token(db: Session, binding,
+                                 http_post=None) -> str:
+    """指定绑定行的 Drive 令牌口（BYOS P3 按绑定扫描用）。
 
-    - 无 active 绑定 → not_found（调用方按“无可用绑定”处理，绝不
-      回落共享 SA——回落会把别人的盘或共享盘当成该用户的盘）；
-    - 未过期（留 300 秒余量）→ 直接返回 access_token；
-    - 快过期 → 刷新后返回新 token 并写回；刷新失败属 expired /
-      auth_error → 落行并抛对应 kind；throttled / transient → 不改
-      行，抛 transient（调用方重试，凭据本身没死）。
+    与 get_user_drive_access_token 同一套刷新/落态逻辑，只是不做
+    “最早 active 绑定”查找：调用方已按绑定分账选好行，本口绝不
+    替调用方换一行——换行就是跨绑定复用凭据。
     """
-    binding = ub.get_active_binding(db, user_id, ub.PROVIDER_DRIVE)
-    if binding is None:
-        raise DriveOAuthError("not_found", "当前用户没有可用的 Drive 绑定。")
     cred, token = _drive_credential_of(db, binding)
     expires_at = int(token.get("expires_at") or 0)
     if expires_at > int(time.time()) + OAUTH_TOKEN_REFRESH_MARGIN_SEC:
@@ -624,6 +618,25 @@ def get_user_drive_access_token(db: Session, user_id: int,
     _store_refreshed_token(db, binding, cred, new_tokens)
     db.commit()
     return new_tokens["access_token"]
+
+
+
+
+def get_user_drive_access_token(db: Session, user_id: int,
+                                http_post=None) -> str:
+    """该用户 Drive 令牌唯一口（播放 / 扫描 / 工人共用，不许各写一套）。
+
+    - 无 active 绑定 → not_found（调用方按“无可用绑定”处理，绝不
+      回落共享 SA——回落会把别人的盘或共享盘当成该用户的盘）；
+    - 未过期（留 300 秒余量）→ 直接返回 access_token；
+    - 快过期 → 刷新后返回新 token 并写回；刷新失败属 expired /
+      auth_error → 落行并抛对应 kind；throttled / transient → 不改
+      行，抛 transient（调用方重试，凭据本身没死）。
+    """
+    binding = ub.get_active_binding(db, user_id, ub.PROVIDER_DRIVE)
+    if binding is None:
+        raise DriveOAuthError("not_found", "当前用户没有可用的 Drive 绑定。")
+    return get_binding_drive_access_token(db, binding, http_post=http_post)
 
 
 def refresh_drive_binding(db: Session, user_id: int, binding_id: int,

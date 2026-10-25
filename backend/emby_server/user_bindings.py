@@ -136,6 +136,42 @@ def get_active_binding(db: Session, user_id: int,
     )
 
 
+def binding_115_cookie(db: Session, user_id: int,
+                       binding_id: int) -> str:
+    """指定绑定行的 115 Cookie（BYOS P3 按绑定扫描列举用，唯一口）。
+
+    - 只认本人行、只认 pan115 行：他人行 / 非 115 行按 not_found 处理
+      （不泄露他人绑定存在性，与 delete_binding 同口径）；
+    - 凭据行归属不对（scope 非 user、owner 非本人）→ transient 响亮报错，
+      不回落共享 Cookie——回落会把别人的盘当成该用户的盘；
+    - 解密封失败 → 绑定落 auth_error 后抛 auth_error（P1 直链同款口径，
+      密钥轮换后旧密文解不开，须重绑）；
+    - 返回的明文只给调用方当次列举用：调用方（byos_scan）不得记日志、
+      不得进返回值、不得跨绑定复用。
+    """
+    binding = (
+        db.query(em.UserStorageBinding)
+        .filter(em.UserStorageBinding.id == binding_id,
+                em.UserStorageBinding.user_id == user_id)
+        .first()
+    )
+    if binding is None or binding.provider != PROVIDER_PAN115:
+        raise BindingError("not_found", "绑定不存在或不属于当前用户。")
+    cred = _credential_of(db, binding)
+    try:
+        cookie = unseal_secret(cred.sealed_credential or "")
+    except SealedSecretError as exc:
+        _mark_failed(db, binding, "auth_error")
+        db.commit()
+        raise BindingError(
+            "auth_error", BINDING_ERROR_MESSAGES["auth_error"]) from exc
+    if not cookie:
+        _mark_failed(db, binding, "auth_error")
+        db.commit()
+        raise BindingError("auth_error", BINDING_ERROR_MESSAGES["auth_error"])
+    return cookie
+
+
 def _credential_of(db: Session,
                    binding: em.UserStorageBinding) -> em.MountCredential:
     cred = (

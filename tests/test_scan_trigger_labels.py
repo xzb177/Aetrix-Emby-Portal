@@ -7,11 +7,11 @@
 全部改写成 "manual" 落库——过去 14 天 222 个 scan run 在 DB 里全是 manual，
 复盘时被误读为"有人在点扫描"，差点把事故归因算到用户头上。
 
-修复：白名单补全为代码里真实存在的 11 个触发值；
+修复：白名单补全为代码里真实存在的 12 个触发值；
 未知值仍回退 "manual"（原设计意图保留）。
 
 本文件三层覆盖：
-1. normalize 单函数：11 个真值原样保留、未知值回退 manual；
+1. normalize 单函数：12 个真值原样保留、未知值回退 manual；
 2. 端到端落库：enqueue（真函数）→ ScanTask 保留真值 →
    begin_scan（真函数）→ ScanRun 行的 trigger_kind 与传入一致；
 3. 未知值端到端：队列透传原值、落库时回退 manual（设计语义）。
@@ -36,7 +36,7 @@ from backend.emby_server import scanner
 KNOWN_TRIGGERS = (
     "manual", "client", "node", "repair",
     "auto", "fs-event", "drive-changes", "chase-new", "strm-gen", "rescrape",
-    "resume",
+    "resume", "byos_binding",
 )
 
 

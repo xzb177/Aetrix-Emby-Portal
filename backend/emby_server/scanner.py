@@ -2342,7 +2342,8 @@ def _watch_empty_source(label: str, src, files: Iterator,
 
 def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
                       failed_roots: list,
-                      report: Optional[list] = None) -> Iterator[tuple]:
+                      report: Optional[list] = None,
+                      source_override: Optional[list] = None) -> Iterator[tuple]:
     """遍历一个媒体库的全部扫描来源（本机路径 + 挂载），产出 ``(来源标签, 文件迭代器)``
 
     来源不可用（目录不存在 / 挂载停用 / 账号失效 / 网络不通）时**不会**抛出去中断整个扫描，
@@ -2350,7 +2351,19 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
     传了 ``report`` 时，不可用的来源也记一条 ``kind="unavailable"`` 的明细进去——
     「这轮一共几个来源、哪个一条都没扫到」在后台要能一眼看见（见 scan_result_payload）。
     明细在生成器收尾时补写：调用方中途退出也拿得到。
+
+    ``source_override``（BYOS P3 定向来源）：给了就**只**产出这些
+    ``(标签, 文件迭代器)``，不读库的现行来源——绑定扫描只认调用方按
+    绑定选好的源，绝不顺带扫共享挂载（顺带读就是跨绑定/跨源串数据）。
+    缺省 None 时行为逐字不变。
     """
+    if source_override is not None:
+        # 计数明细由主循环的 _attribute_source 按来源收尾时算差值（与现行
+        # 来源同口径），这里不另写 report 条目——否则同一来源会出现两条
+        # 明细（一条零计数、一条真实计数）。
+        for label, files in source_override:
+            yield label, files
+        return
     # 清单第 2 项：扫描来源解析改读新表（无行时回落旧列并记警告，见 mount_sources）。
     sources, failed = mount_sources.read_library_sources(db, library)
     unavailable = []
@@ -2742,6 +2755,13 @@ def _dir_key_of(scan_file: "ScanFile") -> str:
     """目录的稳定标识：本机用绝对路径，挂载用 ``mount://<id>/<rel>``"""
     if scan_file.local_dir:
         return scan_file.local_dir
+    # BYOS P3：绑定扫描的入库路径是 ``byos://<binding_id>/<rel>``（见
+    # byos_scan），不是挂载路径——目录键直接取该路径的目录段，既按绑定
+    # 分账（同 rel 不同绑定不撞键），又不写出 ``mount://None/...`` 这种
+    # 假挂载键去污染库的 ScanDirState。
+    stored = getattr(scan_file, "stored_path", "") or ""
+    if stored.startswith("byos://"):
+        return os.path.dirname(stored) or stored
     return mount_lib.mount_path(scan_file.mount_id, scan_file.dir_rel)
 
 
@@ -3049,6 +3069,16 @@ def _series_guid_of(scan_file: "ScanFile") -> str:
     if dirpath:
         series_dir = os.path.dirname(dirpath.rstrip("/")) if dirpath else ""
         return item_guid(series_dir or (os.path.dirname(scan_file.stored_path) or scan_file.stored_path))
+    # BYOS P3：绑定扫描没有挂载 id，远端分支的 mount_path(None, d) 会产
+    # 出 ``mount://None/...``——同剧在不同绑定下会撞同一个剧集 guid、跨
+    # 用户串剧。绑定路径自带绑定 id，直接按入库路径的目录段推导剧集
+    # guid（季目录逻辑与远端分支同口径），分账天然成立。
+    stored = getattr(scan_file, "stored_path", "") or ""
+    if stored.startswith("byos://"):
+        d = os.path.dirname(stored.rstrip("/")) or "/"
+        if _SEASON_DIR_RE.match(os.path.basename(d)):
+            d = posixpath.dirname(d) or "/"
+        return item_guid(d)
     d = (scan_file.dir_rel or "/").rstrip("/") or "/"
     if _SEASON_DIR_RE.match(os.path.basename(d)):
         d = posixpath.dirname(d) or "/"
@@ -3178,23 +3208,28 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
             from backend.emby_server import dedup as dedup_lib
             # 一次查出本库所有电影的 (id, tmdb_id, name, year)，Python 层建去重映射
             existing = db.query(MI.id, MI.tmdb_id, MI.name,
-                                MI.production_year).filter(
+                                MI.production_year, MI.file_path).filter(
                 MI.library_id == ctx.lib_id,
                 MI.item_type == "movie",
                 MI.deleted_at.is_(None),
             ).all()
             key_to_id: dict = {}
-            for eid, etmdb, ename, eyear in existing:
+            for eid, etmdb, ename, eyear, epath in existing:
                 ekey = dedup_lib.dedup_key_for(ctx.lib_id, "movie", etmdb,
                                                ename, eyear)
-                if ekey and ekey not in key_to_id:
-                    key_to_id[ekey] = eid
+                # BYOS P3：去重键叠加命名空间——同一部电影在不同绑定下
+                # 是两条条目，复用对方绑定的行会把 A 的条目改写成 B 的
+                # 路径（串用户）；共享行之间命名空间相同，行为逐字不变。
+                ns_key = (_scan_namespace(epath), ekey)
+                if ekey and ns_key not in key_to_id:
+                    key_to_id[ns_key] = eid
             for idx, p in movie_pendings:
                 pkey = dedup_lib.dedup_key_for(
                     ctx.lib_id, "movie", None,
                     p.parsed.get("name"), p.parsed.get("year"))
-                if pkey and pkey in key_to_id:
-                    movie_dup_map[idx] = key_to_id[pkey]
+                ns_key = (_scan_namespace(p.scan_file.stored_path), pkey)
+                if pkey and ns_key in key_to_id:
+                    movie_dup_map[idx] = key_to_id[ns_key]
         except ImportError:
             pass
 
@@ -3212,7 +3247,7 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
             merge_cfg = _mvw.series_merge_config(db)
             # 一次查出本库所有剧集的 (id, tmdb_id, name, year)，Python 层建去重映射
             existing = db.query(MI.id, MI.tmdb_id, MI.name,
-                                MI.production_year).filter(
+                                MI.production_year, MI.file_path).filter(
                 MI.library_id == ctx.lib_id,
                 MI.item_type == "series",
                 MI.deleted_at.is_(None),
@@ -3220,12 +3255,15 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
             key_to_id: dict = {}
             loose_to_tmdb: dict = {}  # 宽松 key -> 见过的非空 tmdb_id 集合
             loose_to_id: dict = {}    # 宽松 key -> (eid, eyear)，歧义的不进
-            for eid, etmdb, ename, eyear in existing:
+            for eid, etmdb, ename, eyear, epath in existing:
                 ekey = dedup_lib.dedup_key_for(ctx.lib_id, "series", etmdb,
                                                ename, eyear)
-                if ekey and ekey not in key_to_id:
-                    key_to_id[ekey] = eid
-                lkey = ("loose", ctx.lib_id,
+                # BYOS P3：去重键叠加命名空间（与电影版同理）。
+                ns = _scan_namespace(epath)
+                ns_key = (ns, ekey)
+                if ekey and ns_key not in key_to_id:
+                    key_to_id[ns_key] = eid
+                lkey = (ns, "loose", ctx.lib_id,
                         dedup_lib.normalize_name_loose(ename), eyear or 0)
                 tmdb_norm = (etmdb or "").strip() or None
                 seen = loose_to_tmdb.setdefault(lkey, set())
@@ -3240,13 +3278,14 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
                 pkey = dedup_lib.dedup_key_for(
                     ctx.lib_id, "series", None,
                     p.parsed.get("name"), p.parsed.get("year"))
-                if pkey and pkey in key_to_id:
-                    series_dup_map[idx] = key_to_id[pkey]
+                pns = _scan_namespace(p.scan_file.stored_path)
+                if pkey and (pns, pkey) in key_to_id:
+                    series_dup_map[idx] = key_to_id[(pns, pkey)]
                     continue
                 # 总开关=0 时宽松复用全停（严格逻辑不受影响）
                 if not merge_cfg["enabled"] or not merge_cfg["loose_enabled"]:
                     continue
-                lkey = ("loose", ctx.lib_id,
+                lkey = (pns, "loose", ctx.lib_id,
                         dedup_lib.normalize_name_loose(p.parsed.get("name")),
                         p.parsed.get("year") or 0)
                 hit = loose_to_id.get(lkey)
@@ -3737,6 +3776,28 @@ def _submit(pool: ThreadPoolExecutor, fn, *args, **kwargs) -> "Future":
 
 
 
+_BYOS_NS_RE = re.compile(r"^byos://(\d+)/")
+
+
+def _scan_namespace(path: Optional[str]) -> tuple:
+    """扫描身份命名空间：改名识别（file_id / 指纹两版）只在同一命名空间内认领。
+
+    - ``byos://<id>/...`` → ``("byos", id)``：不同绑定的同文件绝不互认
+      （BYOS 设计稿 §四：同一文件被两个用户绑定 = 两条条目，不跨用户去重）；
+    - 其他路径 → ``("shared",)``：共享库现行行为逐字不变；
+    - ``byos://`` 但 id 解析不出 → ``("byos-malformed", path)``：与任何行
+      都不同命名空间，宁可不认改名、不张冠李戴（byos_scan 产出的路径恒
+      为良构，此分支只防脏数据）。
+    """
+    raw = (path or "")
+    if raw.startswith("byos://"):
+        m = _BYOS_NS_RE.match(raw)
+        if m:
+            return ("byos", int(m.group(1)))
+        return ("byos-malformed", raw)
+    return ("shared",)
+
+
 def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
                               ctx: "_ScanContext",
                               claimed_row_ids: Optional[set] = None) -> None:
@@ -3784,6 +3845,12 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
     claimed_row_ids = set(claimed_row_ids) if claimed_row_ids else set()
     for p, fid in zip(need, fids):
         rows = [r for r in found.get(fid, []) if r.id not in claimed_row_ids]
+        # BYOS P3：改名认领不许跨命名空间——同一 Drive 文件被两个绑定扫
+        # 进同一库时，file_id 相同但必须是两条条目，认领对方的行会把
+        # A 的条目改写成 B 的路径（串用户）。共享路径现行行为不变。
+        rows = [r for r in rows
+                if _scan_namespace(getattr(r, "file_path", None))
+                == _scan_namespace(p.scan_file.stored_path)]
         if not rows:
             continue
         # 多集文件同一 file_id 对应多行：按集号精确配对（E27 的 pending
@@ -4200,6 +4267,11 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
                     _seen.add(_r.id)
                     _uniq.append(_r)
             rows = _uniq
+        # BYOS P3：指纹认领同样不许跨命名空间（115 无 file_id，同一
+        # 片名+大小在不同绑定下是两条条目；file_id 版同理，见上）。
+        rows = [r for r in rows
+                if _scan_namespace(getattr(r, "file_path", None))
+                == _scan_namespace(p.scan_file.stored_path)]
         if len(rows) != 1:
             continue
         row = rows[0]
@@ -5188,7 +5260,7 @@ SCAN_STATUS_INTERRUPTED = "interrupted"   # 被进程重启打断（不是失败
 SCAN_TRIGGERS = (
     "manual", "client", "node", "repair",
     "auto", "fs-event", "drive-changes", "chase-new", "strm-gen", "rescrape",
-    "resume",
+    "resume", "byos_binding",
 )
 
 # 每个媒体库保留多少轮扫描流水（0 = 不记流水）。一轮一行，超过就按库回收最旧的行——
@@ -5814,7 +5886,8 @@ def fail_scan(db: Session, library: emby_models.Library, exc: Exception,
 
 def scan_library_sync(db: Session, library: emby_models.Library,
                       snapshot: Optional[LibrarySnapshot] = None,
-                      trigger: str = "manual") -> dict:
+                      trigger: str = "manual",
+                      source_override: Optional[list] = None) -> dict:
     """扫描单个媒体库（同步实现，可在后台线程运行）
 
     约定：
@@ -5829,6 +5902,10 @@ def scan_library_sync(db: Session, library: emby_models.Library,
     - **结果可查**：成功 / 部分失败 / 异常三条路都会把这一轮的统计与原因写回媒体库
       （scan_status / scan_stats / scan_error），见 ``scan_result_payload``；
       同时记一条扫描流水（含 ``trigger``），见 ``scan_runs_payload``。
+    - **定向来源**（BYOS P3）：传了 ``source_override`` 时只扫这些来源，
+      不读库的现行来源；调用方须同时把快照置为定向（``targeted=True``），
+      使清理阶段跳过——绑定线只做新增/更新，绝不因“只看见一个绑定”
+      而删掉库里别的来源的条目。
     """
     snap = snapshot or LibrarySnapshot.of(library)
     # 先在**进程内**占位（重复任务会在这一步被拒绝，不会写库、也不会启动扫描），再写库状态
@@ -5846,7 +5923,16 @@ def scan_library_sync(db: Session, library: emby_models.Library,
         run_id = begin_scan(db, library, trigger, snapshot=snap)
         started = time.perf_counter()
         try:
-            stats = _scan_library_body(db, library, snap)
+            # source_override 只在真正传了时才递给 _scan_library_body：
+            # 默认 None 时保持改前调用形态——_scan_library_body 在运行
+            # 时可能被旧签名的包装/替身替换（scan_instrument 的进度包
+            # 装、测试里的 boom），多一个关键字参数直接 TypeError；
+            # 下面的 iter_scan_sources 分流同款纪律（见 _scan_library_body）。
+            if source_override is None:
+                stats = _scan_library_body(db, library, snap)
+            else:
+                stats = _scan_library_body(db, library, snap,
+                                           source_override=source_override)
         except Exception as exc:  # noqa: BLE001 — 异常要落到库里，再原样抛给调用方
             if isinstance(exc, RuntimeError) and "interpreter shutdown" in str(exc):
                 # 容器重启/部署时扫描线程被中断：不是扫描逻辑故障，给用户一句人话，
@@ -6156,7 +6242,8 @@ def _apply_scan_identity(item, scan_file) -> None:
 
 
 def _scan_library_body(db: Session, library: emby_models.Library,
-                       snap: LibrarySnapshot) -> dict:
+                       snap: LibrarySnapshot,
+                       source_override: Optional[list] = None) -> dict:
     """一轮扫描的主体（不含进程内互斥与结果落库，见 scan_library_sync）"""
     stats: dict = {
         "added": 0, "updated": 0, "removed": 0, "probed": 0, "scraped": 0,
@@ -6178,8 +6265,17 @@ def _scan_library_body(db: Session, library: emby_models.Library,
 
         # 并行 IO 线程池：ffprobe / 目录列举 / TMDB 搜索都在这里跑，写库仍在当前线程按顺序进行
         pool = ThreadPoolExecutor(max_workers=SCAN_WORKERS, thread_name_prefix="scan-io")
-        for label, source_files in iter_scan_sources(snap, library, db, failed_roots,
-                                                     report=stats["sources"]):
+        # source_override 只在真正传了时才递给 iter_scan_sources：默认
+        # None 时保持旧调用形态（测试里有按旧签名替换 iter_scan_sources
+        # 的假函数，多一个关键字参数会直接 TypeError）。
+        if source_override is None:
+            _sources_iter = iter_scan_sources(snap, library, db, failed_roots,
+                                              report=stats["sources"])
+        else:
+            _sources_iter = iter_scan_sources(snap, library, db, failed_roots,
+                                              report=stats["sources"],
+                                              source_override=source_override)
+        for label, source_files in _sources_iter:
             def _process_one(scan_file, _pending):
                 """处理单个文件的写库（由 _iter_prepared 按批次驱动）。
 
@@ -6387,6 +6483,19 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         _dup_ids = _find_duplicate_series(
                             db, library.id, tmdb_id=_nfo_tmdb,
                             name=_series_name, year=_series_year)
+                        # BYOS P3：剧集去重复用同样不许跨命名空间——
+                        # series 行本身没有 file_path（恒为 None → shared
+                        # 命名空间），故绑定扫描永远不复用任何已有 series
+                        # 行（同绑定重扫走 series_guid 命中，不走这条路）；
+                        # 共享扫描复用 None 路径行，行为逐字不变。
+                        if _dup_ids:
+                            _ns = _scan_namespace(full_path)
+                            _dup_rows = db.query(
+                                emby_models.MediaItem.id,
+                                emby_models.MediaItem.file_path).filter(
+                                emby_models.MediaItem.id.in_(_dup_ids)).all()
+                            _dup_ids = [r[0] for r in _dup_rows
+                                        if _scan_namespace(r[1]) == _ns]
                         if _dup_ids:
                             # 复用已有记录：把新 guid 也指向它，本批后续集数都挂过去
                             series = db.get(emby_models.MediaItem, _dup_ids[0])
