@@ -609,7 +609,7 @@ onMounted(() => {
 <template>
   <div class="admin-page coupons-page">
     <PageHeader
-      eyebrow="运营中心"
+      eyebrow="经营"
       title="优惠券"
       description="付费时抵扣：钱照旧走支付网关，只是单价变了。额度下单即占用，付款转已用，关单 / 退款释放。"
     >

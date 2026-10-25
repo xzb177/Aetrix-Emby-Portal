@@ -116,7 +116,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="系统"
       title="播放总线"
       description="播放实时总线的最新快照与最近命令审计（只读展示）；本页不提供发命令入口。"
     >

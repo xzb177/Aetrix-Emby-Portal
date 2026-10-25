@@ -54,7 +54,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="sidecar 状态"
       description="115 与 139 两个 sidecar 运行时的 manifest 与健康状态（只读）；一端没起来时只标该端不可用，不影响另一端显示。"
     >

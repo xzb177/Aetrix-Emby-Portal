@@ -188,7 +188,7 @@ onMounted(loadRules)
 <template>
   <div class="au-diagnosis">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="系统"
       title="一键体检"
       description="点一下，9 项系统检查自动跑完，给出大白话结论和检查步骤。只读诊断，不改任何配置、不重启任何服务。"
     >

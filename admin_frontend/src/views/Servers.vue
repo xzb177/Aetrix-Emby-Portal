@@ -778,7 +778,7 @@ function opsStateText(state: string): string {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="服务器与线路"
       description="接了几台后端服、几台已有 Emby、当前用哪台出流、库归谁、这台机器碰不碰得到存储 —— 都在这一页（范围在「概况」右侧切，不用先理解「多服」是个什么模块）"
     >

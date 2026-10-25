@@ -107,6 +107,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # 冲突标记门禁（2026-10-15 r11 教训）：rebase/amend 解决冲突后残留的
+      # 标记行曾照单提交、靠 pytest 报 SyntaxError 才发现。CI 这一步是强制门，
+      # 命中即红；pre-commit 钩子（.pre-commit-config.yaml）只是本地提前提醒，
+      # 没装 pre-commit 也不影响 CI 拦截。扫描整棵检出树（跳过 .git 与 node_modules）。
+      - name: 冲突标记检查（残留标记即红）
+        timeout-minutes: 5
+        run: python scripts/check_no_conflict_markers.py
+
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"

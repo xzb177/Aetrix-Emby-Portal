@@ -199,7 +199,7 @@ function ago(s: string | null): string {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="用户与账号"
+      eyebrow="用户"
       title="设备与安全"
       description="第三方客户端（Infuse / Forward / SenPlayer 等）登录即登记设备。封禁会同时吊销令牌，移除等于踢下线。"
     >
