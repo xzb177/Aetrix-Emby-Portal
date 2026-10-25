@@ -1097,7 +1097,7 @@ onMounted(() => {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="元数据来源"
       description="条目这一层的元数据从哪来、错了怎么纠、补全队列跑到哪一步。按库的扫描与刮削策略仍在「媒体库」页。"
     >
