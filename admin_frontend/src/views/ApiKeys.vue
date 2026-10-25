@@ -181,7 +181,7 @@ onMounted(load)
 
 <template>
   <div class="apikey-page">
-    <PageHeader title="API Key 管理" desc="第三方系统的长期访问凭证（Service Token），用 X-API-Key 请求头鉴权">
+    <PageHeader title="API Key" desc="第三方系统的长期访问凭证（Service Token），用 X-API-Key 请求头鉴权">
       <template #actions>
         <el-button :icon="RefreshCw" @click="load" :loading="loading">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">创建 Key</el-button>
