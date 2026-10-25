@@ -125,6 +125,9 @@ def extract_binding(item, fetched: dict) -> Optional[dict]:
         getattr(item, "imdb_id", None)
         or details.get("imdb_id")
         or nfo_data.get("imdb_id")
+        # 接线批：已批建议的 fetched 直接带顶层 imdb_id（与 tmdb_id 的
+        # 顶层读取对称），优先级最低，不动已有 / 详情 / NFO 的优先序。
+        or fetched.get("imdb_id")
     )
     if not tmdb_id and not imdb_id:
         return None
@@ -151,6 +154,13 @@ def extract_binding(item, fetched: dict) -> Optional[dict]:
     # 一致，政策门对现行行为零影响。
     if "ai_suggested" in fetched:
         evidence["ai_suggested"] = bool(fetched.get("ai_suggested"))
+    # 人工拍板标记透传（接线批）：已批的 AI 建议落库时带
+    # human_approved，门拒不再适用（人定了、AI 只是提名）；未拍板时
+    # 不带此键，门行为与今天逐字一致。
+    if fetched.get("human_approved"):
+        evidence["human_approved"] = True
+        if fetched.get("approved_by"):
+            evidence["approved_by"] = str(fetched.get("approved_by"))
     if fetched.get("ai_sources") is not None:
         evidence["sources"] = list(fetched.get("ai_sources") or [])
     elif fetched.get("sources") is not None:
@@ -198,6 +208,8 @@ def apply_identity(db, item, fetched: dict) -> Optional[dict]:
     AI 政策门（清单第 17 项，开关 ENRICH_AI_POLICY_ENABLED 默认关）：
     开时纯 AI 提名的绑定一律拒绝落库（返回 None，走现行审查 / none
     终态）；AI 与非 AI 证据并存时落库，但证据里的 ai_weight 钳制到 0.2。
+    例外（接线批）：fetched 带 human_approved 时是人工已拍板的建议，
+    裁决权在人不在 AI，门拒不再适用（权重仍钳制到 0.2）。
     """
     binding = extract_binding(item, fetched)
     if binding is None:
@@ -206,7 +218,7 @@ def apply_identity(db, item, fetched: dict) -> Optional[dict]:
 
     if _aip.ai_policy_enabled():
         verdict = _aip.evaluate_binding_evidence(binding["evidence"])
-        if not verdict["allowed"]:
+        if not verdict["allowed"] and not binding["evidence"].get("human_approved"):
             logger.warning(
                 "AI 政策门拒绝纯 AI 绑定 id=%s reason=%s",
                 item.id, verdict["reason"])
@@ -329,7 +341,99 @@ def fill_from_frodo(item, fetched: Optional[dict] = None) -> dict:
     return _frodo_candidates(item, fetched)
 
 
-def apply_fill(db, item, fetched: dict) -> list:
+def _default_people_fetcher(fetched):
+    """默认人物抓取：复用本轮已采集的 TMDB credits（不新增 IO）。
+
+    按名字精确匹配本轮 credits；名字不在 credits 里时返回 None（该行
+    本轮跳过，不编来源、不另发请求）。拿不到 credits 时返回 None，
+    调用方随之跳过人物补缺。
+    """
+    try:
+        from backend.emby_server.tmdb import cast_list as _cast_list
+    except Exception:  # noqa: BLE001 — TMDB 客户端不可用 = 无抓取源
+        return None
+    details = (fetched or {}).get("tmdb_details") or {}
+    try:
+        cast = _cast_list(details)
+    except Exception:  # noqa: BLE001 — credits 解析失败 = 无抓取源
+        return None
+    by_name = {c["name"]: c for c in cast if c.get("name")}
+    if not by_name:
+        return None
+
+    def _fetch(record):
+        entry = by_name.get((record or {}).get("name"))
+        if entry is None:
+            return None
+        return {
+            "name": entry["name"],
+            "role": entry.get("role") or "",
+            "image": entry.get("image") or "",
+            "person_tmdb_id": entry.get("person_id") or "",
+        }
+
+    return _fetch
+
+
+def _apply_people_fill(db, item, fetched, people_fetcher=None):
+    """补资料段人物补缺（只填 emby_people 现有三列、永不覆盖）。
+
+    记录源 = 本条目已有的人物行（不新建行，建行仍归现行
+    _apply_cast）；抓取源默认复用本轮 TMDB credits，调用方可注入
+    fetcher。开关关 / 无行 / 无抓取源时静默跳过；任何异常只记日志，
+    绝不拖垮补资料段。返回实际改动的字段数（日志用，不进返回值）。
+    """
+    try:
+        from backend.emby_server.metasources import people_scrape as _people
+    except Exception as exc:  # noqa: BLE001 — 人物模块不可用不影响补资料
+        logger.warning("人物刮削模块不可用，跳过 id=%s: %s", item.id, exc)
+        return 0
+    if not _people.people_scrape_enabled():
+        return 0
+    if people_fetcher is None:
+        people_fetcher = _default_people_fetcher(fetched)
+    if people_fetcher is None:
+        return 0
+    try:
+        rows = (
+            db.query(em.EmbyPerson)
+            .filter(em.EmbyPerson.item_id == item.id)
+            .all()
+        )
+    except Exception as exc:  # noqa: BLE001 — 人物行读不到不影响补资料
+        logger.warning("人物行读取失败，跳过 id=%s: %s", item.id, exc)
+        return 0
+    if not rows:
+        return 0
+    records = [
+        {
+            "name": r.name,
+            "role": r.role or "",
+            "image": r.image or "",
+            "person_tmdb_id": r.person_tmdb_id or "",
+        }
+        for r in rows
+    ]
+    try:
+        result = _people.scrape_people(records, people_fetcher)
+    except Exception as exc:  # noqa: BLE001 — 刮削失败不影响补资料
+        logger.warning("人物刮削失败，跳过 id=%s: %s", item.id, exc)
+        return 0
+    filled_by_name = {
+        (entry.get("record") or {}).get("name"): entry.get("record")
+        for entry in (result.get("filled") or [])
+    }
+    changed = 0
+    for row in rows:
+        record = filled_by_name.get(row.name)
+        if record is not None:
+            changed += len(_people.apply_filled_to_person(row, record))
+    if changed:
+        logger.info("补资料段人物补缺 id=%s changed=%s", item.id, changed)
+    return changed
+
+
+def apply_fill(db, item, fetched: dict, people_fetcher=None) -> list:
     """补资料段：只在已绑定条目上、只填空缺字段。
 
     调用方须保证条目已绑定（tmdb_id 或 imdb_id 非空）；未绑定时本函数
@@ -338,7 +442,9 @@ def apply_fill(db, item, fetched: dict) -> list:
     Frodo 只补缺口，不覆盖已填。Frodo 之后仍缺的字段再问中文聚合
     通道（聚合开关关时它返回空，行为与本批之前逐字一致；聚合开时
     它按源优先级逐字段补缺，Frodo 腿在聚合里不受独立 Frodo 开关
-    管辖——见 zh_aggregate 模块头注）。返回实际填上的字段名列表。
+    管辖——见 zh_aggregate 模块头注）。最后跑人物补缺（接线批）：
+    只填本条目已有人物行的 role / image / person_tmdb_id 空缺，
+    永不覆盖、不新建行；开关关时不问源。返回实际填上的字段名列表。
     """
     if _empty(getattr(item, "tmdb_id", None)) and _empty(
         getattr(item, "imdb_id", None)
@@ -377,6 +483,10 @@ def apply_fill(db, item, fetched: dict) -> list:
             if field in agg_candidates:
                 setattr(item, field, agg_candidates[field])
                 filled.append(field)
+    try:
+        _apply_people_fill(db, item, fetched, people_fetcher)
+    except Exception as exc:  # noqa: BLE001 — 人物补缺绝不拖垮补资料段
+        logger.warning("补资料段人物补缺失败，跳过 id=%s: %s", item.id, exc)
     binding = None
     if getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None):
         binding = {
