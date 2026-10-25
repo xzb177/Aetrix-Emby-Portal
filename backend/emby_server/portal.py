@@ -32,6 +32,7 @@ from backend import config_service, models, realms, subscriptions
 from backend.database import get_db, SessionLocal
 
 from backend.emby_server import models as em
+from backend.emby_server import identity_gate
 from backend.emby_server import nodes as node_lib
 from backend.emby_server.public_url import client_base_url, configured_public_url
 from backend.emby_server.api import (
@@ -801,19 +802,24 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
     """
     limit = max(1, min(int(limit or 12), 50))
     UMD, MI, PS = em.UserMediaData, em.MediaItem, em.PlaybackSession
-    rows = (
-        _scope_items(
-            db.query(UMD, MI)
-            .join(MI, MI.id == UMD.item_id)
-            .filter(
-                UMD.user_id == request_user.id,
-                UMD.playback_position_ticks > 0,
-                UMD.played == False,  # noqa: E712
-                MI.item_type.in_(["movie", "episode"]),
-                MI.is_hidden == False,  # noqa: E712
-            ),
-            _library_scope(db, request_user),
+    resume_q = (
+        db.query(UMD, MI)
+        .join(MI, MI.id == UMD.item_id)
+        .filter(
+            UMD.user_id == request_user.id,
+            UMD.playback_position_ticks > 0,
+            UMD.played == False,  # noqa: E712
+            MI.item_type.in_(["movie", "episode"]),
+            MI.is_hidden == False,  # noqa: E712
         )
+    )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：展示过滤、进度不删——未绑定条目不进
+        # 门户续看（电影按自身、单集按所属剧判身份），UserMediaData
+        # 进度行原样保留，重绑后自动回来；门进 SQL（截断之前）。
+        resume_q = resume_q.filter(identity_gate.identity_clause())
+    rows = (
+        _scope_items(resume_q, _library_scope(db, request_user))
         # 同一部剧的几集会被聚合成一行，多取一些候选再截断
         .order_by(UMD.last_played_at.desc().nullslast(), UMD.id.desc())
         .limit(limit * 5 + 20)
@@ -824,11 +830,14 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
     series_ids = {it.series_id for _u, it in rows if it.item_type == "episode" and it.series_id}
     series_map: dict[int, em.MediaItem] = {}
     if series_ids:
-        series_map = {
-            s.id: s for s in db.query(MI).filter(
-                MI.id.in_(series_ids), MI.is_hidden == False,  # noqa: E712
-            ).all()
-        }
+        series_q = db.query(MI).filter(
+            MI.id.in_(series_ids), MI.is_hidden == False,  # noqa: E712
+        )
+        if identity_gate.phase2_enabled():
+            # 折叠查询同口径：所属剧未绑定时单集不出（series_map 查不到
+            # → 循环里 continue，与隐藏剧的单集同处理）。
+            series_q = series_q.filter(identity_gate.identity_clause())
+        series_map = {s.id: s for s in series_q.all()}
 
     page: list[tuple] = []  # (umd, 展示条目, 单集|None)
     seen_series: set[int] = set()
@@ -901,14 +910,18 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
 @user_emby_router.get("/favorites")
 def get_favorite_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                             db: Session = Depends(get_db)):
-    rows = (
+    fav_q = (
         db.query(em.MediaItem)
         .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
         .filter(em.UserMediaData.user_id == request_user.id,
                 em.UserMediaData.is_favorite == True)  # noqa: E712
         .order_by(em.UserMediaData.updated_at.desc())
-        .all()
     )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：列表展示过滤、标记不删——未绑定条目
+        # 不进门户收藏，is_favorite 标记保留，重绑后自动回来。
+        fav_q = fav_q.filter(identity_gate.identity_clause())
+    rows = fav_q.all()
     return {"items": [
         # 季无图时回退父剧集海报（season_poster_url），其余类型行为不变
         {"id": i.guid, "name": i.name, "type": i.item_type, "year": i.production_year,
@@ -1061,6 +1074,11 @@ def get_chase_calendar(request: Request,
     )
     if base_query is not None and library_id is not None:
         base_query = base_query.filter(em.MediaItem.library_id == library_id)
+    if base_query is not None and identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：追新日历是系统主动枚举——未绑定新条目
+        # 不上日历；角标计数与条目详情都从 base_query 出，一处挂载
+        # 两路同口径（设计稿 §4.9：角标与条目同口径）。
+        base_query = base_query.filter(identity_gate.identity_clause())
 
     # 只取四个小列做聚合：一天的条目可能上千，构造 DTO 才是贵的部分，
     # 计数 / 分组没必要把整行实体拉出来。

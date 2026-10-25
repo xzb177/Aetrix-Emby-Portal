@@ -25,6 +25,7 @@ from backend.emby_server.streaming import (
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 import os
 
@@ -397,6 +398,37 @@ def item_alternate_versions(item_id: str, request: Request,
     # 如果查的是被合并的版本，定位到主记录
     primary_id = item.merged_into_id or item.id
     versions = _mvw.get_alternate_versions(db, primary_id)
+    # 三期（开关 IDENTITY_SHELF_PHASE3_ENABLED，须总开关同时开启）：
+    # 版本列表并入同库同身份的未合并副本——合并 worker 还没跑、或
+    # 分组键此前对不上时，同片多份今天不在版本列表里。匹配按分层
+    # 身份直接做（主记录有 tmdb → 同 trim(tmdb)；只有 imdb → 同
+    # trim(imdb)；主记录无身份 → 不扩），故并入的行必已绑定，不会
+    # 把未绑定行经直达面端出来；跨库不串（只查主记录同库）。
+    from backend.emby_server import identity_gate as _gate
+    if _gate.phase3_enabled():
+        primary_row = item if item.id == primary_id else db.query(em.MediaItem).filter(
+            em.MediaItem.id == primary_id).first()
+        if primary_row is not None:
+            _tmdb = (primary_row.tmdb_id or "").strip()
+            _imdb = (primary_row.imdb_id or "").strip()
+            _extra_q = db.query(em.MediaItem).filter(
+                em.MediaItem.library_id == primary_row.library_id,
+                em.MediaItem.merged_into_id.is_(None),
+                em.MediaItem.id != primary_id,
+                em.MediaItem.deleted_at.is_(None),
+            )
+            if _tmdb:
+                _extra_q = _extra_q.filter(
+                    func.trim(em.MediaItem.tmdb_id) == _tmdb)
+            elif _imdb:
+                _extra_q = _extra_q.filter(
+                    func.trim(em.MediaItem.imdb_id) == _imdb)
+            else:
+                _extra_q = None
+            if _extra_q is not None:
+                _seen = {v.id for v in versions}
+                versions = versions + [v for v in _extra_q.all()
+                                       if v.id not in _seen]
     # H1：只列用户可见媒体库里的版本（合并可能跨库）
     versions = sorted((v for v in versions if _item_visible(db, user, v)), key=lambda s: s.id)
     items = [_version_dto(s) for s in versions]

@@ -29,7 +29,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from sqlalchemy import and_, false, func, or_, select
+from sqlalchemy import String, and_, case, cast, false, func, or_, select
 from sqlalchemy.orm import Session, aliased, joinedload
 
 from backend import library_scope, models, playback_policy
@@ -2968,24 +2968,29 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
     """
     # G1-P1-2：Limit 钳制 200（原无上界）
     limit = qlimit(request.query_params, default=12)
-    rows = (
-        _scope_items(
-            db.query(em.UserMediaData, em.MediaItem)
-            .join(em.MediaItem, em.MediaItem.id == em.UserMediaData.item_id)
-            .filter(
-                em.UserMediaData.user_id == user.id,
-                em.UserMediaData.playback_position_ticks > 0,
-                em.UserMediaData.played == False,  # noqa: E712
-                # 客户端 HideFromResume 标记过的条目不再出现在继续观看里
-                em.UserMediaData.hide_from_resume == False,  # noqa: E712
-                em.MediaItem.item_type.in_(["movie", "series", "episode"]),
-                em.MediaItem.is_hidden == False,  # noqa: E712
-                # 副本绝不能占 Resume 的 limit 名额：合并 worker 不搬运播放记录，
-                # 副本的播放行会先占名额、再被 deduplicate_items 扔掉，导致列表缩水。
-                em.MediaItem.merged_into_id.is_(None),
-            ),
-            _library_scope(db, user),
+    resume_q = (
+        db.query(em.UserMediaData, em.MediaItem)
+        .join(em.MediaItem, em.MediaItem.id == em.UserMediaData.item_id)
+        .filter(
+            em.UserMediaData.user_id == user.id,
+            em.UserMediaData.playback_position_ticks > 0,
+            em.UserMediaData.played == False,  # noqa: E712
+            # 客户端 HideFromResume 标记过的条目不再出现在继续观看里
+            em.UserMediaData.hide_from_resume == False,  # noqa: E712
+            em.MediaItem.item_type.in_(["movie", "series", "episode"]),
+            em.MediaItem.is_hidden == False,  # noqa: E712
+            # 副本绝不能占 Resume 的 limit 名额：合并 worker 不搬运播放记录，
+            # 副本的播放行会先占名额、再被 deduplicate_items 扔掉，导致列表缩水。
+            em.MediaItem.merged_into_id.is_(None),
         )
+    )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：展示过滤、进度不删——未绑定条目不进续看，
+        # 但 UserMediaData 的进度行原样保留，重绑后自动回来。必须进 SQL
+        # （limit 之前），先占名额再内存剔除会让续看缩水（同 Latest 的纪律）。
+        resume_q = resume_q.filter(identity_gate.identity_clause())
+    rows = (
+        _scope_items(resume_q, _library_scope(db, user))
         .order_by(em.UserMediaData.last_played_at.desc())
         .limit(limit)
         .all()
@@ -2998,7 +3003,7 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
     sids = {i.series_id for _umd, i in rows if i.item_type == "episode" and i.series_id}
     series_map = {}
     if sids:
-        series_items = _scope_items(
+        series_q = _scope_items(
             db.query(em.MediaItem).filter(
                 em.MediaItem.id.in_(sids),
                 em.MediaItem.is_hidden == False,  # noqa: E712
@@ -3006,7 +3011,12 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                 em.MediaItem.merged_into_id.is_(None),
             ),
             _library_scope(db, user),
-        ).all()
+        )
+        if identity_gate.phase2_enabled():
+            # 折叠查询同口径：episode 所属 series 未绑定时，该行不出现
+            # （series_map 查不到 → 循环里 continue，与隐藏剧的单集同处理）。
+            series_q = series_q.filter(identity_gate.identity_clause())
+        series_items = series_q.all()
         series_map = {s.id: s for s in series_items}
 
     items = []
@@ -3085,10 +3095,11 @@ def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = De
     # 计数同样按可见范围收：否则客户端导航栏显示 120 部、点进去只有 40 部。
     allowed = _library_scope(db, user)
     # 身份门（货架面）：计数必须与列表同口径，未绑定条目不计——否则
-    # 导航栏写 120 部、点进去只有 40 部。口径定死为「已绑定行数」（沿用
-    # 本端点既有的行数语义、只加身份维度；episode/season 按判据跟随
-    # series）；与列表 TotalRecordCount 的「代表组数」完全同源留待三期
-    # 与代表逻辑一起收，本期不在此先行。
+    # 导航栏写 120 部、点进去只有 40 部。一期口径定死为「已绑定行数」
+    # （沿用本端点既有的行数语义、只加身份维度；episode/season 按判据
+    # 跟随 series）；三期开关开启时，电影/剧集计数改为「代表组数」
+    # （与列表 TotalRecordCount 同源：同分层身份键只计一组；集与其它
+    # 类型不去重，仍按行数；总数 = 组数 + 集行数 + 其它类型行数）。
     _gate_clause = (identity_gate.identity_clause()
                     if identity_gate.gate_enabled() else None)
     _by_type_q = db.query(em.MediaItem.item_type, func.count()).filter(
@@ -3103,12 +3114,56 @@ def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = De
         .group_by(em.MediaItem.item_type)
         .all()
     )
+    movie_c = int(by_type.get("movie", 0))
+    series_c = int(by_type.get("series", 0))
+    episode_c = int(by_type.get("episode", 0))
+    item_c = int(_scope_items(_total_q, allowed).scalar() or 0)
+    if identity_gate.phase3_enabled():
+        # 三期代表组对齐：已绑定行只认 tmdb/imdb 两层身份键（弱键组
+        # 在货架面本就不出现，故分层键与列表代表组一一对应；与
+        # dedup_key 的分组结果无关，不改分页去重层）。组键含库 id——
+        # 列表去重键本就含库（同片跨库是两组），计数须同口径。
+        # COUNT(DISTINCT …) 忽略 NULL——无身份行已被门滤掉，CASE 的
+        # NULL 分支是死代码，仅作防御。字符串拼接用 ``+``（PG/SQLite
+        # 均渲染为 ``||``，不用 func.concat——SQLite 没有它）。
+        _tmdb_trim = func.trim(em.MediaItem.tmdb_id)
+        _imdb_trim = func.trim(em.MediaItem.imdb_id)
+        _tmdb_blank = or_(em.MediaItem.tmdb_id.is_(None), _tmdb_trim == "")
+        _lib = cast(em.MediaItem.library_id, String)
+        _tmdb_key = case(
+            (and_(em.MediaItem.tmdb_id.isnot(None), _tmdb_trim != ""),
+             _lib + "|" + _tmdb_trim),
+            else_=None,
+        )
+        _imdb_key = case(
+            (and_(_tmdb_blank, em.MediaItem.imdb_id.isnot(None),
+                  _imdb_trim != ""), _lib + "|" + _imdb_trim),
+            else_=None,
+        )
+        _group_q = db.query(
+            em.MediaItem.item_type,
+            (func.count(func.distinct(_tmdb_key))
+             + func.count(func.distinct(_imdb_key))).label("groups"),
+        ).filter(
+            em.MediaItem.is_hidden == False,  # noqa: E712
+            em.MediaItem.item_type.in_(["movie", "series"]),
+            _gate_clause,
+        )
+        group_by_type = dict(
+            _scope_items(_group_q, allowed)
+            .group_by(em.MediaItem.item_type)
+            .all()
+        )
+        row_others = item_c - movie_c - series_c - episode_c
+        movie_c = int(group_by_type.get("movie", 0))
+        series_c = int(group_by_type.get("series", 0))
+        item_c = movie_c + series_c + episode_c + row_others
 
     return {
-        "MovieCount": int(by_type.get("movie", 0)),
-        "SeriesCount": int(by_type.get("series", 0)),
-        "EpisodeCount": int(by_type.get("episode", 0)),
-        "ItemCount": int(_scope_items(_total_q, allowed).scalar() or 0),
+        "MovieCount": movie_c,
+        "SeriesCount": series_c,
+        "EpisodeCount": episode_c,
+        "ItemCount": item_c,
         "AlbumCount": 0, "SongCount": 0, "ArtistCount": 0, "AlbumArtistCount": 0,
         "MusicVideoCount": 0, "TrailerCount": 0, "BoxSetCount": 0, "BookCount": 0,
     }
@@ -3677,10 +3732,17 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
         # 详情页进入某部未观看的剧时，客户端会先问
         # ``NextUp?SeriesId=<本剧>``。旧实现完全忽略 SeriesId，反而从全库
         # 的已看剧里挑下一集；于是客户端会把另一部剧的 E02 当成本剧首集。
-        requested_series = db.query(em.MediaItem).filter(
+        requested_series_q = db.query(em.MediaItem).filter(
             em.MediaItem.guid == requested_series_guid,
             em.MediaItem.item_type == "series",
-        ).first()
+        )
+        if identity_gate.phase2_enabled():
+            # 二期：SeriesId 点名问下一集仍属货架推送面——未绑定剧的
+            # 下一集不推（详情直达本身不拦，见案 A；NextUp 是系统主动
+            # 推送面，与浏览同口径）。
+            requested_series_q = requested_series_q.filter(
+                identity_gate.identity_clause())
+        requested_series = requested_series_q.first()
         if requested_series is None:
             return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
         if allowed is not None and requested_series.library_id not in allowed:
@@ -3737,6 +3799,14 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
         .all()
     )
     series_ids = sorted({r.series_id for r in ep_series})
+    if identity_gate.phase2_enabled():
+        # 二期：只给已绑定剧集推下一集——集跟随所属 series 的绑定，
+        # 未绑定剧先行剔除，下游按批取首集未看时不再重复判身份。
+        bound_ids = {r[0] for r in db.query(em.MediaItem.id).filter(
+            em.MediaItem.id.in_(series_ids),
+            identity_gate.identity_clause(),
+        ).all()}
+        series_ids = [sid for sid in series_ids if sid in bound_ids]
     if not series_ids:
         return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
     series_recent = {}
@@ -3781,6 +3851,11 @@ def get_favorites(request: Request, user: models.WebUser = Depends(get_emby_user
         .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.is_favorite == True)  # noqa: E712
         .order_by(em.UserMediaData.updated_at.desc())
     )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：列表展示过滤、标记不删——未绑定条目
+        # 不进收藏列表，但 is_favorite 标记保留，重绑后自动回来。
+        # 门挂在 count 之前，TotalRecordCount 与实返一致。
+        base_q = base_q.filter(identity_gate.identity_clause())
     total = base_q.count()
     rows = base_q.offset(start).limit(limit).all()
     base = _base_url(request)
@@ -3802,6 +3877,10 @@ def get_played_items(request: Request, user: models.WebUser = Depends(get_emby_u
         .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.played == True)  # noqa: E712
         .order_by(em.UserMediaData.last_played_at.desc())
     )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：与收藏同口径——展示过滤、已看标记不删，
+        # 门挂在 count 之前，TotalRecordCount 与实返一致。
+        base_q = base_q.filter(identity_gate.identity_clause())
     total = base_q.count()
     rows = base_q.offset(start).limit(limit).all()
     base = _base_url(request)

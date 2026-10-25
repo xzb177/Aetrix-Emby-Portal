@@ -27,6 +27,28 @@
 功能的唯一回滚手段。**切换开关必须配套全库 bump 数据版本**，清列表 ID
 清单缓存与去重缓存（两层缓存的键不含开关状态，见 items_list_cache /
 items_dedup_cache）；只改 env 不清缓存等于没切换——写进上线/回滚操作单。
+
+二期 / 三期开关（2026-10-25 设计收尾，默认关）：
+- ``IDENTITY_SHELF_PHASE2_ENABLED``：个人面与剧集面货架过滤（EA 继续观看 /
+  追剧下一集 / 收藏 / 已看、门户继续观看 / 门户收藏 / 追新日历）。只在总开关
+  同时开启时生效——总开关是唯一回滚手段，关总开关必须连二期一起回旧口径，
+  不许二期单独残留（否则浏览已回旧口径、个人面却还藏着，口径撕裂）。
+- ``IDENTITY_SHELF_PHASE3_ENABLED``：代表与版本完善（组内已绑定优先选主、
+  版本列表并入同库同身份未合并副本、计数按代表组对齐）。同样只在总开关
+  同时开启时生效。二期出口均为无缓存直查，开关翻转无缓存纪律；三期翻转
+  影响列表页缓存（选主结果进缓存页）与去重缓存，翻转时须与总开关同等
+  配套全库 bump 数据版本（或等 TTL 过期），只改 env 不清缓存会短暂残留旧
+  代表，见上线/回滚操作单。
+- 案 B（直达面收紧）不在二期/三期做：用户 2026-10-24 拍板案 A（货架严 /
+  搜索宽 / 直达放行），案 B 从未获专项拍板；详情 / 季集 / 播放直达面
+  永远不挂这里的条件。
+- 三期分组键说明：设计稿原定的「分组键扩为 tmdb→imdb→弱键三级」本批
+  未动 ``dedup_key`` / ``dedup_key_for``（见 PR 说明：分页去重层
+  ``_DEDUP_FIELDS`` 与扫描防重层都要同步改键才一致，属高危热路径，
+  另立项再做）。本批三期只做不依赖分组键的三项：组内已绑定优先选主
+  （选主不改分组，只改组内代表人选）、版本列表按分层身份直接匹配、
+  计数按分层身份组 SQL 直接对齐——三者都不改 ``dedup_key`` 的分组结果，
+  开关关时与旧行为逐字一致。
 """
 from __future__ import annotations
 
@@ -43,6 +65,12 @@ logger = logging.getLogger(__name__)
 #: 身份准入货架总开关（默认关）。启动时读一次，热路径不碰 env。
 IDENTITY_SHELF_GATE = env_int("IDENTITY_SHELF_GATE", 0, 0, 1)
 
+#: 二期开关（默认关）：个人面与剧集面货架过滤。只在总开关同时开启时生效。
+IDENTITY_SHELF_PHASE2_ENABLED = env_int("IDENTITY_SHELF_PHASE2_ENABLED", 0, 0, 1)
+
+#: 三期开关（默认关）：代表与版本完善。只在总开关同时开启时生效。
+IDENTITY_SHELF_PHASE3_ENABLED = env_int("IDENTITY_SHELF_PHASE3_ENABLED", 0, 0, 1)
+
 _TOP_TYPES = ("movie", "series")
 _CHILD_TYPES = ("season", "episode")
 
@@ -50,6 +78,33 @@ _CHILD_TYPES = ("season", "episode")
 def gate_enabled() -> bool:
     """货架身份门是否开启（全仓读开关的唯一入口；测试 patch 本模块常量）。"""
     return IDENTITY_SHELF_GATE > 0
+
+
+def phase2_enabled() -> bool:
+    """二期个人面过滤是否生效：总开关与二期开关须同时开启。
+
+    总开关是唯一回滚手段——关总开关必须连二期一起回旧口径，不许二期
+    单独残留（测试 patch 本模块两个常量）。
+    """
+    return gate_enabled() and IDENTITY_SHELF_PHASE2_ENABLED > 0
+
+
+def phase3_enabled() -> bool:
+    """三期代表与版本完善是否生效：总开关与三期开关须同时开启（同上）。"""
+    return gate_enabled() and IDENTITY_SHELF_PHASE3_ENABLED > 0
+
+
+def is_bound_row(item) -> bool:
+    """Python 侧单行已绑定判定（movie/series 自身口径）。
+
+    与 :func:`_own_bound` 的 SQL 语义逐字对应：``tmdb_id`` / ``imdb_id``
+    任一 strip 后非空。只用于内存对象（如组内选主）；查询一律走
+    :func:`identity_clause`，不许各处私自拼条件。season/episode 的
+    「跟随 series」不在此函数内——内存选主只处理 movie/series 组
+    （``DEDUP_TYPES``），集跟随只在 SQL 层表达。
+    """
+    return bool(((getattr(item, "tmdb_id", None) or "").strip())
+                or ((getattr(item, "imdb_id", None) or "").strip()))
 
 
 def _own_bound(item) -> object:
