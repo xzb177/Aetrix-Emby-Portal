@@ -46,10 +46,6 @@ logger = logging.getLogger(__name__)
 PACK_NAME = "naming-cleanup"
 PACK_VERSION = "v1"
 
-ENV_CUSTOM_TERMS = "RULE_PACK_CUSTOM_TERMS"
-ENV_DISABLED_DEFAULT_TERMS = "RULE_PACK_DISABLED_DEFAULT_TERMS"
-ENV_PROTECTED_TERMS = "RULE_PACK_PROTECTED_TERMS"
-
 # 默认词表：与 scanner._tidy_name 原内联正则的交替项逐字一致、顺序
 # 一致（原正则 ``\\b(... )\\b``）。改这里即改包内容，content_hash
 # 随之变，存量重放据此识别旧规则产物。词条是正则片段（与原正则
@@ -69,8 +65,13 @@ DEFAULT_STRIP_TERMS = (
 _PLACEHOLDER_BASE = 0xE000
 
 
-def _read_term_list(env_key: str) -> tuple:
-    """读 env 里的词表：JSON 字符串数组；非法时记 warning 返回空。"""
+def _env_term_list(env_key: str) -> tuple:
+    """读 env 里的词表：JSON 字符串数组；非法时记 warning 返回空。
+
+    函数名带 _env_ 前缀、调用处传字面量键名，是有意的：r44 防漂移
+    测试只认 ``_env_*("KEY")`` 这类静态可发现的读取，变量传键或
+    常量中转都会让它把 env.example 里的三键判成死键。勿改回变量传键。
+    """
     raw = (os.environ.get(env_key) or "").strip()
     if not raw:
         return ()
@@ -171,11 +172,15 @@ class RulePack:
 
 def default_pack() -> RulePack:
     """当前生效包：默认词表 + env 三层覆盖（每次调用重读 env，开销
-    只是三次 os.getenv，扫描热路径可接受；改 env 重启即生效）。"""
+    只是三次 os.getenv，扫描热路径可接受；改 env 重启即生效）。
+
+    三键此处用字面量直写（勿改回常量/变量中转），见 _env_term_list
+    的说明：r44 静态扫描要靠字面量认出这三处读取。
+    """
     return RulePack(
-        custom_terms=_read_term_list(ENV_CUSTOM_TERMS),
-        disabled_default_terms=_read_term_list(ENV_DISABLED_DEFAULT_TERMS),
-        protected_terms=_read_term_list(ENV_PROTECTED_TERMS),
+        custom_terms=_env_term_list("RULE_PACK_CUSTOM_TERMS"),
+        disabled_default_terms=_env_term_list("RULE_PACK_DISABLED_DEFAULT_TERMS"),
+        protected_terms=_env_term_list("RULE_PACK_PROTECTED_TERMS"),
     )
 
 
