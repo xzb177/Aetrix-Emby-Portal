@@ -42,6 +42,7 @@ from backend.emby_server import api as emby_api
 from backend.emby_server import compat_routes
 from backend.emby_server import models as em
 from backend.emby_server import playback_bus as bus
+from backend.emby_server import session_push as _push
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization
 from backend.security import SECRET_KEY
 
@@ -55,8 +56,8 @@ LIST_PATHS = ("/emby/Sessions", "/Sessions")
 STOP_PATHS = ("/emby/Sessions/{session_key}", "/Sessions/{session_key}")
 # Emby 原生遥控口（阶段 8 PR-3，新路由、无旧实现可替换）：
 # POST /Sessions/{id}/Command，/emby 前缀同口径。只翻译内部已支持
-# 的命令，余者 400 明示；通道只做到服务端接收 + 记账 + 事件，播放器
-# 消费端未建，因此 SupportsRemoteControl 仍保持 False（见 api.py 的
+# 的命令，余者 400 明示；投递段见 session_push（/embywebsocket 推送，
+# 无连接时仅记账），SupportsRemoteControl 仍保持 False（见 api.py 的
 # r50 诚实化注释），未实测前不翻 True。
 COMMAND_PATHS = ("/emby/Sessions/{session_key}/Command",
                  "/Sessions/{session_key}/Command")
@@ -216,24 +217,25 @@ class _GeneralCommandIn(BaseModel):
     Arguments: dict | None = None
 
 
-def send_session_command(
+async def send_session_command(
     session_key: str,
     body: _GeneralCommandIn,
     request: Request,
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    """Emby 原生遥控口：把 GeneralCommand 翻译成内部命令并同步执行。
+    """Emby 原生遥控口：把 GeneralCommand 翻译成内部命令并同步执行，
+    同时经 websocket 投递到播放器（session_push）。
 
     鉴权与结束口同口径：只能遥控自己的会话，管理员（is_staff）可
     遥控任意会话（写角色校验走 ensure_admin_allowed，只读角色得
     403）。总线关时 503、不写行；未知命令名 400、不写行；会话
     不存在 404；seek 参数非法 400、不写行。pause / resume / seek
-    的终态 outcome 仍是 recorded——通道只做到服务端接收 + 记账 +
-    事件，播放器消费端（websocket 推送 / 轮询）未建，completed 在此
-    绝不许读成“播放器已照做”；能力申报因此仍保持
-    SupportsRemoteControl=False。命令行的 device_id 取会话行记的
-    设备（执行器的 device 校验据此放行，命令不会打到别台设备）。
+    的终态 outcome 仍是 recorded——投递只表示帧已发往播放器连接，
+    不是播放器回执；无连接时仅记账执行，completed 在此绝不许读成
+    “播放器已照做”；能力申报因此仍保持 SupportsRemoteControl=False。
+    命令行的 device_id 取会话行记的设备（执行器的 device 校验据此
+    放行，命令不会打到别台设备）。
     """
     from backend.emby_server import play_session as _ps
 
@@ -271,13 +273,21 @@ def send_session_command(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     bus.mark_sent(db, command)
+    # 投递段（阶段 8 投递层）：把 Emby 原名命令推给该会话设备的长连接；
+    # 推不到（无连接）也不影响记账与执行，delivery 如实写 0。
+    pushed = await _push.push_general_command(
+        session.user_id, session.device_id, body.Name, body.Arguments)
     bus.mark_delivered(db, command)
     if internal == "stop":
         command = bus.execute_stop(db, command)
     else:
         command = bus.execute_state_command(db, command)
     data = bus.command_to_dict(command)
-    note = bus.honesty_note(command, via_send_command=True)
+    data["delivery"] = {
+        "pushed_to_player_connections": pushed,
+        "player_connected": pushed > 0,
+    }
+    note = bus.honesty_note(command, via_send_command=True, pushed=pushed)
     if note:
         data["note"] = note
     return data
@@ -354,15 +364,19 @@ def install_session_routes(router) -> dict:
         router, {name: getattr(compat_routes, name) for name in set(REPORT_PATHS.values())}
     )
     command_routes = _install_command_routes(router)
+    # 投递段长连接（阶段 8 投递层）：Emby/Jellyfin 惯用路径，无前缀变体。
+    router.websocket("/embywebsocket")(_push.emby_websocket)
+    push_routes = 1
 
     logger.info(
-        "会话端点：已替换 %d 条旧路由（未鉴权列表/结束 + 可预测会话键），注册 %d 条带鉴权上报路由、%d 条遥控口路由",
+        "会话端点：已替换 %d 条旧路由（未鉴权列表/结束 + 可预测会话键），注册 %d 条带鉴权上报路由、%d 条遥控口路由、%d 条播放器推送长连接",
         superseded,
         report_routes,
         command_routes,
+        push_routes,
     )
     return {"superseded": superseded, "report_routes": report_routes,
-            "command_routes": command_routes}
+            "command_routes": command_routes, "push_routes": push_routes}
 
 
 __all__ = [
