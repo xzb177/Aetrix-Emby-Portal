@@ -1182,6 +1182,40 @@ class LocalMount(MountProvider):
 PAN115_FID_ENABLED = env_int("SCAN_IDENTITY_MATCH_ENABLED", 0, 0, 1) == 1
 
 
+def _table_source_cookie(provider) -> str | None:
+    """115 挂载的源级凭据表读数（清单第 4 步，旗标默认关）。
+
+    - 旗标关 / 无 db / 挂载未落库 → None（调用方走旧路径，无警告，
+      旗标关时表优先读根本不存在）；
+    - 旗标开且表里有行：解得开 → 归一化后的凭据；解不开 →
+      MountAuthError（响亮，不回落旧路径）；
+    - 旗标开但表里没有 → 记警告后回 None（调用方回落旧路径，
+      这就是设计第 4 步要求的“读不到回落旧路径并记警告”）。
+    惰性导入 ``mount_source_credentials``：本模块被它（经
+    mount_sources）间接引用，顶层导入会成环；调用时导入是既有
+    惯例（见 drive_changes 的惰性 _ms）。返回值不进日志。
+    """
+    if provider.db is None:
+        return None
+    from backend.emby_server import mount_source_credentials as msc
+    from backend.emby_server import upstream_sources as ups
+
+    if not msc.source_credentials_enabled():
+        return None
+    mount_id = getattr(provider.mount, "id", None)
+    if mount_id is None:
+        return None
+    try:
+        cookie = msc.load_source_credential(provider.db, mount_id)
+    except ups.SealedSecretError:
+        raise MountAuthError("源级凭据解不开，请管理员重录或轮换（凭据表行）")
+    if cookie is None:
+        logger.warning("挂载 id=%s 凭据表无源级行，回落旧 115 凭据路径",
+                       mount_id)
+        return None
+    return transfer115.normalize_cookie(cookie)
+
+
 class Pan115Mount(MountProvider):
     """115 网盘直挂（Cookie 型 API，不依赖 115 OpenAPI）"""
 
@@ -1230,6 +1264,14 @@ class Pan115Mount(MountProvider):
             )
             source = "挂载配置" if explicit else f"服务器级 {transfer115.PAN115_COOKIE_ENV}"
         else:
+            # 清单第 4 步（旗标默认关）：源级凭据表优先读，只查一次。
+            # 表里有行且解得开 → 用表里那份；表里没有 → 记警告后回落
+            # 旧 resolve_cookie 路径；表里有但解不开 → 响亮报
+            # MountAuthError，不会静默换成另一份凭据。cookie_override
+            # 在函数入口已优先返回，用户域 BYOS 凭据路径不受本分支影响。
+            table_cookie = _table_source_cookie(self)
+            if table_cookie is not None:
+                return table_cookie
             cookie, source = transfer115.resolve_cookie(
                 self.db, library=self.library, account_id=account_id,
             )

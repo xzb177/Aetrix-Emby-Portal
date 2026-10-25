@@ -49,8 +49,8 @@ Redis 失败跳过同口径）。
 - 阶段 8 PR-3（SendCommand 通道）：Emby 原生 POST
   /Sessions/{id}/Command（/emby 前缀同口径，见 session_routes）
   把 GeneralCommand 翻译成内部命令（仅 stop / pause / resume /
-  seek / PlayPause 开关，余者 400 明示）；通道只做到“服务端接收
-  + 记账 + 事件”，播放器消费端（websocket 推送 / 轮询）未建、
+  seek / PlayPause 开关，余者 400 明示）；投递段见 session_push
+  （/embywebsocket 推送，无连接时仅记账；轮询不做，用户定案落选）、
   未经真实播放器实测前 SupportsRemoteControl 保持 False，不翻 True。
 """
 
@@ -663,9 +663,12 @@ def command_to_dict(command: PlaybackControlCommand) -> dict:
 
 
 def honesty_note(command: PlaybackControlCommand,
-                 via_send_command: bool = False) -> str | None:
+                 via_send_command: bool = False,
+                 pushed: int | None = None) -> str | None:
     """命令终态的诚实附注（管理端口径；SendCommand 通道复用，recorded
-    的措辞按通道微调）。enforced 无附注；无终态 outcome 时回 None。"""
+    的措辞按通道微调）。enforced 无附注；无终态 outcome 时回 None。
+    pushed 仅 SendCommand 通道传：投递到播放器连接的帧数（None 表
+    未走投递段，老调用方保持旧措辞）。"""
     if command.outcome == OUTCOME_BEST_EFFORT:
         return ("会话已标记结束，但已发出的直链地址在签名过期前仍可用，"
                 "本次停止为 best-effort，不是已确认停播。")
@@ -673,9 +676,12 @@ def honesty_note(command: PlaybackControlCommand,
         return "目标会话执行前已结束，命令无事可做。"
     if command.outcome == OUTCOME_RECORDED:
         if via_send_command:
-            return ("命令已由 Emby 标准遥控口接收并记账、事件已发布，但"
-                    "播放器侧尚未消费总线事件（无 websocket 推送 / 轮询"
-                    "消费端），本次未直接作用于播放器，不是已确认执行。")
-        return ("命令已记账并发布事件，但播放器暂无接收命令的通道，"
-                "本次未直接作用于播放器，不是已确认执行。")
+            if pushed is not None and pushed > 0:
+                return (f"命令已由 Emby 标准遥控口接收，并经 websocket 投递到 "
+                        f"{pushed} 个播放器连接，但播放器是否照做尚无回执，"
+                        "completed 不等于已确认执行。")
+            return ("命令已由 Emby 标准遥控口接收并记账，但当前无播放器 "
+                    "websocket 连接，未直接作用于播放器，不是已确认执行。")
+        return ("命令已记账并发布事件，但本次未向播放器投递，"
+                "未直接作用于播放器，不是已确认执行。")
     return None

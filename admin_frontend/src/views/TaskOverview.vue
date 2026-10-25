@@ -12,6 +12,8 @@ import {
   Radar, RefreshCw, ScanSearch, Sparkles, TriangleAlert,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader } from '@/components/ui'
+/** 重新布局批 3：采样哈希进度降为本页「进度」区（旧 /sample-hash-progress 跳到本页） */
+import SampleHashProgress from './SampleHashProgress.vue'
 import {
   fetchTasksOverview,
   pauseProbe,
@@ -205,6 +207,9 @@ onMounted(() => load())
         </footer>
       </section>
     </div>
+
+    <!-- 重新布局批 3：采样哈希进度降为本页「进度」区（子页自带 PageHeader 作区标题） -->
+    <SampleHashProgress />
   </div>
 </template>
 

@@ -8,6 +8,10 @@
 3. 双读校验：新表读数与现行 ``mounts.library_sources()`` 输出逐项比对，
    差异只报不拦。
 4. 凭据密封：复用 25-1 ``seal_secret``；KEK 目录只从配置读。
+   KEK 文件信封与源级凭据迁移是清单第 4 步，已落地
+   ``mount_source_credentials``（本模块的 ``seal_mount_credential`` /
+   ``unseal_mount_credential`` 仍是 25-1 旧密封口径，供地基测试与
+   旧行兼容；行级 KEK 分发只走新模块，不许两处各写一套）。
 
 **权威切换（清单第 2 项）**：来源解析的权威从旧列切到新表——扫描、
 追新、探针、监听、Drive Changes 与管理端保存一律经本模块读/写新表；

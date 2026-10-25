@@ -52,15 +52,13 @@ def _clear_night_cfg_cache():
     """每个测试前清掉夜间配置的 60 秒 TTL 缓存 + 环境变量，避免测试间污染"""
     enrich_worker._night_cfg_cache["at"] = 0.0
     enrich_worker._night_cfg_cache["cfg"] = None
-    for k in (enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
-              enrich_worker.ENRICH_NIGHT_START_ENV,
+    for k in (enrich_worker.ENRICH_NIGHT_START_ENV,
               enrich_worker.ENRICH_NIGHT_END_ENV):
         os.environ.pop(k, None)
     yield
     enrich_worker._night_cfg_cache["at"] = 0.0
     enrich_worker._night_cfg_cache["cfg"] = None
-    for k in (enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
-              enrich_worker.ENRICH_NIGHT_START_ENV,
+    for k in (enrich_worker.ENRICH_NIGHT_START_ENV,
               enrich_worker.ENRICH_NIGHT_END_ENV):
         os.environ.pop(k, None)
     from backend import models as _models
@@ -148,8 +146,7 @@ def test_night_config_default_off(db):
 
 
 def test_night_config_env_wins(db):
-    """环境变量优先：设置后 from_env=True"""
-    os.environ[enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV] = "1"
+    """窗口环境变量仍覆盖开始/结束；开关本身不看环境变量。"""
     os.environ[enrich_worker.ENRICH_NIGHT_START_ENV] = "22:00"
     os.environ[enrich_worker.ENRICH_NIGHT_END_ENV] = "06:00"
     cfg = enrich_worker._episode_night_config(db)
@@ -160,11 +157,14 @@ def test_night_config_env_wins(db):
 
 
 def test_night_config_env_explicit_off(db):
-    """环境变量显式 0：关闭且 from_env=True（后台改了不生效，要有提示）"""
-    os.environ[enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV] = "0"
-    cfg = enrich_worker._episode_night_config(db)
-    assert cfg["enabled"] is False
-    assert cfg["from_env"] is True
+    """开关不再读环境变量：设成 0 也不关，from_env 仍为假。"""
+    os.environ["ENRICH_EPISODE_NIGHT_ONLY"] = "0"
+    try:
+        cfg = enrich_worker._episode_night_config(db)
+        assert cfg["enabled"] is True
+        assert cfg["from_env"] is False
+    finally:
+        os.environ.pop("ENRICH_EPISODE_NIGHT_ONLY", None)
 
 
 def test_night_config_db_backed(db):
@@ -206,8 +206,7 @@ def test_night_config_ttl_cache(db, monkeypatch):
 # ---------- _claim_batch ----------
 
 def _enable_night_only(db, monkeypatch, in_window: bool):
-    """打开夜间开关，并固定窗口判断结果。配额制缺省开会盖住夜间禁令，显式关掉。"""
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
+    """夜间开关缺省已开。配额制缺省开会盖住夜间禁令，显式关掉。"""
     enrich_worker.save_enrich_tuning_config(
         db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: False})
     monkeypatch.setattr(
