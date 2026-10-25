@@ -63,7 +63,7 @@ SOURCE_CREDENTIALS_ENABLED_ENV = "MOUNT_SOURCE_CREDENTIALS_ENABLED"
 #: KEK 密封值前缀（格式变了就换前缀，旧值按前缀分发，不静默兼容）。
 KEK_SEAL_PREFIX = "kek-v1:"
 
-#: 25-1 旧密封前缀与 key_id（mount_sources.SEAL_KEY_ID 的同一值，
+#: 25-1 旧密封前缀与 key_id（与 25-1 方案标识同一值，
 #: 这里只读 upstream 的前缀常量，不另起第二套标识）。
 LEGACY_SEAL_PREFIX = ups._SEAL_PREFIX
 LEGACY_KEY_ID = ups._SEAL_PREFIX.rstrip(":")

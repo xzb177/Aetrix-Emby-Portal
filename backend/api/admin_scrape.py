@@ -527,51 +527,6 @@ _TRACKED_FIELDS = (
 )
 
 
-def _read_sibling_text(
-    db: Session, file_path: Optional[str], candidates: list[str], parent_levels: int = 0
-) -> Optional[str]:
-    """读 file_path 同目录（或上 parent_levels 级目录）里的候选 NFO 文本。
-
-    本机路径直接读文件；mount:// 路径经挂载 provider 读。读不到返回 None。
-    """
-    if not file_path or not candidates:
-        return None
-    parsed = mount_lib.parse_mount_path(file_path)
-    if parsed:
-        mount_id, rel = parsed
-        try:
-            provider = mount_lib.build_provider(mount_lib.load_mount(db, mount_id), db)
-        except Exception:  # noqa: BLE001 — 挂载不可用就当没有 NFO
-            return None
-        d = posixpath.dirname(rel)
-        for _ in range(parent_levels + 1):
-            for cand in candidates:
-                try:
-                    return provider.read_text(posixpath.join(d, cand))
-                except Exception:  # noqa: BLE001 — 单个候选读不到就试下一个
-                    continue
-            d = posixpath.dirname(d) or "/"
-        return None
-    d = os.path.dirname(file_path)
-    for _ in range(parent_levels + 1):
-        for cand in candidates:
-            try:
-                with open(os.path.join(d, cand), "r", encoding="utf-8-sig", errors="ignore") as f:
-                    # F-P1-12：限制 NFO 读取大小（256KB），防异常大文件一次性进内存
-                    data = f.read(256 * 1024)
-                    if f.read(1):
-                        logger.warning("NFO 文件过大已截断：%s（只读前 256KB）",
-                                       os.path.join(d, cand))
-                    return data
-            except OSError:
-                continue
-        parent = os.path.dirname(d)
-        if parent == d:
-            break
-        d = parent
-    return None
-
-
 # ==================== 多源元数据（Phase 6b） ====================
 
 class MetaSourcesSaveRequest(BaseModel):

@@ -9,9 +9,9 @@
    差异只报不拦。
 4. 凭据密封：复用 25-1 ``seal_secret``；KEK 目录只从配置读。
    KEK 文件信封与源级凭据迁移是清单第 4 步，已落地
-   ``mount_source_credentials``（本模块的 ``seal_mount_credential`` /
-   ``unseal_mount_credential`` 仍是 25-1 旧密封口径，供地基测试与
-   旧行兼容；行级 KEK 分发只走新模块，不许两处各写一套）。
+   ``mount_source_credentials``（25-1 旧密封行由新模块经
+   ``upstream_sources.unseal_secret`` 读；行级 KEK 分发只走新模块，
+   不许两处各写一套）。
 
 **权威切换（清单第 2 项）**：来源解析的权威从旧列切到新表——扫描、
 追新、探针、监听、Drive Changes 与管理端保存一律经本模块读/写新表；
@@ -34,7 +34,6 @@ from types import SimpleNamespace
 from backend.emby_server import library_source_health as lsh
 from backend.emby_server import library_source_health_pilot as lsh_pilot
 from backend.emby_server import models as em
-from backend.emby_server import upstream_sources as ups
 from backend.emby_server.mounts import (
     build_library_sources,
 )
@@ -57,28 +56,13 @@ MOUNT_KEK_DIR_ENV = "MOUNT_KEK_DIR"
 
 #: 地基阶段 key_id 的取值：25-1 密封方案标识（``_SEAL_PREFIX`` 去冒号）。
 #: KEK 文件信封（key_id → MOUNT_KEK_DIR 下密钥文件）是第 4 步，届时
-#: key_id 改为 KEK 文件编号，本常量只标记“本行由 25-1 方案密封”。
-SEAL_KEY_ID = ups._SEAL_PREFIX.rstrip(":")
+#: key_id 改为 KEK 文件编号（25-1 方案标识见 ``mount_source_credentials``）。
 
 
 def resolve_kek_dir() -> str | None:
     """KEK 目录（部署配置）。未设置回 None，不设代码默认值。"""
     value = (os.environ.get(MOUNT_KEK_DIR_ENV) or "").strip()
     return value or None
-
-
-def seal_mount_credential(plaintext: str) -> tuple[str, str]:
-    """密封一份挂载凭据，返回 ``(密封值, key_id)``。
-
-    密封复用 25-1 ``seal_secret``（Fernet，SECRET_KEY 派生）；原文
-    绝不进日志、不进返回值之外的任何地方。
-    """
-    return ups.seal_secret(plaintext), SEAL_KEY_ID
-
-
-def unseal_mount_credential(sealed: str) -> str:
-    """解开一份挂载凭据。损坏/密钥已换 → ``SealedSecretError``（响亮）。"""
-    return ups.unseal_secret(sealed)
 
 
 # ---------------------------------------------------------------- 能力声明派生
