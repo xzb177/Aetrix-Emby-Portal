@@ -276,6 +276,54 @@ def start_playback_bus_snapshot(stop_event=None) -> bool:
     return True
 
 
+def _upstream_probe_sources():
+    """上游探活守护的 sources_fn（生产接线，FMBY #25 25-3）。
+
+    每轮重新取已启用源，适配成探活模块的 UpstreamSource。只接线，
+    不改守护本体、不改判定语义：
+    - 只含 Emby/Jellyfin 型：探活首批只做这两型，CMS 型后置（跳过）。
+    - 凭据只走 upstream_sources.load_credential 唯一入口：api_key 型
+      源的 token 只进请求头（守护的 _auth_headers）；password 型源
+      没有 token，只做公开握手，不把密码当 token 用。
+    - 凭据解不开的行直接跳过（绝不降级成匿名探活，见 load_credential
+      约定）；取源列表失败则本轮返回空列表，不抛异常。
+    """
+    from backend.database import SessionLocal
+    from backend.emby_server import upstream_health as _uh
+    from backend.emby_server import upstream_sources as _ups
+
+    db = SessionLocal()
+    try:
+        rows = _ups.enabled_sources(db)
+        out = []
+        for row in rows:
+            if row.source_type not in ("emby", "jellyfin"):
+                continue
+            api_key = None
+            if row.auth_method == "api_key":
+                try:
+                    cred = _ups.load_credential(row)
+                except Exception:
+                    logger.warning("上游探活：源 id=%s 凭据解不开，已跳过",
+                                   row.id)
+                    continue
+                if cred:
+                    api_key = cred.get("secret")
+            out.append(_uh.UpstreamSource(
+                key=str(row.id),
+                kind=row.source_type,
+                base_url=row.base_url,
+                enabled=True,
+                api_key=api_key,
+            ))
+        return out
+    except Exception:
+        logger.warning("上游探活：取源列表失败，本轮跳过", exc_info=True)
+        return []
+    finally:
+        db.close()
+
+
 def main() -> int:
     """Worker 主入口"""
     logger.info("🚀 Aetrix Worker 正在启动...")
@@ -591,6 +639,30 @@ def main() -> int:
                 logger.info("苹果 CMS 同步未开启，定时同步不启动")
         except Exception as e:
             logger.warning(f"启动苹果 CMS 定时同步失败（可忽略）: {e}")
+        # 上游探活守护 + 健康落库同步（FMBY #25 25-3/25-14，生产接线）：
+        # 只接线，不改守护本体、不碰投影工人、不碰扫描/播放逻辑。
+        # 两守护各有总开关（默认关），关时线程空转、不发请求、不读写；
+        # 开关开后：探活每轮每源最多一次请求（默认 60 秒），结果写 Redis；
+        # 同步每轮把 Redis 状态翻译后写 PG（#1245 已修提交缺失）。
+        # 两守护共用一个 RedisHealthStore：探活写、同步读，同一份状态。
+        # 友服当前被对方 nginx 挡（公开口亦 403）：探活按守护自身逻辑
+        # 记 failure/unauthorized，3 次后翻 Unavailable、同步落 unhealthy，
+        # 属实记录，不多刷（本处不做任何手动探活）。
+        try:
+            from backend.emby_server import upstream_health as _uh
+            from backend.emby_server import upstream_health_persist as _uhp
+
+            _health_store = _uh.RedisHealthStore()
+            _uh.start_probe_daemon(
+                _upstream_probe_sources, _health_store)
+            started.append("upstream_probe")
+            logger.info("✅ 上游探活守护已启动（总开关关时空转不发请求）")
+            _uhp.start_health_sync_daemon(store=_health_store,
+                                          stop_event=_shutdown_event)
+            started.append("upstream_health_sync")
+            logger.info("✅ 上游健康落库同步守护已启动（总开关关时空转不读写）")
+        except Exception as e:
+            logger.warning(f"启动上游探活/健康同步守护失败（可忽略）: {e}")
 
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
