@@ -673,9 +673,11 @@ def honesty_note(command: PlaybackControlCommand,
         return "目标会话执行前已结束，命令无事可做。"
     if command.outcome == OUTCOME_RECORDED:
         if via_send_command:
-            return ("命令已由 Emby 标准遥控口接收并记账、事件已发布，但"
-                    "播放器侧尚未消费总线事件（无 websocket 推送 / 轮询"
-                    "消费端），本次未直接作用于播放器，不是已确认执行。")
-        return ("命令已记账并发布事件，但播放器暂无接收命令的通道，"
-                "本次未直接作用于播放器，不是已确认执行。")
+            return ("命令已由 Emby 标准遥控口接收并记账、事件已发布，"
+                    "播放器可经轮询口（GET Sessions/{id}/Commands）拉取"
+                    "命令行，但尚无真实播放器实测消费，本次未直接作用于"
+                    "播放器，不是已确认执行。")
+        return ("命令已记账并发布事件，播放器可经轮询口拉取命令行，"
+                "但尚无真实播放器实测消费，本次未直接作用于播放器，"
+                "不是已确认执行。")
     return None

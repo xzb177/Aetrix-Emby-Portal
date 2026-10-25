@@ -42,6 +42,7 @@ from backend.emby_server import api as emby_api
 from backend.emby_server import compat_routes
 from backend.emby_server import models as em
 from backend.emby_server import playback_bus as bus
+from backend.emby_server.query_params import qlimit, qstart
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization
 from backend.security import SECRET_KEY
 
@@ -55,11 +56,20 @@ LIST_PATHS = ("/emby/Sessions", "/Sessions")
 STOP_PATHS = ("/emby/Sessions/{session_key}", "/Sessions/{session_key}")
 # Emby 原生遥控口（阶段 8 PR-3，新路由、无旧实现可替换）：
 # POST /Sessions/{id}/Command，/emby 前缀同口径。只翻译内部已支持
-# 的命令，余者 400 明示；通道只做到服务端接收 + 记账 + 事件，播放器
-# 消费端未建，因此 SupportsRemoteControl 仍保持 False（见 api.py 的
-# r50 诚实化注释），未实测前不翻 True。
+# 的命令，余者 400 明示；通道做到服务端接收 + 记账 + 事件，播放器
+# 消费端为下面的轮询口（POLL_PATHS），websocket 推送未建；因此
+# SupportsRemoteControl 仍保持 False（见 api.py 的 r50 诚实化注释），
+# 未真实播放器实测前不翻 True。
 COMMAND_PATHS = ("/emby/Sessions/{session_key}/Command",
                  "/Sessions/{session_key}/Command")
+# 播放器消费侧（阶段 8 消费端，客户端轮询形态）：
+# GET /Sessions/{id}/Commands，/emby 前缀同口径。只读：返回该会话的
+# 命令行（按发出顺序），供播放器轮询拉取。轮询不改任何命令状态——
+# 不把“被轮询到”写成 sent/delivered（假回执禁令）；播放器回执
+# （ack）是后续项，未建之前命令行的 completed 仍只表示服务端已
+# 执行，不许读成播放器已照做。
+POLL_PATHS = ("/emby/Sessions/{session_key}/Commands",
+              "/Sessions/{session_key}/Commands")
 # Emby GeneralCommand.Name → 内部命令；PlayPause 按会话当前 is_paused
 # 开关（播 → 暂停，停 → 恢复）。未列出的名字（SetVolume / Mute /
 # NextTrack / DisplayMessage 等）一律 400，不静默丢、不假装执行——
@@ -229,9 +239,10 @@ def send_session_command(
     遥控任意会话（写角色校验走 ensure_admin_allowed，只读角色得
     403）。总线关时 503、不写行；未知命令名 400、不写行；会话
     不存在 404；seek 参数非法 400、不写行。pause / resume / seek
-    的终态 outcome 仍是 recorded——通道只做到服务端接收 + 记账 +
-    事件，播放器消费端（websocket 推送 / 轮询）未建，completed 在此
-    绝不许读成“播放器已照做”；能力申报因此仍保持
+    的终态 outcome 仍是 recorded——通道做到服务端接收 + 记账 +
+    事件，播放器消费端为轮询口（本模块 poll_session_commands），
+    websocket 推送未建，completed 在此绝不许读成“播放器已照做”；
+    能力申报因此仍保持
     SupportsRemoteControl=False。命令行的 device_id 取会话行记的
     设备（执行器的 device 校验据此放行，命令不会打到别台设备）。
     """
@@ -283,6 +294,50 @@ def send_session_command(
     return data
 
 
+def poll_session_commands(
+    session_key: str,
+    request: Request,
+    user: models.WebUser = Depends(get_emby_user),
+    db: Session = Depends(get_db),
+):
+    """播放器轮询口：返回该会话的命令行（按发出顺序）。
+
+    鉴权与遥控口同口径：只能拉自己的会话，管理员（is_staff）可拉
+    任意会话（写角色校验走 ensure_admin_allowed，只读角色得 403）。
+    总线关时 503；会话不存在 404。
+
+    只读：轮询不改任何命令状态，不把“被轮询到”写成 sent /
+    delivered；消费去重由轮询方按 command_id 做（服务端不记消费
+    位）。分页与集 / 季列表同口径（StartIndex / Limit，默认 100）。
+    """
+    from backend.emby_server import play_session as _ps
+
+    if not bus.bus_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="播放实时总线未开启（PLAYBACK_BUS_ENABLED=0），命令不执行",
+        )
+    session = _ps.resolve_session(db, session_key)
+    if session is None:
+        raise HTTPException(status_code=404, detail="播放会话不存在")
+    if session.user_id != user.id:
+        if not _is_staff(user):
+            raise HTTPException(status_code=403, detail="只能查看自己的播放会话命令")
+        admin_roles.ensure_admin_allowed(request, user)
+    query = (
+        db.query(bus.PlaybackControlCommand)
+        .filter(bus.PlaybackControlCommand.session_key == session.session_key)
+        .order_by(bus.PlaybackControlCommand.requested_at.asc(),
+                  bus.PlaybackControlCommand.id.asc())
+    )
+    total = query.count()
+    start = qstart(request.query_params)
+    limit = qlimit(request.query_params, default=100)
+    rows = query.offset(start).limit(limit).all()
+    return {"Items": [bus.command_to_dict(c) for c in rows],
+            "TotalRecordCount": total, "StartIndex": start}
+
+
 def _install_report_routes(router, originals: dict) -> int:
     """上报路由：改 body 里的会话键后交给 api.py 的原处理函数
 
@@ -326,6 +381,13 @@ def _install_command_routes(router) -> int:
     return len(COMMAND_PATHS)
 
 
+def _install_command_poll_routes(router) -> int:
+    """注册播放器轮询口（阶段 8 消费端，客户端轮询形态，直接新增）。"""
+    for path in POLL_PATHS:
+        router.get(path)(poll_session_commands)
+    return len(POLL_PATHS)
+
+
 def install_session_routes(router) -> dict:
     """替换会话端点实现（必须在 ``app.include_router(emby_router)`` **之前**调用）
 
@@ -354,15 +416,18 @@ def install_session_routes(router) -> dict:
         router, {name: getattr(compat_routes, name) for name in set(REPORT_PATHS.values())}
     )
     command_routes = _install_command_routes(router)
+    command_poll_routes = _install_command_poll_routes(router)
 
     logger.info(
-        "会话端点：已替换 %d 条旧路由（未鉴权列表/结束 + 可预测会话键），注册 %d 条带鉴权上报路由、%d 条遥控口路由",
+        "会话端点：已替换 %d 条旧路由（未鉴权列表/结束 + 可预测会话键），注册 %d 条带鉴权上报路由、%d 条遥控口路由、%d 条轮询口路由",
         superseded,
         report_routes,
         command_routes,
+        command_poll_routes,
     )
     return {"superseded": superseded, "report_routes": report_routes,
-            "command_routes": command_routes}
+            "command_routes": command_routes,
+            "command_poll_routes": command_poll_routes}
 
 
 __all__ = [
@@ -371,9 +436,11 @@ __all__ = [
     "get_sessions_scoped",
     "stop_session_checked",
     "send_session_command",
+    "poll_session_commands",
     "LIST_PATHS",
     "STOP_PATHS",
     "COMMAND_PATHS",
+    "POLL_PATHS",
     "REPORT_PATHS",
     "SESSION_KEY_RE",
 ]
