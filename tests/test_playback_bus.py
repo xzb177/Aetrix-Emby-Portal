@@ -15,6 +15,7 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 
 import json
+import threading
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -30,6 +31,8 @@ from backend.database import Base, get_db
 from backend.emby_server import models as em
 from backend.emby_server import playback_bus as bus
 from backend.emby_server import playback_bus_admin
+from backend.emby_server import session_routes
+from backend.emby_server.auth import get_emby_user
 
 
 # ---------------------------------------------------------------- Redis 替身
@@ -500,3 +503,253 @@ def test_admin_post_seek_bad_payload_400_no_row(client, db, monkeypatch):
     assert r2.json()["payload"] == {"position_ticks": 777}
     row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
     assert row.position_ticks == 777
+
+
+# ---------------------------------------------------------------- 阶段 8 PR-2：对账卫生
+
+def test_snapshot_includes_last_command_type(db, fake_redis):
+    _session_row(db, "s1", variant="drive_relay")
+    cmd = bus.create_command(db, session_key="s1", command="pause")
+    _run_state_command(db, cmd, fake_redis)
+    snapshot = bus.build_snapshot(db)
+    assert len(snapshot["sessions"]) == 1
+    row = snapshot["sessions"][0]
+    assert row["last_command_type"] == "pause"
+    assert row["last_command_status"] == "completed"
+
+
+def test_snapshot_cycle_sweeps_stale_before_snapshot(db, fake_redis):
+    _session_row(db, "s1", variant="drive_relay")
+    stale = bus.create_command(db, session_key="s1", command="pause")
+    stale.requested_at = datetime.now() - timedelta(seconds=3600)
+    db.commit()
+    fresh = bus.create_command(db, session_key="s1", command="resume")
+    count = bus.run_snapshot_cycle(db, client=fake_redis)
+    assert count == 1
+    db.refresh(stale)
+    assert stale.status == bus.STATUS_TIMEOUT
+    db.refresh(fresh)
+    assert fresh.status == bus.STATUS_PENDING
+    snapshot = bus.read_snapshot(client=fake_redis)
+    row = snapshot["sessions"][0]
+    assert row["last_command_type"] == "resume"
+    assert row["last_command_status"] == "pending"
+
+
+def test_snapshot_loop_sweeps_stale(db):
+    _session_row(db, "s1", variant="drive_relay")
+    stale = bus.create_command(db, session_key="s1", command="pause")
+    stale.requested_at = datetime.now() - timedelta(seconds=3600)
+    db.commit()
+    calls = [0]
+    stop_event = threading.Event()
+
+    def _factory():
+        calls[0] += 1
+        if calls[0] >= 2:
+            stop_event.set()
+        return db
+
+    bus.run_snapshot_loop(_factory, interval_sec=0.01, stop_event=stop_event)
+    assert calls[0] == 2
+    # 工人每拍结束会 close 会话（对象已脱离），用重查断言终态。
+    row = db.query(bus.PlaybackControlCommand).filter_by(
+        command_id=stale.command_id).first()
+    assert row.status == bus.STATUS_TIMEOUT
+
+
+def test_execute_stop_device_mismatch_failed_session_untouched(db):
+    _session_row(db, "s1", variant="drive_relay")
+    cmd = bus.create_command(db, session_key="s1", command="stop",
+                             device_id="dev-2")
+    bus.mark_sent(db, cmd)
+    bus.mark_delivered(db, cmd)
+    out = bus.execute_stop(db, cmd)
+    assert out.status == bus.STATUS_FAILED
+    assert out.error == "device_mismatch"
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.ended_at is None
+
+
+def test_execute_state_command_device_mismatch_failed_flag_untouched(db):
+    _session_row(db, "s1", variant="drive_relay")
+    cmd = bus.create_command(db, session_key="s1", command="pause",
+                             device_id="dev-2")
+    out = _run_state_command(db, cmd)
+    assert out.status == bus.STATUS_FAILED
+    assert out.error == "device_mismatch"
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.is_paused is not True
+
+
+def test_execute_device_match_and_missing_pass(db):
+    _session_row(db, "s1", variant="drive_relay")
+    cmd = bus.create_command(db, session_key="s1", command="pause",
+                             device_id="dev-1")
+    out = _run_state_command(db, cmd)
+    assert out.status == bus.STATUS_COMPLETED
+    cmd2 = bus.create_command(db, session_key="s1", command="resume")
+    out2 = _run_state_command(db, cmd2)
+    assert out2.status == bus.STATUS_COMPLETED
+    # 会话行没记设备时，命令带设备也不判 mismatch（无从比对）。
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    row.device_id = None
+    db.commit()
+    cmd3 = bus.create_command(db, session_key="s1", command="pause",
+                              device_id="dev-9")
+    out3 = _run_state_command(db, cmd3)
+    assert out3.status == bus.STATUS_COMPLETED
+
+
+# ---------------------------------------------------------------- 阶段 8 PR-3：SendCommand 通道
+
+@pytest.fixture()
+def send_command_client(db):
+    app = FastAPI()
+    app.post("/Sessions/{session_key}/Command")(session_routes.send_session_command)
+    app.post("/emby/Sessions/{session_key}/Command")(session_routes.send_session_command)
+
+    def _owner():
+        return SimpleNamespace(id=1, admin_role="super", is_staff=True)
+
+    def _db():
+        yield db
+
+    app.dependency_overrides[get_emby_user] = _owner
+    app.dependency_overrides[get_db] = _db
+    with TestClient(app) as c:
+        yield SimpleNamespace(client=c, app=app)
+    app.dependency_overrides.clear()
+
+
+def test_send_command_pause_recorded(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    r = send_command_client.client.post("/Sessions/s1/Command",
+                                        json={"Name": "Pause"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == bus.STATUS_COMPLETED
+    assert body["outcome"] == bus.OUTCOME_RECORDED
+    assert body["device_id"] == "dev-1"
+    assert "未直接作用于播放器" in body.get("note", "")
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.is_paused is True
+
+
+def test_send_command_emby_prefix_same_shape(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    r = send_command_client.client.post("/emby/Sessions/s1/Command",
+                                        json={"Name": "Pause"})
+    assert r.status_code == 200, r.text
+    assert r.json()["outcome"] == bus.OUTCOME_RECORDED
+
+
+def test_send_command_playpause_toggles(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    r = send_command_client.client.post("/Sessions/s1/Command",
+                                        json={"Name": "PlayPause"})
+    assert r.status_code == 200, r.text
+    assert r.json()["command"] == "pause"
+    r2 = send_command_client.client.post("/Sessions/s1/Command",
+                                         json={"Name": "PlayPause"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["command"] == "resume"
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.is_paused is False
+
+
+def test_send_command_seek_maps_seek_position_ticks(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    r = send_command_client.client.post(
+        "/Sessions/s1/Command",
+        json={"Name": "Seek", "Arguments": {"SeekPositionTicks": 98765}})
+    assert r.status_code == 200, r.text
+    assert r.json()["payload"] == {"position_ticks": 98765}
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.position_ticks == 98765
+
+
+def test_send_command_seek_missing_ticks_400_no_row(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    r = send_command_client.client.post("/Sessions/s1/Command",
+                                        json={"Name": "Seek", "Arguments": {}})
+    assert r.status_code == 400, r.text
+    assert db.query(bus.PlaybackControlCommand).count() == 0
+
+
+def test_send_command_unknown_name_400_no_row(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    r = send_command_client.client.post(
+        "/Sessions/s1/Command",
+        json={"Name": "SetVolume", "Arguments": {"Volume": 50}})
+    assert r.status_code == 400, r.text
+    assert db.query(bus.PlaybackControlCommand).count() == 0
+
+
+def test_send_command_bus_disabled_503_no_row(send_command_client, db, monkeypatch):
+    _disable_bus(monkeypatch)
+    r = send_command_client.client.post("/Sessions/s1/Command",
+                                        json={"Name": "Pause"})
+    assert r.status_code == 503, r.text
+    assert db.query(bus.PlaybackControlCommand).count() == 0
+
+
+def test_send_command_missing_session_404(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    r = send_command_client.client.post("/Sessions/ghost/Command",
+                                        json={"Name": "Pause"})
+    assert r.status_code == 404, r.text
+    assert db.query(bus.PlaybackControlCommand).count() == 0
+
+
+def test_send_command_non_owner_forbidden_no_row(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    send_command_client.app.dependency_overrides[get_emby_user] = (
+        lambda: SimpleNamespace(id=99, admin_role=None, is_staff=False))
+    r = send_command_client.client.post("/Sessions/s1/Command",
+                                        json={"Name": "Pause"})
+    assert r.status_code == 403, r.text
+    assert db.query(bus.PlaybackControlCommand).count() == 0
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.is_paused is not True
+
+
+def test_send_command_viewer_role_forbidden_no_row(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    send_command_client.app.dependency_overrides[get_emby_user] = (
+        lambda: SimpleNamespace(id=99, admin_role="viewer", is_staff=True))
+    r = send_command_client.client.post("/Sessions/s1/Command",
+                                        json={"Name": "Pause"})
+    assert r.status_code == 403, r.text
+    assert db.query(bus.PlaybackControlCommand).count() == 0
+
+
+def test_send_command_staff_remote_allowed(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="drive_relay")
+    send_command_client.app.dependency_overrides[get_emby_user] = (
+        lambda: SimpleNamespace(id=99, admin_role="super", is_staff=True))
+    r = send_command_client.client.post("/Sessions/s1/Command",
+                                        json={"Name": "Pause"})
+    assert r.status_code == 200, r.text
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.is_paused is True
+
+
+def test_send_command_stop_enforced(send_command_client, db, monkeypatch):
+    _enable_bus(monkeypatch)
+    _session_row(db, "s1", variant="mount_relay")
+    r = send_command_client.client.post("/Sessions/s1/Command",
+                                        json={"Name": "Stop"})
+    assert r.status_code == 200, r.text
+    assert r.json()["outcome"] == bus.OUTCOME_ENFORCED
+    row = db.query(em.PlaybackSession).filter_by(session_key="s1").first()
+    assert row.ended_at is not None

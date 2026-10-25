@@ -33,6 +33,7 @@ import re
 from datetime import datetime
 
 from fastapi import Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend import admin_roles, models
@@ -40,6 +41,7 @@ from backend.database import get_db
 from backend.emby_server import api as emby_api
 from backend.emby_server import compat_routes
 from backend.emby_server import models as em
+from backend.emby_server import playback_bus as bus
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization
 from backend.security import SECRET_KEY
 
@@ -51,6 +53,25 @@ SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 # 被替换的旧路由（api.py 里不带鉴权的实现）
 LIST_PATHS = ("/emby/Sessions", "/Sessions")
 STOP_PATHS = ("/emby/Sessions/{session_key}", "/Sessions/{session_key}")
+# Emby 原生遥控口（阶段 8 PR-3，新路由、无旧实现可替换）：
+# POST /Sessions/{id}/Command，/emby 前缀同口径。只翻译内部已支持
+# 的命令，余者 400 明示；通道只做到服务端接收 + 记账 + 事件，播放器
+# 消费端未建，因此 SupportsRemoteControl 仍保持 False（见 api.py 的
+# r50 诚实化注释），未实测前不翻 True。
+COMMAND_PATHS = ("/emby/Sessions/{session_key}/Command",
+                 "/Sessions/{session_key}/Command")
+# Emby GeneralCommand.Name → 内部命令；PlayPause 按会话当前 is_paused
+# 开关（播 → 暂停，停 → 恢复）。未列出的名字（SetVolume / Mute /
+# NextTrack / DisplayMessage 等）一律 400，不静默丢、不假装执行——
+# 命令集扩围是另 PR 的活，不在本通道里偷偷扩。
+_EMBY_COMMAND_MAP = {
+    "Stop": "stop",
+    "Pause": "pause",
+    "Play": "resume",
+    "Unpause": "resume",
+    "PlayPause": "PlayPause",
+    "Seek": "seek",
+}
 # 上报路由：路径 → compat_routes.py 里的处理函数名（只改 body，不改逻辑）
 REPORT_PATHS = {
     "/emby/Sessions/Playing": "session_playing",
@@ -189,6 +210,79 @@ def stop_session_checked(
     return {"success": True}
 
 
+class _GeneralCommandIn(BaseModel):
+    """Emby GeneralCommand 请求体：Name 必填，Arguments 可选。"""
+    Name: str
+    Arguments: dict | None = None
+
+
+def send_session_command(
+    session_key: str,
+    body: _GeneralCommandIn,
+    request: Request,
+    user: models.WebUser = Depends(get_emby_user),
+    db: Session = Depends(get_db),
+):
+    """Emby 原生遥控口：把 GeneralCommand 翻译成内部命令并同步执行。
+
+    鉴权与结束口同口径：只能遥控自己的会话，管理员（is_staff）可
+    遥控任意会话（写角色校验走 ensure_admin_allowed，只读角色得
+    403）。总线关时 503、不写行；未知命令名 400、不写行；会话
+    不存在 404；seek 参数非法 400、不写行。pause / resume / seek
+    的终态 outcome 仍是 recorded——通道只做到服务端接收 + 记账 +
+    事件，播放器消费端（websocket 推送 / 轮询）未建，completed 在此
+    绝不许读成“播放器已照做”；能力申报因此仍保持
+    SupportsRemoteControl=False。命令行的 device_id 取会话行记的
+    设备（执行器的 device 校验据此放行，命令不会打到别台设备）。
+    """
+    from backend.emby_server import play_session as _ps
+
+    if not bus.bus_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="播放实时总线未开启（PLAYBACK_BUS_ENABLED=0），命令不执行",
+        )
+    internal = _EMBY_COMMAND_MAP.get((body.Name or "").strip())
+    if internal is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"本阶段支持的遥控命令：{', '.join(sorted(_EMBY_COMMAND_MAP))}；"
+                   f"不支持：{body.Name}",
+        )
+    session = _ps.resolve_session(db, session_key)
+    if session is None:
+        raise HTTPException(status_code=404, detail="播放会话不存在")
+    if session.user_id != user.id:
+        if not _is_staff(user):
+            raise HTTPException(status_code=403, detail="只能遥控自己的播放会话")
+        admin_roles.ensure_admin_allowed(request, user)
+    if internal == "PlayPause":
+        internal = "resume" if session.is_paused else "pause"
+    payload = None
+    if internal == "seek":
+        args = body.Arguments or {}
+        payload = {"position_ticks": args.get(
+            "SeekPositionTicks", args.get("PositionTicks"))}
+    try:
+        command = bus.create_command(
+            db, session_key=session.session_key, command=internal,
+            requested_by=user.id, device_id=session.device_id,
+            payload=payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    bus.mark_sent(db, command)
+    bus.mark_delivered(db, command)
+    if internal == "stop":
+        command = bus.execute_stop(db, command)
+    else:
+        command = bus.execute_state_command(db, command)
+    data = bus.command_to_dict(command)
+    note = bus.honesty_note(command, via_send_command=True)
+    if note:
+        data["note"] = note
+    return data
+
+
 def _install_report_routes(router, originals: dict) -> int:
     """上报路由：改 body 里的会话键后交给 api.py 的原处理函数
 
@@ -225,6 +319,13 @@ def _install_report_routes(router, originals: dict) -> int:
     return installed
 
 
+def _install_command_routes(router) -> int:
+    """注册 Emby 原生遥控口（阶段 8 PR-3，无旧实现可替换，直接新增）。"""
+    for path in COMMAND_PATHS:
+        router.post(path)(send_session_command)
+    return len(COMMAND_PATHS)
+
+
 def install_session_routes(router) -> dict:
     """替换会话端点实现（必须在 ``app.include_router(emby_router)`` **之前**调用）
 
@@ -252,13 +353,16 @@ def install_session_routes(router) -> dict:
     report_routes = _install_report_routes(
         router, {name: getattr(compat_routes, name) for name in set(REPORT_PATHS.values())}
     )
+    command_routes = _install_command_routes(router)
 
     logger.info(
-        "会话端点：已替换 %d 条旧路由（未鉴权列表/结束 + 可预测会话键），注册 %d 条带鉴权上报路由",
+        "会话端点：已替换 %d 条旧路由（未鉴权列表/结束 + 可预测会话键），注册 %d 条带鉴权上报路由、%d 条遥控口路由",
         superseded,
         report_routes,
+        command_routes,
     )
-    return {"superseded": superseded, "report_routes": report_routes}
+    return {"superseded": superseded, "report_routes": report_routes,
+            "command_routes": command_routes}
 
 
 __all__ = [
@@ -266,8 +370,10 @@ __all__ = [
     "resolve_session_key",
     "get_sessions_scoped",
     "stop_session_checked",
+    "send_session_command",
     "LIST_PATHS",
     "STOP_PATHS",
+    "COMMAND_PATHS",
     "REPORT_PATHS",
     "SESSION_KEY_RE",
 ]

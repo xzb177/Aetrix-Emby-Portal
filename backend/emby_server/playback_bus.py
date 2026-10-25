@@ -41,6 +41,17 @@ PLAY_SESSION_FIRST_CLASS_ENABLED 同口径，进程启动时读一次，改动
 发布失败永不拖播放：publish_event / run_snapshot_once 内部只记
 warning、不抛异常（与 play_events 的永不抛、upstream_health 的
 Redis 失败跳过同口径）。
+- 阶段 8 PR-2（对账卫生）：快照每行补 last_command_type（与
+  last_command_status 并列）；快照工人每拍先扫超时命令再建快照，
+  超时命令判 timeout 且恢复联网不补发；执行器校验 device_id，
+  命令带设备且与会话设备不一致时判 failed（device_mismatch），
+  不静默打到别台设备。
+- 阶段 8 PR-3（SendCommand 通道）：Emby 原生 POST
+  /Sessions/{id}/Command（/emby 前缀同口径，见 session_routes）
+  把 GeneralCommand 翻译成内部命令（仅 stop / pause / resume /
+  seek / PlayPause 开关，余者 400 明示）；通道只做到“服务端接收
+  + 记账 + 事件”，播放器消费端（websocket 推送 / 轮询）未建、
+  未经真实播放器实测前 SupportsRemoteControl 保持 False，不翻 True。
 """
 
 from __future__ import annotations
@@ -199,6 +210,7 @@ def build_snapshot(db: Session) -> dict:
             "is_paused": bool(row.is_paused),
             "last_update_at": row.last_update_at.isoformat() if row.last_update_at else None,
             "last_command_status": last_cmd.status if last_cmd is not None else None,
+            "last_command_type": last_cmd.command if last_cmd is not None else None,
         })
     return {
         "v": SNAPSHOT_VERSION,
@@ -257,17 +269,31 @@ def run_snapshot_once(db: Session, client=None) -> int:
     return len(snapshot["sessions"])
 
 
+def run_snapshot_cycle(db: Session, client=None) -> int:
+    """快照工人单拍（阶段 8 PR-2）：先扫超时命令、再建快照，让本拍
+    快照里的 last_command_status 已反映超时终态；扫超时失败不杀
+    本拍（只记 warning，快照照写）；超时命令判 timeout 后不再补发
+    （恢复联网不重发旧命令，沿用 #24 口径）。"""
+    try:
+        timed_out = timeout_stale_commands(db)
+        if timed_out:
+            logger.info("播放总线快照拍：超时命令 %d 条已判 timeout", timed_out)
+    except Exception:  # noqa: BLE001 — 扫超时失败不拖快照
+        logger.warning("播放总线超时扫失败（本拍快照照写）", exc_info=True)
+    return run_snapshot_once(db, client=client)
+
+
 def run_snapshot_loop(db_factory, interval_sec: int | None = None,
                       stop_event=None) -> None:
-    """快照工人主循环（供 worker 接线，见报告）：每 interval 秒写一次
-    全量快照。stop_event 置位即退出；单轮失败不杀工人。"""
+    """快照工人主循环（供 worker 接线，见报告）：每 interval 秒扫超时
+    + 写一次全量快照。stop_event 置位即退出；单轮失败不杀工人。"""
     import time
 
     interval = interval_sec or SNAPSHOT_INTERVAL_SEC
     while stop_event is None or not stop_event.is_set():
         db = db_factory()
         try:
-            run_snapshot_once(db)
+            run_snapshot_cycle(db)
         finally:
             try:
                 db.close()
@@ -505,13 +531,23 @@ def list_commands(db: Session, limit: int = 50):
     )
 
 
+def _device_mismatch(command: PlaybackControlCommand, session) -> bool:
+    """命令寻址校验（阶段 8 PR-2 最小修复）：命令带了 device_id 且
+    会话也记了 device_id、两者不一致时命令不许打到这台设备。任一
+    为空不判 mismatch（老会话行可能没记设备；命令没带设备时不校验）。"""
+    cmd_dev = (command.device_id or "").strip()
+    ses_dev = (getattr(session, "device_id", None) or "").strip()
+    return bool(cmd_dev and ses_dev and cmd_dev != ses_dev)
+
+
 def execute_stop(db: Session, command: PlaybackControlCommand,
                  publish_client=None) -> PlaybackControlCommand:
     """执行一条 stop 命令（调用前须已是 sent 或 delivered 状态）。
 
     服务端 stop 语义（收口现有三处 stop 的共识，不新发明）：
     会话行置 ended_at；已结束的回 already_ended；查不到会话的
-    判 failed（session_not_found）；执行后尽力发布 ended 事件，
+    判 failed（session_not_found）；设备不一致的判 failed
+    （device_mismatch，阶段 8 PR-2）；执行后尽力发布 ended 事件，
     发布失败不影响命令完成（事件丢了靠快照补齐，这是两件套的
     存在意义）。302 / 直链变体 outcome 恒为 best_effort。
     """
@@ -525,6 +561,8 @@ def execute_stop(db: Session, command: PlaybackControlCommand,
     session = _ps.resolve_session(db, command.session_key)
     if session is None:
         return mark_failed(db, command, "session_not_found")
+    if _device_mismatch(command, session):
+        return mark_failed(db, command, "device_mismatch")
     if session.ended_at is not None:
         return mark_completed(db, command, OUTCOME_ALREADY_ENDED)
     _ps.end_session(db, session)
@@ -551,12 +589,13 @@ def execute_state_command(db: Session, command: PlaybackControlCommand,
     （session_not_found）；已结束回 already_ended；否则只写会话行
     （pause 写 is_paused=True、resume 写 False、seek 写 position_ticks）
     + 尽力发 progress 事件，终态 outcome 一律 recorded——中继流路径
-    不校验会话状态（见模块 docstring），新命令没有 enforced 的份，
-    播放器通道（SendCommand）是后续 PR 的活。
-
-    注意（PR-2 的活，本 PR 不修）：执行时不校验命令带的 device_id
-    与会话 device_id 是否一致；无 PlaySessionId 时的回落键不含设备
-    维度，两台设备播同一条目可能撞键打错设备——风险登记在 PR 描述里。
+    不校验会话状态（见模块 docstring），新命令没有 enforced 的份；
+    SendCommand 通道（阶段 8 PR-3）只做到服务端接收 + 记账 + 事件，
+    播放器消费端未建，recorded 仍不许读成播放器已照做。
+    寻址校验（阶段 8 PR-2）：命令带 device_id 且与会话 device_id
+    不一致时判 failed（device_mismatch），不打到别台设备；任一
+    为空不校验。无 PlaySessionId 时的回落键仍不含设备维度（根治
+    属会话寻址另题），并发写冲突仍是 last-write-wins（见 PR 描述）。
     """
     if command.status not in (STATUS_SENT, STATUS_DELIVERED):
         raise ValueError(
@@ -569,6 +608,8 @@ def execute_state_command(db: Session, command: PlaybackControlCommand,
     session = _ps.resolve_session(db, command.session_key)
     if session is None:
         return mark_failed(db, command, "session_not_found")
+    if _device_mismatch(command, session):
+        return mark_failed(db, command, "device_mismatch")
     if session.ended_at is not None:
         return mark_completed(db, command, OUTCOME_ALREADY_ENDED)
     if command.command == "pause":
@@ -619,3 +660,22 @@ def command_to_dict(command: PlaybackControlCommand) -> dict:
         "completed_at": command.completed_at.isoformat() if command.completed_at else None,
         "error": command.error,
     }
+
+
+def honesty_note(command: PlaybackControlCommand,
+                 via_send_command: bool = False) -> str | None:
+    """命令终态的诚实附注（管理端口径；SendCommand 通道复用，recorded
+    的措辞按通道微调）。enforced 无附注；无终态 outcome 时回 None。"""
+    if command.outcome == OUTCOME_BEST_EFFORT:
+        return ("会话已标记结束，但已发出的直链地址在签名过期前仍可用，"
+                "本次停止为 best-effort，不是已确认停播。")
+    if command.outcome == OUTCOME_ALREADY_ENDED:
+        return "目标会话执行前已结束，命令无事可做。"
+    if command.outcome == OUTCOME_RECORDED:
+        if via_send_command:
+            return ("命令已由 Emby 标准遥控口接收并记账、事件已发布，但"
+                    "播放器侧尚未消费总线事件（无 websocket 推送 / 轮询"
+                    "消费端），本次未直接作用于播放器，不是已确认执行。")
+        return ("命令已记账并发布事件，但播放器暂无接收命令的通道，"
+                "本次未直接作用于播放器，不是已确认执行。")
+    return None
