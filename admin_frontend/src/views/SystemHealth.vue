@@ -471,7 +471,7 @@ onMounted(() => {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="系统"
       title="系统健康"
       description="十个子系统的实时状态灯（绿灯正常、黄灯警告、红灯故障，只展示不诊断），以及服务运行态、实时会话、数据库备份与告警通知。"
     >
