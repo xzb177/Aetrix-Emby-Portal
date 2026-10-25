@@ -1,5 +1,6 @@
 /** v2.2.0 管理端 API（全部走 /api/admin/*，详见 backend/api/admin.py 与 emby_server/portal.py） */
 import { get, getBlob, getPublic, postBlob, post, put, patch, del, upload } from '@/utils/request'
+import { extendUserSubscription, fetchEconomyPlans, grantUserSubscription } from './economy'
 import type { EconomyStats } from './economy'
 import type {
   AdminListResponse,
@@ -126,21 +127,18 @@ export interface PlanRow {
   realm_name?: string
 }
 
-/** 套餐清单（只取启用中的，供授予订阅下拉用）；`realm_id=0` = 全部服，不传 = 当前服 */
-export const fetchPlans = (realm_id?: number) =>
-  get<{ plans: PlanRow[]; realm_id: number | null; active_realm_id: number }>(
-    '/economy/plans',
-    {
-      ...(realm_id === undefined ? {} : { realm_id }),
-      only_active: true,
-    }
-  )
+/**
+ * 套餐清单（只取启用中的，供授予订阅下拉用）；`realm_id=0` = 全部服，不传 = 当前服。
+ * 转调 economy.ts 的 fetchEconomyPlans（唯一实现），这里只固定 only_active: true；
+ * 套餐管理页（Goods.vue）直接用 fetchEconomyPlans 取全量，不过滤，两者不可混用。
+ */
+export const fetchPlans = (realm_id?: number) => fetchEconomyPlans(realm_id, { only_active: true })
 
-export const grantSubscription = (userId: number, data: { plan_id: number; duration_days: number }) =>
-  post<{ success: boolean }>(`/users/${userId}/subscriptions`, data)
+/** 转调 economy.ts 的 grantUserSubscription（唯一实现）；economy 版 data 还可带 realm_id（多服下跟随套餐开服）。 */
+export const grantSubscription = grantUserSubscription
 
-export const extendSubscription = (subscriptionId: number, days: number) =>
-  post<{ success: boolean }>(`/subscriptions/${subscriptionId}/extend`, { days })
+/** 转调 economy.ts 的 extendUserSubscription（唯一实现）。 */
+export const extendSubscription = extendUserSubscription
 
 export const updateUser = (id: number, data: { is_active?: boolean; is_staff?: boolean }) =>
   put<{ success: boolean }>(`/users/${id}`, data)

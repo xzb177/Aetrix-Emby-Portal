@@ -223,7 +223,7 @@ onMounted(load)
 
     <div class="usage-hint">
       <b>第三方怎么用：</b>请求头带 <code>X-API-Key: ak_...</code> 即可。
-      先调 <code>GET /api/admin/api-keys/verify</code> 验证连通性。
+      第三方拿到 Key 后，用该 Key 作 X-API-Key 请求头调 <code>GET /api/admin/api-keys/verify</code> 验证连通性（走 Key 鉴权，不是管理员登录）。
       权限层级：管理 &gt; 读写 &gt; 只读。
     </div>
 
