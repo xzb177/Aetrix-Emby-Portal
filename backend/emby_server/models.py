@@ -868,8 +868,9 @@ class IdentifyReviewTask(Base):
 #: 证据口径（2026-10-24 追加，见 upstream_sources 模块头）：
 #: - source_type：第六阶段实测只建过 Emby 型；jellyfin 列入是用户
 #:   2026-10-24 亲定的首批口径（Emby/Jellyfin 同 API 族），非第六阶段
-#:   单独实测；apple_cms 明确后置（第六阶段只见其许可证项，目录同步
-#:   与播放均未实测），不在允许集里——传它直接被拒。
+#:   单独实测；applecms 列入是用户 2026-10-25 亲定的并列口径
+#:   （苹果 CMS 与 Emby/Jellyfin 并列，绝不做兜底定位），本单只做
+#:   类型与持久化，不碰展示面。
 #: - auth_method：第六阶段实测是账号密码密封；api_key 是 Emby 协议的
 #:   标准形态、未在第六阶段上游建源时单独实测，列入但报告里标待复验。
 #: - credential_scope：源级一把（source）与用户映射（user）两个取值。
@@ -881,8 +882,8 @@ class IdentifyReviewTask(Base):
 #:   与 BYOS 绑定线使用。
 #: - health_status：占位字段（探活是 25-3 的活），取值集先定死，25-3
 #:   的工人只许写这三个值，不许自造第四种状态。
-UPSTREAM_SOURCE_TYPES = ("emby", "jellyfin")
-UPSTREAM_AUTH_METHODS = ("password", "api_key")
+UPSTREAM_SOURCE_TYPES = ("emby", "jellyfin", "applecms")
+UPSTREAM_AUTH_METHODS = ("password", "api_key", "none")
 UPSTREAM_CREDENTIAL_SCOPES = ("source", "user")
 UPSTREAM_HEALTH_STATUSES = ("unknown", "healthy", "unhealthy")
 
@@ -903,7 +904,8 @@ class UpstreamSource(Base):
     """上游源（FMBY 学习 #25 25-1：只做源管理，不做聚合/探活/播放接入）。
 
     学的是 FMBY 第六阶段实测的上游源形态（只学机制、不抄闭源代码）：
-    一行 = 一个别人的媒体服务（Emby/Jellyfin 型），字段与 FMBY 实测的
+    一行 = 一个别人的媒体服务（Emby/Jellyfin/applecms 型，三者并列，
+    苹果 CMS 绝不做兜底定位），字段与 FMBY 实测的
     ``upstream_sources`` 表对齐：source_type、base_url、auth_method、
     sealed_secret（密封凭据）、extra_headers_json、user_agent、referer。
     FMBY 那张表在第六阶段实测里没有 enabled / 健康状态列——本表的
@@ -948,7 +950,7 @@ class UpstreamSource(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(80), unique=True, nullable=False)
-    source_type = Column(String(20), nullable=False)  # emby / jellyfin
+    source_type = Column(String(20), nullable=False)  # emby / jellyfin / applecms
     base_url = Column(String(500), nullable=False)  # 已归一化：去尾斜杠
     auth_method = Column(String(20), nullable=False, default="password")
     username = Column(String(200))  # password 形态必填；api_key 形态为空
@@ -986,6 +988,8 @@ class UpstreamItemMapping(Base):
       （如 tmdb / imdb / title+year），只记“凭什么配上”，不记标题
       原文与任何凭据；
     - 同一三元组重复写不重复建行（唯一约束 + upsert 更新置信度与证据）；
+    - episode_index：播放组内 1 起序号（剧集在同组内的集次），电影为 NULL；
+      upsert 时仅当传入非 None 才更新它，None 不覆盖已有值；
     - 不加外键（照 UpstreamSource 先例）：源删了、本地条目删了，
       映射行留着供追溯；读到死映射时未来兜底口按源不存在 / 条目
       不存在结构化处理，不在本表联动清理；
@@ -1007,8 +1011,36 @@ class UpstreamItemMapping(Base):
     local_item_id = Column(Integer, nullable=False)  # emby_items.id，无外键（见上）
     source_id = Column(Integer, nullable=False)  # upstream_sources.id，无外键（见上）
     upstream_item_id = Column(String(100), nullable=False)  # 对方 Emby Item Id
+    # 播放组内 1 起序号；电影为 NULL（见本类 docstring）。
+    episode_index = Column(Integer, nullable=True)
     confidence = Column(Float, nullable=False, default=0.0)
     evidence = Column(String(200), nullable=False, default="")  # 配对依据短码
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+
+
+class SourceCategoryBinding(Base):
+    """上游源分类绑定（苹果 CMS W1：类型与持久化）。
+
+    一行 = 一个上游源绑定的一个上游分类（苹果 CMS 的分类 / 栏目）：
+    同步工人只拉 sync_enabled 的分类；分类在上游改名时以
+    upstream_category_id 为准、只更新 upstream_category_name。
+    不加外键（照 UpstreamSource 先例）：源删了，绑定行留着供追溯。
+    """
+
+    __tablename__ = "source_category_bindings"
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "upstream_category_id",
+                         name="uq_source_category_binding"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_id = Column(Integer, nullable=False, index=True)  # upstream_sources.id，无外键（见上）
+    upstream_category_id = Column(String(100), nullable=False)
+    upstream_category_name = Column(String(200))
+    sync_enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
                         nullable=False)

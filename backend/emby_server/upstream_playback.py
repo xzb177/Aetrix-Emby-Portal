@@ -47,6 +47,41 @@
 - 超时是运维常量（``UPSTREAM_PROBE_TIMEOUT_SEC``），不是业务档位，
   不走 env；兜底口本身就是低频路径（本地优先），一次认证 + 一次
   Range 探活是可接受的成本。
+
+## 苹果 CMS 分支（本批新增，与 Emby/Jellyfin 并列、绝不兜底）
+
+- 分发点：``resolve_upstream_stream`` 在源存在且启用后，按
+  ``source.source_type == "applecms"`` 分发；Emby/Jellyfin 分支
+  逐字不动。本分支不做「本地失败自动改走苹果 CMS」：苹果 CMS
+  与 Emby/Jellyfin 是并列的上游类型，选哪条由源与映射决定，
+  不在本函数里互相兜底。
+- 门禁（四道，默认全关）：总闸 ``UPSTREAM_PLAYBACK_ENABLED``
+  → 苹果 CMS 开关 ``APPLECMS_ENABLED``（关时与总闸关闭行为一致，
+  404 upstream_playback_disabled）→ 分级门控 ``APPLECMS_TIER_GATE``
+  （关时不查；开且映射未配置时 403，复用既有 upstream_forbidden
+  码，见 ``_resolve_applecms_stream``）→ 解析线路开关
+  ``APPLECMS_PARSE_LINES_ENABLED``（只影响解析型组的 unplayable
+  原因，不放行任何解析）。同步开关 ``UPSTREAM_SYNC_ENABLED``
+  默认关且本批无工人消费；映射写开关
+  ``UPSTREAM_ITEM_MAPPING_ENABLED`` 只管映射写路径，不 gate 播放读
+  路径（它默认关，若 gate 播放则播放恒关，是错的）。
+- 取数：``upstream_item_id`` 即 vod_id（映射行记的上游条目 id
+  对苹果 CMS 型就是 vod_id）；``episode_index`` 从 1 起，调用方
+  未传时默认 1（播第 1 集）。detail 现取现解析，播放地址绝不落库。
+- 探活与错误码全复用既有：CMS 接口非 1 → 502
+  upstream_unavailable；detail 空列表（vod 消失）→ 404
+  upstream_item_not_found；429 → 429；401 → 409
+  upstream_credential_invalid、403 → 403 upstream_forbidden；
+  直链探活仍走 ``_classify_probe_status``。unplayable 原因映射：
+  episode_out_of_range → 404 upstream_item_not_found，其余
+  （parse_not_enabled / parse_rule_missing / no_direct_group）
+  → 502 upstream_unavailable，message 区分原因，code 不新发明。
+- 已知缺口（不在本批文件范围，报协调员）：源类型允许集
+  （``upstream_sources.SOURCE_TYPES`` 与模型 CHECK 约束）目前
+  只有 emby/jellyfin，苹果 CMS 源行尚建不出来；本分支代码与
+  测试已就绪（测试用桩源绕过建源校验），等允许集放行即接通。
+  播放口 HTTP 层（``api.py`` 的 upstream_stream 路由）目前未传
+  episode 参数，接线时由路由把 ``?episode=`` 透传给本函数。
 """
 
 from __future__ import annotations
@@ -67,6 +102,23 @@ logger = logging.getLogger(__name__)
 
 #: 上游播放总开关 env 键（默认关）。
 UPSTREAM_PLAYBACK_ENV = "UPSTREAM_PLAYBACK_ENABLED"
+
+#: 苹果 CMS 播放开关 env 键（默认关，与总闸是两道门：总闸关则全关，
+#: 苹果 CMS 分支还须本开关开才放行）。
+APPLECMS_ENABLED_ENV = "APPLECMS_ENABLED"
+
+#: 苹果 CMS 解析线路开关 env 键（默认关）：关时解析型组一律
+#: unplayable（parse_not_enabled），不猜解析规则。
+APPLECMS_PARSE_LINES_ENV = "APPLECMS_PARSE_LINES_ENABLED"
+
+#: 苹果 CMS 分级门控开关 env 键（默认关）：关时不查分级；
+#: 开且分级映射未配置时返回 403（复用既有 upstream_forbidden 码）。
+APPLECMS_TIER_GATE_ENV = "APPLECMS_TIER_GATE"
+
+#: 上游同步开关 env 键（默认关）：本批只有读路径（现取现解析），
+#: 没有同步工人；本键是未来同步工人复用的门，本模块只定义读取
+#: 口，不消费它写任何东西。
+APPLECMS_SYNC_ENV = "UPSTREAM_SYNC_ENABLED"
 
 #: 上游探活/认证单次超时（秒，运维常量，见模块 docstring）。
 UPSTREAM_PROBE_TIMEOUT_SEC = 10.0
@@ -105,6 +157,47 @@ def playback_enabled() -> bool:
     """上游播放总开关（env，默认关）。每次调用现读，供测试 monkeypatch。"""
     return (str(os.getenv(UPSTREAM_PLAYBACK_ENV, "0") or "0")
             .strip().lower() not in {"0", "false", "no", "off", ""})
+
+
+def _env_on(env_key: str) -> bool:
+    """env 开关通用读法（默认关；0/false/no/off/空 = 关）。"""
+    return (str(os.getenv(env_key, "0") or "0")
+            .strip().lower() not in {"0", "false", "no", "off", ""})
+
+
+def applecms_enabled() -> bool:
+    """苹果 CMS 播放开关（env，默认关）。"""
+    return _env_on(APPLECMS_ENABLED_ENV)
+
+
+def applecms_parse_lines_enabled() -> bool:
+    """苹果 CMS 解析线路开关（env，默认关）。"""
+    return _env_on(APPLECMS_PARSE_LINES_ENV)
+
+
+def applecms_tier_gate_enabled() -> bool:
+    """苹果 CMS 分级门控开关（env，默认关）。"""
+    return _env_on(APPLECMS_TIER_GATE_ENV)
+
+
+def applecms_sync_enabled() -> bool:
+    """上游同步开关（env，默认关）。
+
+    本批没有同步工人：本函数只是把门留给未来同步工作复用，
+    播放分支绝不因它写库、写映射、起后台任务。
+    """
+    return _env_on(APPLECMS_SYNC_ENV)
+
+
+def applecms_tier_configured() -> bool:
+    """苹果 CMS 分级映射是否已配置。
+
+    本批无映射（TODO：分级→可播范围的映射由后续批次定义并落
+    配置后，本函数才返回 True）。现阶段恒为 False，因此分级门
+    控一旦开启，苹果 CMS 播放一律 403——这是 fail-closed，不是 bug。
+    """
+    # TODO(苹果 CMS 分级映射)：映射定义落地后在此接配置读取。
+    return False
 
 
 def build_upstream_stream_url(base_url: str, upstream_item_id: str, *,
@@ -286,11 +379,123 @@ def _classify_probe_status(status: Optional[int], source_id: int,
         source_id=source_id)
 
 
+def _map_applecms_error(exc, source_id: int) -> UpstreamPlaybackError:
+    """把 ``AppleCMSError`` 按种类映射成既有结构化错误（不发明新码）。
+
+    - rate_limited → 429 upstream_quota_exhausted（CMS 侧未透传
+      Retry-After，本批不带该字段，不编数字）；
+    - unauthorized：401 → 409 upstream_credential_invalid，
+      403 → 403 upstream_forbidden（与既有探活同义映射一致）；
+    - not_found → 404 upstream_item_not_found；
+    - network / http_error / bad_response / bad_code → 502
+      upstream_unavailable（CMS 接口非 1 即属此类）。
+    """
+    kind = getattr(exc, "kind", None)
+    status = getattr(exc, "http_status", None)
+    if kind == "rate_limited":
+        return UpstreamPlaybackError(
+            429, "upstream_quota_exhausted",
+            "上游额度已耗尽，请稍后再试或换个源",
+            source_id=source_id)
+    if kind == "unauthorized":
+        if status == 401:
+            return UpstreamPlaybackError(
+                409, "upstream_credential_invalid",
+                "上游凭据失效，请管理员重录该源凭据",
+                source_id=source_id)
+        return UpstreamPlaybackError(
+            403, "upstream_forbidden",
+            "上游拒绝了本次播放，请检查该源权限",
+            source_id=source_id)
+    if kind == "not_found":
+        return UpstreamPlaybackError(
+            404, "upstream_item_not_found",
+            "上游已无此条目",
+            source_id=source_id)
+    return UpstreamPlaybackError(
+        502, "upstream_unavailable",
+        "上游服务当前不可用，请稍后再试",
+        source_id=source_id)
+
+
+def _resolve_applecms_stream(source, vod_id: str, *,
+                             episode_index: int = 1,
+                             http_get: Optional[Callable] = None,
+                             http_probe: Optional[Callable] = None) -> str:
+    """苹果 CMS 播放分支：现取现解析、先探后 302，绝不落库。
+
+    门禁顺序：APPLECMS_ENABLED 关 → 404 upstream_playback_disabled
+    （与总闸关闭行为一致）；分级门控开且映射未配置 → 403
+    upstream_forbidden（文件里唯一的 403 码，复用；其标准语义是
+    「上游拒绝」，此处是本地分级未配置的拒绝，message 已区分，
+    若协调员要为分级单独立码，换这里一处即可）。
+
+    vod_id 即调用方传入的 ``upstream_item_id``（映射行里记的上游
+    条目 id 对苹果 CMS 型就是 vod_id）；``episode_index`` 从 1 起，
+    默认 1（调用方未传集序号时播第 1 集）。detail 现取现解析，
+    播放地址只出现在返回的 302 地址与探活请求里，不写库、不进日志
+    （日志只含 source_id）。CMS 密封凭据不走 Emby 认证口：
+    本分支只用源上配的 UA / Referer / 附加头（``_source_headers``）
+    发请求；CMS 若需密钥，走附加头配置，不走密封凭据。
+    """
+    if not applecms_enabled():
+        raise UpstreamPlaybackError(
+            404, "upstream_playback_disabled",
+            "上游播放未开启", source_id=source.id)
+    if applecms_tier_gate_enabled() and not applecms_tier_configured():
+        raise UpstreamPlaybackError(
+            403, "upstream_forbidden",
+            "该源分级映射未配置，苹果 CMS 播放暂不可用",
+            source_id=source.id)
+    from backend.emby_server import applecms_fetcher as acf
+    headers = _source_headers(source)
+    try:
+        detail = acf.fetch_detail(
+            source.base_url, vod_id, http_get=http_get, headers=headers)
+    except acf.AppleCMSError as exc:
+        raise _map_applecms_error(exc, source.id) from exc
+    if detail is None:
+        raise UpstreamPlaybackError(
+            404, "upstream_item_not_found",
+            "上游已无此条目", source_id=source.id)
+    try:
+        episode = int(episode_index)
+    except (TypeError, ValueError):
+        episode = -1
+    result = acf.resolve_play(
+        detail, episode,
+        parse_lines_enabled=applecms_parse_lines_enabled())
+    if result[0] != "ok":
+        reason = result[1]
+        if reason == "episode_out_of_range":
+            raise UpstreamPlaybackError(
+                404, "upstream_item_not_found",
+                "上游无此集", source_id=source.id)
+        messages = {
+            "parse_not_enabled": "解析型线路未开启，该条目暂无直链可播",
+            "parse_rule_missing": "本站无解析规则，该条目暂无直链可播",
+            "no_direct_group": "该条目暂无直链可播",
+        }
+        raise UpstreamPlaybackError(
+            502, "upstream_unavailable",
+            messages.get(reason, "该条目暂无直链可播"),
+            source_id=source.id)
+    _, _group_name, address = result
+    probe = _default_http_range_probe if http_probe is None else http_probe
+    probe_status, retry_after = probe(
+        address, _source_headers(source), UPSTREAM_PROBE_TIMEOUT_SEC)
+    _classify_probe_status(probe_status, source.id, retry_after)
+    logger.info("上游播放解析成功 source_id=%s", source.id)
+    return address
+
+
 def resolve_upstream_stream(db: Session, source_id: int,
                             upstream_item_id: str, *,
                             media_source_id: Optional[str] = None,
                             http_probe: Optional[Callable] = None,
-                            http_post: Optional[Callable] = None) -> str:
+                            http_post: Optional[Callable] = None,
+                            episode_index: int = 1,
+                            http_get: Optional[Callable] = None) -> str:
     """上游播放解析：查源 → 取凭据 → 拼地址 → Range 探活 → 返回 302 地址。
 
     每一步失败都以 UpstreamPlaybackError 结构化返回，绝不返回死链、
@@ -316,6 +521,10 @@ def resolve_upstream_stream(db: Session, source_id: int,
         raise UpstreamPlaybackError(
             409, "upstream_source_disabled",
             "该上游源未启用", source_id=source_id)
+    if getattr(source, "source_type", None) == "applecms":
+        return _resolve_applecms_stream(
+            source, item_id, episode_index=episode_index,
+            http_get=http_get, http_probe=http_probe)
     try:
         token = _auth_token_for_source(source, http_post=http_post)
     except us.SealedSecretError as exc:

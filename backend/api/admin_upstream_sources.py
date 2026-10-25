@@ -73,7 +73,7 @@ def get_upstream_source(
 class UpstreamSourceCreateRequest(BaseModel):
     name: str = Field(description="源名称（管理端辨识用，全站唯一）")
     source_type: str = Field(
-        description="emby / jellyfin（苹果 CMS 型已后置，传它直接被拒）")
+        description="emby / jellyfin / applecms（苹果 CMS 与 Emby 并列）")
     base_url: str = Field(description="上游基址（只许 http/https 公网地址）")
     auth_method: str = Field(default="password",
                               description="password（实测形态）/ api_key")

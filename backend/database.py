@@ -1063,6 +1063,11 @@ def _auto_migrate():
         ("playback_control_commands", [
             ("payload", "TEXT", "NULL"),
         ]),
+        # 苹果 CMS W1（类型与持久化）：映射表加播放组内集次序号。
+        # 老库补列后为 NULL（= 电影 / 未标序号），行为与升级前一致。
+        ("upstream_item_mappings", [
+            ("episode_index", "INTEGER", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
@@ -1125,6 +1130,7 @@ def _auto_migrate():
     _ensure_lottery_g1_tables(existing_tables)
     _migrate_redpacket_claim_unique(existing_tables)
     _migrate_redpacket_idempotency_unique(existing_tables)
+    _migrate_upstream_source_checks(existing_tables)
     _migrate_scan_run_single_running(existing_tables)
     _migrate_panel_unseal_fk(existing_tables)
     _migrate_exchange_discount_credit_fk(existing_tables)
@@ -1132,6 +1138,56 @@ def _auto_migrate():
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
+
+
+def _migrate_upstream_source_checks(existing_tables: set) -> None:
+    """upstream_sources 的 CHECK 约束补新取值（苹果 CMS W1，幂等）。
+
+    仅 PostgreSQL 生效：其它方言直接跳过（create_all 已覆盖新库，
+    SQLite 的 CHECK 在建表时由模型定义带出）。
+    对每列查 pg_constraint：若该列 CHECK 定义里没有新取值，就 DROP
+    后以原名重建（ck_upstream_source_type 补 'applecms'，
+    ck_upstream_auth_method 补 'none'），取值集取自 models 的唯一
+    定义点（约束与枚举同源，不手写第二份清单）。
+    best-effort：任何失败只记 warning、不崩启动（照
+    uq_alert_rules_event_type 同口径）；失败时老约束原样保留，
+    新取值写入仍被旧 CHECK 挡下、不会静默进脏数据。
+    """
+    from sqlalchemy import inspect, text
+
+    if engine.dialect.name != "postgresql":
+        return
+    if "upstream_sources" not in existing_tables:
+        return
+    try:
+        from backend.emby_server import models as emby_models
+
+        inspector = inspect(engine)
+        checks = {c["name"]: (c.get("sqltext") or "")
+                  for c in inspector.get_check_constraints("upstream_sources")}
+        specs = (
+            ("source_type", "ck_upstream_source_type",
+             emby_models.UPSTREAM_SOURCE_TYPES, "applecms"),
+            ("auth_method", "ck_upstream_auth_method",
+             emby_models.UPSTREAM_AUTH_METHODS, "none"),
+        )
+        for column, constraint_name, allowed, new_value in specs:
+            if f"'{new_value}'" in checks.get(constraint_name, ""):
+                continue
+            in_list = ", ".join(f"'{v}'" for v in allowed)
+            with engine.begin() as conn:
+                conn.execute(text(
+                    f"ALTER TABLE upstream_sources DROP CONSTRAINT IF EXISTS "
+                    f"{constraint_name}"
+                ))
+                conn.execute(text(
+                    f"ALTER TABLE upstream_sources ADD CONSTRAINT "
+                    f"{constraint_name} CHECK ({column} IN ({in_list}))"
+                ))
+            print(f"  🔧 已迁移: upstream_sources CHECK {constraint_name} "
+                  f"补 '{new_value}'")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️ upstream_sources CHECK 约束迁移跳过: {exc}")
 
 
 def _backfill_filename_meta() -> None:
