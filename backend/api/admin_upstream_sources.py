@@ -11,7 +11,11 @@
 - 响应一律走 source_payload：永远不出凭据原文、不出密封值，只出 has_secret；
 - 新建恒为关闭（创建接口不接受 enabled 入参），启用/停用是单独端点。
 
-本模块不探活、不拉目录、不拼播放地址（那是 25-2/25-3/25-4 的活）。
+本模块不探活、不拼播放地址（那是 25-3/25-4 的活）。25-2 的
+手动聚合触发口（POST /upstream-sources/{id}/aggregate）只做
+「请求形态 → 模块调用 → 错误映射」：拉目录与配对在
+emby_server/upstream_aggregate_run，管理端不直接发上游请求。
+触发是手动动作，不接自动调度、不接定时任务。
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from backend import models as base_models
 from backend.database import get_db
 from backend.emby_server import models as em
 from backend.emby_server import upstream_sources as ups
+from backend.emby_server import upstream_aggregate_run as uar
 from backend.emby_server.portal import admin_emby_router, require_staff
 
 logger = logging.getLogger(__name__)
@@ -199,3 +204,42 @@ def delete_upstream_source(
     ups.delete_source(db, _get_source_or_404(db, source_id))
     db.commit()
     return {"success": True}
+
+
+class UpstreamAggregateRequest(BaseModel):
+    page_size: int = Field(
+        default=100, ge=10, le=500,
+        description="Emby Items 单页大小（10–500；默认 100）")
+
+
+@admin_emby_router.post("/upstream-sources/{source_id}/aggregate")
+def aggregate_upstream_source(
+    source_id: int,
+    body: Optional[UpstreamAggregateRequest] = None,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """手动触发某源的目录聚合（25-2 接线，手动动作，不自动调度）。
+
+    流程：拉该源目录 → aggregate_sources → 配对本地条目 →
+    写路径开关开时 record_mapping 写映射 → 回配对结果。
+    写映射的提交在本接口内完成（record_mapping 只 flush）。
+    错误映射：查无此源 404；源未启用 / applecms 型 400；
+    凭据失效 409；上游额度 429；上游不可用 502。
+    响应不出凭据原文、不出密封值、不出上游播放地址。
+    """
+    source = _get_source_or_404(db, source_id)
+    page_size = body.page_size if body is not None else 100
+    try:
+        result = uar.run_manual_aggregation(
+            db, source, page_size=page_size)
+    except uar.UpstreamAggregateRunError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status, detail=exc.message) from exc
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="映射写入冲突，请重试") from exc
+    return {"source": ups.source_payload(source), "result": result}
