@@ -61,6 +61,7 @@ const routes: RouteRecordRaw[] = [
       // 会员等级（P1 统一货币体系）：运营中心 → 会员等级
       { path: 'member-levels', name: 'MemberLevels', component: () => import('@/views/MemberLevels.vue'), meta: { title: '会员等级' } },
       { path: 'emby', name: 'EmbyAdmin', component: () => import('@/views/EmbyAdmin.vue'), meta: { title: '媒体库' } },
+      { path: 'media-library', name: 'MediaLibraryAdmin', component: () => import('@/views/MediaLibraryAdmin.vue'), meta: { title: '图片与顺序' } },
       // 媒体库可见范围（v2.43.0）：服务器默认范围 + 指定用户单独覆盖，默认关闭
       { path: 'library-scope', name: 'LibraryScope', component: () => import('@/views/LibraryScope.vue'), meta: { title: '媒体库可见范围' } },
       // 元数据来源（Phase 6）：条目级的元数据纠偏与补全进度，从「媒体库」页迁到这里

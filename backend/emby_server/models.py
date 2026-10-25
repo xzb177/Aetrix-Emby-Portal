@@ -64,6 +64,11 @@ class Library(Base):
     # 只对**本机路径**生效（远程挂载拿不到可靠的事件源，仍靠定时扫描）。
     # 监听起不来时自动降级为定时扫描，并在设置里说明，不会默默不工作。
     fs_watch = Column(Boolean, default=True)
+    # 库展示顺序（媒体库学习 L4）：Views / 发现页按 sort_order 排库。
+    # 0 = 未设序：只有任一库 sort_order 非零时才参与排序，全部为 0 时
+    # 查询逐字不变（见 api.user_views）；已设序的在前，未设序的排在
+    # 已设之后按 id 自然序（管理端 GET /order 与 Views 同一口径）。
+    sort_order = Column(Integer, default=0)
     # 虚拟媒体库：按发行平台（Netflix / Disney+ …）自动生成，没有自己的文件与路径
     is_virtual = Column(Boolean, default=False)
     platform = Column(String(30))  # 虚拟库对应的平台 id（见 scanner.PLATFORM_LABELS）
@@ -1672,6 +1677,93 @@ class LibraryListProjection(Base):
     earliest_added = Column(DateTime, nullable=True)
     cover_tag = Column(String(64), nullable=False, default="1")
     computed_at = Column(DateTime, nullable=False, default=datetime.now)
+
+
+class MediaItemArtworkOverride(Base):
+    """条目图片人工覆盖（媒体库学习 L2）。
+
+    一行 = 一个条目的一种图（Primary 海报 / Backdrop 背景）被管理员
+    手工指定。优先级：覆盖 > 旁挂（本地图）> 刮削（远程图），见
+    item_artwork.resolve_item_image_src 与 api._image_chain 的覆盖插槽。
+
+    只存 http(s) URL（本批）：图片路由拿到远程 URL 后走与刮削图同一
+    条代理/本地化路径，不新增本地文件写路径；本地直传图不在本批。
+    无外键（照 LibrarySource 先例）：条目删了行由覆盖列表清理（管理
+    端列表只 join 活条目出数，孤行不展示、不影响出图）。
+    新表由 init_db 的 create_all 建出，不走 _auto_migrate。
+    """
+
+    __tablename__ = "emby_item_artwork_overrides"
+
+    __table_args__ = (
+        UniqueConstraint("item_id", "kind", name="uq_item_artwork_override"),
+        Index("ix_item_artwork_override_item", "item_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, nullable=False)
+    kind = Column(String(20), nullable=False)  # Primary / Backdrop
+    image_url = Column(String(1024), nullable=False)
+    created_by = Column(Integer)  # 管理员 WebUser.id（审计用，可空）
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class MediaItemSortProjection(Base):
+    """条目排序投影行（媒体库学习 L5）。
+
+    一行 = 一个活条目的排序键：title_key（中文按拼音，归一化口径与
+    搜索共用 pinyin_sort.pinyin_full）与 year_key（production_year，
+    空 = NULL，排序时 nulls last）。读侧只读本表（游标分页），写侧
+    由周期重建工人（见 item_sort_projection）增量刷新：缺行补、键变化
+    重算，不碰其它写路径。
+
+    回落口径照 #1235（list_projection）：覆盖不全/行过期/读错一律
+    回落现算并记警告，绝不静默出旧数。无外键，孤行由重建清理。
+    新表由 init_db 的 create_all 建出，不走 _auto_migrate。
+    """
+
+    __tablename__ = "emby_item_sort_projection"
+
+    __table_args__ = (
+        Index("ix_item_sort_projection_library", "library_id"),
+        Index("ix_item_sort_projection_title", "library_id", "title_key", "item_id"),
+        Index("ix_item_sort_projection_year", "library_id", "year_key", "item_id"),
+    )
+
+    item_id = Column(Integer, primary_key=True)
+    library_id = Column(Integer, nullable=False)
+    title_key = Column(String(500), nullable=False, default="")
+    year_key = Column(Integer, nullable=True)
+    computed_at = Column(DateTime, nullable=False, default=datetime.now)
+
+
+class HomeSection(Base):
+    """首页分区注册表（媒体库学习 L6）。
+
+    一行 = 一个首页分区：key 是分区标识（continue_watching /
+    recently_updated 先行），provider 是供数来源说明（resume /
+    recently_added，现阶段仅作标识、不参与分发），position 是展示
+    顺序，enabled 是分区开关。分区本身由数据驱动：前端按本表顺序
+    渲染，不 hardcode 分区清单；新增分区只需插行 + 供数分支。
+
+    种子行由 media_library.ensure_sections 在开关开着的首次读取时
+    幂等补齐（不写迁移、不碰 init_db 的建表路径）。
+    """
+
+    __tablename__ = "emby_home_sections"
+
+    __table_args__ = (
+        UniqueConstraint("key", name="uq_home_section_key"),
+        Index("ix_home_section_position", "position"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String(40), nullable=False)
+    title = Column(String(100), nullable=False)
+    provider = Column(String(40), nullable=False, default="")
+    position = Column(Integer, nullable=False, default=0)
+    enabled = Column(Boolean, nullable=False, default=True)
 
 
 __all__ = [
