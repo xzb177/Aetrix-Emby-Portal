@@ -971,6 +971,49 @@ class UpstreamSource(Base):
                         nullable=False)
 
 
+class UpstreamItemMapping(Base):
+    """本地条目→上游条目持久映射（#25 自动兜底的前置项）。
+
+    阶段 7（#1248）给了显式的上游播放兜底口，但故意没接 video_stream
+    自动兜底——因为没有本地条目到上游条目的持久映射（25-2 聚合只是
+    内存展示模型，select_for_presentation 只比 aggregate_key、不落库）。
+    本表就是那个映射层：未来同步工人在 25-2 聚合产出本地条目与上游
+    线路的配对时调 upstream_item_mappings.record_mapping 落库；自动
+    兜底本身是映射落地后的另一步，本表不接 video_stream。
+
+    - 一行 = 一个本地条目到一个上游条目的配对（源 id + 上游条目 id）；
+    - 置信度 0..1（DB CHECK + 写时 clamp 双保险），证据是短码
+      （如 tmdb / imdb / title+year），只记“凭什么配上”，不记标题
+      原文与任何凭据；
+    - 同一三元组重复写不重复建行（唯一约束 + upsert 更新置信度与证据）；
+    - 不加外键（照 UpstreamSource 先例）：源删了、本地条目删了，
+      映射行留着供追溯；读到死映射时未来兜底口按源不存在 / 条目
+      不存在结构化处理，不在本表联动清理；
+    - 由 create_all 自动建表，老库无需 ALTER（见 EnrichFlipEvent 先例）。
+    """
+
+    __tablename__ = "upstream_item_mappings"
+
+    __table_args__ = (
+        CheckConstraint("confidence >= 0 AND confidence <= 1",
+                        name="ck_upstream_item_mapping_confidence"),
+        UniqueConstraint("local_item_id", "source_id", "upstream_item_id",
+                         name="uq_upstream_item_mapping_triple"),
+        Index("ix_upstream_item_mappings_local", "local_item_id"),
+        Index("ix_upstream_item_mappings_source", "source_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    local_item_id = Column(Integer, nullable=False)  # emby_items.id，无外键（见上）
+    source_id = Column(Integer, nullable=False)  # upstream_sources.id，无外键（见上）
+    upstream_item_id = Column(String(100), nullable=False)  # 对方 Emby Item Id
+    confidence = Column(Float, nullable=False, default=0.0)
+    evidence = Column(String(200), nullable=False, default="")  # 配对依据短码
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+
+
 class EnrichFlipEvent(Base):
     """enrich done→pending 批量翻转的告警事件（v2.55.x）
 
