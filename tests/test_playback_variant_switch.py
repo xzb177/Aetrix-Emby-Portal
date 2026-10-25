@@ -141,7 +141,8 @@ def _call_stream(monkeypatch, db, user, item, query=b"", *,
     if switch_on:
         monkeypatch.setenv(SWITCH_ENV, "1")
     else:
-        monkeypatch.delenv(SWITCH_ENV, raising=False)
+        # 显式关（默认已翻为开后，关只能用显式 0 表达，不再用删 env 充数）
+        monkeypatch.setenv(SWITCH_ENV, "0")
     calls = {"relay": 0, "ensure": 0}
 
     async def fake_relay(request, drive_id, fid, **kwargs):
@@ -175,9 +176,9 @@ def _ok_relay():
 # 决策层：开关 / 换线资格 / 可用性排序
 # ---------------------------------------------------------------------------
 
-def test_switch_enabled_default_off_and_on(monkeypatch):
+def test_switch_enabled_default_on_and_off(monkeypatch):
     monkeypatch.delenv(SWITCH_ENV, raising=False)
-    assert variant_switch.switch_enabled() is False
+    assert variant_switch.switch_enabled() is True
     monkeypatch.setenv(SWITCH_ENV, "1")
     assert variant_switch.switch_enabled() is True
     monkeypatch.setenv(SWITCH_ENV, "0")
