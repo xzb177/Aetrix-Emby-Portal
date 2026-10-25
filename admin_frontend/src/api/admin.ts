@@ -2,7 +2,6 @@
 import { get, getBlob, getPublic, postBlob, post, put, patch, del, upload } from '@/utils/request'
 import type { EconomyStats } from './economy'
 import type {
-  AdminInfo,
   AdminListResponse,
   AdminLogRow,
   AdminRole,
@@ -35,7 +34,6 @@ import type {
   ServerKind,
   ServerKindMeta,
   ServerOverview,
-  ServerOpsScanResult,
   ServerOpsSnapshot,
   ServerProbeResult,
   ServerSummary,
@@ -74,8 +72,6 @@ export const setupStatus = () => get<{ setup_completed: boolean }>('/setup/statu
  * P0-4：部署时若配置了 SETUP_BOOTSTRAP_TOKEN，必须携带一致的 bootstrap_token。 */
 export const createFirstAdmin = (data: { username: string; password: string; bootstrap_token?: string }) =>
   post<{ ok: boolean; username: string; setup_completed: boolean }>('/setup', data)
-
-export const fetchMe = () => get<AdminInfo>('/auth/me')
 
 export const changePassword = (data: { old_password: string; new_password: string }) =>
   post<{ success: boolean }>('/auth/change-password', data)
@@ -748,15 +744,6 @@ export const fetchServerOps = (serverId: number, params: {
   runs_limit?: number
 } = {}) => get<ServerOpsSnapshot>(`${S}/${serverId}/ops`, params)
 
-/**
- * 一键把这台节点负责的库推入扫描队列（扫描 → 入库 → 刮削流水线）
- *
- * 与逐库「扫描」同一套机制：面板能扫的本地入队、归其它节点管的转发过去、
- * 已在队列的不重复推。
- */
-export const runServerOpsScan = (serverId: number, params: { include_unassigned?: boolean } = {}) =>
-  post<ServerOpsScanResult>(`${S}/${serverId}/ops/scan`, params)
-
 export interface BackendServiceStatus {
   name: string; role: string; status: string
   last_heartbeat?: number | null; lag_seconds?: number | null
@@ -1190,10 +1177,6 @@ export interface TmdbKeysStatus {
 
 /** TMDB Key 状态（只返回掩码与数量） */
 export const fetchTmdbKeys = () => get<TmdbKeysStatus>(`${E}/scrape/tmdb-keys`)
-
-/** 保存 TMDB API Keys（逗号/换行/空白分隔）：落库后立即热生效 */
-export const saveTmdbKeys = (keys: string) =>
-  put<{ success: boolean; saved: number; source: string; count: number }>(`${E}/scrape/tmdb-keys`, { keys })
 
 /** 逐把增：往密钥池追加一把（去重；已存在返回 409） */
 export const addTmdbKey = (key: string) =>
@@ -1668,10 +1651,6 @@ export const lockItemMetadata = (id: number) =>
 export const unlockItemMetadata = (id: number) =>
   post<ItemLockResult>(`${E}/scrape/items/${id}/unlock`)
 
-/** 条目详情（含 metadata_locked） */
-export const fetchItemLockStatus = (id: number) =>
-  get<ItemLockResult>(`${E}/scrape/items/${id}`)
-
 // ==================== 低置信识别人工审查队列（批二 #15） ====================
 // 自动刮削在 TMDB 真搜过、有候选但无一过置信线时，条目连同当时的候选证据
 // 排进审查队列（后端 emby_identify_review_tasks，开关 IDENTIFY_REVIEW_QUEUE_ENABLED），
@@ -2003,8 +1982,6 @@ export const deleteLibrary = (id: number) => del<{ success: boolean }>(`${E}/lib
 
 export const fetchSessions = () => get<{ sessions: EmbySessionRow[] }>(`${E}/sessions`)
 
-export const stopSession = (sessionKey: string) => del<{ success: boolean }>(`${E}/sessions/${sessionKey}`)
-
 // ==================== 管理员与权限（v2.26.0，/api/admin/admins） ====================
 // 角色定义在后端（backend/admin_roles.py）：super = 全部；operator = 日常运营；
 // viewer = 只读。角色判定发生在服务端鉴权依赖里，这里的函数只是调用入口。
@@ -2072,13 +2049,6 @@ export const probeMountsHealth = () =>
     `${E}/mounts/health`
   )
 
-/** EA 体检：让 EM 向 EA 拉一次「以 EA 视角」的挂载体检并落库 */
-export const refreshEaMountHealth = () =>
-  post<{
-    success: boolean
-    health: { ok: boolean; error?: string; checked_at?: string | null; failed_count?: number }
-  }>('/emby/servers/mounts/refresh')
-
 export interface MountPayload {
   name?: string
   mount_type?: string
@@ -2112,9 +2082,6 @@ export const testSavedMount = (id: number) =>
   post<{ success: boolean; result: { ok: boolean; message: string }; mount: StorageMount }>(
     `${E}/mounts/${id}/test`
   )
-
-export const testMountConfig = (data: { mount_type: string; path?: string; config?: Record<string, string> }) =>
-  post<{ success: boolean; result: { ok: boolean; message: string } }>(`${E}/mounts/test`, data)
 
 export const browseMount = (id: number, rel = '/') =>
   get<{ rel: string; entries: MountDirEntry[]; total: number }>(`${E}/mounts/${id}/browse`, { rel })
@@ -2154,10 +2121,6 @@ export const browseLocalDirs = (path = '/') =>
     /** 单层超过 1000 个子目录时会截断，弹窗提示一下 */
     truncated?: boolean
   }>('/mounts/local-dirs', { path })
-
-/** rclone：列出用户粘贴的 rclone.conf 里已配置的 remote */
-export const fetchMountRcloneRemotes = () =>
-  get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/conf`)
 
 
 // ==================== 备用链路限速（配置瘦身第 3 批） ====================
@@ -2251,10 +2214,6 @@ export const browsePan115 = (params: { cid?: string; account_id?: number; cookie
 
 // ==================== rclone.conf（用户自己粘贴，面板只负责跑 rclone） ====================
 // 后端只回 remote 名，不回 rclone.conf 原文——里面全是 token / secret。
-
-export const fetchRcloneConf = () =>
-  get<{ path: string; configured: boolean; remotes: string[]; total: number }>(
-    `${E}/mounts/rclone/conf`)
 
 export const saveRcloneConf = (conf: string) =>
   post<{ success: boolean; path: string; remotes: string[]; total: number }>(
