@@ -720,6 +720,18 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动苹果 CMS 轻探活守护失败（可忽略）: {e}")
 
+        # 图床镜像工人（批一：库封面 + 合集封面，自有服务器静态托管）：
+        # 仅 COVER_MIRROR_ENABLED=1 时工作；关时线程空转、不发请求、
+        # 不读写任何状态，全站行为逐字不变。本块只加自己的启动行。
+        try:
+            from backend.emby_server import cover_mirror as _cm
+
+            _cm.start_mirror_daemon()
+            started.append("cover_mirror")
+            logger.info("✅ 图床镜像工人已启动（总开关关时空转）")
+        except Exception as e:
+            logger.warning(f"启动图床镜像工人失败（可忽略）: {e}")
+
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
             from backend.emby_server import scan_queue
