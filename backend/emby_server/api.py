@@ -4523,6 +4523,25 @@ def _note_play_start_safe(item: em.MediaItem, **kwargs) -> None:
         pass
 
 
+def _note_upstream_play_start_safe(user_id, resolve_ms) -> None:
+    """上游播放口的起播打点安全口（#25-4 补记）。
+
+    上游口没有本地条目：item_id 恒为空——upstream_item_id 是对方服的
+    条目 id，绝不写进本地 emby_items.id 的数值列；源维度记
+    provider="upstream"、mount_id 为空；user_id 取自 get_play_user。
+    打点模块本身永不抛，这里再套一层保险：任何意外都不许影响 302。
+    """
+    try:
+        from backend.emby_server import play_events
+
+        play_events.note_play_start(
+            provider="upstream", mount_id=None, user_id=user_id,
+            item_id=None, method="upstream", result="ok",
+            resolve_ms=resolve_ms)
+    except Exception:  # noqa: BLE001 — 打点不许打断起播，见 play_events 铁律
+        pass
+
+
 def _play_target(db: Session, item: em.MediaItem, *, variant=None):
     """把条目的 ``file_path`` 解析成播放目标（本机文件 或 挂载直链）
 
@@ -5176,6 +5195,8 @@ async def upstream_stream(
     一律回结构化错误体（code + message + source_id），不静默失败、
     不笼统 500。鉴权与付费墙与 video_stream 同口径（get_play_user
     + ensure_playback_allowed）；上游地址先探后 302，探到可播才下发。
+    成功下发 302 前记一条起播事件（provider=upstream，见 play_events；
+    失败路径不记是本批边界）。
     苹果 CMS 型支持 ?episode=N（默认第 1 集；非法值默认 1，越界
     由解析器按“上游无此集”回 404）；Emby/Jellyfin 型忽略该参数。
     """
@@ -5188,12 +5209,18 @@ async def upstream_stream(
         _ep = int(_ep_raw) if _ep_raw is not None else 1
     except (TypeError, ValueError):
         _ep = 1
+    _t0 = time.perf_counter()
     try:
         _url = await run_in_threadpool(
             _up.resolve_upstream_stream, db, source_id, upstream_item_id,
             media_source_id=_msid, episode_index=_ep)
     except _up.UpstreamPlaybackError as exc:
         return JSONResponse(status_code=exc.status, content=exc.to_body())
+    # 成功起播才记一条：打点走 play_events 既有口径与字段，不新发明
+    # 事件类型；302 本体一行不动。
+    _note_upstream_play_start_safe(
+        getattr(user, "id", None),
+        int((time.perf_counter() - _t0) * 1000))
     return RedirectResponse(_url, status_code=302)
 
 
