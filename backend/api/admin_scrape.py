@@ -1109,37 +1109,6 @@ def get_auto_scan(
     return {"success": True, **auto_scan.get_config(db)}
 
 
-@admin_emby_router.post("/scrape/enrich/retry-unmatched")
-def retry_unmatched_items(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """重试未匹配项（处方 5）：把「搜过、没有」终态条目捞回队列重新补搜。
-
-    TMDB 每天新增条目、本地别名（Tier 1.5）也在变好——终态化不等于永久放弃。
-    捞回的条目置 enrich_priority=50（repair 之下、默认之上），排在队首。
-    """
-    from backend.emby_server import enrich_worker
-    n = enrich_worker.retry_unmatched(db)
-    return {"success": True, "requeued": n}
-
-
-@admin_emby_router.post("/scrape/enrich/requeue-inherit-children")
-def requeue_inherit_children(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """空壳 inherit 单集补排（v2.58.0）：父级已有 tmdb_id、但子集没拿到单集级
-    数据（done+inherit 空壳）的，翻回 pending 重跑。
-
-    与常态联动（父级新拿 tmdb_id 自动翻）同一谓词、同一动作；部署后跑一次即可，
-    日常由联动覆盖。返回翻回条数。
-    """
-    from backend.emby_server import enrich_worker
-    n = enrich_worker.requeue_stuck_inherit_children(db)
-    return {"success": True, "requeued": n}
-
-
 @admin_emby_router.get("/scrape/enrich-none-stats")
 def get_enrich_none_stats(
     staff: base_models.WebUser = Depends(require_staff),
@@ -1317,16 +1286,6 @@ class ProbeResetRequest(BaseModel):
     # stuck：probing → pending；failed：failed → pending（次数清零）；
     # retrying：退避中的立即可重试；all：以上全部
     scope: str = Field("stuck", pattern="^(stuck|failed|retrying|all)$")
-
-
-@admin_emby_router.get("/scrape/probe-progress")
-def get_probe_progress(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """探测进度：各状态计数 / 重试中 / 过期抢单 / 常见错误 / 速率 / 熔断 / ETA"""
-    from backend.emby_server import probe_worker
-    return {"success": True, **probe_worker.status_snapshot(db)}
 
 
 @admin_emby_router.post("/scrape/probe/reset")
@@ -1994,16 +1953,3 @@ def save_unified_fallback(
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.save_unified_fallback_config(db, body.enabled)
     return {"success": True, **cfg}
-
-
-@admin_emby_router.get("/scrape/scheduler/status")
-def get_scheduler_status(
-    staff: base_models.WebUser = Depends(require_staff),
-):
-    """统一任务调度器状态（v2.54.1）：一次看到扫描队列 + 刮削积压 + 让路/熔断状态。
-
-    给管理后台"后台任务"统一视图用。
-    """
-    from backend.emby_server import task_scheduler as _ts
-
-    return {"success": True, "status": _ts.get_unified_status()}
