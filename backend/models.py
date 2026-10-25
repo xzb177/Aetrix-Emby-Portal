@@ -267,9 +267,6 @@ class WebUser(Base):
     # 自建 Emby 凭据（完全自建模式下，Emby 客户端用此账号密码登录）
     emby_username = Column(String(64), unique=True, nullable=True)
     emby_password = Column(String(128), nullable=True)
-    # 用户级转码开关（Linger 借鉴，Emby 标准字段 EnableVideoPlaybackTranscoding）
-    # 管理员可对特定用户禁用转码（只给直传，省服务器资源），默认允许
-    enable_video_transcoding = Column(Boolean, default=True, nullable=False, server_default="1")
     # 公益服身份与资格（模块1）
     is_welfare = Column(Boolean, default=False, nullable=False, server_default="0")
     welfare_expires_at = Column(DateTime, nullable=True)
