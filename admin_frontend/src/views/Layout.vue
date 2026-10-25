@@ -157,11 +157,7 @@ const navGroups: NavGroup[] = [
       { path: '/identify-review', label: '识别审查', icon: ListChecks },
       // 上游源：别人的媒体服当作源接进来（#25 25-1 只做源管理）
       { path: '/upstream-sources', label: '上游源', icon: Server },
-      // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
-      { path: '/storage-bindings', label: '存储绑定列表', icon: HardDrive },
-      { path: '/upstream-mappings', label: '上游映射列表', icon: Server },
-      { path: '/yun139-pools', label: '139 账号池', icon: Cloud },
-      { path: '/provider-sidecar', label: 'sidecar 状态', icon: Database },
+      // 重新布局批 3：四观测页降为上游源页标签，导航不再单列（旧路由跳到对应标签）
       { path: '/pan115', label: '115 账号', icon: Cloud },
       { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
     ],
@@ -211,9 +207,7 @@ const navGroups: NavGroup[] = [
       { path: '/health', label: '系统健康', icon: Activity },
       // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
       { path: '/tasks', label: '任务总览', icon: ListChecks },
-      // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
-      { path: '/sample-hash-progress', label: '采样哈希进度', icon: ListChecks },
-      { path: '/playback-bus', label: '播放总线', icon: Activity },
+      // 重新布局批 3：采样哈希进度降为任务总览页「进度」区、播放总线降为系统健康页「总线」区，导航不再单列
       { path: '/diagnosis', label: '一键体检', icon: Stethoscope },
       { path: '/api-keys', label: 'API Key', icon: KeyRound, superOnly: true },
     ],
