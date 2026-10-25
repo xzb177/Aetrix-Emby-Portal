@@ -4514,7 +4514,14 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict,
         return
     if do_identify:
         try:
-            res = ts.apply_identity(db, item, fetched)
+            try:
+                from backend.emby_server.tmdb import tmdb_client as _tmdb_client
+
+                _details_fetcher = _tmdb_client.details
+            except Exception:  # noqa: BLE001 — 客户端不可用时只读已有证据
+                _details_fetcher = None
+            res = ts.apply_identity(
+                db, item, fetched, tmdb_details_fetcher=_details_fetcher)
             if res is not None:
                 bound = True
             db.commit()  # 识别段独立提交
