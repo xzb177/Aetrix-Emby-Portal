@@ -153,14 +153,22 @@ def find_external_subtitles_in(names, file_path: str) -> list[tuple[str, str]]:
 
 
 def find_external_subtitles_remote(base_name: str, entries, mount_id: int,
-                                   dir_rel: str) -> list[tuple[str, str]]:
-    """远程挂载的外挂字幕：返回 [(lang, mount://<id>/<相对路径>)]"""
+                                   dir_rel: str, *,
+                                   path_prefix: str = None) -> list[tuple[str, str]]:
+    """远程挂载的外挂字幕：返回 [(lang, mount://<id>/<相对路径>)]。
+
+    ``path_prefix`` 给了就按它拼路径（BYOS 绑定线传 ``byos://<绑定 id>``，
+    匹配语义与挂载线同一份 ``match_subtitle_names``，只换路径命名空间，
+    绝不产出 ``mount://None/...`` 这种假挂载路径）；缺省走现行挂载路径。
+    """
     names = [e.name for e in entries if not e.is_dir]
     base_dir = "/" + (dir_rel or "/").strip("/")
-    return [
-        (
-            subtitle_language(os.path.splitext(f)[0]),
-            mount_lib.mount_path(mount_id, f"{base_dir.rstrip('/')}/{f}"),
-        )
-        for f in match_subtitle_names(base_name, names)
-    ]
+    out = []
+    for f in match_subtitle_names(base_name, names):
+        sub_rel = f"{base_dir.rstrip('/')}/{f}"
+        if path_prefix is not None:
+            path = f"{path_prefix.rstrip('/')}{sub_rel}"
+        else:
+            path = mount_lib.mount_path(mount_id, sub_rel)
+        out.append((subtitle_language(os.path.splitext(f)[0]), path))
+    return out

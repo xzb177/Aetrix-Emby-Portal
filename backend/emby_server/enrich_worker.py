@@ -1034,6 +1034,44 @@ def _scanfile_from_item(item: Any) -> Optional[Any]:
             size=size, container=container,
             mount_id=mount_id, rel=rel, provider=provider,
         )
+    if path.startswith("byos://"):
+        # BYOS P3 后续：绑定线条目。现行 local 分支会把 "byos://<id>"
+        # 当成本地目录（side/NFO 全空、还按本地路径查），必须先分支。
+        # 凭据只取该绑定自己的行（byos_scan.binding_provider，与扫描时
+        # 同口）；绑定没了 / 凭据建不出提供者时回落为“无提供者的远程
+        # 文件”——side/NFO 按主线口径跳过，但 TMDB 照常走（scan_file
+        # 非空），绝不因补全 side 失败把整条 enrich 判失败。
+        rest = path[len("byos://"):]
+        binding_id_str, _, rel = rest.partition("/")
+        try:
+            binding_id = int(binding_id_str)
+        except ValueError:
+            binding_id = None
+        if not rel.startswith("/"):
+            rel = "/" + rel
+        provider = None
+        if binding_id is not None:
+            try:
+                from backend.database import SessionLocal as _SL
+                from backend.emby_server import byos_scan as _byos
+                _db = _SL()
+                try:
+                    binding = _db.query(em.UserStorageBinding).filter(
+                        em.UserStorageBinding.id == binding_id).first()
+                    if binding is not None:
+                        provider = _byos.binding_provider(_db, binding)
+                finally:
+                    _db.close()
+            except Exception as exc:  # noqa: BLE001 — 凭据/绑定问题不阻断 TMDB
+                logger.warning("补全 worker 构建绑定提供者失败 binding=%s: %s",
+                               binding_id, exc)
+                provider = None
+        return _sc.ScanFile(
+            stored_path=path, name=name, local_dir=None,
+            dir_rel=os.path.dirname(rel) or "/",
+            size=size, container=container,
+            mount_id=None, rel=rel, provider=provider,
+        )
     dirpath = os.path.dirname(path)
     return _sc.ScanFile(
         stored_path=path, name=name, local_dir=dirpath,
