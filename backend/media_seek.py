@@ -92,7 +92,7 @@ def quota(db: Session, user_id: int) -> dict:
 
 
 # ==================== 月度额度（公益服/付费区分） ====================
-# 与旧版公益服求片中心（backend/welfare_requests.py，已废弃）合并：
+# 与旧版公益服求片中心（已退役）合并：
 # 公益用户每月 welfare_request_monthly 条（默认3），付费用户每月 paid_request_monthly 条（默认10）。
 
 CONFIG_MONTHLY_WELFARE = "welfare_request_monthly"

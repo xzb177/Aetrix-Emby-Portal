@@ -1364,6 +1364,37 @@ class LibrarySourceHealth(Base):
     last_checked_at = Column(DateTime)
 
 
+class CoverMirror(Base):
+    """图床镜像行（批一：库封面 + 合集封面，自有服务器静态托管）。
+
+    一行 = 一个源指纹：本地文件取（大小，mtime_ns），远端 URL 取 URL
+    本身；同一指纹只一行，库封面与合集封面撞同一源天然复用。
+    指纹不用裸 URL 哈希——库封面 URL 按库 guid 稳定、内容换了 URL
+    不变，裸 URL 哈希会在换封面后继续 serving 旧图；本地指纹变了
+    旧行自然不再命中，新指纹重新入队。
+
+    状态机：pending → running → success / failed（指数退避重试，
+    达 COVER_MIRROR_RETRY_MAX 后进 dead，等管理端手动重推）。
+    读路径只认 status=success 且本地文件在的行，否则回落原地址。
+    """
+
+    __tablename__ = "emby_cover_mirrors"
+
+    source_hash = Column(String(64), primary_key=True)
+    source_url = Column(String(2000), nullable=False)
+    source = Column(String(32), nullable=False, default="render")
+    backend = Column(String(16), nullable=False, default="local")
+    status = Column(String(16), nullable=False, default="pending")
+    mirror_rel = Column(String(200))
+    content_type = Column(String(64))
+    local_path_hint = Column(String(1000))
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    last_error_kind = Column(String(100))
+    next_attempt_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class MountCredential(Base):
     """挂载凭据行（FMBY 挂载模型地基，清单第 1 项：凭据分家）。
 
@@ -1951,6 +1982,46 @@ class EnrichStageRecord(Base):
     confidence = Column(String(20))
     evidence_json = Column(Text)
     updated_at = Column(DateTime, default=datetime.now)
+
+
+class AiAdvisorSuggestion(Base):
+    """AI 参谋建议行（高级刮削第二批的接线批；魂 6 状态集中维护）。
+
+    一条建议一行，只追加、不改写历史：建议的每次状态变化都把最新
+    全量快照（含 audit trail）写回本行，旧快照不另存——审计看的是
+    本行的 suggestion_json（to_dict 全量，含 raw 与 audit）。
+
+    不复用识别审查队列表：那张表的 reason CHECK 只允许
+    ``no_confident_match``，参谋建议的状态机（pending /
+    refused_by_policy / approved / rejected）与它不是一回事，硬塞
+    会重蹈 FMBY 的 reason 漂移坑。新表由 init_db 的 create_all 建出
+    （老库升级同 EnrichStageRecord 口径），无外键（条目删了行留着
+    供追溯，item_id 不回查条目表）。
+
+    status 取值与 ai_advisor.Suggestion.status 同源；落库成功不另立
+    状态，用 applied_at 标记（建议状态机里没有 applied，硬加会与
+    模块的状态机漂移）。
+    """
+
+    __tablename__ = "emby_ai_suggestions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    provider = Column(String(100))
+    model = Column(String(100))
+    proposed_tmdb_id = Column(String(32))
+    proposed_imdb_id = Column(String(32))
+    ai_weight = Column(Float)
+    confidence_band = Column(String(20))
+    reason = Column(String(40))
+    # 全量快照 JSON：Suggestion.to_dict（含 raw 与 audit trail）。
+    suggestion_json = Column(Text)
+    approved_by = Column(String(100))
+    applied_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now,
+                        onupdate=datetime.now, nullable=False)
 
 
 class RoleTemplate(Base):

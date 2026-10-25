@@ -83,9 +83,11 @@ jobs:
   smoke:
     name: 后端 · 冒烟测试
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    # fail-fast：每个步骤都有自己的超时（冒烟脚本 5 分钟 / pytest 10 分钟）。
-    # 之前没有单步超时，真卡死时只能等 job 级 25 分钟，看起来像"CI 卡住不动"；
+    # job 级 40 分钟是后备上限：pytest 步骤 20 分钟 + 其余步骤实测约 5 分钟，
+    # 40 分钟留有余量；单步仍各有超时，卡死仍快速失败，不会静默转圈。
+    timeout-minutes: 40
+    # fail-fast：每个步骤都有自己的超时（冒烟脚本 5 分钟 / pytest 20 分钟）。
+    # 之前没有单步超时，真卡死时只能等 job 级上限，看起来像"CI 卡住不动"；
     # 现在卡死会快速失败并明确报超时，而不是静默转圈。
     env:
       DATABASE_TYPE: sqlite
@@ -371,10 +373,25 @@ jobs:
           pip install -q pyvips
 
       - name: 单元测试（pytest：媒体路径沙箱与播放地址口径）
-        timeout-minutes: 10
+        # 容量口径（2026-10-25 L54 兜底）：套件已多次顶到 10 分钟步骤上限
+        # （10-25 当天连超；单次全过最快 392 秒、最慢 598 秒，余量只剩 2 秒）。
+        # 拆分套件暂不做：测试间存在跨文件顺序依赖（#1287/#1289 的隔离泄漏
+        # 就是例证），拆分会改执行顺序、可能掩盖或制造新失败；20 分钟上限 +
+        # 15 分钟预警线先顶住，预警线触发即是下一次容量立项的信号。
+        timeout-minutes: 20
         run: |
           pip install pytest
+          _t0=$(date +%s)
+          set +e
           python -m pytest tests/ -q
+          _rc=$?
+          _t1=$(date +%s)
+          _el=$((_t1 - _t0))
+          echo "pytest 耗时 ${_el} 秒" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$_el" -ge 900 ]; then
+            echo "::warning::pytest 已耗时 ${_el} 秒，超过 15 分钟预警线（步骤上限 20 分钟），套件容量需立项处理"
+          fi
+          exit "$_rc"
 
       - name: 静态护栏自检（每条护栏喂违规样本都会失败、合规样本不误报）
         timeout-minutes: 5
