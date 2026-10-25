@@ -66,10 +66,13 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 #: files.list 端点（与 drive_changes 同一地址）
 FILES_URL = "https://www.googleapis.com/drive/v3/files"
 #: 列目录取的字段：含 modifiedTime（扫描器文件指纹要用）与
-#: md5Checksum/etag/headRevisionId/version（#13 PR-2：内容校验和与
+#: md5Checksum/headRevisionId/version（#13 PR-2：内容校验和与
 #: 修订证据，随列举零额外请求返回，不逐文件发 files.get）。
+#: 注意：不要加 etag——2026-10-25 实测，共享盘列举带 etag 会被
+#: 谷歌回 400，致 5 个库扫描 1 秒即 partial（挂载 3 中断）；只删
+#: etag 一项，其余三字段均已实测安全。
 _LIST_FIELDS = ("nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed,"
-                "md5Checksum,etag,headRevisionId,version)")
+                "md5Checksum,headRevisionId,version)")
 _PAGE_SIZE = 1000
 #: 单次列举内钉住 SA 时 token 的最小剩余寿命（秒）：超大目录枚举可能耗时久，
 #: 索取长寿 token；万一中途仍 401，由同 SA 刷新续跑（Google 的 pageToken
