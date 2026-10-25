@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.emby_server import item_artwork, library_covers
+from backend.emby_server import cover_mirror, item_artwork, library_covers
 from backend.emby_server import models as em
 from backend.emby_server.portal import require_staff
 from backend.models import SystemConfig
@@ -156,3 +156,28 @@ def set_cover_strategy(
         "order": steps,
         "effective_order": library_covers.effective_strategy_order(db),
     }
+
+
+class CoverMirrorRetryIn(BaseModel):
+    source_hash: str
+
+
+@router.get("/cover-mirrors")
+def cover_mirror_stats(db: Session = Depends(get_db)):
+    """图床镜像只读可见性：各状态行数 + 镜像目录总字节。"""
+    return cover_mirror.mirror_stats(db)
+
+
+@router.post("/cover-mirrors/retry")
+def cover_mirror_retry(
+    payload: CoverMirrorRetryIn,
+    db: Session = Depends(get_db),
+):
+    """图床镜像手动重推：无行 → 404；failed/dead → pending（计数清零）；
+    进行中或已成功 → 409（不动）。"""
+    result = cover_mirror.retry_mirror(db, (payload.source_hash or "").strip())
+    if result is None:
+        raise HTTPException(status_code=404, detail="没有这条镜像")
+    if result is False:
+        raise HTTPException(status_code=409, detail="该镜像不需重推（进行中或已成功）")
+    return {"ok": True, "source_hash": (payload.source_hash or "").strip()}
