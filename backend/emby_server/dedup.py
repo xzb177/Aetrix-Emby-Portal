@@ -124,7 +124,22 @@ def _primary_score(item: Any) -> tuple:
 
 
 def pick_primary(group: list) -> Any:
-    """从同组中选主记录。"""
+    """从同组中选主记录。
+
+    三期（开关 ``IDENTITY_SHELF_PHASE3_ENABLED``，须总开关同时开启）：
+    组内有已绑定成员时，只在已绑定成员里选主——有海报的未绑定份不得
+    压过已绑定的成员当代表（设计稿 §3.2 的坑）。开关关时与旧评分
+    逐字一致；本函数只改组内代表人选，不改分组结果（分组键的三级
+    扩展另立项，见 identity_gate 模块说明）。
+    """
+    if len(group) > 1:
+        # 延迟导入：dedup 被扫描器等底层路径 import，identity_gate 只依赖
+        # models/env_util，无循环引用；函数级 import 让测试 patch 常量即时生效。
+        from backend.emby_server import identity_gate as _gate
+        if _gate.phase3_enabled():
+            bound = [g for g in group if _gate.is_bound_row(g)]
+            if bound:
+                group = bound
     return min(group, key=_primary_score)
 
 
