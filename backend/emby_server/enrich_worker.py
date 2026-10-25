@@ -4236,6 +4236,31 @@ def _alias_tmdb_id(name: str) -> Optional[str]:
                 nk = _norm(alias or "")
                 if nk and nk not in index:
                     index[nk] = str(tmdb_id)
+        # L8：开关开时，别名独立表也喂给同一本地别名索引——列别名优先，
+        # 表别名只补列里没有的映射（先到先得，与既有语义一致）；表读失败
+        # 不影响主流程（索引失败 = 当没有表别名）。
+        try:
+            from backend.emby_server import media_alias as _malias
+            if _malias.alias_table_enabled():
+                db2 = SessionLocal()
+                try:
+                    trows = (db2.query(em.MediaAlias.item_id,
+                                       em.MediaAlias.alias)
+                             .all())
+                    item_tmdb = {r[0]: r[1] for r in db2.query(
+                        em.MediaItem.id, em.MediaItem.tmdb_id).filter(
+                        em.MediaItem.tmdb_id.isnot(None)).all()}
+                    for _iid, _alias in trows:
+                        _tid = item_tmdb.get(_iid)
+                        if not _tid:
+                            continue
+                        _nk = _norm(_alias or "")
+                        if _nk and _nk not in index:
+                            index[_nk] = str(_tid)
+                finally:
+                    db2.close()
+        except Exception:  # noqa: BLE001 — 别名表喂给失败不影响识别主流程
+            pass
         _alias_index["rows"] = index
         _alias_index["at"] = now
     return _alias_index["rows"].get(key)
