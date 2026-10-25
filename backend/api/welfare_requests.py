@@ -10,11 +10,9 @@
 - GET  /            我的求片列表
 - GET  /quota       本月额度
 
-管理端（共用 admin_router）：
-- GET  /welfare/requests              全部列表
-- POST /welfare/requests/{id}/approve 审核通过
-- POST /welfare/requests/{id}/reject  审核拒绝
-- POST /welfare/requests/{id}/done    标记已入库
+管理端影子口已下线（批 3）：原 GET /welfare/requests 及 approve/reject/done
+四口由 backend/api/welfare_admin.py 先注册、实际生效，本模块的重复注册
+从未被匹配，现予删除；求片审核以 /api/media-seek 为准。
 """
 
 from __future__ import annotations
@@ -25,7 +23,6 @@ from sqlalchemy.orm import Session
 
 from backend import models
 from backend import welfare_requests as req_mod
-from backend.api.admin_core import admin_router, get_current_admin
 from backend.api.user import get_current_user
 from backend.database import get_db
 
@@ -74,61 +71,3 @@ def quota(
 ):
     """本月求片额度"""
     return req_mod.get_monthly_quota(db, current_user)
-
-
-# ---------- 管理端 ----------
-
-@admin_router.get("/welfare/requests", deprecated=True)
-def admin_list(
-    status: str = Query("", description="按状态过滤"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """管理员：求片列表"""
-    return req_mod.list_all_requests(db, status or None, page, page_size)
-
-
-@admin_router.post("/welfare/requests/{request_id}/approve", deprecated=True)
-def admin_approve(
-    request_id: int,
-    note: ReviewNote,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """管理员：审核通过"""
-    try:
-        r = req_mod.review_request(db, request_id, True, note.admin_note)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return req_mod._to_dict(r)
-
-
-@admin_router.post("/welfare/requests/{request_id}/reject", deprecated=True)
-def admin_reject(
-    request_id: int,
-    note: ReviewNote,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """管理员：审核拒绝"""
-    try:
-        r = req_mod.review_request(db, request_id, False, note.admin_note)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return req_mod._to_dict(r)
-
-
-@admin_router.post("/welfare/requests/{request_id}/done", deprecated=True)
-def admin_done(
-    request_id: int,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """管理员：标记已入库"""
-    try:
-        r = req_mod.mark_done(db, request_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return req_mod._to_dict(r)
