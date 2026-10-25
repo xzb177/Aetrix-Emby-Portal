@@ -627,7 +627,7 @@ def main() -> int:
             from backend.emby_server import upstream_health_persist as _uhp
 
             _health_store = _uh.RedisHealthStore()
-            _upstream_probe_thread = _uh.start_probe_daemon(
+            _uh.start_probe_daemon(
                 _upstream_probe_sources, _health_store)
             started.append("upstream_probe")
             logger.info("✅ 上游探活守护已启动（总开关关时空转不发请求）")
