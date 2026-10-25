@@ -2094,7 +2094,7 @@ function typeLabel(t: string): string {
               </div>
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="episodeNight?.from_env" class="drawer-hint drawer-hint--after">
-                环境变量（ENRICH_EPISODE_NIGHT_ONLY / ENRICH_NIGHT_START / ENRICH_NIGHT_END / ENRICH_NIGHT_TZ）覆盖了这里的设置（改这里不会生效）
+                环境变量（ENRICH_NIGHT_START / ENRICH_NIGHT_END / ENRICH_NIGHT_TZ）覆盖了夜间窗口（改窗口不会生效）。开关以这里保存的值为准。
               </div>
               <div class="scrape-subblock">
                 <h4>单集分项开关</h4>
