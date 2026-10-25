@@ -26,8 +26,8 @@ import {
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Image as ImageIcon,
-  Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
-  UserCog, Activity, Heart, Medal, HardDrive, MessageSquareText,
+  Database, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
+  UserCog, Activity, Heart, Medal, MessageSquareText,
   Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
@@ -158,8 +158,7 @@ const navGroups: NavGroup[] = [
       // 上游源：别人的媒体服当作源接进来（#25 25-1 只做源管理）
       { path: '/upstream-sources', label: '上游源', icon: Server },
       // 重新布局批 3：四观测页降为上游源页标签，导航不再单列（旧路由跳到对应标签）
-      { path: '/pan115', label: '115 账号', icon: Cloud },
-      { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
+      // 重新布局批 5：115/GDrive 账号降为服务器与线路页「存储账号」标签，导航不再单列（旧路由跳到对应子标签）
     ],
   },
   {

@@ -25,7 +25,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from backend import models
-from backend.emby_server.playback_strategy import KEY_DRIVE_DIRECT_PLAY
+from backend.emby_server.playback_strategy import KEY_DRIVE_DIRECT_PLAY, KEY_DRIVE_RELAY
 from backend.integrations import store
 
 # 键 → 类型（设置页与 PUT 接口共用一份，避免两边各写一套白名单）。
@@ -60,6 +60,9 @@ def policy_payload(db: Session) -> dict:
     return {
         # Drive 302 直链总开关（#957 的回滚闸；缺省开）
         "drive_direct_play_enabled": _config_bool(db, KEY_DRIVE_DIRECT_PLAY, True),
+        # Drive 服务器中继总开关（重新布局批 5：客户端策略页只读展示；缺省关，与
+        # playback_strategy.drive_relay_enabled 缺省一致；POLICY_KEYS 仍为空，PUT 不接受写）
+        "drive_relay_enabled": _config_bool(db, KEY_DRIVE_RELAY, False),
     }
 
 
