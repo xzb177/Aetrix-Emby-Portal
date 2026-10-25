@@ -474,15 +474,28 @@ class TestStartup:
             assert probe_worker.start() is True  # 幂等
             snap = worker_registry.snapshot()
             assert snap["probe_dispatcher"]["alive"]
-            # 模拟线程静默死亡
+            assert snap["probe_triage"]["alive"]
+            # 模拟线程静默死亡：_stop_event 是 dispatcher 与 triage 共用的
+            # 停止信号（两循环都以它为退出条件），所以两线程都会死；
+            # 必须把两线程都 join 到已退出再跑监督，否则监督结果取决于
+            # triage 线程是否刚好被调度到退出——原用例只 join dispatcher，
+            # triage 活着时监督只回 dispatcher、退出了就回两项，全量
+            # 冒烟（#1310）正是以后一种时序红的，不是监督本身坏了。
+            # start() 本就把两线程都登记且都带 restart 回调（见
+            # probe_worker._spawn_dispatcher/_spawn_triage），监督理应
+            # 把两项都重启回来，这里钉住两项、不是只钉 dispatcher。
             probe_worker._stop_event.set()
             probe_worker._wake.set()
             probe_worker._dispatcher_thread.join(5)
+            probe_worker._triage_thread.join(5)
             assert worker_registry.snapshot()["probe_dispatcher"]["status"] == "crashed"
+            assert worker_registry.snapshot()["probe_triage"]["status"] == "crashed"
             probe_worker._stop_event.clear()
-            assert worker_registry.supervise_once() == ["probe_dispatcher"]
+            assert worker_registry.supervise_once() == ["probe_dispatcher", "probe_triage"]
             assert probe_worker._dispatcher_thread.is_alive()
+            assert probe_worker._triage_thread.is_alive()
             assert worker_registry.snapshot()["probe_dispatcher"]["restarts"] == 1
+            assert worker_registry.snapshot()["probe_triage"]["restarts"] == 1
         finally:
             probe_worker.stop()
 
