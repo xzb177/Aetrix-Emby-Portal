@@ -48,7 +48,16 @@ def db():
         s.commit()
         yield s
     finally:
-        s.close()
+        # L65：teardown 必须与 setup 清同一批表，否则测试残留会漏进下一个文件
+        # （#1287 的 system_configs 行泄漏即由此而来）。
+        try:
+            for table in (SystemConfig, em.MediaItem, em.Library):
+                s.query(table).delete()
+            s.commit()
+        except Exception:
+            s.rollback()
+        finally:
+            s.close()
 
 
 def _store(db, order):
