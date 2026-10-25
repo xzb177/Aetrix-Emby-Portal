@@ -201,7 +201,21 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
              "raw_path": b"/Videos/item/stream", "query_string": b"",
              "headers": [], "scheme": "http", "server": ("testserver", 80),
              "client": ("testclient", 50000), "root_path": ""}
-    resp = _run(api.video_stream("item", Request(scope), object(), object()))
+    # 2026-10-25 #1289：变体开关默认翻开后，video_stream 的中继分支会先读
+    # 可用性表（无记录当可用）；db 桩必须带 query 链，否则在这里
+    # AttributeError（旧默认关时门控闭合、读表不发生，object() 才够用）。
+    class _FakeQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def one_or_none(self):
+            return None
+
+    class _FakeDB:
+        def query(self, *args, **kwargs):
+            return _FakeQuery()
+
+    resp = _run(api.video_stream("item", Request(scope), object(), _FakeDB()))
     assert resp.status_code == 200
     assert seen == {"drive_id": "DRIVE9", "file_id": "FID123",
                     "media_type": "video/mkv"}
