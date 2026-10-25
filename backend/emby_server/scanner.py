@@ -651,6 +651,14 @@ def _external_subtitles_changed(ctx: "_ScanContext", item, scan_file: "ScanFile"
             current = find_external_subtitles_remote(
                 scan_file.name, entries, scan_file.mount_id, scan_file.dir_rel)
             current_paths = {p for _, p in current}
+        elif _byos_binding_id_of(scan_file) is not None and scan_file.provider is not None:
+            # 绑定线：与挂载线同口径比对（路径命名空间换成 byos://），
+            # 否则指纹未变的文件永远秒跳、字幕增减进不了库。
+            entries = _mount_names(ctx, scan_file)
+            current = find_external_subtitles_remote(
+                scan_file.name, entries, None, scan_file.dir_rel,
+                path_prefix=f"byos://{_byos_binding_id_of(scan_file)}")
+            current_paths = {p for _, p in current}
         else:
             return False
         db_paths = ctx.ext_subtitles.get(getattr(item, "id", None), set())
@@ -3599,6 +3607,16 @@ def _side_info(ctx: "_ScanContext", scan_file: "ScanFile") -> tuple:
         return None, None, find_external_subtitles_remote(
             scan_file.name, entries, scan_file.mount_id, scan_file.dir_rel,
         )
+    # BYOS P3 后续：绑定线没有挂载 id，但有绑定命名空间 + 提供者——
+    # 走同一份远程字幕匹配语义，只把路径前缀换成 byos://<绑定 id>。
+    # （P3 时此分支返回空，字幕随入库丢了；接线后与挂载线同口径。）
+    binding_id = _byos_binding_id_of(scan_file)
+    if binding_id is not None and scan_file.provider is not None:
+        entries = _mount_names(ctx, scan_file)
+        return None, None, find_external_subtitles_remote(
+            scan_file.name, entries, None, scan_file.dir_rel,
+            path_prefix=f"byos://{binding_id}",
+        )
     return None, None, []
 
 
@@ -3617,7 +3635,14 @@ def _read_nfo_cached(ctx: "_ScanContext", scan_file: "ScanFile",
                      local_path: Optional[str] = None,
                      mount_rel: Optional[str] = None):
     """读 + 解析一个 NFO（ctx 级缓存，含阴性缓存；异常当没有 NFO）"""
-    key = ("local", local_path) if local_path else ("mount", scan_file.mount_id, mount_rel)
+    if local_path:
+        key = ("local", local_path)
+    else:
+        # 绑定线缓存键必须带绑定 id：同一 ctx 里理论上只有一个绑定，
+        # 但键里不写绑定 id 时，同 rel 不同绑定的 NFO 会撞键串内容。
+        _bid = _byos_binding_id_of(scan_file)
+        key = (("byos", _bid, mount_rel) if _bid is not None
+               else ("mount", scan_file.mount_id, mount_rel))
     if key not in ctx.nfo_cache:
         try:
             # v2.42.9：真的读一次才计数（耗时含 NFO 的读 + 解析）——
@@ -3668,7 +3693,13 @@ def _find_nfos(ctx: "_ScanContext", scan_file: "ScanFile", kind: str) -> tuple:
     - episode：同目录 `<集文件名>.nfo`；同目录 `season.nfo`；剧集目录 `tvshow.nfo`
     """
     is_local = scan_file.local_dir is not None
-    if not is_local and not (scan_file.mount_id is not None and scan_file.provider is not None):
+    # BYOS P3 后续：绑定线 mount_id 为空但有绑定命名空间 + 提供者，
+    # 按远程分支走（目录列举与旁挂读取都走提供者，与挂载线同口径）；
+    # 既无挂载 id 又无绑定命名空间的远程文件仍按旧口径跳过。
+    is_byos = _byos_binding_id_of(scan_file) is not None
+    if not is_local and not (
+            (scan_file.mount_id is not None or is_byos)
+            and scan_file.provider is not None):
         return None, None, None
     dirpath = scan_file.local_dir if is_local else (scan_file.dir_rel or "/")
 
@@ -3786,6 +3817,17 @@ def _submit(pool: ThreadPoolExecutor, fn, *args, **kwargs) -> "Future":
 
 
 _BYOS_NS_RE = re.compile(r"^byos://(\d+)/")
+
+
+def _byos_binding_id_of(scan_file) -> Optional[int]:
+    """ScanFile 的绑定 id（byos://<id>/... 命名空间才有；其余返回 None）。
+
+    供 _side_info / _find_nfos / _external_subtitles_changed 的绑定线
+    分支共用：只认入库路径命名空间，不猜 mount_id、不读凭据。
+    """
+    stored = getattr(scan_file, "stored_path", "") or ""
+    m = _BYOS_NS_RE.match(stored)
+    return int(m.group(1)) if m else None
 
 
 def _scan_namespace(path: Optional[str]) -> tuple:

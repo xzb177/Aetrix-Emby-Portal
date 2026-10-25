@@ -19,19 +19,21 @@
 运行形态：
 - 总开关 ``BYOS_SCAN_ENABLED``（默认关）：关时 ``scan_binding`` 直接
   拒绝、不碰任何上游、不写任何条目；关掉即回到今天的行为；
-- 定向扫描：快照置 ``targeted=True``，清理阶段跳过——绑定线只做
+- 定向扫描：快照置 ``targeted=True``，整库清理阶段跳过——绑定线只做
   新增/更新，绝不因“本轮只看见一个绑定”而删掉库里别的来源的条目。
-  绑定下文件消失的清理是后续批次的事，本 PR 不做；
+  绑定下文件消失的清理由 ``prune_binding_items`` 在扫描成功后定向做
+  （只删本绑定、本库的未见行，带主线同款空清单拒绝与缺失宽限），
+  不走整库清理路径；
 - 入库路径命名空间 ``byos://<binding_id>/<rel>``：同一文件被两个用户
   绑定 = 两条条目（guid 由该路径派生，天然分账）；同一绑定重扫 =
   同一 guid，走更新。Drive 的改名识别另靠 ``drive_file_id``（扫描体
   现行逻辑），路径只是 guid 锚；
 - 凭据纪律：本模块经手的令牌/Cookie 只传给当次列举/探测的调用，
   绝不记日志、不进返回值、不进扫描统计；
-- 已知缺口（诚实写清，不假装全链路）：绑定扫描的条目 ``mount_id``
-  为空，故扫描体的 NFO 发现与外挂字幕发现按现行口径跳过（见
-  scanner._find_nfos / _side_info 的 mount_id 门）；元数据补全（TMDB）
-  走条目名，不受影响。NFO/字幕的绑定线接线是后续批次。
+- NFO 与外挂字幕：绑定线复用扫描体主线口（``scanner._find_nfos`` /
+  ``_side_info`` 的绑定线分支 + ``subtitle_match`` 的 byos 路径前缀），
+  不另写语义；NFO 文本落库走主线 ``apply_nfo`` 同款分支（见未决项：
+  主线 NFO 优先分支并非严格只填空缺，本模块不擅自改语义）。
 """
 
 from __future__ import annotations
@@ -43,11 +45,13 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Iterator, Optional
 
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import scanner
+from backend.emby_server import soft_delete as _soft_delete
 from backend.emby_server import user_bindings as ub
 
 logger = logging.getLogger(__name__)
@@ -151,8 +155,7 @@ class UserDriveEnumerator:
 
     扫描体用到的口：``local_root``（恒 None：远程源）、``list_dir``、
     ``walk_media``、``resolve_final``（探测取段）、``read_text``
-    （旁挂文本；扫描体对 mount_id 为空的条目目前跳过 NFO 发现，
-    本口为其他调用方与后续批次保留）。
+    （旁挂文本：扫描体 NFO 发现经 ``read_sidecar_text_from`` 走本口）。
     """
 
     def __init__(self, access_token: str, http_get=None,
@@ -406,6 +409,154 @@ def iter_binding_scan_files(provider, binding_id: int,
         )
 
 
+def prune_binding_items(db: Session, library_id: int, binding_id: int,
+                        seen_paths, *, listing_complete: bool) -> dict:
+    """绑定线定向清理：只删**本绑定、本库**的条目，绝不触发整库清理。
+
+    口径照抄主线 ``scanner._remove_missing_items``，只换作用域：
+
+    - 清单不完整（``listing_complete=False``：列举中途抛错、扫描中途
+      失败、子树扫描）→ 本轮什么都不删（``skipped="listing_incomplete"``
+      或调用方在子树时直接跳过——见 ``scan_binding`` 的 root 门）；
+    - 空清单（本轮一个文件都没列到、但库里该绑定线还有可见条目）→
+      拒绝批量删（主线“空清单禁止删库”保护的绑定线版：挂载 3 教训，
+      读不到源时删条目是事故）；
+    - 缺失宽限（主线批一 #6）：未见行先 ``missing_count + 1``，连续
+      缺失达到 ``SCAN_MISSING_GRACE_SCANS``（默认 3）轮才下架；本轮
+      又见到的行清零。单轮抖动不作数；
+    - 下架走软删除（``MEDIA_SOFT_DELETE`` 关时走主线 ``_purge_items``
+      硬删，与主线同一分支）；已下架行不重复处理；
+    - 父行（剧/季）只清“因本轮下架而无可见子条目”的：候选只取本轮
+      下架行的 ``series_id`` / ``parent_id``，且删前复查无可见子行——
+      P3 已保证绑定集行不跨命名空间复用（同绑定重扫走 guid 命中），
+      别的绑定/共享库的父行永远不在候选里；
+    - 刻意**不做**主线的两件整库动作：不调 ``purge_expired``（它按库
+      回收，会动别的绑定的过期行）；不摘 Drive 存在性正缓存（那是
+      共享盘播放侧的机制，绑定线不碰）。
+
+    ``seen_paths`` 是本轮完整列举到的入库路径集合（``byos://<id>/...``），
+    由调用方在列举完整跑完的前提下传入；本函数不自己列举、不猜清单。
+    返回只含 id 与计数，不含任何凭据材料。
+    """
+    result = {
+        "binding_id": binding_id, "library_id": library_id,
+        "skipped": None, "checked": 0, "resets": 0, "graced": 0,
+        "removed": 0, "parents_removed": 0,
+    }
+    if not listing_complete:
+        result["skipped"] = "listing_incomplete"
+        logger.warning("绑定 #%s 清理跳过：清单不完整（本库 %s）",
+                       binding_id, library_id)
+        return result
+    prefix = binding_path(binding_id, "/")  # "byos://<id>/"
+    MI = em.MediaItem
+    rows = db.execute(
+        select(MI.id, MI.file_path, MI.item_type, MI.missing_count,
+               MI.series_id, MI.parent_id)
+        .where(MI.library_id == library_id,
+               MI.file_path.like(prefix + "%"),
+               MI.deleted_at.is_(None),
+               MI.item_type.in_(["movie", "episode"]))
+        .order_by(MI.id)
+    ).all()
+    # LIKE 在 SQLite 下大小写不敏感：再用精确前缀过滤一次，绝不认错绑定。
+    rows = [r for r in rows if (r[1] or "").startswith(prefix)]
+    result["checked"] = len(rows)
+    seen = set(seen_paths or [])
+    if not seen and rows:
+        result["skipped"] = "empty_listing_refused"
+        logger.warning(
+            "绑定 #%s 清理拒绝：本轮列出 0 个文件，但库 %s 里该绑定线"
+            "还有 %d 条可见条目——视为来源不可用，本轮不删",
+            binding_id, library_id, len(rows))
+        return result
+    grace_scans = int(getattr(scanner, "MISSING_GRACE_SCANS", 3) or 3)
+    reset_ids, grace_ids, doomed = [], [], []
+    for item_id, file_path, item_type, missing_count, series_id, parent_id in rows:
+        missing_count = missing_count or 0
+        if file_path in seen:
+            if missing_count > 0:
+                reset_ids.append(item_id)
+            continue
+        if missing_count + 1 >= grace_scans:
+            doomed.append((item_id, item_type, series_id, parent_id))
+        else:
+            grace_ids.append(item_id)
+    if reset_ids:
+        for i in range(0, len(reset_ids), 200):
+            chunk = reset_ids[i:i + 200]
+            db.execute(
+                update(MI).where(MI.id.in_(chunk)).values(
+                    missing_count=0, missing_since=None))
+        result["resets"] = len(reset_ids)
+    if grace_ids:
+        now = datetime.now()
+        for i in range(0, len(grace_ids), 200):
+            chunk = grace_ids[i:i + 200]
+            db.execute(
+                update(MI).where(MI.id.in_(chunk)).values(
+                    missing_count=MI.missing_count + 1,
+                    missing_since=func.coalesce(MI.missing_since, now)))
+        result["graced"] = len(grace_ids)
+    removed = 0
+    if doomed:
+        doomed_ids = [d[0] for d in doomed]
+        if _soft_delete.soft_delete_enabled():
+            removed = _soft_delete.mark_soft_deleted(db, doomed_ids)
+        else:
+            scanner._purge_items(db, doomed_ids)
+            removed = len(doomed_ids)
+        result["removed"] = removed
+        # 父行：只看本轮下架行的父行，且删前复查无可见子行。
+        candidate_series = {d[2] for d in doomed if d[2]}
+        candidate_seasons = {d[3] for d in doomed
+                             if d[1] == "episode" and d[3]}
+        season_doomed = []
+        for season_id in sorted(candidate_seasons):
+            has_child = db.execute(
+                select(MI.id).where(
+                    MI.parent_id == season_id,
+                    MI.deleted_at.is_(None)).limit(1)).first()
+            if not has_child:
+                season_doomed.append(season_id)
+                srow = db.execute(
+                    select(MI.series_id).where(
+                        MI.id == season_id).limit(1)).first()
+                if srow and srow[0]:
+                    candidate_series.add(srow[0])
+        parents = season_doomed + []
+        for series_id in sorted(candidate_series):
+            has_child = db.execute(
+                select(MI.id).where(
+                    MI.series_id == series_id,
+                    MI.deleted_at.is_(None)).limit(1)).first()
+            if not has_child:
+                parents.append(series_id)
+        if parents:
+            if _soft_delete.soft_delete_enabled():
+                result["parents_removed"] = _soft_delete.mark_soft_deleted(
+                    db, parents)
+            else:
+                scanner._purge_items(db, parents)
+                result["parents_removed"] = len(parents)
+    if reset_ids or grace_ids or doomed:
+        db.commit()
+    if result["removed"] or result["parents_removed"]:
+        # 计数与主线清理收尾同口径：可见 movie/series 重数。
+        lib = db.query(em.Library).filter(
+            em.Library.id == library_id).first()
+        if lib is not None:
+            lib.item_count = _soft_delete.count_visible(
+                db,
+                MI.library_id == library_id,
+                MI.item_type.in_(["movie", "series"]),
+                MI.deleted_at.is_(None),
+                MI.merged_into_id.is_(None),
+            )
+            db.commit()
+    return result
+
+
 def scan_binding(db: Session, user_id: int, binding_id: int, library_id: int,
                  *, root: str = "/", provider=None,
                  http_get=None, http_post=None) -> dict:
@@ -414,11 +565,17 @@ def scan_binding(db: Session, user_id: int, binding_id: int, library_id: int,
     - 总开关关着 → disabled，什么都不做；
     - 库不存在 → not_found；绑定非本人/不存在 → not_found；
     - 绑定未 active → invalid/expired，不回落其他绑定；
-    - 扫描体以定向模式跑（targeted=True）：只新增/更新，不清理；
+    - 扫描体以定向模式跑（targeted=True）：整库清理阶段跳过——
+      绑定线绝不因“本轮只看见一个绑定”而删掉库里别的来源的条目；
+    - 扫描成功后按绑定定向清理（``prune_binding_items``）：只删本绑定、
+      本库的未见行，且只在**整绑定列举**（``root="/"``）完整跑完时
+      才做——子树扫描、列举中途抛错、扫描本身失败时一律跳过清理；
+      空清单时拒绝批量删（见 prune 的 fail-closed 门）；
     - 列举中凭据失效（MountAuthError）→ 绑定落 expired 后抛 expired，
       不静默换源、不静默走中继（Drive 令牌刷新失败的落态由 P2 口
       自己负责，本处只处理列举期 401/403）。
-    返回统计（只有 id 与计数，不含任何凭据材料）。
+    返回统计（只有 id 与计数，不含任何凭据材料）；``prune`` 一项是
+    定向清理的结果（``skipped`` 非空 = 本轮没清理，原因见值）。
     """
     if not scan_enabled():
         raise BindingScanError(
@@ -436,7 +593,18 @@ def scan_binding(db: Session, user_id: int, binding_id: int, library_id: int,
     # 不改原快照（原快照仍是库的现行配置，调用方复用它时不受影响）。
     snap = _dataclass_replace(scanner.LibrarySnapshot.of(library),
                               targeted=True)
-    files = iter_binding_scan_files(provider, binding.id, root=root)
+    # 录下本轮列到的入库路径：只有生成器完整跑完（没抛错、没被提前
+    # 截断），listing_complete 才为真——半张清单绝不拿去删条目。
+    seen_paths: set = set()
+    listing_state = {"complete": False}
+
+    def _recording(files):
+        for scan_file in files:
+            seen_paths.add(scan_file.stored_path)
+            yield scan_file
+        listing_state["complete"] = True
+
+    files = _recording(iter_binding_scan_files(provider, binding.id, root=root))
     try:
         stats = scanner.scan_library_sync(
             db, library, snap, trigger="byos_binding",
@@ -452,10 +620,30 @@ def scan_binding(db: Session, user_id: int, binding_id: int, library_id: int,
         raise BindingScanError("expired", ub.error_message("expired")) from exc
     except ub.BindingError as exc:
         raise BindingScanError(exc.kind, exc.message) from exc
+    # 扫描成功才谈清理；子树扫描的清单天生不完整，绝不拿它删行。
+    norm_root = "/" + (root or "").strip("/")
+    if norm_root == "/":
+        try:
+            prune = prune_binding_items(
+                db, library.id, binding.id, seen_paths,
+                listing_complete=listing_state["complete"])
+        except Exception as exc:  # noqa: BLE001 — 清理失败不掩盖扫描成功
+            logger.warning("绑定 #%s 定向清理失败（本轮不删任何行）: %s",
+                           binding.id, exc, exc_info=True)
+            prune = {"binding_id": binding.id, "library_id": library.id,
+                     "skipped": "error", "checked": 0, "resets": 0,
+                     "graced": 0, "removed": 0, "parents_removed": 0}
+    else:
+        prune = {"binding_id": binding.id, "library_id": library.id,
+                 "skipped": "subtree_root", "checked": 0, "resets": 0,
+                 "graced": 0, "removed": 0, "parents_removed": 0}
+        logger.info("绑定 #%s 子树扫描（root=%s），跳过定向清理",
+                    binding.id, root)
     return {
         "binding_id": binding.id,
         "user_id": user_id,
         "provider": binding.provider,
         "library_id": library.id,
         "stats": stats,
+        "prune": prune,
     }
