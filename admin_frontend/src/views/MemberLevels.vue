@@ -145,7 +145,7 @@ onMounted(() => { loadLevels() })
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="运营中心"
+      eyebrow="经营"
       title="会员等级"
       description="管理 Lv1-Lv6 会员等级：经验阈值、徽章、公开权益、订阅折扣（仅付费服）"
     >

@@ -320,7 +320,7 @@ function statusLabel(status: string): string {
 
 <template>
   <div class="admin-page">
-    <PageHeader eyebrow="内容与服务" title="求片管理" description="批准 / 拒绝、转交外部下载服务、标记已入库都在「处理」弹窗里；审核结果会通知提交用户。">
+    <PageHeader eyebrow="内容" title="求片管理" description="批准 / 拒绝、转交外部下载服务、标记已入库都在「处理」弹窗里；审核结果会通知提交用户。">
       <template #actions>
         <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
       </template>
