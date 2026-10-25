@@ -17,7 +17,9 @@
 
 Frodo 在本模块里的位置：补资料段的缺口来源之一（不是识别段的认亲
 依据——认亲只认 TMDB / NFO / 别名给出的身份，Frodo 片名搜不用来定
-身份）。Frodo 腿复用 #1203 熔断注册表（douban_frodo 源名，403 / 429
+身份）。桥用的 IMDb 编号解析口径见 _frodo_imdb_id：条目已有 →
+本轮 tmdb_details → nfo_data，只用已有证据、不另拉详情。
+Frodo 腿复用 #1203 熔断注册表（douban_frodo 源名，403 / 429
 立即熔断、冷却约 60 秒半开）；熔断中、封禁中、任何异常都只返回空
 ——不挡其他源、不静默出旧数、不抛异常进补资料流程。
 """
@@ -214,12 +216,35 @@ def fill_candidates_from_fetched(fetched: dict) -> dict:
     return {k: v for k, v in candidates.items() if not _empty(v)}
 
 
-def _frodo_candidates(item) -> dict:
+def _frodo_imdb_id(item, fetched: Optional[dict] = None) -> Optional[str]:
+    """Frodo 桥用的 IMDb 编号解析（与 extract_binding 同口径，不发请求）。
+
+    顺序：条目已有 imdb_id → 本轮已采集证据 tmdb_details.imdb_id →
+    nfo_data.imdb_id。只用本轮已有的证据：不为搭桥另拉 TMDB 详情
+    （刮削瘦身已定：缺 imdb_id 不再是拉详情的理由，见 enrich_worker
+    的详情收窄注释；要补那一步须另行拍板，不在本函数悄悄做）。
+    """
+    imdb_id = getattr(item, "imdb_id", None)
+    if imdb_id:
+        return str(imdb_id)
+    fetched = fetched or {}
+    details = fetched.get("tmdb_details") or {}
+    if details.get("imdb_id"):
+        return str(details["imdb_id"])
+    nfo_data = fetched.get("nfo_data") or {}
+    if nfo_data.get("imdb_id"):
+        return str(nfo_data["imdb_id"])
+    return None
+
+
+def _frodo_candidates(item, fetched: Optional[dict] = None) -> dict:
     """Frodo 补资料候选（无开关内层，不写库、不抛异常）。
 
     本函数不管独立 Frodo 开关：开关由调用方（fill_from_frodo 或聚合
     通道）各自把关——聚合通道是自己的开关，开聚合即开它里面的
     Frodo 腿。熔断 / 封禁 / 异常三道闸都在本层：只返回空，不挡其他源。
+    桥用的 IMDb 编号按 _frodo_imdb_id 解析：条目没有时用本轮已采集
+    证据里的编号（详情 / NFO），都不给才退回片名搜。
     """
     try:
         from backend.emby_server.metasources import breaker as provider_breaker
@@ -241,9 +266,9 @@ def _frodo_candidates(item) -> dict:
         return {}
     try:
         subject = None
-        imdb_id = getattr(item, "imdb_id", None)
+        imdb_id = _frodo_imdb_id(item, fetched)
         if imdb_id:
-            subject = frodo.find_by_imdb(str(imdb_id), _item_year(item))
+            subject = frodo.find_by_imdb(imdb_id, _item_year(item))
         if subject is None:
             title = getattr(item, "name", None)
             if title:
@@ -261,18 +286,21 @@ def _frodo_candidates(item) -> dict:
         return {}
 
 
-def fill_from_frodo(item) -> dict:
+def fill_from_frodo(item, fetched: Optional[dict] = None) -> dict:
     """Frodo 补资料缺口（只返回候选 dict，不写库、不抛异常）。
 
     路线：有 imdb_id 走 IMDb 桥精确换豆瓣条目（不拿片名撞运气）；
     无 imdb_id 时走 Frodo 片名搜（模块内已有置信门槛，过不了当没搜到）。
-    熔断中 / 封禁中 / 任何异常 → 返回 {}，绝不挡其他源、不出旧数。
-    熔断记账在 douban_frodo 模块的请求层（allow / record 已在内），
-    本层不重复记账（重复记会把失败计数翻倍、提前熔断）。
+    桥用的编号按 _frodo_imdb_id 解析：条目没有时用本轮已采集证据里
+    的编号，调用方（apply_fill / 聚合通道）须把 fetched 透传进来，
+    不传时行为与此前逐字一致。熔断中 / 封禁中 / 任何异常 → 返回 {}，
+    绝不挡其他源、不出旧数。熔断记账在 douban_frodo 模块的请求层
+    （allow / record 已在内），本层不重复记账（重复记会把失败计数
+    翻倍、提前熔断）。
     """
     if not frodo_fill_enabled():
         return {}
-    return _frodo_candidates(item)
+    return _frodo_candidates(item, fetched)
 
 
 def apply_fill(db, item, fetched: dict) -> list:
@@ -302,7 +330,7 @@ def apply_fill(db, item, fetched: dict) -> list:
         if f not in filled and _empty(getattr(item, f, None))
     ]
     if still_missing:
-        frodo_candidates = fill_from_frodo(item)
+        frodo_candidates = fill_from_frodo(item, fetched)
         for field in still_missing:
             if field in frodo_candidates:
                 setattr(item, field, frodo_candidates[field])

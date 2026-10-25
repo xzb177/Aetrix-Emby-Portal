@@ -99,10 +99,12 @@ def _source_douban_frodo(item, fetched: dict) -> dict:
 
     返回已是补资料字段口径（overview / community_rating /
     poster_path）；Frodo 不给背景图，backdrop 位自然空着让给下一源。
+    fetched 透传给内层：条目没有 imdb_id 时用本轮已采集证据里的
+    编号走精确桥，不传时退回片名搜（与补资料段直连口径一致）。
     """
     from backend.emby_server import identify_two_stage as ts
 
-    return ts._frodo_candidates(item) or {}
+    return ts._frodo_candidates(item, fetched) or {}
 
 
 def _source_tmdb_details(item, fetched: dict) -> dict:
