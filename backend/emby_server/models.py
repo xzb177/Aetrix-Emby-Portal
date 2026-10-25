@@ -1749,3 +1749,133 @@ class DriveOAuthState(Base):
     sealed_verifier = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
     expires_at = Column(DateTime)
+
+
+class EmbyMediaSet(Base):
+    """合集（媒体库合集域 L3：与真实库并列的一等架）。
+
+    只承载合集自身的事实：名字、来源、可见性、架序、成员数门、
+    封面策略（只存策略，不算图）、修订号。成员资格、排序键、
+    可见性治理流水线、封面渲染都不在这里（各归其域）：
+    - 成员行见 EmbyMediaSetMember（order_index 在成员行上）；
+    - 规则行见 EmbyMediaSetRule；
+    - 模板行见 EmbyMediaSetTemplate（preset 只做模板机制）；
+    - libraries 表不动（库的 sort_order 是 L4 的地盘）。
+    新表由 init_db 的 create_all 建出，老库无需 ALTER。
+    """
+
+    __tablename__ = "emby_media_sets"
+    __table_args__ = (
+        Index("ix_media_set_sort", "sort_order", "id"),
+        Index("ix_media_set_visibility", "visibility_status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(200), nullable=False)
+    # 来源：manual（手工挑）/ rule（规则）/ path（路径前缀）
+    # / preset（模板实例化，实例化后刷新行为同 rule）
+    # / douban_doulist（只留接口位，刷新恒返回 not_implemented）。
+    source_type = Column(String(20), nullable=False, default="manual")
+    # 合集自身的可见性（不是 L7 治理流水线）：visible 上架候选，
+    # hidden 绝不上架、用户端读口按不存在处理，管理端照常可见。
+    visibility_status = Column(String(20), nullable=False, default="visible")
+    # 架序：架列表里合集区按它出架；未设序（同为 0）时按 id 兜底，
+    # 真实库的顺序不受它影响（库表无此列，不动库表）。
+    sort_order = Column(Integer, nullable=False, default=0)
+    # 上架门：读列表时实时算出的有效成员数低于它，合集不上架。
+    # 不存入成员表、不做物化计数，门一改下次读即生效。
+    min_effective_members = Column(Integer, nullable=False, default=2)
+    # 封面策略枚举：auto_collage（默认）/ none。只存策略，
+    # 读接口只暴露它，绝不输出封面图 URL——算图是封面链的地盘。
+    artwork_mode = Column(String(20), nullable=False, default="auto_collage")
+    # path 来源的路径前缀：成员 = file_path 落在其下的条目。
+    path_prefix = Column(String(1024))
+    # 人物绑定：复用 emby_people 的行 id（该行是某条目下某人的
+    # 一次出演记录）。刷新时按该行的人物身份（person_tmdb_id 优先、
+    # 为空时按 name）把同人条目并入候选集；行被删则绑定悬空，
+    # 刷新时忽略它、不报错（绑定是加分项，不是资格条件）。
+    bound_person_id = Column(Integer)
+    # 修订号对账：规则/路径/绑定/手工成员变了才顶 requested_revision；
+    # 刷新完成后 completed_revision 追平 requested_revision。
+    # 排序/可见性/名字/封面策略/min 门的改动不顶号（不影响成员）。
+    requested_revision = Column(Integer, nullable=False, default=0)
+    completed_revision = Column(Integer, nullable=False, default=0)
+    # 刷新状态：idle / done / not_implemented（仅 douban_doulist）。
+    # 没有后台工人、没有定时任务：刷新只由管理端显式调用触发。
+    refresh_status = Column(String(20), nullable=False, default="idle")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class EmbyMediaSetMember(Base):
+    """合集成员行：一行 = 一个条目在某个合集里的位置。
+
+    member_source 说明这行怎么来的：manual（管理员手工挑，
+    规则刷新永不删它）/ rule / path / preset（刷新按差集管理）。
+    资格（绑定与否）与有效计数不在行上存，读列表时实时算，
+    这样 D1 开关将来反向时不返工、不重算。
+    """
+
+    __tablename__ = "emby_media_set_members"
+    __table_args__ = (
+        UniqueConstraint("set_id", "item_id", name="uq_media_set_member"),
+        Index("ix_media_set_member_set", "set_id", "order_index"),
+        Index("ix_media_set_member_item", "item_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    set_id = Column(Integer, ForeignKey("emby_media_sets.id"), nullable=False)
+    item_id = Column(Integer, ForeignKey("emby_items.id"), nullable=False)
+    # 观影轨排序键：观影轨按它排；全员为 0（未编排）时观影轨
+    # 默认同上映轨（见 media_sets.order_members）。
+    order_index = Column(Integer, nullable=False, default=0)
+    member_source = Column(String(20), nullable=False, default="manual")
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class EmbyMediaSetRule(Base):
+    """合集规则行：8 种规则，均可 is_exclusion 反选。
+
+    值按三型落库，类型与规则种一一对应，校验在 media_sets
+    里集中做（错型直接 400，不静默存错）：
+    - text 型：person（人物 TMDB id 或姓名）/ genre / studio / media_type；
+    - int 型：year（production_year）/ decade（production_year 的十年段，
+      须为 10 的倍数）/ library（library_id）；
+    - float 型：rating（community_rating 下限，含等于）。
+    8 种全部映射到 emby_items / emby_people 的真实列，无
+    not_implemented 项（映射前已按 models.py 实查）。
+    """
+
+    __tablename__ = "emby_media_set_rules"
+    __table_args__ = (
+        Index("ix_media_set_rule_set", "set_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    set_id = Column(Integer, ForeignKey("emby_media_sets.id"), nullable=False)
+    rule_kind = Column(String(20), nullable=False)
+    is_exclusion = Column(Boolean, nullable=False, default=False)
+    value_text = Column(String(300))
+    value_int = Column(Integer)
+    value_float = Column(Float)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class EmbyMediaSetTemplate(Base):
+    """合集模板（preset 的模板机制）：模板是数据、由服主配。
+
+    模板 = 名字 + 规则集（rules_json，规则 dict 列表，与规则行
+    同型校验）。实例化时把规则集原样拷成新合集的规则行，
+    新合集 source_type=preset，刷新行为同 rule。模板里不许
+    出现任何真实片单——模板只存规则，不存条目 id 清单。
+    """
+
+    __tablename__ = "emby_media_set_templates"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_media_set_template_name"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(200), nullable=False)
+    rules_json = Column(Text, nullable=False, default="[]")
+    created_at = Column(DateTime, default=datetime.now)
