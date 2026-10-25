@@ -8,14 +8,17 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.emby_server import item_artwork
+from backend.emby_server import item_artwork, library_covers
 from backend.emby_server import models as em
 from backend.emby_server.portal import require_staff
+from backend.models import SystemConfig
 
 router = APIRouter(
     prefix="/api/admin/media-library",
@@ -93,3 +96,63 @@ def delete_override(
     if not item_artwork.cancel_override(db, item_id, kind):
         raise HTTPException(status_code=404, detail="没有这条覆盖")
     return {"ok": True, "item_id": item_id, "kind": kind}
+
+
+class CoverStrategyIn(BaseModel):
+    order: list[str]
+
+
+@router.get("/cover-strategy")
+def get_cover_strategy(db: Session = Depends(get_db)):
+    """库封面策略（管理端图片与顺序页）：生效顺序 + 各来源现状。
+
+    env_order 非空时文件配置优先，管理端保存暂不生效（仍可先保存，
+    与条目图覆盖「先配好再开开关」同口径）；borrow_enabled 为文件
+    配置开关现状（只读，借代表一步仅在其开启时生效）。
+    """
+    return {
+        "stored_order": library_covers.stored_strategy_order(db),
+        "env_order": library_covers.env_strategy_order(),
+        "effective_order": library_covers.effective_strategy_order(db),
+        "borrow_enabled": library_covers.borrow_enabled(),
+        "known_steps": list(library_covers._KNOWN_STEPS),
+    }
+
+
+@router.put("/cover-strategy")
+def set_cover_strategy(
+    payload: CoverStrategyIn,
+    db: Session = Depends(get_db),
+):
+    """保存库封面策略顺序：未知步骤 → 400；空表 → 400（至少保留一步）；
+    重复步骤按首次出现去重。存 system_configs，不新增 env 键；出图侧
+    下次调用即生效（无缓存）。"""
+    steps: list[str] = []
+    for entry in payload.order:
+        step = str(entry).strip()
+        if step not in library_covers._KNOWN_STEPS:
+            raise HTTPException(status_code=400, detail=f"未知封面步骤：{step}")
+        if step not in steps:
+            steps.append(step)
+    if not steps:
+        raise HTTPException(status_code=400, detail="至少保留一步封面策略")
+    row = (
+        db.query(SystemConfig)
+        .filter(SystemConfig.key == library_covers.COVER_STRATEGY_KEY)
+        .first()
+    )
+    if row is None:
+        row = SystemConfig(
+            key=library_covers.COVER_STRATEGY_KEY,
+            value=json.dumps(steps),
+            description="库封面策略顺序（管理端图片与顺序页保存）",
+        )
+        db.add(row)
+    else:
+        row.value = json.dumps(steps)
+    db.commit()
+    return {
+        "ok": True,
+        "order": steps,
+        "effective_order": library_covers.effective_strategy_order(db),
+    }

@@ -1,27 +1,54 @@
 <script setup lang="ts">
 /**
- * 媒体库图片与顺序（媒体库学习 L2 / L4 管理端）。
+ * 媒体库图片与顺序（媒体库学习 L1 / L2 / L4 管理端）。
  *
- * 上半：库顺序——Views 里库的展示顺序。0 = 未设序（排在已设序之后）；
+ * 上：库封面策略——库封面按什么顺序尝试出图（借代表海报 / 自研渲染 /
+ * 直传 / SVG 占位）。顺序即尝试顺序；管理端保存进 system_configs，
+ * 文件配置 LIBRARY_COVER_STRATEGY_ORDER 已设置时优先于此处保存；
+ * 借代表一步仅在借代表开关开启时生效（文件配置，只读）。
+ * 中：库顺序——Views 里库的展示顺序。0 = 未设序（排在已设序之后）；
  * 已设序的按数值升序在前。改完点「保存顺序」整单写后端。
- * 下半：条目图人工覆盖——管理员给条目手工指定海报 / 背景图。
+ * 下：条目图人工覆盖——管理员给条目手工指定海报 / 背景图。
  * 优先级：覆盖 > 旁挂 > 刮削。覆盖只接受 http(s) URL；读侧是否生效
  * 由 ITEM_ARTWORK_OVERRIDE_ENABLED 开关决定（写侧不受开关影响，
  * 可以先配好再开开关）。
+ *
+ * 布局纪律：本页就是媒体库设置的收纳面，封面与顺序都在此分组呈现，
+ * 不另起导航入口与新页面。
  */
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Image as ImageIcon, ListOrdered } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, Image as ImageIcon, ListOrdered } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import {
   deleteArtworkOverride,
   fetchArtworkOverrides,
+  fetchCoverStrategy,
   fetchLibraryOrder,
   setArtworkOverride,
+  setCoverStrategy,
   setLibraryOrder,
   type ArtworkOverrideRow,
   type LibraryOrderRow,
 } from '@/api/admin'
+
+const STRATEGY_META: Record<string, { label: string; desc: string }> = {
+  borrow: { label: '借代表海报', desc: '借库内已绑定代表条目的海报' },
+  render: { label: '自研渲染封面', desc: '库已设置的渲染封面' },
+  uploaded: { label: '管理员直传', desc: '管理员直接上传的封面' },
+  svg: { label: 'SVG 占位', desc: '无图时给占位图，不破图' },
+}
+
+interface StrategyRow {
+  step: string
+  included: boolean
+}
+
+const strategyRows = ref<StrategyRow[]>([])
+const strategyLoading = ref(false)
+const strategySaving = ref(false)
+const strategyEnvOrder = ref<string[] | null>(null)
+const strategyBorrowEnabled = ref(false)
 
 const orderRows = ref<LibraryOrderRow[]>([])
 const orderLoading = ref(false)
@@ -33,6 +60,61 @@ const formItemId = ref<number | null>(null)
 const formKind = ref('Primary')
 const formUrl = ref('')
 const formSaving = ref(false)
+
+async function loadStrategy() {
+  strategyLoading.value = true
+  try {
+    const d = await fetchCoverStrategy()
+    strategyEnvOrder.value = d.env_order
+    strategyBorrowEnabled.value = d.borrow_enabled
+    // 可编辑顺序：已保存的用保存的，否则用当前生效顺序；已勾选的在前
+    const editOrder = d.stored_order ?? d.effective_order
+    const included = editOrder.filter((s) => d.known_steps.includes(s))
+    const excluded = d.known_steps.filter((s) => !included.includes(s))
+    strategyRows.value = [
+      ...included.map((step) => ({ step, included: true })),
+      ...excluded.map((step) => ({ step, included: false })),
+    ]
+  } catch {
+    ElMessage.error('库封面策略加载失败')
+  } finally {
+    strategyLoading.value = false
+  }
+}
+
+function toggleStrategy(row: StrategyRow) {
+  row.included = !row.included
+  // 勾选的沉到已勾选区末尾，取消的沉到未勾选区，保持两区各自有序
+  const included = strategyRows.value.filter((r) => r.included)
+  const excluded = strategyRows.value.filter((r) => !r.included)
+  strategyRows.value = [...included, ...excluded]
+}
+
+function moveStrategy(index: number, dir: -1 | 1) {
+  const rows = strategyRows.value
+  const target = index + dir
+  if (target < 0 || target >= rows.length) return
+  if (!rows[index].included || !rows[target].included) return
+  ;[rows[index], rows[target]] = [rows[target], rows[index]]
+}
+
+async function saveStrategy() {
+  const order = strategyRows.value.filter((r) => r.included).map((r) => r.step)
+  if (order.length === 0) {
+    ElMessage.warning('至少保留一步封面策略')
+    return
+  }
+  strategySaving.value = true
+  try {
+    await setCoverStrategy(order)
+    ElMessage.success('库封面策略已保存')
+    await loadStrategy()
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '库封面策略保存失败')
+  } finally {
+    strategySaving.value = false
+  }
+}
 
 async function loadOrder() {
   orderLoading.value = true
@@ -107,6 +189,7 @@ async function removeOverride(row: ArtworkOverrideRow) {
 }
 
 onMounted(() => {
+  void loadStrategy()
   void loadOrder()
   void loadOverrides()
 })
@@ -114,7 +197,37 @@ onMounted(() => {
 
 <template>
   <div>
-    <PageHeader title="图片与顺序" description="库展示顺序与条目图人工覆盖（媒体库学习 L2 / L4）" />
+    <PageHeader title="图片与顺序" description="库封面策略、库展示顺序与条目图人工覆盖（媒体库学习 L1 / L2 / L4）" />
+
+    <SectionCard title="库封面策略" :icon="ImageIcon">
+      <template #actions>
+        <el-button type="primary" :loading="strategySaving" @click="saveStrategy">保存策略</el-button>
+      </template>
+      <p class="ml-note">顺序即尝试顺序：有图的步骤先命中。借代表一步仅在借代表开关开启时生效，当前：{{ strategyBorrowEnabled ? '已开启' : '未开启（文件配置）' }}。文件配置已设置时优先于此处保存，当前：{{ strategyEnvOrder ? '已设置' : '未设置' }}。保存后下次出图即生效。</p>
+      <el-table v-loading="strategyLoading" :data="strategyRows" style="width: 100%">
+        <el-table-column label="启用" width="70">
+          <template #default="{ row }">
+            <el-checkbox :model-value="row.included" @change="toggleStrategy(row)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="步骤">
+          <template #default="{ row }">
+            {{ STRATEGY_META[row.step]?.label ?? row.step }}
+            <span class="ml-note">（{{ STRATEGY_META[row.step]?.desc ?? '' }}）</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="调整" width="130">
+          <template #default="{ $index }">
+            <el-button link :disabled="$index === 0 || !strategyRows[$index].included" @click="moveStrategy($index, -1)">
+              <el-icon><ArrowUp /></el-icon>
+            </el-button>
+            <el-button link :disabled="$index >= strategyRows.filter((r) => r.included).length - 1 || !strategyRows[$index].included" @click="moveStrategy($index, 1)">
+              <el-icon><ArrowDown /></el-icon>
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </SectionCard>
 
     <SectionCard title="库顺序" :icon="ListOrdered">
       <template #actions>

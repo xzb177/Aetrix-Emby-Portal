@@ -22,10 +22,16 @@
 开关 LIBRARY_COVER_BORROW_ENABLED（默认 0）：关时五件套只回旧行为
 （cover_path 有值 → render/uploaded，否则 null），不借代表、不出
 占位策略——旧前端与旧客户端看到的与今天逐字一致。
+
+策略顺序的来源（管理端「图片与顺序」页可改，不新增 env 键）：
+env LIBRARY_COVER_STRATEGY_ORDER（文件配置，优先）→ 管理端保存的
+system_configs[library_cover_strategy_order] → 默认 borrow,render,svg。
+语义与默认值逐字不变：未知步骤丢弃、重复去重、跑空回默认。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -33,6 +39,7 @@ from backend.emby_server import image_store
 from backend.emby_server import models as em
 from backend.emby_server.env_util import env_int
 from backend.emby_server.identity_gate import _own_bound
+from backend.models import SystemConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,7 @@ BORROW_ENABLED = env_int("LIBRARY_COVER_BORROW_ENABLED", 0, 0, 1)
 
 _DEFAULT_STRATEGY = "borrow,render,svg"
 _KNOWN_STEPS = ("borrow", "render", "uploaded", "svg")
+COVER_STRATEGY_KEY = "library_cover_strategy_order"
 
 
 def borrow_enabled() -> bool:
@@ -47,15 +55,62 @@ def borrow_enabled() -> bool:
     return BORROW_ENABLED > 0
 
 
-def strategy_order() -> list[str]:
-    """解析策略顺序：env 现读，未知步骤丢弃、重复去重、跑空回默认。"""
-    raw = (os.environ.get("LIBRARY_COVER_STRATEGY_ORDER") or "").strip()
+def _parse_strategy(raw: str | None) -> list[str]:
+    """策略文本 → 步骤表：未知步骤丢弃、重复去重、跑空回默认。"""
     steps: list[str] = []
     for token in (raw or _DEFAULT_STRATEGY).split(","):
         step = token.strip()
         if step in _KNOWN_STEPS and step not in steps:
             steps.append(step)
     return steps or list(_DEFAULT_STRATEGY.split(","))
+
+
+def strategy_order() -> list[str]:
+    """解析策略顺序：env 现读，未知步骤丢弃、重复去重、跑空回默认。"""
+    raw = (os.environ.get("LIBRARY_COVER_STRATEGY_ORDER") or "").strip()
+    return _parse_strategy(raw if raw else None)
+
+
+def env_strategy_order() -> list[str] | None:
+    """env 里显式设置的顺序；未设置 → None（不代表默认）。"""
+    raw = (os.environ.get("LIBRARY_COVER_STRATEGY_ORDER") or "").strip()
+    return _parse_strategy(raw) if raw else None
+
+
+def stored_strategy_order(db) -> list[str] | None:
+    """管理端保存的顺序（system_configs）；未存/非法/跑空 → None。"""
+    if db is None:
+        return None
+    row = (
+        db.query(SystemConfig)
+        .filter(SystemConfig.key == COVER_STRATEGY_KEY)
+        .first()
+    )
+    if row is None or not (row.value or "").strip():
+        return None
+    try:
+        parsed = json.loads(row.value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    steps: list[str] = []
+    for entry in parsed:
+        step = str(entry).strip()
+        if step in _KNOWN_STEPS and step not in steps:
+            steps.append(step)
+    return steps or None
+
+
+def effective_strategy_order(db=None) -> list[str]:
+    """生效顺序：env（文件配置，优先）→ 管理端保存 → 默认。"""
+    env_order = env_strategy_order()
+    if env_order is not None:
+        return env_order
+    stored = stored_strategy_order(db)
+    if stored is not None:
+        return stored
+    return list(_DEFAULT_STRATEGY.split(","))
 
 
 def _identity_key(item) -> str | None:
@@ -142,7 +197,7 @@ def resolve_library_cover(db, lib, kind: str) -> dict:
         return {"url": None, "source": "none"}
     if not borrow_enabled():
         return _legacy_cover(lib)
-    for step in strategy_order():
+    for step in effective_strategy_order(db):
         if step == "borrow":
             rep = resolve_library_representative(db, lib.id)
             url = _item_poster_url(rep) if rep is not None else None
