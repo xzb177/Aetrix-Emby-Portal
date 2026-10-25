@@ -32,10 +32,9 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 # 版本号单一来源：显式先放一份，避免将来 .dockerignore 调整时漏掉它
 COPY VERSION /app/VERSION
 # 白名单拷贝（与 Dockerfile.backend 同一份依据；见那里的逐条说明）：
-#   backend/ emby_api/ web_player/ serve.py
+#   backend/ emby_api/ serve.py
 COPY backend/ /app/backend/
 COPY emby_api/ /app/emby_api/
-COPY web_player/ /app/web_player/
 COPY serve.py /app/serve.py
 COPY --from=user-build /src/user_frontend/dist /app/user_frontend/dist
 COPY --from=admin-build /src/admin_frontend/dist /app/admin_frontend/dist

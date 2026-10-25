@@ -44,6 +44,6 @@ monitoring/
 # 代价只是构建上下文多约 2 MB（实测 scripts/ 共 2.3 MB），可以接受。
 
 # 刻意**不**排除的（白名单 COPY 的目标，漏了会让构建失败）：
-#   backend/  emby_api/  web_player/  serve.py  VERSION  docker/（nginx.conf）
+#   backend/  emby_api/  serve.py  VERSION  docker/（nginx.conf）
 #   user_frontend/ admin_frontend/（前端构建阶段要它们的源码）
 #   scripts/（只有 with-scripts target 用，见上）

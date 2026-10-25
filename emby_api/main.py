@@ -45,8 +45,7 @@ try:  # Starlette ≥ 0.47 提供默认排除表（老版本没有该常量，�
     from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_DEFAULTS
 except ImportError:  # pragma: no cover
     _GZIP_DEFAULTS = ()
-from fastapi.responses import FileResponse, JSONResponse
-from pathlib import Path
+from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 
 from backend.metrics_guard import MetricsGuard
@@ -537,24 +536,6 @@ install_session_routes(emby_router)
 # 图片端点：接上条件请求（客户端缓存仍有效时 304），媒体库滚动/切页不再重传同一张海报
 install_image_routes(emby_router)
 app.include_router(emby_router)
-
-
-# ==================== 轻量 Web 播放页 ====================
-# 单文件 web_player/index.html（手机浏览器直接看片，不用装 App）。
-# 挂在 EA 上：与 /emby/* 同源，页面里的 API/图片/播放地址全用相对路径，
-# 无 CORS 问题，也不用像 user_frontend 那样先查 EA base_url。
-# 独立轻量页，不碰 user_frontend / admin_frontend。
-_WEB_PLAYER_DIR = Path(__file__).resolve().parent.parent / "web_player"
-
-
-@app.get("/watch", include_in_schema=False)
-@app.get("/watch/", include_in_schema=False)
-async def web_player_index():
-    """轻量 Web 播放页入口。"""
-    index_file = _WEB_PLAYER_DIR / "index.html"
-    if index_file.is_file():
-        return FileResponse(index_file, media_type="text/html; charset=utf-8")
-    raise HTTPException(status_code=404, detail="Web player not found")
 
 
 if __name__ == "__main__":

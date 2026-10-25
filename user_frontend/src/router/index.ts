@@ -169,8 +169,8 @@ const router = createRouter({
       redirect: '/game/calendar',
     },
     // ==================== 媒体详情与播放（v2.42.5：媒体库/搜索浏览页已删；
-    // 2026-10-13 旧页面清理：/profile、/media/:id、/watch/:id 三路由已删） ====================
-    // 老地址 /profile、/media/:id、/watch/:id、/media、/library、/search、/favorites、/history
+    // 2026-10-13 旧页面清理：/profile、/media/:id 两路由已删） ====================
+    // 老地址 /profile、/media/:id、/media、/library、/search、/favorites、/history
     // 的书签与外部链接：媒体浏览统一走第三方客户端（Infuse 等），这些入口不再有对应页面，
     // 全部落到兜底 404 页（页面里会给「回首页」的出口）。
     // 注意：/profile 的承接入口是 /game/account（账号设置设施）。
