@@ -247,7 +247,11 @@ class Pan115Client:
                 break
             out.extend(
                 {
-                    "fid": str(entry.get("fid") or entry.get("cid") or ""),
+                    # #13 PR-3：fid 必须是文件自身的真实 id，绝不拿父目录 cid
+                    # 回落冒充——同目录所有文件会共享一个"身份"，file_id 认亲层
+                    # 会大规模错认。API 没给 fid 时 fid 为空串（无身份）。
+                    # cid 侧保留回落（目录浏览靠 cid，目录项本无 fid）。
+                    "fid": str(entry.get("fid") or ""),
                     "cid": str(entry.get("cid") or entry.get("fid") or ""),
                     "name": entry.get("n") or entry.get("name") or "",
                     "is_dir": _is_dir(entry),

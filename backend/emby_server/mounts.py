@@ -1169,6 +1169,15 @@ class LocalMount(MountProvider):
             raise MountError(f"读取文件失败: {rel} ({exc})") from exc
 
 
+# #13 PR-3：115 fid 泛化开关，与 scanner.IDENTITY_MATCH_ENABLED 同键（默认关）。
+# 开时 Pan115Mount.walk_media 才把 115 fid 透传为 MountFile.file_id，走现行
+# file_id 认亲层与写库双写；关时不透传，115 仍走指纹层、行为与基线一致。
+# 模块加载时读一次，改动需重启生效。fid 必须是 transfer115 解析出的文件
+# 自身 id——transfer115 不再拿父目录 cid 回落冒充 fid（见 transfer115.py），
+# API 没给 fid 时 file_id 为空串（无身份），绝不拿 pickcode/cid 冒充。
+PAN115_FID_ENABLED = env_int("SCAN_IDENTITY_MATCH_ENABLED", 0, 0, 1) == 1
+
+
 class Pan115Mount(MountProvider):
     """115 网盘直挂（Cookie 型 API，不依赖 115 OpenAPI）"""
 
@@ -1318,8 +1327,14 @@ class Pan115Mount(MountProvider):
                 # 在拿到一条真实 /files 响应定生死前，115 的哈希一律按缺位
                 # （MountFile 默认空串 → 写库落 NULL），绝不拿 pickcode 或
                 # 其他字段冒充哈希；身份靠 fid 层（PR-3 泛化），不影响主线。
+                # #13 PR-3：fid 透传（仅开关开时）：_raw_list 的 fid 是 transfer115
+                # 从 /files 响应解析出的文件自身 id（无 fid 时为空串，父目录 cid
+                # 不再回落冒充）；开时走现行 file_id 认亲层，关时 file_id 为空、
+                # 行为与基线一致。
+                _fid = (item.get("fid") or "") if PAN115_FID_ENABLED else ""
                 yield MountFile(rel=child_rel, name=name,
-                                size=int(item.get("size") or 0), is_strm=_is_strm_name(name))
+                                size=int(item.get("size") or 0), is_strm=_is_strm_name(name),
+                                file_id=_fid)
 
     def _cid_of(self, rel: str) -> str:
         """把相对路径解析成 cid（逐级列目录，结果缓存到本次提供者实例）"""
