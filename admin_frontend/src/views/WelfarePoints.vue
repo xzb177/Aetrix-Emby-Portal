@@ -136,7 +136,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="公益服"
+      eyebrow="内容"
       title="积分与公益配置"
       description="货币体系、红包规则、兑换比例与公益服到期策略"
     >

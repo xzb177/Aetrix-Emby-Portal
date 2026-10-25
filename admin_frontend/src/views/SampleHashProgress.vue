@@ -37,7 +37,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="系统"
       title="采样哈希进度"
       description="采样哈希队列的计数快照（只读）：待补多少、已采多少、工人状态；本页不触发轮次、不写库。"
     >

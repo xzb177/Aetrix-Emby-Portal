@@ -213,7 +213,7 @@ function fmtDate(s: string): string {
 
 <template>
   <div class="admin-page">
-    <PageHeader eyebrow="内容与服务" title="公告管理" description="发布或修改公告会实时推送给所有在线用户；置顶、停用与删除在「管理」里。">
+    <PageHeader eyebrow="内容" title="公告管理" description="发布或修改公告会实时推送给所有在线用户；置顶、停用与删除在「管理」里。">
       <template #actions>
         <el-button :loading="loading" :icon="RefreshCw" @click="load">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">发布公告</el-button>

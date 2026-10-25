@@ -235,7 +235,7 @@ function riskLevel(row: LoginLogRow): string {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="用户与账号"
+      eyebrow="用户"
       title="登录日志"
       description="登录成功 / 失败、设备超限、诱饵码触发等风控事件；最多加载最近 300 条。"
     >
