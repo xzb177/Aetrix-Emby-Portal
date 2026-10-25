@@ -4320,6 +4320,20 @@ def _enforce_stream_limit(db: Session, request, user, item: em.MediaItem,
         raise HTTPException(status_code=429, detail=reason)
 
 
+def _enforce_path_access(db: Session, user, item: em.MediaItem) -> None:
+    """三层路径授权门禁（FMBY 挂载-7，#1240 落库、本 PR 接线）。
+
+    拒绝抛 403 + 人话原因；非挂载路径 / 三层全无行时
+    check_path_access 返回 None，直接放行，现行行为逐字不变。
+    user 为 None 时只算库层（check_path_access 自身口径）。
+    """
+    from backend.emby_server import path_auth
+
+    reason = path_auth.check_path_access(db, getattr(user, "id", None), item)
+    if reason is not None:
+        raise HTTPException(status_code=403, detail=reason)
+
+
 def _drive_mount_id_for_item(db: Session, item: em.MediaItem) -> Optional[str]:
     """drive 直链快路径用的 drive_id；其他情况返回 None（调用方回落原路径）。
 
@@ -4859,6 +4873,11 @@ async def video_stream(
     # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token / JWT）
     await run_db(ensure_playback_allowed, db, user)
     _pt.mark("auth_playback")
+    # 三层路径授权门禁（FMBY 挂载-7，#1240 落库、本 PR 接线）：放在占租约
+    # 之前，拒绝的请求不占播放路数；非挂载路径 / 无授权行时放行，
+    # 现行行为逐字不变。
+    await run_db(_enforce_path_access, db, user, item)
+    _pt.mark("auth_path_access")
     # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）
     await run_db(play_sign.check_referer, request, db)
     _pt.mark("auth_referer")
