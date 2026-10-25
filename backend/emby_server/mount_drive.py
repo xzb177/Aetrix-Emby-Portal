@@ -389,6 +389,23 @@ class DriveMount(RemoteMount):
             "drive_id": self.drive_id,
         }
 
+    def canary_probe_root(self) -> dict:
+        """共享盘根目录金丝雀探活：只读 files.list 一页。
+
+        2026-10-25 挂载 3 中断的教训：字段白名单回归（如 etag 重进）
+        会让共享盘根列举直接回 400，而扫描是 5 个库全 partial 才暴露。
+        本探活只发一页列举、不写 Drive、不落缓存、不走 list_dir，
+        让字段问题在盘根立刻暴露。失败不抛，返回 ok=False 明细，
+        供健康检查/告警调用；凭据与列举失败一律按 _list_page 语义
+        翻译成 MountError 后在此收敛。
+        """
+        try:
+            body, _token = self._list_page(self.root_id, None)
+        except MountError as exc:
+            return {"ok": False, "fields": _LIST_FIELDS, "error": str(exc)}
+        files = body.get("files", []) if isinstance(body, dict) else []
+        return {"ok": True, "fields": _LIST_FIELDS, "root_entries": len(files)}
+
     @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         folder_id = self._fid_of(rel)
