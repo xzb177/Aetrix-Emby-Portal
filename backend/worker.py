@@ -536,6 +536,19 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动媒体库列表投影重建工人失败（可忽略）: {e}")
 
+        # 条目排序投影重建工人（媒体库学习 L5）：仅开关开时启动；
+        # 关时不启动，游标分页口直接 404，全站行为逐字不变。
+        try:
+            from backend.emby_server import item_sort_projection
+
+            if item_sort_projection.start_sort_projection_worker(_shutdown_event):
+                started.append("item_sort_projection")
+                logger.info("✅ 条目排序投影重建工人已启动")
+            else:
+                logger.info("条目排序投影未开启，重建工人不启动")
+        except Exception as e:
+            logger.warning(f"启动条目排序投影重建工人失败（可忽略）: {e}")
+
         # 变体可用性探活工人（FMBY 播放阶段 4，清单第 4 项）：仅开关开时启动；
         # 关时不发任何请求、不写任何状态，全站行为逐字不变。本阶段只落库 +
         # 只探活，不接调度（list_variants / video_stream 选路一律不动），

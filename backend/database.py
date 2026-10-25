@@ -796,6 +796,8 @@ def _auto_migrate():
             # 即与升级前行为一致：本来就是有增量、有追新的
             ("incremental_scan", "BOOLEAN", "1"),
             ("fs_watch", "BOOLEAN", "1"),
+            # 媒体库学习 L4：库展示顺序；老库补列后为 0（未设序），行为与升级前一致
+            ("sort_order", "INTEGER", "0"),
         ]),
         # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录；服务器归属到某个服
         ("remote_servers", [

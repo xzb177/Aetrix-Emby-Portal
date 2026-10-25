@@ -809,6 +809,7 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
                 UMD.user_id == request_user.id,
                 UMD.playback_position_ticks > 0,
                 UMD.played == False,  # noqa: E712
+                UMD.hide_from_resume == False,  # noqa: E712 — L9：已藏的不出
                 MI.item_type.in_(["movie", "episode"]),
                 MI.is_hidden == False,  # noqa: E712
             ),

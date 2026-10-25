@@ -40,6 +40,7 @@ from backend.emby_server import facets
 from backend.emby_server.fastjson import json_route
 from backend.emby_server import image_store
 from backend.emby_server import item_anchor
+from backend.emby_server import item_artwork
 from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import items_dedup_cache as _dedup_cache
@@ -160,6 +161,10 @@ def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
     """图片回退链：条目自身 → 季 → 剧集海报
 
     季与集常常没有自己的图片；不回退就会整库空白图。
+
+    L2 人工覆盖排在最前面（优先级，不是独占）：开关开且本条目本图类
+    有覆盖时，覆盖 URL 排第一，其后仍保留原链作回退；开关关时本段
+    不执行，行为逐字不变。
     """
     def srcs(it: em.MediaItem) -> list[str]:
         if kind == "Primary":
@@ -191,7 +196,12 @@ def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
             parents.append(series)
         for parent in parents:
             chain.extend(srcs(parent))
-    return [s for s in chain if s]
+    chain = [s for s in chain if s]
+    if item_artwork.override_enabled():
+        url = item_artwork.override_url(db, item.id, kind)
+        if url:
+            return [url] + chain
+    return chain
 
 
 def _first_image(item: em.MediaItem, kind: str, db: Session) -> str | None:
@@ -207,7 +217,14 @@ def season_poster_url(item: em.MediaItem, db: Session) -> str | None:
     series_id 兜底；父条目须通过软删除可见性检查。
     只对 ``season`` 类型做回退——movie / series / episode 原样返回，
     父剧集也没图时返回 None（保持现有占位，不误伤）。
+
+    L2 人工覆盖最优先：开关开且本条目有 Primary 覆盖时，走 Images
+    路由（路由内按 _image_chain 出覆盖图）；有覆盖无自有图时不再出
+    占位。开关关时本段不执行，行为逐字不变。
     """
+    if item_artwork.override_enabled():
+        if item_artwork.override_url(db, item.id, "Primary"):
+            return f"/emby/Items/{item.guid}/Images/Primary"
     if item.poster_path or item.primary_image_url:
         return f"/emby/Items/{item.guid}/Images/Primary"
     if item.item_type != "season":
@@ -1903,6 +1920,16 @@ _LIB_CREATED_AT_FALLBACK = datetime(2020, 1, 1)
 def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
+    # L4 库设序：只有任一库 sort_order 非零时才排，全部为 0 时查询
+    # 逐字不变（排序在内存做，库数小，无额外 SQL）。键：已设序的在前
+    # （按 sort_order 升序），未设序（0）的排在已设之后、按 id 自然序
+    # ——与管理端 GET /order 的回显顺序同一口径。
+    if any((lib.sort_order or 0) != 0 for lib in libs):
+        libs = sorted(
+            libs,
+            key=lambda lib: (0, lib.sort_order, lib.id) if (lib.sort_order or 0) != 0
+            else (1, 0, lib.id),
+        )
     virtual_on = _virtual_libraries_enabled()
     allowed = _library_scope(db, user)
     # DateCreated 恒发（官方 dto.DateCreated 全字段默认下发；缺失会让严格的

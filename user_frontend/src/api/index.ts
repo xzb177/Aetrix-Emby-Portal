@@ -395,6 +395,38 @@ export interface PortalResumeItem extends PortalMediaItem {
   series_name?: string | null
 }
 
+/** 最近更新条目（游标分页口同形） */
+export interface RecentAddedItem {
+  id: number
+  guid: string
+  name: string
+  item_type: string
+  production_year?: number | null
+  poster_url?: string | null
+  date_added?: string | null
+}
+
+/** 首页分区（/api/user/media-library/home/sections）：每分区保持各自供数形态，
+    按 key 区分（continue_watching 是续看形，recently_updated 是条目形）。 */
+export interface HomeSection {
+  key: string
+  title: string
+  position: number
+  items: PortalResumeItem[] | RecentAddedItem[]
+}
+
+/** 已藏的继续观看条目：取消藏的键是 item_guid（单集 guid / 电影 guid）。 */
+export interface HiddenResumeItem {
+  item_guid: string
+  display_name: string
+  display_type: string
+  series_name?: string | null
+  season_number?: number | null
+  episode_number?: number | null
+  poster_url?: string | null
+  last_played_at?: string | null
+}
+
 /** 观看历史条目 */
 export interface WatchHistoryItem {
   id: string
@@ -459,6 +491,14 @@ export const embyApi = {
 
   // 续看列表（首页「继续观看」：单集按剧聚合，带上次播放的客户端 / 设备）
   getResume: (limit = 12) => api.get<never, { items: PortalResumeItem[] }>('/api/user/emby/resume', { params: { limit } }),
+
+  // 首页分区（媒体库学习 L6：注册表驱动；开关关时 404，调用方回落旧布局）
+  getHomeSections: () => api.get<never, { sections: HomeSection[] }>('/api/user/media-library/home/sections'),
+
+  // 继续观看藏 / 取消藏 / 已藏清单（媒体库学习 L9：剧集卡传单集 guid）
+  hideResumeItem: (itemGuid: string) => api.post<never, { ok: boolean }>(`/api/user/media-library/resume/${itemGuid}/hide`),
+  unhideResumeItem: (itemGuid: string) => api.post<never, { ok: boolean }>(`/api/user/media-library/resume/${itemGuid}/unhide`),
+  getHiddenResume: () => api.get<never, { items: HiddenResumeItem[] }>('/api/user/media-library/resume/hidden'),
 
   // 收藏列表
   getFavorites: () => api.get<never, { items: PortalMediaItem[] }>('/api/user/emby/favorites'),

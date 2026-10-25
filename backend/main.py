@@ -40,6 +40,9 @@ from backend.api.setup import router as setup_router
 from backend.api.playback_admin import router as playback_admin_router
 from backend.api.admin_readonly import router as admin_readonly_router
 from backend.api.library_cover import router as library_cover_router
+from backend.api.media_library import router as media_library_router
+from backend.api.admin_artwork import router as admin_artwork_router
+from backend.api.library_order import router as library_order_router
 from backend.api.home_summary import router as home_summary_router
 from backend.api.homepage_sections import router as homepage_sections_router
 from backend.api.panel import router as panel_router, admin_router as panel_admin_router
@@ -806,6 +809,11 @@ app.include_router(playback_bus_admin.router)
 app.include_router(admin_readonly_router)
 # 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
 app.include_router(library_cover_router)
+# 媒体库学习（封面/排序/货架）：门户端游标分页 / 分区 / 藏 / 封面五件套
+# 与管理端覆盖 / 库设序，见 backend/api/media_library.py 等
+app.include_router(media_library_router)
+app.include_router(admin_artwork_router)
+app.include_router(library_order_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)

@@ -64,14 +64,12 @@ import type {
   Yun139PoolsResponse,
 } from '@/types'
 
-// ==================== 认证 ====================
-
+// ==================== 认证 =============
 /** 管理员登录；站点开了「保护管理后台登录」时必须带人机验证令牌 */
 export const login = (data: { username: string; password: string; captcha_token?: string }) =>
   post<LoginResponse>('/auth/login', data)
 
-// ==================== 首次运行向导 ====================
-
+// ==================== 首次运行向导 =============
 /** 向导状态：初始化是否已完成（免鉴权，前端进 /admin/ 前先问一次） */
 export const setupStatus = () => get<{ setup_completed: boolean }>('/setup/status')
 
@@ -95,8 +93,7 @@ export const adminLogout = (refreshToken?: string) =>
     { silent: true },
   )
 
-// ==================== 用户管理 ====================
-
+// ==================== 用户管理 =============
 export const fetchUsers = (params: {
   search?: string
   active?: boolean
@@ -157,8 +154,7 @@ export const sendUserMessage = (id: number, data: { title: string; content: stri
 export const broadcastMessage = (data: { title: string; content: string }) =>
   post<{ success: boolean }>('/messages/broadcast', data)
 
-// ==================== 会员卡码体系 ====================
-
+// ==================== 会员卡码体系 =============
 /** 注册码门禁设置 */
 export const fetchRegistrationSettings = () => get<RegistrationSettings>('/settings/registration')
 
@@ -220,8 +216,7 @@ export const patchRegistrationCode = (id: number, data: { is_active?: boolean; n
 export const deleteRegistrationCode = (id: number) =>
   del<{ success: boolean; message: string }>(`/registration-codes/${id}`)
 
-// ==================== 设备风控 ====================
-
+// ==================== 设备风控 =============
 export const fetchDevices = (params: {
   user_id?: number
   keyword?: string
@@ -240,8 +235,7 @@ export const removeDevice = (userId: number, deviceId: string) =>
   del<{ success: boolean; message: string }>(
     `/devices/${encodeURIComponent(deviceId)}`, { user_id: userId })
 
-// ==================== 登录 / 安全日志 ====================
-
+// ==================== 登录 / 安全日志 =============
 export const fetchLoginLogs = (params: {
   username?: string
   ip?: string
@@ -254,8 +248,7 @@ export const fetchLoginLogs = (params: {
 export const purgeLoginLogs = (days: number) =>
   post<{ success: boolean; message: string; deleted: number }>('/login-logs/purge', { days })
 
-// ==================== 防共享：跨城市轨迹 + 同播检测 ====================
-
+// ==================== 防共享：跨城市轨迹 + 同播检测 =============
 /** 四档处置：关闭 / 只记录 / 记录并告警 / 记录、告警并处置（缺省 off） */
 export type ShareGuardAction = 'off' | 'record' | 'alert' | 'enforce'
 
@@ -311,8 +304,7 @@ export const saveShareGuardPolicy = (policy: Partial<ShareGuardPolicy>) =>
 export const purgeShareGuardEvents = (days: number | null) =>
   post<{ success: boolean; message: string; deleted: number }>('/share-guard/purge', { days })
 
-// ==================== 访问拦截（UA 关键词 + IP 归属地） ====================
-
+// ==================== 访问拦截（UA 关键词 + IP 归属地） =============
 /** 归属地方向：屏蔽名单内 / 只允许名单内 */
 export type AccessGuardRegionMode = 'block' | 'allow'
 
@@ -374,8 +366,7 @@ export const saveAccessGuardPolicy = (policy: AccessGuardPolicyInput) =>
 export const previewAccessGuard = (payload: { ip: string; user_agent: string }) =>
   post<{ success: boolean; result: AccessGuardPreview }>('/access-guard/preview', payload)
 
-// ==================== 邀请码管理（v2.44.0 第一阶段） ====================
-
+// ==================== 邀请码管理（v2.44.0 第一阶段） =============
 /** 邀请码状态：可用 / 已用完 / 已过期 / 已作废 */
 export type InvitationCodeState = 'active' | 'used_up' | 'expired' | 'revoked'
 
@@ -435,8 +426,7 @@ export const updateInvitationCode = (
 export const revokeInvitationCodes = (ids: number[]) =>
   post<{ success: boolean; message: string; count: number }>('/invitation-codes/revoke', { ids })
 
-// ==================== 推广奖励（v2.44.0 第一阶段） ====================
-
+// ==================== 推广奖励（v2.44.0 第一阶段） =============
 export interface PromotionPolicy {
   enabled: boolean
   reward_type: 'balance' | 'days'
@@ -476,8 +466,7 @@ export const fetchPromotion = (params: { limit?: number; offset?: number } = {})
  * 直写辅助已无人调用，随入口一起移除。
  */
 
-// ==================== 媒体库可见范围：服务器默认 + 指定用户覆盖 ====================
-
+// ==================== 媒体库可见范围：服务器默认 + 指定用户覆盖 =============
 /** 媒体库下拉选项（后端返回的全部库，含启用/虚拟状态） */
 export interface LibraryScopeOption {
   id: number
@@ -538,8 +527,7 @@ export const saveLibraryScopeUser = (
 export const removeLibraryScopeUser = (userId: number) =>
   del<LibraryScopeResult>(`/library-scope/users/${userId}`)
 
-// ==================== 公告 ====================
-
+// ==================== 公告 =============
 export const fetchAnnouncements = (params: { active_only?: boolean } = {}) =>
   get<Announcement[]>('/announcements', params)
 
@@ -551,8 +539,7 @@ export const updateAnnouncement = (id: number, data: Partial<{ title: string; co
 
 export const deleteAnnouncement = (id: number) => del<{ success: boolean }>(`/announcements/${id}`)
 
-// ==================== 探险世界 · 到此一游留言墙 ====================
-
+// ==================== 探险世界 · 到此一游留言墙 =============
 export interface WallPost {
   id: number
   user_id: number
@@ -568,8 +555,7 @@ export const fetchWallPosts = (limit = 50) =>
 export const deleteWallPost = (id: number) =>
   del<{ success: boolean; message: string }>(`/wall-posts/${id}`)
 
-// ==================== 探险预告 · 保密新大陆（揭晓位配置） ====================
-
+// ==================== 探险预告 · 保密新大陆（揭晓位配置） =============
 /** 揭晓位配置（后端 GET/PUT /api/admin/teaser-config；字段见 backend/emby_server/teaser.py） */
 export interface TeaserConfig {
   enabled: boolean
@@ -591,8 +577,7 @@ export const fetchTeaserConfig = () =>
 export const saveTeaserConfig = (values: Record<string, string | boolean>) =>
   put<TeaserConfig>('/teaser-config', { values })
 
-// ==================== 工单 ====================
-
+// ==================== 工单 =============
 export const fetchTickets = (params: { status_filter?: string } = {}) =>
   get<TicketRow[]>('/tickets', params)
 
@@ -607,8 +592,7 @@ export const replyTicket = (id: number, data: { message: string; close_ticket?: 
 
 export const closeTicket = (id: number) => post<{ success: boolean }>(`/tickets/${id}/close`)
 
-// ==================== 求片 ====================
-
+// ==================== 求片 =============
 /** 求片清单；`realm_id=0` = 全部服，不传 = 当前服 */
 export const fetchMediaSeeks = (params: { status_filter?: string; realm_id?: number; order?: string } = {}) =>
   get<MediaSeekRow[]>('/media-seek', params)
@@ -648,8 +632,7 @@ export const pushMediaSeek = (id: number, data: { target?: string; link?: string
     data
   )
 
-// ==================== 多服运营（/api/admin/realms） ====================
-
+// ==================== 多服运营（/api/admin/realms） =============
 const R = '/realms'
 
 /** 服清单（含每服的运营数据）+ 当前服 + 跨服汇总 */
@@ -714,8 +697,7 @@ export const fetchRealmSubscriptions = (
 ) =>
   get<RealmSubscriptionsResponse>(`${R}/${realmId}/subscriptions`, params)
 
-// ==================== 服务器管理 ====================
-
+// ==================== 服务器管理 =============
 const S = '/servers'
 
 export const fetchServers = (params: { realm_id?: number } = {}) =>
@@ -811,8 +793,7 @@ export const refreshServerMounts = () =>
     `${S}/mounts/health`
   )
 
-// ==================== 日志与统计 ====================
-
+// ==================== 日志与统计 =============
 export const fetchLogs = (params: { limit?: number; action_filter?: string } = {}) =>
   get<AdminLogRow[]>('/logs', params)
 
@@ -926,8 +907,7 @@ export const fetchDiagnosisRules = () => get<DiagnosisRules>('/diagnosis/rules')
 export const fixDiagnosisRule = (rule_id: string) =>
   post<DiagnosisFixResult>('/diagnosis/fix', { rule_id, confirm: true })
 
-// ==================== API Key / Service Token（/api/admin/api-keys/*） ====================
-
+// ==================== API Key / Service Token（/api/admin/api-keys/*） =============
 export interface ApiKeyRow {
   id: number
   key_id: string
@@ -957,8 +937,7 @@ export const revokeApiKey = (keyId: string) => del<{ ok: boolean }>(`/api-keys/$
 
 export const fetchPlaybackStats = () => get<PlaybackStats>('/stats/playback')
 
-// ==================== 自建 Emby 管理（/api/admin/emby/*） ====================
-
+// ==================== 自建 Emby 管理（/api/admin/emby/*） =============
 const E = '/emby'
 
 export const fetchEmbyOverview = () => get<{ total_items: number; total_libraries: number; active_sessions: number; total_users: number }>(`${E}/overview`)
@@ -1144,8 +1123,7 @@ export const fetchFsWatchStatus = () => get<{
 /** 扫描队列快照：正在跑 / 排队中 / 最近完成 + 远程 IO 计数（面板每几秒轮询一次） */
 export const fetchScanQueue = () => get<EmbyScanQueue>(`${E}/scan-queue`)
 
-// ==================== 元数据与刮削（EmbyAdmin.vue「元数据与刮削」分组） ====================
-
+// ==================== 元数据与刮削（EmbyAdmin.vue「元数据与刮削」分组） =============
 /** 密钥池里的一把 key（只给掩码与运行状态，**没有原文**） */
 export interface TmdbKeyPoolRow {
   /** 展示序号（从 1 开始，与删除接口一致） */
@@ -1398,8 +1376,7 @@ export const testTmdbKeys = (keys?: string) =>
   post<{ results: TmdbTestResult[]; pool?: TmdbKeyPoolRow[] }>(
     `${E}/scrape/tmdb-test`, { keys: keys || '' })
 
-// ==================== 多源元数据（Phase 6b） ====================
-
+// ==================== 多源元数据（Phase 6b） =============
 /** 某个源密钥池里的一把 key（同样只给掩码与运行状态） */
 export interface MetaSourceKeyRow {
   index: number
@@ -1658,8 +1635,7 @@ export const lockItemMetadata = (id: number) =>
 export const unlockItemMetadata = (id: number) =>
   post<ItemLockResult>(`${E}/scrape/items/${id}/unlock`)
 
-// ==================== 低置信识别人工审查队列（批二 #15） ====================
-// 自动刮削在 TMDB 真搜过、有候选但无一过置信线时，条目连同当时的候选证据
+// ==================== 低置信识别人工审查队列（批二 #15） =============// 自动刮削在 TMDB 真搜过、有候选但无一过置信线时，条目连同当时的候选证据
 // 排进审查队列（后端 emby_identify_review_tasks，开关 IDENTIFY_REVIEW_QUEUE_ENABLED），
 // 管理员在「识别审查」页逐条处置：绑定 / 忽略 / 重跑。后端路由与状态流转
 // 是唯一实现（backend/api/admin_identify_review.py），这里只做调用封装。
@@ -1832,8 +1808,7 @@ export interface EnrichProgress {
 export const fetchEnrichProgress = () =>
   get<{ success: boolean } & EnrichProgress>(`${E}/scrape/enrich-progress`)
 
-// ==================== 任务总览（路线 2-A）====================
-
+// ==================== 任务总览（路线 2-A）=============
 export type TaskCardStatus = 'running' | 'ok' | 'warning' | 'error' | 'idle' | 'disabled'
 
 export interface TaskCardMetric {
@@ -1989,8 +1964,7 @@ export const deleteLibrary = (id: number) => del<{ success: boolean }>(`${E}/lib
 
 export const fetchSessions = () => get<{ sessions: EmbySessionRow[] }>(`${E}/sessions`)
 
-// ==================== 管理员与权限（v2.26.0，/api/admin/admins） ====================
-// 角色定义在后端（backend/admin_roles.py）：super = 全部；operator = 日常运营；
+// ==================== 管理员与权限（v2.26.0，/api/admin/admins） =============// 角色定义在后端（backend/admin_roles.py）：super = 全部；operator = 日常运营；
 // viewer = 只读。角色判定发生在服务端鉴权依赖里，这里的函数只是调用入口。
 
 export const fetchAdmins = () => get<AdminListResponse>('/admins')
@@ -2007,16 +1981,14 @@ export const updateAdmin = (userId: number, data: { role?: AdminRole; is_active?
 export const revokeAdmin = (userId: number) =>
   del<{ success: boolean }>(`/admins/${userId}`)
 
-// ==================== 播放与客户端策略（v2.26.0，/api/admin/playback） ====================
-// 转码开关 / 并发上限 / 码率上限：改完对 EM 与 EA 同时生效（同一个库）。
+// ==================== 播放与客户端策略（v2.26.0，/api/admin/playback） =============// 转码开关 / 并发上限 / 码率上限：改完对 EM 与 EA 同时生效（同一个库）。
 
 export const fetchPlaybackPolicy = () =>
   get<{ policy: PlaybackPolicy; keys: Record<string, string>; runtime: PlaybackRuntime }>(
     '/playback/policy',
   )
 
-// ==================== 播放线路可观测（Phase 3，/api/admin/playback/lines） ====================
-// 线路可观测卡片：能不能用 / 是不是在降级 / 有多少人多少流量 / 效果如何。
+// ==================== 播放线路可观测（Phase 3，/api/admin/playback/lines） =============// 线路可观测卡片：能不能用 / 是不是在降级 / 有多少人多少流量 / 效果如何。
 // **只读**：线路配置在 CDN 卡片里改（本地缓存卡片已随中继全删下线），这里不改。
 // 灰度发布（0% 流量影子评估）本期不做，所以也没有对应的开关。
 
@@ -2031,8 +2003,7 @@ export const updatePlaybackPolicy = (policy: Partial<PlaybackPolicy>) =>
   )
 
 
-// ==================== 存储挂载（/api/admin/emby/mounts） ====================
-// 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone / drive 是远程来源。
+// ==================== 存储挂载（/api/admin/emby/mounts） =============// 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone / drive 是远程来源。
 // 类型只由路径前缀决定（115:/ / rclone: / drive: / 绝对路径）。
 // 远程挂载的条目在库里存 mount:// 路径；无 drive_file_id 的走服务端专用中继
 // 转发（streaming.serve_mount_relay_async，凭据不下发），带 drive_file_id 的
@@ -2130,8 +2101,7 @@ export const browseLocalDirs = (path = '/') =>
   }>('/mounts/local-dirs', { path })
 
 
-// ==================== 备用链路限速（配置瘦身第 3 批） ====================
-
+// ==================== 备用链路限速（配置瘦身第 3 批） =============
 /** 备用链路（豆瓣 subject_suggest / Bangumi 兜底）请求最小间隔秒数，0=不限速 */
 export interface AltmetaRates {
   douban_rate: number
@@ -2146,8 +2116,7 @@ export const fetchAltmetaRates = () =>
 export const saveAltmetaRates = (data: AltmetaRates) =>
   put<{ success: boolean; douban_rate: number; bangumi_rate: number }>(`${E}/scrape/altmeta-rates`, data)
 
-// ==================== 播放策略（/api/admin/emby/playback） ====================
-
+// ==================== 播放策略（/api/admin/emby/playback） =============
 export interface PlaybackDirectSource {
   name: string
   type: string
@@ -2162,8 +2131,7 @@ export interface PlaybackDirectSource {
   enabled: boolean
 }
 
-// ==================== 每台 EA 一份 rclone.conf ====================
-
+// ==================== 每台 EA 一份 rclone.conf =============
 /** 读这台 EA 的 rclone.conf：**只返 remote 名，不返明文**（含 token） */
 export const fetchServerRcloneConf = (serverId: number) =>
   get<{
@@ -2180,8 +2148,7 @@ export const saveServerRcloneConf = (serverId: number, conf: string) =>
   post<{ success: boolean; path: string; remotes: string[]; total: number }>(
     `${S}/${serverId}/rclone-conf`, { conf })
 
-// ==================== 115 账号与直挂（/api/admin/emby/115/*） ====================
-
+// ==================== 115 账号与直挂（/api/admin/emby/115/*） =============
 export const fetchPan115Accounts = () =>
   get<{ accounts: Pan115Account[]; env_cookie_configured: boolean
         ua_presets: { value: string; label: string }[] }>(`${E}/115/accounts`)
@@ -2219,8 +2186,7 @@ export const browsePan115 = (params: { cid?: string; account_id?: number; cookie
   )
 
 
-// ==================== rclone.conf（用户自己粘贴，面板只负责跑 rclone） ====================
-// 后端只回 remote 名，不回 rclone.conf 原文——里面全是 token / secret。
+// ==================== rclone.conf（用户自己粘贴，面板只负责跑 rclone） =============// 后端只回 remote 名，不回 rclone.conf 原文——里面全是 token / secret。
 
 export const saveRcloneConf = (conf: string) =>
   post<{ success: boolean; path: string; remotes: string[]; total: number }>(
@@ -2244,8 +2210,7 @@ export const rotateGDriveSa = () =>
   post<{ success: boolean; sa_file?: string; mode?: string; needs_remount?: boolean; remount_hint?: string }>('/gdrive/sa-rotate')
 
 
-// ==================== 系统告警（后端 /api/admin/alerts/*） ====================
-
+// ==================== 系统告警（后端 /api/admin/alerts/*） =============
 /** 告警严重度 */
 export type AlertSeverity = 'info' | 'warning' | 'critical'
 /** 告警渠道 */
@@ -2339,8 +2304,7 @@ export const ackAlert = (alertId: number) =>
 export const sendTestAlert = (channel: AlertChannel) =>
   post<{ ok: boolean; channel: string }>('/alerts/test', { channel })
 
-// ==================== 专线 B 第二阶段 · 只读观测口（GET，仅展示） ====================
-// 全部走 get（@/utils/request，baseURL /api/admin），不新增任何写调用。
+// ==================== 专线 B 第二阶段 · 只读观测口（GET，仅展示） =============// 全部走 get（@/utils/request，baseURL /api/admin），不新增任何写调用。
 // 字段口径见 backend/api/admin_readonly.py 与 backend/emby_server/playback_bus_admin.py。
 
 /** 存储绑定列表：按用户 / 状态过滤，limit/offset 分页（id 倒序） */
@@ -2376,3 +2340,31 @@ export const fetchPlaybackBusSnapshot = () => get<PlaybackBusSnapshot>('/playbac
 /** 播放命令列表：最近命令审计行数组（倒序，limit 默认 50） */
 export const fetchPlaybackBusCommands = (limit = 50) =>
   get<PlaybackBusCommand[]>('/playback-bus/commands', { limit })
+// ==================== 媒体库图片与顺序（媒体库学习 L2 / L4） =============
+export interface ArtworkOverrideRow {
+  id: number
+  item_id: number
+  item_name: string
+  item_type: string
+  kind: string
+  image_url: string
+  created_at?: string | null
+}
+
+export const fetchArtworkOverrides = () =>
+  get<{ items: ArtworkOverrideRow[] }>('/media-library/artwork-overrides')
+export const setArtworkOverride = (data: { item_id: number; kind: string; image_url: string }) =>
+  post<{ ok: boolean }>('/media-library/artwork-overrides', data)
+export const deleteArtworkOverride = (itemId: number, kind: string) =>
+  del<{ ok: boolean }>(`/media-library/artwork-overrides/${itemId}/${kind}`)
+
+export interface LibraryOrderRow {
+  library_id: number
+  name: string
+  sort_order: number
+}
+
+export const fetchLibraryOrder = () =>
+  get<{ items: LibraryOrderRow[] }>('/emby/libraries/order')
+export const setLibraryOrder = (orders: { library_id: number; sort_order: number }[]) =>
+  put<{ ok: boolean }>('/emby/libraries/order', { orders })
