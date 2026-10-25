@@ -1,7 +1,8 @@
 """#13 PR-2：content_hash 采集透传（只写、不改任何判定）。
 
 覆盖：
-- Drive _LIST_FIELDS 含 md5Checksum/etag/headRevisionId/version；
+- Drive _LIST_FIELDS 含 md5Checksum/headRevisionId/version（不含 etag：
+  共享盘列举带 etag 会被谷歌回 400，见 2026-10-25 挂载 3 中断）；
   _entries_of 把 md5Checksum→content_hash（algo md5）、etag、
   headRevisionId/version→revision；无 md5 的文件与目录为空串；
   walk_media 的 MountFile 带全四槽。
@@ -46,9 +47,12 @@ def _no_listing_cache():
 # ---------------- Drive ----------------
 
 def test_drive_list_fields_include_hash_and_revision():
-    fields = mount_drive._LIST_FIELDS
-    for want in ("md5Checksum", "etag", "headRevisionId", "version"):
-        assert want in fields
+    # 精确值回归：共享盘列举带 etag 会 400（2026-10-25 挂载 3 中断），
+    # 此处锁死字段串，误加 etag 即红。
+    assert mount_drive._LIST_FIELDS == (
+        "nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed,"
+        "md5Checksum,headRevisionId,version)")
+    assert "etag" not in mount_drive._LIST_FIELDS
 
 
 def _drive_provider(monkeypatch, items):
