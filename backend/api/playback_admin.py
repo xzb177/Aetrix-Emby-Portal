@@ -103,3 +103,23 @@ def update_playback_policy(
 def _client_ip(request: Request) -> str:
     # 统一用防伪造的 IP 获取（可信代理校验），保留函数名做兼容
     return get_client_ip(request)
+
+
+@router.post("/stream-path-policies/import")
+def import_stream_path_policies(
+    request: Request,
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """显式导入旧配置里的源路径限流策略成表行（#1240 落库、本 PR 接线）。
+
+    幂等：只补（mount_id, prefix）缺失的行，不删、不改已有行；
+    导入本身不切换策略来源——表里有行后下一次 load_policies 自然用表行。
+    """
+    from backend.emby_server import stream_limits
+
+    result = stream_limits.import_config_policies(db)
+    _audit(db, current_admin, "stream_path_policies_import", "system", None,
+           result, ip=_client_ip(request))
+    db.commit()
+    return {"success": True, **result}
