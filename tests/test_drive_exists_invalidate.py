@@ -405,8 +405,29 @@ def _stub_stream(monkeypatch, fid, codes):
         def first(self):
             return mount
 
+    class _QEmpty:
+        def filter(self, *a, **k):
+            return self
+
+        def first(self):
+            return None
+
+        def all(self):
+            return []
+
+    # 路径授权门禁（#1280 接线）会在 video_stream 内查三层授权表；
+    # 本桩库除挂载查询外对授权表一律回空（无行 = 放行），否则通配桩
+    # 会把挂载对象当成角色映射回给门禁，触发 fail-closed 403。
+    _PATH_AUTH_MODELS = (
+        em.UserRoleTemplate, em.RoleTemplateSourcePathGrant,
+        em.UserSourcePathGrant, em.LibraryAccessGrant,
+    )
+
     class _DB:
         def query(self, model):
+            model_cls = getattr(model, "class_", model)
+            if model_cls in _PATH_AUTH_MODELS:
+                return _QEmpty()
             return _Q()
 
     monkeypatch.setattr(api, "_require_item", lambda db, item_id: item)
