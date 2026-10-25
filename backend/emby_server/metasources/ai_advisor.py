@@ -9,9 +9,9 @@
   不许定、强弱阈值，全部由 ai_policy.py 定，本模块绝不另起一套。
   本模块只调用 gate 的 ``evaluate_binding_evidence``（与
   ``classify_confidence`` 作展示分档），不在此复写任何阈值与判定。
-- 防御性导入：主线尚未合并 #1274 时 ``ai_policy`` 不存在，
-  此时参谋链路保持关闭、静默无动作（返回 None），绝不报错、
-  绝不阻塞识别 / 刮削主流程。#1274 合并后复核改走直接导入。
+- 防御性导入已退役：#1284 已合署，``ai_policy`` 已在主线，本模块
+  直接导入政策门（2026-10-25 接线批）。门缺失不再静默关闭——
+  导入失败即在导入时暴露，不把缺门伪装成“参谋关着”。
 - 提供方与模型一律走 env（``AI_ADVISOR_PROVIDER`` /
   ``AI_ADVISOR_MODEL``），本模块不写死任何具体模型、不内置任何
   HTTP 客户端：建议内容由调用方注入的 provider 可调用对象产出，
@@ -47,11 +47,8 @@ AI_ADVISOR_PROVIDER_ENV = "AI_ADVISOR_PROVIDER"
 #: 建议模型（env 配置）；空 = 未配置 = 参谋关闭；绝不写死具体模型。
 AI_ADVISOR_MODEL_ENV = "AI_ADVISOR_MODEL"
 
-#: 防御性导入的政策门：#1274 未合并时为 None，参谋链路随之关闭。
-try:  # pragma: no cover - 有无 gate 取决于主线是否已合 #1274
-    from backend.emby_server import ai_policy as _gate
-except Exception:  # 模块缺失时静默关闭，绝不让导入失败拖垮调用方
-    _gate = None
+#: 政策门：#1284 已合署，直接导入（防御性导入已退役）。
+from backend.emby_server import ai_policy as _gate
 
 
 def _cfg_provider() -> str:

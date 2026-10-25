@@ -40,9 +40,15 @@ def _get_str_config(db: Session, key: str, default: str) -> str:
 
 
 def is_enabled(db: Session) -> bool:
-    """群抽奖总开关：lottery_enabled 为 "1" 或 "true"（去空格、忽略大小写）时开启，默认 "1"。"""
-    val = _get_str_config(db, "lottery_enabled", "1").strip().lower()
-    return val in ("1", "true")
+    """群抽奖总开关：只读 SystemConfig.lottery_enabled，不看环境变量。
+
+    与 welfare_admin 创建轮次的读法一致：没有行视为 "1"。值为 "1" 或 "true"
+    （去空格、忽略大小写）时开启。
+    """
+    cfg = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == "lottery_enabled").first()
+    val = (cfg.value if cfg is not None and cfg.value is not None else "1")
+    return str(val).strip().lower() in ("1", "true")
 
 
 def allowed_group_ids(db: Session) -> set[int]:

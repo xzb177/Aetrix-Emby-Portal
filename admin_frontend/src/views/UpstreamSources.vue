@@ -7,7 +7,8 @@
  * 凭据只存密封值：本页只发凭据原文一次（新建/轮换时），列表与详情
  * 永远只回 has_secret，编辑时留空 = 凭据不动，清空 = 改匿名访问。
  */
-import { onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import {
@@ -20,6 +21,33 @@ import {
 } from '@/api/admin'
 import type { UpstreamSource, UpstreamSourceInput } from '@/api/admin'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
+
+/**
+ * 重新布局批 3：存储绑定 / 上游映射 / 115 账号池 / sidecar 四个只读观测页
+ * 降为本页标签（沿用 Codes.vue 的 ?tab= 同步 + KeepAlive 模式）。
+ * 源列表面板用 v-show：来回切标签不卸载表单与列表状态；观测面板按需加载、
+ * 进过一次后 KeepAlive 缓存，不重拉数据。
+ */
+const StorageBindings = defineAsyncComponent(() => import('./StorageBindings.vue'))
+const UpstreamMappings = defineAsyncComponent(() => import('./UpstreamMappings.vue'))
+const Yun139Pools = defineAsyncComponent(() => import('./Yun139Pools.vue'))
+const ProviderSidecar = defineAsyncComponent(() => import('./ProviderSidecar.vue'))
+
+type UpstreamTab = 'sources' | 'bindings' | 'mappings' | 'pools' | 'sidecar'
+
+const route = useRoute()
+const router = useRouter()
+
+const activeTab = computed<UpstreamTab>({
+  get: () => {
+    const t = route.query.tab
+    return t === 'bindings' || t === 'mappings' || t === 'pools' || t === 'sidecar' ? t : 'sources'
+  },
+  set: (tab) => {
+    if (tab === activeTab.value) return
+    router.replace({ query: { ...route.query, tab } })
+  },
+})
 
 const sources = ref<UpstreamSource[]>([])
 const loading = ref(false)
@@ -220,6 +248,76 @@ onMounted(loadSources)
       title="上游源"
       subtitle="别人的媒体服当作源接进来（FMBY #25 第一步：只做源管理）。新建的源默认关闭，目录聚合、探活、播放接入是后续步骤，本页不做。"
     />
+    <div class="tab-bar" role="tablist" aria-label="上游源">
+      <button
+        id="upstream-tab-sources"
+        type="button"
+        role="tab"
+        class="tab-btn"
+        :class="{ active: activeTab === 'sources' }"
+        :aria-selected="activeTab === 'sources'"
+        aria-controls="upstream-panel"
+        @click="activeTab = 'sources'"
+      >
+        源列表
+        <span class="tab-hint">新建 / 启用 / 凭据</span>
+      </button>
+      <button
+        id="upstream-tab-bindings"
+        type="button"
+        role="tab"
+        class="tab-btn"
+        :class="{ active: activeTab === 'bindings' }"
+        :aria-selected="activeTab === 'bindings'"
+        aria-controls="upstream-panel"
+        @click="activeTab = 'bindings'"
+      >
+        观测·绑定
+        <span class="tab-hint">存储绑定</span>
+      </button>
+      <button
+        id="upstream-tab-mappings"
+        type="button"
+        role="tab"
+        class="tab-btn"
+        :class="{ active: activeTab === 'mappings' }"
+        :aria-selected="activeTab === 'mappings'"
+        aria-controls="upstream-panel"
+        @click="activeTab = 'mappings'"
+      >
+        观测·映射
+        <span class="tab-hint">上游映射</span>
+      </button>
+      <button
+        id="upstream-tab-pools"
+        type="button"
+        role="tab"
+        class="tab-btn"
+        :class="{ active: activeTab === 'pools' }"
+        :aria-selected="activeTab === 'pools'"
+        aria-controls="upstream-panel"
+        @click="activeTab = 'pools'"
+      >
+        观测·账号池
+        <span class="tab-hint">115 账号池</span>
+      </button>
+      <button
+        id="upstream-tab-sidecar"
+        type="button"
+        role="tab"
+        class="tab-btn"
+        :class="{ active: activeTab === 'sidecar' }"
+        :aria-selected="activeTab === 'sidecar'"
+        aria-controls="upstream-panel"
+        @click="activeTab = 'sidecar'"
+      >
+        观测·sidecar
+        <span class="tab-hint">供应商 sidecar</span>
+      </button>
+    </div>
+
+    <!-- 源列表面板：v-show 常驻，切标签回来表单与列表状态都在 -->
+    <div v-show="activeTab === 'sources'">
     <SectionCard title="源列表">
       <template #actions>
         <el-button type="primary" @click="openCreate">新建上游源</el-button>
@@ -326,6 +424,22 @@ onMounted(loadSources)
         </el-form-item>
       </el-form>
     </SectionCard>
+    </div>
+
+    <!-- 观测面板：四个子页各自带 PageHeader，这里只放标签条，不再叠第二个页头 -->
+    <div
+      id="upstream-panel"
+      class="tab-panel"
+      role="tabpanel"
+      :aria-labelledby="`upstream-tab-${activeTab}`"
+    >
+      <KeepAlive>
+        <StorageBindings v-if="activeTab === 'bindings'" />
+        <UpstreamMappings v-else-if="activeTab === 'mappings'" />
+        <Yun139Pools v-else-if="activeTab === 'pools'" />
+        <ProviderSidecar v-else-if="activeTab === 'sidecar'" />
+      </KeepAlive>
+    </div>
   </div>
 </template>
 
@@ -334,5 +448,50 @@ onMounted(loadSources)
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+/* 标签条（与 Codes.vue / Welfare.vue 同款） */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--au-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 10px 18px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--au-text-2);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease);
+}
+.tab-btn:hover { color: var(--au-text); }
+.tab-btn:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: -2px; }
+.tab-btn.active {
+  color: var(--au-primary);
+  border-bottom-color: var(--au-primary);
+}
+.tab-hint {
+  font-size: 12px;
+  color: var(--au-text-3);
+  font-weight: 400;
+  white-space: nowrap;
+}
+.tab-btn.active .tab-hint { color: var(--au-primary); }
+.tab-panel { min-width: 0; }
+
+@media (max-width: 640px) {
+  .tab-btn { padding: 8px 12px; font-size: 14px; }
+  .tab-hint { font-size: 11px; }
 }
 </style>

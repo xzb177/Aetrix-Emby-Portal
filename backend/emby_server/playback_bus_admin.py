@@ -91,8 +91,8 @@ def send_command(body: CommandIn, request: Request,
     elif command.outcome == bus.OUTCOME_ALREADY_ENDED:
         note = "目标会话执行前已结束，命令无事可做。"
     elif command.outcome == bus.OUTCOME_RECORDED:
-        note = ("命令已记账并发布事件，但播放器暂无接收命令的通道，"
-                "本次未直接作用于播放器，不是已确认执行。")
+        note = ("命令已记账并发布事件，但本次管理端命令未向播放器投递，"
+                "未直接作用于播放器，不是已确认执行。")
     return _command_response(command, note)
 
 

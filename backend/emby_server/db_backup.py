@@ -404,7 +404,7 @@ def get_config(db: Session) -> dict:
             CONFIG_LAST_RUN: "",
         },
     )
-    enabled = vals[CONFIG_ENABLED].strip() == "1"
+    enabled = vals[CONFIG_ENABLED].strip().lower() in ("1", "true", "yes", "on")
     time_str = parse_time(vals[CONFIG_TIME]) or DEFAULT_TIME
     try:
         keep_days = int(vals[CONFIG_KEEP_DAYS].strip())

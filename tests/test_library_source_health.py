@@ -201,3 +201,18 @@ def test_scan_filter_off_keeps_source(db, monkeypatch):
     sources, failed = ms.read_library_sources(db, lib)
     assert len(sources) == 1
     assert not any("健康" in (f.get("reason") or "") for f in failed)
+
+
+# ---------- 阈值落定：代码默认值与 env.example 必须同为 3 ----------
+
+def test_hide_after_default_pinned_to_3(monkeypatch):
+    """挂载-8 起步值钉死：代码默认与 env.example 示例值必须同为 3，
+    任一处漂移本测试即红（不要只改一处蒙过去）。"""
+    import re
+    from pathlib import Path
+    monkeypatch.delenv("LIBRARY_SOURCE_HEALTH_HIDE_AFTER", raising=False)
+    assert lsh.hide_after() == 3
+    env_example = Path(__file__).resolve().parents[1] / "env.example"
+    text = env_example.read_text(encoding="utf-8")
+    assert re.search(r"^#?LIBRARY_SOURCE_HEALTH_HIDE_AFTER=3\s*$",
+                     text, re.MULTILINE) is not None
