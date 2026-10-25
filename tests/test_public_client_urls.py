@@ -285,7 +285,6 @@ def seed():
     user = models.WebUser(
         username=UNAME, password_hash="x", is_active=True, is_staff=True,
         emby_username=UNAME, emby_password=hash_password(PW),
-        enable_video_transcoding=True,
     )
     db.add(user)
     lib = em.Library(guid=_guid(), name="公开地址测试库", collection_type="movies", is_enabled=True)
