@@ -40,7 +40,8 @@ def db():
     try:
         for table in (em.HomeSection, em.MediaItemSortProjection,
                       em.MediaItemArtworkOverride, em.UserMediaData,
-                      em.MediaItem, em.Library, base_models.WebUser):
+                      em.MediaItem, em.Library, base_models.WebUser,
+                      base_models.SystemConfig):
             s.query(table).delete()
         s.commit()
         yield s
