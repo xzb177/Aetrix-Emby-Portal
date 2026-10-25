@@ -253,11 +253,12 @@ def run_checks(base: str, username: str, password: str, media_dir: str,
     status, text, _ = request("GET", f"{base}/api/admin/emby/mounts", token=token)
     mounts_payload = as_json(text) or {}
     types = [t.get("value") for t in mounts_payload.get("mount_types") or []]
-    # v2.42.12 起精简后四种（类型由路径前缀决定；drive 是后加的 API 直读类型，
-    # 不是恢复当年下线的 gdrive 原生类型）。这里断言**集合相等**而不是
-    # 「至少 N 种」：以前写的是 >= 10，往回加一种删不掉一种都照样绿。
-    check("挂载类型表可下发且为四种（local/115/rclone/drive）",
-          status == 200 and sorted(types) == ["115", "drive", "local", "rclone"],
+    # v2.42.12 起精简后四种、#1255 加 yun139 成五种（类型由路径前缀决定；
+    # drive 是后加的 API 直读类型，不是恢复当年下线的 gdrive 原生类型）。
+    # 这里断言**集合相等**而不是「至少 N 种」：以前写的是 >= 10，
+    # 往回加一种删不掉一种都照样绿。
+    check("挂载类型表可下发且为五种（local/115/rclone/drive/yun139）",
+          status == 200 and sorted(types) == ["115", "drive", "local", "rclone", "yun139"],
           f"HTTP {status} {len(types)} 种：{','.join(types)}")
     check("rclone 类型已注册且声明 remote 选择器",
           any(t.get("value") == "rclone" and t.get("remotes")

@@ -78,7 +78,8 @@ def unseal_mount_credential(sealed: str) -> str:
 # ---------------------------------------------------------------- 能力声明派生
 
 #: 按挂载类型派生的五能力位（与各 provider 的 ``capabilities()`` 声明
-#: 逐字一致，见 mounts.py / mount_drive.py / mount_rclone.py）。
+#: 逐字一致，见 mounts.py / mount_drive.py / mount_rclone.py /
+#: mount_yun139.py）。
 #: 未知类型一律全 False + 警告，不静默当全 True。
 CAPABILITY_BY_MOUNT_TYPE: dict[str, dict[str, bool]] = {
     "local": {
@@ -94,6 +95,12 @@ CAPABILITY_BY_MOUNT_TYPE: dict[str, dict[str, bool]] = {
         "can_generate_play_target": True, "can_refresh_credentials": True,
     },
     "rclone": {
+        "can_list": True, "can_random_read": True, "can_read_sidecar": True,
+        "can_generate_play_target": True, "can_refresh_credentials": False,
+    },
+    # 139：换链/按段读/旁挂均走 sidecar 能力表；凭据刷新未实测路径，
+    # 与 Yun139Mount.capabilities() 一致诚实声明 False（见 mount_yun139）。
+    "yun139": {
         "can_list": True, "can_random_read": True, "can_read_sidecar": True,
         "can_generate_play_target": True, "can_refresh_credentials": False,
     },

@@ -1215,6 +1215,69 @@ class Pan115Account(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+#: 139 账号池策略枚举（FMBY 池字段 strategy 的取值未实测到枚举；
+#: 本模块只定两个我方实现策略，见 mount_yun139.Yun139AccountPool）。
+#: 枚举与约束同源（FMBY reason_code 漂移教训），不许在别处手写字符串。
+YUN139_POOL_STRATEGIES = ("weighted", "round_robin")
+
+
+class Yun139AccountPool(Base):
+    """139 账号池（FMBY 挂载-4 照抄：yun139_account_pools）。
+
+    一行 = 一个 139 账号池：strategy（weighted 加权轮用 / round_robin
+    顺序轮换）、cooldown_seconds（成员失败后冷却秒数）、max_concurrent
+    （池内总并发上限，0 = 不限——口径见 mount_yun139 模块头假设 7）。
+    成员在 ``Yun139AccountPoolMember``；凭据本体不存本表，成员行以
+    ``credential_id`` 引用 ``mount_credentials``（不另起秘密存储，
+    挂载稿 §4.2 拼法）。cooldown_seconds / max_concurrent 的默认值
+    是我方起步值，非 FMBY 实测常量。
+    """
+
+    __tablename__ = "yun139_account_pools"
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("strategy", YUN139_POOL_STRATEGIES),
+                        name="ck_yun139_pool_strategy"),
+        Index("ix_yun139_account_pools_name", "name"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, default="")
+    strategy = Column(String(20), nullable=False, default="weighted")
+    cooldown_seconds = Column(Integer, nullable=False, default=60)
+    max_concurrent = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class Yun139AccountPoolMember(Base):
+    """139 账号池成员（FMBY 挂载-4 照抄：yun139_account_pool_members）。
+
+    weight（加权轮用的权重）、fail_count（累计失败数）、
+    cooldown_until（冷却截止，None = 未冷却）与 FMBY 字段同名；
+    credential_id 引用 ``mount_credentials`` 的一行（可空：成员可先
+    建池占位、后绑凭据；凭据行删了成员不级联删，删成员联动清理另议）。
+    并发计数（in-flight）是运行时状态，不落库。
+    """
+
+    __tablename__ = "yun139_account_pool_members"
+
+    __table_args__ = (
+        Index("ix_yun139_pool_members_pool", "pool_id"),
+        Index("ix_yun139_pool_members_credential", "credential_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pool_id = Column(Integer, ForeignKey("yun139_account_pools.id"),
+                     nullable=False)
+    credential_id = Column(Integer, ForeignKey("mount_credentials.id"),
+                           nullable=True)
+    label = Column(String(100), nullable=False, default="")
+    weight = Column(Integer, nullable=False, default=1)
+    fail_count = Column(Integer, nullable=False, default=0)
+    cooldown_until = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class EmbyApiToken(Base):
     """Emby 客户端 Access Token
 

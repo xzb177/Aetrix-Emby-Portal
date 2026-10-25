@@ -2,7 +2,7 @@
 
 「挂载」是把内容接进媒体库的方式，本测试逐层覆盖：
 
-- **类型注册表**：local / 115 / rclone / drive 四种类型的元数据、
+- **类型注册表**：local / 115 / rclone / drive / yun139 五种类型的元数据、
   必填字段、脱敏集合与提供者注册
 - **虚拟路径**：`mount://<id>/<rel>` 的构造与解析
 - **本机挂载**（local / strm）：目录可读、只枚举媒体、STRM 读文件内容取直链
@@ -305,8 +305,8 @@ def _mount(name: str, mount_type: str, *, path: str = "", config: dict | None = 
 
 print("=== 类型注册表与虚拟路径 ===")
 registered = {t["value"] for t in mnt.MOUNT_TYPES}
-check("四种挂载类型（v2.42.12 精简 + drive API 直读）",
-      registered == {"local", "115", "rclone", "drive"}, str(sorted(registered)))
+check("五种挂载类型（v2.42.12 精简 + drive API 直读 + yun139）",
+      registered == {"local", "115", "rclone", "drive", "yun139"}, str(sorted(registered)))
 check("删掉的类型一个都不许复活",
       not ({"strm", "webdav", "alist", "s3", "aliyun", "quark", "onedrive", "gdrive"}
            & (registered | set(mnt._PROVIDERS))), str(sorted(registered)))

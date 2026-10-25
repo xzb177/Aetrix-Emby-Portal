@@ -3,7 +3,7 @@
 一个**挂载**就是一种「把内容接进媒体库」的方式。挂载本身不拥有条目，媒体库通过
 ``Library.mount_ids`` 引用它，所以同一个挂载可以被多个库共用。
 
-**只支持四种来源**（v2.42.12 起，其余类型连同代码一并删除，不再维护；
+**只支持五种来源**（v2.42.12 起，其余类型连同代码一并删除，不再维护；
 ``drive`` 是之后按同一套提供者接口新加的 API 直调实现，不是恢复当年下线的
 Google Drive 原生类型）：
 
@@ -17,6 +17,8 @@ Google Drive 原生类型）：
                               指过去。
 ``drive``                     Google 云盘 API 直读。路径以 ``drive:`` 开头，后接
                               共享盘 ID（个人盘 ``drive:myDrive:<remote 名>``）；
+``yun139``                    移动云盘 139 sidecar。路径以 ``139:/`` 开头；默认关
+                              （YUN139_ENABLED=1 开启），实现在 ``mount_yun139.py``。
                               列目录走 drive_changes 的服务账号轮换 + 全局限流，
                               不经 rclone、不绑单个账号。实现在 ``mount_drive.py``。
 ============================  ====================================================
@@ -73,12 +75,14 @@ MOUNT_LOCAL = "local"
 MOUNT_PAN115 = "115"
 MOUNT_RCLONE = "rclone"
 MOUNT_DRIVE = "drive"
+MOUNT_YUN139 = "yun139"
 
 #: 路径前缀 → 挂载类型。表单只填一条路径，类型由前缀决定（``detect_mount_type``）。
 PATH_TYPE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("115:/", MOUNT_PAN115),
     ("rclone:", MOUNT_RCLONE),
     ("drive:", MOUNT_DRIVE),
+    ("139:/", MOUNT_YUN139),
     ("/media", MOUNT_LOCAL),
 )
 
@@ -2372,3 +2376,4 @@ subtitles.register_mount_resolver(mount_source_resolver)
 # backend.api.servers / change_watcher 的导入副作用，不自导入会导致 drive 在其进程里未注册。
 from backend.emby_server import mount_rclone  # noqa: E402,F401  (导入即注册)
 from backend.emby_server import mount_drive  # noqa: E402,F401  (导入即注册)
+from backend.emby_server import mount_yun139  # noqa: E402,F401  (导入即注册)
