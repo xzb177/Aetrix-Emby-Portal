@@ -131,8 +131,20 @@
           </div>
         </section>
 
+        <!-- 首页分区（媒体库学习 L6：注册表驱动；取不到/开关关时回落旧布局） -->
+        <template v-if="isWide && homeSections">
+          <template v-for="s in homeSections" :key="s.key">
+            <ContinueWatch
+              v-if="s.key === 'continue_watching'"
+              :items="s.items as PortalResumeItem[]"
+              @hidden="onResumeHidden"
+              @unhidden="reloadHomeSections"
+            />
+            <RecentUpdates v-else-if="s.key === 'recently_updated'" :items="s.items as RecentAddedItem[]" />
+          </template>
+        </template>
         <!-- 继续观看（桌面专属；数据源见组件注释） -->
-        <ContinueWatch v-if="isWide" />
+        <ContinueWatch v-else-if="isWide" />
 
         <!-- 实时动态流（桌面专属；C档第3批：后端 /api/panel/feed 已随 PR #1003 上线；
              无全量页面，故不设「查看全部」；realm_id 不传=跟随当前服） -->
@@ -199,6 +211,8 @@ import WorldHome from '@/components/panel/WorldHome.vue'
 import GreetingCard from '@/components/panel/GreetingCard.vue'
 import PulseLine from '@/components/panel/PulseLine.vue'
 import ContinueWatch from '@/components/panel/ContinueWatch.vue'
+import RecentUpdates from '@/components/panel/RecentUpdates.vue'
+import { embyApi, type HomeSection, type PortalResumeItem, type RecentAddedItem } from '@/api'
 import DiscoveryRightRail from '@/components/panel/DiscoveryRightRail.vue'
 import LibraryBand from '@/components/panel/LibraryBand.vue'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
@@ -408,11 +422,33 @@ function onResize() {
   })
 }
 
+/* ---------- 首页分区（媒体库学习 L6）：注册表驱动，取不到就回落旧布局 ---------- */
+const homeSections = ref<HomeSection[] | null>(null)
+async function loadHomeSections() {
+  if (!user.isLoggedIn) return
+  try {
+    const d = await embyApi.getHomeSections()
+    homeSections.value = Array.isArray(d?.sections) ? d.sections : null
+  } catch {
+    homeSections.value = null
+  }
+}
+function reloadHomeSections() {
+  void loadHomeSections()
+}
+/** 注册表模式下藏掉一张卡：只改本地分区数据，不重拉。 */
+function onResumeHidden(guid: string) {
+  const sec = homeSections.value?.find((s) => s.key === 'continue_watching')
+  if (!sec) return
+  sec.items = (sec.items as PortalResumeItem[]).filter((it) => (it.episode_id ?? it.id) !== guid)
+}
+
 onMounted(() => {
   // perf 2026-10-13：合并为 1 次请求（4 个 RTT → 1 个 RTT）
   void panel.loadHome()
   void panel.loadFeed()
   void loadServers()
+  void loadHomeSections()
   window.addEventListener('resize', onResize)
   wideMq = window.matchMedia('(min-width: 1280px)')
   syncWide()
