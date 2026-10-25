@@ -427,6 +427,17 @@ def main() -> int:
     # 7. 启动所有后台任务（与 main.py lifespan 的 worker 部分保持一致）
     started = []
     try:
+        # 115 sidecar 显式拉起（生产接线）：扫描/探测走 build_provider，
+        # 开闸时 115 挂载即 sidecar 形态，须在后台任务起跑前拉起验活；
+        # 拉起失败只记 ERROR，不阻断 worker（115 挂载首次使用时响亮报错）。
+        try:
+            from backend.emby_server import p115_sidecar_supervisor
+            if not p115_sidecar_supervisor.ensure_started():
+                logger.error("115 sidecar 拉起失败：115 挂载暂不可用，"
+                             "诊断见上一条 ERROR；回滚 = PAN115_SIDECAR_ENABLED=0 后重启")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"115 sidecar 拉起异常（可忽略，首次使用时再报错）: {e}")
+
         from backend.emby_server import maintenance
         try:
             maintenance.run_startup_maintenance()
@@ -748,6 +759,11 @@ def main() -> int:
 
     # 10. 优雅关闭：停后台任务
     logger.info("👋 Aetrix Worker 正在关闭...")
+    try:
+        from backend.emby_server import p115_sidecar_supervisor as _sup
+        _sup.stop()
+    except Exception as e:
+        logger.warning(f"停止 115 sidecar 失败：{e}")
     try:
         from backend.emby_server import scan_queue as _sq
         _sq.stop_redis_consumer(timeout=5.0)

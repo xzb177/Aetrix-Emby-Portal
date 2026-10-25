@@ -1703,6 +1703,18 @@ _PROVIDERS = {
 def build_provider(mount, db: Optional[Session] = None, library=None) -> MountProvider:
     """按挂载类型构造提供者（未知类型 → 明确报错，而不是静默当成空库）"""
     mount_type = (getattr(mount, "mount_type", "") or "").strip()
+    if mount_type == MOUNT_PAN115:
+        # 115 默认路径（生产接线）：开闸走 sidecar、关闸走进程内。
+        # 懒导入：mount_sidecar 依赖本模块，顶层导入会循环；不往 _PROVIDERS
+        # 加新类型——115_sidecar 不是挂载类型，sidecar 只是 115 的运行时形态。
+        # 失败语义（#1251 立定，不改）：sidecar 未拉起/握手不符时构造直接抛
+        # MountError，不静默回落进程内；回滚 = PAN115_SIDECAR_ENABLED=0 后重启。
+        from backend.emby_server.mount_sidecar import (
+            P115SidecarMount,
+            sidecar_enabled,
+        )
+        if sidecar_enabled():
+            return P115SidecarMount(mount, db, library)
     provider_cls = _PROVIDERS.get(mount_type)
     if provider_cls is None:
         # 已下线类型（WebDAV / AList / S3 / 夸克 / OneDrive / Google Drive 原生…）在库里

@@ -5,12 +5,14 @@
 
 关键口径（与 provider_runtime 的契约一一对应）：
 
-- 默认关：``PAN115_SIDECAR_ENABLED=1`` 才允许构造（测试注入 client 的缝除外，
-  生产路径永不注入）；关时构造即 ``MountError``，不静默回落进程内 provider——
-  回落是调用方的显式决定，不是本模块的暗度陈仓。
-- 不改分发：本模块**不**往 ``mounts.build_provider`` 的 ``_PROVIDERS`` 注册表里
-  加类型（那是挂载模型线的地盘，并行施工不抢写）；sidecar 形态须由调用方
-  显式构造 ``P115SidecarMount``。默认生产路径仍是进程内 ``Pan115Mount``。
+- 默认开：``PAN115_SIDECAR_ENABLED`` 不设即开（测试注入 client 的缝除外，
+  生产路径永不注入）；显式设 ``0`` 才关，关时构造即 ``MountError``，
+  不静默回落进程内 provider——回落是调用方的显式决定，不是本模块的暗度陈仓。
+- 分发（生产接线）：``mounts.build_provider`` 对 ``115`` 类型挂载在开闸时
+  返回 ``P115SidecarMount``、关闸时返回进程内 ``Pan115Mount``；本模块仍
+  **不**往 ``_PROVIDERS`` 注册表里加新类型（``115_sidecar`` 不是挂载类型，
+  sidecar 只是 ``115`` 的运行时形态）。直接显式构造 ``P115SidecarMount``
+  的调用方同样受总闸管。
 - 能力映射（manifest → ProviderCapabilities，139 复用同一张表）：
   ``list_page`` → ``can_list``；``open_range`` → ``can_random_read``；
   ``open_range``（字节取文本）→ ``can_read_sidecar``（sidecar 无独立文本口，
@@ -55,8 +57,9 @@ PROVIDER_P115 = "p115"
 
 
 def sidecar_enabled() -> bool:
-    """115 sidecar 总闸（默认关；开是部署者的显式决定）。"""
-    return os.getenv("PAN115_SIDECAR_ENABLED", "0") == "1"
+    """115 sidecar 总闸（默认开：未设即开；显式设 0 关回进程内，是回滚手段；
+    其它脏值按关处理，不静默开新路径）。"""
+    return os.getenv("PAN115_SIDECAR_ENABLED", "1") == "1"
 
 
 def manifest_to_capabilities(manifest: dict) -> ProviderCapabilities:
@@ -88,8 +91,8 @@ class SidecarMountProvider(MountProvider):
         if client is None and not sidecar_enabled():
             raise MountError(
                 "115 sidecar 未启用（PAN115_SIDECAR_ENABLED=0）："
-                "sidecar 形态默认关，须部署者显式开启并拉起 sidecar 进程；"
-                "当前仍走进程内 Pan115Mount。")
+                "当前走进程内 Pan115Mount；要走 sidecar 请去掉该 0 值并重启服务"
+                "（启动时会自动拉起 sidecar 进程，见 p115_sidecar_supervisor）。")
         self.client = client or ProviderRuntimeClient(self.provider, socket_path)
         # 握手即 fail-closed：协议/provider/8 项能力/扩展任一不符都拒绝接入。
         self.manifest = self.client.handshake(self.required_extensions)

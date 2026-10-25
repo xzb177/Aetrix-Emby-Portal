@@ -3,14 +3,16 @@
 部署形态（照抄 FMBY）：独立 Python 进程，UDS 通信，协议
 ``external-provider-runtime-v1``，manifest
 ``external-provider-runtime-manifest-v1``，8 项基础能力 + 115 扩展 4 项。
-启动方式（宿主不自动拉起，部署者按需起进程，默认关）：
+启动方式（生产接线）：服务启动时由 ``p115_sidecar_supervisor`` 显式拉起
+本进程（开闸时；关闸 ``PAN115_SIDECAR_ENABLED=0`` 时不拉起，分发回
+进程内 ``Pan115Mount``）。手动起进程仍可用（部署者按需、或单测）：
 
     python -m backend.emby_server.p115_sidecar --sock /run/aetrix/providers/p115/runtime.sock
 
 收益与代价沿用挂载稿 §3.6：115 逻辑崩了不拖垮主进程、115 可独立部署升级；
-代价是进程管理、UDS、排障复杂度——本 PR 只给进程与契约，不改宿主的
-``build_provider`` 分发（115 进程内 provider 仍是默认路径，sidecar 须显式构造，
-见 mount_sidecar；管理后台 UI 由管理后台专线另做，本 PR 不含管理页）。
+代价是进程管理、UDS、排障复杂度——本 PR 只给进程与契约；分发切换在
+``mounts.build_provider``（115 类型开闸走 sidecar），管理后台 UI 由管理后台
+专线另做，本 PR 不含管理页。
 
 实现复用原则：115 上游协议只实现一份——本 handler 复用
 ``transfer115.Pan115Client``（list_dir / download_url），不重写 115 API；

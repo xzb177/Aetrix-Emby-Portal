@@ -4,7 +4,7 @@
 覆盖：协议名/能力名逐项照抄、握手 fail-closed、8 项能力往返、分页、
 换链不回 Cookie、错误分级（cookie_expired / not_implemented / session_unknown）、
 扩展 4 项（full_sync/diff_refresh 真实、life_poll/share_full_sync 显式未实现）、
-宿主侧 provider 四口翻译与默认关总闸。
+宿主侧 provider 四口翻译与默认开总闸。
 """
 from __future__ import annotations
 
@@ -19,6 +19,10 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 
 from backend.emby_server import transfer115
+# 先导 mounts 再导 mount_sidecar：既有循环（mounts 尾部导 mount_yun139 →
+# mount_yun139 导 mount_sidecar），sidecar 先导在单跑本文件时必炸；
+# 全量跑时是别的先导文件掩过去的。本行只调顺序，不改生产代码。
+from backend.emby_server import mounts as _mounts_first  # noqa: F401
 from backend.emby_server.mount_sidecar import P115SidecarMount, sidecar_enabled
 from backend.emby_server.p115_sidecar import P115SidecarHandler
 from backend.emby_server.provider_runtime import (
@@ -318,7 +322,10 @@ def test_host_provider_end_to_end(runtime):
         prov.list_dir("/")
 
 
-def test_host_provider_gate_is_off_by_default(monkeypatch):
+def test_host_provider_gate_is_on_by_default(monkeypatch):
+    # 生产接线：未设即开；显式 0 才关回进程内（回滚手段）。
+    monkeypatch.delenv("PAN115_SIDECAR_ENABLED", raising=False)
+    assert sidecar_enabled() is True
     monkeypatch.setenv("PAN115_SIDECAR_ENABLED", "0")
     assert sidecar_enabled() is False
     with pytest.raises(Exception):
