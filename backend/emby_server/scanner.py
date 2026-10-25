@@ -6114,6 +6114,39 @@ def _scan_has_metadata(item, pending) -> bool:
     return bool((getattr(item, "overview", None) or "").strip())
 
 
+def _reset_stale_sample_hash(item) -> bool:
+    """文件大小变了：旧采样哈希已是过期证据，清回 pending 供 worker 重算。
+
+    只动采样哈希（algo 以 ``sample-`` 开头，与认亲层 _match_* 的采样定义
+    一致）：源给的 md5/sha1 绝不动（源哈希由 _apply_scan_identity 每轮按
+    源值刷新，不走这里）。identity_json 里同名采样键一并摘掉，其他证据
+    键原样保留；快照解析失败时快照不动。幂等：已是 NULL 再调也是空操作。
+    返回是否真的清掉了旧采样哈希。
+    """
+    if not (getattr(item, "content_hash_algo", "") or "").startswith("sample-"):
+        return False
+    if not getattr(item, "content_hash", None):
+        return False
+    item.content_hash = None
+    item.content_hash_algo = None
+    old_json = getattr(item, "identity_json", None)
+    if old_json:
+        try:
+            evidence = json.loads(old_json)
+        except (ValueError, TypeError):
+            evidence = None
+        if isinstance(evidence, dict) and (
+            "content_hash" in evidence or "content_hash_algo" in evidence
+        ):
+            evidence.pop("content_hash", None)
+            evidence.pop("content_hash_algo", None)
+            item.identity_json = (
+                json.dumps(evidence, sort_keys=True, ensure_ascii=False)
+                if evidence else None
+            )
+    return True
+
+
 def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
                          flip_tracker=None, has_metadata=True):
     """Decide and write enrich_status. Max nesting depth: 2.
@@ -6129,6 +6162,10 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
     """
     old_status = getattr(item, "enrich_status", None)
     old_size, new_size, size_changed = _compute_size_change(item, scan_file)
+    if size_changed:
+        # 采样哈希供给：文件大小变了，旧采样哈希已是过期证据（采样摘要
+        # 本身就含 size），清回 pending 供 worker 重算；源哈希不动。
+        _reset_stale_sample_hash(item)
 
     def _record(reason):
         if flip_tracker is not None:
