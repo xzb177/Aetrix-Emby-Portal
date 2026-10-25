@@ -214,17 +214,13 @@ def fill_candidates_from_fetched(fetched: dict) -> dict:
     return {k: v for k, v in candidates.items() if not _empty(v)}
 
 
-def fill_from_frodo(item) -> dict:
-    """Frodo 补资料缺口（只返回候选 dict，不写库、不抛异常）。
+def _frodo_candidates(item) -> dict:
+    """Frodo 补资料候选（无开关内层，不写库、不抛异常）。
 
-    路线：有 imdb_id 走 IMDb 桥精确换豆瓣条目（不拿片名撞运气）；
-    无 imdb_id 时走 Frodo 片名搜（模块内已有置信门槛，过不了当没搜到）。
-    熔断中 / 封禁中 / 任何异常 → 返回 {}，绝不挡其他源、不出旧数。
-    熔断记账在 douban_frodo 模块的请求层（allow / record 已在内），
-    本层不重复记账（重复记会把失败计数翻倍、提前熔断）。
+    本函数不管独立 Frodo 开关：开关由调用方（fill_from_frodo 或聚合
+    通道）各自把关——聚合通道是自己的开关，开聚合即开它里面的
+    Frodo 腿。熔断 / 封禁 / 异常三道闸都在本层：只返回空，不挡其他源。
     """
-    if not frodo_fill_enabled():
-        return {}
     try:
         from backend.emby_server.metasources import breaker as provider_breaker
         from backend.emby_server.metasources import douban_frodo as frodo
@@ -265,13 +261,30 @@ def fill_from_frodo(item) -> dict:
         return {}
 
 
+def fill_from_frodo(item) -> dict:
+    """Frodo 补资料缺口（只返回候选 dict，不写库、不抛异常）。
+
+    路线：有 imdb_id 走 IMDb 桥精确换豆瓣条目（不拿片名撞运气）；
+    无 imdb_id 时走 Frodo 片名搜（模块内已有置信门槛，过不了当没搜到）。
+    熔断中 / 封禁中 / 任何异常 → 返回 {}，绝不挡其他源、不出旧数。
+    熔断记账在 douban_frodo 模块的请求层（allow / record 已在内），
+    本层不重复记账（重复记会把失败计数翻倍、提前熔断）。
+    """
+    if not frodo_fill_enabled():
+        return {}
+    return _frodo_candidates(item)
+
+
 def apply_fill(db, item, fetched: dict) -> list:
     """补资料段：只在已绑定条目上、只填空缺字段。
 
     调用方须保证条目已绑定（tmdb_id 或 imdb_id 非空）；未绑定时本函数
     拒绝写任何字段、返回 []（防线，不依赖调用方自觉）。
     顺序：先用已采集证据填，仍缺的 overview / 评分 / 海报再问 Frodo；
-    Frodo 只补缺口，不覆盖已填。返回实际填上的字段名列表。
+    Frodo 只补缺口，不覆盖已填。Frodo 之后仍缺的字段再问中文聚合
+    通道（聚合开关关时它返回空，行为与本批之前逐字一致；聚合开时
+    它按源优先级逐字段补缺，Frodo 腿在聚合里不受独立 Frodo 开关
+    管辖——见 zh_aggregate 模块头注）。返回实际填上的字段名列表。
     """
     if _empty(getattr(item, "tmdb_id", None)) and _empty(
         getattr(item, "imdb_id", None)
@@ -293,6 +306,22 @@ def apply_fill(db, item, fetched: dict) -> list:
         for field in still_missing:
             if field in frodo_candidates:
                 setattr(item, field, frodo_candidates[field])
+                filled.append(field)
+    agg_missing = [
+        f for f in FILL_FIELDS
+        if f not in filled and _empty(getattr(item, f, None))
+    ]
+    if agg_missing:
+        try:
+            from backend.emby_server.metasources import zh_aggregate as _zh
+
+            agg_candidates, _agg_prov = _zh.aggregate(item, fetched, agg_missing)
+        except Exception as exc:  # noqa: BLE001 — 聚合失败不拖垮补资料段
+            logger.warning("中文聚合失败，跳过 id=%s: %s", item.id, exc)
+            agg_candidates = {}
+        for field in agg_missing:
+            if field in agg_candidates:
+                setattr(item, field, agg_candidates[field])
                 filled.append(field)
     binding = None
     if getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None):
