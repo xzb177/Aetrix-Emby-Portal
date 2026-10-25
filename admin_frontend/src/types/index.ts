@@ -47,6 +47,8 @@ export interface PlaybackPolicy {
   /** 客户端 UA 白名单（填了就只放列表内的客户端） */
   /** Drive 302 直链总开关（#957 的回滚闸；关掉后 Drive 文件播放返回 410） */
   drive_direct_play_enabled: boolean
+  /** Drive 服务器中继总开关（播放主线；缺省关；面板只读展示，改走服务端配置） */
+  drive_relay_enabled: boolean
 }
 
 /** 策略的运行态：只反映**本进程**（转码删除后不再有转码运行态） */

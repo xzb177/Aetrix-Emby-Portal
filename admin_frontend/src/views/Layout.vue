@@ -162,8 +162,7 @@ const navGroups: NavGroup[] = [
       { path: '/upstream-mappings', label: '上游映射列表', icon: Server },
       { path: '/yun139-pools', label: '139 账号池', icon: Cloud },
       { path: '/provider-sidecar', label: 'sidecar 状态', icon: Database },
-      { path: '/pan115', label: '115 账号', icon: Cloud },
-      { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
+      // 重新布局批 5：115/GDrive 账号降为服务器与线路页「存储账号」标签，导航不再单列（旧路由跳到对应子标签）
     ],
   },
   {
