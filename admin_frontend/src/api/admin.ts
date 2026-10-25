@@ -2368,3 +2368,17 @@ export const fetchLibraryOrder = () =>
   get<{ items: LibraryOrderRow[] }>('/emby/libraries/order')
 export const setLibraryOrder = (orders: { library_id: number; sort_order: number }[]) =>
   put<{ ok: boolean }>('/emby/libraries/order', { orders })
+
+/** 库封面策略（媒体库学习 L1）：顺序即尝试顺序，管理端保存进 system_configs */
+export interface CoverStrategyState {
+  stored_order: string[] | null
+  env_order: string[] | null
+  effective_order: string[]
+  borrow_enabled: boolean
+  known_steps: string[]
+}
+
+export const fetchCoverStrategy = () =>
+  get<CoverStrategyState>('/media-library/cover-strategy')
+export const setCoverStrategy = (order: string[]) =>
+  put<{ ok: boolean; order: string[]; effective_order: string[] }>('/media-library/cover-strategy', { order })
