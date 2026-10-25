@@ -324,6 +324,44 @@ def _upstream_probe_sources():
         db.close()
 
 
+def _applecms_probe_sources():
+    """苹果 CMS 轻探活的 sources_fn（生产接线，FMBY #25 下一批）。
+
+    每轮重新取已启用源，适配成探活模块的 AppleCMSSource。只接线，
+    不改守护本体、不改判定语义：
+    - 只含 applecms 型：Emby/Jellyfin 型走 25-3 守护（其 sources_fn
+      跳过 CMS 型），本块只补 CMS 型，两边不重复探。
+    - 键与 Emby 侧同口径 str(row.id)，结论写同一份 Redis 健康存储，
+      健康落库同步守护自动翻译进 PG（同步另有自己的开关）。
+    - 请求头走探活模块的 source_headers（源上配的 UA / Referer /
+      附加头），密封凭据绝不走这里；取源列表失败则本轮返回空列表，
+      不抛异常。
+    """
+    from backend.database import SessionLocal
+    from backend.emby_server import applecms_probe as _acp
+    from backend.emby_server import upstream_sources as _ups
+
+    db = SessionLocal()
+    try:
+        rows = _ups.enabled_sources(db)
+        out = []
+        for row in rows:
+            if row.source_type != "applecms":
+                continue
+            out.append(_acp.AppleCMSSource(
+                key=str(row.id),
+                base_url=row.base_url,
+                enabled=True,
+                headers=_acp.source_headers(row),
+            ))
+        return out
+    except Exception:
+        logger.warning("苹果 CMS 探活：取源列表失败，本轮跳过", exc_info=True)
+        return []
+    finally:
+        db.close()
+
+
 def main() -> int:
     """Worker 主入口"""
     logger.info("🚀 Aetrix Worker 正在启动...")
@@ -663,6 +701,24 @@ def main() -> int:
             logger.info("✅ 上游健康落库同步守护已启动（总开关关时空转不读写）")
         except Exception as e:
             logger.warning(f"启动上游探活/健康同步守护失败（可忽略）: {e}")
+
+        # 苹果 CMS 轻探活（FMBY #25 下一批唯一施工项）：仅
+        # APPLECMS_PROBE_ENABLED=1 时启动；关时线程空转、不发任何请求、
+        # 不读写任何状态，全站行为逐字不变。只探 applecms 型已启用源
+        # （Emby/Jellyfin 守护跳过 CMS 型，本块只补 CMS 型，不改其行为）；
+        # 结论写与 Emby 探活同一份 Redis 健康存储（键 str(source.id)），
+        # 健康落库同步守护自动翻译进 PG。本块只加自己的启动行，不动
+        # 上面两守护的接线行。
+        try:
+            from backend.emby_server import applecms_probe as _acp
+            from backend.emby_server import upstream_health as _uh2
+
+            _acp.start_applecms_probe_daemon(
+                _applecms_probe_sources, _uh2.RedisHealthStore())
+            started.append("applecms_probe")
+            logger.info("✅ 苹果 CMS 轻探活守护已启动（总开关关时空转不发请求）")
+        except Exception as e:
+            logger.warning(f"启动苹果 CMS 轻探活守护失败（可忽略）: {e}")
 
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
