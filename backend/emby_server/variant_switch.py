@@ -21,8 +21,9 @@
 
 ## 开关与回滚
 
-- ``PLAYBACK_VARIANT_SWITCH_ENABLED``（默认关）：关时选路与今天
-  逐字一致，是本阶段唯一回滚手段；开时才读可用性表。
+- ``PLAYBACK_VARIANT_SWITCH_ENABLED``（默认开；显式设 0 回滚）：
+  开时 Drive 默认路线读可用性表；显式设 0 时选路与今天逐字一致，
+  是本阶段的回滚手段（生产已设 1，默认翻开后行为不变）。
 - 回退上限写死为 1（与迁移方案「回退上限一次」一致，不走 env）。
 - 本模块不碰 PlaybackInfo 清单顺序：第一条恒为主线是阶段 1 的
   底线，清单重排会动老客户端行为；换线只发生在 video_stream
@@ -41,7 +42,7 @@ from backend.emby_server import variant_availability as va
 
 logger = logging.getLogger(__name__)
 
-#: 换线总开关 env 键（默认关）。
+#: 换线总开关 env 键（默认开；显式设 0 关闭）。
 SWITCH_ENV = "PLAYBACK_VARIANT_SWITCH_ENABLED"
 
 #: 回退上限：一次（迁移方案定死，不走 env，与现行中继重试一次同口径）。
@@ -54,9 +55,9 @@ SWITCHABLE_RELAY_STATUS = 502
 
 
 def switch_enabled() -> bool:
-    """换线总开关（env，默认关）。每次调用现读，供测试 monkeypatch。"""
-    return (str(os.getenv(SWITCH_ENV, "0") or "0")
-            .strip().lower() not in {"0", "false", "no", "off", ""})
+    """换线总开关（env，默认开；显式设 0 / false / no / off 关闭；空值视同未设）。每次调用现读，供测试 monkeypatch。"""
+    return (str(os.getenv(SWITCH_ENV) or "1")
+            .strip().lower() not in {"0", "false", "no", "off"})
 
 
 def is_switch_eligible_relay_status(status: int) -> bool:
