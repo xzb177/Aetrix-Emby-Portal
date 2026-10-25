@@ -123,3 +123,25 @@ def import_stream_path_policies(
            result, ip=_client_ip(request))
     db.commit()
     return {"success": True, **result}
+
+
+@router.post("/stream-path-policies/seed-templates")
+def seed_stream_path_templates(
+    request: Request,
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """显式建种子角色模板（User / RestrictedUser / Admin，闭环 #11）。
+
+    落点说明：``path_auth.ensure_seed_templates`` 的 docstring 明写不 wired
+    进 init_db，种子落点是管理端接线时的后续项——本端点就是该调用口。
+    幂等：按名查已存在再插，二次调用不产生重复行；与 import 端点同款
+    鉴权（get_current_admin）与审计 + db.commit 口径。
+    """
+    from backend.emby_server import path_auth
+
+    result = path_auth.ensure_seed_templates(db)
+    _audit(db, current_admin, "stream_path_policies_seed_templates",
+           "system", None, result, ip=_client_ip(request))
+    db.commit()
+    return {"success": True, "templates": result}
