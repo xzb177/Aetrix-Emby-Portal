@@ -38,7 +38,7 @@ def list_diagnosis_rules(
     return {
         "rules": diagnosis.RULES,
         "thresholds": {rid: diagnosis.get_threshold(rid)
-                       for rid, _ in diagnosis.THRESHOLD_DEFS},
+                       for rid in diagnosis.THRESHOLD_DEFS},
         "levels": list(diagnosis.LEVELS),
         "fixes": diagnosis_fix.list_fixes(),
         "fix_thresholds": {name: diagnosis_fix.get_fix_threshold(name)
