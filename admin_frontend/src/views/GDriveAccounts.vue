@@ -90,7 +90,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="Google Drive 账号"
       description="Google 子账号池（rclone 用它读写网盘）：当前用到第几个、缓存和磁盘还剩多少。某个账号被 Google 限流时，可以手动换下一个。"
     >

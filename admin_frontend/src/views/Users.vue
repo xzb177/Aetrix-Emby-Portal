@@ -674,7 +674,7 @@ function fmtCount(n: number | null | undefined): string {
 <template>
   <div class="admin-page users-page">
     <PageHeader
-      eyebrow="用户与账号"
+      eyebrow="用户"
       title="用户"
       description="点用户名或「详情」打开 360° 画像：会员、积分、订单、邀请、设备与授权资源都在抽屉里处理。"
     >

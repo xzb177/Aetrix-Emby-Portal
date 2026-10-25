@@ -272,7 +272,7 @@ function shortDate(s: string | null): string {
 <template>
   <div class="admin-page realms-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="服管理"
       description="一个面板可以同时运营多个服。一个服＝一套独立的播放服务：自己的媒体库、存储来源、套餐、订阅、会员卡码与求片；同一个服可以部署到多台机器，每台机器就是一台播放节点。"
     >

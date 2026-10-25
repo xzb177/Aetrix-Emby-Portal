@@ -318,7 +318,7 @@ function usedByNames(row: RegistrationCode): string {
 <template>
   <div class="admin-page codes-page">
     <PageHeader
-      eyebrow="运营中心"
+      eyebrow="经营"
       title="会员卡码管理"
       description="注册码 / 续期码 / 白名单码 / 诱饵码 / 指名码——生成与审计。会员卡码开的是它所属服的会员。"
     >
