@@ -494,7 +494,7 @@ onMounted(reloadAll)
 <template>
   <div class="admin-page invite-page">
     <PageHeader
-      eyebrow="运营中心"
+      eyebrow="经营"
       title="邀请与积分"
       description="邀请码的生成与台账、积分流水都在这；返利规则等参数统一在「系统设置 → 邀请返利」里改。"
     >
