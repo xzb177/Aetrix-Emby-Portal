@@ -715,8 +715,6 @@ def _auto_migrate():
             # v2.44.0 注册渠道归因（admin/code/invitation/open）：老用户补列后为 NULL，
             # 按「未记录」显示——不硬猜成 open（见 backend/register_channel.py）
             ("register_channel", "VARCHAR(20)", "NULL"),
-            # 用户级转码开关（Linger 借鉴）：默认允许，老用户补列后为 True
-            ("enable_video_transcoding", "BOOLEAN", "1"),
             # v2.57.0 公益服模块1：公益身份与资格。老库补列后 is_welfare=0（非公益）、
             # 其余为 NULL（无公益资格），行为与升级前完全一致。
             ("is_welfare", "BOOLEAN", "0"),
