@@ -55,6 +55,13 @@ import type {
   UserDetail,
   UserGrants,
   UsersResponse,
+  PlaybackBusCommand,
+  PlaybackBusSnapshot,
+  SampleHashProgress,
+  SidecarStatusResponse,
+  StorageBindingsResponse,
+  UpstreamMappingsResponse,
+  Yun139PoolsResponse,
 } from '@/types'
 
 // ==================== 认证 ====================
@@ -2331,3 +2338,41 @@ export const ackAlert = (alertId: number) =>
 /** 发送测试告警（只发给当前管理员） */
 export const sendTestAlert = (channel: AlertChannel) =>
   post<{ ok: boolean; channel: string }>('/alerts/test', { channel })
+
+// ==================== 专线 B 第二阶段 · 只读观测口（GET，仅展示） ====================
+// 全部走 get（@/utils/request，baseURL /api/admin），不新增任何写调用。
+// 字段口径见 backend/api/admin_readonly.py 与 backend/emby_server/playback_bus_admin.py。
+
+/** 存储绑定列表：按用户 / 状态过滤，limit/offset 分页（id 倒序） */
+export const fetchStorageBindings = (params: {
+  user_id?: number
+  status?: string
+  limit?: number
+  offset?: number
+} = {}) => get<StorageBindingsResponse>('/storage-bindings', params)
+
+/** 采样哈希进度：只计数，不触发轮次、不写库 */
+export const fetchSampleHashProgress = () => get<SampleHashProgress>('/sample-hash/progress')
+
+/** sidecar 状态：不传 provider 查 p115 + yun139 两个，传了只查该个 */
+export const fetchSidecarStatus = (provider?: string) =>
+  get<SidecarStatusResponse>('/providers/sidecar', provider ? { provider } : undefined)
+
+/** 上游映射列表：按本地条目 / 源过滤，limit/offset 分页（id 倒序） */
+export const fetchUpstreamMappings = (params: {
+  local_item_id?: number
+  source_id?: number
+  limit?: number
+  offset?: number
+} = {}) => get<UpstreamMappingsResponse>('/upstream-mappings', params)
+
+/** 139 账号池列表（含成员；成员只出 has_credential），limit/offset 分页 */
+export const fetchYun139Pools = (params: { limit?: number; offset?: number } = {}) =>
+  get<Yun139PoolsResponse>('/yun139/pools', params)
+
+/** 播放快照：无快照时后端回 404，调用方须按空状态处理、不当错误页 */
+export const fetchPlaybackBusSnapshot = () => get<PlaybackBusSnapshot>('/playback-bus/snapshot')
+
+/** 播放命令列表：最近命令审计行数组（倒序，limit 默认 50） */
+export const fetchPlaybackBusCommands = (limit = 50) =>
+  get<PlaybackBusCommand[]>('/playback-bus/commands', { limit })
