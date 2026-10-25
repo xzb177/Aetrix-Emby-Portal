@@ -128,6 +128,15 @@ REMOVAL_MAX_ABSOLUTE = env_int("SCAN_REMOVAL_MAX_ABSOLUTE", 20, 1, 1000000)
 MISSING_GRACE_SCANS = env_int("SCAN_MISSING_GRACE_SCANS", 3, 1, 1000)
 
 
+# ==================== #13 PR-3 认亲层开关 ====================
+# SCAN_IDENTITY_MATCH_ENABLED 默认关：关时 PR-3 新增的认亲层（content_hash 层、
+# 指纹层的 scan_title 列读数与 movie 版本签名、115 fid 泛化）一律不启用，
+# 行为与基线逐字一致；开时才启用。PR-1/PR-2 的写入（scan 列与哈希采集落库）
+# 不受本开关管、默认开。模块加载时读一次（与 IDENTITY_SHELF_GATE 同口径）；
+# 115 walk_media 侧读同一个键（见 mounts.py），改动需重启生效。
+IDENTITY_MATCH_ENABLED = env_int("SCAN_IDENTITY_MATCH_ENABLED", 0, 0, 1) == 1
+
+
 # ==================== 清单可信度守卫（FMBY 扫描域，清单第 12 项）====================
 # FMBY 形态：直系文件凭空消失先怀疑上游抖动、整轮中止不误删。
 # 与上面两道闸分工：预算管「来源整体不可用」（全库一条都不删），宽限管
@@ -3737,7 +3746,9 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
     说明是同一文件改了名/换了目录：把已有的那行直接挂到 pending 上，
     写库循环走 update 分支（更新 file_path + guid），不删记录、不丢元数据。
 
-    批量查一次，不逐文件点查。没有 file_id 的文件（本地/115）跳过。
+    批量查一次，不逐文件点查。没有 file_id 的文件（本地）跳过。
+    115 的 fid 在 SCAN_IDENTITY_MATCH_ENABLED 开时由 Pan115Mount.walk_media
+    透传为 file_id，同样走本层（#13 PR-3 泛化）；关时不透传，115 仍走指纹层。
 
     claimed_row_ids：调用方先跑的 ``_attach_known_items`` 已认领的行 id
     集合——这些行不得再被认领（r60：多集迁移下主/次 pending 双认领同一旧行）。
@@ -3832,18 +3843,184 @@ def _attach_known_items(prepared: list, known: dict) -> set:
     return claimed
 
 
+def _row_scan_title_year(row):
+    """行侧 scan 身份：优先读 scan_title/scan_year 列，缺失时回落旧口径重 parse。
+
+    scan 列是入库时的解析快照（只有扫描器写，刮削/管理端不碰）；回填没跑完
+    的行 scan 列为 NULL，此时退回现行「重 parse 旧路径」口径（episode 行的剧名
+    仍走 _series_name_of 的旧推导），行为与基线一致。返回 (title, year)，
+    title 为 None = 该行无可用 scan 身份。
+    """
+    from types import SimpleNamespace
+    title = getattr(row, "scan_title", None) or None
+    year = getattr(row, "scan_year", None)
+    if title is not None and row.item_type != "movie":
+        return title, None  # episode：scan_title 存剧名，年份不用
+    if title is not None and year is not None:
+        return title, year  # movie：两列齐全，零重 parse
+    if not getattr(row, "file_path", None):
+        return title, year
+    if row.item_type == "movie":
+        lib_type = "movies"
+        try:
+            parsed = parse_media_filename(row.file_path, lib_type)
+        except Exception:  # noqa: BLE001 — 解析失败的行不参与 scan 身份匹配
+            return title, year
+        return title or parsed.get("name"), (
+            year if year is not None else parsed.get("year"))
+    # episode：scan_title 存剧名；缺失时用旧口径从旧路径推导剧名。
+    if title is not None:
+        return title, None
+    lib_type = "tvshows"
+    try:
+        parsed = parse_media_filename(row.file_path, lib_type)
+    except Exception:  # noqa: BLE001
+        return None, None
+    if mount_lib.is_mount_path(row.file_path):
+        _mid, rel = mount_lib.parse_mount_path(row.file_path)
+        sf = SimpleNamespace(local_dir=None,
+                             dir_rel=posixpath.dirname(rel) or "/")
+    else:
+        sf = SimpleNamespace(local_dir=os.path.dirname(row.file_path),
+                             dir_rel=None)
+    try:
+        series_name = _series_name_of(sf, parsed)
+    except Exception:  # noqa: BLE001
+        return None, None
+    return series_name, None
+
+
+def _sample_title_matches(pending, row) -> bool:
+    """采样哈希的标题叠加约束（#13 §2.1：采样是弱证据，必撞同压制复制）。
+
+    采样哈希（algo 以 ``sample-`` 开头）认领时，除 1:1 唯一性外还要求
+    归一化标题一致；任一侧标题为空 = 证据不足，fail-closed 不认领。
+    全量哈希（md5/sha1）不走本函数。
+    """
+    from backend.emby_server import dedup as dedup_lib
+    if pending.item_type == "movie":
+        pending_title = (pending.parsed or {}).get("name")
+    else:
+        pending_title = getattr(pending, "series_name", None)
+    row_title, _ = _row_scan_title_year(row)
+    if not pending_title or not row_title:
+        return False
+    return dedup_lib.normalize_name(pending_title) == dedup_lib.normalize_name(row_title)
+
+
+def _match_renames_by_content_hash(db: Session, prepared: list, known: dict,
+                                   ctx: "_ScanContext",
+                                   claimed_row_ids: Optional[set] = None,
+                                   enabled: Optional[bool] = None) -> None:
+    """#13 PR-3：用 (content_hash, content_hash_algo, size) 识别改名/移动。
+
+    插在 file_id 层与指纹层之间，救「file_id 换了但内容没变」：
+    跨盘复制、115 转存换 fid、Drive 重新上传同文件——file_id 层认不上，
+    内容哈希仍能把旧行（元数据/进度/收藏）接回来。
+
+    认领条件（缺一不可，写死不留模糊）：
+    - 开关 SCAN_IDENTITY_MATCH_ENABLED 开（默认关；关时本函数直接返回，
+      行为与基线逐字一致）；
+    - pending 有源给的 content_hash 且 size > 0，行侧 (hash, algo) 成对命中
+      且 size 相等——algo 必须成对比较（md5 值与 sha1 值同串是两回事）；
+    - 候选唯一：同一 (hash, algo, size) 恰好 1 行才认领（同压制文件多份
+      复制时 hash 必然撞，撞了就放弃走宽限，宁可错分不可错认）；
+    - episode 按集号精确配对（多集文件同 hash 对应多行时各认各的）；
+    - 采样哈希（algo 以 ``sample-`` 开头）是弱证据，须再叠加归一化标题
+      一致（见 _sample_title_matches）；
+    - 与 file_id/指纹层同款 P0 保护：目标 guid 被占用则放弃，claimed 行
+      不得再认领（r60）。
+    """
+    if enabled is None:
+        enabled = IDENTITY_MATCH_ENABLED
+    if not enabled:
+        return
+    MI = emby_models.MediaItem
+    need: list = []
+    hashes: list[str] = []
+    for p in prepared:
+        if p.item is not None or getattr(p, "renamed", False):
+            continue
+        if p.item_type not in ("movie", "episode"):
+            continue
+        _h = getattr(p.scan_file, "content_hash", "") or ""
+        if not _h:
+            continue
+        if (getattr(p.scan_file, "size", 0) or 0) <= 0:
+            continue
+        need.append(p)
+        hashes.append(_h)
+    if not need:
+        return
+    found: dict[str, list] = {}
+    with _soft_delete.include_deleted():
+        for chunk in _chunks(sorted(set(hashes)), SQL_IN_CHUNK):
+            for row in db.query(MI).filter(
+                    MI.library_id == ctx.lib_id,
+                    MI.content_hash.in_(chunk)).all():
+                if row.content_hash:
+                    found.setdefault(row.content_hash, []).append(row)
+    claimed_rows: set = set(claimed_row_ids) if claimed_row_ids else set()
+    matched = 0
+    for p in need:
+        _h = getattr(p.scan_file, "content_hash", "") or ""
+        _algo = getattr(p.scan_file, "content_hash_algo", "") or ""
+        _size = getattr(p.scan_file, "size", 0) or 0
+        rows = [r for r in found.get(_h, [])
+                if (getattr(r, "content_hash_algo", "") or "") == _algo
+                and (r.size or 0) == _size
+                and r.id not in claimed_rows]
+        if p.item_type == "episode":
+            _ep = (p.parsed or {}).get("episode")
+            rows = [r for r in rows
+                    if getattr(r, "episode_number", None) == _ep]
+        if len(rows) != 1:
+            continue
+        row = rows[0]
+        if _algo.startswith("sample-") and not _sample_title_matches(p, row):
+            continue
+        _holder = _guid_held_by_other(db, getattr(p, "guid", None), row.id)
+        if _holder is not None:
+            logger.warning(
+                "扫描改名识别放弃（content_hash）：%s 的目标 guid 已被条目 %s 占用，"
+                "按新文件处理",
+                p.scan_file.stored_path, _holder)
+            ctx.stats["rename_collision_skipped"] = (
+                ctx.stats.get("rename_collision_skipped", 0) + 1)
+            continue
+        claimed_rows.add(row.id)
+        p.item = row
+        p.renamed = True
+        matched += 1
+        logger.info("扫描识别改名/移动（content_hash）: %s -> %s（保留元数据）",
+                    row.file_path, p.scan_file.stored_path)
+    if matched:
+        ctx.stats["renamed"] = ctx.stats.get("renamed", 0) + matched
+        ctx.stats["renamed_by_content_hash"] = (
+            ctx.stats.get("renamed_by_content_hash", 0) + matched)
+
+
 def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
                                   ctx: "_ScanContext",
-                                  claimed_row_ids: Optional[set] = None) -> None:
+                                  claimed_row_ids: Optional[set] = None,
+                                  enabled: Optional[bool] = None) -> None:
     """用 (文件大小, 解析身份) 指纹识别改名/移动（无 file_id 的来源）。
 
-    ``_match_renames_by_file_id`` 只覆盖有稳定 file_id 的来源（Drive/rclone）；
-    本地目录和 115 没有 file_id，改名/移动会走"删旧建新"，播放进度、收藏、
-    刮削元数据全丢在这里。
+    ``_match_renames_by_file_id`` 只覆盖有稳定 file_id 的来源（Drive/rclone，
+    以及开关开时透传 fid 的 115）；本地目录仍无 file_id，改名/移动会走
+    "删旧建新"，播放进度、收藏、刮削元数据全丢在这里——本层就是兜底。
 
     指纹 = (size, 解析身份)：size 必须 > 0 且相等（大小变了说明内容变了，
     不算改名）；解析身份 movie 用归一化标题 + 年份，episode 用归一化剧名 +
     季 + 集，候选行用 ``parse_media_filename`` 同口径解析，保证两边一致。
+
+    #13 PR-3（仅开关 SCAN_IDENTITY_MATCH_ENABLED 开时生效，默认关）：
+    - 候选行侧优先读存量 ``scan_title``/``scan_year`` 列（入库快照），
+      不再每轮重 parse 旧路径；列为 NULL 的行回落旧口径（回填期降级）；
+    - 归一化收敛到 ``dedup.normalize_name`` 一处（旧局部 _norm 只去空白
+      与 ``._-``，与 dedup 口径不一致）；
+    - movie 补与 episode 同款版本签名分量（同片多版本不再互认）。
+    开关关时以上三项一律不启用，行为与基线逐字一致（对照组测试钉死）。
 
     保守策略（宁可删旧建新，不张冠李戴）：
     - 同一指纹下必须**恰好 1 个待匹配文件对恰好 1 个候选行**才认领；
@@ -3851,17 +4028,25 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
     - 有 file_id 的文件跳过——file_id 是权威身份，没匹配上就是真新文件。
     - claimed_row_ids：``_attach_known_items`` 已认领的行不得再认领（r60）。
     """
+    if enabled is None:
+        enabled = IDENTITY_MATCH_ENABLED
     from types import SimpleNamespace
     # 版本签名模块：函数顶部导入一次，_ver_sig 在热路径（逐文件×逐候选行）
     # 被调用，import 语句虽走 sys.modules 缓存仍是无谓开销。
     # （episode_versions 顶层只依赖 logging/os/typing，与 scanner 无循环导入）
     from backend.emby_server import episode_versions as _ev
+    if enabled:
+        # 归一化收敛：与 dedup_key_for / 同剧去重同一口径（NFKC+小写+去空白标点）。
+        from backend.emby_server import dedup as _dedup
 
-    def _norm(name: str) -> str:
-        return "".join(
-            ch for ch in (name or "").lower()
-            if not ch.isspace() and ch not in "._-"
-        )
+        def _norm(name: str) -> str:
+            return _dedup.normalize_name(name)
+    else:
+        def _norm(name: str) -> str:
+            return "".join(
+                ch for ch in (name or "").lower()
+                if not ch.isspace() and ch not in "._-"
+            )
 
     def _ver_sig(path: str) -> tuple:
         # 版本签名（P1）：同集多版本（2160p / 1080p / H265…）不再互认为改名。
@@ -3879,7 +4064,12 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         if p.item_type == "movie":
             if not parsed.get("name"):
                 return None
-            return ("movie", size, _norm(parsed["name"]), parsed.get("year"))
+            fp = ("movie", size, _norm(parsed["name"]), parsed.get("year"))
+            if enabled:
+                # #13 PR-3：movie 补版本签名（与 episode 同款），同片多版本
+                # （2160p/1080p 各一份）不再互认为改名；缺签名时退化相等。
+                fp = fp + (_ver_sig(p.scan_file.stored_path),)
+            return fp
         if p.item_type == "episode":
             if (not p.series_name or parsed.get("season") is None
                     or parsed.get("episode") is None):
@@ -3898,21 +4088,35 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         except Exception:  # noqa: BLE001 — 解析失败的行不参与指纹匹配
             return None
         if row.item_type == "movie":
+            if enabled:
+                # #13 PR-3：优先读 scan 列（入库快照），NULL 才用重 parse 值。
+                _t, _y = _row_scan_title_year(row)
+                if not _t:
+                    return None
+                return ("movie", row.size, _norm(_t), _y,
+                        _ver_sig(row.file_path or ""))
             if not parsed.get("name"):
                 return None
             return ("movie", row.size, _norm(parsed["name"]), parsed.get("year"))
-        # episode：用 _series_name_of 从旧路径推导剧名（与 pending 侧同口径）
-        if mount_lib.is_mount_path(row.file_path):
+        # episode：开关开且 scan_title 有值时直接读列，否则用 _series_name_of
+        # 从旧路径推导剧名（与 pending 侧同口径）。
+        if enabled and getattr(row, "scan_title", None):
+            series_name = row.scan_title
+        elif mount_lib.is_mount_path(row.file_path):
             _mid, rel = mount_lib.parse_mount_path(row.file_path)
             sf = SimpleNamespace(local_dir=None,
                                  dir_rel=posixpath.dirname(rel) or "/")
+            try:
+                series_name = _series_name_of(sf, parsed)
+            except Exception:  # noqa: BLE001
+                return None
         else:
             sf = SimpleNamespace(local_dir=os.path.dirname(row.file_path),
                                  dir_rel=None)
-        try:
-            series_name = _series_name_of(sf, parsed)
-        except Exception:  # noqa: BLE001
-            return None
+            try:
+                series_name = _series_name_of(sf, parsed)
+            except Exception:  # noqa: BLE001
+                return None
         # episode 的季/集身份用行自身的字段（入库时写死），而不是从旧路径
         # 重新解析——多集文件的第二行（episode_number=episode_end）解析旧路径
         # 只会得到区间起点，永远匹配不上自己的 pending。单集行两者一致，
@@ -4117,6 +4321,20 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
 
     # v2.52.0: guid 没命中的，用 drive_file_id 识别改名/移动（复用已有行）
     _match_renames_by_file_id(db, prepared, known, ctx, claimed_row_ids)
+    # #13 PR-3：上一层已认领的行不得再被后层认领——每层只把自己的认领结果
+    # 累进 claimed 集合（r60 的教训只防了 _attach 层，层与层之间同样会
+    # 双认领同一旧行：file_id 层认走的行，hash/指纹层不得再抢）。
+    claimed_row_ids = set(claimed_row_ids) | {
+        p.item.id for p in prepared
+        if p.item is not None and getattr(p.item, "id", None) is not None
+    }
+
+    # #13 PR-3：file_id 没命中的，用 content_hash 识别（跨盘复制/重传同文件）
+    _match_renames_by_content_hash(db, prepared, known, ctx, claimed_row_ids)
+    claimed_row_ids = set(claimed_row_ids) | {
+        p.item.id for p in prepared
+        if p.item is not None and getattr(p.item, "id", None) is not None
+    }
 
     # v2.53.x: 没有 file_id 的来源（本地目录/115），用 (大小, 解析身份) 指纹
     # 识别改名/移动，保住播放进度与元数据
@@ -6077,7 +6295,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                 if _fid:
                     item.drive_file_id = _fid
                     # 身份锚（清单第 8 项）：Drive/rclone 的 file_id 双写 provider_file_id；
-                    # 115/本机没有稳定 file_id，provider_file_id 留空，绝不猜。
+                    # 115 的 fid 在 #13 PR-3 开关开时由 walk_media 透传、同样双写，
+                    # 关时不透传（留空）；本机没有稳定 file_id，留空，绝不猜。
                     item.provider_file_id = _fid
                 # 身份锚 source_id：只在本次扫描带新表行 id 时写（来源换了行 id 就跟到新行）；
                 # 旧列回落扫描没有行 id，不清除已有锚（锚可能仍有效，回落路径会验证）。

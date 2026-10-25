@@ -233,7 +233,8 @@ class MediaItem(Base):
     # 身份锚（清单第 8 项，挂载模型第 3 步）：条目自身身份，不再只靠 mount:// 字符串。
     # source_id 指向 library_sources 行（无外键：源行被管理端删了重插后锚悬空，
     # 播放回落现行 mount:// 解析，见 item_anchor）；provider_file_id 是供应商侧文件 id
-    # （Drive 即 drive_file_id、rclone 即远端 id（若有），115/本机为空）。
+    # （Drive 即 drive_file_id、rclone 即远端 id（若有）；115 的 fid 在 #13 PR-3
+    # 开关开时双写、关时为空；本机为空）。
     # 两列均可空：老库补列后为空；新入库只写扫描时能确定的，不确定的留空绝不猜；
     # 存量回填是后续批次的事，本 PR 不写回填。
     source_id = Column(Integer, nullable=True)

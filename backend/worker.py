@@ -384,6 +384,14 @@ def main() -> int:
             logger.warning(f"启动多版本合并 worker 失败（可忽略）: {e}")
 
         try:
+            from backend.emby_server import sample_hash_worker
+            if sample_hash_worker.start():
+                started.append("sample_hash_worker")
+                logger.info("✅ 采样哈希 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动采样哈希 worker 失败（可忽略）: {e}")
+
+        try:
             from backend.emby_server import thumbnail_worker
             if thumbnail_worker.start():
                 started.append("thumbnail_worker")
