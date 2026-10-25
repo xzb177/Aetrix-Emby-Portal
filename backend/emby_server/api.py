@@ -28,7 +28,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.orm import Session, aliased, joinedload
 
@@ -5157,6 +5157,37 @@ async def video_stream_ext(
     SenPlayer 按 Emby 约定用 PlaybackInfo 的 Container 拼 stream.strm 取流）
     """
     return await video_stream(item_id, request, user, db)
+
+
+@emby_router.get("/emby/Videos/upstream/{source_id}/{upstream_item_id}/stream")
+@emby_router.get("/Videos/upstream/{source_id}/{upstream_item_id}/stream")
+@release_db_before_response
+async def upstream_stream(
+    source_id: int, upstream_item_id: str, request: Request,
+    user: models.WebUser = Depends(get_play_user),
+    db: Session = Depends(get_db),
+):
+    """上游播放兜底口（播放阶段 7，#25-4）。
+
+    本地优先、上游只兜底：本口不由 video_stream 自动调用——客户端
+    在本地变体全部不可用时才调本口（自动兜底需要本地条目到上游
+    条目的持久映射，尚未落地，见 upstream_playback 模块 docstring）。
+    开关关时返回 404，行为上等于该口不存在；上游额度耗尽等失败
+    一律回结构化错误体（code + message + source_id），不静默失败、
+    不笼统 500。鉴权与付费墙与 video_stream 同口径（get_play_user
+    + ensure_playback_allowed）；上游地址先探后 302，探到可播才下发。
+    """
+    from backend.emby_server import upstream_playback as _up
+    from backend.emby_server.async_db import run_db
+    await run_db(ensure_playback_allowed, db, user)
+    _msid = (getattr(request, "query_params", None) or {}).get("mediaSourceId")
+    try:
+        _url = await run_in_threadpool(
+            _up.resolve_upstream_stream, db, source_id, upstream_item_id,
+            media_source_id=_msid)
+    except _up.UpstreamPlaybackError as exc:
+        return JSONResponse(status_code=exc.status, content=exc.to_body())
+    return RedirectResponse(_url, status_code=302)
 
 
 @emby_router.get("/emby/videos/{item_id}/{transcode_path:path}")
