@@ -1549,8 +1549,9 @@ def authenticate_by_name(
             "IsActive": True,
             "HasCustomDeviceName": False,
             "LastActivityDate": _iso(datetime.now()),
-            # r50 诚实化：本服务没有实现任何远程控制接收端点（无 SendCommand /
-            # websocket），此前恒 True 属虚假宣称；客户端据此展示遥控 UI 也无处可发。
+            # r50 诚实化：SendCommand 接收口与 websocket 投递已实现，但未经
+            # 真实播放器实测验证前，SupportsRemoteControl 保持 False；此前
+            # 恒 True 属虚假宣称，客户端据此展示遥控 UI 也无处可发。
             "SupportsRemoteControl": False,
             "SupportsMediaControl": False,
             "PlayState": {
