@@ -1450,3 +1450,152 @@ export interface EmbySessionRow {
   started_at: string | null
 }
 
+
+/** 专线 B 第二阶段 · 只读观测口（字段与 backend/api/admin_readonly.py、playback_bus_admin.py 一一对应，不自造） */
+
+/** 存储绑定行（GET /api/admin/storage-bindings；凭据只出 has_credential） */
+export interface StorageBindingRow {
+  id: number
+  user_id: number
+  provider: string
+  account_label: string | null
+  status: string
+  last_verified_at: string | null
+  last_error_kind: string | null
+  error_message: string | null
+  has_credential: boolean
+  created_at: string | null
+}
+
+export interface StorageBindingsResponse {
+  items: StorageBindingRow[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** 采样哈希工人快照（worker_registry；无条目时 worker 为 null） */
+export interface SampleHashWorker {
+  alive: boolean
+  status: string
+  uptime_sec: number
+  idle_sec: number
+  restarts: number
+}
+
+/** 采样哈希进度（GET /api/admin/sample-hash/progress；只计数，不触发轮次） */
+export interface SampleHashProgress {
+  enabled: boolean
+  max_files_per_round: number
+  interval_sec: number
+  pending: number
+  sampled: number
+  worker: SampleHashWorker | null
+}
+
+/** sidecar 单端状态（GET /api/admin/providers/sidecar；manifest / health 为对端原样对象） */
+export interface SidecarError {
+  code: string
+  kind: string
+  message: string
+}
+
+export interface SidecarProviderStatus {
+  provider: string
+  socket_path: string
+  available: boolean
+  manifest: Record<string, unknown> | null
+  health: Record<string, unknown> | null
+  error: SidecarError | null
+}
+
+export interface SidecarStatusResponse {
+  providers: SidecarProviderStatus[]
+}
+
+/** 上游映射行（GET /api/admin/upstream-mappings） */
+export interface UpstreamMappingRow {
+  id: number
+  local_item_id: number
+  source_id: number
+  upstream_item_id: string
+  confidence: number | null
+  evidence: unknown
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface UpstreamMappingsResponse {
+  items: UpstreamMappingRow[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** 139 账号池成员（只出 has_credential，绝不含凭据） */
+export interface Yun139PoolMember {
+  id: number
+  label: string | null
+  weight: number
+  fail_count: number
+  cooldown_until: string | null
+  has_credential: boolean
+  created_at: string | null
+}
+
+/** 139 账号池（GET /api/admin/yun139/pools） */
+export interface Yun139Pool {
+  id: number
+  name: string
+  strategy: string
+  cooldown_seconds: number
+  max_concurrent: number
+  created_at: string | null
+  member_count: number
+  members: Yun139PoolMember[]
+}
+
+export interface Yun139PoolsResponse {
+  items: Yun139Pool[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** 播放快照里的进行中会话（GET /api/admin/playback-bus/snapshot；无快照时后端回 404） */
+export interface PlaybackBusSnapshotSession {
+  session_id: string
+  session_key: string
+  user_id: number | null
+  item_id: number | null
+  variant: string | null
+  device_id: string | null
+  position_ticks: number
+  is_paused: boolean
+  last_update_at: string | null
+  last_command_status: string | null
+  last_command_type: string | null
+}
+
+export interface PlaybackBusSnapshot {
+  v: number
+  computed_at: string
+  sessions: PlaybackBusSnapshotSession[]
+}
+
+/** 播放命令行（GET /api/admin/playback-bus/commands；行数组，非分页包裹） */
+export interface PlaybackBusCommand {
+  command_id: string
+  session_key: string
+  device_id: string | null
+  command: string
+  payload: unknown
+  status: string
+  outcome: string | null
+  requested_by: number | null
+  requested_at: string | null
+  sent_at: string | null
+  delivered_at: string | null
+  completed_at: string | null
+  error: string | null
+}
