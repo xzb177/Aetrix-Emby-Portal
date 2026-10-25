@@ -28,6 +28,7 @@ import os
 from types import SimpleNamespace
 
 from backend.emby_server import library_source_health as lsh
+from backend.emby_server import library_source_health_pilot as lsh_pilot
 from backend.emby_server import models as em
 from backend.emby_server import upstream_sources as ups
 from backend.emby_server.mounts import (
@@ -396,8 +397,11 @@ def read_library_sources(db, library):
                 ("mount", src.mount.id, src.subpath or "/"))
     # 挂载第 5 步：健康过滤（默认关；开时跳过健康表已隐藏的源，记 failed
     # 不静默丢弃——扫描器据此跳过清理，避免把“读不到”当成“已删除”。
+    # 试点范围（挂载-9）：设了试点库清单时，只对清单里的库做健康过滤，
+    # 清单外的库本轮不过滤（与设清单前一致：清单为空 = 全部库都过滤）。
     # 播放按健康表过滤是后续项（播放入口另行接线），不在这里做。）
-    if lsh.health_enabled():
+    if lsh.health_enabled() and lsh_pilot.in_pilot_scope(
+            getattr(library, "id", None)):
         kept: list = []
         hidden_failed: list[dict] = []
         for src in sources:
