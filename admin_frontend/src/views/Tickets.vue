@@ -150,7 +150,7 @@ function statusBadge(status: string): string {
 
 <template>
   <div class="admin-page">
-    <PageHeader eyebrow="内容与服务" title="工单" description="点任意一行打开对话；回复会以站内消息通知用户，可在详情里直接改状态与优先级。">
+    <PageHeader eyebrow="内容" title="工单" description="点任意一行打开对话；回复会以站内消息通知用户，可在详情里直接改状态与优先级。">
       <template #actions>
         <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
       </template>

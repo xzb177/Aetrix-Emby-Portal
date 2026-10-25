@@ -191,7 +191,7 @@ function fmtDate(value: string | null): string {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="用户"
       title="管理员与权限"
       description="后台账号就是前台账号：这里只把已注册的人标记为管理员并给他一个角色，不新建账号。"
     >

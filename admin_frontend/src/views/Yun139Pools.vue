@@ -67,7 +67,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="139 账号池"
       description="139 账号池与池内成员（只读）：成员只显示有没有凭据，不展示凭据原文。"
     >

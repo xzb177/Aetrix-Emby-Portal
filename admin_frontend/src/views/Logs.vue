@@ -237,7 +237,7 @@ function detailText(log: AdminLogRow): string {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="系统"
       title="操作日志"
       :description="`每一次管理操作都会留下审计记录；后端按操作类型筛选，关键字在已加载的最近 ${limit} 条里查。`"
     >

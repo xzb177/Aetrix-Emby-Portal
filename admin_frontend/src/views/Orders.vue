@@ -491,7 +491,7 @@ onMounted(() => {
 <template>
   <div class="admin-page orders-page">
     <PageHeader
-      eyebrow="运营中心"
+      eyebrow="经营"
       title="订单"
       description="充值 / 订阅订单、营收统计与人工补单。点「处理 / 详情」补单、关单或退款。"
     >
