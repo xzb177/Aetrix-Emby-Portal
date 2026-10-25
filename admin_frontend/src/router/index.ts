@@ -28,14 +28,14 @@ const routes: RouteRecordRaw[] = [
       { path: '', name: 'Dashboard', component: () => import('@/views/Dashboard.vue'), meta: { title: '仪表盘' } },
       { path: 'users', name: 'Users', component: () => import('@/views/Users.vue'), meta: { title: '用户' } },
       { path: 'subscriptions', name: 'Subscriptions', component: () => import('@/views/Subscriptions.vue'), meta: { title: '订阅与权益' } },
-      { path: 'goods', name: 'Goods', component: () => import('@/views/Goods.vue'), meta: { title: '商品管理' } },
-      { path: 'orders', name: 'Orders', component: () => import('@/views/Orders.vue'), meta: { title: '运营·订单' } },
+      { path: 'goods', name: 'Goods', component: () => import('@/views/Goods.vue'), meta: { title: '订阅套餐' } },
+      { path: 'orders', name: 'Orders', component: () => import('@/views/Orders.vue'), meta: { title: '订单' } },
       // 会员卡码 / 兑换码已并入「码管理」（Codes.vue 两个标签页）：旧地址跳到对应标签，收藏不会落到仪表盘
       { path: 'exchange-codes', redirect: { path: '/codes', query: { tab: 'exchange' } } },
       { path: 'registration-codes', redirect: { path: '/codes', query: { tab: 'reg' } } },
       // 优惠券（v2.10.0）：与兑换码分工不同——兑换码不花钱拿东西，优惠券是付费时抵扣
-      { path: 'coupons', name: 'Coupons', component: () => import('@/views/Coupons.vue'), meta: { title: '运营·优惠券' } },
-      { path: 'invitations', name: 'Invitations', component: () => import('@/views/Invitations.vue'), meta: { title: '运营·邀请与积分' } },
+      { path: 'coupons', name: 'Coupons', component: () => import('@/views/Coupons.vue'), meta: { title: '优惠券' } },
+      { path: 'invitations', name: 'Invitations', component: () => import('@/views/Invitations.vue'), meta: { title: '邀请与积分' } },
       { path: 'codes', name: 'Codes', component: () => import('@/views/Codes.vue'), meta: { title: '码管理' } },
       { path: 'devices', name: 'Devices', component: () => import('@/views/Devices.vue'), meta: { title: '设备与安全' } },
       { path: 'login-logs', name: 'LoginLogs', component: () => import('@/views/LoginLogs.vue'), meta: { title: '登录日志' } },
@@ -50,15 +50,15 @@ const routes: RouteRecordRaw[] = [
       // 成就与馆灵（r48 遗留 ⑨）：面板 v4 成就定义 + 馆灵阶段的管理入口
       { path: 'panel-achievements', name: 'PanelAchievements', component: () => import('@/views/PanelAchievements.vue'), meta: { title: '成就与馆灵' } },
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
-      // 公益服：抽奖配置 / 积分配置（v2.55 公益用户页已并入用户管理，求片审核页已合并）
-      // 求片审核已并入「求片管理」（MediaSeek.vue），路由移除
-      { path: 'welfare-lottery-rounds', name: 'WelfareLotteryRounds', component: () => import('@/views/WelfareLotteryRounds.vue'), meta: { title: '公益服·群抽奖' } },
+      // 公益服（重新布局批 2）：群抽奖 + 积分配置并为一页两标签（Welfare.vue），
+      // 旧 /welfare-points 跳到积分配置标签；求片审核已并入「求片管理」（MediaSeek.vue），路由移除
+      { path: 'welfare-lottery-rounds', name: 'WelfareLotteryRounds', component: () => import('@/views/Welfare.vue'), meta: { title: '公益服' } },
       // 旧抽奖页（WelfareLottery.vue）/ 公益用户 / 求片审核已删除或合并：旧地址跳到新页
       { path: 'welfare-lottery', redirect: '/welfare-lottery-rounds' },
       { path: 'welfare-users', redirect: '/users' },
       { path: 'welfare-requests', redirect: '/media-seek' },
-      { path: 'welfare-points', name: 'WelfarePoints', component: () => import('@/views/WelfarePoints.vue'), meta: { title: '公益服·积分配置' } },
-      // 会员等级（P1 统一货币体系）：运营中心 → 会员等级
+      { path: 'welfare-points', redirect: { path: '/welfare-lottery-rounds', query: { tab: 'points' } } },
+      // 会员等级（P1 统一货币体系）：经营 → 会员等级
       { path: 'member-levels', name: 'MemberLevels', component: () => import('@/views/MemberLevels.vue'), meta: { title: '会员等级' } },
       { path: 'emby', name: 'EmbyAdmin', component: () => import('@/views/EmbyAdmin.vue'), meta: { title: '媒体库' } },
       { path: 'media-library', name: 'MediaLibraryAdmin', component: () => import('@/views/MediaLibraryAdmin.vue'), meta: { title: '图片与顺序' } },
@@ -71,16 +71,16 @@ const routes: RouteRecordRaw[] = [
       // 上游源（FMBY #25 25-1）：只做源管理，聚合/探活/播放接入是后续步骤
       { path: 'upstream-sources', name: 'UpstreamSources', component: () => import('@/views/UpstreamSources.vue'), meta: { title: '上游源' } },
       // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
-      { path: 'storage-bindings', name: 'StorageBindings', component: () => import('@/views/StorageBindings.vue'), meta: { title: '存储绑定列表' } },
-      { path: 'upstream-mappings', name: 'UpstreamMappings', component: () => import('@/views/UpstreamMappings.vue'), meta: { title: '上游映射列表' } },
-      { path: 'yun139-pools', name: 'Yun139Pools', component: () => import('@/views/Yun139Pools.vue'), meta: { title: '139 账号池' } },
-      { path: 'provider-sidecar', name: 'ProviderSidecar', component: () => import('@/views/ProviderSidecar.vue'), meta: { title: 'sidecar 状态' } },
+      { path: 'storage-bindings', redirect: { path: '/upstream-sources', query: { tab: 'bindings' } } },
+      { path: 'upstream-mappings', redirect: { path: '/upstream-sources', query: { tab: 'mappings' } } },
+      { path: 'yun139-pools', redirect: { path: '/upstream-sources', query: { tab: 'pools' } } },
+      { path: 'provider-sidecar', redirect: { path: '/upstream-sources', query: { tab: 'sidecar' } } },
       // 「存储来源」独立页已于 v2.42.15 撒销：挂载建在「添加服务器」弹窗里（按服务器配置），
       // 目录浏览 / 体检 / 编辑都已搬过去。旧地址跳到服务器页，别人的书签不至于 404。
       { path: 'mounts', redirect: '/servers' },
       // v2.18.0：转存任务下线，页面只保留 115 账号；旧地址保留为跳转，收藏不会 404
       { path: 'pan115', alias: 'transfer-115', name: 'Pan115Accounts', component: () => import('@/views/Pan115Accounts.vue'), meta: { title: '115 账号' } },
-      { path: 'gdrive', name: 'GDriveAccounts', component: () => import('@/views/GDriveAccounts.vue'), meta: { title: 'Google Drive 账号' } },
+      { path: 'gdrive', name: 'GDriveAccounts', component: () => import('@/views/GDriveAccounts.vue'), meta: { title: 'Google Drive' } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
       // v2.26.0：管理员与权限（角色 super / operator / viewer）与播放、客户端策略
       { path: 'admins', name: 'Admins', component: () => import('@/views/Admins.vue'), meta: { title: '管理员与权限' } },
@@ -90,15 +90,15 @@ const routes: RouteRecordRaw[] = [
       // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
       { path: 'tasks', name: 'TaskOverview', component: () => import('@/views/TaskOverview.vue'), meta: { title: '任务总览' } },
       // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
-      { path: 'sample-hash-progress', name: 'SampleHashProgress', component: () => import('@/views/SampleHashProgress.vue'), meta: { title: '采样哈希进度' } },
-      { path: 'playback-bus', name: 'PlaybackBus', component: () => import('@/views/PlaybackBus.vue'), meta: { title: '播放总线' } },
+      { path: 'sample-hash-progress', redirect: '/tasks' },
+      { path: 'playback-bus', redirect: '/health' },
       // v2.56.0 健康一页：十个子系统红黄绿灯同屏（原 Health.vue 已并入「系统健康」）
       // Batch E（健康体系合并）：旧「健康总览」地址保留为跳转，收藏与外部链接不会落到 404
       { path: 'health-board', redirect: '/health' },
       // v2.57.0 一键体检：只读诊断规则引擎，大白话结论 + 检查步骤
       { path: 'diagnosis', name: 'Diagnosis', component: () => import('@/views/Diagnosis.vue'), meta: { title: '一键体检' } },
       // v2.58.0 API Key 管理：第三方 Service Token（创建/列表/吊销）
-      { path: 'api-keys', name: 'ApiKeys', component: () => import('@/views/ApiKeys.vue'), meta: { title: 'API Key 管理' } },
+      { path: 'api-keys', name: 'ApiKeys', component: () => import('@/views/ApiKeys.vue'), meta: { title: 'API Key' } },
       // 服管理以绝对路径声明：跳转契约检查要求跳转目标与声明的 path 完全一致
       { path: '/realms', name: 'Realms', component: () => import('@/views/Realms.vue'), meta: { title: '服管理' } },
       { path: 'servers', name: 'Servers', component: () => import('@/views/Servers.vue'), meta: { title: '服务器与线路' } },

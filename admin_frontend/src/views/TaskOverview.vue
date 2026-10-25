@@ -12,6 +12,8 @@ import {
   Radar, RefreshCw, ScanSearch, Sparkles, TriangleAlert,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader } from '@/components/ui'
+/** 重新布局批 3：采样哈希进度降为本页「进度」区（旧 /sample-hash-progress 跳到本页） */
+import SampleHashProgress from './SampleHashProgress.vue'
 import {
   fetchTasksOverview,
   pauseProbe,
@@ -127,7 +129,7 @@ onMounted(() => load())
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="系统"
       title="任务总览"
       description="所有后台任务一页看完：状态、进度、开关。出问题先看这里，再点「详情」去各任务自己的页面细看。"
     >
@@ -205,6 +207,9 @@ onMounted(() => load())
         </footer>
       </section>
     </div>
+
+    <!-- 重新布局批 3：采样哈希进度降为本页「进度」区（子页自带 PageHeader 作区标题） -->
+    <SampleHashProgress />
   </div>
 </template>
 

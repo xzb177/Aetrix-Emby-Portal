@@ -36,7 +36,6 @@ from backend.emby_server import enrich_worker
 init_db()
 
 _NIGHT_ENVS = (
-    enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
     enrich_worker.ENRICH_NIGHT_START_ENV,
     enrich_worker.ENRICH_NIGHT_END_ENV,
     enrich_worker.ENRICH_NIGHT_TZ_ENV,
@@ -44,6 +43,7 @@ _NIGHT_ENVS = (
 _QUOTA_KEYS = (
     enrich_worker.CFG_ENRICH_EPISODE_DAY_QUOTA,
     enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE,
+    enrich_worker.CFG_EPISODE_NIGHT_ONLY,
 )
 
 
@@ -108,10 +108,11 @@ def _enable_quota_mode(db, quota=2000, night_only=True, in_window=False,
     if monkeypatch is not None:
         monkeypatch.setattr(
             enrich_worker, "_in_night_window", lambda now, s, e, tz=None: in_window)
-    if night_only:
-        os.environ[enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV] = "1"
-    else:
-        os.environ.pop(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, None)
+    # 开关只认库。缺省已是开；要关必须落 "0"，不能再靠环境变量。
+    if not night_only:
+        enrich_worker.save_episode_night_config(db, False, "02:00", "06:00")
+        enrich_worker._night_cfg_cache["at"] = 0.0
+        enrich_worker._night_cfg_cache["cfg"] = None
 
 
 def _mark_claimed_today(db, n):
@@ -130,7 +131,6 @@ def test_flag_off_daytime_still_bans_episodes(db, monkeypatch):
     配额制缺省已是开，本例经保存路径显式关掉。"""
     enrich_worker.save_enrich_tuning_config(
         db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: False})
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
     monkeypatch.setattr(
         enrich_worker, "_in_night_window", lambda now, s, e, tz=None: False)
     _make_item(db, item_type="movie", name="电影A")

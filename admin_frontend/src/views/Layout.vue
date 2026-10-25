@@ -8,8 +8,8 @@
  * v2.54（暗房影院）：外壳与用户端 AppHeader 同一套语言——不透明暖黑顶栏 + 发丝线、
  * 衬线大写拉字距的品牌字、琥珀放映机标、三枚同配方的圆形图标按钮。侧边栏不再是
  * 「可折叠手风琴」：分区标题是常驻的小眉题，每一项带自己的图标，当前页 = 正文色 +
- * 实色表面 + 右侧一颗琥珀指示灯。分区按交付链重排为 7 组（安全准入从「用户与账号」
- * 拆出，单项的「服务支持」并入「内容与服务」），所有路径与权限标记一个没少。
+ * 实色表面 + 右侧一颗琥珀指示灯。分区按重新布局为 7 组（概览 / 用户 / 安全与准入 /
+ * 经营 / 内容 / 媒体 / 系统），所有路径与权限标记一个没少。
  *
  * v2.25.0：一级导航按**交付链**重组（仪表盘 / 用户与账号 / 媒体与交付 / 求片与内容 /
  * 运营中心 / 服务支持 / 系统与审计）——“多服”不再是要先理解的一级概念：
@@ -27,7 +27,7 @@ import {
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Image as ImageIcon,
   Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
-  UserCog, Activity, Heart, Medal, HardDrive, MessageSquareText,
+  UserCog, Activity, Medal, HardDrive, MessageSquareText,
   Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
@@ -113,23 +113,26 @@ interface NavGroup {
 }
 
 /**
- * 导航分区（暗房影院重排）：按「谁在用 → 谁能进 → 内容从哪来 → 内容 / 服务 → 钱 → 系统」
- * 一条交付链排下来。路径一个字没动（旧收藏、外部链接照旧打开）。
+ * 导航分区（2026-10-25 重新布局批 1）：7 组——概览 / 用户 / 安全与准入 / 经营 /
+ * 内容 / 媒体 / 系统。观测类只读内容不再占导航（见各页内标签），开关跟功能走。
+ * 路径、权限标记一个字没动（旧收藏、外部链接照旧打开）。
  */
 const navGroups: NavGroup[] = [
   { title: '概览', icon: LayoutDashboard, items: [{ path: '/', label: '仪表盘', icon: LayoutDashboard }] },
   {
-    title: '用户与账号',
+    title: '用户',
     icon: Users,
     items: [
       { path: '/users', label: '用户', icon: Users },
       { path: '/subscriptions', label: '订阅与权益', icon: Crown },
       { path: '/devices', label: '设备与安全', icon: Smartphone },
       { path: '/login-logs', label: '登录日志', icon: ScrollText },
+      // 管理员与权限是「人」的操作，从系统组移入用户组
+      { path: '/admins', label: '管理员与权限', icon: UserCog, superOnly: true },
     ],
   },
   {
-    // 「谁能进、能做什么」三件事从用户组里拆出来：它们都是全站级开关，影响所有人
+    // 「谁能进、能做什么」三件事：它们都是全站级开关，影响所有人
     title: '安全与准入',
     icon: ShieldAlert,
     items: [
@@ -142,8 +145,34 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
+    title: '经营',
+    icon: Package,
+    items: [
+      { path: '/goods', label: '订阅套餐', icon: Package },
+      { path: '/orders', label: '订单', icon: Receipt },
+      { path: '/coupons', label: '优惠券', icon: TicketPercent },
+      { path: '/invitations', label: '邀请与积分', icon: UserPlus },
+      { path: '/member-levels', label: '会员等级', icon: Medal },
+      { path: '/codes', label: '码管理', icon: KeySquare },
+    ],
+  },
+  {
+    // 求片 / 公告 / 工单都是「和用户对话」；公益服两页先并入内容组（批 2 再并为一入口）
+    title: '内容',
+    icon: MessageSquareDashed,
+    items: [
+      { path: '/media-seek', label: '求片管理', icon: MessageSquareDashed },
+      { path: '/panel-achievements', label: '成就与馆灵', icon: Medal },
+      { path: '/announcements', label: '公告管理', icon: Megaphone },
+      { path: '/wall-posts', label: '留言墙管理', icon: MessageSquareText },
+      { path: '/tickets', label: '工单', icon: Ticket },
+      // 公益服：抽奖配置 / 积分配置（公益用户已并入「用户管理」，求片审核已并入「求片管理」）
+      { path: '/welfare-lottery-rounds', label: '公益服', icon: Trophy },
+    ],
+  },
+  {
     // 交付链：谁在出流 → 内容从哪来 → 内容怎么组织（旧页里的 服管理 不再占一个一级入口）
-    title: '媒体与交付',
+    title: '媒体',
     icon: Server,
     items: [
       { path: '/servers', label: '服务器与线路', icon: Server },
@@ -157,63 +186,22 @@ const navGroups: NavGroup[] = [
       { path: '/identify-review', label: '识别审查', icon: ListChecks },
       // 上游源：别人的媒体服当作源接进来（#25 25-1 只做源管理）
       { path: '/upstream-sources', label: '上游源', icon: Server },
-      // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
-      { path: '/storage-bindings', label: '存储绑定列表', icon: HardDrive },
-      { path: '/upstream-mappings', label: '上游映射列表', icon: Server },
-      { path: '/yun139-pools', label: '139 账号池', icon: Cloud },
-      { path: '/provider-sidecar', label: 'sidecar 状态', icon: Database },
+      // 专线 B 第二阶段 · 只读观测口（GET，仅展示；批 3 起降级为上游源页标签）
       { path: '/pan115', label: '115 账号', icon: Cloud },
       { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
     ],
   },
   {
-    // 求片 / 公告 / 工单都是「和用户对话」：原来工单单独占一个只有一项的分组
-    title: '内容与服务',
-    icon: MessageSquareDashed,
-    items: [
-      { path: '/media-seek', label: '求片管理', icon: MessageSquareDashed },
-      { path: '/panel-achievements', label: '成就与馆灵', icon: Medal },
-      { path: '/announcements', label: '公告管理', icon: Megaphone },
-      { path: '/wall-posts', label: '留言墙管理', icon: MessageSquareText },
-      { path: '/tickets', label: '工单', icon: Ticket },
-    ],
-  },
-  {
-    // 公益服：抽奖配置 / 积分配置（公益用户已并入「用户管理」，求片审核已并入「求片管理」）
-    title: '公益服',
-    icon: Heart,
-    items: [
-      // 求片审核已并入「求片管理」，菜单移除
-      { path: '/welfare-lottery-rounds', label: '群抽奖活动', icon: Trophy },
-      { path: '/welfare-points', label: '积分配置', icon: Wallet },
-    ],
-  },
-  {
-    title: '运营中心',
-    icon: Package,
-    items: [
-      { path: '/goods', label: '订阅套餐', icon: Package },
-      { path: '/orders', label: '订单', icon: Receipt },
-      { path: '/coupons', label: '优惠券', icon: TicketPercent },
-      { path: '/invitations', label: '邀请与积分', icon: UserPlus },
-      { path: '/member-levels', label: '会员等级', icon: Medal },
-      { path: '/codes', label: '码管理', icon: KeySquare },
-    ],
-  },
-  {
-    title: '系统与审计',
+    title: '系统',
     icon: Settings,
     items: [
-      { path: '/admins', label: '管理员与权限', icon: UserCog, superOnly: true },
       { path: '/settings', label: '系统设置', icon: Settings, superOnly: true },
       { path: '/logs', label: '操作日志', icon: ScrollText },
       // Batch E（健康体系合并）：「服务健康」＋「健康总览」合并为一页「系统健康」，导航只留一个入口
       { path: '/health', label: '系统健康', icon: Activity },
       // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
       { path: '/tasks', label: '任务总览', icon: ListChecks },
-      // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
-      { path: '/sample-hash-progress', label: '采样哈希进度', icon: ListChecks },
-      { path: '/playback-bus', label: '播放总线', icon: Activity },
+      // 专线 B 第二阶段 · 只读观测口（GET，仅展示；批 3 起降级为任务总览 / 系统健康页内区）
       { path: '/diagnosis', label: '一键体检', icon: Stethoscope },
       { path: '/api-keys', label: 'API Key', icon: KeyRound, superOnly: true },
     ],
@@ -221,12 +209,12 @@ const navGroups: NavGroup[] = [
 ]
 
 /**
- * 不占导航位置、但仍要归属到某个分组的页面（服管理 = 媒体与交付里的一条支线）
+ * 不占导航位置、但仍要归属到某个分组的页面（服管理 = 媒体里的一条支线）
  *
  * 放进导航就会让「多服」又变成要先理解的一级概念——它的入口在「服务器与线路」页里，
  * 这里只负责面包屑归属与分组展开。
  */
-const OFF_NAV_GROUP: Record<string, string> = { '/realms': '媒体与交付' }
+const OFF_NAV_GROUP: Record<string, string> = { '/realms': '媒体' }
 
 /** 某个路径归哪个分组（含不占导航位置的页面，见 OFF_NAV_GROUP） */
 function groupOf(path: string): NavGroup | undefined {

@@ -34,7 +34,7 @@ const activeTab = computed<CodesTab>({
 </script>
 
 <template>
-  <!-- 两个子页各自带 PageHeader（眉题「运营中心」），这里只放标签条，不再叠第二个页头 -->
+  <!-- 两个子页各自带 PageHeader（眉题「经营」），这里只放标签条，不再叠第二个页头 -->
   <div class="admin-page codes-page">
     <!-- 四种码分工说明：唯一权威出处。验收口径=新服主不看说明书能分清四种码 -->
     <el-alert type="info" :closable="false" show-icon class="division-alert">

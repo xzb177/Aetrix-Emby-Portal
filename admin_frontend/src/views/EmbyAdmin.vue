@@ -1722,7 +1722,7 @@ function typeLabel(t: string): string {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="媒体库"
       description="点「新建媒体库」或卡片上的「设置」打开同一张配置表单：分组改完路径、归属、刮削与自动发现新增文件"
     >
@@ -2094,7 +2094,7 @@ function typeLabel(t: string): string {
               </div>
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="episodeNight?.from_env" class="drawer-hint drawer-hint--after">
-                环境变量（ENRICH_EPISODE_NIGHT_ONLY / ENRICH_NIGHT_START / ENRICH_NIGHT_END / ENRICH_NIGHT_TZ）覆盖了这里的设置（改这里不会生效）
+                环境变量（ENRICH_NIGHT_START / ENRICH_NIGHT_END / ENRICH_NIGHT_TZ）覆盖了夜间窗口（改窗口不会生效）。开关以这里保存的值为准。
               </div>
               <div class="scrape-subblock">
                 <h4>单集分项开关</h4>

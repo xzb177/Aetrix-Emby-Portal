@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Activity, AlertTriangle, Bell, Cpu, Database, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, Sparkles, Users, Zap } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
+/** 重新布局批 3：播放总线降为本页「总线」区（旧 /playback-bus 跳到本页） */
+import PlaybackBus from './PlaybackBus.vue'
 import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
 import { fetchBackupConfig, saveBackupConfig, runBackupNow } from '@/api/admin'
 import {
@@ -469,7 +471,7 @@ onMounted(() => {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="系统"
       title="系统健康"
       description="十个子系统的实时状态灯（绿灯正常、黄灯警告、红灯故障，只展示不诊断），以及服务运行态、实时会话、数据库备份与告警通知。"
     >
@@ -778,6 +780,9 @@ onMounted(() => {
         <el-button type="primary" :loading="alertRuleSaving" @click="onSaveAlertRule">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 重新布局批 3：播放总线降为本页「总线」区（子页自带 PageHeader 作区标题） -->
+    <PlaybackBus />
   </div>
 </template>
 
