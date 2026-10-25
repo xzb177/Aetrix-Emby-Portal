@@ -244,7 +244,7 @@ onMounted(() => {
 
 <template>
   <div class="admin-page">
-    <PageHeader eyebrow="公益服" title="群抽奖活动" description="创建与管理 Telegram 群抽奖活动，开奖与发放">
+    <PageHeader eyebrow="内容" title="群抽奖活动" description="创建与管理 Telegram 群抽奖活动，开奖与发放">
       <template #actions>
         <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="openCreate">新建活动</el-button>

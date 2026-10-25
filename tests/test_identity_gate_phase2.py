@@ -195,7 +195,13 @@ def test_portal_resume_and_favorites(scene, monkeypatch):
 def test_portal_calendar_counts_and_items_share_gate(scene, monkeypatch):
     """门户日历：角标计数与条目详情同源（都从 base_query 出）。"""
     _gate2(monkeypatch, 1, 1)
-    now = datetime.now()
+    # 时区无关：日历把入参当上海日、把 date_added 当 UTC-naive，
+    # 入库时刻落在查询日的上海帧 [当天 00:00, 次日 00:00) 换算后
+    # 即 [前一日 16:00 UTC, 当日 16:00 UTC) 内才命中。用当天 12:00
+    # 做入库时刻——无论跑道时区是 UTC 还是上海都落在帧内；
+    # 原写法用 datetime.now() 原样入库，在 UTC 跑道 16:00–24:00
+    # （上海次日 00:00–08:00）时条目落在查询日之外，days 为空。
+    now = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
     for it in scene.m.values():
         if isinstance(it, em.MediaItem):
             it.date_added = now

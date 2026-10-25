@@ -900,7 +900,7 @@ watch(
 <template>
   <div class="admin-page settings-page">
     <PageHeader
-      eyebrow="系统与审计"
+      eyebrow="系统"
       title="系统设置"
       description="外部服务能力、运营参数与危险操作；修改后立即对用户端生效。"
     >

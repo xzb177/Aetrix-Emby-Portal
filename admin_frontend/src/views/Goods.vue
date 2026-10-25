@@ -309,7 +309,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="运营中心"
+      eyebrow="经营"
       title="订阅套餐"
       description="订阅套餐一个服一份（在哪个服买就开哪个服的会员）；积分充值套餐全服共用。"
     >
