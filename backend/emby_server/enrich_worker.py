@@ -3182,12 +3182,16 @@ def enrich_episode_quota_status(db) -> dict:
     }
 
 
-def _claim_batch(db, limit: int) -> list:
+def _claim_batch(db, limit: int, queue: Optional[str] = None) -> list:
     """原子抢一批待补全条目（多 worker/多进程不重复）。
 
     认领是原子的（_claim_group_atomic）：单条
     UPDATE ... WHERE enrich_status='pending'，PG/SQLite 都不会重复认领。
     只抢「到重试时间」的（next_retry_at IS NULL 或已到期）。
+
+    queue（清单第 17 项）：None = 今天的单队列口径（逐字不变）；
+    "identify" = 只抢未绑定条目（识别队列）；"fill" = 只抢已绑定条目
+    （刮削队列）。未知队列名直接 ValueError（不静默回落）。
 
     v2.42.9 第 5 批（处方 2）：**按父级成组**抢单。组 = ``coalesce(series_id, id)``
     ——剧条目与它名下所有集共享同一个组键，整组一次抢走，父级排在最前。
@@ -3271,6 +3275,11 @@ def _claim_batch(db, limit: int) -> list:
     # 多版本（电影/剧集/单集）：被合并的版本不独立补全，元数据走主记录。
     # （probe/subtitle/thumbnail worker 已有同口径过滤。）
     not_merged = em.MediaItem.merged_into_id.is_(None)
+    # 清单第 17 项：两队列抢单谓词（None = 单队列口径，逐字不变）。
+    queue_pred = True
+    if queue is not None:
+        from backend.emby_server import enrich_queues as _eq
+        queue_pred = _eq.queue_filter(queue)
     # 先看优先级最高 / 最近入库的若干个组：通常 1~3 个组就能填满一批；被别的 worker
     # 锁住（抢到 0 行）的组自动跳过，继续看下一个。GROUP BY 查询没法带
     # FOR UPDATE（PG 限制），所以是「选组」与「抢行」两步。
@@ -3278,7 +3287,7 @@ def _claim_batch(db, limit: int) -> list:
                          _func.max(em.MediaItem.date_added).label("latest"),
                          em.MediaItem.library_id.label("lib"))
                 .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
-                        not_episode, not_merged, not_ban_backfill)
+                        not_episode, not_merged, not_ban_backfill, queue_pred)
                 # library_id 必须显式入组（PG 要求）：组键是全局 id，
                 # 同一组恒在同一库内，(group_key, library_id) 与 group_key 等价。
                 .group_by(group_key, em.MediaItem.library_id))
@@ -3290,7 +3299,8 @@ def _claim_batch(db, limit: int) -> list:
             break
         q = (db.query(em.MediaItem)
              .filter(em.MediaItem.enrich_status == "pending", due, unlocked,
-                     not_episode, not_merged, not_ban_backfill, group_key == gid)
+                     not_episode, not_merged, not_ban_backfill, queue_pred,
+                     group_key == gid)
              .order_by(
                  # 父级（剧/电影）先于子级：父级先落 done，子集才能纯继承
                  _case((em.MediaItem.item_type.in_(["series", "movie"]), 0), else_=1),
@@ -4405,7 +4415,9 @@ def _inherit_parent_info(db, item: Any) -> Optional[dict]:
     return {"series_id": series.id, "tmdb_id": series.tmdb_id}
 
 
-def _enrich_apply_two_stage(db, item: Any, fetched: dict) -> None:
+def _enrich_apply_two_stage(db, item: Any, fetched: dict,
+                            identify: Optional[bool] = None,
+                            fill: Optional[bool] = None) -> None:
     """两段写库（清单第 13 项，FMBY #17）：识别提交 → 补资料提交。
 
     只在任一段开关开时由 _process_item 调用；开关全关时不进本函数，
@@ -4418,12 +4430,26 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict) -> None:
     - 补资料段开但未绑定：不进补资料段，回落现行写库（审查 / none 终态
       由现行路径接管，不在此伪造）。
     - 识别段开、补资料段关：身份落库后本条回 pending，等补资料段认领。
+    identify / fill（清单第 17 项）：None = 读两段开关（今天的行为）；
+    显式 bool = 覆盖开关——两队列模式下 _process_item 按条目所属队列
+    传入（识别队列 identify=True/fill=False，刮削队列反之），保证一
+    次认领只跑一段、两段是两次独立的认领与重试。
+    - 识别段未定身份（无绑定）：回落现行写库走审查 / none 终态（收尾
+      修正：旧行为是回 pending 且 attempts 不涨，未绑定条目会无限空
+      转；终态判定带 attempts 计次，超限才转 failed / done+none）。
+    - 两段双关：回落现行写库（直调保护；_process_item 本来就不进
+      本函数，旧行为的无意义回 pending 不再保留）。
     """
     from backend.emby_server import identify_two_stage as ts
 
     had_tmdb = bool(getattr(item, "tmdb_id", None))
     bound = bool(getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None))
-    if ts.identify_enabled():
+    do_identify = ts.identify_enabled() if identify is None else bool(identify)
+    do_fill = ts.fill_enabled() if fill is None else bool(fill)
+    if not do_identify and not do_fill:
+        _enrich_apply(db, item, fetched)
+        return
+    if do_identify:
         try:
             res = ts.apply_identity(db, item, fetched)
             if res is not None:
@@ -4434,7 +4460,11 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict) -> None:
             db.rollback()
             _enrich_apply(db, item, fetched)
             return
-    if ts.fill_enabled():
+        if not bound and not do_fill:
+            # 识别段未定身份：现行终态接管，不空转 pending（见 docstring）。
+            _enrich_apply(db, item, fetched)
+            return
+    if do_fill:
         if not bound:
             _enrich_apply(db, item, fetched)
             return
@@ -4463,7 +4493,7 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict) -> None:
             fetched["_parent_tmdb_newly_acquired"] = item.id
         _maybe_queue_probe(db, item)
         return
-    # 识别段开、补资料段关：身份已落库，本条回 pending 等补资料段认领。
+    # 识别段开、补资料段关：身份已落库，本条回 pending 等刮削队列认领。
     item.enrich_status = "pending"
     item.enrich_next_retry_at = datetime.now() + timedelta(
         seconds=ts.unfilled_retry_sec())
@@ -4471,15 +4501,22 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict) -> None:
     item.enrich_claim_token = None
 
 
-def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
+def _process_item(db, item: Any, holder: Optional[dict] = None,
+                  queue: Optional[str] = None) -> str:
     """处理一条已抢到的条目：IO 阶段 → 写库阶段。
 
     返回 'done' / 'retry' / 'failed' / 'mount_unavailable' / 'skip'
     （'mount_unavailable' = 存储读不动，不算成功也不算失败，不进速率口径）。
 
+    queue（清单第 17 项）：None = 今天的行为（两段开关决定写库段）；
+    "identify" / "fill" = 两队列模式下按条目所属队列分段写库（一次认
+    领只跑一段）。未知队列名直接 ValueError（不静默回落）。
+
     v2.42.9 从 _worker_loop 里提出来：一是要给**整条**计时并记结果（阶段计数 +
     完成速率都靠它），二是让循环回到「抢一批 → 逐条处理」两行。行为与提之前一致。
     """
+    if queue is not None and queue not in ("identify", "fill"):
+        raise ValueError("unknown enrich queue: %r" % (queue,))
     # _claim_batch 的 commit 会让 ORM 对象过期；一次性复制字段后，后续 IO 不再
     # 触碰 ORM 对象，避免属性访问重新开启一个事务。
     snapshot = item if isinstance(item, _EnrichItemSnapshot) else _snapshot_item(item)
@@ -4535,10 +4572,16 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
             return "skip"
         from backend.emby_server import identify_two_stage as _ts
 
-        if _ts.any_enabled():
-            _enrich_apply_two_stage(db, fresh, fetched)
+        if queue is None:
+            if _ts.any_enabled():
+                _enrich_apply_two_stage(db, fresh, fetched)
+            else:
+                _enrich_apply(db, fresh, fetched)
         else:
-            _enrich_apply(db, fresh, fetched)
+            # 两队列模式：一次认领只跑一段（分段覆盖，不读两段开关）。
+            _enrich_apply_two_stage(
+                db, fresh, fetched,
+                identify=(queue == "identify"), fill=(queue == "fill"))
         _st = (fresh.enrich_status or "")
         outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
         db.commit()
@@ -4617,7 +4660,8 @@ def _process_batch(db, batch: list) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("批量 TMDB 失败（%d 条），回退逐条: %s", len(indexed), exc)
             db.rollback()
-            # 回退：整批走原逐条路径
+            # 回退：整批走原逐条路径（两队列模式下按条目所属队列分段）
+            from backend.emby_server import enrich_queues as _eq
             holder2: Optional[dict] = None
             current_group2 = None
             for item in batch:
@@ -4628,7 +4672,8 @@ def _process_batch(db, batch: list) -> None:
                     holder2 = {}
                     current_group2 = gkey
                 started = time.monotonic()
-                outcome = _process_item(db, item, holder2)
+                _fb_queue = _eq.queue_of(item) if _eq.two_queue_enabled() else None
+                outcome = _process_item(db, item, holder2, queue=_fb_queue)
                 progress.note_stage(
                     "enrich_item", (time.monotonic() - started) * 1000.0)
                 progress.note_completed(outcome)
@@ -4694,7 +4739,17 @@ def _process_batch(db, batch: list) -> None:
                 db.rollback()
                 outcome = "skip"
             else:
-                _enrich_apply(db, fresh, fetched)
+                from backend.emby_server import enrich_queues as _eq
+                if _eq.two_queue_enabled():
+                    # 两队列模式：批量路径写库也按条目所属队列分段
+                    # （写库当刻的绑定状态为准，认领后被手动绑定的条目
+                    # 直接进刮削段，不回炉重识别）。
+                    _enrich_apply_two_stage(
+                        db, fresh, fetched,
+                        identify=(_eq.queue_of(fresh) == "identify"),
+                        fill=(_eq.queue_of(fresh) == "fill"))
+                else:
+                    _enrich_apply(db, fresh, fetched)
                 _st = (fresh.enrich_status or "")
                 outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
                 db.commit()
@@ -4728,6 +4783,7 @@ def _worker_loop(worker_id: int) -> None:
     # 在等时降并发让路（保留 ENRICH_PREEMPT_MIN_THREADS 个线程继续刮削，
     # 其余线程短睡后重试），而不是全停。
     from backend.emby_server import task_scheduler as _ts
+    from backend.emby_server import enrich_queues as _eq
 
     try:
         while not _stop_event.is_set():
@@ -4746,7 +4802,17 @@ def _worker_loop(worker_id: int) -> None:
                 try:
                     # Step 1：批次大小 / TMDB 批量开关后台可配（60s 热生效）
                     _tuning = _enrich_tuning_config(db)
-                    batch = _claim_batch(db, _tuning["values"][CFG_ENRICH_BATCH])
+                    _batch_limit = _tuning["values"][CFG_ENRICH_BATCH]
+                    if _eq.two_queue_enabled():
+                        # 两队列模式：识别队列先抢，剩余额度给刮削队列；
+                        # 两段是两次独立的认领，本轮识别段定下的绑定下轮
+                        # 才由刮削队列认领（同轮不直通）。
+                        batch = _claim_batch(db, _batch_limit, queue="identify")
+                        if len(batch) < _batch_limit:
+                            batch += _claim_batch(
+                                db, _batch_limit - len(batch), queue="fill")
+                    else:
+                        batch = _claim_batch(db, _batch_limit)
                 except Exception as exc:  # noqa: BLE001
                     db.rollback()
                     logger.warning("补全 worker 取单失败: %s", exc)
@@ -4776,7 +4842,10 @@ def _worker_loop(worker_id: int) -> None:
                         # 「近 5 分钟 done/分钟」的来源 —— 后面几批优化（纯继承 / ctx 复用 /
                         # 终态化）到底有没有把积压量降下来，靠它们验收。
                         started = time.monotonic()
-                        outcome = _process_item(db, item, holder)
+                        _item_queue = (_eq.queue_of(item)
+                                       if _eq.two_queue_enabled() else None)
+                        outcome = _process_item(db, item, holder,
+                                                queue=_item_queue)
                         progress.note_stage(
                             "enrich_item", (time.monotonic() - started) * 1000.0)
                         progress.note_completed(outcome)
