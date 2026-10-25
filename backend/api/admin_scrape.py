@@ -575,7 +575,7 @@ def _read_sibling_text(
 # ==================== 多源元数据（Phase 6b） ====================
 
 class MetaSourcesSaveRequest(BaseModel):
-    enabled: bool = Field(default=False, description="多源补全总开关")
+    enabled: Optional[bool] = Field(default=None, description="多源补全总开关；不传则保留库里的现值")
     prefer_chinese: bool = Field(default=True, description="中文信息优先")
     order: list[str] = Field(default_factory=list, description="源顺序（源 id 数组）")
     toggles: dict[str, bool] = Field(default_factory=dict, description="逐源开关")
@@ -689,8 +689,12 @@ def save_meta_sources(
     order += [sid for sid in ms_config.DEFAULT_ORDER if sid in known and sid not in order]
     toggles = {sid: bool(on) for sid, on in (req.toggles or {}).items() if sid in known}
     rates = {sid: rate for sid, rate in (req.rates or {}).items() if sid in known}
+    if req.enabled is None:
+        enabled = ms_config.read_config(db, ms_sources.SPECS).enabled
+    else:
+        enabled = bool(req.enabled)
     ms_config.write_config(
-        db, enabled=bool(req.enabled), prefer_chinese=bool(req.prefer_chinese),
+        db, enabled=enabled, prefer_chinese=bool(req.prefer_chinese),
         order=order, toggles=toggles, rates=rates,
         tmdb_miss_fallback=None if req.tmdb_miss_fallback is None
         else bool(req.tmdb_miss_fallback))
@@ -996,12 +1000,12 @@ def rescrape_library(
 # ==================== 定时扫描（用户可控的自动扫描计划） ====================
 
 class AutoScanSaveRequest(BaseModel):
-    enabled: bool = Field(default=False, description="总开关")
+    enabled: Optional[bool] = Field(default=None, description="总开关；不传则保留库里的现值")
     time: str = Field(default="03:00", description="每天执行时间，HH:MM（24 小时制，服务器本地时间）")
 
 
 class ChaseNewSaveRequest(BaseModel):
-    enabled: bool = Field(default=False, description="追新总开关")
+    enabled: Optional[bool] = Field(default=None, description="追新总开关；不传则保留库里的现值")
     interval: int = Field(default=10, description="轮询间隔（分钟），5-120")
     excluded: str = Field(default="",
                           description="**排除**监听的库 ID，逗号分隔，空 = 全部启用库都监听")
@@ -1095,7 +1099,10 @@ def save_chase_new(
     db: Session = Depends(get_db),
 ):
     """保存追新配置：立即生效，无需重启"""
-    cfg = change_watcher.save_config(db, req.enabled, req.interval,
+    enabled = req.enabled
+    if enabled is None:
+        enabled = change_watcher.get_config(db)["enabled"]
+    cfg = change_watcher.save_config(db, enabled, req.interval,
                                      excluded=req.excluded, libraries=req.libraries)
     return {"success": True, **cfg}
 
@@ -1107,37 +1114,6 @@ def get_auto_scan(
 ):
     """定时扫描当前配置（开关 / 时间 / 上次执行日期）"""
     return {"success": True, **auto_scan.get_config(db)}
-
-
-@admin_emby_router.post("/scrape/enrich/retry-unmatched")
-def retry_unmatched_items(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """重试未匹配项（处方 5）：把「搜过、没有」终态条目捞回队列重新补搜。
-
-    TMDB 每天新增条目、本地别名（Tier 1.5）也在变好——终态化不等于永久放弃。
-    捞回的条目置 enrich_priority=50（repair 之下、默认之上），排在队首。
-    """
-    from backend.emby_server import enrich_worker
-    n = enrich_worker.retry_unmatched(db)
-    return {"success": True, "requeued": n}
-
-
-@admin_emby_router.post("/scrape/enrich/requeue-inherit-children")
-def requeue_inherit_children(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """空壳 inherit 单集补排（v2.58.0）：父级已有 tmdb_id、但子集没拿到单集级
-    数据（done+inherit 空壳）的，翻回 pending 重跑。
-
-    与常态联动（父级新拿 tmdb_id 自动翻）同一谓词、同一动作；部署后跑一次即可，
-    日常由联动覆盖。返回翻回条数。
-    """
-    from backend.emby_server import enrich_worker
-    n = enrich_worker.requeue_stuck_inherit_children(db)
-    return {"success": True, "requeued": n}
 
 
 @admin_emby_router.get("/scrape/enrich-none-stats")
@@ -1176,7 +1152,7 @@ def get_enrich_progress(
 
 
 class EnrichEpisodeNightSaveRequest(BaseModel):
-    enabled: bool = Field(default=False, description="单集仅夜间刮削开关")
+    enabled: Optional[bool] = Field(default=None, description="单集仅夜间刮削开关；不传则保留库里的现值")
     night_start: str = Field(default="02:00", description="夜间窗口开始 HH:MM")
     night_end: str = Field(default="06:00", description="夜间窗口结束 HH:MM")
     night_tz: str | None = Field(default=None, description="夜间窗口时区（IANA 时区名），不传则沿用后台已存值")
@@ -1215,8 +1191,11 @@ def save_enrich_episode_night(
 ):
     """保存单集夜间刮削配置（写 SystemConfig，60 秒内热生效，无需重启）"""
     from backend.emby_server import enrich_worker
+    enabled = req.enabled
+    if enabled is None:
+        enabled = enrich_worker.get_episode_night_config(db)["enabled"]
     cfg = enrich_worker.save_episode_night_config(
-        db, req.enabled, req.night_start, req.night_end, req.night_tz)
+        db, enabled, req.night_start, req.night_end, req.night_tz)
     return {"success": True, **cfg}
 
 
@@ -1319,16 +1298,6 @@ class ProbeResetRequest(BaseModel):
     scope: str = Field("stuck", pattern="^(stuck|failed|retrying|all)$")
 
 
-@admin_emby_router.get("/scrape/probe-progress")
-def get_probe_progress(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """探测进度：各状态计数 / 重试中 / 过期抢单 / 常见错误 / 速率 / 熔断 / ETA"""
-    from backend.emby_server import probe_worker
-    return {"success": True, **probe_worker.status_snapshot(db)}
-
-
 @admin_emby_router.post("/scrape/probe/reset")
 def reset_probe_queue(
     req: ProbeResetRequest,
@@ -1380,7 +1349,10 @@ def save_auto_scan(
 ):
     """保存定时扫描配置：立即生效，无需重启；时间格式非法返回 400"""
     try:
-        cfg = auto_scan.save_config(db, req.enabled, req.time)
+        enabled = req.enabled
+        if enabled is None:
+            enabled = auto_scan.get_config(db)["enabled"]
+        cfg = auto_scan.save_config(db, enabled, req.time)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"success": True, **cfg}
@@ -1967,7 +1939,7 @@ def save_douban_ban_downgrade(
 # ==================== 兜底链路统一（链路规划 Step 2） ====================
 
 class _UnifiedFallbackBody(BaseModel):
-    enabled: bool = False
+    enabled: Optional[bool] = None
 
 
 @admin_emby_router.get("/scrape/unified-fallback")
@@ -1992,18 +1964,8 @@ def save_unified_fallback(
     关 = 回滚到 Step 1 部署后的原行为。
     """
     from backend.emby_server import enrich_worker
-    cfg = enrich_worker.save_unified_fallback_config(db, body.enabled)
+    enabled = body.enabled
+    if enabled is None:
+        enabled = enrich_worker.get_unified_fallback_config(db)["enabled"]
+    cfg = enrich_worker.save_unified_fallback_config(db, enabled)
     return {"success": True, **cfg}
-
-
-@admin_emby_router.get("/scrape/scheduler/status")
-def get_scheduler_status(
-    staff: base_models.WebUser = Depends(require_staff),
-):
-    """统一任务调度器状态（v2.54.1）：一次看到扫描队列 + 刮削积压 + 让路/熔断状态。
-
-    给管理后台"后台任务"统一视图用。
-    """
-    from backend.emby_server import task_scheduler as _ts
-
-    return {"success": True, "status": _ts.get_unified_status()}

@@ -44,6 +44,7 @@ from backend.api.media_sets_api import (
     user_media_sets_router,
 )
 from backend.api.library_cover import router as library_cover_router
+from backend.api.media_library import mirror_router as cover_mirror_router
 from backend.api.media_library import router as media_library_router
 from backend.api.admin_artwork import router as admin_artwork_router
 from backend.api.library_order import router as library_order_router
@@ -98,7 +99,6 @@ from backend.api.emby_portal import auth_router
 from backend.api.economy import router as economy_router
 from backend.api.invitation import router as invitation_router
 from backend.api.points import router as welfare_points_router
-from backend.api.welfare_requests import router as welfare_requests_router
 from backend.api.welfare_reviews import router as welfare_reviews_router
 from backend.api.tg_bind import router as tg_bind_router
 from backend.api.lottery import router as lottery_router
@@ -820,6 +820,8 @@ app.include_router(library_cover_router)
 # 媒体库学习（封面/排序/货架）：门户端游标分页 / 分区 / 藏 / 封面五件套
 # 与管理端覆盖 / 库设序，见 backend/api/media_library.py 等
 app.include_router(media_library_router)
+# 图床镜像出图（批一）：无前缀，即 /cdn/covers/{hash}，公开出图
+app.include_router(cover_mirror_router)
 app.include_router(admin_artwork_router)
 app.include_router(library_order_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
@@ -896,7 +898,6 @@ app.include_router(auth_router)
 app.include_router(economy_router)
 app.include_router(invitation_router)
 app.include_router(welfare_points_router)
-app.include_router(welfare_requests_router)
 app.include_router(welfare_reviews_router)
 app.include_router(tg_bind_router)
 

@@ -28,7 +28,6 @@ def db(monkeypatch):
     enrich_worker._night_cfg_cache["at"] = 0.0
     enrich_worker._night_cfg_cache["cfg"] = None
     night_env = (
-        enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV,
         enrich_worker.ENRICH_NIGHT_START_ENV,
         enrich_worker.ENRICH_NIGHT_END_ENV,
         enrich_worker.ENRICH_NIGHT_TZ_ENV,
