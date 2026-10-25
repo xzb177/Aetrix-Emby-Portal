@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -69,12 +70,15 @@ def _as_pos_int(value: object, name: str) -> int:
 
 def record_mapping(db: Session, *, local_item_id: int, source_id: int,
                    upstream_item_id: str, confidence: float,
-                   evidence: str = ""):
+                   evidence: str = "",
+                   episode_index: Optional[int] = None):
     """写一条映射（幂等 upsert）。
 
     - 开关关时不写任何东西，返回 None；
     - 同一（本地条目，源，上游条目）三元组重复写只更新置信度 / 证据 /
       更新时间，不建新行（唯一约束兜底）；
+    - episode_index：播放组内 1 起序号，电影为 None；插入时写入，
+      upsert 更新时仅当传入非 None 才更新它（None 不覆盖已有值）；
     - 本函数只 flush 不 commit，调用方事务内执行（照
       ``upstream_sources.create_source`` 口径）；
     - 证据是短码（如 tmdb / imdb / title+year），只记“凭什么配上”，
@@ -98,6 +102,7 @@ def record_mapping(db: Session, *, local_item_id: int, source_id: int,
             local_item_id=local_id,
             source_id=src_id,
             upstream_item_id=item_id,
+            episode_index=episode_index,
             confidence=_clamp_confidence(confidence),
             evidence=(evidence or "").strip()[:200],
             created_at=now,
@@ -107,6 +112,8 @@ def record_mapping(db: Session, *, local_item_id: int, source_id: int,
     else:
         row.confidence = _clamp_confidence(confidence)
         row.evidence = (evidence or "").strip()[:200]
+        if episode_index is not None:
+            row.episode_index = episode_index
         row.updated_at = now
     db.flush()
     return row

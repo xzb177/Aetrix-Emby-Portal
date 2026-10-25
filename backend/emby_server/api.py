@@ -5176,15 +5176,22 @@ async def upstream_stream(
     一律回结构化错误体（code + message + source_id），不静默失败、
     不笼统 500。鉴权与付费墙与 video_stream 同口径（get_play_user
     + ensure_playback_allowed）；上游地址先探后 302，探到可播才下发。
+    苹果 CMS 型支持 ?episode=N（默认第 1 集；非法值默认 1，越界
+    由解析器按“上游无此集”回 404）；Emby/Jellyfin 型忽略该参数。
     """
     from backend.emby_server import upstream_playback as _up
     from backend.emby_server.async_db import run_db
     await run_db(ensure_playback_allowed, db, user)
     _msid = (getattr(request, "query_params", None) or {}).get("mediaSourceId")
+    _ep_raw = (getattr(request, "query_params", None) or {}).get("episode")
+    try:
+        _ep = int(_ep_raw) if _ep_raw is not None else 1
+    except (TypeError, ValueError):
+        _ep = 1
     try:
         _url = await run_in_threadpool(
             _up.resolve_upstream_stream, db, source_id, upstream_item_id,
-            media_source_id=_msid)
+            media_source_id=_msid, episode_index=_ep)
     except _up.UpstreamPlaybackError as exc:
         return JSONResponse(status_code=exc.status, content=exc.to_body())
     return RedirectResponse(_url, status_code=302)

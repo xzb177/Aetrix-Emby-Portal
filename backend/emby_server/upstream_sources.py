@@ -23,8 +23,9 @@ auth_method、sealed_secret、extra_headers_json、user_agent、referer；
   ③ enabled / health_status / last_checked_at：FMBY 实测列里没有，
   是我方治理面补的字段（默认关、状态未知占位），不是 FMBY 实测值；
   ④ name：FMBY 实测列里没有，是我方管理端辨识源的必需字段。
-- 不做的：苹果 CMS 型（第六阶段只见其许可证项，同步与播放未实测，
-  且用户已定首批后置）；FMBY 的许可证档位 gating（那是它的商业模式，
+- 苹果 CMS 型：用户 2026-10-25 亲定与 Emby/Jellyfin 并列（绝不做兜底
+  定位）；本单只做类型与持久化（none 鉴权、分类绑定），同步与播放
+  是后续步骤，不在本模块越界；FMBY 的许可证档位 gating（那是它的商业模式，
   用户已定不卖软件，本模块不设任何档位门）。
 
 凭据密封：Fernet，密钥由 SECRET_KEY 经 SHA-256 派生（SECRET_KEY 是
@@ -243,8 +244,7 @@ def _validate_common(name: str, source_type: str, base_url: str,
         raise UpstreamSourceError("上游源名称过长（最多 80 字）")
     if source_type not in SOURCE_TYPES:
         raise UpstreamSourceError(
-            f"source_type={source_type!r} 不在允许集 {SOURCE_TYPES}——"
-            "苹果 CMS 型已明确后置，传它直接被拒")
+            f"source_type={source_type!r} 不在允许集 {SOURCE_TYPES}")
     if auth_method not in AUTH_METHODS:
         raise UpstreamSourceError(
             f"auth_method={auth_method!r} 不在允许集 {AUTH_METHODS}")
@@ -252,6 +252,8 @@ def _validate_common(name: str, source_type: str, base_url: str,
         raise UpstreamSourceError("password 形态必须填用户名")
     if auth_method == "api_key" and (username or "").strip():
         raise UpstreamSourceError("api_key 形态不填用户名（凭据只走密封值）")
+    # none 形态：无凭据，username 可空、密封值可空（create_source 里
+    # secret 为空即不存密封值）；password / api_key 的规则原样不动。
     return normalize_base_url(base_url)
 
 
@@ -440,6 +442,59 @@ def enabled_sources(db):
     return (db.query(em.UpstreamSource)
             .filter(em.UpstreamSource.enabled.is_(True))
             .order_by(em.UpstreamSource.id).all())
+
+
+# ---------------------------------------------------------------------------
+# 分类绑定（苹果 CMS W1：只做持久化，不拉目录、不做同步）
+# ---------------------------------------------------------------------------
+
+def list_category_bindings(db, source_id: int):
+    """某源的全部类别绑定（id 升序；含 sync_enabled=False 的行）。"""
+    return (db.query(em.SourceCategoryBinding)
+            .filter(em.SourceCategoryBinding.source_id == source_id)
+            .order_by(em.SourceCategoryBinding.id).all())
+
+
+def set_category_binding(db, source_id: int, category_id: str,
+                         category_name: Optional[str] = None,
+                         sync_enabled: bool = True):
+    """绑定上游分类（幂等 upsert）：同一（源，分类 id）重复写只更新
+    分类名 / 同步开关 / 更新时间，不建新行。只 flush 不 commit，
+    调用方事务内执行（照 create_source 口径）。"""
+    cid = (category_id or "").strip()
+    if not cid:
+        raise UpstreamSourceError("上游分类 id 不能为空")
+    row = (db.query(em.SourceCategoryBinding)
+           .filter(em.SourceCategoryBinding.source_id == source_id,
+                   em.SourceCategoryBinding.upstream_category_id == cid)
+           .first())
+    now = datetime.now()
+    if row is None:
+        row = em.SourceCategoryBinding(
+            source_id=source_id,
+            upstream_category_id=cid,
+            upstream_category_name=(category_name.strip()
+                                    if category_name else None),
+            sync_enabled=bool(sync_enabled),
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(row)
+    else:
+        row.upstream_category_name = (category_name.strip()
+                                      if category_name else None)
+        row.sync_enabled = bool(sync_enabled)
+        row.updated_at = now
+    db.flush()
+    return row
+
+
+def enabled_category_bindings(db, source_id: int):
+    """某源已启用同步的分类绑定（只返回 sync_enabled=True 的行）。"""
+    return (db.query(em.SourceCategoryBinding)
+            .filter(em.SourceCategoryBinding.source_id == source_id,
+                    em.SourceCategoryBinding.sync_enabled.is_(True))
+            .order_by(em.SourceCategoryBinding.id).all())
 
 
 def source_payload(source) -> dict:
