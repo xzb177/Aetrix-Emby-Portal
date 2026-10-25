@@ -743,24 +743,6 @@ export interface ServerOpsSnapshot {
   notes: string[]
 }
 
-/** 一键扫描的结果（`POST /api/admin/servers/{id}/ops/scan`） */
-export interface ServerOpsScanResult {
-  success: boolean
-  server_id: number
-  server_name: string
-  /** 本地入队的库 */
-  queued: { id: number; name: string; message: string }[]
-  /** 已在队列 / 正在扫的（不重复推） */
-  already: { id: number; name: string; message: string; state?: string }[]
-  /** 转发给归属节点并成功的 */
-  forwarded: { id: number; name: string; node_id: number; node_name: string }[]
-  /** 转发失败的：只有这一类会让整键变成「部分失败」 */
-  failed: { id: number; name: string; node_id: number; node_name: string; error: string }[]
-  /** 停用 / 虚拟库 / 超出单次上限被跳过的（带原因） */
-  skipped: { id: number; name: string; reason: string }[]
-  message: string
-}
-
 export interface ServerProbeResult {
   ok: boolean
   message?: string

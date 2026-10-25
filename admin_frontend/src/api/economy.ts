@@ -1,6 +1,5 @@
 /** v2.3.0 经济系统管理 API（/api/admin/economy/*，详见 backend/api/admin.py） */
 import { get, post, put, del } from '@/utils/request'
-import type { SubscriptionOverview } from '@/types'
 
 // ==================== 类型 ====================
 
@@ -112,9 +111,6 @@ export interface EconomySettings {
 export const fetchEconomyStats = () => get<EconomyStats>('/economy/stats')
 
 // ==================== 订阅总览 ====================
-
-export const fetchSubscriptions = (params: { status_filter?: string; search?: string; limit?: number } = {}) =>
-  get<SubscriptionOverview>('/economy/subscriptions', params)
 
 /** 按用户直接授予订阅（与用户管理页共享后端逻辑） */
 export const grantUserSubscription = (
