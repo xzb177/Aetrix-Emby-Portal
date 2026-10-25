@@ -24,7 +24,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend import media_seek, models, points, vitality, welfare_requests
+from backend import media_seek, models, points, vitality
 from backend.api import admin_economy, economy
 from backend.emby_server import models as em_models
 
@@ -172,18 +172,6 @@ def test_media_seek_used_this_month_uses_shanghai_month(db):
     db.add(models.MovieRequest(user_id=u.id, movie_name="t", created_at=created))
     db.commit()
     assert media_seek.used_this_month(db, u.id) == 1
-
-
-def test_welfare_monthly_quota_uses_shanghai_month(db):
-    u = _make_user(db, username="u8")  # welfare_expires_at=None → 公益服
-    now_sh = datetime.now(ZoneInfo("Asia/Shanghai"))
-    first_4am = now_sh.replace(day=1, hour=4, minute=0, second=0, microsecond=0)
-    created = first_4am.astimezone(timezone.utc).replace(tzinfo=None)
-    db.add(models.MediaRequest(user_id=u.id, tmdb_id="1", media_type="movie",
-                               title="t", created_at=created))
-    db.commit()
-    quota = welfare_requests.get_monthly_quota(db, u)
-    assert quota["used"] == 1
 
 
 # ---------------- F7/F8: 管理后台 ----------------

@@ -208,11 +208,79 @@ def _upsert_stage_record(db, item_id: int, stage: str, binding: Optional[dict]) 
     record.updated_at = now
 
 
-def apply_identity(db, item, fetched: dict) -> Optional[dict]:
+def resolve_imdb_id(item, fetched: dict, details_fetcher=None):
+    """TMDB→IMDb 显式解析步（已拍板放行）。
+
+    返回 (imdb_id, source)，解析不到时 (None, None)；source 取值：
+    item / details / details_external_ids / nfo / fetched /
+    tmdb_details（显式拉详情）。顺序只填空缺、永不覆盖，不降级
+    标题猜：条目已有 imdb_id → 本轮 tmdb_details.imdb_id →
+    tmdb_details.external_ids.imdb_id（TV 详情的 IMDb 号只在这里，
+    顶层没有）→ nfo_data.imdb_id → fetched 顶层 imdb_id →
+    有 tmdb_id 且给了 details_fetcher 时显式拉一次 TMDB 详情
+    （details() 自带 append_to_response=external_ids，电影与剧集
+    同口径），从详情的 imdb_id / external_ids.imdb_id 取。
+
+    details_fetcher 不给时只读已有证据，不发请求——调用方（识别段
+    分发）负责在生产链路上传入 TMDB 客户端；测试注入替身。
+    只有 movie / series 才走网络解析：episode / season 的 TMDB
+    编号不在 movie / tv 详情端点口径内，不许拿错端点猜。
+    任何异常只记日志返回 (None, None)，绝不拖垮识别段。
+    """
+    imdb_id = getattr(item, "imdb_id", None)
+    if imdb_id:
+        return str(imdb_id), "item"
+    fetched = fetched or {}
+    details = fetched.get("tmdb_details") or {}
+    if details.get("imdb_id"):
+        return str(details["imdb_id"]), "details"
+    external_ids = details.get("external_ids") or {}
+    if isinstance(external_ids, dict) and external_ids.get("imdb_id"):
+        return str(external_ids["imdb_id"]), "details_external_ids"
+    nfo_data = fetched.get("nfo_data") or {}
+    if nfo_data.get("imdb_id"):
+        return str(nfo_data["imdb_id"]), "nfo"
+    if fetched.get("imdb_id"):
+        return str(fetched["imdb_id"]), "fetched"
+    tmdb_id = (
+        getattr(item, "tmdb_id", None)
+        or fetched.get("tmdb_id")
+        or nfo_data.get("tmdb_id")
+    )
+    if not tmdb_id or details_fetcher is None:
+        return None, None
+    if getattr(item, "item_type", None) not in ("movie", "series"):
+        return None, None
+    kind = "series" if getattr(item, "item_type", None) == "series" else "movie"
+    try:
+        data = details_fetcher(str(tmdb_id), kind)
+    except Exception as exc:  # noqa: BLE001 — 解析失败 = 本轮无 IMDb 身份
+        logger.warning(
+            "TMDB→IMDb 显式解析失败 id=%s tmdb_id=%s: %s",
+            getattr(item, "id", None), tmdb_id, exc)
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    resolved = data.get("imdb_id")
+    if not resolved:
+        ext = data.get("external_ids") or {}
+        if isinstance(ext, dict):
+            resolved = ext.get("imdb_id")
+    if resolved:
+        return str(resolved), "tmdb_details"
+    return None, None
+
+
+def apply_identity(db, item, fetched: dict, tmdb_details_fetcher=None) -> Optional[dict]:
     """识别段：只写身份列 + 一段识别记录，不写任何资料字段。
 
     返回绑定 dict；无绑定（fetched 与条目都没有 tmdb / imdb 身份）时
     返回 None 且什么都不写——调用方据此判定“识别未定”，不进补资料段。
+
+    tmdb_details_fetcher：TMDB 详情取数器，签名 (tmdb_id, kind) -> dict，
+    由识别段分发传入生产客户端；不给时只读已有证据。绑定有 TMDB
+    身份却无 IMDb 身份时，用它显式解析一步（见 resolve_imdb_id）；
+    解析不到不改任何已有值，开关语义与此前逐字一致。
 
     AI 政策门（清单第 17 项，开关 ENRICH_AI_POLICY_ENABLED 默认关）：
     开时纯 AI 提名的绑定一律拒绝落库（返回 None，走现行审查 / none
@@ -234,6 +302,12 @@ def apply_identity(db, item, fetched: dict) -> Optional[dict]:
             return None
         if verdict["ai_weight"] is not None:
             binding["evidence"]["ai_weight"] = verdict["ai_weight"]
+    if binding.get("tmdb_id") and not binding.get("imdb_id"):
+        resolved, source = resolve_imdb_id(item, fetched, tmdb_details_fetcher)
+        if resolved:
+            binding["imdb_id"] = resolved
+            if source == "tmdb_details":
+                binding["evidence"]["imdb_id_source"] = "tmdb_explicit"
     if _empty(getattr(item, "tmdb_id", None)) and binding.get("tmdb_id"):
         item.tmdb_id = binding["tmdb_id"]
     if _empty(getattr(item, "imdb_id", None)) and binding.get("imdb_id"):

@@ -743,7 +743,8 @@ def _check_once() -> None:
     fatal_error = ""
     ran = False
     try:
-        if _get_config(db, CONFIG_ENABLED, "1") != "1":
+        if _get_config(db, CONFIG_ENABLED, "1").strip().lower() not in (
+                "1", "true", "yes", "on"):
             return
         ran = True
         interval = _parse_interval(_get_config(db, CONFIG_INTERVAL, str(DEFAULT_INTERVAL)))

@@ -19,15 +19,16 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from backend.api.user import get_current_user
 from backend.database import get_db
 from backend.emby_server import models as em
-from backend.emby_server import item_artwork, item_sort_projection, library_covers
+from backend.emby_server import cover_mirror, item_artwork, item_sort_projection, library_covers
 from backend.emby_server.env_util import env_int
 from backend.emby_server.identity_gate import gate_enabled, identity_clause
 
@@ -175,13 +176,21 @@ def library_cover_kind(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """库封面五件套之一（L1）。kind 非法 → 400；库不存在 → 404。"""
+    """库封面五件套之一（L1）。kind 非法 → 400；库不存在 → 404。
+
+    图床镜像（批一）：解析结果过镜像层——有成功镜像行且文件在即换
+    镜像地址（source 不变），否则原样返回并在无行时入队；开关关时
+    逐字返回解析结果。
+    """
     if kind not in _COVER_KINDS:
         raise HTTPException(status_code=400, detail="kind 只接受 poster / banner / backdrop / thumb / logo")
     lib = db.query(em.Library).filter(em.Library.id == library_id).first()
     if lib is None:
         raise HTTPException(status_code=404, detail="媒体库不存在")
-    return library_covers.resolve_library_cover(db, lib, kind)
+    result = library_covers.resolve_library_cover(db, lib, kind)
+    return cover_mirror.apply_mirror(
+        db, result,
+        local_path=cover_mirror.local_path_for_library_cover(lib, result))
 
 
 @router.get("/libraries/{library_id}/cover-placeholder.svg")
@@ -197,6 +206,35 @@ def library_cover_placeholder(
     return Response(
         content=_SVG_PLACEHOLDER,
         media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# 图床镜像出图路由（批一）：无前缀挂载，即 /cdn/covers/{hash}。
+# 故意不鉴权：封面图本就是公开可见内容（P4），且浏览器 <img> 带不了
+# 门户 JWT；地址按 64 位源哈希寻址，不含用户数据。行不在 / 未成功 /
+# 文件丢了 → 404（读路径遇此只会回落原地址，不破图）。
+mirror_router = APIRouter(tags=["cover-mirror"])
+
+
+@mirror_router.get("/cdn/covers/{source_hash}")
+def serve_cover_mirror(
+    source_hash: str,
+    db: Session = Depends(get_db),
+):
+    """图床镜像出图：hash 非法 / 无成功行 / 文件不在 → 404。"""
+    if not cover_mirror.is_valid_hash(source_hash):
+        raise HTTPException(status_code=404, detail="镜像不存在")
+    row = db.query(em.CoverMirror).filter(
+        em.CoverMirror.source_hash == source_hash).first()
+    if row is None or row.status != "success":
+        raise HTTPException(status_code=404, detail="镜像不存在")
+    path = cover_mirror.mirror_file_path(row)
+    if path is None or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="镜像不存在")
+    return FileResponse(
+        path,
+        media_type=row.content_type or "application/octet-stream",
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
