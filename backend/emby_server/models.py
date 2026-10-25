@@ -1333,6 +1333,37 @@ class LibrarySource(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class LibrarySourceHealth(Base):
+    """库源健康行（FMBY 挂载学习第 5 步：健康落库）。
+
+    一行 = 一个库源（library_sources.id）的健康状态，语义照搬 FMBY
+    ``library_source_health`` 实测机制（与上游源 upstream_health 同款
+    状态机，落点是 PG/SQLite 表不是 Redis）：
+    - 无记录默认当可用（读侧查不到行即 Active，不默认当不可用）；
+    - 成功一次即复位：状态回 Active、失败计数清零、hidden_at 清空、
+      last_success_at 更新；
+    - 失败累计 consecutive_unavailable_failures，达阈值（默认 3 次，
+      走 LIBRARY_SOURCE_HEALTH_HIDE_AFTER，不写死）才翻为 Unavailable
+      并记 hidden_at（首次翻转时间，之后继续失败不刷新）；
+    - Unknown 结论（探针未决）只推 last_checked_at，状态、计数、
+      隐藏时间、失败原因一律不动。
+    无外键（沿用 LibrarySource 先例：源删了行留着供追溯；孤行无害，
+    读侧按 library_source_id 查，源没了自然不再被读到）。
+    播放按健康表过滤是后续项（播放入口另行接线，本 PR 只做落库 +
+    扫描过滤）；复探 = 下一次探针运行，成功即复位，不另设复探定时器。
+    """
+
+    __tablename__ = "library_source_health"
+
+    library_source_id = Column(Integer, primary_key=True)
+    availability_state = Column(String(32), default="Active")
+    consecutive_unavailable_failures = Column(Integer, default=0)
+    last_failure_kind = Column(String(100))
+    hidden_at = Column(DateTime)
+    last_success_at = Column(DateTime)
+    last_checked_at = Column(DateTime)
+
+
 class MountCredential(Base):
     """挂载凭据行（FMBY 挂载模型地基，清单第 1 项：凭据分家）。
 

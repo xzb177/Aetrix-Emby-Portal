@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session
 
 from backend import models, realms
 from backend.database import get_db
+from backend.emby_server import library_source_health as lsh
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import mount_sources
@@ -206,6 +207,14 @@ def mounts_health(db: Session, service: str, realm_id: Optional[int] = None) -> 
     mounts = probe_mounts(db, realm_id=realm_id)
     probed = [m for m in mounts if m.get("ok") is not None]
     failed = [m for m in probed if not m["ok"]]
+    # 挂载第 5 步：探针结论落库源健康表（默认关；开时每次体检都写，
+    # 成功即复位，失败达阈值才隐藏；未体检 ok=None 的不写）。
+    if lsh.health_enabled():
+        for m in probed:
+            kind = None
+            if not m["ok"]:
+                kind = lsh.FAILURE_KIND_AUTH if m.get("auth_error") else lsh.FAILURE_KIND_PROBE
+            lsh.sync_mount_probe_to_source_health(db, m["id"], bool(m["ok"]), kind)
     node = playback_node(db, realm_id)
     realm = realms.get_realm(db, realm_id) if realm_id is not None else None
     return {
