@@ -10,6 +10,7 @@ from backend.api.admin import admin_router
 from backend.api import admin_economy  # noqa: F401 — 导入即注册
 from backend.api import admin_scrape  # noqa: F401 — 导入即注册（元数据与刮削）
 from backend.api import admin_identify_review  # noqa: F401 — 导入即注册（低置信识别审查队列）
+from backend.api import admin_media_governance  # noqa: F401 — 导入即注册（可见性治理复核队列 + 库级扫描预设，L7/L10）
 from backend.api import admin_upstream_sources  # noqa: F401 — 导入即注册（上游源管理，#25 25-1）
 from backend.api import admin_user_grants  # noqa: F401 — 导入即注册（用户授权资源卡片）
 from backend.api import welfare_admin  # noqa: F401 — 导入即注册（公益服管理后台）

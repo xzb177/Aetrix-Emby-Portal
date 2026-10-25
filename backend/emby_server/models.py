@@ -858,6 +858,164 @@ class IdentifyReviewTask(Base):
     )
 
 
+#: 可见性治理流水线（FMBY 媒体库学习 L7）与别名独立表（L8）、
+#: 库级扫描预设策略（L10）的允许值——**全仓唯一定义点**。
+#: 下方三类模型的 CheckConstraint SQL 直接由这些元组拼出，治理 /
+#: 别名 / 预设模块的代码校验也只读它们：约束与枚举同源、永不漂移。
+#: preset 取值 = Aetrix 现有 Library.collection_type 取值（movies /
+#: tvshows / mixed），不是任何外部产品的预设名；模板与片单不 hardcode，
+#: preset 只决定解析口径（见 library_scan_presets）。
+VISIBILITY_TASK_STATUSES = ("pending", "approved", "rejected")
+VISIBILITY_SURFACES = ("shelf", "search", "direct")
+VISIBILITY_EVENT_TYPES = ("task_created", "task_approved", "task_rejected",
+                          "decision_recorded")
+VISIBILITY_RULE_KEYS = ("case_a_bound", "case_a_unbound", "case_a_open")
+MEDIA_ALIAS_SOURCES = ("tmdb", "nfo", "manual", "legacy_column")
+LIBRARY_SCAN_PRESETS = ("movies", "tvshows", "mixed")
+
+
+class VisibilityGovernanceTask(Base):
+    """可见性治理任务（L7）：管理员复核队列的一行。
+
+    只记录“有人提请复核某条目在某面的可见性”这一事实与处置结果。
+    **本行不是露出开关**：复核动作（准入/驳回）只追加决策行与事件，
+    露出结果永远由案 A 判定函数现算（见 visibility_governance），
+    本批复核动作不改变任何露出结果——露出变化需另行拍板。
+    """
+
+    __tablename__ = "emby_visibility_tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+    item_id = Column(Integer, nullable=False, index=True)  # emby_items.id，不加外键：条目删后复核行留着供追溯（照 IdentifyReviewTask 先例）
+    item_name = Column(String(500))  # 入队时快照，条目改名/删除不影响追溯
+    surface = Column(String(20), nullable=False)  # shelf / search / direct
+    status = Column(String(20), nullable=False, default="pending")
+    reason = Column(String(500))
+    decided_by = Column(Integer)  # web_users.id（处置管理员）
+    decided_at = Column(DateTime)
+    decision_note = Column(String(500))
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("surface", VISIBILITY_SURFACES),
+                        name="ck_visibility_task_surface"),
+        CheckConstraint(_in_sql("status", VISIBILITY_TASK_STATUSES),
+                        name="ck_visibility_task_status"),
+        Index("ix_visibility_task_status_created", "status", "created_at"),
+    )
+
+
+class ItemVisibilityDecision(Base):
+    """可见性决策行（L7）：一次复核留下的审计快照，只追加、不改不删。
+
+    ``visible`` 存的是复核当刻案 A 判定函数算出的结果（审计用），
+    露出读路径**不读本表**——改本表任何一行都不会改变露出。
+    """
+
+    __tablename__ = "emby_item_visibility_decisions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    item_id = Column(Integer, nullable=False, index=True)
+    surface = Column(String(20), nullable=False)
+    visible = Column(Boolean, nullable=False)
+    rule_key = Column(String(40), nullable=False)  # case_a_*（见 VISIBILITY_RULE_KEYS）
+    task_id = Column(Integer)  # 触发本次决策的治理任务（无任务的审计记 None）
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("surface", VISIBILITY_SURFACES),
+                        name="ck_visibility_decision_surface"),
+        CheckConstraint(_in_sql("rule_key", VISIBILITY_RULE_KEYS),
+                        name="ck_visibility_decision_rule"),
+        Index("ix_visibility_decision_item_surface", "item_id", "surface",
+              "created_at"),
+    )
+
+
+class VisibilityEvent(Base):
+    """可见性事件流水（L7）：不可变事件，只追加、不改不删。
+
+    本模型刻意**没有 updated_at 列**；visibility_governance 模块里
+    不给本表留任何 UPDATE / DELETE 路径（测试以源码 grep + 无
+    updated_at 列双重证明）。事件是审计证据，不是可编辑状态。
+    """
+
+    __tablename__ = "emby_visibility_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    task_id = Column(Integer, index=True)
+    item_id = Column(Integer, nullable=False, index=True)
+    event_type = Column(String(40), nullable=False)
+    actor = Column(Integer)  # web_users.id（系统动作记 None）
+    detail_json = Column(Text)  # JSON：{surface, status, note, rule_key, ...}
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("event_type", VISIBILITY_EVENT_TYPES),
+                        name="ck_visibility_event_type"),
+        Index("ix_visibility_event_item_created", "item_id", "created_at"),
+    )
+
+
+class MediaAlias(Base):
+    """条目别名独立表（L8）：识别与搜索的共同证据源。
+
+    存量 MediaItem.aliases 列**原样不动**（列、trigram 索引、搜索行为
+    都不改）：本表是增量证据源，存量列数据由
+    media_alias.migrate_aliases_from_column 幂等迁入（source=
+    legacy_column）。识别候选生成时（enrich_worker._alias_tmdb_id 的
+    本地别名索引）开关开时同时读本表。
+    """
+
+    __tablename__ = "emby_media_aliases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    item_id = Column(Integer, nullable=False, index=True)  # emby_items.id
+    alias = Column(String(300), nullable=False)
+    source = Column(String(40), nullable=False, default="manual")
+    confidence = Column(Float, default=1.0)
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("source", MEDIA_ALIAS_SOURCES),
+                        name="ck_media_alias_source"),
+        UniqueConstraint("item_id", "alias", "source",
+                         name="uq_media_alias_item_alias_source"),
+        Index("ix_media_alias_alias", "alias"),
+    )
+
+
+class LibraryScanPreset(Base):
+    """库级扫描预设策略（L10）：一库一行，声明解析口径。
+
+    preset 取值 = Library.collection_type 取值（movies / tvshows /
+    mixed），只决定扫描解析时把文件当电影还是剧集（与
+    parse_media_filename 的 library_type 参数同口径）；extensions
+    是逗号分隔的扩展名白名单（空 = 不限，实际仍受 VIDEO_EXTS 约束，
+    只收窄不放宽）；path_filters 是 JSON 数组的子串包含过滤（空 =
+    不限，命中任一子串才纳入）。开关关、或该库无策略行时，扫描走
+    现行口径，零行为变化。
+    """
+
+    __tablename__ = "emby_library_scan_presets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now,
+                        nullable=False)
+    library_id = Column(Integer, nullable=False, unique=True, index=True)
+    preset = Column(String(40), nullable=False)
+    extensions = Column(Text, default="")  # 逗号分隔，如 ".mkv,.mp4"（空=不限）
+    path_filters = Column(Text, default="")  # JSON 数组，如 ["Season 1"]
+
+    __table_args__ = (
+        CheckConstraint(_in_sql("preset", LIBRARY_SCAN_PRESETS),
+                        name="ck_library_scan_preset"),
+    )
+
+
 #: 上游源（FMBY 学习 #25 25-1）的 source_type / auth_method /
 #: credential_scope / health_status 允许值——**全仓唯一定义点**。下方
 #: UpstreamSource 的 CheckConstraint SQL 直接由这四个元组拼出，

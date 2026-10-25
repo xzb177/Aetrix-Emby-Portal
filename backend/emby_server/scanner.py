@@ -2025,6 +2025,15 @@ class LibrarySnapshot:
     # 为空 = 正常全库扫描。
     limit_prefixes: tuple = ()
     targeted: bool = False
+    # L10 库级扫描预设策略（默认 None/空 = 无策略，走现行口径）：
+    # policy_parse_type 覆盖 collection_type 的解析口径；
+    # policy_extensions 与 VIDEO_EXTS 取交集后的白名单（None = 不限）；
+    # policy_path_filters 为子串包含过滤（空 = 不限）。三字段只由
+    # scan_library_sync 入口的 attach_policy_to_snapshot 填写，扫描中途
+    # 不改（快照语义），开关关/未配策略时恒为默认值，零行为变化。
+    policy_parse_type: Optional[str] = None
+    policy_extensions: Optional[tuple] = None
+    policy_path_filters: tuple = ()
 
     @classmethod
     def of(cls, library) -> "LibrarySnapshot":
@@ -4351,7 +4360,21 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     """把一批文件变成「可直接写库」的任务：一次查库 + 并行预取"""
     prepared: list = []
     guids: list = []
+    # L10：本轮解析口径 = 策略 preset（有策略时）否则库 collection_type；
+    # 无策略时 parse_type 恒等于 collection_type，行为与改前逐字一致。
+    try:
+        from backend.emby_server import library_scan_presets as _lsp
+        parse_type = _lsp.effective_parse_type(ctx.snap, ctx.snap.collection_type)
+    except Exception:  # noqa: BLE001 — 策略判定失败 = 现行口径
+        _lsp = None
+        parse_type = ctx.snap.collection_type
     for scan_file in batch:
+        # L10：策略过滤（无策略时恒 True）：被滤掉的文件不建任务、不入库，
+        # 计入 policy_skipped 供扫描统计核对。
+        if _lsp is not None and not _lsp.snapshot_policy_allows(
+                ctx.snap, scan_file.stored_path):
+            ctx.stats["policy_skipped"] = ctx.stats.get("policy_skipped", 0) + 1
+            continue
         guid = item_guid(scan_file.stored_path)
         if guid in ctx.seen_guids:
             # 同一文件在本轮扫描里已经处理过：遍历器偶发产出重复
@@ -4364,10 +4387,10 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             logger.debug("扫描跳过重复文件：%s", scan_file.stored_path)
             continue
         ctx.seen_guids.add(guid)
-        parsed = parse_media_filename(scan_file.stored_path, ctx.snap.collection_type)
+        parsed = parse_media_filename(scan_file.stored_path, parse_type)
         item_type = (
             "episode" if parsed["season"] is not None
-            else ("series" if ctx.snap.collection_type == "tvshows" else "movie")
+            else ("series" if parse_type == "tvshows" else "movie")
         )
         pending = _Pending(scan_file=scan_file, guid=guid, parsed=parsed, item_type=item_type)
         if item_type == "episode":
@@ -5908,6 +5931,15 @@ def scan_library_sync(db: Session, library: emby_models.Library,
       而删掉库里别的来源的条目。
     """
     snap = snapshot or LibrarySnapshot.of(library)
+    # L10：开关开且该库配了策略时，把策略挂到快照上；开关关/未配策略/
+    # 挂载失败时原样返回快照，走现行口径（attach 内部已 fail-safe）。
+    try:
+        from backend.emby_server import library_scan_presets as _lsp
+        snap = _lsp.attach_policy_to_snapshot(db, snap,
+                                              allowed_extensions=VIDEO_EXTS)
+    except Exception:  # noqa: BLE001 — 策略挂载绝不阻断扫描
+        logger.warning("扫描预设挂载失败（库 %s），走现行口径", snap.library_id,
+                       exc_info=True)
     # 先在**进程内**占位（重复任务会在这一步被拒绝，不会写库、也不会启动扫描），再写库状态
     _acquire_scan(snap.library_id)
     # 让路配额（2026-10-23）：本轮开扫重置配额时钟；定向扫描（新片入库）
