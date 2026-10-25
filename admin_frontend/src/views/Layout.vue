@@ -180,12 +180,12 @@ const navGroups: NavGroup[] = [
   },
   {
     // 公益服：抽奖配置 / 积分配置（公益用户已并入「用户管理」，求片审核已并入「求片管理」）
+    // 批 2：两页并为一入口（Welfare.vue 两标签），导航只留这一项
     title: '公益服',
     icon: Heart,
     items: [
       // 求片审核已并入「求片管理」，菜单移除
-      { path: '/welfare-lottery-rounds', label: '群抽奖活动', icon: Trophy },
-      { path: '/welfare-points', label: '积分配置', icon: Wallet },
+      { path: '/welfare-lottery-rounds', label: '公益服', icon: Trophy },
     ],
   },
   {

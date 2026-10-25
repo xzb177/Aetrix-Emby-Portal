@@ -50,14 +50,14 @@ const routes: RouteRecordRaw[] = [
       // 成就与馆灵（r48 遗留 ⑨）：面板 v4 成就定义 + 馆灵阶段的管理入口
       { path: 'panel-achievements', name: 'PanelAchievements', component: () => import('@/views/PanelAchievements.vue'), meta: { title: '成就与馆灵' } },
       { path: 'media-seek', name: 'MediaSeek', component: () => import('@/views/MediaSeek.vue'), meta: { title: '求片管理' } },
-      // 公益服：抽奖配置 / 积分配置（v2.55 公益用户页已并入用户管理，求片审核页已合并）
-      // 求片审核已并入「求片管理」（MediaSeek.vue），路由移除
-      { path: 'welfare-lottery-rounds', name: 'WelfareLotteryRounds', component: () => import('@/views/WelfareLotteryRounds.vue'), meta: { title: '公益服·群抽奖' } },
+      // 公益服（重新布局批 2）：群抽奖 + 积分配置并为一页两标签（Welfare.vue），
+      // 旧 /welfare-points 跳到积分配置标签；求片审核已并入「求片管理」（MediaSeek.vue），路由移除
+      { path: 'welfare-lottery-rounds', name: 'WelfareLotteryRounds', component: () => import('@/views/Welfare.vue'), meta: { title: '公益服' } },
       // 旧抽奖页（WelfareLottery.vue）/ 公益用户 / 求片审核已删除或合并：旧地址跳到新页
       { path: 'welfare-lottery', redirect: '/welfare-lottery-rounds' },
       { path: 'welfare-users', redirect: '/users' },
       { path: 'welfare-requests', redirect: '/media-seek' },
-      { path: 'welfare-points', name: 'WelfarePoints', component: () => import('@/views/WelfarePoints.vue'), meta: { title: '公益服·积分配置' } },
+      { path: 'welfare-points', redirect: { path: '/welfare-lottery-rounds', query: { tab: 'points' } } },
       // 会员等级（P1 统一货币体系）：运营中心 → 会员等级
       { path: 'member-levels', name: 'MemberLevels', component: () => import('@/views/MemberLevels.vue'), meta: { title: '会员等级' } },
       { path: 'emby', name: 'EmbyAdmin', component: () => import('@/views/EmbyAdmin.vue'), meta: { title: '媒体库' } },
