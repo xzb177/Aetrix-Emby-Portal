@@ -323,7 +323,8 @@ def episode_address(group, episode_index) -> Optional[str]:
 
 
 def resolve_play(vod_detail, episode_index,
-                 parse_lines_enabled: bool = False):
+                 parse_lines_enabled: bool = False,
+                 parse_resolver: Optional[Callable] = None):
     """从 vod 详情里选播放地址（只解析，不发任何请求、不落库）。
 
     返回 ``("ok", 组名, 地址)`` 或 ``("unplayable", 原因)``，原因取值：
@@ -331,9 +332,20 @@ def resolve_play(vod_detail, episode_index,
     - ``"episode_out_of_range"``：直链组存在，但该集序号越界；
     - ``"parse_not_enabled"``：只有解析型组，解析线路开关关着；
     - ``"parse_rule_missing"``：解析线路开关开着，但本站无解析规则
-      （本批规则不存在，恒为此原因，不猜规则）；
+      （未注入 ``parse_resolver``，或解析器对该集无可用结果）；
     - ``"no_direct_group"``：无直链组、也无解析型组（无播放信息、
       地址全 unknown/空）。
+
+    逐站解析（后续四件之 ③）：开关关时行为与此前逐字一致
+    （解析型组一律 ``parse_not_enabled``，绝不调解析器）；开关开
+    时，``parse_resolver`` 是调用方按站/线路注入的解析函数，签名
+    ``parse_resolver(address, group_name) -> Optional[str]``——
+    ``address`` 是该集的解析型地址，``group_name`` 是 CMS 给的线路
+    名（数据驱动，调用方可按它分站派发，本模块不 hardcode 任何
+    站名与规则）。解析器只对请求的这一集调一次；返回的地址必须
+    经 ``classify_url`` 判定为 direct 才算解析成功（返回解析型/
+    空地址都按无规则处理），成功结果走既有 ``("ok", …)`` 口径，
+    下游探活/302 口径与直链组完全一致，不另起播放路径。
     """
     if not isinstance(vod_detail, dict):
         return ("unplayable", "no_direct_group")
@@ -351,5 +363,19 @@ def resolve_play(vod_detail, episode_index,
     if has_parse:
         if not parse_lines_enabled:
             return ("unplayable", "parse_not_enabled")
+        if parse_resolver is not None:
+            for group in groups:
+                address = episode_address(group, episode_index)
+                if address is None:
+                    continue
+                if classify_url(address) != "parse":
+                    continue
+                try:
+                    resolved = parse_resolver(address, group["name"])
+                except Exception:
+                    continue
+                if isinstance(resolved, str) and resolved.strip() \
+                        and classify_url(resolved) == "direct":
+                    return ("ok", group["name"], resolved.strip())
         return ("unplayable", "parse_rule_missing")
     return ("unplayable", "no_direct_group")

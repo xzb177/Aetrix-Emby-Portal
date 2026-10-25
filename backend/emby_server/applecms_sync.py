@@ -174,12 +174,18 @@ class SyncResult:
 
     ``unmatched`` 是未匹配作品的聚合键列表（parallel/list 模式）；
     ``hidden`` 是 hide 模式下被排除的未匹配作品数。
+    ``unmatched_items`` 与 ``unmatched`` 同批产出：它是未匹配作品
+    的聚合对象本身（parallel/list 模式才有；hide 模式为空），供
+    展示层经 :func:`select_unmatched_for_presentation` 消费——
+    只给键不够展示用（键是归一化后的标题+年份，丢了原名），
+    所以同步时把聚合对象一并留下来；键仍保留，供计数/诊断。
     """
 
     source_id: str
     scanned: int = 0
     mapped: int = 0
     unmatched: List[str] = field(default_factory=list)
+    unmatched_items: List[Any] = field(default_factory=list)
     hidden: int = 0
     errors: List[str] = field(default_factory=list)
     health: str = "unknown"
@@ -590,6 +596,7 @@ def sync_source(
                             result.hidden += 1
                         else:
                             result.unmatched.append(work_key)
+                            result.unmatched_items.append(item)
                         continue
                     if not mapping_on:
                         continue
@@ -626,7 +633,43 @@ def sync_source(
 
 
 # ---------------------------------------------------------------------------
-# 手动触发与工人门（本批不新增路由、不碰 worker.py）
+# 展示层消费未配对项（后续四件之 ④）
+# ---------------------------------------------------------------------------
+
+
+def select_unmatched_for_presentation(
+    result: SyncResult,
+    local_entries: Iterable[Any],
+    *,
+    unmatched_mode: Optional[str] = None,
+) -> List[Any]:
+    """把一次同步的未配对项并进展示层（架面/搜索面共用同一函数，
+    全站一个规矩，不按面分细规则）。
+
+    口径（与 ``APPLECMS_UNMATCHED_MODE`` 并列语义一致）：
+    - ``parallel`` / ``list``：本地在前，未配对项只补本地没有的
+      作品（比对口径与去重全复用 ``upstream_aggregation
+      .select_for_presentation``，上游绝不插队、绝不顶掉本地）；
+    - ``hide``：只剩本地，未配对项不出现（与同步时的 hidden 计数
+      一致——hide 模式下 ``unmatched_items`` 本就是空的，本函数
+      再按模式挡一次，双保险）。
+    - 模式未显式传时读 env（与同步同一键）；非法值回落 parallel。
+    展示条目只含聚合键 / 来源分区 / 名称，不含任何播放地址：
+    未配对项的播放仍走既有上游播放口（须映射/显式调用），本函数
+    不给展示层发播放地址、不替 video_stream 选路。
+    """
+    mode = _unmatched_mode(unmatched_mode)
+    local = list(local_entries or [])
+    if mode == "hide":
+        return local
+    items = getattr(result, "unmatched_items", None) or []
+    return agg.select_for_presentation(
+        local, items, aggregation_enabled=True)
+
+
+# ---------------------------------------------------------------------------
+# 手动触发与工人门（管理路由与定时调度见 applecms_production /
+# applecms_scheduler；本模块仍不碰 worker.py）
 # ---------------------------------------------------------------------------
 
 

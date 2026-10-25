@@ -61,7 +61,9 @@
   （关时不查；开且映射未配置时 403，复用既有 upstream_forbidden
   码，见 ``_resolve_applecms_stream``）→ 解析线路开关
   ``APPLECMS_PARSE_LINES_ENABLED``（只影响解析型组的 unplayable
-  原因，不放行任何解析）。同步开关 ``UPSTREAM_SYNC_ENABLED``
+  原因；开时调用方可经 ``parse_resolver`` 参数注入逐站解析函数，
+  未注入时仍记 parse_rule_missing，不内置任何站规则、不猜解析）。
+  同步开关 ``UPSTREAM_SYNC_ENABLED``
   默认关且本批无工人消费；映射写开关
   ``UPSTREAM_ITEM_MAPPING_ENABLED`` 只管映射写路径，不 gate 播放读
   路径（它默认关，若 gate 播放则播放恒关，是错的）。
@@ -421,7 +423,8 @@ def _map_applecms_error(exc, source_id: int) -> UpstreamPlaybackError:
 def _resolve_applecms_stream(source, vod_id: str, *,
                              episode_index: int = 1,
                              http_get: Optional[Callable] = None,
-                             http_probe: Optional[Callable] = None) -> str:
+                             http_probe: Optional[Callable] = None,
+                             parse_resolver: Optional[Callable] = None) -> str:
     """苹果 CMS 播放分支：现取现解析、先探后 302，绝不落库。
 
     门禁顺序：APPLECMS_ENABLED 关 → 404 upstream_playback_disabled
@@ -464,7 +467,8 @@ def _resolve_applecms_stream(source, vod_id: str, *,
         episode = -1
     result = acf.resolve_play(
         detail, episode,
-        parse_lines_enabled=applecms_parse_lines_enabled())
+        parse_lines_enabled=applecms_parse_lines_enabled(),
+        parse_resolver=parse_resolver)
     if result[0] != "ok":
         reason = result[1]
         if reason == "episode_out_of_range":
@@ -495,7 +499,8 @@ def resolve_upstream_stream(db: Session, source_id: int,
                             http_probe: Optional[Callable] = None,
                             http_post: Optional[Callable] = None,
                             episode_index: int = 1,
-                            http_get: Optional[Callable] = None) -> str:
+                            http_get: Optional[Callable] = None,
+                            parse_resolver: Optional[Callable] = None) -> str:
     """上游播放解析：查源 → 取凭据 → 拼地址 → Range 探活 → 返回 302 地址。
 
     每一步失败都以 UpstreamPlaybackError 结构化返回，绝不返回死链、
@@ -524,7 +529,8 @@ def resolve_upstream_stream(db: Session, source_id: int,
     if getattr(source, "source_type", None) == "applecms":
         return _resolve_applecms_stream(
             source, item_id, episode_index=episode_index,
-            http_get=http_get, http_probe=http_probe)
+            http_get=http_get, http_probe=http_probe,
+            parse_resolver=parse_resolver)
     try:
         token = _auth_token_for_source(source, http_post=http_post)
     except us.SealedSecretError as exc:
