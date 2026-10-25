@@ -147,9 +147,20 @@ def test_cutover_matches_legacy_after_backfill(db, tmp_path):
 
 # ---------- 2. 能力门控 ----------
 
-def test_capability_parity_four_providers(db, tmp_path):
-    """四家 provider 声明与回填派生口径逐字一致；drive 全 True，
-    其余 can_refresh_credentials=False（声明是保证不是尽力）。"""
+def test_capability_parity_all_providers(db, tmp_path):
+    """五家 provider 声明与回填派生口径逐字一致；drive 全 True，
+    其余 can_refresh_credentials=False（声明是保证不是尽力）。
+    139 是 sidecar 形态：构造走 Fake 运行时客户端（握手 + 会话两口），
+    不依赖真实 sidecar 进程。"""
+    from backend.emby_server.mount_yun139 import Yun139Mount
+    from backend.emby_server.provider_runtime import BASE_CAPABILITIES
+
+    class _Fake139Client:
+        def handshake(self, required_extensions=None):
+            return {"capabilities": list(BASE_CAPABILITIES)}
+        def session_upsert(self, session_id, data):
+            return {"ok": True, "session_id": session_id}
+
     expected = {
         "local": {"can_list": True, "can_random_read": True, "can_read_sidecar": True,
                   "can_generate_play_target": True, "can_refresh_credentials": False},
@@ -159,6 +170,8 @@ def test_capability_parity_four_providers(db, tmp_path):
                   "can_generate_play_target": True, "can_refresh_credentials": True},
         "rclone": {"can_list": True, "can_random_read": True, "can_read_sidecar": True,
                    "can_generate_play_target": True, "can_refresh_credentials": False},
+        "yun139": {"can_list": True, "can_random_read": True, "can_read_sidecar": True,
+                   "can_generate_play_target": True, "can_refresh_credentials": False},
     }
     assert ms.CAPABILITY_BY_MOUNT_TYPE == expected
     providers = [
@@ -166,8 +179,11 @@ def test_capability_parity_four_providers(db, tmp_path):
         mnt.Pan115Mount(SimpleNamespace(path="115:/", config={})),
         DriveMount(SimpleNamespace(path="drive:shared", config={})),
         RcloneMount(SimpleNamespace(path="rclone:MP:", config={"mode": "rc"})),
+        Yun139Mount(SimpleNamespace(path="139:/", config={}, id=77),
+                    client=_Fake139Client()),
     ]
-    for provider, mount_type in zip(providers, ("local", "115", "drive", "rclone")):
+    for provider, mount_type in zip(
+            providers, ("local", "115", "drive", "rclone", "yun139")):
         assert provider.capabilities().as_dict() == expected[mount_type]
 
 
