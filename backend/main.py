@@ -39,6 +39,10 @@ from backend.api.admins_admin import router as admins_router
 from backend.api.setup import router as setup_router
 from backend.api.playback_admin import router as playback_admin_router
 from backend.api.admin_readonly import router as admin_readonly_router
+from backend.api.media_sets_api import (
+    admin_media_sets_router,
+    user_media_sets_router,
+)
 from backend.api.library_cover import router as library_cover_router
 from backend.api.home_summary import router as home_summary_router
 from backend.api.homepage_sections import router as homepage_sections_router
@@ -804,6 +808,10 @@ app.include_router(playback_bus_admin.router)
 # 管理后台只读观测口（专线 B 第一阶段：补口）：绑定 / 采样进度 / sidecar /
 # 映射 / 139 池，全部 GET，见 backend/api/admin_readonly.py
 app.include_router(admin_readonly_router)
+# 媒体库合集域 L3：管理端 CRUD/规则/刷新/模板 + 用户端架与成员读口。
+# 总闸 COLLECTIONS_ENABLED 默认关，关时本组接口惰性 404，现有路由不动。
+app.include_router(admin_media_sets_router)
+app.include_router(user_media_sets_router)
 # 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
 app.include_router(library_cover_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
