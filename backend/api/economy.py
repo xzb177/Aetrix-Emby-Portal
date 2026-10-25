@@ -351,15 +351,16 @@ def _checkin_rules(db: Session) -> dict:
     """签到奖励规则（管理端 SystemConfig 可调）
 
     2026-10-09 合并公益服签到后的统一规则：
-    - 基础积分：checkin_base_min ~ checkin_base_max 随机；
-      未配置 min/max 时回退到 checkin_base_points（默认 5~5 = 固定 5 分，旧行为不变）
+    - 基础积分：checkin_base_min ~ checkin_base_max 随机；未配置时默认
+      5~5 = 固定 5 分（2026-10-23 去重：原 checkin_base_points 单值键退役，
+      它只在未配范围时当回退、配了范围即被架空，一值三字段只留范围一对）
     - 连签加成：streak_bonus * (streak-1)，封顶 streak_max_bonus
     - 惩罚：penalty_pct% 概率扣 penalty_min ~ penalty_max（默认 0 = 关闭，旧行为不变）
     - 积分仅发放给公益服用户（is_welfare=True）；其他用户签到只记录连签
     """
-    base_points = _get_int_config(db, "checkin_base_points", 5)
-    base_min = _get_int_config(db, "checkin_base_min", base_points)
-    base_max = _get_int_config(db, "checkin_base_max", base_points)
+    base_min = _get_int_config(db, "checkin_base_min", 5)
+    base_max = _get_int_config(db, "checkin_base_max", 5)
+    base_points = base_min
     if base_min > base_max:
         base_min, base_max = base_max, base_min
     penalty_min = _get_int_config(db, "checkin_penalty_min", 1)
@@ -787,6 +788,13 @@ def _grant_subscription(db: Session, user: models.WebUser, plan: models.Subscrip
             )
             db.add(subscription)
             db.flush()
+    # 订阅分档权益（PR-1）：该用户的当前套餐可能已变（新建/顺延/换档），
+    # 清掉他的权益解析缓存；同进程立即生效，跨进程靠 60 秒 TTL 兜底
+    #（见 backend/entitlements.py）。本函数是购买/兑换/管理员发放/自动
+    # 续订的共同发放口，挂在这里即全覆盖。
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate(user_id=user.id)
     return subscription
 
 
@@ -1141,6 +1149,8 @@ def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db))
     """
     if not _get_bool_config(db, "subscription_purchase_enabled", True):
         return {"enabled": False, "plans": []}
+    from backend import entitlements as _entitlements
+
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
     query = realms.scope(db.query(models.SubscriptionPlan),
                          models.SubscriptionPlan.realm_id, scope_id)
@@ -1159,6 +1169,9 @@ def payment_plans(realm_id: Optional[int] = None, db: Session = Depends(get_db))
                 "id": p.id, "name": p.name, "description": p.description,
                 "price": float(p.price), "duration_days": p.duration_days,
                 "features": p.features, "is_popular": p.is_popular,
+                # 订阅分档权益（经判定单口 parse 归一：未声明即 {}，坏值剔除）；
+                # 用户端商店据此自动生成权益文案行，展示永远等于实际生效值
+                "entitlements": _entitlements.parse_entitlements(p.entitlements),
                 "realm_id": p.realm_id,
                 "realm_name": (p.realm.name if p.realm else ""),
                 "points_price": (float(p.points_price) if p.points_price is not None else None),

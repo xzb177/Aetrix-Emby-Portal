@@ -124,16 +124,12 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 但存字节必须相同）。
     "welfare_require_tg_bind": ("bool", "digit"),
     "lottery_draw_interval_sec": ("int", 30, 86400),
-    "chat_points_enabled": ("bool",),  # 默认关的功能开关保留面板（2026-10-21）
+    # chat_points_* 已于 2026-10-23 去重退役（机器人那套群发言积分，
+    # 与 points_chat_* 重复），此处不再登记
     "points_transfer_fee_pct": ("int", 0, 100),
     "points_transfer_min": ("int", 1, _BIG),
     "points_transfer_max": ("int", 0, _BIG),
     "points_transfer_daily_cap": ("int", 0, _BIG),
-    "chat_points_per_message": ("int", 0, 100000),
-    "chat_points_min_len": ("int", 0, 10000),
-    "chat_points_minute_window": ("int", 0, 86400),
-    "chat_points_daily_cap": ("int", 0, _BIG),
-    "chat_points_points_per_day": ("int", 0, _BIG),
     # 2026-10-17 第 4 批 4-2：补上 WELFARE_CONFIG_KEYS 里漏登记的 3 个
     # （读侧 lottery.py 有明确口径：bool 默认开、int max(0,·) 钳制）
     "lottery_require_group_member": ("bool", "digit"),
@@ -143,7 +139,7 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     # 存字符串）。注册为 ("str",) 与今天逐字一致：原文直存，None/空串→删行
     # （读侧 _get_str_config 缺行/空行都回默认 ""，等价）。
     "bot_group_ids": ("str",),
-    "chat_points_group_ids": ("str",),
+
     "lottery_group_ids": ("str",),
 }
 
@@ -218,12 +214,17 @@ ITEMS_CACHE_CONFIG_SCHEMA: dict[str, tuple] = {
 #   而不是删行）；复合校验（stream_accel 开关+域名联动、签到上下限、活力阈值）
 #   保留在端点层，注册表只表达"类型+范围"。
 ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
-    "checkin_enabled": ("bool",), "checkin_base_points": ("int", 0, _BIG),
+    "checkin_enabled": ("bool",),
     "checkin_streak_bonus": ("int", 0, _BIG), "checkin_streak_max_bonus": ("int", 0, _BIG),
     "checkin_base_min": ("int", 0, _BIG), "checkin_base_max": ("int", 0, _BIG),
     "checkin_penalty_pct": ("int", 0, 100),
     "checkin_penalty_min": ("int", 0, _BIG), "checkin_penalty_max": ("int", 0, _BIG),
     "media_seek_daily_limit": ("int", 0, _BIG),
+    # 2026-10-23 去重 #5：两个月限与日限同卡（运营参数）后需在此登记才可
+    # 从该页保存；welfare_request_monthly 同时保留在 WELFARE_CONFIG_SCHEMA
+    # （公益配置端点的历史口径），paid_request_monthly 此前无任何登记
+    "welfare_request_monthly": ("int", 0, 10000),
+    "paid_request_monthly": ("int", 0, 10000),
     # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取；无行=按服自动推导）
     "code_default_plan_id": ("int", 0, _BIG),
     "recharge_enabled": ("bool",), "subscription_purchase_enabled": ("bool",),
@@ -235,7 +236,6 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "device_limit_per_user": ("int", 0, _BIG), "device_limit_auto_evict": ("bool",),
     "login_log_retention_days": ("int", 0, _BIG),
     "max_pending_orders_per_user": ("int", 0, _BIG),
-    "invitation_reward_points": ("int", 0, _BIG),
     "invitation_invitee_reward_points": ("int", 0, _BIG),
     "invitation_rebate_percent": ("int", 0, 100),
     "promotion_reward_enabled": ("bool",),

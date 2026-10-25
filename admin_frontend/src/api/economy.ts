@@ -1,6 +1,5 @@
 /** v2.3.0 经济系统管理 API（/api/admin/economy/*，详见 backend/api/admin.py） */
 import { get, post, put, del } from '@/utils/request'
-import type { SubscriptionOverview } from '@/types'
 
 // ==================== 类型 ====================
 
@@ -20,6 +19,8 @@ export interface PlanRowFull {
   points_price: number | null
   duration_days: number
   features: string[] | null
+  /** 订阅分档权益表 {权益键: 值}；null/缺键 = 该项跟随全站默认（键与区间见后端 backend/entitlements.py） */
+  entitlements?: Record<string, number> | null
   is_active: boolean
   is_popular: boolean
   sort_order: number
@@ -110,9 +111,6 @@ export interface EconomySettings {
 export const fetchEconomyStats = () => get<EconomyStats>('/economy/stats')
 
 // ==================== 订阅总览 ====================
-
-export const fetchSubscriptions = (params: { status_filter?: string; search?: string; limit?: number } = {}) =>
-  get<SubscriptionOverview>('/economy/subscriptions', params)
 
 /** 按用户直接授予订阅（与用户管理页共享后端逻辑） */
 export const grantUserSubscription = (

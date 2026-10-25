@@ -34,7 +34,7 @@ from backend.subscriptions import (
     realm_access_note,
     realm_requires_subscription,
 )
-from backend.ratelimit import check_rate_limit, client_ip
+from backend.ratelimit import check_rate_limit, client_ip, reset_rate_limit
 # 人机验证（能力中心）：用户端登录/注册与后台登录共用同一个守卫（含安全日志）
 from backend.integrations import captcha
 from backend.security import (
@@ -96,6 +96,9 @@ class UserOut(BaseModel):
     is_active: bool = True
     # 是否管理员：用户端据此显示「管理后台」入口（管理后台与门户同一套 JWT）
     is_staff: bool = False
+    # 是否公益服用户：活力值等公益专属功能只对这类用户开放，用户端据此
+    # 决定要不要发那些专属请求（非公益用户发了必 403，白跑一趟还刷日志）
+    is_welfare: bool = False
     # 付费墙是否开启（开启且非会员时播放会被拦截）；公益服恒为 false
     subscription_required: bool = False
     # 站点是否允许下载 + 每用户设备上限（0 表示不限）
@@ -147,6 +150,7 @@ def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
         is_vip=is_vip,
         is_active=user.is_active,
         is_staff=bool(user.is_staff),
+        is_welfare=bool(getattr(user, "is_welfare", False)),
         subscription_required=requires_sub,
         download_allowed=download_allowed(db) if db is not None else True,
         device_limit=device_limit(db) if db is not None else 0,
@@ -167,7 +171,9 @@ def _issue_auth_response(
     保证“门户账号即 Emby 账号”——用户无需另行设置即可在 Infuse 等客户端登录。
     """
     if plain_password:
-        ensure_emby_credentials(db, user, password=plain_password)
+        # fill_only：登录只给「还没有播放密码」的用户补齐（老数据迁移口径），
+        # 已有播放密码（含用户在接线员页自设的）不被门户登录覆盖
+        ensure_emby_credentials(db, user, password=plain_password, fill_only=True)
     else:
         ensure_emby_credentials(db, user)
     access = create_access_token(user.id, {"username": user.username},
@@ -303,8 +309,9 @@ def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
 def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     """注册新用户（用户名唯一，密码 bcrypt 存储，自动生成自建 Emby 凭据）"""
     rl_enabled, rl_max, rl_window = _get_register_ratelimit(db)
+    rl_key = f"register:{client_ip(request)}"
     if rl_enabled:
-        allowed, retry_after = check_rate_limit(f"register:{client_ip(request)}", rl_max, rl_window)
+        allowed, retry_after = check_rate_limit(rl_key, rl_max, rl_window)
         if not allowed:
             raise HTTPException(status_code=429, detail="注册过于频繁，请稍后再试")
     # 人机验证（能力中心）：未配置 / 未开保护时直接放行；失败一律 400 + 安全日志
@@ -377,6 +384,11 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
                            exc_info=True)
 
     logger.info("新用户注册: %s (id=%s, mode=%s)", username, user.id, reg_mode)
+    # 计数语义：注册成功后退还该 IP 的注册限流计数，失败尝试（验证码错 /
+    # 用户名已存在 / 邮箱已注册等）保留计数防爆破。否则同一 NAT 出口下
+    # 一个人注册成功，就把同出口后来者的 5 次/小时额度白白烧掉一格。
+    if rl_enabled:
+        reset_rate_limit(rl_key)
     return _issue_auth_response(user, db, plain_password=req.password)
 
 

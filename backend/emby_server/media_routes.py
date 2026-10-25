@@ -1,6 +1,7 @@
 """图片与下载路由
 
-由 ``backend/emby_server/api.py`` 拆分而来（v2.13.0），图片投递（含带序号的 Backdrop/Thumb 等）、原始文件下载、HLS 的 hls1 入口。
+由 ``backend/emby_server/api.py`` 拆分而来（v2.13.0），图片投递（含带序号的 Backdrop/Thumb 等）、原始文件下载。
+转码删除后 HLS 的 hls1 入口已移除（hls1 是 Emby 的转码路径）。
 
 路由仍注册在同一个 ``emby_router`` 上（从 ``api`` 导入同一实例），注册顺序与拆分前一致，
 因此 ``mount_routes`` / ``image_routes`` / ``session_routes`` 的「按路径 + 端点名替换」逻辑不受影响。
@@ -18,19 +19,13 @@ from backend.emby_server import image_store
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, get_play_user, parse_emby_authorization, resolve_token
 from backend.emby_server.streaming import (
-    get_transcode,
     serve_file,
     serve_image,
-    start_transcode,
-    stop_all_transcodes,
-    stop_transcode,
-    stop_user_transcodes,
-    transcode_alive,
-    wait_for_file,
 )
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 import os
 
@@ -41,7 +36,6 @@ from backend.emby_server.api import (
     _play_target,
     _queue_image_repair,
     _require_visible_item,
-    video_hls,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,16 +55,6 @@ def _remember_local_image(db: Session, item: em.MediaItem, kind: str, path: str)
     except Exception as exc:  # noqa: BLE001
         logger.warning("记录本地化图片路径失败 item=%s: %s", getattr(item, "guid", "?"), exc)
         db.rollback()
-
-
-@emby_router.get("/emby/Videos/{item_id}/hls1")
-@emby_router.get("/Videos/{item_id}/hls1")
-async def video_hls1(item_id: str, request: Request,
-                     user: models.WebUser = Depends(get_play_user),
-                     db: Session = Depends(get_db)):
-    # r62：与 video_hls 同口径（get_play_user）：签名优先，回退 Emby token/JWT。
-    # Emby 客户端直接请求 hls1 路径
-    return await video_hls(item_id, "master.m3u8", request, user, db)
 
 
 @emby_router.get("/emby/Items/{item_id}/Download")
@@ -357,6 +341,23 @@ def item_thumbnails(item_id: str, request: Request,
     return {"TotalRecordCount": len(thumbs)}
 
 
+@emby_router.get("/emby/Items/{item_id}/ThumbnailSet")
+@emby_router.get("/Items/{item_id}/ThumbnailSet")
+def item_thumbnail_set(item_id: str,
+                       user: models.WebUser = Depends(get_emby_user),
+                       db: Session = Depends(get_db)):
+    """进度条预览图集（trickplay 的 ThumbnailSet 形态）。
+
+    Hills 等客户端拖动进度条时调这个端点，此前 404（2026-10-22 晚实测 3 次）。
+    我方的预览图是 thumbnail_worker 的独立 JPG 序列（走 /Thumbnails/{index}），
+    没有 ThumbnailSet 形态的图集数据 —— 这里返回合法空集（与全站列表端点
+    同构的 QueryResult 形状），让客户端按「无预览图」降级，而不是报错。
+    不编造图集条目：造假数据会让客户端去拉不存在的图片，变成新的 404。
+    """
+    item = _require_visible_item(db, user, item_id)
+    return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+
+
 # ---------------------------------------------------------------------------
 # 多版本（对标 StrmAssistant #4 MergeMultiVersionTask）
 # ---------------------------------------------------------------------------
@@ -397,6 +398,37 @@ def item_alternate_versions(item_id: str, request: Request,
     # 如果查的是被合并的版本，定位到主记录
     primary_id = item.merged_into_id or item.id
     versions = _mvw.get_alternate_versions(db, primary_id)
+    # 三期（开关 IDENTITY_SHELF_PHASE3_ENABLED，须总开关同时开启）：
+    # 版本列表并入同库同身份的未合并副本——合并 worker 还没跑、或
+    # 分组键此前对不上时，同片多份今天不在版本列表里。匹配按分层
+    # 身份直接做（主记录有 tmdb → 同 trim(tmdb)；只有 imdb → 同
+    # trim(imdb)；主记录无身份 → 不扩），故并入的行必已绑定，不会
+    # 把未绑定行经直达面端出来；跨库不串（只查主记录同库）。
+    from backend.emby_server import identity_gate as _gate
+    if _gate.phase3_enabled():
+        primary_row = item if item.id == primary_id else db.query(em.MediaItem).filter(
+            em.MediaItem.id == primary_id).first()
+        if primary_row is not None:
+            _tmdb = (primary_row.tmdb_id or "").strip()
+            _imdb = (primary_row.imdb_id or "").strip()
+            _extra_q = db.query(em.MediaItem).filter(
+                em.MediaItem.library_id == primary_row.library_id,
+                em.MediaItem.merged_into_id.is_(None),
+                em.MediaItem.id != primary_id,
+                em.MediaItem.deleted_at.is_(None),
+            )
+            if _tmdb:
+                _extra_q = _extra_q.filter(
+                    func.trim(em.MediaItem.tmdb_id) == _tmdb)
+            elif _imdb:
+                _extra_q = _extra_q.filter(
+                    func.trim(em.MediaItem.imdb_id) == _imdb)
+            else:
+                _extra_q = None
+            if _extra_q is not None:
+                _seen = {v.id for v in versions}
+                versions = versions + [v for v in _extra_q.all()
+                                       if v.id not in _seen]
     # H1：只列用户可见媒体库里的版本（合并可能跨库）
     versions = sorted((v for v in versions if _item_visible(db, user, v)), key=lambda s: s.id)
     items = [_version_dto(s) for s in versions]
@@ -426,6 +458,37 @@ def item_intro_markers(item_id: str,
     item = _require_visible_item(db, user, item_id)
     markers = _im.get_markers(db, item.id)
     return {"Markers": markers, "Chapters": _im.to_chapters(markers)}
+
+
+# Emby 4.8 的片段接口：支持「跳过片头」的客户端不读 IntroMarkers，
+# 只认 /MediaSegments/{item_id}（2026-10-22 晚实测 404×2）。数据是同一份
+# （intro_marker 表），这里只做结构映射；没有标记就返回空集，不报错。
+_MEDIA_SEGMENT_TYPES = {"intro": "Intro", "outro": "Outro", "credits": "Credits"}
+
+
+@emby_router.get("/emby/MediaSegments/{item_id}")
+@emby_router.get("/MediaSegments/{item_id}")
+def item_media_segments(item_id: str,
+                        user: models.WebUser = Depends(get_emby_user),
+                        db: Session = Depends(get_db)):
+    """片头片尾片段（MediaSegments 结构）：由 IntroMarkers 数据映射而来。"""
+    from backend.emby_server import intro_marker as _im
+    from backend.emby_server.api import _guid_of
+
+    item = _require_visible_item(db, user, item_id)
+    segments = []
+    for m in _im.get_markers(db, item.id):
+        seg_type = _MEDIA_SEGMENT_TYPES.get(m["marker_type"])
+        if seg_type is None:
+            continue
+        segments.append({
+            "Id": _guid_of("MediaSegment", f"{item.guid}:{m['marker_type']}"),
+            "ItemId": item.guid,
+            "Type": seg_type,
+            "StartTicks": m["start_ms"] * 10000,  # ms → ticks
+            "EndTicks": m["end_ms"] * 10000,
+        })
+    return {"Items": segments, "TotalRecordCount": len(segments), "StartIndex": 0}
 
 
 @emby_router.post("/emby/Items/{item_id}/IntroMarkers")

@@ -38,7 +38,15 @@ from backend.api.admins_admin import router as admins_router
 # 首次运行向导（setup_mode）：建第一个管理员，完成后入口永久关闭
 from backend.api.setup import router as setup_router
 from backend.api.playback_admin import router as playback_admin_router
+from backend.api.admin_readonly import router as admin_readonly_router
+from backend.api.media_sets_api import (
+    admin_media_sets_router,
+    user_media_sets_router,
+)
 from backend.api.library_cover import router as library_cover_router
+from backend.api.media_library import router as media_library_router
+from backend.api.admin_artwork import router as admin_artwork_router
+from backend.api.library_order import router as library_order_router
 from backend.api.home_summary import router as home_summary_router
 from backend.api.homepage_sections import router as homepage_sections_router
 from backend.api.panel import router as panel_router, admin_router as panel_admin_router
@@ -76,6 +84,7 @@ from backend.emby_server import facets  # noqa: F401
 # 这里的顺序（media → compat → stream）与拆分前的定义顺序一致，不能调换。
 from backend.emby_server import media_routes  # noqa: F401
 from backend.emby_server import compat_routes  # noqa: F401
+from backend.emby_server import playback_bus_admin
 from backend.emby_server import stream_routes  # noqa: F401
 from backend.emby_server.image_routes import install_image_routes
 from backend.emby_server.mount_routes import install_mount_routes
@@ -124,12 +133,7 @@ async def lifespan(app: FastAPI):
         logger.info("AETRIX_ROLE=api：API 模式，后台任务由 worker 进程负责，这里跳过启动")
 
     logger.info(f"📊 数据库类型: {DATABASE_TYPE}")
-    # Hardware transcode detection (Linger): one-frame self-test at startup
-    try:
-        from backend.emby_server import hwaccel as _hwaccel
-        _hwaccel.detect_hardware()
-    except Exception as e:
-        logger.warning(f"HW transcode check failed, using software: {e}")
+    # 转码删除（2026-10-24）：启动时不再做硬件转码自测（hwaccel 已删）。
 
     # JWT 密钥是 EM/EA 认证与节点配对的根信任。未配置或过短时必须 fail-closed，
     # 不能让服务用导入期随机值带病上线。
@@ -300,7 +304,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # 关闭时：先收掉子进程与临时文件，避免 ffmpeg 变成孤儿继续吃 CPU/磁盘
+    # 关闭时：跑退出收尾（转码删除后收尾已是空操作，保留调用点做兼容）
     logger.info("👋 Aetrix Portal 正在关闭...")
     try:
         maintenance.shutdown_cleanup()
@@ -799,8 +803,25 @@ app.include_router(admins_router)
 app.include_router(setup_router)
 # 播放与客户端策略（v2.26.0）：转码开关 / 并发上限 / 码率上限 / 客户端准入，见 backend/api/playback_admin.py
 app.include_router(playback_admin_router)
+# 播放实时总线管理端（FMBY #24 接线）：命令表 + 快照读数；总线仍默认关，
+# 关时发命令回 503、不执行（见 backend/emby_server/playback_bus_admin.py）。
+# 挂载即导入模型，lifespan 的 init_db create_all 随既有表建出
+# playback_control_commands 新表（部署时须亲验新表已建出）。
+app.include_router(playback_bus_admin.router)
+# 管理后台只读观测口（专线 B 第一阶段：补口）：绑定 / 采样进度 / sidecar /
+# 映射 / 139 池，全部 GET，见 backend/api/admin_readonly.py
+app.include_router(admin_readonly_router)
+# 媒体库合集域 L3：管理端 CRUD/规则/刷新/模板 + 用户端架与成员读口。
+# 总闸 COLLECTIONS_ENABLED 默认关，关时本组接口惰性 404，现有路由不动。
+app.include_router(admin_media_sets_router)
+app.include_router(user_media_sets_router)
 # 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
 app.include_router(library_cover_router)
+# 媒体库学习（封面/排序/货架）：门户端游标分页 / 分区 / 藏 / 封面五件套
+# 与管理端覆盖 / 库设序，见 backend/api/media_library.py 等
+app.include_router(media_library_router)
+app.include_router(admin_artwork_router)
+app.include_router(library_order_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
 app.include_router(realms_router)
 app.include_router(emby_servers_router)
@@ -960,11 +981,27 @@ else:
 
 
 if __name__ == "__main__":
+    import logging
+
     import uvicorn
+
+    try:
+        try:
+            from backend.domain_guard import uvicorn_proxy_kwargs
+        except ImportError:
+            from domain_guard import uvicorn_proxy_kwargs
+
+        proxy_kwargs = uvicorn_proxy_kwargs()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "构造代理头信任名单失败，uvicorn 只信回环", exc_info=True
+        )
+        proxy_kwargs = {"proxy_headers": True, "forwarded_allow_ips": "127.0.0.1,::1"}
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="info"
+        log_level="info",
+        **proxy_kwargs,
     )

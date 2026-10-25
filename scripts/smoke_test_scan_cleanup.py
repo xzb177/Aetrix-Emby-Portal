@@ -155,11 +155,19 @@ check("重扫仍走快速路径、不遍历整库",
 check("清理阶段耗时可忽略（不是遍历整库）", sc._CLEANUP_LAST["elapsed_ms"] < 200,
       f"{sc._CLEANUP_LAST['elapsed_ms']:.0f} ms（整轮扫描 {elapsed_ms:.0f} ms）")
 
-# ==================== 3. 文件消失：退回遍历并精确删除 ====================
+# ==================== 3. 文件消失：宽限累计后精确删除 ====================
 print("\n=== 3. 文件消失 ===")
 victim = os.path.join(movie_dir, "Cleanup Movie 00 (2021).mkv")
 os.remove(victim)
-third = scan()
+# 缺失宽限（2026-10-24 批一 #6）：前 GRACE-1 轮只累计缺失计数、条目仍在；
+# 第 GRACE 轮才真正下架。逐轮验，防「宽限被绕过」与「永远不下架」两头坏。
+third = None
+for round_no in range(1, sc.MISSING_GRACE_SCANS + 1):
+    third = scan()
+    if round_no < sc.MISSING_GRACE_SCANS:
+        check(f"缺失第 {round_no} 轮仍在宽限期（不下架、条目仍在）",
+              third["removed"] == 0 and item_count() == TOTAL + PARENTS,
+              f"removed={third['removed']} 条目={item_count()}")
 check("消失的条目被删除（且只删它）", third["removed"] == 1, f"removed={third['removed']}")
 check("这一轮没有走快速路径（有东西要清理）", sc._CLEANUP_LAST["fast_path"] is False,
       f"cleanup={sc._CLEANUP_LAST}")
@@ -234,11 +242,16 @@ print("\n=== 6. 强制小批次（CLEANUP_BATCH=2） ===")
 os.remove(os.path.join(movie_dir, "Cleanup Movie 03 (2021).mkv"))
 real_batch = sc.CLEANUP_BATCH
 sc.CLEANUP_BATCH = 2
+eighth = None
+eighth_removed = 0
 try:
-    eighth = scan()
+    # 同 §3：小批设置下连扫满宽限轮数，累计 removed 恰为 1
+    for _ in range(sc.MISSING_GRACE_SCANS):
+        eighth = scan()
+        eighth_removed += eighth["removed"]
 finally:
     sc.CLEANUP_BATCH = real_batch
-check("小批次下依然精确删除那一条", eighth["removed"] == 1, f"removed={eighth['removed']}")
+check("小批次下依然精确删除那一条", eighth_removed == 1, f"removed={eighth_removed}")
 check("小批次下遍历走完全库（跨批推进）",
       sc._CLEANUP_LAST["walked"] == item_count() + eighth["removed"],
       f"walked={sc._CLEANUP_LAST['walked']} 剩余={item_count()} removed={eighth['removed']}")

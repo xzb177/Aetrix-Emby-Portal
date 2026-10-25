@@ -16,9 +16,12 @@
    - 「流媒体加速」开关打开时自动启用；否则看环境变量 ``TRUST_CF_IP=true``
      （默认关闭，不信任任何代理头）；
    - **只有 TCP 直连对端是可信代理时才读代理头**（安全修复 H4）：Cloudflare 官方网段
-     （内置，可用 ``CLOUDFLARE_IP_RANGES`` 覆盖），以及与客户端公开地址同一份名单
+     （内置，可用 ``CLOUDFLARE_IP_RANGES`` 覆盖），以及与客户端公开地址同一份点名名单
      （``peer_honors_forwarded_headers``：本机回环、``TRUSTED_PROXIES``、
-     ``FORWARDED_ALLOW_IPS``）。
+     ``FORWARDED_ALLOW_IPS`` 里的精确 IP / CIDR）。
+     ``FORWARDED_ALLOW_IPS=*`` 一律忽略：它很危险，不能使用。uvicorn 若自己读到 ``*``，
+     会在应用代码之前用伪造的 ``X-Forwarded-For`` 改写客户端 IP。启动器把去掉 ``*``
+     的名单显式传给 uvicorn；域名守卫和公开 URL 的 scheme/host 同样不认它。见到 ``*`` 记一次 WARNING。
      直连源站的请求带 ``CF-Connecting-IP: 127.0.0.1`` 不再生效；
    - 优先 ``CF-Connecting-IP``，回退 ``X-Forwarded-For`` **最后一段**（最近一跳代理追加的，
      首段是客户端可伪造的）；
@@ -213,9 +216,66 @@ def _cloudflare_networks() -> list:
     return nets
 
 
+# ``*`` 只警告一次：热路径每个请求都会读这份名单。
+_wildcard_warned = False
+
+
 def _forwarded_allow_ips() -> list[str]:
     raw = os.getenv("FORWARDED_ALLOW_IPS", "")
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    _note_forwarded_wildcard(parts)
+    return parts
+
+
+def _note_forwarded_wildcard(parts: list[str]) -> None:
+    """``*`` 很危险，到处都不采信。提醒一次，避免运维以为写了就能用。"""
+    global _wildcard_warned
+    if _wildcard_warned or "*" not in parts:
+        return
+    _wildcard_warned = True
+    logger.warning(
+        "FORWARDED_ALLOW_IPS 含 *，已忽略。不要使用 *："
+        "任意直连方都能用 X-Forwarded-For 改写客户端 IP。"
+        "域名守卫、公开 URL 的 scheme/host、uvicorn 的代理头都只认显式 IP/CIDR；"
+        "没有显式条目时 uvicorn 只信回环。"
+    )
+
+
+# uvicorn 未设置 FORWARDED_ALLOW_IPS 时的默认值。只信回环。
+_UVICORN_LOOPBACK_FORWARDED = "127.0.0.1,::1"
+
+
+def uvicorn_forwarded_allow_ips() -> str:
+    """传给 uvicorn 的 ``forwarded_allow_ips``。返回值里绝不包含 ``*``。
+
+    uvicorn 在参数省略时自己读环境变量；值为 ``*`` 时，ProxyHeadersMiddleware
+    会在本应用之前改写客户端 IP。这里把 ``*`` 丢掉后显式传入。只剩通配、变量没设、
+    或读取失败时退回环，与 uvicorn 的默认一致。
+    """
+    try:
+        parts = _forwarded_allow_ips()
+    except Exception:
+        logger.warning("读取 FORWARDED_ALLOW_IPS 失败，uvicorn 只信回环", exc_info=True)
+        return _UVICORN_LOOPBACK_FORWARDED
+    named = [part for part in parts if part != "*"]
+    if not named:
+        return _UVICORN_LOOPBACK_FORWARDED
+    return ",".join(named)
+
+
+def uvicorn_proxy_kwargs() -> dict:
+    """``uvicorn.run`` / ``Config`` 的代理头参数。``proxy_headers`` 保持开启，名单不含 ``*``。"""
+    allow = _UVICORN_LOOPBACK_FORWARDED
+    try:
+        allow = uvicorn_forwarded_allow_ips()
+    except Exception:
+        logger.warning("构造 uvicorn 代理信任名单失败，只信回环", exc_info=True)
+        allow = _UVICORN_LOOPBACK_FORWARDED
+    tokens = [part.strip() for part in str(allow).split(",")]
+    if not any(tokens) or "*" in tokens:
+        logger.warning("uvicorn 代理信任名单无效，只信回环")
+        allow = _UVICORN_LOOPBACK_FORWARDED
+    return {"proxy_headers": True, "forwarded_allow_ips": allow}
 
 
 def _ip_in_cidr_list(ip: str, parts: list[str]) -> bool:
@@ -235,17 +295,20 @@ def _ip_in_cidr_list(ip: str, parts: list[str]) -> bool:
 
 
 def peer_honors_forwarded_headers(ip: str) -> bool:
-    """直连 IP 是否允许采信转发头。公开 URL 与域名守卫共用这一份。
+    """直连 IP 是否在点名名单里，因而允许采信转发头。
+
+    域名守卫（改写客户端 IP）与公开 URL（拼 scheme/host）共用这一份点名名单，不含 ``*``：
 
     - ``TRUSTED_PROXIES``（含默认回环）：与限流同一份名单，支持 CIDR。
-    - ``FORWARDED_ALLOW_IPS``：与 uvicorn 同一变量。精确 IP、CIDR，或显式 ``*``
-      （``*`` 是部署方自己打开的，默认不信任所有对端）。
+    - ``FORWARDED_ALLOW_IPS`` 里的精确 IP 与 CIDR。
+
+    ``*`` 一律忽略。把它算进去的话，任何一个直连方都能用 ``X-Forwarded-For``
+    改写客户端 IP。启动器要把去掉 ``*`` 的名单显式传给 uvicorn，见
+    :func:`uvicorn_forwarded_allow_ips`。
     """
     if not ip:
         return False
-    allows = _forwarded_allow_ips()
-    if "*" in allows:
-        return True
+    allows = [part for part in _forwarded_allow_ips() if part != "*"]
     if ip in allows:
         return True
     if _ip_in_cidr_list(ip, allows):

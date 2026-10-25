@@ -135,6 +135,11 @@ def _rollback_subscription(db: Session, order: models.SubscriptionOrder,
         subscription.status = "cancelled"
         cancelled = True
     subscription.updated_at = now
+    # 订阅分档权益（PR-1）：到期时间/状态变了，清该用户的权益解析缓存
+    #（见 backend/entitlements.py；跨进程靠 60 秒 TTL 兜底）
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate(user_id=subscription.user_id)
     return subscription, days, cancelled
 
 

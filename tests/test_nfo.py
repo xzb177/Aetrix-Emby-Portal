@@ -179,6 +179,55 @@ def test_apply_nfo_episode_only_plot_and_rating():
     assert item.last_scraped_at is None  # 单集不参与刮削策略
 
 
+MOVIE_NFO_WITH_ART = """<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
+<movie>
+  <title>带图电影</title>
+  <year>2020</year>
+  <thumb aspect="poster">https://img.example.com/poster.jpg</thumb>
+  <thumb aspect="banner">https://img.example.com/banner.jpg</thumb>
+  <fanart>
+    <thumb>https://img.example.com/fanart.jpg</thumb>
+  </fanart>
+</movie>
+"""
+
+
+def test_parse_nfo_thumb_and_fanart():
+    """NFO 自带图：取 poster 那张 thumb 与 fanart 第一张，banner 不算海报"""
+    data = nfo_lib.parse_nfo(MOVIE_NFO_WITH_ART)
+    assert data["poster"] == "https://img.example.com/poster.jpg"
+    assert data["fanart"] == "https://img.example.com/fanart.jpg"
+
+
+def test_parse_nfo_relative_thumb_ignored():
+    """相对路径的 thumb 在网盘语境取不到，不收（免得写成坏图）"""
+    data = nfo_lib.parse_nfo(
+        "<movie><title>X</title>"
+        "<thumb aspect=\"poster\">poster.jpg</thumb></movie>")
+    assert data["poster"] == ""
+
+
+def test_apply_nfo_art_fills_only_when_empty():
+    """NFO 图只填空缺：条目没图时落 NFO 的，已有图（side/TMDB）不覆盖"""
+    item = _item()
+    item.poster_path = None
+    item.primary_image_url = None
+    item.backdrop_path = None
+    item.backdrop_image_url = None
+    nfo_lib.apply_nfo(item, nfo_lib.parse_nfo(MOVIE_NFO_WITH_ART), "movie")
+    assert item.primary_image_url == "https://img.example.com/poster.jpg"
+    assert item.backdrop_image_url == "https://img.example.com/fanart.jpg"
+
+    item2 = _item()
+    item2.poster_path = "/local/poster.jpg"
+    item2.primary_image_url = "https://image.tmdb.org/t/p/original/x.jpg"
+    item2.backdrop_path = "/local/fanart.jpg"
+    item2.backdrop_image_url = "https://image.tmdb.org/t/p/original/y.jpg"
+    nfo_lib.apply_nfo(item2, nfo_lib.parse_nfo(MOVIE_NFO_WITH_ART), "movie")
+    assert item2.primary_image_url == "https://image.tmdb.org/t/p/original/x.jpg"
+    assert item2.backdrop_image_url == "https://image.tmdb.org/t/p/original/y.jpg"
+
+
 # ==================== 候选文件名 ====================
 
 

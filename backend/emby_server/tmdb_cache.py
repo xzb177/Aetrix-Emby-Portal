@@ -15,6 +15,15 @@
   启动维护与 janitor 周期也会跑（见 maintenance）；
 - **只缓存成功的响应**：``_get`` 返回 None（网络失败/429/限流）不落盘，
   让这类条目照旧走重试队列——缓存绝不能把「暂时失败」固化成「没有」；
+- **双份快照 + 命中计数**（2026-10-24，FMBY 学习批一 #8）：信封里除归一化
+  载荷（``v``，调用方真正消费的那份）外，调用方给了原始响应时一并存
+  ``raw``——排查「TMDB 到底回了什么」时不必再去撞一次配额重打。raw 有
+  容量上限（``EMBY_TMDB_CACHE_RAW_MAX_KB``，默认 64 KB），超限存截断
+  标记（``_truncated`` + 原始字节数 + 开头节选），不让大响应撑爆缓存盘。
+  每条信封记 ``hits``（命中累计）：命中时顺手把计数 +1 写回（写失败
+  静默——计数是观测，不能反过来拖累命中；多进程并发命中时计数可能
+  少记个别次，量级可信即可）。老信封没有这两个键，读时按 0 / 无 raw
+  兼容，命中后自然补上；
 - **磁盘不可用自动降级**：目录建不出来（只读 FS）就禁用，只告警一次；
   写失败计数并保留 L1，**绝不影响刮削主流程**。
 
@@ -22,11 +31,12 @@
 
 ==========================  ==================================================
 ``EMBY_TMDB_CACHE``          ``0`` 关闭（默认开启）
-``EMBY_TMDB_CACHE_DIR``      缓存目录（默认 ``<EMBY_TRANSCODE_DIR>/tmdb``）
+``EMBY_TMDB_CACHE_DIR``      缓存目录（默认 ``<EMBY_CACHE_DIR>/tmdb``）
 ``EMBY_TMDB_CACHE_MB``       容量上限，默认 256 MB；0 = 不限
 ``EMBY_TMDB_TTL_SEARCH``     search 命中 TTL 秒，默认 7 天
 ``EMBY_TMDB_TTL_NEGATIVE``   search 阴性 TTL 秒，默认 24 小时
 ``EMBY_TMDB_TTL_DETAILS``    details TTL 秒，默认 30 天
+``EMBY_TMDB_CACHE_RAW_MAX_KB`` 原始响应（raw）单条上限 KB，默认 64；0 = 不存 raw
 ==========================  ==================================================
 """
 from __future__ import annotations
@@ -53,8 +63,9 @@ def _env_flag(name: str, default: str = "1") -> bool:
 # 配置全部**动态**读 env：测试可以用 monkeypatch.setenv 逐例改，无需重新导入；
 # 代价只是每次多几个 os.getenv（相对一次文件 IO 可忽略）。
 def _cfg_dir() -> str:
+    # 转码删除后 TMDB 缓存不再复用转码根目录：默认落独立缓存根。
     return (os.getenv("EMBY_TMDB_CACHE_DIR", "").strip()
-            or os.path.join(os.getenv("EMBY_TRANSCODE_DIR", "/tmp/emby_transcode"),
+            or os.path.join(os.getenv("EMBY_CACHE_DIR", "/tmp/aetrix_cache"),
                             "tmdb"))
 
 
@@ -76,6 +87,10 @@ def _cfg_ttl_negative() -> int:
 
 def _cfg_ttl_details() -> int:
     return max(60, env_int("EMBY_TMDB_TTL_DETAILS", 30 * 86400))
+
+
+def _cfg_raw_max_bytes() -> int:
+    return max(0, env_int("EMBY_TMDB_CACHE_RAW_MAX_KB", 64)) * 1024  # 0 = 不存 raw
 
 
 # 写入量累计到 32MB 或距上次巡检 ≥5 分钟就顺手巡检一次（删过期 + 容量淘汰）
@@ -140,8 +155,13 @@ def _ensure_dir(path: str) -> bool:
         return False
 
 
-def _load(path: str, ttl_for: Callable[[Any], int]):
-    """读一个缓存文件。返回 (hit, payload)；过期视为未命中并顺手删除。"""
+def _load_envelope(path: str, ttl_for: Callable[[Any], int]):
+    """读信封。返回 (hit, envelope)；过期视为未命中并顺手删除。
+
+    命中时顺手把信封的 ``hits`` +1 写回（批一 #8）：这是每条缓存自己的
+    命中账，与进程级 ``_stats`` 的总量计数分工不同——前者回答「哪条
+    缓存真在被用」，后者回答「这进程命中了多少次」。
+    """
     if not _ensure_dir(path):
         return False, None
     try:
@@ -163,6 +183,29 @@ def _load(path: str, ttl_for: Callable[[Any], int]):
             _stats["misses"] += 1
         return False, None
     _bump("hits")
+    envelope["hits"] = int(envelope.get("hits") or 0) + 1   # 本次命中先记上
+    _bump_entry_hits(path, envelope)
+    return True, envelope
+
+
+def _bump_entry_hits(path: str, envelope: dict) -> None:
+    """把（已 +1 的）信封写回（尽力而为）：保留 ``at`` 不动（TTL 口径不变），
+    mtime 顺带刷新——容量淘汰按 mtime 从旧到新，等于真 LRU。"""
+    try:
+        blob = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(blob)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 — 计数写不回绝不影响这次命中
+        pass
+
+
+def _load(path: str, ttl_for: Callable[[Any], int]):
+    """读一个缓存文件。返回 (hit, payload)；过期视为未命中并顺手删除。"""
+    hit, envelope = _load_envelope(path, ttl_for)
+    if not hit:
+        return False, None
     return True, envelope.get("v")
 
 
@@ -174,15 +217,43 @@ def _unlink(path: str) -> bool:
         return False
 
 
-def _save(path: str, payload) -> bool:
-    """原子写一个缓存文件（临时文件 + os.replace），并按需触发巡检。"""
+def _cap_raw(raw):
+    """原始响应 → 可落盘形态：没给 / 关了 raw / 序列化不了 → None（不存）。
+
+    超过单条上限时存截断标记而不是原文：``_truncated`` 注明截断、
+    ``_bytes`` 是原始字节数、``head`` 留开头节选供排查认形状。
+    """
+    if raw is None:
+        return None
+    cap = _cfg_raw_max_bytes()
+    if cap <= 0:
+        return None
+    try:
+        blob = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+    if len(blob.encode("utf-8")) <= cap:
+        return raw
+    return {"_truncated": True, "_bytes": len(blob.encode("utf-8")),
+            "head": blob[:2048]}
+
+
+def _save(path: str, payload, raw=None) -> bool:
+    """原子写一个缓存文件（临时文件 + os.replace），并按需触发巡检。
+
+    信封：``at`` 写入时刻、``v`` 归一化载荷、``hits`` 命中累计（从 0 起）、
+    ``raw`` 原始响应（给了才存，经 :func:`_cap_raw` 截断把关）。
+    """
     global _written_since_prune
     if not _ensure_dir(path):
         return False
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        blob = json.dumps({"at": time.time(), "v": payload},
-                          ensure_ascii=False, separators=(",", ":"))
+        envelope = {"at": time.time(), "v": payload, "hits": 0}
+        capped = _cap_raw(raw)
+        if capped is not None:
+            envelope["raw"] = capped
+        blob = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(blob)
         os.replace(tmp, path)      # 原子替换：并发读永远不会看到半截 JSON
@@ -209,10 +280,14 @@ def load_search(endpoint: str, norm_query: str, year: int, lang: str = ""):
                  lambda v: _cfg_ttl_negative() if not v else _cfg_ttl_search())
 
 
-def save_search(endpoint: str, norm_query: str, year: int, results, lang: str = "") -> bool:
-    """search 结果落盘；空列表（阴性）同样落盘，读时用更短的 TTL。"""
+def save_search(endpoint: str, norm_query: str, year: int, results, lang: str = "",
+                raw=None) -> bool:
+    """search 结果落盘；空列表（阴性）同样落盘，读时用更短的 TTL。
+
+    ``raw``：上游原始响应（给了才存双份，见模块 docstring 的截断口径）。
+    """
     return _save(_key_path(endpoint, norm_query, int(year or 0), lang),
-                 list(results or []))
+                 list(results or []), raw=raw)
 
 
 def load_details(endpoint: str, tmdb_id: str, lang: str = ""):
@@ -220,11 +295,27 @@ def load_details(endpoint: str, tmdb_id: str, lang: str = ""):
     return _load(_key_path(endpoint, str(tmdb_id), 0, lang), lambda v: _cfg_ttl_details())
 
 
-def save_details(endpoint: str, tmdb_id: str, data, lang: str = "") -> bool:
+def save_details(endpoint: str, tmdb_id: str, data, lang: str = "", raw=None) -> bool:
     """details 落盘。data 为空 = 请求失败（不是「没数据」），不落盘。"""
     if not data:
         return False
-    return _save(_key_path(endpoint, str(tmdb_id), 0, lang), data)
+    return _save(_key_path(endpoint, str(tmdb_id), 0, lang), data, raw=raw)
+
+
+def load_entry(endpoint: str, ident: str, year: int = 0, lang: str = "",
+               kind: str = "details"):
+    """读整条信封（排查 / 观测用）。返回 (hit, envelope)。
+
+    envelope 含 ``v``（归一化载荷）、``hits``（命中累计）、``raw``
+    （原始响应；老信封或没存时为 None、超限截断时是带 ``_truncated``
+    的标记 dict）。业务读路径仍走 ``load_search`` / ``load_details``。
+    """
+    if kind == "search":
+        return _load_envelope(
+            _key_path(endpoint, ident, int(year or 0), lang),
+            lambda v: _cfg_ttl_negative() if not v else _cfg_ttl_search())
+    return _load_envelope(
+        _key_path(endpoint, str(ident), 0, lang), lambda v: _cfg_ttl_details())
 
 
 def invalidate_search(name: str, year: Optional[int], kind: str, lang: str = "",

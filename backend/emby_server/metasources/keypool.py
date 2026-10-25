@@ -103,9 +103,6 @@ class KeyPool:
         """401：这把 key 基本废了，冷却更久"""
         self._cool(key, "无效（HTTP 401）", self._invalid_cooldown_sec)
 
-    def note_failure(self, key: str, reason: str, seconds: float) -> None:
-        """其它错误（例如 token 过期）：按同样的方式冷却，原因是原话"""
-        self._cool(key, reason, max(1.0, float(seconds)))
 
     def _cool(self, key: str, reason: str, seconds: float) -> None:
         with self._lock:

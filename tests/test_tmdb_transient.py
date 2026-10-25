@@ -24,10 +24,15 @@ NAME = "迷宫 (2013) 中字"   # 中文标题：_search_candidates 给 3 个候
 @pytest.fixture(autouse=True)
 def _clean_cache(monkeypatch):
     """空缓存起步（L1 是类级 dict 全进程共享），并关掉磁盘缓存（数真实 HTTP）"""
+    from backend.emby_server.metasources import breaker as provider_breaker
     monkeypatch.setenv("EMBY_TMDB_CACHE", "0")
     TmdbClient._cache.clear()
+    # 熔断注册表同为进程全局（批一 #8）：本文件连着模拟多次 TMDB 失败，
+    # 不复位会跨用例把熔断喂开、让后面的阴性用例改抛瞬态异常
+    provider_breaker.reset_all()
     yield
     TmdbClient._cache.clear()
+    provider_breaker.reset_all()
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +148,12 @@ def test_transient_failure_does_not_poison_l1(monkeypatch):
     with pytest.raises(TmdbTransientError):
         client.search(NAME, 2013, "series")
     first = len(client.session.calls)
+    # 批一 #8 起多了一道熔断闸：一次 search 的多次 _get 失败会把熔断喂开，
+    # 紧接着的 search 会零请求直接抛瞬态（这正是熔断要的「源全挂别再撞」）。
+    # 本用例守的是 L1 不被失败毒化，与熔断是两道独立的闸——这里复位熔断
+    # （等价于冷却到期后的下一批），只验 L1 口径
+    from backend.emby_server.metasources import breaker as provider_breaker
+    provider_breaker.reset_all()
     with pytest.raises(TmdbTransientError):
         client.search(NAME, 2013, "series")
     assert len(client.session.calls) > first, "第二次 search 必须真发请求（未被投毒）"

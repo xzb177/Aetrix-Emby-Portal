@@ -1,0 +1,502 @@
+"""识别 / 补资料两段式 + 豆瓣 Frodo 补资料源（清单第 13 项，FMBY #17 / #14）。
+
+对应魂 1（身份与证据先行）：刮削的写库拆成两段——
+
+- 识别段：只定身份绑定（provider / 实体 / 置信度 / 证据），写身份列
+  （tmdb_id / imdb_id）与一段识别记录，不写任何资料字段；
+- 补资料段：只在已绑定条目上跑，只填空缺、永不覆盖已有资料
+  （2026-10-19 定版口径：只填空缺永不覆盖）。
+
+两段独立开关、独立重试：识别段提交后即落库，补资料失败不回滚身份；
+识别未定的条目不进补资料段（由现行写库路径接管审查 / none 终态）。
+
+与现行 enrich_worker 的分工：IO 阶段（_enrich_fetch）仍是证据采集的
+共享步骤；写库阶段在任一段开关开时走两段提交，开关全关时与现行逐字
+一致。本模块不碰扫描器、播放变体、身份锚（source_id / provider_file_id
+是另一路的地盘）、绑定管理、列表接口、凭据密封。
+
+Frodo 在本模块里的位置：补资料段的缺口来源之一（不是识别段的认亲
+依据——认亲只认 TMDB / NFO / 别名给出的身份，Frodo 片名搜不用来定
+身份）。桥用的 IMDb 编号解析口径见 _frodo_imdb_id：条目已有 →
+本轮 tmdb_details → nfo_data，只用已有证据、不另拉详情。
+Frodo 腿复用 #1203 熔断注册表（douban_frodo 源名，403 / 429
+立即熔断、冷却约 60 秒半开）；熔断中、封禁中、任何异常都只返回空
+——不挡其他源、不静默出旧数、不抛异常进补资料流程。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime
+from typing import Optional
+
+from backend.emby_server import models as em
+from backend.emby_server.env_util import env_int
+
+logger = logging.getLogger(__name__)
+
+#: 识别段总开关（默认关）。启动时读一次，热路径不碰 env。
+IDENTIFY_STAGE_ENABLED = env_int("IDENTIFY_STAGE_ENABLED", 0, 0, 1)
+#: 补资料段总开关（默认关）。与识别段独立：可只开识别攒绑定，也可只开
+#: 补资料给历史已绑定条目填空。
+FILL_STAGE_ENABLED = env_int("FILL_STAGE_ENABLED", 0, 0, 1)
+#: Frodo 补资料源开关（默认关）。开时补资料段才向 Frodo 问缺口字段。
+IDENTIFY_FRODO_FILL_ENABLED = env_int("IDENTIFY_FRODO_FILL_ENABLED", 0, 0, 1)
+#: 已识别未填空条目回 pending 后的重认领延迟（秒）：识别段提交后若补资料
+#: 段关着，本条回队等补资料段认领；延迟避免识别→回队→识别空转。
+IDENTIFY_UNFILLED_RETRY_SEC = env_int("IDENTIFY_UNFILLED_RETRY_SEC", 300, 0, 86400)
+
+#: 补资料段允许写的资料字段（白名单制：不在表里的字段一律不写）。
+#: overview / poster_path / backdrop_path / community_rating 四项而已——
+#: 演员、季海报、字幕、NFO 等仍归现行写库路径，本段不越权。
+FILL_FIELDS = ("overview", "poster_path", "backdrop_path", "community_rating")
+
+#: Frodo 补资料时问的缺口字段（overview / 评分 / 海报三项；backdrop 不问
+#: Frodo——它的 image 口径是海报，不是背景图）。
+FRODO_FILL_FIELDS = ("overview", "community_rating", "poster_path")
+
+
+def identify_enabled() -> bool:
+    """识别段是否开启（全仓读开关的唯一入口；测试 patch 本模块常量）。"""
+    return IDENTIFY_STAGE_ENABLED > 0
+
+
+def fill_enabled() -> bool:
+    """补资料段是否开启（全仓读开关的唯一入口；测试 patch 本模块常量）。"""
+    return FILL_STAGE_ENABLED > 0
+
+
+def frodo_fill_enabled() -> bool:
+    """Frodo 补资料源是否开启。"""
+    return IDENTIFY_FRODO_FILL_ENABLED > 0
+
+
+def any_enabled() -> bool:
+    """任一段开着即走两段写库；全关 = 现行写库逐字一致。"""
+    return identify_enabled() or fill_enabled()
+
+
+def unfilled_retry_sec() -> int:
+    """已识别未填空条目的回队延迟（秒）。"""
+    return IDENTIFY_UNFILLED_RETRY_SEC
+
+
+def _empty(value) -> bool:
+    """资料字段的“空”判定：None 或空白字符串都算空（评分只认 None）。"""
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
+def _item_year(item) -> Optional[int]:
+    """条目年份（Frodo 按标题搜用；取不到就 None，不编年份）。"""
+    year = getattr(item, "production_year", None)
+    if isinstance(year, int) and year > 0:
+        return year
+    return None
+
+
+def extract_binding(item, fetched: dict) -> Optional[dict]:
+    """从已采集证据里抽身份绑定（纯函数，不写库）。
+
+    绑定来源与现行写库同口径：tmdb_id 取 fetched（NFO / 别名 / 搜索命中
+    都已在 IO 阶段落进 fetched["tmdb_id"]）或条目已有值；imdb_id 取
+    TMDB 详情、NFO 或条目已有值。身份列只认已有、不覆盖：条目已有
+    tmdb_id 时不以 fetched 的去换（与现行 ``item.tmdb_id or fetched``
+    同口径）。
+
+    置信度不编数字：显式来源（条目自带 / NFO 给的 tmdb_id）记
+    ``explicit``，搜索命中记 ``search``——证据快照里写清判定依据，
+    调用方与审查员看的是证据本身，不是分数。
+    """
+    fetched = fetched or {}
+    nfo_data = fetched.get("nfo_data") or {}
+    details = fetched.get("tmdb_details") or {}
+    had_tmdb = bool(getattr(item, "tmdb_id", None))
+    tmdb_id = (
+        getattr(item, "tmdb_id", None)
+        or fetched.get("tmdb_id")
+        or nfo_data.get("tmdb_id")
+    )
+    imdb_id = (
+        getattr(item, "imdb_id", None)
+        or details.get("imdb_id")
+        or nfo_data.get("imdb_id")
+        # 接线批：已批建议的 fetched 直接带顶层 imdb_id（与 tmdb_id 的
+        # 顶层读取对称），优先级最低，不动已有 / 详情 / NFO 的优先序。
+        or fetched.get("imdb_id")
+    )
+    if not tmdb_id and not imdb_id:
+        return None
+    if tmdb_id:
+        provider, external_id = "tmdb", str(tmdb_id)
+    else:
+        provider, external_id = "imdb", str(imdb_id)
+    confidence = (
+        "explicit"
+        if (had_tmdb or bool(nfo_data.get("tmdb_id")))
+        else "search"
+    )
+    evidence = {
+        "tmdb_id_source": (
+            "item" if had_tmdb else ("nfo" if nfo_data.get("tmdb_id") else "fetched")
+        ),
+        "has_details": bool(details),
+        "has_nfo": bool(nfo_data),
+        "item_type": getattr(item, "item_type", None),
+        "item_title": getattr(item, "name", None),
+    }
+    # AI 提名标记透传（清单第 17 项）：未来 AI 提名器经 fetched 带
+    # ai_suggested / ai_sources / ai_weight；不带时证据形状与今天逐字
+    # 一致，政策门对现行行为零影响。
+    if "ai_suggested" in fetched:
+        evidence["ai_suggested"] = bool(fetched.get("ai_suggested"))
+    # 人工拍板标记透传（接线批）：已批的 AI 建议落库时带
+    # human_approved，门拒不再适用（人定了、AI 只是提名）；未拍板时
+    # 不带此键，门行为与今天逐字一致。
+    if fetched.get("human_approved"):
+        evidence["human_approved"] = True
+        if fetched.get("approved_by"):
+            evidence["approved_by"] = str(fetched.get("approved_by"))
+    if fetched.get("ai_sources") is not None:
+        evidence["sources"] = list(fetched.get("ai_sources") or [])
+    elif fetched.get("sources") is not None:
+        evidence["sources"] = list(fetched.get("sources") or [])
+    if fetched.get("ai_weight") is not None:
+        evidence["ai_weight"] = fetched.get("ai_weight")
+    return {
+        "provider": provider,
+        "external_id": external_id,
+        "tmdb_id": str(tmdb_id) if tmdb_id else None,
+        "imdb_id": str(imdb_id) if imdb_id else None,
+        "confidence": confidence,
+        "evidence": evidence,
+    }
+
+
+def _upsert_stage_record(db, item_id: int, stage: str, binding: Optional[dict]) -> None:
+    """识别 / 补资料段记录 upsert（按 item_id 一行，状态集中维护）。"""
+    now = datetime.now()
+    record = (
+        db.query(em.EnrichStageRecord)
+        .filter(em.EnrichStageRecord.item_id == item_id)
+        .first()
+    )
+    if record is None:
+        record = em.EnrichStageRecord(item_id=item_id)
+        db.add(record)
+    record.stage = stage
+    if binding is not None:
+        record.provider = binding.get("provider")
+        record.external_id = binding.get("external_id")
+        record.confidence = binding.get("confidence")
+        record.evidence_json = json.dumps(
+            binding.get("evidence") or {}, ensure_ascii=False
+        )
+    record.updated_at = now
+
+
+def apply_identity(db, item, fetched: dict) -> Optional[dict]:
+    """识别段：只写身份列 + 一段识别记录，不写任何资料字段。
+
+    返回绑定 dict；无绑定（fetched 与条目都没有 tmdb / imdb 身份）时
+    返回 None 且什么都不写——调用方据此判定“识别未定”，不进补资料段。
+
+    AI 政策门（清单第 17 项，开关 ENRICH_AI_POLICY_ENABLED 默认关）：
+    开时纯 AI 提名的绑定一律拒绝落库（返回 None，走现行审查 / none
+    终态）；AI 与非 AI 证据并存时落库，但证据里的 ai_weight 钳制到 0.2。
+    例外（接线批）：fetched 带 human_approved 时是人工已拍板的建议，
+    裁决权在人不在 AI，门拒不再适用（权重仍钳制到 0.2）。
+    """
+    binding = extract_binding(item, fetched)
+    if binding is None:
+        return None
+    from backend.emby_server import ai_policy as _aip
+
+    if _aip.ai_policy_enabled():
+        verdict = _aip.evaluate_binding_evidence(binding["evidence"])
+        if not verdict["allowed"] and not binding["evidence"].get("human_approved"):
+            logger.warning(
+                "AI 政策门拒绝纯 AI 绑定 id=%s reason=%s",
+                item.id, verdict["reason"])
+            return None
+        if verdict["ai_weight"] is not None:
+            binding["evidence"]["ai_weight"] = verdict["ai_weight"]
+    if _empty(getattr(item, "tmdb_id", None)) and binding.get("tmdb_id"):
+        item.tmdb_id = binding["tmdb_id"]
+    if _empty(getattr(item, "imdb_id", None)) and binding.get("imdb_id"):
+        item.imdb_id = binding["imdb_id"]
+    _upsert_stage_record(db, item.id, "identified", binding)
+    logger.info(
+        "识别段提交 id=%s provider=%s external_id=%s confidence=%s",
+        item.id, binding["provider"], binding["external_id"],
+        binding["confidence"],
+    )
+    return binding
+
+
+def fill_candidates_from_fetched(fetched: dict) -> dict:
+    """从已采集证据里抽补资料候选（纯函数，不写库）。
+
+    只取白名单字段；空值直接丢掉——空候选不算“填上了”，也不覆盖。
+    """
+    fetched = fetched or {}
+    details = fetched.get("tmdb_details") or {}
+    candidates = {
+        "overview": details.get("overview") or "",
+        "poster_path": fetched.get("poster") or details.get("poster_path") or "",
+        "backdrop_path": fetched.get("fanart") or details.get("backdrop_path") or "",
+        "community_rating": details.get("vote_average"),
+    }
+    return {k: v for k, v in candidates.items() if not _empty(v)}
+
+
+def _frodo_imdb_id(item, fetched: Optional[dict] = None) -> Optional[str]:
+    """Frodo 桥用的 IMDb 编号解析（与 extract_binding 同口径，不发请求）。
+
+    顺序：条目已有 imdb_id → 本轮已采集证据 tmdb_details.imdb_id →
+    nfo_data.imdb_id。只用本轮已有的证据：不为搭桥另拉 TMDB 详情
+    （刮削瘦身已定：缺 imdb_id 不再是拉详情的理由，见 enrich_worker
+    的详情收窄注释；要补那一步须另行拍板，不在本函数悄悄做）。
+    """
+    imdb_id = getattr(item, "imdb_id", None)
+    if imdb_id:
+        return str(imdb_id)
+    fetched = fetched or {}
+    details = fetched.get("tmdb_details") or {}
+    if details.get("imdb_id"):
+        return str(details["imdb_id"])
+    nfo_data = fetched.get("nfo_data") or {}
+    if nfo_data.get("imdb_id"):
+        return str(nfo_data["imdb_id"])
+    return None
+
+
+def _frodo_candidates(item, fetched: Optional[dict] = None) -> dict:
+    """Frodo 补资料候选（无开关内层，不写库、不抛异常）。
+
+    本函数不管独立 Frodo 开关：开关由调用方（fill_from_frodo 或聚合
+    通道）各自把关——聚合通道是自己的开关，开聚合即开它里面的
+    Frodo 腿。熔断 / 封禁 / 异常三道闸都在本层：只返回空，不挡其他源。
+    桥用的 IMDb 编号按 _frodo_imdb_id 解析：条目没有时用本轮已采集
+    证据里的编号（详情 / NFO），都不给才退回片名搜。
+    """
+    try:
+        from backend.emby_server.metasources import breaker as provider_breaker
+        from backend.emby_server.metasources import douban_frodo as frodo
+    except Exception as exc:  # noqa: BLE001 — Frodo 腿不可用不影响补资料段
+        logger.warning("Frodo 补资料源导入失败，跳过 id=%s: %s", item.id, exc)
+        return {}
+    if not provider_breaker.allow(frodo.PROVIDER):
+        logger.warning("Frodo 熔断中，补资料跳过 Frodo id=%s", item.id)
+        return {}
+    try:
+        from backend.emby_server import douban as douban_leg
+
+        if douban_leg.ban_remaining() > 0:
+            logger.warning("豆瓣封禁期，补资料跳过 Frodo id=%s", item.id)
+            return {}
+    except Exception as exc:  # noqa: BLE001 — 封禁状态问不到时保守跳过 Frodo
+        logger.warning("豆瓣封禁状态未知，补资料跳过 Frodo id=%s: %s", item.id, exc)
+        return {}
+    try:
+        subject = None
+        imdb_id = _frodo_imdb_id(item, fetched)
+        if imdb_id:
+            subject = frodo.find_by_imdb(imdb_id, _item_year(item))
+        if subject is None:
+            title = getattr(item, "name", None)
+            if title:
+                subject = frodo.search_by_title(str(title), _item_year(item))
+        if not subject:
+            return {}
+        mapped = {
+            "overview": subject.get("overview") or "",
+            "community_rating": subject.get("rating"),
+            "poster_path": subject.get("image") or "",
+        }
+        return {k: v for k, v in mapped.items() if not _empty(v)}
+    except Exception as exc:  # noqa: BLE001 — Frodo 任何失败都不进补资料流程
+        logger.warning("Frodo 补资料失败，跳过 id=%s: %s", item.id, exc)
+        return {}
+
+
+def fill_from_frodo(item, fetched: Optional[dict] = None) -> dict:
+    """Frodo 补资料缺口（只返回候选 dict，不写库、不抛异常）。
+
+    路线：有 imdb_id 走 IMDb 桥精确换豆瓣条目（不拿片名撞运气）；
+    无 imdb_id 时走 Frodo 片名搜（模块内已有置信门槛，过不了当没搜到）。
+    桥用的编号按 _frodo_imdb_id 解析：条目没有时用本轮已采集证据里
+    的编号，调用方（apply_fill / 聚合通道）须把 fetched 透传进来，
+    不传时行为与此前逐字一致。熔断中 / 封禁中 / 任何异常 → 返回 {}，
+    绝不挡其他源、不出旧数。熔断记账在 douban_frodo 模块的请求层
+    （allow / record 已在内），本层不重复记账（重复记会把失败计数
+    翻倍、提前熔断）。
+    """
+    if not frodo_fill_enabled():
+        return {}
+    return _frodo_candidates(item, fetched)
+
+
+def _default_people_fetcher(fetched):
+    """默认人物抓取：复用本轮已采集的 TMDB credits（不新增 IO）。
+
+    按名字精确匹配本轮 credits；名字不在 credits 里时返回 None（该行
+    本轮跳过，不编来源、不另发请求）。拿不到 credits 时返回 None，
+    调用方随之跳过人物补缺。
+    """
+    try:
+        from backend.emby_server.tmdb import cast_list as _cast_list
+    except Exception:  # noqa: BLE001 — TMDB 客户端不可用 = 无抓取源
+        return None
+    details = (fetched or {}).get("tmdb_details") or {}
+    try:
+        cast = _cast_list(details)
+    except Exception:  # noqa: BLE001 — credits 解析失败 = 无抓取源
+        return None
+    by_name = {c["name"]: c for c in cast if c.get("name")}
+    if not by_name:
+        return None
+
+    def _fetch(record):
+        entry = by_name.get((record or {}).get("name"))
+        if entry is None:
+            return None
+        return {
+            "name": entry["name"],
+            "role": entry.get("role") or "",
+            "image": entry.get("image") or "",
+            "person_tmdb_id": entry.get("person_id") or "",
+        }
+
+    return _fetch
+
+
+def _apply_people_fill(db, item, fetched, people_fetcher=None):
+    """补资料段人物补缺（只填 emby_people 现有三列、永不覆盖）。
+
+    记录源 = 本条目已有的人物行（不新建行，建行仍归现行
+    _apply_cast）；抓取源默认复用本轮 TMDB credits，调用方可注入
+    fetcher。开关关 / 无行 / 无抓取源时静默跳过；任何异常只记日志，
+    绝不拖垮补资料段。返回实际改动的字段数（日志用，不进返回值）。
+    """
+    try:
+        from backend.emby_server.metasources import people_scrape as _people
+    except Exception as exc:  # noqa: BLE001 — 人物模块不可用不影响补资料
+        logger.warning("人物刮削模块不可用，跳过 id=%s: %s", item.id, exc)
+        return 0
+    if not _people.people_scrape_enabled():
+        return 0
+    if people_fetcher is None:
+        people_fetcher = _default_people_fetcher(fetched)
+    if people_fetcher is None:
+        return 0
+    try:
+        rows = (
+            db.query(em.EmbyPerson)
+            .filter(em.EmbyPerson.item_id == item.id)
+            .all()
+        )
+    except Exception as exc:  # noqa: BLE001 — 人物行读不到不影响补资料
+        logger.warning("人物行读取失败，跳过 id=%s: %s", item.id, exc)
+        return 0
+    if not rows:
+        return 0
+    records = [
+        {
+            "name": r.name,
+            "role": r.role or "",
+            "image": r.image or "",
+            "person_tmdb_id": r.person_tmdb_id or "",
+        }
+        for r in rows
+    ]
+    try:
+        result = _people.scrape_people(records, people_fetcher)
+    except Exception as exc:  # noqa: BLE001 — 刮削失败不影响补资料
+        logger.warning("人物刮削失败，跳过 id=%s: %s", item.id, exc)
+        return 0
+    filled_by_name = {
+        (entry.get("record") or {}).get("name"): entry.get("record")
+        for entry in (result.get("filled") or [])
+    }
+    changed = 0
+    for row in rows:
+        record = filled_by_name.get(row.name)
+        if record is not None:
+            changed += len(_people.apply_filled_to_person(row, record))
+    if changed:
+        logger.info("补资料段人物补缺 id=%s changed=%s", item.id, changed)
+    return changed
+
+
+def apply_fill(db, item, fetched: dict, people_fetcher=None) -> list:
+    """补资料段：只在已绑定条目上、只填空缺字段。
+
+    调用方须保证条目已绑定（tmdb_id 或 imdb_id 非空）；未绑定时本函数
+    拒绝写任何字段、返回 []（防线，不依赖调用方自觉）。
+    顺序：先用已采集证据填，仍缺的 overview / 评分 / 海报再问 Frodo；
+    Frodo 只补缺口，不覆盖已填。Frodo 之后仍缺的字段再问中文聚合
+    通道（聚合开关关时它返回空，行为与本批之前逐字一致；聚合开时
+    它按源优先级逐字段补缺，Frodo 腿在聚合里不受独立 Frodo 开关
+    管辖——见 zh_aggregate 模块头注）。最后跑人物补缺（接线批）：
+    只填本条目已有人物行的 role / image / person_tmdb_id 空缺，
+    永不覆盖、不新建行；开关关时不问源。返回实际填上的字段名列表。
+    """
+    if _empty(getattr(item, "tmdb_id", None)) and _empty(
+        getattr(item, "imdb_id", None)
+    ):
+        logger.warning("补资料段拒绝未绑定条目 id=%s（不写任何字段）", item.id)
+        return []
+    filled = []
+    candidates = fill_candidates_from_fetched(fetched)
+    for field in FILL_FIELDS:
+        if _empty(getattr(item, field, None)) and field in candidates:
+            setattr(item, field, candidates[field])
+            filled.append(field)
+    still_missing = [
+        f for f in FRODO_FILL_FIELDS
+        if f not in filled and _empty(getattr(item, f, None))
+    ]
+    if still_missing:
+        frodo_candidates = fill_from_frodo(item, fetched)
+        for field in still_missing:
+            if field in frodo_candidates:
+                setattr(item, field, frodo_candidates[field])
+                filled.append(field)
+    agg_missing = [
+        f for f in FILL_FIELDS
+        if f not in filled and _empty(getattr(item, f, None))
+    ]
+    if agg_missing:
+        try:
+            from backend.emby_server.metasources import zh_aggregate as _zh
+
+            agg_candidates, _agg_prov = _zh.aggregate(item, fetched, agg_missing)
+        except Exception as exc:  # noqa: BLE001 — 聚合失败不拖垮补资料段
+            logger.warning("中文聚合失败，跳过 id=%s: %s", item.id, exc)
+            agg_candidates = {}
+        for field in agg_missing:
+            if field in agg_candidates:
+                setattr(item, field, agg_candidates[field])
+                filled.append(field)
+    try:
+        _apply_people_fill(db, item, fetched, people_fetcher)
+    except Exception as exc:  # noqa: BLE001 — 人物补缺绝不拖垮补资料段
+        logger.warning("补资料段人物补缺失败，跳过 id=%s: %s", item.id, exc)
+    binding = None
+    if getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None):
+        binding = {
+            "provider": "tmdb" if getattr(item, "tmdb_id", None) else "imdb",
+            "external_id": str(
+                getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None)
+            ),
+            "confidence": None,
+            "evidence": {"filled_fields": filled},
+        }
+    _upsert_stage_record(db, item.id, "filled", binding)
+    logger.info("补资料段提交 id=%s filled=%s", item.id, filled)
+    return filled

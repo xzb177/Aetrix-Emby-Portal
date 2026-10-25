@@ -572,36 +572,6 @@ def _read_sibling_text(
     return None
 
 
-def _discover_nfo(db: Session, item: em.MediaItem) -> Optional[dict]:
-    """给条目找 NFO（电影/剧集优先；季/集按 NFO 能力处理）"""
-    kind = item.item_type
-    if kind == "movie":
-        stem = posixpath.splitext(posixpath.basename(item.file_path or ""))[0]
-        cands = [f"{stem}.nfo", "movie.nfo"] if stem else ["movie.nfo"]
-        text = _read_sibling_text(db, item.file_path, cands)
-    elif kind == "series":
-        # 用第一集定位剧集目录：tvshow.nfo 在剧集目录（或季目录的父级）
-        ep = (
-            db.query(em.MediaItem)
-            .filter(em.MediaItem.series_id == item.id, em.MediaItem.item_type == "episode")
-            .first()
-        )
-        text = _read_sibling_text(db, ep.file_path if ep else None, ["tvshow.nfo"], parent_levels=1)
-    elif kind == "episode":
-        stem = posixpath.splitext(posixpath.basename(item.file_path or ""))[0]
-        text = _read_sibling_text(db, item.file_path, [f"{stem}.nfo"] if stem else [])
-    elif kind == "season":
-        ep = (
-            db.query(em.MediaItem)
-            .filter(em.MediaItem.parent_id == item.id, em.MediaItem.item_type == "episode")
-            .first()
-        )
-        text = _read_sibling_text(db, ep.file_path if ep else None, ["season.nfo"])
-    else:
-        return None
-    return nfo_lib.parse_nfo(text) if text else None
-
-
 # ==================== 多源元数据（Phase 6b） ====================
 
 class MetaSourcesSaveRequest(BaseModel):
@@ -629,12 +599,14 @@ def _meta_sources_view(db: Session, snapshot=None) -> dict:
 
     **密钥原文不出这个函数**：每把只给掩码、冷却剩余秒数与原因。
     """
+    from backend.emby_server.metasources import breaker as ms_breaker
     from backend.emby_server.metasources import config as ms_config
     from backend.emby_server.metasources import keypool as ms_keypool
     from backend.emby_server.metasources import sources as ms_sources
 
     snapshot = snapshot if snapshot is not None else ms_config.read_config(db, ms_sources.SPECS)
     order = [s.id for s in snapshot.sources]
+    breaker_view = ms_breaker.status()   # 熔断状态（批一 #8）：每源一行带上
     rows = []
     for position, source_cfg in enumerate(snapshot.sources, start=1):
         spec = ms_sources.SPEC_BY_ID.get(source_cfg.id)
@@ -672,6 +644,12 @@ def _meta_sources_view(db: Session, snapshot=None) -> dict:
             "keys_legacy": source_cfg.keys_legacy,
             # TMDB 的密钥池在 6a 那张卡片里（单一入口），这里不再重复给输入框
             "key_entry": "pool_card" if source_cfg.id == "tmdb" else "inline",
+            # 豆瓣的开关/间隔在下方豆瓣卡里统一设置（单一存储 douban_enabled /
+            # douban_min_interval），源表这一行只展示状态、不再给第二个间隔输入框
+            "managed_by_card": source_cfg.id == "douban",
+            # 熔断状态：None = 从没记过账（一直健康或还没跑过）；有值时含
+            # state（closed/open/half_open）/连续失败数/剩余冷却秒/最近错误
+            "breaker": breaker_view.get(source_cfg.id),
         })
     return {
         "enabled": snapshot.enabled,
@@ -1114,7 +1092,6 @@ def get_chase_new(
     return result
 
 
-
 @admin_emby_router.put("/scrape/chase-new")
 def save_chase_new(
     req: ChaseNewSaveRequest,
@@ -1137,37 +1114,6 @@ def get_auto_scan(
 ):
     """定时扫描当前配置（开关 / 时间 / 上次执行日期）"""
     return {"success": True, **auto_scan.get_config(db)}
-
-
-@admin_emby_router.post("/scrape/enrich/retry-unmatched")
-def retry_unmatched_items(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """重试未匹配项（处方 5）：把「搜过、没有」终态条目捞回队列重新补搜。
-
-    TMDB 每天新增条目、本地别名（Tier 1.5）也在变好——终态化不等于永久放弃。
-    捞回的条目置 enrich_priority=50（repair 之下、默认之上），排在队首。
-    """
-    from backend.emby_server import enrich_worker
-    n = enrich_worker.retry_unmatched(db)
-    return {"success": True, "requeued": n}
-
-
-@admin_emby_router.post("/scrape/enrich/requeue-inherit-children")
-def requeue_inherit_children(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """空壳 inherit 单集补排（v2.58.0）：父级已有 tmdb_id、但子集没拿到单集级
-    数据（done+inherit 空壳）的，翻回 pending 重跑。
-
-    与常态联动（父级新拿 tmdb_id 自动翻）同一谓词、同一动作；部署后跑一次即可，
-    日常由联动覆盖。返回翻回条数。
-    """
-    from backend.emby_server import enrich_worker
-    n = enrich_worker.requeue_stuck_inherit_children(db)
-    return {"success": True, "requeued": n}
 
 
 @admin_emby_router.get("/scrape/enrich-none-stats")
@@ -1350,16 +1296,6 @@ class ProbeResetRequest(BaseModel):
     # stuck：probing → pending；failed：failed → pending（次数清零）；
     # retrying：退避中的立即可重试；all：以上全部
     scope: str = Field("stuck", pattern="^(stuck|failed|retrying|all)$")
-
-
-@admin_emby_router.get("/scrape/probe-progress")
-def get_probe_progress(
-    staff: base_models.WebUser = Depends(require_staff),
-    db: Session = Depends(get_db),
-):
-    """探测进度：各状态计数 / 重试中 / 过期抢单 / 常见错误 / 速率 / 熔断 / ETA"""
-    from backend.emby_server import probe_worker
-    return {"success": True, **probe_worker.status_snapshot(db)}
 
 
 @admin_emby_router.post("/scrape/probe/reset")
@@ -2033,16 +1969,3 @@ def save_unified_fallback(
         enabled = enrich_worker.get_unified_fallback_config(db)["enabled"]
     cfg = enrich_worker.save_unified_fallback_config(db, enabled)
     return {"success": True, **cfg}
-
-
-@admin_emby_router.get("/scrape/scheduler/status")
-def get_scheduler_status(
-    staff: base_models.WebUser = Depends(require_staff),
-):
-    """统一任务调度器状态（v2.54.1）：一次看到扫描队列 + 刮削积压 + 让路/熔断状态。
-
-    给管理后台"后台任务"统一视图用。
-    """
-    from backend.emby_server import task_scheduler as _ts
-
-    return {"success": True, "status": _ts.get_unified_status()}

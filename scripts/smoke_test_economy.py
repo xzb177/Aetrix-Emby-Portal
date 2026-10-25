@@ -38,6 +38,17 @@ def main():
         row.value = "true"
     else:
         db.add(models.SystemConfig(key="checkin_enabled", value="true"))
+    # 2026-10-23 去重 #3：邀请人奖励只由推广发放——冒烟按推广口径种配置，
+    # 下方「邀请者获得奖励积分」的期望来自这里（开、余额型、100 分）
+    for k, v in (("promotion_reward_enabled", "true"),
+                 ("promotion_reward_type", "balance"),
+                 ("promotion_reward_amount", "100"),
+                 ("promotion_reward_days", "0")):
+        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == k).first()
+        if row:
+            row.value = v
+        else:
+            db.add(models.SystemConfig(key=k, value=v))
     db.commit()
     now = datetime.now()
 

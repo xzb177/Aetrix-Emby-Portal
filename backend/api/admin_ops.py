@@ -598,6 +598,29 @@ def delete_device(
     _audit(db, current_admin, "remove_device", "user_device", None,
            {"device_id": device_id, "user_id": user_id})
     db.commit()
+
+
+@admin_ops_router.delete("/emby-tokens/{token_id}")
+def revoke_emby_token(
+    token_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """阶段 3（#22）：单令牌吊销——管理端单独踢掉某一个兼容层令牌，
+    不碰该用户其它令牌与门户 JWT 会话。令牌值只存哈希，响应不回传任何
+    令牌材料，只回用户与设备标识。"""
+    from backend.emby_server import models as em
+
+    row = db.query(em.EmbyApiToken).filter(em.EmbyApiToken.id == token_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="令牌不存在")
+    ok = devices.revoke_single_token(db, row.user_id, token_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="令牌不存在")
+    _audit(db, current_admin, "revoke_emby_token", "emby_api_token", token_id,
+           {"user_id": row.user_id, "device_id": row.device_id})
+    db.commit()
+    return {"success": True, "user_id": row.user_id, "device_id": row.device_id}
     return {"success": True, "message": "设备已移除，对应客户端需重新登录"}
 
 
@@ -1028,7 +1051,8 @@ class InvitationCodeGenerateRequest(BaseModel):
     max_uses: int = Field(default=100, ge=0, le=100000)
     expires_days: int = Field(default=0, ge=0, le=3650)
     whitelist: str = ""
-    # 本批码的专属奖励（积分）：0/不填 = 跟随全局 invitation_reward_points（r31 起接通）
+    # 本批码的专属奖励（积分）：0/不填 = 跟随推广配置 promotion_reward_amount
+    # （r31 起接通；2026-10-23 去重后由 promotion.grant 统一发放）
     reward_points: Optional[int] = Field(default=None, ge=0, le=1000000)
 
 

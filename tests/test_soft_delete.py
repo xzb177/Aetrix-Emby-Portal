@@ -34,6 +34,14 @@ from backend.emby_server import scanner, soft_delete
 from backend.integrations import store
 
 
+@pytest.fixture(autouse=True)
+def _grace_single_pass(monkeypatch):
+    # 本文件测软删除主体，钉的是「确认缺失 → 下架」这一环；
+    # 缺失宽限（批一 #6，默认 3 轮）会让单轮清理不下架，与本文件无关，
+    # 压到 1 轮隔离变量（宽限语义在 test_missing_grace.py 里钉）
+    monkeypatch.setattr(scanner, "MISSING_GRACE_SCANS", 1)
+
+
 @pytest.fixture()
 def db():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},

@@ -460,7 +460,7 @@ def test_playback_info_media_source_has_official_static_fields(client, token, se
     for key, value in official_static.items():
         assert src.get(key) == value, f"MediaSource {key} 应为 {value}"
     assert src["SupportsDirectPlay"] is True
-    assert src["SupportsTranscoding"] is True
+    assert src["SupportsTranscoding"] is False  # 转码删除后恒报 False
     assert src["IsRemote"] is False
 
 

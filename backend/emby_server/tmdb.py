@@ -28,6 +28,7 @@ from backend.emby_server import models as emby_models
 from backend.emby_server import scan_progress as progress
 from backend.emby_server import tmdb_cache
 from backend.emby_server.env_util import env_float, env_int
+from backend.emby_server.metasources import breaker as provider_breaker
 from backend.emby_server.zh_s2t import to_traditional as _to_traditional
 
 logger = logging.getLogger(__name__)
@@ -1495,10 +1496,18 @@ class TmdbClient:
         **瞬态失败上抛** ``TmdbTransientError``（网络重试耗尽、5xx、解析失败、
         全 key 429），让调用方把条目送回重试队列；404/401/未配置照旧返回
         ``None``（阴性语义，不烧重试预算）。
+
+        熔断（2026-10-24 批一 #8）：成败在这一层喂 ``provider_breaker``
+        （按请求记账——一次搜索背后是多次 _get，按条目记会失真）；
+        熔断打开时直接抛瞬态异常，语义与「网络挂了」一致，调用方现成
+        的重试队列口径不用改。逐 key 冷却仍是第一道（粒度更细），熔断
+        是整源总闸：所有 key 一起坏时别再逐条撞。
         """
         self._ensure_session()
         if not self.session:
             return None
+        if not provider_breaker.allow("tmdb"):
+            raise TmdbTransientError("TMDB 熔断中（连续失败触发），暂不发请求")
         total = max(1, len(self.api_keys))
         tried: set[str] = set()
         last_wait = 0.0
@@ -1514,6 +1523,7 @@ class TmdbClient:
                 # 网络异常已在 _request 里按 TMDB_NET_RETRIES 退避重试过，到这
                 # 说明抖动持续存在：抛瞬态异常，条目回重试队列（吞成 None 会被
                 # 写成终态 none，且 L1 会把失败当空结果缓存 300 秒——时好时坏）
+                provider_breaker.record_failure("tmdb", error=f"网络请求失败: {path}")
                 raise TmdbTransientError(f"TMDB 网络请求失败（重试耗尽）: {path}")
             status = r.status_code
             if status in (401, 429):
@@ -1534,14 +1544,20 @@ class TmdbClient:
             if status >= 500:
                 # TMDB/网关侧的临时错误：瞬态，转重试队列（404/400 仍按阴性处理）
                 logger.warning("TMDB 服务端错误 %s: HTTP %s（瞬态，转重试）", path, status)
+                provider_breaker.record_failure("tmdb", status=status,
+                                                error=f"服务端错误: {path}")
                 raise TmdbTransientError(f"TMDB 服务端错误 HTTP {status}: {path}")
             if status >= 400:
                 logger.warning("TMDB 响应异常 %s: HTTP %s", path, status)
+                # 4xx（404/400 等）是对这条请求的阴性回答，不是源坏了：
+                # 不喂熔断；但半开名额若是这一发领的，要归还（见 breaker）
+                provider_breaker.release_probe("tmdb")
                 return None
             try:
                 data = r.json()
             except Exception as exc:  # noqa: BLE001 — 200 却解析不出（多半是网关错误页）
                 logger.warning("TMDB 响应解析失败 %s: %s", path, exc)
+                provider_breaker.record_failure("tmdb", error=f"响应解析失败: {path}")
                 raise TmdbTransientError(f"TMDB 响应解析失败: {path}") from exc
             # 成功一次就清掉这把的失败计数（它可能只是碰到了临时配额窗口）
             with self._key_lock():
@@ -1549,6 +1565,7 @@ class TmdbClient:
             if entry:
                 logger.info("TMDB 密钥 ****%s 恢复正常", key[-4:])
             self._keyed_limiter(key).note_success()
+            provider_breaker.record_success("tmdb")
             return data
         if last_wait > 0:
             # 全部 key 都撞了限流：先退避一轮再放行后续请求（这段窗口内的条目
@@ -1557,8 +1574,12 @@ class TmdbClient:
         if saw_429:
             # 限流是配额窗口问题（瞬态）：抛出去让条目退避重试；
             # 只有 401/无 key 这种「配置坏了」才按阴性返回 None
+            provider_breaker.record_failure("tmdb", status=429,
+                                            error=f"全部密钥限流: {path}")
             raise TmdbTransientError(f"TMDB 全部密钥限流（HTTP 429）: {path}")
         logger.warning("TMDB 全部密钥不可用或已用尽: %s", path)
+        # 走到这里是全部 key 401（配置问题）：不喂熔断，归还半开名额
+        provider_breaker.release_probe("tmdb")
         return None
 
     @property
@@ -1668,7 +1689,7 @@ class TmdbClient:
                 # 真实成功的搜索响应：响应体里带 results 数组才算"搜过了"。
                 # 空数组是合法阴性（TMDB 确认无此片），允许写 L1/L2。
                 results = data.get("results") or []
-                tmdb_cache.save_search(endpoint, norm, year or 0, results, lang)
+                tmdb_cache.save_search(endpoint, norm, year or 0, results, lang, raw=data)
                 self._cache_put(key, results)
                 return results
             if data is None:
@@ -1802,6 +1823,43 @@ class TmdbClient:
             return []
         return [hit for hit in list(results or [])[:limit] if isinstance(hit, dict)]
 
+    def scored_candidates(self, name: str, year: Optional[int], kind: str,
+                          limit: int = 8) -> list[dict]:
+        """带置信分数的候选快照（低置信人工审查队列的证据，批二 #15）。
+
+        与 ``search()`` 的区别：不裁剪、不挑赢家——把原始候选连同各自的
+        ``_hit_score`` 分数（tier/rank，被置信线拒掉的 tier=None）一起
+        返回，管理员处置时看的就是识别当刻「有哪些候选、为什么没过线」。
+        只走 ``_search_raw``（两级缓存，识别刚搜过通常命中），失败返回
+        空表（证据抓取失败由调用方按「无证据」处理，不许拖垮识别收尾）。
+        """
+        query = _clean_query(name) or (name or "").strip()
+        if not query:
+            return []
+        try:
+            results = self._search_raw(query, year, kind)
+        except Exception as exc:  # noqa: BLE001 — 证据抓取失败返回空表（见 docstring）
+            logger.warning("TMDB 带分数候选抓取失败 q=%r: %s", query, exc)
+            return []
+        out: list[dict] = []
+        for hit in list(results or [])[:limit]:
+            if not isinstance(hit, dict):
+                continue
+            sc = _hit_score(name, query, hit, True, year=year)
+            out.append({
+                "tmdb_id": hit.get("id"),
+                "title": hit.get("title") or hit.get("name") or "",
+                "original_title": (hit.get("original_title")
+                                   or hit.get("original_name") or ""),
+                "year": (hit.get("release_date")
+                         or hit.get("first_air_date") or "")[:4],
+                "tier": sc[0] if sc else None,
+                "rank": sc[1] if sc else None,
+                "popularity": hit.get("popularity"),
+                "poster_path": hit.get("poster_path"),
+            })
+        return out
+
     def details(self, tmdb_id: str, kind: str) -> Optional[dict]:
         """详情（补 IMDb Id 与多别名）——只在条目缺这两项时调用。
 
@@ -1839,7 +1897,7 @@ class TmdbClient:
                 # 真实详情载荷必带 id：错误体 {"success": False, ...} 不写 L2，
                 # 免得磁盘积错误体——读路径虽有 _has_credits 守卫不会误服，
                 # 但每次都会穿透重打网络。
-                tmdb_cache.save_details(endpoint, str(tmdb_id), data, lang)
+                tmdb_cache.save_details(endpoint, str(tmdb_id), data, lang, raw=data)
             self._cache_put(key, data)
             return data
 
@@ -1874,7 +1932,7 @@ class TmdbClient:
                          {"language": preferred_language()})
         if isinstance(data, dict) and data.get("id") is not None:
             # 真实季载荷必带 id：错误体不写 L2（与 details 同理）
-            tmdb_cache.save_details("tv_season", f"{tid}:{sn}", data, "")
+            tmdb_cache.save_details("tv_season", f"{tid}:{sn}", data, "", raw=data)
         url = _season_poster_url(data) if data else None
         self._cache_put(key, url)
         return url
@@ -2004,7 +2062,7 @@ class TmdbClient:
         if data:
             try:
                 tmdb_cache.save_details(
-                    f"{endpoint}_images", str(tmdb_id), data, image_lang)
+                    f"{endpoint}_images", str(tmdb_id), data, image_lang, raw=data)
             except Exception:
                 pass
         return data
@@ -2055,7 +2113,7 @@ class TmdbClient:
             if isinstance(data, dict) and "episodes" in data:
                 # 真实成功的季响应：带 episodes 数组才算"拉过了"；
                 # 空数组是合法阴性，允许写 L1/L2。
-                tmdb_cache.save_details("season", cache_key, data, lang)
+                tmdb_cache.save_details("season", cache_key, data, lang, raw=data)
                 eps = data.get("episodes") or []
                 self._cache_put(key, eps)
                 return eps

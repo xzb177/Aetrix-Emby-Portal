@@ -21,7 +21,7 @@ from backend import realms
 from backend.database import get_db
 from backend.emby_server.models import MediaItem
 from backend.emby_server.portal import resolve_emby_base_url
-from backend.emby_server.public_url import client_base_url
+from backend.emby_server.public_url import client_base_url, configured_public_url
 from backend.integrations import branding as branding_capability
 from backend.tg_bind import get_bot_username
 
@@ -60,8 +60,10 @@ _LOGIN_POSTERS_TTL = 600
 _LOGIN_POSTERS_FAIL_TTL = 30
 # at 初值用 None 表示"从未刷新"：monotonic() 起点是系统启动时刻，
 # 用 0.0 会在开机不足 TTL 时误判缓存新鲜，导致登录页持续空白。
-# 按客户端基址分桶：全局一份会把第一个请求的 Host 写进 emby_base_url，
-# TTL 内所有人拿到同一个源站地址。条目列表仍按桶缓存，地址解析口径不变。
+# 没配 EMBY_PUBLIC_URL 时按推断出的基址分桶，避免第一个请求的 Host 在 TTL 内
+# 覆盖所有人的 emby_base_url。配了公开地址则全站一个桶：基址不看 Host，
+# 再按请求分桶只会让随机 Host 把桶撑满并挤掉唯一有用的条目。
+# 推断桶有上限，多出来的按最久未刷新丢弃。
 _LOGIN_POSTERS_MAX_KEYS = 32
 _login_posters_cache: dict = {"entries": {}}
 # single-flight 锁：TTL 到期瞬间只放一个线程去刷，其余直接返回旧缓存
@@ -69,8 +71,10 @@ _login_posters_lock = threading.Lock()
 
 
 def _poster_cache_key(request: Request | None) -> str:
-    """缓存键是客户端基址，不是请求 Host 本身。"""
+    """配了 EMBY_PUBLIC_URL 时返回固定桶；否则返回本次请求推断出的基址。"""
     try:
+        if configured_public_url():
+            return ""
         return client_base_url(request) or ""
     except Exception:
         return ""
@@ -107,10 +111,14 @@ def _remember_poster_entry(key: str, entry: dict) -> None:
     overflow = len(entries) - _LOGIN_POSTERS_MAX_KEYS
     if overflow <= 0:
         return
-    oldest = sorted(entries, key=lambda k: entries[k].get("at") or 0)[:overflow]
-    for stale_key in oldest:
-        if stale_key != key:
-            entries.pop(stale_key, None)
+    # 刚写入的这一桶先留下。它的 at 往往还是 None，若参与「最旧」排序会排在最前，
+    # 然后被跳过，上限就漏掉一格，随机 Host 仍能把桶撑过上限。
+    ranked = sorted(
+        (k for k in entries if k != key),
+        key=lambda k: entries[k].get("at") or 0,
+    )
+    for stale_key in ranked[:overflow]:
+        entries.pop(stale_key, None)
 
 
 @site_router.get("/login-posters")

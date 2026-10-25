@@ -18,8 +18,8 @@
 """
 from __future__ import annotations
 
-# 分片缓存时长（秒）：HLS 分片是不可变的（ffmpeg 写完就不改），边缘可以放心缓存。
-# 转码会话的分片同样不可变（一个 session 一份内容，session 票据在查询串里）。
+# 分片缓存时长（秒）：分片写完不可变，边缘可以放心缓存。
+# （转码删除后不再有转码会话分片；这里只服务直接流分片。）
 SEGMENT_CACHE_SECONDS = 6 * 3600
 # 边缘缓存一般要比浏览器激进：给 s-maxage 留长一些，浏览器短一点
 SEGMENT_CACHE_HEADER = f"public, max-age={SEGMENT_CACHE_SECONDS}, s-maxage={SEGMENT_CACHE_SECONDS}, immutable"

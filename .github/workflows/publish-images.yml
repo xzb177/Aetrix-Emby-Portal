@@ -96,7 +96,7 @@ jobs:
             --username "${{ github.actor }}" --password-stdin
 
       # ---- 后端镜像 ----
-      # 白名单拷贝（Dockerfile.backend）：镜像里只有 backend/ emby_api/ web_player/
+      # 白名单拷贝（Dockerfile.backend）：镜像里只有 backend/ emby_api/
       # serve.py VERSION，没有 .git、没有前端 TS 源码、没有 tests/ 与 docs/。
       #
       # --target runtime 是**必须显式写的**，不能依赖默认值。Dockerfile.backend 有

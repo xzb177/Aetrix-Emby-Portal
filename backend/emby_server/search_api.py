@@ -46,6 +46,9 @@ def _search_clauses(term: str) -> list:
             em.MediaItem.original_title.ilike(like),
             em.MediaItem.sort_name.ilike(like),
             em.MediaItem.aliases.ilike(like),
+            # 拼音派生字段（批二 #16）：全拼/首字母打法靠这两列捞候选
+            em.MediaItem.pinyin_full.ilike(like),
+            em.MediaItem.pinyin_initials.ilike(like),
         ])
     return clauses
 

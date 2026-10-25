@@ -12,7 +12,9 @@
   风控安全退避。本模块不自带第二套轮换/重试/限流实现。
 - 文件的 Drive id 直接透传成 ``MountEntry.file_id`` → 扫描器写
   ``item.drive_file_id`` → 播放走 302 直链分支（与 rclone 挂载的条目完全同构）。
-  ``resolve()`` 只剩探测（ffprobe）与 .strm 内容读取在用。
+  探测（ffprobe）与 .strm 内容读取走四口（resolve_play_target /
+  open_range / read_sidecar_text / refresh_credentials）；旧 ``resolve()``
+  已随来源切表删除。
 
 路径与配置：
 
@@ -42,6 +44,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import FrozenSet, Iterator, Optional
+from urllib.parse import parse_qsl, urlparse
 
 from backend.emby_server import disc_filter, drive_auth, drive_changes
 from backend.emby_server import mounts as mount_lib
@@ -51,6 +54,7 @@ from backend.emby_server.mounts import (
     MountEntry,
     MountError,
     PlayTarget,
+    ProviderCapabilities,
     RemoteMount,
     cached_listing,
 )
@@ -61,8 +65,14 @@ logger = logging.getLogger(__name__)
 FOLDER_MIME = "application/vnd.google-apps.folder"
 #: files.list 端点（与 drive_changes 同一地址）
 FILES_URL = "https://www.googleapis.com/drive/v3/files"
-#: 列目录取的字段：含 modifiedTime（扫描器文件指纹要用）
-_LIST_FIELDS = "nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed)"
+#: 列目录取的字段：含 modifiedTime（扫描器文件指纹要用）与
+#: md5Checksum/headRevisionId/version（#13 PR-2：内容校验和与
+#: 修订证据，随列举零额外请求返回，不逐文件发 files.get）。
+#: 注意：不要加 etag——2026-10-25 实测，共享盘列举带 etag 会被
+#: 谷歌回 400，致 5 个库扫描 1 秒即 partial（挂载 3 中断）；只删
+#: etag 一项，其余三字段均已实测安全。
+_LIST_FIELDS = ("nextPageToken,files(id,name,mimeType,size,modifiedTime,trashed,"
+                "md5Checksum,headRevisionId,version)")
 _PAGE_SIZE = 1000
 #: 单次列举内钉住 SA 时 token 的最小剩余寿命（秒）：超大目录枚举可能耗时久，
 #: 索取长寿 token；万一中途仍 401，由同 SA 刷新续跑（Google 的 pageToken
@@ -81,6 +91,19 @@ def _parse_mod_ts(value: object) -> float:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
+
+
+def _file_id_from_url(url: str) -> Optional[str]:
+    """usercontent 直链 → file_id（``id`` 查询参数）；解析不出返回 None。
+
+    解析缓存命中后现挂 Bearer 时还原亲和键用：``resolve`` 当初以 file_id 为
+    亲和键取 token，url 里就带着它。拿不到时返回 None，``drive_auth_headers``
+    会退回以 url 本身为亲和键（与 STRM 路径同口径）。
+    """
+    try:
+        return dict(parse_qsl(urlparse(url or "").query)).get("id") or None
+    except Exception:  # noqa: BLE001 — 亲和键还原是尽力而为，不许打断播放
+        return None
 
 
 class _PathDeadEnd(MountError):
@@ -119,6 +142,25 @@ class DriveMount(RemoteMount):
         self._fid_cache: dict[str, str] = {"/": self.root_id}
 
     # ---- 凭据与列举 ----
+
+    def refresh_credentials(self) -> bool:
+        """Drive 凭据刷新：走 _token(force_refresh=True)，即 drive_changes
+        唯一入口（共享盘再轮换一次 / 个人盘 OAuth 刷新）。成功返回 True，
+        失败抛 MountAuthError（_token 的翻译口径）。"""
+        self._token(force_refresh=True)
+        return True
+
+    def capabilities(self) -> ProviderCapabilities:
+        # Drive：列举 / 按段读（usercontent 直链 + Bearer Range，探测现行
+        # 就是这么用的）/ 文本旁挂 / 换链全是真能力；凭据可刷新——
+        # _token(force_refresh=True) 走 drive_changes 唯一入口。
+        # 注意：正常播放主线不走本提供者的 resolve（带 drive_file_id 的
+        # 条目在 api 层直接 302），能力声明说的是提供者本身的能力，
+        # 不是播放主线的路由选择，两者不要混淆。
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=True,
+        )
 
     def _token(self, force_refresh: bool = False) -> str:
         """按盘取凭据（共享盘 SA 轮换 / 个人盘 OAuth），取不到按凭据错误报"""
@@ -347,6 +389,23 @@ class DriveMount(RemoteMount):
             "drive_id": self.drive_id,
         }
 
+    def canary_probe_root(self) -> dict:
+        """共享盘根目录金丝雀探活：只读 files.list 一页。
+
+        2026-10-25 挂载 3 中断的教训：字段白名单回归（如 etag 重进）
+        会让共享盘根列举直接回 400，而扫描是 5 个库全 partial 才暴露。
+        本探活只发一页列举、不写 Drive、不落缓存、不走 list_dir，
+        让字段问题在盘根立刻暴露。失败不抛，返回 ok=False 明细，
+        供健康检查/告警调用；凭据与列举失败一律按 _list_page 语义
+        翻译成 MountError 后在此收敛。
+        """
+        try:
+            body, _token = self._list_page(self.root_id, None)
+        except MountError as exc:
+            return {"ok": False, "fields": _LIST_FIELDS, "error": str(exc)}
+        files = body.get("files", []) if isinstance(body, dict) else []
+        return {"ok": True, "fields": _LIST_FIELDS, "root_entries": len(files)}
+
     @cached_listing
     def list_dir(self, rel: str = "/") -> list[MountEntry]:
         folder_id = self._fid_of(rel)
@@ -380,6 +439,13 @@ class DriveMount(RemoteMount):
                 # 与 rclone 挂载同一条约定，扫描器靠它区分文件身份
                 file_id="" if is_dir else item_id,
                 mod_ts=_parse_mod_ts(item.get("modifiedTime")),
+                # #13 PR-2：Drive 元数据自带的校验和与修订证据（零额外请求）；
+                # 目录与无 md5 的文件（Google 原生文档等）为空串 → 写库落 NULL。
+                content_hash="" if is_dir else str(item.get("md5Checksum") or ""),
+                content_hash_algo="md5" if (not is_dir and item.get("md5Checksum")) else "",
+                etag="" if is_dir else str(item.get("etag") or ""),
+                revision="" if is_dir else str(
+                    item.get("headRevisionId") or item.get("version") or ""),
             ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
@@ -428,10 +494,11 @@ class DriveMount(RemoteMount):
             return (parent + "/" + name) if parent != "/" else ("/" + name)
 
         # ---- 第一遍：按 folder id 并行 BFS，收齐文件 ----
-        # 条目：(rel 文本, file_id, 文件名, 大小, mod_ts, 分支键)
+        # 条目：(rel 文本, file_id, 文件名, 大小, mod_ts, 分支键,
+        #        content_hash, content_hash_algo, etag, revision)
         # 分支键 = 从 root 到父目录的 folder id 元组：真撞时排序用，
         # 保证多次扫描的改名结果确定一致。
-        collected: list[tuple[str, str, str, int, float, tuple]] = []
+        collected: list[tuple[str, str, str, int, float, tuple, str, str, str, str]] = []
         seen_folders: set[str] = {root_fid}
         walk_errors: list[str] = []
         current: list[tuple[str, str, int, tuple]] = [(root_fid, root_rel, 0, (root_fid,))]
@@ -478,17 +545,19 @@ class DriveMount(RemoteMount):
                         collected.append((
                             _child_rel(dpath, entry.name), entry.file_id,
                             entry.name, entry.size, entry.mod_ts, bkey,
+                            entry.content_hash, entry.content_hash_algo,
+                            entry.etag, entry.revision,
                         ))
 
         # ---- 第二遍：按 rel 文本分组，真撞的文件确定性改名 ----
         # 同 (rel, file_id) 重复出现（网盘侧重复条目/分页异常）按重复去重，
         # 与基类 seen_files 同语义。
         by_rel: dict[str, dict[str, tuple]] = _defaultdict(dict)
-        for rel, file_id, name, size, mod_ts, bkey in collected:
-            by_rel[rel].setdefault(file_id, (name, size, mod_ts, bkey))
+        for rel, file_id, name, size, mod_ts, bkey, chash, calgo, etag, rev in collected:
+            by_rel[rel].setdefault(file_id, (name, size, mod_ts, bkey, chash, calgo, etag, rev))
         for rel in sorted(by_rel):
             members = sorted(by_rel[rel].items(), key=lambda kv: (kv[1][3], kv[0]))
-            for idx, (file_id, (name, size, mod_ts, _bkey)) in enumerate(members):
+            for idx, (file_id, (name, size, mod_ts, _bkey, chash, calgo, etag, rev)) in enumerate(members):
                 if idx == 0:
                     out_name, out_rel = name, rel
                 else:
@@ -501,6 +570,8 @@ class DriveMount(RemoteMount):
                     rel=out_rel, name=out_name, size=size,
                     is_strm=mount_lib._is_strm_name(out_name),
                     file_id=file_id, mod_ts=mod_ts,
+                    content_hash=chash, content_hash_algo=calgo,
+                    etag=etag, revision=rev,
                 )
         if walk_errors:
             # 生成器收尾时抛：已产出的文件照常处理，上层按来源不可用处理并
@@ -598,7 +669,7 @@ class DriveMount(RemoteMount):
         except MountError:
             return False  # 与基类一致：列举失败按不存在
 
-    def resolve(self, rel: str) -> PlayTarget:
+    def resolve_play_target(self, rel: str) -> PlayTarget:
         """探测/.strm 读取用的解析：usercontent 直链 + Bearer 头（不下发客户端）。
 
         正常播放不走这里：带 drive_file_id 的条目在 api 层直接 302。
@@ -609,6 +680,21 @@ class DriveMount(RemoteMount):
         url = drive_auth.drive_usercontent_download_url(entry.file_id)
         return PlayTarget(
             "url", url, drive_auth.drive_auth_headers(url, entry.file_id))
+
+    # 解析缓存的凭据拆分：Bearer 每次经 drive_auth 现取（SA 轮换与 401 按值
+    # 失效都在那一层维护），缓存里只留 url 本身。现挂时把亲和键还原成
+    # file_id——它就写在 usercontent 直链的 id 参数里，与 resolve() 当初
+    # 传的亲和键一致，不会把某个 SA 钉进缓存反复用。
+    def cacheable_play_target(self, target: PlayTarget) -> Optional[PlayTarget]:
+        headers = dict(target.headers or {})
+        headers.pop("Authorization", None)
+        return PlayTarget(target.kind, target.value, headers)
+
+    def reattach_play_target(self, stored: PlayTarget) -> PlayTarget:
+        headers = dict(stored.headers or {})
+        headers.update(drive_auth.drive_auth_headers(
+            stored.value, _file_id_from_url(stored.value)))
+        return PlayTarget(stored.kind, stored.value, headers)
 
 
 PROVIDERS = {MOUNT_DRIVE: DriveMount}

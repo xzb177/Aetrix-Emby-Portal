@@ -80,24 +80,7 @@ def test_transfer_daily_cap_not_bypassed_by_concurrent_requests(file_engine, mon
     assert sorted(results.values())[0] == "ok"
 
 
-def test_chat_points_locks_user_before_counting(monkeypatch):
-    from backend.tg_bot import chat_points
-    calls = []
-    monkeypatch.setattr(economy, "lock_user_row", lambda db, uid: calls.append(uid))
-    engine = create_engine("sqlite:///:memory:")
-    for t in (models.WebUser, models.SystemConfig, models.PointsLog, models.ChatPointsLog):
-        t.__table__.create(engine, checkfirst=True)
-    db = sessionmaker(bind=engine)()
-    u = models.WebUser(username="cp", password_hash="", points=0, telegram_id=555)
-    db.add(u)
-    db.add_all([
-        models.SystemConfig(key="chat_points_enabled", value="true"),
-        models.SystemConfig(key="chat_points_group_ids", value="-100"),
-    ])
-    db.commit()
-    upd = {"message": {"message_id": 1, "chat": {"id": -100}, "from": {"id": 555}, "text": "hello world"}}
-    assert chat_points.handle_group_message(db, upd) > 0
-    assert calls == [u.id]
+
 
 
 def test_redpacket_send_and_claim_lock_user_before_counting(monkeypatch):

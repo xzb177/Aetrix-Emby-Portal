@@ -355,11 +355,6 @@ def get_redis() -> Optional["redis.Redis"]:
     return client
 
 
-def redis_degraded() -> bool:
-    """配置了 Redis 但当前用不了（启动未连上 / 熔断中）——限流应改用进程内计数"""
-    return REDIS_ENABLED and (redis_client is None or redis_breaker.state == "open")
-
-
 _MISSING = object()
 
 
@@ -427,7 +422,17 @@ class CacheManager:
     ``_MEMORY_CACHE_MAX``，存 (value, expire_at)，读时校验过期、
     写满时先清过期条目再按 FIFO 淘汰最老的。Redis 故障时也不会
     无限增长吃掉内存。
+
+    域 scope（FMBY 批一 #10，借鉴其 Redis 按域分片）：``get/set/delete/
+    exists`` 可带 ``domain=``——带域写入的键落 ``rb:d:<域>:<原键>``
+    命名空间，读取先查新键、未命中回退旧的无域键（老键不迁移、靠
+    TTL 自然消亡）；不带 ``domain`` 的调用与从前逐字节一致，老调用方
+    语义不变。整域失效走 :meth:`invalidate_domain`。
     """
+
+    #: 起步四域：浏览 / 条目 / 播放 / 资源（域只是键命名空间，不改变值语义；
+    #: 新域只要是合法 slug 即可用，不必改这张表——表是给人看的清单）
+    DOMAINS = ("browse", "items", "playback", "assets")
 
     # 修复 E-P1-2：内存缓存被多线程共享，dict 与 FIFO order 必须原子更新
     _memory_cache: dict = {}
@@ -490,35 +495,98 @@ class CacheManager:
                 order.append(key)
             cache[key] = (value, expire_at)
 
-    @staticmethod
-    def get(key: str) -> Optional[str]:
-        """获取缓存（Redis 熔断 / 故障时走内存）"""
-        value = redis_call(lambda r: r.get(f"rb:{key}"), _MISSING)
-        if value is not _MISSING:
-            return value
-        return CacheManager._memory_get(key)
+    # ---------------- 域 scope（#10） ----------------
 
     @staticmethod
-    def set(key: str, value: str, ttl: int = 300) -> bool:
-        """设置缓存"""
-        ok = redis_call(lambda r: r.setex(f"rb:{key}", ttl, value), _MISSING)
-        if ok is not _MISSING:
-            return ok
-        CacheManager._memory_set(key, value, ttl)
-        return True
+    def _validate_domain(domain: Optional[str]) -> Optional[str]:
+        """域 slug 校验：None 原样返回；非法 slug 直接抛错（防打错域静默失效）。"""
+        if domain is None:
+            return None
+        d = str(domain).strip().lower()
+        if not d or not d.isascii() or not all(
+                c.isalnum() or c in "_-" for c in d):
+            raise ValueError(f"非法缓存域: {domain!r}")
+        return d
 
     @staticmethod
-    def delete(key: str) -> bool:
-        """删除缓存"""
-        res = redis_call(lambda r: r.delete(f"rb:{key}") > 0, _MISSING)
-        if res is not _MISSING:
-            return res
-        if key in CacheManager._memory_cache:
+    def _scoped(key: str, domain: Optional[str]) -> str:
+        """逻辑键：带域时 ``d:<域>:<原键>``（Redis 后缀与内存回退共用同一形）。"""
+        return f"d:{domain}:{key}" if domain else key
+
+    @staticmethod
+    def _memory_delete(key: str) -> bool:
+        with CacheManager._memory_cache_lock:
+            if key not in CacheManager._memory_cache:
+                return False
             del CacheManager._memory_cache[key]
             try:
                 CacheManager._memory_cache_order.remove(key)
             except ValueError:
                 pass
+            return True
+
+    @staticmethod
+    def get(key: str, *, domain: Optional[str] = None) -> Optional[str]:
+        """获取缓存（Redis 熔断 / 故障时走内存）
+
+        带 ``domain`` 时先查域内新键，未命中回退旧无域键（迁移期双读，
+        老键靠 TTL 自然消亡）；不带 domain 与从前一致。
+        """
+        domain = CacheManager._validate_domain(domain)
+        if domain is None:
+            value = redis_call(lambda r: r.get(f"rb:{key}"), _MISSING)
+            if value is not _MISSING:
+                return value
+            return CacheManager._memory_get(key)
+        scoped = CacheManager._scoped(key, domain)
+        value = redis_call(lambda r: r.get(f"rb:{scoped}"), _MISSING)
+        if value is not _MISSING:
+            if value is not None:
+                return value
+            # Redis 可达、新键未命中 → 回退旧键
+            legacy = redis_call(lambda r: r.get(f"rb:{key}"), _MISSING)
+            return legacy if legacy is not _MISSING else None
+        # Redis 不可用 → 内存回退：同样先新键后旧键
+        hit = CacheManager._memory_get(scoped)
+        if hit is not None:
+            return hit
+        return CacheManager._memory_get(key)
+
+    @staticmethod
+    def set(key: str, value: str, ttl: int = 300, *,
+            domain: Optional[str] = None) -> bool:
+        """设置缓存。带 ``domain`` 时只写入域命名空间（新键）。"""
+        domain = CacheManager._validate_domain(domain)
+        logical = CacheManager._scoped(key, domain)
+        ok = redis_call(lambda r: r.setex(f"rb:{logical}", ttl, value), _MISSING)
+        if ok is not _MISSING:
+            return ok
+        CacheManager._memory_set(logical, value, ttl)
+        return True
+
+    @staticmethod
+    def delete(key: str, *, domain: Optional[str] = None) -> bool:
+        """删除缓存。带 ``domain`` 时域内新键与旧无域键一并删（读路径
+        双读，删除必须把两边都清掉，否则旧键会把已删的值又读回来）。"""
+        domain = CacheManager._validate_domain(domain)
+        if domain is None:
+            res = redis_call(lambda r: r.delete(f"rb:{key}") > 0, _MISSING)
+            if res is not _MISSING:
+                return res
+            if key in CacheManager._memory_cache:
+                del CacheManager._memory_cache[key]
+                try:
+                    CacheManager._memory_cache_order.remove(key)
+                except ValueError:
+                    pass
+            return True
+        scoped = CacheManager._scoped(key, domain)
+        res = redis_call(lambda r: r.delete(f"rb:{scoped}", f"rb:{key}") > 0,
+                         _MISSING)
+        if res is not _MISSING:
+            return res
+        CacheManager._memory_delete(scoped)
+        CacheManager._memory_delete(key)
         return True
 
     @staticmethod
@@ -534,12 +602,55 @@ class CacheManager:
         return 0
 
     @staticmethod
-    def exists(key: str) -> bool:
-        """检查缓存是否存在"""
-        res = redis_call(lambda r: r.exists(f"rb:{key}") > 0, _MISSING)
+    def exists(key: str, *, domain: Optional[str] = None) -> bool:
+        """检查缓存是否存在（带 domain 时新键、旧键任一存在即 True）。"""
+        domain = CacheManager._validate_domain(domain)
+        if domain is None:
+            res = redis_call(lambda r: r.exists(f"rb:{key}") > 0, _MISSING)
+            if res is not _MISSING:
+                return res
+            return CacheManager._memory_get(key) is not None
+        scoped = CacheManager._scoped(key, domain)
+        res = redis_call(
+            lambda r: (r.exists(f"rb:{scoped}") or r.exists(f"rb:{key}")) > 0,
+            _MISSING)
         if res is not _MISSING:
             return res
-        return CacheManager._memory_get(key) is not None
+        return (CacheManager._memory_get(scoped) is not None
+                or CacheManager._memory_get(key) is not None)
+
+    @staticmethod
+    def invalidate_domain(domain: str) -> int:
+        """按域失效：删掉该域全部带 scope 的键，返回删除数。
+
+        只动 ``rb:d:<域>:*`` 命名空间——无域旧键与其它域不受影响。
+        Redis 与内存回退都清（同一进程可能在 Redis 故障窗口攒下内存条目）；
+        Redis 不可用时返回内存侧的删除数（best-effort，与 delete_pattern 同口径）。
+        """
+        domain = CacheManager._validate_domain(domain)
+        if domain is None:
+            raise ValueError("domain 不能为空")
+        prefix = f"d:{domain}:"
+        count = 0
+
+        def _del(r):
+            keys = r.keys(f"rb:{prefix}*")
+            return r.delete(*keys) if keys else 0
+
+        res = redis_call(_del, _MISSING)
+        if res is not _MISSING:
+            count += int(res or 0)
+        with CacheManager._memory_cache_lock:
+            doomed = [k for k in CacheManager._memory_cache
+                      if k.startswith(prefix)]
+            for k in doomed:
+                del CacheManager._memory_cache[k]
+                try:
+                    CacheManager._memory_cache_order.remove(k)
+                except ValueError:
+                    pass
+            count += len(doomed)
+        return count
 
 
 cache = CacheManager()
@@ -604,8 +715,6 @@ def _auto_migrate():
             # v2.44.0 注册渠道归因（admin/code/invitation/open）：老用户补列后为 NULL，
             # 按「未记录」显示——不硬猜成 open（见 backend/register_channel.py）
             ("register_channel", "VARCHAR(20)", "NULL"),
-            # 用户级转码开关（Linger 借鉴）：默认允许，老用户补列后为 True
-            ("enable_video_transcoding", "BOOLEAN", "1"),
             # v2.57.0 公益服模块1：公益身份与资格。老库补列后 is_welfare=0（非公益）、
             # 其余为 NULL（无公益资格），行为与升级前完全一致。
             ("is_welfare", "BOOLEAN", "0"),
@@ -687,6 +796,8 @@ def _auto_migrate():
             # 即与升级前行为一致：本来就是有增量、有追新的
             ("incremental_scan", "BOOLEAN", "1"),
             ("fs_watch", "BOOLEAN", "1"),
+            # 媒体库学习 L4：库展示顺序；老库补列后为 0（未设序），行为与升级前一致
+            ("sort_order", "INTEGER", "0"),
         ]),
         # v2.6.20 多节点：EA 用 node_key 认领自己那条服务器记录；服务器归属到某个服
         ("remote_servers", [
@@ -706,6 +817,12 @@ def _auto_migrate():
             # P2 统一货币体系：套餐积分价。老库补列后为 NULL（不支持积分购买），与升级前行为一致。
             ("points_price", "NUMERIC(10, 2)", "NULL"),
         ]),
+        # 订阅分档权益表（PR-1）：与上一条同表分开追加（本函数的列表纪律）。
+        # 老库补列后为 NULL（未声明任何权益），全部权益回退现行全局配置，
+        # 行为与升级前完全一致（判定单口见 backend/entitlements.py）。
+        ("subscription_plans", [
+            ("entitlements", "JSON", "NULL"),
+        ]),
         # P4 会员等级订阅折扣：老库补列后为 0（无折扣），与升级前行为一致；
         # migrate_discount_pct 会按等级回填默认值。
         ("member_levels", [
@@ -716,6 +833,13 @@ def _auto_migrate():
         ]),
         ("storage_mounts", [
             ("realm_id", "INTEGER", "NULL"),
+            # FMBY 挂载模型地基（清单第 1 项）：五能力位声明列，老库补列
+            # 后为 0（未声明），回填按 mount_type 派生；只声明、不执法。
+            ("can_list", "BOOLEAN", "0"),
+            ("can_random_read", "BOOLEAN", "0"),
+            ("can_read_sidecar", "BOOLEAN", "0"),
+            ("can_generate_play_target", "BOOLEAN", "0"),
+            ("can_refresh_credentials", "BOOLEAN", "0"),
         ]),
         # v2.6.19 求片可以转交外部服务（MoviePilot 订阅 / qBittorrent 加种）：
         # 把「交给谁、成没成、为什么没成」落库，否则面板只能显示一句模糊的失败
@@ -874,6 +998,78 @@ def _auto_migrate():
             ("drive_share_ok", "BOOLEAN", "NULL"),
             ("drive_share_checked_at", "DATETIME", "NULL"),
         ]),
+        # 身份锚（清单第 8 项）：emby_items 加 source_id / provider_file_id。
+        # 老库补列后为 NULL（= 尚未锚定，播放走现行 mount:// 解析并计回落）；
+        # 新入库只写扫描时能确定的，行为与升级前一致。
+        ("emby_items", [
+            ("source_id", "INTEGER", "NULL"),
+            ("provider_file_id", "VARCHAR(128)", "NULL"),
+        ]),
+        # 缺失宽限（2026-10-24，FMBY 学习批一 #6）：emby_items 加
+        # missing_since / missing_count。老库补列后 missing_count=0
+        # （= 从未缺失），与升级前行为衔接：下一轮清理起开始累计。
+        ("emby_items", [
+            ("missing_since", "DATETIME", "NULL"),
+            ("missing_count", "INTEGER", "0"),
+        ]),
+        # 拼音搜索派生字段（2026-10-24，FMBY 学习批二 #16）：emby_items 加
+        # pinyin_full / pinyin_initials（由 name 生成的全拼/首字母紧凑键）。
+        # 老库补列后为 NULL：搜索拼音层对 NULL 天然不命中，行为与升级前
+        # 一致；存量由 scripts/backfill_pinyin_search_fields.py 回填，新
+        # 写入走 models 的落库钩子自动生成。
+        ("emby_items", [
+            ("pinyin_full", "TEXT", "NULL"),
+            ("pinyin_initials", "TEXT", "NULL"),
+        ]),
+        # 扫描检查点专属落点（2026-10-24，FMBY 学习批一 #7）：emby_scan_runs
+        # 加 state_json（定向扫描的续扫范围）。老库补列后为 NULL，
+        # interrupted_resume_prefixes 读不到就回退 stats 里的 resume_scope
+        # （老流水的既有落点），行为与升级前完全一致。
+        ("emby_scan_runs", [
+            ("state_json", "TEXT", "NULL"),
+        ]),
+        # 目录到期调度（2026-10-24，FMBY 学习批二 #12）：emby_scan_dirs 加
+        # next_due_at / last_decision。老库补列后为 NULL（= 没有排期，
+        # 按「已到期」处理：走完整核对后才开始排期），行为与升级前一致。
+        ("emby_scan_dirs", [
+            ("next_due_at", "DATETIME", "NULL"),
+            ("last_decision", "VARCHAR(32)", "NULL"),
+        ]),
+        # 进度双记（2026-10-24，FMBY 学习批一 #4）：emby_user_media_data 加
+        # max_position_ticks（历史最远进度，与 playback_position_ticks 并存）。
+        # 老库补列后为 NULL（= 还没双记过），读/算回退 playback_position_ticks，
+        # 行为与升级前一致；新上报经 _apply_play_progress 只增不减地维护。
+        ("emby_user_media_data", [
+            ("max_position_ticks", "BIGINT", "NULL"),
+        ]),
+        # 按变体取流（2026-10-24，FMBY 学习批二 #11 PR-2）：起播事件表加
+        # variant（实际走的变体名）。老库补列后为 NULL（= 老事件/无变体
+        # 调用），聚合读口仍按 provider × mount_id 分组，variant 只作
+        # 筛选维度，行为与升级前一致。
+        ("emby_play_start_events", [
+            ("variant", "VARCHAR(30)", "NULL"),
+        ]),
+        # 远端身份四件套（清单第 10 项 #13，PR-1）：emby_items 加 scan 身份列。
+        # 老库补列后为 NULL（= 身份未知），认亲层无键跳过该层，行为与升级前一致。
+        ("emby_items", [
+            ("scan_title", "VARCHAR(300)", "NULL"),
+            ("scan_year", "INTEGER", "NULL"),
+            ("content_hash", "VARCHAR(40)", "NULL"),
+            ("content_hash_algo", "VARCHAR(16)", "NULL"),
+            ("identity_json", "TEXT", "NULL"),
+        ]),
+        # 阶段 8 PR-1（2026-10-25）：命令表加 payload（命令参数 JSON 文本，
+        # seek 的目标 ticks 等）。老库补列后为 NULL（= 无参数命令），
+        # 读数按无参数处理，行为与升级前一致；create_all 不改已建的表，
+        # 不走这里老库会报 no such column。
+        ("playback_control_commands", [
+            ("payload", "TEXT", "NULL"),
+        ]),
+        # 苹果 CMS W1（类型与持久化）：映射表加播放组内集次序号。
+        # 老库补列后为 NULL（= 电影 / 未标序号），行为与升级前一致。
+        ("upstream_item_mappings", [
+            ("episode_index", "INTEGER", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []
@@ -936,11 +1132,64 @@ def _auto_migrate():
     _ensure_lottery_g1_tables(existing_tables)
     _migrate_redpacket_claim_unique(existing_tables)
     _migrate_redpacket_idempotency_unique(existing_tables)
+    _migrate_upstream_source_checks(existing_tables)
+    _migrate_scan_run_single_running(existing_tables)
     _migrate_panel_unseal_fk(existing_tables)
     _migrate_exchange_discount_credit_fk(existing_tables)
+    _relax_mount_credential_mount_id(existing_tables)
     _resurrect_soft_deleted(existing_tables)
     _ensure_default_realm()
     _hash_plain_emby_tokens(existing_tables)
+
+
+def _migrate_upstream_source_checks(existing_tables: set) -> None:
+    """upstream_sources 的 CHECK 约束补新取值（苹果 CMS W1，幂等）。
+
+    仅 PostgreSQL 生效：其它方言直接跳过（create_all 已覆盖新库，
+    SQLite 的 CHECK 在建表时由模型定义带出）。
+    对每列查 pg_constraint：若该列 CHECK 定义里没有新取值，就 DROP
+    后以原名重建（ck_upstream_source_type 补 'applecms'，
+    ck_upstream_auth_method 补 'none'），取值集取自 models 的唯一
+    定义点（约束与枚举同源，不手写第二份清单）。
+    best-effort：任何失败只记 warning、不崩启动（照
+    uq_alert_rules_event_type 同口径）；失败时老约束原样保留，
+    新取值写入仍被旧 CHECK 挡下、不会静默进脏数据。
+    """
+    from sqlalchemy import inspect, text
+
+    if engine.dialect.name != "postgresql":
+        return
+    if "upstream_sources" not in existing_tables:
+        return
+    try:
+        from backend.emby_server import models as emby_models
+
+        inspector = inspect(engine)
+        checks = {c["name"]: (c.get("sqltext") or "")
+                  for c in inspector.get_check_constraints("upstream_sources")}
+        specs = (
+            ("source_type", "ck_upstream_source_type",
+             emby_models.UPSTREAM_SOURCE_TYPES, "applecms"),
+            ("auth_method", "ck_upstream_auth_method",
+             emby_models.UPSTREAM_AUTH_METHODS, "none"),
+        )
+        for column, constraint_name, allowed, new_value in specs:
+            if f"'{new_value}'" in checks.get(constraint_name, ""):
+                continue
+            in_list = ", ".join(f"'{v}'" for v in allowed)
+            with engine.begin() as conn:
+                conn.execute(text(
+                    f"ALTER TABLE upstream_sources DROP CONSTRAINT IF EXISTS "
+                    f"{constraint_name}"
+                ))
+                conn.execute(text(
+                    f"ALTER TABLE upstream_sources ADD CONSTRAINT "
+                    f"{constraint_name} CHECK ({column} IN ({in_list}))"
+                ))
+            print(f"  🔧 已迁移: upstream_sources CHECK {constraint_name} "
+                  f"补 '{new_value}'")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️ upstream_sources CHECK 约束迁移跳过: {exc}")
 
 
 def _backfill_filename_meta() -> None:
@@ -1054,6 +1303,9 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     # v2.52.0：改名/移动检测按 drive_file_id 批量查条目，没有索引就是全表扫
     ("emby_items", "idx_item_drive_file_id", "drive_file_id", None,
      "  已迁移: emby_items.idx_item_drive_file_id"),
+    # 远端身份四件套（#13 PR-1）：PR-3 的 content_hash 认亲层按 hash 批量查条目
+    ("emby_items", "idx_item_content_hash", "content_hash", None,
+     "  已迁移: emby_items.idx_item_content_hash"),
     # StrmAssistant 打磨 R2（PR #406）：get_alternate_versions() 按 merged_into_id 查版本，
     # 详情页每次打开都触发；models.py 的 index=True 只对 create_all 新建表生效，
     # 老库升级上来没有索引就是全表扫（40 万行约 0.5-2 秒/次，拖慢播放链路）
@@ -1102,6 +1354,35 @@ _LEGACY_INDEXES: tuple[tuple[str, ...], ...] = (
     ("emby_items", "idx_item_aliases_trgm", "aliases gin_trgm_ops", "aliases",
      "  已迁移: emby_items.idx_item_aliases_trgm（搜索 trigram GIN 索引）",
      None, "gin"),
+    # 拼音搜索字段的 trigram 索引（2026-10-24，批二 #16）：与上面四列同一
+    # 基建、同一幂等口径，索引名与 models.__table_args__ 声明同名。
+    ("emby_items", "idx_item_pinyin_full_trgm", "pinyin_full gin_trgm_ops",
+     "pinyin_full",
+     "  已迁移: emby_items.idx_item_pinyin_full_trgm（搜索 trigram GIN 索引）",
+     None, "gin"),
+    ("emby_items", "idx_item_pinyin_initials_trgm",
+     "pinyin_initials gin_trgm_ops", "pinyin_initials",
+     "  已迁移: emby_items.idx_item_pinyin_initials_trgm（搜索 trigram GIN 索引）",
+     None, "gin"),
+    # 补全进度统计（2026-10-23 压测实锤）：进度快照按 enrich_claimed_at >= 今天
+    # 逐类型计数，无索引时每条都是 Parallel Seq Scan（cost 约 5.5 万、每分钟
+    # 数十次）。等价 DDL：CREATE INDEX idx_item_enrich_claimed
+    # ON emby_items (enrich_claimed_at)。回滚：DROP INDEX idx_item_enrich_claimed。
+    ("emby_items", "idx_item_enrich_claimed", "enrich_claimed_at", "enrich_claimed_at",
+     "  已迁移: emby_items.idx_item_enrich_claimed（补全进度统计索引）"),
+    # 抢单去重聚合（同日实锤）：_claim_batch 子查询 GROUP BY coalesce(series_id,
+    # id) 原走单列状态索引位图扫 7.8 万行（含已软删/已合并死行）。部分索引只含
+    # 活行（约 2.4 万），INCLUDE 三列供 index-only 聚合；非 PG 方言把 INCLUDE
+    # 列并进键列（覆盖语义等价）。等价 DDL：CREATE INDEX
+    # idx_item_enrich_claim_cover ON emby_items (enrich_status,
+    # enrich_next_retry_at) INCLUDE (series_id, date_added, library_id)
+    # WHERE deleted_at IS NULL AND merged_into_id IS NULL。
+    # 回滚：DROP INDEX idx_item_enrich_claim_cover。
+    ("emby_items", "idx_item_enrich_claim_cover", "enrich_status, enrich_next_retry_at",
+     None,
+     "  已迁移: emby_items.idx_item_enrich_claim_cover（抢单去重聚合部分覆盖索引）",
+     "deleted_at IS NULL AND merged_into_id IS NULL", None,
+     "series_id, date_added, library_id"),
 )
 
 
@@ -1166,14 +1447,19 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
                   required_column: Optional[str], message: str,
                   where: Optional[str] = None,
-                  using: Optional[str] = None) -> None:
+                  using: Optional[str] = None,
+                  include: Optional[str] = None) -> None:
     """给老库补一条索引（幂等）：表不存在 / 依赖列不存在 / 索引已在 → 什么都不做
 
     ``where`` 为 None 时 DDL 与以前逐字节一致；给出时建部分索引
     （``CREATE INDEX ... WHERE <where>``）。
 
     ``using`` 为 None 时行为不变；给出时建 ``USING <using>`` 索引，
-    且仅 PostgreSQL 支持，非 PostgreSQL 方言直接返回。"""
+    且仅 PostgreSQL 支持，非 PostgreSQL 方言直接返回。
+
+    ``include`` 为 None 时行为不变；给出时 PG 建覆盖索引
+    （``CREATE INDEX ... ({columns}) INCLUDE ({include})``），其余方言
+    把 include 列并进键列，覆盖语义等价。"""
     from sqlalchemy import inspect, text
 
     if using is not None and engine.dialect.name != "postgresql":
@@ -1190,10 +1476,17 @@ def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
         return
     with engine.begin() as conn:
         if using is None:
-            if where is None:
-                conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns})"))
-            else:
-                conn.execute(text(f"CREATE INDEX {name} ON {table} ({columns}) WHERE {where}"))
+            ddl_columns = columns
+            include_clause = ""
+            if include is not None:
+                if engine.dialect.name == "postgresql":
+                    include_clause = f" INCLUDE ({include})"
+                else:
+                    ddl_columns = f"{columns}, {include}"
+            ddl = f"CREATE INDEX {name} ON {table} ({ddl_columns}){include_clause}"
+            if where is not None:
+                ddl += f" WHERE {where}"
+            conn.execute(text(ddl))
         else:
             if where is None:
                 conn.execute(text(f"CREATE INDEX {name} ON {table} USING {using} ({columns})"))
@@ -1215,6 +1508,15 @@ def _ensure_legacy_indexes(existing_tables: set) -> None:
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠️ pg_trgm 扩展安装跳过: {exc}")
+        # pg_stat_statements：慢查询归因（2026-10-23 压测后补）。扩展本体在
+        # 这里幂等装；统计视图要等 postgres 以 shared_preload_libraries 加载
+        # 它才可查——仓库 docker-compose.yml 的 postgres 启动参数已带，
+        # 非 compose 部署需运维自行加上。装不上不拦启动（与 pg_trgm 同款）。
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_stat_statements"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ⚠️ pg_stat_statements 扩展安装跳过: {exc}")
     for spec in _LEGACY_INDEXES:
         _ensure_index(existing_tables, *spec)
 
@@ -1287,6 +1589,85 @@ def _migrate_redpacket_idempotency_unique(existing_tables: set) -> None:
             "UNIQUE (idempotency_key)"
         ))
     print("  🔧 已迁移: red_packets 唯一约束 (idempotency_key)")
+
+
+def _migrate_scan_run_single_running(existing_tables: set) -> None:
+    """emby_scan_runs 同库只许一条 running 流水（跨进程防重，FMBY 学习批一 #7）
+
+    worker 与 EA 是两个进程：进程内互斥（scanner._acquire_scan）挡不住跨
+    进程同扫一个库，最后一道闸落在库层——部分唯一索引
+    ``(library_id) WHERE status = 'running'``，begin_scan 撞上它抛
+    ScanInProgress。新库由模型 ``__table_args__`` 的同名索引经 create_all
+    直接建，这里只管存量库。
+
+    **安全序不能反**：
+    1. 先收尾存量僵尸——同库多条 running 只留最新一条（id 最大 = 最近
+       开跑），其余收尾成 interrupted（被打断，不是失败；与
+       maintenance.close_stale_scan_runs 的收尾口径一致），只动 running
+       行，跑过一次后每库至多一条、这步自然空转（幂等）；
+    2. 再建索引——反过来 CREATE UNIQUE INDEX 会被存量重复行直接顶失败。
+    索引创建失败也只记 warning 不崩启动（与 uq_alert_rules_event_type
+    同口径）：那时跨进程防重退回进程内防线，行为不比升级前差。
+    MySQL 不支持部分索引，跳过（同上退回进程内防线）。
+    """
+    from sqlalchemy import inspect, text
+
+    if "emby_scan_runs" not in existing_tables:
+        return
+    if engine.dialect.name not in ("sqlite", "postgresql"):
+        print("  ⚠️ 当前方言不支持部分唯一索引，emby_scan_runs 跨进程防重跳过（保留进程内防线）")
+        return
+    inspector = inspect(engine)
+    names = {ix["name"] for ix in inspector.get_indexes("emby_scan_runs")}
+    if "uq_scan_runs_one_running" in names:
+        return
+
+    # 第一步：收尾同库重复的 running 流水（这一步在建索引之前，顺序不能反）
+    from backend.emby_server import models as emby_models
+
+    session = Session(bind=engine)
+    closed = 0
+    try:
+        # 按 (库, id 倒序) 取行：每库先出现的是 id 最大 = 最近开跑的一条，留它；
+        # 其余都是更早的僵尸，收尾成 interrupted
+        rows = (
+            session.query(emby_models.ScanRun)
+            .filter(emby_models.ScanRun.status == "running")
+            .order_by(emby_models.ScanRun.library_id, emby_models.ScanRun.id.desc())
+            .all()
+        )
+        seen: set = set()
+        now = datetime.now()
+        for run in rows:
+            if run.library_id in seen:
+                run.status = "interrupted"
+                run.finished_at = now
+                run.error = (run.error or "迁移收尾：同库多条运行中流水，只保留最新一条")[:500]
+                closed += 1
+            else:
+                seen.add(run.library_id)
+        if closed:
+            session.commit()
+            print(f"  🔧 已迁移: emby_scan_runs 收尾 {closed} 条同库重复的运行中流水（只留最新一条）")
+    except Exception as exc:  # noqa: BLE001 — 收尾失败不许连累启动（协调员补强）
+        # 与下方建索引失败同口径：只告警、跳过——跨进程防重退回进程内
+        # 防线，行为不比升级前差；异常时 session 里可能有未提交的收尾
+        # 改动，close 前先 rollback，别把半截状态留给连接池里的下个用户。
+        session.rollback()
+        print(f"  ⚠️ emby_scan_runs 僵尸流水收尾跳过: {exc}")
+    finally:
+        session.close()
+
+    # 第二步：建部分唯一索引
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX uq_scan_runs_one_running "
+                "ON emby_scan_runs (library_id) WHERE status = 'running'"
+            ))
+        print("  🔧 已迁移: emby_scan_runs 同库单运行唯一索引 (library_id WHERE status='running')")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ⚠️ emby_scan_runs 同库单运行唯一索引创建跳过: {exc}")
 
 
 def _migrate_panel_unseal_fk(existing_tables: set) -> None:
@@ -1371,6 +1752,37 @@ def _migrate_exchange_discount_credit_fk(existing_tables: set) -> None:
                 "ALTER COLUMN exchange_code_id DROP NOT NULL"
             ))
             print("  🔧 已迁移: exchange_discount_credits.exchange_code_id 放宽为可空")
+
+
+def _relax_mount_credential_mount_id(existing_tables: set) -> None:
+    """BYOS P1：mount_credentials.mount_id 放宽为可空（仅 PG 老库）。
+
+    #1230 建表时 mount_id 是 NOT NULL；BYOS 绑定凭据行不附属任何
+    挂载（mount_id=NULL），否则同一用户第二个绑定即撞（mount_id,
+    scope, owner_user_id）唯一约束。NULL 行在 PG 唯一约束里互不
+    相等，故挂载附属行的约束语义逐字不变。
+
+    幂等：列已可空时直接返回；SQLite 跳过（新鲜库由 create_all 按
+    模型建表；SQLite 不支持 DROP NOT NULL，且开发库可重建）。
+    """
+    from sqlalchemy import text
+
+    if "mount_credentials" not in existing_tables:
+        return
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        is_nullable = conn.execute(text(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name='mount_credentials' "
+            "AND column_name='mount_id'"
+        )).scalar()
+        if is_nullable == "NO":
+            conn.execute(text(
+                "ALTER TABLE mount_credentials "
+                "ALTER COLUMN mount_id DROP NOT NULL"
+            ))
+            print("  🔧 已迁移: mount_credentials.mount_id 放宽为可空（BYOS 绑定行）")
 
 
 def _resurrect_soft_deleted(existing_tables: set) -> None:

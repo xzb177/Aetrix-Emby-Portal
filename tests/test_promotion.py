@@ -130,8 +130,10 @@ def test_grant_is_noop_when_disabled(db):
     assert _points_logs(db, inviter.id, "promotion") == []
 
 
-def test_apply_invitation_without_promotion_keeps_legacy_behavior(db):
-    """出厂状态下邀请流程必须与升级前**逐字一致**：只发 100 + 50 两笔"""
+def test_apply_invitation_without_promotion_pays_inviter_nothing(db):
+    """2026-10-23 去重后：推广是邀请人奖励的唯一发放方——它没配数值时
+    邀请人得 0（不再有第二条按 invitation_reward_points 发放的路径）；
+    被邀请人奖励不受影响，仍按 invitation_invitee_reward_points 发。"""
     inviter = _user(db, "boss")
     invitee = _user(db, "newbie")
     _code(db, inviter)
@@ -140,10 +142,12 @@ def test_apply_invitation_without_promotion_keeps_legacy_behavior(db):
     db.commit()
 
     assert result["applied"] is True
-    assert _balance(db, inviter.id) == 100
+    assert result["inviter_reward"] == 0
+    assert _balance(db, inviter.id) == 0
     assert _balance(db, invitee.id) == 50
     assert _rewards(db) == []          # 推广奖励没开 → 一行都不写
-    assert len(_points_logs(db, inviter.id, "invite")) == 1
+    assert _points_logs(db, inviter.id, "invite") == []
+    assert len(_points_logs(db, inviter.id, "promotion")) == 0
 
 
 # ===========================================================================
@@ -285,11 +289,11 @@ def test_grant_failure_never_breaks_the_invitation(db):
     assert _rewards(db) == []
     assert _points_logs(db, inviter.id, "promotion") == []
 
-    # 邀请关系照常建立（100 邀请 + 50 推广，推广开关是开着的）
+    # 邀请关系照常建立（邀请人只得推广那 50，去重后没有第二笔）
     result = apply_invitation(db, invitee, "INVITE001")
     db.commit()
     assert result["applied"] is True
-    assert _balance(db, inviter.id) == 150
+    assert _balance(db, inviter.id) == 50
     assert len(_rewards(db)) == 1
 
 
@@ -318,7 +322,10 @@ def test_apply_invitation_whitelist_hit_is_case_insensitive(db):
 
     assert apply_invitation(db, bob, "INVITE001")["applied"] is True
     db.commit()
-    assert _balance(db, inviter.id) == 100
+    # 白名单命中即建立关系；邀请人奖励只走推广（本例未配 → 0），
+    # 被邀请人奖励照常（去重口径见 test_apply_invitation_without_promotion_*）
+    assert _balance(db, inviter.id) == 0
+    assert _balance(db, bob.id) == 50
 
 
 def test_apply_invitation_empty_whitelist_means_unlimited(db):
@@ -370,7 +377,7 @@ def test_apply_invitation_still_works_when_promotion_enabled(db):
     db.commit()
 
     assert result["applied"] is True
-    assert _balance(db, inviter.id) == 130        # 100 邀请 + 30 推广
+    assert _balance(db, inviter.id) == 30         # 只有推广一笔（去重后）
     assert _balance(db, invitee.id) == 50
     rewards = _rewards(db, inviter.id)
     assert len(rewards) == 1 and rewards[0].reward_value == 30

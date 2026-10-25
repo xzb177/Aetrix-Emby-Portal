@@ -191,7 +191,7 @@ services:
       - pg_isready -U $${POSTGRES_USER:-aetrix} -d $${POSTGRES_DB:-aetrix}
       timeout: 5s
     image: postgres:16-alpine
-    command: postgres -c max_connections=200 -c shared_buffers=256MB
+    command: postgres -c max_connections=200 -c shared_buffers=${PG_SHARED_BUFFERS:-1GB} -c shared_preload_libraries=pg_stat_statements -c work_mem=${PG_WORK_MEM:-16MB}
     restart: unless-stopped
     volumes:
     - postgres_data:/var/lib/postgresql/data

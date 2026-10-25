@@ -32,6 +32,7 @@ from backend import config_service, models, realms, subscriptions
 from backend.database import get_db, SessionLocal
 
 from backend.emby_server import models as em
+from backend.emby_server import identity_gate
 from backend.emby_server import nodes as node_lib
 from backend.emby_server.public_url import client_base_url, configured_public_url
 from backend.emby_server.api import (
@@ -55,15 +56,10 @@ from backend.emby_server.scanner import (
     scan_result_payload,
     scan_runs_payload,
 )
-# 本文件里这几个路由都是 async def，所以必须用异步变体：同步的 stop_transcode 会
-# terminate 子进程、等它退出（最坏 5 秒）、再递归删分片目录，放在事件循环上等于把全站卡住。
-from backend.emby_server.streaming import (
-    stop_all_transcodes_async,
-    stop_transcodes_for_async,
-)
 from backend.emby_server import facets
 from backend.emby_server import image_store
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import mount_sources
 # 扫描队列（v2.27.0）：按远程挂载串行化 + 并发上限 + 排队状态/进度，见 scan_queue.py
 from backend.emby_server import reachability
 from backend.emby_server import scan_queue
@@ -509,6 +505,10 @@ def _user_realm_cards(user: models.WebUser, db: Session,
             "is_free": free,
             "access_note": realms.access_note_of(db, realm.id),
             "end_date": sub.end_date.isoformat() if sub and sub.end_date else None,
+            # 剩余天数由后端按下发口径算好（与 api/user.py 的 days_left 同公式：
+            # 精确差向下取整），前端直接显示不许自算——前端曾用「补到当天
+            # 23:59:59 再向上取整」自算，与「我的」页差 1~2 天（2026-10-23 修）
+            "days_left": max(0, (sub.end_date - now).days) if sub and sub.end_date else None,
             "plan_name": (sub.plan.name if sub and sub.plan else ""),
             "is_default": realm.id == realms.legacy_realm_id(db),
         })
@@ -642,6 +642,145 @@ def set_play_line_pref(req: dict,
     return {"line": "relay"}
 
 
+# ==================== BYOS 用户存储绑定（P1 + P2） ====================
+# 绑定是用户自己的网盘账号：建绑即验活（115）、解绑删行 + 凭据行、
+# 失效分三档文案。响应永远不含凭据原文与密封值（见 user_bindings）。
+# Drive 绑定走 P2 OAuth（下两口）：start 建 state 行并返回 Google
+# 授权地址，callback 凭 state 单次验讫换 token + 验活后建双行；
+# 凭据 POST 创建口仍只接受 pan115（Drive 不收明文凭据）。
+
+
+class StorageBindingCreate(BaseModel):
+    provider: str
+    account_label: str
+    credential: str
+
+
+def _binding_error_status(exc) -> int:
+    if exc.kind == "not_found":
+        return 404
+    if exc.kind == "transient":
+        return 502
+    return 400
+
+
+@user_emby_router.get("/storage-bindings")
+def list_storage_bindings(
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """本人存储绑定列表（只出自己的行，不含任何凭据材料）。"""
+    from backend.emby_server import user_bindings
+
+    return {"bindings": user_bindings.list_bindings(db, request_user.id)}
+
+
+@user_emby_router.post("/storage-bindings", status_code=201)
+def create_storage_binding(
+        body: StorageBindingCreate,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """建绑 + 同步验活（P1 仅 pan115）。
+
+    验活通过返回 status=active；验活失败属三档内时仍 201 返回该行
+    （status=invalid/expired + error_message），由客户端展示重绑
+    引导——失效要响亮，不静默；一过性失败 502 且不落行。
+    """
+    from backend.emby_server import user_bindings
+
+    try:
+        binding = user_bindings.create_binding(
+            db, request_user.id, body.provider,
+            body.account_label, body.credential)
+    except user_bindings.BindingError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return user_bindings.serialize_binding(binding)
+
+
+@user_emby_router.delete("/storage-bindings/{binding_id}")
+def delete_storage_binding(
+        binding_id: int,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """解绑：删绑定行 + 其凭据行（非本人行按不存在处理）。"""
+    from backend.emby_server import user_bindings
+
+    try:
+        user_bindings.delete_binding(db, request_user.id, binding_id)
+    except user_bindings.BindingError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return {"success": True}
+
+
+@user_emby_router.post("/storage-bindings/{binding_id}/verify")
+def verify_storage_binding(
+        binding_id: int,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """重验绑定（失效后恢复口）：通过回 active，失败落三档态。"""
+    from backend.emby_server import user_bindings
+
+    try:
+        binding = user_bindings.verify_binding(db, request_user.id, binding_id)
+    except user_bindings.BindingError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return user_bindings.serialize_binding(binding)
+
+
+class DriveOAuthStart(BaseModel):
+    account_label: str
+
+
+@user_emby_router.post("/storage-bindings/drive/oauth/start")
+def start_drive_oauth_binding(
+        body: DriveOAuthStart,
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """开始 Drive 授权：建 state 行、返回 Google 授权地址。
+
+    此时不建绑定行与凭据行（绑完先验活）；前端引导用户去授权地址
+    完成 Google 同意，Google 再把浏览器带回 callback 口。服务器
+    应用凭据 / 对外地址未配时响亮 400（部署者先配好，不猜）。
+    """
+    from backend.emby_server import drive_oauth
+
+    try:
+        return drive_oauth.start_drive_oauth(
+            db, request_user.id, body.account_label)
+    except drive_oauth.DriveOAuthError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+
+
+@user_emby_router.get("/storage-bindings/drive/oauth/callback")
+def callback_drive_oauth_binding(
+        code: str = "",
+        state: str = "",
+        error: str = "",
+        db: Session = Depends(get_db)):
+    """Drive 授权回调：凭 state 单次验讫换 token + 验活后建双行。
+
+    本口不依赖用户会话——授权方是 state 行（256 位随机、单次有效、
+    10 分钟过期，行里绑定 user_id）；Google 拒授权（error 参数）
+    时直接 400，不落行。换 token / 验活属三档内时返回 200 + 失败态
+    绑定行（与 P1 的 201 + status 同口径）；一过性失败 502 且不落行
+    （授权码本身也是一次性，须重新走授权）。
+    """
+    from backend.emby_server import drive_oauth, user_bindings
+
+    if error:
+        raise HTTPException(
+            status_code=400, detail=f"Google 授权失败：{error}")
+    try:
+        binding = drive_oauth.complete_drive_oauth(db, state, code)
+    except drive_oauth.DriveOAuthError as exc:
+        raise HTTPException(
+            status_code=_binding_error_status(exc), detail=exc.message) from exc
+    return user_bindings.serialize_binding(binding)
+
+
 @user_emby_router.get("/resume")
 def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db),
@@ -663,19 +802,25 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
     """
     limit = max(1, min(int(limit or 12), 50))
     UMD, MI, PS = em.UserMediaData, em.MediaItem, em.PlaybackSession
-    rows = (
-        _scope_items(
-            db.query(UMD, MI)
-            .join(MI, MI.id == UMD.item_id)
-            .filter(
-                UMD.user_id == request_user.id,
-                UMD.playback_position_ticks > 0,
-                UMD.played == False,  # noqa: E712
-                MI.item_type.in_(["movie", "episode"]),
-                MI.is_hidden == False,  # noqa: E712
-            ),
-            _library_scope(db, request_user),
+    resume_q = (
+        db.query(UMD, MI)
+        .join(MI, MI.id == UMD.item_id)
+        .filter(
+            UMD.user_id == request_user.id,
+            UMD.playback_position_ticks > 0,
+            UMD.played == False,  # noqa: E712
+            UMD.hide_from_resume == False,  # noqa: E712 — L9：已藏的不出
+            MI.item_type.in_(["movie", "episode"]),
+            MI.is_hidden == False,  # noqa: E712
         )
+    )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：展示过滤、进度不删——未绑定条目不进
+        # 门户续看（电影按自身、单集按所属剧判身份），UserMediaData
+        # 进度行原样保留，重绑后自动回来；门进 SQL（截断之前）。
+        resume_q = resume_q.filter(identity_gate.identity_clause())
+    rows = (
+        _scope_items(resume_q, _library_scope(db, request_user))
         # 同一部剧的几集会被聚合成一行，多取一些候选再截断
         .order_by(UMD.last_played_at.desc().nullslast(), UMD.id.desc())
         .limit(limit * 5 + 20)
@@ -686,11 +831,14 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
     series_ids = {it.series_id for _u, it in rows if it.item_type == "episode" and it.series_id}
     series_map: dict[int, em.MediaItem] = {}
     if series_ids:
-        series_map = {
-            s.id: s for s in db.query(MI).filter(
-                MI.id.in_(series_ids), MI.is_hidden == False,  # noqa: E712
-            ).all()
-        }
+        series_q = db.query(MI).filter(
+            MI.id.in_(series_ids), MI.is_hidden == False,  # noqa: E712
+        )
+        if identity_gate.phase2_enabled():
+            # 折叠查询同口径：所属剧未绑定时单集不出（series_map 查不到
+            # → 循环里 continue，与隐藏剧的单集同处理）。
+            series_q = series_q.filter(identity_gate.identity_clause())
+        series_map = {s.id: s for s in series_q.all()}
 
     page: list[tuple] = []  # (umd, 展示条目, 单集|None)
     seen_series: set[int] = set()
@@ -763,14 +911,18 @@ def get_resume_list(request_user: models.WebUser = Depends(get_admin_or_emby_use
 @user_emby_router.get("/favorites")
 def get_favorite_list(request_user: models.WebUser = Depends(get_admin_or_emby_user),
                             db: Session = Depends(get_db)):
-    rows = (
+    fav_q = (
         db.query(em.MediaItem)
         .join(em.UserMediaData, em.UserMediaData.item_id == em.MediaItem.id)
         .filter(em.UserMediaData.user_id == request_user.id,
                 em.UserMediaData.is_favorite == True)  # noqa: E712
         .order_by(em.UserMediaData.updated_at.desc())
-        .all()
     )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：列表展示过滤、标记不删——未绑定条目
+        # 不进门户收藏，is_favorite 标记保留，重绑后自动回来。
+        fav_q = fav_q.filter(identity_gate.identity_clause())
+    rows = fav_q.all()
     return {"items": [
         # 季无图时回退父剧集海报（season_poster_url），其余类型行为不变
         {"id": i.guid, "name": i.name, "type": i.item_type, "year": i.production_year,
@@ -923,6 +1075,11 @@ def get_chase_calendar(request: Request,
     )
     if base_query is not None and library_id is not None:
         base_query = base_query.filter(em.MediaItem.library_id == library_id)
+    if base_query is not None and identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：追新日历是系统主动枚举——未绑定新条目
+        # 不上日历；角标计数与条目详情都从 base_query 出，一处挂载
+        # 两路同口径（设计稿 §4.9：角标与条目同口径）。
+        base_query = base_query.filter(identity_gate.identity_clause())
 
     # 只取四个小列做聚合：一天的条目可能上千，构造 DTO 才是贵的部分，
     # 计数 / 分组没必要把整行实体拉出来。
@@ -1252,14 +1409,12 @@ async def stop_my_session(session_key: str,
     """结束自己的播放会话（同时释放转码进程）"""
     def _end_session() -> tuple:
         "结束会话的同步段：查会话 / 取条目 guid / 写结束时间（下放线程池）"
-        session = (
-            db.query(em.PlaybackSession)
-            .filter(
-                em.PlaybackSession.session_key == session_key,
-                em.PlaybackSession.user_id == request_user.id,
-            )
-            .first()
-        )
+        # 阶段 3：一等会话 id 与旧 session_key 都接受，但仍只许停自己的。
+        from backend.emby_server import play_session as _ps
+
+        session = _ps.resolve_session(db, session_key)
+        if session is not None and session.user_id != request_user.id:
+            session = None
         if not session:
             raise HTTPException(status_code=404, detail="播放会话不存在")
         ended = (session.user_id, item_guid_for(db, session.item_id))
@@ -1267,10 +1422,8 @@ async def stop_my_session(session_key: str,
         db.commit()
         return ended
 
-    ended_user_id, ended_item = await run_in_threadpool(_end_session)
-    # 按「用户 + 条目 guid」反查转码会话：播放会话键（PlaySessionId）与转码会话 id（uuid）
-    # 不是同一个东西，旧实现拿前者去 pop 等于什么都没停到（见 streaming.find_transcodes）。
-    await stop_transcodes_for_async(ended_user_id, item_guid=ended_item)
+    await run_in_threadpool(_end_session)
+    # 转码删除后结束会话不再需要停转码进程（已无转码会话存在）。
     return {"success": True}
 
 
@@ -1887,6 +2040,9 @@ def create_library(req: LibraryCreate, staff: models.WebUser = Depends(require_s
         fs_watch=bool(req.fs_watch),
     )
     db.add(lib)
+    db.flush()  # 落 id，供新表行引用
+    # 清单第 2 项：保存只写新表，旧列反向同步（双写期）
+    mount_sources.write_library_sources(db, lib, req.paths, req.mount_ids)
     db.commit()
     db.refresh(lib)
     return {"success": True, "id": lib.id, "guid": lib.guid}
@@ -2011,6 +2167,13 @@ def update_library(lib_id: int, req: LibraryUpdate, staff: models.WebUser = Depe
     if req.mount_ids is not None:
         _validate_library_sources(db, [], req.mount_ids)
         lib.mount_ids = _mount_ids_field(db, req.mount_ids)
+    if req.path_entries is not None or req.paths is not None or req.mount_ids is not None:
+        # 清单第 2 项：保存只写新表，旧列反向同步（双写期）。从合并后的
+        # 旧列派生（子目录胜出）：只改 paths 也可能挤掉旧 mount_ids 根行，
+        # 与旧解析的子目录胜出过滤口径一致。
+        mount_sources.write_library_sources(
+            db, lib, mount_lib.split_library_paths(lib.paths),
+            mount_lib.parse_mount_ids(lib))
     if req.is_enabled is not None:
         lib.is_enabled = req.is_enabled
     if req.scrape_policy is not None:
@@ -2492,6 +2655,21 @@ def admin_delete_item(item_id: str, staff: models.WebUser = Depends(require_staf
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="条目不存在")
+    # 管理端删条目时播放侧可能还记着「文件存在」（正缓存最长 600s，且在 EA 进程）。
+    # 先摘缓存再删行；失败不影响删除本身。
+    if (getattr(item, "drive_file_id", None) or "").strip():
+        try:
+            from backend.emby_server.api import invalidate_drive_exists_for_item
+            invalidate_drive_exists_for_item(db, item)
+        except Exception:  # noqa: BLE001
+            logger.debug("删除条目时失效 Drive 存在性缓存失败", exc_info=True)
+    # 批一 #1：同点位连带清解析结果缓存（不限 Drive 挂载，115/rclone 同理；
+    # 不放在上面的 drive_file_id 守卫里，否则非 Drive 条目删了缓存还留一个 TTL）。
+    try:
+        from backend.emby_server.mounts import invalidate_resolve_cache_for_path
+        invalidate_resolve_cache_for_path(getattr(item, "file_path", ""))
+    except Exception:  # noqa: BLE001
+        logger.debug("删除条目时失效解析缓存失败", exc_info=True)
     db.query(em.MediaStream).filter(em.MediaStream.item_id == item.id).delete()
     db.query(em.UserMediaData).filter(em.UserMediaData.item_id == item.id).delete()
     db.delete(item)
@@ -2529,9 +2707,10 @@ def admin_sessions(staff: models.WebUser = Depends(require_staff), db: Session =
 async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(require_staff), db: Session = Depends(get_db)):
     def _end_session() -> tuple | None:
         """查会话 / 写结束时间（同步段下放线程池），返回要停的转码定位信息"""
-        session = db.query(em.PlaybackSession).filter(
-            em.PlaybackSession.session_key == session_key
-        ).first()
+        # 阶段 3：一等会话 id 与旧 session_key 都接受（先按 server id 查）。
+        from backend.emby_server import play_session as _ps
+
+        session = _ps.resolve_session(db, session_key)
         if not session:
             return None
         ended = (session.user_id, item_guid_for(db, session.item_id))
@@ -2539,16 +2718,8 @@ async def admin_stop_session(session_key: str, staff: models.WebUser = Depends(r
         db.commit()
         return ended
 
-    ended = await run_in_threadpool(_end_session)
-    if ended:
-        await stop_transcodes_for_async(ended[0], item_guid=ended[1])
+    await run_in_threadpool(_end_session)
     return {"success": True}
-
-
-@admin_emby_router.post("/transcodes/stop-all")
-async def admin_stop_all_transcodes(staff: models.WebUser = Depends(require_staff)):
-    count = await stop_all_transcodes_async()
-    return {"success": True, "stopped": count}
 
 
 # ==================== 存储挂载（已拆出） ====================

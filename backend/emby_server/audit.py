@@ -63,7 +63,7 @@ ACTION_TABLE: dict[tuple[str, str], tuple[str, str]] = {
     ("DELETE", "/scan-queue/{}"): ("emby_scan_cancel", "library"),
     ("DELETE", "/items/{}"): ("emby_delete_item", "media_item"),
     ("DELETE", "/sessions/{}"): ("emby_stop_session", "playback_session"),
-    ("POST", "/transcodes/stop-all"): ("emby_stop_all_transcodes", "transcode"),
+
     ("POST", "/scrape/probe/reset"): ("emby_probe_queue_reset", "probe"),
     ("POST", "/115/accounts"): ("emby_create_pan115", "pan115_account"),
     ("PUT", "/115/accounts/{}"): ("emby_update_pan115", "pan115_account"),

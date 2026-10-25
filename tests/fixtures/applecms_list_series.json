@@ -1,0 +1,1 @@
+{"code":1,"limit":20,"list":[{"type_id":2,"type_name":"电视剧","vod_id":202,"vod_name":"示例剧集","vod_play_from":"直链线路$$$解析线路","vod_play_url":"第01集$https://cdn.example.com/ep1.mp4#第02集$https://cdn.example.com/ep2.mp4?token=x$$$第01集$playtoken202"}],"msg":"ok","page":1,"pagecount":1,"total":1}

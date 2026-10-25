@@ -291,19 +291,14 @@ WELFARE_CONFIG_KEYS = {
     "lottery_max_joins_per_day": "0",
     # 注册后 TG 绑定引导页总开关
     # 求片 v2：总开关 / 附议 / 附议者入库通知（默认全开）
-# M1 群发言积分：总开关默认关闭，服主手动开启（默认关的开关保留面板，2026-10-21）
-    "chat_points_enabled": "false",
     # C2 积分转账：总开关默认开启，手续费/限额可配（0=不收/不限）
     "points_transfer_fee_pct": "5",
     "points_transfer_min": "1",
     "points_transfer_max": "0",
     "points_transfer_daily_cap": "0",
-    "chat_points_group_ids": "",
-    "chat_points_per_message": "1",
-    "chat_points_min_len": "2",
-    "chat_points_minute_window": "60",
-    "chat_points_daily_cap": "20",
-    "chat_points_points_per_day": "100",
+    # M1 群发言积分（chat_points_*）已于 2026-10-23 去重退役：与
+    # points.award_chat_points（points_chat_*）是两套重复系统，退役
+    # 机器人这套（生产一直关着），发言积分只保留 points.py 一套。
 }
 
 

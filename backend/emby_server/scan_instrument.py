@@ -104,11 +104,14 @@ def _wrap_body(fn):
         return fn
 
     @functools.wraps(fn)
-    def wrapper(db, library, snap):
+    def wrapper(db, library, snap, **kwargs):
+        # 包装必须对被包函数签名透明：只透传、不收窄——
+        # #1254 前本包装只收三参，scan_library_sync 递 source_override
+        # 时默认扫描在装机进程里直接 TypeError（部署自检 last_scan 实锤）。
         library_id = progress.current_library_id() or getattr(library, "id", None)
         if library_id is not None:
             progress.set_phase(library_id, "enumerating")
-        return fn(db, library, snap)
+        return fn(db, library, snap, **kwargs)
 
     wrapper._rb_progress_wrapped = True  # type: ignore[attr-defined]
     return wrapper

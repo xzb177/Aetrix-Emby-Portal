@@ -3,7 +3,6 @@ import ScanQueueCard from '@/components/emby/ScanQueueCard.vue'
 import LibraryCard from '@/components/emby/LibraryCard.vue'
 /**
  * 媒体库管理：库列表/创建/扫描/删除 + 刮削策略 + 平台虚拟媒体库 + 图片修复队列
- * + 停止全部转码
  *
  * v2.6.11：会话表改用 DataTable（手机卡片）；媒体库卡片的「挂载 / 刮削策略 / 115 账号」
  * 在窄屏改为「标签在上、控件在下」，不再把中文标签挤成竖排两行；页面里的硬编码灰度
@@ -25,7 +24,7 @@ import type { UploadRequestOptions } from 'element-plus'
 import {
   Film, FolderPlus, History, ImagePlus, RefreshCw, ScanSearch,
   CalendarClock, Info, ShieldAlert,
-  Square, Wand2, X,
+  Wand2, X,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import {
@@ -66,7 +65,6 @@ import {
   saveEnrichEpisodeFields,
   saveEnrichTuning,
   saveUnifiedFallback,
-  stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
@@ -1409,11 +1407,6 @@ async function removeLib(l: EmbyLibrary) {
   load()
 }
 
-async function stopAll() {
-  const res = await stopAllTranscodes()
-  ElMessage.success(`已停止 ${res.stopped} 路转码`)
-}
-
 function fmtDate(s: string | null): string {
   if (!s) return '—'
   return s.slice(0, 16).replace('T', ' ')
@@ -1739,9 +1732,6 @@ function typeLabel(t: string): string {
         </el-button>
         <el-button :loading="virtualLoading" @click="generateVirtual">
           <Wand2 :size="14" style="margin-right: 4px" />生成平台虚拟库
-        </el-button>
-        <el-button @click="stopAll">
-          <Square :size="13" style="margin-right: 4px" />停止全部转码
         </el-button>
         <el-button type="primary" @click="openCreate">
           <FolderPlus :size="15" style="margin-right: 4px" />新建媒体库

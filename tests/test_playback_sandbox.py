@@ -32,14 +32,14 @@ def test_local_path_rejects_symlink_escape(tmp_path):
 
 
 def test_safe_child_name_accepts_plain_filename(tmp_path):
-    root = tmp_path / "transcode"
+    root = tmp_path / "sandbox"
     root.mkdir()
     assert safe_child_name(str(root), "segment.ts") == str(root / "segment.ts")
 
 
 @pytest.mark.parametrize("name", ["", ".", "..", "dir/segment.ts", "dir\\segment.ts"])
 def test_safe_child_name_rejects_invalid_names(tmp_path, name):
-    root = tmp_path / "transcode"
+    root = tmp_path / "sandbox"
     root.mkdir()
     with pytest.raises(ValueError):
         safe_child_name(str(root), name)

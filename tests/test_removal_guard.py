@@ -123,8 +123,11 @@ def test_absolute_floor_protects_small_libraries(db, tmp_path, monkeypatch):
     assert left == 5
 
 
-def test_absolute_floor_defaults_are_safe_for_small_libraries(db, tmp_path):
+def test_absolute_floor_defaults_are_safe_for_small_libraries(db, tmp_path, monkeypatch):
     """默认参数下，小库删一大半确实会被比例阈拦住（不靠绝对值）"""
+    # 缺失宽限（批一 #6）默认 3 轮才下架；本文件测的是删除保护本身，
+    # 把宽限压到 1 轮隔离变量（宽限语义在 test_missing_grace.py 里钉）
+    monkeypatch.setattr(scanner, "MISSING_GRACE_SCANS", 1)
     lib = _lib(db, str(tmp_path))
     for i in range(10):
         _item(db, lib, f"m{i}")
@@ -137,7 +140,7 @@ def test_absolute_floor_defaults_are_safe_for_small_libraries(db, tmp_path):
 
 # ==================== 不能“一刀切地不删” ====================
 
-def test_normal_small_cleanup_still_deletes(db, tmp_path):
+def test_normal_small_cleanup_still_deletes(db, tmp_path, monkeypatch):
     """正常场景要真删：100 条里删 1 条（一部片下架了），必须下架它
 
     没有这一条的话，前面的保护会把清理功能整个废掉。
@@ -145,6 +148,8 @@ def test_normal_small_cleanup_still_deletes(db, tmp_path):
     v2.48.0 起「删掉」默认是软删除：行还在、只是对所有人隐藏（见 test_soft_delete.py）。
     这里同时钉住两条：默认隐藏、``MEDIA_SOFT_DELETE=0`` 时真的物理删除。
     """
+    # 同上：隔离缺失宽限变量（批一 #6），单轮下架口径测删除主体
+    monkeypatch.setattr(scanner, "MISSING_GRACE_SCANS", 1)
     lib = _lib(db, str(tmp_path))
     gone = _item(db, lib, "gone")
     for i in range(100):
@@ -164,6 +169,7 @@ def test_normal_small_cleanup_still_deletes(db, tmp_path):
 def test_normal_small_cleanup_physically_deletes_when_soft_delete_is_off(db, tmp_path,
                                                                         monkeypatch):
     """关掉软删除就是回到硬删：那条目**真的**没了（不是标记）"""
+    monkeypatch.setattr(scanner, "MISSING_GRACE_SCANS", 1)
     monkeypatch.setenv("MEDIA_SOFT_DELETE", "0")
     lib = _lib(db, str(tmp_path))
     gone = _item(db, lib, "gone")

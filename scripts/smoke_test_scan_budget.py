@@ -285,13 +285,21 @@ check(not raced and delta == 1, "多线程同时要同一目录也只列一次",
 check(subs == MOVIES, "外挂字幕按文件识别入库", f"字幕轨={subs}")
 
 # ==================== 清理阶段仍然工作 ====================
+# 缺失宽限（2026-10-24 批一 #6）：文件消失后不再一轮就下架，要连续缺失
+# SCAN_MISSING_GRACE_SCANS 轮（默认 3）才清理。这里按真实默认口径
+# 端到端验：重扫满宽限轮数，累计 removed 必须恰好是那 1 条——
+# 少了是清理坏了，多了是误删了别的。
 victim = os.path.join(movie_dir, "Budget Movie 000 (2020).mkv")
 os.remove(victim)
-db = Session()
-lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
-again = sc.scan_library_sync(db, lib)
-db.close()
-check(again["removed"] == 1, "文件消失后重扫只清理该条目", f"removed={again['removed']}")
+total_removed = 0
+for _ in range(sc.MISSING_GRACE_SCANS):
+    db = Session()
+    lib = db.query(em.Library).filter(em.Library.id == lib_id).first()
+    again = sc.scan_library_sync(db, lib)
+    db.close()
+    total_removed += again["removed"]
+check(total_removed == 1, "文件消失后重扫只清理该条目",
+      f"removed={total_removed}（宽限 {sc.MISSING_GRACE_SCANS} 轮累计）")
 
 print()
 if FAILED:

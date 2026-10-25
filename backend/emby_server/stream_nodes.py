@@ -100,20 +100,21 @@ def pick_stream_node(db: Session) -> Optional[dict]:
 
 
 def rewrite_playback_urls(
-    db: Session, stream_url: str, transcoding_url: str, base: str,
-) -> tuple[str, str, bool]:
+    db: Session, stream_url: str, base: str,
+) -> tuple[str, bool]:
     """有远端健康流节点时，把播放 URL 基址换成流节点。
 
-    返回 ``(stream_url, transcoding_url, hit)``。未命中时原样返回，
-    调用方行为与升级前逐字节一致。
+    返回 ``(stream_url, hit)``。未命中时原样返回，调用方行为与
+    升级前逐字节一致。转码删除后不再有 TranscodingUrl，改写链
+    只处理播放 URL 这一条。
     """
     node = pick_stream_node(db)
     if node is None:
-        return stream_url, transcoding_url, False
+        return stream_url, False
     node_base = (node.get("url") or "").rstrip("/")
     base = (base or "").rstrip("/")
     if not base or _same_origin(node_base, base):
-        return stream_url, transcoding_url, False
+        return stream_url, False
     def _boundary_match(url: str) -> bool:
         # base 耗尽处必须是路径/查询/片段边界，否则按未命中处理
         # （r30 F1：base 落在路径段中间时 startswith 命中会造出坏 URL）
@@ -126,15 +127,11 @@ def rewrite_playback_urls(
         stream_url.replace(base, node_base, 1)
         if _boundary_match(stream_url) else stream_url
     )
-    new_trans = (
-        transcoding_url.replace(base, node_base, 1)
-        if _boundary_match(transcoding_url) else transcoding_url
-    )
-    # 两个都没换上说明 base 对不上：宁可不改写，也不能给客户端一个坏 URL
-    if new_stream == stream_url and new_trans == transcoding_url:
-        return stream_url, transcoding_url, False
+    # 没换上说明 base 对不上：宁可不改写，也不能给客户端一个坏 URL
+    if new_stream == stream_url:
+        return stream_url, False
     logger.debug("播放 URL 改写到流节点 %s", node_base)
-    return new_stream, new_trans, True
+    return new_stream, True
 
 
 # ---------------------------------------------------------------------------

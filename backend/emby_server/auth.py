@@ -30,6 +30,23 @@ bearer_scheme = HTTPBearer(auto_error=False)
 # 客户端 token 的 last_used_at 写库节流间隔（秒）
 TOKEN_TOUCH_INTERVAL = env_float("EMBY_TOKEN_TOUCH_SECONDS", 60.0)
 
+#: 鉴权腿计数 Redis 哈希（播放全切观测口径：哪条鉴权腿还在被真实请求走）。
+#: 读取：docker exec aetrix-redis redis-cli HGETALL aetrix:auth_legs:v1
+#: 字段：play_sign（短期签名）/ emby_token（Emby 客户端 token）/
+#: emby_jwt（get_emby_user 的 JWT 回退）/ resolve_token / resolve_jwt
+#: （resolve_request_user 的两腿，供下载策略侧观测）。
+AUTH_LEG_COUNTER_KEY = "aetrix:auth_legs:v1"
+
+
+def _count_auth_leg(leg: str) -> None:
+    """鉴权腿计数（best-effort）：Redis 不可用/出错时静默跳过，绝不影响鉴权。"""
+    try:
+        from backend.database import redis_call
+
+        redis_call(lambda c: c.hincrby(AUTH_LEG_COUNTER_KEY, leg, 1))
+    except Exception:  # noqa: BLE001 - 计数失败不许影响鉴权
+        pass
+
 # 请求头里的客户端信息（X-Emby-Authorization: MediaBrowser Client="...", Device="...", DeviceId="...", Version="..."）
 DEVICE_HEADERS = ["X-Emby-Authorization", "X-MediaBrowser-Token"]
 
@@ -80,13 +97,20 @@ def verify_and_migrate_emby_password(db: Session, user: models.WebUser, password
     return True
 
 
-def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None) -> Optional[str]:
-    """确保用户拥有自建 Emby 登录凭据；只在缺失/不匹配/旧格式时更新。"""
+def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None,
+                            fill_only: bool = False) -> Optional[str]:
+    """确保用户拥有自建 Emby 登录凭据；只在缺失/不匹配/旧格式时更新。
+
+    fill_only=True（门户登录专用）：emby_password 已有值时绝不覆盖——
+    用户在接线员页显式设置的播放密码曾被每次网站登录用门户密码顶掉，
+    播放器攥着旧凭据拿 401（能进界面、资源数量不显示，2026-10-23 修）。
+    显式设置播放密码走 set_emby_password（不带 fill_only），不受影响。
+    """
     changed = False
     if not user.emby_username:
         user.emby_username = f"emby_{user.id}_{uuid.uuid4().hex[:6]}"
         changed = True
-    if password is not None:
+    if password is not None and not (fill_only and user.emby_password):
         # 门户登录会频繁调用本函数：相同的新格式哈希不应每次都重新 bcrypt，
         # 否则登录一次就产生一次昂贵哈希并迫使所有旧客户端重新走同步。
         same = bool(user.emby_password) and verify_emby_password(password, user.emby_password)
@@ -207,6 +231,7 @@ def resolve_request_user(db: Session, request: Request) -> Optional[models.WebUs
 
     resolved = resolve_token(db, request)
     if resolved is not None:
+        _count_auth_leg("resolve_token")
         return resolved[0]
 
     # H2：门户 JWT 只认请求头，不认 URL 里的 ?api_key=<JWT>（URL 会进日志 / 历史 / Referer）
@@ -235,6 +260,7 @@ def resolve_request_user(db: Session, request: Request) -> Optional[models.WebUs
         enforce_token_freshness(db, payload, user)
     except HTTPException:
         return None
+    _count_auth_leg("resolve_jwt")
     return user
 
 
@@ -289,6 +315,7 @@ def get_emby_user(
                     payload = decode_token(raw, expected_type="access")
                     if payload is not None:
                         enforce_token_freshness(db, payload, user)
+                        _count_auth_leg("emby_jwt")
                         return user
     if result is None:
         raise HTTPException(
@@ -296,6 +323,7 @@ def get_emby_user(
             detail="Invalid access token",
         )
     user, token_row = result
+    _count_auth_leg("emby_token")
     # 每个播放请求都写一次 last_used_at = 每个请求都要等一次提交（SQLite 下是一次 fsync）。
     # 客户端轮询进度、请求切片非常密集，而这个字段只是「最近使用时间」，
     # 按间隔节流写库即可（EMBY_TOKEN_TOUCH_SECONDS，设为 0 回到每次请求都写）。
@@ -377,5 +405,6 @@ def get_play_user(
         user = db.query(models.WebUser).filter(models.WebUser.id == uid).first()
         if not user or not user.is_active:
             raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+        _count_auth_leg("play_sign")
         return user
     return get_emby_user(request, db, credentials)

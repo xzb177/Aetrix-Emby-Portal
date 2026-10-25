@@ -201,6 +201,8 @@ export interface AuthUser {
   is_active: boolean
   /** 管理员：用户端据此显示「管理后台」入口（两端同源同 JWT，无需二次登录） */
   is_staff?: boolean
+  /** 公益服用户标记：活力值等公益专属请求只对这类用户发（其余人发了必 403） */
+  is_welfare?: boolean
   /** 付费墙是否开启：开启且非会员时播放会被拦截；公益服恒为 false */
   subscription_required?: boolean
   /** 接入方式：free = 本服是公益服（免费开放，不需要会员） */
@@ -308,6 +310,8 @@ export interface AccountRealmCard {
   is_free?: boolean
   access_note?: string
   end_date: string | null
+  /** 后端统一口径算好的剩余天数（与「我的」页 days_left 同公式）；前端直接用，不自算 */
+  days_left?: number | null
   plan_name: string
   is_default: boolean
   /** 该服的查看权限（没权限时 base_url 置空） */
@@ -391,6 +395,38 @@ export interface PortalResumeItem extends PortalMediaItem {
   series_name?: string | null
 }
 
+/** 最近更新条目（游标分页口同形） */
+export interface RecentAddedItem {
+  id: number
+  guid: string
+  name: string
+  item_type: string
+  production_year?: number | null
+  poster_url?: string | null
+  date_added?: string | null
+}
+
+/** 首页分区（/api/user/media-library/home/sections）：每分区保持各自供数形态，
+    按 key 区分（continue_watching 是续看形，recently_updated 是条目形）。 */
+export interface HomeSection {
+  key: string
+  title: string
+  position: number
+  items: PortalResumeItem[] | RecentAddedItem[]
+}
+
+/** 已藏的继续观看条目：取消藏的键是 item_guid（单集 guid / 电影 guid）。 */
+export interface HiddenResumeItem {
+  item_guid: string
+  display_name: string
+  display_type: string
+  series_name?: string | null
+  season_number?: number | null
+  episode_number?: number | null
+  poster_url?: string | null
+  last_played_at?: string | null
+}
+
 /** 观看历史条目 */
 export interface WatchHistoryItem {
   id: string
@@ -455,6 +491,14 @@ export const embyApi = {
 
   // 续看列表（首页「继续观看」：单集按剧聚合，带上次播放的客户端 / 设备）
   getResume: (limit = 12) => api.get<never, { items: PortalResumeItem[] }>('/api/user/emby/resume', { params: { limit } }),
+
+  // 首页分区（媒体库学习 L6：注册表驱动；开关关时 404，调用方回落旧布局）
+  getHomeSections: () => api.get<never, { sections: HomeSection[] }>('/api/user/media-library/home/sections'),
+
+  // 继续观看藏 / 取消藏 / 已藏清单（媒体库学习 L9：剧集卡传单集 guid）
+  hideResumeItem: (itemGuid: string) => api.post<never, { ok: boolean }>(`/api/user/media-library/resume/${itemGuid}/hide`),
+  unhideResumeItem: (itemGuid: string) => api.post<never, { ok: boolean }>(`/api/user/media-library/resume/${itemGuid}/unhide`),
+  getHiddenResume: () => api.get<never, { items: HiddenResumeItem[] }>('/api/user/media-library/resume/hidden'),
 
   // 收藏列表
   getFavorites: () => api.get<never, { items: PortalMediaItem[] }>('/api/user/emby/favorites'),

@@ -118,6 +118,10 @@ def test_video_stream_source_has_no_google_direct_call():
     分两处写法（快路径：存在性校验通过后直接 302，跳过步行；回落分支：
     快路径未命中时保留原语义），但判定门（开关）与 URL 来源
     （``drive_usercontent_download_url``）是同一套，不许新增别的直链入口。
+    ③BYOS P1（2026-10-24 用户亲批任务清单第 3 项）：绑定用户播 115 型
+    条目时，按该绑定自己的凭据现签现发 302（``_byos_url``）。它不在
+    Drive 禁区内：URL 不是谷歌地址、不带 URL token、不走公开下载池；
+    且分支位于签名验签 / 来路检查 / 限流闸门之后，凭据绝不跨用户复用。
     用 AST 取**真实代码**（注释里可以继续解释）。
     A-P3-4（2026-10-18）：不再纯计数——**每处** 302 的 URL 来源表达式必须
     ∈ 白名单集合，第 4 处出现时若来源不在白名单即红。
@@ -130,6 +134,12 @@ def test_video_stream_source_has_no_google_direct_call():
     _WHITELIST_302_URL_SOURCES = {
         "drive_usercontent_download_url(_fid)",  # Drive 直链（快路径 + 回落）
         "direct_url",  # 对象存储签名直链（← _strategy.maybe_direct_url）
+        # 注 2026-10-24：#1220 的转码变体 HLS 分支已随转码全面删除而移除，
+        # 本白名单不再含 _hls_url；任何新增的外部门直链变量仍不在白名单里，照样红。
+        # 注 2026-10-24（BYOS P1，用户亲批）：_byos_url 是 115 直链——
+        # 按绑定用户自己的凭据现签现发，非谷歌地址，不在 Drive 禁区内；
+        # 本行是本次审批新增的白名单项，后续新增仍须同样审批。
+        "_byos_url",  # BYOS P1：用户自己绑定的 115 直链（← user_bindings）
     }
     sources = []
     for node in ast.walk(tree):

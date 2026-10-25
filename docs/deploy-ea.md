@@ -32,7 +32,7 @@ panel.example.com ──┤  EM 控制面（注册登录、订阅权限、求片
 | 职责 | 跑在哪 | 关键配置 |
 | --- | --- | --- |
 | EM 控制面 | 当前服务器（`serve.py`） | `ENABLE_EMBY_GATEWAY=false`：面板只做控制，不提供协议面、不转码 |
-| EA 数据面 | 另一台服务器（`serve_emby.py`） | `NODE_KEY` 认领节点、`EMBY_PUBLIC_URL` 是**客户端唯一该连的地址** |
+| EA 数据面 | 另一台服务器（`serve_emby.py`） | `NODE_KEY` 认领节点。播放器连这台 EA；播放地址用 EA 上的 `EMBY_PUBLIC_URL`（只填根，不要带路径）。账号卡由 EM 给出，顺序是服对外地址 → 服务入口 → EM 的 `EMBY_PUBLIC_URL`，不是只看 EA 这一行 |
 | 数据库 | 独立一处（推荐托管 PostgreSQL） | 不开放公网，只允许 EM / EA 的私网来源 |
 | 媒体存储 | 独立存储服务（WebDAV / rclone RC / 群晖 / 115） | EM 与 EA 用**同一个地址**读写，不依赖任何一方的本机路径 |
 
@@ -126,7 +126,7 @@ EA 与 EM 必须共用**同一个数据库**与**同一个 `SECRET_KEY`**（客�
 | --- | --- |
 | `SECRET_KEY` | **必须与 EM 完全相同**，否则客户端 token 全部校验失败 |
 | `DATABASE_URL` / `DATABASE_TYPE` | **必须与 EM 指向同一个库** |
-| `EMBY_PUBLIC_URL` | EA 的对外地址（客户端账号卡/一键导入用它） |
+| `EMBY_PUBLIC_URL` | EA 上播放地址的对外基址（`https://emby.example.com`）。账号卡另有优先级，见[第 6 节](#6-客户端接入) |
 | `EMBY_SERVER_NAME` / `EMBY_SERVER_ID` | 与 EM 保持一致（客户端按 ID 识别服务器） |
 | `EMBY_API_PORT` | EA 监听端口，默认 `8001` |
 | `EM_PANEL_URL` | 可选，EA 启动时探测 EM 是否可达（仅告警） |
@@ -238,7 +238,15 @@ server {
 
 ## 6. 客户端接入
 
-1. 客户端「服务器地址」填 `EMBY_PUBLIC_URL` 指向的地址（如 `https://emby.example.com`），**不要带 `/emby` 后缀**——客户端自己会拼协议路径。
+播放器里的拉流地址，和门户账号卡上让用户填写的服务器根，不是同一个函数。
+
+- **播放地址**（PlaybackInfo、字幕、图片、HLS、`System/Info`）在 **EA 进程**上解析：`EMBY_PUBLIC_URL` 只填根（字面为 `http://` 或 `https://`，不要带路径；代码不剥路径）优先；没配时，只在直连方属于 `TRUSTED_PROXIES` 或 `FORWARDED_ALLOW_IPS` 里的精确 IP / CIDR（或这次请求已由可信代理还原出真实 IP）时采信 `X-Forwarded-Proto` / `X-Forwarded-Host`；否则用请求自己的地址。本机 Nginx 反代到 `127.0.0.1` 时回环默认可信。Docker 网关不在默认名单里，不配信任网段就会把 `http://` 写进播放地址，不跟随 301 的客户端（例如 SenPlayer）播不了。`FORWARDED_ALLOW_IPS=*` 会被丢掉并记一次 WARNING：`*` 能让任意直连方伪造客户端 IP，绕过限流和按 IP 做的访问判断。只写了 `*` 时，uvicorn 只信回环。
+- **账号卡 / 一键导入**只在 **EM 进程**上解析（EA 不挂这些门户路由）。顺序是：该服「服管理」里的对外地址 → 该服「服务器」页的服务入口 →（仅默认服）EM 的 `EMBY_PUBLIC_URL` → 可信转发头或当前请求地址。非默认服前两项都空时，账号卡不下发地址，也不会去读 EA 的环境变量。EM 和 EA 都要设 `EMBY_PUBLIC_URL`；服对外地址或服务入口填了，只代替 EM 这一侧。
+- 有健康的公网流节点时，`DirectStreamUrl` / `TranscodingUrl` 改写成**该节点自己登记的地址**，不是主站的 `EMBY_PUBLIC_URL`。EA 自登记用 `EMBY_API_PUBLIC_URL`。
+
+推荐 EM 和 EA 都写 `EMBY_PUBLIC_URL=https://emby.example.com`（只填根），并在「服管理」填同一个根。启动时不是 `https://` 开头只打 WARNING，`http://` 仍会用。域名守卫的名单：流媒体加速开关打开并且填了域名时用那份域名，否则看 `ENFORCE_DOMAIN`；名单非空而主机不在里面时，进来的请求按 Host 403。改环境变量要重启对应进程。PlaybackInfo 里三条播放 URL 按当次基址重拼；字幕 `DeliveryUrl` 在缓存里最多再留 `PLAYBACKINFO_CACHE_TTL` 秒（默认 300）。完整口径、Compose 里网页容器会把协议头盖成 http 的情况，见 [Docker 部署 · 客户端对外地址](./deploy-docker.md#客户端对外地址)。
+
+1. 客户端「服务器地址」填账号卡给出的根（推荐与 `EMBY_PUBLIC_URL` 同为 `https://emby.example.com`），**不要带 `/emby` 后缀**——客户端自己会拼协议路径。
 2. 用户名密码用**门户账号**：
    - 用户首次打开门户账号卡时会自动生成 `emby_username`；
    - 也可主动设置：`POST /api/user/emby/password`；

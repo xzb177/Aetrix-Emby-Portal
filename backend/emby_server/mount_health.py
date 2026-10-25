@@ -39,8 +39,10 @@ from sqlalchemy.orm import Session
 
 from backend import models, realms
 from backend.database import get_db
+from backend.emby_server import library_source_health as lsh
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import mount_sources
 from backend.emby_server.env_util import env_float
 
 logger = logging.getLogger(__name__)
@@ -111,13 +113,23 @@ def playback_node(db: Session, realm_id: Optional[int] = None) -> str:
 
 
 def _mount_library_map(db: Session, realm_id: Optional[int] = None) -> dict[int, list[int]]:
-    """挂载 id → 引用它的媒体库 id 列表（用于「被库引用却不可用」的告警）"""
+    """挂载 id → 引用它的媒体库 id 列表（用于「被库引用却不可用」的告警）
+
+    清单第 2 项：按新表行算（paths 派生的挂载也算——旧实现只读
+    mount_ids，paths 里的 mount:// 挂载一直漏网，本实现补上）；
+    新表无行时 read_source_rows 回落旧配置派生。
+    """
     # 内容按「NULL = 所有服」处理（见 realms.scope_inclusive），否则未标注服的老库会被藏起来
     query = realms.scope_inclusive(db.query(em.Library), em.Library.realm_id, realm_id)
     usage: dict[int, list[int]] = {}
     for lib in query.all():
-        for mount_id in mount_lib.parse_mount_ids(lib):
-            usage.setdefault(mount_id, []).append(lib.id)
+        for row in mount_sources.read_source_rows(db, lib):
+            mount_id = row["mount_id"]
+            if mount_id is None:
+                continue
+            libs = usage.setdefault(mount_id, [])
+            if lib.id not in libs:
+                libs.append(lib.id)
     return usage
 
 
@@ -195,6 +207,14 @@ def mounts_health(db: Session, service: str, realm_id: Optional[int] = None) -> 
     mounts = probe_mounts(db, realm_id=realm_id)
     probed = [m for m in mounts if m.get("ok") is not None]
     failed = [m for m in probed if not m["ok"]]
+    # 挂载第 5 步：探针结论落库源健康表（默认关；开时每次体检都写，
+    # 成功即复位，失败达阈值才隐藏；未体检 ok=None 的不写）。
+    if lsh.health_enabled():
+        for m in probed:
+            kind = None
+            if not m["ok"]:
+                kind = lsh.FAILURE_KIND_AUTH if m.get("auth_error") else lsh.FAILURE_KIND_PROBE
+            lsh.sync_mount_probe_to_source_health(db, m["id"], bool(m["ok"]), kind)
     node = playback_node(db, realm_id)
     realm = realms.get_realm(db, realm_id) if realm_id is not None else None
     return {

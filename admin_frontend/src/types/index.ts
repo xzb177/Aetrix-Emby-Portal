@@ -43,24 +43,15 @@ export interface AdminListResponse {
 
 /** 播放与客户端策略（后端 playback_policy.py，EM / EA 共用同一个库） */
 export interface PlaybackPolicy {
-  /** 是否允许服务端转码（关掉只放直连） */
-  transcode_enabled: boolean
-  /** 并发转码上限；0 = 用进程内置上限（EMBY_MAX_TRANSCODES / CPU 核数） */
-  max_concurrent_transcodes: number
   /** 客户端 UA 黑名单（子串，逗号分隔） */
   /** 客户端 UA 白名单（填了就只放列表内的客户端） */
   /** Drive 302 直链总开关（#957 的回滚闸；关掉后 Drive 文件播放返回 410） */
   drive_direct_play_enabled: boolean
 }
 
-/** 策略的运行态：只反映**本进程**（分离部署时转码跑在 EA 上） */
+/** 策略的运行态：只反映**本进程**（转码删除后不再有转码运行态） */
 export interface PlaybackRuntime {
-  active_transcodes: number
-  capacity: number
-  idle_timeout_seconds: number
   playback_node: string
-  ffmpeg_available: boolean
-  max_transcodes_env: string
 }
 
 /** 一条线路的降级原因（本进程累计，按次数降序） */
@@ -131,6 +122,37 @@ export interface PlayLinesSnapshot {
   lines: PlayLineCard[]
   total_users: number
   default_line: string
+}
+
+/** 播放风控看板（/api/admin/playback/risk，只读） */
+export interface PlayRiskItem {
+  item_id: number
+  name: string | null
+  series_name: string | null
+  is_drive: boolean
+  /** 同时在播的不同用户数 */
+  viewers: number
+  sessions: number
+  /** viewers ≥ stack_threshold：同一文件叠播 */
+  stacked: boolean
+}
+
+export interface PlayRiskSnapshot {
+  /** all_processes = Redis 全进程合计；process = 仅面板本进程 */
+  scope: 'all_processes' | 'process'
+  since: number | null
+  counters: Record<
+    'redirect_302' | 'exists_cache_hit' | 'exists_cache_miss' | 'exists_404' | 'exists_503' | 'drive_403' | 'drive_429',
+    number
+  >
+  exists_cache_hit_rate: number | null
+  exists_cache_ttl_sec: number | null
+  active_sessions: number | null
+  window_seconds: number
+  stack_threshold: number
+  stacked_items: number
+  top_items: PlayRiskItem[]
+  error?: boolean
 }
 
 export interface LoginResponse {
@@ -719,24 +741,6 @@ export interface ServerOpsSnapshot {
   handoff: ServerOpsHandoff
   /** 把「这个视图意味着什么」写成人话；面板直接展示，不自己推断 */
   notes: string[]
-}
-
-/** 一键扫描的结果（`POST /api/admin/servers/{id}/ops/scan`） */
-export interface ServerOpsScanResult {
-  success: boolean
-  server_id: number
-  server_name: string
-  /** 本地入队的库 */
-  queued: { id: number; name: string; message: string }[]
-  /** 已在队列 / 正在扫的（不重复推） */
-  already: { id: number; name: string; message: string; state?: string }[]
-  /** 转发给归属节点并成功的 */
-  forwarded: { id: number; name: string; node_id: number; node_name: string }[]
-  /** 转发失败的：只有这一类会让整键变成「部分失败」 */
-  failed: { id: number; name: string; node_id: number; node_name: string; error: string }[]
-  /** 停用 / 虚拟库 / 超出单次上限被跳过的（带原因） */
-  skipped: { id: number; name: string; reason: string }[]
-  message: string
 }
 
 export interface ServerProbeResult {
@@ -1446,3 +1450,152 @@ export interface EmbySessionRow {
   started_at: string | null
 }
 
+
+/** 专线 B 第二阶段 · 只读观测口（字段与 backend/api/admin_readonly.py、playback_bus_admin.py 一一对应，不自造） */
+
+/** 存储绑定行（GET /api/admin/storage-bindings；凭据只出 has_credential） */
+export interface StorageBindingRow {
+  id: number
+  user_id: number
+  provider: string
+  account_label: string | null
+  status: string
+  last_verified_at: string | null
+  last_error_kind: string | null
+  error_message: string | null
+  has_credential: boolean
+  created_at: string | null
+}
+
+export interface StorageBindingsResponse {
+  items: StorageBindingRow[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** 采样哈希工人快照（worker_registry；无条目时 worker 为 null） */
+export interface SampleHashWorker {
+  alive: boolean
+  status: string
+  uptime_sec: number
+  idle_sec: number
+  restarts: number
+}
+
+/** 采样哈希进度（GET /api/admin/sample-hash/progress；只计数，不触发轮次） */
+export interface SampleHashProgress {
+  enabled: boolean
+  max_files_per_round: number
+  interval_sec: number
+  pending: number
+  sampled: number
+  worker: SampleHashWorker | null
+}
+
+/** sidecar 单端状态（GET /api/admin/providers/sidecar；manifest / health 为对端原样对象） */
+export interface SidecarError {
+  code: string
+  kind: string
+  message: string
+}
+
+export interface SidecarProviderStatus {
+  provider: string
+  socket_path: string
+  available: boolean
+  manifest: Record<string, unknown> | null
+  health: Record<string, unknown> | null
+  error: SidecarError | null
+}
+
+export interface SidecarStatusResponse {
+  providers: SidecarProviderStatus[]
+}
+
+/** 上游映射行（GET /api/admin/upstream-mappings） */
+export interface UpstreamMappingRow {
+  id: number
+  local_item_id: number
+  source_id: number
+  upstream_item_id: string
+  confidence: number | null
+  evidence: unknown
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface UpstreamMappingsResponse {
+  items: UpstreamMappingRow[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** 139 账号池成员（只出 has_credential，绝不含凭据） */
+export interface Yun139PoolMember {
+  id: number
+  label: string | null
+  weight: number
+  fail_count: number
+  cooldown_until: string | null
+  has_credential: boolean
+  created_at: string | null
+}
+
+/** 139 账号池（GET /api/admin/yun139/pools） */
+export interface Yun139Pool {
+  id: number
+  name: string
+  strategy: string
+  cooldown_seconds: number
+  max_concurrent: number
+  created_at: string | null
+  member_count: number
+  members: Yun139PoolMember[]
+}
+
+export interface Yun139PoolsResponse {
+  items: Yun139Pool[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** 播放快照里的进行中会话（GET /api/admin/playback-bus/snapshot；无快照时后端回 404） */
+export interface PlaybackBusSnapshotSession {
+  session_id: string
+  session_key: string
+  user_id: number | null
+  item_id: number | null
+  variant: string | null
+  device_id: string | null
+  position_ticks: number
+  is_paused: boolean
+  last_update_at: string | null
+  last_command_status: string | null
+  last_command_type: string | null
+}
+
+export interface PlaybackBusSnapshot {
+  v: number
+  computed_at: string
+  sessions: PlaybackBusSnapshotSession[]
+}
+
+/** 播放命令行（GET /api/admin/playback-bus/commands；行数组，非分页包裹） */
+export interface PlaybackBusCommand {
+  command_id: string
+  session_key: string
+  device_id: string | null
+  command: string
+  payload: unknown
+  status: string
+  outcome: string | null
+  requested_by: number | null
+  requested_at: string | null
+  sent_at: string | null
+  delivered_at: string | null
+  completed_at: string | null
+  error: string | null
+}

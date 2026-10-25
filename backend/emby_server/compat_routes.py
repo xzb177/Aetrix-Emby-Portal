@@ -18,6 +18,7 @@ from backend.database import SessionLocal, get_db
 from backend.emby_server import models as em
 from backend.emby_server.auth import get_emby_user, parse_emby_authorization, resolve_token
 from backend.emby_server import facets
+from backend.emby_server import playback_bus
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.query_params import qint, qlimit, qstart
 from backend.emby_server.scanner import (
@@ -28,15 +29,8 @@ from backend.emby_server.scanner import (
 )
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.streaming import (
-    get_transcode,
     serve_file,
     serve_image,
-    start_transcode,
-    stop_all_transcodes,
-    stop_transcodes_for,
-    stop_user_transcodes,
-    transcode_alive,
-    wait_for_file,
 )
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -51,6 +45,7 @@ from backend.emby_server.api import (
     SERVER_VERSION,
     _base_url,
     _empty_items,
+    _filters_payload,
     _guid_of,
     _now_playing_dto,
     item_guid_for,
@@ -58,6 +53,7 @@ from backend.emby_server.api import (
     _query_result,
     _require_visible_item,
     _run_time_ticks,
+    _stream_client_identity,
     _user_data_dto,
     user_views,
 )
@@ -128,7 +124,15 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
         em.PlaybackSession.session_key == session_key
     ).first()
     auth = parse_emby_authorization(request.headers.get("X-Emby-Authorization"))
-    new_session = session is None
+    # 阶段 3 一等会话：PlaybackInfo 预建的行（awaiting_first_report）在首次
+    # 上报时仍须走一次 share_guard 判定——行已存在绝不等于判定已通过，
+    # 否则预建会话会悄悄绕过同播/跨城市拦截。旧行本列恒 False，行为不变。
+    precreated = bool(
+        session is not None
+        and getattr(session, "awaiting_first_report", False)
+        and session.ended_at is None
+    )
+    new_session = session is None or precreated
     if session is not None and session.ended_at is not None and not ended:
         # 同一会话键的新一轮播放（客户端复用了旧键 / 确定性键命中了已结束行）：
         # 复活该行并重新走一次判定。否则这次播放既不会被计入并发、也不会被
@@ -159,13 +163,24 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
             verdict = share_guard.note_session(db, user, session_key, ip, commit=False)
             if verdict and verdict.get("blocked"):
                 logger.info("同播拦截：user=%s session=%s", user.id, session_key)
+                if precreated:
+                    # 预建行被拦下：置 ended，不留幻影活会话（旧路径无此行）。
+                    session.ended_at = datetime.now()
+                    session.awaiting_first_report = False
                 db.commit()
                 return None, False
             verdict = share_guard.note_activity(db, user, ip, commit=False)
             if verdict and verdict.get("blocked"):
                 logger.info("跨城市停用后拒绝建会话：user=%s", user.id)
+                if precreated:
+                    session.ended_at = datetime.now()
+                    session.awaiting_first_report = False
                 db.commit()
                 return None, False
+        if precreated:
+            # 判定已通过：清零待首次上报标志（末尾统一提交时落库；本分支
+            # new_session=True 故 material 恒真，不会走节流提前返回）。
+            session.awaiting_first_report = False
         if session is None:
             # 真·新会话：建行；上面复活分支走进来时复用旧行，不另建
             session = em.PlaybackSession(
@@ -212,6 +227,9 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
             return session, False
 
     session.device_name = auth.get("Device") or session.device_name
+    if not getattr(session, "device_id", None):
+        # 阶段 3：上报时补设备稳定标识（预建行只在 PlaybackInfo 能拿到时才填）。
+        session.device_id = (auth.get("DeviceId") or "")[:100] or None
     session.client_name = auth.get("Client") or session.client_name
     session.client_version = auth.get("Version") or session.client_version
     session.remote_addr = request.client.host if request.client else session.remote_addr
@@ -229,6 +247,24 @@ def _upsert_session(db: Session, request: Request, user: models.WebUser,
     # 发现页实时动态流埋点：新会话=开始看，ended=看完（只加写入调用，不改上报行为）
     _note_play_feed(db, item, started=(new_session and not ended),
                     finished=bool(ended and not was_ended))
+    # 播放实时总线接线（FMBY #24，唯一发布点 = 写库后发）：
+    # 新会话且非结束 → started；结束上报 → ended；其余写库 → progress。
+    # 节流未写库（本函数提前返回处）不发；防共享拦下（session 为 None）
+    # 在前面已返回，不发；起播打点处（api.py note_play_start）不发，
+    # 同一事件绝不两处重复发。发布失败永不抛、不阻断上报
+    # （playback_bus.publish_event 内部保证）。
+    if new_session and not ended:
+        _bus_event = playback_bus.EVENT_STARTED
+    elif ended:
+        _bus_event = playback_bus.EVENT_ENDED
+    else:
+        _bus_event = playback_bus.EVENT_PROGRESS
+    playback_bus.publish_event(playback_bus.build_event(
+        _bus_event,
+        session_id=session.server_session_id or session.session_key,
+        user_id=session.user_id, item_id=session.item_id,
+        variant=session.variant, device_id=session.device_id,
+        position_ticks=session.position_ticks, is_paused=session.is_paused))
     return session, True
 
 
@@ -250,18 +286,38 @@ def _get_or_create_umd(db: Session, user: models.WebUser, item: em.MediaItem) ->
     return umd
 
 
+def effective_max_position_ticks(umd: em.UserMediaData) -> int:
+    """这行「历史最远看到哪」的有效值（进度双记，FMBY 学习批一 #4）。
+
+    ``max_position_ticks`` 为 NULL = 这行还没被双记写过（升级前老数据），
+    回退 ``playback_position_ticks``——老数据在第一次新上报前，最远点就等于
+    当时的断点。不做批量回填：靠下一次真实进度上报在 _apply_play_progress
+    里以旧 position 为基线自然长出来，心跳不写库的口径不因此被打破。
+    """
+    if umd.max_position_ticks is not None:
+        return int(umd.max_position_ticks)
+    return int(umd.playback_position_ticks or 0)
+
+
 def _apply_play_progress(umd: em.UserMediaData, pos: int, finished: bool) -> None:
     """把一次进度落到 UserMediaData 行上（Progress 与 Stopped 共用；调用方负责 commit）。
 
-    finished（90% 口径）时标已看并清零断点；played 已标时 play_count 不重复加。
+    进度双记：position 记当前位置（可变小），max_position 记本轮最远点、
+    只增不减（基线是 effective_max_position_ticks，老数据回退旧 position）。
+    finished（90% 口径）时标已看并清零断点——max 与 position 一起清零，
+    与现行清零口径对齐（同一轮观看结束，下一轮从零重新累计）；
+    played 已标时 play_count 不重复加。
     """
+    base_max = effective_max_position_ticks(umd)
     umd.playback_position_ticks = pos
+    umd.max_position_ticks = max(base_max, pos)
     umd.last_played_at = datetime.now()
     if finished:
         if not umd.played:
             umd.play_count = (umd.play_count or 0) + 1
         umd.played = True
         umd.playback_position_ticks = 0
+        umd.max_position_ticks = 0
 
 
 def _record_playing(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
@@ -316,6 +372,18 @@ def _record_stopped(request: Request, user: models.WebUser, db: Session, body: d
     umd = _get_or_create_umd(db, user, item)
     _apply_play_progress(umd, pos, finished)
     db.commit()
+    # 批一 #3：尽力提前释放「挂载+路径前缀」播放路数租约（stream_limits）。
+    # 只是提前量：客户端不发 Stopped 也没关系，租约靠 TTL 到期收敛；
+    # release 本身永不抛，这里再套一层保险，不许影响 Stopped 主流程。
+    try:
+        from backend.emby_server import stream_limits
+
+        stream_limits.release(
+            db, _stream_client_identity(request, user),
+            str(body.get("ItemId") or ""),
+            getattr(item, "file_path", "") or "")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @emby_router.post("/emby/Sessions/Playing")
@@ -400,12 +468,9 @@ def stop_session(session_key: str, db: Session = Depends(get_db),
     if session:
         if session.user_id != user.id and not getattr(user, "is_staff", False):
             raise HTTPException(status_code=403, detail="无权操作他人的播放会话")
-        # 转码会话按「用户 + 条目 guid」反查：播放会话键与转码 uuid 不是一回事
-        # （旧写法 stop_transcode(session_key) 永远匹配不上，进程其实没被停）
-        user_id, item_guid = session.user_id, item_guid_for(db, session.item_id)
+        # 转码删除后结束会话不再需要停转码进程（已无转码会话存在）。
         session.ended_at = datetime.now()
         db.commit()
-        stop_transcodes_for(user_id, item_guid)
     return {"success": True}
 
 
@@ -548,6 +613,48 @@ def remove_favorite(item_id: str, user_id: str,
     return _set_favorite(db, user, item_id, False)
 
 
+# ---- 从继续观看隐藏（HideFromResume）----
+
+def _set_hide_from_resume(db: Session, user: models.WebUser, item_id: str) -> dict:
+    """落「从继续观看隐藏」标记。
+
+    进度只写在单集行上、Resume 又把单集折叠成剧集展示（见 api.get_resume），
+    所以客户端对剧集卡片点隐藏时传来的是剧集 guid：只标记剧集行自己的
+    UserMediaData 没有任何行可排除，必须把该剧全部单集的进度行一并标记。
+    标记不动 playback_position_ticks —— 取消隐藏没有对应端点，进度数据保留，
+    与官方「隐藏只是不展示」的语义一致。
+    """
+    item = _require_visible_item(db, user, item_id)
+    umd = db.query(em.UserMediaData).filter(
+        em.UserMediaData.user_id == user.id, em.UserMediaData.item_id == item.id
+    ).first()
+    if not umd:
+        umd = em.UserMediaData(user_id=user.id, item_id=item.id)
+        db.add(umd)
+    umd.hide_from_resume = True
+    if item.item_type == "series":
+        ep_ids = [r[0] for r in db.query(em.MediaItem.id).filter(
+            em.MediaItem.series_id == item.id,
+            em.MediaItem.item_type == "episode",
+        ).all()]
+        if ep_ids:
+            db.query(em.UserMediaData).filter(
+                em.UserMediaData.user_id == user.id,
+                em.UserMediaData.item_id.in_(ep_ids),
+            ).update({em.UserMediaData.hide_from_resume: True},
+                     synchronize_session=False)
+    db.commit()
+    return _user_data_dto(umd, item.guid, _run_time_ticks(item))
+
+
+@emby_router.post("/emby/Users/{user_id}/Items/{item_id}/HideFromResume")
+@emby_router.post("/Users/{user_id}/Items/{item_id}/HideFromResume")
+def hide_from_resume(item_id: str, user_id: str,
+                     user: models.WebUser = Depends(get_emby_user),
+                     db: Session = Depends(get_db)):
+    return _set_hide_from_resume(db, user, item_id)
+
+
 # ---- 相似推荐 ----
 
 @emby_router.get("/emby/Items/{item_id}/Similar")
@@ -616,7 +723,12 @@ def local_trailers(item_id: str, user: models.WebUser = Depends(get_emby_user)):
 
 @emby_router.get("/emby/Items/{item_id}/SpecialFeatures")
 @emby_router.get("/Items/{item_id}/SpecialFeatures")
-def special_features(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+@emby_router.get("/emby/Users/{user_id}/Items/{item_id}/SpecialFeatures")
+@emby_router.get("/Users/{user_id}/Items/{item_id}/SpecialFeatures")
+def special_features(item_id: str, user_id: str = "",
+                     user: models.WebUser = Depends(get_emby_user)):
+    # 部分客户端只走带用户前缀的形态（与 Intros / PlaybackInfo 的双形态同理）：
+    # 此前只有无前缀形态，带前缀请求直接 404（2026-10-22 晚实测 7 次）。
     return _empty_items()
 
 
@@ -722,6 +834,33 @@ def studios_list(user: models.WebUser = Depends(get_emby_user), db: Session = De
     return _named_items("Studio", _menu_names(db, facets.KIND_STUDIO, em.MediaItem.studios))
 
 
+# ---- 筛选分面列表（年份 / 标签 / 分级）----
+#
+# Items 列表的 Years=/Tags=/OfficialRatings= 过滤参数早已实现，缺的只是给
+# 筛选面板供数的三个列表端点 —— 带分面筛选 UI 的客户端（Hills 等）打开库内
+# 筛选时先拉这三个端点，此前全部 404（2026-10-22 晚各实测 7 次），筛选面板
+# 直接残缺。取值直接复用 Items/Filters 的同一份聚合（_filters_payload，
+# 带缓存与 facets 关联表口径），保证「面板里选得到的」与「Filters 报的」一致。
+
+@emby_router.get("/emby/Years")
+@emby_router.get("/Years")
+def years_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    return _named_items("Year", [str(y) for y in _filters_payload(db)["Years"]])
+
+
+@emby_router.get("/emby/Tags")
+@emby_router.get("/Tags")
+def tags_list(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
+    return _named_items("Tag", _filters_payload(db)["Tags"])
+
+
+@emby_router.get("/emby/OfficialRatings")
+@emby_router.get("/OfficialRatings")
+def official_ratings_list(user: models.WebUser = Depends(get_emby_user),
+                          db: Session = Depends(get_db)):
+    return _named_items("OfficialRating", _filters_payload(db)["OfficialRatings"])
+
+
 @emby_router.get("/emby/Persons")
 @emby_router.get("/Persons")
 def persons_list(request: Request, user: models.WebUser = Depends(get_emby_user),
@@ -825,7 +964,10 @@ def activity_log(user: models.WebUser = Depends(get_emby_user)):
     return _empty_items()
 
 
-# ---- 转码释放 / 库刷新 ----
+# ---- 转码释放（已删除，保留协议空壳） / 库刷新 ----
+# 转码删除（2026-10-24）：服务端不再有转码会话。Emby 客户端在停止播放
+# 时仍会按协议调用 ActiveEncodings 删除端点；保留 204 空壳只是为了
+# 不让客户端把“停播”误判为失败，这里不再释放任何东西。
 
 @emby_router.delete("/emby/Videos/ActiveEncodings")
 @emby_router.delete("/Videos/ActiveEncodings")
@@ -833,11 +975,7 @@ def activity_log(user: models.WebUser = Depends(get_emby_user)):
 @emby_router.post("/Videos/ActiveEncodings/Delete")
 def delete_active_encodings(request: Request,
                             user: models.WebUser = Depends(get_emby_user)):
-    # 管理员释放全部转码，普通用户只能释放自己的（避免互相踢掉播放）；
-    # 只读审计角色（v2.26.0）不算「管理员」：它只能释放自己的转码
-    is_admin = user.is_staff and admin_roles.can_write(user)
-    count = stop_all_transcodes() if is_admin else stop_user_transcodes(user.id)
-    logger.info("释放转码会话 user=%s count=%s", user.id, count)
+    logger.info("释放转码会话（空壳，转码已删除） user=%s", user.id)
     return Response(status_code=204)
 
 
@@ -863,3 +1001,53 @@ def library_refresh(request: Request,
     return {"success": True, "libraries": queued, "already": already}
 
 
+
+
+# ==================== 弹幕插件空兼容 / 品牌 Logo（2026-10-22 兼容补齐）====================
+#
+# G7：国区客户端（Hills / Streama 系）的弹幕加载走 Danmu 插件约定路径
+# ``/api/danmu/{item_id}``（含 ``/raw`` 原始 XML 形态），挂在 /emby 前缀下。
+# 本服务没有弹幕功能，此前每次播放先撞一次 404（2026-10-22 晚实测 9 次）。
+# 这里只做「合法空弹幕」承接：返回可解析的空弹幕文档（bilibili 风格 XML，
+# 根元素 <i> 下零条 <d>），客户端拿到就是「这部片没弹幕」，不再报错重试。
+# 不实现弹幕的抓取 / 存储 / 下发，那是独立产品功能，不在本兼容范围内。
+
+_EMPTY_DANMU_XML = '<?xml version="1.0" encoding="utf-8"?><i></i>'
+
+
+@emby_router.get("/emby/api/danmu/{item_id}")
+@emby_router.get("/api/danmu/{item_id}")
+@emby_router.get("/emby/api/danmu/{item_id}/raw")
+@emby_router.get("/api/danmu/{item_id}/raw")
+def danmu_empty(item_id: str, user: models.WebUser = Depends(get_emby_user)):
+    return Response(content=_EMPTY_DANMU_XML,
+                    media_type="text/xml; charset=utf-8")
+
+
+# G10：GET /Branding/Logo —— 个别客户端拿它当服务器图标，此前 404（实测 2 次）。
+# 本服务没有单独的台标图资源：仓库里有现成站点图标（user_frontend 的
+# favicon.ico，全量部署形态下存在）就发它；后端独立镜像（Dockerfile.backend
+# 白名单 COPY 不含 user_frontend）没有该文件时，降级为 1×1 透明 PNG 的
+# 200 响应 —— 对客户端而言是「有图但为空」，不再把服务器图标位打成错误。
+
+_LOGO_FALLBACK_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+@emby_router.get("/emby/Branding/Logo")
+@emby_router.get("/Branding/Logo")
+def branding_logo(user: models.WebUser = Depends(get_emby_user)):
+    import base64
+    from pathlib import Path
+
+    favicon = (Path(__file__).resolve().parents[2]
+               / "user_frontend" / "public" / "favicon.ico")
+    if favicon.is_file():
+        # 不走 streaming.serve_file：它按媒体文件猜类型，会把 .ico 报成
+        # video/mp4（实测），客户端同样会当坏图。这里显式给 image/x-icon。
+        return Response(content=favicon.read_bytes(),
+                        media_type="image/x-icon")
+    return Response(content=base64.b64decode(_LOGO_FALLBACK_PNG_B64),
+                    media_type="image/png")

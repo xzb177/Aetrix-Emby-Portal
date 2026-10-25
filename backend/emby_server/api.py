@@ -19,7 +19,6 @@ import logging
 import os
 import random
 import secrets
-import shutil
 import threading
 import time
 import urllib.parse
@@ -29,8 +28,8 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, StreamingResponse
-from sqlalchemy import and_, false, func, or_, select
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
+from sqlalchemy import String, and_, case, cast, false, func, or_, select
 from sqlalchemy.orm import Session, aliased, joinedload
 
 from backend import library_scope, models, playback_policy
@@ -40,20 +39,25 @@ from backend.emby_server.async_db import release_db_before_response
 from backend.emby_server import facets
 from backend.emby_server.fastjson import json_route
 from backend.emby_server import image_store
+from backend.emby_server import item_anchor
+from backend.emby_server import item_artwork
 from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import items_dedup_cache as _dedup_cache
 from backend.emby_server import items_list_cache as _list_cache
+from backend.emby_server import list_projection
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import play_session
 from backend.emby_server import play_sign
+from backend.emby_server import play_variants
 from backend.emby_server.public_url import client_base_url
 from backend.emby_server.query_params import qlimit, qstart
 from backend.emby_server import soft_delete
 from backend.emby_server import title_beautify
 from backend.emby_server import missing_episodes as _missing_episodes
-from backend.emby_server.playback_security import safe_child_name
-from backend.emby_server import subtitles as subs
+
+from backend.emby_server import identity_gate, subtitles as subs
 from backend.emby_server.auth import (
     _token_from_request,
     get_emby_user,
@@ -73,24 +77,9 @@ from backend.emby_server.search import (
     search_variants,
 )
 from backend.emby_server.streaming import (
-    active_transcode_ids,
-    get_transcode,
-    transcode_capacity,
     serve_file,
-    touch_transcode,
+    serve_drive_relay_async,
     serve_image,
-    start_transcode,
-    find_transcodes,
-    stop_all_transcodes,
-    stop_all_transcodes_async,
-    stop_transcode,
-    stop_transcode_async,
-    stop_transcodes_for,
-    stop_transcodes_for_async,
-    stop_user_transcodes,
-    stop_user_transcodes_async,
-    transcode_alive,
-    wait_for_file,
 )
 from backend.subscriptions import ensure_download_allowed, ensure_playback_allowed
 
@@ -108,9 +97,9 @@ SERVER_ID = os.getenv("EMBY_SERVER_ID", "aetrix-emby-server")
 def item_guid_for(db: Session, item_id) -> Optional[str]:
     """播放会话的 ``item_id`` → 条目 guid
 
-    转码会话在 ``streaming._TRANSCODE_PROCS`` 里按 guid 记（那个 uuid 只出现在 HLS 播放列表的
-    ``?session=`` 上），而「结束播放」手上只有播放会话的 ``item_id``；两者之间需要这一座桥。
-    旧实现在那里直接拿播放会话键去 pop，键对不上，等于什么都没停到。
+    「结束播放」手上只有播放会话的 ``item_id``，而需要按条目 guid
+    定位条目；两者之间需要这一座桥。（转码删除前这里还解释过转码
+    会话注册表与播放会话键对不上的旧坑，转码删除后该注册表已不存在。）
     """
     if not item_id:
         return None
@@ -172,6 +161,10 @@ def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
     """图片回退链：条目自身 → 季 → 剧集海报
 
     季与集常常没有自己的图片；不回退就会整库空白图。
+
+    L2 人工覆盖排在最前面（优先级，不是独占）：开关开且本条目本图类
+    有覆盖时，覆盖 URL 排第一，其后仍保留原链作回退；开关关时本段
+    不执行，行为逐字不变。
     """
     def srcs(it: em.MediaItem) -> list[str]:
         if kind == "Primary":
@@ -203,7 +196,12 @@ def _image_chain(item: em.MediaItem, kind: str, db: Session) -> list[str]:
             parents.append(series)
         for parent in parents:
             chain.extend(srcs(parent))
-    return [s for s in chain if s]
+    chain = [s for s in chain if s]
+    if item_artwork.override_enabled():
+        url = item_artwork.override_url(db, item.id, kind)
+        if url:
+            return [url] + chain
+    return chain
 
 
 def _first_image(item: em.MediaItem, kind: str, db: Session) -> str | None:
@@ -219,7 +217,14 @@ def season_poster_url(item: em.MediaItem, db: Session) -> str | None:
     series_id 兜底；父条目须通过软删除可见性检查。
     只对 ``season`` 类型做回退——movie / series / episode 原样返回，
     父剧集也没图时返回 None（保持现有占位，不误伤）。
+
+    L2 人工覆盖最优先：开关开且本条目有 Primary 覆盖时，走 Images
+    路由（路由内按 _image_chain 出覆盖图）；有覆盖无自有图时不再出
+    占位。开关关时本段不执行，行为逐字不变。
     """
+    if item_artwork.override_enabled():
+        if item_artwork.override_url(db, item.id, "Primary"):
+            return f"/emby/Items/{item.guid}/Images/Primary"
     if item.poster_path or item.primary_image_url:
         return f"/emby/Items/{item.guid}/Images/Primary"
     if item.item_type != "season":
@@ -445,25 +450,6 @@ def _series_source_dir(item, db):
         if p.startswith("Season"):
             return "/".join(parts[:i])
     return _parent_dir(fp)
-
-def _series_siblings(item, db):
-    if item.item_type != "series":
-        return []
-    src = _series_source_dir(item, db)
-    if not src:
-        return []
-    cands = (
-        db.query(em.MediaItem)
-        .filter(
-            em.MediaItem.library_id == item.library_id,
-            em.MediaItem.item_type == "series",
-            em.MediaItem.name == item.name,
-            em.MediaItem.is_hidden == False,
-        )
-        .order_by(em.MediaItem.id)
-        .all()
-    )
-    return [s for s in cands if _series_source_dir(s, db) == src]
 
 
 def _version_siblings(item, db):
@@ -706,8 +692,18 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                     "SeriesName": item.series.name if item.series else None,
                     "IndexNumber": item.season_number})
     if full:
+        # 详情面 MediaSource 的转码申报须与 PlaybackInfo 同源（批二 #11）：
+        # 单口要用户本人（策略 or staff 且个人开关），按 user_id 取行传入；
+        # 详情是单条目路径，多一次主键查询可接受。取不到就传 None（按策略值）。
+        _src_user = None
+        try:
+            _src_user = db.query(models.WebUser).filter(
+                models.WebUser.id == user_id).first()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("详情 MediaSource 用户查询失败 user_id=%s: %s",
+                           user_id, exc)
         dto["MediaSources"] = [_media_source(item, base, api_key, db, auth_qs,
-                                             synthesize=True)]
+                                             synthesize=True, user=_src_user)]
         dto["MediaSourceCount"] = 1
         # 片头片尾标记 → Chapters：复用 MediaSource 里已算好的（_chapters_for_item
         # 同一套口径），不重复跑两次 intro 管道
@@ -957,6 +953,35 @@ def _external_urls(item: em.MediaItem) -> list:
     return urls
 
 
+def _emby_num(val):
+    """把库里以字符串存的数值型流字段转回 JSON 数字，转不动返回 None（不发该字段）。
+
+    frame_rate / level 在流表里是 String 列：frame_rate 存的是 ffprobe 原始
+    avg_frame_rate（如 "30000/1001"、"29.970003"），level 存的是 str(level)
+    （如 "51"）。但 Emby 协议里 FrameRate / Level 都是数字，Dart 客户端
+    （Hills 等）按 num? 强转，拿到字符串直接抛
+    "type 'String' is not a subtype of type 'num?' in type cast"，
+    条目详情/播放信息整页打不开。这里在下发边界统一转数字：
+    分数按除法算（30000/1001 ≈ 29.97），整数串回 int，小数串回 float。
+    """
+    if val is None or val == "":
+        return None
+    if isinstance(val, (int, float)):
+        return val
+    text = str(val).strip()
+    try:
+        if "/" in text:
+            num, _, den = text.partition("/")
+            f = float(num) / float(den)
+            return round(f, 3) if f else None
+        f = float(text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if f == int(f):
+        return int(f)
+    return round(f, 3)
+
+
 def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = None,
                 auth_qs: str = "") -> dict:
     # ffprobe 的 video stream 经常不单独给 bitrate（尤其是远程 HEVC 文件），
@@ -985,6 +1010,10 @@ def _stream_dto(s, base: str, item: em.MediaItem, api_key: str, db: Session = No
         ("sample_format", "SampleFormat"),
     ):
         val = getattr(s, attr, None)
+        if key in ("FrameRate", "Level"):
+            # 协议里是数字、库里存的是字符串，必须转（见 _emby_num）；
+            # 转不动就不发这个字段，宁可缺行也不能发字符串把客户端打崩
+            val = _emby_num(val)
         if val not in (None, ""):
             dto[key] = val
     if is_video and item.width and item.height:
@@ -1180,7 +1209,11 @@ def _effective_bitrate(item) -> int | None:
 
 
 def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
-                  auth_qs: str = "", synthesize: bool = False) -> dict:
+                  auth_qs: str = "", synthesize: bool = False, user=None) -> dict:
+    # 转码删除（2026-10-24）：服务端不再转码，申报恒 False。
+    # 历史上这里硬编码 True，PlaybackInfo 面会被策略覆写、详情 DTO 面
+    # 不会，两面申报不一致；删除后两面统一为 False。
+    _supports_transcoding = False
     dto = {
         "Id": item.guid,
         "Name": item.name,
@@ -1198,7 +1231,7 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         "Bitrate": _effective_bitrate(item) or None,
         "SupportsDirectPlay": True,
         "SupportsDirectStream": True,
-        "SupportsTranscoding": True,
+        "SupportsTranscoding": _supports_transcoding,
         "IsRemote": False,
         # 官方 MediaSourceInfo 的非空值类型/集合字段（对照
         # MediaBrowser.Model/Dto/MediaSourceInfo.cs，均在构造器里初始化，序列化恒发）。
@@ -1240,8 +1273,9 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
     if item.audio_codec:
         dto["AudioCodec"] = item.audio_codec
     # iOS 客户端（Lenna/SenPlayer）对 null 敏感，递归去掉 None 字段
-    # 注：DirectStreamUrl / TranscodingUrl 由调用方（playback_info）在拿到 _play_target 后
+    # 注：DirectStreamUrl 由调用方（playback_info）在拿到 _play_target 后
     # 拼装，CDN 域名改写也在那一层完成（这里只管字幕 DeliveryUrl）。
+    # 转码删除后不再有 TranscodingUrl。
     return _strip_nulls(dto)
 
 
@@ -1418,6 +1452,12 @@ def authenticate_by_name(
             or_(models.WebUser.emby_username == username, models.WebUser.username == username)
         ).first()
 
+    # 日志用：这次登录名命中的是自建 Emby 用户名还是门户用户名（只记类型不记值）。
+    # 此前日志恒记门户用户名，「接线员随机账号登录异常」类报告无法用日志定案（2026-10-23）
+    matched_via = None
+    if user is not None:
+        matched_via = "emby_username" if user.emby_username == username else "username"
+
     from backend.emby_server.auth import issue_token, verify_and_migrate_emby_password
 
     def _auth_fail(detail: str = "用户名或密码错误"):
@@ -1426,7 +1466,8 @@ def authenticate_by_name(
         record_event(
             db, username=username, user_id=user.id if user else None, ip=ip,
             agent=request.headers.get("user-agent"), success=False,
-            reason="emby_login_failed", detail=detail,
+            reason="emby_login_failed",
+            detail=f"{detail}（via={matched_via}）" if matched_via else detail,
         )
         # 对齐官方 Emby：认证失败返回 401 空 body。
         # 曾返回 {"error": "InvalidUsernameOrPassword"} JSON，官方 iOS 客户端会尝试
@@ -1465,7 +1506,7 @@ def authenticate_by_name(
     record_event(
         db, username=user.username, user_id=user.id, ip=ip,
         agent=request.headers.get("user-agent"), success=True, reason="emby_login",
-        detail=f"{auth.get('Client') or 'Emby Client'} / {token_row.device_id}",
+        detail=f"{auth.get('Client') or 'Emby Client'} / {token_row.device_id} / via={matched_via}",
     )
     # 防共享·跨城市轨迹（默认 off，不判定也不写库）。命中 enforce 时账号已被停用、
     # 刚签发的令牌也已吊销，所以直接拒绝本次登录而不是「登进去发现不能用」
@@ -1699,7 +1740,7 @@ def _policy_dto(user: models.WebUser) -> dict:
         "EnableContentDownloading": True,
         "EnableMediaPlayback": True,
         "EnableAudioPlaybackTranscoding": True,
-        "EnableVideoPlaybackTranscoding": bool(getattr(user, "enable_video_transcoding", True)),
+        "EnableVideoPlaybackTranscoding": False,
         "EnablePlaybackRemuxing": True,
         "ForceRemoteSourceTranscoding": False,
         "EnableSyncTranscoding": True,
@@ -1810,6 +1851,16 @@ def get_user(user_id: str, user: models.WebUser = Depends(get_emby_user),
 def _library_item_count(db, lib) -> int:
     """媒体库条目数：优先用扫描结束时写入的缓存；为 None（扫描未完成/失败过）
     时实时计数，口径与扫描器一致（只计 movie/series）。"""
+    if identity_gate.gate_enabled():
+        # 身份门开时缓存列是全量口径（含未绑定条目），Views 的 ChildCount
+        # 必须与点进去的列表同口径，只数已绑定行——走实时计数（与本函数
+        # 缓存为空时的既有回退同路径、同成本），不能用缓存列。
+        return soft_delete.count_visible(
+            db,
+            em.MediaItem.library_id == lib.id,
+            em.MediaItem.item_type.in_(["movie", "series"]),
+            identity_gate.identity_clause(),
+        )
     if lib.item_count is not None:
         return lib.item_count
     # count_visible 而非 Query.count()：后者数得到已下架的条目（软删除可见性过滤
@@ -1869,15 +1920,42 @@ _LIB_CREATED_AT_FALLBACK = datetime(2020, 1, 1)
 def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
                      db: Session = Depends(get_db)):
     libs = db.query(em.Library).filter(em.Library.is_enabled == True).all()  # noqa: E712
+    # L4 库设序：只有任一库 sort_order 非零时才排，全部为 0 时查询
+    # 逐字不变（排序在内存做，库数小，无额外 SQL）。键：已设序的在前
+    # （按 sort_order 升序），未设序（0）的排在已设之后、按 id 自然序
+    # ——与管理端 GET /order 的回显顺序同一口径。
+    if any((lib.sort_order or 0) != 0 for lib in libs):
+        libs = sorted(
+            libs,
+            key=lambda lib: (0, lib.sort_order, lib.id) if (lib.sort_order or 0) != 0
+            else (1, 0, lib.id),
+        )
     virtual_on = _virtual_libraries_enabled()
     allowed = _library_scope(db, user)
     # DateCreated 恒发（官方 dto.DateCreated 全字段默认下发；缺失会让严格的
     # 三方客户端整条解析失败，ddPlayer 即为其一）。历史迁移库的 created_at
     # 可能为 NULL：先回退该库内最早入库条目的 date_added（与条目数同一口径），
     # 空库再回退固定常量——保证每个条目恒带 DateCreated。
+    # 列表投影读模型（清单第 16 项试点）：非虚拟库的三值走投影表；
+    # 身份门开、开关关、缺行、过期、读错任一 → 整包现行路径（见 list_projection）。
+    # 投影行是全量口径，身份门开时 ChildCount 必须按身份过滤现算，不能用。
+    _proj = None
+    if list_projection.enabled() and not identity_gate.gate_enabled():
+        _proj_ids = [lib.id for lib in libs
+                     if not bool(getattr(lib, "is_virtual", False))]
+        _proj = list_projection.load_projection(db, _proj_ids)
+        if _proj is None and _proj_ids:
+            logger.warning("媒体库列表投影不可用（缺行/过期/读错），整包回落现算")
     need_earliest = [lib.id for lib in libs if not lib.created_at]
     _lib_earliest_added: dict = {}
-    if need_earliest:
+    if _proj is not None:
+        _lib_earliest_added = {
+            lib.id: _proj[lib.id].earliest_added
+            for lib in libs
+            if not lib.created_at and lib.id in _proj
+            and _proj[lib.id].earliest_added is not None
+        }
+    elif need_earliest:
         rows = (
             db.query(em.MediaItem.library_id, func.min(em.MediaItem.date_added))
             .filter(
@@ -1901,9 +1979,9 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
             continue
         # 媒体库封面：有 cover_path 才给 Primary 标记，客户端才会去拉 /Images/Primary
         cover_path = getattr(lib, "cover_path", None)
-        cover_tag = _library_cover_tag(cover_path)
+        cover_tag = _proj[lib.id].cover_tag if (_proj is not None and not is_virtual) else _library_cover_tag(cover_path)
         image_tags = {"Primary": cover_tag} if cover_path else {}
-        child_count = count_virtual_items(db, lib) if is_virtual else _library_item_count(db, lib)
+        child_count = count_virtual_items(db, lib) if is_virtual else (_proj[lib.id].child_count if _proj is not None else _library_item_count(db, lib))
         # 虚拟库跨电影/剧集聚合，统一按 mixed 上报，客户端才能正常当普通文件夹浏览
         collection_type = "mixed" if is_virtual else lib.collection_type
         # 字段集对照官方 CollectionFolder BaseItemDto（Jellyfin DtoService，
@@ -1983,6 +2061,10 @@ def get_suggestions(user_id: str,
             em.MediaItem.is_hidden == False,  # noqa: E712
         )
     )
+    if identity_gate.gate_enabled():
+        # 身份门（货架面）：推荐是系统主动枚举，未绑定条目不进；latest 与
+        # popular 都从 base_q 派生，一处挂载两路同口径。
+        base_q = base_q.filter(identity_gate.identity_clause())
     base_q = _scope_items(base_q, allowed)
     latest = (
         base_q.order_by(em.MediaItem.date_added.desc().nullslast(),
@@ -2440,6 +2522,16 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         query = query.filter(or_(em.MediaItem.tmdb_id.isnot(None),
                                  em.MediaItem.imdb_id.isnot(None)))
 
+    # 身份准入货架（案 A，一期）：门开时「货架面」只露已绑定条目。挂在
+    # 基础查询上，去重层（dropped/primary 恒为本 query 的子集）与随机分支
+    # 自然同口径，组内选主只会落在已绑定成员上。拆面纪律（钉死，勿扩）：
+    # 带 SearchTerm 是搜索面——不挂（FMBY 实测「浏览严、搜索宽」）；
+    # Ids 直查与 AnyProviderIdEquals 编号查是点名/直达——不挂，
+    # 凭 guid/编号直达未绑定条目照常（老收藏与在播不断）。
+    if (identity_gate.gate_enabled() and not ids and not search
+            and not _prov_conds):
+        query = query.filter(identity_gate.identity_clause())
+
     if not ids:
         # 单集多版本：被合并的版本不独立出现在列表里（与 get_episodes 同口径）。
         # 注意只管 episode：电影/剧集的多版本仍走 dedup 层（历史行为，不动）。
@@ -2535,8 +2627,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
             query = query.filter(~em.MediaItem.item_type.in_(mapped))
 
     if search:
-        # SQL 预筛：标题族 + 别名族，并把繁简/发布标签变体一起放进来，
-        # 精排交给 rank_items（完全匹配 > 前缀 > 别名 > 分类 > 模糊）。
+        # SQL 预筛：标题族 + 别名族 + 拼音派生族，并把繁简/发布标签变体
+        # 一起放进来，精排交给 rank_items（完全匹配 > 前缀 > 别名 > 拼音 >
+        # 分类 > 模糊）。
         clauses = []
         for variant in search_variants(search):
             like = f"%{variant}%"
@@ -2545,6 +2638,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
                 em.MediaItem.original_title.ilike(like),
                 em.MediaItem.sort_name.ilike(like),
                 em.MediaItem.aliases.ilike(like),
+                # 拼音派生字段（批二 #16）：全拼/首字母打法靠这两列捞候选
+                em.MediaItem.pinyin_full.ilike(like),
+                em.MediaItem.pinyin_initials.ilike(like),
             ])
         if clauses:
             query = query.filter(or_(*clauses))
@@ -2632,6 +2728,9 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
         c = {
             "SortName": em.MediaItem.sort_name, "Name": em.MediaItem.name,
             "DateCreated": em.MediaItem.date_added, "ProductionYear": em.MediaItem.production_year,
+            # PremiereDate：Infuse / SenPlayer 等的常用默认排序。此前映射表缺它，
+            # 未知键被整段丢弃后静默回退按名称排序（用户体感「排序选了没效果」）。
+            "PremiereDate": em.MediaItem.premiere_date,
             "CommunityRating": em.MediaItem.community_rating,
             "DateLastContentAdded": _date_last_content_added,
         }.get(key)
@@ -2896,22 +2995,29 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
     """
     # G1-P1-2：Limit 钳制 200（原无上界）
     limit = qlimit(request.query_params, default=12)
-    rows = (
-        _scope_items(
-            db.query(em.UserMediaData, em.MediaItem)
-            .join(em.MediaItem, em.MediaItem.id == em.UserMediaData.item_id)
-            .filter(
-                em.UserMediaData.user_id == user.id,
-                em.UserMediaData.playback_position_ticks > 0,
-                em.UserMediaData.played == False,  # noqa: E712
-                em.MediaItem.item_type.in_(["movie", "series", "episode"]),
-                em.MediaItem.is_hidden == False,  # noqa: E712
-                # 副本绝不能占 Resume 的 limit 名额：合并 worker 不搬运播放记录，
-                # 副本的播放行会先占名额、再被 deduplicate_items 扔掉，导致列表缩水。
-                em.MediaItem.merged_into_id.is_(None),
-            ),
-            _library_scope(db, user),
+    resume_q = (
+        db.query(em.UserMediaData, em.MediaItem)
+        .join(em.MediaItem, em.MediaItem.id == em.UserMediaData.item_id)
+        .filter(
+            em.UserMediaData.user_id == user.id,
+            em.UserMediaData.playback_position_ticks > 0,
+            em.UserMediaData.played == False,  # noqa: E712
+            # 客户端 HideFromResume 标记过的条目不再出现在继续观看里
+            em.UserMediaData.hide_from_resume == False,  # noqa: E712
+            em.MediaItem.item_type.in_(["movie", "series", "episode"]),
+            em.MediaItem.is_hidden == False,  # noqa: E712
+            # 副本绝不能占 Resume 的 limit 名额：合并 worker 不搬运播放记录，
+            # 副本的播放行会先占名额、再被 deduplicate_items 扔掉，导致列表缩水。
+            em.MediaItem.merged_into_id.is_(None),
         )
+    )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：展示过滤、进度不删——未绑定条目不进续看，
+        # 但 UserMediaData 的进度行原样保留，重绑后自动回来。必须进 SQL
+        # （limit 之前），先占名额再内存剔除会让续看缩水（同 Latest 的纪律）。
+        resume_q = resume_q.filter(identity_gate.identity_clause())
+    rows = (
+        _scope_items(resume_q, _library_scope(db, user))
         .order_by(em.UserMediaData.last_played_at.desc())
         .limit(limit)
         .all()
@@ -2924,7 +3030,7 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
     sids = {i.series_id for _umd, i in rows if i.item_type == "episode" and i.series_id}
     series_map = {}
     if sids:
-        series_items = _scope_items(
+        series_q = _scope_items(
             db.query(em.MediaItem).filter(
                 em.MediaItem.id.in_(sids),
                 em.MediaItem.is_hidden == False,  # noqa: E712
@@ -2932,7 +3038,12 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
                 em.MediaItem.merged_into_id.is_(None),
             ),
             _library_scope(db, user),
-        ).all()
+        )
+        if identity_gate.phase2_enabled():
+            # 折叠查询同口径：episode 所属 series 未绑定时，该行不出现
+            # （series_map 查不到 → 循环里 continue，与隐藏剧的单集同处理）。
+            series_q = series_q.filter(identity_gate.identity_clause())
+        series_items = series_q.all()
         series_map = {s.id: s for s in series_items}
 
     items = []
@@ -2978,6 +3089,10 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
         # 先查 16 条再内存去重时，若最新 16 条全是副本会返回空数组。
         em.MediaItem.merged_into_id.is_(None),
     )
+    if identity_gate.gate_enabled():
+        # 身份门（货架面）：与上面的副本过滤同理，必须进 SQL——未绑定
+        # 条目先占 limit 名额再被剔除会让「最新」列表缩水。
+        q = q.filter(identity_gate.identity_clause())
     parent_id = request.query_params.get("ParentId")
     if parent_id:
         lib = db.query(em.Library).filter(em.Library.guid == parent_id).first()
@@ -3006,25 +3121,76 @@ def items_counts(user: models.WebUser = Depends(get_emby_user), db: Session = De
     # 总数也走 Core 的 COUNT(*)（不再让 ORM 把实体包一层子查询）。
     # 计数同样按可见范围收：否则客户端导航栏显示 120 部、点进去只有 40 部。
     allowed = _library_scope(db, user)
+    # 身份门（货架面）：计数必须与列表同口径，未绑定条目不计——否则
+    # 导航栏写 120 部、点进去只有 40 部。一期口径定死为「已绑定行数」
+    # （沿用本端点既有的行数语义、只加身份维度；episode/season 按判据
+    # 跟随 series）；三期开关开启时，电影/剧集计数改为「代表组数」
+    # （与列表 TotalRecordCount 同源：同分层身份键只计一组；集与其它
+    # 类型不去重，仍按行数；总数 = 组数 + 集行数 + 其它类型行数）。
+    _gate_clause = (identity_gate.identity_clause()
+                    if identity_gate.gate_enabled() else None)
+    _by_type_q = db.query(em.MediaItem.item_type, func.count()).filter(
+        em.MediaItem.is_hidden == False)  # noqa: E712
+    _total_q = db.query(func.count()).select_from(em.MediaItem).filter(
+        em.MediaItem.is_hidden == False)  # noqa: E712
+    if _gate_clause is not None:
+        _by_type_q = _by_type_q.filter(_gate_clause)
+        _total_q = _total_q.filter(_gate_clause)
     by_type = dict(
-        _scope_items(
-            db.query(em.MediaItem.item_type, func.count())
-            .filter(em.MediaItem.is_hidden == False),  # noqa: E712
-            allowed,
-        )
+        _scope_items(_by_type_q, allowed)
         .group_by(em.MediaItem.item_type)
         .all()
     )
+    movie_c = int(by_type.get("movie", 0))
+    series_c = int(by_type.get("series", 0))
+    episode_c = int(by_type.get("episode", 0))
+    item_c = int(_scope_items(_total_q, allowed).scalar() or 0)
+    if identity_gate.phase3_enabled():
+        # 三期代表组对齐：已绑定行只认 tmdb/imdb 两层身份键（弱键组
+        # 在货架面本就不出现，故分层键与列表代表组一一对应；与
+        # dedup_key 的分组结果无关，不改分页去重层）。组键含库 id——
+        # 列表去重键本就含库（同片跨库是两组），计数须同口径。
+        # COUNT(DISTINCT …) 忽略 NULL——无身份行已被门滤掉，CASE 的
+        # NULL 分支是死代码，仅作防御。字符串拼接用 ``+``（PG/SQLite
+        # 均渲染为 ``||``，不用 func.concat——SQLite 没有它）。
+        _tmdb_trim = func.trim(em.MediaItem.tmdb_id)
+        _imdb_trim = func.trim(em.MediaItem.imdb_id)
+        _tmdb_blank = or_(em.MediaItem.tmdb_id.is_(None), _tmdb_trim == "")
+        _lib = cast(em.MediaItem.library_id, String)
+        _tmdb_key = case(
+            (and_(em.MediaItem.tmdb_id.isnot(None), _tmdb_trim != ""),
+             _lib + "|" + _tmdb_trim),
+            else_=None,
+        )
+        _imdb_key = case(
+            (and_(_tmdb_blank, em.MediaItem.imdb_id.isnot(None),
+                  _imdb_trim != ""), _lib + "|" + _imdb_trim),
+            else_=None,
+        )
+        _group_q = db.query(
+            em.MediaItem.item_type,
+            (func.count(func.distinct(_tmdb_key))
+             + func.count(func.distinct(_imdb_key))).label("groups"),
+        ).filter(
+            em.MediaItem.is_hidden == False,  # noqa: E712
+            em.MediaItem.item_type.in_(["movie", "series"]),
+            _gate_clause,
+        )
+        group_by_type = dict(
+            _scope_items(_group_q, allowed)
+            .group_by(em.MediaItem.item_type)
+            .all()
+        )
+        row_others = item_c - movie_c - series_c - episode_c
+        movie_c = int(group_by_type.get("movie", 0))
+        series_c = int(group_by_type.get("series", 0))
+        item_c = movie_c + series_c + episode_c + row_others
 
     return {
-        "MovieCount": int(by_type.get("movie", 0)),
-        "SeriesCount": int(by_type.get("series", 0)),
-        "EpisodeCount": int(by_type.get("episode", 0)),
-        "ItemCount": int(_scope_items(
-            db.query(func.count()).select_from(em.MediaItem)
-            .filter(em.MediaItem.is_hidden == False),  # noqa: E712
-            allowed,
-        ).scalar() or 0),
+        "MovieCount": movie_c,
+        "SeriesCount": series_c,
+        "EpisodeCount": episode_c,
+        "ItemCount": item_c,
         "AlbumCount": 0, "SongCount": 0, "ArtistCount": 0, "AlbumArtistCount": 0,
         "MusicVideoCount": 0, "TrailerCount": 0, "BoxSetCount": 0, "BookCount": 0,
     }
@@ -3140,10 +3306,6 @@ def _filters_payload(db: Session) -> dict:
 @emby_router.get("/Items/Filters2")
 def items_filters(user: models.WebUser = Depends(get_emby_user), db: Session = Depends(get_db)):
     return _filters_payload(db)
-
-
-
-
 
 
 @json_route(emby_router, "/emby/Items/{item_id}", "/Items/{item_id}", "/emby/Users/{user_id}/Items/{item_id}", "/Users/{user_id}/Items/{item_id}")
@@ -3597,10 +3759,17 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
         # 详情页进入某部未观看的剧时，客户端会先问
         # ``NextUp?SeriesId=<本剧>``。旧实现完全忽略 SeriesId，反而从全库
         # 的已看剧里挑下一集；于是客户端会把另一部剧的 E02 当成本剧首集。
-        requested_series = db.query(em.MediaItem).filter(
+        requested_series_q = db.query(em.MediaItem).filter(
             em.MediaItem.guid == requested_series_guid,
             em.MediaItem.item_type == "series",
-        ).first()
+        )
+        if identity_gate.phase2_enabled():
+            # 二期：SeriesId 点名问下一集仍属货架推送面——未绑定剧的
+            # 下一集不推（详情直达本身不拦，见案 A；NextUp 是系统主动
+            # 推送面，与浏览同口径）。
+            requested_series_q = requested_series_q.filter(
+                identity_gate.identity_clause())
+        requested_series = requested_series_q.first()
         if requested_series is None:
             return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
         if allowed is not None and requested_series.library_id not in allowed:
@@ -3657,6 +3826,14 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
         .all()
     )
     series_ids = sorted({r.series_id for r in ep_series})
+    if identity_gate.phase2_enabled():
+        # 二期：只给已绑定剧集推下一集——集跟随所属 series 的绑定，
+        # 未绑定剧先行剔除，下游按批取首集未看时不再重复判身份。
+        bound_ids = {r[0] for r in db.query(em.MediaItem.id).filter(
+            em.MediaItem.id.in_(series_ids),
+            identity_gate.identity_clause(),
+        ).all()}
+        series_ids = [sid for sid in series_ids if sid in bound_ids]
     if not series_ids:
         return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
     series_recent = {}
@@ -3701,6 +3878,11 @@ def get_favorites(request: Request, user: models.WebUser = Depends(get_emby_user
         .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.is_favorite == True)  # noqa: E712
         .order_by(em.UserMediaData.updated_at.desc())
     )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：列表展示过滤、标记不删——未绑定条目
+        # 不进收藏列表，但 is_favorite 标记保留，重绑后自动回来。
+        # 门挂在 count 之前，TotalRecordCount 与实返一致。
+        base_q = base_q.filter(identity_gate.identity_clause())
     total = base_q.count()
     rows = base_q.offset(start).limit(limit).all()
     base = _base_url(request)
@@ -3722,6 +3904,10 @@ def get_played_items(request: Request, user: models.WebUser = Depends(get_emby_u
         .filter(em.UserMediaData.user_id == user.id, em.UserMediaData.played == True)  # noqa: E712
         .order_by(em.UserMediaData.last_played_at.desc())
     )
+    if identity_gate.phase2_enabled():
+        # 身份门二期（货架面）：与收藏同口径——展示过滤、已看标记不删，
+        # 门挂在 count 之前，TotalRecordCount 与实返一致。
+        base_q = base_q.filter(identity_gate.identity_clause())
     total = base_q.count()
     rows = base_q.offset(start).limit(limit).all()
     base = _base_url(request)
@@ -3777,6 +3963,7 @@ def mark_played(item_id: str, user_id: str,
     umd.play_count = (umd.play_count or 0) + 1
     umd.last_played_at = datetime.now()
     umd.playback_position_ticks = 0
+    umd.max_position_ticks = 0  # 进度双记：与断点一起清零（批一 #4）
     db.commit()
     return _user_data_dto(umd, item.guid, _run_time_ticks(item))
 
@@ -3794,6 +3981,7 @@ def mark_unplayed(item_id: str, user_id: str,
         umd.played = False
         umd.play_count = 0
         umd.playback_position_ticks = 0
+        umd.max_position_ticks = 0  # 进度双记：与断点一起清零（批一 #4）
         db.commit()
     return _user_data_dto(umd, item.guid, _run_time_ticks(item))
 
@@ -3861,34 +4049,354 @@ def _drive_exists_http_get(url, *, params, headers, timeout):
 #: 存在性判定不依赖 token 值——SA 轮换/换取不影响缓存有效性，无需失效。
 #: 404 不缓存（文件删后恢复应可播）；401/超时/5xx 等异常不缓存
 #: （401 毒化失效依赖每次真实判定；异常结果不值得信任）。
-_DRIVE_EXISTS_CACHE_TTL = 60.0
+#: TTL（2026-10-21 owner 拍板 60s→600s）：环境变量 DRIVE_EXISTS_CACHE_TTL_SEC
+#: （默认 600；0 或负数=关闭正缓存，每次都真实 files.get）。调参项只走 env，不进后台。
+#: 启动时读一次：非法值的 warning 只打在进程起来的时候，播放热路径不再碰 env。
+#: 改 env 需重启。负数由 env_int 钳到 0，即关闭。
+#: 删除失效（同日追加）：正缓存拉到 600s 后，文件已在网盘删掉但库还没扫完时，
+#: 播放器会一直 302 到死链。扫描确认丢失 / 管理端删条目 / 补开分享见到 404
+#: 时摘掉这条缓存；EA 与扫描分进程，摘除记在 Redis 墓碑上，Redis 挂了只清本进程。
+#: 另外：同一客户端在短窗口内用相同 Range 起始再请求，当成播放器在谷歌 404 后
+#: 的重试，跳过缓存复验。起始字节变了（拖动 / 下一段）仍走缓存。
+_DRIVE_EXISTS_CACHE_TTL_DEFAULT = 600
+#: 同起始 Range 复验窗口默认秒数（0=关闭）。env DRIVE_EXISTS_RETRY_WINDOW_SEC。
+_DRIVE_EXISTS_RETRY_WINDOW_DEFAULT = 15
+#: 字典上限：超过即先清过期条目，仍超则整体清空（防无限增长）
+_DRIVE_EXISTS_CACHE_MAX = 10000
 _drive_exists_cache: dict = {}
 _drive_exists_cache_lock = threading.Lock()
 
 
+def _drive_exists_cache_ttl_from_env() -> int:
+    """解析 DRIVE_EXISTS_CACHE_TTL_SEC。非法值 warning 一次并回落默认；负数钳成 0（关闭）。"""
+    return env_int("DRIVE_EXISTS_CACHE_TTL_SEC", _DRIVE_EXISTS_CACHE_TTL_DEFAULT,
+                   0, 86400)
+
+
+def _drive_exists_retry_window_from_env() -> int:
+    """解析 DRIVE_EXISTS_RETRY_WINDOW_SEC。非法值 warning 一次并回落默认；负数钳成 0（关闭）。"""
+    return env_int("DRIVE_EXISTS_RETRY_WINDOW_SEC",
+                   _DRIVE_EXISTS_RETRY_WINDOW_DEFAULT, 0, 600)
+
+
+# 模块导入即进程启动：非法 env 的 warning 只发生在这里，热路径读下面两个整数。
+_cache_ttl_sec = _drive_exists_cache_ttl_from_env()
+_retry_window_sec = _drive_exists_retry_window_from_env()
+
+
+def drive_exists_cache_ttl() -> int:
+    """存在性正缓存 TTL（秒）。启动时已解析，默认 600，0=关闭。"""
+    return _cache_ttl_sec
+
+
+def drive_exists_retry_window() -> int:
+    """同起始 Range 复验窗口（秒）。启动时已解析，默认 15，0=关闭。"""
+    return _retry_window_sec
+
+
+#: 跨进程墓碑：file_id 全局唯一，扫描/管理端不一定解析得出和播放侧相同的 drive_id。
+_DRIVE_EXISTS_INVAL_PREFIX = "aetrix:drive_exists:inv:"
+#: 跨进程重试记号（值是身份+文件+Range 起始的哈希，不落用户 id 明文）。
+_DRIVE_EXISTS_RETRY_PREFIX = "aetrix:drive_exists:retry:"
+_drive_exists_retry: dict = {}
+_drive_exists_retry_lock = threading.Lock()
+_DRIVE_EXISTS_RETRY_MAX = 10000
+#: 开播连发窗口。播放器起播时经常在一两百毫秒内连打几次 bytes=0-
+#: （探测 bytes=0-1 和真正的 GET，起始字节都是 0）。谷歌 404 之后的重试
+#: 至少要多一次 HTTP 往返，几乎总是超过 300ms，并且仍落在复验窗口里。
+#: 只对起始字节 0 生效；锚在第一次请求上，连发不把时间戳往后滑。
+#: 不进 env：再放宽会把很快返回的 404 重试也吞掉。
+_DRIVE_EXISTS_START_BURST_SEC = 0.3
+
+
+def _drive_exists_redis():
+    """EA / 扫描 / 面板分进程时共用的 Redis。未启用或导入失败 → None。"""
+    try:
+        from backend.database import redis_client
+        return redis_client
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _exists_inval_key(file_id: str) -> str:
+    return _DRIVE_EXISTS_INVAL_PREFIX + file_id
+
+
+def _exists_tombstone(file_id: str) -> bool:
+    """别的进程宣布这个文件已失效。Redis 不可用 → False（只信本进程缓存）。"""
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return False
+        return bool(rc.exists(_exists_inval_key(file_id)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _publish_exists_tombstone(file_id: str) -> None:
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return
+        ttl = drive_exists_cache_ttl()
+        # 盖住当前正缓存可能残留的寿命；缓存关着时仍留默认窗口，避免刚删的条目被旧进程续上
+        ex = ttl if ttl > 0 else _DRIVE_EXISTS_CACHE_TTL_DEFAULT
+        rc.set(_exists_inval_key(file_id), "1", ex=int(ex))
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive 存在性缓存墓碑写 Redis 失败", exc_info=True)
+
+
+def _clear_exists_tombstone(file_id: str) -> None:
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return
+        rc.delete(_exists_inval_key(file_id))
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive 存在性缓存墓碑清除失败", exc_info=True)
+
+
+def _drop_local_exists(drive_id: str | None, file_id: str) -> None:
+    """摘本进程正缓存。drive_id 为空时摘掉该 file_id 的每一条。"""
+    with _drive_exists_cache_lock:
+        if drive_id:
+            _drive_exists_cache.pop((drive_id, file_id), None)
+            return
+        for key in [k for k in _drive_exists_cache if len(k) == 2 and k[1] == file_id]:
+            _drive_exists_cache.pop(key, None)
+
+
+def invalidate_drive_exists_cache(drive_id: str | None, file_id: str) -> None:
+    """摘掉 (drive_id, file_id) 的存在性正缓存，并通知其他进程。
+
+    Redis 不可用时只清本进程，不抛异常（播放/扫描热路径）。
+    file_id 为空直接返回。drive_id 为空则按 file_id 摘掉本进程全部匹配项，
+    墓碑仍按 file_id 发（Drive file id 全局唯一）。
+    """
+    file_id = (file_id or "").strip()
+    if not file_id:
+        return
+    drive_id = (drive_id or "").strip() or None
+    try:
+        _drop_local_exists(drive_id, file_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive 存在性缓存本进程摘除失败", exc_info=True)
+    _publish_exists_tombstone(file_id)
+
+
+def invalidate_drive_exists_for_item(db, item) -> None:
+    """条目已确认不在（扫描丢失 / 管理端删除 / 分享 404）。永不抛。"""
+    try:
+        file_id = (getattr(item, "drive_file_id", None) or "").strip()
+        if not file_id:
+            return
+        drive_id = None
+        try:
+            drive_id = _drive_mount_id_for_item(db, item)
+        except Exception:  # noqa: BLE001
+            drive_id = None
+        invalidate_drive_exists_cache(drive_id, file_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("按条目失效 Drive 存在性缓存失败", exc_info=True)
+
+
 def _drive_exists_cache_hit(drive_id: str, file_id: str) -> bool:
-    """正缓存命中（60s 内已判定存在）→ True；否则 False。"""
+    """正缓存命中（TTL 内已判定存在，且没有跨进程墓碑）→ True。TTL=0 恒 False。"""
+    if drive_exists_cache_ttl() <= 0:
+        return False
     now = time.monotonic()
     key = (drive_id, file_id)
     with _drive_exists_cache_lock:
         exp = _drive_exists_cache.get(key)
-        if exp is not None:
-            if exp > now:
-                return True
-            del _drive_exists_cache[key]
-    return False
+        if exp is None or exp <= now:
+            if exp is not None:
+                del _drive_exists_cache[key]
+            return False
+    # 锁外问 Redis：别的容器已经宣布这个文件没了
+    if _exists_tombstone(file_id):
+        try:
+            _drop_local_exists(drive_id, file_id)
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+    return True
 
 
 def _drive_exists_cache_put(drive_id: str, file_id: str) -> None:
-    """files.get 200 后写入正缓存（只在成功路径调用）。"""
+    """files.get 200 后写入正缓存（只在成功路径调用；TTL=0 不写）。
+
+    同时摘掉墓碑：文件又被确认存在，别的进程的「已删除」宣告作废。
+    """
+    ttl = drive_exists_cache_ttl()
+    if ttl <= 0:
+        _clear_exists_tombstone(file_id)
+        return
     with _drive_exists_cache_lock:
-        if len(_drive_exists_cache) > 10000:
-            # 防无限增长：清掉已过期条目（常态字典很小，不触发）
+        if len(_drive_exists_cache) >= _DRIVE_EXISTS_CACHE_MAX:
+            # 防无限增长：先清过期条目；TTL 拉长到 600s 后仍可能全是活条目，
+            # 这时整体清空（最坏只是多打几次 files.get，不影响正确性）
             now = time.monotonic()
             for k in [k for k, e in _drive_exists_cache.items() if e <= now]:
                 del _drive_exists_cache[k]
-        _drive_exists_cache[(drive_id, file_id)] = (
-            time.monotonic() + _DRIVE_EXISTS_CACHE_TTL)
+            if len(_drive_exists_cache) >= _DRIVE_EXISTS_CACHE_MAX:
+                _drive_exists_cache.clear()
+        _drive_exists_cache[(drive_id, file_id)] = time.monotonic() + ttl
+    _clear_exists_tombstone(file_id)
+
+
+def _range_start_token(header: str | None):
+    """Range 起始位置。无头与 bytes=0- 不是同一次请求；只比较起始，不比较结束。
+
+    - 无 / 空 → ("absent",)
+    - bytes=START-... → ("start", START)
+    - bytes=-SUFFIX → ("suffix", SUFFIX)
+    - 认不出 → ("raw", 原文)（两次一模一样的怪请求仍能对上）
+    """
+    if header is None:
+        return ("absent",)
+    text = str(header).strip()
+    if not text:
+        return ("absent",)
+    first = text.split(",", 1)[0].strip()
+    if not first.lower().startswith("bytes="):
+        return ("raw", text)
+    spec = first.split("=", 1)[1].strip()
+    if spec.startswith("-"):
+        num = spec[1:].strip()
+        if num.isdigit():
+            return ("suffix", int(num))
+        return ("raw", text)
+    start = spec.split("-", 1)[0].strip()
+    if start.isdigit():
+        return ("start", int(start))
+    return ("raw", text)
+
+
+def _stream_client_identity(request, user) -> str:
+    """重试身份：设备优先，其次播放会话，最后用户。
+
+    流地址本身不带 PlaySessionId；Emby 客户端通常仍带 DeviceId 头或查询参数。
+    都没有时用用户 id，避免两个用户抢同一文件时互相当成重试。
+    """
+    headers = getattr(request, "headers", None)
+    params = getattr(request, "query_params", None)
+    auth = parse_emby_authorization(headers.get("X-Emby-Authorization") if headers else None)
+    device = (auth.get("DeviceId") or "")
+    if headers is not None and not device:
+        device = (headers.get("X-Emby-Device-Id") or headers.get("X-Device-Id") or "")
+    if params is not None and not device:
+        device = params.get("DeviceId") or ""
+    device = str(device or "").strip()
+    if device:
+        return "dev:" + device[:100]
+    session = ""
+    if params is not None:
+        session = str(params.get("PlaySessionId") or "").strip()
+    if session:
+        return "ses:" + session[:64]
+    uid = getattr(user, "id", None)
+    if uid is not None:
+        return f"user:{uid}"
+    return "anon"
+
+
+def _retry_redis_key(identity: str, file_id: str, token) -> str:
+    raw = f"{identity}\x1f{file_id}\x1f{token!r}".encode()
+    return _DRIVE_EXISTS_RETRY_PREFIX + hashlib.sha256(raw).hexdigest()[:32]
+
+
+def _parse_retry_ts(raw):
+    """Redis 里存的是第一次见到该请求的 unix 时间。旧值 ``"1"`` / 坏值 → None。"""
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opening_burst(token, age: float) -> bool:
+    """起始字节 0、且距第一次请求还不到开播连发窗口。"""
+    return (
+        token == ("start", 0)
+        and 0 <= age < _DRIVE_EXISTS_START_BURST_SEC
+    )
+
+
+def _retry_seen_redis(identity: str, file_id: str, token, window: int) -> bool:
+    """别的进程在窗口内见过同一请求 → True。Redis 不可用 → False。
+
+    值是第一次见到的 unix 时间。bytes=0- 且年龄还在开播连发窗口内 → False，
+    也不刷新 TTL（锚留在第一次）。读不到时间戳（升级前写下的 ``"1"``）宁可
+    当成重试，多打一次 files.get。
+    """
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return False
+        key = _retry_redis_key(identity, file_id, token)
+        now = time.time()
+        created = rc.set(key, f"{now:.6f}", nx=True, ex=int(window))
+        if created:
+            return False
+        raw = rc.get(key)
+        if raw is None:
+            return False
+        ts = _parse_retry_ts(raw)
+        if ts is not None and _opening_burst(token, now - ts):
+            return False
+        try:
+            rc.expire(key, int(window))
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def drive_exists_rapid_retry(request, user, file_id: str) -> bool:
+    """同一客户端、同一文件、相同 Range 起始，在窗口内又来了一次 → True。
+
+    第一次只登记，不当重试。起始字节不同（拖动、下一段）→ False，缓存继续有效。
+    开播时极短间隔内重复的 bytes=0- 也不当重试（见 ``_DRIVE_EXISTS_START_BURST_SEC``），
+    并且不把登记时间往后滑，这样窗口内稍晚的真正重试仍能对上第一次。
+    窗口 0 或任何异常 → False，播放照旧走缓存。Redis 挂了只看本进程。
+    """
+    try:
+        file_id = (file_id or "").strip()
+        window = drive_exists_retry_window()
+        if window <= 0 or not file_id:
+            return False
+        headers = getattr(request, "headers", None)
+        token = _range_start_token(headers.get("Range") if headers else None)
+        identity = _stream_client_identity(request, user)
+        local_key = (identity, file_id, token)
+        now = time.monotonic()
+        local_hit = False
+        with _drive_exists_retry_lock:
+            prev = _drive_exists_retry.get(local_key)
+            if prev is not None and _opening_burst(token, now - prev):
+                # 连发：保持第一次的时间戳，本进程也不算重试。
+                pass
+            else:
+                _drive_exists_retry[local_key] = now
+                if len(_drive_exists_retry) > _DRIVE_EXISTS_RETRY_MAX:
+                    cutoff = now - window
+                    for key, ts in [kv for kv in _drive_exists_retry.items() if kv[1] < cutoff]:
+                        _drive_exists_retry.pop(key, None)
+                    if len(_drive_exists_retry) > _DRIVE_EXISTS_RETRY_MAX:
+                        _drive_exists_retry.clear()
+                        _drive_exists_retry[local_key] = now
+                if prev is not None and 0 <= (now - prev) <= window:
+                    local_hit = True
+        return local_hit or _retry_seen_redis(identity, file_id, token, window)
+    except Exception:  # noqa: BLE001
+        logger.debug("Drive 存在性缓存重试判定失败", exc_info=True)
+        return False
+
+
 #: 单次 files.get 超时（秒）：只做存在性判定，不许引入新的长等待。
 _DRIVE_EXISTS_TIMEOUT = 3.0
 _DRIVE_FILE_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
@@ -3900,6 +4408,36 @@ class _DriveFileGone(Exception):
 
 class _DriveFileUnavailable(Exception):
     """files.get 非 404 失败（超时/5xx/凭据问题）→ 上层转 HTTP 503"""
+
+
+def _enforce_stream_limit(db: Session, request, user, item: em.MediaItem,
+                          item_id: str) -> None:
+    """按「挂载+路径前缀」限同时播放路数（FMBY 批一 #3，stream_limits）。
+
+    无策略命中时零开销放行；超限抛 429 + 人话原因，不许静默失败。
+    计数在 Redis 里跨进程一致，租约式占位（细节见 stream_limits 模块）。
+    """
+    from backend.emby_server import stream_limits
+
+    reason = stream_limits.acquire(
+        db, _stream_client_identity(request, user), str(item_id or ""),
+        getattr(item, "file_path", "") or "")
+    if reason is not None:
+        raise HTTPException(status_code=429, detail=reason)
+
+
+def _enforce_path_access(db: Session, user, item: em.MediaItem) -> None:
+    """三层路径授权门禁（FMBY 挂载-7，#1240 落库、本 PR 接线）。
+
+    拒绝抛 403 + 人话原因；非挂载路径 / 三层全无行时
+    check_path_access 返回 None，直接放行，现行行为逐字不变。
+    user 为 None 时只算库层（check_path_access 自身口径）。
+    """
+    from backend.emby_server import path_auth
+
+    reason = path_auth.check_path_access(db, getattr(user, "id", None), item)
+    if reason is not None:
+        raise HTTPException(status_code=403, detail=reason)
 
 
 def _drive_mount_id_for_item(db: Session, item: em.MediaItem) -> Optional[str]:
@@ -3933,17 +4471,82 @@ def _drive_mount_id_for_item(db: Session, item: em.MediaItem) -> Optional[str]:
     return provider.drive_id or None
 
 
-def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
+def _mount_can_generate_play_target(db: Session, item: em.MediaItem) -> Optional[bool]:
+    """条目挂载的换链能力（清单第 2 项能力门控，变体清单用）。
+
+    只接受 file_path 是 mount:// 前缀的条目：挂载行按类型派生能力
+    （mount_sources.capabilities_for_mount_type，与各 provider 的
+    capabilities() 声明逐字一致）；挂载不存在或条目非 mount:// 时回
+    None（调用方保持旧行为，不因查不到挂载就把变体扣掉）。
+    同步、只做一次主键查询，调用方经 run_db 走线程池。
+    """
+    from backend.emby_server import mount_sources
+
+    parsed = mount_lib.parse_mount_path(getattr(item, "file_path", "") or "")
+    if parsed is None:
+        return None
+    mount = db.query(em.StorageMount).filter(
+        em.StorageMount.id == parsed[0]).first()
+    if mount is None:
+        return None
+    return mount_sources.capabilities_for_mount_type(
+        mount.mount_type).get("can_generate_play_target")
+
+
+def _user115_direct_available(db: Session, item: em.MediaItem,
+                              user) -> bool:
+    """BYOS P1 绑定直链可用性（变体清单与取流校验共用，同口径）。
+
+    同时满足才 True：条目是 mount:// 路径、挂载类型为 115、该用户
+    有 active 的 pan115 绑定。同步、两次主键级查询，调用方经 run_db
+    走线程池。清单阶段不真解析直链；无绑定用户恒 False，行为与
+    今天逐字一致。
+    """
+    from backend.emby_server import user_bindings
+
+    parsed = mount_lib.parse_mount_path(getattr(item, "file_path", "") or "")
+    if parsed is None:
+        return False
+    mount = db.query(em.StorageMount).filter(
+        em.StorageMount.id == parsed[0]).first()
+    if mount is None or mount.mount_type != mount_lib.MOUNT_PAN115:
+        return False
+    return user_bindings.get_active_binding(
+        db, getattr(user, "id", None), "pan115") is not None
+
+
+def _drive_file_exists_sync(drive_id: str, file_id: str,
+                            force_recheck: bool = False) -> None:
     """同步：一次 files.get 判定存在性。只在 _DRIVE_EXISTS_EXECUTOR 里调用。
 
     404 抛 _DriveFileGone；其他失败抛 _DriveFileUnavailable。永不碰 db。
     凭据走 ``drive_changes.get_token_for_drive``（全项目唯一入口，含
     个人盘 OAuth 与共享盘 SA 轮换）；401 时按 token 值失效内外两层缓存。
-    60s 正缓存命中时直接返回（A-P2-3）；404 不缓存。
+    正缓存（TTL 见 drive_exists_cache_ttl，默认 600s）命中时直接返回（A-P2-3）；404 不缓存。
+    ``force_recheck``：播放器用相同 Range 起始在短窗口内又来了一次，跳过正缓存
+    重新 files.get。404 时摘掉缓存（含跨进程墓碑）；200 时刷新缓存。
     """
-    from backend.emby_server import drive_auth, drive_changes
-    if _drive_exists_cache_hit(drive_id, file_id):
+    from backend.emby_server import playback_risk
+    if not force_recheck and _drive_exists_cache_hit(drive_id, file_id):
+        playback_risk.bump("exists_cache_hit")
         return
+    playback_risk.bump("exists_cache_miss")
+    try:
+        _drive_file_exists_remote(drive_id, file_id)
+    except _DriveFileGone:
+        # 跳过缓存复验得到 404 时，旧的正缓存条目还在，必须摘掉，否则下一次非重试仍 302
+        invalidate_drive_exists_cache(drive_id, file_id)
+        playback_risk.bump("exists_404")
+        raise
+    except _DriveFileUnavailable:
+        playback_risk.bump("exists_503")
+        raise
+
+
+def _drive_file_exists_remote(drive_id: str, file_id: str) -> None:
+    """真实 files.get（缓存未命中时）：成功写正缓存，失败抛异常。"""
+    from backend.emby_server import drive_auth, drive_changes
+    from backend.emby_server import playback_risk
     try:
         token = drive_changes.get_token_for_drive(drive_id)
     except drive_changes.DriveAuthError as exc:
@@ -3963,6 +4566,7 @@ def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 — 超时/网络异常一律转 503
         raise _DriveFileUnavailable(f"files.get 调用失败：{exc}") from exc
+    playback_risk.note_drive_status(resp.status_code)
     if resp.status_code == 404:
         raise _DriveFileGone(f"Drive 文件已不存在：{file_id}")
     if resp.status_code == 401:
@@ -3976,7 +4580,7 @@ def _drive_file_exists_sync(drive_id: str, file_id: str) -> None:
 
 
 async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
-                                      file_id: str) -> None:
+                                      file_id: str, force_recheck: bool = False) -> None:
     """drive 直链 302 前的便宜存在性校验（P0，2026-10-18）。
 
     先经 run_db 做一次毫秒级挂载解析（拿 drive_id；解析失败返回 None
@@ -4005,7 +4609,8 @@ async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(
-            _DRIVE_EXISTS_EXECUTOR, _drive_file_exists_sync, drive_id, file_id)
+            _DRIVE_EXISTS_EXECUTOR, _drive_file_exists_sync,
+            drive_id, file_id, bool(force_recheck))
     except _DriveFileGone as exc:
         raise HTTPException(status_code=404, detail=f"媒体来源不可用：{exc}")
     except _DriveFileUnavailable as exc:
@@ -4013,20 +4618,115 @@ async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,
     return True
 
 
-def _play_target(db: Session, item: em.MediaItem):
+def _note_play_start_safe(item: em.MediaItem, **kwargs) -> None:
+    """起播事件打点的安全调用口（FMBY 批一 #2）。
+
+    从条目推导源维度后调 play_events.note_play_start。打点模块本身永不抛，
+    这里再套一层保险：钩子处任何意外都不许影响起播（测试钉住这一条）。
+    """
+    try:
+        from backend.emby_server import play_events
+
+        file_path = getattr(item, "file_path", "") or ""
+        if mount_lib.is_mount_path(file_path):
+            parsed = mount_lib.parse_mount_path(file_path)
+            provider = "mount"
+            mount_id = parsed[0] if parsed else None
+        elif (getattr(item, "drive_file_id", "") or "").strip():
+            provider, mount_id = "drive", None
+        else:
+            provider, mount_id = "local", None
+        play_events.note_play_start(
+            provider=provider, mount_id=mount_id,
+            item_id=getattr(item, "id", None), **kwargs)
+    except Exception:  # noqa: BLE001 — 打点不许打断起播，见 play_events 铁律
+        pass
+
+
+def _note_upstream_play_start_safe(user_id, resolve_ms) -> None:
+    """上游播放口的起播打点安全口（#25-4 补记）。
+
+    上游口没有本地条目：item_id 恒为空——upstream_item_id 是对方服的
+    条目 id，绝不写进本地 emby_items.id 的数值列；源维度记
+    provider="upstream"、mount_id 为空；user_id 取自 get_play_user。
+    打点模块本身永不抛，这里再套一层保险：任何意外都不许影响 302。
+    """
+    try:
+        from backend.emby_server import play_events
+
+        play_events.note_play_start(
+            provider="upstream", mount_id=None, user_id=user_id,
+            item_id=None, method="upstream", result="ok",
+            resolve_ms=resolve_ms)
+    except Exception:  # noqa: BLE001 — 打点不许打断起播，见 play_events 铁律
+        pass
+
+
+def _play_target(db: Session, item: em.MediaItem, *, variant=None):
     """把条目的 ``file_path`` 解析成播放目标（本机文件 或 挂载直链）
+
+    ``variant``（FMBY 批二 #11 PR-2，关键字专属、可选）：video_stream
+    按变体取流时传进来，调度事件按所选变体记（mount_relay / local_file
+    不再一律记 resolve）；不传时行为与升级前逐字一致。签名仍可按
+    ``(db, item)`` 两参调用（多处桩替身共用），解析事件仍不带 user_id。
+    
 
     挂载来源（115 / WebDAV / AList / STRM）解析失败时给出明确状态码，不抛 500：
 
     - 挂载被删除 / 停用 → 404（该条目需要重新扫描或重新绑定挂载）
     - 凭据失效（Cookie / 令牌 / 密码）→ 503（可修，修好后重试即可）
+
+    起播打点（批一 #2）：解析段的成败/耗时/错误类型在此收口记一条事件
+    （method=resolve）。**不给本函数加 user 参数**：它被多处桩替身与下载
+    端点共用，签名冻结；解析事件因此不带 user_id（快路径事件在
+    video_stream 里记，带 user_id）。
     """
+    _evt_t0 = time.perf_counter()
     try:
-        return mount_lib.resolve_play_target(item.file_path, db, item.library)
+        # 身份锚双读（清单第 8 项）：先按 (source_id, provider_file_id) 定位挂载，
+        # 锚失败时回落现行 mount:// 解析——回落是第二路，行为与今天逐字一致。
+        # 锚解析本身异常（如桩替身缺字段）不计数、不阻断，直接走路径解析，
+        # 真正的 DB 故障由路径解析原样抛出。
+        _anchor_mount = None
+        try:
+            _anchor_mount, _anchor_reason = item_anchor.resolve_anchor(db, item)
+        except Exception:  # noqa: BLE001 — 锚只是第一路，路径解析才是权威
+            _anchor_mount, _anchor_reason = None, None
+        if _anchor_mount is not None:
+            item_anchor.note_anchor_used()
+            target = mount_lib.resolve_play_target(
+                item.file_path, db, item.library, anchor_mount=_anchor_mount)
+        else:
+            if _anchor_reason is not None and mount_lib.is_mount_path(
+                    getattr(item, "file_path", "") or ""):
+                item_anchor.note_fallback(_anchor_reason)
+            target = mount_lib.resolve_play_target(item.file_path, db, item.library)
     except mount_lib.MountAuthError as exc:
+        _note_play_start_safe(
+            item, method="resolve", variant=variant, result="error",
+            error_kind="auth",
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         raise HTTPException(status_code=503, detail=f"媒体来源凭据失效：{exc}")
     except mount_lib.MountError as exc:
+        _note_play_start_safe(
+            item, method="resolve", variant=variant, result="error",
+            error_kind="mount_unavailable",
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         raise HTTPException(status_code=404, detail=f"媒体来源不可用：{exc}")
+    except Exception:
+        _note_play_start_safe(
+            item, method="resolve", variant=variant, result="error",
+            error_kind="resolve_error",
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+        raise
+    # 按变体取流的成功事件按所选变体记（mount_relay / local_file），
+    # 无变体参数时仍记 resolve；错误事件一律记 resolve（见上）。
+    _ok_method = variant if variant in (
+        play_variants.MOUNT_RELAY, play_variants.LOCAL_FILE) else "resolve"
+    _note_play_start_safe(
+        item, method=_ok_method, variant=variant, result="ok",
+        resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+    return target
 
 
 @emby_router.post("/emby/Items/{item_id}/PlaybackInfo")
@@ -4083,8 +4783,8 @@ async def playback_info(
         (device_profile.get("MaxStreamingBitrate") or 0)
     ) or 120_000_000
     # 2026-10 简化：删除服务端码率钳制，客户端要多少给多少（学 Linger 薄服务器思路）
-    # 转码开关：关掉就按「只能直连」答复，客户端会直接走直连（而不是拿到一个必 403 的地址）
-    allow_transcode = (await run_db(playback_policy.transcode_enabled, db) or bool(user.is_staff)) and bool(getattr(user, "enable_video_transcoding", True))
+    # 转码删除（2026-10-24）：服务端不再转码，PlaybackInfo 不再下发
+    # TranscodingUrl，SupportsTranscoding 恒 False。
 
     # PlaybackInfo 短期缓存（5 分钟）：同一部片子短时间内重复请求直接走 Redis，
     # 省掉 _media_source 的 DB 查询。PlaySessionId 和 api_key 每次重新生成，不进缓存。
@@ -4109,7 +4809,7 @@ async def playback_info(
     if cached_source is None:
         _pt.mark("cache_miss")
         # _media_source 读 item.streams（懒加载关系），必须在线程池里，不能直接在事件循环上碰
-        media_source = await run_db(_media_source, item, base, "", db)
+        media_source = await run_db(_media_source, item, base, "", db, user=user)
         _pt.mark("media_source")
         if cache_key and cache_ttl > 0:
             try:
@@ -4150,39 +4850,81 @@ async def playback_info(
     stream_url = (
         f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}{key_qs}{signed_qs}"
     )
-    transcoding_url = (
-        f"{base}/emby/videos/{item.guid}/master.m3u8?MediaSourceId={item.guid}{key_qs}{signed_qs}"
-    )
     # 统一播放 URL 改写（横切能力只许一套）：流节点 > 加速域名 > 原样。
     # 签名查询串原样保留，流节点用同一 SECRET_KEY 验签。
     # 最简播放（2026-10-16 用户拍板）：Drive 条目且直链开关开启时，跳过
     # 流节点/加速域名改写——DirectStreamUrl 保持本机 /stream，
     # 由 video_stream 直接 302 到谷歌直链，字节不经任何中间层。
+    # 转码删除后不再构建 TranscodingUrl，改写链只改写播放 URL。
     from backend.emby_server import playback_strategy as _ps2
     _dd_fid = (getattr(item, "drive_file_id", "") or "").strip()
     if _dd_fid and _ps2.drive_direct_play_enabled(db):
         pass  # 直链播放：跳过改写即可（本分支 _rewrite_src 已无其他消费方）
     else:
         from backend.emby_server import stream_accel
-        stream_url, transcoding_url, _ = stream_accel.rewrite_playback_urls_unified(
-            db, stream_url, transcoding_url, base)
+        stream_url, _ = stream_accel.rewrite_playback_urls_unified(
+            db, stream_url, base)
     media_source.update({
         "SupportsDirectPlay": True,
         "SupportsDirectStream": bool(direct),
-        "SupportsTranscoding": allow_transcode,
+        "SupportsTranscoding": False,
         # r50：补 DirectPlayUrl（此前恒缺，SupportsDirectPlay=True 却无对应地址）。
         # 本架构直放与直接串流是同一条 302（video_stream 302 到网盘直链），故同值。
         "DirectPlayUrl": stream_url,
         "DirectStreamUrl": stream_url,
     })
-    if allow_transcode:
-        media_source["TranscodingUrl"] = transcoding_url
+    media_source.pop("TranscodingUrl", None)
 
+    sources = [media_source]
+    _variants = []
+    if play_variants.variants_enabled():
+        # 变体清单下发（批二 #11）：可用性只看开关 + 条目静态属性 +
+        # Drive 挂载可定位（一次主键查询），不在清单阶段真解析直链
+        #（与 #1205 解析缓存正交）。第一条恒为现行主线变体，只取第一
+        # 条的老客户端无感；可用变体只有一条时保持原单源下发不变样。
+        _drive_mount_ok = False
+        if _dd_fid:
+            _drive_mount_ok = (
+                await run_db(_drive_mount_id_for_item, db, item)) is not None
+        # 清单第 2 项能力门控：挂载换链能力进变体清单判定。
+        _mount_can_generate = await run_db(
+            _mount_can_generate_play_target, db, item)
+        # BYOS P1：绑定直链信号（该用户有 active 的 pan115 绑定且
+        # 条目挂载为 115 时，清单追加 byos115_direct）。
+        _user115_ok = await run_db(
+            _user115_direct_available, db, item, user)
+        _variants = await run_db(
+            play_variants.list_variants, db, item,
+            drive_mount_locatable=_drive_mount_ok,
+            mount_can_generate_play_target=_mount_can_generate,
+            user115_direct_available=_user115_ok)
+        if len(_variants) > 1:
+            sources = play_variants.build_media_sources(
+                media_source, _variants, guid=item.guid,
+                stream_url=stream_url,
+                direct_stream_ok=bool(direct))
+
+    # 阶段 3 一等会话（默认关）：开时 PlaySessionId 不再是每次现生成的随机
+    # 票据，而是服务端在 PlaybackInfo 时预建的会话 id——上报侧 session_key
+    # 与 PlaybackInfo 侧是同一身份，管理员在“已起播未上报”窗口内已有目标
+    # 可打；预建失败绝不能打断 PlaybackInfo，回落旧随机票据。关时逐字旧行为。
+    _play_session_id = secrets.token_hex(8)
+    if play_session.first_class_enabled():
+        try:
+            _auth = parse_emby_authorization(
+                request.headers.get("X-Emby-Authorization"))
+            _sess = await run_db(
+                play_session.create_session, db, user, item,
+                variant=(_variants[0].name if _variants else None),
+                device_id=_auth.get("DeviceId") or None)
+            _play_session_id = _sess.server_session_id
+        except Exception:  # noqa: BLE001 — 预建失败只回落，不阻断播放
+            _play_session_id = secrets.token_hex(8)
     _pt.done()
     return _strip_nulls({
-        "MediaSources": [media_source],
+        "MediaSources": sources,
         # 每次播放会话一个独立票据，客户端据此上报进度
-        "PlaySessionId": secrets.token_hex(8),
+        "PlaySessionId": _play_session_id,
         "ErrorCode": None,
     })
 
@@ -4200,6 +4942,9 @@ def _observe_traffic(response):
     面板上的「出流量」就会虚高——宁可口径窄，也不能给一个偏大的数。
     """
     line_stats.record_request()
+    if getattr(response, "status_code", None) == 302:
+        from backend.emby_server import playback_risk
+        playback_risk.bump("redirect_302")
     iterator = getattr(response, "body_iterator", None)
     if iterator is None:
         return response
@@ -4215,6 +4960,22 @@ def _observe_traffic(response):
 
     response.body_iterator = _counting()
     return response
+
+
+def _available_variant_names(db: Session, item: em.MediaItem,
+                             user) -> list:
+    """video_stream 按变体取流用的可用变体名（与 playback_info 同口径）。
+
+    Drive 挂载可定位走 _drive_mount_id_for_item 一次主键查询；
+    清单阶段不真解析直链。只在客户端带了变体时才调用——无变体
+    老路径不增加这次查询成本。
+    """
+    locatable = False
+    if (getattr(item, "drive_file_id", "") or "").strip():
+        locatable = _drive_mount_id_for_item(db, item) is not None
+    return [v.name for v in play_variants.list_variants(
+        db, item, drive_mount_locatable=locatable,
+        user115_direct_available=_user115_direct_available(db, item, user))]
 
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
@@ -4237,9 +4998,49 @@ async def video_stream(
     # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token / JWT）
     await run_db(ensure_playback_allowed, db, user)
     _pt.mark("auth_playback")
+    # 三层路径授权门禁（FMBY 挂载-7，#1240 落库、本 PR 接线）：放在占租约
+    # 之前，拒绝的请求不占播放路数；非挂载路径 / 无授权行时放行，
+    # 现行行为逐字不变。
+    await run_db(_enforce_path_access, db, user, item)
+    _pt.mark("auth_path_access")
     # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）
     await run_db(play_sign.check_referer, request, db)
     _pt.mark("auth_referer")
+    # 按挂载+路径前缀限同时播放路数（FMBY 批一 #3）：四分支共用此一处闸门，
+    # 起播占租约、超限 429；无策略时零行为变化。
+    await run_db(_enforce_stream_limit, db, request, user, item, item_id)
+    _pt.mark("auth_stream_limit")
+    # 按变体取流（FMBY 批二 #11 PR-2）：客户端带了变体（variant 参数 /
+    # MediaSourceId 后缀）时，只执行该变体的分支。变体未知报 404、
+    # 已知但该条目当下不可用报 409，两种情况都不许静默改走默认条；
+    # 没带变体时 _requested_variant 为 None，下面各分支条件与升级前
+    # 逐字一致（老客户端行为不变）。租约已在上面按条目占过一次，
+    # 租约 id 不含变体（stream_limits._lease_id），同条目两变体只占一额。
+    _requested_variant = None
+    # #1220 CI 修：变体参数是可选特性，读不到查询串时按“没带变体”
+    # 走老路径，不许让整个流端点崩掉。真实 FastAPI 请求一定有
+    # query_params（本模块多处同款直读）；这里只兜底鸭子类型调用方
+    # （如测试桩）缺该属性的情况，真实请求行为逐字不变。
+    _variant_qs = getattr(request, "query_params", None) or {}
+    _variant_name, _variant_mismatch = play_variants.parse_requested_variant(
+        _variant_qs)
+    if _variant_mismatch:
+        raise HTTPException(
+            status_code=404, detail="播放变体不存在：variant 与 MediaSourceId 不一致")
+    if _variant_name is not None:
+        _available_names = await run_db(
+            _available_variant_names, db, item, user)
+        _requested_variant, _variant_error = (
+            play_variants.resolve_requested_variant(
+                _variant_qs, _available_names))
+        if _variant_error == 404:
+            raise HTTPException(status_code=404, detail="播放变体不存在")
+        if _variant_error == 409:
+            raise HTTPException(
+                status_code=409, detail="播放变体当前不可用，请选择其他变体")
+    # 转码删除（2026-10-24）：不再有 transcode_hls 变体分支；客户端
+    # 若仍带 transcode_hls 变体，上面 resolve_requested_variant 已按
+    # 「不在四变体枚举里」报 404，不会落到这里。
     media_type = f"video/{item.container}" if item.container else "video/mp4"
     # 最简播放（2026-10-16 用户拍板学 raisemby）：Drive 条目（有 drive_file_id）
     # 且 drive_direct_play_enabled 开关开启时，直接 302 到谷歌 usercontent
@@ -4253,18 +5054,197 @@ async def video_stream(
     _fid = (getattr(item, "drive_file_id", "") or "").strip()
     _drive_switch_on = bool(_fid) and await run_db(
         _strategy.drive_direct_play_enabled, db)
+    # 播放阶段 6 按可用性换线：只影响下面无变体请求的 Drive 默认路线；
+    # 显式变体请求与挂载/本机路线不受换线影响。关时 _switch_on 为
+    # False，后面所有换线分支都不进，选路与今天逐字一致。
+    from backend.emby_server import variant_switch as _variant_switch
+    _switch_on = _variant_switch.switch_enabled()
+    _switch_attempted = False
+    if (_drive_switch_on and await run_db(_strategy.drive_relay_enabled, db)
+            and (_requested_variant is None
+                 or _requested_variant == play_variants.DRIVE_RELAY)):
+        _evt_t0 = time.perf_counter()
+        _relay_drive_id = await run_db(_drive_mount_id_for_item, db, item)
+        if _requested_variant == play_variants.DRIVE_RELAY and not _relay_drive_id:
+            # 校验时可定位、执行时已不可定位（挂载被停用等竞态）：
+            # 报 409，不许回落到直链或 _play_target（那是静默改走）。
+            raise HTTPException(
+                status_code=409, detail="播放变体当前不可用：drive_relay")
+        if _relay_drive_id:
+            # 阶段 6 换线首选（只针对无变体请求）：先读可用性表——
+            # 中继不可用且直链可用时直接跳过中继走直链；两条都不可用
+            # 时明确 409，不试死线。显式变体请求不进这里（客户端选
+            # 了就是选了，换线不许替它改主意）。
+            _skip_relay = False
+            if _switch_on and _requested_variant is None:
+                _first, _avail, _ = await run_db(
+                    _variant_switch.drive_route_choice, db)
+                if _first is None:
+                    # 路由决策失败事件（未实际发中继请求，见 error_kind）：
+                    # 两条都不可用，明确失败，不试死线。
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None),
+                        method="relay", variant=play_variants.DRIVE_RELAY,
+                        result="error", error_kind="all_variants_unavailable",
+                        resolve_ms=int(
+                            (time.perf_counter() - _evt_t0) * 1000))
+                    raise HTTPException(
+                        status_code=409,
+                        detail="播放变体均不可用：drive_relay、drive_direct"
+                               "（可用性表）")
+                if _first[0] != play_variants.DRIVE_RELAY:
+                    _skip_relay = True
+                    _switch_attempted = True
+                    logger.warning(
+                        "变体切换：drive_relay 在可用性表中不可用，起播直接走 "
+                        "drive_direct item=%s", getattr(item, "id", "?"))
+            if not _skip_relay:
+                # Drive SA 中继（2026-10-23 额度应急）：字节过服务器转发，
+                # file_id 不出门、不走公开下载池；存在性由上游取流本身
+                # 回答（文件没了上游 404 透传），不再单跑存在性校验。
+                # 观测口径与直链快路径一致（_observe_traffic + play-timing）。
+                _pt.mark("relay")
+                try:
+                    _relay_resp = await serve_drive_relay_async(
+                        request, _relay_drive_id, _fid,
+                        media_type=media_type, pt=_pt)
+                except HTTPException as exc:
+                    # 阶段 6 换线失败重试点：只有上游 502（远端不可用）
+                    # 可换线；403（轮换后仍失败）/503（取不到凭据）/
+                    # 404（目标没了）原样抛，不记变体的账、不换线。
+                    # 中继失败本身先记一条 error 事件（method=relay），
+                    # 再决定换线还是原样抛——换线成功时后面还有直链的
+                    # ok 事件，两条事件拼出一次完整切换。
+                    if (_switch_on and _requested_variant is None
+                            and _variant_switch.is_switch_eligible_relay_status(
+                                exc.status_code)):
+                        _note_play_start_safe(
+                            item, user_id=getattr(user, "id", None),
+                            method="relay",
+                            variant=play_variants.DRIVE_RELAY,
+                            result="error", error_kind="upstream_502",
+                            resolve_ms=int(
+                                (time.perf_counter() - _evt_t0) * 1000))
+                        _, _avail2, _ = await run_db(
+                            _variant_switch.drive_route_choice, db)
+                        if play_variants.DRIVE_DIRECT not in [
+                                name for name, _ in _avail2]:
+                            raise HTTPException(
+                                status_code=409,
+                                detail="变体切换失败：drive_relay 上游不可用，"
+                                       "且 drive_direct 在可用性表中不可用"
+                                       ) from exc
+                        _switch_attempted = True
+                        logger.warning(
+                            "变体切换：drive_relay 上游 502，改走 "
+                            "drive_direct item=%s", getattr(item, "id", "?"))
+                    else:
+                        raise
+                else:
+                    # 起播打点（批一 #2）：中继首响应回来即记一条，成败看上游状态码
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None), method="relay",
+                        variant=play_variants.DRIVE_RELAY,
+                        result="error" if _relay_resp.status_code >= 400 else "ok",
+                        error_kind=(f"upstream_{_relay_resp.status_code}"
+                                    if _relay_resp.status_code >= 400 else None),
+                        resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
+                    return _observe_traffic(_relay_resp)
     _fast302 = False
+    _evt_t0 = time.perf_counter()
     if _drive_switch_on:
-        _fast302 = await _ensure_drive_file_playable(db, item, _fid)
+        # 相同起始 Range 的短时重试：播放器多半是谷歌 404 之后又来了一次，
+        # 正缓存不能再把死链 302 出去。拖动 / 下一段起始字节不同，不进这里。
+        _force = drive_exists_rapid_retry(request, user, _fid)
+        try:
+            _fast302 = await _ensure_drive_file_playable(
+                db, item, _fid, force_recheck=_force)
+        except HTTPException as exc:
+            # 阶段 6：换线后直链仍失败，原因要带上切换上下文，不许
+            # 把一次切换失败读成普通的直链失败。
+            if _switch_attempted:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail="变体切换后仍失败（drive_relay→drive_direct）："
+                           f"{exc.detail}") from exc
+            raise
+    if _switch_attempted and not _fast302:
+        # 阶段 6：换线已发生、直链又没 materialize（挂载不可定位，
+        # _ensure 回 None）——不许悄悄落到后面的通用分支，明确失败。
+        raise HTTPException(
+            status_code=409,
+            detail="变体切换后仍失败（drive_relay→drive_direct）：挂载不可定位")
+    if _requested_variant == play_variants.DRIVE_DIRECT and not _fast302:
+        # 校验时可定位、执行时已不可定位（挂载被停用等竞态）：
+        # 报 409，不许回落到 _play_target 的通用分支（那是静默改走）。
+        # 文件没了/凭据失效时 _ensure 已直接抛 404/503，不走这里。
+        raise HTTPException(
+            status_code=409, detail="播放变体当前不可用：drive_direct")
     if _fast302:
         _pt.mark("drive_exists_check")
         _pt.done()
+        # 起播打点（批一 #2）：存在性校验通过、302 直链下发记一条
+        _note_play_start_safe(
+            item, user_id=getattr(user, "id", None), method="direct_302",
+            variant=play_variants.DRIVE_DIRECT,
+            result="ok",
+            resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         from backend.emby_server.drive_auth import drive_usercontent_download_url
         return _observe_traffic(
             RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
                              headers=_strategy.DIRECT_REDIRECT_HEADERS))
-    target = await run_db(_play_target, db, item)
+    if _requested_variant == play_variants.BYOS115_DIRECT:
+        # BYOS P1：绑定用户自己的 115 直链——按绑定凭据现签现发 302，
+        # 播放器自拉，字节不过服务器。签名验签 / 来路检查 / 限流闸门
+        # 已在上面走过；起播打点与 302 观测与直链分支同口径。
+        from backend.emby_server import user_bindings as _ub
+        _byos_t0 = time.perf_counter()
+        try:
+            _byos_url = await run_db(
+                _ub.resolve_user115_direct_url, db,
+                getattr(user, "id", None), item)
+        except _ub.BindingError as exc:
+            # 凭据失效三档：resolver 已落失败态，这里只报 409 + 文案，
+            # 不静默回落共享中继；一过性/无绑定按通用句报 409。
+            _note_play_start_safe(
+                item, user_id=getattr(user, "id", None),
+                method="byos115_direct",
+                variant=play_variants.BYOS115_DIRECT,
+                result="error", error_kind=exc.kind,
+                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+            _detail = exc.message if exc.kind in (
+                "auth_error", "expired", "throttled") else \
+                "播放变体当前不可用：byos115_direct"
+            raise HTTPException(status_code=409, detail=_detail) from exc
+        _pt.mark("byos115_direct")
+        _pt.done()
+        _note_play_start_safe(
+            item, user_id=getattr(user, "id", None),
+            method="byos115_direct", variant=play_variants.BYOS115_DIRECT,
+            result="ok",
+            resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+        return _observe_traffic(
+            RedirectResponse(_byos_url, status_code=302,
+                             headers=_strategy.DIRECT_REDIRECT_HEADERS))
+    if _requested_variant is not None:
+        target = await run_db(_play_target, db, item,
+                              variant=_requested_variant)
+    else:
+        target = await run_db(_play_target, db, item)
     _pt.mark("play_target")
+    # 按变体取流的不变量：走到这里的只能是挂载中继 / 本机文件两种
+    # 变体（Drive 两条与转码已在前面返回）；走到这里说明其分支已消失
+    # （开关/挂载竞态），报 409，不许按通用分支静默改走。
+    if _requested_variant not in (
+            None, play_variants.MOUNT_RELAY, play_variants.LOCAL_FILE):
+        raise HTTPException(
+            status_code=409, detail="播放变体当前不可用")
+    if _requested_variant == play_variants.MOUNT_RELAY and target.kind != "url":
+        raise HTTPException(
+            status_code=409, detail="播放变体当前不可用：mount_relay")
+    if _requested_variant == play_variants.LOCAL_FILE and target.kind == "url":
+        raise HTTPException(
+            status_code=409, detail="播放变体当前不可用：local_file")
     if target.kind == "url":
         # 播放策略能力：对象存储直链名单命中时 302 到对象存储；Drive 条目
         # 直接 302 到谷歌 usercontent 直链。判定逻辑见 playback_strategy。
@@ -4279,7 +5259,8 @@ async def video_stream(
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
         direct_url = await run_db(
             _strategy.maybe_direct_url, db, getattr(item, "drive_file_id", None))
-        if direct_url:
+        # 按变体取流时不走对象存储直链分支（那不是所选变体的分支）。
+        if direct_url and _requested_variant is None:
             _pt.mark("direct_302")
             _pt.done()
             return _observe_traffic(
@@ -4322,6 +5303,52 @@ async def video_stream_ext(
     return await video_stream(item_id, request, user, db)
 
 
+@emby_router.get("/emby/Videos/upstream/{source_id}/{upstream_item_id}/stream")
+@emby_router.get("/Videos/upstream/{source_id}/{upstream_item_id}/stream")
+@release_db_before_response
+async def upstream_stream(
+    source_id: int, upstream_item_id: str, request: Request,
+    user: models.WebUser = Depends(get_play_user),
+    db: Session = Depends(get_db),
+):
+    """上游播放兜底口（播放阶段 7，#25-4）。
+
+    本地优先、上游只兜底：本口不由 video_stream 自动调用——客户端
+    在本地变体全部不可用时才调本口（自动兜底需要本地条目到上游
+    条目的持久映射，尚未落地，见 upstream_playback 模块 docstring）。
+    开关关时返回 404，行为上等于该口不存在；上游额度耗尽等失败
+    一律回结构化错误体（code + message + source_id），不静默失败、
+    不笼统 500。鉴权与付费墙与 video_stream 同口径（get_play_user
+    + ensure_playback_allowed）；上游地址先探后 302，探到可播才下发。
+    成功下发 302 前记一条起播事件（provider=upstream，见 play_events；
+    失败路径不记是本批边界）。
+    苹果 CMS 型支持 ?episode=N（默认第 1 集；非法值默认 1，越界
+    由解析器按“上游无此集”回 404）；Emby/Jellyfin 型忽略该参数。
+    """
+    from backend.emby_server import upstream_playback as _up
+    from backend.emby_server.async_db import run_db
+    await run_db(ensure_playback_allowed, db, user)
+    _msid = (getattr(request, "query_params", None) or {}).get("mediaSourceId")
+    _ep_raw = (getattr(request, "query_params", None) or {}).get("episode")
+    try:
+        _ep = int(_ep_raw) if _ep_raw is not None else 1
+    except (TypeError, ValueError):
+        _ep = 1
+    _t0 = time.perf_counter()
+    try:
+        _url = await run_in_threadpool(
+            _up.resolve_upstream_stream, db, source_id, upstream_item_id,
+            media_source_id=_msid, episode_index=_ep)
+    except _up.UpstreamPlaybackError as exc:
+        return JSONResponse(status_code=exc.status, content=exc.to_body())
+    # 成功起播才记一条：打点走 play_events 既有口径与字段，不新发明
+    # 事件类型；302 本体一行不动。
+    _note_upstream_play_start_safe(
+        getattr(user, "id", None),
+        int((time.perf_counter() - _t0) * 1000))
+    return RedirectResponse(_url, status_code=302)
+
+
 @emby_router.get("/emby/videos/{item_id}/{transcode_path:path}")
 @emby_router.get("/videos/{item_id}/{transcode_path:path}")
 @release_db_before_response
@@ -4330,157 +5357,21 @@ async def video_hls(
     user: models.WebUser = Depends(get_play_user),
     db: Session = Depends(get_db),
 ):
-    # SenPlayer 等客户端按 Emby 约定拼 /emby/videos/{id}/stream.{ext} 取流；
-    # stream.* 是直接流不是转码路径。若被 catch-all 误收会起 ffmpeg 返 m3u8，
-    # 客户端等视频字节流等不到就一直转圈。一律转交直连处理（放最前，避免
-    # 与 video_stream 重复做可见性校验；双层 release_db 关闭会话是幂等的）。
+    """转码地址瘦身（2026-10-24 转码删除）：只保留 stream.* 直连委托。
+
+    SenPlayer 等客户端按 Emby 约定拼 /emby/videos/{id}/stream.{ext} 取流，
+    这条通配路由必须继续把它转交 video_stream；其余一切路径（master.m3u8、
+    切片、会话地址）都是已删除的转码路径，一律 404，不再起 ffmpeg。
+    """
+    # stream.* 是直接流不是转码路径；转交 video_stream 做完整鉴权与取流。
     if transcode_path.startswith("stream."):
         return await video_stream(item_id, request, user, db)
-    # P0（2026-09-29）：async 路由里直接调同步 DB 会卡住单 worker 的事件循环。
-    from backend.emby_server.async_db import run_db
-    # 安全修复（P0 / H1）：条目必须在用户可见的库范围内（统一 helper）
-    item = await run_db(_require_visible_item, db, user, item_id)
-    base = _base_url(request)
-    q = request.query_params
+    raise HTTPException(status_code=404, detail="服务端转码已移除，请使用直连播放")
 
-    # 已存在的转码会话：直接回放列表/切片
-    # 注意：切片请求走 session 票据校验（HLS 播放器无法对切片附加 api_key），
-    # 会话本身只在建立转码（master.m3u8 首次请求）时经过完整鉴权创建。
-    # H2：子请求沿用本次请求的签名 / Emby token；门户 JWT 不回显进播放列表
-    auth_qs = _echo_auth_qs(request)
-    existing = q.get("session")
-    if existing and get_transcode(existing):
-        info = get_transcode(existing)
-        # S6：客户端还在拉播放列表 / 切片 = 还有人在看（闲置回收按它判定）
-        touch_transcode(existing)
-        try:
-            file_path = safe_child_name(info["dir"], transcode_path)
-            playlist = safe_child_name(info["dir"], "master.m3u8")
-        except ValueError:
-            raise HTTPException(status_code=404, detail="Invalid transcode path")
-        if transcode_path.endswith(".m3u8"):
-            # ffmpeg 写完首个切片才落盘播放列表；直接返回空列表会让播放器判定播放失败
-            await wait_for_file(playlist, timeout=15.0)
-            if not os.path.isfile(playlist):
-                if not transcode_alive(existing):
-                    raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
-                raise HTTPException(status_code=504, detail="转码尚未产出播放列表")
-            # S3：重写要读 CDN 配置（同步 DB）与磁盘上的播放列表：放线程池
-            content = await run_db(_rewrite_playlist, info["dir"], base, item.guid, existing,
-                                   db=db, auth_qs=auth_qs)
-            return Response(
-                content, media_type="application/vnd.apple.mpegurl",
-                # 播放列表绝不进 CDN/浏览器缓存：内容随时变（会话回收后失效）
-                headers={"Cache-Control": cdn.NO_STORE},
-            )
-        # 客户端请求切片往往早于 ffmpeg 写出，短暂等待而非立即 404
-        if not await wait_for_file(file_path, timeout=12.0):
-            if not transcode_alive(existing):
-                raise HTTPException(status_code=503, detail="转码进程已退出，请重新发起播放")
-            raise HTTPException(status_code=404, detail="Segment not ready")
-        media_type = "video/mp2t" if transcode_path.endswith(".ts") else "application/octet-stream"
-        # 分片是 CDN 缓存的全部意义所在：ffmpeg 写完就不变，边缘放多久都安全。
-        # （CDN 未启用时浏览器也能短缓存热点，无副作用。）
-        return FileResponse(file_path, media_type=media_type,
-                            headers={"Cache-Control": cdn.SEGMENT_CACHE_HEADER})
-
-    # 新转码请求（付费墙 + 客户端与转码策略：建立会话前校验）
-    # S3：整段准备（策略校验的同步 DB、115 取直链的同步 HTTP、本地缓存查询/入队、
-    # 起 ffmpeg 的 Popen）一次性扔进线程池——旧实现直接在事件循环上做，115 慢的时候
-    # 单 worker 的 EA 整个卡住最长 20s+，所有人的播放 / 列表都停。
-    content = await run_db(_prepare_new_transcode, db, user, item, request, base, auth_qs)
-    return Response(content=content, media_type="application/vnd.apple.mpegurl")
-
-
-def _prepare_new_transcode(db: Session, user, item, request: Request, base: str,
-                           auth_qs: str) -> str:
-    """建立一次新的 HLS 转码会话，返回 master 播放列表文本（同步，必须在线程里调）
-
-    包含：防盗链 / 付费墙 / 客户端与转码策略校验、码率归档、播放目标解析（可能是
-    115 取直链等同步网络调用）、本地缓存线路查询与入队、转码缓存复用或起 ffmpeg、
-    子请求鉴权串与 CDN 改写。
-    """
-    q = request.query_params
-    # 防盗链：白名单为空时直接放行（默认关闭，兼容第三方客户端）；
-    # 切片子请求走 session 票据，不经过这里。
-    play_sign.check_referer(request, db)
-    ensure_playback_allowed(db, user)
-    # 并发上限按**本机**正在跑的转码数判定：分离部署时 EA 就是那台播放节点
-    playback_policy.ensure_transcode_allowed(
-        db, user, running=len(active_transcode_ids()), capacity=transcode_capacity(),
-    )
-    if not shutil.which(os.getenv("EMBY_FFMPEG_PATH", "ffmpeg")):
-        raise HTTPException(status_code=503, detail="服务器未安装 ffmpeg，无法转码；请使用直连播放")
-    # 2026-10 简化：删除服务端码率钳制，客户端要多少转多少
-    video_bitrate = int(q.get("VideoBitrate") or q.get("videoBitrate") or 4_000_000)
-    height = int(q.get("Height") or 0) or None
-    # 2026-10 简化：删除服务端三档转码。客户端要多少码率/分辨率就转多少，
-    # 只在源片分辨率低于请求时不做无意义的上采样（学 Linger 薄服务器思路）。
-    from backend.emby_server import transcode as transcode_mod
-    height = transcode_mod.clamp_to_source(height, getattr(item, "height", None))
-    start_ticks = int(q.get("PositionTicks") or 0)
-    start_seconds = start_ticks / TICKS
-    target = _play_target(db, item)
-    # 转码的拉流字节由 ffmpeg 进程走，不经过本服务的响应体，
-    # 所以这里只记请求不记流量（面板上已标明流量口径不含转码拉流）。
-    line_stats.record_request()
-    # 按需转码 P1：缓存命中直接复用，不再起 ffmpeg；
-    # 2 路硬限制超了就 503，让客户端降级走直连
-    fingerprint = getattr(item, "file_fingerprint", None)
-    cached_dir = transcode_mod.find_cache(item.guid, video_bitrate, height, fingerprint)
-    if cached_dir:
-        session_id = transcode_mod.register_cache_session(
-            cached_dir, user_id=user.id, item_guid=item.guid,
-            video_bitrate=video_bitrate, height=height)
-    else:
-        # D-P1-1：用 transcode_slot() 保证"检查→启动"原子，
-        # 突发请求不会绕过并发上限打满 CPU。
-        with transcode_mod.transcode_slot():
-            session_id = start_transcode(
-                target.value, start_seconds, video_bitrate, height,
-                user_id=user.id, item_guid=item.guid, input_headers=target.headers,
-                cache_key=transcode_mod.cache_key(item.guid, video_bitrate, height, fingerprint),
-                fingerprint=fingerprint,
-            )
-    # 变体与切片地址必须自带 api_key：hls.js 等播放器不会给子请求附加认证头，
-    # 旧实现只带 session 导致全部子请求 401（网页端 HLS 播放实际不可用）。
-    if not auth_qs:
-        # 首次请求是 header 里的 JWT（无签名 / 无 Emby token）：给子请求签一把短期播放签名
-        auth_qs = _url_auth_qs(db, request, user, item.guid)
-    variant_url = (
-        f"{base}/emby/videos/{item.guid}/main.m3u8"
-        f"?session={session_id}&{auth_qs}"
-    )
-    return f"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH={video_bitrate}\n{variant_url}\n"
-
-
-def _rewrite_playlist(out_dir: str, base: str, item_guid_value: str, session_id: str,  # noqa: D401
-                     api_key: str = "", db: Session = None, auth_qs: str = "") -> str:
-    """重写 ffmpeg 播放列表：切片指向本服务，并带上 session 票据与 api_key
-
-    不带 api_key 时播放器对切片子请求不会附加认证头，会直接 401。
-    """
-    master = os.path.join(out_dir, "master.m3u8")
-    if not os.path.isfile(master):
-        return "#EXTM3U\n"
-    with open(master, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
-    if auth_qs:
-        suffix = f"&{auth_qs}"
-    else:
-        suffix = f"&api_key={urllib.parse.quote(api_key)}" if api_key else ""
-    seg_base = base
-    lines = []
-    for line in content.splitlines():
-        if line.endswith((".ts", ".m4s", ".aac", ".vtt")):
-            lines.append(f"{seg_base}/emby/videos/{item_guid_value}/{line}?session={session_id}{suffix}")
-        else:
-            lines.append(line)
-    return "\n".join(lines) + "\n"
 
 # ==================== 拆分说明（v2.13.0）====================
 # 本文件原先 2100+ 行，已按关注点拆出三个模块（路由注册顺序与拆分前完全一致）：
-#   - media_routes.py  图片投递 / 下载 / hls1
+#   - media_routes.py  图片投递 / 下载（hls1 转码入口已随转码删除移除）
 #   - compat_routes.py 会话上报与协议补齐端点
 #   - stream_routes.py 播放流容器变体 / 原始文件 / 字幕投递 / HLS 通配
 # 三者把路由注册到上面这个 emby_router 上（由 backend/main.py 与 emby_api/main.py 导入触发）。

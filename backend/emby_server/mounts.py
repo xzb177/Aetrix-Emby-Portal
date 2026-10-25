@@ -3,7 +3,7 @@
 一个**挂载**就是一种「把内容接进媒体库」的方式。挂载本身不拥有条目，媒体库通过
 ``Library.mount_ids`` 引用它，所以同一个挂载可以被多个库共用。
 
-**只支持四种来源**（v2.42.12 起，其余类型连同代码一并删除，不再维护；
+**只支持五种来源**（v2.42.12 起，其余类型连同代码一并删除，不再维护；
 ``drive`` 是之后按同一套提供者接口新加的 API 直调实现，不是恢复当年下线的
 Google Drive 原生类型）：
 
@@ -17,6 +17,8 @@ Google Drive 原生类型）：
                               指过去。
 ``drive``                     Google 云盘 API 直读。路径以 ``drive:`` 开头，后接
                               共享盘 ID（个人盘 ``drive:myDrive:<remote 名>``）；
+``yun139``                    移动云盘 139 sidecar。路径以 ``139:/`` 开头；默认关
+                              （YUN139_ENABLED=1 开启），实现在 ``mount_yun139.py``。
                               列目录走 drive_changes 的服务账号轮换 + 全局限流，
                               不经 rclone、不绑单个账号。实现在 ``mount_drive.py``。
 ============================  ====================================================
@@ -73,12 +75,14 @@ MOUNT_LOCAL = "local"
 MOUNT_PAN115 = "115"
 MOUNT_RCLONE = "rclone"
 MOUNT_DRIVE = "drive"
+MOUNT_YUN139 = "yun139"
 
 #: 路径前缀 → 挂载类型。表单只填一条路径，类型由前缀决定（``detect_mount_type``）。
 PATH_TYPE_PREFIXES: tuple[tuple[str, str], ...] = (
     ("115:/", MOUNT_PAN115),
     ("rclone:", MOUNT_RCLONE),
     ("drive:", MOUNT_DRIVE),
+    ("139:/", MOUNT_YUN139),
     ("/media", MOUNT_LOCAL),
 )
 
@@ -311,6 +315,18 @@ class MountFile:
     #: ModTime 解析值；扫描器把它混入文件指纹，同尺寸内容替换也能被增量扫描发现
     #: （完美审查 C-P2-3）。
     mod_ts: float = 0.0
+    #: 内容校验和（#13 PR-2：远端身份四件套采集透传）。
+    #: Drive 取 files.list 的 md5Checksum；rclone CLI 取 lsjson --hash 的
+    #: Hashes（偏好 md5 > sha1 > sha256）；拿不到记 ""，写库时落 NULL，
+    #: 绝不猜值、绝不拿尺寸/时间冒充。
+    content_hash: str = ""
+    #: content_hash 的算法名（"md5"/"sha1"/"sha256"）；无哈希时为空串。
+    content_hash_algo: str = ""
+    #: Drive files.list 的 etag（内容变化标识；非 Drive 源为空串）。
+    etag: str = ""
+    #: Drive 修订标识（优先 headRevisionId，无则 version；非 Drive 源为空串）。
+    #: 只进 identity_json 证据快照，不单独成列。
+    revision: str = ""
 
 
 @dataclass
@@ -331,6 +347,14 @@ class MountEntry:
     #: 之前追新为此绕开公共通道直接读 rclone 原始 JSON 的 ModTime，等于自带一条
     #: 无限流的旁路（2026-10 rclone 请求风暴）。带在条目上，公共通道就能直接复用。
     mod_ts: float = 0.0
+    #: 内容校验和与算法（#13 PR-2，同 MountFile.content_hash 语义）：
+    #: 目录为空串；拿不到的源（115 sha1 未实测、rclone RC 无可用 opt）为空串，
+    #: 写库时落 NULL，绝不猜值。
+    content_hash: str = ""
+    content_hash_algo: str = ""
+    #: Drive etag / 修订标识（同 MountFile.etag / revision 语义；非 Drive 源为空串）。
+    etag: str = ""
+    revision: str = ""
 
 
 @dataclass
@@ -726,7 +750,12 @@ def cached_listing(fn: Callable) -> Callable:
 
     @functools.wraps(fn)
     def wrapper(self, rel: str = "/", fresh: bool = False):
-        if fresh or MOUNT_LIST_CACHE_SECONDS <= 0:
+        # BYOS 隔离：带绑定凭据的提供者实例（_byos_no_cache）永不读写
+        # 共享目录缓存——缓存键只有挂载 id + 配置，不含凭据；同一挂载
+        # 行在共享凭据与用户绑定凭据下会算出同一键，复用即跨用户串
+        # 目录（名、cid、pickcode 皆属列出它的那个账号）。
+        if (fresh or MOUNT_LIST_CACHE_SECONDS <= 0
+                or getattr(self, "_byos_no_cache", False)):
             return _call_remote(self, fn, rel)
         key = _list_cache_key(self, fn.__name__, rel)
         hit = _cache_get(key)
@@ -758,6 +787,54 @@ def list_dir_uncached(provider, rel: str = "/") -> list:
     return _call_remote(provider, impl, rel)
 
 
+@dataclass
+class ProviderCapabilities:
+    """提供者五能力位声明（FMBY 批三 #23，魂 4 能力声明式扩展的地基）。
+
+    - ``can_list``：能列目录 / 遍历媒体（list_dir / walk_media 可用）。
+    - ``can_random_read``：能按段取字节。语义是 open_range 能向调用方
+      交出正确的 [start, end) 字节：本机 seek 直读，或远程 Range GET；
+      上游回 200（无视 Range）时 open_range 在本地切片兜底，正确性仍
+      有保证，只是多拉了整段字节（性能代价，不是正确性缺口）。
+    - ``can_read_sidecar``：能读文本旁挂（NFO / 字幕 / .strm 内容）。
+      注意粒度：本位只管文本旁挂；图片旁挂走 display-asset 语义
+      （open_range 取字节），不由本位宣称。
+    - ``can_generate_play_target``：能换链（resolve_play_target 可用）。
+    - ``can_refresh_credentials``：凭据可刷新（refresh_credentials 可用
+      且有真实刷新路径；静态凭据 / 无凭据的提供者声明 False）。
+    """
+
+    can_list: bool = False
+    can_random_read: bool = False
+    can_read_sidecar: bool = False
+    can_generate_play_target: bool = False
+    can_refresh_credentials: bool = False
+
+    def as_dict(self) -> dict:
+        return {
+            "can_list": self.can_list,
+            "can_random_read": self.can_random_read,
+            "can_read_sidecar": self.can_read_sidecar,
+            "can_generate_play_target": self.can_generate_play_target,
+            "can_refresh_credentials": self.can_refresh_credentials,
+        }
+
+
+def read_sidecar_text_from(provider, rel: str) -> str:
+    """旁挂文本读取的过渡口：优先走提供者的 ``read_sidecar_text`` 新口；
+    只实现旧 ``read_text`` 的 duck-type 提供者（扫描器历史上的假提供者
+    与第三方提供者都属此类）回落到 ``read_text``。
+
+    扫描器对 provider 一直是 duck-type 调用（list_dir / read_text 都不
+    要求继承 MountProvider），直接改口会静默打断这类提供者，故过渡口
+    必须保留回落；MountProvider 子类永远走新口。
+    """
+    read = getattr(provider, "read_sidecar_text", None)
+    if callable(read):
+        return read(rel)
+    return provider.read_text(rel)
+
+
 class MountProvider:
     """挂载提供者基类"""
 
@@ -771,14 +848,24 @@ class MountProvider:
         self.config = parse_config(mount)
 
     # ---- 能力 ----
+    # FMBY 批三 #23（阶段 2 骨架）：五能力位声明。语义是「保证」不是
+    # 「尽力」——声明 True 的能力，上层可以无条件编排；不能保证的声明
+    # False，哪怕现行某条路碰巧能走通。
+    # 清单第 2 项起声明即门控：扫描（mount_sources.read_library_sources）、
+    # 变体清单（play_variants.list_variants）、刷新重试
+    # （refresh_credentials_if_supported）按本声明编排，不再只描述不执法。
+    # 旧 capabilities() 曾返回 {"browse", "local"} 且在 af2769a2 上全仓
+    # 零调用方（生产与测试均无调用），属于死代码，本次直接替换为五能力位
+    # 结构，不保留旧 dict 形态。
 
     @property
     def local_root(self) -> Optional[str]:
         """本机可读时的根目录（远程挂载返回 None）"""
         return None
 
-    def capabilities(self) -> dict:
-        return {"browse": True, "local": self.local_root is not None}
+    def capabilities(self) -> "ProviderCapabilities":
+        """本提供者的能力声明；未知提供者默认全 False（保守口径）。"""
+        return ProviderCapabilities()
 
     # ---- 接口 ----
 
@@ -795,22 +882,121 @@ class MountProvider:
         """
         raise NotImplementedError
 
-    def resolve(self, rel: str) -> PlayTarget:  # pragma: no cover - 由子类实现
-        raise NotImplementedError
-
     def read_text(self, rel: str) -> str:  # pragma: no cover - 由子类实现
         raise NotImplementedError
+
+    # ---- 协议分离（FMBY 批三 #23 阶段 2 之二步）----
+    # 旧 resolve 一个函数混了四件事：定位 / 取凭据 / 铸链 / 读旁挂。
+    # 拆开后四口各管一件事，上层按能力声明编排时不再靠类型特例猜：
+    # - resolve_play_target：换链，只回 PlayTarget，不读文件内容；
+    # - open_range：搬字节，只按 Range 取段，不换链给客户端；
+    # - read_sidecar_text：文本旁挂（NFO / 字幕 / .strm 内容）；
+    # - refresh_credentials：凭据刷新，单独一口。
+    # 清单第 2 项：旧 ``resolve()`` 已删——换链实现全部迁入各子类的
+    # ``resolve_play_target``，旧调用方已全部迁移（全仓 grep 零调用方）；
+    # ``read_text()`` 仍保留为旁挂文本的旧名。resolve_final 的
+    # 语义逐字不变，只是 .strm 那条路现在显式走旁挂口，不再藏在换链里。
+
+    def resolve_play_target(self, rel: str) -> PlayTarget:  # pragma: no cover - 由子类实现
+        """换链口：返回文件的播放链（PlayTarget），不读文件内容。
+
+        .strm 语义不在这里：.strm 要内容解析走 ``resolve_final``。
+        子类直接覆写本口实现换链；未覆写的提供者调本口即
+        ``NotImplementedError``，不许静默回落到别的实现。
+        """
+        raise NotImplementedError
+
+    def read_sidecar_text(self, rel: str) -> str:
+        """文本旁挂口（NFO / 字幕 / .strm 内容）。
+
+        默认走既有 ``read_text``，覆写了 ``read_text`` 的子类行为原样
+        保留；新调用方一律用本口，能力门控只认
+        ``can_read_sidecar``。图片旁挂不走本口，走 ``open_range``
+        的 display-asset 语义（按段取字节）。
+        """
+        return self.read_text(rel)
+
+    def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
+        """按段取字节口：返回文件 [start, end) 的字节（end 为 None 读到尾）。
+
+        本机挂载：seek 直读。远程挂载：子类覆写（换链 + Range GET）。
+        注意：本口读的是文件本身；.strm 文件读到的是 .strm 文本，
+        不是它指向的目标——目标解析是 ``resolve_final`` 的事。
+        """
+        if start < 0 or (end is not None and end <= start):
+            raise MountError(f"无效的取段范围: start={start} end={end}")
+        root = self.local_root
+        if root is not None:
+            try:
+                path = safe_local_path(root, (rel or "/").lstrip("/"))
+            except ValueError as exc:
+                raise MountError(str(exc)) from exc
+            try:
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    return f.read() if end is None else f.read(end - start)
+            except OSError as exc:
+                raise MountError(f"按段读取失败: {rel} ({exc})") from exc
+        raise MountError("该提供者不支持按段取字节")
+
+    def refresh_credentials(self) -> bool:
+        """凭据刷新口：有真实刷新路径返回 True（失败抛 MountAuthError），
+        无刷新路径返回 False（不是错误，调用方据此不重试刷新）。"""
+        return False
+
+    def refresh_credentials_if_supported(self) -> bool:
+        """刷新重试唯一入口（清单第 2 项能力门控，横切只许一套）。
+
+        先查 ``can_refresh_credentials`` 再刷新：声明 False 的提供者
+        直接回 False，不调 ``refresh_credentials``、不重试——静态凭据
+        （115 Cookie / rclone conf / 本机无凭据）重试刷新毫无意义，
+        只会把一次凭据错刷成多次。声明 True 的提供者调其
+        ``refresh_credentials()``（失败抛 ``MountAuthError``，调用方按
+        既有口径处理）。刷新重试不许绕过本口另写一套。
+        """
+        try:
+            caps = self.capabilities()
+        except Exception:  # noqa: BLE001 — 声明都读不到的提供者按无刷新能力处理
+            return False
+        if not caps.can_refresh_credentials:
+            return False
+        return self.refresh_credentials()
 
     def resolve_final(self, rel: str) -> PlayTarget:
         """播放真正使用的解析入口：.strm 先取文件内容，再当直链播
 
         STRM 在**任何**挂载里都按内容解析（本机 / 115 / WebDAV / AList / 云盘），
-        否则客户端会收到一个文本文件。为此不得不看文件内容时才走 ``read_text``，
-        避免与 ``resolve``（只拿文件本身的地址）互相递归。
+        否则客户端会收到一个文本文件。为此不得不看文件内容时才走
+        ``read_sidecar_text``（旁挂口），避免与换链口互相递归。
+        非 .strm 直接走换链口。
         """
         if _is_strm_name(rel):
-            return _strm_play_target(self.read_text(rel), rel)
-        return self.resolve(rel)
+            return _strm_play_target(self.read_sidecar_text(rel), rel)
+        return self.resolve_play_target(rel)
+
+    # ---- 解析结果缓存的凭据拆分（FMBY 批一 #1）----
+    # ``resolve_play_target`` 会把解析结果按 (挂载, 类型, 配置指纹, rel) 缓存
+    # ``RESOLVE_TARGET_CACHE_TTL_SEC`` 秒，省掉每次播放重走的逐级列目录 /
+    # 子进程换链。凭据头（Cookie / Authorization）**禁止进缓存值**：凭据状态
+    # 只归既有唯一入口维护（115 的 ``transfer115.resolve_cookie``、Drive 的
+    # ``drive_auth``），缓存里存一份凭据等于第二套状态，轮换 / 401 按值失效
+    # 之后必然漂移——正是 2026-10-11 全局 token 缓存架空 SA 轮询事故的同款
+    # 形态。所以子类把「解析」与「挂凭据」拆成两段：``cacheable_play_target``
+    # 返回剥掉凭据头的可缓存副本（无法安全缓存时返回 None），
+    # ``reattach_play_target`` 在缓存命中后现挂凭据。
+    # 默认实现取保守口径：headers 里含凭据头就**不缓存**——没覆写的提供者
+    # 最多是没收益，绝不许把凭据漏进缓存。
+
+    def cacheable_play_target(self, target: PlayTarget) -> Optional[PlayTarget]:
+        """解析结果进缓存前的脱凭据副本；不可安全缓存返回 None。"""
+        headers = dict(target.headers or {})
+        if any(name in headers for name in ("Cookie", "Authorization")):
+            return None
+        return PlayTarget(target.kind, target.value, headers)
+
+    def reattach_play_target(self, stored: PlayTarget) -> PlayTarget:
+        """缓存命中后现挂凭据；默认无凭据可挂，返回一份拷贝（缓存对象不外借）。"""
+        return PlayTarget(stored.kind, stored.value, dict(stored.headers or {}))
 
     # ---- 公共实现 ----
 
@@ -868,6 +1054,14 @@ class LocalMount(MountProvider):
     @property
     def local_root(self) -> Optional[str]:
         return self.path or None
+
+    def capabilities(self) -> ProviderCapabilities:
+        # 本机目录：列举 / 按段读（seek）/ 文本旁挂 / 换链（本机路径）
+        # 全是真能力；无凭据可刷新。
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=False,
+        )
 
     def _require_path(self) -> str:
         if not self.path:
@@ -958,7 +1152,7 @@ class LocalMount(MountProvider):
                 + ("..." if len(walk_errors) > 5 else "")
             )
 
-    def resolve(self, rel: str) -> PlayTarget:
+    def resolve_play_target(self, rel: str) -> PlayTarget:
         root = self._require_path()
         try:
             path = safe_local_path(root, (rel or "/").lstrip("/"))
@@ -979,21 +1173,50 @@ class LocalMount(MountProvider):
             raise MountError(f"读取文件失败: {rel} ({exc})") from exc
 
 
+# #13 PR-3：115 fid 泛化开关，与 scanner.IDENTITY_MATCH_ENABLED 同键（默认关）。
+# 开时 Pan115Mount.walk_media 才把 115 fid 透传为 MountFile.file_id，走现行
+# file_id 认亲层与写库双写；关时不透传，115 仍走指纹层、行为与基线一致。
+# 模块加载时读一次，改动需重启生效。fid 必须是 transfer115 解析出的文件
+# 自身 id——transfer115 不再拿父目录 cid 回落冒充 fid（见 transfer115.py），
+# API 没给 fid 时 file_id 为空串（无身份），绝不拿 pickcode/cid 冒充。
+PAN115_FID_ENABLED = env_int("SCAN_IDENTITY_MATCH_ENABLED", 0, 0, 1) == 1
+
+
 class Pan115Mount(MountProvider):
     """115 网盘直挂（Cookie 型 API，不依赖 115 OpenAPI）"""
 
     kind = "remote"
     mount_type = MOUNT_PAN115
 
-    def __init__(self, mount, db=None, library=None):
+    def __init__(self, mount, db=None, library=None, cookie_override=None):
         super().__init__(mount, db, library)
+        # BYOS 绑定凭据：调用方（user_bindings）传入该用户自己的
+        # Cookie 后，本实例只用它（不读挂载配置/账号档/服务器级
+        # Cookie），且永不读写共享目录缓存（见 cached_listing 的
+        # _byos_no_cache 分支）——凭据绝不跨用户复用。
+        self._cookie_override = (
+            transfer115.normalize_cookie(cookie_override)
+            if cookie_override else None
+        )
+        self._byos_no_cache = self._cookie_override is not None
         self.root_cid = str(self.config.get("cid") or "0")
         # rel → cid / pickcode 缓存（只在本次提供者实例内，不跨请求）
         self._cid_cache: dict[str, str] = {"": self.root_cid, "/": self.root_cid}
         self._pick_cache: dict[str, str] = {}
 
+    def capabilities(self) -> ProviderCapabilities:
+        # 115：列举 / 按段读（下载直链 Range，见 open_range）/ 文本旁挂 /
+        # 换链全是真能力；Cookie 是静态凭据、过期只报 MountAuthError，
+        # 没有刷新路径——这是全仓唯一确定的否定声明。
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=False,
+        )
+
     # ---- Cookie ----
     def _cookie(self) -> str:
+        if self._cookie_override:
+            return self._cookie_override
         account_id = self.config.get("account_id")
         try:
             account_id = int(account_id) if account_id not in (None, "", "0") else None
@@ -1016,6 +1239,10 @@ class Pan115Mount(MountProvider):
 
     def _ua(self) -> str:
         """这个挂载发 115 请求时用的 UA（与 Cookie 同一套账号优先级）"""
+        if self._cookie_override:
+            # 绑定凭据实例不用挂载的账号 UA（那是另一个账号的设备
+            # 身份），回服务器级默认 UA。
+            return ""
         if self.db is None:
             return ""
         try:
@@ -1099,8 +1326,19 @@ class Pan115Mount(MountProvider):
                 if os.path.splitext(name)[1].lower() not in REMOTE_MEDIA_EXTS:
                     continue
                 self._pick_cache[child_rel] = str(item.get("pickcode") or "")
+                # #13 PR-2：115 不填 content_hash——115 的 sha1 是否真实返回
+                # 至今未实测（生产无 115 挂载、密封的用户凭据绝不能挪来探测），
+                # 在拿到一条真实 /files 响应定生死前，115 的哈希一律按缺位
+                # （MountFile 默认空串 → 写库落 NULL），绝不拿 pickcode 或
+                # 其他字段冒充哈希；身份靠 fid 层（PR-3 泛化），不影响主线。
+                # #13 PR-3：fid 透传（仅开关开时）：_raw_list 的 fid 是 transfer115
+                # 从 /files 响应解析出的文件自身 id（无 fid 时为空串，父目录 cid
+                # 不再回落冒充）；开时走现行 file_id 认亲层，关时 file_id 为空、
+                # 行为与基线一致。
+                _fid = (item.get("fid") or "") if PAN115_FID_ENABLED else ""
                 yield MountFile(rel=child_rel, name=name,
-                                size=int(item.get("size") or 0), is_strm=_is_strm_name(name))
+                                size=int(item.get("size") or 0), is_strm=_is_strm_name(name),
+                                file_id=_fid)
 
     def _cid_of(self, rel: str) -> str:
         """把相对路径解析成 cid（逐级列目录，结果缓存到本次提供者实例）"""
@@ -1135,7 +1373,7 @@ class Pan115Mount(MountProvider):
                 }
         raise MountError(f"115 上找不到文件: {rel}")
 
-    def resolve(self, rel: str) -> PlayTarget:
+    def resolve_play_target(self, rel: str) -> PlayTarget:
         entry = self._locate(rel)
         if not entry.get("pickcode"):
             raise MountError(f"115 未返回该文件的 pickcode: {rel}")
@@ -1155,13 +1393,48 @@ class Pan115Mount(MountProvider):
             "X-Pickcode": pickcode_115,
         })
 
+    # 解析缓存的凭据拆分：Cookie 每次现取（``transfer115.resolve_cookie`` 是
+    # 唯一状态入口），缓存里只留 UA / Referer 与 X-Pickcode——X-Pickcode 不是
+    # 凭据，是失效钥匙：中继收到上游 403/404/410 时靠它连带清解析缓存。
+    def cacheable_play_target(self, target: PlayTarget) -> Optional[PlayTarget]:
+        headers = dict(target.headers or {})
+        headers.pop("Cookie", None)
+        return PlayTarget(target.kind, target.value, headers)
+
+    def reattach_play_target(self, stored: PlayTarget) -> PlayTarget:
+        headers = dict(stored.headers or {})
+        headers["Cookie"] = self._cookie()
+        return PlayTarget(stored.kind, stored.value, headers)
+
     def read_text(self, rel: str) -> str:
-        target = self.resolve(rel)
+        target = self.resolve_play_target(rel)
         client = _shared_http_client("pan115")
         resp = client.get(target.value, headers=target.headers)
         if resp.status_code >= 400:
             raise MountError(f"读取 115 文件失败: HTTP {resp.status_code}")
         return resp.content.decode("utf-8", errors="ignore")
+
+    def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
+        """115 按段取字节：换链 + Range GET（与 RemoteMount 同款切片兜底，
+        复用既有远程 IO 名额；115 不继承 RemoteMount，故单写一份）。"""
+        if start < 0 or (end is not None and end <= start):
+            raise MountError(f"无效的取段范围: start={start} end={end}")
+        target = self.resolve_play_target(rel)
+        range_header = (
+            f"bytes={start}-" if end is None else f"bytes={start}-{end - 1}"
+        )
+        headers = dict(target.headers or {})
+        headers["Range"] = range_header
+        client = _shared_http_client("pan115")
+        with remote_io_slot():
+            resp = client.get(target.value, headers=headers)
+        if resp.status_code >= 400:
+            raise MountError(
+                f"按段读取 115 文件失败: HTTP {resp.status_code}")
+        body = resp.content or b""
+        if resp.status_code == 206:
+            return body
+        return body[start:end] if end is not None else body[start:]
 
 
 # 模块级共享 HTTP 客户端池：按 (base, timeout) 复用连接，避免扫描时
@@ -1372,7 +1645,12 @@ class RemoteMount(MountProvider):
                                         file_id=getattr(entry, "file_id", "") or "",
                                         # P2（完美审查 C-P2-3）：把远端 ModTime 透给扫描器，
                                         # 用于文件指纹/目录指纹，同尺寸替换可检出。
-                                        mod_ts=getattr(entry, "mod_ts", 0.0) or 0.0)
+                                        mod_ts=getattr(entry, "mod_ts", 0.0) or 0.0,
+                                        # #13 PR-2：内容校验和与证据槽透传（拿不到的源为空串）。
+                                        content_hash=getattr(entry, "content_hash", "") or "",
+                                        content_hash_algo=getattr(entry, "content_hash_algo", "") or "",
+                                        etag=getattr(entry, "etag", "") or "",
+                                        revision=getattr(entry, "revision", "") or "")
         if walk_errors:
             # 生成器收尾时抛：已产出的文件照常处理，上层 _guarded 会把错误记进
             # failed_roots 并跳过清理阶段，避免误删这些子目录下的条目。
@@ -1384,9 +1662,36 @@ class RemoteMount(MountProvider):
 
     def read_text(self, rel: str) -> str:
         """默认实现：解析成直链后把内容当文本读（用于 .strm 与字幕）"""
-        target = self.resolve(rel)
+        target = self.resolve_play_target(rel)
         resp = self._request("GET", target.value, headers=target.headers)
         return resp.content.decode("utf-8", errors="ignore")
+
+    def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
+        """远程按段取字节：换链 + Range GET，复用既有远程 IO 名额。
+
+        上游回 206 直接返回；上游回 200（无视 Range）时在本地按段切片
+        兜底——调用方拿到的字节一定是 [start, end)，正确性有保证，
+        代价是多拉了整段字节。网络请求只包在 remote_io_slot 里，
+        不另起第二套限流。
+        """
+        if start < 0 or (end is not None and end <= start):
+            raise MountError(f"无效的取段范围: start={start} end={end}")
+        target = self.resolve_play_target(rel)
+        range_header = (
+            f"bytes={start}-" if end is None else f"bytes={start}-{end - 1}"
+        )
+        headers = dict(target.headers or {})
+        headers["Range"] = range_header
+        with remote_io_slot():
+            resp = self._request("GET", target.value, headers=headers)
+        if resp.status_code >= 400:
+            raise MountError(
+                f"按段读取失败: {rel} (HTTP {resp.status_code})")
+        body = resp.content or b""
+        if resp.status_code == 206:
+            return body
+        # 200 或其他 2xx：上游无视 Range，本地切片兜底。
+        return body[start:end] if end is not None else body[start:]
 
 
 _PROVIDERS = {
@@ -1438,6 +1743,9 @@ class LibrarySource:
     mount: Any = None              # StorageMount（kind=mount）
     provider: Optional[MountProvider] = None
     subpath: str = "/"             # kind=mount 时只扫描挂载下的这个子目录（"/" = 整个挂载）
+    #: 新表 library_sources 行 id（清单第 8 项身份锚：入库写 item.source_id 用）。
+    #: 旧列回落路径没有行，恒为 None；扫描器只在有行 id 时写锚，绝不反查补写。
+    source_row_id: Optional[int] = None
 
 
 #: 库 id 的合理上限（SQLite/PG 主键都是 64 位整数）：粘进来的超长数字串直接丢掉
@@ -1683,30 +1991,25 @@ def explain_local_path_failure(path: str) -> str:
     return "目录不存在或不可读"
 
 
-def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dict]]:
-    """把媒体库的 ``paths`` + 挂载解析成扫描来源
+def build_library_sources(local_paths, mount_subpaths, mount_ids, db: Session,
+                          library=None, *, enforce_can_list: bool = False,
+                          ) -> tuple[list[LibrarySource], list[dict]]:
+    """把已拆好的来源输入解析成扫描来源（旧列解析与新表读取共用，唯一实现）。
 
-    ``paths`` 里除了本机目录，还可以写 ``mount://<挂载 id>/<子目录>``（例如
-    ``mount://2/video/剧集/动漫剧``），表示只扫描该挂载下的这个子目录。
+    - ``local_paths``：本机目录原文列表；
+    - ``mount_subpaths``：``[(原文标签, 挂载 id, 子目录)]``；
+    - ``mount_ids``：整挂载来源的挂载 id 列表；子目录胜出过滤在本函数内做，
+      与旧行为逐字一致：同挂载既有子目录行又有整挂载行时只留子目录行
+      （2026-09-26 演唱会事故教训），没有子目录的库仍按整挂载扫；
+    - ``enforce_can_list``：True 时按能力门控——``can_list=False`` 的挂载
+      不进扫描（记 failed，不静默跳过）；False 时保持旧行为（旧函数与
+      回落路径用，不执法）。
 
-    返回 ``(可用来源, 不可用来源)``：不可用来源（路径不存在 / 账号失效 / 网络不通）
-    会记进 ``failed``，扫描器据此**跳过清理阶段**，避免把「读不到」当成「文件已删除」。
+    返回 ``(可用来源, 不可用来源)``：不可用来源会记进 ``failed``，扫描器
+    据此**跳过清理阶段**，避免把「读不到」当成「文件已删除」。
     """
     sources: list[LibrarySource] = []
     failed: list[dict] = []
-
-    # 先把 paths 拆成「本机目录」和「mount:// 子目录」两类
-    local_paths: list[str] = []
-    mount_subpaths: list[tuple[str, int, str]] = []  # (原文, 挂载 id, 子目录)
-    for raw in (getattr(library, "paths", "") or "").split(","):
-        path = raw.strip()
-        if not path:
-            continue
-        parsed = parse_mount_path(path)
-        if parsed is not None:
-            mount_subpaths.append((path, parsed[0], parsed[1]))
-        else:
-            local_paths.append(path)
 
     for path in local_paths:
         if not os.path.isdir(path):
@@ -1716,7 +2019,6 @@ def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dic
             continue
         sources.append(LibrarySource(label=path, kind="local", path=path))
 
-    mount_ids = parse_mount_ids(library)
     # 一个库可能同时留下旧字段：paths 写了 mount://<id>/<子目录>，
     # mount_ids 又保留了同一个挂载 id。子目录来源已经代表这个挂载，
     # 再追加 mount_ids 的根来源会把整个云盘也扫进去（严重时把别的库内容
@@ -1741,6 +2043,16 @@ def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dic
             return
         try:
             provider = build_provider(mount, db, library)
+            if enforce_can_list:
+                try:
+                    caps = provider.capabilities()
+                except Exception as exc:  # noqa: BLE001 — 声明都读不到的挂载按不可用处理
+                    failed.append({"label": label, "reason": f"能力声明读取失败: {exc}"})
+                    return
+                if not caps.can_list:
+                    failed.append({"label": label,
+                                   "reason": f"挂载「{mount.name}」声明 can_list=False，能力门控跳过扫描"})
+                    return
             if subpath.strip("/"):
                 # 子目录必须真实存在，否则这个来源不可用（扫描器会跳过清理，避免误删条目）
                 provider.list_dir(subpath)
@@ -1758,6 +2070,34 @@ def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dic
         _mount_source(mount_label(mounts.get(mount_id)) if mounts.get(mount_id) else f"挂载 #{mount_id}",
                       mount_id, "/")
     return sources, failed
+
+
+def library_sources(library, db: Session) -> tuple[list[LibrarySource], list[dict]]:
+    """把媒体库的 ``paths`` + 挂载解析成扫描来源（旧列解析）。
+
+    ``paths`` 里除了本机目录，还可以写 ``mount://<挂载 id>/<子目录>``（例如
+    ``mount://2/video/剧集/动漫剧``），表示只扫描该挂载下的这个子目录。
+
+    本函数是回落路径与双读基线：新表读取走
+    ``mount_sources.read_library_sources``，新表读不到时回落到这里；
+    双读校验（``compare_library_sources``）以本函数的输出为旧侧基线。
+    不执法能力门控（门控只在新表读取里开）。
+    """
+    # 先把 paths 拆成「本机目录」和「mount:// 子目录」两类
+    local_paths: list[str] = []
+    mount_subpaths: list[tuple[str, int, str]] = []  # (原文, 挂载 id, 子目录)
+    for raw in (getattr(library, "paths", "") or "").split(","):
+        path = raw.strip()
+        if not path:
+            continue
+        parsed = parse_mount_path(path)
+        if parsed is not None:
+            mount_subpaths.append((path, parsed[0], parsed[1]))
+        else:
+            local_paths.append(path)
+
+    return build_library_sources(local_paths, mount_subpaths,
+                                 parse_mount_ids(library), db, library)
 
 
 def check_mount_subpath(db: Session, mount_id: int, rel: str) -> None:
@@ -1779,7 +2119,169 @@ def load_mount(db: Session, mount_id: int):
     return db.query(em.StorageMount).filter(em.StorageMount.id == mount_id).first()
 
 
-def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> PlayTarget:
+# ==================== 解析结果缓存（FMBY 批一 #1）====================
+# ``resolve_play_target`` 的输出（kind + 直链 + 静态头）按 (挂载, 类型,
+# 配置指纹, rel) 在进程内缓存 ``RESOLVE_TARGET_CACHE_TTL_SEC`` 秒（默认 600，
+# 0 = 关闭；启动时读一次，热路径不碰 env）。动机：播放器一次播放 = 多次
+# stream 请求（起播探测 + 每个 Range 分片），此前每次请求都要重走一遍解析
+# ——115 逐级列目录、rclone CLI 每次拉一个子进程、STRM 每次读文件内容。
+# 学的是 FMBY 的 remote_target_cache：调度层（换链/选路）加带过期的缓存，
+# 数据面（中继取流）一行不动。
+#
+# 硬约束（定稿 §3，防 2026-10-11 全局 token 缓存架空 SA 轮询事故重演）：
+# - **凭据头禁止进缓存值**：Cookie / Authorization 一律经提供者的
+#   ``cacheable_play_target`` 剥掉、命中后经 ``reattach_play_target`` 现挂，
+#   凭据状态仍只归既有唯一入口维护（魂 6）。STRM 目标的 Bearer 在本层统一
+#   剥/挂（它由 ``_strm_play_target`` 拼、亲和键就是 url 本身，与提供者无关）。
+# - ``X-Pickcode`` 随缓存保留：它不是凭据，是 115 的失效钥匙（中继 403/
+#   404/410 时靠它反查连带清本缓存，见 ``invalidate_resolve_cache_by_pickcode``）。
+# - 缓存的是「解析结果快照」，不是「文件仍在」的断言——存在性另有正缓存
+#   与墓碑，不在这里重复担保。同路径换文件靠 TTL 自然收敛 + 115 的 403
+#   连带失效兜底，最多陈旧一个 TTL，这是本项接受的已知窗口。
+# - 进程内 dict（与 115 换链缓存 / 目录缓存同口径）：api 与 ea 两进程各
+#   一份、失效不广播，靠 TTL 收敛；要跨进程共享须先保证凭据已拆出，再迁
+#   CacheManager 的 playback 域，另行立项。
+RESOLVE_TARGET_CACHE_TTL_SEC = env_int("RESOLVE_TARGET_CACHE_TTL_SEC", 600, 0, 3600)
+#: 上限与 Drive 存在性正缓存同数（10000）；满员先清过期、仍满整体清空。
+RESOLVE_TARGET_CACHE_MAX = 10000
+
+# 模块级直接初始化，不许懒初始化（同 _pan115_url_cache_lock 的口径）。
+_RESOLVE_CACHE: dict = {}
+_RESOLVE_CACHE_LOCK = threading.Lock()
+_RESOLVE_CACHE_STATS = {"hits": 0, "misses": 0, "expired": 0, "evictions": 0}
+
+
+def resolve_cache_stats() -> dict:
+    """解析缓存命中情况（健康检查 / 测试用）"""
+    with _RESOLVE_CACHE_LOCK:
+        return {**_RESOLVE_CACHE_STATS, "entries": len(_RESOLVE_CACHE),
+                "ttl_seconds": RESOLVE_TARGET_CACHE_TTL_SEC}
+
+
+def reset_resolve_cache() -> None:
+    """清空解析缓存与计数（测试隔离用，照 #1203 熔断 ``reset_all`` 先例）。"""
+    with _RESOLVE_CACHE_LOCK:
+        _RESOLVE_CACHE.clear()
+        for name in _RESOLVE_CACHE_STATS:
+            _RESOLVE_CACHE_STATS[name] = 0
+
+
+def _resolve_cache_key(provider, rel: str) -> tuple:
+    """缓存键 = (挂载 id, 类型, 配置指纹, rel)，与目录缓存同法（mounts._list_cache_key）。
+
+    配置指纹进键：挂载改配置 / 换 Cookie 后指纹变，旧条目自然打不中，无需
+    主动清理。键里**不许**放 user_id / token / Cookie——解析结果与用户无关
+    （权限在播放入口已先行判定），放用户维度只会把命中率打碎。
+    """
+    mount = getattr(provider, "mount", None)
+    return (
+        getattr(mount, "id", None),
+        (getattr(mount, "mount_type", "") or "").strip(),
+        _config_fingerprint(provider),
+        rel or "/",
+    )
+
+
+def _resolve_cache_get(key: tuple) -> Optional[PlayTarget]:
+    """取缓存（命中返回缓存里的脱凭据副本；过期顺手删并当未命中）。TTL=0 恒未命中。"""
+    if RESOLVE_TARGET_CACHE_TTL_SEC <= 0:
+        return None
+    now = time.monotonic()
+    with _RESOLVE_CACHE_LOCK:
+        row = _RESOLVE_CACHE.get(key)
+        if row is not None and row[0] > now:
+            _RESOLVE_CACHE_STATS["hits"] += 1
+            return row[1]
+        if row is not None:
+            _RESOLVE_CACHE.pop(key, None)
+            _RESOLVE_CACHE_STATS["expired"] += 1
+        _RESOLVE_CACHE_STATS["misses"] += 1
+        return None
+
+
+def _resolve_cache_put(key: tuple, stored: Optional[PlayTarget]) -> None:
+    if stored is None or RESOLVE_TARGET_CACHE_TTL_SEC <= 0:
+        return
+    now = time.monotonic()
+    with _RESOLVE_CACHE_LOCK:
+        if len(_RESOLVE_CACHE) >= RESOLVE_TARGET_CACHE_MAX:
+            # 防无限增长：先清过期条目；仍满则整体清空（与存在性正缓存同
+            # 口径；最坏只是多走几次解析，不影响正确性）
+            for k in [k for k, row in _RESOLVE_CACHE.items() if row[0] <= now]:
+                _RESOLVE_CACHE.pop(k, None)
+            if len(_RESOLVE_CACHE) >= RESOLVE_TARGET_CACHE_MAX:
+                _RESOLVE_CACHE.clear()
+            _RESOLVE_CACHE_STATS["evictions"] += 1
+        _RESOLVE_CACHE[key] = (now + RESOLVE_TARGET_CACHE_TTL_SEC, stored)
+
+
+def invalidate_resolve_cache(mount_id: Optional[int] = None,
+                             rel: Optional[str] = None) -> None:
+    """清解析缓存：mount_id + rel 只清一条；只给 mount_id 清整个挂载；都不给全清。"""
+    with _RESOLVE_CACHE_LOCK:
+        if mount_id is None and rel is None:
+            _RESOLVE_CACHE.clear()
+            return
+        for key in [k for k in _RESOLVE_CACHE
+                    if (mount_id is None or k[0] == mount_id)
+                    and (rel is None or k[3] == rel)]:
+            _RESOLVE_CACHE.pop(key, None)
+
+
+def invalidate_resolve_cache_by_pickcode(pickcode: str) -> None:
+    """按 X-Pickcode 反查清解析缓存（115 中继上游 403/404/410 时连带调用）。
+
+    只清 115 换链缓存不够：解析缓存里还留着同一条死链，不连带清会被它
+    续命最多一个 TTL。永不抛——失效失败最多多留 TTL 秒陈旧。
+    """
+    if not pickcode:
+        return
+    with _RESOLVE_CACHE_LOCK:
+        for key in [k for k, row in _RESOLVE_CACHE.items()
+                    if (row[1].headers or {}).get("X-Pickcode") == pickcode]:
+            _RESOLVE_CACHE.pop(key, None)
+
+
+def invalidate_resolve_cache_for_path(file_path: Optional[str]) -> None:
+    """按条目 ``file_path`` 清一条解析缓存（扫描确认丢失 / 管理端删条目 /
+    分享补开见 404 时，在 ``invalidate_drive_exists_for_item`` 的调用点同点位
+    连带调用）。非挂载路径直接跳过；永不抛，不许打断调用方的主流程。"""
+    try:
+        parsed = parse_mount_path(file_path)
+        if parsed is None:
+            return
+        invalidate_resolve_cache(parsed[0], parsed[1])
+    except Exception:  # noqa: BLE001 — 失效是尽力而为，TTL 兜底
+        logger.debug("解析缓存按路径失效失败 path=%s", file_path, exc_info=True)
+
+
+def _stored_play_target(provider, target: PlayTarget, rel: str) -> Optional[PlayTarget]:
+    """解析结果进缓存前的脱凭据副本；不可安全缓存返回 None。
+
+    .strm 目标的凭据只有 ``_strm_play_target`` 拼的 Drive Bearer（亲和键是
+    url 本身），与提供者无关，在这一层统一剥；其余目标交给提供者自己的
+    ``cacheable_play_target`` 拆分。
+    """
+    if _is_strm_name(rel):
+        headers = dict(target.headers or {})
+        headers.pop("Authorization", None)
+        return PlayTarget(target.kind, target.value, headers)
+    return provider.cacheable_play_target(target)
+
+
+def _reattach_cached_target(provider, stored: PlayTarget, rel: str) -> PlayTarget:
+    """缓存命中后现挂凭据，返回一份新 PlayTarget（缓存里的对象不外借）。"""
+    if _is_strm_name(rel):
+        headers = dict(stored.headers or {})
+        from backend.emby_server import drive_auth
+        # 与 _strm_play_target 当初的拼法逐字一致：亲和键缺省就是 url 本身
+        headers.update(drive_auth.drive_auth_headers(stored.value))
+        return PlayTarget(stored.kind, stored.value, headers)
+    return provider.reattach_play_target(stored)
+
+
+def resolve_play_target(file_path: Optional[str], db: Session, library=None, *,
+                        anchor_mount=None) -> PlayTarget:
     """把条目的 ``file_path`` 解析成播放/探测目标
 
     - 本机路径（含 ``.strm``）→ 直接读文件，strm 读内容是直链；
@@ -1787,6 +2289,11 @@ def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> 
 
     条目没有路径时（虚拟库聚合条目、容器类型、源文件被删后重扫前的残留行）
     明确报 MountError → 上层转成 404，而不是让 ``.lower()`` 抛 500。
+
+    ``anchor_mount``（清单第 8 项身份锚双读）：调用方按身份锚定位到的挂载。
+    只有当它与路径解析出的挂载 id 一致且启用时才采用（跳过一次 load_mount
+    查询）；不一致 / 停用 / 为空时一律走现行路径——锚只确认挂载身份，绝不把
+    播放重定向到路径之外的挂载，rel 仍取自 file_path。
     """
     if not file_path:
         raise MountError("该条目没有可播放的媒体路径（虚拟库聚合条目或源文件已丢失）")
@@ -1794,14 +2301,28 @@ def resolve_play_target(file_path: Optional[str], db: Session, library=None) -> 
     if parsed is None:
         return local_play_target(file_path)
     mount_id, rel = parsed
-    mount = load_mount(db, mount_id)
+    mount = None
+    if (anchor_mount is not None
+            and getattr(anchor_mount, "id", None) == mount_id
+            and getattr(anchor_mount, "is_enabled", False)):
+        mount = anchor_mount
+    if mount is None:
+        mount = load_mount(db, mount_id)
     if mount is None:
         raise MountError(f"挂载 #{mount_id} 不存在（该条目来自已删除的挂载）")
     if not mount.is_enabled:
         raise MountError(f"挂载「{mount.name}」已停用")
-    target = build_provider(mount, db, library).resolve_final(rel)
+    provider = build_provider(mount, db, library)
+    # 解析缓存的查询必须排在 load_mount + is_enabled 检查**之后**：停用挂载
+    # 不许被 TTL 内的缓存残量短路（定稿 §5 的失效矩阵钉死这一条顺序）。
+    cache_key = _resolve_cache_key(provider, rel)
+    stored = _resolve_cache_get(cache_key)
+    if stored is not None:
+        return _reattach_cached_target(provider, stored, rel)
+    target = provider.resolve_final(rel)
     if target.kind == "url":
         target.value = validate_remote_url(target.value)
+        _resolve_cache_put(cache_key, _stored_play_target(provider, target, rel))
     return target
 
 
@@ -1855,3 +2376,4 @@ subtitles.register_mount_resolver(mount_source_resolver)
 # backend.api.servers / change_watcher 的导入副作用，不自导入会导致 drive 在其进程里未注册。
 from backend.emby_server import mount_rclone  # noqa: E402,F401  (导入即注册)
 from backend.emby_server import mount_drive  # noqa: E402,F401  (导入即注册)
+from backend.emby_server import mount_yun139  # noqa: E402,F401  (导入即注册)

@@ -10,7 +10,7 @@
 | 源 | 要 key | 中文 | 简介 | 评分 | 备注 |
 |---|---|---|---|---|---|
 | Bangumi | 否 | 强 | 有 | 有 | 中文番剧最准；公开接口，UA 礼仪限速 |
-| 豆瓣 | 否 | 强 | **没有** | **没有** | subject_suggest 只给标题/年份/海报/ID |
+| 豆瓣 | 否 | 强 | Frodo 有 | Frodo 有 | subject_suggest 只给标题/年份/海报/ID；Frodo 兜底才有简介/评分 |
 | AniList | 否 | 中 | 有 | 有 | GraphQL，动漫覆盖好，中文标题是 native title |
 | TVmaze | 否 | 弱 | 有 | 有 | 英文剧集强，中文片名常常搜不到 |
 | OMDb | **是** | 弱 | 有 | 有 | 只有电影；剧集直接不参与 |
@@ -28,6 +28,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+from urllib.error import HTTPError
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,19 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 
 
 class SourceError(RuntimeError):
-    """这一源这次失败了（引擎会隔离掉，不影响其它源）"""
+    """这一源这次失败了（引擎会隔离掉，不影响其它源）
+
+    ``status``：HTTP 失败时的状态码（熔断按它识别 403/429 立即开断，
+    见 metasources.breaker）；``count_failure=False`` 表示这不是源的
+    问题（没配密钥这类预检失败），不许喂给熔断计数——否则管理员没填
+    key 也能把源「熔断」掉，观测面就全是假警报。
+    """
+
+    def __init__(self, message: str = "", *, status: Optional[int] = None,
+                 count_failure: bool = True):
+        super().__init__(message)
+        self.status = status
+        self.count_failure = count_failure
 
 
 @dataclass
@@ -94,7 +107,9 @@ def _http_json(url: str, *, headers: Optional[dict] = None, data: Optional[bytes
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", "ignore")
     except Exception as exc:  # noqa: BLE001 — 统一成 SourceError，交给引擎隔离
-        raise SourceError(f"{type(exc).__name__}: {exc}") from exc
+        # HTTP 状态码单独挂在异常上（文案保持原口径）：熔断靠它认 403/429
+        status = exc.code if isinstance(exc, HTTPError) else None
+        raise SourceError(f"{type(exc).__name__}: {exc}", status=status) from exc
     try:
         return json.loads(body)
     except ValueError as exc:
@@ -145,7 +160,7 @@ def search_tmdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
 
     gate.acquire()
     if not tmdb_lib.tmdb_client.configured:
-        raise SourceError("没有可用的 TMDB 密钥")
+        raise SourceError("没有可用的 TMDB 密钥", count_failure=False)
     raw = tmdb_lib.tmdb_client.search(title, year, kind)
     if not raw:
         return None
@@ -162,7 +177,7 @@ def find_tmdb_by_imdb(imdb_id: str, year: Optional[int], kind: str, *, pool, gat
 
     gate.acquire()
     if not tmdb_lib.tmdb_client.configured:
-        raise SourceError("没有可用的 TMDB 密钥")
+        raise SourceError("没有可用的 TMDB 密钥", count_failure=False)
     found = tmdb_lib.tmdb_client.find_by_imdb(imdb_id) or {}
     key = "movie_results" if kind == "movie" else "tv_results"
     for raw in found.get(key) or []:
@@ -194,7 +209,7 @@ def _number(value) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# 2. 豆瓣：复用 altmeta（subject_suggest，没有简介与评分）
+# 2. 豆瓣：suggest（altmeta）主路 + Frodo 兜底（能带回简介 / 评分）
 # ---------------------------------------------------------------------------
 
 def search_douban(title: str, year: Optional[int], kind: str, *, pool, gate) -> Optional[Hit]:
@@ -202,17 +217,39 @@ def search_douban(title: str, year: Optional[int], kind: str, *, pool, gate) -> 
 
     gate.acquire()
     hit = altmeta.search(title, year, kind, min_interval=0.0)
-    if not hit:
+    if hit:
+        return Hit(
+            source="douban",
+            title=str(hit.get("title") or ""),
+            overview="",            # subject_suggest 不给简介（如实留空）
+            rating=None,            # 同理不给评分
+            year=_year_of(hit.get("year")),
+            poster=str(hit.get("image") or "") or None,
+            lang="zh",
+            external_ids={"douban": str(hit.get("id") or "")} if hit.get("id") else {},
+        )
+    # Frodo 兜底（批二 #14）：suggest 没命中时再问 Frodo 片名搜——它走
+    # 移动端接口（suggest 在机房出口恒空时 Frodo 仍有机会），且命中后
+    # 能带回简介 / 评分（suggest 结构性给不了）。置信门槛在
+    # douban_frodo.search_by_title 里（标题一致 + 年份相等 + 类型对
+    # 位），与本文件其它源同一口径：宁可漏也不错配。熔断是它自己的
+    # douban_frodo 源名，失败只熔断它自己，不牵连 suggest 腿。
+    from backend.emby_server.metasources import douban_frodo
+
+    found = douban_frodo.search_by_title(title, year, kind)
+    if not found:
         return None
     return Hit(
         source="douban",
-        title=str(hit.get("title") or ""),
-        overview="",            # subject_suggest 不给简介（如实留空）
-        rating=None,            # 同理不评分
-        year=_year_of(hit.get("year")),
-        poster=str(hit.get("image") or "") or None,
+        title=str(found.get("title") or ""),
+        original_title=str(found.get("original_title") or ""),
+        overview=str(found.get("overview") or ""),
+        genres=[str(g) for g in (found.get("genres") or [])],
+        rating=found.get("rating"),
+        year=found.get("year"),
+        poster=str(found.get("image") or "") or None,
         lang="zh",
-        external_ids={"douban": str(hit.get("id") or "")} if hit.get("id") else {},
+        external_ids={"douban": str(found.get("id") or "")} if found.get("id") else {},
     )
 
 
@@ -382,7 +419,7 @@ def search_omdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
         return None               # OMDb 不索引剧集，剧集条目直接不查
     key = pool.pick_any()
     if not key:
-        raise SourceError("没有可用的 OMDb 密钥")
+        raise SourceError("没有可用的 OMDb 密钥", count_failure=False)
     gate.acquire()
     params = {"apikey": key, "t": (title or "").strip()}
     if year:
@@ -460,7 +497,7 @@ def search_tvdb(title: str, year: Optional[int], kind: str, *, pool, gate) -> Op
         return None               # v4 的 search 只覆盖剧集
     key = pool.pick_any()
     if not key:
-        raise SourceError("没有可用的 TheTVDB 密钥")
+        raise SourceError("没有可用的 TheTVDB 密钥", count_failure=False)
     gate.acquire()
     query = f"{title} {year}".strip() if year else (title or "").strip()
     url = f"{TVDB_SEARCH}?query={urllib.parse.quote(query)}&limit=5"
@@ -509,7 +546,7 @@ SPECS: list = [
     SourceSpec("bangumi", "Bangumi（番组）", False, "zh",
                "中文番剧最准；公开接口，按 UA 礼仪限速", search_bangumi),
     SourceSpec("douban", "豆瓣", False, "zh",
-               "中文剧命中率高；subject_suggest 只给标题/年份/海报，没有简介与评分", search_douban),
+               "中文剧命中率高；subject_suggest 只给标题/年份/海报，Frodo 兜底可带回简介与评分", search_douban),
     SourceSpec("anilist", "AniList", False, "zh",
                "动漫覆盖好，简介与评分齐全；GraphQL 公开接口", search_anilist),
     SourceSpec("tvmaze", "TVmaze", False, "en",

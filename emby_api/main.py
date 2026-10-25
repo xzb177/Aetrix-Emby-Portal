@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 # 纯 ASGI 中间件（中转零拷贝优化）：替代原来的 @app.middleware("http")
 from emby_api.asgi_middleware import (
+    DoubleEmbyPrefixMiddleware,
     EaBodyLimitMiddleware,
     EaRateLimitMiddleware,
     ForegroundActivityMiddleware,
@@ -44,8 +45,7 @@ try:  # Starlette ≥ 0.47 提供默认排除表（老版本没有该常量，�
     from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES as _GZIP_DEFAULTS
 except ImportError:  # pragma: no cover
     _GZIP_DEFAULTS = ()
-from fastapi.responses import FileResponse, JSONResponse
-from pathlib import Path
+from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
 
 from backend.metrics_guard import MetricsGuard
@@ -167,13 +167,15 @@ async def lifespan(app: FastAPI):
     _claim_identity()
     await _probe_panel()
 
-    # 崩溃残留的收尾 + 长期运行的后台维护（扫描标志 / 过期会话 / 转码目录 / 字幕缓存）。
-    # 同一套库可能同时被 EM 与多台 EA 打开，这里做的是幂等且带阈值判断的清理。
+    # 崩溃残留的收尾 + 长期运行的后台维护（过期会话 / 转码目录 / 字幕缓存）。
     # r43：EA 是播放前台进程，janitor 只跑轻量清理（heavy=False），图片/缩略图/
     # 分类回填等重活由 worker 进程做——原来两边每 600 秒各跑一整套，纯浪费不说，
     # 还跟播放请求抢 DB/磁盘/CPU。
+    # 扫描收尾三件套（复位/收尾/续扫）同理只归 worker：scan_owner=False。
+    # 2026-10-22 事故实证：EA 无门槛跑三件套与 worker 撞车，每次重启成对
+    # 产生两条 resume 流水、互相掐断对方刚续上的扫描（见 maintenance 文档）。
     try:
-        maintenance.run_startup_maintenance()
+        maintenance.run_startup_maintenance(scan_owner=False)
         maintenance.start_janitor(heavy=False)
     except Exception as exc:  # noqa: BLE001 — 维护失败不影响出流
         logger.warning("启动维护失败（可忽略）: %s", exc)
@@ -396,6 +398,10 @@ app.add_middleware(DownloadGuardMiddleware)
 app.add_middleware(DomainGuardMiddleware)
 app.add_middleware(CloudflareIPMiddleware)
 
+# 双重 /emby 前缀归一化：注册在最外层（CORS 除外），路径先折叠再进其余中间件
+# 与路由 —— 客户端自拼 /emby + 用户又填带 /emby 的地址时不再整串 404。
+app.add_middleware(DoubleEmbyPrefixMiddleware)
+
 # CORS 最后注册 = 最外层（见上文注释）
 if _cors_origins:
     app.add_middleware(
@@ -532,27 +538,20 @@ install_image_routes(emby_router)
 app.include_router(emby_router)
 
 
-# ==================== 轻量 Web 播放页 ====================
-# 单文件 web_player/index.html（手机浏览器直接看片，不用装 App）。
-# 挂在 EA 上：与 /emby/* 同源，页面里的 API/图片/播放地址全用相对路径，
-# 无 CORS 问题，也不用像 user_frontend 那样先查 EA base_url。
-# 独立轻量页，不碰 user_frontend / admin_frontend。
-_WEB_PLAYER_DIR = Path(__file__).resolve().parent.parent / "web_player"
-
-
-@app.get("/watch", include_in_schema=False)
-@app.get("/watch/", include_in_schema=False)
-async def web_player_index():
-    """轻量 Web 播放页入口。"""
-    index_file = _WEB_PLAYER_DIR / "index.html"
-    if index_file.is_file():
-        return FileResponse(index_file, media_type="text/html; charset=utf-8")
-    raise HTTPException(status_code=404, detail="Web player not found")
-
-
 if __name__ == "__main__":
+    import logging
+
     import uvicorn
 
+    try:
+        from backend.domain_guard import uvicorn_proxy_kwargs
+
+        proxy_kwargs = uvicorn_proxy_kwargs()
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "构造代理头信任名单失败，uvicorn 只信回环", exc_info=True
+        )
+        proxy_kwargs = {"proxy_headers": True, "forwarded_allow_ips": "127.0.0.1,::1"}
     uvicorn.run(
         "emby_api.main:app",
         host=os.getenv("HOST", "0.0.0.0"),
@@ -560,4 +559,6 @@ if __name__ == "__main__":
         log_level=os.getenv("LOG_LEVEL", "info"),
         # 单进程：转码子进程与会话管理在同一进程内闭环，多 worker 会重复 fork
         workers=1,
+        # 显式传入，避免 uvicorn 自己读到 FORWARDED_ALLOW_IPS=*
+        **proxy_kwargs,
     )

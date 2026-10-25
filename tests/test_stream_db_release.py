@@ -132,7 +132,11 @@ def test_video_stream_closes_session_before_body(monkeypatch, tmp_path):
         return StreamingResponse(gen())
 
     monkeypatch.setattr(api, "serve_file", fake_serve_file)
-    req = types.SimpleNamespace(headers={}, url=types.SimpleNamespace(path="/emby/Videos/g1/stream"))
+    # #1220 修：真实 Starlette 请求一定有 query_params；此前桩缺该属性，
+    # 在 video_stream 新读变体参数后触发 AttributeError。补齐后桩与
+    # 真实请求形状一致（本用例不带变体，走老路径）。
+    req = types.SimpleNamespace(headers={}, query_params={},
+                                url=types.SimpleNamespace(path="/emby/Videos/g1/stream"))
     user = types.SimpleNamespace(id=1)
 
     async def go():
@@ -143,29 +147,6 @@ def test_video_stream_closes_session_before_body(monkeypatch, tmp_path):
 
     asyncio.run(go())
     assert states == [True]
-
-
-def test_video_hls_segment_closes_session(monkeypatch, tmp_path):
-    from backend.emby_server import api
-
-    _patch_common(monkeypatch, api)
-    seg = tmp_path / "seg1.ts"
-    seg.write_bytes(b"ts")
-    info = {"dir": str(tmp_path)}
-    monkeypatch.setattr(api, "get_transcode", lambda sid: info)
-    monkeypatch.setattr(api, "touch_transcode", lambda sid: None, raising=False)
-    db = _FakeDb()
-    req = types.SimpleNamespace(
-        headers={}, query_params={"session": "s1"},
-        url=types.SimpleNamespace(path="/emby/videos/g1/seg1.ts"),
-        base_url="http://t/",
-    )
-    monkeypatch.setattr(api, "_base_url", lambda r: "http://t")
-    monkeypatch.setattr(api, "_echo_auth_qs", lambda r: "")
-    user = types.SimpleNamespace(id=1)
-    resp = asyncio.run(api.video_hls("g1", "seg1.ts", req, user, db))
-    assert db.closed
-    assert resp.path == str(seg)
 
 
 def test_streaming_endpoints_are_decorated():

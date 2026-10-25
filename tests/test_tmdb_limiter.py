@@ -35,8 +35,13 @@ def _clean_cache(monkeypatch):
     """
     monkeypatch.setenv("EMBY_TMDB_CACHE", "0")
     TmdbClient._cache.clear()
+    # 熔断注册表同为进程全局（批一 #8）：本文件专测 429/网络失败风暴，
+    # 不复位的话失败计数跨用例累计、会把后面的用例误熔断掉
+    from backend.emby_server.metasources import breaker as provider_breaker
+    provider_breaker.reset_all()
     yield
     TmdbClient._cache.clear()
+    provider_breaker.reset_all()
 
 
 @pytest.fixture

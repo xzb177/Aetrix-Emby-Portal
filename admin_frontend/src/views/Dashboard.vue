@@ -25,13 +25,13 @@ import {
   Film, MessageSquareDashed, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
   Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, Trophy, Flame, Activity,
-  AlertTriangle,
+  AlertTriangle, Table2,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchLibraries, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
   fetchServersSummary, fetchStatsTrend, fetchBackendServices, fetchDashboardAggregate,
-  type BackendServiceStatus, type DashboardAggregate } from '@/api/admin'
+  type BackendServiceStatus, type DashboardAggregate, type DashboardDetailTables } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
   EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary, TrendStats,
@@ -39,6 +39,15 @@ import type {
 
 const overview = ref<OverviewStats | null>(null)
 const playback = ref<PlaybackStats | null>(null)
+/** 数据明细 7 表（detail part）：集中在本页一个区里页签切换，不铺开 */
+const detail = ref<DashboardDetailTables | null>(null)
+const detailTab = ref('users')
+
+/** 明细表时间：ISO → MM-DD HH:mm（年份与秒对扫表没意义） */
+function fmtTime(iso: string): string {
+  if (!iso || iso.length < 16) return iso || ''
+  return `${iso.slice(5, 10)} ${iso.slice(11, 16)}`
+}
 const economy = ref<EconomyStats | null>(null)
 const trend = ref<TrendStats | null>(null)
 // 存储健康卡按库的本机目录可读性判（见 mountSummary）。以前这里还单独拉一次 /mounts，
@@ -108,6 +117,7 @@ async function loadAggregate(): Promise<boolean> {
   servers.value = parts.servers ?? null
   realms.value = parts.realms ?? null
   backendServices.value = parts.backend_services?.services ?? []
+  detail.value = parts.detail ?? null
   failedParts.value = failed
   loading.value = false
   return true
@@ -654,6 +664,114 @@ function serviceRoleLabel(role: string): string {
           </div>
         </SectionCard>
       </section>
+
+      <!-- 数据明细：7 张表集中在这一个区里页签切换（2026-10-23 用户要求补表，
+           并明确不要铺得到处都是） -->
+      <SectionCard v-if="detail" title="数据明细" :icon="Table2" meta="点页签切换">
+        <el-tabs v-model="detailTab" class="detail-tabs">
+          <el-tab-pane label="最近注册" name="users">
+            <EmptyState v-if="detail.recent_users.length === 0" compact :icon="Users" title="暂无用户" description="" />
+            <table v-else class="detail-table">
+              <thead><tr><th>用户</th><th>注册时间</th><th>渠道</th><th>类型</th></tr></thead>
+              <tbody>
+                <tr v-for="u in detail.recent_users" :key="u.username + u.created_at">
+                  <td>{{ u.username }}</td>
+                  <td>{{ fmtTime(u.created_at) }}</td>
+                  <td>{{ u.channel || '—' }}</td>
+                  <td>{{ u.is_welfare ? '公益' : '付费' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </el-tab-pane>
+          <el-tab-pane label="最近订单" name="orders">
+            <EmptyState v-if="detail.recent_orders.length === 0" compact :icon="Wallet" title="暂无订单" description="" />
+            <table v-else class="detail-table">
+              <thead><tr><th>用户</th><th>项目</th><th>类别</th><th>金额</th><th>状态</th><th>时间</th></tr></thead>
+              <tbody>
+                <tr v-for="(o, i) in detail.recent_orders" :key="i">
+                  <td>{{ o.username }}</td>
+                  <td>{{ o.item }}</td>
+                  <td>{{ o.kind }}</td>
+                  <td>¥{{ o.amount }}</td>
+                  <td>{{ o.status }}</td>
+                  <td>{{ fmtTime(o.created_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </el-tab-pane>
+          <el-tab-pane label="库内容" name="libraries">
+            <EmptyState v-if="detail.library_stats.length === 0" compact :icon="Film" title="暂无媒体库" description="" />
+            <table v-else class="detail-table">
+              <thead><tr><th>媒体库</th><th>电影</th><th>剧集</th><th>集数</th><th>合计</th></tr></thead>
+              <tbody>
+                <tr v-for="r in detail.library_stats" :key="r.library">
+                  <td>{{ r.library }}</td>
+                  <td>{{ r.movies }}</td>
+                  <td>{{ r.shows }}</td>
+                  <td>{{ r.episodes }}</td>
+                  <td>{{ r.total }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </el-tab-pane>
+          <el-tab-pane label="刮削进度" name="enrich">
+            <EmptyState v-if="detail.enrich_progress.length === 0" compact :icon="Film" title="暂无媒体库" description="" />
+            <table v-else class="detail-table">
+              <thead><tr><th>媒体库</th><th>已刮</th><th>待刮</th><th>覆盖率</th></tr></thead>
+              <tbody>
+                <tr v-for="r in detail.enrich_progress" :key="r.library">
+                  <td>{{ r.library }}</td>
+                  <td>{{ r.enriched }}</td>
+                  <td>{{ r.pending }}</td>
+                  <td>{{ r.enriched + r.pending === 0 ? '—' : `${Math.round((r.enriched / (r.enriched + r.pending)) * 100)}%` }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </el-tab-pane>
+          <el-tab-pane label="积分流水" name="points">
+            <EmptyState v-if="detail.points_flow.length === 0" compact :icon="Coins" title="暂无流水" description="" />
+            <table v-else class="detail-table">
+              <thead><tr><th>用户</th><th>类型</th><th>增减</th><th>说明</th><th>时间</th></tr></thead>
+              <tbody>
+                <tr v-for="(p, i) in detail.points_flow" :key="i">
+                  <td>{{ p.username }}</td>
+                  <td>{{ p.type }}</td>
+                  <td :class="p.amount >= 0 ? 'amt-in' : 'amt-out'">{{ p.amount >= 0 ? `+${p.amount}` : p.amount }}</td>
+                  <td class="desc-cell">{{ p.description }}</td>
+                  <td>{{ fmtTime(p.created_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </el-tab-pane>
+          <el-tab-pane label="求片热度" name="seeks">
+            <EmptyState v-if="detail.seek_hot.length === 0" compact :icon="MessageSquareDashed" title="暂无求片" description="" />
+            <table v-else class="detail-table">
+              <thead><tr><th>片名</th><th>类型</th><th>求片次数</th><th>待处理</th></tr></thead>
+              <tbody>
+                <tr v-for="s in detail.seek_hot" :key="s.title + s.media_type">
+                  <td>{{ s.title }}</td>
+                  <td>{{ s.media_type === 'movie' ? '电影' : s.media_type === 'tv' ? '剧集' : s.media_type }}</td>
+                  <td>{{ s.count }}</td>
+                  <td>{{ s.pending }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </el-tab-pane>
+          <el-tab-pane label="近 7 天活跃" name="activity">
+            <table class="detail-table">
+              <thead><tr><th>日期</th><th>活跃用户</th><th>播放次数</th><th>新增用户</th></tr></thead>
+              <tbody>
+                <tr v-for="d in detail.activity_days" :key="d.date">
+                  <td>{{ d.date.slice(5) }}</td>
+                  <td>{{ d.active_users }}</td>
+                  <td>{{ d.plays }}</td>
+                  <td>{{ d.new_users }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </el-tab-pane>
+        </el-tabs>
+      </SectionCard>
     </template>
   </div>
 </template>
@@ -858,6 +976,34 @@ function serviceRoleLabel(role: string): string {
   padding: 9px 0;
   border-bottom: 1px solid var(--au-border);
 }
+
+/* 数据明细表（detail part）：紧凑扫表，与 rank-row 同一条分隔线口径 */
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.detail-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--au-text-2);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--au-border);
+}
+.detail-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--au-border);
+  white-space: nowrap;
+}
+.detail-table .desc-cell {
+  white-space: normal;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.detail-table .amt-in { color: var(--au-success, #16a34a); }
+.detail-table .amt-out { color: var(--au-danger, #dc2626); }
+.detail-tabs :deep(.el-tabs__header) { margin-bottom: 6px; }
 .rank-row:last-child { border-bottom: none; }
 
 .rank-index {

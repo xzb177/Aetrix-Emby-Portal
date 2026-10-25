@@ -100,11 +100,6 @@ def _protected(cfg: dict, action: str) -> bool:
     return str(cfg.get(f"captcha_protect_{action}") or "").strip().lower() == "true"
 
 
-def is_protected(db: Session, action: str) -> bool:
-    """某个动作（login / register / admin_login）是否要校验"""
-    return _protected(_config(db), action)
-
-
 def widget_info(db: Session) -> dict:
     """给前端挂件的信息（只含公开的站点密钥；未启用时不给任何密钥）"""
     cfg = _config(db)
@@ -150,10 +145,6 @@ def _verify(db: Session, cfg: dict, token: Optional[str], ip: str = "") -> tuple
         return True, ""
     codes = body.get("error-codes") or []
     return False, f"人机验证失败（{', '.join(str(c) for c in codes) or resp.status_code}）"
-
-
-def verify_token(db: Session, token: Optional[str], ip: str = "") -> tuple[bool, str]:
-    return _verify(db, _config(db), token, ip)
 
 
 def verify_request(db: Session, action: str, token: Optional[str], ip: str = "") -> tuple[bool, str]:

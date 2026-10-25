@@ -102,8 +102,7 @@ const GROUPS: Group[] = [
     icon: CalendarCheck,
     fields: [
       { key: 'checkin_enabled', label: '启用签到', type: 'bool', hint: '关闭后用户端签到入口隐藏，已发放的积分不受影响' },
-      { key: 'checkin_base_points', label: '基础积分', type: 'int', suffix: '积分/次', hint: '未设置随机范围时的默认值' },
-      { key: 'checkin_base_min', label: '基础积分下限', type: 'int', suffix: '积分/次', hint: '随机范围下限，默认跟随基础积分', advanced: true },
+      { key: 'checkin_base_min', label: '基础积分下限', type: 'int', suffix: '积分/次', hint: '随机范围下限，与上限相同=固定值；都不填=固定 5 分', advanced: true },
       { key: 'checkin_base_max', label: '基础积分上限', type: 'int', suffix: '积分/次', hint: '随机范围上限，与下限相同=固定值', advanced: true },
       { key: 'checkin_streak_bonus', label: '连签加成', type: 'int', suffix: '积分/天', hint: '每多连签一天额外增加的积分', advanced: true },
       { key: 'checkin_streak_max_bonus', label: '加成上限', type: 'int', suffix: '积分', hint: '连签加成的封顶值', advanced: true },
@@ -130,7 +129,7 @@ const GROUPS: Group[] = [
   {
     id: 'exchange',
     title: '兑换码 · 求片',
-    desc: '卡码默认套餐与用户每日求片上限',
+    desc: '卡码默认套餐与求片额度（日限 + 公益/付费月限都在这一张卡）',
     icon: TicketCheck,
     fields: [
       {
@@ -147,6 +146,22 @@ const GROUPS: Group[] = [
         type: 'int',
         suffix: '条/天',
         hint: '用户端提交求片时的硬性限额，未设置时默认 5 条',
+      },
+      {
+        // 2026-10-23 去重 #5：两个月限原先散在公益页（付费月限甚至没有
+        // 后台入口），与日限收进同一张卡；后端键与 media_seek 消费不变
+        key: 'welfare_request_monthly',
+        label: '公益服每月求片上限',
+        type: 'int',
+        suffix: '条/月',
+        hint: '公益服用户每月最多求片条数，未设置时默认 3 条',
+      },
+      {
+        key: 'paid_request_monthly',
+        label: '付费服每月求片上限',
+        type: 'int',
+        suffix: '条/月',
+        hint: '付费用户每月最多求片条数，未设置时默认 10 条',
       },
     ],
   },
@@ -192,7 +207,8 @@ const GROUPS: Group[] = [
     desc: '邀请奖励与下级消费返利比例',
     icon: UserPlus,
     fields: [
-      { key: 'invitation_reward_points', label: '邀请人奖励', type: 'int', suffix: '积分', hint: '每成功邀请一人，邀请人拿到的积分。推荐值：100' },
+      // 邀请人奖励已收口到下方「推广奖励」一组（2026-10-23 去重）：同一事件
+      // 此前两处各发一笔，现只由推广奖励发放，这里的同名字段已删除
       { key: 'invitation_invitee_reward_points', label: '被邀请人奖励', type: 'int', suffix: '积分', hint: '新人用邀请链接注册时多拿的积分。推荐值：50', advanced: true },
       { key: 'invitation_rebate_percent', label: '消费返利', type: 'int', suffix: '%', hint: '下级充值/消费时邀请人可得的比例', advanced: true },
       {
@@ -1292,8 +1308,11 @@ watch(
             </el-form>
           </SectionCard>
 
-          <!-- 列表去重缓存 -->
+          <!-- 列表去重缓存：独立卡片，归「播放与风控」段（左侧导航入口
+               也是这么挂的）。此前漏写 v-if，在每个段落里各渲染了一份
+               （全页共 4 份重复卡），2026-10-23 修复 -->
           <SectionCard
+            v-if="sec.id === 'playback'"
             id="group-items-dedup-cache"
             title="列表去重缓存"
             :icon="Zap"

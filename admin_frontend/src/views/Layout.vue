@@ -25,6 +25,7 @@ import {
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Clapperboard,
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
+  Image as ImageIcon,
   Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Heart, Medal, HardDrive, MessageSquareText,
   Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks,
@@ -147,10 +148,20 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/servers', label: '服务器与线路', icon: Server },
       { path: '/emby', label: '媒体库', icon: Library },
+      { path: '/media-library', label: '图片与顺序', icon: ImageIcon },
       // 谁能看到哪些库（服务器默认范围 + 指定用户覆盖）：默认关闭，不改现有行为
       { path: '/library-scope', label: '可见范围', icon: Eye },
       // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
       { path: '/metadata-sources', label: '元数据来源', icon: Database },
+      // 识别审查：自动刮削认不准（有候选没过置信线）的条目带证据排队，人工在这里处置
+      { path: '/identify-review', label: '识别审查', icon: ListChecks },
+      // 上游源：别人的媒体服当作源接进来（#25 25-1 只做源管理）
+      { path: '/upstream-sources', label: '上游源', icon: Server },
+      // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
+      { path: '/storage-bindings', label: '存储绑定列表', icon: HardDrive },
+      { path: '/upstream-mappings', label: '上游映射列表', icon: Server },
+      { path: '/yun139-pools', label: '139 账号池', icon: Cloud },
+      { path: '/provider-sidecar', label: 'sidecar 状态', icon: Database },
       { path: '/pan115', label: '115 账号', icon: Cloud },
       { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
     ],
@@ -200,6 +211,9 @@ const navGroups: NavGroup[] = [
       { path: '/health', label: '系统健康', icon: Activity },
       // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
       { path: '/tasks', label: '任务总览', icon: ListChecks },
+      // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
+      { path: '/sample-hash-progress', label: '采样哈希进度', icon: ListChecks },
+      { path: '/playback-bus', label: '播放总线', icon: Activity },
       { path: '/diagnosis', label: '一键体检', icon: Stethoscope },
       { path: '/api-keys', label: 'API Key', icon: KeyRound, superOnly: true },
     ],

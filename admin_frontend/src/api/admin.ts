@@ -2,7 +2,6 @@
 import { get, getBlob, getPublic, postBlob, post, put, patch, del, upload } from '@/utils/request'
 import type { EconomyStats } from './economy'
 import type {
-  AdminInfo,
   AdminListResponse,
   AdminLogRow,
   AdminRole,
@@ -29,12 +28,12 @@ import type {
   PlaybackPolicy,
   PlaybackRuntime,
   PlayLinesSnapshot,
+  PlayRiskSnapshot,
   EaMountHealth,
   RemoteServerRow,
   ServerKind,
   ServerKindMeta,
   ServerOverview,
-  ServerOpsScanResult,
   ServerOpsSnapshot,
   ServerProbeResult,
   ServerSummary,
@@ -56,16 +55,21 @@ import type {
   UserDetail,
   UserGrants,
   UsersResponse,
+  PlaybackBusCommand,
+  PlaybackBusSnapshot,
+  SampleHashProgress,
+  SidecarStatusResponse,
+  StorageBindingsResponse,
+  UpstreamMappingsResponse,
+  Yun139PoolsResponse,
 } from '@/types'
 
-// ==================== 认证 ====================
-
+// ==================== 认证 =============
 /** 管理员登录；站点开了「保护管理后台登录」时必须带人机验证令牌 */
 export const login = (data: { username: string; password: string; captcha_token?: string }) =>
   post<LoginResponse>('/auth/login', data)
 
-// ==================== 首次运行向导 ====================
-
+// ==================== 首次运行向导 =============
 /** 向导状态：初始化是否已完成（免鉴权，前端进 /admin/ 前先问一次） */
 export const setupStatus = () => get<{ setup_completed: boolean }>('/setup/status')
 
@@ -73,8 +77,6 @@ export const setupStatus = () => get<{ setup_completed: boolean }>('/setup/statu
  * P0-4：部署时若配置了 SETUP_BOOTSTRAP_TOKEN，必须携带一致的 bootstrap_token。 */
 export const createFirstAdmin = (data: { username: string; password: string; bootstrap_token?: string }) =>
   post<{ ok: boolean; username: string; setup_completed: boolean }>('/setup', data)
-
-export const fetchMe = () => get<AdminInfo>('/auth/me')
 
 export const changePassword = (data: { old_password: string; new_password: string }) =>
   post<{ success: boolean }>('/auth/change-password', data)
@@ -91,8 +93,7 @@ export const adminLogout = (refreshToken?: string) =>
     { silent: true },
   )
 
-// ==================== 用户管理 ====================
-
+// ==================== 用户管理 =============
 export const fetchUsers = (params: {
   search?: string
   active?: boolean
@@ -153,8 +154,7 @@ export const sendUserMessage = (id: number, data: { title: string; content: stri
 export const broadcastMessage = (data: { title: string; content: string }) =>
   post<{ success: boolean }>('/messages/broadcast', data)
 
-// ==================== 会员卡码体系 ====================
-
+// ==================== 会员卡码体系 =============
 /** 注册码门禁设置 */
 export const fetchRegistrationSettings = () => get<RegistrationSettings>('/settings/registration')
 
@@ -216,8 +216,7 @@ export const patchRegistrationCode = (id: number, data: { is_active?: boolean; n
 export const deleteRegistrationCode = (id: number) =>
   del<{ success: boolean; message: string }>(`/registration-codes/${id}`)
 
-// ==================== 设备风控 ====================
-
+// ==================== 设备风控 =============
 export const fetchDevices = (params: {
   user_id?: number
   keyword?: string
@@ -236,8 +235,7 @@ export const removeDevice = (userId: number, deviceId: string) =>
   del<{ success: boolean; message: string }>(
     `/devices/${encodeURIComponent(deviceId)}`, { user_id: userId })
 
-// ==================== 登录 / 安全日志 ====================
-
+// ==================== 登录 / 安全日志 =============
 export const fetchLoginLogs = (params: {
   username?: string
   ip?: string
@@ -250,8 +248,7 @@ export const fetchLoginLogs = (params: {
 export const purgeLoginLogs = (days: number) =>
   post<{ success: boolean; message: string; deleted: number }>('/login-logs/purge', { days })
 
-// ==================== 防共享：跨城市轨迹 + 同播检测 ====================
-
+// ==================== 防共享：跨城市轨迹 + 同播检测 =============
 /** 四档处置：关闭 / 只记录 / 记录并告警 / 记录、告警并处置（缺省 off） */
 export type ShareGuardAction = 'off' | 'record' | 'alert' | 'enforce'
 
@@ -307,8 +304,7 @@ export const saveShareGuardPolicy = (policy: Partial<ShareGuardPolicy>) =>
 export const purgeShareGuardEvents = (days: number | null) =>
   post<{ success: boolean; message: string; deleted: number }>('/share-guard/purge', { days })
 
-// ==================== 访问拦截（UA 关键词 + IP 归属地） ====================
-
+// ==================== 访问拦截（UA 关键词 + IP 归属地） =============
 /** 归属地方向：屏蔽名单内 / 只允许名单内 */
 export type AccessGuardRegionMode = 'block' | 'allow'
 
@@ -370,8 +366,7 @@ export const saveAccessGuardPolicy = (policy: AccessGuardPolicyInput) =>
 export const previewAccessGuard = (payload: { ip: string; user_agent: string }) =>
   post<{ success: boolean; result: AccessGuardPreview }>('/access-guard/preview', payload)
 
-// ==================== 邀请码管理（v2.44.0 第一阶段） ====================
-
+// ==================== 邀请码管理（v2.44.0 第一阶段） =============
 /** 邀请码状态：可用 / 已用完 / 已过期 / 已作废 */
 export type InvitationCodeState = 'active' | 'used_up' | 'expired' | 'revoked'
 
@@ -431,8 +426,7 @@ export const updateInvitationCode = (
 export const revokeInvitationCodes = (ids: number[]) =>
   post<{ success: boolean; message: string; count: number }>('/invitation-codes/revoke', { ids })
 
-// ==================== 推广奖励（v2.44.0 第一阶段） ====================
-
+// ==================== 推广奖励（v2.44.0 第一阶段） =============
 export interface PromotionPolicy {
   enabled: boolean
   reward_type: 'balance' | 'days'
@@ -472,8 +466,7 @@ export const fetchPromotion = (params: { limit?: number; offset?: number } = {})
  * 直写辅助已无人调用，随入口一起移除。
  */
 
-// ==================== 媒体库可见范围：服务器默认 + 指定用户覆盖 ====================
-
+// ==================== 媒体库可见范围：服务器默认 + 指定用户覆盖 =============
 /** 媒体库下拉选项（后端返回的全部库，含启用/虚拟状态） */
 export interface LibraryScopeOption {
   id: number
@@ -534,8 +527,7 @@ export const saveLibraryScopeUser = (
 export const removeLibraryScopeUser = (userId: number) =>
   del<LibraryScopeResult>(`/library-scope/users/${userId}`)
 
-// ==================== 公告 ====================
-
+// ==================== 公告 =============
 export const fetchAnnouncements = (params: { active_only?: boolean } = {}) =>
   get<Announcement[]>('/announcements', params)
 
@@ -547,8 +539,7 @@ export const updateAnnouncement = (id: number, data: Partial<{ title: string; co
 
 export const deleteAnnouncement = (id: number) => del<{ success: boolean }>(`/announcements/${id}`)
 
-// ==================== 探险世界 · 到此一游留言墙 ====================
-
+// ==================== 探险世界 · 到此一游留言墙 =============
 export interface WallPost {
   id: number
   user_id: number
@@ -564,8 +555,7 @@ export const fetchWallPosts = (limit = 50) =>
 export const deleteWallPost = (id: number) =>
   del<{ success: boolean; message: string }>(`/wall-posts/${id}`)
 
-// ==================== 探险预告 · 保密新大陆（揭晓位配置） ====================
-
+// ==================== 探险预告 · 保密新大陆（揭晓位配置） =============
 /** 揭晓位配置（后端 GET/PUT /api/admin/teaser-config；字段见 backend/emby_server/teaser.py） */
 export interface TeaserConfig {
   enabled: boolean
@@ -587,8 +577,7 @@ export const fetchTeaserConfig = () =>
 export const saveTeaserConfig = (values: Record<string, string | boolean>) =>
   put<TeaserConfig>('/teaser-config', { values })
 
-// ==================== 工单 ====================
-
+// ==================== 工单 =============
 export const fetchTickets = (params: { status_filter?: string } = {}) =>
   get<TicketRow[]>('/tickets', params)
 
@@ -603,8 +592,7 @@ export const replyTicket = (id: number, data: { message: string; close_ticket?: 
 
 export const closeTicket = (id: number) => post<{ success: boolean }>(`/tickets/${id}/close`)
 
-// ==================== 求片 ====================
-
+// ==================== 求片 =============
 /** 求片清单；`realm_id=0` = 全部服，不传 = 当前服 */
 export const fetchMediaSeeks = (params: { status_filter?: string; realm_id?: number; order?: string } = {}) =>
   get<MediaSeekRow[]>('/media-seek', params)
@@ -644,8 +632,7 @@ export const pushMediaSeek = (id: number, data: { target?: string; link?: string
     data
   )
 
-// ==================== 多服运营（/api/admin/realms） ====================
-
+// ==================== 多服运营（/api/admin/realms） =============
 const R = '/realms'
 
 /** 服清单（含每服的运营数据）+ 当前服 + 跨服汇总 */
@@ -710,8 +697,7 @@ export const fetchRealmSubscriptions = (
 ) =>
   get<RealmSubscriptionsResponse>(`${R}/${realmId}/subscriptions`, params)
 
-// ==================== 服务器管理 ====================
-
+// ==================== 服务器管理 =============
 const S = '/servers'
 
 export const fetchServers = (params: { realm_id?: number } = {}) =>
@@ -746,15 +732,6 @@ export const fetchServerOps = (serverId: number, params: {
   include_unassigned?: boolean
   runs_limit?: number
 } = {}) => get<ServerOpsSnapshot>(`${S}/${serverId}/ops`, params)
-
-/**
- * 一键把这台节点负责的库推入扫描队列（扫描 → 入库 → 刮削流水线）
- *
- * 与逐库「扫描」同一套机制：面板能扫的本地入队、归其它节点管的转发过去、
- * 已在队列的不重复推。
- */
-export const runServerOpsScan = (serverId: number, params: { include_unassigned?: boolean } = {}) =>
-  post<ServerOpsScanResult>(`${S}/${serverId}/ops/scan`, params)
 
 export interface BackendServiceStatus {
   name: string; role: string; status: string
@@ -816,15 +793,25 @@ export const refreshServerMounts = () =>
     `${S}/mounts/health`
   )
 
-// ==================== 日志与统计 ====================
-
+// ==================== 日志与统计 =============
 export const fetchLogs = (params: { limit?: number; action_filter?: string } = {}) =>
   get<AdminLogRow[]>('/logs', params)
 
 export const fetchOverview = () => get<OverviewStats>('/stats/overview')
 
+/** 仪表盘数据明细（2026-10-23 新增 detail part：7 张表，前端集中一区页签切换） */
+export interface DashboardDetailTables {
+  recent_users: Array<{ username: string; created_at: string; channel: string; is_welfare: boolean }>
+  recent_orders: Array<{ username: string; item: string; kind: string; amount: number; status: string; created_at: string }>
+  library_stats: Array<{ library: string; movies: number; shows: number; episodes: number; total: number }>
+  enrich_progress: Array<{ library: string; enriched: number; pending: number }>
+  points_flow: Array<{ username: string; type: string; amount: number; description: string; created_at: string }>
+  seek_hot: Array<{ title: string; media_type: string; count: number; pending: number }>
+  activity_days: Array<{ date: string; active_users: number; plays: number; new_users: number }>
+}
+
 /**
- * 仪表盘聚合：一次拿回首屏 8 路数据（后端 GET /api/admin/dashboard/overview）。
+ * 仪表盘聚合：一次拿回首屏各路数据（后端 GET /api/admin/dashboard/overview）。
  * parts 里某一项为 null 表示该采集失败——语义与原先逐个调用的 soft() 兜底一致，
  * 前端按同样规则点名并给重试。聚合本身失败时调用方应回退逐个调用。
  */
@@ -840,6 +827,7 @@ export interface DashboardAggregate {
     realms: RealmOverview | null
     backend_services: { success: boolean; services: BackendServiceStatus[] } | null
     trend: TrendStats | null
+    detail: DashboardDetailTables | null
   }
 }
 export const fetchDashboardAggregate = (days = 14) =>
@@ -919,8 +907,7 @@ export const fetchDiagnosisRules = () => get<DiagnosisRules>('/diagnosis/rules')
 export const fixDiagnosisRule = (rule_id: string) =>
   post<DiagnosisFixResult>('/diagnosis/fix', { rule_id, confirm: true })
 
-// ==================== API Key / Service Token（/api/admin/api-keys/*） ====================
-
+// ==================== API Key / Service Token（/api/admin/api-keys/*） =============
 export interface ApiKeyRow {
   id: number
   key_id: string
@@ -950,8 +937,7 @@ export const revokeApiKey = (keyId: string) => del<{ ok: boolean }>(`/api-keys/$
 
 export const fetchPlaybackStats = () => get<PlaybackStats>('/stats/playback')
 
-// ==================== 自建 Emby 管理（/api/admin/emby/*） ====================
-
+// ==================== 自建 Emby 管理（/api/admin/emby/*） =============
 const E = '/emby'
 
 export const fetchEmbyOverview = () => get<{ total_items: number; total_libraries: number; active_sessions: number; total_users: number }>(`${E}/overview`)
@@ -1137,8 +1123,7 @@ export const fetchFsWatchStatus = () => get<{
 /** 扫描队列快照：正在跑 / 排队中 / 最近完成 + 远程 IO 计数（面板每几秒轮询一次） */
 export const fetchScanQueue = () => get<EmbyScanQueue>(`${E}/scan-queue`)
 
-// ==================== 元数据与刮削（EmbyAdmin.vue「元数据与刮削」分组） ====================
-
+// ==================== 元数据与刮削（EmbyAdmin.vue「元数据与刮削」分组） =============
 /** 密钥池里的一把 key（只给掩码与运行状态，**没有原文**） */
 export interface TmdbKeyPoolRow {
   /** 展示序号（从 1 开始，与删除接口一致） */
@@ -1177,10 +1162,6 @@ export interface TmdbKeysStatus {
 
 /** TMDB Key 状态（只返回掩码与数量） */
 export const fetchTmdbKeys = () => get<TmdbKeysStatus>(`${E}/scrape/tmdb-keys`)
-
-/** 保存 TMDB API Keys（逗号/换行/空白分隔）：落库后立即热生效 */
-export const saveTmdbKeys = (keys: string) =>
-  put<{ success: boolean; saved: number; source: string; count: number }>(`${E}/scrape/tmdb-keys`, { keys })
 
 /** 逐把增：往密钥池追加一把（去重；已存在返回 409） */
 export const addTmdbKey = (key: string) =>
@@ -1395,8 +1376,7 @@ export const testTmdbKeys = (keys?: string) =>
   post<{ results: TmdbTestResult[]; pool?: TmdbKeyPoolRow[] }>(
     `${E}/scrape/tmdb-test`, { keys: keys || '' })
 
-// ==================== 多源元数据（Phase 6b） ====================
-
+// ==================== 多源元数据（Phase 6b） =============
 /** 某个源密钥池里的一把 key（同样只给掩码与运行状态） */
 export interface MetaSourceKeyRow {
   index: number
@@ -1435,6 +1415,8 @@ export interface MetaSourceRow {
   keys_legacy?: boolean
   /** 密钥在哪里填：inline = 本卡片行内输入；pool_card = 在下面的密钥池卡片里（TMDB） */
   key_entry?: 'inline' | 'pool_card'
+  /** true = 开关/间隔由下方专属卡片统一设置（豆瓣），源表行只展示状态 */
+  managed_by_card?: boolean
 }
 
 export interface MetaSourcesConfig {
@@ -1653,9 +1635,137 @@ export const lockItemMetadata = (id: number) =>
 export const unlockItemMetadata = (id: number) =>
   post<ItemLockResult>(`${E}/scrape/items/${id}/unlock`)
 
-/** 条目详情（含 metadata_locked） */
-export const fetchItemLockStatus = (id: number) =>
-  get<ItemLockResult>(`${E}/scrape/items/${id}`)
+// ==================== 低置信识别人工审查队列（批二 #15） =============// 自动刮削在 TMDB 真搜过、有候选但无一过置信线时，条目连同当时的候选证据
+// 排进审查队列（后端 emby_identify_review_tasks，开关 IDENTIFY_REVIEW_QUEUE_ENABLED），
+// 管理员在「识别审查」页逐条处置：绑定 / 忽略 / 重跑。后端路由与状态流转
+// 是唯一实现（backend/api/admin_identify_review.py），这里只做调用封装。
+
+/** 审查行状态：pending 待处置；bound / ignored / requeued 是处置结果 */
+export type IdentifyReviewStatus = 'pending' | 'bound' | 'ignored' | 'requeued'
+
+/** 证据快照里的一个候选：识别当刻 TMDB 搜到、但没过置信线的那些 */
+export interface IdentifyReviewCandidate {
+  tmdb_id: number | null
+  title: string
+  original_title: string
+  /** TMDB 的四位年份字符串，可能为空串 */
+  year: string
+  /** 置信档（打分 tier：2 精确 / 1.5 / 1.2 / 1 模糊），被拒候选可能为 null */
+  tier: number | null
+  /** 档内排序分（rank），可能为 null */
+  rank: number | null
+  popularity: number | null
+  poster_path: string | null
+}
+
+/** 入队时的证据快照（只有详情接口带） */
+export interface IdentifyReviewEvidence {
+  query?: string
+  kind?: string
+  searched_year?: number | null
+  captured_at?: string
+  candidates?: IdentifyReviewCandidate[]
+}
+
+/** 审查队列一行（列表与详情同形，详情多 evidence；item_* 是条目当前状态） */
+export interface IdentifyReviewTask {
+  id: number
+  item_id: number
+  /** 入队时的条目名 / 年份快照（条目后来改名也不影响这行说什么） */
+  item_name: string | null
+  item_type: string | null
+  item_year: number | null
+  reason: string
+  status: IdentifyReviewStatus
+  created_at: string | null
+  updated_at: string | null
+  resolved_by: number | null
+  resolved_at: string | null
+  resolved_tmdb_id: string | null
+  item_exists: boolean
+  item_tmdb_id: string | number | null
+  item_enrich_status: string | null
+  item_metadata_source: string | null
+  evidence?: IdentifyReviewEvidence
+}
+
+/** 审查队列分页列表（status 不传 = 全部状态，最新在前） */
+export const fetchIdentifyReviewTasks = (status?: string, page = 1, pageSize = 20) =>
+  get<{ items: IdentifyReviewTask[]; total: number; page: number; page_size: number }>(
+    `${E}/identify-review/tasks`, { page, page_size: pageSize, ...(status ? { status } : {}) })
+
+/** 审查任务详情（含入队时的证据快照：候选与分数） */
+export const fetchIdentifyReviewTask = (taskId: number) =>
+  get<IdentifyReviewTask>(`${E}/identify-review/tasks/${taskId}`)
+
+/** 处置：绑定到选定的 TMDB（后端复用手动绑定的唯一实现 bind_tmdb_id，
+ *  tmdb_id 也支持 tt 开头的 IMDb ID）；重复处置后端返回 409 */
+export const bindIdentifyReviewTask = (taskId: number, tmdbId: string) =>
+  post<{ success: boolean; task: IdentifyReviewTask; bind: TmdbBindResult }>(
+    `${E}/identify-review/tasks/${taskId}/bind`, { tmdb_id: tmdbId })
+
+/** 处置：忽略（条目保持现状，审查行落 ignored 留痕） */
+export const ignoreIdentifyReviewTask = (taskId: number) =>
+  post<{ success: boolean; task: IdentifyReviewTask }>(
+    `${E}/identify-review/tasks/${taskId}/ignore`)
+
+/** 处置：重跑识别（条目重新排入补全队列，审查行落 requeued） */
+export const rerunIdentifyReviewTask = (taskId: number) =>
+  post<{ success: boolean; task: IdentifyReviewTask }>(
+    `${E}/identify-review/tasks/${taskId}/rerun`)
+
+/** 上游源（FMBY 学习 #25 25-1：只做源管理，不做聚合/探活/播放接入）。
+ *  响应永不出凭据原文，只出 has_secret；新建恒为关闭，启用走单独端点。 */
+export interface UpstreamSource {
+  id: number
+  name: string
+  source_type: 'emby' | 'jellyfin'
+  base_url: string
+  auth_method: 'password' | 'api_key'
+  username: string | null
+  has_secret: boolean
+  extra_headers: Record<string, string>
+  user_agent: string | null
+  referer: string | null
+  enabled: boolean
+  credential_scope: string
+  health_status: 'unknown' | 'healthy' | 'unhealthy'
+  last_checked_at: string | null
+  note: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface UpstreamSourceInput {
+  name: string
+  source_type: 'emby' | 'jellyfin'
+  base_url: string
+  auth_method: 'password' | 'api_key'
+  username?: string | null
+  secret?: string | null
+  extra_headers?: Record<string, string> | null
+  user_agent?: string | null
+  referer?: string | null
+  note?: string | null
+}
+
+export const fetchUpstreamSources = () =>
+  get<{ items: UpstreamSource[] }>(`${E}/upstream-sources`)
+
+export const createUpstreamSource = (input: UpstreamSourceInput) =>
+  post<UpstreamSource>(`${E}/upstream-sources`, input)
+
+export const updateUpstreamSource = (id: number, input: Partial<UpstreamSourceInput>) =>
+  put<UpstreamSource>(`${E}/upstream-sources/${id}`, input)
+
+export const enableUpstreamSource = (id: number) =>
+  post<UpstreamSource>(`${E}/upstream-sources/${id}/enable`, {})
+
+export const disableUpstreamSource = (id: number) =>
+  post<UpstreamSource>(`${E}/upstream-sources/${id}/disable`, {})
+
+export const deleteUpstreamSource = (id: number) =>
+  del<{ success: boolean }>(`${E}/upstream-sources/${id}`)
 
 
 /** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
@@ -1698,8 +1808,7 @@ export interface EnrichProgress {
 export const fetchEnrichProgress = () =>
   get<{ success: boolean } & EnrichProgress>(`${E}/scrape/enrich-progress`)
 
-// ==================== 任务总览（路线 2-A）====================
-
+// ==================== 任务总览（路线 2-A）=============
 export type TaskCardStatus = 'running' | 'ok' | 'warning' | 'error' | 'idle' | 'disabled'
 
 export interface TaskCardMetric {
@@ -1855,12 +1964,7 @@ export const deleteLibrary = (id: number) => del<{ success: boolean }>(`${E}/lib
 
 export const fetchSessions = () => get<{ sessions: EmbySessionRow[] }>(`${E}/sessions`)
 
-export const stopSession = (sessionKey: string) => del<{ success: boolean }>(`${E}/sessions/${sessionKey}`)
-
-export const stopAllTranscodes = () => post<{ stopped: number }>(`${E}/transcodes/stop-all`)
-
-// ==================== 管理员与权限（v2.26.0，/api/admin/admins） ====================
-// 角色定义在后端（backend/admin_roles.py）：super = 全部；operator = 日常运营；
+// ==================== 管理员与权限（v2.26.0，/api/admin/admins） =============// 角色定义在后端（backend/admin_roles.py）：super = 全部；operator = 日常运营；
 // viewer = 只读。角色判定发生在服务端鉴权依赖里，这里的函数只是调用入口。
 
 export const fetchAdmins = () => get<AdminListResponse>('/admins')
@@ -1877,20 +1981,21 @@ export const updateAdmin = (userId: number, data: { role?: AdminRole; is_active?
 export const revokeAdmin = (userId: number) =>
   del<{ success: boolean }>(`/admins/${userId}`)
 
-// ==================== 播放与客户端策略（v2.26.0，/api/admin/playback） ====================
-// 转码开关 / 并发上限 / 码率上限：改完对 EM 与 EA 同时生效（同一个库）。
+// ==================== 播放与客户端策略（v2.26.0，/api/admin/playback） =============// 转码开关 / 并发上限 / 码率上限：改完对 EM 与 EA 同时生效（同一个库）。
 
 export const fetchPlaybackPolicy = () =>
   get<{ policy: PlaybackPolicy; keys: Record<string, string>; runtime: PlaybackRuntime }>(
     '/playback/policy',
   )
 
-// ==================== 播放线路可观测（Phase 3，/api/admin/playback/lines） ====================
-// 线路可观测卡片：能不能用 / 是不是在降级 / 有多少人多少流量 / 效果如何。
+// ==================== 播放线路可观测（Phase 3，/api/admin/playback/lines） =============// 线路可观测卡片：能不能用 / 是不是在降级 / 有多少人多少流量 / 效果如何。
 // **只读**：线路配置在 CDN 卡片里改（本地缓存卡片已随中继全删下线），这里不改。
 // 灰度发布（0% 流量影子评估）本期不做，所以也没有对应的开关。
 
 export const fetchPlayLines = () => get<PlayLinesSnapshot>('/playback/lines')
+
+/** 播放风控看板：叠播 Top10 + Drive 调用计数（只读） */
+export const fetchPlayRisk = () => get<PlayRiskSnapshot>('/playback/risk')
 
 export const updatePlaybackPolicy = (policy: Partial<PlaybackPolicy>) =>
   put<{ success: boolean; applied: Record<string, string>; policy: PlaybackPolicy }>(
@@ -1898,8 +2003,7 @@ export const updatePlaybackPolicy = (policy: Partial<PlaybackPolicy>) =>
   )
 
 
-// ==================== 存储挂载（/api/admin/emby/mounts） ====================
-// 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone / drive 是远程来源。
+// ==================== 存储挂载（/api/admin/emby/mounts） =============// 挂载 = 媒体库的内容来源：local 是本机目录，115 / rclone / drive 是远程来源。
 // 类型只由路径前缀决定（115:/ / rclone: / drive: / 绝对路径）。
 // 远程挂载的条目在库里存 mount:// 路径；无 drive_file_id 的走服务端专用中继
 // 转发（streaming.serve_mount_relay_async，凭据不下发），带 drive_file_id 的
@@ -1922,13 +2026,6 @@ export const probeMountsHealth = () =>
   post<{ mounts: StorageMount[]; total: number; ok_count: number; failed_count: number }>(
     `${E}/mounts/health`
   )
-
-/** EA 体检：让 EM 向 EA 拉一次「以 EA 视角」的挂载体检并落库 */
-export const refreshEaMountHealth = () =>
-  post<{
-    success: boolean
-    health: { ok: boolean; error?: string; checked_at?: string | null; failed_count?: number }
-  }>('/emby/servers/mounts/refresh')
 
 export interface MountPayload {
   name?: string
@@ -1963,9 +2060,6 @@ export const testSavedMount = (id: number) =>
   post<{ success: boolean; result: { ok: boolean; message: string }; mount: StorageMount }>(
     `${E}/mounts/${id}/test`
   )
-
-export const testMountConfig = (data: { mount_type: string; path?: string; config?: Record<string, string> }) =>
-  post<{ success: boolean; result: { ok: boolean; message: string } }>(`${E}/mounts/test`, data)
 
 export const browseMount = (id: number, rel = '/') =>
   get<{ rel: string; entries: MountDirEntry[]; total: number }>(`${E}/mounts/${id}/browse`, { rel })
@@ -2006,13 +2100,8 @@ export const browseLocalDirs = (path = '/') =>
     truncated?: boolean
   }>('/mounts/local-dirs', { path })
 
-/** rclone：列出用户粘贴的 rclone.conf 里已配置的 remote */
-export const fetchMountRcloneRemotes = () =>
-  get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/conf`)
 
-
-// ==================== 备用链路限速（配置瘦身第 3 批） ====================
-
+// ==================== 备用链路限速（配置瘦身第 3 批） =============
 /** 备用链路（豆瓣 subject_suggest / Bangumi 兜底）请求最小间隔秒数，0=不限速 */
 export interface AltmetaRates {
   douban_rate: number
@@ -2027,8 +2116,7 @@ export const fetchAltmetaRates = () =>
 export const saveAltmetaRates = (data: AltmetaRates) =>
   put<{ success: boolean; douban_rate: number; bangumi_rate: number }>(`${E}/scrape/altmeta-rates`, data)
 
-// ==================== 播放策略（/api/admin/emby/playback） ====================
-
+// ==================== 播放策略（/api/admin/emby/playback） =============
 export interface PlaybackDirectSource {
   name: string
   type: string
@@ -2043,8 +2131,7 @@ export interface PlaybackDirectSource {
   enabled: boolean
 }
 
-// ==================== 每台 EA 一份 rclone.conf ====================
-
+// ==================== 每台 EA 一份 rclone.conf =============
 /** 读这台 EA 的 rclone.conf：**只返 remote 名，不返明文**（含 token） */
 export const fetchServerRcloneConf = (serverId: number) =>
   get<{
@@ -2061,8 +2148,7 @@ export const saveServerRcloneConf = (serverId: number, conf: string) =>
   post<{ success: boolean; path: string; remotes: string[]; total: number }>(
     `${S}/${serverId}/rclone-conf`, { conf })
 
-// ==================== 115 账号与直挂（/api/admin/emby/115/*） ====================
-
+// ==================== 115 账号与直挂（/api/admin/emby/115/*） =============
 export const fetchPan115Accounts = () =>
   get<{ accounts: Pan115Account[]; env_cookie_configured: boolean
         ua_presets: { value: string; label: string }[] }>(`${E}/115/accounts`)
@@ -2100,12 +2186,7 @@ export const browsePan115 = (params: { cid?: string; account_id?: number; cookie
   )
 
 
-// ==================== rclone.conf（用户自己粘贴，面板只负责跑 rclone） ====================
-// 后端只回 remote 名，不回 rclone.conf 原文——里面全是 token / secret。
-
-export const fetchRcloneConf = () =>
-  get<{ path: string; configured: boolean; remotes: string[]; total: number }>(
-    `${E}/mounts/rclone/conf`)
+// ==================== rclone.conf（用户自己粘贴，面板只负责跑 rclone） =============// 后端只回 remote 名，不回 rclone.conf 原文——里面全是 token / secret。
 
 export const saveRcloneConf = (conf: string) =>
   post<{ success: boolean; path: string; remotes: string[]; total: number }>(
@@ -2129,8 +2210,7 @@ export const rotateGDriveSa = () =>
   post<{ success: boolean; sa_file?: string; mode?: string; needs_remount?: boolean; remount_hint?: string }>('/gdrive/sa-rotate')
 
 
-// ==================== 系统告警（后端 /api/admin/alerts/*） ====================
-
+// ==================== 系统告警（后端 /api/admin/alerts/*） =============
 /** 告警严重度 */
 export type AlertSeverity = 'info' | 'warning' | 'critical'
 /** 告警渠道 */
@@ -2223,3 +2303,82 @@ export const ackAlert = (alertId: number) =>
 /** 发送测试告警（只发给当前管理员） */
 export const sendTestAlert = (channel: AlertChannel) =>
   post<{ ok: boolean; channel: string }>('/alerts/test', { channel })
+
+// ==================== 专线 B 第二阶段 · 只读观测口（GET，仅展示） =============// 全部走 get（@/utils/request，baseURL /api/admin），不新增任何写调用。
+// 字段口径见 backend/api/admin_readonly.py 与 backend/emby_server/playback_bus_admin.py。
+
+/** 存储绑定列表：按用户 / 状态过滤，limit/offset 分页（id 倒序） */
+export const fetchStorageBindings = (params: {
+  user_id?: number
+  status?: string
+  limit?: number
+  offset?: number
+} = {}) => get<StorageBindingsResponse>('/storage-bindings', params)
+
+/** 采样哈希进度：只计数，不触发轮次、不写库 */
+export const fetchSampleHashProgress = () => get<SampleHashProgress>('/sample-hash/progress')
+
+/** sidecar 状态：不传 provider 查 p115 + yun139 两个，传了只查该个 */
+export const fetchSidecarStatus = (provider?: string) =>
+  get<SidecarStatusResponse>('/providers/sidecar', provider ? { provider } : undefined)
+
+/** 上游映射列表：按本地条目 / 源过滤，limit/offset 分页（id 倒序） */
+export const fetchUpstreamMappings = (params: {
+  local_item_id?: number
+  source_id?: number
+  limit?: number
+  offset?: number
+} = {}) => get<UpstreamMappingsResponse>('/upstream-mappings', params)
+
+/** 139 账号池列表（含成员；成员只出 has_credential），limit/offset 分页 */
+export const fetchYun139Pools = (params: { limit?: number; offset?: number } = {}) =>
+  get<Yun139PoolsResponse>('/yun139/pools', params)
+
+/** 播放快照：无快照时后端回 404，调用方须按空状态处理、不当错误页 */
+export const fetchPlaybackBusSnapshot = () => get<PlaybackBusSnapshot>('/playback-bus/snapshot')
+
+/** 播放命令列表：最近命令审计行数组（倒序，limit 默认 50） */
+export const fetchPlaybackBusCommands = (limit = 50) =>
+  get<PlaybackBusCommand[]>('/playback-bus/commands', { limit })
+// ==================== 媒体库图片与顺序（媒体库学习 L2 / L4） =============
+export interface ArtworkOverrideRow {
+  id: number
+  item_id: number
+  item_name: string
+  item_type: string
+  kind: string
+  image_url: string
+  created_at?: string | null
+}
+
+export const fetchArtworkOverrides = () =>
+  get<{ items: ArtworkOverrideRow[] }>('/media-library/artwork-overrides')
+export const setArtworkOverride = (data: { item_id: number; kind: string; image_url: string }) =>
+  post<{ ok: boolean }>('/media-library/artwork-overrides', data)
+export const deleteArtworkOverride = (itemId: number, kind: string) =>
+  del<{ ok: boolean }>(`/media-library/artwork-overrides/${itemId}/${kind}`)
+
+export interface LibraryOrderRow {
+  library_id: number
+  name: string
+  sort_order: number
+}
+
+export const fetchLibraryOrder = () =>
+  get<{ items: LibraryOrderRow[] }>('/emby/libraries/order')
+export const setLibraryOrder = (orders: { library_id: number; sort_order: number }[]) =>
+  put<{ ok: boolean }>('/emby/libraries/order', { orders })
+
+/** 库封面策略（媒体库学习 L1）：顺序即尝试顺序，管理端保存进 system_configs */
+export interface CoverStrategyState {
+  stored_order: string[] | null
+  env_order: string[] | null
+  effective_order: string[]
+  borrow_enabled: boolean
+  known_steps: string[]
+}
+
+export const fetchCoverStrategy = () =>
+  get<CoverStrategyState>('/media-library/cover-strategy')
+export const setCoverStrategy = (order: string[]) =>
+  put<{ ok: boolean; order: string[]; effective_order: string[] }>('/media-library/cover-strategy', { order })

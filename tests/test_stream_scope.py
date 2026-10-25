@@ -35,5 +35,8 @@ class TestLibraryScopeStreamGuard:
         """两个播放端点都经统一 helper 做库范围校验（H1：_require_visible_item）"""
         with open("backend/emby_server/api.py", encoding="utf-8") as f:
             content = f.read()
-        assert content.count("P0 / H1") == 2
-        assert content.count("await run_db(_require_visible_item, db, user, item_id)") >= 3
+        assert content.count("P0 / H1") == 1  # video_hls 转交 video_stream，标记只剩一处
+        assert content.count("await run_db(_require_visible_item, db, user, item_id)") >= 2
+        # video_hls 转交 video_stream：两个播放入口仍经同一 helper 校验
+        #（video_stream 直接调用，video_hls 经委托覆盖）
+        assert "return await video_stream(item_id, request, user, db)" in content

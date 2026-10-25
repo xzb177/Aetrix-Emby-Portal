@@ -24,10 +24,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from backend.emby_server.metasources import config as cfg_mod
+from backend.emby_server.metasources import breaker, config as cfg_mod
 from backend.emby_server.metasources import keypool, sources
 
 logger = logging.getLogger(__name__)
+
+#: 在自己的请求层喂熔断的源，引擎不再重复喂（否则一次失败记两笔）：
+#: tmdb 由 TmdbClient._get 按请求喂；douban / bangumi 由 altmeta 的
+#: HTTP 层喂（异常在那里被吞成 None，引擎层分不清成败）。
+_SELF_FEEDING = {"tmdb", "douban", "bangumi"}
 
 # 会被「按序填充」的字段（外部 ID 是合并，不是取第一个）
 MERGE_FIELDS = ("title", "original_title", "overview", "genres", "rating", "year", "poster")
@@ -129,20 +134,47 @@ def _douban_banned_now() -> bool:
 
 
 def _fetch_one(source_cfg, title: str, year: Optional[int], kind: str) -> Optional[sources.Hit]:
-    """问一个源；失败抛 ``SourceError``（由调用方隔离）"""
+    """问一个源；失败抛 ``SourceError``（由调用方隔离）
+
+    成败顺手喂熔断（``breaker``）：自喂的源（``_SELF_FEEDING``）跳过，
+    预检失败（没配密钥这类 ``count_failure=False``）不喂——那不是源的错。
+    """
+    feeding = source_cfg.id not in _SELF_FEEDING
     spec = sources.SPEC_BY_ID.get(source_cfg.id)
     if spec is None:
-        raise sources.SourceError("未知数据源")
+        if feeding:
+            breaker.release_probe(source_cfg.id)   # 没发请求：归还半开名额
+        raise sources.SourceError("未知数据源", count_failure=False)
     pool = keypool.pool_for(source_cfg.id, source_cfg.keys)
     gate = keypool.RateGate(source_cfg.id, source_cfg.rate)
     if spec.requires_key and not pool.usable:
-        raise sources.SourceError("没有可用密钥")
-    return spec.search(title, year, kind, pool=pool, gate=gate)
+        if feeding:
+            breaker.release_probe(source_cfg.id)   # 同上
+        raise sources.SourceError("没有可用密钥", count_failure=False)
+    try:
+        hit = spec.search(title, year, kind, pool=pool, gate=gate)
+    except sources.SourceError as exc:
+        if feeding:
+            if exc.count_failure:
+                breaker.record_failure(source_cfg.id, status=exc.status, error=str(exc))
+            else:
+                # 预检类失败不计数，但半开名额是引擎刚领的，必须归还
+                breaker.release_probe(source_cfg.id)
+        raise
+    except Exception as exc:  # noqa: BLE001 — 与引擎的隔离口径一致，计数后原样上抛
+        if feeding:
+            breaker.record_failure(source_cfg.id, error=f"{type(exc).__name__}: {exc}")
+        raise
+    if feeding:
+        # 返回 Hit 或 None（合法地没搜到）都算源活着
+        breaker.record_success(source_cfg.id)
+    return hit
 
 
 def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
             *, limit: Optional[int] = None, only: Optional[str] = None,
-            ignore_switch: bool = False, snapshot=None) -> CollectResult:
+            ignore_switch: bool = False, snapshot=None,
+            imdb_id: Optional[str] = None) -> CollectResult:
     """按配置顺序采集一条，返回归并后的字段与逐源结果
 
     总开关关掉时**直接返回空结果**（调用方据此走原来的 NFO → TMDB → 豆瓣链路），
@@ -202,6 +234,19 @@ def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
             result.outcomes.append(SourceOutcome(
                 source_cfg.id, label, False, skipped="本轮时间预算用尽，后面的源没问"))
             continue
+        # 熔断（批一 #8）：源连续失败开断后，自动采集直接跳过、不再逐条撞；
+        # 冷却到期由 breaker.allow 放行一个探测请求试水。检查点必须紧贴
+        # 发请求处：allow 在半开期会领走唯一的探测名额，领了又不发
+        # （被上面任何一道 continue 截住）名额就漏了、源再也等不到探测。
+        # 与豆瓣封禁同一口径：只拦自动采集，试采集（only）是人工探针——
+        # 它打成功了熔断自然解除，失败了重新计时，比干等冷却更有用。
+        # 自喂的源（_SELF_FEEDING）不在这里查：它们的请求层自己查
+        # （在这里先领走探测名额、请求层再查就会自己把自己挡住）。
+        if only is None and source_cfg.id not in _SELF_FEEDING \
+                and not breaker.allow(source_cfg.id):
+            result.outcomes.append(SourceOutcome(
+                source_cfg.id, label, False, skipped="源熔断中，已跳过"))
+            continue
         began = time.monotonic()
         asked += 1
         try:
@@ -226,6 +271,8 @@ def collect(db, title: str, year: Optional[int] = None, kind: str = "series",
                                              elapsed_ms=elapsed))
 
     _relay_tmdb(result, hits, targets, title, year, kind, only=only)
+    _relay_douban(result, hits, targets, title, year, kind,
+                  only=only, db=db, imdb_id=imdb_id)
     _merge(result, hits)
     return result
 
@@ -298,6 +345,70 @@ def _relay_tmdb(result: CollectResult, hits: list, targets: list,
         result.outcomes.append(SourceOutcome(
             "tmdb", "TMDB（IMDb 接力）", True, hit=True,
             elapsed_ms=int((time.monotonic() - began) * 1000)))
+
+
+def _relay_douban(result: CollectResult, hits: list, targets: list,
+                  title: str, year: Optional[int], kind: str, *,
+                  only: Optional[str], db, imdb_id: Optional[str]) -> None:
+    """IMDb → 豆瓣桥（FMBY 学习批二 #14，魂 1：身份与证据先行）。
+
+    FMBY 的豆瓣通道用 IMDb 编号在 TMDB 与豆瓣之间搭桥对齐身份——先用
+    编号认亲，再谈搬文案。本桥是 ``_relay_tmdb`` 的镜像：任一源已经给
+    出豆瓣 id 就不桥；编号来源的可信度规则与 TMDB 桥二完全一致
+    （条目自身 ``imdb_id`` 最可信；其它源带回的编号必须过标题一致性
+    门，防模糊命中的错编号被「转正」成错绑）。桥本身只认编号、不做
+    片名搜——片名兜底在豆瓣源自己的 Frodo 搜里（见 sources.search_douban）。
+
+    闸门口径与采集主循环里的豆瓣源一致：豆瓣没进本轮目标 / 已关 /
+    总开关关 / 全局封禁期，一律不桥（封禁期零豆瓣请求是反风控红线）。
+    Frodo 腿自身的熔断在 ``douban_frodo`` 模块内（``douban_frodo``
+    源名），桥失败一律静默——桥是增益，不是主链。
+    """
+    if only is not None:
+        return
+    if any(h.external_ids.get("douban") for h in hits):
+        return
+    douban_cfg = next((s for s in targets if s.id == "douban"), None)
+    if douban_cfg is None or not douban_cfg.enabled:
+        return
+    # db 为 None 时开关状态已编码在快照里（read_config 的口径），不再重查
+    if db is not None and not _douban_switch_on(db):
+        return
+    if _douban_banned_now():
+        return
+    imdb = str(imdb_id or "").strip()
+    if not imdb:
+        known_titles = [title] + [h.original_title for h in hits if h.original_title]
+        imdb = next((h.external_ids.get("imdb") for h in hits
+                     if h.external_ids.get("imdb")
+                     and any(sources._title_consistent(t, h.title)
+                             for t in known_titles)), None) or ""
+    if not imdb:
+        return
+    began = time.monotonic()
+    try:
+        from backend.emby_server.metasources import douban_frodo
+
+        found = douban_frodo.find_by_imdb(imdb, year, kind)
+    except Exception:  # noqa: BLE001 — 桥失败不影响已采到的结果
+        return
+    if not found or not found.get("id"):
+        return
+    hits.append(sources.Hit(
+        source="douban",
+        title=str(found.get("title") or ""),
+        original_title=str(found.get("original_title") or ""),
+        overview=str(found.get("overview") or ""),
+        genres=[str(g) for g in (found.get("genres") or [])],
+        rating=found.get("rating"),
+        year=found.get("year"),
+        poster=str(found.get("image") or "") or None,
+        lang="zh",
+        external_ids={"douban": str(found["id"]), "imdb": imdb},
+    ))
+    result.outcomes.append(SourceOutcome(
+        "douban", "豆瓣（IMDb 桥）", True, hit=True,
+        elapsed_ms=int((time.monotonic() - began) * 1000)))
 
 
 def _merge(result: CollectResult, hits: list) -> None:

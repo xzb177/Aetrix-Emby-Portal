@@ -2,8 +2,9 @@
 
 两条必须同时成立：
 
-- 配了 ``EMBY_PUBLIC_URL`` 时，PlaybackInfo（DirectStreamUrl / DirectPlayUrl /
-  TranscodingUrl）、字幕 DeliveryUrl、本服务图片绝对地址、System/Info，以及门户
+- 配了 ``EMBY_PUBLIC_URL`` 时，PlaybackInfo（DirectStreamUrl / DirectPlayUrl、
+  且不再下发 TranscodingUrl）、字幕 DeliveryUrl、本服务图片绝对地址、System/Info，
+  以及门户
   交给播放器的导入 scheme，全部用这个地址。请求 Host 即使是源站 IP 也不许出现。
 - 没配时，只有可信反代（回环 / ``TRUSTED_PROXIES`` / ``FORWARDED_ALLOW_IPS``）
   的 ``X-Forwarded-Proto`` / ``X-Forwarded-Host`` 才生效；不可信对端伪造的头被忽略。
@@ -148,12 +149,18 @@ def test_untrusted_peer_cannot_forge_https_or_host(monkeypatch):
     assert not base.startswith("https://")
 
 
-def test_star_forwarded_allow_is_explicit_not_default(monkeypatch):
+def test_star_forwarded_allow_is_ignored_for_public_url(monkeypatch):
+    """``*`` 不能改写公开 URL 的 scheme/host，也不能让点名函数信任任意对端。"""
+    from backend.domain_guard import peer_honors_forwarded_headers
+
     _clear_public_env(monkeypatch)
     req = _request(client="198.51.100.8", forwarded_proto="https", forwarded_host="emby.example.com")
     assert client_base_url(req).startswith("http://")
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
-    assert client_base_url(req) == "https://emby.example.com"
+    assert peer_honors_forwarded_headers("198.51.100.8") is False
+    base = client_base_url(req)
+    assert base == f"http://{ORIGIN_IP}"
+    assert "emby.example.com" not in base
 
 
 def test_restored_real_ip_still_trusts_forwarded_proto(monkeypatch):
@@ -278,7 +285,6 @@ def seed():
     user = models.WebUser(
         username=UNAME, password_hash="x", is_active=True, is_staff=True,
         emby_username=UNAME, emby_password=hash_password(PW),
-        enable_video_transcoding=True,
     )
     db.add(user)
     lib = em.Library(guid=_guid(), name="公开地址测试库", collection_type="movies", is_enabled=True)
@@ -366,7 +372,8 @@ def test_playback_info_uses_public_url_when_host_is_origin_ip(monkeypatch, app, 
 
     assert play.status_code == 200, play.text
     src = play.json()["MediaSources"][0]
-    for key in ("DirectStreamUrl", "DirectPlayUrl", "TranscodingUrl"):
+    assert "TranscodingUrl" not in src  # 转码删除后不再下发
+    for key in ("DirectStreamUrl", "DirectPlayUrl"):
         assert src[key].startswith(PUBLIC + "/"), src[key]
         assert ORIGIN_IP not in src[key]
         assert ORIGIN_HOST not in src[key]
@@ -404,7 +411,8 @@ def test_playback_info_is_https_behind_trusted_proxy_without_public_url(monkeypa
     assert info.json()["WanAddress"] == "https://emby.example.com"
     assert play.status_code == 200, play.text
     src = play.json()["MediaSources"][0]
-    for key in ("DirectStreamUrl", "DirectPlayUrl", "TranscodingUrl"):
+    assert "TranscodingUrl" not in src  # 转码删除后不再下发
+    for key in ("DirectStreamUrl", "DirectPlayUrl"):
         assert src[key].startswith("https://emby.example.com/"), src[key]
         assert not src[key].startswith("http://")
         assert ORIGIN_IP not in src[key]
@@ -430,29 +438,12 @@ def test_playback_info_ignores_forged_https_from_untrusted_peer(monkeypatch, app
     src = play.json()["MediaSources"][0]
     assert src["DirectStreamUrl"].startswith(f"http://{ORIGIN_IP}/")
     assert "evil.example" not in src["DirectStreamUrl"]
-    assert src["TranscodingUrl"].startswith(f"http://{ORIGIN_IP}/")
+    assert "TranscodingUrl" not in src  # 转码删除后不再下发
 
 
-def test_hls_playlist_urls_use_public_base(monkeypatch, tmp_path):
-    monkeypatch.setenv("EMBY_PUBLIC_URL", PUBLIC)
-    (tmp_path / "master.m3u8").write_text(
-        "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:4.0,\nseg-000.ts\n#EXTINF:4.0,\nseg-001.m4s\n",
-        encoding="utf-8",
-    )
-    req = _request(
-        host=ORIGIN_IP,
-        client="203.0.113.9",
-        forwarded_host="attacker.example",
-    )
-    guid = "d" * 32
-    text = emby_api._rewrite_playlist(
-        str(tmp_path), emby_api._base_url(req), guid, "sess-1", api_key="tok",
-    )
-    assert f"{PUBLIC}/emby/videos/{guid}/seg-000.ts?" in text
-    assert f"{PUBLIC}/emby/videos/{guid}/seg-001.m4s?" in text
-    assert ORIGIN_IP not in text
-    assert ORIGIN_HOST not in text
-    assert "attacker.example" not in text
+# 转码删除注：test_hls_playlist_urls_use_public_base 已随 _rewrite_playlist 的删除而移除——
+# 播放列表改写辅助函数已不存在（video_hls 仅保留 stream.* 直连委托，其余路径一律 404，
+# 见 tests/test_transcode_removed.py::test_transcode_paths_return_404）。
 
 
 def test_forged_xfh_from_untrusted_peer_is_ignored(monkeypatch):

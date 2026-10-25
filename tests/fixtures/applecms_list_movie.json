@@ -1,0 +1,1 @@
+{"code":1,"limit":20,"list":[{"type_id":1,"type_name":"电影","vod_id":101,"vod_name":"示例电影","vod_play_from":"线路A","vod_play_url":"正片$https://cdn.example.com/movie.m3u8"}],"msg":"ok","page":1,"pagecount":1,"total":1}

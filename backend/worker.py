@@ -244,6 +244,124 @@ def _start_heartbeat_thread(redis_client) -> threading.Thread:
     return t
 
 
+_playback_bus_snapshot_thread: threading.Thread | None = None
+
+
+def start_playback_bus_snapshot(stop_event=None) -> bool:
+    """播放实时总线快照工人（FMBY #24 接线）。
+
+    仅在 PLAYBACK_BUS_ENABLED=1 时启动一根 daemon 线程跑
+    run_snapshot_loop；关时返回 False、不启动、不写快照，全站行为
+    逐字不变。幂等：已有存活线程时直接返回 True，不重复启动。
+    stop_event 供测试与优雅关闭；默认用 worker 的 _shutdown_event。
+    """
+    global _playback_bus_snapshot_thread
+    from backend.emby_server import playback_bus
+
+    if not playback_bus.bus_enabled():
+        return False
+    alive = _playback_bus_snapshot_thread
+    if alive is not None and alive.is_alive():
+        return True
+    from backend.database import SessionLocal
+
+    t = threading.Thread(
+        target=playback_bus.run_snapshot_loop,
+        args=(SessionLocal,),
+        kwargs={"stop_event": stop_event if stop_event is not None else _shutdown_event},
+        daemon=True, name="playback-bus-snapshot",
+    )
+    t.start()
+    _playback_bus_snapshot_thread = t
+    return True
+
+
+def _upstream_probe_sources():
+    """上游探活守护的 sources_fn（生产接线，FMBY #25 25-3）。
+
+    每轮重新取已启用源，适配成探活模块的 UpstreamSource。只接线，
+    不改守护本体、不改判定语义：
+    - 只含 Emby/Jellyfin 型：探活首批只做这两型，CMS 型后置（跳过）。
+    - 凭据只走 upstream_sources.load_credential 唯一入口：api_key 型
+      源的 token 只进请求头（守护的 _auth_headers）；password 型源
+      没有 token，只做公开握手，不把密码当 token 用。
+    - 凭据解不开的行直接跳过（绝不降级成匿名探活，见 load_credential
+      约定）；取源列表失败则本轮返回空列表，不抛异常。
+    """
+    from backend.database import SessionLocal
+    from backend.emby_server import upstream_health as _uh
+    from backend.emby_server import upstream_sources as _ups
+
+    db = SessionLocal()
+    try:
+        rows = _ups.enabled_sources(db)
+        out = []
+        for row in rows:
+            if row.source_type not in ("emby", "jellyfin"):
+                continue
+            api_key = None
+            if row.auth_method == "api_key":
+                try:
+                    cred = _ups.load_credential(row)
+                except Exception:
+                    logger.warning("上游探活：源 id=%s 凭据解不开，已跳过",
+                                   row.id)
+                    continue
+                if cred:
+                    api_key = cred.get("secret")
+            out.append(_uh.UpstreamSource(
+                key=str(row.id),
+                kind=row.source_type,
+                base_url=row.base_url,
+                enabled=True,
+                api_key=api_key,
+            ))
+        return out
+    except Exception:
+        logger.warning("上游探活：取源列表失败，本轮跳过", exc_info=True)
+        return []
+    finally:
+        db.close()
+
+
+def _applecms_probe_sources():
+    """苹果 CMS 轻探活的 sources_fn（生产接线，FMBY #25 下一批）。
+
+    每轮重新取已启用源，适配成探活模块的 AppleCMSSource。只接线，
+    不改守护本体、不改判定语义：
+    - 只含 applecms 型：Emby/Jellyfin 型走 25-3 守护（其 sources_fn
+      跳过 CMS 型），本块只补 CMS 型，两边不重复探。
+    - 键与 Emby 侧同口径 str(row.id)，结论写同一份 Redis 健康存储，
+      健康落库同步守护自动翻译进 PG（同步另有自己的开关）。
+    - 请求头走探活模块的 source_headers（源上配的 UA / Referer /
+      附加头），密封凭据绝不走这里；取源列表失败则本轮返回空列表，
+      不抛异常。
+    """
+    from backend.database import SessionLocal
+    from backend.emby_server import applecms_probe as _acp
+    from backend.emby_server import upstream_sources as _ups
+
+    db = SessionLocal()
+    try:
+        rows = _ups.enabled_sources(db)
+        out = []
+        for row in rows:
+            if row.source_type != "applecms":
+                continue
+            out.append(_acp.AppleCMSSource(
+                key=str(row.id),
+                base_url=row.base_url,
+                enabled=True,
+                headers=_acp.source_headers(row),
+            ))
+        return out
+    except Exception:
+        logger.warning("苹果 CMS 探活：取源列表失败，本轮跳过", exc_info=True)
+        return []
+    finally:
+        db.close()
+
+
 def main() -> int:
     """Worker 主入口"""
     logger.info("🚀 Aetrix Worker 正在启动...")
@@ -350,6 +468,14 @@ def main() -> int:
                 logger.info("✅ 多版本合并 worker 已启动")
         except Exception as e:
             logger.warning(f"启动多版本合并 worker 失败（可忽略）: {e}")
+
+        try:
+            from backend.emby_server import sample_hash_worker
+            if sample_hash_worker.start():
+                started.append("sample_hash_worker")
+                logger.info("✅ 采样哈希 worker 已启动")
+        except Exception as e:
+            logger.warning(f"启动采样哈希 worker 失败（可忽略）: {e}")
 
         try:
             from backend.emby_server import thumbnail_worker
@@ -469,6 +595,130 @@ def main() -> int:
                 logger.info("本机目录实时监听未启用，已降级为定时扫描")
         except Exception as e:
             logger.warning(f"启动目录监听失败（已降级为定时扫描）: {e}")
+
+        # 播放实时总线快照工人（FMBY #24 接线）：仅开关开时启动；
+        # 关时不启动、不写快照，全站行为逐字不变。worker 进程持有
+        # Redis 单实例锁，快照只由本进程写，无双跑风险。
+        try:
+            if start_playback_bus_snapshot():
+                started.append("playback_bus_snapshot")
+                logger.info("✅ 播放总线快照工人已启动")
+            else:
+                logger.info("播放实时总线未开启，快照工人不启动")
+        except Exception as e:
+            logger.warning(f"启动播放总线快照工人失败（可忽略）: {e}")
+
+        # 媒体库列表投影重建工人（FMBY 列表投影读模型试点）：仅开关开时启动；
+        # 关时不启动，读路径走现行现算，全站行为逐字不变。行落 PG 表，
+        # api/ea 任一进程读到的都是同一份；单次重建失败只记警告、不停循环。
+        try:
+            from backend.emby_server import list_projection
+
+            if list_projection.start_projection_worker(_shutdown_event):
+                started.append("list_projection")
+                logger.info("✅ 媒体库列表投影重建工人已启动")
+            else:
+                logger.info("媒体库列表投影未开启，重建工人不启动")
+        except Exception as e:
+            logger.warning(f"启动媒体库列表投影重建工人失败（可忽略）: {e}")
+
+        # 条目排序投影重建工人（媒体库学习 L5）：仅开关开时启动；
+        # 关时不启动，游标分页口直接 404，全站行为逐字不变。
+        try:
+            from backend.emby_server import item_sort_projection
+
+            if item_sort_projection.start_sort_projection_worker(_shutdown_event):
+                started.append("item_sort_projection")
+                logger.info("✅ 条目排序投影重建工人已启动")
+            else:
+                logger.info("条目排序投影未开启，重建工人不启动")
+        except Exception as e:
+            logger.warning(f"启动条目排序投影重建工人失败（可忽略）: {e}")
+
+        # 变体可用性探活工人（FMBY 播放阶段 4，清单第 4 项）：仅开关开时启动；
+        # 关时不发任何请求、不写任何状态，全站行为逐字不变。本阶段只落库 +
+        # 只探活，不接调度（list_variants / video_stream 选路一律不动），
+        # 可用性表只是“看得见的状态”，调度按它过滤是阶段 6/7 的事。
+        try:
+            from backend.emby_server import variant_availability
+
+            if variant_availability.start_probe_worker(_shutdown_event):
+                started.append("variant_availability_probe")
+                logger.info("✅ 变体可用性探活工人已启动")
+            else:
+                logger.info("变体可用性探活未开启，探活工人不启动")
+        except Exception as e:
+            logger.warning(f"启动变体可用性探活工人失败（可忽略）: {e}")
+        # Drive 用户凭据维护工人（BYOS P2，清单第 9 项）：仅开关开时启动；
+        # 关时不扫任何凭据行，全站行为逐字不变；启动即跑一轮 + 周期跑，
+        # 只扫 provider=drive 的用户绑定行，scope=source 行（SA 池等）
+        # 永远不进本循环（分账铁律）。
+        try:
+            from backend.emby_server import drive_oauth
+
+            if drive_oauth.start_drive_cred_maintenance_worker(_shutdown_event):
+                started.append("drive_cred_maintenance")
+                logger.info("✅ Drive 用户凭据维护工人已启动")
+            else:
+                logger.info("Drive 用户凭据维护未开启，维护工人不启动")
+        except Exception as e:
+            logger.warning(f"启动 Drive 凭据维护工人失败（可忽略）: {e}")
+
+        # 苹果 CMS 定时同步（后续四件之 ①）：仅两闸同开时启动；
+        # 关时不启动、不发任何上游请求，全站行为逐字不变。本块只
+        # 加自己的启动行，不动变体探活 / 健康同步的接线行。
+        try:
+            from backend.emby_server import applecms_scheduler
+
+            if applecms_scheduler.start_applecms_scheduler(_shutdown_event):
+                started.append("applecms_scheduler")
+                logger.info("✅ 苹果 CMS 定时同步已启动")
+            else:
+                logger.info("苹果 CMS 同步未开启，定时同步不启动")
+        except Exception as e:
+            logger.warning(f"启动苹果 CMS 定时同步失败（可忽略）: {e}")
+        # 上游探活守护 + 健康落库同步（FMBY #25 25-3/25-14，生产接线）：
+        # 只接线，不改守护本体、不碰投影工人、不碰扫描/播放逻辑。
+        # 两守护各有总开关（默认关），关时线程空转、不发请求、不读写；
+        # 开关开后：探活每轮每源最多一次请求（默认 60 秒），结果写 Redis；
+        # 同步每轮把 Redis 状态翻译后写 PG（#1245 已修提交缺失）。
+        # 两守护共用一个 RedisHealthStore：探活写、同步读，同一份状态。
+        # 友服当前被对方 nginx 挡（公开口亦 403）：探活按守护自身逻辑
+        # 记 failure/unauthorized，3 次后翻 Unavailable、同步落 unhealthy，
+        # 属实记录，不多刷（本处不做任何手动探活）。
+        try:
+            from backend.emby_server import upstream_health as _uh
+            from backend.emby_server import upstream_health_persist as _uhp
+
+            _health_store = _uh.RedisHealthStore()
+            _uh.start_probe_daemon(
+                _upstream_probe_sources, _health_store)
+            started.append("upstream_probe")
+            logger.info("✅ 上游探活守护已启动（总开关关时空转不发请求）")
+            _uhp.start_health_sync_daemon(store=_health_store,
+                                          stop_event=_shutdown_event)
+            started.append("upstream_health_sync")
+            logger.info("✅ 上游健康落库同步守护已启动（总开关关时空转不读写）")
+        except Exception as e:
+            logger.warning(f"启动上游探活/健康同步守护失败（可忽略）: {e}")
+
+        # 苹果 CMS 轻探活（FMBY #25 下一批唯一施工项）：仅
+        # APPLECMS_PROBE_ENABLED=1 时启动；关时线程空转、不发任何请求、
+        # 不读写任何状态，全站行为逐字不变。只探 applecms 型已启用源
+        # （Emby/Jellyfin 守护跳过 CMS 型，本块只补 CMS 型，不改其行为）；
+        # 结论写与 Emby 探活同一份 Redis 健康存储（键 str(source.id)），
+        # 健康落库同步守护自动翻译进 PG。本块只加自己的启动行，不动
+        # 上面两守护的接线行。
+        try:
+            from backend.emby_server import applecms_probe as _acp
+            from backend.emby_server import upstream_health as _uh2
+
+            _acp.start_applecms_probe_daemon(
+                _applecms_probe_sources, _uh2.RedisHealthStore())
+            started.append("applecms_probe")
+            logger.info("✅ 苹果 CMS 轻探活守护已启动（总开关关时空转不发请求）")
+        except Exception as e:
+            logger.warning(f"启动苹果 CMS 轻探活守护失败（可忽略）: {e}")
 
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:

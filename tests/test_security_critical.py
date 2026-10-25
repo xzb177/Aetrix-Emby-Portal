@@ -476,13 +476,11 @@ def test_h2_url_auth_qs_uses_play_sign_for_portal(db):
     assert qs2 == "api_key=" + "b" * 40
 
 
-def test_h2_hls_playlist_echoes_sign_not_jwt(tmp_path):
+def test_h2_echo_auth_qs_never_echoes_jwt():
+    # 转码删除注：原测试的前半（_rewrite_playlist 改写播放列表并回显签名）已随
+    # 该辅助函数的删除而移除；保留后半：查询串里的 JWT 绝不能被回显进 URL。
     from backend.emby_server import api
 
-    (tmp_path / "master.m3u8").write_text("#EXTM3U\nseg0.ts\n", encoding="utf-8")
-    out = api._rewrite_playlist(str(tmp_path), "https://h", "g", "sess",
-                                auth_qs="uid=1&exp=2&sign=abc")
-    assert "seg0.ts?session=sess&uid=1&exp=2&sign=abc" in out
     jwt = create_access_token(1, {"username": "x"})
     req = _request(query=f"session=s&api_key={jwt}".encode())
     assert api._echo_auth_qs(req) == ""
@@ -508,8 +506,7 @@ def test_h2_emby_user_rejects_jwt_in_query(db):
 def test_h2_frontends_do_not_put_tokens_in_image_urls():
     emby_ts = (ROOT / "user_frontend" / "src" / "api" / "emby.ts").read_text(encoding="utf-8")
     assert "api_key=${encodeURIComponent(token)}" not in emby_ts
-    player = (ROOT / "web_player" / "index.html").read_text(encoding="utf-8")
-    assert "'&api_key=' + encodeURIComponent(store.k.token)" not in player
+    # /watch 轻量播放页已删（2026-10-25），播放页断言随之移除。
 
 
 # ===========================================================================

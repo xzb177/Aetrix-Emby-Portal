@@ -150,7 +150,7 @@ function statusBadge(status: string): string {
 
 <template>
   <div class="admin-page">
-    <PageHeader eyebrow="内容与服务" title="工单" description="点标题打开对话；回复会以站内消息通知用户，可在详情里直接改状态与优先级。">
+    <PageHeader eyebrow="内容与服务" title="工单" description="点任意一行打开对话；回复会以站内消息通知用户，可在详情里直接改状态与优先级。">
       <template #actions>
         <el-button :loading="loading" @click="load" :icon="RefreshCw">刷新</el-button>
       </template>
@@ -172,6 +172,8 @@ function statusBadge(status: string): string {
         :error="loadError"
         :empty="statusFilter ? `没有${statusLabel(statusFilter)}的工单` : '还没有工单'"
         :empty-description="statusFilter ? '切到「全部」看看其它状态。' : '用户提交的工单会出现在这里。'"
+        clickable
+        @row-click="openDetail"
         @retry="load"
       >
         <template #cell-title="{ row }">
@@ -194,10 +196,13 @@ function statusBadge(status: string): string {
         <template #cell-updated_at="{ row }"><span class="mono">{{ fmtDate(row.updated_at) }}</span></template>
 
         <template #cell-actions="{ row }">
-          <el-button v-if="row.status !== 'closed'" size="small" type="danger" :loading="rowBusyId === row.id" @click="close(row)">
-            关闭
-          </el-button>
-          <span v-else class="muted">已关闭</span>
+          <!-- 整行可点开详情后，「关闭」必须拦住冒泡，否则点关闭会同时打开抽屉 -->
+          <span @click.stop>
+            <el-button v-if="row.status !== 'closed'" size="small" type="danger" :loading="rowBusyId === row.id" @click="close(row)">
+              关闭
+            </el-button>
+            <span v-else class="muted">已关闭</span>
+          </span>
         </template>
       </DataTable>
     </SectionCard>

@@ -145,8 +145,11 @@ def dispatch(db, update: dict) -> None:
         # 口令抽奖：群内非命令文本先尝试匹配口令关键词
         # 注意：此处不消耗群级限流预算（普通聊天不计入），防刷由 handler 内部的
         # 幂等逻辑保证（重复口令静默，已参加/资格不符均不刷屏）。
+        # （2026-10-23 去重：原「口令未命中接群发言积分」已退役——发言积分
+        # 与 points.award_chat_points 是两套重复系统，退役机器人这套，
+        # 只保留 points.py 那套，见运营参数去重 #1。）
         if in_group and not text.startswith("/"):
-            from backend.tg_bot import callbacks, chat_points
+            from backend.tg_bot import callbacks
 
             try:
                 if callbacks.handle_lottery_password(db, chat_id, tg_user, text):
@@ -154,11 +157,6 @@ def dispatch(db, update: dict) -> None:
             except Exception:
                 logger.exception("lottery password dispatch failed")
                 return
-            try:
-                # r30 N2：口令未命中时接群发言积分（开关/群白名单在内部判断）
-                chat_points.handle_group_message(db, update)
-            except Exception:
-                logger.exception("chat points dispatch failed")
             return
 
         # 非命令文本忽略

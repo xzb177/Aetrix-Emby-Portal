@@ -15,12 +15,12 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import {
-  Activity, AlertTriangle, Clock, Cpu, Download, Gauge, Info, RefreshCw, Save,
-  Server, Smartphone, Target, Tv, Zap,
+  Activity, AlertTriangle, Download, Gauge, Info, RefreshCw, Save,
+  Server, Smartphone, Zap,
 } from 'lucide-vue-next'
 import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
-  fetchPlayLines, fetchPlaybackPolicy,
+  fetchPlayLines, fetchPlayRisk, fetchPlaybackPolicy,
   updatePlaybackPolicy,
 } from '@/api/admin'
 import { fmtBytes } from '@/composables/useDangerOps'
@@ -28,7 +28,7 @@ import { fmtBytes } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type {
   PlaybackPolicy, PlaybackRuntime,
-  PlayLinesSnapshot,
+  PlayLinesSnapshot, PlayRiskSnapshot,
 } from '@/types'
 import { useAuthStore } from '@/stores/auth'
 import NoticePanel from '@/components/NoticePanel.vue'
@@ -45,8 +45,6 @@ const savingPolicy = ref(false)
 const savingOps = ref(false)
 
 const policy = ref<PlaybackPolicy>({
-  transcode_enabled: true,
-  max_concurrent_transcodes: 0,
   drive_direct_play_enabled: true,
 })
 const runtime = ref<PlaybackRuntime | null>(null)
@@ -67,14 +65,16 @@ async function load() {
   loading.value = true
   loadError.value = false
   try {
-    const [p, s, ln] = await Promise.all([
+    const [p, s, ln, rk] = await Promise.all([
       fetchPlaybackPolicy(),
       fetchEconomySettings().catch(() => null),
       fetchPlayLines().catch(() => null),
+      fetchPlayRisk().catch(() => null),
     ])
     policy.value = p.policy
     runtime.value = p.runtime
     playLines.value = ln
+    playRisk.value = rk
     opsError.value = !s
     if (s) {
       ops.value = {
@@ -100,8 +100,31 @@ onMounted(load)
 
 const playLines = ref<PlayLinesSnapshot | null>(null)
 
-/** 本机文件整文件直发 / 转码拉流不走本服务响应体，流量口径不包含它们 */
-const lineBytesHint = '流量 = 本进程经手的出流量（不含转码时 ffmpeg 的拉流与整文件直发）'
+// ==================== 播放风控看板（只读） ====================
+// 同一文件多人同时播（叠播）最容易被谷歌 usercontent 限速；Drive API 403/429
+// 说明配额/风控在收紧。这里只展示，不改任何配置（调参走 env）。
+const playRisk = ref<PlayRiskSnapshot | null>(null)
+const riskHitRate = computed(() => {
+  const r = playRisk.value?.exists_cache_hit_rate
+  return r == null ? '—' : `${Math.round(r * 100)}%`
+})
+const riskScopeLabel = computed(() =>
+  playRisk.value?.scope === 'all_processes' ? '全进程合计（Redis）' : '仅面板本进程（Redis 不可用）',
+)
+const riskSince = computed(() => {
+  const t = playRisk.value?.since
+  return t ? new Date(t * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'
+})
+const riskDriveErrors = computed(() =>
+  (playRisk.value?.counters.drive_403 ?? 0) + (playRisk.value?.counters.drive_429 ?? 0),
+)
+function riskItemName(it: PlayRiskSnapshot['top_items'][number]) {
+  const n = it.name || `#${it.item_id}`
+  return it.series_name ? `${it.series_name} · ${n}` : n
+}
+
+/** 本机文件整文件直发不走本服务响应体，流量口径不包含它 */
+const lineBytesHint = '流量 = 本进程经手的出流量（不含整文件直发）'
 
 async function savePolicy() {
   savingPolicy.value = true
@@ -129,7 +152,6 @@ async function saveOps() {
   }
 }
 
-const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_seconds ?? 0))
 
 </script>
 
@@ -167,35 +189,15 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       description="下面显示的是默认值，请勿直接保存。点右上角「刷新」重试。"
     />
 
-    <!-- 运行态：改上限之前先知道现在跑到什么程度 -->
+    <!-- 运行态：当前出流节点（转码删除后不再有转码运行态） -->
     <SectionCard
       v-if="runtime"
       title="运行态"
       :icon="Gauge"
       meta="本进程"
-      description="分离部署时转码跑在 EA 上，这里的数字是面板本机的。"
+      description="分离部署时这里的节点是面板本机的。"
     >
       <div class="tile-grid">
-        <StatTile
-          label="正在转码"
-          :icon="Cpu"
-          :value="runtime.active_transcodes"
-          :tone="runtime.active_transcodes > 0 ? 'warn' : 'plain'"
-        />
-        <StatTile
-          :label="policy.max_concurrent_transcodes ? '策略上限' : '内置上限'"
-          :icon="Target"
-          :value="policy.max_concurrent_transcodes || runtime.capacity"
-          suffix="路"
-        />
-        <StatTile label="闲置回收" :icon="Clock" :value="idleSeconds" suffix="s" />
-        <StatTile
-          label="ffmpeg"
-          :icon="Tv"
-          :value="runtime.ffmpeg_available ? '可用' : '未安装'"
-          :tone="runtime.ffmpeg_available ? 'ok' : 'warn'"
-          class="text-tile"
-        />
         <StatTile
           label="当前出流"
           :icon="Server"
@@ -203,53 +205,6 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
           class="text-tile"
         />
       </div>
-      <template #footer>
-        内置上限 {{ runtime.capacity }} 路（来自 <code>EMBY_MAX_TRANSCODES</code> 或 CPU 核数）；
-        超上限时只拒绝<strong>新的</strong>转码请求，不会中断正在看的人。
-      </template>
-    </SectionCard>
-
-    <!-- 转码与清晰度 -->
-    <SectionCard title="转码与清晰度" :icon="Tv" description="控制服务端转码：省 CPU / 省上行与兼容性之间的取舍。">
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">允许服务端转码</label>
-          <p class="cp-hint">
-            当前状态由服务端配置控制（面板不再提供开关）。关闭时只放直连 /
-            直接播放：省 CPU 与上行，但客户端兼容性会变差
-            （网页端播放器遇到不支持的编码会播不了）。
-          </p>
-        </div>
-        <span class="au-badge" :class="policy.transcode_enabled ? 'au-badge-green' : 'au-badge-muted'">
-          {{ policy.transcode_enabled ? '已开启' : '已关闭' }}
-        </span>
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">并发转码上限</label>
-          <p class="cp-hint">
-            0 = 用进程内置上限（默认按 CPU 核数）。设成具体值后，满了会<strong>拒绝新的转码请求</strong>
-            并提示稍后再试，而不是把整台机器的 CPU 打满、所有人一起卡。
-          </p>
-        </div>
-        <el-input-number
-          v-model="policy.max_concurrent_transcodes"
-          :min="0" :max="200"
-          :disabled="!isSuper"
-          controls-position="right"
-          class="cp-num"
-        />
-      </div>
-
-      <template #footer>
-        <div class="cp-save">
-          <span class="cp-save-hint">与「Drive 302 直链」同属播放策略，保存任一处都会一起提交。</span>
-          <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
-            <Save :size="14" class="btn-ico" />保存
-          </el-button>
-        </div>
-      </template>
     </SectionCard>
 
     <!-- 下载与设备：这批配置键的唯一写入口（系统设置页只读回显） -->
@@ -359,6 +314,45 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
         :icon="Activity"
         title="播放路径数据读取失败"
         description="下方策略与配置不受影响；点右上角「刷新」重试。"
+      />
+    </SectionCard>
+
+    <!-- 播放风控看板（2026-10-21）：叠播 + Drive 调用计数，只读 -->
+    <SectionCard
+      title="播放风控"
+      :icon="AlertTriangle"
+      :meta="playRisk ? riskScopeLabel : (loading ? '加载中…' : '')"
+      description="同一文件多人同时播（叠播）最容易被谷歌限速；Drive 403/429 说明配额或风控在收紧。只读，调参走环境变量。"
+    >
+      <template v-if="playRisk">
+        <div class="tile-grid">
+          <StatTile label="正在播放" :value="playRisk.active_sessions ?? '—'" :hint="`${Math.round(playRisk.window_seconds / 60)} 分钟内有上报`" />
+          <StatTile label="叠播文件" :value="playRisk.stacked_items" :tone="playRisk.stacked_items > 0 ? 'warn' : 'plain'" :hint="`同时 ≥${playRisk.stack_threshold} 人`" />
+          <StatTile label="302 跳转" :value="playRisk.counters.redirect_302" />
+          <StatTile label="存在性检查命中率" :value="riskHitRate" :hint="`命中 ${playRisk.counters.exists_cache_hit} / 实查 ${playRisk.counters.exists_cache_miss}；缓存 ${playRisk.exists_cache_ttl_sec ?? '—'}s`" />
+          <StatTile label="文件不存在（404）" :value="playRisk.counters.exists_404" :tone="playRisk.counters.exists_404 > 0 ? 'warn' : 'plain'" />
+          <StatTile label="暂不可用（503）" :value="playRisk.counters.exists_503" :tone="playRisk.counters.exists_503 > 0 ? 'warn' : 'plain'" />
+          <StatTile label="Drive 403 / 429" :value="`${playRisk.counters.drive_403} / ${playRisk.counters.drive_429}`" :tone="riskDriveErrors > 0 ? 'danger' : 'plain'" />
+        </div>
+        <p class="cp-hint">计数起点：{{ riskSince }}（{{ riskScopeLabel }}）</p>
+        <div v-if="playRisk.top_items.length" class="risk-list">
+          <div class="cache-list-head">同时在播 Top {{ playRisk.top_items.length }}</div>
+          <div v-for="it in playRisk.top_items" :key="it.item_id" class="risk-row" :class="{ 'is-stacked': it.stacked }">
+            <span class="risk-name">{{ riskItemName(it) }}</span>
+            <span v-if="!it.is_drive" class="au-badge au-badge-muted">非 Drive</span>
+            <span class="au-badge" :class="it.stacked ? 'au-badge-amber' : 'au-badge-muted'">
+              {{ it.viewers }} 人{{ it.stacked ? ' · 叠播' : '' }}
+            </span>
+          </div>
+        </div>
+        <p v-else class="cp-hint">现在没有正在播放的会话。</p>
+      </template>
+      <EmptyState
+        v-else-if="!loading"
+        compact
+        :icon="AlertTriangle"
+        title="播放风控数据读取失败"
+        description="不影响播放；点右上角「刷新」重试。"
       />
     </SectionCard>
 
@@ -504,6 +498,25 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
   color: var(--au-text-3);
 }
 .line-key { display: inline-block; min-width: 64px; color: var(--au-text-2); font-weight: 500; }
+
+/* ===== 播放风控 ===== */
+.risk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--au-border);
+}
+.risk-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--au-text-2);
+}
+.risk-row.is-stacked .risk-name { color: var(--au-text); font-weight: 600; }
+.risk-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ===== 本地缓存条目 ===== */
 .cache-list {

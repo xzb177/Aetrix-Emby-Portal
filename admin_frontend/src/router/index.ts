@@ -61,10 +61,20 @@ const routes: RouteRecordRaw[] = [
       // 会员等级（P1 统一货币体系）：运营中心 → 会员等级
       { path: 'member-levels', name: 'MemberLevels', component: () => import('@/views/MemberLevels.vue'), meta: { title: '会员等级' } },
       { path: 'emby', name: 'EmbyAdmin', component: () => import('@/views/EmbyAdmin.vue'), meta: { title: '媒体库' } },
+      { path: 'media-library', name: 'MediaLibraryAdmin', component: () => import('@/views/MediaLibraryAdmin.vue'), meta: { title: '图片与顺序' } },
       // 媒体库可见范围（v2.43.0）：服务器默认范围 + 指定用户单独覆盖，默认关闭
       { path: 'library-scope', name: 'LibraryScope', component: () => import('@/views/LibraryScope.vue'), meta: { title: '媒体库可见范围' } },
       // 元数据来源（Phase 6）：条目级的元数据纠偏与补全进度，从「媒体库」页迁到这里
       { path: 'metadata-sources', name: 'MetadataSources', component: () => import('@/views/MetadataSources.vue'), meta: { title: '元数据来源' } },
+      // 识别审查（批二 #15）：低置信识别的人工处置队列，与元数据来源同组
+      { path: 'identify-review', name: 'IdentifyReview', component: () => import('@/views/IdentifyReview.vue'), meta: { title: '识别审查' } },
+      // 上游源（FMBY #25 25-1）：只做源管理，聚合/探活/播放接入是后续步骤
+      { path: 'upstream-sources', name: 'UpstreamSources', component: () => import('@/views/UpstreamSources.vue'), meta: { title: '上游源' } },
+      // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
+      { path: 'storage-bindings', name: 'StorageBindings', component: () => import('@/views/StorageBindings.vue'), meta: { title: '存储绑定列表' } },
+      { path: 'upstream-mappings', name: 'UpstreamMappings', component: () => import('@/views/UpstreamMappings.vue'), meta: { title: '上游映射列表' } },
+      { path: 'yun139-pools', name: 'Yun139Pools', component: () => import('@/views/Yun139Pools.vue'), meta: { title: '139 账号池' } },
+      { path: 'provider-sidecar', name: 'ProviderSidecar', component: () => import('@/views/ProviderSidecar.vue'), meta: { title: 'sidecar 状态' } },
       // 「存储来源」独立页已于 v2.42.15 撒销：挂载建在「添加服务器」弹窗里（按服务器配置），
       // 目录浏览 / 体检 / 编辑都已搬过去。旧地址跳到服务器页，别人的书签不至于 404。
       { path: 'mounts', redirect: '/servers' },
@@ -79,6 +89,9 @@ const routes: RouteRecordRaw[] = [
       { path: 'health', name: 'SystemHealth', component: () => import('@/views/SystemHealth.vue'), meta: { title: '系统健康' } },
       // v2.56.0：任务总览——所有后台任务一页看完（状态/进度/开关）
       { path: 'tasks', name: 'TaskOverview', component: () => import('@/views/TaskOverview.vue'), meta: { title: '任务总览' } },
+      // 专线 B 第二阶段 · 只读观测口（GET，仅展示）
+      { path: 'sample-hash-progress', name: 'SampleHashProgress', component: () => import('@/views/SampleHashProgress.vue'), meta: { title: '采样哈希进度' } },
+      { path: 'playback-bus', name: 'PlaybackBus', component: () => import('@/views/PlaybackBus.vue'), meta: { title: '播放总线' } },
       // v2.56.0 健康一页：十个子系统红黄绿灯同屏（原 Health.vue 已并入「系统健康」）
       // Batch E（健康体系合并）：旧「健康总览」地址保留为跳转，收藏与外部链接不会落到 404
       { path: 'health-board', redirect: '/health' },

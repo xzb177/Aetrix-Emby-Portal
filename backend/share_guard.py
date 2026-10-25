@@ -39,7 +39,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import entitlements, models
 from backend.integrations import store
 
 logger = logging.getLogger(__name__)
@@ -153,6 +153,24 @@ def concurrent_limit(db: Session) -> int:
     return _int(db, CONFIG_CONCURRENT_LIMIT, LIMIT_MIN, LIMIT_MAX)
 
 
+def _effective_concurrent_limit(db: Session, user) -> int:
+    """同播闸门实际生效的上限：先问套餐权益，未声明才回全局值。
+
+    订阅分档（设计 §4.3）：上限数字的来源换成两层——用户当前套餐若在
+    权益表里声明了 ``concurrent_streams`` 就用声明值；没声明（无订阅 /
+    套餐未声明该键 / 值非法）一律回退现行全局 ``share_concurrent_limit``，
+    读法一字不动。本函数只是闸门内部实现，不外露成第二单口；问权益只许
+    走 ``entitlements.get_user_entitlement``（其两级缓存保证热路径命中时
+    零额外 DB 查询）。权益决定「上限是多少」，``share_concurrent_action``
+    决定「闸门开不开」——off 时 ``note_session`` 开头即返回，根本不会问
+    到这里，所以权益填什么都不影响 off 档行为。
+    """
+    entitled = entitlements.get_user_entitlement(db, user, "concurrent_streams")
+    if entitled is not None:
+        return entitled
+    return concurrent_limit(db)
+
+
 def retention_days(db: Session) -> int:
     """防共享事件保留天数（0 = 不自动清理）"""
     return _int(db, CONFIG_RETENTION_DAYS, 0, 3650)
@@ -179,6 +197,13 @@ def policy_payload(db: Session) -> dict:
         "action_labels": dict(ACTION_LABELS),
         # 城市能不能查出来：没配地理能力时，跨城市检测只能「不判定」
         "geo_ready": _geo_ready(db),
+        # 只读说明（订阅分档 §4.3）：同播实际上限是两层口径——先看用户
+        # 套餐权益，未声明才用上面的全局值。仅供后台展示，写路径白名单
+        # 不含它（权益只能从套餐编辑写，一个权益一个写入口）。
+        "entitlement_note": (
+            "同时播放实际上限先看用户套餐权益（可同时播放路数），"
+            "套餐未声明时才用上面的全局上限；权益在套餐编辑里设置。"
+        ),
     }
 
 
@@ -464,7 +489,7 @@ def note_session(
     from backend.api.economy import lock_user_row
     lock_user_row(db, user.id)
 
-    limit = concurrent_limit(db)
+    limit = _effective_concurrent_limit(db, user)
     others = _other_live_sessions(db, user.id, session_key)
     # 上限 N = 允许 N 路并发。第 N+1 路才是同播，所以 others >= limit 才算超
     if len(others) < limit:

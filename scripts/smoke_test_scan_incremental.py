@@ -11,7 +11,8 @@
 - **变了一定处理**：新增文件、新增目录、目录 mtime 变了、字幕新增 → 该目录重新处理
 - **大小变了也处理**（目录 mtime 不变的情况）：替换同名文件、大小不同 → 重新探测
 - **库里没有行就必须处理**：手动删掉某条目 → 重扫要把它建回来（这是「跳过」的安全底线）
-- **该重刮时不跳过**：补图标记、到期重刮策略（3m）、TMDB 详情没补齐
+- **该重刮时不跳过**：补图标记、TMDB 详情没补齐；到期重刮（3m）自批二 #12
+  起改为有界推迟——目录未到期时先推迟（默认 ≤24 小时），目录到期重验时照常重刮
 - **没配 TMDB 的部署也照样增量**：刮削不可能成功，不该因此让整库每轮重做
 - **开关**：`SCAN_INCREMENTAL=0` 回到每次全量处理
 - **配了 TMDB 的剧集库也照样增量**（v2.31.0）：集根本不参与刮削（写库循环只刮
@@ -270,7 +271,18 @@ aged.imdb_id = "tt123"
 aged.aliases = "别名"
 aged.last_scraped_at = sc.datetime.now() - sc.timedelta(days=200)
 db.commit()
-policy_scan = scan("3m 策略 + 到期条目")
+policy_scan = scan("3m 策略 + 到期条目（目录未到期）")
+# 到期调度（批二 #12）的新口径：目录未到期时，到期重刮先推迟到目录的
+# next_due_at（推迟有界，默认 ≤ SCAN_DIR_RECHECK_SEC=24 小时），不是
+# 无限饿死——目录一到期，重验走完整判定，重刮照常发生（下一项钉住）。
+check("未到期时到期重刮先推迟（有界推迟）", counters["side"] == 0,
+      f"side={counters['side']}")
+db.query(em.ScanDirState).filter(
+    em.ScanDirState.library_id == lib.id).update(
+    {"next_due_at": sc.datetime.now() - sc.timedelta(minutes=1)},
+    synchronize_session=False)
+db.commit()
+policy_scan = scan("3m 策略 + 到期条目（目录已到期）")
 check("到期重刮的条目不会被跳过", counters["side"] >= 1 and policy_scan["scraped"] >= 0,
       f"side={counters['side']}")
 

@@ -132,63 +132,6 @@ _SCHEDULER_STARTED = False
 _SCHEDULER_LOCK = threading.Lock()
 
 
-def bulk_extend_welfare(db: Session, min_expired_days: int, max_expired_days: int, add_days: int, granted_by=None) -> dict:
-    """批量延期：找出过期天数在 [min_expired_days, max_expired_days] 的公益用户，每人加 add_days 天。
-
-    .. deprecated::
-        已无调用方——管理后台走 ``api/welfare_admin.py::welfare_bulk_extend``
-        的键集分页实现。保留仅防外部脚本引用，请勿新增调用，不删除。
-    """
-    from backend.emby_server import portal
-    now = datetime.now()
-    # (now - exp).days >= min  <=>  exp <= now - min days
-    # (now - exp).days <= max  <=>  exp >  now - (max + 1) days
-    lower = now - timedelta(days=max_expired_days + 1)
-    upper = now - timedelta(days=min_expired_days)
-    users = (
-        db.query(models.WebUser)
-        .filter(
-            models.WebUser.is_welfare == True,
-            models.WebUser.welfare_expires_at.isnot(None),
-            models.WebUser.welfare_expires_at > lower,
-            models.WebUser.welfare_expires_at <= upper,
-        )
-        .all()
-    )
-    extended = []
-    for u in users:
-        exp = u.welfare_expires_at
-        ed = (now - exp).days
-        if min_expired_days <= ed <= max_expired_days:
-            portal.grant_welfare(db, u, channel="admin_bulk", days=add_days, granted_by=granted_by)
-            extended.append(u.id)
-    return {"extended": extended, "count": len(extended)}
-
-
-def get_expiring_soon(db: Session, days: int = 3) -> list:
-    """找出 days 天内到期的公益用户。"""
-    now = datetime.now()
-    # (exp - now).days >= 0  <=>  exp > now
-    # (exp - now).days <= days  <=>  exp < now + (days + 1) days
-    users = (
-        db.query(models.WebUser)
-        .filter(
-            models.WebUser.is_welfare == True,
-            models.WebUser.welfare_expires_at.isnot(None),
-            models.WebUser.welfare_expires_at > now,
-            models.WebUser.welfare_expires_at < now + timedelta(days=days + 1),
-        )
-        .all()
-    )
-    result = []
-    for u in users:
-        exp = u.welfare_expires_at
-        days_left = (exp - now).days
-        if 0 <= days_left <= days:
-            result.append({"user_id": u.id, "expires_at": exp.isoformat(), "days_left": days_left})
-    return result
-
-
 def start_welfare_expiry_scheduler() -> bool:
     """启动公益到期检查调度器（每 24 小时一次）。同一进程只启动一次。
 

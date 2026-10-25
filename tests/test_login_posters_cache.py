@@ -191,6 +191,64 @@ class LoginPostersCacheTest(unittest.TestCase):
         # 两个基址各查一次库；回到第一个基址命中自己的桶
         self.assertEqual(db.query_obj.all_calls, 2)
 
+    def test_configured_public_url_shares_one_poster_bucket(self):
+        """EMBY_PUBLIC_URL 已设时，不同 Host 共用一个桶，不能靠 Host 把缓存撑满。"""
+        os.environ["EMBY_PUBLIC_URL"] = "https://media.example.com"
+        row = type("Row", (), {"guid": "b" * 32, "name": "海报"})()
+        db = FakeDB(rows=[row])
+        hosts = [f"192.0.2.{i}" for i in range(1, 21)]
+
+        with mock.patch.object(site.time, "monotonic", return_value=1000.0), \
+                mock.patch.object(site.realms, "active_realm_id", return_value=None), \
+                mock.patch.object(site, "resolve_emby_base_url",
+                                  return_value="https://media.example.com"):
+            results = [
+                site.get_login_posters(db=db, request=_http_request(host))
+                for host in hosts
+            ]
+
+        self.assertEqual(db.query_obj.all_calls, 1)
+        self.assertEqual(len(site._poster_entries()), 1)
+        self.assertTrue(all(
+            item["emby_base_url"] == "https://media.example.com" for item in results
+        ))
+        self.assertEqual(results[0]["items"], [{"id": "b" * 32, "name": "海报"}])
+
+    def test_inferred_poster_buckets_are_per_base_and_bounded(self):
+        """没配公开地址时按推断基址分桶，桶数不超过上限，最旧的会被挤掉。"""
+        row = type("Row", (), {"guid": "c" * 32, "name": "海报"})()
+        db = FakeDB(rows=[row])
+        extra = 8
+        hosts = [f"192.0.2.{i}" for i in range(1, site._LOGIN_POSTERS_MAX_KEYS + extra + 1)]
+        clock = {"now": 8000.0}
+
+        def tick():
+            clock["now"] += 1.0
+            return clock["now"]
+
+        def resolve(_db, _realm, request):
+            return f"http://{request.headers['host']}"
+
+        with mock.patch.object(site.time, "monotonic", side_effect=tick), \
+                mock.patch.object(site.realms, "active_realm_id", return_value=None), \
+                mock.patch.object(site, "resolve_emby_base_url", side_effect=resolve):
+            results = [
+                site.get_login_posters(db=db, request=_http_request(host))
+                for host in hosts
+            ]
+
+        entries = site._poster_entries()
+        self.assertEqual(results[0]["emby_base_url"], "http://192.0.2.1")
+        self.assertEqual(results[1]["emby_base_url"], "http://192.0.2.2")
+        self.assertEqual(db.query_obj.all_calls, len(hosts))
+        self.assertEqual(len(entries), site._LOGIN_POSTERS_MAX_KEYS)
+        self.assertNotIn("http://192.0.2.1", entries)
+        self.assertIn(f"http://192.0.2.{len(hosts)}", entries)
+        self.assertEqual(
+            entries[f"http://192.0.2.{len(hosts)}"]["emby_base_url"],
+            f"http://192.0.2.{len(hosts)}",
+        )
+
 
 def _http_request(host: str):
     from starlette.requests import Request

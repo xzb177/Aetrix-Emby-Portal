@@ -187,12 +187,14 @@ async def economy_adjust_points(
 
 ECONOMY_CONFIG_KEYS = {
     # checkin_enabled：默认关的功能开关保留面板（2026-10-21 服主口径）
-    "checkin_enabled": "bool", "checkin_base_points": "int", "checkin_streak_bonus": "int",
+    "checkin_enabled": "bool", "checkin_streak_bonus": "int",
     "checkin_streak_max_bonus": "int",
-    # 签到随机基础分 / 惩罚（economy._checkin_rules 读取；留空=回退到 checkin_base_points / 默认值）
+    # 签到随机基础分 / 惩罚（economy._checkin_rules 读取；留空=回退默认值 5）
     "checkin_base_min": "int", "checkin_base_max": "int",
     "checkin_penalty_pct": "int", "checkin_penalty_min": "int", "checkin_penalty_max": "int",
     "media_seek_daily_limit": "int",  # 用户每日求片上限（用户端硬性校验）
+    "welfare_request_monthly": "int",  # 公益服每月求片上限（2026-10-23 去重 #5 与日限同卡）
+    "paid_request_monthly": "int",  # 付费服每月求片上限（此前无后台入口，本轮补登记）
     "code_default_plan_id": "int",  # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取）
     "recharge_enabled": "bool", "subscription_purchase_enabled": "bool",
     "payment_gateway_url": "str", "payment_partner_id": "str",
@@ -205,7 +207,8 @@ ECONOMY_CONFIG_KEYS = {
     "device_limit_per_user": "int", "device_limit_auto_evict": "bool",
     "login_log_retention_days": "int",
     "max_pending_orders_per_user": "int",
-    "invitation_reward_points": "int",
+    # invitation_reward_points 已退役（2026-10-23 去重）：邀请人奖励由
+    # promotion_* 唯一配置、promotion.grant 唯一发放
     "invitation_invitee_reward_points": "int", "invitation_rebate_percent": "int",
     # 推广奖励（v2.44.0）：总开关缺省开（金额/天数为 0 时不发放），留在面板落库
     "promotion_reward_enabled": "bool",

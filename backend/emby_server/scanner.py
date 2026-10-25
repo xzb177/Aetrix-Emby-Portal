@@ -24,7 +24,7 @@ from backend.emby_server.cpu_budget import background_workers as _cpu_workers
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.pinyin_sort import make_sort_name
 
-from sqlalchemy import func, inspect, select, text, tuple_
+from sqlalchemy import func, inspect, select, text, tuple_, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,8 @@ from backend.db_retry import commit_with_retry, deadlock_backoff, is_deadlock, r
 from backend.emby_server import disc_filter
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
+from backend.emby_server import mount_sources
+from backend.emby_server import scan_snapshots
 from backend.emby_server import nfo as nfo_lib
 # 软删除（v2.48.0）：清理阶段默认只标记 deleted_at，物理删除留给过期回收
 from backend.emby_server import soft_delete as _soft_delete
@@ -117,6 +119,43 @@ REMOVAL_MAX_RATIO = env_float("SCAN_REMOVAL_MAX_RATIO", 0.5, 0.0)
 #: 绝对阈值：小库也要有下限保护（库里总共就 10 条，删 6 条就已经是“全没了”）
 REMOVAL_MAX_ABSOLUTE = env_int("SCAN_REMOVAL_MAX_ABSOLUTE", 20, 1, 1000000)
 
+# ==================== 缺失宽限（2026-10-24，FMBY 学习批一 #6）====================
+# 魂「对外部变化克制」：单次观测不作数。上面的删除保护管的是「整库级」
+# 事故（来源整体不可用时一条都不删）；这里管的是「单条级」抖动：
+# 单个文件这一轮没看到（挂载抖动、目录半读、网盘短暂抽风），不许当轮就
+# 下架——先记 missing_count 累计，连续缺失达到这个轮数才真正软删除。
+# 文件重新出现即清零。设 1 = 回到旧行为（确认缺失即下架）。
+MISSING_GRACE_SCANS = env_int("SCAN_MISSING_GRACE_SCANS", 3, 1, 1000)
+
+
+# ==================== #13 PR-3 认亲层开关 ====================
+# SCAN_IDENTITY_MATCH_ENABLED 默认关：关时 PR-3 新增的认亲层（content_hash 层、
+# 指纹层的 scan_title 列读数与 movie 版本签名、115 fid 泛化）一律不启用，
+# 行为与基线逐字一致；开时才启用。PR-1/PR-2 的写入（scan 列与哈希采集落库）
+# 不受本开关管、默认开。模块加载时读一次（与 IDENTITY_SHELF_GATE 同口径）；
+# 115 walk_media 侧读同一个键（见 mounts.py），改动需重启生效。
+IDENTITY_MATCH_ENABLED = env_int("SCAN_IDENTITY_MATCH_ENABLED", 0, 0, 1) == 1
+
+
+# ==================== 清单可信度守卫（FMBY 扫描域，清单第 12 项）====================
+# FMBY 形态：直系文件凭空消失先怀疑上游抖动、整轮中止不误删。
+# 与上面两道闸分工：预算管「来源整体不可用」（全库一条都不删），宽限管
+# 「单条级抖动」（单条累计多轮才下架）；这里管「某个目录抖动」——只拦该
+# 目录的删除，其余目录正常清理。
+# 触发条件（同时满足才拦）：
+# - 开关开（默认开；关时行为与现行逐字一致）；
+# - 该目录直系文件类条目数达到最小规模（小目录单条删减就会把比例冲得
+#   很高，不值得怀疑——交给缺失宽限）；
+# - 本轮确认缺失（未见 + 其他来源也读不到，与清理主循环同一口径）占
+#   直系总数比例严格大于阈值。
+# 拦下后的行为：该目录未见行本轮不累计 missing_count、不下架、不摘缓存，
+# 只记警告；已见行照常清零（它们是本轮真实列到的，不受怀疑）。
+# 数值来源：阈值 0.5 沿用整库预算 REMOVAL_MAX_RATIO 的先例；最小规模 10
+# 与比例 0.5 均为我方起步值，非 FMBY 实测常量（FMBY 的阈值常量未实测到）。
+CREDIBILITY_GUARD_ENABLED = env_int("SCAN_CREDIBILITY_GUARD_ENABLED", 1, 0, 1)
+CREDIBILITY_MAX_RATIO = env_float("SCAN_CREDIBILITY_MAX_RATIO", 0.5, 0.0)
+CREDIBILITY_MIN_DIR_ENTRIES = env_int("SCAN_CREDIBILITY_MIN_DIR_ENTRIES", 10, 1, 1000000)
+
 
 def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, int]:
     """能不能开始清理 → ``(能不能, 不能的原因, 库内文件类条目数)``
@@ -153,11 +192,13 @@ def _removal_budget(db: Session, library, seen_guids: set) -> tuple[bool, str, i
     return True, "", total
 
 # 上一次清理阶段的决策（健康检查与测试用：有没有走快速路径、走过多少条、耗时）
-_CLEANUP_LAST: dict = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_ms": 0.0,
+_CLEANUP_LAST: dict = {"fast_path": False, "walked": 0, "removed": 0, "graced": 0, "elapsed_ms": 0.0,
                        # skipped = 删除保护拦下了本轮清理的原因（空串 = 没拦）
                        # 调用点用 .get("skipped") 读，所以这个键**必须一开始就存在**，
                        # 否则读出来恒为空、“被拦了”这件事就永远传不到接口/前端。
-                       "skipped": ""}
+                       "skipped": "",
+                       # credibility_guarded = 本轮被清单可信度守卫拦下的目录（空 = 没拦）
+                       "credibility_guarded": []}
 
 # ==================== 扫描限速（播放优先）====================
 # 扫描跑在 API 进程的后台线程里，而 POSIX 的 nice 是**进程级**的：直接给本进程降优先级，
@@ -609,6 +650,14 @@ def _external_subtitles_changed(ctx: "_ScanContext", item, scan_file: "ScanFile"
             entries = _mount_names(ctx, scan_file)
             current = find_external_subtitles_remote(
                 scan_file.name, entries, scan_file.mount_id, scan_file.dir_rel)
+            current_paths = {p for _, p in current}
+        elif _byos_binding_id_of(scan_file) is not None and scan_file.provider is not None:
+            # 绑定线：与挂载线同口径比对（路径命名空间换成 byos://），
+            # 否则指纹未变的文件永远秒跳、字幕增减进不了库。
+            entries = _mount_names(ctx, scan_file)
+            current = find_external_subtitles_remote(
+                scan_file.name, entries, None, scan_file.dir_rel,
+                path_prefix=f"byos://{_byos_binding_id_of(scan_file)}")
             current_paths = {p for _, p in current}
         else:
             return False
@@ -1984,6 +2033,15 @@ class LibrarySnapshot:
     # 为空 = 正常全库扫描。
     limit_prefixes: tuple = ()
     targeted: bool = False
+    # L10 库级扫描预设策略（默认 None/空 = 无策略，走现行口径）：
+    # policy_parse_type 覆盖 collection_type 的解析口径；
+    # policy_extensions 与 VIDEO_EXTS 取交集后的白名单（None = 不限）；
+    # policy_path_filters 为子串包含过滤（空 = 不限）。三字段只由
+    # scan_library_sync 入口的 attach_policy_to_snapshot 填写，扫描中途
+    # 不改（快照语义），开关关/未配策略时恒为默认值，零行为变化。
+    policy_parse_type: Optional[str] = None
+    policy_extensions: Optional[tuple] = None
+    policy_path_filters: tuple = ()
 
     @classmethod
     def of(cls, library) -> "LibrarySnapshot":
@@ -2029,10 +2087,19 @@ class ScanFile:
     rel: str = ""
     # Drive file_id（改名/移动不变）：扫描器用它识别改名
     file_id: str = ""
+    #: 新表 library_sources 行 id（清单第 8 项身份锚：入库写 item.source_id 用）。
+    #: 旧列回落扫描没有行 id，恒为 None；写盘点只在有行 id 时写锚，绝不清除已有锚。
+    source_row_id: Optional[int] = None
     mtime_ns: Optional[int] = None  # 本机文件=st_mtime_ns；远程挂载无mtime，记None
     #: 远端挂载的最后修改时间（Unix 秒；拿不到记 0.0）——rclone ModTime 解析值，
     #: 混入文件指纹/目录指纹用（完美审查 C-P2-3：同尺寸内容替换的检出依据）。
     remote_mod_ts: float = 0.0
+    #: 内容校验和与算法（#13 PR-2：列举透传，拿不到记 ""；写库时落 NULL）。
+    content_hash: str = ""
+    content_hash_algo: str = ""
+    #: Drive etag / 修订标识（#13 PR-2：只进 identity_json 证据快照，不单独成列）。
+    etag: str = ""
+    revision: str = ""
     provider: Any = None
     local_target: Any = None      # 本机可读来源的播放目标（strm 的直链在这里）
     _target: Any = None
@@ -2089,7 +2156,8 @@ def _drive_file_id_from_url(url: str) -> str:
         return ""
 
 
-def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
+def _local_dir_files(root: str, failed_roots: list,
+                     source_row_id: Optional[int] = None) -> Iterator[ScanFile]:
     """本机目录：与历史行为一致，直接 os.walk 真实文件"""
     for dirpath, _dirnames, filenames in os.walk(
         root,
@@ -2126,6 +2194,7 @@ def _local_dir_files(root: str, failed_roots: list) -> Iterator[ScanFile]:
                 mtime_ns=_mtime_ns,
                 # v2.55.x A'：纸条直链里的 Drive ID 原地落库（target 已在内存，无新增 IO）
                 file_id=_drive_file_id_from_url(target.value),
+                source_row_id=source_row_id,
             )
 
 
@@ -2172,6 +2241,12 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
                 mount_id=mount_id, rel=rel, provider=provider, local_target=target,
                 # v2.55.x A'：本机可读挂载的 .strm，挂载层没给 ID 时从直链解析兜底
                 file_id=getattr(mount_file, "file_id", "") or _drive_file_id_from_url(target.value),
+                source_row_id=getattr(src, "source_row_id", None),
+                # #13 PR-2：本机可读挂载的 MountFile 一般无哈希，默认空串即可。
+                content_hash=getattr(mount_file, "content_hash", "") or "",
+                content_hash_algo=getattr(mount_file, "content_hash_algo", "") or "",
+                etag=getattr(mount_file, "etag", "") or "",
+                revision=getattr(mount_file, "revision", "") or "",
             )
             continue
         container = os.path.splitext(mount_file.name)[1].lstrip(".").lower()
@@ -2182,8 +2257,14 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
             local_dir=None, dir_rel=dir_rel, size=mount_file.size,
             container=container, mount_id=mount_id, rel=rel, provider=provider,
             file_id=getattr(mount_file, "file_id", "") or "",
+            source_row_id=getattr(src, "source_row_id", None),
             # P2（完美审查 C-P2-3）：远端 ModTime 进指纹，同尺寸替换可检出。
             remote_mod_ts=getattr(mount_file, "mod_ts", 0.0) or 0.0,
+            # #13 PR-2：内容校验和与证据槽透传（拿不到的源为空串 → 写库落 NULL）。
+            content_hash=getattr(mount_file, "content_hash", "") or "",
+            content_hash_algo=getattr(mount_file, "content_hash_algo", "") or "",
+            etag=getattr(mount_file, "etag", "") or "",
+            revision=getattr(mount_file, "revision", "") or "",
         )
 
 
@@ -2278,7 +2359,8 @@ def _watch_empty_source(label: str, src, files: Iterator,
 
 def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
                       failed_roots: list,
-                      report: Optional[list] = None) -> Iterator[tuple]:
+                      report: Optional[list] = None,
+                      source_override: Optional[list] = None) -> Iterator[tuple]:
     """遍历一个媒体库的全部扫描来源（本机路径 + 挂载），产出 ``(来源标签, 文件迭代器)``
 
     来源不可用（目录不存在 / 挂载停用 / 账号失效 / 网络不通）时**不会**抛出去中断整个扫描，
@@ -2286,8 +2368,21 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
     传了 ``report`` 时，不可用的来源也记一条 ``kind="unavailable"`` 的明细进去——
     「这轮一共几个来源、哪个一条都没扫到」在后台要能一眼看见（见 scan_result_payload）。
     明细在生成器收尾时补写：调用方中途退出也拿得到。
+
+    ``source_override``（BYOS P3 定向来源）：给了就**只**产出这些
+    ``(标签, 文件迭代器)``，不读库的现行来源——绑定扫描只认调用方按
+    绑定选好的源，绝不顺带扫共享挂载（顺带读就是跨绑定/跨源串数据）。
+    缺省 None 时行为逐字不变。
     """
-    sources, failed = mount_lib.library_sources(library, db)
+    if source_override is not None:
+        # 计数明细由主循环的 _attribute_source 按来源收尾时算差值（与现行
+        # 来源同口径），这里不另写 report 条目——否则同一来源会出现两条
+        # 明细（一条零计数、一条真实计数）。
+        for label, files in source_override:
+            yield label, files
+        return
+    # 清单第 2 项：扫描来源解析改读新表（无行时回落旧列并记警告，见 mount_sources）。
+    sources, failed = mount_sources.read_library_sources(db, library)
     unavailable = []
     for item in failed:
         logger.warning("媒体库「%s」来源不可用：%s（%s）", snap.name, item["label"], item["reason"])
@@ -2306,7 +2401,9 @@ def iter_scan_sources(snap: "LibrarySnapshot", library, db: Session,
             if src.kind == "local":
                 yield src.label, _watch_empty_source(
                     src.label, src,
-                    _prefix_filter(_local_dir_files(src.path, failed_roots), prefixes),
+                    _prefix_filter(_local_dir_files(
+                        src.path, failed_roots,
+                        getattr(src, "source_row_id", None)), prefixes),
                     db, library.id, failed_roots, check_empty)
                 continue
 
@@ -2458,6 +2555,22 @@ class _ScanContext:
     dir_fingerprints: dict = field(default_factory=dict)
     # 本批处理过的目录（目录 → 当前指纹），批次提交时写回
     dirty_dirs: dict = field(default_factory=dict)
+    # 到期调度（批二 #12）：目录 → (next_due_at, 本轮判定)，随批次提交写回；
+    # 与 dirty_dirs 分开是因为「到期重验过但指纹没变」的目录不在 dirty 里，
+    # 却同样要推进 next_due_at
+    dirty_dir_schedule: dict = field(default_factory=dict)
+    # 到期调度：目录 → 本轮判定（first/changed/due/not_due/None），一轮只判一次
+    # （同一目录的文件可能跨批次，判定与统计计数都以第一次为准）
+    dir_decisions: dict = field(default_factory=dict)
+    # 按源快照层（任务清单第 11 项）：目录 → 所属源行 id（解析不到的不在内，
+    # 走旧 ScanDirState 路径）；目录 → (指纹, next_due_at, 项数)；目录 → 本轮
+    # 清单项数；目录 → (源 id, 指纹, 项数, 判定, 到期时刻)，随批次提交写回
+    snapshot_resolved: dict = field(default_factory=dict)
+    snapshot_states: dict = field(default_factory=dict)
+    snapshot_counts: dict = field(default_factory=dict)
+    dirty_snapshots: dict = field(default_factory=dict)
+    # 本轮扫描已取过的源行 [(id, mount_id, sub_path)]，None = 还没取过
+    snapshot_source_rows: Optional[list] = None
     # 列举失败的远程目录（读不到就别拿空列表当“目录没变”）
     dir_list_failed: set = field(default_factory=set)
     # NFO：已解析的 NFO 缓存（含阴性缓存），key 见 _read_nfo_cached
@@ -2522,6 +2635,117 @@ def _incremental_on(ctx: "_ScanContext") -> bool:
     return SCAN_INCREMENTAL and getattr(snap, "incremental_scan", True) is not False
 
 
+# ==================== 到期调度：清单指纹 v2 + next_due_at（FMBY 学习批二 #12）====================
+# 学的是 FMBY 的扫描调度：每个目录存一份**清单指纹**，扫描由「到期」驱动——
+# 不是每轮都把每个目录按同一深度重验一遍。
+#
+# 在上面这套增量（L1 文件指纹秒跳 + 目录指纹跳过）之上再分一层（魂 3：调度与
+# 数据面分离——调度只决定「核对深度」，枚举/入库/清理这些数据面一律不感知
+# 到期）：
+#
+#   清单指纹（v2）：指纹从旧的弱启发式（本机 mtime:项数 / 挂载 项数:总字节:摘要）
+#   升级为对**清单内容**的哈希：本机 = 目录 mtime + 全部条目名，挂载 = 每条目的
+#   名/大小/远端 ModTime。输入全部来自列举时本来就拿到的元数据，不为算指纹
+#   逐个打开文件。格式带 ``v2:`` 前缀：升级后存量指纹必然对不上，首轮按
+#   「指纹变了」完整处理一次（L1 文件级秒跳仍在，成本有界），之后恢复增量。
+#
+#   到期调度：每个目录在 ScanDirState 里多一份排期（next_due_at + last_decision）：
+#     first    —— 第一次见到：完整处理，处理完排期（now + 周期）；
+#     changed  —— 清单指纹变了：完整处理，处理完重新排期；
+#     due      —— 指纹没变但已到期：走完整核对（含到期重刮判定），核对完推进排期；
+#     not_due  —— 指纹没变且未到期：整段跳过，只跑不带 IO 的安全检查（条目在、
+#                 没下架、没报修、大小没变），到期重刮这类「到期才做」的判定
+#                 推迟到 next_due_at；安全检查不过的文件照常完整处理。
+#   周期由 SCAN_DIR_RECHECK_SEC 定（默认 24 小时）；SCAN_DIR_DUE_SCHEDULING=0
+#   整体关掉到期层（指纹 v2 仍生效，核对深度与旧行为逐字一致）。
+#
+# 与其它增量机制的关系（别造两套增量互相打架）：
+#   - L1 文件指纹秒跳在更前面：enrich 已补全的文件先被它拦下，根本走不到
+#     目录判定——到期层管的是「还没被 L1 拦下」的那些文件所在目录的深度。
+#   - Drive Changes 增量（定向扫描，snap.targeted）：事件驱动的条目级更新，
+#     只看部分目录——到期层**不参与**（定向扫描不判到期、不写排期），它写回的
+#     指纹仍是「扫描当时清单」的事实，下一次整库扫描按清单现状判定即可。
+#   - 清理阶段（缺失宽限 #1201）：到期层只动「处理深度」，枚举一根汗毛不碰，
+#     seen_guids 永远完整；清理内部顺序也原样——清单可信度守卫
+#     （_removal_budget）先判、missing 计数判缺在后（魂 5：对外部变化克制）。
+#     尤其不许因为目录「未到期」就剪枝枚举：看不到的文件会被清理当成已删除。
+#
+# 可观测：每轮扫描统计带 dirs_new / dirs_changed / dirs_due / dirs_not_due
+# 四个计数（经 _scan_metrics 对外），加上 ScanDirState 里的 next_due_at /
+# last_decision 两列，「哪个目录何时到期、为何触发」在管理面与库里都可查。
+
+
+def _dir_due_enabled() -> bool:
+    """到期调度总开关（批二 #12）：1=开（默认）。运行时读环境变量，
+    供测试中途开关（与 _fast_skip_enabled 同口径）。"""
+    return (os.getenv("SCAN_DIR_DUE_SCHEDULING", "1") or "1").strip().lower() \
+        not in {"0", "false", "no", "off"}
+
+
+def _dir_recheck_after() -> timedelta:
+    """到期周期：目录完整核对后，隔多久再到期重验一次。
+
+    默认 24 小时；钳制 5 分钟～30 天（env_int 统一口径，非法值回落默认）。
+    """
+    return timedelta(seconds=env_int("SCAN_DIR_RECHECK_SEC", 86400, 300, 2592000))
+
+
+def _dir_decision(ctx: "_ScanContext", dir_key: str,
+                  fingerprint: Optional[str],
+                  stored: Optional[tuple],
+                  entry_count: Optional[int] = None) -> Optional[str]:
+    """目录本轮的到期判定（批二 #12；任务清单第 11 项加按源快照层）。
+
+    返回 None = 到期层不参与本目录，走旧的完整核对深度（增量关 /
+    指纹缺失 / 定向扫描 / 到期层关）。
+
+    每个目录每轮只判一次，结果缓存在 ctx.dir_decisions，统计也只计一次。
+    ``stored`` 是 (指纹, next_due_at)，按源快照层传 (指纹, next_due_at,
+    项数) 时多一条：项数对不上也算 changed（清单项数变了，指纹再像
+    也不能跳过——项数是零成本的前置校验）。
+    """
+    if dir_key in ctx.dir_decisions:
+        return ctx.dir_decisions[dir_key]
+    decision: Optional[str] = None
+    snap = getattr(ctx, "snap", None)
+    if (_incremental_on(ctx) and _dir_due_enabled()
+            and not getattr(snap, "targeted", False) and fingerprint):
+        if stored is None:
+            decision = "first"
+        elif stored[0] != fingerprint:
+            decision = "changed"
+        elif (entry_count is not None and len(stored) > 2
+                and stored[2] is not None and stored[2] != entry_count):
+            decision = "changed"
+        elif stored[1] is None or stored[1] <= datetime.now():
+            decision = "due"
+        else:
+            decision = "not_due"
+    ctx.dir_decisions[dir_key] = decision
+    if decision == "first":
+        ctx.stats["dirs_new"] = ctx.stats.get("dirs_new", 0) + 1
+    elif decision == "changed":
+        ctx.stats["dirs_changed"] = ctx.stats.get("dirs_changed", 0) + 1
+    elif decision == "due":
+        ctx.stats["dirs_due"] = ctx.stats.get("dirs_due", 0) + 1
+    elif decision == "not_due":
+        ctx.stats["dirs_not_due"] = ctx.stats.get("dirs_not_due", 0) + 1
+    return decision
+
+
+def _schedule_dir(ctx: "_ScanContext", dir_key: str, decision: str,
+                  due_at: Optional[datetime] = None) -> None:
+    """把目录本轮的排期决定记进 ctx，批次收尾时随 _store_dir_states 写回。
+
+    due_at 缺省 = now + 周期（刚完整核对/处理过）；not_due 的跳过要保留原
+    到期时刻（只记判定供查，不许把排期越推越远），由调用方把原值传进来。
+    """
+    ctx.dirty_dir_schedule[dir_key] = (
+        due_at if due_at is not None else datetime.now() + _dir_recheck_after(),
+        decision,
+    )
+
+
 # 分层扫描 L1/L2 总开关（v2.40.0）：1=开（默认）。
 # 开：Phase 1 只做文件发现+指纹+极简入库（秒级可见），side/NFO/TMDB 全部
 #     交给后台 enrich_worker 补全；关：回到旧行为（Phase 1 内联做完所有事）。
@@ -2548,11 +2772,25 @@ def _dir_key_of(scan_file: "ScanFile") -> str:
     """目录的稳定标识：本机用绝对路径，挂载用 ``mount://<id>/<rel>``"""
     if scan_file.local_dir:
         return scan_file.local_dir
+    # BYOS P3：绑定扫描的入库路径是 ``byos://<binding_id>/<rel>``（见
+    # byos_scan），不是挂载路径——目录键直接取该路径的目录段，既按绑定
+    # 分账（同 rel 不同绑定不撞键），又不写出 ``mount://None/...`` 这种
+    # 假挂载键去污染库的 ScanDirState。
+    stored = getattr(scan_file, "stored_path", "") or ""
+    if stored.startswith("byos://"):
+        return os.path.dirname(stored) or stored
     return mount_lib.mount_path(scan_file.mount_id, scan_file.dir_rel)
 
 
 def _dir_fingerprint(ctx: "_ScanContext", scan_file: "ScanFile") -> Optional[str]:
-    """目录指纹（拿不到返回 None：这个目录这一次不走增量捷径）"""
+    """目录清单指纹 v2（拿不到返回 None：这个目录这一次不走增量捷径）
+
+    v2 起指纹是**清单内容**的哈希（格式 ``v2:<md5>``），不再是旧的弱启发式
+    （本机 mtime:项数 / 挂载 项数:总字节:摘要）：同项数同总大小的改名、等尺寸
+    替换在旧口径下都可能漏检，v2 对清单逐条序列化后哈希，清单变指纹必变。
+    输入全部来自列举元数据（本机 os.listdir 的名字 + 目录 mtime；挂载条目的
+    名/大小/远端 ModTime），不为算指纹逐个打开文件。
+    """
     key = _dir_key_of(scan_file)
     if key in ctx.dir_fingerprints:
         return ctx.dir_fingerprints[key]
@@ -2560,70 +2798,181 @@ def _dir_fingerprint(ctx: "_ScanContext", scan_file: "ScanFile") -> Optional[str
     if scan_file.local_dir:
         try:
             listing = _list_dir_cached(scan_file.local_dir)
-            value = f"{os.stat(scan_file.local_dir).st_mtime_ns}:{len(listing)}"
+            payload = (f"{os.stat(scan_file.local_dir).st_mtime_ns}\n"
+                       + "\n".join(sorted(listing)))
+            value = "v2:" + hashlib.md5(payload.encode("utf-8")).hexdigest()
         except OSError:
             value = None
     elif key not in ctx.dir_list_failed:
         entries = _mount_names(ctx, scan_file)
         if key not in ctx.dir_list_failed:
-            # P2 修复（完美审查 C-P2-3）：目录指纹混入各文件的远端 ModTime 摘要——
-            # 否则同尺寸替换只改单个文件时 len:sum(sizes) 不变，_can_skip_file
-            # 直接放行整目录（L1 文件指纹修了也没用）。无 ModTime 的提供方
-            # mod_ts 全 0，摘要退化为"名字+尺寸"仍是确定性的。
-            mod_part = "|".join(
+            # 挂载清单序列化（名/大小/远端 ModTime 逐条）：P2 修复（完美审查
+            # C-P2-3）的口径整体保留——同尺寸替换只改单个文件时，ModTime 变
+            # 指纹必变；无 ModTime 的提供方 mod_ts 全 0，退化为"名字+尺寸"，
+            # 仍是确定性的。v2 与旧格式的差别只在不再截断摘要、不再混入
+            # 项数/总字节这类可碰撞的聚合量。
+            payload = "\n".join(
                 f"{e.name}:{int(e.size or 0)}:"
                 f"{float(getattr(e, 'mod_ts', 0.0) or 0.0):.0f}"
                 for e in sorted(entries, key=lambda x: x.name)
             )
-            mod_digest = hashlib.md5(mod_part.encode("utf-8")).hexdigest()[:16]
-            value = (f"{len(entries)}:{sum(int(e.size or 0) for e in entries)}"
-                     f":{mod_digest}")
+            value = "v2:" + hashlib.md5(payload.encode("utf-8")).hexdigest()
     ctx.dir_fingerprints[key] = value
     return value
 
 
 def _load_dir_states(db: Session, lib_id: int, dir_keys: list) -> dict:
-    """一批目录的已存指纹（分片查，只取两个列）"""
+    """一批目录的已存状态（分片查）：dir_key → (指纹, next_due_at)
+
+    批二 #12 起连排期一起取回：到期判定要在 prepare 里当场做，不能逐目录
+    再查一次库。
+    """
     found: dict = {}
     unique = list(dict.fromkeys(k for k in dir_keys if k))
     for chunk in _chunks(unique, SQL_IN_CHUNK):
         for row in db.query(emby_models.ScanDirState.dir_key,
-                            emby_models.ScanDirState.fingerprint).filter(
+                            emby_models.ScanDirState.fingerprint,
+                            emby_models.ScanDirState.next_due_at).filter(
             emby_models.ScanDirState.library_id == lib_id,
             emby_models.ScanDirState.dir_key.in_(chunk),
         ):
-            found[row.dir_key] = row.fingerprint
+            found[row.dir_key] = (row.fingerprint, row.next_due_at)
     return found
 
 
 def _store_dir_states(db: Session, ctx: "_ScanContext") -> None:
-    """把本批处理过的目录指纹写回（与条目在同一个事务里提交）"""
+    """把本批处理过的目录指纹与排期写回（与条目在同一个事务里提交）
+
+    指纹（ctx.dirty_dirs）与排期（ctx.dirty_dir_schedule）是两个独立的脏集：
+    到期重验过但指纹没变的目录只在排期集里，只推进 next_due_at / last_decision，
+    不动指纹。
+    """
     dirty, ctx.dirty_dirs = ctx.dirty_dirs, {}
-    if not dirty:
+    schedule, ctx.dirty_dir_schedule = ctx.dirty_dir_schedule, {}
+    if not dirty and not schedule:
         return
+    keys = list(dict.fromkeys([*dirty.keys(), *schedule.keys()]))
     existing: dict = {}
-    for chunk in _chunks(list(dirty.keys()), SQL_IN_CHUNK):
+    for chunk in _chunks(keys, SQL_IN_CHUNK):
         for row in db.query(emby_models.ScanDirState).filter(
             emby_models.ScanDirState.library_id == ctx.lib_id,
             emby_models.ScanDirState.dir_key.in_(chunk),
         ):
             existing[row.dir_key] = row
     now = datetime.now()
-    for dir_key, fingerprint in dirty.items():
+    for dir_key in keys:
         row = existing.get(dir_key)
         if row is None:
-            db.add(emby_models.ScanDirState(library_id=ctx.lib_id, dir_key=dir_key,
-                                            fingerprint=fingerprint, updated_at=now))
-        elif row.fingerprint != fingerprint:
-            row.fingerprint = fingerprint
+            row = emby_models.ScanDirState(library_id=ctx.lib_id, dir_key=dir_key,
+                                           fingerprint=dirty.get(dir_key),
+                                           updated_at=now)
+            db.add(row)
+        if dir_key in dirty and row.fingerprint != dirty[dir_key]:
+            row.fingerprint = dirty[dir_key]
+            row.updated_at = now
+        if dir_key in schedule:
+            due_at, decision = schedule[dir_key]
+            row.next_due_at = due_at
+            row.last_decision = decision
             row.updated_at = now
 
 
+def _load_snapshot_states(db: Session, ctx: "_ScanContext", dir_keys: list) -> None:
+    """本批目录的按源快照状态（任务清单第 11 项）。
+
+    只解析到源行的目录进快照层：ctx.snapshot_resolved 记 dir_key → 源行 id，
+    ctx.snapshot_states 记 dir_key → (指纹, next_due_at, 项数)（无快照行
+    的不记，判定走 first）。解析不到、读表失败、开关关闭时两字典都空，
+    调用方一律走旧 ScanDirState 路径（fail-closed）。
+    """
+    ctx.snapshot_resolved = {}
+    ctx.snapshot_states = {}
+    if ctx.snapshot_source_rows is None:
+        ctx.snapshot_source_rows = scan_snapshots.load_source_rows(db, ctx.lib_id)
+    rows = ctx.snapshot_source_rows
+    if not rows:
+        return
+    resolved: dict = {}
+    for key in dict.fromkeys(k for k in dir_keys if k):
+        source_id = scan_snapshots.resolve_source_id(rows, key)
+        if source_id is not None:
+            resolved[key] = source_id
+    if not resolved:
+        return
+    ctx.snapshot_resolved = resolved
+    found = scan_snapshots.load_snapshots(db, ctx.lib_id, list(resolved.keys()))
+    for key in resolved:
+        if key in found:
+            fp, count, due = found[key]
+            ctx.snapshot_states[key] = (fp, due, count)
+
+
+def _dir_listing_count(ctx: "_ScanContext", scan_file: "ScanFile") -> Optional[int]:
+    """目录本轮清单项数（零额外 IO：只读已缓存的列举结果）。
+
+    本机读模块级目录缓存；挂载读 _mount_names 的预热缓存。列举失败
+    回 None（调用方不拿项数做判定，退回指纹单一路）。
+    """
+    key = _dir_key_of(scan_file)
+    if scan_file.local_dir:
+        try:
+            return len(_list_dir_cached(scan_file.local_dir))
+        except OSError:
+            return None
+    if key in ctx.dir_list_failed:
+        return None
+    entries = _mount_names(ctx, scan_file)
+    if key in ctx.dir_list_failed:
+        return None
+    return len(entries)
+
+
+def _record_snapshot(ctx: "_ScanContext", dir_key: str, decision: str,
+                     due_at: Optional[datetime] = None) -> None:
+    """把目录本轮的快照写回决定记进 ctx，批次收尾时随 _store_snapshots 写回。
+
+    只对解析到源行的目录记；due_at 缺省 = now + 周期（与 _schedule_dir
+    同口径）；not_due 的调用方须把原到期时刻传进来（不许越推越远）。
+    """
+    if decision is None:
+        return
+    source_id = ctx.snapshot_resolved.get(dir_key)
+    if source_id is None:
+        return
+    fingerprint = ctx.dir_fingerprints.get(dir_key)
+    if fingerprint is None:
+        return
+    if due_at is None:
+        due_at = datetime.now() + _dir_recheck_after()
+    ctx.dirty_snapshots[dir_key] = (
+        source_id, fingerprint, ctx.snapshot_counts.get(dir_key),
+        decision, due_at)
+
+
+def _store_snapshots(db: Session, ctx: "_ScanContext") -> None:
+    """把本批快照写回（与条目在同一个事务里提交；旧表双写不受影响）。
+
+    directory_path 与 dir_key 同值（本机绝对路径 / mount://<id>/<rel>）。
+    假 ctx（部分测试用 SimpleNamespace/_Ctx 替身，只带旧属性）没有
+    dirty_snapshots 时直接返回——快照层缺席不许拖垮提交路径。
+    """
+    dirty = getattr(ctx, "dirty_snapshots", None)
+    if not dirty:
+        return
+    ctx.dirty_snapshots = {}
+    scan_snapshots.store_snapshots(db, ctx.lib_id, dirty, datetime.now())
+
+
 def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: Optional[str],
-                   stored_fingerprint: Optional[str]) -> bool:
+                   stored_fingerprint: Optional[str], defer_scrape: bool = False) -> bool:
     """这个文件能不能不做任何写库工作（只记一笔）
 
     任何一条不满足都退回完整处理——宁可多做，不能漏文件或漏元数据。
+
+    defer_scrape（批二 #12 到期调度）：目录未到期时传 True——只推迟下面两处
+    「到期才做」的刮削判定（到期重刮 / 详情补齐 / 父剧未刮），其余安全检查
+    （条目存在、未下架、指纹一致、探针、报修、层级）一条不少。推迟有界：
+    目录 next_due_at 一到，重验走完整判定，这些活一件不会少。
     """
     if not _incremental_on(ctx) or item is None or not fingerprint:
         return False
@@ -2641,12 +2990,12 @@ def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: 
     # 另外只有**电影 / 剧集**参与刮削（写库循环里是 item_type in ("series", "movie")）：
     # 集与季根本没有 tmdb_id，`should_scrape` 对它们恒等于「缺元数据 → 要刮」，落到这里就是
     # 「配了 TMDB 的剧集库每轮重扫都得完整处理每一集」——增量扫描对这个最常见的库型等于关掉。
-    if _tmdb.tmdb_client.configured and pending.item_type in ("series", "movie"):
+    if not defer_scrape and _tmdb.tmdb_client.configured and pending.item_type in ("series", "movie"):
         if should_scrape(item, ctx.snap.scrape_policy):
             return False                 # 到期重刮 / all 策略 / 缺元数据
         if item.tmdb_id and not (item.imdb_id and item.aliases):
             return False                 # 与循环里的 need_details 一致：详情还没补齐
-    if (pending.item_type == "episode" and _tmdb.tmdb_client.configured
+    if (not defer_scrape and pending.item_type == "episode" and _tmdb.tmdb_client.configured
             and pending.series_guid):
         # B 方案补全：父 series 从没走过 TMDB（无 tmdb_id 且无尝试记录）时不能跳过——
         # episode 隐式创建的 series 平时走不到 TMDB 搜索分支，跳过了就永远刮不到。
@@ -2737,6 +3086,16 @@ def _series_guid_of(scan_file: "ScanFile") -> str:
     if dirpath:
         series_dir = os.path.dirname(dirpath.rstrip("/")) if dirpath else ""
         return item_guid(series_dir or (os.path.dirname(scan_file.stored_path) or scan_file.stored_path))
+    # BYOS P3：绑定扫描没有挂载 id，远端分支的 mount_path(None, d) 会产
+    # 出 ``mount://None/...``——同剧在不同绑定下会撞同一个剧集 guid、跨
+    # 用户串剧。绑定路径自带绑定 id，直接按入库路径的目录段推导剧集
+    # guid（季目录逻辑与远端分支同口径），分账天然成立。
+    stored = getattr(scan_file, "stored_path", "") or ""
+    if stored.startswith("byos://"):
+        d = os.path.dirname(stored.rstrip("/")) or "/"
+        if _SEASON_DIR_RE.match(os.path.basename(d)):
+            d = posixpath.dirname(d) or "/"
+        return item_guid(d)
     d = (scan_file.dir_rel or "/").rstrip("/") or "/"
     if _SEASON_DIR_RE.match(os.path.basename(d)):
         d = posixpath.dirname(d) or "/"
@@ -2866,23 +3225,28 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
             from backend.emby_server import dedup as dedup_lib
             # 一次查出本库所有电影的 (id, tmdb_id, name, year)，Python 层建去重映射
             existing = db.query(MI.id, MI.tmdb_id, MI.name,
-                                MI.production_year).filter(
+                                MI.production_year, MI.file_path).filter(
                 MI.library_id == ctx.lib_id,
                 MI.item_type == "movie",
                 MI.deleted_at.is_(None),
             ).all()
             key_to_id: dict = {}
-            for eid, etmdb, ename, eyear in existing:
+            for eid, etmdb, ename, eyear, epath in existing:
                 ekey = dedup_lib.dedup_key_for(ctx.lib_id, "movie", etmdb,
                                                ename, eyear)
-                if ekey and ekey not in key_to_id:
-                    key_to_id[ekey] = eid
+                # BYOS P3：去重键叠加命名空间——同一部电影在不同绑定下
+                # 是两条条目，复用对方绑定的行会把 A 的条目改写成 B 的
+                # 路径（串用户）；共享行之间命名空间相同，行为逐字不变。
+                ns_key = (_scan_namespace(epath), ekey)
+                if ekey and ns_key not in key_to_id:
+                    key_to_id[ns_key] = eid
             for idx, p in movie_pendings:
                 pkey = dedup_lib.dedup_key_for(
                     ctx.lib_id, "movie", None,
                     p.parsed.get("name"), p.parsed.get("year"))
-                if pkey and pkey in key_to_id:
-                    movie_dup_map[idx] = key_to_id[pkey]
+                ns_key = (_scan_namespace(p.scan_file.stored_path), pkey)
+                if pkey and ns_key in key_to_id:
+                    movie_dup_map[idx] = key_to_id[ns_key]
         except ImportError:
             pass
 
@@ -2900,7 +3264,7 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
             merge_cfg = _mvw.series_merge_config(db)
             # 一次查出本库所有剧集的 (id, tmdb_id, name, year)，Python 层建去重映射
             existing = db.query(MI.id, MI.tmdb_id, MI.name,
-                                MI.production_year).filter(
+                                MI.production_year, MI.file_path).filter(
                 MI.library_id == ctx.lib_id,
                 MI.item_type == "series",
                 MI.deleted_at.is_(None),
@@ -2908,12 +3272,15 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
             key_to_id: dict = {}
             loose_to_tmdb: dict = {}  # 宽松 key -> 见过的非空 tmdb_id 集合
             loose_to_id: dict = {}    # 宽松 key -> (eid, eyear)，歧义的不进
-            for eid, etmdb, ename, eyear in existing:
+            for eid, etmdb, ename, eyear, epath in existing:
                 ekey = dedup_lib.dedup_key_for(ctx.lib_id, "series", etmdb,
                                                ename, eyear)
-                if ekey and ekey not in key_to_id:
-                    key_to_id[ekey] = eid
-                lkey = ("loose", ctx.lib_id,
+                # BYOS P3：去重键叠加命名空间（与电影版同理）。
+                ns = _scan_namespace(epath)
+                ns_key = (ns, ekey)
+                if ekey and ns_key not in key_to_id:
+                    key_to_id[ns_key] = eid
+                lkey = (ns, "loose", ctx.lib_id,
                         dedup_lib.normalize_name_loose(ename), eyear or 0)
                 tmdb_norm = (etmdb or "").strip() or None
                 seen = loose_to_tmdb.setdefault(lkey, set())
@@ -2928,13 +3295,14 @@ def _claim_batch_guids(db: Session, prepared: list, ctx: "_ScanContext") -> None
                 pkey = dedup_lib.dedup_key_for(
                     ctx.lib_id, "series", None,
                     p.parsed.get("name"), p.parsed.get("year"))
-                if pkey and pkey in key_to_id:
-                    series_dup_map[idx] = key_to_id[pkey]
+                pns = _scan_namespace(p.scan_file.stored_path)
+                if pkey and (pns, pkey) in key_to_id:
+                    series_dup_map[idx] = key_to_id[(pns, pkey)]
                     continue
                 # 总开关=0 时宽松复用全停（严格逻辑不受影响）
                 if not merge_cfg["enabled"] or not merge_cfg["loose_enabled"]:
                     continue
-                lkey = ("loose", ctx.lib_id,
+                lkey = (pns, "loose", ctx.lib_id,
                         dedup_lib.normalize_name_loose(p.parsed.get("name")),
                         p.parsed.get("year") or 0)
                 hit = loose_to_id.get(lkey)
@@ -3239,6 +3607,16 @@ def _side_info(ctx: "_ScanContext", scan_file: "ScanFile") -> tuple:
         return None, None, find_external_subtitles_remote(
             scan_file.name, entries, scan_file.mount_id, scan_file.dir_rel,
         )
+    # BYOS P3 后续：绑定线没有挂载 id，但有绑定命名空间 + 提供者——
+    # 走同一份远程字幕匹配语义，只把路径前缀换成 byos://<绑定 id>。
+    # （P3 时此分支返回空，字幕随入库丢了；接线后与挂载线同口径。）
+    binding_id = _byos_binding_id_of(scan_file)
+    if binding_id is not None and scan_file.provider is not None:
+        entries = _mount_names(ctx, scan_file)
+        return None, None, find_external_subtitles_remote(
+            scan_file.name, entries, None, scan_file.dir_rel,
+            path_prefix=f"byos://{binding_id}",
+        )
     return None, None, []
 
 
@@ -3257,7 +3635,14 @@ def _read_nfo_cached(ctx: "_ScanContext", scan_file: "ScanFile",
                      local_path: Optional[str] = None,
                      mount_rel: Optional[str] = None):
     """读 + 解析一个 NFO（ctx 级缓存，含阴性缓存；异常当没有 NFO）"""
-    key = ("local", local_path) if local_path else ("mount", scan_file.mount_id, mount_rel)
+    if local_path:
+        key = ("local", local_path)
+    else:
+        # 绑定线缓存键必须带绑定 id：同一 ctx 里理论上只有一个绑定，
+        # 但键里不写绑定 id 时，同 rel 不同绑定的 NFO 会撞键串内容。
+        _bid = _byos_binding_id_of(scan_file)
+        key = (("byos", _bid, mount_rel) if _bid is not None
+               else ("mount", scan_file.mount_id, mount_rel))
     if key not in ctx.nfo_cache:
         try:
             # v2.42.9：真的读一次才计数（耗时含 NFO 的读 + 解析）——
@@ -3267,7 +3652,11 @@ def _read_nfo_cached(ctx: "_ScanContext", scan_file: "ScanFile",
                     with open(local_path, "r", encoding="utf-8-sig", errors="ignore") as f:
                         text = f.read()
                 else:
-                    text = scan_file.provider.read_text(mount_rel)
+                    # 阶段 2 拆分：NFO 读走旁挂文本过渡口（MountProvider
+                    # 子类走新口，duck-type 旧提供者回落 read_text，见
+                    # mounts.read_sidecar_text_from 的过渡口径）。
+                    text = mount_lib.read_sidecar_text_from(
+                        scan_file.provider, mount_rel)
                 ctx.nfo_cache[key] = nfo_lib.parse_nfo(text)
         except Exception:  # noqa: BLE001 — 单个 NFO 读不到就当没有
             ctx.nfo_cache[key] = None
@@ -3304,7 +3693,13 @@ def _find_nfos(ctx: "_ScanContext", scan_file: "ScanFile", kind: str) -> tuple:
     - episode：同目录 `<集文件名>.nfo`；同目录 `season.nfo`；剧集目录 `tvshow.nfo`
     """
     is_local = scan_file.local_dir is not None
-    if not is_local and not (scan_file.mount_id is not None and scan_file.provider is not None):
+    # BYOS P3 后续：绑定线 mount_id 为空但有绑定命名空间 + 提供者，
+    # 按远程分支走（目录列举与旁挂读取都走提供者，与挂载线同口径）；
+    # 既无挂载 id 又无绑定命名空间的远程文件仍按旧口径跳过。
+    is_byos = _byos_binding_id_of(scan_file) is not None
+    if not is_local and not (
+            (scan_file.mount_id is not None or is_byos)
+            and scan_file.provider is not None):
         return None, None, None
     dirpath = scan_file.local_dir if is_local else (scan_file.dir_rel or "/")
 
@@ -3421,6 +3816,39 @@ def _submit(pool: ThreadPoolExecutor, fn, *args, **kwargs) -> "Future":
 
 
 
+_BYOS_NS_RE = re.compile(r"^byos://(\d+)/")
+
+
+def _byos_binding_id_of(scan_file) -> Optional[int]:
+    """ScanFile 的绑定 id（byos://<id>/... 命名空间才有；其余返回 None）。
+
+    供 _side_info / _find_nfos / _external_subtitles_changed 的绑定线
+    分支共用：只认入库路径命名空间，不猜 mount_id、不读凭据。
+    """
+    stored = getattr(scan_file, "stored_path", "") or ""
+    m = _BYOS_NS_RE.match(stored)
+    return int(m.group(1)) if m else None
+
+
+def _scan_namespace(path: Optional[str]) -> tuple:
+    """扫描身份命名空间：改名识别（file_id / 指纹两版）只在同一命名空间内认领。
+
+    - ``byos://<id>/...`` → ``("byos", id)``：不同绑定的同文件绝不互认
+      （BYOS 设计稿 §四：同一文件被两个用户绑定 = 两条条目，不跨用户去重）；
+    - 其他路径 → ``("shared",)``：共享库现行行为逐字不变；
+    - ``byos://`` 但 id 解析不出 → ``("byos-malformed", path)``：与任何行
+      都不同命名空间，宁可不认改名、不张冠李戴（byos_scan 产出的路径恒
+      为良构，此分支只防脏数据）。
+    """
+    raw = (path or "")
+    if raw.startswith("byos://"):
+        m = _BYOS_NS_RE.match(raw)
+        if m:
+            return ("byos", int(m.group(1)))
+        return ("byos-malformed", raw)
+    return ("shared",)
+
+
 def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
                               ctx: "_ScanContext",
                               claimed_row_ids: Optional[set] = None) -> None:
@@ -3430,7 +3858,9 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
     说明是同一文件改了名/换了目录：把已有的那行直接挂到 pending 上，
     写库循环走 update 分支（更新 file_path + guid），不删记录、不丢元数据。
 
-    批量查一次，不逐文件点查。没有 file_id 的文件（本地/115）跳过。
+    批量查一次，不逐文件点查。没有 file_id 的文件（本地）跳过。
+    115 的 fid 在 SCAN_IDENTITY_MATCH_ENABLED 开时由 Pan115Mount.walk_media
+    透传为 file_id，同样走本层（#13 PR-3 泛化）；关时不透传，115 仍走指纹层。
 
     claimed_row_ids：调用方先跑的 ``_attach_known_items`` 已认领的行 id
     集合——这些行不得再被认领（r60：多集迁移下主/次 pending 双认领同一旧行）。
@@ -3466,6 +3896,12 @@ def _match_renames_by_file_id(db: Session, prepared: list, known: dict,
     claimed_row_ids = set(claimed_row_ids) if claimed_row_ids else set()
     for p, fid in zip(need, fids):
         rows = [r for r in found.get(fid, []) if r.id not in claimed_row_ids]
+        # BYOS P3：改名认领不许跨命名空间——同一 Drive 文件被两个绑定扫
+        # 进同一库时，file_id 相同但必须是两条条目，认领对方的行会把
+        # A 的条目改写成 B 的路径（串用户）。共享路径现行行为不变。
+        rows = [r for r in rows
+                if _scan_namespace(getattr(r, "file_path", None))
+                == _scan_namespace(p.scan_file.stored_path)]
         if not rows:
             continue
         # 多集文件同一 file_id 对应多行：按集号精确配对（E27 的 pending
@@ -3525,18 +3961,184 @@ def _attach_known_items(prepared: list, known: dict) -> set:
     return claimed
 
 
+def _row_scan_title_year(row):
+    """行侧 scan 身份：优先读 scan_title/scan_year 列，缺失时回落旧口径重 parse。
+
+    scan 列是入库时的解析快照（只有扫描器写，刮削/管理端不碰）；回填没跑完
+    的行 scan 列为 NULL，此时退回现行「重 parse 旧路径」口径（episode 行的剧名
+    仍走 _series_name_of 的旧推导），行为与基线一致。返回 (title, year)，
+    title 为 None = 该行无可用 scan 身份。
+    """
+    from types import SimpleNamespace
+    title = getattr(row, "scan_title", None) or None
+    year = getattr(row, "scan_year", None)
+    if title is not None and row.item_type != "movie":
+        return title, None  # episode：scan_title 存剧名，年份不用
+    if title is not None and year is not None:
+        return title, year  # movie：两列齐全，零重 parse
+    if not getattr(row, "file_path", None):
+        return title, year
+    if row.item_type == "movie":
+        lib_type = "movies"
+        try:
+            parsed = parse_media_filename(row.file_path, lib_type)
+        except Exception:  # noqa: BLE001 — 解析失败的行不参与 scan 身份匹配
+            return title, year
+        return title or parsed.get("name"), (
+            year if year is not None else parsed.get("year"))
+    # episode：scan_title 存剧名；缺失时用旧口径从旧路径推导剧名。
+    if title is not None:
+        return title, None
+    lib_type = "tvshows"
+    try:
+        parsed = parse_media_filename(row.file_path, lib_type)
+    except Exception:  # noqa: BLE001
+        return None, None
+    if mount_lib.is_mount_path(row.file_path):
+        _mid, rel = mount_lib.parse_mount_path(row.file_path)
+        sf = SimpleNamespace(local_dir=None,
+                             dir_rel=posixpath.dirname(rel) or "/")
+    else:
+        sf = SimpleNamespace(local_dir=os.path.dirname(row.file_path),
+                             dir_rel=None)
+    try:
+        series_name = _series_name_of(sf, parsed)
+    except Exception:  # noqa: BLE001
+        return None, None
+    return series_name, None
+
+
+def _sample_title_matches(pending, row) -> bool:
+    """采样哈希的标题叠加约束（#13 §2.1：采样是弱证据，必撞同压制复制）。
+
+    采样哈希（algo 以 ``sample-`` 开头）认领时，除 1:1 唯一性外还要求
+    归一化标题一致；任一侧标题为空 = 证据不足，fail-closed 不认领。
+    全量哈希（md5/sha1）不走本函数。
+    """
+    from backend.emby_server import dedup as dedup_lib
+    if pending.item_type == "movie":
+        pending_title = (pending.parsed or {}).get("name")
+    else:
+        pending_title = getattr(pending, "series_name", None)
+    row_title, _ = _row_scan_title_year(row)
+    if not pending_title or not row_title:
+        return False
+    return dedup_lib.normalize_name(pending_title) == dedup_lib.normalize_name(row_title)
+
+
+def _match_renames_by_content_hash(db: Session, prepared: list, known: dict,
+                                   ctx: "_ScanContext",
+                                   claimed_row_ids: Optional[set] = None,
+                                   enabled: Optional[bool] = None) -> None:
+    """#13 PR-3：用 (content_hash, content_hash_algo, size) 识别改名/移动。
+
+    插在 file_id 层与指纹层之间，救「file_id 换了但内容没变」：
+    跨盘复制、115 转存换 fid、Drive 重新上传同文件——file_id 层认不上，
+    内容哈希仍能把旧行（元数据/进度/收藏）接回来。
+
+    认领条件（缺一不可，写死不留模糊）：
+    - 开关 SCAN_IDENTITY_MATCH_ENABLED 开（默认关；关时本函数直接返回，
+      行为与基线逐字一致）；
+    - pending 有源给的 content_hash 且 size > 0，行侧 (hash, algo) 成对命中
+      且 size 相等——algo 必须成对比较（md5 值与 sha1 值同串是两回事）；
+    - 候选唯一：同一 (hash, algo, size) 恰好 1 行才认领（同压制文件多份
+      复制时 hash 必然撞，撞了就放弃走宽限，宁可错分不可错认）；
+    - episode 按集号精确配对（多集文件同 hash 对应多行时各认各的）；
+    - 采样哈希（algo 以 ``sample-`` 开头）是弱证据，须再叠加归一化标题
+      一致（见 _sample_title_matches）；
+    - 与 file_id/指纹层同款 P0 保护：目标 guid 被占用则放弃，claimed 行
+      不得再认领（r60）。
+    """
+    if enabled is None:
+        enabled = IDENTITY_MATCH_ENABLED
+    if not enabled:
+        return
+    MI = emby_models.MediaItem
+    need: list = []
+    hashes: list[str] = []
+    for p in prepared:
+        if p.item is not None or getattr(p, "renamed", False):
+            continue
+        if p.item_type not in ("movie", "episode"):
+            continue
+        _h = getattr(p.scan_file, "content_hash", "") or ""
+        if not _h:
+            continue
+        if (getattr(p.scan_file, "size", 0) or 0) <= 0:
+            continue
+        need.append(p)
+        hashes.append(_h)
+    if not need:
+        return
+    found: dict[str, list] = {}
+    with _soft_delete.include_deleted():
+        for chunk in _chunks(sorted(set(hashes)), SQL_IN_CHUNK):
+            for row in db.query(MI).filter(
+                    MI.library_id == ctx.lib_id,
+                    MI.content_hash.in_(chunk)).all():
+                if row.content_hash:
+                    found.setdefault(row.content_hash, []).append(row)
+    claimed_rows: set = set(claimed_row_ids) if claimed_row_ids else set()
+    matched = 0
+    for p in need:
+        _h = getattr(p.scan_file, "content_hash", "") or ""
+        _algo = getattr(p.scan_file, "content_hash_algo", "") or ""
+        _size = getattr(p.scan_file, "size", 0) or 0
+        rows = [r for r in found.get(_h, [])
+                if (getattr(r, "content_hash_algo", "") or "") == _algo
+                and (r.size or 0) == _size
+                and r.id not in claimed_rows]
+        if p.item_type == "episode":
+            _ep = (p.parsed or {}).get("episode")
+            rows = [r for r in rows
+                    if getattr(r, "episode_number", None) == _ep]
+        if len(rows) != 1:
+            continue
+        row = rows[0]
+        if _algo.startswith("sample-") and not _sample_title_matches(p, row):
+            continue
+        _holder = _guid_held_by_other(db, getattr(p, "guid", None), row.id)
+        if _holder is not None:
+            logger.warning(
+                "扫描改名识别放弃（content_hash）：%s 的目标 guid 已被条目 %s 占用，"
+                "按新文件处理",
+                p.scan_file.stored_path, _holder)
+            ctx.stats["rename_collision_skipped"] = (
+                ctx.stats.get("rename_collision_skipped", 0) + 1)
+            continue
+        claimed_rows.add(row.id)
+        p.item = row
+        p.renamed = True
+        matched += 1
+        logger.info("扫描识别改名/移动（content_hash）: %s -> %s（保留元数据）",
+                    row.file_path, p.scan_file.stored_path)
+    if matched:
+        ctx.stats["renamed"] = ctx.stats.get("renamed", 0) + matched
+        ctx.stats["renamed_by_content_hash"] = (
+            ctx.stats.get("renamed_by_content_hash", 0) + matched)
+
+
 def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
                                   ctx: "_ScanContext",
-                                  claimed_row_ids: Optional[set] = None) -> None:
+                                  claimed_row_ids: Optional[set] = None,
+                                  enabled: Optional[bool] = None) -> None:
     """用 (文件大小, 解析身份) 指纹识别改名/移动（无 file_id 的来源）。
 
-    ``_match_renames_by_file_id`` 只覆盖有稳定 file_id 的来源（Drive/rclone）；
-    本地目录和 115 没有 file_id，改名/移动会走"删旧建新"，播放进度、收藏、
-    刮削元数据全丢在这里。
+    ``_match_renames_by_file_id`` 只覆盖有稳定 file_id 的来源（Drive/rclone，
+    以及开关开时透传 fid 的 115）；本地目录仍无 file_id，改名/移动会走
+    "删旧建新"，播放进度、收藏、刮削元数据全丢在这里——本层就是兜底。
 
     指纹 = (size, 解析身份)：size 必须 > 0 且相等（大小变了说明内容变了，
     不算改名）；解析身份 movie 用归一化标题 + 年份，episode 用归一化剧名 +
     季 + 集，候选行用 ``parse_media_filename`` 同口径解析，保证两边一致。
+
+    #13 PR-3（仅开关 SCAN_IDENTITY_MATCH_ENABLED 开时生效，默认关）：
+    - 候选行侧优先读存量 ``scan_title``/``scan_year`` 列（入库快照），
+      不再每轮重 parse 旧路径；列为 NULL 的行回落旧口径（回填期降级）；
+    - 归一化收敛到 ``dedup.normalize_name`` 一处（旧局部 _norm 只去空白
+      与 ``._-``，与 dedup 口径不一致）；
+    - movie 补与 episode 同款版本签名分量（同片多版本不再互认）。
+    开关关时以上三项一律不启用，行为与基线逐字一致（对照组测试钉死）。
 
     保守策略（宁可删旧建新，不张冠李戴）：
     - 同一指纹下必须**恰好 1 个待匹配文件对恰好 1 个候选行**才认领；
@@ -3544,17 +4146,25 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
     - 有 file_id 的文件跳过——file_id 是权威身份，没匹配上就是真新文件。
     - claimed_row_ids：``_attach_known_items`` 已认领的行不得再认领（r60）。
     """
+    if enabled is None:
+        enabled = IDENTITY_MATCH_ENABLED
     from types import SimpleNamespace
     # 版本签名模块：函数顶部导入一次，_ver_sig 在热路径（逐文件×逐候选行）
     # 被调用，import 语句虽走 sys.modules 缓存仍是无谓开销。
     # （episode_versions 顶层只依赖 logging/os/typing，与 scanner 无循环导入）
     from backend.emby_server import episode_versions as _ev
+    if enabled:
+        # 归一化收敛：与 dedup_key_for / 同剧去重同一口径（NFKC+小写+去空白标点）。
+        from backend.emby_server import dedup as _dedup
 
-    def _norm(name: str) -> str:
-        return "".join(
-            ch for ch in (name or "").lower()
-            if not ch.isspace() and ch not in "._-"
-        )
+        def _norm(name: str) -> str:
+            return _dedup.normalize_name(name)
+    else:
+        def _norm(name: str) -> str:
+            return "".join(
+                ch for ch in (name or "").lower()
+                if not ch.isspace() and ch not in "._-"
+            )
 
     def _ver_sig(path: str) -> tuple:
         # 版本签名（P1）：同集多版本（2160p / 1080p / H265…）不再互认为改名。
@@ -3572,7 +4182,12 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         if p.item_type == "movie":
             if not parsed.get("name"):
                 return None
-            return ("movie", size, _norm(parsed["name"]), parsed.get("year"))
+            fp = ("movie", size, _norm(parsed["name"]), parsed.get("year"))
+            if enabled:
+                # #13 PR-3：movie 补版本签名（与 episode 同款），同片多版本
+                # （2160p/1080p 各一份）不再互认为改名；缺签名时退化相等。
+                fp = fp + (_ver_sig(p.scan_file.stored_path),)
+            return fp
         if p.item_type == "episode":
             if (not p.series_name or parsed.get("season") is None
                     or parsed.get("episode") is None):
@@ -3591,21 +4206,35 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
         except Exception:  # noqa: BLE001 — 解析失败的行不参与指纹匹配
             return None
         if row.item_type == "movie":
+            if enabled:
+                # #13 PR-3：优先读 scan 列（入库快照），NULL 才用重 parse 值。
+                _t, _y = _row_scan_title_year(row)
+                if not _t:
+                    return None
+                return ("movie", row.size, _norm(_t), _y,
+                        _ver_sig(row.file_path or ""))
             if not parsed.get("name"):
                 return None
             return ("movie", row.size, _norm(parsed["name"]), parsed.get("year"))
-        # episode：用 _series_name_of 从旧路径推导剧名（与 pending 侧同口径）
-        if mount_lib.is_mount_path(row.file_path):
+        # episode：开关开且 scan_title 有值时直接读列，否则用 _series_name_of
+        # 从旧路径推导剧名（与 pending 侧同口径）。
+        if enabled and getattr(row, "scan_title", None):
+            series_name = row.scan_title
+        elif mount_lib.is_mount_path(row.file_path):
             _mid, rel = mount_lib.parse_mount_path(row.file_path)
             sf = SimpleNamespace(local_dir=None,
                                  dir_rel=posixpath.dirname(rel) or "/")
+            try:
+                series_name = _series_name_of(sf, parsed)
+            except Exception:  # noqa: BLE001
+                return None
         else:
             sf = SimpleNamespace(local_dir=os.path.dirname(row.file_path),
                                  dir_rel=None)
-        try:
-            series_name = _series_name_of(sf, parsed)
-        except Exception:  # noqa: BLE001
-            return None
+            try:
+                series_name = _series_name_of(sf, parsed)
+            except Exception:  # noqa: BLE001
+                return None
         # episode 的季/集身份用行自身的字段（入库时写死），而不是从旧路径
         # 重新解析——多集文件的第二行（episode_number=episode_end）解析旧路径
         # 只会得到区间起点，永远匹配不上自己的 pending。单集行两者一致，
@@ -3689,6 +4318,11 @@ def _match_renames_by_fingerprint(db: Session, prepared: list, known: dict,
                     _seen.add(_r.id)
                     _uniq.append(_r)
             rows = _uniq
+        # BYOS P3：指纹认领同样不许跨命名空间（115 无 file_id，同一
+        # 片名+大小在不同绑定下是两条条目；file_id 版同理，见上）。
+        rows = [r for r in rows
+                if _scan_namespace(getattr(r, "file_path", None))
+                == _scan_namespace(p.scan_file.stored_path)]
         if len(rows) != 1:
             continue
         row = rows[0]
@@ -3768,7 +4402,21 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     """把一批文件变成「可直接写库」的任务：一次查库 + 并行预取"""
     prepared: list = []
     guids: list = []
+    # L10：本轮解析口径 = 策略 preset（有策略时）否则库 collection_type；
+    # 无策略时 parse_type 恒等于 collection_type，行为与改前逐字一致。
+    try:
+        from backend.emby_server import library_scan_presets as _lsp
+        parse_type = _lsp.effective_parse_type(ctx.snap, ctx.snap.collection_type)
+    except Exception:  # noqa: BLE001 — 策略判定失败 = 现行口径
+        _lsp = None
+        parse_type = ctx.snap.collection_type
     for scan_file in batch:
+        # L10：策略过滤（无策略时恒 True）：被滤掉的文件不建任务、不入库，
+        # 计入 policy_skipped 供扫描统计核对。
+        if _lsp is not None and not _lsp.snapshot_policy_allows(
+                ctx.snap, scan_file.stored_path):
+            ctx.stats["policy_skipped"] = ctx.stats.get("policy_skipped", 0) + 1
+            continue
         guid = item_guid(scan_file.stored_path)
         if guid in ctx.seen_guids:
             # 同一文件在本轮扫描里已经处理过：遍历器偶发产出重复
@@ -3781,10 +4429,10 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
             logger.debug("扫描跳过重复文件：%s", scan_file.stored_path)
             continue
         ctx.seen_guids.add(guid)
-        parsed = parse_media_filename(scan_file.stored_path, ctx.snap.collection_type)
+        parsed = parse_media_filename(scan_file.stored_path, parse_type)
         item_type = (
             "episode" if parsed["season"] is not None
-            else ("series" if ctx.snap.collection_type == "tvshows" else "movie")
+            else ("series" if parse_type == "tvshows" else "movie")
         )
         pending = _Pending(scan_file=scan_file, guid=guid, parsed=parsed, item_type=item_type)
         if item_type == "episode":
@@ -3810,6 +4458,20 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
 
     # v2.52.0: guid 没命中的，用 drive_file_id 识别改名/移动（复用已有行）
     _match_renames_by_file_id(db, prepared, known, ctx, claimed_row_ids)
+    # #13 PR-3：上一层已认领的行不得再被后层认领——每层只把自己的认领结果
+    # 累进 claimed 集合（r60 的教训只防了 _attach 层，层与层之间同样会
+    # 双认领同一旧行：file_id 层认走的行，hash/指纹层不得再抢）。
+    claimed_row_ids = set(claimed_row_ids) | {
+        p.item.id for p in prepared
+        if p.item is not None and getattr(p.item, "id", None) is not None
+    }
+
+    # #13 PR-3：file_id 没命中的，用 content_hash 识别（跨盘复制/重传同文件）
+    _match_renames_by_content_hash(db, prepared, known, ctx, claimed_row_ids)
+    claimed_row_ids = set(claimed_row_ids) | {
+        p.item.id for p in prepared
+        if p.item is not None and getattr(p.item, "id", None) is not None
+    }
 
     # v2.53.x: 没有 file_id 的来源（本地目录/115），用 (大小, 解析身份) 指纹
     # 识别改名/移动，保住播放进度与元数据
@@ -3854,6 +4516,13 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
     stored_states = _load_dir_states(
         db, ctx.lib_id, [_dir_key_of(p.scan_file) for p in prepared]
     ) if _incremental_on(ctx) else {}
+    # 按源快照层（任务清单第 11 项）：解析到源行的目录以快照为准，
+    # 解析不到/开关关闭时两字典为空，循环里一律走旧路径。
+    if _incremental_on(ctx) and scan_snapshots.snapshots_enabled():
+        _load_snapshot_states(db, ctx, [_dir_key_of(p.scan_file) for p in prepared])
+    else:
+        ctx.snapshot_resolved = {}
+        ctx.snapshot_states = {}
 
     policy = ctx.snap.scrape_policy
     # r60：_attach_known_items 已在批次开头（改名识别之前）执行，
@@ -3888,15 +4557,50 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
         # 目录没变、库里这一行也是最新的 → 不做任何逐文件工作（guid 已在上面记进 seen_guids）
         dir_key = _dir_key_of(scan_file)
         fingerprint = _dir_fingerprint(ctx, scan_file) if _incremental_on(ctx) else None
-        if _can_skip_file(ctx, item, pending, fingerprint, stored_states.get(dir_key)):
+        stored = stored_states.get(dir_key)
+        stored_fp = stored[0] if stored else None
+        # 按源快照层：解析到源行的目录，快照（指纹 + 项数 + 到期）为准；
+        # 无快照行时 stored=None → 判定 first，完整处理一次并写快照。
+        listing_count = None
+        if dir_key in ctx.snapshot_resolved:
+            snap_stored = ctx.snapshot_states.get(dir_key)
+            stored = snap_stored
+            stored_fp = stored[0] if stored else None
+            listing_count = _dir_listing_count(ctx, scan_file) if fingerprint else None
+            ctx.snapshot_counts[dir_key] = listing_count
+        # 到期调度（批二 #12）：先判这个目录本轮的核对深度。未到期且指纹没变
+        # → 只跑安全检查、推迟到期类判定（defer_scrape）；判定为 None（到期层
+        # 不参与）或 first/changed/due → 走下面原有的完整判定，一字不差。
+        decision = _dir_decision(ctx, dir_key, fingerprint, stored,
+                                 entry_count=listing_count) if fingerprint else None
+        if decision == "not_due" and _can_skip_file(
+                ctx, item, pending, fingerprint, stored_fp, defer_scrape=True):
+            pending.skipped = True
+            # 计数口径与下面的完整核对跳过不同：那里是「全深度核对过、确认
+            # 没变」，照旧 updated + unchanged 各计一次；这里是「未到期、
+            # 只跑了安全检查」——没有真核对过内容，只计 unchanged，
+            # 保住「updated + unchanged 不重复计同一个文件」的统计口径。
+            ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
+            # 只记判定供查：保留原到期时刻，不许把排期越推越远
+            _schedule_dir(ctx, dir_key, "not_due", due_at=stored[1])
+            _record_snapshot(ctx, dir_key, "not_due", due_at=stored[1])
+            continue
+        if _can_skip_file(ctx, item, pending, fingerprint, stored_fp):
             pending.skipped = True
             # updated 照旧计一次（对用户来说这个条目本轮确实重新核对过），
             # 另外单独记 unchanged，方便看“增量到底省了多少”
             ctx.stats["updated"] = ctx.stats.get("updated", 0) + 1
             ctx.stats["unchanged"] = ctx.stats.get("unchanged", 0) + 1
+            if decision is not None:
+                # 到期重验过但指纹没变：指纹不在 dirty 里，靠排期集推进到期时刻
+                _schedule_dir(ctx, dir_key, decision)
+                _record_snapshot(ctx, dir_key, decision)
             continue
         if fingerprint:
             ctx.dirty_dirs[dir_key] = fingerprint   # 这个目录这批真处理了 → 提交时写回指纹
+        if decision is not None:
+            _schedule_dir(ctx, dir_key, decision)   # 完整处理过 → 重新排期
+            _record_snapshot(ctx, dir_key, decision)
         pending.probe_needed = bool(is_new or needs_probe(item, scan_file.stored_path,
                                                              scan_file.size))
         if SCAN_LAYERED and not pending.fast_skipped:
@@ -4130,6 +4834,7 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session, process_one,
                 for p in prepared:
                     process_one(p.scan_file, p)
                 _store_dir_states(db, ctx)   # 增量扫描：这批真处理过的目录指纹随本次提交写回
+                _store_snapshots(db, ctx)      # 按源快照：与指纹同事务写回
                 outcome = commit_batch()
             except OperationalError as exc:
                 # PG 死锁（40P01）：enrich worker 的批量认领
@@ -4234,26 +4939,42 @@ def _purge_items(db: Session, item_ids: list) -> None:
 def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
     """快速路径：一眼判断「这一轮不可能有要清理的条目」
 
-    两个条件都成立才返回 True，都只是计数查询（走索引），比遍历整库便宜两个数量级：
+    三个条件都成立才返回 True，都只是计数查询（走索引），比遍历整库便宜两个数量级：
 
     1. **文件类条目数 == 本次扫描见到的文件数**：说明每个文件都有行，库里也没有多余的
        （来源里已经没有的）文件类条目；
     2. **剧/季行数 == 被引用的剧数 + 被引用的季数**：说明没有「没有子条目的剧或季」残留
-       （剧被 season/episode 的 ``series_id`` 引用，季被 episode 的 ``parent_id`` 引用）。
+       （剧被 season/episode 的 ``series_id`` 引用，季被 episode 的 ``parent_id`` 引用）；
+    3. **没有挂着缺失计数的条目**（批一 #6 缺失宽限）：有的话遍历要负责清零/累计，
+       不能跳过。
 
     任何一个不成立就退回遍历——**宁可多花时间，也不能漏掉该删的条目**。
     实测十万条目（剧集库，稳定无删除）：这里约 40 ms，遍历整库约 2.2 s。
     """
-    file_backed = int(db.execute(
+    # 一条查询同时拿文件类条目数与「挂着缺失计数的条目数」（批一 #6）：
+    # 快速路径的立身之本是便宜，不许为宽限多加一次往返（资源预算冒烟
+    # 对条目表 SELECT 次数有硬上限）。missing_count 只会落在 movie/episode
+    # 上（宽限只管文件类条目），折进这条计数不丢信息。
+    _fb_row = db.execute(
         text(
-            "SELECT COUNT(*) FROM emby_items "
+            "SELECT COUNT(*), "
+            "COALESCE(SUM(CASE WHEN missing_count > 0 THEN 1 ELSE 0 END), 0) "
+            "FROM emby_items "
             "WHERE library_id = :lib AND item_type IN ('movie', 'episode') "
             "AND deleted_at IS NULL"
         ),
         {"lib": library.id},
-    ).scalar() or 0)
+    ).first()
+    file_backed = int(_fb_row[0] or 0)
+    pending_grace = int(_fb_row[1] or 0)
     if file_backed != len(seen_guids):
         return False                      # 条数与文件数对不上：可能有已消失的条目
+    # 缺失宽限（批一 #6）：有条目正挂着缺失计数时不能走快速路径——
+    # 遍历要负责给「文件回来了」的条目清零、给「还缺着」的累计计数；
+    # 跳过遍历会让计数永远停在旧值，下一次单轮缺失就直接越线下架。
+    # 必须放在下面两个提前 return 之前查，否则电影库/空库永远轮不到。
+    if pending_grace:
+        return False
     if not file_backed:
         return True                       # 空库：本来就没有可清理的
     parents = int(db.execute(
@@ -4285,10 +5006,142 @@ def _no_removals_possible(db: Session, library, seen_guids: set) -> bool:
     return parents == refs_series + refs_season
 
 
+def _evict_gone_drive_files(db, library, gone: list) -> None:
+    """来源里已经没有的 Drive 文件：摘掉播放侧存在性正缓存。
+
+    播放在 EA 容器，扫描在别的容器，失效走 Redis 墓碑（见 api.invalidate）。
+    任何失败都不许打断清理。
+    """
+    if not gone:
+        return
+    try:
+        from types import SimpleNamespace
+
+        from backend.emby_server.api import invalidate_drive_exists_for_item
+    except Exception:  # noqa: BLE001
+        logger.debug("加载 Drive 存在性缓存失效入口失败", exc_info=True)
+        return
+    for file_path, file_id in gone:
+        try:
+            invalidate_drive_exists_for_item(
+                db, SimpleNamespace(
+                    file_path=file_path or "",
+                    drive_file_id=file_id,
+                    library=library,
+                ))
+        except Exception:  # noqa: BLE001
+            logger.debug("扫描失效存在性缓存失败 file=%s", file_id, exc_info=True)
+        # 批一 #1：同点位连带清解析结果缓存——文件已确认不在，解析快照
+        # 不许再留（否则 TTL 内播放还会拿到这条已消失文件的直链）。
+        try:
+            from backend.emby_server.mounts import (
+                invalidate_resolve_cache_for_path)
+            invalidate_resolve_cache_for_path(file_path)
+        except Exception:  # noqa: BLE001
+            logger.debug("扫描失效解析缓存失败 file=%s", file_id, exc_info=True)
+
+
+def _apply_missing_resets(db: Session, item_ids: list[int]) -> None:
+    """缺失计数清零（批一 #6）：文件重新出现的条目，旧账一笔勾销。"""
+    for i in range(0, len(item_ids), SQL_IN_CHUNK):
+        chunk = item_ids[i:i + SQL_IN_CHUNK]
+        db.execute(
+            update(emby_models.MediaItem)
+            .where(emby_models.MediaItem.id.in_(chunk))
+            .values(missing_count=0, missing_since=None)
+        )
+
+
+def _apply_missing_grace(db: Session, item_ids: list[int]) -> None:
+    """缺失计数 +1（批一 #6）：首次缺失记下时刻，后续只累计次数。
+
+    一条 SQL 统一自增：每个 id 本轮至多出现一次（遍历按 id 单趟），
+    不存在同批重复累计。
+    """
+    now = datetime.now()
+    for i in range(0, len(item_ids), SQL_IN_CHUNK):
+        chunk = item_ids[i:i + SQL_IN_CHUNK]
+        db.execute(
+            update(emby_models.MediaItem)
+            .where(emby_models.MediaItem.id.in_(chunk))
+            .values(
+                missing_count=emby_models.MediaItem.missing_count + 1,
+                missing_since=func.coalesce(emby_models.MediaItem.missing_since, now),
+            )
+        )
+
+
+def _parent_dir_of(file_path):
+    """直系目录：file_path 去掉最后一段。
+
+    无路径/裸文件名（无斜杠）→ None，不进守卫统计：它们不属于任何真实
+    目录，硬归成一处会把毫不相关的行算成一个“目录”而误拦。
+    """
+    if not file_path:
+        return None
+    parent = posixpath.dirname(file_path)
+    return parent or None
+
+
+def _credibility_guarded_dirs(db: Session, library, seen_guids: set,
+                              exists_cache: dict) -> set:
+    """统计每目录直系消失比例，返回超阈目录集合（清单第 12 项）。
+
+    只统计文件类行（movie/episode）且有真实父目录的行；剧/季行不进统计
+    （它们的“消失”是派生的无子条目，不是清单证据）。
+    确认缺失口径与清理主循环逐字一致：未见 + 其他来源也读不到。
+    本轮 media_exists 的判定结果写进 exists_cache 供主循环复用——统计与
+    主循环共用一次判定，不翻倍查来源。
+    """
+    totals: dict = {}
+    missing: dict = {}
+    last_id = 0
+    while True:
+        rows = db.execute(
+            select(
+                emby_models.MediaItem.id,
+                emby_models.MediaItem.guid,
+                emby_models.MediaItem.item_type,
+                emby_models.MediaItem.file_path,
+                emby_models.MediaItem.drive_file_id,
+                emby_models.MediaItem.missing_count,
+            )
+            .where(
+                emby_models.MediaItem.library_id == library.id,
+                emby_models.MediaItem.id > last_id,
+                emby_models.MediaItem.deleted_at.is_(None),
+            )
+            .order_by(emby_models.MediaItem.id)
+            .limit(CLEANUP_BATCH)
+        ).all()
+        if not rows:
+            break
+        last_id = rows[-1][0]
+        for item_id, guid, item_type, file_path, drive_file_id, missing_count in rows:
+            if item_type not in ("movie", "episode"):
+                continue
+            parent = _parent_dir_of(file_path)
+            if parent is None:
+                continue
+            totals[parent] = totals.get(parent, 0) + 1
+            if guid in seen_guids:
+                continue
+            alive = mount_lib.media_exists(file_path, db, library)
+            exists_cache[item_id] = alive
+            if not alive:
+                missing[parent] = missing.get(parent, 0) + 1
+    guarded = set()
+    for parent, total in totals.items():
+        gone = missing.get(parent, 0)
+        if total >= CREDIBILITY_MIN_DIR_ENTRIES and gone / total > CREDIBILITY_MAX_RATIO:
+            guarded.add(parent)
+    return guarded
+
+
 def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
     """清理「来源里已经没有」的条目，返回删除条数
 
-    三个刻意的选择：
+    四个刻意的选择（前三条见下，第四条为清单第 12 项新增）：
 
     - **快速路径**：稳定库（每个文件都有行、没有多余行、没有无子条目的剧/季）根本不必
       遍历整库，两次计数就能证明「没有可清理的条目」；任何一条对不上就退回遍历。
@@ -4299,11 +5152,16 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
       全部留着——误删一部片还能连播放进度与收藏一起回来。物理删除仍会做，但只针对
       「已经隐藏很久」的条目（`MEDIA_SOFT_DELETE_PURGE_DAYS`，默认 30 天），
       否则表会无限涨。把 `MEDIA_SOFT_DELETE=0` 就完全回到硬删。
+    - **缺失宽限**（2026-10-24 批一 #6）：确认缺失先累计 `missing_count`，
+      连续缺失 `SCAN_MISSING_GRACE_SCANS` 轮（默认 3）才下架；文件回来即清零。
+      与删除保护分工：保护管整库级事故，宽限管单条级抖动。
+    - **清单可信度守卫**（清单第 12 项）：某目录直系消失超阈时，本轮不删
+      该目录的条目、不计缺失轮次，只记警告；其余目录正常清理。
     """
     global _CLEANUP_LAST
     started = time.perf_counter()
-    _CLEANUP_LAST = {"fast_path": False, "walked": 0, "removed": 0, "elapsed_ms": 0.0,
-                     "skipped": ""}
+    _CLEANUP_LAST = {"fast_path": False, "walked": 0, "removed": 0, "graced": 0,
+                     "elapsed_ms": 0.0, "skipped": "", "credibility_guarded": []}
     if _no_removals_possible(db, library, seen_guids):
         elapsed = (time.perf_counter() - started) * 1000
         _CLEANUP_LAST.update(fast_path=True, elapsed_ms=elapsed)
@@ -4319,7 +5177,20 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                              elapsed_ms=(time.perf_counter() - started) * 1000)
         logger.error("清理阶段已中止（删除保护）：%s", why)
         return 0
+    # 清单可信度守卫：先统计、再清理——被拦目录的未见行本轮不做任何变更
+    guarded_dirs: set = set()
+    exists_cache: dict = {}
+    if CREDIBILITY_GUARD_ENABLED:
+        guarded_dirs = _credibility_guarded_dirs(db, library, seen_guids, exists_cache)
+        if guarded_dirs:
+            _CLEANUP_LAST["credibility_guarded"] = sorted(guarded_dirs)
+            logger.warning(
+                "清单可信度守卫：%d 个目录直系消失超阈，本轮不删这些目录的条目、"
+                "不计缺失轮次：%s",
+                len(guarded_dirs), sorted(guarded_dirs),
+            )
     removed = 0
+    graced = 0
     walked = 0
     last_id = 0
     while True:
@@ -4329,6 +5200,8 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 emby_models.MediaItem.guid,
                 emby_models.MediaItem.item_type,
                 emby_models.MediaItem.file_path,
+                emby_models.MediaItem.drive_file_id,
+                emby_models.MediaItem.missing_count,
             )
             .where(
                 emby_models.MediaItem.library_id == library.id,
@@ -4344,15 +5217,47 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
         last_id = rows[-1][0]
         walked += len(rows)
         doomed: list[int] = []
-        for item_id, guid, item_type, file_path in rows:
+        gone_drive: list[tuple] = []
+        grace_ids: list[int] = []
+        reset_ids: list[int] = []
+        for item_id, guid, item_type, file_path, drive_file_id, missing_count in rows:
+            missing_count = missing_count or 0
             if guid in seen_guids:
+                # 文件回来了：缺失计数清零（批一 #6），别让旧账害它下次单轮缺失就越线
+                if missing_count > 0:
+                    reset_ids.append(item_id)
                 continue
             if item_type in ("movie", "episode"):
+                # 清单可信度守卫（清单第 12 项）：被拦目录的未见行本轮不做任何
+                # 变更——不累计、不下架；已见行照常走下面的清零分支。
+                if guid not in seen_guids:
+                    _parent = _parent_dir_of(file_path)
+                    if _parent is not None and _parent in guarded_dirs:
+                        continue
                 # 本机路径与远程挂载都查：命中的说明是别的来源的文件，保留；
-                # 查不到（挂载已删/已停用）才当删除处理。
-                if file_path and mount_lib.media_exists(file_path, db, library):
+                # 查不到（挂载已删/已停用）才当删除处理。守卫统计已查过的行
+                # 复用判定，不翻倍查来源；守卫关时缓存为空，走现行直查。
+                if item_id in exists_cache:
+                    _alive = exists_cache[item_id]
+                elif file_path:
+                    _alive = mount_lib.media_exists(file_path, db, library)
+                else:
+                    _alive = False
+                if file_path and _alive:
+                    if missing_count > 0:
+                        reset_ids.append(item_id)  # 文件在别的来源活着，同样清零
                     continue  # 其他来源（路径 / 挂载）的文件
-                doomed.append(item_id)
+                # 确认缺失：先过宽限（批一 #6），连续缺失达到阈值才下架；
+                # 宽限期内条目保持可见——单轮抖动不作数（魂：对外部变化克制）。
+                if missing_count + 1 >= MISSING_GRACE_SCANS:
+                    doomed.append(item_id)
+                    fid = (drive_file_id or "").strip()
+                    if fid:
+                        # 真正判缺了才摘存在性正缓存：宽限期内不摘，
+                        # 文件可能只是暂时读不到，摘了会害播放白查一趟来源
+                        gone_drive.append((file_path, fid))
+                else:
+                    grace_ids.append(item_id)
             elif item_type == "season":
                 has_children = db.query(emby_models.MediaItem.id).filter(
                     emby_models.MediaItem.parent_id == item_id
@@ -4365,6 +5270,13 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
                 ).first()
                 if not has_children:
                     doomed.append(item_id)
+        if reset_ids:
+            _apply_missing_resets(db, reset_ids)
+        if grace_ids:
+            _apply_missing_grace(db, grace_ids)
+            graced += len(grace_ids)
+        if gone_drive:
+            _evict_gone_drive_files(db, library, gone_drive)
         if doomed:
             if _soft_delete.soft_delete_enabled():
                 # 只标记：从属数据（播放进度 / 收藏 / 分面）留着，文件回来就能恢复
@@ -4373,6 +5285,7 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
             else:
                 _purge_items(db, doomed)
                 removed += len(doomed)
+        if doomed or grace_ids or reset_ids:
             db.commit()  # 一批一次提交：与扫描主体同一套资源口径
     if _soft_delete.soft_delete_enabled():
         try:
@@ -4380,7 +5293,7 @@ def _remove_missing_items(db: Session, library, seen_guids: set) -> int:
         except Exception as exc:  # noqa: BLE001 — 回收失败不影响本轮清理结果
             db.rollback()
             logger.warning("软删除回收失败 library_id=%s: %s", library.id, exc)
-    _CLEANUP_LAST.update(walked=walked, removed=removed,
+    _CLEANUP_LAST.update(walked=walked, removed=removed, graced=graced,
                          elapsed_ms=(time.perf_counter() - started) * 1000)
     return removed
 
@@ -4412,7 +5325,7 @@ SCAN_STATUS_INTERRUPTED = "interrupted"   # 被进程重启打断（不是失败
 SCAN_TRIGGERS = (
     "manual", "client", "node", "repair",
     "auto", "fs-event", "drive-changes", "chase-new", "strm-gen", "rescrape",
-    "resume",
+    "resume", "byos_binding",
 )
 
 # 每个媒体库保留多少轮扫描流水（0 = 不记流水）。一轮一行，超过就按库回收最旧的行——
@@ -4422,13 +5335,19 @@ SCAN_RUN_KEEP = env_int("EMBY_SCAN_HISTORY", 20, 1, 10000)
 # 需要长期保留的统计键：其余键本来只是内部状态，不进库
 SCAN_STATS_KEYS = ("added", "updated", "removed", "probed", "probe_queued", "scraped",
                    "repaired", "unchanged", "resurrected", "removal_skipped",
+                   # 到期调度（批二 #12）：目录判定计数，不进白名单落不了库
+                   "dirs_new", "dirs_changed", "dirs_due", "dirs_not_due",
                    "failed_roots", "duplicate_files", "duration_ms", "sources",
                    # 删除保护拦截原因：finish_scan 的 error 兜底链 + _scan_metrics
                    # 对外口径都依赖它，不进白名单就落不了库（v2.55.x 修复）
                    "removal_guard",
                    # 定向扫描标记：清理跳过是预期行为，finish_scan 据此不判 partial
                    #（v2.56.x 修复"没有可用来源"误报）
-                   "targeted_scan")
+                   "targeted_scan",
+                   # 定向扫描的范围（limit_prefixes）：begin_scan 开跑时记下，
+                   # 被重启打断后自动续扫据它定向续、不放大成整库遍历；
+                   # 只在流水 stats 里流转，_scan_metrics 不提取、不对外
+                   "resume_scope")
 
 
 def normalize_scan_trigger(trigger: Optional[str]) -> str:
@@ -4539,6 +5458,18 @@ def encode_scan_stats(stats: Optional[dict]) -> Optional[str]:
             out["removal_guard"] = str(out.get("removal_guard") or "")[:500]
         if "sources" in out:
             out["sources"] = _encode_scan_sources(out.get("sources"))
+        if "resume_scope" in out:
+            # 只留定向范围本身：前缀逐个截断、条数封顶，坏形状直接丢弃
+            scope = out.get("resume_scope")
+            if isinstance(scope, dict) and scope.get("targeted"):
+                out["resume_scope"] = {
+                    "targeted": True,
+                    "limit_prefixes": [
+                        str(p)[:1000] for p in (scope.get("limit_prefixes") or [])
+                    ][:200],
+                }
+            else:
+                out.pop("resume_scope", None)
         return json.dumps(out, ensure_ascii=False, sort_keys=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning("序列化扫描统计失败: %s", exc)
@@ -4725,12 +5656,102 @@ def _write_scan_state(db: Session, library: emby_models.Library, status: str,
         db.rollback()
 
 
+def _resume_scope_of(snapshot) -> Optional[dict]:
+    """从快照里提取「被打断后该按什么范围续扫」，整库扫描返回 None。
+
+    定向扫描（Drive Changes 触发，只扫几个变化目录）被重启打断时，续扫必须
+    还是定向——历史上续扫不分青红皂白整库重走，一次几分钟的增量能被续成
+    几天走不完的全量遍历（2026-10-22 国产剧实证）。范围只在定向时才记：
+    整库扫描本来就该整库续，记了反而多一层出错面。
+    """
+    try:
+        if snapshot is None or not getattr(snapshot, "targeted", False):
+            return None
+        prefixes = [str(p) for p in (getattr(snapshot, "limit_prefixes", ()) or ()) if p]
+        if not prefixes:
+            return None
+        return {"targeted": True, "limit_prefixes": prefixes}
+    except Exception:  # noqa: BLE001 — 取范围失败绝不拖累扫描本身
+        return None
+
+
+def interrupted_resume_prefixes(db: Session, library_id: int) -> Optional[list]:
+    """该库最近一条「已中断」流水里记下的定向续扫范围；没有就返回 None。
+
+    续扫方（maintenance.resume_interrupted_scans）据此决定定向续还是整库续：
+    返回 None = 整库续（整库扫描被打断、或老流水没记范围时的既有口径）。
+    读不出来（没流水 / stats 损坏）一律 None 回退整库，不许抛。
+
+    范围落点两代兼容（批一 #7）：新流水先读检查点列 ``state_json``
+    （begin_scan 专属落点、收尾永不覆写）；它为空/损坏/没记范围时回退
+    ``stats`` 里的 resume_scope（老流水的落点，升级前只有这一处）。
+    """
+    try:
+        run = (
+            db.query(emby_models.ScanRun)
+            .filter(emby_models.ScanRun.library_id == library_id,
+                    emby_models.ScanRun.status == SCAN_STATUS_INTERRUPTED)
+            .order_by(emby_models.ScanRun.id.desc())
+            .first()
+        )
+        if run is None:
+            return None
+        scope = decode_scan_stats(getattr(run, "state_json", None)).get("resume_scope") or {}
+        if not scope.get("targeted"):
+            scope = decode_scan_stats(getattr(run, "stats", None)).get("resume_scope") or {}
+        if not scope.get("targeted"):
+            return None
+        prefixes = [str(p) for p in (scope.get("limit_prefixes") or []) if p]
+        return prefixes or None
+    except Exception:  # noqa: BLE001 — 回退整库续是安全侧
+        return None
+
+
+#: 跨进程防重的部分唯一索引名（models.ScanRun.__table_args__ 与
+#: database._migrate_scan_run_single_running 同名，三处必须一致）
+SCAN_RUN_SINGLE_INDEX = "uq_scan_runs_one_running"
+
+
+def _is_single_running_violation(exc: IntegrityError) -> bool:
+    """这次 IntegrityError 是不是撞了「同库只许一条 running 流水」的索引。
+
+    PG 文案带约束名：``duplicate key value violates unique constraint
+    "uq_scan_runs_one_running"``——认名最准。SQLite 不报索引名、只报
+    ``UNIQUE constraint failed: emby_scan_runs.library_id``（实测 3.45）：
+    begin_scan 这次提交里 emby_scan_runs 上的唯一约束只有这一条索引，
+    「表名 + 唯一冲突」即是它。两条都不命中（别的表冲突 / NOT NULL /
+    外键）说明别处数据算错了，仍走「吞掉只记 warning」的老口径，
+    不能误升级成 ScanInProgress 把真问题藏起来。
+
+    只看驱动原始报错（``exc.orig``），不看 SQLAlchemy 拼的全文——全文里
+    带的 SQL 语句本身就含表名，会把别的约束的锅也算到这张表头上。
+    """
+    haystack = str(getattr(exc, "orig", "") or "")
+    if SCAN_RUN_SINGLE_INDEX in haystack:
+        return True
+    return "emby_scan_runs" in haystack and _is_unique_violation(exc)
+
+
 def begin_scan(db: Session, library: emby_models.Library,
-               trigger: str = "manual") -> Optional[int]:
+               trigger: str = "manual",
+               snapshot=None) -> Optional[int]:
     """标记扫描开始，并开一条扫描流水，返回它 id
 
     独立提交一次：扫描过程中进程被杀，库里也能看出「上一轮在跑」以及是谁触发的。
     状态写不进去不影响扫描本身（只是这次没有流水）。
+
+    ``snapshot`` 给了且是定向扫描时，把范围记进流水的 stats（resume_scope，
+    老落点）与 state_json（检查点专属落点，批一 #7）：流水收尾只动
+    status/error、不动 stats，被打断后范围还在，续扫先读 state_json、
+    再回退 stats。对外流水结构（_scan_metrics）是白名单提取，
+    这两个键都不会漏到管理端。
+
+    **跨进程防重（批一 #7）**：插入的 running 流水撞上「同库只许一条
+    running」的部分唯一索引时，说明另一个进程（worker / EA）已在扫这个
+    库——抛 ``ScanInProgress``，与进程内 ``_acquire_scan`` 同一个异常，
+    队列层按「重复任务拒绝」的现成口径处理。其余写库失败（抖动、锁、
+    别的约束）维持老口径：吞掉只记 warning，本轮照常扫、只是没流水。
+    ``SCAN_RUN_KEEP=0``（不开流水）时没有行可撞，防重只剩进程内一层。
     """
     library.is_scanning = True
     library.scan_status = SCAN_STATUS_RUNNING
@@ -4742,9 +5763,21 @@ def begin_scan(db: Session, library: emby_models.Library,
         run = emby_models.ScanRun(library_id=library.id, status=SCAN_STATUS_RUNNING,
                                   trigger=normalize_scan_trigger(trigger),
                                   started_at=datetime.now())
+        scope = _resume_scope_of(snapshot)
+        if scope is not None:
+            encoded_scope = encode_scan_stats({"resume_scope": scope})
+            run.stats = encoded_scope
+            run.state_json = encoded_scope
         db.add(run)
     try:
         commit_with_retry(db, label="扫描开始状态")
+    except IntegrityError as exc:
+        db.rollback()
+        if _is_single_running_violation(exc):
+            raise ScanInProgress(
+                f"媒体库 {library.id} 正在扫描中（其他进程已在扫描）") from exc
+        logger.warning("写入扫描开始状态失败: %s", exc)
+        return None
     except Exception as exc:  # noqa: BLE001 — 状态写不进去也要照常扫描
         logger.warning("写入扫描开始状态失败: %s", exc)
         db.rollback()
@@ -4918,7 +5951,8 @@ def fail_scan(db: Session, library: emby_models.Library, exc: Exception,
 
 def scan_library_sync(db: Session, library: emby_models.Library,
                       snapshot: Optional[LibrarySnapshot] = None,
-                      trigger: str = "manual") -> dict:
+                      trigger: str = "manual",
+                      source_override: Optional[list] = None) -> dict:
     """扫描单个媒体库（同步实现，可在后台线程运行）
 
     约定：
@@ -4933,15 +5967,46 @@ def scan_library_sync(db: Session, library: emby_models.Library,
     - **结果可查**：成功 / 部分失败 / 异常三条路都会把这一轮的统计与原因写回媒体库
       （scan_status / scan_stats / scan_error），见 ``scan_result_payload``；
       同时记一条扫描流水（含 ``trigger``），见 ``scan_runs_payload``。
+    - **定向来源**（BYOS P3）：传了 ``source_override`` 时只扫这些来源，
+      不读库的现行来源；调用方须同时把快照置为定向（``targeted=True``），
+      使清理阶段跳过——绑定线只做新增/更新，绝不因“只看见一个绑定”
+      而删掉库里别的来源的条目。
     """
     snap = snapshot or LibrarySnapshot.of(library)
+    # L10：开关开且该库配了策略时，把策略挂到快照上；开关关/未配策略/
+    # 挂载失败时原样返回快照，走现行口径（attach 内部已 fail-safe）。
+    try:
+        from backend.emby_server import library_scan_presets as _lsp
+        snap = _lsp.attach_policy_to_snapshot(db, snap,
+                                              allowed_extensions=VIDEO_EXTS)
+    except Exception:  # noqa: BLE001 — 策略挂载绝不阻断扫描
+        logger.warning("扫描预设挂载失败（库 %s），走现行口径", snap.library_id,
+                       exc_info=True)
     # 先在**进程内**占位（重复任务会在这一步被拒绝，不会写库、也不会启动扫描），再写库状态
     _acquire_scan(snap.library_id)
+    # 让路配额（2026-10-23）：本轮开扫重置配额时钟；定向扫描（新片入库）
+    # 全程豁免让路——只扫几个变化目录、用户正等着上架，进来就跑完。
     try:
-        run_id = begin_scan(db, library, trigger)
+        from backend.emby_server import foreground_activity as _fg
+
+        _fg.reset_yield_clock()
+        _fg.set_yield_exempt(bool(getattr(snap, "targeted", False)))
+    except Exception:  # noqa: BLE001 — 让路记账失败绝不拖累扫描本身
+        pass
+    try:
+        run_id = begin_scan(db, library, trigger, snapshot=snap)
         started = time.perf_counter()
         try:
-            stats = _scan_library_body(db, library, snap)
+            # source_override 只在真正传了时才递给 _scan_library_body：
+            # 默认 None 时保持改前调用形态——_scan_library_body 在运行
+            # 时可能被旧签名的包装/替身替换（scan_instrument 的进度包
+            # 装、测试里的 boom），多一个关键字参数直接 TypeError；
+            # 下面的 iter_scan_sources 分流同款纪律（见 _scan_library_body）。
+            if source_override is None:
+                stats = _scan_library_body(db, library, snap)
+            else:
+                stats = _scan_library_body(db, library, snap,
+                                           source_override=source_override)
         except Exception as exc:  # noqa: BLE001 — 异常要落到库里，再原样抛给调用方
             if isinstance(exc, RuntimeError) and "interpreter shutdown" in str(exc):
                 # 容器重启/部署时扫描线程被中断：不是扫描逻辑故障，给用户一句人话，
@@ -4960,6 +6025,12 @@ def scan_library_sync(db: Session, library: emby_models.Library,
     finally:
         # 无论成功、失败还是生成器被提前关闭，都释放进程内占位，否则这个库再也扫不动
         _release_scan(snap.library_id)
+        try:
+            from backend.emby_server import foreground_activity as _fg
+
+            _fg.set_yield_exempt(False)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---- enrich_status 统一写入点（P2-1/P2-3/P3-1，2026-10-11 round3-p2p3）----
@@ -5117,6 +6188,39 @@ def _scan_has_metadata(item, pending) -> bool:
     return bool((getattr(item, "overview", None) or "").strip())
 
 
+def _reset_stale_sample_hash(item) -> bool:
+    """文件大小变了：旧采样哈希已是过期证据，清回 pending 供 worker 重算。
+
+    只动采样哈希（algo 以 ``sample-`` 开头，与认亲层 _match_* 的采样定义
+    一致）：源给的 md5/sha1 绝不动（源哈希由 _apply_scan_identity 每轮按
+    源值刷新，不走这里）。identity_json 里同名采样键一并摘掉，其他证据
+    键原样保留；快照解析失败时快照不动。幂等：已是 NULL 再调也是空操作。
+    返回是否真的清掉了旧采样哈希。
+    """
+    if not (getattr(item, "content_hash_algo", "") or "").startswith("sample-"):
+        return False
+    if not getattr(item, "content_hash", None):
+        return False
+    item.content_hash = None
+    item.content_hash_algo = None
+    old_json = getattr(item, "identity_json", None)
+    if old_json:
+        try:
+            evidence = json.loads(old_json)
+        except (ValueError, TypeError):
+            evidence = None
+        if isinstance(evidence, dict) and (
+            "content_hash" in evidence or "content_hash_algo" in evidence
+        ):
+            evidence.pop("content_hash", None)
+            evidence.pop("content_hash_algo", None)
+            item.identity_json = (
+                json.dumps(evidence, sort_keys=True, ensure_ascii=False)
+                if evidence else None
+            )
+    return True
+
+
 def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
                          flip_tracker=None, has_metadata=True):
     """Decide and write enrich_status. Max nesting depth: 2.
@@ -5132,6 +6236,10 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
     """
     old_status = getattr(item, "enrich_status", None)
     old_size, new_size, size_changed = _compute_size_change(item, scan_file)
+    if size_changed:
+        # 采样哈希供给：文件大小变了，旧采样哈希已是过期证据（采样摘要
+        # 本身就含 size），清回 pending 供 worker 重算；源哈希不动。
+        _reset_stale_sample_hash(item)
 
     def _record(reason):
         if flip_tracker is not None:
@@ -5214,8 +6322,39 @@ def _apply_enrich_status(item, scan_file, *, is_new, layered, item_type,
 
 
 
+def _apply_scan_identity(item, scan_file) -> None:
+    """写库点落内容校验和与证据快照（#13 PR-2，纯写、不改变任何判定）。
+
+    规则（与 drive_file_id 的 ``if _fid:`` 口径一致）：
+    - 本轮列举给了哈希才写列；没给（115 sha1 未实测、rclone RC 无可用
+      opt、本机文件）时**不清除**已有值——缺位 = 身份未知，落 NULL 只
+      发生在新行第一次写（列默认 NULL），绝不拿空串占位、绝不猜值。
+    - identity_json 只组装本轮实际拿到的证据键（present-only，键按
+      字母序）；本轮零证据时不动已有快照（不把旧证据洗成空）。
+    """
+    _hash = getattr(scan_file, "content_hash", "") or ""
+    if _hash:
+        item.content_hash = _hash
+        item.content_hash_algo = getattr(scan_file, "content_hash_algo", "") or ""
+    evidence: dict[str, str] = {}
+    if _hash:
+        evidence["content_hash"] = _hash
+        _algo = getattr(scan_file, "content_hash_algo", "") or ""
+        if _algo:
+            evidence["content_hash_algo"] = _algo
+    _etag = getattr(scan_file, "etag", "") or ""
+    if _etag:
+        evidence["etag"] = _etag
+    _rev = getattr(scan_file, "revision", "") or ""
+    if _rev:
+        evidence["revision"] = _rev
+    if evidence:
+        item.identity_json = json.dumps(evidence, sort_keys=True, ensure_ascii=False)
+
+
 def _scan_library_body(db: Session, library: emby_models.Library,
-                       snap: LibrarySnapshot) -> dict:
+                       snap: LibrarySnapshot,
+                       source_override: Optional[list] = None) -> dict:
     """一轮扫描的主体（不含进程内互斥与结果落库，见 scan_library_sync）"""
     stats: dict = {
         "added": 0, "updated": 0, "removed": 0, "probed": 0, "scraped": 0,
@@ -5237,8 +6376,17 @@ def _scan_library_body(db: Session, library: emby_models.Library,
 
         # 并行 IO 线程池：ffprobe / 目录列举 / TMDB 搜索都在这里跑，写库仍在当前线程按顺序进行
         pool = ThreadPoolExecutor(max_workers=SCAN_WORKERS, thread_name_prefix="scan-io")
-        for label, source_files in iter_scan_sources(snap, library, db, failed_roots,
-                                                     report=stats["sources"]):
+        # source_override 只在真正传了时才递给 iter_scan_sources：默认
+        # None 时保持旧调用形态（测试里有按旧签名替换 iter_scan_sources
+        # 的假函数，多一个关键字参数会直接 TypeError）。
+        if source_override is None:
+            _sources_iter = iter_scan_sources(snap, library, db, failed_roots,
+                                              report=stats["sources"])
+        else:
+            _sources_iter = iter_scan_sources(snap, library, db, failed_roots,
+                                              report=stats["sources"],
+                                              source_override=source_override)
+        for label, source_files in _sources_iter:
             def _process_one(scan_file, _pending):
                 """处理单个文件的写库（由 _iter_prepared 按批次驱动）。
 
@@ -5305,6 +6453,16 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                 item.original_title = parsed["name"]
                 item.sort_name = make_sort_name(parsed["name"])
                 item.production_year = parsed["year"]
+                # 远端身份四件套（#13 PR-1）：scan 身份落库快照，与 name/
+                # production_year 同点位写（建行与认亲更新共用此分支）。
+                # episode 行存剧名（_series_name_of 产物），季/集号读现行列；
+                # 解析不出标题时留 NULL（= 身份未知），不写空串占位。
+                if item_type == "episode":
+                    _scan_title = _pending.series_name or parsed["name"]
+                else:
+                    _scan_title = parsed["name"]
+                item.scan_title = _scan_title or None
+                item.scan_year = parsed["year"]
                 item.file_path = full_path
                 # v2.52.0: 改名/移动的行，guid 跟着新路径走（保持 guid=path 派生不变式）；
                 # 元数据（TMDB/刮削/播放进度）都在同一行上，全保留。
@@ -5343,6 +6501,17 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                 _fid = getattr(scan_file, "file_id", "") or ""
                 if _fid:
                     item.drive_file_id = _fid
+                    # 身份锚（清单第 8 项）：Drive/rclone 的 file_id 双写 provider_file_id；
+                    # 115 的 fid 在 #13 PR-3 开关开时由 walk_media 透传、同样双写，
+                    # 关时不透传（留空）；本机没有稳定 file_id，留空，绝不猜。
+                    item.provider_file_id = _fid
+                # 身份锚 source_id：只在本次扫描带新表行 id 时写（来源换了行 id 就跟到新行）；
+                # 旧列回落扫描没有行 id，不清除已有锚（锚可能仍有效，回落路径会验证）。
+                _src_row_id = getattr(scan_file, "source_row_id", None)
+                if _src_row_id is not None:
+                    item.source_id = _src_row_id
+                # #13 PR-2：内容校验和与证据快照（纯写；scan_title/scan_year 语义不动）。
+                _apply_scan_identity(item, scan_file)
                 item.container = scan_file.container or os.path.splitext(fname)[1].lstrip(".")
                 # 分层扫描：文件指纹落库（下次秒跳的依据）；补全状态标记。
                 # layered=本轮只做 L1 极简入库 → pending，等后台 enrich_worker；
@@ -5425,6 +6594,19 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         _dup_ids = _find_duplicate_series(
                             db, library.id, tmdb_id=_nfo_tmdb,
                             name=_series_name, year=_series_year)
+                        # BYOS P3：剧集去重复用同样不许跨命名空间——
+                        # series 行本身没有 file_path（恒为 None → shared
+                        # 命名空间），故绑定扫描永远不复用任何已有 series
+                        # 行（同绑定重扫走 series_guid 命中，不走这条路）；
+                        # 共享扫描复用 None 路径行，行为逐字不变。
+                        if _dup_ids:
+                            _ns = _scan_namespace(full_path)
+                            _dup_rows = db.query(
+                                emby_models.MediaItem.id,
+                                emby_models.MediaItem.file_path).filter(
+                                emby_models.MediaItem.id.in_(_dup_ids)).all()
+                            _dup_ids = [r[0] for r in _dup_rows
+                                        if _scan_namespace(r[1]) == _ns]
                         if _dup_ids:
                             # 复用已有记录：把新 guid 也指向它，本批后续集数都挂过去
                             series = db.get(emby_models.MediaItem, _dup_ids[0])
@@ -5670,6 +6852,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
         if _CLEANUP_LAST.get("skipped"):
             stats["removal_guard"] = _CLEANUP_LAST["skipped"]
             stats["removal_skipped"] = True
+        if _CLEANUP_LAST.get("credibility_guarded"):
+            stats["credibility_guard"] = _CLEANUP_LAST["credibility_guarded"]
 
     # WS1：显式可见口径 —— merged_into_id 无全局过滤，必须显式剔除合并副本
     #（与 portal.admin_overview 同类；索引齐全，仍是单条 COUNT 查询）

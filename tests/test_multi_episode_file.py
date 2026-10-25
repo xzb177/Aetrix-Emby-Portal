@@ -31,6 +31,13 @@ from backend.emby_server import scanner
 from backend.emby_server import media_probe
 from backend.integrations import store
 
+
+@pytest.fixture(autouse=True)
+def _grace_single_pass(monkeypatch):
+    # 同 test_soft_delete：隔离缺失宽限（批一 #6）变量，只测清理主体
+    monkeypatch.setattr(scanner, "MISSING_GRACE_SCANS", 1)
+
+
 OLD_PATH = "/media/tv/SpongeBob/SpongeBob S06E27-E28.mp4"
 # 改名目标：只换容器后缀，不带版本标签（2160p/H265 等会改变版本签名，
 # 指纹改名按设计不认——那是多版本不是改名）

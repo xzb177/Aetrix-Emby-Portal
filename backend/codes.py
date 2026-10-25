@@ -261,6 +261,12 @@ def grant_membership_days(db: Session, user: models.WebUser, days: int,
         )
         db.add(sub)
     db.flush()   # 拿主键；提交由调用方负责（与 economy._grant_subscription 同一口径）
+    # 订阅分档权益（PR-1）：本函数是卡码核销/邀请奖励发天的发放口（不走
+    # _grant_subscription），同样要清该用户的权益解析缓存（见
+    # backend/entitlements.py；跨进程靠 60 秒 TTL 兜底）。
+    from backend import entitlements as _entitlements
+
+    _entitlements.invalidate(user_id=user.id)
     return sub
 
 
@@ -376,6 +382,27 @@ def grant_days_for(code: models.RegistrationCode) -> int:
     return normalize_days(code.days)
 
 
+# 核销失败机器码（error_code）：随失败结果一起返回，供端点/前端区分
+# 「码本身明确无效」与限流、系统错误。用户侧文案仍走 message/detail 人话。
+CODE_ERROR_USED_UP = "CODE_USED_UP"        # 已被用尽 / 并发抢占失败（已被别人使用）
+CODE_ERROR_DISABLED = "CODE_DISABLED"      # 已停用
+CODE_ERROR_EXPIRED = "CODE_EXPIRED"          # 已过期
+CODE_ERROR_NOT_FOUND = "CODE_NOT_FOUND"      # 不存在
+CODE_ERROR_SELF_USED = "CODE_SELF_USED"      # 自己已使用过（每个账号每张码限用一次）
+CODE_ERROR_NAMED_OTHER = "CODE_NAMED_OTHER"  # 指名码，限指定账号使用
+
+# 「明确无效」集合：命中这些状态的尝试，再试多少次答案都一样，与限流无关。
+# 端点层对这类结果直接返回业务文案，不许用 429 把真原因盖掉（见 api/user.py）。
+CLEARLY_INVALID_CODE_ERRORS = frozenset({
+    CODE_ERROR_USED_UP, CODE_ERROR_DISABLED, CODE_ERROR_EXPIRED,
+    CODE_ERROR_NOT_FOUND, CODE_ERROR_SELF_USED, CODE_ERROR_NAMED_OTHER,
+})
+
+# 已用尽 / 已被使用的统一用户文案。旧文案有「卡码已用尽」（预检/reg_code_error）
+# 与「卡码已被使用」（并发抢占失败）两种说法，用户分不清是不是一回事，统一到这句。
+CODE_USED_UP_MESSAGE = "该注册码已被使用"
+
+
 def reg_code_error(code: models.RegistrationCode) -> Optional[str]:
     """卡码自身可用性检查（不论使用者）"""
     if not code.is_active:
@@ -383,7 +410,18 @@ def reg_code_error(code: models.RegistrationCode) -> Optional[str]:
     if code.expires_at and code.expires_at < datetime.now():
         return "卡码已过期"
     if code.max_uses and code.use_count >= code.max_uses:
-        return "卡码已用尽"
+        return CODE_USED_UP_MESSAGE
+    return None
+
+
+def reg_code_error_code(code: models.RegistrationCode) -> Optional[str]:
+    """reg_code_error 的机器码版本（判定顺序必须与 reg_code_error 一致：停用→过期→用尽）"""
+    if not code.is_active:
+        return CODE_ERROR_DISABLED
+    if code.expires_at and code.expires_at < datetime.now():
+        return CODE_ERROR_EXPIRED
+    if code.max_uses and code.use_count >= code.max_uses:
+        return CODE_ERROR_USED_UP
     return None
 
 
@@ -431,6 +469,10 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
         elif reward_type == 'discount':
             preview["discount_pct"] = getattr(code, 'discount_pct', 0) or 0
             preview["message"] = error or (f"折扣卡码（{discount_pct_text(preview['discount_pct'])}）" if named_ok else "该卡码限指定账号使用")
+        # 明确无效时附机器码：端点层据此把业务文案优先于限流 429 返回
+        _ec = reg_code_error_code(code) or (CODE_ERROR_NAMED_OTHER if not named_ok else None)
+        if _ec:
+            preview["error_code"] = _ec
         return preview
 
     invitation = db.query(models.InvitationCode).filter(
@@ -469,7 +511,8 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
                         if coupon.is_active else "该优惠券已停用"),
         }
 
-    return {"valid": False, "kind": "unknown", "message": "卡码不存在"}
+    return {"valid": False, "kind": "unknown", "message": "卡码不存在",
+            "error_code": CODE_ERROR_NOT_FOUND}
 
 
 def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
@@ -490,7 +533,10 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
     code = find_reg_code(db, raw)
     if not code:
         preview = preview_code(db, raw)
-        return {"success": False, "message": preview.get("message") or "卡码无效"}
+        result = {"success": False, "message": preview.get("message") or "卡码无效"}
+        if preview.get("error_code"):
+            result["error_code"] = preview["error_code"]
+        return result
 
     if is_honeypot(code):
         # 蜜罐：诱饵码只应出现在盗版/破解渠道，使用即视为违规。
@@ -512,10 +558,12 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
 
     error = reg_code_error(code)
     if error:
-        return {"success": False, "message": error}
+        return {"success": False, "message": error,
+                "error_code": reg_code_error_code(code)}
 
     if code.target_username and code.target_username.strip().lower() != (user.username or "").lower():
-        return {"success": False, "message": "该卡码限指定账号使用"}
+        return {"success": False, "message": "该卡码限指定账号使用",
+                "error_code": CODE_ERROR_NAMED_OTHER}
 
     days = grant_days_for(code)
     # 这张卡码属于哪个服，就判定/开通哪个服的会员（甲服的会员不算乙服的）
@@ -528,9 +576,11 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
     # 先原子占位再发奖：并发提交同一张卡码时只有一个请求能拿到那一行（见 claim_code）。
     # 抢不到 = 这张码在这次请求之前已经被用掉，如实告诉用户，不发天数。
     if user_already_redeemed(db, REDEMPTION_KIND_REG, code, user.id):
-        return {"success": False, "message": "你已经使用过这张卡码（每个账号每张码限用一次）"}
+        return {"success": False, "message": "你已经使用过这张卡码（每个账号每张码限用一次）",
+                "error_code": CODE_ERROR_SELF_USED}
     if not claim_code(db, code, user.id):
-        return {"success": False, "message": "卡码已被使用"}
+        return {"success": False, "message": CODE_USED_UP_MESSAGE,
+                "error_code": CODE_ERROR_USED_UP}
 
     # 占位与发奖在同一个事务里（本函数不提交，由调用方提交）；
     # 中间崩溃会一起回滚，不会出现「码烧了、会员没到账」
@@ -587,3 +637,37 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         "realm_name": target_name,
         "end_date": sub.end_date.isoformat(),
     }
+
+
+def classify_invalid_code(db: Session, user: Optional[models.WebUser], raw: str) -> Optional[dict]:
+    """只读判定一张码是否处于「明确无效」状态（不核销、不写库）。
+
+    命中返回 {"error_code": ..., "message": ...}，未命中返回 None。
+    供核销端点在限流拒绝时兜底：码的状态已经确定时（已被使用 / 已停用 /
+    已过期 / 不存在 / 指名他人 / 自己已用过），把业务文案给用户，不用
+    一句 429「操作过于频繁」把真原因盖掉。
+    蜜罐码故意返回 None——必须走正常核销流程触发封禁与安全日志，
+    不能在这里提前短路，更不能暴露它与普通无效码的区别。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    code = find_reg_code(db, raw)
+    if code is None:
+        preview = preview_code(db, raw, user.username if user else None)
+        if preview.get("kind") == "unknown":
+            return {"error_code": CODE_ERROR_NOT_FOUND,
+                    "message": preview.get("message") or "卡码不存在"}
+        return None
+    if is_honeypot(code):
+        return None
+    error_code = reg_code_error_code(code)
+    if error_code:
+        return {"error_code": error_code, "message": reg_code_error(code)}
+    if (code.target_username and user is not None
+            and code.target_username.strip().lower() != (user.username or "").lower()):
+        return {"error_code": CODE_ERROR_NAMED_OTHER, "message": "该卡码限指定账号使用"}
+    if user is not None and user_already_redeemed(db, REDEMPTION_KIND_REG, code, user.id):
+        return {"error_code": CODE_ERROR_SELF_USED,
+                "message": "你已经使用过这张卡码（每个账号每张码限用一次）"}
+    return None
