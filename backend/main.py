@@ -38,6 +38,7 @@ from backend.api.admins_admin import router as admins_router
 # 首次运行向导（setup_mode）：建第一个管理员，完成后入口永久关闭
 from backend.api.setup import router as setup_router
 from backend.api.playback_admin import router as playback_admin_router
+from backend.api.admin_readonly import router as admin_readonly_router
 from backend.api.library_cover import router as library_cover_router
 from backend.api.home_summary import router as home_summary_router
 from backend.api.homepage_sections import router as homepage_sections_router
@@ -800,6 +801,9 @@ app.include_router(playback_admin_router)
 # 挂载即导入模型，lifespan 的 init_db create_all 随既有表建出
 # playback_control_commands 新表（部署时须亲验新表已建出）。
 app.include_router(playback_bus_admin.router)
+# 管理后台只读观测口（专线 B 第一阶段：补口）：绑定 / 采样进度 / sidecar /
+# 映射 / 139 池，全部 GET，见 backend/api/admin_readonly.py
+app.include_router(admin_readonly_router)
 # 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
 app.include_router(library_cover_router)
 # 多服运营：服的增删改查 / 每服运营数据 / 切换当前服（见 backend/realms.py）
