@@ -295,7 +295,7 @@ async function submit() {
 
 <template>
   <div class="admin-page subs-page">
-    <PageHeader eyebrow="用户与账号" title="会员与权益">
+    <PageHeader eyebrow="用户" title="会员与权益">
       <template #description>
         共 {{ summary.total }} 条订阅记录 · {{ activeCount }} 位会员生效中
         <template v-if="scopeRealmName">· 范围：{{ scopeRealmName }}</template>

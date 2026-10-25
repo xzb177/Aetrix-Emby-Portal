@@ -236,7 +236,7 @@ onMounted(() => {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="识别审查"
       description="自动刮削认不准的条目会带着当时搜到的候选排进这里：TMDB 搜到了一些候选，但没有一个够格自动绑定。逐条看证据，绑对的、忽略，或者送回去重新识别。"
     >

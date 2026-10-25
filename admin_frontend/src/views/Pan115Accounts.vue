@@ -261,7 +261,7 @@ function currentPath(): string {
 <template>
   <div class="admin-page pan115-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="115 账号"
       description="配置 115 Cookie 以使用「存储来源 → 115」直挂：面板 / EA 直接列目录、换直链播放，不需要转存。"
     >

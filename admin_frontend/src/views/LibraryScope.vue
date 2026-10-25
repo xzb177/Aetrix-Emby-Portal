@@ -289,7 +289,7 @@ async function removeOverride(row: { username: string; user_id: number }) {
 <template>
   <div class="admin-page scope-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="媒体库可见范围"
       description="服务器默认范围 + 指定用户单独覆盖。默认关闭——所有启用的媒体库照旧全部可见；工作人员账号不受限制。"
     >
@@ -386,7 +386,7 @@ async function removeOverride(row: { username: string; user_id: number }) {
                 compact
                 :icon="Library"
                 title="站点还没有任何媒体库"
-                description="先到「媒体与交付 → 媒体库」建库再回来配置。"
+                description="先到「媒体 → 媒体库」建库再回来配置。"
               />
               <template v-else>
                 <div v-for="lib in visibleOptions" :key="lib.id" class="ls-pick-item">
