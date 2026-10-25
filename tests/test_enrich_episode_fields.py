@@ -298,7 +298,6 @@ def test_fetch_episode_tmdb_still_off_skips_prewarm(monkeypatch):
 # ---------- 夜间总开关优先（分项不能绕过认领门控） ----------
 
 def _enable_night_only(db, monkeypatch, in_window: bool):
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "1")
     enrich_worker.save_enrich_tuning_config(
         db, {enrich_worker.CFG_ENRICH_EPISODE_QUOTA_MODE: False})
     monkeypatch.setattr(
@@ -324,9 +323,9 @@ def test_night_gate_takes_precedence_over_fields(db, monkeypatch):
 def test_fields_apply_when_night_gate_off(db, monkeypatch):
     """夜间总开关关：单集正常被抢，分项开关在写库阶段才起作用。
 
-    2026-10-21 起夜间开关缺省=开（生产现值），本例显式经 env 关掉，
+    2026-10-21 起夜间开关缺省=开，且不再读环境变量。本例把库行写成关，
     并清夜间/调优两个 TTL 缓存（上一例的缓存会盖住新值）。"""
-    monkeypatch.setenv(enrich_worker.ENRICH_EPISODE_NIGHT_ONLY_ENV, "0")
+    enrich_worker.save_episode_night_config(db, False, "02:00", "06:00")
     enrich_worker._night_cfg_cache["at"] = 0.0
     enrich_worker._night_cfg_cache["cfg"] = None
     enrich_worker._enrich_tuning_cache["at"] = 0.0
