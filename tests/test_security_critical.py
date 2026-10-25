@@ -506,8 +506,7 @@ def test_h2_emby_user_rejects_jwt_in_query(db):
 def test_h2_frontends_do_not_put_tokens_in_image_urls():
     emby_ts = (ROOT / "user_frontend" / "src" / "api" / "emby.ts").read_text(encoding="utf-8")
     assert "api_key=${encodeURIComponent(token)}" not in emby_ts
-    player = (ROOT / "web_player" / "index.html").read_text(encoding="utf-8")
-    assert "'&api_key=' + encodeURIComponent(store.k.token)" not in player
+    # /watch 轻量播放页已删（2026-10-25），播放页断言随之移除。
 
 
 # ===========================================================================

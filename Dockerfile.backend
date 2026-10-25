@@ -13,8 +13,6 @@
 #   emby_api/   自建 Emby 服务端。backend/run_all.py 用 `python -m emby_api.main`
 #               拉起它 —— 这条是字符串拼出来的命令，静态搜 import 搜不到，
 #               漏了它容器起来就只剩一个进程、EA 直接崩。
-#   web_player/ 单文件看片页。emby_api/main.py 按 `parent.parent/"web_player"`
-#               定位它，漏了 /watch 会 404（手机浏览器看片直接不可用）。
 #   serve.py    run_all.py 的 api 子进程入口（uvicorn backend.main:app）
 #   VERSION     backend/version.py 按 `parent.parent/"VERSION"` 读，漏了版本号
 #               会退化成 dev，/api/health 报的版本是假的
@@ -81,7 +79,6 @@ COPY backend/assets/fonts /app/backend/assets/fonts
 # ---- 白名单拷贝（顺序无所谓，两个目录之间无 import 依赖）----
 COPY backend/ /app/backend/
 COPY emby_api/ /app/emby_api/
-COPY web_player/ /app/web_player/
 COPY serve.py /app/serve.py
 
 # 密钥一个都不打进镜像：SECRET_KEY / 数据库口令 / 各家 API Key 全走运行时环境变量
