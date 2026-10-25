@@ -578,6 +578,20 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动 Drive 凭据维护工人失败（可忽略）: {e}")
 
+        # 苹果 CMS 定时同步（后续四件之 ①）：仅两闸同开时启动；
+        # 关时不启动、不发任何上游请求，全站行为逐字不变。本块只
+        # 加自己的启动行，不动变体探活 / 健康同步的接线行。
+        try:
+            from backend.emby_server import applecms_scheduler
+
+            if applecms_scheduler.start_applecms_scheduler(_shutdown_event):
+                started.append("applecms_scheduler")
+                logger.info("✅ 苹果 CMS 定时同步已启动")
+            else:
+                logger.info("苹果 CMS 同步未开启，定时同步不启动")
+        except Exception as e:
+            logger.warning(f"启动苹果 CMS 定时同步失败（可忽略）: {e}")
+
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
             from backend.emby_server import scan_queue

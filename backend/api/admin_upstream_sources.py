@@ -11,7 +11,8 @@
 - 响应一律走 source_payload：永远不出凭据原文、不出密封值，只出 has_secret；
 - 新建恒为关闭（创建接口不接受 enabled 入参），启用/停用是单独端点。
 
-本模块不探活、不拉目录、不拼播放地址（那是 25-2/25-3/25-4 的活）。
+本模块不探活、不拼播放地址（那是 25-2/25-3/25-4 的活）；唯一例外
+是苹果 CMS 手动同步触发口（只调生产触发入口，不自写同步逻辑）。
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from backend import models as base_models
 from backend.database import get_db
+from backend.emby_server import applecms_production as acp
 from backend.emby_server import models as em
 from backend.emby_server import upstream_sources as ups
 from backend.emby_server.portal import admin_emby_router, require_staff
@@ -187,6 +189,44 @@ def disable_upstream_source(
     row = ups.disable_source(db, _get_source_or_404(db, source_id))
     db.commit()
     return ups.source_payload(row)
+
+
+@admin_emby_router.post("/upstream-sources/{source_id}/sync-applecms")
+def sync_applecms_upstream_source(
+    source_id: int,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """管理端手动触发一次苹果 CMS 同步（后续四件之 ②，仅管理员）。
+
+    只接受苹果 CMS 型源（其它类型 400，本口不替 Emby/Jellyfin
+    源跑同步）；同步逻辑复用生产触发入口
+    ``applecms_production.production_trigger_applecms_sync`` 的单次
+    有界流程，本路由不另起一套同步实现、不读播放地址。两闸未同
+    开时触发入口返回 disabled 结果，本路由映射为 409（不是成功），
+    调用方凭此知道本轮根本没跑。响应只含计数与健康，不含任何
+    播放地址与未配对明细（未配对展示消费走展示层函数，不走本口）。
+    """
+    source = _get_source_or_404(db, source_id)
+    if getattr(source, "source_type", None) != "applecms":
+        raise HTTPException(
+            status_code=400,
+            detail="本接口只对苹果 CMS 型上游源触发同步")
+    result = acp.production_trigger_applecms_sync(db, source_id)
+    if result.health == "disabled":
+        raise HTTPException(
+            status_code=409,
+            detail="苹果 CMS 同步未开启（APPLECMS_ENABLED 与 "
+                   "UPSTREAM_SYNC_ENABLED 两闸须同开）")
+    return {
+        "source_id": result.source_id,
+        "scanned": result.scanned,
+        "mapped": result.mapped,
+        "unmatched_count": len(result.unmatched),
+        "hidden": result.hidden,
+        "errors": result.errors,
+        "health": result.health,
+    }
 
 
 @admin_emby_router.delete("/upstream-sources/{source_id}")
