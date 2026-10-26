@@ -199,6 +199,7 @@
                 <span class="dev-meta">
                   谷歌盘 · {{ driveStatusText(b.status) }}
                   <template v-if="b.error_message"> · {{ b.error_message }}</template>
+                  <template v-if="b.needs_rebind"> · 转存需要写权限，请重新授权</template>
                 </span>
               </div>
               <span v-if="b.status === 'active'" class="dev-badge ok">可用</span>
@@ -213,6 +214,15 @@
                 {{ verifyingBinding === b.id ? '验证中' : '重新验证' }}
               </button>
               <button
+                v-if="b.needs_rebind"
+                type="button"
+                class="dev-remove"
+                :disabled="rebindingId === b.id"
+                @click="handleRebindDrive(b)"
+              >
+                {{ rebindingId === b.id ? '正在打开授权…' : '重新授权' }}
+              </button>
+              <button
                 type="button"
                 class="dev-remove"
                 :class="{ confirming: pendingUnbind === b.id }"
@@ -223,6 +233,7 @@
               </button>
             </div>
             <p class="dev-tip">绑好了，下一步：去播一集试试，走的就是你自己的盘；播不动先点“重新验证”，还不行就解绑重绑。</p>
+            <p v-if="driveBindings.some((b) => b.needs_rebind)" class="dev-tip">有谷歌盘还是旧的只读授权，转存到你盘里会失败：点那一行旁边的“重新授权”，去 Google 同意新增的写权限（只覆盖本站创建的文件），同意后转存失败的任务会自动重跑。</p>
           </template>
           <div class="acct-field">
             <label class="acct-label" for="drive-label">给这个盘起个名字</label>
@@ -631,6 +642,8 @@ const pan115Error = ref('')
 const driveLabel = ref('')
 const driveFormError = ref('')
 const driveStarting = ref(false)
+// 正在走重绑的绑定行 id（重绑不新增行，原地换凭据，按钮防重复点）。
+const rebindingId = ref<number | null>(null)
 // iOS 弹窗被拦时的手动 fallback：弹窗被拦下时把授权地址存这里，
 // 页面上渲染一条可点链接，用户手动点开也能走完授权流程。
 const driveAuthUrl = ref('')
@@ -701,6 +714,38 @@ async function handleBindDrive() {
     driveFormError.value = humanizeError(e)
   } finally {
     driveStarting.value = false
+  }
+}
+
+async function handleRebindDrive(b: StorageBinding) {
+  // 重绑：同名同行原地换凭据（后端 start 带 rebind_binding_id，回调
+  // 成功不新增行）；流程与新绑一致——先在手势里同步开空窗保住
+  // 手势，拿到授权地址后再指地址，绝不带 noopener（iOS 实测带了
+  // 后续改地址不生效）。
+  if (rebindingId.value !== null) return
+  rebindingId.value = b.id
+  driveFormError.value = ''
+  driveAuthUrl.value = ''
+  const win = window.open('about:blank', '_blank')
+  try {
+    const res = await storageBindingApi.startDriveOAuth(b.account_label, b.id)
+    if (!res.authorization_url) {
+      if (win && !win.closed) win.close()
+      driveFormError.value = '服务器没有返回授权地址，请稍后重试'
+      return
+    }
+    driveAuthUrl.value = res.authorization_url
+    if (!win || win.closed) {
+      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来点“刷新列表”'
+      return
+    }
+    win.location.href = res.authorization_url
+    toast.success('已打开 Google 授权页，同意新增的写权限后回到本页点“刷新列表”，转存失败的任务会自动重跑')
+  } catch (e) {
+    if (win && !win.closed) win.close()
+    driveFormError.value = humanizeError(e)
+  } finally {
+    rebindingId.value = null
   }
 }
 

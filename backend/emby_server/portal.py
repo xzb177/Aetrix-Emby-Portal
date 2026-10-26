@@ -748,6 +748,7 @@ def verify_storage_binding(
 
 class DriveOAuthStart(BaseModel):
     account_label: str
+    rebind_binding_id: int | None = None
 
 
 @user_emby_router.post("/storage-bindings/drive/oauth/start")
@@ -765,7 +766,8 @@ def start_drive_oauth_binding(
 
     try:
         return drive_oauth.start_drive_oauth(
-            db, request_user.id, body.account_label)
+            db, request_user.id, body.account_label,
+            rebind_binding_id=body.rebind_binding_id)
     except drive_oauth.DriveOAuthError as exc:
         raise HTTPException(
             status_code=_binding_error_status(exc), detail=exc.message) from exc

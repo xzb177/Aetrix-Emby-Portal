@@ -67,8 +67,20 @@ logger = logging.getLogger(__name__)
 #: Google OAuth 端点（TOKEN_URL 复用 drive_changes 的唯一常量）。
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 DRIVE_ABOUT_URL = "https://www.googleapis.com/drive/v3/about"
-#: 只读 scope：播放与扫描只要读文件，绝不申请写权限。
+#: 只读 scope：读侧（共享源读取、BYOS 已有文件读取、用户副本读取）
+#: 全靠它。写侧（转存目录建立、files.copy 建副本）不走它。
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+#: 写 scope（Non-sensitive）：只覆盖“应用创建或打开的文件”——
+#: 转存目录 aetrix-transfer 与转存副本都是应用创建的，正在此覆盖内。
+#: 注意：单 file 不够——读共享源文件与 BYOS 已有文件都不在 file
+#: 覆盖里，故授权请求是两档并列（readonly + file），缺一不可；
+#: 全盘 drive（Restricted + CASA）只当组合实测失败时的 fallback，
+#: 不擅自升级。
+DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+#: 授权请求实际发出的范围（空格分隔；Google 回的已授范围可能因
+#: 用户在同意屏上逐项取消而少于此串，回调以实授为准入库）。
+DRIVE_OAUTH_SCOPES = (DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE)
+DRIVE_OAUTH_SCOPE = " ".join(DRIVE_OAUTH_SCOPES)
 #: 回调路径（挂在 portal 的 user_emby_router 下，前缀固定）。
 OAUTH_CALLBACK_PATH = "/api/user/emby/storage-bindings/drive/oauth/callback"
 
@@ -122,13 +134,18 @@ def state_ttl_sec() -> int:
 # ---------------------------------------------------------------------------
 
 def encode_drive_token(access_token: str, refresh_token: str,
-                       expires_at: int) -> str:
+                       expires_at: int, scope: str | None = None) -> str:
+    """密封令牌 JSON：scope 存实授范围（Google token 响应原样回的
+    空格分隔串；刷新时沿用旧存值，不许用请求串覆盖——刷新响应
+    未必带 scope，拿请求串覆盖会把“用户只授了只读”谎报成已授
+    写权限，needs_rebind 判定就全错）。None = 未知（老绑定），
+    判定上一律按需重绑处理。"""
     return json.dumps({
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_at": int(expires_at),
         "token_type": "Bearer",
-        "scope": DRIVE_READONLY_SCOPE,
+        "scope": scope,
     })
 
 
@@ -241,7 +258,7 @@ def build_authorization_url(redirect_uri_value: str, state: str,
         "client_id": _client_id(),
         "redirect_uri": redirect_uri_value,
         "response_type": "code",
-        "scope": DRIVE_READONLY_SCOPE,
+        "scope": DRIVE_OAUTH_SCOPE,
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -293,6 +310,9 @@ def exchange_code_for_tokens(code: str, redirect_uri_value: str,
         "access_token": access,
         "refresh_token": refresh,
         "expires_at": int(time.time()) + expires_in,
+        # Google token 响应原样回的已授范围（空格分隔）；用户在同意屏
+        # 上逐项取消时可能少于请求串，回调以此为准入库，不许拿请求串冒充。
+        "scope": (body.get("scope") or "").strip() or None,
     }
 
 
@@ -379,29 +399,96 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
+#: 转存工人建目录失败的 error_detail 前缀（transfer_variant.py
+#: 建目录 403 时原样记入；重置判定只认这个前缀，不认别的失败）。
+MKDIR_FAILED_PREFIX = "建转存目录失败"
+
+
+def granted_scope_set(granted_scopes: str | None) -> set:
+    """已授范围串（空格分隔）→ 集合；None/空串 → 空集。"""
+    return set((granted_scopes or "").split()) - {""}
+
+
+def binding_needs_rebind(granted_scopes: str | None) -> bool:
+    """Drive 绑定是否需重绑：已授范围里缺 drive.file 即需重绑。
+    老绑定无记录（None）一律按需重绑——老代码只申请过只读，
+    不可能自带写权限，猜“已授”就是谎报。"""
+    return DRIVE_FILE_SCOPE not in granted_scope_set(granted_scopes)
+
+
+def reset_mkdir_failed_jobs(db: Session, user_id: int) -> int:
+    """重绑成功后，把该用户因建转存目录失败（只读令牌写盘 403）
+    而 failed 的转存任务打回 pending、attempts 清零、错误与重试
+    时间清掉——工人下一轮即按现取的新绑定凭据重跑（工人只捡
+    pending，failed 不再处理；门禁对 failed 返 409 终态；24h 节流
+    又挡新任务——三重死锁，不重置这单永远播不了）。
+    只动 error_detail 以“建转存目录失败”开头的 failed 行：其它
+    失败原因（源失效、凭据错等）不在本次重绑的修复范围，不许
+    顺手复活。返回重置行数（调用方提交）。"""
+    rows = (
+        db.query(em.TransferJob)
+        .filter(em.TransferJob.owner_scope == "user",
+                em.TransferJob.owner_ref == str(user_id),
+                em.TransferJob.status == "failed",
+                em.TransferJob.error_detail.like(MKDIR_FAILED_PREFIX + "%"))
+        .all()
+    )
+    for job in rows:
+        job.status = "pending"
+        job.attempts = 0
+        job.error_kind = None
+        job.error_detail = None
+        job.next_retry_at = None
+    return len(rows)
+
+
+#: Google 令牌吊销端点（重绑卫生用，成败不影响重绑结果）。
+REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+
+
+def _revoke_refresh_token_best_effort(refresh_token: str,
+                                      http_post=None) -> None:
+    """旧 refresh 尽力吊销：成败都不影响重绑结果（旧令牌即使未
+    吊销，也会在用户撤销或达到 Google 上限时失效；吊销只是卫生，
+    失败不许把已成功的重绑拖垮）。"""
+    post = http_post or _default_http_post
+    try:
+        post(REVOKE_URL, data={"token": refresh_token}, timeout=30)
+    except Exception:
+        logger.warning("重绑旧 refresh 吊销失败（忽略）", exc_info=True)
+
+
 def _validate_label_and_quota(db: Session, user_id: int,
-                              account_label: str) -> str:
+                              account_label: str,
+                              exclude_binding_id: int | None = None) -> str:
     """P1 同款校验（label 1–100 字、同 provider 重名拒、上限拒），
-    供 start 与 complete 两处共用（complete 时重查，防并发抢名）。"""
+    供 start 与 complete 两处共用（complete 时重查，防并发抢名）。
+    exclude_binding_id：重绑时传目标绑定 id——同名校验跳过自身、
+    上限计数不算自身（重绑不新增行，不许因“已达上限”把重绑挡在
+    门外）。"""
     label = (account_label or "").strip()
     if not label or len(label) > 100:
         raise DriveOAuthError("validation", "account_label 需为 1–100 字。")
-    existing = (
+    existing_q = (
         db.query(em.UserStorageBinding)
         .filter(em.UserStorageBinding.user_id == user_id,
                 em.UserStorageBinding.provider == ub.PROVIDER_DRIVE,
                 em.UserStorageBinding.account_label == label)
-        .first()
     )
-    if existing is not None:
+    if exclude_binding_id is not None:
+        existing_q = existing_q.filter(
+            em.UserStorageBinding.id != exclude_binding_id)
+    if existing_q.first() is not None:
         raise DriveOAuthError(
             "validation", f"同 provider 下已存在同名绑定「{label}」。")
-    count = (
+    count_q = (
         db.query(em.UserStorageBinding)
         .filter(em.UserStorageBinding.user_id == user_id)
-        .count()
     )
-    if count >= ub.binding_limit_per_user():
+    if exclude_binding_id is not None:
+        count_q = count_q.filter(
+            em.UserStorageBinding.id != exclude_binding_id)
+    if count_q.count() >= ub.binding_limit_per_user():
         raise DriveOAuthError(
             "validation",
             f"绑定已达上限（{ub.binding_limit_per_user()} 个），请先解绑不用的账号。")
@@ -409,12 +496,18 @@ def _validate_label_and_quota(db: Session, user_id: int,
 
 
 def start_drive_oauth(db: Session, user_id: int, account_label: str,
-                      redirect_uri_value: str | None = None) -> dict:
+                      redirect_uri_value: str | None = None,
+                      rebind_binding_id: int | None = None) -> dict:
     """开始 Drive 授权：建 state 行、返回 Google 授权地址。
 
     此时不建绑定行与凭据行——绑完先验活，没换到 token 就不成行。
     前置缺失响亮拒绝：服务器应用凭据未配、对外地址未配、label
     非法、重名、超上限，全部 validation（400），不生成 state。
+    rebind_binding_id：重绑时传目标绑定 id——目标须是本人名下的
+    Drive 绑定行，否则 validation；state 行记下它，回调成功时原地
+    换凭据（不新增行、不改 label、不改绑定 id），回调失败时目标行
+    落失败态（不另建失败行）。重绑中途放弃：旧绑定原样不动，
+    不像“先删后绑”那样丢行。
     """
     if not _client_id() or not _client_secret():
         raise DriveOAuthError(
@@ -427,14 +520,28 @@ def start_drive_oauth(db: Session, user_id: int, account_label: str,
             "validation",
             "服务器未配置对外地址（EMBY_PUBLIC_URL），部署者须先配好并在 "
             "Google Cloud 把回调地址注册为授权重定向 URI。")
-    label = _validate_label_and_quota(db, user_id, account_label)
+    rebind_target = None
+    if rebind_binding_id is not None:
+        rebind_target = (
+            db.query(em.UserStorageBinding)
+            .filter(em.UserStorageBinding.id == rebind_binding_id,
+                    em.UserStorageBinding.user_id == user_id,
+                    em.UserStorageBinding.provider == ub.PROVIDER_DRIVE)
+            .first()
+        )
+        if rebind_target is None:
+            raise DriveOAuthError(
+                "validation", "重绑目标不存在或不属于本人。")
+    label = _validate_label_and_quota(db, user_id, account_label,
+                                      exclude_binding_id=rebind_binding_id)
     state = secrets.token_urlsafe(32)
     verifier, challenge = _pkce_pair()
     now = datetime.now()
     row = em.DriveOAuthState(
         state_hash=_hash_state(state), user_id=user_id,
         account_label=label, sealed_verifier=seal_secret(verifier),
-        created_at=now, expires_at=now + timedelta(seconds=state_ttl_sec()))
+        created_at=now, expires_at=now + timedelta(seconds=state_ttl_sec()),
+        rebind_binding_id=rebind_binding_id)
     db.add(row)
     db.commit()
     return {
@@ -475,6 +582,12 @@ def complete_drive_oauth(db: Session, state: str, code: str,
       （Google 授权码本身也是一次性，旧码换不第二次）；
     - 成功 → 双行 active + last_verified_at。
     无论成败，state 行在首次使用后即删（单次有效）。
+    重绑（state 行带 rebind_binding_id）：成功时原地换目标行的凭据
+    （凭据行 id、绑定行 id、label 全不变，只换密封令牌 + 已授范围
+    + active 态），并把该用户建转存目录失败的 failed 任务打回
+    pending；旧 refresh_token 尽力吊销（失败不挡重绑）；失败属三档
+    内时目标行落失败态（不另建行）；目标行中途已删时响亮拒绝，
+    不另建行（防 label 唯一约束冲突）。
     """
     uri = redirect_uri_value or redirect_uri()
     row = (
@@ -485,6 +598,7 @@ def complete_drive_oauth(db: Session, state: str, code: str,
     if row is None:
         raise DriveOAuthError("not_found", "授权会话不存在或已使用，请重新授权。")
     user_id, label = row.user_id, row.account_label
+    rebind_binding_id = getattr(row, "rebind_binding_id", None)
     try:
         verifier = unseal_secret(row.sealed_verifier or "")
     except SealedSecretError as exc:
@@ -501,33 +615,83 @@ def complete_drive_oauth(db: Session, state: str, code: str,
         raise DriveOAuthError(
             "validation", "服务器未配置对外地址（EMBY_PUBLIC_URL）。")
     try:
-        label = _validate_label_and_quota(db, user_id, label)
+        label = _validate_label_and_quota(
+            db, user_id, label, exclude_binding_id=rebind_binding_id)
     except DriveOAuthError:
         raise
+    rebind_target = None
+    if rebind_binding_id is not None:
+        rebind_target = (
+            db.query(em.UserStorageBinding)
+            .filter(em.UserStorageBinding.id == rebind_binding_id,
+                    em.UserStorageBinding.user_id == user_id,
+                    em.UserStorageBinding.provider == ub.PROVIDER_DRIVE)
+            .first()
+        )
+        if rebind_target is None:
+            raise DriveOAuthError(
+                "validation", "重绑目标已不存在，请重新绑定。")
     try:
         tokens = exchange_code_for_tokens(code, uri, verifier,
                                           http_post=http_post)
     except DriveOAuthError as exc:
         if exc.kind in ("auth_error", "expired", "throttled"):
+            if rebind_target is not None:
+                ub._mark_failed(db, rebind_target, exc.kind)
+                db.commit()
+                return rebind_target
             return _create_failed_drive_rows(db, user_id, label, exc.kind)
         raise
     try:
         check_drive_liveness(tokens["access_token"], http_get=http_get)
     except DriveOAuthError as exc:
         if exc.kind in ("auth_error", "expired", "throttled"):
+            if rebind_target is not None:
+                ub._mark_failed(db, rebind_target, exc.kind)
+                db.commit()
+                return rebind_target
             return _create_failed_drive_rows(db, user_id, label, exc.kind)
         raise
+    granted = tokens.get("scope")
+    if rebind_target is not None:
+        # 原地换凭据：凭据行 id 与绑定行 id 不变，旧 refresh 尽力吊销。
+        # 凭据行只取一次；旧令牌解不开时 old_refresh 留空（不挡重绑），
+        # 凭据行本身缺失则响亮失败（用户可删后重绑，不静默另建行）。
+        cred = ub._credential_of(db, rebind_target)
+        old_refresh = None
+        try:
+            old_refresh = decode_drive_token(
+                unseal_secret(cred.sealed_credential or "")
+            ).get("refresh_token")
+        except Exception:
+            old_refresh = None
+        cred.sealed_credential = seal_secret(encode_drive_token(
+            tokens["access_token"], tokens["refresh_token"],
+            tokens["expires_at"], scope=granted))
+        now = datetime.now()
+        cred.status = "active"
+        cred.last_verified_at = now
+        cred.last_error_kind = None
+        rebind_target.granted_scopes = granted
+        rebind_target.status = "active"
+        rebind_target.last_verified_at = now
+        rebind_target.last_error_kind = None
+        reset_mkdir_failed_jobs(db, user_id)
+        db.commit()
+        if old_refresh and old_refresh != tokens["refresh_token"]:
+            _revoke_refresh_token_best_effort(old_refresh, http_post)
+        return rebind_target
     cred = em.MountCredential(
         mount_id=None, scope="user", owner_user_id=user_id,
         sealed_credential=seal_secret(encode_drive_token(
             tokens["access_token"], tokens["refresh_token"],
-            tokens["expires_at"])),
+            tokens["expires_at"], scope=granted)),
         key_id="fernet-v1", status="active")
     db.add(cred)
     db.flush()
     binding = em.UserStorageBinding(
         user_id=user_id, provider=ub.PROVIDER_DRIVE, account_label=label,
-        credential_id=cred.id, status="active")
+        credential_id=cred.id, status="active", granted_scopes=granted)
     db.add(binding)
     db.flush()
     now = datetime.now()
@@ -565,10 +729,19 @@ def _drive_credential_of(db: Session,
 
 def _store_refreshed_token(db: Session, binding: em.UserStorageBinding,
                            cred: em.MountCredential, tokens: dict) -> None:
-    """刷新结果写回（密封 JSON 全量替换；调用方提交）"""
+    """刷新结果写回（密封 JSON 全量替换；调用方提交）。
+    scope 沿用旧存值：刷新响应未必带 scope，拿请求串覆盖会把
+    “用户只授了只读”谎报成已授写权限，needs_rebind 判定就全错；
+    旧存值解不开时存 None（未知→需重绑），不猜。"""
+    old_scope = None
+    try:
+        old_scope = decode_drive_token(
+            unseal_secret(cred.sealed_credential or "")).get("scope")
+    except Exception:
+        old_scope = None
     cred.sealed_credential = seal_secret(encode_drive_token(
         tokens["access_token"], tokens["refresh_token"],
-        tokens["expires_at"]))
+        tokens["expires_at"], scope=old_scope))
     now = datetime.now()
     cred.status = "active"
     cred.last_verified_at = now

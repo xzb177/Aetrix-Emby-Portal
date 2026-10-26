@@ -328,7 +328,9 @@ export const deviceApi = {
 // 前端只原样送出一次，绝不在日志与报错里回显。
 // 绑定行字段照抄 backend/emby_server/user_bindings.py serialize_binding：
 // id / provider / account_label / status / last_verified_at / last_error_kind /
-// error_message / has_credential / created_at，绝不含凭据原文。
+// error_message / has_credential / needs_rebind / granted_scopes / created_at，绝不含凭据原文。
+// needs_rebind：Drive 行已授范围缺 drive.file 即 True（老绑定无记录也 True），
+// 115 行恒 False；granted_scopes：实授范围列表，老绑定无记录为 null。
 export interface StorageBinding {
   id: number
   provider: string
@@ -338,6 +340,8 @@ export interface StorageBinding {
   last_error_kind: string | null
   error_message: string | null
   has_credential: boolean
+  needs_rebind: boolean
+  granted_scopes: string[] | null
   created_at: string | null
 }
 
@@ -362,10 +366,15 @@ export const storageBindingApi = {
     api.get<never, StorageBindingsResponse>('/api/user/emby/storage-bindings'),
   providers: () =>
     api.get<never, StorageBindingProvidersResponse>('/api/user/emby/storage-bindings/providers'),
-  startDriveOAuth: (accountLabel: string) =>
+  startDriveOAuth: (accountLabel: string, rebindBindingId?: number) =>
     api.post<never, DriveOAuthStartResponse>(
       '/api/user/emby/storage-bindings/drive/oauth/start',
-      { account_label: accountLabel },
+      {
+        account_label: accountLabel,
+        ...(rebindBindingId != null
+          ? { rebind_binding_id: rebindBindingId }
+          : {}),
+      },
     ),
   createPan115: (accountLabel: string, cookie: string) =>
     api.post<never, StorageBinding>(
