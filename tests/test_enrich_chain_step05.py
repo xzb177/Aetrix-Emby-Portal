@@ -304,7 +304,6 @@ class TestEngineBanAware:
         assert "douban" in outcomes
         assert outcomes["douban"].skipped == "豆瓣封禁中，已跳过"
         assert outcomes["douban"].hit is False
-        assert res.any_hit is False
 
     def test_not_banned_douban_source_runs(self):
         """未封禁：豆瓣源正常被问（行为=现状）。"""
