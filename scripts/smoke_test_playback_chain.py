@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import codes, models  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
+from backend.emby_server.auth import hash_emby_token  # noqa: E402
 
 init_db()
 
@@ -78,17 +79,25 @@ r = client.post("/api/user/auth/register", json={"username": "playuser", "passwo
 check("注册用户成功", r.status_code == 201, f"status={r.status_code}")
 user_id = r.json()["user"]["id"]
 H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+# #1290 后 /emby/* 不再接受门户 JWT：本脚本的 /emby/* 一律走 Emby 令牌，
+# /api/*（me）仍走门户 JWT。
+with SessionLocal() as _db:
+    _raw = "p" * 40
+    _db.add(em.EmbyApiToken(token=hash_emby_token(_raw), user_id=user_id,
+                            device_id="smoke-test", is_revoked=False))
+    _db.commit()
+H_EMBY = {"X-Emby-Token": _raw}
 
 # ==================== 1. 付费墙默认开启 ====================
 
 check("新用户 is_vip 为 False（未开通）", r.json()["user"]["is_vip"] is False)
 
-r = client.post(f"/emby/Items/{PLAYABLE}/PlaybackInfo", json={}, headers=H)
+r = client.post(f"/emby/Items/{PLAYABLE}/PlaybackInfo", json={}, headers=H_EMBY)
 check("非会员 PlaybackInfo 被付费墙拦截 403", r.status_code == 403, f"status={r.status_code}")
 check("非会员提示可读（说明要开会员）",
       r.status_code == 403 and "会员" in str(r.json().get("detail", "")), f"{r.json()}")
 
-r = client.get(f"/emby/Videos/{PLAYABLE}/stream", headers=H)
+r = client.get(f"/emby/Videos/{PLAYABLE}/stream", headers=H_EMBY)
 check("非会员直连流也被拦截 403", r.status_code == 403, f"status={r.status_code}")
 
 # ==================== 2. 开通会员后链路打通 ====================
@@ -102,7 +111,7 @@ with SessionLocal() as db:
 r = client.get("/api/user/auth/me", headers=H)
 check("开通后 me.is_vip 为 True（由订阅派生）", r.json().get("is_vip") is True, f"{r.json().get('is_vip')}")
 
-r = client.post(f"/emby/Items/{PLAYABLE}/PlaybackInfo", json={}, headers=H)
+r = client.post(f"/emby/Items/{PLAYABLE}/PlaybackInfo", json={}, headers=H_EMBY)
 body = r.json() if r.status_code == 200 else {}
 check("会员 PlaybackInfo 返回 200", r.status_code == 200, f"status={r.status_code}")
 check("PlaybackInfo 带可播放来源", bool(body.get("MediaSources")), f"keys={list(body)[:5]}")
@@ -111,23 +120,23 @@ check("来源带直链地址",
            or (body.get("MediaSources") or [{}])[0].get("Path")),
       f"{(body.get('MediaSources') or [{}])[0]}")
 
-r = client.get(f"/emby/Videos/{PLAYABLE}/stream", headers=H)
+r = client.get(f"/emby/Videos/{PLAYABLE}/stream", headers=H_EMBY)
 check("会员直连流返回 200", r.status_code == 200, f"status={r.status_code}")
 check("直连流返回真实字节", len(r.content) > 0, f"bytes={len(r.content)}")
 
-r = client.get(f"/emby/Videos/{PLAYABLE}/stream", headers={**H, "Range": "bytes=0-9"})
+r = client.get(f"/emby/Videos/{PLAYABLE}/stream", headers={**H_EMBY, "Range": "bytes=0-9"})
 check("Range 请求返回 206（播放器拖进度条依赖）", r.status_code == 206, f"status={r.status_code}")
 check("Range 只返回 10 字节", len(r.content) == 10, f"bytes={len(r.content)}")
 
 # ==================== 3. 没有媒体路径的条目：404 而不是 500 ====================
 
-r = client.post(f"/emby/Items/{NO_PATH}/PlaybackInfo", json={}, headers=H)
+r = client.post(f"/emby/Items/{NO_PATH}/PlaybackInfo", json={}, headers=H_EMBY)
 check("无路径条目 PlaybackInfo 不报 500", r.status_code == 200, f"status={r.status_code}")
 check("无路径条目不发放必 404 的播放地址（MediaSources 为空）",
       r.status_code == 200 and r.json().get("MediaSources") == [], f"{str(r.json())[:80]}")
 
 try:
-    r = client.get(f"/emby/Videos/{NO_PATH}/stream", headers=H)
+    r = client.get(f"/emby/Videos/{NO_PATH}/stream", headers=H_EMBY)
     ok = r.status_code == 404
     detail = f"status={r.status_code}"
 except Exception as exc:  # noqa: BLE001 — 未捕获异常就是 500 的表现
@@ -136,13 +145,13 @@ check("无路径条目直连流返回 404（不是 500 / 不抛异常）", ok, d
 
 # ==================== 4. 互动链路落库 ====================
 
-r = client.post(f"/emby/Users/me/Items/{PLAYABLE}/Rating", json={"IsFavorite": True}, headers=H)
+r = client.post(f"/emby/Users/me/Items/{PLAYABLE}/Rating", json={"IsFavorite": True}, headers=H_EMBY)
 check("收藏成功", r.status_code == 200 and r.json().get("IsFavorite") is True, f"{r.status_code}")
 
-r = client.post(f"/emby/Users/me/PlayedItems/{PLAYABLE}", headers=H)
+r = client.post(f"/emby/Users/me/PlayedItems/{PLAYABLE}", headers=H_EMBY)
 check("标记已看成功", r.status_code == 200 and r.json().get("Played") is True, f"{r.status_code}")
 
-r = client.delete(f"/emby/Users/me/PlayedItems/{PLAYABLE}", headers=H)
+r = client.delete(f"/emby/Users/me/PlayedItems/{PLAYABLE}", headers=H_EMBY)
 check("取消已看成功", r.status_code == 200 and r.json().get("Played") is False, f"{r.status_code}")
 
 with SessionLocal() as db:

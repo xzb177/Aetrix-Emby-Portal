@@ -31,6 +31,7 @@ from backend import admin_roles, models  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.main import app  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
+from backend.emby_server.auth import ensure_emby_credentials  # noqa: E402
 
 init_db()
 client = TestClient(app)
@@ -56,6 +57,10 @@ def make_user(username: str, *, is_staff: bool = False, role: str | None = None,
         )
         db.add(user)
         db.commit()
+        # Emby 侧门用例要走 AuthenticateByName：直建用户没有 emby_password，
+        # Emby 登录只验 emby_password（不回落 password_hash），这里先补齐，
+        # 与门户首次登录的 fill_only 补齐结果一致。
+        ensure_emby_credentials(db, user, password="pass12345")
         return user.id
 
 
@@ -234,11 +239,24 @@ check("只读登录响应里 can_write=False（界面据此置灰）",
       and v_user.get("is_super") is False, str(v_user))
 
 # Emby 兼容面：触发全库重扫是写操作
+# JWT 腿已删（#1290）：Emby 兼容面只认 Emby token，侧门用例改走
+# AuthenticateByName 换 token；门户 JWT 本身应被挡在 401（第三项钉死）。
+def emby_headers(username: str) -> dict:
+    r = client.post("/emby/Users/AuthenticateByName",
+                    json={"Username": username, "Pw": "pass12345"},
+                    headers={"X-Emby-Authorization": 'MediaBrowser Client="Test", Device="Test", DeviceId="roles-smoke", Version="1"'})
+    assert r.status_code == 200, r.text
+    return {"X-Emby-Token": r.json()["AccessToken"]}
+
+H_VIEW2_EMBY = emby_headers("auditor2")
+H_OP_EMBY = emby_headers("operator")
 check("只读触发全库重扫 → 403（不能从 Emby 接口绕道）",
-      client.post("/Library/Refresh", headers=H_VIEW2).status_code == 403,
-      f"HTTP {client.post('/Library/Refresh', headers=H_VIEW2).status_code}")
+      client.post("/Library/Refresh", headers=H_VIEW2_EMBY).status_code == 403,
+      f"HTTP {client.post('/Library/Refresh', headers=H_VIEW2_EMBY).status_code}")
 check("运营触发全库重扫 → 放行（这是日常运维动作）",
-      client.post("/Library/Refresh", headers=H_OP).status_code == 200)
+      client.post("/Library/Refresh", headers=H_OP_EMBY).status_code == 200)
+check("门户 JWT 不再能进 Emby 兼容面（JWT 腿已删）",
+      client.post("/Library/Refresh", headers=H_OP).status_code == 401)
 
 # 踢别人的会话需要真实会话行；这里直接验角色判定入口（端点调的就是它）
 fake_emby_delete = SimpleNamespace(url=SimpleNamespace(path="/emby/Sessions/abc"), method="DELETE")

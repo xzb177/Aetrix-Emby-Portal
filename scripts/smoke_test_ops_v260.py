@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from backend import models
 from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
+from backend.emby_server.auth import hash_emby_token
 from backend.main import app
 from backend.security import hash_password
 from backend.integrations.store import invalidate
@@ -97,6 +98,17 @@ def portal_login(username: str) -> dict:
 
 
 staff_h, a_h, b_h = portal_login(staff_name), portal_login(a_name), portal_login(b_name)
+# #1290 后 /emby/* 不再接受门户 JWT：第五节的 /emby/* 走 Emby 令牌，
+# 其余 /api/* 仍走门户 JWT。
+_db = SessionLocal()
+_a_e = {"X-Emby-Token": "o" * 40}  # 顺序跑时付费墙已占 "s"*40（token 列 UNIQUE），此处须用未被任何冒烟脚本占用的 raw
+_s_e = {"X-Emby-Token": "w" * 40}
+for _name, _raw in ((a_name, "o" * 40), (staff_name, "w" * 40)):
+    _u = _db.query(models.WebUser).filter(models.WebUser.username == _name).first()
+    _db.add(em.EmbyApiToken(token=hash_emby_token(_raw), user_id=_u.id,
+                            device_id="smoke-test", is_revoked=False))
+_db.commit()
+_db.close()
 
 
 def emby_login(username: str, device_id: str, password: str = "pass12345"):
@@ -383,20 +395,20 @@ db.commit()
 db.close()
 
 set_config("subscription_required", "false")  # 隔离下载策略，先关掉付费墙
-r = client.get(f"/emby/Items/{item_guid}/Download", headers=a_h)
+r = client.get(f"/emby/Items/{item_guid}/Download", headers=_a_e)
 check("关闭下载后 /Download → 403", r.status_code == 403, str(r.status_code))
 
-r = client.get(f"/emby/Items/{item_guid}/File", headers=a_h)
+r = client.get(f"/emby/Items/{item_guid}/File", headers=_a_e)
 check("关闭下载后 /Items/{id}/File 同样被拦（网关兜底）", r.status_code == 403, str(r.status_code))
 
-r = client.get(f"/emby/Items/{item_guid}/File", headers=staff_h)
+r = client.get(f"/emby/Items/{item_guid}/File", headers=_s_e)
 check("管理员不受下载开关限制", r.status_code == 200, str(r.status_code))
 
-r = client.get(f"/emby/Videos/{item_guid}/stream", headers=a_h)
+r = client.get(f"/emby/Videos/{item_guid}/stream", headers=_a_e)
 check("在线播放不受下载开关影响", r.status_code in (200, 206), str(r.status_code))
 
 set_config("allow_download", None)
-r = client.get(f"/emby/Items/{item_guid}/File", headers=a_h)
+r = client.get(f"/emby/Items/{item_guid}/File", headers=_a_e)
 check("重新允许下载后可访问", r.status_code == 200, str(r.status_code))
 
 # ==================== 六、注册模式开关（注册码门禁已下线） ====================

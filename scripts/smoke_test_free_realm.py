@@ -34,6 +34,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import models  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
+from backend.emby_server.auth import hash_emby_token
 from backend.security import hash_password  # noqa: E402
 
 init_db()
@@ -80,6 +81,15 @@ r = client.post("/api/user/auth/register",
                 json={"username": "freeviewer", "password": "freepass123"})
 check("注册普通用户成功", r.status_code == 201, f"status={r.status_code}")
 USER_H = {"Authorization": f"Bearer {r.json()['access_token']}"}
+# #1290 后 /emby/* 不再接受门户 JWT：本脚本的 /emby/* 走 Emby 令牌，
+# /api/* 仍走门户 JWT。
+_user_id = r.json()["user"]["id"]
+with SessionLocal() as _db:
+    _raw = "f" * 40
+    _db.add(em.EmbyApiToken(token=hash_emby_token(_raw), user_id=_user_id,
+                            device_id="smoke-test", is_revoked=False))
+    _db.commit()
+USER_E = {"X-Emby-Token": _raw}
 check("新账号不是会员（没有任何订阅）", r.json()["user"]["is_vip"] is False)
 
 with SessionLocal() as db:
@@ -108,7 +118,7 @@ r = client.get("/api/user/auth/me", headers=USER_H)
 check("付费服下 subscription_required=true", r.json().get("subscription_required") is True, str(r.json()))
 check("付费服下 is_free_realm=false", r.json().get("is_free_realm") is False, str(r.json()))
 
-r = client.post(f"/emby/Items/{ITEM}/PlaybackInfo", json={}, headers=USER_H)
+r = client.post(f"/emby/Items/{ITEM}/PlaybackInfo", json={}, headers=USER_E)
 check("付费服下非会员播放被拦截 403（付费墙照旧）", r.status_code == 403, f"status={r.status_code}")
 
 # ==================== 2. 建公益服并切过去 ====================
@@ -144,18 +154,18 @@ check("公益服下 is_free_realm=true 且带规则文案",
 check("公益服下 download_allowed=false（资源保护默认生效）",
       me.get("download_allowed") is False, str(me.get("download_allowed")))
 
-r = client.post(f"/emby/Items/{ITEM}/PlaybackInfo", json={}, headers=USER_H)
+r = client.post(f"/emby/Items/{ITEM}/PlaybackInfo", json={}, headers=USER_E)
 check("公益服下非会员也能拿 PlaybackInfo（200）", r.status_code == 200, f"status={r.status_code}")
 check("公益服播放信息带可播放来源",
       bool((r.json() if r.status_code == 200 else {}).get("MediaSources")), str(r.status_code))
 
-r = client.get(f"/emby/Items/{ITEM}/Download", headers=USER_H)
+r = client.get(f"/emby/Items/{ITEM}/Download", headers=USER_E)
 check("公益服下载被拦 403", r.status_code == 403, f"status={r.status_code}")
 check("公益服下载提示是公益口径（只提供在线观看）",
       r.status_code == 403 and "在线观看" in str(r.json().get("detail", "")), str(r.json()))
 
 # 账号卡：公益服的地址与口径照样下发（哪怕这个账号没有订阅）
-r = client.get("/api/user/emby/server", headers=USER_H)
+r = client.get("/api/user/emby/server", headers=USER_E)
 card = r.json() if r.status_code == 200 else {}
 check("账号卡顶层是公益口径",
       card.get("access_mode") == "free" and card.get("is_free") is True, str(card.get("access_mode")))
@@ -186,10 +196,10 @@ check("切回默认服（付费服）", r.status_code == 200 and r.json().get("a
 r = client.get("/api/user/auth/me", headers=USER_H)
 check("付费服下 subscription_required 又变回 true",
       r.json().get("subscription_required") is True, str(r.json().get("subscription_required")))
-r = client.post(f"/emby/Items/{ITEM}/PlaybackInfo", json={}, headers=USER_H)
+r = client.post(f"/emby/Items/{ITEM}/PlaybackInfo", json={}, headers=USER_E)
 check("付费服下非会员播放重新被拦 403（同一账号、同一台机器）",
       r.status_code == 403, f"status={r.status_code}")
-r = client.get(f"/emby/Items/{ITEM}/Download", headers=USER_H)
+r = client.get(f"/emby/Items/{ITEM}/Download", headers=USER_E)
 # 下载与播放同一门槛：付费服下非会员仍然先撞付费墙（而不是撞到公益服那条下载策略）
 check("付费服下载先撞付费墙（提示是要开会员，不是公益服口径）",
       r.status_code == 403 and "会员" in str(r.json().get("detail", "")), str(r.json()))
@@ -210,20 +220,20 @@ check("公益服改成允许下载", r.status_code == 200 and r.json()["realm"].
       f"status={r.status_code}")
 
 client.post(f"/api/admin/realms/{FREE_ID}/activate", headers=ADMIN_H)
-r = client.get(f"/emby/Items/{ITEM}/Download", headers=USER_H)
+r = client.get(f"/emby/Items/{ITEM}/Download", headers=USER_E)
 check("策略改成允许后，公益服下载放行 200", r.status_code == 200, f"status={r.status_code}")
 
 r = client.put(f"/api/admin/realms/{FREE_ID}", headers=ADMIN_H, json={"download_policy": "follow"})
 check("改回跟随（公益服默认禁止下载）",
       r.status_code == 200 and r.json()["realm"].get("allow_download") is None, f"status={r.status_code}")
-r = client.get(f"/emby/Items/{ITEM}/Download", headers=USER_H)
+r = client.get(f"/emby/Items/{ITEM}/Download", headers=USER_E)
 check("改回跟随后下载再次被拦 403", r.status_code == 403, f"status={r.status_code}")
 
 # 接入方式可以来回切换：改回付费服后不再免费开放
 r = client.put(f"/api/admin/realms/{FREE_ID}", headers=ADMIN_H, json={"access_mode": "paid"})
 check("公益服可以改回付费服", r.status_code == 200 and r.json()["realm"].get("is_free") is False,
       f"status={r.status_code}")
-r = client.post(f"/emby/Items/{ITEM}/PlaybackInfo", json={}, headers=USER_H)
+r = client.post(f"/emby/Items/{ITEM}/PlaybackInfo", json={}, headers=USER_E)
 check("改回付费服后非会员播放被拦 403", r.status_code == 403, f"status={r.status_code}")
 r = client.put(f"/api/admin/realms/{FREE_ID}", headers=ADMIN_H, json={"access_mode": "free"})
 check("再切回公益服", r.status_code == 200 and r.json()["realm"].get("is_free") is True,
