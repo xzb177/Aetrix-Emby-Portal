@@ -572,16 +572,27 @@ def test_release_ready_rows_scoped_by_owner(db):
 # ---------- Drive 用户盘工人（Path A / Path B） ----------
 
 class _FakeUserDrive:
-    """UserDriveApiClient 桩：mode 决定 copy 行为。"""
+    """UserDriveApiClient 桩：mode 决定 copy 行为。
 
-    def __init__(self, mode="path_a"):
+    dir_ids：list_file_ids_by_name 的返回值；None 时默认返回 copy
+    的 id（即目录核对通过）。传 [] 表示目录里核不到，传其它列表
+    可模拟目录 id 胜出 / 多同名冲突。
+    """
+
+    def __init__(self, mode="path_a", dir_ids=None):
         self.mode = mode
+        self.dir_ids = dir_ids
         self.copy_calls = []
         self.perm_calls = []
         self._tmp_forbidden_once = True
 
     def ensure_folder(self, drive_id, dir_name):
         return "ufolder"
+
+    def list_file_ids_by_name(self, drive_id, folder_id, name):
+        if self.dir_ids is not None:
+            return list(self.dir_ids)
+        return ["usercopy"]
 
     def copy_file(self, drive_id, source_fid, folder_id, name):
         self.copy_calls.append(source_fid)
@@ -705,6 +716,97 @@ def test_worker_user_path_b_tmp_reused_on_retry(db, monkeypatch):
     db.commit()
     assert tv.run_transfer_job_once(db, job, sa)["outcome"] == "done"
     assert sa.copy_calls == 1 and sa.deleted == ["tmpfid"]
+
+
+# ---------- 转存后目录核对（FMBY discover_transfer_target 口径） ----------
+
+def test_worker_user_path_a_dir_missing_copy_unresolved(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_a", dir_ids=[])
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    result = tv.run_transfer_job_once(db, job, _StubDriveSA())
+    assert result["outcome"] == "failed"
+    assert result["error_kind"] == "copy_unresolved"
+    assert job.status == "failed"
+    assert db.query(em.TransferVariant).count() == 0
+    assert fake.perm_calls == []  # 核不到不补权限、不登记、不回落
+
+
+def test_worker_user_path_a_dir_id_wins(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_a", dir_ids=["dir-456"])
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    result = tv.run_transfer_job_once(db, job, _StubDriveSA())
+    assert result["outcome"] == "done"
+    row = db.query(em.TransferVariant).filter(
+        em.TransferVariant.status == "ready").one()
+    assert row.variant_file_id == "dir-456"  # 目录核到的 id 为准
+    assert fake.perm_calls == ["dir-456"]  # 权限补在核到的 id 上
+
+
+def test_worker_user_path_a_dir_exact_fid_wins(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_a", dir_ids=["usercopy", "other"])
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    result = tv.run_transfer_job_once(db, job, _StubDriveSA())
+    assert result["outcome"] == "done"
+    row = db.query(em.TransferVariant).filter(
+        em.TransferVariant.status == "ready").one()
+    assert row.variant_file_id == "usercopy"  # 回执 id 在目录中即核到
+
+
+def test_worker_user_path_a_dir_conflict_copy_unresolved(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_a", dir_ids=["x1", "x2"])
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    result = tv.run_transfer_job_once(db, job, _StubDriveSA())
+    assert result["outcome"] == "failed"
+    assert result["error_kind"] == "copy_unresolved"
+    assert db.query(em.TransferVariant).count() == 0  # 多同名冲突不猜
+
+
+def test_worker_user_path_a_dir_list_failure_retried(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_a")
+
+    def _boom(*args):
+        raise tv._Retriable("按名列出文件失败：500")
+
+    fake.list_file_ids_by_name = _boom
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    result = tv.run_transfer_job_once(db, job, _StubDriveSA())
+    assert result["outcome"] == "retried"  # 目录列举失败按可重试处理
+    assert db.query(em.TransferVariant).count() == 0
+
+
+def test_worker_user_path_b_dir_missing_copy_unresolved(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_b", dir_ids=[])
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    sa = _StubDriveSA()
+    result = tv.run_transfer_job_once(db, job, sa)
+    assert result["outcome"] == "failed"
+    assert result["error_kind"] == "copy_unresolved"
+    assert db.query(em.TransferVariant).count() == 0
+    assert sa.deleted == []  # 核不到失败时暂存不删，下次按名复用
 
 
 # ---------- Quota 信号 BYOS 分支 ----------

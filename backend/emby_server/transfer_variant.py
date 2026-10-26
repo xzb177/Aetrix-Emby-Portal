@@ -46,7 +46,10 @@ BYOS 口径（设计稿 §八底线，照搬）：用户副本只许播给 owner
 失败总原则（设计稿 §六，2026-10-26 补充）：选路与信号处理永不
 抛错进播放链（门禁函数内部异常 → error verdict，调用方报 503
 fail-closed，绝不静默回落）；工人侧 copy 403/404 不重试、
-429/5xx 最多 3 次指数退避、权限失败记 orphan 不删文件。Drive
+429/5xx 最多 3 次指数退避、权限失败记 orphan 不删文件。转存后
+目录核对（FMBY discover_transfer_target 口径，2026-10-26 全学补齐）：
+copy 回执只作期望值，必须在目标目录里按名核到才登记；核不到记
+failed/copy_unresolved，不重试、不回落源文件播放。Drive
 用户任务两条路径：Path A 用户令牌直拷（anyone-reader 源）；Path B
 SA 暂存中转（用户无权源：SA 拷暂存 → anyone-reader 分享给用户 →
 用户令牌再拷进自己盘，成功后尽力删暂存）。Path C（SA 拷后转交
@@ -819,6 +822,26 @@ class DriveApiClient:
             return None
         raise _Retriable(f"按名查找文件失败：{resp.status_code}")
 
+    def list_file_ids_by_name(self, drive_id, folder_id, name):
+        """在指定目录下按精确文件名列出全部文件 id（转存后目录核对用）。
+
+        返回 id 列表（可能为空）；查询失败抛 _Retriable（调用方决定
+        重试）。与 find_file_by_name 同查询口径，区别是返回全部命中
+        而非首个——核对时要区分“恰好一个新文件”与“多个同名冲突”
+        （FMBY discover_transfer_target 口径）。
+        """
+        escaped = name.replace("'", "\\'")
+        q = (f"name='{escaped}' and '{folder_id}' in parents "
+             f"and trashed=false")
+        params = {"q": q, "supportsAllDrives": "true",
+                  "fields": "files(id,name)"}
+        params.update(self._list_params(drive_id))
+        resp = self._request("GET", FILES_URL, drive_id, params=params)
+        if resp.status_code == 200:
+            files = (resp.json() or {}).get("files") or []
+            return [str(f["id"]) for f in files if f.get("id")]
+        raise _Retriable(f"按名列出文件失败：{resp.status_code}")
+
     def delete_file(self, drive_id, fid):
         """删文件（Path B 成功后清暂存，尽力而为）。
 
@@ -929,6 +952,27 @@ def _register_ready_variant(db, job, item, variant_fid, variant_drive_id,
     return row
 
 
+def _verify_drive_copy_in_dir(client, drive_id, folder_id, name,
+                             expected_fid):
+    """转存后目录核对（FMBY discover_transfer_target 口径）。
+
+    列出目标目录中与副本同名的文件：
+    - 回执 id 在其中 → 核到，返回回执 id；
+    - 恰好一个同名文件（回执 id 不在其中）→ 核到，返回目录里的 id
+      （目录为准）；
+    - 一个都没有，或多个同名且无一是回执 id → 核不到，返回 ""。
+    调用方核不到时记 failed/copy_unresolved，不重试（避免重复 copy
+    产生重复文件），绝不回落源文件播放。目录列举本身失败时抛异常
+    （调用方按可重试处理，不记 copy_unresolved）。
+    """
+    matches = client.list_file_ids_by_name(drive_id, folder_id, name)
+    if expected_fid and expected_fid in matches:
+        return expected_fid
+    if len(matches) == 1:
+        return matches[0]
+    return ""
+
+
 def _run_drive_user_job(db, job, item, drive_api):
     """Drive 用户盘任务：Path A 用户令牌直拷，403/404 转 Path B。
 
@@ -972,6 +1016,21 @@ def _run_drive_user_job(db, job, item, drive_api):
         return {"job_id": job.id,
                 "outcome": _schedule_retry(
                     db, job, Exception("copy 未返回新 file_id"))}
+    # 转存后目录核对（FMBY discover 口径）：copy 回执只作期望值，
+    # 必须在用户转存目录里按名核到才登记；核不到记 copy_unresolved
+    #（不重试、不回落源文件播放），目录列举失败则按可重试处理。
+    try:
+        verified_fid = _verify_drive_copy_in_dir(
+            user_client, user_drive, folder_id, name, variant_fid)
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not verified_fid:
+        return _fail_job(
+            db, job, "copy_unresolved",
+            f"Drive copy 回执 id={variant_fid} 在用户转存目录中核不到"
+            f"（目录 id={folder_id}，文件名={name}），不登记、不回落")
+    variant_fid = verified_fid
     try:
         user_client.add_anyone_reader(user_drive, variant_fid)
     except Exception as exc:
@@ -1064,6 +1123,23 @@ def _run_drive_user_job_path_b(db, job, item, drive_api, user_client,
         return {"job_id": job.id,
                 "outcome": _schedule_retry(
                     db, job, Exception("用户盘 copy 未返回新 file_id"))}
+    # 转存后目录核对（与 Path A 同口径）：用户盘 copy 回执只作期望值，
+    # 必须在用户转存目录里按名核到才登记；核不到记 copy_unresolved
+    #（不重试、不回落源文件播放），目录列举失败则按可重试处理。
+    # 注意：此时暂存尚未删（删暂存只在成功登记后），核不到失败时暂存
+    # 留待下次播放重建任务时按名复用，不在此处删。
+    try:
+        verified_fid = _verify_drive_copy_in_dir(
+            user_client, user_drive, user_folder, name, variant_fid)
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not verified_fid:
+        return _fail_job(
+            db, job, "copy_unresolved",
+            f"Drive 用户盘 copy 回执 id={variant_fid} 在转存目录中核不到"
+            f"（目录 id={user_folder}，文件名={name}），不登记、不回落")
+    variant_fid = verified_fid
     try:
         user_client.add_anyone_reader(user_drive, variant_fid)
     except Exception as exc:
@@ -1138,13 +1214,18 @@ def _extract_115_copy_result(result):
     return fid, pickcode
 
 
-def _match_115_copy_in_dir(client, dest_cid, name, size):
-    """列目标目录，按名 + 大小（大小缺失时只按名）匹配新文件。
+def _match_115_copy_in_dir(client, dest_cid, name, size, expected_fid=None):
+    """列目标目录核对新文件（FMBY discover_transfer_target 口径）。
 
-    返回 (fid, pickcode)，找不到返回 ("", "")。只认非目录项。
-    注意：目标目录若预先存在同名文件，匹配可能命中旧文件——copy
-    响应 fid 路径是主路径，本回落只在响应无 fid 时用，且转存目录
-    正常为空（用户自建同名文件是边缘情形，见报告已知项）。
+    返回 (fid, pickcode)，核不到返回 ("", "")。只认非目录项。
+    - 回执 fid 在目录中 → 返回回执 fid 及其 pickcode；
+    - 否则按名 + 大小（大小缺失时只按名）匹配，命中时返回；
+    - 否则恰好一个同名文件时返回它（目录为准）；
+    - 多个同名且无一是回执 id 时返回 ("", "")（冲突，不猜）。
+    注意：目标目录若预先存在同名文件，单同名回落可能命中旧文件——
+    回执 fid 路径是主路径，转存目录正常为空（用户自建同名文件是
+    边缘情形，见报告已知项）；多同名冲突时宁可记 copy_unresolved
+    也不猜一个登记。
     """
     size_int = _to_int(size)
     matches = []
@@ -1156,12 +1237,18 @@ def _match_115_copy_in_dir(client, dest_cid, name, size):
         matches.append(entry)
     if not matches:
         return "", ""
+    if expected_fid:
+        for entry in matches:
+            if (entry.get("fid") or "") == expected_fid:
+                return expected_fid, entry.get("pickcode") or ""
     if size_int:
         for entry in matches:
             if _to_int(entry.get("size")) == size_int:
                 return entry.get("fid") or "", entry.get("pickcode") or ""
-    entry = matches[0]
-    return entry.get("fid") or "", entry.get("pickcode") or ""
+    if len(matches) == 1:
+        entry = matches[0]
+        return entry.get("fid") or "", entry.get("pickcode") or ""
+    return "", ""
 
 
 def _run_pan115_job(db, job, item):
@@ -1171,8 +1258,8 @@ def _run_pan115_job(db, job, item):
     绝不用服主档）。
     新 fid + pickcode 登记用户行；Cookie 失效 → failed/auth_error
     + 绑定落 expired（user_bindings._mark_failed），不重试、不回落。
-    copy 响应无 fid 时列目标目录匹配；仍找不到 →
-    failed/copy_unresolved（不重试，避免重复 copy 产生重复文件）。
+    copy 后必列目标目录核对（回执只作期望值，目录核到的 id 为准）；
+    核不到 → failed/copy_unresolved（不重试，避免重复 copy 产生重复文件）。
     """
     from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
     uid = (getattr(job, "owner_ref", "") or "").strip()
@@ -1204,16 +1291,19 @@ def _run_pan115_job(db, job, item):
         client = _make_pan115_client(cookie)
         dest_cid = _ensure_115_transfer_dir(client)
         result = client.copy_file(orig_fid, dest_cid)
-        new_fid, pickcode = _extract_115_copy_result(result)
-        if not new_fid:
-            new_fid, pickcode = _match_115_copy_in_dir(
-                client, dest_cid, _copy_name_for_item(item),
-                getattr(item, "size", None))
+        resp_fid, _resp_pickcode = _extract_115_copy_result(result)
+        # 转存后目录核对（FMBY discover 口径）：copy 回执只作期望值，
+        # 必须在目标目录里按名核到才登记；核不到记 copy_unresolved
+        #（不重试，避免重复 copy 产生重复文件；不回落源文件播放）。
+        new_fid, pickcode = _match_115_copy_in_dir(
+            client, dest_cid, _copy_name_for_item(item),
+            getattr(item, "size", None), expected_fid=resp_fid or None)
         if not new_fid:
             return _fail_job(
                 db, job, "copy_unresolved",
-                f"115 copy 完成但未定位新文件（源 fid={orig_fid}，"
-                f"目标目录 cid={dest_cid}，请人工核对，不自动重试）")
+                f"115 copy 完成但目标目录核不到新文件（源 fid={orig_fid}，"
+                f"回执 fid={resp_fid or '无'}，目标目录 cid={dest_cid}，"
+                f"请人工核对，不自动重试）")
     except Pan115AuthError as exc:
         try:
             from backend.emby_server import user_bindings as ub

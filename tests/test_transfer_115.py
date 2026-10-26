@@ -127,6 +127,15 @@ class _FakePan115:
             raise transfer115.Pan115AuthError("Cookie 已失效")
         if self.copy_result == "error":
             raise transfer115.Pan115Error("115 业务错误")
+        if self.copy_result == "ghost":
+            # 回执有 fid，但目标目录里没产生文件：目录核对必须拦下。
+            return {"fid": "newfid", "pickcode": "PC-NEW"}
+        if self.copy_result == "dir_wins":
+            # 回执 fid 与目录里核到的 id 不一致：以目录为准。
+            self.dirs.setdefault(dest_cid, []).append(
+                {"fid": "dirfid", "cid": "c-dir", "name": "a.mkv",
+                 "is_dir": False, "size": 1000, "pickcode": "PC-DIR"})
+            return {"fid": "newfid", "pickcode": "PC-NEW"}
         # 真实 copy 会在目标目录产生新文件（fid 不同、内容同）。
         self.dirs.setdefault(dest_cid, []).append(
             {"fid": "newfid", "cid": "c-new", "name": "a.mkv",
@@ -242,6 +251,35 @@ def test_115_worker_copy_response_no_fid_dir_match(db, monkeypatch):
     assert result["outcome"] == "done"
     row = db.query(em.TransferVariant).one()
     assert row.variant_file_id == "newfid" and row.pickcode == "PC-NEW"
+
+
+# ---------- 转存后目录核对（FMBY discover_transfer_target 口径） ----------
+
+def test_115_worker_copy_receipt_unverified_copy_unresolved(db, monkeypatch):
+    _mount115(db)
+    item = _item115(db)
+    _binding115(db, 7)
+    job = _job115(db, item.id)
+    fake = _FakePan115(copy_result="ghost")
+    _patch_115(monkeypatch, fake)
+    result = tv.run_transfer_job_once(db, job, object())
+    assert result["outcome"] == "failed"
+    assert result["error_kind"] == "copy_unresolved"
+    assert db.query(em.TransferVariant).count() == 0  # 核不到不登记
+
+
+def test_115_worker_dir_id_wins_over_receipt(db, monkeypatch):
+    _mount115(db)
+    item = _item115(db)
+    _binding115(db, 7)
+    job = _job115(db, item.id)
+    fake = _FakePan115(copy_result="dir_wins")
+    _patch_115(monkeypatch, fake)
+    result = tv.run_transfer_job_once(db, job, object())
+    assert result["outcome"] == "done"
+    row = db.query(em.TransferVariant).one()
+    assert row.variant_file_id == "dirfid"  # 目录核到的 id 为准
+    assert row.pickcode == "PC-DIR"
 
 
 def test_115_worker_auth_error_no_retry_marks_binding(db, monkeypatch):
