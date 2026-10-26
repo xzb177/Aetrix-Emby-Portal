@@ -117,6 +117,8 @@ def _default_http_post(url: str, payload: dict, headers: dict,
                        timeout: float):
     """认证 POST：返回 (status|None, body|None)，超时/断连给 (None, None)。"""
     data = json.dumps(payload).encode("utf-8")
+    headers = dict(headers or {})
+    headers.setdefault("User-Agent", "Aetrix/1.0")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -137,6 +139,8 @@ def _default_http_post(url: str, payload: dict, headers: dict,
 
 def _default_http_get(url: str, headers: dict, timeout: float):
     """目录 GET：返回 (status|None, body|None)，超时/断连给 (None, None)。"""
+    headers = dict(headers or {})
+    headers.setdefault("User-Agent", "Aetrix/1.0")
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -161,8 +165,9 @@ def _source_headers(source) -> dict:
     与 upstream_playback._source_headers 同口径；凭据绝不走这里。
     """
     headers: dict = {"Accept": "application/json"}
-    if getattr(source, "user_agent", None):
-        headers["User-Agent"] = source.user_agent
+    # 前门会拦 Python-urllib 默认 UA（实测 403，聚合误判为凭据失效）：
+    # 源没配 UA 时默认用 Aetrix UA，不许裸用 urllib 默认 UA 出站。
+    headers["User-Agent"] = getattr(source, "user_agent", None) or "Aetrix/1.0"
     if getattr(source, "referer", None):
         headers["Referer"] = source.referer
     try:
