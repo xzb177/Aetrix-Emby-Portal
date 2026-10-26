@@ -4441,6 +4441,35 @@ def _enforce_path_access(db: Session, user, item: em.MediaItem) -> None:
         raise HTTPException(status_code=403, detail=reason)
 
 
+def _byos_binding_id_of_path(file_path: str | None) -> Optional[int]:
+    """byos://<binding_id>/<rel> 里的绑定 id；非 byos 路径或 id 非数字
+    时返回 None（调用方按“不是本分支”或“路径畸形”处理，不猜）。"""
+    path = (file_path or "").strip()
+    if not path.startswith("byos://"):
+        return None
+    rest = path[len("byos://"):]
+    head = rest.split("/", 1)[0]
+    try:
+        return int(head)
+    except (ValueError, TypeError):
+        return None
+
+
+def _byos_binding_row(db: Session, item: em.MediaItem):
+    """BYOS 分支用的绑定行（同步、一次主键查询，调用方经 run_db）。
+
+    返回 ``(binding_id, row)``：binding_id 为 None = 路径畸形；
+    row 为 None = 该 id 无绑定行。行本身的状态/归属/provider 由
+    video_stream 的 byos 分支逐项明文判定，本助手不替它回落。
+    """
+    binding_id = _byos_binding_id_of_path(getattr(item, "file_path", ""))
+    if binding_id is None:
+        return None, None
+    row = db.query(em.UserStorageBinding).filter(
+        em.UserStorageBinding.id == binding_id).first()
+    return binding_id, row
+
+
 def _drive_mount_id_for_item(db: Session, item: em.MediaItem) -> Optional[str]:
     """drive 直链快路径用的 drive_id；其他情况返回 None（调用方回落原路径）。
 
@@ -4899,6 +4928,14 @@ async def playback_info(
             drive_mount_locatable=_drive_mount_ok,
             mount_can_generate_play_target=_mount_can_generate,
             user115_direct_available=_user115_ok)
+        # 挂载第 5 步播放过滤（变体层）：源已隐藏时变体清单清零，
+        # 且不静默回落单源——下发空 MediaSources，客户端无可播变体。
+        # 只新增本调用，不改上面任何变体判定行。
+        from backend.emby_server import playback_source_health as _psh
+        _health_ok = await run_db(_psh.item_source_available, db, item)
+        _variants = _psh.filter_variants(_variants, _health_ok)
+        if not _health_ok:
+            sources = []
         if len(_variants) > 1:
             sources = play_variants.build_media_sources(
                 media_source, _variants, guid=item.guid,
@@ -4974,9 +5011,15 @@ def _available_variant_names(db: Session, item: em.MediaItem,
     locatable = False
     if (getattr(item, "drive_file_id", "") or "").strip():
         locatable = _drive_mount_id_for_item(db, item) is not None
-    return [v.name for v in play_variants.list_variants(
+    names = [v.name for v in play_variants.list_variants(
         db, item, drive_mount_locatable=locatable,
         user115_direct_available=_user115_direct_available(db, item, user))]
+    # 挂载第 5 步播放过滤（变体层）：源已隐藏时可用变体为空，
+    # 已选变体按 resolve_requested_variant 现成语义报 409。
+    from backend.emby_server import playback_source_health as _psh
+    if not _psh.item_source_available(db, item):
+        return []
+    return names
 
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
@@ -5011,6 +5054,14 @@ async def video_stream(
     # 起播占租约、超限 429；无策略时零行为变化。
     await run_db(_enforce_stream_limit, db, request, user, item, item_id)
     _pt.mark("auth_stream_limit")
+    # 挂载第 5 步播放过滤（取流门）：源已隐藏时直接 503，不分变体；
+    # 无变体老客户端同样挡得住。只新增本调用，不改上面任何授权 /
+    # 限流 / JWT / switch 行；健康总闸关、试点范围外、无健康记录时
+    # 本调用回 True，行为与今天逐字一致。
+    from backend.emby_server import playback_source_health as _psh_gate
+    if not await run_db(_psh_gate.item_source_available, db, item):
+        raise HTTPException(
+            status_code=503, detail="库源健康表已隐藏该源，暂时不可播")
     # 按变体取流（FMBY 批二 #11 PR-2）：客户端带了变体（variant 参数 /
     # MediaSourceId 后缀）时，只执行该变体的分支。变体未知报 404、
     # 已知但该条目当下不可用报 409，两种情况都不许静默改走默认条；
@@ -5061,6 +5112,105 @@ async def video_stream(
     from backend.emby_server import variant_switch as _variant_switch
     _switch_on = _variant_switch.switch_enabled()
     _switch_attempted = False
+    # BYOS 用户令牌中继（Drive 腿，闭环 #13）：条目是 byos:// 路径且
+    # drive_relay_enabled 开时，字节走该用户自己的 Drive 令牌中继，
+    # 绝不走共享 SA 池。铁律：一个用户、一份凭据、一份额度；下面
+    # 任何一步失败都明文报错，绝不静默回落 SA 中继或 _play_target。
+    # 门禁：byos 路径 + 中继开关开 + 变体为 None 或 DRIVE_RELAY。
+    # 阶段 6 换线口径照搬标准分支：switch 开且无变体请求时，路由
+    # 首选不是 DRIVE_RELAY 就跳过本分支、落回标准流程。
+    from backend.emby_server import byos_scan as _byos_scan
+    _byos_is_path = _byos_scan.is_byos_path(
+        getattr(item, "file_path", ""))
+    _byos_relay_on = _byos_is_path and await run_db(
+        _strategy.drive_relay_enabled, db) and _requested_variant in (
+            None, play_variants.DRIVE_RELAY)
+    if _byos_relay_on:
+        _byos_t0 = time.perf_counter()
+        _byos_skip = False
+        if _switch_on and _requested_variant is None:
+            _byos_first, _, _ = await run_db(
+                _variant_switch.drive_route_choice, db)
+            if _byos_first is None or _byos_first[0] != play_variants.DRIVE_RELAY:
+                _byos_skip = True
+                logger.warning(
+                    "变体切换：byos drive_relay 在可用性表中不是首选，"
+                    "落回标准流程 item=%s", getattr(item, "id", "?"))
+        if not _byos_skip:
+            _byos_id, _byos_row = await run_db(
+                _byos_binding_row, db, item)
+            if _byos_id is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="BYOS 路径无法解析绑定：byos://<绑定 id> 格式错误")
+            if _byos_row is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="BYOS Drive 绑定不存在，无法用用户令牌中继")
+            if getattr(_byos_row, "user_id", None) != getattr(user, "id", None):
+                raise HTTPException(
+                    status_code=403,
+                    detail="BYOS 绑定不属于当前用户，无法用他人令牌中继")
+            if getattr(_byos_row, "provider", "") != "drive":
+                raise HTTPException(
+                    status_code=409,
+                    detail="BYOS 中继只支持 Drive 绑定："
+                           "pan115 请走 byos115_direct 变体，其他 provider "
+                           "暂不支持")
+            if getattr(_byos_row, "status", "") != "active":
+                raise HTTPException(
+                    status_code=409,
+                    detail="BYOS Drive 绑定当前不可用"
+                           f"（状态：{getattr(_byos_row, 'status', '')}），"
+                           "请重新绑定后再播")
+            if not _fid:
+                raise HTTPException(
+                    status_code=409,
+                    detail="BYOS Drive 条目缺少 drive_file_id，无法中继")
+            from backend.emby_server import drive_oauth as _drive_oauth
+            try:
+                _byos_token = await run_db(
+                    _drive_oauth.get_binding_drive_access_token,
+                    db, _byos_row)
+            except _drive_oauth.DriveOAuthError as exc:
+                _byos_detail = exc.message or "Drive 绑定令牌不可用"
+                if exc.kind in ("expired", "auth_error"):
+                    if "重新绑定" not in _byos_detail:
+                        _byos_detail += "，请重新绑定。"
+                elif exc.kind == "transient":
+                    if "重试" not in _byos_detail:
+                        _byos_detail += "，可重试。"
+                else:
+                    _byos_detail = "Drive 绑定令牌不可用，请重新绑定。"
+                _note_play_start_safe(
+                    item, user_id=getattr(user, "id", None),
+                    method="relay", variant=play_variants.DRIVE_RELAY,
+                    result="error", error_kind=f"byos_token_{exc.kind}",
+                    resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+                raise HTTPException(
+                    status_code=503, detail=_byos_detail) from exc
+            _pt.mark("relay")
+            try:
+                _byos_resp = await serve_drive_relay_async(
+                    request, f"byos:{_byos_id}", _fid,
+                    media_type=media_type, pt=_pt,
+                    access_token=_byos_token)
+            except HTTPException as exc:
+                _note_play_start_safe(
+                    item, user_id=getattr(user, "id", None),
+                    method="relay", variant=play_variants.DRIVE_RELAY,
+                    result="error",
+                    error_kind=f"upstream_{exc.status_code}",
+                    resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+                raise
+            _note_play_start_safe(
+                item, user_id=getattr(user, "id", None), method="relay",
+                variant=play_variants.DRIVE_RELAY,
+                result="error" if _byos_resp.status_code >= 400 else "ok",
+                error_kind=(f"upstream_{_byos_resp.status_code}"
+                            if _byos_resp.status_code >= 400 else None),
+                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+            return _observe_traffic(_byos_resp)
     if (_drive_switch_on and await run_db(_strategy.drive_relay_enabled, db)
             and (_requested_variant is None
                  or _requested_variant == play_variants.DRIVE_RELAY)):

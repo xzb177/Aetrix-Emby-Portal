@@ -643,6 +643,7 @@ async def serve_drive_relay_async(
     file_id: str,
     media_type: str = "video/mp4",
     pt=None,
+    access_token=None,
 ):
     """Drive 条目 SA 中继：服务端用盘凭据从 Drive API 取流、流式转发。
 
@@ -658,6 +659,9 @@ async def serve_drive_relay_async(
     - 上游 403（多为当前 SA 的下载额度被打满）→ 轮换/刷新凭据重试
       一次；再失败按挂载中继的口径抛错（403 透传、5xx 转 502）。
     - 凭据获取失败（个人盘 OAuth 抛错、无 SA 可用）→ 503。
+    - access_token 给了（BYOS 用户令牌中继）：直接用它、只试一次，
+      上游 403 原样抛、绝不换凭据重试——换凭据就是跨用户复用，
+      BYOS 铁律不许。drive_id 此时只作日志标识，不用于取凭据。
     """
     from backend.emby_server.drive_auth import (
         drive_api_media_url,
@@ -666,6 +670,12 @@ async def serve_drive_relay_async(
     from backend.emby_server.drive_changes import get_token_for_drive
 
     url = drive_api_media_url(drive_usercontent_download_url(file_id))
+    if access_token is not None:
+        # BYOS 用户令牌腿：单次直试，任何 HTTPException 原样抛。
+        return await serve_mount_relay_async(
+            url, request,
+            headers={"Authorization": f"Bearer {access_token}"},
+            media_type=media_type, pt=pt)
     for attempt in (0, 1):
         try:
             token = await asyncio.to_thread(

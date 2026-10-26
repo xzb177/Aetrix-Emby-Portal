@@ -235,6 +235,103 @@ def test_rebuild_upserts_and_cleans(db):
     assert {r.library_id for r in db.query(em.LibraryListProjection).all()} == {lib_a.id}
 
 
+def test_staging_build_does_not_touch_live(db):
+    """#20：build_staging 只写 staging 表，live 表一行不动。"""
+    _user(db)
+    lib_a = _library(db, "A", is_enabled=True)
+    # Library.item_count 列默认 0（走缓存列分支）；要覆盖实时计数分支，
+    # 须裸 SQL 写回 NULL（与 _scene 同款处理）。
+    from sqlalchemy import text as _text
+
+    db.execute(_text("UPDATE emby_libraries SET item_count=NULL WHERE id=:id"),
+               {"id": lib_a.id})
+    db.commit()
+    db.expire_all()
+    _item(db, lib_a, "片一", "movie", datetime(2026, 1, 2, 3, 4, 5))
+    stats = lp.build_staging(db)
+    db.commit()
+    assert stats == {"libraries": 1, "staged": 1}
+    assert db.query(em.LibraryListProjection).count() == 0
+    staged = db.query(em.LibraryListProjectionStaging).all()
+    assert [r.library_id for r in staged] == [lib_a.id]
+    assert staged[0].child_count == 1
+    assert staged[0].earliest_added == datetime(2026, 1, 2, 3, 4, 5)
+
+
+def test_switch_requires_full_coverage_and_keeps_live(db):
+    """#20：staging 缺任一目标库 → 切换抛错，live 旧行原样保留。"""
+    import pytest as _pytest
+
+    _user(db)
+    lib_a = _library(db, "A", is_enabled=True)
+    lib_b = _library(db, "B", is_enabled=True)
+    lp.rebuild_projection(db)
+    db.commit()
+    db.query(em.LibraryListProjection).update({"child_count": 9999})
+    db.commit()
+    # staging 只剩 A，缺 B：切换必须拒绝，且不动 live 行。
+    db.query(em.LibraryListProjectionStaging).delete()
+    db.add(em.LibraryListProjectionStaging(
+        library_id=lib_a.id, child_count=1, computed_at=datetime.now()))
+    db.commit()
+    with _pytest.raises(ValueError, match="覆盖不全"):
+        lp.switch_to_staging(db)
+    live = {r.library_id: r.child_count
+            for r in db.query(em.LibraryListProjection).all()}
+    assert live == {lib_a.id: 9999, lib_b.id: 9999}
+
+
+def test_switch_drops_non_target_staging_rows(db):
+    """#20：构建后目标变了（库停用），切换时只拷目标库行，不复活旧行。"""
+    _user(db)
+    lib_a = _library(db, "A", is_enabled=True)
+    lib_b = _library(db, "B", is_enabled=True)
+    lp.build_staging(db)
+    db.commit()
+    lib_b.is_enabled = False
+    db.commit()
+    switched = lp.switch_to_staging(db)
+    db.commit()
+    assert switched == {"switched": 1, "deleted": 0}
+    assert {r.library_id for r in db.query(em.LibraryListProjection).all()} == {lib_a.id}
+
+
+def test_rebuild_via_staging_values_match_live(db):
+    """#20：整库重建终态与现算逐值一致，且 staging 与 live 镜像一致。"""
+    _user(db)
+    lib_a = _library(db, "A", is_enabled=True)
+    # 同上：item_count 写回 NULL，走实时计数分支。
+    from sqlalchemy import text as _text
+
+    db.execute(_text("UPDATE emby_libraries SET item_count=NULL WHERE id=:id"),
+               {"id": lib_a.id})
+    db.commit()
+    db.expire_all()
+    _item(db, lib_a, "片一", "movie", datetime(2026, 1, 2, 3, 4, 5))
+    _item(db, lib_a, "剧一", "series", datetime(2026, 2, 3, 4, 5, 6))
+    _item(db, lib_a, "单集", "episode", datetime(2026, 3, 4, 5, 6, 7))
+    stats = lp.rebuild_projection(db)
+    db.commit()
+    assert stats == {"libraries": 1, "updated": 1, "deleted": 0}
+    live = db.query(em.LibraryListProjection).all()
+    assert len(live) == 1
+    assert live[0].child_count == 2  # 只计 movie/series，episode 不计
+    assert live[0].earliest_added == datetime(2026, 1, 2, 3, 4, 5)
+    assert live[0].cover_tag == "1"
+    staged = db.query(em.LibraryListProjectionStaging).all()
+    assert [(r.library_id, r.child_count) for r in staged] == [(lib_a.id, 2)]
+
+
+def test_refresh_now_leaves_staging_populated(db):
+    """#20：工人入口 refresh_now 走 staging：统计照常回，staging 有行。"""
+    _user(db)
+    _library(db, "A", is_enabled=True)
+    stats = lp.refresh_now(lambda: db)
+    assert stats is not None and stats["libraries"] == 1
+    assert db.query(em.LibraryListProjectionStaging).count() == 1
+    assert db.query(em.LibraryListProjection).count() == 1
+
+
 def test_refresh_now_stats_and_worker_gating(db, monkeypatch):
     """refresh_now 回统计；工人开关关不启动、开时幂等单线程。"""
     _user(db)

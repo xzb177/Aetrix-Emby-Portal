@@ -115,7 +115,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="上游映射列表"
       description="本地条目到上游条目的映射（只读）：按本地条目 ID、源 ID 过滤，置信度与证据原样展示。"
     >

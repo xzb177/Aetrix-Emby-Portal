@@ -107,7 +107,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="存储绑定列表"
       description="全站用户存储绑定（只读）：按用户 ID、状态过滤；凭据只显示有没有，不展示原文。"
     >

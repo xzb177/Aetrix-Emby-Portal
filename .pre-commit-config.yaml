@@ -1,0 +1,12 @@
+# 本地辅助钩子（不是强制门）：提交前提前跑一次冲突标记检查，省得推上去才被 CI 打回。
+# 强制门是 CI 里后端冒烟 job 的「冲突标记检查」步骤——没装 pre-commit 时 CI 照样拦截，
+# 所以 pre-commit 只是提前提醒，不能替代 CI。启用：pip install pre-commit && pre-commit install。
+repos:
+  - repo: local
+    hooks:
+      - id: no-conflict-markers
+        name: no-conflict-markers
+        entry: python scripts/check_no_conflict_markers.py
+        language: system
+        pass_filenames: false
+        always_run: true

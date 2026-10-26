@@ -1722,7 +1722,7 @@ function typeLabel(t: string): string {
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="媒体与交付"
+      eyebrow="媒体"
       title="媒体库"
       description="点「新建媒体库」或卡片上的「设置」打开同一张配置表单：分组改完路径、归属、刮削与自动发现新增文件"
     >

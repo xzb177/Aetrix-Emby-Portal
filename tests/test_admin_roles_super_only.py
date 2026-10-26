@@ -123,3 +123,48 @@ def test_rclone_conf_suffix_does_not_overmatch():
     """后缀判定不误伤：路径里含 rclone-conf 但不是后缀结尾的不受影响"""
     assert blocked_reason(_req("/api/admin/servers/rclone-conf-list", "POST"), _admin(ROLE_OPERATOR)) is None
     assert blocked_reason(_req("/api/admin/mounts/health", "POST"), _admin(ROLE_OPERATOR)) is None
+
+
+# ==================== 批 7 补后端批（2026-10-26） ====================
+# 批 7 审计定档的 5 个 B 档写口：运营此前可写，现收进 SUPER_ONLY_PREFIXES。
+# 判定走同一集中机制（get_current_admin → ensure_admin_allowed → blocked_reason，
+# emby 路由的 require_staff 经 _bearer_admin 同样走 get_current_admin）。
+# 前缀判定只拦非安全方法，各口 GET 读口不受影响——与名单内其它前缀同口径。
+
+_BATCH7_SUPER_ONLY_WRITES = [
+    ("POST", "/api/admin/emby/mounts/rclone/conf"),
+    ("PUT", "/api/admin/settings/registration"),
+    ("PUT", "/api/admin/hotlink-config"),
+    ("POST", "/api/admin/login-logs/purge"),
+    ("PUT", "/api/admin/items-dedup-cache-config"),
+]
+
+_BATCH7_READ_SIBLINGS = [
+    "/api/admin/emby/mounts/rclone/conf",
+    "/api/admin/settings/registration",
+    "/api/admin/hotlink-config",
+    "/api/admin/login-logs",
+    "/api/admin/items-dedup-cache-config",
+]
+
+
+@pytest.mark.parametrize("method,path", _BATCH7_SUPER_ONLY_WRITES)
+def test_batch7_operator_and_viewer_cannot_write(method, path):
+    """运营 / 只读调这 5 个写口一律被拦（返回拒绝的判定即 blocked_reason 非空）"""
+    for role in (ROLE_OPERATOR, ROLE_VIEWER):
+        reason = blocked_reason(_req(path, method), _admin(role))
+        assert reason, f"{role} {method} {path} 应被拦"
+        assert "超级管理员" in reason
+
+
+@pytest.mark.parametrize("method,path", _BATCH7_SUPER_ONLY_WRITES)
+def test_batch7_super_can_still_write(method, path):
+    """超管调这 5 个写口仍放行：不能把超管自己挡在门外"""
+    assert blocked_reason(_req(path, method), _admin(ROLE_SUPER)) is None, f"super {method} {path}"
+
+
+@pytest.mark.parametrize("path", _BATCH7_READ_SIBLINGS)
+def test_batch7_reads_stay_open_to_operator(path):
+    """只改写口：各口 GET 读口运营仍可看（前缀判定只拦非安全方法）"""
+    assert blocked_reason(_req(path, "GET"), _admin(ROLE_OPERATOR)) is None, f"operator GET {path}"
+    assert blocked_reason(_req(path, "GET"), _admin(ROLE_VIEWER)) is None, f"viewer GET {path}"

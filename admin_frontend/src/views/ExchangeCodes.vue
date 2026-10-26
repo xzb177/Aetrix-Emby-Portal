@@ -263,7 +263,7 @@ onMounted(load)
 <template>
   <div class="admin-page">
     <PageHeader
-      eyebrow="运营中心"
+      eyebrow="经营"
       title="旧版兑换码"
       description="老系统遗留的码：只查旧码，不再新发。用户兑换后直接生成奖励（积分 / 订阅时长 / 抵扣额度），并查看谁核销了它。新发放统一走「会员卡码」。列表为最近 200 个。"
     >

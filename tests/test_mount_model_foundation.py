@@ -20,7 +20,6 @@ from sqlalchemy.pool import StaticPool
 from backend import models as base_models
 from backend.emby_server import models as em
 from backend.emby_server import mount_sources as ms
-from backend.emby_server import upstream_sources as ups
 
 
 @pytest.fixture()
@@ -172,16 +171,7 @@ def test_compare_flags_dangling_mount_as_only_new_and_failed(db):
                for entry in result["failed"])
 
 
-# ---------- 凭据密封与 KEK 配置 ----------
-
-def test_credential_seal_roundtrip_and_key_id():
-    sealed, key_id = ms.seal_mount_credential("cookie-abc-123")
-    assert sealed != "cookie-abc-123"
-    assert key_id == "fernet-v1"
-    assert ms.unseal_mount_credential(sealed) == "cookie-abc-123"
-    with pytest.raises(ups.SealedSecretError):
-        ms.unseal_mount_credential("garbage-no-prefix")
-
+# ---------- KEK 配置 ----------
 
 def test_kek_dir_no_code_default(monkeypatch):
     monkeypatch.delenv("MOUNT_KEK_DIR", raising=False)

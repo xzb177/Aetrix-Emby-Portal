@@ -80,10 +80,6 @@ class CollectResult:
             return self._primary
         return self.outcomes[0].source if self.outcomes and self.outcomes[0].hit else ""
 
-    @property
-    def any_hit(self) -> bool:
-        return bool(self.fields)
-
     def as_dict(self) -> dict:
         return {
             "fields": dict(self.fields),
