@@ -5,7 +5,7 @@
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('account') }}</span>
         <h1><span aria-hidden="true">⚙️</span> 账号设置</h1>
-        <p>改登录密码、看我的会员、管我的设备 —— 账号自己的事都在这儿。</p>
+        <p>改登录密码、看我的会员、管我的设备、绑自己的网盘 —— 账号自己的事都在这儿。</p>
       </header>
 
       <!-- 安全设置：修改登录密码（逻辑由 ProfileView 移植，authApi.changePassword） -->
@@ -164,6 +164,68 @@
           </p>
         </div>
       </section>
+
+      <!-- 我的网盘：绑定自己的谷歌盘（BYOS，storageBindingApi）——只放用户端已有设置面，不新增导航入口。
+           后端口径见 backend/emby_server/portal.py user_emby_router：列表只出自己的行；
+           绑定走 Google 授权（新窗口打开授权地址），回调由 Google 直接调后端 callback 口返回绑定行 JSON，
+           所以授权完成后回到本页点“刷新列表”才能看到新绑定；服务器未配 OAuth 凭据时后端明文 400，前端原样展示。 -->
+      <section class="v4-sec" aria-label="我的网盘">
+        <div class="v4-sec-title"><span aria-hidden="true">💾</span> 我的网盘</div>
+        <div class="v4-sec-sub">绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑不影响现有播放</div>
+        <div class="v4-card">
+          <div class="dev-head">
+            <span class="dev-count">已绑 {{ driveBindings.length }} 个谷歌盘</span>
+            <button type="button" class="v4-mini-btn" title="刷新" :disabled="driveLoading" :aria-busy="driveLoading" @click="loadDriveBindings">
+              <RefreshCw :size="13" /> {{ driveLoading ? '刷新中' : '刷新列表' }}
+            </button>
+          </div>
+          <div v-if="driveLoading && !driveBindings.length" class="v4-skeleton" style="height:120px"></div>
+          <div v-else-if="driveError" class="v4-err">{{ driveError }}<br><button class="v4-retry" @click="loadDriveBindings">重试</button></div>
+          <div v-else-if="!driveBindings.length" class="v4-empty">
+            还没有绑定的谷歌盘 —— 起个名字点“绑定谷歌盘”，去 Google 点一下同意就行
+          </div>
+          <template v-else>
+            <div v-for="b in driveBindings" :key="b.id" class="dev-row">
+              <div class="dev-main">
+                <span class="dev-name">{{ b.account_label }}</span>
+                <span class="dev-meta">
+                  谷歌盘 · {{ driveStatusText(b.status) }}
+                  <template v-if="b.error_message"> · {{ b.error_message }}</template>
+                </span>
+              </div>
+              <span v-if="b.status === 'active'" class="dev-badge ok">可用</span>
+              <span v-else class="dev-badge off">不可用</span>
+              <button
+                v-if="b.status !== 'active'"
+                type="button"
+                class="dev-remove"
+                :disabled="verifyingBinding === b.id"
+                @click="handleVerifyBinding(b)"
+              >
+                {{ verifyingBinding === b.id ? '验证中' : '重新验证' }}
+              </button>
+              <button
+                type="button"
+                class="dev-remove"
+                :class="{ confirming: pendingUnbind === b.id }"
+                :disabled="unbindingId === b.id"
+                @click="handleUnbindDrive(b)"
+              >
+                {{ unbindingId === b.id ? '解绑中' : (pendingUnbind === b.id ? '确认解绑' : '解绑') }}
+              </button>
+            </div>
+          </template>
+          <div class="acct-field">
+            <label class="acct-label" for="drive-label">给这个盘起个名字</label>
+            <input id="drive-label" v-model="driveLabel" type="text" placeholder="比如：我的主力盘" autocomplete="off" />
+          </div>
+          <p v-if="driveFormError" class="acct-error" role="alert">{{ driveFormError }}</p>
+          <button type="button" class="acct-btn primary" :disabled="driveStarting" @click="handleBindDrive">
+            {{ driveStarting ? '正在打开授权…' : '绑定谷歌盘' }}
+          </button>
+          <p class="dev-tip">点绑定后会在新窗口打开 Google 授权页，点同意后关掉那个窗口、回到本页点“刷新列表”，新绑定就会出现。授权页本身不是本站页面，账号密码只交给 Google。</p>
+        </div>
+      </section>
     </div>
 
     <!-- 修改登录密码弹窗（由 ProfileView 移植） -->
@@ -218,6 +280,7 @@
  * 1. 修改登录密码（authApi.changePassword，全仓唯一入口）
  * 2. 我的会员（复用 components/profile/ProfileSubscriptions.vue：到期 / 历史 / 取消）
  * 3. 我的设备（deviceApi：设备列表 / 移除，顶上限自救通道）
+ * 4. 我的网盘（storageBindingApi：绑定自己的谷歌盘，BYOS；不新增导航入口）
  *
  * 后续已承接（R45）：Emby 多服列表、正在播放远程终止已由接线员页
  * （/game/operator）承接 —— realmCards 多服列表 + 正在播放一键远程结束。
@@ -228,7 +291,7 @@ import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 import { facilityStamp } from '@/config/game'
 import { authApi, subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
-import { deviceApi, type MyDevice, type MyDevicesResponse } from '@/api/economy'
+import { deviceApi, storageBindingApi, type MyDevice, type MyDevicesResponse, type StorageBinding } from '@/api/economy'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import { useServerCards, type ServerCardItem } from '@/composables/useServerCards'
@@ -460,6 +523,103 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
   return `${Math.floor(hours / 24)} 天前`
 }
 
+// ===== 我的网盘（用户自带谷歌盘绑定，BYOS） =====
+// 只展示 provider === 'drive' 的行（列表口也可能返回 115 绑定，那是另一条线，不在这里混着管）。
+// 绑定流程：start 口返回 authorization_url（字段名照抄 drive_oauth.start_drive_oauth），
+// 新窗口打开 Google 授权；Google 回调直接调后端 callback 口，不经过本站页面，
+// 所以本页不监听回调，只等用户回来点“刷新列表”。
+const driveBindings = ref<StorageBinding[]>([])
+const driveLoading = ref(false)
+const driveError = ref('')
+const driveLabel = ref('')
+const driveFormError = ref('')
+const driveStarting = ref(false)
+const verifyingBinding = ref<number | null>(null)
+const unbindingId = ref<number | null>(null)
+const pendingUnbind = ref<number | null>(null)
+
+function driveStatusText(status: string) {
+  if (status === 'active') return '可用'
+  if (status === 'expired') return '已过期'
+  if (status === 'invalid') return '不可用'
+  return status
+}
+
+async function loadDriveBindings() {
+  driveLoading.value = true
+  driveError.value = ''
+  try {
+    const res = await storageBindingApi.list()
+    driveBindings.value = (res.bindings || []).filter((b) => b.provider === 'drive')
+  } catch (e) {
+    // 加载失败别装成“没绑盘”，留错误态给用户重试
+    driveError.value = humanizeError(e)
+  } finally {
+    driveLoading.value = false
+  }
+}
+
+async function handleBindDrive() {
+  const label = driveLabel.value.trim()
+  if (!label) {
+    driveFormError.value = '先给这个盘起个名字'
+    return
+  }
+  driveFormError.value = ''
+  driveStarting.value = true
+  try {
+    const res = await storageBindingApi.startDriveOAuth(label)
+    if (!res.authorization_url) {
+      driveFormError.value = '服务器没有返回授权地址，请稍后重试'
+      return
+    }
+    window.open(res.authorization_url, '_blank', 'noopener')
+    toast.success('已打开 Google 授权页，同意后回到本页点“刷新列表”')
+  } catch (e) {
+    // 服务器未配 OAuth 凭据等明文 400，原样展示后端错误，不编造成功
+    driveFormError.value = humanizeError(e)
+  } finally {
+    driveStarting.value = false
+  }
+}
+
+async function handleVerifyBinding(b: StorageBinding) {
+  if (verifyingBinding.value !== null) return
+  verifyingBinding.value = b.id
+  try {
+    const updated = await storageBindingApi.verify(b.id)
+    driveBindings.value = driveBindings.value.map((x) => (x.id === b.id ? updated : x))
+    toast.success(updated.status === 'active' ? '验证通过，这个盘可以用了' : '验证后仍不可用，请重新绑定')
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'removeFailed'))
+  } finally {
+    verifyingBinding.value = null
+  }
+}
+
+async function handleUnbindDrive(b: StorageBinding) {
+  // 两步确认，照抄设备移除的口径（4 秒内未确认自动收回）
+  if (unbindingId.value !== null) return
+  if (pendingUnbind.value !== b.id) {
+    pendingUnbind.value = b.id
+    window.setTimeout(() => {
+      if (pendingUnbind.value === b.id) pendingUnbind.value = null
+    }, 4000)
+    return
+  }
+  pendingUnbind.value = null
+  unbindingId.value = b.id
+  try {
+    await storageBindingApi.remove(b.id)
+    toast.success('已解绑')
+    await loadDriveBindings()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'removeFailed'))
+  } finally {
+    unbindingId.value = null
+  }
+}
+
 // ===== 发现页卡片展示（模式 + 每服显隐，偏好存 localStorage） =====
 const cardPrefs = useServerCardPrefs()
 const { mode, setMode, toggleServer } = cardPrefs
@@ -516,6 +676,7 @@ async function toggleLeaderboard() {
 onMounted(() => {
   loadSubs()
   loadDevices()
+  loadDriveBindings()
   loadPrivacy()
   if (!serversLoading.value && !servers.value.length) void loadServers()
 })
