@@ -20,11 +20,10 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
-import type { UploadRequestOptions } from 'element-plus'
 import {
-  Film, FolderPlus, History, ImagePlus, RefreshCw, ScanSearch,
+  Film, FolderPlus, History, RefreshCw, ScanSearch,
   CalendarClock, Info, ShieldAlert,
-  Wand2, X,
+  Wand2,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import {
@@ -54,7 +53,6 @@ import {
   generateVirtualLibraries,
   previewLibraryCover,
   regenerateLibraryCover,
-  removeLibraryCover,
   renderLibraryCover,
   rescrapeLibrary,
   runRepairQueue,
@@ -68,7 +66,6 @@ import {
   saveEnrichTuning,
   saveUnifiedFallback,
   updateLibrary,
-  uploadLibraryCover,
 } from '@/api/admin'
 import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, EnrichEpisodeNightConfig, EnrichEpisodeFieldsConfig, EnrichTuningConfig, EnrichNoneStats, EnrichFieldStats, UnifiedFallbackConfig } from '@/api/admin'
 import type {
@@ -103,7 +100,6 @@ const loading = ref(false)
 const repairCount = ref(0)
 const virtualLoading = ref(false)
 const coverUrls = ref<Record<number, string>>({})
-const coverUploading = ref<Record<number, boolean>>({})
 /** 各库 Views 展示顺序（0 = 未设序）：原“图片与顺序”页库顺序分组已收进卡片封面处 */
 const orderMap = ref<Record<number, number>>({})
 const orderSaving = ref<Record<number, boolean>>({})
@@ -780,12 +776,6 @@ async function loadCoverImages(rows: EmbyLibrary[]) {
   }))
 }
 
-function replaceCoverImage(id: number, blob: Blob) {
-  const old = coverUrls.value[id]
-  if (old) URL.revokeObjectURL(old)
-  coverUrls.value[id] = URL.createObjectURL(blob)
-}
-
 /** 卡片封面处顺序值：读同一库顺序接口，保存走同一设序接口（单库 PUT 只改该库） */
 async function loadLibraryOrder() {
   try {
@@ -811,48 +801,6 @@ async function saveLibraryOrder(l: EmbyLibrary, value: number) {
   } finally {
     orderSaving.value[l.id] = false
   }
-}
-
-async function uploadCover(l: EmbyLibrary, file: File) {
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-    ElMessage.warning('封面仅支持 JPG、PNG 或 WebP 图片')
-    return
-  }
-  if (file.size > 8 * 1024 * 1024) {
-    ElMessage.warning('封面图片不能超过 8 MB')
-    return
-  }
-  coverUploading.value[l.id] = true
-  try {
-    const result = await uploadLibraryCover(l.id, file)
-    replaceCoverImage(l.id, await fetchLibraryCover(l.id))
-    l.cover_url = result.cover_url
-    ElMessage.success('媒体库封面已更新')
-  } finally {
-    coverUploading.value[l.id] = false
-  }
-}
-
-function requestCoverUpload(l: EmbyLibrary, options: UploadRequestOptions) {
-  return uploadCover(l, options.file)
-}
-
-async function removeCover(l: EmbyLibrary) {
-  try {
-    await ElMessageBox.confirm(
-      `移除「${l.name}」的自定义封面？移除后显示默认封面，可随时重新上传。`,
-      '移除媒体库封面',
-      { type: 'warning', confirmButtonText: '确认移除', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-  await removeLibraryCover(l.id)
-  const old = coverUrls.value[l.id]
-  if (old) URL.revokeObjectURL(old)
-  delete coverUrls.value[l.id]
-  l.cover_url = null
-  ElMessage.success('媒体库封面已移除')
 }
 
 async function generateVirtual() {
@@ -2567,7 +2515,7 @@ function typeLabel(t: string): string {
         <div v-if="libFormTarget" class="settings-section">
           <div class="settings-section-title">媒体库封面</div>
           <p class="form-hint">
-            封面只影响列表与首页的观感，不参与刮削，扫描也不会覆盖它。支持 JPG / PNG / WebP，单张最大 8 MB。
+            封面只影响列表与首页的观感，不参与刮削，扫描也不会覆盖它。
           </p>
           <p class="form-hint">
             <strong>封面样式与标题改完要点底部「保存」才生效</strong>——页面上的预览只是预览，
@@ -2584,21 +2532,6 @@ function typeLabel(t: string): string {
                 <Film :size="20" />
                 <span>未设置封面</span>
               </div>
-            </div>
-            <div class="lib-cover-ops">
-              <el-upload
-                :accept="'image/jpeg,image/png,image/webp'"
-                :show-file-list="false"
-                :disabled="!!coverUploading[libFormTarget.id]"
-                :http-request="(options: UploadRequestOptions) => requestCoverUpload(libFormTarget!, options)"
-              >
-                <el-button :loading="!!coverUploading[libFormTarget.id]">
-                  <ImagePlus :size="14" style="margin-right: 4px" />{{ libFormTarget.cover_url ? '更换封面' : '上传封面' }}
-                </el-button>
-              </el-upload>
-              <el-button v-if="libFormTarget.cover_url" @click="removeCover(libFormTarget)">
-                <X :size="14" style="margin-right: 4px" />移除封面
-              </el-button>
             </div>
           </div>
   <div class="form-hint" style="margin-top: 12px">
