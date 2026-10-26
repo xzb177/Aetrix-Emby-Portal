@@ -27,9 +27,9 @@ defineProps<{ collection: ShelfCollection }>()
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border: 1px solid var(--au-line, #e3e3e2);
+  border: 1px solid var(--au-border, #e3e3e2);
   border-radius: 12px;
-  background: var(--au-card, #fff);
+  background: var(--au-surface, #fff);
   color: inherit;
   text-decoration: none;
 }

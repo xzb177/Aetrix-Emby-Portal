@@ -167,14 +167,14 @@ onMounted(() => { void reload() })
 .v4-track-switch button {
   padding: 6px 16px;
   border-radius: 999px;
-  border: 1px solid var(--au-line, #e3e3e2);
+  border: 1px solid var(--au-border, #e3e3e2);
   background: transparent;
   color: inherit;
   cursor: pointer;
 }
 .v4-track-switch button.on {
-  background: var(--au-brand, #016a71);
-  border-color: var(--au-brand, #016a71);
+  background: var(--au-primary, #016a71);
+  border-color: var(--au-primary, #016a71);
   color: #fff;
 }
 .v4-members {
@@ -190,7 +190,7 @@ onMounted(() => { void reload() })
   align-items: baseline;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid var(--au-line, #e3e3e2);
+  border: 1px solid var(--au-border, #e3e3e2);
   border-radius: 10px;
 }
 .v4-member-idx {
