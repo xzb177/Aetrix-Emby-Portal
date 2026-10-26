@@ -61,6 +61,16 @@ SUPER_ONLY_PREFIXES = (
     # API Key / Service Token：运营自己给自己发一把 admin scope 的 Key，
     # 就能绕过上面所有名单——创建/吊销只给超管（只读 GET 不受影响）。
     "/api/admin/api-keys",
+    # 批 7 补后端批（2026-10-26）：以下 5 口此前只在 B 档（运营可写），
+    # 逐项核对均为系统级 / 审计级写操作，收进超管名单。前缀判定只拦非安全
+    # 方法，各口的 GET 读口不受影响（运营仍可看配置、只读审计仍可读）。
+    "/api/admin/emby/mounts/rclone/conf",  # rclone.conf 整份覆盖（凭据材料；
+    # 与后缀 /rclone-conf 区分：那条是服务器维度的 rclone-conf 读写都拦，
+    # 这里只拦写，GET 仍只回 remote 名、不回明文）
+    "/api/admin/settings/registration",  # 注册总开关（开/关影响全站新用户入口）
+    "/api/admin/hotlink-config",  # 防盗链总开关 + 播放签名 TTL
+    "/api/admin/login-logs/purge",  # 清空登录审计记录（删证据的操作只给超管）
+    "/api/admin/items-dedup-cache-config",  # 列表去重缓存配置
 )
 
 # 仅超级管理员可读写（不分读写方法）的路径后缀：凭据材料类端点。
