@@ -5020,6 +5020,21 @@ async def playback_info(
             _play_session_id = _sess.server_session_id
         except Exception:  # noqa: BLE001 — 预建失败只回落，不阻断播放
             _play_session_id = secrets.token_hex(8)
+    # 转存准备中态（2026-10-26 用户亲定“先转存再播”）：清单保留该条
+    # 但点不了。状态每请求新鲜算（门禁内部读任务表），不污染上面的
+    # 5 分钟基础体缓存；只有 preparing/failed 才覆盖，error 与
+    # serve_115_copy 不动清单（error 由取流时 503 明示，115 副本由
+    # video_stream 的 serve_115_copy 分支 302，不用改清单 URL）。
+    # sources 为空（源不可用）时不算门禁。注意：PlaybackInfo 取到
+    # 也会触发建任务（用户已走到播放屏，算首播意图；24h 节流兜底，
+    # 同一用户同一条目不重复建）。
+    if sources:
+        from backend.emby_server import transfer_variant as _tv_pi
+        _pi_gate = await run_db(
+            _tv_pi.ensure_user_copy_gate, db, item, user)
+        _pi_verdict = (_pi_gate or {}).get("verdict")
+        if _pi_verdict in ("preparing", "failed"):
+            play_variants.apply_transfer_status(sources, _pi_verdict)
     _pt.done()
     return _strip_nulls({
         "MediaSources": sources,
@@ -5183,6 +5198,68 @@ async def video_stream(
     if _fid:
         _play_fid, _play_variant = await run_db(
             _tv.resolve_play_file_id, db, item, user)
+    # 首播转存门禁（2026-10-26 用户亲定“先转存再播”）：绑定用户只走
+    # 自己绑定盘里的副本，无副本先转存、转完再播，绝不静默回落共享
+    # SA 中继。门禁在选路之后、阶段 6 换线之前：Drive 就绪副本已由
+    # 选路解析到（proceed 直接走副本）；115 就绪副本走用户 Cookie
+    # 现签 302（serve_115_copy）；准备中/失败报 409/503，不改走别的路。
+    # 显式 byos 变体（用户已显式选自己盘）跳过门禁，不二次拦；
+    # 已下发链接消费不追溯（与 #1341 绑定门禁同一口径）。
+    if _requested_variant not in (play_variants.BYOS_DRIVE_RELAY,
+                                  play_variants.BYOS115_DIRECT):
+        _play_sign_consume = await run_db(
+            _gate._request_uses_issued_play_sign, request, db)
+        _transfer_gate = await run_db(
+            _tv.ensure_user_copy_gate, db, item, user,
+            play_sign_consume=_play_sign_consume)
+        _gate_verdict = (_transfer_gate or {}).get("verdict")
+        if _gate_verdict == "serve_115_copy":
+            _variant115 = (_transfer_gate or {}).get("variant")
+            _pickcode115 = (getattr(_variant115, "pickcode", "")
+                            or "").strip()
+            if not _pickcode115:
+                raise HTTPException(
+                    status_code=409,
+                    detail="115 用户副本已就绪但无 pickcode，无法取下载地址")
+            from backend.emby_server import user_bindings as _ub115
+            _byos_t0 = time.perf_counter()
+            try:
+                _url115 = await run_db(
+                    _ub115.resolve_user115_copy_url, db,
+                    getattr(user, "id", None), _pickcode115)
+            except _ub115.BindingError as exc:
+                _note_play_start_safe(
+                    item, user_id=getattr(user, "id", None),
+                    method="transfer115_copy",
+                    variant=play_variants.BYOS115_DIRECT,
+                    result="error", error_kind=exc.kind,
+                    resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+                _detail = exc.message if exc.kind in (
+                    "auth_error", "expired", "throttled") else \
+                    "播放变体当前不可用：transfer115_copy"
+                raise HTTPException(status_code=409, detail=_detail) from exc
+            _note_play_start_safe(
+                item, user_id=getattr(user, "id", None),
+                method="transfer115_copy",
+                variant=play_variants.BYOS115_DIRECT,
+                result="ok",
+                resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+            return _observe_traffic(
+                RedirectResponse(_url115, status_code=302,
+                                 headers=_strategy.DIRECT_REDIRECT_HEADERS))
+        if _gate_verdict == "preparing":
+            raise HTTPException(
+                status_code=409,
+                detail="转存准备中：正在把文件转存到你的绑定盘，"
+                       "转存完成后可播")
+        if _gate_verdict == "failed":
+            raise HTTPException(
+                status_code=409,
+                detail="转存失败，不走共享播放：请稍后重试或联系管理员")
+        if _gate_verdict == "error":
+            raise HTTPException(
+                status_code=503,
+                detail="转存门禁暂不可用，稍后重试（未走共享播放）")
     # 播放阶段 6 按可用性换线（门控已删，换线恒生效；回滚 = revert）：
     # 只影响下面无变体请求的 Drive 默认路线；显式变体请求与挂载/本机
     # 路线不受换线影响。

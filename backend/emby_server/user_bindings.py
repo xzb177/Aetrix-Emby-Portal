@@ -521,3 +521,48 @@ def resolve_user115_direct_url(db: Session, user_id: int,
             raise BindingError("not_found", f"115 上找不到文件：{rel}") from exc
         raise BindingError("transient", f"115 直链解析失败：{exc}") from exc
     return url
+
+
+def resolve_user115_copy_url(db: Session, user_id: int,
+                             pickcode: str) -> str:
+    """用户盘 115 副本直链：按该用户自己的 Cookie 现签（转存播放口）。
+
+    与 resolve_user115_direct_url 同一套凭据口径（最早 active 绑定、
+    现签现取、**不走共享 pickcode 缓存**），区别只在 pickcode 来源：
+    这里直接用转存副本行的 pickcode，不从条目路径定位（副本在用户
+    自己的盘里，不在共享挂载路径上，定位不到）。
+    凭据失效 → BindingError（expired/auth_error），调用方按 409 处理，
+    不静默回落共享中继；一过性失败 → transient。
+    """
+    binding = get_active_binding(db, user_id, PROVIDER_PAN115)
+    if binding is None:
+        raise BindingError("not_found", "当前用户没有可用的 115 绑定。")
+    cred = _credential_of(db, binding)
+    try:
+        cookie = unseal_secret(cred.sealed_credential or "")
+    except SealedSecretError as exc:
+        _mark_failed(db, binding, "auth_error")
+        db.commit()
+        raise BindingError(
+            "auth_error", BINDING_ERROR_MESSAGES["auth_error"]) from exc
+    if not cookie:
+        _mark_failed(db, binding, "auth_error")
+        db.commit()
+        raise BindingError(
+            "auth_error", BINDING_ERROR_MESSAGES["auth_error"])
+    try:
+        url = transfer115.Pan115Client(cookie).download_url(pickcode)
+    except transfer115.Pan115AuthError as exc:
+        _mark_failed(db, binding, "expired")
+        db.commit()
+        raise BindingError(
+            "expired", BINDING_ERROR_MESSAGES["expired"]) from exc
+    except Exception as exc:  # noqa: BLE001 — 分类后决定落态或不改
+        classified = _classify_pan115_error(exc)
+        if classified is not None:
+            kind, message = classified
+            _mark_failed(db, binding, kind)
+            db.commit()
+            raise BindingError(kind, message) from exc
+        raise BindingError("transient", f"115 直链解析失败：{exc}") from exc
+    return url

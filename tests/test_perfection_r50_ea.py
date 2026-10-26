@@ -44,6 +44,16 @@ def seed():
             synchronize_session=False)
         db.query(em.UserMediaData).filter(em.UserMediaData.user_id == old.id).delete(
             synchronize_session=False)
+        # 绑定门禁（#1341 硬规矩）要求种子用户自带 active 绑定：旧种子残留的
+        # 绑定/凭据行一并清掉，避免唯一约束冲突与脏数据复用。
+        _old_cred_ids = [r[0] for r in db.query(em.UserStorageBinding.credential_id)
+                         .filter(em.UserStorageBinding.user_id == old.id).all()]
+        db.query(em.UserStorageBinding).filter(
+            em.UserStorageBinding.user_id == old.id).delete(synchronize_session=False)
+        if _old_cred_ids:
+            db.query(em.MountCredential).filter(
+                em.MountCredential.id.in_(_old_cred_ids)).delete(
+                    synchronize_session=False)
         db.query(models.WebUser).filter(models.WebUser.id == old.id).delete()
         db.commit()
     for stale in db.query(em.Library).filter(em.Library.name.like("r50兼容%")).all():
@@ -93,6 +103,16 @@ def seed():
     db.add(em.UserMediaData(user_id=user.id, item_id=e1.id, played=True,
                             play_count=1, last_played_at=datetime.now()))
     db.commit()
+    # 播放门禁（#1341 硬规矩，无开关）：PlaybackInfo 必须名下有 active 绑定
+    # 才放行。本用例自带绑定，不依赖默认库里的残留绑定行（新库必 403）。
+    _cred = em.MountCredential(scope="user", owner_user_id=user.id,
+                               status="active")
+    db.add(_cred)
+    db.commit()
+    db.add(em.UserStorageBinding(user_id=user.id, provider="drive",
+                                 account_label="r50绑定",
+                                 credential_id=_cred.id, status="active"))
+    db.commit()
     data = {"user_id": user.id, "lib": lib.guid, "m1": m1.guid, "m2": m2.guid,
             "series": series.guid, "e1": e1.guid, "e2": e2.guid,
             "e1_id": e1.id, "e2_id": e2.id}
@@ -118,6 +138,15 @@ def seed():
             em.PlaybackSession.user_id == data["user_id"]).delete(synchronize_session=False)
         db.query(em.UserMediaData).filter(
             em.UserMediaData.user_id == data["user_id"]).delete(synchronize_session=False)
+        _cred_ids = [r[0] for r in db.query(em.UserStorageBinding.credential_id)
+                     .filter(em.UserStorageBinding.user_id == data["user_id"]).all()]
+        db.query(em.UserStorageBinding).filter(
+            em.UserStorageBinding.user_id == data["user_id"]).delete(
+                synchronize_session=False)
+        if _cred_ids:
+            db.query(em.MountCredential).filter(
+                em.MountCredential.id.in_(_cred_ids)).delete(
+                    synchronize_session=False)
         db.query(models.WebUser).filter(
             models.WebUser.id == data["user_id"]).delete()
         db.commit()
