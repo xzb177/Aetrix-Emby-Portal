@@ -39,9 +39,11 @@ BYOS 口径（设计稿 §八底线，照搬）：用户副本只许播给 owner
 回落共享 SA 中继；变体清单保留该条但呈“准备中”态（列出来但
 点不了，见 play_variants.transfer_status）；转存失败报 409/503，
 不静默改走别的路。门禁口见 ensure_user_copy_gate（video_stream
-在选路之后、换线之前调用）。未绑定该 provider 的用户（provider
-错配，如只绑 115 的用户播 Drive 条目）保持旧行为——这是有意写明
-的规则，待用户确认，不是静默回落。
+在选路之后、换线之前调用）。provider 错配（2026-10-26 20:54
+用户亲定，推翻 20:46“保持放行”与 20:04“不跨 provider”两条）：
+只绑了另一 provider 的用户也要转存、播绑定盘（绑哪播哪），见
+本模块后半段“跨 provider 转存”；用户无任何绑定时仍 proceed
+（拦无绑定用户是 #1341 绑定门禁的职责，本门禁不越权）。
 
 失败总原则（设计稿 §六，2026-10-26 补充）：选路与信号处理永不
 抛错进播放链（门禁函数内部异常 → error verdict，调用方报 503
@@ -57,6 +59,40 @@ SA 暂存中转（用户无权源：SA 拷暂存 → anyone-reader 分享给用�
 （权限 + 接受两步）且个人↔工作/学校账号互转被禁，Path B 已全面
 占优（无同意、无转移配额）。115 线：同 provider 内服务端 copy，
 新 fid + pickcode 播放，Cookie 失效报 409/503 不回落。
+
+跨 provider 转存（2026-10-26 20:54 用户亲定“绑哪播哪”，20:56
+亲定搬字节学 FMBY，20:57 亲定机制不自己新作）：绑定与条目
+provider 不一致时，字节必经 worker 服务器中转（下一边传一边，
+内存 O(段大小)，不整文件落盘、不整文件进内存；带宽代价见 PR
+描述，不藏）。机制形状照 FMBY：异步任务＋轮询（复用本模块 job
+状态机 pending/running/done/failed＋有界重试，不另起状态机）＋
+转存后目标目录按名核对（复用全学两路核对逻辑，核不到记
+failed/copy_unresolved）＋换链与搬字节分离（先解析源下载链、
+再搬字节、最后用新文件 id 解析播放）＋变体选错硬报错（门禁
+verdict 之外不回落）。搬字节按 FMBY open_range 口径 Range 分段
+取：源侧 401/403 报凭据过期（终态 failed/auth_error）、其余报
+远端不可用（有界重试）、搬运层不静默重试（中途失败整单重来，
+v1 已知代价）；上传侧 403 等不按凭据过期算（可能是空间/配额），
+走有界重试，见各执行器注释。两方向：
+- Drive→115：SA 令牌按段取源字节 → 用户 115 Cookie 简单上传
+  （115cli 0.3.4 simple_upload 口径：sampleinitupload 取 OSS 表单
+  参数 → 表单 POST；上限 5 GiB，超限记 unsupported——多段上传
+  需 initupload 加密协议（p115cipher ECDH-AES），未实测不硬编；
+  秒传（initupload）同理未实现，v1 一律传全量字节）→ 列用户
+  115 转存目录按名核对 → 登记 pan115:user-<uid> 行，播出走现有
+  serve_115_copy（用户 Cookie 现签 302）。
+- 115→Drive：服主侧 115 账号现解析源 pickcode（绝不用 EA 播放
+  的共享 pickcode 缓存）→ 现取 download_url → 按段取字节 →
+  用户 Drive 令牌可续传上传 → anyone-reader → 列用户 Drive
+  转存目录按名核对 → 登记 userdrive:<uid> 行，播出走现有 Drive
+  链（SA 轮换读 anyone-reader 副本）。
+凭据口径（任务书原话，写死在本模块注释里）：目标写入一律只用
+该用户自己的绑定凭据（Drive 令牌／115 Cookie），绝不用服主档；
+源读取走既有共享池读路径（Drive 源→SA 轮换，与中继一致；115
+源→服主侧挂载账号，与 EA 播放一致），且 115 源下载链必须现解析、
+不写／不用共享 pickcode 缓存。源侧凭据失效（SA 401/403、服主
+115 Cookie 失效）只记任务失败，绝不拿去落用户绑定的失败态；
+只有用户自己绑定凭据失效时才落该绑定 expired（见执行器内注释）。
 
 未决实测（设计稿 §十二，施工前须知）：Quota 网页信号的精确特征
 未拿真实额度爆文件抓包复核，本版只认强信号（整段 200 +
@@ -177,6 +213,30 @@ class TransferError(Exception):
 
 class _DriveError(Exception):
     pass
+
+
+class _CrossAuthError(_DriveError):
+    """跨 provider 搬字节：源侧凭据失效（源下载 401/403）。
+
+    终态 failed/auth_error，不重试。注意：失效的是源侧凭据（SA
+    令牌／服主 115 Cookie），绝不能拿去落用户绑定的失败态——只有
+    用户自己绑定凭据失效（用户 115 Cookie 401/403、用户 Drive
+    令牌刷新失败）才落该绑定，见各执行器。
+    """
+
+
+class _CrossRemoteError(_DriveError):
+    """跨 provider 搬字节：远端不可用（源下载非 401/403 失败、上传
+    侧失败、网络异常）。有界重试（_schedule_retry），搬运层内部
+    不静默重试——中途失败整单重来（v1 已知代价）。"""
+
+
+# 跨 provider 搬字节分段大小（Range 取段与 Drive 可续传上传共用）
+_CROSS_SEGMENT = 8 * 1024 * 1024
+# 115 简单上传上限（115cli 0.3.4 MAX_SIMPLE_UPLOAD_SIZE = 5 GiB）
+_115_SIMPLE_UPLOAD_LIMIT = 5 * 1024 * 1024 * 1024
+# Drive 可续传上传端点（与 mount_drive.FILES_URL 的 API 域名一致）
+_DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
 
 
 class _NotFound(_DriveError):
@@ -357,6 +417,91 @@ def create_user_job(db, item, user_id, provider, trigger="playback"):
     return job
 
 
+# ---------------------------------------------------------------------------
+# 跨 provider 转存（2026-10-26 20:54 用户亲定“绑哪播哪”）
+# ---------------------------------------------------------------------------
+
+def _is_cross_job(job):
+    """任务行是否跨 provider：provider=源，dest_drive_id=目标盘。
+
+    - Drive 源任务 dest 以 pan115: 开头 → 落用户 115 盘；
+    - 115 源任务 dest 以 userdrive: 开头 → 落用户 Drive 盘。
+    同 provider 任务的 dest 与 provider 同侧（drive→userdrive:、
+    pan115→pan115:），不会误判。任务行无需新列，provider 字段
+    保留为源 provider（巡检/统计口径不变）。
+    """
+    provider = (getattr(job, "provider", "") or "").strip()
+    dest = (getattr(job, "dest_drive_id", "") or "").strip()
+    return ((provider == "drive" and dest.startswith("pan115:"))
+            or (provider == "pan115" and dest.startswith("userdrive:")))
+
+
+def _latest_job_for_dest(db, item_id, owner_scope, owner_ref, dest):
+    """该条目该归属桶内、指定落盘的最新一行任务（或 None）。"""
+    return (db.query(em.TransferJob)
+            .filter(em.TransferJob.item_id == item_id,
+                    em.TransferJob.owner_scope == owner_scope,
+                    em.TransferJob.owner_ref == owner_ref,
+                    em.TransferJob.dest_drive_id == dest)
+            .order_by(em.TransferJob.id.desc())
+            .first())
+
+
+def _newest_ready_for_scheme(db, item_id, owner_scope, owner_ref, scheme):
+    """该条目该归属下、指定落盘方案的最新 ready 行（或 None）。
+
+    跨流程必须按 variant_drive_id 前缀挑行：双绑定用户先后有过
+    同 provider 行与跨行时，通用 _newest_ready 可能挑到另一盘的
+    行——播出路由按 variant_drive_id 前缀定（pan115:→serve_115_copy，
+    userdrive:→proceed），挑错盘即播错盘。单绑定用户只有一种
+    副本可能，但仍按方案过滤，不依赖“只有一种可能”的假设。
+    """
+    return (db.query(em.TransferVariant)
+            .filter(em.TransferVariant.item_id == item_id,
+                    em.TransferVariant.owner_scope == owner_scope,
+                    em.TransferVariant.owner_ref == owner_ref,
+                    em.TransferVariant.status == "ready",
+                    em.TransferVariant.variant_drive_id.startswith(scheme))
+            .order_by(em.TransferVariant.id.desc())
+            .first())
+
+
+def create_cross_provider_job(db, item, user_id, source_provider,
+                              trigger="playback"):
+    """给该用户建一个跨 provider 转存任务（门禁共用）。
+
+    校验与 create_user_job 同款（总闸、条目 id、24h 同归属桶节流、
+    115 源须有 fid、Drive 源须有源盘标识），节流桶沿用 (item, user)
+    单桶——同 provider 任务与跨任务互斥，同一用户同一条目 24h 内
+    不会同时在途两单。provider=源 provider，dest_drive_id=目标盘
+    （drive 源→pan115:user-<uid>，pan115 源→userdrive:<uid>）。
+    """
+    if not master_enabled():
+        raise TransferError("master_off", "转存变体总闸未开")
+    item_id = getattr(item, "id", None)
+    if item_id is None:
+        raise TransferError("no_item_id", "条目无 id")
+    owner_ref = str(user_id)
+    if _recent_job_exists(db, item_id, "user", owner_ref):
+        raise TransferError("throttled", "24h 内该用户已有转存任务")
+    orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
+    if source_provider == "pan115" and not orig_fid:
+        raise TransferError("no_source_fid", "115 条目无源 fid，无法转存")
+    source_drive_id = _source_drive_id(db, item, source_provider)
+    if source_provider == "drive" and not source_drive_id:
+        raise TransferError("no_drive", "Drive 条目取不到源盘标识")
+    dest = (f"pan115:user-{user_id}" if source_provider == "drive"
+            else f"userdrive:{user_id}")
+    job = em.TransferJob(item_id=item_id, trigger=trigger,
+                         drive_id=source_drive_id or None,
+                         provider=source_provider, owner_scope="user",
+                         owner_ref=owner_ref, dest_drive_id=dest,
+                         status="pending")
+    db.add(job)
+    db.commit()
+    return job
+
+
 # 门禁 verdict 与调用方映射（video_stream / playback_info 共用语义）：
 # - proceed：放行（走现有播放链；Drive 就绪副本已由选路解析到）。
 # - preparing：转存进行中或节流中，播放端呈“转存准备中”（409）。
@@ -396,9 +541,61 @@ def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
             return {"verdict": "proceed", "reason": "unknown_provider"}
         binding = _active_binding(db, user_id, provider)
         if binding is None:
-            # provider 错配（只绑了另一 provider）：保持现有行为，
-            # 不是静默回落——该用户本来就不在该 provider 的转存口径内。
-            return {"verdict": "proceed", "reason": "no_matching_binding"}
+            # provider 错配（2026-10-26 20:54 用户亲定“绑哪播哪”）：
+            # 只绑了另一 provider → 走跨 provider 转存，不再放行共享链；
+            # 无任何绑定 → 仍 proceed（拦无绑定用户是 #1341 绑定门禁
+            # 的职责，本门禁不越权）。
+            other = "pan115" if provider == "drive" else "drive"
+            other_binding = _active_binding(db, user_id, other)
+            if other_binding is None:
+                return {"verdict": "proceed",
+                        "reason": "no_matching_binding"}
+            orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
+            if provider == "pan115" and not orig_fid:
+                return {"verdict": "failed", "reason": "no_source_fid"}
+            if provider == "drive" and not orig_fid:
+                return {"verdict": "proceed", "reason": "no_drive_file"}
+            item_id = getattr(item, "id", None)
+            if item_id is None:
+                return {"verdict": "proceed", "reason": "no_item_id"}
+            dest = (f"pan115:user-{user_id}" if other == "pan115"
+                    else f"userdrive:{user_id}")
+            scheme = "pan115:" if other == "pan115" else "userdrive:"
+            ready = _newest_ready_for_scheme(db, item_id, "user",
+                                             str(user_id), scheme)
+            if ready is not None:
+                if other == "pan115":
+                    return {"verdict": "serve_115_copy", "reason": "ready",
+                            "variant": ready}
+                return {"verdict": "proceed",
+                        "reason": "has_ready_variant", "variant": ready}
+            job = _latest_job_for_dest(db, item_id, "user",
+                                       str(user_id), dest)
+            if job is not None:
+                if job.status in ("pending", "running"):
+                    return {"verdict": "preparing",
+                            "reason": "job_in_flight", "job_id": job.id}
+                if job.status == "failed":
+                    if job.error_kind in _TERMINAL_JOB_KINDS:
+                        return {"verdict": "failed", "reason": job.error_kind,
+                                "job_id": job.id}
+                    return {"verdict": "preparing", "reason": "throttled",
+                            "job_id": job.id}
+                if job.status == "done":
+                    if _recent_job_exists(db, item_id, "user",
+                                          str(user_id)):
+                        return {"verdict": "preparing", "reason": "throttled",
+                                "job_id": job.id}
+            try:
+                new_job = create_cross_provider_job(db, item, user_id,
+                                                    provider,
+                                                    trigger="playback")
+            except TransferError as exc:
+                if exc.kind == "throttled":
+                    return {"verdict": "preparing", "reason": "throttled"}
+                return {"verdict": "failed", "reason": exc.kind}
+            return {"verdict": "preparing", "reason": "job_created",
+                    "job_id": new_job.id}
         orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
         if provider == "pan115" and not orig_fid:
             # 115 无源 fid：不建任务（不污染节流窗），等扫描补 fid。
@@ -801,6 +998,51 @@ class DriveApiClient:
             raise _Forbidden("副本无权访问")
         raise _Retriable(f"files.get 失败：{resp.status_code}")
 
+    def download_range(self, drive_id, fid, start, end):
+        """跨 provider 搬字节：Drive 源按 Range 取一段字节。
+
+        FMBY open_range 口径：401/403 → _CrossAuthError（源凭据
+        失效，终态）；其它失败（非 206、短读、网络异常）→
+        _CrossRemoteError（有界重试）。401 时先按 _request 同款
+        逻辑强制刷新令牌重试一次（SA 轮换内部处理），刷新后仍
+        401/403 才算凭据失效。返回字节数必须等于请求段长，短读
+        即失败（不静默补齐，避免静默损坏文件）。
+        """
+        url = f"{FILES_URL}/{fid}"
+        params = {"supportsAllDrives": "true", "alt": "media"}
+        headers = dict(self._headers(drive_id))
+        headers["Range"] = f"bytes={start}-{end}"
+        try:
+            resp = httpx.request("GET", url, params=params,
+                                 headers=headers, timeout=120)
+        except (httpx.TimeoutException, httpx.ConnectError,
+                httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            raise _CrossRemoteError(
+                f"Drive 源下载网络异常：{type(exc).__name__}") from exc
+        if resp.status_code == 401:
+            headers = dict(self._headers(drive_id, force_refresh=True))
+            headers["Range"] = f"bytes={start}-{end}"
+            try:
+                resp = httpx.request("GET", url, params=params,
+                                     headers=headers, timeout=120)
+            except (httpx.TimeoutException, httpx.ConnectError,
+                    httpx.RemoteProtocolError, httpx.ReadError) as exc:
+                raise _CrossRemoteError(
+                    f"Drive 源下载网络异常（刷新后）：{type(exc).__name__}"
+                    ) from exc
+        if resp.status_code in (401, 403):
+            raise _CrossAuthError(
+                f"Drive 源下载被拒：{resp.status_code}（源凭据失效）")
+        if resp.status_code != 206:
+            raise _CrossRemoteError(
+                f"Drive 源下载失败：{resp.status_code}（非 206）")
+        data = resp.content or b""
+        if len(data) != end - start + 1:
+            raise _CrossRemoteError(
+                f"Drive 源下载短读：要 {end - start + 1} 字节，"
+                f"实得 {len(data)} 字节")
+        return data
+
     def find_file_by_name(self, drive_id, folder_id, name):
         """在指定目录下按精确文件名找文件 id（Path B 暂存复用）。
 
@@ -882,6 +1124,155 @@ class UserDriveApiClient(DriveApiClient):
                 raise _Retriable("用户 Drive 凭据不可用")
             self._token = token
         return {"Authorization": f"Bearer {self._token}"}
+
+    def resumable_upload(self, drive_id, name, folder_id, size, reader):
+        """跨 provider 搬字节：用户 Drive 令牌可续传上传（标准协议）。
+
+        POST upload/drive/v3/files?uploadType=resumable 取会话 URI
+        （元数据 name + parents，X-Upload-Content-Length=size）→
+        按 _CROSS_SEGMENT 分段 PUT（Content-Range: bytes s-e/size）：
+        200/201 回文件 id；308 按 Range 头续传；401 刷新令牌重试
+        当段一次。会话 URI 只活在本任务尝试内，不持久化——中途
+        失败整单重来时重建会话（v1 已知代价，与搬运层不静默重试
+        一致）。上传侧 403 不按凭据过期算（可能是空间/配额），
+        一律 _CrossRemoteError 走有界重试；令牌刷新失败抛
+        DriveOAuthError（调用方记 no_binding，与 Path A 同口径）。
+        reader 须支持 seek/tell/read（_SegmentReader）。
+        """
+        from backend.emby_server.drive_oauth import DriveOAuthError
+        params = {"uploadType": "resumable", "supportsAllDrives": "true"}
+        meta = {"name": name, "parents": [folder_id]}
+        headers = dict(self._headers(drive_id))
+        headers["X-Upload-Content-Type"] = "application/octet-stream"
+        headers["X-Upload-Content-Length"] = str(size)
+        try:
+            resp = httpx.request("POST", _DRIVE_UPLOAD_URL, params=params,
+                                 json=meta, headers=headers, timeout=120)
+        except (httpx.TimeoutException, httpx.ConnectError,
+                httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            raise _CrossRemoteError(
+                f"Drive 可续传会话创建网络异常：{type(exc).__name__}"
+                ) from exc
+        if resp.status_code == 401:
+            headers = dict(self._headers(drive_id, force_refresh=True))
+            headers["X-Upload-Content-Type"] = "application/octet-stream"
+            headers["X-Upload-Content-Length"] = str(size)
+            try:
+                resp = httpx.request("POST", _DRIVE_UPLOAD_URL, params=params,
+                                     json=meta, headers=headers, timeout=120)
+            except (httpx.TimeoutException, httpx.ConnectError,
+                    httpx.RemoteProtocolError, httpx.ReadError) as exc:
+                raise _CrossRemoteError(
+                    f"Drive 可续传会话创建网络异常（刷新后）："
+                    f"{type(exc).__name__}") from exc
+        session_uri = (resp.headers.get("location") or "").strip()
+        if resp.status_code != 200 or not session_uri:
+            raise _CrossRemoteError(
+                f"Drive 可续传会话创建失败：{resp.status_code}")
+        pos = 0
+        refreshed = False
+        guard = (size + _CROSS_SEGMENT - 1) // _CROSS_SEGMENT + 5
+        while pos < size and guard > 0:
+            guard -= 1
+            end = min(pos + _CROSS_SEGMENT, size) - 1
+            reader.seek(pos)
+            chunk = reader.read(end - pos + 1)
+            if len(chunk) != end - pos + 1:
+                raise _CrossRemoteError(
+                    f"搬字节读取短读：段 {pos}-{end} 实得 {len(chunk)} 字节")
+            put_headers = dict(self._headers(drive_id))
+            put_headers["Content-Range"] = f"bytes {pos}-{end}/{size}"
+            put_headers["Content-Length"] = str(len(chunk))
+            try:
+                put = httpx.request("PUT", session_uri, headers=put_headers,
+                                    content=chunk, timeout=300)
+            except (httpx.TimeoutException, httpx.ConnectError,
+                    httpx.RemoteProtocolError, httpx.ReadError) as exc:
+                raise _CrossRemoteError(
+                    f"Drive 可续传分段上传网络异常：{type(exc).__name__}"
+                    ) from exc
+            if put.status_code == 401 and not refreshed:
+                refreshed = True
+                self._headers(drive_id, force_refresh=True)
+                continue
+            if put.status_code in (200, 201):
+                data = put.json() if put.content else {}
+                fid = str((data or {}).get("id") or "")
+                if not fid:
+                    raise _CrossRemoteError("Drive 可续传完成未返回文件 id")
+                return fid
+            if put.status_code == 308:
+                ranged = (put.headers.get("range") or "").strip()
+                if ranged.startswith("bytes=0-"):
+                    try:
+                        pos = int(ranged[len("bytes=0-"):]) + 1
+                        continue
+                    except ValueError:
+                        pass
+                raise _CrossRemoteError(
+                    "Drive 可续传 308 未带可用 Range 头，无法续传")
+            raise _CrossRemoteError(
+                f"Drive 可续传分段上传失败：{put.status_code}")
+        raise _CrossRemoteError("Drive 可续传上传循环超限（疑似 308 死循环）")
+
+
+class _SegmentReader:
+    """跨 provider 搬字节的分段读取器（内存 O(段大小)，不落盘）。
+
+    fetch(start, end) -> bytes（闭区间）由调用方提供（Drive 源
+    download_range 或 115 下载直链 Range GET）。内部按
+    _CROSS_SEGMENT 缓存当前窗口；read/seek/tell 语义与文件对象
+    一致，供 httpx 表单上传（seek/tell 算 Content-Length）与
+    Drive 可续传上传（seek 到段首重读）共用。seek 越界抛
+    ValueError；read 到文件尾返回 b""。
+    """
+
+    def __init__(self, size, fetch):
+        self._size = int(size)
+        self._fetch = fetch
+        self._pos = 0
+        self._win_start = 0
+        self._win_data = b""
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, offset, whence=0):
+        if whence == 0:
+            pos = offset
+        elif whence == 1:
+            pos = self._pos + offset
+        elif whence == 2:
+            pos = self._size + offset
+        else:
+            raise ValueError(f"非法 whence：{whence}")
+        if pos < 0 or pos > self._size:
+            raise ValueError(f"seek 越界：{pos}（大小 {self._size}）")
+        self._pos = pos
+        return pos
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = self._size - self._pos
+        if n <= 0 or self._pos >= self._size:
+            return b""
+        out = bytearray()
+        while len(out) < n and self._pos < self._size:
+            if not (self._win_start <= self._pos
+                    < self._win_start + len(self._win_data)):
+                win_end = min(self._pos + _CROSS_SEGMENT,
+                              self._size) - 1
+                self._win_start = self._pos
+                self._win_data = self._fetch(self._pos, win_end)
+                if len(self._win_data) != win_end - self._pos + 1:
+                    raise _CrossRemoteError(
+                        f"搬字节取段短读：{self._pos}-{win_end} 实得 "
+                        f"{len(self._win_data)} 字节")
+            off = self._pos - self._win_start
+            take = min(n - len(out), len(self._win_data) - off)
+            out += self._win_data[off:off + take]
+            self._pos += take
+        return bytes(out)
 
 
 # ---------------------------------------------------------------------------
@@ -1396,6 +1787,343 @@ def _patrol_115_row(db, row, stats, now):
         row.last_checked_at = now
 
 
+def _resolve_115_source(db, item):
+    """跨 provider 115→Drive：服主侧解析源 pickcode（换链步骤）。
+
+    绝不用 EA 播放的共享 pickcode 缓存（_get_cached_115_url）：每次
+    现解析。返回 (client, pickcode, size)：
+    - mount:// 路径：按挂载行构造 Pan115Mount（db + 条目所属库，
+      凭据解析与播放侧同一套：源级凭据表 → 挂载/库绑定账号 →
+      默认账号 → 服务器级），_locate 逐级定位；
+    - 115:/ 路径：库绑定账号 → 默认账号 → 服务器级解析 Cookie，
+      直接按段列目录定位。
+    找不到文件 → _NotFound（调用方记 dead）；服主 Cookie 失效 →
+    _CrossAuthError（只记任务失败，绝不落用户绑定）；其它 115
+    失败 → _CrossRemoteError（有界重试）。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    path = (getattr(item, "file_path", "") or "").strip()
+    library_row = None
+    library_id = getattr(item, "library_id", None)
+    if library_id is not None:
+        try:
+            library_row = (db.query(em.Library)
+                           .filter(em.Library.id == library_id).first())
+        except Exception:
+            library_row = None
+    if path.startswith("mount://"):
+        try:
+            from backend.emby_server import mounts as mount_lib
+            parsed = mount_lib.parse_mount_path(path)
+        except Exception:
+            parsed = None
+        if parsed is None:
+            raise _CrossRemoteError("115 源 mount 路径解析失败")
+        mount_id, rel = parsed
+        mount = (db.query(em.StorageMount)
+                 .filter(em.StorageMount.id == mount_id).first())
+        if mount is None or mount.mount_type != getattr(
+                mount_lib, "MOUNT_PAN115", "115"):
+            raise _CrossRemoteError("115 源挂载行不存在或类型非 115")
+        mount_obj = mount_lib.Pan115Mount(mount, db=db,
+                                          library=library_row)
+        try:
+            entry = mount_obj._locate(rel)
+        except mount_lib.MountError as exc:
+            if "找不到" in str(exc):
+                raise _NotFound(str(exc)) from exc
+            raise _CrossRemoteError(str(exc)) from exc
+        except Pan115AuthError as exc:
+            raise _CrossAuthError(
+                f"服主侧 115 凭据失效：{exc}") from exc
+        except Pan115Error as exc:
+            raise _CrossRemoteError(str(exc)) from exc
+        pickcode = (entry.get("pickcode") or "").strip()
+        if not pickcode:
+            raise _NotFound("115 源未返回 pickcode")
+        return (mount_obj._client(), pickcode,
+                _to_int(entry.get("size")))
+    if path.startswith("115:/"):
+        from backend.emby_server import transfer115 as t115
+        try:
+            cookie, _src = t115.resolve_cookie(db, library=library_row)
+        except Pan115Error as exc:
+            raise _CrossRemoteError(str(exc)) from exc
+        if not cookie:
+            raise _CrossAuthError("未解析到服主侧 115 Cookie")
+        client = _make_pan115_client(cookie)
+        rel = path[len("115:"):].lstrip("/")
+        segments = [s for s in rel.split("/") if s]
+        if not segments:
+            raise _NotFound("115 源路径无文件名")
+        try:
+            cid = "0"
+            for seg in segments[:-1]:
+                nxt = next(
+                    (e for e in client.list_dir(cid)
+                     if (e.get("name") or "") == seg
+                     and t115._is_dir(e)),
+                    None)
+                if nxt is None or not (nxt.get("cid") or ""):
+                    raise _NotFound(f"115 源目录缺失：{seg}")
+                cid = str(nxt["cid"])
+            entry = next(
+                (e for e in client.list_dir(cid)
+                 if (e.get("name") or "") == segments[-1]
+                 and not t115._is_dir(e)),
+                None)
+        except Pan115AuthError as exc:
+            raise _CrossAuthError(
+                f"服主侧 115 凭据失效：{exc}") from exc
+        except Pan115Error as exc:
+            raise _CrossRemoteError(str(exc)) from exc
+        if entry is None:
+            raise _NotFound(f"115 源文件不存在：{segments[-1]}")
+        pickcode = (entry.get("pickcode") or "").strip()
+        if not pickcode:
+            raise _NotFound("115 源未返回 pickcode")
+        return (client, pickcode, _to_int(entry.get("size")))
+    raise _CrossRemoteError(f"115 源路径形态未知：{path[:60]}")
+
+
+def _run_cross_drive_to_115(db, job, item, drive_api):
+    """跨 provider Drive→115：SA 源按段取字节 → 用户 115 简单上传。
+
+    字节必经 worker 中转（分段读取器直供 httpx 表单上传，不落盘）。
+    用户 115 Cookie 失效 → 绑定落 expired + failed/auth_error（与
+    同 provider 115 执行器同口径）；SA 源下载 401/403 → _CrossAuthError
+    → failed/auth_error，但绝不碰用户绑定（失效的是源侧 SA 凭据）；
+    其余失败 → 有界重试。上传后必列用户 115 转存目录按名核对
+    （FMBY discover 口径），核不到记 copy_unresolved 不重试。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    from backend.emby_server import user_bindings as ub
+    uid = (getattr(job, "owner_ref", "") or "").strip()
+    try:
+        user_id = int(uid)
+    except (TypeError, ValueError):
+        user_id = None
+    binding = _active_binding(db, user_id, "pan115") if user_id else None
+    if binding is None:
+        return _fail_job(db, job, "no_binding",
+                         "用户 115 绑定已失效或不存在（不重试）")
+    try:
+        cookie = ub.binding_115_cookie(db, user_id, binding.id)
+    except ub.BindingError as exc:
+        if exc.kind == "auth_error":
+            return _fail_job(db, job, "auth_error", str(exc))
+        if exc.kind == "not_found":
+            return _fail_job(db, job, "no_binding", str(exc))
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    orig_fid = (item.drive_file_id or "").strip()
+    source_drive = (getattr(job, "drive_id", "") or "").strip()
+    if not source_drive:
+        return _fail_job(db, job, "no_drive", "跨任务无源 Drive 盘标识")
+    name = _copy_name_for_item(item)
+    try:
+        info = drive_api.get_file(source_drive, orig_fid)
+        size = _to_int((info or {}).get("size"))
+    except (_NotFound, _Forbidden) as exc:
+        return _fail_job(db, job, "dead", f"Drive 源已死/无权：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not size:
+        size = _to_int(getattr(item, "size", None))
+    if size <= 0:
+        return _fail_job(
+            db, job, "unsupported",
+            "Drive 源文件大小未知/为零，无法分段搬运（不猜大小）")
+    if size > _115_SIMPLE_UPLOAD_LIMIT:
+        return _fail_job(
+            db, job, "unsupported",
+            f"文件 {size} 字节超过 115 简单上传 5 GiB 上限；多段上传需 "
+            f"initupload 加密协议（未实测），暂不支持，不静默回落")
+    try:
+        client = _make_pan115_client(cookie)
+        dest_cid = _ensure_115_transfer_dir(client)
+    except Pan115AuthError as exc:
+        try:
+            ub._mark_failed(db, binding, "expired")
+        except Exception:
+            pass
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    reader = _SegmentReader(
+        size,
+        lambda s, e: drive_api.download_range(source_drive, orig_fid, s, e))
+    try:
+        result = client.simple_upload(reader, name, dest_cid)
+    except Pan115AuthError as exc:
+        try:
+            ub._mark_failed(db, binding, "expired")
+        except Exception:
+            pass
+        return _fail_job(db, job, "auth_error", str(exc))
+    except _CrossAuthError as exc:
+        # SA 源凭据失效：只记任务失败，绝不落用户 115 绑定。
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    resp_fid = (result or {}).get("fid") or ""
+    try:
+        new_fid, pickcode = _match_115_copy_in_dir(
+            client, dest_cid, name, size, expected_fid=resp_fid or None)
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not new_fid:
+        return _fail_job(
+            db, job, "copy_unresolved",
+            f"115 跨转存上传完成但目标目录核不到新文件（源 fid={orig_fid}，"
+            f"回执 fid={resp_fid or '无'}，目标目录 cid={dest_cid}，"
+            f"请人工核对，不自动重试）")
+    row = _register_ready_variant(db, job, item, new_fid,
+                                  f"pan115:user-{uid}",
+                                  pickcode=pickcode or None, size=size)
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
+def _run_cross_115_to_drive(db, job, item):
+    """跨 provider 115→Drive：服主 115 现解析下载链 → 用户 Drive
+    可续传上传。
+
+    换链与搬字节分离：先 _resolve_115_source 现解析 pickcode（绝
+    不用共享 pickcode 缓存），再现取 download_url 按段取字节，最
+    后用用户 Drive 令牌可续传上传。用户 Drive 令牌失效 →
+    failed/no_binding（与 Path A 同口径）；服主 115 凭据失效 →
+    failed/auth_error 但不碰用户绑定；其余失败 → 有界重试。
+    上传后必补 anyone-reader（失败记 orphan）并列用户 Drive 转存
+    目录按名核对，核不到记 copy_unresolved。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    from backend.emby_server.drive_oauth import DriveOAuthError
+    uid = (getattr(job, "owner_ref", "") or "").strip()
+    try:
+        user_id = int(uid)
+    except (TypeError, ValueError):
+        user_id = None
+    binding = _active_binding(db, user_id, "drive") if user_id else None
+    if binding is None:
+        return _fail_job(db, job, "no_binding",
+                         "用户 Drive 绑定已失效或不存在（不重试）")
+    user_client = UserDriveApiClient(db, binding)
+    user_drive = f"myDrive:{user_id}"
+    name = _copy_name_for_item(item)
+    try:
+        server_client, pickcode, src_size = _resolve_115_source(db, item)
+    except _NotFound as exc:
+        return _fail_job(db, job, "dead", f"115 源已不存在：{exc}")
+    except _CrossAuthError as exc:
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    try:
+        url = server_client.download_url(pickcode)
+    except Pan115AuthError as exc:
+        return _fail_job(db, job, "auth_error",
+                         f"服主侧 115 凭据失效：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    size = src_size or _to_int(getattr(item, "size", None))
+    if size <= 0:
+        return _fail_job(
+            db, job, "unsupported",
+            "115 源文件大小未知/为零，无法分段搬运（不猜大小）")
+    try:
+        folder_id = user_client.ensure_folder(user_drive,
+                                              transfer_dir_name())
+    except DriveOAuthError as exc:
+        return _fail_job(db, job, "no_binding",
+                         f"用户 Drive 令牌失效：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+
+    def _fetch(start, end):
+        headers = {"User-Agent": server_client.ua,
+                   "Referer": "https://115.com/",
+                   "Cookie": server_client.cookie,
+                   "Range": f"bytes={start}-{end}"}
+        try:
+            resp = httpx.request("GET", url, headers=headers, timeout=120)
+        except (httpx.TimeoutException, httpx.ConnectError,
+                httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            raise _CrossRemoteError(
+                f"115 源下载网络异常：{type(exc).__name__}") from exc
+        if resp.status_code in (401, 403):
+            raise _CrossAuthError(
+                f"115 源下载被拒：{resp.status_code}（服主侧凭据失效）")
+        if resp.status_code != 206:
+            raise _CrossRemoteError(
+                f"115 源下载失败：{resp.status_code}（非 206）")
+        data = resp.content or b""
+        if len(data) != end - start + 1:
+            raise _CrossRemoteError(
+                f"115 源下载短读：要 {end - start + 1} 字节，"
+                f"实得 {len(data)} 字节")
+        return data
+
+    reader = _SegmentReader(size, _fetch)
+    try:
+        new_fid = user_client.resumable_upload(user_drive, name, folder_id,
+                                               size, reader)
+    except DriveOAuthError as exc:
+        return _fail_job(db, job, "no_binding",
+                         f"用户 Drive 令牌失效：{exc}")
+    except _CrossAuthError as exc:
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    try:
+        verified_fid = _verify_drive_copy_in_dir(
+            user_client, user_drive, folder_id, name, new_fid)
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not verified_fid:
+        return _fail_job(
+            db, job, "copy_unresolved",
+            f"Drive 跨转存上传回执 id={new_fid} 在用户转存目录中核不到"
+            f"（目录 id={folder_id}，文件名={name}），不登记、不回落")
+    try:
+        user_client.add_anyone_reader(user_drive, verified_fid)
+    except Exception as exc:
+        row = em.TransferVariant(
+            item_id=job.item_id, source_file_id=item.drive_file_id.strip(),
+            variant_file_id=verified_fid,
+            variant_drive_id=f"userdrive:{user_id}",
+            owner_scope="user", owner_ref=uid, status="orphan",
+            size_bytes=size)
+        db.add(row)
+        return _fail_job(db, job, "orphan", str(exc))
+    row = _register_ready_variant(db, job, item, verified_fid,
+                                  f"userdrive:{user_id}", size=size)
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
+def _run_cross_job(db, job, item, drive_api):
+    """跨 provider 任务分发：按 dest_drive_id 定方向（不按 provider）。
+
+    dest pan115: 开头 → Drive→115；dest userdrive: 开头 → 115→Drive；
+    其它 dest（理论上到不了，_is_cross_job 已过滤）→ unsupported。
+    """
+    dest = (getattr(job, "dest_drive_id", "") or "").strip()
+    if dest.startswith("pan115:"):
+        return _run_cross_drive_to_115(db, job, item, drive_api)
+    if dest.startswith("userdrive:"):
+        return _run_cross_115_to_drive(db, job, item)
+    return _fail_job(db, job, "unsupported",
+                     f"跨任务落盘标识未知：{dest}（不重试）")
+
+
 def run_transfer_job_once(db, job, drive_api):
     """执行一个转存任务（工人单线程顺序调用；内部提交）。
 
@@ -1414,7 +2142,10 @@ def run_transfer_job_once(db, job, drive_api):
         job.error_detail = "条目不存在或无 drive_file_id"
         db.commit()
         return {"job_id": job.id, "outcome": "failed", "error_kind": "item_gone"}
-    # 按 provider + 归属分发（2026-10-26 用户盘口径）：
+    # 按 provider + 归属分发（2026-10-26 用户盘口径 + 跨 provider）：
+    # - 跨任务（dest 与 provider 错侧，见 _is_cross_job）→ 跨执行器
+    #   （先于下方同 provider 分支，跨任务的 provider 是源 provider，
+    #   不能按 provider 直接分发到同 provider 执行器）；
     # - pan115 + user → 115 执行器（drive_id 可为空，靠条目 fid）；
     # - drive + user → Drive 用户盘执行器（Path A/B）；
     # - drive + source → 下方既有同盘路径（逐字不动）；
@@ -1441,6 +2172,8 @@ def run_transfer_job_once(db, job, drive_api):
     job.status = "running"
     job.attempts += 1
     db.commit()
+    if _is_cross_job(job):
+        return _run_cross_job(db, job, item, drive_api)
     if provider == "pan115":
         return _run_pan115_job(db, job, item)
     if owner_scope == "user":

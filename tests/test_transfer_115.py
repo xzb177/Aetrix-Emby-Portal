@@ -457,3 +457,94 @@ def test_115_patrol_pickcode_fallback_fills(db, monkeypatch):
     db.refresh(row)
     assert row.status == "ready" and row.pickcode == "PC-NEW"
     assert fake.download_calls == ["PC-NEW"]
+
+
+# ---------- 115 简单上传（跨 provider Drive→115 用，115cli 口径） ----------
+
+class _FakeOSSResp:
+    def __init__(self, status_code=200, body=None):
+        self.status_code = status_code
+        self._body = body if body is not None else {}
+
+    def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+
+class _FakeOSSClient:
+    """替 httpx.Client：只录表单字段与文件体，返回预设回调。"""
+
+    def __init__(self, resp):
+        self.resp = resp
+        self.posted = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def post(self, url, data=None, files=None, headers=None):
+        name, fileobj = files["file"]
+        self.posted = {"url": url, "data": dict(data or {}),
+                       "filename": name, "body": fileobj.read()}
+        return self.resp
+
+
+def _client115():
+    return transfer115.Pan115Client("cookie-test")
+
+
+def test_simple_upload_happy(monkeypatch):
+    import httpx as _httpx
+    seen = {}
+
+    def _fake_call(method, url, params=None, data=None, cookie=None, ua=""):
+        seen["init"] = (method, url, data)
+        return {"host": "https://bucket.oss-cn-shenzhen.aliyuncs.com",
+                "object": "obj-key", "policy": "pol", "accessid": "acc",
+                "callback": "cb", "signature": "sig"}
+
+    monkeypatch.setattr(transfer115, "_http_json", _fake_call)
+    oss = _FakeOSSClient(_FakeOSSResp(200, {
+        "data": {"file_id": "fid9", "file_name": "a.mkv",
+                 "pick_code": "pc9", "sha1": "x", "file_size": 5}}))
+    monkeypatch.setattr(_httpx, "Client", lambda *a, **k: oss)
+    out = _client115().simple_upload(__import__("io").BytesIO(b"hello"),
+                                     "a.mkv", "900")
+    assert out["fid"] == "fid9" and out["pickcode"] == "pc9"
+    assert seen["init"][1].endswith("/3.0/sampleinitupload.php")
+    assert seen["init"][2] == {"filename": "a.mkv", "target": "U_1_900"}
+    assert oss.posted["url"].startswith("https://bucket.")
+    assert oss.posted["data"]["key"] == "obj-key"
+    assert oss.posted["data"]["success_action_status"] == "200"
+    assert oss.posted["body"] == b"hello"
+
+
+def test_simple_upload_missing_oss_field(monkeypatch):
+    def _fake_call(method, url, params=None, data=None, cookie=None, ua=""):
+        return {"host": "https://bucket.example", "object": "",
+                "policy": "pol", "accessid": "acc", "callback": "cb",
+                "signature": "sig"}
+
+    monkeypatch.setattr(transfer115, "_http_json", _fake_call)
+    with pytest.raises(transfer115.Pan115Error):
+        _client115().simple_upload(__import__("io").BytesIO(b"x"),
+                                   "a.mkv", "900")
+
+
+def test_simple_upload_oss_401_is_auth(monkeypatch):
+    import httpx as _httpx
+
+    def _fake_call(method, url, params=None, data=None, cookie=None, ua=""):
+        return {"host": "https://bucket.example", "object": "o",
+                "policy": "p", "accessid": "a", "callback": "c",
+                "signature": "s"}
+
+    monkeypatch.setattr(transfer115, "_http_json", _fake_call)
+    oss = _FakeOSSClient(_FakeOSSResp(401, {}))
+    monkeypatch.setattr(_httpx, "Client", lambda *a, **k: oss)
+    with pytest.raises(transfer115.Pan115AuthError):
+        _client115().simple_upload(__import__("io").BytesIO(b"x"),
+                                   "a.mkv", "900")

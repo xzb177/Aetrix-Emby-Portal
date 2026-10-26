@@ -457,14 +457,21 @@ def test_gate_no_binding_proceeds(db, monkeypatch):
     assert db.query(em.TransferJob).count() == 0
 
 
-def test_gate_provider_mismatch_proceeds(db, monkeypatch):
+def test_gate_provider_mismatch_goes_cross(db, monkeypatch):
+    # 2026-10-26 20:54 用户亲定推翻旧口径：错配不再放行共享链，
+    # 只绑另一 provider 时走跨 provider 转存（绑哪播哪）。
     _enable(monkeypatch)
     _mount(db, 3, "drive", "drive:drive1")
     item = _item(db)
     _binding(db, 7, provider="pan115")
     gate = tv.ensure_user_copy_gate(db, item, _user())
-    assert gate["verdict"] == "proceed"
-    assert gate["reason"] == "no_matching_binding"
+    assert gate["verdict"] == "preparing"
+    assert gate["reason"] == "job_created"
+    job = db.query(em.TransferJob).one()
+    assert job.provider == "drive" and job.owner_scope == "user"
+    assert job.owner_ref == "7" and job.drive_id == "drive1"
+    assert job.dest_drive_id == "pan115:user-7" and job.status == "pending"
+    assert tv._is_cross_job(job) is True
 
 
 def test_gate_creates_user_job_preparing(db, monkeypatch):
@@ -881,3 +888,316 @@ def test_apply_transfer_status_failed_overlay():
     assert sources[0]["TransferStatus"] == "failed"
     assert sources[0]["SupportsDirectPlay"] is False
     assert "DirectPlayUrl" not in sources[0]
+
+
+# ---------- 跨 provider 转存（2026-10-26 20:54 用户亲定“绑哪播哪”） ----------
+# 全部离线：SA 下载、115 上传、用户 Drive 上传一律用桩替身；
+# 真实跨 provider 搬字节（真实 Drive copy/上传、真实 115 上传口）
+# 未实测，见 PR 描述的未验证项，本文件不编造闭环。
+
+_PAYLOAD = bytes(range(256)) * 4  # 1024 字节
+
+
+class _FakeUser115:
+    """用户侧 115 桩：转存目录预建，simple_upload 吃掉读取器字节。"""
+
+    def __init__(self, uploaded_name="a.mkv"):
+        self.dirs = {
+            "0": [{"name": "aetrix-transfer", "is_dir": True, "cid": "900"}],
+            "900": [],
+        }
+        self.uploaded_name = uploaded_name
+        self.uploaded = None
+
+    def list_dir(self, cid="0", limit=200):
+        return list(self.dirs.get(str(cid), []))
+
+    def mkdir(self, parent_cid, name):
+        self.dirs.setdefault("0", []).append(
+            {"name": name, "is_dir": True, "cid": "900"})
+        return {}
+
+    def simple_upload(self, fileobj, filename, pid):
+        self.uploaded = (filename, pid, fileobj.read())
+        self.dirs["900"] = [{"name": filename, "is_dir": False,
+                             "fid": "newfid115", "pickcode": "pc115",
+                             "size": len(self.uploaded[2])}]
+        return {"fid": "newfid115", "pickcode": "pc115", "raw": {}}
+
+
+class _FakeSA:
+    """SA 桩：get_file 报大小，download_range 按段切字节。"""
+
+    def __init__(self, payload=_PAYLOAD):
+        self.payload = payload
+
+    def get_file(self, drive_id, fid):
+        return {"id": fid, "size": len(self.payload)}
+
+    def download_range(self, drive_id, fid, start, end):
+        return self.payload[start:end + 1]
+
+
+def _cross_job(db, item_id, user_id, provider, dest, status="pending",
+               drive_id=None):
+    row = em.TransferJob(item_id=item_id, trigger="playback",
+                         drive_id=drive_id, provider=provider,
+                         owner_scope="user", owner_ref=str(user_id),
+                         dest_drive_id=dest, status=status)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_segment_reader_window_refill(monkeypatch):
+    monkeypatch.setattr(tv, "_CROSS_SEGMENT", 4)
+    data = b"0123456789"
+    reader = tv._SegmentReader(len(data), lambda s, e: data[s:e + 1])
+    assert reader.read(3) == b"012"
+    assert reader.tell() == 3
+    assert reader.read(5) == b"34567"  # 跨窗口
+    reader.seek(0)
+    assert reader.read() == data
+    reader.seek(-2, 2)
+    assert reader.read() == b"89"
+    with pytest.raises(ValueError):
+        reader.seek(len(data) + 1)
+
+
+def test_is_cross_job_shapes():
+    drive_cross = SimpleNamespace(provider="drive",
+                                  dest_drive_id="pan115:user-7")
+    pan_cross = SimpleNamespace(provider="pan115",
+                                dest_drive_id="userdrive:7")
+    same_drive = SimpleNamespace(provider="drive",
+                                 dest_drive_id="userdrive:7")
+    same_pan = SimpleNamespace(provider="pan115",
+                               dest_drive_id="pan115:user-7")
+    assert tv._is_cross_job(drive_cross) is True
+    assert tv._is_cross_job(pan_cross) is True
+    assert tv._is_cross_job(same_drive) is False
+    assert tv._is_cross_job(same_pan) is False
+
+
+def test_gate_cross_drive_to_115_flow(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:shared1")
+    item = _item(db, file_path="mount://3/电影/a.mkv", size=len(_PAYLOAD))
+    _binding(db, 7, provider="pan115")  # 只绑 115，条目是 Drive
+    out = tv.ensure_user_copy_gate(db, item, _user(7))
+    assert out["verdict"] == "preparing" and out["reason"] == "job_created"
+    job = db.query(em.TransferJob).filter(
+        em.TransferJob.id == out["job_id"]).first()
+    assert job.provider == "drive"
+    assert job.dest_drive_id == "pan115:user-7"
+    out2 = tv.ensure_user_copy_gate(db, item, _user(7))
+    assert out2["verdict"] == "preparing"
+    assert out2["reason"] == "job_in_flight"
+    fake115 = _FakeUser115()
+    monkeypatch.setattr(tv, "_make_pan115_client", lambda cookie: fake115)
+    monkeypatch.setattr("backend.emby_server.user_bindings.binding_115_cookie",
+                        lambda db_, uid, bid: "cookie-115")
+    res = tv.run_transfer_job_once(db, job, _FakeSA())
+    assert res["outcome"] == "done"
+    assert fake115.uploaded[2] == _PAYLOAD  # 字节真从读取器流过
+    row = db.query(em.TransferVariant).filter(
+        em.TransferVariant.item_id == item.id).first()
+    assert row.status == "ready"
+    assert row.variant_drive_id == "pan115:user-7"
+    assert row.pickcode == "pc115"
+    out3 = tv.ensure_user_copy_gate(db, item, _user(7))
+    assert out3["verdict"] == "serve_115_copy"
+    assert out3["variant"].id == row.id
+
+
+def test_gate_cross_115_to_drive_flow(db, monkeypatch):
+    _enable(monkeypatch)
+    item = _item(db, file_path="115:/电影/a.mkv", size=len(_PAYLOAD),
+                 drive_file_id="srcfid")
+    _binding(db, 7, provider="drive")  # 只绑 Drive，条目是 115
+    out = tv.ensure_user_copy_gate(db, item, _user(7))
+    assert out["verdict"] == "preparing" and out["reason"] == "job_created"
+    job = db.query(em.TransferJob).filter(
+        em.TransferJob.id == out["job_id"]).first()
+    assert job.provider == "pan115"
+    assert job.dest_drive_id == "userdrive:7"
+
+    class _FakeServer115:
+        def __init__(self):
+            self.cookie = "server-cookie"
+            self.ua = "ua-test"
+
+        def list_dir(self, cid="0", limit=200):
+            if str(cid) == "0":
+                return [{"name": "电影", "is_dir": True, "cid": "11"}]
+            return [{"name": "a.mkv", "is_dir": False, "pickcode": "srccode",
+                     "size": len(_PAYLOAD), "fid": "srcfid"}]
+
+        def download_url(self, pickcode):
+            assert pickcode == "srccode"
+            return "https://dl.example/file"
+
+    monkeypatch.setattr("backend.emby_server.transfer115.resolve_cookie",
+                        lambda db_, library=None: ("server-cookie", "test"))
+    monkeypatch.setattr(tv, "_make_pan115_client",
+                        lambda cookie: _FakeServer115())
+
+    def _fake_request(method, url, headers=None, timeout=None, **kw):
+        assert method == "GET"
+        rng = headers["Range"]
+        start, end = (int(x) for x in rng[len("bytes="):].split("-"))
+        return SimpleNamespace(status_code=206,
+                               content=_PAYLOAD[start:end + 1])
+
+    monkeypatch.setattr(tv.httpx, "request", _fake_request)
+    uploaded = {}
+
+    def _fake_upload(self, drive_id, name, folder_id, size, reader):
+        uploaded["bytes"] = reader.read()
+        uploaded["name"] = name
+        return "newdrivefid"
+
+    monkeypatch.setattr(tv.UserDriveApiClient, "ensure_folder",
+                        lambda self, d, n: "ufolder")
+    monkeypatch.setattr(tv.UserDriveApiClient, "resumable_upload",
+                        _fake_upload)
+    monkeypatch.setattr(tv.UserDriveApiClient, "add_anyone_reader",
+                        lambda self, d, f: None)
+    monkeypatch.setattr(tv.UserDriveApiClient, "list_file_ids_by_name",
+                        lambda self, d, f, n: ["newdrivefid"])
+    res = tv.run_transfer_job_once(db, job, _FakeSA())
+    assert res["outcome"] == "done"
+    assert uploaded["bytes"] == _PAYLOAD
+    row = db.query(em.TransferVariant).filter(
+        em.TransferVariant.item_id == item.id).first()
+    assert row.status == "ready"
+    assert row.variant_drive_id == "userdrive:7"
+    out2 = tv.ensure_user_copy_gate(db, item, _user(7))
+    assert out2["verdict"] == "proceed"
+    assert out2["reason"] == "has_ready_variant"
+
+
+def test_gate_no_binding_still_proceeds(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:shared1")
+    item = _item(db, file_path="mount://3/电影/a.mkv")
+    out = tv.ensure_user_copy_gate(db, item, _user(7))
+    assert out == {"verdict": "proceed", "reason": "no_matching_binding"}
+
+
+def test_gate_cross_ready_scheme_filter(db, monkeypatch):
+    _enable(monkeypatch)
+    item = _item(db, file_path="115:/电影/a.mkv", drive_file_id="srcfid")
+    _binding(db, 7, provider="drive")  # 只绑 Drive，条目是 115
+    # 错盘的 ready 行（pan115 方案）不能被 Drive 侧门禁认领
+    _variant(db, item.id, fid="wrongfid", scope="user", ref="7")
+    db.query(em.TransferVariant).filter(
+        em.TransferVariant.item_id == item.id).update(
+        {"variant_drive_id": "pan115:user-7"})
+    db.commit()
+    out = tv.ensure_user_copy_gate(db, item, _user(7))
+    assert out["verdict"] == "preparing" and out["reason"] == "job_created"
+    # 对盘的 ready 行才认领
+    _variant(db, item.id, fid="rightfid", scope="user", ref="7")
+    db.query(em.TransferVariant).filter(
+        em.TransferVariant.variant_file_id == "rightfid").update(
+        {"variant_drive_id": "userdrive:7"})
+    db.commit()
+    out2 = tv.ensure_user_copy_gate(db, item, _user(7))
+    assert out2["verdict"] == "proceed"
+    assert out2["reason"] == "has_ready_variant"
+
+
+def test_cross_drive_to_115_over_limit_unsupported(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:shared1")
+    item = _item(db, file_path="mount://3/电影/a.mkv", size=1)
+    _binding(db, 7, provider="pan115")
+    job = _cross_job(db, item.id, 7, "drive", "pan115:user-7",
+                     drive_id="shared1")
+    monkeypatch.setattr("backend.emby_server.user_bindings.binding_115_cookie",
+                        lambda db_, uid, bid: "cookie-115")
+
+    class _BigSA(_FakeSA):
+        def get_file(self, drive_id, fid):
+            return {"id": fid, "size": tv._115_SIMPLE_UPLOAD_LIMIT + 1}
+
+    res = tv.run_transfer_job_once(db, job, _BigSA())
+    assert res["outcome"] == "failed"
+    assert res["error_kind"] == "unsupported"
+
+
+def test_cross_drive_to_115_unresolved(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:shared1")
+    item = _item(db, file_path="mount://3/电影/a.mkv", size=len(_PAYLOAD))
+    _binding(db, 7, provider="pan115")
+    job = _cross_job(db, item.id, 7, "drive", "pan115:user-7",
+                     drive_id="shared1")
+
+    class _EmptyDir115(_FakeUser115):
+        def simple_upload(self, fileobj, filename, pid):
+            fileobj.read()  # 字节流过，但目录里不出现新文件
+            return {"fid": "ghostfid", "pickcode": "", "raw": {}}
+
+    monkeypatch.setattr(tv, "_make_pan115_client",
+                        lambda cookie: _EmptyDir115())
+    monkeypatch.setattr("backend.emby_server.user_bindings.binding_115_cookie",
+                        lambda db_, uid, bid: "cookie-115")
+    res = tv.run_transfer_job_once(db, job, _FakeSA())
+    assert res["outcome"] == "failed"
+    assert res["error_kind"] == "copy_unresolved"
+
+
+def test_cross_115_to_drive_source_gone(db, monkeypatch):
+    _enable(monkeypatch)
+    item = _item(db, file_path="115:/电影/a.mkv", drive_file_id="srcfid")
+    _binding(db, 7, provider="drive")
+    job = _cross_job(db, item.id, 7, "pan115", "userdrive:7")
+
+    class _EmptyServer115:
+        def list_dir(self, cid="0", limit=200):
+            return []
+
+    monkeypatch.setattr("backend.emby_server.transfer115.resolve_cookie",
+                        lambda db_, library=None: ("server-cookie", "test"))
+    monkeypatch.setattr(tv, "_make_pan115_client",
+                        lambda cookie: _EmptyServer115())
+    res = tv.run_transfer_job_once(db, job, _FakeSA())
+    assert res["outcome"] == "failed"
+    assert res["error_kind"] == "dead"
+
+
+def test_resumable_upload_308_resume(monkeypatch):
+    monkeypatch.setattr(tv, "_CROSS_SEGMENT", 8)
+    data = b"0123456789ABCDEFGHIJ"  # 20 字节 → 3 段
+    reader = tv._SegmentReader(len(data), lambda s, e: data[s:e + 1])
+    calls = []
+
+    def _fake_request(method, url, params=None, json=None, headers=None,
+                      content=None, timeout=None, **kw):
+        if method == "POST":
+            return SimpleNamespace(status_code=200,
+                                   headers={"location": "https://sess/x"},
+                                   content=b"")
+        calls.append((headers.get("Content-Range"), bytes(content or b"")))
+        if len(calls) < 3:
+            ranged = f"bytes=0-{len(calls) * 8 - 1}"
+            return SimpleNamespace(status_code=308,
+                                   headers={"range": ranged}, content=b"")
+        return SimpleNamespace(status_code=200, headers={},
+                               content=b'{"id": "upfid"}',
+                               json=lambda: {"id": "upfid"})
+
+    monkeypatch.setattr(tv.httpx, "request", _fake_request)
+    monkeypatch.setattr(tv.UserDriveApiClient, "_headers",
+                        lambda self, d, force_refresh=False:
+                        {"Authorization": "Bearer t"})
+    client = tv.UserDriveApiClient.__new__(tv.UserDriveApiClient)
+    fid = client.resumable_upload("myDrive:7", "a.mkv", "folder", len(data),
+                                  reader)
+    assert fid == "upfid"
+    assert calls[0][0] == "bytes 0-7/20"
+    assert calls[1][0] == "bytes 8-15/20"
+    assert calls[2][0] == "bytes 16-19/20"
+    assert b"".join(c[1] for c in calls) == data

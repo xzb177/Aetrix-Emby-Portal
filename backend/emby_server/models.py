@@ -1457,8 +1457,9 @@ class TransferJob(Base):
       owner_ref）24h 内有任何任务行（无论成败），自动/播放触发不再
       重复入队；手动触发可用 force 显式越过（审计留痕）。分桶是
       关键：用户 A 的任务绝不能堵住用户 B 的任务。
-    - ``provider``：``drive`` | ``pan115``（同 provider 内转存，
-      不跨 provider 下载再上传）。
+    - ``provider``：``drive`` | ``pan115``（源 provider；跨 provider
+      任务的落盘由 ``dest_drive_id`` 定，与 provider 错侧，见
+      transfer_variant._is_cross_job，2026-10-26 用户亲定“绑哪播哪”）。
     - ``owner_scope`` / ``owner_ref``：``source``（服主副本，
       owner_ref 为空）| ``user``（用户盘副本，owner_ref 为用户 id
       字符串）。工人按归属写对应 scope 的副本行。

@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 PAN115_COOKIE_ENV = "PAN115_COOKIE"
 # 端点可用环境变量覆盖：115 的 Web API 域名偶有调整，也便于测试指向本地假服务
 PAN115_WEBAPI_BASE = os.getenv("PAN115_WEBAPI_BASE", "https://webapi.115.com").rstrip("/")
+# 上传域名（与 Web API 分离，见 115cli 0.3.4 的 Endpoint.UPLB）
+PAN115_UPLB_BASE = os.getenv("PAN115_UPLB_BASE", "https://uplb.115.com").rstrip("/")
 PAN115_TIMEOUT = env_float("PAN115_TIMEOUT", 20.0)
 PAN115_UA = os.getenv(
     "PAN115_USER_AGENT",
@@ -314,6 +316,82 @@ class Pan115Client:
             data={"pid": parent_cid, "cname": name},
         )
         return _raise_for_state(body)
+
+    # ---- 上传（跨 provider 转存 Drive→115 用） ----
+
+    def simple_upload(self, fileobj, filename: str, pid: str) -> dict:
+        """简单上传（115cli 0.3.4 的 simple_upload 口径，Cookie 鉴权）。
+
+        两步，不走 initupload 加密协议（见模块外说明）：
+        1. POST ``uplb.115.com/3.0/sampleinitupload.php``（filename +
+           target=U_1_<pid>）取 OSS 表单参数（host/object/policy/
+           accessid/callback/signature）；
+        2. 向 host 做 OSS 表单 POST（字段 name/key/policy/
+           OSSAccessKeyId/success_action_status=200/callback/signature
+           + 文件体），success_action_status=200 时响应体即 115 回调
+           JSON（含 file_id/file_name/pick_code/sha1/file_size）。
+
+        上限：115cli 的 MAX_SIMPLE_UPLOAD_SIZE = 5 GiB，超限文件不
+        走本方法（调用方先拦，记 unsupported，不静默拆段）。
+        fileobj 须支持 read/seek/tell（httpx 按 seek/tell 算
+        Content-Length；跨 provider 搬字节用分段读取器直供，不落盘）。
+        fileobj.read 中抛出的搬运层异常（如源盘凭据失效）原样上抛，
+        本方法只把 httpx 层失败转成 Pan115Error/AuthError。
+        返回 ``{fid, pickcode, raw}``；回调里提不到 fid/pickcode 时
+        对应字段为空串，调用方走列目录匹配回落（不依赖本响应字段）。
+        """
+        import httpx
+
+        init = self._call(
+            "POST", f"{PAN115_UPLB_BASE}/3.0/sampleinitupload.php",
+            data={"filename": filename, "target": f"U_1_{pid}"},
+        )
+        if init.get("state") is False:
+            raise Pan115Error(
+                f"115 简单上传初始化失败：{init.get('error') or init.get('message') or init}")
+        host = init.get("host") or ""
+        fields = {
+            "name": filename,
+            "key": init.get("object") or "",
+            "policy": init.get("policy") or "",
+            "OSSAccessKeyId": init.get("accessid") or "",
+            "success_action_status": "200",
+            "callback": init.get("callback") or "",
+            "signature": init.get("signature") or "",
+        }
+        if not host or not all((fields["key"], fields["policy"],
+                                fields["OSSAccessKeyId"], fields["callback"],
+                                fields["signature"])):
+            raise Pan115Error("115 简单上传初始化未返回完整 OSS 参数")
+        timeout = httpx.Timeout(connect=30.0, read=300.0, write=300.0,
+                                pool=30.0)
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(
+                    host, data=fields,
+                    files={"file": (filename, fileobj)},
+                    headers={"User-Agent": self.ua,
+                             "Referer": "https://115.com/"},
+                )
+        except httpx.HTTPError as exc:
+            raise Pan115Error(f"115 简单上传请求失败：{exc}") from exc
+        if resp.status_code in (401, 403):
+            raise Pan115AuthError(
+                f"115 简单上传返回 HTTP {resp.status_code}，Cookie 可能已失效")
+        if resp.status_code >= 400:
+            raise Pan115Error(f"115 简单上传返回 HTTP {resp.status_code}")
+        try:
+            body = resp.json()
+        except Exception as exc:  # noqa: BLE001 — OSS 回调非 JSON 即失败
+            raise Pan115Error("115 简单上传回调非 JSON") from exc
+        if not isinstance(body, dict):
+            raise Pan115Error("115 简单上传回调形态异常")
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        fid = str(data.get("file_id") or data.get("fid")
+                  or data.get("id") or "")
+        pickcode = str(data.get("pick_code") or data.get("pickcode")
+                       or data.get("pc") or "")
+        return {"fid": fid, "pickcode": pickcode, "raw": body}
 
     # ---- 内部 ----
 
