@@ -162,6 +162,14 @@ const router = createRouter({
       component: () => import('@/views/TgBindGuideView.vue'),
       meta: { title: '绑定 Telegram', requiresAuth: true },
     },
+    // 隐私政策：公开页（Google OAuth 验证要求挂在本站域名下），
+    // 不带 requiresAuth，路由守卫只拦 requiresAuth 路由，未登录也能直接打开。
+    {
+      path: '/privacy',
+      name: 'privacy',
+      component: () => import('@/views/PrivacyView.vue'),
+      meta: { title: '隐私政策' },
+    },
     // 追新日历（2026-10-13 旧页面清理：已删，走 /game/calendar 探险预告）
     // R28：旧 /calendar 书签重定向到新地址，避免落 404
     {
