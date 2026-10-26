@@ -3,7 +3,7 @@
 全部用假 115 客户端 + 真实 UDS 服务跑完整回路，不碰真网络、不读库。
 覆盖：协议名/能力名逐项照抄、握手 fail-closed、8 项能力往返、分页、
 换链不回 Cookie、错误分级（cookie_expired / not_implemented / session_unknown）、
-扩展 4 项（full_sync/diff_refresh 真实、life_poll/share_full_sync 显式未实现）、
+扩展 4 项（full_sync/diff_refresh 真实、life_poll 轮询差分、share_full_sync 分享根全量同步）、
 宿主侧 provider 四口翻译与默认开总闸。
 """
 from __future__ import annotations
@@ -255,13 +255,18 @@ def test_p115_full_sync_and_diff_refresh(session_client):
     assert diff["missing"] == ["/gone"]
 
 
-def test_p115_life_poll_and_share_are_explicitly_not_implemented(session_client):
+def test_p115_life_poll_and_share_are_implemented(session_client):
+    # #1328 落地后：life_poll 是轮询差分（非原生推送）、share_full_sync 是分享根全量同步；
+    # 旧的 not_implemented 断言已随能力落地而失效，改按新行为断言。
     client = session_client
-    for name in ("p115.life_poll", "p115.share_full_sync"):
-        with pytest.raises(ProviderRuntimeError) as excinfo:
-            client.call_extension(name, {"session_id": "s1"})
-        # 不编能力：未落地就是 not_implemented，绝不拿重列冒充 life 事件。
-        assert excinfo.value.kind == "not_implemented"
+    life = client.call_extension("p115.life_poll", {"session_id": "s1"})
+    assert life["source"] == "poll_diff" and life["baseline"] is True and life["events"] == []
+    share = client.call_extension("p115.share_full_sync", {"session_id": "s1"})
+    assert share["share_mode"] == "full_sync_via_root" and len(share["entries"]) > 0
+    unknown = None
+    with pytest.raises(ProviderRuntimeError) as excinfo:
+        client.call_extension("p115.no_such_ext", {"session_id": "s1"})
+    assert excinfo.value.kind == "unknown_method"
 
 
 def test_open_range_error_grading(tmp_path):
