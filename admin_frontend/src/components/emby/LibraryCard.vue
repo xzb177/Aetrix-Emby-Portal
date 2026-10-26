@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { Film, Server, HardDrive, ImagePlus, X, ScanSearch, RefreshCcw, RefreshCw, Search, Settings2, History, Delete } from 'lucide-vue-next'
-import type { UploadRequestOptions } from 'element-plus'
+import { Film, Server, HardDrive, ScanSearch, RefreshCcw, RefreshCw, Search, Settings2, History, Delete } from 'lucide-vue-next'
 
 const props = defineProps<{
   library: any
@@ -21,15 +20,12 @@ const props = defineProps<{
   reachMessage?: string
   /** 播放风险"改法"（对应旧 reachTitle 的 verdict.fix；与 reachMessage 拼成悬停说明） */
   reachFix?: string
-  coverUploading?: boolean
   /** Views 展示顺序值（0 = 未设序，排在已设序之后；数值越小越靠前） */
   sortOrder?: number
   orderSaving?: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: 'cover-upload', options: UploadRequestOptions): void
-  (e: 'cover-remove'): void
   (e: 'scan'): void
   (e: 'scan-full'): void
   (e: 'rescrape'): void
@@ -64,21 +60,6 @@ function onOrderChange() {
           {{ library.is_enabled ? '启用' : '停用' }}
         </span>
         <span v-if="badge" class="mini-badge" :class="badge.cls">{{ badge.text }}</span>
-      </div>
-      <div class="lib-cover-actions">
-        <el-upload
-          accept="image/jpeg,image/png,image/webp"
-          :show-file-list="false"
-          :disabled="coverUploading"
-          :http-request="(options: UploadRequestOptions) => emit('cover-upload', options)"
-        >
-          <el-button class="cover-button" circle text :loading="coverUploading" title="上传封面" aria-label="上传媒体库封面">
-            <ImagePlus :size="18" />
-          </el-button>
-        </el-upload>
-        <el-button v-if="library.cover_url" class="cover-button" circle text title="移除封面" @click="emit('cover-remove')">
-          <X :size="17" />
-        </el-button>
       </div>
       <div class="lib-cover-order" title="Views 展示顺序：0 = 未设序，排在已设序之后；数值越小越靠前。改动后即保存">
         <span class="lib-cover-order-label">顺序</span>
@@ -162,12 +143,11 @@ function onOrderChange() {
 .lib-cover img { width: 100%; height: 100%; object-fit: cover; }
 .lib-cover-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--el-text-color-secondary); }
 /* P2-1：删除 scoped .lib-cover-shade 复写，沿用全局 EmbyAdmin.css 的顶部保护层 */
-.lib-cover-badges { position: absolute; top: 8px; left: 8px; right: 58px; display: flex; gap: 4px; flex-wrap: wrap; }
+.lib-cover-badges { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; gap: 4px; flex-wrap: wrap; }
 .mini-badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; background: rgba(0,0,0,.55); color: #fff; }
 .mini-badge.ok { background: var(--el-color-success); }
 .mini-badge.off { background: var(--el-color-info); }
-.lib-cover-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
-/* 封面处顺序小控件：左下角半透明条，不挡右上上传/移除与左上徽标 */
+/* 封面处顺序小控件：左下角半透明条，不挡左上徽标 */
 .lib-cover-order { position: absolute; left: 8px; bottom: 8px; display: flex; align-items: center; gap: 4px; background: rgba(0,0,0,.55); border-radius: 4px; padding: 2px 4px 2px 6px; }
 .lib-cover-order-label { font-size: 11px; color: #fff; white-space: nowrap; }
 .lib-cover-order :deep(.el-input-number--small) { width: 76px; }
