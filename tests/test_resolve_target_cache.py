@@ -217,6 +217,10 @@ def test_config_change_misses_old_entry(counting):
 @pytest.fixture()
 def pan115(monkeypatch):
     """真 Pan115Mount + 桩 _locate/_client/_cookie/_ua；cookie 可中途轮换。"""
+    # 解析缓存测试走进程内 Pan115Mount：#1313 把 115 默认切到 sidecar 后，
+    # 本文件若不关闸会去连 sidecar socket（CI 里没有），与缓存语义无关；
+    # sidecar 路径另由 test_p115_sidecar_wiring.py 覆盖。
+    monkeypatch.setenv("PAN115_SIDECAR_ENABLED", "0")
     holder = {"cookie": "cookie-1", "locate": 0, "download": 0}
 
     def _locate(self, rel):
