@@ -195,6 +195,18 @@ def test_breakers_warn(db, mock_subs):
     assert _by_id(rep, "probe_breakers")["level"] == "warn"
 
 
+def test_breakers_many_lists_names(db, mock_subs):
+    # 熔断超过 5 个时，标题既要列出前 5 个名字、也要带总数，
+    # 不能只剩"等 N 个"把名字全丢掉（r72 实测复现）。
+    names = ["m1", "m2", "m3", "m4", "m5", "m6", "m7"]
+    mock_subs["subs"]["probe"]["metrics"]["open_breakers"] = names
+    rep = diagnosis.run_diagnosis(db)
+    title = _by_id(rep, "probe_breakers")["title"]
+    for n in names[:5]:
+        assert n in title
+    assert "等 7 个" in title
+
+
 def test_missing_data_no_false_alarm(db, mock_subs):
     # 探针没拿到数据 → 如实说，不误报 warn/critical
     mock_subs["subs"]["disk"]["metrics"] = {}

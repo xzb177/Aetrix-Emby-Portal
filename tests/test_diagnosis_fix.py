@@ -4,7 +4,7 @@
 覆盖：
 1. 白名单：只有 disk_space / probe_queue / workers_alive 可修复；
    db_health 等 6 条危险规则不在白名单，只能手动
-2. 安全修复成功路径：disk_space 真删遗留转码目录（tmp 目录实测端到端）
+2. 安全修复成功路径：disk_space 只清过期字幕缓存（tmp 目录实测端到端）
 3. 危险操作被拒绝：db_health → 400 not_fixable（附手动步骤）
 4. 未知规则被拒绝：400 unknown_rule
 5. 二次确认缺失被拒绝：confirm=False/缺省 → 400 confirm_required
@@ -103,6 +103,15 @@ def test_whitelist_only_safe_rules():
     assert not (set(diagnosis_fix.FIXES) & set(diagnosis_fix.MANUAL_ONLY))
     for rid, spec in diagnosis_fix.FIXES.items():
         assert spec.confirm_text and spec.description  # 二次确认文案必填
+
+
+def test_disk_space_copy_matches_actual_behavior():
+    # 转码删除后磁盘清理只做过期字幕缓存淘汰：用户侧文案不许再承诺
+    # 清理转码目录（r72：旧文案承诺了代码不做的事）。
+    spec = diagnosis_fix.FIXES["disk_space"]
+    assert "字幕" in spec.description and "字幕" in spec.confirm_text
+    assert "转码" not in spec.description
+    assert "转码" not in spec.confirm_text
 
 
 # ---------------------------------------------------------------- 2. 安全修复成功路径（端到端）

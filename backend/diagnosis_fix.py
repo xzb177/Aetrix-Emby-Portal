@@ -149,9 +149,9 @@ FIXES: dict[str, FixSpec] = {
     "disk_space": FixSpec(
         rule_id="disk_space",
         name="清理过期缓存",
-        description="删除遗留的转码临时目录和过期字幕缓存（都是可再生的临时文件，"
+        description="删除过期字幕缓存（可再生的临时文件，"
                     "在跑的任务不动），释放磁盘空间。",
-        confirm_text="将清理遗留转码目录与过期字幕缓存（可再生的临时文件，"
+        confirm_text="将清理过期字幕缓存（可再生的临时文件，"
                      "在跑的任务不受影响）。确认执行吗？",
         run=_fix_disk_space,
     ),
