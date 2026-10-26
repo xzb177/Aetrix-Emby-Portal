@@ -229,6 +229,7 @@
             <input id="drive-label" v-model="driveLabel" type="text" placeholder="比如：我的主力盘" autocomplete="off" />
           </div>
           <p v-if="driveFormError" class="acct-error" role="alert">{{ driveFormError }}</p>
+          <p v-if="driveAuthUrl" class="dev-tip">点这里打开 Google 授权页：<a :href="driveAuthUrl" target="_blank" rel="noopener">打开 Google 授权页</a>，同意后关掉那个窗口、回到本页点“刷新列表”。</p>
           <button type="button" class="acct-btn primary" :disabled="driveStarting" @click="handleBindDrive">
             {{ driveStarting ? '正在打开授权…' : '绑定谷歌盘' }}
           </button>
@@ -630,6 +631,9 @@ const pan115Error = ref('')
 const driveLabel = ref('')
 const driveFormError = ref('')
 const driveStarting = ref(false)
+// iOS 弹窗被拦时的手动 fallback：弹窗被拦下时把授权地址存这里，
+// 页面上渲染一条可点链接，用户手动点开也能走完授权流程。
+const driveAuthUrl = ref('')
 const pan115Label = ref('')
 const pan115Cookie = ref('')
 const pan115FormError = ref('')
@@ -669,17 +673,29 @@ async function handleBindDrive() {
     return
   }
   driveFormError.value = ''
+  driveAuthUrl.value = ''
+  // iOS Safari 只认点按当下同步开的窗：await 之后再 window.open 会被当弹窗拦。
+  // 所以先在手势里同步开一个空窗保住手势，拿到授权地址后再给它指地址。
+  const win = window.open('about:blank', '_blank', 'noopener')
   driveStarting.value = true
   try {
     const res = await storageBindingApi.startDriveOAuth(label)
     if (!res.authorization_url) {
+      if (win && !win.closed) win.close()
       driveFormError.value = '服务器没有返回授权地址，请稍后重试'
       return
     }
-    window.open(res.authorization_url, '_blank', 'noopener')
+    driveAuthUrl.value = res.authorization_url
+    if (!win || win.closed) {
+      // 弹窗被浏览器拦了：不许谎报成功，留错误态 + 页面上的手动链接
+      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来点“刷新列表”'
+      return
+    }
+    win.location.href = res.authorization_url
     toast.success('已打开 Google 授权页，同意后回到本页点“刷新列表”')
   } catch (e) {
     // 服务器未配 OAuth 凭据等明文 400，原样展示后端错误，不编造成功
+    if (win && !win.closed) win.close()
     driveFormError.value = humanizeError(e)
   } finally {
     driveStarting.value = false
