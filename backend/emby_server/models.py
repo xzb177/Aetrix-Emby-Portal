@@ -1395,6 +1395,83 @@ class CoverMirror(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class TransferVariant(Base):
+    """转存变体登记行（转存变体机制，D1 播放源单独立列方案）。
+
+    一行 = 一个条目的一个副本播放源：条目身份锚（``drive_file_id``、
+    ``source_id``/``provider_file_id``）永远不动，播放源指针只活在
+    本表——重扫改写 ``drive_file_id`` 也动不了播放源（扫描锚定保护
+    的第一层：播放源与身份锚天然解耦）。
+
+    - ``owner_scope``：``source``（服主盘副本）| ``user``（用户盘副本）。
+      用户副本只许播给 ``owner_ref`` 本人，绝不跨用户复用。
+    - ``status``：``ready``（可播）| ``stale``（副本已死，巡检或播放
+      实证标死，不再被选路）| ``orphan``（副本已建但不可播，如权限
+      设置失败，文件在、登记在，等管理员处置，不自动删）|
+      ``released``（管理员解除绑定，行留作审计，不再被选路）。
+    - 无外键（照 LibrarySource 先例）：条目删了行留着供追溯；读侧
+      只认 ``status='ready'`` 的行，孤行不影响出流。
+    - 新表由 init_db 的 create_all 建出，不走 _auto_migrate。
+    """
+
+    __tablename__ = "emby_transfer_variants"
+
+    __table_args__ = (
+        Index("ix_transfer_variant_item", "item_id"),
+        Index("ix_transfer_variant_item_scope", "item_id", "owner_scope"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, nullable=False)
+    source_file_id = Column(String(256), nullable=False)  # 原件 fid，永留档
+    variant_file_id = Column(String(256), nullable=False)  # 副本 fid
+    variant_drive_id = Column(String(256))  # 副本所在盘（v1 与源同盘）
+    owner_scope = Column(String(20), nullable=False, default="source")
+    owner_ref = Column(String(100))  # user  scope 时为 WebUser.id 的字符串
+    status = Column(String(20), nullable=False, default="ready")
+    size_bytes = Column(Integer)
+    created_at = Column(DateTime, default=datetime.now)
+    last_played_at = Column(DateTime)
+    last_checked_at = Column(DateTime)
+    stale_count = Column(Integer, nullable=False, default=0)
+
+
+class TransferJob(Base):
+    """转存任务行（手动触发 + 应急自动触发共用同一张队列表）。
+
+    - ``trigger``：``manual``（管理端按钮）| ``auto``（播放链 Quota
+      网页信号入队）。
+    - ``status``：``pending``（待跑/待重试）| ``running`` |
+      ``done`` | ``failed``。
+    - ``error_kind``：``dead``（copy 403/404，原件已死，不重试）|
+      ``retriable``（429/5xx/网络，3 次内指数退避重试）|
+      ``orphan``（副本已建但权限失败）| ``item_gone`` |
+      ``no_drive`` | 其它。
+    - 24h 节流口径：同一条目 24h 内有任何任务行（无论成败），
+      自动触发不再重复入队；手动触发可用 force 显式越过（审计留痕）。
+    - 新表由 init_db 的 create_all 建出，不走 _auto_migrate。
+    """
+
+    __tablename__ = "emby_transfer_jobs"
+
+    __table_args__ = (
+        Index("ix_transfer_job_item", "item_id"),
+        Index("ix_transfer_job_status", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    item_id = Column(Integer, nullable=False)
+    trigger = Column(String(20), nullable=False)
+    drive_id = Column(String(256))  # 源所在盘 = 副本落盘（v1 同盘拷贝）
+    status = Column(String(20), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    error_kind = Column(String(100))
+    error_detail = Column(String(500))
+    next_retry_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class MountCredential(Base):
     """挂载凭据行（FMBY 挂载模型地基，清单第 1 项：凭据分家）。
 

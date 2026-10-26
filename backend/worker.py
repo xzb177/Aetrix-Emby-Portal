@@ -743,6 +743,18 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动图床镜像工人失败（可忽略）: {e}")
 
+        # 转存变体工人（FMBY original_transfer 机制化，第一步 + 第二步）：
+        # 手动/应急自动入队的任务 + 每天一次副本健康巡检。只 TRANSFER_
+        # VARIANT_ENABLED=1 时跑；关时线程空转、不发任何请求、不读写
+        # 任何任务状态，全站行为逐字不变。单线程顺序、每轮最多 10 单。
+        try:
+            from backend.emby_server import transfer_variant as _tv
+            _tv.start_transfer_daemon()
+            started.append("transfer_variant")
+            logger.info("✅ 转存变体守护已启动（总闸关时空转不发请求）")
+        except Exception as e:
+            logger.warning(f"启动转存变体守护失败（可忽略）: {e}")
+
         # 8. 启动 Redis 扫描队列消费（API 进程入队，worker 消费执行）
         try:
             from backend.emby_server import scan_queue

@@ -508,6 +508,7 @@ async def serve_mount_relay_async(
     headers: Optional[dict] = None,
     media_type: str = "video/mp4",
     pt=None,
+    sniff_quota_page: bool = False,
 ):
     """远程挂载专用中继：服务端带挂载凭据取流、流式转发给播放器。
 
@@ -516,6 +517,13 @@ async def serve_mount_relay_async(
     - Range 透传：客户端的 ``Range`` 原样发给上游，上游的 200/206 与
       ``Content-Range``/``Accept-Ranges`` 等头原样透回。
     - ``pt``（可选）：播放链路计时器，只加日志不改逻辑。
+    - ``sniff_quota_page``（转存变体应急自动触发用）：只 Drive 中继传
+      True；115 挂载中继不受影响。开启时，整段请求（无 Range）且上游
+      回 200 text/html 时预读首块——命中 Quota 标记则关响应关客户端、
+      抛 transfer_variant.QuotaPageError（调用方记信号 + 入队，本次
+      播放回落现行链）；未命中则首块原样补回流中，字节一分不少。
+      小段 Range 请求不嗅探（莫语者实证：小段 Range 仍放行、探测
+      正常、播放死，嗅探整段才有意义）。
     """
     import httpx
 
@@ -578,6 +586,41 @@ async def serve_mount_relay_async(
                 status_code=502 if status >= 500 else status,
                 detail=f"源站返回 {status}")
 
+        # 转存变体 Quota 嗅探（仅 Drive 中继传 True；115 挂载中继不受影响）。
+        # 整段请求（无 Range）且上游回 200 时预读首块：命中 Quota 标记
+        # → 关响应关客户端、抛 QuotaPageError（video_stream 接住记信号 +
+        # 入队，本次播放回落现行链）；未命中 → 首块记为 prelude，
+        # iter_mount 先吐首块再续流，字节一分不少、透传头不动。
+        # 嗅探本身绝不能拖垮播放：预读失败时当作未嗅探，照常流式转发。
+        # 注意：QuotaPageError 在本块内关完客户端才抛——外层 except 只认
+        # HTTPException，QuotaPageError 会原样穿到调用方，不会漏关连接。
+        _prelude = None
+        if sniff_quota_page and resp.status_code == 200 and not range_header:
+            from backend.emby_server import transfer_variant as _tv
+            try:
+                _aiter = resp.aiter_bytes(READ_CHUNK)
+                try:
+                    _first = await _aiter.__anext__()
+                except StopAsyncIteration:
+                    _first = b""
+                if _tv.is_quota_page_bytes(
+                        resp.status_code, resp.headers.get("content-type"),
+                        _first):
+                    await resp.aclose()
+                    resp = None
+                    try:
+                        await client.aclose()
+                    except Exception:
+                        pass
+                    raise _tv.QuotaPageError("上游整段响应为 Quota 额度页")
+                _prelude = (_aiter, _first)
+            except _tv.QuotaPageError:
+                raise
+            except Exception as exc:
+                logger.warning("Quota 嗅探预读失败，照常转发：%s",
+                               type(exc).__name__)
+                _prelude = None
+
         passthrough = {}
         for name in ("content-range", "accept-ranges", "content-length",
                      "last-modified", "etag"):
@@ -599,8 +642,17 @@ async def serve_mount_relay_async(
 
         async def iter_mount():
             try:
-                async for chunk in resp.aiter_bytes(READ_CHUNK):
-                    yield chunk
+                if _prelude is not None:
+                    # 嗅探已预读首块：先吐首块，再续跑同一迭代器——
+                    # 非 Quota 的 HTML 原样续流，字节一个不少。
+                    _aiter, _first = _prelude
+                    if _first:
+                        yield _first
+                    async for chunk in _aiter:
+                        yield chunk
+                else:
+                    async for chunk in resp.aiter_bytes(READ_CHUNK):
+                        yield chunk
             except httpx.TransportError as exc:
                 # 源站中途断开：结束这条流、归还连接；响应头已发出，
                 # 播放器会对剩余区间重新发 Range。
@@ -690,7 +742,7 @@ async def serve_drive_relay_async(
             return await serve_mount_relay_async(
                 url, request,
                 headers={"Authorization": f"Bearer {token}"},
-                media_type=media_type, pt=pt)
+                media_type=media_type, pt=pt, sniff_quota_page=True)
         except HTTPException as exc:
             if exc.status_code != 403 or attempt == 1:
                 raise

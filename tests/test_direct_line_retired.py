@@ -132,7 +132,7 @@ def test_video_stream_source_has_no_google_direct_call():
     assert "target.direct" not in code
     # 白名单：每处 302 第一个位置参数（URL 来源表达式）的源码文本
     _WHITELIST_302_URL_SOURCES = {
-        "drive_usercontent_download_url(_fid)",  # Drive 直链（快路径 + 回落）
+        "drive_usercontent_download_url(_play_fid)",  # Drive 直链（快路径 + 回落；#1316 起播放源指针改名 _play_fid，生产改名有意、白名单同步新名）
         "direct_url",  # 对象存储签名直链（← _strategy.maybe_direct_url）
         # 注 2026-10-24：#1220 的转码变体 HLS 分支已随转码全面删除而移除，
         # 本白名单不再含 _hls_url；任何新增的外部门直链变量仍不在白名单里，照样红。

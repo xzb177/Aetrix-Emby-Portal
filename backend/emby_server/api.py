@@ -5106,6 +5106,16 @@ async def video_stream(
     _fid = (getattr(item, "drive_file_id", "") or "").strip()
     _drive_switch_on = bool(_fid) and await run_db(
         _strategy.drive_direct_play_enabled, db)
+    # 转存变体选路（D1 播放源单独立列）：有健康副本时 Drive 中继/302
+    # 两条路改播副本 fid；无副本或总闸关时 _play_fid == _fid，行为逐字
+    # 不变。解析以 item_id 为键：重扫改写 drive_file_id 后副本仍可被
+    # 解析到。解析本身纯读、异常回原件，绝不拖垮播放。通用 _play_target
+    # 路径（挂载中继/本机文件/对象存储直链）不受变体影响，保持原样。
+    from backend.emby_server import transfer_variant as _tv
+    _play_fid, _play_variant = _fid, None
+    if _fid:
+        _play_fid, _play_variant = await run_db(
+            _tv.resolve_play_file_id, db, item, user)
     # 播放阶段 6 按可用性换线：只影响下面无变体请求的 Drive 默认路线；
     # 显式变体请求与挂载/本机路线不受换线影响。关时 _switch_on 为
     # False，后面所有换线分支都不进，选路与今天逐字一致。
@@ -5215,7 +5225,13 @@ async def video_stream(
             and (_requested_variant is None
                  or _requested_variant == play_variants.DRIVE_RELAY)):
         _evt_t0 = time.perf_counter()
-        _relay_drive_id = await run_db(_drive_mount_id_for_item, db, item)
+        # 转存变体：有副本时中继凭据走副本所在盘（v1 与原件同盘，凭据
+        # 与原件盘一致）；无副本时仍按原件定位。显式 DRIVE_RELAY 且无
+        # drive 时报 409 的语义不变（副本行一定带 variant_drive_id）。
+        _relay_drive_id = (
+            _play_variant.variant_drive_id
+            if _play_variant is not None and _play_variant.variant_drive_id
+            else await run_db(_drive_mount_id_for_item, db, item))
         if _requested_variant == play_variants.DRIVE_RELAY and not _relay_drive_id:
             # 校验时可定位、执行时已不可定位（挂载被停用等竞态）：
             # 报 409，不许回落到直链或 _play_target（那是静默改走）。
@@ -5257,8 +5273,36 @@ async def video_stream(
                 _pt.mark("relay")
                 try:
                     _relay_resp = await serve_drive_relay_async(
-                        request, _relay_drive_id, _fid,
+                        request, _relay_drive_id, _play_fid,
                         media_type=media_type, pt=_pt)
+                except _tv.QuotaPageError:
+                    # 转存变体应急自动触发：上游整段回的是 Quota 额度页
+                    # （不是视频字节）。记信号 + 按节流入队（函数内部
+                    # 绝不抛错），本次播放回落现行链：302 开着走下面的
+                    # _fast302 流程（用原件 _fid，不置 _switch_attempted，
+                    # 避免误触「变体切换后仍失败」的 409 分支）；302 关着
+                    # 则干净 502。入队用的 drive_id 必须是原件所在盘，
+                    # 故此处重算原件 drive，不复用可能等于变体盘的
+                    # _relay_drive_id（v1 两者相同，语义上以原件为准）。
+                    # 刚标 stale 的变体不再复用（_play_fid 指回原件）。
+                    _orig_drive_id = await run_db(
+                        _drive_mount_id_for_item, db, item)
+                    await run_db(
+                        _tv.note_quota_signal, db, item, user,
+                        _play_variant, _orig_drive_id)
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None),
+                        method="relay",
+                        variant=play_variants.DRIVE_RELAY,
+                        result="error", error_kind="quota_page",
+                        resolve_ms=int(
+                            (time.perf_counter() - _evt_t0) * 1000))
+                    _play_fid = _fid
+                    if not _drive_switch_on:
+                        raise HTTPException(
+                            status_code=502,
+                            detail="文件公开额度已耗尽，转存已入队，"
+                                   "下次播放走副本") from None
                 except HTTPException as exc:
                     # 阶段 6 换线失败重试点：只有上游 502（远端不可用）
                     # 可换线；403（轮换后仍失败）/503（取不到凭据）/
@@ -5306,10 +5350,10 @@ async def video_stream(
     if _drive_switch_on:
         # 相同起始 Range 的短时重试：播放器多半是谷歌 404 之后又来了一次，
         # 正缓存不能再把死链 302 出去。拖动 / 下一段起始字节不同，不进这里。
-        _force = drive_exists_rapid_retry(request, user, _fid)
+        _force = drive_exists_rapid_retry(request, user, _play_fid)
         try:
             _fast302 = await _ensure_drive_file_playable(
-                db, item, _fid, force_recheck=_force)
+                db, item, _play_fid, force_recheck=_force)
         except HTTPException as exc:
             # 阶段 6：换线后直链仍失败，原因要带上切换上下文，不许
             # 把一次切换失败读成普通的直链失败。
@@ -5342,7 +5386,7 @@ async def video_stream(
             resolve_ms=int((time.perf_counter() - _evt_t0) * 1000))
         from backend.emby_server.drive_auth import drive_usercontent_download_url
         return _observe_traffic(
-            RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
+            RedirectResponse(drive_usercontent_download_url(_play_fid), status_code=302,
                              headers=_strategy.DIRECT_REDIRECT_HEADERS))
     if _requested_variant == play_variants.BYOS115_DIRECT:
         # BYOS P1：绑定用户自己的 115 直链——按绑定凭据现签现发 302，
@@ -5400,13 +5444,14 @@ async def video_stream(
         # 播放策略能力：对象存储直链名单命中时 302 到对象存储；Drive 条目
         # 直接 302 到谷歌 usercontent 直链。判定逻辑见 playback_strategy。
         # 回落分支：快路径未命中（挂载解析失败等）时仍走原 _play_target，
-        # 这里保留原 drive 302 语义（_fid + 开关）。
+        # 这里保留原 drive 302 语义（_play_fid + 开关；无副本时
+        # _play_fid == _fid，有副本时 302 指向副本）。
         if _drive_switch_on:
             from backend.emby_server.drive_auth import drive_usercontent_download_url
             _pt.mark("drive_direct_302")
             _pt.done()
             return _observe_traffic(
-                RedirectResponse(drive_usercontent_download_url(_fid), status_code=302,
+                RedirectResponse(drive_usercontent_download_url(_play_fid), status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
         direct_url = await run_db(
             _strategy.maybe_direct_url, db, getattr(item, "drive_file_id", None))
