@@ -95,6 +95,37 @@ def error_message(kind: str | None) -> str:
     return "绑定不可用，请重新绑定。"
 
 
+#: 挂载类型 → 用户端绑定 provider（GET /storage-bindings/providers 用）。
+#: 只映射 BYOS 有绑定入口的两类：drive（含 gdrive / google 系别名）与 115 系；
+#: 其余类型（local / rclone / yun139 等）没有绑定入口，不映射、不返回。
+_MOUNT_TYPE_TO_BINDING_PROVIDER = {
+    "drive": "drive", "gdrive": "drive", "google": "drive",
+    "googledrive": "drive", "google_drive": "drive",
+    "115": "pan115", "pan115": "pan115",
+}
+
+
+def list_binding_providers(db: Session) -> list[str]:
+    """后台实际启用的挂载类型映射后的 provider 名单（只读小口的查询本体）。
+
+    只返回映射后的 provider 名，不返回挂载路径、凭据、账号等任何敏感字段；
+    只有 is_enabled 的挂载行才计入（NULL 按列默认值启用计）。
+    """
+    rows = (
+        db.query(em.StorageMount.mount_type)
+        .filter(em.StorageMount.is_enabled.isnot(False))
+        .distinct()
+        .all()
+    )
+    found = set()
+    for (raw,) in rows:
+        mapped = _MOUNT_TYPE_TO_BINDING_PROVIDER.get((raw or "").strip().lower())
+        if mapped:
+            found.add(mapped)
+    # 固定顺序输出；前端只做 includes 判断，不依赖顺序
+    return [p for p in ("drive", "pan115") if p in found]
+
+
 def serialize_binding(binding: em.UserStorageBinding) -> dict:
     """绑定行 → 用户端响应：绝不含凭据原文、密封值与内部凭据行号"""
     return {

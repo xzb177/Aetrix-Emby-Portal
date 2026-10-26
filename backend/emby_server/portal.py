@@ -674,6 +674,23 @@ def list_storage_bindings(
     return {"bindings": user_bindings.list_bindings(db, request_user.id)}
 
 
+@user_emby_router.get("/storage-bindings/providers")
+def list_storage_binding_providers(
+        request_user: models.WebUser = Depends(get_admin_or_emby_user),
+        db: Session = Depends(get_db)):
+    """用户端“我的网盘”按挂载驱动渲染用：只返回后台实际启用的挂载类型映射后的
+    provider 名单，不返回挂载路径、凭据、账号等任何敏感字段。
+
+    映射与口径见 user_bindings.list_binding_providers：只有 is_enabled 的挂载行
+    才计入；前端按这份名单渲染对应 provider 的块，名单里没有的 provider 整个块
+    不渲染，连该 provider 已绑的行也不展示（以名单为准；与“列表只出自己的行”
+    口径的冲突点已写进 PR 描述，等父代理审）。
+    """
+    from backend.emby_server import user_bindings
+
+    return {"providers": user_bindings.list_binding_providers(db)}
+
+
 @user_emby_router.post("/storage-bindings", status_code=201)
 def create_storage_binding(
         body: StorageBindingCreate,
