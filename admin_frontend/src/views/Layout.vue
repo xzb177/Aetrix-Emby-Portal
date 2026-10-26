@@ -25,7 +25,7 @@ import {
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Clapperboard,
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
-  Image as ImageIcon,
+  Image as ImageIcon, Layers,
   Database, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Medal, MessageSquareText,
   Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks,
@@ -177,7 +177,6 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/servers', label: '服务器与线路', icon: Server },
       { path: '/emby', label: '媒体库', icon: Library },
-      { path: '/media-library', label: '图片与顺序', icon: ImageIcon },
       // 谁能看到哪些库（服务器默认范围 + 指定用户覆盖）：默认关闭，不改现有行为
       { path: '/library-scope', label: '可见范围', icon: Eye },
       // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
@@ -208,12 +207,12 @@ const navGroups: NavGroup[] = [
 ]
 
 /**
- * 不占导航位置、但仍要归属到某个分组的页面（服管理 = 媒体里的一条支线）
- *
- * 放进导航就会让「多服」又变成要先理解的一级概念——它的入口在「服务器与线路」页里，
- * 这里只负责面包屑归属与分组展开。
+ * 不占导航位置、但仍要归属到某个分组的页面（只负责面包屑归属与分组展开）：
+ * - 服管理 = 媒体里的一条支线。放进导航就会让「多服」又变成要先理解的一级概念——
+ *   它的入口在「服务器与线路」页里。
+ * - 合集管理、图片与顺序 = 媒体里的支线。页保留、导航不占位，入口只剩直接地址与命令面板。
  */
-const OFF_NAV_GROUP: Record<string, string> = { '/realms': '媒体', '/media-collections': '媒体' }
+const OFF_NAV_GROUP: Record<string, string> = { '/realms': '媒体', '/media-collections': '媒体', '/media-library': '媒体' }
 
 /** 某个路径归哪个分组（含不占导航位置的页面，见 OFF_NAV_GROUP） */
 function groupOf(path: string): NavGroup | undefined {
@@ -270,7 +269,14 @@ const QUICK_JUMPS: PaletteItem[] = [
   { id: 'jump-expiring', label: '7 天内到期订阅', group: '常用定位', to: '/subscriptions?status=expiring', icon: Crown, hint: '续费窗口里的会员' },
 ]
 
-/** 侧边栏的页面清单（含不占导航位置的 /realms）——命令面板不维护第二份 */
+/** 不占导航位置的页面在命令面板里的显示（label / 图标按路径给，不许硬编码成某一页） */
+const OFF_NAV_META: Record<string, { label: string; icon: unknown; keywords?: string }> = {
+  '/realms': { label: '服管理', icon: RealmIcon, keywords: 'realm 服 切换' },
+  '/media-collections': { label: '合集管理', icon: Layers },
+  '/media-library': { label: '图片与顺序', icon: ImageIcon },
+}
+
+/** 侧边栏的页面清单（含不占导航位置的 /realms、/media-collections 与 /media-library）——命令面板不维护第二份 */
 const pageCommands = computed<PaletteItem[]>(() => {
   const items: PaletteItem[] = []
   for (const group of navGroups) {
@@ -290,14 +296,16 @@ const pageCommands = computed<PaletteItem[]>(() => {
     }
   }
   for (const [path, groupTitle] of Object.entries(OFF_NAV_GROUP)) {
+    const meta = OFF_NAV_META[path]
+    if (!meta) continue
     items.push({
       id: `page-${path}`,
-      label: '服管理',
+      label: meta.label,
       group: groupTitle,
       to: path,
-      icon: RealmIcon,
+      icon: meta.icon,
       hint: path,
-      keywords: 'realm 服 切换',
+      keywords: meta.keywords,
     })
   }
   return items
