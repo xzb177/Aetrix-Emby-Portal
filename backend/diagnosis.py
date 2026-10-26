@@ -245,7 +245,7 @@ def _rule_breakers(subs: dict) -> dict:
         more = f"等 {len(breakers)} 个" if len(breakers) > 5 else ""
         return Finding(
             "probe_breakers", "SA 熔断", "warn",
-            f"有挂载的 SA 被熔断（{more or names}）",
+            f"有挂载的 SA 被熔断（{names}{more}）",
             "部分挂载的 Google 账号触发了限流/配额保护，被暂时熔断。熔断是保护机制，"
             "不是故障；相关挂载的探测会变慢，但不会丢数据。",
             ["不用手动干预：熔断到期会自动恢复",
