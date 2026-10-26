@@ -238,9 +238,30 @@ def variantize_url(url: str, guid: str, variant_name: str) -> str:
     return f"{out}{sep}variant={variant_name}"
 
 
+def apply_transfer_status(sources: list[dict], transfer_status: str) -> None:
+    """转存准备中态覆盖（2026-10-26 用户亲定“先转存再播”）。
+
+    只对 preparing/failed 生效，其它值（含 None/ready）逐字不动：
+    各源加 ``TransferStatus`` 字段、SupportsDirectPlay 与
+    SupportsDirectStream 置 False、删 DirectPlayUrl/DirectStreamUrl
+    ——清单里保留该条、但点不了（FMBY“先转存再播”口径，不要做成
+    清单里根本不列）。原地修改，调用方在缓存取/存之后再算状态
+    并覆盖（状态每请求新鲜算，不污染 5 分钟基础体缓存）。
+    """
+    if transfer_status not in ("preparing", "failed"):
+        return
+    for src in sources:
+        src["TransferStatus"] = transfer_status
+        src["SupportsDirectPlay"] = False
+        src["SupportsDirectStream"] = False
+        src.pop("DirectPlayUrl", None)
+        src.pop("DirectStreamUrl", None)
+
+
 def build_media_sources(base_source: dict, variants: list[Variant], *,
                         guid: str, stream_url: str,
-                        direct_stream_ok: bool) -> list[dict]:
+                        direct_stream_ok: bool,
+                        transfer_status: str = None) -> list[dict]:
     """把 ``_media_source`` 基础体按变体清单复制成多条 MediaSource。
 
     基础体（含真实探测轨道/章节）每变体深拷贝一份，只改身份与申报
@@ -248,6 +269,8 @@ def build_media_sources(base_source: dict, variants: list[Variant], *,
     可读名、Protocol/IsRemote 按变体元数据、URL 按变体打标。
     服务端转码已删除：``SupportsTranscoding`` 每条恒 False，
     不再下发 ``TranscodingUrl``。
+    ``transfer_status`` 为 preparing/failed 时建完即覆盖准备中态
+    （见 apply_transfer_status；默认 None = 逐字不变）。
     """
     base_name = base_source.get("Name") or ""
     out: list[dict] = []
@@ -265,4 +288,5 @@ def build_media_sources(base_source: dict, variants: list[Variant], *,
         src["SupportsTranscoding"] = False
         src.pop("TranscodingUrl", None)
         out.append(src)
+    apply_transfer_status(out, transfer_status)
     return out

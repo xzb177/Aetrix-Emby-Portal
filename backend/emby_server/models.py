@@ -1426,6 +1426,9 @@ class TransferVariant(Base):
     source_file_id = Column(String(256), nullable=False)  # 原件 fid，永留档
     variant_file_id = Column(String(256), nullable=False)  # 副本 fid
     variant_drive_id = Column(String(256))  # 副本所在盘（v1 与源同盘）
+    # 115 副本的 pickcode（播放取下载地址用；Drive 行恒 NULL）。
+    # pickcode 随文件存在而稳定，副本删除后巡检标 stale，不复用旧码。
+    pickcode = Column(String(64))
     owner_scope = Column(String(20), nullable=False, default="source")
     owner_ref = Column(String(100))  # user  scope 时为 WebUser.id 的字符串
     status = Column(String(20), nullable=False, default="ready")
@@ -1440,16 +1443,30 @@ class TransferJob(Base):
     """转存任务行（手动触发 + 应急自动触发共用同一张队列表）。
 
     - ``trigger``：``manual``（管理端按钮）| ``auto``（播放链 Quota
-      网页信号入队）。
+      网页信号入队）| ``playback``（绑定用户首播触发，2026-10-26
+      用户亲定“先转存再播”）。
     - ``status``：``pending``（待跑/待重试）| ``running`` |
       ``done`` | ``failed``。
     - ``error_kind``：``dead``（copy 403/404，原件已死，不重试）|
       ``retriable``（429/5xx/网络，3 次内指数退避重试）|
       ``orphan``（副本已建但权限失败）| ``item_gone`` |
-      ``no_drive`` | 其它。
-    - 24h 节流口径：同一条目 24h 内有任何任务行（无论成败），
-      自动触发不再重复入队；手动触发可用 force 显式越过（审计留痕）。
-    - 新表由 init_db 的 create_all 建出，不走 _auto_migrate。
+      ``no_drive`` | ``no_binding``（用户绑定已失效，工人不重试）|
+      ``auth_error``（115 Cookie 失效，工人不重试）|
+      ``unsupported``（该 provider/scope 组合工人不支持）| 其它。
+    - 24h 节流口径（按归属分桶）：同一条目同一归属（owner_scope +
+      owner_ref）24h 内有任何任务行（无论成败），自动/播放触发不再
+      重复入队；手动触发可用 force 显式越过（审计留痕）。分桶是
+      关键：用户 A 的任务绝不能堵住用户 B 的任务。
+    - ``provider``：``drive`` | ``pan115``（同 provider 内转存，
+      不跨 provider 下载再上传）。
+    - ``owner_scope`` / ``owner_ref``：``source``（服主副本，
+      owner_ref 为空）| ``user``（用户盘副本，owner_ref 为用户 id
+      字符串）。工人按归属写对应 scope 的副本行。
+    - ``dest_drive_id``：用户任务的落盘标识（Drive 为
+      ``userdrive:<user_id>``，115 为 ``pan115:user-<user_id>``）；
+      服主任务为空（= drive_id，同盘拷贝）。
+    - 新表由 init_db 的 create_all 建出；老库新增列由 database
+      通用 auto-migrate（_all_metadata 双 Base 对账）补齐。
     """
 
     __tablename__ = "emby_transfer_jobs"
@@ -1457,12 +1474,21 @@ class TransferJob(Base):
     __table_args__ = (
         Index("ix_transfer_job_item", "item_id"),
         Index("ix_transfer_job_status", "status"),
+        Index("ix_transfer_job_owner", "item_id", "owner_scope", "owner_ref"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     item_id = Column(Integer, nullable=False)
     trigger = Column(String(20), nullable=False)
-    drive_id = Column(String(256))  # 源所在盘 = 副本落盘（v1 同盘拷贝）
+    drive_id = Column(String(256))  # 源所在盘（v1 同盘拷贝时 = 副本落盘）
+    # 归属与落盘（2026-10-26 用户亲定“转存到用户绑定盘”）：
+    # provider: drive | pan115；owner_scope: source | user；
+    # owner_ref: user scope 时为用户 id 字符串，source 时为空；
+    # dest_drive_id: 用户任务落盘标识，服主任务为空（= drive_id）。
+    provider = Column(String(20), nullable=False, default="drive")
+    owner_scope = Column(String(20), nullable=False, default="source")
+    owner_ref = Column(String(100))
+    dest_drive_id = Column(String(256))
     status = Column(String(20), nullable=False, default="pending")
     attempts = Column(Integer, nullable=False, default=0)
     error_kind = Column(String(100))

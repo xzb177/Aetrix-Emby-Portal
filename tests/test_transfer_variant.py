@@ -22,6 +22,7 @@ from sqlalchemy.pool import StaticPool
 from backend import models as base_models
 from backend.emby_server import models as em
 from backend.emby_server import transfer_variant as tv
+from backend.emby_server import play_variants
 from backend.emby_server import scanner as scanner_mod
 from backend.emby_server import streaming as streaming_mod
 from backend.emby_server.streaming import serve_mount_relay_async
@@ -413,3 +414,368 @@ def test_relay_sniff_non_quota_streams_full_body(monkeypatch):
 
     body = asyncio.run(_serve_and_collect())
     assert body == b"<html>hello</html>more-bytes"  # 首块补回，一个不少
+
+
+# ---------- 首播转存门禁（2026-10-26 先转存再播） ----------
+
+def _mount(db, mount_id, mount_type, path):
+    row = em.StorageMount(id=mount_id, name=f"m{mount_id}",
+                          mount_type=mount_type, path=path)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _user_job(db, item_id, user_id, provider="drive", status="pending",
+              drive_id="drive1", trigger="playback"):
+    dest = (f"userdrive:{user_id}" if provider == "drive"
+            else f"pan115:user-{user_id}")
+    row = em.TransferJob(item_id=item_id, trigger=trigger,
+                         drive_id=drive_id, provider=provider,
+                         owner_scope="user", owner_ref=str(user_id),
+                         dest_drive_id=dest, status=status)
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_gate_master_off_proceeds(db, monkeypatch):
+    monkeypatch.setenv("TRANSFER_VARIANT_ENABLED", "0")
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    assert tv.ensure_user_copy_gate(db, item, _user())["verdict"] == "proceed"
+    assert db.query(em.TransferJob).count() == 0
+
+
+def test_gate_no_binding_proceeds(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate == {"verdict": "proceed", "reason": "no_matching_binding"}
+    assert db.query(em.TransferJob).count() == 0
+
+
+def test_gate_provider_mismatch_proceeds(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7, provider="pan115")
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "proceed"
+    assert gate["reason"] == "no_matching_binding"
+
+
+def test_gate_creates_user_job_preparing(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "preparing" and gate["reason"] == "job_created"
+    job = db.query(em.TransferJob).one()
+    assert job.provider == "drive" and job.owner_scope == "user"
+    assert job.owner_ref == "7" and job.drive_id == "drive1"
+    assert job.dest_drive_id == "userdrive:7" and job.status == "pending"
+
+
+def test_gate_no_duplicate_job(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    _user_job(db, item.id, 7)
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "preparing" and gate["reason"] == "job_in_flight"
+    assert db.query(em.TransferJob).count() == 1
+
+
+def test_gate_ready_drive_copy_proceeds(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    _variant(db, item.id, fid="usercopy", scope="user", ref="7")
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "proceed"
+    assert gate["reason"] == "has_ready_variant"
+
+
+def test_gate_failed_dead_job(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_job(db, item.id, 7, status="failed")
+    job.error_kind = "dead"
+    db.commit()
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate == {"verdict": "failed", "reason": "dead",
+                    "job_id": job.id}
+
+
+def test_gate_done_job_within_24h_throttled(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    # done 但副本已释放（无 ready 行）：节流窗内不重复建。
+    _user_job(db, item.id, 7, status="done")
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "preparing" and gate["reason"] == "throttled"
+    assert db.query(em.TransferJob).count() == 1
+
+
+def test_gate_per_user_throttle_isolated(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    _binding(db, 8)
+    _user_job(db, item.id, 7)  # 用户 A 的任务绝不能堵住用户 B
+    gate = tv.ensure_user_copy_gate(db, item, _user(8))
+    assert gate["verdict"] == "preparing" and gate["reason"] == "job_created"
+    assert db.query(em.TransferJob).count() == 2
+
+
+def test_gate_byos_item_proceeds(db, monkeypatch):
+    _enable(monkeypatch)
+    item = _item(db, file_path="byos://2/电影/a.mkv")
+    _binding(db, 7)
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate == {"verdict": "proceed", "reason": "byos_item"}
+
+
+def test_gate_play_sign_consume_proceeds(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    gate = tv.ensure_user_copy_gate(db, item, _user(),
+                                    play_sign_consume=True)
+    assert gate == {"verdict": "proceed", "reason": "play_sign_consume"}
+    assert db.query(em.TransferJob).count() == 0
+
+
+def test_release_ready_rows_scoped_by_owner(db):
+    item = _item(db)
+    row_a = _variant(db, item.id, fid="copy-a", scope="user", ref="7")
+    row_b = _variant(db, item.id, fid="copy-b", scope="user", ref="8")
+    assert tv._release_ready_rows(db, item.id, "user", "7") == 1
+    db.commit()  # 释放函数约定调用方 commit，提交后刷新才可见。
+    db.refresh(row_a)
+    db.refresh(row_b)
+    assert row_a.status == "released" and row_b.status == "ready"
+
+
+# ---------- Drive 用户盘工人（Path A / Path B） ----------
+
+class _FakeUserDrive:
+    """UserDriveApiClient 桩：mode 决定 copy 行为。"""
+
+    def __init__(self, mode="path_a"):
+        self.mode = mode
+        self.copy_calls = []
+        self.perm_calls = []
+        self._tmp_forbidden_once = True
+
+    def ensure_folder(self, drive_id, dir_name):
+        return "ufolder"
+
+    def copy_file(self, drive_id, source_fid, folder_id, name):
+        self.copy_calls.append(source_fid)
+        if self.mode == "path_a":
+            return {"id": "usercopy", "size": 1000}
+        if source_fid == "origfid":
+            # Path A：用户无权源，403 转 Path B。
+            raise tv._CopyForbidden("copy 被拒：403")
+        if self.mode == "path_b_flaky_tmp" and self._tmp_forbidden_once:
+            self._tmp_forbidden_once = False
+            raise tv._CopyForbidden("copy 被拒：403")
+        return {"id": "usercopy", "size": 1000}
+
+    def add_anyone_reader(self, drive_id, fid):
+        self.perm_calls.append(fid)
+
+
+class _StubDriveSA:
+    """Path B 的 SA 侧桩：暂存建/复用/删全程可观测。"""
+
+    def __init__(self, copy_behavior="ok", tmp_exists=False):
+        self.copy_behavior = copy_behavior
+        self.tmp_exists = tmp_exists
+        self.copy_calls = 0
+        self.deleted = []
+
+    def ensure_folder(self, drive_id, dir_name):
+        return "tfolder"
+
+    def find_file_by_name(self, drive_id, folder_id, name):
+        return "tmpfid" if self.tmp_exists else None
+
+    def copy_file(self, drive_id, source_fid, folder_id, name):
+        self.copy_calls += 1
+        if self.copy_behavior == "forbidden":
+            raise tv._CopyForbidden("copy 被拒：403")
+        return {"id": "tmpfid", "size": 1000}
+
+    def add_anyone_reader(self, drive_id, fid):
+        pass
+
+    def delete_file(self, drive_id, fid):
+        self.deleted.append(fid)
+
+
+def _user_pending_job(db, item_id, user_id=7, drive_id="drive1"):
+    return _user_job(db, item_id, user_id, status="pending",
+                     drive_id=drive_id, trigger="playback")
+
+
+def test_worker_user_path_a_success(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    _variant(db, item.id, fid="other-copy", scope="user", ref="8")
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_a")
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    result = tv.run_transfer_job_once(db, job, _StubDriveSA())
+    assert result["outcome"] == "done" and job.status == "done"
+    rows = db.query(em.TransferVariant).filter(
+        em.TransferVariant.status == "ready").all()
+    assert len(rows) == 2  # 用户 8 的行不受影响（按 owner 释放）
+    mine = [r for r in rows if r.owner_ref == "7"]
+    assert len(mine) == 1 and mine[0].variant_file_id == "usercopy"
+    assert mine[0].variant_drive_id == "userdrive:7"
+    assert fake.perm_calls == ["usercopy"]
+
+
+def test_worker_user_path_b_success_and_tmp_cleanup(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_b")
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    sa = _StubDriveSA()
+    result = tv.run_transfer_job_once(db, job, sa)
+    assert result["outcome"] == "done"
+    assert sa.copy_calls == 1 and sa.deleted == ["tmpfid"]
+    row = db.query(em.TransferVariant).filter(
+        em.TransferVariant.status == "ready").one()
+    assert row.variant_file_id == "usercopy" and row.owner_ref == "7"
+
+
+def test_worker_user_path_b_sa_dead(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_b")
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    result = tv.run_transfer_job_once(db, job,
+                                      _StubDriveSA("forbidden"))
+    assert result["outcome"] == "failed" and result["error_kind"] == "dead"
+    assert db.query(em.TransferVariant).count() == 0
+
+
+def test_worker_user_no_binding(db):
+    item = _item(db)
+    job = _user_pending_job(db, item.id)
+    result = tv.run_transfer_job_once(db, job, _StubDriveSA())
+    assert result["outcome"] == "failed"
+    assert result["error_kind"] == "no_binding"
+
+
+def test_worker_user_path_b_tmp_reused_on_retry(db, monkeypatch):
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_pending_job(db, item.id)
+    fake = _FakeUserDrive("path_b_flaky_tmp")
+    monkeypatch.setattr(tv, "UserDriveApiClient",
+                        lambda db_arg, binding: fake)
+    sa = _StubDriveSA()
+    # 第 1 次：暂存分享后用户 copy 403（传播延迟）→ retried。
+    assert tv.run_transfer_job_once(db, job, sa)["outcome"] == "retried"
+    assert sa.copy_calls == 1
+    # 第 2 次：暂存已存在，复用不重建，SA copy 不再调用。
+    job.next_retry_at = None
+    sa.tmp_exists = True
+    db.commit()
+    assert tv.run_transfer_job_once(db, job, sa)["outcome"] == "done"
+    assert sa.copy_calls == 1 and sa.deleted == ["tmpfid"]
+
+
+# ---------- Quota 信号 BYOS 分支 ----------
+
+def test_quota_byos_creates_user_job(db, monkeypatch):
+    _enable(monkeypatch, auto=True)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    result = tv.note_quota_signal(db, item, _user(), None, "drive1")
+    assert result["action"] == "queued"
+    job = db.query(em.TransferJob).one()
+    assert job.provider == "drive" and job.owner_scope == "user"
+    assert job.owner_ref == "7" and job.trigger == "auto"
+
+
+def test_quota_byos_throttled_per_user(db, monkeypatch):
+    _enable(monkeypatch, auto=True)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    _binding(db, 8)
+    _user_job(db, item.id, 7, status="pending", trigger="auto")
+    assert tv.note_quota_signal(
+        db, item, _user(7), None, "drive1")["action"] == "throttled"
+    assert tv.note_quota_signal(
+        db, item, _user(8), None, "drive1")["action"] == "queued"
+
+
+# ---------- 准备中态覆盖 ----------
+
+def _base_source():
+    return {"Name": "测试片", "SupportsDirectPlay": True,
+            "SupportsDirectStream": True, "DirectPlayUrl": "http://x/s",
+            "DirectStreamUrl": "http://x/s", "SupportsTranscoding": False}
+
+
+def _variants():
+    return [play_variants.Variant(name="drive_relay", label="中继",
+                                   protocol="Http", is_remote=False,
+                                   needs_relay=True)]
+
+
+def test_build_media_sources_preparing_overlay():
+    sources = play_variants.build_media_sources(
+        _base_source(), _variants(), guid="g1",
+        stream_url="http://x/s", direct_stream_ok=True,
+        transfer_status="preparing")
+    assert len(sources) == 1
+    src = sources[0]
+    assert src["TransferStatus"] == "preparing"
+    assert src["SupportsDirectPlay"] is False
+    assert src["SupportsDirectStream"] is False
+    assert "DirectPlayUrl" not in src and "DirectStreamUrl" not in src
+
+
+def test_build_media_sources_ready_unchanged():
+    sources = play_variants.build_media_sources(
+        _base_source(), _variants(), guid="g1",
+        stream_url="http://x/s", direct_stream_ok=True,
+        transfer_status="ready")
+    src = sources[0]
+    assert "TransferStatus" not in src
+    assert src["SupportsDirectPlay"] is True
+    assert src["DirectPlayUrl"].startswith("http://x/s")
+    assert "variant=drive_relay" in src["DirectPlayUrl"]
+
+
+def test_apply_transfer_status_failed_overlay():
+    sources = [_base_source()]
+    play_variants.apply_transfer_status(sources, "failed")
+    assert sources[0]["TransferStatus"] == "failed"
+    assert sources[0]["SupportsDirectPlay"] is False
+    assert "DirectPlayUrl" not in sources[0]

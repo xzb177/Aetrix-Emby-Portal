@@ -257,6 +257,10 @@ class Pan115Client:
                     "is_dir": _is_dir(entry),
                     "size": int(entry.get("s") or 0),
                     "pickcode": entry.get("pc") or "",
+                    # sha1 仅透传（响应里有才取，缺时为空）：本 PR 不建
+                    # hash 上传秒传路径——服务端内 copy 不需要 sha1，
+                    # 绝不拿 pickcode 或其它字段冒充哈希。
+                    "sha1": entry.get("sha1") or "",
                 }
                 for entry in data
             )
@@ -280,6 +284,36 @@ class Pan115Client:
         if not url:
             raise Pan115Error("115 未返回下载地址")
         return str(url)
+
+    # ---- 转存（同 provider 内 copy，不搬字节） ----
+
+    def copy_file(self, source_fid: str, dest_cid: str) -> dict:
+        """服务端内 copy（转存到用户盘用）。
+
+        请求形态：POST /files/copy，fid=源 fid、pid=目标目录 cid。
+        响应形态待 115 测试账号实测：返回原始 body，调用方用多字段
+        容错提新 fid/pickcode，提不到再列目标目录匹配。115 copy 是
+        服务端内操作、通常瞬时，但大文件不假设严格瞬时——状态机与
+        Drive 线同一套（准备中 → 就绪/失败），不因“秒传”省状态。
+        """
+        body = self._call(
+            "POST", f"{PAN115_WEBAPI_BASE}/files/copy",
+            data={"fid": source_fid, "pid": dest_cid},
+        )
+        return _raise_for_state(body)
+
+    def mkdir(self, parent_cid: str, name: str) -> dict:
+        """在指定目录下建子目录（转存目录用）。
+
+        请求形态：POST /files/add，pid=父目录 cid、cname=目录名。
+        响应形态待实测：返回原始 body，调用方建完按名重列验 cid，
+        不依赖本响应字段。
+        """
+        body = self._call(
+            "POST", f"{PAN115_WEBAPI_BASE}/files/add",
+            data={"pid": parent_cid, "cname": name},
+        )
+        return _raise_for_state(body)
 
     # ---- 内部 ----
 

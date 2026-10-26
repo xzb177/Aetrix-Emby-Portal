@@ -24,26 +24,45 @@ D1 已定（播放源单独立列）：条目 ``drive_file_id`` 永远指原件�
 
 未定项按设计稿开关默认走，不返工：D2 热门预防后置；D3 保留策略
 字段已留（last_played_at/last_checked_at），删除逻辑后置；D4 BYOS
-用户盘拷贝未做（见下）；D5 应急自动默认关；D6 转存目录名默认
+用户盘拷贝已做（2026-10-26 用户亲定“转存到用户绑定盘、先转存
+再播”，见下）；D5 应急自动默认关；D6 转存目录名默认
 ``aetrix-transfer``，目录级排除 + 扫描器首段跳过双保险；D7 工人
 放 worker 进程、单线程顺序、每轮最多 10 单；D8 巡检每天一次、
-两次 stale 算死；D9 只论 Drive；D10 账单面后置。
+两次 stale 算死；D9 只论 Drive（115 线见本模块后半段，同 provider
+内转存）；D10 账单面后置。
 
 BYOS 口径（设计稿 §八底线，照搬）：用户副本只许播给 owner_ref
 本人；服主副本不许给有生效中 drive 绑定的用户播（严格于设计稿
 §八「否则服主副本」一句——两句冲突时取严格的一句，见 PR 描述）。
-用户盘拷贝创建路径是 D4 后续项：本版自动触发遇到 BYOS 用户只记
-日志不建服主副本；手动触发只建服主副本。
+2026-10-26 用户亲定升级（覆盖“转存是加分项”旧口径）：绑定用户
+首播只走自己绑定盘里的副本，无副本先转存、转完再播，绝不静默
+回落共享 SA 中继；变体清单保留该条但呈“准备中”态（列出来但
+点不了，见 play_variants.transfer_status）；转存失败报 409/503，
+不静默改走别的路。门禁口见 ensure_user_copy_gate（video_stream
+在选路之后、换线之前调用）。未绑定该 provider 的用户（provider
+错配，如只绑 115 的用户播 Drive 条目）保持旧行为——这是有意写明
+的规则，待用户确认，不是静默回落。
 
-失败总原则（设计稿 §六）：转存是加分项，不是播放的前置条件。
-选路与信号处理永不抛错进播放链；工人侧 copy 403/404 不重试、
-429/5xx 最多 3 次指数退避、权限失败记 orphan 不删文件。
+失败总原则（设计稿 §六，2026-10-26 补充）：选路与信号处理永不
+抛错进播放链（门禁函数内部异常 → error verdict，调用方报 503
+fail-closed，绝不静默回落）；工人侧 copy 403/404 不重试、
+429/5xx 最多 3 次指数退避、权限失败记 orphan 不删文件。Drive
+用户任务两条路径：Path A 用户令牌直拷（anyone-reader 源）；Path B
+SA 暂存中转（用户无权源：SA 拷暂存 → anyone-reader 分享给用户 →
+用户令牌再拷进自己盘，成功后尽力删暂存）。Path C（SA 拷后转交
+所有权）不实现：consumer 间转移须 prospective owner 显式同意
+（权限 + 接受两步）且个人↔工作/学校账号互转被禁，Path B 已全面
+占优（无同意、无转移配额）。115 线：同 provider 内服务端 copy，
+新 fid + pickcode 播放，Cookie 失效报 409/503 不回落。
 
 未决实测（设计稿 §十二，施工前须知）：Quota 网页信号的精确特征
 未拿真实额度爆文件抓包复核，本版只认强信号（整段 200 +
-text/html + 体内 Quota 标记）；跨盘 copy 权限语义未实测，本版只做
-同盘拷贝（源与副本同盘）；目标盘剩余空间未实查（热门预防立项前
-必须实查，本版应急量级小、空间可忽略但仍记账 size_bytes）。
+text/html + 体内 Quota 标记）；跨盘 copy 权限语义的真实端到端
+实测仍待补（本版 Path A/Path B 逻辑由离线 mock 覆盖，真实 Drive
+copy、真实用户令牌、SA 暂存分享链均未实测，不许写成已实测）；
+目标盘剩余空间未实查（热门预防立项前必须实查，本版应急量级小、
+空间可忽略但仍记账 size_bytes）；115 copy/mkdir 请求形态与 copy
+响应新 fid 字段待 115 测试账号实测（生产 pan115 绑定现为 0 条）。
 """
 
 import os
@@ -195,12 +214,240 @@ def has_active_drive_binding(db, user_id) -> bool:
     """
     if user_id is None:
         return False
-    row = (db.query(em.UserStorageBinding)
-           .filter(em.UserStorageBinding.user_id == user_id,
-                   em.UserStorageBinding.provider == "drive",
-                   em.UserStorageBinding.status == "active")
-           .first())
-    return row is not None
+    return _active_binding(db, user_id, "drive") is not None
+
+
+def has_active_pan115_binding(db, user_id) -> bool:
+    """用户是否有生效中的 115 绑定（只认 provider=pan115 且 active）。"""
+    if user_id is None:
+        return False
+    return _active_binding(db, user_id, "pan115") is not None
+
+
+def _active_binding(db, user_id, provider):
+    """该用户该 provider 的生效中绑定行（最早建的一个），或 None。
+
+    只取本人行，绝不跨用户；绑定行本身不携带凭据原文，凭据由
+    各执行器按绑定行另行解封（Drive 走 drive_oauth、115 走
+    upstream_sources.unseal_secret），本函数不碰凭据。
+    """
+    if user_id is None:
+        return None
+    return (db.query(em.UserStorageBinding)
+            .filter(em.UserStorageBinding.user_id == user_id,
+                    em.UserStorageBinding.provider == provider,
+                    em.UserStorageBinding.status == "active")
+            .order_by(em.UserStorageBinding.id)
+            .first())
+
+
+def _item_provider(db, item):
+    """条目所属 provider：drive | pan115 | None（不在门禁范围）。
+
+    只认两类路径：mount://（按挂载类型判定）与 115:/（115 直挂）。
+    本地路径、rclone、byos:// 与其它形状一律返回 None——门禁对不
+    认识的形状保持旧行为（proceed），绝不因判定不清拦播放。
+    """
+    path = (getattr(item, "file_path", "") or "").strip()
+    if path.startswith("115:/"):
+        return "pan115"
+    if not path.startswith("mount://"):
+        return None
+    try:
+        from backend.emby_server import mounts as mount_lib
+        parsed = mount_lib.parse_mount_path(path)
+    except Exception:
+        return None
+    if parsed is None:
+        return None
+    mount_id, _rel = parsed
+    try:
+        mount = (db.query(em.StorageMount)
+                 .filter(em.StorageMount.id == mount_id)
+                 .first())
+    except Exception:
+        return None
+    if mount is None:
+        return None
+    if mount.mount_type == getattr(mount_lib, "MOUNT_PAN115", "115"):
+        return "pan115"
+    if mount.mount_type == getattr(mount_lib, "MOUNT_DRIVE", "drive"):
+        return "drive"
+    return None
+
+
+def _source_drive_id(db, item, provider):
+    """任务行的源盘标识（Drive：源共享盘 id；115：源挂载标记）。
+
+    Drive 源盘取自 file_path 的 mount:// 挂载配置（drive:<盘 id>），
+    取不到时回落空串（工人再按任务 drive_id 校验，不静默猜盘）。
+    115 源挂载标记为 ``pan115:mount-<id>``，115:/ 直挂路径无挂载
+    时为空串（115 工人不依赖 drive_id，靠条目 fid + 用户 Cookie）。
+    """
+    path = (getattr(item, "file_path", "") or "").strip()
+    if provider == "pan115":
+        if path.startswith("mount://"):
+            try:
+                from backend.emby_server import mounts as mount_lib
+                parsed = mount_lib.parse_mount_path(path)
+            except Exception:
+                parsed = None
+            if parsed is not None:
+                return f"pan115:mount-{parsed[0]}"
+        return ""
+    if not path.startswith("mount://"):
+        return ""
+    try:
+        from backend.emby_server import mounts as mount_lib
+        parsed = mount_lib.parse_mount_path(path)
+    except Exception:
+        return ""
+    if parsed is None:
+        return ""
+    try:
+        mount = (db.query(em.StorageMount)
+                 .filter(em.StorageMount.id == parsed[0])
+                 .first())
+    except Exception:
+        return ""
+    if mount is None:
+        return ""
+    mount_path = (getattr(mount, "path", "") or "").strip()
+    if mount_path.startswith("drive:"):
+        return mount_path[len("drive:"):].strip()
+    return mount_path or ""
+
+
+def create_user_job(db, item, user_id, provider, trigger="playback"):
+    """给该用户建一个用户盘转存任务（门禁与 Quota 信号共用）。
+
+    - 总闸关 → master_off；无条目 id → no_item_id；
+    - 24h 内同归属桶已有任务 → throttled（不重复建）；
+    - 115 且条目无源 fid → no_source_fid（不建任务：无 fid 无从
+      copy，等扫描补 fid 后下次播放再建，不污染节流窗）；
+    - Drive 且无源盘标识 → no_drive（不猜盘）。
+    成功返回任务行（已提交）。调用方按 TransferError.kind 映射。
+    """
+    if not master_enabled():
+        raise TransferError("master_off", "转存变体总闸未开")
+    item_id = getattr(item, "id", None)
+    if item_id is None:
+        raise TransferError("no_item_id", "条目无 id")
+    owner_ref = str(user_id)
+    if _recent_job_exists(db, item_id, "user", owner_ref):
+        raise TransferError("throttled", "24h 内该用户已有转存任务")
+    orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
+    if provider == "pan115" and not orig_fid:
+        raise TransferError("no_source_fid", "115 条目无源 fid，无法转存")
+    source_drive_id = _source_drive_id(db, item, provider)
+    if provider == "drive" and not source_drive_id:
+        raise TransferError("no_drive", "Drive 条目取不到源盘标识")
+    dest = (f"userdrive:{user_id}" if provider == "drive"
+            else f"pan115:user-{user_id}")
+    job = em.TransferJob(item_id=item_id, trigger=trigger,
+                         drive_id=source_drive_id or None,
+                         provider=provider, owner_scope="user",
+                         owner_ref=owner_ref, dest_drive_id=dest,
+                         status="pending")
+    db.add(job)
+    db.commit()
+    return job
+
+
+# 门禁 verdict 与调用方映射（video_stream / playback_info 共用语义）：
+# - proceed：放行（走现有播放链；Drive 就绪副本已由选路解析到）。
+# - preparing：转存进行中或节流中，播放端呈“转存准备中”（409）。
+# - failed：转存已死/失败，不走共享播放（409/503）。
+# - error：门禁内部异常，fail-closed 报 503，绝不静默回落。
+# - serve_115_copy：115 用户副本已就绪，调用方须用用户 Cookie +
+#   副本 pickcode 现签 302（绝不走共享 115 链），variant 行随 dict 回。
+_TERMINAL_JOB_KINDS = {
+    "dead", "auth_error", "unsupported", "retriable", "copy_unresolved",
+    "orphan", "item_gone", "no_drive",
+}
+
+
+def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
+    """首播转存门禁（2026-10-26 用户亲定“先转存再播”）。
+
+    绝不抛异常：内部异常一律吞掉返回 error verdict（调用方 503
+    fail-closed）。本函数只读 + 可能建一个用户任务，不改条目身份、
+    不改共享行、不碰播放链的写路径。
+    返回 dict：{verdict, reason, job_id?, variant?}。
+    """
+    try:
+        if not master_enabled():
+            return {"verdict": "proceed", "reason": "master_off"}
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return {"verdict": "proceed", "reason": "no_user"}
+        if play_sign_consume:
+            # 已下发链接消费不追溯（与 #1341 绑定门禁同一口径）。
+            return {"verdict": "proceed", "reason": "play_sign_consume"}
+        path = (getattr(item, "file_path", "") or "").strip()
+        if path.startswith("byos://"):
+            # 已在用户盘里的条目：走现有 byos 变体，不再转存。
+            return {"verdict": "proceed", "reason": "byos_item"}
+        provider = _item_provider(db, item)
+        if provider is None:
+            return {"verdict": "proceed", "reason": "unknown_provider"}
+        binding = _active_binding(db, user_id, provider)
+        if binding is None:
+            # provider 错配（只绑了另一 provider）：保持现有行为，
+            # 不是静默回落——该用户本来就不在该 provider 的转存口径内。
+            return {"verdict": "proceed", "reason": "no_matching_binding"}
+        orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
+        if provider == "pan115" and not orig_fid:
+            # 115 无源 fid：不建任务（不污染节流窗），等扫描补 fid。
+            return {"verdict": "failed", "reason": "no_source_fid"}
+        if provider == "drive" and not orig_fid:
+            return {"verdict": "proceed", "reason": "no_drive_file"}
+        item_id = getattr(item, "id", None)
+        if item_id is None:
+            return {"verdict": "proceed", "reason": "no_item_id"}
+        ready = _newest_ready(db, item_id, "user", str(user_id))
+        if ready is not None:
+            if provider == "pan115":
+                return {"verdict": "serve_115_copy", "reason": "ready",
+                        "variant": ready}
+            return {"verdict": "proceed", "reason": "has_ready_variant",
+                    "variant": ready}
+        job = _latest_job(db, item_id, "user", str(user_id))
+        if job is not None:
+            if job.status in ("pending", "running"):
+                return {"verdict": "preparing", "reason": "job_in_flight",
+                        "job_id": job.id}
+            if job.status == "failed":
+                if job.error_kind in _TERMINAL_JOB_KINDS:
+                    return {"verdict": "failed", "reason": job.error_kind,
+                            "job_id": job.id}
+                # no_binding / no_source_fid：原因可能自愈（重绑/重扫），
+                # 但节流窗内不重复建，呈准备中 + 节流说明。
+                return {"verdict": "preparing", "reason": "throttled",
+                        "job_id": job.id}
+            if job.status == "done":
+                if _recent_job_exists(db, item_id, "user", str(user_id)):
+                    # 副本已释放/变 stale 但节流窗未过：不重复建。
+                    return {"verdict": "preparing", "reason": "throttled",
+                            "job_id": job.id}
+                # done 且节流窗已过：落到下面重建。
+        try:
+            new_job = create_user_job(db, item, user_id, provider,
+                                      trigger="playback")
+        except TransferError as exc:
+            if exc.kind == "throttled":
+                return {"verdict": "preparing", "reason": "throttled"}
+            return {"verdict": "failed", "reason": exc.kind}
+        return {"verdict": "preparing", "reason": "job_created",
+                "job_id": new_job.id}
+    except Exception:
+        logger.warning("首播转存门禁异常（fail-closed，不放行共享播放）",
+                       exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return {"verdict": "error", "reason": "internal"}
 
 
 def get_ready_variant_for_user(db, item_id, user_id):
@@ -246,13 +493,35 @@ def resolve_play_file_id(db, item, user):
     return row.variant_file_id, row
 
 
-def _recent_job_exists(db, item_id, window_sec=THROTTLE_SEC) -> bool:
+def _recent_job_exists(db, item_id, owner_scope="source", owner_ref=None,
+                       window_sec=THROTTLE_SEC) -> bool:
+    """24h 节流：同一条目同一归属桶内有任务行即节流。
+
+    分桶是关键：用户 A 的任务绝不能堵住用户 B 的任务（2026-10-26
+    审计发现旧全局口径有此问题）。服主桶 owner_ref 为空。
+    """
     cutoff = datetime.now() - timedelta(seconds=window_sec)
-    row = (db.query(em.TransferJob)
-           .filter(em.TransferJob.item_id == item_id,
-                   em.TransferJob.created_at >= cutoff)
-           .first())
-    return row is not None
+    q = (db.query(em.TransferJob)
+         .filter(em.TransferJob.item_id == item_id,
+                 em.TransferJob.owner_scope == owner_scope,
+                 em.TransferJob.created_at >= cutoff))
+    if owner_ref is None:
+        q = q.filter(em.TransferJob.owner_ref.is_(None))
+    else:
+        q = q.filter(em.TransferJob.owner_ref == owner_ref)
+    return q.first() is not None
+
+
+def _latest_job(db, item_id, owner_scope, owner_ref=None):
+    """该条目该归属桶内最新的一行任务（或 None）。"""
+    q = (db.query(em.TransferJob)
+         .filter(em.TransferJob.item_id == item_id,
+                 em.TransferJob.owner_scope == owner_scope))
+    if owner_ref is None:
+        q = q.filter(em.TransferJob.owner_ref.is_(None))
+    else:
+        q = q.filter(em.TransferJob.owner_ref == owner_ref)
+    return q.order_by(em.TransferJob.id.desc()).first()
 
 
 def note_quota_signal(db, item, user, playing_variant, drive_id):
@@ -261,9 +530,10 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
     返回 dict：action in ignored/skipped/throttled/queued/error。
     - playing_variant 非空 → 正在播的副本爆额度是确定性证据，立即
       标 stale（不走巡检的两次规则），下次播放不再选它；
-    - BYOS 用户 → 只记日志，不建服主副本（用户盘拷贝是 D4 后续项）；
+    - BYOS 用户 → 建用户盘任务（2026-10-26 口径；旧“只记日志”
+      已废止，用户盘拷贝见 D4）；
     - 已有健康副本 → 跳过（不要对同一条目堆副本）；
-    - 24h 内已有任何任务 → 节流（throttled，不建新任务）；
+    - 24h 内同归属桶已有任务 → 节流（throttled，不建新任务）；
     - 自动开关关 → 只记日志，返回 skipped/auto_off（供人工手动触发）。
     """
     try:
@@ -285,14 +555,31 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
                 item_id, playing_variant.id)
         user_id = getattr(user, "id", None)
         if user_id is not None and has_active_drive_binding(db, user_id):
-            logger.info(
-                "转存变体 Quota 信号：BYOS 用户不自动建服主副本 item=%s user=%s",
-                item_id, user_id)
-            return {"action": "skipped", "reason": "byos_user"}
+            # BYOS 用户：额度信号触发给该用户建用户盘任务（不再 skip）。
+            ready_user = _newest_ready(db, item_id, "user", str(user_id))
+            if ready_user is not None:
+                return {"action": "skipped", "reason": "has_ready_variant"}
+            if _recent_job_exists(db, item_id, "user", str(user_id)):
+                return {"action": "throttled", "reason": "job_within_24h"}
+            if not auto_enabled():
+                logger.info(
+                    "转存变体 Quota 信号：自动入队关，BYOS 用户仅记日志 "
+                    "item=%s user=%s", item_id, user_id)
+                return {"action": "skipped", "reason": "auto_off"}
+            try:
+                job = create_user_job(db, item, user_id, "drive",
+                                      trigger="auto")
+            except TransferError as exc:
+                if exc.kind == "throttled":
+                    return {"action": "throttled", "reason": "job_within_24h"}
+                return {"action": "skipped", "reason": exc.kind}
+            logger.warning("转存变体应急自动入队（用户盘）：item=%s user=%s "
+                           "job=%s", item_id, user_id, job.id)
+            return {"action": "queued", "job_id": job.id}
         ready = get_ready_variant_for_user(db, item_id, user_id)
         if ready is not None:
             return {"action": "skipped", "reason": "has_ready_variant"}
-        if _recent_job_exists(db, item_id):
+        if _recent_job_exists(db, item_id, "source", None):
             return {"action": "throttled", "reason": "job_within_24h"}
         if not auto_enabled():
             logger.info(
@@ -300,7 +587,8 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
                 item_id)
             return {"action": "skipped", "reason": "auto_off"}
         job = em.TransferJob(item_id=item_id, trigger="auto",
-                             drive_id=drive_id, status="pending")
+                             drive_id=drive_id, provider="drive",
+                             owner_scope="source", status="pending")
         db.add(job)
         db.commit()
         logger.warning("转存变体应急自动入队：item=%s job=%s", item_id, job.id)
@@ -334,10 +622,11 @@ def create_manual_job(db, item, drive_id, force=False):
     existing = _newest_ready(db, item_id, "source")
     if existing is not None:
         raise TransferError("has_ready_variant", "已有健康服主副本，不重复转存")
-    if not force and _recent_job_exists(db, item_id):
+    if not force and _recent_job_exists(db, item_id, "source", None):
         raise TransferError("throttled", "24h 内已尝试过转存")
     job = em.TransferJob(item_id=item_id, trigger="manual",
-                         drive_id=drive_id, status="pending")
+                         drive_id=drive_id, provider="drive",
+                         owner_scope="source", status="pending")
     db.add(job)
     db.commit()
     return job
@@ -359,14 +648,18 @@ def release_binding(db, item_id) -> int:
     return len(rows)
 
 
-def _release_ready_rows(db, item_id, owner_scope) -> int:
-    """把该条目该 scope 的 ready 行置 released（成功建新副本前调用，
-    保证一物一生效源；调用方负责 commit）。"""
-    rows = (db.query(em.TransferVariant)
-            .filter(em.TransferVariant.item_id == item_id,
-                    em.TransferVariant.owner_scope == owner_scope,
-                    em.TransferVariant.status == "ready")
-            .all())
+def _release_ready_rows(db, item_id, owner_scope, owner_ref=None) -> int:
+    """把该条目该 scope（用户 scope 时限定该用户）的 ready 行置
+    released（成功建新副本前调用，保证一物一生效源；调用方负责
+    commit）。用户 scope 不带 owner_ref 过滤会误释他人的行，绝不
+    允许：用户 scope 调用方必须传 owner_ref。"""
+    q = (db.query(em.TransferVariant)
+         .filter(em.TransferVariant.item_id == item_id,
+                 em.TransferVariant.owner_scope == owner_scope,
+                 em.TransferVariant.status == "ready"))
+    if owner_scope == "user":
+        q = q.filter(em.TransferVariant.owner_ref == owner_ref)
+    rows = q.all()
     for row in rows:
         row.status = "released"
     return len(rows)
@@ -505,6 +798,68 @@ class DriveApiClient:
             raise _Forbidden("副本无权访问")
         raise _Retriable(f"files.get 失败：{resp.status_code}")
 
+    def find_file_by_name(self, drive_id, folder_id, name):
+        """在指定目录下按精确文件名找文件 id（Path B 暂存复用）。
+
+        找不到返回 None；查询失败抛 _Retriable（调用方决定重试）。
+        精确名匹配：暂存文件名含任务 id（tmp-<jobid>-<原名>），重试
+        时命中即复用，不重复建暂存副本。
+        """
+        escaped = name.replace("'", "\\'")
+        q = (f"name='{escaped}' and '{folder_id}' in parents "
+             f"and trashed=false")
+        params = {"q": q, "supportsAllDrives": "true",
+                  "fields": "files(id,name)"}
+        params.update(self._list_params(drive_id))
+        resp = self._request("GET", FILES_URL, drive_id, params=params)
+        if resp.status_code == 200:
+            files = (resp.json() or {}).get("files") or []
+            if files:
+                return str(files[0]["id"])
+            return None
+        raise _Retriable(f"按名查找文件失败：{resp.status_code}")
+
+    def delete_file(self, drive_id, fid):
+        """删文件（Path B 成功后清暂存，尽力而为）。
+
+        非 2xx 抛异常，调用方忽略（暂存残留记账为已知 v1 缺陷，
+        不阻塞任务成功）。
+        """
+        url = f"{FILES_URL}/{fid}"
+        resp = self._request("DELETE", url, drive_id,
+                             params={"supportsAllDrives": "true"})
+        if resp.status_code not in (200, 204):
+            raise Exception(f"删文件失败：{resp.status_code}")
+
+
+class UserDriveApiClient(DriveApiClient):
+    """用户令牌模式的 Drive 客户端（Path A / Path B 用户侧）。
+
+    与 SA 模式的区别只有凭据来源：固定用指定绑定行的用户令牌，
+    不走 get_token_for_drive 轮换，绝不替调用方换绑定行（跨绑定
+    复用凭据是红线，见 drive_oauth.get_binding_drive_access_token
+    文档）。drive_id 参数只用于 personal/shared 分支判断——调用方
+    一律传 ``myDrive:<uid>`` 形标记，触发 personal 分支（root 根、
+    spaces=drive）；令牌本身不依赖该标记。
+    401 时按绑定行重取一次令牌（drive_oauth 内部含刷新逻辑；刷新
+    失败抛 DriveOAuthError，绑定行由 drive_oauth 内部落失败态）。
+    """
+
+    def __init__(self, db, binding):
+        self._db = db
+        self._binding = binding
+        self._token = None
+
+    def _headers(self, drive_id, force_refresh=False):
+        if self._token is None or force_refresh:
+            from backend.emby_server import drive_oauth
+            token = drive_oauth.get_binding_drive_access_token(
+                self._db, self._binding)
+            if not token:
+                raise _Retriable("用户 Drive 凭据不可用")
+            self._token = token
+        return {"Authorization": f"Bearer {self._token}"}
+
 
 # ---------------------------------------------------------------------------
 # 工人（单线程顺序执行，调用方是 worker 守护；内部提交）
@@ -539,6 +894,418 @@ def _schedule_retry(db, job, exc):
     return "retried"
 
 
+def _fail_job(db, job, kind, detail):
+    """任务置 failed 并提交（工人各执行器共用）。"""
+    job.status = "failed"
+    job.error_kind = kind
+    job.error_detail = (detail or "")[:500]
+    db.commit()
+    return {"job_id": job.id, "outcome": "failed", "error_kind": kind}
+
+
+def _register_ready_variant(db, job, item, variant_fid, variant_drive_id,
+                            pickcode=None, size=None):
+    """成功登记：先释放同归属旧 ready 行，再建新 ready 行并置任务 done。
+
+    用户 scope 必须带 owner_ref（_release_ready_rows 内强制过滤，
+    绝不误释他人行）。
+    """
+    owner_ref = getattr(job, "owner_ref", None)
+    _release_ready_rows(db, job.item_id,
+                        getattr(job, "owner_scope", "source") or "source",
+                        owner_ref)
+    row = em.TransferVariant(
+        item_id=job.item_id, source_file_id=item.drive_file_id.strip(),
+        variant_file_id=variant_fid, variant_drive_id=variant_drive_id,
+        owner_scope=getattr(job, "owner_scope", "source") or "source",
+        owner_ref=owner_ref, status="ready", pickcode=pickcode,
+        size_bytes=_to_int(size) or _to_int(getattr(item, "size", None)))
+    db.add(row)
+    job.status = "done"
+    job.error_kind = None
+    job.error_detail = None
+    job.next_retry_at = None
+    db.commit()
+    return row
+
+
+def _run_drive_user_job(db, job, item, drive_api):
+    """Drive 用户盘任务：Path A 用户令牌直拷，403/404 转 Path B。
+
+    任务行 drive_id=源盘、dest_drive_id=userdrive:<uid>；登记行
+    owner_scope=user、variant_drive_id=userdrive:<uid>（播放链沿用
+    SA 轮换读 anyone-reader 副本，中继/302 均不改）。
+    必须是真 copy（files.copy），快捷方式/添加到云端硬盘不算。
+    """
+    from backend.emby_server.drive_oauth import DriveOAuthError
+    uid = (getattr(job, "owner_ref", "") or "").strip()
+    try:
+        user_id = int(uid)
+    except (TypeError, ValueError):
+        user_id = None
+    binding = _active_binding(db, user_id, "drive") if user_id else None
+    if binding is None:
+        return _fail_job(db, job, "no_binding",
+                         "用户 Drive 绑定已失效或不存在（任务创建后解绑，"
+                         "不重试；重绑后下次播放节流窗外可重建）")
+    user_client = UserDriveApiClient(db, binding)
+    user_drive = f"myDrive:{user_id}"
+    orig_fid = item.drive_file_id.strip()
+    name = _copy_name_for_item(item)
+    # Path A：用户令牌直拷（anyone-reader 源）。
+    try:
+        folder_id = user_client.ensure_folder(user_drive,
+                                              transfer_dir_name())
+        copied = user_client.copy_file(user_drive, orig_fid, folder_id, name)
+    except _CopyForbidden:
+        # 用户无权源 → Path B（不直接判死，SA 暂存中转）。
+        return _run_drive_user_job_path_b(db, job, item, drive_api,
+                                          user_client, user_drive, name)
+    except DriveOAuthError as exc:
+        return _fail_job(db, job, "no_binding",
+                         f"用户 Drive 令牌失效：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    variant_fid = (copied or {}).get("id") or ""
+    if not variant_fid:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(
+                    db, job, Exception("copy 未返回新 file_id"))}
+    try:
+        user_client.add_anyone_reader(user_drive, variant_fid)
+    except Exception as exc:
+        # 副本已建但不可播：记 orphan，不删文件，等管理员处置。
+        row = em.TransferVariant(
+            item_id=job.item_id, source_file_id=orig_fid,
+            variant_file_id=variant_fid,
+            variant_drive_id=f"userdrive:{user_id}",
+            owner_scope="user", owner_ref=uid, status="orphan",
+            size_bytes=_to_int((copied or {}).get("size"))
+            or _to_int(getattr(item, "size", None)))
+        db.add(row)
+        return _fail_job(db, job, "orphan", str(exc))
+    row = _register_ready_variant(db, job, item, variant_fid,
+                                  f"userdrive:{user_id}",
+                                  size=(copied or {}).get("size"))
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
+def _run_drive_user_job_path_b(db, job, item, drive_api, user_client,
+                               user_drive, name):
+    """Path B：SA 暂存中转（用户无权源）。
+
+    SA 在源盘 aetrix-transfer 目录下建 tmp-<jobid>-<原名> 暂存副本
+    （扫描排除目录，暂存文件不入库）→ anyone-reader 分享给用户 →
+    用户令牌再拷进自己盘 → anyone-reader → 登记用户行 → 尽力删暂存。
+    SA copy 403/404 → dead；暂存分享后用户 copy 403 → 传播延迟，
+    走 retriable（重试时按暂存名复用已建暂存，不重复建）。
+    成功后暂存删不掉也只记日志（已知 v1 缺陷：SA 盘暂存堆积）。
+    """
+    from backend.emby_server.drive_oauth import DriveOAuthError
+    uid = (getattr(job, "owner_ref", "") or "").strip()
+    orig_fid = item.drive_file_id.strip()
+    try:
+        tmp_folder = drive_api.ensure_folder(job.drive_id,
+                                             transfer_dir_name())
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    tmp_name = f"tmp-{job.id}-{name}"
+    try:
+        tmp_fid = drive_api.find_file_by_name(job.drive_id, tmp_folder,
+                                              tmp_name)
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    if not tmp_fid:
+        try:
+            tmp_copied = drive_api.copy_file(job.drive_id, orig_fid,
+                                             tmp_folder, tmp_name)
+        except _CopyForbidden as exc:
+            # SA 也无权/源已死：真死文件，不重试。
+            return _fail_job(db, job, "dead", str(exc))
+        except Exception as exc:
+            return {"job_id": job.id,
+                    "outcome": _schedule_retry(db, job, exc)}
+        tmp_fid = (tmp_copied or {}).get("id") or ""
+        if not tmp_fid:
+            return {"job_id": job.id,
+                    "outcome": _schedule_retry(
+                        db, job, Exception("SA 暂存 copy 未返回新 file_id"))}
+    try:
+        drive_api.add_anyone_reader(job.drive_id, tmp_fid)
+    except Exception as exc:
+        # 暂存已建但无法分享：记 orphan（暂存文件留待人工清理）。
+        row = em.TransferVariant(
+            item_id=job.item_id, source_file_id=orig_fid,
+            variant_file_id=tmp_fid, variant_drive_id=job.drive_id,
+            owner_scope="user", owner_ref=uid, status="orphan",
+            size_bytes=_to_int(getattr(item, "size", None)))
+        db.add(row)
+        return _fail_job(db, job, "orphan", str(exc))
+    try:
+        user_folder = user_client.ensure_folder(user_drive,
+                                                transfer_dir_name())
+        copied = user_client.copy_file(user_drive, tmp_fid, user_folder,
+                                       name)
+    except _CopyForbidden as exc:
+        # 分享传播延迟：可重试（重试复用暂存）。
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    except DriveOAuthError as exc:
+        return _fail_job(db, job, "no_binding",
+                         f"用户 Drive 令牌失效：{exc}")
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    variant_fid = (copied or {}).get("id") or ""
+    if not variant_fid:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(
+                    db, job, Exception("用户盘 copy 未返回新 file_id"))}
+    try:
+        user_client.add_anyone_reader(user_drive, variant_fid)
+    except Exception as exc:
+        row = em.TransferVariant(
+            item_id=job.item_id, source_file_id=orig_fid,
+            variant_file_id=variant_fid,
+            variant_drive_id=f"userdrive:{uid}",
+            owner_scope="user", owner_ref=uid, status="orphan",
+            size_bytes=_to_int((copied or {}).get("size"))
+            or _to_int(getattr(item, "size", None)))
+        db.add(row)
+        return _fail_job(db, job, "orphan", str(exc))
+    row = _register_ready_variant(db, job, item, variant_fid,
+                                  f"userdrive:{uid}",
+                                  size=(copied or {}).get("size"))
+    try:
+        drive_api.delete_file(job.drive_id, tmp_fid)
+    except Exception:
+        logger.warning("Path B 暂存清理失败（残留记账） job=%s tmp=%s",
+                       job.id, tmp_fid)
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
+def _make_pan115_client(cookie):
+    """115 客户端构造口（测试可 monkeypatch 本模块属性替换）。
+
+    生产路径固定用用户自己的 Cookie，绝不用服主/默认账号档。
+    """
+    from backend.emby_server.transfer115 import Pan115Client
+    return Pan115Client(cookie)
+
+
+def _ensure_115_transfer_dir(client):
+    """用户盘转存目录 cid：根目录下找 aetrix-transfer，没有就建。
+
+    建目录响应形态待 115 测试账号实测，故建完必按名重列根目录
+    验 cid，不依赖 mkdir 响应字段。
+    """
+    name = transfer_dir_name()
+    for entry in client.list_dir("0"):
+        if entry.get("is_dir") and (entry.get("name") or "") == name:
+            cid = entry.get("cid") or ""
+            if cid:
+                return cid
+    client.mkdir("0", name)
+    for entry in client.list_dir("0"):
+        if entry.get("is_dir") and (entry.get("name") or "") == name:
+            cid = entry.get("cid") or ""
+            if cid:
+                return cid
+    from backend.emby_server.transfer115 import Pan115Error
+    raise Pan115Error("115 建转存目录后仍找不到该目录")
+
+
+def _extract_115_copy_result(result):
+    """从 copy 响应里提新 fid + pickcode（响应形态待实测，多字段容错）。
+
+    fid 候选：fid/file_id/id；pickcode 候选：pickcode/pick_code/pc。
+    任一缺失都返回空串，调用方走列目录匹配回落。
+    """
+    if not isinstance(result, dict):
+        return "", ""
+    data = result.get("data")
+    if isinstance(data, list):
+        data = data[0] if data else {}
+    if not isinstance(data, dict):
+        data = result
+    fid = str(data.get("fid") or data.get("file_id")
+              or data.get("id") or "")
+    pickcode = str(data.get("pickcode") or data.get("pick_code")
+                   or data.get("pc") or "")
+    return fid, pickcode
+
+
+def _match_115_copy_in_dir(client, dest_cid, name, size):
+    """列目标目录，按名 + 大小（大小缺失时只按名）匹配新文件。
+
+    返回 (fid, pickcode)，找不到返回 ("", "")。只认非目录项。
+    注意：目标目录若预先存在同名文件，匹配可能命中旧文件——copy
+    响应 fid 路径是主路径，本回落只在响应无 fid 时用，且转存目录
+    正常为空（用户自建同名文件是边缘情形，见报告已知项）。
+    """
+    size_int = _to_int(size)
+    matches = []
+    for entry in client.list_dir(dest_cid):
+        if entry.get("is_dir"):
+            continue
+        if (entry.get("name") or "") != name:
+            continue
+        matches.append(entry)
+    if not matches:
+        return "", ""
+    if size_int:
+        for entry in matches:
+            if _to_int(entry.get("size")) == size_int:
+                return entry.get("fid") or "", entry.get("pickcode") or ""
+    entry = matches[0]
+    return entry.get("fid") or "", entry.get("pickcode") or ""
+
+
+def _run_pan115_job(db, job, item):
+    """115 用户盘任务：同 provider 内服务端 copy（不搬字节）。
+
+    凭据：用户自己的 115 Cookie（唯一口 binding_115_cookie，
+    绝不用服主档）。
+    新 fid + pickcode 登记用户行；Cookie 失效 → failed/auth_error
+    + 绑定落 expired（user_bindings._mark_failed），不重试、不回落。
+    copy 响应无 fid 时列目标目录匹配；仍找不到 →
+    failed/copy_unresolved（不重试，避免重复 copy 产生重复文件）。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    uid = (getattr(job, "owner_ref", "") or "").strip()
+    try:
+        user_id = int(uid)
+    except (TypeError, ValueError):
+        user_id = None
+    orig_fid = (item.drive_file_id or "").strip()
+    if not orig_fid:
+        return _fail_job(db, job, "no_source_fid",
+                         "115 条目无源 fid，无法转存（等扫描补 fid）")
+    binding = _active_binding(db, user_id, "pan115") if user_id else None
+    if binding is None:
+        return _fail_job(db, job, "no_binding",
+                         "用户 115 绑定已失效或不存在（不重试）")
+    # 凭据唯一口：binding_115_cookie（含本人/115 行/凭据归属校验，
+    # 解封失败时 helper 内部已落 auth_error 失败态）。
+    try:
+        from backend.emby_server import user_bindings as ub
+        cookie = ub.binding_115_cookie(db, user_id, binding.id)
+    except ub.BindingError as exc:
+        if exc.kind == "auth_error":
+            return _fail_job(db, job, "auth_error", str(exc))
+        if exc.kind == "not_found":
+            return _fail_job(db, job, "no_binding", str(exc))
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    try:
+        client = _make_pan115_client(cookie)
+        dest_cid = _ensure_115_transfer_dir(client)
+        result = client.copy_file(orig_fid, dest_cid)
+        new_fid, pickcode = _extract_115_copy_result(result)
+        if not new_fid:
+            new_fid, pickcode = _match_115_copy_in_dir(
+                client, dest_cid, _copy_name_for_item(item),
+                getattr(item, "size", None))
+        if not new_fid:
+            return _fail_job(
+                db, job, "copy_unresolved",
+                f"115 copy 完成但未定位新文件（源 fid={orig_fid}，"
+                f"目标目录 cid={dest_cid}，请人工核对，不自动重试）")
+    except Pan115AuthError as exc:
+        try:
+            from backend.emby_server import user_bindings as ub
+            ub._mark_failed(db, binding, "expired")
+        except Exception:
+            pass
+        return _fail_job(db, job, "auth_error", str(exc))
+    except Pan115Error as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    except Exception as exc:
+        return {"job_id": job.id,
+                "outcome": _schedule_retry(db, job, exc)}
+    row = _register_ready_variant(db, job, item, new_fid,
+                                  f"pan115:user-{uid}",
+                                  pickcode=pickcode or None)
+    return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
+
+
+def _find_115_pickcode_by_fid(client, fid):
+    """老行 pickcode 回落：根目录 → aetrix-transfer 目录 → 按 fid 匹配。
+
+    找不到返回 ""。只查转存目录（副本只应在此目录）。
+    """
+    if not fid:
+        return ""
+    name = transfer_dir_name()
+    for entry in client.list_dir("0"):
+        if entry.get("is_dir") and (entry.get("name") or "") == name:
+            cid = entry.get("cid") or ""
+            if not cid:
+                continue
+            for item in client.list_dir(cid):
+                if not item.get("is_dir") and (item.get("fid") or "") == fid:
+                    return item.get("pickcode") or ""
+            return ""
+    return ""
+
+
+def _patrol_115_row(db, row, stats, now):
+    """115 副本巡检：download_url(存量 pickcode) 验活。
+
+    - 成功 → strike 清零；
+    - 认证错（Cookie 失效）→ 不记 strike（不是副本的错，绑定落态
+      由用户下次播放/工人处理，巡检不改绑定）；
+    - 其它错 → strike，满 2 次 stale；
+    - pickcode 为空的老行 → 目录匹配回落补 pickcode；
+    - 绑定已无 → 跳过（不记 strike、不改行）。
+    """
+    from backend.emby_server.transfer115 import Pan115AuthError, Pan115Error
+    uid = (row.owner_ref or "").strip()
+    try:
+        user_id = int(uid)
+    except (TypeError, ValueError):
+        user_id = None
+    binding = _active_binding(db, user_id, "pan115") if user_id else None
+    if binding is None:
+        return
+    from backend.emby_server import user_bindings as ub
+    try:
+        cookie = ub.binding_115_cookie(db, user_id, binding.id)
+        client = _make_pan115_client(cookie)
+        pickcode = (row.pickcode or "").strip()
+        if not pickcode:
+            pickcode = _find_115_pickcode_by_fid(client,
+                                                 row.variant_file_id)
+            if pickcode:
+                row.pickcode = pickcode
+        if pickcode:
+            client.download_url(pickcode)
+        else:
+            raise _NotFound("115 副本无 pickcode 且目录匹配未找到")
+    except Pan115AuthError:
+        return  # 不记 strike
+    except ub.BindingError:
+        return  # 凭据问题不记 strike（绑定落态已由 helper 处理）
+    except (_NotFound, _Forbidden, Pan115Error):
+        row.stale_count += 1
+        row.last_checked_at = now
+        if row.stale_count >= STALE_STRIKES:
+            row.status = "stale"
+            stats["stale"] += 1
+    except Exception:
+        stats["errors"] += 1
+        logger.warning("115 副本巡检异常 variant=%s（不记 strike）",
+                       row.id, exc_info=True)
+        return
+    else:
+        row.stale_count = 0
+        row.last_checked_at = now
+
+
 def run_transfer_job_once(db, job, drive_api):
     """执行一个转存任务（工人单线程顺序调用；内部提交）。
 
@@ -557,7 +1324,25 @@ def run_transfer_job_once(db, job, drive_api):
         job.error_detail = "条目不存在或无 drive_file_id"
         db.commit()
         return {"job_id": job.id, "outcome": "failed", "error_kind": "item_gone"}
-    if not job.drive_id:
+    # 按 provider + 归属分发（2026-10-26 用户盘口径）：
+    # - pan115 + user → 115 执行器（drive_id 可为空，靠条目 fid）；
+    # - drive + user → Drive 用户盘执行器（Path A/B）；
+    # - drive + source → 下方既有同盘路径（逐字不动）；
+    # - 其它组合（pan115 + source、未知 provider）→ 不支持，不重试。
+    provider = (getattr(job, "provider", "") or "drive").strip() or "drive"
+    owner_scope = (getattr(job, "owner_scope", "") or "source").strip() or "source"
+    if (provider not in ("drive", "pan115")
+            or (provider == "pan115" and owner_scope != "user")
+            or owner_scope not in ("source", "user")):
+        job.status = "failed"
+        job.error_kind = "unsupported"
+        job.error_detail = (
+            f"不支持的任务组合 provider={provider} "
+            f"owner_scope={owner_scope}（不重试）")
+        db.commit()
+        return {"job_id": job.id, "outcome": "failed",
+                "error_kind": "unsupported"}
+    if provider == "drive" and not job.drive_id:
         job.status = "failed"
         job.error_kind = "no_drive"
         job.error_detail = "任务无 drive_id"
@@ -566,6 +1351,10 @@ def run_transfer_job_once(db, job, drive_api):
     job.status = "running"
     job.attempts += 1
     db.commit()
+    if provider == "pan115":
+        return _run_pan115_job(db, job, item)
+    if owner_scope == "user":
+        return _run_drive_user_job(db, job, item, drive_api)
     orig_fid = item.drive_file_id.strip()
     try:
         folder_id = drive_api.ensure_folder(job.drive_id, transfer_dir_name())
@@ -695,6 +1484,10 @@ def patrol_once(db, drive_api_factory, now=None):
             row.status = "orphan"
             stats["orphaned_items"] += 1
             continue
+        if (row.variant_drive_id or "").startswith("pan115:"):
+            # 115 副本不用 Drive get_file 验活（盘不同、凭据不同）。
+            _patrol_115_row(db, row, stats, now)
+            continue
         try:
             client.get_file(row.variant_drive_id or "", row.variant_file_id)
         except (_NotFound, _Forbidden):
@@ -756,10 +1549,12 @@ __all__ = [
     "master_enabled", "auto_enabled", "transfer_dir_name",
     "QuotaPageError", "is_quota_page_bytes", "is_transfer_dir_rel",
     "TransferError",
-    "has_active_drive_binding", "get_ready_variant_for_user",
+    "has_active_drive_binding", "has_active_pan115_binding",
+    "get_ready_variant_for_user",
     "resolve_play_file_id", "note_quota_signal", "create_manual_job",
+    "create_user_job", "ensure_user_copy_gate",
     "release_binding",
-    "DriveApiClient",
+    "DriveApiClient", "UserDriveApiClient",
     "run_transfer_job_once", "process_due_jobs_once", "patrol_once",
     "start_transfer_daemon",
 ]
