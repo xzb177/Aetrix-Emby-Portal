@@ -1981,6 +1981,12 @@ class EnrichStageRecord(Base):
     external_id = Column(String(32))
     confidence = Column(String(20))
     evidence_json = Column(Text)
+    # 规则包版本化（FMBY 清单 #18）：识别决策当刻跑的命名清洗规则。
+    # version 是人读标签（现行 v1），hash 是实际生效规则哈希（含服主
+    # 覆盖层，见 rule_pack.RulePack.effective_hash）；NULL = 包上线前
+    # 的老记录，重放时不动（首部署只打戳、不重写存量）。
+    rule_pack_version = Column(String(20))
+    rule_pack_hash = Column(String(64))
     updated_at = Column(DateTime, default=datetime.now)
 
 

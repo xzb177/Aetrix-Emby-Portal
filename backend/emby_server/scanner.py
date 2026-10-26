@@ -33,6 +33,7 @@ from backend.emby_server import disc_filter
 from backend.emby_server import models as emby_models
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import mount_sources
+from backend.emby_server import rule_pack as _rule_pack
 from backend.emby_server import scan_snapshots
 from backend.emby_server import nfo as nfo_lib
 # 软删除（v2.48.0）：清理阶段默认只标记 deleted_at，物理删除留给过期回收
@@ -668,9 +669,9 @@ def _external_subtitles_changed(ctx: "_ScanContext", item, scan_file: "ScanFile"
         return True
 
 
-def _tidy_name(raw: str) -> str:
+def _tidy_name(raw: str, pack=None) -> str:
     """清洗片名；结果只剩分隔符时返回空（供回退到目录名用）"""
-    out = clean_name(raw or "")
+    out = clean_name(raw or "", pack=pack)
     return "" if not out.strip(" .-_[]()") else out
 
 
@@ -771,7 +772,9 @@ def _strip_redundant_dash_number(name: str) -> str:
     return _DUP_DASH_BEFORE_YEAR_RE.sub(_repl, name)
 
 
-def clean_name(raw: str) -> str:
+def clean_name(raw: str, pack=None) -> str:
+    """清洗文件名主干。pack 为空时用当刻生效规则包（env 覆盖层）；
+    显式传包时按该包的词表剥质量标签（测试 / 重放用）。"""
     name = raw or ""
     # 版本号 token 先行保护（见 _VERSION_TOKEN_RE 注释）：`梅根2.0`→不拆，
     # `哥斯拉-1.0`→不拆。必须在下面的 `-N` 剔除之前，占位的 `-` 不再被误杀。
@@ -801,16 +804,11 @@ def clean_name(raw: str) -> str:
     # 当片名吐回去（之前会因为 `or raw` 变成「2」/「[2]」）。
     fallback = name
     name = CLEAN_RE.sub(" ", name)
-    # 去掉质量标签。注意 CLEAN_RE 已经把 `.` `_` `-` 换成了空格，所以这里的分隔符
-    # 必须容得下空格：否则 "WEB-DL" 变成 "WEB DL" 后不再被识别。
-    name = re.sub(
-        r"\b(2160p|1440p|1080p|1080i|720p|480p|\d{3,4}[pi]|4k|8k|uhd|hdr10\+?|hdr|dolby|dv|hevc|h\.?264|x264|h\.?265|x265|"
-        r"aac|ac3|eac3|dts|flac|truehd|atmos|web[\s\-]?dl|webrip|web|remux|blu[\s\-]?ray|bluray|"
-        r"bdrip|brrip|hdtv|dvdrip|diy|repack|proper|multi|internal|chs&eng|chs|cht|eng|gb|big5)\b",
-        " ",
-        name,
-        flags=re.IGNORECASE,
-    )
+    # 去掉质量标签：词表来自规则包（FMBY 清单 #18），默认包的词表与
+    # 旧内联正则逐字一致。注意 CLEAN_RE 已经把 `.` `_` `-` 换成了空格，
+    # 所以词表里的片段必须容得下空格：否则 "WEB-DL" 变成 "WEB DL" 后
+    # 不再被识别（词表里的 web[\s\-]?dl、blu[\s\-]?ray 正是为此）。
+    name = (pack or _rule_pack.default_pack()).strip(name)
     name = _strip_platform_tags(name)
     name = re.sub(r"\s+", " ", name).strip(" .-_")
     # 还原版本号 token 的占位符
@@ -847,7 +845,7 @@ def _season_from_dirname(folder: str) -> Optional[int]:
     return found.pop() if len(found) == 1 else None
 
 
-def parse_media_filename(path: str, library_type: str) -> dict:
+def parse_media_filename(path: str, library_type: str, pack=None) -> dict:
     """从文件路径解析 基础名称/年份/季/集
 
     季的识别除 S01E02 / 1x02 / 第1集 外，还覆盖**只有季号**的常见命名：
@@ -985,7 +983,11 @@ def parse_media_filename(path: str, library_type: str) -> dict:
     raw_name = target
     for s0, s1 in sorted(dig_spans, reverse=True):
         raw_name = f"{raw_name[:s0]} {raw_name[s1:]}".strip()
-    name_part = _tidy_name(raw_name) or _tidy_name(folder) or _tidy_name(stem)
+    name_part = (
+        _tidy_name(raw_name, pack=pack)
+        or _tidy_name(folder, pack=pack)
+        or _tidy_name(stem, pack=pack)
+    )
 
     # 年份：排除集号匹配段，避免 S01E2019 的 2019 被当成年份
     #（_extract_year 内部已处理 stem→folder 回退；exclude 只作用于 stem 坐标）
@@ -3041,7 +3043,7 @@ _SEASON_DIR_RE = re.compile(
 )
 
 
-def _series_name_of(scan_file: "ScanFile", parsed: dict) -> str:
+def _series_name_of(scan_file: "ScanFile", parsed: dict, pack=None) -> str:
     """从剧集目录推导 series 名，绝不从 episode 文件名猜剧名。
 
     远端路径通常是 ``剧名/Season 1/file S01E01.mkv``；本机路径同理。
@@ -3059,7 +3061,7 @@ def _series_name_of(scan_file: "ScanFile", parsed: dict) -> str:
         parent = posixpath.basename(posixpath.dirname(directory))
         directory_name = parent if _SEASON_DIR_RE.match(leaf) else leaf
 
-    name = _tidy_name(directory_name)
+    name = _tidy_name(directory_name, pack=pack)
     year = parsed.get("year")
     if year and str(year) in name:
         name = _strip_year(name, year)
@@ -3071,7 +3073,11 @@ def _series_name_of(scan_file: "ScanFile", parsed: dict) -> str:
         name, trailing_year = _split_trailing_year(name)
         if trailing_year is not None:
             parsed["year"] = trailing_year
-    return name or _tidy_name(parsed.get("name") or "") or (parsed.get("name") or "未知剧集")
+    return (
+        name
+        or _tidy_name(parsed.get("name") or "", pack=pack)
+        or (parsed.get("name") or "未知剧集")
+    )
 
 
 def _series_guid_of(scan_file: "ScanFile") -> str:

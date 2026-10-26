@@ -189,13 +189,22 @@ def _upsert_stage_record(db, item_id: int, stage: str, binding: Optional[dict]) 
         record = em.EnrichStageRecord(item_id=item_id)
         db.add(record)
     record.stage = stage
+    # 规则包打戳（FMBY 清单 #18）：每次写段记录都钉当刻生效的规则包，
+    # 列上钉版本 + 生效哈希，证据快照里同步一份（决策日志口径一致）。
+    # 不改 binding 本身（只拷一份证据加键），调用方手里的 binding 不变。
+    from backend.emby_server.rule_pack import default_pack as _default_pack
+
+    _pack = _default_pack()
+    record.rule_pack_version = _pack.version
+    record.rule_pack_hash = _pack.effective_hash
     if binding is not None:
         record.provider = binding.get("provider")
         record.external_id = binding.get("external_id")
         record.confidence = binding.get("confidence")
-        record.evidence_json = json.dumps(
-            binding.get("evidence") or {}, ensure_ascii=False
-        )
+        _evidence = dict(binding.get("evidence") or {})
+        _evidence["rule_pack_version"] = _pack.version
+        _evidence["rule_pack_hash"] = _pack.effective_hash
+        record.evidence_json = json.dumps(_evidence, ensure_ascii=False)
     record.updated_at = now
 
 
