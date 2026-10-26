@@ -172,6 +172,11 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
     monkeypatch.setattr(api, "_require_visible_item",
                         lambda db, user, item_id: item)
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
+    # 播放门禁与付费墙同口径桩掉（本用例测中继接线，不测门禁本身；
+    # 门禁行为见 tests/test_playback_gate.py）。
+    monkeypatch.setattr(
+        "backend.emby_server.playback_gate.ensure_binding_playback_allowed",
+        lambda db, u, r=None: None)
     monkeypatch.setattr(api, "_drive_mount_id_for_item",
                         lambda db, it: "DRIVE9")
     # _observe_traffic 真实签名只有一个参数（response）；桩必须同签名，

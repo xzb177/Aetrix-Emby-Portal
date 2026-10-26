@@ -113,6 +113,20 @@ for _u, _raw in ((member, "m" * 40), (free, "f" * 40), (staff, "s" * 40)):
 _db.commit()
 _db.close()
 member_e, free_e, staff_e = _emby_h[member_name], _emby_h[free_name], _emby_h[staff_name]
+# 播放门禁（2026-10-26 硬规矩）：绑定≠会员——免费用户的 403 项均由付费墙
+# 先行拦截（顺序不变），但“关闭付费墙后非会员放行”项须三人都有 active 绑定。
+with SessionLocal() as _db2:
+    for _name in (member_name, free_name, staff_name):
+        _u = _db2.query(models.WebUser).filter(models.WebUser.username == _name).first()
+        _cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=_u.id,
+                                   sealed_credential="", key_id="fernet-v1",
+                                   status="active")
+        _db2.add(_cred)
+        _db2.flush()
+        _db2.add(em.UserStorageBinding(user_id=_u.id, provider="drive",
+                                       account_label="冒烟盘", credential_id=_cred.id,
+                                       status="active"))
+    _db2.commit()
 
 # ---------- /auth/me 暴露付费墙状态 ----------
 r = client.get("/api/user/auth/me", headers=free_h)

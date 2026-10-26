@@ -93,6 +93,10 @@ def _call_pi(monkeypatch, db, user, item, *, variants_on,
                         lambda db_, u_, iid: item)
     monkeypatch.setattr(api, "ensure_playback_allowed",
                         lambda db_, u_: None)
+    # 播放门禁桩（与付费墙桩同口径；本文件测变体逻辑，不测门禁）。
+    monkeypatch.setattr(
+        "backend.emby_server.playback_gate.ensure_binding_playback_allowed",
+        lambda db_, u_, r=None: None)
     monkeypatch.setattr(probe_worker, "maybe_enqueue",
                         lambda db_, it: None)
     monkeypatch.setattr(

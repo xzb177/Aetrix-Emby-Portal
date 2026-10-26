@@ -181,7 +181,14 @@ def test_byos_other_users_binding_403_and_no_relay(monkeypatch):
     assert relay == [] and token == [] and sa == []
 
 
-def test_byos_missing_binding_409_no_sa_fallback(monkeypatch):
+def test_byos_missing_binding_403_gate_no_sa_fallback(monkeypatch):
+    """无绑定用户：播放门禁 403 先于 byos 分支的 409（2026-10-26 硬规矩）。
+
+    门禁上线前本用例断言 409（byos 分支“绑定缺失”）；门禁上线后，
+    名下完全无绑定的用户在门禁处即被 403 拦下，不再走到 byos 分支。
+    “绝不静默回落 SA”这一核心性质不变（sa == []）；绑定不可用
+    （expired / 非 drive）时仍走 byos 分支的 409，见相邻用例。
+    """
     from backend.emby_server import api
 
     relay, token, sa, notes = _setup_video_stream(
@@ -189,7 +196,8 @@ def test_byos_missing_binding_409_no_sa_fallback(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         _run(api.video_stream(
             "item1", _fake_request(), _user(), _FakeDB(None)))
-    assert ei.value.status_code == 409
+    assert ei.value.status_code == 403
+    assert "绑定" in ei.value.detail
     assert relay == [] and token == [] and sa == []
 
 
@@ -279,8 +287,9 @@ def test_non_byos_item_skips_branch(monkeypatch):
         return default
 
     monkeypatch.setattr(_st.store, "get_value", fake_get)
+    # 门禁上线后：分支跳过逻辑须用已绑定用户测（无绑定用户在门禁处即 403）。
     resp = _run(api.video_stream(
-        "item2", _fake_request(), _user(), _FakeDB(None)))
+        "item2", _fake_request(), _user(), _FakeDB(_binding())))
     assert resp.status_code == 200
     assert relay == [] and token == [] and sa == []
 

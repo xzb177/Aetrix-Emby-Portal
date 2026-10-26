@@ -22,6 +22,10 @@
         </div>
         <p class="psp-sub">点一下，直接跳到播放器里填好</p>
         <div v-if="loading" class="psp-empty">正在读取播放器…</div>
+        <p v-else-if="needsBinding" class="psp-empty">
+          请先绑定自己的网盘账号才能点播。
+          <RouterLink to="/game/account" @click="close">去“我的”页绑定网盘</RouterLink>
+        </p>
         <p v-else-if="schemes.length === 0" class="psp-empty">
           这里还没有可导入的播放器。
           <RouterLink to="/game/operator" @click="close">去接线员页导入</RouterLink>
@@ -45,6 +49,7 @@
 import { nextTick, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useToast } from '@/composables/useToast'
+import { storageBindingApi } from '@/api/economy'
 import {
   assignImportScheme,
   loadImportSchemes,
@@ -57,6 +62,9 @@ defineProps<{ title?: string }>()
 const toast = useToast()
 const schemes = ref<PlayerScheme[]>([])
 const loading = ref(false)
+// 播放门禁引导：名下无 active 绑定时为 true， sheet 只展示绑定引导，
+// 不直接跳播放器（跳过去也会在播放器里被服务端 403）。
+const needsBinding = ref(false)
 const panelEl = ref<HTMLElement | null>(null)
 let jumpTimer = 0
 
@@ -69,7 +77,18 @@ watch(open, (now) => {
 async function refresh() {
   loading.value = true
   try {
-    schemes.value = await loadImportSchemes()
+    const [schemesResult, bindingsResult] = await Promise.allSettled([
+      loadImportSchemes(),
+      storageBindingApi.list(),
+    ])
+    if (schemesResult.status === 'fulfilled') schemes.value = schemesResult.value
+    // 绑定列表拉取失败时保持旧行为（服务端门禁仍会拦截），引导只是尽力而为。
+    if (bindingsResult.status === 'fulfilled') {
+      const bindings = bindingsResult.value?.bindings ?? []
+      needsBinding.value = !bindings.some((b) => b.status === 'active')
+    } else {
+      needsBinding.value = false
+    }
   } finally {
     loading.value = false
   }

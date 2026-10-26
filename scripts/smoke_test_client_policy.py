@@ -96,6 +96,19 @@ with SessionLocal() as db:
     db.add(em.EmbyApiToken(token=hash_emby_token(raw_staff), user_id=boss.id,
                            device_id="smoke-test", is_revoked=False))
     db.commit()
+    # 播放门禁（2026-10-26 硬规矩，管理员同样过门禁）：冒烟用户须有 active
+    # 绑定，否则 PlaybackInfo 在门禁处即 403，本脚本测的“恒报不可转码”
+    # 无从谈起。
+    for uid in (viewer.id, boss.id):
+        cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=uid,
+                                  sealed_credential="", key_id="fernet-v1",
+                                  status="active")
+        db.add(cred)
+        db.flush()
+        db.add(em.UserStorageBinding(user_id=uid, provider="drive",
+                                     account_label="冒烟盘", credential_id=cred.id,
+                                     status="active"))
+    db.commit()
     user_id, staff_id, item_id = viewer.id, boss.id, items.guid
 
 H_USER = {"Authorization": f"Bearer {create_access_token(user_id)}"}

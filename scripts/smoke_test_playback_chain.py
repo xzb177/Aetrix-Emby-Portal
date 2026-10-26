@@ -85,6 +85,16 @@ with SessionLocal() as _db:
     _raw = "p" * 40
     _db.add(em.EmbyApiToken(token=hash_emby_token(_raw), user_id=user_id,
                             device_id="smoke-test", is_revoked=False))
+    # 播放门禁（2026-10-26 硬规矩）：绑定≠会员——非会员 403 项仍由付费墙
+    # 先行拦截，但会员放行项须先有 active 绑定，否则门禁 403 先于断言。
+    _cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=user_id,
+                               sealed_credential="", key_id="fernet-v1",
+                               status="active")
+    _db.add(_cred)
+    _db.flush()
+    _db.add(em.UserStorageBinding(user_id=user_id, provider="drive",
+                                  account_label="冒烟盘", credential_id=_cred.id,
+                                  status="active"))
     _db.commit()
 H_EMBY = {"X-Emby-Token": _raw}
 

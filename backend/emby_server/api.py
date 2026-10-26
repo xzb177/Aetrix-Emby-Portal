@@ -4817,6 +4817,10 @@ async def playback_info(
     item = await run_db(_require_visible_item, db, user, item_id)
     # 付费墙：未订阅不发放播放地址（网页端据此展示开通引导，客户端同样不能绕过）
     await run_db(ensure_playback_allowed, db, user)
+    # 播放门禁（2026-10-26 用户亲定硬规矩，无开关）：名下无 active 绑定
+    # 的用户不发放播放地址；浏览、搜索、详情页不受影响（本函数只管下发）。
+    from backend.emby_server import playback_gate as _gate
+    await run_db(_gate.ensure_binding_playback_allowed, db, user)
     _pt.mark("auth")
     # 按需媒体信息探测：远程文件缺 codec 时入队，后台限流探测，不阻塞播放（v2.51.0）
     try:
@@ -5081,6 +5085,10 @@ async def video_stream(
     _pt.mark("auth_visible")
     # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token）
     await run_db(ensure_playback_allowed, db, user)
+    # 播放门禁（2026-10-26 用户亲定硬规矩）：Emby token 直接调流是新播放，
+    # 必须过门禁；带有效 play_sign 的请求是在消费已下发的链接，不追溯。
+    from backend.emby_server import playback_gate as _gate
+    await run_db(_gate.ensure_binding_playback_allowed, db, user, request)
     _pt.mark("auth_playback")
     # 三层路径授权门禁（FMBY 挂载-7，#1240 落库、本 PR 接线）：放在占租约
     # 之前，拒绝的请求不占播放路数；非挂载路径 / 无授权行时放行，
@@ -5653,6 +5661,10 @@ async def upstream_stream(
     from backend.emby_server import upstream_playback as _up
     from backend.emby_server.async_db import run_db
     await run_db(ensure_playback_allowed, db, user)
+    # 播放门禁（2026-10-26 用户亲定硬规矩）：上游 302 本次调用即新下发，
+    # 无条件过门禁（无已下发链接消费一说）。
+    from backend.emby_server import playback_gate as _gate
+    await run_db(_gate.ensure_binding_playback_allowed, db, user)
     _msid = (getattr(request, "query_params", None) or {}).get("mediaSourceId")
     _ep_raw = (getattr(request, "query_params", None) or {}).get("episode")
     try:
