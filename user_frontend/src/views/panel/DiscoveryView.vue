@@ -131,6 +131,30 @@
           </div>
         </section>
 
+        <!-- 合集货架（媒体库学习 L3：合集区；总闸关/无合集时整段隐藏，不占位；
+             桌面锚点不收它——条件渲染的区段挂锚点会点出死锚） -->
+        <section v-if="collectionsLoading || collectionsError || shelfCollections.length > 0" class="v4-sec d3-ord-collections" id="disc-collections">
+          <div class="m-only">
+            <div class="v4-sec-title">📚 合集</div>
+            <div class="v4-sec-sub">服主整理好的合集，点进去看成员</div>
+          </div>
+          <div class="d3-sec-head d-only">
+            <div><span class="d3-k">COLLECTIONS</span><div class="d3-sec-title">合集</div><div class="d3-sec-sub">服主整理好的合集，点进去看成员</div></div>
+          </div>
+          <div v-if="collectionsLoading" class="v4-skeleton" aria-hidden="true" style="height:96px"></div>
+          <div v-else-if="collectionsError" class="v4-err">合集加载失败：{{ collectionsError }}<br><button type="button" class="v4-retry" @click="loadCollections">重试</button></div>
+          <div v-else class="v4-collections">
+            <CollectionCard
+              v-for="c in shelfCollections"
+              :key="c.id"
+              :collection="c"
+            />
+          </div>
+          <div v-if="!collectionsLoading && !collectionsError" style="margin-top:10px">
+            <RouterLink to="/collections" class="v4-empty-link">查看全部合集 ›</RouterLink>
+          </div>
+        </section>
+
         <!-- 首页分区（媒体库学习 L6：注册表驱动；取不到/开关关时回落旧布局） -->
         <template v-if="isWide && homeSections">
           <template v-for="s in homeSections" :key="s.key">
@@ -220,6 +244,8 @@ import { RouterLink, useRouter } from 'vue-router'
 import { useServerCards } from '@/composables/useServerCards'
 import { useServerCardPrefs } from '@/composables/useServerCardPrefs'
 import { humanizeError, type FeedItem, type ParcelItem, type ParcelsData } from '@/composables/usePanelApi'
+import CollectionCard from '@/components/panel/CollectionCard.vue'
+import { collectionsApi, type ShelfCollection } from '@/api'
 
 const panel = usePanelStore()
 const user = useUserStore()
@@ -246,6 +272,29 @@ function goWorld() {
   setHomeMode('world')
 }
 const { today, parcels, pulse, letter, feed } = storeToRefs(panel)
+// 合集货架区段：只读架列表（后端已按 sort_order 出架）；总闸关（404）
+// 或空架时整段隐藏，不报错、不占位；其它失败给重试。
+const collectionsLoading = ref(false)
+const collectionsError = ref('')
+const shelfCollections = ref<ShelfCollection[]>([])
+async function loadCollections() {
+  if (collectionsLoading.value) return
+  collectionsLoading.value = true
+  collectionsError.value = ''
+  try {
+    const data = await collectionsApi.getShelves()
+    shelfCollections.value = Array.isArray(data?.collections) ? data.collections : []
+  } catch (err: unknown) {
+    const status = (err as { response?: { status?: number } })?.response?.status
+    if (status === 404) {
+      shelfCollections.value = []
+    } else {
+      collectionsError.value = humanizeError(err)
+    }
+  } finally {
+    collectionsLoading.value = false
+  }
+}
 // 首页服务器卡片：服清单数据驱动 + 混合展示 + 用户自选（逻辑见 useServerCards / useServerCardPrefs）
 const serverCards = useServerCards()
 const cardPrefs = useServerCardPrefs()
@@ -448,6 +497,7 @@ onMounted(() => {
   void panel.loadHome()
   void panel.loadFeed()
   void loadServers()
+  void loadCollections()
   void loadHomeSections()
   window.addEventListener('resize', onResize)
   wideMq = window.matchMedia('(min-width: 1280px)')
@@ -643,6 +693,12 @@ const hasLetterData = computed(() => Object.keys(letterData.value).length > 0)
 <style scoped>
 /* 封存包裹行：横向滑动货架（见下方 .v4-parcels） */
 /* 封存包裹行：横向滑动货架（单行横滑 + scroll-snap，行尾露一截提示可滑） */
+.v4-collections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
 .v4-parcels {
   display: flex;
   gap: 12px;

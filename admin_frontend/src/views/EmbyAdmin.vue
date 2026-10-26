@@ -1714,6 +1714,10 @@ function typeLabel(t: string): string {
         <el-button :loading="virtualLoading" @click="generateVirtual">
           <Wand2 :size="14" style="margin-right: 4px" />生成平台虚拟库
         </el-button>
+        <!-- 合集管理：不占导航位置（Layout.vue OFF_NAV_GROUP 归属“媒体”），入口收在这里 -->
+        <el-button @click="router.push({ name: 'MediaCollections' })">
+          合集管理
+        </el-button>
         <el-button type="primary" @click="openCreate">
           <FolderPlus :size="15" style="margin-right: 4px" />新建媒体库
         </el-button>

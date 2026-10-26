@@ -213,7 +213,7 @@ const navGroups: NavGroup[] = [
  * 放进导航就会让「多服」又变成要先理解的一级概念——它的入口在「服务器与线路」页里，
  * 这里只负责面包屑归属与分组展开。
  */
-const OFF_NAV_GROUP: Record<string, string> = { '/realms': '媒体' }
+const OFF_NAV_GROUP: Record<string, string> = { '/realms': '媒体', '/media-collections': '媒体' }
 
 /** 某个路径归哪个分组（含不占导航位置的页面，见 OFF_NAV_GROUP） */
 function groupOf(path: string): NavGroup | undefined {

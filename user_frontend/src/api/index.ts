@@ -757,3 +757,79 @@ export const subscriptionApi = {
   // 自动续订开关：到期前 24 小时用能量自动续订，余额不足则不续
   setAutoRenew: (id: number, enabled: boolean) => api.post<never, { success: boolean; auto_renew: boolean; message: string }>(`/api/user/subscriptions/${id}/auto-renew`, { enabled }),
 }
+
+// ==================== 合集 API（backend/api/media_sets_api.py 用户端读口） ====================
+//
+// 用户端只有读口：架列表 / 合集详情 / 成员列表（双轨）。写操作（新建 /
+// 编辑 / 成员增删 / 设序）只在管理端，见 admin_frontend/src/api/collections.ts。
+// 总闸 COLLECTIONS_ENABLED 关时读口 404，调用方按“无合集”处理（不报错）。
+// 封面只出 artwork_mode 策略，不出图 URL：卡片无封面时用占位，不另起封面机制。
+// 成员露出受案 A 门控（visible_items_query）：未绑定成员不上架显示。
+
+/** 架上的一个合集（GET /api/user/collections/shelves 的 collections 项） */
+export interface ShelfCollection {
+  kind: 'collection'
+  id: number
+  name: string
+  sort_order: number
+  artwork_mode: string
+  member_count: number
+  min_effective_members: number
+}
+
+/** 架列表：真实库 + 合集区（合集已按 sort_order、id 出架） */
+export interface ShelvesResponse {
+  libraries: Array<{ kind: 'library'; id: number; name: string; collection_type: string }>
+  collections: ShelfCollection[]
+}
+
+/** 合集详情（GET /api/user/collections/{id}；已剔除刷新修订字段） */
+export interface CollectionDetail {
+  id: number
+  name: string
+  source_type: string
+  visibility_status: string
+  sort_order: number
+  min_effective_members: number
+  artwork_mode: string
+  path_prefix: string | null
+  bound_person_id: number | null
+  member_count: number
+  effective_count: number
+  shelf_eligible: boolean
+}
+
+/** 合集成员行（双轨列表的 items 项；order_index 为该轨下的序号） */
+export interface CollectionMemberItem {
+  id: number
+  name: string
+  item_type: string
+  production_year: number | null
+  premiere_date: string | null
+  order_index?: number
+}
+
+/** 双轨成员列表（track=release 上映序 / watch 观影序；后端 order_members 语义） */
+export interface CollectionItemsResponse {
+  id: number
+  name: string
+  track: 'release' | 'watch'
+  artwork_mode: string
+  shelf_eligible: boolean
+  effective_count: number
+  min_effective_members: number
+  items: CollectionMemberItem[]
+  total: number
+}
+
+export const collectionsApi = {
+  // 架列表（合集区已按 sort_order 出架；总闸关时 404）
+  getShelves: () => api.get<never, ShelvesResponse>('/api/user/collections/shelves'),
+
+  // 合集详情（hidden 合集按不存在处理 → 404）
+  getCollection: (id: number) => api.get<never, CollectionDetail>(`/api/user/collections/${id}`),
+
+  // 成员列表（双轨切换；未达 min 门时 items 为空 + shelf_eligible=false）
+  getItems: (id: number, params?: { track?: 'release' | 'watch'; limit?: number; offset?: number }) =>
+    api.get<never, CollectionItemsResponse>(`/api/user/collections/${id}/items`, { params }),
+}
