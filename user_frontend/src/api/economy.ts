@@ -317,6 +317,51 @@ export const deviceApi = {
       `/api/user/emby/devices/${encodeURIComponent(deviceId)}`),
 }
 
+// ==================== 我的网盘（用户自带存储绑定，BYOS） ====================
+// 后端口径（backend/emby_server/portal.py user_emby_router，前缀 /api/user/emby）：
+// GET /storage-bindings → { bindings: [...] }；POST /storage-bindings/drive/oauth/start
+// { account_label } → { authorization_url, expires_in }；POST /storage-bindings/{id}/verify
+// → 绑定行；DELETE /storage-bindings/{id} → { success: true }。
+// 绑定行字段照抄 backend/emby_server/user_bindings.py serialize_binding：
+// id / provider / account_label / status / last_verified_at / last_error_kind /
+// error_message / has_credential / created_at，绝不含凭据原文。
+export interface StorageBinding {
+  id: number
+  provider: string
+  account_label: string
+  status: string
+  last_verified_at: string | null
+  last_error_kind: string | null
+  error_message: string | null
+  has_credential: boolean
+  created_at: string | null
+}
+
+export interface StorageBindingsResponse {
+  bindings: StorageBinding[]
+}
+
+export interface DriveOAuthStartResponse {
+  authorization_url: string
+  expires_in: number
+}
+
+export const storageBindingApi = {
+  list: () =>
+    api.get<never, StorageBindingsResponse>('/api/user/emby/storage-bindings'),
+  startDriveOAuth: (accountLabel: string) =>
+    api.post<never, DriveOAuthStartResponse>(
+      '/api/user/emby/storage-bindings/drive/oauth/start',
+      { account_label: accountLabel },
+    ),
+  verify: (bindingId: number) =>
+    api.post<never, StorageBinding>(
+      `/api/user/emby/storage-bindings/${bindingId}/verify`),
+  remove: (bindingId: number) =>
+    api.delete<never, { success: boolean }>(
+      `/api/user/emby/storage-bindings/${bindingId}`),
+}
+
 // ==================== 优惠券（v2.10.0） ====================
 
 /** 试算结果：能不能用、省多少、实付多少（与真正下单同一套口径） */
