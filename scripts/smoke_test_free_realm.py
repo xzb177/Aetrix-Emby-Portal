@@ -88,6 +88,16 @@ with SessionLocal() as _db:
     _raw = "f" * 40
     _db.add(em.EmbyApiToken(token=hash_emby_token(_raw), user_id=_user_id,
                             device_id="smoke-test", is_revoked=False))
+    # 播放门禁（2026-10-26 硬规矩）：公益服免的是订阅、不是绑定——
+    # “公益服下非会员也能拿 PlaybackInfo”项须先有 active 绑定。
+    _cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=_user_id,
+                               sealed_credential="", key_id="fernet-v1",
+                               status="active")
+    _db.add(_cred)
+    _db.flush()
+    _db.add(em.UserStorageBinding(user_id=_user_id, provider="drive",
+                                  account_label="冒烟盘", credential_id=_cred.id,
+                                  status="active"))
     _db.commit()
 USER_E = {"X-Emby-Token": _raw}
 check("新账号不是会员（没有任何订阅）", r.json()["user"]["is_vip"] is False)

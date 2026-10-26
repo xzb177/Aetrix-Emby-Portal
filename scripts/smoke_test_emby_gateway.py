@@ -53,6 +53,17 @@ user = models.WebUser(
 db.add(user)
 db.commit()
 
+# 播放门禁（2026-10-26 硬规矩，管理员同样过门禁）：alice 须有 active 绑定，
+# 否则直连流在门禁处即 403（bob 的 403 项均由付费墙先行拦截，不受影响）。
+cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=user.id,
+                          sealed_credential="", key_id="fernet-v1", status="active")
+db.add(cred)
+db.flush()
+db.add(em.UserStorageBinding(user_id=user.id, provider="drive",
+                             account_label="冒烟盘", credential_id=cred.id,
+                             status="active"))
+db.commit()
+
 lib_dir = tempfile.mkdtemp(prefix="gwlib_")
 movie_dir = os.path.join(lib_dir, "Movie A (2019)")
 season_dir = os.path.join(lib_dir, "Show B", "Season 1")

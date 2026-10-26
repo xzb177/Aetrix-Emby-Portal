@@ -306,6 +306,10 @@ def _route_request(query=b""):
 def _stub_route_auth(monkeypatch):
     monkeypatch.setattr(api_mod, "ensure_playback_allowed",
                         lambda db, user: None)
+    # 播放门禁桩（与付费墙桩同口径；本文件测上游路由，不测门禁）。
+    monkeypatch.setattr(
+        "backend.emby_server.playback_gate.ensure_binding_playback_allowed",
+        lambda db, user, r=None: None)
 
     async def fake_run_db(fn, *args, **kwargs):
         return fn(*args, **kwargs)

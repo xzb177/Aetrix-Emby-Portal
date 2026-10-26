@@ -77,6 +77,10 @@ def _stub_common(monkeypatch, item):
     monkeypatch.setattr(api, "_require_item", lambda db, item_id: item)
     monkeypatch.setattr(api, "_library_scope", lambda db_, user_: None)
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
+    # 播放门禁桩（与付费墙桩同口径；本文件测 drive 快捷路径，不测门禁）。
+    monkeypatch.setattr(
+        "backend.emby_server.playback_gate.ensure_binding_playback_allowed",
+        lambda db, user, r=None: None)
 
 
 def _stub_switch(monkeypatch, value):

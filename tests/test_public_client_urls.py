@@ -270,9 +270,22 @@ def seed():
     db = SessionLocal()
     old = db.query(models.WebUser).filter(models.WebUser.username == UNAME).first()
     if old:
+        # 种子绑定的清理与种子创建配对（先删绑定行再删凭据行，外键顺序）。
+        cred_ids = [r[0] for r in db.query(em.UserStorageBinding.credential_id)
+                    .filter(em.UserStorageBinding.user_id == old.id).all()]
+        db.query(em.UserStorageBinding).filter(
+            em.UserStorageBinding.user_id == old.id).delete(synchronize_session=False)
+        if cred_ids:
+            db.query(em.MountCredential).filter(
+                em.MountCredential.id.in_(cred_ids)).delete(synchronize_session=False)
         db.query(em.EmbyApiToken).filter(em.EmbyApiToken.user_id == old.id).delete(
             synchronize_session=False)
         db.query(models.WebUser).filter(models.WebUser.id == old.id).delete()
+    # 孤儿绑定无条件清掉（旧用户已被删、只剩孤儿行时 old 为空，正是最需要
+    # 清孤儿的时候；否则新种子用户复用 id 时撞唯一约束）。
+    db.query(em.UserStorageBinding).filter(
+        ~em.UserStorageBinding.user_id.in_(
+            db.query(models.WebUser.id))).delete(synchronize_session=False)
     for lib in db.query(em.Library).filter(em.Library.name == "公开地址测试库").all():
         ids = [r[0] for r in db.query(em.MediaItem.id).filter(em.MediaItem.library_id == lib.id).all()]
         if ids:
@@ -289,6 +302,16 @@ def seed():
     db.add(user)
     lib = em.Library(guid=_guid(), name="公开地址测试库", collection_type="movies", is_enabled=True)
     db.add(lib)
+    db.flush()
+    # 播放门禁（2026-10-26 硬规矩，管理员同样过门禁）：种子用户须有 active
+    # 绑定，否则 PlaybackInfo 用例在门禁处即 403。
+    cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=user.id,
+                              sealed_credential="", key_id="fernet-v1", status="active")
+    db.add(cred)
+    db.flush()
+    db.add(em.UserStorageBinding(user_id=user.id, provider="drive",
+                                 account_label="种子盘", credential_id=cred.id,
+                                 status="active"))
     db.flush()
     movie = em.MediaItem(
         guid=_guid(), library_id=lib.id, item_type="movie", name="公开地址电影",

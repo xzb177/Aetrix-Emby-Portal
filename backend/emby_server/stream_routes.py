@@ -48,12 +48,16 @@ async def video_stream_container(item_id: str, container: str, request: Request,
 @emby_router.get("/emby/Items/{item_id}/File")
 @emby_router.get("/Items/{item_id}/File")
 @release_db_before_response
-def item_file(item_id: str, user: models.WebUser = Depends(get_play_user),
+def item_file(item_id: str, request: Request, user: models.WebUser = Depends(get_play_user),
               db: Session = Depends(get_db)):
     # r62：播放投递端点统一走 get_play_user（短期签名优先，回退 Emby token/JWT）；
     # 此前用 get_emby_user，门户网页端凭 uid/exp/sign 播放签名会被 401。
     item = _require_visible_item(db, user, item_id)
     ensure_playback_allowed(db, user)
+    # 播放门禁（2026-10-26 用户亲定硬规矩）：Emby token 直接取文件是新播放，
+    # 必须过门禁；带有效 play_sign 的请求是在消费已下发的链接，不追溯。
+    from backend.emby_server import playback_gate as _gate
+    _gate.ensure_binding_playback_allowed(db, user, request)
     if not item.file_path:
         raise HTTPException(status_code=404, detail="File not found")
     try:

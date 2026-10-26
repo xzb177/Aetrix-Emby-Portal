@@ -109,6 +109,20 @@ for _name, _raw in ((a_name, "o" * 40), (staff_name, "w" * 40)):
                             device_id="smoke-test", is_revoked=False))
 _db.commit()
 _db.close()
+# 播放门禁（2026-10-26 硬规矩，管理员同样过门禁）：在线播放项与管理员
+# File 项须 user_a 与 staff 都有 active 绑定，否则门禁 403 先于断言。
+with SessionLocal() as _db2:
+    for _name in (a_name, staff_name):
+        _u = _db2.query(models.WebUser).filter(models.WebUser.username == _name).first()
+        _cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=_u.id,
+                                   sealed_credential="", key_id="fernet-v1",
+                                   status="active")
+        _db2.add(_cred)
+        _db2.flush()
+        _db2.add(em.UserStorageBinding(user_id=_u.id, provider="drive",
+                                       account_label="冒烟盘", credential_id=_cred.id,
+                                       status="active"))
+    _db2.commit()
 
 
 def emby_login(username: str, device_id: str, password: str = "pass12345"):

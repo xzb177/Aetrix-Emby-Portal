@@ -122,6 +122,11 @@ def _request(range_header=None):
 def _stub_common(monkeypatch, item, target):
     monkeypatch.setattr(api, "_require_visible_item", lambda db, user, item_id: item)
     monkeypatch.setattr(api, "ensure_playback_allowed", lambda db, user: None)
+    # 播放门禁与付费墙同口径桩掉（本文件测中继分支，不测门禁本身；
+    # 门禁行为见 tests/test_playback_gate.py）。
+    monkeypatch.setattr(
+        "backend.emby_server.playback_gate.ensure_binding_playback_allowed",
+        lambda db, u, r=None: None)
     monkeypatch.setattr(api.play_sign, "check_referer", lambda *a, **k: None)
     monkeypatch.setattr(api, "_play_target", lambda db, it: target)
     monkeypatch.setattr(_strategy, "maybe_direct_url", lambda db, fid: None)

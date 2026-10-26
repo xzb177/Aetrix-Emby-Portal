@@ -33,9 +33,24 @@ def _guid():
 def _cleanup(db, lib_name):
     old = db.query(models.WebUser).filter(models.WebUser.username == UNAME).first()
     if old:
+        # 种子绑定的清理与种子创建配对（先删绑定行再删凭据行，外键顺序）；
+        # 否则重跑时同名绑定撞 (user_id, provider, account_label) 唯一约束。
+        cred_ids = [r[0] for r in db.query(em.UserStorageBinding.credential_id)
+                    .filter(em.UserStorageBinding.user_id == old.id).all()]
+        db.query(em.UserStorageBinding).filter(
+            em.UserStorageBinding.user_id == old.id).delete(synchronize_session=False)
+        if cred_ids:
+            db.query(em.MountCredential).filter(
+                em.MountCredential.id.in_(cred_ids)).delete(synchronize_session=False)
         db.query(em.EmbyApiToken).filter(
             em.EmbyApiToken.user_id == old.id).delete(synchronize_session=False)
         db.query(models.WebUser).filter(models.WebUser.id == old.id).delete()
+    # 孤儿绑定（用户已不在、绑定残留，历史种子未清所致）无条件清掉——
+    # 不能放在 if old 里：旧用户已被删、只剩孤儿行时 old 为空，正是最
+    # 需要清孤儿的时候；否则新种子用户复用 id 时撞唯一约束。
+    db.query(em.UserStorageBinding).filter(
+        ~em.UserStorageBinding.user_id.in_(
+            db.query(models.WebUser.id))).delete(synchronize_session=False)
     for lib in db.query(em.Library).filter(em.Library.name == lib_name).all():
         ids = [r[0] for r in db.query(em.MediaItem.id)
                .filter(em.MediaItem.library_id == lib.id).all()]
@@ -61,6 +76,16 @@ def seed():
     lib = em.Library(guid=_guid(), name="隐藏路径测试库", collection_type="tvshows",
                      is_enabled=True)
     db.add(lib)
+    db.flush()
+    # 播放门禁（2026-10-26 硬规矩，管理员同样过门禁）：种子用户须有 active
+    # 绑定，否则 PlaybackInfo 在门禁处即 403，本文件测的“仍可播”无从谈起。
+    cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=user.id,
+                              sealed_credential="", key_id="fernet-v1", status="active")
+    db.add(cred)
+    db.flush()
+    db.add(em.UserStorageBinding(user_id=user.id, provider="drive",
+                                 account_label="种子盘", credential_id=cred.id,
+                                 status="active"))
     db.flush()
     series = em.MediaItem(guid=_guid(), library_id=lib.id, item_type="series",
                           name="沦陷", file_path="/strm/剧集/国产剧/沦陷 (2026)")
