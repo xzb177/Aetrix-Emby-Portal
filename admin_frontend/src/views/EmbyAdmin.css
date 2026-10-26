@@ -180,7 +180,7 @@
   white-space: nowrap;
 }
 
-/* 配置表单里的封面：缩略图 + 操作按钮 */
+/* 配置表单里的封面缩略图 */
 .lib-cover-edit {
   display: flex;
   align-items: center;
@@ -201,12 +201,6 @@
   height: 100%;
   object-fit: cover;
   display: block;
-}
-.lib-cover-ops {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 
 /* 表单底栏：左边一句状态，右边按钮 */
