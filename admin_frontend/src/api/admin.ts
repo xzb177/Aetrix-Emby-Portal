@@ -1717,9 +1717,9 @@ export const rerunIdentifyReviewTask = (taskId: number) =>
 export interface UpstreamSource {
   id: number
   name: string
-  source_type: 'emby' | 'jellyfin'
+  source_type: 'emby' | 'jellyfin' | 'applecms'
   base_url: string
-  auth_method: 'password' | 'api_key'
+  auth_method: 'password' | 'api_key' | 'none'
   username: string | null
   has_secret: boolean
   extra_headers: Record<string, string>
@@ -1736,9 +1736,9 @@ export interface UpstreamSource {
 
 export interface UpstreamSourceInput {
   name: string
-  source_type: 'emby' | 'jellyfin'
+  source_type: 'emby' | 'jellyfin' | 'applecms'
   base_url: string
-  auth_method: 'password' | 'api_key'
+  auth_method: 'password' | 'api_key' | 'none'
   username?: string | null
   secret?: string | null
   extra_headers?: Record<string, string> | null

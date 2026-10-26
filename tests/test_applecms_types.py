@@ -38,6 +38,9 @@ def db(db_factory):
 @pytest.fixture(autouse=True)
 def _switch_on(monkeypatch):
     monkeypatch.setenv(uim.MAPPING_ENABLED_ENV, "1")
+    # 本文件建 applecms 源：创建口总闸须开（关闸拒建另见
+    # test_applecms_p1_gate.py）。
+    monkeypatch.setenv("APPLECMS_ENABLED", "1")
 
 
 # ---------- 枚举成员 ----------
