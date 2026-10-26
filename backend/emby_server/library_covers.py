@@ -31,6 +31,7 @@ system_configs[library_cover_strategy_order] → 默认 borrow,render,svg。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -212,3 +213,170 @@ def resolve_library_cover(db, lib, kind: str) -> dict:
         elif step == "svg":
             return {"url": _svg_url(lib), "source": "svg"}
     return {"url": None, "source": "none"}
+
+
+# ==================== 虚拟库派生封面（Emby 协议口径） ====================
+# 背景：虚拟库（按平台聚合）没有自己的目录与封面文件，cover_path 恒空；
+# Emby 协议 Views 里虚拟库因此拿不到 Primary 标记，第三方客户端无图。
+# 本节只给「无 cover_path 的虚拟库」派生封面，真实库与已有显式封面的
+# 虚拟库一律不走这里（调用方先分流）。派生不写库、不单独存封面文件，
+# 封面从内容派生（L1 的魂），与上面五件套的 borrow 开关无关——虚拟库
+# 过去本来就没有封面可回退，不存在旧行为可破坏；五件套路径本身不动。
+
+# SVG 占位字节：与 backend/api/media_library.py 的占位路由同一份字节
+# （800x450 景观占位，文案“暂无封面”）；占位路由改为从这里 import，
+# 不再两处各存一份。
+SVG_PLACEHOLDER_BYTES = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"'
+    ' viewBox="0 0 800 450"><rect width="800" height="450" fill="#e8e4dc"/>'
+    '<g fill="none" stroke="#9a948a" stroke-width="6">'
+    '<rect x="310" y="150" width="180" height="150" rx="12"/>'
+    '<circle cx="400" cy="225" r="42"/></g>'
+    '<text x="400" y="350" font-family="sans-serif" font-size="28"'
+    ' fill="#8a847a" text-anchor="middle">暂无封面</text></svg>'
+).encode("utf-8")
+
+# 列查询返回的列顺序（调用方按下标取，禁止用 SELECT * 式整行）：
+# 0=id, 1=guid, 2=tmdb_id, 3=imdb_id, 4=poster_path, 5=primary_image_url
+_VIRTUAL_COLS = (
+    em.MediaItem.id,
+    em.MediaItem.guid,
+    em.MediaItem.tmdb_id,
+    em.MediaItem.imdb_id,
+    em.MediaItem.poster_path,
+    em.MediaItem.primary_image_url,
+)
+
+
+def _virtual_member_rows(db, lib):
+    """虚拟库成员列（与 facets.count_virtual_items 同口径）：
+
+    平台聚合：ItemFacet 就绪时走关联表（kind=platform），否则回退
+    platforms ILIKE；只取 movie/series、排除 is_hidden；按 id 升序
+    （fallback 的确定性顺序与代表分组的最低 id 口径都依赖它）。
+    平台为空 → []（无成员，调用方出占位）。
+    """
+    from backend.emby_server import facets as _facets
+
+    platform = (getattr(lib, "platform", "") or "").strip()
+    if not platform:
+        return []
+    base = (
+        db.query(*_VIRTUAL_COLS)
+        .filter(
+            em.MediaItem.is_hidden == False,  # noqa: E712
+            em.MediaItem.item_type.in_(("movie", "series")),
+        )
+    )
+    if _facets.ready(db):
+        condition = _facets.candidate_condition(_facets.KIND_PLATFORM, [platform], db)
+        if condition is None:
+            return []
+        return base.filter(condition).order_by(em.MediaItem.id.asc()).all()
+    return (
+        base.filter(em.MediaItem.platforms.ilike(f"%{platform}%"))
+        .order_by(em.MediaItem.id.asc())
+        .all()
+    )
+
+
+def _pick_virtual_representative(rows):
+    """案 A 代表规则的列元组版（与 resolve_library_representative 同规则，
+    实体版保持不动，避免改动真实库路径）：
+
+    rows 按 id 升序；同身份键（tmdb 优先、次 imdb）只留最低 id 行；
+    再在代表中取 id 最大且有海报（poster_path 或 primary_image_url
+    非空）的一个；无则 None。代表须已绑定（tmdb/imdb 任一 trim 后
+    非空，与 _own_bound 的 SQL 语义逐字对应）。
+    """
+    reps = {}
+    for row in rows:
+        if not ((row[2] or "").strip() or (row[3] or "").strip()):
+            continue
+        key = _identity_key_of(row[2], row[3])
+        if key and key not in reps:
+            reps[key] = row
+    for row in sorted(reps.values(), key=lambda r: r[0], reverse=True):
+        if (row[4] or "").strip() or (row[5] or "").strip():
+            return row
+    return None
+
+
+def _identity_key_of(tmdb, imdb):
+    """代表归一键：tmdb 优先，次 imdb；两空 = 无身份。"""
+    tmdb = (tmdb or "").strip()
+    if tmdb:
+        return f"tmdb:{tmdb}"
+    imdb = (imdb or "").strip()
+    if imdb:
+        return f"imdb:{imdb}"
+    return None
+
+
+def _poster_key(row):
+    """海报来源键（供 tag 用，来源变了 tag 就变）：本地缓存图取文件
+    mtime（与 _item_poster_url 的本地判定同口径），否则取远程 URL。"""
+    poster_path = (row[4] or "").strip()
+    remote = (row[5] or "").strip()
+    if (
+        poster_path
+        and image_store.is_cached_path(poster_path)
+        and os.path.isfile(poster_path)
+    ):
+        try:
+            return f"file:{int(os.path.getmtime(poster_path))}"
+        except OSError:
+            pass
+    return f"url:{remote}"
+
+
+def _virtual_cover_tag(source, row=None):
+    """派生封面的 ImageTag（客户端缓存失效键，tag 本身不被服务端校验）：
+
+    borrow/fallback：vb-/vf- + 代表条目 guid 与海报来源键的短哈希；
+    svg：vs- + 占位字节短哈希（占位字节变了 tag 跟着变）。
+    """
+    if source == "svg":
+        return "vs-" + hashlib.md5(SVG_PLACEHOLDER_BYTES).hexdigest()[:8]
+    prefix = "vb-" if source == "borrow" else "vf-"
+    raw = f"{row[1]}|{_poster_key(row)}".encode("utf-8")
+    return prefix + hashlib.md5(raw).hexdigest()[:12]
+
+
+def resolve_virtual_library_cover(db, lib):
+    """虚拟库派生封面（Views ImageTags 与 Primary 出图口径共用）：
+
+    返回 {"source", "tag", "item_id", "item_guid"}，source ∈：
+    - borrow：案 A 代表条目的海报（已绑定代表中 id 最大且有海报者）；
+    - fallback：无代表时，按 id 升序取首个有海报的成员（确定性顺序，
+      不限已绑定——任务书定死的回退口径）；
+    - svg：没有任何成员有海报（或库无平台/无成员）时占位；
+    - none：仅理论（svg 恒有）；调用方遇 none 按无封面处理。
+
+    代表判定不查 IDENTITY_SHELF_GATE 开关（与既有 borrow 一致：
+    借图不是货架准入），但代表本身须已绑定；成员口径与计数一致
+    （平台聚合、movie/series、排除 is_hidden）。本函数不写库。
+    """
+    rows = _virtual_member_rows(db, lib)
+    rep = _pick_virtual_representative(rows)
+    if rep is not None:
+        return {
+            "source": "borrow",
+            "tag": _virtual_cover_tag("borrow", rep),
+            "item_id": rep[0],
+            "item_guid": rep[1],
+        }
+    for row in rows:  # rows 已按 id 升序：首个有海报者即确定性回退
+        if (row[4] or "").strip() or (row[5] or "").strip():
+            return {
+                "source": "fallback",
+                "tag": _virtual_cover_tag("fallback", row),
+                "item_id": row[0],
+                "item_guid": row[1],
+            }
+    return {
+        "source": "svg",
+        "tag": _virtual_cover_tag("svg"),
+        "item_id": None,
+        "item_guid": None,
+    }

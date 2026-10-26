@@ -45,6 +45,7 @@ from backend.emby_server import line_stats
 from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import items_dedup_cache as _dedup_cache
 from backend.emby_server import items_list_cache as _list_cache
+from backend.emby_server import library_covers
 from backend.emby_server import list_projection
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
@@ -1980,10 +1981,28 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
         # 虚拟媒体库（按发行平台生成）：只在总开关 + 该库开启时才出现在客户端
         if is_virtual and not virtual_on:
             continue
-        # 媒体库封面：有 cover_path 才给 Primary 标记，客户端才会去拉 /Images/Primary
+        # 媒体库封面：有 cover_path 才给 Primary 标记，客户端才会去拉 /Images/Primary。
+        # 虚拟库无 cover_path 时派生封面（借代表海报 / 回退首个有海报成员 /
+        # SVG 占位），走同一 Primary 口径；真实库与已有显式封面的虚拟库
+        # 逻辑逐字不动（primary_aspect 对真实库恒等于旧的 cover_path 条件）。
         cover_path = getattr(lib, "cover_path", None)
-        cover_tag = _proj[lib.id].cover_tag if (_proj is not None and not is_virtual) else _library_cover_tag(cover_path)
-        image_tags = {"Primary": cover_tag} if cover_path else {}
+        primary_aspect = 0.6666667 if cover_path else None
+        if is_virtual and not cover_path:
+            _derived = library_covers.resolve_virtual_library_cover(db, lib)
+            if _derived["source"] in ("borrow", "fallback"):
+                cover_tag = _derived["tag"]
+                image_tags = {"Primary": cover_tag}
+                primary_aspect = 0.6666667
+            elif _derived["source"] == "svg":
+                cover_tag = _derived["tag"]
+                image_tags = {"Primary": cover_tag}
+                primary_aspect = 800 / 450  # 占位图本身是 800x450 景观
+            else:
+                cover_tag = _library_cover_tag(cover_path)
+                image_tags = {}
+        else:
+            cover_tag = _proj[lib.id].cover_tag if (_proj is not None and not is_virtual) else _library_cover_tag(cover_path)
+            image_tags = {"Primary": cover_tag} if cover_path else {}
         child_count = count_virtual_items(db, lib) if is_virtual else (_proj[lib.id].child_count if _proj is not None else _library_item_count(db, lib))
         # 虚拟库跨电影/剧集聚合，统一按 mixed 上报，客户端才能正常当普通文件夹浏览
         collection_type = "mixed" if is_virtual else lib.collection_type
@@ -2025,9 +2044,9 @@ def user_views(user_id: str, user: models.WebUser = Depends(get_emby_user),
         if collection_type:
             # 官方 CollectionType 为 null 时字段整个不发（nullable 枚举省略）
             entry["CollectionType"] = collection_type
-        if cover_path:
+        if primary_aspect is not None:
             # 官方 Views 显式带 PrimaryImageAspectRatio；无 Primary 图时官方为 null 不发
-            entry["PrimaryImageAspectRatio"] = 0.6666667
+            entry["PrimaryImageAspectRatio"] = primary_aspect
         # 官方 dto.DateCreated = item.DateCreated（全字段默认下发）：恒发；
         # created_at 为空的库回退库内最早入库时间，空库回退固定常量。
         entry["DateCreated"] = _iso(

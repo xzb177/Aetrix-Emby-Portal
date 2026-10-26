@@ -47,15 +47,9 @@ _SEED_SECTIONS = (
     ("recently_updated", "最近更新", "recently_added", 1),
 )
 
-_SVG_PLACEHOLDER = (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"'
-    ' viewBox="0 0 800 450"><rect width="800" height="450" fill="#e8e4dc"/>'
-    '<g fill="none" stroke="#9a948a" stroke-width="6">'
-    '<rect x="310" y="150" width="180" height="150" rx="12"/>'
-    '<circle cx="400" cy="225" r="42"/></g>'
-    '<text x="400" y="350" font-family="sans-serif" font-size="28"'
-    ' fill="#8a847a" text-anchor="middle">暂无封面</text></svg>'
-).encode("utf-8")
+# SVG 占位字节唯一来源：backend/emby_server/library_covers.py 的
+# SVG_PLACEHOLDER_BYTES（虚拟库派生封面共用同一份字节，不再两处各存一份）。
+_SVG_PLACEHOLDER = library_covers.SVG_PLACEHOLDER_BYTES
 
 
 def sections_enabled() -> bool:
