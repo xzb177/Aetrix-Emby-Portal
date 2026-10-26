@@ -38,6 +38,19 @@ const router = createRouter({
             component: () => import('@/views/panel/CollectorView.vue'),
             meta: { title: '收藏家', requiresAuth: true },
           },
+          // 合集：货架页 + 详情页（只读用户口；不在底栏占位，入口在发现页合集区段）
+          {
+            path: '/collections',
+            name: 'collections',
+            component: () => import('@/views/panel/CollectionShelfView.vue'),
+            meta: { title: '合集', requiresAuth: true },
+          },
+          {
+            path: '/collections/:id',
+            name: 'collection-detail',
+            component: () => import('@/views/panel/CollectionView.vue'),
+            meta: { title: '合集', requiresAuth: true },
+          },
           {
             path: '/server',
             name: 'server',
