@@ -140,6 +140,7 @@ def test_video_stream_source_has_no_google_direct_call():
         # 按绑定用户自己的凭据现签现发，非谷歌地址，不在 Drive 禁区内；
         # 本行是本次审批新增的白名单项，后续新增仍须同样审批。
         "_byos_url",  # BYOS P1：用户自己绑定的 115 直链（← user_bindings）
+        "_url115",  # 转存 115 副本直链（#1346）：用户自己绑定的 115 副本 pickcode 现签现发，非谷歌地址，不在 Drive 禁区内；与 _byos_url 同口径
     }
     sources = []
     for node in ast.walk(tree):
