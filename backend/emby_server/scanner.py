@@ -2213,6 +2213,16 @@ def _remote_strm_container(provider, rel: str) -> str:
     return mount_lib.strm_container(target.value)
 
 
+def _is_transfer_dir_rel(rel: str) -> bool:
+    """转存目录排除判定（转存变体硬性件）：首段 == 转存目录名即命中。
+
+    函数级 import：scanner 是热模块，transfer_variant 只 import
+    models/drive_changes、无回指，惰性导入只是与本文件既有风格一致。
+    """
+    from backend.emby_server import transfer_variant as _tv
+    return _tv.is_transfer_dir_rel(rel)
+
+
 def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
     """一个挂载里的媒体文件
 
@@ -2225,6 +2235,11 @@ def _mount_files(src, provider, failed_roots: list) -> Iterator[ScanFile]:
     subpath = getattr(src, "subpath", "/") or "/"
     for mount_file in provider.walk_media(root=subpath):
         rel = mount_file.rel
+        # 转存变体目录排除（硬性件，防御纵深）：正常布局下转存目录本
+        # 就不在任何库的扫描源内；即使某库扫描源误指到它，首段命中即
+        # 跳过，副本文件永不入库成新条目。
+        if _is_transfer_dir_rel(rel):
+            continue
         dir_rel = os.path.dirname(rel) or "/"
         if root is not None:
             full_path = os.path.join(root, rel.lstrip("/"))

@@ -65,7 +65,7 @@ def _patch_relay(monkeypatch, behavior):
     """behavior(attempt_no, headers) -> 返回值或抛 HTTPException。"""
     calls = []
 
-    async def fake_mount(url, request, headers=None, media_type="video/mp4", pt=None):
+    async def fake_mount(url, request, headers=None, media_type="video/mp4", pt=None, sniff_quota_page=False):
         calls.append({"url": url, "headers": dict(headers or {})})
         return behavior(len(calls), headers)
 

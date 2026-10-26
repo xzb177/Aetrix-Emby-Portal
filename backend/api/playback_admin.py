@@ -30,6 +30,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from backend import playback_policy
 from backend.api.admin_core import _audit, get_current_admin
@@ -145,3 +146,138 @@ def seed_stream_path_templates(
            "system", None, result, ip=_client_ip(request))
     db.commit()
     return {"success": True, "templates": result}
+
+
+class TransferRequest(BaseModel):
+    force: bool = False
+
+
+def _transfer_error_to_http(exc) -> HTTPException:
+    mapping = {"master_off": 409, "no_drive_file": 400,
+               "has_ready_variant": 409, "throttled": 409}
+    return HTTPException(status_code=mapping.get(exc.kind, 409),
+                         detail=str(exc))
+
+
+@router.post("/transfer-variants/{item_id}/transfer")
+def transfer_variant_transfer(
+    item_id: int,
+    body: TransferRequest = TransferRequest(),
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """手动触发转存（管理端单条目「转存」按钮；转存变体第一步）。
+
+    条目查不到 → 404；原件盘不可定位 → 409；总闸关 / 已有健康服主
+    副本 / 24h 内已尝试（且 force=False）→ 409；无 drive_file_id → 400。
+    force=True 为管理员显式越过 24h 节流（审计留痕）。只建队、不
+    立即执行——工人守护按轮次跑（总闸关时工人空转，任务挂起）。
+    """
+    from backend.emby_server import models as em
+    from backend.emby_server import transfer_variant as _tv
+
+    # 先取主键整数再做任何提交：create_manual_job 内部 commit 后 ORM
+    # 属性会过期，_audit 传对象可能触发跨会话刷新，传整数可避该坑。
+    admin_id = getattr(current_admin, "id", None)
+    item = (db.query(em.MediaItem)
+            .filter(em.MediaItem.id == item_id,
+                    em.MediaItem.deleted_at.is_(None))
+            .first())
+    if item is None:
+        raise HTTPException(status_code=404, detail="条目不存在")
+    # 函数级 import：emby_server.api 是重模块（main 已加载，调用时只是
+    # 字典查找）；_drive_mount_id_for_item 的定位逻辑只许一套，不复制。
+    from backend.emby_server.api import _drive_mount_id_for_item
+    drive_id = _drive_mount_id_for_item(db, item)
+    if not drive_id:
+        raise HTTPException(status_code=409, detail="条目所在 Drive 盘不可定位")
+    try:
+        job = _tv.create_manual_job(db, item, drive_id, force=body.force)
+    except _tv.TransferError as exc:
+        raise _transfer_error_to_http(exc) from exc
+    _audit(db, admin_id, "transfer_variant_transfer", "emby_item", item_id,
+           {"job_id": job.id, "drive_id": drive_id, "force": body.force})
+    db.commit()
+    return {"success": True, "job_id": job.id, "item_id": item_id,
+            "status": job.status}
+
+
+@router.post("/transfer-variants/{item_id}/unbind")
+def transfer_variant_unbind(
+    item_id: int,
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """条目级解除绑定（回滚第 2 级）：该条目全部 ready 行变 released，
+    下次播放回原件；行与副本文件都保留（不自动删）。无 ready 行 → 404。"""
+    from backend.emby_server import transfer_variant as _tv
+
+    admin_id = getattr(current_admin, "id", None)
+    released = _tv.release_binding(db, item_id)
+    if not released:
+        raise HTTPException(status_code=404, detail="该条目无生效中的转存副本")
+    _audit(db, admin_id, "transfer_variant_unbind", "emby_item", item_id,
+           {"released": released})
+    db.commit()
+    return {"success": True, "item_id": item_id, "released": released}
+
+
+def _transfer_variant_row(row) -> dict:
+    return {
+        "id": row.id, "item_id": row.item_id,
+        "source_file_id": row.source_file_id,
+        "variant_file_id": row.variant_file_id,
+        "variant_drive_id": row.variant_drive_id,
+        "owner_scope": row.owner_scope, "owner_ref": row.owner_ref,
+        "status": row.status, "size_bytes": row.size_bytes,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "last_played_at": (row.last_played_at.isoformat()
+                            if row.last_played_at else None),
+        "last_checked_at": (row.last_checked_at.isoformat()
+                             if row.last_checked_at else None),
+        "stale_count": row.stale_count,
+    }
+
+
+@router.get("/transfer-variants")
+def list_transfer_variants(
+    limit: int = 50,
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """转存副本登记列表（管理端专属口；fid 不是凭据，可见无妨）。
+    按 id 倒序，limit 默认 50、上限 200。"""
+    from backend.emby_server import models as em
+
+    limit = max(1, min(limit, 200))
+    rows = (db.query(em.TransferVariant)
+            .order_by(em.TransferVariant.id.desc())
+            .limit(limit).all())
+    return {"items": [_transfer_variant_row(r) for r in rows]}
+
+
+@router.get("/transfer-variants/jobs")
+def list_transfer_jobs(
+    status: Optional[str] = None,
+    limit: int = 50,
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """转存任务列表（管理端专属口；status 可选过滤，limit 同款）。"""
+    from backend.emby_server import models as em
+
+    limit = max(1, min(limit, 200))
+    q = db.query(em.TransferJob).order_by(em.TransferJob.id.desc())
+    if status:
+        q = q.filter(em.TransferJob.status == status)
+    rows = q.limit(limit).all()
+    return {"items": [{
+        "id": r.id, "item_id": r.item_id, "trigger": r.trigger,
+        "drive_id": r.drive_id, "status": r.status,
+        "attempts": r.attempts, "error_kind": r.error_kind,
+        "error_detail": r.error_detail,
+        "next_retry_at": (r.next_retry_at.isoformat()
+                           if r.next_retry_at else None),
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    } for r in rows]}

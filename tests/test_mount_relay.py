@@ -149,7 +149,7 @@ def test_mount_item_goes_to_mount_relay_not_410(monkeypatch):
 
     calls = {}
 
-    async def fake_relay(url, request, headers, media_type, pt=None):
+    async def fake_relay(url, request, headers, media_type, pt=None, sniff_quota_page=False):
         calls.update(url=url, headers=headers, media_type=media_type)
         return Response(b"fake-bytes", media_type="video/mp4")
 
