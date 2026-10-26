@@ -4928,6 +4928,14 @@ async def playback_info(
             drive_mount_locatable=_drive_mount_ok,
             mount_can_generate_play_target=_mount_can_generate,
             user115_direct_available=_user115_ok)
+        # 挂载第 5 步播放过滤（变体层）：源已隐藏时变体清单清零，
+        # 且不静默回落单源——下发空 MediaSources，客户端无可播变体。
+        # 只新增本调用，不改上面任何变体判定行。
+        from backend.emby_server import playback_source_health as _psh
+        _health_ok = await run_db(_psh.item_source_available, db, item)
+        _variants = _psh.filter_variants(_variants, _health_ok)
+        if not _health_ok:
+            sources = []
         if len(_variants) > 1:
             sources = play_variants.build_media_sources(
                 media_source, _variants, guid=item.guid,
@@ -5003,9 +5011,15 @@ def _available_variant_names(db: Session, item: em.MediaItem,
     locatable = False
     if (getattr(item, "drive_file_id", "") or "").strip():
         locatable = _drive_mount_id_for_item(db, item) is not None
-    return [v.name for v in play_variants.list_variants(
+    names = [v.name for v in play_variants.list_variants(
         db, item, drive_mount_locatable=locatable,
         user115_direct_available=_user115_direct_available(db, item, user))]
+    # 挂载第 5 步播放过滤（变体层）：源已隐藏时可用变体为空，
+    # 已选变体按 resolve_requested_variant 现成语义报 409。
+    from backend.emby_server import playback_source_health as _psh
+    if not _psh.item_source_available(db, item):
+        return []
+    return names
 
 
 @emby_router.get("/emby/Videos/{item_id}/stream")
@@ -5040,6 +5054,14 @@ async def video_stream(
     # 起播占租约、超限 429；无策略时零行为变化。
     await run_db(_enforce_stream_limit, db, request, user, item, item_id)
     _pt.mark("auth_stream_limit")
+    # 挂载第 5 步播放过滤（取流门）：源已隐藏时直接 503，不分变体；
+    # 无变体老客户端同样挡得住。只新增本调用，不改上面任何授权 /
+    # 限流 / JWT / switch 行；健康总闸关、试点范围外、无健康记录时
+    # 本调用回 True，行为与今天逐字一致。
+    from backend.emby_server import playback_source_health as _psh_gate
+    if not await run_db(_psh_gate.item_source_available, db, item):
+        raise HTTPException(
+            status_code=503, detail="库源健康表已隐藏该源，暂时不可播")
     # 按变体取流（FMBY 批二 #11 PR-2）：客户端带了变体（variant 参数 /
     # MediaSourceId 后缀）时，只执行该变体的分支。变体未知报 404、
     # 已知但该条目当下不可用报 409，两种情况都不许静默改走默认条；
