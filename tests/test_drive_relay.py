@@ -219,3 +219,36 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
     assert resp.status_code == 200
     assert seen == {"drive_id": "DRIVE9", "file_id": "FID123",
                     "media_type": "video/mkv"}
+
+# ---------- Quota 额度页：与 403 同口径轮换重试 ----------
+
+def test_relay_quota_page_rotates_token_and_retries(monkeypatch):
+    """整段请求撞额度页：先换 SA 再试一次，第二次出字节即成功，不记转存信号。"""
+    from backend.emby_server import transfer_variant as _tv
+
+    def behavior(n, headers):
+        if n == 1:
+            raise _tv.QuotaPageError("quota page")
+        return "RESP"
+
+    calls = _patch_relay(monkeypatch, behavior)
+    tokens = _patch_token(monkeypatch, ["TOK1", "TOK2"])
+    result = _run(streaming.serve_drive_relay_async(
+        _fake_request(), "drive1", "fid1"))
+    assert result == "RESP"
+    assert len(calls) == 2
+    assert calls[1]["headers"]["Authorization"] == "Bearer TOK2"
+
+
+def test_relay_second_quota_page_propagates(monkeypatch):
+    """两次都撞额度页：原样抛 QuotaPageError，调用方照常记信号 + 入队。"""
+    from backend.emby_server import transfer_variant as _tv
+
+    def behavior(n, headers):
+        raise _tv.QuotaPageError("quota page")
+
+    _patch_relay(monkeypatch, behavior)
+    _patch_token(monkeypatch, ["TOK1", "TOK2"])
+    with pytest.raises(_tv.QuotaPageError):
+        _run(streaming.serve_drive_relay_async(
+            _fake_request(), "drive1", "fid1"))

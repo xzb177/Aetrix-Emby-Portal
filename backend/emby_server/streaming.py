@@ -710,6 +710,10 @@ async def serve_drive_relay_async(
       （全项目唯一入口：共享盘 SA 轮换 / 个人盘 OAuth 不回退）。
     - 上游 403（多为当前 SA 的下载额度被打满）→ 轮换/刷新凭据重试
       一次；再失败按挂载中继的口径抛错（403 透传、5xx 转 502）。
+    - 整段请求撞上 Quota 额度页（上游回 200 HTML 额度页）→ 与 403
+      同口径：先轮换凭据重试一次；两次都撞额度页才原样抛
+      QuotaPageError，调用方照常记信号 + 入队转存（信号不丢）。
+      BYOS 用户令牌腿不嗅探、不重试，原样不动。
     - 凭据获取失败（个人盘 OAuth 抛错、无 SA 可用）→ 503。
     - access_token 给了（BYOS 用户令牌中继）：直接用它、只试一次，
       上游 403 原样抛、绝不换凭据重试——换凭据就是跨用户复用，
@@ -720,6 +724,7 @@ async def serve_drive_relay_async(
         drive_usercontent_download_url,
     )
     from backend.emby_server.drive_changes import get_token_for_drive
+    from backend.emby_server import transfer_variant as _tv
 
     url = drive_api_media_url(drive_usercontent_download_url(file_id))
     if access_token is not None:
@@ -743,6 +748,11 @@ async def serve_drive_relay_async(
                 url, request,
                 headers={"Authorization": f"Bearer {token}"},
                 media_type=media_type, pt=pt, sniff_quota_page=True)
+        except _tv.QuotaPageError:
+            if attempt == 1:
+                raise
+            logger.warning(
+                "Drive 中继上游额度页，轮换凭据重试 file_id=%s", file_id)
         except HTTPException as exc:
             if exc.status_code != 403 or attempt == 1:
                 raise
