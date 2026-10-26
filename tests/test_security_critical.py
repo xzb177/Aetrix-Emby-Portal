@@ -486,7 +486,7 @@ def test_h2_echo_auth_qs_never_echoes_jwt():
     assert api._echo_auth_qs(req) == ""
 
 
-def test_h2_emby_user_rejects_jwt_in_query(db):
+def test_h2_emby_user_rejects_jwt(db):
     from backend.emby_server import auth
 
     user = _user(db, "alice")
@@ -494,10 +494,11 @@ def test_h2_emby_user_rejects_jwt_in_query(db):
     with pytest.raises(HTTPException) as exc:
         auth.get_emby_user(_request(query=f"api_key={jwt}".encode()), db, None)
     assert exc.value.status_code == 401
-    # 请求头里的 JWT 仍然可用（网页端 fetch 走 Authorization 头）
-    ok = auth.get_emby_user(_request(headers={"Authorization": f"Bearer {jwt}"}), db,
+    # JWT 回退已删（2026-10-25）：请求头里的 JWT 也不再被接受
+    with pytest.raises(HTTPException) as exc:
+        auth.get_emby_user(_request(headers={"Authorization": f"Bearer {jwt}"}), db,
                             HTTPAuthorizationCredentials(scheme="Bearer", credentials=jwt))
-    assert ok.id == user.id
+    assert exc.value.status_code == 401
     with pytest.raises(HTTPException):
         auth.get_admin_or_emby_user(_request(query=f"api_key={jwt}".encode()), db)
     assert auth.resolve_request_user(db, _request(query=f"api_key={jwt}".encode())) is None

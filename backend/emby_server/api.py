@@ -1679,7 +1679,9 @@ def _api_key_for(db: Session, request: Request) -> str:
     from backend.security import resolve_jwt_user_id
 
     raw = (_token_from_request(request) or _bearer_raw(request) or "").strip()
-    if not raw or resolve_jwt_user_id(raw) is not None or raw.count(".") == 2:
+    # JWT 形态嗅探已删（2026-10-25）：真 JWT 一定能被 resolve_jwt_user_id 解出，
+    # 不靠数点号猜；JWT 仍绝不回显进 URL（H2）。
+    if not raw or resolve_jwt_user_id(raw) is not None:
         return ""
     return _up.quote(raw, safe="")
 
@@ -5077,7 +5079,7 @@ async def video_stream(
     # 安全修复（P0 / H1）：条目必须在用户可见的库范围内（统一 helper）
     item = await run_db(_require_visible_item, db, user, item_id)
     _pt.mark("auth_visible")
-    # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token / JWT）
+    # 授权已由 get_play_user 依赖完成（短期签名优先，回退 Emby token）
     await run_db(ensure_playback_allowed, db, user)
     _pt.mark("auth_playback")
     # 三层路径授权门禁（FMBY 挂载-7，#1240 落库、本 PR 接线）：放在占租约
@@ -5154,11 +5156,10 @@ async def video_stream(
     if _fid:
         _play_fid, _play_variant = await run_db(
             _tv.resolve_play_file_id, db, item, user)
-    # 播放阶段 6 按可用性换线：只影响下面无变体请求的 Drive 默认路线；
-    # 显式变体请求与挂载/本机路线不受换线影响。关时 _switch_on 为
-    # False，后面所有换线分支都不进，选路与今天逐字一致。
+    # 播放阶段 6 按可用性换线（门控已删，换线恒生效；回滚 = revert）：
+    # 只影响下面无变体请求的 Drive 默认路线；显式变体请求与挂载/本机
+    # 路线不受换线影响。
     from backend.emby_server import variant_switch as _variant_switch
-    _switch_on = _variant_switch.switch_enabled()
     _switch_attempted = False
     # BYOS Drive 显式变体（本 PR）：客户端在 PlaybackInfo 清单里选了
     # byos_drive_relay 时走这里——字节凭路径绑定行那个用户的 Drive
@@ -5266,7 +5267,7 @@ async def video_stream(
     if _byos_relay_on:
         _byos_t0 = time.perf_counter()
         _byos_skip = False
-        if _switch_on and _requested_variant is None:
+        if _requested_variant is None:
             _byos_first, _, _ = await run_db(
                 _variant_switch.drive_route_choice, db)
             if _byos_first is None or _byos_first[0] != play_variants.DRIVE_RELAY:
@@ -5371,7 +5372,7 @@ async def video_stream(
             # 时明确 409，不试死线。显式变体请求不进这里（客户端选
             # 了就是选了，换线不许替它改主意）。
             _skip_relay = False
-            if _switch_on and _requested_variant is None:
+            if _requested_variant is None:
                 _first, _avail, _ = await run_db(
                     _variant_switch.drive_route_choice, db)
                 if _first is None:
@@ -5438,7 +5439,7 @@ async def video_stream(
                     # 中继失败本身先记一条 error 事件（method=relay），
                     # 再决定换线还是原样抛——换线成功时后面还有直链的
                     # ok 事件，两条事件拼出一次完整切换。
-                    if (_switch_on and _requested_variant is None
+                    if (_requested_variant is None
                             and _variant_switch.is_switch_eligible_relay_status(
                                 exc.status_code)):
                         _note_play_start_safe(

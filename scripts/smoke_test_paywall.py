@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from backend import models
 from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
+from backend.emby_server.auth import hash_emby_token
 from backend.main import app
 from backend.security import hash_password
 from backend.integrations.store import invalidate
@@ -102,6 +103,16 @@ def login(username: str) -> dict:
 
 
 member_h, free_h, staff_h = login(member_name), login(free_name), login(staff_name)
+# #1290 后 /emby/* 不再接受门户 JWT：/emby/* 走 Emby 令牌，/api/* 仍走门户 JWT。
+_db = SessionLocal()
+_emby_h = {}
+for _u, _raw in ((member, "m" * 40), (free, "f" * 40), (staff, "s" * 40)):
+    _db.add(em.EmbyApiToken(token=hash_emby_token(_raw), user_id=_u.id,
+                            device_id="smoke-test", is_revoked=False))
+    _emby_h[_u.username] = {"X-Emby-Token": _raw}
+_db.commit()
+_db.close()
+member_e, free_e, staff_e = _emby_h[member_name], _emby_h[free_name], _emby_h[staff_name]
 
 # ---------- /auth/me 暴露付费墙状态 ----------
 r = client.get("/api/user/auth/me", headers=free_h)
@@ -113,44 +124,44 @@ r = client.get("/api/user/auth/me", headers=member_h)
 check("/auth/me 会员侧 is_vip=true", r.json().get("is_vip") is True, str(r.json().get("is_vip")))
 
 # ---------- 播放地址：非会员被拦 ----------
-r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=free_h, json={})
+r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=free_e, json={})
 check("非会员 PlaybackInfo → 403", r.status_code == 403, str(r.status_code))
 check("默认拦截文案可读", "会员" in (r.json().get("detail") or ""), str(r.json().get("detail")))
 
-r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=member_h, json={})
+r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=member_e, json={})
 check("会员 PlaybackInfo → 200 且含播放地址",
       r.status_code == 200 and "/stream" in (r.json()["MediaSources"][0].get("DirectStreamUrl") or ""),
       str(r.status_code))
 
-r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=staff_h, json={})
+r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=staff_e, json={})
 check("管理员放行", r.status_code == 200, str(r.status_code))
 
 # ---------- 直连拉流 / 下载：非会员被拦 ----------
-r = client.get(f"/emby/Videos/{item_guid}/stream", headers=free_h)
+r = client.get(f"/emby/Videos/{item_guid}/stream", headers=free_e)
 check("非会员直连拉流 → 403", r.status_code == 403, str(r.status_code))
 
-r = client.get(f"/emby/Videos/{item_guid}/stream", headers={**member_h, "Range": "bytes=0-99"})
+r = client.get(f"/emby/Videos/{item_guid}/stream", headers={**member_e, "Range": "bytes=0-99"})
 check("会员拉流 → 206 分段", r.status_code in (200, 206), str(r.status_code))
 
-r = client.get(f"/emby/Items/{item_guid}/Download", headers=free_h)
+r = client.get(f"/emby/Items/{item_guid}/Download", headers=free_e)
 check("非会员下载 → 403", r.status_code == 403, str(r.status_code))
 
-r = client.get(f"/emby/videos/{item_guid}/master.m3u8", headers=free_h)
+r = client.get(f"/emby/videos/{item_guid}/master.m3u8", headers=free_e)
 check("转码地址已删除 → 404（不再走付费墙/转码）", r.status_code == 404, str(r.status_code))
 
-r = client.get(f"/emby/Items/{item_guid}/Download", headers=member_h)
+r = client.get(f"/emby/Items/{item_guid}/Download", headers=member_e)
 check("会员下载放行", r.status_code == 200, str(r.status_code))
 
 # ---------- 自定义拦截文案 ----------
 set_config("subscription_gate_message", "请开通会员后观看")
-r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=free_h, json={})
+r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=free_e, json={})
 check("自定义拦截文案生效", r.status_code == 403 and r.json().get("detail") == "请开通会员后观看",
       str(r.json().get("detail")))
 set_config("subscription_gate_message", None)
 
 # ---------- 关闭付费墙：全员放行 ----------
 set_config("subscription_required", "false")
-r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=free_h, json={})
+r = client.post(f"/emby/Items/{item_guid}/PlaybackInfo", headers=free_e, json={})
 check("关闭付费墙后非会员放行", r.status_code == 200, str(r.status_code))
 r = client.get("/api/user/auth/me", headers=free_h)
 check("/auth/me 同步反映关闭状态", r.json().get("subscription_required") is False,

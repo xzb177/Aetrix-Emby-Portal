@@ -21,9 +21,8 @@
 
 ## 开关与回滚
 
-- ``PLAYBACK_VARIANT_SWITCH_ENABLED``（默认开；显式设 0 回滚）：
-  开时 Drive 默认路线读可用性表；显式设 0 时选路与今天逐字一致，
-  是本阶段的回滚手段（生产已设 1，默认翻开后行为不变）。
+- 门控已删（2026-10-25，/watch 下掉、切新方案收尾）：换线恒生效，
+  不再读 ``PLAYBACK_VARIANT_SWITCH_ENABLED``；回滚 = revert 本提交。
 - 回退上限写死为 1（与迁移方案「回退上限一次」一致，不走 env）。
 - 本模块不碰 PlaybackInfo 清单顺序：第一条恒为主线是阶段 1 的
   底线，清单重排会动老客户端行为；换线只发生在 video_stream
@@ -33,7 +32,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from sqlalchemy.orm import Session
 
@@ -42,9 +40,6 @@ from backend.emby_server import variant_availability as va
 
 logger = logging.getLogger(__name__)
 
-#: 换线总开关 env 键（默认开；显式设 0 关闭）。
-SWITCH_ENV = "PLAYBACK_VARIANT_SWITCH_ENABLED"
-
 #: 回退上限：一次（迁移方案定死，不走 env，与现行中继重试一次同口径）。
 MAX_FALLBACKS = 1
 
@@ -52,12 +47,6 @@ MAX_FALLBACKS = 1
 #: 403（轮换后仍失败）/ 503（取不到凭据）是凭据类，404 是目标没了，
 #: 三者都不换线——见模块 docstring 的额度语义。
 SWITCHABLE_RELAY_STATUS = 502
-
-
-def switch_enabled() -> bool:
-    """换线总开关（env，默认开；显式设 0 / false / no / off 关闭；空值视同未设）。每次调用现读，供测试 monkeypatch。"""
-    return (str(os.getenv(SWITCH_ENV) or "1")
-            .strip().lower() not in {"0", "false", "no", "off"})
 
 
 def is_switch_eligible_relay_status(status: int) -> bool:

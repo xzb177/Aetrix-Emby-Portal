@@ -222,46 +222,18 @@ def resolve_token(db: Session, request: Request) -> Optional[tuple[models.WebUse
 
 
 def resolve_request_user(db: Session, request: Request) -> Optional[models.WebUser]:
-    """解析请求对应的用户：Emby 客户端 token 优先，回退门户 JWT
+    """解析请求对应的用户：只认 Emby 客户端 token。
 
     与 ``get_emby_user`` 同一口径，但不抛异常、可用于依赖注入之外的位置
     （例如下载策略的网关级中间件）。解析不到用户时返回 None。
     """
-    from backend.security import decode_token, enforce_token_freshness, resolve_jwt_user_id
-
     resolved = resolve_token(db, request)
     if resolved is not None:
         _count_auth_leg("resolve_token")
         return resolved[0]
-
-    # H2：门户 JWT 只认请求头，不认 URL 里的 ?api_key=<JWT>（URL 会进日志 / 历史 / Referer）
-    raw = (
-        request.headers.get("X-Emby-Token")
-        or request.headers.get("X-MediaBrowser-Token")
-        or ""
-    )
-    auth = request.headers.get("Authorization") or ""
-    if auth.lower().startswith("bearer "):
-        raw = auth[7:].strip() or raw
-    if not raw:
-        return None
-
-    user_id = resolve_jwt_user_id(raw)
-    if user_id is None:
-        return None
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user or not user.is_active:
-        return None
-    # A-P1-2：JWT 回退路径需校验 token 新鲜度，改密/登出后旧 token 立即失效
-    payload = decode_token(raw, expected_type="access")
-    if payload is None:
-        return None
-    try:
-        enforce_token_freshness(db, payload, user)
-    except HTTPException:
-        return None
-    _count_auth_leg("resolve_jwt")
-    return user
+    # JWT 回退已删（2026-10-25，/watch 下掉后无网页端播放依赖）：
+    # 拿不到 token 即 None，交回调用方处理（下载策略侧通常是 401），不改错误语义。
+    return None
 
 
 def get_emby_user(
@@ -269,10 +241,10 @@ def get_emby_user(
     db: Session = Depends(get_db),
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ):
-    """Emby 客户端鉴权依赖：Emby 客户端 token 优先，回退到门户 JWT
+    """Emby 客户端鉴权依赖：只认 Emby 客户端 token（AuthenticateByName 签发）。
 
-    回退 JWT 使网页端门户可直接复用 /emby/* 协议端点（媒体库浏览、播放、收藏等），
-    无需先走 AuthenticateByName 换取客户端 token。JWT 有效即视为已认证用户。
+    门户 JWT 回退已删（2026-10-25，/watch 下掉后无网页端播放依赖）：
+    JWT 不再被接受，第三方客户端只走 token 腿；未带有效 token 即 401。
     """
     result = None
     if credentials and credentials.credentials:
@@ -295,28 +267,6 @@ def get_emby_user(
                 result = (user, row)
     if result is None:
         result = resolve_token(db, request)
-    if result is None:
-        # 回退：门户 JWT（只认 Authorization: Bearer <jwt> / X-Emby-Token 请求头）。
-        # H2：不再接受 ?api_key=<JWT>——服务端与前端都不再把 JWT 放进 URL，
-        # 网页端播放 / 字幕 / HLS 地址改用短期播放签名（uid/exp/sign，见 get_play_user）。
-        # 第三方 Emby 客户端在 ?api_key= 里带的是 Emby token，走上面的 resolve_token，不受影响。
-        raw = (
-            (credentials.credentials if credentials else None)
-            or request.headers.get("X-Emby-Token", "")
-        )
-        if raw:
-            from backend.security import decode_token, enforce_token_freshness, resolve_jwt_user_id
-
-            jwt_user_id = resolve_jwt_user_id(raw)
-            if jwt_user_id is not None:
-                user = db.query(models.WebUser).filter(models.WebUser.id == jwt_user_id).first()
-                if user and user.is_active:
-                    # A-P1-2：JWT 回退路径补做 token 新鲜度校验，改密/登出后旧 token 立即失效
-                    payload = decode_token(raw, expected_type="access")
-                    if payload is not None:
-                        enforce_token_freshness(db, payload, user)
-                        _count_auth_leg("emby_jwt")
-                        return user
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -373,7 +323,7 @@ def get_play_user(
     db: Session = Depends(get_db),
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> models.WebUser:
-    """播放端点鉴权依赖：短期签名优先，回退原有 token/JWT 口径。
+    """播放端点鉴权依赖：短期签名优先，回退 Emby token 口径。
 
     - URL 带 ``uid/exp/sign`` 且能对应上路径里的 ``item_id`` 时走签名校验：
       签名对不上或已过期 → 403；用户不存在/禁用 → 401。

@@ -108,14 +108,19 @@ def test_get_emby_user_token_leg_counted(db, recorder):
     assert "emby_jwt" not in _fields(recorder)
 
 
-def test_get_emby_user_jwt_leg_counted(db, recorder):
+def test_get_emby_user_jwt_rejected(db, recorder):
+    """JWT 回退已删：请求头里的 JWT 不再被接受，也不记 emby_jwt 腿。"""
+    import pytest
+    from fastapi import HTTPException
+
     user = _user(db, "jwt")
     jwt = create_access_token(user.id, {"username": "jwt"})
-    got = auth.get_emby_user(
-        _request(headers={"Authorization": f"Bearer {jwt}"}), db,
-        HTTPAuthorizationCredentials(scheme="Bearer", credentials=jwt))
-    assert got.id == user.id
-    assert "emby_jwt" in _fields(recorder)
+    with pytest.raises(HTTPException) as exc:
+        auth.get_emby_user(
+            _request(headers={"Authorization": f"Bearer {jwt}"}), db,
+            HTTPAuthorizationCredentials(scheme="Bearer", credentials=jwt))
+    assert exc.value.status_code == 401
+    assert "emby_jwt" not in _fields(recorder)
 
 
 def test_resolve_request_user_legs_counted(db, recorder):
@@ -128,11 +133,12 @@ def test_resolve_request_user_legs_counted(db, recorder):
     assert got is not None and got.id == user.id
     assert "resolve_token" in _fields(recorder)
 
+    # JWT 回退已删：Bearer JWT 解析不到用户，且不记 resolve_jwt 腿。
     jwt = create_access_token(user.id, {"username": "res"})
     got = auth.resolve_request_user(
         db, _request(headers={"Authorization": f"Bearer {jwt}"}))
-    assert got is not None and got.id == user.id
-    assert "resolve_jwt" in _fields(recorder)
+    assert got is None
+    assert "resolve_jwt" not in _fields(recorder)
 
 
 def test_get_play_user_sign_leg_counted(db, recorder, monkeypatch):

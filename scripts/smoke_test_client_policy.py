@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import models, playback_policy  # noqa: E402
 from backend.database import SessionLocal, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
+from backend.emby_server.auth import hash_emby_token  # noqa: E402
 from backend.main import app  # noqa: E402
 from backend.security import create_access_token, hash_password  # noqa: E402
 from backend.integrations.store import invalidate  # noqa: E402
@@ -86,14 +87,25 @@ with SessionLocal() as db:
                          file_path=media_file, container="mkv", bitrate=12_000_000)
     db.add(items)
     db.commit()
+    # #1290 后 /emby/* 不再接受门户 JWT：PlaybackInfo 与转码地址探测必须走
+    # Emby 令牌腿（emby_api_tokens），门户 JWT 只留给 /api/admin/*。
+    raw_user = "u" * 40
+    raw_staff = "s" * 40
+    db.add(em.EmbyApiToken(token=hash_emby_token(raw_user), user_id=viewer.id,
+                           device_id="smoke-test", is_revoked=False))
+    db.add(em.EmbyApiToken(token=hash_emby_token(raw_staff), user_id=boss.id,
+                           device_id="smoke-test", is_revoked=False))
+    db.commit()
     user_id, staff_id, item_id = viewer.id, boss.id, items.guid
 
 H_USER = {"Authorization": f"Bearer {create_access_token(user_id)}"}
 H_STAFF = {"Authorization": f"Bearer {create_access_token(staff_id)}"}
+H_EMBY_USER = {"X-Emby-Token": raw_user}
+H_EMBY_STAFF = {"X-Emby-Token": raw_staff}
 PB = f"/emby/Items/{item_id}/PlaybackInfo"
 
 
-def playback(headers=H_USER, ua="Emby/4.9.0.30 Android", body=None):
+def playback(headers=H_EMBY_USER, ua="Emby/4.9.0.30 Android", body=None):
     h = dict(headers)
     if ua:
         h["User-Agent"] = ua
@@ -122,7 +134,7 @@ check("普通用户：PlaybackInfo 报 SupportsTranscoding=False 且无 Transcod
       r.status_code == 200 and src.get("SupportsTranscoding") is False
       and "TranscodingUrl" not in src,
       str({k: src.get(k) for k in ("SupportsTranscoding", "TranscodingUrl")}))
-r = playback(headers=H_STAFF)
+r = playback(headers=H_EMBY_STAFF)
 src = r.json()["MediaSources"][0] if r.status_code == 200 else {}
 check("管理员同样报不可转码（转码删除后不再有管理员例外）",
       r.status_code == 200 and src.get("SupportsTranscoding") is False
@@ -131,10 +143,10 @@ check("管理员同样报不可转码（转码删除后不再有管理员例外�
 
 # ==================== 3. 转码地址 404 ====================
 print("\n=== 3. 转码地址已移除 ===")
-r = client.get(f"/emby/videos/{item_id}/master.m3u8", headers=H_USER)
+r = client.get(f"/emby/videos/{item_id}/master.m3u8", headers=H_EMBY_USER)
 check("直接请求 master.m3u8 → 404",
       r.status_code == 404, f"HTTP {r.status_code} {r.text[:120]}")
-r = client.get(f"/emby/Videos/{item_id}/hls1", headers=H_USER)
+r = client.get(f"/emby/Videos/{item_id}/hls1", headers=H_EMBY_USER)
 check("hls1 入口同样 404",
       r.status_code == 404, f"HTTP {r.status_code}")
 

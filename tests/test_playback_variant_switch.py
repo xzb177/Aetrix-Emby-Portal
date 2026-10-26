@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
-"""播放阶段 6：按可用性自动换线（清单第 6 项）。
+"""播放阶段 6：按可用性自动换线（清单第 6 项；门控已删，换线恒生效）。
 
-钉死三条（开关开时）：
+钉死三条：
 - 可用变体优先：中继在可用性表中不可用时，起播直接走直链，不试死线；
 - 失败重试点：中继上游 502 时改走直链（上限一次），凭据错
   （403/503）与 404 不换线；
 - 全部不可用时明确失败（409 + 变体名与原因），不静默播死线。
-关时选路与今天逐字一致（中继 502 原样抛）。
 
 全部离线：DB 用内存 SQLite，可见性/付费墙/referer/限流/Drive
-存在性校验/中继取流全部桩掉（与 test_play_variants_pr2.py 同口径）；
-开关读数走 monkeypatch env（switch_enabled 每次现读）。
+存在性校验/中继取流全部桩掉（与 test_play_variants_pr2.py 同口径）。
 """
 import os
 
@@ -37,7 +35,6 @@ from backend.emby_server import playback_strategy, variant_switch
 from backend.emby_server import drive_auth
 
 FID = "1eXUpWksxfCCrIZUye8lo24JGXyr_2ZQO"
-SWITCH_ENV = "PLAYBACK_VARIANT_SWITCH_ENABLED"
 
 
 @pytest.fixture(autouse=True)
@@ -131,18 +128,13 @@ def _stub_gates(monkeypatch, item):
 
 
 def _call_stream(monkeypatch, db, user, item, query=b"", *,
-                 relay=None, ensure=None, switch_on=True):
+                 relay=None, ensure=None):
     """relay/ensure 是桩行为：relay 为 HTTPException 时中继抛错，
     为 Response 时中继成功返回；ensure 为 True/None/HTTPException。
     返回 (response_or_None, calls)，calls 记两桩各被调几次。
     """
     _stub_switches(monkeypatch)
     _stub_gates(monkeypatch, item)
-    if switch_on:
-        monkeypatch.setenv(SWITCH_ENV, "1")
-    else:
-        # 显式关（默认已翻为开后，关只能用显式 0 表达，不再用删 env 充数）
-        monkeypatch.setenv(SWITCH_ENV, "0")
     calls = {"relay": 0, "ensure": 0}
 
     async def fake_relay(request, drive_id, fid, **kwargs):
@@ -173,17 +165,8 @@ def _ok_relay():
 
 
 # ---------------------------------------------------------------------------
-# 决策层：开关 / 换线资格 / 可用性排序
+# 决策层：换线资格 / 可用性排序
 # ---------------------------------------------------------------------------
-
-def test_switch_enabled_default_on_and_off(monkeypatch):
-    monkeypatch.delenv(SWITCH_ENV, raising=False)
-    assert variant_switch.switch_enabled() is True
-    monkeypatch.setenv(SWITCH_ENV, "1")
-    assert variant_switch.switch_enabled() is True
-    monkeypatch.setenv(SWITCH_ENV, "0")
-    assert variant_switch.switch_enabled() is False
-
 
 def test_is_switch_eligible_only_502():
     assert variant_switch.is_switch_eligible_relay_status(502) is True
@@ -229,22 +212,14 @@ def test_drive_route_choice_all_unavailable(db):
 
 
 # ---------------------------------------------------------------------------
-# video_stream 层：开关关时逐字不变；开时换线三条钉死
+# video_stream 层：换线三条钉死（门控已删，旧路已无）
 # ---------------------------------------------------------------------------
-
-def test_stream_switch_off_relay_502_propagates(db, monkeypatch):
-    with pytest.raises(HTTPException) as excinfo:
-        _call_stream(monkeypatch, db, _user(), _drive_item("s-off"),
-                     relay=HTTPException(status_code=502, detail="源站不可达"),
-                     ensure=True, switch_on=False)
-    assert excinfo.value.status_code == 502
-
 
 def test_stream_switch_on_relay_502_falls_to_direct(db, monkeypatch):
     resp, calls = _call_stream(
         monkeypatch, db, _user(), _drive_item("s-502"),
         relay=HTTPException(status_code=502, detail="源站不可达"),
-        ensure=True, switch_on=True)
+        ensure=True)
     assert resp.status_code == 302
     assert resp.headers["location"] == f"https://usercontent.test/{FID}"
     assert calls == {"relay": 1, "ensure": 1}
@@ -258,7 +233,7 @@ def test_stream_switch_on_relay_unavailable_skips_relay(db, monkeypatch):
     _set_availability(db, "drive_relay", "unavailable")
     resp, calls = _call_stream(
         monkeypatch, db, _user(), _drive_item("s-skip"),
-        relay=_ok_relay(), ensure=True, switch_on=True)
+        relay=_ok_relay(), ensure=True)
     assert resp.status_code == 302
     assert calls["relay"] == 0
     assert calls["ensure"] == 1
@@ -269,7 +244,7 @@ def test_stream_switch_on_all_unavailable_409(db, monkeypatch):
     _set_availability(db, "drive_direct", "unavailable")
     with pytest.raises(HTTPException) as excinfo:
         _call_stream(monkeypatch, db, _user(), _drive_item("s-all"),
-                     relay=_ok_relay(), ensure=True, switch_on=True)
+                     relay=_ok_relay(), ensure=True)
     assert excinfo.value.status_code == 409
     assert "均不可用" in excinfo.value.detail
 
@@ -278,7 +253,7 @@ def test_stream_switch_on_relay_403_no_switch(db, monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         _call_stream(monkeypatch, db, _user(), _drive_item("s-403"),
                      relay=HTTPException(status_code=403, detail="forbidden"),
-                     ensure=True, switch_on=True)
+                     ensure=True)
     assert excinfo.value.status_code == 403
 
 
@@ -286,7 +261,7 @@ def test_stream_switch_on_relay_503_no_switch(db, monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         _call_stream(monkeypatch, db, _user(), _drive_item("s-503"),
                      relay=HTTPException(status_code=503, detail="no credential"),
-                     ensure=True, switch_on=True)
+                     ensure=True)
     assert excinfo.value.status_code == 503
 
 
@@ -295,7 +270,7 @@ def test_stream_switch_on_relay_502_direct_unavailable_409(db, monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         _call_stream(monkeypatch, db, _user(), _drive_item("s-502u"),
                      relay=HTTPException(status_code=502, detail="源站不可达"),
-                     ensure=True, switch_on=True)
+                     ensure=True)
     assert excinfo.value.status_code == 409
     assert "变体切换失败" in excinfo.value.detail
 
@@ -305,8 +280,7 @@ def test_stream_switch_on_relay_502_direct_ensure_raises_wrapped(
     with pytest.raises(HTTPException) as excinfo:
         _call_stream(monkeypatch, db, _user(), _drive_item("s-502e"),
                      relay=HTTPException(status_code=502, detail="源站不可达"),
-                     ensure=HTTPException(status_code=503, detail="暂不可用"),
-                     switch_on=True)
+                     ensure=HTTPException(status_code=503, detail="暂不可用"))
     assert excinfo.value.status_code == 503
     assert "变体切换后仍失败" in excinfo.value.detail
 
@@ -315,7 +289,7 @@ def test_stream_switch_on_relay_502_direct_ensure_none_409(db, monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         _call_stream(monkeypatch, db, _user(), _drive_item("s-502n"),
                      relay=HTTPException(status_code=502, detail="源站不可达"),
-                     ensure=None, switch_on=True)
+                     ensure=None)
     assert excinfo.value.status_code == 409
     assert "变体切换后仍失败" in excinfo.value.detail
 
@@ -325,5 +299,5 @@ def test_stream_switch_on_explicit_variant_502_no_switch(db, monkeypatch):
         _call_stream(monkeypatch, db, _user(), _drive_item("s-explicit"),
                      query=b"variant=drive_relay",
                      relay=HTTPException(status_code=502, detail="源站不可达"),
-                     ensure=True, switch_on=True)
+                     ensure=True)
     assert excinfo.value.status_code == 502
