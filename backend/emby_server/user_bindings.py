@@ -127,7 +127,21 @@ def list_binding_providers(db: Session) -> list[str]:
 
 
 def serialize_binding(binding: em.UserStorageBinding) -> dict:
-    """绑定行 → 用户端响应：绝不含凭据原文、密封值与内部凭据行号"""
+    """绑定行 → 用户端响应：绝不含凭据原文、密封值与内部凭据行号。
+    Drive 行另出 needs_rebind（已授范围缺 drive.file 即 True，老绑定
+    无记录也 True）与 granted_scopes（实授范围列表，无记录为 None），
+    供“我的网盘”挂重绑引导；115 行 needs_rebind 恒 False。"""
+    needs_rebind = False
+    granted_list = None
+    if binding.provider == "drive":
+        granted_list = (
+            (binding.granted_scopes or "").split()
+            if binding.granted_scopes else None
+        )
+        # drive_oauth → user_bindings 的顶层 import 会循环，函数内懒引。
+        from backend.emby_server import drive_oauth
+        needs_rebind = drive_oauth.binding_needs_rebind(
+            binding.granted_scopes)
     return {
         "id": binding.id,
         "provider": binding.provider,
@@ -143,6 +157,8 @@ def serialize_binding(binding: em.UserStorageBinding) -> dict:
             if binding.last_error_kind else None
         ),
         "has_credential": True,
+        "needs_rebind": needs_rebind,
+        "granted_scopes": granted_list,
         "created_at": (
             binding.created_at.isoformat() if binding.created_at else None
         ),

@@ -1590,6 +1590,10 @@ class UserStorageBinding(Base):
     last_verified_at = Column(DateTime)
     last_error_kind = Column(String(100))
     created_at = Column(DateTime, default=datetime.now)
+    #: Google 实授范围（空格分隔，回调以 token 响应原样为准入库）；
+    #: NULL = 老绑定（2026-10-27 可写范围上线前只申请过只读），
+    #: 判定上一律按需重绑处理。老库由 database._auto_migrate 补列。
+    granted_scopes = Column(Text, nullable=True)
 
 
 class Pan115Account(Base):
@@ -2271,6 +2275,9 @@ class DriveOAuthState(Base):
     sealed_verifier = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
     expires_at = Column(DateTime)
+    #: 重绑目标绑定 id（NULL = 新绑；非 NULL = 回调成功时原地换该行
+    #: 凭据）。老库由 database._auto_migrate 补列。
+    rebind_binding_id = Column(Integer, nullable=True)
 
 
 class EmbyMediaSet(Base):
