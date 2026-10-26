@@ -676,7 +676,9 @@ async function handleBindDrive() {
   driveAuthUrl.value = ''
   // iOS Safari 只认点按当下同步开的窗：await 之后再 window.open 会被当弹窗拦。
   // 所以先在手势里同步开一个空窗保住手势，拿到授权地址后再给它指地址。
-  const win = window.open('about:blank', '_blank', 'noopener')
+  // 注意：不能带 noopener——实测 iPhone 上带 noopener 时后续 win.location.href 改地址不生效，
+  // 空窗一直停在 about:blank（后端 start 已 200、授权地址已返回，窗就是不动）。
+  const win = window.open('about:blank', '_blank')
   driveStarting.value = true
   try {
     const res = await storageBindingApi.startDriveOAuth(label)
