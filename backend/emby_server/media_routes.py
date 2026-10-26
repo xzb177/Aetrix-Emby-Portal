@@ -184,6 +184,7 @@ def item_image(item_id: str, image_type: str, request: Request,
     # 按场景精确尺寸：海报墙 320/160、详情页 480、背景 1280，各调各的，不一刀切
     ew, eh = image_store.pick_dim(maxWidth, w), image_store.pick_dim(maxHeight, h)
     # 媒体库封面：第三方客户端用库的 guid 拉 /Images/Primary
+    _derived_item = None
     if image_type == "Primary":
         lib = db.query(em.Library).filter(em.Library.guid == item_id).first()
         cover_rel = getattr(lib, "cover_path", None) if lib is not None else None
@@ -194,7 +195,23 @@ def item_image(item_id: str, image_type: str, request: Request,
             if abs_path and _os.path.isfile(abs_path):
                 return _serve_sized(abs_path, ew, eh)
             raise HTTPException(status_code=404, detail="Image not found")
-    item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
+        if lib is not None and getattr(lib, "is_virtual", False):
+            # 虚拟库无显式封面：派生封面与 Views 同口径（借代表海报 /
+            # 回退成员 / SVG 占位）；真实库与有显式封面的库不受影响。
+            from backend.emby_server import library_covers as _lc
+            _derived = _lc.resolve_virtual_library_cover(db, lib)
+            if _derived["source"] in ("borrow", "fallback"):
+                _derived_item = db.query(em.MediaItem).filter(
+                    em.MediaItem.id == _derived["item_id"]).first()
+                if _derived_item is None:
+                    raise HTTPException(status_code=404, detail="Item not found")
+            elif _derived["source"] == "svg":
+                return Response(
+                    content=_lc.SVG_PLACEHOLDER_BYTES,
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"},
+                )
+    item = _derived_item if _derived_item is not None else db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
         if image_type == "Primary" and item_id.isdigit():
             # 演员头像：People[].Id 是 emby_people 行 id（数字串，与 32 位 guid 不撞），
