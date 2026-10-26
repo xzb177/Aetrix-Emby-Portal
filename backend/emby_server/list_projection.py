@@ -8,6 +8,12 @@ api/ea 任一进程读到的都是同一份，不依赖进程内存）：
 - 周期重建：worker 进程的后台线程每 LIST_PROJECTION_REFRESH_SEC
   重算全部启用非虚拟库的三值（条目数/最早入库/封面 tag）并 upsert；
   失败只记警告、不抛、不挡任何请求（见 run_rebuild_loop）。
+- 整库重建走 staging 切换（清单第 20 项）：重建 = build_staging
+  （全量新行写 staging 表，live 行一行不动）→ switch_to_staging
+  （校验 staging 覆盖全部目标库后，一步删 + 插替换 live 行）。
+  覆盖不全时切换直接抛错、live 行原样保留；读侧永远只读 live 表，
+  不存在新旧混用的中间态。rebuild_projection 即这两步的组合，
+  调用方（工人/测试）负责提交，失败回滚后 live 与 staging 同归旧态。
 - 读路径：一次 IN 查询取所需库的投影行；缺行、过期（超过
   LIST_PROJECTION_MAX_STALE_SEC）、读错 → 整包回落现算并记警告，
   绝不混用新旧值、绝不静默出旧数（FMBY #19 实测教训：投影延迟肉眼
@@ -112,41 +118,108 @@ def _live_earliest_map(db, library_ids: list[int]) -> dict[int, object]:
     return {lid: dt for lid, dt in rows if dt is not None}
 
 
-def rebuild_projection(db) -> dict:
-    """重算全部启用非虚拟库的投影行并 upsert，删掉已失效库的旧行。
-
-    幂等可重跑；调用方（工人/测试）负责提交。返回统计
-    {libraries, updated, deleted}，失败由调用方决定（工人只记警告）。
-    """
+def _target_libraries(db) -> list:
+    """重建目标库：启用非虚拟库（与旧 rebuild_projection 的筛选逐字同）。"""
     libs = (
         db.query(em.Library)
         .filter(em.Library.is_enabled == True)  # noqa: E712
         .all()
     )
-    target_libs = [lib for lib in libs if not bool(getattr(lib, "is_virtual", False))]
+    return [lib for lib in libs if not bool(getattr(lib, "is_virtual", False))]
+
+
+def _compute_rows(db, target_libs: list) -> list[dict]:
+    """算出全部目标库的投影值（纯计算，不写任何表）。
+
+    一次构建共用一个 computed_at：同批行的延迟口径一致，读侧的
+    过期判定不因逐行时间差抖动。
+    """
     earliest = _live_earliest_map(db, [lib.id for lib in target_libs])
-    existing = {
-        row.library_id: row
-        for row in db.query(em.LibraryListProjection).all()
-    }
-    updated = 0
+    now = datetime.now()
+    rows = []
     for lib in target_libs:
-        row = existing.get(lib.id)
-        if row is None:
-            row = em.LibraryListProjection(library_id=lib.id)
-            db.add(row)
-        row.child_count = _live_child_count(db, lib)
-        row.earliest_added = earliest.get(lib.id)
-        row.cover_tag = _cover_tag(getattr(lib, "cover_path", None))
-        row.computed_at = datetime.now()
-        updated += 1
+        rows.append({
+            "library_id": lib.id,
+            "child_count": _live_child_count(db, lib),
+            "earliest_added": earliest.get(lib.id),
+            "cover_tag": _cover_tag(getattr(lib, "cover_path", None)),
+            "computed_at": now,
+        })
+    return rows
+
+
+def build_staging(db) -> dict:
+    """把全量新行写进 staging 表（live 行一行不动）。
+
+    先清空 staging 再写：staging 只代表最近一次构建，不依赖旧内容。
+    不提交，调用方负责提交。返回 {libraries, staged}。
+    """
+    target_libs = _target_libraries(db)
+    db.query(em.LibraryListProjectionStaging).delete()
+    # 先 flush 再插：staging 表 library_id 有唯一约束，同事务里
+    # 删旧行 + 插同库新行时必须保证 DELETE 先落库，否则撞唯一键。
+    db.flush()
+    rows = _compute_rows(db, target_libs)
+    for values in rows:
+        db.add(em.LibraryListProjectionStaging(**values))
+    return {"libraries": len(target_libs), "staged": len(rows)}
+
+
+def switch_to_staging(db) -> dict:
+    """校验 staging 覆盖后，一步把 staging 行替换进 live 表。
+
+    校验：staging 必须覆盖全部当前目标库，缺任一 → 抛 ValueError，
+    live 行原样保留（本函数在抛错前不删不写 live 行）。
+    切换：删全部 live 行，只把属于目标库的 staging 行拷进 live
+    （staging 里多余的非目标行直接丢弃，不复活已停用/已删的库）。
+    live 行主键每轮重建会换新（删 + 插），读侧只按 library_id 取，
+    无外键指向本表，换新无影响。
+    不提交，调用方负责提交。返回 {switched, deleted}，其中 deleted
+    = 本轮消失的目标外 live 行数（与旧 rebuild_projection 同口径）。
+    """
+    target_libs = _target_libraries(db)
     target_ids = {lib.id for lib in target_libs}
-    deleted = 0
-    for library_id, row in existing.items():
-        if library_id not in target_ids:
-            db.delete(row)
-            deleted += 1
-    return {"libraries": len(target_libs), "updated": updated, "deleted": deleted}
+    staged = {row.library_id: row for row in db.query(em.LibraryListProjectionStaging).all()}
+    missing = target_ids - set(staged)
+    if missing:
+        raise ValueError(f"列表投影 staging 覆盖不全，缺库：{sorted(missing)}")
+    live_rows = db.query(em.LibraryListProjection).all()
+    deleted = sum(1 for row in live_rows if row.library_id not in target_ids)
+    for row in live_rows:
+        db.delete(row)
+    # 先 flush 再插：live 表 library_id 有唯一约束，同事务里删旧行 +
+    # 插同库新行时必须保证 DELETE 先落库，否则撞唯一键。
+    db.flush()
+    switched = 0
+    for library_id in sorted(target_ids):
+        src = staged[library_id]
+        db.add(em.LibraryListProjection(
+            library_id=src.library_id,
+            child_count=src.child_count,
+            earliest_added=src.earliest_added,
+            cover_tag=src.cover_tag,
+            computed_at=src.computed_at,
+        ))
+        switched += 1
+    return {"switched": switched, "deleted": deleted}
+
+
+def rebuild_projection(db) -> dict:
+    """整库重建：build_staging → switch_to_staging。
+
+    幂等可重跑；调用方（工人/测试）负责提交。返回统计
+    {libraries, updated, deleted}，与旧 in-place 重建同口径：
+    libraries = 目标库数，updated = 换进 live 的行数，
+    deleted = 本轮消失的目标外 live 行数。失败由调用方决定
+    （工人只记警告；回滚后 live 行原样保留）。
+    """
+    built = build_staging(db)
+    switched = switch_to_staging(db)
+    return {
+        "libraries": built["libraries"],
+        "updated": switched["switched"],
+        "deleted": switched["deleted"],
+    }
 
 
 def load_projection(db, library_ids: list[int]) -> dict[int, em.LibraryListProjection] | None:
