@@ -1580,11 +1580,11 @@ function waitingText(t: EmbyScanTask): string {
   return (t.position ?? 1) > 1 ? '前面还有扫描在跑' : '等待调度'
 }
 
-/** 进度一行：已处理 / 已发现 / 耗时（扫到哪了一眼可见，不用看容器 CPU） */
+/** 进度一行：已送写库 / 已发现 / 耗时（扫到哪了一眼可见，不用看容器 CPU） */
 function progressLine(t: EmbyScanTask): string {
   const p = t.progress
   if (!p) return ''
-  const parts = [`已处理 ${p.processed}`]
+  const parts = [`已送写库 ${p.processed}`]
   if (p.enumerated) parts.push(`已发现 ${p.enumerated}`)
   if (p.elapsed_ms) parts.push(fmtDuration(p.elapsed_ms))
   if (p.remote_lists) parts.push(`远程请求 ${p.remote_lists}`)
@@ -1600,7 +1600,7 @@ function cardBadge(l: EmbyLibrary): { text: string; cls: string } | null {
   return scanBadge(l)
 }
 
-/** 卡片的实时一行：排队原因，或「已处理 N · 当前目录」 */
+/** 卡片的实时一行：排队原因，或「已送写库 N · 当前目录」 */
 function cardLiveHint(l: EmbyLibrary): string {
   const task = liveFor(l)
   if (!task) return l.scan_live?.state === 'running' ? (l.scan_live.message || '') : ''

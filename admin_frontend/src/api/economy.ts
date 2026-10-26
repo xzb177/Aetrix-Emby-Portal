@@ -112,25 +112,35 @@ export const fetchEconomyStats = () => get<EconomyStats>('/economy/stats')
 
 // ==================== 订阅总览 ====================
 
-/** 按用户直接授予订阅（与用户管理页共享后端逻辑） */
+/** 按用户直接授予订阅（与用户管理页共享后端逻辑）；
+ * 唯一实现：`admin.ts` 的 grantSubscription 只是转调这里（economy 版 data 还可带 realm_id，多服下跟随套餐开服）。 */
 export const grantUserSubscription = (
   userId: number,
   data: { plan_id: number; duration_days: number; realm_id?: number }
 ) => post<{ success: boolean }>(`/users/${userId}/subscriptions`, data)
 
+/** 唯一实现：`admin.ts` 的 extendSubscription 只是转调这里。 */
 export const extendUserSubscription = (subscriptionId: number, days: number) =>
   post<{ success: boolean }>(`/subscriptions/${subscriptionId}/extend`, { days })
 
 // ==================== 订阅套餐 ====================
 
-/** 套餐清单；`realm_id=0` = 全部服，不传 = 当前服 */
-export const fetchEconomyPlans = (realm_id?: number) =>
-  get<{
+/**
+ * 套餐清单；`realm_id=0` = 全部服，不传 = 当前服。
+ * 唯一实现：`admin.ts` 的 fetchPlans 只是转调这里（only_active: true，供授予订阅下拉只取启用中的套餐）；
+ * 套餐管理页（Goods.vue）直接用这里取全量，不过滤。
+ */
+export const fetchEconomyPlans = (realm_id?: number, opts?: { only_active?: boolean }) => {
+  const params: Record<string, number | boolean> = {}
+  if (realm_id !== undefined) params.realm_id = realm_id
+  if (opts?.only_active) params.only_active = true
+  return get<{
     plans: PlanRowFull[]
     realm_id: number | null
     active_realm_id: number
     realms: { id: number; name: string }[]
-  }>('/economy/plans', realm_id === undefined ? undefined : { realm_id })
+  }>('/economy/plans', Object.keys(params).length ? params : undefined)
+}
 
 export const createEconomyPlan = (data: Omit<PlanRowFull, 'id'>) => post<{ success: boolean }>('/economy/plans', data)
 
