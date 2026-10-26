@@ -55,6 +55,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlsplit
@@ -235,6 +236,17 @@ def validate_extra_headers(extra_headers_json: Optional[str]) -> Optional[str]:
     return json.dumps(parsed, ensure_ascii=False, sort_keys=True)
 
 
+#: 苹果 CMS 总闸 env 键（与 upstream_playback / applecms_sync 同名同义）。
+#: 读法与播放分支一致：0/false/no/off/空 = 关，其余 = 开；默认关。
+APPLECMS_ENABLED_ENV = "APPLECMS_ENABLED"
+
+
+def applecms_enabled() -> bool:
+    """苹果 CMS 总闸是否开启（创建口的唯一入口；测试 patch 本函数常量无效时用 env）。"""
+    return (str(os.getenv(APPLECMS_ENABLED_ENV, "0") or "0")
+            .strip().lower() not in {"0", "false", "no", "off", ""})
+
+
 def _validate_common(name: str, source_type: str, base_url: str,
                      auth_method: str, username: Optional[str]) -> str:
     """新建/编辑共用的校验：名称、类型、认证形态、地址。返回归一化地址。"""
@@ -282,9 +294,18 @@ def create_source(db, *, name: str, source_type: str, base_url: str,
     """新建上游源。新建恒为关闭（enabled=False，不接受 enabled 入参），
     启用是 enable_source 的单独动作。
 
+    苹果 CMS 总闸（APPLECMS_ENABLED，默认关）：关时 applecms 型源
+    不可创建（UpstreamSourceError → 管理端 400）；已建源的停用语义
+    不由本函数管——播放分支与同步工人各自按总闸视已建源为停用
+    （见 upstream_playback._resolve_applecms_stream 与
+    applecms_sync.gates_enabled），本函数不因此拦 enable_source。
+
     secret=None = 不配凭据（匿名访问）；secret="" 视同未配（不存空串）。
     本函数只 flush 不 commit，调用方事务内执行。
     """
+    if source_type == "applecms" and not applecms_enabled():
+        raise UpstreamSourceError(
+            "苹果 CMS 总闸未开启（APPLECMS_ENABLED=0），applecms 型源不可创建")
     normalized = _validate_common(name, source_type, base_url, auth_method,
                                   username)
     headers = validate_extra_headers(extra_headers_json)

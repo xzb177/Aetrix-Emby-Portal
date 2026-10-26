@@ -202,6 +202,13 @@ def test_presentation_hide_excludes_unmatched(monkeypatch):
 # ---------------- ② 管理触发路由 ----------------
 
 
+@pytest.fixture(autouse=True)
+def _applecms_gate_on(monkeypatch):
+    # 本文件建 applecms 源：创建口总闸须开（关闸拒建另见
+    # test_applecms_p1_gate.py）。
+    monkeypatch.setenv("APPLECMS_ENABLED", "1")
+
+
 @pytest.fixture()
 def db_factory():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},

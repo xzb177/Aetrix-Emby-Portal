@@ -58,9 +58,9 @@ const showForm = ref(false)
 const editingId = ref<number | null>(null)
 const form = ref({
   name: '',
-  source_type: 'emby' as 'emby' | 'jellyfin',
+  source_type: 'emby' as 'emby' | 'jellyfin' | 'applecms',
   base_url: '',
-  auth_method: 'password' as 'password' | 'api_key',
+  auth_method: 'password' as 'password' | 'api_key' | 'none',
   username: '',
   secret: '',
   extra_headers_text: '',
@@ -366,7 +366,7 @@ onMounted(loadSources)
       <EmptyState
         v-if="!loading && !loadError && sources.length === 0"
         title="还没有上游源"
-        description="点右上角新建：Emby / Jellyfin 型先行，苹果 CMS 型本步不做"
+        description="点右上角新建：Emby / Jellyfin / 苹果 CMS 型（苹果 CMS 须先开 APPLECMS_ENABLED 总闸，否则建源被拒）"
       />
     </SectionCard>
 
@@ -379,6 +379,7 @@ onMounted(loadSources)
           <el-select v-model="form.source_type">
             <el-option label="Emby" value="emby" />
             <el-option label="Jellyfin" value="jellyfin" />
+            <el-option label="苹果 CMS" value="applecms" />
           </el-select>
         </el-form-item>
         <el-form-item label="地址" required>
@@ -388,6 +389,7 @@ onMounted(loadSources)
           <el-select v-model="form.auth_method">
             <el-option label="账号密码" value="password" />
             <el-option label="api_key" value="api_key" />
+            <el-option label="匿名（none）" value="none" />
           </el-select>
         </el-form-item>
         <el-form-item v-if="form.auth_method === 'password'" label="用户名" required>
