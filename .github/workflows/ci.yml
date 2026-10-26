@@ -99,6 +99,11 @@ jobs:
       #（注：job 级 env 不可用 runner 上下文，${{ runner.temp }} 会让整个
       # workflow 报 Invalid workflow file、0 个 job 启动，故用字面路径。）
       MOUNT_RCLONE_CONF: /tmp/rclone.conf
+      # 115 sidecar 的 socket 目录默认是 /run/aetrix/providers，CI runner
+      # 上 /run 不可写（#1313 冒烟：lifespan 拉起 sidecar 时建目录报
+      # Permission denied，sidecar 起不来）。这里指向 CI 可写临时路径，
+      # 只改 CI；生产默认值不变，生产部署方仍须自备可写目录（见 PR 描述）。
+      PROVIDER_RUNTIME_SOCK_DIR: /tmp/aetrix-providers
     steps:
       - uses: actions/checkout@v7
 
@@ -296,8 +301,16 @@ jobs:
 
       # 存储挂载本体（本地目录 / rclone rc / WebDAV / STRM 的列举与播放 URL 组装）。
       # 播放取流的第一跳就是这里，错一点就是“点开没反应”。
+      # 本步单独关 sidecar 总闸（只改 CI，生产默认仍开）：该脚本把 httpx.Client
+      # 在本进程内替换成假服务、且从不进 TestClient 上下文（不走 lifespan，
+      # 也就不会拉起 sidecar 子进程），假网络过不了进程边界去 sidecar 子进程，
+      # 单改 socket 目录仍会在 115 一节报 sidecar 不可达（已本地复现实测）。
+      # 115 挂载本体仍走进程内路径如 #1313 之前；sidecar 接线本身由 pytest 步
+      # 的 tests/test_p115_sidecar_wiring.py 覆盖，不由本步覆盖。
       - name: 存储挂载冒烟（本地 / rclone rc / WebDAV / STRM 列举与取流）
         timeout-minutes: 5
+        env:
+          PAN115_SIDECAR_ENABLED: "0"
         run: python scripts/smoke_test_mounts.py
 
       - name: 服务器与求片转交冒烟（多服务器 / 当前使用切换 / MoviePilot 与 qB）

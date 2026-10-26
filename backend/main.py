@@ -146,6 +146,17 @@ async def lifespan(app: FastAPI):
         logger.exception("数据库初始化失败，服务拒绝启动")
         raise
 
+    # 115 sidecar 显式拉起（生产接线）：开闸时随服务启动拉起 sidecar 子进程
+    # 并握手验活；拉起失败只记 ERROR（supervisor 里已写清诊断），不阻断启动——
+    # 115 挂载首次使用时仍会响亮报错，不静默回落进程内。关闸时本调用是空操作。
+    try:
+        from backend.emby_server import p115_sidecar_supervisor
+        if not p115_sidecar_supervisor.ensure_started():
+            logger.error("115 sidecar 拉起失败：115 挂载暂不可用，"
+                         "诊断见上一条 ERROR；回滚 = PAN115_SIDECAR_ENABLED=0 后重启")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"115 sidecar 拉起异常（可忽略，首次使用时再报错）: {e}")
+
     # EMBY_PUBLIC_URL 不合规只告警：http 或域名守卫不允许的主机不能把进程打挂。
     try:
         from backend.emby_server.public_url import warn_public_url_on_startup
@@ -310,6 +321,12 @@ async def lifespan(app: FastAPI):
         maintenance.shutdown_cleanup()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"退出收尾失败（可忽略）: {e}")
+    # 115 sidecar：只停本服务拉起的子进程，复用的外部 sidecar 不碰。
+    try:
+        from backend.emby_server import p115_sidecar_supervisor as _sup
+        _sup.stop()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"停止 115 sidecar 失败（可忽略）: {e}")
     # 探测 worker：已抢未处理的放回 pending（API 角色下它没启动，stop 是空操作）
     try:
         from backend.emby_server import probe_worker as _pw
