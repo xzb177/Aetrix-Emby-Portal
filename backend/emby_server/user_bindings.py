@@ -431,6 +431,12 @@ def delete_binding(db: Session, user_id: int, binding_id: int) -> None:
         .first()
     )
     db.delete(binding)
+    # 先把绑定行 flush 落库再删凭据行：两模型间没有 ORM relationship，
+    # 单次 flush 时 SQLAlchemy 不保证先删绑定行，生产 PG 上曾出现凭据行
+    # 先删、撞 user_storage_bindings_credential_id_fkey 外键、整事务回滚
+    # （DELETE /storage-bindings/{id} 500）。flush 不等于提交，单事务
+    # 原子性不变：后一步失败仍整体回滚。
+    db.flush()
     if cred is not None:
         db.delete(cred)
     db.commit()

@@ -13,7 +13,7 @@
 """
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -231,6 +231,44 @@ def test_delete_binding_removes_both_rows(db):
     assert db.query(em.UserStorageBinding).count() == 0
     assert db.query(em.MountCredential).filter(
         em.MountCredential.id == cid).count() == 0
+
+
+@pytest.fixture()
+def fk_db():
+    """外键强制开启的隔离库：生产 PG 强制外键，默认 SQLite 不强制，
+    解绑删凭据撞外键的 bug 就是这么漏网的（2026-10-26 生产 500）。"""
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+
+    @event.listens_for(engine, "connect")
+    def _fk_on(dbapi_conn, _rec):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    base_models.Base.metadata.create_all(engine)
+    em.Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    yield session
+    session.close()
+
+
+def test_delete_binding_fk_enforced_removes_both_rows(fk_db):
+    user = base_models.WebUser(username="u1", password_hash="x")
+    fk_db.add(user)
+    fk_db.commit()
+    cred = em.MountCredential(mount_id=None, scope="user", owner_user_id=user.id,
+                              sealed_credential="", key_id="fernet-v1", status="invalid")
+    fk_db.add(cred)
+    fk_db.flush()
+    b = em.UserStorageBinding(user_id=user.id, provider="drive", account_label="谷歌盘",
+                              credential_id=cred.id, status="invalid")
+    fk_db.add(b)
+    fk_db.commit()
+    ub.delete_binding(fk_db, user.id, b.id)
+    assert fk_db.query(em.UserStorageBinding).count() == 0
+    assert fk_db.query(em.MountCredential).filter(
+        em.MountCredential.id == cred.id).count() == 0
 
 
 def test_delete_foreign_binding_not_found(db):
