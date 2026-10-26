@@ -518,6 +518,8 @@ def _default_http_get(url: str, headers: dict, timeout: float):
     返回 (status, json_body_or_None)。超时/断连返回 (None, None)，
     由 classify_handshake 定为 unreachable；HTTPError 带状态码。
     """
+    headers = dict(headers or {})
+    headers.setdefault("User-Agent", "Aetrix/1.0")
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
