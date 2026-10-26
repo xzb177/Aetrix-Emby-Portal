@@ -79,8 +79,8 @@ const routes: RouteRecordRaw[] = [
       // 目录浏览 / 体检 / 编辑都已搬过去。旧地址跳到服务器页，别人的书签不至于 404。
       { path: 'mounts', redirect: '/servers' },
       // v2.18.0：转存任务下线，页面只保留 115 账号；旧地址保留为跳转，收藏不会 404
-      { path: 'pan115', alias: 'transfer-115', name: 'Pan115Accounts', component: () => import('@/views/Pan115Accounts.vue'), meta: { title: '115 账号' } },
-      { path: 'gdrive', name: 'GDriveAccounts', component: () => import('@/views/GDriveAccounts.vue'), meta: { title: 'Google Drive' } },
+      { path: 'pan115', alias: 'transfer-115', redirect: { path: '/servers', query: { tab: 'storage', subtab: 'pan115' } } },
+      { path: 'gdrive', redirect: { path: '/servers', query: { tab: 'storage', subtab: 'gdrive' } } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
       // v2.26.0：管理员与权限（角色 super / operator / viewer）与播放、客户端策略
       { path: 'admins', name: 'Admins', component: () => import('@/views/Admins.vue'), meta: { title: '管理员与权限' } },

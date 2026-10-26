@@ -46,6 +46,7 @@ const savingOps = ref(false)
 
 const policy = ref<PlaybackPolicy>({
   drive_direct_play_enabled: true,
+  drive_relay_enabled: false,
 })
 const runtime = ref<PlaybackRuntime | null>(null)
 
@@ -383,6 +384,26 @@ async function saveOps() {
           </el-button>
         </div>
       </template>
+    </SectionCard>
+
+    <!-- Drive 中继状态（重新布局批 5：与 302 直链卡对称，只读；开关走服务端配置） -->
+    <SectionCard title="Drive 中继" :icon="Zap">
+      <template #actions>
+        <span class="au-badge" :class="policy.drive_relay_enabled ? 'au-badge-green' : 'au-badge-muted'">
+          {{ policy.drive_relay_enabled ? '已开启' : '已关闭' }}
+        </span>
+      </template>
+
+      <div class="cp-field">
+        <div class="cp-field-main">
+          <label class="cp-label">Drive 文件服务器中继</label>
+          <p class="cp-hint">
+            开启（当前播放主线）：服务器用子账号身份取流、走自有带宽发给用户，
+            不碰全网共用的公开下载池；302 直链退为兜底。当前状态由服务端配置控制
+            （面板不提供开关）；中继出问题先看「播放风控」里的 Drive 403/429 计数。
+          </p>
+        </div>
+      </div>
     </SectionCard>
 
 

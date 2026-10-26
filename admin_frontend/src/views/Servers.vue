@@ -19,8 +19,8 @@
  * 增删改（添加 / 编辑 / 测试 / 设为当前 / 启停 / 删除）也都在这一页完成；
  * 内容自动化（MoviePilot / qB）与出流入口分开成两段，避免混在一起看不清谁在出流。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { computed, defineAsyncComponent, onMounted, reactive, ref } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import {
@@ -63,6 +63,36 @@ import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 
 const realm = useRealmStore()
 const router = useRouter()
+
+/**
+ * 重新布局批 5：115 / Google Drive 账号页降为本页「存储账号」标签
+ * （沿用 Codes.vue 的 ?tab= 同步 + KeepAlive 模式；存储账号内再分两个子标签）。
+ * 服务器面板用 v-show：来回切标签不卸载列表与弹窗状态；账号面板按需加载、
+ * 进过一次后 KeepAlive 缓存。
+ */
+const Pan115Accounts = defineAsyncComponent(() => import('./Pan115Accounts.vue'))
+const GDriveAccounts = defineAsyncComponent(() => import('./GDriveAccounts.vue'))
+
+type ServerTab = 'servers' | 'storage'
+type StorageSubTab = 'pan115' | 'gdrive'
+
+const route = useRoute()
+
+const activeTab = computed<ServerTab>({
+  get: () => (route.query.tab === 'storage' ? 'storage' : 'servers'),
+  set: (tab) => {
+    if (tab === activeTab.value) return
+    router.replace({ query: { ...route.query, tab } })
+  },
+})
+
+const activeSubTab = computed<StorageSubTab>({
+  get: () => (route.query.subtab === 'gdrive' ? 'gdrive' : 'pan115'),
+  set: (subtab) => {
+    if (subtab === activeSubTab.value) return
+    router.replace({ query: { ...route.query, subtab } })
+  },
+})
 
 /** 出流入口（一个服一个）与内容自动化（可全服共用）——分两段展示，别混在一起 */
 const ENTRY_KINDS: ServerKind[] = ['ea', 'emby']
@@ -813,6 +843,38 @@ function opsStateText(state: string): string {
       </template>
     </PageHeader>
 
+    <div class="tab-bar" role="tablist" aria-label="服务器与线路">
+      <button
+        id="servers-tab-servers"
+        type="button"
+        role="tab"
+        class="tab-btn"
+        :class="{ active: activeTab === 'servers' }"
+        :aria-selected="activeTab === 'servers'"
+        aria-controls="servers-panel"
+        @click="activeTab = 'servers'"
+      >
+        服务器
+        <span class="tab-hint">入口 / 挂载 / 体检</span>
+      </button>
+      <button
+        id="servers-tab-storage"
+        type="button"
+        role="tab"
+        class="tab-btn"
+        :class="{ active: activeTab === 'storage' }"
+        :aria-selected="activeTab === 'storage'"
+        aria-controls="servers-panel"
+        @click="activeTab = 'storage'"
+      >
+        存储账号
+        <span class="tab-hint">115 / Google Drive 凭据</span>
+      </button>
+    </div>
+
+    <!-- 服务器面板：v-show 常驻，切标签回来列表与弹窗状态都在 -->
+    <div v-show="activeTab === 'servers'">
+
     <!-- 汇总：一眼看出「接了多少、多少可用、多少要处理」 -->
     <SectionCard title="概况" :icon="Server" class="ov-card">
       <template #actions>
@@ -1478,10 +1540,104 @@ function opsStateText(state: string): string {
       root-key-label="目录"
       @pick="onBrowsePick"
     />
+    </div>
+
+    <!-- 存储账号面板：两个子页各自带 PageHeader，这里只放标签条，不再叠第二个页头 -->
+    <div
+      id="servers-panel"
+      v-show="activeTab === 'storage'"
+      class="tab-panel"
+      role="tabpanel"
+      :aria-labelledby="activeTab === 'servers' ? 'servers-tab-servers' : 'servers-tab-storage'"
+    >
+      <div class="tab-bar tab-bar--inner" role="tablist" aria-label="存储账号">
+        <button
+          id="storage-tab-pan115"
+          type="button"
+          role="tab"
+          class="tab-btn"
+          :class="{ active: activeSubTab === 'pan115' }"
+          :aria-selected="activeSubTab === 'pan115'"
+          aria-controls="storage-panel"
+          @click="activeSubTab = 'pan115'"
+        >
+          115 账号
+        </button>
+        <button
+          id="storage-tab-gdrive"
+          type="button"
+          role="tab"
+          class="tab-btn"
+          :class="{ active: activeSubTab === 'gdrive' }"
+          :aria-selected="activeSubTab === 'gdrive'"
+          aria-controls="storage-panel"
+          @click="activeSubTab = 'gdrive'"
+        >
+          Google Drive
+        </button>
+      </div>
+      <div
+        id="storage-panel"
+        class="tab-panel"
+        role="tabpanel"
+        :aria-labelledby="activeSubTab === 'pan115' ? 'storage-tab-pan115' : 'storage-tab-gdrive'"
+      >
+        <KeepAlive>
+          <Pan115Accounts v-if="activeSubTab === 'pan115'" />
+          <GDriveAccounts v-else />
+        </KeepAlive>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* 标签条（与 Codes.vue / Welfare.vue 同款；内层与外层隔 16px，不贴在一起） */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--au-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-bar--inner { margin-top: 16px; }
+.tab-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 10px 18px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--au-text-2);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color var(--au-fast) var(--au-ease), border-color var(--au-fast) var(--au-ease);
+}
+.tab-btn:hover { color: var(--au-text); }
+.tab-btn:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: -2px; }
+.tab-btn.active {
+  color: var(--au-primary);
+  border-bottom-color: var(--au-primary);
+}
+.tab-hint {
+  font-size: 12px;
+  color: var(--au-text-3);
+  font-weight: 400;
+  white-space: nowrap;
+}
+.tab-btn.active .tab-hint { color: var(--au-primary); }
+.tab-panel { min-width: 0; }
+
+@media (max-width: 640px) {
+  .tab-btn { padding: 8px 12px; font-size: 14px; }
+  .tab-hint { font-size: 11px; }
+}
 /* 管理弹窗：详情用全局 .kv-list，只补告警列表与页脚布局 */
 .mg-body { display: flex; flex-direction: column; gap: 12px; }
 .mg-body .kv-row .kv-value { text-align: left; }

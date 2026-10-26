@@ -2,8 +2,9 @@
 /**
  * 任务总览（路线 2-A）：管理后台一页看所有后台任务的状态、进度、开关。
  *
- * 只读展示为主；开关操作直接调各任务已有的保存接口（admin.ts 里现成的），
- * 不另起新接口。卡片数据来自 GET /api/admin/tasks/overview。
+ * 只读展示为主；探测开关直接调已有的暂停/恢复接口（admin.ts 里现成的），
+ * 不另起新接口。刮削开关（自动扫描/追新/夜间刮削）按重新布局批 5 只读展示，
+ * 唯一写入口在媒体库页，本页不写。卡片数据来自 GET /api/admin/tasks/overview。
  */
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -18,9 +19,6 @@ import {
   fetchTasksOverview,
   pauseProbe,
   resumeProbe,
-  saveAutoScan,
-  saveChaseNew,
-  saveEnrichEpisodeNight,
   type TaskCard,
   type TaskCardStatus,
 } from '@/api/admin'
@@ -88,31 +86,14 @@ async function load(silent = false) {
 
 /** 开关切换：失败弹回原状态。 */
 async function onToggle(card: TaskCard, val: boolean) {
+  // 重新布局批 5：本页只剩探测开关可写；刮削开关只读展示，不走到这里
   const key = card.key
   const sw = card.switch
-  if (!sw) return
-  const keep = (sw.keep ?? {}) as Record<string, unknown>
+  if (!sw || key !== 'probe') return
   toggling.value[key] = true
   try {
-    if (key === 'scan') {
-      await saveAutoScan(val, String(keep.time ?? '03:00'))
-    } else if (key === 'probe') {
-      if (val) await resumeProbe()
-      else await pauseProbe()
-    } else if (key === 'enrich') {
-      await saveEnrichEpisodeNight(
-        val,
-        String(keep.night_start ?? '02:00'),
-        String(keep.night_end ?? '06:00'),
-        String(keep.night_tz ?? 'Asia/Shanghai'),
-      )
-    } else if (key === 'chase_new') {
-      await saveChaseNew(
-        val,
-        Number(keep.interval ?? 30),
-        String(keep.excluded ?? ''),
-      )
-    }
+    if (val) await resumeProbe()
+    else await pauseProbe()
     ElMessage.success(`${card.title}已${val ? '开启' : '关闭'}`)
     await load(true)
   } catch {
@@ -198,12 +179,16 @@ onMounted(() => load())
         <footer class="task-foot">
           <span class="muted">{{ card.last_run_label }}：{{ fmtTime(card.last_run) }}</span>
           <el-switch
-            v-if="card.switch"
+            v-if="card.switch && card.key === 'probe'"
             v-model="card.switch.enabled"
             :loading="toggling[card.key]"
             :active-text="card.switch.label"
             @change="(v: boolean) => onToggle(card, v)"
           />
+          <!-- 重新布局批 5：刮削开关（自动扫描/追新/夜间刮削）唯一写入口在媒体库页，本页只读展示 -->
+          <span v-else-if="card.switch" class="muted">
+            {{ card.switch.enabled ? '已开启' : '已关闭' }} · 开关在媒体库页改
+          </span>
         </footer>
       </section>
     </div>
