@@ -165,14 +165,20 @@
         </div>
       </section>
 
-      <!-- 我的网盘：绑定自己的谷歌盘（BYOS，storageBindingApi）——只放用户端已有设置面，不新增导航入口。
+      <!-- 我的网盘：绑定自己的谷歌盘与 115（BYOS，storageBindingApi）——只放用户端已有设置面，不新增导航入口。
+           渲染按后台挂载驱动：先调 GET /storage-bindings/providers 拿 provider 名单，
+           只有名单里的块才渲染（同一套 hasProvider 门控管两块，不写死分支）；
+           名单里没有的 provider，整个块不渲染，连该 provider 已绑的行也不展示（以名单为准）。
            后端口径见 backend/emby_server/portal.py user_emby_router：列表只出自己的行；
-           绑定走 Google 授权（新窗口打开授权地址），回调由 Google 直接调后端 callback 口返回绑定行 JSON，
-           所以授权完成后回到本页点“刷新列表”才能看到新绑定；服务器未配 OAuth 凭据时后端明文 400，前端原样展示。 -->
-      <section class="v4-sec" aria-label="我的网盘">
+           谷歌盘绑定走 Google 授权（新窗口打开授权地址），回调由 Google 直接调后端 callback 口返回绑定行 JSON，
+           所以授权完成后回到本页点“刷新列表”才能看到新绑定；服务器未配 OAuth 凭据时后端明文 400，前端原样展示。
+           115 绑定走 POST /storage-bindings（provider='pan115'，credential 为 115 Cookie），建时后端同步验活。 -->
+      <section v-if="providersError || (providersLoaded && (hasProvider('drive') || hasProvider('pan115')))" class="v4-sec" aria-label="我的网盘">
         <div class="v4-sec-title"><span aria-hidden="true">💾</span> 我的网盘</div>
-        <div class="v4-sec-sub">绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑不影响现有播放</div>
-        <div class="v4-card">
+        <div v-if="providersError" class="v4-err">{{ providersError }}<br><button class="v4-retry" @click="loadProviders">重试</button></div>
+        <template v-else>
+        <div v-if="hasProvider('drive')" class="v4-sec-sub">绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑不影响现有播放</div>
+        <div v-if="hasProvider('drive')" class="v4-card">
           <div class="dev-head">
             <span class="dev-count">已绑 {{ driveBindings.length }} 个谷歌盘</span>
             <button type="button" class="v4-mini-btn" title="刷新" :disabled="driveLoading" :aria-busy="driveLoading" @click="loadDriveBindings">
@@ -182,7 +188,9 @@
           <div v-if="driveLoading && !driveBindings.length" class="v4-skeleton" style="height:120px"></div>
           <div v-else-if="driveError" class="v4-err">{{ driveError }}<br><button class="v4-retry" @click="loadDriveBindings">重试</button></div>
           <div v-else-if="!driveBindings.length" class="v4-empty">
-            还没有绑定的谷歌盘 —— 起个名字点“绑定谷歌盘”，去 Google 点一下同意就行
+            <p>① 这是什么：绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；不绑也不影响现有播放。</p>
+            <p>② 怎么做：起个名字点“绑定谷歌盘”→新窗口去 Google 点同意→回来点“刷新列表”。</p>
+            <p>③ 绑完怎么验：去播一集，看是不是走你自己的盘。</p>
           </div>
           <template v-else>
             <div v-for="b in driveBindings" :key="b.id" class="dev-row">
@@ -214,6 +222,7 @@
                 {{ unbindingId === b.id ? '解绑中' : (pendingUnbind === b.id ? '确认解绑' : '解绑') }}
               </button>
             </div>
+            <p class="dev-tip">绑好了，下一步：去播一集试试，走的就是你自己的盘；播不动先点“重新验证”，还不行就解绑重绑。</p>
           </template>
           <div class="acct-field">
             <label class="acct-label" for="drive-label">给这个盘起个名字</label>
@@ -225,6 +234,68 @@
           </button>
           <p class="dev-tip">点绑定后会在新窗口打开 Google 授权页，点同意后关掉那个窗口、回到本页点“刷新列表”，新绑定就会出现。授权页本身不是本站页面，账号密码只交给 Google。</p>
         </div>
+        <div v-if="hasProvider('pan115')" class="v4-card">
+          <div class="dev-head">
+            <span class="dev-count">已绑 {{ pan115Bindings.length }} 个 115 账号</span>
+            <button type="button" class="v4-mini-btn" title="刷新" :disabled="driveLoading" :aria-busy="driveLoading" @click="loadDriveBindings">
+              <RefreshCw :size="13" /> {{ driveLoading ? '刷新中' : '刷新列表' }}
+            </button>
+          </div>
+          <div class="v4-sec-sub">绑了自己的 115，播 115 的片子就走你自己的 115 账号现签直链，字节不过服务器；没绑不影响现有播放</div>
+          <div v-if="driveLoading && !pan115Bindings.length" class="v4-skeleton" style="height:120px"></div>
+          <div v-else-if="pan115Error" class="v4-err">{{ pan115Error }}<br><button class="v4-retry" @click="loadDriveBindings">重试</button></div>
+          <div v-else-if="!pan115Bindings.length" class="v4-empty">
+            <p>① 这是什么：绑了自己的 115，播 115 的片子就走你自己的 115 账号现签直链，字节不过服务器；不绑也不影响现有播放。</p>
+            <p>② 怎么做：去 115 网页版取登录 Cookie→粘到下面框里点“绑定 115”→本站只密封存、只用于你自己的播放；Cookie 过期了重绑。</p>
+            <p>③ 绑完怎么验：去播一集 115 的片子，看走不走自己的账号。</p>
+          </div>
+          <template v-else>
+            <div v-for="b in pan115Bindings" :key="b.id" class="dev-row">
+              <div class="dev-main">
+                <span class="dev-name">{{ b.account_label }}</span>
+                <span class="dev-meta">
+                  115 · {{ driveStatusText(b.status) }}
+                  <template v-if="b.error_message"> · {{ b.error_message }}</template>
+                </span>
+              </div>
+              <span v-if="b.status === 'active'" class="dev-badge ok">可用</span>
+              <span v-else class="dev-badge off">不可用</span>
+              <button
+                v-if="b.status !== 'active'"
+                type="button"
+                class="dev-remove"
+                :disabled="verifyingBinding === b.id"
+                @click="handleVerifyPan115(b)"
+              >
+                {{ verifyingBinding === b.id ? '验证中' : '重新验证' }}
+              </button>
+              <button
+                type="button"
+                class="dev-remove"
+                :class="{ confirming: pendingUnbind === b.id }"
+                :disabled="unbindingId === b.id"
+                @click="handleUnbindPan115(b)"
+              >
+                {{ unbindingId === b.id ? '解绑中' : (pendingUnbind === b.id ? '确认解绑' : '解绑') }}
+              </button>
+            </div>
+            <p class="dev-tip">绑好了，下一步：去播一集 115 的片子试试，走的就是你自己的 115 账号；播不动先点“重新验证”，还不行就解绑重绑。</p>
+          </template>
+          <div class="acct-field">
+            <label class="acct-label" for="pan115-label">给这个 115 账号起个名字</label>
+            <input id="pan115-label" v-model="pan115Label" type="text" placeholder="比如：我的 115" autocomplete="off" />
+          </div>
+          <div class="acct-field">
+            <label class="acct-label" for="pan115-cookie">115 Cookie</label>
+            <input id="pan115-cookie" v-model="pan115Cookie" type="password" placeholder="从 115 网页版登录态里取，粘进来就行" autocomplete="off" />
+          </div>
+          <p v-if="pan115FormError" class="acct-error" role="alert">{{ pan115FormError }}</p>
+          <button type="button" class="acct-btn primary" :disabled="pan115Creating" @click="handleBindPan115">
+            {{ pan115Creating ? '正在验证…' : '绑定 115' }}
+          </button>
+          <p class="dev-tip">Cookie 只交给本站后端密封保存，只用来播你自己 115 里的东西，不会拿去干别的；它也不会显示在页面上，提交后输入框会立刻清空。115 的 Cookie 会过期，过期了这里会显示已过期，到时候重新粘一次就行。</p>
+        </div>
+        </template>
       </section>
     </div>
 
@@ -523,17 +594,46 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
   return `${Math.floor(hours / 24)} 天前`
 }
 
-// ===== 我的网盘（用户自带谷歌盘绑定，BYOS） =====
-// 只展示 provider === 'drive' 的行（列表口也可能返回 115 绑定，那是另一条线，不在这里混着管）。
-// 绑定流程：start 口返回 authorization_url（字段名照抄 drive_oauth.start_drive_oauth），
+// ===== 我的网盘（用户自带谷歌盘与 115 绑定，BYOS） =====
+// 列表口一次拉取，按 provider 分两组展示：drive 走 Google 授权，pan115 走 Cookie 粘贴
+// （POST /storage-bindings，provider='pan115'，建时后端同步验活）。
+// 绑定流程（谷歌盘）：start 口返回 authorization_url（字段名照抄 drive_oauth.start_drive_oauth），
 // 新窗口打开 Google 授权；Google 回调直接调后端 callback 口，不经过本站页面，
 // 所以本页不监听回调，只等用户回来点“刷新列表”。
+// 后台挂载驱动的 provider 名单（GET /storage-bindings/providers）：两块共用同一套
+// 门控，不写死分支——名单里没有的块整个不渲染，连已绑行也不展示。
+const availableProviders = ref<string[]>([])
+const providersLoaded = ref(false)
+const providersError = ref('')
+
+function hasProvider(provider: string) {
+  return availableProviders.value.includes(provider)
+}
+
+async function loadProviders() {
+  providersError.value = ''
+  try {
+    const res = await storageBindingApi.providers()
+    availableProviders.value = res.providers || []
+    providersLoaded.value = true
+  } catch (e) {
+    // 名单拿不到就没法按规则渲染，留错误态给用户重试，不猜、不 fallback 到全显
+    providersError.value = humanizeError(e)
+  }
+}
+
 const driveBindings = ref<StorageBinding[]>([])
+const pan115Bindings = ref<StorageBinding[]>([])
 const driveLoading = ref(false)
 const driveError = ref('')
+const pan115Error = ref('')
 const driveLabel = ref('')
 const driveFormError = ref('')
 const driveStarting = ref(false)
+const pan115Label = ref('')
+const pan115Cookie = ref('')
+const pan115FormError = ref('')
+const pan115Creating = ref(false)
 const verifyingBinding = ref<number | null>(null)
 const unbindingId = ref<number | null>(null)
 const pendingUnbind = ref<number | null>(null)
@@ -548,12 +648,15 @@ function driveStatusText(status: string) {
 async function loadDriveBindings() {
   driveLoading.value = true
   driveError.value = ''
+  pan115Error.value = ''
   try {
     const res = await storageBindingApi.list()
     driveBindings.value = (res.bindings || []).filter((b) => b.provider === 'drive')
+    pan115Bindings.value = (res.bindings || []).filter((b) => b.provider === 'pan115')
   } catch (e) {
     // 加载失败别装成“没绑盘”，留错误态给用户重试
     driveError.value = humanizeError(e)
+    pan115Error.value = humanizeError(e)
   } finally {
     driveLoading.value = false
   }
@@ -599,6 +702,76 @@ async function handleVerifyBinding(b: StorageBinding) {
 
 async function handleUnbindDrive(b: StorageBinding) {
   // 两步确认，照抄设备移除的口径（4 秒内未确认自动收回）
+  if (unbindingId.value !== null) return
+  if (pendingUnbind.value !== b.id) {
+    pendingUnbind.value = b.id
+    window.setTimeout(() => {
+      if (pendingUnbind.value === b.id) pendingUnbind.value = null
+    }, 4000)
+    return
+  }
+  pendingUnbind.value = null
+  unbindingId.value = b.id
+  try {
+    await storageBindingApi.remove(b.id)
+    toast.success('已解绑')
+    await loadDriveBindings()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'removeFailed'))
+  } finally {
+    unbindingId.value = null
+  }
+}
+
+async function handleBindPan115() {
+  const label = pan115Label.value.trim()
+  const cookie = pan115Cookie.value.trim()
+  if (!label) {
+    pan115FormError.value = '先给这个 115 账号起个名字'
+    return
+  }
+  if (!cookie) {
+    pan115FormError.value = '先把 115 Cookie 粘进来'
+    return
+  }
+  pan115FormError.value = ''
+  pan115Creating.value = true
+  try {
+    // Cookie 只送出一次：无论成败，提交后立刻清空输入框，不留存在页面状态里；
+    // 报错只展示后端文案（后端文案不含凭据），绝不回显 Cookie 全文
+    const created = await storageBindingApi.createPan115(label, cookie)
+    if (created.status === 'active') {
+      toast.success('115 绑好了，可以播你自己 115 里的片子了')
+    } else {
+      // 建时验活失败属三档内时后端仍 201 返回该行：绑是落下了，但不可用，响亮说出来
+      pan115FormError.value = created.error_message || '绑定落下了，但验活没过，请检查 Cookie 后重新绑定'
+    }
+    await loadDriveBindings()
+  } catch (e) {
+    pan115FormError.value = humanizeError(e)
+  } finally {
+    pan115Cookie.value = ''
+    pan115Creating.value = false
+  }
+}
+
+async function handleVerifyPan115(b: StorageBinding) {
+  // 重验用后端已存的密封 Cookie，不用用户再粘一次；口径照抄谷歌盘重验
+  if (verifyingBinding.value !== null) return
+  verifyingBinding.value = b.id
+  try {
+    const updated = await storageBindingApi.verify(b.id)
+    pan115Bindings.value = pan115Bindings.value.map((x) => (x.id === b.id ? updated : x))
+    toast.success(updated.status === 'active' ? '验证通过，这个 115 账号可以用了' : '验证后仍不可用，请重新绑定')
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'removeFailed'))
+  } finally {
+    verifyingBinding.value = null
+  }
+}
+
+async function handleUnbindPan115(b: StorageBinding) {
+  // 两步确认，照抄设备移除 / 谷歌盘解绑的口径（4 秒内未确认自动收回）
   if (unbindingId.value !== null) return
   if (pendingUnbind.value !== b.id) {
     pendingUnbind.value = b.id
@@ -676,6 +849,7 @@ async function toggleLeaderboard() {
 onMounted(() => {
   loadSubs()
   loadDevices()
+  loadProviders()
   loadDriveBindings()
   loadPrivacy()
   if (!serversLoading.value && !servers.value.length) void loadServers()

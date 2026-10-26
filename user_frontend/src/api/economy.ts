@@ -320,8 +320,12 @@ export const deviceApi = {
 // ==================== 我的网盘（用户自带存储绑定，BYOS） ====================
 // 后端口径（backend/emby_server/portal.py user_emby_router，前缀 /api/user/emby）：
 // GET /storage-bindings → { bindings: [...] }；POST /storage-bindings/drive/oauth/start
-// { account_label } → { authorization_url, expires_in }；POST /storage-bindings/{id}/verify
-// → 绑定行；DELETE /storage-bindings/{id} → { success: true }。
+// { account_label } → { authorization_url, expires_in }；POST /storage-bindings
+// { provider: 'pan115', account_label, credential } → 201 绑定行（验活失败属三档内时
+// 仍 201 返回该行，status=invalid/expired + error_message，由客户端展示重绑引导）；
+// POST /storage-bindings/{id}/verify → 绑定行；DELETE /storage-bindings/{id} → { success: true }。
+// 115 的 credential 是 115 Cookie（后端经 transfer115.normalize_cookie 后密封存），
+// 前端只原样送出一次，绝不在日志与报错里回显。
 // 绑定行字段照抄 backend/emby_server/user_bindings.py serialize_binding：
 // id / provider / account_label / status / last_verified_at / last_error_kind /
 // error_message / has_credential / created_at，绝不含凭据原文。
@@ -346,13 +350,27 @@ export interface DriveOAuthStartResponse {
   expires_in: number
 }
 
+// 后台实际启用的挂载类型映射后的 provider 名单（GET /storage-bindings/providers）：
+// 只含 provider 名串（如 drive / pan115），不含挂载路径、凭据、账号等敏感字段。
+// 前端“我的网盘”按这份名单渲染对应块，名单里没有的块整个不渲染。
+export interface StorageBindingProvidersResponse {
+  providers: string[]
+}
+
 export const storageBindingApi = {
   list: () =>
     api.get<never, StorageBindingsResponse>('/api/user/emby/storage-bindings'),
+  providers: () =>
+    api.get<never, StorageBindingProvidersResponse>('/api/user/emby/storage-bindings/providers'),
   startDriveOAuth: (accountLabel: string) =>
     api.post<never, DriveOAuthStartResponse>(
       '/api/user/emby/storage-bindings/drive/oauth/start',
       { account_label: accountLabel },
+    ),
+  createPan115: (accountLabel: string, cookie: string) =>
+    api.post<never, StorageBinding>(
+      '/api/user/emby/storage-bindings',
+      { provider: 'pan115', account_label: accountLabel, credential: cookie },
     ),
   verify: (bindingId: number) =>
     api.post<never, StorageBinding>(
