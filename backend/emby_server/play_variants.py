@@ -9,7 +9,7 @@ false，因为它服务端不转码）。
 并下发清单，播放决策权还给客户端；取流执行仍在 video_stream 的既有
 分支里（按变体直达是 PR-2 的事），本模块不搬一个字节。
 
-我方实际只有四种播放目标（定稿 §三逐项对过 video_stream 的分支）：
+我方主线只有四种播放目标（定稿 §三逐项对过 video_stream 的分支）：
 ``drive_relay``（Drive SA 中继，字节过服务器）/ ``drive_direct``
 （Drive 302 直链，客户端自拉）/ ``mount_relay``（挂载中继，115/
 WebDAV/AList/STRM 走 provider 凭据代理）/ ``local_file``（本机文件
@@ -66,6 +66,14 @@ LOCAL_FILE = "local_file"
 #: pan115 绑定且条目挂载为 115 时才进清单；第一条仍恒为现行
 #: 主线变体（mount_relay），老客户端行为不变。
 BYOS115_DIRECT = "byos115_direct"
+#: BYOS Drive 中继：绑定用户自己的 Drive 令牌中继（服务端凭该用户
+#: 令牌取流、字节过服务器，走该用户自己的额度，绝不走共享 SA 池）。
+#: 注意不是“直链”：Drive alt=media 取流须带 Authorization 头，302
+#: 给播放器会丢令牌，无法直链；故本变体诚实申报为中继
+#: （is_remote=False / needs_relay=True），与 byos115_direct 的
+#: 302 直链形态不同。只在条目是 byos:// 路径、路径绑定是该用户
+#: active 的 Drive 绑定且条目有 drive_file_id 时才进清单。
+BYOS_DRIVE_RELAY = "byos_drive_relay"
 
 
 @dataclass(frozen=True)
@@ -92,6 +100,9 @@ _VARIANTS: dict[str, Variant] = {
     # is_remote=True（客户端从 115 自拉）/ needs_relay=False
     # （字节不过服务器，零服务器带宽）——与 drive_direct 同形。
     BYOS115_DIRECT: Variant(BYOS115_DIRECT, "我的 115 直链", "Http", True, False),
+    # 中继形态：字节过服务器（凭用户令牌取流），故 is_remote=False /
+    # needs_relay=True——与 drive_relay 同形，只是凭据换成用户自己的。
+    BYOS_DRIVE_RELAY: Variant(BYOS_DRIVE_RELAY, "我的 Drive 中继", "Http", False, True),
 }
 
 
@@ -103,7 +114,8 @@ def variants_enabled() -> bool:
 def list_variants(db: Session, item, *,
                   drive_mount_locatable: bool = False,
                   mount_can_generate_play_target: bool | None = None,
-                  user115_direct_available: bool = False) -> list[Variant]:
+                  user115_direct_available: bool = False,
+                  user_drive_byos_available: bool = False) -> list[Variant]:
     """按条目算可用变体清单（唯一判定口），第一条恒为现行主线变体。
 
     排序即兼容：第一条就是今天 video_stream 自动判定实际会走的那条
@@ -126,6 +138,13 @@ def list_variants(db: Session, item, *,
     能力算好传进来（一次主键查询，见 api._mount_can_generate_play_target）：
     False 时挂载中继不进清单（清单第 2 项能力门控）；None 时保持旧行为
     （调用方未提供能力信号时，不因查不到挂载就把变体扣掉）。
+
+    ``user_drive_byos_available`` 由调用方用 api._user_drive_byos_available
+    算好传进来：条目是 byos:// 路径、路径绑定是该用户 active 的 Drive
+    绑定且条目有 drive_file_id 时才 True；True 时在主线之后追加
+    byos_drive_relay（第一条仍是现行主线，老客户端无感）。清单阶段
+    不真取令牌——令牌只在取流时现取现用，失效时取流报 409/503，
+    不静默回落共享 SA 池。
     """
     fid = (getattr(item, "drive_file_id", "") or "").strip()
     file_path = getattr(item, "file_path", "") or ""
@@ -147,6 +166,14 @@ def list_variants(db: Session, item, *,
             names.append(BYOS115_DIRECT)
     else:
         names.append(LOCAL_FILE)
+    # BYOS Drive：排在主线之后（第一条仍是现行主线），无绑定或
+    # 非 byos 条目时恒不追加——不虚列、不伪装可播。本函数内再以
+    # drive_file_id 兜底：无 fid 的条目（本机文件等）即使调用方误传
+    # 信号也不追加，信号不得外溢（与 byos115 只在挂载分支追加同款
+    # 纪律；api 侧的 _user_drive_byos_available 本就要求 byos 路径
+    # + fid，这里是第二道门）。
+    if user_drive_byos_available and fid:
+        names.append(BYOS_DRIVE_RELAY)
     return [_VARIANTS[n] for n in names]
 
 
@@ -176,7 +203,7 @@ def resolve_requested_variant(query_params, available_names) -> tuple:
     返回 ``(variant_or_None, error_status_or_None)``：
     - ``(None, None)``：没带变体，走原判定；
     - ``(name, None)``：带了且在可用清单里；
-    - ``(None, 404)``：名字不在四变体枚举里，或 variant 参数与
+    - ``(None, 404)``：名字不在变体枚举里，或 variant 参数与
       MediaSourceId 后缀不一致（身份对不上）；
     - ``(None, 409)``：名字是已知变体，但该条目当下不可用——调用方
       必须明确报错，**不许静默改走默认条**（静默改走会让客户端的
