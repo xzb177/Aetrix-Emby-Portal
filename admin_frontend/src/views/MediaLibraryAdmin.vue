@@ -6,30 +6,27 @@
  * 直传 / SVG 占位）。顺序即尝试顺序；管理端保存进 system_configs，
  * 文件配置 LIBRARY_COVER_STRATEGY_ORDER 已设置时优先于此处保存；
  * 借代表一步仅在借代表开关开启时生效（文件配置，只读）。
- * 中：库顺序——Views 里库的展示顺序。0 = 未设序（排在已设序之后）；
- * 已设序的按数值升序在前。改完点「保存顺序」整单写后端。
+ * 库展示顺序已收进媒体库页各库卡片封面处的小控件（改动即保存，走
+ * 同一后端设序接口），本页不再单列顺序分组。
  * 下：条目图人工覆盖——管理员给条目手工指定海报 / 背景图。
  * 优先级：覆盖 > 旁挂 > 刮削。覆盖只接受 http(s) URL；读侧是否生效
  * 由 ITEM_ARTWORK_OVERRIDE_ENABLED 开关决定（写侧不受开关影响，
  * 可以先配好再开开关）。
  *
- * 布局纪律：本页就是媒体库设置的收纳面，封面与顺序都在此分组呈现，
- * 不另起导航入口与新页面。
+ * 布局纪律：本页就是媒体库设置的收纳面，封面策略与条目图覆盖在此
+ * 分组呈现，不另起导航入口与新页面。
  */
 import { onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, ArrowUp, Image as ImageIcon, ListOrdered } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, Image as ImageIcon } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import {
   deleteArtworkOverride,
   fetchArtworkOverrides,
   fetchCoverStrategy,
-  fetchLibraryOrder,
   setArtworkOverride,
   setCoverStrategy,
-  setLibraryOrder,
   type ArtworkOverrideRow,
-  type LibraryOrderRow,
 } from '@/api/admin'
 
 const STRATEGY_META: Record<string, { label: string; desc: string }> = {
@@ -49,10 +46,6 @@ const strategyLoading = ref(false)
 const strategySaving = ref(false)
 const strategyEnvOrder = ref<string[] | null>(null)
 const strategyBorrowEnabled = ref(false)
-
-const orderRows = ref<LibraryOrderRow[]>([])
-const orderLoading = ref(false)
-const orderSaving = ref(false)
 
 const overrideRows = ref<ArtworkOverrideRow[]>([])
 const overrideLoading = ref(false)
@@ -116,34 +109,6 @@ async function saveStrategy() {
   }
 }
 
-async function loadOrder() {
-  orderLoading.value = true
-  try {
-    const d = await fetchLibraryOrder()
-    orderRows.value = d.items
-  } catch {
-    ElMessage.error('库顺序加载失败')
-  } finally {
-    orderLoading.value = false
-  }
-}
-
-async function saveOrder() {
-  orderSaving.value = true
-  try {
-    await setLibraryOrder(orderRows.value.map((r) => ({
-      library_id: r.library_id,
-      sort_order: r.sort_order || 0,
-    })))
-    ElMessage.success('库顺序已保存')
-    await loadOrder()
-  } catch {
-    ElMessage.error('库顺序保存失败')
-  } finally {
-    orderSaving.value = false
-  }
-}
-
 async function loadOverrides() {
   overrideLoading.value = true
   try {
@@ -190,14 +155,13 @@ async function removeOverride(row: ArtworkOverrideRow) {
 
 onMounted(() => {
   void loadStrategy()
-  void loadOrder()
   void loadOverrides()
 })
 </script>
 
 <template>
   <div>
-    <PageHeader title="图片与顺序" description="库封面策略、库展示顺序与条目图人工覆盖（媒体库学习 L1 / L2 / L4）" />
+    <PageHeader title="图片与顺序" description="库封面策略与条目图人工覆盖（媒体库学习 L1 / L4）；库展示顺序在媒体库页各库卡片封面处改" />
 
     <SectionCard title="库封面策略" :icon="ImageIcon">
       <template #actions>
@@ -224,21 +188,6 @@ onMounted(() => {
             <el-button link :disabled="$index >= strategyRows.filter((r) => r.included).length - 1 || !strategyRows[$index].included" @click="moveStrategy($index, 1)">
               <el-icon><ArrowDown /></el-icon>
             </el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </SectionCard>
-
-    <SectionCard title="库顺序" :icon="ListOrdered">
-      <template #actions>
-        <el-button type="primary" :loading="orderSaving" @click="saveOrder">保存顺序</el-button>
-      </template>
-      <p class="ml-note">0 = 未设序，排在已设序之后；已设序的按数值升序在前。全部为 0 时 Views 顺序与今天逐字一致。</p>
-      <el-table v-loading="orderLoading" :data="orderRows" style="width: 100%">
-        <el-table-column prop="name" label="媒体库" />
-        <el-table-column label="顺序值" width="180">
-          <template #default="{ row }">
-            <el-input-number v-model="row.sort_order" :min="-9999" :max="9999" controls-position="right" />
           </template>
         </el-table-column>
       </el-table>

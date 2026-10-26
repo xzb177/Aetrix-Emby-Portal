@@ -33,6 +33,7 @@ import {
   deleteLibrary,
   fetchLibraries,
   fetchLibraryCover,
+  fetchLibraryOrder,
   fetchLibraryScans,
   fetchMounts,
   fetchPan115Accounts,
@@ -59,6 +60,7 @@ import {
   runRepairQueue,
   scanAllLibraries,
   scanLibrary,
+  setLibraryOrder,
   saveAutoScan,
   saveChaseNew,
   saveEnrichEpisodeNight,
@@ -102,6 +104,9 @@ const repairCount = ref(0)
 const virtualLoading = ref(false)
 const coverUrls = ref<Record<number, string>>({})
 const coverUploading = ref<Record<number, boolean>>({})
+/** 各库 Views 展示顺序（0 = 未设序）：原“图片与顺序”页库顺序分组已收进卡片封面处 */
+const orderMap = ref<Record<number, number>>({})
+const orderSaving = ref<Record<number, boolean>>({})
 let coverLoadVersion = 0
 
 // 媒体库配置表单的可见性与状态统一在下面的「单页分组表单」一节里（新建 / 编辑共用）
@@ -729,6 +734,7 @@ async function load() {
     libraries.value = l.libraries.map((lib) => ({ ...lib, mount_ids: lib.mount_ids || [] }))
     if (l.storage_backends?.length) storageBackends.value = l.storage_backends
     void loadCoverImages(libraries.value)
+    void loadLibraryOrder()
     repairCount.value = r.total
     panAccounts.value = a.accounts
     mounts.value = m.mounts
@@ -778,6 +784,33 @@ function replaceCoverImage(id: number, blob: Blob) {
   const old = coverUrls.value[id]
   if (old) URL.revokeObjectURL(old)
   coverUrls.value[id] = URL.createObjectURL(blob)
+}
+
+/** 卡片封面处顺序值：读同一库顺序接口，保存走同一设序接口（单库 PUT 只改该库） */
+async function loadLibraryOrder() {
+  try {
+    const d = await fetchLibraryOrder()
+    const map: Record<number, number> = {}
+    for (const row of d.items) map[row.library_id] = row.sort_order || 0
+    orderMap.value = map
+  } catch {
+    // 顺序读不到不挡卡片其余信息；控件回落为 0（未设序）
+  }
+}
+
+async function saveLibraryOrder(l: EmbyLibrary, value: number) {
+  const v = value || 0
+  if ((orderMap.value[l.id] ?? 0) === v) return
+  orderSaving.value[l.id] = true
+  try {
+    await setLibraryOrder([{ library_id: l.id, sort_order: v }])
+    orderMap.value[l.id] = v
+    ElMessage.success('库顺序已保存')
+  } catch {
+    ElMessage.error('库顺序保存失败')
+  } finally {
+    orderSaving.value[l.id] = false
+  }
 }
 
 async function uploadCover(l: EmbyLibrary, file: File) {
@@ -1855,8 +1888,11 @@ function typeLabel(t: string): string {
             :reach-message="libReach(l)?.level === 'bad' ? libReach(l)?.message : ''"
             :reach-fix="libReach(l)?.level === 'bad' ? libReach(l)?.fix : ''"
             :cover-uploading="coverUploading[l.id]"
+            :sort-order="orderMap[l.id] ?? 0"
+            :order-saving="!!orderSaving[l.id]"
             @cover-upload="(opts) => requestCoverUpload(l, opts)"
             @cover-remove="removeCover(l)"
+            @order-save="(v) => saveLibraryOrder(l, v)"
             @scan="scan(l)"
             @scan-full="scanFull(l)"
             @rescrape="openRescrape(l)"

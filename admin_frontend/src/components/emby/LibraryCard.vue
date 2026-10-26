@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue'
 import { Film, Server, HardDrive, ImagePlus, X, ScanSearch, RefreshCcw, RefreshCw, Search, Settings2, History, Delete } from 'lucide-vue-next'
 import type { UploadRequestOptions } from 'element-plus'
 
-defineProps<{
+const props = defineProps<{
   library: any
   coverUrl?: string
   typeLabel: string
@@ -21,6 +22,9 @@ defineProps<{
   /** 播放风险"改法"（对应旧 reachTitle 的 verdict.fix；与 reachMessage 拼成悬停说明） */
   reachFix?: string
   coverUploading?: boolean
+  /** Views 展示顺序值（0 = 未设序，排在已设序之后；数值越小越靠前） */
+  sortOrder?: number
+  orderSaving?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -33,7 +37,16 @@ const emit = defineEmits<{
   (e: 'settings'): void
   (e: 'scans'): void
   (e: 'remove'): void
+  (e: 'order-save', value: number): void
 }>()
+
+/** 封面处顺序小控件：本地值跟随父级 sortOrder，改动确认后才上报保存 */
+const orderInput = ref(props.sortOrder ?? 0)
+watch(() => props.sortOrder, (v) => { orderInput.value = v ?? 0 })
+function onOrderChange() {
+  const v = orderInput.value ?? 0
+  if (v !== (props.sortOrder ?? 0)) emit('order-save', v)
+}
 </script>
 
 <template>
@@ -66,6 +79,19 @@ const emit = defineEmits<{
         <el-button v-if="library.cover_url" class="cover-button" circle text title="移除封面" @click="emit('cover-remove')">
           <X :size="17" />
         </el-button>
+      </div>
+      <div class="lib-cover-order" title="Views 展示顺序：0 = 未设序，排在已设序之后；数值越小越靠前。改动后即保存">
+        <span class="lib-cover-order-label">顺序</span>
+        <el-input-number
+          v-model="orderInput"
+          :min="-9999"
+          :max="9999"
+          :disabled="orderSaving"
+          controls-position="right"
+          size="small"
+          aria-label="媒体库展示顺序"
+          @change="onOrderChange"
+        />
       </div>
     </div>
 
@@ -141,6 +167,10 @@ const emit = defineEmits<{
 .mini-badge.ok { background: var(--el-color-success); }
 .mini-badge.off { background: var(--el-color-info); }
 .lib-cover-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
+/* 封面处顺序小控件：左下角半透明条，不挡右上上传/移除与左上徽标 */
+.lib-cover-order { position: absolute; left: 8px; bottom: 8px; display: flex; align-items: center; gap: 4px; background: rgba(0,0,0,.55); border-radius: 4px; padding: 2px 4px 2px 6px; }
+.lib-cover-order-label { font-size: 11px; color: #fff; white-space: nowrap; }
+.lib-cover-order :deep(.el-input-number--small) { width: 76px; }
 .lib-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .lib-head { display: flex; justify-content: space-between; align-items: center; }
 /* P2-5：旧规则全文（衬线标题 + 单行省略） */
