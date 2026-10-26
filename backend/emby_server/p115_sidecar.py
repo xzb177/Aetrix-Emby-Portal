@@ -26,9 +26,16 @@
   与 transfer115 单目录封顶同口径）；``generation`` 是本进程单调计数，
   不是 FMBY 的代际 SQLite——持久代际库归扫描线另议，本 PR 不伪造。
 - ``p115.diff_refresh``：真实重列指定目录（stateless，无脏目录库）。
-- ``p115.life_poll`` / ``p115.share_full_sync``：显式 ``not_implemented``——
-  transfer115 客户端里没有 life 事件源与分享 API，绝不拿重列结果冒充 life 事件；
-  扫描线接代际库时再落地，调用方收到 not_implemented 即知道未就绪。
+- ``p115.life_poll``：轮询差分（不是 115 原生推送）——对监视目录做
+  ``diff_refresh``，与本 sidecar 内保存的上一次快照比对，输出新增/
+  删除/变更事件（带 ``generation``）。事件字段只含路径、条目与指纹，
+  不含 115 未提供的推送字段；首次轮询只建基线、不报事件。
+- ``p115.share_full_sync``：分享根全量同步——transfer115 没有分享 API，
+  本扩展不编造分享接口；对给定分享根（``root_cid`` 或分享目录 ``path``）
+  做与 ``full_sync`` 同款全量 walk，返回 ``generation``/``entries``/
+  ``truncated``，分享链接与权限语义不在此口径内，待 115 真实账号实测。
+- 两个扩展默认不自动跑，须显式 ``call_extension`` 才工作；不改
+  list/stat/play 等已有行为。
 """
 from __future__ import annotations
 
@@ -74,6 +81,9 @@ class _SessionState:
     client: object = None
     cid_cache: dict = field(default_factory=dict)
     pick_cache: dict = field(default_factory=dict)
+    # life_poll 快照：key = 监视目录元组，value = {path: 指纹}；
+    # 只存本 sidecar 进程内存，不落盘、不跨进程（与 full_sync 的 generation 同口径）。
+    life_snapshots: dict = field(default_factory=dict)
 
 
 class P115SidecarHandler:
@@ -287,18 +297,19 @@ class P115SidecarHandler:
             return self._full_sync(state, params or {})
         if name == "p115.diff_refresh":
             return self._diff_refresh(state, params or {})
-        if name in ("p115.life_poll", "p115.share_full_sync"):
-            raise ProviderRuntimeError(
-                "not_implemented",
-                f"{name} 尚未落地：transfer115 客户端没有 life 事件源与分享 API，"
-                "本 sidecar 不拿重列结果冒充；代际库与分享口由扫描线另行落地。")
+        if name == "p115.life_poll":
+            return self._life_poll(state, params or {})
+        if name == "p115.share_full_sync":
+            return self._share_full_sync(state, params or {})
         raise ProviderRuntimeError("unknown_method", f"未知扩展：{name}")
 
     def _full_sync(self, state: _SessionState, params: dict) -> dict:
         root_cid = str(params.get("root_cid") or state.root_cid)
+        root_rel = "/" + str(params.get("root_rel") or "/").strip("/")
+        root_rel = root_rel.rstrip("/") or "/"
         entries: list[dict] = []
         seen: set[str] = set()
-        stack: list[tuple[str, str]] = [("/", root_cid)]
+        stack: list[tuple[str, str]] = [(root_rel, root_cid)]
         while stack:
             rel, cid = stack.pop()
             if cid in seen and cid != root_cid:
@@ -336,6 +347,106 @@ class P115SidecarHandler:
                 entry["parent_id"] = cid
                 entries.append(entry)
         return {"entries": entries, "missing": missing}
+
+    @staticmethod
+    def _snapshot_fingerprint(entry: dict) -> dict:
+        """快照指纹：只用条目自身已有的字段，不编造上游字段。"""
+        return {
+            "entry_id": entry.get("entry_id") or "",
+            "file_id": entry.get("file_id") or "",
+            "is_dir": bool(entry.get("is_dir")),
+            "size": int(entry.get("size") or 0),
+        }
+
+    def _life_poll(self, state: _SessionState, params: dict) -> dict:
+        """轮询差分 life_poll：115 无原生推送，此处明确不是推送。
+
+        对监视目录做 _diff_refresh，与上一次快照比对：新增 / 删除 /
+        变更（指纹变化）。首次轮询只建基线、不报事件，避免把存量
+        全量误报成新增。快照只存本进程内存，sidecar 重启后重新建基线。
+        """
+        directories = params.get("directories") or []
+        if not directories and params.get("path"):
+            directories = [params.get("path")]
+        if not directories:
+            directories = ["/"]
+        normalized: list[str] = []
+        for rel in directories:
+            rel = "/" + str(rel or "").lstrip("/")
+            rel = rel.rstrip("/") or "/"
+            if rel not in normalized:
+                normalized.append(rel)
+        refreshed = self._diff_refresh(state, {"directories": normalized})
+        new_snapshot = {
+            entry["path"]: self._snapshot_fingerprint(entry)
+            for entry in refreshed["entries"]
+        }
+        by_path = {entry["path"]: entry for entry in refreshed["entries"]}
+        key = tuple(normalized)
+        old_snapshot = state.life_snapshots.get(key)
+        baseline = old_snapshot is None
+        events: list[dict] = []
+        if not baseline:
+            for path in sorted(set(new_snapshot) | set(old_snapshot)):
+                if path not in old_snapshot:
+                    events.append({"type": "added", "path": path,
+                                   "entry": by_path[path], "previous": None})
+                elif path not in new_snapshot:
+                    events.append({"type": "deleted", "path": path,
+                                   "entry": None, "previous": old_snapshot[path]})
+                elif new_snapshot[path] != old_snapshot[path]:
+                    events.append({"type": "changed", "path": path,
+                                   "entry": by_path[path],
+                                   "previous": old_snapshot[path]})
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+            state.life_snapshots[key] = new_snapshot
+        return {
+            "generation": generation,
+            "events": events,
+            "directories": normalized,
+            "missing": refreshed["missing"],
+            "source": "poll_diff",
+            "is_poll_diff": True,
+            "baseline": baseline,
+            "snapshot_size": len(new_snapshot),
+            "note": "轮询差分：115 无原生 life 推送，本扩展以重列结果与上一次快照"
+                    "比对生成事件；事件字段只含路径、条目与指纹，不含 115 未"
+                    "提供的推送字段。",
+        }
+
+    def _share_full_sync(self, state: _SessionState, params: dict) -> dict:
+        """分享根全量同步：transfer115 无分享 API，不编造分享接口。
+
+        给定分享根（root_cid / share_root_cid / share_cid，或分享目录
+        path）做与 full_sync 同款全量 walk。返回 generation / entries /
+        truncated，与 full_sync 同款语义；分享链接、权限、过期等分享
+        语义不在此口径内，待 115 真实账号实测。
+        """
+        root_cid = (
+            params.get("root_cid") or params.get("share_root_cid")
+            or params.get("share_cid") or ""
+        )
+        path = params.get("path") or params.get("share_path") or params.get("root_path")
+        root_rel = "/"
+        if path:
+            root_rel = "/" + str(path).lstrip("/")
+            root_rel = root_rel.rstrip("/") or "/"
+            if not root_cid:
+                root_cid = self._cid_of(state, root_rel)
+        if not root_cid:
+            root_cid = state.root_cid
+        result = self._full_sync(
+            state, {"root_cid": str(root_cid), "root_rel": root_rel})
+        result.update({
+            "share_root_cid": str(root_cid),
+            "share_mode": "full_sync_via_root",
+            "note": "分享口待 115 真实账号实测：transfer115 无分享 API，本扩展"
+                    "未调用任何 115 分享接口，仅对给定分享根做全量同步；"
+                    "分享链接、权限、过期等分享语义不在此口径内。",
+        })
+        return result
 
 
 def _default_http_client():
