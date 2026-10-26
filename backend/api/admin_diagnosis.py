@@ -43,7 +43,7 @@ def list_diagnosis_rules(
         "fixes": diagnosis_fix.list_fixes(),
         "fix_thresholds": {name: diagnosis_fix.get_fix_threshold(name)
                            for name in diagnosis_fix.FIX_THRESHOLD_DEFS},
-        "manual_only": {rid: info["reason"]
+        "manual_only": {rid: info.get("reason", "")
                         for rid, info in diagnosis_fix.MANUAL_ONLY.items()},
     }
 
@@ -71,7 +71,10 @@ def _reject(db, current_admin, rule_id: str, error: str, message: str,
     details = {"rule_id": rule_id, "ok": False, "error": error}
     if extra:
         details.update(extra)
-    _audit(db, current_admin, "diagnosis.fix", "diagnosis_rule", None, details)
+    try:
+        _audit(db, current_admin, "diagnosis.fix", "diagnosis_rule", None, details)
+    except Exception:  # noqa: BLE001 — 审计失败不掩盖拒绝本身
+        logger.warning("体检修复审计失败 rule=%s", rule_id, exc_info=True)
     try:
         db.commit()
     except Exception:  # noqa: BLE001 — 审计落盘失败不掩盖拒绝本身
@@ -135,9 +138,12 @@ def fix_diagnosis_rule(
         payload["error"] = error
         payload["message"] = message
 
-    _audit(db, current_admin, "diagnosis.fix", "diagnosis_rule", None,
-           {"rule_id": rule_id, "ok": ok,
-            "result": result if ok else None, "error": error or None})
+    try:
+        _audit(db, current_admin, "diagnosis.fix", "diagnosis_rule", None,
+               {"rule_id": rule_id, "ok": ok,
+                "result": result if ok else None, "error": error or None})
+    except Exception:  # noqa: BLE001 — 审计失败不掩盖修复结果
+        logger.warning("体检修复审计失败 rule=%s", rule_id, exc_info=True)
     try:
         db.commit()
     except Exception:  # noqa: BLE001

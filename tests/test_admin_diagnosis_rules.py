@@ -34,3 +34,38 @@ def test_list_diagnosis_rules_shape():
     assert isinstance(result["fixes"], dict)
     assert isinstance(result["fix_thresholds"], dict)
     assert isinstance(result["manual_only"], dict)
+
+import pytest
+from fastapi import HTTPException
+
+from backend import diagnosis_fix
+
+
+class _StubDB:
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None
+
+
+def test_reject_still_400_when_audit_raises(monkeypatch):
+    """F5 回归：_audit 抛错时 _reject 仍抛 400，不变成 500。"""
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("audit boom")
+
+    monkeypatch.setattr(admin_diagnosis, "_audit", _boom)
+    with pytest.raises(HTTPException) as exc_info:
+        admin_diagnosis._reject(_StubDB(), None, "disk_warn_pct",
+                                "unknown_rule", "msg")
+    assert exc_info.value.status_code == 400
+
+
+def test_list_rules_tolerates_manual_only_without_reason(monkeypatch):
+    """F2 回归：MANUAL_ONLY 某条缺 reason 时 rules 口不抛。"""
+    patched = dict(diagnosis_fix.MANUAL_ONLY)
+    patched["__no_reason_rule__"] = {"steps": ["手动处理"]}
+    monkeypatch.setattr(diagnosis_fix, "MANUAL_ONLY", patched)
+    result = admin_diagnosis.list_diagnosis_rules()
+    assert result["manual_only"]["__no_reason_rule__"] == ""
