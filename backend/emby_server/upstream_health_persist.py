@@ -178,8 +178,12 @@ def sync_health_to_pg(db, store, *, now: Optional[float] = None) -> dict:
         if record is None:
             counts["no_record"] += 1
             target = PG_UNKNOWN
-        elif uh.is_health_stale(record, now=now):
+        elif (record.availability_state == uh.STATE_ACTIVE
+                and uh.is_health_stale(record, now=now)):
             # 过期 Active 等效 unknown：Redis 存的状态不动，只降级 PG 翻译。
+            # 只限 Active：过期 Unavailable 仍是“已知已死”，须保持 unhealthy；
+            # 不加 Active 限定会把过期死源也抹成 unknown，丢掉已知结论
+            # （与 effective_availability_state 只降级 Active 的口径不一致）。
             target = PG_UNKNOWN
         else:
             target = translate_redis_state(record.availability_state)
