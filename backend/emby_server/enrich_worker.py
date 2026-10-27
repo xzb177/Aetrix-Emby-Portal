@@ -2541,6 +2541,25 @@ def _parity_renumber_apply(db, siblings, series, series_id, season_no,
     return True
 
 
+#: 终态身份列（第 2 项）：只清 MediaItem 上这两列，person_tmdb_id /
+#: proposed_* / resolved_* 等其它身份列一律不动。
+_BLANK_IDENTITY_COLUMNS = ("tmdb_id", "imdb_id")
+
+
+def _clear_blank_identity(item: Any) -> None:
+    """终态清理：把纯空白身份列清成 NULL。
+
+    空白（strip 后为空，含 "" / "  " / 制表符）从来不是真实身份，
+    留着只会污染后续匹配。只清纯空白，真实身份一律不动；本函数
+    不改 enrich_status，调用方只在 done 终态点调用，done 不复活。
+    getattr/setattr 兜底：测试轻量替身缺字段时不抛。
+    """
+    for _col in _BLANK_IDENTITY_COLUMNS:
+        _v = getattr(item, _col, None)
+        if isinstance(_v, str) and not _v.strip():
+            setattr(item, _col, None)
+
+
 def _enrich_apply(db, item: Any, fetched: dict) -> None:
     """写库阶段（单条短事务内调用）：把 IO 阶段拿到的数据落库。"""
     from backend.emby_server import nfo as nfo_lib
@@ -2561,6 +2580,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         item.enrich_last_error = None  # WS1/T1：成功（或转人工）即清零
         item.enrich_claimed_at = None
         item.enrich_claim_token = None
+        _clear_blank_identity(item)
         _maybe_queue_probe(db, item)
         return
 
@@ -3012,6 +3032,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                 # 等自动回捞，不再进 failed（failed 只留给异常：网络/挂载/代码）。
                 # 同一个 flag 包裹：关 flag 时行为与 Step 4 前完全一致（转 failed）。
                 item.enrich_status = "done"
+                _clear_blank_identity(item)
                 item.metadata_source = "none"
                 item.enrich_attempts = 0
                 # 记本次终态化时间：回捞周期后 janitor 按最旧优先自动捞回
@@ -3037,6 +3058,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                         item.id, attempts, backoff)
     else:
         item.enrich_status = "done"
+        _clear_blank_identity(item)
         item.enrich_attempts = 0
         item.enrich_last_error = None  # WS1/T1：成功即清零
         if _searched_no_hit and enrich_tuning_value(CFG_ENRICH_NONE_AUTO_RESCHEDULE, db):
@@ -4586,6 +4608,7 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict,
             item.enrich_claim_token = None
             return
         item.enrich_status = "done"
+        _clear_blank_identity(item)
         item.enrich_attempts = 0
         item.enrich_last_error = None
         item.enrich_next_retry_at = None
