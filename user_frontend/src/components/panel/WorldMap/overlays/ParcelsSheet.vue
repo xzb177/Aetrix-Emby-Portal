@@ -1,7 +1,7 @@
 <template>
   <div class="sheet-parcels">
-          <p class="w-sheet-empty" v-if="parcelsLoading && parcelList.length === 0">正在搬包裹…</p>
-          <p class="w-sheet-empty" v-else-if="parcelList.length === 0">今天还没有新封存，明天再来拆 📦</p>
+          <p class="w-sheet-empty" v-if="parcelsLoading && parcelList.length === 0">正在加载</p>
+          <p class="w-sheet-empty" v-else-if="parcelList.length === 0">今天还没有新封存，明天再来拆</p>
           <div class="w-parcel-grid" v-else>
             <ParcelBox
               v-for="p in parcelList"

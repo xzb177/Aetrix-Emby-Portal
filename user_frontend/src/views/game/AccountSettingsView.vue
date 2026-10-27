@@ -4,14 +4,14 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('account') }}</span>
-        <h1><span aria-hidden="true">⚙️</span> 账号设置</h1>
+        <h1>账号设置</h1>
         <p>改登录密码、看我的会员、管我的设备、绑自己的网盘 —— 账号自己的事都在这儿。</p>
         <p><a class="v4-empty-link" href="#my-drive" @click.prevent="goToMyDrive">去我的网盘绑定 →</a></p>
       </header>
 
       <!-- 安全设置：修改登录密码（逻辑由 ProfileView 移植，authApi.changePassword） -->
       <section class="v4-sec" aria-label="安全设置">
-        <div class="v4-sec-title"><span aria-hidden="true">🔐</span> 安全设置</div>
+        <div class="v4-sec-title">安全设置</div>
         <div class="v4-sec-sub">登录密码是进营地的钥匙，定期换一把更安心</div>
         <div class="v4-card acct-card">
           <button type="button" class="acct-row" @click="openChangePwd">
@@ -25,7 +25,7 @@
       <!-- 我的会员：直接复用 ProfileSubscriptions.vue（查看到期 / 历史 / 取消订阅） -->
       <section class="v4-sec" aria-label="我的会员">
         <!-- R41：补上标题行，与其他两节结构对齐（标题+副标题） -->
-        <div class="v4-sec-title"><span aria-hidden="true">🏷️</span> 我的会员</div>
+        <div class="v4-sec-title">我的会员</div>
         <div class="v4-sec-sub">会员到期、历史账单、取消续订都在这里</div>
         <div v-if="subsError" class="v4-err">订阅加载失败，请稍后重试<br><button class="v4-retry" @click="loadSubs">重试</button></div>
         <!-- R41：在途显示骨架屏 —— 请求还没回来时别闪现"还没有会员"（ProfileSubscriptions 的空数据文案） -->
@@ -88,7 +88,7 @@
 
       <!-- 隐私设置：观影碑时长榜上榜开关（存账号） -->
       <section class="v4-sec" aria-label="隐私设置">
-        <div class="v4-sec-title"><span aria-hidden="true">🙈</span> 隐私设置</div>
+        <div class="v4-sec-title">隐私设置</div>
         <div class="v4-sec-sub">谁能在榜单上看到你，你说了算</div>
         <div class="v4-card">
           <div class="srv-row">
@@ -113,7 +113,7 @@
 
       <!-- 我的设备：第三方播放器登录设备列表 / 移除（顶上限自救通道，deviceApi） -->
       <section class="v4-sec" aria-label="我的设备">
-        <div class="v4-sec-title"><span aria-hidden="true">📱</span> 我的设备</div>
+        <div class="v4-sec-title">我的设备</div>
         <div class="v4-sec-sub">用第三方播放器登录过的设备都在这里，顶到上限自己动手清</div>
         <div class="v4-card">
           <div class="dev-head">
@@ -175,7 +175,7 @@
            所以授权完成后回到本页会自动重拉一次绑定列表（没出现再点“刷新列表”）；服务器未配 OAuth 凭据时后端明文 400，前端原样展示。
            115 绑定走 POST /storage-bindings（provider='pan115'，credential 为 115 Cookie），建时后端同步验活。 -->
       <section v-if="providersError || (providersLoaded && (hasProvider('drive') || hasProvider('pan115')))" id="my-drive" class="v4-sec" aria-label="我的网盘">
-        <div class="v4-sec-title"><span aria-hidden="true">💾</span> 我的网盘</div>
+        <div class="v4-sec-title">我的网盘</div>
         <div v-if="providersError" class="v4-err">{{ providersError }}<br><button class="v4-retry" @click="loadProviders">重试</button></div>
         <template v-else>
         <div v-if="hasProvider('drive')" class="v4-sec-sub">绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑定只能浏览、不能点播</div>

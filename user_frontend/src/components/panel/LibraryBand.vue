@@ -6,7 +6,6 @@
   <section v-if="libs.length > 0" id="disc-libs" class="d3-band" aria-label="媒体库速览">
     <div class="d3-sec-head">
       <div>
-        <span class="d3-k">LIBRARY</span>
         <div class="d3-sec-title">媒体库速览</div>
         <div class="d3-sec-sub">{{ libs.length }} 个库 · 全部直挂可播</div>
       </div>

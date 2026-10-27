@@ -16,7 +16,7 @@
           <!-- 正文只在日志头可见时出现。桌面入口打开时给正文单独挂 m-only，
                这样 ≥1280 整段问候仍隐藏，但下面的胶囊不会被父级 display:none 一起吃掉。 -->
           <div class="v4-loghead-main" :class="{ 'm-only': showWorldSwitch }">
-            <span class="v4-stamp">探险日志 · {{ dateLabel }}</span>
+            <span class="v4-stamp">{{ dateLabel }}</span>
             <h1>{{ greeting }}，{{ nickname }}</h1>
             <p v-if="today.data && parcelTotal !== null && parcelTotal > 0">今天片库里有 {{ parcelTotal }} 件新封存，等你拆。</p>
             <p v-else-if="today.data && parcelTotal === 0">今天暂时没有新封存，明天再来看看。</p>
@@ -26,7 +26,7 @@
             <p v-else>今天片库有更新，看看下面的货架上有啥。</p>
           </div>
           <div v-if="streak > 0 || showWorldSwitch" class="v4-loghead-actions">
-            <div v-if="streak > 0" class="v4-fire" :class="{ 'm-only': showWorldSwitch }">🔥 连签 <b>{{ streak }}</b> 天 · 明天有惊喜</div>
+            <div v-if="streak > 0" class="v4-fire" :class="{ 'm-only': showWorldSwitch }">连签 <b>{{ streak }}</b> 天</div>
             <!-- 回世界：桌面切世界首页；手机去 /game，不把发现页换成同一张地图。 -->
             <button
               v-if="showWorldSwitch"
@@ -71,10 +71,9 @@
 
         <!-- 收藏家入口：退出底栏后收进发现页（DESIGN.md v1.1）；页面本身保留在 /collector -->
         <RouterLink to="/collector" class="v4-collector-entry d3-ord-collector" aria-label="收藏家">
-          <span class="v4-collector-ic" aria-hidden="true">🏅</span>
           <span class="v4-collector-body">
             <span class="v4-collector-title">收藏家</span>
-            <span class="v4-collector-sub">你的成就与收藏，一览无余</span>
+            <span class="v4-collector-sub">成就和口味</span>
           </span>
           <span class="v4-collector-go" aria-hidden="true">›</span>
         </RouterLink>
@@ -85,16 +84,16 @@
         <!-- 每日一封 -->
         <section class="v4-sec v4-sec-letter d3-ord-letter" id="disc-letter">
           <div class="m-only">
-            <div class="v4-sec-title">✉️ 每日一封</div>
+            <div class="v4-sec-title">每日一封</div>
             <div class="v4-sec-sub">昨天的你，留了一封信 —— 点开看看</div>
           </div>
           <div class="d3-sec-head d-only" style="margin-bottom:10px">
-            <div><span class="d3-k">LETTER</span><div class="d3-sec-title">每日一封</div><div class="d3-sec-sub">昨天的你，留了一封信 —— 点开看看</div></div>
+            <div><div class="d3-sec-title">每日一封</div><div class="d3-sec-sub">昨天的你，留了一封信 —— 点开看看</div></div>
           </div>
           <div v-if="letter.loading" class="v4-skeleton" aria-hidden="true" style="height:120px"></div>
           <div v-else-if="letter.error" class="v4-err">信件加载失败：{{ letter.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadLetter(true)">重试</button></div>
           <WaxLetter v-else-if="hasLetterData" :letter="letterData" />
-          <div v-else class="v4-empty">昨天的信还在路上，先去看片吧</div>
+          <div v-else class="v4-empty">还没有昨日来信</div>
         </section>
       </div>
 
@@ -103,11 +102,11 @@
         <!-- 今日封存：盲盒 -->
         <section class="v4-sec d3-ord-shelf" id="disc-shelf">
           <div class="m-only">
-            <div class="v4-sec-title">📦 今日封存</div>
+            <div class="v4-sec-title">今日封存</div>
             <div class="v4-sec-sub">新入库的片子，点一下开封看看</div>
           </div>
           <div class="d3-sec-head d-only">
-            <div><span class="d3-k">FRESH IN</span><div class="d3-sec-title">今日封存</div><div class="d3-sec-sub">新入库的片子，点一下开封看看</div></div>
+            <div><div class="d3-sec-title">今日封存</div><div class="d3-sec-sub">新入库的片子，点一下开封看看</div></div>
           </div>
           <div v-if="parcels.loading" class="v4-skel-row">
             <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
@@ -115,7 +114,7 @@
             <div class="v4-skeleton" aria-hidden="true" style="width:132px;height:216px;flex:0 0 auto"></div>
           </div>
           <div v-else-if="parcels.error" class="v4-err">封存加载失败：{{ parcels.error }}<br><button type="button" class="v4-retry" @click="() => panel.loadParcels(true)">重试</button></div>
-          <div v-else-if="parcelList.length === 0" class="v4-empty">今天还没有新封存，明天再来拆 📦</div>
+          <div v-else-if="parcelList.length === 0" class="v4-empty">今天没有新入库</div>
           <div v-else class="d3-shelf-wrap">
             <button v-if="isWide && shelfHasOverflow" type="button" class="d3-arrow l" aria-label="货架向左滚动" @click="scrollShelf(-1)">‹</button>
             <div ref="parcelsEl" class="v4-parcels">
@@ -141,7 +140,7 @@
             <div class="v4-sec-sub">服主整理好的合集，点进去看成员</div>
           </div>
           <div class="d3-sec-head d-only">
-            <div><span class="d3-k">COLLECTIONS</span><div class="d3-sec-title">合集</div><div class="d3-sec-sub">服主整理好的合集，点进去看成员</div></div>
+            <div><div class="d3-sec-title">合集</div><div class="d3-sec-sub">服主整理好的合集，点进去看成员</div></div>
           </div>
           <div v-if="collectionsLoading" class="v4-skeleton" aria-hidden="true" style="height:96px"></div>
           <div v-else-if="collectionsError" class="v4-err">合集加载失败：{{ collectionsError }}<br><button type="button" class="v4-retry" @click="loadCollections">重试</button></div>
@@ -168,11 +167,11 @@
              无全量页面，故不设「查看全部」；realm_id 不传=跟随当前服） -->
         <section v-if="isWide" id="feed" class="d3-card" aria-label="实时动态">
           <div class="d3-sec-head">
-            <div><span class="d3-k">LIVE FEED</span><div class="d3-sec-title">实时动态</div><div class="d3-sec-sub">入库 · 刮削 · 播放 · 跟随当前服</div></div>
+            <div><div class="d3-sec-title">实时动态</div><div class="d3-sec-sub">入库 · 刮削 · 播放 · 跟随当前服</div></div>
           </div>
           <div v-if="feed.loading" class="d3-skel" style="height:300px" aria-hidden="true"></div>
           <div v-else-if="feed.error" class="d3-err">动态加载失败：{{ feed.error }}<button type="button" class="d3-retry" @click="() => panel.loadFeed(true)">重试</button></div>
-          <div v-else-if="feedItems.length === 0" class="d3-empty">动态还没长出来——入库、刮削或播放后，这里会有记录</div>
+          <div v-else-if="feedItems.length === 0" class="d3-empty">还没有动态</div>
           <div v-else>
             <div v-for="it in feedItems" :key="it.key" class="d3-feed-row">
               <span class="ft">{{ it.time }}</span>
@@ -184,7 +183,7 @@
 
         <!-- 服务器脉搏（移动端专属；桌面由左栏脉搏摘要 + 服务器页接管） -->
         <section class="v4-sec m-only d3-ord-pulse">
-          <div class="v4-sec-title">💓 服务器脉搏</div>
+          <div class="v4-sec-title">服务器脉搏</div>
           <div class="v4-sec-sub">服务器实时动态</div>
         </section>
         <!-- pulse.error 时整盒不渲染，避免留黑色空矩形（错误态在下面统一渲染） -->

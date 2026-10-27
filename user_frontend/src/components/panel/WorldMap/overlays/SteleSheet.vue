@@ -15,8 +15,8 @@
             <button type="button" class="lb-period" :class="{ on: lbPeriod === 'day' }" @click="lbPeriod = 'day'">日榜</button>
             <button type="button" class="lb-period" :class="{ on: lbPeriod === 'week' }" @click="lbPeriod = 'week'">周榜</button>
           </div>
-          <p class="w-sheet-empty" v-if="lbLoading && lbRows.length === 0">正在抄榜…</p>
-          <p class="w-sheet-empty" v-else-if="lbRows.length === 0">还没有人上榜，快去看片抢头名 🏆</p>
+          <p class="w-sheet-empty" v-if="lbLoading && lbRows.length === 0">正在加载榜单</p>
+          <p class="w-sheet-empty" v-else-if="lbRows.length === 0">还没有人上榜，快去看片抢头名</p>
           <template v-else>
             <div class="lb-podium">
               <div v-for="slot in lbPodium" :key="slot.rank" class="lb-pod" :class="`r${slot.rank}`">

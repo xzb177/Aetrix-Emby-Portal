@@ -4,13 +4,13 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('pigeon') }}</span>
-        <h1><span aria-hidden="true">🕊️</span> 信鸽</h1>
+        <h1>信鸽</h1>
         <p>每天有信鸽飞来，脚上绑着信 —— 点一只鸽子，拆信。</p>
       </header>
 
       <!-- 栖木 -->
       <section class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">🪵</span> 鸽子栖木</div>
+        <div class="v4-sec-title">鸽子栖木</div>
         <div class="v4-sec-sub">头上有红点的鸽子，信还没拆</div>
         <div class="perch">
           <div class="birds" aria-hidden="true">🕊️🕊️🕊️</div>
@@ -24,7 +24,7 @@
 
       <!-- 工具条 -->
       <section class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">📬</span> 今日来信</div>
+        <div class="v4-sec-title">今日来信</div>
         <div class="v4-sec-sub">点开鸽子 → 火漆拆信</div>
         <div class="toolbar">
           <div class="search-wrap">
@@ -88,7 +88,6 @@
         </div>
 
         <div v-else-if="!filtered.length" class="v4-empty">
-          <div class="v4-empty-emoji"><span aria-hidden="true">🕊️</span></div>
           <!-- R53A-4：先判「有筛选条件但无命中」，避免与上方「全部拆完（N 封）」自相矛盾 -->
           <p v-if="keyword || selectedType !== 'all'">这类信鸽还没飞来，换个分类或关键词看看</p>
           <p v-else-if="unreadOnly">未拆的信都拆完啦，鸽子们去歇着了</p>
@@ -510,7 +509,6 @@ onMounted(() => { void load(true) })
 
 /* 状态区 */
 .skeleton-list { display: flex; flex-direction: column; gap: 10px; }
-.v4-empty-emoji { font-size: 40px; margin-bottom: 8px; }
 
 /* 键盘可达性：按钮获得焦点时给出可见轮廓 */
 .unread-toggle:focus-visible,

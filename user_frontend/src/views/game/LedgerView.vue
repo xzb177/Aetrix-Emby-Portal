@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('ledger') }}</span>
-        <h1><span aria-hidden="true">📒</span> 能量账本</h1>
+        <h1>能量账本</h1>
         <p>探险家的随身账本 —— 能量从哪来，到哪去。</p>
       </header>
 
@@ -46,17 +46,17 @@
           <button class="v4-retry" @click="reload">重试</button>
         </div>
         <div v-else-if="!filteredGroups.length" class="v4-empty">
-          <template v-if="filter === 'all'">这一栏空空的 —— 去探索片库大陆，赚点能量回来吧 <span aria-hidden="true">🧭</span></template>
+          <template v-if="filter === 'all'">这一栏空空的 —— 去探索片库大陆，赚点能量回来吧</template>
           <!-- R106-1：筛选只过滤已加载的分页；还有没翻到的记录时空态要诚实，不能让人以为真没有 -->
           <template v-else-if="hasMore">
-            已翻到的记录里还没有，要继续往下翻吗 <span aria-hidden="true">👀</span><br>
+            已翻到的记录里还没有，要继续往下翻吗<br>
             <button type="button" class="v4-retry" :disabled="loadingMore" @click="loadMore">{{ loadingMore ? '加载中…' : '继续翻' }}</button>
           </template>
-          <template v-else>当前筛选下没有记录，换个筛选看看 <span aria-hidden="true">👀</span></template>
+          <template v-else>当前筛选下没有记录，换个筛选看看</template>
         </div>
         <template v-else>
           <div v-for="g in filteredGroups" :key="g.key" class="day-group">
-            <div class="v4-sec-title"><span aria-hidden="true">📅</span> {{ g.title }}</div>
+            <div class="v4-sec-title">{{ g.title }}</div>
             <div class="v4-sec-sub">{{ g.sub }}</div>
             <!-- R106-6：流水行加 list 语义，读屏器可逐条朗读 -->
             <div role="list" :aria-label="g.title">

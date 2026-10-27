@@ -6,6 +6,7 @@ import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
   ChevronRight, Heart, ShieldCheck,
+  Globe, Plug, ClipboardList, Map, Radio, Bird, Notebook, Receipt, Users, Compass, Shirt, Settings,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -18,6 +19,25 @@ import { gameFacilities, gameHubConfig } from '@/config/game'
 import { checkinApi, vitalityApi } from '@/api/economy'
 // 站名与 Logo 来自「站点与品牌」能力（没配就用默认值，不会出现空标题）
 import { branding } from '@/composables/useBranding'
+
+/** 头像菜单设施图标：Lucide，不读 game.ts 的地图针表情。 */
+function facilityMenuIcon(key: string) {
+  switch (key) {
+    case 'operator': return Plug
+    case 'checkin': return ClipboardList
+    case 'calendar': return Map
+    case 'wishlist': return Sparkles
+    case 'signal': return Radio
+    case 'pigeon': return Bird
+    case 'ledger': return Notebook
+    case 'supply': return Receipt
+    case 'companion': return Users
+    case 'guide': return Compass
+    case 'outfit': return Shirt
+    case 'account': return Settings
+    default: return Globe
+  }
+}
 
 /** 积分余额（顶栏 pill 显示，登录后加载） */
 const pointsBalance = ref<number | null>(null)
@@ -661,14 +681,14 @@ onBeforeUnmount(() => {
                      scripts/check_avatar_menu_guards.py 在 CI 拦住；窄屏外观切换走后续专项决策）。
                      管理后台例外：2026-10-13 用户拍板恢复，仅管理员可见（见下面 ②.6） -->
                 <template v-if="menuFacilities.length > 0">
-                <div class="dropdown-sec-title">🏕️ 营地设施 · 点卡片直接进</div>
+                <div class="dropdown-sec-title">营地设施 · 点卡片直接进</div>
                 <RouterLink
                   to="/game"
                   class="dropdown-facility"
                   role="menuitem"
                   @click="closeMenus"
                 >
-                  <span class="facility-icon" aria-hidden="true">🏕️</span>
+                  <span class="facility-icon" aria-hidden="true"><Globe :size="18" :stroke-width="1.75" /></span>
                   <span class="facility-body">
                     <span class="facility-name">{{ gameHubConfig.navName }} · 大本营</span>
                     <span class="facility-desc">{{ gameHubConfig.subtitle }}</span>
@@ -683,7 +703,7 @@ onBeforeUnmount(() => {
                   role="menuitem"
                   @click="closeMenus"
                 >
-                  <span class="facility-icon" aria-hidden="true">{{ f.icon }}</span>
+                  <span class="facility-icon" aria-hidden="true"><component :is="facilityMenuIcon(f.key)" :size="18" :stroke-width="1.75" /></span>
                   <span class="facility-body">
                     <span class="facility-name">{{ f.name }}</span>
                     <span class="facility-desc">{{ f.desc }}</span>
@@ -788,13 +808,12 @@ onBeforeUnmount(() => {
   border-radius: inherit;
 }
 
-/* 品牌字：衬线 + 大写 + 拉开字距（片头字幕的气质） */
+/* 品牌字：与登录页同一口径，CJK 不拉距、不再 uppercase */
 .logo-text {
   font-family: var(--paper-font-serif);
   font-size: 1.0625rem;
-  font-weight: 700;
-  letter-spacing: 0.28em;
-  text-transform: uppercase;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--paper-ink);
 }
 
@@ -1435,7 +1454,7 @@ onBeforeUnmount(() => {
 }
 .facility-name {
   font-size: 0.875rem;
-  font-weight: 800;
+  font-weight: 600;
   letter-spacing: 0.5px;
   color: var(--ink);
   white-space: nowrap;
@@ -1500,7 +1519,7 @@ onBeforeUnmount(() => {
   /* 有未读消息时窄屏也显示信鸽铃铛（权重 0,3,0 压过 .wide-only 0,1,0） */
   .msg-menu.wide-only.has-unread { display: block; }
   .narrow-only { display: block; }
-  .logo-text { font-size: 0.9375rem; letter-spacing: 0.18em; }
+  .logo-text { font-size: 0.9375rem; letter-spacing: 0.02em; }
   .logo-mark { width: 26px; height: 26px; }
   .points-pill { padding: 0.3125rem 0.625rem; }
 }

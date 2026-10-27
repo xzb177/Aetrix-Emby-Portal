@@ -4,13 +4,13 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">营地 · 探险地图</span>
-        <h1><span aria-hidden="true">🗺️</span> 探险预告</h1>
+        <h1>探险预告</h1>
         <p>新抵达的大陆，先睹为快。点"想去"加入探险计划。</p>
       </header>
 
       <!-- 时间线 -->
       <section class="v4-sec" :aria-busy="loading" aria-label="最近抵达">
-        <h2 class="v4-sec-title"><span aria-hidden="true">🧭</span> 最近抵达</h2>
+        <h2 class="v4-sec-title">最近抵达</h2>
         <div class="v4-sec-sub">红点是今天，圆圈是近几天的日子</div>
         <div v-if="loading" class="sk-timeline" aria-hidden="true">
           <div class="v4-skeleton sk-tdate"></div>
@@ -85,7 +85,7 @@
           </section>
           </div>
           <!-- R27：无报错但一天都没有 → 空态说明（计划不持久化是 v1 设计，不改） -->
-          <div v-if="!days.length && !teaserStandalone" class="v4-empty">这几天营地里还没有新大陆，过几天再来看看 <span aria-hidden="true">🧭</span></div>
+          <div v-if="!days.length && !teaserStandalone" class="v4-empty">这几天营地里还没有新大陆，过几天再来看看</div>
         </div>
       </section>
 

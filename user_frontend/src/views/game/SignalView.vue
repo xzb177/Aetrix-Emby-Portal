@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('signal') }}</span>
-        <h1><span aria-hidden="true">📡</span> 求救信号</h1>
+        <h1>求救信号</h1>
         <p>探险途中遇险？摇响信号机，营地马上派救援队。</p>
       </header>
 
@@ -19,7 +19,7 @@
 
       <!-- 发信号 -->
       <section class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">⚠️</span> 遇险类型</div>
+        <div class="v4-sec-title">遇险类型</div>
         <div class="v4-sec-sub">先选一种，救援队好带对工具</div>
         <div
           class="types"
@@ -52,7 +52,7 @@
           </button>
         </div>
 
-        <div class="v4-sec-title"><span aria-hidden="true">✉️</span> 一句话说清险情</div>
+        <div class="v4-sec-title">一句话说清险情</div>
         <div class="v4-sec-sub">让救援队一眼看懂哪里遇了险</div>
         <input
           v-model="form.title"
@@ -63,7 +63,7 @@
           maxlength="100"
         />
 
-        <div class="v4-sec-title"><span aria-hidden="true">✉️</span> 求救信</div>
+        <div class="v4-sec-title">求救信</div>
         <div class="v4-sec-sub">写清楚在哪儿遇的险，发生了什么</div>
         <textarea
           v-model="form.message"
@@ -78,7 +78,7 @@
 
         <!-- 摩斯电码发送动画 -->
         <div v-if="morseShow" class="morse-panel" role="status" aria-live="polite">
-          <div class="morse-title"><span aria-hidden="true">📡</span> 正在发送摩斯电码…</div>
+          <div class="morse-title">正在发送摩斯电码…</div>
           <div class="morse-code">
             <div
               v-for="(s, i) in morseSyms"
@@ -93,7 +93,7 @@
 
       <!-- 事故记录 -->
       <section class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">📋</span> 探险事故记录</div>
+        <div class="v4-sec-title">探险事故记录</div>
         <div class="v4-sec-sub">你发过的求救信号，点开看救援进度</div>
 
         <div v-if="loading">
@@ -104,7 +104,7 @@
           <button class="v4-retry" @click="fetchTickets()">重试</button>
         </div>
         <div v-else-if="tickets.length === 0" class="v4-empty">
-          营地一切安好，还没有发过求救信号 <span aria-hidden="true">📡</span>
+          营地一切安好，还没有发过求救信号
         </div>
 
         <div v-else class="cards">

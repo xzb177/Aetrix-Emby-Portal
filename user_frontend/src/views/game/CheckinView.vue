@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead" :aria-busy="statusLoading">
         <span class="v4-stamp">营地 · 报到处</span>
-        <h1><span aria-hidden="true">📋</span> 每日报到</h1>
+        <h1>每日报到</h1>
         <p>探险家每天到营地报到，盖章打卡，领能量。</p>
         <div v-if="status" class="v4-fire">
           <template v-if="status.streak > 0"><span aria-hidden="true">🔥</span> 已连报 <b>{{ status.streak }}</b> 天
@@ -24,7 +24,7 @@
 
       <!-- 报到簿 -->
       <section class="v4-sec" :aria-busy="statusLoading">
-        <div class="v4-sec-title"><span aria-hidden="true">📖</span> 报到簿 · {{ monthLabel }}</div>
+        <div class="v4-sec-title">报到簿 · {{ monthLabel }}</div>
         <!-- R48：子文案跟着状态走，加载/失败时不显示行动文案 -->
         <!-- 2026-10-16 用户拍板：checkin_enabled=false 时不催报到（整行不渲染，避免空 div 占位） -->
         <div v-if="!statusLoading && !statusError && (status?.checked_today || status?.enabled)" class="v4-sec-sub">

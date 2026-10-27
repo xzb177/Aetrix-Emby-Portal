@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('wishlist') }}</span>
-        <h1><span aria-hidden="true">🏮</span> 许愿池</h1>
+        <h1>许愿池</h1>
         <p>营地中央的古井 —— 把心愿写在纸上，折成小船，投进去。</p>
       </header>
 
@@ -32,11 +32,11 @@
 
       <!-- 我的许愿 -->
       <section class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">📜</span> 我的许愿</div>
+        <div class="v4-sec-title">我的许愿</div>
         <div class="v4-sec-sub">漂流中的心愿，营地正在想办法捞起来</div>
         <div v-if="myLoading" class="v4-skeleton" style="height:80px"></div>
         <div v-else-if="myError" class="v4-err">许愿加载失败：{{ myError }}<br><button class="v4-retry" @click="loadMine">重试</button></div>
-        <div v-else-if="myWishes.length === 0" class="v4-empty">池子里还没有你的心愿，投一条下去吧 🏮</div>
+        <div v-else-if="myWishes.length === 0" class="v4-empty">池子里还没有你的心愿，投一条下去吧</div>
         <div v-else>
           <div
             v-for="w in myWishes"
@@ -61,7 +61,7 @@
 
       <!-- 众人许愿 -->
       <section class="v4-sec" style="padding-bottom:20px">
-        <div class="v4-sec-title"><span aria-hidden="true">👥</span> 众人许愿</div>
+        <div class="v4-sec-title">众人许愿</div>
         <div class="v4-sec-sub">附议多的心愿，优先被捞起来</div>
         <div v-if="hotLoading" class="v4-skeleton" style="height:80px"></div>
         <div v-else-if="hotError" class="v4-err">众人许愿加载失败：{{ hotError }}<br><button class="v4-retry" @click="loadHot">重试</button></div>
@@ -89,7 +89,7 @@
     <!-- 许愿弹窗 -->
     <div class="modal" :class="{ show: modalOpen }" role="dialog" aria-modal="true" aria-label="许愿" tabindex="-1" @click.self="closeModal" @keydown="onModalKeydown">
       <div class="mcard">
-        <h3><span aria-hidden="true">✍️</span> 写下你的心愿</h3>
+        <h3>写下你的心愿</h3>
         <p>写下片名，纸条会折成小船，噗通一声投进池子</p>
         <input
           ref="wishInput"

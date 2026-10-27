@@ -4,7 +4,7 @@
             <p class="w-board-text">{{ String(boardData.text ?? '') }}</p>
             <p class="w-board-sig">—— {{ String(boardData.signature ?? '服主') }}</p>
           </div>
-          <p class="w-sheet-empty" v-else>服主还没留言，改天再来看看 📢</p>
+          <p class="w-sheet-empty" v-else>服主还没留言，改天再来看看</p>
           </div>
 </template>
 

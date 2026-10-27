@@ -9,9 +9,9 @@
       <p class="sky-hello">{{ greetingText }}，{{ nickname }}</p>
       <p class="sky-daypart" v-if="daypartLine">{{ daypartLine }}</p>
       <div class="sky-pills">
-        <span class="spill" v-if="streak > 0">🔥 连签 {{ streak }} 天<template v-if="streakHint"> · {{ streakHint }}</template></span>
+        <span class="spill" v-if="streak > 0">连签 {{ streak }} 天<template v-if="streakHint"> · {{ streakHint }}</template></span>
         <span class="spill" v-if="memberInfo">Lv.{{ memberInfo.level }} {{ memberInfo.level_name }}</span>
-        <span class="spill" v-if="pointsText">🪙 {{ pointsText }} 积分</span>
+        <span class="spill" v-if="pointsText">{{ pointsText }} 积分</span>
       </div>
       <div class="sky-quest">
         <p class="sky-quest-title">今日探险 {{ questDoneCount }}/{{ quests.length }}<template v-if="questNextLabel"> · 还差：{{ questNextLabel }}</template></p>
