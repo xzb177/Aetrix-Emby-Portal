@@ -83,7 +83,8 @@ def _clamp_ttl(raw, lo: int, hi: int, default: int) -> int:
 def hotlink_enabled(db: Session | None = None) -> bool:
     """防盗链总开关，默认开启（db 为 None / 读失败 / 非法值均回落默认启用=现状）。
 
-    播放链路调用：配置表读不到时 fail-open（放行），播放不能因为配置故障全挂。
+    播放链路调用：配置表读不到时回落默认启用、不弱化验签（与 auth.py
+    同口径）；无签请求仍回退 token/JWT 鉴权，配置故障不会把播放全挂掉。
     """
     if db is None:
         return HOTLINK_DEFAULT
