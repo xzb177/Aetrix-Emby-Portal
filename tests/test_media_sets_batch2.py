@@ -2,7 +2,7 @@
 
 覆盖 8 种规则（含 is_exclusion 反选）、刷新差集增量语义、
 修订号对账、min_effective_members 默认 2、双轨标配、
-artwork_mode 只存策略不输出图 URL。
+artwork_mode 仍是策略字段；无海报时 cover_url 为 null。
 """
 
 import os
@@ -260,7 +260,8 @@ def test_artwork_mode_is_strategy_only(authed, db, gate_on):
     body = r.json()
     assert body["artwork_mode"] == "auto_collage"
     assert body["min_effective_members"] == 2  # 默认门为 2
-    assert not any("url" in key or "cover" in key for key in body), body
+    # 没有可用海报：不给空串、不给会裂图的地址
+    assert body["cover_url"] is None
     assert authed.post("/api/admin/media-sets",
                        json={"name": "坏策略", "source_type": "manual",
                              "artwork_mode": "bogus"}).status_code == 400

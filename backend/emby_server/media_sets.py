@@ -17,7 +17,8 @@
 
 范围边界（越界即返工，写死在这里）：
 - 不碰 libraries 表结构（库的 sort_order 是 L4 的地盘）；
-- 不算封面图（artwork_mode 只存策略，读口不输出图 URL）；
+- 封面图不算在本模块里：artwork_mode 仍只存策略；auto_collage
+  的拼贴、缓存与 cover_url 在 collection_cover（复用库封面渲染器）；
 - 不做库内列表投影键/游标（L5 的地盘）；
 - 不做可见性治理流水线（L7 的地盘；本域只有合集自身的
   visibility_status 一个字段）。
@@ -376,7 +377,8 @@ def list_shelf(db) -> dict:
     顺序不动）+ 合集区（合集按 sort_order、id 出架）。
 
     合集区只收 shelf_eligible 的合集：自身 hidden 的、有效成员
-    未达 min 门的都不进架。封面只出 artwork_mode 策略，不出图 URL。
+    未达 min 门的都不进架。cover_url 为拼贴门户路径、镜像路径或
+    None（artwork_mode=none / 没有可用海报）。
     """
     libraries = db.query(em.Library).filter(
         em.Library.is_enabled == True).order_by(em.Library.id).all()  # noqa: E712
@@ -392,6 +394,7 @@ def list_shelf(db) -> dict:
             "kind": "collection", "id": media_set.id, "name": media_set.name,
             "sort_order": media_set.sort_order,
             "artwork_mode": media_set.artwork_mode,
+            "cover_url": _collection_cover_url(db, media_set),
             "member_count": effective_count(db, media_set),
             "min_effective_members": media_set.min_effective_members,
         })
@@ -399,6 +402,13 @@ def list_shelf(db) -> dict:
 
 
 # ---------------------------------------------------------------- 序列化
+
+
+def _collection_cover_url(db, media_set):
+    """延迟导入，避免 collection_cover 回读本模块时成环。"""
+    from backend.emby_server.collection_cover import cover_url_for
+
+    return cover_url_for(db, media_set)
 
 
 def set_to_dict(media_set, db=None) -> dict:
@@ -409,6 +419,7 @@ def set_to_dict(media_set, db=None) -> dict:
         "sort_order": media_set.sort_order,
         "min_effective_members": media_set.min_effective_members,
         "artwork_mode": media_set.artwork_mode,
+        "cover_url": _collection_cover_url(db, media_set),
         "path_prefix": media_set.path_prefix,
         "bound_person_id": media_set.bound_person_id,
         "requested_revision": media_set.requested_revision,

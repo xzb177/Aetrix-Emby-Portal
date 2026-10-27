@@ -441,6 +441,25 @@ def get_shelves(current_user=Depends(get_current_user),
     return ms.list_shelf(db)
 
 
+@user_media_sets_router.get("/collections/{set_id}/cover")
+def get_collection_cover(set_id: int, db: Session = Depends(get_db)):
+    """合集拼贴图（WebP），拼不出时回库封面同一张 SVG 占位。
+
+    不挂门户 JWT：浏览器 ``<img>`` 带不了 Authorization，与
+    ``/emby/Items/.../Images/Primary``、``/cdn/covers/{hash}`` 同一口径。
+    总闸关、合集不存在或 hidden → 404。``artwork_mode=none`` 或没有
+    可用海报时不拼图，回 SVG（读口 ``cover_url`` 此时为 null，正常
+    卡片不会来拉这张图）。
+    """
+    _require_enabled()
+    media_set = _get_set(db, set_id)
+    if media_set.visibility_status != "visible":
+        raise HTTPException(status_code=404, detail="合集不存在")
+    from backend.emby_server.collection_cover import serve_collection_cover
+
+    return serve_collection_cover(db, media_set)
+
+
 @user_media_sets_router.get("/collections/{set_id}")
 def get_collection(set_id: int, current_user=Depends(get_current_user),
                    db: Session = Depends(get_db)):
@@ -464,7 +483,7 @@ def get_collection_items(set_id: int, track: str = "release",
 
     露/藏与 min 门都在这里实时算：hidden 合集按不存在处理；
     有效成员未达 min 门时返回空 items + shelf_eligible=false，
-    不谎称有内容。封面只出 artwork_mode，不出图 URL。
+    不谎称有内容。本口不出 cover_url（封面在合集详情与架列表）。
     """
     _require_enabled()
     if track not in ("release", "watch"):

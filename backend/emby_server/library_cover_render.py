@@ -447,18 +447,20 @@ def _template_filmstrip(img, posters, _backdrop_src, title_text: str,
                fill=_ACCENT, width=3)
 
 
-def render_cover_bytes(
-    db,
-    library,
+def render_collage_bytes(
+    posters: List[str],
+    *,
+    title_text: str = "",
+    sub_text: str = "",
+    backdrop: Optional[str] = None,
     template: str = DEFAULT_TEMPLATE,
-    title: str = "",
-    subtitle: str = "",
+    label: str = "",
 ) -> Optional[bytes]:
-    """按模板渲染封面并返回 WebP 字节；无法渲染时返回 None
+    """把已选好的海报拼成 1920×1080 WebP。
 
-    选图与渲染都在这里完成，调用方只需给 db + library（库名与内容类型
-    从 library 自身取，避免两处传参对不上）。任何异常只记日志返回 None，
-    调用方据此保留原封面。
+    库封面与合集封面共用这一段：选图各走各的（库按最近入库，合集按
+    可见成员），拼图、字体回落、失败只记日志都不另起一套。``label``
+    只进日志（如 ``媒体库「名字」``），拼不出图返回 None。
     """
     pil = _pil()
     if pil is None:
@@ -466,19 +468,14 @@ def render_cover_bytes(
     Image_, _draw, ImageFilter, _font_mod = pil
     if template not in TEMPLATES:
         template = DEFAULT_TEMPLATE
-
     need = TEMPLATE_POSTER_COUNT if template in ("poster", "visual") \
         else TEMPLATE_FILMSTRIP_COUNT
-    posters = pick_recent_posters(db, library, need)
+    posters = [p for p in posters if p][:need]
     if not posters:
-        logger.info("媒体库「%s」没有可用海报，跳过封面生成", getattr(library, "name", "?"))
+        logger.info("%s没有可用海报，跳过封面生成", label or "")
         return None
-    backdrop = None
-    if template in ("poster", "visual"):
-        backdrop = pick_recent_backdrop(db, library) or posters[0]
-
-    title_text = render_text(title, library.name, library.collection_type or "")
-    sub_text = render_text(subtitle, library.name, library.collection_type or "")
+    if template in ("poster", "visual") and not backdrop:
+        backdrop = posters[0]
 
     try:
         img = Image_.new("RGBA", (CANVAS_W, CANVAS_H), (12, 15, 24, 255))
@@ -492,7 +489,40 @@ def render_cover_bytes(
         img.convert("RGB").save(out, format="WEBP", quality=86, method=5)
         return out.getvalue()
     except Exception:  # noqa: BLE001 - 封面是锦上添花，失败不该中断保存
-        logger.warning("媒体库「%s」封面渲染失败", getattr(library, "name", "?"),
-                       exc_info=True)
+        logger.warning("%s封面渲染失败", label or "", exc_info=True)
         return None
+
+
+def render_cover_bytes(
+    db,
+    library,
+    template: str = DEFAULT_TEMPLATE,
+    title: str = "",
+    subtitle: str = "",
+) -> Optional[bytes]:
+    """按模板渲染库封面并返回 WebP 字节；无法渲染时返回 None
+
+    选图与渲染都在这里完成，调用方只需给 db + library（库名与内容类型
+    从 library 自身取，避免两处传参对不上）。任何异常只记日志返回 None，
+    调用方据此保留原封面。拼图本身见 :func:`render_collage_bytes`。
+    """
+    if template not in TEMPLATES:
+        template = DEFAULT_TEMPLATE
+    need = TEMPLATE_POSTER_COUNT if template in ("poster", "visual") \
+        else TEMPLATE_FILMSTRIP_COUNT
+    posters = pick_recent_posters(db, library, need)
+    backdrop = None
+    if posters and template in ("poster", "visual"):
+        backdrop = pick_recent_backdrop(db, library) or posters[0]
+    name = getattr(library, "name", "?")
+    title_text = render_text(title, name, getattr(library, "collection_type", None) or "")
+    sub_text = render_text(subtitle, name, getattr(library, "collection_type", None) or "")
+    return render_collage_bytes(
+        posters,
+        title_text=title_text,
+        sub_text=sub_text,
+        backdrop=backdrop,
+        template=template,
+        label=f"媒体库「{name}」",
+    )
 
