@@ -7,6 +7,9 @@ export interface ToastMessage {
   type: 'success' | 'error' | 'warning' | 'info'
   message: string
   duration?: number
+  /** 重试操作：有它时 Toast 不自动消失，直到用户点重试或关闭 */
+  actionLabel?: string
+  onAction?: () => void
 }
 
 const props = defineProps<{
@@ -65,6 +68,12 @@ const getToastClass = (type: string) => {
             <component :is="getIcon(msg.type)" :size="12" :stroke-width="2.75" />
           </span>
           <span class="toast-message">{{ msg.message }}</span>
+          <button
+            v-if="msg.actionLabel"
+            type="button"
+            class="toast-action"
+            @click="msg.onAction?.(); emit('remove', msg.id)"
+          >{{ msg.actionLabel }}</button>
           <button
             type="button"
             class="toast-close"
@@ -128,6 +137,20 @@ const getToastClass = (type: string) => {
   color: var(--paper-ink);
   word-break: break-word;
 }
+
+.toast-action {
+  min-height: 44px;
+  padding: 0 14px;
+  flex-shrink: 0;
+  border: 1px solid var(--paper-line-strong);
+  border-radius: var(--paper-r-sm);
+  background: transparent;
+  color: var(--paper-ink);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.toast-action:hover { background: var(--paper-card-2); }
 
 .toast-close {
   /* 触摸区 44px：负 margin 抵消放大，视觉占位与原来 24px 一致 */

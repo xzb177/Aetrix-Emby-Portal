@@ -1,8 +1,8 @@
 <!-- 桌面发现页中栏 · 最近更新（媒体库学习 L6 首页分区之一）
      数据源：首页分区口 continue_watching 之外的 recently_updated 分区
      （启用库的 movie / series，按入库时间倒序；身份门开时只出已绑定条目）。
-     本批只做展示（标题 + 年份 + 类型）；点播接线（条目→播放器选择）是后续项，
-     不在这里编一个假跳转。 -->
+     本批只做展示（标题 + 年份 + 类型）；行不是链接：本站没有单片详情页，
+     不在这里编一个假跳转。点播请到播放器里搜片名（见播放器选择页说明）。 -->
 <template>
   <section id="disc-recent" class="d3-card" aria-label="最近更新">
     <div class="d3-sec-head">
