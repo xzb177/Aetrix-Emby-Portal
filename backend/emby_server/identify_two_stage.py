@@ -7,8 +7,9 @@
 - 补资料段：只在已绑定条目上跑，只填空缺、永不覆盖已有资料
   （2026-10-19 定版口径：只填空缺永不覆盖）。
 
-两段独立开关、独立重试：识别段提交后即落库，补资料失败不回滚身份；
-识别未定的条目不进补资料段（由现行写库路径接管审查 / none 终态）。
+两段独立开关、独立重试（默认双开，FMBY #17 闭环后即真实路径）：
+识别段提交后即落库，补资料失败不回滚身份；识别未定的条目不进补
+资料段（由现行写库路径接管审查 / none 终态）。
 
 与现行 enrich_worker 的分工：IO 阶段（_enrich_fetch）仍是证据采集的
 共享步骤；写库阶段在任一段开关开时走两段提交，开关全关时与现行逐字
@@ -36,11 +37,13 @@ from backend.emby_server.env_util import env_int
 
 logger = logging.getLogger(__name__)
 
-#: 识别段总开关（默认关）。启动时读一次，热路径不碰 env。
-IDENTIFY_STAGE_ENABLED = env_int("IDENTIFY_STAGE_ENABLED", 0, 0, 1)
-#: 补资料段总开关（默认关）。与识别段独立：可只开识别攒绑定，也可只开
+#: 识别段总开关（默认开，FMBY #17 闭环：两段式已是真实刮削路径，
+#: 不再是仅供测试的实验开关；要回旧写库须显式把两段开关都置 0）。
+#: 启动时读一次，热路径不碰 env。
+IDENTIFY_STAGE_ENABLED = env_int("IDENTIFY_STAGE_ENABLED", 1, 0, 1)
+#: 补资料段总开关（默认开）。与识别段独立：可只开识别攒绑定，也可只开
 #: 补资料给历史已绑定条目填空。
-FILL_STAGE_ENABLED = env_int("FILL_STAGE_ENABLED", 0, 0, 1)
+FILL_STAGE_ENABLED = env_int("FILL_STAGE_ENABLED", 1, 0, 1)
 #: Frodo 补资料源开关（默认关）。开时补资料段才向 Frodo 问缺口字段。
 IDENTIFY_FRODO_FILL_ENABLED = env_int("IDENTIFY_FRODO_FILL_ENABLED", 0, 0, 1)
 #: 已识别未填空条目回 pending 后的重认领延迟（秒）：识别段提交后若补资料

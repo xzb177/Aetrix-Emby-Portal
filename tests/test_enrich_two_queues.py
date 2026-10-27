@@ -228,8 +228,8 @@ def test_identify_queue_unbound_counts_attempts_to_terminal(db):
     assert terminal in ("done", "failed")
 
 
-# ---------- 开关默认关 ----------
+# ---------- 开关默认（FMBY #17 闭环后两队列默认开，AI 政策门仍默认关） ----------
 
 def test_switches_default_off():
-    assert eq.two_queue_enabled() is False
+    assert eq.two_queue_enabled() is True
     assert ai_policy.ai_policy_enabled() is False

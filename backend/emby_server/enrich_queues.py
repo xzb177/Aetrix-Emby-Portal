@@ -12,9 +12,9 @@
 识别段定下的绑定下一轮由刮削队列认领（同轮不直通，保证两段是两
 次独立的认领与重试）。
 
-总开关：env ``ENRICH_TWO_QUEUE_ENABLED``（默认 0=关）。关时抢单与
-处理与今天逐字一致（单队列 + 现行写库）；开时 worker 按队列分批抢
-单、分段处理。本模块只含谓词与开关，不碰扫描器、播放、源适配器。
+总开关：env ``ENRICH_TWO_QUEUE_ENABLED``（默认 1=开）。关时抢单与
+处理回单队列 + 现行写库；开时 worker 按队列分批抢单、分段处理。
+本模块只含谓词与开关，不碰扫描器、播放、源适配器。
 """
 
 from __future__ import annotations
@@ -26,8 +26,9 @@ from sqlalchemy import or_ as _or
 from backend.emby_server import models as em
 from backend.emby_server.env_util import env_int
 
-#: 两队列总开关（默认关）。启动时读一次，热路径不碰 env。
-TWO_QUEUE_ENABLED = env_int("ENRICH_TWO_QUEUE_ENABLED", 0, 0, 1)
+#: 两队列总开关（默认开，FMBY #17 闭环：worker 真实抢单即按队列分批；
+#: 要回单队列须显式置 0）。启动时读一次，热路径不碰 env。
+TWO_QUEUE_ENABLED = env_int("ENRICH_TWO_QUEUE_ENABLED", 1, 0, 1)
 
 #: 队列名：识别队列 / 刮削队列。
 QUEUE_IDENTIFY = "identify"

@@ -4468,6 +4468,29 @@ def _inherit_parent_info(db, item: Any) -> Optional[dict]:
     return {"series_id": series.id, "tmdb_id": series.tmdb_id}
 
 
+def _apply_write_phase(db, item: Any, fetched: dict,
+                       queue: Optional[str] = None) -> None:
+    """写库段分发（FMBY #17 闭环后的唯一分发点，逐条与批量共用）。
+
+    queue=None = 读两段开关（双开时走两段，全关时现行写库逐字一致）；
+    queue="identify"/"fill" = 两队列模式，一次认领只跑一段（显式覆盖
+    开关，不读开关值）。未知队列名直接 ValueError，不静默回落。
+    """
+    if queue is not None and queue not in ("identify", "fill"):
+        raise ValueError("unknown enrich queue: %r" % (queue,))
+    if queue is None:
+        from backend.emby_server import identify_two_stage as _ts
+
+        if _ts.any_enabled():
+            _enrich_apply_two_stage(db, item, fetched)
+        else:
+            _enrich_apply(db, item, fetched)
+    else:
+        _enrich_apply_two_stage(
+            db, item, fetched,
+            identify=(queue == "identify"), fill=(queue == "fill"))
+
+
 def _enrich_apply_two_stage(db, item: Any, fetched: dict,
                             identify: Optional[bool] = None,
                             fill: Optional[bool] = None) -> None:
@@ -4630,18 +4653,7 @@ def _process_item(db, item: Any, holder: Optional[dict] = None,
             logger.info("补全写库跳过（认领已失效）id=%s", item_id)
             db.rollback()
             return "skip"
-        from backend.emby_server import identify_two_stage as _ts
-
-        if queue is None:
-            if _ts.any_enabled():
-                _enrich_apply_two_stage(db, fresh, fetched)
-            else:
-                _enrich_apply(db, fresh, fetched)
-        else:
-            # 两队列模式：一次认领只跑一段（分段覆盖，不读两段开关）。
-            _enrich_apply_two_stage(
-                db, fresh, fetched,
-                identify=(queue == "identify"), fill=(queue == "fill"))
+        _apply_write_phase(db, fresh, fetched, queue=queue)
         _st = (fresh.enrich_status or "")
         outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
         db.commit()
@@ -4800,16 +4812,14 @@ def _process_batch(db, batch: list) -> None:
                 outcome = "skip"
             else:
                 from backend.emby_server import enrich_queues as _eq
-                if _eq.two_queue_enabled():
-                    # 两队列模式：批量路径写库也按条目所属队列分段
-                    # （写库当刻的绑定状态为准，认领后被手动绑定的条目
-                    # 直接进刮削段，不回炉重识别）。
-                    _enrich_apply_two_stage(
-                        db, fresh, fetched,
-                        identify=(_eq.queue_of(fresh) == "identify"),
-                        fill=(_eq.queue_of(fresh) == "fill"))
-                else:
-                    _enrich_apply(db, fresh, fetched)
+                # 闭环前批量路径只认两队列开关、忽略两段开关：批量是多条
+                # 时的真实主路径，两段开关开着却走现行写库是接线缺口。
+                # 现经唯一分发点：两队列开时按当刻绑定状态分段，否则读
+                # 两段开关（双开走两段，全关才现行写库）。
+                _apply_write_phase(
+                    db, fresh, fetched,
+                    queue=(_eq.queue_of(fresh)
+                           if _eq.two_queue_enabled() else None))
                 _st = (fresh.enrich_status or "")
                 outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
                 db.commit()
