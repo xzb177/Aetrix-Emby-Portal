@@ -333,6 +333,9 @@ class Pan115Client:
 
         上限：115cli 的 MAX_SIMPLE_UPLOAD_SIZE = 5 GiB，超限文件不
         走本方法（调用方先拦，记 unsupported，不静默拆段）。
+        本方法入口亦自带同一上限守卫：能用 seek/tell 测出大小时，
+        超限直接报 Pan115Error，绝不在初始化 OSS 会话后再失败；
+        测不出大小时才放行（调用方已拦，守卫是第二道、不是唯一一道）。
         fileobj 须支持 read/seek/tell（httpx 按 seek/tell 算
         Content-Length；跨 provider 搬字节用分段读取器直供，不落盘）。
         fileobj.read 中抛出的搬运层异常（如源盘凭据失效）原样上抛，
@@ -341,6 +344,24 @@ class Pan115Client:
         对应字段为空串，调用方走列目录匹配回落（不依赖本响应字段）。
         """
         import httpx
+
+        # 入口上限守卫（第二道）：测得出大小且超 5 GiB 即拒，绝不
+        # 先初始化 OSS 会话；测不出大小时放行，调用方已先拦过。
+        _max = 5 * 1024 * 1024 * 1024  # 115cli MAX_SIMPLE_UPLOAD_SIZE
+        try:
+            _pos = fileobj.tell()
+            _end = fileobj.seek(0, 2)
+            fileobj.seek(_pos)
+        except Exception:
+            try:
+                fileobj.seek(0)
+            except Exception:
+                pass
+            _end = None
+        if _end is not None and _end > _max:
+            raise Pan115Error(
+                f"文件 {_end} 字节超过 115 简单上传 5 GiB 上限；"
+                "多段上传需 initupload 加密协议（未实测），暂不支持")
 
         init = self._call(
             "POST", f"{PAN115_UPLB_BASE}/3.0/sampleinitupload.php",
