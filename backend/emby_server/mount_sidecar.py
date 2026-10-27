@@ -38,6 +38,7 @@ from backend.emby_server.mounts import (
     MountEntry,
     MountError,
     MountFile,
+    require_capability,
     MountProvider,
     Pan115Mount,
     PlayTarget,
@@ -193,6 +194,10 @@ class SidecarMountProvider(MountProvider):
         return PlayTarget("url", url, headers)
 
     def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
+        # FMBY #23 门控：manifest 未含 open_range 时本提供者的
+        # can_random_read 为 False（见 manifest_to_capabilities），
+        # 此时不向 sidecar 发请求；文本旁挂走本口解码，同样被挡。
+        require_capability(self, "can_random_read")
         if start < 0 or (end is not None and end <= start):
             raise MountError(f"无效的取段范围：start={start} end={end}")
         try:

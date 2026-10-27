@@ -276,6 +276,35 @@ def start_playback_bus_snapshot(stop_event=None) -> bool:
     return True
 
 
+_playback_bus_consumer_thread: threading.Thread | None = None
+
+
+def start_playback_bus_consumer(stop_event=None) -> bool:
+    """播放实时总线事件消费工人（FMBY #24 消费端）。
+
+    仅在 PLAYBACK_BUS_ENABLED=1 时启动一根 daemon 线程跑
+    run_event_consumer_loop（订阅频道 → 事件尾巴）；关时返回 False、
+    不启动，频道事件无人消费也不产生尾巴，全站行为逐字不变。
+    幂等：已有存活线程时直接返回 True，不重复启动。
+    """
+    global _playback_bus_consumer_thread
+    from backend.emby_server import playback_bus
+
+    if not playback_bus.bus_enabled():
+        return False
+    alive = _playback_bus_consumer_thread
+    if alive is not None and alive.is_alive():
+        return True
+    t = threading.Thread(
+        target=playback_bus.run_event_consumer_loop,
+        kwargs={"stop_event": stop_event if stop_event is not None else _shutdown_event},
+        daemon=True, name="playback-bus-consumer",
+    )
+    t.start()
+    _playback_bus_consumer_thread = t
+    return True
+
+
 def _upstream_probe_sources():
     """上游探活守护的 sources_fn（生产接线，FMBY #25 25-3）。
 
@@ -628,6 +657,17 @@ def main() -> int:
                 logger.info("播放实时总线未开启，快照工人不启动")
         except Exception as e:
             logger.warning(f"启动播放总线快照工人失败（可忽略）: {e}")
+
+        # 播放实时总线事件消费工人（FMBY #24 消费端）：与快照工人
+        # 同开关；只在开时启动，关时不启动、不写事件尾巴。
+        try:
+            if start_playback_bus_consumer():
+                started.append("playback_bus_consumer")
+                logger.info("✅ 播放总线事件消费工人已启动")
+            else:
+                logger.info("播放实时总线未开启，事件消费工人不启动")
+        except Exception as e:
+            logger.warning(f"启动播放总线事件消费工人失败（可忽略）: {e}")
 
         # 媒体库列表投影重建工人（FMBY 列表投影读模型试点）：仅开关开时启动；
         # 关时不启动，读路径走现行现算，全站行为逐字不变。行落 PG 表，
