@@ -17,10 +17,11 @@
 2. 轮换（rotate）：403/401 时换一个 SA 再预检，最多 5 次；全败才放弃，
    且放弃时记一条 play_start error 事件（error_kind 带轮换次数），
    播放器永远不会在第一次就拿到一个未经验证的坏令牌。
-3. 预热（warm）：详情页打开时在后台线程里把 1+2 做完并写进
-   playback 域共享缓存；PlaybackInfo 命中 120 秒内的预热直接复用，
-   超过 120 秒先单次复检再用；预热缓存本身 TTL 300 秒，远小于
-   SA 令牌 1 小时寿命，余量已算进。
+3. 预热（warm）：详情页、单条 Ids 直达、选集列表在后台线程里把 1+2
+   做完并写进 playback 域共享缓存；电影/单集在返回前就占上在途标记，
+   PlaybackInfo 若缓存未热会等这一次预检结束再复用，不再并行再打一遍。
+   命中 120 秒内的预热直接复用（alt_warm_hit），超过 120 秒先单次复检
+   再用；预热缓存本身 TTL 300 秒，远小于 SA 令牌 1 小时寿命。
 
 注意：预热只能热“服务端 → 谷歌”这一段（令牌、预检、尾部可达），
 播放器 → 谷歌那段的网络（用户侧 VPN 节点、播放器首次探格式）
@@ -40,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -63,6 +65,24 @@ TAIL_PROBE_BYTES = 1024
 #: 某次 403（配额/权限变化），轮换成功后立即用新 SA 覆盖本记录，
 #: 自愈，不靠 TTL 过期才恢复。
 SA_AFFINITY_TTL_SEC = 6 * 3600
+#: PlaybackInfo 等待在途预热的上限：与单次预检超时同量级。健康预检约 1s，
+#: 等得到就复用；等不到再走自己的冷预检（不把一次挂死放大成两次叠加之前，
+#: 上限停在这一次预检的预算上）。
+INFLIGHT_WAIT_SEC = PRECHECK_TIMEOUT_SEC
+
+
+def _log_warm(event: str, **fields) -> None:
+    """打一条预热日志。走 play-timing 的 logger：EA 默认没有 root handler，
+    普通 logger.info 会被吞，而 [play-timing] 那条在生产上能 grep 到。
+    日志里只有条目/用户/来源，没有令牌。
+    """
+    try:
+        from backend.emby_server.play_timing import logger as _pt
+
+        extras = " ".join(f"{k}={v}" for k, v in fields.items())
+        _pt.info("[first-play] %s %s", event, extras)
+    except Exception:  # noqa: BLE001 — 日志失败不影响预热
+        logger.info("[first-play] %s", event)
 
 
 def alt_media_url(file_id: str) -> str:
@@ -315,6 +335,11 @@ def _resolve_for_playback(db, item, user, fid: str) -> dict:
         from backend.emby_server import drive_auth as _da
         from backend.database import CacheManager
 
+        _log_warm(
+            "warm trigger", source="playbackinfo_cold",
+            item_id=getattr(item, "id", None),
+            user_id=getattr(user, "id", None))
+
         def _token_fn(attempt: int):
             return _da.get_drive_bearer_token(f"{fid}:{attempt}")
 
@@ -339,6 +364,7 @@ def warm_first_play_sync(db, item, user) -> dict:
     同步函数（在后台线程里跑，不碰请求 DB 会话）。任何异常只返回
     ok=False，绝不抛到详情页。返回含 rotations/precheck_ms/tail_ok。
     """
+    outcome = {"ok": False, "reason": "exception"}
     try:
         from backend.emby_server import playback_strategy as _ps
         from backend.emby_server import transfer_variant as _tv
@@ -347,16 +373,18 @@ def warm_first_play_sync(db, item, user) -> dict:
         fid, _ = _tv.resolve_play_file_id(db, item, user)
         fid = (fid or "").strip()
         if not fid or not _ps.drive_direct_play_enabled(db):
-            return {"ok": False, "reason": "no_drive_direct"}
+            outcome = {"ok": False, "reason": "no_drive_direct"}
+            return outcome
         from backend.database import CacheManager
 
         cached = load_warm(
             lambda k: CacheManager.get(k, domain="playback"),
             getattr(item, "guid", ""), getattr(user, "id", None))
         if warm_usable(cached):
-            return {"ok": True, "reason": "warm_hit",
-                    "rotations": cached.get("rotations", 0), "precheck_ms": 0,
-                    "tail_ok": bool(cached.get("tail_ok"))}
+            outcome = {"ok": True, "reason": "warm_hit",
+                       "rotations": cached.get("rotations", 0), "precheck_ms": 0,
+                       "tail_ok": bool(cached.get("tail_ok"))}
+            return outcome
 
         def _token_fn(attempt: int):
             return _da.get_drive_bearer_token(f"{fid}:{attempt}")
@@ -366,10 +394,11 @@ def warm_first_play_sync(db, item, user) -> dict:
             cache_get=lambda k: CacheManager.get(k, domain="playback"),
             cache_set=lambda k, v, ttl: CacheManager.set(k, v, ttl, domain="playback"))
         if not result.get("ok"):
-            return {"ok": False, "reason": "precheck_failed",
-                    "rotations": result.get("rotations", 0),
-                    "last_status": result.get("last_status"),
-                    "precheck_ms": result.get("precheck_ms", 0)}
+            outcome = {"ok": False, "reason": "precheck_failed",
+                       "rotations": result.get("rotations", 0),
+                       "last_status": result.get("last_status"),
+                       "precheck_ms": result.get("precheck_ms", 0)}
+            return outcome
         # 尾部可达性：只探最后 1KB，验该令牌能否读尾部索引段。
         tail_ok = False
         try:
@@ -389,11 +418,21 @@ def warm_first_play_sync(db, item, user) -> dict:
         store_warm(
             lambda k, v, ttl: CacheManager.set(k, v, ttl, domain="playback"),
             getattr(item, "guid", ""), getattr(user, "id", None), result)
-        return {"ok": True, "reason": "warmed", "rotations": result["rotations"],
-                "precheck_ms": result["precheck_ms"], "tail_ok": tail_ok}
+        outcome = {"ok": True, "reason": "warmed", "rotations": result["rotations"],
+                   "precheck_ms": result["precheck_ms"], "tail_ok": tail_ok}
+        return outcome
     except Exception as exc:  # noqa: BLE001 — 预热永不抛
         logger.warning("first_play warm failed: %s", type(exc).__name__)
-        return {"ok": False, "reason": "exception"}
+        outcome = {"ok": False, "reason": "exception"}
+        return outcome
+    finally:
+        _log_warm(
+            "warm done",
+            item_id=getattr(item, "id", None),
+            guid=getattr(item, "guid", ""),
+            user_id=getattr(user, "id", None),
+            reason=outcome.get("reason"),
+            precheck_ms=outcome.get("precheck_ms", 0))
 
 
 
@@ -491,9 +530,94 @@ def warm_target_for_detail(db, user_id: int, item):
     return None
 
 
-def _warm_thread_body(item_id: int, user_id: int, mode: str):
-    """预热后台线程体：自开 DB 会话，不碰请求会话；任何异常只记日志。"""
+# ---------------------------------------------------------------------------
+# 在途预热：同一用户同一条目只打一次谷歌预检。
+# 电影/单集在 HTTP 返回前就 claim，PlaybackInfo 若缓存还没写上就等这一次，
+# 不再并行再开一轮冷预检。剧/季的目标是另一集，等线程选中目标后再 claim。
+# ---------------------------------------------------------------------------
+
+_inflight_lock = threading.Lock()
+_inflight: dict[str, threading.Event] = {}
+
+
+def inflight_key(user_id, item_id) -> str:
+    return f"{user_id}:{item_id}"
+
+
+def claim_inflight(user_id, item_id):
+    """占上在途标记。返回 (event, owner)。owner=False 表示已有一次在跑。"""
+    key = inflight_key(user_id, item_id)
+    with _inflight_lock:
+        current = _inflight.get(key)
+        if current is not None and not current.is_set():
+            return current, False
+        ev = threading.Event()
+        _inflight[key] = ev
+        return ev, True
+
+
+def finish_inflight(user_id, item_id, ev: threading.Event | None) -> None:
+    """结束在途标记（幂等）。等的人被放开；下一次点播走缓存而不是再等。"""
+    if ev is None:
+        return
+    ev.set()
+    key = inflight_key(user_id, item_id)
+    with _inflight_lock:
+        if _inflight.get(key) is ev:
+            _inflight.pop(key, None)
+
+
+def wait_inflight(user_id, item_id, timeout: float) -> bool:
+    """有在途预热就等它结束。没有在途返回 False（调用方走自己的冷预检）。"""
+    key = inflight_key(user_id, item_id)
+    with _inflight_lock:
+        ev = _inflight.get(key)
+    if ev is None:
+        return False
+    return bool(ev.wait(timeout))
+
+
+def consume_inflight_warm(cache_get, user_id, item_id, guid, fid,
+                          timeout: float = INFLIGHT_WAIT_SEC) -> dict | None:
+    """等在途预热写完缓存。等不到、或写上的不是这个文件，返回 None。"""
+    if not wait_inflight(user_id, item_id, timeout):
+        return None
+    entry = load_warm(cache_get, guid, user_id)
+    if warm_usable(entry) and entry.get("fid") == fid:
+        return entry
+    return None
+
+
+def direct_item_guid(ids) -> str | None:
+    """恰好一条 Ids 才是点名直达。批量刷新不预热，避免一次列表打多次谷歌。"""
+    if not ids or len(ids) != 1:
+        return None
+    guid = str(ids[0] or "").strip()
+    return guid or None
+
+
+def iter_query_ids(values) -> list[str]:
+    """把查询串里的 Ids（可重复、可逗号拼接）收成 guid 列表。"""
+    out: list[str] = []
+    for value in values or ():
+        for part in str(value).split(","):
+            part = part.strip()
+            if part:
+                out.append(part)
+    return out
+
+
+def _warm_thread_body(item_id: int, user_id: int, mode: str,
+                      preclaimed_event: threading.Event | None = None):
+    """预热后台线程体：自开 DB 会话，不碰请求会话；任何异常只记日志。
+
+    ``preclaimed_event`` 是调用方在返回 HTTP 之前占上的在途标记（电影/单集
+    暖自身）。目标若换成别的条目（剧详情 → 第一集未看），先放开原标记再占
+    新目标，避免 PlaybackInfo 空等。无论成功失败，finally 都会放开标记。
+    """
     session = None
+    finish_item = item_id
+    finish_ev = preclaimed_event
     try:
         from backend.database import SessionLocal as _SL
         from backend.emby_server import models as _em
@@ -509,11 +633,22 @@ def _warm_thread_body(item_id: int, user_id: int, mode: str):
             target = next_episode_after(session, item)
         else:  # "detail"
             target = warm_target_for_detail(session, user_id, item)
-        if target is not None:
-            warm_first_play_sync(session, target, user)
+        if target is None:
+            return
+        if finish_ev is not None and target.id != item_id:
+            finish_inflight(user_id, item_id, finish_ev)
+            finish_ev = None
+        if finish_ev is None:
+            ev, owner = claim_inflight(user_id, target.id)
+            if not owner:
+                return
+            finish_ev = ev
+            finish_item = target.id
+        warm_first_play_sync(session, target, user)
     except Exception:  # noqa: BLE001 — 预热永不影响请求路径
         pass
     finally:
+        finish_inflight(user_id, finish_item, finish_ev)
         try:
             if session is not None:
                 session.close()
@@ -521,23 +656,53 @@ def _warm_thread_body(item_id: int, user_id: int, mode: str):
             pass
 
 
-def spawn_first_play_warm(item_id: int, user_id: int, mode: str = "detail") -> bool:
-    """起一个 daemon 预热线程（不阻塞、不抛）；启动失败返回 False。"""
-    try:
-        import threading as _th
+def spawn_first_play_warm(item_id: int, user_id: int, mode: str = "detail", *,
+                          source: str = "", self_target: bool = False) -> bool:
+    """起一个 daemon 预热线程（不阻塞、不抛）；启动失败返回 False。
 
-        _th.Thread(target=_warm_thread_body, args=(item_id, user_id, mode),
-                   daemon=True).start()
+    ``self_target=True``（电影/单集暖自身）：在起线程之前就占上在途标记，
+    这样紧跟着的 PlaybackInfo 能等这一次预检，而不是再打一遍。已有在途则
+    直接返回（幂等）。``source`` 只写进日志，不参与任何播放器分支。
+    """
+    if source != "parent_list":
+        _log_warm(
+            "warm trigger", item_id=item_id, user_id=user_id,
+            mode=mode, source=source or "-")
+    preclaimed = None
+    if self_target and mode != "next":
+        ev, owner = claim_inflight(user_id, item_id)
+        if not owner:
+            _log_warm(
+                "warm already inflight", item_id=item_id, user_id=user_id,
+                source=source or "-")
+            return True
+        preclaimed = ev
+    try:
+        threading.Thread(
+            target=_warm_thread_body,
+            args=(item_id, user_id, mode, preclaimed),
+            daemon=True, name="first-play-warm").start()
         return True
     except Exception:  # noqa: BLE001
+        finish_inflight(user_id, item_id, preclaimed)
         return False
 
 
-def spawn_first_play_warm_by_guid(guid: str, user_id: int) -> bool:
-    """按 guid 起详情预热（列表页 ParentId 用）：guid 查不到条目时线程内空转返回。"""
-    try:
-        import threading as _th
+def spawn_first_play_warm_by_guid(guid: str, user_id: int, *,
+                                  source: str = "guid") -> bool:
+    """按 guid 起详情预热（列表页 ParentId / 单条 Ids 用）。
 
+    guid 查不到条目时线程内空转返回。列表页 ParentId 可能是库 guid，
+    那种空转不打 warm trigger 日志，避免每次刷库都刷一屏。
+    """
+    guid = (guid or "").strip()
+    if not guid:
+        return False
+    if source != "parent_list":
+        _log_warm(
+            "warm trigger", guid=guid, user_id=user_id,
+            mode="detail", source=source)
+    try:
         def _by_guid(_guid=guid, _user_id=user_id):
             session = None
             try:
@@ -547,8 +712,12 @@ def spawn_first_play_warm_by_guid(guid: str, user_id: int) -> bool:
                 session = _SL()
                 item = session.query(_em.MediaItem).filter(
                     _em.MediaItem.guid == _guid).first()
-                if item is not None:
-                    _warm_thread_body(item.id, _user_id, "detail")
+                item_pk = item.id if item is not None else None
+                session.close()
+                session = None
+                if item_pk is not None:
+                    # 查完就放开这条会话，预检那一秒不再占着连接。
+                    _warm_thread_body(item_pk, _user_id, "detail")
             except Exception:  # noqa: BLE001
                 pass
             finally:
@@ -558,7 +727,7 @@ def spawn_first_play_warm_by_guid(guid: str, user_id: int) -> bool:
                 except Exception:  # noqa: BLE001
                     pass
 
-        _th.Thread(target=_by_guid, daemon=True).start()
+        threading.Thread(target=_by_guid, daemon=True, name="first-play-warm").start()
         return True
     except Exception:  # noqa: BLE001
         return False
