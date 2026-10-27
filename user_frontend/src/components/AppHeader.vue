@@ -6,7 +6,7 @@ import {
   Clapperboard, LogOut, Ticket, Inbox, Crown, Sparkles,
   Gift, Megaphone, AlertCircle, Clock, Sun, Moon, MonitorSmartphone, Bell,
   ChevronRight, Heart, ShieldCheck,
-  Globe, Plug, ClipboardList, Map, Radio, Bird, Notebook, Receipt, Users, Compass, Shirt, Settings,
+  Globe, Plug, ClipboardList, Map as MapIcon, Radio, Bird, Notebook, Receipt, Users, Compass, Shirt, Settings,
 } from 'lucide-vue-next'
 import api, {
   messageApi, announcementApi, isExpiringSoon, subscriptionApi,
@@ -25,7 +25,7 @@ function facilityMenuIcon(key: string) {
   switch (key) {
     case 'operator': return Plug
     case 'checkin': return ClipboardList
-    case 'calendar': return Map
+    case 'calendar': return MapIcon
     case 'wishlist': return Sparkles
     case 'signal': return Radio
     case 'pigeon': return Bird
