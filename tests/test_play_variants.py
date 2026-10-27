@@ -160,21 +160,23 @@ def test_switch_off_cache_hit_same_and_users_isolated(db, monkeypatch):
 # 开关开：变体集合按条目类型正确、主线第一
 # ---------------------------------------------------------------------------
 
-def test_drive_item_variants_relay_first(db, monkeypatch):
+def test_drive_item_variants_direct_first(db, monkeypatch):
+    # 直链为主线（2026-10-27 用户改令）：双开关都开时第一条恒为直链，
+    # 中继列在之后作兜底；此前“中继第一”的口径已作废。
     item = _drive_item("guid-on-drive")
     resp = _call_pi(monkeypatch, db, _user(), item, variants_on=True)
     sources = resp["MediaSources"]
     assert [s["Id"] for s in sources] == [
-        f"{item.guid}:drive_relay",
         f"{item.guid}:drive_direct",
+        f"{item.guid}:drive_relay",
     ]
     first = sources[0]
-    assert "variant=drive_relay" in first["DirectStreamUrl"]
-    assert f"MediaSourceId={item.guid}:drive_relay" in first["DirectStreamUrl"]
-    assert first["Name"].endswith("Drive 中继")
-    direct = sources[1]
-    assert direct["IsRemote"] is True
-    assert "variant=drive_direct" in direct["DirectStreamUrl"]
+    assert "variant=drive_direct" in first["DirectStreamUrl"]
+    assert f"MediaSourceId={item.guid}:drive_direct" in first["DirectStreamUrl"]
+    assert first["Name"].endswith("Drive 直链")
+    assert first["IsRemote"] is True
+    relay = sources[1]
+    assert "variant=drive_relay" in relay["DirectStreamUrl"]
     for src in sources:
         assert src["SupportsTranscoding"] is False
         assert "TranscodingUrl" not in src
@@ -235,7 +237,7 @@ def test_no_transcode_variant_ever(db, monkeypatch):
     resp = _call_pi(monkeypatch, db, user, item, variants_on=True)
     sources = resp["MediaSources"]
     assert [s["Id"] for s in sources] == [
-        f"{item.guid}:drive_relay", f"{item.guid}:drive_direct"]
+        f"{item.guid}:drive_direct", f"{item.guid}:drive_relay"]
     for src in sources:
         assert src["SupportsTranscoding"] is False
         assert "TranscodingUrl" not in src

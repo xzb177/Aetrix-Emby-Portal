@@ -39,6 +39,7 @@ from backend.emby_server import api, mounts as mount_lib
 from backend.emby_server import models as em
 from backend.emby_server import play_events, play_sign, play_variants
 from backend.emby_server import playback_strategy, stream_limits
+from backend.emby_server import drive_auth
 from backend.emby_server import streaming as streaming_mod
 
 FID = "1eXUpWksxfCCrIZUye8lo24JGXyr_2ZQO"
@@ -150,11 +151,11 @@ def _events(db):
 # 阶段 0：变体清单决策矩阵（list_variants，与 PR-1 清单下发同口径）
 # ---------------------------------------------------------------------------
 
-def test_phase0_drive_dual_on_lists_relay_first(db, monkeypatch):
+def test_phase0_drive_dual_on_lists_direct_first(db, monkeypatch):
     _stub_switches(monkeypatch)
     names = [v.name for v in play_variants.list_variants(
         db, _drive_item("g0-drive"), drive_mount_locatable=True)]
-    assert names == ["drive_relay", "drive_direct"]
+    assert names == ["drive_direct", "drive_relay"]
 
 
 def test_phase0_drive_relay_off_or_unlocatable_lists_direct_first(
@@ -281,7 +282,9 @@ def test_phase0_play_event_with_variant_round_trips(db):
 # 阶段 1：无变体老路径逐字不变
 # ---------------------------------------------------------------------------
 
-def test_legacy_no_variant_drive_goes_relay_first(db, monkeypatch):
+def test_legacy_no_variant_drive_goes_direct_first(db, monkeypatch):
+    # 直链为主线（2026-10-27 用户改令）：无变体老路径默认走直链，
+    # 中继不再先被试；此前“中继第一”的口径已作废。
     _stub_switches(monkeypatch)
     item = _drive_item("g1-legacy")
     calls = []
@@ -291,13 +294,23 @@ def test_legacy_no_variant_drive_goes_relay_first(db, monkeypatch):
         calls.append(("relay", drive_id, file_id))
         return Response(content=b"relay-bytes", media_type=media_type)
 
+    async def fake_ensure(db_, it, fid, **kwargs):
+        return True
+
     monkeypatch.setattr(api, "serve_drive_relay_async", fake_relay)
+    monkeypatch.setattr(api, "_ensure_drive_file_playable", fake_ensure)
+    monkeypatch.setattr(api, "drive_exists_rapid_retry",
+                        lambda request, user_, fid: False)
+    monkeypatch.setattr(
+        drive_auth, "drive_usercontent_download_url",
+        lambda fid: f"https://usercontent.test/{fid}")
     resp = _call_stream(monkeypatch, db, _user(), item)
-    assert calls == [("relay", "drive-x", FID)]
-    assert resp.status_code == 200
+    assert calls == []
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"https://usercontent.test/{FID}"
     rows = _events(db)
-    assert len(rows) == 1 and rows[0].method == "relay"
-    assert rows[0].variant == "drive_relay"
+    assert len(rows) == 1 and rows[0].method == "direct_302"
+    assert rows[0].variant == "drive_direct"
 
 
 def test_legacy_no_variant_mount_goes_mount_relay(db, monkeypatch):

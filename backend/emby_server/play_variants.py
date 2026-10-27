@@ -122,8 +122,11 @@ def list_variants(db: Session, item, *,
     分支，只取第一条源的老客户端行为与今天一致。判定顺序与
     video_stream 的分支顺序对齐（Drive 快路径在前、回落解析在后）：
 
-    - 有 drive_file_id 且直链开关开：主线是中继（中继开关开且挂载
-      可定位时）或直链；两条都可用时都列（中继第一）；
+    - 有 drive_file_id 且直链开关开：主线是直链（2026-10-27 用户改令：
+      直链为主线）；中继开关开且挂载可定位时，中继作为可切换兜底
+      列在直链之后；两条都可用时都列（直链第一）；中继关时只列直链，
+      单条不是清单失效——准备中态标注仍对单条生效（见
+      apply_transfer_status，PlaybackInfo 对单条同样覆盖）。
     - mount:// 条目：挂载中继；
     - 其余（本机路径、直链开关关时的 Drive 条目回落）：本机文件或
       按 file_path 形态落挂载中继。
@@ -151,7 +154,7 @@ def list_variants(db: Session, item, *,
     names: list[str] = []
     if fid and playback_strategy.drive_direct_play_enabled(db):
         if drive_mount_locatable and playback_strategy.drive_relay_enabled(db):
-            names += [DRIVE_RELAY, DRIVE_DIRECT]
+            names += [DRIVE_DIRECT, DRIVE_RELAY]
         else:
             names += [DRIVE_DIRECT]
     elif mount_lib.is_mount_path(file_path):

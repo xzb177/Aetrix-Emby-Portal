@@ -5421,8 +5421,11 @@ async def video_stream(
     # 绝不走共享 SA 池。铁律：一个用户、一份凭据、一份额度；下面
     # 任何一步失败都明文报错，绝不静默回落 SA 中继或 _play_target。
     # 门禁：byos 路径 + 中继开关开 + 变体为 None 或 DRIVE_RELAY。
-    # 阶段 6 换线口径照搬标准分支：switch 开且无变体请求时，路由
-    # 首选不是 DRIVE_RELAY 就跳过本分支、落回标准流程。
+    # 注意：直链为主线（#1353）的 Drive 路由首选不适用于本分支——
+    # drive_route_choice 的候选只是共享盘 Drive 两条变体，而 byos://
+    # 条目没有 drive_direct 变体，Drive 腿只有 byos_drive_relay；
+    # 按 Drive 首选跳过本分支会落回标准流程，违背下面“绝不静默
+    # 回落 _play_target”铁律（见 _byos_skip 处注释）。
     from backend.emby_server import byos_scan as _byos_scan
     _byos_is_path = _byos_scan.is_byos_path(
         getattr(item, "file_path", ""))
@@ -5431,15 +5434,16 @@ async def video_stream(
             None, play_variants.DRIVE_RELAY)
     if _byos_relay_on:
         _byos_t0 = time.perf_counter()
+        # #1353 回归修复：此前这里按 drive_route_choice 首选决定
+        # 是否跳过 BYOS 分支；#1353 把首选从 drive_relay 改成
+        # drive_direct 后，无变体请求的 BYOS 条目恒被跳过，落回
+        # 标准流程后 _play_target 把 byos:// 当成本地文件（且在
+        # 测试桩上因 item 无 .library 直接 AttributeError），下面
+        # 的绑定检查（403 他人绑定 / 409 非 Drive 或非 active /
+        # 503 令牌失效）全被绕过——CI 6 个 BYOS 用例因此红。
+        # BYOS 没有 drive_direct 可落，跳过本分支不是“换线”，
+        # 是改走错路，故本分支不读 Drive 路由首选，恒不跳过。
         _byos_skip = False
-        if _requested_variant is None:
-            _byos_first, _, _ = await run_db(
-                _variant_switch.drive_route_choice, db)
-            if _byos_first is None or _byos_first[0] != play_variants.DRIVE_RELAY:
-                _byos_skip = True
-                logger.warning(
-                    "变体切换：byos drive_relay 在可用性表中不是首选，"
-                    "落回标准流程 item=%s", getattr(item, "id", "?"))
         if not _byos_skip:
             _byos_id, _byos_row = await run_db(
                 _byos_binding_row, db, item)
@@ -5532,10 +5536,10 @@ async def video_stream(
             raise HTTPException(
                 status_code=409, detail="播放变体当前不可用：drive_relay")
         if _relay_drive_id:
-            # 阶段 6 换线首选（只针对无变体请求）：先读可用性表——
-            # 中继不可用且直链可用时直接跳过中继走直链；两条都不可用
-            # 时明确 409，不试死线。显式变体请求不进这里（客户端选
-            # 了就是选了，换线不许替它改主意）。
+            # 阶段 6 换线首选（只针对无变体请求，直链优先）：
+            # 先读可用性表——直链可用时直接跳过中继走直链；直链不可用
+            # 且中继可用时才走中继；两条都不可用时明确 409，不试死线。
+            # 显式变体请求不进这里（客户端选了就是选了，换线不许替它改主意）。
             _skip_relay = False
             if _requested_variant is None:
                 _first, _avail, _ = await run_db(
@@ -5557,8 +5561,8 @@ async def video_stream(
                     _skip_relay = True
                     _switch_attempted = True
                     logger.warning(
-                        "变体切换：drive_relay 在可用性表中不可用，起播直接走 "
-                        "drive_direct item=%s", getattr(item, "id", "?"))
+                        "变体切换：默认路线走 drive_direct（直链优先），"
+                        "跳过中继 item=%s", getattr(item, "id", "?"))
             if not _skip_relay:
                 # Drive SA 中继（2026-10-23 额度应急）：字节过服务器转发，
                 # file_id 不出门、不走公开下载池；存在性由上游取流本身

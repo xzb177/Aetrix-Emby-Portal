@@ -4,21 +4,29 @@
 ``variant_availability`` 表，本阶段让默认起播选路读它——不是凭
 感觉换线，也不是中继函数自己无限重试。
 
-## 换线规则（只针对无变体请求的 Drive 默认路线）
+## 换线规则（只针对无变体请求的 Drive 默认路线；2026-10-27 用户改令：
+## 直链为主线，中继只作可切换兜底）
 
-- 首选：按可用性排序候选变体（无记录当可用），unavailable 的变体
+- 首选：直链。按可用性排序候选变体（无记录当可用），unavailable 的变体
   不做首选；同变体多挂载（``mount_relay:<id>``）按挂载键独立排序。
-- 失败重试点：中继失败时改走下一条可用变体，上限一次。502
-  （远端不可用）与 403（中继函数内部已轮换凭据重试一次、再失败
-  才抛到这里——见 streaming.serve_drive_relay_async 的 attempt
-  循环）都可换线：核心换线是“凭据轮换之后”的第二步、有界步骤，
-  不是中继函数自己无限重试；换线时先记一条 error 事件
-  （method=relay、variant=drive_relay、error_kind 标清上游状态），
-  换线成功后直链的 ok 事件与之拼出一次完整切换，无记录的静默
-  换线不许出现。
+- 中继何时被试：仅当直链在可用性表中不可用、或客户端显式选了
+  drive_relay 时。中继开关关着时中继不进默认路线，也不在清单
+  之外被试（显式选则按 409 纪律明文报错，不静默改走直链）。
+- 失败重试点（#1355 一次换线，限于中继确实被试之后；直链优先
+  后“中继先试再换直链”已不是默认路径）：中继失败时改走下一条
+  可用变体，上限一次。502（远端不可用）与 403（中继函数内部已
+  轮换凭据重试一次、再失败才抛到这里——见
+  streaming.serve_drive_relay_async 的 attempt 循环）都可换线：
+  换线时先记一条 error 事件（method=relay、variant=drive_relay、
+  error_kind 标清上游状态），再重读路由——直链在可用组时改走
+  直链，换线成功后直链的 ok 事件与之拼出一次完整切换，无记录
+  的静默换线不许出现；直链仍不可用时明确 409，不静默改走。
+  中继函数内部的 403 换 SA 重试仍在先，换线不替它做第二遍。
 - 额度语义：凭据取不到（503）、目标没了（404）、配额节流
   （429）、凭据错但未经过轮换的腿（如 BYOS 用户令牌单次直试）
   不触发换线——BYOS 分支根本不走本函数；401/404/429/503 原样抛。
+- 直链自身失败（404 目标没了 / 503 凭据错）不静默改走中继——
+  同 file_id 的中继一样会撞同一堵墙，失败必须明文报错。
 - 红线：换线只在同一用户副本的变体之间换（直链↔中继，走门禁
   已解析出的 _play_fid 用户副本），绝不以“换线”名义在转存未
   完成时播共享盘——转存门禁在换线之前，preparing/failed 早已
@@ -100,13 +108,17 @@ def order_candidates(db: Session, candidates) -> list:
 def drive_route_choice(db: Session) -> tuple:
     """Drive 默认路线的换线决策（供 video_stream 的中继分支调用）。
 
-    候选偏好顺序恒为 [drive_relay, drive_direct]（与今天默认路线
-    的尝试顺序一致）。返回 ``(首选元组或 None, 可用组, 不可用组)``：
+    候选偏好顺序恒为 [drive_direct, drive_relay]（2026-10-27 用户改令：
+    直链为主线，中继只作可切换兜底；与今天默认路线的尝试顺序一致）。
+    返回 ``(首选元组或 None, 可用组, 不可用组)``：
     首选 None = 两条都不可用，调用方须明确失败、不许试死线。
+    注意：中继分支只在中继开关开时才读本函数；直链可用时首选即直链，
+    调用方跳过中继走直链——中继 502→直链的旧换线路径因此被直链优先
+    取代，只在直链不可用且中继被试后仍 502 时以 409 收尾。
     """
     available, unavailable = split_available(db, [
-        (play_variants.DRIVE_RELAY, None),
         (play_variants.DRIVE_DIRECT, None),
+        (play_variants.DRIVE_RELAY, None),
     ])
     first = available[0] if available else None
     return first, available, unavailable

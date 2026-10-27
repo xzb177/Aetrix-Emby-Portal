@@ -3,8 +3,10 @@
 
 钉死三条：
 - 可用变体优先：中继在可用性表中不可用时，起播直接走直链，不试死线；
-- 失败重试点：中继上游 502 与轮换后 403 时改走直链（上限一次），
-  凭据取不到（503）与 404 不换线；
+- 失败重试点（直链优先后仅限中继确实被试时）：中继上游 502 与
+  轮换后 403 时先记 error 事件、再重读路由，直链可用才改走直链
+  （上限一次），直链仍不可用则明确 409；凭据取不到（503）与
+  404 不换线；
 - 全部不可用时明确失败（409 + 变体名与原因），不静默播死线。
 
 全部离线：DB 用内存 SQLite，可见性/付费墙/referer/限流/Drive
@@ -216,25 +218,28 @@ def test_drive_route_choice_all_unavailable(db):
     first, avail, unavail = variant_switch.drive_route_choice(db)
     assert first is None
     assert avail == []
-    assert unavail == [("drive_relay", None), ("drive_direct", None)]
+    assert unavail == [("drive_direct", None), ("drive_relay", None)]
 
 
 # ---------------------------------------------------------------------------
 # video_stream 层：换线三条钉死（门控已删，旧路已无）
 # ---------------------------------------------------------------------------
 
-def test_stream_switch_on_relay_502_falls_to_direct(db, monkeypatch):
+def test_stream_direct_first_skips_relay_when_both_available(db, monkeypatch):
+    # 直链为主线（2026-10-27 用户改令）：双可用时默认走直链，中继
+    # 根本不被试；旧“中继 502→直链”换线场景已被直链优先取代——
+    # 中继只在直链不可用时才被试（见 direct_unavailable_409 一案）。
     resp, calls = _call_stream(
         monkeypatch, db, _user(), _drive_item("s-502"),
         relay=HTTPException(status_code=502, detail="源站不可达"),
         ensure=True)
     assert resp.status_code == 302
     assert resp.headers["location"] == f"https://usercontent.test/{FID}"
-    assert calls == {"relay": 1, "ensure": 1}
+    assert calls == {"relay": 0, "ensure": 1}
     evs = [(e.method, e.variant, e.result, e.error_kind)
            for e in _events(db)]
-    assert ("relay", "drive_relay", "error", "upstream_502") in evs
     assert ("direct_302", "drive_direct", "ok", None) in evs
+    assert ("relay", "drive_relay", "error", "upstream_502") not in evs
 
 
 def test_stream_switch_on_relay_unavailable_skips_relay(db, monkeypatch):
@@ -257,30 +262,53 @@ def test_stream_switch_on_all_unavailable_409(db, monkeypatch):
     assert "均不可用" in excinfo.value.detail
 
 
-def test_stream_switch_on_relay_403_after_rotation_falls_to_direct(db, monkeypatch):
-    # FMBY 全部学第 5 项：中继函数内部已轮换凭据重试一次、再失败抛
-    # 403 时，核心换线一次改走直链（上限一次、有 error 事件记录）。
-    # 此处 _call_stream 的 relay 桩直接抛 403，模拟“轮换后仍失败”
-    # 的那一次抛错；BYOS 单次直试分支不走换线，不受本测试影响。
+def test_stream_direct_first_ignores_relay_403_when_both_available(
+        db, monkeypatch):
+    # 直链优先：默认路线根本不试中继，中继的 403 不会打断直链。
+    # （#1355 旧版“中继 403→改走直链”测试的前提是中继先被试，
+    # 直链优先后该前提已不存在，故由本案取代；一次换线本身仍在
+    # 下面 direct_unavailable_409 一案里以 403 守卫路径覆盖。）
     resp, calls = _call_stream(
         monkeypatch, db, _user(), _drive_item("s-403"),
         relay=HTTPException(status_code=403, detail="forbidden"),
         ensure=True)
     assert resp.status_code == 302
-    assert resp.headers["location"] == f"https://usercontent.test/{FID}"
-    assert calls == {"relay": 1, "ensure": 1}
+    assert calls == {"relay": 0, "ensure": 1}
+
+
+def test_stream_switch_on_relay_403_direct_unavailable_409(db, monkeypatch):
+    # #1355 一次换线守卫：直链不可用时中继被试、轮换后仍 403，
+    # 换线先记 error 事件，再重读路由——直链仍不可用，明确 409。
+    _set_availability(db, "drive_direct", "unavailable")
+    with pytest.raises(HTTPException) as excinfo:
+        _call_stream(monkeypatch, db, _user(), _drive_item("s-403u"),
+                     relay=HTTPException(status_code=403, detail="forbidden"),
+                     ensure=True)
+    assert excinfo.value.status_code == 409
+    assert "变体切换失败" in excinfo.value.detail
     evs = [(e.method, e.variant, e.result, e.error_kind)
            for e in _events(db)]
     assert ("relay", "drive_relay", "error", "upstream_403_after_rotation") in evs
-    assert ("direct_302", "drive_direct", "ok", None) in evs
 
 
-def test_stream_switch_on_relay_503_no_switch(db, monkeypatch):
+def test_stream_explicit_relay_403_no_switch(db, monkeypatch):
+    # 显式选了中继就是选了，403 原样抛，不换线、不静默改走直链。
     with pytest.raises(HTTPException) as excinfo:
-        _call_stream(monkeypatch, db, _user(), _drive_item("s-503"),
-                     relay=HTTPException(status_code=503, detail="no credential"),
+        _call_stream(monkeypatch, db, _user(), _drive_item("s-403e"),
+                     query=b"variant=drive_relay",
+                     relay=HTTPException(status_code=403, detail="forbidden"),
                      ensure=True)
-    assert excinfo.value.status_code == 503
+    assert excinfo.value.status_code == 403
+
+
+def test_stream_direct_first_ignores_relay_503_when_both_available(
+        db, monkeypatch):
+    resp, calls = _call_stream(
+        monkeypatch, db, _user(), _drive_item("s-503"),
+        relay=HTTPException(status_code=503, detail="no credential"),
+        ensure=True)
+    assert resp.status_code == 302
+    assert calls == {"relay": 0, "ensure": 1}
 
 
 def test_stream_switch_on_relay_502_direct_unavailable_409(db, monkeypatch):
@@ -293,8 +321,11 @@ def test_stream_switch_on_relay_502_direct_unavailable_409(db, monkeypatch):
     assert "变体切换失败" in excinfo.value.detail
 
 
-def test_stream_switch_on_relay_502_direct_ensure_raises_wrapped(
+def test_stream_direct_first_ensure_raises_with_route_context(
         db, monkeypatch):
+    # 直链优先：默认路线跳过中继走直链（_switch_attempted 在跳过时即
+    # 置真，旧口径如此），直链存在性失败仍带换线上下文前缀，便于
+    # 从日志里看出这次直链是经换线决策到达的，而非老直链路径。
     with pytest.raises(HTTPException) as excinfo:
         _call_stream(monkeypatch, db, _user(), _drive_item("s-502e"),
                      relay=HTTPException(status_code=502, detail="源站不可达"),
@@ -303,13 +334,15 @@ def test_stream_switch_on_relay_502_direct_ensure_raises_wrapped(
     assert "变体切换后仍失败" in excinfo.value.detail
 
 
-def test_stream_switch_on_relay_502_direct_ensure_none_409(db, monkeypatch):
+def test_stream_explicit_direct_ensure_none_409(db, monkeypatch):
+    # 显式选了直链、执行时又不可定位：报 409，不许悄悄落回通用分支。
     with pytest.raises(HTTPException) as excinfo:
         _call_stream(monkeypatch, db, _user(), _drive_item("s-502n"),
+                     query=b"variant=drive_direct",
                      relay=HTTPException(status_code=502, detail="源站不可达"),
                      ensure=None)
     assert excinfo.value.status_code == 409
-    assert "变体切换后仍失败" in excinfo.value.detail
+    assert "drive_direct" in excinfo.value.detail
 
 
 def test_stream_switch_on_explicit_variant_502_no_switch(db, monkeypatch):

@@ -168,6 +168,32 @@ def test_byos_drive_uses_binding_token_not_sa(monkeypatch):
     assert notes[0]["result"] == "ok"
 
 
+def test_byos_no_variant_ignores_drive_direct_first(monkeypatch):
+    """#1353 回归：Drive 路由首选改成直链后，无变体请求的 BYOS 条目
+    仍须走 BYOS 用户令牌中继，不许因 drive_direct 是首选就跳过本分支
+    落回标准流程（标准流程的 _play_target 会把 byos:// 当成本地文件、
+    绕过绑定检查；CI 原 6 个 BYOS 用例即因此红）。
+
+    这里把 drive_route_choice 显式钉成直链首选，BYOS 中继仍须跑。
+    """
+    from backend.emby_server import api
+    from backend.emby_server import play_variants as _pv
+    from backend.emby_server import variant_switch as _vs
+
+    relay, token, sa, notes = _setup_video_stream(
+        monkeypatch, _byos_item(), _user(), _binding())
+    monkeypatch.setattr(
+        _vs, "drive_route_choice",
+        lambda db: ((_pv.DRIVE_DIRECT, None),
+                    [(_pv.DRIVE_DIRECT, None), (_pv.DRIVE_RELAY, None)], []))
+    resp = _run(api.video_stream(
+        "item1", _fake_request(), _user(), _FakeDB(_binding())))
+    assert resp.status_code == 200
+    assert relay == [{"drive_id": "byos:7", "file_id": "FID7",
+                      "media_type": "video/mkv", "access_token": "USERTOK"}]
+    assert sa == []
+
+
 def test_byos_other_users_binding_403_and_no_relay(monkeypatch):
     from backend.emby_server import api
 
