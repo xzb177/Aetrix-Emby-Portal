@@ -163,6 +163,40 @@ def test_username_may_match_own_portal_username(db):
     assert body["emby_username"] == "carol"
 
 
+def test_register_rejects_portal_username_matching_other_emby_username(db):
+    """注册门户名不能撞别人已有的接线名（AuthenticateByName 两个字段都认）。"""
+    from starlette.requests import Request
+
+    from backend.api import emby_portal
+
+    owner = _make_user(db, "alice")
+    owner.emby_username = "taken_play"
+    db.add(models.SystemConfig(key="register_ratelimit_enabled", value="false"))
+    db.commit()
+
+    scope = {
+        "type": "http", "method": "POST", "path": "/", "headers": [],
+        "client": ("1.2.3.4", 1234),
+    }
+    req = emby_portal.RegisterRequest(username=" taken_play ", password="secret123")
+    with pytest.raises(HTTPException) as exc:
+        emby_portal.register(Request(scope), req, db)
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "用户名已被占用"
+    assert db.query(models.WebUser).filter(models.WebUser.username == "taken_play").first() is None
+    db.refresh(owner)
+    assert owner.emby_username == "taken_play"
+
+    ok = emby_portal.register(
+        Request(scope),
+        emby_portal.RegisterRequest(username="fresh_user", password="secret123"),
+        db,
+    )
+    assert ok.user.username == "fresh_user"
+    stored = db.query(models.WebUser).filter_by(username="fresh_user").one()
+    assert stored.emby_username is None
+
+
 def test_username_unique_against_other_emby_and_portal_names(db):
     owner = _make_user(db, "alice")
     owner.emby_username = "taken_emby"
