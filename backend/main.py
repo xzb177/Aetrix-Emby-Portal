@@ -86,6 +86,7 @@ from backend.emby_server import facets  # noqa: F401
 from backend.emby_server import media_routes  # noqa: F401
 from backend.emby_server import compat_routes  # noqa: F401
 from backend.emby_server import playback_bus_admin
+from backend.emby_server import play_start_admin
 from backend.emby_server import stream_routes  # noqa: F401
 from backend.emby_server.image_routes import install_image_routes
 from backend.emby_server.mount_routes import install_mount_routes
@@ -825,6 +826,9 @@ app.include_router(playback_admin_router)
 # 挂载即导入模型，lifespan 的 init_db create_all 随既有表建出
 # playback_control_commands 新表（部署时须亲验新表已建出）。
 app.include_router(playback_bus_admin.router)
+# 起播事件聚合读口（FMBY #2 闭环接线）：管理端只读口直接调
+# play_events.aggregate_play_start_events，见 play_start_admin.py。
+app.include_router(play_start_admin.router)
 # 管理后台只读观测口（专线 B 第一阶段：补口）：绑定 / 采样进度 / sidecar /
 # 映射 / 139 池，全部 GET，见 backend/api/admin_readonly.py
 app.include_router(admin_readonly_router)
