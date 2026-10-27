@@ -638,15 +638,26 @@ def panel_letter(
 
     hours = total_secs // 3600
     minutes = (total_secs % 3600) // 60
-    return _ok({
+    payload = {
         "date": (now - timedelta(days=1)).strftime("%Y-%m-%d"),
         "watch_duration": f"{hours}小时{minutes}分" if hours else f"{minutes}分",
         "watch_count": len(watched),
         "watched": watched[:5],
         "taste_shift": taste_shift,
         "streak": _streak(db, user.id),
-        "teaser": "今日封存已送达，去拆盲盒吧 📦",
-    })
+    }
+    # 附言 / 今日推荐走能力中心 world_letter。个人统计只来自上面的播放查询。
+    # 读配置失败时回落改前硬编码附言，推荐留空，避免整封信 500。
+    from backend.integrations import world_letter
+    try:
+        letter_copy = world_letter.public_info(db)
+        payload["teaser"] = letter_copy["teaser"]
+        payload["recommendation"] = letter_copy["recommendation"]
+    except Exception:  # noqa: BLE001
+        logger.warning("panel_letter 来信文案读取失败", exc_info=True)
+        payload["teaser"] = world_letter.FALLBACK_TEASER
+        payload["recommendation"] = ""
+    return _ok(payload)
 
 
 # ==================== 5.6 GET /api/panel/feed ====================

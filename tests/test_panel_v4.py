@@ -240,6 +240,108 @@ def test_letter_and_collector_read_playback_sessions(db, user):
     assert coll["watch_hours"] == 2.0
 
 
+_LETTER_STAT_KEYS = (
+    "date", "watch_duration", "watch_count", "watched", "taste_shift", "streak",
+)
+
+
+def test_letter_copy_from_world_letter(db, user):
+    """昨日来信附言 / 今日推荐走 world_letter；个人统计不随文案配置消失。
+
+    空配置回落改前硬编码附言，推荐为空串。关掉 letter_enabled 后统计仍在，
+    两段文案强制为空（不回落默认附言）。/home 的 letter 区块同一口径。
+    """
+    from backend import integrations
+    from backend.integrations import store, world_letter
+
+    start = _bj_to_storage(12, 0, days_ago=1)
+    _mk_session(db, user, "昨日电影", start, 7200)
+    app = _make_app(db, user)
+    client = TestClient(app)
+
+    letter = client.get("/api/panel/letter").json()["data"]
+    assert letter["teaser"] == world_letter.FALLBACK_TEASER
+    assert letter["recommendation"] == ""
+    for key in _LETTER_STAT_KEYS:
+        assert key in letter
+    assert letter["watch_count"] == 1
+    assert letter["watched"] == ["昨日电影"]
+    assert "enabled" not in letter
+    # 未填配置时卡片默认开着：无必填字段，letter_enabled 缺省 true
+    cards = {c["slug"]: c for c in integrations.list_capabilities(db)}
+    card = cards["world_letter"]
+    assert card["group"] == "探险世界"
+    assert card["enabled"] is True and card["configured"] is True
+    assert card["fields"]["letter_enabled"] == "true"
+    assert card["fields"]["letter_teaser"] == ""
+    assert card["fields"]["letter_recommendation"] == ""
+
+    integrations.save_capability(db, "world_letter", {
+        "letter_enabled": True,
+        "letter_teaser": "  附言已配置  ",
+        "letter_recommendation": "  今日看《测试片》  ",
+    })
+    letter = client.get("/api/panel/letter").json()["data"]
+    assert letter["teaser"] == "附言已配置"
+    assert letter["recommendation"] == "今日看《测试片》"
+    assert letter["watch_duration"] == "2小时0分"
+    assert "streak" in letter and "taste_shift" in letter and "date" in letter
+    home = client.get("/api/panel/home").json()["data"]["letter"]
+    assert home["teaser"] == "附言已配置"
+    assert home["recommendation"] == "今日看《测试片》"
+    assert home["watched"] == ["昨日电影"]
+
+    integrations.save_capability(db, "world_letter", {
+        "letter_teaser": "附" * (world_letter.MAX_TEASER_LEN + 50),
+        "letter_recommendation": "荐" * (world_letter.MAX_RECOMMENDATION_LEN + 100),
+    })
+    letter = client.get("/api/panel/letter").json()["data"]
+    assert letter["teaser"] == "附" * world_letter.MAX_TEASER_LEN
+    assert len(letter["teaser"]) == 200
+    assert letter["recommendation"] == "荐" * world_letter.MAX_RECOMMENDATION_LEN
+    assert len(letter["recommendation"]) == 500
+    assert letter["watch_count"] == 1
+
+    # 空白附言 / 空白推荐：附言回落，推荐隐藏
+    store.write_values(db, {
+        "letter_enabled": "true",
+        "letter_teaser": "   ",
+        "letter_recommendation": " \n ",
+    })
+    db.commit()
+    info = world_letter.public_info(db)
+    assert info["enabled"] is True
+    assert info["teaser"] == world_letter.FALLBACK_TEASER
+    assert info["recommendation"] == ""
+    letter = client.get("/api/panel/letter").json()["data"]
+    assert letter["teaser"] == world_letter.FALLBACK_TEASER
+    assert letter["recommendation"] == ""
+
+    # 关闭开关：统计照旧，文案强制空，不回落默认附言
+    saved = integrations.save_capability(db, "world_letter", {
+        "letter_enabled": False,
+        "letter_teaser": "不该出现的附言",
+        "letter_recommendation": "不该出现的推荐",
+    })
+    assert saved["values"]["letter_enabled"] == "false"
+    info = world_letter.public_info(db)
+    assert info == {"teaser": "", "recommendation": "", "enabled": False}
+    letter = client.get("/api/panel/letter").json()["data"]
+    assert letter["teaser"] == ""
+    assert letter["recommendation"] == ""
+    assert letter["watch_count"] == 1
+    assert letter["watched"] == ["昨日电影"]
+    assert letter["watch_duration"] == "2小时0分"
+    for key in _LETTER_STAT_KEYS:
+        assert key in letter
+    home = client.get("/api/panel/home").json()["data"]["letter"]
+    assert home is not None
+    assert home["teaser"] == ""
+    assert home["recommendation"] == ""
+    assert home["watch_count"] == 1
+    assert home["watched"] == ["昨日电影"]
+
+
 # ==================== 3. 盲盒拆封幂等 ====================
 
 def test_unseal_idempotent(db, user):
