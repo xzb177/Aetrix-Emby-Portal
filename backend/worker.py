@@ -592,6 +592,16 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动 Drive 增量发现失败（可忽略）: {e}")
 
+        # 115 增量镜像（FMBY #21）：默认关（PAN115_MIRROR_ENABLED=0），
+        # 开闸后首轮 full、之后 incremental；无 115 账号时不启动。
+        try:
+            from backend.emby_server import pan115_mirror
+            if pan115_mirror.start():
+                started.append("pan115_mirror")
+                logger.info("✅ 115 增量镜像已启动")
+        except Exception as e:
+            logger.warning(f"启动 115 增量镜像失败（可忽略）: {e}")
+
 
         # 本机目录实时监听（v2.46.0）：必须在这里也起一次。
         # main.py 里的同一段包在 `if not _is_api_role` 里，而 run_all.py 会把 serve.py
