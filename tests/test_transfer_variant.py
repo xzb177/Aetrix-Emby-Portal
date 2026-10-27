@@ -1201,3 +1201,192 @@ def test_resumable_upload_308_resume(monkeypatch):
     assert calls[1][0] == "bytes 8-15/20"
     assert calls[2][0] == "bytes 16-19/20"
     assert b"".join(c[1] for c in calls) == data
+
+
+# ---------- 方案 2：绑定用户不静默播共享原件 / Quota 不换号 ----------
+
+def _clear_quota_flags(monkeypatch):
+    monkeypatch.delenv("TRANSFER_VARIANT_AUTO_ENABLED", raising=False)
+    monkeypatch.delenv("TRANSFER_VARIANT_QUOTA_AUTO_ENQUEUE", raising=False)
+
+
+def test_quota_auto_enqueue_defaults_off(monkeypatch):
+    _clear_quota_flags(monkeypatch)
+    assert tv.quota_auto_enqueue_enabled() is False
+    assert tv.auto_enabled() is False
+
+
+def test_quota_auto_enqueue_either_key(monkeypatch):
+    _clear_quota_flags(monkeypatch)
+    monkeypatch.setenv("TRANSFER_VARIANT_QUOTA_AUTO_ENQUEUE", "1")
+    assert tv.quota_auto_enqueue_enabled() is True
+    _clear_quota_flags(monkeypatch)
+    monkeypatch.setenv("TRANSFER_VARIANT_AUTO_ENABLED", "1")
+    assert tv.quota_auto_enqueue_enabled() is True
+
+
+def test_gate_bound_without_ready_never_proceeds(db, monkeypatch, caplog):
+    """有绑定、没有本人 ready 副本：不能 proceed 共享原件，并入队。"""
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    with caplog.at_level("INFO", logger="backend.emby_server.transfer_variant"):
+        gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "preparing"
+    assert gate["reason"] == "job_created"
+    assert gate["verdict"] != "proceed"
+    assert "byos_gate_block" in caplog.text
+    assert "byos_enqueue" in caplog.text
+
+
+def test_gate_bound_no_drive_file_failed(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db, drive_file_id="")
+    _binding(db, 7)
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate == {"verdict": "failed", "reason": "no_drive_file"}
+    assert db.query(em.TransferJob).count() == 0
+
+
+def test_gate_cross_bound_no_drive_file_failed(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db, drive_file_id="")
+    _binding(db, 7, provider="pan115")
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "failed"
+    assert gate["reason"] == "no_drive_file"
+    assert db.query(em.TransferJob).count() == 0
+
+
+def test_gate_bound_missing_item_id_failed(db, monkeypatch):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    _binding(db, 7)
+    item = SimpleNamespace(id=None, drive_file_id="origfid",
+                           file_path="mount://3/电影/a.mkv")
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate == {"verdict": "failed", "reason": "no_item_id"}
+    assert db.query(em.TransferJob).count() == 0
+
+
+def test_gate_ready_logs_ready_play(db, monkeypatch, caplog):
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    _variant(db, item.id, fid="usercopy", scope="user", ref="7")
+    with caplog.at_level("INFO", logger="backend.emby_server.transfer_variant"):
+        gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["reason"] == "has_ready_variant"
+    assert "byos_ready_play" in caplog.text
+
+
+def test_prefer_user_variant_replaces_shared_original():
+    shared = SimpleNamespace(owner_scope="source", variant_file_id="origfid")
+    copy = SimpleNamespace(owner_scope="user", variant_file_id="usercopy")
+    gate = {"verdict": "proceed", "reason": "has_ready_variant",
+            "variant": copy}
+    fid, row = tv.prefer_user_variant("origfid", shared, gate)
+    assert fid == "usercopy" and row is copy
+    # 明示放行没有用户副本行时，保留调用方已经解析的 fid。
+    fid2, row2 = tv.prefer_user_variant(
+        "origfid", None, {"verdict": "proceed", "reason": "master_off"})
+    assert fid2 == "origfid" and row2 is None
+
+
+def test_bound_shared_play_blocked_matrix():
+    copy = SimpleNamespace(owner_scope="user", variant_file_id="usercopy")
+    assert tv.bound_shared_play_blocked(
+        {"verdict": "proceed", "reason": "no_drive_file"},
+        has_binding=True, play_variant=None) is True
+    assert tv.bound_shared_play_blocked(
+        {"verdict": "proceed", "reason": "master_off"},
+        has_binding=True, play_variant=None) is False
+    assert tv.bound_shared_play_blocked(
+        {"verdict": "proceed", "reason": "play_sign_consume"},
+        has_binding=True, play_variant=None) is False
+    assert tv.bound_shared_play_blocked(
+        {"verdict": "proceed", "reason": "has_ready_variant"},
+        has_binding=True, play_variant=copy) is False
+    assert tv.bound_shared_play_blocked(
+        {"verdict": "proceed", "reason": "has_ready_variant"},
+        has_binding=True, play_variant=None) is True
+    assert tv.bound_shared_play_blocked(
+        {"verdict": "preparing", "reason": "job_created"},
+        has_binding=True, play_variant=None) is False
+    assert tv.bound_shared_play_blocked(
+        {"verdict": "proceed", "reason": "no_drive_file"},
+        has_binding=False, play_variant=None) is False
+
+
+def test_quota_bound_auto_off_records_only(db, monkeypatch, caplog):
+    _enable(monkeypatch)
+    _clear_quota_flags(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    with caplog.at_level("INFO", logger="backend.emby_server.transfer_variant"):
+        result = tv.note_quota_signal(db, item, _user(), None, "drive1")
+    assert result == {"action": "skipped", "reason": "auto_off"}
+    assert db.query(em.TransferJob).count() == 0
+    assert "byos_quota_force" in caplog.text
+    assert "byos_enqueue" not in caplog.text
+    decision = tv.quota_playback_decision(result, bound=True)
+    assert decision["failover"] is False
+    assert decision["status"] == 409
+    assert decision["detail"] == tv.QUOTA_AUTO_OFF_DETAIL
+
+
+def test_quota_new_key_enqueues_once(db, monkeypatch, caplog):
+    _enable(monkeypatch)
+    _clear_quota_flags(monkeypatch)
+    monkeypatch.setenv("TRANSFER_VARIANT_QUOTA_AUTO_ENQUEUE", "1")
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    with caplog.at_level("INFO", logger="backend.emby_server.transfer_variant"):
+        first = tv.note_quota_signal(db, item, _user(), None, "drive1")
+    assert first["action"] == "queued"
+    second = tv.note_quota_signal(db, item, _user(), None, "drive1")
+    assert second["action"] == "throttled"
+    assert db.query(em.TransferJob).count() == 1
+    assert "byos_enqueue" in caplog.text
+    assert "byos_quota_force" in caplog.text
+    pending = tv.quota_playback_decision(first, bound=True)
+    assert pending == {"failover": False, "status": 409,
+                       "detail": tv.QUOTA_COPY_PENDING_DETAIL}
+    assert tv.quota_playback_decision(
+        {"action": "ignored", "reason": "master_off"}, bound=True)["status"] == 503
+    assert tv.quota_playback_decision(
+        {"action": "skipped", "reason": "auto_off"}, bound=False)["failover"] is True
+
+
+def test_quota_pan115_bound_user_job_not_source(db, monkeypatch):
+    _enable(monkeypatch)
+    _clear_quota_flags(monkeypatch)
+    monkeypatch.setenv("TRANSFER_VARIANT_QUOTA_AUTO_ENQUEUE", "1")
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7, provider="pan115")
+    result = tv.note_quota_signal(db, item, _user(), None, "drive1")
+    assert result["action"] == "queued"
+    job = db.query(em.TransferJob).one()
+    assert job.owner_scope == "user"
+    assert job.owner_ref == "7"
+    assert job.dest_drive_id == "pan115:user-7"
+    assert job.provider == "drive"
+    assert job.trigger == "auto"
+
+
+def test_quota_pan115_bound_auto_off_no_source_job(db, monkeypatch):
+    _enable(monkeypatch)
+    _clear_quota_flags(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7, provider="pan115")
+    result = tv.note_quota_signal(db, item, _user(), None, "drive1")
+    assert result == {"action": "skipped", "reason": "auto_off"}
+    assert db.query(em.TransferJob).count() == 0

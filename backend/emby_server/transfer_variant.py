@@ -318,8 +318,24 @@ def master_enabled() -> bool:
 
 
 def auto_enabled() -> bool:
-    """应急自动触发开关，默认关（D5：手动验证过后再开）。"""
+    """应急自动触发开关（D5 / ``TRANSFER_VARIANT_AUTO_ENABLED``），默认关。
+
+    与 ``TRANSFER_VARIANT_QUOTA_AUTO_ENQUEUE`` 等价，见
+    ``quota_auto_enqueue_enabled``：两个键都关时 Quota 强信号只记日志。
+    """
     return _env_on("TRANSFER_VARIANT_AUTO_ENABLED", "0")
+
+
+def quota_auto_enqueue_enabled() -> bool:
+    """Quota 强信号是否自动入队。默认关。
+
+    现网键 ``TRANSFER_VARIANT_AUTO_ENABLED``（D5）与方案键
+    ``TRANSFER_VARIANT_QUOTA_AUTO_ENQUEUE`` 都默认关。任一显式打开，
+    才在既有 24h 节流窗内入队一次。都关：只记信号，播放端返回稳定
+    409，不入队，也不换共享 SA / Cookie。
+    """
+    return auto_enabled() or _env_on(
+        "TRANSFER_VARIANT_QUOTA_AUTO_ENQUEUE", "0")
 
 
 def transfer_dir_name() -> str:
@@ -340,9 +356,12 @@ _QUOTA_MARKERS = (b"quota exceeded", b"quotaexceeded",
 class QuotaPageError(Exception):
     """上游整段响应是 Quota 额度页（不是视频字节）。
 
-    由中继嗅探抛给 video_stream：调用方记信号 + 入队转存，本次播放
-    回落现行链（302 开着走 302，否则干净 502）。不是 HTTPException，
-    其它中继调用方（目前只有 video_stream）不会误把它当普通上游失败。
+    由中继嗅探抛给 video_stream：调用方记信号，并按
+    ``quota_auto_enqueue_enabled`` 决定是否入队。绑定用户不换共享
+    SA、不改播共享原件，返回稳定 409/503（见
+    ``quota_playback_decision``）。未绑定的已下发签名仍走旧回落
+    （302 开着走 302，否则 502）。不是 HTTPException，其它中继调用方
+    不会误把它当普通上游失败。
     """
 
 
@@ -765,13 +784,159 @@ def create_cross_provider_job(db, item, user_id, source_provider,
 # - error：门禁内部异常，fail-closed 报 503，绝不静默回落。
 # - serve_115_copy：115 用户副本已就绪，调用方须用用户 Cookie +
 #   副本 pickcode 现签 302（绝不走共享 115 链），variant 行随 dict 回。
+#
+# 绑定用户可以 proceed 共享原件的原因只有下面这些明示放行。
+# 其余 proceed（含 no_drive_file / no_item_id）一律改成 failed，
+# 调用方再按 409 挡掉，不许静默播共享原件。
+SHARED_PROCEED_REASONS = frozenset({
+    "master_off", "no_user", "play_sign_consume", "byos_item",
+    "unknown_provider", "no_matching_binding",
+})
+
+# Quota 强信号 / 门禁挡共享原件时返回给客户端的稳定文案。
+QUOTA_COPY_PENDING_DETAIL = "请稍候，正在拷到你的盘"
+QUOTA_AUTO_OFF_DETAIL = (
+    "共享盘额度已满，应急自动入队关着，本次不入队、不改播共享原件")
+QUOTA_READY_RETRY_DETAIL = (
+    "额度页已命中，不改播共享原件。你的盘里已有副本，请重试播放")
+QUOTA_UNAVAILABLE_DETAIL = (
+    "共享盘额度已满，未能入队转存，不改播共享原件")
+QUOTA_NO_SHARED_DETAIL = "共享盘额度已满，不改播共享原件"
+SHARED_BLOCKED_DETAIL = "转存未就绪，不走共享播放"
+
 _TERMINAL_JOB_KINDS = {
     "dead", "auth_error", "unsupported", "retriable", "copy_unresolved",
     "orphan", "item_gone", "no_drive",
 }
 
 
+def log_byos(event: str, **fields) -> None:
+    """方案 2 结构化日志。
+
+    事件名只认 ``byos_gate_block`` / ``byos_enqueue`` /
+    ``byos_quota_force`` / ``byos_ready_play``。日志失败不影响播放。
+    """
+    try:
+        extras = " ".join(
+            f"{key}={value}" for key, value in fields.items()
+            if value is not None)
+        logger.info("[byos] %s %s", event, extras)
+    except Exception:  # noqa: BLE001 — 观测失败不能挡播放
+        pass
+
+
+def _observe_gate(result, item, user) -> None:
+    """门禁出口打点：挡住 / 入队 / 就绪播出。proceed 明示放行不打。"""
+    verdict = (result or {}).get("verdict")
+    reason = (result or {}).get("reason")
+    fields = {
+        "item": getattr(item, "id", None),
+        "user": getattr(user, "id", None),
+        "verdict": verdict,
+        "reason": reason,
+        "job_id": (result or {}).get("job_id"),
+    }
+    if reason == "job_created":
+        log_byos("byos_enqueue", **fields)
+    if verdict in ("preparing", "failed", "error"):
+        log_byos("byos_gate_block", **fields)
+    elif verdict == "serve_115_copy" or reason == "has_ready_variant":
+        log_byos("byos_ready_play", **fields)
+
+
+def bound_shared_play_blocked(gate, *, has_binding, play_variant) -> bool:
+    """绑定用户没有本人 ready 副本时，不许静默播共享原件。
+
+    明示放行（总闸关、已下发签名、无绑定、byos 条目等）返回 False。
+    preparing / failed / error / serve_115_copy 由调用方按原状态码
+    处理，这里不重复挡。``has_ready_variant`` 但调用方没换成用户
+    副本 fid 时仍返回 True。
+    """
+    if not has_binding:
+        return False
+    if (play_variant is not None
+            and getattr(play_variant, "owner_scope", None) == "user"):
+        return False
+    verdict = (gate or {}).get("verdict")
+    reason = (gate or {}).get("reason")
+    if verdict in ("preparing", "failed", "error", "serve_115_copy"):
+        return False
+    if verdict == "proceed" and reason in SHARED_PROCEED_REASONS:
+        return False
+    return True
+
+
+def prefer_user_variant(play_fid, play_variant, gate):
+    """门禁确认本人 ready 副本时，播出 fid 以门禁行为准。
+
+    ``resolve_play_file_id`` 查询异常会回共享原件。门禁已经拿到
+    用户副本行时，不许沿用那个原件。
+    """
+    variant = (gate or {}).get("variant")
+    if ((gate or {}).get("verdict") == "proceed"
+            and (gate or {}).get("reason") == "has_ready_variant"
+            and variant is not None
+            and getattr(variant, "owner_scope", None) == "user"):
+        fid = (getattr(variant, "variant_file_id", "") or "").strip()
+        if fid:
+            return fid, variant
+    return play_fid, play_variant
+
+
+def quota_playback_decision(signal, *, bound: bool) -> dict:
+    """Quota 强信号的播放裁决。
+
+    绑定用户 ``failover`` 恒为 False：不换 SA、不改播共享原件。
+    状态码：入队或节流中 409；自动入队关着 409；已有副本 409；
+    总闸关或信号处理失败 503。未绑定返回 failover，调用方保持
+    旧的 302/502 回落（只可能是已下发签名）。
+    """
+    if not bound:
+        return {"failover": True, "status": None, "detail": None}
+    action = (signal or {}).get("action")
+    reason = (signal or {}).get("reason")
+    if action == "error" or reason in ("master_off", "internal"):
+        return {"failover": False, "status": 503,
+                "detail": QUOTA_UNAVAILABLE_DETAIL}
+    if action in ("queued", "throttled") or reason == "job_within_24h":
+        return {"failover": False, "status": 409,
+                "detail": QUOTA_COPY_PENDING_DETAIL}
+    if reason == "auto_off":
+        return {"failover": False, "status": 409,
+                "detail": QUOTA_AUTO_OFF_DETAIL}
+    if reason == "has_ready_variant":
+        return {"failover": False, "status": 409,
+                "detail": QUOTA_READY_RETRY_DETAIL}
+    return {"failover": False, "status": 409,
+            "detail": QUOTA_NO_SHARED_DETAIL}
+
+
+def _emit_quota_bound(result, item_id, user_id) -> dict:
+    """绑定用户的 Quota 分支出口：强制事件，入队时再打一条。"""
+    log_byos(
+        "byos_quota_force",
+        item=item_id, user=user_id,
+        action=(result or {}).get("action"),
+        reason=(result or {}).get("reason"),
+        job_id=(result or {}).get("job_id"))
+    if (result or {}).get("action") == "queued":
+        log_byos(
+            "byos_enqueue",
+            item=item_id, user=user_id,
+            job_id=(result or {}).get("job_id"),
+            trigger="quota")
+    return result
+
+
 def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
+    """首播转存门禁。语义见 ``_ensure_user_copy_gate_impl``。"""
+    result = _ensure_user_copy_gate_impl(
+        db, item, user, play_sign_consume=play_sign_consume)
+    _observe_gate(result, item, user)
+    return result
+
+
+def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
     """首播转存门禁（2026-10-26 用户亲定“先转存再播”）。
 
     绝不抛异常：内部异常一律吞掉返回 error verdict（调用方 503
@@ -810,10 +975,11 @@ def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
             if provider == "pan115" and not orig_fid:
                 return {"verdict": "failed", "reason": "no_source_fid"}
             if provider == "drive" and not orig_fid:
-                return {"verdict": "proceed", "reason": "no_drive_file"}
+                # 有绑定但没有可转的源 fid：不许 proceed 去播共享原件。
+                return {"verdict": "failed", "reason": "no_drive_file"}
             item_id = getattr(item, "id", None)
             if item_id is None:
-                return {"verdict": "proceed", "reason": "no_item_id"}
+                return {"verdict": "failed", "reason": "no_item_id"}
             dest = (f"pan115:user-{user_id}" if other == "pan115"
                     else f"userdrive:{user_id}")
             scheme = "pan115:" if other == "pan115" else "userdrive:"
@@ -857,10 +1023,11 @@ def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
             # 115 无源 fid：不建任务（不污染节流窗），等扫描补 fid。
             return {"verdict": "failed", "reason": "no_source_fid"}
         if provider == "drive" and not orig_fid:
-            return {"verdict": "proceed", "reason": "no_drive_file"}
+            # 有绑定但没有可转的源 fid：不许 proceed 去播共享原件。
+            return {"verdict": "failed", "reason": "no_drive_file"}
         item_id = getattr(item, "id", None)
         if item_id is None:
-            return {"verdict": "proceed", "reason": "no_item_id"}
+            return {"verdict": "failed", "reason": "no_item_id"}
         ready = _newest_ready(db, item_id, "user", str(user_id))
         if ready is not None:
             if provider == "pan115":
@@ -1206,7 +1373,8 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
       已废止，用户盘拷贝见 D4）；
     - 已有健康副本 → 跳过（不要对同一条目堆副本）；
     - 24h 内同归属桶已有任务 → 节流（throttled，不建新任务）；
-    - 自动开关关 → 只记日志，返回 skipped/auto_off（供人工手动触发）。
+    - 自动开关关（``quota_auto_enqueue_enabled`` 默认关）→ 只记日志，
+      返回 skipped/auto_off（供人工手动触发）。绑定用户不建服主任务。
     """
     try:
         item_id = getattr(item, "id", None)
@@ -1228,32 +1396,86 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
         user_id = getattr(user, "id", None)
         if user_id is not None and has_active_drive_binding(db, user_id):
             # BYOS 用户：额度信号触发给该用户建用户盘任务（不再 skip）。
+            # 开关默认关：只记信号，不入队，也不落到下面的服主任务。
             ready_user = _newest_ready(db, item_id, "user", str(user_id))
             if ready_user is not None:
-                return {"action": "skipped", "reason": "has_ready_variant"}
-            if _recent_job_exists(db, item_id, "user", str(user_id)):
-                return {"action": "throttled", "reason": "job_within_24h"}
-            if not auto_enabled():
+                result = {"action": "skipped", "reason": "has_ready_variant"}
+            elif _recent_job_exists(db, item_id, "user", str(user_id)):
+                result = {"action": "throttled", "reason": "job_within_24h"}
+            elif not quota_auto_enqueue_enabled():
                 logger.info(
                     "转存变体 Quota 信号：自动入队关，BYOS 用户仅记日志 "
                     "item=%s user=%s", item_id, user_id)
-                return {"action": "skipped", "reason": "auto_off"}
-            try:
-                job = create_user_job(db, item, user_id, "drive",
-                                      trigger="auto")
-            except TransferError as exc:
-                if exc.kind == "throttled":
-                    return {"action": "throttled", "reason": "job_within_24h"}
-                return {"action": "skipped", "reason": exc.kind}
-            logger.warning("转存变体应急自动入队（用户盘）：item=%s user=%s "
-                           "job=%s", item_id, user_id, job.id)
-            return {"action": "queued", "job_id": job.id}
+                result = {"action": "skipped", "reason": "auto_off"}
+            else:
+                try:
+                    job = create_user_job(db, item, user_id, "drive",
+                                          trigger="auto")
+                except TransferError as exc:
+                    if exc.kind == "throttled":
+                        result = {"action": "throttled",
+                                  "reason": "job_within_24h"}
+                    else:
+                        result = {"action": "skipped", "reason": exc.kind}
+                else:
+                    logger.warning(
+                        "转存变体应急自动入队（用户盘）：item=%s user=%s "
+                        "job=%s", item_id, user_id, job.id)
+                    result = {"action": "queued", "job_id": job.id}
+            return _emit_quota_bound(result, item_id, user_id)
+        if user_id is not None and has_active_pan115_binding(db, user_id):
+            # 只绑了 115：入用户 115，绝不建服主 source 任务。
+            provider = _item_provider(db, item)
+            if provider == "pan115":
+                ready_user = _newest_ready_for_scheme(
+                    db, item_id, "user", str(user_id), "pan115:")
+                enqueue = "same"
+            elif provider == "drive":
+                ready_user = _newest_ready_for_scheme(
+                    db, item_id, "user", str(user_id), "pan115:")
+                enqueue = "cross"
+            else:
+                logger.info(
+                    "转存变体 Quota 信号：115 绑定但条目 provider 不明，"
+                    "不入队 item=%s user=%s", item_id, user_id)
+                return _emit_quota_bound(
+                    {"action": "skipped", "reason": "unknown_provider"},
+                    item_id, user_id)
+            if ready_user is not None:
+                result = {"action": "skipped", "reason": "has_ready_variant"}
+            elif _recent_job_exists(db, item_id, "user", str(user_id)):
+                result = {"action": "throttled", "reason": "job_within_24h"}
+            elif not quota_auto_enqueue_enabled():
+                logger.info(
+                    "转存变体 Quota 信号：自动入队关，115 绑定用户仅记日志 "
+                    "item=%s user=%s", item_id, user_id)
+                result = {"action": "skipped", "reason": "auto_off"}
+            else:
+                try:
+                    if enqueue == "cross":
+                        job = create_cross_provider_job(
+                            db, item, user_id, "drive", trigger="auto")
+                    else:
+                        job = create_user_job(
+                            db, item, user_id, "pan115", trigger="auto")
+                except TransferError as exc:
+                    if exc.kind == "throttled":
+                        result = {"action": "throttled",
+                                  "reason": "job_within_24h"}
+                    else:
+                        result = {"action": "skipped", "reason": exc.kind}
+                else:
+                    logger.warning(
+                        "转存变体应急自动入队（用户 115）：item=%s user=%s "
+                        "job=%s", item_id, user_id, job.id)
+                    result = {"action": "queued", "job_id": job.id}
+            return _emit_quota_bound(result, item_id, user_id)
         ready = get_ready_variant_for_user(db, item_id, user_id)
         if ready is not None:
             return {"action": "skipped", "reason": "has_ready_variant"}
         if _recent_job_exists(db, item_id, "source", None):
             return {"action": "throttled", "reason": "job_within_24h"}
-        if not auto_enabled():
+        if not quota_auto_enqueue_enabled():
             logger.info(
                 "转存变体 Quota 信号：自动入队默认关，仅记日志 item=%s",
                 item_id)
