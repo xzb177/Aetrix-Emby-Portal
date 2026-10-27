@@ -6,6 +6,8 @@ export interface ToastMessage {
   type: 'success' | 'error' | 'warning' | 'info'
   message: string
   duration?: number
+  actionLabel?: string
+  onAction?: () => void
 }
 
 const messages = ref<ToastMessage[]>([])
@@ -24,7 +26,7 @@ const COPY_HINTS: Record<string, string> = {
 }
 
 export function useToast() {
-  const add = (message: string, type: ToastMessage['type'] = 'info', duration = 3000) => {
+  const add = (message: string, type: ToastMessage['type'] = 'info', duration = 3000, opts?: Pick<ToastMessage, 'actionLabel' | 'onAction'>) => {
     const now = Date.now()
     const key = `${type}:${message}`
     if (key === lastKey && now - lastAt < DEDUP_WINDOW_MS) {
@@ -34,7 +36,7 @@ export function useToast() {
     lastAt = now
 
     const id = ++messageId
-    messages.value.push({ id, type, message, duration })
+    messages.value.push({ id, type, message, duration, ...opts })
 
     // 自动关闭
     if (duration > 0) {
@@ -55,6 +57,9 @@ export function useToast() {
 
   const success = (message: string, duration?: number) => add(message, 'success', duration)
   const error = (message: string, duration?: number) => add(message, 'error', duration)
+  /** 带重试的报错：不自动消失，用户点“重试”才执行并关闭本条 */
+  const errorWithRetry = (message: string, onRetry: () => void) =>
+    add(message, 'error', 0, { actionLabel: '重试', onAction: onRetry })
   const warning = (message: string, duration?: number) => add(message, 'warning', duration)
   const info = (message: string, duration?: number) => add(message, 'info', duration)
 
@@ -67,6 +72,7 @@ export function useToast() {
     remove,
     success,
     error,
+    errorWithRetry,
     warning,
     info,
     copySuccess

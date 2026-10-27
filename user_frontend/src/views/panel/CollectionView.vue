@@ -25,6 +25,7 @@
           <div class="v4-sec-sub">
             <span v-if="detail">{{ detail.effective_count }} 部有效成员</span>
             <span v-else>正在加载…</span>
+            <span> · 成员只有片名展示，本站没有单片详情页，点播请到播放器里搜片名</span>
           </div>
           <div class="v4-track-switch" role="tablist" aria-label="成员排序">
             <button

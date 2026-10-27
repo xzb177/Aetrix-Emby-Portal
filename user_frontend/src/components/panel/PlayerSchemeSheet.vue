@@ -20,11 +20,11 @@
           </div>
           <button type="button" class="psp-x" aria-label="关闭" @click="close">✕</button>
         </div>
-        <p class="psp-sub">点一下，直接跳到播放器里填好</p>
+        <p class="psp-sub">这一步只把播放器账号导入，不直接播这一集：点播放器后，还要在播放器里搜上面这个片名。</p>
         <div v-if="loading" class="psp-empty">正在读取播放器…</div>
         <p v-else-if="needsBinding" class="psp-empty">
-          请先绑定自己的网盘账号才能点播。
-          <RouterLink to="/game/account" @click="close">去“我的”页绑定网盘</RouterLink>
+          请先绑定自己的网盘账号才能点播，没绑定只能浏览、不能点播。
+          <RouterLink :to="{ path: '/game/account', hash: '#my-drive' }" @click="close">去“我的网盘”绑定</RouterLink>
         </p>
         <p v-else-if="schemes.length === 0" class="psp-empty">
           这里还没有可导入的播放器。
@@ -39,6 +39,16 @@
             @click="pick(s)"
           >{{ s.name }}</button>
         </div>
+        <p v-if="!loading && !needsBinding && schemes.length > 0" class="psp-tip">
+          首播说明：没转存过的片子，首播会先转存到你自己的盘，不走共享池。
+          播放器里转圈、报 409（转存还没完成）或 503（转存失败）时，关掉播放器回到这里再点一次就是重试，不用重绑。
+        </p>
+        <button
+          v-if="title && !loading && !needsBinding"
+          type="button"
+          class="psp-copy"
+          @click="copyTitle"
+        >复制片名，去播放器里搜</button>
         <p class="psp-tip">没装的话去<RouterLink to="/game/operator" @click="close">接线员页</RouterLink>导入</p>
       </div>
     </div>
@@ -57,7 +67,7 @@ import {
 } from '@/composables/usePlayerSchemes'
 
 const open = defineModel<boolean>('open', { default: false })
-defineProps<{ title?: string }>()
+const props = defineProps<{ title?: string }>()
 
 const toast = useToast()
 const schemes = ref<PlayerScheme[]>([])
@@ -97,6 +107,18 @@ async function refresh() {
 function close() {
   window.clearTimeout(jumpTimer)
   open.value = false
+}
+
+async function copyTitle() {
+  const t = (props.title || '').trim()
+  if (!t) return
+  try {
+    await navigator.clipboard.writeText(t)
+    toast.success('片名已复制，去播放器里粘贴搜索')
+  } catch {
+    // 剪贴板不可用时不谎报成功，让用户手动复制标题行文字
+    toast.info('复制失败，请手动复制上面的片名')
+  }
 }
 
 async function pick(s: PlayerScheme) {
@@ -195,6 +217,17 @@ async function pick(s: PlayerScheme) {
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.12);
 }
 .psp-btn:active { transform: translateY(2px); box-shadow: none; }
+.psp-copy {
+  margin-top: 12px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--ink, #2a2620);
+  border-radius: var(--paper-r-lg, 12px);
+  background: transparent;
+  color: var(--ink, #2a2620);
+  font-size: 13px;
+  cursor: pointer;
+}
 .psp-btn:focus-visible,
 .psp-x:focus-visible,
 .psp-sheet:focus-visible {

@@ -6,6 +6,7 @@
         <span class="v4-stamp">{{ facilityStamp('account') }}</span>
         <h1><span aria-hidden="true">⚙️</span> 账号设置</h1>
         <p>改登录密码、看我的会员、管我的设备、绑自己的网盘 —— 账号自己的事都在这儿。</p>
+        <p><a class="v4-empty-link" href="#my-drive" @click.prevent="goToMyDrive">去我的网盘绑定 →</a></p>
       </header>
 
       <!-- 安全设置：修改登录密码（逻辑由 ProfileView 移植，authApi.changePassword） -->
@@ -171,13 +172,13 @@
            名单里没有的 provider，整个块不渲染，连该 provider 已绑的行也不展示（以名单为准）。
            后端口径见 backend/emby_server/portal.py user_emby_router：列表只出自己的行；
            谷歌盘绑定走 Google 授权（新窗口打开授权地址），回调由 Google 直接调后端 callback 口返回绑定行 JSON，
-           所以授权完成后回到本页点“刷新列表”才能看到新绑定；服务器未配 OAuth 凭据时后端明文 400，前端原样展示。
+           所以授权完成后回到本页会自动重拉一次绑定列表（没出现再点“刷新列表”）；服务器未配 OAuth 凭据时后端明文 400，前端原样展示。
            115 绑定走 POST /storage-bindings（provider='pan115'，credential 为 115 Cookie），建时后端同步验活。 -->
-      <section v-if="providersError || (providersLoaded && (hasProvider('drive') || hasProvider('pan115')))" class="v4-sec" aria-label="我的网盘">
+      <section v-if="providersError || (providersLoaded && (hasProvider('drive') || hasProvider('pan115')))" id="my-drive" class="v4-sec" aria-label="我的网盘">
         <div class="v4-sec-title"><span aria-hidden="true">💾</span> 我的网盘</div>
         <div v-if="providersError" class="v4-err">{{ providersError }}<br><button class="v4-retry" @click="loadProviders">重试</button></div>
         <template v-else>
-        <div v-if="hasProvider('drive')" class="v4-sec-sub">绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑不影响现有播放</div>
+        <div v-if="hasProvider('drive')" class="v4-sec-sub">绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑定只能浏览、不能点播</div>
         <div v-if="hasProvider('drive')" class="v4-card">
           <div class="dev-head">
             <span class="dev-count">已绑 {{ driveBindings.length }} 个谷歌盘</span>
@@ -188,8 +189,8 @@
           <div v-if="driveLoading && !driveBindings.length" class="v4-skeleton" style="height:120px"></div>
           <div v-else-if="driveError" class="v4-err">{{ driveError }}<br><button class="v4-retry" @click="loadDriveBindings">重试</button></div>
           <div v-else-if="!driveBindings.length" class="v4-empty">
-            <p>① 这是什么：绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；不绑也不影响现有播放。</p>
-            <p>② 怎么做：起个名字点“绑定谷歌盘”→新窗口去 Google 点同意→回来点“刷新列表”。</p>
+            <p>① 这是什么：绑了自己的谷歌盘，播放就走你自己的额度，不走共享池；没绑定只能浏览、不能点播。</p>
+            <p>② 怎么做：起个名字点“绑定谷歌盘”→新窗口去 Google 点同意→回来后列表会自动刷新，没出现再点“刷新列表”。</p>
             <p>③ 绑完怎么验：去播一集，看是不是走你自己的盘。</p>
           </div>
           <template v-else>
@@ -240,11 +241,11 @@
             <input id="drive-label" v-model="driveLabel" type="text" placeholder="比如：我的主力盘" autocomplete="off" />
           </div>
           <p v-if="driveFormError" class="acct-error" role="alert">{{ driveFormError }}</p>
-          <p v-if="driveAuthUrl" class="dev-tip">点这里打开 Google 授权页：<a :href="driveAuthUrl" target="_blank" rel="noopener">打开 Google 授权页</a>，同意后关掉那个窗口、回到本页点“刷新列表”。</p>
+          <p v-if="driveAuthUrl" class="dev-tip">点这里打开 Google 授权页：<a :href="driveAuthUrl" target="_blank" rel="noopener">打开 Google 授权页</a>，同意后关掉那个窗口、回到本页，列表会自动刷新。</p>
           <button type="button" class="acct-btn primary" :disabled="driveStarting" @click="handleBindDrive">
             {{ driveStarting ? '正在打开授权…' : '绑定谷歌盘' }}
           </button>
-          <p class="dev-tip">点绑定后会在新窗口打开 Google 授权页，点同意后关掉那个窗口、回到本页点“刷新列表”，新绑定就会出现。授权页本身不是本站页面，账号密码只交给 Google。</p>
+          <p class="dev-tip">点绑定后会在新窗口打开 Google 授权页，点同意后关掉那个窗口、回到本页，列表会自动刷新，没出现再点“刷新列表”。授权页本身不是本站页面，账号密码只交给 Google。</p>
         </div>
         <div v-if="hasProvider('pan115')" class="v4-card">
           <div class="dev-head">
@@ -253,11 +254,11 @@
               <RefreshCw :size="13" /> {{ driveLoading ? '刷新中' : '刷新列表' }}
             </button>
           </div>
-          <div class="v4-sec-sub">绑了自己的 115，播 115 的片子就走你自己的 115 账号现签直链，字节不过服务器；没绑不影响现有播放</div>
+          <div class="v4-sec-sub">绑了自己的 115，播 115 的片子就走你自己的 115 账号现签直链，字节不过服务器；没绑定只能浏览、不能点播</div>
           <div v-if="driveLoading && !pan115Bindings.length" class="v4-skeleton" style="height:120px"></div>
           <div v-else-if="pan115Error" class="v4-err">{{ pan115Error }}<br><button class="v4-retry" @click="loadDriveBindings">重试</button></div>
           <div v-else-if="!pan115Bindings.length" class="v4-empty">
-            <p>① 这是什么：绑了自己的 115，播 115 的片子就走你自己的 115 账号现签直链，字节不过服务器；不绑也不影响现有播放。</p>
+            <p>① 这是什么：绑了自己的 115，播 115 的片子就走你自己的 115 账号现签直链，字节不过服务器；没绑定只能浏览、不能点播。</p>
             <p>② 怎么做：去 115 网页版取登录 Cookie→粘到下面框里点“绑定 115”→本站只密封存、只用于你自己的播放；Cookie 过期了重绑。</p>
             <p>③ 绑完怎么验：去播一集 115 的片子，看走不走自己的账号。</p>
           </div>
@@ -301,6 +302,7 @@
             <label class="acct-label" for="pan115-cookie">115 Cookie</label>
             <input id="pan115-cookie" v-model="pan115Cookie" type="password" placeholder="从 115 网页版登录态里取，粘进来就行" autocomplete="off" />
           </div>
+          <p class="dev-tip">取法：先在 115 网页版登录 → 打开浏览器开发者工具 → 应用/存储 → Cookie → 把 115 那一行的“键=值; 键=值”整段复制到上面；只粘 Cookie 值，不要粘请求头、不要带换行。Cookie 会过期，过期了这里会显示已过期，到时候重新粘一次就行。</p>
           <p v-if="pan115FormError" class="acct-error" role="alert">{{ pan115FormError }}</p>
           <button type="button" class="acct-btn primary" :disabled="pan115Creating" @click="handleBindPan115">
             {{ pan115Creating ? '正在验证…' : '绑定 115' }}
@@ -368,7 +370,7 @@
  * 后续已承接（R45）：Emby 多服列表、正在播放远程终止已由接线员页
  * （/game/operator）承接 —— realmCards 多服列表 + 正在播放一键远程结束。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Lock, ChevronRight, RefreshCw } from 'lucide-vue-next'
 import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
@@ -442,6 +444,8 @@ function closeChangePwd() {
 }
 onUnmounted(() => {
   window.removeEventListener('keydown', onPwdEsc)
+  window.removeEventListener('focus', onOAuthReturn)
+  document.removeEventListener('visibilitychange', onVisibilityReturn)
   // R41：组件卸载时兜底释放 body 滚动锁，避免锁死
   document.body.style.overflow = ''
 })
@@ -611,7 +615,8 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
 // （POST /storage-bindings，provider='pan115'，建时后端同步验活）。
 // 绑定流程（谷歌盘）：start 口返回 authorization_url（字段名照抄 drive_oauth.start_drive_oauth），
 // 新窗口打开 Google 授权；Google 回调直接调后端 callback 口，不经过本站页面，
-// 所以本页不监听回调，只等用户回来点“刷新列表”。
+// 所以本页不监听回调，改为窗口重新获得焦点/页面重新可见时自动重拉一次
+// （只在刚走完 OAuth 的会话里做，避免无意义轮询；手动“刷新列表”仍保留作兜底）。
 // 后台挂载驱动的 provider 名单（GET /storage-bindings/providers）：两块共用同一套
 // 门控，不写死分支——名单里没有的块整个不渲染，连已绑行也不展示。
 const availableProviders = ref<string[]>([])
@@ -654,6 +659,24 @@ const pan115Creating = ref(false)
 const verifyingBinding = ref<number | null>(null)
 const unbindingId = ref<number | null>(null)
 const pendingUnbind = ref<number | null>(null)
+// 刚走完 Google OAuth 的会话标记：窗口重新获得焦点/页面重新可见时自动重拉一次。
+const pendingOAuthReturn = ref(false)
+
+function goToMyDrive() {
+  try { window.history.replaceState(null, '', '#my-drive') } catch { /* 忽略 */ }
+  const el = document.getElementById('my-drive')
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+function onOAuthReturn() {
+  if (!pendingOAuthReturn.value || driveLoading.value) return
+  pendingOAuthReturn.value = false
+  void loadDriveBindings()
+}
+
+function onVisibilityReturn() {
+  if (document.visibilityState === 'visible') onOAuthReturn()
+}
 
 function driveStatusText(status: string) {
   if (status === 'active') return '可用'
@@ -703,11 +726,12 @@ async function handleBindDrive() {
     driveAuthUrl.value = res.authorization_url
     if (!win || win.closed) {
       // 弹窗被浏览器拦了：不许谎报成功，留错误态 + 页面上的手动链接
-      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来点“刷新列表”'
+      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来，列表会自动刷新'
       return
     }
     win.location.href = res.authorization_url
-    toast.success('已打开 Google 授权页，同意后回到本页点“刷新列表”')
+    pendingOAuthReturn.value = true
+    toast.success('已打开 Google 授权页，同意后回到本页，列表会自动刷新')
   } catch (e) {
     // 服务器未配 OAuth 凭据等明文 400，原样展示后端错误，不编造成功
     if (win && !win.closed) win.close()
@@ -736,11 +760,12 @@ async function handleRebindDrive(b: StorageBinding) {
     }
     driveAuthUrl.value = res.authorization_url
     if (!win || win.closed) {
-      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来点“刷新列表”'
+      driveFormError.value = '弹窗被浏览器拦了，点上面“打开 Google 授权页”手动打开，同意后回来，列表会自动刷新'
       return
     }
     win.location.href = res.authorization_url
-    toast.success('已打开 Google 授权页，同意新增的写权限后回到本页点“刷新列表”，转存失败的任务会自动重跑')
+    pendingOAuthReturn.value = true
+    toast.success('已打开 Google 授权页，同意新增的写权限后回到本页，列表会自动刷新，转存失败的任务会自动重跑')
   } catch (e) {
     if (win && !win.closed) win.close()
     driveFormError.value = humanizeError(e)
@@ -795,6 +820,12 @@ async function handleBindPan115() {
   }
   if (!cookie) {
     pan115FormError.value = '先把 115 Cookie 粘进来'
+    return
+  }
+  // 提交前格式预检（后端只做去空白，不校验形态）：Cookie 应是“键=值; 键=值”的一段，
+  // 单个词、没有等号、过短的都先拦下来，不等后端验活失败才报错；不回显 Cookie 全文。
+  if (cookie.length < 10 || !cookie.includes('=')) {
+    pan115FormError.value = '这段看起来不像 Cookie：应是“键=值; 键=值”的一段，请从 115 网页版登录态里重新复制'
     return
   }
   pan115FormError.value = ''
@@ -916,6 +947,18 @@ onMounted(() => {
   loadDriveBindings()
   loadPrivacy()
   if (!serversLoading.value && !servers.value.length) void loadServers()
+  // 从播放器选择页带 #my-drive 跳过来时，等网盘区段渲染后再落点；
+  // 区段由 providersLoaded 门控，watch 里同样处理（见下）。
+  window.addEventListener('focus', onOAuthReturn)
+  document.addEventListener('visibilitychange', onVisibilityReturn)
+})
+
+watch(providersLoaded, (loaded) => {
+  if (loaded && window.location.hash === '#my-drive') {
+    void nextTick(() => {
+      document.getElementById('my-drive')?.scrollIntoView({ block: 'start' })
+    })
+  }
 })
 </script>
 

@@ -18,6 +18,7 @@
       <div style="min-width:0">
         <div class="d3-parcel-name">{{ parcel.name || '神秘包裹' }}</div>
         <div class="d3-parcel-meta">{{ coverMeta }}</div>
+        <div v-if="busy" class="d3-parcel-meta">拆封中，请稍等…</div>
       </div>
       <span class="d3-tag-sealed" :class="{ 'is-open': isOpen }">{{ isOpen ? '已拆封' : '待拆' }}</span>
     </div>
@@ -50,7 +51,7 @@
       </template>
     </div>
     <div class="v4-parcel-foot">
-      <span v-if="!isOpen" class="v4-parcel-hint">点一下开封</span>
+      <span v-if="!isOpen" class="v4-parcel-hint">{{ busy ? '拆封中，请稍等…' : '点一下开封' }}</span>
       <button
         v-else
         type="button"

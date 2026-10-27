@@ -1,4 +1,4 @@
-<!-- 桌面发现页中栏 · 继续观看（C档第2批）
+<!-- 发现页中栏 · 继续观看（C档第2批；桌面与手机都渲染，手机 2 列）
      数据源：GET /api/user/emby/resume（门户「继续观看」口径，
      backend/emby_server/portal.py get_resume_list）——有进度、未播完、
      最近播放的在前；单集按剧聚合。字段映射：
@@ -209,18 +209,27 @@ function openPicker(w: PortalResumeItem) {
 </script>
 
 <style scoped>
-/* 藏按钮：平时隐藏，悬停/聚焦卡片时出现（桌面发现页专属，触屏不进此页） */
+/* 藏按钮：桌面悬停/聚焦时出现；触屏（粗指针）下常显，触控区 44px，
+   视觉 × 居中，不靠 hover 才能点到。 */
 .d3-watch-wrap { position: relative; }
 .d3-watch-wrap .d3-watch { width: 100%; }
 .d3-watch-hide {
   position: absolute; top: 6px; right: 6px; z-index: 2;
-  width: 22px; height: 22px; border-radius: 50%;
+  width: 44px; height: 44px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
   border: none; background: rgba(0, 0, 0, 0.45); color: #fff;
   font-size: 14px; line-height: 1; cursor: pointer;
   opacity: 0; transition: opacity 0.15s;
 }
 .d3-watch-wrap:hover .d3-watch-hide,
 .d3-watch-hide:focus-visible { opacity: 1; }
+@media (pointer: coarse) {
+  .d3-watch-hide { opacity: 1; }
+}
+@media (max-width: 767px) {
+  /* 手机继续观看：4 列会挤成条，改 2 列紧凑列表；底部导航留白由 v4-page 统一口径承担 */
+  .d3-watch-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+}
 .d3-hidden-toggle { margin-top: 10px; text-align: right; }
 .d3-hidden-toggle button {
   background: none; border: none; cursor: pointer;

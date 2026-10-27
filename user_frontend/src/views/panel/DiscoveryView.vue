@@ -40,10 +40,12 @@
         <!-- 个人问候卡（桌面专属） -->
         <GreetingCard v-if="isWide" class="d-only" />
 
-        <!-- 区块锚点导航（桌面专属）：纯文字，激活态只许深青淡底 -->
+        <!-- 区块锚点导航（桌面专属）：只列当前 DOM 里真实存在的区段，
+             媒体库（disc-libs）无库时不渲染、继续观看注册表无该分区时不渲染，
+             这些情况下锚点不列出来，避免点锚点落空。 -->
         <nav v-if="isWide" class="d3-card d3-anchor d-only" aria-label="区块导航">
           <a
-            v-for="a in anchors"
+            v-for="a in visibleAnchors"
             :key="a.id"
             :href="'#' + a.id"
             :class="{ on: activeAnchor === a.id }"
@@ -167,8 +169,8 @@
             <RecentUpdates v-else-if="s.key === 'recently_updated'" :items="s.items as RecentAddedItem[]" />
           </template>
         </template>
-        <!-- 继续观看（桌面专属；数据源见组件注释） -->
-        <ContinueWatch v-else-if="isWide" />
+        <!-- 继续观看（桌面走注册表/自取；手机同样渲染，不再只在 isWide 时出现） -->
+        <ContinueWatch v-else />
 
         <!-- 实时动态流（桌面专属；C档第3批：后端 /api/panel/feed 已随 PR #1003 上线；
              无全量页面，故不设「查看全部」；realm_id 不传=跟随当前服） -->
@@ -340,6 +342,9 @@ function syncWide() {
 }
 
 /* ---------- 区块锚点导航（桌面专属）：滚动联动高亮 ---------- */
+// 锚点只列 DOM 里真实存在的区段：visibleAnchors 在 setupSpy 里按
+// document.getElementById 重建（disc-libs 只在有库时渲染、继续观看在注册表
+// 无该分区时不渲染，固定列全量会在这些情况下指向不存在的区段）。
 const anchors = [
   { id: 'disc-shelf', label: '今日封存' },
   { id: 'disc-watch', label: '继续观看' },
@@ -348,10 +353,12 @@ const anchors = [
   { id: 'disc-libs', label: '媒体库' },
   { id: 'disc-world', label: '世界' },
 ]
+const visibleAnchors = ref(anchors)
 const activeAnchor = ref('disc-shelf')
 let spy: IntersectionObserver | null = null
 function setupSpy() {
   if (!isWide.value || spy || typeof IntersectionObserver === 'undefined') return
+  visibleAnchors.value = anchors.filter((a) => document.getElementById(a.id))
   spy = new IntersectionObserver(
     (entries) => {
       for (const en of entries) {
@@ -360,7 +367,7 @@ function setupSpy() {
     },
     { rootMargin: '-30% 0px -60% 0px' },
   )
-  for (const a of anchors) {
+  for (const a of visibleAnchors.value) {
     const el = document.getElementById(a.id)
     if (el) spy.observe(el)
   }
@@ -410,8 +417,10 @@ function syncReduceMotion() {
 }
 
 function jumpTo(id: string) {
+  const el = document.getElementById(id)
+  if (!el) return
   activeAnchor.value = id
-  document.getElementById(id)?.scrollIntoView({ behavior: reduceMotion.value ? 'auto' : 'smooth', block: 'start' })
+  el.scrollIntoView({ behavior: reduceMotion.value ? 'auto' : 'smooth', block: 'start' })
 }
 watch(isWide, () => refreshSpy())
 watch(homeWorldActive, () => refreshSpy())
@@ -615,8 +624,8 @@ async function onUnseal(id: string | number) {
   try {
     await panel.unseal(id)
   } catch (e) {
-    // 失败不再静默：toast 告诉用户具体原因
-    useToast().error(humanizeError(e))
+    // 失败不再静默，也不再 3 秒自动消失：带“重试”的报错一直留着，直到用户点重试或关闭
+    useToast().errorWithRetry(`拆封失败：${humanizeError(e)}`, () => void onUnseal(id))
   } finally {
     unsealingIds.value.delete(key)
   }
