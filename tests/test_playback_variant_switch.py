@@ -3,8 +3,8 @@
 
 钉死三条：
 - 可用变体优先：中继在可用性表中不可用时，起播直接走直链，不试死线；
-- 失败重试点：中继上游 502 时改走直链（上限一次），凭据错
-  （403/503）与 404 不换线；
+- 失败重试点：中继上游 502 与轮换后 403 时改走直链（上限一次），
+  凭据取不到（503）与 404 不换线；
 - 全部不可用时明确失败（409 + 变体名与原因），不静默播死线。
 
 全部离线：DB 用内存 SQLite，可见性/付费墙/referer/限流/Drive
@@ -172,9 +172,13 @@ def _ok_relay():
 # 决策层：换线资格 / 可用性排序
 # ---------------------------------------------------------------------------
 
-def test_is_switch_eligible_only_502():
+def test_is_switch_eligible_502_and_403_after_rotation():
+    # 502 与轮换后 403 可换线；401/404/429/500/503 不换线。
+    # 403 可换线的前提是调用方只在共享盘中继分支（中继函数内部已
+    # 轮换凭据重试一次）调用；BYOS 单次直试分支不调用本函数。
     assert variant_switch.is_switch_eligible_relay_status(502) is True
-    for status in (401, 403, 404, 429, 500, 503):
+    assert variant_switch.is_switch_eligible_relay_status(403) is True
+    for status in (401, 404, 429, 500, 503):
         assert variant_switch.is_switch_eligible_relay_status(status) is False
 
 
@@ -253,12 +257,22 @@ def test_stream_switch_on_all_unavailable_409(db, monkeypatch):
     assert "均不可用" in excinfo.value.detail
 
 
-def test_stream_switch_on_relay_403_no_switch(db, monkeypatch):
-    with pytest.raises(HTTPException) as excinfo:
-        _call_stream(monkeypatch, db, _user(), _drive_item("s-403"),
-                     relay=HTTPException(status_code=403, detail="forbidden"),
-                     ensure=True)
-    assert excinfo.value.status_code == 403
+def test_stream_switch_on_relay_403_after_rotation_falls_to_direct(db, monkeypatch):
+    # FMBY 全部学第 5 项：中继函数内部已轮换凭据重试一次、再失败抛
+    # 403 时，核心换线一次改走直链（上限一次、有 error 事件记录）。
+    # 此处 _call_stream 的 relay 桩直接抛 403，模拟“轮换后仍失败”
+    # 的那一次抛错；BYOS 单次直试分支不走换线，不受本测试影响。
+    resp, calls = _call_stream(
+        monkeypatch, db, _user(), _drive_item("s-403"),
+        relay=HTTPException(status_code=403, detail="forbidden"),
+        ensure=True)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"https://usercontent.test/{FID}"
+    assert calls == {"relay": 1, "ensure": 1}
+    evs = [(e.method, e.variant, e.result, e.error_kind)
+           for e in _events(db)]
+    assert ("relay", "drive_relay", "error", "upstream_403_after_rotation") in evs
+    assert ("direct_302", "drive_direct", "ok", None) in evs
 
 
 def test_stream_switch_on_relay_503_no_switch(db, monkeypatch):
