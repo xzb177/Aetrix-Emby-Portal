@@ -310,6 +310,7 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
     """注册新用户（用户名唯一，密码 bcrypt 存储）。
 
     不自动生成接线用户名或播放密码；用户在接线员页自行设置。
+    门户用户名也不能与别人已有的接线用户名相同：客户端登录两个字段都认。
     """
     rl_enabled, rl_max, rl_window = _get_register_ratelimit(db)
     rl_key = f"register:{client_ip(request)}"
@@ -329,6 +330,15 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
     existing = db.query(models.WebUser).filter(models.WebUser.username == username).first()
     if existing:
         raise HTTPException(status_code=409, detail="用户名已被注册")
+    # 新用户自己还没有接线名，只查别人。撞上已有 emby_username 时
+    # AuthenticateByName 的 OR 查询会不确定命中谁，与设号撞名同一 409。
+    taken_emby = (
+        db.query(models.WebUser.id)
+        .filter(models.WebUser.emby_username == username)
+        .first()
+    )
+    if taken_emby:
+        raise HTTPException(status_code=409, detail="用户名已被占用")
 
     # ===== 注册模式开关 =====
     # open: 开放注册 / closed: 关闭注册
