@@ -431,6 +431,84 @@ class _CopyForbidden(_DriveError):
     """copy 403/404：原件已死或无权，不重试（设计稿 §六）。"""
 
 
+class _CopyQuotaExceeded(_DriveError):
+    """copy 403 且响应体判定为用户盘存储配额不足。
+
+    刻意不继承 _CopyForbidden：配额不足不是“原件已死”，调用方
+    绝不能把它当死文件走 Path B 或记 dead；它只走空间处理
+    （先腾再重试一次，仍不足则明确失败，绝不静默回落共享）。
+    未接住它的调用方会落入通用 except → _schedule_retry（有界
+    重试），同样不是死文件口径。
+    """
+
+
+class _SpaceInsufficient(Exception):
+    """用户盘空间不足（转存前实测或 copy 中途配额复核的终态）。
+
+    属性 file_size / free_bytes / shortfall 必须齐全才算“报清
+    三数”；about 未测到时 free_bytes / shortfall 为 None，消息
+    里如实写“剩余空间未测到”，不编数字。调用方接住它一律
+    _fail_job insufficient_space，绝不转 Path B、不转重试。
+    """
+
+    def __init__(self, file_size, free_bytes, shortfall,
+                 evicted=None, bytes_freed=0):
+        self.file_size = file_size
+        self.free_bytes = free_bytes
+        self.shortfall = shortfall
+        self.evicted = list(evicted or [])
+        self.bytes_freed = bytes_freed
+        if file_size is None:
+            detail = (f"用户盘空间不足：文件大小未知，"
+                      f"copy 中途仍报存储配额不足（已腾 "
+                      f"{len(self.evicted)} 条、{bytes_freed} 字节），"
+                      f"未静默回落共享")
+        elif free_bytes is None or shortfall is None:
+            detail = (f"用户盘空间不足：文件 {file_size} 字节，"
+                      f"剩余空间未测到（已腾 {len(self.evicted)} 条、"
+                      f"{bytes_freed} 字节），未静默回落共享")
+        else:
+            detail = (f"用户盘空间不足：文件 {file_size} 字节，"
+                      f"剩余 {free_bytes} 字节，还差 {shortfall} 字节"
+                      f"（已腾 {len(self.evicted)} 条、"
+                      f"{bytes_freed} 字节），未静默回落共享")
+        super().__init__(detail)
+
+
+def _is_storage_quota_response(resp):
+    """判定一次 Drive 403 响应是不是存储配额不足。
+
+    只认强信号，二者居一即算：
+    - 响应体 error.errors[] 里 reason == storageQuotaExceeded；
+    - 响应体 error.message 里含 storage quota（不区分大小写）。
+    刻意排除下载配额：reason == downloadQuotaExceeded 或消息含
+    download quota 时不算——下载配额是读侧限流，不是盘满了，
+    腾地方对它无效。响应体解析失败一律不算（按旧口径走
+    _CopyForbidden，不把不明 403 误判成盘满）。
+    """
+    try:
+        data = resp.json() or {}
+    except Exception:  # noqa: BLE001 — 解析失败 = 不是强信号
+        return False
+    if not isinstance(data, dict):
+        return False
+    err = data.get("error") or {}
+    if not isinstance(err, dict):
+        return False
+    for entry in err.get("errors") or []:
+        if not isinstance(entry, dict):
+            continue
+        reason = str(entry.get("reason") or "").strip().lower()
+        if reason == "storagequotaexceeded":
+            return True
+        if reason == "downloadquotaexceeded":
+            return False
+    message = str(err.get("message") or "").lower()
+    if "download quota" in message:
+        return False
+    return "storage quota" in message
+
+
 # ---------------------------------------------------------------------------
 # 选路与触发（纯读/纯触发，不碰播放链的写路径）
 # ---------------------------------------------------------------------------
@@ -1353,7 +1431,14 @@ class DriveApiClient:
         raise _Retriable(f"建转存目录失败：{resp.status_code}")
 
     def copy_file(self, drive_id, source_fid, folder_id, name):
-        """同盘 files.copy；403/404 转 _CopyForbidden（死文件，不重试）。"""
+        """同盘 files.copy；403/404 转 _CopyForbidden（死文件，不重试）。
+
+        唯一例外：403 且响应体判定为存储配额不足时转
+        _CopyQuotaExceeded（不继承 _CopyForbidden，调用方只走
+        空间处理，绝不能当死文件走 Path B）。401 由 _request
+        内部刷新重试，刷新后仍 401 不进这里（_request 原样返回
+        401 响应时按旧口径走 _Retriable，不误判成配额问题）。
+        """
         url = f"{FILES_URL}/{source_fid}/copy"
         body = {"name": name, "parents": [folder_id]}
         resp = self._request("POST", url, drive_id, json=body,
@@ -1363,9 +1448,36 @@ class DriveApiClient:
             data = resp.json() or {}
             return {"id": str(data.get("id") or ""),
                     "size": _to_int(data.get("size"))}
+        if resp.status_code == 403 and _is_storage_quota_response(resp):
+            raise _CopyQuotaExceeded(
+                "copy 被拒：用户盘存储配额不足（403 storageQuotaExceeded）")
         if resp.status_code in (403, 404):
             raise _CopyForbidden(f"copy 被拒：{resp.status_code}")
         raise _Retriable(f"copy 失败：{resp.status_code}")
+
+    def about_storage(self, drive_id):
+        """用户盘配额只读查询（Drive about.get，fields=storageQuota）。
+
+        返回 {limit, usage, free}（字节整数；limit 解析不到时为
+        None，free 随之为 None，表示“不限量/测不到上限”，调用方
+        按空间充足处理，不据此腾地方）。free = limit - usage：
+        usage 是账号总用量（Drive + 邮件 + 相册），正是配额执法
+        口径，不是仅转存目录用量。非 200 一律 _Retriable（调用方
+        按 quota_unknown 处理：不腾地方、照旧 copy，不把一次
+        about 抖动变成转存失败）。本方法只读配额，不列文件、
+        不读个人文件内容。
+        """
+        url = "https://www.googleapis.com/drive/v3/about"
+        resp = self._request("GET", url, drive_id,
+                             params={"fields": "storageQuota"})
+        if resp.status_code != 200:
+            raise _Retriable(f"about 配额查询失败：{resp.status_code}")
+        quota = (resp.json() or {}).get("storageQuota") or {}
+        limit = _to_int(quota.get("limit"))
+        usage = _to_int(quota.get("usage"))
+        if limit is None or usage is None:
+            return {"limit": limit, "usage": usage, "free": None}
+        return {"limit": limit, "usage": usage, "free": limit - usage}
 
     def add_anyone_reader(self, drive_id, fid):
         """给副本补 anyone reader（中继与 302 两条链都可用，见 PR 描述
@@ -1799,6 +1911,70 @@ def _verify_drive_copy_in_dir(client, drive_id, folder_id, name,
     return ""
 
 
+def _fresh_quota_numbers(user_client, user_drive, file_size):
+    """二次配额失败时的三数复核（只读 about，不腾地方）。
+
+    返回 (free_bytes, shortfall)，about 拿不到时均为 None。
+    本函数绝不调用 evict：二次失败时再腾就是无限循环的口子。
+    """
+    try:
+        quota = user_client.about_storage(user_drive)
+    except Exception:  # noqa: BLE001 — 复核失败不掩盖配额终态
+        return None, None
+    free = (quota or {}).get("free")
+    if free is None or file_size is None:
+        return free, None
+    return int(free), int(file_size) - int(free)
+
+
+def _attempt_user_copy(db, user_client, user_drive, orig_fid, folder_id,
+                       name, space_factory, user_id, item_id, file_size,
+                       quota_state):
+    """用户盘 Path A copy（含 copy 中途配额的一次腾+重试）。
+
+    正常 copy 直接返回回执。copy 抛 _CopyQuotaExceeded 时：
+    - 本任务此前未腾过（quota_state["retried"] 为假）：调
+      ensure_space 腾一次；腾后仍不足（reason == insufficient）
+      → 抛 _SpaceInsufficient（调用方 _fail_job，不走 Path B）；
+      否则重试 copy 一次；
+    - 重试的那一次仍抛配额错，或本任务已经腾过一次：不再腾、
+      不再重试，直接抛 _SpaceInsufficient（三数用 about 复核，
+      复核不到时 free/shortfall 为 None）。
+    _CopyForbidden 原样上抛（调用方按旧口径走文件夹缓存重试
+    或 Path B）；其它异常原样上抛。quota_state 由调用方在整
+    个 Path A 任务内共享（初始 copy 与文件夹缓存重试 copy 共
+    用），保证一个任务内 copy 中途的腾+重试至多一轮，绝不
+    因两个 copy 点各腾一次而变相循环。
+    """
+    from backend.emby_server import transfer_cleanup as tc
+    try:
+        return user_client.copy_file(user_drive, orig_fid, folder_id,
+                                     name)
+    except _CopyQuotaExceeded:
+        pass
+    if quota_state.get("retried"):
+        free, shortfall = _fresh_quota_numbers(
+            user_client, user_drive, file_size)
+        raise _SpaceInsufficient(file_size, free, shortfall)
+    quota_state["retried"] = True
+    space = tc.ensure_space_for_transfer(
+        db, space_factory, user_id, file_size=file_size,
+        exclude_item_ids=[item_id])
+    if space["reason"] == "insufficient":
+        raise _SpaceInsufficient(
+            file_size, space["free_bytes"], space["shortfall"],
+            evicted=space["evicted"], bytes_freed=space["bytes_freed"])
+    try:
+        return user_client.copy_file(user_drive, orig_fid, folder_id,
+                                     name)
+    except _CopyQuotaExceeded:
+        free, shortfall = _fresh_quota_numbers(
+            user_client, user_drive, file_size)
+        raise _SpaceInsufficient(
+            file_size, free, shortfall, evicted=space["evicted"],
+            bytes_freed=space["bytes_freed"])
+
+
 def _run_drive_user_job(db, job, item, drive_api):
     """Drive 用户盘任务：Path A 用户令牌直拷，403/404 转 Path B。
 
@@ -1806,6 +1982,10 @@ def _run_drive_user_job(db, job, item, drive_api):
     owner_scope=user、variant_drive_id=userdrive:<uid>（播放链沿用
     SA 轮换读 anyone-reader 副本，中继/302 均不改）。
     必须是真 copy（files.copy），快捷方式/添加到云端硬盘不算。
+    转存前量空间：copy 前调 ensure_space_for_transfer（剩余 <
+    文件大小时先腾，腾完仍不足直接 _fail_job insufficient_space，
+    绝不静默回落共享）；copy 中途配额错走 _attempt_user_copy
+    的腾一次重试一次（见该函数说明）。
     """
     from backend.emby_server.drive_oauth import DriveOAuthError
     uid = (getattr(job, "owner_ref", "") or "").strip()
@@ -1822,6 +2002,15 @@ def _run_drive_user_job(db, job, item, drive_api):
     user_drive = f"myDrive:{user_id}"
     orig_fid = item.drive_file_id.strip()
     name = _copy_name_for_item(item)
+    # 转存前量空间用的工厂：只返回本任务已建好的用户客户端，
+    # 绝不替调用方换绑定；其它用户一律无客户端（行不动）。
+    from backend.emby_server import transfer_cleanup as _tc
+    _space_factory = (lambda db_, uid: (user_client, user_drive)
+                      if uid == user_id else (None, None))
+    # copy 中途配额腾+重试的共享旗标（初始 copy 与文件夹缓存
+    # 重试 copy 共用，一个任务内至多一轮）。
+    _quota_state = {"retried": False}
+    _file_size = _to_int(getattr(item, "size", None))
     # Path A：用户令牌直拷（anyone-reader 源）。
     # 目录解析走缓存（实测 0.25 秒分段）：假客户端（旧测试桩）
     # 没有 ensure_folder_cached 时退回 ensure_folder，行为逐字旧。
@@ -1833,7 +2022,22 @@ def _run_drive_user_job(db, job, item, drive_api):
         else:
             folder_id = user_client.ensure_folder(user_drive,
                                                   transfer_dir_name())
-        copied = user_client.copy_file(user_drive, orig_fid, folder_id, name)
+        # 转存前量空间：剩余 < 文件大小时先腾，腾完仍不足直接
+        # 明确失败（绝不静默回落共享）；其它 reason 照旧走 copy。
+        _space = _tc.ensure_space_for_transfer(
+            db, _space_factory, user_id, file_size=_file_size,
+            exclude_item_ids=[item.id])
+        if _space["reason"] == "insufficient":
+            return _fail_job(
+                db, job, "insufficient_space",
+                f"用户盘空间不足：文件 {_space['file_size']} 字节，"
+                f"剩余 {_space['free_bytes']} 字节，还差 "
+                f"{_space['shortfall']} 字节（已腾 "
+                f"{len(_space['evicted'])} 条、"
+                f"{_space['bytes_freed']} 字节），未静默回落共享")
+        copied = _attempt_user_copy(
+            db, user_client, user_drive, orig_fid, folder_id, name,
+            _space_factory, user_id, item.id, _file_size, _quota_state)
     except _CopyForbidden:
         if folder_from_cache:
             # 缓存目录可能已被删/换绑：先失效重解析再拷一次，
@@ -1845,11 +2049,15 @@ def _run_drive_user_job(db, job, item, drive_api):
                                                   transfer_dir_name())
                 folder_id = user_client.ensure_folder(user_drive,
                                                       transfer_dir_name())
-                copied = user_client.copy_file(user_drive, orig_fid,
-                                               folder_id, name)
+                copied = _attempt_user_copy(
+                    db, user_client, user_drive, orig_fid, folder_id,
+                    name, _space_factory, user_id, item.id, _file_size,
+                    _quota_state)
             except _CopyForbidden:
                 return _run_drive_user_job_path_b(
                     db, job, item, drive_api, user_client, user_drive, name)
+            except _SpaceInsufficient as exc:
+                return _fail_job(db, job, "insufficient_space", str(exc))
             except DriveOAuthError as exc:
                 return _fail_job(db, job, "no_binding",
                                  f"用户 Drive 令牌失效：{exc}")
@@ -1860,6 +2068,8 @@ def _run_drive_user_job(db, job, item, drive_api):
             # 用户无权源 → Path B（不直接判死，SA 暂存中转）。
             return _run_drive_user_job_path_b(db, job, item, drive_api,
                                               user_client, user_drive, name)
+    except _SpaceInsufficient as exc:
+        return _fail_job(db, job, "insufficient_space", str(exc))
     except DriveOAuthError as exc:
         return _fail_job(db, job, "no_binding",
                          f"用户 Drive 令牌失效：{exc}")
