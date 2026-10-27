@@ -3146,7 +3146,7 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
         series_items = series_q.all()
         series_map = {s.id: s for s in series_items}
 
-    items = []
+    folded = []  # (展示条目, 折叠前的可播源)：单集折叠成剧，源仍是那集
     seen_series = set()
     for _umd, i in rows:
         if i.item_type == "episode":
@@ -3157,15 +3157,32 @@ def get_resume(request: Request, user: models.WebUser = Depends(get_emby_user),
             if series_item is None:
                 continue
             seen_series.add(sid)
-            items.append(series_item)
+            folded.append((series_item, i))
         else:
             if i.item_type == "series":
                 if i.id in seen_series:
                     continue
                 seen_series.add(i.id)
-            items.append(i)
+            folded.append((i, i))
     # 去重：同一部剧/电影（同 tmdb_id）在不同路径有多条记录时只保留一条
-    items = dedup_lib.deduplicate_items(items)
+    items = dedup_lib.deduplicate_items([shown for shown, _src in folded])
+    # 最多暖 1 条：用户会点的第一张卡。单集已折叠成剧，暖的是折叠前
+    # 那条有进度的 episode（或 movie 自身），不是整页，也不是剧卡片。
+    try:
+        playable = None
+        if items:
+            first_id = items[0].id
+            for shown, src in folded:
+                if shown.id == first_id:
+                    playable = src
+                    break
+        if playable is not None:
+            from backend.emby_server import first_play as _fp_resume
+            _fp_resume.spawn_first_play_warm(
+                playable.id, user.id, mode="detail", source="resume",
+                self_target=getattr(playable, "item_type", None) in ("movie", "episode"))
+    except Exception:  # noqa: BLE001 — 预热启动失败不影响继续观看
+        pass
     _prefetch_list_data(db, user.id, items)
     return {"Items": [_item_dto(i, base, user.id, db) for i in items],
             "TotalRecordCount": len(items), "StartIndex": 0}
@@ -3206,6 +3223,16 @@ def get_latest(request: Request, user: models.WebUser = Depends(get_emby_user),
     )
     # 去重：同一部剧/电影在不同路径有多条记录时只保留一条（首页海报行不重复）
     items = dedup_lib.deduplicate_items(items)
+    # 最多暖 1 条：电影暖自身；剧走 detail（线程里选第一集未看）。
+    try:
+        if items:
+            _first = items[0]
+            from backend.emby_server import first_play as _fp_latest
+            _fp_latest.spawn_first_play_warm(
+                _first.id, user.id, mode="detail", source="latest",
+                self_target=getattr(_first, "item_type", None) == "movie")
+    except Exception:  # noqa: BLE001 — 预热启动失败不影响最新列表
+        pass
     base = _base_url(request)
     _prefetch_list_data(db, user.id, items)
     return [_item_dto(item, base, user.id, db) for item in items]
@@ -3931,6 +3958,13 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
         )
         if next_episode is None:
             return {"Items": [], "TotalRecordCount": 0, "StartIndex": 0}
+        try:
+            from backend.emby_server import first_play as _fp_nu
+            _fp_nu.spawn_first_play_warm(
+                next_episode.id, user.id, mode="detail", source="next_up",
+                self_target=True)
+        except Exception:  # noqa: BLE001 — 预热启动失败不影响下一集
+            pass
         base = _base_url(request)
         _prefetch_list_data(db, user.id, [next_episode])
         return {"Items": [_item_dto(next_episode, base, user.id, db)],
@@ -3997,6 +4031,15 @@ def get_next_up(request: Request, user: models.WebUser = Depends(get_emby_user),
             if nxt is not None:
                 ranked.append((series_recent.get(sid), nxt))
     episodes = [e for _, e in ranked[start:start + limit]]
+    # 返回列表非空时只暖第一条 episode，不暖整页。
+    try:
+        if episodes:
+            from backend.emby_server import first_play as _fp_nu
+            _fp_nu.spawn_first_play_warm(
+                episodes[0].id, user.id, mode="detail", source="next_up",
+                self_target=True)
+    except Exception:  # noqa: BLE001 — 预热启动失败不影响下一集列表
+        pass
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
     return {"Items": [_item_dto(e, base, user.id, db) for e in episodes],
@@ -4235,6 +4278,7 @@ def drive_exists_retry_window() -> int:
 #: 跨进程墓碑：file_id 全局唯一，扫描/管理端不一定解析得出和播放侧相同的 drive_id。
 _DRIVE_EXISTS_INVAL_PREFIX = "aetrix:drive_exists:inv:"
 #: 跨进程正缓存：工人登记 ready 后写（transfer_variant.publish_drive_exists_ok），
+#: 首次播放预热 206 且 drive_id 未知时也写这把键。
 #: 须与 transfer_variant._DRIVE_EXISTS_OK_PREFIX 逐字一致；墓碑优先于正缓存。
 _DRIVE_EXISTS_OK_PREFIX = "aetrix:drive_exists:ok:"
 #: 跨进程重试记号（值是身份+文件+Range 起始的哈希，不落用户 id 明文）。
@@ -4363,7 +4407,17 @@ def _drive_exists_cache_hit(drive_id: str, file_id: str) -> bool:
         if exp is None or exp <= now:
             if exp is not None:
                 del _drive_exists_cache[key]
-            return False
+            local_live = False
+        else:
+            local_live = True
+    if not local_live:
+        # 本进程没有这条：跨进程正缓存（工人登记 ready，或预热 206 后
+        # publish_drive_exists_ok）命中即省一次 files.get。键不含 drive_id，
+        # 命中后按本次请求的 drive_id 回填本进程。墓碑优先于正缓存。
+        if _exists_ok_redis(file_id) and not _exists_tombstone(file_id):
+            _drive_exists_cache_put(drive_id, file_id)
+            return True
+        return False
     # 锁外问 Redis：别的容器已经宣布这个文件没了
     if _exists_tombstone(file_id):
         try:
@@ -5209,7 +5263,7 @@ async def playback_info(
                     item.guid, user.id)
                 _alt_applied = False
                 if _fp.warm_usable(_warm) and _warm.get("fid") == _alt_fid:
-                    # 120 秒内预热：令牌已验证过，直接复用，不再预检。
+                    # 新鲜窗口内（默认 180 秒）预热：令牌已验证过，直接复用，不再预检。
                     _pt.mark("alt_warm_hit")
                     _alt_applied = _apply_alt_media_direct(
                         sources[0], _alt_fid, _warm.get("token"))
@@ -5232,7 +5286,7 @@ async def playback_info(
                             sources[0]["DirectPlayUrl"] = _joined.get("url") or sources[0]["DirectPlayUrl"]
                             sources[0]["DirectStreamUrl"] = sources[0]["DirectPlayUrl"]
                 if not _alt_applied:
-                    # 冷启动或预热已超 120 秒：预检 + 403 轮换 SA 再下发，
+                    # 冷启动或预热已超出新鲜窗口（默认 180 秒）：预检 + 403 轮换 SA 再下发，
                     # 播放器第一次拿到的必须是经验证的令牌（见 first_play）。
                     _verified = await run_db(
                         _fp._resolve_for_playback, db, item, user, _alt_fid)

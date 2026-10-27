@@ -189,6 +189,25 @@ def test_confirmed_exists_clears_tombstone(monkeypatch):
     assert len(calls) == 1
 
 
+def test_redis_ok_promotes_local_on_miss(monkeypatch):
+    """本进程未命中时，跨进程正缓存（预热 / 工人）应省掉 files.get。"""
+    fake = FakeRedis()
+    fake.set(api._DRIVE_EXISTS_OK_PREFIX + FID, "1")
+    monkeypatch.setattr(api, "_drive_exists_redis", lambda: fake)
+    assert (DRIVE, FID) not in api._drive_exists_cache
+    assert api._drive_exists_cache_hit(DRIVE, FID) is True
+    assert (DRIVE, FID) in api._drive_exists_cache
+
+
+def test_tombstone_beats_redis_ok_on_miss(monkeypatch):
+    fake = FakeRedis()
+    fake.set(api._DRIVE_EXISTS_OK_PREFIX + FID, "1")
+    fake.set(api._exists_inval_key(FID), "1")
+    monkeypatch.setattr(api, "_drive_exists_redis", lambda: fake)
+    assert api._drive_exists_cache_hit(DRIVE, FID) is False
+    assert (DRIVE, FID) not in api._drive_exists_cache
+
+
 def test_recheck_404_evicts_positive_entry(monkeypatch):
     fake = FakeRedis()
     monkeypatch.setattr(api, "_drive_exists_redis", lambda: fake)
