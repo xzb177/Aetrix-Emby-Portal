@@ -121,7 +121,55 @@ class HotBoardInstantiate(BaseModel):
     name: str | None = None
 
 
+class GenreThemeInstantiate(BaseModel):
+    """从某类型的当前可见片单快照一份手工主题周合集。
+
+    media_type 收 Movie/Series（空 = 两种都收）。limit 默认 20，须在 1–50。
+    sort 默认 rating，也可 premiere / random。
+    """
+    genre: str
+    name: str | None = None
+    limit: int = 20
+    media_type: str | None = None
+    min_year: int | None = None
+    sort: str = "rating"
+
+
+class PersonSetInstantiate(BaseModel):
+    """按人物键生成一份 rule 合集，并立刻刷新一次。
+
+    person_key 是 TMDB 人物 id 或姓名（与 person 规则同一口径）。
+    bound_person_id 可选，须是 emby_people 里存在的行。
+    """
+    person_key: str
+    bound_person_id: int | None = None
+    name: str | None = None
+    min_effective_members: int = 2
+
+
 _HOT_PERIOD_LABEL = {"day": "日榜", "week": "周榜"}
+
+
+def _resolve_optional_name(raw: str | None, default: str) -> str:
+    """name 缺省用 default；显式传入则 strip，空名或超过 200 字 400。"""
+    if raw is None:
+        name = default
+    else:
+        name = raw.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="合集名不能为空")
+    if len(name) > 200:
+        raise HTTPException(status_code=400, detail="合集名过长")
+    return name
+
+
+def _theme_today():
+    """今天 0 点（Asia/Shanghai naive）。与热播榜窗口展示同一口径。"""
+    # 函数内导入：portal 很重，主题周只用它的自然日计算。
+    from backend.emby_server.portal import leaderboard_window
+
+    window_naive, _window_utc = leaderboard_window("day")
+    return window_naive
 
 
 def _check_set_fields(db: Session, source_type: str, visibility_status: str,
@@ -244,6 +292,132 @@ def instantiate_from_hot_leaderboard(
     out["period"] = body.period
     out["window_start"] = window_start
     out["members"] = [ms.member_to_dict(m) for m in members]
+    return out
+
+
+@admin_media_sets_router.post("/media-sets/from-genre-theme")
+def instantiate_from_genre_theme(
+        body: GenreThemeInstantiate,
+        current_admin=Depends(get_current_admin),
+        db: Session = Depends(get_db)):
+    """把某类型的当前可见片单快照成一份手工合集（主题周）。
+
+    候选与排序在 ``genre_theme_item_ids``：可见 movie/series、
+    genres 定界命中、可选类型与年份，按评分 / 上映 / 随机取前 limit 条。
+    每次调用都新建一份（没有稳定键、不更新已有合集）。成员
+    order_index 从 1 起即这次排序的名次，member_source=manual。
+    没有命中时不建行，返回 ``created=false``、``reason=theme_empty``。
+    默认名 ``主题周 · {genre} · YYYY-MM-DD``（上海自然日）。
+    """
+    _require_enabled()
+    genre = (body.genre or "").strip()
+    if not genre:
+        raise HTTPException(status_code=400, detail="genre 不能为空")
+    if body.limit < 1 or body.limit > 50:
+        raise HTTPException(status_code=400, detail="limit 须在 1 到 50 之间")
+    if body.sort not in ms.GENRE_THEME_SORTS:
+        raise HTTPException(
+            status_code=400, detail="sort 只能是 rating、premiere 或 random")
+    item_type = None
+    if body.media_type is not None:
+        item_type = ms.GENRE_THEME_MEDIA_TYPES.get(body.media_type)
+        if item_type is None:
+            raise HTTPException(
+                status_code=400, detail="media_type 只能是 Movie 或 Series")
+    window_naive = _theme_today()
+    window_start = window_naive.isoformat()
+    item_ids = ms.genre_theme_item_ids(
+        db, genre, limit=body.limit, item_type=item_type,
+        min_year=body.min_year, sort=body.sort)
+    if not item_ids:
+        return {
+            "created": False,
+            "reason": "theme_empty",
+            "board": "theme",
+            "genre": genre,
+            "window_start": window_start,
+            "members": [],
+        }
+    date_label = window_naive.strftime("%Y-%m-%d")
+    prefix = "主题周 · "
+    suffix = f" · {date_label}"
+    room = 200 - len(prefix) - len(suffix)
+    default_name = f"{prefix}{genre[:room]}{suffix}"
+    name = _resolve_optional_name(body.name, default_name)
+    media_set = em.EmbyMediaSet(name=name, source_type="manual")
+    db.add(media_set)
+    db.flush()
+    members = []
+    for rank, item_id in enumerate(item_ids, start=1):
+        member = em.EmbyMediaSetMember(
+            set_id=media_set.id, item_id=item_id,
+            order_index=rank, member_source="manual")
+        db.add(member)
+        members.append(member)
+    ms.bump_requested(media_set)
+    db.commit()
+    db.refresh(media_set)
+    for member in members:
+        db.refresh(member)
+    out = ms.set_to_dict(media_set, db)
+    out["created"] = True
+    out["board"] = "theme"
+    out["genre"] = genre
+    out["window_start"] = window_start
+    out["members"] = [ms.member_to_dict(m) for m in members]
+    return out
+
+
+@admin_media_sets_router.post("/media-sets/from-person")
+def instantiate_from_person(
+        body: PersonSetInstantiate,
+        current_admin=Depends(get_current_admin),
+        db: Session = Depends(get_db)):
+    """按人物键建一份 rule 合集：一条 person 包含规则，并立刻刷新一次。
+
+    person_key 走 ``validate_rule`` 的 person 口径（TMDB 人物 id 或
+    姓名，二者任一命中）。bound_person_id 若给了，必须是 emby_people
+    里存在的行；刷新时既有逻辑会把该行的同人条目并入候选。
+    有效成员不够 min 门也照建：shelf_eligible 按读时逻辑算，不补假成员。
+    默认名 ``{display} 出演``：有绑定行且有姓名时用该姓名，否则用 person_key。
+    返回合集字典加本次 refresh 摘要（与模板实例化同一形态）。
+    """
+    _require_enabled()
+    try:
+        checked = ms.validate_rule(
+            "person", False, body.person_key, None, None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if len(checked["value_text"] or "") > 300:
+        raise HTTPException(status_code=400, detail="person_key 过长")
+    if body.min_effective_members < 0:
+        raise HTTPException(
+            status_code=400, detail="min_effective_members 不能为负")
+    _check_set_fields(db, "rule", "visible", "auto_collage", None,
+                      body.bound_person_id)
+    display = checked["value_text"] or ""
+    if body.bound_person_id is not None:
+        bound = db.query(em.EmbyPerson).filter(
+            em.EmbyPerson.id == body.bound_person_id).first()
+        bound_name = (bound.name or "").strip() if bound is not None else ""
+        if bound_name:
+            display = bound_name
+    suffix = " 出演"
+    default_name = f"{display[:200 - len(suffix)]}{suffix}"
+    name = _resolve_optional_name(body.name, default_name)
+    media_set = em.EmbyMediaSet(
+        name=name, source_type="rule",
+        min_effective_members=body.min_effective_members,
+        bound_person_id=body.bound_person_id)
+    db.add(media_set)
+    db.flush()
+    db.add(em.EmbyMediaSetRule(set_id=media_set.id, **checked))
+    ms.bump_requested(media_set)
+    db.commit()
+    db.refresh(media_set)
+    result = ms.refresh_media_set(db, media_set)
+    out = ms.set_to_dict(media_set, db)
+    out["refresh"] = result
     return out
 
 
