@@ -5253,8 +5253,13 @@ async def playback_info(
             from backend.emby_server import transfer_variant as _tv_alt
             from backend.database import CacheManager as _CM
 
-            _alt_fid, _ = await run_db(
-                _tv_alt.resolve_play_file_id, db, item, user)
+            # 门禁已确认本人 ready 副本时用那一行的 fid。
+            # resolve_play_file_id 查询异常会回共享原件，这里不许沿用。
+            _alt_fid, _ = _tv_alt.prefer_user_variant(
+                "", None, _pi_gate)
+            if not _alt_fid:
+                _alt_fid, _ = await run_db(
+                    _tv_alt.resolve_play_file_id, db, item, user)
             _alt_on = await run_db(_ps_alt.drive_direct_play_enabled, db)
             if _alt_fid and _alt_on:
                 _warm = await run_db(
@@ -5504,6 +5509,10 @@ async def video_stream(
     # 现签 302（serve_115_copy）；准备中/失败报 409/503，不改走别的路。
     # 显式 byos 变体（用户已显式选自己盘）跳过门禁，不二次拦；
     # 已下发链接消费不追溯（与 #1341 绑定门禁同一口径）。
+    # 绑定用户正在啃共享原件时，Quota 额度页不换下一个 SA。
+    # 用户自己的 ready 副本仍允许既有的一次轮换（anyone-reader 读副本）。
+    _viewer_bound = False
+    _rotate_on_quota = True
     if _requested_variant not in (play_variants.BYOS_DRIVE_RELAY,
                                   play_variants.BYOS115_DIRECT):
         _play_sign_consume = await run_db(
@@ -5573,9 +5582,37 @@ async def video_stream(
             raise HTTPException(
                 status_code=503,
                 detail="转存门禁暂不可用，稍后重试（未走共享播放）")
+        _play_fid, _play_variant = _tv.prefer_user_variant(
+            _play_fid, _play_variant, _transfer_gate)
+        _on_user_copy = (
+            _play_variant is not None
+            and getattr(_play_variant, "owner_scope", None) == "user")
+        # 只有可能播到共享 Drive 原件时才查绑定。本机文件 / 无 fid
+        # 走不到 SA 轮换，也不存在「静默播共享原件」；这里多查一次
+        # 会打到只实现了 close() 的会话桩。
+        if not _on_user_copy and _fid:
+            _uid = getattr(user, "id", None)
+            if _uid is not None:
+                _viewer_bound = bool(await run_db(
+                    _gate.has_active_binding, db, _uid))
+            if _viewer_bound:
+                _rotate_on_quota = False
+        if _tv.bound_shared_play_blocked(
+                _transfer_gate, has_binding=_viewer_bound,
+                play_variant=_play_variant):
+            _tv.log_byos(
+                "byos_gate_block",
+                item=getattr(item, "id", None),
+                user=getattr(user, "id", None),
+                verdict=_gate_verdict,
+                reason=(_transfer_gate or {}).get("reason"),
+                where="video_stream")
+            raise HTTPException(
+                status_code=409, detail=_tv.SHARED_BLOCKED_DETAIL)
     # 配额方案 1（限速 + 错峰）：总闸默认关，关时下面直接放行。
     # 开时只约束还没有用户自己副本的共享 Drive 起播。超限 429，
     # 错误码在 detail 前缀和 X-Error-Code。不轮换账号、不建秒传池。
+    # 放在用户副本 fid 换上之后：已有本人副本不再算共享起播。
     from backend.emby_server import shared_quota_pace as _pace
     _personal_copy = _pace.is_personal_copy(_play_variant)
     if _pace.is_shared_drive_start(item, _requested_variant, _play_variant):
@@ -5834,20 +5871,18 @@ async def video_stream(
                 try:
                     _relay_resp = await serve_drive_relay_async(
                         request, _relay_drive_id, _play_fid,
-                        media_type=media_type, pt=_pt)
+                        media_type=media_type, pt=_pt,
+                        rotate_on_quota=_rotate_on_quota)
                 except _tv.QuotaPageError:
-                    # 转存变体应急自动触发：上游整段回的是 Quota 额度页
-                    # （不是视频字节）。记信号 + 按节流入队（函数内部
-                    # 绝不抛错），本次播放回落现行链：302 开着走下面的
-                    # _fast302 流程（用原件 _fid，不置 _switch_attempted，
-                    # 避免误触「变体切换后仍失败」的 409 分支）；302 关着
-                    # 则干净 502。入队用的 drive_id 必须是原件所在盘，
-                    # 故此处重算原件 drive，不复用可能等于变体盘的
-                    # _relay_drive_id（v1 两者相同，语义上以原件为准）。
-                    # 刚标 stale 的变体不再复用（_play_fid 指回原件）。
+                    # Quota 强信号：记信号，是否入队看
+                    # quota_auto_enqueue_enabled（默认关，24h 节流）。
+                    # 绑定用户（含正在播本人副本）不换号、不把 fid 指回
+                    # 共享原件，按 quota_playback_decision 返回 409/503。
+                    # 未绑定只可能是已下发签名：保持旧回落（302 开着走
+                    # 原件直链，否则 502）。入队用的 drive_id 是原件盘。
                     _orig_drive_id = await run_db(
                         _drive_mount_id_for_item, db, item)
-                    await run_db(
+                    _quota_signal = await run_db(
                         _tv.note_quota_signal, db, item, user,
                         _play_variant, _orig_drive_id)
                     _note_play_start_safe(
@@ -5857,8 +5892,32 @@ async def video_stream(
                         result="error", error_kind="quota_page",
                         resolve_ms=int(
                             (time.perf_counter() - _evt_t0) * 1000))
-                    # 总闸开且还没有用户副本：不要再 302 去打同一条共享链。
-                    # 总闸关或已有用户副本时 _forced 为 None，下面仍是旧回落。
+                    # 绑定用户：不换号、不把 fid 指回共享原件。
+                    # 未绑定才继续：方案 1 总闸开且没有用户副本时 409
+                    # 先转存；总闸关或已有用户副本则保持旧的 302/502 回落。
+                    _bound_now = _viewer_bound
+                    if not _bound_now:
+                        _uid = getattr(user, "id", None)
+                        if _uid is not None:
+                            _bound_now = bool(await run_db(
+                                _gate.has_active_binding, db, _uid))
+                    _decision = _tv.quota_playback_decision(
+                        _quota_signal, bound=_bound_now)
+                    if not _decision["failover"]:
+                        # 绑定分支里 note_quota_signal 已打过
+                        # byos_quota_force；总闸关等提前返回补一条。
+                        if (_quota_signal or {}).get("action") in (
+                                "ignored", "error"):
+                            _tv.log_byos(
+                                "byos_quota_force",
+                                item=getattr(item, "id", None),
+                                user=getattr(user, "id", None),
+                                action=(_quota_signal or {}).get("action"),
+                                reason=(_quota_signal or {}).get("reason"),
+                                status=_decision["status"])
+                        raise HTTPException(
+                            status_code=_decision["status"],
+                            detail=_decision["detail"]) from None
                     _forced = await run_db(
                         _pace.transfer_required_http, db,
                         personal_copy=_personal_copy)

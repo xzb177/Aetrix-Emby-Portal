@@ -190,8 +190,10 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
 
     seen = {}
 
-    async def fake_relay(request, drive_id, file_id, media_type="video/mp4", pt=None):
-        seen.update(drive_id=drive_id, file_id=file_id, media_type=media_type)
+    async def fake_relay(request, drive_id, file_id, media_type="video/mp4",
+                         pt=None, access_token=None, rotate_on_quota=True):
+        seen.update(drive_id=drive_id, file_id=file_id, media_type=media_type,
+                    rotate_on_quota=rotate_on_quota)
         return Response(content=b"x", media_type="video/mp4")
 
     monkeypatch.setattr(api, "serve_drive_relay_async", fake_relay)
@@ -235,7 +237,7 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
     resp = _run(api.video_stream("item", Request(scope), object(), _FakeDB()))
     assert resp.status_code == 200
     assert seen == {"drive_id": "DRIVE9", "file_id": "FID123",
-                    "media_type": "video/mkv"}
+                    "media_type": "video/mkv", "rotate_on_quota": True}
 
 # ---------- Quota 额度页：与 403 同口径轮换重试 ----------
 
@@ -269,3 +271,19 @@ def test_relay_second_quota_page_propagates(monkeypatch):
     with pytest.raises(_tv.QuotaPageError):
         _run(streaming.serve_drive_relay_async(
             _fake_request(), "drive1", "fid1"))
+
+
+def test_relay_quota_page_does_not_rotate_when_disabled(monkeypatch):
+    """绑定用户啃共享原件：第一次额度页就抛，不换下一个 SA。"""
+    from backend.emby_server import transfer_variant as _tv
+
+    def behavior(n, headers):
+        raise _tv.QuotaPageError("quota page")
+
+    calls = _patch_relay(monkeypatch, behavior)
+    tokens = _patch_token(monkeypatch, ["TOK1", "TOK2"])
+    with pytest.raises(_tv.QuotaPageError):
+        _run(streaming.serve_drive_relay_async(
+            _fake_request(), "drive1", "fid1", rotate_on_quota=False))
+    assert len(calls) == 1
+    assert tokens == [{"drive_id": "drive1", "force": False}]
