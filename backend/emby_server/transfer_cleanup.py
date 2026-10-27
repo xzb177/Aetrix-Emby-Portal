@@ -39,6 +39,22 @@
   文件不动，留待 115 删除口径实测后再补。
 - 每一次删（含已删）都记日志：用户、条目、文件 id、大小、
   结果；统计以返回的 stats 为准，调用方按 stats 审计。
+- 转存前量空间（2026-10-27 用户亲定“转存前量空间，不够先腾
+  旧副本”）：ensure_space_for_transfer 是自动触发的唯一入口，
+  只对 Drive 用户盘生效。about.get 取用户盘剩余空间，剩余 >=
+  文件大小直接转、不腾；不足时 need_bytes = 文件大小 - 剩余
+  空间，用 evict 按最久没播顺序腾同用户 ready 副本、腾够即停。
+  正在播的不腾：活跃会话（ended_at 为空且未暂停过期——
+  last_update_at 在 600 秒内，或 is_paused）对应条目的副本，
+  以及 600 秒内有播放回写的副本，一律排除；正在转的本条
+  （exclude_item_ids）同样排除。腾完仍不足时明确失败并报清
+  三数（文件大小、剩余空间、还差多少），绝不静默回落共享。
+  about.get 拿不到、文件大小未知、无可用客户端时 fail-closed
+  的含义只针对删除侧：不据此腾任何地方，照旧走 copy（旧行为），
+  copy 中途的配额错仍由调用方的腾一次重试兜底——绝不
+  因为一次配额查询抖动就把转存直接判死。115 盘无 Drive
+  about.get 口径，本单不覆盖：evict 只删 userdrive: 行，
+  pan115: 行一律跳过、行不动。
 """
 
 import logging
@@ -55,6 +71,58 @@ DELETED_STATUS = "deleted"
 _FILE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 # 播放回写节流：同一 ready 行 1 小时内只写一次 last_played_at。
 PLAYED_WRITE_MIN_INTERVAL_SEC = 3600
+# 正在播排除窗口：活跃会话 last_update_at 在 600 秒内，或
+# is_paused 的未结束会话，对应条目的副本一律不腾；600 秒内
+# 有播放回写的副本同样不腾（会话行缺失时的代理口径）。
+ACTIVE_PLAYING_WINDOW_SEC = 600
+
+
+def active_playing_variant_ids(db, user_id, *, now=None,
+                               window_sec=ACTIVE_PLAYING_WINDOW_SEC):
+    """该用户“正在播”副本的变体 id 集合（腾地方时一律排除）。
+
+    两条口径取并集，任一命中即排除：
+    - 活跃会话：emby_playback_sessions 里 user_id 相同、ended_at
+      为空，且 last_update_at 为空（从未上报过，仍算未结束）
+      或在窗口内，或 is_paused（暂停仍是播一半的状态，恢复时
+      还要读这个副本）。已结束（ended_at 非空）的不算；未暂停
+      且 last_update_at 超出窗口的，视为 janitor 口径下的过期
+      会话，不再排除（否则僵尸会话会永久锁住副本腾不掉）。
+    - 近期播放：同用户 ready 行 last_played_at 在窗口内。
+    只返回变体 id，不删任何行；会话查询本身抛异常时异常向
+    上抛，由 ensure_space 按 active_check_failed 处理（不腾）。
+    """
+    now = now or datetime.now()
+    cutoff = now - timedelta(seconds=window_sec)
+    ids = set()
+    sessions = (db.query(em.PlaybackSession)
+                .filter(em.PlaybackSession.user_id == user_id,
+                        em.PlaybackSession.ended_at.is_(None))
+                .all())
+    item_ids = set()
+    for session in sessions:
+        last = getattr(session, "last_update_at", None)
+        if (last is None or last >= cutoff
+                or bool(getattr(session, "is_paused", False))):
+            if getattr(session, "item_id", None) is not None:
+                item_ids.add(session.item_id)
+    if item_ids:
+        rows = (db.query(em.TransferVariant)
+                .filter(em.TransferVariant.owner_scope == "user",
+                        em.TransferVariant.owner_ref == str(user_id),
+                        em.TransferVariant.status == "ready",
+                        em.TransferVariant.item_id.in_(item_ids))
+                .all())
+        ids.update(row.id for row in rows)
+    recent = (db.query(em.TransferVariant)
+              .filter(em.TransferVariant.owner_scope == "user",
+                      em.TransferVariant.owner_ref == str(user_id),
+                      em.TransferVariant.status == "ready",
+                      em.TransferVariant.last_played_at.isnot(None),
+                      em.TransferVariant.last_played_at >= cutoff)
+              .all())
+    ids.update(row.id for row in recent)
+    return ids
 
 
 def is_safe_variant_file_id(fid) -> bool:
@@ -281,18 +349,21 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
 
 def evict_lru_variants(db, drive_client_factory, user_id, *,
                        need_bytes=None, max_count=None,
-                       session_progress=None):
+                       session_progress=None, exclude_variant_ids=()):
     """按需腾地方：只在调用方给出需求时删 ready 行，否则一条不删。
 
     需求二选一（至少一个为正数）：need_bytes（要腾出的字节数，
     腾够即停）或 max_count（最多腾几条）。两者都未给时返回
     {"evicted": [], "reason": "no_need"} 且不删任何行——这是
     规则 3 的代码级保证，不是文档约定。
-    触发口径（见 PR 描述）：v1 不由工人自动触发，因为用户盘剩余
-    空间未实测（Drive about.get 未接线）；需求须由已实测剩余空间
-    的调用方（或运维手动）给出。备选口径：接通 about.get 后，改为
-    “新转存前实测剩余空间 < 新文件大小时，need_bytes = 新文件
-    大小 - 剩余空间”自动触发——该接线不在本 PR，不编造成已接通。
+    触发口径：自动触发的唯一入口是 ensure_space_for_transfer
+    （新转存前实测 about.get，剩余 < 文件大小时 need_bytes =
+    文件大小 - 剩余空间）；运维手动给出需求时同样走本函数。
+    只删 Drive 用户盘行：variant_drive_id 不以 "userdrive:" 开头
+    的行（例如 pan115: 行）一律跳过、行不动——Drive 客户端绝
+    不能拿 115 的 pickcode 当 Drive fid 删（#1360 的 evict 原
+    实现缺这道 guard，本单补上）。exclude_variant_ids 命中的
+    行（正在播、正在转的本条）一律不删。
     返回 {evicted: [variant_id...], bytes_freed, reason}。
     """
     if not need_bytes and not max_count:
@@ -305,7 +376,8 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
         return {"evicted": [], "bytes_freed": 0,
                 "reason": "no_client"}
     candidates = select_lru_candidates(
-        db, user_id, session_progress=session_progress)
+        db, user_id, session_progress=session_progress,
+        exclude_ids=exclude_variant_ids)
     evicted = []
     freed = 0
     now = datetime.now()
@@ -314,6 +386,13 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
             break
         if cap and len(evicted) >= cap:
             break
+        drive_id = (getattr(row, "variant_drive_id", "") or "").strip()
+        if not drive_id.startswith("userdrive:"):
+            logger.info(
+                "[transfer-cleanup] 跳过非 Drive 用户行（LRU） "
+                "user=%s item=%s variant=%s drive=%s",
+                row.owner_ref, row.item_id, row.id, drive_id)
+            continue
         _log_pre_delete(row, "lru_evict")
         outcome, size = _delete_one_drive_file(db, row, client, marker,
                                                now)
@@ -328,3 +407,107 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
     if need and freed < need:
         reason = "insufficient_candidates"
     return {"evicted": evicted, "bytes_freed": freed, "reason": reason}
+
+
+def ensure_space_for_transfer(db, drive_client_factory, user_id, *,
+                              file_size, session_progress=None,
+                              exclude_item_ids=(), now=None):
+    """新转存前量空间（自动触发的唯一入口，只对 Drive 用户盘）。
+
+    返回 dict：{reason, proceed, file_size, free_bytes, shortfall,
+    evicted, bytes_freed}。reason 取值：
+    - "sufficient"：剩余 >= 文件大小，一条不腾，直接转；
+    - "evicted_enough"：腾后估算剩余（实测剩余 + 实际删掉的
+      字节数，about 配额有传播延迟，不以二次 about 为准）>=
+      文件大小，可以转；
+    - "insufficient"：腾完所有可腾副本仍不足，调用方必须明确
+      失败并报清三数（file_size / free_bytes / shortfall），绝
+      不静默回落共享——proceed 为 False 的唯一情形；
+    - "quota_unknown"：about.get 拿不到（客户端无该方法、抛错、
+      非 200），删除侧 fail-closed：一条不腾，proceed 为 True
+      照旧走 copy（旧行为），copy 中途的配额错仍由调用方兜底；
+    - "unknown_size"：文件大小未知/<=0，算不出 need，一条不腾，
+      照旧走 copy；
+    - "no_client"：工厂给不出该用户客户端，一条不腾，照旧走
+      copy（copy 路径自会按无绑定失败）；
+    - "active_check_failed"：正在播排除集合算不出来，删除侧
+      fail-closed：一条不腾，照旧走 copy（宁可 copy 时报配额
+      错，也不冒着删掉正在播的副本的风险硬腾）。
+    只腾同用户、转存目录内的 ready 副本：evict 的 userdrive:
+    guard + exclude（正在播 + exclude_item_ids 对应的本条）双
+    重兜底；个人文件、115 行、stale/deleted 行一律不在候选里
+    （候选查询本身只取 status=ready 的用户行）。
+    """
+    now = now or datetime.now()
+    result = {"reason": "sufficient", "proceed": True, "file_size": file_size,
+              "free_bytes": None, "shortfall": None, "evicted": [],
+              "bytes_freed": 0}
+    size = None
+    try:
+        size = int(file_size) if file_size is not None else None
+    except (TypeError, ValueError):
+        size = None
+    if size is None or size <= 0:
+        result["reason"] = "unknown_size"
+        return result
+    result["file_size"] = size
+    client, marker = _user_drive_client(db, user_id,
+                                        drive_client_factory)
+    if client is None:
+        result["reason"] = "no_client"
+        return result
+    about = getattr(client, "about_storage", None)
+    if about is None:
+        logger.warning(
+            "[transfer-cleanup] 用户盘配额未测到（客户端无 "
+            "about_storage）：user=%s，不腾地方照旧 copy", user_id)
+        result["reason"] = "quota_unknown"
+        return result
+    try:
+        quota = about(marker)
+    except Exception as exc:  # noqa: BLE001 — about 抖动不判死转存
+        logger.warning(
+            "[transfer-cleanup] 用户盘配额查询失败：user=%s err=%s，"
+            "不腾地方照旧 copy", user_id, exc)
+        result["reason"] = "quota_unknown"
+        return result
+    free = (quota or {}).get("free")
+    if free is None:
+        # 上限不限量/测不到上限：按空间充足处理，不据此腾地方。
+        return result
+    free = int(free)
+    result["free_bytes"] = free
+    if free >= size:
+        return result
+    need = size - free
+    try:
+        excluded = active_playing_variant_ids(db, user_id, now=now)
+    except Exception as exc:  # noqa: BLE001 — 排除集算不出就不腾
+        logger.warning(
+            "[transfer-cleanup] 正在播排除集计算失败：user=%s "
+            "err=%s，不腾地方照旧 copy", user_id, exc)
+        result["reason"] = "active_check_failed"
+        return result
+    if exclude_item_ids:
+        rows = (db.query(em.TransferVariant)
+                .filter(em.TransferVariant.owner_scope == "user",
+                        em.TransferVariant.owner_ref == str(user_id),
+                        em.TransferVariant.status == "ready",
+                        em.TransferVariant.item_id.in_(
+                            list(exclude_item_ids)))
+                .all())
+        excluded.update(row.id for row in rows)
+    evicted_result = evict_lru_variants(
+        db, drive_client_factory, user_id, need_bytes=need,
+        session_progress=session_progress,
+        exclude_variant_ids=sorted(excluded))
+    result["evicted"] = evicted_result["evicted"]
+    result["bytes_freed"] = evicted_result["bytes_freed"]
+    estimate = free + evicted_result["bytes_freed"]
+    if estimate >= size:
+        result["reason"] = "evicted_enough"
+        return result
+    result["reason"] = "insufficient"
+    result["proceed"] = False
+    result["shortfall"] = size - estimate
+    return result
