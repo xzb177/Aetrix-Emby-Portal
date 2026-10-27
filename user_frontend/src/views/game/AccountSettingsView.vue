@@ -313,6 +313,39 @@
       </section>
     </div>
 
+      <!-- 追剧订阅：账号页内订阅与状态（不放首页/发现页；订阅只建订阅行，转存由工人扫集建） -->
+      <section v-if="followLoaded || followError" class="v4-sec" aria-label="追剧订阅">
+        <div class="v4-sec-title">追剧订阅</div>
+        <div class="v4-sec-sub">订阅后新集到货会自动转存到你自己绑定的盘里，转完状态在这里看；无绑定、盘满或转存失败都会明示原因，绝不静默走共享线路。115 与跨盘转存不在本单范围。</div>
+        <div v-if="followError" class="v4-err">追剧订阅加载失败，请稍后重试<br><button class="v4-retry" @click="loadFollows">重试</button></div>
+        <div v-else-if="!follows.length" class="srv-empty">还没有订阅的剧</div>
+        <div v-else>
+          <div v-for="f in follows" :key="f.follow_id" class="v4-card">
+            <div class="srv-row">
+              <div class="srv-info">
+                <div class="srv-name">{{ f.series_name || `剧集 #${f.series_item_id}` }}</div>
+                <div class="srv-tag">{{ f.status === 'active' ? '订阅中' : '已取消' }}</div>
+              </div>
+              <button v-if="f.status === 'active'" type="button" class="acct-btn" @click="cancelFollow(f.series_item_id)">取消订阅</button>
+            </div>
+            <div v-for="ep in f.episodes" :key="ep.episode_id" class="srv-row">
+              <div class="srv-info">
+                <div class="srv-name">第 {{ ep.season_number ?? '?' }} 季第 {{ ep.episode_number ?? '?' }} 集 · {{ ep.name }}</div>
+                <div class="srv-tag">{{ followStateText(ep.state, ep.queue_reason) }}<span v-if="ep.error_detail"> · {{ ep.error_detail }}</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="acct-field">
+          <label class="acct-label" for="follow-series-id">订阅剧集（填剧集条目 id）</label>
+          <input id="follow-series-id" v-model="followSeriesId" type="number" placeholder="例如 12345" />
+        </div>
+        <p v-if="followFormError" class="acct-error" role="alert">{{ followFormError }}</p>
+        <button type="button" class="acct-btn primary" :disabled="followSubmitting" @click="handleSubscribeFollow">
+          {{ followSubmitting ? '正在订阅…' : '订阅这部剧' }}
+        </button>
+      </section>
+
     <!-- 修改登录密码弹窗（由 ProfileView 移植） -->
     <div v-if="showChangePwd" class="acct-mask" @click.self="closeChangePwd" @keydown="onPwdModalKeydown">
       <div class="acct-modal" role="dialog" aria-modal="true" aria-label="修改登录密码">
@@ -376,7 +409,7 @@ import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 import { facilityStamp } from '@/config/game'
 import { authApi, subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
-import { deviceApi, storageBindingApi, type MyDevice, type MyDevicesResponse, type StorageBinding } from '@/api/economy'
+import { deviceApi, storageBindingApi, seriesFollowApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type SeriesFollow } from '@/api/economy'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import { useServerCards, type ServerCardItem } from '@/composables/useServerCards'
@@ -940,7 +973,74 @@ async function toggleLeaderboard() {
   }
 }
 
+// ===== 追剧订阅（账号页内，订阅与状态；不放首页/发现页） =====
+const follows = ref<SeriesFollow[]>([])
+const followLoaded = ref(false)
+const followError = ref('')
+const followSeriesId = ref('')
+const followFormError = ref('')
+const followSubmitting = ref(false)
+
+function followStateText(state: string, queueReason: string | null): string {
+  if (state === 'ready') return '已转存到你的盘'
+  if (state === 'pending') return '转存排队中'
+  if (state === 'running') return '转存进行中'
+  if (state === 'done') return '转存完成'
+  if (state === 'failed') return '转存失败'
+  if (queueReason === 'no_binding') return '未绑定网盘，绑定后下一轮自动转存'
+  if (queueReason === 'unsupported_provider_115') return '115 源不在本单范围'
+  if (queueReason === 'unknown_provider') return '来源不明，暂不转存'
+  return '等待下一轮扫集'
+}
+
+async function loadFollows() {
+  followError.value = ''
+  try {
+    const res = await seriesFollowApi.list()
+    follows.value = res.follows || []
+    followLoaded.value = true
+  } catch (e) {
+    // 开关关时后端 404：整块隐藏，不当成加载失败反复提示
+    const status = (e as { response?: { status?: number } }).response?.status
+    if (status === 404) {
+      followLoaded.value = false
+      followError.value = ''
+    } else {
+      followError.value = humanizeError(e)
+    }
+  }
+}
+
+async function handleSubscribeFollow() {
+  followFormError.value = ''
+  const id = Number(followSeriesId.value)
+  if (!id) {
+    followFormError.value = '请先填剧集条目 id'
+    return
+  }
+  followSubmitting.value = true
+  try {
+    await seriesFollowApi.subscribe(id)
+    followSeriesId.value = ''
+    await loadFollows()
+  } catch (e) {
+    followFormError.value = humanizeError(e)
+  } finally {
+    followSubmitting.value = false
+  }
+}
+
+async function cancelFollow(seriesItemId: number) {
+  try {
+    await seriesFollowApi.unsubscribe(seriesItemId)
+    await loadFollows()
+  } catch (e) {
+    followFormError.value = humanizeError(e)
+  }
+}
+
 onMounted(() => {
+  loadFollows()
   loadSubs()
   loadDevices()
   loadProviders()

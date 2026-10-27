@@ -389,6 +389,49 @@ export const storageBindingApi = {
       `/api/user/emby/storage-bindings/${bindingId}`),
 }
 
+// ==================== 追剧订阅（全自动追剧，账号页） ====================
+// 后端口径（backend/api/series_follow_api.py，前缀 /api/user/series-follows）：
+// GET → { follows: [...] }；POST { series_item_id } → 订阅结果；
+// DELETE /{series_item_id} → 取消结果。开关关时后端 404，前端按未启用隐藏。
+// 订阅只建订阅行，转存任务由工人循环扫集建；状态只读，不触发转存。
+export interface SeriesFollowEpisode {
+  episode_id: number
+  season_number: number | null
+  episode_number: number | null
+  name: string
+  state: string
+  error_kind: string | null
+  error_detail: string | null
+  queue_reason: string | null
+  job_id: number | null
+}
+
+export interface SeriesFollow {
+  follow_id: number
+  series_item_id: number
+  series_name: string | null
+  status: string
+  episodes: SeriesFollowEpisode[]
+}
+
+export interface SeriesFollowsResponse {
+  follows: SeriesFollow[]
+}
+
+export const seriesFollowApi = {
+  list: () =>
+    api.get<never, SeriesFollowsResponse>('/api/user/series-follows'),
+  subscribe: (seriesItemId: number) =>
+    api.post<never, { subscribed: boolean; reason: string; follow_id: number | null }>(
+      '/api/user/series-follows',
+      { series_item_id: seriesItemId },
+    ),
+  unsubscribe: (seriesItemId: number) =>
+    api.delete<never, { subscribed: boolean; reason: string; follow_id: number | null }>(
+      `/api/user/series-follows/${seriesItemId}`,
+    ),
+}
+
 // ==================== 优惠券（v2.10.0） ====================
 
 /** 试算结果：能不能用、省多少、实付多少（与真正下单同一套口径） */

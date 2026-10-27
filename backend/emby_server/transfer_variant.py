@@ -3452,7 +3452,7 @@ def start_transfer_daemon(session_factory=None, drive_api_factory=None):
     任何异常只记 warning、不炸线程。返回线程对象，调用方持有以便观测。
     """
     stop = threading.Event()
-    state = {"last_patrol": 0.0}
+    state = {"last_patrol": 0.0, "last_follow_sweep": 0.0}
     if session_factory is None:
         from backend.database import SessionLocal
         session_factory = SessionLocal
@@ -3511,6 +3511,24 @@ def _daemon_main_loop(stop, state, session_factory, drive_api_factory):
                     finally:
                         db.close()
                     state["last_patrol"] = now_ts
+                # 追剧扫集（2026-10-27 首批第二单）：只在追剧开关与
+                # 转存总闸双开时跑，间隔 SERIES_FOLLOW_SWEEP_SEC
+                #（默认 600 秒）；纯查库 + 建任务行，异常只记 warning
+                # 不炸工人循环；扫集本身不碰共享链（见 series_follow）。
+                from backend.emby_server import series_follow as _sf
+                if (_sf.series_follow_enabled()
+                        and now_ts - state.get("last_follow_sweep", 0.0)
+                        >= _sf.follow_sweep_sec()):
+                    state["last_follow_sweep"] = now_ts
+                    try:
+                        db = session_factory()
+                        try:
+                            _sf.process_series_follows(db)
+                        finally:
+                            db.close()
+                    except Exception:
+                        logger.warning("追剧扫集异常，已跳过本轮",
+                                       exc_info=True)
         except Exception:
             logger.warning("转存变体工人轮次异常，已跳过本轮", exc_info=True)
         _wait_for_wake(stop, worker_sweep_sec())

@@ -1513,6 +1513,41 @@ class TransferJob(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class SeriesFollow(Base):
+    """全自动追剧订阅（opt-in，2026-10-27 首批第二单）。
+
+    一行 = 一个用户主动订阅的一部剧（series 条目）。默认不跟：
+    只有用户在账号页显式订阅后才建行；取消订阅只把 status 置
+    cancelled，不删行（审计 + 重订阅可原地恢复，不产生重复行）。
+    同一用户同一剧唯一（user_id, series_item_id），重订阅恢复
+    同一行，不另建。
+
+    “新集”判定见 series_follow.process_series_follows：只看
+    date_added >= 本行 created_at 的单集（订阅之后到货的集），
+    date_added 为空的集不猜、跳过并计数（见 sweep 结果的
+    skipped_unknown_date）。本表不存凭据、不存文件信息。
+    新表由 init_db 的 create_all 建出；老库新增表由 database
+    通用 auto-migrate（_all_metadata 双 Base 对账）补齐。
+    """
+
+    __tablename__ = "emby_series_follows"
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "series_item_id",
+                         name="uq_series_follow_user_series"),
+        Index("ix_series_follow_user", "user_id"),
+        Index("ix_series_follow_series", "series_item_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("web_users.id"), nullable=False)
+    series_item_id = Column(Integer, ForeignKey("emby_items.id"),
+                            nullable=False)
+    status = Column(String(20), nullable=False, default="active")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class MountCredential(Base):
     """挂载凭据行（FMBY 挂载模型地基，清单第 1 项：凭据分家）。
 
