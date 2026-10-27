@@ -1,13 +1,15 @@
-"""无后缀 /stream 兼容（2026-10-27 #1358 补丁）。
+"""无后缀 /stream 兼容（2026-10-27 #1358 补丁，第二轮改为一跳）。
 
 背景：REX 2 小时内对小写裸地址 /emby/videos/{guid}/stream 发起 96 次
 请求、全部 404——全仓此前只有大写裸路由与小写带后缀路由，小写裸地址
 没有任何路由，请求落到小写通配后按非 stream.* 判 404；REX 反复重试、
 最后才回落 alt=media 出画面，这就是它首次 38 秒、第二次快的原因。
-修法（通用，不按播放器名分流）：裸地址按条目容器 307 重定向到已有的
-带后缀路由，原查询串原样保留；未知容器保持 404 但记日志。
+#1358 先以 307 重定向到带后缀路由消掉 404；第二轮再把两跳并成一跳：
+裸地址校验容器后直接委派给 video_stream（与带后缀路由同一 handler），
+省一次往返，门禁/限流/查询串全在 video_stream 里，不存在跳过一说。
+未知容器保持 404 但记日志。
 
-本文件只测路由层：路由注册顺序 + handler 的重定向目标与 404 语义，
+本文件只测路由层：路由注册顺序 + handler 的委派语义与 404 语义，
 不碰真实 DB（_require_visible_item 用桩替换）与真实谷歌。
 """
 
@@ -37,8 +39,15 @@ def _bare(monkeypatch, container, query=QUERY):
         api, "_require_visible_item",
         lambda db, user, item_id: SimpleNamespace(
             container=container, file_path=""))
+    calls = []
+
+    async def _fake_stream(item_id, request, user, db):
+        calls.append((item_id, request, user, db))
+        return SimpleNamespace(status_code=302, headers={"location": "direct"})
+
+    monkeypatch.setattr(api, "video_stream", _fake_stream)
     req = SimpleNamespace(url=SimpleNamespace(query=query))
-    return _run(api.video_stream_bare(GUID, req, SimpleNamespace(), None))
+    return _run(api.video_stream_bare(GUID, req, SimpleNamespace(), None)), calls, req
 
 
 def test_bare_stream_routes_registered_before_catch_all():
@@ -53,23 +62,26 @@ def test_bare_stream_routes_registered_before_catch_all():
                 "裸 stream 路由必须在小写通配之前，否则仍会被通配抢走判 404")
 
 
-def test_bare_stream_mkv_redirect_keeps_all_params(monkeypatch):
-    resp = _bare(monkeypatch, "mkv")
-    assert resp.status_code == 307
-    assert resp.headers["location"] == (
-        f"/emby/videos/{GUID}/stream.mkv?{QUERY}")
+def test_bare_stream_mkv_delegates_in_one_hop(monkeypatch):
+    resp, calls, req = _bare(monkeypatch, "mkv")
+    # 一跳：不是 307 重定向，而是 video_stream 的直出结果；
+    # 原请求对象原样传过去（查询串不重建、不丢参数）。
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "direct"
+    assert len(calls) == 1
+    assert calls[0][0] == GUID and calls[0][1] is req
 
 
-def test_bare_stream_mp4_redirect_keeps_all_params(monkeypatch):
-    resp = _bare(monkeypatch, "mp4")
-    assert resp.status_code == 307
-    assert resp.headers["location"] == (
-        f"/emby/videos/{GUID}/stream.mp4?{QUERY}")
+def test_bare_stream_mp4_delegates_in_one_hop(monkeypatch):
+    resp, calls, _req = _bare(monkeypatch, "mp4")
+    assert resp.status_code == 302
+    assert len(calls) == 1
 
 
-def test_bare_stream_no_query_redirects_without_question_mark(monkeypatch):
-    resp = _bare(monkeypatch, "mkv", query="")
-    assert resp.headers["location"] == f"/emby/videos/{GUID}/stream.mkv"
+def test_bare_stream_no_query_still_delegates(monkeypatch):
+    resp, calls, _req = _bare(monkeypatch, "mkv", query="")
+    assert resp.status_code == 302
+    assert len(calls) == 1
 
 
 def test_bare_stream_unknown_container_keeps_404_and_logs(monkeypatch, caplog):
