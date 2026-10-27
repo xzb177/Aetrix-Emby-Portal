@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from sqlalchemy import and_ as _and
+from sqlalchemy import func as _func
 from sqlalchemy import not_ as _not
 from sqlalchemy import or_ as _or
 
@@ -62,15 +63,25 @@ def queue_of(item) -> str:
 
 
 def identify_filter():
-    """识别队列抢单谓词：tmdb_id 与 imdb_id 双空（NULL 与空串都算空）。"""
+    """识别队列抢单谓词：tmdb_id 与 imdb_id 双空（NULL、空串与纯空白都算空）。
+
+    必须与 queue_of / _is_empty（strip 口径）逐字一致：此前 SQL 只认
+    NULL 与 ""，空白身份（如 "  "）会被刮削队列抢走、而 queue_of 却判为
+    识别队列——两队列认领与分段写库口径分裂，条目在两段之间空转、永不终态。
+    注意：裸 trim() 只去空格（SQLite/PG 同此语义），须显式传空白字符集
+    才能对齐 Python strip() 的 \t\n\r\f\v；trim(col, chars) 在两方言上
+    均为合法的双边去字符集语义（同仓 _field_completeness_missing
+    已有裸 trim 先例）。
+    """
+    _ws = " \t\n\r\f\v"
     return _and(
         _or(
             em.MediaItem.tmdb_id.is_(None),
-            em.MediaItem.tmdb_id == "",
+            _func.trim(em.MediaItem.tmdb_id, _ws) == "",
         ),
         _or(
             em.MediaItem.imdb_id.is_(None),
-            em.MediaItem.imdb_id == "",
+            _func.trim(em.MediaItem.imdb_id, _ws) == "",
         ),
     )
 

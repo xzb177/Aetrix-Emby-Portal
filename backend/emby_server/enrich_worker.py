@@ -4518,8 +4518,21 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict,
     """
     from backend.emby_server import identify_two_stage as ts
 
-    had_tmdb = bool(getattr(item, "tmdb_id", None))
-    bound = bool(getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None))
+    # bound / had_tmdb 必须与 enrich_queues._is_empty（strip 口径）一致：
+    # 裸 bool() 会把纯空白身份（如 "  "）当成已绑定，跳过下面的“未定身份
+    # 回落现行终态”分支、走到识别段尾的回 pending——空白身份条目就在
+    # 识别队列里无限空转；had_tmdb 同理会压住“本轮新获 tmdb”的联动标记。
+    def _bound_value(value) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        return bool(value)
+
+    had_tmdb = _bound_value(getattr(item, "tmdb_id", None))
+
+    bound = _bound_value(getattr(item, "tmdb_id", None)) or _bound_value(
+        getattr(item, "imdb_id", None))
     do_identify = ts.identify_enabled() if identify is None else bool(identify)
     do_fill = ts.fill_enabled() if fill is None else bool(fill)
     if not do_identify and not do_fill:
@@ -4535,6 +4548,16 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict,
                 _details_fetcher = None
             res = ts.apply_identity(
                 db, item, fetched, tmdb_details_fetcher=_details_fetcher)
+            if res is not None and not (
+                    _bound_value(res.get("tmdb_id"))
+                    or _bound_value(res.get("imdb_id"))):
+                # 空白绑定不是绑定：extract_binding（identify_two_stage
+                # 域外文件，本批不动它）用裸 or 取已有值，会把纯空白身份
+                # 当成已有绑定返回并 upsert 一段“identified”记录；按 strip
+                # 口径否决它（回滚掉该段记录），身份仍算未定，走下面的
+                # 现行终态接管，否则空白条目在识别段尾回 pending 空转。
+                db.rollback()
+                res = None
             if res is not None:
                 bound = True
             db.commit()  # 识别段独立提交
