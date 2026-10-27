@@ -92,6 +92,7 @@ from backend.emby_server.image_routes import install_image_routes
 from backend.emby_server.mount_routes import install_mount_routes
 from backend.emby_server.session_routes import install_session_routes
 from backend.emby_server.search_api import search_router
+from backend.emby_server.play_preflight_api import preflight_router
 from backend.emby_server.portal import user_emby_router, admin_emby_router, configured_emby_url
 # 存储挂载端点已从 portal.py 拆出（portal.py 尾部超出编辑窗口）：导入即注册到同一个
 # admin_emby_router 上，因此必须放在 app.include_router(admin_emby_router) 之前。
@@ -863,6 +864,9 @@ if _ENABLE_EMBY_GATEWAY:
     # 搜索接口先注册：FastAPI 按注册顺序取第一个匹配，
     # 这样 /Search/Hints 走 search_api 的相关度排序版（api.py 里的同名历史实现会被遮蔽）
     app.include_router(search_router)
+    # 播放前体检（第二批第 2 单，只读诊断口，不下发播放链接）：
+    # 与搜索接口同挂网关块，关时 404，全站逐字不变。
+    app.include_router(preflight_router)
     # 挂载来源：把只认本机文件的 /Items/{id}/File 换成挂载感知实现（必须在 include_router 前）
     install_mount_routes(emby_router)
     # 会话端点：补鉴权（普通用户只看/只能停自己）并把会话键改为随机（必须在 include_router 前）
