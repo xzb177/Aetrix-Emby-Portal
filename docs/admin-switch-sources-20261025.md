@@ -149,7 +149,7 @@
 
 | 键 | 当前唯一事实来源 | 代码缺省 | 读取点 | 缺口与延期理由 |
 |---|---|---|---|---|
-| `drive_relay_enabled`（M14，影响最大） | **DB 行**（无 env、无面板、无 schema 登记） | 关（`"false"`） | `backend/emby_server/playback_strategy.py:51,132-143` | 中继是播放主线，开中继今天只能写库；与 `drive_direct_play_enabled` 不对称——后者是 M12 已摘面板键，有 env `DRIVE_DIRECT_PLAY_ENABLED`（`store.py` 接管，env＞DB＞缺省开）＋ ClientPolicy 只读展示。补 env 入口须改播放文件读取逻辑，另立批；另立批时缺省仍取关、不得擅自改默认开 |
+| `drive_relay_enabled`（M14，影响最大） | **DB 行**（无 env、无面板、无 schema 登记） | 关（`"false"`） | `backend/emby_server/playback_strategy.py:51,132-143` | 直链是播放主线（2026-10-27 用户改令，此前“中继为主线”口径作废），中继只作可切换兜底，开中继今天只能写库；与 `drive_direct_play_enabled` 不对称——后者是 M12 已摘面板键，有 env `DRIVE_DIRECT_PLAY_ENABLED`（`store.py` 接管，env＞DB＞缺省开）＋ ClientPolicy 只读展示。补 env 入口须改播放文件读取逻辑，另立批；另立批时缺省仍取关、不得擅自改默认开 |
 | `introdb_enabled` | **DB 行**（无 env、无面板） | 开（`"true"`） | `playback_strategy.py:57-70` | IntroDB 自动片头片尾；读失败 fail-safe 回默认开。补入口同上，另立批 |
 | `enrich_tmdb_text_fill_only` | **env `ENRICH_TMDB_TEXT_FILL_ONLY`＞DB 行**（有 env，`env.example:556`：`1`；无面板） | 开（True＝只填空、不覆盖；显式 `"0"` 回退覆盖） | `backend/emby_server/tmdb.py:92,904-920`（进程内 30 秒缓存） | 审计时“无后台 UI”的说法仍成立，但“无 env”的说法已过期：当前 tip 已有 env 且已登记。补面板入口须动刮削域，另立批；在此之前部署者走 env 即可 |
 | `items_list_cache_ttl_seconds` | **DB 行**（无 env、无面板写入口） | 300 秒（范围 10–3600） | `backend/emby_server/items_list_cache.py:66,134-143` | 连 env 都没有，只能改代码缺省或写 DB 行；模块内已有 `config_payload()`（注释“供将来管理端点”），将来接管理端点时直接用它，不要另造读取口。补入口须动缓存模块，另立批 |

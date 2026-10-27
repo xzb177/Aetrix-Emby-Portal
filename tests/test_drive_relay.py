@@ -152,7 +152,12 @@ def test_relay_no_token_503(monkeypatch):
 # ---------- video_stream 接线（回归：中继分支不得引用不存在的符号） ----------
 
 def test_video_stream_relay_branch_wiring(monkeypatch):
-    """中继开关开 + 挂载解析出 drive_id → video_stream 走中继分支返回。
+    """显式选 drive_relay + 中继开关开 + 挂载解析出 drive_id →
+    video_stream 走中继分支返回。
+
+    直链为主线（2026-10-27 用户改令）后默认路线不再先试中继，
+    故本接线用例改走显式变体（客户端选了就是选了，换线不替它改
+    主意）；此前无变体即走中继的口径已作废。
 
     2026-10-23 首版接线引用了不存在的 play_sign.audit_play，生产实播
     500——本用例把 api 侧接线整体桩通跑一遍，同类错误必须在这里红。
@@ -203,7 +208,8 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
                         lambda request, db: None)
 
     scope = {"type": "http", "method": "GET", "path": "/Videos/item/stream",
-             "raw_path": b"/Videos/item/stream", "query_string": b"",
+             "raw_path": b"/Videos/item/stream",
+             "query_string": b"variant=drive_relay",
              "headers": [], "scheme": "http", "server": ("testserver", 80),
              "client": ("testclient", 50000), "root_path": ""}
     # 2026-10-25 #1289：变体开关默认翻开后，video_stream 的中继分支会先读
@@ -212,6 +218,12 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
     class _FakeQuery:
         def filter(self, *args, **kwargs):
             return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return None
 
         def one_or_none(self):
             return None

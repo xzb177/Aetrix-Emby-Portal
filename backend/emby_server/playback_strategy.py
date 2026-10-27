@@ -1,5 +1,15 @@
 """播放策略能力：对象存储直链（direct）可配 + Drive 302 直链 + 远程挂载专用中继。
 
+播放口径（2026-10-27 用户改令，直链为主线）：
+默认走 Drive 302 直链（drive.usercontent，播放器自拉，字节不经服务器，
+含 confirm=t 处理）；Drive SA 中继只作可切换兜底（drive_relay_enabled
+开关仍在，不删中继代码、不删 302 代码），仅直链不可用（可用性表）或
+客户端显式选 drive_relay 时才走中继。此前“中继为主线、302 为兜底”的
+口径（2026-10-23 额度应急）已作废；中继 2026-10-17 删过一次、2026-10-23
+为额度应急加回，本模块顶部的“中继已全删”旧注记同样作废。
+远程挂载（115 等 mount://）仍走服务端专用中继代理，与 Drive 中继开关
+无关（凭据不下发）。
+
 设计口径（2026-10-16 用户拍板）：只做通用能力、不做死业务逻辑——
 策略与直链源全部走 SystemConfig + 管理后台，用哪种由服主决定。
 ``direct`` 时，仅当条目的 drive_file_id 在服主登记的直链名单（热门副本）
@@ -45,9 +55,11 @@ logger = logging.getLogger(__name__)
 #: 服务器退出字节通道；关闭时行为与旧中继路径完全一致（回滚兜底）。
 #: 默认开。
 KEY_DRIVE_DIRECT_PLAY = "drive_direct_play_enabled"
-#: Drive SA 中继（2026-10-23 额度应急）：开启时 Drive 条目改走服务端
-#: 中继（SA 凭据取流、字节过服务器），不经公开下载池、file_id 不出门。
-#: 默认关；与直链开关并存，中继优先（直链开关关时整体回旧路径）。
+#: Drive SA 中继（2026-10-23 额度应急）：开启时中继成为可切换兜底，
+#: 默认仍走直链，仅直链不可用（可用性表）或显式选 drive_relay 时走
+#: 服务端中继（SA 凭据取流、字节过服务器），不经公开下载池、file_id 不出门。
+#: 默认关；与直链开关并存，直链优先（2026-10-27 用户改令直链为主线；
+#: 直链开关关时整体回旧路径）。
 KEY_DRIVE_RELAY = "drive_relay_enabled"
 #: IntroDB 自动片头片尾（2026-10-17 用户拍板学 raisemby）：开启时播放信息
 #: 组装 Chapters 会把众包库 api.introdb.app 的分段并入手打标记。默认开。
@@ -130,12 +142,13 @@ def drive_direct_play_enabled(db: Session) -> bool:
 
 
 def drive_relay_enabled(db: Session) -> bool:
-    """Drive SA 中继开关（默认关）。
+    """Drive SA 中继开关（默认关，可切换兜底）。
 
-    开启时 video_stream 对有 drive_file_id 的条目改走服务端中继
-    （serve_drive_relay_async）：SA 凭据取流、字节过服务器，既绕开
-    公开下载池的共用额度，也不再把 file_id 下发给客户端。读失败
-    fail-safe 回默认关——中继是新路，开关读不到时不贸然改道。
+    开启时中继成为可切换兜底：默认路线仍走直链，仅直链在可用性表
+    中不可用、或客户端显式选 drive_relay / byos_drive_relay 时走
+    服务端中继（serve_drive_relay_async）：SA 凭据取流、字节过服务器，
+    既绕开公开下载池的共用额度，也不再把 file_id 下发给客户端。
+    读失败 fail-safe 回默认关——中继是兜底路，开关读不到时不贸然改道。
     """
     try:
         raw = (store.get_value(db, KEY_DRIVE_RELAY, "false") or "").strip().lower()
