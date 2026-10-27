@@ -29,13 +29,22 @@ FMBY 形态照搬三点：每个识别任务钉规则包版本 + 内容哈希；
   不动——首部署只打戳、不重写存量，机制从新决策开始生效。
 - 只对已存 ``scan_title`` 再跑一遍现行词表：新词进了词表才会多剥掉
   词；词表删词不会把已剥的词“长回来”（剥掉的信息已丢，复原只能
-  重 parse 文件名，那是另一项）。剥完为空的标题跳过，永不写空标题。
+  重 parse 文件名——见回滚模式）。剥完为空的标题跳过，永不写空标题。
 - 人工覆盖受保护：审查队列里 status=bound 的条目（管理员亲手绑定
   过）一律跳过，重放不动它。
 - 重放只改标题 + 把条目放回 pending 待识别，不直接改身份列；身份
   重定仍走识别段，证据与政策门照旧。重放默认 dry_run，只报数不写
   库；调用方显式传 dry_run=False 才写，且本函数只 add / 改字段、
   不 commit（与 apply_identity、_upsert_stage_record 同口径）。
+
+版本冻存与回滚（FMBY #18 闭环）：
+- PACK_VERSION_TERMS 冻存每版词表原文；pack_for_version 按名取版，
+  未知版直接 ValueError。rule_pack_status 是可查口：现行版 / 哈希 /
+  旧规则产物数 / 各版记录分布，不写库。
+- 回滚模式（replay_pack 的 rollback_from_path）：目标版须在注册表
+  里，只认钉了更新版的记录，只对电影条目从 file_path 文件名用目标
+  包重解析；剧 / 集跳过（集文件名里没有可靠剧名）；只改 scan_title
+  解析快照 + 回 pending，绝不直接改显示名 name（那是存量回填另一项）。
 """
 
 from __future__ import annotations
@@ -73,6 +82,23 @@ DEFAULT_STRIP_TERMS = (
     "bdrip", "brrip", "hdtv", "dvdrip", "diy", "repack", "proper",
     "multi", "internal", "chs&eng", "chs", "cht", "eng", "gb", "big5",
 )
+
+# v2 新增词条（冻存 v1 的依据）：v1 = 现行词表去掉下面这 7 条。
+# 回滚到 v1 必须有 v1 词表原文——不许从现行词表里“反推”删词，
+# 反推一旦漏一条，回滚结果就与当年 v1 实际跑过的不一致。
+_V2_ADDED_TERMS = (
+    "adweb",
+    r"ddp\s+\d\s+\d", r"dd\s+\d\s+\d", r"dts\s+\d\s+\d",
+    r"eac3\s+\d\s+\d", r"ac3\s+\d\s+\d", r"aac\s+\d\s+\d",
+)
+
+#: 版本 → 词表冻存。新增版本时在此加一版、PACK_VERSION 指过去，
+#: 旧版词表永不改——改旧版词表等于改写历史，回滚就无据可查。
+PACK_VERSION_TERMS = {
+    "v1": tuple(t for t in DEFAULT_STRIP_TERMS if t not in _V2_ADDED_TERMS),
+    "v2": DEFAULT_STRIP_TERMS,
+}
+PACK_VERSION_ORDER = ("v1", "v2")
 
 # 保护词占位符：私有区字符（U+E000 起）不是 \\w 词字符，任何
 # \\b 界定的词条都不可能在占位符里命中，也不会跨占位符拼出词条。
@@ -198,15 +224,75 @@ def default_pack() -> RulePack:
     )
 
 
-def find_stale_records(db, limit: int = 100):
-    """找出存量里“旧规则产物”的识别记录：已钉哈希且不等于现行生效
-    哈希。NULL（包上线前的老记录）不在内——首部署不重写存量。
+def pack_for_version(version: str) -> RulePack:
+    """按版本号取冻存包（回滚入口）：词表用该版原文，env 三层覆盖
+    仍按当刻读入（服主禁用 / 保护的意图在回滚时依然生效）。
+
+    未知版本直接 ValueError，不静默回落现行包——回落的包不是调用
+    方要的那个版本，写出去就是错的。
+    """
+    if version not in PACK_VERSION_TERMS:
+        raise ValueError("unknown rule pack version: %r" % (version,))
+    return RulePack(
+        version=version,
+        default_terms=PACK_VERSION_TERMS[version],
+        custom_terms=_env_term_list("RULE_PACK_CUSTOM_TERMS"),
+        disabled_default_terms=_env_term_list("RULE_PACK_DISABLED_DEFAULT_TERMS"),
+        protected_terms=_env_term_list("RULE_PACK_PROTECTED_TERMS"),
+    )
+
+
+def rule_pack_status(db) -> dict:
+    """规则包可查状态（FMBY #18 闭环的“查”口，不写库）。
+
+    返回现行包版本 / 内容哈希 / 生效哈希、旧规则产物记录数、
+    以及识别记录按钉的版本分布（NULL 版记为 "unknown"，即包上线
+    前的老记录）。调用方（运维 / 管理后台）据此决定要不要重放或
+    回滚，不用裸查 EnrichStageRecord 表。
+    """
+    from sqlalchemy import func as _func
+
+    from backend.emby_server import models as _m
+
+    pack = default_pack()
+    rows = (
+        db.query(
+            _m.EnrichStageRecord.rule_pack_version,
+            _func.count(_m.EnrichStageRecord.id),
+        )
+        .group_by(_m.EnrichStageRecord.rule_pack_version)
+        .all()
+    )
+    stale_count = (
+        db.query(_m.EnrichStageRecord)
+        .filter(
+            _m.EnrichStageRecord.rule_pack_hash.isnot(None),
+            _m.EnrichStageRecord.rule_pack_hash != pack.effective_hash,
+        )
+        .count()
+    )
+    return {
+        "pack_name": pack.name,
+        "pack_version": pack.version,
+        "content_hash": pack.content_hash,
+        "effective_hash": pack.effective_hash,
+        "stale_count": stale_count,
+        "records_by_version": {
+            (version or "unknown"): count for version, count in rows
+        },
+    }
+
+
+def find_stale_records(db, limit: int = 100, pack=None):
+    """找出存量里“旧规则产物”的识别记录：已钉哈希且不等于给定包
+    （默认现行包）的生效哈希。NULL（包上线前的老记录）不在内——
+    首部署不重写存量。
 
     返回 (pack, records)；records 按 id 升序、至多 limit 条。
     """
     from backend.emby_server import models as _m
 
-    pack = default_pack()
+    pack = pack or default_pack()
     records = (
         db.query(_m.EnrichStageRecord)
         .filter(
@@ -220,15 +306,50 @@ def find_stale_records(db, limit: int = 100):
     return pack, records
 
 
-def replay_pack(db, limit: int = 100, dry_run: bool = True) -> dict:
-    """按现行规则包重放存量标题（见模块 docstring 的重放语义）。
+def replay_pack(db, limit: int = 100, dry_run: bool = True,
+                target_pack=None, rollback_from_path: bool = False) -> dict:
+    """按规则包重放存量标题（见模块 docstring 的重放语义）。
+
+    默认 = 按现行包正向重放（只对已存 scan_title 再剥一遍新词）。
+    回滚模式（rollback_from_path=True，须同时给 target_pack，如
+    pack_for_version("v1")）：只认钉了更新版本（注册表顺序在目标版
+    之后）的记录，且只对电影条目从 file_path 文件名用目标包重解析
+    ——scan_title 本身已被剥过词，剥掉的词不可能从它身上长回来，
+    不从文件名重解析的“回滚”全是假回滚。剧 / 集条目跳过（集文件名
+    里没有可靠的剧名，不许拿集文件名猜剧名）。回滚只改 scan_title
+    解析快照 + 放回 pending 待识别重定身份，绝不直接改显示名 name
+    （存量显示名回填是另一项，须另行点头）。
 
     只改标题 + 放回 pending 待识别，不碰身份列；不 commit，调用方
     负责提交。返回报表 dict，dry_run 时 requeued 恒为 0。
+    回滚不给目标包、或目标版不在注册表里，直接 ValueError。
     """
     from backend.emby_server import models as _m
 
-    pack, records = find_stale_records(db, limit=limit)
+    if rollback_from_path:
+        if target_pack is None:
+            raise ValueError(
+                "rollback_from_path requires target_pack (e.g. pack_for_version)")
+        if target_pack.version not in PACK_VERSION_ORDER:
+            raise ValueError(
+                "rollback target version not in registry: %r"
+                % (target_pack.version,))
+        pack = target_pack
+        newer = PACK_VERSION_ORDER[
+            PACK_VERSION_ORDER.index(pack.version) + 1:]
+        records = (
+            db.query(_m.EnrichStageRecord)
+            .filter(
+                _m.EnrichStageRecord.rule_pack_hash.isnot(None),
+                _m.EnrichStageRecord.rule_pack_version.in_(newer),
+            )
+            .order_by(_m.EnrichStageRecord.id)
+            .limit(limit)
+            .all()
+        )
+    else:
+        pack, records = find_stale_records(
+            db, limit=limit, pack=target_pack)
     report = {
         "pack_version": pack.version,
         "pack_hash": pack.effective_hash,
@@ -237,8 +358,11 @@ def replay_pack(db, limit: int = 100, dry_run: bool = True) -> dict:
         "requeued": 0,
         "skipped_protected": 0,
         "skipped_empty": 0,
+        "skipped_non_movie": 0,
+        "skipped_no_path": 0,
         "missing": 0,
         "dry_run": dry_run,
+        "rollback_from_path": rollback_from_path,
     }
     for record in records:
         item = (
@@ -261,13 +385,28 @@ def replay_pack(db, limit: int = 100, dry_run: bool = True) -> dict:
         if bound is not None:
             report["skipped_protected"] += 1
             continue
-        old_title = item.scan_title or ""
-        if not old_title:
-            report["skipped_empty"] += 1
-            continue
-        # 与 _tidy_name 尾段同口径：空白归一 + 剥首尾分隔符。
-        new_title = re.sub(r"\s+", " ", pack.strip(old_title)).strip(" .-_")
-        if not new_title or new_title == old_title:
+        if rollback_from_path:
+            if getattr(item, "item_type", None) != "movie":
+                report["skipped_non_movie"] += 1
+                continue
+            if not getattr(item, "file_path", None):
+                report["skipped_no_path"] += 1
+                continue
+            # 懒导入：scanner 顶层导入 rule_pack，反向顶层导入会循环。
+            from backend.emby_server import scanner as _sc
+
+            parsed = _sc.parse_media_filename(
+                item.file_path, "movies", pack=pack)
+            new_title = (parsed or {}).get("name") or ""
+        else:
+            old_title = item.scan_title or ""
+            if not old_title:
+                report["skipped_empty"] += 1
+                continue
+            # 与 _tidy_name 尾段同口径：空白归一 + 剥首尾分隔符。
+            new_title = re.sub(
+                r"\s+", " ", pack.strip(old_title)).strip(" .-_")
+        if not new_title or new_title == (item.scan_title or ""):
             if not new_title:
                 report["skipped_empty"] += 1
             continue
