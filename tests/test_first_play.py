@@ -101,13 +101,37 @@ def test_warm_store_load_roundtrip_and_fid_isolation():
     assert fp.load_warm(cache_get, "guid1", 8) is None
 
 
-def test_warm_usable_fresh_and_stale():
+def test_warm_usable_fresh_and_stale(monkeypatch):
+    monkeypatch.delenv("FIRST_PLAY_WARM_FRESH_SEC", raising=False)
     now = time.time()
     fresh = {"url": "u", "token": "t", "warmed_at": now - 60}
+    widened = {"url": "u", "token": "t", "warmed_at": now - 150}
     stale = {"url": "u", "token": "t", "warmed_at": now - 200}
     assert fp.warm_usable(fresh, now=now) is True
-    assert fp.warm_usable(stale, now=now) is False  # 超 120 秒须复检
+    assert fp.warm_usable(widened, now=now) is True  # 默认新鲜窗口 180（原 120）
+    assert fp.warm_usable(stale, now=now) is False
     assert fp.warm_usable({"url": "u", "warmed_at": now}) is False  # 无令牌不可用
+
+
+def test_warm_windows_read_env(monkeypatch):
+    monkeypatch.setenv("FIRST_PLAY_WARM_FRESH_SEC", "90")
+    monkeypatch.setenv("FIRST_PLAY_WARM_TTL_SEC", "42")
+    assert fp.warm_fresh_sec() == 90
+    assert fp.warm_ttl_sec() == 42
+    now = time.time()
+    assert fp.warm_usable(
+        {"url": "u", "token": "t", "warmed_at": now - 100}, now=now) is False
+    seen = {}
+    assert fp.store_warm(
+        lambda k, v, ttl: seen.setdefault("ttl", ttl),
+        "g", 1, {"url": "u", "token": "t", "fid": "f"}) is True
+    assert seen["ttl"] == 42
+    monkeypatch.setenv("FIRST_PLAY_WARM_FRESH_SEC", "nope")
+    monkeypatch.setenv("FIRST_PLAY_WARM_TTL_SEC", "")
+    assert fp.warm_fresh_sec() == 180
+    assert fp.warm_ttl_sec() == 300
+    monkeypatch.setenv("FIRST_PLAY_WARM_FRESH_SEC", "-3")
+    assert fp.warm_fresh_sec() == 0
 
 
 def test_no_client_name_in_first_play_api():

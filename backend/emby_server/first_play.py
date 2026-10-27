@@ -17,11 +17,14 @@
 2. 轮换（rotate）：403/401 时换一个 SA 再预检，最多 5 次；全败才放弃，
    且放弃时记一条 play_start error 事件（error_kind 带轮换次数），
    播放器永远不会在第一次就拿到一个未经验证的坏令牌。
-3. 预热（warm）：详情页、单条 Ids 直达、选集列表在后台线程里把 1+2
-   做完并写进 playback 域共享缓存；电影/单集在返回前就占上在途标记，
+3. 预热（warm）：详情页、单条 Ids 直达、选集列表、以及首页
+   Resume / Latest / NextUp 各暖用户最可能点的 1 条，在后台线程里把
+   1+2 做完并写进 playback 域共享缓存；电影/单集在返回前就占上在途标记，
    PlaybackInfo 若缓存未热会等这一次预检结束再复用，不再并行再打一遍。
-   命中 120 秒内的预热直接复用（alt_warm_hit），超过 120 秒先单次复检
-   再用；预热缓存本身 TTL 300 秒，远小于 SA 令牌 1 小时寿命。
+   命中新鲜窗口（默认 180 秒，FIRST_PLAY_WARM_FRESH_SEC）内的预热直接
+   复用（alt_warm_hit），超过则先单次复检再用；预热缓存 TTL 默认 300 秒
+   （FIRST_PLAY_WARM_TTL_SEC），远小于 SA 令牌 1 小时寿命。预热 206 且
+   有 fid 时顺手写入 exists 正缓存，随后 /stream 少打一次 files.get。
 
 注意：预热只能热“服务端 → 谷歌”这一段（令牌、预检、尾部可达），
 播放器 → 谷歌那段的网络（用户侧 VPN 节点、播放器首次探格式）
@@ -47,6 +50,8 @@ import urllib.error
 import urllib.request
 from typing import Callable, Optional
 
+from backend.emby_server.env_util import env_int
+
 logger = logging.getLogger(__name__)
 
 #: 预检单次超时（秒）：服务端到谷歌首字节实测约 1.1s，10s 已留足余量，
@@ -55,9 +60,23 @@ PRECHECK_TIMEOUT_SEC = 10.0
 #: 403/401 时最多轮换次数（含首次尝试共 5 个 SA）。
 MAX_ROTATIONS = 5
 #: 预热缓存 TTL（秒），远小于 SA 令牌 1 小时寿命。
-WARM_TTL_SEC = 300
-#: 预热 120 秒内可直接复用；超过则单次复检后再用（防令牌临近过期）。
-WARM_FRESH_SEC = 120
+#: FIRST_PLAY_WARM_TTL_SEC，默认 300。空/非整数回落默认；负数钳成 0。
+_WARM_TTL_DEFAULT = 300
+#: 预热新鲜窗口（秒）：窗口内可直接复用；超过则单次复检后再用。
+#: FIRST_PLAY_WARM_FRESH_SEC，默认 180（原先写死 120，刻意略加深）。
+_WARM_FRESH_DEFAULT = 180
+
+
+def warm_fresh_sec() -> int:
+    """新鲜窗口秒数。空/非整数回落 180；负数钳成 0。"""
+    return env_int("FIRST_PLAY_WARM_FRESH_SEC", _WARM_FRESH_DEFAULT, 0, 86400)
+
+
+def warm_ttl_sec() -> int:
+    """预热缓存 TTL 秒数。空/非整数回落 300；负数钳成 0。"""
+    return env_int("FIRST_PLAY_WARM_TTL_SEC", _WARM_TTL_DEFAULT, 0, 86400)
+
+
 #: 尾部探测字节数：只验尾部可达，不下载整段。
 TAIL_PROBE_BYTES = 1024
 #: 跨进程 SA 亲和记录 TTL（秒）：文件→SA 的可读关系本身是稳定的
@@ -198,8 +217,10 @@ def warm_key(guid: str, user_id) -> str:
 
 
 def warm_usable(entry: dict | None, now: float | None = None,
-                fresh_sec: int = WARM_FRESH_SEC) -> bool:
+                fresh_sec: int | None = None) -> bool:
     """预热条目是否可直接复用（年龄 <= fresh_sec 且有令牌与地址）。"""
+    if fresh_sec is None:
+        fresh_sec = warm_fresh_sec()
     if not isinstance(entry, dict):
         return False
     if not entry.get("url") or not entry.get("token"):
@@ -212,8 +233,10 @@ def warm_usable(entry: dict | None, now: float | None = None,
 
 
 def store_warm(cache_set: Callable, guid: str, user_id, result: dict,
-               ttl: int = WARM_TTL_SEC) -> bool:
+               ttl: int | None = None) -> bool:
     """把验证过的直链写进共享缓存（只存本次验证结果，不存用户令牌）。"""
+    if ttl is None:
+        ttl = warm_ttl_sec()
     try:
         payload = {"url": result.get("url"), "token": result.get("token"),
                    "fid": result.get("fid"),
@@ -225,6 +248,35 @@ def store_warm(cache_set: Callable, guid: str, user_id, result: dict,
         return True
     except Exception:  # noqa: BLE001 — 缓存失败不影响播放
         return False
+
+
+def note_drive_exists_from_warm(fid: str, drive_id: str | None = None) -> None:
+    """预热已验证 206 且有 fid：写入 exists 正缓存。永不抛。
+
+    drive_id 已知时写本进程字典（``api._drive_exists_cache_put``）。
+    未知时（预热路径的常态，令牌预检拿不到挂载盘 id）走跨进程正缓存
+    ``transfer_variant.publish_drive_exists_ok``，键
+    ``aetrix:drive_exists:ok:{fid}``，与工人登记 ready 同一约定。
+    懒导入，避免 first_play ↔ api 在模块加载时环回。
+    """
+    fid = (fid or "").strip()
+    if not fid:
+        return
+    drive_id = (drive_id or "").strip()
+    if drive_id:
+        try:
+            from backend.emby_server import api as _api
+
+            _api._drive_exists_cache_put(drive_id, fid)
+            return
+        except Exception:  # noqa: BLE001 — 本进程写失败再试跨进程键
+            logger.debug("first_play exists local put failed", exc_info=True)
+    try:
+        from backend.emby_server import transfer_variant as _tv
+
+        _tv.publish_drive_exists_ok(fid)
+    except Exception:  # noqa: BLE001 — 正缓存失败不影响预热
+        logger.debug("first_play exists publish failed", exc_info=True)
 
 
 def load_warm(cache_get: Callable, guid: str, user_id) -> dict | None:
@@ -352,6 +404,7 @@ def _resolve_for_playback(db, item, user, fid: str) -> dict:
             store_warm(
                 lambda k, v, ttl: CacheManager.set(k, v, ttl, domain="playback"),
                 getattr(item, "guid", ""), getattr(user, "id", None), result)
+            note_drive_exists_from_warm(fid)
         return result
     except Exception as exc:  # noqa: BLE001 — 失败只回落旧地址
         logger.warning("first_play resolve failed: %s", type(exc).__name__)
@@ -418,6 +471,7 @@ def warm_first_play_sync(db, item, user) -> dict:
         store_warm(
             lambda k, v, ttl: CacheManager.set(k, v, ttl, domain="playback"),
             getattr(item, "guid", ""), getattr(user, "id", None), result)
+        note_drive_exists_from_warm(fid)
         outcome = {"ok": True, "reason": "warmed", "rotations": result["rotations"],
                    "precheck_ms": result["precheck_ms"], "tail_ok": tail_ok}
         return outcome
@@ -441,8 +495,9 @@ def warm_first_play_sync(db, item, user) -> dict:
 #
 # 界线（先定死，避免预热失控）：
 # - 每次触发最多暖 1 条：详情页暖本条或本剧下一集、列表页暖父级
-#   的第一集未看、PlaybackInfo 暖下一集；绝不整列表全暖（一个列表
-#   20 条冷预热就是 20 次令牌 + 20 次谷歌预检，配额与耗时都失控）。
+#   的第一集未看、PlaybackInfo 暖下一集、Resume/Latest/NextUp 各暖
+#   用户最可能点的那 1 条；绝不整列表全暖（一个列表 20 条冷预热就是
+#   20 次令牌 + 20 次谷歌预检，配额与耗时都失控）。
 # - 预热本身已做 warm_usable 早退：已暖过的条目在线程里只做 DB
 #   解析、不再打谷歌，所以重复触发不会重复烧预检。
 # - “下一集”口径与站内 NextUp 一致：同剧第一集未看（按
