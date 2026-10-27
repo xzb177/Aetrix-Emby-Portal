@@ -43,23 +43,20 @@ body {
   overflow-x: hidden;
 }
 
-/* 胶片颗粒（暗房影院，与用户端同配方）：整屏静态噪点，不动画、不吃事件。
-   暗房里没有霓虹：旧版右上角的青 / 蓝氛围光已退役。 */
+/* 胶片颗粒（暗房影院，与用户端同配方）：几乎关掉。≤0.02，不混合，不动画、不吃事件。 */
 body::after {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 9999;
   pointer-events: none;
-  opacity: 0.05;
-  mix-blend-mode: overlay;
+  opacity: 0.02;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 160px 160px;
 }
 
 html[data-theme='light'] body::after {
-  opacity: 0.04;
-  mix-blend-mode: multiply;
+  opacity: 0.02;
 }
 
 /* 衬线标题：页标题 / 区块标题 / 弹窗标题走宋体系，正文仍是系统无衬线（同用户端） */

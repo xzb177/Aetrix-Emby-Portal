@@ -1,25 +1,25 @@
 <template>
   <!-- 新手引导卡：localStorage['aetrix_camp_onboarded_v1'] 为空且已登录才展示。
        跳过 / 跟逛都会写 key，此后不再出现。 -->
-  <section v-if="visible" class="v4-card guide-card" aria-label="营地新手引导">
+  <section v-if="visible" class="v4-card guide-card" aria-label="新手引导">
     <div class="guide-head">
-      <span class="guide-char" aria-hidden="true">🧭</span>
+      <Compass class="guide-icon" :size="22" :stroke-width="1.75" aria-hidden="true" />
       <div class="guide-titles">
-        <div class="guide-title">向导带你逛营地</div>
-        <div class="guide-sub">第一次来？三步就上手</div>
+        <div class="guide-title">第一次来可以先报到</div>
+        <div class="guide-sub">三步就能开始用</div>
       </div>
     </div>
     <ol class="guide-steps">
       <li><b>先去报到</b>——{{ checkinTip }}</li>
-      <li><b>领体力</b>——报到顺手把今天的体力拿上，看片不心慌。</li>
-      <li><b>逛设施</b>——地图上的小帐篷都能点进去看看。</li>
+      <li><b>领体力</b>——报到时把今天的体力领上。</li>
+      <li><b>看看设施</b>——地图上的地点都可以点进去。</li>
     </ol>
     <div class="guide-btns">
-      <button class="guide-go" @click="followGuide" aria-label="跟着向导逛逛，先去报到">
-        跟着向导逛逛
+      <button class="guide-go" @click="followGuide" aria-label="去报到">
+        去报到
       </button>
-      <button class="guide-skip" @click="skipGuide" aria-label="跳过新手引导，我自己逛">
-        我自己逛
+      <button class="guide-skip" @click="skipGuide" aria-label="跳过新手引导">
+        跳过
       </button>
     </div>
   </section>
@@ -28,6 +28,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { Compass } from 'lucide-vue-next'
 import { useUserStore } from '@/stores/user'
 import { gameFacilities } from '@/config/game'
 
@@ -87,16 +88,14 @@ onMounted(() => {
   gap: 12px;
   margin-bottom: 10px;
 }
-.guide-char {
-  font-size: 40px;
-  line-height: 1;
+.guide-icon {
   flex-shrink: 0;
-  filter: drop-shadow(1px 2px 0 rgba(0, 0, 0, 0.12));
+  color: var(--ink2);
 }
 .guide-title {
   font-size: 16px;
-  font-weight: 800;
-  letter-spacing: 1px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 .guide-sub {
   font-size: 12px;

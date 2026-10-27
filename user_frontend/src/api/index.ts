@@ -763,7 +763,8 @@ export const subscriptionApi = {
 // 用户端只有读口：架列表 / 合集详情 / 成员列表（双轨）。写操作（新建 /
 // 编辑 / 成员增删 / 设序）只在管理端，见 admin_frontend/src/api/collections.ts。
 // 总闸 COLLECTIONS_ENABLED 关时读口 404，调用方按“无合集”处理（不报错）。
-// 封面只出 artwork_mode 策略，不出图 URL：卡片无封面时用占位，不另起封面机制。
+// 展示封面只认 cover_url（非空字符串出图，空则占位）。
+// artwork_mode 仍是策略字段，前端不解析、不据此拼 URL。
 // 成员露出受案 A 门控（visible_items_query）：未绑定成员不上架显示。
 
 /** 架上的一个合集（GET /api/user/collections/shelves 的 collections 项） */
@@ -773,6 +774,8 @@ export interface ShelfCollection {
   name: string
   sort_order: number
   artwork_mode: string
+  /** 已解析的封面地址；空则卡片用占位，前端不补 URL */
+  cover_url?: string | null
   member_count: number
   min_effective_members: number
 }
@@ -792,6 +795,8 @@ export interface CollectionDetail {
   sort_order: number
   min_effective_members: number
   artwork_mode: string
+  /** 已解析的封面地址；空则不展示图，前端不补 URL */
+  cover_url?: string | null
   path_prefix: string | null
   bound_person_id: number | null
   member_count: number
@@ -815,6 +820,8 @@ export interface CollectionItemsResponse {
   name: string
   track: 'release' | 'watch'
   artwork_mode: string
+  /** 已解析的封面地址；空则不展示图，前端不补 URL */
+  cover_url?: string | null
   shelf_eligible: boolean
   effective_count: number
   min_effective_members: number

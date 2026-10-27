@@ -12,8 +12,8 @@
    ======================================== */
 
 :root {
-  /* 字体（暗房影院）：标题走衬线（片名 / 页标题 / 大数字说明），正文保持系统无衬线 */
-  --au-font-serif: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
+  /* 字体（暗房影院）：标题走系统宋体（与用户端同一栈，不外链），正文保持系统无衬线 */
+  --au-font-serif: 'Songti SC', 'STSong', 'SimSun', 'Noto Serif SC', 'Source Han Serif SC', serif;
   --au-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 
   /* 主色 — 放映机琥珀（全站唯一强调色） */
@@ -210,11 +210,11 @@ html[data-theme='light'] {
 
 .au-num { font-variant-numeric: tabular-nums; }
 
-/* 小号字距拉开的「眉题」：琥珀色 */
+/* 小号眉题：琥珀色，字距收到 0.1em */
 .au-eyebrow {
   font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.24em;
+  font-weight: 500;
+  letter-spacing: 0.1em;
   color: var(--au-primary);
 }
 

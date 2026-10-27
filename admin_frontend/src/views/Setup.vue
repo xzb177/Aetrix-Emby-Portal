@@ -216,12 +216,11 @@ async function submit() {
 
 .brand-eyebrow { margin: 0 0 0.375rem; }
 
-/* 站名：衬线（base.css 的 h1）+ 大写 + 拉开字距，同用户端 .brand-title */
+/* 站名：与登录页同一口径，字距 ≤0.04em，不再 uppercase */
 .brand-title {
   font-size: 1.5rem;
   font-weight: 700;
-  letter-spacing: 0.28em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
   color: var(--au-text);
   margin: 0 0 0.5rem;
 }

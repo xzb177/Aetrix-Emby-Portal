@@ -219,15 +219,14 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 胶片颗粒：整屏静态噪点（内联 SVG feTurbulence），不动画、不吃事件，开销只有一次绘制 */
+/* 胶片颗粒：默认几乎关掉。保留一层 ≤0.02 的静态噪点，不再 overlay 混合，避免整屏像套了滤镜。 */
 body::after {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 9999;
   pointer-events: none;
-  opacity: 0.05;
-  mix-blend-mode: overlay;
+  opacity: 0.02;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 160px 160px;
 }
@@ -250,11 +249,11 @@ h3,
   letter-spacing: 0.01em;
 }
 
-/* 小号字距拉开的「眉题」：琥珀色、全大写感 */
+/* 小号眉题：琥珀色，字距收到 0.1em（中文不再拉开成生成器标签） */
 .au-eyebrow {
   font-size: 0.8125rem;
-  font-weight: 600;
-  letter-spacing: 0.24em;
+  font-weight: 500;
+  letter-spacing: 0.1em;
   color: var(--au-primary);
 }
 
@@ -567,10 +566,9 @@ html[data-theme='light'] body {
   color: var(--au-text);
 }
 
-/* 纸面颗粒更淡一些，正片叠底 */
+/* 纸面颗粒与暗色同一上限，不再叠混合模式 */
 html[data-theme='light'] body::after {
-  opacity: 0.04;
-  mix-blend-mode: multiply;
+  opacity: 0.02;
 }
 
 /* 浅色模式下滚动条里写死的中性色跟过来 */

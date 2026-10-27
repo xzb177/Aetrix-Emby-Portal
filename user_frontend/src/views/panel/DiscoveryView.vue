@@ -137,7 +137,7 @@
              桌面锚点不收它——条件渲染的区段挂锚点会点出死锚） -->
         <section v-if="collectionsLoading || collectionsError || shelfCollections.length > 0" class="v4-sec d3-ord-collections" id="disc-collections">
           <div class="m-only">
-            <div class="v4-sec-title">📚 合集</div>
+            <div class="v4-sec-title">合集</div>
             <div class="v4-sec-sub">服主整理好的合集，点进去看成员</div>
           </div>
           <div class="d3-sec-head d-only">

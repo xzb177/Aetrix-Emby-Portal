@@ -549,9 +549,9 @@ onUnmounted(() => {
 .brand-title {
   font-size: 1.75rem;
   font-weight: 700;
-  letter-spacing: 0.2em;
-  text-indent: 0.2em; /* 补偿末字符后的字距，居中标题视觉不偏左 */
-  text-transform: uppercase;
+  /* CJK 站名不拉距：≤0.04em，不再 uppercase */
+  letter-spacing: 0.02em;
+  text-indent: 0.02em;
   color: var(--paper-ink);
   margin: 0 0 0.625rem;
   line-height: 1.3;

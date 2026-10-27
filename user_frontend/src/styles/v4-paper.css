@@ -235,22 +235,22 @@ html[data-theme='light'] {
   border-bottom: 2px solid var(--ink);
   position: relative;
 }
+/* 页眉小标签：普通标签，不再旋转、不再用红色橡皮章 */
 .v4-stamp {
   display: inline-block;
-  border: 2px solid var(--red);
-  color: var(--red);
+  border: 1px solid var(--line);
+  color: var(--ink2);
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  padding: 4px 10px;
-  transform: rotate(-4deg);
-  border-radius: 3px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 4px;
   margin-bottom: 10px;
 }
 .v4-loghead h1 {
   font-size: 24px;
-  font-weight: 800;
-  letter-spacing: 1px;
+  font-weight: 500;
+  letter-spacing: 0;
   margin: 0;
 }
 .v4-loghead p {
@@ -279,8 +279,8 @@ html[data-theme='light'] {
   align-items: center;
   gap: 8px;
   font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 2px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   /* h2 元素自带 UA 默认 margin，显式归零，只保留下方间距 */
   margin: 0 0 4px;
 }
@@ -499,10 +499,10 @@ html[data-theme='light'] {
   --stb-fill-empty: #b9b0a0;
 }
 
-/* 手机日志头：印章与大标题间距加大，避免旋转印章视觉上压字 */
+/* 手机日志头：标签与标题留出一点间距（印章已不再旋转） */
 @media (max-width: 767px) {
   .v4-loghead .v4-stamp {
-    margin-bottom: 16px;
+    margin-bottom: 10px;
   }
 }
 

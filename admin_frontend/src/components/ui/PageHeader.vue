@@ -54,8 +54,8 @@ withDefaults(
 .au-page-header__eyebrow {
   margin: 0 0 6px;
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.24em;
+  font-weight: 500;
+  letter-spacing: 0.1em;
   color: var(--au-primary);
 }
 
