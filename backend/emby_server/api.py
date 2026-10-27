@@ -5056,6 +5056,8 @@ async def playback_info(
     # sources 为空（源不可用）时不算门禁。注意：PlaybackInfo 取到
     # 也会触发建任务（用户已走到播放屏，算首播意图；24h 节流兜底，
     # 同一用户同一条目不重复建）。
+    _pi_verdict = None
+    _pi_gate = None
     if sources:
         from backend.emby_server import transfer_variant as _tv_pi
         _pi_gate = await run_db(
@@ -5063,9 +5065,26 @@ async def playback_info(
         _pi_verdict = (_pi_gate or {}).get("verdict")
         if _pi_verdict in ("preparing", "failed"):
             play_variants.apply_transfer_status(sources, _pi_verdict)
+        # 就绪态分级（FMBY 全部学第 2 项）：每条源都有 Readiness；
+        # preparing/failed 已由 apply_transfer_status 写好，其余按
+        # “有没有流地址”补 ready/unavailable（ready 态不污染缓存，
+        # 本段在缓存取/存之后算）。多变体时另附不带地址的清单描述子。
+        for _src in sources:
+            _src.setdefault(
+                "Readiness",
+                "ready" if _src.get("DirectPlayUrl") else "unavailable")
+    _playback_variants = None
+    if _variants:
+        _requires_transfer = bool(
+            _pi_verdict in ("preparing", "failed")
+            or (_pi_gate or {}).get("variant") is not None)
+        _playback_variants = play_variants.build_variant_descriptors(
+            _variants, transfer_verdict=_pi_verdict,
+            requires_transfer=_requires_transfer)
     _pt.done()
     return _strip_nulls({
         "MediaSources": sources,
+        "PlaybackVariants": _playback_variants,
         # 每次播放会话一个独立票据，客户端据此上报进度
         "PlaySessionId": _play_session_id,
         "ErrorCode": None,
@@ -5579,12 +5598,16 @@ async def video_stream(
                             detail="文件公开额度已耗尽，转存已入队，"
                                    "下次播放走副本") from None
                 except HTTPException as exc:
-                    # 阶段 6 换线失败重试点：只有上游 502（远端不可用）
-                    # 可换线；403（轮换后仍失败）/503（取不到凭据）/
-                    # 404（目标没了）原样抛，不记变体的账、不换线。
-                    # 中继失败本身先记一条 error 事件（method=relay），
-                    # 再决定换线还是原样抛——换线成功时后面还有直链的
-                    # ok 事件，两条事件拼出一次完整切换。
+                    # 阶段 6 换线失败重试点（FMBY 全部学第 5 项）：502
+                    # （远端不可用）与轮换后 403（中继函数内部已轮换
+                    # 凭据重试一次、再失败才抛到这里）可换线，上限一次；
+                    # 503（取不到凭据）/ 404（目标没了）/ 429 原样抛。
+                    # 中继失败本身先记一条 error 事件（method=relay，
+                    # error_kind 标清上游状态），再决定换线还是原样抛
+                    # ——换线成功时后面还有直链的 ok 事件，两条事件拼
+                    # 出一次完整切换。换线只在同一用户副本的变体之间
+                    # 换（_play_fid 已由门禁解析为用户副本），转存未
+                    # 完成时根本到不了这里，绝不以换线名义播共享盘。
                     if (_requested_variant is None
                             and _variant_switch.is_switch_eligible_relay_status(
                                 exc.status_code)):
@@ -5592,7 +5615,11 @@ async def video_stream(
                             item, user_id=getattr(user, "id", None),
                             method="relay",
                             variant=play_variants.DRIVE_RELAY,
-                            result="error", error_kind="upstream_502",
+                            result="error",
+                            error_kind=(
+                                "upstream_403_after_rotation"
+                                if exc.status_code == 403
+                                else "upstream_502"),
                             resolve_ms=int(
                                 (time.perf_counter() - _evt_t0) * 1000))
                         _, _avail2, _ = await run_db(
@@ -5601,13 +5628,15 @@ async def video_stream(
                                 name for name, _ in _avail2]:
                             raise HTTPException(
                                 status_code=409,
-                                detail="变体切换失败：drive_relay 上游不可用，"
+                                detail="变体切换失败：drive_relay 上游不可用"
+                                       f"（{exc.status_code}），"
                                        "且 drive_direct 在可用性表中不可用"
                                        ) from exc
                         _switch_attempted = True
                         logger.warning(
-                            "变体切换：drive_relay 上游 502，改走 "
-                            "drive_direct item=%s", getattr(item, "id", "?"))
+                            "变体切换：drive_relay 上游 %s，改走 "
+                            "drive_direct item=%s",
+                            exc.status_code, getattr(item, "id", "?"))
                     else:
                         raise
                 else:

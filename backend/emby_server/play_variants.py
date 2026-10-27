@@ -247,15 +247,113 @@ def apply_transfer_status(sources: list[dict], transfer_status: str) -> None:
     ——清单里保留该条、但点不了（FMBY“先转存再播”口径，不要做成
     清单里根本不列）。原地修改，调用方在缓存取/存之后再算状态
     并覆盖（状态每请求新鲜算，不污染 5 分钟基础体缓存）。
+    同时写就绪态分级字段 ``Readiness``（preparing/failed），与
+    :func:`compute_readiness` 同口径；ready 态由
+    :func:`build_media_sources` 预置，不由本函数补。
     """
     if transfer_status not in ("preparing", "failed"):
         return
     for src in sources:
         src["TransferStatus"] = transfer_status
+        src["Readiness"] = transfer_status
         src["SupportsDirectPlay"] = False
         src["SupportsDirectStream"] = False
         src.pop("DirectPlayUrl", None)
         src.pop("DirectStreamUrl", None)
+
+
+def stable_variant_id(kind: str, height=None, label: str = "") -> str:
+    """FMBY 式稳定变体 id（不含条目 guid，同一变体跨请求恒定）。
+
+    有高度时用 ``{kind}-h{高度}``（如 ``drive_direct-h1080``）；
+    无高度时用标签归一化后的 slug（小写、非字母数字折成 ``-``、
+    首尾去 ``-``，空则回落 kind）；冲突后缀由
+    :func:`assign_stable_variant_ids` 统一加 ``-2``/``-3``，本函数
+    本身不做冲突处理。注意：Emby 的 MediaSourceId 仍用
+    ``{guid}:{variant_name}``（兼容老客户端与既有签名口径），本 id
+    只用于清单描述子（PlaybackVariants），两者不要混用。
+    """
+    kind = (kind or "").strip() or "variant"
+    if height:
+        try:
+            h = int(height)
+        except (TypeError, ValueError):
+            h = 0
+        if h > 0:
+            return f"{kind}-h{h}"
+    slug = "".join(
+        ch.lower() if ch.isalnum() else "-" for ch in (label or ""))
+    slug = "-".join(part for part in slug.split("-") if part)
+    return slug or kind
+
+
+def assign_stable_variant_ids(kinds_labels) -> list[str]:
+    """给一批 (kind, height, label) 分配互不冲突的稳定 id。
+
+    同 id 第二次出现加 ``-2``，第三次 ``-3``，依此类推（FMBY
+    侧车 id 生成规则：高度优先、标签 slug 兜底、冲突加后缀）。
+    """
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for kind, height, label in kinds_labels:
+        base = stable_variant_id(kind, height, label)
+        n = seen.get(base, 0) + 1
+        seen[base] = n
+        out.append(base if n == 1 else f"{base}-{n}")
+    return out
+
+
+def compute_readiness(has_stream_url: bool, transfer_verdict=None) -> str:
+    """就绪态分级（FMBY readiness 的我方口径，纯函数）。
+
+    由“有没有流地址＋转存准备状态”共同算出（requires_transfer
+    已由门禁 verdict 编码：preparing/failed 就是“需要转存且未就绪”，
+    proceed/serve_115_copy 就是“转存要求已满足”，不再另设第四输入）：
+    - verdict failed → ``failed``（取流报 409/503，明文，不静默改走）；
+    - verdict preparing → ``preparing``（清单保留、点不了）；
+    - verdict error → ``unavailable``（门禁本身不可用，取流 503）；
+    - 其余：有流地址 → ``ready``，无流地址 → ``unavailable``。
+    """
+    if transfer_verdict == "failed":
+        return "failed"
+    if transfer_verdict == "preparing":
+        return "preparing"
+    if transfer_verdict == "error":
+        return "unavailable"
+    return "ready" if has_stream_url else "unavailable"
+
+
+def build_variant_descriptors(variants: list[Variant], *,
+                              transfer_verdict=None,
+                              requires_transfer: bool = False) -> list[dict]:
+    """FMBY 形清单描述子：便宜、可缓存、不带任何真实流地址。
+
+    这是清单与取流分离的第一步：描述子只含稳定 id、种类、可读名、
+    是否默认、是否需要转存、就绪态——**不含任何 URL 键**（调用方
+    不许事后往里塞地址；地址只在取流时由 video_stream 按变体
+    第二步解析）。Emby 协议要求 MediaSources 带 DirectPlayUrl，
+    故 PlaybackInfo 的 MediaSources 仍按原口径下发本站 /stream
+    内链（那不是上游解析出的真实地址，上游解析只在 video_stream
+    时发生）；描述子是给“清单便宜、可缓存、不泄露上游地址”用的
+    另一面，两面不要混成一面。
+    ``has_stream_url`` 对描述子恒按“在可用清单里”算：变体在清单
+    里即视为有取流入口（取流成败仍由取流时回答），不在清单里的
+    变体根本不进描述子。``requires_transfer`` 由调用方按门禁
+     verdict 传入（转存未完成或已有用户副本时为 True）。
+    """
+    heights_labels = [(v.name, None, v.label) for v in variants]
+    stable_ids = assign_stable_variant_ids(heights_labels)
+    out: list[dict] = []
+    for i, (v, sid) in enumerate(zip(variants, stable_ids)):
+        out.append({
+            "stable_id": sid,
+            "kind": v.name,
+            "label": v.label,
+            "is_default": i == 0,
+            "requires_transfer": bool(requires_transfer),
+            "readiness": compute_readiness(True, transfer_verdict),
+        })
+    return out
 
 
 def build_media_sources(base_source: dict, variants: list[Variant], *,
@@ -286,6 +384,7 @@ def build_media_sources(base_source: dict, variants: list[Variant], *,
         src["SupportsDirectPlay"] = True
         src["SupportsDirectStream"] = bool(direct_stream_ok)
         src["SupportsTranscoding"] = False
+        src["Readiness"] = "ready"
         src.pop("TranscodingUrl", None)
         out.append(src)
     apply_transfer_status(out, transfer_status)

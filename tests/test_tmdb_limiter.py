@@ -17,6 +17,7 @@
 
 这些用例都在假会话上跑，不发真请求。
 """
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -51,9 +52,24 @@ def sleeps(monkeypatch):
     注意 ``tmdb_mod.time`` 就是标准库 ``time``：``acquire()`` 内部的等待也会一起被打桩，
     所以用到本 fixture 的用例都把限速器调快（见 ``_client`` 的 ``rate``），
     否则空转轮询要等到真实时间过去才退出。
+
+    只记测试主线程的 sleep（2026-10-27 #1355 CI 实证）：``time.sleep`` 是进程全局，
+    test_node_health 起的 node-health 守护线程也在同一进程里每 30 秒睡一次；
+    它若在打桩窗口内醒来，``sleep(30)`` 会被照单记进这张表（CI 里就是
+    ``sleeps == [30, 20.0]`` 导致 ``len(sleeps) == 1`` 断言红，而生产代码本身
+    只睡了 20.0 秒一次）。后台线程的 sleep 直接返回、不记数、不真睡——
+    守护线程在用例窗口内空转毫秒级是无害的，打桩一撤它就回到真实 30 秒节律。
     """
     recorded: list = []
-    monkeypatch.setattr(tmdb_mod.time, "sleep", lambda s: recorded.append(s))
+    main_ident = threading.get_ident()
+
+    def _fake_sleep(s):
+        if threading.get_ident() == main_ident:
+            recorded.append(s)
+        # 非测试线程：不记数、不真睡（避免守护线程空转时污染计数，
+        # 也避免真睡 30 秒把用例拖死）
+
+    monkeypatch.setattr(tmdb_mod.time, "sleep", _fake_sleep)
     return recorded
 
 
@@ -221,6 +237,30 @@ def test_single_key_429_without_header_still_waits_a_token(monkeypatch, sleeps):
     with pytest.raises(TmdbTransientError):   # 没有 Retry-After 也退避，然后转重试
         client._get("/search/tv", {"query": "x"})
     assert len(sleeps) == 1 and 0 < sleeps[0] <= tmdb_mod.TMDB_RETRY_AFTER_CAP_SEC
+
+
+def test_sleeps_fixture_ignores_background_thread_sleeps(monkeypatch, sleeps):
+    """回归（2026-10-27 #1355 CI）：后台线程的 sleep 不许污染计数
+
+    node-health 守护线程每 30 秒睡一次；旧 fixture 照单全收时，它在打桩
+    窗口内醒来一次就会让 ``test_single_key_429_without_header_still_waits_a_token``
+    的 ``len(sleeps) == 1`` 断言红（CI 实证 ``[30, 20.0]``）。本用例模拟该
+    线程：后台线程连睡 5 次 30 秒，主线程再睡一次 7 秒——记录里只能有主线程
+    那一次，且后台线程不会被真睡 30 秒拖住。
+    """
+    done: list = []
+
+    def _bg():
+        for _ in range(5):
+            tmdb_mod.time.sleep(30)
+        done.append(True)
+
+    t = threading.Thread(target=_bg)
+    t.start()
+    t.join(timeout=10)
+    assert done == [True]
+    tmdb_mod.time.sleep(7)
+    assert sleeps == [7]
 
 
 def test_multi_key_429_rotates_instead_of_sleeping_long(monkeypatch, sleeps):
