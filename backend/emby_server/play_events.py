@@ -26,8 +26,9 @@ import 时读一次，热路径不查 env（与 play_timing 同口径）。
 - 事件粒度是「调度尝试」：快路径（Drive 中继 / 302）各一条、回落解析
   一条；回落分支最终分发到 mount 中继还是本机文件不另记 method 细分。
 - 解析前的拒绝（条目不可见 404、未订阅拦截）没进调度层，不记。
-- 聚合读口是 ``aggregate_play_start_events`` 查询函数；管理端页面挂靠
-  留后续（仪表盘/诊断面接入时直接调它）。
+- 聚合读口是 ``aggregate_play_start_events`` 查询函数；管理端调用方
+  是 ``play_start_admin.py`` 的 GET /api/admin/playback/play-start-stats
+ （FMBY #2 闭环接线，只读，不进播放热路径）。
 """
 from __future__ import annotations
 
