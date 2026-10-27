@@ -47,6 +47,7 @@ from backend.api.media_sets_api import (
 from backend.api.library_cover import router as library_cover_router
 from backend.api.media_library import mirror_router as cover_mirror_router
 from backend.api.media_library import router as media_library_router
+from backend.api.nl_search import router as nl_search_router
 from backend.api.admin_artwork import router as admin_artwork_router
 from backend.api.library_order import router as library_order_router
 from backend.api.home_summary import router as home_summary_router
@@ -844,6 +845,8 @@ app.include_router(library_cover_router)
 # 媒体库学习（封面/排序/货架）：门户端游标分页 / 分区 / 藏 / 封面五件套
 # 与管理端覆盖 / 库设序，见 backend/api/media_library.py 等
 app.include_router(media_library_router)
+# 自然语言搜片（第三批第二单，默认关；只挂用户端搜索路由，不碰首页）
+app.include_router(nl_search_router)
 # 图床镜像出图（批一）：无前缀，即 /cdn/covers/{hash}，公开出图
 app.include_router(cover_mirror_router)
 app.include_router(admin_artwork_router)
