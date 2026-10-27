@@ -2123,14 +2123,22 @@ def get_items(
     db: Session = Depends(get_db),
 ):
     result = _query_items(request, user, db, _base_url(request))
-    # 首次播放预热（第二轮，列表页）：带 ParentId 的剧集/季单集列表
-    # 打开时，在后台暖该父级的第一集未看（最多 1 条，响应本身不动；
-    # ParentId 为库 guid 或查不到条目时线程内空转，不影响列表）。
+    # 首次播放预热：恰好一条 Ids 是点名直达（点播前常走这条而不是详情路由），
+    # 后台暖这一条。否则才用 ParentId 暖父级第一集未看（最多 1 条，响应不动；
+    # ParentId 为库 guid 或查不到时线程内空转）。两条不叠加，避免一次列表打两次谷歌。
     try:
-        _parent_guid = request.query_params.get("ParentId")
-        if _parent_guid:
-            from backend.emby_server import first_play as _fp_list
-            _fp_list.spawn_first_play_warm_by_guid(_parent_guid, user.id)
+        from backend.emby_server import first_play as _fp_list
+
+        _direct = _fp_list.direct_item_guid(
+            _fp_list.iter_query_ids(request.query_params.getlist("Ids")))
+        if _direct:
+            _fp_list.spawn_first_play_warm_by_guid(
+                _direct, user.id, source="items_id")
+        else:
+            _parent_guid = request.query_params.get("ParentId")
+            if _parent_guid:
+                _fp_list.spawn_first_play_warm_by_guid(
+                    _parent_guid, user.id, source="parent_list")
     except Exception:  # noqa: BLE001 — 预热启动失败不影响列表页
         pass
     return result
@@ -3438,7 +3446,11 @@ def get_item_detail(
     # 后台线程、不阻塞详情页；可播条目暖自身，剧/季暖下一集。
     try:
         from backend.emby_server import first_play as _fp_detail
-        _fp_detail.spawn_first_play_warm(item.id, user.id, mode="detail")
+        # 电影/单集暖的就是自己：返回前占上在途标记，紧跟着的 PlaybackInfo
+        # 等这一次预检而不是再打一遍。剧/季目标是另一集，不在这里占。
+        _fp_detail.spawn_first_play_warm(
+            item.id, user.id, mode="detail", source="detail",
+            self_target=getattr(item, "item_type", None) in ("movie", "episode"))
     except Exception:  # noqa: BLE001 — 预热启动失败不影响详情页
         pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
@@ -3705,6 +3717,9 @@ def get_episodes(item_id: str, request: Request,
                        db: Session = Depends(get_db)):
     item = _require_visible_item(db, user, item_id)
     season_id = request.query_params.get("SeasonId")
+    # 选集页预热锚点：有真实季行就暖该季第一集未看，否则暖本剧第一集未看。
+    # 最多 1 条；在拼 DTO 之前起线程，序列化列表的时间叠在预检上。
+    warm_anchor_id = item.id
     # 系统性去重合并：该剧在不同路径可能有多条 series 记录，集数合并展示
     series_ids = [item.id]
     if item.item_type == "series":
@@ -3731,6 +3746,7 @@ def get_episodes(item_id: str, request: Request,
         )
         if season and (_season_belongs_to(season, item) or family_season):
             query = query.filter(em.MediaItem.parent_id == season.id)
+            warm_anchor_id = season.id
         else:
             # 虚拟季（桶B：get_seasons 合成的 ``vseason-<剧 db id>-<季号>`` 条目）：
             # 真实 guid 查不到；校验它属于本剧口径且真有可见集后按季号筛集。
@@ -3768,6 +3784,15 @@ def get_episodes(item_id: str, request: Request,
     limit = qlimit(request.query_params, default=100)
     total = len(episodes)
     episodes = episodes[start:start + limit]
+    try:
+        from backend.emby_server import first_play as _fp_eps
+        _fp_eps.spawn_first_play_warm(
+            warm_anchor_id, user.id, mode="detail", source="episodes",
+            self_target=(
+                warm_anchor_id == item.id
+                and getattr(item, "item_type", None) in ("movie", "episode")))
+    except Exception:  # noqa: BLE001 — 预热启动失败不影响选集列表
+        pass
     base = _base_url(request)
     _prefetch_list_data(db, user.id, episodes)
     # 分集标题美化：相关剧名（供文件名去剧名前缀用）。_prefetch_list_data 已把剧载入
@@ -5192,6 +5217,21 @@ async def playback_info(
                         sources[0]["DirectPlayUrl"] = _warm.get("url") or sources[0]["DirectPlayUrl"]
                         sources[0]["DirectStreamUrl"] = sources[0]["DirectPlayUrl"]
                 if not _alt_applied:
+                    # 详情/单条直达/选集已经在后台预热：等这一次写进缓存再复用，
+                    # 不再并行再打一遍谷歌。没有在途则立刻返回，下面走冷预检。
+                    _joined = await run_db(
+                        _fp.consume_inflight_warm,
+                        lambda k: _CM.get(k, domain="playback"),
+                        user.id, item.id, item.guid, _alt_fid,
+                        _fp.INFLIGHT_WAIT_SEC)
+                    if _joined:
+                        _pt.mark("alt_warm_hit")
+                        _alt_applied = _apply_alt_media_direct(
+                            sources[0], _alt_fid, _joined.get("token"))
+                        if _alt_applied:
+                            sources[0]["DirectPlayUrl"] = _joined.get("url") or sources[0]["DirectPlayUrl"]
+                            sources[0]["DirectStreamUrl"] = sources[0]["DirectPlayUrl"]
+                if not _alt_applied:
                     # 冷启动或预热已超 120 秒：预检 + 403 轮换 SA 再下发，
                     # 播放器第一次拿到的必须是经验证的令牌（见 first_play）。
                     _verified = await run_db(
@@ -5230,7 +5270,8 @@ async def playback_info(
     try:
         if (request.query_params.get("IsPlayback") or "").lower() == "true":
             from backend.emby_server import first_play as _fp_next
-            _fp_next.spawn_first_play_warm(item.id, user.id, mode="next")
+            _fp_next.spawn_first_play_warm(
+                item.id, user.id, mode="next", source="next")
     except Exception:  # noqa: BLE001 — 预热启动失败不影响本次播放
         pass
     return _strip_nulls({
