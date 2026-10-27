@@ -2245,6 +2245,22 @@ export const fetchGDriveSaStatus = () =>
     cache_size_human: string
   }>('/gdrive/sa-status')
 
+/** 额度驾驶舱（只读管理端口；开关关时后端返回 404，调用方按未启用处理） */
+export type QuotaDashboard = {
+  sa_pool: { count: number | null; status: string; note: string }
+  user_disks: {
+    items: Array<{ binding_id: number; user_id: number; account_label: string; limit: number | null; usage: number | null; free: number | null; status: string }>
+    status: string
+    truncated: boolean
+  }
+  transfer_queue: {
+    counts: { pending: number; running: number; done: number; failed: number }
+    status: string
+    recent_failed: Array<{ job_id: number; item_id: number; trigger: string; error_kind: string | null; error_detail: string }>
+  }
+}
+export const fetchQuotaDashboard = () => get<QuotaDashboard>('/quota-dashboard')
+
 /** 手动触发 SA 轮换（Fix 6） */
 export const rotateGDriveSa = () =>
   post<{ success: boolean; sa_file?: string; mode?: string; needs_remount?: boolean; remount_hint?: string }>('/gdrive/sa-rotate')
