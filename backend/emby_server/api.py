@@ -3350,6 +3350,15 @@ def get_item_detail(
         probe_worker.maybe_enqueue(db, item)
     except Exception:  # noqa: BLE001 — 入队失败不影响详情页
         pass
+    # 详情页预转存（2026-10-27 极限优化）：与按需探测同款“详情页触发、
+    # 不阻塞、失败不影响详情页”口径。列表口不触发；首个可播条目、
+    # 已有 ready、24h 节流、每天 5 单帽子、每用户 2 单在途上限都在
+    # maybe_prefetch_transfer 里判定，详情口这里只调不判。
+    try:
+        from backend.emby_server import transfer_variant as _tv_detail
+        _tv_detail.maybe_prefetch_transfer(db, item, user)
+    except Exception:  # noqa: BLE001 — 预转存失败不影响详情页
+        pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
                      auth_qs=_url_auth_qs(db, request, user, item.guid))
 
@@ -4118,6 +4127,9 @@ def drive_exists_retry_window() -> int:
 
 #: 跨进程墓碑：file_id 全局唯一，扫描/管理端不一定解析得出和播放侧相同的 drive_id。
 _DRIVE_EXISTS_INVAL_PREFIX = "aetrix:drive_exists:inv:"
+#: 跨进程正缓存：工人登记 ready 后写（transfer_variant.publish_drive_exists_ok），
+#: 须与 transfer_variant._DRIVE_EXISTS_OK_PREFIX 逐字一致；墓碑优先于正缓存。
+_DRIVE_EXISTS_OK_PREFIX = "aetrix:drive_exists:ok:"
 #: 跨进程重试记号（值是身份+文件+Range 起始的哈希，不落用户 id 明文）。
 _DRIVE_EXISTS_RETRY_PREFIX = "aetrix:drive_exists:retry:"
 _drive_exists_retry: dict = {}
@@ -4151,6 +4163,17 @@ def _exists_tombstone(file_id: str) -> bool:
         if rc is None:
             return False
         return bool(rc.exists(_exists_inval_key(file_id)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _exists_ok_redis(file_id: str) -> bool:
+    """工人登记 ready 后写的跨进程正缓存。Redis 不可用 → False。"""
+    try:
+        rc = _drive_exists_redis()
+        if rc is None:
+            return False
+        return bool(rc.exists(_DRIVE_EXISTS_OK_PREFIX + file_id))
     except Exception:  # noqa: BLE001
         return False
 
@@ -4241,6 +4264,11 @@ def _drive_exists_cache_hit(drive_id: str, file_id: str) -> bool:
         except Exception:  # noqa: BLE001
             pass
         return False
+    # 跨进程正缓存：工人登记 ready 后写，命中即省一次 files.get。
+    # 墓碑已在上面先查过，正缓存不会绕过“已删除”宣告。
+    if _exists_ok_redis(file_id):
+        _drive_exists_cache_put(drive_id, file_id)
+        return True
     return True
 
 
@@ -5213,6 +5241,20 @@ async def video_stream(
             _tv.ensure_user_copy_gate, db, item, user,
             play_sign_consume=_play_sign_consume)
         _gate_verdict = (_transfer_gate or {}).get("verdict")
+        # 准备中态等流（2026-10-27 极限优化）：准备中不再直接 409
+        # 让播放器拿无签地址连探 404、等它自己再查 PlaybackInfo
+        # （实测约 24 秒感知等待）。流请求本身在这里等：每 0.2 秒
+        # 重查一次门禁，转存好了（proceed / serve_115_copy）就继续
+        # 正常选路 302 到用户副本，失败/超时仍按旧 409/503 处理。
+        # 等流不 serve 任何字节、不回落共享，超时上限 15 秒（可配）。
+        if _gate_verdict == "preparing":
+            async def _re_gate():
+                return await run_db(
+                    _tv.ensure_user_copy_gate, db, item, user,
+                    play_sign_consume=_play_sign_consume)
+            _transfer_gate = await _tv.wait_for_transfer_ready(
+                _transfer_gate, _re_gate)
+            _gate_verdict = (_transfer_gate or {}).get("verdict")
         if _gate_verdict == "serve_115_copy":
             _variant115 = (_transfer_gate or {}).get("variant")
             _pickcode115 = (getattr(_variant115, "pickcode", "")
