@@ -639,7 +639,7 @@ def _emby_username_taken(db: Session, user: models.WebUser, username: str) -> bo
 
 
 @user_emby_router.post("/password")
-async def set_emby_password(
+def set_emby_password(
     req: SetPasswordRequest,
     request_user: models.WebUser = Depends(get_admin_or_emby_user),
     db: Session = Depends(get_db),

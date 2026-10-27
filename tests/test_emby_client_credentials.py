@@ -76,7 +76,7 @@ def _subscribe(db, user):
 
 def _set(db, user, **body):
     req = SetPasswordRequest(**body)
-    return asyncio.run(set_emby_password(req, user, db))
+    return set_emby_password(req, user, db)
 
 
 def _raises(db, user, **body):
