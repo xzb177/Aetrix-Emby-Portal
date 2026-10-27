@@ -297,7 +297,12 @@ def next_probe_due(
     """
     if record.availability_state == STATE_UNAVAILABLE:
         extra = max(0, record.consecutive_unavailable_failures - threshold)
-        delay = min(interval_sec * (2 ** extra), backoff_max_sec)
+        # 指数先封顶再乘：extra 无上界时 interval * 2**extra 会在
+        # extra 约 1020 处 OverflowError（长死源约 7 天即到），异常
+        # 会在 set_source 之前炸掉 probe_source、连带 abort 整轮
+        # probe_sources_once（后排源当轮全被跳过）。2**60 已远超
+        # 任何 backoff_max_sec 上限，封顶不改变任何实际退避值。
+        delay = min(interval_sec * (2 ** min(extra, 60)), backoff_max_sec)
     else:
         delay = interval_sec
     record.next_probe_at = now + delay
@@ -400,22 +405,35 @@ def _record_to_json(record: SourceHealthRecord) -> str:
 
 
 def _record_from_json(key: str, raw: str) -> Optional[SourceHealthRecord]:
+    """脏 Redis 值按无记录计（fail-open，与 get_line 的坏 JSON 同口径）。
+
+    只拦 json 解析与非 dict 是不够的：数值字段被写坏（如
+    ``consecutive_unavailable_failures`` 存成 ``"abc"``）时 int/float
+    转换照样抛 ValueError，且 RedisHealthStore.get_source 只包了
+    Redis 读本身——异常会一路穿出 probe_source、abort 整轮探活。
+    数值字段一律在 try 内转换，任一字段坏掉即整条按无记录计。
+    """
     try:
         data = json.loads(raw)
     except (ValueError, TypeError):
         return None
     if not isinstance(data, dict):
         return None
+    try:
+        failures = int(data.get("consecutive_unavailable_failures") or 0)
+        next_probe_at = float(data.get("next_probe_at") or 0.0)
+    except (ValueError, TypeError):
+        return None
     return SourceHealthRecord(
         source_key=key,
         availability_state=data.get("availability_state", STATE_ACTIVE),
-        consecutive_unavailable_failures=int(data.get("consecutive_unavailable_failures") or 0),
+        consecutive_unavailable_failures=failures,
         last_failure_kind=data.get("last_failure_kind"),
         last_failure_at=data.get("last_failure_at"),
         last_success_at=data.get("last_success_at"),
         last_checked_at=data.get("last_checked_at"),
         hidden_at=data.get("hidden_at"),
-        next_probe_at=float(data.get("next_probe_at") or 0.0),
+        next_probe_at=next_probe_at,
     )
 
 

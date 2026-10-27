@@ -79,6 +79,7 @@ def record_mapping(db: Session, *, local_item_id: int, source_id: int,
       更新时间，不建新行（唯一约束兜底）；
     - episode_index：播放组内 1 起序号，电影为 None；插入时写入，
       upsert 更新时仅当传入非 None 才更新它（None 不覆盖已有值）；
+      非 None 且非正（0 / 负数）一律 ValueError，不静默入库；
     - 本函数只 flush 不 commit，调用方事务内执行（照
       ``upstream_sources.create_source`` 口径）；
     - 证据是短码（如 tmdb / imdb / title+year），只记“凭什么配上”，
@@ -91,6 +92,10 @@ def record_mapping(db: Session, *, local_item_id: int, source_id: int,
         raise ValueError("upstream_item_id 不能为空")
     local_id = _as_pos_int(local_item_id, "local_item_id")
     src_id = _as_pos_int(source_id, "source_id")
+    if episode_index is not None:
+        # 剧集序号 1 起、电影为 None：0 / 负数此前直接入库，违背
+        # 模块与模型 docstring 的域定义，且未来兜底口按 1 起取集。
+        episode_index = _as_pos_int(episode_index, "episode_index")
     row = db.query(em.UpstreamItemMapping).filter(
         em.UpstreamItemMapping.local_item_id == local_id,
         em.UpstreamItemMapping.source_id == src_id,
