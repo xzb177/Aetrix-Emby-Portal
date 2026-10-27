@@ -29,6 +29,9 @@ from backend.emby_server.search import (
     rank_items,
     search_variants,
 )
+from backend.emby_server import unified_search as unified
+from backend.emby_server import upstream_aggregation as _agg
+from fastapi import HTTPException
 
 search_router = APIRouter(tags=["搜索"])
 
@@ -108,3 +111,84 @@ def search_hints(request: Request, user: models.WebUser = Depends(get_emby_user)
     # r50：TotalRecordCount 必须是截断前的命中总数（客户端据此翻页）；
     # 此前是当前页条数，有更多结果时客户端会认为没有下一页。
     return {"SearchHints": hints, "TotalRecordCount": len(ordered)}
+
+
+@search_router.get("/emby/UnifiedSearch")
+@search_router.get("/UnifiedSearch")
+def unified_search(request: Request, user: models.WebUser = Depends(get_emby_user),
+                   db: Session = Depends(get_db)):
+    """跨服统一搜索（第二批第 1 单）：一个入口搜本站库 + 已启用上游源。
+
+    只读：本站侧走与 /Search/Hints 同一套预筛（_search_clauses）与
+    精排（rank_items）；上游侧逐源只读现查（unified_search.
+    search_upstream_source），绝不触发聚合、不写库、不建映射。
+    开关 UNIFIED_SEARCH_ENABLED 默认关，关时 404，全站逐字不变。
+    上游源 id 过滤：?source=1,2（也接受 upstream:1 写法）。
+    前端注意：独立搜索页调用本口；发现页（首页）不挂本口（首页冻结令）。
+    """
+    if not unified.unified_search_enabled():
+        raise HTTPException(status_code=404, detail="统一搜索未启用")
+    q = request.query_params
+    term = (q.get("SearchTerm") or q.get("q") or "").strip()
+    if not term:
+        raise HTTPException(status_code=400, detail="SearchTerm 不能为空")
+    try:
+        limit = max(1, min(int(q.get("Limit") or 20), 100))
+    except ValueError:
+        limit = 20
+    source_filter = unified.normalize_source_filter(
+        [t for t in (q.get("source") or "").split(",") if t.strip()] or None)
+    include = [t.strip().lower() for t in (q.get("IncludeItemTypes") or "").split(",") if t.strip()]
+
+    query = db.query(em.MediaItem).filter(em.MediaItem.is_hidden == False)  # noqa: E712
+    query = query.filter(
+        or_(em.MediaItem.item_type != "episode",
+            em.MediaItem.merged_into_id.is_(None))
+    )
+    query = library_scope.scope_query(query, library_scope.effective_ids_safe(db, user))
+    clauses = _search_clauses(term)
+    if clauses:
+        query = query.filter(or_(*clauses))
+    if include:
+        type_map = {"movie": "movie", "series": "series", "episode": "episode", "season": "season"}
+        query = query.filter(em.MediaItem.item_type.in_([type_map.get(t, t) for t in include]))
+    rows = query.order_by(em.MediaItem.sort_name.asc()).limit(SEARCH_CANDIDATE_LIMIT).all()
+    ordered = rank_items(rows, term)
+    local_entries = []
+    for it in ordered:
+        probe = _agg.UpstreamCatalogRecord(
+            source_id="", upstream_item_id="",
+            name=(getattr(it, "scan_title", None) or it.name or ""),
+            item_type=it.item_type or "",
+            production_year=(getattr(it, "scan_year", None)
+                             if getattr(it, "scan_year", None) is not None
+                             else it.production_year),
+            tmdb_id=str(it.tmdb_id) if it.tmdb_id else None,
+            imdb_id=str(it.imdb_id) if it.imdb_id else None,
+            series_name="",
+            season_number=it.season_number,
+            episode_number=it.episode_number,
+        )
+        local_entries.append(unified.LocalSearchEntry(
+            aggregate_key=_agg.aggregate_key_for(probe),
+            name=it.name, item_type=it.item_type or "",
+            production_year=it.production_year))
+
+    per_source = {}
+    enabled_sources = (db.query(em.UpstreamSource)
+                       .filter(em.UpstreamSource.enabled == True)  # noqa: E712
+                       .order_by(em.UpstreamSource.id).all())
+    for source in enabled_sources:
+        source_id = str(source.id)
+        if source_filter is not None and source_id not in source_filter:
+            continue
+        if (source.source_type or "") == "applecms":
+            per_source[source_id] = (
+                "applecms 型源不走 Emby 搜索口（走苹果 CMS 同步口，另议）")
+            continue
+        records, error = unified.search_upstream_source(source, term)
+        per_source[source_id] = error if error else records
+
+    merged = unified.merge_search_results(
+        local_entries, per_source, term, source_filter=source_filter)
+    return unified.to_response_body(merged, limit=limit)
