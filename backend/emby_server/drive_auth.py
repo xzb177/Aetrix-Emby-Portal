@@ -238,7 +238,8 @@ def _affinity_pick(affinity_key: str | None) -> dict[str, Any] | None:
     return sa
 
 
-def get_drive_bearer_token(affinity_key: str | None = None) -> str | None:
+def get_drive_bearer_token(affinity_key: str | None = None,
+                           _sa: dict[str, Any] | None = None) -> str | None:
     """获取 Drive 访问用的 Bearer access_token；失败返回 None，永不抛异常。
 
     每次调用都先经 ``_pick_sa()`` round-robin 选出一个 SA，再以该 SA 的
@@ -258,7 +259,9 @@ def get_drive_bearer_token(affinity_key: str | None = None) -> str | None:
     """
     try:
         drive_changes = _load_drive_changes()
-        sa = _affinity_pick(affinity_key)
+        # _sa 指定时跳过亲和选 SA（持久亲和用：调用方按上次成功的
+        # client_email 指定 SA，其余缓存与换取流程逐字不变）。
+        sa = _sa if (_sa is not None and _is_sa_dict(_sa)) else _affinity_pick(affinity_key)
     except Exception as exc:
         logger.warning("drive_auth: 加载 Drive 凭据模块失败，调用方降级处理: %s", exc)
         return None
@@ -311,6 +314,51 @@ def get_drive_bearer_token(affinity_key: str | None = None) -> str | None:
                 return cached[0]
             _token_cache[email] = (token, minted_at + _TOKEN_TTL_SECONDS)
         return token
+
+
+def find_sa_by_email(email: str) -> dict[str, Any] | None:
+    """按 client_email 找 SA 字典；找不到 / 凭据模块失败时返回 None，永不抛。"""
+    if not email:
+        return None
+    try:
+        drive_changes = _load_drive_changes()
+        files = drive_changes._discover_sa_files() or []
+    except Exception:
+        return None
+    for entry in files:
+        try:
+            sa = entry if _is_sa_dict(entry) else _read_sa_file(entry)
+        except Exception:
+            continue
+        if _is_sa_dict(sa) and sa.get("client_email") == email:
+            return sa
+    return None
+
+
+def get_drive_bearer_token_for_email(email: str) -> str | None:
+    """按指定 SA 邮箱取令牌（持久亲和用）；找不到该 SA 时返回 None，永不抛。"""
+    sa = find_sa_by_email(email)
+    if sa is None:
+        return None
+    return get_drive_bearer_token(_sa=sa)
+
+
+def sa_email_for_token(token: str) -> str | None:
+    """按令牌值反查本进程分账号缓存里的 SA 邮箱；查不到返回 None，永不抛。
+
+    只用于把“刚预检成功的令牌属于哪个 SA”记进共享亲和缓存；
+    跨进程时本进程缓存里没有该令牌是正常情况（调用方跳过记录即可）。
+    """
+    if not token:
+        return None
+    try:
+        with _cache_lock:
+            for email, cached in _token_cache.items():
+                if cached and cached[0] == token:
+                    return email
+    except Exception:
+        return None
+    return None
 
 
 def drive_auth_headers(url: str, affinity_key: str | None = None) -> dict[str, str]:

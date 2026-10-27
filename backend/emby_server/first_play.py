@@ -26,6 +26,14 @@
 播放器 → 谷歌那段的网络（用户侧 VPN 节点、播放器首次探格式）
 服务端无法直接加速；本模块把服务端能确定的部分全部提前做完，
 让播放器点播放时不再为坏令牌重试几十秒。
+
+尾部索引诚实结论（第二轮，2026-10-27 #1358 上线后实测）：
+尾部 1KB 探测只能证明“该令牌能读尾部”，不能让播放器少一次尾部
+seek——DirectPlayUrl 是谷歌 alt=media 直链，播放器解析 mp4 moov /
+mkv cues 时必须自己向谷歌拉尾部，服务端没有给播放器递索引字节
+的通道（递了就是中继，违背直链主线）。#1358 已有尾部探测、但
+PlaybackInfo→会话仍隔 11–14 秒，正是这一点的实证；所以本轮不
+再假装“预取尾部能加速首帧”，尾部探测只保留作可读性验证。
 """
 
 from __future__ import annotations
@@ -49,6 +57,11 @@ WARM_TTL_SEC = 300
 WARM_FRESH_SEC = 120
 #: 尾部探测字节数：只验尾部可达，不下载整段。
 TAIL_PROBE_BYTES = 1024
+#: 跨进程 SA 亲和记录 TTL（秒）：文件→SA 的可读关系本身是稳定的
+#: （SA 在分享名单里才会 206），6 小时内先用上次成功的 SA；若该 SA
+#: 某次 403（配额/权限变化），轮换成功后立即用新 SA 覆盖本记录，
+#: 自愈，不靠 TTL 过期才恢复。
+SA_AFFINITY_TTL_SEC = 6 * 3600
 
 
 def alt_media_url(file_id: str) -> str:
@@ -187,6 +200,92 @@ def load_warm(cache_get: Callable, guid: str, user_id) -> dict | None:
         return None
 
 
+def sa_affinity_key(fid: str) -> str:
+    """跨进程 SA 亲和缓存键：按文件隔离，不按用户隔离（SA 可读性是文件属性）。"""
+    return f"fp:sa:{fid}"
+
+
+def load_sa_affinity(cache_get, fid: str) -> str | None:
+    """读上次预检成功的 SA 邮箱；过期 / 解析失败 / 缺字段时返回 None。"""
+    if not fid:
+        return None
+    try:
+        raw = cache_get(sa_affinity_key(fid))
+        if not raw:
+            return None
+        entry = json.loads(raw)
+        if not isinstance(entry, dict):
+            return None
+        email = entry.get("email")
+        updated_at = entry.get("updated_at")
+        if not email or updated_at is None:
+            return None
+        if 0 <= (time.time() - float(updated_at)) <= SA_AFFINITY_TTL_SEC:
+            return str(email)
+    except Exception:  # noqa: BLE001 — 亲和记录失败只回落轮换
+        return None
+    return None
+
+
+def store_sa_affinity(cache_set, fid: str, email: str) -> bool:
+    """把预检成功的 SA 邮箱写进共享缓存（只存邮箱，不存令牌）。"""
+    if not fid or not email:
+        return False
+    try:
+        cache_set(sa_affinity_key(fid),
+                  json.dumps({"email": email, "updated_at": time.time()}),
+                  SA_AFFINITY_TTL_SEC)
+        return True
+    except Exception:  # noqa: BLE001 — 缓存失败不影响播放
+        return False
+
+
+def _resolve_verified(fid: str, token_fn, *, cache_get=None, cache_set=None,
+                      probe=None) -> dict:
+    """带持久亲和的验证解析：先用上次成功的 SA，失败再走轮换。
+
+    顺序（每一步失败都只回落，不抛）：
+    1. 共享缓存里有该文件的成功 SA 邮箱 → 按邮箱取令牌并预检，
+       206 直接返回（rotations=0，不消耗轮换次数）。
+    2. 亲和 SA 预检 403/401 或取不到令牌 → 走原轮换循环（最多 5 个 SA）。
+    3. 轮换成功时，把成功令牌对应的 SA 邮箱写回共享缓存（本进程
+       缓存里查不到该令牌时跳过记录，下次仍走轮换，不出错）。
+    亲和 SA 若因配额 403 而失败，本次多付一次预检（约 1 秒）后轮换；
+    轮换成功即覆盖记录，所以亲和记录不会把播放钉死在一个坏 SA 上。
+    """
+    from backend.emby_server import drive_auth as _da
+
+    url = alt_media_url(fid) if fid else ""
+    if not url:
+        return {"ok": False, "url": "", "token": None, "rotations": 0,
+                "last_status": 0, "precheck_ms": 0}
+    probe_fn = probe or (lambda u, t: probe_alt_media(u, t))
+    if cache_get is not None:
+        pref_email = load_sa_affinity(cache_get, fid)
+        if pref_email:
+            try:
+                pref_token = _da.get_drive_bearer_token_for_email(pref_email)
+            except Exception:  # noqa: BLE001
+                pref_token = None
+            if pref_token:
+                pref_result = probe_fn(url, pref_token)
+                if pref_result.get("ok") and int(pref_result.get("status") or 0) == 206:
+                    return {"ok": True, "url": url, "token": pref_token,
+                            "rotations": 0, "precheck_ms": int(pref_result.get("ttfb_ms") or 0),
+                            "content_type": pref_result.get("content_type"),
+                            "content_range": pref_result.get("content_range"),
+                            "preferred": True}
+    result = resolve_verified_alt_media(fid, token_fn, probe=probe_fn)
+    if result.get("ok") and cache_set is not None:
+        try:
+            email = _da.sa_email_for_token(result.get("token"))
+        except Exception:  # noqa: BLE001
+            email = None
+        if email:
+            store_sa_affinity(cache_set, fid, email)
+    return result
+
+
 def _resolve_for_playback(db, item, user, fid: str) -> dict:
     """PlaybackInfo 同步入口：验证直链并写预热缓存（在 run_db 线程里跑）。
 
@@ -200,7 +299,10 @@ def _resolve_for_playback(db, item, user, fid: str) -> dict:
         def _token_fn(attempt: int):
             return _da.get_drive_bearer_token(f"{fid}:{attempt}")
 
-        result = resolve_verified_alt_media(fid, _token_fn)
+        result = _resolve_verified(
+            fid, _token_fn,
+            cache_get=lambda k: CacheManager.get(k, domain="playback"),
+            cache_set=lambda k, v, ttl: CacheManager.set(k, v, ttl, domain="playback"))
         if result.get("ok"):
             result["fid"] = fid
             store_warm(
@@ -240,7 +342,10 @@ def warm_first_play_sync(db, item, user) -> dict:
         def _token_fn(attempt: int):
             return _da.get_drive_bearer_token(f"{fid}:{attempt}")
 
-        result = resolve_verified_alt_media(fid, _token_fn)
+        result = _resolve_verified(
+            fid, _token_fn,
+            cache_get=lambda k: CacheManager.get(k, domain="playback"),
+            cache_set=lambda k, v, ttl: CacheManager.set(k, v, ttl, domain="playback"))
         if not result.get("ok"):
             return {"ok": False, "reason": "precheck_failed",
                     "rotations": result.get("rotations", 0),
@@ -270,3 +375,171 @@ def warm_first_play_sync(db, item, user) -> dict:
     except Exception as exc:  # noqa: BLE001 — 预热永不抛
         logger.warning("first_play warm failed: %s", type(exc).__name__)
         return {"ok": False, "reason": "exception"}
+
+
+
+# ---------------------------------------------------------------------------
+# 第二轮：预热范围扩展（详情 → 剧集页/列表页/下一集）与目标选择
+#
+# 界线（先定死，避免预热失控）：
+# - 每次触发最多暖 1 条：详情页暖本条或本剧下一集、列表页暖父级
+#   的第一集未看、PlaybackInfo 暖下一集；绝不整列表全暖（一个列表
+#   20 条冷预热就是 20 次令牌 + 20 次谷歌预检，配额与耗时都失控）。
+# - 预热本身已做 warm_usable 早退：已暖过的条目在线程里只做 DB
+#   解析、不再打谷歌，所以重复触发不会重复烧预检。
+# - “下一集”口径与站内 NextUp 一致：同剧第一集未看（按
+#   season_number / episode_number / id 排序），不是按入库顺序。
+# ---------------------------------------------------------------------------
+
+def _is_watched(db, user_id: int, item_id: int) -> bool:
+    """该用户是否看过该条目（played / 有进度 / 有播放次数，NextUp 口径）。"""
+    from backend.emby_server import models as _em
+
+    row = db.query(_em.UserMediaData).filter(
+        _em.UserMediaData.user_id == user_id,
+        _em.UserMediaData.item_id == item_id).first()
+    if row is None:
+        return False
+    return bool(getattr(row, "played", False)
+                or (getattr(row, "playback_position_ticks", 0) or 0) > 0
+                or (getattr(row, "play_count", 0) or 0) > 0)
+
+
+def _episodes_of_series(db, series_id: int):
+    """同剧全部单集（活行，按季/集/id 排序；NULL 季集号排最后）。"""
+    from backend.emby_server import models as _em
+    from sqlalchemy import nullslast
+
+    return (db.query(_em.MediaItem)
+            .filter(_em.MediaItem.item_type == "episode",
+                    _em.MediaItem.series_id == series_id,
+                    _em.MediaItem.merged_into_id.is_(None),
+                    _em.MediaItem.is_hidden == False)  # noqa: E712
+            .order_by(nullslast(_em.MediaItem.season_number.asc()),
+                      nullslast(_em.MediaItem.episode_number.asc()),
+                      _em.MediaItem.id.asc())
+            .all())
+
+
+def first_unwatched_episode(db, user_id: int, series_id: int, season_number=None):
+    """同剧（可选限定季）第一集未看；全看过时返回 None（不猜、不回落已看）。"""
+    if not series_id:
+        return None
+    for ep in _episodes_of_series(db, series_id):
+        if season_number is not None and getattr(ep, "season_number", None) != season_number:
+            continue
+        if not _is_watched(db, user_id, ep.id):
+            return ep
+    return None
+
+
+def next_episode_after(db, item):
+    """本集的下一集：同剧按季/集/id 排序，取本集之后的第一个；无则 None。
+
+    纯排序比较（不做 SQL 元组比较，避免 NULL 季集号语义坑）；
+    单集数通常 < 数百行，放在预热后台线程里，不进请求路径。
+    """
+    if getattr(item, "item_type", None) != "episode":
+        return None
+    series_id = getattr(item, "series_id", None)
+    if not series_id:
+        return None
+    cur = (getattr(item, "season_number", None) or 0,
+           getattr(item, "episode_number", None) or 0)
+    for ep in _episodes_of_series(db, series_id):
+        nxt = (getattr(ep, "season_number", None) or 0,
+               getattr(ep, "episode_number", None) or 0)
+        if (nxt, ep.id) > (cur, item.id):
+            return ep
+    return None
+
+
+def warm_target_for_detail(db, user_id: int, item):
+    """详情页预热目标（最多 1 条）：可播条目暖自身；剧/季暖第一集未看。
+
+    剧/季本身无 drive_file_id 时旧代码在线程里直接返回，等于没暖；
+    本函数把目标换成用户最可能点的下一集，详情页才真正起到预热作用。
+    """
+    item_type = getattr(item, "item_type", None)
+    if item_type in ("episode", "movie"):
+        return item
+    if item_type == "series":
+        return first_unwatched_episode(db, user_id, item.id)
+    if item_type == "season":
+        return first_unwatched_episode(
+            db, user_id, getattr(item, "series_id", None),
+            season_number=getattr(item, "season_number", None))
+    return None
+
+
+def _warm_thread_body(item_id: int, user_id: int, mode: str):
+    """预热后台线程体：自开 DB 会话，不碰请求会话；任何异常只记日志。"""
+    session = None
+    try:
+        from backend.database import SessionLocal as _SL
+        from backend.emby_server import models as _em
+
+        session = _SL()
+        item = session.query(_em.MediaItem).filter(
+            _em.MediaItem.id == item_id).first()
+        user = session.query(_em.WebUser).filter(
+            _em.WebUser.id == user_id).first()
+        if item is None or user is None:
+            return
+        if mode == "next":
+            target = next_episode_after(session, item)
+        else:  # "detail"
+            target = warm_target_for_detail(session, user_id, item)
+        if target is not None:
+            warm_first_play_sync(session, target, user)
+    except Exception:  # noqa: BLE001 — 预热永不影响请求路径
+        pass
+    finally:
+        try:
+            if session is not None:
+                session.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def spawn_first_play_warm(item_id: int, user_id: int, mode: str = "detail") -> bool:
+    """起一个 daemon 预热线程（不阻塞、不抛）；启动失败返回 False。"""
+    try:
+        import threading as _th
+
+        _th.Thread(target=_warm_thread_body, args=(item_id, user_id, mode),
+                   daemon=True).start()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def spawn_first_play_warm_by_guid(guid: str, user_id: int) -> bool:
+    """按 guid 起详情预热（列表页 ParentId 用）：guid 查不到条目时线程内空转返回。"""
+    try:
+        import threading as _th
+
+        def _by_guid(_guid=guid, _user_id=user_id):
+            session = None
+            try:
+                from backend.database import SessionLocal as _SL
+                from backend.emby_server import models as _em
+
+                session = _SL()
+                item = session.query(_em.MediaItem).filter(
+                    _em.MediaItem.guid == _guid).first()
+                if item is not None:
+                    _warm_thread_body(item.id, _user_id, "detail")
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                try:
+                    if session is not None:
+                        session.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _th.Thread(target=_by_guid, daemon=True).start()
+        return True
+    except Exception:  # noqa: BLE001
+        return False

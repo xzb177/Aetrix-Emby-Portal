@@ -2122,7 +2122,18 @@ def get_items(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    return _query_items(request, user, db, _base_url(request))
+    result = _query_items(request, user, db, _base_url(request))
+    # 首次播放预热（第二轮，列表页）：带 ParentId 的剧集/季单集列表
+    # 打开时，在后台暖该父级的第一集未看（最多 1 条，响应本身不动；
+    # ParentId 为库 guid 或查不到条目时线程内空转，不影响列表）。
+    try:
+        _parent_guid = request.query_params.get("ParentId")
+        if _parent_guid:
+            from backend.emby_server import first_play as _fp_list
+            _fp_list.spawn_first_play_warm_by_guid(_parent_guid, user.id)
+    except Exception:  # noqa: BLE001 — 预热启动失败不影响列表页
+        pass
+    return result
 
 
 @emby_router.get("/emby/Users/{user_id}/Suggestions")
@@ -3421,33 +3432,13 @@ def get_item_detail(
     # 首次播放预热（first_play）：详情页打开时在后台线程里把直链
     # 验证（令牌 + Range 0-0 预检 + 403 轮换 + 尾部可达）做完并写进
     # playback 域共享缓存；详情页本身不等待、不阻塞。线程内自开
-    # DB 会话，不碰请求会话；任何异常只记日志。剧集/季详情本身
-    # 无 drive_file_id 时线程内直接返回（各集详情打开时再暖各集）。
+    # DB 会话，不碰请求会话；任何异常只记日志。第二轮：剧/季详情
+    # 不再因自身无 drive_file_id 而空转，目标改为本剧第一集未看。
+    # 首次播放预热（first_play，第二轮：详情页目标已扩到剧/季的第一集未看）：
+    # 后台线程、不阻塞详情页；可播条目暖自身，剧/季暖下一集。
     try:
-        import threading as _th
-
-        def _warm_thread(_item_id=item.id, _user_id=user.id):
-            _s = None
-            try:
-                from backend.database import SessionLocal as _SL
-                from backend.emby_server import first_play as _fp_w
-                _s = _SL()
-                _it = _s.query(em.MediaItem).filter(
-                    em.MediaItem.id == _item_id).first()
-                _us = _s.query(models.WebUser).filter(
-                    models.WebUser.id == _user_id).first()
-                if _it is not None and _us is not None:
-                    _fp_w.warm_first_play_sync(_s, _it, _us)
-            except Exception:  # noqa: BLE001 — 预热永不影响详情页
-                pass
-            finally:
-                try:
-                    if _s is not None:
-                        _s.close()
-                except Exception:  # noqa: BLE001
-                    pass
-
-        _th.Thread(target=_warm_thread, daemon=True).start()
+        from backend.emby_server import first_play as _fp_detail
+        _fp_detail.spawn_first_play_warm(item.id, user.id, mode="detail")
     except Exception:  # noqa: BLE001 — 预热启动失败不影响详情页
         pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
@@ -5233,6 +5224,15 @@ async def playback_info(
             _variants, transfer_verdict=_pi_verdict,
             requires_transfer=_requires_transfer)
     _pt.done()
+    # 首次播放预热（第二轮，下一集预测）：真实播放（IsPlayback=true）
+    # 才暖下一集，探格式的 IsPlayback=false 请求不暖；最多 1 条，
+    # 不阻塞本次 PlaybackInfo 响应；非单集时目标选择返回 None。
+    try:
+        if (request.query_params.get("IsPlayback") or "").lower() == "true":
+            from backend.emby_server import first_play as _fp_next
+            _fp_next.spawn_first_play_warm(item.id, user.id, mode="next")
+    except Exception:  # noqa: BLE001 — 预热启动失败不影响本次播放
+        pass
     return _strip_nulls({
         "MediaSources": sources,
         "PlaybackVariants": _playback_variants,
@@ -5981,11 +5981,11 @@ async def video_stream_ext(
 # 按非 stream.* 判 404）；REX 于是反复重试、最后才回落 alt=media 出画面，
 # 这就是它首次 38 秒、第二次快的原因。SenPlayer/VidHub 走带后缀地址
 # 直接 302，所以它们的慢不在这一处。
-# 修法（通用，不按播放器名分流）：裸地址按条目容器 307 重定向到已有的
-# 带后缀路由，原查询串原样带过去（DeviceId、MediaSourceId、Static、
-# PlaySessionId、api_key、X-Emby-Token、play_sign 等一个不落），重定向
-# 后的请求仍走 video_stream 全套门禁/限流；未知容器（iso 等不在白名单）
-# 时保持旧行为 404，但必须记一条日志，绝不静默 404。本路由必须注册在
+# 修法（通用，不按播放器名分流）：裸地址按条目容器校验后直接
+# 委派给 video_stream（第二轮一跳：#1358 的 307 到带后缀路由已改为
+# 直接委派，省一次往返；原查询串、门禁、限流全在 video_stream 里，
+# 不存在“跳过门禁”一说）；未知容器（iso 等不在白名单）时保持旧
+# 行为 404，但必须记一条日志，绝不静默 404。本路由必须注册在
 # 下方小写通配路由之前，否则裸地址仍会被通配抢走。
 @emby_router.get("/emby/videos/{item_id}/stream")
 @emby_router.get("/videos/{item_id}/stream")
@@ -5998,18 +5998,18 @@ async def video_stream_bare(
     from backend.emby_server.async_db import run_db
 
     item = await run_db(_require_visible_item, db, user, item_id)
-    suffix = _direct_stream_suffix(await run_db(_container_of, item))
-    if not suffix:
+    if not _direct_stream_suffix(await run_db(_container_of, item)):
         logger.warning(
             "[bare-stream] container unknown, keep 404: item=%s container=%r",
             item_id, getattr(item, "container", None))
         raise HTTPException(
             status_code=404, detail="播放容器未知，无后缀流地址不可用")
-    query = request.url.query
-    target = f"/emby/videos/{item_id}/stream{suffix}"
-    if query:
-        target = f"{target}?{query}"
-    return RedirectResponse(target, status_code=307)
+    # 第二轮一跳：不再 307 到带后缀地址，直接委派给 video_stream
+    # （与带后缀路由同一 handler），省一次往返。行为与带后缀逐字
+    # 一致：video_stream 不依赖 URL 后缀（media_type 取条目 container；
+    # 本地文件缓存头对 /stream 与 /stream.{容器} 同为可缓存分片），
+    # 且重定向后的全套门禁/限流本来就在 video_stream 里，一跳后仍全走。
+    return await video_stream(item_id, request, user, db)
 
 
 @emby_router.get("/emby/Videos/upstream/{source_id}/{upstream_item_id}/stream")
