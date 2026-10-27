@@ -432,6 +432,10 @@ def delete_binding(db: Session, user_id: int, binding_id: int) -> None:
     """解绑：删绑定行 + 其凭据行（单事务，不留残留）。
 
     非本人行按不存在处理（不泄露他人绑定存在性）。
+    转存副本政策（2026-10-27 清理规则第 5 条，写死）：解绑时
+    不自动删用户盘转存目录里的副本，也不改变体行——副本仍是
+    用户盘里的文件，删不删须另行问用户；本函数绝不调用清理
+    模块，测试 test_transfer_cleanup.py 的解绑用例锁死这一点。
     """
     binding = (
         db.query(em.UserStorageBinding)
