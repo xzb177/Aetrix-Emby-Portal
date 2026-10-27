@@ -82,6 +82,9 @@ class _FakeItems:
     def get(self, url, headers, timeout):
         from urllib.parse import parse_qs, urlsplit
         self.urls.append(url)
+        if url.split("?")[0].endswith("/Library/MediaFolders"):
+            # 按库分批后 run 先取库清单：旧替身只模拟单库。
+            return 200, {"Items": [{"Id": "lib-1", "Name": "库"}]}
         query = parse_qs(urlsplit(url).query)
         start = int(query["StartIndex"][0])
         limit = int(query["Limit"][0])
