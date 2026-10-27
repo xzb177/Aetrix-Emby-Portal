@@ -104,6 +104,7 @@ copy、真实用户令牌、SA 暂存分享链均未实测，不许写成已实�
 响应新 fid 字段待 115 测试账号实测（生产 pan115 绑定现为 0 条）。
 """
 
+import asyncio
 import os
 import threading
 import time
@@ -186,6 +187,123 @@ def worker_sweep_sec():
 def worker_auth_pause_sec():
     """用户凭据死后暂停该用户队列的时长（秒），默认 900。"""
     return max(60, int(TRANSFER_WORKER_AUTH_PAUSE_SEC or 900))
+
+
+# 极限优化（2026-10-27，用户亲批全做，含预转存）：
+# 转存 2.86 秒的分段实测是：找目录约 0.25 秒、谷歌同盘 copy 约
+# 1.67 秒、目录核对约 0.24 秒、加 anyone-reader 约 0.68 秒；copy
+# 本身是谷歌服务端时间，压不下去。核对与加权限原想并行，但亲验
+# 旧测试后否决（anyone 必须加在核到的 id 上、核不到绝不能补权限），
+# 故转存提速只靠目录缓存，目标约 2.6 秒，不是 2.3 秒。端到端感知
+# 约 24 秒的大头不在转存，在准备中态下播放器拿无签地址连探 404、
+# 等它自己再查 PlaybackInfo——等流（§2）与预转存（§3）压的是这一段。
+def transfer_folder_cache_ttl_sec() -> int:
+    """每用户转存目录 id 缓存 TTL（秒），默认 3600。
+
+    只缓存用户盘（UserDriveApiClient），SA 共享盘目录不缓存：
+    共享盘目录删了重建的影响面大，且不在实测的 0.25 秒分段里。
+    """
+    try:
+        value = int(os.getenv("TRANSFER_FOLDER_CACHE_TTL_SEC", "") or "")
+    except (TypeError, ValueError):
+        return 3600
+    return value if value > 0 else 3600
+
+
+def wait_stream_enabled() -> bool:
+    """准备中态等流开关：默认开（关 = 回到旧行为，准备中直接 409）。"""
+    return _env_on("TRANSFER_WAIT_STREAM_ENABLED", "1")
+
+
+def wait_stream_max_sec() -> float:
+    """等流最长等待（秒），默认 15，钳在 1–60 秒。"""
+    try:
+        value = float(os.getenv("TRANSFER_WAIT_STREAM_MAX_SEC", "") or "")
+    except (TypeError, ValueError):
+        return 15.0
+    return min(60.0, max(1.0, value))
+
+
+def wait_stream_poll_sec() -> float:
+    """等流轮询间隔（秒），默认 0.2，钳在 0.05–1 秒。"""
+    try:
+        value = float(os.getenv("TRANSFER_WAIT_STREAM_POLL_MS", "") or "")
+    except (TypeError, ValueError):
+        return 0.2
+    return min(1.0, max(0.05, value / 1000.0))
+
+
+def prefetch_daily_max() -> int:
+    """每用户每天预转存单数上限，默认 5；0 = 关预转存。"""
+    try:
+        value = int(os.getenv("TRANSFER_PREFETCH_DAILY_MAX", "") or "")
+    except (TypeError, ValueError):
+        return 5
+    return value if value >= 0 else 5
+
+
+# 每用户转存目录 id 缓存（进程内，工人进程内跨任务生效）：
+# 键含绑定行 id + last_verified_at——重绑原地换凭据时
+# last_verified_at 变成新时间，旧缓存键自然失效，不会把旧账号
+# 的目录 id 用到新账号上；目录被删的情形由 Path A 的缓存重试
+# 兜底（见 _run_drive_user_job），不是靠缓存永不过期硬扛。
+_transfer_folder_cache = {}
+_transfer_folder_cache_lock = threading.Lock()
+
+
+def clear_transfer_folder_cache() -> None:
+    """清掉全部目录缓存（测试用；生产不主动清，靠 TTL + 指纹）。"""
+    with _transfer_folder_cache_lock:
+        _transfer_folder_cache.clear()
+
+
+def _folder_cache_key(binding, drive_id, dir_name):
+    bid = getattr(binding, "id", None) if binding is not None else None
+    lva = getattr(binding, "last_verified_at", None) \
+        if binding is not None else None
+    return (str(drive_id or ""), str(dir_name or ""), bid, str(lva))
+
+
+# Drive 存在性正缓存的跨进程键（须与 api.py 的
+# _DRIVE_EXISTS_OK_PREFIX 逐字一致；api 读、工人写）。
+# 墓碑键同理（api 已有 _DRIVE_EXISTS_INVAL_PREFIX，工人写正缓存
+# 时顺手清墓碑，防止“删过又重拷”被旧墓碑挡住）。
+_DRIVE_EXISTS_OK_PREFIX = "aetrix:drive_exists:ok:"
+_DRIVE_EXISTS_INVAL_PREFIX = "aetrix:drive_exists:inv:"
+
+
+def publish_drive_exists_ok(file_id, ttl_sec=None) -> bool:
+    """变体登记 ready 后，把该副本 fid 写进 Redis 正缓存。
+
+    EA 的存在性检查是本进程字典 + Redis 墓碑，工人进程写不进
+    EA 的字典；跨进程正缓存键是唯一能让第一条流省掉一次
+    files.get（约 0.25 秒）的办法。墓碑优先于正缓存（api 侧先查
+    墓碑），所以旧墓碑不会被正缓存绕过；这里写正缓存时清墓碑，
+    是因为“刚登记 ready”本身就是文件存在的最新证据。
+    Redis 不可用 / 键为空时返回 False，绝不抛错进工人。
+    """
+    fid = (file_id or "").strip()
+    if not fid:
+        return False
+    try:
+        ttl = ttl_sec
+        if ttl is None:
+            try:
+                ttl = int(os.getenv("DRIVE_EXISTS_CACHE_TTL_SEC", "") or "")
+            except (TypeError, ValueError):
+                ttl = 600
+        if ttl <= 0:
+            return False
+        from backend.database import get_redis
+        rc = get_redis()
+        if rc is None:
+            return False
+        rc.set(_DRIVE_EXISTS_OK_PREFIX + fid, "1", ex=int(ttl))
+        rc.delete(_DRIVE_EXISTS_INVAL_PREFIX + fid)
+        return True
+    except Exception:  # noqa: BLE001 — 预填只是加速，失败不挡登记
+        logger.debug("存在性正缓存预填失败", exc_info=True)
+        return False
 
 
 def _env_on(name: str, default: str = "0") -> bool:
@@ -709,6 +827,222 @@ def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
         return {"verdict": "error", "reason": "internal"}
 
 
+# ---------------------------------------------------------------------------
+# 预转存（2026-10-27 极限优化，用户亲批全做，含预转存）
+# ---------------------------------------------------------------------------
+# 触发点：EA 详情口 get_item_detail（/emby/Items/{id}），不是列表口。
+# 为什么钉在这里：第三方播放器（SenPlayer/REX）没有“停留回调”，
+# 自家前端又没有独立详情视图调用 getItem——EA 详情口是唯一能
+# 覆盖第三方播放器的触发点；列表浏览（/emby/Items?ParentId=…）
+# 绝不触发，否则刷一屏列表就写一屏用户盘。
+# “停留”落地成可执行的规则（不是计时器，因为第三方客户端给不出
+# 计时器）：主动打开详情页 + 首个可播条目 + 已有 ready 不重复 +
+# 24h 节流 + 每用户每天最多 5 单 + 工人每用户 2 单在途上限。
+# 每天 5 单是硬帽子：用户一天打开 100 个详情页，最多也只预转 5 个，
+# 剩下的等点播时走 playback 快通道（快通道优先于 prefetch 慢通道，
+# 见 _pick_candidates：只有 trigger=="playback" 才算快通道）。
+def _prefetch_target_item(db, item):
+    """详情页对应的首个可播条目（或 None）。
+
+    - 电影 / 单集：本身（须有 drive_file_id，byos:// 排除在外，
+      调用方另行判断）；
+    - 剧：series_id == 剧 id 的单集，按季号、集号、id 排序取首集
+      （季号/集号为空排最后，不靠入库顺序猜）；
+    - 季：parent_id == 季 id 的单集，同款排序取首集；parent 为空
+      时回落 series_id + season_number 匹配；
+    - 其它类型（季之外的容器、人物等）：None，不预转。
+    只认活行（deleted_at 为空、merged_into_id 为空）。
+    """
+    item_type = getattr(item, "item_type", "") or ""
+    if item_type in ("movie", "episode"):
+        return item
+    if item_type == "series":
+        q = (db.query(em.MediaItem)
+             .filter(em.MediaItem.item_type == "episode",
+                     em.MediaItem.series_id == getattr(item, "id", None),
+                     em.MediaItem.deleted_at.is_(None),
+                     em.MediaItem.merged_into_id.is_(None)))
+    elif item_type == "season":
+        q = (db.query(em.MediaItem)
+             .filter(em.MediaItem.item_type == "episode",
+                     em.MediaItem.parent_id == getattr(item, "id", None),
+                     em.MediaItem.deleted_at.is_(None),
+                     em.MediaItem.merged_into_id.is_(None)))
+        first = q.order_by(
+            em.MediaItem.season_number.is_(None),
+            em.MediaItem.season_number,
+            em.MediaItem.episode_number.is_(None),
+            em.MediaItem.episode_number,
+            em.MediaItem.id).first()
+        if first is not None:
+            return first
+        if getattr(item, "series_id", None) is not None:
+            q = (db.query(em.MediaItem)
+                 .filter(em.MediaItem.item_type == "episode",
+                         em.MediaItem.series_id == item.series_id,
+                         em.MediaItem.season_number == item.season_number,
+                         em.MediaItem.deleted_at.is_(None),
+                         em.MediaItem.merged_into_id.is_(None)))
+        else:
+            return None
+    else:
+        return None
+    return q.order_by(
+        em.MediaItem.season_number.is_(None),
+        em.MediaItem.season_number,
+        em.MediaItem.episode_number.is_(None),
+        em.MediaItem.episode_number,
+        em.MediaItem.id).first()
+
+
+def _prefetch_today_count(db, user_id) -> int:
+    """该用户今天已建的 prefetch 单数（本地 naive 时间，与节流同口径）。"""
+    today_start = datetime.now().replace(hour=0, minute=0, second=0,
+                                         microsecond=0)
+    return (db.query(em.TransferJob)
+            .filter(em.TransferJob.owner_scope == "user",
+                    em.TransferJob.owner_ref == str(user_id),
+                    em.TransferJob.trigger == "prefetch",
+                    em.TransferJob.created_at >= today_start)
+            .count())
+
+
+def maybe_prefetch_transfer(db, item, user) -> dict:
+    """详情页预转存（幂等、便宜、永不抛错进详情页）。
+
+    返回 {"triggered", "reason", "job_id"?, "target_item_id"?}。
+    不触发的情形一律明示原因，不静默：master_off / no_user /
+    unsupported_type / no_first_episode / byos_item /
+    unknown_provider / no_matching_binding / already_ready /
+    throttled / daily_cap / no_source_fid / no_drive。
+    跨 provider 走现有“绑哪播哪”规则（只绑另一 provider 时建跨单，
+    不偷换成同 provider 单）；无任何绑定时不建单（拦无绑定用户
+    是 #1341 绑定门禁的职责，预转存不越权）。
+    """
+    try:
+        if not master_enabled():
+            return {"triggered": False, "reason": "master_off"}
+        user_id = getattr(user, "id", None)
+        if user_id is None:
+            return {"triggered": False, "reason": "no_user"}
+        target = _prefetch_target_item(db, item)
+        if target is None:
+            reason = ("no_first_episode"
+                      if (getattr(item, "item_type", "") or "")
+                      in ("series", "season") else "unsupported_type")
+            return {"triggered": False, "reason": reason}
+        path = (getattr(target, "file_path", "") or "").strip()
+        if path.startswith("byos://"):
+            return {"triggered": False, "reason": "byos_item"}
+        provider = _item_provider(db, target)
+        if provider is None:
+            return {"triggered": False, "reason": "unknown_provider"}
+        binding = _active_binding(db, user_id, provider)
+        if binding is None:
+            other = "pan115" if provider == "drive" else "drive"
+            other_binding = _active_binding(db, user_id, other)
+            if other_binding is None:
+                return {"triggered": False, "reason": "no_matching_binding"}
+            orig_fid = (getattr(target, "drive_file_id", "") or "").strip()
+            if provider == "pan115" and not orig_fid:
+                return {"triggered": False, "reason": "no_source_fid"}
+            if provider == "drive" and not orig_fid:
+                return {"triggered": False, "reason": "no_drive_file"}
+            dest = (f"pan115:user-{user_id}" if other == "pan115"
+                    else f"userdrive:{user_id}")
+            scheme = "pan115:" if other == "pan115" else "userdrive:"
+            ready = _newest_ready_for_scheme(db, target.id, "user",
+                                             str(user_id), scheme)
+            if ready is not None:
+                return {"triggered": False, "reason": "already_ready",
+                        "target_item_id": target.id}
+            if _recent_job_exists(db, target.id, "user", str(user_id)):
+                return {"triggered": False, "reason": "throttled",
+                        "target_item_id": target.id}
+            if _prefetch_today_count(db, user_id) >= prefetch_daily_max():
+                return {"triggered": False, "reason": "daily_cap",
+                        "target_item_id": target.id}
+            try:
+                job = create_cross_provider_job(db, target, user_id,
+                                                provider, trigger="prefetch")
+            except TransferError as exc:
+                if exc.kind == "throttled":
+                    return {"triggered": False, "reason": "throttled",
+                            "target_item_id": target.id}
+                return {"triggered": False, "reason": exc.kind,
+                        "target_item_id": target.id}
+            return {"triggered": True, "reason": "job_created",
+                    "job_id": job.id, "target_item_id": target.id}
+        orig_fid = (getattr(target, "drive_file_id", "") or "").strip()
+        if provider == "pan115" and not orig_fid:
+            return {"triggered": False, "reason": "no_source_fid"}
+        if provider == "drive" and not orig_fid:
+            return {"triggered": False, "reason": "no_drive_file"}
+        ready = _newest_ready(db, target.id, "user", str(user_id))
+        if ready is not None:
+            return {"triggered": False, "reason": "already_ready",
+                    "target_item_id": target.id}
+        if _recent_job_exists(db, target.id, "user", str(user_id)):
+            return {"triggered": False, "reason": "throttled",
+                    "target_item_id": target.id}
+        if _prefetch_today_count(db, user_id) >= prefetch_daily_max():
+            return {"triggered": False, "reason": "daily_cap",
+                    "target_item_id": target.id}
+        try:
+            job = create_user_job(db, target, user_id, provider,
+                                  trigger="prefetch")
+        except TransferError as exc:
+            if exc.kind == "throttled":
+                return {"triggered": False, "reason": "throttled",
+                        "target_item_id": target.id}
+            return {"triggered": False, "reason": exc.kind,
+                    "target_item_id": target.id}
+        return {"triggered": True, "reason": "job_created",
+                "job_id": job.id, "target_item_id": target.id}
+    except Exception:  # noqa: BLE001 — 预转存绝不能打断详情页
+        logger.warning("详情页预转存异常（不影响详情页）", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"triggered": False, "reason": "error"}
+
+
+async def wait_for_transfer_ready(initial_gate, gate_callable, *,
+                                  max_sec=None, poll_sec=None):
+    """准备中态等流：每 poll 秒重查一次门禁，直到变体就绪。
+
+    只对 reason 为 job_created / job_in_flight 的 preparing 等：
+    throttled（节流窗内无在途任务）等再久也没用，直接回原 verdict，
+    不烧 15 秒。其它 verdict（proceed / serve_115_copy / failed /
+    error）一出现即回，不等满时。超时回最后一次 preparing verdict，
+    调用方按旧 409 处理。gate_callable 异常时回初始 preparing
+    verdict（调用方 409，不把等流本身的异常读成播放失败）。
+    全程不 serve 任何字节、不回落共享：等到的只是“门禁变了”，
+    真正的 302 仍由调用方按正常选路走用户副本。
+    """
+    gate = initial_gate or {}
+    if gate.get("verdict") != "preparing":
+        return gate
+    if gate.get("reason") not in ("job_created", "job_in_flight"):
+        return gate
+    if not wait_stream_enabled():
+        return gate
+    max_s = wait_stream_max_sec() if max_sec is None else float(max_sec)
+    poll_s = wait_stream_poll_sec() if poll_sec is None else float(poll_sec)
+    deadline = time.monotonic() + max_s
+    while time.monotonic() < deadline:
+        await asyncio.sleep(poll_s)
+        try:
+            gate = await gate_callable()
+        except Exception:  # noqa: BLE001 — 重查失败不改 verdict
+            return initial_gate
+        gate = gate or {}
+        if gate.get("verdict") != "preparing":
+            return gate
+    return gate
+
+
 def get_ready_variant_for_user(db, item_id, user_id):
     """该用户在该条目上可播的副本登记行（或 None）。
 
@@ -1186,6 +1520,38 @@ class UserDriveApiClient(DriveApiClient):
             self._token = token
         return {"Authorization": f"Bearer {self._token}"}
 
+    def ensure_folder_cached(self, drive_id, dir_name):
+        """带缓存命中的目录解析，返回 (folder_id, from_cache)。
+
+        缓存键含绑定指纹（见 _folder_cache_key），重绑即失效；
+        TTL 默认 3600 秒。调用方（Path A）用 from_cache 决定：
+        copy 被拒时若是缓存目录，先失效重解析再拷一次，第二次
+        仍被拒才算源无权、走 Path B——避免“目录被删”被误读成
+        “源无权”而走错路。
+        """
+        key = _folder_cache_key(self._binding, drive_id, dir_name)
+        now = time.monotonic()
+        with _transfer_folder_cache_lock:
+            entry = _transfer_folder_cache.get(key)
+            if entry is not None and entry[1] > now:
+                return entry[0], True
+        fid = super().ensure_folder(drive_id, dir_name)
+        with _transfer_folder_cache_lock:
+            _transfer_folder_cache[key] = (
+                fid, time.monotonic() + transfer_folder_cache_ttl_sec())
+        return fid, False
+
+    def ensure_folder(self, drive_id, dir_name):
+        """转存目录解析（用户盘走缓存；SA 侧父类方法不缓存）。"""
+        fid, _ = self.ensure_folder_cached(drive_id, dir_name)
+        return fid
+
+    def drop_folder_cache(self, drive_id, dir_name) -> None:
+        """丢掉该绑定该目录的缓存条目（Path A 缓存重试用）。"""
+        key = _folder_cache_key(self._binding, drive_id, dir_name)
+        with _transfer_folder_cache_lock:
+            _transfer_folder_cache.pop(key, None)
+
     def resumable_upload(self, drive_id, name, folder_id, size, reader):
         """跨 provider 搬字节：用户 Drive 令牌可续传上传（标准协议）。
 
@@ -1401,6 +1767,11 @@ def _register_ready_variant(db, job, item, variant_fid, variant_drive_id,
     job.error_detail = None
     job.next_retry_at = None
     db.commit()
+    # 登记 ready 后预填存在性正缓存（只对 Drive 副本；115 副本的
+    # variant_file_id 不是 Drive fid，不进 Drive 存在性命名空间）。
+    # 预填失败不影响登记（publish 内部永不抛错）。
+    if not (variant_drive_id or "").startswith("pan115:"):
+        publish_drive_exists_ok(variant_fid)
     return row
 
 
@@ -1449,14 +1820,43 @@ def _run_drive_user_job(db, job, item, drive_api):
     orig_fid = item.drive_file_id.strip()
     name = _copy_name_for_item(item)
     # Path A：用户令牌直拷（anyone-reader 源）。
+    # 目录解析走缓存（实测 0.25 秒分段）：假客户端（旧测试桩）
+    # 没有 ensure_folder_cached 时退回 ensure_folder，行为逐字旧。
+    folder_from_cache = False
     try:
-        folder_id = user_client.ensure_folder(user_drive,
-                                              transfer_dir_name())
+        if hasattr(user_client, "ensure_folder_cached"):
+            folder_id, folder_from_cache = user_client.ensure_folder_cached(
+                user_drive, transfer_dir_name())
+        else:
+            folder_id = user_client.ensure_folder(user_drive,
+                                                  transfer_dir_name())
         copied = user_client.copy_file(user_drive, orig_fid, folder_id, name)
     except _CopyForbidden:
-        # 用户无权源 → Path B（不直接判死，SA 暂存中转）。
-        return _run_drive_user_job_path_b(db, job, item, drive_api,
-                                          user_client, user_drive, name)
+        if folder_from_cache:
+            # 缓存目录可能已被删/换绑：先失效重解析再拷一次，
+            # 第二次仍被拒才算源无权、走 Path B（不把目录问题
+            # 误读成源无权）。
+            try:
+                if hasattr(user_client, "drop_folder_cache"):
+                    user_client.drop_folder_cache(user_drive,
+                                                  transfer_dir_name())
+                folder_id = user_client.ensure_folder(user_drive,
+                                                      transfer_dir_name())
+                copied = user_client.copy_file(user_drive, orig_fid,
+                                               folder_id, name)
+            except _CopyForbidden:
+                return _run_drive_user_job_path_b(
+                    db, job, item, drive_api, user_client, user_drive, name)
+            except DriveOAuthError as exc:
+                return _fail_job(db, job, "no_binding",
+                                 f"用户 Drive 令牌失效：{exc}")
+            except Exception as exc:
+                return {"job_id": job.id,
+                        "outcome": _schedule_retry(db, job, exc)}
+        else:
+            # 用户无权源 → Path B（不直接判死，SA 暂存中转）。
+            return _run_drive_user_job_path_b(db, job, item, drive_api,
+                                              user_client, user_drive, name)
     except DriveOAuthError as exc:
         return _fail_job(db, job, "no_binding",
                          f"用户 Drive 令牌失效：{exc}")
@@ -1471,6 +1871,12 @@ def _run_drive_user_job(db, job, item, drive_api):
     # 转存后目录核对（FMBY discover 口径）：copy 回执只作期望值，
     # 必须在用户转存目录里按名核到才登记；核不到记 copy_unresolved
     #（不重试、不回落源文件播放），目录列举失败则按可重试处理。
+    # 注意（2026-10-27 极限优化时亲验）：核对与加 anyone-reader
+    # 不能并行——anyone 必须加在核到的 id 上（目录 id 胜出时与回
+    # 执 id 不同），且核不到时绝不能补权限（旧测试
+    # test_worker_user_path_a_dir_missing_copy_unresolved /
+    # test_worker_user_path_a_dir_id_wins 钉住这两条）。并行省
+    # 0.24 秒的代价是改这两条语义，不值得；提速只靠目录缓存。
     try:
         verified_fid = _verify_drive_copy_in_dir(
             user_client, user_drive, folder_id, name, variant_fid)
