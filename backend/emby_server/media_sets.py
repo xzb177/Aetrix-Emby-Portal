@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import logging
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select
 
 from backend.emby_server import models as em
 from backend.emby_server.env_util import env_int
@@ -249,6 +249,62 @@ def candidate_item_ids(db, media_set) -> set:
     if media_set.bound_person_id:
         ids |= _bound_person_item_ids(db, media_set.bound_person_id)
     return ids
+
+
+# ---------------------------------------------------------------- 主题周候选
+
+
+GENRE_THEME_SORTS = ("rating", "premiere", "random")
+#: 请求里的 Movie/Series（库内小写同样收）→ item_type。
+GENRE_THEME_MEDIA_TYPES = {
+    "Movie": "movie",
+    "Series": "series",
+    "movie": "movie",
+    "series": "series",
+}
+
+
+def genre_theme_item_ids(db, genre: str, *, limit: int,
+                         item_type: str | None = None,
+                         min_year: int | None = None,
+                         sort: str = "rating") -> list[int]:
+    """可见片单里，类型命中 ``genre`` 的前 ``limit`` 个 id（已按 sort 排好）。
+
+    可见：``is_hidden`` 为假、``merged_into_id`` 为空；软删行由全局
+    ORM 钩子排除。类型匹配走 ``_csv_contains``（与 genre 规则同一口径，
+    按逗号定界，避免「动作」命中「动作片」）。只收 movie/series——
+    主题周是片单，不是季/集清单；``item_type`` 再收窄到其中一种。
+    ``min_year`` 有值时要求 production_year 达到该年（空年份不算）。
+    身份货架门不在这条写路径上套，上架仍由读时 effective_count 决定。
+    """
+    query = db.query(em.MediaItem.id).filter(
+        em.MediaItem.merged_into_id.is_(None),
+        em.MediaItem.is_hidden == False,  # noqa: E712
+        em.MediaItem.item_type.in_(("movie", "series")),
+        _csv_contains(em.MediaItem.genres, genre),
+    )
+    if item_type is not None:
+        query = query.filter(em.MediaItem.item_type == item_type)
+    if min_year is not None:
+        query = query.filter(em.MediaItem.production_year >= min_year)
+    if sort == "rating":
+        # 无评分的排最后，同分按 id，结果稳定、可测。
+        query = query.order_by(
+            case((em.MediaItem.community_rating.is_(None), 1), else_=0),
+            em.MediaItem.community_rating.desc(),
+            em.MediaItem.id.asc(),
+        )
+    elif sort == "premiere":
+        query = query.order_by(
+            case((em.MediaItem.premiere_date.is_(None), 1), else_=0),
+            em.MediaItem.premiere_date.desc(),
+            em.MediaItem.id.asc(),
+        )
+    elif sort == "random":
+        query = query.order_by(func.random())
+    else:
+        raise ValueError(f"未知的主题周排序: {sort!r}")
+    return [row[0] for row in query.limit(limit).all()]
 
 
 # ---------------------------------------------------------------- 刷新
