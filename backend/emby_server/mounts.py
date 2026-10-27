@@ -820,6 +820,27 @@ class ProviderCapabilities:
         }
 
 
+def require_capability(provider, bit: str) -> None:
+    """FMBY #23 能力门控唯一入口（横切只许一套）。
+
+    提供者有 ``capabilities()`` 声明时按声明执法：未声明该能力位
+    直接抛 ``MountError``，调用方不得再调对应接口；声明读取本身
+    异常时按无能力处理（fail-closed，与 refresh_credentials_if_supported
+    同口径）。没有 ``capabilities()`` 的 duck-type 旧提供者（扫描器
+    历史假提供者）无法可依，按旧行为放行——过渡期不静默打断它们，
+    执法只对 MountProvider 子类生效。
+    """
+    caps_fn = getattr(provider, "capabilities", None)
+    if not callable(caps_fn):
+        return
+    try:
+        caps = caps_fn()
+    except Exception:  # noqa: BLE001 — 声明都读不到的提供者按无能力处理
+        raise MountError(f"提供者能力声明不可读，拒绝调用 {bit} 对应接口")
+    if not getattr(caps, bit, False):
+        raise MountError(f"提供者未声明 {bit} 能力，拒绝调用对应接口")
+
+
 def read_sidecar_text_from(provider, rel: str) -> str:
     """旁挂文本读取的过渡口：优先走提供者的 ``read_sidecar_text`` 新口；
     只实现旧 ``read_text`` 的 duck-type 提供者（扫描器历史上的假提供者
@@ -828,7 +849,12 @@ def read_sidecar_text_from(provider, rel: str) -> str:
     扫描器对 provider 一直是 duck-type 调用（list_dir / read_text 都不
     要求继承 MountProvider），直接改口会静默打断这类提供者，故过渡口
     必须保留回落；MountProvider 子类永远走新口。
+
+    FMBY #23 门控：MountProvider 子类先过 ``can_read_sidecar`` 门
+    （见 ``require_capability``）；未声明时抛 MountError，扫描器侧
+    按既有口径把单个 NFO 读不到当没有（跳过、不打挂整单扫描）。
     """
+    require_capability(provider, "can_read_sidecar")
     read = getattr(provider, "read_sidecar_text", None)
     if callable(read):
         return read(rel)
@@ -913,7 +939,12 @@ class MountProvider:
         保留；新调用方一律用本口，能力门控只认
         ``can_read_sidecar``。图片旁挂不走本口，走 ``open_range``
         的 display-asset 语义（按段取字节）。
+
+        FMBY #23 门控：未声明 ``can_read_sidecar`` 的提供者直接
+        抛 MountError，不读——.strm 解析因此同样被挡（读不到 .strm
+        文本就无法解析其目标，降级只会给出错误地址，不许静默）。
         """
+        require_capability(self, "can_read_sidecar")
         return self.read_text(rel)
 
     def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
@@ -922,7 +953,12 @@ class MountProvider:
         本机挂载：seek 直读。远程挂载：子类覆写（换链 + Range GET）。
         注意：本口读的是文件本身；.strm 文件读到的是 .strm 文本，
         不是它指向的目标——目标解析是 ``resolve_final`` 的事。
+
+        FMBY #23 门控：未声明 ``can_random_read`` 的提供者直接
+        抛 MountError，不碰磁盘 / 不发请求——声明 False 时调用方
+        必须跳过该源而不是等一次网络失败才知道。
         """
+        require_capability(self, "can_random_read")
         if start < 0 or (end is not None and end <= start):
             raise MountError(f"无效的取段范围: start={start} end={end}")
         root = self.local_root
@@ -1458,7 +1494,9 @@ class Pan115Mount(MountProvider):
 
     def open_range(self, rel: str, start: int, end: Optional[int] = None) -> bytes:
         """115 按段取字节：换链 + Range GET（与 RemoteMount 同款切片兜底，
-        复用既有远程 IO 名额；115 不继承 RemoteMount，故单写一份）。"""
+        复用既有远程 IO 名额；115 不继承 RemoteMount，故单写一份）。
+        FMBY #23 门控：未声明 can_random_read 时不换链、不发请求。"""
+        require_capability(self, "can_random_read")
         if start < 0 or (end is not None and end <= start):
             raise MountError(f"无效的取段范围: start={start} end={end}")
         target = self.resolve_play_target(rel)
@@ -1715,7 +1753,9 @@ class RemoteMount(MountProvider):
         兜底——调用方拿到的字节一定是 [start, end)，正确性有保证，
         代价是多拉了整段字节。网络请求只包在 remote_io_slot 里，
         不另起第二套限流。
+        FMBY #23 门控：未声明 can_random_read 时不换链、不发请求。
         """
+        require_capability(self, "can_random_read")
         if start < 0 or (end is not None and end <= start):
             raise MountError(f"无效的取段范围: start={start} end={end}")
         target = self.resolve_play_target(rel)
@@ -2367,6 +2407,20 @@ def resolve_play_target(file_path: Optional[str], db: Session, library=None, *,
     if not mount.is_enabled:
         raise MountError(f"挂载「{mount.name}」已停用")
     provider = build_provider(mount, db, library)
+    # FMBY #23 门控：按本口实际会走的解析路选能力位，且必须排在
+    # 解析缓存查询之前——缓存残量不许短路能力门控（与停用挂载不许
+    # 被缓存短路同款顺序纪律）。非 .strm 走换链，门 can_generate_
+    # play_target；.strm 走 resolve_final 的内容解析，门 can_read_
+    # sidecar——.strm 提供者可以不实现换链口，拿换链门挡它就是错杀
+    # （test_resolve_target_cache 的 _StrmProvider 正是此例）。
+    # 变体清单已把换链 False 的源排除在外（list_variants），本门控
+    # 挡的是无变体参数的老客户端直访与变体可用性探针：探针侧
+    # MountError 按既有口径转 remote_unavailable——门控消息刻意不含
+    # “不存在/已停用”，不让探针误判为 unknown。
+    if _is_strm_name(rel):
+        require_capability(provider, "can_read_sidecar")
+    else:
+        require_capability(provider, "can_generate_play_target")
     # 解析缓存的查询必须排在 load_mount + is_enabled 检查**之后**：停用挂载
     # 不许被 TTL 内的缓存残量短路（定稿 §5 的失效矩阵钉死这一条顺序）。
     cache_key = _resolve_cache_key(provider, rel)

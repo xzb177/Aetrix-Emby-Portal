@@ -257,6 +257,122 @@ def read_snapshot(client=None):
     return snapshot
 
 
+# ---------------------------------------------------------------- 事件尾巴（#24 消费端）
+# 2026-10-27 之前总线只有生产没有消费：publish_event 向频道发事件，
+# 但 subscribe() 在生产代码里零调用方——事件发进 Redis 就没人收，
+# 那不叫总线，叫日志。本节补上真实消费端：worker 里的消费工人订阅
+# 频道、把事件排进 capped 尾巴，管理端 GET /events 读尾巴。快照仍是
+# 断线重连的对齐源（频道是 at-most-once：消费工人没起时事件不补发，
+# 读端靠快照补齐，不许把尾巴读成全量事实）。
+BUS_EVENTS_KEY = "aetrix:playback:events:v1"
+BUS_EVENTS_MAX = 100
+# 消费工人排空间隔（固定值，不新增 env 键，免 env.example 防漂移）：
+# get_message 是非阻塞调用，2 秒一拍的开销可忽略。
+CONSUMER_INTERVAL_SEC = 2.0
+
+
+def _valid_bus_event(data) -> dict | None:
+    """频道消息 → 合格事件 dict；不合格（脏 JSON / 非 dict / 版本或
+    类型不对）回 None，调用方跳过不记入尾巴。"""
+    try:
+        if isinstance(data, bytes):
+            data = data.decode("utf-8")
+        event = json.loads(data)
+    except Exception:  # noqa: BLE001 — 脏消息跳过，不杀消费工人
+        return None
+    if not isinstance(event, dict):
+        return None
+    if event.get("v") != 1 or event.get("type") not in EVENT_TYPES:
+        return None
+    return event
+
+
+def drain_bus_pubsub(pubsub, client=None, limit: int = 1000) -> int:
+    """排空一次已订阅的 pubsub：把合格事件追加进尾巴并裁到上限。
+
+    pubsub 必须已订阅 BUS_CHANNEL（调用方持有它跨拍复用——每拍
+    现订阅现丢会漏掉拍间的事件，那是假消费）。无 Redis / pubsub
+    为 None 回 0；单条脏消息跳过不中断整拍；本函数永不抛异常。
+    返回本拍记入尾巴的事件数。
+    """
+    if pubsub is None:
+        return 0
+    redis = _redis_client(client)
+    if redis is None:
+        return 0
+    kept = 0
+    try:
+        while kept < limit:
+            msg = pubsub.get_message()
+            if msg is None:
+                break
+            if not isinstance(msg, dict) or msg.get("type") != "message":
+                continue
+            if msg.get("channel") != BUS_CHANNEL:
+                continue
+            event = _valid_bus_event(msg.get("data"))
+            if event is None:
+                continue
+            redis.rpush(BUS_EVENTS_KEY,
+                        json.dumps(event, ensure_ascii=False))
+            kept += 1
+        if kept:
+            redis.ltrim(BUS_EVENTS_KEY, -BUS_EVENTS_MAX, -1)
+    except Exception:  # noqa: BLE001
+        logger.warning("播放总线消费排空失败（本拍剩余事件丢弃）",
+                       exc_info=True)
+    return kept
+
+
+def consume_bus_events_once(client=None, limit: int = 1000) -> int:
+    """订阅 + 排空一次（单拍工具，供测试与手动触发；工人循环不用
+    它——工人持有 pubsub 跨拍复用，见 run_event_consumer_loop）。"""
+    pubsub = subscribe(client=client)
+    if pubsub is None:
+        return 0
+    return drain_bus_pubsub(pubsub, client=client, limit=limit)
+
+
+def read_bus_events(client=None, limit: int = 50) -> list[dict]:
+    """读事件尾巴（最新在前；脏条目跳过）。无 Redis 回空列表。"""
+    redis = _redis_client(client)
+    if redis is None:
+        return []
+    try:
+        raw_items = redis.lrange(BUS_EVENTS_KEY, 0, -1) or []
+    except Exception:  # noqa: BLE001
+        logger.warning("播放总线事件尾巴读取失败，视为空", exc_info=True)
+        return []
+    events = []
+    for raw in reversed(raw_items):
+        event = _valid_bus_event(raw)
+        if event is not None:
+            events.append(event)
+    return events[:max(1, limit)]
+
+
+def run_event_consumer_loop(client=None, stop_event=None) -> None:
+    """事件消费工人主循环（供 worker 接线）：持有同一个 pubsub 跨拍
+    复用，每 CONSUMER_INTERVAL_SEC 秒排空一次；无 Redis 时本拍
+    空转等下一拍，不自旋；单拍失败不杀工人；stop_event 置位即退出。
+    本循环不碰 DB（事件本身就是事实，事实源仍是会话表 + 快照）。"""
+    import time
+
+    pubsub = None
+    while stop_event is None or not stop_event.is_set():
+        try:
+            if pubsub is None:
+                pubsub = subscribe(client=client)
+            if pubsub is not None:
+                drain_bus_pubsub(pubsub, client=client)
+        except Exception:  # noqa: BLE001
+            logger.warning("播放总线消费工人单拍失败", exc_info=True)
+            pubsub = None
+        if stop_event is not None and stop_event.is_set():
+            break
+        time.sleep(CONSUMER_INTERVAL_SEC)
+
+
 def run_snapshot_once(db: Session, client=None) -> int:
     """构建并写入一次快照，返回会话数；失败回 -1 不抛异常。"""
     try:

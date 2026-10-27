@@ -271,6 +271,11 @@ class TestMountsStrmBranch:
         signed = DRIVE_URL + "&aexp=9999999999&asig=abcdef"
         provider = mounts.MountProvider.__new__(mounts.MountProvider)
         provider.read_text = lambda rel: signed
+        # FMBY #23 门控：旁挂口要求提供者声明 can_read_sidecar；本用例测的是
+        # resolve_final 直传，不是门控拒绝（拒绝由 test_fmby_23_24_capability_bus 覆盖）。
+        provider.capabilities = lambda: mounts.ProviderCapabilities(
+            can_read_sidecar=True
+        )
         with mock.patch(
             "backend.emby_server.drive_auth.drive_auth_headers",
             return_value={"Authorization": "Bearer <redacted>"},

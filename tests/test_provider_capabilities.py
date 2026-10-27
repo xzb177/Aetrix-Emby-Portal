@@ -97,7 +97,18 @@ def test_rclone_capabilities_both_modes():
 
 
 class _SpyProvider(MountProvider):
-    """MountProvider 子类桩：记录换链与旁挂各被调了几次。"""
+    """MountProvider 子类桩：记录换链与旁挂各被调了几次。
+
+    #23 门控后桩必须如实声明能力：本桩确实实现换链与旁挂，
+    故五位全 True；声明 False 的桩走门控拒绝路径，见
+    test_fmby_23_24_capability_bus.py。
+    """
+
+    def capabilities(self):
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=False,
+        )
 
     def __init__(self):
         self.resolve_calls = []
@@ -188,6 +199,13 @@ def test_open_range_local_strm_reads_file_itself(tmp_path):
 
 
 class _FakeRemote(mnt.RemoteMount):
+    def capabilities(self):
+        # #23 门控：本桩确实实现按段读，声明 True 才能走 open_range。
+        return ProviderCapabilities(
+            can_list=True, can_random_read=True, can_read_sidecar=True,
+            can_generate_play_target=True, can_refresh_credentials=False,
+        )
+
     def __init__(self, status, body, headers_seen):
         self._status = status
         self._body = body
@@ -235,6 +253,13 @@ def test_open_range_pan115(monkeypatch):
     class _Pan115(Pan115Mount):
         def __init__(self):
             pass
+
+        def capabilities(self):
+            # #23 门控：本桩确实实现按段读，声明 True 才能走 open_range。
+            return ProviderCapabilities(
+                can_list=True, can_random_read=True, can_read_sidecar=True,
+                can_generate_play_target=True, can_refresh_credentials=False,
+            )
 
         def resolve_play_target(self, rel):
             return mnt.PlayTarget("url", "http://x/115", {})

@@ -102,7 +102,13 @@ def _mount(mount_id=7, mount_type="pan115", config=None, enabled=True, path=""):
 
 
 class _CountingProvider(mnt.MountProvider):
-    """计数型假提供者：换链口调一次计数 +1，返回可配的 PlayTarget。"""
+    """计数型假提供者：换链口调一次计数 +1，返回可配的 PlayTarget。
+
+    #23 门控：本桩确实实现换链口，故如实声明
+    can_generate_play_target=True（其余位未实现，声明 False）。"""
+
+    def capabilities(self):
+        return mnt.ProviderCapabilities(can_generate_play_target=True)
 
     calls = 0
     headers = {"User-Agent": "counting-ua"}
@@ -305,7 +311,14 @@ def test_drive_bearer_is_reattached_fresh_never_cached(drive):
 # ---------------- STRM 目标：Bearer 现挂 ----------------
 
 class _StrmProvider(mnt.MountProvider):
-    """read_text 给一条 Drive 直链内容；换链口对 .strm 根本不该被调。"""
+    """read_text 给一条 Drive 直链内容；换链口对 .strm 根本不该被调。
+
+    #23 门控：本桩确实实现旁挂读，故如实声明 can_read_sidecar=True；
+    换链口故意不实现，声明 False——模块换链口对 .strm 按旁挂门控，
+    不拿换链门错杀它。"""
+
+    def capabilities(self):
+        return mnt.ProviderCapabilities(can_read_sidecar=True)
 
     reads = 0
 

@@ -14,6 +14,8 @@
 - GET /api/admin/playback-bus/commands/{command_id}：查一条命令。
 - GET /api/admin/playback-bus/commands：最近命令审计列表。
 - GET /api/admin/playback-bus/snapshot：读最新快照（无快照回 404）。
+- GET /api/admin/playback-bus/events：读总线事件尾巴（#24 消费端出口，
+  最新在前；总线关时回 503，不读停机前残量）。
 
 鉴权：与 backend/api/playback_admin.py 同口径——get_current_admin
 （Bearer JWT + is_staff）；写接口额外调 admin_roles.ensure_admin_allowed，
@@ -122,3 +124,20 @@ def get_snapshot(current_admin=Depends(get_current_admin)):
     if snapshot is None:
         raise HTTPException(status_code=404, detail="暂无播放快照")
     return snapshot
+
+
+@router.get("/events")
+def get_events(limit: int = 50,
+               current_admin=Depends(get_current_admin)):
+    """读总线事件尾巴（FMBY #24 消费端出口，最新在前）。
+
+    总线关时回 503——关时消费工人不跑，尾巴是停机前的残量，
+    读出来冒充实时是假数据，不许读。开时尾巴空是正常态（刚启动
+    或暂无播放），回空列表，不回 404。
+    """
+    if not bus.bus_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="播放实时总线未开启（PLAYBACK_BUS_ENABLED=0），事件尾巴不提供",
+        )
+    return bus.read_bus_events(limit=max(1, min(200, limit)))
