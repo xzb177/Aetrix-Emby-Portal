@@ -271,6 +271,133 @@ def resolve_imdb_id(item, fetched: dict, details_fetcher=None):
     return None, None
 
 
+#: 远端身份认亲可继承绑定的条目类型（FMBY #13 接线）：只有 movie /
+#: series 行才 carries tmdb_id / imdb_id 绑定；episode / season 行的
+#: 编号不在 movie / tv 详情端点口径内，不许拿 donor 的绑定去贴。
+_REMOTE_IDENTITY_INHERIT_TYPES = ("movie", "series")
+
+
+def _donor_binding(rows) -> tuple:
+    """donor 行 → (binding 对, 是否歧义)。
+
+    binding 对 = (tmdb_id, imdb_id)，空值归一为 None；行里两个号都空
+    的不算 donor。恰好一种 binding 对才可继承；两种及以上互相不
+    一致的对 = 歧义，返回 (None, True)，调用方不得再用弱层去覆盖
+    强层的歧义（宁可错分不可错认，与扫描器认亲层同口径）。
+    """
+    pairs = set()
+    for row in rows:
+        tmdb = getattr(row, "tmdb_id", None) or None
+        imdb = getattr(row, "imdb_id", None) or None
+        if tmdb or imdb:
+            pairs.add((str(tmdb) if tmdb else None,
+                       str(imdb) if imdb else None))
+    if not pairs:
+        return None, False
+    if len(pairs) > 1:
+        return None, True
+    return next(iter(pairs)), False
+
+
+def inherit_binding_from_remote_identity(db, item) -> Optional[dict]:
+    """远端身份认亲（FMBY #13）：识别段的 donor 继承。
+
+    扫描器认亲层（scanner 的 file_id / content_hash / 指纹层）只在
+    扫描入库时复用旧行；刮削识别段此前完全不认远端身份——同一文件
+    被扫进两个库、或改名后旧行已绑定而新行未绑定时，识别段只能靠
+    标题搜索重认，远端身份白白作废。本函数把认亲接进识别段：当
+    extract_binding 无绑定时，按远端身份找已绑定的 donor 行继承。
+
+    层序（与扫描器同口径，强层优先）：
+    - file_id 层：同 drive_file_id 的可见行（deleted_at IS NULL 且
+      merged_into_id IS NULL，本行除外）；
+    - content_hash 层：同 (content_hash, content_hash_algo, size)，
+      hash 与 algo 均非空、size > 0。
+    任一层 donor 歧义（同一身份对应两种及以上不一致的绑定）即返回
+    None，不再退到弱层。movie / series 以外不继承；条目已有任一
+    号时不继承（只填空缺、永不覆盖）；DB 异常只记日志返回 None，
+    绝不拖垮识别段。返回的 binding 形状与 extract_binding 一致，
+    confidence 记 ``inherited``，证据里钉 donor 行 id 与层名（不钉
+    原始 fid / hash 值，审计时按行反查即可）。
+    """
+    try:
+        if getattr(item, "item_type", None) not in _REMOTE_IDENTITY_INHERIT_TYPES:
+            return None
+        if getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None):
+            return None
+        item_id = getattr(item, "id", None)
+        MI = em.MediaItem
+        visible = (
+            MI.deleted_at.is_(None),
+            MI.merged_into_id.is_(None),
+        )
+        donor_rows = []
+        layer = None
+        fid = getattr(item, "drive_file_id", None) or ""
+        if fid:
+            query = db.query(MI).filter(
+                MI.drive_file_id == fid, *visible)
+            if item_id is not None:
+                query = query.filter(MI.id != item_id)
+            donor_rows = query.all()
+            pair, ambiguous = _donor_binding(donor_rows)
+            if ambiguous:
+                logger.warning(
+                    "远端身份认亲放弃（file_id 歧义）id=%s fid 命中 %s 行",
+                    item_id, len(donor_rows))
+                return None
+            if pair is not None:
+                layer = "file_id"
+        if layer is None:
+            _hash = getattr(item, "content_hash", None) or ""
+            _algo = getattr(item, "content_hash_algo", None) or ""
+            _size = getattr(item, "size", 0) or 0
+            if _hash and _algo and _size > 0:
+                query = db.query(MI).filter(
+                    MI.content_hash == _hash,
+                    MI.content_hash_algo == _algo,
+                    MI.size == _size,
+                    *visible)
+                if item_id is not None:
+                    query = query.filter(MI.id != item_id)
+                donor_rows = query.all()
+                pair, ambiguous = _donor_binding(donor_rows)
+                if ambiguous:
+                    logger.warning(
+                        "远端身份认亲放弃（content_hash 歧义）id=%s",
+                        item_id)
+                    return None
+                if pair is not None:
+                    layer = "content_hash"
+        if layer is None:
+            return None
+        tmdb_id, imdb_id = pair
+        donor_ids = sorted({r.id for r in donor_rows
+                            if getattr(r, "id", None) is not None})
+        if tmdb_id:
+            provider, external_id = "tmdb", str(tmdb_id)
+        else:
+            provider, external_id = "imdb", str(imdb_id)
+        return {
+            "provider": provider,
+            "external_id": external_id,
+            "tmdb_id": str(tmdb_id) if tmdb_id else None,
+            "imdb_id": str(imdb_id) if imdb_id else None,
+            "confidence": "inherited",
+            "evidence": {
+                "remote_identity_layer": layer,
+                "donor_item_id": donor_ids[0] if donor_ids else None,
+                "donor_count": len(donor_ids),
+                "item_type": getattr(item, "item_type", None),
+                "item_title": getattr(item, "name", None),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001 — 认亲失败 = 本轮无继承绑定
+        logger.warning(
+            "远端身份认亲失败 id=%s: %s", getattr(item, "id", None), exc)
+        return None
+
+
 def apply_identity(db, item, fetched: dict, tmdb_details_fetcher=None) -> Optional[dict]:
     """识别段：只写身份列 + 一段识别记录，不写任何资料字段。
 
@@ -289,6 +416,11 @@ def apply_identity(db, item, fetched: dict, tmdb_details_fetcher=None) -> Option
     裁决权在人不在 AI，门拒不再适用（权重仍钳制到 0.2）。
     """
     binding = extract_binding(item, fetched)
+    if binding is None:
+        # FMBY #13 接线：标题 / NFO / 详情都给不出身份时，按远端身份
+        # 向已绑定的 donor 行继承；继承不到仍返回 None，行为与此前一致。
+        # 继承绑定同样走下面的 AI 政策门与 IMDb 解析步，不另开口子。
+        binding = inherit_binding_from_remote_identity(db, item)
     if binding is None:
         return None
     from backend.emby_server import ai_policy as _aip
