@@ -66,7 +66,9 @@ def test_success_resets_count_and_hidden():
     assert rec.consecutive_unavailable_failures == 0
     assert rec.hidden_at is None
     assert rec.last_success_at == 200.0
-    assert uh.is_source_available(rec) is True
+    # 该用例的心跳是 200.0（1970 纪元）；按过期语义须以同一时刻判断，
+    # 否则以真实 now 判断会因超 7 天未探活而判过期（属新语义，非回归）。
+    assert uh.is_source_available(rec, now=200.0) is True
 
 
 def test_failure_counts_but_does_not_flip_below_threshold():
