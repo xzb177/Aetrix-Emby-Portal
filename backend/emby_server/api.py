@@ -5573,6 +5573,16 @@ async def video_stream(
             raise HTTPException(
                 status_code=503,
                 detail="转存门禁暂不可用，稍后重试（未走共享播放）")
+    # 配额方案 1（限速 + 错峰）：总闸默认关，关时下面直接放行。
+    # 开时只约束还没有用户自己副本的共享 Drive 起播。超限 429，
+    # 错误码在 detail 前缀和 X-Error-Code。不轮换账号、不建秒传池。
+    from backend.emby_server import shared_quota_pace as _pace
+    _personal_copy = _pace.is_personal_copy(_play_variant)
+    if _pace.is_shared_drive_start(item, _requested_variant, _play_variant):
+        _pace_denied = await run_db(
+            _pace.admit_shared_start, db, user, _play_fid or _fid)
+        if _pace_denied is not None:
+            raise _pace_denied
     # 播放阶段 6 按可用性换线（门控已删，换线恒生效；回滚 = revert）：
     # 只影响下面无变体请求的 Drive 默认路线；显式变体请求与挂载/本机
     # 路线不受换线影响。
@@ -5847,6 +5857,13 @@ async def video_stream(
                         result="error", error_kind="quota_page",
                         resolve_ms=int(
                             (time.perf_counter() - _evt_t0) * 1000))
+                    # 总闸开且还没有用户副本：不要再 302 去打同一条共享链。
+                    # 总闸关或已有用户副本时 _forced 为 None，下面仍是旧回落。
+                    _forced = await run_db(
+                        _pace.transfer_required_http, db,
+                        personal_copy=_personal_copy)
+                    if _forced is not None:
+                        raise _forced
                     _play_fid = _fid
                     if not _drive_switch_on:
                         raise HTTPException(
@@ -5854,6 +5871,15 @@ async def video_stream(
                             detail="文件公开额度已耗尽，转存已入队，"
                                    "下次播放走副本") from None
                 except HTTPException as exc:
+                    # 已知 429：总闸开且无用户副本时改为「先转存再播」，
+                    # 不再按 429 原样抛回去让客户端连打共享链。总闸关则
+                    # 仍是下面的原样抛（429 本来就不换线）。
+                    if _pace.is_known_drive_quota_http(exc):
+                        _forced = await run_db(
+                            _pace.transfer_required_http, db,
+                            personal_copy=_personal_copy)
+                        if _forced is not None:
+                            raise _forced
                     # 阶段 6 换线失败重试点（FMBY 全部学第 5 项）：502
                     # （远端不可用）与轮换后 403（中继函数内部已轮换
                     # 凭据重试一次、再失败才抛到这里）可换线，上限一次；
@@ -5915,6 +5941,14 @@ async def video_stream(
             _fast302 = await _ensure_drive_file_playable(
                 db, item, _play_fid, force_recheck=_force)
         except HTTPException as exc:
+            # files.get 429 被收成 503（detail 含「返回 429」）。总闸开
+            # 且无用户副本时不再包一层换线文案，直接要求先转存再播。
+            if _pace.is_known_drive_quota_http(exc):
+                _forced = await run_db(
+                    _pace.transfer_required_http, db,
+                    personal_copy=_personal_copy)
+                if _forced is not None:
+                    raise _forced
             # 阶段 6：换线后直链仍失败，原因要带上切换上下文，不许
             # 把一次切换失败读成普通的直链失败。
             if _switch_attempted:
