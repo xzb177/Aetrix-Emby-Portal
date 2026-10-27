@@ -94,6 +94,36 @@ def _empty(value) -> bool:
     return False
 
 
+def _clean_identity(value):
+    """身份值的归一：None 或纯空白字符串都不算身份（返回 None）。
+
+    与 ``_empty`` / ``enrich_queues._is_empty`` 同 strip 口径（空格与
+    ``\t\n\r\f\v`` 都算空白）。字符串去首尾空白后返回——真实编号里
+    不该有首尾空白，归一后 ``external_id`` 不再带空格；非字符串按原
+    真值（0 / 空容器仍算空，与原裸 ``or`` 链的跳过语义一致）。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned if cleaned else None
+    return value if value else None
+
+
+def _first_identity(*values):
+    """按优先序取第一个非空身份（替代裸 ``or`` 链）。
+
+    裸 ``or`` 只跳过 falsy 值：纯空白字符串（如 ``"  "``、``"\t"``）
+    是 truthy，会被当成已有身份返回——空白身份就此冒充绑定，还会
+    压住后一顺位上真实的身份值。本函数逐个归一，只认非空值。
+    """
+    for value in values:
+        cleaned = _clean_identity(value)
+        if cleaned is not None:
+            return cleaned
+    return None
+
+
 def _item_year(item) -> Optional[int]:
     """条目年份（Frodo 按标题搜用；取不到就 None，不编年份）。"""
     year = getattr(item, "production_year", None)
@@ -111,6 +141,13 @@ def extract_binding(item, fetched: dict) -> Optional[dict]:
     tmdb_id 时不以 fetched 的去换（与现行 ``item.tmdb_id or fetched``
     同口径）。
 
+    空白不是绑定（根治，2026-10-27）：各来源身份值先按 strip 口径归
+    一再取优先序，None / 空串 / 纯空白字符串一律不算身份——裸 ``or``
+    会把纯空白当成已有绑定返回并 upsert 一段 identified 记录，是 B 批
+    （#1374）实锤的域外同根点。归一后空白身份在 extract_binding 层
+    即返回 None；B 批在 enrich_worker 层的域内否决仍保留作防御纵深，
+    两层口径一致、不互相替代。
+
     置信度不编数字：显式来源（条目自带 / NFO 给的 tmdb_id）记
     ``explicit``，搜索命中记 ``search``——证据快照里写清判定依据，
     调用方与审查员看的是证据本身，不是分数。
@@ -118,19 +155,21 @@ def extract_binding(item, fetched: dict) -> Optional[dict]:
     fetched = fetched or {}
     nfo_data = fetched.get("nfo_data") or {}
     details = fetched.get("tmdb_details") or {}
-    had_tmdb = bool(getattr(item, "tmdb_id", None))
-    tmdb_id = (
-        getattr(item, "tmdb_id", None)
-        or fetched.get("tmdb_id")
-        or nfo_data.get("tmdb_id")
+    item_tmdb = _clean_identity(getattr(item, "tmdb_id", None))
+    nfo_tmdb = _clean_identity(nfo_data.get("tmdb_id"))
+    had_tmdb = item_tmdb is not None
+    tmdb_id = _first_identity(
+        getattr(item, "tmdb_id", None),
+        fetched.get("tmdb_id"),
+        nfo_data.get("tmdb_id"),
     )
-    imdb_id = (
-        getattr(item, "imdb_id", None)
-        or details.get("imdb_id")
-        or nfo_data.get("imdb_id")
+    imdb_id = _first_identity(
+        getattr(item, "imdb_id", None),
+        details.get("imdb_id"),
+        nfo_data.get("imdb_id"),
         # 接线批：已批建议的 fetched 直接带顶层 imdb_id（与 tmdb_id 的
         # 顶层读取对称），优先级最低，不动已有 / 详情 / NFO 的优先序。
-        or fetched.get("imdb_id")
+        fetched.get("imdb_id"),
     )
     if not tmdb_id and not imdb_id:
         return None
@@ -140,12 +179,12 @@ def extract_binding(item, fetched: dict) -> Optional[dict]:
         provider, external_id = "imdb", str(imdb_id)
     confidence = (
         "explicit"
-        if (had_tmdb or bool(nfo_data.get("tmdb_id")))
+        if (had_tmdb or nfo_tmdb is not None)
         else "search"
     )
     evidence = {
         "tmdb_id_source": (
-            "item" if had_tmdb else ("nfo" if nfo_data.get("tmdb_id") else "fetched")
+            "item" if had_tmdb else ("nfo" if nfo_tmdb is not None else "fetched")
         ),
         "has_details": bool(details),
         "has_nfo": bool(nfo_data),
