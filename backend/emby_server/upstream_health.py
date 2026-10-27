@@ -718,6 +718,16 @@ def probe_source(
     except Exception:
         logger.warning("上游熔断喂数异常，已忽略", exc_info=True)
 
+    if outcome.kind == OUTCOME_UNKNOWN:
+        # 探针已结束（无论是定性 unknown 还是握手异常）：半开名额必须
+        # 归还，否则与 invalid_base_url 修前同款泄漏——名额被占到
+        # 120 秒自愈窗口，其间该源下次到期探活全被 breaker_open 挡掉。
+        # 只清 probe_in_flight，不碰失败计数与开断时刻，故不算喂数。
+        try:
+            provider_breaker.release_probe(breaker_key)
+        except Exception:
+            logger.warning("上游熔断归还探针名额异常，已忽略", exc_info=True)
+
     apply_source_result(record, outcome, threshold=threshold, now=now)
     next_probe_due(record, interval_sec=interval_sec, backoff_max_sec=backoff_max_sec,
                    threshold=threshold, now=now)
