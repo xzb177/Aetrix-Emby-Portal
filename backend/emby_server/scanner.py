@@ -1,4 +1,31 @@
-"""自建 Emby 服务器：媒体库扫描 + 元数据刮削"""
+r"""自建 Emby 服务器：媒体库扫描 + 元数据刮削
+
+脏标题清理规则表（2026-10-27，生产实证，落库前须先给用户看本表 + 干跑样本）：
+规则只清显示名 ``name``，是纯字符串函数（``clean_name`` /
+``clean_stored_display_name`` / ``clean_query_title``）。
+落库回填时只写 ``name`` 一列；``production_year`` / ``scan_title`` /
+``scan_year`` / ``original_title`` / ``file_path`` / ``guid`` /
+``drive_file_id`` / ``library_id`` / ``series/season/episode_number``
+一律不动。年份只留在年份栏里，新扫描建行时由解析口径回填，存量回填
+绝不拿名字里的年份（闭合或残片）覆盖已有 ``production_year``。
+
+| 规则 | 适用范围 | 改前 → 改后 | 绝不动的反例 |
+| R1 规则包词表 | 全部片名（``rule_pack`` v1） | ``Movie 1080p BluRay x265`` → ``Movie``；``Film WEB-DL H264 AAC`` → ``Film`` | 词表外的一切词不删；``2012``（纯数字标题）不动 |
+| R2 规则包 v2 | 全部片名 | ``Film ADWeb 1080p`` → ``Film``；``Film DDP 2 0`` → ``Film``；``Film DTS 5 1`` → ``Film`` | 只加已实证的 ``adweb`` 一个组名，不凭空扩组名表；声道多词条必须排在单一声频词之前，否则 ``DDP`` 先咬只剩 ``2 0`` |
+| R3 孤立杂词 | 全部片名（``clean_name`` 窄规则） | 空括号 ``话 蓝光( ) 32 240`` → ``话 32 240``；独立成词 ``某剧 蓝光 1080p`` → ``某剧``；声道残留 ``某剧 2 0`` → ``某剧`` | ``蓝光侠``（前后紧贴中文字符）不动；版本号 token ``梅根2.0`` / ``哥斯拉-1.0`` 不动；``Delta Movie 02 00`` 不动 |
+| R4 尾巴闭合年份 | 剧 / 电影存量显示名，串尾 ``(YYYY)`` / ``[YYYY]`` / ``【YYYY】``，走 ``clean_stored_display_name``（clean_name + _split_trailing_year） | ``不死少女·杀人笑剧 (2023)`` → ``不死少女·杀人笑剧``；``LoveLive 爱与演唱会!超级明星!! (2021)`` → ``LoveLive 爱与演唱会!超级明星!!``；``舌尖上的中国 (2012)`` → ``舌尖上的中国`` | 中间括号 ``某某电影 (真人版)`` 不动；``production_year`` 不动（``守护者 (2017)`` 而字段是 2018 时以字段为准）；clean_name 本身不剥年份（否则解析路径回填年份会丢），不要拿 clean_name 当回填口径 |
+| R5 尾巴未闭合年份 + 孤左括号 | 剧 / 电影存量显示名，串尾 ``(YYYY`` 无右括号，走 ``clean_stored_display_name``；孤 ``(`` 在串尾时 clean_name 直接剥 | ``一念间 (2016`` → ``一念间``；``你好 (2026`` → ``你好`` | 中间括号不动；存量回填绝不拿残片改年份（``一念间 (2016`` 而字段是 1989 时只删残片，年份仍是 1989） |
+| R6 集展示名不重复 | 集显示名（``_episode_display_name``） | ``莫语者 第 14 集`` + ep 14 → ``莫语者 第 14 集``（不再追加 ``S01E14``） | base 无集标记时旧口径不变：``3月的狮子`` + S01E02 → ``3月的狮子 S01E02``；集号不一致时仍追加（宁可重复、不错标） |
+| R7 重查查询串 | 仅供没刮出来 / 没海报的剧 / 电影重查 TMDB 用（``clean_query_title`` = ``clean_stored_display_name``） | ``一念间 (2016`` → 查询 ``一念间``；``泪之女王 (2024)`` → 查询 ``泪之女王`` | 不许拿集显示名当查询（含 ``第 X 集`` 会带偏搜索）；本函数不发请求、不做匹配判定，拿不准的进人工认亲 |
+| R8 粘连年份只进人工复核 | 全部片名，中文名后直接粘着 ``(19|20)xx``、无括号无分隔 | 不自动删年份 token，干跑单独列出人工复核清单 | ``魔王2099``、``机动战士高达0079``、``1899``、``1122好夫妇``、``魔术快斗1412``、``你是谁 - 学校2015``、``唐探1900``、``阿根廷1985`` 的年份 token 一律不删（既有分隔符归一如 ``-`` 变空格除外，那不是删年份） |
+| R9 没海报 / 没刮出来 | 剧 / 电影：``metadata_source='none'``，或 ``poster_path`` 与 ``primary_image_url`` 双空 | 先用 R7 干净标题重查，高置信才补海报 / 简介 | 拿不准的进 ``emby_identify_review_tasks`` 人工认亲，绝不硬贴错海报；季（season）继承剧集元数据是正常现象，不当缺失硬刮 |
+
+字段来源（读代码确认）：新扫描建行时 ``name`` = 解析名、
+``original_title`` = 同一解析名、``scan_title`` = 集存剧名 / 其余存解析名、
+``production_year`` = 解析年份（含目录名尾巴年份回填）；``clean_name``
+本身不读不写任何字段，只返回字符串。存量回填与新扫描建行是两条路，
+不要把解析回填年份的逻辑套到存量回填上。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -699,14 +726,23 @@ def _strip_platform_tags(name: str) -> str:
 # （如电影《2012》）、不会命中；「(真人版)」这类非年份括号也不命中。
 _TRAILING_YEAR_RE = re.compile(
     r"\s*[\(\[【（]\s*((?:19|20)\d{2})\s*[\)\]】）]\s*$")
+# 未闭合的尾巴年份（2026-10-27 脏标题实证）：目录名本身就是
+# 「一念间 (2016」「你好 (2026」——右括号在源头就丢了，闭合版正则
+# 永远命中不了，_strip_year 的 replace 又只去数字留孤括号。
+# 只认字符串结尾、左括号 + 年份、再无右括号的形态，不碰中间的括号。
+_TRAILING_UNCLOSED_YEAR_RE = re.compile(
+    r"\s*[\(\[【（]\s*((?:19|20)\d{2})\s*$")
 
 
 def _split_trailing_year(name: str):
     """把片名尾巴带括号的年份剥出来，返回 (剥净的名字, 年份或 None)。"""
     m = _TRAILING_YEAR_RE.search(name or "")
-    if not m:
-        return name, None
-    return (name[: m.start()].strip(), int(m.group(1)))
+    if m:
+        return (name[: m.start()].strip(), int(m.group(1)))
+    m = _TRAILING_UNCLOSED_YEAR_RE.search(name or "")
+    if m:
+        return (name[: m.start()].strip(), int(m.group(1)))
+    return name, None
 
 
 def _strip_year(name: str, year) -> str:
@@ -721,8 +757,12 @@ def _strip_year(name: str, year) -> str:
         # 否则「泪之女王 (2024)」整段当片名入库、年份栏反而留空，客户端
         # 会把年份显示两遍（2026-10-20 生产 1,662 条实证，用户亲令
         # 「名字后面不要带年份」）。剥出的年份由调用方按需回填年份栏。
+        # _split_trailing_year 已含未闭合版（2026-10-27 脏标题）。
         return _split_trailing_year(name)[0]
     out = re.sub(r"[\(\[【（]\s*" + str(year) + r"\s*[\)\]】）]", " ", name)
+    # 未闭合版：左括号 + 年份在串尾、无右括号时也要整段剥，否则只去
+    # 数字留孤括号（「一念间 (2016」→「一念间 (」）。
+    out = re.sub(r"[\(\[【（]\s*" + str(year) + r"\s*$", " ", out)
     if str(year) in out:
         out = out.replace(str(year), "")
     return re.sub(r"\s+", " ", out).strip(" .-_()")
@@ -810,6 +850,26 @@ def clean_name(raw: str, pack=None) -> str:
     # 不再被识别（词表里的 web[\s\-]?dl、blu[\s\-]?ray 正是为此）。
     name = (pack or _rule_pack.default_pack()).strip(name)
     name = _strip_platform_tags(name)
+    # 2026-10-27 脏标题清理（窄规则，只删已实证的孤立杂词，不动正经片名）：
+    # ① 空括号「( )」「（ ）」：年份剥离后留下的空壳，或源头就有的空壳；
+    # ② 独立成词的中文发布词「蓝光」：前后不是中文字符才删（「蓝光」是
+    #    片名一部分如「蓝光侠」时前后紧贴中文字符，不动）；
+    # ③ 声道残留「2 0」「5 1」「7 1」：旧规则已把声频词剥掉、只剩声道数
+    #    的存量名。版本号 token（梅根2.0）是「2.0」一个 token，不会命中
+    #    「2 0」两 token；「Delta Movie 02 00」的「02」前无词边界，
+    #    同样不命中——这两类反例由测试钉住。
+    name = re.sub(r"[\(\[【（]\s*[\)\]】）]", " ", name)
+    name = re.sub(r"(?<![\u4e00-\u9fff])蓝光(?![\u4e00-\u9fff])", " ", name)
+    name = re.sub(r"(?<![\d.])\b(?:2\s0|5\s1|7\s1)\b(?![\d.])", " ", name)
+    # ④ 尾巴的孤左括号：串尾孤「(」一并剥（中间的括号如「(真人版)」不动）。
+    #    注意：尾巴年份（闭合「(2023)」与未闭合「(2016」）绝不在 clean_name
+    #    里剥——解析路径（_tidy_name → _series_name_of / parse_media_filename）
+    #    要在 tidy 之后用 _split_trailing_year 把年份回填进 production_year，
+    #    clean_name 先剥了年份，回填就永远拿不到（2026-10-27 实证：
+    #    泪之女王 (2024) 的 year 回填丢成 None）。存量脏名的年份剥离
+    #    走 clean_stored_display_name（clean_name + _split_trailing_year），
+    #    干跑与未来回填都只许用它，不许直接用 clean_name 当回填口径。
+    name = re.sub(r"\s*[\(\[【（]\s*$", "", name)
     name = re.sub(r"\s+", " ", name).strip(" .-_")
     # 还原版本号 token 的占位符
     name = name.replace(_VERSION_DOT_PLACEHOLDER, ".").replace(
@@ -1017,13 +1077,51 @@ def _episode_display_name(name: str, season_no: Optional[int], ep_no: Optional[i
     整个媒体库的扫描会在这一行崩掉、前面已扫的批次全部白跑。
 
     这类文件按 ``片名 S02`` 命名，集号留空（后续人工补），不猜、不填 0。
+
+    2026-10-27 脏标题清理：base 里已经有与 ep_no 一致的中文集标记
+    （「第 14 集」「第 14 话」，含空格版「第 14 集」）时不再追加
+    SxxExx——否则「莫语者 第 14 集」会变成「莫语者 第 14 集 S01E14」，
+    集号在显示名里出现两次。base 里已有 SxxExx 时同样不重复追加。
+    base 里没有集标记时（如纯剧名「3月的狮子」）仍按旧口径追加，
+    不改既有展示契约。
     """
     base = (name or "").strip()
+    if ep_no is not None:
+        _cn_ep = re.search(r"第\s*(\d+)\s*[集话話]", base)
+        if _cn_ep is not None and int(_cn_ep.group(1)) == ep_no:
+            return base
+        if re.search(r"[Ss]\d{1,2}[Ee]\d{1,4}", base):
+            return base
     if ep_no is None:
         return f"{base} S{season_no:02d}" if season_no is not None else base
     if season_no is None:
         return f"{base} E{ep_no:02d}"
     return f"{base} S{season_no:02d}E{ep_no:02d}"
+
+
+def clean_stored_display_name(name: str) -> str:
+    """存量脏名的清洗口径（干跑 / 未来回填唯一入口，纯函数、不写库）。
+
+    顺序钉死：先 ``clean_name`` 去技术杂词，再 ``_split_trailing_year``
+    剥尾巴年份（闭合与未闭合版同口径），剥出的年份直接丢弃——
+    本函数不返回年份，调用方（回填）只写 ``name`` 一列，绝不拿
+    剥出的年份覆盖已有 ``production_year``。新扫描建行不要走本函数，
+    走解析路径（tidy → split → 回填年份栏），否则年份栏会丢。
+    """
+    cleaned = clean_name(name or "")
+    cleaned, _year = _split_trailing_year(cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" .-_")
+
+
+def clean_query_title(name: str) -> str:
+    """给 TMDB 重查用的干净查询标题（纯函数，不发请求、不写库）。
+
+    口径 = ``clean_stored_display_name``。只供没刮出来的剧 / 电影
+    重查时用：调用方须用 scan_title（剧名）或电影名，不许拿集显示名
+    当查询（集名含「第 X 集」会把搜索带偏）。拿不准的仍进人工认亲，
+    本函数不做任何匹配判定。
+    """
+    return clean_stored_display_name(name or "")
 
 
 # 远程 ffprobe 的有限 Range 上限：rclone rc-serve 不接受默认的开放式
