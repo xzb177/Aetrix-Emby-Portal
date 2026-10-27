@@ -10,6 +10,12 @@ FMBY 形态照搬三点：每个识别任务钉规则包版本 + 内容哈希；
   搬进 ``DEFAULT_STRIP_TERMS``，顺序一字不动。分隔符归一、括号剥离、
   平台标签、重复标记等其余清洗手法仍是扫描器机制，尚未收进包里，
   后续版本再吸纳，不在本批假装“整套清洗已版本化”。
+- v2（2026-10-27 脏标题清理）：在 v1 词表上追加已实证的发行组标签
+  ``adweb`` 与音频声道多词条（``ddp 2 0`` / ``dts 5 1`` 等，单一声频
+  词先咬会留孤立声道数）。词表一变 content_hash 即变，存量旧规则
+  产物由既有 replay_pack 机制识别；中文标签（蓝光）、空括号、未闭
+  合年份、声道残留仍在扫描器 clean_name 层处理，不进包（\b 词边界
+  对中文词不生效，硬塞会静默失效）。
 - 覆盖层来源是 env（与本仓所有开关同一口径：文件配置为准，改了
   重启生效）。三键见 env.example；非法 JSON 当空处理并记 warning，
   绝不因配置写错拖垮扫描。
@@ -44,7 +50,7 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 PACK_NAME = "naming-cleanup"
-PACK_VERSION = "v1"
+PACK_VERSION = "v2"
 
 # 默认词表：与 scanner._tidy_name 原内联正则的交替项逐字一致、顺序
 # 一致（原正则 ``\\b(... )\\b``）。改这里即改包内容，content_hash
@@ -54,7 +60,15 @@ DEFAULT_STRIP_TERMS = (
     "2160p", "1440p", "1080p", "1080i", "720p", "480p", r"\d{3,4}[pi]",
     "4k", "8k", "uhd", r"hdr10\+?", "hdr", "dolby", "dv", "hevc",
     r"h\.?264", "x264", r"h\.?265", "x265",
-    "aac", "ac3", "eac3", "dts", "flac", "truehd", "atmos",
+    # v2：音频声道多词条必须排在单一声频词之前，否则 "DDP 2 0" 先被
+    # "ddp" 咬掉只剩孤立的 "2 0" 留在标题里（生产 1,508 条实证）。
+    # CLEAN_RE 已把 "DDP 2.0" 拆成 "DDP 2 0"，故词条用 \s+ 拼声道数。
+    r"ddp\s+\d\s+\d", r"dd\s+\d\s+\d", r"dts\s+\d\s+\d",
+    r"eac3\s+\d\s+\d", r"ac3\s+\d\s+\d", r"aac\s+\d\s+\d",
+    "aac", "ac3", "eac3", "dts", "flac", "truehd", "atmos", "ddp",
+    # v2：发行组标签（生产实证：ADWeb 1,508 条）。只加已实证的这一个，
+    # 不凭空扩组名词表——组名撞真片名词的风险由 \b 整词边界兜底。
+    "adweb",
     r"web[\s\-]?dl", "webrip", "web", "remux", r"blu[\s\-]?ray", "bluray",
     "bdrip", "brrip", "hdtv", "dvdrip", "diy", "repack", "proper",
     "multi", "internal", "chs&eng", "chs", "cht", "eng", "gb", "big5",

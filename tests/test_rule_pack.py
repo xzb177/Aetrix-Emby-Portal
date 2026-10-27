@@ -105,7 +105,7 @@ def test_hash_layers():
     b = rp.RulePack()
     assert a.content_hash == b.content_hash
     assert a.effective_hash == b.effective_hash
-    changed = rp.RulePack(version="v2")
+    changed = rp.RulePack(version="v3")
     assert changed.content_hash != a.content_hash
     overrode = rp.RulePack(custom_terms=("camrip",))
     assert overrode.content_hash == a.content_hash
@@ -157,10 +157,10 @@ def test_identify_stamps_pack(db):
     rec = db.query(em.EnrichStageRecord).filter(
         em.EnrichStageRecord.item_id == item.id).first()
     assert rec is not None
-    assert rec.rule_pack_version == "v1"
+    assert rec.rule_pack_version == rp.PACK_VERSION
     assert rec.rule_pack_hash == rp.default_pack().effective_hash
     evidence = json.loads(rec.evidence_json)
-    assert evidence["rule_pack_version"] == "v1"
+    assert evidence["rule_pack_version"] == rp.PACK_VERSION
     assert evidence["rule_pack_hash"] == rec.rule_pack_hash
 
 
