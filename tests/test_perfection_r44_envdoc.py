@@ -5,7 +5,7 @@ r44 专项：env.example 缺失约 177 个代码实际读取的环境变量键�
 
 本测试保证以后新增 env 键时文档不掉队：
 1. 静态可检测的读取（os.getenv / os.environ.get / env_int / env_float /
-   _env_* / _env_flag / _cpu_workers / *_ENV = "NAME" 常量）必须被 env.example
+   _env_* / _env_flag / _cpu_workers / _capped_workers / *_ENV = "NAME" 常量）必须被 env.example
    收录，或列入下面的显式 allowlist（间接读取/部署专用，有据）。
 2. allowlist 里的键必须在代码里仍有引用（防改名后 allowlist 变成僵尸）。
 3. env.example 里收录的键必须仍有出处（代码读取/间接读取/部署专用），
@@ -110,8 +110,11 @@ DEPLOY_ONLY = {
 
 _PATTERNS = [
     # 直接读取：os.getenv / os.environ.get / env_int / env_float / _env_* 系列 helper
-    # （_env_[a-z_]+ 覆盖 _env_int_or / _env_flag 等全部本地 helper 变体）
-    re.compile(r'\b(?:os\.getenv|os\.environ\.get|getenv|env_int|env_float|_env_[a-z_]+|_cpu_workers)\(\s*["\']([A-Z][A-Z0-9_]*)["\']'),
+    # （_env_[a-z_]+ 覆盖 _env_int_or / _env_flag 等全部本地 helper 变体；
+    #   cpu_budget 别名与 _cpu_workers 同构：background_workers 读键走 _cpu_workers，
+    #   capped_workers 读键走 _capped_workers，两者都必须被静态扫描认出来，
+    #   否则写成标准键=值行的文档键会被 test_documented_keys_live 反向误报为死键）
+    re.compile(r'\b(?:os\.getenv|os\.environ\.get|getenv|env_int|env_float|_env_[a-z_]+|_cpu_workers|_capped_workers)\(\s*["\']([A-Z][A-Z0-9_]*)["\']'),
     re.compile(r'\bos\.environ\[\s*["\']([A-Z][A-Z0-9_]*)["\']'),
     # 间接读取：FOO_ENV = "FOO" / _FOO_ENV = "FOO" 常量（允许前导下划线）
     re.compile(r'\b[A-Za-z_][A-Za-z0-9_]*_ENV\b\s*=\s*["\']([A-Z][A-Z0-9_]*)["\']'),
