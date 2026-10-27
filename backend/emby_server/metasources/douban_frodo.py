@@ -31,6 +31,19 @@ Frodo 与 v2 端点从机房 IP 大概率吃 403（FMBY 在机房实测同样 40
 下尽力而为；403 会被熔断挡下、冷却后自动半开重试，不会逐条硬撞，
 更不会拖慢 TMDB 主链（enrich 的多源采集对单源失败本来就隔离）。
 
+## 真实端点探查（2026-10-27，见 tests/test_fmby_13_14_identity_frodo.py
+## 的 opt-in live probe；结论不靠推断）
+
+- 两路出口（开发机、本机经跳板的生产 VPS 出口）对 v2 imdb 端点、
+  Frodo 详情、Frodo 搜索三路实测结果一致：HTTP 400、code 104
+  ``invalid_apikey``——内置公开 apikey 已被豆瓣拒，不是机房 IP 的
+  403，也不是空响应。也就是说：桥的形状（编号精确换 subject、
+  年份 sanity 门、详情补空缺）已由单测钉死，但拿内置 key 今天从
+  任一出口都换不到数据；要真通须由用户提供有效的自备 key，走
+  ``DOUBAN_FRODO_APIKEY`` 覆盖（本模块已支持，见 _cfg_apikey），
+  换 key 后用同一 live probe 复核——在那之前不许对外宣称 Frodo
+  腿已实测通过。失败仍走熔断隔离，不拖 TMDB 主链。
+
 ## 与既有豆瓣腿的分工
 
 - ``altmeta.search``（suggest）：只给标题 / 年份 / 海报，没有简介评分；
