@@ -2,14 +2,15 @@
 /**
  * 上游源 —— FMBY 学习 #25 的 25-1（源管理）+ 25-2 手动聚合触发。
  * 源管理只管「源建得进、管得住」：类型、地址、凭据、启用开关、健康状态。
- * 目录聚合（25-2）只做手动触发：行上的「聚合」按钮调后端的按库分批聚合口，
- * 拉上游目录、配对本地条目、写路径开关开时才写映射；不做自动调度、不探活、
- * 不拼播放地址、不做自动播放兜底；新建的源恒为关闭，启用后才会被后续步骤读取。
+ * 目录聚合（25-2）只做手动触发：行上的「聚合」按钮入队后轮询任务。
+ * 聚合经常超过 axios 的 30 秒，不再干等同步口，避免超时被说成「网络连不上」。
+ * 后台按库拉上游目录、配对本地条目、写路径开关开时才写映射；不做自动调度、
+ * 不探活、不拼播放地址、不做自动播放兜底；新建的源恒为关闭，启用后才会被后续步骤读取。
  * 苹果 CMS 型源不走 Emby 目录聚合口，本页不给它聚合按钮（后端同样会 400 拒）。
  * 凭据只存密封值：本页只发凭据原文一次（新建/轮换时），列表与详情
  * 永远只回 has_secret，编辑时留空 = 凭据不动，清空 = 改匿名访问。
  */
-import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
@@ -19,10 +20,16 @@ import {
   deleteUpstreamSource,
   disableUpstreamSource,
   enableUpstreamSource,
+  fetchUpstreamAggregateTask,
   fetchUpstreamSources,
   updateUpstreamSource,
 } from '@/api/admin'
-import type { UpstreamAggregateResult, UpstreamSource, UpstreamSourceInput } from '@/api/admin'
+import type {
+  UpstreamAggregateResult,
+  UpstreamAggregateTask,
+  UpstreamSource,
+  UpstreamSourceInput,
+} from '@/api/admin'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 
 /**
@@ -56,8 +63,51 @@ const sources = ref<UpstreamSource[]>([])
 const loading = ref(false)
 const loadError = ref(false)
 const saving = ref(false)
-const aggregatingId = ref<number | null>(null)
+const aggregatingIds = ref<number[]>([])
 const aggregateResult = ref<{ sourceName: string; result: UpstreamAggregateResult } | null>(null)
+
+/** 离开页面就停轮询，不再弹已经看不见的结果。 */
+let aggregatePageToken = 0
+const AGGREGATE_POLL_MS = 1500
+const AGGREGATE_POLL_RETRIES = 3
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms)
+  })
+}
+
+/** 把任务失败还原成带 response.detail 的错误，走现有 toAdminError 文案。 */
+function aggregateTaskError(task: UpstreamAggregateTask): Error {
+  const detail = task.error?.detail?.trim() || '聚合失败'
+  const err = new Error(detail) as Error & {
+    response?: { status?: number; data?: { detail: string } }
+  }
+  err.response = { status: task.error?.status, data: { detail } }
+  return err
+}
+
+async function pollAggregateTask(
+  sourceId: number,
+  taskId: string,
+  token: number,
+): Promise<UpstreamAggregateTask> {
+  let transient = 0
+  for (;;) {
+    if (token !== aggregatePageToken) {
+      throw new Error('聚合已取消')
+    }
+    try {
+      const snap = await fetchUpstreamAggregateTask(sourceId, taskId)
+      if (snap.status === 'succeeded' || snap.status === 'failed') return snap
+      transient = 0
+    } catch (e) {
+      transient += 1
+      if (transient > AGGREGATE_POLL_RETRIES || token !== aggregatePageToken) throw e
+    }
+    await sleep(AGGREGATE_POLL_MS)
+  }
+}
 
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
@@ -207,26 +257,39 @@ async function toggleEnabled(source: UpstreamSource) {
 }
 
 async function runAggregate(source: UpstreamSource) {
+  if (aggregatingIds.value.includes(source.id)) return
+  const token = aggregatePageToken
+  aggregatingIds.value = [...aggregatingIds.value, source.id]
   try {
-    await ElMessageBox.confirm(
-      `给「${source.name}」跑一次目录聚合吗？会按库拉上游目录、配对本地条目，写路径开关开时才写映射；单库失败不毁已写映射，结果会在表下方展示。`,
-      '跑目录聚合',
-      { type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  aggregatingId.value = source.id
-  try {
-    const { result } = await aggregateUpstreamSource(source.id)
+    try {
+      await ElMessageBox.confirm(
+        `给「${source.name}」跑一次目录聚合吗？会按库拉上游目录、配对本地条目，写路径开关开时才写映射；单库失败不毁已写映射，结果会在表下方展示。`,
+        '跑目录聚合',
+        { type: 'warning' },
+      )
+    } catch {
+      return
+    }
+    let task = await aggregateUpstreamSource(source.id)
+    if (task.status !== 'succeeded' && task.status !== 'failed') {
+      task = await pollAggregateTask(source.id, task.task_id, token)
+    }
+    if (token !== aggregatePageToken) return
+    if (task.status === 'failed' || !task.result) {
+      throw aggregateTaskError(task)
+    }
+    const result = task.result
     aggregateResult.value = { sourceName: source.name, result }
     ElMessage.success(
       `聚合完成：发现 ${result.libraries_discovered} 个库，拉取 ${result.fetched} 条，配对 ${result.paired} 条，写入 ${result.written} 条，失败库 ${result.failed_libraries.length} 个`,
     )
   } catch (e) {
+    if (token !== aggregatePageToken) return
     ElMessage.error(toAdminError(e))
   } finally {
-    aggregatingId.value = null
+    if (token === aggregatePageToken) {
+      aggregatingIds.value = aggregatingIds.value.filter((id) => id !== source.id)
+    }
   }
 }
 
@@ -269,6 +332,9 @@ async function removeSource(source: UpstreamSource) {
 }
 
 onMounted(loadSources)
+onUnmounted(() => {
+  aggregatePageToken += 1
+})
 </script>
 
 <template>
@@ -389,7 +455,8 @@ onMounted(loadSources)
               v-if="row.source_type !== 'applecms'"
               size="small"
               type="primary"
-              :loading="aggregatingId === row.id"
+              :loading="aggregatingIds.includes(row.id)"
+              :disabled="aggregatingIds.includes(row.id)"
               @click="runAggregate(row)"
             >
               聚合

@@ -545,6 +545,22 @@ def pair_aggregates(db: Session, items: List[agg.UpstreamAggregateItem]):
 # 手动触发总入口（只 flush 不 commit，调用方事务内提交）
 # ---------------------------------------------------------------------------
 
+def ensure_aggregatable(source) -> None:
+    """不发上游请求的前置校验：未启用、苹果 CMS 直接拒。
+
+    凭据失效、额度、上游不可用要打到上游才知道，不在这里判断。
+    管理端入队前先调本函数，这几类仍是立刻返回的 400；
+    ``run_manual_aggregation`` 开头再查一次，入队后源被停用也不会静默跑。
+    """
+    if not getattr(source, "enabled", False):
+        raise UpstreamAggregateRunError(
+            400, "source_disabled", "上游源未启用，先启用再聚合")
+    if getattr(source, "source_type", "") == "applecms":
+        raise UpstreamAggregateRunError(
+            400, "source_type_not_supported",
+            "苹果 CMS 源走自己的同步，不走 Emby 目录聚合")
+
+
 def run_manual_aggregation(db: Session, source, *,
                            http_get: Optional[Callable] = None,
                            http_post: Optional[Callable] = None,
@@ -566,13 +582,7 @@ def run_manual_aggregation(db: Session, source, *,
     断点续跑：重跑本接口即可，成功库的映射 upsert 不建新行，
     失败库重试；本函数不新增持久检查点表。
     """
-    if not getattr(source, "enabled", False):
-        raise UpstreamAggregateRunError(
-            400, "source_disabled", "上游源未启用，先启用再聚合")
-    if getattr(source, "source_type", "") == "applecms":
-        raise UpstreamAggregateRunError(
-            400, "source_type_not_supported",
-            "苹果 CMS 源走自己的同步，不走 Emby 目录聚合")
+    ensure_aggregatable(source)
     api_key = _resolve_api_key(source, http_post=http_post)
     libraries = fetch_upstream_libraries(
         source, http_get=http_get, http_post=http_post, api_key=api_key)

@@ -3,9 +3,10 @@
 
 定位（与 #1352 系手动聚合的分工）：
 - 手动聚合仍是唯一已验证的入口：管理端
-  ``POST /api/admin/emby/upstream-sources/{id}/aggregate`` → 
-  ``upstream_aggregate_run.run_manual_aggregation``（按库拉目录 →
-  聚合 → 配对 → 开关开时写映射，单库失败隔离）。
+  ``POST /api/admin/emby/upstream-sources/{id}/aggregate`` 入队后，
+  后台线程调 ``upstream_aggregate_run.run_manual_aggregation``
+  （按库拉目录 → 聚合 → 配对 → 开关开时写映射，单库失败隔离）。
+  本调度不走那张任务表，仍在调度线程里直接调同一入口。
 - 本模块只做「到点触发」：按间隔对已启用的 Emby / Jellyfin 型源
   逐个调用同一手动聚合入口，不另起一套聚合实现、不读播放地址、
   不碰 video_stream 选路、不改手动聚合的任何语义。

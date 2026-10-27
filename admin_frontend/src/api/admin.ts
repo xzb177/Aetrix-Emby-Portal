@@ -1766,11 +1766,12 @@ export const deleteUpstreamSource = (id: number) =>
   del<{ success: boolean }>(`${E}/upstream-sources/${id}`)
 
 /** 上游目录聚合手动触发（FMBY 学习 #25 25-2 接线）。
- *  #1352 只把触发口做到后端（POST /upstream-sources/{id}/aggregate），
- *  管理端一直没有按钮，等于调用方仍不存在，映射永远是 0 条——本函数就是补
- *  那个按钮的调用层。只做手动触发，不做自动调度、不做自动播放兜底：
- *  后端按库分批拉目录、配对本地条目、写路径开关开时才写映射；单库失败
- *  只进 failed_libraries，不毁已写映射；返回照实带逐库进度。 */
+ *  只做手动触发，不做自动调度、不做自动播放兜底。
+ *  POST 立刻返回任务（queued），聚合在后台跑；用
+ *  fetchUpstreamAggregateTask 轮询。完成时 result 与原先同步口同形
+ *  （libraries_discovered / fetched / paired / written / failed_libraries）。
+ *  失败时 error.detail 是原来的中文错误（源未启用、凭据、上游不可用等）。
+ *  苹果 CMS 不走这个口。 */
 export interface UpstreamAggregateLibrarySummary {
   library_id: string
   library_name: string
@@ -1803,9 +1804,29 @@ export interface UpstreamAggregateResult {
   failed_libraries: UpstreamAggregateFailedLibrary[]
 }
 
+export type UpstreamAggregateTaskStatus = 'queued' | 'running' | 'succeeded' | 'failed'
+
+export interface UpstreamAggregateTaskError {
+  status: number
+  code: string
+  detail: string
+}
+
+export interface UpstreamAggregateTask {
+  task_id: string
+  source_id: number
+  status: UpstreamAggregateTaskStatus
+  result: UpstreamAggregateResult | null
+  error: UpstreamAggregateTaskError | null
+}
+
+/** 入队。本地就能判定的错误（源不存在 / 未启用 / 苹果 CMS）仍是 HTTP 4xx。 */
 export const aggregateUpstreamSource = (id: number) =>
-  post<{ source: UpstreamSource; result: UpstreamAggregateResult }>(
-    `${E}/upstream-sources/${id}/aggregate`, {})
+  post<UpstreamAggregateTask>(`${E}/upstream-sources/${id}/aggregate`, {})
+
+/** 按任务 id 查聚合进度。进行中 status 为 queued / running；完成时带 result。 */
+export const fetchUpstreamAggregateTask = (id: number, taskId: string) =>
+  get<UpstreamAggregateTask>(`${E}/upstream-sources/${id}/aggregate/${taskId}`)
 
 
 /** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
