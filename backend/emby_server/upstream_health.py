@@ -671,6 +671,13 @@ def probe_source(
         base = validate_base_url(source.base_url)
     except ValueError:
         # 配置错误是“无法判断”，不是“源死了”：按 unknown，不覆盖已知。
+        # allow() 已通过但请求最终没发出去：按熔断文档归还半开探针名额，
+        # 否则名额一直被占到 120 秒自愈窗口（breaker._PROBE_STALE_SEC），
+        # 其间该源的半开探测全被挡。熔断关时 allow 从未置名额，归还是 no-op。
+        try:
+            provider_breaker.release_probe(breaker_key)
+        except Exception:
+            logger.warning("上游熔断归还探针名额异常，已忽略", exc_info=True)
         apply_source_result(record, ProbeOutcome(OUTCOME_UNKNOWN), threshold=threshold, now=now)
         next_probe_due(record, interval_sec=interval_sec, backoff_max_sec=backoff_max_sec,
                        threshold=threshold, now=now)
