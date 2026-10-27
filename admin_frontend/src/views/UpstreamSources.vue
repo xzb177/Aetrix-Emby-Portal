@@ -1,9 +1,11 @@
 <script setup lang="ts">
 /**
- * 上游源 —— FMBY 学习 #25 的 25-1（只做源管理）。
- * 这里只管「源建得进、管得住」：类型、地址、凭据、启用开关、健康状态占位。
- * 目录聚合是 25-2、探活是 25-3、播放接入是 25-4，本页不拉目录、不探活、
- * 不拼播放地址；新建的源恒为关闭，启用后才会被后续步骤读取。
+ * 上游源 —— FMBY 学习 #25 的 25-1（源管理）+ 25-2 手动聚合触发。
+ * 源管理只管「源建得进、管得住」：类型、地址、凭据、启用开关、健康状态。
+ * 目录聚合（25-2）只做手动触发：行上的「聚合」按钮调后端的按库分批聚合口，
+ * 拉上游目录、配对本地条目、写路径开关开时才写映射；不做自动调度、不探活、
+ * 不拼播放地址、不做自动播放兜底；新建的源恒为关闭，启用后才会被后续步骤读取。
+ * 苹果 CMS 型源不走 Emby 目录聚合口，本页不给它聚合按钮（后端同样会 400 拒）。
  * 凭据只存密封值：本页只发凭据原文一次（新建/轮换时），列表与详情
  * 永远只回 has_secret，编辑时留空 = 凭据不动，清空 = 改匿名访问。
  */
@@ -12,6 +14,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import {
+  aggregateUpstreamSource,
   createUpstreamSource,
   deleteUpstreamSource,
   disableUpstreamSource,
@@ -19,7 +22,7 @@ import {
   fetchUpstreamSources,
   updateUpstreamSource,
 } from '@/api/admin'
-import type { UpstreamSource, UpstreamSourceInput } from '@/api/admin'
+import type { UpstreamAggregateResult, UpstreamSource, UpstreamSourceInput } from '@/api/admin'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 
 /**
@@ -53,6 +56,8 @@ const sources = ref<UpstreamSource[]>([])
 const loading = ref(false)
 const loadError = ref(false)
 const saving = ref(false)
+const aggregatingId = ref<number | null>(null)
+const aggregateResult = ref<{ sourceName: string; result: UpstreamAggregateResult } | null>(null)
 
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
@@ -198,6 +203,30 @@ async function toggleEnabled(source: UpstreamSource) {
     await loadSources()
   } catch (e) {
     ElMessage.error(toAdminError(e))
+  }
+}
+
+async function runAggregate(source: UpstreamSource) {
+  try {
+    await ElMessageBox.confirm(
+      `给「${source.name}」跑一次目录聚合吗？会按库拉上游目录、配对本地条目，写路径开关开时才写映射；单库失败不毁已写映射，结果会在表下方展示。`,
+      '跑目录聚合',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  aggregatingId.value = source.id
+  try {
+    const { result } = await aggregateUpstreamSource(source.id)
+    aggregateResult.value = { sourceName: source.name, result }
+    ElMessage.success(
+      `聚合完成：发现 ${result.libraries_discovered} 个库，拉取 ${result.fetched} 条，配对 ${result.paired} 条，写入 ${result.written} 条，失败库 ${result.failed_libraries.length} 个`,
+    )
+  } catch (e) {
+    ElMessage.error(toAdminError(e))
+  } finally {
+    aggregatingId.value = null
   }
 }
 
@@ -347,7 +376,7 @@ onMounted(loadSources)
             {{ HEALTH_LABELS[row.health_status] ?? row.health_status }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="280">
+        <el-table-column label="操作" width="360">
           <template #default="{ row }">
             <el-button size="small" @click="toggleEnabled(row)">
               {{ row.enabled ? '停用' : '启用' }}
@@ -356,12 +385,44 @@ onMounted(loadSources)
             <el-button v-if="row.has_secret" size="small" @click="clearSecret(row)">
               清凭据
             </el-button>
+            <el-button
+              v-if="row.source_type !== 'applecms'"
+              size="small"
+              type="primary"
+              :loading="aggregatingId === row.id"
+              @click="runAggregate(row)"
+            >
+              聚合
+            </el-button>
             <el-button size="small" type="danger" @click="removeSource(row)">
               删除
             </el-button>
           </template>
         </el-table-column>
       </el-table>
+      <SectionCard v-if="aggregateResult" title="最近一次聚合结果">
+        <p>
+          源「{{ aggregateResult.sourceName }}」：发现 {{ aggregateResult.result.libraries_discovered }} 个库，
+          拉取 {{ aggregateResult.result.fetched }} 条，聚合 {{ aggregateResult.result.aggregates }} 条，
+          配对 {{ aggregateResult.result.paired }} 条，写入 {{ aggregateResult.result.written }} 条，
+          写路径开关：{{ aggregateResult.result.mapping_enabled ? '开' : '关' }}。
+          写进的映射去「映射」标签查看。
+        </p>
+        <ul>
+          <li v-for="lib in aggregateResult.result.libraries" :key="lib.library_id">
+            {{ lib.library_name || lib.library_id }}：拉取 {{ lib.fetched }} 条，配对 {{ lib.paired }} 条，
+            写入 {{ lib.written }} 条，状态 {{ lib.status }}
+            <span v-if="lib.status === 'failed'">（{{ lib.error_code }}：{{ lib.error }}）</span>
+          </li>
+        </ul>
+        <p v-if="aggregateResult.result.failed_libraries.length">
+          失败库 {{ aggregateResult.result.failed_libraries.length }} 个：
+          <span v-for="f in aggregateResult.result.failed_libraries" :key="f.library_id">
+            {{ f.library_name || f.library_id }}（{{ f.code }}：{{ f.message }}）；
+          </span>
+          已写映射不受影响，重跑即可重试失败库。
+        </p>
+      </SectionCard>
       <EmptyState v-if="!loading && loadError" title="列表加载失败" description="点刷新重试" />
       <EmptyState
         v-if="!loading && !loadError && sources.length === 0"

@@ -1765,6 +1765,48 @@ export const disableUpstreamSource = (id: number) =>
 export const deleteUpstreamSource = (id: number) =>
   del<{ success: boolean }>(`${E}/upstream-sources/${id}`)
 
+/** 上游目录聚合手动触发（FMBY 学习 #25 25-2 接线）。
+ *  #1352 只把触发口做到后端（POST /upstream-sources/{id}/aggregate），
+ *  管理端一直没有按钮，等于调用方仍不存在，映射永远是 0 条——本函数就是补
+ *  那个按钮的调用层。只做手动触发，不做自动调度、不做自动播放兜底：
+ *  后端按库分批拉目录、配对本地条目、写路径开关开时才写映射；单库失败
+ *  只进 failed_libraries，不毁已写映射；返回照实带逐库进度。 */
+export interface UpstreamAggregateLibrarySummary {
+  library_id: string
+  library_name: string
+  fetched: number
+  aggregates: number
+  paired: number
+  written: number
+  status: string
+  error_code?: string
+  error?: string
+}
+
+export interface UpstreamAggregateFailedLibrary {
+  library_id: string
+  library_name: string
+  code: string
+  message: string
+}
+
+export interface UpstreamAggregateResult {
+  source_id: number
+  fetched: number
+  aggregates: number
+  paired: number
+  written: number
+  mapping_enabled: boolean
+  unpaired_reasons: Record<string, number>
+  libraries: UpstreamAggregateLibrarySummary[]
+  libraries_discovered: number
+  failed_libraries: UpstreamAggregateFailedLibrary[]
+}
+
+export const aggregateUpstreamSource = (id: number) =>
+  post<{ source: UpstreamSource; result: UpstreamAggregateResult }>(
+    `${E}/upstream-sources/${id}/aggregate`, {})
+
 
 /** 阶段统计（v2.42.9）：次数 + 累计耗时 + 平均耗时。avg_ms 只对「计过时」的那几次求平均 */
 export interface EnrichStageStat {
