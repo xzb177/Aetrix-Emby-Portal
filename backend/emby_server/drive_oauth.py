@@ -403,6 +403,13 @@ def _pkce_pair() -> tuple[str, str]:
 #: 建目录 403 时原样记入；重置判定只认这个前缀，不认别的失败）。
 MKDIR_FAILED_PREFIX = "建转存目录失败"
 
+#: 转存工人列目录失败且为 401 的 error_detail 前缀（transfer_variant.py
+#: ensure_folder 列目录非 200 时原样记入“列转存目录失败：<码>”；
+#: 401 = 令牌已死，重绑换了新凭据才可重跑，故与建目录失败同列
+#: 重置范围。只认 401：429/5xx 属可重试瞬态、工人自会重跑，
+#: 不由重绑顺手复活；403 不在此列，属权限问题另议）。
+LIST_FAILED_401_PREFIX = "列转存目录失败：401"
+
 
 def granted_scope_set(granted_scopes: str | None) -> set:
     """已授范围串（空格分隔）→ 集合；None/空串 → 空集。"""
@@ -418,19 +425,23 @@ def binding_needs_rebind(granted_scopes: str | None) -> bool:
 
 def reset_mkdir_failed_jobs(db: Session, user_id: int) -> int:
     """重绑成功后，把该用户因建转存目录失败（只读令牌写盘 403）
-    而 failed 的转存任务打回 pending、attempts 清零、错误与重试
-    时间清掉——工人下一轮即按现取的新绑定凭据重跑（工人只捡
-    pending，failed 不再处理；门禁对 failed 返 409 终态；24h 节流
-    又挡新任务——三重死锁，不重置这单永远播不了）。
-    只动 error_detail 以“建转存目录失败”开头的 failed 行：其它
-    失败原因（源失效、凭据错等）不在本次重绑的修复范围，不许
-    顺手复活。返回重置行数（调用方提交）。"""
+    或列转存目录失败 401（令牌已死）而 failed 的转存任务打回
+    pending、attempts 清零、错误与重试时间清掉——工人下一轮即
+    按现取的新绑定凭据重跑（工人只捡 pending，failed 不再处理；
+    门禁对 failed 返 409 终态；24h 节流又挡新任务——三重死锁，
+    不重置这单永远播不了）。
+    只动 error_detail 以“建转存目录失败”或“列转存目录失败：401”
+    开头的 failed 行：其它失败原因（源失效、列目录 429/5xx 等
+    瞬态、其它凭据错）不在本次重绑的修复范围，不许顺手复活。
+    返回重置行数（调用方提交）。"""
+    from sqlalchemy import or_ as _or
     rows = (
         db.query(em.TransferJob)
         .filter(em.TransferJob.owner_scope == "user",
                 em.TransferJob.owner_ref == str(user_id),
                 em.TransferJob.status == "failed",
-                em.TransferJob.error_detail.like(MKDIR_FAILED_PREFIX + "%"))
+                _or(em.TransferJob.error_detail.like(MKDIR_FAILED_PREFIX + "%"),
+                    em.TransferJob.error_detail.like(LIST_FAILED_401_PREFIX + "%")))
         .all()
     )
     for job in rows:
@@ -762,16 +773,23 @@ def _apply_refresh_failure(db: Session, binding: em.UserStorageBinding,
 
 
 def get_binding_drive_access_token(db: Session, binding,
-                                 http_post=None) -> str:
+                                 http_post=None,
+                                 force_refresh: bool = False) -> str:
     """指定绑定行的 Drive 令牌口（BYOS P3 按绑定扫描用）。
 
     与 get_user_drive_access_token 同一套刷新/落态逻辑，只是不做
     “最早 active 绑定”查找：调用方已按绑定分账选好行，本口绝不
     替调用方换一行——换行就是跨绑定复用凭据。
+    force_refresh=True 时跳过“未过期直接返回”捷径，真走
+    refresh_token 换新令牌并写回：此前本口无此参数，401 重试方
+    （transfer_variant.UserDriveApiClient._headers）纵使传了
+    force_refresh 也被丢掉，拿回的仍是同一枚未过期旧令牌，
+    重试必再 401——本参数就是修这个真 bug。
     """
     cred, token = _drive_credential_of(db, binding)
     expires_at = int(token.get("expires_at") or 0)
-    if expires_at > int(time.time()) + OAUTH_TOKEN_REFRESH_MARGIN_SEC:
+    if (not force_refresh
+            and expires_at > int(time.time()) + OAUTH_TOKEN_REFRESH_MARGIN_SEC):
         return token["access_token"]
     refresh_token = (token.get("refresh_token") or "").strip()
     if not refresh_token:
@@ -796,7 +814,8 @@ def get_binding_drive_access_token(db: Session, binding,
 
 
 def get_user_drive_access_token(db: Session, user_id: int,
-                                http_post=None) -> str:
+                                http_post=None,
+                                force_refresh: bool = False) -> str:
     """该用户 Drive 令牌唯一口（播放 / 扫描 / 工人共用，不许各写一套）。
 
     - 无 active 绑定 → not_found（调用方按“无可用绑定”处理，绝不
@@ -805,11 +824,13 @@ def get_user_drive_access_token(db: Session, user_id: int,
     - 快过期 → 刷新后返回新 token 并写回；刷新失败属 expired /
       auth_error → 落行并抛对应 kind；throttled / transient → 不改
       行，抛 transient（调用方重试，凭据本身没死）。
+    - force_refresh=True → 直通绑定级口，真换令牌（401 重试用）。
     """
     binding = ub.get_active_binding(db, user_id, ub.PROVIDER_DRIVE)
     if binding is None:
         raise DriveOAuthError("not_found", "当前用户没有可用的 Drive 绑定。")
-    return get_binding_drive_access_token(db, binding, http_post=http_post)
+    return get_binding_drive_access_token(db, binding, http_post=http_post,
+                                          force_refresh=force_refresh)
 
 
 def refresh_drive_binding(db: Session, user_id: int, binding_id: int,
