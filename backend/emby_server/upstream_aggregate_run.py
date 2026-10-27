@@ -115,6 +115,21 @@ def _unavailable_error() -> UpstreamAggregateRunError:
         502, "upstream_unavailable", "上游服务当前不可用，请稍后再试")
 
 
+def _frontend_blocked_error() -> UpstreamAggregateRunError:
+    return UpstreamAggregateRunError(
+        502, "upstream_frontend_blocked",
+        "上游前门（nginx）拦截，未到 Emby：请对方放行本方出口 IP "
+        "15.204.95.101，重录凭据无效")
+
+
+def _forbidden_error(body) -> UpstreamAggregateRunError:
+    """403 分流：Emby JSON 报错体 → 凭据失效；无 JSON 体（nginx HTML
+    被传输层吞成 None）→ 前门拦截 502。重录凭据修不好后者，绝不误判。"""
+    if isinstance(body, dict):
+        return _credential_error()
+    return _frontend_blocked_error()
+
+
 def _quota_error() -> UpstreamAggregateRunError:
     return UpstreamAggregateRunError(
         429, "upstream_quota_exhausted", "上游额度已耗尽，请稍后再试或换个源")
@@ -198,7 +213,8 @@ def _api_key_for_source(source, *, http_post: Optional[Callable] = None):
     - 未配凭据 → None（匿名访问）；
     - api_key 形态 → 密封值本身就是 key；
     - password 形态 → 向上游认证口换 AccessToken，换不到按凭据
-      失效 / 上游不可用映射，绝不降级成匿名。
+      失效 / 上游不可用映射，绝不降级成匿名；403 按体分流
+      （JSON 体 → 凭据失效，无 JSON 体 → 前门拦截 502）。
     密封解不开（SealedSecretError）→ 凭据失效，调用方须请管理员重录。
     """
     try:
@@ -224,8 +240,10 @@ def _api_key_for_source(source, *, http_post: Optional[Callable] = None):
             headers, HTTP_TIMEOUT_SEC)
         if status == 200 and isinstance(body, dict) and body.get("AccessToken"):
             return str(body["AccessToken"])
-        if status in (401, 403):
+        if status == 401:
             raise _credential_error()
+        if status == 403:
+            raise _forbidden_error(body)
         raise _unavailable_error()
     raise _unavailable_error()
 
@@ -238,8 +256,9 @@ def _resolve_api_key(source, *, http_post=None):
 def _page_fetcher(source, api_key, get, *, parent_id=None):
     """造一个 Emby Items 取页回调：parent_id 给了就按库拉，不给走整源。
 
-    错误映射与旧整源路径同款：401/403→凭据失效、429→额度、
-    其余→上游不可用，绝不把半页数据当成完整目录返回。
+    错误映射与旧整源路径同款：401→凭据失效、403 分流（JSON 体→
+    凭据失效、无 JSON 体→前门拦截 502）、429→额度、其余→上游
+    不可用，绝不把半页数据当成完整目录返回。
     """
 
     base = (source.base_url or "").rstrip("/")
@@ -261,8 +280,10 @@ def _page_fetcher(source, api_key, get, *, parent_id=None):
         status, body = get(url, headers, HTTP_TIMEOUT_SEC)
         if status == 200 and isinstance(body, dict):
             return body
-        if status in (401, 403):
+        if status == 401:
             raise _credential_error()
+        if status == 403:
+            raise _forbidden_error(body)
         if status == 429:
             raise _quota_error()
         raise _unavailable_error()
@@ -278,6 +299,8 @@ def fetch_upstream_libraries(source, *, http_get=None,
     该端点是 Emby 官方库清单口（本仓库 compat_routes 亦实现同口），
     api_key 形态同样走 api_key 参数。空清单 = 上游无可见库，照实
     返回空列表，不回落整源拉取（回落会重回整源上限问题）。
+    403 按体分流：Emby JSON 体 → 凭据失效，无 JSON 体（nginx HTML
+    被传输层吞成 None）→ 前门拦截 502。
     """
     get = _default_http_get if http_get is None else http_get
     if api_key is None:
@@ -291,8 +314,10 @@ def fetch_upstream_libraries(source, *, http_get=None,
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
     status, body = get(url, headers, HTTP_TIMEOUT_SEC)
-    if status in (401, 403):
+    if status == 401:
         raise _credential_error()
+    if status == 403:
+        raise _forbidden_error(body)
     if status == 429:
         raise _quota_error()
     if status != 200 or body is None:
