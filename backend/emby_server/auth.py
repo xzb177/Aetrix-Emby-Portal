@@ -2,7 +2,6 @@
 import hashlib
 import logging
 import secrets
-import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -99,18 +98,26 @@ def verify_and_migrate_emby_password(db: Session, user: models.WebUser, password
 
 def ensure_emby_credentials(db: Session, user: models.WebUser, password: Optional[str] = None,
                             fill_only: bool = False) -> Optional[str]:
-    """确保用户拥有自建 Emby 登录凭据；只在缺失/不匹配/旧格式时更新。
+    """按需写入 Emby 播放密码。从不自动生成 ``emby_username``。
 
-    fill_only=True（门户登录专用）：emby_password 已有值时绝不覆盖——
-    用户在接线员页显式设置的播放密码曾被每次网站登录用门户密码顶掉，
-    播放器攥着旧凭据拿 401（能进界面、资源数量不显示，2026-10-23 修）。
-    显式设置播放密码走 set_emby_password（不带 fill_only），不受影响。
+    接线用户名只能由用户在 ``POST /api/user/emby/password`` 首次提交时写入，
+    写好后不可改。本函数不创建、不修改用户名。
+
+    fill_only=True（门户登录专用）：
+    - 没有 ``emby_username``：什么都不做。新用户去接线员页自己设账号，
+      登录不再把门户密码当成播放密码。
+    - 已有用户名但还没有播放密码：用本次门户密码补一次（老数据兼容）。
+    - 已有播放密码：绝不覆盖。接线员页自设的密码曾被每次网站登录顶掉，
+      播放器攥着旧凭据拿 401（2026-10-23 修）。
+
+    fill_only=False（显式改密 / 管理员重置 / 登录后透明升级哈希）：
+    传入 ``password`` 时写入哈希（相同且已是新格式则跳过）。
+    没有用户名时仍允许写入密码哈希，供管理员重置、建号脚本和部署自检使用；
+    用户端接口在调用前自行拒绝「还没有用户名就只改密码」。
     """
     changed = False
-    if not user.emby_username:
-        user.emby_username = f"emby_{user.id}_{uuid.uuid4().hex[:6]}"
-        changed = True
-    if password is not None and not (fill_only and user.emby_password):
+    # 没有接线用户名时，登录路径不能顺手补密码；显式调用不受这条限制。
+    if password is not None and not (fill_only and (not user.emby_username or user.emby_password)):
         # 门户登录会频繁调用本函数：相同的新格式哈希不应每次都重新 bcrypt，
         # 否则登录一次就产生一次昂贵哈希并迫使所有旧客户端重新走同步。
         same = bool(user.emby_password) and verify_emby_password(password, user.emby_password)

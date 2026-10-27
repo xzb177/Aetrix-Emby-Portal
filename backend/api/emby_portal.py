@@ -165,17 +165,17 @@ def _user_out(user: models.WebUser, db: Session | None = None) -> UserOut:
 def _issue_auth_response(
     user: models.WebUser, db: Session, plain_password: str | None = None
 ) -> AuthResponse:
-    """签发 access + refresh token，并确保自建 Emby 凭据存在
+    """签发 access + refresh token。
 
-    plain_password: 注册/登录成功后把门户密码同步为 Emby 播放密码（bcrypt 存储），
-    保证“门户账号即 Emby 账号”——用户无需另行设置即可在 Infuse 等客户端登录。
+    不再自动生成接线用户名，也不为还没有接线用户名的用户把门户密码写成播放密码。
+    用户去接线员页自行设置（``POST /api/user/emby/password``）。
+
+    兼容：已经有 ``emby_username``、但还没有 ``emby_password`` 的老用户，
+    登录时用本次已验证的门户密码补一次（fill_only）。已有播放密码的不被覆盖。
+    没带明文密码的路径（刷新后的换票、Telegram 免密登录）什么都不补。
     """
     if plain_password:
-        # fill_only：登录只给「还没有播放密码」的用户补齐（老数据迁移口径），
-        # 已有播放密码（含用户在接线员页自设的）不被门户登录覆盖
         ensure_emby_credentials(db, user, password=plain_password, fill_only=True)
-    else:
-        ensure_emby_credentials(db, user)
     access = create_access_token(user.id, {"username": user.username},
                                   token_version=user.token_version or 0)
     refresh = create_refresh_token(user.id, token_version=user.token_version or 0)
@@ -307,7 +307,10 @@ def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
 
 @auth_router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
-    """注册新用户（用户名唯一，密码 bcrypt 存储，自动生成自建 Emby 凭据）"""
+    """注册新用户（用户名唯一，密码 bcrypt 存储）。
+
+    不自动生成接线用户名或播放密码；用户在接线员页自行设置。
+    """
     rl_enabled, rl_max, rl_window = _get_register_ratelimit(db)
     rl_key = f"register:{client_ip(request)}"
     if rl_enabled:
@@ -433,7 +436,8 @@ def login(request: Request, req: LoginRequest, db: Session = Depends(get_db)):
             status_code=403,
             detail="检测到该账号在短时间内于多个城市登录，已被暂停使用，请联系管理员",
         )
-    # 旧数据迁移：emby_password 为空的老用户，登录成功后用已验证的门户密码补齐 Emby 凭据
+    # 已有接线用户名但还没有播放密码的老用户：登录成功后用已验证的门户密码补一次。
+    # 没有接线用户名的新用户什么都不写，去接线员页自己设。
     return _issue_auth_response(user, db, plain_password=req.password)
 
 

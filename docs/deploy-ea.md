@@ -247,10 +247,12 @@ server {
 推荐 EM 和 EA 都写 `EMBY_PUBLIC_URL=https://emby.example.com`（只填根），并在「服管理」填同一个根。启动时不是 `https://` 开头只打 WARNING，`http://` 仍会用。域名守卫的名单：流媒体加速开关打开并且填了域名时用那份域名，否则看 `ENFORCE_DOMAIN`；名单非空而主机不在里面时，进来的请求按 Host 403。改环境变量要重启对应进程。PlaybackInfo 里三条播放 URL 按当次基址重拼；字幕 `DeliveryUrl` 在缓存里最多再留 `PLAYBACKINFO_CACHE_TTL` 秒（默认 300）。完整口径、Compose 里网页容器会把协议头盖成 http 的情况，见 [Docker 部署 · 客户端对外地址](./deploy-docker.md#客户端对外地址)。
 
 1. 客户端「服务器地址」填账号卡给出的根（推荐与 `EMBY_PUBLIC_URL` 同为 `https://emby.example.com`），**不要带 `/emby` 后缀**——客户端自己会拼协议路径。
-2. 用户名密码用**门户账号**：
-   - 用户首次打开门户账号卡时会自动生成 `emby_username`；
-   - 也可主动设置：`POST /api/user/emby/password`；
-   - 门户改密会**自动同步**为 Emby 播放密码，两边永远一致。
+2. 用户名密码用**接线账号**（不再自动生成）：
+   - 首次在接线员页设置：`POST /api/user/emby/password`，同时提交 `username` 与 `password`；
+   - 用户名设好后不可修改；之后同一接口只改 `password`（`username` 可省略，或原样再传一次）；
+   - 接口不返回明文密码。打开账号卡、注册、登录都不会再发明用户名；
+   - 还没有接线用户名时，登录不会把门户密码写成播放密码。已有用户名但还没有播放密码的老用户，登录会用本次门户密码补一次；
+   - 门户改密仍会覆盖已有的 Emby 播放密码。
 3. 若中途改过 `EMBY_SERVER_ID`，客户端会把同一台服务器当成新服务器，需要重新添加。
 
 协议面已覆盖 40+ 端点（节选）：`/Users/AuthenticateByName`、`/Users/{uid}/Items`、`/Items/{id}/PlaybackInfo`（GET/POST）、`/Videos/{id}/stream`（Range 直连）、`/videos/{id}/master.m3u8`（HLS 转码，切片自带 `api_key`）、字幕投递 `/Videos/{id}/{mid}/Subtitles/{i}/Stream.{fmt}`、`/Search/Hints`、`/Items/{id}/Images/{Type}/{Index}`、`/Sessions/Playing/*` 进度上报、`/System/Info`、`/Branding/Configuration` 等。
@@ -291,7 +293,7 @@ EA 不提供交互式 API 文档（`/docs` 已关闭），也不托管任何页�
 | 启动直接退出，日志说 `SECRET_KEY 未设置` | 与 EM 用同一份 `.env`（值必须一致） |
 | 启动退出，日志列出 `缺少 EM 的表` | 指向的库不对，或 EM 还没初始化过；先跑 EM（`python serve.py`）并至少建一个媒体库 |
 | 客户端提示"服务器无法连接" | 证书不受信任（换受信证书）、端口未放行、或地址带了 `/emby` 后缀 |
-| 认证 401 | 用了旧账号/旧密码；确认门户已生成 `emby_username`，且两边 `SECRET_KEY` 一致 |
+| 认证 401 | 用了旧账号/旧密码；确认用户已在接线员页设置接线用户名和密码，且两边 `SECRET_KEY` 一致 |
 | 播放 403 | 付费墙生效（非会员）或站点关闭了下载；管理员不受限 |
 | 转码 503 | EA 这台机器没装 ffmpeg，或 `EMBY_FFMPEG_PATH` 指错；直连播放不受影响 |
 | 首片久等 / 中途断流 | Nginx 默认 60s 读超时所致：`proxy_read_timeout 300s` + `proxy_buffering off` |

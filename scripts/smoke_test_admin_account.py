@@ -1,7 +1,7 @@
 """管理后台账号工具（`scripts/create_admin.py`）冒烟测试
 
 覆盖：新建（指定密码 / 自动生成）、幂等升级、不改密码语义、重置密码、
-Emby 客户端凭据补齐、真实登录 `/api/admin/auth/login` 与 `/api/admin/auth/me`、
+不自动生成 Emby 用户名（给了密码则写入播放密码哈希）、真实登录 `/api/admin/auth/login` 与 `/api/admin/auth/me`、
 非管理员被拒、非法用户名与过短密码被拒。
 
 跑法：``python3 scripts/smoke_test_admin_account.py``（用临时库，不动开发库）
@@ -56,9 +56,9 @@ PASSWORD = "BossPass!2345"
 user, created, applied = create_admin.upsert_admin(db, "boss", password=PASSWORD)
 check("新建管理员账号", created and applied == PASSWORD, f"created={created}")
 check("新账号 is_staff / is_active", bool(user.is_staff) and bool(user.is_active))
-check("自动补齐 Emby 客户端凭据",
-      bool(user.emby_username) and (user.emby_password or "").startswith(("$2", "$bcrypt-sha256$")),
-      f"emby_username={user.emby_username}")
+check("不自动生成 Emby 用户名；给了密码则写入播放密码哈希",
+      not user.emby_username and (user.emby_password or "").startswith(("$2", "$bcrypt-sha256$")),
+      f"emby_username={user.emby_username!r}")
 
 # ==================== 2. 真实登录管理后台 ====================
 r = admin_login("boss", PASSWORD)
