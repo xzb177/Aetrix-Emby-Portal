@@ -50,6 +50,7 @@ from backend.api.media_library import router as media_library_router
 from backend.api.nl_search import router as nl_search_router
 from backend.api.admin_artwork import router as admin_artwork_router
 from backend.api.library_order import router as library_order_router
+from backend.api.smart_subtitles import router as smart_subtitles_router
 from backend.api.home_summary import router as home_summary_router
 from backend.api.homepage_sections import router as homepage_sections_router
 from backend.api.panel import router as panel_router, admin_router as panel_admin_router
@@ -789,6 +790,8 @@ app.include_router(notification_router)
 # 用户端 API 路由
 app.include_router(user_router)
 app.include_router(series_follow_router)
+# 智能字幕（第三批第一单，默认关；只挂用户端路由，不碰首页）
+app.include_router(smart_subtitles_router)
 # 首页聚合：9 项首屏数据一次取回（HomeView 骨架屏优化，见 backend/api/home_summary.py）
 app.include_router(home_summary_router)
 app.include_router(homepage_sections_router)
