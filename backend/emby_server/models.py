@@ -1637,6 +1637,84 @@ class Pan115Account(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class Pan115RawNode(Base):
+    """115 代际镜像原始节点（FMBY #21：pan115_raw_nodes 我方形态）。
+
+    一行 = 115 上一个文件或目录在某次同步里见到的样子。身份键
+    ``node_key``：目录用 ``dir:<cid>``，有 fid 的文件用 ``fid:<fid>``，
+    无 fid 的文件退化为 ``path:<parent_key>:<name>``（``has_fid=False``，
+    绝不拿父目录 cid 冒充文件身份，见 #13 PR-3 教训）。
+    ``(scope, node_key)`` 唯一：同一节点重复同步只更新、不插新行，
+    这就是本表的去重语义。``is_deleted`` 只标记、不物理删行，
+    节点复活（删后又出现）时同一行翻回未删除。
+    """
+
+    __tablename__ = "pan115_raw_nodes"
+    __table_args__ = (
+        UniqueConstraint("scope", "node_key", name="uq_pan115_node_scope_key"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope = Column(String(200), nullable=False, index=True)
+    node_key = Column(String(300), nullable=False, index=True)
+    parent_key = Column(String(300), default="")
+    name = Column(String(500), default="")
+    path = Column(String(2000), default="")
+    is_dir = Column(Boolean, default=False)
+    size = Column(BigInteger, default=0)
+    pickcode = Column(String(100), default="")
+    sha1 = Column(String(100), default="")
+    has_fid = Column(Boolean, default=True)
+    fingerprint = Column(String(100), default="")
+    last_seen_generation = Column(Integer, default=0)
+    is_deleted = Column(Boolean, default=False)
+    first_seen_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class Pan115SyncCheckpoint(Base):
+    """115 同步检查点（FMBY #21：pan115_sync_checkpoints 我方形态）。
+
+    一 scope 一行：``last_generation`` 是已落库的最新代际，下次运行
+    的代际 = 它 + 1；``last_counts`` 存最近一轮的 added/changed/
+    deleted/unchanged/truncated 计数 JSON；``last_error`` 存最近一轮
+    的失败原因（成功时清空），失败轮次不推进代际、可断点续跑。
+    """
+
+    __tablename__ = "pan115_sync_checkpoints"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope = Column(String(200), nullable=False, unique=True, index=True)
+    root_cid = Column(String(100), default="0")
+    last_generation = Column(Integer, default=0)
+    last_mode = Column(String(20), default="")
+    last_counts = Column(Text, default="{}")
+    last_error = Column(String(500), default="")
+    last_run_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class Pan115LifeEvent(Base):
+    """115 生命事件（FMBY #21：pan115_life_events 我方形态）。
+
+    同步轮次里指纹变化的节点才写事件：added / changed / deleted。
+    未变化节点不写事件——下游（扫描器、脏目录统计）只消费事件，
+    不用每轮重扫全量镜像。115 无原生推送，本表事件来自轮询差分，
+    不是 115 下发的推送事件，字段里不编造推送语义。
+    """
+
+    __tablename__ = "pan115_life_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope = Column(String(200), nullable=False, index=True)
+    generation = Column(Integer, nullable=False, index=True)
+    event_type = Column(String(20), nullable=False)
+    node_key = Column(String(300), nullable=False)
+    path = Column(String(2000), default="")
+    fingerprint = Column(String(100), default="")
+    created_at = Column(DateTime, default=datetime.now)
+
+
 #: 139 账号池策略枚举（FMBY 池字段 strategy 的取值未实测到枚举；
 #: 本模块只定两个我方实现策略，见 mount_yun139.Yun139AccountPool）。
 #: 枚举与约束同源（FMBY reason_code 漂移教训），不许在别处手写字符串。
