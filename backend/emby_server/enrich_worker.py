@@ -2568,7 +2568,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
 
     # 联动快照（v2.58.0）：父级剧本轮是否新拿到 tmdb_id。放在所有落库之前，
     # 写库末尾用它判定要不要翻转名下空壳 inherit 单集。
-    had_tmdb_id = bool(getattr(item, "tmdb_id", None))
+    # strip 口径（完美审查第三轮）：裸 bool() 会把纯空白身份（如 "  "）
+    # 当成“此前已有”，压住本轮新获 id 的联动标记（与两段路径的
+    # _bound_value / extract_binding 归一口径一致）。
+    _had_tmdb = getattr(item, "tmdb_id", None)
+    had_tmdb_id = bool(_had_tmdb.strip()) if isinstance(
+        _had_tmdb, str) else bool(_had_tmdb)
 
     # 锁后认领：如果条目在抢单之后被管理员锁定，不再写入任何自动结果，
     # 直接 done 并释放租约（之前这里不检查，锁定形同虚设）。
@@ -2627,7 +2632,14 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     _ep_skip_overview = bool(
         _ep_fields is not None and not _ep_fields["overview"])
     if fetched.get("tmdb_id"):
-        item.tmdb_id = item.tmdb_id or fetched["tmdb_id"]
+        # 只填空不覆盖（完美审查第三轮）：裸 or 会把纯空白已有值
+        # （如 "  "，truthy）当成已有身份，挡住本轮真实 id；随后 done
+        # 终态的 _clear_blank_identity 再把空白清成 NULL——本轮真实 id
+        # 就此丢失。空白与缺失同按“空”处理。
+        _cur_tmdb = getattr(item, "tmdb_id", None)
+        if _cur_tmdb is None or (isinstance(_cur_tmdb, str)
+                                 and not _cur_tmdb.strip()):
+            item.tmdb_id = fetched["tmdb_id"]
         details = fetched.get("tmdb_details")
         if details:
             # 批2（刮削瘦身）：apply_details 门控收窄。apply_details 现在是
@@ -4338,6 +4350,23 @@ def _suppress_flood(db) -> int:
     简介永远没人补（欧美剧库 767 部假完成实锤）；这类行留 pending 由
     worker 按 tmdb_id 正常补刮详情即可。
     """
+    # 批量 done 同样走终态清理（完美审查第三轮）：此前这里只翻状态，
+    # 纯空白身份原样带进 done，#1383 的 4 处单条清理全旁路。
+    # 先轻量查出本批行的身份列、按 strip 口径（与 _clear_blank_identity
+    # 一致）批量清空白，再翻状态——顺序不能反（翻完 pending 过滤失效）。
+    _flood_rows = (
+        db.query(em.MediaItem.id, em.MediaItem.tmdb_id, em.MediaItem.imdb_id)
+        .filter(em.MediaItem.enrich_status == "pending")
+        .filter(em.MediaItem.file_fingerprint.is_(None))
+        .filter(em.MediaItem.last_scraped_at.isnot(None))
+        .all())
+    for _col, _idx in (("tmdb_id", 1), ("imdb_id", 2)):
+        _blank_ids = [r[0] for r in _flood_rows
+                      if isinstance(r[_idx], str) and not r[_idx].strip()]
+        for _i in range(0, len(_blank_ids), 500):
+            db.query(em.MediaItem).filter(
+                em.MediaItem.id.in_(_blank_ids[_i:_i + 500])).update(
+                    {_col: None}, synchronize_session=False)
     n = (db.query(em.MediaItem)
          .filter(em.MediaItem.enrich_status == "pending")
          .filter(em.MediaItem.file_fingerprint.is_(None))
@@ -4573,11 +4602,12 @@ def _enrich_apply_two_stage(db, item: Any, fetched: dict,
             if res is not None and not (
                     _bound_value(res.get("tmdb_id"))
                     or _bound_value(res.get("imdb_id"))):
-                # 空白绑定不是绑定：extract_binding（identify_two_stage
-                # 域外文件，本批不动它）用裸 or 取已有值，会把纯空白身份
-                # 当成已有绑定返回并 upsert 一段“identified”记录；按 strip
-                # 口径否决它（回滚掉该段记录），身份仍算未定，走下面的
-                # 现行终态接管，否则空白条目在识别段尾回 pending 空转。
+                # 空白绑定不是绑定：防御纵深（完美审查第三轮注记）。
+                # #1377 已把 extract_binding 换成 strip 归一，正常路径下
+                # 这里已不可达；保留否决是防 apply_identity 后续拼接
+                # （如 resolve_imdb_id 的返回值）再带进空白：按 strip 口径
+                # 否决它（回滚掉该段记录），身份仍算未定，走下面的现行
+                # 终态接管，否则空白条目在识别段尾回 pending 空转。
                 db.rollback()
                 res = None
             if res is not None:

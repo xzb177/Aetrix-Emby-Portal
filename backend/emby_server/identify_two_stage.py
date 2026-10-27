@@ -269,25 +269,35 @@ def resolve_imdb_id(item, fetched: dict, details_fetcher=None):
     编号不在 movie / tv 详情端点口径内，不许拿错端点猜。
     任何异常只记日志返回 (None, None)，绝不拖垮识别段。
     """
-    imdb_id = getattr(item, "imdb_id", None)
-    if imdb_id:
+    # strip 归一（完美审查第三轮）：本函数此前全是裸 or / 裸真值判定，
+    # 与 #1377 的 extract_binding 口径脱节——空白 imdb 会被当成“条目
+    # 已有”返回并落库；空白 item tmdb 会压住 fetched 的真实 tmdb，
+    # 导致详情取数器拿着 "  " 去调 TMDB。以下各步只认归一后的非空值。
+    imdb_id = _clean_identity(getattr(item, "imdb_id", None))
+    if imdb_id is not None:
         return str(imdb_id), "item"
     fetched = fetched or {}
     details = fetched.get("tmdb_details") or {}
-    if details.get("imdb_id"):
-        return str(details["imdb_id"]), "details"
+    _details_imdb = _clean_identity(details.get("imdb_id"))
+    if _details_imdb is not None:
+        return str(_details_imdb), "details"
     external_ids = details.get("external_ids") or {}
-    if isinstance(external_ids, dict) and external_ids.get("imdb_id"):
-        return str(external_ids["imdb_id"]), "details_external_ids"
+    _ext_imdb = _clean_identity(
+        external_ids.get("imdb_id")) if isinstance(
+            external_ids, dict) else None
+    if _ext_imdb is not None:
+        return str(_ext_imdb), "details_external_ids"
     nfo_data = fetched.get("nfo_data") or {}
-    if nfo_data.get("imdb_id"):
-        return str(nfo_data["imdb_id"]), "nfo"
-    if fetched.get("imdb_id"):
-        return str(fetched["imdb_id"]), "fetched"
-    tmdb_id = (
-        getattr(item, "tmdb_id", None)
-        or fetched.get("tmdb_id")
-        or nfo_data.get("tmdb_id")
+    _nfo_imdb = _clean_identity(nfo_data.get("imdb_id"))
+    if _nfo_imdb is not None:
+        return str(_nfo_imdb), "nfo"
+    _fetched_imdb = _clean_identity(fetched.get("imdb_id"))
+    if _fetched_imdb is not None:
+        return str(_fetched_imdb), "fetched"
+    tmdb_id = _first_identity(
+        getattr(item, "tmdb_id", None),
+        fetched.get("tmdb_id"),
+        nfo_data.get("tmdb_id"),
     )
     if not tmdb_id or details_fetcher is None:
         return None, None
@@ -329,8 +339,11 @@ def _donor_binding(rows) -> tuple:
     """
     pairs = set()
     for row in rows:
-        tmdb = getattr(row, "tmdb_id", None) or None
-        imdb = getattr(row, "imdb_id", None) or None
+        # strip 归一（完美审查第三轮）：裸 or 会把纯空白 donor 行
+        # （如 tmdb_id="  "）算成有效 donor——不但能继承出空白绑定，
+        # 还会在与真实 donor 并存时把“恰好一种”毒化成歧义、挡掉继承。
+        tmdb = _clean_identity(getattr(row, "tmdb_id", None))
+        imdb = _clean_identity(getattr(row, "imdb_id", None))
         if tmdb or imdb:
             pairs.add((str(tmdb) if tmdb else None,
                        str(imdb) if imdb else None))
@@ -365,7 +378,11 @@ def inherit_binding_from_remote_identity(db, item) -> Optional[dict]:
     try:
         if getattr(item, "item_type", None) not in _REMOTE_IDENTITY_INHERIT_TYPES:
             return None
-        if getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None):
+        # strip 口径（完美审查第三轮）：裸 or 会把纯空白身份当成“已有号”，
+        # 让空白条目永远走不到 donor 继承——extract_binding 刚因空白返回
+        # None，继承门又因同一空白把它挡在门外，空白条目无路可认。
+        if (_clean_identity(getattr(item, "tmdb_id", None)) is not None
+                or _clean_identity(getattr(item, "imdb_id", None)) is not None):
             return None
         item_id = getattr(item, "id", None)
         MI = em.MediaItem
@@ -745,12 +762,14 @@ def apply_fill(db, item, fetched: dict, people_fetcher=None) -> list:
     except Exception as exc:  # noqa: BLE001 — 人物补缺绝不拖垮补资料段
         logger.warning("补资料段人物补缺失败，跳过 id=%s: %s", item.id, exc)
     binding = None
-    if getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None):
+    # strip 归一（完美审查第三轮）：裸 or 会让空白 tmdb 压住真实 imdb，
+    # 补资料段记录 upsert 成 provider=tmdb / external_id="  " 的脏证据。
+    _fill_tmdb = _clean_identity(getattr(item, "tmdb_id", None))
+    _fill_imdb = _clean_identity(getattr(item, "imdb_id", None))
+    if _fill_tmdb or _fill_imdb:
         binding = {
-            "provider": "tmdb" if getattr(item, "tmdb_id", None) else "imdb",
-            "external_id": str(
-                getattr(item, "tmdb_id", None) or getattr(item, "imdb_id", None)
-            ),
+            "provider": "tmdb" if _fill_tmdb else "imdb",
+            "external_id": str(_fill_tmdb or _fill_imdb),
             "confidence": None,
             "evidence": {"filled_fields": filled},
         }
