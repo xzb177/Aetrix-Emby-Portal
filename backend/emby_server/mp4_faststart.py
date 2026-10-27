@@ -30,14 +30,16 @@ from collections import deque
 
 logger = logging.getLogger(__name__)
 
+# ``*_ENV = "NAME"`` 才是 env.example 防漂移扫描认的读取证据
+# （见 tests/test_perfection_r44_envdoc.py）。前缀写成 ENV_* 会被当成死键。
 #: 新入库处理开关。默认关。
-ENV_INGEST = "MP4_FASTSTART_ON_INGEST"
+ON_INGEST_ENV = "MP4_FASTSTART_ON_INGEST"
 #: 存量脚本开关。默认关。脚本还要再加 --apply 才会改文件。
-ENV_BACKFILL = "MP4_FASTSTART_BACKFILL"
+BACKFILL_ENV = "MP4_FASTSTART_BACKFILL"
 #: 大文件阈值（字节）。默认 2GiB。moov 已在尾时不受此阈值限制。
-ENV_MIN_BYTES = "MP4_FASTSTART_MIN_BYTES"
+MIN_BYTES_ENV = "MP4_FASTSTART_MIN_BYTES"
 #: ffmpeg 重写超时（秒）。大文件拷贝封装可能要很久。
-ENV_TIMEOUT = "MP4_FASTSTART_TIMEOUT_SEC"
+TIMEOUT_SEC_ENV = "MP4_FASTSTART_TIMEOUT_SEC"
 DEFAULT_MIN_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_TIMEOUT_SEC = 7200
 
@@ -63,24 +65,24 @@ def _flag(name: str, default: str = "0") -> bool:
 
 def ingest_enabled() -> bool:
     """新入库 faststart 是否打开。默认关。"""
-    return _flag(ENV_INGEST, "0")
+    return _flag(ON_INGEST_ENV, "0")
 
 
 def backfill_enabled() -> bool:
     """存量脚本是否允许进入「可以改文件」的分支。默认关。"""
-    return _flag(ENV_BACKFILL, "0")
+    return _flag(BACKFILL_ENV, "0")
 
 
 def min_bytes() -> int:
     from backend.emby_server.env_util import env_int
 
-    return env_int(ENV_MIN_BYTES, DEFAULT_MIN_BYTES, lo=1)
+    return env_int(MIN_BYTES_ENV, DEFAULT_MIN_BYTES, lo=1)
 
 
 def timeout_sec() -> int:
     from backend.emby_server.env_util import env_int
 
-    return env_int(ENV_TIMEOUT, DEFAULT_TIMEOUT_SEC, lo=30, hi=24 * 3600)
+    return env_int(TIMEOUT_SEC_ENV, DEFAULT_TIMEOUT_SEC, lo=30, hi=24 * 3600)
 
 
 def ffmpeg_bin() -> str:

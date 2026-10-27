@@ -15,9 +15,9 @@ from backend.emby_server import mp4_faststart as fs
 
 @pytest.fixture(autouse=True)
 def _flags_off(monkeypatch):
-    monkeypatch.delenv(fs.ENV_INGEST, raising=False)
-    monkeypatch.delenv(fs.ENV_BACKFILL, raising=False)
-    monkeypatch.delenv(fs.ENV_MIN_BYTES, raising=False)
+    monkeypatch.delenv(fs.ON_INGEST_ENV, raising=False)
+    monkeypatch.delenv(fs.BACKFILL_ENV, raising=False)
+    monkeypatch.delenv(fs.MIN_BYTES_ENV, raising=False)
 
 
 def _atom(typ: bytes, payload: bytes = b"") -> bytes:
@@ -36,7 +36,7 @@ def test_detect_moov_front_and_back(tmp_path):
 
 
 def test_eligible_threshold_and_containers(monkeypatch):
-    monkeypatch.setenv(fs.ENV_MIN_BYTES, "1000")
+    monkeypatch.setenv(fs.MIN_BYTES_ENV, "1000")
     assert fs.eligible(container="mkv", size=99999) == (False, "not_mp4")
     assert fs.eligible(container="mp4", size=99999, moov_position="front") == (False, "already_front")
     assert fs.eligible(container="mp4", size=10, moov_position=None) == (False, "below_threshold")
@@ -56,8 +56,8 @@ def test_ingest_off_does_not_queue(monkeypatch):
 
 
 def test_ingest_on_queues_only_eligible(monkeypatch):
-    monkeypatch.setenv(fs.ENV_INGEST, "1")
-    monkeypatch.setenv(fs.ENV_MIN_BYTES, "100")
+    monkeypatch.setenv(fs.ON_INGEST_ENV, "1")
+    monkeypatch.setenv(fs.MIN_BYTES_ENV, "100")
     queued = []
     monkeypatch.setattr(fs, "_enqueue", queued.append)
     assert fs.note_new_ingest(
@@ -282,7 +282,7 @@ def test_backfill_selection_and_default_does_not_rewrite(db, monkeypatch):
     session.add(_item(lib, guid="mkv", size=9_000, container="mkv",
                       file_path="/data/a.mkv"))
     session.commit()
-    monkeypatch.setenv(fs.ENV_MIN_BYTES, "1000")
+    monkeypatch.setenv(fs.MIN_BYTES_ENV, "1000")
     jobs = fs.select_backfill_jobs(session)
     reasons = {job["reason"] for job in jobs}
     paths = {job["file_path"] for job in jobs}
@@ -299,7 +299,7 @@ def test_backfill_selection_and_default_does_not_rewrite(db, monkeypatch):
     assert summary["reason"] == "backfill_disabled"
     assert called == []
 
-    monkeypatch.setenv(fs.ENV_BACKFILL, "1")
+    monkeypatch.setenv(fs.BACKFILL_ENV, "1")
     dry = fs.run_backfill(session, apply=False, process=lambda job: called.append(job))
     assert dry["ran"] is False
     assert dry["reason"] == "dry_run"
@@ -316,7 +316,7 @@ def test_backfill_selection_and_default_does_not_rewrite(db, monkeypatch):
 
 
 def test_script_disabled_exits_without_touching_db(monkeypatch):
-    monkeypatch.delenv(fs.ENV_BACKFILL, raising=False)
+    monkeypatch.delenv(fs.BACKFILL_ENV, raising=False)
     path = os.path.join(os.path.dirname(__file__), "..", "scripts", "mp4_faststart_backfill.py")
     spec = importlib.util.spec_from_file_location("mp4_faststart_backfill", path)
     mod = importlib.util.module_from_spec(spec)
