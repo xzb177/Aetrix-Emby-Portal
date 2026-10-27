@@ -198,10 +198,11 @@ class TestWiring:
         # playback_info 双轨发放签名参数
         assert "issue_play_sign" in content
         assert "&uid=" in content and "&exp=" in content and "&sign=" in content
-        # 四个播放路由走签名优先的鉴权依赖
-        # （video_stream / video_stream_ext / video_hls + #1248 上游兜底口，
-        # 上游口与 video_stream 同口径走 get_play_user，故计入）
-        assert content.count("Depends(get_play_user)") == 4
+        # 五个播放路由走签名优先的鉴权依赖
+        # （video_stream / video_stream_ext / video_stream_bare / video_hls
+        # + #1248 上游兜底口，上游口与 video_stream 同口径走 get_play_user，
+        # 故计入；video_stream_bare 为 #1358 新增的无后缀 /stream 重定向口）
+        assert content.count("Depends(get_play_user)") == 5
         # 防盗链检查挂在 video_stream（video_hls 转交 video_stream，
         # 同一检查点覆盖两个入口）
         assert content.count("play_sign.check_referer") == 1
