@@ -1607,6 +1607,25 @@ def get_admin_logs(
 
 # ==================== 统计数据 API ====================
 
+@admin_router.get("/quota-dashboard")
+def get_quota_dashboard(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """额度驾驶舱（只读）：SA 池数量 + 用户盘剩余 + 转存队列。
+
+    开关 QUOTA_DASHBOARD_ENABLED 默认关：关时返回 404（不是空
+    数据，避免看着像一切正常）；开时才聚合。只读：不写库、
+    不触发转存、不列用户盘文件。用户盘配额走 #1368 的
+    about_storage 路径，单行失败只降级该行。
+    """
+    from backend.emby_server import quota_dashboard
+
+    if not quota_dashboard.quota_dashboard_enabled():
+        raise HTTPException(status_code=404, detail="额度驾驶舱未启用")
+    return quota_dashboard.build_quota_dashboard(db)
+
+
 @admin_router.get("/stats/overview")
 def get_stats_overview(
     current_admin: models.WebUser = Depends(get_current_admin),

@@ -30,8 +30,8 @@ import {
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
   fetchLibraries, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
-  fetchServersSummary, fetchStatsTrend, fetchBackendServices, fetchDashboardAggregate,
-  type BackendServiceStatus, type DashboardAggregate, type DashboardDetailTables } from '@/api/admin'
+  fetchServersSummary, fetchStatsTrend, fetchBackendServices, fetchDashboardAggregate, fetchQuotaDashboard,
+  type BackendServiceStatus, type DashboardAggregate, type DashboardDetailTables, type QuotaDashboard } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
   EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary, TrendStats,
@@ -157,7 +157,21 @@ async function loadAll() {
   }
 }
 
-onMounted(loadAll)
+/** 额度驾驶舱（只读管理端区块）：开关关时后端 404，前端直接隐藏本区块 */
+const quota = ref<QuotaDashboard | null>(null)
+async function loadQuota() {
+  try {
+    quota.value = await fetchQuotaDashboard()
+  } catch {
+    quota.value = null
+  }
+}
+function fmtBytes(v: number | null): string {
+  if (v == null) return '未知'
+  return `${(v / 1024 ** 3).toFixed(1)} GB`
+}
+
+onMounted(() => { loadAll(); loadQuota() })
 
 // ==================== 服务器接入（信息展示）====================
 
@@ -538,6 +552,46 @@ function serviceRoleLabel(role: string): string {
               </span>
             </div>
           </RouterLink>
+        </div>
+      </SectionCard>
+
+      <!-- 额度驾驶舱（只读）：SA 池数量 + 用户盘剩余 + 转存队列；开关关时不渲染 -->
+      <SectionCard
+        v-if="quota"
+        title="额度驾驶舱"
+        :icon="HardDrive"
+        meta="只读 · 不触发转存"
+      >
+        <div class="realm-stats">
+          <span>SA 账号 <b>{{ quota.sa_pool.count ?? '未知' }}</b></span>
+          <span>转存待跑 <b>{{ quota.transfer_queue.counts.pending }}</b></span>
+          <span>转存进行中 <b>{{ quota.transfer_queue.counts.running }}</b></span>
+          <span>转存失败 <b>{{ quota.transfer_queue.counts.failed }}</b></span>
+        </div>
+        <div v-if="quota.user_disks.items.length" class="realm-rows">
+          <div v-for="d in quota.user_disks.items" :key="d.binding_id" class="realm-row">
+            <div class="realm-name">
+              <strong>{{ d.account_label }}</strong>
+              <span class="au-badge au-badge-muted">用户 {{ d.user_id }}</span>
+              <span v-if="d.status !== 'ok'" class="au-badge au-badge-amber">配额未知</span>
+            </div>
+            <div class="realm-stats">
+              <span>剩余 <b>{{ fmtBytes(d.free) }}</b></span>
+              <span>已用 <b>{{ fmtBytes(d.usage) }}</b></span>
+              <span>上限 <b>{{ fmtBytes(d.limit) }}</b></span>
+            </div>
+          </div>
+        </div>
+        <div v-if="quota.transfer_queue.recent_failed.length" class="realm-rows">
+          <div v-for="f in quota.transfer_queue.recent_failed" :key="f.job_id" class="realm-row">
+            <div class="realm-name">
+              <strong>转存失败 #{{ f.job_id }}</strong>
+              <span class="au-badge au-badge-muted">{{ f.error_kind || '未知原因' }}</span>
+            </div>
+            <div class="realm-stats">
+              <span>{{ f.error_detail }}</span>
+            </div>
+          </div>
         </div>
       </SectionCard>
 
