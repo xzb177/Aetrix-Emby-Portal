@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import urllib.error
 import urllib.request
 from typing import Callable, Optional
 
@@ -101,6 +102,24 @@ def probe_alt_media(url: str, token: str, *, range_header: str = "bytes=0-0",
         return {"ok": status == 206, "status": status,
                 "content_type": ct, "content_range": cr,
                 "ttfb_ms": int((time.monotonic() - t0) * 1000)}
+    except urllib.error.HTTPError as exc:
+        # urlopen 对 4xx/5xx 不返回响应、而是抛 HTTPError：状态码必须
+        # 从 exc.code 取回。旧代码把它吞进通用 except、报 status=0，
+        # 轮换循环见不到 403/401、首轮即 break——“403 换 SA 最多 5 次”
+        # 在真实路径上从未生效（注入探针的测试盖不住这一层）。
+        # 429/5xx 同样如实上报状态，轮换循环仍按“非 403/401 不换 SA”
+        # 直接放弃，只是不再把状态谎报成 0。
+        try:
+            exc.close()
+        except Exception:  # noqa: BLE001 — 关错误体失败不影响状态上报
+            pass
+        headers = getattr(exc, "headers", None)
+        get = getattr(headers, "get", None) if headers is not None else None
+        return {"ok": False, "status": int(exc.code),
+                "content_type": get("Content-Type") if get else None,
+                "content_range": get("Content-Range") if get else None,
+                "ttfb_ms": int((time.monotonic() - t0) * 1000),
+                "error": "HTTPError"}
     except Exception as exc:  # noqa: BLE001 — 预检失败即不可用，不向上抛
         return {"ok": False, "status": 0, "content_type": None,
                 "content_range": None, "ttfb_ms": int((time.monotonic() - t0) * 1000),
