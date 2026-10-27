@@ -107,6 +107,8 @@ copy、真实用户令牌、SA 暂存分享链均未实测，不许写成已实�
 import os
 import threading
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import httpx
@@ -128,7 +130,62 @@ WORKER_INTERVAL_SEC = 60
 PATROL_INTERVAL_SEC = 86400  # 巡检每天一次
 STALE_STRIKES = 2  # 巡检两次 stale 算死
 MAX_JOBS_PER_ROUND = 10
-STUCK_RUNNING_SEC = 3600  # running 卡住超 1h 回 pending
+STUCK_RUNNING_SEC = 3600  # running 卡住超 1h 回 pending（旧路径兜底）
+
+
+def _env_int(name, default):
+    try:
+        value = int(os.getenv(name, "") or "")
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# 可伸缩工人（2026-10-27，一劳永逸版，替代“把 60 秒改 5 秒轮询”）：
+# 旧结构的问题不是轮询慢，而是单线程 + 全局按 id 排队 + running 卡
+# 1 小时才打回 + 一人爆单挡所有人。把轮询改短只会让空转查库与
+# Drive 调用翻倍，用户一多先崩的是 DB 与配额。所以新结构是：
+# 事件唤醒（建任务即通知，零任务零负载）+ 认领式多工人（原子
+# UPDATE 认领，租约续租，死了自动回队）+ 快慢双通道 + 按用户
+# 公平限流 + 队列可观测；60 秒兜底扫保留，绝不改成 5 秒高频轮询。
+TRANSFER_WORKER_CONCURRENCY = _env_int("TRANSFER_WORKER_CONCURRENCY", 4)
+TRANSFER_WORKER_PER_USER_MAX = _env_int("TRANSFER_WORKER_PER_USER_MAX", 2)
+TRANSFER_WORKER_LEASE_SEC = _env_int("TRANSFER_WORKER_LEASE_SEC", 300)
+TRANSFER_WORKER_SWEEP_SEC = _env_int("TRANSFER_WORKER_SWEEP_SEC", 60)
+TRANSFER_WORKER_AUTH_PAUSE_SEC = _env_int(
+    "TRANSFER_WORKER_AUTH_PAUSE_SEC", 900)
+TRANSFER_WORKER_ALERT_QUEUE_DEPTH = _env_int(
+    "TRANSFER_WORKER_ALERT_QUEUE_DEPTH", 200)
+TRANSFER_WORKER_ALERT_WAIT_SEC = _env_int(
+    "TRANSFER_WORKER_ALERT_WAIT_SEC", 300)
+TRANSFER_WORKER_WAKE_CHANNEL = (
+    os.getenv("TRANSFER_WORKER_WAKE_CHANNEL", "transfer:wake")
+    or "transfer:wake")
+
+
+def worker_concurrency():
+    """并行执行器数（模块属性可 patch，测试用 monkeypatch 改属性）。"""
+    return max(1, min(16, int(TRANSFER_WORKER_CONCURRENCY or 4)))
+
+
+def worker_per_user_max():
+    """每用户同时在途上限（running + 本轮已认领），默认 2。"""
+    return max(1, int(TRANSFER_WORKER_PER_USER_MAX or 2))
+
+
+def worker_lease_sec():
+    """认领租约时长（秒），默认 300；执行中由心跳续租。"""
+    return max(60, int(TRANSFER_WORKER_LEASE_SEC or 300))
+
+
+def worker_sweep_sec():
+    """兜底扫间隔（秒），默认 60；事件唤醒失败时仍能跑，不许改 5 秒。"""
+    return max(30, int(TRANSFER_WORKER_SWEEP_SEC or 60))
+
+
+def worker_auth_pause_sec():
+    """用户凭据死后暂停该用户队列的时长（秒），默认 900。"""
+    return max(60, int(TRANSFER_WORKER_AUTH_PAUSE_SEC or 900))
 
 
 def _env_on(name: str, default: str = "0") -> bool:
@@ -414,6 +471,7 @@ def create_user_job(db, item, user_id, provider, trigger="playback"):
                          status="pending")
     db.add(job)
     db.commit()
+    notify_transfer_wakeup(job.id)
     return job
 
 
@@ -499,6 +557,7 @@ def create_cross_provider_job(db, item, user_id, source_provider,
                          status="pending")
     db.add(job)
     db.commit()
+    notify_transfer_wakeup(job.id)
     return job
 
 
@@ -791,6 +850,7 @@ def note_quota_signal(db, item, user, playing_variant, drive_id):
                              owner_scope="source", status="pending")
         db.add(job)
         db.commit()
+        notify_transfer_wakeup(job.id)
         logger.warning("转存变体应急自动入队：item=%s job=%s", item_id, job.id)
         return {"action": "queued", "job_id": job.id}
     except Exception:
@@ -829,6 +889,7 @@ def create_manual_job(db, item, drive_id, force=False):
                          owner_scope="source", status="pending")
     db.add(job)
     db.commit()
+    notify_transfer_wakeup(job.id)
     return job
 
 
@@ -2237,22 +2298,13 @@ def run_transfer_job_once(db, job, drive_api):
 
 
 def process_due_jobs_once(db, drive_api_factory, now=None):
-    """一轮到期任务处理：先把 running 卡住超 1h 的打回 pending（不改
-    attempts），再按 id 顺序、每轮最多 10 单逐个跑（单线程即限并发 1）。"""
+    """旧单线程一轮（兼容路径，Daemon 已改走 process_claimed_round）：
+    先回收租约过期 / running 卡住超 1h 的行（不改 attempts），再按
+    id 顺序、每轮最多 10 单逐个跑（单线程即限并发 1）。"""
     now = now or datetime.now()
     stats = {"processed": 0, "done": 0, "failed": 0, "retried": 0,
              "stuck_reset": 0}
-    stuck = (db.query(em.TransferJob)
-             .filter(em.TransferJob.status == "running",
-                     em.TransferJob.updated_at
-                     < now - timedelta(seconds=STUCK_RUNNING_SEC))
-             .all())
-    for job in stuck:
-        job.status = "pending"
-        job.next_retry_at = None
-        stats["stuck_reset"] += 1
-    if stuck:
-        db.commit()
+    stats["stuck_reset"] = reclaim_expired_leases(db, now=now)
     due = (db.query(em.TransferJob)
            .filter(em.TransferJob.status == "pending",
                    (em.TransferJob.next_retry_at.is_(None))
@@ -2279,6 +2331,441 @@ def process_due_jobs_once(db, drive_api_factory, now=None):
             stats["failed"] += 1
         else:
             stats["retried"] += 1
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# 可伸缩工人：事件唤醒 / 认领 / 快慢通道 / 按用户限流 / 租约 / 可观测
+# ---------------------------------------------------------------------------
+
+_WAKE_EVENT = threading.Event()
+_WORKER_ID = uuid.uuid4().hex[:12]
+# 死令牌暂停：键 (owner_scope, owner_ref) -> 暂停到期时刻。进程内
+# 字典是主路径；Redis 可用时同步写一个带 TTL 的键（见 _paused_store），
+# 让多副本工人也能看到同一暂停，Redis 不可用时退回进程内字典，
+# 绝不因 Redis 故障把工人打停（fail-open，见上游健康存储同款口径）。
+_paused_until = {}
+_paused_lock = threading.Lock()
+# 可观测计数（进程内，Daemon 每轮日志用；重启清零，不作持久口径）。
+_metrics = {"drive_429_total": 0, "jobs_done": 0, "jobs_failed": 0,
+            "jobs_retried": 0}
+_metrics_lock = threading.Lock()
+
+_AUTH_TERMINAL_KINDS = ("no_binding", "auth_error")
+
+
+def _owner_key(job_or_scope, ref=None):
+    if ref is not None:
+        return (str(job_or_scope or "source"), str(ref or ""))
+    return (str(getattr(job_or_scope, "owner_scope", "source") or "source"),
+            str(getattr(job_or_scope, "owner_ref", "") or ""))
+
+
+def pause_user_queue(owner_scope, owner_ref, seconds=None, now=None):
+    """暂停某用户队列（死令牌场景）：只停该用户，不停整轮。
+
+    seconds 为 None 时读 worker_auth_pause_sec()。同时尽力写 Redis
+    带 TTL 键 transfer:paused:<scope>:<ref>，写失败只记 warning。
+    """
+    until = (now or datetime.now()) + timedelta(
+        seconds=seconds if seconds is not None else worker_auth_pause_sec())
+    key = (str(owner_scope or "source"), str(owner_ref or ""))
+    with _paused_lock:
+        _paused_until[key] = until
+    try:
+        from backend.database import get_redis
+        client = get_redis()
+        if client is not None:
+            client.setex(
+                f"transfer:paused:{key[0]}:{key[1]}",
+                int((until - (now or datetime.now())).total_seconds()) or 1,
+                "1")
+    except Exception:
+        logger.warning("转存工人：暂停状态写 Redis 失败，退回进程内暂停",
+                       exc_info=True)
+    return until
+
+
+def is_user_paused(owner_scope, owner_ref, now=None):
+    """该用户队列是否在暂停期内（Redis 键优先，进程内字典兜底）。"""
+    now = now or datetime.now()
+    key = (str(owner_scope or "source"), str(owner_ref or ""))
+    try:
+        from backend.database import get_redis
+        client = get_redis()
+        if client is not None and client.exists(
+                f"transfer:paused:{key[0]}:{key[1]}"):
+            return True
+    except Exception:
+        pass
+    with _paused_lock:
+        until = _paused_until.get(key)
+    return until is not None and until > now
+
+
+def notify_transfer_wakeup(job_id=None):
+    """事件唤醒：建任务后调用，尽力通知工人立即干活，永不抛错。
+
+    - 进程内 Event：同进程工人（开发/测试）立即醒；
+    - Redis publish：跨容器工人（EA 建任务、worker 干活）立即醒，
+      Redis 不可用时返回 False，兜底扫（60 秒）仍能跑，绝不因此
+      丢任务、绝不因此改成高频轮询。
+    返回 True 表示至少一条唤醒路径已发出（进程内 Event 恒算发出）。
+    """
+    _WAKE_EVENT.set()
+    try:
+        from backend.database import get_redis
+        client = get_redis()
+        if client is not None:
+            client.publish(TRANSFER_WORKER_WAKE_CHANNEL,
+                           str(job_id or "wake"))
+            return True
+    except Exception:
+        logger.warning("转存工人：唤醒 publish 失败，兜底扫仍会跑",
+                       exc_info=True)
+    return True
+
+
+def _wake_subscriber_loop(stop_event):
+    """Redis 订阅线程：收到唤醒即置进程内 Event，订阅断了就重连等
+    下一轮兜底扫，绝不炸主循环。"""
+    while not stop_event.is_set():
+        try:
+            from backend.database import get_redis
+            client = get_redis()
+            if client is None:
+                stop_event.wait(30)
+                continue
+            pubsub = client.pubsub()
+            pubsub.subscribe(TRANSFER_WORKER_WAKE_CHANNEL)
+            for message in pubsub.listen():
+                if stop_event.is_set():
+                    break
+                if message.get("type") == "message":
+                    _WAKE_EVENT.set()
+        except Exception:
+            logger.warning("转存工人：唤醒订阅断开，30 秒后重连",
+                           exc_info=True)
+            stop_event.wait(30)
+
+
+def reclaim_expired_leases(db, now=None):
+    """租约回收：running 且租约已过期 → pending（attempts 不变），
+    兼容旧行：租约 NULL 且 updated_at 距今超 STUCK_RUNNING_SEC
+    的 running 行同样打回（升级前遗留行不靠租约也能自愈）。
+    返回打回数。调用方负责提交（本函数内提交一次）。"""
+    now = now or datetime.now()
+    expired = (db.query(em.TransferJob)
+               .filter(em.TransferJob.status == "running")
+               .filter(
+                   (em.TransferJob.lease_expires_at.isnot(None))
+                   & (em.TransferJob.lease_expires_at <= now)
+                   | (em.TransferJob.lease_expires_at.is_(None))
+                   & (em.TransferJob.updated_at
+                      < now - timedelta(seconds=STUCK_RUNNING_SEC)))
+               .all())
+    for job in expired:
+        job.status = "pending"
+        job.next_retry_at = None
+        job.lease_expires_at = None
+        job.claimed_by = None
+    if expired:
+        db.commit()
+    return len(expired)
+
+
+def _running_counts_by_owner(db, now=None):
+    """当前 running（租约未过期）按归属计数，用于按用户限流。"""
+    now = now or datetime.now()
+    rows = (db.query(em.TransferJob)
+            .filter(em.TransferJob.status == "running")
+            .filter(
+                (em.TransferJob.lease_expires_at.is_(None))
+                | (em.TransferJob.lease_expires_at > now))
+            .all())
+    counts = {}
+    for row in rows:
+        key = _owner_key(row)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _pick_candidates(candidates, limit, running_counts, cap, now=None):
+    """公平挑单：快通道在前、慢通道在后；每通道内按用户轮流取
+    （每轮每用户先取 1 单，再取第 2 单……），直至 limit 或取尽。
+    暂停用户直接跳过；已在途达 cap 的用户直接跳过。
+    返回挑中的任务行（不改状态，认领在 claim_due_jobs 里做）。"""
+    now = now or datetime.now()
+    fast = [c for c in candidates if (c.trigger or "") == "playback"]
+    slow = [c for c in candidates if (c.trigger or "") != "playback"]
+    picked = []
+    used = dict(running_counts)
+    for lane in (fast, slow):
+        # 按用户分组，保持每组内 id 顺序
+        by_owner = {}
+        for job in lane:
+            by_owner.setdefault(_owner_key(job), []).append(job)
+        round_no = 0
+        while len(picked) < limit:
+            progressed = False
+            for key in sorted(by_owner):
+                if len(picked) >= limit:
+                    break
+                group = by_owner[key]
+                if round_no >= len(group):
+                    continue
+                if is_user_paused(key[0], key[1], now=now):
+                    continue
+                if used.get(key, 0) >= cap:
+                    continue
+                picked.append(group[round_no])
+                used[key] = used.get(key, 0) + 1
+                progressed = True
+            if not progressed:
+                break
+            round_no += 1
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def claim_due_jobs(db, now=None, limit=None, worker_id=None):
+    """认领到期任务：租约回收 → 公平挑单 → 原子认领，返回 job id 列表。
+
+    原子性（多工人互斥的关键）：
+    - PostgreSQL：先在同一事务内 SELECT ... FOR UPDATE SKIP LOCKED
+      挑行，再 UPDATE 挑中的行置 running + 租约；另一工人同事务
+      的 SKIP LOCKED 直接跳过已被锁的行，不阻塞、不重复认领。
+    - SQLite（测试）：不支持 FOR UPDATE SKIP LOCKED，走等价路径——
+      UPDATE ... WHERE id=? AND status='pending'，rowcount==1 才算
+      认领成功；已被另一会话认领的行 rowcount==0，自动跳过。
+    认领事务一提交即释放行锁，租约是长时认领标记，绝不跨 copy
+    持有数据库行锁（否则 copy 几分钟就把别的工人全堵住）。
+    """
+    from sqlalchemy import text
+    now = now or datetime.now()
+    limit = limit if limit is not None else MAX_JOBS_PER_ROUND
+    worker_id = worker_id or _WORKER_ID
+    reclaim_expired_leases(db, now=now)
+    due = (db.query(em.TransferJob)
+           .filter(em.TransferJob.status == "pending",
+                   (em.TransferJob.next_retry_at.is_(None))
+                   | (em.TransferJob.next_retry_at <= now))
+           .order_by(em.TransferJob.id)
+           .limit(200)
+           .all())
+    if not due:
+        return []
+    cap = worker_per_user_max()
+    running_counts = _running_counts_by_owner(db, now=now)
+    picked = _pick_candidates(due, limit, running_counts, cap, now=now)
+    if not picked:
+        return []
+    lease_until = now + timedelta(seconds=worker_lease_sec())
+    claimed = []
+    dialect = ""
+    try:
+        dialect = db.bind.dialect.name if db.bind is not None else ""
+    except Exception:
+        dialect = ""
+    if dialect == "postgresql":
+        try:
+            ids = [job.id for job in picked]
+            # FOR UPDATE SKIP LOCKED：只锁本事务内挑中的行，另一工人
+            # 的同查询直接跳过这些行；随后 UPDATE 并提交即放锁。
+            locked = (db.query(em.TransferJob.id)
+                      .filter(em.TransferJob.id.in_(ids))
+                      .filter(em.TransferJob.status == "pending")
+                      .with_for_update(skip_locked=True)
+                      .all())
+            locked_ids = {row[0] for row in locked}
+            for job in picked:
+                if job.id not in locked_ids:
+                    continue
+                job.status = "running"
+                job.lease_expires_at = lease_until
+                job.claimed_by = worker_id
+                claimed.append(job.id)
+            db.commit()
+            return claimed
+        except Exception:
+            logger.warning("转存工人：PG 认领 FOR UPDATE 失败，退回原子 UPDATE",
+                           exc_info=True)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    # 通用等价路径（SQLite + PG 退回）：原子 UPDATE，rowcount 定胜负。
+    for job in picked:
+        result = db.execute(
+            text("UPDATE emby_transfer_jobs SET status='running', "
+                 "lease_expires_at=:lease, claimed_by=:worker "
+                 "WHERE id=:jid AND status='pending'"),
+            {"lease": lease_until, "worker": worker_id, "jid": job.id})
+        if result.rowcount == 1:
+            claimed.append(job.id)
+    db.commit()
+    return claimed
+
+
+def queue_stats(db, now=None):
+    """队列可观测口径（纯读，不写库）：深度、等待中位数/p95、
+    在途数、失败/重试计数由 Daemon 进程内 _metrics 另记。
+    waiting 按 due 任务（pending 且已到期）的 created_at 算。"""
+    now = now or datetime.now()
+    pending = (db.query(em.TransferJob)
+               .filter(em.TransferJob.status == "pending").all())
+    due_waits = sorted(
+        (now - (job.created_at or now)).total_seconds()
+        for job in pending
+        if job.next_retry_at is None or job.next_retry_at <= now)
+    running = (db.query(em.TransferJob)
+               .filter(em.TransferJob.status == "running").count())
+
+    def _pct(values, pct):
+        if not values:
+            return 0.0
+        idx = min(len(values) - 1, int(len(values) * pct / 100.0))
+        return float(values[idx])
+
+    median = _pct(due_waits, 50) if due_waits else 0.0
+    return {
+        "queue_depth": len(pending),
+        "due_count": len(due_waits),
+        "running": running,
+        "waiting_median_sec": median,
+        "waiting_p95_sec": _pct(due_waits, 95) if due_waits else 0.0,
+        "waiting_max_sec": float(due_waits[-1]) if due_waits else 0.0,
+    }
+
+
+def queue_alerts(stats):
+    """超阈值告警（warning 级，Daemon 每轮记；不抛错、不停轮）。"""
+    alerts = []
+    if stats.get("queue_depth", 0) >= int(TRANSFER_WORKER_ALERT_QUEUE_DEPTH or 200):
+        alerts.append(f"转存队列深度 {stats['queue_depth']} 超阈值 "
+                      f"{TRANSFER_WORKER_ALERT_QUEUE_DEPTH}")
+    if stats.get("waiting_p95_sec", 0) >= int(TRANSFER_WORKER_ALERT_WAIT_SEC or 300):
+        alerts.append(f"转存等待 p95 {stats['waiting_p95_sec']:.0f}s 超阈值 "
+                      f"{TRANSFER_WORKER_ALERT_WAIT_SEC}s")
+    return alerts
+
+
+def _heartbeat(job_id, session_factory, stop_event, worker_id):
+    """租约心跳：执行中每 60 秒（或租约 1/3，取小）续租一次，
+    直到任务终态或 stop_event 置位；心跳失败只记 warning，不杀任务。"""
+    interval = max(30, min(60, worker_lease_sec() // 3 or 60))
+    while not stop_event.wait(interval):
+        try:
+            db = session_factory()
+            try:
+                job = db.query(em.TransferJob).filter(
+                    em.TransferJob.id == job_id).first()
+                if job is None or job.status != "running":
+                    return
+                job.lease_expires_at = (
+                    datetime.now() + timedelta(seconds=worker_lease_sec()))
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            logger.warning("转存工人：租约心跳失败 job=%s", job_id,
+                           exc_info=True)
+
+
+def _execute_claimed_job(job_id, session_factory, drive_api_factory):
+    """执行一单已认领任务（独立会话）：跑完清租约；死令牌只暂停
+    该用户队列；429 计数进 _metrics。返回 outcome 字符串。"""
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat, args=(job_id, session_factory, stop_heartbeat,
+                                 _WORKER_ID), daemon=True)
+    heartbeat.start()
+    db = session_factory()
+    try:
+        job = db.query(em.TransferJob).filter(
+            em.TransferJob.id == job_id).first()
+        if job is None:
+            return "missing"
+        try:
+            result = run_transfer_job_once(db, job, drive_api_factory())
+        except Exception:
+            logger.warning("转存任务执行异常 job=%s", job_id, exc_info=True)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return "failed"
+        outcome = result.get("outcome", "")
+        # 终态清租约（run_transfer_job_once 内部已提交终态；这里只清租约）。
+        try:
+            fresh = db.query(em.TransferJob).filter(
+                em.TransferJob.id == job_id).first()
+            if fresh is not None:
+                fresh.lease_expires_at = None
+                fresh.claimed_by = None
+                db.commit()
+        except Exception:
+            logger.warning("转存工人：清租约失败 job=%s", job_id, exc_info=True)
+        with _metrics_lock:
+            if outcome == "done":
+                _metrics["jobs_done"] += 1
+            elif outcome == "failed":
+                _metrics["jobs_failed"] += 1
+            else:
+                _metrics["jobs_retried"] += 1
+            detail = (result.get("error_detail") or "") + " " + str(
+                getattr(job, "error_detail", "") or "")
+            if "429" in detail:
+                _metrics["drive_429_total"] += 1
+        if outcome == "failed":
+            fresh_kind = result.get("error_kind") or getattr(
+                job, "error_kind", None)
+            if fresh_kind in _AUTH_TERMINAL_KINDS and (
+                    getattr(job, "owner_scope", "") or "") == "user":
+                pause_user_queue(job.owner_scope, job.owner_ref)
+        return outcome
+    finally:
+        stop_heartbeat.set()
+        db.close()
+
+
+def process_claimed_round(session_factory, drive_api_factory, now=None,
+                          limit=None):
+    """可伸缩一轮：认领 → 并行执行 → 统计 + 告警。返回统计 dict。
+    session_factory 每次调用返回独立会话（多线程各用各的会话，
+    绝不跨线程共用同一 Session）。"""
+    now = now or datetime.now()
+    db = session_factory()
+    try:
+        stats_before = queue_stats(db, now=now)
+        claimed = claim_due_jobs(db, now=now, limit=limit)
+    finally:
+        db.close()
+    if not claimed:
+        return {"processed": 0, "done": 0, "failed": 0, "retried": 0,
+                "claimed": [], "queue": stats_before,
+                "alerts": queue_alerts(stats_before)}
+    workers = worker_concurrency()
+    outcomes = []
+    if workers <= 1:
+        for job_id in claimed:
+            outcomes.append(_execute_claimed_job(
+                job_id, session_factory, drive_api_factory))
+    else:
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="transfer-job") as pool:
+            outcomes = list(pool.map(
+                lambda jid: _execute_claimed_job(
+                    jid, session_factory, drive_api_factory), claimed))
+    stats = {"processed": len(outcomes),
+             "done": outcomes.count("done"),
+             "failed": outcomes.count("failed"),
+             "retried": outcomes.count("retried"),
+             "claimed": claimed, "queue": stats_before,
+             "alerts": queue_alerts(stats_before)}
+    for alert in stats["alerts"]:
+        logger.warning("转存工人告警：%s", alert)
     return stats
 
 
@@ -2331,38 +2818,83 @@ def patrol_once(db, drive_api_factory, now=None):
     return stats
 
 
-def start_transfer_daemon():
+def start_transfer_daemon(session_factory=None, drive_api_factory=None):
     """启动转存工人守护线程（必须显式调用；import 时绝不自动启动）。
 
-    总闸关时空转等待（不发请求、不读写任务）；开时每 60 秒一轮：
-    到期任务 + 每天一次巡检（进程内记忆上次巡检时间）。任何异常只记
-    warning、不炸线程。返回线程对象，调用方持有以便观测。
+    新结构（2026-10-27）：事件唤醒 + 认领式并行 + 60 秒兜底扫。
+    - 建任务时 notify_transfer_wakeup() 置 Event / 发 Redis publish，
+      主循环立即醒来跑一轮，不等下一轮；无任务时零负载。
+    - 兜底扫仍是 60 秒（TRANSFER_WORKER_SWEEP_SEC，默认 60），
+      唤醒路径（Redis 断连、进程重启）失效时仍能跑，绝不改 5 秒。
+    - 每轮先跑可伸缩认领轮（快通道优先、按用户限流、租约认领、
+      并行执行），再按需跑每天一次巡检；总闸关时空转等待。
+    - session_factory / drive_api_factory 可注入（测试用），默认
+      生产值：backend.database.SessionLocal / DriveApiClient。
+    任何异常只记 warning、不炸线程。返回线程对象，调用方持有以便观测。
     """
     stop = threading.Event()
     state = {"last_patrol": 0.0}
-
-    def _loop():
-        while not stop.is_set():
-            try:
-                if master_enabled():
-                    from backend.database import SessionLocal
-                    db = SessionLocal()
-                    try:
-                        process_due_jobs_once(db, DriveApiClient)
-                        now_ts = time.time()
-                        if now_ts - state["last_patrol"] >= PATROL_INTERVAL_SEC:
-                            patrol_once(db, DriveApiClient)
-                            state["last_patrol"] = now_ts
-                    finally:
-                        db.close()
-            except Exception:
-                logger.warning("转存变体工人轮次异常，已跳过本轮", exc_info=True)
-            stop.wait(WORKER_INTERVAL_SEC)
-
-    thread = threading.Thread(target=_loop, name="transfer-variant",
-                              daemon=True)
+    if session_factory is None:
+        from backend.database import SessionLocal
+        session_factory = SessionLocal
+    if drive_api_factory is None:
+        drive_api_factory = DriveApiClient
+    subscriber = threading.Thread(
+        target=_wake_subscriber_loop, args=(stop,), daemon=True,
+        name="transfer-wake-subscriber")
+    subscriber.start()
+    thread = threading.Thread(
+        target=_daemon_main_loop,
+        args=(stop, state, session_factory, drive_api_factory),
+        daemon=True, name="transfer-variant")
     thread.start()
     return thread
+
+
+def _wait_for_wake(stop, timeout_sec):
+    """等唤醒或超时：_WAKE_EVENT 置位即提前返回 True；stop 置位
+    或超时返回 False。等待期间不查库、不发 Drive 请求（零负载）。"""
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        if stop.is_set():
+            return False
+        if _WAKE_EVENT.is_set():
+            _WAKE_EVENT.clear()
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        # 小步等待，避免错过 stop / wake（步长 0.2 秒，仍零业务负载）。
+        _WAKE_EVENT.wait(min(0.2, remaining))
+
+
+def _daemon_main_loop(stop, state, session_factory, drive_api_factory):
+    """Daemon 主循环：唤醒即跑一轮，队列未空立即续跑，空了等唤醒
+    或 60 秒兜底扫；巡检每天一次；异常只记 warning 不炸线程。"""
+    while not stop.is_set():
+        try:
+            if master_enabled():
+                stats = process_claimed_round(
+                    session_factory, drive_api_factory)
+                if stats["claimed"]:
+                    db = session_factory()
+                    try:
+                        remaining = queue_stats(db)["due_count"]
+                    finally:
+                        db.close()
+                    if remaining:
+                        continue
+                now_ts = time.time()
+                if now_ts - state["last_patrol"] >= PATROL_INTERVAL_SEC:
+                    db = session_factory()
+                    try:
+                        patrol_once(db, drive_api_factory)
+                    finally:
+                        db.close()
+                    state["last_patrol"] = now_ts
+        except Exception:
+            logger.warning("转存变体工人轮次异常，已跳过本轮", exc_info=True)
+        _wait_for_wake(stop, worker_sweep_sec())
 
 
 __all__ = [
@@ -2380,4 +2912,8 @@ __all__ = [
     "DriveApiClient", "UserDriveApiClient",
     "run_transfer_job_once", "process_due_jobs_once", "patrol_once",
     "start_transfer_daemon",
+    "worker_concurrency", "worker_per_user_max", "worker_lease_sec",
+    "worker_sweep_sec", "notify_transfer_wakeup", "pause_user_queue",
+    "is_user_paused", "reclaim_expired_leases", "claim_due_jobs",
+    "queue_stats", "queue_alerts", "process_claimed_round",
 ]
