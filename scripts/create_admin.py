@@ -121,7 +121,9 @@ def main() -> int:
           f"is_active={summary['is_active']}）")
     print(f"   数据库   : {DATABASE_TYPE} ({DATABASE_URL})")
     if summary["emby_username"]:
-        print(f"   Emby 账号: {summary['emby_username']}（播放密码与门户密码一致）")
+        print(f"   Emby 账号: {summary['emby_username']}")
+    else:
+        print("   Emby 账号: 未设置（在接线员页自行创建；用户名设好后不可修改）")
     print("\n   登录入口 : 门户 / 登录后后台免登进 /admin/，或直接到 /admin/ 用上面的账号密码登录")
     return 0
 

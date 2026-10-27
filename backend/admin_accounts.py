@@ -56,8 +56,9 @@ def upsert_admin(db, username: str, password: str | None = None,
     - 账号不存在：必须给密码（``password`` 或 ``reset_password=True`` 自动生成），否则报错；
     - 账号已存在：只升级 ``is_staff`` / ``is_active``；``password`` 给了就改，
       ``reset_password=True`` 则重置为新的随机密码，两者都没有则**不动密码**；
-    - 无论哪条路径，都会补齐 Emby 客户端凭据（``emby_username``）；
-      设置了密码时同步 ``emby_password``，门户密码与播放密码保持一致。
+    - 不自动生成接线用户名（``emby_username``）。用户在接线员页自己设，设好后不可改。
+      本次如果写了门户密码，会同步 ``emby_password``（bcrypt）。没有接线用户名时，
+      客户端仍可用门户用户名 + 这份播放密码登录（``AuthenticateByName`` 两个字段都认）。
 
     ``applied_password`` 是本次真正写进库的密码（没有改密码时为 None）。
     """
@@ -101,7 +102,7 @@ def upsert_admin(db, username: str, password: str | None = None,
 
     db.commit()
     db.refresh(user)
-    # 给了密码就把 Emby 播放密码一起同步（没给则只保证 emby_username 存在）
+    # 给了密码就同步播放密码哈希。不在这里发明接线用户名。
     ensure_emby_credentials(db, user, password=applied)
     db.refresh(user)
     return user, created, applied

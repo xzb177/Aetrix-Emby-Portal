@@ -165,8 +165,9 @@ def preflight(media_dir: str) -> tuple[int, str, str]:
     db.add(user)
     db.commit()
     db.refresh(user)
-    # 同时给上自建 Emby 凭据（emby_username / emby_password）：客户端认证走的是这两个字段，
-    # 只有门户密码时 EA 会正确地回 401 —— 真实部署下用户也是这么被创建的。
+    # 写入播放密码哈希，不自动生成 emby_username。没有接线用户名时，
+    # AuthenticateByName 仍按门户用户名命中（emby_username OR username）。
+    # 只有门户密码、没有 emby_password 时 EA 会正确地回 401。
     ensure_emby_credentials(db, user, password=password)
     user_id = user.id
     db.close()
@@ -458,7 +459,7 @@ def run_split_checks(em_base: str, ea_base: str, username: str, password: str,
     if not ea_token:
         return
 
-    # 注意：Name 是 EM 给用户分配的自建 Emby 用户名（emby_<id>_<随机>），不是门户用户名
+    # Name：设了接线用户名就用它，否则回落门户用户名。自检账号不自动生成接线用户名。
     status, text, _ = request("GET", f"{ea_base}/emby/Users/Me", emby_token=ea_token)
     me = as_json(text) or {}
     check("EA 接受该 token 并读出同一用户的身份",

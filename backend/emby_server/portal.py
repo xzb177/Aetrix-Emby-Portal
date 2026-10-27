@@ -416,6 +416,9 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
     查看权限：付费服要求有效订阅，公益服要求积分解锁（见 ``_realm_view_granted``）。
     没权限时 ``base_url`` / ``import_schemes`` / ``emby_username`` 置空不下发，
     前端据 ``view_permission`` 展示解锁入口。
+
+    没有接线用户名时同样不下发导入 scheme（空用户名的链接没有用）。
+    本接口从不把密码拼进 scheme；密码只在前端内存里拼接。
     """
     if realm_id is None:
         realm_id = realms.active_realm_id(db)
@@ -425,6 +428,8 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
     realm = realms.get_realm(db, realm_id)
     granted, unlock = _realm_view_granted(db, user, realm_id)
     price_points, price_days = _view_unlock_pricing(db)
+    # 未设置接线用户名时是空串，不是 null：账号卡这个字段一直是字符串。
+    emby_username = (user.emby_username or "") if granted else ""
     card = {
         "server_id": SERVER_ID,
         "server_name": os.getenv("EMBY_SERVER_NAME", "Aetrix Media Server"),
@@ -432,7 +437,7 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "mode": mode,
         "external": external,
         "account_managed_by": "external" if external else "portal",
-        "emby_username": user.emby_username if granted else "",
+        "emby_username": emby_username,
         "emby_password": None,
         # has_password 不 gate：它只是用户自己的密码设置状态，不泄露服务器信息；
         # 冒烟测试也依赖它（set-password 后断言为 True）
@@ -444,12 +449,13 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "is_free": realms.is_free_realm(db, realm_id),
         "access_note": realms.access_note_of(db, realm_id),
         "allow_download": subscriptions.download_allowed(db, realm_id),
-        "import_schemes": {} if (external or not granted) else {
+        # 没用户名时不发 scheme。密码参数留给前端：这里绝不传入 password。
+        "import_schemes": {} if (external or not granted or not emby_username) else {
             # Rex 播放器一键导入（2026-10-10 用户要求替换 forward）。
-            "Rex": _rex_import_link(url, user.emby_username),
-            "senplayer": _senplayer_import_link(url, user.emby_username),
+            "Rex": _rex_import_link(url, emby_username),
+            "senplayer": _senplayer_import_link(url, emby_username),
             # VidHub 播放器一键导入（2026-10-15 用户要求新增，参数格式与 Rex 同）。
-            "VidHub": _vidhub_import_link(url, user.emby_username),
+            "VidHub": _vidhub_import_link(url, emby_username),
         },
         "view_permission": {
             "granted": granted,
@@ -519,15 +525,16 @@ def _user_realm_cards(user: models.WebUser, db: Session,
 async def get_server_info(request: Request,
                           request_user: models.WebUser = Depends(get_admin_or_emby_user),
                           db: Session = Depends(get_db)):
-    """返回账号卡信息：服务器地址 + 自建 Emby 用户名 + 播放器导入 scheme
+    """返回账号卡信息：服务器地址 + 接线用户名 + 播放器导入 scheme
 
     ``?realm_id=`` 可以指定要哪个服的地址（多服部署下同一个用户可能持有几个服的会员），
     不传则用面板当前服。
 
-    安全：不返回密码明文。密码仅注册/重置时一次性返回。
+    只读：不创建接线用户名，也不写入播放密码。未设置时 ``emby_username`` 为空串、
+    ``has_password`` 为 false，且不下发 ``import_schemes``。响应里的
+    ``emby_password`` 恒为 null，明文密码不会出现在 scheme 里。
     """
     user = request_user
-    ensure_emby_credentials(db, user)
     realm_id = None
     raw = request.query_params.get("realm_id")
     if raw and str(raw).strip().isdigit():
@@ -609,6 +616,26 @@ def unlock_emby_view(
 
 class SetPasswordRequest(BaseModel):
     password: str
+    # 首次设置必填；用户名写好之后可省略。与当前值相同也可以，不同则拒绝。
+    username: str | None = None
+
+
+def _emby_username_taken(db: Session, user: models.WebUser, username: str) -> bool:
+    """接线用户名不能跟别人的接线用户名或门户用户名撞车。
+
+    客户端登录同时认这两个字段（``AuthenticateByName`` 用 OR 查询）。
+    撞上别人的门户用户名时，``.first()`` 会不确定命中谁。
+    """
+    row = (
+        db.query(models.WebUser.id)
+        .filter(models.WebUser.id != user.id)
+        .filter(or_(
+            models.WebUser.emby_username == username,
+            models.WebUser.username == username,
+        ))
+        .first()
+    )
+    return row is not None
 
 
 @user_emby_router.post("/password")
@@ -617,10 +644,45 @@ async def set_emby_password(
     request_user: models.WebUser = Depends(get_admin_or_emby_user),
     db: Session = Depends(get_db),
 ):
-    """设置/修改自建 Emby 播放密码（bcrypt 哈希存储）"""
+    """设置接线账号（用户名 + 播放密码）或只改播放密码。
+
+    首次（还没有 ``emby_username``）：``username`` 和 ``password`` 都必填。
+    用户名规则与门户注册相同（字母 / 数字 / 下划线，3-32 位），且不能与
+    其他用户的门户用户名或接线用户名重复。写好后不可修改。
+
+    之后：只提交 ``password`` 即可。``username`` 省略，或与当前值相同，都接受；
+    提交了不同的用户名则 400「用户名设好后不可修改」。
+
+    密码 bcrypt 存储。响应只有 ``success`` 和 ``emby_username``，不回明文密码。
+    """
     if not (3 <= len(req.password) <= 64):
         raise HTTPException(status_code=400, detail="密码长度需为 3-64 位")
-    ensure_emby_credentials(db, request_user, password=req.password)
+
+    supplied = req.username.strip() if isinstance(req.username, str) else None
+    current = request_user.emby_username or ""
+    if not current:
+        if not supplied:
+            raise HTTPException(status_code=400, detail="首次设置接线账号需要同时提供用户名和密码")
+        from backend.api.emby_portal import USERNAME_RE
+
+        if not USERNAME_RE.match(supplied):
+            raise HTTPException(
+                status_code=400,
+                detail="用户名只能包含字母、数字、下划线，长度 3-32 位",
+            )
+        if _emby_username_taken(db, request_user, supplied):
+            raise HTTPException(status_code=409, detail="用户名已被占用")
+        request_user.emby_username = supplied
+    elif supplied is not None and supplied != current:
+        raise HTTPException(status_code=400, detail="用户名设好后不可修改")
+
+    try:
+        ensure_emby_credentials(db, request_user, password=req.password)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="用户名已被占用")
+    db.refresh(request_user)
     return {"success": True, "emby_username": request_user.emby_username}
 
 

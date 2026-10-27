@@ -487,7 +487,7 @@ def reset_user_password(
     user.password_hash = hash_password(request.new_password)
     db.commit()
 
-    # 同步 Emby 播放密码，保持"门户账号即 Emby 账号"
+    # 同步 Emby 播放密码哈希。不自动生成接线用户名。
     # r46：同步失败是"部分成功"，不能报成全成功——管理员需知道用户用新密码登 Emby 会失败
     emby_synced = True
     try:
