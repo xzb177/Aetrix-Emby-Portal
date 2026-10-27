@@ -1466,6 +1466,13 @@ class TransferJob(Base):
     - ``dest_drive_id``：用户任务的落盘标识（Drive 为
       ``userdrive:<user_id>``，115 为 ``pan115:user-<user_id>``）；
       服主任务为空（= drive_id，同盘拷贝）。
+    - 可伸缩工人（2026-10-27）：``lease_expires_at`` 为认领租约
+      到期时刻（NULL = 未认领/已终态），工人执行中续租、死了租约
+      过期即自动回 pending，不再等 1 小时；``claimed_by`` 仅作
+      观测（工人标识），不做权限判定。认领本身靠
+      status pending→running 的原子 UPDATE（PG 下先以
+      FOR UPDATE SKIP LOCKED 挑行），租约是长时认领标记、不是
+      行锁持有——行锁只在认领事务内短暂持有，绝不跨 copy 持有。
     - 新表由 init_db 的 create_all 建出；老库新增列由 database
       通用 auto-migrate（_all_metadata 双 Base 对账）补齐。
     """
@@ -1495,6 +1502,10 @@ class TransferJob(Base):
     error_kind = Column(String(100))
     error_detail = Column(String(500))
     next_retry_at = Column(DateTime)
+    # 可伸缩工人认领租约（2026-10-27）：到期即视为工人已死，可被
+    # 另一工人认领；NULL = 未认领或已终态。老库由 auto-migrate 补列。
+    lease_expires_at = Column(DateTime)
+    claimed_by = Column(String(64))
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
