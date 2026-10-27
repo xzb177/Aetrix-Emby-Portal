@@ -337,8 +337,8 @@ export interface AccountCard {
   server_id: string
   server_name: string
   base_url: string
-  /** 未自建时为空串或 null。接口不会再发明 emby_ 用户名。 */
-  emby_username: string | null
+  /** 未自建时为空串。接口不会再发明 emby_ 用户名，也不用 null 表示未设置。 */
+  emby_username: string
   /** 明文永不下发，恒为 null */
   emby_password: null
   has_password: boolean
@@ -495,8 +495,10 @@ export const embyApi = {
       '/api/user/emby/unlock-view', { realm_id: realmId ?? null }),
 
   /**
-   * 设置接线账号。第一次必须带用户名；用户名已存在后只改密码。
-   * 再带 username 时后端回 400，调用方不要在已有用户名时传入。
+   * 设置接线账号。
+   * 首次（emby_username 为空）必须带 username + password。
+   * 之后只传 password。相同用户名可以再传；改名或空串会 400「用户名设好后不可修改」。
+   * 已有用户名时这里不传 username。
    */
   setPassword: (password: string, username?: string) => {
     const body: { password: string; username?: string } = { password }

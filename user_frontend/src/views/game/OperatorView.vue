@@ -83,14 +83,14 @@
                     name="emby_play_password"
                     autocomplete="new-password"
                     maxlength="64"
-                    placeholder="至少 6 位"
+                    placeholder="3 到 64 位"
                     aria-required="true"
                     :aria-invalid="credPasswordInvalid ? 'true' : 'false'"
                     aria-describedby="emby-cred-hint"
                   />
                 </div>
                 <div class="cred-actions">
-                  <p id="emby-cred-hint" class="op-tip cred-hint">用户名 3 到 32 位，设好就不能改。播放密码和网站登录密码无关。</p>
+                  <p id="emby-cred-hint" class="op-tip cred-hint">{{ credHint }}</p>
                   <p v-if="credError" class="modal-error" role="alert">{{ credError }}</p>
                   <button type="submit" class="op-btn primary" :disabled="settingPwd">
                     {{ settingPwd ? '保存中' : '保存接线账号' }}
@@ -180,11 +180,11 @@
             </div>
           </section>
 
-          <!-- 一键导入 -->
-          <section v-if="hasSchemes" class="v4-sec">
+          <!-- 一键导入。没有用户名时方案列表是空的，仍留说明，避免只看 has_password 就当成已经能导入。 -->
+          <section v-if="showImportSection" class="v4-sec">
             <div class="v4-sec-title">一键导入到客户端</div>
-            <div class="v4-sec-sub">点一下，直接跳到播放器里填好</div>
-            <div class="scheme-btns">
+            <div class="v4-sec-sub">{{ hasEmbyUsername ? '点一下，直接跳到播放器里填好' : '设好接线账号之后才能导入' }}</div>
+            <div v-if="hasSchemes" class="scheme-btns">
               <button
                 v-for="(url, name) in importSchemes"
                 :key="name"
@@ -345,7 +345,7 @@
           aria-describedby="set-play-pwd-desc"
         >
           <h3 id="set-play-pwd-title" class="modal-title">{{ hasPlayPassword ? '修改播放密码' : '设置播放密码' }}</h3>
-          <p id="set-play-pwd-desc" class="modal-desc">这个密码用在 Emby 客户端里登录，和网站登录密码无关，至少 6 位。</p>
+          <p id="set-play-pwd-desc" class="modal-desc">这个密码用在 Emby 客户端里登录，和网站登录密码无关。密码长度 3-64 位。</p>
           <form @submit.prevent="confirmSetPassword">
             <label class="modal-label" for="set-play-pwd-input">新的播放密码</label>
             <input
@@ -481,6 +481,8 @@ interface AccountCardExtra {
   realm_free?: boolean
   /** 公益服说明（顶层兼容字段） */
   realm_note?: string
+  /** 接入的是外部 Emby 时不下发导入方案 */
+  external?: boolean
 }
 /** R50：view_permission 里后端可能多带的字段 */
 interface ViewPermissionExtra {
@@ -535,8 +537,13 @@ const serverUrl = computed(() => accountExtra.value.server_url || account.value?
 /** 空串不当成账号，也不回退到网站登录名，更不展示 emby_ 占位。 */
 const embyUsername = computed(() => (account.value?.emby_username || '').trim())
 const hasEmbyUsername = computed(() => embyUsername.value.length > 0)
-/** 三态：还没用户名 / 有账号但本页没有明文密码 / 可以带密码导入 */
+/** 三态：还没用户名 / 有账号但本页没有明文密码 / 可以带密码导入。只看用户名，不看 has_password。 */
 const importTip = computed(() => embyImportTip(hasEmbyUsername.value, playPwdLoaded.value))
+const credHint = computed(() => (
+  hasPlayPassword.value
+    ? '接线用户名还没有。填一个用户名，并设播放密码。用户名设好后不能改。密码长度 3-64 位。'
+    : '用户名只能包含字母、数字、下划线，长度 3-32 位，设好后不能改。密码长度 3-64 位，和网站登录密码无关。'
+))
 const importPwdDesc = computed(() => (
   hasPlayPassword.value
     ? '把播放密码填上，这次导入会带过去。填错可以点清除再填，不会改掉已经设好的密码。'
@@ -553,6 +560,9 @@ const importSchemes = computed((): Record<string, string> => {
   return s && typeof s === 'object' ? s : {}
 })
 const hasSchemes = computed(() => Object.keys(importSchemes.value).length > 0)
+const isExternalEmby = computed(() => !!accountExtra.value.external)
+/** 没有用户名时方案是空对象，导入区仍要出现，用来说明先去设账号。外部 Emby 本来就没有方案。 */
+const showImportSection = computed(() => hasSchemes.value || (!hasEmbyUsername.value && !isExternalEmby.value))
 
 async function refreshAccount(quiet = false): Promise<boolean> {
   if (!quiet) loading.value = true
@@ -601,8 +611,7 @@ function clearRememberedPassword() {
 }
 
 function passwordError(password: string): string {
-  if (!password || password.length < 6) return '密码至少 6 位'
-  if (password.length > 64) return '密码最长 64 位'
+  if (password.length < 3 || password.length > 64) return '密码长度需为 3-64 位'
   return ''
 }
 
@@ -621,7 +630,7 @@ async function confirmSetCredentials() {
   credUsernameInvalid.value = !USERNAME_RE.test(username)
   credPasswordInvalid.value = passwordError(password) !== ''
   if (credUsernameInvalid.value) {
-    credError.value = '用户名需 3-32 位，仅限字母、数字、下划线'
+    credError.value = '用户名只能包含字母、数字、下划线，长度 3-32 位'
     focusCredUsername()
     return
   }
@@ -632,7 +641,7 @@ async function confirmSetCredentials() {
   }
   settingPwd.value = true
   try {
-    // 第一次设账号才带用户名。已有用户名走修改密码，不能再带。
+    // 用户名还是空的才带 username。已有用户名只改密码，不传 username（空串也会被当成改名）。
     const res = await embyApi.setPassword(password, username)
     rememberPlayPassword(password)
     newUsername.value = ''
@@ -669,7 +678,7 @@ async function confirmSetPassword() {
   }
   settingPwd.value = true
   try {
-    // 用户名已存在，只传密码。再传用户名后端会 400。
+    // 用户名已存在，只传密码。相同用户名可以再传，这里不传，避免发成空串或另一个名字。
     await embyApi.setPassword(password)
     rememberPlayPassword(password)
     toast.success('播放密码已更新')
@@ -750,26 +759,14 @@ async function confirmImportPassword() {
     closeImportPwd()
     return
   }
-  if (!password) {
-    importPwdError.value = '请填写播放密码'
-    nextTick(() => importPwdInput.value?.focus())
-    return
-  }
-  if (password.length > 64) {
-    importPwdError.value = '密码最长 64 位'
+  const err = passwordError(password)
+  if (err) {
+    importPwdError.value = err
     nextTick(() => importPwdInput.value?.focus())
     return
   }
   // 已经设过密码：只拿来拼链接，不把用户填错的值写回服务器。
-  // 还没设过：先保存，播放器里才能登上去。
-  if (!hasPlayPassword.value) {
-    const err = passwordError(password)
-    if (err) {
-      importPwdError.value = err
-      nextTick(() => importPwdInput.value?.focus())
-      return
-    }
-  }
+  // 还没设过、但用户名已经有了：只提交密码。用户名还是空的时走上面的建账号表，不进这个弹窗。
   settingPwd.value = true
   try {
     if (!hasPlayPassword.value) {

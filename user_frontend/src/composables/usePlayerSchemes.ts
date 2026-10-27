@@ -42,10 +42,14 @@ export function withImportPassword(url: string, password: string): string {
   return `${before}${joiner}password=${encodeURIComponent(password)}${hash}`
 }
 
-/** 接线员一键导入说明：还没用户名 / 有账号但本页没有明文密码 / 可以带密码导入。 */
+/**
+ * 接线员一键导入说明，三态跟账号卡走：
+ * 还没有用户名（此时 import_schemes 为空）/ 有用户名但本页没有明文密码 / 可以带密码导入。
+ * 「要不要自建」只看用户名是否为空，不看 has_password。
+ */
 export function embyImportTip(hasUsername: boolean, playPwdLoaded: boolean): string {
   if (!hasUsername) {
-    return '还没有接线账号。先在上面设好用户名和播放密码，再点导入，密码会一起带过去。'
+    return '还没有接线账号。先在上面设好用户名和播放密码。设好后这里会出现导入按钮，点的时候会带上播放密码。'
   }
   if (!playPwdLoaded) {
     return '点导入时会先问一次播放密码，填上就一起带过去。本页开着不用再填，离开或点清除就清掉。'
