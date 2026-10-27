@@ -14,10 +14,9 @@ P0 自有服务器静态托管；P1 首批只库封面 + 合集封面；P2 borro
   自然不再命中，新指纹重新入队。
 - borrow 只镜 http(s) 远端 URL：borrow 的 Images 路由形态已是本地出图，
   镜像它无收益，且端点拿不到代表海报本地路径、指纹对不上，跳过。
-- 合集封面：现行代码没有合集封面 URL（set_to_dict 不出图 URL、无拼贴
-  出图路由），批一先接库封面；本模块的 apply_mirror 对任意
-  {url, source} 结果通用，合集拼贴出图口一到、传 source="collage"
-  即可复用（collage 与 render 同属自有图，不受 borrow 子开关管）。
+- 合集封面：拼贴出图口是 GET /api/user/collections/{id}/cover，
+  读口把 {url, source="collage"} 交给 apply_mirror（collage 与
+  render 同属自有图，不受 borrow 子开关管）。
 - 出图路由公开（不鉴权）：封面图本就是公开可见内容（P4），且浏览器
   <img> 带不了门户 JWT；地址按 64 位十六进制源哈希寻址，不含用户数据。
 """

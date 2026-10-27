@@ -2406,8 +2406,8 @@ class EmbyMediaSet(Base):
     # 上架门：读列表时实时算出的有效成员数低于它，合集不上架。
     # 不存入成员表、不做物化计数，门一改下次读即生效。
     min_effective_members = Column(Integer, nullable=False, default=2)
-    # 封面策略枚举：auto_collage（默认）/ none。只存策略，
-    # 读接口只暴露它，绝不输出封面图 URL——算图是封面链的地盘。
+    # 封面策略枚举：auto_collage（默认）/ none。只存策略。
+    # 拼贴图与 cover_url 由 collection_cover 现算，不在本表落路径。
     artwork_mode = Column(String(20), nullable=False, default="auto_collage")
     # path 来源的路径前缀：成员 = file_path 落在其下的条目。
     path_prefix = Column(String(1024))
