@@ -35,7 +35,7 @@
         <template v-if="viewGranted">
           <section class="v4-sec">
             <div class="v4-sec-title">你的接线账号</div>
-            <div class="v4-sec-sub">拿着这三样，去播放器里登录</div>
+            <div class="v4-sec-sub">{{ hasEmbyUsername ? '拿着这三样，去播放器里登录' : '自己设用户名和播放密码。用户名设好后不能改。' }}</div>
 
             <div class="op-rows" :class="{ loading: loading && !accountReloading }">
               <template v-if="accountReloading">
@@ -47,39 +47,99 @@
               <div class="op-row">
                 <span class="op-label">服务器</span>
                 <span class="op-value mono">{{ serverUrl }}</span>
-                <button class="copy-btn" title="复制服务器地址" aria-label="复制服务器地址" @click="copyText(serverUrl, 'server')">
+                <button type="button" class="copy-btn" title="复制服务器地址" aria-label="复制服务器地址" @click="copyText(serverUrl, 'server')">
                   <Check v-if="copiedField === 'server'" :size="14" class="ok" />
                   <Copy v-else :size="14" />
                 </button>
               </div>
+              <form v-if="!hasEmbyUsername" class="cred-form" aria-label="设置接线账号" @submit.prevent="confirmSetCredentials">
+                <div class="op-row">
+                  <label class="op-label" for="emby-cred-username">用户名</label>
+                  <input
+                    id="emby-cred-username"
+                    ref="credUsernameInput"
+                    v-model="newUsername"
+                    class="cred-input"
+                    name="emby_username"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    spellcheck="false"
+                    maxlength="32"
+                    placeholder="字母、数字或下划线"
+                    aria-required="true"
+                    :aria-invalid="credUsernameInvalid ? 'true' : 'false'"
+                    aria-describedby="emby-cred-hint"
+                  />
+                </div>
+                <div class="op-row">
+                  <label class="op-label" for="emby-cred-password">播放密码</label>
+                  <input
+                    id="emby-cred-password"
+                    ref="credPasswordInput"
+                    v-model="newPassword"
+                    class="cred-input"
+                    type="password"
+                    name="emby_play_password"
+                    autocomplete="new-password"
+                    maxlength="64"
+                    placeholder="至少 6 位"
+                    aria-required="true"
+                    :aria-invalid="credPasswordInvalid ? 'true' : 'false'"
+                    aria-describedby="emby-cred-hint"
+                  />
+                </div>
+                <div class="cred-actions">
+                  <p id="emby-cred-hint" class="op-tip cred-hint">用户名 3 到 32 位，设好就不能改。播放密码和网站登录密码无关。</p>
+                  <p v-if="credError" class="modal-error" role="alert">{{ credError }}</p>
+                  <button type="submit" class="op-btn primary" :disabled="settingPwd">
+                    {{ settingPwd ? '保存中' : '保存接线账号' }}
+                  </button>
+                </div>
+              </form>
+              <template v-else>
               <div class="op-row">
                 <span class="op-label">用户名</span>
                 <span class="op-value mono">{{ embyUsername }}</span>
-                <button class="copy-btn" title="复制用户名" aria-label="复制用户名" @click="copyText(embyUsername, 'user')">
+                <button type="button" class="copy-btn" title="复制用户名" aria-label="复制用户名" @click="copyText(embyUsername, 'user')">
                   <Check v-if="copiedField === 'user'" :size="14" class="ok" />
                   <Copy v-else :size="14" />
                 </button>
               </div>
-              <div class="op-row">
+              <div class="op-row op-row-password">
                 <span class="op-label">播放密码</span>
                 <span class="op-value mono">
-                  <template v-if="hasPlayPassword">{{ showPlayPassword && playPwdLoaded ? playPasswordText : '••••••••' }}</template>
+                  <template v-if="playPwdLoaded">{{ showPlayPassword ? playPasswordText : '••••••••' }}</template>
+                  <template v-else-if="hasPlayPassword">••••••••</template>
                   <template v-else>未设置</template>
                 </span>
-                <button
-                  v-if="playPwdLoaded"
-                  class="copy-btn"
-                  :title="showPlayPassword ? '隐藏' : '查看'"
-                  :aria-label="showPlayPassword ? '隐藏' : '查看'"
-                  @click="showPlayPassword = !showPlayPassword"
-                >
-                  <Eye v-if="showPlayPassword" :size="14" />
-                  <EyeOff v-else :size="14" />
-                </button>
-                <button class="text-btn" @click="openSetPlayPwd">
-                  {{ hasPlayPassword ? '修改' : '设置' }}
-                </button>
+                <div class="op-row-actions">
+                  <button
+                    v-if="playPwdLoaded"
+                    type="button"
+                    class="copy-btn"
+                    :title="showPlayPassword ? '隐藏播放密码' : '查看播放密码'"
+                    :aria-label="showPlayPassword ? '隐藏播放密码' : '查看播放密码'"
+                    @click="showPlayPassword = !showPlayPassword"
+                  >
+                    <Eye v-if="showPlayPassword" :size="14" />
+                    <EyeOff v-else :size="14" />
+                  </button>
+                  <button
+                    v-if="playPwdLoaded"
+                    type="button"
+                    class="text-btn"
+                    aria-label="清除本次记住的播放密码"
+                    @click="clearRememberedPassword"
+                  >
+                    清除
+                  </button>
+                  <button type="button" class="text-btn" @click="openSetPlayPwd">
+                    {{ hasPlayPassword ? '修改播放密码' : '设置播放密码' }}
+                  </button>
+                </div>
               </div>
+              </template>
               </template>
             </div>
 
@@ -218,8 +278,9 @@
               <div class="guide-step">
                 <span class="step-num">1</span>
                 <div>
-                  <b>复制上面三样</b>
-                  <p>服务器地址、用户名、播放密码，点右边按钮复制。</p>
+                  <b>{{ hasEmbyUsername ? '复制上面三样' : '先设好接线账号' }}</b>
+                  <p v-if="hasEmbyUsername">服务器地址、用户名、播放密码，点右边按钮复制。</p>
+                  <p v-else>填一个用户名和播放密码。用户名设好就不能改，密码以后可以再改。</p>
                 </div>
               </div>
               <div class="guide-step">
@@ -273,27 +334,76 @@
       </template>
     </div>
 
-    <!-- 设置播放密码弹窗 -->
+    <!-- 修改播放密码（用户名已设好，只改密码） -->
     <Teleport to="body">
       <div v-if="showSetPlayPwd" class="modal-mask" @click.self="closeSetPlayPwd()" @keydown="onModalKeydown">
-        <div class="modal-card" role="dialog" aria-modal="true" aria-label="设置播放密码">
-          <h3 class="modal-title">设置 Emby 播放密码</h3>
-          <p class="modal-desc">这个密码用在 Emby 客户端（Infuse、Forward 等）里登录，至少 6 位。</p>
-          <input
-            v-model="playPwd"
-            type="password"
-            class="modal-input"
-            placeholder="输入新密码（至少 6 位）"
-            aria-label="设置播放密码"
-            autocomplete="new-password"
-          />
-          <p v-if="pwdError" class="modal-error" role="alert">{{ pwdError }}</p>
-          <div class="modal-actions">
-            <button class="op-btn ghost" @click="closeSetPlayPwd()">取消</button>
-            <button class="op-btn primary" :disabled="settingPwd" @click="confirmSetPassword">
-              {{ settingPwd ? '设置中' : '确认' }}
-            </button>
-          </div>
+        <div
+          class="modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="set-play-pwd-title"
+          aria-describedby="set-play-pwd-desc"
+        >
+          <h3 id="set-play-pwd-title" class="modal-title">{{ hasPlayPassword ? '修改播放密码' : '设置播放密码' }}</h3>
+          <p id="set-play-pwd-desc" class="modal-desc">这个密码用在 Emby 客户端里登录，和网站登录密码无关，至少 6 位。</p>
+          <form @submit.prevent="confirmSetPassword">
+            <label class="modal-label" for="set-play-pwd-input">新的播放密码</label>
+            <input
+              id="set-play-pwd-input"
+              ref="setPlayPwdInput"
+              v-model="playPwd"
+              type="password"
+              class="modal-input"
+              autocomplete="new-password"
+              maxlength="64"
+              aria-required="true"
+              :aria-invalid="pwdError ? 'true' : 'false'"
+            />
+            <p v-if="pwdError" class="modal-error" role="alert">{{ pwdError }}</p>
+            <div class="modal-actions">
+              <button type="button" class="op-btn ghost" @click="closeSetPlayPwd()">取消</button>
+              <button type="submit" class="op-btn primary" :disabled="settingPwd">
+                {{ settingPwd ? '保存中' : '确认' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 一键导入前补明文密码（接口不回传密码） -->
+    <Teleport to="body">
+      <div v-if="showImportPwd" class="modal-mask" @click.self="closeImportPwd()" @keydown="onModalKeydown">
+        <div
+          class="modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="import-pwd-title"
+          aria-describedby="import-pwd-desc"
+        >
+          <h3 id="import-pwd-title" class="modal-title">填写播放密码</h3>
+          <p id="import-pwd-desc" class="modal-desc">{{ importPwdDesc }}</p>
+          <form @submit.prevent="confirmImportPassword">
+            <label class="modal-label" for="import-pwd-input">播放密码</label>
+            <input
+              id="import-pwd-input"
+              ref="importPwdInput"
+              v-model="importPwd"
+              type="password"
+              class="modal-input"
+              autocomplete="current-password"
+              maxlength="64"
+              aria-required="true"
+              :aria-invalid="importPwdError ? 'true' : 'false'"
+            />
+            <p v-if="importPwdError" class="modal-error" role="alert">{{ importPwdError }}</p>
+            <div class="modal-actions">
+              <button type="button" class="op-btn ghost" @click="closeImportPwd()">取消</button>
+              <button type="submit" class="op-btn primary" :disabled="settingPwd">
+                {{ settingPwd ? '处理中' : (hasPlayPassword ? '带上密码导入' : '保存并导入') }}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </Teleport>
@@ -344,7 +454,7 @@ import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { Check, CircleStop, Copy, Eye, EyeOff, MonitorSmartphone, Wifi } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
-import { assignImportScheme } from '@/composables/usePlayerSchemes'
+import { assignImportScheme, embyImportTip, withImportPassword } from '@/composables/usePlayerSchemes'
 import { useClipboard } from '@/composables/useClipboard'
 import { humanizeError } from '@/composables/usePanelApi'
 import { toUserMessage } from '@/utils/toUserMessage'
@@ -352,13 +462,10 @@ import {
   embyApi,
   type AccountCard, type AccountRealmCard, type MyPlaybackSession, type ViewPermission,
 } from '@/api'
-import { useUserStore } from '@/stores/user'
-
 const router = useRouter()
 const toast = useToast()
 // R41：复制走全站唯一切口（照抄 CompanionView 同一模式）
 const { copy } = useClipboard()
-const userStore = useUserStore()
 
 const loading = ref(true)
 const account = ref<AccountCard | null>(null)
@@ -395,25 +502,46 @@ const showUnlockConfirm = ref(false)
 const copiedField = ref('')
 const showPlayPassword = ref(false)
 const playPasswordText = ref('')
-/** R50：播放密码明文是否懒加载成功（失败时模板继续显示 ••••••••） */
+/** 本页是否已有明文播放密码。接口不回传密码，只有刚设好或导入前填过才为 true。 */
 const playPwdLoaded = ref(false)
 const showSetPlayPwd = ref(false)
 const playPwd = ref('')
 const pwdError = ref('')
 const settingPwd = ref(false)
-/** R53：一键导入提示文案随密码状态走（三态） */
-const importTip = computed(() => {
-  if (playPwdLoaded.value) return '点一下直接导入，密码一起带过去，只用在这次跳转里，不会存'
-  if (hasPlayPassword.value) return '密码已设置，这次没法自动带过去，导入后在播放器里输一次就行'
-  return '还没设播放密码，导入后在播放器里也能补'
-})
+const newUsername = ref('')
+const newPassword = ref('')
+const credError = ref('')
+const credUsernameInvalid = ref(false)
+const credPasswordInvalid = ref(false)
+const credUsernameInput = ref<HTMLInputElement | null>(null)
+const credPasswordInput = ref<HTMLInputElement | null>(null)
+const setPlayPwdInput = ref<HTMLInputElement | null>(null)
+const showImportPwd = ref(false)
+const importPwd = ref('')
+const importPwdError = ref('')
+const importPwdInput = ref<HTMLInputElement | null>(null)
+const pendingScheme = ref<{ url: string; name: string } | null>(null)
+
+const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/
+
+watch(newUsername, () => { credUsernameInvalid.value = false })
+watch(newPassword, () => { credPasswordInvalid.value = false })
 
 /** 是否有查看权限：以卡里 view_permission.granted 为准（和 ProfileView 同一口径） */
 const viewGranted = computed(() => !!viewPermission.value?.granted)
 const hasPlayPassword = computed(() => !!account.value?.has_password)
 
 const serverUrl = computed(() => accountExtra.value.server_url || account.value?.base_url || EMPTY_DASH)
-const embyUsername = computed(() => account.value?.emby_username || userStore.user?.username || EMPTY_DASH)
+/** 空串不当成账号，也不回退到网站登录名，更不展示 emby_ 占位。 */
+const embyUsername = computed(() => (account.value?.emby_username || '').trim())
+const hasEmbyUsername = computed(() => embyUsername.value.length > 0)
+/** 三态：还没用户名 / 有账号但本页没有明文密码 / 可以带密码导入 */
+const importTip = computed(() => embyImportTip(hasEmbyUsername.value, playPwdLoaded.value))
+const importPwdDesc = computed(() => (
+  hasPlayPassword.value
+    ? '把播放密码填上，这次导入会带过去。填错可以点清除再填，不会改掉已经设好的密码。'
+    : '还没设过播放密码。确认后会记成你的播放密码，并带进这次导入。'
+))
 const isFreeRealm = computed(() => !!accountExtra.value.realm_free || !!viewPermission.value?.realm_free)
 const realmNote = computed(() => accountExtra.value.realm_note || viewPermission.value?.realm_note || '')
 const realmCards = computed((): AccountRealmCard[] => {
@@ -460,22 +588,92 @@ async function copyText(text: string, field: string) {
   copyTimer = window.setTimeout(() => { if (copiedField.value === field) copiedField.value = '' }, 1800)
 }
 
-async function confirmSetPassword() {
-  pwdError.value = ''
-  if (!playPwd.value || playPwd.value.length < 6) {
-    pwdError.value = '密码至少 6 位'
+function rememberPlayPassword(password: string) {
+  playPasswordText.value = password
+  playPwdLoaded.value = true
+  showPlayPassword.value = false
+}
+
+function clearRememberedPassword() {
+  playPasswordText.value = ''
+  playPwdLoaded.value = false
+  showPlayPassword.value = false
+}
+
+function passwordError(password: string): string {
+  if (!password || password.length < 6) return '密码至少 6 位'
+  if (password.length > 64) return '密码最长 64 位'
+  return ''
+}
+
+function focusCredUsername() {
+  nextTick(() => {
+    credUsernameInput.value?.scrollIntoView({ block: 'center' })
+    credUsernameInput.value?.focus()
+  })
+}
+
+async function confirmSetCredentials() {
+  if (settingPwd.value) return
+  credError.value = ''
+  const username = newUsername.value.trim()
+  const password = newPassword.value
+  credUsernameInvalid.value = !USERNAME_RE.test(username)
+  credPasswordInvalid.value = passwordError(password) !== ''
+  if (credUsernameInvalid.value) {
+    credError.value = '用户名需 3-32 位，仅限字母、数字、下划线'
+    focusCredUsername()
+    return
+  }
+  if (credPasswordInvalid.value) {
+    credError.value = passwordError(password)
+    nextTick(() => credPasswordInput.value?.focus())
     return
   }
   settingPwd.value = true
   try {
-    await embyApi.setPassword(playPwd.value)
-    toast.success('播放密码已设置')
-    // R53：本会话内记住明文（后端 bcrypt 存的、取不回来）——密码行查看按钮与一键导入都用它
-    playPasswordText.value = playPwd.value
-    playPwdLoaded.value = true
-    playPwd.value = ''
+    // 第一次设账号才带用户名。已有用户名走修改密码，不能再带。
+    const res = await embyApi.setPassword(password, username)
+    rememberPlayPassword(password)
+    newUsername.value = ''
+    newPassword.value = ''
+    const refreshed = await refreshAccount(true)
+    const saved = (account.value?.emby_username || res?.emby_username || '').trim()
+    if (saved && saved !== username) {
+      toast.info('服务器保存的用户名和你填的不一样，设好后不能再改')
+    } else if (refreshed) {
+      toast.success('接线账号已设好')
+    } else {
+      toast.info('账号已保存，页面没刷新成功，重新进入本页就能看到')
+    }
+  } catch (e) {
+    const msg = humanizeError(e)
+    credError.value = msg
+    // 用户名其实已经有了（重复提交）时，拉一次卡切到只读
+    const refreshed = await refreshAccount(true)
+    if (refreshed && hasEmbyUsername.value) toast.info(msg)
+  } finally {
+    settingPwd.value = false
+  }
+}
+
+async function confirmSetPassword() {
+  if (settingPwd.value) return
+  pwdError.value = ''
+  const password = playPwd.value
+  const err = passwordError(password)
+  if (err) {
+    pwdError.value = err
+    nextTick(() => setPlayPwdInput.value?.focus())
+    return
+  }
+  settingPwd.value = true
+  try {
+    // 用户名已存在，只传密码。再传用户名后端会 400。
+    await embyApi.setPassword(password)
+    rememberPlayPassword(password)
+    toast.success('播放密码已更新')
     closeSetPlayPwd()
-    showPlayPassword.value = false
     await refreshAccount(true)
   } catch (e) {
     pwdError.value = humanizeError(e)
@@ -504,26 +702,13 @@ async function confirmUnlock() {
   }
 }
 
-async function openScheme(url: string, appName = '播放器') {
+async function jumpScheme(url: string, appName: string, password: string) {
   // R50：空地址直接提示，不跳转（空串 location.href 会刷新当前页）
   if (!url) {
     toast.info('播放地址无效')
     return
   }
-  let finalUrl = url
-  // R53：一键导入只用本会话已知密码（hasPlayPassword 但本会话未知时带不过去——明文取不回）
-  if (playPwdLoaded.value) {
-    try {
-      const u = new URL(url)
-      // 常见 scheme 参数名兼容：password / pwd
-      if (!u.searchParams.has('password') && !u.searchParams.has('pwd')) {
-        u.searchParams.set('password', playPasswordText.value)
-      }
-      finalUrl = u.toString()
-    } catch {
-      finalUrl = url
-    }
-  }
+  const finalUrl = withImportPassword(url, password)
   // R41：没装 App 时 iOS 跳转是死路 —— 跳转前先说一声，提醒没装的去应用商店
   toast.info(`正在打开${appName}，没装的话请先去应用商店安装`)
   // R50：给 toast 一点展示时间再跳转，否则提示来不及被看到
@@ -531,6 +716,74 @@ async function openScheme(url: string, appName = '播放器') {
   await new Promise((resolve) => setTimeout(resolve, 600))
   // 与发现页「去看」同一跳转：只接受 App scheme，拒绝 http(s)
   if (!assignImportScheme(finalUrl)) toast.info('播放地址无效')
+}
+
+async function openScheme(url: string, appName = '播放器') {
+  if (!url) {
+    toast.info('播放地址无效')
+    return
+  }
+  if (!hasEmbyUsername.value) {
+    toast.info('先设好用户名和播放密码，再导入')
+    focusCredUsername()
+    return
+  }
+  // 本页还没有明文密码：先问一次，再拼进 scheme。问过之后复用 playPwdLoaded。
+  if (!playPwdLoaded.value) {
+    pendingScheme.value = { url, name: appName }
+    importPwdError.value = ''
+    importPwd.value = ''
+    recordTrigger()
+    showImportPwd.value = true
+    nextTick(() => importPwdInput.value?.focus())
+    return
+  }
+  await jumpScheme(url, appName, playPasswordText.value)
+}
+
+async function confirmImportPassword() {
+  if (settingPwd.value) return
+  importPwdError.value = ''
+  const password = importPwd.value
+  const pending = pendingScheme.value
+  if (!pending) {
+    closeImportPwd()
+    return
+  }
+  if (!password) {
+    importPwdError.value = '请填写播放密码'
+    nextTick(() => importPwdInput.value?.focus())
+    return
+  }
+  if (password.length > 64) {
+    importPwdError.value = '密码最长 64 位'
+    nextTick(() => importPwdInput.value?.focus())
+    return
+  }
+  // 已经设过密码：只拿来拼链接，不把用户填错的值写回服务器。
+  // 还没设过：先保存，播放器里才能登上去。
+  if (!hasPlayPassword.value) {
+    const err = passwordError(password)
+    if (err) {
+      importPwdError.value = err
+      nextTick(() => importPwdInput.value?.focus())
+      return
+    }
+  }
+  settingPwd.value = true
+  try {
+    if (!hasPlayPassword.value) {
+      await embyApi.setPassword(password)
+      await refreshAccount(true)
+    }
+    rememberPlayPassword(password)
+    closeImportPwd()
+    await jumpScheme(pending.url, pending.name, password)
+  } catch (e) {
+    importPwdError.value = humanizeError(e)
+  } finally {
+    settingPwd.value = false
+  }
 }
 
 function daysLeft(r: AccountRealmCard): number | null {
@@ -605,7 +858,8 @@ function confirmStopSession(session: MyPlaybackSession) {
 /** Esc 关闭各确认弹窗（照 WishlistView 模式） */
 function onEsc(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
-  if (showSetPlayPwd.value) closeSetPlayPwd()
+  if (showImportPwd.value) closeImportPwd()
+  else if (showSetPlayPwd.value) closeSetPlayPwd()
   else if (showUnlockConfirm.value) closeUnlockConfirm()
   else if (sessionToStop.value) closeStopSession()
 }
@@ -657,7 +911,19 @@ function restoreTriggerFocus() {
     target.focus?.()
   }
 }
-function closeSetPlayPwd() { showSetPlayPwd.value = false; restoreTriggerFocus() }
+function closeSetPlayPwd() {
+  showSetPlayPwd.value = false
+  playPwd.value = ''
+  pwdError.value = ''
+  restoreTriggerFocus()
+}
+function closeImportPwd() {
+  showImportPwd.value = false
+  importPwd.value = ''
+  importPwdError.value = ''
+  pendingScheme.value = null
+  restoreTriggerFocus()
+}
 function closeUnlockConfirm() { showUnlockConfirm.value = false; restoreTriggerFocus() }
 function closeStopSession() {
   // R50：先落焦点再关弹窗——此时弹窗仍在 DOM，触发按钮若已被移除可落到弹窗关闭按钮/标题
@@ -669,7 +935,7 @@ function closeStopSession() {
  *  代码路径上三者互斥（解锁弹窗只在没权限分支，另两个只在有权限分支；弹窗打开时页面被遮罩盖住点不到别的），
  *  但用 anyModalOpen 统一 watch 而不是各写一遍，万一叠加也锁不死：三个全关才释放。 */
 const anyModalOpen = computed(
-  () => showSetPlayPwd.value || showUnlockConfirm.value || sessionToStop.value !== null,
+  () => showSetPlayPwd.value || showImportPwd.value || showUnlockConfirm.value || sessionToStop.value !== null,
 )
 /** R50：body 滚动锁——保存打开前的值，关闭时恢复（避免与其他锁滚动逻辑互相覆盖） */
 let savedBodyOverflow = ''
@@ -684,9 +950,10 @@ watch(anyModalOpen, (open) => {
 function openSetPlayPwd() {
   // R37 P3-9：重开弹窗清掉旧错误文案
   pwdError.value = ''
+  playPwd.value = ''
   recordTrigger()
   showSetPlayPwd.value = true
-  focusOpenModalCard()
+  nextTick(() => setPlayPwdInput.value?.focus())
 }
 function openUnlockConfirm() { recordTrigger(); showUnlockConfirm.value = true; focusOpenModalCard() }
 
@@ -799,6 +1066,41 @@ watch(viewGranted, (granted) => {
   /* 透明 padding + 负 margin：文字视觉不变，点击区扩到 ≥44px（R50：横向 4px→12px） */
   padding: 15px 12px;
   margin: -9px -8px;
+}
+.text-btn:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+.op-row-password { flex-wrap: wrap; row-gap: 4px; }
+.op-row-actions {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  flex: none;
+}
+.op-row-actions .text-btn { white-space: nowrap; margin: 0; min-height: 44px; }
+.op-row-actions .copy-btn { margin: 0; }
+.cred-form { border-top: 1px dashed var(--line); }
+.cred-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  font-family: ui-monospace, monospace;
+  padding: 8px 10px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--paper-r-md, 10px);
+  background: var(--paper-card);
+  color: var(--ink);
+}
+.cred-input::placeholder { color: var(--ink2); opacity: 0.7; }
+.cred-input:focus-visible { outline: 2px solid var(--red); outline-offset: 1px; }
+.cred-actions { padding: 4px 16px 14px; }
+.cred-hint { margin-top: 0; }
+.cred-actions .modal-error { margin: 0 0 8px; }
+.cred-actions .op-btn { width: 100%; }
+.modal-label {
+  display: block;
+  font-size: 12px;
+  color: var(--ink2);
+  letter-spacing: 1px;
+  margin: 0 0 6px;
 }
 .op-tip {
   font-size: 12px;

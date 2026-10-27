@@ -337,7 +337,9 @@ export interface AccountCard {
   server_id: string
   server_name: string
   base_url: string
-  emby_username: string
+  /** 未自建时为空串或 null。接口不会再发明 emby_ 用户名。 */
+  emby_username: string | null
+  /** 明文永不下发，恒为 null */
   emby_password: null
   has_password: boolean
   import_schemes: Record<string, string>
@@ -477,8 +479,14 @@ export interface MyPlaybackSession {
   updated_at?: string | null
 }
 
+/** POST /api/user/emby/password 的返回。明文密码不会出现在这里。 */
+export interface SetEmbyPasswordResult {
+  success?: boolean
+  emby_username?: string | null
+}
+
 export const embyApi = {
-  // 账号卡（服务器地址 / Emby 用户名 / 播放器一键导入 scheme）
+  // 账号卡（服务器地址 / Emby 用户名 / 播放器一键导入 scheme，scheme 不含密码）
   getAccountCard: () => api.get<never, AccountCard>('/api/user/emby/server'),
 
   // 公益服：花积分解锁 Emby 账号/线路查看权限（幂等）
@@ -486,8 +494,16 @@ export const embyApi = {
     api.post<never, { success: boolean; already: boolean; expires_at: string | null; points_spent?: number; balance?: number }>(
       '/api/user/emby/unlock-view', { realm_id: realmId ?? null }),
 
-  // 设置/修改 Emby 播放密码
-  setPassword: (password: string) => api.post('/api/user/emby/password', { password }),
+  /**
+   * 设置接线账号。第一次必须带用户名；用户名已存在后只改密码。
+   * 再带 username 时后端回 400，调用方不要在已有用户名时传入。
+   */
+  setPassword: (password: string, username?: string) => {
+    const body: { password: string; username?: string } = { password }
+    const name = username?.trim()
+    if (name) body.username = name
+    return api.post<never, SetEmbyPasswordResult>('/api/user/emby/password', body)
+  },
 
   // 续看列表（首页「继续观看」：单集按剧聚合，带上次播放的客户端 / 设备）
   getResume: (limit = 12) => api.get<never, { items: PortalResumeItem[] }>('/api/user/emby/resume', { params: { limit } }),

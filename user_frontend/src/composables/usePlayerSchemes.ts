@@ -27,6 +27,32 @@ export function assignImportScheme(url: string): boolean {
   return true
 }
 
+/**
+ * 把本页记住的播放密码拼进导入链接。
+ * 已有 password / pwd 时不覆盖；其余查询参数保持原样，避免把地址重新编码坏掉。
+ * 密码只放进这次跳转，不写存储。
+ */
+export function withImportPassword(url: string, password: string): string {
+  if (!url || !password) return url
+  const hashAt = url.indexOf('#')
+  const before = hashAt >= 0 ? url.slice(0, hashAt) : url
+  const hash = hashAt >= 0 ? url.slice(hashAt) : ''
+  if (/[?&](?:password|pwd)=/i.test(before)) return url
+  const joiner = before.includes('?') ? '&' : '?'
+  return `${before}${joiner}password=${encodeURIComponent(password)}${hash}`
+}
+
+/** 接线员一键导入说明：还没用户名 / 有账号但本页没有明文密码 / 可以带密码导入。 */
+export function embyImportTip(hasUsername: boolean, playPwdLoaded: boolean): string {
+  if (!hasUsername) {
+    return '还没有接线账号。先在上面设好用户名和播放密码，再点导入，密码会一起带过去。'
+  }
+  if (!playPwdLoaded) {
+    return '点导入时会先问一次播放密码，填上就一起带过去。本页开着不用再填，离开或点清除就清掉。'
+  }
+  return '点一下直接导入，密码一起带过去，只用在这次跳转里，不会存'
+}
+
 export function listImportSchemes(schemes: Record<string, string> | null | undefined): PlayerScheme[] {
   if (!schemes || typeof schemes !== 'object') return []
   const keys = Object.keys(schemes)
