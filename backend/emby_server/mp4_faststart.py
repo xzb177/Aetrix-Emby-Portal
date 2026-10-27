@@ -618,7 +618,13 @@ def select_backfill_jobs(session, limit: int = 0) -> list[dict]:
 
 
 def run_backfill(session, *, apply: bool, limit: int = 0, process=None) -> dict:
-    """存量入口。默认不改文件。"""
+    """存量入口。默认不改文件。
+
+    计数口径：rewritten + kept == processed 恒成立。already_front
+    （库里 moov=back 是旧数据、实测文件头已在前，常见于重写成功
+    但 mark_moov_front 记库失败后的下一轮）不算 rewritten，但原件
+    原样保留，故计 kept，不让 summary 里凭空少几条。
+    """
     allowed, why = backfill_will_rewrite(apply=apply)
     jobs = select_backfill_jobs(session, limit=limit)
     if not allowed:
@@ -632,7 +638,9 @@ def run_backfill(session, *, apply: bool, limit: int = 0, process=None) -> dict:
         result = process_fn(job)
         if result.get("ok") and result.get("reason") == "rewritten":
             rewritten += 1
-        elif not result.get("ok"):
+        else:
+            # 非 rewritten 一律是原件保留：失败，以及 ok 但已是
+            # already_front（文件头已在前，无需重写）。
             kept += 1
         time.sleep(0)  # 让出；真正的节流是单线程顺序，不并行打网盘
     return {"ran": True, "reason": "apply", "candidates": len(jobs),
