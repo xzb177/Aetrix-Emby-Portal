@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from backend import models
 from backend.database import SessionLocal, init_db
 from backend.emby_server import models as em
-from backend.emby_server.auth import hash_emby_token
+from backend.emby_server.auth import ensure_emby_credentials, hash_emby_token
 from backend.main import app
 from backend.security import hash_password
 from backend.integrations.store import invalidate
@@ -88,6 +88,9 @@ db.commit()
 item_guid = item.guid
 staff_name, a_name, b_name = staff.username, user_a.username, user_b.username
 plan_id = plan.id
+# 设备风控用门户用户名走 AuthenticateByName。客户端只验 emby_password，
+# 门户登录不再自动补这份哈希，这里显式写入，不发明接线用户名。
+ensure_emby_credentials(db, user_a, password="pass12345")
 db.close()
 
 
