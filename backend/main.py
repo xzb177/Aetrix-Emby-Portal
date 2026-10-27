@@ -38,6 +38,7 @@ from backend.api.admins_admin import router as admins_router
 # 首次运行向导（setup_mode）：建第一个管理员，完成后入口永久关闭
 from backend.api.setup import router as setup_router
 from backend.api.playback_admin import router as playback_admin_router
+from backend.api.series_follow_api import router as series_follow_router
 from backend.api.admin_readonly import router as admin_readonly_router
 from backend.api.media_sets_api import (
     admin_media_sets_router,
@@ -786,6 +787,7 @@ app.include_router(notification_router)
 
 # 用户端 API 路由
 app.include_router(user_router)
+app.include_router(series_follow_router)
 # 首页聚合：9 项首屏数据一次取回（HomeView 骨架屏优化，见 backend/api/home_summary.py）
 app.include_router(home_summary_router)
 app.include_router(homepage_sections_router)
