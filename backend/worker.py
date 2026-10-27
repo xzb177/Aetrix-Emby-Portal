@@ -738,6 +738,22 @@ def main() -> int:
                 logger.info("苹果 CMS 同步未开启，定时同步不启动")
         except Exception as e:
             logger.warning(f"启动苹果 CMS 定时同步失败（可忽略）: {e}")
+        # 上游聚合定时调度（准备线，开关默认关）：仅
+        # UPSTREAM_AGGREGATE_SCHEDULE_ENABLED=1 时启动；关时不启动、
+        # 不发任何上游请求，全站行为逐字不变。本块只加自己的启动行，
+        # 不动苹果 CMS 调度 / 探活工人的接线行。调度本体复用手动聚合
+        # 入口（见 backend/emby_server/upstream_aggregate_scheduler.py）。
+        try:
+            from backend.emby_server import upstream_aggregate_scheduler
+
+            if upstream_aggregate_scheduler.start_upstream_aggregate_scheduler(
+                    _shutdown_event):
+                started.append("upstream_aggregate_scheduler")
+                logger.info("✅ 上游聚合定时调度已启动")
+            else:
+                logger.info("上游聚合定时调度未开启，不启动")
+        except Exception as e:
+            logger.warning(f"启动上游聚合定时调度失败（可忽略）: {e}")
         # 上游探活守护 + 健康落库同步（FMBY #25 25-3/25-14，生产接线）：
         # 只接线，不改守护本体、不碰投影工人、不碰扫描/播放逻辑。
         # 两守护各有总开关（默认关），关时线程空转、不发请求、不读写；
