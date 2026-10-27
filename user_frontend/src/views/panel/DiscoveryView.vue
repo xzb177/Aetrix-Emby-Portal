@@ -41,7 +41,7 @@
         <GreetingCard v-if="isWide" class="d-only" />
 
         <!-- 区块锚点导航（桌面专属）：只列当前 DOM 里真实存在的区段，
-             媒体库（disc-libs）无库时不渲染、继续观看注册表无该分区时不渲染，
+             媒体库（disc-libs）无库时不渲染，
              这些情况下锚点不列出来，避免点锚点落空。 -->
         <nav v-if="isWide" class="d3-card d3-anchor d-only" aria-label="区块导航">
           <a
@@ -98,7 +98,7 @@
         </section>
       </div>
 
-      <!-- 中栏：今日封存 / 继续观看 /（移动端）服务器脉搏 -->
+      <!-- 中栏：今日封存 /（移动端）服务器脉搏 -->
       <div class="d3-mid">
         <!-- 今日封存：盲盒 -->
         <section class="v4-sec d3-ord-shelf" id="disc-shelf">
@@ -157,20 +157,12 @@
           </div>
         </section>
 
-        <!-- 首页分区（媒体库学习 L6：注册表驱动；取不到/开关关时回落旧布局） -->
+        <!-- 首页分区（媒体库学习 L6：注册表驱动；继续观看分区已整体删除，不再渲染） -->
         <template v-if="isWide && homeSections">
           <template v-for="s in homeSections" :key="s.key">
-            <ContinueWatch
-              v-if="s.key === 'continue_watching'"
-              :items="s.items as PortalResumeItem[]"
-              @hidden="onResumeHidden"
-              @unhidden="reloadHomeSections"
-            />
-            <RecentUpdates v-else-if="s.key === 'recently_updated'" :items="s.items as RecentAddedItem[]" />
+            <RecentUpdates v-if="s.key === 'recently_updated'" :items="s.items as RecentAddedItem[]" />
           </template>
         </template>
-        <!-- 继续观看（桌面走注册表/自取；手机同样渲染，不再只在 isWide 时出现） -->
-        <ContinueWatch v-else />
 
         <!-- 实时动态流（桌面专属；C档第3批：后端 /api/panel/feed 已随 PR #1003 上线；
              无全量页面，故不设「查看全部」；realm_id 不传=跟随当前服） -->
@@ -236,9 +228,8 @@ import TicketCard from '@/components/panel/TicketCard.vue'
 import WorldHome from '@/components/panel/WorldHome.vue'
 import GreetingCard from '@/components/panel/GreetingCard.vue'
 import PulseLine from '@/components/panel/PulseLine.vue'
-import ContinueWatch from '@/components/panel/ContinueWatch.vue'
 import RecentUpdates from '@/components/panel/RecentUpdates.vue'
-import { embyApi, type HomeSection, type PortalResumeItem, type RecentAddedItem } from '@/api'
+import { embyApi, type HomeSection, type RecentAddedItem } from '@/api'
 import DiscoveryRightRail from '@/components/panel/DiscoveryRightRail.vue'
 import LibraryBand from '@/components/panel/LibraryBand.vue'
 import { useHomeViewMode } from '@/composables/useHomeViewMode'
@@ -343,11 +334,10 @@ function syncWide() {
 
 /* ---------- 区块锚点导航（桌面专属）：滚动联动高亮 ---------- */
 // 锚点只列 DOM 里真实存在的区段：visibleAnchors 在 setupSpy 里按
-// document.getElementById 重建（disc-libs 只在有库时渲染、继续观看在注册表
-// 无该分区时不渲染，固定列全量会在这些情况下指向不存在的区段）。
+// document.getElementById 重建（disc-libs 只在有库时渲染，
+// 固定列全量会在这些情况下指向不存在的区段）。
 const anchors = [
   { id: 'disc-shelf', label: '今日封存' },
-  { id: 'disc-watch', label: '继续观看' },
   { id: 'disc-letter', label: '每日一封' },
   { id: 'feed', label: '实时动态' },
   { id: 'disc-libs', label: '媒体库' },
@@ -491,16 +481,6 @@ async function loadHomeSections() {
     homeSections.value = null
   }
 }
-function reloadHomeSections() {
-  void loadHomeSections()
-}
-/** 注册表模式下藏掉一张卡：只改本地分区数据，不重拉。 */
-function onResumeHidden(guid: string) {
-  const sec = homeSections.value?.find((s) => s.key === 'continue_watching')
-  if (!sec) return
-  sec.items = (sec.items as PortalResumeItem[]).filter((it) => (it.episode_id ?? it.id) !== guid)
-}
-
 onMounted(() => {
   // perf 2026-10-13：合并为 1 次请求（4 个 RTT → 1 个 RTT）
   void panel.loadHome()
