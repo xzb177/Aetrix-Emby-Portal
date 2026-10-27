@@ -261,8 +261,10 @@ def aggregate_upstream_source(
 ):
     """手动触发某源的目录聚合（25-2 接线，手动动作，不自动调度）。
 
-    流程：拉该源目录 → aggregate_sources → 配对本地条目 →
-    写路径开关开时 record_mapping 写映射 → 回配对结果。
+    流程：先取上游库清单（/Library/MediaFolders），再逐库按 ParentId
+    拉目录 → 逐库 aggregate_sources → 逐库配对本地条目 →
+    写路径开关开时 record_mapping 写映射 → 回配对结果与逐库进度。
+    单库失败不毁已写映射（见 failed_libraries），重跑靠 upsert 续跑。
     写映射的提交在本接口内完成（record_mapping 只 flush）。
     错误映射：查无此源 404；源未启用 / applecms 型 400；
     凭据失效 409；上游额度 429；上游不可用 502。

@@ -42,9 +42,15 @@
 本模块照实回 ``written=0`` 与 ``mapping_enabled=false``，
 配对结果照常返回（管理员先看配对质量、再决定开不开写）。
 
-有界性：单次手动聚合最多拉 20000 条目录记录，超了响亮报错
-（不静默截断）；上游 TotalRecordCount 说谎导致死循环时，
-同样由该上限截停。
+有界性：按库分批聚合，不再整源一把梭。先经
+``/Library/MediaFolders`` 取上游库清单，再逐库按 ``ParentId``
+拉取、逐库聚合配对写映射；每库仍受单库上限保护（见
+``MAX_RECORDS_PER_RUN``，现为单库上限），整源超 20000 条不再
+全盘 502。单库失败只记入该库的失败项、继续下一库，已写映射
+不受影响；重跑靠 ``record_mapping`` 的幂等 upsert 续跑（已写库
+不建新行），本模块不新增持久检查点表——断点续跑 = 重跑本接口，
+失败库重试、成功库 upsert 不重复。全局性失败（源未启用、
+凭据失效、额度耗尽）发生在首库之前时仍响亮报错，不写任何东西。
 """
 
 from __future__ import annotations
@@ -65,8 +71,13 @@ from backend.emby_server import upstream_sources as us
 
 logger = logging.getLogger(__name__)
 
-#: 单次手动聚合的目录记录上限（防上游 TotalRecordCount 说谎死循环）。
+#: 单库目录记录上限（防上游 TotalRecordCount 说谎死循环）。
+#: 历史名 MAX_RECORDS_PER_RUN 即此单库上限，不再是整源上限：
+#: 整源可以超过 20000 条，只要单库不超；单库超了只失败该库。
 MAX_RECORDS_PER_RUN = 20000
+
+#: 单库上限的显式别名，与 MAX_RECORDS_PER_RUN 同值。
+MAX_RECORDS_PER_LIBRARY = MAX_RECORDS_PER_RUN
 
 #: 单页默认大小（Emby StartIndex/Limit 分页）。
 DEFAULT_PAGE_SIZE = 100
@@ -219,20 +230,18 @@ def _api_key_for_source(source, *, http_post: Optional[Callable] = None):
     raise _unavailable_error()
 
 
-def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
-                           http_post: Optional[Callable] = None,
-                           page_size: int = DEFAULT_PAGE_SIZE
-                           ) -> List[agg.UpstreamCatalogRecord]:
-    """拉回某源的全部目录记录（Emby Items 分页，Recursive）。
+def _resolve_api_key(source, *, http_post=None):
+    """取 Items 请求用的 api_key；None = 匿名。只解析一次供逐库复用。"""
+    return _api_key_for_source(source, http_post=http_post)
 
-    只拉 Movie / Series / Episode 三型；季不进聚合（不是配对目标）。
-    取页失败（401/403/429/5xx/断连）按播放口同款短码映射，绝不
-    把半页数据当成完整目录返回。
+
+def _page_fetcher(source, api_key, get, *, parent_id=None):
+    """造一个 Emby Items 取页回调：parent_id 给了就按库拉，不给走整源。
+
+    错误映射与旧整源路径同款：401/403→凭据失效、429→额度、
+    其余→上游不可用，绝不把半页数据当成完整目录返回。
     """
-    if page_size <= 0:
-        raise ValueError("page_size must be positive")
-    get = _default_http_get if http_get is None else http_get
-    api_key = _api_key_for_source(source, http_post=http_post)
+
     base = (source.base_url or "").rstrip("/")
     headers = _source_headers(source)
 
@@ -244,6 +253,8 @@ def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
             "StartIndex": str(start),
             "Limit": str(limit),
         }
+        if parent_id:
+            params["ParentId"] = str(parent_id)
         if api_key:
             params["api_key"] = api_key
         url = f"{base}/Items?{urllib.parse.urlencode(params)}"
@@ -256,6 +267,73 @@ def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
             raise _quota_error()
         raise _unavailable_error()
 
+    return fetch_page
+
+
+def fetch_upstream_libraries(source, *, http_get=None,
+                             http_post=None, api_key=None) -> List[dict]:
+    """取上游库清单（Emby /Library/MediaFolders）。
+
+    返回 [{"id": ..., "name": ...}]（按上游顺序，Id 去重）。
+    该端点是 Emby 官方库清单口（本仓库 compat_routes 亦实现同口），
+    api_key 形态同样走 api_key 参数。空清单 = 上游无可见库，照实
+    返回空列表，不回落整源拉取（回落会重回整源上限问题）。
+    """
+    get = _default_http_get if http_get is None else http_get
+    if api_key is None:
+        api_key = _resolve_api_key(source, http_post=http_post)
+    base = (source.base_url or "").rstrip("/")
+    headers = _source_headers(source)
+    params = {}
+    if api_key:
+        params["api_key"] = api_key
+    url = f"{base}/Library/MediaFolders"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    status, body = get(url, headers, HTTP_TIMEOUT_SEC)
+    if status in (401, 403):
+        raise _credential_error()
+    if status == 429:
+        raise _quota_error()
+    if status != 200 or body is None:
+        raise _unavailable_error()
+    if isinstance(body, list):
+        items = body
+    elif isinstance(body, dict):
+        items = body.get("Items") or []
+    else:
+        items = []
+    libraries: List[dict] = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        lib_id = item.get("Id")
+        if not lib_id or str(lib_id) in seen:
+            continue
+        seen.add(str(lib_id))
+        libraries.append({"id": str(lib_id),
+                          "name": str(item.get("Name") or "")})
+    return libraries
+
+
+def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
+                           http_post: Optional[Callable] = None,
+                           page_size: int = DEFAULT_PAGE_SIZE
+                           ) -> List[agg.UpstreamCatalogRecord]:
+    """拉回某源的全部目录记录（Emby Items 分页，Recursive）。
+
+    遗留整源路径：只拉 Movie / Series / Episode 三型；季不进聚合。
+    新的 run_manual_aggregation 不再走这里（走逐库路径），本函数
+    保留供显式整源调用与旧测试使用；单库上限语义见模块头。
+    取页失败（401/403/429/5xx/断连）按播放口同款短码映射，绝不
+    把半页数据当成完整目录返回。
+    """
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    get = _default_http_get if http_get is None else http_get
+    api_key = _resolve_api_key(source, http_post=http_post)
+    fetch_page = _page_fetcher(source, api_key, get)
     records: List[agg.UpstreamCatalogRecord] = []
     for record in agg.iter_emby_pages(fetch_page, source_id=str(source.id),
                                       page_size=page_size):
@@ -263,8 +341,41 @@ def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
         if len(records) > MAX_RECORDS_PER_RUN:
             raise UpstreamAggregateRunError(
                 502, "upstream_catalog_too_large",
-                f"上游目录超过单次手动聚合上限 "
-                f"{MAX_RECORDS_PER_RUN} 条，未做截断，请分源/分库处理")
+                f"上游单库目录超过单库聚合上限 "
+                f"{MAX_RECORDS_PER_RUN} 条，未做截断")
+    return records
+
+
+def fetch_upstream_records_for_parent(
+        source, parent_id, *, http_get: Optional[Callable] = None,
+        http_post: Optional[Callable] = None,
+        page_size: int = DEFAULT_PAGE_SIZE,
+        api_key: Optional[str] = None) -> List[agg.UpstreamCatalogRecord]:
+    """按 ParentId 拉回某上游库的目录记录（逐库分批的核心）。
+
+    与整源路径同款分页与错误映射，唯一区别是多传 ParentId；
+    category_id 记为该库 id，供聚合层按库分区。单库超上限时
+    响亮报错（调用方 run 按库捕获、继续下一库，不毁已写映射）。
+    api_key 传了就复用（逐库不重复换 token），没传则现解析。
+    """
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    if not parent_id:
+        raise ValueError("parent_id 不能为空")
+    get = _default_http_get if http_get is None else http_get
+    if api_key is None:
+        api_key = _resolve_api_key(source, http_post=http_post)
+    fetch_page = _page_fetcher(source, api_key, get, parent_id=parent_id)
+    records: List[agg.UpstreamCatalogRecord] = []
+    for record in agg.iter_emby_pages(
+            fetch_page, source_id=str(source.id),
+            category_id=str(parent_id), page_size=page_size):
+        records.append(record)
+        if len(records) > MAX_RECORDS_PER_RUN:
+            raise UpstreamAggregateRunError(
+                502, "upstream_catalog_too_large",
+                f"上游库 {parent_id} 目录超过单库聚合上限 "
+                f"{MAX_RECORDS_PER_RUN} 条，未做截断，该库跳过")
     return records
 
 
@@ -413,13 +524,22 @@ def run_manual_aggregation(db: Session, source, *,
                            http_get: Optional[Callable] = None,
                            http_post: Optional[Callable] = None,
                            page_size: int = DEFAULT_PAGE_SIZE) -> dict:
-    """手动聚合一轮：拉目录 → 聚合 → 配对 → 开关开时写映射。
+    """手动聚合一轮：按库分批拉目录 → 逐库聚合 → 逐库配对 → 开关开时写映射。
 
-    前置校验（响亮失败，不静默跳过）：
+    前置校验（响亮失败，不静默跳过，发生在任何写库之前）：
     - 源不存在由调用方先 404（本函数不查源行）；
     - 源未启用 → 400（停用即断聚合）；
     - applecms 型 → 400（走它自己的同步，不按 Emby 协议撞接口）。
-    返回的 pairs 含 written 标记：开关关时一律 false、written=0。
+    逐库语义：
+    - 先取库清单，再逐库拉取/聚合/配对/写映射（flush，调用方事务内提交）；
+    - 单库失败（拉取失败、单库超上限、聚合 error）只记入该库失败项，
+      继续下一库，已写库的映射不受影响；返回时照实带 failed_libraries；
+    - 全局性失败（库清单取不到凭据/额度）仍响亮报错，此时尚未写库。
+    返回的 pairs 含 written 标记：开关关时一律 false、written=0；
+    每对另带 library_id / library_name 供追溯；written 计 upsert
+    返回的行数（含重复三元组的更新行，与旧口径一致）。
+    断点续跑：重跑本接口即可，成功库的映射 upsert 不建新行，
+    失败库重试；本函数不新增持久检查点表。
     """
     if not getattr(source, "enabled", False):
         raise UpstreamAggregateRunError(
@@ -428,38 +548,83 @@ def run_manual_aggregation(db: Session, source, *,
         raise UpstreamAggregateRunError(
             400, "source_type_not_supported",
             "苹果 CMS 源走自己的同步，不走 Emby 目录聚合")
-    records = fetch_upstream_records(
-        source, http_get=http_get, http_post=http_post, page_size=page_size)
-    aggregated = agg.aggregate_sources({str(source.id): records})
-    if aggregated and aggregated[0].error:
-        raise UpstreamAggregateRunError(
-            502, "upstream_aggregate_failed",
-            f"上游聚合失败：{aggregated[0].error}")
-    items = aggregated[0].items if aggregated else []
-    pairs, unpaired = pair_aggregates(db, items)
+    api_key = _resolve_api_key(source, http_post=http_post)
+    libraries = fetch_upstream_libraries(
+        source, http_get=http_get, http_post=http_post, api_key=api_key)
     mapping_on = uim.mapping_enabled()
-    written = 0
-    for pair in pairs:
-        row = uim.record_mapping(
-            db, local_item_id=pair["local_item_id"],
-            source_id=source.id,
-            upstream_item_id=pair["upstream_item_id"],
-            confidence=pair["confidence"], evidence=pair["evidence"],
-            episode_index=pair["episode_index"])
-        pair["written"] = row is not None
-        if row is not None:
-            written += 1
-    logger.info("上游手动聚合 source_id=%s fetched=%s aggregates=%s "
-                "pairs=%s written=%s mapping_enabled=%s",
-                source.id, len(records), len(items), len(pairs), written,
+    all_pairs: List[dict] = []
+    unpaired_total: Dict[str, int] = {}
+    library_summaries: List[dict] = []
+    failed_libraries: List[dict] = []
+    total_fetched = 0
+    total_aggregates = 0
+    total_written = 0
+    for library in libraries:
+        lib_id = library["id"]
+        lib_name = library["name"]
+        summary: Dict[str, object] = {
+            "library_id": lib_id, "library_name": lib_name,
+            "fetched": 0, "aggregates": 0, "paired": 0, "written": 0,
+            "status": "ok",
+        }
+        try:
+            records = fetch_upstream_records_for_parent(
+                source, lib_id, http_get=http_get, http_post=http_post,
+                page_size=page_size, api_key=api_key)
+            aggregated = agg.aggregate_sources({str(source.id): records})
+            if aggregated and aggregated[0].error:
+                raise UpstreamAggregateRunError(
+                    502, "upstream_aggregate_failed",
+                    f"上游库 {lib_name or lib_id} 聚合失败："
+                    f"{aggregated[0].error}")
+            items = aggregated[0].items if aggregated else []
+            pairs, unpaired = pair_aggregates(db, items)
+            written = 0
+            for pair in pairs:
+                pair["library_id"] = lib_id
+                pair["library_name"] = lib_name
+                row = uim.record_mapping(
+                    db, local_item_id=pair["local_item_id"],
+                    source_id=source.id,
+                    upstream_item_id=pair["upstream_item_id"],
+                    confidence=pair["confidence"], evidence=pair["evidence"],
+                    episode_index=pair["episode_index"])
+                pair["written"] = row is not None
+                if row is not None:
+                    written += 1
+            summary.update({"fetched": len(records), "aggregates": len(items),
+                            "paired": len(pairs), "written": written})
+            all_pairs.extend(pairs)
+            for reason, count in unpaired.items():
+                unpaired_total[reason] = unpaired_total.get(reason, 0) + count
+            total_fetched += len(records)
+            total_aggregates += len(items)
+            total_written += written
+        except UpstreamAggregateRunError as exc:
+            summary.update({"status": "failed", "error_code": exc.code,
+                            "error": exc.message})
+            failed_libraries.append({
+                "library_id": lib_id, "library_name": lib_name,
+                "code": exc.code, "message": exc.message})
+            logger.warning("上游按库聚合单库失败 source_id=%s library=%s "
+                           "code=%s", source.id, lib_id, exc.code)
+        library_summaries.append(summary)
+    logger.info("上游按库手动聚合 source_id=%s libraries=%s fetched=%s "
+                "aggregates=%s pairs=%s written=%s failed_libraries=%s "
+                "mapping_enabled=%s",
+                source.id, len(libraries), total_fetched, total_aggregates,
+                len(all_pairs), total_written, len(failed_libraries),
                 mapping_on)
     return {
         "source_id": source.id,
-        "fetched": len(records),
-        "aggregates": len(items),
-        "pairs": pairs,
-        "paired": len(pairs),
-        "written": written,
+        "fetched": total_fetched,
+        "aggregates": total_aggregates,
+        "pairs": all_pairs,
+        "paired": len(all_pairs),
+        "written": total_written,
         "mapping_enabled": mapping_on,
-        "unpaired_reasons": unpaired,
+        "unpaired_reasons": unpaired_total,
+        "libraries": library_summaries,
+        "libraries_discovered": len(libraries),
+        "failed_libraries": failed_libraries,
     }
