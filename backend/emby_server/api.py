@@ -5282,12 +5282,18 @@ def _available_variant_names(db: Session, item: em.MediaItem,
     Drive 挂载可定位走 _drive_mount_id_for_item 一次主键查询；
     清单阶段不真解析直链。只在客户端带了变体时才调用——无变体
     老路径不增加这次查询成本。
+    取流校验与 PlaybackInfo 清单逐字一致：挂载换链能力
+    （_mount_can_generate_play_target，一次主键查询）同样传给
+    list_variants——清单扣掉的变体在取流侧同样被拒（409），
+    不留“清单无、取流有”的绕过窗口；None 时保持旧行为。
     """
     locatable = False
     if (getattr(item, "drive_file_id", "") or "").strip():
         locatable = _drive_mount_id_for_item(db, item) is not None
     names = [v.name for v in play_variants.list_variants(
         db, item, drive_mount_locatable=locatable,
+        mount_can_generate_play_target=_mount_can_generate_play_target(
+            db, item),
         user115_direct_available=_user115_direct_available(db, item, user),
         user_drive_byos_available=_user_drive_byos_available(db, item, user))]
     # 挂载第 5 步播放过滤（变体层）：源已隐藏时可用变体为空，
