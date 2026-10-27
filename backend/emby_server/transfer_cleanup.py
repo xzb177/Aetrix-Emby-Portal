@@ -37,6 +37,21 @@
 - 115 行不删：pan115: 行的删除口径（115 删除 API）未经实测，
   本模块不编造调用；这类行计 skipped_unsupported，行不动、
   文件不动，留待 115 删除口径实测后再补。
+- 115 删除口径证据等级（2026-10-27 115 能力收尾时亲验，GRADE 0）：
+  仓库里没有任何 115 删除端点、参数或响应形态的记录，也没有
+  真实账号验证；本模块不猜端点、不写删除调用。任何后续删除
+  代码落地前，必须先由持 115 测试账号的人确认端点 + 参数 +
+  成功/失败响应形态，并把确认结果写进测试清单，空口断言不算。
+  为让这批行可被运维/测试者逐条核对，stale 清理与 LRU 腾地方
+  的 stats 里都带 skipped_rows（variant_id / owner_ref / item_id /
+  drive_id / file_id / reason），115 行的 reason 一律为
+  pan115_delete_unverified。
+- LRU 腾地方只腾 Drive 行：select_lru_candidates 本身只选不删，
+  但 evict_lru_variants 曾把 pan115: 行也交给 Drive 客户端——Drive
+  files.get 查 115 fid 必然 404，会被误标 already_gone（115 文件
+  实际还在）。本模块起，evict 循环里非 userdrive: 行一律跳过
+  （计 skipped_unsupported、进 skipped_rows、行不动、不调客户端），
+  与 stale 路径同口径。
 - 每一次删（含已删）都记日志：用户、条目、文件 id、大小、
   结果；统计以返回的 stats 为准，调用方按 stats 审计。
 - 转存前量空间（2026-10-27 用户亲定“转存前量空间，不够先腾
@@ -286,9 +301,13 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
     """首轮清理：只删 stale 行，不碰 ready（硬性范围）。
 
     返回 stats：{checked, deleted, already_gone, skipped_unsupported,
-    skipped_unsafe, skipped_no_client, failed, bytes_freed}。
+    skipped_unsafe, skipped_no_client, failed, bytes_freed,
+    skipped_rows: [{variant_id, owner_ref, item_id, drive_id, file_id,
+    reason}]}。
     - Drive 用户行（variant_drive_id 以 "userdrive:" 开头）走删；
     - pan115 行与其它 scope 行计 skipped_unsupported，行不动；
+      pan115 行的 reason 一律为 pan115_delete_unverified（删除口径
+      证据等级 GRADE 0，见模块说明，本函数不编造删除调用）；
     - 无可用客户端的行计 skipped_no_client，行不动；
     - 每行删前都记日志（用户、条目、文件 id、大小）。
     本函数不调度、不定时：首轮生产运行须由运维在部署后手动触发
@@ -296,7 +315,8 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
     """
     stats = {"checked": 0, "deleted": 0, "already_gone": 0,
              "skipped_unsupported": 0, "skipped_unsafe": 0,
-             "skipped_no_client": 0, "failed": 0, "bytes_freed": 0}
+             "skipped_no_client": 0, "failed": 0, "bytes_freed": 0,
+             "skipped_rows": []}
     q = (db.query(em.TransferVariant)
          .filter(em.TransferVariant.status == "stale")
          .order_by(em.TransferVariant.id))
@@ -311,6 +331,9 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
         if (getattr(row, "owner_scope", "") != "user"
                 or not drive_id.startswith("userdrive:")):
             stats["skipped_unsupported"] += 1
+            stats["skipped_rows"].append(_skipped_row(
+                row, "pan115_delete_unverified"
+                if drive_id.startswith("pan115:") else "unsupported_drive"))
             logger.info(
                 "[transfer-cleanup] 跳过非 Drive 用户行 user=%s item=%s "
                 "variant=%s drive=%s", row.owner_ref, row.item_id,
@@ -320,6 +343,8 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
             user_id = int(row.owner_ref)
         except (TypeError, ValueError):
             stats["skipped_unsupported"] += 1
+            stats["skipped_rows"].append(_skipped_row(
+                row, "unsupported_owner_ref"))
             continue
         if user_id not in clients:
             clients[user_id] = _user_drive_client(db, user_id,
@@ -327,6 +352,7 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
         client, marker = clients[user_id]
         if client is None:
             stats["skipped_no_client"] += 1
+            stats["skipped_rows"].append(_skipped_row(row, "no_client"))
             logger.warning(
                 "[transfer-cleanup] 无可用客户端，行不动 user=%s item=%s "
                 "variant=%s", row.owner_ref, row.item_id, row.id)
@@ -341,10 +367,21 @@ def cleanup_stale_variants(db, drive_client_factory, *, limit=None):
             stats["already_gone"] += 1
         elif outcome == "skipped_unsafe":
             stats["skipped_unsafe"] += 1
+            stats["skipped_rows"].append(_skipped_row(row, "unsafe_fid"))
         else:
             stats["failed"] += 1
     logger.info("[transfer-cleanup] stale 清理完成 stats=%s", stats)
     return stats
+
+
+def _skipped_row(row, reason):
+    """跳过行的可核对快照（只含行上已有字段，不调客户端、不写库）。"""
+    return {"variant_id": getattr(row, "id", None),
+            "owner_ref": getattr(row, "owner_ref", None),
+            "item_id": getattr(row, "item_id", None),
+            "drive_id": getattr(row, "variant_drive_id", None),
+            "file_id": getattr(row, "variant_file_id", None),
+            "reason": reason}
 
 
 def evict_lru_variants(db, drive_client_factory, user_id, *,
@@ -359,39 +396,50 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
     触发口径：自动触发的唯一入口是 ensure_space_for_transfer
     （新转存前实测 about.get，剩余 < 文件大小时 need_bytes =
     文件大小 - 剩余空间）；运维手动给出需求时同样走本函数。
-    只删 Drive 用户盘行：variant_drive_id 不以 "userdrive:" 开头
-    的行（例如 pan115: 行）一律跳过、行不动——Drive 客户端绝
-    不能拿 115 的 pickcode 当 Drive fid 删（#1360 的 evict 原
-    实现缺这道 guard，本单补上）。exclude_variant_ids 命中的
-    行（正在播、正在转的本条）一律不删。
-    返回 {evicted: [variant_id...], bytes_freed, reason}。
+    只腾 Drive 用户盘行：候选里 variant_drive_id 非 userdrive:
+    开头的行（含 pan115: 行）一律跳过，计 skipped_unsupported、
+    进 skipped_rows、行不动、不调客户端——绝不把 115 fid 交给
+    Drive 客户端查删（Drive 查 115 fid 必然 404，会被误标
+    already_gone）。exclude_variant_ids 命中的行（正在播、
+    正在转的本条）一律不删。
+    返回 {evicted: [variant_id...], bytes_freed, reason,
+    skipped_unsupported, skipped_rows}。
     """
     if not need_bytes and not max_count:
-        return {"evicted": [], "bytes_freed": 0, "reason": "no_need"}
+        return {"evicted": [], "bytes_freed": 0, "reason": "no_need",
+                "skipped_unsupported": 0, "skipped_rows": []}
     need = int(need_bytes or 0)
     cap = int(max_count or 0)
     client, marker = _user_drive_client(db, user_id,
                                         drive_client_factory)
     if client is None:
         return {"evicted": [], "bytes_freed": 0,
-                "reason": "no_client"}
+                "reason": "no_client",
+                "skipped_unsupported": 0, "skipped_rows": []}
     candidates = select_lru_candidates(
         db, user_id, session_progress=session_progress,
         exclude_ids=exclude_variant_ids)
     evicted = []
     freed = 0
+    skipped_unsupported = 0
+    skipped_rows = []
     now = datetime.now()
     for row in candidates:
         if need and freed >= need:
             break
         if cap and len(evicted) >= cap:
             break
-        drive_id = (getattr(row, "variant_drive_id", "") or "").strip()
-        if not drive_id.startswith("userdrive:"):
+        _drive_id = (getattr(row, "variant_drive_id", "") or "").strip()
+        if (getattr(row, "owner_scope", "") != "user"
+                or not _drive_id.startswith("userdrive:")):
+            skipped_unsupported += 1
+            skipped_rows.append(_skipped_row(
+                row, "pan115_delete_unverified"
+                if _drive_id.startswith("pan115:") else "unsupported_drive"))
             logger.info(
-                "[transfer-cleanup] 跳过非 Drive 用户行（LRU） "
-                "user=%s item=%s variant=%s drive=%s",
-                row.owner_ref, row.item_id, row.id, drive_id)
+                "[transfer-cleanup] LRU 跳过非 Drive 行 user=%s item=%s "
+                "variant=%s drive=%s", row.owner_ref, row.item_id,
+                row.id, _drive_id)
             continue
         _log_pre_delete(row, "lru_evict")
         outcome, size = _delete_one_drive_file(db, row, client, marker,
@@ -406,7 +454,9 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
     reason = "done"
     if need and freed < need:
         reason = "insufficient_candidates"
-    return {"evicted": evicted, "bytes_freed": freed, "reason": reason}
+    return {"evicted": evicted, "bytes_freed": freed, "reason": reason,
+            "skipped_unsupported": skipped_unsupported,
+            "skipped_rows": skipped_rows}
 
 
 def ensure_space_for_transfer(db, drive_client_factory, user_id, *,
