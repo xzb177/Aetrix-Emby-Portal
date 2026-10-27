@@ -320,6 +320,20 @@ def _apply_play_progress(umd: em.UserMediaData, pos: int, finished: bool) -> Non
         umd.max_position_ticks = 0
 
 
+def _mark_variant_played_best_effort(db, user, item) -> None:
+    """转存副本播放回写（2026-10-27 清理规则第 4 条，尽力而为）。
+
+    会话上报是播放的通用信号（直链 alt=media 不走 /stream，play_start
+    未必有），所以回写钉在这里而不是 stream 路径。失败绝不影响上报
+    本身；1 小时节流在 mark_variant_played 内部，不破坏上报节流。
+    """
+    try:
+        from backend.emby_server import transfer_cleanup
+        transfer_cleanup.mark_variant_played(db, user.id, item.id)
+    except Exception:  # noqa: BLE001 — 追踪失败不挡播放上报
+        logger.debug("转存副本播放回写失败", exc_info=True)
+
+
 def _record_playing(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
     item = _require_visible_item(db, user, body.get("ItemId") or "")
     session, _wrote = _upsert_session(db, request, user, item, body)
@@ -329,6 +343,7 @@ def _record_playing(request: Request, user: models.WebUser, db: Session, body: d
             status_code=403,
             detail="同时播放的会话数已达上限，本次播放请求已被拦截",
         )
+    _mark_variant_played_best_effort(db, user, item)
 
 
 def _record_progress(request: Request, user: models.WebUser, db: Session, body: dict) -> None:
@@ -355,6 +370,7 @@ def _record_progress(request: Request, user: models.WebUser, db: Session, body: 
         # 会话和观看进度都没有新信息：同一次上报不必再来一次写事务（见文件头的节流说明）
         return
 
+    _mark_variant_played_best_effort(db, user, item)
     _apply_play_progress(umd, pos, finished)
     db.commit()
 
@@ -370,6 +386,7 @@ def _record_stopped(request: Request, user: models.WebUser, db: Session, body: d
     runtime = item.duration_ticks or 0
     finished = bool(runtime and pos >= runtime * 0.9)
     umd = _get_or_create_umd(db, user, item)
+    _mark_variant_played_best_effort(db, user, item)
     _apply_play_progress(umd, pos, finished)
     db.commit()
     # 批一 #3：尽力提前释放「挂载+路径前缀」播放路数租约（stream_limits）。
