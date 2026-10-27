@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import threading
 import time
@@ -88,11 +89,21 @@ def _sup_env(monkeypatch):
 
 
 def _wait_sock(path, timeout=5.0):
+    # 同 test_provider_runtime_115_sidecar 的竞态修：文件在 bind 时就
+    # 出现、listen 在后，只查存在会在窗口内 connect 得 ECONNREFUSED；
+    # 改为真连通探测，一次 connect 成功才算 listen 已完成。
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if os.path.exists(path):
+        try:
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(0.2)
+                probe.connect(path)
+            finally:
+                probe.close()
             return True
-        time.sleep(0.1)
+        except OSError:
+            time.sleep(0.01)
     return False
 
 

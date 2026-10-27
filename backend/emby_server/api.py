@@ -1116,6 +1116,65 @@ def _container_of(item: em.MediaItem) -> Optional[str]:
     return None
 
 
+# 直链格式申报与实际地址一致化（2026-10-27 #1353 后续：严格播放器按
+# MIME/后缀认格式）：
+# PlaybackInfo 曾下发无后缀的 /stream 地址，同时申报 SupportsDirectPlay=True
+# 与 container=mkv——按后缀认格式的播放器在原地址上认不出来，直接报
+# Invalid media format。带后缀的地址走既有 video_stream_ext 路由（本文件
+# 下方），其行为与 /stream 逐字一致，只是 URL 上多一个容器后缀；后缀
+# 白名单只含可流式播放的容器，iso 等非流式容器与未知容器保持原地址。
+_DIRECT_STREAM_EXTS = frozenset({
+    "mkv", "mp4", "avi", "mov", "ts", "m2ts", "webm", "flv", "wmv", "mpeg",
+})
+
+
+def _direct_stream_suffix(container: str | None) -> str:
+    """容器名 → /stream 后缀（.mkv 等），不在白名单时返回空串。
+
+    纯函数：只做字符串判定，不碰 DB、不读文件，供 PlaybackInfo 与测试共用。
+    """
+    c = (container or "").strip().lower()
+    return f".{c}" if c in _DIRECT_STREAM_EXTS else ""
+
+
+def _drive_alt_media_url(file_id: str) -> str:
+    """文件 id → Drive API alt=media 地址（无令牌在 URL 里）。
+
+    复用 drive_auth 现成转换（usercontent → alt=media，共享盘补
+    supportsAllDrives=true）。实测：带 SA Bearer 头 Range 读回 206、
+    Content-Type video/x-matroska；而不带头 / token 放 URL 查询参数
+    时谷歌回 403——所以凭据只能走 RequiredHttpHeaders，不能放 URL。
+    """
+    from backend.emby_server import drive_auth as _da
+
+    return _da.drive_api_media_url(
+        _da.drive_usercontent_download_url(file_id))
+
+
+def _apply_alt_media_direct(source: dict, file_id: str | None,
+                            token: str | None) -> bool:
+    """在已过门禁的前提下，把源的直链换成 alt=media + 凭据头。
+
+    调用方（PlaybackInfo）必须先跑过转存门禁且 verdict 为 proceed，
+    本函数只做最后一步替换，不做门禁判断。fid/token 缺失时返回 False
+    且不改 source（调用方保留带后缀的 /stream 地址）。
+    令牌只许是共享 SA 池短期令牌，用户绑定令牌绝不进这里。
+    """
+    if not isinstance(source, dict):
+        return False
+    fid = (file_id or "").strip()
+    tok = (token or "").strip()
+    if not fid or not tok:
+        return False
+    url = _drive_alt_media_url(fid)
+    if not url:
+        return False
+    source["DirectPlayUrl"] = url
+    source["DirectStreamUrl"] = url
+    source["RequiredHttpHeaders"] = {"Authorization": f"Bearer {tok}"}
+    return True
+
+
 def hide_media_path() -> bool:
     """EMBY_HIDE_MEDIA_PATH（默认开）：客户端协议响应里不下发服务器上的媒体路径。
 
@@ -4962,8 +5021,12 @@ async def playback_info(
         _du = _st.get("DeliveryUrl") if isinstance(_st, dict) else None
         if _du and _du.endswith("?api_key="):
             _st["DeliveryUrl"] = _du[: -len("api_key=")] + sub_auth
+    # 直链格式一致化：有白名单容器时下发带后缀的地址
+    #（/stream.mkv），走 video_stream_ext 路由；无后缀地址曾让严格播放器
+    # 认不出格式而报 Invalid media format。改写链只换基址，后缀原样保留。
+    _stream_suffix = _direct_stream_suffix(await run_db(_container_of, item))
     stream_url = (
-        f"{base}/emby/Videos/{item.guid}/stream?static=true&MediaSourceId={item.guid}{key_qs}{signed_qs}"
+        f"{base}/emby/Videos/{item.guid}/stream{_stream_suffix}?static=true&MediaSourceId={item.guid}{key_qs}{signed_qs}"
     )
     # 统一播放 URL 改写（横切能力只许一套）：流节点 > 加速域名 > 原样。
     # 签名查询串原样保留，流节点用同一 SECRET_KEY 验签。
@@ -5073,6 +5136,28 @@ async def playback_info(
             _src.setdefault(
                 "Readiness",
                 "ready" if _src.get("DirectPlayUrl") else "unavailable")
+    # 直链 MIME 修复（2026-10-27）：门禁已放行（proceed）且直链开关开时，
+    # 把第一条源的直链换成 Drive alt=media + RequiredHttpHeaders（SA 短期
+    # 令牌）。实测：alt=media + Bearer 头回 206 video/x-matroska；不带头
+    # 或 token 放 URL 查询参数时谷歌回 403——凭据只能走头，不能放 URL。
+    # preparing/failed/error、115 副本、无 fid、无令牌时一律不动（保留带
+    # 后缀的 /stream 地址，走 video_stream 的等流/302 旧链路）；任何异常
+    # 都回落旧地址，绝不因本段失败打断 PlaybackInfo。令牌只进本次响应，
+    # 不进 5 分钟基础体缓存（缓存已在上面存完，本段只改响应对象）。
+    if sources and _pi_verdict == "proceed":
+        try:
+            from backend.emby_server import drive_auth as _da_alt
+            from backend.emby_server import playback_strategy as _ps_alt
+            from backend.emby_server import transfer_variant as _tv_alt
+
+            _alt_fid, _ = await run_db(
+                _tv_alt.resolve_play_file_id, db, item, user)
+            _alt_on = await run_db(_ps_alt.drive_direct_play_enabled, db)
+            if _alt_fid and _alt_on:
+                _alt_token = await run_db(_da_alt.get_drive_bearer_token)
+                _apply_alt_media_direct(sources[0], _alt_fid, _alt_token)
+        except Exception:  # noqa: BLE001 — 本段失败只保留旧地址
+            pass
     _playback_variants = None
     if _variants:
         _requires_transfer = bool(
@@ -5791,9 +5876,25 @@ async def video_stream(
 @emby_router.get("/emby/videos/{item_id}/stream.mkv")
 @emby_router.get("/emby/videos/{item_id}/stream.mp4")
 @emby_router.get("/emby/videos/{item_id}/stream.strm")
+@emby_router.get("/emby/videos/{item_id}/stream.avi")
+@emby_router.get("/emby/videos/{item_id}/stream.mov")
+@emby_router.get("/emby/videos/{item_id}/stream.ts")
+@emby_router.get("/emby/videos/{item_id}/stream.m2ts")
+@emby_router.get("/emby/videos/{item_id}/stream.webm")
+@emby_router.get("/emby/videos/{item_id}/stream.flv")
+@emby_router.get("/emby/videos/{item_id}/stream.wmv")
+@emby_router.get("/emby/videos/{item_id}/stream.mpeg")
 @emby_router.get("/emby/Videos/{item_id}/stream.mkv")
 @emby_router.get("/emby/Videos/{item_id}/stream.mp4")
 @emby_router.get("/emby/Videos/{item_id}/stream.strm")
+@emby_router.get("/emby/Videos/{item_id}/stream.avi")
+@emby_router.get("/emby/Videos/{item_id}/stream.mov")
+@emby_router.get("/emby/Videos/{item_id}/stream.ts")
+@emby_router.get("/emby/Videos/{item_id}/stream.m2ts")
+@emby_router.get("/emby/Videos/{item_id}/stream.webm")
+@emby_router.get("/emby/Videos/{item_id}/stream.flv")
+@emby_router.get("/emby/Videos/{item_id}/stream.wmv")
+@emby_router.get("/emby/Videos/{item_id}/stream.mpeg")
 async def video_stream_ext(
     item_id: str,
     request: Request,
