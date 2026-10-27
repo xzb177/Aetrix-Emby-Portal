@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from unittest import mock
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
@@ -17,6 +18,26 @@ def _make_sa(email: str) -> dict:
     return {"client_email": email, "private_key": f"private-key-for-{email}"}
 
 
+def _patch_premint_sleep(monkeypatch, sleeps=None):
+    """只截获预铸线程池里的抖动，其它 ``time.sleep`` 照旧。
+
+    ``drive_auth.time`` 就是标准库 ``time``。整函数换掉 ``sleep`` 时，
+    全量套件里已经在跑的 ``node-health`` 守护线程（``test_node_health``
+    起的，每 30 秒一拍）会把 sleep 变成空转，次数灌进本文件的断言。
+    预铸池的线程名是 ``sa-premint_0`` 这种前缀。
+    """
+    real_sleep = drive_auth.time.sleep
+
+    def _sleep(seconds):
+        if threading.current_thread().name.startswith("sa-premint_"):
+            if sleeps is not None:
+                sleeps.append(seconds)
+            return
+        return real_sleep(seconds)
+
+    monkeypatch.setattr(drive_auth.time, "sleep", _sleep)
+
+
 def _fake_drive_changes(monkeypatch, emails=("sa1@x", "sa2@x"), fail=False):
     fake = mock.MagicMock()
     fake._discover_sa_files.return_value = [_make_sa(e) for e in emails]
@@ -27,8 +48,8 @@ def _fake_drive_changes(monkeypatch, emails=("sa1@x", "sa2@x"), fail=False):
             lambda sa, min_remaining=60: "token-for-" + sa["client_email"]
         )
     monkeypatch.setattr(drive_auth, "_load_drive_changes", lambda: fake)
-    # 预铸测试不需要真实 sleep：打掉 0~0.5s 抖动，加速用例
-    monkeypatch.setattr(drive_auth.time, "sleep", lambda s: None)
+    # 预铸测试不需要真实 sleep：只打掉预铸池里的抖动，加速用例
+    _patch_premint_sleep(monkeypatch)
     return fake
 
 
@@ -91,7 +112,17 @@ def test_premint_discover_raises_silent(monkeypatch):
 def test_premint_stagger_uses_window(monkeypatch):
     """stagger_seconds>0 时抖动窗口按其打散，而非固定 0~0.5s。"""
     sleeps = []
-    monkeypatch.setattr(drive_auth.time, "sleep", lambda s: sleeps.append(s))
+    _patch_premint_sleep(monkeypatch, sleeps)
+    # 全量套件里 node-health 会在这条用例期间继续 time.sleep。
+    # 这里用同名后台线程复现：隔离失败时 len(sleeps) 会远大于 6。
+    stop = threading.Event()
+
+    def _foreign_sleeper():
+        while not stop.is_set():
+            drive_auth.time.sleep(0)
+
+    foreign = threading.Thread(target=_foreign_sleeper, name="node-health", daemon=True)
+    foreign.start()
     fake = mock.MagicMock()
     fake._discover_sa_files.return_value = [_make_sa(f"sa{i}@x") for i in range(6)]
     fake._sa_access_token.side_effect = (
@@ -104,6 +135,8 @@ def test_premint_stagger_uses_window(monkeypatch):
     try:
         result = drive_auth.premint_tokens(max_workers=2, stagger_seconds=10)
     finally:
+        stop.set()
+        foreign.join(timeout=2)
         drive_auth._reset_state()
     assert result["ok"] == 6
     assert len(sleeps) == 6
@@ -114,7 +147,7 @@ def test_premint_stagger_uses_window(monkeypatch):
 def test_premint_default_jitter_unchanged(monkeypatch):
     """stagger_seconds 缺省时保持旧的 0~0.5s 抖动。"""
     sleeps = []
-    monkeypatch.setattr(drive_auth.time, "sleep", lambda s: sleeps.append(s))
+    _patch_premint_sleep(monkeypatch, sleeps)
     fake = mock.MagicMock()
     fake._discover_sa_files.return_value = [_make_sa(f"sa{i}@x") for i in range(4)]
     fake._sa_access_token.side_effect = (
