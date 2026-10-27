@@ -403,11 +403,16 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
     already_gone）。exclude_variant_ids 命中的行（正在播、
     正在转的本条）一律不删。
     返回 {evicted: [variant_id...], bytes_freed, reason,
-    skipped_unsupported, skipped_rows}。
+    skipped_unsupported, skipped_rows, skipped_unsafe, failed}，
+    其中 skipped_unsafe / failed 与 stale 清理同口径（不合规 fid
+    的行计 skipped_unsafe 并进 skipped_rows，删前核查/删除失败
+    的行计 failed、行不动），调用方按 stats 审计时不再把“有候选
+    但删不掉”误读成“无候选”。
     """
     if not need_bytes and not max_count:
         return {"evicted": [], "bytes_freed": 0, "reason": "no_need",
-                "skipped_unsupported": 0, "skipped_rows": []}
+                "skipped_unsupported": 0, "skipped_rows": [],
+                "skipped_unsafe": 0, "failed": 0}
     need = int(need_bytes or 0)
     cap = int(max_count or 0)
     client, marker = _user_drive_client(db, user_id,
@@ -415,7 +420,8 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
     if client is None:
         return {"evicted": [], "bytes_freed": 0,
                 "reason": "no_client",
-                "skipped_unsupported": 0, "skipped_rows": []}
+                "skipped_unsupported": 0, "skipped_rows": [],
+                "skipped_unsafe": 0, "failed": 0}
     candidates = select_lru_candidates(
         db, user_id, session_progress=session_progress,
         exclude_ids=exclude_variant_ids)
@@ -423,6 +429,8 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
     freed = 0
     skipped_unsupported = 0
     skipped_rows = []
+    skipped_unsafe = 0
+    failed = 0
     now = datetime.now()
     for row in candidates:
         if need and freed >= need:
@@ -447,16 +455,23 @@ def evict_lru_variants(db, drive_client_factory, user_id, *,
         if outcome in ("deleted", "already_gone"):
             evicted.append(row.id)
             freed += size
+        elif outcome == "skipped_unsafe":
+            # 与 stale 路径同口径：不合规 fid 行计入统计与 skipped_rows，
+            # 行不动；继续往后腾，不跳过整批。
+            skipped_unsafe += 1
+            skipped_rows.append(_skipped_row(row, "unsafe_fid"))
         else:
             # 删失败不跳过整批：继续往后腾（失败行留 ready，下次
-            # 再排），但失败本身已在 _delete_one 里记日志。
-            continue
+            # 再排），失败计数与 _delete_one 里的日志双通道可查。
+            failed += 1
     reason = "done"
     if need and freed < need:
         reason = "insufficient_candidates"
     return {"evicted": evicted, "bytes_freed": freed, "reason": reason,
             "skipped_unsupported": skipped_unsupported,
-            "skipped_rows": skipped_rows}
+            "skipped_rows": skipped_rows,
+            "skipped_unsafe": skipped_unsafe,
+            "failed": failed}
 
 
 def ensure_space_for_transfer(db, drive_client_factory, user_id, *,
