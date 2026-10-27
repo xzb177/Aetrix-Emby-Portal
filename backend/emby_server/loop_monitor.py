@@ -23,6 +23,21 @@ LAG_WARN_CONSECUTIVE = 3
 _monitor_task: asyncio.Task | None = None
 
 
+def start_loop_monitor() -> None:
+    """在 lifespan 里调用，启动监控任务（幂等）。
+
+    恢复说明：本函数在 0d13b5f0 被连带删掉（该提交正文只说恢复 3 个脚本，
+    未提及 loop_monitor），而 emby_api/main.py 的 lifespan 仍在调用它；
+    调用处包在 try/except 里，于是 EA 每次启动只记一条“监控启动失败
+    （可忽略）”，P0 哨兵实际从未跑起来。本恢复与删除前的实现逐字一致。
+    """
+    global _monitor_task
+    if _monitor_task is not None and not _monitor_task.done():
+        return
+    _monitor_task = asyncio.create_task(_monitor_loop())
+    logger.info("事件循环健康监控已启动（lag > %.1fs 告警）", LAG_WARN_SECONDS)
+
+
 async def _monitor_loop() -> None:
     consecutive = 0
     while True:
