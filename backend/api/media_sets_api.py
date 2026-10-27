@@ -115,6 +115,15 @@ class TemplateInstantiate(BaseModel):
     min_effective_members: int | None = None
 
 
+class HotBoardInstantiate(BaseModel):
+    """从当前热播榜生成一份手工合集。period 默认日榜，name 可覆盖默认名。"""
+    period: str = "day"
+    name: str | None = None
+
+
+_HOT_PERIOD_LABEL = {"day": "日榜", "week": "周榜"}
+
+
 def _check_set_fields(db: Session, source_type: str, visibility_status: str,
                       artwork_mode: str, path_prefix, bound_person_id):
     if source_type not in ms.SOURCE_TYPES:
@@ -157,6 +166,85 @@ def create_media_set(body: MediaSetCreate,
     db.commit()
     db.refresh(media_set)
     return ms.set_to_dict(media_set, db)
+
+
+@admin_media_sets_router.post("/media-sets/from-hot-leaderboard")
+def instantiate_from_hot_leaderboard(
+        body: HotBoardInstantiate | None = None,
+        current_admin=Depends(get_current_admin),
+        db: Session = Depends(get_db)):
+    """把当前热播榜快照成一份手工合集。
+
+    排名直接用用户热播榜的 ``hot_leaderboard_items``（同一窗口、同一
+    Top20、剧集按整剧聚合），不另写算法。每次调用都新建一份合集：
+    没有稳定键、不更新已有合集——榜是时点快照，重复点击得到另一份，
+    避免静默覆盖管理员改过的成员。
+    榜为空，或排名条目都已缺失时不建行，返回 ``created=false``。
+    成员 ``order_index`` 从 1 起按榜名次排，观影轨即榜序。
+    默认名由榜种 + 周期 + 窗口日期组成（如「热播日榜 2026-10-27」），
+    body.name 可覆盖。
+    """
+    _require_enabled()
+    body = body or HotBoardInstantiate()
+    if body.period not in _HOT_PERIOD_LABEL:
+        raise HTTPException(status_code=400, detail="period 只能是 day 或 week")
+    # 函数内导入：portal 很重，且只在这个动作里需要排名函数。
+    from backend.emby_server.portal import (
+        hot_leaderboard_items, leaderboard_window)
+
+    window_naive, window_utc = leaderboard_window(body.period)
+    ranked, _user_totals = hot_leaderboard_items(db, window_utc)
+    ranked_ids = [row["item_id"] for row in ranked]
+    if ranked_ids:
+        # 排名查询与插入之间条目可能被删/被合并：缺的跳过，不让外键把请求打成 500。
+        alive = {
+            mid for (mid,) in db.query(em.MediaItem.id).filter(
+                em.MediaItem.id.in_(ranked_ids),
+                em.MediaItem.merged_into_id.is_(None),
+            ).all()
+        }
+        ranked_ids = [iid for iid in ranked_ids if iid in alive]
+    window_start = window_naive.isoformat()
+    if not ranked_ids:
+        return {
+            "created": False,
+            "reason": "leaderboard_empty",
+            "board": "hot",
+            "period": body.period,
+            "window_start": window_start,
+            "members": [],
+        }
+    if body.name is None:
+        name = (f"热播{_HOT_PERIOD_LABEL[body.period]} "
+                f"{window_naive.strftime('%Y-%m-%d')}")
+    else:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="合集名不能为空")
+    if len(name) > 200:
+        raise HTTPException(status_code=400, detail="合集名过长")
+    media_set = em.EmbyMediaSet(name=name, source_type="manual")
+    db.add(media_set)
+    db.flush()
+    members = []
+    for rank, item_id in enumerate(ranked_ids, start=1):
+        member = em.EmbyMediaSetMember(
+            set_id=media_set.id, item_id=item_id,
+            order_index=rank, member_source="manual")
+        db.add(member)
+        members.append(member)
+    ms.bump_requested(media_set)
+    db.commit()
+    db.refresh(media_set)
+    for member in members:
+        db.refresh(member)
+    out = ms.set_to_dict(media_set, db)
+    out["created"] = True
+    out["board"] = "hot"
+    out["period"] = body.period
+    out["window_start"] = window_start
+    out["members"] = [ms.member_to_dict(m) for m in members]
+    return out
 
 
 @admin_media_sets_router.get("/media-sets")

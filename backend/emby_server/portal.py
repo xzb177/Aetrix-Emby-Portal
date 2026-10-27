@@ -1212,24 +1212,14 @@ def get_watch_stats(request_user: models.WebUser = Depends(get_admin_or_emby_use
     }
 
 
-@user_emby_router.get("/leaderboard")
-def get_leaderboard(
-    board: str,
-    period: str = "day",
-    request_user: models.WebUser = Depends(get_admin_or_emby_user),
-    db: Session = Depends(get_db),
-):
-    """探险世界 · 观影碑榜单。
+def leaderboard_window(period: str) -> tuple[datetime, datetime]:
+    """热播榜 / 时长榜的窗口起点。period 须已是 day 或 week。
 
-    口径：hot=热播榜（窗口内开播次数，剧集按整剧聚合）；duration=观影时长榜
-    （窗口内每用户观影总时长秒数，只统计允许上榜的用户）。
-    period：day=日榜（今天自然日），week=周榜（本周自然周，周一起算），按 Asia/Shanghai。
+    返回 ``(window_start_naive, window_start_utc)``：
+    - naive 是 Asia/Shanghai 自然日（周榜为本周一）0 点，对外展示用；
+    - utc 是同一时刻的 UTC-naive，用来比 PlaybackSession.start_time。
+    缺 tzdata 时与原实现一样退回本地时间。
     """
-    if board not in ("hot", "duration"):
-        raise HTTPException(status_code=400, detail="board 只能是 hot 或 duration")
-    if period not in ("day", "week"):
-        raise HTTPException(status_code=400, detail="period 只能是 day 或 week")
-
     # 时区口径与 #910 问候语保持一致，统一按 Asia/Shanghai 计算自然日 / 自然周
     from zoneinfo import ZoneInfo
 
@@ -1254,69 +1244,104 @@ def get_leaderboard(
         window_start_utc = window_start.astimezone(timezone.utc).replace(tzinfo=None)
     else:
         window_start_utc = window_start_naive
+    return window_start_naive, window_start_utc
+
+
+def hot_leaderboard_items(db: Session, window_start_utc: datetime):
+    """热播榜 Top20。用户榜单与「从热播榜生成合集」共用这一段，不要另写排名。
+
+    返回 ``(items, user_totals)``。items 按窗口内开播次数降序、最多 20 条；
+    剧集按 series_id 聚成整剧。已删除、已合并、对不上条目的播放不计。
+    平局保持计数表插入序（sorted 稳定排序，与抽出前的榜单一致）。
+    user_totals 是窗口内每个用户的开播次数，供榜单接口算 my_rank。
+    """
+    # 热播榜：一次取出窗口内的 (user_id, item_id)，Python 侧聚合（表不大，不写复杂 SQL）
+    rows = (
+        db.query(em.PlaybackSession.user_id, em.PlaybackSession.item_id)
+        .filter(em.PlaybackSession.start_time >= window_start_utc)
+        .all()
+    )
+
+    raw_item_ids = {iid for _, iid in rows if iid is not None}
+
+    # 被播放的条目本身必须未删除、未合并，并映射到聚合键（剧集 → series_id，电影/剧本体 → 自身 id）
+    key_by_item: dict[int, int] = {}
+    if raw_item_ids:
+        key_by_item = {
+            mid: (sid or mid)
+            for mid, sid in db.query(em.MediaItem.id, em.MediaItem.series_id)
+            .filter(
+                em.MediaItem.id.in_(list(raw_item_ids)),
+                em.MediaItem.deleted_at.is_(None),
+                em.MediaItem.merged_into_id.is_(None),
+            )
+            .all()
+        }
+
+    # 聚合键对应的剧 / 片实体同样必须未删除、未合并
+    agg_keys = set(key_by_item.values())
+    info_map: dict[int, tuple] = {}
+    if agg_keys:
+        info_map = {
+            mid: (name, item_type)
+            for mid, name, item_type in db.query(
+                em.MediaItem.id, em.MediaItem.name, em.MediaItem.item_type
+            )
+            .filter(
+                em.MediaItem.id.in_(list(agg_keys)),
+                em.MediaItem.deleted_at.is_(None),
+                em.MediaItem.merged_into_id.is_(None),
+            )
+            .all()
+        }
+
+    # 榜 + 每用户总播放次数（算我自己的排名用）
+    counts: dict[int, int] = {}
+    user_totals: dict[int, int] = {}
+    for uid, iid in rows:
+        key = key_by_item.get(iid)
+        if key is None or key not in info_map:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        if uid is not None:
+            user_totals[uid] = user_totals.get(uid, 0) + 1
+
+    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
+    items = [
+        {
+            "item_id": key,
+            "name": info_map[key][0],
+            "item_type": info_map[key][1],
+            "count": cnt,
+        }
+        for key, cnt in top
+    ]
+    return items, user_totals
+
+
+@user_emby_router.get("/leaderboard")
+def get_leaderboard(
+    board: str,
+    period: str = "day",
+    request_user: models.WebUser = Depends(get_admin_or_emby_user),
+    db: Session = Depends(get_db),
+):
+    """探险世界 · 观影碑榜单。
+
+    口径：hot=热播榜（窗口内开播次数，剧集按整剧聚合）；duration=观影时长榜
+    （窗口内每用户观影总时长秒数，只统计允许上榜的用户）。
+    period：day=日榜（今天自然日），week=周榜（本周自然周，周一起算），按 Asia/Shanghai。
+    热播排名只在 hot_leaderboard_items 里算一次。
+    """
+    if board not in ("hot", "duration"):
+        raise HTTPException(status_code=400, detail="board 只能是 hot 或 duration")
+    if period not in ("day", "week"):
+        raise HTTPException(status_code=400, detail="period 只能是 day 或 week")
+
+    window_start_naive, window_start_utc = leaderboard_window(period)
 
     if board == "hot":
-        # 热播榜：一次取出窗口内的 (user_id, item_id)，Python 侧聚合（表不大，不写复杂 SQL）
-        rows = (
-            db.query(em.PlaybackSession.user_id, em.PlaybackSession.item_id)
-            .filter(em.PlaybackSession.start_time >= window_start_utc)
-            .all()
-        )
-
-        raw_item_ids = {iid for _, iid in rows if iid is not None}
-
-        # 被播放的条目本身必须未删除、未合并，并映射到聚合键（剧集 → series_id，电影/剧本体 → 自身 id）
-        key_by_item: dict[int, int] = {}
-        if raw_item_ids:
-            key_by_item = {
-                mid: (sid or mid)
-                for mid, sid in db.query(em.MediaItem.id, em.MediaItem.series_id)
-                .filter(
-                    em.MediaItem.id.in_(list(raw_item_ids)),
-                    em.MediaItem.deleted_at.is_(None),
-                    em.MediaItem.merged_into_id.is_(None),
-                )
-                .all()
-            }
-
-        # 聚合键对应的剧 / 片实体同样必须未删除、未合并
-        agg_keys = set(key_by_item.values())
-        info_map: dict[int, tuple] = {}
-        if agg_keys:
-            info_map = {
-                mid: (name, item_type)
-                for mid, name, item_type in db.query(
-                    em.MediaItem.id, em.MediaItem.name, em.MediaItem.item_type
-                )
-                .filter(
-                    em.MediaItem.id.in_(list(agg_keys)),
-                    em.MediaItem.deleted_at.is_(None),
-                    em.MediaItem.merged_into_id.is_(None),
-                )
-                .all()
-            }
-
-        # 榜 + 每用户总播放次数（算我自己的排名用）
-        counts: dict[int, int] = {}
-        user_totals: dict[int, int] = {}
-        for uid, iid in rows:
-            key = key_by_item.get(iid)
-            if key is None or key not in info_map:
-                continue
-            counts[key] = counts.get(key, 0) + 1
-            if uid is not None:
-                user_totals[uid] = user_totals.get(uid, 0) + 1
-
-        top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
-        items = [
-            {
-                "item_id": key,
-                "name": info_map[key][0],
-                "item_type": info_map[key][1],
-                "count": cnt,
-            }
-            for key, cnt in top
-        ]
+        items, user_totals = hot_leaderboard_items(db, window_start_utc)
         my_total = user_totals.get(request_user.id, 0)
         my_rank = 1 + sum(1 for t in user_totals.values() if t > my_total) if my_total else None
     else:
