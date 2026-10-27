@@ -22,6 +22,13 @@ dict：线路状态在 ``upstream_playback_variants.availability_status``，
 - **Unknown 是“探活结论”，不是“存的状态”**：新状态为 Unknown 时
   保留旧状态（写进 SQL 的克制）。本模块里 Unknown 结论只推进
   ``last_checked_at``，状态、失败计数、隐藏时间、失败原因一律不动。
+- **健康过期等效 unknown（2026-10-27 parent 定口径）**：有心跳且超 7 天
+  未探活的 Active 记录，在自动调度判断里等效 unknown——
+  ``is_source_available`` 回 False（见 ``effective_availability_state``），
+  但存的 ``availability_state`` 不被改写，下次探活成功即复位；
+  手动聚合不走 ``is_source_available``，不受影响。Redis 心跳
+  ``last_checked_at`` 由每次探活结论刷新（见 ``apply_source_result``），
+  PG 侧心跳镜像见 ``upstream_health_persist.sync_health_to_pg``。
 - **成功复位**：一次成功就把状态复位为 Active、连续失败计数清零、
   ``hidden_at`` 清空、``last_success_at`` 更新。
 - **失败计数与隐藏**：失败累计 ``consecutive_unavailable_failures``；
@@ -117,6 +124,12 @@ OUTCOME_SUCCESS = "success"
 OUTCOME_FAILURE = "failure"
 OUTCOME_UNKNOWN = "unknown"
 
+#: 健康过期阈值（秒）：超 7 天未探活的记录视为过期，等效 unknown
+#: （见 is_source_available / effective_availability_state）。该阈值是
+#: 2026-10-27 parent 定口径，不是 FMBY 实测值；本项不新增 env 键，
+#: 故写死为常量，后续如需可调须另立 env 键并同步 env.example。
+HEALTH_STALE_AFTER_SEC = 7 * 24 * 3600
+
 #: Redis 持久化键前缀。记录是 JSON，不含任何凭据。
 REDIS_KEY_PREFIX = "upstream:health:"
 
@@ -204,11 +217,50 @@ class LineHealthRecord:
     last_checked_at: Optional[float] = None
 
 
-def is_source_available(record: Optional[SourceHealthRecord]) -> bool:
-    """调度过滤口：无记录当 Active；只有明确 Unavailable 才算不可用。"""
+def is_health_stale(record: Optional[SourceHealthRecord], *, now: Optional[float] = None) -> bool:
+    """记录是否过期：有心跳且距今严格超过 7 天。
+
+    无记录、无心跳、心跳非法时无法判定过期，按不过期计（fail-open：
+    缺失数据不把源判死；真实探活记录恒有心跳，None 只出现在手工构造
+    与脏值场景，脏心跳另由 persist 侧的 _probe_checked_at 兜底）。
+    """
+    if record is None or record.last_checked_at is None:
+        return False
+    try:
+        checked = float(record.last_checked_at)
+    except (TypeError, ValueError):
+        return False
+    now = time.time() if now is None else now
+    return (now - checked) > HEALTH_STALE_AFTER_SEC
+
+
+def effective_availability_state(record: Optional[SourceHealthRecord],
+                                 *, now: Optional[float] = None) -> str:
+    """自动调度用的等效状态（只算、不写）。
+
+    - 无记录 → Active（沿用旧默认：探活未接线时不挡调度）。
+    - 非 Active → 原样。
+    - Active 且过期（超 7 天未探活）→ unknown：存的状态不动，
+      但自动调度须视作不可用（见 is_source_available）。
+    """
+    if record is None:
+        return STATE_ACTIVE
+    if record.availability_state != STATE_ACTIVE:
+        return record.availability_state
+    if is_health_stale(record, now=now):
+        return OUTCOME_UNKNOWN
+    return STATE_ACTIVE
+
+
+def is_source_available(record: Optional[SourceHealthRecord],
+                        *, now: Optional[float] = None) -> bool:
+    """调度过滤口：无记录当 Active；只有明确 Unavailable 才算不可用；
+    另：过期（超 7 天未探活）的 Active 等效 unknown，自动调度视作不可用。
+    手动聚合不走本函数，不受影响；存的状态本身不受过期判断改写。
+    """
     if record is None:
         return True
-    return record.availability_state == STATE_ACTIVE
+    return effective_availability_state(record, now=now) == STATE_ACTIVE
 
 
 def is_line_available(record: Optional[LineHealthRecord]) -> bool:
@@ -716,6 +768,7 @@ __all__ = [
     "UpstreamSource", "ProbeOutcome", "SourceHealthRecord", "LineHealthRecord",
     "HealthStore", "InMemoryHealthStore", "RedisHealthStore",
     "is_source_available", "is_line_available",
+    "is_health_stale", "effective_availability_state", "HEALTH_STALE_AFTER_SEC",
     "apply_source_result", "apply_line_result", "next_probe_due",
     "classify_handshake", "classify_line_probe",
     "validate_base_url", "probe_enabled", "probe_interval_sec",

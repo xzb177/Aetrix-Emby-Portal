@@ -15,6 +15,8 @@
 - Redis ``"Active"``      → PG ``"healthy"``
 - Redis ``"Unavailable"`` → PG ``"unhealthy"``
 - 无记录（``None``）      → PG ``"unknown"``
+- 过期 Active（超 7 天未探活，见 ``uh.is_health_stale``）→ PG ``"unknown"``
+  （等效 unknown：Redis 存的状态不动，只在 PG 翻译层降级）
 - 其它未知值             → PG ``"unknown"`` + warning（绝不把未在允许集
   里的值写进 PG；CHECK 约束是最后一道防线，不是第一道）
 
@@ -24,11 +26,17 @@
 
 ## 同步语义（钉死，不许悄悄改）
 
-- 只写变化：目标值与 PG 现值相等时不动（``updated_at`` 不 churn）；
+- 只写状态变化：目标值与 PG 现值相等时状态不动（``updated_at`` 不 churn）；
   变化时走 ``upstream_sources.set_health_status``（魂 6 唯一写入口，
-  不许自己拼 UPDATE）。PG 的 ``last_checked_at`` 由该函数刷新为
-  写入时刻——即它是“上次状态写入时间”，状态不变时不刷新；
-  探活节律看 Redis 记录的 ``last_checked_at``，别拿 PG 这一列当探活心跳。
+  不许自己拼 UPDATE）。但 PG 的 ``last_checked_at`` 不再是“上次状态
+  写入时间”：它是“上次探活时间（Redis 心跳的镜像）”——每次同步时，
+  只要 Redis 记录有合法心跳且与 PG 现值不同，就把该心跳时刻写进 PG
+  （状态不变时也写，不计 updated，计 ``heartbeat_refreshed``；
+  行因心跳列变化而 UPDATE，``updated_at`` 随模型 onupdate 走，
+  与状态变化的写同一机制——“不 churn”只针对无心跳变化的行）。
+  此前 PG 心跳只在状态变化时刷新为同步时刻，
+  不能当探活心跳用，本项即修此处；上线后首轮同步会把有心跳行的 PG
+  心跳一次性纠回探活时刻（含向后纠），属预期纠偏。
 - 无记录当 unknown：PG 行在 Redis 里没有记录 → 写 unknown。
 - Redis 读不到与无记录同值：``RedisHealthStore`` 读失败返回 None
   （25-3 的 fail-open），同步无法区分“Redis 挂了”与“真没记录”，
@@ -42,8 +50,10 @@
 
 ## 不碰的东西
 
-- 不碰 25-3：本模块只读 ``store.get_source``，不调 probe、不改
-  判定语义、不改 Redis 值。25-3 的工人与本模块的同步是两条独立链路。
+- 不碰 25-3：本模块只读 ``store.get_source``，不调 probe、不改 Redis 值。
+  唯一例外是 PG 翻译层的等效状态：过期 Active 在 PG 侧降级为 unknown
+  （见翻译表），这是翻译口径，不改 Redis 存的状态、不改探活判定本身。
+  25-3 的工人与本模块的同步是两条独立链路。
 - 不改 worker.py：周期守护线程须显式调用才跑；生产 worker 接线等
   25-3 探活守护接线之后再做（探活本身未接线时同步无记录可搬），
   本 PR 不给 worker 加任何启动块。
@@ -53,7 +63,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
+import time
+from datetime import datetime
 from typing import Optional
 
 from backend.emby_server import upstream_health as uh
@@ -103,20 +116,50 @@ def sync_interval_sec() -> float:
     return env_float("UPSTREAM_HEALTH_PG_SYNC_INTERVAL_SEC", 60.0, 1.0, 86400.0)
 
 
-def sync_health_to_pg(db, store) -> dict:
+def _probe_checked_at(record):
+    """Redis 记录的探活心跳 → naive datetime（与 set_health_status 的
+    ``datetime.now()`` 同口径，便于直接比较与写回）。
+
+    缺失、非法、非正、非有限、溢出时回 None：调用方不写、不报错。
+    （``_record_from_json`` 只守卫了失败计数与下次探活两个数值字段，
+    心跳字段仍可能脏，故这里再兜一层。）
+    """
+    ts = getattr(record, "last_checked_at", None)
+    if ts is None:
+        return None
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return None
+    if ts <= 0 or math.isnan(ts) or math.isinf(ts):
+        return None
+    try:
+        return datetime.fromtimestamp(ts)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def sync_health_to_pg(db, store, *, now: Optional[float] = None) -> dict:
     """一次性回填/同步：把全部 PG 源行的 Redis 状态翻译后写回 PG。
 
     入参 ``db`` 是 SQLAlchemy 会话，``store`` 是 HealthStore
     （生产用 ``RedisHealthStore``，测试用 ``InMemoryHealthStore``）。
-    返回计数字典：``disabled/total/updated/unchanged/no_record/errors``。
+    ``now`` 仅供测试钉过期边界，生产调用不传（取当前时间）。
+    返回计数字典：``disabled/total/updated/unchanged/no_record/errors``
+    外加 ``heartbeat_refreshed``（状态不变、仅把 Redis 探活心跳镜像进
+    PG 的行数；不计入 updated，但行 UPDATE 后 ``updated_at`` 随模型
+    onupdate 走）。
     关时返回 ``disabled=True`` 且其余计数全 0，不读 Redis、不写 PG。
     本函数不抛异常：源列表读失败、单行读写失败都只记 warning。
     """
     if not sync_enabled():
         return {"disabled": True, "total": 0, "updated": 0,
-                "unchanged": 0, "no_record": 0, "errors": 0}
+                "unchanged": 0, "no_record": 0, "errors": 0,
+                "heartbeat_refreshed": 0}
     counts = {"disabled": False, "total": 0, "updated": 0,
-              "unchanged": 0, "no_record": 0, "errors": 0}
+              "unchanged": 0, "no_record": 0, "errors": 0,
+              "heartbeat_refreshed": 0}
+    now = time.time() if now is None else now
     try:
         rows = ups.list_sources(db)
     except Exception:
@@ -135,13 +178,36 @@ def sync_health_to_pg(db, store) -> dict:
         if record is None:
             counts["no_record"] += 1
             target = PG_UNKNOWN
+        elif uh.is_health_stale(record, now=now):
+            # 过期 Active 等效 unknown：Redis 存的状态不动，只降级 PG 翻译。
+            target = PG_UNKNOWN
         else:
             target = translate_redis_state(record.availability_state)
         if target == row.health_status:
             counts["unchanged"] += 1
+            # 状态不变也镜像心跳：PG last_checked_at = 探活时刻（不是同步时刻），
+            # 不计 updated；写失败计 errors、不中断。
+            if record is not None:
+                checked = _probe_checked_at(record)
+                if checked is not None and row.last_checked_at != checked:
+                    try:
+                        row.last_checked_at = checked
+                        db.flush()
+                        counts["heartbeat_refreshed"] += 1
+                    except Exception:
+                        logger.warning("上游健康同步：源 id=%s 写心跳失败，已跳过",
+                                       row.id, exc_info=True)
+                        counts["errors"] += 1
             continue
         try:
             ups.set_health_status(db, row, target)
+            # set_health_status 刷的是同步时刻；有合法探活心跳时纠回探活时刻，
+            # 使 PG 心跳语义与状态不变分支一致（仍只 flush，提交由调用方负责）。
+            if record is not None:
+                checked = _probe_checked_at(record)
+                if checked is not None:
+                    row.last_checked_at = checked
+                    db.flush()
             counts["updated"] += 1
         except Exception:
             logger.warning("上游健康同步：源 id=%s 写 PG 失败，已跳过",
