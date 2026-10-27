@@ -3418,6 +3418,38 @@ def get_item_detail(
         _tv_detail.maybe_prefetch_transfer(db, item, user)
     except Exception:  # noqa: BLE001 — 预转存失败不影响详情页
         pass
+    # 首次播放预热（first_play）：详情页打开时在后台线程里把直链
+    # 验证（令牌 + Range 0-0 预检 + 403 轮换 + 尾部可达）做完并写进
+    # playback 域共享缓存；详情页本身不等待、不阻塞。线程内自开
+    # DB 会话，不碰请求会话；任何异常只记日志。剧集/季详情本身
+    # 无 drive_file_id 时线程内直接返回（各集详情打开时再暖各集）。
+    try:
+        import threading as _th
+
+        def _warm_thread(_item_id=item.id, _user_id=user.id):
+            _s = None
+            try:
+                from backend.database import SessionLocal as _SL
+                from backend.emby_server import first_play as _fp_w
+                _s = _SL()
+                _it = _s.query(em.MediaItem).filter(
+                    em.MediaItem.id == _item_id).first()
+                _us = _s.query(models.WebUser).filter(
+                    models.WebUser.id == _user_id).first()
+                if _it is not None and _us is not None:
+                    _fp_w.warm_first_play_sync(_s, _it, _us)
+            except Exception:  # noqa: BLE001 — 预热永不影响详情页
+                pass
+            finally:
+                try:
+                    if _s is not None:
+                        _s.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _th.Thread(target=_warm_thread, daemon=True).start()
+    except Exception:  # noqa: BLE001 — 预热启动失败不影响详情页
+        pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
                      auth_qs=_url_auth_qs(db, request, user, item.guid))
 
@@ -5146,16 +5178,50 @@ async def playback_info(
     # 不进 5 分钟基础体缓存（缓存已在上面存完，本段只改响应对象）。
     if sources and _pi_verdict == "proceed":
         try:
-            from backend.emby_server import drive_auth as _da_alt
+            from backend.emby_server import first_play as _fp
             from backend.emby_server import playback_strategy as _ps_alt
             from backend.emby_server import transfer_variant as _tv_alt
+            from backend.database import CacheManager as _CM
 
             _alt_fid, _ = await run_db(
                 _tv_alt.resolve_play_file_id, db, item, user)
             _alt_on = await run_db(_ps_alt.drive_direct_play_enabled, db)
             if _alt_fid and _alt_on:
-                _alt_token = await run_db(_da_alt.get_drive_bearer_token)
-                _apply_alt_media_direct(sources[0], _alt_fid, _alt_token)
+                _warm = await run_db(
+                    _fp.load_warm,
+                    lambda k: _CM.get(k, domain="playback"),
+                    item.guid, user.id)
+                _alt_applied = False
+                if _fp.warm_usable(_warm) and _warm.get("fid") == _alt_fid:
+                    # 120 秒内预热：令牌已验证过，直接复用，不再预检。
+                    _pt.mark("alt_warm_hit")
+                    _alt_applied = _apply_alt_media_direct(
+                        sources[0], _alt_fid, _warm.get("token"))
+                    if _alt_applied:
+                        sources[0]["DirectPlayUrl"] = _warm.get("url") or sources[0]["DirectPlayUrl"]
+                        sources[0]["DirectStreamUrl"] = sources[0]["DirectPlayUrl"]
+                if not _alt_applied:
+                    # 冷启动或预热已超 120 秒：预检 + 403 轮换 SA 再下发，
+                    # 播放器第一次拿到的必须是经验证的令牌（见 first_play）。
+                    _verified = await run_db(
+                        _fp._resolve_for_playback, db, item, user, _alt_fid)
+                    _pt.mark("alt_precheck")
+                    if _verified.get("ok"):
+                        _alt_applied = _apply_alt_media_direct(
+                            sources[0], _alt_fid, _verified.get("token"))
+                        if _alt_applied:
+                            sources[0]["DirectPlayUrl"] = _verified.get("url") or sources[0]["DirectPlayUrl"]
+                            sources[0]["DirectStreamUrl"] = sources[0]["DirectPlayUrl"]
+                    elif _verified.get("last_status") in (403, 401):
+                        # 预检全败才记错：播放器本次不会拿到坏令牌，
+                        # 回落带后缀的 /stream 旧链路（显式 fallback）。
+                        from backend.emby_server import play_events as _pe
+                        _pe.note_play_start(
+                            provider="mount", user_id=user.id, item_id=item.id,
+                            method="direct_302", variant="drive_direct",
+                            result="error",
+                            error_kind=f"alt_media_{_verified.get('last_status')}_x{_verified.get('rotations', 0)}",
+                            resolve_ms=_verified.get("precheck_ms"))
         except Exception:  # noqa: BLE001 — 本段失败只保留旧地址
             pass
     _playback_variants = None
@@ -5906,6 +5972,44 @@ async def video_stream_ext(
     SenPlayer 按 Emby 约定用 PlaybackInfo 的 Container 拼 stream.strm 取流）
     """
     return await video_stream(item_id, request, user, db)
+
+
+# 无后缀 /stream 兼容（2026-10-27 #1358 补丁：REX 首次播放根因之一）。
+# 实测：REX 2 小时内对小写裸地址 /emby/videos/{guid}/stream 发起 96 次
+# 请求、全部 404（全仓此前只有大写裸路由与小写带后缀路由，小写裸地址
+# 没有任何路由，请求落到 /emby/videos/{id}/{transcode_path:path} 通配后
+# 按非 stream.* 判 404）；REX 于是反复重试、最后才回落 alt=media 出画面，
+# 这就是它首次 38 秒、第二次快的原因。SenPlayer/VidHub 走带后缀地址
+# 直接 302，所以它们的慢不在这一处。
+# 修法（通用，不按播放器名分流）：裸地址按条目容器 307 重定向到已有的
+# 带后缀路由，原查询串原样带过去（DeviceId、MediaSourceId、Static、
+# PlaySessionId、api_key、X-Emby-Token、play_sign 等一个不落），重定向
+# 后的请求仍走 video_stream 全套门禁/限流；未知容器（iso 等不在白名单）
+# 时保持旧行为 404，但必须记一条日志，绝不静默 404。本路由必须注册在
+# 下方小写通配路由之前，否则裸地址仍会被通配抢走。
+@emby_router.get("/emby/videos/{item_id}/stream")
+@emby_router.get("/videos/{item_id}/stream")
+async def video_stream_bare(
+    item_id: str,
+    request: Request,
+    user: models.WebUser = Depends(get_play_user),
+    db: Session = Depends(get_db),
+):
+    from backend.emby_server.async_db import run_db
+
+    item = await run_db(_require_visible_item, db, user, item_id)
+    suffix = _direct_stream_suffix(await run_db(_container_of, item))
+    if not suffix:
+        logger.warning(
+            "[bare-stream] container unknown, keep 404: item=%s container=%r",
+            item_id, getattr(item, "container", None))
+        raise HTTPException(
+            status_code=404, detail="播放容器未知，无后缀流地址不可用")
+    query = request.url.query
+    target = f"/emby/videos/{item_id}/stream{suffix}"
+    if query:
+        target = f"{target}?{query}"
+    return RedirectResponse(target, status_code=307)
 
 
 @emby_router.get("/emby/Videos/upstream/{source_id}/{upstream_item_id}/stream")
