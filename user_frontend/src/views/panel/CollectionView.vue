@@ -4,7 +4,7 @@
       <div class="v4-col-top">
         <h1>
           <RouterLink to="/collections" class="v4-back" aria-label="返回合集货架">‹</RouterLink>
-          <span aria-hidden="true">📚</span> {{ detail?.name ?? '合集' }}
+          {{ detail?.name ?? '合集' }}
         </h1>
       </div>
 

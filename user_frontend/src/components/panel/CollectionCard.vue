@@ -1,11 +1,23 @@
 <template>
-  <!-- 合集卡片（发现页合集区段与 /collections 货架页共用；封面只出占位，不另起封面机制） -->
+  <!-- 合集卡片（发现页合集区段与 /collections 货架页共用）。
+       封面只认 cover_url：非空字符串出图，否则单色块 + Library，不拼 URL、不用 emoji。 -->
   <RouterLink
     :to="`/collections/${collection.id}`"
     class="v4-collection-card"
     :aria-label="`合集：${collection.name}`"
   >
-    <span class="v4-collection-ic" aria-hidden="true">📚</span>
+    <span class="v4-collection-art" aria-hidden="true">
+      <img
+        v-if="coverSrc"
+        class="v4-collection-cover"
+        :src="coverSrc"
+        alt=""
+        loading="lazy"
+        decoding="async"
+        @error="coverFailed = true"
+      />
+      <Library v-else :size="20" :stroke-width="1.75" />
+    </span>
     <span class="v4-collection-body">
       <span class="v4-collection-name">{{ collection.name }}</span>
       <span class="v4-collection-meta">{{ collection.member_count }} 部</span>
@@ -15,10 +27,25 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
+import { Library } from 'lucide-vue-next'
 import type { ShelfCollection } from '@/api'
 
-defineProps<{ collection: ShelfCollection }>()
+const props = defineProps<{ collection: ShelfCollection }>()
+
+const coverFailed = ref(false)
+
+watch(() => props.collection.cover_url, () => {
+  coverFailed.value = false
+})
+
+/** 非空字符串才当图片地址；不补默认图，也不根据 artwork_mode 推导。 */
+const coverSrc = computed(() => {
+  if (coverFailed.value) return ''
+  const url = props.collection.cover_url
+  return typeof url === 'string' && url.trim() !== '' ? url : ''
+})
 </script>
 
 <style scoped>
@@ -33,9 +60,23 @@ defineProps<{ collection: ShelfCollection }>()
   color: inherit;
   text-decoration: none;
 }
-.v4-collection-ic {
-  font-size: 22px;
+.v4-collection-art {
+  width: 44px;
+  height: 58px;
   flex: 0 0 auto;
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #8a7a62;
+  color: #f6f1e7;
+}
+.v4-collection-cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .v4-collection-body {
   display: flex;

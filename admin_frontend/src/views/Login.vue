@@ -2,9 +2,9 @@
 /**
  * 管理员登录页：JWT 登录 → 恢复 ?redirect 或进入概览
  *
- * 暗房影院：与用户端 LoginView 同一张「认证卡」——暖黑底 + 胶片颗粒、实色卡片 + 发丝线、
- * 琥珀放映机标、衬线大写拉字距的站名、带图标的输入框（聚焦琥珀光环）、琥珀实心提交按钮。
- * 只多一枚「管理控制台」眉题，让管理员一眼分清自己在哪一端。
+ * 暗房影院：与用户端 LoginView 同一张「认证卡」——暖黑底、实色卡片 + 发丝线、
+ * 琥珀放映机标、衬线站名（不拉字距、不大写）、带图标的输入框（聚焦琥珀光环）、琥珀实心提交按钮。
+ * 副标题写明这是管理后台，不再另放一枚眉题。
  */
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -63,7 +63,6 @@ async function submit() {
           <img v-if="branding.logo_url" :src="branding.logo_url" :alt="branding.site_name" />
           <Clapperboard v-else :size="22" />
         </div>
-        <p class="au-eyebrow brand-eyebrow">管理控制台</p>
         <h1 class="brand-title">{{ branding.site_name }}</h1>
         <p class="brand-subtitle">运营管理后台 · 仅限管理员账号登录</p>
       </div>
@@ -122,8 +121,6 @@ async function submit() {
   width: 100%;
   max-width: 400px;
   background: var(--au-surface);
-  /* ui/beautify-20261018：顶部暖光叠加（ radial 琥珀光，不抢琥珀主色） */
-  background-image: radial-gradient(ellipse 120% 90% at 50% 0%, rgba(232, 168, 74, 0.07), transparent 60%);
   border: 1px solid var(--au-border);
   border-radius: var(--au-r-lg);
   padding: 2rem 1.75rem 1.5rem;
@@ -157,14 +154,11 @@ async function submit() {
   border-radius: inherit;
 }
 
-.brand-eyebrow { margin: 0 0 0.375rem; }
-
-/* 站名：衬线（base.css 的 h1）+ 大写 + 拉开字距，同用户端 .brand-title */
+/* 站名：衬线（base.css 的 h1），字距收进 0.04em 以内，不再 uppercase */
 .brand-title {
   font-size: 1.5rem;
   font-weight: 700;
-  letter-spacing: 0.28em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
   color: var(--au-text);
   margin: 0 0 0.5rem;
 }

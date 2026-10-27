@@ -46,7 +46,7 @@ import { PageHeader, SectionCard, StatTile, EmptyState } from '@/components/ui'
 2. **数字走正文色**：颜色只用来提示「有没有要看的」（警告 / 危险），不做装饰；`tone="accent"` 一页最多一两处。
 3. **分层靠发丝线，不靠阴影**：卡片 = `--au-surface` + `1px --au-border` + `--au-r-lg`，无 box-shadow。
 4. **标题走衬线**：`h1/h2/h3` 已全局衬线（`base.css`）；写成 div 的标题加 `.au-serif`。正文保持无衬线。
-5. **小眉题**：分组名 / 页面归属用 `.au-eyebrow`（琥珀、11–12px、字距 .24em）。
+5. **小眉题**：分组名 / 页面归属用 `.au-eyebrow`（琥珀、11–12px、字距 .1em）。
 6. **焦点**：`outline: 2px solid var(--au-border-focus)` 或输入框的 `0 0 0 3px var(--au-primary-soft)` 光环。
 7. **动效**：只淡入（透明度），不上浮、不缩放（按下 `scale(.98)` 除外）。
 

@@ -257,7 +257,7 @@ function sourceLabel(s: string): string {
 }
 
 function artworkLabel(m: string): string {
-  // 后端只出 artwork_mode 策略，不出图 URL：卡片无封面时用占位，不另起封面机制
+  // artwork_mode 只描述策略；真正出图看 cover_url，这里不拼地址
   return m === 'auto_collage' ? '自动拼贴（无封面时占位）' : m === 'none' ? '无封面' : m
 }
 

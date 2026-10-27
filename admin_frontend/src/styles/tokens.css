@@ -40,7 +40,7 @@
 
   /* ==================== 字体 ==================== */
   --font-sans: var(--au-font-sans);
-  /* 衬线展示字（页标题 / 区块标题 / 品牌字），与用户端同一支 Noto Serif SC */
+  /* 衬线展示字（页标题 / 区块标题 / 品牌字）：系统宋体栈，与用户端一致，不外链 */
   --font-serif: var(--au-font-serif);
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
     'Liberation Mono', monospace;

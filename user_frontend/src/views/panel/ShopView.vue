@@ -926,20 +926,19 @@ async function copyInviteCode() {
 }
 .shop-stamp {
   display: inline-block;
-  border: 2px solid var(--red);
-  color: var(--red);
+  border: 1px solid var(--line);
+  color: var(--ink2);
   font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  padding: 4px 10px;
-  transform: rotate(-4deg);
-  border-radius: 3px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 4px;
   margin-bottom: 10px;
 }
 .shop-head h1 {
   font-size: 24px;
-  font-weight: 800;
-  letter-spacing: 1px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 .shop-head p {
   color: var(--ink2);

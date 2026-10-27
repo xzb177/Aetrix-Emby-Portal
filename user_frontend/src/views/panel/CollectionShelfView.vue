@@ -3,7 +3,7 @@
     <div class="v4-page">
       <!-- 顶栏 -->
       <div class="v4-col-top">
-        <h1><span aria-hidden="true">📚</span> 合集</h1>
+        <h1>合集</h1>
       </div>
 
       <!-- 顶层错误卡 -->

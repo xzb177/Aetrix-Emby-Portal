@@ -3,7 +3,7 @@
  *
  * 只做机制位，不做内容：合集与模板全由服主在管理页里配；不预置片单、
  * 不做豆列导入闭环（模板规则 JSON 由服主自己填）、不做拼贴封面引擎
- * （卡片无封面时用占位，artwork_mode 只透传后端策略）。
+ * （展示封面只认 cover_url；artwork_mode 只透传后端策略，前端不拼 URL）。
  */
 import { del, get, patch, post } from '@/utils/request'
 
@@ -16,6 +16,8 @@ export interface MediaSet {
   sort_order: number
   min_effective_members: number
   artwork_mode: string
+  /** 已解析的封面地址；空则占位，前端不补 URL */
+  cover_url?: string | null
   path_prefix: string | null
   bound_person_id: number | null
   requested_revision: number | null

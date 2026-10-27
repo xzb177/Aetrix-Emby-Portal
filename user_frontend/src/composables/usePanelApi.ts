@@ -133,7 +133,7 @@ export interface CollectorData {
   [k: string]: unknown
 }
 
-/** 服务器页：生命体 / 雷达 / 生态 / 机关 */
+/** 服务器页：连接状态 / 任务 / 媒体库 / 入库趋势 */
 export interface ServerVitals {
   status?: string
   level?: string
