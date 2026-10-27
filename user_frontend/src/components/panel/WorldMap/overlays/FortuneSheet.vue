@@ -1,6 +1,6 @@
 <template>
   <div class="sheet-fortune">
-          <div v-if="fortuneLoading && !fortune" class="w-sheet-empty">正在摇签筒…</div>
+          <div v-if="fortuneLoading && !fortune" class="w-sheet-empty">正在抽签</div>
           <div v-else-if="fortuneDrew" class="w-fortune">
             <div class="w-fortune-level">{{ String(fortune?.level ?? '') }}</div>
             <p class="w-fortune-text">{{ String(fortune?.text ?? '') }}</p>
@@ -9,9 +9,9 @@
           </div>
           <div v-else class="w-fortune-draw">
             <div class="w-fortune-pot">🎋</div>
-            <p class="w-sheet-empty">心诚则灵，点一下抽今日运势</p>
+            <p class="w-sheet-empty">点一下抽今天的签</p>
             <button type="button" class="w-fortune-btn" :disabled="fortuneDrawing" @click="$emit('draw')">
-              {{ fortuneDrawing ? '摇签中…' : '抽一签' }}
+              {{ fortuneDrawing ? '抽取中…' : '抽一签' }}
             </button>
           </div>
           </div>

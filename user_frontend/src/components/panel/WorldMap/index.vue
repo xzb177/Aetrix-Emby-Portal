@@ -9,10 +9,10 @@
       <div class="map-frame">
       <div class="hud">
         <span class="brand">Aetrix<b>.</b></span>
-        <span class="worldname">🗺 探险世界</span>
+        <span class="worldname">探险世界</span>
         <div class="right">
-          <span class="pill" v-if="streak > 0">🔥 连签 {{ streak }} 天<template v-if="streakHint"> · {{ streakHint }}</template></span>
-          <button type="button" class="pill amber" v-if="pointsText" @click="goLedger">🪙 {{ pointsText }} 积分</button>
+          <span class="pill" v-if="streak > 0">连签 {{ streak }} 天<template v-if="streakHint"> · {{ streakHint }}</template></span>
+          <button type="button" class="pill amber" v-if="pointsText" @click="goLedger">{{ pointsText }} 积分</button>
           <span class="pill" v-if="memberInfo"><span class="lv">Lv.{{ memberInfo.level }}</span> {{ memberInfo.level_name }}</span>
           <button v-if="variant !== 'game'" type="button" class="avatar" @click="goAccount" aria-label="我的账号">{{ avatarChar }}</button>
         </div>
@@ -695,13 +695,13 @@ function closeOverlay() {
 
 const sheetTitle = computed(() => {
   switch (overlay.value) {
-    case 'parcels': return '📦 今日封存'
-    case 'letter': return '✉️ 每日一封'
-    case 'stele': return '🏆 观影碑'
-    case 'board': return '📢 服主告示牌'
-    case 'wall': return '💬 到此一游'
-    case 'fortune': return '🎋 每日一签'
-    case 'region': return regionGroup.value ? `${regionGroup.value.icon} ${regionGroup.value.title}` : '营地分区'
+    case 'parcels': return '今日封存'
+    case 'letter': return '每日一封'
+    case 'stele': return '观影碑'
+    case 'board': return '服主告示牌'
+    case 'wall': return '到此一游'
+    case 'fortune': return '每日一签'
+    case 'region': return regionGroup.value ? regionGroup.value.title : '营地分区'
     default: return ''
   }
 })

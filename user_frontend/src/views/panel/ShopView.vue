@@ -4,8 +4,8 @@
       <!-- 日志头 -->
       <div class="shop-head">
         <span class="shop-stamp">补给站 · 今日开张</span>
-        <h1><span aria-hidden="true">🎒</span> 探险补给站</h1>
-        <p>出发前，先备好干粮 —— 能量是路上的盘缠，会员是手里的通行证。</p>
+        <h1>补给站</h1>
+        <p>能量用来兑换和续费，会员用来看全片库。</p>
         <div v-if="loading" class="v4-skeleton" style="height:64px;margin-top:12px"></div>
         <div v-else class="purse">
           <div class="coin">
@@ -23,7 +23,7 @@
 
       <!-- ⚡ 能量补给 -->
       <section class="shop-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">⚡</span> 能量补给</div>
+        <div class="v4-sec-title">能量</div>
         <!-- R37 P3-1：比例接口失败时副标题诚实兜底，不再假装「加载中」 -->
         <div class="v4-sec-sub">
           <template v-if="ratioFailed">充能量 = 补充能量 —— 点一罐看看</template>
@@ -123,11 +123,11 @@
 
       <!-- 📜 探险执照 -->
       <section class="shop-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">📜</span> 探险执照</div>
+        <div class="v4-sec-title">会员</div>
         <div class="v4-sec-sub">买会员 = 领取执照 —— 凭执照解锁全片库，点开看细则</div>
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照 <span aria-hidden="true">🎉</span><br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
+        <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
         <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <div v-else-if="plans.length === 0" class="v4-empty">执照暂未上架，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <template v-else>
@@ -181,7 +181,7 @@
 
       <!-- ⛰️ 探险家等级 -->
       <section class="shop-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">⛰️</span> 探险家等级</div>
+        <div class="v4-sec-title">等级</div>
         <div class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
         <div v-else-if="memberFailed" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
@@ -224,12 +224,12 @@
 
       <!-- 🤝 带上同伴 -->
       <section v-if="loading || inviteEnabled || inviteFailed" class="shop-sec" style="padding-bottom:24px">
-        <div class="v4-sec-title"><span aria-hidden="true">🤝</span> 带上同伴</div>
+        <div class="v4-sec-title">带上同伴</div>
         <div class="v4-sec-sub">邀请一位探险家，双方都得能量</div>
         <div v-if="loading" class="v4-skeleton" style="height:120px"></div>
         <div v-else-if="inviteFailed" class="v4-err">组队暗号加载失败{{ inviteErrMsg ? '：' + inviteErrMsg : '' }}<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="inviteEnabled" class="invite">
-          <h3><span aria-hidden="true">🧭</span> 结伴远行，都有能量拿</h3>
+          <h3>结伴远行，都有能量拿</h3>
           <p v-if="inviteReward > 0 || inviteeReward > 0">同伴用你的组队暗号注册并领取执照，你得 {{ inviteReward }} 能量，他得 {{ inviteeReward }} 能量 —— 上不封顶。</p>
           <!-- R30：奖励为 0 时"上不封顶"自相矛盾，改诚实文案 -->
           <p v-else>当前邀请奖励未开启。</p>
@@ -245,7 +245,7 @@
 
       <!-- 🎟️ 核销中心 -->
       <section id="shop-redeem" class="shop-sec" style="padding-bottom:24px">
-        <div class="v4-sec-title"><span aria-hidden="true">🎟️</span> 核销中心</div>
+        <div class="v4-sec-title">核销中心</div>
         <div class="v4-sec-sub">会员卡码 / 兑换码 / 优惠券 —— 自动识别，输完点"使用"</div>
         <div v-if="loading" class="v4-skeleton" style="height:140px"></div>
         <div v-else class="redeem">
@@ -1160,7 +1160,6 @@ async function copyInviteCode() {
   font-size: 13px;
   font-weight: 800;
   box-shadow: 0 3px 0 var(--red-deep);
-  transform: rotate(-6deg);
   font-family: Georgia, serif;
   line-height: 1.2;
   text-align: center;
@@ -1199,7 +1198,6 @@ async function copyInviteCode() {
   font-size: 11px;
   padding: 3px 10px;
   border-radius: 2px;
-  transform: rotate(2deg);
 }
 .license .detail {
   display: none;

@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">营地 · 接线处</span>
-        <h1><span aria-hidden="true">🔌</span> 接线员</h1>
+        <h1>接线员</h1>
         <p>买完会员来这儿接线 —— 拿上账号密码，去播放器里连上就能看。</p>
       </header>
 
@@ -24,7 +24,7 @@
       <template v-else>
         <!-- 公益服说明 -->
         <div v-if="isFreeRealm" class="v4-sec">
-          <div class="v4-sec-title"><span aria-hidden="true">📻</span> 接入方式</div>
+          <div class="v4-sec-title">接入方式</div>
           <div class="free-note">
             <span class="badge free">公益服 · 免费开放</span>
             <p>{{ realmNote }}</p>
@@ -34,7 +34,7 @@
         <!-- 有查看权限：账号密码卡 -->
         <template v-if="viewGranted">
           <section class="v4-sec">
-            <div class="v4-sec-title"><span aria-hidden="true">🔑</span> 你的接线账号</div>
+            <div class="v4-sec-title">你的接线账号</div>
             <div class="v4-sec-sub">拿着这三样，去播放器里登录</div>
 
             <div class="op-rows" :class="{ loading: loading && !accountReloading }">
@@ -90,7 +90,7 @@
 
           <!-- 多服 -->
           <section v-if="realmCards.length > 1" class="v4-sec">
-            <div class="v4-sec-title"><span aria-hidden="true">🗺️</span> 我的服</div>
+            <div class="v4-sec-title">我的服</div>
             <div class="v4-sec-sub">每个服有自己的地址和会员</div>
             <div class="realm-list">
               <div v-for="r in realmCards" :key="r.id" class="realm-item">
@@ -122,7 +122,7 @@
 
           <!-- 一键导入 -->
           <section v-if="hasSchemes" class="v4-sec">
-            <div class="v4-sec-title"><span aria-hidden="true">📲</span> 一键导入到客户端</div>
+            <div class="v4-sec-title">一键导入到客户端</div>
             <div class="v4-sec-sub">点一下，直接跳到播放器里填好</div>
             <div class="scheme-btns">
               <button
@@ -140,7 +140,7 @@
           <!-- 正在播放：旧 PlaybackSessions 一比一恢复（#783 删页面时丢了入口） -->
           <section class="v4-sec" aria-label="正在播放">
             <div class="v4-sec-title">
-              <span aria-hidden="true">📺</span> 正在播放
+              正在播放
               <button
                 class="refresh-btn"
                 :class="{ 'is-loading': sessionsLoading }"
@@ -213,7 +213,7 @@
 
           <!-- 怎么连：小白指引 -->
           <section class="v4-sec">
-            <div class="v4-sec-title"><span aria-hidden="true">🧭</span> 怎么连上？</div>
+            <div class="v4-sec-title">怎么连上？</div>
             <div class="guide-steps">
               <div class="guide-step">
                 <span class="step-num">1</span>
@@ -242,7 +242,7 @@
 
         <!-- 没查看权限：解锁入口 -->
         <div v-else-if="viewPermission" class="v4-sec">
-          <div class="v4-sec-title"><span aria-hidden="true">🔒</span> 接线需要解锁</div>
+          <div class="v4-sec-title">接线需要解锁</div>
           <template v-if="viewPermission.realm_free">
             <p class="unlock-desc">
               花 <strong>{{ viewPermission.unlock_points }}</strong> 能量解锁查看权限，

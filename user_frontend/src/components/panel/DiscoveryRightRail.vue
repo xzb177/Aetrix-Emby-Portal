@@ -8,7 +8,6 @@
     <section id="disc-world">
       <div class="d3-sec-head">
         <div>
-          <span class="d3-k">WORLD</span>
           <div class="d3-sec-title">世界</div>
           <div class="d3-sec-sub">地图、榜单、留言都在这</div>
         </div>
@@ -17,7 +16,7 @@
         <div class="d3-world-card">
           <div style="min-width:0">
             <div class="t">探险世界</div>
-            <div class="s">全屏地图 · 纸痕测绘</div>
+            <div class="s">全屏地图</div>
           </div>
           <button type="button" class="d3-btn-ghost" @click="enterWorld">进入世界</button>
         </div>
@@ -28,7 +27,6 @@
     <section class="d3-card" aria-label="观影碑">
       <div class="d3-sec-head">
         <div>
-          <span class="d3-k">CHARTS</span>
           <div class="d3-sec-title">观影碑</div>
           <div class="d3-sec-sub">热播榜 · {{ period === 'day' ? '日榜' : '周榜' }}</div>
         </div>
@@ -37,8 +35,8 @@
           <button type="button" role="tab" :class="{ on: period === 'week' }" :aria-selected="period === 'week'" @click="period = 'week'">周榜</button>
         </div>
       </div>
-      <div v-if="lbLoading && lbRows.length === 0" class="d3-empty">正在抄榜…</div>
-      <div v-else-if="lbRows.length === 0" class="d3-empty">还没有人上榜，快去看片抢头名</div>
+      <div v-if="lbLoading && lbRows.length === 0" class="d3-empty">正在加载榜单</div>
+      <div v-else-if="lbRows.length === 0" class="d3-empty">还没有人上榜</div>
       <div v-else>
         <div v-for="(r, i) in lbRows.slice(0, 5)" :key="i + '-' + (r.name ?? '')" class="d3-rk">
           <i :class="{ top: i < 3 }">{{ i + 1 }}</i>
@@ -55,7 +53,6 @@
     <section class="d3-card d3-notice" aria-label="服主告示牌">
       <div class="d3-sec-head">
         <div>
-          <span class="d3-k">NOTICE</span>
           <div class="d3-sec-title">服主告示牌</div>
         </div>
       </div>
@@ -70,12 +67,11 @@
     <section class="d3-card" aria-label="每日抽一签">
       <div class="d3-sec-head" style="margin-bottom:6px">
         <div>
-          <span class="d3-k">FORTUNE</span>
           <div class="d3-sec-title">每日抽一签</div>
         </div>
       </div>
       <div class="d3-fortune">
-        <template v-if="fortuneLoading && !fortune">正在摇签筒…</template>
+        <template v-if="fortuneLoading && !fortune">正在抽签</template>
         <template v-else-if="fortuneDrew">
           <div class="big">{{ String(fortune?.level ?? '') }}</div>
           <p>{{ String(fortune?.text ?? '') }}<br>宜{{ String(fortune?.yi ?? '') }} · 忌{{ String(fortune?.ji ?? '') }}</p>
@@ -84,7 +80,7 @@
           <p>每日一签，试试手气</p>
           <div style="margin-top:10px">
             <button type="button" class="d3-btn-ghost" :disabled="fortuneDrawing" @click="drawFortune">
-              {{ fortuneDrawing ? '摇签中…' : '抽一签' }}
+              {{ fortuneDrawing ? '抽取中…' : '抽一签' }}
             </button>
           </div>
         </template>
@@ -95,13 +91,12 @@
     <section class="d3-card" aria-label="到此一游留言墙">
       <div class="d3-sec-head">
         <div>
-          <span class="d3-k">GUESTBOOK</span>
           <div class="d3-sec-title">到此一游</div>
           <div class="d3-sec-sub">世界留言墙 · 最新两条</div>
         </div>
         <RouterLink to="/game" class="d3-sec-link">写留言 <span aria-hidden="true">→</span></RouterLink>
       </div>
-      <div v-if="wallLoading && wallPosts.length === 0" class="d3-empty">正在翻墙…</div>
+      <div v-if="wallLoading && wallPosts.length === 0" class="d3-empty">正在加载留言</div>
       <div v-else-if="wallPosts.length === 0" class="d3-empty">墙上还空着，来留下第一句话吧</div>
       <template v-else>
         <div v-for="p in wallPosts.slice(0, 2)" :key="String(p.id)" class="d3-msg">

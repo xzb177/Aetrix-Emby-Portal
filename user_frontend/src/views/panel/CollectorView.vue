@@ -3,7 +3,7 @@
     <div class="v4-page">
       <!-- 顶栏 -->
       <div class="v4-col-top">
-        <h1><span aria-hidden="true">🏅</span> 收藏家</h1>
+        <h1>收藏家</h1>
         <span v-if="collector.loading" class="v4-skeleton" style="height:24px;width:110px;border-radius:14px"></span>
         <span v-else-if="!collector.error" class="v4-lv">{{ levelText }}</span>
       </div>
@@ -40,7 +40,7 @@
 
       <!-- 口味护照 -->
       <section v-if="!collector.error" class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">🛂</span> 口味护照</div>
+        <div class="v4-sec-title">口味护照</div>
         <div class="v4-sec-sub">看够一个类型，就盖一个章 —— 集满 12 枚有惊喜</div>
         <!-- loading 契约直通子组件，父级不再用 v-else 抢占骨架分支 -->
         <TastePassport :raw="tastesRaw" :loading="collector.loading" @retry="retryCollector" />
@@ -48,11 +48,11 @@
 
       <!-- 馆灵养成 -->
       <section v-if="!collector.error" class="v4-sec" style="padding-bottom:20px">
-        <div class="v4-sec-title"><span aria-hidden="true">🥚</span> 馆灵养成</div>
+        <div class="v4-sec-title">馆灵养成</div>
         <div class="v4-sec-sub">你看的每一分钟，都在喂养它</div>
         <div v-if="collector.loading" class="v4-skeleton" style="height:220px"></div>
         <PetCard v-else-if="pet" :pet="pet" />
-        <div v-else class="v4-empty">馆灵还在路上，多看片把它养出来</div>
+        <div v-else class="v4-empty">还没有馆灵数据</div>
       </section>
     </div>
   </div>
@@ -195,8 +195,8 @@ const pet = computed((): PetData | null => {
 }
 .v4-col-top h1 {
   font-size: 20px;
-  font-weight: 800;
-  letter-spacing: 2px;
+  font-weight: 500;
+  letter-spacing: 0;
   margin: 0;
 }
 .v4-lv {
@@ -219,18 +219,21 @@ const pet = computed((): PetData | null => {
 }
 .v4-idcard-mark {
   position: absolute;
-  right: -8px;
-  top: 8px;
-  font-size: 44px;
-  font-weight: 900;
-  color: rgba(42, 38, 32, 0.05);
-  letter-spacing: 4px;
-  transform: rotate(8deg);
+  right: 14px;
+  top: 14px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink2);
+  letter-spacing: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 6px;
   pointer-events: none;
 }
 .v4-id-name {
   font-size: 22px;
   font-weight: 800;
+  padding-right: 72px;
 }
 .v4-id-title {
   font-size: 12px;

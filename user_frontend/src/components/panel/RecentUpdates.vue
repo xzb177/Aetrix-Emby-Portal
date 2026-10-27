@@ -7,7 +7,6 @@
   <section id="disc-recent" class="d3-card" aria-label="最近更新">
     <div class="d3-sec-head">
       <div>
-        <span class="d3-k">RECENT</span>
         <div class="d3-sec-title">最近更新</div>
         <div class="d3-sec-sub">刚入库的片子</div>
       </div>

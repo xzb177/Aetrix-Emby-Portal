@@ -16,7 +16,7 @@ export interface GameFacility {
   name: string
   /** 路由路径，必须已在 src/router/index.ts 声明 */
   path: string
-  /** 表情图标（与各游戏页 h1 的 emoji 保持一致） */
+  /** 地图针表情。页面标题和头像菜单不再使用这枚图标。 */
   icon: string
   /** 一句话介绍 */
   desc: string
@@ -55,9 +55,9 @@ export const gameHubConfig = {
   /** Hub 页印章 */
   stamp: '探险家 · 大本营',
   /** Hub 页标题 */
-  title: '🏕️ 探险日志',
+  title: '世界',
   /** Hub 页副标题（/game 已换成世界地图本体） */
-  subtitle: '世界地图：建筑、观影碑、留言墙、抽签亭都在这里，挨个逛逛吧。',
+  subtitle: '地图上的建筑都可以点开。',
 } as const
 
 /** 全部游戏设施（营地设施）—— order 即数组顺序，0 起 */

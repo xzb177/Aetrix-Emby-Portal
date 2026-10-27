@@ -4,13 +4,13 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">{{ facilityStamp('supply') }}</span>
-        <h1><span aria-hidden="true">🧾</span> 补给记录</h1>
+        <h1>补给记录</h1>
         <p>补给站的采购小票，一张张钉在布告栏上 —— 点小票看明细。</p>
       </header>
 
       <!-- 布告栏 -->
       <section class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">📌</span> 布告栏</div>
+        <div class="v4-sec-title">布告栏</div>
         <div class="v4-sec-sub">在补给站买过的东西</div>
 
         <div v-if="loading" role="status" aria-label="正在加载补给记录">
@@ -18,7 +18,7 @@
           <div class="v4-skeleton" aria-hidden="true" style="height:104px;margin-bottom:22px"></div>
         </div>
         <div v-else-if="error" class="v4-err">布告栏的小票拿不到：{{ error }}<br><button class="v4-retry" @click="load">重试</button></div>
-        <div v-else-if="!orders.length" class="v4-empty"><span aria-hidden="true">🧾</span><br>布告栏空空的 —— 去补给站备点干粮吧 <span aria-hidden="true">🎒</span></div>
+        <div v-else-if="!orders.length" class="v4-empty">布告栏空空的 —— 去补给站备点干粮吧</div>
 
         <div v-else class="board">
           <article

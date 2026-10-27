@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">营地一角 · 老向导</span>
-        <h1><span aria-hidden="true">🧭</span> 向导</h1>
+        <h1>向导</h1>
         <p>营地里坐着位老向导，片库的事，问他准没错。</p>
         <div v-if="available" id="guide-quota" class="v4-fire"><span aria-hidden="true">🟢</span> {{ quotaText }}</div>
         <div v-else-if="loading" class="v4-skeleton" style="height:32px;width:60%;margin-top:10px"></div>
@@ -46,7 +46,7 @@
 
         <!-- 快捷问 -->
         <section class="v4-sec">
-          <div class="v4-sec-title"><span aria-hidden="true">💬</span> 直接问他</div>
+          <div class="v4-sec-title">直接问他</div>
           <div class="chips">
             <button
               v-for="s in SUGGESTIONS"

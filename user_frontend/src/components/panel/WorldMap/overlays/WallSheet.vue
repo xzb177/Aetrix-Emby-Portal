@@ -1,6 +1,6 @@
 <template>
   <div class="sheet-wall">
-          <p class="w-sheet-empty" v-if="wallLoading && wallPosts.length === 0">正在翻墙…</p>
+          <p class="w-sheet-empty" v-if="wallLoading && wallPosts.length === 0">正在加载留言</p>
           <ul class="w-wall-list" v-else-if="wallPosts.length > 0">
             <li v-for="p in wallPosts" :key="String(p.id)" class="w-wall-row">
               <span class="w-wall-nick">{{ String(p.nickname ?? '') }}</span>
@@ -8,7 +8,7 @@
               <p class="w-wall-text">{{ String(p.content ?? '') }}</p>
             </li>
           </ul>
-          <p class="w-sheet-empty" v-else>墙上还空着，来留下第一句话吧 💬</p>
+          <p class="w-sheet-empty" v-else>墙上还空着，来留下第一句话吧</p>
           <div class="w-wall-form">
             <input :value="modelValue"
             @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)" maxlength="60" placeholder="到此一游，留句话吧（60字内）" @keyup.enter="$emit('submit')" aria-label="留言内容" />

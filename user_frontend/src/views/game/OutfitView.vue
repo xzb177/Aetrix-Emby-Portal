@@ -4,7 +4,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">衣帽间 · 试衣中</span>
-        <h1><span aria-hidden="true">👕</span> 换装</h1>
+        <h1>换装</h1>
         <p>探险家的衣帽间 —— 点一套看看配色，满意了再点"就穿这套"。</p>
         <!-- R41：原"整个营地跟着换天色"是虚假承诺 —— v4 纸色浅色是既定硬约束（路由强制 light），试穿暗色在 v4 页不可见 -->
       </header>
@@ -48,7 +48,7 @@
         aria-label="穿搭"
       >
       <div class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">🎨</span> 营地天色</div>
+        <div class="v4-sec-title">营地天色</div>
         <div class="v4-sec-sub">先试穿，满意了再点"就穿这套"</div>
 
         <template v-if="outfits.length > 0">
@@ -73,7 +73,7 @@
           <span class="tick">✓</span>
         </div>
         </template>
-        <div v-else class="v4-empty">暂时没有可换的配色，稍后再来看看 <span aria-hidden="true">✨</span></div>
+        <div v-else class="v4-empty">暂时没有可换的配色，稍后再来看看</div>
       </div>
 
       <div class="note">
@@ -89,7 +89,7 @@
         aria-label="装备库"
       >
       <div class="v4-sec">
-        <div class="v4-sec-title"><span aria-hidden="true">🎒</span> 装备库 · 徽章陈列柜</div>
+        <div class="v4-sec-title">装备库 · 徽章陈列柜</div>
         <div class="v4-sec-sub">探险攒下的徽章都在这儿 —— 点一枚戴上，再点右上角头像就能看到它</div>
         <!-- 加载中 -->
         <div v-if="badgeLoading" class="badge-wall" role="status" aria-live="polite">
@@ -146,7 +146,7 @@
           </div>
         </div>
         <!-- 空 -->
-        <div v-else class="v4-empty">还没有徽章，去探险攒一枚 <span aria-hidden="true">✨</span></div>
+        <div v-else class="v4-empty">还没有徽章，去探险攒一枚</div>
         <!-- 新解锁提示 -->
         <div v-if="newUnlockNames.length > 0" class="v4-fresh" style="margin-top:12px" role="status" aria-live="polite">
           <span aria-hidden="true">🎉</span> 新徽章解锁：{{ newUnlockNames.join('、') }}

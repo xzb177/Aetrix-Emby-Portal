@@ -5,7 +5,7 @@
       <!-- 日志头 -->
       <header class="v4-loghead">
         <span class="v4-stamp">营地门口 · 组队处</span>
-        <h1>🤝 结伴同行</h1>
+        <h1>结伴同行</h1>
         <p>在营地门口举起牌子 —— 组队探险啦！</p>
         <div v-if="info && !disabled" class="v4-fire">
           🎒 已组队 <b>{{ info.invited_count ?? 0 }}</b> 人
@@ -69,7 +69,7 @@
 
         <!-- 已组队的伙伴 -->
         <section v-if="!loading" class="v4-sec" :aria-busy="recordsLoading">
-          <h2 class="v4-sec-title">🎒 已组队<template v-if="!recordsErr"> · {{ recordsTotal }} 人</template></h2>
+          <h2 class="v4-sec-title">已组队<template v-if="!recordsErr"> · {{ recordsTotal }} 人</template></h2>
           <div class="v4-sec-sub">跟着你一起出发的伙伴</div>
           <div v-if="recordsErr" class="v4-err">
             伙伴名单加载失败，可能是网络波动<br>
@@ -94,7 +94,7 @@
 
         <!-- 带路费账本 -->
         <section v-if="!loading" class="v4-sec" :aria-busy="rebatesLoading">
-          <h2 class="v4-sec-title">💰 带路费账本</h2>
+          <h2 class="v4-sec-title">带路费账本</h2>
           <div class="v4-sec-sub">伙伴充能量，你的回扣自动记在这里<template v-if="!rebatesErr"> · 累计 +{{ totalRebate }}⚡</template></div>
           <div v-if="rebatesErr" class="v4-err">
             带路费账本加载失败，可能是网络波动<br>
@@ -118,7 +118,7 @@
 
         <!-- 见面礼记录 -->
         <section v-if="!loading" class="v4-sec" :aria-busy="promotionsLoading">
-          <h2 class="v4-sec-title">🎁 见面礼记录</h2>
+          <h2 class="v4-sec-title">见面礼记录</h2>
           <div class="v4-sec-sub">每带一位伙伴，营地当场发的谢礼</div>
           <div v-if="promotionsErr" class="v4-err">
             见面礼记录加载失败，可能是网络波动<br>
