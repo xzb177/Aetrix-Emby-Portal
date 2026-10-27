@@ -1432,7 +1432,10 @@ class TransferVariant(Base):
     owner_scope = Column(String(20), nullable=False, default="source")
     owner_ref = Column(String(100))  # user  scope 时为 WebUser.id 的字符串
     status = Column(String(20), nullable=False, default="ready")
-    size_bytes = Column(Integer)
+    # 生产表已是 BIGINT（2026-10-27 前 ALTER 过）：模型此前仍是
+    # Integer，SQLite 下无碍、PostgreSQL 下超 2GB 的副本写回会被
+    # 截断/溢出，故与表结构对齐改 BigInteger（不改列名、不改语义）。
+    size_bytes = Column(BigInteger)
     created_at = Column(DateTime, default=datetime.now)
     last_played_at = Column(DateTime)
     last_checked_at = Column(DateTime)

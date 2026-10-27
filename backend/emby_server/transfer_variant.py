@@ -1514,8 +1514,10 @@ class UserDriveApiClient(DriveApiClient):
     def _headers(self, drive_id, force_refresh=False):
         if self._token is None or force_refresh:
             from backend.emby_server import drive_oauth
+            # force_refresh 必须直通令牌口：此前这里吞掉了该参数，
+            # 401 重试拿回的仍是同一枚未过期旧令牌，重试必再 401。
             token = drive_oauth.get_binding_drive_access_token(
-                self._db, self._binding)
+                self._db, self._binding, force_refresh=force_refresh)
             if not token:
                 raise _Retriable("用户 Drive 凭据不可用")
             self._token = token
