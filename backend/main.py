@@ -44,6 +44,7 @@ from backend.api.media_sets_api import (
     admin_media_sets_router,
     user_media_sets_router,
 )
+from backend.api.store import router as store_router
 from backend.api.library_cover import router as library_cover_router
 from backend.api.media_library import mirror_router as cover_mirror_router
 from backend.api.media_library import router as media_library_router
@@ -840,6 +841,9 @@ app.include_router(admin_readonly_router)
 # 总闸 COLLECTIONS_ENABLED 默认关，关时本组接口惰性 404，现有路由不动。
 app.include_router(admin_media_sets_router)
 app.include_router(user_media_sets_router)
+# 想看商店骨架（§7 / R0）：总闸 STORE_ENABLED 默认关，关时本组接口惰性 404。
+# 不入队转存、不接播放。见 backend/api/store.py 与 store_contract.py。
+app.include_router(store_router)
 # 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
 app.include_router(library_cover_router)
 # 媒体库学习（封面/排序/货架）：门户端游标分页 / 分区 / 藏 / 封面五件套
