@@ -13,10 +13,11 @@
 
 本模块不探活、不拼播放地址（那是 25-3/25-4 的活）；例外是两个手动触发口：
 苹果 CMS 手动同步触发口（只调生产触发入口，不自写同步逻辑），以及
-25-2 的手动聚合触发口（POST /upstream-sources/{id}/aggregate，只做
-「请求形态 → 模块调用 → 错误映射」：拉目录与配对在
-emby_server/upstream_aggregate_run，管理端不直接发上游请求）。
-触发是手动动作，不接自动调度、不接定时任务。
+25-2 的手动聚合触发口（POST /upstream-sources/{id}/aggregate）。
+聚合经常超过管理端 axios 的 30 秒，POST 只做入队并立刻返回任务 id，
+真正的拉目录与配对在后台线程里走 emby_server/upstream_aggregate_run，
+进度用 GET /upstream-sources/{id}/aggregate/{task_id} 查。
+管理端不直接发上游请求。触发是手动动作，不接自动调度、不接定时任务。
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from backend.database import get_db
 from backend.emby_server import applecms_production as acp
 from backend.emby_server import models as em
 from backend.emby_server import upstream_sources as ups
+from backend.emby_server import upstream_aggregate_jobs as uaj
 from backend.emby_server import upstream_aggregate_run as uar
 from backend.emby_server.portal import admin_emby_router, require_staff
 
@@ -259,29 +261,44 @@ def aggregate_upstream_source(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """手动触发某源的目录聚合（25-2 接线，手动动作，不自动调度）。
+    """手动触发某源的目录聚合，立刻返回任务，不阻塞到跑完。
 
-    流程：先取上游库清单（/Library/MediaFolders），再逐库按 ParentId
-    拉目录 → 逐库 aggregate_sources → 逐库配对本地条目 →
-    写路径开关开时 record_mapping 写映射 → 回配对结果与逐库进度。
-    单库失败不毁已写映射（见 failed_libraries），重跑靠 upsert 续跑。
-    写映射的提交在本接口内完成（record_mapping 只 flush）。
-    错误映射：查无此源 404；源未启用 / applecms 型 400；
-    凭据失效 409；上游额度 429；上游不可用 502。
+    后台线程再走原来的按库流程：取上游库清单 → 逐库拉目录 →
+    聚合 → 配对 → 写路径开关开时写映射。单库失败仍只进
+    failed_libraries，不毁已写映射。写映射的提交在后台线程里完成
+    （record_mapping 只 flush）。
+
+    不发上游请求就能判定的错误仍在本接口立刻返回，映射与以前相同：
+    查无此源 404；源未启用 / applecms 型 400。
+    要打到上游才知道的错误（凭据失效 409、额度 429、上游不可用 502、
+    映射写入冲突 409）记在任务上，由查询口带回，不在这里空等。
     响应不出凭据原文、不出密封值、不出上游播放地址。
     """
     source = _get_source_or_404(db, source_id)
-    page_size = body.page_size if body is not None else 100
     try:
-        result = uar.run_manual_aggregation(
-            db, source, page_size=page_size)
+        uar.ensure_aggregatable(source)
     except uar.UpstreamAggregateRunError as exc:
-        db.rollback()
         raise HTTPException(status_code=exc.status, detail=exc.message) from exc
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409, detail="映射写入冲突，请重试") from exc
-    return {"source": ups.source_payload(source), "result": result}
+    page_size = body.page_size if body is not None else 100
+    return uaj.enqueue(source.id, page_size)
+
+
+@admin_emby_router.get(
+    "/upstream-sources/{source_id}/aggregate/{task_id}")
+def get_upstream_aggregate_task(
+    source_id: int,
+    task_id: str,
+    staff: base_models.WebUser = Depends(require_staff),
+):
+    """查一条聚合任务。完成时 result 与原先同步口的聚合结果同形。
+
+    失败时 HTTP 仍是 200，``error.status`` / ``error.code`` /
+    ``error.detail`` 沿用同步口的状态码和中文文案（凭据 409、
+    上游不可用 502、额度 429、映射冲突 409 等），方便轮询区分
+    「任务还在跑」和「这次聚合失败了」。任务不存在、或任务不属于
+    这个源，返回 404。
+    """
+    view = uaj.get_task(source_id, task_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail="聚合任务不存在或已过期")
+    return view
