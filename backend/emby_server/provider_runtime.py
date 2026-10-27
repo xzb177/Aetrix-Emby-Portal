@@ -365,6 +365,9 @@ class ProviderRuntimeServer:
         self._lock = threading.Lock()
         self._sock: socket.socket | None = None
         self._stop = threading.Event()
+        # 启动/停止互斥：stop() 不许在 serve_forever 绑 socket 的半途中
+        # 把 _sock 置 None（CI 曾因此在 settimeout 处 AttributeError 炸线程）。
+        self._start_lock = threading.Lock()
 
     # ---- 会话 ----
     def _require_session(self, params: dict) -> RuntimeSession:
@@ -480,7 +483,16 @@ class ProviderRuntimeServer:
                 pass
 
     def serve_forever(self) -> None:
-        """绑 UDS 并接受连接（阻塞；调用方在线程里跑它，停服调 :meth:`stop`）。"""
+        """绑 UDS 并接受连接（阻塞；调用方在线程里跑它，停服调 :meth:`stop`）。
+
+        竞态修（2026-10-27 CI 实锤）：旧实现先 bind（此时 socket 文件已
+        出现）后 listen，_wait_sock 只查文件存在时客户端会在窗口内
+        connect 得 ECONNREFUSED；且 stop() 会在启动半途中把 _sock 置
+        None，线程随后在 settimeout 处 AttributeError。因此启动全程持
+        _start_lock、循环用局部 sock（不读可被 stop() 置空的 _sock），
+        stop() 同样持锁关 socket；stop 先于启动时，线程绑好后立即
+        退出并清掉残留 socket 文件，不留僵尸监听。
+        """
         import os as _os
 
         parent = _os.path.dirname(self.socket_path)
@@ -492,29 +504,47 @@ class ProviderRuntimeServer:
             pass
         except OSError:
             pass
-        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._sock.bind(self.socket_path)
-        self._sock.listen(64)
-        self._sock.settimeout(0.2)
-        while not self._stop.is_set():
-            try:
-                conn, _ = self._sock.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            thread = threading.Thread(target=self._handle_conn, args=(conn,), daemon=True)
-            thread.start()
+        with self._start_lock:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(0.2)
+            sock.bind(self.socket_path)
+            sock.listen(64)
+            self._sock = sock
+        started_after_stop = self._stop.is_set()
+        try:
+            while not self._stop.is_set():
+                try:
+                    conn, _ = sock.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                thread = threading.Thread(target=self._handle_conn, args=(conn,), daemon=True)
+                thread.start()
+        finally:
+            with self._start_lock:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                if self._sock is sock:
+                    self._sock = None
+            if started_after_stop:
+                try:
+                    _os.unlink(self.socket_path)
+                except OSError:
+                    pass
 
     def stop(self) -> None:
         """停服并清理 socket 文件（幂等）。"""
         self._stop.set()
-        if self._sock is not None:
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-            self._sock = None
+        with self._start_lock:
+            if self._sock is not None:
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
+                self._sock = None
         try:
             os.unlink(self.socket_path)
         except OSError:

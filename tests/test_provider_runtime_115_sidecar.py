@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import threading
 from types import SimpleNamespace
 
@@ -104,14 +105,30 @@ class FakeHTTP:
 
 
 def _wait_sock(sock: str, timeout: float = 5.0) -> None:
-    """等服务端线程绑好 UDS 再连（不用 sleep 猜时序，轮询到文件出现为止）。"""
+    """等服务端线程绑好 UDS 再连（不用 sleep 猜时序）。
+
+    竞态修（2026-10-27 CI 实锤）：旧实现只查文件存在，而文件在
+    bind 时就出现、listen 在后，窗口内 connect 必得 ECONNREFUSED。
+    改为真连通探测：一次 connect 成功才证明 listen 已完成；探测
+    连接随即关闭，服务端 _handle_conn 对空连接只做 OSError 兜底，
+    不污染会话状态。
+    """
     import time
 
     deadline = time.time() + timeout
-    while not os.path.exists(sock):
-        if time.time() > deadline:
-            raise AssertionError(f"sidecar 未在 {timeout}s 内绑好 socket：{sock}")
-        time.sleep(0.01)
+    while True:
+        try:
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(0.2)
+                probe.connect(sock)
+            finally:
+                probe.close()
+            return
+        except OSError:
+            if time.time() > deadline:
+                raise AssertionError(f"sidecar 未在 {timeout}s 内绑好 socket：{sock}")
+            time.sleep(0.01)
 
 
 @pytest.fixture()
