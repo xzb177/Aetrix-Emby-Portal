@@ -221,10 +221,19 @@ export interface WelfareRedeemResponse {
   expires_at: string | null
 }
 
+export interface WelfareStatusResponse {
+  is_welfare: boolean
+  /** 公益资格到期日（ISO；null = 公益用户不过期、非公益用户未开通） */
+  welfare_expires_at: string | null
+}
+
 export const welfareApi = {
   /** 积分兑换公益天数（仅支持 7 或 30；要求登录 + 绑 TG，未绑会被服务端拦） */
   redeem: (daysOption: 7 | 30) =>
     api.post<never, WelfareRedeemResponse>('/api/points/redeem', { days_option: daysOption }),
+  /** 当前登录用户的公益资格状态（含到期日；失败时调用方容错，不阻断页面） */
+  status: () =>
+    api.get<never, WelfareStatusResponse>('/api/points/welfare-status'),
 }
 
 // ==================== 积分 ====================
