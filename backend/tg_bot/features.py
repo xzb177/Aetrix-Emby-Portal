@@ -449,7 +449,12 @@ def handle_rules(db, tg_user: dict, chat_id: int, args: str) -> str:
 
 
 def handle_rank(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """积分排行榜，复用 WebUser.points 单一积分余额。"""
+    """积分排行榜，复用 WebUser.points 单一积分余额。
+
+    排序口径不变（积分降序、同分按 id 升序、前 10 名）；等级公益服活动
+    治理 Step 4：仅公益服下追加等级列展示（Lv.数字＋等级名），付费服
+    输出与此前逐字一致。
+    """
     rows = (
         db.query(models.WebUser)
         .filter(models.WebUser.is_active.is_(True),
@@ -460,11 +465,76 @@ def handle_rank(db, tg_user: dict, chat_id: int, args: str) -> str:
     )
     if not rows:
         return "🏆 暂时还没有排行榜数据。"
+    from backend.subscriptions import is_free_realm as _is_free_realm
+    free_realm = _is_free_realm(db)
+    level_names = {}
+    if free_realm:
+        level_names = {
+            lv.level: lv.name
+            for lv in db.query(models.MemberLevel)
+            .filter(models.MemberLevel.is_active == True)  # noqa: E712
+            .all()
+        }
     my_id = int(tg_user.get("id") or 0)
     lines = ["🏆 <b>全站积分排行榜</b>", "", "仅显示已绑定且允许上榜的用户。"]
     medals = ["🥇", "🥈", "🥉"]
     for index, row in enumerate(rows, 1):
         mark = medals[index - 1] if index <= 3 else f"{index}."
         mine = " ◀️" if row.telegram_id == my_id else ""
-        lines.append(f"{mark} {_esc(row.username)}：<b>{int(row.points or 0)}</b>{mine}")
+        if free_realm:
+            level = row.member_level or 1
+            name = level_names.get(level)
+            level_text = f" · Lv.{level} {_esc(name)}" if name else f" · Lv.{level}"
+            lines.append(f"{mark} {_esc(row.username)}：<b>{int(row.points or 0)}</b>{level_text}{mine}")
+        else:
+            lines.append(f"{mark} {_esc(row.username)}：<b>{int(row.points or 0)}</b>{mine}")
+    return "\n".join(lines)
+
+
+_GOVLOG_ACTION_TEXT = {
+    "freeze": "停权",
+    "release": "解封",
+    "downgrade": "降级",
+}
+
+
+def handle_govlog(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """治理审计日志只读查看（等级公益服活动治理 Step 4）。
+
+    仅私聊（群聊由 router 的 private_only 拦）、仅公益服、仅 Lv.6 传奇；
+    未绑定／非公益服／低于 Lv.6 一律只回提示、不泄露日志内容。
+    """
+    from backend import governance as _governance
+    from backend.subscriptions import is_free_realm as _is_free_realm
+
+    user = _bound_user(db, tg_user)
+    if user is None:
+        return "请先绑定账号后再查看治理审计日志。"
+    if not _is_free_realm(db):
+        return "治理审计日志仅在公益服开放。"
+    if (user.member_level or 1) < 6:
+        return "治理审计日志仅 Lv.6 传奇可见。"
+    entries = _governance.list_audit_logs(db, limit=10)
+    if not entries:
+        return "📋 <b>治理审计日志</b>\n\n暂无记录。"
+    user_ids = {e.actor_user_id for e in entries if e.actor_user_id}
+    user_ids |= {e.target_user_id for e in entries if e.target_user_id}
+    names = {}
+    if user_ids:
+        names = {
+            u.id: u.username
+            for u in db.query(models.WebUser).filter(models.WebUser.id.in_(user_ids)).all()
+        }
+    lines = ["📋 <b>治理审计日志（最近 10 条）</b>", ""]
+    for e in entries:
+        action_text = _GOVLOG_ACTION_TEXT.get(e.action, e.action)
+        actor = names.get(e.actor_user_id, "系统") if e.actor_user_id else "系统"
+        if e.target_user_id:
+            target = names.get(e.target_user_id, f"用户{e.target_user_id}")
+        elif e.target_ref:
+            target = e.target_ref
+        else:
+            target = "—"
+        created = e.created_at.strftime("%m-%d %H:%M") if e.created_at else ""
+        lines.append(f"{created} {_esc(actor)} {action_text} {_esc(target)}")
     return "\n".join(lines)

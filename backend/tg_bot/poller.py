@@ -37,6 +37,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("request", "求片"),
     ("myrequests", "我的求片"),
     ("rank", "积分排行榜"),
+    ("govlog", "治理审计日志"),
     ("requestboard", "求片榜"),
     ("rules", "群规"),
     ("login", "快捷登录"),

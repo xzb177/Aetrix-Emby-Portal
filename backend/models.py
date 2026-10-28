@@ -1727,6 +1727,56 @@ class MemberXpLog(Base):
     user = relationship("WebUser")
 
 
+class GovernanceAuditLog(Base):
+    """治理审计日志（等级公益服活动治理 Step 4）
+
+    只追加、不改不删：治理动作（停权／解封／手动降级，Step 1–3 的附议／
+    举报／复核／提案／发起后续也经 ``backend.governance.record_governance_audit``
+    写这里）的时间、操作人、对象与结果。Lv.6 与管理员只读可见。
+    """
+
+    __tablename__ = 'governance_audit_logs'
+
+    __table_args__ = (
+        Index('idx_gov_audit_created', 'created_at'),
+        Index('idx_gov_audit_actor', 'actor_user_id'),
+        Index('idx_gov_audit_target', 'target_user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action = Column(String(40), nullable=False)  # freeze/release/downgrade/vote/report/review/propose/launch…
+    actor_user_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)  # 操作人，空=系统
+    target_user_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)  # 被作用的用户，空=非针对人
+    target_ref = Column(String(100), nullable=True)  # 关联对象，如 seek:123 / lottery:5
+    detail = Column(Text, nullable=True)  # JSON 文本：理由、数值、等级前后等
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class GovernanceFreeze(Base):
+    """治理停权记录（等级公益服活动治理 Step 4）
+
+    管理员冻结指定用户的治理特权（权重／提案／复核／举报），保留基础附议
+    1 票与等级展示，不影响播放／查看／基础求片额度，不扣经验。
+    一行即一次停权：released_at 为空且未过期 = 生效中；解封或过期即失效，
+    历史行保留备查。Step 1–3 的治理入口以 ``is_governance_frozen`` 判定。
+    """
+
+    __tablename__ = 'governance_freezes'
+
+    __table_args__ = (
+        Index('idx_gov_freeze_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    reason = Column(String(200), nullable=False)  # 停权理由，必填
+    expires_at = Column(DateTime, nullable=True)  # 空=不限期，需管理员手动解封
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=False)  # 操作管理员
+    created_at = Column(DateTime, default=datetime.now)
+    released_at = Column(DateTime, nullable=True)
+    released_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+
+
 class TgBindCode(Base):
     """TG 绑定码表（B1：bot 绑定基础设施）
 

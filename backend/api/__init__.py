@@ -14,6 +14,7 @@ from backend.api import admin_media_governance  # noqa: F401 — 导入即注册
 from backend.api import admin_upstream_sources  # noqa: F401 — 导入即注册（上游源管理，#25 25-1）
 from backend.api import admin_user_grants  # noqa: F401 — 导入即注册（用户授权资源卡片）
 from backend.api import welfare_admin  # noqa: F401 — 导入即注册（公益服管理后台）
+from backend.api import governance_admin  # noqa: F401 — 导入即注册（等级治理 Step 4：停权＋审计日志）
 from backend.api import admin_dashboard  # noqa: F401 — 导入即注册（仪表盘聚合）
 
 __all__ = ["user_router", "admin_router"]

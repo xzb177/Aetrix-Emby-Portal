@@ -534,6 +534,10 @@ def handle_rank(db, tg_user, chat_id, args):
     from backend.tg_bot.features import handle_rank as _impl
     return _impl(db, tg_user, chat_id, args)
 
+def handle_govlog(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_govlog as _impl
+    return _impl(db, tg_user, chat_id, args)
+
 def handle_request_board(db, tg_user, chat_id, args):
     from backend.tg_bot.features import handle_request_board as _impl
     return _impl(db, tg_user, chat_id, args)
