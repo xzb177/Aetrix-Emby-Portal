@@ -5321,6 +5321,20 @@ async def playback_info(
                     _alt_applied = await run_db(
                         _apply_usercopy_direct, db, user, sources[0],
                         _alt_fid)
+                    if _alt_applied:
+                        # 防外流发放可查（2026-10-28）：只记可转发即用
+                        # 的免凭证直链这一次（旧链路 alt=media+头不记，
+                        # 脱离头凭证无用）。记账走独立短会话、永不抛
+                        # 异常，失败只记 warning，绝不影响本次响应。
+                        try:
+                            _vid = getattr(_alt_variant, "id", None)
+                            await run_db(
+                                _tv_alt.note_usercopy_issued, db,
+                                user.id, item.id,
+                                int(_vid) if _vid else None,
+                                _alt_fid, "usercontent")
+                        except Exception:  # noqa: BLE001 — 记账失败不挡播放
+                            pass
                 _warm = await run_db(
                     _fp.load_warm,
                     lambda k: _CM.get(k, domain="playback"),

@@ -1440,6 +1440,43 @@ class TransferVariant(Base):
     last_played_at = Column(DateTime)
     last_checked_at = Column(DateTime)
     stale_count = Column(Integer, nullable=False, default=0)
+    # 防外流（2026-10-28）：该副本的 anyone-reader 权限已被收回的时间
+    #（NULL = 尚未收回/未尝试）。只标记收回动作本身，不改行状态：
+    # 收回后副本仍可被本人重授（PlaybackInfo 自愈）后再次播放；
+    # 闲置 TTL 的收回 pass 只处理本列为 NULL 的行，避免每轮重复调
+    # Drive permissions 列表。老库由 _auto_migrate 补列（NULL）。
+    share_revoked_at = Column(DateTime)
+
+
+class DirectIssueLog(Base):
+    """用户副本直链发放日志（防外流三件套之三：发放可查，2026-10-28）。
+
+    只记**可转发即用的免凭证 usercontent 直链**发放（PlaybackInfo
+    用户副本分支授权限成功、换地址的那一次），不记带头凭证的
+    alt=media 旧链路（那条链接脱离头凭证无用，转发价值低）。
+    泄露后靠本表定位“哪次发放、发给谁、哪个副本”，不做事后
+    下载观测（userContent 下载不经过本站，本来就看不到谁在下）。
+
+    - ``variant_id``：副本行 id（可空：行已删时仍留档，只记 fid）；
+    - ``variant_file_id``：副本在用户盘里的 Drive file id；
+    - ``via``：发放形式，目前恒为 ``usercontent``（免凭证直链）。
+    只追加、不修改、不删除；管理端只读查询口见
+    ``backend/api/playback_admin.py`` 的 ``/direct-issue-logs``。
+    """
+
+    __tablename__ = "emby_direct_issue_logs"
+    __table_args__ = (
+        Index("idx_direct_issue_user", "user_id", "created_at"),
+        Index("idx_direct_issue_item", "item_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime, default=datetime.now)
+    user_id = Column(Integer, nullable=False)
+    item_id = Column(Integer, nullable=False)
+    variant_id = Column(Integer)
+    variant_file_id = Column(String(256))
+    via = Column(String(32), default="usercontent")
 
 
 class TransferJob(Base):
