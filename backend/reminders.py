@@ -292,6 +292,9 @@ async def run_expiry_reminders(db: Session, now: Optional[datetime] = None,
                 title=title,
                 content=content,
                 related_id=item["subscription_id"],
+                # 站内信保留；绑定了 Telegram 的用户同步收到续费提醒。
+                # 未配置 Telegram 或未绑定时，该渠道返回 False，不影响站内信成功。
+                channels=["in_app", "telegram"],
             ) or {}
         except Exception as exc:  # noqa: BLE001 — 一条失败不能带走整轮
             logger.warning("到期提醒发送失败（订阅 %s）: %s", item["subscription_id"], exc)

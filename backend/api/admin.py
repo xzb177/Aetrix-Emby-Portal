@@ -1444,6 +1444,7 @@ async def update_media_seek(
                  + (f"\n备注：{note}" if note else "")),
         related_id=request_id,
         from_admin_id=admin_id,
+        channels=["in_app", "telegram"],
     )
     return {"success": True, "message": "求片状态更新成功"}
 
@@ -1521,6 +1522,7 @@ async def mark_media_seek_in_library(
                  + ("已入库，可以直接观看了。" if info["matched"] else "已入库（管理员已确认）。")),
         related_id=request_id,
         from_admin_id=admin_id,
+        channels=["in_app", "telegram"],
     )
     # v2：附议者也收到入库通知（开关可关；失败不影响主流程）
     # r46：内联 try/except 并入统一 quiet 守卫（横切只许一套）。
@@ -1535,6 +1537,7 @@ async def mark_media_seek_in_library(
                      + "已入库，可以直接观看了。"),
             related_id=request_id,
             from_admin_id=admin_id,
+            channels=["in_app", "telegram"],
         )
     return {
         "success": True,

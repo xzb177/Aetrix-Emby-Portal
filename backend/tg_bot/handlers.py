@@ -36,6 +36,13 @@ def _command_list() -> str:
         f"▪️ {_cmd('/bind')}　绑定 Telegram\n"
         f"▪️ {_cmd('/checkin')}　每日签到\n"
         f"▪️ {_cmd('/points')}　查积分\n"
+        f"▪️ {_cmd('/account')}　账号中心\n"
+        f"▪️ {_cmd('/request')}　求片\n"
+        f"▪️ {_cmd('/myrequests')}　我的求片\n"
+        f"▪️ {_cmd('/rank')}　积分排行榜\n"
+        f"▪️ {_cmd('/requestboard')}　求片榜\n"
+        f"▪️ {_cmd('/rules')}　群规\n"
+        f"▪️ {_cmd('/login')}　快捷登录\n"
         f"▪️ {_cmd('/redpacket')}　发红包：{_cmd('/redpacket')} <i>总积分 个数</i>\n"
         f"▪️ {_cmd('/lottery')}　抽奖\n"
         f"▪️ {_cmd('/bindings')}　查网盘绑定\n"
@@ -185,6 +192,23 @@ def _menu_markup(db, web_user, is_private: bool) -> dict:
         {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
         {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
     ])
+    if is_private:
+        rows.append([
+            {"text": "👤 账号中心", "callback_data": "menu:account"},
+            {"text": "🎬 求片", "callback_data": "menu:request"},
+        ])
+        rows.append([
+            {"text": "📋 我的求片", "callback_data": "menu:myrequests"},
+            {"text": "🏆 积分榜", "callback_data": "menu:rank"},
+        ])
+    else:
+        rows.append([
+            {"text": "🏆 积分榜", "callback_data": "menu:rank"},
+            {"text": "🔥 求片榜", "callback_data": "menu:requestboard"},
+        ])
+        rows.append([
+            {"text": "📜 群规", "callback_data": "menu:rules"},
+        ])
     rows.append([
         {"text": "🔗 我的绑定", "callback_data": "menu:bindings"},
         {"text": "📦 转存进度", "callback_data": "menu:transfers"},
@@ -515,6 +539,34 @@ def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
     return (text, redpacket_common.claim_markup(packet.id))
 
 
+# 扩展功能适配器：业务实现独立于旧命令，避免 handlers.py 继续膨胀。
+def handle_account(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_account as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_request(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_request as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_my_requests(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_my_requests as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_login(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_login as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_rank(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_rank as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_request_board(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_request_board as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_rules(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_rules as _impl
+    return _impl(db, tg_user, chat_id, args)
 # ---- P1 自助查询（只读）：统一先拦群聊、再验绑定，最后调 queries 只读渲染 ----
 # 群聊里查个人数据会把结果公开给全群：一律只许私聊（私聊 chat_id == tg id）。
 def _p1_user(db, tg_user: dict, chat_id: int):
