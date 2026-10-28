@@ -204,6 +204,14 @@ const router = createRouter({
     // 的书签与外部链接：媒体浏览统一走第三方客户端（Infuse 等），这些入口不再有对应页面，
     // 全部落到兜底 404 页（页面里会给「回首页」的出口）。
     // 注意：/profile 的承接入口是 /game/account（账号设置设施）。
+    // 302 Next 搜索页（MVP 非商店部分）：独立页，不复活已废弃的 /search，
+    // 不改底栏、不碰首页/发现页、不挂想看按钮（想看是商店那单的 B1）。
+    {
+      path: '/search-next',
+      name: 'search-next',
+      component: () => import('@/views/panel/SearchNextView.vue'),
+      meta: { title: '搜索', requiresAuth: true },
+    },
     {
       path: '/:pathMatch(.*)*',
       name: 'not-found',

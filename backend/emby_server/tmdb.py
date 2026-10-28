@@ -1901,6 +1901,56 @@ class TmdbClient:
             self._cache_put(key, data)
             return data
 
+    # 302 Next A1 数据集同步用的榜单路径白名单：只许这 6 条，调用方
+    # 传别的 list_name/media_type 直接 ValueError，绝不拼任意路径打 TMDB。
+    _DATASET_LIST_PATHS = {
+        ("trending", "movie"): "/trending/movie/week",
+        ("trending", "tv"): "/trending/tv/week",
+        ("popular", "movie"): "/movie/popular",
+        ("popular", "tv"): "/tv/popular",
+        ("top_rated", "movie"): "/movie/top_rated",
+        ("top_rated", "tv"): "/tv/top_rated",
+    }
+
+    def list_page(self, list_name: str, media_type: str,
+                  page: int = 1) -> list:
+        """榜单页（供 A1 数据集同步，不走请求路径）。
+
+        返回该页的 results 列表（每项是 TMDB 原始 dict）；未配置 key、
+        404/401 按 _get 口径返回空列表（阴性，不烧重试预算）；瞬态
+        失败上抛 ``TmdbTransientError``，调用方记 last_error 后继续
+        下一页/下一榜，不中断整轮同步。
+        """
+        path = self._DATASET_LIST_PATHS.get((list_name, media_type))
+        if path is None:
+            raise ValueError(f"不支持的榜单：{list_name}/{media_type}")
+        data = self._get(path, {"page": max(1, int(page or 1))})
+        if not isinstance(data, dict):
+            return []
+        results = data.get("results")
+        return list(results) if isinstance(results, list) else []
+
+    def genre_names(self, media_type: str) -> dict:
+        """类型 id → 类型名（供 A1 数据集同步把 genre_ids 换成名）。
+
+        榜单页只回 genre_ids（数字），直接存数字前端没法展示；这里
+        拉一次类型表换成名。拿不到（未配置/瞬态失败）返回空 dict，
+        调用方把类型名空着，不挡同步。
+        """
+        if media_type not in ("movie", "tv"):
+            raise ValueError(f"不支持的类型：{media_type}")
+        try:
+            data = self._get(f"/genre/{media_type}/list", {})
+        except Exception:  # noqa: BLE001 — 类型表失败不挡同步
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out = {}
+        for g in data.get("genres") or []:
+            if isinstance(g, dict) and g.get("id") is not None:
+                out[g["id"]] = g.get("name") or ""
+        return out
+
     def season_poster(self, tmdb_id: str, season_number: int) -> Optional[str]:
         """TMDB 季海报（``GET /tv/{id}/season/{n}`` 的 ``poster_path``）
 

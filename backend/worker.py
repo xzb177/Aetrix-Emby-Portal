@@ -754,6 +754,18 @@ def main() -> int:
                 logger.info("上游聚合定时调度未开启，不启动")
         except Exception as e:
             logger.warning(f"启动上游聚合定时调度失败（可忽略）: {e}")
+        # 302 Next 数据集同步：默认关（总闸与子开关双关），关时不起线程；
+        # 开后按 NEXT302_DATASET_SYNC_INTERVAL_SEC（下限 600 秒）跑榜单同步。
+        try:
+            from backend.emby_server import tmdb_dataset
+
+            if tmdb_dataset.start_dataset_scheduler():
+                started.append("next302_dataset")
+                logger.info("✅ 302 Next 数据集同步已启动")
+            else:
+                logger.info("302 Next 数据集同步未开启，不启动")
+        except Exception as e:
+            logger.warning(f"启动 302 Next 数据集同步失败（可忽略）: {e}")
         # 上游探活守护 + 健康落库同步（FMBY #25 25-3/25-14，生产接线）：
         # 只接线，不改守护本体、不碰投影工人、不碰扫描/播放逻辑。
         # 两守护各有总开关（默认关），关时线程空转、不发请求、不读写；
