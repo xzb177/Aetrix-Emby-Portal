@@ -204,3 +204,68 @@ def test_router_bilingual_happy_path(monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json()["cue_count"] == 2
     assert r.json()["filename"].endswith(".vtt")
+
+
+# ---- R4 修复：匹配基准名 + 语言码先验 ----
+
+def test_router_match_prefers_file_basename_over_display_name(monkeypatch):
+    # 展示名经改写后与文件名语言不同时，exact sidecar 也必须对得上；
+    # 此前路由只传展示名，静默返回空列表。
+    _enable(monkeypatch)
+    client, session = _client(monkeypatch, scope_allowed=True)
+    session.add(em.MediaItem(id=11, guid="k" * 32, library_id=1,
+                             item_type="movie", name="流浪地球",
+                             file_path="mount://3/Movies/The.Wandering.Earth.2019.mkv"))
+    session.commit()
+    r = client.post("/api/user/smart-subtitles/11/match",
+                    json={"candidates": ["The.Wandering.Earth.2019.chi.srt"]})
+    assert r.status_code == 200, r.text
+    assert [o["name"] for o in r.json()["matched"]] == [
+        "The.Wandering.Earth.2019.chi.srt"]
+
+
+def test_router_match_falls_back_to_display_name_without_file_path(monkeypatch):
+    _enable(monkeypatch)
+    client, session = _client(monkeypatch, scope_allowed=True)
+    session.add(em.MediaItem(id=12, guid="m" * 32, library_id=1,
+                             item_type="movie", name="Movie.2024.mkv",
+                             file_path=""))
+    session.commit()
+    r = client.post("/api/user/smart-subtitles/12/match",
+                    json={"candidates": ["Movie.2024.chi.srt"]})
+    assert r.status_code == 200, r.text
+    assert [o["name"] for o in r.json()["matched"]] == ["Movie.2024.chi.srt"]
+
+
+def test_generate_bad_lang_does_not_call_provider(monkeypatch, tmp_path):
+    _enable(monkeypatch)
+    monkeypatch.setenv("SMART_SUBTITLE_TRANSLATE_PROVIDER", "custom")
+    monkeypatch.setenv("SMART_SUBTITLE_TRANSLATE_ENDPOINT", "https://example.invalid/t")
+    monkeypatch.setenv("SMART_SUBTITLE_TRANSLATE_API_KEY", "dummy-test-key")
+    calls = []
+
+    def _fake_post(url, headers, payload):
+        calls.append(url)
+        return {"translations": ["你好", "世界"]}
+
+    with pytest.raises(ValueError, match="语言码"):
+        ss.generate_bilingual_track(9, SRT, "ENG", "chi",
+                                    http_post=_fake_post, cache_dir=str(tmp_path))
+    assert calls == []
+
+
+def test_generate_valid_lang_still_calls_provider(monkeypatch, tmp_path):
+    _enable(monkeypatch)
+    monkeypatch.setenv("SMART_SUBTITLE_TRANSLATE_PROVIDER", "custom")
+    monkeypatch.setenv("SMART_SUBTITLE_TRANSLATE_ENDPOINT", "https://example.invalid/t")
+    monkeypatch.setenv("SMART_SUBTITLE_TRANSLATE_API_KEY", "dummy-test-key")
+    calls = []
+
+    def _fake_post(url, headers, payload):
+        calls.append(url)
+        return {"translations": ["你好", "世界"]}
+
+    out = ss.generate_bilingual_track(9, SRT, "eng", "chi",
+                                      http_post=_fake_post, cache_dir=str(tmp_path))
+    assert out["cue_count"] == 2
+    assert calls == ["https://example.invalid/t"]

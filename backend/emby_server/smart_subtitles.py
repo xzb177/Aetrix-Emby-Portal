@@ -344,16 +344,20 @@ def generate_bilingual_track(item_id: int, source_text: str,
                              http_post: Optional[Callable] = None,
                              cache_dir: Optional[str] = None,
                              db=None) -> dict:
-    """一站式：开关 → 翻译（未给译文时调提供方）→ 合成 → 缓存区落盘。
+    """一站式：开关 → 语言码先验 → 翻译（未给译文时调提供方）→ 合成 → 缓存区落盘。
 
     调用方已给 ``translations`` 时不做任何外部调用；未给时缺配置即
     ``TranslateNotConfigured``，不静默回落。
     ``db`` 不为 None 时开关与三件套走桥接（面板行优先、缺行回退 env）。
+    语言码先验放在调翻译之前：此前非法语言码（如大写 ENG）要等翻译
+    调完、落盘时才报 400，白白浪费一次提供方调用。
     """
     require_enabled(db)
     cues = parse_cues(source_text)
     if not cues:
         raise ValueError("原文中没有可解析的字幕 cue，拒绝生成空轨")
+    # 只校验、不落盘；写盘时还会再验一次，口径同一处。
+    bilingual_cache_path(item_id, source_lang, target_lang, cache_dir=cache_dir)
     if translations is None:
         translations = translate_texts(
             [c["text"] for c in cues], source_lang, target_lang,
