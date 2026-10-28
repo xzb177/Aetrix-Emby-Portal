@@ -45,6 +45,8 @@ from backend.api.media_sets_api import (
     user_media_sets_router,
 )
 from backend.api.store import router as store_router
+from backend.api.store_requests import admin_router as store_requests_admin_router
+from backend.api.store_requests import router as store_requests_router
 from backend.api.library_cover import router as library_cover_router
 from backend.api.media_library import mirror_router as cover_mirror_router
 from backend.api.media_library import router as media_library_router
@@ -847,6 +849,10 @@ app.include_router(user_media_sets_router)
 # 想看商店骨架（§7 / R0）：总闸 STORE_ENABLED 默认关，关时本组接口惰性 404。
 # 不入队转存、不接播放。见 backend/api/store.py 与 store_contract.py。
 app.include_router(store_router)
+# 想看商店求片 R1：登记 + 榜单 + 入库联动（读时同步翻 completed）。
+# 复用 movie_requests / movie_request_votes，不另建表；只受 STORE_ENABLED 总闸 + 会员闸管。
+app.include_router(store_requests_router)
+app.include_router(store_requests_admin_router)
 # 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
 app.include_router(library_cover_router)
 # 媒体库学习（封面/排序/货架）：门户端游标分页 / 分区 / 藏 / 封面五件套
