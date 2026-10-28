@@ -5,6 +5,7 @@
 - POST /signin          【已废弃】转发到 POST /api/user/economy/checkin
 - POST /redeem          积分兑换公益天数 {days_option: 7 | 30}
 - GET  /balance         积分概览（余额/今日获得/累计获得）
+- GET  /welfare-status  福利资格状态（本人：是否公益用户 + 资格到期日）
 - GET  /logs            积分明细（分页）
 - POST /chat-award      发言奖励（内部调用，供聊天模块用）
 """
@@ -56,6 +57,15 @@ def redeem_welfare(
         return points_mod.redeem_welfare(db, current_user, req.days_option)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/welfare-status")
+def welfare_status(
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """福利资格状态（本人）：是否公益用户 + 资格到期日，供续期入口首屏展示。"""
+    return points_mod.get_welfare_status(db, current_user)
 
 
 @router.get("/balance")
