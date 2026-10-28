@@ -189,6 +189,15 @@ def dispatch(db, update: dict) -> None:
             "/bind": handlers.handle_bind,
             "/checkin": handlers.handle_checkin,
             "/points": handlers.handle_points,
+            "/account": handlers.handle_account,
+            "/me": handlers.handle_account,
+            "/request": handlers.handle_request,
+            "/myrequests": handlers.handle_my_requests,
+            "/rank": handlers.handle_rank,
+            "/requestboard": handlers.handle_request_board,
+            "/rules": handlers.handle_rules,
+            "/login": handlers.handle_login,
+            "/renew": handlers.handle_login,
             "/redeem": handlers.handle_redeem,
             "/lottery": handlers.handle_lottery,
             "/redpacket": handlers.handle_redpacket,
@@ -200,6 +209,12 @@ def dispatch(db, update: dict) -> None:
         fn = commands.get(cmd)
         if fn is None:
             sender.send_message(db, chat_id, "未知命令，发送 /help 查看可用命令")
+            return
+
+        # 账号、求片和免密登录都可能泄露隐私/凭据，强制私聊。
+        private_only = {"/account", "/me", "/request", "/myrequests", "/login", "/renew"}
+        if cmd in private_only and in_group:
+            sender.send_message(db, chat_id, "🔒 这个功能请私聊机器人使用")
             return
 
         # P1 个人查询在群里不执行（结果会公开给全群看）

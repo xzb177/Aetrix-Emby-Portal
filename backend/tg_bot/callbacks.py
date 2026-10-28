@@ -79,6 +79,24 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
     elif action == "points":
         text = handlers.handle_points(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
+    elif action in ("account", "request", "myrequests", "rank", "requestboard", "rules", "login"):
+        if not is_private and action in ("account", "request", "myrequests", "login"):
+            text, markup = "🔒 这个功能请私聊机器人使用", handlers.back_markup()
+        else:
+            fn = {
+                "account": handlers.handle_account,
+                "request": handlers.handle_request,
+                "myrequests": handlers.handle_my_requests,
+                "rank": handlers.handle_rank,
+                "requestboard": handlers.handle_request_board,
+                "rules": handlers.handle_rules,
+                "login": handlers.handle_login,
+            }[action]
+            reply = fn(db, tg_user, chat_id, "")
+            if isinstance(reply, tuple):
+                text, markup = reply
+            else:
+                text, markup = reply, handlers.back_markup()
     elif action == "lottery":
         reply = handlers.handle_lottery(db, tg_user, chat_id, "", False)
         if isinstance(reply, tuple):
