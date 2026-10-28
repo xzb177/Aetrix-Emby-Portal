@@ -94,6 +94,28 @@ def _verify_bind_code(db, update: dict) -> None:
     # reply 为 None → 不是有效的绑定码，静默忽略
 
 
+def _award_group_chat_points(db, tg_user: dict) -> None:
+    """群发言奖励：已绑定账号的发送者按发言计分。
+
+    直接进程内调用 points.award_chat_points（与发表影评同款），
+    走 points_chat_* 默认口径（1 分/条、每天 20 分封顶）。
+    未绑定发送者静默跳过；发分失败只记日志，绝不中断消息处理。
+    """
+    tg_user_id = (tg_user or {}).get("id")
+    if not tg_user_id:
+        return
+    try:
+        from backend import points as points_mod
+        from backend.tg_bot.identity import resolve
+
+        user = resolve(db, int(tg_user_id))
+        if user is None:
+            return
+        points_mod.award_chat_points(db, user.id)
+    except Exception:
+        logger.exception("group chat points award failed")
+
+
 # P1 自助查询命令：个人数据，群聊里不执行（handler 层另有私聊 guard 双保险）
 _P1_COMMANDS = ("/bindings", "/transfers", "/whyplay", "/wants")
 
@@ -160,9 +182,9 @@ def dispatch(db, update: dict) -> None:
         # 口令抽奖：群内非命令文本先尝试匹配口令关键词
         # 注意：此处不消耗群级限流预算（普通聊天不计入），防刷由 handler 内部的
         # 幂等逻辑保证（重复口令静默，已参加/资格不符均不刷屏）。
-        # （2026-10-23 去重：原「口令未命中接群发言积分」已退役——发言积分
-        # 与 points.award_chat_points 是两套重复系统，退役机器人这套，
-        # 只保留 points.py 那套，见运营参数去重 #1。）
+        # （2026-10-28 接回群发言奖励：口令未命中后按发言计分，见 _award_group_chat_points；
+        # 群白名单已在上方 is_group_allowed 处拦截，未放行群到不了这里；
+        # 普通聊天不消耗 _group_allow 群级限流预算，保持原有口径。）
         if in_group and not text.startswith("/"):
             from backend.tg_bot import callbacks
 
@@ -172,6 +194,7 @@ def dispatch(db, update: dict) -> None:
             except Exception:
                 logger.exception("lottery password dispatch failed")
                 return
+            _award_group_chat_points(db, tg_user)
             return
 
         # 非命令文本忽略
