@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.database import Base
 from backend import models
+from backend.emby_server import models as em
 from backend.tg_bot import identity, handlers, router
 
 
@@ -27,6 +28,11 @@ def db():
     # 绑定成功消息需要查订阅与套餐
     models.UserSubscription.__table__.create(engine, checkfirst=True)
     models.SubscriptionPlan.__table__.create(engine, checkfirst=True)
+    # /start 已绑定 dashboard 需要查成就与馆灵
+    models.PanelAchievementDef.__table__.create(engine, checkfirst=True)
+    models.PanelAchievementUnlock.__table__.create(engine, checkfirst=True)
+    em.PlaybackSession.__table__.create(engine, checkfirst=True)
+    em.MediaItem.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine)
     session = Session()
     yield session
@@ -63,7 +69,7 @@ def test_handle_start_unbound(db):
     tg_user = {"id": 555, "first_name": "Tom"}
     result = handlers.handle_start(db, tg_user, 555, "")
     text = result[0] if isinstance(result, tuple) else result
-    assert "/bind" in text
+    assert "绑定" in text and "左下角" in text
 
 
 def test_handle_start_bound(db):
@@ -71,12 +77,12 @@ def test_handle_start_bound(db):
     tg_user = {"id": 555, "first_name": "Tom"}
     result = handlers.handle_start(db, tg_user, 555, "")
     text = result[0] if isinstance(result, tuple) else result
-    assert "欢迎回到" in text and "当前账号" in text
+    assert "欢迎回到" in text and "账号：" in text
 
 
 def test_handle_help(db):
     text = handlers.handle_help(db, {}, 1, "")
-    assert "/start" in text and "/bind" in text
+    assert "左下角" in text and "/bind" in text
 
 
 def test_handle_bind_no_args_returns_guide(db):
@@ -142,7 +148,7 @@ def test_handle_bind_success_with_subscription(db):
 def test_handle_help_appends_bind_guide(db):
     text = handlers.handle_help(db, {}, 1, "")
     assert "如何绑定账号" in text
-    assert "/start" in text
+    assert "左下角" in text
 
 
 def test_handle_bind_already_bound(db):

@@ -106,9 +106,11 @@ def test_policy_new_commands_default_on_and_switchable(db):
 
 
 def test_help_lists_new_commands(db):
+    # 命令不再以消息罗列，改走左下角原生菜单；注册表覆盖见
+    # test_tg_bot_account_display.test_bot_commands_cover_router_commands
     text = handlers.handle_help(db, _tg(), 900001, "")
-    for cmd in ("/bindings", "/transfers", "/whyplay", "/wants"):
-        assert cmd in text
+    assert "可用命令" not in text
+    assert "左下角" in text
 
 
 # ---------- 查绑定 ----------

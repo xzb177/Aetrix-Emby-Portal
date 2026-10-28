@@ -28,30 +28,6 @@ def _cmd(code: str) -> str:
     return f"<code>{code}</code>"
 
 
-def _command_list() -> str:
-    return (
-        "📋 <b>可用命令</b>\n"
-        f"▪️ {_cmd('/start')}　欢迎与快捷入口\n"
-        f"▪️ {_cmd('/help')}　帮助\n"
-        f"▪️ {_cmd('/bind')}　绑定 Telegram\n"
-        f"▪️ {_cmd('/checkin')}　每日签到\n"
-        f"▪️ {_cmd('/points')}　查积分\n"
-        f"▪️ {_cmd('/account')}　账号中心\n"
-        f"▪️ {_cmd('/request')}　求片\n"
-        f"▪️ {_cmd('/myrequests')}　我的求片\n"
-        f"▪️ {_cmd('/rank')}　积分排行榜\n"
-        f"▪️ {_cmd('/requestboard')}　求片榜\n"
-        f"▪️ {_cmd('/rules')}　群规\n"
-        f"▪️ {_cmd('/login')}　快捷登录\n"
-        f"▪️ {_cmd('/redpacket')}　发红包：{_cmd('/redpacket')} <i>总积分 个数</i>\n"
-        f"▪️ {_cmd('/lottery')}　抽奖\n"
-        f"▪️ {_cmd('/bindings')}　查网盘绑定\n"
-        f"▪️ {_cmd('/transfers')}　查转存进度\n"
-        f"▪️ {_cmd('/whyplay')}　为什么播不了：{_cmd('/whyplay')} <i>片名</i>\n"
-        f"▪️ {_cmd('/wants')}　查想看"
-    )
-
-
 def _bind_guide_text() -> str:
     return (
         "🔗 <b>如何绑定账号</b>\n"
@@ -262,14 +238,17 @@ def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str,
     is_private = (chat_id == telegram_id)
 
     if web_user:
-        username = html.escape(str(web_user.username or ""))
+        from backend.tg_bot.features import compact_dashboard
+
+        dashboard = compact_dashboard(db, web_user)
         text = (
             f"✨ <b>欢迎回到{site_name}</b> ✨\n"
             "\n"
             f"👋 亲爱的 <b>{name}</b>\n"
-            f"👤 当前账号：{username}\n"
             "\n"
-            f"{_command_list()}"
+            f"{dashboard}\n"
+            "\n"
+            "📋 全部命令请点左下角的 / 菜单查看"
         )
         if not is_private:
             # 一键免密登录链接 = 账号凭据：只在与本人的私聊里下发（私聊 chat_id == 用户 id）。
@@ -287,7 +266,7 @@ def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str,
         "1️⃣ 在网页端登录 → <b>个人中心</b> → <b>绑定 Telegram</b> 获取 6 位绑定码\n"
         "2️⃣ 把绑定码发给我即可完成绑定\n"
         "\n"
-        f"{_command_list()}"
+        "📋 全部命令请点左下角的 / 菜单查看"
     )
     markup = {"inline_keyboard": [
         [{"text": "🔗 绑定账号", "callback_data": "menu:bind"}],
@@ -302,7 +281,7 @@ def handle_help(db, tg_user: dict, chat_id: int, args: str) -> str:
         "\n"
         "🤖 本机器人用于公益服快捷操作：签到领积分、查积分、发红包、抽奖，以及接收求片进度、订阅到期等通知。\n"
         "\n"
-        f"{_command_list()}\n"
+        "📋 全部命令请点左下角的 / 菜单查看。\n"
         "\n"
         f"{_bind_guide_text()}\n"
         "\n"
