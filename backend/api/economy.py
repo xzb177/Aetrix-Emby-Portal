@@ -1106,12 +1106,16 @@ class PaymentMethod(BaseModel):
 
 @router.get("/payment/methods", response_model=list[PaymentMethod])
 async def payment_methods(db: Session = Depends(get_db)):
+    # 公益服转换：购买开关关了，方法列表也必须全灭——否则前端仍显示
+    # “可用”，用户点单才 503（P0 支付网关空的老坑）。购买口本身的
+    # 关闭逻辑不动，只改列表展示；开关开时保持现有行为。
+    purchase_enabled = _get_bool_config(db, "subscription_purchase_enabled", True)
     methods = [
-        PaymentMethod(id="alipay", name="支付宝", enabled=True),
-        PaymentMethod(id="wxpay", name="微信支付", enabled=True),
+        PaymentMethod(id="alipay", name="支付宝", enabled=purchase_enabled),
+        PaymentMethod(id="wxpay", name="微信支付", enabled=purchase_enabled),
     ]
     if _get_config(db, "payment_qqpay_enabled", "false").lower() == "true":
-        methods.append(PaymentMethod(id="qqpay", name="QQ 钱包", enabled=True))
+        methods.append(PaymentMethod(id="qqpay", name="QQ 钱包", enabled=purchase_enabled))
     return methods
 
 
