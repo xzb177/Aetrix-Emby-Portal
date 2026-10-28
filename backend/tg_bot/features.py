@@ -26,8 +26,85 @@ def _bound_user(db, tg_user: dict):
     return resolve(db, int(tg_user.get("id") or 0))
 
 
+def _achievement_summary(db, user_id: int):
+    """账号成就：返回（已解锁定义行（按 sort 排序，仅 enabled 定义），enabled 定义总数）。
+
+    口径与 GET /api/panel/collector 一致：只展示 enabled 定义。
+    """
+    defs = (
+        db.query(models.PanelAchievementDef)
+        .filter_by(enabled=True)
+        .order_by(models.PanelAchievementDef.sort)
+        .all()
+    )
+    unlocked_keys = {
+        r[0]
+        for r in db.query(models.PanelAchievementUnlock.ach_key)
+        .filter_by(user_id=user_id)
+        .all()
+    }
+    shown = [d for d in defs if d.key in unlocked_keys]
+    return shown, len(defs)
+
+
+def _pet_summary(db, user_id: int):
+    """馆灵：返回（累计观影小时，当前阶段 dict，下一阶段 dict 或 None）。
+
+    观影秒数与阶段解析口径与 GET /api/panel/collector 逐字一致：
+    emby_playback_sessions join MediaItem 后 playback_seconds 累加，
+    阶段一律走 backend.api.panel._read_pet_stages（横切只许一套）。
+    """
+    from backend.api.panel import _read_pet_stages
+    from backend.emby_server import models as em
+    from backend.panel_achievements import playback_seconds
+
+    rows = (
+        db.query(
+            em.PlaybackSession.position_ticks,
+            em.MediaItem.duration_ticks,
+        )
+        .join(em.MediaItem, em.MediaItem.id == em.PlaybackSession.item_id)
+        .filter(em.PlaybackSession.user_id == user_id)
+        .all()
+    )
+    total_secs = sum(playback_seconds(r) for r in rows)
+    total_hours = total_secs / 3600
+    stages = _read_pet_stages(db)
+    if not stages:
+        # _read_pet_stages 自带非法回退，正常走不到这里；防御性兜底
+        from backend.api.panel import PET_STAGES_DEFAULT
+
+        stages = [dict(s) for s in PET_STAGES_DEFAULT]
+    cur_idx = 0
+    for i, st in enumerate(stages):
+        if total_hours >= st["hours"]:
+            cur_idx = i
+    cur = stages[cur_idx]
+    nxt = stages[cur_idx + 1] if cur_idx + 1 < len(stages) else None
+    return total_hours, cur, nxt
+
+
+def compact_dashboard(db, user) -> str:
+    """/start 已绑定用户精简版 dashboard：账号、能量、活力、馆灵、成就数。"""
+    shown_ach, total_ach = _achievement_summary(db, user.id)
+    total_hours, pet_cur, _pet_nxt = _pet_summary(db, user.id)
+    vitality = getattr(user, "vitality", None)
+    vitality_text = f"<b>{int(vitality)}</b>" if vitality is not None else "—"
+    lines = [
+        "👤 <b>账号中心</b>",
+        "",
+        f"账号：<b>{_esc(user.username)}</b>",
+        f"能量：<b>{int(user.points or 0)}</b>",
+        f"活力值：{vitality_text}",
+        f"{_esc(pet_cur.get('icon', ''))} 馆灵：{_esc(pet_cur.get('name', ''))}"
+        f"（累计观影 {total_hours:.1f} 小时）",
+        f"🏅 成就：{len(shown_ach)}／{total_ach}",
+    ]
+    return "\n".join(lines)
+
+
 def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """账号中心：余额、活力、订阅和最近设备。"""
+    """账号中心：能量、活力、馆灵、成就、订阅和最近设备。"""
     user = _bound_user(db, tg_user)
     if user is None:
         return "🔒 账号中心需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
@@ -49,7 +126,7 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
         "👤 <b>账号中心</b>",
         "",
         f"账号：<b>{_esc(user.username)}</b>",
-        f"积分：<b>{int(user.points or 0)}</b>",
+        f"能量：<b>{int(user.points or 0)}</b>",
     ]
     if bool(getattr(user, "is_welfare", False)):
         welfare_end = getattr(user, "welfare_expires_at", None)
@@ -58,6 +135,28 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
     vitality = getattr(user, "vitality", None)
     if vitality is not None:
         lines.append(f"活力值：<b>{int(vitality)}</b>")
+
+    total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
+    lines += ["", "🐉 <b>馆灵</b>"]
+    lines.append(
+        f"{_esc(pet_cur.get('icon', ''))} {_esc(pet_cur.get('name', ''))}"
+        f"（累计观影 {total_hours:.1f} 小时）"
+    )
+    if pet_nxt is not None:
+        remain = pet_nxt["hours"] - total_hours
+        lines.append(
+            f"下一阶段：{_esc(pet_nxt.get('name', ''))}，还差 {remain:.1f} 小时"
+        )
+    else:
+        lines.append("已满级")
+
+    shown_ach, total_ach = _achievement_summary(db, user.id)
+    lines += ["", f"🏅 <b>成就</b>（已解锁 {len(shown_ach)}／共 {total_ach} 个）"]
+    if not shown_ach:
+        lines.append("暂无成就")
+    else:
+        for d in shown_ach:
+            lines.append(f"{_esc(d.icon)} {_esc(d.name)}")
 
     lines += ["", "📦 <b>订阅</b>"]
     if not subs:

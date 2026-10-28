@@ -159,7 +159,7 @@ def test_handle_start_unbound_returns_menu_markup(db):
     result = handlers.handle_start(db, {"id": 800111, "first_name": "N"}, 800111, "")
     assert isinstance(result, tuple)
     text, markup = result
-    assert "/bind" in text
+    assert "左下角" in text
     rows = markup["inline_keyboard"]
     assert rows[0][0]["callback_data"] == "menu:bind"
 

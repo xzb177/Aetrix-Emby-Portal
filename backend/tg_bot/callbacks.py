@@ -80,7 +80,8 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         text = handlers.handle_points(db, tg_user, chat_id, "")
         markup = handlers.back_markup()
     elif action in ("account", "request", "myrequests", "rank", "requestboard", "rules", "login"):
-        if not is_private and action in ("account", "request", "myrequests", "login"):
+        # 凭据类与求片类仍私聊限定；账号展示已放行群聊（只展示个人面板信息）。
+        if not is_private and action in ("request", "myrequests", "login"):
             text, markup = "🔒 这个功能请私聊机器人使用", handlers.back_markup()
         else:
             fn = {

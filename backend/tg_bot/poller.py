@@ -23,6 +23,35 @@ LAST_ERROR_KEY = "tg_bot_poller_last_error"
 HEARTBEAT_STALE_SECONDS = 360
 
 
+# 启动时注册的 Bot 命令菜单（客户端左下角 / 菜单可见）。
+# 与 router 命令表对照：路由新增用户命令时须同步补齐；
+# /me、/renew 分别为 /account、/login 的别名，描述与行为一致。
+BOT_COMMANDS: list[tuple[str, str]] = [
+    ("start", "欢迎与快捷入口"),
+    ("help", "帮助"),
+    ("bind", "绑定 Telegram"),
+    ("checkin", "每日签到"),
+    ("points", "查积分"),
+    ("account", "账号中心"),
+    ("me", "账号中心"),
+    ("request", "求片"),
+    ("myrequests", "我的求片"),
+    ("rank", "积分排行榜"),
+    ("requestboard", "求片榜"),
+    ("rules", "群规"),
+    ("login", "快捷登录"),
+    ("renew", "快捷登录"),
+    ("redpacket", "发红包"),
+    ("lottery", "抽奖"),
+    ("redeem", "兑换码兑换"),
+    ("chatpoints", "群发言积分查询"),
+    ("bindings", "查网盘绑定"),
+    ("transfers", "查转存进度"),
+    ("whyplay", "为什么播不了"),
+    ("wants", "查想看"),
+]
+
+
 def _beat(db) -> None:
     """写心跳（失败忽略，不影响轮询）。"""
     from datetime import datetime
@@ -169,28 +198,7 @@ def poll_forever() -> None:
 
         _db = SessionLocal()
         try:
-            ok, err = _sender.set_my_commands(_db, [
-                ("start", "欢迎与快捷入口"),
-                ("help", "帮助"),
-                ("bind", "绑定 Telegram"),
-                ("checkin", "每日签到"),
-                ("points", "查积分"),
-                ("account", "账号中心"),
-                ("request", "求片"),
-                ("myrequests", "我的求片"),
-                ("rank", "积分排行榜"),
-                ("requestboard", "求片榜"),
-                ("rules", "群规"),
-                ("login", "快捷登录"),
-                ("redpacket", "发红包"),
-                ("lottery", "抽奖"),
-                ("redeem", "兑换码兑换"),
-                ("chatpoints", "群发言积分查询"),
-                ("bindings", "查网盘绑定"),
-                ("transfers", "查转存进度"),
-                ("whyplay", "为什么播不了"),
-                ("wants", "查想看"),
-            ])
+            ok, err = _sender.set_my_commands(_db, BOT_COMMANDS)
             if not ok:
                 logger.debug("tg setMyCommands failed: %s", err)
         finally:
