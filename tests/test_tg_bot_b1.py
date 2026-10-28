@@ -33,6 +33,10 @@ def db():
     models.PanelAchievementUnlock.__table__.create(engine, checkfirst=True)
     em.PlaybackSession.__table__.create(engine, checkfirst=True)
     em.MediaItem.__table__.create(engine, checkfirst=True)
+    # /start 详细版 dashboard 新增：查看凭证、连签、网盘绑定
+    models.EmbyViewUnlock.__table__.create(engine, checkfirst=True)
+    models.CheckinRecord.__table__.create(engine, checkfirst=True)
+    em.UserStorageBinding.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine)
     session = Session()
     yield session

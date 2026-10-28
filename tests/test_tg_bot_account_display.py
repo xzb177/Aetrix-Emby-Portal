@@ -94,7 +94,7 @@ def test_start_bound_private_has_dashboard_no_command_list(db):
     assert isinstance(reply, tuple)
     text, _markup = reply
     assert "可用命令" not in text
-    assert "左下角" in text
+    assert "左下角" not in text  # 末尾菜单指引行已删
     assert all(x in text for x in ("alice", "能量", "活力值", "夜枭", "120.0", "成就"))
 
 
@@ -104,7 +104,8 @@ def test_start_bound_group_has_dashboard_no_login_link(db):
     assert isinstance(reply, str)
     assert "可用命令" not in reply
     assert "能量" in reply
-    assert "一键免密登录请私聊" in reply
+    assert "一键免密登录请私聊" not in reply  # 末尾私聊登录指引行已删
+    assert "左下角" not in reply  # 末尾菜单指引行已删
     assert "token=" not in reply
 
 

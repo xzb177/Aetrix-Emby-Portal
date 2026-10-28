@@ -84,21 +84,135 @@ def _pet_summary(db, user_id: int):
     return total_hours, cur, nxt
 
 
+def _welfare_line(user) -> str:
+    """公益资格三态：未开通／长期有效／有效期至 YYYY-MM-DD。
+
+    口径与 /account 既有写法一致（is_welfare＋welfare_expires_at），只补未开通分支。
+    """
+    if not bool(getattr(user, "is_welfare", False)):
+        return "公益资格：未开通"
+    end = getattr(user, "welfare_expires_at", None)
+    if end is None:
+        return "公益资格：长期有效"
+    return f"公益资格：有效期至 {end.strftime('%Y-%m-%d')}"
+
+
+def _view_unlock_line(db, user_id: int) -> str:
+    """查看凭证：取用户名下有效行（expires_at 为空或未过期）。
+
+    有效性口径与 portal.py 购票校验一致（expires_at IS NULL OR expires_at > now）。
+    多行时永久有效优先，否则取最晚到期日；无有效行写未开通。
+    """
+    now = datetime.now()
+    rows = (
+        db.query(models.EmbyViewUnlock)
+        .filter(models.EmbyViewUnlock.user_id == user_id)
+        .all()
+    )
+    valid = [r for r in rows if r.expires_at is None or r.expires_at > now]
+    if not valid:
+        return "查看凭证：未开通"
+    if any(r.expires_at is None for r in valid):
+        return "查看凭证：长期有效"
+    latest = max(r.expires_at for r in valid)
+    return f"查看凭证：有效期至 {latest.strftime('%Y-%m-%d')}"
+
+
+def _bindings_line(db, user_id: int) -> str:
+    """网盘绑定：仅 active 行，按 provider 区分展示。"""
+    from backend.emby_server import models as em
+
+    rows = (
+        db.query(em.UserStorageBinding)
+        .filter(em.UserStorageBinding.user_id == user_id,
+                em.UserStorageBinding.status == "active")
+        .all()
+    )
+    providers = {r.provider for r in rows}
+    names = []
+    if "drive" in providers:
+        names.append("Drive 已绑")
+    if "pan115" in providers:
+        names.append("115 已绑")
+    for p in sorted(providers - {"drive", "pan115"}):
+        names.append(f"{_esc(p)} 已绑")
+    if not names:
+        return "网盘绑定：未绑定，绑定后才能点播"
+    return "网盘绑定：" + "、".join(names)
+
+
+def _vitality_config(db) -> tuple[int, int]:
+    """活力上限与观影阈值：走 get_vitality_config，读失败回落默认 14／3。"""
+    try:
+        from backend.vitality import get_vitality_config
+
+        cfg = get_vitality_config(db)
+        return int(cfg.get("max", 14)), int(cfg.get("limit_threshold", 3))
+    except Exception:
+        logger.debug("读取活力配置失败，回落默认 14／3", exc_info=True)
+        return 14, 3
+
+
+def _streak_renew_min(db) -> int:
+    """连签保资格阈值：SystemConfig welfare_streak_renew_min，默认 30。"""
+    try:
+        row = (
+            db.query(models.SystemConfig)
+            .filter_by(key="welfare_streak_renew_min")
+            .first()
+        )
+        return int(row.value) if row and row.value is not None else 30
+    except Exception:
+        return 30
+
+
+def _streak_line(db, user_id: int) -> str:
+    """连签：取最近一条签到记录的 streak 列，无记录为 0 天。"""
+    row = (
+        db.query(models.CheckinRecord)
+        .filter(models.CheckinRecord.user_id == user_id)
+        .order_by(models.CheckinRecord.checkin_date.desc())
+        .first()
+    )
+    streak = int(row.streak) if row is not None and row.streak is not None else 0
+    return f"📋 连签：{streak} 天（连签 {_streak_renew_min(db)} 天自动续公益资格）"
+
+
 def compact_dashboard(db, user) -> str:
-    """/start 已绑定用户精简版 dashboard：账号、能量、活力、馆灵、成就数。"""
+    """/start 已绑定用户 dashboard：账号、公益资格、查看凭证、能量·活力、网盘绑定、馆灵、成就、连签。"""
     shown_ach, total_ach = _achievement_summary(db, user.id)
-    total_hours, pet_cur, _pet_nxt = _pet_summary(db, user.id)
+    total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
+    cap, threshold = _vitality_config(db)
     vitality = getattr(user, "vitality", None)
-    vitality_text = f"<b>{int(vitality)}</b>" if vitality is not None else "—"
+    if vitality is None:
+        vitality_text = "—"
+    else:
+        vitality_text = f"<b>{int(vitality)}</b>／{cap}"
+        if int(vitality) < threshold:
+            vitality_text += "（暂时播不了）"
+    if pet_nxt is not None:
+        remain = pet_nxt["hours"] - total_hours
+        pet_text = (
+            f"{_esc(pet_cur.get('icon', ''))} 馆灵：{_esc(pet_cur.get('name', ''))}"
+            f"（累计观影 {total_hours:.1f} 小时，"
+            f"距{_esc(pet_nxt.get('name', ''))}还差 {remain:.1f} 小时）"
+        )
+    else:
+        pet_text = (
+            f"{_esc(pet_cur.get('icon', ''))} 馆灵：{_esc(pet_cur.get('name', ''))}"
+            f"（累计观影 {total_hours:.1f} 小时，已满级）"
+        )
     lines = [
         "👤 <b>账号中心</b>",
         "",
         f"账号：<b>{_esc(user.username)}</b>",
-        f"能量：<b>{int(user.points or 0)}</b>",
-        f"活力值：{vitality_text}",
-        f"{_esc(pet_cur.get('icon', ''))} 馆灵：{_esc(pet_cur.get('name', ''))}"
-        f"（累计观影 {total_hours:.1f} 小时）",
+        _welfare_line(user),
+        _view_unlock_line(db, user.id),
+        f"能量：<b>{int(user.points or 0)}</b> · 活力值：{vitality_text}",
+        _bindings_line(db, user.id),
+        pet_text,
         f"🏅 成就：{len(shown_ach)}／{total_ach}",
+        _streak_line(db, user.id),
     ]
     return "\n".join(lines)
 

@@ -246,14 +246,9 @@ def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str,
             "\n"
             f"👋 亲爱的 <b>{name}</b>\n"
             "\n"
-            f"{dashboard}\n"
-            "\n"
-            "📋 全部命令请点左下角的 / 菜单查看"
+            f"{dashboard}"
         )
         if not is_private:
-            # 一键免密登录链接 = 账号凭据：只在与本人的私聊里下发（私聊 chat_id == 用户 id）。
-            # 群里发出去，群内任何人先点就以该用户身份登录。
-            text += "\n\n🔐 一键免密登录请私聊我发送 /start"
             return text
         return text, _menu_markup(db, web_user, is_private=True)
 
