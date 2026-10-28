@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -59,9 +61,22 @@ def match_subtitles(item_id: int, req: MatchRequest,
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="智能字幕未开启")
     item = _visible_item(db, user, item_id)
-    matched = ss.match_for_item(item.name, item.season_number,
+    matched = ss.match_for_item(_match_base_name(item), item.season_number,
                                 item.episode_number, req.candidates)
     return {"item_id": item_id, "matched": matched}
+
+
+def _match_base_name(item) -> str:
+    """匹配用名：优先用文件路径的文件名，file_path 为空时回退展示名。
+
+    字幕同名判定的本来输入就是文件名（见 subtitle_match 的
+    find_external_subtitles_in：basename(file_path)）。展示名经 NFO /
+    刮削改写后可能与文件名语言不同（如文件名英文、展示名中文），直接
+    用展示名会把 exact sidecar 也判丢，静默返回空列表。
+    """
+    raw = (item.file_path or "").strip()
+    base = os.path.basename(raw) if raw else ""
+    return base or item.name
 
 
 @router.post("/smart-subtitles/{item_id}/bilingual")
