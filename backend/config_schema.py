@@ -251,6 +251,10 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "vitality_watch_reward": ("int", 0, _BIG),
     "vitality_daily_gain_limit": ("int", 0, _BIG),
     "vitality_archive_clamp": ("int", 0, _BIG),
+    "vitality_watch_tier1_minutes": ("int", 0, _BIG),
+    "vitality_watch_tier1_reward": ("int", 0, _BIG),
+    "vitality_watch_tier2_minutes": ("int", 0, _BIG),
+    "vitality_watch_tier2_reward": ("int", 0, _BIG),
     "series_merge_interval_sec": ("int", 3600, 604800),
     "series_merge_batch_limit": ("int", 10, 100000),
 }
