@@ -130,6 +130,7 @@ MAX_ATTEMPTS = 3  # copy 可重试类失败的最多尝试次数（含首次）
 RETRY_BASE_SEC = 60  # 退避基数：60s、120s、240s
 WORKER_INTERVAL_SEC = 60
 PATROL_INTERVAL_SEC = 86400  # 巡检每天一次
+COPY_IDLE_CLEANUP_INTERVAL_SEC = 3600  # 闲置 TTL 每小时独立一轮（2026-10-28 2 小时单：从每日巡检解耦）
 STALE_STRIKES = 2  # 巡检两次 stale 算死
 MAX_JOBS_PER_ROUND = 10
 STUCK_RUNNING_SEC = 3600  # running 卡住超 1h 回 pending（旧路径兜底）
@@ -916,23 +917,25 @@ def ensure_user_copy_public(db, user_id, file_id) -> bool:
 # 不碰中继、不碰 #1405 门禁、不改变体默认顺序、不改共享文件权限。
 # ---------------------------------------------------------------------------
 
-def copy_idle_revoke_days() -> int:
-    """闲置收权限阈值（天）：副本最后活动超此天数未动即收 anyone-reader。
+def copy_idle_revoke_hours() -> int:
+    """闲置收权限阈值（小时）：副本最后活动超此小时数未动即收 anyone-reader。
 
-    走 env COPY_IDLE_REVOKE_DAYS，默认 30；非法/<=0 回落默认
-    （_env_int 同款口径：0 不表示“关”，要停 TTL 请停工人调用点）。
+    走 env COPY_IDLE_REVOKE_HOURS，默认 2；非法/<=0 回落默认。
+    旧 COPY_IDLE_REVOKE_DAYS 已废弃（整天数表达不了 2 小时，且 0 会
+    回落默认 30 天，填 0/小数冒充 2 小时必错），新代码不再读取。
     """
-    return _env_int("COPY_IDLE_REVOKE_DAYS", 30)
+    return _env_int("COPY_IDLE_REVOKE_HOURS", 2)
 
 
-def copy_idle_delete_days() -> int:
-    """闲置删文件阈值（天）：副本最后活动超此天数未动即删文件 + 变体行。
+def copy_idle_delete_hours() -> int:
+    """闲置删文件阈值（小时）：副本最后活动超此小时数未动即删文件 + 变体行。
 
-    走 env COPY_IDLE_DELETE_DAYS，默认 90；非法/<=0 回落默认。
+    走 env COPY_IDLE_DELETE_HOURS，默认 2；非法/<=0 回落默认。
     删除 pass 只在持有可用绑定令牌时执行（无令牌删不了文件，
     行留待重绑后处理；链接本身已由解绑/收回 pass 断掉，不外流）。
+    旧 COPY_IDLE_DELETE_DAYS 已废弃，新代码不再读取。
     """
-    return _env_int("COPY_IDLE_DELETE_DAYS", 90)
+    return _env_int("COPY_IDLE_DELETE_HOURS", 2)
 
 
 def _stored_drive_token(db, binding):
@@ -1093,12 +1096,16 @@ def _copy_last_activity_map(db, rows):
 
 
 def copy_idle_cleanup(db, now=None, limit=100):
-    """闲置 TTL 清理（工人每日巡检后跑，有界、不阻塞播放主链路）。
+    """闲置 TTL 清理（工人每小时独立一轮，有界、不阻塞播放主链路）。
 
-    顺序：先删除 pass（闲置≥DELETE_DAYS：删文件 + 变体行），再收回
-    pass（闲置≥REVOKE_DAYS：只收权限），避免同一轮对同一行又收
-    又删。两 pass 每轮各最多处理 ``limit`` 行（按 created_at 升序
-    最旧优先），避免首轮对存量老副本的雷霆清理。
+    闲置按整小时取整（1 小时 59 分算 1 小时，不触发；2 小时整触发）。
+    顺序：先删除 pass（闲置≥DELETE_HOURS：删文件 + 变体行），再收回
+    pass（闲置≥REVOKE_HOURS：只收权限），避免同一轮对同一行又收
+    又删。两阈值默认同为 2 小时：此时收回 pass 只处理删除 pass 未
+    删掉的行（如删文件失败、fid 非法等记 error 后仍保留的行）；
+    无绑定行两 pass 均记 skipped、不记 error。两 pass 每轮各最多
+    处理 ``limit`` 行（按 created_at 升序最旧优先），避免首轮对
+    存量老副本的雷霆清理。
     删除 pass 须持有可用绑定令牌：无 active 绑定的用户整批跳过
     （行留待重绑后处理；链接已由解绑收回断掉，不构成外流）。
     本函数末尾统一提交；永不抛异常（工人循环外层另有兜底）。
@@ -1106,8 +1113,8 @@ def copy_idle_cleanup(db, now=None, limit=100):
     stats = {"checked": 0, "revoked": 0, "deleted": 0,
              "skipped_no_binding": 0, "errors": 0}
     now = now or datetime.now()
-    revoke_days = copy_idle_revoke_days()
-    delete_days = copy_idle_delete_days()
+    revoke_hours = copy_idle_revoke_hours()
+    delete_hours = copy_idle_delete_hours()
     try:
         candidates = db.query(em.TransferVariant).filter(
             em.TransferVariant.owner_scope == "user",
@@ -1123,16 +1130,16 @@ def copy_idle_cleanup(db, now=None, limit=100):
         return stats
     stats["checked"] = len(candidates)
 
-    def _idle_days(row):
+    def _idle_hours(row):
         last = last_map.get(row.id)
         if last is None:
             return 0
-        delta = (now - last).days
-        return delta if delta > 0 else 0
+        hours = int((now - last).total_seconds() // 3600)
+        return hours if hours > 0 else 0
 
     # 删除 pass（先行：删掉的行不再进收回 pass）。
     deleted_ids = set()
-    delete_rows = [r for r in candidates if _idle_days(r) >= delete_days]
+    delete_rows = [r for r in candidates if _idle_hours(r) >= delete_hours]
     by_user = {}
     for row in delete_rows:
         by_user.setdefault(row.owner_ref, []).append(row)
@@ -1184,7 +1191,7 @@ def copy_idle_cleanup(db, now=None, limit=100):
     # 其链接已由解绑收回断掉，每天重复记 error 只是噪音。
     revoke_rows = [r for r in candidates
                    if r.id not in deleted_ids
-                   and _idle_days(r) >= revoke_days]
+                   and _idle_hours(r) >= revoke_hours]
     revoke_by_user = {}
     for row in revoke_rows:
         revoke_by_user.setdefault(row.owner_ref, []).append(row)
@@ -4120,13 +4127,14 @@ def start_transfer_daemon(session_factory=None, drive_api_factory=None):
     - 兜底扫仍是 60 秒（TRANSFER_WORKER_SWEEP_SEC，默认 60），
       唤醒路径（Redis 断连、进程重启）失效时仍能跑，绝不改 5 秒。
     - 每轮先跑可伸缩认领轮（快通道优先、按用户限流、租约认领、
-      并行执行），再按需跑每天一次巡检；总闸关时空转等待。
+      并行执行），再按需跑每天一次巡检；闲置 TTL 每小时独立一轮；总闸关时空转等待。
     - session_factory / drive_api_factory 可注入（测试用），默认
       生产值：backend.database.SessionLocal / DriveApiClient。
     任何异常只记 warning、不炸线程。返回线程对象，调用方持有以便观测。
     """
     stop = threading.Event()
-    state = {"last_patrol": 0.0, "last_follow_sweep": 0.0}
+    state = {"last_patrol": 0.0, "last_follow_sweep": 0.0,
+             "last_idle_cleanup": 0.0}
     if session_factory is None:
         from backend.database import SessionLocal
         session_factory = SessionLocal
@@ -4161,9 +4169,19 @@ def _wait_for_wake(stop, timeout_sec):
         _WAKE_EVENT.wait(min(0.2, remaining))
 
 
+def _idle_cleanup_due(state, now_ts) -> bool:
+    """闲置 TTL 本轮是否到点：独立于每日巡检，每小时一轮。
+
+    state 缺 last_idle_cleanup 时按从未跑过处理（首轮即跑）。
+    """
+    return now_ts - state.get("last_idle_cleanup", 0.0) \
+        >= COPY_IDLE_CLEANUP_INTERVAL_SEC
+
+
 def _daemon_main_loop(stop, state, session_factory, drive_api_factory):
     """Daemon 主循环：唤醒即跑一轮，队列未空立即续跑，空了等唤醒
-    或 60 秒兜底扫；巡检每天一次；异常只记 warning 不炸线程。"""
+    或 60 秒兜底扫；巡检每天一次；闲置 TTL 每小时独立一轮；
+    异常只记 warning 不炸线程。"""
     while not stop.is_set():
         try:
             if master_enabled():
@@ -4184,9 +4202,12 @@ def _daemon_main_loop(stop, state, session_factory, drive_api_factory):
                         patrol_once(db, drive_api_factory)
                     finally:
                         db.close()
-                    # 防外流闲置 TTL（2026-10-28）：与巡检同每日节奏、
-                    # 独立会话；copy_idle_cleanup 自带 try/except 与
-                    # 有界批次，异常只记 warning，绝不炸工人循环。
+                    state["last_patrol"] = now_ts
+                # 防外流闲置 TTL（2026-10-28 2 小时单）：从每日巡检解耦，
+                # 每小时独立一轮；copy_idle_cleanup 自带 try/except 与
+                # 有界批次，异常只记 warning，绝不炸工人循环。
+                if _idle_cleanup_due(state, now_ts):
+                    state["last_idle_cleanup"] = now_ts
                     try:
                         db = session_factory()
                         try:
@@ -4196,7 +4217,6 @@ def _daemon_main_loop(stop, state, session_factory, drive_api_factory):
                     except Exception:
                         logger.warning("闲置 TTL 清理异常，已跳过本轮",
                                        exc_info=True)
-                    state["last_patrol"] = now_ts
                 # 追剧扫集（2026-10-27 首批第二单）：只在追剧开关与
                 # 转存总闸双开时跑，间隔 SERIES_FOLLOW_SWEEP_SEC
                 #（默认 600 秒）；纯查库 + 建任务行，异常只记 warning
@@ -4222,7 +4242,8 @@ def _daemon_main_loop(stop, state, session_factory, drive_api_factory):
 
 __all__ = [
     "THROTTLE_SEC", "MAX_ATTEMPTS", "RETRY_BASE_SEC", "WORKER_INTERVAL_SEC",
-    "PATROL_INTERVAL_SEC", "STALE_STRIKES", "MAX_JOBS_PER_ROUND",
+    "PATROL_INTERVAL_SEC", "COPY_IDLE_CLEANUP_INTERVAL_SEC",
+    "STALE_STRIKES", "MAX_JOBS_PER_ROUND",
     "STUCK_RUNNING_SEC",
     "master_enabled", "auto_enabled", "transfer_dir_name",
     "QuotaPageError", "is_quota_page_bytes", "is_transfer_dir_rel",
