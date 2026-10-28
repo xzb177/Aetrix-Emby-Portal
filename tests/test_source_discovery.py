@@ -430,3 +430,29 @@ def test_confirm_master_off_failed(client, db, engine, monkeypatch):
               "upstream_item_id": "up-14"})
     assert resp.json()["state"] == "failed"
     assert _jobs(engine) == 0
+
+
+def test_confirm_partial_triple_auto_on_400(client, db, engine, monkeypatch):
+    """自动模式开时，部分三元组 + tmdb 也不许滑进自动挑选：400，不建任务。
+
+    回归：之前只有“全三元组”才走三元组支，残缺三元组会被丢弃、按 tmdb
+    另挑最高候选建任务——确认的根本不是调用方指的那一个（例如
+    local_item_id=999999 照常 200 建任务）。
+    """
+    monkeypatch.setenv("SOURCE_DISCOVERY_ENABLED", "1")
+    monkeypatch.setenv("TRANSFER_VARIANT_ENABLED", "1")
+    monkeypatch.setenv("SOURCE_DISCOVERY_AUTO_TRANSFER_ENABLED", "1")
+    user = _user(db, "u-partial")
+    _bind(db, user, "drive")
+    item = _drive_item(db, "115")
+    src = _source(db, "云海服")
+    _mapping(db, item, src, "up-15")
+    c = _as(client, user)
+    resp = c.post("/api/user/source-discovery/confirm",
+                  json={"local_item_id": 999999, "tmdb_id": "115"})
+    assert resp.status_code == 400
+    resp = c.post("/api/user/source-discovery/confirm",
+                  json={"local_item_id": item.id, "source_id": src.id,
+                        "tmdb_id": "115"})
+    assert resp.status_code == 400
+    assert _jobs(engine) == 0
