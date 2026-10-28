@@ -115,12 +115,14 @@ def _library_hit(db: Session, tmdb_id: str | None):
 
 def _record(row: models.MovieRequest, *, in_library: bool,
             library_item_id: int | None, voted: bool,
-            message: str) -> RequestRecord:
+            message: str, weighted_vote_count: int) -> RequestRecord:
     return RequestRecord(
         request_id=row.id,
         tmdb_id=row.tmdb_id or "",
         movie_name=row.movie_name,
         vote_count=row.vote_count or 0,
+        # Step 1 加权附议：原始人数仍见 vote_count；榜单排序与加权数走这里
+        weighted_vote_count=weighted_vote_count,
         status=row.status,
         state=_r1_state(row.status),
         in_library=in_library,
@@ -134,18 +136,27 @@ def _append_vote(db: Session, row: models.MovieRequest,
                  user_id: int) -> tuple[str, models.MovieRequest | None]:
     """给处理中行附议一票（并发安全），返回 (结果, 行)。
 
-    结果三档：
+    结果四档：
     - ``"voted"``：本次落票成功；
     - ``"already"``：并发请求已先落下同一人的票，本次不重复计；
-    - ``"gone"``：行并发消失，调用方重走新建支。
+    - ``"gone"``：行并发消失，调用方重走新建支；
+    - ``"limited"``：今日附议已达上限（Step 1，默认 20 次，按当日现存
+      附议行计，取消删行即释放名额），本次不落票。
     先查后插在并发下会撞唯一约束 ``uq_vote_request_user``（两个请求
     同时看到“没投过”又同时插行）：撞上不 500，回滚后重查——对方已
     落票则按已登记回；重查没票（极少数假阳性）则重试一次，第二次
     再撞约束仍按已登记回（约束本身就是“已有人投过”的证据）。
     """
+    # Step 1：每日附议上限（toggle_vote 同口径；创建人首票走新建支，不走这里）
+    if media_seek.daily_votes_used(db, user_id) >= media_seek.daily_vote_limit(db):
+        return "limited", row
+    voter = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    weight = media_seek.vote_weight_for_user(db, voter, row) if voter is not None else 1
     for _attempt in range(2):
         try:
-            db.add(models.MovieRequestVote(request_id=row.id, user_id=user_id))
+            db.add(models.MovieRequestVote(
+                request_id=row.id, user_id=user_id, weight_snapshot=weight,
+            ))
             db.flush()
             row.vote_count = _recount_votes(db, row.id)
             db.commit()
@@ -246,6 +257,8 @@ def post_request(
                 tmdb_id=key,
                 movie_name=existing.movie_name,
                 vote_count=existing.vote_count or 0,
+                weighted_vote_count=media_seek.weighted_votes_for(
+                    db, [existing.id]).get(existing.id, 0),
                 status="completed",
                 state="stored",
                 in_library=in_library,
@@ -266,20 +279,29 @@ def post_request(
             return _record(
                 existing, in_library=False, library_item_id=None,
                 voted=True, message=REQUEST_ALREADY_REGISTERED_MESSAGE,
+                weighted_vote_count=media_seek.weighted_votes_for(
+                    db, [existing.id]).get(existing.id, 0),
             )
         outcome, existing = _append_vote(db, existing, user.id)
         if outcome == "gone":
             # 行并发消失：落到下面的新建支，重新登记一行。
             pass
+        elif outcome == "limited":
+            # Step 1：今日附议已达上限（与 toggle_vote 同文案，走 400）
+            raise HTTPException(status_code=400, detail="今日附议已达上限")
         elif outcome == "already":
             return _record(
                 existing, in_library=False, library_item_id=None,
                 voted=True, message=REQUEST_ALREADY_REGISTERED_MESSAGE,
+                weighted_vote_count=media_seek.weighted_votes_for(
+                    db, [existing.id]).get(existing.id, 0),
             )
         else:
             return _record(
                 existing, in_library=False, library_item_id=None,
                 voted=True, message=REQUEST_VOTED_MESSAGE,
+                weighted_vote_count=media_seek.weighted_votes_for(
+                    db, [existing.id]).get(existing.id, 0),
             )
 
     row = models.MovieRequest(
@@ -291,12 +313,18 @@ def post_request(
     )
     db.add(row)
     db.flush()
-    db.add(models.MovieRequestVote(request_id=row.id, user_id=user.id))
+    # Step 1：创建人首票同样按其等级权重快照计（与附议同口径）
+    db.add(models.MovieRequestVote(
+        request_id=row.id, user_id=user.id,
+        weight_snapshot=media_seek.vote_weight_for_user(db, user, row),
+    ))
     db.commit()
     db.refresh(row)
     return _record(
         row, in_library=False, library_item_id=None,
         voted=True, message=REQUEST_REGISTERED_MESSAGE,
+        weighted_vote_count=media_seek.weighted_votes_for(
+            db, [row.id]).get(row.id, 0),
     )
 
 
@@ -334,6 +362,7 @@ def get_my_requests(
     if changed:
         db.commit()
     voted_set = _voted_ids(db, user.id, [row.id for row in rows])
+    weighted_map = media_seek.weighted_votes_for(db, [row.id for row in rows])
     items = []
     for row in rows:
         in_library, library_item_id = _library_hit(db, row.tmdb_id)
@@ -341,6 +370,7 @@ def get_my_requests(
             row, in_library=in_library, library_item_id=library_item_id,
             voted=(row.user_id == user.id or row.id in voted_set),
             message="",
+            weighted_vote_count=weighted_map.get(row.id, 0),
         ))
     return RequestListResponse(items=items)
 
@@ -350,7 +380,7 @@ def get_board(
     user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> RequestListResponse:
-    """会员可见求片榜：处理中的行按附议数排榜（人数 = 热度）。
+    """会员可见求片榜：处理中的行按加权附议和排榜（Step 1；原始人数另列）。
 
     读时同步会把已入库的行翻出榜单（它们不再是“求片”，应去想看）。
     """
@@ -363,7 +393,7 @@ def get_board(
             models.MovieRequest.status.in_(media_seek.ACTIVE_STATUSES),
         )
         .order_by(
-            models.MovieRequest.vote_count.desc(),
+            media_seek.weighted_vote_ordering().desc(),
             models.MovieRequest.created_at.desc(),
         )
         .limit(BOARD_LIMIT + SYNC_READ_EXTRA)
@@ -377,6 +407,7 @@ def get_board(
     active = [row for row in rows if row.status in media_seek.ACTIVE_STATUSES]
     active = active[:BOARD_LIMIT]
     voted_set = _voted_ids(db, user.id, [row.id for row in active])
+    weighted_map = media_seek.weighted_votes_for(db, [row.id for row in active])
     items = []
     for row in active:
         in_library, library_item_id = _library_hit(db, row.tmdb_id)
@@ -384,6 +415,7 @@ def get_board(
             row, in_library=in_library, library_item_id=library_item_id,
             voted=(row.user_id == user.id or row.id in voted_set),
             message="",
+            weighted_vote_count=weighted_map.get(row.id, 0),
         ))
     return RequestListResponse(items=items)
 
@@ -393,7 +425,7 @@ def get_admin_requests(
     admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ) -> RequestListResponse:
-    """管理端可见全部登记：含已入库 / 已拒绝 / 已撤回，按附议数排。
+    """管理端可见全部登记：含已入库 / 已拒绝 / 已撤回，按加权附议和排。
 
     只读：改状态（批准/拒绝/标记已入库）走既有 MediaSeek 入口，
     本模块不开写入口。
@@ -405,7 +437,7 @@ def get_admin_requests(
             models.MovieRequest.tmdb_id != "",
         )
         .order_by(
-            models.MovieRequest.vote_count.desc(),
+            media_seek.weighted_vote_ordering().desc(),
             models.MovieRequest.created_at.desc(),
         )
         .limit(ADMIN_LIST_LIMIT + SYNC_READ_EXTRA)
@@ -416,11 +448,14 @@ def get_admin_requests(
         changed = _sync_row(db, row) or changed
     if changed:
         db.commit()
+    page = rows[:ADMIN_LIST_LIMIT]
+    weighted_map = media_seek.weighted_votes_for(db, [row.id for row in page])
     items = []
-    for row in rows[:ADMIN_LIST_LIMIT]:
+    for row in page:
         in_library, library_item_id = _library_hit(db, row.tmdb_id)
         items.append(_record(
             row, in_library=in_library, library_item_id=library_item_id,
             voted=False, message="",
+            weighted_vote_count=weighted_map.get(row.id, 0),
         ))
     return RequestListResponse(items=items)

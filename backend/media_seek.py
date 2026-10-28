@@ -22,7 +22,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from backend import entitlements, models
@@ -35,6 +35,13 @@ logger = logging.getLogger(__name__)
 # 每日求片上限（防止刷单）；后台「系统设置 → 经济」里可改
 CONFIG_DAILY_LIMIT = "media_seek_daily_limit"
 DEFAULT_DAILY_LIMIT = 5
+
+# Step 1 加权附议：权重表为固定表（Lv.1–Lv.6 → 1–6，封顶 6，设计稿 Q1＋Q11），
+# 不走管理端配置；每日附议上限走 SystemConfig（后台「系统设置 → 经济」可改）
+VOTE_WEIGHTS = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+VOTE_WEIGHT_CAP = 6
+CONFIG_DAILY_VOTE_LIMIT = "media_seek_daily_vote_limit"
+DEFAULT_DAILY_VOTE_LIMIT = 20
 
 # 用户主动撤回的求片：不再展示、也不再参与去重，但仍计入当天的提交数
 WITHDRAWN_STATUS = "withdrawn"
@@ -457,15 +464,104 @@ def notify_voters_enabled(db: Session) -> bool:
     return _get_bool(db, CONFIG_NOTIFY_VOTERS, True)
 
 
-def toggle_vote(db: Session, user, request_id: int) -> dict:
-    """附议 / 取消附议一条求片。返回 {"voted": bool, "vote_count": int}
+# ==================== Step 1 加权附议 ====================
 
-    规则：
+def daily_vote_limit(db: Session) -> int:
+    """每日附议上限：SystemConfig 覆盖，缺省/脏值回默认值（绝不让脏配置把附议打死）"""
+    cfg = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == CONFIG_DAILY_VOTE_LIMIT
+    ).first()
+    raw = str(cfg.value).strip() if cfg and cfg.value is not None else ""
+    if not (raw.isascii() and raw.isdigit()):
+        return DEFAULT_DAILY_VOTE_LIMIT
+    return max(1, int(raw))
+
+
+def vote_weight_for_level(level) -> int:
+    """等级 → 附议权重：Lv.1–Lv.6 对应 1–6，超界钳制（等级缺失按 Lv.1）"""
+    try:
+        lv = int(level or 1)
+    except (TypeError, ValueError):
+        lv = 1
+    lv = max(1, min(VOTE_WEIGHT_CAP, lv))
+    return VOTE_WEIGHTS[lv]
+
+
+def _request_is_free_realm(db: Session, req) -> bool:
+    """这条求片所属的服是不是公益服：行有 realm_id 用它；老行 realm_id 为空
+    时归默认服（id 最小）；全站无服时按 paid 处理（与 realms.access_mode_of
+    同口径的安全默认）。realms 懒导入：防循环导入。"""
+    from backend import realms
+    realm_id = getattr(req, "realm_id", None)
+    if realm_id is None:
+        legacy = realms.legacy_realm(db)
+        realm_id = legacy.id if legacy is not None else None
+    return realms.is_free_realm(db, realm_id)
+
+
+def vote_weight_for_user(db: Session, user, req) -> int:
+    """投票人本次附议的权重：仅公益服按投票时刻等级快照；付费服恒为 1"""
+    if not _request_is_free_realm(db, req):
+        return 1
+    return vote_weight_for_level(getattr(user, "member_level", None) or 1)
+
+
+def weighted_votes_for(db: Session, request_ids: list) -> dict:
+    """一批求片的加权附议和（一次 GROUP BY 查询；老票 weight_snapshot 为空按 1 计）"""
+    if not request_ids:
+        return {}
+    rows = (
+        db.query(
+            models.MovieRequestVote.request_id,
+            func.coalesce(func.sum(func.coalesce(models.MovieRequestVote.weight_snapshot, 1)), 0),
+        )
+        .filter(models.MovieRequestVote.request_id.in_(request_ids))
+        .group_by(models.MovieRequestVote.request_id)
+        .all()
+    )
+    return {int(rid): int(total or 0) for rid, total in rows}
+
+
+def weighted_vote_ordering():
+    """榜单加权排序表达式：附议行权重快照之和（老票空值按 1 计），供 order_by 用"""
+    return (
+        select(
+            func.coalesce(
+                func.sum(func.coalesce(models.MovieRequestVote.weight_snapshot, 1)), 0
+            )
+        )
+        .where(models.MovieRequestVote.request_id == models.MovieRequest.id)
+        .scalar_subquery()
+    )
+
+
+def daily_votes_used(db: Session, user_id: int) -> int:
+    """今天已附议次数（按当日现存附议行计；取消是硬删除，删行即释放名额——
+    与求片撤回的软删除不同，附议没有“撤回不退还”可计的残留行。
+    防刷仍成立：榜单热度只反映现存票，投→撤不留膨胀热度）。
+    日界复用 economy 口径（懒导入防循环）。"""
+    from backend.api.economy import _today_start_utc_naive
+    today_start = _today_start_utc_naive()
+    return db.query(models.MovieRequestVote).filter(
+        models.MovieRequestVote.user_id == user_id,
+        models.MovieRequestVote.created_at >= today_start,
+    ).count()
+
+
+def toggle_vote(db: Session, user, request_id: int) -> dict:
+    """附议 / 取消附议一条求片。返回 {"voted": bool, "vote_count": int,
+    "weighted_vote_count": int}
+
+    规则（Step 1 加权附议）：
     - 附议开关关闭 → ValueError（路由转 403）
     - 求片不存在 → ValueError
     - 只能对 pending 的求片附议
     - 不能给自己的求片附议
     - 已附议 → 取消；未附议 → 附议（vote_count 行锁更新，防并发）
+    - 新附议带投票时刻等级权重快照（公益服按等级，付费服恒为 1）；
+      取消删行即自动扣减该票权重，升降级不追溯历史票
+    - 新附议受每日上限管（默认 20 次，按当日现存附议行计；取消删行即释放
+      名额）；取消永远放行
     """
     if not vote_enabled(db):
         raise ValueError("附议功能已关闭")
@@ -490,11 +586,21 @@ def toggle_vote(db: Session, user, request_id: int) -> dict:
         req.vote_count = max(0, (req.vote_count or 0) - 1)
         voted = False
     else:
-        db.add(models.MovieRequestVote(request_id=request_id, user_id=user.id))
+        if daily_votes_used(db, user.id) >= daily_vote_limit(db):
+            raise ValueError("今日附议已达上限")
+        weight = vote_weight_for_user(db, user, req)
+        db.add(models.MovieRequestVote(
+            request_id=request_id, user_id=user.id, weight_snapshot=weight,
+        ))
         req.vote_count = (req.vote_count or 0) + 1
         voted = True
     db.commit()
-    return {"voted": voted, "vote_count": int(req.vote_count or 0)}
+    weighted = weighted_votes_for(db, [request_id]).get(request_id, 0)
+    return {
+        "voted": voted,
+        "vote_count": int(req.vote_count or 0),
+        "weighted_vote_count": int(weighted),
+    }
 
 
 def voter_ids(db: Session, request_id: int, exclude_user_id=None) -> list:
@@ -541,9 +647,18 @@ __all__ = [
     "season_label",
     "seasons_for",
     "seek_enabled",
+    "CONFIG_DAILY_VOTE_LIMIT",
+    "DEFAULT_DAILY_VOTE_LIMIT",
+    "VOTE_WEIGHTS",
+    "daily_vote_limit",
+    "daily_votes_used",
     "toggle_vote",
     "used_today",
     "vote_enabled",
+    "vote_weight_for_level",
+    "vote_weight_for_user",
     "voted_ids",
     "voter_ids",
+    "weighted_vote_ordering",
+    "weighted_votes_for",
 ]

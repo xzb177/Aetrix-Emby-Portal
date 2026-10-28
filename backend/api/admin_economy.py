@@ -193,6 +193,7 @@ ECONOMY_CONFIG_KEYS = {
     "checkin_base_min": "int", "checkin_base_max": "int",
     "checkin_penalty_pct": "int", "checkin_penalty_min": "int", "checkin_penalty_max": "int",
     "media_seek_daily_limit": "int",  # 用户每日求片上限（用户端硬性校验）
+    "media_seek_daily_vote_limit": "int",  # Step 1：用户每日附议上限（默认 20 次，按当日现存附议行计）
     "welfare_request_monthly": "int",  # 公益服每月求片上限（2026-10-23 去重 #5 与日限同卡）
     "paid_request_monthly": "int",  # 付费服每月求片上限（此前无后台入口，本轮补登记）
     "code_default_plan_id": "int",  # r40：卡码授予天数所用默认套餐（codes._resolve_plan 读取）

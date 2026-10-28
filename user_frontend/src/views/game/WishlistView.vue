@@ -51,7 +51,7 @@
                 <span v-if="w.status === 'completed' && w.emby_item_id">
                   · 营地已上架，<button type="button" class="goto-player" @click="goOperator">去播放器看</button>
                 </span>
-                <span v-else-if="w.vote_count"> · 已有 {{ w.vote_count }} 人附议</span>
+                <span v-else-if="w.vote_count"> · 已有 {{ w.vote_count }} 人附议（加权 {{ w.weighted_vote_count ?? w.vote_count }}）</span>
               </div>
             </div>
             <span class="chip" :class="statusChip(w.status)">{{ statusText(w.status) }}</span>
@@ -70,7 +70,7 @@
           <div v-for="w in hotWishes" :key="w.id" class="crowd">
             <div class="row1">
               <b>《{{ w.movie_name }}》</b>
-              <span class="chip blue">{{ w.vote_count > 0 ? w.vote_count + ' 人也想看' : '还没有人附议' }}</span>
+              <span class="chip blue">{{ w.vote_count > 0 ? w.vote_count + ' 人也想看 · 加权 ' + (w.weighted_vote_count ?? w.vote_count) : '还没有人附议' }}</span>
             </div>
             <div class="want">{{ shortDate(w.created_at) }} 投入池中</div>
             <button
@@ -600,6 +600,7 @@ async function upvote(w: HotMediaSeekRequest) {
     const r = await mediaSeekApi.vote(w.id)
     w.voted = r.voted
     w.vote_count = r.vote_count
+    w.weighted_vote_count = r.weighted_vote_count
   } catch {
     // 附议失败不再静默：toast 提醒，按钮保持可点
     useToast().error('附议失败，再试一次')

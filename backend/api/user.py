@@ -867,7 +867,7 @@ def hot_media_seeks(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """v2 热门求片：所有人 pending 的求片（匿名展示用户名），按附议数排序
+    """v2 热门求片：所有人 pending 的求片（匿名展示用户名），按加权附议和排序
 
     附议开关关闭时返回空列表（前端隐藏该区块）。
     """
@@ -876,12 +876,13 @@ def hot_media_seeks(
     rows = (
         db.query(models.MovieRequest)
         .filter(models.MovieRequest.status == "pending")
-        .order_by(models.MovieRequest.vote_count.desc(),
+        .order_by(media_seek.weighted_vote_ordering().desc(),
                   models.MovieRequest.created_at.desc())
         .limit(50)
         .all()
     )
     voted = media_seek.voted_ids(db, current_user.id, [r.id for r in rows])
+    weighted_map = media_seek.weighted_votes_for(db, [r.id for r in rows])
     return {
         "requests": [
             {
@@ -891,6 +892,7 @@ def hot_media_seeks(
                 "type": r.type,
                 "season_label": media_seek.season_label(r.season),
                 "vote_count": r.vote_count or 0,
+                "weighted_vote_count": weighted_map.get(r.id, 0),
                 "voted": r.id in voted,
                 "mine": r.user_id == current_user.id,
                 "created_at": r.created_at.isoformat(),

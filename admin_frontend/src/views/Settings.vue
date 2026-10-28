@@ -148,6 +148,13 @@ const GROUPS: Group[] = [
         hint: '用户端提交求片时的硬性限额，未设置时默认 5 条',
       },
       {
+        key: 'media_seek_daily_vote_limit',
+        label: '每日附议上限',
+        type: 'int',
+        suffix: '次/天',
+        hint: '用户每天附议次数上限（按当日现存附议行计，取消即释放名额），未设置时默认 20 次',
+      },
+      {
         // 2026-10-23 去重 #5：两个月限原先散在公益页（付费月限甚至没有
         // 后台入口），与日限收进同一张卡；后端键与 media_seek 消费不变
         key: 'welfare_request_monthly',

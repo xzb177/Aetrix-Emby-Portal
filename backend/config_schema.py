@@ -222,6 +222,7 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "checkin_penalty_pct": ("int", 0, 100),
     "checkin_penalty_min": ("int", 0, _BIG), "checkin_penalty_max": ("int", 0, _BIG),
     "media_seek_daily_limit": ("int", 0, _BIG),
+    "media_seek_daily_vote_limit": ("int", 0, _BIG),
     # 2026-10-23 去重 #5：两个月限与日限同卡（运营参数）后需在此登记才可
     # 从该页保存；welfare_request_monthly 同时保留在 WELFARE_CONFIG_SCHEMA
     # （公益配置端点的历史口径），paid_request_monthly 此前无任何登记

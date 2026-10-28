@@ -1293,6 +1293,10 @@ class MovieRequestVote(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     request_id = Column(Integer, ForeignKey('movie_requests.id'), nullable=False)
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    # Step 1 加权附议：投票时刻投票人的等级权重快照（Lv.1–Lv.6 → 1–6，封顶 6；
+    # 仅公益服按等级，付费服恒为 1）。升降级不追溯历史票；老库补列默认 1
+    # （历史票权重，与升级前“每票恒＝1”一致）。聚合时空值按 1 计。
+    weight_snapshot = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
 
 

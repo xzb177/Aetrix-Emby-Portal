@@ -93,6 +93,8 @@ class RequestRecord(BaseModel):
     tmdb_id: str
     movie_name: str | None = None
     vote_count: int = 0
+    #: Step 1 加权附议和（投票时刻等级权重快照之和；原始人数仍见 vote_count）
+    weighted_vote_count: int = 0
     #: MediaSeek 原始 status（pending/approved/completed/rejected/withdrawn）。
     status: str
     #: R1 展示态（registered/seeking/stored/not_found/withdrawn/in_library）。
