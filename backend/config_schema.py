@@ -104,6 +104,7 @@ def normalize(key: str, spec: tuple, value: Any, bool_style: str = "word") -> Op
 
 # 公益配置（welfare_admin.WELFARE_CONFIG_KEYS）里的数值/开关键；未列出的（群 id 列表等）按字符串保存
 WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
+    "points_chat_per_msg": ("int", 0, _BIG),
     "points_chat_daily_cap": ("int", 0, _BIG),
     "points_redeem_7d": ("int", 0, _BIG),
     "points_redeem_30d": ("int", 0, _BIG),

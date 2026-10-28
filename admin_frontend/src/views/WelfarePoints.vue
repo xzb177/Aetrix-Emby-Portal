@@ -45,6 +45,7 @@ const transferFields = [
 ]
 
 const earnRedeemFields = [
+  { key: 'points_chat_per_msg', label: '发言每条奖励', hint: '默认 1，填 0 关闭发言奖励', suffix: '积分/条' },
   { key: 'points_chat_daily_cap', label: '发言每日上限', hint: '默认 20', suffix: '积分/天' },
   { key: 'points_redeem_7d', label: '兑换 7 天', hint: '默认 100', suffix: '积分' },
   { key: 'points_redeem_30d', label: '兑换 30 天', hint: '默认 300', suffix: '积分' },
