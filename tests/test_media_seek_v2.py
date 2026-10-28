@@ -83,9 +83,10 @@ def test_toggle_vote_basic(db):
     b = _user(db, "b")
     r = _req(db, a)
     out = media_seek.toggle_vote(db, b, r.id)
-    assert out == {"voted": True, "vote_count": 1}
+    # Step 1：返回新增 weighted_vote_count；无服时按 paid 计，权重恒为 1
+    assert out == {"voted": True, "vote_count": 1, "weighted_vote_count": 1}
     out = media_seek.toggle_vote(db, b, r.id)
-    assert out == {"voted": False, "vote_count": 0}
+    assert out == {"voted": False, "vote_count": 0, "weighted_vote_count": 0}
 
 
 def test_vote_own_request_forbidden(db):

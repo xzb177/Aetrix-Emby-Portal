@@ -53,7 +53,7 @@
             </div>
             <div v-else class="req-line">
               <span class="k">状态</span><span>{{ stateLabel(submitResult.state) }}</span>
-              <span class="k">附议</span><span>{{ submitResult.vote_count }} 人</span>
+              <span class="k">附议</span><span>{{ submitResult.vote_count }} 人（加权 {{ submitResult.weighted_vote_count ?? submitResult.vote_count }}）</span>
             </div>
           </div>
         </section>
@@ -68,7 +68,7 @@
             <div v-for="r in board" :key="r.request_id ?? r.tmdb_id" class="req-row">
               <span class="req-name">{{ r.movie_name || r.tmdb_id }}</span>
               <span class="req-state">{{ stateLabel(r.state) }}</span>
-              <span class="req-votes">{{ r.vote_count }} 人附议</span>
+              <span class="req-votes">加权 {{ r.weighted_vote_count ?? r.vote_count }} · {{ r.vote_count }} 人附议</span>
               <button
                 v-if="r.request_id !== null && !r.voted"
                 class="v4-retry"
@@ -90,7 +90,7 @@
             <div v-for="r in mine" :key="r.request_id ?? r.tmdb_id" class="req-row">
               <span class="req-name">{{ r.movie_name || r.tmdb_id }}</span>
               <span class="req-state">{{ stateLabel(r.state) }}</span>
-              <span class="req-votes">{{ r.vote_count }} 人附议</span>
+              <span class="req-votes">加权 {{ r.weighted_vote_count ?? r.vote_count }} · {{ r.vote_count }} 人附议</span>
               <RouterLink v-if="r.state === 'stored' || r.in_library" to="/want" class="v4-retry">去想看</RouterLink>
             </div>
           </div>

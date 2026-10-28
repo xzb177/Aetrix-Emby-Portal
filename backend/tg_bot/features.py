@@ -416,16 +416,18 @@ def handle_login(db, tg_user: dict, chat_id: int, args: str):
 
 def handle_request_board(db, tg_user: dict, chat_id: int, args: str) -> str:
     """群运营求片榜：只展示片名和热度，不泄露申请人身份。"""
+    # Step 1：榜单按加权附议和排（行文案仍显原始人数，不泄露投票人身份）
+    from backend import media_seek
     rows = (
         db.query(models.MovieRequest)
         .filter(models.MovieRequest.status == "pending")
-        .order_by(models.MovieRequest.vote_count.desc(),
+        .order_by(media_seek.weighted_vote_ordering().desc(),
                   models.MovieRequest.created_at.desc())
         .limit(10).all()
     )
     if not rows:
         return "🔥 <b>求片榜</b>\n\n当前没有排队中的求片。"
-    lines = ["🔥 <b>求片榜</b>", "", "按附议数排序："]
+    lines = ["🔥 <b>求片榜</b>", "", "按加权热度排序："]
     for index, row in enumerate(rows, 1):
         title = _esc(row.movie_name)
         season = f"（{_esc(row.season)}）" if row.season and row.season != "all" else ""

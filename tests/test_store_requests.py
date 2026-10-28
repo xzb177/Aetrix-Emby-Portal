@@ -283,9 +283,11 @@ def test_admin_board_sees_all_and_guest_401(client, db, monkeypatch):
     resp = _as_admin(client, admin).get("/api/admin/store/requests")
     assert resp.status_code == 200
     items = resp.json()["items"]
-    assert [item["tmdb_id"] for item in items] == ["302", "301"]
-    assert items[1]["state"] == "registered"
-    assert items[0]["state"] == "not_found"
+    # Step 1：管理榜按加权和排——拒片行 vote_count=5 但无附议行（加权 0），
+    # 排在有 1 张实票（加权 1）的 301 之后；两行都可见（本用例原意）不变
+    assert [item["tmdb_id"] for item in items] == ["301", "302"]
+    assert items[0]["state"] == "registered"
+    assert items[1]["state"] == "not_found"
     client.app.dependency_overrides.pop(get_current_admin, None)
     assert client.get("/api/admin/store/requests").status_code == 401
 

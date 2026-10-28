@@ -865,6 +865,11 @@ def _auto_migrate():
             # v2 求片附议数（新表 movie_request_votes 由 create_all 建）
             ("vote_count", "INTEGER", "0"),
         ]),
+        # Step 1 加权附议：附议行投票时刻等级权重快照；老库补列默认 1，
+        # 历史票权重与升级前行为一致（每票恒＝1）。
+        ("movie_request_votes", [
+            ("weight_snapshot", "INTEGER", "1"),
+        ]),
         # v2.10.0 优惠券：订单上快照「原价 / 优惠金额 / 核销记录」。
         # 退款与对账要能解释「当时到底按多少钱算的」——套餐改价之后不能按现价重算。
         # （新表 coupon_codes / coupon_usages 由 create_all 建，不在此列）
