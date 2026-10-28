@@ -258,3 +258,69 @@ def test_query_exact_search_no_regression(monkeypatch):
     assert [x["id"] for x in r["results"]] == [8]
     r = nl.search_items(db, "不存在的片名xyz123", {1})
     assert r["results"] == []
+
+
+# ---- R4 审查修复回归：地区 ISO 代码 / 最近残留 / LIKE 通配转义 ----
+
+def _db_iso():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    em.MediaItem.__table__.create(engine, checkfirst=True)
+    em.EmbyPerson.__table__.create(engine, checkfirst=True)
+    session = sessionmaker(bind=engine)()
+    # 生产真实取值：countries 存 TMDB origin_country ISO 代码，不是中文名。
+    items = [
+        # (id, name, year, countries, genres, library)
+        (1, "国产剧示例", 2024, "CN", "剧情", 1),
+        (2, "喜剧之王", 1999, "HK", "喜剧", 1),
+        (3, "千与千寻", 2001, "JP", "动画", 2),
+    ]
+    for i, name, year, countries, genres, lib in items:
+        session.add(em.MediaItem(id=i, guid=f"{i:032d}", library_id=lib,
+                                 item_type="movie", name=name,
+                                 production_year=year, countries=countries,
+                                 genres=genres))
+    session.commit()
+    return session
+
+
+def test_region_matches_production_iso_codes(monkeypatch):
+    _enable(monkeypatch)
+    db = _db_iso()
+    r = nl.search_items(db, "国产剧", {1})
+    assert r["region"] == "内地" and [x["id"] for x in r["results"]] == [1]
+    r = nl.search_items(db, "香港喜剧", {1})
+    assert [x["id"] for x in r["results"]] == [2]
+    r = nl.search_items(db, "日本动画", {1, 2})
+    assert [x["id"] for x in r["results"]] == [3]
+
+
+def test_recent_token_never_leaks_into_keyword():
+    from datetime import date
+    y = date.today().year
+    # 显式年代已定时，“最近”须被清除，不能进 LIKE 误收窄。
+    p = nl.parse_query("90年代最近的科幻")
+    assert p["year_range"] == (1990, 1999) and p["keyword"] == ""
+    # 两词并存时只清一处不够，两处都须清。
+    p = nl.parse_query("最近近期科幻")
+    assert p["year_range"] == (y - 2, y) and p["keyword"] == ""
+
+
+def test_like_wildcards_in_keyword_are_literal(monkeypatch):
+    _enable(monkeypatch)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    em.MediaItem.__table__.create(engine, checkfirst=True)
+    em.EmbyPerson.__table__.create(engine, checkfirst=True)
+    db = sessionmaker(bind=engine)()
+    db.add(em.MediaItem(id=1, guid="00000000000000000000000000000001",
+                        library_id=1, item_type="movie", name="100%纯爱",
+                        production_year=2020, countries="CN", genres="爱情"))
+    db.add(em.MediaItem(id=2, guid="00000000000000000000000000000002",
+                        library_id=1, item_type="movie", name="100X纯爱",
+                        production_year=2020, countries="CN", genres="爱情"))
+    db.commit()
+    # % 若当通配符，100X纯爱也会命中；按字面匹配只能命中 100%纯爱。
+    r = nl.search_items(db, "100%纯", {1})
+    assert r["fallback"] is True
+    assert [x["id"] for x in r["results"]] == [1]

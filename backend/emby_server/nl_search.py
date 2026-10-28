@@ -13,7 +13,8 @@
 - 年代：``90年代``/``1990年代``/``90s`` → 1990–1999；``1994年`` → 当年。
   两位数年代按 >=30 归 19xx、<30 归 20xx（``00年代`` → 2000s）。
 - 地区：可配置别名表（默认含常见地区词），匹配 ``countries`` 列
-  （“国产”按既有口径映射为“内地”，与“大陆”同义）。
+  （“国产”按既有口径映射为“内地”，与“大陆”同义）；查询层中文名与
+  TMDB origin_country ISO 代码双轨匹配（生产行 countries 存代码）。
 - 类型：可配置别名表（默认含常见类型词），匹配 ``genres`` 列。
 - 最近：无显式年代时，“最近”/“近期” → 今年及前两年（production_year 区间）。
 - 其余文本：关键词，匹配 name / sort_name / original_title / aliases，
@@ -55,6 +56,27 @@ DEFAULT_REGION_MAP: dict[str, str] = {
     "韩国": "韩国", "韩": "韩国", "美国": "美国", "美": "美国",
     "英国": "英国", "法国": "法国", "德国": "德国", "欧洲": "欧洲",
 }
+#: 地区中文名 → TMDB origin_country ISO 代码。countries 列的生产取值是
+#: ISO 代码（tmdb.py apply_details 只写 origin_country，如 CN/HK/JP），
+#: 不是中文名；只按中文名 LIKE 命中不了生产行，故查询层须中文名与代码
+#: 双轨匹配（中文名保留，兼容旧夹具/手工写中文名的行；“欧洲”无单码，
+#: 仍只按中文名匹配）。
+REGION_CODE_MAP: dict[str, str] = {
+    "香港": "HK", "内地": "CN", "台湾": "TW", "日本": "JP",
+    "韩国": "KR", "美国": "US", "英国": "GB", "法国": "FR", "德国": "DE",
+}
+
+
+def _like_escape(text: str) -> str:
+    """LIKE 模式转义：用户输入的 %/_ 须按字面匹配，不当通配符。"""
+    return (text.replace("\\", "\\\\")
+                .replace("%", "\\%").replace("_", "\\_"))
+
+
+def _like_col(column, text: str):
+    return column.like(f"%{_like_escape(text)}%", escape="\\")
+
+
 #: 默认类型别名表（键 = 用户可能输入的词，值 = 匹配 genres 列用的词）。
 DEFAULT_GENRE_MAP: dict[str, str] = {
     "喜剧": "喜剧", "动作": "动作", "爱情": "爱情", "科幻": "科幻",
@@ -153,10 +175,12 @@ def parse_query(text: str) -> dict:
         elif "最近" in rest or "近期" in rest:
             # 无显式年代时，“最近/近期” → 今年及前两年（不编造新字段语义，
             # 走既有 production_year 区间；显式年代优先，不覆盖它）。
-            token = "最近" if "最近" in rest else "近期"
             y = date.today().year
             year_range = (y - 2, y)
-            rest = rest.replace(token, " ", 1)
+    # 相对时间词在任何分支下都不进 keyword：显式年代已定（90年代最近…）
+    # 或两词并存（最近近期…）时，残留的“最近/近期”若进 LIKE 必把结果
+    # 误收窄到片名含该词的条目；此处全量清除（只清一次不够）。
+    rest = rest.replace("最近", " ").replace("近期", " ")
     region_map = _env_map(REGION_MAP_ENV, DEFAULT_REGION_MAP)
     region = None
     for token in sorted(region_map, key=len, reverse=True):
@@ -215,21 +239,25 @@ def search_items(db, query_text: str,
     if parsed["year"] is not None:
         q = q.filter(em.MediaItem.production_year == parsed["year"])
     if parsed["region"] is not None:
-        q = q.filter(em.MediaItem.countries.like(f"%{parsed['region']}%"))
+        region_clauses = [_like_col(em.MediaItem.countries, parsed["region"])]
+        code = REGION_CODE_MAP.get(parsed["region"])
+        if code:
+            region_clauses.append(_like_col(em.MediaItem.countries, code))
+        q = q.filter(or_(*region_clauses))
     if parsed["genre"] is not None:
-        q = q.filter(em.MediaItem.genres.like(f"%{parsed['genre']}%"))
+        q = q.filter(_like_col(em.MediaItem.genres, parsed["genre"]))
     if parsed["keyword"]:
-        kw = f"%{parsed['keyword']}%"
+        kw = parsed["keyword"]
         # 人物匹配走 emby_people.name（演员表；导演若落库同表亦命中）。
         person_hit = db.query(em.EmbyPerson.id).filter(
             em.EmbyPerson.item_id == em.MediaItem.id,
-            em.EmbyPerson.name.like(kw),
+            _like_col(em.EmbyPerson.name, kw),
         ).exists()
         q = q.filter(or_(
-            em.MediaItem.name.like(kw),
-            em.MediaItem.sort_name.like(kw),
-            em.MediaItem.original_title.like(kw),
-            em.MediaItem.aliases.like(kw),
+            _like_col(em.MediaItem.name, kw),
+            _like_col(em.MediaItem.sort_name, kw),
+            _like_col(em.MediaItem.original_title, kw),
+            _like_col(em.MediaItem.aliases, kw),
             person_hit,
         ))
     rows = q.order_by(em.MediaItem.id).limit(limit).all()
