@@ -214,8 +214,8 @@
         </template>
       </section>
 
-      <!-- ⛰️ 探险家等级 -->
-      <section class="shop-sec">
+      <!-- ⛰️ 探险家等级：公益服下整块隐藏（等级特权全是执照折扣，公益服不卖执照） -->
+      <section v-if="!welfareRealm" class="shop-sec">
         <div class="v4-sec-title">等级</div>
         <div class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
