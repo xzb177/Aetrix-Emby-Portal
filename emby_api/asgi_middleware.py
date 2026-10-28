@@ -184,6 +184,10 @@ def _ea_is_auth(request: Request) -> bool:
 
 
 def _ea_check_limit(ip: str, path: str, authenticated: bool) -> tuple:
+    # r4-auth：与 EM 同口径，登录四条路径归一到同一桶。
+    from backend.ratelimit import canonical_rate_limit_path as _canon
+
+    path = _canon(path)
     for prefix, limit_anon, limit_auth in _EA_RATE_LIMITS:
         if path.startswith(prefix):
             limit = limit_auth if authenticated else limit_anon
@@ -221,7 +225,8 @@ class EaRateLimitMiddleware:
 
         path = scope.get("path", "")
         # /api/ 与 /emby/ 都限流：后者覆盖 Emby 客户端登录（其它 /emby/ 路径无匹配规则则放行）
-        if path.startswith(("/api/", "/emby/")):
+        # r4-auth：裸 /Users/ 登录路径也要进限流（旧门漏了它，裸登录不限流）。
+        if path.startswith(("/api/", "/emby/", "/Users/")):
             request = Request(scope)
             ip = _ea_get_ip(request)
             authenticated = _ea_is_auth(request)

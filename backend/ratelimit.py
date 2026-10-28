@@ -91,7 +91,10 @@ def reset_rate_limit(key: str) -> None:
 API_RATE_LIMITS = [
     ("/api/health", 0, 0),              # 健康检查：不限流
     ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
-    ("/emby/Users/authenticatebyname", 15, 15),  # 小写登录别名：同限额（独立桶，计数键含命中的前缀）
+    # 注意：不要再为小写别名 /emby/Users/authenticatebyname 另加条目。
+    # 计数键含命中的前缀，另加条目 = 另建独立桶，大小写两条路各 15 次/分钟、
+    # 合计 30 次/分钟（r4-auth 实测）。四条登录路径先经下面的
+    # canonical_rate_limit_path() 归一到本条目，共用同一个桶。
     # 登录专档必须是**真实路由**：用户登录是 /api/user/auth/login、管理员登录是
     # /api/admin/auth/login。旧条目写的是 /api/user/login 与 /api/admin/emby/login，
     # 路由表里根本没有这两个路径 → 永远命中不到（死条目），登录请求实际落进
@@ -106,6 +109,26 @@ API_RATE_LIMITS = [
     ("/api/admin/", 60, 300),           # 管理接口：未认证 60，认证 300
     ("/api/", 120, 600),               # 普通 API：未认证 120，认证 600
 ]
+
+# Emby 登录的规范限流键前缀：四条路由（有无 /emby 前缀 × 大小写）共用它。
+EMBY_LOGIN_RATE_LIMIT_PREFIX = "/emby/Users/AuthenticateByName"
+
+
+def canonical_rate_limit_path(path: str) -> str:
+    """把 Emby 登录四条路径归一到同一限流桶。
+
+    路由层大小写敏感（FastAPI 精确匹配），但限流层必须不敏感：
+    不归一时，小写别名命中另一条目（或无条目），等于给爆破多开一条路。
+    归一只认登录路径本身的全等（大小写不敏感），其它路径原样返回；
+    尾巴带额外段的路径不归一（路由上本就 404，不进登录桶）。
+    EM（backend/main.py::_check_rate_limit）与 EA
+    （emby_api/asgi_middleware.py::_ea_check_limit）两处检查前都必须调它，
+    不许各自手写归一逻辑。
+    """
+    lowered = (path or "").lower()
+    if lowered in ("/emby/users/authenticatebyname", "/users/authenticatebyname"):
+        return EMBY_LOGIN_RATE_LIMIT_PREFIX
+    return path
 
 
 def is_authenticated_request(request) -> bool:
