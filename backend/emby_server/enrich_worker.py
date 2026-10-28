@@ -3720,15 +3720,27 @@ def retry_unmatched(db) -> int:
 def _none_reschedulable_query(db, cutoff, max_rounds):
     """Step 4：超期 none 条目的查询（回捞动作与只读计数共用同一口径）。
 
-    口径：enrich_status='done' + metadata_source='none' + 无 tmdb_id +
+    口径：enrich_status='done' + 无 tmdb_id + 无海报（poster_path 为空）+
     剧/电影 + 有文件指纹 + 未锁定 + 回捞轮数未达上限 +
     （enrich_next_retry_at 为 NULL（旧存量/从未记录）或 <= cutoff
-    （上次回捞/终态化已超过周期））。
+    （上次回捞/终态化已超过周期））+
+    metadata_source 为 'none' 或 NULL。
+
+    2026-10-28 漏网补口（《尸油降》/《末世行者》案）：首轮刮削后 done +
+    tmdb_id 为空 + metadata_source 为 NULL（不是 'none'）+ 无海报 +
+    enrich_next_retry_at 为 NULL 的条目，旧口径（只认 source='none'）
+    认不出来、janitor 永不捞回，漏一次就永久黑卡。本口径把这类
+    来源为空的漏网也纳入——但海报 gate 对两支都生效：已有海报的条目
+    （卡片已能渲染）一律不进回捞，已修好的条目（有海报 + 有 tmdb_id）
+    更不会被翻出来重刮。
     """
     from sqlalchemy import or_ as _or
     return (db.query(em.MediaItem)
             .filter(em.MediaItem.enrich_status == "done",
-                    em.MediaItem.metadata_source == "none",
+                    _or(em.MediaItem.metadata_source == "none",
+                        em.MediaItem.metadata_source.is_(None)),
+                    _or(em.MediaItem.poster_path.is_(None),
+                        em.MediaItem.poster_path == ""),
                     em.MediaItem.tmdb_id.is_(None),
                     em.MediaItem.item_type.in_(["series", "movie"]),
                     em.MediaItem.file_fingerprint.isnot(None),
@@ -3759,6 +3771,10 @@ def enrich_none_auto_reschedule(db) -> int:
       ``enrich_none_reschedules`` +1；达上限的行永久保留 done（防无限重搜）。
     - 锁定跳过：``metadata_locked=True`` 的行永不被翻回（抢单本就跳过锁定行，
       翻回只会让它烂在 pending 里污染待刮计数）。
+    - 来源为空的漏网（2026-10-28 补口）：done + source 为 NULL + 无海报的
+      条目与 done+none 走同一口径、同一轮数上限与单轮上限回捞；首轮
+      再搜不到会按正常终态化记为 source='none'，此后由常规 none 周期接管。
+      已有海报或已有 tmdb_id 的条目一律不进回捞。
     - 单轮硬上限 ``ENRICH_NONE_AUTO_RESCHEDULE_BATCH``（2000，写死）：按最旧
       优先（NULL 最旧，其次按时间戳），捞满即停，下一轮 janitor 继续。
     - 翻回动作复用 ``retry_unmatched`` 的逻辑：清 TMDB 搜索阴性缓存 +
@@ -4032,6 +4048,10 @@ def none_stock_stats(db) -> dict:
     - by_type：按 item_type 分组的全量 none 存量（所有类型，含单集/季）；
     - reschedulable_now：当前周期下 janitor 下一轮可捞回的条数
       （剧/电影 + 超期口径，见 _none_reschedulable_query）；
+    - leak_null_source_noposter：来源为空的漏网存量（done + source NULL +
+      无 tmdb + 无海报 + 剧/电影 + 有指纹 + 未合并 + 未锁定，不论周期与
+      轮数——即 2026-10-28 案那类漏网的总量；reschedulable_now 是其中
+      下一轮可捞的子集）；
     - batch_limit：单轮硬上限（2000）。
     供管理后台「定时与刮削」只读展示 + 上线前存量计数（handoff SQL 的同口径实现）。
     """
@@ -4054,10 +4074,24 @@ def none_stock_stats(db) -> dict:
     reschedulable = (_none_reschedulable_query(db, cutoff, max_rounds)
                      .with_entities(func.count(em.MediaItem.id))
                      .scalar() or 0)
+    from sqlalchemy import or_ as _or
+    leak_null_source = (db.query(em.MediaItem)
+                        .filter(em.MediaItem.enrich_status == "done",
+                                em.MediaItem.metadata_source.is_(None),
+                                em.MediaItem.tmdb_id.is_(None),
+                                _or(em.MediaItem.poster_path.is_(None),
+                                    em.MediaItem.poster_path == ""),
+                                em.MediaItem.item_type.in_(["series", "movie"]),
+                                em.MediaItem.file_fingerprint.isnot(None),
+                                em.MediaItem.merged_into_id.is_(None),
+                                em.MediaItem.metadata_locked.isnot(True))
+                        .with_entities(func.count(em.MediaItem.id))
+                        .scalar() or 0)
     return {
         "by_type": by_type,
         "total": sum(by_type.values()),
         "reschedulable_now": reschedulable,
+        "leak_null_source_noposter": leak_null_source,
         "cycle_days": days,
         "max_rounds": max_rounds,
         "auto_reschedule_enabled": bool(

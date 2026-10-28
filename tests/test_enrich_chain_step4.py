@@ -409,3 +409,92 @@ def test_flipped_row_is_claimable(db):
                        em.MediaItem.enrich_next_retry_at <= datetime.now()))
            .filter(em.MediaItem.id == it.id).count())
     assert hit == 1, "翻回行必须落在工人认领口径内"
+
+
+# ================= 2026-10-28 漏网补口：来源为空的终态探测 =================
+
+def _null_leak_row(db, name, **kw):
+    """来源为空的漏网行：《尸油降》/《末世行者》案的形状——done + source
+    NULL + 无 tmdb + 无海报 + 未锁。poster_path 缺省为 None。"""
+    kw.setdefault("metadata_source", None)
+    return _none_row(db, name, **kw)
+
+
+def test_auto_reschedule_flips_null_source_noposter_leak(db):
+    """来源 NULL + 无海报的漏网也被捞回（旧口径只认 source='none' 会漏掉）；
+    未超期的 NULL 漏网不动；空字符串海报视同无海报"""
+    _flag_on()
+    old = datetime.now() - timedelta(days=31)
+    legacy = _null_leak_row(db, "旧存量漏网", enrich_next_retry_at=None)
+    overdue = _null_leak_row(db, "超期漏网", enrich_next_retry_at=old)
+    empty_poster = _null_leak_row(db, "空串海报漏网",
+                                  enrich_next_retry_at=old, poster_path="")
+    fresh = _null_leak_row(db, "刚终态漏网",
+                           enrich_next_retry_at=datetime.now())
+    n = ew.enrich_none_auto_reschedule(db)
+    assert n == 3
+    for it in (legacy, overdue, empty_poster):
+        db.refresh(it)
+        assert it.enrich_status == "pending"
+        assert it.enrich_attempts == 0
+        assert it.enrich_priority == ew.ENRICH_PRIORITY_RETRY_UNMATCHED == 50
+        assert it.enrich_none_reschedules == 1, "翻回时轮数 +1，有界"
+    db.refresh(fresh)
+    assert fresh.enrich_status == "done", "未超期不动"
+
+
+def test_auto_reschedule_skips_has_poster(db):
+    """已有海报的一律不进回捞（两支都 gate）：NULL 来源 + 有海报不动，
+    'none' 来源 + 有海报也不动；已修好的形状（有海报 + 有 tmdb）更不动"""
+    _flag_on()
+    old = datetime.now() - timedelta(days=31)
+    null_poster = _null_leak_row(db, "有海报漏网", enrich_next_retry_at=old,
+                                 poster_path="/x.jpg")
+    none_poster = _none_row(db, "有海报none", enrich_next_retry_at=old,
+                            poster_path="/y.jpg")
+    fixed = _make_item(db, name="已修好的片", enrich_status="done",
+                       metadata_source="tmdb", tmdb_id="1241429",
+                       poster_path="/lQcXL3JtjG5A2rddja6PUGgvyFJ.jpg",
+                       file_fingerprint="fp-fixed",
+                       enrich_next_retry_at=old)
+    n = ew.enrich_none_auto_reschedule(db)
+    assert n == 0
+    for it in (null_poster, none_poster, fixed):
+        db.refresh(it)
+        assert it.enrich_status == "done", "有海报/有 tmdb 的行绝不被翻回"
+
+
+def test_auto_reschedule_null_source_round_cap(db):
+    """NULL 漏网同样有界：达轮数上限的永久保留 done，不空转；
+    未达上限的翻回且计数 +1"""
+    _flag_on()
+    _set_max_rounds("1")
+    old = datetime.now() - timedelta(days=31)
+    capped = _null_leak_row(db, "已满轮漏网", enrich_next_retry_at=old,
+                            enrich_none_reschedules=1)
+    fresh = _null_leak_row(db, "还有轮次漏网", enrich_next_retry_at=old,
+                           enrich_none_reschedules=0)
+    n = ew.enrich_none_auto_reschedule(db)
+    assert n == 1
+    db.refresh(capped)
+    assert capped.enrich_status == "done", "达上限永久保留 done"
+    assert capped.enrich_none_reschedules == 1
+    db.refresh(fresh)
+    assert fresh.enrich_status == "pending"
+    assert fresh.enrich_none_reschedules == 1, "翻回时计数 +1"
+
+
+def test_none_stock_stats_counts_null_source_leak(db):
+    """只读计数：leak_null_source_noposter 计来源 NULL + 无海报的漏网总量
+    （不论周期与轮数）；reschedulable_now 含其中超期的子集"""
+    _flag_on()
+    old = datetime.now() - timedelta(days=31)
+    _null_leak_row(db, "漏网剧", enrich_next_retry_at=old)
+    _null_leak_row(db, "漏网电影", item_type="movie",
+                   enrich_next_retry_at=None)
+    _null_leak_row(db, "有海报不算漏网", enrich_next_retry_at=old,
+                   poster_path="/z.jpg")
+    _none_row(db, "基准none剧", enrich_next_retry_at=old)
+    stats = ew.none_stock_stats(db)
+    assert stats["leak_null_source_noposter"] == 2
+    assert stats["reschedulable_now"] == 3, "2 条漏网 + 1 条 none 均超期可捞"
