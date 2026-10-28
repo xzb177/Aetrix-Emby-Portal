@@ -1296,6 +1296,88 @@ class MovieRequestVote(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class GovernanceReport(Base):
+    """治理举报（等级公益服活动治理 Step 2：举报＋复核＋管理员终审）。
+
+    v1 仅针对求片条目（target_type='media_seek'，target_id=MovieRequest.id）。
+    状态机：pending（待复核）→ escalated（已升级终审队列）
+           → accepted（终审受理）/ rejected（终审驳回）；
+           复核不同意达 quorum＋阈值时 → review_rejected（复核关闭，不进终审，
+           为避免无结论报告永久挂起而设的对称出口，设计稿未明文，PR body 有说明）。
+    举报行不删改求片本身；终审受理也不自动隐藏／删除求片（v1 必须人工终审，
+    自动处理误伤不可逆，处理动作由管理员另行决定）。
+    同一用户对同一对象终身只能举报 1 次（uq 约束）。
+    终审结果通过列表／详情接口对举报人与复核员可见（v1 不另建推送通道）。
+    """
+    __tablename__ = 'governance_reports'
+
+    __table_args__ = (
+        UniqueConstraint('reporter_id', 'target_type', 'target_id',
+                         name='uq_gov_report_reporter_target'),
+        Index('idx_gov_report_status', 'status'),
+        Index('idx_gov_report_target', 'target_type', 'target_id'),
+        Index('idx_gov_report_reporter', 'reporter_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    reporter_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    target_type = Column(String(20), nullable=False, default='media_seek')
+    target_id = Column(Integer, nullable=False)
+    reason = Column(String(20), nullable=False)  # spam / duplicate / violation
+    detail = Column(Text)
+    status = Column(String(20), default='pending', nullable=False)
+    admin_note = Column(Text)
+    admin_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    escalated_at = Column(DateTime)
+    decided_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class GovernanceReviewVote(Base):
+    """复核票：复核员对举报行的表决，权重为投票时刻等级快照，不随升降级漂移。"""
+    __tablename__ = 'governance_review_votes'
+
+    __table_args__ = (
+        UniqueConstraint('report_id', 'reviewer_id',
+                         name='uq_gov_review_report_reviewer'),
+        Index('idx_gov_review_report', 'report_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_id = Column(Integer, ForeignKey('governance_reports.id'), nullable=False)
+    reviewer_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    decision = Column(String(20), nullable=False)  # agree / disagree
+    weight = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class GovernanceSuspension(Base):
+    """治理停权：冻结治理特权（举报／复核），不扣经验、不降级。
+
+    生效 ⟺ revoked_at IS NULL AND now < ends_at。
+    自动停权（reason='auto_abuse'）由终审驳回计数触发；手动停权
+    （reason='manual'）由管理员操作，可撤销（revoked_at）。
+    降级（扣经验）不在本表：仅管理员手动走 add_xp 负数，另案工具。
+    """
+    __tablename__ = 'governance_suspensions'
+
+    __table_args__ = (
+        Index('idx_gov_susp_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    reason = Column(String(20), nullable=False)  # auto_abuse / manual
+    note = Column(Text)
+    created_by_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    starts_at = Column(DateTime, default=datetime.now, nullable=False)
+    ends_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime)
+    revoked_by_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 # ==================== 系统监控 ====================
 
 class SystemMetric(Base):
