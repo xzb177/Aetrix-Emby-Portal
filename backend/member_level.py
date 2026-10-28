@@ -291,6 +291,179 @@ def add_xp(
     }
 
 
+# ---- Step 0：公益原生经验来源（等级公益服活动治理设计稿 §四）----
+# 新增来源一律走 add_xp（member_xp_log 留痕，source＋ref_id 可查）。
+# 可刷部分（观影＋签到）日封顶 10（上海自然日界，与活力日界同口径）；
+# 成就一次性与邀请 ＋10 不计入日封顶。治理动作不产生经验（后续步骤的事）。
+XP_SOURCE_WATCH = "watch"
+XP_SOURCE_CHECKIN = "checkin"
+XP_SOURCE_ACHIEVEMENT = "achievement"
+XP_FARMABLE_SOURCES = (XP_SOURCE_WATCH, XP_SOURCE_CHECKIN)
+XP_DAILY_FARMABLE_CAP = 10
+XP_CHECKIN_AMOUNT = 1
+XP_ACHIEVEMENT_AMOUNT = 10
+# Step 0 总开关（回滚用）：SystemConfig 键，缺省=开；关掉即停发三个新来源，
+# 已发经验不收回。改后最长 60 秒生效（store 进程缓存 TTL）。
+XP_WELFARE_SOURCES_SWITCH = "level_welfare_xp_enabled"
+
+
+def welfare_xp_enabled(db: Session) -> bool:
+    """Step 0 总开关：缺省开；显式 "false" 即关（与活力 _cfg_bool 同口径）。"""
+    from backend.integrations import store as _store
+
+    raw = _store.get_value(db, XP_WELFARE_SOURCES_SWITCH, "")
+    if raw is None or str(raw).strip() == "":
+        return True
+    return str(raw).strip().lower() == "true"
+
+
+def _today_farmable_xp(db: Session, user_id: int) -> int:
+    """今天已发的可刷经验（观影＋签到），上海自然日界（与活力日界同口径）。"""
+    from backend.api.economy import _today_start_utc_naive
+
+    today_start = _today_start_utc_naive()
+    total = (
+        db.query(func.coalesce(func.sum(models.MemberXpLog.xp_delta), 0))
+        .filter(
+            models.MemberXpLog.user_id == user_id,
+            models.MemberXpLog.source.in_(XP_FARMABLE_SOURCES),
+            models.MemberXpLog.xp_delta > 0,
+            models.MemberXpLog.created_at >= today_start,
+        )
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def _watch_tier_amount(db: Session, watched_minutes) -> int:
+    """观影 XP 档位：与活力观影奖励同分档（读同一组活力配置键；活力总开关不影响 XP）。
+    满二档取二档奖，满一档取一档奖，不叠加；不足一档／奖励<=0 返回 0。"""
+    from backend import vitality as _vitality
+
+    cfg = _vitality.get_vitality_config(db)
+    try:
+        minutes = float(watched_minutes or 0)
+    except (TypeError, ValueError):
+        return 0
+    t1_min = int(cfg.get("watch_tier1_minutes", 30) or 0)
+    t1_rw = int(cfg.get("watch_tier1_reward", 1) or 0)
+    t2_min = int(cfg.get("watch_tier2_minutes", 60) or 0)
+    t2_rw = int(cfg.get("watch_tier2_reward", 2) or 0)
+    if minutes >= t2_min:
+        return t2_rw
+    if minutes >= t1_min:
+        return t1_rw
+    return 0
+
+
+def award_watch_xp(db: Session, user_id: int, watched_minutes, item_id) -> int:
+    """观影 XP（Step 0）：与活力同结算点同分档；同一条目每日只计 1 次；
+    可刷日封顶 10（与签到合计），超额按剩余量截断。
+    自己锁行＋提交（供 _record_stopped 尽力而为调用）；失败回滚返回 0。"""
+    if not welfare_xp_enabled(db):
+        return 0
+    amount = _watch_tier_amount(db, watched_minutes)
+    if amount <= 0:
+        return 0
+    try:
+        from backend import vitality as _vitality
+        from backend.api.economy import _today_start_utc_naive
+
+        # 锁用户行，查用量-判上限-写同一事务串行化（与活力 _grant_free_vitality 同款）
+        _vitality._lock_user_row(db, user_id)
+        today_start = _today_start_utc_naive()
+        ref_id = f"watch:{item_id}"
+        already = (
+            db.query(models.MemberXpLog.id)
+            .filter(
+                models.MemberXpLog.user_id == user_id,
+                models.MemberXpLog.source == XP_SOURCE_WATCH,
+                models.MemberXpLog.ref_id == ref_id,
+                models.MemberXpLog.created_at >= today_start,
+            )
+            .first()
+        )
+        if already is not None:
+            db.rollback()
+            return 0
+        remaining = XP_DAILY_FARMABLE_CAP - _today_farmable_xp(db, user_id)
+        if remaining <= 0:
+            db.rollback()
+            return 0
+        amount = min(amount, remaining)
+        user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+        if user is None:
+            db.rollback()
+            return 0
+        add_xp(db, user, amount, XP_SOURCE_WATCH, ref_id=ref_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("观影 XP 发放失败 user=%s item=%s", user_id, item_id)
+        return 0
+    return amount
+
+
+def award_checkin_xp(db: Session, user: models.WebUser) -> int:
+    """签到 XP（Step 0）：＋1／日，受可刷日封顶 10 钳制。
+    不提交事务（调用方 _do_checkin_core 统一 commit）；不锁行（签到唯一索引已防重，
+    与活力签到恢复同款尽力口径）。同一签到日重复调用时按 ref 去重，不双发。"""
+    if not welfare_xp_enabled(db):
+        return 0
+    from backend.api.economy import _today_start, _today_start_utc_naive
+
+    today_start = _today_start_utc_naive()
+    ref_id = f"checkin:{_today_start().strftime('%Y%m%d')}"
+    already = (
+        db.query(models.MemberXpLog.id)
+        .filter(
+            models.MemberXpLog.user_id == user.id,
+            models.MemberXpLog.source == XP_SOURCE_CHECKIN,
+            models.MemberXpLog.ref_id == ref_id,
+            models.MemberXpLog.created_at >= today_start,
+        )
+        .first()
+    )
+    if already is not None:
+        return 0
+    remaining = XP_DAILY_FARMABLE_CAP - _today_farmable_xp(db, user.id)
+    if remaining <= 0:
+        return 0
+    amount = min(XP_CHECKIN_AMOUNT, remaining)
+    result = add_xp(db, user, amount, XP_SOURCE_CHECKIN, ref_id=ref_id)
+    return amount if result.get("added") else 0
+
+
+def award_achievement_xp(db: Session, user_id: int, ach_key: str) -> int:
+    """成就 XP（Step 0）：＋10／项一次性，不计入日封顶。
+    自己提交；失败回滚返回 0。同一 key 已有成就 XP 流水时不再重复发
+    （防并发评估双发；评估本身 60 秒防抖，残余竞态窗口极小）。"""
+    if not welfare_xp_enabled(db):
+        return 0
+    try:
+        already = (
+            db.query(models.MemberXpLog.id)
+            .filter(
+                models.MemberXpLog.user_id == user_id,
+                models.MemberXpLog.source == XP_SOURCE_ACHIEVEMENT,
+                models.MemberXpLog.ref_id == ach_key,
+            )
+            .first()
+        )
+        if already is not None:
+            return 0
+        user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+        if user is None:
+            return 0
+        result = add_xp(db, user, XP_ACHIEVEMENT_AMOUNT, XP_SOURCE_ACHIEVEMENT, ref_id=ach_key)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("成就 XP 发放失败 user=%s key=%s", user_id, ach_key)
+        return 0
+    return XP_ACHIEVEMENT_AMOUNT if result.get("added") else 0
+
+
 _MIGRATION_FLAG = "member_discount_pct_migrated"
 def migrate_discount_pct(db: Session) -> int:
     """幂等回填：把存量等级行的 discount_pct 按等级回填默认值。

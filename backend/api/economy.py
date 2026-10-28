@@ -518,9 +518,16 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
                     vitality_gained = _vitality._add_vitality(db, user_id, 1, "checkin")
         except Exception:
             logger.exception("checkin vitality restore failed for user %s", user_id)
+    # Step 0 公益原生经验：签到 +1（可刷日封顶 10 钳制；不提交，随签到事务提交）
+    xp_gained = 0
+    try:
+        from backend import member_level as _ml
+        xp_gained = _ml.award_checkin_xp(db, user)
+    except Exception:
+        logger.exception("checkin XP award failed for user %s", user_id)
     db.commit()
     return {"points_awarded": reward, "streak": streak, "balance": balance,
-            "penalty": penalty, "vitality_gained": vitality_gained}
+            "penalty": penalty, "vitality_gained": vitality_gained, "xp_gained": xp_gained}
 
 
 @router.post("/checkin")
@@ -563,6 +570,7 @@ async def do_checkin(
         "streak": award["streak"],
         "balance": award["balance"],
         "vitality_gained": award.get("vitality_gained", 0),
+        "xp_gained": award.get("xp_gained", 0),
         "message": message,
     }
 

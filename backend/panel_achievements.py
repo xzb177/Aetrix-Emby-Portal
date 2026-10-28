@@ -337,6 +337,13 @@ def evaluate(user_id: int, db: Session) -> list:
             db.rollback()
             logger.exception("成就解锁写库失败 user=%s key=%s", user_id, key)
             raise
+        # Step 0 公益原生经验：成就 +10／项一次性（不计日封顶；尽力而为，
+        # 失败只记日志不挡评估——解锁本身已落库，下次评估不再重复触发本 key）
+        try:
+            from backend import member_level as _ml
+            _ml.award_achievement_xp(db, user_id, key)
+        except Exception:
+            logger.exception("成就 XP 发放失败 user=%s key=%s", user_id, key)
     return new_unlocks
 
 
