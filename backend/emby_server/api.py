@@ -1479,6 +1479,11 @@ def emby_root():
 
 @emby_router.post("/emby/Users/AuthenticateByName")
 @emby_router.post("/Users/AuthenticateByName")
+# 小写别名：部分三方播放器（如 AfuseKt）用全小写 authenticatebyname 登录；
+# 该路径若不注册会落到只认 GET 的 /Users/{user_id} 上回 405（2026-10-28 生产实测）。
+# 别名复用同一 handler，鉴权与限流语义与大写路径完全一致。
+@emby_router.post("/emby/Users/authenticatebyname")
+@emby_router.post("/Users/authenticatebyname")
 def authenticate_by_name(
     request: Request,
     credentials: dict = Body(...),

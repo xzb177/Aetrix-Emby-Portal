@@ -91,6 +91,7 @@ def reset_rate_limit(key: str) -> None:
 API_RATE_LIMITS = [
     ("/api/health", 0, 0),              # 健康检查：不限流
     ("/emby/Users/AuthenticateByName", 15, 15),  # Emby 客户端登录：每分钟 15 次/IP（防暴力破解，对标 go-emby）
+    ("/emby/Users/authenticatebyname", 15, 15),  # 小写登录别名：同限额（独立桶，计数键含命中的前缀）
     # 登录专档必须是**真实路由**：用户登录是 /api/user/auth/login、管理员登录是
     # /api/admin/auth/login。旧条目写的是 /api/user/login 与 /api/admin/emby/login，
     # 路由表里根本没有这两个路径 → 永远命中不到（死条目），登录请求实际落进
