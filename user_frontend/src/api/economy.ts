@@ -211,6 +211,22 @@ export const vitalityApi = {
     api.post<never, { success: boolean; vitality_gained: number; points_spent: number; vitality: number; points_balance: number }>('/api/user/economy/vitality/recharge', { points }),
 }
 
+// ==================== 公益服自助续期 ====================
+
+export interface WelfareRedeemResponse {
+  days: number
+  /** 本次实际扣费（服务端定价，前端不写死价格） */
+  cost: number
+  balance: number
+  expires_at: string | null
+}
+
+export const welfareApi = {
+  /** 积分兑换公益天数（仅支持 7 或 30；要求登录 + 绑 TG，未绑会被服务端拦） */
+  redeem: (daysOption: 7 | 30) =>
+    api.post<never, WelfareRedeemResponse>('/api/points/redeem', { days_option: daysOption }),
+}
+
 // ==================== 积分 ====================
 
 export interface TransferConfig {

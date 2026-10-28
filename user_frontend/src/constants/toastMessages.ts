@@ -59,6 +59,7 @@ export const toastFallback = {
   saveFailed: '暂时没能保存，请稍后重试',
   cancelFailed: '终止没能完成，请稍后重试',
   toggleAutoRenewFailed: '自动续订开关没能切换，请稍后重试',
+  renewFailed: '续期没能完成，请稍后重试',
   removeFailed: '移除没能完成，请稍后重试',
   settingFailed: '设置没能保存，请稍后重试',
   /** 数据加载类兜底（Batch G：humanizeError 统一收敛到 toUserMessage 时用） */
