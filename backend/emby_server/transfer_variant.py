@@ -883,6 +883,34 @@ def prefer_user_variant(play_fid, play_variant, gate):
     return play_fid, play_variant
 
 
+def ensure_user_copy_public(db, user_id, file_id) -> bool:
+    """PlaybackInfo 发用户副本直链前确保 anyone-reader（自愈存量副本）。
+
+    只用该用户本人的生效中 Drive 绑定令牌，给该用户盘上的副本授
+    anyone-reader；本次授成（ok）与已授过（already）都算成功。无绑定、
+    令牌失效、授权限失败一律返回 False（调用方回落 alt=media+头
+    旧链路），永不抛异常。调用方只传用户副本行（owner_scope=user
+    且 variant_drive_id 以 userdrive: 开头），绝不用于共享源文件。
+    """
+    try:
+        fid = (file_id or "").strip()
+        if not fid or user_id is None:
+            return False
+        binding = _active_binding(db, user_id, "drive")
+        if binding is None:
+            return False
+        from backend.emby_server import drive_oauth as _do
+        from backend.emby_server import drive_share as _ds
+        token = _do.get_binding_drive_access_token(db, binding)
+        if not token:
+            return False
+        return _ds.ensure_shared(fid, token) in ("ok", "already")
+    except Exception:
+        logger.warning("用户副本 anyone-reader 自愈失败 user=%s",
+                       user_id, exc_info=True)
+        return False
+
+
 def quota_playback_decision(signal, *, bound: bool) -> dict:
     """Quota 强信号的播放裁决。
 
@@ -1703,12 +1731,14 @@ class DriveApiClient:
 
     def add_anyone_reader(self, drive_id, fid):
         """给副本补 anyone reader（中继与 302 两条链都可用，见 PR 描述
-        与设计稿 §4.1 的口径说明）。非 2xx 抛异常，调用方记 orphan。"""
+        与设计稿 §4.1 的口径说明）。200/201/409 均视为成功：409 是
+        文件已有相同权限（幂等，drive_share.ensure_shared 同款口径），
+        重试/重登记时不报错；其它非 2xx 抛异常，调用方记 orphan。"""
         url = f"{FILES_URL}/{fid}/permissions"
         body = {"role": "reader", "type": "anyone"}
         resp = self._request("POST", url, drive_id, json=body,
                              params={"supportsAllDrives": "true"})
-        if resp.status_code not in (200, 201):
+        if resp.status_code not in (200, 201, 409):
             raise Exception(f"补 anyone 权限失败：{resp.status_code}")
 
     def get_file(self, drive_id, fid):

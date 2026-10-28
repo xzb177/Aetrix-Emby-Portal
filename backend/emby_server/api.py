@@ -1175,6 +1175,49 @@ def _apply_alt_media_direct(source: dict, file_id: str | None,
     return True
 
 
+def _is_user_drive_copy_variant(variant) -> bool:
+    """是否为用户 Drive 副本行（转存登记行：owner_scope=user 且
+    variant_drive_id 以 userdrive: 开头）。115 副本、服主副本、None
+    一律 False（走 alt=media+头旧链路）。"""
+    if variant is None:
+        return False
+    if getattr(variant, "owner_scope", None) != "user":
+        return False
+    drive_id = str(getattr(variant, "variant_drive_id", "") or "")
+    return drive_id.startswith("userdrive:")
+
+
+def _apply_usercopy_direct(db, user, source, file_id) -> bool:
+    """用户副本直链：免凭证 usercontent 地址 + 空头。
+
+    SenPlayer 不发 RequiredHttpHeaders 时 alt=media 必 403，故用户
+    副本改走免凭证直链：发地址前先确保副本 anyone-reader（覆盖本
+    修复前已建的副本）；授权限失败时返回 False，调用方回落
+    alt=media+头旧链路。永不抛异常。只动用户自己的副本，不碰
+    共享文件、不碰中继、不碰门禁。
+    """
+    try:
+        if not isinstance(source, dict):
+            return False
+        fid = (file_id or "").strip()
+        if not fid:
+            return False
+        from backend.emby_server import transfer_variant as _tv
+        if not _tv.ensure_user_copy_public(
+                db, getattr(user, "id", None), fid):
+            return False
+        from backend.emby_server import drive_auth as _da
+        url = _da.drive_usercontent_download_url(fid)
+        if not url:
+            return False
+        source["DirectPlayUrl"] = url
+        source["DirectStreamUrl"] = url
+        source["RequiredHttpHeaders"] = {}
+        return True
+    except Exception:
+        return False
+
+
 def hide_media_path() -> bool:
     """EMBY_HIDE_MEDIA_PATH（默认开）：客户端协议响应里不下发服务器上的媒体路径。
 
@@ -5247,6 +5290,9 @@ async def playback_info(
     # 把第一条源的直链换成 Drive alt=media + RequiredHttpHeaders（SA 短期
     # 令牌）。实测：alt=media + Bearer 头回 206 video/x-matroska；不带头
     # 或 token 放 URL 查询参数时谷歌回 403——凭据只能走头，不能放 URL。
+    # 用户 Drive 副本例外（2026-10-28）：先确保 anyone-reader，再发免凭证
+    # usercontent 地址 + 空头（SenPlayer 不发头时 alt=media 必 403）；
+    # 授权限失败回落 alt=media+头。共享文件变体原样不动。
     # preparing/failed/error、115 副本、无 fid、无令牌时一律不动（保留带
     # 后缀的 /stream 地址，走 video_stream 的等流/302 旧链路）；任何异常
     # 都回落旧地址，绝不因本段失败打断 PlaybackInfo。令牌只进本次响应，
@@ -5258,21 +5304,29 @@ async def playback_info(
             from backend.emby_server import transfer_variant as _tv_alt
             from backend.database import CacheManager as _CM
 
-            # 门禁已确认本人 ready 副本时用那一行的 fid。
+            # 门禁已确认本人 ready 副本时用那一行的 fid。注意同时留住
+            # 变体行：用户 Drive 副本走免凭证直链，共享原件走旧链路。
             # resolve_play_file_id 查询异常会回共享原件，这里不许沿用。
-            _alt_fid, _ = _tv_alt.prefer_user_variant(
+            _alt_fid, _alt_variant = _tv_alt.prefer_user_variant(
                 "", None, _pi_gate)
             if not _alt_fid:
-                _alt_fid, _ = await run_db(
+                _alt_fid, _alt_variant = await run_db(
                     _tv_alt.resolve_play_file_id, db, item, user)
             _alt_on = await run_db(_ps_alt.drive_direct_play_enabled, db)
             if _alt_fid and _alt_on:
+                _alt_applied = False
+                if _is_user_drive_copy_variant(_alt_variant):
+                    # 用户副本直链：免凭证 usercontent + 空头；授权限
+                    # 失败时 _alt_applied 仍为 False，下面走旧链路。
+                    _alt_applied = await run_db(
+                        _apply_usercopy_direct, db, user, sources[0],
+                        _alt_fid)
                 _warm = await run_db(
                     _fp.load_warm,
                     lambda k: _CM.get(k, domain="playback"),
                     item.guid, user.id)
-                _alt_applied = False
-                if _fp.warm_usable(_warm) and _warm.get("fid") == _alt_fid:
+                if (not _alt_applied and _fp.warm_usable(_warm)
+                        and _warm.get("fid") == _alt_fid):
                     # 新鲜窗口内（默认 180 秒）预热：令牌已验证过，直接复用，不再预检。
                     _pt.mark("alt_warm_hit")
                     _alt_applied = _apply_alt_media_direct(
