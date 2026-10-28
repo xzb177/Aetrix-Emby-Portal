@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
-from backend import models
+from backend import governance, models
 from backend.subscriptions import is_free_realm
 
 REPORT_TARGET_MEDIA_SEEK = "media_seek"
@@ -168,6 +168,13 @@ def _require_not_suspended(db: Session, user_id: int) -> None:
         raise GovernanceError(403, "治理权限已被暂停")
 
 
+def _require_not_frozen(db: Session, user_id: int) -> None:
+    """Step 4 管理员停权（GovernanceFreeze）检查：与 Step 2 的自动暂停
+    （GovernanceSuspension，恶意举报达标触发）是两套独立机制，互不替代。"""
+    if governance.is_governance_frozen(db, user_id):
+        raise GovernanceError(403, "治理特权已被冻结")
+
+
 def _vote_stats(db: Session, report_ids: list[int]) -> dict[int, dict]:
     """批量取复核统计：{report_id: {ballots, agree_weight, disagree_weight}}。"""
     stats: dict[int, dict] = {
@@ -267,6 +274,7 @@ def create_report(
         raise GovernanceError(404, "求片不存在")
     _require_free_realm(db, target.realm_id)
     _require_not_suspended(db, user.id)
+    _require_not_frozen(db, user.id)
     if reason not in REPORT_REASONS:
         raise GovernanceError(400, "举报原因无效")
     existing = (
@@ -363,6 +371,7 @@ def cast_review_vote(
         raise GovernanceError(409, "该举报已不在复核中")
     _require_free_realm(db, _target_realm_id(db, report))
     _require_not_suspended(db, user.id)
+    _require_not_frozen(db, user.id)
     if decision not in ("agree", "disagree"):
         raise GovernanceError(400, "复核决定无效")
     weight = review_weight(user.member_level)

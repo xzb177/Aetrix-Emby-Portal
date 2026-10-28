@@ -30,6 +30,8 @@ def db():
     models.LotteryRoundPrize.__table__.create(engine, checkfirst=True)
     models.LotteryActivityProposal.__table__.create(engine, checkfirst=True)
     models.LotteryDirectLaunch.__table__.create(engine, checkfirst=True)
+    # 停权接线后 submit/direct 入口会读停权表，未建表会在此夹具下报缺表。
+    models.GovernanceFreeze.__table__.create(engine, checkfirst=True)
     models.AdminLog.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine)
     session = Session()

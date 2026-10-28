@@ -25,7 +25,7 @@ from typing import Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from backend import entitlements, models
+from backend import entitlements, governance, models
 from backend.integrations.store import switch_env_value as _switch_env_value
 
 logger = logging.getLogger(__name__)
@@ -559,7 +559,8 @@ def toggle_vote(db: Session, user, request_id: int) -> dict:
     - 不能给自己的求片附议
     - 已附议 → 取消；未附议 → 附议（vote_count 行锁更新，防并发）
     - 新附议带投票时刻等级权重快照（公益服按等级，付费服恒为 1）；
-      取消删行即自动扣减该票权重，升降级不追溯历史票
+      被停权用户仍保留基础附议 1 票（快照强制为 1），不按等级权重；
+      取消删行即自动扣减该票权重，升降级不追溯历史票；取消附议不受停权影响
     - 新附议受每日上限管（默认 20 次，按当日现存附议行计；取消删行即释放
       名额）；取消永远放行
     """
@@ -588,7 +589,7 @@ def toggle_vote(db: Session, user, request_id: int) -> dict:
     else:
         if daily_votes_used(db, user.id) >= daily_vote_limit(db):
             raise ValueError("今日附议已达上限")
-        weight = vote_weight_for_user(db, user, req)
+        weight = 1 if governance.is_governance_frozen(db, user.id) else vote_weight_for_user(db, user, req)
         db.add(models.MovieRequestVote(
             request_id=request_id, user_id=user.id, weight_snapshot=weight,
         ))

@@ -47,7 +47,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend import lottery, member_level, models
+from backend import governance, lottery, member_level, models
 from backend.api.admin_core import _audit
 # 注意：必须用 subscriptions.is_free_realm（无 realm_id 时解析为面板当前服）；
 # realms.is_free_realm(db, None) 会因查不到服而一律按 paid 处理，公益服下会误拦。
@@ -292,12 +292,14 @@ def _check_no_active_round(db: Session, chat_id: int) -> None:
 def submit_proposal(db: Session, user_id: int, payload: dict[str, Any]) -> models.LotteryActivityProposal:
     """提交活动提案：只写提案行，不建轮次，不产生经验。
 
-    门禁顺序：free realm -> 抽奖开关 -> 等级 >= Lv.2 -> 本月提案上限 ->
+    门禁顺序：free realm -> 抽奖开关 -> 停权检查 -> 等级 >= Lv.2 -> 本月提案上限 ->
     载荷校验 -> 群解析 -> 群白名单。提交时不查同群进行中活动，冲突留到批准时查
     （批准时群里可能已有新活动在跑，提交时查了也拦不住）。
     """
     _require_free_realm(db)
     _require_lottery_enabled(db)
+    if governance.is_governance_frozen(db, user_id):
+        raise LotteryGovernanceError(403, "治理特权已被冻结")
     level = user_level(db, user_id)
     if level < MIN_PROPOSE_LEVEL:
         raise LotteryGovernanceError(403, "等级不足：活动提案需要 Lv.2 及以上")
@@ -437,12 +439,14 @@ def direct_launch(
 ) -> tuple[models.LotteryRound, models.LotteryDirectLaunch]:
     """直接发起活动：Lv.5+ 不经审批建轮次，并写直接发起记录行（事后审计）。
 
-    门禁顺序：free realm -> 抽奖开关 -> 等级 >= Lv.5 -> 本月直接发起上限 ->
+    门禁顺序：free realm -> 抽奖开关 -> 停权检查 -> 等级 >= Lv.5 -> 本月直接发起上限 ->
     载荷校验 -> 群解析 -> 群白名单 -> 同群进行中活动 -> 建轮次。
     滥用时管理员用现有取消端点取消轮次（事后审计有据可查）。
     """
     _require_free_realm(db)
     _require_lottery_enabled(db)
+    if governance.is_governance_frozen(db, user_id):
+        raise LotteryGovernanceError(403, "治理特权已被冻结")
     level = user_level(db, user_id)
     if level < MIN_DIRECT_LEVEL:
         raise LotteryGovernanceError(403, "等级不足：直接发起活动需要 Lv.5 及以上")
