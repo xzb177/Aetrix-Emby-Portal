@@ -655,7 +655,8 @@ def _source_drive_id(db, item, provider):
     return mount_path or ""
 
 
-def create_user_job(db, item, user_id, provider, trigger="playback"):
+def create_user_job(db, item, user_id, provider, trigger="playback",
+                    force=False):
     """给该用户建一个用户盘转存任务（门禁与 Quota 信号共用）。
 
     - 总闸关 → master_off；无条目 id → no_item_id；
@@ -664,6 +665,9 @@ def create_user_job(db, item, user_id, provider, trigger="playback"):
       copy，等扫描补 fid 后下次播放再建，不污染节流窗）；
     - Drive 且无源盘标识 → no_drive（不猜盘）。
     成功返回任务行（已提交）。调用方按 TransferError.kind 映射。
+    force=True 仅供门禁对 failed-retriable 任务的重触发：24h 内
+    已失败的任务不挡重建（否则重触发永远撞上自己留下的失败行，
+    等于没修）；其它调用方一律不传，重触发预算由门禁侧把关。
     """
     if not master_enabled():
         raise TransferError("master_off", "转存变体总闸未开")
@@ -671,7 +675,7 @@ def create_user_job(db, item, user_id, provider, trigger="playback"):
     if item_id is None:
         raise TransferError("no_item_id", "条目无 id")
     owner_ref = str(user_id)
-    if _recent_job_exists(db, item_id, "user", owner_ref):
+    if not force and _recent_job_exists(db, item_id, "user", owner_ref):
         raise TransferError("throttled", "24h 内该用户已有转存任务")
     orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
     if provider == "pan115" and not orig_fid:
@@ -742,7 +746,7 @@ def _newest_ready_for_scheme(db, item_id, owner_scope, owner_ref, scheme):
 
 
 def create_cross_provider_job(db, item, user_id, source_provider,
-                              trigger="playback"):
+                              trigger="playback", force=False):
     """给该用户建一个跨 provider 转存任务（门禁共用）。
 
     校验与 create_user_job 同款（总闸、条目 id、24h 同归属桶节流、
@@ -750,6 +754,8 @@ def create_cross_provider_job(db, item, user_id, source_provider,
     单桶——同 provider 任务与跨任务互斥，同一用户同一条目 24h 内
     不会同时在途两单。provider=源 provider，dest_drive_id=目标盘
     （drive 源→pan115:user-<uid>，pan115 源→userdrive:<uid>）。
+    force=True 仅供门禁对 failed-retriable 任务的重触发，语义同
+    create_user_job（24h 内已失败的任务不挡重建）。
     """
     if not master_enabled():
         raise TransferError("master_off", "转存变体总闸未开")
@@ -757,7 +763,7 @@ def create_cross_provider_job(db, item, user_id, source_provider,
     if item_id is None:
         raise TransferError("no_item_id", "条目无 id")
     owner_ref = str(user_id)
-    if _recent_job_exists(db, item_id, "user", owner_ref):
+    if not force and _recent_job_exists(db, item_id, "user", owner_ref):
         raise TransferError("throttled", "24h 内该用户已有转存任务")
     orig_fid = (getattr(item, "drive_file_id", "") or "").strip()
     if source_provider == "pan115" and not orig_fid:
@@ -1308,6 +1314,56 @@ def _emit_quota_bound(result, item_id, user_id) -> dict:
     return result
 
 
+def _gate_retrigger_budget_ok(db, item_id, user_id, dest=None):
+    """门禁重触发预算（2026-10-29 #1453 回归修复）。
+
+    24h 窗口内同一归属桶已有 >=2 行任务时不再重触发：一次失败
+    任务 + 一次重触发 = 2 行；第 3 次起不再建——防播放器每秒
+    重试把“失败→重建”循环刷成任务洪水。桶口径与节流一致：
+    同 provider 按 (item, user)，跨 provider 按 (item, user, dest)。
+    """
+    cutoff = datetime.now() - timedelta(seconds=THROTTLE_SEC)
+    q = (db.query(em.TransferJob)
+         .filter(em.TransferJob.item_id == item_id,
+                 em.TransferJob.owner_scope == "user",
+                 em.TransferJob.owner_ref == str(user_id),
+                 em.TransferJob.created_at >= cutoff))
+    if dest is not None:
+        q = q.filter(em.TransferJob.dest_drive_id == dest)
+    return q.count() < 2
+
+
+def _retrigger_failed_job(db, item, user_id, provider, job, *,
+                          cross=False, dest=None):
+    """failed-retriable 任务的门禁重触发（2026-10-29 #1453 回归修复）。
+
+    旧行为：失败任务直接判 failed → 调用方 409，且不新建不重试，
+    播放器每秒重试也永远 409（黑屏）。新行为：预算内重建一单
+    （force 越过 24h 节流——失败行本身否则会挡住重建），返回
+    preparing/job_retriggered 走准备中态；预算耗尽或重建被拒时
+    仍按失败／节流处理，不无限重试。一次播放请求内：新单在途
+    时后续重查门禁只见 job_in_flight，不重复建。
+    """
+    item_id = getattr(item, "id", None)
+    if not _gate_retrigger_budget_ok(db, item_id, user_id, dest=dest):
+        return {"verdict": "failed", "reason": "retriable",
+                "job_id": job.id}
+    try:
+        if cross:
+            new_job = create_cross_provider_job(
+                db, item, user_id, provider, trigger="playback", force=True)
+        else:
+            new_job = create_user_job(
+                db, item, user_id, provider, trigger="playback", force=True)
+    except TransferError as exc:
+        if exc.kind == "throttled":
+            return {"verdict": "preparing", "reason": "throttled",
+                    "job_id": job.id}
+        return {"verdict": "failed", "reason": exc.kind, "job_id": job.id}
+    return {"verdict": "preparing", "reason": "job_retriggered",
+            "job_id": new_job.id}
+
+
 def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
     """首播转存门禁。语义见 ``_ensure_user_copy_gate_impl``。"""
     result = _ensure_user_copy_gate_impl(
@@ -1378,6 +1434,10 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                     return {"verdict": "preparing",
                             "reason": "job_in_flight", "job_id": job.id}
                 if job.status == "failed":
+                    if job.error_kind == "retriable":
+                        return _retrigger_failed_job(
+                            db, item, user_id, provider, job, cross=True,
+                            dest=dest)
                     if job.error_kind in _TERMINAL_JOB_KINDS:
                         return {"verdict": "failed", "reason": job.error_kind,
                                 "job_id": job.id}
@@ -1421,6 +1481,9 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                 return {"verdict": "preparing", "reason": "job_in_flight",
                         "job_id": job.id}
             if job.status == "failed":
+                if job.error_kind == "retriable":
+                    return _retrigger_failed_job(
+                        db, item, user_id, provider, job)
                 if job.error_kind in _TERMINAL_JOB_KINDS:
                     return {"verdict": "failed", "reason": job.error_kind,
                             "job_id": job.id}
@@ -1638,19 +1701,20 @@ async def wait_for_transfer_ready(initial_gate, gate_callable, *,
                                   max_sec=None, poll_sec=None):
     """准备中态等流：每 poll 秒重查一次门禁，直到变体就绪。
 
-    只对 reason 为 job_created / job_in_flight 的 preparing 等：
-    throttled（节流窗内无在途任务）等再久也没用，直接回原 verdict，
-    不烧 15 秒。其它 verdict（proceed / serve_115_copy / failed /
-    error）一出现即回，不等满时。超时回最后一次 preparing verdict，
-    调用方按旧 409 处理。gate_callable 异常时回初始 preparing
-    verdict（调用方 409，不把等流本身的异常读成播放失败）。
-    全程不 serve 任何字节、不回落共享：等到的只是“门禁变了”，
-    真正的 302 仍由调用方按正常选路走用户副本。
+    只对 reason 为 job_created / job_in_flight / job_retriggered
+    的 preparing 等：throttled（节流窗内无在途任务）等再久也没用，
+    直接回原 verdict，不烧 15 秒。其它 verdict（proceed /
+    serve_115_copy / failed / error）一出现即回，不等满时。超时回
+    最后一次 preparing verdict，调用方按旧 409 处理。gate_callable
+    异常时回初始 preparing verdict（调用方 409，不把等流本身的
+    异常读成播放失败）。全程不 serve 任何字节、不回落共享：等到
+    的只是“门禁变了”，真正的 302 仍由调用方按正常选路走用户副本。
     """
     gate = initial_gate or {}
     if gate.get("verdict") != "preparing":
         return gate
-    if gate.get("reason") not in ("job_created", "job_in_flight"):
+    if gate.get("reason") not in ("job_created", "job_in_flight",
+                                  "job_retriggered"):
         return gate
     if not wait_stream_enabled():
         return gate
@@ -1955,6 +2019,23 @@ def _to_int(value):
         return None
 
 
+def _drive_error_snippet(resp, limit=300):
+    """Drive 错误体摘要（2026-10-29 可观测性修复）。
+
+    旧口径只记状态码，403 精确子原因（如 insufficientPermissions
+    与其它 403）无法区分。Drive 错误体是公开的错误结构
+    （code/message/errors[]），不含令牌等凭据；空白折叠后截断，
+    防日志与 error_detail 膨胀。解析失败回落空串。
+    """
+    try:
+        text = resp.text or ""
+    except Exception:  # noqa: BLE001 — 摘要失败不挡主流程
+        return ""
+    if not text:
+        return ""
+    return " ".join(text.split())[:limit]
+
+
 class DriveApiClient:
     """转存工人用的 Drive API 客户端。
 
@@ -2008,7 +2089,15 @@ class DriveApiClient:
         return {"driveId": drive_id, "corpora": "drive"}
 
     def ensure_folder(self, drive_id, dir_name):
-        """转存目录在就返回 id，没有就建（同盘根目录下）。"""
+        """转存目录在就返回 id，没有就建（同盘根目录下）。
+
+        file-only 兼容（2026-10-29 #1453 回归修复）：drive.file
+        令牌只认应用自创文件，带 ``'root' in parents`` 的根枚举
+        查询会回 403——此时改按名查应用自创文件（不带 parents
+        条件），查到即复用，不重复建；按名查 200 但无匹配时才
+        走创建；按名查也失败时不盲建（会重名），带错误体报
+        可重试失败。双范围／SA 令牌首查即 200，走旧路径不变。
+        """
         root = self._root_parent(drive_id)
         escaped = dir_name.replace("'", "\\'")
         q = (f"name='{escaped}' and '{root}' in parents "
@@ -2021,8 +2110,19 @@ class DriveApiClient:
             files = (resp.json() or {}).get("files") or []
             if files:
                 return str(files[0]["id"])
+        elif resp.status_code == 403:
+            logger.warning(
+                "转存目录根枚举 403，走按名查应用自创文件：drive=%s "
+                "dir=%s body=%s",
+                drive_id, dir_name, _drive_error_snippet(resp))
+            fid = self._find_app_folder(drive_id, dir_name)
+            if fid is not None:
+                return fid
+            # 按名查 200 但无匹配：目录确实不存在，落到下面创建。
         else:
-            raise _Retriable(f"列转存目录失败：{resp.status_code}")
+            raise _Retriable(
+                f"列转存目录失败：{resp.status_code} "
+                f"{_drive_error_snippet(resp)}")
         body = {"name": dir_name, "mimeType": _FOLDER_MIME, "parents": [root]}
         resp = self._request("POST", FILES_URL, drive_id, json=body,
                              params={"supportsAllDrives": "true"})
@@ -2030,7 +2130,32 @@ class DriveApiClient:
             fid = (resp.json() or {}).get("id")
             if fid:
                 return str(fid)
-        raise _Retriable(f"建转存目录失败：{resp.status_code}")
+        raise _Retriable(
+            f"建转存目录失败：{resp.status_code} "
+            f"{_drive_error_snippet(resp)}")
+
+    def _find_app_folder(self, drive_id, dir_name):
+        """按名查应用自创转存目录（file-only 兼容：不带 parents）。
+
+        返回 id（查到）或 None（200 但无匹配，目录确实不存在）。
+        非 200 抛 _Retriable（带 Drive 错误体，供日志定性精确
+        子原因；调用方不盲建，避免同名目录重复）。
+        """
+        escaped = dir_name.replace("'", "\\'")
+        q = (f"name='{escaped}' and mimeType='{_FOLDER_MIME}' "
+             f"and trashed=false")
+        params = {"q": q, "supportsAllDrives": "true",
+                  "fields": "files(id,name)"}
+        params.update(self._list_params(drive_id))
+        resp = self._request("GET", FILES_URL, drive_id, params=params)
+        if resp.status_code == 200:
+            files = (resp.json() or {}).get("files") or []
+            if files:
+                return str(files[0]["id"])
+            return None
+        raise _Retriable(
+            f"按名列转存目录失败：{resp.status_code} "
+            f"{_drive_error_snippet(resp)}")
 
     def copy_file(self, drive_id, source_fid, folder_id, name):
         """同盘 files.copy；403/404 转 _CopyForbidden（死文件，不重试）。
