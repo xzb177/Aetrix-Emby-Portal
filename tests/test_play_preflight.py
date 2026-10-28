@@ -126,3 +126,22 @@ def test_result_dict_contains_no_play_url():
     body = pf.result_to_dict(result)
     assert "url" not in str(body).lower().replace("fallback_variant", "")
     assert body["fallback_variant"] is None
+
+
+# ---- R4 审查修复回归：容器别名归一 ----
+
+def test_container_aliases_map_to_streamable_names():
+    # 扫描器把 container 存为原始扩展名；m4v/mts/mpg 是白名单容器
+    # mp4/m2ts/mpeg 的别名（api._CONTAINER_BY_EXT 同款映射），
+    # 体检不得把它们误判为不可流式而 blocked。
+    for alias in ("m4v", "mts", "mpg"):
+        result = pf.preflight_variant(
+            "drive_direct", ["drive_direct"], container=alias,
+            video_codec="h264", audio_codec="aac", streams=_streams())
+        assert result.verdict in ("ready", "degraded"), alias
+        assert not result.failures, alias
+    # 真不可流式（iso）仍 blocked，不变。
+    result = pf.preflight_variant(
+        "drive_direct", ["drive_direct"], container="iso",
+        video_codec="h264", audio_codec="aac", streams=_streams())
+    assert result.verdict == "blocked"

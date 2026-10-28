@@ -30,7 +30,6 @@ from backend.emby_server.search import (
     search_variants,
 )
 from backend.emby_server import unified_search as unified
-from backend.emby_server import upstream_aggregation as _agg
 from fastapi import HTTPException
 
 search_router = APIRouter(tags=["搜索"])
@@ -156,21 +155,16 @@ def unified_search(request: Request, user: models.WebUser = Depends(get_emby_use
     ordered = rank_items(rows, term)
     local_entries = []
     for it in ordered:
-        probe = _agg.UpstreamCatalogRecord(
-            source_id="", upstream_item_id="",
-            name=(getattr(it, "scan_title", None) or it.name or ""),
-            item_type=it.item_type or "",
-            production_year=(getattr(it, "scan_year", None)
-                             if getattr(it, "scan_year", None) is not None
-                             else it.production_year),
-            tmdb_id=str(it.tmdb_id) if it.tmdb_id else None,
-            imdb_id=str(it.imdb_id) if it.imdb_id else None,
-            series_name="",
-            season_number=it.season_number,
-            episode_number=it.episode_number,
-        )
         local_entries.append(unified.LocalSearchEntry(
-            aggregate_key=_agg.aggregate_key_for(probe),
+            aggregate_key=unified.local_aggregate_key(
+                name=(getattr(it, "scan_title", None) or it.name or ""),
+                item_type=it.item_type or "",
+                production_year=it.production_year,
+                scan_year=getattr(it, "scan_year", None),
+                tmdb_id=str(it.tmdb_id) if it.tmdb_id else None,
+                imdb_id=str(it.imdb_id) if it.imdb_id else None,
+                season_number=it.season_number,
+                episode_number=it.episode_number),
             name=it.name, item_type=it.item_type or "",
             production_year=it.production_year))
 
@@ -181,6 +175,12 @@ def unified_search(request: Request, user: models.WebUser = Depends(get_emby_use
     for source in enabled_sources:
         source_id = str(source.id)
         if source_filter is not None and source_id not in source_filter:
+            # 被滤掉的源仍须进 per_source：merge 层靠“键在场 + 未被请求”
+            # 才标 not_requested；直接 continue 会让该源在 sources 里消失，
+            # 与统一搜索“被滤源标 not_requested、不冒充已查”的约定相悖。
+            # 值置 None（不发 HTTP、不查源），merge 在 not_requested 分支
+            # 直接返回，不 inspect 该值。
+            per_source[source_id] = None
             continue
         if (source.source_type or "") == "applecms":
             per_source[source_id] = (

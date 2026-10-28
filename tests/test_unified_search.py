@@ -161,3 +161,109 @@ def test_search_upstream_source_200_parses_and_filters_by_term():
         run._resolve_api_key = orig_resolve
     assert error is None
     assert [r.upstream_item_id for r in records] == ["a"]
+
+
+# ---- R4 审查修复回归 ----
+
+def test_exception_error_is_fixed_code_not_raw_text():
+    # 模块头凭据纪律：异常原文可能含带 api_key 的上游 URL，绝不进 error 体。
+    merged = us.merge_search_results(
+        [], {"1": Exception("https://upstream/x?api_key=SECRET123")}, "肖申克")
+    body = us.to_response_body(merged, limit=10)
+    assert body["sources"][0]["status"] == "unavailable"
+    assert body["sources"][0]["error"] == "upstream_unavailable"
+    assert "SECRET123" not in str(body)
+
+
+def test_none_placeholder_source_marks_not_requested():
+    # 调用方约定：被滤源以 None 占位进 per_source（不发 HTTP），merge 须
+    # 在 inspect 值之前先标 not_requested。
+    merged = us.merge_search_results(
+        [], {"1": None, "2": [_record("2", "b", tmdb="278")]},
+        "肖申克", source_filter={"2"})
+    by_id = {s.source_id: s for s in merged.sources}
+    assert by_id["1"].status == "not_requested"
+    assert by_id["2"].status == "ok"
+
+
+def test_local_key_prefers_production_year_over_scan_year():
+    # 本地键年份须与上游 production_year 同口径；scan_year 优先会让
+    # 无外部身份的同一作品在两边算出不同的标题+年份键，去重 miss。
+    key = us.local_aggregate_key(
+        name="无身份片", item_type="movie",
+        production_year=2021, scan_year=2020,
+        tmdb_id=None, imdb_id=None,
+        season_number=None, episode_number=None)
+    upstream = agg.parse_emby_item(
+        {"Id": "u", "Name": "无身份片", "Type": "Movie",
+         "ProductionYear": 2021, "ProviderIds": {}},
+        source_id="1")
+    assert key == agg.aggregate_key_for(upstream)
+    merged = us.merge_search_results(
+        [us.LocalSearchEntry(aggregate_key=key, name="无身份片",
+                             item_type="movie", production_year=2021)],
+        {"1": [upstream]}, "无身份片")
+    assert len(merged.results) == 1
+    assert merged.results[0].origin == "local"
+    assert merged.results[0].also_on_sources == ("1",)
+
+
+def test_local_key_falls_back_to_scan_year_when_no_production_year():
+    key = us.local_aggregate_key(
+        name="无身份片", item_type="movie",
+        production_year=None, scan_year=2020,
+        tmdb_id=None, imdb_id=None,
+        season_number=None, episode_number=None)
+    assert key == "title:无身份片:2020"
+
+
+def test_route_filtered_source_reported_not_requested(monkeypatch):
+    # 端到端（路由层）：被滤源须出现在 sources 里标 not_requested，
+    # 而不是被调用方 continue 掉直接消失。
+    monkeypatch.setenv("UNIFIED_SEARCH_ENABLED", "1")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine as _ce
+    from sqlalchemy.orm import sessionmaker as _sm
+    from sqlalchemy.pool import StaticPool as _SP
+    from backend.emby_server import models as _em
+    from backend.emby_server import search_api as _api
+    from backend.emby_server.auth import get_emby_user as _geu
+    from backend.database import get_db as _gdb
+    from backend import library_scope as _ls
+
+    engine = _ce("sqlite://", connect_args={"check_same_thread": False},
+                 poolclass=_SP)
+    _em.MediaItem.__table__.create(engine, checkfirst=True)
+    _em.UpstreamSource.__table__.create(engine, checkfirst=True)
+    db = _sm(bind=engine)()
+    db.add(_em.MediaItem(id=1, guid="00000000000000000000000000000001",
+                         library_id=1, item_type="movie", name="肖申克的救赎",
+                         production_year=1994, sort_name="肖申克的救赎",
+                         is_hidden=False))
+    db.add(_em.UpstreamSource(id=1, name="src-apple", source_type="applecms",
+                              base_url="https://example.invalid",
+                              auth_method="password", username="u",
+                              enabled=True))
+    db.add(_em.UpstreamSource(id=2, name="src-emby", source_type="emby",
+                              base_url="https://example.invalid",
+                              auth_method="password", username="u",
+                              enabled=True))
+    db.commit()
+    monkeypatch.setattr(_ls, "effective_ids_safe", lambda d, u: {1})
+    monkeypatch.setattr(
+        us, "search_upstream_source",
+        lambda source, term: ([_record("2", "b", tmdb="278")], None))
+    app = FastAPI()
+    app.include_router(_api.search_router)
+    app.dependency_overrides[_geu] = lambda: type(
+        "U", (), {"id": 1, "is_staff": False})()
+    app.dependency_overrides[_gdb] = lambda: db
+    client = TestClient(app)
+    r = client.get("/emby/UnifiedSearch",
+                   params={"SearchTerm": "肖申克", "source": "2"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    by_id = {s["source_id"]: s for s in body["sources"]}
+    assert by_id["1"]["status"] == "not_requested"
+    assert by_id["2"]["status"] == "ok"

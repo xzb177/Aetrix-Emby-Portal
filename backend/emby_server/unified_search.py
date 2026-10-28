@@ -88,6 +88,30 @@ def _source_sort_key(source_id: str) -> Tuple[int, object]:
     return (1, source_id)
 
 
+def local_aggregate_key(*, name: str, item_type: str,
+                        production_year: Optional[int],
+                        scan_year: Optional[int],
+                        tmdb_id: Optional[str], imdb_id: Optional[str],
+                        season_number: Optional[int],
+                        episode_number: Optional[int]) -> str:
+    """本站条目的归一键（调用方唯一入口，纯函数）。
+
+    年份口径须与上游侧一致：上游记录的 production_year 来自对方
+    ProductionYear，与本站 production_year 对得上；scan_year 只是扫描期
+    文件名年份，仅在 production_year 为空时回落。用 scan_year 优先算键
+    会让无外部身份的同一作品（标题+年份键）在两边算出不同的键，
+    去重 miss、本地行与上游行重复出现。
+    """
+    probe = agg.UpstreamCatalogRecord(
+        source_id="", upstream_item_id="",
+        name=name, item_type=item_type,
+        production_year=(production_year if production_year is not None
+                         else scan_year),
+        tmdb_id=tmdb_id, imdb_id=imdb_id, series_name="",
+        season_number=season_number, episode_number=episode_number)
+    return agg.aggregate_key_for(probe)
+
+
 # ---------------------------------------------------------------------------
 # 输入 / 输出模型（纯数据，不碰数据库）
 # ---------------------------------------------------------------------------
@@ -236,9 +260,11 @@ def merge_search_results(
                                          status="not_requested"))
             continue
         if isinstance(value, Exception):
+            # 异常原文绝不进 error 体：它可能含带 api_key 的上游 URL
+            # （模块头凭据纪律）；统一记固定原因码，不拼接异常文本。
             statuses.append(SourceStatus(source_id=source_id,
                                          status="unavailable",
-                                         error=str(value) or "upstream_unavailable"))
+                                         error="upstream_unavailable"))
             continue
         if isinstance(value, str):
             statuses.append(SourceStatus(source_id=source_id,
