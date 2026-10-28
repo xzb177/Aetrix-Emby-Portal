@@ -59,7 +59,7 @@
         <section v-if="candidates.length > 0" class="shop-sec">
           <div class="v4-sec-title">候选</div>
           <div class="src-list">
-            <div v-for="c in candidates" :key="`${c.local_item_id}-${c.source_id ?? ''}-${c.upstream_item_id ?? ''}`" class="src-card">
+            <div v-for="c in candidates" :key="candKey(c)" class="src-card">
               <div class="src-title">{{ c.local_title }}<span v-if="c.local_year">（{{ c.local_year }}）</span></div>
               <div class="src-meta">
                 <span v-if="c.local_type">类型：{{ c.local_type }}</span>
@@ -127,9 +127,11 @@ function detailOf(err: unknown): string {
   return typeof d === 'string' ? d : ''
 }
 
-// 候选键：确认结果只贴到被点的那张卡上
+// 候选键：确认结果只贴到被点的那张卡上；键必须与后端去重键同口径
+// （orchestrator 按 (adapter, local_item_id, source_id, upstream_item_id) 去重，
+// 同三元组可被多个适配器各出一张卡），只用三元组会在多适配器时串卡。
 function candKey(c: SourceCandidate): string {
-  return `${c.local_item_id}-${c.source_id ?? ''}-${c.upstream_item_id ?? ''}`
+  return `${c.adapter}-${c.local_item_id}-${c.source_id ?? ''}-${c.upstream_item_id ?? ''}`
 }
 
 // 默认模式确认必须给全三元组；缺任何一个都不发请求、不编造
