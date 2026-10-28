@@ -78,6 +78,13 @@ STREAMABLE_CONTAINERS = frozenset({
     "mkv", "mp4", "avi", "mov", "ts", "m2ts", "webm", "flv", "wmv", "mpeg",
 })
 
+#: 容器别名 → 规范名（与 api._CONTAINER_BY_EXT 的扩展名映射同值）。
+#: 扫描器把 item.container 存为原始扩展名（m4v/mts/mpg），而
+#: _container_of 只有 container 为空时才走扩展名回退；已存别名的行
+#: 若直接拿别名查白名单会被误判不可流式（PlaybackInfo 仍正常下发
+#: 原地址），故判定前先归一。
+_CONTAINER_ALIASES = {"m4v": "mp4", "mts": "m2ts", "mpg": "mpeg"}
+
 
 def preflight_enabled() -> bool:
     """总开关是否开启（每次调用现读 env，默认关）。"""
@@ -177,7 +184,8 @@ def preflight_variant(variant: str, available_names: Iterable[str], *,
     checks.append(PreflightCheck("variant_available", "pass",
                                  f"变体 {name} 在本条目可用清单里"))
 
-    normalized = (container or "").strip().lower()
+    normalized = (container or "").strip().lower().lstrip(".")
+    normalized = _CONTAINER_ALIASES.get(normalized, normalized)
     if name != "local_file":
         if not normalized:
             checks.append(PreflightCheck(
