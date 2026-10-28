@@ -133,11 +133,15 @@ def test_per_user_failure_does_not_poison_batch(db, monkeypatch):
 
 
 def test_normal_deduct_unchanged(db):
-    """无失败时行为不变：全部扣减，failed=0（含 suspend 计数口径）。"""
+    """无失败时行为不变：全部扣减，failed=0（含 suspend 计数口径）。
+
+    2026-10-28 保号 A+B：结果有意多一个 skipped_checkin（本轮因昨天签到
+    而跳过扣减的人数，本例为 0）；扣减/停播/失败三数语义不变。
+    """
     n = 5
     _make_users(db, n, vitality_value=1)
     res = vitality.daily_deduct(db)
-    assert res == {"deducted": n, "suspended": n, "failed": 0}
+    assert res == {"deducted": n, "suspended": n, "failed": 0, "skipped_checkin": 0}
     assert db.query(models.WebUser).filter(models.WebUser.vitality > 0).count() == 0
 
 

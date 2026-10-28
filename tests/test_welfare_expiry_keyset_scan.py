@@ -91,9 +91,13 @@ def test_inactive_keyset_scan_no_missed_users(db, monkeypatch):
 
 
 def test_expiry_result_shape_unchanged(db):
-    """返回结构与旧实现一致：checked/grace/expired。"""
+    """返回结构：checked/grace/expired + 连签保资格新增的 renewed。
+
+    2026-10-28 保号 A+B：形状有意多一个 renewed（本轮续期的用户 id），
+    供 worker tick 日志观测续期；其余三键语义不变。
+    """
     _seed_expiry(db, 10)
     res = welfare_expiry.check_welfare_expiry(db)
-    assert set(res.keys()) == {"checked", "grace", "expired"}
+    assert set(res.keys()) == {"checked", "grace", "expired", "renewed"}
     res2 = welfare_expiry.check_inactive_users(db)
     assert set(res2.keys()) == {"checked", "disabled"}

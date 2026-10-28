@@ -108,6 +108,7 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "points_redeem_7d": ("int", 0, _BIG),
     "points_redeem_30d": ("int", 0, _BIG),
     "welfare_grace_days": ("int", 0, 3650),
+    "welfare_streak_renew_min": ("int", 0, 3650),
     "welfare_inactive_days": ("int", 0, 3650),
     "welfare_request_monthly": ("int", 0, 10000),
     "recharge_ratio": ("float", 0.0001, 1000000),
