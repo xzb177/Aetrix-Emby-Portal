@@ -562,6 +562,18 @@ def main() -> int:
         except Exception as e:
             logger.warning(f"启动活力值调度失败（可忽略）: {e}")
 
+        # 公益到期检查：每天一次，处理过期保留和不活跃用户（daemon 线程，失败可忽略）
+        # （此前只在 main.py 以 `if not _is_api_role` 启动，生产 api 进程 AETRIX_ROLE=api
+        # 被跳过、worker.py 从未调用 → 生产定时检查永不执行；现由 worker 接线，main.py
+        # 的调用保留给单体模式。worker 进程有 Redis 单实例锁，无双跑风险。）
+        try:
+            from backend import welfare_expiry
+            if welfare_expiry.start_welfare_expiry_scheduler():
+                started.append("welfare_expiry")
+                logger.info("✅ 公益到期检查调度已启动")
+        except Exception as e:
+            logger.warning(f"启动公益到期检查调度失败（可忽略）: {e}")
+
         # 红包过期自动退款（daemon 线程，失败可忽略）
         try:
             from backend import welfare_redpacket
