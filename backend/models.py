@@ -1620,7 +1620,9 @@ class MemberLevel(Base):
 class MemberXpLog(Base):
     """会员经验流水表（P1 统一货币体系）
 
-    经验只来自真实充值（订单回调成功）和有效邀请；兑换码/红包/签到不加经验。
+    经验来源：真实充值（订单回调成功）、有效邀请（＋10／人）、Step 0 公益原生经验
+    （观影 watch／签到 checkin／成就 achievement，见 member_level.py）；
+    兑换码／红包不加经验。
     """
     __tablename__ = 'member_xp_log'
 

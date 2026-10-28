@@ -400,6 +400,12 @@ def _record_stopped(request: Request, user: models.WebUser, db: Session, body: d
         _vitality.award_watch_minutes_reward(db, user.id, watched_ticks / 600_000_000)
     except Exception:  # noqa: BLE001 — 奖励失败不挡停播上报
         logger.debug("观影时长奖励发放失败", exc_info=True)
+    # Step 0 公益原生经验：观影 XP（尽力而为，与活力同结算点同分档）。
+    try:
+        from backend import member_level as _ml
+        _ml.award_watch_xp(db, user.id, watched_ticks / 600_000_000, item.id)
+    except Exception:  # noqa: BLE001 — 经验发放失败不挡停播上报
+        logger.debug("观影 XP 发放失败", exc_info=True)
     # 批一 #3：尽力提前释放「挂载+路径前缀」播放路数租约（stream_limits）。
     # 只是提前量：客户端不发 Stopped 也没关系，租约靠 TTL 到期收敛；
     # release 本身永不抛，这里再套一层保险，不许影响 Stopped 主流程。
