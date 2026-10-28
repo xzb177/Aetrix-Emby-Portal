@@ -34,8 +34,10 @@ const props = defineProps<{
   togglingRenew?: number | string | null
   /** 公益资格是否生效（取自登录态 is_welfare） */
   welfareIsWelfare?: boolean
-  /** 公益资格到期日（ISO；用户侧无此接口，续期成功后以服务端返回为准） */
+  /** 公益资格到期日（ISO；由福利状态口返回，续期成功后以服务端返回为准） */
   welfareExpiresAt?: string | null
+  /** 福利状态口是否已成功返回（未返回时不显示到期／不过期后缀，避免闪现） */
+  welfareStatusLoaded?: boolean
   /** 当前能量（取自账号卡 view_permission.points_balance，未取到为 null） */
   pointsBalance?: number | null
   /** 是否已绑 TG（null = 未知，按钮不拦、以服务端为准） */
@@ -74,6 +76,12 @@ const viewRenewInfo = computed(() => {
   const v = props.viewUnlock
   if (!v) return null
   return { points: v.unlockPoints, days: v.unlockDays }
+})
+
+/** 公益到期日（yyyy-mm-dd）：状态口未成功返回时为 null，不展示 */
+const welfareExpiresDate = computed(() => {
+  if (!props.welfareStatusLoaded || !props.welfareExpiresAt) return null
+  return props.welfareExpiresAt.slice(0, 10)
 })
 </script>
 
@@ -125,7 +133,7 @@ const viewRenewInfo = computed(() => {
       <!-- 自助续期：后端口子现成（公益天数 /redeem、查看 /unlock-view），此前个人中心无入口 -->
       <div class="renew-block">
         <div class="renew-block-title">公益资格</div>
-        <p class="renew-line">{{ welfareIsWelfare ? '生效中' : '未开通' }}<template v-if="welfareExpiresAt"> · 到期 {{ welfareExpiresAt.slice(0, 10) }}</template><template v-if="pointsBalance != null"> · 当前能量 {{ pointsBalance }}</template></p>
+        <p class="renew-line">{{ welfareIsWelfare ? '生效中' : '未开通' }}<template v-if="welfareExpiresDate"> · 到期 {{ welfareExpiresDate }}</template><template v-else-if="welfareStatusLoaded && welfareIsWelfare"> · 不过期</template><template v-if="pointsBalance != null"> · 当前能量 {{ pointsBalance }}</template></p>
         <p v-if="tgBound === false" class="renew-hint">续期需先绑定 Telegram，绑定后回来续期</p>
         <div class="renew-btns">
           <button

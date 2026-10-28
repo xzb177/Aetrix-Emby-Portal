@@ -41,6 +41,7 @@
           :toggling-renew="togglingRenew"
           :welfare-is-welfare="!!userStore.user?.is_welfare"
           :welfare-expires-at="welfareExpiresAt"
+          :welfare-status-loaded="welfareStatusLoaded"
           :points-balance="pointsBalance"
           :tg-bound="tgBound"
           :view-unlock="viewUnlock"
@@ -567,10 +568,11 @@ async function toggleAutoRenew(s: MySubscription) {
 }
 
 // ===== 自助续期（公益服）：后端口子现成（公益天数 /redeem、查看 /unlock-view），此前个人中心无入口 =====
-// 公益资格到期日用户侧无接口：首屏不编造，续期成功后以服务端返回的 expires_at 为准展示。
+// 公益资格到期日取福利状态口（GET /api/points/welfare-status）：失败时不显示日期，不阻断页面。
 const accountCard = ref<AccountCard | null>(null)
 const tgBound = ref<boolean | null>(null)
 const welfareExpiresAt = ref<string | null>(null)
+const welfareStatusLoaded = ref(false)
 const renewingWelfare = ref<number | null>(null)
 const renewingView = ref(false)
 
@@ -599,6 +601,14 @@ async function loadRenewal() {
   } catch {
     tgBound.value = null
   }
+  try {
+    const st = await welfareApi.status()
+    welfareExpiresAt.value = st.welfare_expires_at
+    if (userStore.user) userStore.user.is_welfare = st.is_welfare
+    welfareStatusLoaded.value = true
+  } catch {
+    // 状态口失败时不显示日期，不阻断页面
+  }
 }
 
 async function renewWelfare(days: 7 | 30) {
@@ -607,6 +617,7 @@ async function renewWelfare(days: 7 | 30) {
   try {
     const res = await welfareApi.redeem(days)
     welfareExpiresAt.value = res.expires_at
+    welfareStatusLoaded.value = true
     if (userStore.user) userStore.user.is_welfare = true
     toast.success(`续期成功，已延至 ${res.expires_at ? res.expires_at.slice(0, 10) : `${days} 天后`}（花费 ${res.cost} 能量，余额 ${res.balance}）`)
     await loadRenewal()
