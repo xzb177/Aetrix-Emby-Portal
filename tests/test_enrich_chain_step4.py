@@ -498,3 +498,60 @@ def test_none_stock_stats_counts_null_source_leak(db):
     stats = ew.none_stock_stats(db)
     assert stats["leak_null_source_noposter"] == 2
     assert stats["reschedulable_now"] == 3, "2 条漏网 + 1 条 none 均超期可捞"
+
+
+# ================= 第四轮审查：#1420 海报门与轮数 NULL 缺口 =================
+
+
+def test_auto_reschedule_skips_primary_image_url_only(db):
+    """第四轮：只有远程图（primary_image_url 有、poster_path 空）的条目
+    卡片已能渲染（api.py:229/273、media_library.py:91、scanner R9 双空
+    口径皆以 poster_path 或 primary_image_url 任一有为有图），一律不进回捞；
+    否则 #1420 的 poster_path 单列门会把有图行翻回重搜、白烧 TMDB 配额。"""
+    _flag_on()
+    old = datetime.now() - timedelta(days=31)
+    remote_only = _null_leak_row(db, "只有远程图漏网", enrich_next_retry_at=old,
+                                 primary_image_url="https://image.tmdb.org/x.jpg")
+    remote_none = _none_row(db, "只有远程图none", enrich_next_retry_at=old,
+                            primary_image_url="https://image.tmdb.org/y.jpg")
+    n = ew.enrich_none_auto_reschedule(db)
+    assert n == 0
+    for it in (remote_only, remote_none):
+        db.refresh(it)
+        assert it.enrich_status == "done", "只有远程图也算有图，不许翻回"
+
+
+def test_auto_reschedule_null_rounds_treated_as_zero(db):
+    """第四轮：enrich_none_reschedules 为 NULL 的行不得被轮数门静默排除
+    （SQL 里 NULL < 上限为 UNKNOWN，直接滤掉；翻回更新 NULL+1 仍是 NULL，
+    须与查询配对修）。NULL 应视同 0：翻回且计数变 1，下轮才按 1 计。"""
+    _flag_on()
+    old = datetime.now() - timedelta(days=31)
+    # ORM 构造器会把显式 None 转成列 default 0，故用裸 SQL 置 NULL：
+    # 该列 nullable 且无 server_default，非 ORM 写行可落 NULL（models.py:384
+    # 注释自认仓库存在绕过 ORM 的裸 SQL/Core 直插），复现即此类行。
+    from sqlalchemy import text as _text
+    null_rounds = _null_leak_row(db, "轮数NULL漏网", enrich_next_retry_at=old)
+    db.execute(_text("UPDATE emby_items SET enrich_none_reschedules=NULL "
+                     "WHERE id=:i"), {"i": null_rounds.id})
+    db.commit()
+    db.refresh(null_rounds)
+    assert null_rounds.enrich_none_reschedules is None, "复现前提：轮数确为 NULL"
+    n = ew.enrich_none_auto_reschedule(db)
+    assert n == 1
+    db.refresh(null_rounds)
+    assert null_rounds.enrich_status == "pending"
+    assert null_rounds.enrich_none_reschedules == 1, "NULL 视同 0 再 +1"
+
+
+def test_none_stock_stats_excludes_primary_image_url_only_leak(db):
+    """第四轮：只读计数 leak 口径与回捞口径同义——只有远程图的行不算漏网，
+    否则 leak 数会把有图行虚算进漏网总量，与 reschedulable_now 脱节。"""
+    _flag_on()
+    old = datetime.now() - timedelta(days=31)
+    _null_leak_row(db, "真漏网", enrich_next_retry_at=old)
+    _null_leak_row(db, "只有远程图不算漏网", enrich_next_retry_at=old,
+                   primary_image_url="https://image.tmdb.org/z.jpg")
+    stats = ew.none_stock_stats(db)
+    assert stats["leak_null_source_noposter"] == 1
+    assert stats["reschedulable_now"] == 1
