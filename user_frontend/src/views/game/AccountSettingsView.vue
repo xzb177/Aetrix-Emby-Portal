@@ -26,7 +26,8 @@
       <section class="v4-sec" aria-label="我的会员">
         <!-- R41：补上标题行，与其他两节结构对齐（标题+副标题） -->
         <div class="v4-sec-title">我的会员</div>
-        <div class="v4-sec-sub">会员到期、历史账单、取消续订都在这里</div>
+        <!-- 公益服下付费口径文案会误导（付费卡／续订已隐藏），改写为公益服实际内容 -->
+        <div class="v4-sec-sub">{{ isFreeRealm ? '公益资格、查看凭证到期都在这里' : '会员到期、历史账单、取消续订都在这里' }}</div>
         <div v-if="subsError" class="v4-err">订阅加载失败，请稍后重试<br><button class="v4-retry" @click="loadSubs">重试</button></div>
         <!-- R41：在途显示骨架屏 —— 请求还没回来时别闪现"还没有会员"（ProfileSubscriptions 的空数据文案） -->
         <div v-else-if="subsLoading" class="v4-skeleton" style="height:180px"></div>

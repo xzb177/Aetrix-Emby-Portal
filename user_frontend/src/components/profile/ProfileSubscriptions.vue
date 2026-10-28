@@ -95,7 +95,11 @@ const welfareExpiresDate = computed(() => {
       </h2>
     </header>
 
-    <div v-if="activeSub" class="sub-active" :class="{ warn: expiringSoon }">
+    <!-- 公益服下付费会员部分一律不渲染：转公益时 legacy 订阅记录保留至到期（权益不变），
+         但 activeSub 仍为真时会抢在 v-else-if 的公益服块之前渲染，造成公益服下仍显示付费卡；
+         此处以 isFreeRealm 设门，公益服下走下面的 sub-free 块（公益资格／查看凭证）。
+         isFreeRealm 未传／非真值时按非公益服处理（fail-closed，信号缺失不误藏）。 -->
+    <div v-if="activeSub && !isFreeRealm" class="sub-active" :class="{ warn: expiringSoon }">
       <div class="sub-info">
         <div class="sub-plan">{{ activeSub.plan_name }}</div>
         <div class="sub-end">{{ activeSub.end_date.slice(0, 10) }} 到期 · 剩余 {{ activeSub.days_left }} 天</div>
@@ -109,8 +113,9 @@ const welfareExpiresDate = computed(() => {
       </span>
     </div>
     <!-- r48-⑬：自动续订开关 —— 到期前 24 小时用能量按当前档位续订一期，
-         能量不足则不续并站内信提醒；人民币自动扣款不开通 -->
-    <div v-if="activeSub" class="renew-row">
+         能量不足则不续并站内信提醒；人民币自动扣款不开通
+         公益服下与会员卡一并隐藏（同上设门原因） -->
+    <div v-if="activeSub && !isFreeRealm" class="renew-row">
       <div class="renew-info">
         <b>到期自动续订</b>
         <small>到期前 24 小时用能量自动续订一期 · 能量不足则不续并提醒你</small>
@@ -180,7 +185,8 @@ const welfareExpiresDate = computed(() => {
       </template>
     </EmptyState>
 
-    <ul v-if="subscriptions.length > 1" class="sub-history">
+    <!-- 历史账单／取消续订入口 —— 公益服下与会员卡一并隐藏（含 active 行的“终止”按钮） -->
+    <ul v-if="subscriptions.length > 1 && !isFreeRealm" class="sub-history">
       <li v-for="s in subscriptions.slice(0, 4)" :key="s.id" class="sub-history-item">
         <span>{{ s.plan_name }}<em v-if="s.realm_name" class="sub-realm">（{{ s.realm_name }}）</em></span>
         <span class="sub-history-date">{{ s.start_date.slice(0, 10) }} ~ {{ s.end_date.slice(0, 10) }}</span>
