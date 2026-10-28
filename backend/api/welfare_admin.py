@@ -264,6 +264,7 @@ WELFARE_CONFIG_KEYS = {
     "points_redeem_7d": "100",
     "points_redeem_30d": "300",
     "welfare_grace_days": "7",
+    "welfare_streak_renew_min": "30",
     "welfare_inactive_days": "30",
     "welfare_request_monthly": "3",
     # P0 统一货币体系：充值比例与红包规则

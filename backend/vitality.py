@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from fastapi import HTTPException
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -374,18 +374,56 @@ def clamp_on_archive(db: Session, user_id: int) -> int:
 _DEDUCT_BATCH = 500
 
 
+def _yesterday_checkin_user_ids(db: Session) -> set:
+    """上一上海自然日有签到记录的用户 id 集合（签到日免日耗的跳过依据）。
+
+    日期口径与 CheckinRecord.checkin_date 写入帧一致（economy._today_start_utc_naive：
+    上海自然日 00:00 的 UTC naive 帧），与活力扣减认领 _today_str() 的上海自然日
+    同一口径。函数内导入 economy 是为了避开循环导入（economy.py 顶层导入了本模块，
+    与 get_today_free_gain 同款写法）。
+    计算失败时返回空集（不跳过任何人，退回旧行为），绝不凭不确定数据跳过扣减。
+    跳过条件只认记录存在，不论当日积分是否为 0；非公益用户本来就不进扣减范围，
+    不用另处理。
+    """
+    try:
+        from backend.api.economy import _today_start_utc_naive
+        today_start = _today_start_utc_naive()
+    except Exception:
+        logger.warning("签到日免日耗：计算上海今日起点失败，本轮不跳过", exc_info=True)
+        return set()
+    yesterday_start = today_start - timedelta(days=1)
+    rows = (
+        db.query(models.CheckinRecord.user_id)
+        .filter(
+            models.CheckinRecord.checkin_date >= yesterday_start,
+            models.CheckinRecord.checkin_date < today_start,
+        )
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
 def daily_deduct(db: Session) -> dict:
-    """每日 00:00 扣减公益服用户活力值"""
+    """每日 00:00 扣减公益服用户活力值。
+
+    签到日免日耗：上一自然日有签到记录的用户本轮不扣（每天净 +1，活力掉到阈值
+    以下后靠每天签到爬回来）；从不签到的用户仍每天扣 1。上限 14、阈值 3、日耗 1、
+    签到 +1、每日免费上限、扣到 0 为止、键集分页与单用户 savepoint 隔离均不变。
+    """
     cfg = get_vitality_config(db)
     if not cfg["enabled"]:
-        return {"deducted": 0, "suspended": 0, "failed": 0, "skipped": True}
+        return {"deducted": 0, "suspended": 0, "failed": 0, "skipped": True,
+                "skipped_checkin": 0}
     cost = cfg["daily_cost"]
     deducted = 0
     suspended = 0
     failed = 0
+    skipped_checkin = 0
+    skip_ids = _yesterday_checkin_user_ids(db)
     last_id = 0
     # 键集分页（id > last_id）而不是 offset：过滤条件是 vitality > 0，本批扣到 0 的用户
-    # 会从结果集里消失，offset 继续往后跳就会整批漏扣后面的用户
+    # 会从结果集里消失，offset 继续往后跳就会整批漏扣后面的用户。
+    # 循环内跳过不影响分页：last_id 仍按整批末尾推进，跳过者只是不写扣减。
     while True:
         rows = (db.query(models.WebUser.id)
                 .filter(models.WebUser.is_welfare == True, models.WebUser.vitality > 0,
@@ -394,6 +432,9 @@ def daily_deduct(db: Session) -> dict:
         if not rows:
             break
         for (uid,) in rows:
+            if uid in skip_ids:
+                skipped_checkin += 1
+                continue
             try:
                 # PG 事务中任一语句失败后整个事务 aborted，后续语句全失败；存点把单个用户失败
                 # 隔离在 ROLLBACK TO SAVEPOINT 范围内，不污染本批其他用户
@@ -413,7 +454,8 @@ def daily_deduct(db: Session) -> dict:
             logger.exception("vitality daily_deduct batch commit failed, stop")
             break
         last_id = rows[-1][0]
-    return {"deducted": deducted, "suspended": suspended, "failed": failed}
+    return {"deducted": deducted, "suspended": suspended, "failed": failed,
+            "skipped_checkin": skipped_checkin}
 
 _SCHEDULER_STARTED = False
 _SCHEDULER_LOCK = threading.Lock()
