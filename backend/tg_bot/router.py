@@ -94,9 +94,24 @@ def _verify_bind_code(db, update: dict) -> None:
     # reply 为 None → 不是有效的绑定码，静默忽略
 
 
+# P1 自助查询命令：个人数据，群聊里不执行（handler 层另有私聊 guard 双保险）
+_P1_COMMANDS = ("/bindings", "/transfers", "/whyplay", "/wants")
+
+
 def dispatch(db, update: dict) -> None:
-    """分发单个 update 到对应的处理器。"""
+    """分发单个 update 到对应的处理器。
+
+    P0：处理器抛异常时不再只记日志——尽力给用户回一句看得见的失败提示
+    （2026-10-21 教训：失败只记日志、用户端看着像成功）。
+    """
     from backend.tg_bot import handlers, sender
+
+    # 先取 chat_id：异常发生在任何一步时失败提示都有地方发
+    if "callback_query" in update:
+        _cq = update["callback_query"] or {}
+        chat_id = ((_cq.get("message") or {}).get("chat") or {}).get("id")
+    else:
+        chat_id = ((update.get("message") or {}).get("chat") or {}).get("id")
 
     try:
         # B4：批量读取全部 Bot 策略配置（1 次 DB 查询）
@@ -177,10 +192,19 @@ def dispatch(db, update: dict) -> None:
             "/redeem": handlers.handle_redeem,
             "/lottery": handlers.handle_lottery,
             "/redpacket": handlers.handle_redpacket,
+            "/bindings": handlers.handle_bindings,
+            "/transfers": handlers.handle_transfers,
+            "/whyplay": handlers.handle_whyplay,
+            "/wants": handlers.handle_wants,
         }
         fn = commands.get(cmd)
         if fn is None:
             sender.send_message(db, chat_id, "未知命令，发送 /help 查看可用命令")
+            return
+
+        # P1 个人查询在群里不执行（结果会公开给全群看）
+        if cmd in _P1_COMMANDS and in_group:
+            sender.send_message(db, chat_id, "🔒 个人查询请私聊我发送，群里不查")
             return
 
         # /redeem 在群里发 = 把兑换码公开给全群：拒绝执行，尽量删掉原消息（没权限就算了），提示私聊
@@ -232,3 +256,8 @@ def dispatch(db, update: dict) -> None:
         sender.send_message(db, chat_id, text, reply_markup=markup)
     except Exception as exc:  # noqa: BLE001
         logger.error("tg dispatch failed: %s", exc, exc_info=True)
+        if chat_id:
+            try:
+                sender.send_message(db, chat_id, "系统繁忙，请稍后再试")
+            except Exception:  # noqa: BLE001
+                logger.debug("tg failure reply failed", exc_info=True)

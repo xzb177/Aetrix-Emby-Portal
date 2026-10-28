@@ -25,6 +25,11 @@ DEFAULTS: dict[str, str] = {
     "bot_cmd_points": "true",
     "bot_cmd_redeem": "true",
     "bot_cmd_bind": "true",
+    # P1 自助查询开关（默认开，关闭后该命令回复"该功能已关闭"）
+    "bot_cmd_bindings": "true",
+    "bot_cmd_transfers": "true",
+    "bot_cmd_whyplay": "true",
+    "bot_cmd_wants": "true",
     # 红包功能开关（/redpacket 发红包 + 抢红包按钮）
     "bot_redpacket_enabled": "true",
 }
@@ -35,6 +40,10 @@ COMMAND_SWITCHES: dict[str, str] = {
     "/points": "bot_cmd_points",
     "/redeem": "bot_cmd_redeem",
     "/bind": "bot_cmd_bind",
+    "/bindings": "bot_cmd_bindings",
+    "/transfers": "bot_cmd_transfers",
+    "/whyplay": "bot_cmd_whyplay",
+    "/wants": "bot_cmd_wants",
 }
 
 _DEFAULT_RATE_LIMIT_SECONDS = 3.0

@@ -37,7 +37,11 @@ def _command_list() -> str:
         f"▪️ {_cmd('/checkin')}　每日签到\n"
         f"▪️ {_cmd('/points')}　查积分\n"
         f"▪️ {_cmd('/redpacket')}　发红包：{_cmd('/redpacket')} <i>总积分 个数</i>\n"
-        f"▪️ {_cmd('/lottery')}　抽奖"
+        f"▪️ {_cmd('/lottery')}　抽奖\n"
+        f"▪️ {_cmd('/bindings')}　查网盘绑定\n"
+        f"▪️ {_cmd('/transfers')}　查转存进度\n"
+        f"▪️ {_cmd('/whyplay')}　为什么播不了：{_cmd('/whyplay')} <i>片名</i>\n"
+        f"▪️ {_cmd('/wants')}　查想看"
     )
 
 
@@ -180,6 +184,14 @@ def _menu_markup(db, web_user, is_private: bool) -> dict:
     rows.append([
         {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
         {"text": "🧧 发红包", "callback_data": "menu:redpacket"},
+    ])
+    rows.append([
+        {"text": "🔗 我的绑定", "callback_data": "menu:bindings"},
+        {"text": "📦 转存进度", "callback_data": "menu:transfers"},
+    ])
+    rows.append([
+        {"text": "❓ 为什么播不了", "callback_data": "menu:whyplay"},
+        {"text": "⭐ 我的想看", "callback_data": "menu:wants"},
     ])
     rows.append([
         {"text": "🔗 绑定", "callback_data": "menu:bind"},
@@ -501,3 +513,54 @@ def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
     sender_name = html.escape(str(user.username or "朋友"))
     text = redpacket_common.packet_text(packet, sender_name)
     return (text, redpacket_common.claim_markup(packet.id))
+
+
+# ---- P1 自助查询（只读）：统一先拦群聊、再验绑定，最后调 queries 只读渲染 ----
+# 群聊里查个人数据会把结果公开给全群：一律只许私聊（私聊 chat_id == tg id）。
+def _p1_user(db, tg_user: dict, chat_id: int):
+    """P1 前置：返回 (user, error_text)，error_text 非空时直接回复它。"""
+    from backend.tg_bot import queries
+
+    tg_id = tg_user.get("id")
+    if not tg_id or chat_id != tg_id:
+        return None, queries.PRIVATE_ONLY_TEXT
+    user = resolve(db, int(tg_id))
+    if user is None:
+        return None, _bind_guide_text()
+    return user, None
+
+
+def handle_bindings(db, tg_user: dict, chat_id: int, args: str) -> str:
+    from backend.tg_bot import queries
+
+    user, err = _p1_user(db, tg_user, chat_id)
+    if err:
+        return err
+    return queries.render_bindings(db, user)
+
+
+def handle_transfers(db, tg_user: dict, chat_id: int, args: str) -> str:
+    from backend.tg_bot import queries
+
+    user, err = _p1_user(db, tg_user, chat_id)
+    if err:
+        return err
+    return queries.render_transfers(db, user)
+
+
+def handle_wants(db, tg_user: dict, chat_id: int, args: str) -> str:
+    from backend.tg_bot import queries
+
+    user, err = _p1_user(db, tg_user, chat_id)
+    if err:
+        return err
+    return queries.render_wants(db, user)
+
+
+def handle_whyplay(db, tg_user: dict, chat_id: int, args: str) -> str:
+    from backend.tg_bot import queries
+
+    user, err = _p1_user(db, tg_user, chat_id)
+    if err:
+        return err
+    return queries.diagnose_whyplay(db, user, args)
