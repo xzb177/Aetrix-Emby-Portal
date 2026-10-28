@@ -215,3 +215,29 @@ def test_sync_partial_failure_does_not_kill_round(db):
     fresh = dataset.get_freshness(db)
     assert fresh["synced"] is True  # 至少一页成功即算本轮成功
     assert fresh["last_error"]
+
+
+def test_library_mixin_respects_media_type(db):
+    """库内混排受 type 约束：movie 不混剧集、tv 不混电影，季/集行永不混排。
+
+    回归：混排查询之前没按 media_type 过滤，type=movie 也会返回剧集行，
+    季/集行还会被标成 movie（media_type 映射只有 series→tv、其余→movie）。
+    """
+    _item(db, "搏击俱乐部", "999", library_id=7, item_type="series")
+    _item(db, "搏击俱乐部", "998", library_id=7, item_type="episode")
+    _item(db, "搏击俱乐部", "997", library_id=7, item_type="movie")
+    db.commit()
+    by_movie = {r["tmdb_id"]: r for r in
+                dataset.search_local(db, "搏击俱乐部", media_type="movie",
+                                     library_known=True)["results"]}
+    assert set(by_movie) == {"997"}
+    assert by_movie["997"]["media_type"] == "movie"
+    by_tv = {r["tmdb_id"]: r for r in
+             dataset.search_local(db, "搏击俱乐部", media_type="tv",
+                                  library_known=True)["results"]}
+    assert set(by_tv) == {"999"}
+    assert by_tv["999"]["media_type"] == "tv"
+    by_all = {r["tmdb_id"]: r for r in
+              dataset.search_local(db, "搏击俱乐部", media_type=None,
+                                   library_known=True)["results"]}
+    assert set(by_all) == {"997", "999"}
