@@ -39,8 +39,17 @@
           :realm-note="realmNote"
           :cancelling-sub="cancellingSub"
           :toggling-renew="togglingRenew"
+          :welfare-is-welfare="!!userStore.user?.is_welfare"
+          :welfare-expires-at="welfareExpiresAt"
+          :points-balance="pointsBalance"
+          :tg-bound="tgBound"
+          :view-unlock="viewUnlock"
+          :renewing-welfare="renewingWelfare"
+          :renewing-view="renewingView"
           @cancel="cancelSubscription"
           @toggle-renew="toggleAutoRenew"
+          @renew-welfare="renewWelfare"
+          @renew-view="renewView"
         />
       </section>
 
@@ -408,8 +417,9 @@ import { Lock, ChevronRight, RefreshCw } from 'lucide-vue-next'
 import Modal from '@/components/ui/Modal.vue'
 import ProfileSubscriptions from '@/components/profile/ProfileSubscriptions.vue'
 import { facilityStamp } from '@/config/game'
-import { authApi, subscriptionApi, isExpiringSoon, type MySubscription } from '@/api'
-import { deviceApi, storageBindingApi, seriesFollowApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type SeriesFollow } from '@/api/economy'
+import { authApi, subscriptionApi, embyApi, isExpiringSoon, type MySubscription, type AccountCard } from '@/api'
+import { deviceApi, storageBindingApi, seriesFollowApi, welfareApi, type MyDevice, type MyDevicesResponse, type StorageBinding, type SeriesFollow } from '@/api/economy'
+import { tgApi } from '@/api/tg'
 import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 import { useServerCards, type ServerCardItem } from '@/composables/useServerCards'
@@ -553,6 +563,72 @@ async function toggleAutoRenew(s: MySubscription) {
     toast.error(toUserMessage(err, 'toggleAutoRenewFailed'))
   } finally {
     togglingRenew.value = null
+  }
+}
+
+// ===== 自助续期（公益服）：后端口子现成（公益天数 /redeem、查看 /unlock-view），此前个人中心无入口 =====
+// 公益资格到期日用户侧无接口：首屏不编造，续期成功后以服务端返回的 expires_at 为准展示。
+const accountCard = ref<AccountCard | null>(null)
+const tgBound = ref<boolean | null>(null)
+const welfareExpiresAt = ref<string | null>(null)
+const renewingWelfare = ref<number | null>(null)
+const renewingView = ref(false)
+
+const viewUnlock = computed(() => {
+  const vp = accountCard.value?.view_permission
+  if (!vp) return null
+  return {
+    granted: vp.granted,
+    expiresAt: vp.expires_at,
+    unlockPoints: vp.unlock_points,
+    unlockDays: vp.unlock_days,
+  }
+})
+const pointsBalance = computed(() => accountCard.value?.view_permission?.points_balance ?? null)
+
+async function loadRenewal() {
+  // 两路各自容错：账号卡失败不挡 TG 状态，反之亦然；失败时对应区块降级（查看块隐藏、TG 未知时不拦按钮，以服务端为准）
+  try {
+    accountCard.value = await embyApi.getAccountCard()
+  } catch {
+    accountCard.value = null
+  }
+  try {
+    const st = await tgApi.status()
+    tgBound.value = st.telegram_id !== null && st.telegram_id !== undefined
+  } catch {
+    tgBound.value = null
+  }
+}
+
+async function renewWelfare(days: 7 | 30) {
+  if (renewingWelfare.value !== null) return
+  renewingWelfare.value = days
+  try {
+    const res = await welfareApi.redeem(days)
+    welfareExpiresAt.value = res.expires_at
+    if (userStore.user) userStore.user.is_welfare = true
+    toast.success(`续期成功，已延至 ${res.expires_at ? res.expires_at.slice(0, 10) : `${days} 天后`}（花费 ${res.cost} 能量，余额 ${res.balance}）`)
+    await loadRenewal()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'renewFailed'))
+  } finally {
+    renewingWelfare.value = null
+  }
+}
+
+async function renewView() {
+  if (renewingView.value) return
+  renewingView.value = true
+  try {
+    const realmId = accountCard.value?.realm_id ?? undefined
+    const res = await embyApi.unlockView(realmId)
+    toast.success(res.already ? '查看已是解锁状态' : `续费成功${res.expires_at ? `，已延至 ${res.expires_at.slice(0, 10)}` : ''}`)
+    await loadRenewal()
+  } catch (err: any) {
+    toast.error(toUserMessage(err, 'renewFailed'))
+  } finally {
+    renewingView.value = false
   }
 }
 
@@ -1042,6 +1118,7 @@ async function cancelFollow(seriesItemId: number) {
 onMounted(() => {
   loadFollows()
   loadSubs()
+  if (userStore.isFreeRealm) void loadRenewal()
   loadDevices()
   loadProviders()
   loadDriveBindings()
