@@ -109,6 +109,7 @@ const GROUPS: Group[] = [
       { key: 'checkin_penalty_pct', label: '惩罚概率', type: 'int', suffix: '%', hint: '0=关闭惩罚', advanced: true },
       { key: 'checkin_penalty_min', label: '惩罚下限', type: 'int', suffix: '积分', hint: '单次惩罚最少扣多少积分。推荐值：1', advanced: true },
       { key: 'checkin_penalty_max', label: '惩罚上限', type: 'int', suffix: '积分', hint: '单次惩罚最多扣多少积分。推荐值：3', advanced: true },
+      { key: 'vitality_checkin_gain', label: '签到活力奖励', type: 'int', suffix: '点/次', hint: '公益服用户签到恢复的活力点数，默认 1，填 0 则签到不恢复活力；仍受每日获取上限门控与活力上限钳制', advanced: true },
     ],
   },
   {
@@ -124,6 +125,10 @@ const GROUPS: Group[] = [
       { key: 'vitality_watch_reward', label: '观影奖励', type: 'int', suffix: '点', hint: '每次有效观影奖励的活力值' },
       { key: 'vitality_daily_gain_limit', label: '每日获取上限', type: 'int', suffix: '点/天', hint: '每日通过签到/观影免费获取的上限（0=不限）', advanced: true },
       { key: 'vitality_archive_clamp', label: '归档钳制', type: 'int', suffix: '点', hint: '归档/退群时活力值钳制上限', advanced: true },
+      { key: 'vitality_watch_tier1_minutes', label: '观影一档分钟数', type: 'int', suffix: '分钟', hint: '单次观影达到该分钟数奖励一档活力，默认 30' },
+      { key: 'vitality_watch_tier1_reward', label: '观影一档奖励', type: 'int', suffix: '点', hint: '一档奖励的活力点数，默认 1' },
+      { key: 'vitality_watch_tier2_minutes', label: '观影二档分钟数', type: 'int', suffix: '分钟', hint: '应不小于一档分钟数，默认 60' },
+      { key: 'vitality_watch_tier2_reward', label: '观影二档奖励', type: 'int', suffix: '点', hint: '二档奖励的活力点数，不与一档叠加，默认 2' },
     ],
   },
   {

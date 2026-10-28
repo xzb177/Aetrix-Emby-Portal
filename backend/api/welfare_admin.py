@@ -264,6 +264,9 @@ WELFARE_CONFIG_KEYS = {
     "points_chat_daily_cap": "20",
     "points_redeem_7d": "100",
     "points_redeem_30d": "300",
+    # 新注册冷启动赠送天数（emby_portal._grant_register_gifts 读取；0=永不过期仅福利天数适用）
+    "register_gift_welfare_days": "30",
+    "register_gift_view_days": "30",
     "welfare_grace_days": "7",
     "welfare_streak_renew_min": "30",
     "welfare_inactive_days": "30",
