@@ -10,6 +10,8 @@
   条目拒绝、不存在的剧拒绝；
 - 扫集只转订阅之后到货的集：旧集不转、date_added 为空的集跳过
   并计数、已 ready 的集不重复建、24h 节流内不重复建；
+- 在途（pending/running）单超 24h 节流窗也不重建（job_in_flight，
+  与门禁同口径，防工人并行真 copy 同一文件）；
 - 无绑定不建单（reason=no_binding，不污染节流窗）、115 源跳过
   （unsupported_provider_115）、未知 provider 跳过；
 - 开关关时扫集零结果、接口 404；开关开时 HTTP 订阅/状态口径
@@ -18,7 +20,7 @@
 """
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
@@ -204,11 +206,43 @@ def test_sweep_only_new_episodes_and_ready_and_throttle(db, user,
     assert jobs[0].provider == "drive"
     assert jobs[0].dest_drive_id == f"userdrive:{user.id}"
     assert jobs[0].status == "pending"
-    # 第二轮：新集已有任务（24h 节流）+ ready 集仍不建
+    # 第二轮：新集已有在途任务（job_in_flight，与门禁同口径）+ ready 集仍不建
     out2 = sf.process_series_follows(db)
     assert out2["jobs_created"] == 0
-    assert out2["skipped"].get("throttled") == 1
+    assert out2["skipped"].get("job_in_flight") == 1
     assert db.query(em.TransferJob).count() == 1
+
+
+def test_sweep_skips_inflight_job_past_throttle_window(db, user,
+                                                       monkeypatch):
+    """在途单超 24h 节流窗也不重建（R4 审查回归）。
+
+    节流只看 created_at：排队超 24h 的 pending/running 单若再建一单，
+    工人认领不按条目+用户去重，两单会并行真 copy 同一文件。门禁对
+    在途单只报 preparing 不重建，扫集与门禁同口径。
+    """
+    _enable(monkeypatch)
+    mount = _mount(db)
+    series = _series(db)
+    _follow(db, user.id, series.id)
+    _binding(db, user.id)
+    _episode(db, series, mount, "g-inflight",
+             datetime(2026, 10, 27, 12, 0, 0))
+    out = sf.process_series_follows(db)
+    assert out["jobs_created"] == 1
+    job = db.query(em.TransferJob).one()
+    from sqlalchemy import text as _text
+    for status in ("pending", "running"):
+        job.status = status
+        db.commit()
+        db.execute(_text(
+            "UPDATE emby_transfer_jobs SET created_at=:t WHERE id=:i"),
+            {"t": datetime.now() - timedelta(hours=25), "i": job.id})
+        db.commit()
+        out2 = sf.process_series_follows(db)
+        assert out2["jobs_created"] == 0, out2
+        assert out2["skipped"].get("job_in_flight") == 1, out2
+        assert db.query(em.TransferJob).count() == 1
 
 
 def test_sweep_no_binding_and_115_and_unknown(db, user, monkeypatch):

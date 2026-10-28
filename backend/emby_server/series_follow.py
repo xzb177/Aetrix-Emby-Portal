@@ -166,10 +166,15 @@ def process_series_follows(db) -> dict:
 
     返回 {"swept_follows", "jobs_created", "job_ids",
     "skipped": {reason: count}}。每集只走一条分支，原因明示：
-    already_ready / throttled / master_off / no_drive /
+    already_ready / job_in_flight / throttled / master_off / no_drive /
     no_source_fid / unsupported_provider_115 / unknown_provider /
     job_created。异常按集隔离：单集抛错记 skipped[internal_error]，
     不中断整轮（工人循环外层另有兜底 warning）。
+    在途（pending / running）不看 24h 节流窗：节流只看 created_at，
+    排队超 24h（每用户在途上限、暂停用户、工人积压）的在途单若再建
+    一单，工人认领不按条目+用户去重，两单会并行真 copy 同一文件。
+    门禁对在途单同样只报 preparing 不重建（job_in_flight），扫集与
+    门禁同口径；failed / done 行仍走 24h 节流后的重建（失败恢复）。
     开关关时直接返回零结果，不查订阅、不建任务。
     """
     result = {"swept_follows": 0, "jobs_created": 0, "job_ids": [],
@@ -209,16 +214,25 @@ def process_series_follows(db) -> dict:
                         # 无绑定不建注定失败的单（见模块头硬规矩）。
                         reason = "no_binding"
                     else:
-                        try:
-                            job = tv.create_user_job(
-                                db, ep, follow.user_id, provider,
-                                trigger=TRIGGER)
-                        except tv.TransferError as exc:
-                            reason = exc.kind
+                        _latest = _latest_user_job(db, ep.id,
+                                                   follow.user_id)
+                        if (_latest is not None
+                                and _latest.status
+                                in ("pending", "running")):
+                            # 在途单不看 24h 窗：见 process_series_follows
+                            # docstring（节流只看 created_at，超窗在途会重单）。
+                            reason = "job_in_flight"
                         else:
-                            result["jobs_created"] += 1
-                            result["job_ids"].append(job.id)
-                            reason = None
+                            try:
+                                job = tv.create_user_job(
+                                    db, ep, follow.user_id, provider,
+                                    trigger=TRIGGER)
+                            except tv.TransferError as exc:
+                                reason = exc.kind
+                            else:
+                                result["jobs_created"] += 1
+                                result["job_ids"].append(job.id)
+                                reason = None
                 if reason is not None:
                     result["skipped"][reason] = (
                         result["skipped"].get(reason, 0) + 1)
