@@ -67,20 +67,45 @@ logger = logging.getLogger(__name__)
 #: Google OAuth 端点（TOKEN_URL 复用 drive_changes 的唯一常量）。
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 DRIVE_ABOUT_URL = "https://www.googleapis.com/drive/v3/about"
-#: 只读 scope：读侧（共享源读取、BYOS 已有文件读取、用户副本读取）
-#: 全靠它。写侧（转存目录建立、files.copy 建副本）不走它。
+#: 只读 scope（Restricted）：读侧（共享源读取、BYOS 已有文件读取、
+#: 用户盘任意文件读取）全靠它。写侧（转存目录建立、files.copy
+#: 建副本）不走它。
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
-#: 写 scope（Non-sensitive）：只覆盖“应用创建或打开的文件”——
-#: 转存目录 aetrix-transfer 与转存副本都是应用创建的，正在此覆盖内。
-#: 注意：单 file 不够——读共享源文件与 BYOS 已有文件都不在 file
-#: 覆盖里，故授权请求是两档并列（readonly + file），缺一不可；
-#: 全盘 drive（Restricted + CASA）只当组合实测失败时的 fallback，
-#: 不擅自升级。
+#: 写 scope（Console 列为 Non-sensitive）：只覆盖“应用创建或打开的
+#: 文件”——转存目录 aetrix-transfer 与转存副本都是应用创建的，
+#: 正在此覆盖内；用户用 Drive 选择器明确交给应用的文件也在内。
+#: 注意：单 file 不够读共享源文件与 BYOS 已有文件（都不在 file
+#: 覆盖里），故正常态授权请求是两档并列（readonly + file）。
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
-#: 授权请求实际发出的范围（空格分隔；Google 回的已授范围可能因
-#: 用户在同意屏上逐项取消而少于此串，回调以实授为准入库）。
+#: 完整范围集（恢复 readonly 时的请求串；见 requested_scopes）。
 DRIVE_OAUTH_SCOPES = (DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE)
-DRIVE_OAUTH_SCOPE = " ".join(DRIVE_OAUTH_SCOPES)
+#: 临时措施（2026-10-28 用户亲定）：drive.readonly 属受限范围、
+#: 尚未通过验证，正式版应用的新授权撞谷歌硬拦截“此应用已被阻止”。
+#: 在验证通过前，新绑定与重绑默认只请求 drive.file 一个范围
+#: （Console 列为非敏感，不用审核），让新用户先能绑上；存量
+#: readonly 授权不受影响。本开关只影响“新发起的授权请求串”，
+#: 已授范围一律以回调实授为准入库，绝不拿请求串冒充。
+#: 恢复方法（无需改代码）：部署环境设 DRIVE_OAUTH_INCLUDE_READONLY=1
+#: 并重建容器，请求串即恢复两档并列。
+INCLUDE_READONLY_ENV = "DRIVE_OAUTH_INCLUDE_READONLY"
+
+
+def include_readonly_in_request() -> bool:
+    """新授权是否同时请求 readonly（默认关；非法值按关处理）。"""
+    return env_int(INCLUDE_READONLY_ENV, 0, 0, 1) == 1
+
+
+def requested_scopes() -> tuple[str, ...]:
+    """本次授权请求发出的范围：默认仅 file；开关开时两档并列。"""
+    if include_readonly_in_request():
+        return DRIVE_OAUTH_SCOPES
+    return (DRIVE_FILE_SCOPE,)
+
+
+def requested_scope_string() -> str:
+    """授权请求实际发出的范围串（空格分隔；Google 回的已授范围
+    可能因用户在同意屏上逐项取消而少于此串，回调以实授为准入库）。"""
+    return " ".join(requested_scopes())
 #: 回调路径（挂在 portal 的 user_emby_router 下，前缀固定）。
 OAUTH_CALLBACK_PATH = "/api/user/emby/storage-bindings/drive/oauth/callback"
 
@@ -258,7 +283,7 @@ def build_authorization_url(redirect_uri_value: str, state: str,
         "client_id": _client_id(),
         "redirect_uri": redirect_uri_value,
         "response_type": "code",
-        "scope": DRIVE_OAUTH_SCOPE,
+        "scope": requested_scope_string(),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -358,6 +383,9 @@ def refresh_access_token(refresh_token: str,
 def check_drive_liveness(access_token: str, http_get=None) -> dict:
     """Drive 验活：about 接口（只读 user 段，证明令牌真能读盘）。
 
+    about.get 接受 drive.file 范围，故 file-only 令牌（2026-10-28
+    临时默认授权）同样跑通本验活，不因缺 readonly 而误判失效；
+    转存目录的建/验走应用自创路径，也在 file 覆盖内。
     401 → expired（调用方先刷新再定）；403 限流 → throttled；
     其余 403 → auth_error；5xx / 网络错 → transient（不落状态）。
     返回 about 的 user 段（仅证明用，不入库）。

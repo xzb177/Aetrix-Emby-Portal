@@ -1,10 +1,13 @@
 """Drive 可写范围（只读 + file）：授权范围、实授入库、重绑原地换凭据、
 重绑重置建目录失败任务。Google / Drive 网络全部用桩替身，不碰真实上游。
 
-钉死的口径（2026-10-27 转存 mkdir 403 根因的修复）：
-- 授权请求发两档范围（readonly + file），缺一不可；单 file 不够
-  （读共享源与 BYOS 已有文件不在 file 覆盖里），全盘 drive 只当
-  组合实测失败时的 fallback，不擅自升级；
+钉死的口径（2026-10-27 转存 mkdir 403 根因的修复，2026-10-28
+临时 file-only 授权调整）：
+- 授权请求默认只发 drive.file（2026-10-28 用户亲定临时措施：
+  drive.readonly 属受限范围、尚未通过验证，正式版应用新授权撞
+  谷歌硬拦截；开关 DRIVE_OAUTH_INCLUDE_READONLY=1 时恢复两档
+  并列 readonly + file）。单 file 不够读共享源与 BYOS 已有文件，
+  只是验证通过前的临时缺口，不是新常态；
 - 回调以 Google token 响应原样回的已授范围为准入库，不拿请求串冒充；
 - 老绑定无记录一律按需重绑（老代码只申请过只读，不可能自带写权限）；
 - 重绑原地换凭据（绑定行 id、凭据行 id、label 全不变），不新增行；
@@ -149,10 +152,34 @@ def _seed_job(db, item_id, user_id="7", status="failed",
 # 授权范围与实授入库
 # ---------------------------------------------------------------------------
 
-def test_auth_url_requests_both_scopes(db):
+def test_auth_url_requests_file_only_by_default(db, monkeypatch):
+    # 2026-10-28 临时默认：新授权只发 drive.file，不发未验证的
+    # readonly，正式版应用不再撞谷歌硬拦截。
+    monkeypatch.setenv("DRIVE_OAUTH_INCLUDE_READONLY", "0")
+    started = do.start_drive_oauth(db, 7, "盘")
+    scope = parse_qs(urlparse(started["authorization_url"]).query)["scope"][0]
+    assert set(scope.split()) == {FILE}
+
+
+def test_auth_url_requests_both_scopes_when_switch_on(db, monkeypatch):
+    # 恢复路径：开关拨开即恢复两档并列，无需改代码。
+    monkeypatch.setenv("DRIVE_OAUTH_INCLUDE_READONLY", "1")
     started = do.start_drive_oauth(db, 7, "盘")
     scope = parse_qs(urlparse(started["authorization_url"]).query)["scope"][0]
     assert set(scope.split()) == {READONLY, FILE}
+
+
+def test_complete_file_only_grant_is_active_and_not_needs_rebind(db):
+    # file-only 令牌绑完即验活（about 接受 file 范围）且不判需重绑：
+    # needs_rebind 只认缺 file，不认缺 readonly。
+    started = do.start_drive_oauth(db, 7, "盘")
+    binding = do.complete_drive_oauth(
+        db, _state_of(started), "CODE-123",
+        http_post=_token_post_factory(granted_scope=FILE),
+        http_get=_about_get_factory())
+    assert binding.status == "active"
+    assert binding.granted_scopes == FILE
+    assert ub.serialize_binding(binding)["needs_rebind"] is False
 
 
 def test_complete_new_bind_stores_granted_scope(db):

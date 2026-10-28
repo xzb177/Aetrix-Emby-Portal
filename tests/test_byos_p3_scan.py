@@ -259,6 +259,44 @@ def test_drive_token_uses_the_binding_not_the_earliest(db):
     assert drive_oauth.get_binding_drive_access_token(db, second) == "tok-second"
 
 
+# ---------------------------------------------------------------- file-only 绑定禁整盘扫描
+
+def test_file_only_binding_refuses_whole_drive_scan(db):
+    # 门在取令牌之前：凭据故意留空（取令牌必失败），仍应先报
+    # unsupported，证明没跑列举、没碰令牌、更不会跑定向清理。
+    binding = _make_binding(db, 7, "drive", "file-only", seal_secret(""))
+    binding.granted_scopes = drive_oauth.DRIVE_FILE_SCOPE
+    db.commit()
+    with pytest.raises(byos_scan.BindingScanError) as exc:
+        byos_scan.binding_provider(db, binding)
+    assert exc.value.kind == "unsupported"
+
+
+def test_readonly_binding_still_scans(db):
+    import time
+    far = int(time.time()) + 3600
+    binding = _make_binding(
+        db, 7, "drive", "full",
+        seal_secret(drive_oauth.encode_drive_token("tok-full", "ref-full", far)))
+    binding.granted_scopes = (
+        drive_oauth.DRIVE_READONLY_SCOPE + " " + drive_oauth.DRIVE_FILE_SCOPE)
+    db.commit()
+    provider = byos_scan.binding_provider(db, binding)
+    assert isinstance(provider, byos_scan.UserDriveEnumerator)
+
+
+def test_legacy_none_scope_binding_still_scans(db):
+    # #1348 之前建的老绑定无实授记录（当时只授 readonly），按老口径放行。
+    import time
+    far = int(time.time()) + 3600
+    binding = _make_binding(
+        db, 7, "drive", "legacy",
+        seal_secret(drive_oauth.encode_drive_token("tok-leg", "ref-leg", far)))
+    assert binding.granted_scopes is None
+    provider = byos_scan.binding_provider(db, binding)
+    assert isinstance(provider, byos_scan.UserDriveEnumerator)
+
+
 def test_pan115_provider_uses_only_the_binding_cookie(db, monkeypatch):
     seen = {}
 

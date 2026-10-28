@@ -351,6 +351,22 @@ def binding_provider(db: Session, binding: em.UserStorageBinding,
     if binding.provider == ub.PROVIDER_DRIVE:
         from backend.emby_server import drive_oauth
 
+        # file-only 绑定禁整盘扫描（2026-10-28 临时 file-only 授权）：
+        # drive.file 令牌列举只返回应用自创文件，整盘扫描会静默
+        # 少列——更糟的是扫描成功后的定向清理会把该绑定已入库的
+        # 现成文件行当“消失”删掉。故实授范围已知且缺 readonly
+        # 时直接响亮拒绝，不跑列举、不做清理。granted_scopes 为
+        # None 是 #1348 之前建的老绑定（当时只授 readonly），按
+        # 老口径放行；空串按缺 readonly 计（新授权必有实授记录）。
+        granted = getattr(binding, "granted_scopes", None)
+        if granted is not None and (
+                drive_oauth.DRIVE_READONLY_SCOPE
+                not in drive_oauth.granted_scope_set(granted)):
+            raise BindingScanError(
+                "unsupported",
+                "该 Drive 绑定仅授 drive.file（只能读写应用自己创建的"
+                "文件），无法列举整个用户盘；请等待 drive.readonly "
+                "审核通过后重绑，恢复完整范围后再扫描。")
         try:
             token = drive_oauth.get_binding_drive_access_token(
                 db, binding, http_post=http_post)
