@@ -401,6 +401,10 @@ def _is_authenticated(request) -> bool:
 
 def _check_rate_limit(ip: str, path: str, authenticated: bool) -> tuple[bool, str]:
     """返回 (是否允许, 原因)"""
+    # r4-auth：登录四条路径归一到同一桶（大小写/有无 /emby 前缀不拆桶）。
+    from backend.ratelimit import canonical_rate_limit_path as _canon
+
+    path = _canon(path)
     for prefix, limit_anon, limit_auth in RATE_LIMITS:
         if path.startswith(prefix):
             limit = limit_auth if authenticated else limit_anon
@@ -439,7 +443,10 @@ async def rate_limit_middleware(request, call_next):
     # API 路径 + Emby 客户端路径都限流。Emby 登录（/emby/Users/AuthenticateByName）
     # 单独给更严的 per-IP 限额（15次/分钟，对标 go-emby），防暴力破解。
     path = request.url.path
-    if path.startswith(("/api/", "/emby/")):
+    # r4-auth：裸 /Users/ 登录路径也要进限流（旧门只认 /api/ 与 /emby/，
+    # 裸登录在 EM/EA 两边都绕过了网关限流）。非登录 /Users/ 路径无匹配
+    # 规则，_check_rate_limit 直接放行，不产生额外限流。
+    if path.startswith(("/api/", "/emby/", "/Users/")):
         ip = _get_client_ip(request)
         authenticated = _is_authenticated(request)
         # redis-py 是同步客户端：直接在事件循环里 incr/expire，就把一次 Redis 往返
