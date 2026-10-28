@@ -21,6 +21,13 @@
         </div>
       </div>
 
+      <!-- 想看商店入口：独立页 /want，不占底栏、不碰发现页；会员想看、非会员先办会员 -->
+      <section class="shop-sec">
+        <div class="v4-sec-title">想看商店</div>
+        <div class="v4-sec-sub">库里已有的片子才能想看，转存到你自己的盘里播；库里没有的不能想看、也不能直接开播</div>
+        <RouterLink to="/want" class="want-entry"><span aria-hidden="true">🎬</span><span class="lbl">去想看商店</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
+      </section>
+
       <!-- ⚡ 能量补给 -->
       <section class="shop-sec">
         <div class="v4-sec-title">能量</div>
@@ -297,6 +304,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { useToast } from '@/composables/useToast'
 import { humanizeError } from '@/composables/usePanelApi'
 import {
@@ -920,6 +928,26 @@ async function copyInviteCode() {
 
 <style scoped>
 /* 补给站样式：严格抄自设计稿 shop.html（纸色 token 不许改） */
+/* 想看商店入口行：复用纸色 token，只做一行可点入口，不改补给站布局 */
+.want-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+.want-entry .lbl {
+  flex: 1;
+}
+.want-entry .arrow {
+  color: var(--ink2);
+}
 .shop-head {
   padding: 26px 20px 14px;
   border-bottom: 2px solid var(--ink);
