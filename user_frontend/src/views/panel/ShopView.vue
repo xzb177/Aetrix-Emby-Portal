@@ -28,6 +28,14 @@
         <RouterLink to="/want" class="want-entry"><span aria-hidden="true">🎬</span><span class="lbl">去想看商店</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
       </section>
 
+      <!-- 求片登记与找源入口：独立页，不占底栏、不碰发现页；求片要会员，找源确认要绑定自己的盘 -->
+      <section class="shop-sec">
+        <div class="v4-sec-title">求片与找源</div>
+        <div class="v4-sec-sub">库里没有的片子先登记求片；有来源线索的用找源确认后转存到你自己的盘</div>
+        <RouterLink to="/store-requests" class="want-entry"><span aria-hidden="true">📝</span><span class="lbl">去求片登记</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
+        <RouterLink to="/source-discovery" class="want-entry"><span aria-hidden="true">🔍</span><span class="lbl">去找源</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
+      </section>
+
       <!-- ⚡ 能量补给 -->
       <section class="shop-sec">
         <div class="v4-sec-title">能量</div>
