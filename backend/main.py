@@ -47,6 +47,7 @@ from backend.api.media_sets_api import (
 from backend.api.store import router as store_router
 from backend.api.store_requests import admin_router as store_requests_admin_router
 from backend.api.store_requests import router as store_requests_router
+from backend.api.source_discovery import router as source_discovery_router
 from backend.api.library_cover import router as library_cover_router
 from backend.api.media_library import mirror_router as cover_mirror_router
 from backend.api.media_library import router as media_library_router
@@ -854,6 +855,9 @@ app.include_router(store_router)
 # 复用 movie_requests / movie_request_votes，不另建表；只受 STORE_ENABLED 总闸 + 会员闸管。
 app.include_router(store_requests_router)
 app.include_router(store_requests_admin_router)
+# 找源通用能力：总闸 SOURCE_DISCOVERY_ENABLED 默认关，关时本组接口惰性 404。
+# 只做找候选（上游聚合映射源）+ 确认后复用既有转存链路，不挂前端。
+app.include_router(source_discovery_router)
 # 媒体库封面自动生成：预览 / 渲染保存 / 按已存配置重新生成
 app.include_router(library_cover_router)
 # 媒体库学习（封面/排序/货架）：门户端游标分页 / 分区 / 藏 / 封面五件套
