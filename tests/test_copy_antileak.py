@@ -326,9 +326,9 @@ def test_revoke_no_refresh_path_with_token_uses_raw_client(db, monkeypatch):
 # copy_idle_cleanup：口径 / 顺序 / 有界 / 无绑定
 # ---------------------------------------------------------------------------
 
-def _setup_ttl(db, monkeypatch, revoke_days=30, delete_days=90):
-    monkeypatch.setattr(tv, "copy_idle_revoke_days", lambda: revoke_days)
-    monkeypatch.setattr(tv, "copy_idle_delete_days", lambda: delete_days)
+def _setup_ttl(db, monkeypatch, revoke_hours=2, delete_hours=2):
+    monkeypatch.setattr(tv, "copy_idle_revoke_hours", lambda: revoke_hours)
+    monkeypatch.setattr(tv, "copy_idle_delete_hours", lambda: delete_hours)
 
 
 def test_ttl_last_activity_max_and_delete_first(db, monkeypatch):
@@ -336,25 +336,25 @@ def test_ttl_last_activity_max_and_delete_first(db, monkeypatch):
     _fake_clients(monkeypatch, {})
     _binding(db, me)
     now = datetime(2026, 10, 28)
-    old = now - timedelta(days=100)
-    # 删：100 天未动（created 兜底）→ 删文件 + 行。
+    old = now - timedelta(hours=100)
+    # 删：100 小时未动（created 兜底）→ 删文件 + 行。
     doomed = _variant(db, 71, "doomed", me.id, created=old)
-    # 只收：40 天未动 → 收权限不删行。
-    idle = _variant(db, 72, "idle", me.id, last_played=now - timedelta(days=40),
+    # 只收：3 小时未动（≥收 2 小时、＜删 4 小时）→ 收权限不删行。
+    idle = _variant(db, 72, "idle", me.id, last_played=now - timedelta(hours=3),
                     created=old)
-    # 新：10 天 → 不动。
-    fresh = _variant(db, 73, "fresh", me.id, created=now - timedelta(days=10))
-    # UMD 更近：变体 100 天未动、但该用户该条目 5 天前有进度 → 不动。
+    # 新：1 小时 → 不动。
+    fresh = _variant(db, 73, "fresh", me.id, created=now - timedelta(hours=1))
+    # UMD 更近：变体 100 小时未动、但该用户该条目 30 分钟前有进度 → 不动。
     umd_recent = _variant(db, 74, "umdrecent", me.id, created=old)
     db.add(em.UserMediaData(user_id=me.id, item_id=74,
-                            last_played_at=now - timedelta(days=5)))
-    # 取新者：变体 50 天、UMD 20 天 → 闲置 20 天 → 不动。
+                            last_played_at=now - timedelta(minutes=30)))
+    # 取新者：变体 50 小时、UMD 1 小时 → 闲置 1 小时 → 不动。
     umd_max = _variant(db, 75, "umdmax", me.id,
-                       last_played=now - timedelta(days=50), created=old)
+                       last_played=now - timedelta(hours=50), created=old)
     db.add(em.UserMediaData(user_id=me.id, item_id=75,
-                            last_played_at=now - timedelta(days=20)))
+                            last_played_at=now - timedelta(hours=1)))
     db.commit()
-    _setup_ttl(db, monkeypatch)
+    _setup_ttl(db, monkeypatch, revoke_hours=2, delete_hours=4)
     stats = tv.copy_idle_cleanup(db, now=now)
     assert stats["deleted"] == 1 and stats["revoked"] == 1
     assert stats["errors"] == 0
@@ -372,7 +372,7 @@ def test_ttl_no_binding_skipped_not_error(db, monkeypatch):
     _fake_clients(monkeypatch, {})
     now = datetime(2026, 10, 28)
     row = _variant(db, 81, "nobind", me.id,
-                   created=now - timedelta(days=100))
+                   created=now - timedelta(hours=100))
     _setup_ttl(db, monkeypatch)
     stats = tv.copy_idle_cleanup(db, now=now)
     assert stats["skipped_no_binding"] == 2  # 删除 pass + 收回 pass 各记 1
@@ -387,7 +387,7 @@ def test_ttl_delete_failure_keeps_row(db, monkeypatch):
     _binding(db, me)
     now = datetime(2026, 10, 28)
     row = _variant(db, 91, "failfid", me.id,
-                   created=now - timedelta(days=100))
+                   created=now - timedelta(hours=100))
     _setup_ttl(db, monkeypatch)
     stats = tv.copy_idle_cleanup(db, now=now)
     assert stats["deleted"] == 0 and stats["errors"] >= 1
@@ -402,7 +402,7 @@ def test_ttl_limit_bounds_batch(db, monkeypatch):
     now = datetime(2026, 10, 28)
     for i in range(3):
         _variant(db, 100 + i, f"lim{i}", me.id,
-                 created=now - timedelta(days=100))
+                 created=now - timedelta(hours=100))
     _setup_ttl(db, monkeypatch)
     stats = tv.copy_idle_cleanup(db, now=now, limit=2)
     assert stats["checked"] == 2 and stats["deleted"] == 2
@@ -410,14 +410,76 @@ def test_ttl_limit_bounds_batch(db, monkeypatch):
 
 
 def test_ttl_threshold_defaults_and_invalid_env(monkeypatch):
-    monkeypatch.delenv("COPY_IDLE_REVOKE_DAYS", raising=False)
-    monkeypatch.delenv("COPY_IDLE_DELETE_DAYS", raising=False)
-    assert tv.copy_idle_revoke_days() == 30
-    assert tv.copy_idle_delete_days() == 90
-    monkeypatch.setenv("COPY_IDLE_REVOKE_DAYS", "abc")
-    monkeypatch.setenv("COPY_IDLE_DELETE_DAYS", "-5")
-    assert tv.copy_idle_revoke_days() == 30
-    assert tv.copy_idle_delete_days() == 90
+    monkeypatch.delenv("COPY_IDLE_REVOKE_HOURS", raising=False)
+    monkeypatch.delenv("COPY_IDLE_DELETE_HOURS", raising=False)
+    assert tv.copy_idle_revoke_hours() == 2
+    assert tv.copy_idle_delete_hours() == 2
+    monkeypatch.setenv("COPY_IDLE_REVOKE_HOURS", "abc")
+    monkeypatch.setenv("COPY_IDLE_DELETE_HOURS", "-5")
+    assert tv.copy_idle_revoke_hours() == 2
+    assert tv.copy_idle_delete_hours() == 2
+    # 旧 DAYS 键不再产生歧义：即使残留在 .env 里也不影响小时阈值。
+    monkeypatch.setenv("COPY_IDLE_REVOKE_DAYS", "30")
+    monkeypatch.setenv("COPY_IDLE_DELETE_DAYS", "90")
+    assert tv.copy_idle_revoke_hours() == 2
+    assert tv.copy_idle_delete_hours() == 2
+
+
+def test_ttl_hour_boundary_keeps_1h59m_deletes_2h(db, monkeypatch):
+    me = _user(db)
+    _fake_clients(monkeypatch, {})
+    _binding(db, me)
+    now = datetime(2026, 10, 28)
+    old = now - timedelta(hours=100)
+    # 1 小时 59 分 → 整小时取整为 1，不触发。
+    kept = _variant(db, 121, "kept", me.id,
+                    last_played=now - timedelta(hours=1, minutes=59),
+                    created=old)
+    # 2 小时整 → 触发删除。
+    doomed = _variant(db, 122, "doomed2h", me.id,
+                      last_played=now - timedelta(hours=2),
+                      created=old)
+    db.commit()
+    _setup_ttl(db, monkeypatch)
+    stats = tv.copy_idle_cleanup(db, now=now)
+    assert stats["deleted"] == 1 and stats["errors"] == 0
+    assert db.query(em.TransferVariant).filter(
+        em.TransferVariant.id == doomed.id).first() is None
+    db.refresh(kept)
+    assert kept.share_revoked_at is None
+    assert db.query(em.TransferVariant).filter(
+        em.TransferVariant.id == kept.id).first() is not None
+
+
+def test_ttl_old_stock_row_cleaned_under_new_threshold(db, monkeypatch):
+    """存量老行按新阈值正确处理：30 天未动的副本首轮即删（受 limit 约束）。"""
+    me = _user(db)
+    _fake_clients(monkeypatch, {})
+    _binding(db, me)
+    now = datetime(2026, 10, 28)
+    row = _variant(db, 123, "oldstock", me.id,
+                   created=now - timedelta(days=30))
+    db.commit()
+    _setup_ttl(db, monkeypatch)
+    stats = tv.copy_idle_cleanup(db, now=now)
+    assert stats["deleted"] == 1
+    assert db.query(em.TransferVariant).filter(
+        em.TransferVariant.id == row.id).first() is None
+
+
+def test_idle_cleanup_due_hourly_gate(monkeypatch):
+    state = {}
+    now_ts = 1000000.0
+    assert tv._idle_cleanup_due(state, now_ts) is True  # 从未跑过，首轮即跑
+    state["last_idle_cleanup"] = now_ts - 1800  # 30 分钟前跑过
+    assert tv._idle_cleanup_due(state, now_ts) is False
+    state["last_idle_cleanup"] = now_ts - 3600  # 整 1 小时
+    assert tv._idle_cleanup_due(state, now_ts) is True
+    monkeypatch.setattr(tv, "COPY_IDLE_CLEANUP_INTERVAL_SEC", 60)
+    state["last_idle_cleanup"] = now_ts - 61
+    assert tv._idle_cleanup_due(state, now_ts) is True
+    state["last_idle_cleanup"] = now_ts - 59
+    assert tv._idle_cleanup_due(state, now_ts) is False
 
 
 # ---------------------------------------------------------------------------
