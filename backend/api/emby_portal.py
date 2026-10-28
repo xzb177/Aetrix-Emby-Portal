@@ -327,25 +327,15 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
             detail="用户名只能包含字母、数字、下划线，长度 3-32 位",
         )
 
-    existing = db.query(models.WebUser).filter(models.WebUser.username == username).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="用户名已被注册")
-    # 新用户自己还没有接线名，只查别人。撞上已有 emby_username 时
-    # AuthenticateByName 的 OR 查询会不确定命中谁，与设号撞名同一 409。
-    taken_emby = (
-        db.query(models.WebUser.id)
-        .filter(models.WebUser.emby_username == username)
-        .first()
-    )
-    if taken_emby:
-        raise HTTPException(status_code=409, detail="用户名已被占用")
-
-    # ===== 注册模式开关 =====
+    # ===== 注册模式开关（r4-auth：必须在撞名检查之前）=====
     # open: 开放注册 / closed: 关闭注册
     # 「code」（注册码门禁）已于 v2.7.x 下线。DB 里残留的 "code"（及任何未知值）
     # 一律按 closed 处理（fail-closed）：管理员当初设 code 是为了「不对外开放」，
     # 升级后不能静默变成开放注册，需管理员在后台显式改成 open。
     # 卡码体系（钱包/个人中心核销注册码/续期码/白名单码）不受影响。
+    # 顺序是安全语义：旧顺序先查撞名、后查模式，关闭注册时探一个已占用的
+    # 名字回 409、探未占用的名字回 403，等于用注册接口枚举门户名与接线名
+    # 是否存在。先判模式，关闭时一律 403，不泄露撞名信息。
     mode_config = db.query(models.SystemConfig).filter(
         models.SystemConfig.key == "registration_mode"
     ).first()
@@ -360,6 +350,19 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
             detail=(closed_msg_config.value if closed_msg_config and closed_msg_config.value
                     else "当前未开放注册"),
         )
+
+    existing = db.query(models.WebUser).filter(models.WebUser.username == username).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="用户名已被注册")
+    # 新用户自己还没有接线名，只查别人。撞上已有 emby_username 时
+    # AuthenticateByName 的 OR 查询会不确定命中谁，与设号撞名同一 409。
+    taken_emby = (
+        db.query(models.WebUser.id)
+        .filter(models.WebUser.emby_username == username)
+        .first()
+    )
+    if taken_emby:
+        raise HTTPException(status_code=409, detail="用户名已被占用")
     if req.email:
         email = req.email.strip()
         if "@" not in email:
