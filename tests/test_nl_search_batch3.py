@@ -66,6 +66,8 @@ def _db():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)
     em.MediaItem.__table__.create(engine, checkfirst=True)
+    # 人物匹配走 emby_people（生产迁移必有此表），夹具须同建，否则 EXISTS 报错。
+    em.EmbyPerson.__table__.create(engine, checkfirst=True)
     session = sessionmaker(bind=engine)()
     items = [
         # (id, name, year, countries, genres, library)
@@ -173,3 +175,86 @@ def test_router_happy_path_marks_no_fallback(monkeypatch):
     body = r.json()
     assert body["fallback"] is False
     assert [x["id"] for x in body["results"]] == [1, 2]
+
+
+# ---- 虚词剥离 / 国产 / 最近 / 人物匹配（解析 bug 修复） ----
+
+def test_parse_particle_stripped_from_keyword():
+    p = nl.parse_query("周星驰的喜剧")
+    assert p["genre"] == "喜剧" and p["keyword"] == "周星驰"
+    p = nl.parse_query("宫崎骏的动画电影")
+    assert p["genre"] == "动画" and p["keyword"] == "宫崎骏"
+    p = nl.parse_query("2024年的国产剧")
+    assert p["year"] == 2024 and p["region"] == "内地"
+    assert p["keyword"] == ""
+    # 只剥首尾虚词，词中“之”不动。
+    p = nl.parse_query("月之恋的喜剧")
+    assert p["genre"] == "喜剧" and p["keyword"] == "月之恋"
+    # 纯虚词 token 丢弃，不进查询。
+    p = nl.parse_query("的喜剧")
+    assert p["genre"] == "喜剧" and p["keyword"] == ""
+
+
+def test_parse_recent_maps_to_year_range():
+    from datetime import date
+    y = date.today().year
+    p = nl.parse_query("最近的科幻片")
+    assert p["year_range"] == (y - 2, y)
+    assert p["genre"] == "科幻" and p["keyword"] == ""
+    p = nl.parse_query("近期动画")
+    assert p["year_range"] == (y - 2, y) and p["genre"] == "动画"
+    # 显式年代优先，不被“最近”覆盖。
+    p = nl.parse_query("最近1994年喜剧")
+    assert p["year"] == 1994 and p["year_range"] is None
+
+
+def _db_fix():
+    from datetime import date
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
+                           poolclass=StaticPool)
+    em.MediaItem.__table__.create(engine, checkfirst=True)
+    em.EmbyPerson.__table__.create(engine, checkfirst=True)
+    session = sessionmaker(bind=engine)()
+    y = date.today().year
+    items = [
+        # (id, name, year, countries, genres, library)
+        (1, "喜剧之王", 1999, "香港", "喜剧", 1),
+        (2, "大话西游", 1995, "香港", "喜剧", 1),
+        (4, "千与千寻", 2001, "日本", "动画", 2),
+        (6, "科幻新片", y, "内地", "科幻", 1),
+        (7, "国产剧示例", 2024, "内地", "剧情", 1),
+        (8, "星际穿越", 2014, "美国", "科幻", 1),
+    ]
+    for i, name, year, countries, genres, lib in items:
+        session.add(em.MediaItem(id=i, guid=f"{i:032d}", library_id=lib,
+                                 item_type="movie", name=name,
+                                 production_year=year, countries=countries,
+                                 genres=genres))
+    # 人物行：只挂在对应条目下（2 号喜剧无周星驰行，防人物匹配误扩大）。
+    session.add(em.EmbyPerson(item_id=1, name="周星驰", sort_order=0))
+    session.add(em.EmbyPerson(item_id=4, name="宫崎骏", sort_order=0))
+    session.commit()
+    return session
+
+
+def test_query_four_reported_queries_return_results(monkeypatch):
+    _enable(monkeypatch)
+    db = _db_fix()
+    r = nl.search_items(db, "周星驰的喜剧", {1})
+    assert [x["id"] for x in r["results"]] == [1]
+    r = nl.search_items(db, "最近的科幻片", {1})
+    assert [x["id"] for x in r["results"]] == [6]
+    r = nl.search_items(db, "2024年的国产剧", {1})
+    assert [x["id"] for x in r["results"]] == [7]
+    r = nl.search_items(db, "宫崎骏的动画电影", {1, 2})
+    assert [x["id"] for x in r["results"]] == [4]
+
+
+def test_query_exact_search_no_regression(monkeypatch):
+    _enable(monkeypatch)
+    db = _db_fix()
+    r = nl.search_items(db, "星际穿越", {1})
+    assert r["fallback"] is True
+    assert [x["id"] for x in r["results"]] == [8]
+    r = nl.search_items(db, "不存在的片名xyz123", {1})
+    assert r["results"] == []

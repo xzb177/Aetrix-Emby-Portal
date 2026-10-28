@@ -12,9 +12,13 @@
 解析维度（均可配置，见下表；默认值只是通用词汇表，不是示例内容）：
 - 年代：``90年代``/``1990年代``/``90s`` → 1990–1999；``1994年`` → 当年。
   两位数年代按 >=30 归 19xx、<30 归 20xx（``00年代`` → 2000s）。
-- 地区：可配置别名表（默认含常见地区词），匹配 ``countries`` 列。
+- 地区：可配置别名表（默认含常见地区词），匹配 ``countries`` 列
+  （“国产”按既有口径映射为“内地”，与“大陆”同义）。
 - 类型：可配置别名表（默认含常见类型词），匹配 ``genres`` 列。
-- 其余文本：关键词，匹配 name / sort_name / original_title / aliases。
+- 最近：无显式年代时，“最近”/“近期” → 今年及前两年（production_year 区间）。
+- 其余文本：关键词，匹配 name / sort_name / original_title / aliases，
+  以及 emby_people.name（演员等人名字段）；首尾虚词“的/之”剥离，
+  不进 LIKE 查询。
 
 维度表可经 env JSON 覆盖（``NL_SEARCH_REGION_MAP`` /
 ``NL_SEARCH_GENRE_MAP``，形如 ``{"港": "香港"}``）；JSON 非法时
@@ -28,6 +32,7 @@ import json
 import logging
 import os
 import re
+from datetime import date
 from typing import Optional, Sequence
 
 from sqlalchemy import or_
@@ -45,6 +50,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 #: 默认地区别名表（键 = 用户可能输入的词，值 = 匹配 countries 列用的词）。
 DEFAULT_REGION_MAP: dict[str, str] = {
     "港": "香港", "香港": "香港", "内地": "内地", "大陆": "内地",
+    "国产": "内地",
     "台湾": "台湾", "台": "台湾", "日本": "日本", "日": "日本",
     "韩国": "韩国", "韩": "韩国", "美国": "美国", "美": "美国",
     "英国": "英国", "法国": "法国", "德国": "德国", "欧洲": "欧洲",
@@ -101,6 +107,20 @@ def _decade_range(num: int) -> tuple[int, int]:
     return (start, start + 9)
 
 
+#: 解析后剥离的虚词（“周星驰的”里的“的”若进 LIKE 查询必空；
+#: 只剥 token 首尾，不动词中——“月之恋”里的“之”不受影响）。
+_PARTICLES = {"的", "之"}
+
+
+def _strip_particles(token: str) -> str:
+    token = token.strip()
+    while token and token[0] in _PARTICLES:
+        token = token[1:]
+    while token and token[-1] in _PARTICLES:
+        token = token[:-1]
+    return token
+
+
 #: 解析后丢弃的泛词（“港片”里的“片”、“香港电影”里的“电影”不是关键词，
 #: 留下会把结果误收窄到片名含“片”的条目）。
 _STOPWORDS = {"片", "电影", "影片", "剧集", "电视剧", "剧"}
@@ -130,6 +150,13 @@ def parse_query(text: str) -> dict:
         if m:
             year = int(m.group(1))
             rest = rest[:m.start()] + " " + rest[m.end():]
+        elif "最近" in rest or "近期" in rest:
+            # 无显式年代时，“最近/近期” → 今年及前两年（不编造新字段语义，
+            # 走既有 production_year 区间；显式年代优先，不覆盖它）。
+            token = "最近" if "最近" in rest else "近期"
+            y = date.today().year
+            year_range = (y - 2, y)
+            rest = rest.replace(token, " ", 1)
     region_map = _env_map(REGION_MAP_ENV, DEFAULT_REGION_MAP)
     region = None
     for token in sorted(region_map, key=len, reverse=True):
@@ -145,7 +172,9 @@ def parse_query(text: str) -> dict:
             rest = rest.replace(token, " ", 1)
             break
     keyword = _PUNCT_RE.sub(" ", rest).strip()
-    keyword = " ".join(t for t in keyword.split(" ") if t and t not in _STOPWORDS)
+    keyword = " ".join(
+        t for t in (_strip_particles(tok) for tok in keyword.split(" "))
+        if t and t not in _STOPWORDS)
     parsed_any = (year_range is not None or year is not None
                   or region is not None or genre is not None)
     if not parsed_any:
@@ -191,11 +220,17 @@ def search_items(db, query_text: str,
         q = q.filter(em.MediaItem.genres.like(f"%{parsed['genre']}%"))
     if parsed["keyword"]:
         kw = f"%{parsed['keyword']}%"
+        # 人物匹配走 emby_people.name（演员表；导演若落库同表亦命中）。
+        person_hit = db.query(em.EmbyPerson.id).filter(
+            em.EmbyPerson.item_id == em.MediaItem.id,
+            em.EmbyPerson.name.like(kw),
+        ).exists()
         q = q.filter(or_(
             em.MediaItem.name.like(kw),
             em.MediaItem.sort_name.like(kw),
             em.MediaItem.original_title.like(kw),
             em.MediaItem.aliases.like(kw),
+            person_hit,
         ))
     rows = q.order_by(em.MediaItem.id).limit(limit).all()
     return {**parsed, "results": [
