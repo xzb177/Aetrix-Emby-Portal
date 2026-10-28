@@ -968,3 +968,107 @@ export const storeApi = {
   // 我的想看清单：本人 trigger=store_want 的任务行
   getWants: () => api.get<never, StoreWantsResponse>('/api/user/store/wants'),
 }
+
+// ==================== 想看商店求片 R1（backend/api/store_requests.py） ====================
+// 总闸 STORE_ENABLED 关时三个口都 404（与商店同款惰性 404），调用方按“商店未开启”处理。
+// 登记与榜单都要登录 + 有效会员订阅（非会员 403）；登记≠能播，入库前文案明说不能播。
+// 同一 tmdb 登记两次不重复建行：第二次走附议（人数 +1，已投过原样回）。
+
+/** 求片展示态（与后端 R1_STATE_LABELS 同口径；未知态原样回，前端不编造） */
+export type StoreRequestState =
+  | 'registered'
+  | 'seeking'
+  | 'stored'
+  | 'not_found'
+  | 'withdrawn'
+  | 'in_library'
+
+/** 一条求片记录（我的列表 / 榜单同形；request_id 为 null 只出现在“已在库”这一支） */
+export interface StoreRequestRecord {
+  request_id: number | null
+  tmdb_id: string
+  movie_name?: string | null
+  vote_count: number
+  status: string
+  state: StoreRequestState
+  in_library: boolean
+  library_item_id?: number | null
+  voted: boolean
+  message: string
+}
+
+export interface StoreRequestListResponse {
+  items: StoreRequestRecord[]
+}
+
+export const storeRequestsApi = {
+  // 登记：库外 tmdb 登记或附议；库内回 in_library（request_id 为 null），引导去想看
+  postRequest: (tmdbId: string, title?: string) =>
+    api.post<never, StoreRequestRecord>('/api/user/store/requests', {
+      tmdb_id: tmdbId,
+      ...(title ? { title } : {}),
+    }),
+
+  // 我的求片：创建的 + 附议过的（tmdb 绑定行）
+  getMine: () => api.get<never, StoreRequestListResponse>('/api/user/store/requests'),
+
+  // 求片榜：处理中的行按附议数排榜
+  getBoard: () => api.get<never, StoreRequestListResponse>('/api/user/store/requests/board'),
+}
+
+// ==================== 找源（backend/api/source_discovery.py） ====================
+// 总闸 SOURCE_DISCOVERY_ENABLED 关时两个口都 404（detail“找源未开启”），调用方按“找源未开启”处理。
+// 搜索只读不建任务；确认复用转存链路落用户绑定盘；两个口都要登录。
+// 候选的 playable_now 恒为 false：现在不能直接播，确认转存、副本就绪后可播，前端不给候选挂播放入口。
+
+/** 一个找源候选（与后端 CandidateOut 同字段） */
+export interface SourceCandidate {
+  adapter: string
+  local_item_id: number
+  local_title: string
+  local_year?: number | null
+  local_type: string
+  tmdb_id?: string | null
+  imdb_id?: string | null
+  source_id?: number | null
+  source_name: string
+  upstream_item_id?: string | null
+  confidence: number
+  evidence: string
+  resolution?: string | null
+  container?: string | null
+  media_source?: string | null
+  size_bytes?: number | null
+  subtitle_languages?: string | null
+  acquisition: string
+  playable_now: boolean
+}
+
+export interface SourceSearchResponse {
+  candidates: SourceCandidate[]
+  total: number
+  adapters: string[]
+  auto_transfer_enabled: boolean
+}
+
+/** 确认结果态：queued 已建任务 / already_queued 已有任务不重复建 / failed 按原因明说 */
+export type SourceConfirmState = 'queued' | 'already_queued' | 'failed'
+
+export interface SourceConfirmResult {
+  state: SourceConfirmState
+  job_id?: number | null
+  local_item_id?: number | null
+  source_id?: number | null
+  upstream_item_id?: string | null
+  message: string
+}
+
+export const sourceDiscoveryApi = {
+  // 查候选：只读，绝不建任务；三个条件至少给一个（空查后端 400）
+  search: (params: { title?: string; tmdb_id?: string; imdb_id?: string }) =>
+    api.get<never, SourceSearchResponse>('/api/user/source-discovery/search', { params }),
+
+  // 确认：默认模式必须给全候选三元组；搜出来是什么就原样传回去，不编造
+  confirm: (triple: { local_item_id: number; source_id: number; upstream_item_id: string }) =>
+    api.post<never, SourceConfirmResult>('/api/user/source-discovery/confirm', triple),
+}
