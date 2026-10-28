@@ -92,20 +92,32 @@ engine_config = {
 if DATABASE_TYPE == "sqlite":
     # busy timeout：等待写锁而不是立刻报 "database is locked"（媒体扫描/播放上报并发场景）
     engine_config["connect_args"] = {"check_same_thread": False, "timeout": 30}
-# 每进程连接上限 = _POOL_SIZE + _MAX_OVERFLOW；api / worker / EA 三个进程各自持有独立 engine，
-# 峰值 3×(25+10)=105；请保证 PG max_connections 留足富余（默认 100 不够，需同步调高），
-# 避免高峰期随机 "too many clients already" 导致全站 500。
+# 每进程连接上限 = _POOL_SIZE + _MAX_OVERFLOW；api / worker / EA 三个进程各自持有独立 engine。
+# 预算（生产实测 2026-10-28）：compose 给三进程都钉了 DB_MAX_OVERFLOW=25（见 env.example），
+# 故生产峰值 = api(45+25) + worker(25+25) + EA(25+25) = 170，PG max_connections=200 留 30 富余给
+# psql / 监控等临时连接。不要把三进程的 pool_size 一起抬到 40——那会是 3×(40+25)=195，
+# 只剩 5 个名额，临时连接一到就全站 "too many clients already"。
+# 2026-10-28 洪峰根治：api 是唯一被洪峰打满的进程（单 worker、50 槽、注册/登录/面板全走它），
+# 故只抬 api 的默认值；worker / EA 未被打满，保持 25 不动。
 # ---- DB 连接池大小（Batch 2 开关清理：env-only 单源化） ----
-# DB_POOL_SIZE：只读环境变量（默认 25 = 生产现值）；管理后台不再可写，
-# SystemConfig 里即便有旧行也会被忽略。
+# DB_POOL_SIZE：只读环境变量；管理后台不再可写，SystemConfig 里即便有旧行也会被忽略。
+# 未设 env 时的默认值按进程角色区分：api=45（洪峰-facing），其余=25。
 # engine 创建时解析一次（进程启动时），改完需重启进程生效。
 DB_POOL_SIZE_ENV = "DB_POOL_SIZE"
 DB_POOL_SIZE_DEFAULT = 25
+DB_POOL_SIZE_DEFAULT_API = 45
+
+
+def _default_pool_size() -> int:
+    """未设 env 时的 pool_size 默认值：api 进程 45，其余进程 25。"""
+    if (os.getenv("AETRIX_ROLE") or "").strip() == "api":
+        return DB_POOL_SIZE_DEFAULT_API
+    return DB_POOL_SIZE_DEFAULT
 
 
 def _resolve_db_pool_size() -> int:
-    """DB 连接池大小：env-only（默认 25 = 生产现值）；改完需重启进程生效。"""
-    return env_int(DB_POOL_SIZE_ENV, DB_POOL_SIZE_DEFAULT, 1)
+    """DB 连接池大小：env 优先，未设 env 时按进程角色取默认值；改完需重启进程生效。"""
+    return env_int(DB_POOL_SIZE_ENV, _default_pool_size(), 1)
 
 
 _POOL_SIZE = _resolve_db_pool_size()
@@ -129,7 +141,7 @@ def db_pool_config() -> dict:
         "max_overflow": _MAX_OVERFLOW,
         "from_env": _DB_POOL_SIZE_FROM_ENV,
         "env_name": DB_POOL_SIZE_ENV,
-        "default": DB_POOL_SIZE_DEFAULT,
+        "default": _default_pool_size(),
         "database_type": DATABASE_TYPE,
         "restart_required": True,
     }
