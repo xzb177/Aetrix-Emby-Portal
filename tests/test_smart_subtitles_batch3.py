@@ -145,6 +145,9 @@ def _client(monkeypatch, scope_allowed=True):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)
     em.MediaItem.__table__.create(engine, checkfirst=True)
+    # 路由现经桥接读 system_configs（面板行优先、缺行回退 env），夹具须建该表
+    from backend import models as _core_models
+    _core_models.SystemConfig.__table__.create(engine, checkfirst=True)
     session = sessionmaker(bind=engine)()
 
     class _Scope:

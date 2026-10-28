@@ -55,7 +55,7 @@ def _visible_item(db: Session, user, item_id: int):
 @router.post("/smart-subtitles/{item_id}/match")
 def match_subtitles(item_id: int, req: MatchRequest,
                     user=Depends(get_current_user), db: Session = Depends(get_db)):
-    if not ss.enabled():
+    if not ss.resolve_enabled(db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="智能字幕未开启")
     item = _visible_item(db, user, item_id)
@@ -68,7 +68,7 @@ def match_subtitles(item_id: int, req: MatchRequest,
 def create_bilingual(item_id: int, req: BilingualRequest,
                      user=Depends(get_current_user),
                      db: Session = Depends(get_db)):
-    if not ss.enabled():
+    if not ss.resolve_enabled(db):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="智能字幕未开启")
     _visible_item(db, user, item_id)
@@ -76,10 +76,10 @@ def create_bilingual(item_id: int, req: BilingualRequest,
         if req.translations is not None:
             result = ss.generate_bilingual_track(
                 item_id, req.source_text, req.source_lang, req.target_lang,
-                translations=req.translations)
+                translations=req.translations, db=db)
         elif req.translate:
             result = ss.generate_bilingual_track(
-                item_id, req.source_text, req.source_lang, req.target_lang)
+                item_id, req.source_text, req.source_lang, req.target_lang, db=db)
         else:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="须提供 translations，或将 translate 置 true 走配置化翻译")
