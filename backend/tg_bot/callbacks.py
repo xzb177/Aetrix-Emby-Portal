@@ -85,6 +85,18 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
             text, markup = reply
         else:
             text, markup = reply, handlers.back_markup()
+    elif action == "bindings":
+        text = handlers.handle_bindings(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
+    elif action == "transfers":
+        text = handlers.handle_transfers(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
+    elif action == "whyplay":
+        text = handlers.handle_whyplay(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
+    elif action == "wants":
+        text = handlers.handle_wants(db, tg_user, chat_id, "")
+        markup = handlers.back_markup()
     elif action == "bind":
         user = resolve(db, int(tg_id))
         if user is not None:

@@ -72,6 +72,7 @@ from backend.api.admin_tasks import tasks_router
 from backend.api.reminders_admin import admin_reminders_router
 from backend.api.admin_alerts import admin_alerts_router
 from backend.api.admin_diagnosis import admin_diagnosis_router
+from backend.api.tg_bot_admin import tg_bot_admin_router
 from backend.api.admin_apikey import router as admin_apikey_router
 from backend.api.orders_admin import admin_orders_router
 from backend.api.coupons_admin import admin_coupons_router
@@ -822,6 +823,7 @@ app.include_router(admin_reminders_router)
 app.include_router(admin_alerts_router)
 # 一键体检：只读诊断报告（见 backend/api/admin_diagnosis.py）
 app.include_router(admin_diagnosis_router)
+app.include_router(tg_bot_admin_router)
 # API Key / Service Token：创建/列表/吊销 + 连通性测试（见 backend/api/admin_apikey.py）
 app.include_router(admin_apikey_router)
 # 订单关单与退款（见 backend/api/orders_admin.py）

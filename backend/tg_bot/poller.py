@@ -16,6 +16,9 @@ _OFFSET_KEY = "tg_bot_update_offset"
 # poller 心跳（SystemConfig，ISO 时间）：API 进程据此判断 poller 是否在跑，
 # 在跑时网页端绑定校验不得自己调 getUpdates（会与长轮询 409 冲突并抢走 update）
 HEARTBEAT_KEY = "tg_bot_poller_heartbeat"
+# 最后一次轮询错误（SystemConfig，ISO 时间 + 错误摘要）：管理端据此看到
+# poller 是“跑着但报错”还是“跑着且正常”。成功后清掉，不留过期报错吓人。
+LAST_ERROR_KEY = "tg_bot_poller_last_error"
 # 心跳新鲜度阈值：长轮询 30s + 请求超时 10s + 最大退避 300s，留余量
 HEARTBEAT_STALE_SECONDS = 360
 
@@ -30,6 +33,30 @@ def _beat(db) -> None:
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         logger.debug("tg poller heartbeat failed: %s", exc)
+
+
+def _record_poll_error(db, exc: Exception) -> None:
+    """记最后一次轮询错误（失败忽略，不影响轮询）。"""
+    from datetime import datetime
+    from backend.integrations import store
+    try:
+        summary = f"{datetime.now().isoformat()} {exc}"[:300]
+        store.write_values(db, {LAST_ERROR_KEY: summary})
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.debug("tg poller last-error record failed", exc_info=True)
+
+
+def _clear_poll_error(db) -> None:
+    """清掉已恢复的报错（失败忽略，不影响轮询）。"""
+    from backend.integrations import store
+    try:
+        store.write_values(db, {LAST_ERROR_KEY: ""})
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.debug("tg poller last-error clear failed", exc_info=True)
 
 
 def is_active(db) -> bool:
@@ -133,6 +160,8 @@ def poll_forever() -> None:
         t.start()
 
     backoff = 5
+    # P0：是否已记过报错；恢复后才清，避免每轮都写一次 SystemConfig
+    error_recorded = False
 
     # 启动时注册一次 Bot 命令菜单（客户端「菜单」按钮可见）；幂等，失败不影响轮询
     try:
@@ -150,6 +179,10 @@ def poll_forever() -> None:
                 ("lottery", "抽奖"),
                 ("redeem", "兑换码兑换"),
                 ("chatpoints", "群发言积分查询"),
+                ("bindings", "查网盘绑定"),
+                ("transfers", "查转存进度"),
+                ("whyplay", "为什么播不了"),
+                ("wants", "查想看"),
             ])
             if not ok:
                 logger.debug("tg setMyCommands failed: %s", err)
@@ -171,6 +204,10 @@ def poll_forever() -> None:
             # 关闭后 router 层静默丢弃 update，见 tg_bot/router.py）。
             offset = _get_offset(db)
             _beat(db)
+            # P0：上一轮报错、本轮心跳已恢复 → 清掉旧报错
+            if error_recorded:
+                _clear_poll_error(db)
+                error_recorded = False
         finally:
             db.close()
 
@@ -189,5 +226,15 @@ def poll_forever() -> None:
                 _process_updates(updates, offset, _persist)
         except Exception as exc:  # noqa: BLE001
             logger.error("tg poll failed: %s, retry in %ss", exc, backoff)
+            # P0：报错写进 SystemConfig，管理端不用翻日志也能看到
+            try:
+                _db = SessionLocal()
+                try:
+                    _record_poll_error(_db, exc)
+                finally:
+                    _db.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("tg poll error record skipped", exc_info=True)
+            error_recorded = True
             time.sleep(backoff)
             backoff = min(backoff * 2, 300)
