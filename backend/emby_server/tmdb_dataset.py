@@ -191,6 +191,9 @@ def search_local(db: Session, q: str, media_type: str | None = None,
             library_item_id=lib.id if lib is not None else None,
             library_known=library_known))
     # 库内但不在数据集里的条目也混排进来（库内条目可能还没被同步到）。
+    # 混排同样受 media_type 约束：数据集侧按 media_type 过滤，库内侧
+    # 之前没过滤，导致 type=movie 也会混进剧集行、季/集行还会被标成
+    # movie；这里按同一口径过滤，只留 movie / series 标题级条目。
     if library_known:
         seen = {c.tmdb_id for c in candidates}
         extra_query = (
@@ -199,6 +202,15 @@ def search_local(db: Session, q: str, media_type: str | None = None,
                     em.MediaItem.deleted_at.is_(None),
                     em.MediaItem.merged_into_id.is_(None))
         )
+        if media_type == "movie":
+            extra_query = extra_query.filter(
+                em.MediaItem.item_type == "movie")
+        elif media_type == "tv":
+            extra_query = extra_query.filter(
+                em.MediaItem.item_type == "series")
+        else:
+            extra_query = extra_query.filter(
+                em.MediaItem.item_type.in_(("movie", "series")))
         if allowed_library_ids is not None:
             extra_query = extra_query.filter(
                 em.MediaItem.library_id.in_(allowed_library_ids))
@@ -372,6 +384,10 @@ def start_dataset_scheduler() -> bool:
     global _SCHEDULER_STARTED
     with _SCHEDULER_LOCK:
         if _SCHEDULER_STARTED:
+            return False
+        # 门禁现查：总闸或数据集子开关任一关着都不起线程（之前这里
+        # 没查门禁，关闸时也照常起线程并让 worker 记“已启动”，误导运维）。
+        if not gate.dataset_enabled():
             return False
         _SCHEDULER_STARTED = True
 
