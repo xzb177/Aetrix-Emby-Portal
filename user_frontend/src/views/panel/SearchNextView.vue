@@ -51,6 +51,7 @@
           <p v-else-if="playStatus.action === 'want'" class="note">还没有自己的副本，去想看建一个转存任务，转完就能播。</p>
           <p v-else-if="playStatus.action === 'bind'" class="note">去绑定自己的盘后才能点播。</p>
         </div>
+        <SubtitlePicker :key="detail.library_item_id" :item-id="detail.library_item_id" />
       </template>
       <p v-else class="note">库里还没有这部片子，这里只展示，不给播放入口。想看入口随商店单来。</p>
       <button type="button" @click="detail = null">关闭详情</button>
@@ -66,6 +67,7 @@ import {
   type Next302PlayStatus,
   type Next302Result,
 } from '@/api'
+import SubtitlePicker from '@/components/panel/SubtitlePicker.vue'
 
 const q = ref('')
 const type = ref('all')
