@@ -21,6 +21,15 @@
 - 总开关 ``SMART_SUBTITLES_ENABLED``（默认关），每次调用现读 env，
   关 = 全部入口拒绝，唯一回滚手段。
 
+桥接口径（管理后台字幕能力，system_configs 为准、env 做默认回退）：
+
+- ``resolve_enabled(db)`` / ``resolve_provider_config(db)``：有 db 时走
+  ``integrations.store.get_value``（面板行优先、缺行回退同名 env，写时失效、
+  60 秒热缓存）；``db=None`` 时与原来一样只读 env（本模块默认仍是纯函数）。
+- 管理端永远不写生产 ``.env``：面板保存只写 ``system_configs`` 行。
+- 用户端路由调用时传 db，面板改完即生效（同进程写时失效）；直调核心函数
+  不传 db 时行为与原来逐字一致。
+
 本模块是纯函数 + 受控写盘（仅缓存区），不依赖 DB、不依赖网络
 （除非调用方显式传入 ``http_post`` 或配好提供方后调翻译）。
 """
@@ -49,6 +58,49 @@ def enabled() -> bool:
     return (os.getenv(ENABLED_ENV, "0") or "0").strip().lower() in _TRUTHY
 
 
+def _db_value(db, env_key: str, default: str = "") -> str:
+    """DB 行优先、env 回退的单键读取（走 store 热缓存；面板保存时写时失效）。
+
+    store 导入放函数内：本模块默认不依赖 DB，调用方不传 db 时不引入
+    integrations 的导入链（避免循环导入与纯函数测试的额外依赖）。
+    """
+    from backend.integrations import store as _store
+    return _store.get_value(db, env_key, os.getenv(env_key, default))
+
+
+def resolve_enabled(db=None) -> bool:
+    """生效开关：有 db 时面板行优先、缺行回退 env；无 db 时与 enabled() 一致。"""
+    if db is None:
+        return enabled()
+    return _db_value(db, ENABLED_ENV, "0").strip().lower() in _TRUTHY
+
+
+def resolve_provider_config(db=None) -> tuple[str, str, str]:
+    """生效三件套：有 db 时面板行优先、缺行回退 env；无 db 时与 _provider_config() 一致。
+
+    缺任一即 ``TranslateNotConfigured``，错误信息只写缺了哪一项的
+    环境变量名，绝不回显凭据值（与 _provider_config() 逐字一致）。
+    """
+    if db is None:
+        return _provider_config()
+    provider = _db_value(db, PROVIDER_ENV, "").strip()
+    endpoint = _db_value(db, ENDPOINT_ENV, "").strip()
+    api_key = _db_value(db, API_KEY_ENV, "")
+    if not provider:
+        raise TranslateNotConfigured(
+            "翻译提供方未配置：请设置 SMART_SUBTITLE_TRANSLATE_PROVIDER"
+        )
+    if not endpoint:
+        raise TranslateNotConfigured(
+            "翻译端点未配置：请设置 SMART_SUBTITLE_TRANSLATE_ENDPOINT"
+        )
+    if not api_key:
+        raise TranslateNotConfigured(
+            "翻译凭据未配置：请设置 SMART_SUBTITLE_TRANSLATE_API_KEY"
+        )
+    return provider, endpoint, api_key
+
+
 class SmartSubtitleDisabled(Exception):
     """开关未开启。"""
 
@@ -69,8 +121,8 @@ class UnsafeCachePath(ValueError):
     """生成的缓存路径不在服务端字幕缓存区内，拒绝写盘。"""
 
 
-def require_enabled() -> None:
-    if not enabled():
+def require_enabled(db=None) -> None:
+    if not resolve_enabled(db):
         raise SmartSubtitleDisabled(
             "智能字幕未开启：SMART_SUBTITLES_ENABLED=1 后重试（默认关）"
         )
@@ -215,7 +267,7 @@ def _provider_config() -> tuple[str, str, str]:
 
 
 def translate_texts(texts: Sequence[str], source_lang: str, target_lang: str,
-                    http_post: Optional[Callable] = None) -> list[str]:
+                    http_post: Optional[Callable] = None, db=None) -> list[str]:
     """经配置化提供方翻译一批文本。
 
     提供方协议（调用方按此实现服务端点）：POST JSON
@@ -223,8 +275,9 @@ def translate_texts(texts: Sequence[str], source_lang: str, target_lang: str,
     ``{translations: [...]}`` 且条数与入参一致；否则 ``TranslateFailed``。
     ``http_post`` 仅供测试注入（签名 ``(url, headers, payload) -> dict``）；
     未注入时走 urllib，超时 30 秒。失败一律抛错，不回落原文。
+    ``db`` 不为 None 时三件套走桥接（面板行优先、缺行回退 env）；为 None 时只读 env。
     """
-    provider, endpoint, api_key = _provider_config()
+    provider, endpoint, api_key = resolve_provider_config(db)
     payload = {
         "provider": provider,
         "source_lang": source_lang,
@@ -289,20 +342,22 @@ def generate_bilingual_track(item_id: int, source_text: str,
                              source_lang: str, target_lang: str,
                              translations: Optional[Sequence[str]] = None,
                              http_post: Optional[Callable] = None,
-                             cache_dir: Optional[str] = None) -> dict:
+                             cache_dir: Optional[str] = None,
+                             db=None) -> dict:
     """一站式：开关 → 翻译（未给译文时调提供方）→ 合成 → 缓存区落盘。
 
     调用方已给 ``translations`` 时不做任何外部调用；未给时缺配置即
     ``TranslateNotConfigured``，不静默回落。
+    ``db`` 不为 None 时开关与三件套走桥接（面板行优先、缺行回退 env）。
     """
-    require_enabled()
+    require_enabled(db)
     cues = parse_cues(source_text)
     if not cues:
         raise ValueError("原文中没有可解析的字幕 cue，拒绝生成空轨")
     if translations is None:
         translations = translate_texts(
             [c["text"] for c in cues], source_lang, target_lang,
-            http_post=http_post)
+            http_post=http_post, db=db)
     vtt = build_bilingual_vtt(source_text, translations, source_lang, target_lang)
     filename = write_bilingual_track(item_id, vtt, source_lang, target_lang,
                                      cache_dir=cache_dir)

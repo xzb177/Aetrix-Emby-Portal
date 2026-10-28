@@ -33,7 +33,7 @@ FIELD_TYPES = ("str", "secret", "int", "bool", "select")
 
 # 能力清单：顺序即后台展示顺序；模块里再声明 title / desc / group
 CAPABILITY_MODULES: tuple[str, ...] = (
-    "proxy", "captcha", "mail", "telegram", "ai", "geoip", "branding",
+    "proxy", "captcha", "mail", "telegram", "ai", "smart_subtitles", "geoip", "branding",
     "world_board", "world_fortune", "world_streak", "world_copy", "world_letter",
 )
 
@@ -170,6 +170,13 @@ def list_capabilities(db: Session) -> list[dict]:
 def get_capability(db: Session, slug: str) -> dict:
     spec = _spec(slug)
     values = raw_values(db, slug)
+    # 模块可选钩子 effective_values(db, values)：表单回显用生效值
+    # （面板行优先、缺行回退环境变量）。没有钩子的能力保持原行为；
+    # 钩子结果同时进卡片徽标判定（is_enabled/is_configured 看到的就是生效值）。
+    module = _module(slug)
+    eff = getattr(module, "effective_values", None)
+    if callable(eff):
+        values = eff(db, values)
     return {"spec": spec, "item": _card(db, slug, spec, values),
             "values": mask_values(slug, values)}
 
