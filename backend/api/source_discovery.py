@@ -119,6 +119,18 @@ def confirm_source(
         and body.source_id is not None
         and (body.upstream_item_id or "").strip() != ""
     )
+    # fail-closed：三元组给了一部分但没给全时，不许悄悄滑进自动模式
+    # （自动模式只接受“只给 tmdb_id”）。否则调用方写错/过期的一半
+    # 三元组会被丢弃，服务端按 tmdb 另挑一个候选建任务——确认的就不是
+    # 调用方指的那一个（复现：local_item_id=999999 + tmdb 在自动模式下
+    # 照常 200 建任务，999999 被静默丢掉）。
+    triple_partial = (
+        body.local_item_id is not None
+        or body.source_id is not None
+        or (body.upstream_item_id or "").strip() != ""
+    )
+    if triple_partial and not triple:
+        raise HTTPException(status_code=400, detail=TRIPLE_REQUIRED_MESSAGE)
     if triple:
         resolved = orchestrator.resolve_candidate(
             db,
