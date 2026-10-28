@@ -12,6 +12,7 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 
 import asyncio
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -563,6 +564,175 @@ def test_gate_play_sign_consume_proceeds(db, monkeypatch):
                                     play_sign_consume=True)
     assert gate == {"verdict": "proceed", "reason": "play_sign_consume"}
     assert db.query(em.TransferJob).count() == 0
+
+
+# ---------- 2026-10-29 #1453 file-only 回归修复 ----------
+
+def _fake_drive_resp(status_code, files=None, text=""):
+    return SimpleNamespace(status_code=status_code,
+                           json=lambda: {"files": files or []},
+                           text=text)
+
+
+def test_ensure_folder_fileonly_root_list_403_finds_app_folder(monkeypatch):
+    # 根枚举 403 → 按名查应用自创文件，查到即复用，不走创建。
+    calls = []
+
+    def fake_request(self, method, url, drive_id, **kwargs):
+        q = (kwargs.get("params") or {}).get("q", "")
+        calls.append((method, q))
+        if method == "GET" and "'root' in parents" in q:
+            return _fake_drive_resp(
+                403, text='{"error": {"code": 403, "message": "forbidden", '
+                          '"errors": [{"reason": "insufficientPermissions"}]}}')
+        if method == "GET":
+            return _fake_drive_resp(200, files=[{"id": "appfolder1",
+                                                "name": "aetrix-transfer"}])
+        raise AssertionError("unexpected drive call")
+
+    monkeypatch.setattr(tv.DriveApiClient, "_request", fake_request)
+    assert (tv.DriveApiClient().ensure_folder("myDrive:u7", "aetrix-transfer")
+            == "appfolder1")
+    assert len(calls) == 2 and all(m == "GET" for m, _ in calls)
+
+
+def test_ensure_folder_fileonly_root_list_403_creates_when_absent(monkeypatch):
+    # 根枚举 403 + 按名查 200 无匹配 = 目录确实不存在，才走创建。
+    def fake_request(self, method, url, drive_id, **kwargs):
+        if method == "GET":
+            q = (kwargs.get("params") or {}).get("q", "")
+            if "'root' in parents" in q:
+                return _fake_drive_resp(403, text='{"error": {"code": 403}}')
+            return _fake_drive_resp(200, files=[])
+        if method == "POST":
+            return SimpleNamespace(status_code=201,
+                                   json=lambda: {"id": "newfolder"},
+                                   text="")
+        raise AssertionError("unexpected drive call")
+
+    monkeypatch.setattr(tv.DriveApiClient, "_request", fake_request)
+    assert (tv.DriveApiClient().ensure_folder("myDrive:u7", "aetrix-transfer")
+            == "newfolder")
+
+
+def test_ensure_folder_fileonly_both_lists_403_raises_with_body(monkeypatch):
+    # 两次列举都 403 时不盲建（会重名），且异常带 Drive 错误体。
+    def fake_request(self, method, url, drive_id, **kwargs):
+        assert method == "GET"
+        return _fake_drive_resp(
+            403, text='{"error": {"code": 403, "errors": '
+                      '[{"reason": "insufficientPermissions"}]}}')
+
+    monkeypatch.setattr(tv.DriveApiClient, "_request", fake_request)
+    with pytest.raises(tv._Retriable) as excinfo:
+        tv.DriveApiClient().ensure_folder("myDrive:u7", "aetrix-transfer")
+    assert "insufficientPermissions" in str(excinfo.value)
+
+
+def test_ensure_folder_primary_200_unchanged(monkeypatch):
+    # 双范围／SA 旧路径：首查 200 即回，不碰回落。
+    calls = []
+
+    def fake_request(self, method, url, drive_id, **kwargs):
+        calls.append(method)
+        return _fake_drive_resp(200, files=[{"id": "rootfolder",
+                                            "name": "aetrix-transfer"}])
+
+    monkeypatch.setattr(tv.DriveApiClient, "_request", fake_request)
+    assert (tv.DriveApiClient().ensure_folder("myDrive:u7", "aetrix-transfer")
+            == "rootfolder")
+    assert calls == ["GET"]
+
+
+def test_gate_failed_retriable_retriggers_once(db, monkeypatch):
+    # job 422 原型：24h 内失败的可重试任务，播放时重建一单走准备中，
+    # 不再永久 409；同请求内重查只见在途任务，不重复建单。
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_job(db, item.id, 7, status="failed")
+    job.error_kind = "retriable"
+    job.error_detail = "列转存目录失败：403"
+    db.commit()
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "preparing"
+    assert gate["reason"] == "job_retriggered"
+    assert db.query(em.TransferJob).count() == 2
+    new_job = db.query(em.TransferJob).order_by(
+        em.TransferJob.id.desc()).first()
+    assert new_job.status == "pending" and new_job.trigger == "playback"
+    assert gate["job_id"] == new_job.id
+    gate2 = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate2["verdict"] == "preparing"
+    assert gate2["reason"] == "job_in_flight"
+    assert db.query(em.TransferJob).count() == 2
+
+
+def test_gate_failed_retriable_budget_exhausted(db, monkeypatch):
+    # 桶内 24h 已有 2 行（失败 + 已重触发过一次）：不再建第 3 单，
+    # 仍判失败 409，不无限重试。
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    _user_job(db, item.id, 7, status="failed", trigger="prefetch")
+    job = _user_job(db, item.id, 7, status="failed")
+    job.error_kind = "retriable"
+    db.commit()
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate == {"verdict": "failed", "reason": "retriable",
+                    "job_id": job.id}
+    assert db.query(em.TransferJob).count() == 2
+
+
+def test_gate_failed_retriable_old_job_outside_window(db, monkeypatch):
+    # 失败行已出 24h 窗口：预算未耗，重触发仍放行。
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    job = _user_job(db, item.id, 7, status="failed")
+    job.error_kind = "retriable"
+    job.created_at = datetime.now() - timedelta(days=2)
+    db.commit()
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "preparing"
+    assert gate["reason"] == "job_retriggered"
+    assert db.query(em.TransferJob).count() == 2
+
+
+def test_gate_failed_retriable_cross_retriggers(db, monkeypatch):
+    # 跨 provider 分支同款：只绑 115 的用户播 Drive 条目，跨单失败
+    # 可重试时同样重触发跨单，不永久 409。
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7, provider="pan115")
+    job = _user_job(db, item.id, 7, provider="pan115", status="failed")
+    job.error_kind = "retriable"
+    db.commit()
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "preparing"
+    assert gate["reason"] == "job_retriggered"
+    assert db.query(em.TransferJob).count() == 2
+    new_job = db.query(em.TransferJob).order_by(
+        em.TransferJob.id.desc()).first()
+    assert new_job.status == "pending" and new_job.provider == "drive"
+    assert new_job.dest_drive_id == "pan115:user-7"
+    assert tv._is_cross_job(new_job) is True
+
+
+def test_wait_for_transfer_ready_accepts_retriggered():
+    # 等流循环须等 job_retriggered（否则重触发当次请求不等流，
+    # 直接 409，白白多一次播放器重试）。
+    async def _re_gate():
+        return {"verdict": "proceed", "reason": "has_ready_variant"}
+
+    out = asyncio.run(tv.wait_for_transfer_ready(
+        {"verdict": "preparing", "reason": "job_retriggered"},
+        _re_gate, max_sec=5, poll_sec=0.01))
+    assert out["verdict"] == "proceed"
 
 
 def test_release_ready_rows_scoped_by_owner(db):
