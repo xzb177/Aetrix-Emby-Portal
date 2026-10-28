@@ -175,6 +175,15 @@ const router = createRouter({
       component: () => import('@/views/TgBindGuideView.vue'),
       meta: { title: '绑定 Telegram', requiresAuth: true },
     },
+    // 想看商店：独立页 /want（/store 已 301 到补给站，不能复用）。
+    // 访客可浏览查片（后端目录与详情只读），想看写口与清单要登录 + 会员，
+    // 所以这里不挂 requiresAuth，页内按 401/403 给登录与会员提示。
+    {
+      path: '/want',
+      name: 'want-store',
+      component: () => import('@/views/panel/StoreView.vue'),
+      meta: { title: '想看商店' },
+    },
     // 隐私政策：公开页（Google OAuth 验证要求挂在本站域名下），
     // 不带 requiresAuth，路由守卫只拦 requiresAuth 路由，未登录也能直接打开。
     {
@@ -246,7 +255,7 @@ router.beforeEach(async (to) => {
 
 // v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
-export const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit', '/game/account'])
+export const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/want', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit', '/game/account'])
 // 底部坞由 App.vue 全局常驻渲染（PanelTabbar，≤768px 唯一一套，
 // 桌面 ≥769px 由 CSS 隐藏）；各视图模板不再自带 <PanelTabbar/>。
 function restoreUserTheme() {

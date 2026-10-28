@@ -858,3 +858,55 @@ export const collectionsApi = {
   getItems: (id: number, params?: { track?: 'release' | 'watch'; limit?: number; offset?: number }) =>
     api.get<never, CollectionItemsResponse>(`/api/user/collections/${id}/items`, { params }),
 }
+
+// ==================== 想看商店（backend/api/store.py） ====================
+// 总闸 STORE_ENABLED 关时四个口都 404，调用方按“商店未开启”处理（不报错）。
+// 目录与详情访客可读；想看写口与清单要登录 + 有效会员订阅（非会员 403）。
+// 想看只对库内已有映射的 tmdb 建转存任务；库里没有的回 missing_source，
+// 文案写明不能直接开播——前端不给库外条目挂任何播放入口。
+
+/** 详情卡片（GET /api/user/store/items/{tmdb_id}；骨架不拉 TMDB） */
+export interface StoreItem {
+  tmdb_id: string
+  title?: string | null
+  year?: number | null
+  poster_url?: string | null
+  media_type?: string | null
+  in_library: boolean
+  library_item_id?: number | null
+}
+
+export type StoreWantState =
+  | 'wanted'
+  | 'resolving'
+  | 'transferring'
+  | 'ready'
+  | 'failed'
+  | 'missing_source'
+
+/** 一条想看结果（POST /want 回体；清单项同形） */
+export interface StoreWantRecord {
+  tmdb_id: string
+  state: StoreWantState
+  in_library: boolean
+  library_item_id?: number | null
+  job_id?: number | null
+  message: string
+}
+
+export interface StoreWantsResponse {
+  items: StoreWantRecord[]
+}
+
+export const storeApi = {
+  // 详情：只回 tmdb_id 与库内是否已有条目
+  getItem: (tmdbId: string) =>
+    api.get<never, StoreItem>(`/api/user/store/items/${encodeURIComponent(tmdbId)}`),
+
+  // 想看：会员 + 库内映射才真入队；其余按记录体 state/message 展示
+  postWant: (tmdbId: string) =>
+    api.post<never, StoreWantRecord>('/api/user/store/want', { tmdb_id: tmdbId }),
+
+  // 我的想看清单：本人 trigger=store_want 的任务行
+  getWants: () => api.get<never, StoreWantsResponse>('/api/user/store/wants'),
+}
