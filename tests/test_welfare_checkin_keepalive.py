@@ -1,6 +1,8 @@
 """保号 A+B：签到日免日耗（vitality.daily_deduct）＋连签保资格（welfare_expiry）。
 
-A：上一上海自然日有签到记录的用户，daily_deduct 本轮不扣；从不签到的照常扣。
+A（开关门控，默认关）：开关 vitality_checkin_skip_deduct_enabled 开时，
+上一上海自然日有签到记录的用户，daily_deduct 本轮不扣；从不签到的照常扣。
+开关关（默认）时不跳过任何人，行为与 #1449 之前一致；开关非法值按关处理。
 B：已过期用户若最近签到在昨天或今天、且该条 streak >= 阈值（默认 30），
    直接续期 30 天、不扣分、记 streak_renew；查看凭证不动；续期后重跑不重复续。
 """
@@ -28,6 +30,7 @@ def _db():
         "vitality_enabled", "vitality_daily_cost", "vitality_max",
         vitality.CONFIG_LAST_DEDUCT_DATE,
         "welfare_grace_days", "welfare_streak_renew_min",
+        "vitality_checkin_skip_deduct_enabled",
     )
     return s
 
@@ -54,11 +57,17 @@ def _vitality(db, user_id):
     return db.query(models.WebUser).filter_by(id=user_id).one().vitality
 
 
-# ---------------- A：签到日免日耗 ----------------
+def _set_skip_switch(db, value):
+    db.add(models.SystemConfig(key="vitality_checkin_skip_deduct_enabled", value=value))
+    db.commit()
+
+
+# ---------------- A：签到日免日耗（开关门控，默认关） ----------------
 
 def test_deduct_skips_yesterday_checkin_only():
-    """昨天签过 → 不扣；没签过 → 照扣；非公益 → 本来就不扣；扣到 0 计 suspended。"""
+    """开关开：昨天签过 → 不扣；没签过 → 照扣；非公益 → 本来就不扣；扣到 0 计 suspended。"""
     db = _db()
+    _set_skip_switch(db, "true")
     today, yesterday = _frames()
     skip = _user(db, "skip", is_welfare=True, vitality=5)
     _checkin(db, skip.id, yesterday, 5)
@@ -78,8 +87,9 @@ def test_deduct_skips_yesterday_checkin_only():
 
 
 def test_vitality_climbs_back_with_daily_checkin():
-    """活力 2 的用户恢复每天签到：扣减跳过（ stays 2）＋当天签到 +1 → 3，爬回阈值。"""
+    """开关开：活力 2 的用户恢复每天签到：扣减跳过（ stays 2）＋当天签到 +1 → 3，爬回阈值。"""
     db = _db()
+    _set_skip_switch(db, "true")
     today, yesterday = _frames()
     for key, val in [("checkin_enabled", "true"), ("checkin_base_min", "3"),
                      ("checkin_base_max", "3"), ("checkin_streak_bonus", "1"),
@@ -102,6 +112,32 @@ def test_deduct_ignores_stale_checkin():
     today, yesterday = _frames()
     u = _user(db, "stale", is_welfare=True, vitality=5)
     _checkin(db, u.id, today - timedelta(days=3), 40)
+    res = vitality.daily_deduct(db)
+    assert _vitality(db, u.id) == 4
+    assert res["skipped_checkin"] == 0
+    db.close()
+
+
+def test_deduct_switch_off_deducts_yesterday_checkin():
+    """开关默认关（无配行）：昨天签过也照扣，skipped_checkin 为 0，行为与 #1449 之前一致。"""
+    db = _db()
+    today, yesterday = _frames()
+    u = _user(db, "off", is_welfare=True, vitality=5)
+    _checkin(db, u.id, yesterday, 5)
+    res = vitality.daily_deduct(db)
+    assert _vitality(db, u.id) == 4
+    assert res["deducted"] == 1
+    assert res["skipped_checkin"] == 0
+    db.close()
+
+
+def test_deduct_switch_illegal_value_treated_as_off():
+    """开关非法值（非 true）→ 按关处理：昨天签过也照扣。"""
+    db = _db()
+    _set_skip_switch(db, "yes")
+    today, yesterday = _frames()
+    u = _user(db, "bad", is_welfare=True, vitality=5)
+    _checkin(db, u.id, yesterday, 5)
     res = vitality.daily_deduct(db)
     assert _vitality(db, u.id) == 4
     assert res["skipped_checkin"] == 0
