@@ -756,6 +756,64 @@ export interface MySubscription {
   days_left: number
 }
 
+/** 302 Next MVP 非商店部分：本地数据集搜索 + 库外详情 + 播放状态 */
+export interface Next302Result {
+  tmdb_id: string
+  media_type: string
+  title: string
+  original_title: string
+  year?: number | null
+  overview: string
+  genres: string[]
+  poster_path: string
+  vote_average?: number | null
+  in_library: boolean
+  library_item_id?: number | null
+  library_known: boolean
+  dataset_only: boolean
+}
+
+export interface Next302Freshness {
+  last_success_at: string | null
+  total_rows: number
+  last_error: string | null
+  synced: boolean
+}
+
+export interface Next302SearchResponse {
+  results: Next302Result[]
+  total: number
+  freshness: Next302Freshness
+}
+
+export interface Next302PlayStatus {
+  item_id: number
+  route: string
+  detail: string
+  action: 'play' | 'wait' | 'failed' | 'want' | 'bind'
+  has_binding: boolean
+  has_user_ready_copy: boolean
+  job_status: string | null
+}
+
+export const next302Api = {
+  /** 本地数据集搜索（不调 TMDB）：库内混排、库内优先标出 */
+  search: (q: string, type?: string) =>
+    api.get<never, Next302SearchResponse>('/api/user/next302/search', {
+      params: { q, ...(type && type !== 'all' ? { type } : {}) },
+    }),
+
+  /** 详情：库内给播放状态入口，库外只展示、不给播放入口 */
+  details: (mediaType: string, tmdbId: string) =>
+    api.get<never, Next302Result>(`/api/user/next302/details/${mediaType}/${tmdbId}`),
+
+  /** 播放状态（E4，只读）：这部库内片能不能播、为什么 */
+  playStatus: (itemId: number) =>
+    api.get<never, Next302PlayStatus>('/api/user/next302/play-status', {
+      params: { item_id: itemId },
+    }),
+}
+
 /**
  * 临期阈值（天）：与后台「到期前提醒」同一口径（backend/reminders.py 默认 7/3/1）。
  * 用户端不自己写 7：改了后端档位后，界面上的提醒也该跟着换。

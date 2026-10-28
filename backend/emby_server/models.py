@@ -2535,3 +2535,55 @@ class EmbyMediaSetTemplate(Base):
     name = Column(String(200), nullable=False)
     rules_json = Column(Text, nullable=False, default="[]")
     created_at = Column(DateTime, default=datetime.now)
+
+
+class TmdbDatasetItem(Base):
+    """302 Next A1：本地 TMDB 数据集行（只存展示字段）。
+
+    新表：由 ``create_all`` 自动建表，老库无需 ALTER。
+    只存展示用的字段（标题、原名、年份、简介、类型、海报路径、评分），
+    不存版权文本全文，不存任何密钥与用户数据。
+    同一 (tmdb_id, media_type) 只留一行，同步时按该键 upsert。
+    搜索只读本表，不在请求时现调 TMDB（A2 的硬口径）。
+    """
+
+    __tablename__ = "tmdb_dataset_items"
+    __table_args__ = (
+        UniqueConstraint("tmdb_id", "media_type",
+                         name="uq_tmdb_dataset_tmdb_type"),
+        Index("idx_tmdb_dataset_title", "title"),
+        Index("idx_tmdb_dataset_type_year", "media_type", "year"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tmdb_id = Column(String(20), nullable=False, index=True)
+    media_type = Column(String(20), nullable=False)  # movie / tv
+    title = Column(String(300), nullable=False)
+    original_title = Column(String(300))
+    year = Column(Integer)
+    overview = Column(Text)
+    genres_json = Column(Text, default="[]")  # 类型名列表 JSON
+    poster_path = Column(String(300))  # TMDB poster_path 原值，不拼全 URL
+    vote_average = Column(Float)
+    release_date = Column(String(20))  # YYYY-MM-DD 原值，不解析
+    source = Column(String(40))  # trending / popular / top_rated / backfill
+    updated_at = Column(DateTime, default=datetime.now)
+    last_synced_at = Column(DateTime, default=datetime.now)
+
+
+class TmdbDatasetMeta(Base):
+    """302 Next A1：数据集新鲜度（单行，id=1）。
+
+    搜索响应里带出 last_success_at 与 total_rows，让用户看得到数据
+    新不新鲜；同步断了会悄悄变旧，所以失败也要记 last_error，绝不
+    静默过期。同步任务只写本行，不删数据集行。
+    """
+
+    __tablename__ = "tmdb_dataset_meta"
+
+    id = Column(Integer, primary_key=True)
+    last_sync_at = Column(DateTime)
+    last_success_at = Column(DateTime)
+    total_rows = Column(Integer, default=0)
+    last_error = Column(Text)
+    updated_at = Column(DateTime, default=datetime.now)
