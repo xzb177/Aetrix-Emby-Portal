@@ -293,3 +293,51 @@ def test_admin_board_sees_all_and_guest_401(client, db, monkeypatch):
 def test_guest_board_401(client, monkeypatch):
     monkeypatch.setenv("STORE_ENABLED", "1")
     assert client.get("/api/user/store/requests/board").status_code == 401
+
+
+def test_concurrent_vote_conflict_does_not_500(client, db, monkeypatch):
+    """并发附议撞唯一约束不 500：重试后落票成功，人数正确。
+
+    回归：先查后插在并发下会撞 uq_vote_request_user，之前无
+    IntegrityError 处理，并发第二票直接 500。这里用一次“假阳性”
+    flush 失败模拟撞约束：修前该请求 500；修后回滚重试一次，
+    落票成功且人数为 2，再顺序重投仍幂等为 2。
+    """
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import Session as _Session
+
+    monkeypatch.setenv("STORE_ENABLED", "1")
+    first = _user(db, "first-race")
+    second = _user(db, "second-race")
+    _subscribe(db, first)
+    _subscribe(db, second)
+    _as(client, first).post("/api/user/store/requests", json={"tmdb_id": "126"})
+    real_flush = _Session.flush
+    state = {"done": False}
+
+    def _flaky_flush(self, *args, **kwargs):
+        if (not state["done"]
+                and any(isinstance(o, models.MovieRequestVote)
+                        for o in self.new)):
+            state["done"] = True
+            raise IntegrityError(
+                "INSERT", {}, Exception("UNIQUE constraint failed"))
+        return real_flush(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Session, "flush", _flaky_flush)
+    resp = _as(client, second).post(
+        "/api/user/store/requests", json={"tmdb_id": "126"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["vote_count"] == 2
+    db.expire_all()
+    row = _request_row(db, "126")
+    assert row.vote_count == 2
+    votes = (
+        db.query(models.MovieRequestVote)
+        .filter(models.MovieRequestVote.request_id == row.id)
+        .count()
+    )
+    assert votes == 2
+    again = _as(client, second).post(
+        "/api/user/store/requests", json={"tmdb_id": "126"})
+    assert again.json()["vote_count"] == 2

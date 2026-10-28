@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import media_seek, models
@@ -129,6 +130,50 @@ def _record(row: models.MovieRequest, *, in_library: bool,
     )
 
 
+def _append_vote(db: Session, row: models.MovieRequest,
+                 user_id: int) -> tuple[str, models.MovieRequest | None]:
+    """给处理中行附议一票（并发安全），返回 (结果, 行)。
+
+    结果三档：
+    - ``"voted"``：本次落票成功；
+    - ``"already"``：并发请求已先落下同一人的票，本次不重复计；
+    - ``"gone"``：行并发消失，调用方重走新建支。
+    先查后插在并发下会撞唯一约束 ``uq_vote_request_user``（两个请求
+    同时看到“没投过”又同时插行）：撞上不 500，回滚后重查——对方已
+    落票则按已登记回；重查没票（极少数假阳性）则重试一次，第二次
+    再撞约束仍按已登记回（约束本身就是“已有人投过”的证据）。
+    """
+    for _attempt in range(2):
+        try:
+            db.add(models.MovieRequestVote(request_id=row.id, user_id=user_id))
+            db.flush()
+            row.vote_count = _recount_votes(db, row.id)
+            db.commit()
+            return "voted", row
+        except IntegrityError:
+            db.rollback()
+            fresh = (
+                db.query(models.MovieRequest)
+                .filter(models.MovieRequest.id == row.id)
+                .first()
+            )
+            if fresh is None:
+                return "gone", None
+            row = fresh
+            voted = (
+                db.query(models.MovieRequestVote)
+                .filter(
+                    models.MovieRequestVote.request_id == row.id,
+                    models.MovieRequestVote.user_id == user_id,
+                )
+                .first()
+                is not None
+            )
+            if voted:
+                return "already", row
+    return "already", row
+
+
 def _voted_ids(db: Session, user_id: int, request_ids: list[int]) -> set[int]:
     """当前用户在给定求片 id 里登记/附议过哪些（一次查询打标）。"""
     if not request_ids:
@@ -222,15 +267,20 @@ def post_request(
                 existing, in_library=False, library_item_id=None,
                 voted=True, message=REQUEST_ALREADY_REGISTERED_MESSAGE,
             )
-        db.add(models.MovieRequestVote(request_id=existing.id, user_id=user.id))
-        db.flush()
-        existing.vote_count = _recount_votes(db, existing.id)
-        db.commit()
-        db.refresh(existing)
-        return _record(
-            existing, in_library=False, library_item_id=None,
-            voted=True, message=REQUEST_VOTED_MESSAGE,
-        )
+        outcome, existing = _append_vote(db, existing, user.id)
+        if outcome == "gone":
+            # 行并发消失：落到下面的新建支，重新登记一行。
+            pass
+        elif outcome == "already":
+            return _record(
+                existing, in_library=False, library_item_id=None,
+                voted=True, message=REQUEST_ALREADY_REGISTERED_MESSAGE,
+            )
+        else:
+            return _record(
+                existing, in_library=False, library_item_id=None,
+                voted=True, message=REQUEST_VOTED_MESSAGE,
+            )
 
     row = models.MovieRequest(
         user_id=user.id,
