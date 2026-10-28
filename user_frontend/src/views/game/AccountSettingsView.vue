@@ -1142,6 +1142,12 @@ watch(providersLoaded, (loaded) => {
 <style scoped>
 /* 账号设置设施：v4 纸色（只用 v4-paper.css 定义的 token，不硬编码色值） */
 
+/* 追剧订阅区是 .v4-scope 的直属子级（不在 .v4-page 内），吃不到 .v4-page 的
+   底栏留白，最后一截会被固定底栏盖住且滑不上来；这里按 .v4-page 同款口径补齐。 */
+.v4-scope > section[aria-label="追剧订阅"] {
+  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+}
+
 .acct-card { padding: 6px; }
 
 .acct-row {
