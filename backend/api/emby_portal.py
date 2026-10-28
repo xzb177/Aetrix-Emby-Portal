@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -305,6 +305,38 @@ def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
     return enabled, max_events, window_seconds
 
 
+# 公益服冷启动赠送（2026-10-28）：新注册默认送 30 天公益资格 + 30 天查看行，
+# 均不扣积分。资格复用 grant_welfare（channel=register_gift）；查看行复用
+# EmbyViewUnlock（points_spent=0 标记赠送）。只给新用户，不动现有用户行。
+REGISTER_GIFT_WELFARE_DAYS = 30
+REGISTER_GIFT_VIEW_DAYS = 30
+
+
+def _grant_register_gifts(db, user):
+    """新注册冷启动赠送：30 天公益资格 + 30 天查看行（不扣积分）。"""
+    from backend import realms
+    from backend.emby_server.portal import grant_welfare
+
+    grant_welfare(db, user, channel="register_gift", days=REGISTER_GIFT_WELFARE_DAYS)
+    realm_id = realms.active_realm_id(db)
+    existing = (
+        db.query(models.EmbyViewUnlock)
+        .filter(models.EmbyViewUnlock.user_id == user.id,
+                models.EmbyViewUnlock.realm_id == realm_id)
+        .first()
+    )
+    if existing is None:
+        now = datetime.now()
+        db.add(models.EmbyViewUnlock(
+            user_id=user.id,
+            realm_id=realm_id,
+            unlocked_at=now,
+            expires_at=now + timedelta(days=REGISTER_GIFT_VIEW_DAYS),
+            points_spent=0,
+        ))
+        db.commit()
+
+
 @auth_router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 def register(request: Request, req: RegisterRequest, db: Session = Depends(get_db)):
     """注册新用户（用户名唯一，密码 bcrypt 存储）。
@@ -398,6 +430,13 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
             db.rollback()
             logger.warning("邀请码应用失败: user=%s code=%s", user.id, req.invitation_code,
                            exc_info=True)
+
+    # 公益服冷启动赠送：失败静默不阻塞注册（与邀请奖励同一容错口径）。
+    try:
+        _grant_register_gifts(db, user)
+    except Exception:  # noqa: BLE001 — 赠送失败不阻塞注册
+        db.rollback()
+        logger.warning("新注册赠送失败: user=%s", user.id, exc_info=True)
 
     logger.info("新用户注册: %s (id=%s, mode=%s)", username, user.id, reg_mode)
     # 计数语义：注册成功后退还该 IP 的注册限流计数，失败尝试（验证码错 /
