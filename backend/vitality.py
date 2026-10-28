@@ -19,6 +19,11 @@ CONFIG_POINT_COST = "vitality_point_cost"
 CONFIG_WATCH_REWARD = "vitality_watch_reward"
 CONFIG_DAILY_GAIN_LIMIT = "vitality_daily_gain_limit"
 CONFIG_ARCHIVE_CLAMP = "vitality_archive_clamp"
+# 观影时长分档：满一档分钟数 → 一档奖，满二档分钟数 → 二档奖（取档位值，不叠加）
+CONFIG_WATCH_TIER1_MINUTES = "vitality_watch_tier1_minutes"
+CONFIG_WATCH_TIER1_REWARD = "vitality_watch_tier1_reward"
+CONFIG_WATCH_TIER2_MINUTES = "vitality_watch_tier2_minutes"
+CONFIG_WATCH_TIER2_REWARD = "vitality_watch_tier2_reward"
 
 VITALITY_DEFAULTS = {
     CONFIG_ENABLED: "true",
@@ -29,6 +34,10 @@ VITALITY_DEFAULTS = {
     CONFIG_WATCH_REWARD: "1",
     CONFIG_DAILY_GAIN_LIMIT: "2",
     CONFIG_ARCHIVE_CLAMP: "3",
+    CONFIG_WATCH_TIER1_MINUTES: "30",
+    CONFIG_WATCH_TIER1_REWARD: "1",
+    CONFIG_WATCH_TIER2_MINUTES: "60",
+    CONFIG_WATCH_TIER2_REWARD: "2",
 }
 
 # 每日免费获取计入上限的 reason（付费 recharge / 管理员 admin_grant 不计入）
@@ -63,6 +72,8 @@ def validate_vitality_config(values: dict) -> dict:
     - max > 0；daily_cost >= 0；limit_threshold >= 0 且 <= max
     - point_cost > 0；watch_reward >= 0；daily_gain_limit >= 0
     - archive_clamp >= 0 且 <= max
+    - watch_tier1_minutes >= 0；watch_tier1_reward >= 0
+    - watch_tier2_minutes >= watch_tier1_minutes；watch_tier2_reward >= 0
     """
     errors = {}
 
@@ -105,6 +116,25 @@ def validate_vitality_config(values: dict) -> dict:
     elif archive_clamp > max_v:
         errors[CONFIG_ARCHIVE_CLAMP] = "归档钳制不能超过活力上限"
 
+    t1_min = _as_int(values.get(CONFIG_WATCH_TIER1_MINUTES, VITALITY_DEFAULTS[CONFIG_WATCH_TIER1_MINUTES]))
+    if t1_min is None or t1_min < 0:
+        errors[CONFIG_WATCH_TIER1_MINUTES] = "观影一档分钟数不能为负数"
+        t1_min = int(VITALITY_DEFAULTS[CONFIG_WATCH_TIER1_MINUTES])
+
+    t1_rw = _as_int(values.get(CONFIG_WATCH_TIER1_REWARD, VITALITY_DEFAULTS[CONFIG_WATCH_TIER1_REWARD]))
+    if t1_rw is None or t1_rw < 0:
+        errors[CONFIG_WATCH_TIER1_REWARD] = "观影一档奖励不能为负数"
+
+    t2_min = _as_int(values.get(CONFIG_WATCH_TIER2_MINUTES, VITALITY_DEFAULTS[CONFIG_WATCH_TIER2_MINUTES]))
+    if t2_min is None or t2_min < 0:
+        errors[CONFIG_WATCH_TIER2_MINUTES] = "观影二档分钟数不能为负数"
+    elif t2_min < t1_min:
+        errors[CONFIG_WATCH_TIER2_MINUTES] = "观影二档分钟数不能小于一档分钟数"
+
+    t2_rw = _as_int(values.get(CONFIG_WATCH_TIER2_REWARD, VITALITY_DEFAULTS[CONFIG_WATCH_TIER2_REWARD]))
+    if t2_rw is None or t2_rw < 0:
+        errors[CONFIG_WATCH_TIER2_REWARD] = "观影二档奖励不能为负数"
+
     return errors
 
 
@@ -118,6 +148,10 @@ def get_vitality_config(db: Session) -> dict:
         "watch_reward": _cfg_int(db, CONFIG_WATCH_REWARD, 1),
         "daily_gain_limit": _cfg_int(db, CONFIG_DAILY_GAIN_LIMIT, 2),
         "archive_clamp": _cfg_int(db, CONFIG_ARCHIVE_CLAMP, 3),
+        "watch_tier1_minutes": _cfg_int(db, CONFIG_WATCH_TIER1_MINUTES, 30),
+        "watch_tier1_reward": _cfg_int(db, CONFIG_WATCH_TIER1_REWARD, 1),
+        "watch_tier2_minutes": _cfg_int(db, CONFIG_WATCH_TIER2_MINUTES, 60),
+        "watch_tier2_reward": _cfg_int(db, CONFIG_WATCH_TIER2_REWARD, 2),
     }
 
 
@@ -224,23 +258,15 @@ def get_today_free_gain(db: Session, user_id: int) -> int:
     return int(total or 0)
 
 
-def award_watch_reward(db: Session, user_id: int) -> int:
-    """观影奖励：按 vitality_watch_reward 发放，受每日免费获取上限钳制。
+def _grant_free_vitality(db: Session, user_id: int, amount: int, caller: str) -> int:
+    """免费活力发放共用段：锁行 → 查今日免费已得 → 每日上限钳制 → 发放 → 提交。
 
-    返回实际发放的点数（0 表示未发放：功能关闭 / 已达上限 / 非公益服用户）。
-    幂等性由调用方保证（每次有效观影调用一次）。
-
-    并发安全：先对用户行加锁，再「查今日已得 → 判上限 → 发放」，三步在同一事务内
-    串行化。第二个并发请求在锁上等待前者提交后，能看到前者已发放的记录，
-    不会超发（修复 TOCTOU）。
+    调用方先做功能开关 / 金额合法性判断。本函数只处理「该不该发、发多少」
+    （非公益服用户 / 已达上限返回 0）。并发安全：锁行后「查用量-判上限-写」
+    三步在同一事务内串行化，第二个并发请求在锁上等待前者提交后，能看到
+    前者已发放的记录，不会超发（修复 TOCTOU）。
     """
-    cfg = get_vitality_config(db)
-    if not cfg["enabled"]:
-        return 0
-    reward = int(cfg.get("watch_reward", 0) or 0)
-    if reward <= 0:
-        return 0
-    limit = int(cfg.get("daily_gain_limit", 0) or 0)
+    limit = int(get_vitality_config(db).get("daily_gain_limit", 0) or 0)
     try:
         # 先锁行：把"查今日免费获取"和"发放"包进同一事务，避免并发超发
         _lock_user_row(db, user_id)
@@ -255,14 +281,61 @@ def award_watch_reward(db: Session, user_id: int) -> int:
             if remaining <= 0:
                 db.rollback()
                 return 0
-            reward = min(reward, remaining)
-        _add_vitality(db, user_id, reward, "watch_reward")
+            amount = min(amount, remaining)
+        _add_vitality(db, user_id, amount, "watch_reward")
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("award_watch_reward failed for user %s", user_id)
+        logger.exception("%s failed for user %s", caller, user_id)
         return 0
-    return reward
+    return amount
+
+
+def award_watch_reward(db: Session, user_id: int) -> int:
+    """观影奖励：按 vitality_watch_reward 发放，受每日免费获取上限钳制。
+
+    返回实际发放的点数（0 表示未发放：功能关闭 / 已达上限 / 非公益服用户）。
+    幂等性由调用方保证（每次有效观影调用一次）。
+    """
+    cfg = get_vitality_config(db)
+    if not cfg["enabled"]:
+        return 0
+    reward = int(cfg.get("watch_reward", 0) or 0)
+    if reward <= 0:
+        return 0
+    return _grant_free_vitality(db, user_id, reward, "award_watch_reward")
+
+
+def award_watch_minutes_reward(db: Session, user_id: int, watched_minutes) -> int:
+    """观影时长分档奖励：单次观看结算。
+
+    满一档分钟数 → 一档奖；满二档分钟数 → 二档奖（取档位值，不叠加）；
+    不足一档返回 0。再走与 award_watch_reward 相同的锁 + 每日免费获取上限
+    钳制（与签到恢复活力共用上限）+ 发放。
+
+    返回实际发放的点数（0 表示未发放：功能关闭 / 未满一档 / 已达上限 /
+    非公益服用户）。调用方在停播时结算一次；重复停播只受每日上限兜底。
+    """
+    cfg = get_vitality_config(db)
+    if not cfg["enabled"]:
+        return 0
+    try:
+        minutes = float(watched_minutes or 0)
+    except (TypeError, ValueError):
+        return 0
+    t1_min = int(cfg.get("watch_tier1_minutes", 30) or 0)
+    t1_rw = int(cfg.get("watch_tier1_reward", 1) or 0)
+    t2_min = int(cfg.get("watch_tier2_minutes", 60) or 0)
+    t2_rw = int(cfg.get("watch_tier2_reward", 2) or 0)
+    if minutes >= t2_min:
+        amount = t2_rw
+    elif minutes >= t1_min:
+        amount = t1_rw
+    else:
+        return 0
+    if amount <= 0:
+        return 0
+    return _grant_free_vitality(db, user_id, amount, "award_watch_minutes_reward")
 
 
 def clamp_on_archive(db: Session, user_id: int) -> int:
@@ -438,6 +511,7 @@ def start_vitality_scheduler() -> bool:
 __all__ = [
     "VITALITY_DEFAULTS", "get_vitality_config", "vitality_status",
     "ensure_can_play", "daily_deduct", "claim_daily_deduct", "start_vitality_scheduler",
-    "validate_vitality_config", "award_watch_reward", "clamp_on_archive",
+    "validate_vitality_config", "award_watch_reward", "award_watch_minutes_reward",
+    "clamp_on_archive",
     "get_today_free_gain", "FREE_GAIN_REASONS",
 ]

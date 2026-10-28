@@ -218,11 +218,13 @@ ECONOMY_CONFIG_KEYS = {
     # 流媒体加速（v2.49.0）：总开关缺省开，留在面板落库；域名点保存即生效
     "stream_accel_enabled": "bool",
     "stream_accel_domain": "str",
-    # 活力值（C1 竞品借鉴）：上限/每日扣减/观影阈值/积分兑换率/观影奖励/每日获取上限/归档钳制，全部可配
+    # 活力值（C1 竞品借鉴）：上限/每日扣减/观影阈值/积分兑换率/观影奖励/每日获取上限/归档钳制/观影时长分档，全部可配
     "vitality_max": "int", "vitality_daily_cost": "int",
     "vitality_limit_threshold": "int", "vitality_point_cost": "int",
     "vitality_watch_reward": "int", "vitality_daily_gain_limit": "int",
     "vitality_archive_clamp": "int",
+    "vitality_watch_tier1_minutes": "int", "vitality_watch_tier1_reward": "int",
+    "vitality_watch_tier2_minutes": "int", "vitality_watch_tier2_reward": "int",
     # C3 流水审计开关（points_audit_enabled）与 Q3 同剧合并三开关
     # （series_merge_*）均已于 2026-10-21 摘面板（env 治理，缺省开）；
     # 此处只剩同剧合并的间隔/组数上限两个数值（间隔下限 3600 秒，

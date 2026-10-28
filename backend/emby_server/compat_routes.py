@@ -386,9 +386,20 @@ def _record_stopped(request: Request, user: models.WebUser, db: Session, body: d
     runtime = item.duration_ticks or 0
     finished = bool(runtime and pos >= runtime * 0.9)
     umd = _get_or_create_umd(db, user, item)
+    # 观影时长分档奖励：本轮最远点必须在 _apply_play_progress 之前取——
+    # 90% 看完（finished）时该函数会把 max_position 清零，取晚了就没了。
+    # 注意最远点是位置不是实看时长（快进会虚增），每日上限 2 兜底超发。
+    watched_ticks = max(effective_max_position_ticks(umd), pos)
     _mark_variant_played_best_effort(db, user, item)
     _apply_play_progress(umd, pos, finished)
     db.commit()
+    # 观影时长分档奖励（尽力而为）：发放走自己的锁 + 提交，失败只记日志，
+    # 绝不影响 Stopped 主流程与返回。
+    try:
+        from backend import vitality as _vitality
+        _vitality.award_watch_minutes_reward(db, user.id, watched_ticks / 600_000_000)
+    except Exception:  # noqa: BLE001 — 奖励失败不挡停播上报
+        logger.debug("观影时长奖励发放失败", exc_info=True)
     # 批一 #3：尽力提前释放「挂载+路径前缀」播放路数租约（stream_limits）。
     # 只是提前量：客户端不发 Stopped 也没关系，租约靠 TTL 到期收敛；
     # release 本身永不抛，这里再套一层保险，不许影响 Stopped 主流程。
