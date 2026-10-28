@@ -911,6 +911,351 @@ def ensure_user_copy_public(db, user_id, file_id) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# 防外流三件套（2026-10-28）：解绑收权限 + 闲置 TTL + 发放可查。
+# 不碰中继、不碰 #1405 门禁、不改变体默认顺序、不改共享文件权限。
+# ---------------------------------------------------------------------------
+
+def copy_idle_revoke_days() -> int:
+    """闲置收权限阈值（天）：副本最后活动超此天数未动即收 anyone-reader。
+
+    走 env COPY_IDLE_REVOKE_DAYS，默认 30；非法/<=0 回落默认
+    （_env_int 同款口径：0 不表示“关”，要停 TTL 请停工人调用点）。
+    """
+    return _env_int("COPY_IDLE_REVOKE_DAYS", 30)
+
+
+def copy_idle_delete_days() -> int:
+    """闲置删文件阈值（天）：副本最后活动超此天数未动即删文件 + 变体行。
+
+    走 env COPY_IDLE_DELETE_DAYS，默认 90；非法/<=0 回落默认。
+    删除 pass 只在持有可用绑定令牌时执行（无令牌删不了文件，
+    行留待重绑后处理；链接本身已由解绑/收回 pass 断掉，不外流）。
+    """
+    return _env_int("COPY_IDLE_DELETE_DAYS", 90)
+
+
+def _stored_drive_token(db, binding):
+    """读某绑定行已存未过期的 access_token（不刷新、不重试刷新）。
+
+    供 invalid 钩子用：刷新失败正是调用原因，任何刷新尝试都会
+    递归回 _apply_refresh_failure。令牌缺失/已过期（留 60 秒余量）/
+    解不开一律返回 None（调用方按“无可用令牌”跳过，不阻塞）。
+    """
+    try:
+        from backend.emby_server import drive_oauth as _do
+        _cred, token = _do._drive_credential_of(db, binding)
+        tok = (token or {}).get("access_token")
+        exp = int((token or {}).get("expires_at") or 0)
+        if tok and exp > int(time.time()) + 60:
+            return tok
+    except Exception:  # noqa: BLE001 — 令牌读不到 = 无可用令牌
+        return None
+    return None
+
+
+def _user_copy_rows(db, user_id, row_ids=None):
+    """某用户名下全部 Drive 副本行（收回作用域，硬边界）。
+
+    只认 owner_scope='user'、owner_ref=str(user_id)、
+    variant_drive_id 以 'userdrive:' 开头的行；共享源文件、115 行、
+    别人名下的行一律不在结果里。status 不过滤：stale 行的文件
+    可能还在（stale 只是两次巡检没读到）、released 行的文件也在
+    用户盘里，链接同样可转发，都要收。
+    """
+    q = db.query(em.TransferVariant).filter(
+        em.TransferVariant.owner_scope == "user",
+        em.TransferVariant.owner_ref == str(user_id),
+        em.TransferVariant.variant_drive_id.like("userdrive:%"))
+    if row_ids is not None:
+        q = q.filter(em.TransferVariant.id.in_(list(row_ids)))
+    return q.order_by(em.TransferVariant.id).all()
+
+
+def revoke_user_copy_sharing(db, user_id, binding=None, row_ids=None,
+                             allow_refresh=True):
+    """收回某用户名下 Drive 副本的 anyone-reader（只收权限）。
+
+    文件不动、变体行不删、不改行状态；重绑后 PlaybackInfo 自愈
+    再授的路径已存在，本函数不另起。成功（revoked / already_clean /
+    gone）时把行 share_revoked_at 置为 now（审计用：最后一次收回
+    时间）；失败的行不置标记，下次再试。
+
+    令牌与客户端（作用域 = 令牌可见性）：
+    - binding 给定时只用该绑定的令牌（解绑钩子：只收该账号下能
+      看见的文件；其它账号的副本不动——用户仍保有那些绑定，动了
+      会断其正常播放，虽自愈可重授但属无谓 churn）；
+    - binding 为空时用该用户全部 active Drive 绑定的令牌逐个试
+      （TTL 工人：副本可能分属多个绑定账号）；
+    - allow_refresh=False 时只用已存未过期令牌（invalid 钩子专用，
+      绝不刷新，否则递归回刷新失败路径）；无可用令牌时整批跳过。
+
+    本函数不提交：调用方在流程末尾统一 commit（解绑单事务、工人
+    循环、invalid 钩子的调用方均已提交）。永不抛异常：任何失败
+    只记 stats.errors + warning，绝不阻塞解绑/工人/刷新失败处理。
+    """
+    stats = {"total": 0, "revoked": 0, "already_clean": 0, "gone": 0,
+             "errors": 0}
+    try:
+        rows = _user_copy_rows(db, user_id, row_ids)
+    except Exception:  # noqa: BLE001 — 查库失败 = 整批记 error
+        logger.warning("收回副本分享查行失败 user=%s", user_id,
+                       exc_info=True)
+        stats["errors"] = 1
+        return stats
+    stats["total"] = len(rows)
+    if not rows:
+        return stats
+    clients = []
+    try:
+        if binding is not None:
+            if allow_refresh:
+                clients = [UserDriveApiClient(db, binding)]
+            else:
+                token = _stored_drive_token(db, binding)
+                if token:
+                    clients = [_RawTokenClient(token)]
+        elif allow_refresh:
+            bindings = db.query(em.UserStorageBinding).filter(
+                em.UserStorageBinding.user_id == user_id,
+                em.UserStorageBinding.provider == "drive",
+                em.UserStorageBinding.status == "active").order_by(
+                    em.UserStorageBinding.id).all()
+            clients = [UserDriveApiClient(db, b) for b in bindings]
+    except Exception:  # noqa: BLE001 — 客户端建不出来 = 整批记 error
+        logger.warning("收回副本分享建客户端失败 user=%s", user_id,
+                       exc_info=True)
+        stats["errors"] = len(rows)
+        return stats
+    if not clients:
+        logger.warning("收回副本分享无可用令牌 user=%s（跳过 %d 行）",
+                       user_id, len(rows))
+        stats["errors"] = len(rows)
+        return stats
+    now = datetime.now()
+    marker = f"myDrive:{user_id}"
+    for row in rows:
+        fid = (row.variant_file_id or "").strip()
+        if not fid or any(c in fid for c in (" ", "/")):
+            stats["errors"] += 1
+            continue
+        outcome = None
+        for client in clients:
+            try:
+                outcome = client.remove_anyone_reader(marker, fid)
+                break
+            except Exception:  # noqa: BLE001 — 换下一个令牌再试
+                logger.warning("收回副本分享失败 user=%s fid=%s",
+                               user_id, fid, exc_info=True)
+        if outcome in ("revoked", "already_clean", "gone"):
+            stats[outcome] += 1
+            row.share_revoked_at = now
+        else:
+            stats["errors"] += 1
+    return stats
+
+
+def _copy_last_activity_map(db, rows):
+    """批量算各副本行的最后活动时间（闲置 TTL 口径，三者取新者）。
+
+    - 变体行 last_played_at（本单起：发放 usercontent 直链时维护）；
+    - UserMediaData.last_played_at（该用户该条目的播放进度上报）；
+    - 变体行 created_at（从未播过的新副本不算闲置）。
+    发放≠实际出画面、进度不上报的播放器会使信号偏旧——取新者
+    只能缓解，不能根除（见 PR 报告未知项）。
+    """
+    user_ids = set()
+    for row in rows:
+        try:
+            user_ids.add(int(row.owner_ref))
+        except (TypeError, ValueError):
+            pass
+    umd_last = {}
+    if user_ids:
+        for umd in db.query(em.UserMediaData).filter(
+                em.UserMediaData.user_id.in_(sorted(user_ids))).all():
+            key = (umd.user_id, umd.item_id)
+            prev = umd_last.get(key)
+            if umd.last_played_at and (prev is None
+                                       or umd.last_played_at > prev):
+                umd_last[key] = umd.last_played_at
+    result = {}
+    for row in rows:
+        candidates = [row.created_at, row.last_played_at]
+        try:
+            key = (int(row.owner_ref), row.item_id)
+            candidates.append(umd_last.get(key))
+        except (TypeError, ValueError):
+            pass
+        present = [c for c in candidates if c is not None]
+        result[row.id] = max(present) if present else None
+    return result
+
+
+def copy_idle_cleanup(db, now=None, limit=100):
+    """闲置 TTL 清理（工人每日巡检后跑，有界、不阻塞播放主链路）。
+
+    顺序：先删除 pass（闲置≥DELETE_DAYS：删文件 + 变体行），再收回
+    pass（闲置≥REVOKE_DAYS：只收权限），避免同一轮对同一行又收
+    又删。两 pass 每轮各最多处理 ``limit`` 行（按 created_at 升序
+    最旧优先），避免首轮对存量老副本的雷霆清理。
+    删除 pass 须持有可用绑定令牌：无 active 绑定的用户整批跳过
+    （行留待重绑后处理；链接已由解绑收回断掉，不构成外流）。
+    本函数末尾统一提交；永不抛异常（工人循环外层另有兜底）。
+    """
+    stats = {"checked": 0, "revoked": 0, "deleted": 0,
+             "skipped_no_binding": 0, "errors": 0}
+    now = now or datetime.now()
+    revoke_days = copy_idle_revoke_days()
+    delete_days = copy_idle_delete_days()
+    try:
+        candidates = db.query(em.TransferVariant).filter(
+            em.TransferVariant.owner_scope == "user",
+            em.TransferVariant.variant_drive_id.like("userdrive:%"),
+            em.TransferVariant.status.in_(
+                ("ready", "stale", "orphan", "released"))).order_by(
+                    em.TransferVariant.created_at.asc(),
+                    em.TransferVariant.id.asc()).limit(limit).all()
+        last_map = _copy_last_activity_map(db, candidates)
+    except Exception:  # noqa: BLE001 — 查库失败整轮记 error
+        logger.warning("闲置 TTL 清理查行失败", exc_info=True)
+        stats["errors"] = 1
+        return stats
+    stats["checked"] = len(candidates)
+
+    def _idle_days(row):
+        last = last_map.get(row.id)
+        if last is None:
+            return 0
+        delta = (now - last).days
+        return delta if delta > 0 else 0
+
+    # 删除 pass（先行：删掉的行不再进收回 pass）。
+    deleted_ids = set()
+    delete_rows = [r for r in candidates if _idle_days(r) >= delete_days]
+    by_user = {}
+    for row in delete_rows:
+        by_user.setdefault(row.owner_ref, []).append(row)
+    for owner_ref, rows in by_user.items():
+        try:
+            user_id = int(owner_ref)
+        except (TypeError, ValueError):
+            stats["errors"] += len(rows)
+            continue
+        try:
+            bindings = db.query(em.UserStorageBinding).filter(
+                em.UserStorageBinding.user_id == user_id,
+                em.UserStorageBinding.provider == "drive",
+                em.UserStorageBinding.status == "active").order_by(
+                    em.UserStorageBinding.id).all()
+            clients = [UserDriveApiClient(db, b) for b in bindings]
+        except Exception:  # noqa: BLE001
+            logger.warning("闲置 TTL 删除 pass 建客户端失败 user=%s",
+                           user_id, exc_info=True)
+            stats["errors"] += len(rows)
+            continue
+        if not clients:
+            stats["skipped_no_binding"] += len(rows)
+            continue
+        marker = f"myDrive:{user_id}"
+        for row in rows:
+            fid = (row.variant_file_id or "").strip()
+            if not fid or any(c in fid for c in (" ", "/")):
+                stats["errors"] += 1
+                continue
+            ok = False
+            for client in clients:
+                try:
+                    client.delete_file_ignore_missing(marker, fid)
+                    ok = True
+                    break
+                except Exception:  # noqa: BLE001 — 换下一个令牌再试
+                    logger.warning("闲置 TTL 删文件失败 user=%s fid=%s",
+                                   user_id, fid, exc_info=True)
+            if ok:
+                db.delete(row)
+                deleted_ids.add(row.id)
+                stats["deleted"] += 1
+            else:
+                stats["errors"] += 1
+
+    # 收回 pass（只处理未被本轮删掉、且闲置≥阈值的行）。
+    # 无 active 绑定的用户直接记 skipped_no_binding（不记 error）：
+    # 其链接已由解绑收回断掉，每天重复记 error 只是噪音。
+    revoke_rows = [r for r in candidates
+                   if r.id not in deleted_ids
+                   and _idle_days(r) >= revoke_days]
+    revoke_by_user = {}
+    for row in revoke_rows:
+        revoke_by_user.setdefault(row.owner_ref, []).append(row)
+    for owner_ref, rows in revoke_by_user.items():
+        try:
+            user_id = int(owner_ref)
+        except (TypeError, ValueError):
+            stats["errors"] += len(rows)
+            continue
+        try:
+            has_binding = db.query(em.UserStorageBinding).filter(
+                em.UserStorageBinding.user_id == user_id,
+                em.UserStorageBinding.provider == "drive",
+                em.UserStorageBinding.status == "active").first() \
+                is not None
+        except Exception:  # noqa: BLE001
+            has_binding = False
+        if not has_binding:
+            stats["skipped_no_binding"] += len(rows)
+            continue
+        sub = revoke_user_copy_sharing(
+            db, user_id, row_ids=[r.id for r in rows])
+        stats["revoked"] += sub["revoked"] + sub["already_clean"] \
+            + sub["gone"]
+        stats["errors"] += sub["errors"]
+    try:
+        db.commit()
+    except Exception:  # noqa: BLE001 — 提交失败回滚，不谎报
+        logger.warning("闲置 TTL 清理提交失败", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        stats["errors"] += 1
+    return stats
+
+
+def note_usercopy_issued(_db, user_id, item_id, variant_id, fid,
+                         via="usercontent"):
+    """记一条用户副本直链发放日志 + 刷新副本行最后播放时间。
+
+    用独立短会话（与请求会话隔离）：写 emby_direct_issue_logs 一行，
+    并把对应变体行的 last_played_at 置为 now（供闲置 TTL 取新者
+    用）。行已删时只记日志、不报错。第一个参数是 run_db 透传的
+    请求会话，本函数不使用它（隔离写，绝不污染请求事务）。
+    永不抛异常：调用方是播放主链路，记账失败绝不能影响本次
+    PlaybackInfo 响应。
+    """
+    try:
+        from backend.database import SessionLocal
+        now = datetime.now()
+        session = SessionLocal()
+        try:
+            session.add(em.DirectIssueLog(
+                user_id=user_id, item_id=item_id, variant_id=variant_id,
+                variant_file_id=fid, via=via, created_at=now))
+            if variant_id:
+                row = session.query(em.TransferVariant).filter(
+                    em.TransferVariant.id == variant_id).first()
+                if row is not None:
+                    row.last_played_at = now
+            session.commit()
+        finally:
+            session.close()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning("直链发放日志写入失败 user=%s item=%s",
+                       user_id, item_id, exc_info=True)
+        return False
+
+
 def quota_playback_decision(signal, *, bound: bool) -> dict:
     """Quota 强信号的播放裁决。
 
@@ -1741,6 +2086,61 @@ class DriveApiClient:
         if resp.status_code not in (200, 201, 409):
             raise Exception(f"补 anyone 权限失败：{resp.status_code}")
 
+    def list_permissions(self, drive_id, fid):
+        """列出指定文件的权限（防外流收回用）。
+
+        404 → _NotFound（与 get_file 同款口径：文件已不在）；
+        其它非 200 抛异常，由调用方记 error、不静默当成功。
+        """
+        url = f"{FILES_URL}/{fid}/permissions"
+        resp = self._request("GET", url, drive_id,
+                             params={"supportsAllDrives": "true"})
+        if resp.status_code == 404:
+            raise _NotFound("副本不存在")
+        if resp.status_code != 200:
+            raise Exception(f"列文件权限失败：{resp.status_code}")
+        return (resp.json() or {}).get("permissions") or []
+
+    def remove_anyone_reader(self, drive_id, fid):
+        """收回指定文件的 anyone-reader 权限（防外流三件套之一）。
+
+        只删 ``type == "anyone"`` 的权限行，绝不动其它共享人。
+        返回：``"revoked"``（删了至少一条）| ``"already_clean"``
+        （文件在、但本来就没有 anyone 权限）| ``"gone"``
+        （文件已不在）。DELETE 遇 404 同样算成功（权限已随文件
+        或先前操作消失）。
+        """
+        try:
+            perms = self.list_permissions(drive_id, fid)
+        except _NotFound:
+            return "gone"
+        anyone_ids = [p.get("id") for p in perms
+                      if isinstance(p, dict) and p.get("type") == "anyone"
+                      and p.get("id")]
+        if not anyone_ids:
+            return "already_clean"
+        for perm_id in anyone_ids:
+            url = f"{FILES_URL}/{fid}/permissions/{perm_id}"
+            resp = self._request("DELETE", url, drive_id,
+                                 params={"supportsAllDrives": "true"})
+            if resp.status_code not in (200, 204, 404):
+                raise Exception(f"删 anyone 权限失败：{resp.status_code}")
+        return "revoked"
+
+    def delete_file_ignore_missing(self, drive_id, fid):
+        """删除用户盘里的单个文件（闲置 TTL 删除 pass 专用）。
+
+        与 Path B 的 delete_file（404 抛异常、调用方忽略）区分：
+        本方法 404 算成功（文件已不在 = 目标已达成）；其它非 2xx
+        抛异常，调用方不删变体行、不谎报删除。单列方法名，避免
+        改动 Path B 既有语义。
+        """
+        url = f"{FILES_URL}/{fid}"
+        resp = self._request("DELETE", url, drive_id,
+                             params={"supportsAllDrives": "true"})
+        if resp.status_code not in (200, 204, 404):
+            raise Exception(f"删文件失败：{resp.status_code}")
+
     def get_file(self, drive_id, fid):
         """巡检用 files.get：404/已进回收站 → _NotFound；403 → _Forbidden；
         429/5xx/网络 → _Retriable；其它状态 → _Retriable（有界重试）。"""
@@ -1855,6 +2255,28 @@ class DriveApiClient:
                              params={"supportsAllDrives": "true"})
         if resp.status_code not in (200, 204):
             raise Exception(f"删文件失败：{resp.status_code}")
+
+
+class _RawTokenClient(DriveApiClient):
+    """裸令牌 Drive 客户端（仅供绑定 invalid 钩子用）。
+
+    只用调用方给定的已存 access_token 发请求，绝不刷新——invalid
+    钩子本身就跑在刷新失败路径里，再刷新会递归。只复用父类的
+    list_permissions / remove_anyone_reader / delete_file_ignore_missing
+    （它们只调 self._request，不碰令牌解析），其余方法一律不用。
+    注意：本类必须放在 DriveApiClient 完整定义之后、
+    UserDriveApiClient 之前——插进 DriveApiClient 类体中间会把
+    后续方法误收进本类（2026-10-28 自查实证）。
+    """
+
+    def __init__(self, token):
+        self._raw_token = token
+
+    def _request(self, method, url, drive_id, **kwargs):
+        kwargs.setdefault("timeout", 60)
+        return httpx.request(
+            method, url,
+            headers={"Authorization": f"Bearer {self._raw_token}"}, **kwargs)
 
 
 class UserDriveApiClient(DriveApiClient):
@@ -3762,6 +4184,18 @@ def _daemon_main_loop(stop, state, session_factory, drive_api_factory):
                         patrol_once(db, drive_api_factory)
                     finally:
                         db.close()
+                    # 防外流闲置 TTL（2026-10-28）：与巡检同每日节奏、
+                    # 独立会话；copy_idle_cleanup 自带 try/except 与
+                    # 有界批次，异常只记 warning，绝不炸工人循环。
+                    try:
+                        db = session_factory()
+                        try:
+                            copy_idle_cleanup(db)
+                        finally:
+                            db.close()
+                    except Exception:
+                        logger.warning("闲置 TTL 清理异常，已跳过本轮",
+                                       exc_info=True)
                     state["last_patrol"] = now_ts
                 # 追剧扫集（2026-10-27 首批第二单）：只在追剧开关与
                 # 转存总闸双开时跑，间隔 SERIES_FOLLOW_SWEEP_SEC

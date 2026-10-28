@@ -767,9 +767,23 @@ def _apply_refresh_failure(db: Session, binding: em.UserStorageBinding,
     """刷新失败落态（调用方提交）：expired / auth_error 落行；
     throttled 不落行——token 端点 429 是上游节流，不是凭据死亡，
     落 invalid 会逼用户重绑，错杀（与 P1 的 115 直链映射有意不同，
-    115 throttled 是账号被限、此处是端点被限，原因已写清）。"""
+    115 throttled 是账号被限、此处是端点被限，原因已写清）。
+    防外流（2026-10-28）：落 invalid 时 best-effort 收回该绑定名
+    下用户副本的 anyone-reader（只收权限，文件与行不动）。本钩子
+    只用已存未过期令牌、绝不刷新——刷新失败正是本次调用的原因，
+    再刷新会递归回本函数；令牌已死时直接跳过（等用户重绑后由
+    TTL/解绑补收，见 PR 报告未知项）。throttled 不落行也不收回
+    （绑定未死，收回会断正常播放）。本钩子不提交、不抛异常。
+    """
     if kind in ("expired", "auth_error"):
         ub._mark_failed(db, binding, kind)
+        try:
+            from backend.emby_server import transfer_variant as _tv
+            _tv.revoke_user_copy_sharing(
+                db, binding.user_id, binding=binding, allow_refresh=False)
+        except Exception:  # noqa: BLE001 — 收回失败绝不影响落态
+            logger.warning("绑定失效收回副本分享失败 binding=%s",
+                           binding.id, exc_info=True)
 
 
 def get_binding_drive_access_token(db: Session, binding,

@@ -1070,6 +1070,15 @@ def _auto_migrate():
         ("upstream_item_mappings", [
             ("episode_index", "INTEGER", "NULL"),
         ]),
+        # 防外流三件套（2026-10-28）：转存副本行加 anyone-reader
+        # 收回标记（审计列：最后一次收回时间）。老库补列后为 NULL
+        # （= 尚未收回）；收回 pass 不以本列过滤——重授路径
+        # （PlaybackInfo 自愈）跑在请求会话上、提交不可靠，过滤会
+        # 漏收；新表 emby_direct_issue_logs 由 create_all 建出
+        # （只建缺失表），不走这里。
+        ("emby_transfer_variants", [
+            ("share_revoked_at", "DATETIME", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

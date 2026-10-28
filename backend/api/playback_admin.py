@@ -10,6 +10,9 @@
 
 - ``GET  /api/admin/playback/lines``：单路径快照——播放流量（本进程请求数/出流量）、
   本地缓存层状态（启用/命中率/占用）。**纯只读**。
+- ``GET  /api/admin/playback/direct-issue-logs``：用户副本直链发放日志（防外流
+  三件套之三，2026-10-28）——按用户/条目/时间查，纯只读；只做接口与
+  日志表，前端报表页不在本单内。
 - ``GET  /api/admin/playback/risk``：播放风控看板（2026-10-21）——正在播会话数、
   同一文件同时在播人数 Top10（≥2 标叠播）、302 次数、Drive 存在性检查
   命中/未命中/404/503、Drive API 403/429。**纯只读**，口径见 playback_risk。
@@ -281,3 +284,82 @@ def list_transfer_jobs(
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "updated_at": r.updated_at.isoformat() if r.updated_at else None,
     } for r in rows]}
+
+
+def _parse_issue_time(value, field):
+    """解析 since/until（ISO 格式）；非法格式抛 ValueError（端点转 400）。
+
+    时区后缀统一忽略、按 naive 时间比较：发放日志的 created_at
+    写的是 datetime.now()（naive），带 tz 的输入先去 tzinfo 再比，
+    避免 naive/aware 比较抛 TypeError。
+    """
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        from datetime import datetime as _dt
+        parsed = _dt.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"{field} 非法 ISO 时间：{value}")
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
+def query_direct_issue_logs(db, user_id=None, item_id=None,
+                            since=None, until=None, limit=50):
+    """查用户副本直链发放日志（纯查询，供端点与测试共用）。
+
+    过滤：user_id / item_id 精确匹配；since（含）/ until（含）
+    按 created_at 比较。limit 钳制到 1..200，默认 50；按 id 倒序
+    （最新发放先出）。只读，不写审计（与本文件其它只读口同口径）。
+    """
+    from backend.emby_server import models as em
+
+    limit = max(1, min(int(limit or 50), 200))
+    q = db.query(em.DirectIssueLog)
+    if user_id is not None:
+        q = q.filter(em.DirectIssueLog.user_id == user_id)
+    if item_id is not None:
+        q = q.filter(em.DirectIssueLog.item_id == item_id)
+    if since is not None:
+        q = q.filter(em.DirectIssueLog.created_at >= since)
+    if until is not None:
+        q = q.filter(em.DirectIssueLog.created_at <= until)
+    rows = q.order_by(em.DirectIssueLog.id.desc()).limit(limit).all()
+    return [{
+        "id": r.id,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "user_id": r.user_id,
+        "item_id": r.item_id,
+        "variant_id": r.variant_id,
+        "variant_file_id": r.variant_file_id,
+        "via": r.via,
+    } for r in rows]
+
+
+@router.get("/direct-issue-logs")
+def get_direct_issue_logs(
+    user_id: Optional[int] = None,
+    item_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 50,
+    current_admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """用户副本直链发放日志（防外流三件套之三，2026-10-28）。
+
+    泄露后靠本口定位“哪次发放、发给谁、哪个副本”。since/until
+    为 ISO 时间（非法格式回 400）；limit 默认 50、上限 200。
+    """
+    try:
+        since_dt = _parse_issue_time(since, "since")
+        until_dt = _parse_issue_time(until, "until")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"logs": query_direct_issue_logs(
+        db, user_id=user_id, item_id=item_id,
+        since=since_dt, until=until_dt, limit=limit)}

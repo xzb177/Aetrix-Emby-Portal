@@ -436,6 +436,13 @@ def delete_binding(db: Session, user_id: int, binding_id: int) -> None:
     不自动删用户盘转存目录里的副本，也不改变体行——副本仍是
     用户盘里的文件，删不删须另行问用户；本函数绝不调用清理
     模块，测试 test_transfer_cleanup.py 的解绑用例锁死这一点。
+    防外流例外（2026-10-28，收权限≠删副本）：解绑时先收回该
+    绑定名下用户副本的 anyone-reader 权限（只收权限：文件不动、
+    行不删、行状态与 file_id 不变；唯一写的是新增审计列
+    share_revoked_at，故不违反上述锁死规则——锁死用例断言的
+    正是行状态与 file_id 不变）。顺序是关键：
+    必须在删凭据行之前用尚有效的绑定令牌执行收回；令牌已失效
+    时 best-effort（记日志、不阻塞解绑、不抛异常）。
     """
     binding = (
         db.query(em.UserStorageBinding)
@@ -450,6 +457,12 @@ def delete_binding(db: Session, user_id: int, binding_id: int) -> None:
         .filter(em.MountCredential.id == binding.credential_id)
         .first()
     )
+    try:
+        from backend.emby_server import transfer_variant as _tv
+        _tv.revoke_user_copy_sharing(db, user_id, binding=binding)
+    except Exception:  # noqa: BLE001 — 收回失败绝不阻塞解绑
+        logger.warning("解绑收回副本分享失败 user=%s binding=%s",
+                       user_id, binding_id, exc_info=True)
     db.delete(binding)
     # 先把绑定行 flush 落库再删凭据行：两模型间没有 ORM relationship，
     # 单次 flush 时 SQLAlchemy 不保证先删绑定行，生产 PG 上曾出现凭据行
