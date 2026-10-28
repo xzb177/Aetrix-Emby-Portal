@@ -21,23 +21,43 @@
         </div>
       </div>
 
+      <!-- ❤️ 活力值兑换：仅公益服用户可见（状态拿不到就整块隐藏，不留空位） -->
+      <section v-if="vitality !== null" class="shop-sec shop-sec-tight">
+        <div class="v4-sec-title">活力值</div>
+        <div class="v4-sec-sub">10 能量＝1 活力 · 用能量给活力续命</div>
+        <div class="vitality-row">
+          <span class="vitality-stat">❤️ 活力 <b>{{ vitality }}/{{ vitalityMax }}</b></span>
+          <span class="vitality-stat">⚡ 能量 <b>{{ pointsText }}</b></span>
+        </div>
+        <div class="vitality-actions">
+          <button class="vitality-chip" :disabled="vitalityBusy || vitalityFull || (points != null && points < 10)" @click="doVitalityRecharge(10)">+1 活力 · 10 能量</button>
+          <button class="vitality-chip" :disabled="vitalityBusy || vitalityFull || (points != null && points < 50)" @click="doVitalityRecharge(50)">+5 活力 · 50 能量</button>
+          <button v-if="vitalityRoom > 0" class="vitality-chip" :disabled="vitalityBusy || (points != null && points < vitalityRoom * 10)" @click="doVitalityRecharge(vitalityRoom * 10)">补满 · {{ vitalityRoom * 10 }} 能量</button>
+        </div>
+        <div class="vitality-custom">
+          <input v-model.number="vitalityCustomPoints" type="number" min="10" step="10" placeholder="自定义能量数" class="vitality-input" aria-label="自定义兑换能量数" />
+          <button class="vitality-btn" :disabled="!canVitalityCustom" @click="doVitalityRecharge(vitalityCustomPoints ?? 0)">兑换</button>
+        </div>
+        <div v-if="vitalityHint" class="vitality-hint">{{ vitalityHint }}</div>
+      </section>
+
       <!-- 想看商店入口：独立页 /want，不占底栏、不碰发现页；会员想看、非会员先办会员 -->
-      <section class="shop-sec">
+      <section class="shop-sec shop-sec-tight">
         <div class="v4-sec-title">想看商店</div>
         <div class="v4-sec-sub">库里已有的片子才能想看，转存到你自己的盘里播；库里没有的不能想看、也不能直接开播</div>
         <RouterLink to="/want" class="want-entry"><span aria-hidden="true">🎬</span><span class="lbl">去想看商店</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
       </section>
 
       <!-- 求片登记与找源入口：独立页，不占底栏、不碰发现页；求片要会员，找源确认要绑定自己的盘 -->
-      <section class="shop-sec">
+      <section class="shop-sec shop-sec-tight">
         <div class="v4-sec-title">求片与找源</div>
         <div class="v4-sec-sub">库里没有的片子先登记求片；有来源线索的用找源确认后转存到你自己的盘</div>
         <RouterLink to="/store-requests" class="want-entry"><span aria-hidden="true">📝</span><span class="lbl">去求片登记</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
         <RouterLink to="/source-discovery" class="want-entry"><span aria-hidden="true">🔍</span><span class="lbl">去找源</span><span class="arrow" aria-hidden="true">→</span></RouterLink>
       </section>
 
-      <!-- ⚡ 能量补给 -->
-      <section class="shop-sec">
+      <!-- ⚡ 能量补给：公益服下整块隐藏（付费区不在公益服出现） -->
+      <section v-if="!welfareRealm" class="shop-sec">
         <div class="v4-sec-title">能量</div>
         <!-- R37 P3-1：比例接口失败时副标题诚实兜底，不再假装「加载中」 -->
         <div class="v4-sec-sub">
@@ -46,8 +66,8 @@
         </div>
         <div v-if="loading" class="v4-skeleton" style="height:220px"></div>
         <div v-else-if="pkgsFailed" class="v4-err">能量罐加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
-        <div v-else-if="!rechargeEnabled" class="v4-empty">能量充值暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
-        <div v-else-if="packages.length === 0" class="v4-empty">能量罐暂未上架，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
+        <div v-else-if="!rechargeEnabled" class="v4-empty empty-compact"><span class="lbl">能量充值暂未开启，稍后再来看看</span><button class="v4-retry" @click="loadAll">刷新看看</button></div>
+        <div v-else-if="packages.length === 0" class="v4-empty empty-compact"><span class="lbl">能量罐暂未上架，稍后再来看看</span><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <template v-else>
           <!-- R82A-1：支付方式未就绪不再整体替换空态，改为货架上方一条瘦横幅提示；浏览照常，充能类按钮靠已有 !methodsReady 禁用 -->
           <!-- 口径：错误态给"重试"，配置态给"刷新看看"（页面被 KeepAlive 缓存，配置态也需要站内刷新入口） -->
@@ -136,15 +156,15 @@
         </template>
       </section>
 
-      <!-- 📜 探险执照 -->
-      <section class="shop-sec">
+      <!-- 📜 探险执照：公益服下整块隐藏（付费区不在公益服出现） -->
+      <section v-if="!welfareRealm" class="shop-sec">
         <div class="v4-sec-title">会员</div>
         <div class="v4-sec-sub">买会员 = 领取执照 —— 凭执照解锁全片库，点开看细则</div>
         <div v-if="loading" class="v4-skeleton" style="height:280px"></div>
         <div v-else-if="plansFailed" class="v4-err">执照加载失败，稍后再试<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="isFreeRealm" class="v4-empty">当前为公益服，全片库免费开放，无需领取执照<br v-if="realmNote" /><span v-if="realmNote" style="font-size:11px">{{ realmNote }}</span></div>
-        <div v-else-if="!plansEnabled" class="v4-empty">执照领取暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
-        <div v-else-if="plans.length === 0" class="v4-empty">执照暂未上架，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
+        <div v-else-if="!plansEnabled" class="v4-empty empty-compact"><span class="lbl">执照领取暂未开启，稍后再来看看</span><button class="v4-retry" @click="loadAll">刷新看看</button></div>
+        <div v-else-if="plans.length === 0" class="v4-empty empty-compact"><span class="lbl">执照暂未上架，稍后再来看看</span><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <template v-else>
           <div class="cur-toggle">
             <button :class="{ on: currency === 'y' }" :aria-pressed="currency === 'y'" @click="currency = 'y'">¥ 人民币</button>
@@ -203,7 +223,7 @@
         <div v-else-if="!member" class="v4-empty">暂无等级记录，默认从 Lv.1 开始</div>
         <!-- 「暂未开启/暂未上架」是配置态（非故障），不挂"重试"按钮（重试只给加载失败类错误态）；
              但页面被 KeepAlive 缓存、无其他站内刷新入口，所以配置态给一个叫"刷新看看"的按钮，与错误态区分 -->
-        <div v-else-if="!trailLevels.length" class="v4-empty">等级路线暂未开启，稍后再来看看<br><button class="v4-retry" @click="loadAll">刷新看看</button></div>
+        <div v-else-if="!trailLevels.length" class="v4-empty empty-compact"><span class="lbl">等级路线暂未开启，稍后再来看看</span><button class="v4-retry" @click="loadAll">刷新看看</button></div>
         <div v-else class="trail">
           <div
             v-for="lv in trailLevels"
@@ -324,6 +344,7 @@ import {
   exchangeApi,
   membershipApi,
   couponApi,
+  vitalityApi,
   type SubscriptionPlan,
   type RechargePackage,
   type MyMemberInfo,
@@ -331,6 +352,7 @@ import {
   type CouponQuote,
   type PaymentMethod,
 } from '@/api/economy'
+import { useUserStore } from '@/stores/user'
 
 const toast = useToast()
 
@@ -358,6 +380,31 @@ const pointsFailed = ref(false)
 const rechargeRatio = ref<number | null>(null)
 /** R37 P3-1：充值比例接口失败标记 —— 失败时副标题走诚实兜底，不再永久「加载中」 */
 const ratioFailed = ref(false)
+
+/* ---------- 活力值兑换 ---------- */
+// 公益服判定：登录态 AuthUser.is_free_realm（登录时即下发，存 localStorage）；
+// 拿不到时按非公益服处理，付费区保持原样（fail-closed，不误藏）。
+const userStore = useUserStore()
+const welfareRealm = computed(() => userStore.isFreeRealm)
+/** 活力值：null = 拿不到状态（非公益服用户 403 或失败），整块入口隐藏，不留空位（与 StaminaBar 同款口径） */
+const vitality = ref<number | null>(null)
+const vitalityMax = ref(0)
+const vitalityBusy = ref(false)
+const vitalityCustomPoints = ref<number | null>(null)
+const vitalityRoom = computed(() => (vitality.value == null ? 0 : Math.max(0, vitalityMax.value - vitality.value)))
+const vitalityFull = computed(() => vitality.value != null && vitalityMax.value > 0 && vitality.value >= vitalityMax.value)
+const vitalityHint = computed(() => {
+  if (vitality.value == null) return ''
+  if (vitalityFull.value) return '活力已满，无需兑换'
+  if (points.value != null && points.value < 10) return '能量不足 10，先去攒点能量'
+  return ''
+})
+const canVitalityCustom = computed(() => {
+  const p = vitalityCustomPoints.value ?? 0
+  return !vitalityBusy.value && vitality.value != null && !vitalityFull.value &&
+    Number.isInteger(p) && p >= 10 && p % 10 === 0 &&
+    (points.value == null || points.value >= p)
+})
 const payMethod = ref('alipay')
 /* R28：支付方式接口就绪标记——未就绪时禁用下单按钮，避免用默认值 'alipay' 下单 */
 const methodsReady = ref(false)
@@ -647,6 +694,28 @@ async function handleCustomRecharge() {
   }
 }
 
+/* ---------- 活力值兑换 ---------- */
+// 兑换比例以后端 vitality_point_cost 默认值 10 为准（10 能量＝1 活力）；服务端返回的
+// vitality_gained / points_spent 为准，比例若被管理员改过，服务端 400 文案会报出真实比例。
+async function doVitalityRecharge(pointsToSpend: number) {
+  if (vitalityBusy.value || vitality.value == null || vitalityFull.value) return
+  if (!Number.isInteger(pointsToSpend) || pointsToSpend < 10 || pointsToSpend % 10 !== 0) {
+    toast.error('兑换能量需为 10 的整数倍')
+    return
+  }
+  vitalityBusy.value = true
+  try {
+    const res = await vitalityApi.recharge(pointsToSpend)
+    toast.success(`活力 +${res.vitality_gained}，花了 ${res.points_spent} 能量`)
+    // 静默刷新：能量余额与活力值一起回新值，不闪骨架
+    await loadAll(true)
+  } catch (err: unknown) {
+    toast.error(humanizeError(err))
+  } finally {
+    vitalityBusy.value = false
+  }
+}
+
 onMounted(() => {
   void loadAll()
 })
@@ -674,7 +743,7 @@ async function doLoadAll(silent = false) {
   memberFailed.value = false
   methodsFailed.value = false
   try {
-  const [pkgs, pls, mem, inv, pts, cur, methodsRes, exCfg, cpCfg] = await Promise.allSettled([
+  const [pkgs, pls, mem, inv, pts, cur, methodsRes, exCfg, cpCfg, vit] = await Promise.allSettled([
     paymentApi.packages(),
     paymentApi.plans(),
     memberApi.info(),
@@ -684,6 +753,7 @@ async function doLoadAll(silent = false) {
     paymentApi.methods(),
     exchangeApi.config(),
     couponApi.config(),
+    vitalityApi.status(),
   ])
   if (pkgs.status === 'fulfilled') {
     packages.value = pkgs.value.packages || []
@@ -743,6 +813,13 @@ async function doLoadAll(silent = false) {
   }
   if (exCfg.status === 'fulfilled') exchangeEnabled.value = exCfg.value.enabled !== false
   if (cpCfg.status === 'fulfilled') couponEnabled.value = cpCfg.value.enabled !== false
+  if (vit.status === 'fulfilled') {
+    vitality.value = vit.value.vitality
+    vitalityMax.value = Number(vit.value.max) || 0
+  } else {
+    // 非公益服用户（403）或拿不到就不显示入口，不打扰（与 StaminaBar 同款口径）
+    vitality.value = null
+  }
   // 信鸽兑换通知跳进来：自动展开核销区（R28：锚点与 PigeonView 深链统一为 #shop-redeem）
   if (typeof window !== 'undefined' && window.location.hash === '#shop-redeem') {
     const el = document.getElementById('shop-redeem')
@@ -1813,5 +1890,91 @@ async function copyInviteCode() {
 .coupon-strip.sm {
   font-size: 12px;
   margin-top: 4px;
+}
+
+/* ---------- 补给站紧凑区：圈出区域收紧纵向占用（标题/副标题/入口间距），功能与按钮一律保留 ---------- */
+.shop-sec-tight {
+  padding-top: 14px;
+}
+.shop-sec-tight .v4-sec-sub {
+  margin-bottom: 8px;
+}
+.shop-sec-tight .want-entry {
+  margin-top: 8px;
+}
+/* 配置态占位压成紧凑单行：文字在左、刷新按钮在右，不再大居中空块＋大按钮 */
+.v4-empty.empty-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  padding: 10px 12px;
+}
+.v4-empty.empty-compact .lbl {
+  flex: 1;
+}
+.v4-empty.empty-compact .v4-retry {
+  margin-top: 0;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+/* ---------- 活力值兑换 ---------- */
+.vitality-row {
+  display: flex;
+  gap: 16px;
+  font-size: 14px;
+  margin: 2px 0 10px;
+}
+.vitality-row b {
+  font-weight: 800;
+}
+.vitality-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.vitality-chip {
+  border: 1px solid var(--line);
+  background: var(--paper-card);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.vitality-chip:disabled {
+  opacity: 0.5;
+}
+.vitality-custom {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.vitality-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.vitality-btn {
+  background: #016a71;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.vitality-btn:disabled {
+  opacity: 0.5;
+}
+.vitality-hint {
+  font-size: 12px;
+  color: var(--ink2);
+  margin-top: 6px;
 }
 </style>
