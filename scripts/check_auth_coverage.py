@@ -55,6 +55,7 @@ ROUTER_MODULES = (
     # 用户端
     "backend.api.user",
     "backend.api.store",  # 想看商店骨架：POST /want 走 get_current_user
+    "backend.api.store_requests",  # 想看商店求片 R1：POST /requests 走 get_current_user
     "backend.api.emby_portal",
     "backend.api.economy",
     "backend.api.invitation",
