@@ -114,6 +114,23 @@ def get_points_summary(db: Session, user: models.WebUser) -> dict:
     }
 
 
+def get_welfare_status(db: Session, user: models.WebUser) -> dict:
+    """当前用户福利资格状态（只读本人行）。
+
+    无 user_id 参数，调用方只能传已鉴权的当前用户对象，无法越权看他人。
+    welfare_expires_at 为空时原样返回 null：公益用户为空表示不过期，
+    非公益用户为空表示未开通，两者以 is_welfare 区分（与现有代码口径一致）。
+    """
+    row = db.query(models.WebUser).filter(models.WebUser.id == user.id).first()
+    if row is None:
+        return {"is_welfare": False, "welfare_expires_at": None}
+    exp = getattr(row, "welfare_expires_at", None)
+    return {
+        "is_welfare": bool(getattr(row, "is_welfare", False)),
+        "welfare_expires_at": exp.isoformat() if exp else None,
+    }
+
+
 def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
     """积分兑换公益天数
 
