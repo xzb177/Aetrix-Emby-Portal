@@ -22,7 +22,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
-from backend import config_service, models
+from backend import config_service, lottery_governance, models
 from backend.api.admin_core import admin_router, get_current_admin, _audit
 from backend.database import get_db
 
@@ -716,6 +716,88 @@ def cancel_lottery_round(
     if row is None:
         raise HTTPException(status_code=404, detail="抽奖活动不存在")
     raise HTTPException(status_code=409, detail="该活动正在开奖或已开奖，无法取消")
+
+
+# ==================== 等级治理 Step 3：活动提案审批 ====================
+# 用户端提交的提案（POST /api/lottery/proposals）由管理员在这里审批：
+# 批准 -> 建轮次（created_by=提案人）并走正常开奖流程；拒绝 -> 不产生任何东西。
+# 批准/拒绝另写 AdminLog（lottery_proposal_approve/reject）；提案行本身也是审计记录。
+
+
+class ProposalReviewRequest(BaseModel):
+    note: Optional[str] = None
+
+
+@admin_router.get("/welfare/lottery/proposals")
+def list_lottery_proposals(
+    status: Optional[str] = Query(None, description="pending/approved/rejected"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """分页列出活动提案（默认倒序，可按状态过滤）。"""
+    total, items = lottery_governance.list_proposals(
+        db, user_id=None, status=status, page=page, page_size=page_size
+    )
+    return {"total": total, "items": items}
+
+
+@admin_router.post("/welfare/lottery/proposals/{proposal_id}/approve")
+def approve_lottery_proposal(
+    proposal_id: int,
+    req: ProposalReviewRequest = ProposalReviewRequest(),
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """批准活动提案：建轮次并关联提案，轮次走正常开奖流程。"""
+    admin_id = current_admin.id
+    try:
+        proposal, round_obj = lottery_governance.approve_proposal(
+            db, admin_id, proposal_id, note=req.note
+        )
+    except lottery_governance.LotteryGovernanceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    _audit(db, admin_id, "lottery_proposal_approve", "lottery_proposal", proposal.id,
+           {"round_id": round_obj.id, "proposer_id": proposal.user_id})
+    db.commit()
+    try:
+        notify = _get_lottery().notify_new_round(db, round_obj.id)
+    except Exception:  # noqa: BLE001
+        notify = {"ok": False}
+    return {
+        "proposal": lottery_governance.proposal_to_dict(proposal),
+        "round": {
+            "id": round_obj.id,
+            "title": round_obj.title,
+            "chat_id": round_obj.chat_id,
+            "status": round_obj.status,
+            "lottery_type": round_obj.lottery_type,
+            "seed_hash": round_obj.seed_hash,
+        },
+        "notify": notify,
+    }
+
+
+@admin_router.post("/welfare/lottery/proposals/{proposal_id}/reject")
+def reject_lottery_proposal(
+    proposal_id: int,
+    req: ProposalReviewRequest = ProposalReviewRequest(),
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """拒绝活动提案：只改提案行，不产生轮次与奖品。"""
+    admin_id = current_admin.id
+    try:
+        proposal = lottery_governance.reject_proposal(
+            db, admin_id, proposal_id, note=req.note
+        )
+    except lottery_governance.LotteryGovernanceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    _audit(db, admin_id, "lottery_proposal_reject", "lottery_proposal", proposal.id,
+           {"proposer_id": proposal.user_id})
+    db.commit()
+    return lottery_governance.proposal_to_dict(proposal)
 
 
 # ==================== 三重门·资格门：黑名单管理 ====================

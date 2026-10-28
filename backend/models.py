@@ -1592,6 +1592,66 @@ class LotteryRoundWinner(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class LotteryActivityProposal(Base):
+    """等级治理 Step 3：用户活动提案。
+
+    Lv.2+ 用户提交活动提案，管理员批准后才建轮次、拒绝则不产生任何东西。
+    本行本身就是审计记录：谁（user_id）、何时（created_at / reviewed_at）、
+    什么活动（title / chat_id / prizes_json / draw_at）、谁审批（reviewer_id）、
+    结果（status / review_note / round_id）。提案动作不产生经验。
+    新表由 init_db 的 create_all 建出，无需迁移文件（与 DriveOAuthState 同口径）。
+    """
+    __tablename__ = 'lottery_activity_proposals'
+
+    __table_args__ = (
+        Index('idx_lottery_proposal_user_created', 'user_id', 'created_at'),
+        Index('idx_lottery_proposal_status', 'status'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id', ondelete='CASCADE'), nullable=False)
+    title = Column(String(200), nullable=False)
+    # 群组 chat_id：与 lottery_rounds.chat_id 同为 BigInteger（TG 群 id 为整数）。
+    chat_id = Column(BigInteger, nullable=False)
+    lottery_type = Column(String(20), nullable=False, default='button')
+    password_keyword = Column(String(100), nullable=True)
+    # 奖品清单 JSON：[{name, type(days/points/whitelist), value, quantity}]，与
+    # 管理端 RoundCreateRequest.PrizeItem 同形，批准时原样交给 lottery.create_round。
+    prizes_json = Column(Text, nullable=False, default='[]')
+    draw_at = Column(DateTime, nullable=True)
+    max_participants = Column(Integer, nullable=False, default=0)
+    # 提交时刻的等级快照：审批与审计以它为准，不随用户后续升级/降级回改。
+    level_snapshot = Column(Integer, nullable=False)
+    # pending / approved / rejected
+    status = Column(String(20), nullable=False, default='pending')
+    reviewer_id = Column(Integer, ForeignKey('web_users.id'), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    review_note = Column(String(500), nullable=True)
+    round_id = Column(Integer, ForeignKey('lottery_rounds.id', ondelete='SET NULL'), nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class LotteryDirectLaunch(Base):
+    """等级治理 Step 3：用户直接发起活动记录（事后审计）。
+
+    Lv.5+ 用户不经审批直接建轮次；本行记录谁、何时、建了哪个轮次，
+    管理员事后可凭它审计，滥用时用现有的取消端点（/welfare/lottery/rounds/{id}/cancel）
+    取消轮次。直接发起动作不产生经验。
+    """
+    __tablename__ = 'lottery_direct_launches'
+
+    __table_args__ = (
+        Index('idx_lottery_direct_user_created', 'user_id', 'created_at'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id', ondelete='CASCADE'), nullable=False)
+    round_id = Column(Integer, ForeignKey('lottery_rounds.id', ondelete='SET NULL'), nullable=True)
+    level_snapshot = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+
 class LotteryBlacklist(Base):
     """群抽奖黑名单：三重门·资格门。
 
