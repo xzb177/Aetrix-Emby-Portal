@@ -308,16 +308,35 @@ def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
 # 公益服冷启动赠送（2026-10-28）：新注册默认送 30 天公益资格 + 30 天查看行，
 # 均不扣积分。资格复用 grant_welfare（channel=register_gift）；查看行复用
 # EmbyViewUnlock（points_spent=0 标记赠送）。只给新用户，不动现有用户行。
+# 天数走 SystemConfig（管理端公益配置里改；未配行／非法行回退下面默认值）：
+# register_gift_welfare_days（0=永不过期，grant_welfare 口径），
+# register_gift_view_days（最小 1；0 天按 timedelta 算是“立即过期”，不是永久）。
 REGISTER_GIFT_WELFARE_DAYS = 30
 REGISTER_GIFT_VIEW_DAYS = 30
 
 
+def _get_register_gift_days(db, key, default, min_value):
+    """读新注册赠送天数：直查 SystemConfig，无进程缓存，管理端保存即生效。"""
+    row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+    if row is None or row.value is None or str(row.value).strip() == "":
+        return default
+    try:
+        value = int(str(row.value).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value >= min_value else default
+
+
 def _grant_register_gifts(db, user):
-    """新注册冷启动赠送：30 天公益资格 + 30 天查看行（不扣积分）。"""
+    """新注册冷启动赠送：公益资格 + 查看行（不扣积分），天数见上面两键。"""
     from backend import realms
     from backend.emby_server.portal import grant_welfare
 
-    grant_welfare(db, user, channel="register_gift", days=REGISTER_GIFT_WELFARE_DAYS)
+    welfare_days = _get_register_gift_days(
+        db, "register_gift_welfare_days", REGISTER_GIFT_WELFARE_DAYS, 0)
+    view_days = _get_register_gift_days(
+        db, "register_gift_view_days", REGISTER_GIFT_VIEW_DAYS, 1)
+    grant_welfare(db, user, channel="register_gift", days=welfare_days)
     realm_id = realms.active_realm_id(db)
     existing = (
         db.query(models.EmbyViewUnlock)
@@ -331,7 +350,7 @@ def _grant_register_gifts(db, user):
             user_id=user.id,
             realm_id=realm_id,
             unlocked_at=now,
-            expires_at=now + timedelta(days=REGISTER_GIFT_VIEW_DAYS),
+            expires_at=now + timedelta(days=view_days),
             points_spent=0,
         ))
         db.commit()

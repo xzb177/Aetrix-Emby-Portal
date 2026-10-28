@@ -112,6 +112,10 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "welfare_streak_renew_min": ("int", 0, 3650),
     "welfare_inactive_days": ("int", 0, 3650),
     "welfare_request_monthly": ("int", 0, 10000),
+    # 新注册冷启动赠送：福利天数 0=永不过期（grant_welfare 口径）；查看天数最小 1
+    #（0 天按 timedelta 算是“立即过期”，不是永久，管理端直接禁掉）
+    "register_gift_welfare_days": ("int", 0, _BIG),
+    "register_gift_view_days": ("int", 1, _BIG),
     "recharge_ratio": ("float", 0.0001, 1000000),
     "recharge_quick_amounts": ("int_list", 1, 1000000),
     "bot_rate_limit_seconds": ("int", 0, 3600),
@@ -259,6 +263,8 @@ ECONOMY_CONFIG_SCHEMA: dict[str, tuple] = {
     "vitality_watch_tier2_minutes": ("int", 0, _BIG),
     "vitality_watch_tier2_reward": ("int", 0, _BIG),
     "vitality_checkin_skip_deduct_enabled": ("bool",),
+    # 签到活力奖励（economy._do_checkin_core 读取；默认 1，填 0 则签到不恢复活力）
+    "vitality_checkin_gain": ("int", 0, _BIG),
     "series_merge_interval_sec": ("int", 3600, 604800),
     "series_merge_batch_limit": ("int", 10, 100000),
 }

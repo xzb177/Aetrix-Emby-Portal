@@ -507,6 +507,7 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
         description, f"checkin:{today.strftime('%Y%m%d')}",
     )
     # C1 活力值：公益服用户签到恢复活力（受每日免费获取上限钳制）
+    # 恢复点数走 SystemConfig vitality_checkin_gain（默认 1，填 0 则签到不恢复活力）
     vitality_gained = 0
     if is_welfare:
         try:
@@ -514,8 +515,9 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
             if cfg["enabled"]:
                 limit = int(cfg.get("daily_gain_limit", 0) or 0)
                 gained = _vitality.get_today_free_gain(db, user_id) if limit > 0 else 0
-                if limit <= 0 or gained < limit:
-                    vitality_gained = _vitality._add_vitality(db, user_id, 1, "checkin")
+                gain = _get_int_config(db, "vitality_checkin_gain", 1)
+                if gain > 0 and (limit <= 0 or gained < limit):
+                    vitality_gained = _vitality._add_vitality(db, user_id, gain, "checkin")
         except Exception:
             logger.exception("checkin vitality restore failed for user %s", user_id)
     # Step 0 公益原生经验：签到 +1（可刷日封顶 10 钳制；不提交，随签到事务提交）

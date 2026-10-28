@@ -65,6 +65,9 @@ const botFields = [
 const welfareFields = [
   { key: 'welfare_grace_days', label: '到期保留天数', hint: '到期后可登录但不可播放，默认 7', suffix: '天' },
   { key: 'welfare_inactive_days', label: '未活跃禁用天数', hint: '默认 30', suffix: '天' },
+  { key: 'welfare_streak_renew_min', label: '连签续期门槛', hint: '资格到期时，连签达到该天数自动续 30 天、不扣分；查看凭证不自动续，默认 30', suffix: '天' },
+  { key: 'register_gift_welfare_days', label: '新注册送公益天数', hint: '新用户注册默认赠送的公益资格天数，默认 30，填 0 为永不过期', suffix: '天' },
+  { key: 'register_gift_view_days', label: '新注册送查看天数', hint: '新用户注册默认赠送的查看凭证天数，默认 30，最小 1', suffix: '天' },
   // 公益求片额度（welfare_request_monthly）已于 2026-10-23 去重 #5 移到
   // 运营参数「兑换码 · 求片」卡，与每日上限、付费月限放一起
 ]
@@ -246,7 +249,7 @@ onMounted(load)
       <SectionCard
         title="公益服规则"
         :icon="Settings2"
-        description="到期保留、未活跃禁用（求片额度在运营参数里统一设置）"
+        description="到期保留、未活跃禁用、连签续期与新注册赠送（求片额度在运营参数里统一设置）"
       >
         <el-form :label-position="labelPosition" label-width="120px" class="config-form">
           <el-form-item v-for="f in welfareFields" :key="f.key" :label="f.label">
