@@ -106,6 +106,43 @@ def test_single_source_failure_isolated():
     assert by_id[3]["status"] == "ok"
 
 
+def test_session_open_failure_isolated_per_source():
+    """完美审查第四轮：开会话失败只记该源 failed，不毁整轮。
+
+    修前开会话在 try 外：第一个源开会话一抛，整轮抛掉、已跑完的
+    源结果一并丢失，与模块“单源失败隔离”宣称不符。
+    """
+    sources = [_FakeSource(1), _FakeSource(2)]
+    attempts = []
+
+    def _flaky_factory():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("会话打不开（假）")
+        return _FakeSession()
+
+    results = uas.run_scheduled_aggregation(
+        session_factory=_flaky_factory,
+        aggregate_fn=lambda db, source: {"fetched": 1, "written": 0},
+        list_sources_fn=lambda: sources)
+    by_id = {r["source_id"]: r for r in results}
+    assert by_id[1]["status"] == "failed"
+    assert by_id[2]["status"] == "ok"
+
+
+def test_nondict_outcome_is_failed_not_ok():
+    """完美审查第四轮：聚合返回非 dict 记 failed，不许谎报 ok。
+
+    修前非 dict 被当 ok（fetched/written 全 None），调度日志谎称成功。
+    """
+    results = uas.run_scheduled_aggregation(
+        session_factory=_session_factory,
+        aggregate_fn=lambda db, source: None,
+        list_sources_fn=lambda: [_FakeSource(1)])
+    assert results[0]["status"] == "failed"
+    assert results[0]["source_id"] == 1
+
+
 def test_list_sources_failure_returns_empty():
     results = uas.run_scheduled_aggregation(
         session_factory=_session_factory, aggregate_fn=lambda db, s: {},

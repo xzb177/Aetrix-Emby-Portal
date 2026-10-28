@@ -149,11 +149,17 @@ def run_scheduled_aggregation(*, session_factory=None, aggregate_fn=None,
             results.append({"source_id": source_id, "status": "skipped",
                             "reason": "source_type_not_supported"})
             continue
-        db = session_factory() if session_factory is not None else None
+        # 单源隔离（完美审查第四轮）：开会话与取结果都在 try 内——
+        # 开会话失败若在 try 外，本轮直接抛掉、已跑完的源结果一并丢失；
+        # 非 dict 返回若按 ok 记，调度日志会谎称成功（fetched/written 全 None）。
+        db = None
         try:
+            db = session_factory() if session_factory is not None else None
             outcome = aggregate_fn(db, source)
-            fetched = outcome.get("fetched") if isinstance(outcome, dict) else None
-            written = outcome.get("written") if isinstance(outcome, dict) else None
+            if not isinstance(outcome, dict):
+                raise TypeError("聚合返回非 dict，无法记调度结果")
+            fetched = outcome.get("fetched")
+            written = outcome.get("written")
             logger.info("上游聚合定时调度单源完成 source_id=%s fetched=%s "
                         "written=%s", source_id, fetched, written)
             results.append({"source_id": source_id, "status": "ok",
