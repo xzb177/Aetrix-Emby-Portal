@@ -42,15 +42,19 @@
 本模块照实回 ``written=0`` 与 ``mapping_enabled=false``，
 配对结果照常返回（管理员先看配对质量、再决定开不开写）。
 
-有界性：按库分批聚合，不再整源一把梭。先经
-``/Library/MediaFolders`` 取上游库清单，再逐库按 ``ParentId``
-拉取、逐库聚合配对写映射；每库仍受单库上限保护（见
-``MAX_RECORDS_PER_RUN``，现为单库上限），整源超 20000 条不再
-全盘 502。单库失败只记入该库的失败项、继续下一库，已写映射
-不受影响；重跑靠 ``record_mapping`` 的幂等 upsert 续跑（已写库
-不建新行），本模块不新增持久检查点表——断点续跑 = 重跑本接口，
-失败库重试、成功库 upsert 不重复。全局性失败（源未启用、
-凭据失效、额度耗尽）发生在首库之前时仍响亮报错，不写任何东西。
+有界性：按库分窗聚合，不再整源一把梭，也不再设单库总量上限。
+先经 ``/Library/MediaFolders`` 取上游库清单，再逐库按 ``ParentId``
+拉取、每 ``WINDOW_RECORDS`` 条一窗聚合配对写映射；内存与单次
+IN 查询规模恒以窗为界，不随库大小增长。旧单库 20000 上限已删：
+2026-10-28 实证它把云海服 4 个真实大库（58100 / 32151 /
+113070 / 142533 条）挡在聚合之外；它原先防的“TotalRecordCount
+说谎死循环”已由 ``iter_emby_pages`` 的空页终止覆盖（某页 0 条
+即停，总量说谎只会提前截断、不会死循环）。单库失败只记入该库
+的失败项、继续下一库，已写窗的映射不受影响；重跑靠
+``record_mapping`` 的幂等 upsert 续跑（已写窗不建新行），本模块
+不新增持久检查点表——断点续跑 = 重跑本接口，失败库重试、成功
+窗 upsert 不重复。全局性失败（源未启用、凭据失效、额度耗尽）
+发生在首库之前时仍响亮报错，不写任何东西。
 """
 
 from __future__ import annotations
@@ -71,13 +75,21 @@ from backend.emby_server import upstream_sources as us
 
 logger = logging.getLogger(__name__)
 
-#: 单库目录记录上限（防上游 TotalRecordCount 说谎死循环）。
-#: 历史名 MAX_RECORDS_PER_RUN 即此单库上限，不再是整源上限：
-#: 整源可以超过 20000 条，只要单库不超；单库超了只失败该库。
+#: 整源拉取助手的遗留上限（仅 ``fetch_upstream_records`` 整源路径用，
+#: 生产逐库路径已改分窗、不再用它）：防上游 TotalRecordCount 说谎
+#: 死循环。2026-10-28 实证：该上限曾把云海服 4 个真实大库
+#: （58100 / 32151 / 113070 / 142533 条）挡在聚合之外；逐库路径
+#: 的防循环已由 ``iter_emby_pages`` 的空页终止覆盖（见模块头）。
 MAX_RECORDS_PER_RUN = 20000
 
-#: 单库上限的显式别名，与 MAX_RECORDS_PER_RUN 同值。
+#: 单库上限的显式别名，与 MAX_RECORDS_PER_RUN 同值（同上，仅遗留路径）。
 MAX_RECORDS_PER_LIBRARY = MAX_RECORDS_PER_RUN
+
+#: 逐库分窗大小（条）：单库按此分窗拉取 → 聚合 → 配对 → 写映射，
+#: 内存与单次 IN 查询规模恒以窗为界，不随库大小增长；窗内失败
+#: 只失败该库（已写窗的映射不受影响，重跑 upsert 不重复）。
+#: 5000 条约数 MB 内存、50 次分页请求，6 小时调度轮次内绰绰有余。
+WINDOW_RECORDS = 5000
 
 #: 单页默认大小（Emby StartIndex/Limit 分页）。
 DEFAULT_PAGE_SIZE = 100
@@ -371,16 +383,18 @@ def fetch_upstream_records(source, *, http_get: Optional[Callable] = None,
     return records
 
 
-def fetch_upstream_records_for_parent(
+def iter_upstream_records_for_parent(
         source, parent_id, *, http_get: Optional[Callable] = None,
         http_post: Optional[Callable] = None,
         page_size: int = DEFAULT_PAGE_SIZE,
-        api_key: Optional[str] = None) -> List[agg.UpstreamCatalogRecord]:
-    """按 ParentId 拉回某上游库的目录记录（逐库分批的核心）。
+        api_key: Optional[str] = None):
+    """按 ParentId 流式拉回某上游库的目录记录（逐库分窗的核心）。
 
+    只产出、不攒 list、不设单库总量上限：总量上限曾把真实大库
+    挡在聚合之外（2026-10-28 云海服 4 库实证）；防循环由
+    ``agg.iter_emby_pages`` 的空页终止覆盖（某页 0 条即停）。
     与整源路径同款分页与错误映射，唯一区别是多传 ParentId；
-    category_id 记为该库 id，供聚合层按库分区。单库超上限时
-    响亮报错（调用方 run 按库捕获、继续下一库，不毁已写映射）。
+    category_id 记为该库 id，供聚合层按库分区。
     api_key 传了就复用（逐库不重复换 token），没传则现解析。
     """
     if page_size <= 0:
@@ -391,17 +405,23 @@ def fetch_upstream_records_for_parent(
     if api_key is None:
         api_key = _resolve_api_key(source, http_post=http_post)
     fetch_page = _page_fetcher(source, api_key, get, parent_id=parent_id)
-    records: List[agg.UpstreamCatalogRecord] = []
-    for record in agg.iter_emby_pages(
-            fetch_page, source_id=str(source.id),
-            category_id=str(parent_id), page_size=page_size):
-        records.append(record)
-        if len(records) > MAX_RECORDS_PER_RUN:
-            raise UpstreamAggregateRunError(
-                502, "upstream_catalog_too_large",
-                f"上游库 {parent_id} 目录超过单库聚合上限 "
-                f"{MAX_RECORDS_PER_RUN} 条，未做截断，该库跳过")
-    return records
+    yield from agg.iter_emby_pages(
+        fetch_page, source_id=str(source.id),
+        category_id=str(parent_id), page_size=page_size)
+
+
+def iter_record_windows(records, window_size):
+    """把记录流切成定长窗（末窗可短）：纯切分，不发请求。"""
+    if window_size <= 0:
+        raise ValueError("window_size must be positive")
+    window = []
+    for record in records:
+        window.append(record)
+        if len(window) >= window_size:
+            yield window
+            window = []
+    if window:
+        yield window
 
 
 # ---------------------------------------------------------------------------
@@ -572,9 +592,10 @@ def run_manual_aggregation(db: Session, source, *,
     - 源未启用 → 400（停用即断聚合）；
     - applecms 型 → 400（走它自己的同步，不按 Emby 协议撞接口）。
     逐库语义：
-    - 先取库清单，再逐库拉取/聚合/配对/写映射（flush，调用方事务内提交）；
-    - 单库失败（拉取失败、单库超上限、聚合 error）只记入该库失败项，
-      继续下一库，已写库的映射不受影响；返回时照实带 failed_libraries；
+    - 先取库清单，再逐库分窗（WINDOW_RECORDS 条一窗）拉取/聚合/
+      配对/写映射（flush，调用方事务内提交）；
+    - 单库失败（拉取失败、聚合 error）只记入该库失败项，继续下一库，
+      已写窗的映射不受影响；返回时照实带 failed_libraries；
     - 全局性失败（库清单取不到凭据/额度）仍响亮报错，此时尚未写库。
     返回的 pairs 含 written 标记：开关关时一律 false、written=0；
     每对另带 library_id / library_name 供追溯；written 计 upsert
@@ -602,40 +623,49 @@ def run_manual_aggregation(db: Session, source, *,
             "fetched": 0, "aggregates": 0, "paired": 0, "written": 0,
             "status": "ok",
         }
+        lib_fetched = lib_aggregates = lib_paired = lib_written = 0
         try:
-            records = fetch_upstream_records_for_parent(
+            record_iter = iter_upstream_records_for_parent(
                 source, lib_id, http_get=http_get, http_post=http_post,
                 page_size=page_size, api_key=api_key)
-            aggregated = agg.aggregate_sources({str(source.id): records})
-            if aggregated and aggregated[0].error:
-                raise UpstreamAggregateRunError(
-                    502, "upstream_aggregate_failed",
-                    f"上游库 {lib_name or lib_id} 聚合失败："
-                    f"{aggregated[0].error}")
-            items = aggregated[0].items if aggregated else []
-            pairs, unpaired = pair_aggregates(db, items)
-            written = 0
-            for pair in pairs:
-                pair["library_id"] = lib_id
-                pair["library_name"] = lib_name
-                row = uim.record_mapping(
-                    db, local_item_id=pair["local_item_id"],
-                    source_id=source.id,
-                    upstream_item_id=pair["upstream_item_id"],
-                    confidence=pair["confidence"], evidence=pair["evidence"],
-                    episode_index=pair["episode_index"])
-                pair["written"] = row is not None
-                if row is not None:
-                    written += 1
-            summary.update({"fetched": len(records), "aggregates": len(items),
-                            "paired": len(pairs), "written": written})
-            all_pairs.extend(pairs)
-            for reason, count in unpaired.items():
-                unpaired_total[reason] = unpaired_total.get(reason, 0) + count
-            total_fetched += len(records)
-            total_aggregates += len(items)
-            total_written += written
+            for window in iter_record_windows(record_iter, WINDOW_RECORDS):
+                aggregated = agg.aggregate_sources({str(source.id): window})
+                if aggregated and aggregated[0].error:
+                    raise UpstreamAggregateRunError(
+                        502, "upstream_aggregate_failed",
+                        f"上游库 {lib_name or lib_id} 聚合失败："
+                        f"{aggregated[0].error}")
+                items = aggregated[0].items if aggregated else []
+                pairs, unpaired = pair_aggregates(db, items)
+                written = 0
+                for pair in pairs:
+                    pair["library_id"] = lib_id
+                    pair["library_name"] = lib_name
+                    row = uim.record_mapping(
+                        db, local_item_id=pair["local_item_id"],
+                        source_id=source.id,
+                        upstream_item_id=pair["upstream_item_id"],
+                        confidence=pair["confidence"], evidence=pair["evidence"],
+                        episode_index=pair["episode_index"])
+                    pair["written"] = row is not None
+                    if row is not None:
+                        written += 1
+                lib_fetched += len(window)
+                lib_aggregates += len(items)
+                lib_paired += len(pairs)
+                lib_written += written
+                all_pairs.extend(pairs)
+                for reason, count in unpaired.items():
+                    unpaired_total[reason] = unpaired_total.get(reason, 0) + count
+                total_fetched += len(window)
+                total_aggregates += len(items)
+                total_written += written
+            summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
+                            "paired": lib_paired, "written": lib_written})
         except UpstreamAggregateRunError as exc:
+            # 窗粒度断点：已写窗的进度照实留在 summary 里，重跑续写剩余窗。
+            summary.update({"fetched": lib_fetched, "aggregates": lib_aggregates,
+                            "paired": lib_paired, "written": lib_written})
             summary.update({"status": "failed", "error_code": exc.code,
                             "error": exc.message})
             failed_libraries.append({

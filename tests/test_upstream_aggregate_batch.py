@@ -138,20 +138,57 @@ def test_failed_library_does_not_destroy_earlier_mappings(db, monkeypatch):
     assert db.query(em.UpstreamItemMapping).count() == 1
 
 
-def test_per_library_cap_does_not_fail_whole_source(db, monkeypatch):
+def test_large_library_processes_in_windows_without_cap(db, monkeypatch):
     source = _source(db)
     _local(db, item_id=10, name="肖申克的救赎", tmdb="278")
     fake = _FakeUpstream(
         [("lib-a", "大库"), ("lib-b", "小库")],
-        {"lib-a": [_movie(f"u-a{i}", tmdb=None) for i in range(3)],
+        {"lib-a": [_movie(f"u-a{i}", name=f"不存在的片{i}", tmdb=None)
+                   for i in range(5)],
          "lib-b": [_movie("u-b", tmdb="278")]})
     monkeypatch.setenv(uim.MAPPING_ENABLED_ENV, "1")
+    # 旧单库上限 2 条仍在（遗留整源路径），但逐库分窗路径不再理它：
+    # 大库 5 条分 3 窗照常跑完、不失败；小库映射照写；整源不 502。
     monkeypatch.setattr(uar, "MAX_RECORDS_PER_RUN", 2)
+    monkeypatch.setattr(uar, "WINDOW_RECORDS", 2)
     result = uar.run_manual_aggregation(db, source, http_get=fake.get)
-    # 大库 3 条 > 单库上限 2 条只失败大库；小库照常写映射；整源不 502。
+    assert result["failed_libraries"] == []
     assert result["written"] == 1
-    assert [f["library_id"] for f in result["failed_libraries"]] == ["lib-a"]
-    assert result["failed_libraries"][0]["code"] == "upstream_catalog_too_large"
+    lib_a = [lib for lib in result["libraries"]
+             if lib["library_id"] == "lib-a"][0]
+    assert lib_a["status"] == "ok"
+    assert lib_a["fetched"] == 5
+    db.commit()
+    assert db.query(em.UpstreamItemMapping).count() == 1
+
+
+def test_window_split_pairs_do_not_duplicate_or_drop(db, monkeypatch):
+    source = _source(db)
+    _local(db, item_id=10, name="肖申克的救赎", tmdb="278")
+    fake = _FakeUpstream(
+        [("lib-a", "大库")],
+        {"lib-a": [_movie(f"u-a{i}", tmdb="278") for i in range(3)]})
+    monkeypatch.setenv(uim.MAPPING_ENABLED_ENV, "1")
+    # 同一 tmdb 的 3 条分两窗（2 + 1）：每窗各自聚合配对，3 条全落、
+    # 不重复、不丢失——窗切分不改变配对结果。
+    monkeypatch.setattr(uar, "WINDOW_RECORDS", 2)
+    result = uar.run_manual_aggregation(db, source, http_get=fake.get)
+    assert result["failed_libraries"] == []
+    assert result["fetched"] == 3
+    assert result["written"] == 3
+    assert sorted(p["upstream_item_id"] for p in result["pairs"]) == [
+        "u-a0", "u-a1", "u-a2"]
+    db.commit()
+    assert db.query(em.UpstreamItemMapping).count() == 3
+
+
+def test_iter_record_windows_chunks():
+    assert list(uar.iter_record_windows(iter([1, 2, 3, 4, 5, 6, 7]), 3)) == [
+        [1, 2, 3], [4, 5, 6], [7]]
+    assert list(uar.iter_record_windows(iter([1, 2, 3]), 3)) == [[1, 2, 3]]
+    assert list(uar.iter_record_windows(iter([]), 3)) == []
+    with pytest.raises(ValueError):
+        list(uar.iter_record_windows(iter([1]), 0))
 
 
 def test_empty_library_list_returns_empty_result(db):
