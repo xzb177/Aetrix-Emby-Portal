@@ -261,3 +261,60 @@ def test_admin_endpoint_unknown_slug_404(monkeypatch):
     client, _ = _admin_client(monkeypatch)
     r = client.get("/api/admin/capabilities/no_such_slug")
     assert r.status_code == 404
+
+
+# ---- R4 修复：面板清空（"" 行）必须回退 env，与表单回显一致 ----
+
+def test_resolve_provider_config_cleared_row_falls_back_to_env(db, monkeypatch):
+    # 面板清空写 "" 行（不是删行）；此前生成侧把 "" 当成“已填空值”，
+    # 报未配置，而表单回显已回退 env 显示已配置，两边打架。
+    _set_env(monkeypatch, provider="env-p", endpoint="https://env.invalid/v1",
+             api_key="env-key-plain")
+    integrations.save_capability(db, "smart_subtitles", {API_KEY: ""})
+    assert _get_row(db, API_KEY) == ""
+    assert ss.resolve_provider_config(db) == (
+        "env-p", "https://env.invalid/v1", "env-key-plain")
+    # 逐项：只清提供方时，提供方回退 env，其余仍用面板值
+    integrations.save_capability(db, "smart_subtitles", {
+        ENDPOINT: "https://db.invalid/v1", API_KEY: "db-key-plain"})
+    integrations.save_capability(db, "smart_subtitles", {PROVIDER: ""})
+    assert ss.resolve_provider_config(db) == (
+        "env-p", "https://db.invalid/v1", "db-key-plain")
+
+
+def test_resolve_enabled_blank_row_falls_back_to_env(db, monkeypatch):
+    _set_env(monkeypatch, enabled="1")
+    _set_row(db, ENABLED, "")
+    assert ss.resolve_enabled(db) is True
+    _set_env(monkeypatch, enabled="0")
+    assert ss.resolve_enabled(db) is False
+
+
+def test_generate_translate_path_uses_env_after_clear(db, monkeypatch, tmp_path):
+    _set_env(monkeypatch, enabled="1", provider="env-p",
+             endpoint="https://env.invalid/v1", api_key="env-key-plain")
+    integrations.save_capability(db, "smart_subtitles", {API_KEY: ""})
+    seen = {}
+
+    def _fake_post(url, headers, payload):
+        seen["url"] = url
+        return {"translations": ["你好", "世界"]}
+
+    out = ss.generate_bilingual_track(1, SRT, "eng", "chi",
+                                      http_post=_fake_post,
+                                      cache_dir=str(tmp_path), db=db)
+    assert out["cue_count"] == 2
+    assert seen["url"] == "https://env.invalid/v1"
+
+
+def test_list_capabilities_fields_use_effective_values(db, monkeypatch):
+    # 总览此前只对详情页用生效值：纯 env 配置时总览字段全空、徽标却已配置。
+    _set_env(monkeypatch, enabled="1", provider="env-p",
+             endpoint="https://env.invalid/v1", api_key="env-key-plain")
+    cards = {c["slug"]: c for c in integrations.list_capabilities(db)}
+    card = cards["smart_subtitles"]
+    assert card["enabled"] is True and card["configured"] is True
+    assert card["fields"][PROVIDER] == "env-p"
+    assert card["fields"][ENDPOINT] == "https://env.invalid/v1"
+    assert card["fields"][API_KEY] == "******"
+    assert "env-key-plain" not in str(card)

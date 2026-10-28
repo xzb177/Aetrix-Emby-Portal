@@ -63,9 +63,18 @@ def _db_value(db, env_key: str, default: str = "") -> str:
 
     store 导入放函数内：本模块默认不依赖 DB，调用方不传 db 时不引入
     integrations 的导入链（避免循环导入与纯函数测试的额外依赖）。
+
+    注意 store 的行语义：行存在即用行值、哪怕是空串（面板清空会写 "" 行，
+    不是删行）。但本模块的面板口径是“面板没填 = 回退同名 env”（与表单
+    回显的 _effective 一致），所以空串行必须同样回退 env，否则面板上
+    显示“已配置（回退 env）”、生成侧却报“未配置”，两边打架。
     """
     from backend.integrations import store as _store
-    return _store.get_value(db, env_key, os.getenv(env_key, default))
+    env_fallback = os.getenv(env_key, default)
+    value = _store.get_value(db, env_key, env_fallback)
+    if not (value or "").strip():
+        return env_fallback
+    return value
 
 
 def resolve_enabled(db=None) -> bool:

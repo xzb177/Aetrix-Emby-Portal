@@ -164,7 +164,17 @@ def list_capabilities(db: Session) -> list[dict]:
     """能力总览（后台「系统设置」中心页用）"""
     specs = {slug: _spec(slug) for slug in CAPABILITY_MODULES}
     all_values = raw_values_many(db, CAPABILITY_MODULES)
-    return [_card(db, slug, specs[slug], all_values[slug]) for slug in CAPABILITY_MODULES]
+    out = []
+    for slug in CAPABILITY_MODULES:
+        values = all_values[slug]
+        # 与 get_capability 同款钩子：总览的 fields 也得是生效值，否则
+        # 纯 env 配置的能力在总览里字段全空、徽标却显示已配置，两边打架。
+        # 没有钩子的能力保持原行为。
+        eff = getattr(_module(slug), "effective_values", None)
+        if callable(eff):
+            values = eff(db, values)
+        out.append(_card(db, slug, specs[slug], values))
+    return out
 
 
 def get_capability(db: Session, slug: str) -> dict:
