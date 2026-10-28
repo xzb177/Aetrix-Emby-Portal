@@ -24,6 +24,8 @@ CONFIG_WATCH_TIER1_MINUTES = "vitality_watch_tier1_minutes"
 CONFIG_WATCH_TIER1_REWARD = "vitality_watch_tier1_reward"
 CONFIG_WATCH_TIER2_MINUTES = "vitality_watch_tier2_minutes"
 CONFIG_WATCH_TIER2_REWARD = "vitality_watch_tier2_reward"
+# 签到日免日耗开关（2026-10-28 23:27 用户亲令 A 先关闭，可逆：管理端拨开关即可重开，无需部署）
+CONFIG_CHECKIN_SKIP_DEDUCT_ENABLED = "vitality_checkin_skip_deduct_enabled"
 
 VITALITY_DEFAULTS = {
     CONFIG_ENABLED: "true",
@@ -38,6 +40,7 @@ VITALITY_DEFAULTS = {
     CONFIG_WATCH_TIER1_REWARD: "1",
     CONFIG_WATCH_TIER2_MINUTES: "60",
     CONFIG_WATCH_TIER2_REWARD: "2",
+    CONFIG_CHECKIN_SKIP_DEDUCT_ENABLED: "false",
 }
 
 # 每日免费获取计入上限的 reason（付费 recharge / 管理员 admin_grant 不计入）
@@ -152,6 +155,7 @@ def get_vitality_config(db: Session) -> dict:
         "watch_tier1_reward": _cfg_int(db, CONFIG_WATCH_TIER1_REWARD, 1),
         "watch_tier2_minutes": _cfg_int(db, CONFIG_WATCH_TIER2_MINUTES, 60),
         "watch_tier2_reward": _cfg_int(db, CONFIG_WATCH_TIER2_REWARD, 2),
+        "checkin_skip_deduct_enabled": _cfg_bool(db, CONFIG_CHECKIN_SKIP_DEDUCT_ENABLED, False),
     }
 
 
@@ -406,9 +410,13 @@ def _yesterday_checkin_user_ids(db: Session) -> set:
 def daily_deduct(db: Session) -> dict:
     """每日 00:00 扣减公益服用户活力值。
 
-    签到日免日耗：上一自然日有签到记录的用户本轮不扣（每天净 +1，活力掉到阈值
-    以下后靠每天签到爬回来）；从不签到的用户仍每天扣 1。上限 14、阈值 3、日耗 1、
-    签到 +1、每日免费上限、扣到 0 为止、键集分页与单用户 savepoint 隔离均不变。
+    签到日免日耗（#1449 的 A）现由开关 vitality_checkin_skip_deduct_enabled
+    门控（默认关）：关时 skip_ids 恒为空集，行为与 #1449 之前逐字一致；
+    开时恢复 #1449 的跳过逻辑（上一自然日有签到记录的用户本轮不扣）。
+    开关值缺失／非法时 _cfg_bool 回落 False（关）；跳过集合计算失败时
+    同样按不跳过处理（fail-closed，绝不凭不确定数据跳过扣减）。
+    上限 14、阈值 3、日耗 1、签到 +1、每日免费上限、扣到 0 为止、
+    键集分页与单用户 savepoint 隔离均不变。
     """
     cfg = get_vitality_config(db)
     if not cfg["enabled"]:
@@ -419,7 +427,13 @@ def daily_deduct(db: Session) -> dict:
     suspended = 0
     failed = 0
     skipped_checkin = 0
-    skip_ids = _yesterday_checkin_user_ids(db)
+    skip_ids = set()
+    if cfg.get("checkin_skip_deduct_enabled"):
+        try:
+            skip_ids = _yesterday_checkin_user_ids(db)
+        except Exception:
+            logger.warning("签到日免日耗：跳过集合计算失败，本轮不跳过", exc_info=True)
+            skip_ids = set()
     last_id = 0
     # 键集分页（id > last_id）而不是 offset：过滤条件是 vitality > 0，本批扣到 0 的用户
     # 会从结果集里消失，offset 继续往后跳就会整批漏扣后面的用户。

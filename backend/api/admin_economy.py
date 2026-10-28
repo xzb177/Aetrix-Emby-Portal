@@ -225,6 +225,7 @@ ECONOMY_CONFIG_KEYS = {
     "vitality_archive_clamp": "int",
     "vitality_watch_tier1_minutes": "int", "vitality_watch_tier1_reward": "int",
     "vitality_watch_tier2_minutes": "int", "vitality_watch_tier2_reward": "int",
+    "vitality_checkin_skip_deduct_enabled": "bool",
     # C3 流水审计开关（points_audit_enabled）与 Q3 同剧合并三开关
     # （series_merge_*）均已于 2026-10-21 摘面板（env 治理，缺省开）；
     # 此处只剩同剧合并的间隔/组数上限两个数值（间隔下限 3600 秒，
