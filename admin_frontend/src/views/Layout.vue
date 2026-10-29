@@ -28,7 +28,7 @@ import {
   Image as ImageIcon, Layers,
   Database, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Medal, MessageSquareText,
-  Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks,
+  Sun, Moon, MonitorSmartphone, Stethoscope, ListChecks, Flag,
 } from 'lucide-vue-next'
 import { changePassword } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
@@ -166,6 +166,8 @@ const navGroups: NavGroup[] = [
       { path: '/announcements', label: '公告管理', icon: Megaphone },
       { path: '/wall-posts', label: '留言墙管理', icon: MessageSquareText },
       { path: '/tickets', label: '工单', icon: Ticket },
+      // 等级治理：举报终审队列 + 治理停权（复核达标的举报在这里受理 / 驳回）
+      { path: '/governance', label: '举报与停权', icon: Flag },
       // 公益服：抽奖配置 / 积分配置（公益用户已并入「用户管理」，求片审核已并入「求片管理」）
       { path: '/welfare-lottery-rounds', label: '公益服', icon: Trophy },
     ],
