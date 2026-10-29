@@ -5382,8 +5382,15 @@ async def playback_info(
                     # 不下发额度页直链。有本人 115 副本 → 清单指回本站
                     # /stream（video_stream 走 115 现签 302）；没有 → 明确报
                     # 错。绝不回落共享原件、绝不带 SA 令牌。
+                    _pi_quota_cached = await run_db(
+                        _tv_alt.usercopy_quota_probe_cached,
+                        user.id, _alt_fid)
                     if await run_db(_tv_alt.probe_user_copy_quota,
                                     user.id, _alt_fid) == "quota":
+                        _tv_alt.log_byos(
+                            "byos_usercopy_quota", item=item.id,
+                            user=user.id, fid=_alt_fid,
+                            cached=_pi_quota_cached)
                         _alt_is_user_copy = False
                         _alt_applied = True  # 跳过下面 alt=media+头各段
                         _v115 = await run_db(_tv_alt.ready_user115_variant,
@@ -5735,6 +5742,30 @@ async def video_stream(
                 variant=play_variants.BYOS115_DIRECT,
                 result="ok",
                 resolve_ms=int((time.perf_counter() - _byos_t0) * 1000))
+            _alive115 = await run_db(_ub115.check_115_download_alive,
+                                     _url115)
+            if _alive115 == "dead":
+                # 死链不 302：播放器跟随 302 只会撞 404。记一 strike、
+                # 预算内重建一单，409 明示正在重新转存；预算耗尽时
+                # 明示上限，不谎称正在转存。
+                await run_db(_tv.mark_variant_stale_once, db,
+                             getattr(_variant115, "id", None))
+                _rebuilt115 = await run_db(
+                    _tv.rebuild_dead_user115_copy, db, item,
+                    getattr(user, "id", None))
+                _note_play_start_safe(
+                    item, user_id=getattr(user, "id", None),
+                    method="transfer115_copy",
+                    variant=play_variants.BYOS115_DIRECT,
+                    result="error", error_kind="115_copy_dead")
+                if (_rebuilt115 or {}).get("reason") == "throttled":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="115 副本已失效，重新转存已达 24 小时上限，"
+                               "请稍后重试")
+                raise HTTPException(
+                    status_code=409,
+                    detail="115 副本已失效，正在重新转存")
             return _observe_traffic(
                 RedirectResponse(_url115, status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
@@ -5756,11 +5787,24 @@ async def video_stream(
         _on_user_copy = (
             _play_variant is not None
             and getattr(_play_variant, "owner_scope", None) == "user")
+        _quota_cached = False
+        _quota_verdict = None
         if (_on_user_copy and _play_fid
-                and _is_user_drive_copy_variant(_play_variant)
-                and await run_db(_tv.probe_user_copy_quota,
-                                 getattr(user, "id", None), _play_fid)
-                == "quota"):
+                and _is_user_drive_copy_variant(_play_variant)):
+            # 先问缓存再探测：顺序不能反，探测跑完缓存里就有了。
+            _quota_cached = await run_db(
+                _tv.usercopy_quota_probe_cached,
+                getattr(user, "id", None), _play_fid)
+            _quota_verdict = await run_db(
+                _tv.probe_user_copy_quota,
+                getattr(user, "id", None), _play_fid)
+        if _quota_verdict == "quota":
+            # quota 409 不再只有 _note_play_start_safe 打点：应用日志
+            # 里留一条带 item/user/fid/缓存命中的结构化行。
+            _tv.log_byos(
+                "byos_usercopy_quota", item=getattr(item, "id", None),
+                user=getattr(user, "id", None), fid=_play_fid,
+                cached=_quota_cached)
             # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
             # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
             _v115q = await run_db(_tv.ready_user115_variant, db,
@@ -5796,6 +5840,23 @@ async def video_stream(
                 method="transfer115_copy",
                 variant=play_variants.BYOS115_DIRECT, result="ok",
                 resolve_ms=int((time.perf_counter() - _byos_t0q) * 1000))
+            _alive115q = await run_db(_ub115q.check_115_download_alive,
+                                      _url115)
+            if _alive115q == "dead":
+                # 115 回落链也是死链：不 302，记 strike 并预算内重建；
+                # 仍报额度 409（主因是 Drive 副本额度满），重建后台跑。
+                await run_db(_tv.mark_variant_stale_once, db,
+                             getattr(_v115q, "id", None))
+                await run_db(_tv.rebuild_dead_user115_copy, db, item,
+                             getattr(user, "id", None))
+                _note_play_start_safe(
+                    item, user_id=getattr(user, "id", None),
+                    method="transfer115_copy",
+                    variant=play_variants.BYOS115_DIRECT,
+                    result="error", error_kind="115_copy_dead")
+                raise HTTPException(
+                    status_code=409,
+                    detail=_tv.USERCOPY_QUOTA_DETAIL)
             return _observe_traffic(
                 RedirectResponse(_url115, status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))
