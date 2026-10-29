@@ -429,6 +429,27 @@ def _usercopy_probe_http(url):
         return resp.status_code, ctype, head
 
 
+def _usercopy_quota_cache_key(user_id, fid) -> str:
+    return f"usercopy_quota:{user_id}:{fid}"
+
+
+def usercopy_quota_probe_cached(user_id, fid) -> bool:
+    """quota 探测缓存是否已命中（video_stream / PlaybackInfo 打日志用）。
+
+    只读缓存、不触发探测：调用方必须在 probe 之前先问一次——probe
+    跑完后缓存里就有了，再问恒为真，顺序不能反。缓存不可用按未命中。
+    """
+    fid = (fid or "").strip()
+    if not fid:
+        return False
+    try:
+        from backend.database import CacheManager
+        return CacheManager.get(_usercopy_quota_cache_key(user_id, fid),
+                                domain="playback") in ("ok", "quota")
+    except Exception:  # noqa: BLE001 — 缓存不可用按未命中
+        return False
+
+
 def probe_user_copy_quota(user_id, fid) -> str:
     """探测用户副本免凭证直链是否被谷歌下载额度挡住。
 
@@ -442,7 +463,7 @@ def probe_user_copy_quota(user_id, fid) -> str:
     fid = (fid or "").strip()
     if not fid:
         return "error"
-    key = f"usercopy_quota:{user_id}:{fid}"
+    key = _usercopy_quota_cache_key(user_id, fid)
     try:
         from backend.database import CacheManager
         cached = CacheManager.get(key, domain="playback")
@@ -476,8 +497,6 @@ def probe_user_copy_quota(user_id, fid) -> str:
                              domain="playback")
     except Exception:  # noqa: BLE001
         pass
-    if verdict == "quota":
-        log_byos("byos_usercopy_quota", user=user_id, fid=fid)
     return verdict
 
 
@@ -929,7 +948,8 @@ def log_byos(event: str, **fields) -> None:
     """方案 2 结构化日志。
 
     事件名只认 ``byos_gate_block`` / ``byos_enqueue`` /
-    ``byos_quota_force`` / ``byos_ready_play``。日志失败不影响播放。
+    ``byos_quota_force`` / ``byos_ready_play`` / ``byos_usercopy_quota``。
+    日志失败不影响播放。
     """
     try:
         extras = " ".join(
@@ -1598,6 +1618,61 @@ def _rebuild_done_job(db, item, user_id, provider, job, *,
             "job_id": new_job.id}
 
 
+def rebuild_dead_user115_copy(db, item, user_id):
+    """115 死链检出后的重建（serve_115_copy 现签校验专用）。
+
+    与 _rebuild_done_job 同款预算口径：24h 同桶 < 2 行才 force 重建
+    一单（_gate_retrigger_budget_ok），预算耗尽不建新单、不刷任务
+    洪水。provider==pan115 走同 provider 任务，否则走跨 provider
+    任务（Drive 源→用户 115 盘）；只建用户盘任务，不碰共享原件。
+    返回 dict：preparing/job_rebuilt | preparing/throttled |
+    failed/<kind>，与 _rebuild_done_job 同款形状。
+    """
+    item_id = getattr(item, "id", None)
+    provider = _item_provider(db, item)
+    if item_id is None or provider is None:
+        return {"verdict": "failed", "reason": "unknown_provider"}
+    cross = provider != "pan115"
+    dest = f"pan115:user-{user_id}" if cross else None
+    if not _gate_retrigger_budget_ok(db, item_id, user_id, dest=dest):
+        return {"verdict": "preparing", "reason": "throttled"}
+    try:
+        if cross:
+            new_job = create_cross_provider_job(
+                db, item, user_id, provider, trigger="playback", force=True)
+        else:
+            new_job = create_user_job(
+                db, item, user_id, provider, trigger="playback", force=True)
+    except TransferError as exc:
+        if exc.kind == "throttled":
+            return {"verdict": "preparing", "reason": "throttled"}
+        return {"verdict": "failed", "reason": exc.kind}
+    return {"verdict": "preparing", "reason": "job_rebuilt",
+            "job_id": new_job.id}
+
+
+def mark_variant_stale_once(db, variant_id):
+    """给变体行记一次 stale strike（115 死链检出时调用）。
+
+    与转存巡检同款语义：stale_count +1，满 STALE_STRIKES 行状态
+    转 stale；下一轮门禁见 stale_count >= 1 即不再直接放行该行，
+    改走任务逻辑（准备中/重建），不再反复给播放器发死链。
+    行不存在返回 None，否则返回记分后的 stale_count。
+    """
+    if variant_id is None:
+        return None
+    row = (db.query(em.TransferVariant)
+           .filter(em.TransferVariant.id == variant_id)
+           .first())
+    if row is None:
+        return None
+    row.stale_count = (getattr(row, "stale_count", 0) or 0) + 1
+    if row.stale_count >= STALE_STRIKES:
+        row.status = "stale"
+    db.commit()
+    return row.stale_count
+
+
 def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
     """首播转存门禁。语义见 ``_ensure_user_copy_gate_impl``。"""
     result = _ensure_user_copy_gate_impl(
@@ -1655,6 +1730,12 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
             scheme = "pan115:" if other == "pan115" else "userdrive:"
             ready = _newest_ready_for_scheme(db, item_id, "user",
                                              str(user_id), scheme)
+            if (ready is not None and other == "pan115"
+                    and getattr(ready, "stale_count", 0) >= 1):
+                # 115 行已吃过一次 stale strike：DB 状态虽仍 ready，但
+                # 文件很可能已死（2026-10-29 115 死链实证），不再直接
+                # 放行 serve_115_copy；落到下面任务逻辑走重建/准备中。
+                ready = None
             if ready is not None:
                 if other == "pan115":
                     return {"verdict": "serve_115_copy", "reason": "ready",
@@ -1706,6 +1787,10 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
         if item_id is None:
             return {"verdict": "failed", "reason": "no_item_id"}
         ready = _newest_ready(db, item_id, "user", str(user_id))
+        if (ready is not None and provider == "pan115"
+                and getattr(ready, "stale_count", 0) >= 1):
+            # 同上：stale 115 行不直接放行，走下面任务逻辑重建。
+            ready = None
         if ready is not None:
             if provider == "pan115":
                 return {"verdict": "serve_115_copy", "reason": "ready",

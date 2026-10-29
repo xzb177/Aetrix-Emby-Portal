@@ -615,3 +615,42 @@ def resolve_user115_copy_url(db: Session, user_id: int,
             raise BindingError(kind, message) from exc
         raise BindingError("transient", f"115 直链解析失败：{exc}") from exc
     return url
+
+def _pan115_probe_http(url):
+    """115 现签地址的探测 HTTP 入口（测试打桩用）。
+
+    与 transfer_variant._usercopy_probe_http 同款姿势：GET Range
+    bytes=0-、跟随跳转、只读少量字节后关连接，不下整段。只返回
+    最终状态码；调用方按状态码定性。
+    """
+    import httpx
+
+    with httpx.stream("GET", url, headers={"Range": "bytes=0-"},
+                      timeout=3.0, follow_redirects=True) as resp:
+        for _chunk in resp.iter_bytes():
+            break
+        return resp.status_code
+
+
+def check_115_download_alive(url: str) -> str:
+    """115 现签下载地址的轻量存在性校验（serve_115_copy 302 前用）。
+
+    返回 "alive" / "dead" / "unknown"：
+    - 200/206 → alive（可播）；
+    - 404/410 → dead（文件已死，302 过去播放器也只会撞 404）；
+    - 其余（403/5xx/超时/异常）→ unknown：定性不清时不拦播放，
+      调用方沿用旧行为 302，绝不因探测抖动多造一次播放失败。
+    永不抛异常。
+    """
+    if not (url or "").strip():
+        return "unknown"
+    try:
+        status = _pan115_probe_http(url)
+    except Exception:  # noqa: BLE001 — 探测失败不阻断播放
+        return "unknown"
+    if status in (200, 206):
+        return "alive"
+    if status in (404, 410):
+        return "dead"
+    return "unknown"
+
