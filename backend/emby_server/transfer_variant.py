@@ -1259,6 +1259,173 @@ def copy_idle_delete_hours() -> int:
     return _env_int("COPY_IDLE_DELETE_HOURS", 2)
 
 
+# ---------------------------------------------------------------------------
+# 安全收口（2026-10-30）：服主副本 TTL 开关 + 死令牌待收回登记/执行
+# + Path B 暂存残留登记/扫荡。
+# ---------------------------------------------------------------------------
+
+#: 服主副本闲置 TTL 开关（SystemConfig 键，非 env；管理端/运维改
+#: system_configs 行即生效）。
+KEY_SOURCE_COPY_IDLE_CLEANUP = "transfer_source_copy_idle_cleanup_enabled"
+
+
+def source_copy_idle_cleanup_enabled(db) -> bool:
+    """服主副本纳入闲置 TTL 的开关（默认开）。
+
+    读法与 user_bindings.pan115_bind_vip_check_enabled 同款
+    （store 热读 + fail-safe 回默认开）：收口是安全动作，读不到
+    配置不该悄悄关掉。
+    """
+    try:
+        from backend.integrations import store
+        raw = (store.get_value(
+            db, KEY_SOURCE_COPY_IDLE_CLEANUP, "true") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB 场景下保默认
+        logger.warning(
+            "transfer_source_copy_idle_cleanup_enabled 读取失败，回默认开",
+            exc_info=True)
+        return True
+    return raw not in ("0", "false", "no", "off")
+
+
+def mark_share_revoke_pending(db, user_id):
+    """死令牌待收回登记：把该用户名下尚未收回（share_revoked_at
+    为空）且未登记的用户副本行标 share_revoke_pending_at=now。
+
+    调用点是凭据死亡钩子（drive_oauth._apply_refresh_failure）：
+    死亡时能收的已先收（成功行 share_revoked_at 非空、自动
+    跳过），剩下的就是令牌已死收不到、或逐行失败的行。副本行
+    没有绑定 id 列，登记只能按用户粒度——它只是义务清单，真正
+    执行时仍由令牌可见性决定能收哪几行，不扩大作用域。
+    不提交、不抛异常，返回登记行数。
+    """
+    now = datetime.now()
+    count = 0
+    try:
+        for row in _user_copy_rows(db, user_id):
+            if getattr(row, "share_revoked_at", None) is None and \
+                    getattr(row, "share_revoke_pending_at", None) is None:
+                row.share_revoke_pending_at = now
+                count += 1
+    except Exception:  # noqa: BLE001 — 登记失败不许拖垮调用方
+        logger.warning("待收回登记失败 user=%s", user_id, exc_info=True)
+    return count
+
+
+def pending_share_revoke_row_ids(db, user_id):
+    """该用户待收回登记在案的行 id（重绑成功时优先补收用）。"""
+    try:
+        return [row.id for row in _user_copy_rows(db, user_id)
+                if getattr(row, "share_revoke_pending_at", None) is not None]
+    except Exception:  # noqa: BLE001
+        logger.warning("待收回查行失败 user=%s", user_id, exc_info=True)
+        return []
+
+
+def run_pending_share_revokes(db, limit_users=20):
+    """死令牌待收回兜底执行：逐个处理有待收回登记的用户。
+
+    凭该用户全部 active Drive 绑定的令牌试收（revoke 本职口径），
+    收成功的行在 revoke 内同步清登记。无 active 绑定的用户整批
+    跳过：无令牌可执行，登记保留——已知残留（用户解绑后不再
+    重绑时，那批副本只能等其在 Google 侧自行撤权；登记行留在
+    库里可盘点，不静默丢弃）。不提交、不抛异常。返回 stats。
+    """
+    stats = {"users": 0, "revoked": 0, "errors": 0}
+    try:
+        rows = db.query(em.TransferVariant).filter(
+            em.TransferVariant.owner_scope == "user",
+            em.TransferVariant.share_revoke_pending_at.isnot(None)).all()
+    except Exception:  # noqa: BLE001 — 查库失败整轮记 error
+        logger.warning("待收回兜底查行失败", exc_info=True)
+        stats["errors"] = 1
+        return stats
+    by_user = {}
+    for row in rows:
+        by_user.setdefault(row.owner_ref, []).append(row.id)
+    for owner_ref, row_ids in list(by_user.items())[:limit_users]:
+        try:
+            user_id = int(owner_ref)
+        except (TypeError, ValueError):
+            stats["errors"] += len(row_ids)
+            continue
+        stats["users"] += 1
+        sub = revoke_user_copy_sharing(db, user_id, row_ids=row_ids)
+        stats["revoked"] += sub["revoked"] + sub["already_clean"] \
+            + sub["gone"]
+        stats["errors"] += sub["errors"]
+    return stats
+
+
+def _register_staging_leftover(db, job, item, uid, tmp_fid):
+    """Path B 暂存残留登记：暂存文件删不掉时落一行 orphan 登记。
+
+    与暂存分享失败的既有登记同形（owner_scope='user'、
+    variant_drive_id=源盘 id、status='orphan'）：清理周期的
+    暂存扫荡按此形重试删除、成功删行销账。同 fid 已有登记时
+    不重复落行。本函数只 add 不提交（调用方统一提交，与本
+    模块既有 orphan 登记同口径）。
+    """
+    exists = db.query(em.TransferVariant).filter(
+        em.TransferVariant.variant_file_id == tmp_fid,
+        em.TransferVariant.status == "orphan").first()
+    if exists is not None:
+        return exists
+    row = em.TransferVariant(
+        item_id=job.item_id, source_file_id=(item.drive_file_id or "").strip(),
+        variant_file_id=tmp_fid, variant_drive_id=job.drive_id,
+        owner_scope="user", owner_ref=uid, status="orphan",
+        size_bytes=_to_int(getattr(item, "size", None)))
+    db.add(row)
+    return row
+
+
+def sweep_staging_leftovers(db, drive_api=None, limit=100):
+    """暂存扫荡（清理周期内调）：重试删除登记在案的暂存残留。
+
+    作用域（硬边界）：status='orphan'、owner_scope='user'、
+    variant_drive_id 既非 userdrive: 也非 pan115: 前缀的行——
+    即文件落在共享源盘、可凭 SA 令牌删除的 Path B 暂存文件
+    （分享失败与成功后删不掉两种来源同形）。用户盘上的 orphan
+    行不在此列（归闲置 TTL 的删除 pass 按绑定令牌处理）。
+    删成功/文件已不存在 → 删行销账；失败 → 留行下轮再试。
+    不提交、不抛异常。返回 stats。
+    """
+    stats = {"checked": 0, "deleted": 0, "errors": 0}
+    try:
+        rows = db.query(em.TransferVariant).filter(
+            em.TransferVariant.status == "orphan",
+            em.TransferVariant.owner_scope == "user",
+            em.TransferVariant.variant_drive_id.isnot(None),
+            ~em.TransferVariant.variant_drive_id.like("userdrive:%"),
+            ~em.TransferVariant.variant_drive_id.like("pan115:%"),
+        ).order_by(em.TransferVariant.created_at.asc(),
+                   em.TransferVariant.id.asc()).limit(limit).all()
+    except Exception:  # noqa: BLE001 — 查库失败整轮记 error
+        logger.warning("暂存扫荡查行失败", exc_info=True)
+        stats["errors"] = 1
+        return stats
+    stats["checked"] = len(rows)
+    if not rows:
+        return stats
+    client = drive_api or DriveApiClient()
+    for row in rows:
+        fid = (row.variant_file_id or "").strip()
+        if not fid or any(c in fid for c in (" ", "/")):
+            stats["errors"] += 1
+            continue
+        try:
+            client.delete_file_ignore_missing(row.variant_drive_id, fid)
+        except Exception:  # noqa: BLE001 — 失败留行下轮再试
+            logger.warning("暂存扫荡删文件失败 fid=%s", fid,
+                           exc_info=True)
+            stats["errors"] += 1
+            continue
+        db.delete(row)
+        stats["deleted"] += 1
+    return stats
+
+
 def _stored_drive_token(db, binding):
     """读某绑定行已存未过期的 access_token（不刷新、不重试刷新）。
 
@@ -1377,6 +1544,8 @@ def revoke_user_copy_sharing(db, user_id, binding=None, row_ids=None,
         if outcome in ("revoked", "already_clean", "gone"):
             stats[outcome] += 1
             row.share_revoked_at = now
+            # 待收回义务已履行：同步清登记（安全收口 2026-10-30）。
+            row.share_revoke_pending_at = None
         else:
             stats["errors"] += 1
     return stats
@@ -1435,7 +1604,10 @@ def copy_idle_cleanup(db, now=None, limit=100):
     本函数末尾统一提交；永不抛异常（工人循环外层另有兜底）。
     """
     stats = {"checked": 0, "revoked": 0, "deleted": 0,
-             "skipped_no_binding": 0, "errors": 0}
+             "skipped_no_binding": 0, "errors": 0,
+             "source_checked": 0, "source_revoked": 0,
+             "source_deleted": 0, "pending_revoked": 0,
+             "staging_checked": 0, "staging_deleted": 0}
     now = now or datetime.now()
     revoke_hours = copy_idle_revoke_hours()
     delete_hours = copy_idle_delete_hours()
@@ -1541,6 +1713,95 @@ def copy_idle_cleanup(db, now=None, limit=100):
         stats["revoked"] += sub["revoked"] + sub["already_clean"] \
             + sub["gone"]
         stats["errors"] += sub["errors"]
+
+    # 服主副本 pass（2026-10-30 安全收口）：owner_scope='source'
+    # 的 ready 行纳入同一套闲置口径（先删后收，与用户行同序），
+    # 凭 SA 令牌执行（DriveApiClient 本职）。最后活动 = max（行
+    # last_played_at、该条目任一用户的 UserMediaData
+    # last_played_at、行 created_at）——任一用户近期播过该条目
+    # 即视为不闲置；被清掉的服主副本需要时按现行转存链路重建。
+    # 开关 transfer_source_copy_idle_cleanup_enabled 默认开。
+    if source_copy_idle_cleanup_enabled(db):
+        source_rows = []
+        try:
+            source_rows = db.query(em.TransferVariant).filter(
+                em.TransferVariant.owner_scope == "source",
+                em.TransferVariant.status == "ready").order_by(
+                    em.TransferVariant.created_at.asc(),
+                    em.TransferVariant.id.asc()).limit(limit).all()
+        except Exception:  # noqa: BLE001 — 查行失败整轮记 error
+            logger.warning("闲置 TTL 清理查服主行失败", exc_info=True)
+            stats["errors"] += 1
+        stats["source_checked"] = len(source_rows)
+        if source_rows:
+            umd_max = {}
+            try:
+                item_ids = sorted({r.item_id for r in source_rows})
+                for umd in db.query(em.UserMediaData).filter(
+                        em.UserMediaData.item_id.in_(item_ids)).all():
+                    if umd.last_played_at and (
+                            umd.item_id not in umd_max
+                            or umd.last_played_at > umd_max[umd.item_id]):
+                        umd_max[umd.item_id] = umd.last_played_at
+            except Exception:  # noqa: BLE001 — 活动信号查不到按行自身时间
+                logger.warning("闲置 TTL 清理查服主行活动失败",
+                               exc_info=True)
+            sa_client = None
+            for row in source_rows:
+                present = [c for c in (row.created_at,
+                                       row.last_played_at,
+                                       umd_max.get(row.item_id))
+                           if c is not None]
+                if not present:
+                    continue
+                idle_h = int((now - max(present)).total_seconds() // 3600)
+                if idle_h < revoke_hours:
+                    continue
+                fid = (row.variant_file_id or "").strip()
+                drive_id = (row.variant_drive_id or "").strip()
+                if not fid or not drive_id or \
+                        any(c in fid for c in (" ", "/")):
+                    stats["errors"] += 1
+                    continue
+                if sa_client is None:
+                    sa_client = DriveApiClient()
+                if idle_h >= delete_hours:
+                    try:
+                        sa_client.delete_file_ignore_missing(drive_id, fid)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("闲置 TTL 删服主副本失败 fid=%s",
+                                       fid, exc_info=True)
+                        stats["errors"] += 1
+                        continue
+                    db.delete(row)
+                    stats["source_deleted"] += 1
+                elif getattr(row, "share_revoked_at", None) is None:
+                    try:
+                        outcome = sa_client.remove_anyone_reader(
+                            drive_id, fid)
+                    except Exception:  # noqa: BLE001
+                        logger.warning("闲置 TTL 收服主副本权限失败 fid=%s",
+                                       fid, exc_info=True)
+                        stats["errors"] += 1
+                        continue
+                    if outcome in ("revoked", "already_clean", "gone"):
+                        row.share_revoked_at = now
+                        stats["source_revoked"] += 1
+                    else:
+                        stats["errors"] += 1
+
+    # 死令牌待收回兜底（2026-10-30 安全收口）：登记在案的行不看
+    # 闲置时长，凭该用户任一 active 绑定补收，结果并入 stats。
+    pending_stats = run_pending_share_revokes(db)
+    stats["pending_revoked"] = pending_stats["revoked"]
+    stats["errors"] += pending_stats["errors"]
+
+    # 暂存扫荡（2026-10-30 安全收口）：Path B 暂存残留登记行凭
+    # SA 令牌重试删除，成功删行销账。
+    staging_stats = sweep_staging_leftovers(db, limit=limit)
+    stats["staging_checked"] = staging_stats["checked"]
+    stats["staging_deleted"] = staging_stats["deleted"]
+    stats["errors"] += staging_stats["errors"]
     try:
         db.commit()
     except Exception:  # noqa: BLE001 — 提交失败回滚，不谎报
@@ -3327,7 +3588,8 @@ def _run_drive_user_job_path_b(db, job, item, drive_api, user_client,
     用户令牌再拷进自己盘 → anyone-reader → 登记用户行 → 尽力删暂存。
     SA copy 403/404 → dead；暂存分享后用户 copy 403 → 传播延迟，
     走 retriable（重试时按暂存名复用已建暂存，不重复建）。
-    成功后暂存删不掉也只记日志（已知 v1 缺陷：SA 盘暂存堆积）。
+    成功后暂存删不掉时落 orphan 登记，清理周期的暂存扫荡
+    重试删除（2026-10-30 安全收口，不再无声堆积）。
     """
     from backend.emby_server.drive_oauth import DriveOAuthError
     uid = (getattr(job, "owner_ref", "") or "").strip()
@@ -3435,8 +3697,11 @@ def _run_drive_user_job_path_b(db, job, item, drive_api, user_client,
     try:
         drive_api.delete_file(job.drive_id, tmp_fid)
     except Exception:
-        logger.warning("Path B 暂存清理失败（残留记账） job=%s tmp=%s",
+        # 暂存删不掉：落 orphan 登记进暂存扫荡重试，不再只记
+        # 日志无声堆积（2026-10-30 安全收口）。
+        logger.warning("Path B 暂存清理失败（已登记待扫荡） job=%s tmp=%s",
                        job.id, tmp_fid)
+        _register_staging_leftover(db, job, item, uid, tmp_fid)
     return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
 
 

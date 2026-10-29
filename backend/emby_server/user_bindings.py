@@ -516,7 +516,8 @@ def verify_binding(db: Session, user_id: int,
     return binding
 
 
-def delete_binding(db: Session, user_id: int, binding_id: int) -> None:
+def delete_binding(db: Session, user_id: int, binding_id: int,
+                   http_post=None) -> None:
     """解绑：删绑定行 + 其凭据行（单事务，不留残留）。
 
     非本人行按不存在处理（不泄露他人绑定存在性）。
@@ -551,6 +552,25 @@ def delete_binding(db: Session, user_id: int, binding_id: int) -> None:
     except Exception:  # noqa: BLE001 — 收回失败绝不阻塞解绑
         logger.warning("解绑收回副本分享失败 user=%s binding=%s",
                        user_id, binding_id, exc_info=True)
+    if binding.provider == PROVIDER_DRIVE and cred is not None:
+        # 解绑断净（2026-10-30 安全收口）：删行前用尚存的 refresh
+        # token 调 Google 吊销端点，让谷歌侧授权一并失效——只删
+        # 本地行、不断谷歌侧授权，令牌值若曾外泄，解绑后照样能
+        # 用。顺序在收回分享之后（收回还要用绑定令牌）、删行
+        # 之前。best-effort：解不开/吊销失败只记日志，绝不阻塞
+        # 解绑（与重绑的 _revoke_refresh_token_best_effort 同口径，
+        # 直接复用同一实现）。pan115 是 Cookie 型凭据、没有
+        # Google 授权可吊销，跳过。
+        try:
+            from backend.emby_server import drive_oauth as _do
+            _refresh = _do.decode_drive_token(
+                unseal_secret(cred.sealed_credential or "")
+            ).get("refresh_token")
+            if _refresh:
+                _do._revoke_refresh_token_best_effort(_refresh, http_post)
+        except Exception:  # noqa: BLE001 — 吊销失败绝不阻塞解绑
+            logger.warning("解绑吊销 Google 令牌失败 user=%s binding=%s",
+                           user_id, binding_id, exc_info=True)
     db.delete(binding)
     # 先把绑定行 flush 落库再删凭据行：两模型间没有 ORM relationship，
     # 单次 flush 时 SQLAlchemy 不保证先删绑定行，生产 PG 上曾出现凭据行

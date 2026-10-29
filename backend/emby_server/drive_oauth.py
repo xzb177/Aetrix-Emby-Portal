@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -497,6 +498,81 @@ def _revoke_refresh_token_best_effort(refresh_token: str,
         logger.warning("重绑旧 refresh 吊销失败（忽略）", exc_info=True)
 
 
+#: 回调浏览器会话 nonce 的 cookie 名（portal 下发/读取，本模块校验）。
+OAUTH_NONCE_COOKIE = "aetrix_drive_oauth_nonce"
+
+
+def oauth_nonce_cookie_domain(request_host: str | None) -> str | None:
+    """nonce cookie 的 Domain 推导（回调会话校验配套）。
+
+    发起端（前端同源 XHR）与回调端（Google 注册的对外地址）同
+    host → 返回 None（host-only cookie 即可）；不同 host 但共享
+    父域（如 aetrix.135505.autos 与 cdn.135505.autos 共享
+    135505.autos）→ 返回父域，cookie 才能跟过子域跳转；无共享
+    父域 → None（该部署下浏览器流程会 fail-closed，须让发起端
+    与回调端同域，见 PR 说明的已知边界）。
+    """
+    from urllib.parse import urlsplit
+
+    callback_host = urlsplit(configured_public_url() or "").hostname or ""
+    req_host = (request_host or "").split(":")[0].strip().lower()
+    cb_host = callback_host.strip().lower()
+    if not req_host or not cb_host or req_host == cb_host:
+        return None
+    req_labels = req_host.split(".")
+    cb_labels = cb_host.split(".")
+    common = []
+    for a, b in zip(reversed(req_labels), reversed(cb_labels)):
+        if a != b:
+            break
+        common.append(a)
+    if len(common) < 2:
+        return None
+    return ".".join(reversed(common))
+
+
+def assert_callback_browser_binding(db: Session, state: str,
+                                    nonce_cookie: str | None,
+                                    session_user_id: int | None) -> None:
+    """回调会话校验（安全收口 2026-10-30）：complete 消费 state 前把关。
+
+    堵的是审计第 1 点的 exploit 链：旧回调只认 state，攻击者用
+    自己合法生成的 state 诱使受害者在 Google 同意屏点同意，就能
+    把受害者的 Google 令牌绑到攻击者名下。本校验把回调绑回
+    “发起授权的那个浏览器 + 那个用户”：
+
+    - state 行不存在 → 本函数直接返回，交给 complete 按
+      not_found 原口径处理（不泄露 state 是否存在过）；
+    - 浏览器出示的 nonce 与行内 nonce_hash 对不上（无 cookie /
+      换了浏览器 / 上线前在途行 nonce_hash 为 NULL）→ 烧掉 state
+      行并抛 auth_error：受害者浏览器里没有发起者的 cookie，
+      链路在此断掉；烧行防同一 state 被反复试探；
+    - 请求自带可解析会话（JWT / Emby token）时，会话用户必须
+      等于 state 行 user_id，对不上同样烧行拒绝（纵深）。
+      浏览器回跳通常不带会话头，此时只靠 nonce 一条腿。
+    nonce 比对走 sha256 后 compare_digest，原文永不入库、不进日志。
+    """
+    row = (
+        db.query(em.DriveOAuthState)
+        .filter(em.DriveOAuthState.state_hash == _hash_state(state or ""))
+        .first()
+    )
+    if row is None:
+        return
+    nonce_ok = bool(
+        nonce_cookie and getattr(row, "nonce_hash", None)
+        and hmac.compare_digest(_hash_state(nonce_cookie), row.nonce_hash))
+    user_ok = session_user_id is None or session_user_id == row.user_id
+    if nonce_ok and user_ok:
+        return
+    db.delete(row)
+    db.commit()
+    logger.warning("Drive OAuth 回调会话校验失败（已烧 state 行）")
+    raise DriveOAuthError(
+        "auth_error",
+        "授权会话校验失败，请在发起绑定的浏览器里重新授权。")
+
+
 def _validate_label_and_quota(db: Session, user_id: int,
                               account_label: str,
                               exclude_binding_id: int | None = None) -> str:
@@ -574,11 +650,13 @@ def start_drive_oauth(db: Session, user_id: int, account_label: str,
     label = _validate_label_and_quota(db, user_id, account_label,
                                       exclude_binding_id=rebind_binding_id)
     state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
     verifier, challenge = _pkce_pair()
     now = datetime.now()
     row = em.DriveOAuthState(
         state_hash=_hash_state(state), user_id=user_id,
         account_label=label, sealed_verifier=seal_secret(verifier),
+        nonce_hash=_hash_state(nonce),
         created_at=now, expires_at=now + timedelta(seconds=state_ttl_sec()),
         rebind_binding_id=rebind_binding_id)
     db.add(row)
@@ -586,6 +664,9 @@ def start_drive_oauth(db: Session, user_id: int, account_label: str,
     return {
         "authorization_url": build_authorization_url(uri, state, challenge),
         "expires_in": state_ttl_sec(),
+        # 浏览器会话 nonce 原文：只许 portal 用它下发 HttpOnly
+        # cookie（portal 返回前端前会 pop 掉本键，绝不进 JSON）。
+        "_oauth_nonce": nonce,
     }
 
 
@@ -719,6 +800,25 @@ def complete_drive_oauth(db: Session, state: str, code: str,
         db.commit()
         if old_refresh and old_refresh != tokens["refresh_token"]:
             _revoke_refresh_token_best_effort(old_refresh, http_post)
+        # 死令牌待收回优先执行（2026-10-30 安全收口）：凭据死亡
+        # 期间登记的待收回行，趁新令牌可用先补收（作用域由本
+        # 绑定令牌的可见性决定，收不到的行留待清理周期兜底）。
+        # 补收失败绝不影响已成功的重绑。
+        try:
+            from backend.emby_server import transfer_variant as _tv
+            _pending_ids = _tv.pending_share_revoke_row_ids(db, user_id)
+            if _pending_ids:
+                _tv.revoke_user_copy_sharing(
+                    db, user_id, binding=rebind_target,
+                    row_ids=_pending_ids)
+                db.commit()
+        except Exception:  # noqa: BLE001 — 补收失败绝不影响重绑
+            logger.warning("重绑后待收回补收失败 user=%s",
+                           user_id, exc_info=True)
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
         return rebind_target
     cred = em.MountCredential(
         mount_id=None, scope="user", owner_user_id=user_id,
@@ -811,6 +911,16 @@ def _apply_refresh_failure(db: Session, binding: em.UserStorageBinding,
                 db, binding.user_id, binding=binding, allow_refresh=False)
         except Exception:  # noqa: BLE001 — 收回失败绝不影响落态
             logger.warning("绑定失效收回副本分享失败 binding=%s",
+                           binding.id, exc_info=True)
+        # 死令牌待收回登记（2026-10-30 安全收口）：本次没收成的行
+        # （令牌已死整批跳过 / 逐行失败）落 share_revoke_pending_at
+        # 登记，重绑成功时优先补收、闲置清理周期兜底重试。登记
+        # 失败同样不影响落态。
+        try:
+            from backend.emby_server import transfer_variant as _tv2
+            _tv2.mark_share_revoke_pending(db, binding.user_id)
+        except Exception:  # noqa: BLE001 — 登记失败绝不影响落态
+            logger.warning("待收回登记失败 binding=%s",
                            binding.id, exc_info=True)
 
 
