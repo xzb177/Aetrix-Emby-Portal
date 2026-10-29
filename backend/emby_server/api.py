@@ -5315,7 +5315,13 @@ async def playback_info(
             _alt_on = await run_db(_ps_alt.drive_direct_play_enabled, db)
             if _alt_fid and _alt_on:
                 _alt_applied = False
-                if _is_user_drive_copy_variant(_alt_variant):
+                # C1 修复：仅用户 Drive 副本尝试直链下发（免凭证
+                # usercontent，失败回落 alt=media+头）。共享原件/服主
+                # 副本一律不在此覆盖，保持指向本服务器的 /stream 地址
+                # （带 MediaSourceId/uid/variant），由 video_stream 302
+                # 到免凭证 usercontent——全权 SA 令牌绝不随清单出门。
+                _alt_is_user_copy = _is_user_drive_copy_variant(_alt_variant)
+                if _alt_is_user_copy:
                     # 用户副本直链：免凭证 usercontent + 空头；授权限
                     # 失败时 _alt_applied 仍为 False，下面走旧链路。
                     _alt_applied = await run_db(
@@ -5339,7 +5345,8 @@ async def playback_info(
                     _fp.load_warm,
                     lambda k: _CM.get(k, domain="playback"),
                     item.guid, user.id)
-                if (not _alt_applied and _fp.warm_usable(_warm)
+                if (_alt_is_user_copy and not _alt_applied
+                        and _fp.warm_usable(_warm)
                         and _warm.get("fid") == _alt_fid):
                     # 新鲜窗口内（默认 180 秒）预热：令牌已验证过，直接复用，不再预检。
                     _pt.mark("alt_warm_hit")
@@ -5348,7 +5355,7 @@ async def playback_info(
                     if _alt_applied:
                         sources[0]["DirectPlayUrl"] = _warm.get("url") or sources[0]["DirectPlayUrl"]
                         sources[0]["DirectStreamUrl"] = sources[0]["DirectPlayUrl"]
-                if not _alt_applied:
+                if not _alt_applied and _alt_is_user_copy:
                     # 详情/单条直达/选集已经在后台预热：等这一次写进缓存再复用，
                     # 不再并行再打一遍谷歌。没有在途则立刻返回，下面走冷预检。
                     _joined = await run_db(
@@ -5363,7 +5370,7 @@ async def playback_info(
                         if _alt_applied:
                             sources[0]["DirectPlayUrl"] = _joined.get("url") or sources[0]["DirectPlayUrl"]
                             sources[0]["DirectStreamUrl"] = sources[0]["DirectPlayUrl"]
-                if not _alt_applied:
+                if not _alt_applied and _alt_is_user_copy:
                     # 冷启动或预热已超出新鲜窗口（默认 180 秒）：预检 + 403 轮换 SA 再下发，
                     # 播放器第一次拿到的必须是经验证的令牌（见 first_play）。
                     _verified = await run_db(
