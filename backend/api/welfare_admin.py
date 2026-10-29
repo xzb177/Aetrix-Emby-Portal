@@ -267,6 +267,9 @@ WELFARE_CONFIG_KEYS = {
     # 新注册冷启动赠送天数（emby_portal._grant_register_gifts 读取；0=永不过期仅福利天数适用）
     "register_gift_welfare_days": "30",
     "register_gift_view_days": "30",
+    # 新注册送公益资格总开关（2026-10-29 默认关：开放注册但不送资格；
+    # 服主在管理端改成 true 即可重开，天数仍走上面两个键）
+    "register_gift_welfare_enabled": "false",
     "welfare_grace_days": "7",
     "welfare_streak_renew_min": "30",
     "welfare_inactive_days": "30",
