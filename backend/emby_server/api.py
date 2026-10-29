@@ -5497,10 +5497,10 @@ async def playback_info(
                     _pi_probe_verdict = await run_db(
                         _tv_alt.probe_user_copy_quota,
                         user.id, _alt_fid)
+                    _pi_probe_detail = await run_db(
+                        _tv_alt.usercopy_quota_probe_detail,
+                        user.id, _alt_fid)
                     if _pi_probe_verdict in ("quota", "interstitial"):
-                        _pi_probe_detail = await run_db(
-                            _tv_alt.usercopy_quota_probe_detail,
-                            user.id, _alt_fid)
                         # 改道只认 Range 腿（2026-10-30 01:40 证据
                         # 修订，用户「直链优先、中继第二位」定版）：
                         # GET 腿探到额度页/插页只是信号，Range 分段
@@ -5554,6 +5554,19 @@ async def playback_info(
                                     _tv_alt.USERCOPY_QUOTA_DETAIL
                                     if _pi_probe_verdict == "quota"
                                     else _tv_alt.USERCOPY_INTERSTITIAL_DETAIL)
+                    elif _pi_probe_detail.get("shape") == "get" and _pi_probe_detail.get("page"):
+                        # Range 健康但 GET 腿探到页：只打信号、仍发直链
+                        # （probe 返回值已是出法裁决口径，GET 信号只在
+                        # detail 里；事件名按 page 取，verdict 恒为 direct）。
+                        _tv_alt.log_byos(
+                            "byos_usercopy_quota"
+                            if _pi_probe_detail["page"] == "quota"
+                            else "byos_usercopy_interstitial",
+                            item=item.id, user=user.id, fid=_alt_fid,
+                            cached=_pi_quota_cached,
+                            verdict="direct",
+                            shape="get",
+                            page=_pi_probe_detail["page"])
                 if _alt_is_user_copy:
                     # 用户副本直链：免凭证 usercontent + 空头；授权限
                     # 失败时 _alt_applied 仍为 False，下面走旧链路。
@@ -5948,14 +5961,14 @@ async def video_stream(
             _quota_verdict = await run_db(
                 _tv.probe_user_copy_quota,
                 getattr(user, "id", None), _play_fid)
+        _probe_detail = await run_db(
+            _tv.usercopy_quota_probe_detail,
+            getattr(user, "id", None), _play_fid)
         if _quota_verdict in ("quota", "interstitial"):
             # 判定打点：应用日志里留一条带 item/user/fid/缓存命中/
             # 探测形态/插页分类的结构化行（quota 与 interstitial
             # 分事件名；改道时走向由下面 relay / 115 / 409 的打点
             # 续记，只打信号时 verdict=direct 标明仍发直链）。
-            _probe_detail = await run_db(
-                _tv.usercopy_quota_probe_detail,
-                getattr(user, "id", None), _play_fid)
             # 改道只认 Range 腿（2026-10-30 01:40 证据修订，用户
             # 「直链优先、中继第二位」定版）：GET 腿探到额度页/插页
             # 只是信号——Range 分段健康就照常发直链，绝不因整拉
@@ -6047,6 +6060,20 @@ async def video_stream(
                 return _observe_traffic(
                     RedirectResponse(_url115, status_code=302,
                                      headers=_strategy.DIRECT_REDIRECT_HEADERS))
+        elif _probe_detail.get("shape") == "get" and _probe_detail.get("page"):
+            # Range 健康但 GET 腿探到页：只打信号、仍发直链（probe
+            # 返回值已是出法裁决口径，GET 信号只在 detail 里；事件名
+            # 按 page 取，verdict 恒为 direct）。
+            _tv.log_byos(
+                "byos_usercopy_quota"
+                if _probe_detail["page"] == "quota"
+                else "byos_usercopy_interstitial",
+                item=getattr(item, "id", None),
+                user=getattr(user, "id", None), fid=_play_fid,
+                cached=_quota_cached,
+                verdict="direct",
+                shape="get",
+                page=_probe_detail["page"])
         # 只有可能播到共享 Drive 原件时才查绑定。本机文件 / 无 fid
         # 走不到 SA 轮换，也不存在「静默播共享原件」；这里多查一次
         # 会打到只实现了 close() 的会话桩。

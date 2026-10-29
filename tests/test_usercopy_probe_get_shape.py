@@ -161,36 +161,37 @@ def _stub_legs(monkeypatch, range_resp, get_resp):
     return calls
 
 
-def test_probe_range206_get_quota_is_quota(monkeypatch):
-    """事故形态：Range 206 视频、整拉回额度页 → probe 判 quota
-    信号（shape=get）。这只是信号：判定点按 Range 腿裁决出法、
-    本形态最终发直链，见 test_rule_direct_first_relay_second_*。"""
+def test_probe_range206_get_quota_is_ok_with_get_signal(monkeypatch):
+    """事故形态：Range 206 视频、整拉回额度页 → probe 返 ok
+    （出法裁决口径），GET 信号只进 detail（shape=get、page=quota）。
+    判定点按 detail 打信号日志、出法仍发直链，见
+    test_rule_direct_first_relay_second_*。"""
     calls = _stub_legs(monkeypatch,
                        (206, "video/mp4", VIDEO_HEAD),
                        (200, "text/html; charset=utf-8", QUOTA_HTML))
-    assert tv.probe_user_copy_quota(7, COPY_FID) == "quota"
+    assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
     assert tv.usercopy_quota_probe_detail(7, COPY_FID) == {
         "shape": "get", "page": "quota"}
-    assert tv.probe_user_copy_quota(7, COPY_FID) == "quota"
+    assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
     assert calls == {"range": 1, "get": 1}
     assert tv.usercopy_quota_probe_cached(7, COPY_FID)
 
 
-def test_probe_range206_get_scan_is_interstitial(monkeypatch):
+def test_probe_range206_get_scan_is_ok_with_get_signal(monkeypatch):
     _stub_legs(monkeypatch,
                (206, "video/mp4", VIDEO_HEAD),
                (200, "text/html; charset=utf-8", SCAN_HTML))
-    assert tv.probe_user_copy_quota(7, COPY_FID) == "interstitial"
+    assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
     assert tv.usercopy_quota_probe_detail(7, COPY_FID) == {
         "shape": "get", "page": "scan"}
     assert tv.usercopy_quota_probe_cached(7, COPY_FID)
 
 
-def test_probe_range206_get_generic_html_is_interstitial(monkeypatch):
+def test_probe_range206_get_generic_html_is_ok_with_get_signal(monkeypatch):
     _stub_legs(monkeypatch,
                (206, "video/mp4", VIDEO_HEAD),
                (200, "text/html", GENERIC_HTML))
-    assert tv.probe_user_copy_quota(7, COPY_FID) == "interstitial"
+    assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
     assert tv.usercopy_quota_probe_detail(7, COPY_FID) == {
         "shape": "get", "page": "html"}
 
@@ -221,13 +222,15 @@ def test_probe_get_leg_failure_keeps_range_ok(monkeypatch):
     assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
 
 
-def test_probe_range200_html_scan_also_interstitial(monkeypatch):
-    """Range 形态回 200 HTML（非额度页）：第二腿分类出 interstitial
-    信号（旧口径会直接判 ok、连信号都没有）。"""
+def test_probe_range200_html_scan_is_ok_with_get_signal(monkeypatch):
+    """Range 形态回 200 HTML（非额度页）：第二腿分类出 scan 信号进
+    detail，probe 返 ok（出法裁决口径）；旧口径连信号都没有。"""
     _stub_legs(monkeypatch,
                (200, "text/html", SCAN_HTML),
                (200, "text/html", SCAN_HTML))
-    assert tv.probe_user_copy_quota(7, COPY_FID) == "interstitial"
+    assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
+    assert tv.usercopy_quota_probe_detail(7, COPY_FID) == {
+        "shape": "get", "page": "scan"}
 
 
 class _FakeResp:
@@ -491,7 +494,8 @@ def test_rule_direct_first_relay_second_stream_get_quota_keeps_direct(
         db, monkeypatch):
     """事故形态全程：Range 206 视频 + 整拉额度页 → 仍发直链 302。
 
-    probe 判 quota 信号（shape=get），但 video_stream 的最终出法
+    probe 返 ok（出法裁决口径），GET 信号只进 detail（shape=get），
+    但 video_stream 的最终出法
     必须是本人副本 usercontent 直链；中继不许被调用（_stub_stream
     已把 serve_drive_relay_async 桩成一调就炸）；信号日志要在，
     且 verdict=direct、shape=get、page=quota。

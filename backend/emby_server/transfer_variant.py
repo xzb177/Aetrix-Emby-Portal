@@ -607,18 +607,20 @@ def probe_user_copy_quota(user_id, fid) -> str:
     信号；第一腿放行时再跑第二腿整拉形态（plain GET、无 Range、
     与播放器起播同形态）——Range 回 206 视频不代表整拉可播（生产
     实证：同一副本 Range 206、整拉 / HEAD 回额度页，播放器吃页
-    判死）。第二腿回 HTML 插页即不可安全播：额度页判 "quota"，
-    其它插页（病毒扫描警告页等）判 "interstitial"。
+    判死）。第二腿回 HTML 插页只记信号：额度页记 page=quota，
+    其它插页（病毒扫描警告页等）记 page=scan / html。
 
-    注意：返回值是探测信号，不是出法裁决——出法只认 Range 腿
-    （shape=range 的 quota 才在判定点触发改道中继 / 115 / 409）；
-    GET 腿的 quota / interstitial 只打信号日志、照常发直链
-    （2026-10-30 01:40 证据修订，用户「直链优先、中继第二位」
-    定版；专门钉这条规矩的回归测试见
+    注意：返回值是出法裁决口径，只认 Range 腿——Range 腿判 quota
+    才返回 "quota"（判定点据此改道中继 / 115 / 409）；Range 腿健康
+    时恒返回 "ok"，哪怕第二腿探到额度页/插页（2026-10-30 01:40
+    证据修订，用户「直链优先、中继第二位」定版；与 #1490 契约对
+    齐：已下发地址的探测判定恒为 ok）。GET 腿信号只写进 detail
+    （shape=get、page=quota / scan / html），判定点按 detail 打信
+    号日志、不改变出法。专门钉这条规矩的回归测试见
     tests/test_usercopy_probe_get_shape.py 的
     test_rule_direct_first_relay_second_*）。
 
-    返回 "ok" / "quota" / "interstitial" / "error"（探测本身失败）。
+    返回 "ok" / "quota" / "error"（探测本身失败）。
     ok / quota / interstitial 按 (user, fid) 短缓存（默认 300 秒，
     可调；判定形态与插页分类同 TTL 存明细缓存），error 不缓存。
     只请求用户本人副本的 usercontent 地址：不带任何令牌、不碰共享
@@ -664,10 +666,10 @@ def probe_user_copy_quota(user_id, fid) -> str:
             verdict, shape = "ok", "range"
         else:
             kind = _html_page_kind(g_status, g_ctype, g_head)
-            if kind == "quota":
-                verdict, shape, page = "quota", "get", "quota"
-            elif kind is not None:
-                verdict, shape, page = "interstitial", "get", kind
+            if kind is not None:
+                # GET 腿信号只进 detail：出法裁决口径下 Range 健康即
+                # ok（与 #1490 契约对齐），绝不因整拉形态改 verdict。
+                verdict, shape, page = "ok", "get", kind
             else:
                 verdict, shape = "ok", "get"
     if verdict == "ok":
