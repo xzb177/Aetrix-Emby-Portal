@@ -5297,6 +5297,7 @@ async def playback_info(
     # 后缀的 /stream 地址，走 video_stream 的等流/302 旧链路）；任何异常
     # 都回落旧地址，绝不因本段失败打断 PlaybackInfo。令牌只进本次响应，
     # 不进 5 分钟基础体缓存（缓存已在上面存完，本段只改响应对象）。
+    _pi_quota_error = None
     if sources and _pi_verdict == "proceed":
         try:
             from backend.emby_server import first_play as _fp
@@ -5322,6 +5323,26 @@ async def playback_info(
                 # 到免凭证 usercontent——全权 SA 令牌绝不随清单出门。
                 _alt_is_user_copy = _is_user_drive_copy_variant(_alt_variant)
                 if _alt_is_user_copy:
+                    # 额度探测（2026-10-29）：用户副本被谷歌下载额度挡住时
+                    # 不下发额度页直链。有本人 115 副本 → 清单指回本站
+                    # /stream（video_stream 走 115 现签 302）；没有 → 明确报
+                    # 错。绝不回落共享原件、绝不带 SA 令牌。
+                    if await run_db(_tv_alt.probe_user_copy_quota,
+                                    user.id, _alt_fid) == "quota":
+                        _alt_is_user_copy = False
+                        _alt_applied = True  # 跳过下面 alt=media+头各段
+                        _v115 = await run_db(_tv_alt.ready_user115_variant,
+                                             db, item.id, user.id)
+                        if _v115 is None:
+                            for _s in sources:
+                                for _k in ("DirectPlayUrl", "DirectStreamUrl",
+                                           "TranscodingUrl", "Path"):
+                                    _s.pop(_k, None)
+                                _s["SupportsDirectPlay"] = False
+                                _s["SupportsDirectStream"] = False
+                                _s["RequiredHttpHeaders"] = {}
+                            _pi_quota_error = _tv_alt.USERCOPY_QUOTA_DETAIL
+                if _alt_is_user_copy:
                     # 用户副本直链：免凭证 usercontent + 空头；授权限
                     # 失败时 _alt_applied 仍为 False，下面走旧链路。
                     _alt_applied = await run_db(
@@ -5329,8 +5350,7 @@ async def playback_info(
                         _alt_fid)
                     if _alt_applied:
                         # 防外流发放可查（2026-10-28）：只记可转发即用
-                        # 的免凭证直链这一次（旧链路 alt=media+头不记，
-                        # 脱离头凭证无用）。记账走独立短会话、永不抛
+                        # 的免凭证直链这一次。记账走独立短会话、永不抛
                         # 异常，失败只记 warning，绝不影响本次响应。
                         try:
                             _vid = getattr(_alt_variant, "id", None)
@@ -5341,6 +5361,12 @@ async def playback_info(
                                 _alt_fid, "usercontent")
                         except Exception:  # noqa: BLE001 — 记账失败不挡播放
                             pass
+                    else:
+                        # 用户硬底线：播放用户副本时也不拿服务账号令牌
+                        # 走 alt=media。授权限失败就保留本站 /stream，
+                        # 由 video_stream 仅以用户副本 usercontent 302；
+                        # 绝不碰 SA 下载额度，绝不把 SA 头下发客户端。
+                        _alt_is_user_copy = False
                 _warm = await run_db(
                     _fp.load_warm,
                     lambda k: _CM.get(k, domain="playback"),
@@ -5413,6 +5439,14 @@ async def playback_info(
                 item.id, user.id, mode="next", source="next")
     except Exception:  # noqa: BLE001 — 预热启动失败不影响本次播放
         pass
+    if _pi_quota_error:
+        return _strip_nulls({
+            "MediaSources": sources,
+            "PlaybackVariants": _playback_variants,
+            "PlaySessionId": _play_session_id,
+            "ErrorCode": "NoCompatibleStream",
+            "ErrorMessage": _pi_quota_error,
+        })
     return _strip_nulls({
         "MediaSources": sources,
         "PlaybackVariants": _playback_variants,
@@ -5667,6 +5701,49 @@ async def video_stream(
         _on_user_copy = (
             _play_variant is not None
             and getattr(_play_variant, "owner_scope", None) == "user")
+        if (_on_user_copy and _play_fid
+                and _is_user_drive_copy_variant(_play_variant)
+                and await run_db(_tv.probe_user_copy_quota,
+                                 getattr(user, "id", None), _play_fid)
+                == "quota"):
+            # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
+            # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
+            _v115q = await run_db(_tv.ready_user115_variant, db,
+                                  getattr(item, "id", None),
+                                  getattr(user, "id", None))
+            _pc115q = (getattr(_v115q, "pickcode", "") or "").strip() \
+                if _v115q is not None else ""
+            if not _pc115q:
+                _note_play_start_safe(
+                    item, user_id=getattr(user, "id", None),
+                    method="direct_302", variant=play_variants.DRIVE_DIRECT,
+                    result="error", error_kind="usercopy_quota")
+                raise HTTPException(status_code=409,
+                                    detail=_tv.USERCOPY_QUOTA_DETAIL)
+            from backend.emby_server import user_bindings as _ub115q
+            _byos_t0q = time.perf_counter()
+            try:
+                _url115 = await run_db(
+                    _ub115q.resolve_user115_copy_url, db,
+                    getattr(user, "id", None), _pc115q)
+            except _ub115q.BindingError as exc:
+                _note_play_start_safe(
+                    item, user_id=getattr(user, "id", None),
+                    method="transfer115_copy",
+                    variant=play_variants.BYOS115_DIRECT,
+                    result="error", error_kind=exc.kind,
+                    resolve_ms=int((time.perf_counter() - _byos_t0q) * 1000))
+                raise HTTPException(
+                    status_code=409,
+                    detail=_tv.USERCOPY_QUOTA_DETAIL) from exc
+            _note_play_start_safe(
+                item, user_id=getattr(user, "id", None),
+                method="transfer115_copy",
+                variant=play_variants.BYOS115_DIRECT, result="ok",
+                resolve_ms=int((time.perf_counter() - _byos_t0q) * 1000))
+            return _observe_traffic(
+                RedirectResponse(_url115, status_code=302,
+                                 headers=_strategy.DIRECT_REDIRECT_HEADERS))
         # 只有可能播到共享 Drive 原件时才查绑定。本机文件 / 无 fid
         # 走不到 SA 轮换，也不存在「静默播共享原件」；这里多查一次
         # 会打到只实现了 close() 的会话桩。

@@ -523,16 +523,82 @@ def test_gate_failed_dead_job(db, monkeypatch):
                     "job_id": job.id}
 
 
-def test_gate_done_job_within_24h_throttled(db, monkeypatch):
+def test_gate_done_job_copy_gone_rebuilds(db, monkeypatch):
+    # 2026-10-29 生产实证：done 但副本已被清掉（无 ready 行），旧逻辑
+    # 24h 内永久 throttled（99 用户 357 条卡死）。现在预算内重建一单。
     _enable(monkeypatch)
     _mount(db, 3, "drive", "drive:drive1")
     item = _item(db)
     _binding(db, 7)
-    # done 但副本已释放（无 ready 行）：节流窗内不重复建。
     _user_job(db, item.id, 7, status="done")
     gate = tv.ensure_user_copy_gate(db, item, _user())
-    assert gate["verdict"] == "preparing" and gate["reason"] == "throttled"
+    assert gate["verdict"] == "preparing"
+    assert gate["reason"] == "job_rebuilt"
+    assert db.query(em.TransferJob).count() == 2
+    new_job = db.query(em.TransferJob).order_by(
+        em.TransferJob.id.desc()).first()
+    assert new_job.status == "pending" and new_job.trigger == "playback"
+    assert new_job.dest_drive_id == "userdrive:7"
+    assert gate["job_id"] == new_job.id
+    # 同一次播放的后续重查只见在途，不再建第 3 单。
+    gate2 = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate2["reason"] == "job_in_flight"
+    assert db.query(em.TransferJob).count() == 2
+
+
+def test_gate_done_job_copy_gone_budget_exhausted(db, monkeypatch):
+    # 24h 同桶已有 2 行（上次 done + 已重建过一次又 done）：不再建，
+    # 仍 throttled，防播放器重试刷任务洪水。
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    _user_job(db, item.id, 7, status="done", trigger="prefetch")
+    job = _user_job(db, item.id, 7, status="done")
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate == {"verdict": "preparing", "reason": "throttled",
+                    "job_id": job.id}
+    assert db.query(em.TransferJob).count() == 2
+
+
+def test_gate_done_job_with_ready_copy_proceeds(db, monkeypatch):
+    # done 且副本仍 ready：直接播本人副本，不重建。
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7)
+    _user_job(db, item.id, 7, status="done")
+    _variant(db, item.id, fid="usercopy", scope="user", ref="7")
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "proceed"
+    assert gate["reason"] == "has_ready_variant"
     assert db.query(em.TransferJob).count() == 1
+
+
+def test_gate_cross_done_job_copy_gone_rebuilds(db, monkeypatch):
+    # 跨 provider 同款：只绑 115 的用户，跨单 done 但 115 副本没了。
+    _enable(monkeypatch)
+    _mount(db, 3, "drive", "drive:drive1")
+    item = _item(db)
+    _binding(db, 7, provider="pan115")
+    _user_job(db, item.id, 7, provider="pan115", status="done")
+    gate = tv.ensure_user_copy_gate(db, item, _user())
+    assert gate["verdict"] == "preparing"
+    assert gate["reason"] == "job_rebuilt"
+    new_job = db.query(em.TransferJob).order_by(
+        em.TransferJob.id.desc()).first()
+    assert new_job.status == "pending"
+    assert new_job.dest_drive_id == "pan115:user-7"
+
+
+def test_wait_for_transfer_ready_accepts_rebuilt():
+    async def _re_gate():
+        return {"verdict": "proceed", "reason": "has_ready_variant"}
+
+    out = asyncio.run(tv.wait_for_transfer_ready(
+        {"verdict": "preparing", "reason": "job_rebuilt"},
+        _re_gate, max_sec=5, poll_sec=0.01))
+    assert out["verdict"] == "proceed"
 
 
 def test_gate_per_user_throttle_isolated(db, monkeypatch):
