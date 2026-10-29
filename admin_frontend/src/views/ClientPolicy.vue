@@ -4,7 +4,7 @@
  *
  * 一句话回答「客户端这边到底允许做什么」：
  *
- * - **转码**：允不允许服务端转码、同时几路（省 CPU / 省上行）；
+ * - **播放路径**：Drive 302 直链 / 中继的只读状态（服务端转码已于 2026-10-24 删除，不再有转码策略）；
  * - **下载与设备**：是否允许下载、每人几台设备、超限是拒绝还是自动踢最久未用的、
  *   安全日志保留多久（这组 SystemConfig 键的唯一写入口，「系统设置」只读回显）。
  *
@@ -161,7 +161,7 @@ async function saveOps() {
     <PageHeader
       eyebrow="安全与准入"
       title="客户端策略"
-      description="转码、下载与设备、播放线路：改完对面板与出流的节点同时生效（管理员不受这些策略限制）。"
+      description="下载与设备、播放线路：改完对面板与出流的节点同时生效（管理员不受这些策略限制）。服务端不转码。"
     >
       <template #actions>
         <el-button :loading="loading" @click="load">
@@ -296,7 +296,7 @@ async function saveOps() {
     >
       <p class="cp-hint cp-lead">
         Drive 文件直接 302 到谷歌直链，播放器自拉，字节不经服务器；
-        115 等挂载源暂不支持（410）。转码不受影响。
+        115 等挂载源暂不支持（410）。服务端不做转码。
       </p>
 
       <div v-if="playLines" class="line-card">
@@ -378,7 +378,7 @@ async function saveOps() {
 
       <template #footer>
         <div class="cp-save">
-          <span class="cp-save-hint">与「转码与清晰度」同属播放策略，保存任一处都会一起提交。</span>
+          <span class="cp-save-hint">属于播放策略，保存会一起提交。</span>
           <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
             <Save :size="14" class="btn-ico" />保存
           </el-button>
@@ -414,7 +414,7 @@ async function saveOps() {
       storage-key="client-policy-scope"
     >
       <div class="policy-guide">
-        这里只放「客户端能做什么」（转码、下载与设备）；
+        这里只放「客户端能做什么」（下载与设备、播放路径）；
         「站点怎么运营」（注册、支付、付费墙、邀请返利）仍然在系统设置里。
       </div>
     </NoticePanel>

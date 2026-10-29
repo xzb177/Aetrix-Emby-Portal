@@ -31,7 +31,7 @@ ENABLE_EMBY_GATEWAY=false   # 分离模式：协议面交给 EA，EM 只跑面�
 | PostgreSQL | 13+ | **默认数据库**（v2.42.0 起）。必须能被 EM 连上，连不上启动即退出 |
 | SQLite | 内置 | 可选：设 `DATABASE_TYPE=sqlite` 后使用，单机 / 单进程够用 |
 | Redis | 5+ | 可选：多实例、或希望重启不丢风控状态时启用 |
-| ffmpeg | 可选 | **分离部署下转码在 EA 那台机器上，EM 不需要** |
+| ffmpeg | 可选 | 只用于内封字幕抽取、缩略图抽帧等辅助用途，不做视频转码；分离部署下字幕抽取在 EA 那台 |
 
 ```bash
 # Debian / Ubuntu
@@ -147,7 +147,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now aetrix-em
 journalctl -u aetrix-em -f
 ```
 
-> 单进程模式（EM 自带协议面）下**不要**用 `uvicorn --workers N`：HLS 转码子进程与会话管理在同一进程内闭环，多 worker 会重复 fork 并泄漏进程。分离部署时 EM 不参与转码，但仍建议保持单进程以免风控计数分散。
+> **不要**用 `uvicorn --workers N`：扫描队列、限流与风控计数、后台调度都是进程内状态，多 worker 会让它们分散、互不可见。（服务端转码已于 2026-10-24 删除，不再是单进程的理由。）
 
 ## 7. Nginx + HTTPS（按域名授权）
 
@@ -181,7 +181,7 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 300s;
-        proxy_buffering off;          # 边转码边播放
+        proxy_buffering off;          # 中继直出边收边发
     }
 
     location / {
@@ -239,7 +239,7 @@ curl -X POST https://panel.example.com/api/admin/emby/libraries/1/scan \
 
 扫描会递归识别「电影 / 剧集 / 季 / 集」（支持 `S01E02`、`1x02`、`第N集`、`EP05`，以及只有季号的 `S09` / `Season 9` / `第九季`），ffprobe 提取编码、分辨率、音轨与字幕轨，并检测外挂字幕。
 
-> 分离部署时注意：媒体文件的路径必须是 **EA 那台机器/容器能看到**的路径（EA 才负责读文件与转码）。
+> 分离部署时注意：媒体文件的路径必须是 **EA 那台机器/容器能看到**的路径（EA 才负责读文件与出流）。
 
 ### 刮削策略
 
@@ -287,7 +287,7 @@ curl -X POST https://panel.example.com/api/admin/emby/libraries/repair/run -H "A
 
 | 配置 | 作用 |
 | --- | --- |
-| 付费墙（`subscription_required` + 拦截文案） | 非会员的播放、直连流、HLS、下载一律被拦；管理员始终放行 |
+| 付费墙（`subscription_required` + 拦截文案） | 非会员的播放、直连流、下载一律被拦；管理员始终放行 |
 | 下载开关（`allow_download`） | 关闭后客户端下载与 `/Items/{id}/File` 等价路径一并被拦 |
 | 设备风控（`device_limit_per_user` / `device_limit_auto_evict`） | 每用户设备上限，超限自动踢最久未使用设备 |
 | 登录与安全日志（`login_log_retention_days`） | 登录成功/失败、设备超限、诱饵码触发等事件保留天数 |

@@ -6,7 +6,7 @@
 [![CI](https://github.com/xzb177/Aetrix-Emby-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Emby-Portal/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg?logo=docker&logoColor=white)](docs/deploy-docker.md)
 
-A self-hosted movie & TV media server that fully implements the Emby protocol (`/emby/*`). Third-party Emby clients connect to it directly — no official Emby Server required.
+A self-hosted movie & TV media server that implements the commonly used Emby client protocol surface (`/emby/*`). Third-party Emby clients connect to it directly — no official Emby Server required. Playback is direct link or relayed passthrough only; there is no server-side transcoding.
 
 Python 3.12 + FastAPI · Vue 3 + TypeScript · PostgreSQL · Redis 7 · ffmpeg
 
@@ -14,9 +14,9 @@ Python 3.12 + FastAPI · Vue 3 + TypeScript · PostgreSQL · Redis 7 · ffmpeg
 
 ## What This Is
 
-Aetrix Emby Portal is a self-hosted media server. The backend fully implements the Emby protocol, so clients like Infuse, SenPlayer, Forward, and the official Emby apps can connect to it as if it were an Emby Server — while the server side is provided entirely by this project, with zero dependence on the official Emby Server.
+Aetrix Emby Portal is a self-hosted media server. The backend implements the Emby endpoints clients commonly rely on (authentication, browsing, `PlaybackInfo`, streaming, subtitles, progress reporting), so clients like Infuse, SenPlayer, Forward, and the official Emby apps can connect to it as if it were an Emby Server — while the server side is provided entirely by this project, with zero dependence on the official Emby Server. The server does not transcode (`SupportsTranscoding` is always false), so formats that would need transcoding must be decoded by the client.
 
-The system is split into two processes by responsibility: **EM** (the portal: user site / admin console / library scanning / membership billing) and **EA** (the Emby protocol gateway: authentication / browsing / streaming / transcoding / subtitles). Both share the same PostgreSQL and the same `SECRET_KEY`. The default layout is a single machine (the self-built compose splits api / ea / worker into separate containers; the licensed compose merges them into one), but you can also split them across machines for a distributed deployment.
+The system is split into two processes by responsibility: **EM** (the portal: user site / admin console / library scanning / membership billing) and **EA** (the Emby protocol gateway: authentication / browsing / streaming / subtitles). Both share the same PostgreSQL and the same `SECRET_KEY`. The default layout is a single machine (the self-built compose splits api / ea / worker into separate containers; the licensed compose merges them into one), but you can also split them across machines for a distributed deployment.
 
 Built for technical users who run their own server, their own media library, and their own users.
 
@@ -27,10 +27,10 @@ Built for technical users who run their own server, their own media library, and
 | Component | Responsibility |
 | --- | --- |
 | **EM** | Portal: user site, admin console, library scanning, membership billing |
-| **EA** | Emby protocol gateway: authentication, browsing, streaming, transcoding, subtitles |
+| **EA** | Emby protocol gateway: authentication, browsing, streaming (direct link / relay passthrough), subtitles |
 | **PostgreSQL** | Metadata, users, billing data (default) |
 | **Redis 7** | Cache, sessions, task queue |
-| **ffmpeg** | HLS transcoding |
+| **ffmpeg** | Auxiliary only: embedded text subtitle extraction, thumbnail frames, etc. (no video transcoding) |
 
 ```
 Emby clients ──HTTP──▶ EA (streaming)
@@ -141,8 +141,8 @@ MEDIA_ROOT=/srv/media
 ### Playback & Streaming
 
 - HTTP Range direct streaming with seek support
-- ffmpeg HLS transcoding
-- Full Emby protocol compatibility, including `PlaybackInfo`, subtitle delivery, and progress reporting
+- No server-side transcoding: only two delivery modes, direct link (302 to the drive URL, bytes never touch the server) and relayed passthrough (the server forwards bytes as-is)
+- Compatible with the Emby protocol surface clients commonly use, including `PlaybackInfo`, subtitle delivery, and progress reporting; `PlaybackInfo` always reports no transcoding support, and HLS transcode URLs return 404
 - `.strm` direct play (Google Drive / rclone mounts)
 
 ### Users & Operations

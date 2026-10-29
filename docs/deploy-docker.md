@@ -124,7 +124,7 @@ bash scripts/deploy.sh          # 首次部署后端；--dry-run 可先看它要
 | 卷 | 存什么 |
 |---|---|
 | `postgres_data` | 数据库本体——最重要的数据在这里 |
-| `aetrix_data` | 海报图片缓存、转码临时目录（**不是数据库**） |
+| `aetrix_data` | 海报图片缓存、缩略图等（**不是数据库**；服务端转码已删除，compose 里残留的 `EMBY_TRANSCODE_DIR` 已不被读取） |
 | `redis_data` | Redis AOF 数据 |
 | `aetrix_backups` | 数据库备份的持久化卷（与部署解耦，重建容器不丢） |
 
@@ -265,8 +265,8 @@ docker 网关地址，真实 IP 就此丢失——后端名单配得再对，拿
 或反过来。
 
 **播放地址**（`backend/emby_server/public_url.py` 的 `client_base_url`）用于
-PlaybackInfo 的 `DirectStreamUrl` / `DirectPlayUrl` / `TranscodingUrl`、字幕
-`DeliveryUrl`、本服务自己的图片绝对地址、HLS 切片，以及 `System/Info` 的
+PlaybackInfo 的 `DirectStreamUrl` / `DirectPlayUrl`、字幕
+`DeliveryUrl`、本服务自己的图片绝对地址，以及 `System/Info` 的
 `LocalAddress` / `WanAddress`。顺序是：
 
 1. `EMBY_PUBLIC_URL` 已设置，并且字面以 `http://` 或 `https://` 开头：用它。不看 Host，不看转发头。只填根地址，不要带路径或查询串；代码不剥路径，`https://media.example.com/emby` 会原样留在基址里，后面再拼 `/emby/Videos/...`。尾斜杠会去掉；默认端口 `:443` / `:80` 会去掉。
@@ -275,7 +275,7 @@ PlaybackInfo 的 `DirectStreamUrl` / `DirectPlayUrl` / `TranscodingUrl`、字幕
 
 内置的 Cloudflare 回源网段参与「真实 IP 可不可信」（`_peer_trusted`），不因此让播放地址采信 `X-Forwarded-Proto`。`流媒体加速` 开着或 `TRUST_CF_IP=true` 时，中间件才会在这些网段上还原真实 IP，还原成功后这次请求的转发头才按上一条第 2 步处理。
 
-拼完基址之后，`DirectStreamUrl` / `TranscodingUrl` 还可能被改写（`rewrite_playback_urls_unified`）：有健康且为公网地址的流节点时，换成**该节点登记的地址**；否则流媒体加速开着时换成 `https://` 加加速域名；都没有则保持上面的基址。Drive 直链播放跳过这次改写。流节点的登记地址不是主站的 `EMBY_PUBLIC_URL`。EA 启动时自动登记用的是 `EMBY_API_PUBLIC_URL`；没设且 `HOST` 为 `0.0.0.0` 或 `::` 时不拼地址。内网、回环地址不会被拿去改写播放 URL。
+拼完基址之后，`DirectStreamUrl` 还可能被改写（`rewrite_playback_urls_unified`）：有健康且为公网地址的流节点时，换成**该节点登记的地址**；否则流媒体加速开着时换成 `https://` 加加速域名；都没有则保持上面的基址。Drive 直链播放跳过这次改写。流节点的登记地址不是主站的 `EMBY_PUBLIC_URL`。EA 启动时自动登记用的是 `EMBY_API_PUBLIC_URL`；没设且 `HOST` 为 `0.0.0.0` 或 `::` 时不拼地址。内网、回环地址不会被拿去改写播放 URL。
 
 **账号卡与一键导入**（`resolve_emby_base_url`）是用户该填进播放器的服务器根。顺序是：
 
@@ -328,7 +328,7 @@ TRUSTED_PROXIES=172.18.0.0/16
 
 - 启动时若设置了 `EMBY_PUBLIC_URL`，却不是以 `https://` 开头（大小写不敏感），打一条 WARNING，服务照常启动。`http://…` 运行时仍然使用，不会因为这条警告被丢掉。字面不是 `http://` 或 `https://` 开头的值，运行时当成没配。未设置不告警。
 - 域名守卫的允许名单分两步：管理后台「流媒体加速」开关打开 **并且** 填了加速域名时，用那份域名；这两项没有同时满足时，才看环境变量 `ENFORCE_DOMAIN`。两边都空则守卫关闭，请求原样放行。名单非空时，启动再检查 `EMBY_PUBLIC_URL` 的主机在不在里面；不在只打 WARNING，地址照样下发。真正的拦截在请求上：Host 不在名单里返回 403，所以客户端要连的域名得在这份名单里。这是域名守卫，不是播放防盗链的 Referer 白名单；Referer 白名单不参与 `EMBY_PUBLIC_URL` 的启动检查，空名单等于不检查 Referer。
-- PlaybackInfo 把 MediaSource（含字幕 `DeliveryUrl` 里的基址）缓存 `PLAYBACKINFO_CACHE_TTL` 秒，默认 300，设 `0` 关闭。缓存键是条目、用户、设备 profile 指纹和码率上限，不含对外基址。`DirectStreamUrl` / `DirectPlayUrl` / `TranscodingUrl` 在读缓存之后按**当次**基址重拼，改地址并重启后这三条下次请求就是新基址。字幕 `DeliveryUrl` 留在缓存里的那份仍可能是旧基址，要等这次 TTL 结束。Redis 里的缓存跨重启还在。
+- PlaybackInfo 把 MediaSource（含字幕 `DeliveryUrl` 里的基址）缓存 `PLAYBACKINFO_CACHE_TTL` 秒，默认 300，设 `0` 关闭。缓存键是条目、用户、设备 profile 指纹和码率上限，不含对外基址。`DirectStreamUrl` / `DirectPlayUrl` 在读缓存之后按**当次**基址重拼，改地址并重启后这两条下次请求就是新基址（转码删除后不再有 `TranscodingUrl`）。字幕 `DeliveryUrl` 留在缓存里的那份仍可能是旧基址，要等这次 TTL 结束。Redis 里的缓存跨重启还在。
 
 分离部署时，播放地址在出协议的进程上算，那是 EA；账号卡在 EM 进程里算（`portal.resolve_emby_base_url` 读到 `EMBY_PUBLIC_URL` 的那一步）。EA 不挂门户路由（`emby_api/main.py` 只挂协议面、搜索、挂载体检和节点身份），所以 EA 环境里的 `EMBY_PUBLIC_URL` 不会出现在账号卡上。两边都要设这个变量：Compose 的同一份 `.env` 会同时进 EM 和 EA；两台机器则各写一份，都只填根地址。EM 上若已经填了「服对外地址」或「服务入口」，账号卡可以不靠 EM 的这个变量；EA 的播放地址仍然要靠 EA 自己的 `EMBY_PUBLIC_URL`（或 EA 前面那一跳可信反代的转发头）。详见 [EA 网关部署 · 客户端接入](./deploy-ea.md#6-客户端接入)。
 
