@@ -384,6 +384,114 @@ def is_quota_page_bytes(status, content_type, body) -> bool:
     return any(m in text for m in _QUOTA_MARKERS)
 
 
+USERCOPY_QUOTA_DETAIL = "你的谷歌盘今日下载额度已满，约 24 小时后恢复"
+
+
+def usercopy_quota_probe_enabled() -> bool:
+    """用户副本额度探测开关（TRANSFER_USERCOPY_QUOTA_PROBE_ENABLED），默认开。
+
+    关掉即回到探测前行为：直接下发用户副本直链（额度页时播放器黑屏）。
+    """
+    return _env_on("TRANSFER_USERCOPY_QUOTA_PROBE_ENABLED", "1")
+
+
+def _usercopy_quota_probe_ttl() -> int:
+    try:
+        ttl = int((os.getenv("TRANSFER_USERCOPY_QUOTA_PROBE_TTL_SEC", "300")
+                   or "300").strip())
+    except (TypeError, ValueError):
+        ttl = 300
+    return ttl if ttl > 0 else 300
+
+
+def _usercopy_probe_http(url):
+    """额度探测的 HTTP 入口（测试打桩用）。
+
+    返回 (status, content_type, head_bytes)。``Range: bytes=0-``
+    是关键：谷歌对小段 Range（如 bytes=0-1）即使额度已满也回 206 视频，
+    只有开放式 Range / 无 Range 才回 200 额度页——与播放器真实请求同口径。
+    只读响应头 + 前 512 字节后立刻关连接，不下整段。
+    """
+    with httpx.stream("GET", url, headers={"Range": "bytes=0-"},
+                      timeout=3.0, follow_redirects=True) as resp:
+        head = b""
+        ctype = resp.headers.get("content-type", "")
+        if ctype.lower().startswith("text/html"):
+            for chunk in resp.iter_bytes():
+                head += chunk
+                if len(head) >= 4096:
+                    break
+        else:
+            for chunk in resp.iter_bytes():
+                head += chunk
+                if len(head) >= 512:
+                    break
+        return resp.status_code, ctype, head
+
+
+def probe_user_copy_quota(user_id, fid) -> str:
+    """探测用户副本免凭证直链是否被谷歌下载额度挡住。
+
+    返回 "ok"（可拉流）/ "quota"（额度页）/ "error"（探测本身失败）。
+    ok / quota 按 (user, fid) 短缓存（默认 300 秒，可调），error 不缓存。
+    只请求用户本人副本的 usercontent 地址：不带任何令牌、不碰共享
+    原件、不碰 SA。永不抛异常。开关关时恒返回 "ok"。
+    """
+    if not usercopy_quota_probe_enabled():
+        return "ok"
+    fid = (fid or "").strip()
+    if not fid:
+        return "error"
+    key = f"usercopy_quota:{user_id}:{fid}"
+    try:
+        from backend.database import CacheManager
+        cached = CacheManager.get(key, domain="playback")
+        if cached in ("ok", "quota"):
+            return cached
+    except Exception:  # noqa: BLE001 — 缓存不可用按未命中
+        CacheManager = None  # type: ignore[assignment]
+    try:
+        from backend.emby_server.drive_auth import drive_usercontent_download_url
+        url = drive_usercontent_download_url(fid)
+        status, ctype, head = _usercopy_probe_http(url)
+    except Exception:  # noqa: BLE001 — 探测失败不阻断播放
+        logger.info("用户副本额度探测失败 user=%s fid=%s，照常下发",
+                    user_id, fid, exc_info=True)
+        return "error"
+    if is_quota_page_bytes(status, ctype, head):
+        verdict = "quota"
+    elif status in (200, 206):
+        verdict = "ok"
+    else:
+        # 404/403/5xx 不归额度：交给后续既有存在性/错误口径处理。
+        return "error"
+    if verdict == "ok":
+        try:
+            publish_drive_exists_ok(fid)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        if CacheManager is not None:
+            CacheManager.set(key, verdict, _usercopy_quota_probe_ttl(),
+                             domain="playback")
+    except Exception:  # noqa: BLE001
+        pass
+    if verdict == "quota":
+        log_byos("byos_usercopy_quota", user=user_id, fid=fid)
+    return verdict
+
+
+def ready_user115_variant(db, item_id, user_id):
+    """该用户该条目 ready 的 115 副本行（或 None）。额度回落只看本人 115。"""
+    try:
+        return _newest_ready_for_scheme(db, item_id, "user", str(user_id),
+                                        "pan115:")
+    except Exception:  # noqa: BLE001
+        logger.warning("查 115 副本失败 item=%s user=%s", item_id, user_id,
+                       exc_info=True)
+        return None
+
+
 def is_transfer_dir_rel(rel: str) -> bool:
     """扫描排除判定：rel 首段 == 转存目录名即转存目录下的文件。
 
@@ -1364,6 +1472,39 @@ def _retrigger_failed_job(db, item, user_id, provider, job, *,
             "job_id": new_job.id}
 
 
+def _rebuild_done_job(db, item, user_id, provider, job, *,
+                      cross=False, dest=None):
+    """done 任务但本人副本已不在 ready 时的门禁重建（2026-10-29 生产实证）。
+
+    旧行为：24h 内只要有过 done 任务就判 throttled，副本被 LRU /
+    闲置清理 / 额度信号标 stale 删掉后，用户 24h 内一直“准备中”
+    播不了（生产 99 个用户 357 条卡死）。调用方已确认本人无 ready
+    副本（ready 检查在前）。新行为：预算内（与失败重触发同一个
+    _gate_retrigger_budget_ok，24h 同桶 < 2 行）force 重建一单，
+    返回 preparing/job_rebuilt 走准备中等流；预算耗尽仍 throttled，
+    不会被播放器重试刷成任务洪水。只建用户盘任务（files.copy 到
+    本人盘），不碰共享原件、不改选路。
+    """
+    item_id = getattr(item, "id", None)
+    if not _gate_retrigger_budget_ok(db, item_id, user_id, dest=dest):
+        return {"verdict": "preparing", "reason": "throttled",
+                "job_id": job.id}
+    try:
+        if cross:
+            new_job = create_cross_provider_job(
+                db, item, user_id, provider, trigger="playback", force=True)
+        else:
+            new_job = create_user_job(
+                db, item, user_id, provider, trigger="playback", force=True)
+    except TransferError as exc:
+        if exc.kind == "throttled":
+            return {"verdict": "preparing", "reason": "throttled",
+                    "job_id": job.id}
+        return {"verdict": "failed", "reason": exc.kind, "job_id": job.id}
+    return {"verdict": "preparing", "reason": "job_rebuilt",
+            "job_id": new_job.id}
+
+
 def ensure_user_copy_gate(db, item, user, *, play_sign_consume=False):
     """首播转存门禁。语义见 ``_ensure_user_copy_gate_impl``。"""
     result = _ensure_user_copy_gate_impl(
@@ -1446,8 +1587,11 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                 if job.status == "done":
                     if _recent_job_exists(db, item_id, "user",
                                           str(user_id)):
-                        return {"verdict": "preparing", "reason": "throttled",
-                                "job_id": job.id}
+                        # 本人该 scheme 的 ready 副本已查过为空：done
+                        # 行留下的只是“副本已被清掉”，预算内重建。
+                        return _rebuild_done_job(
+                            db, item, user_id, provider, job, cross=True,
+                            dest=dest)
             try:
                 new_job = create_cross_provider_job(db, item, user_id,
                                                     provider,
@@ -1493,9 +1637,10 @@ def _ensure_user_copy_gate_impl(db, item, user, *, play_sign_consume=False):
                         "job_id": job.id}
             if job.status == "done":
                 if _recent_job_exists(db, item_id, "user", str(user_id)):
-                    # 副本已释放/变 stale 但节流窗未过：不重复建。
-                    return {"verdict": "preparing", "reason": "throttled",
-                            "job_id": job.id}
+                    # 副本已释放/变 stale（ready 已查过为空）但节流窗未
+                    # 过：预算内重建一单，预算耗尽才 throttled。
+                    return _rebuild_done_job(
+                        db, item, user_id, provider, job)
                 # done 且节流窗已过：落到下面重建。
         try:
             new_job = create_user_job(db, item, user_id, provider,
@@ -1701,7 +1846,8 @@ async def wait_for_transfer_ready(initial_gate, gate_callable, *,
                                   max_sec=None, poll_sec=None):
     """准备中态等流：每 poll 秒重查一次门禁，直到变体就绪。
 
-    只对 reason 为 job_created / job_in_flight / job_retriggered
+    只对 reason 为 job_created / job_in_flight / job_retriggered /
+    job_rebuilt
     的 preparing 等：throttled（节流窗内无在途任务）等再久也没用，
     直接回原 verdict，不烧 15 秒。其它 verdict（proceed /
     serve_115_copy / failed / error）一出现即回，不等满时。超时回
@@ -1714,7 +1860,7 @@ async def wait_for_transfer_ready(initial_gate, gate_callable, *,
     if gate.get("verdict") != "preparing":
         return gate
     if gate.get("reason") not in ("job_created", "job_in_flight",
-                                  "job_retriggered"):
+                                  "job_retriggered", "job_rebuilt"):
         return gate
     if not wait_stream_enabled():
         return gate
