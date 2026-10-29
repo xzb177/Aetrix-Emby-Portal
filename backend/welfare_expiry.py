@@ -22,19 +22,34 @@ def _safe_get_int(db: Session, key: str, default: int) -> int:
         return default
 
 
+def _safe_get_bool(db: Session, key: str, default: bool) -> bool:
+    """读取布尔配置，读取失败时记录错误并返回默认值。"""
+    try:
+        return economy._get_bool_config(db, key, default)
+    except Exception as e:
+        logger.error("读取配置 %s 失败，使用默认值 %s: %s", key, default, e, exc_info=True)
+        return default
+
+
 _SCAN_BATCH = 500
 
 
 def _try_streak_renew(db: Session, user: models.WebUser, now: datetime) -> bool:
-    """连签保资格：已过期用户若连签 alive 且 streak >= 阈值，续期 30 天、不扣分。
+    """连签保资格：已过期用户若连签 alive 且 streak >= 阈值，续期 N 天、不扣分。
 
+    总开关 welfare_streak_renew_enabled（默认开）关闭时整条不跑，直接返回
+    False，调用方照常走保留期/取消流程。续期天数 welfare_streak_renew_days
+    （默认 30），实际延期与 WelfareGrantLog.days 同走此值。
     alive：最近一条签到记录落在昨天或今天（上海自然日帧，与 CheckinRecord.checkin_date
     写入帧一致）；长度：该条记录的 streak 字段。两者缺一不可：断过（streak 被重置）
     或最近记录已 stale（3 天前），都不续。
-    续期后 expires_at = now + 30 天 > now，下一轮 tick 不再过期、不重复续期（幂等）。
+    续期后 expires_at = now + N 天 > now，下一轮 tick 不再过期、不重复续期（幂等）。
     查看凭证（EmbyViewUnlock）一律不动：查看到期仍需花 50 分续。
     """
+    if not _safe_get_bool(db, "welfare_streak_renew_enabled", True):
+        return False
     min_streak = _safe_get_int(db, "welfare_streak_renew_min", 30)
+    renew_days = _safe_get_int(db, "welfare_streak_renew_days", 30)
     today_start = economy._today_start_utc_naive()
     yesterday_start = today_start - timedelta(days=1)
     latest = (
@@ -49,8 +64,8 @@ def _try_streak_renew(db: Session, user: models.WebUser, now: datetime) -> bool:
         return False
     if (latest.streak or 0) < min_streak:
         return False
-    user.welfare_expires_at = now + timedelta(days=30)
-    db.add(models.WelfareGrantLog(user_id=user.id, channel="streak_renew", days=30,
+    user.welfare_expires_at = now + timedelta(days=renew_days)
+    db.add(models.WelfareGrantLog(user_id=user.id, channel="streak_renew", days=renew_days,
                                   granted_by=None))
     db.commit()
     return True
@@ -60,8 +75,10 @@ def check_welfare_expiry(db: Session) -> dict:
     """扫描已过期的公益用户。
 
     连签保资格（在保留期/取消之前先判）：已过期且连签 alive、streak >= 阈值
-    （welfare_streak_renew_min，默认 30）的用户直接续期 30 天、不扣分，记
+    （welfare_streak_renew_min，默认 30）的用户直接续期（天数
+    welfare_streak_renew_days，默认 30）、不扣分，记
     channel="streak_renew" 的 WelfareGrantLog，不走保留期/取消路径。
+    总开关 welfare_streak_renew_enabled 关闭时不续期，照常走保留期/取消。
     过期时间在保留期（welfare_grace_days）内的用户仅记录，不修改状态；
     超过保留期的用户自动取消公益身份（is_welfare=False），
     并写入 channel="auto_expire" 的 WelfareGrantLog。

@@ -166,6 +166,26 @@ def _streak_renew_min(db) -> int:
         return 30
 
 
+def _streak_renew_enabled(db) -> bool:
+    """连签保资格总开关：SystemConfig welfare_streak_renew_enabled，默认开。
+
+    与 welfare_expiry 的读口一致（只认 "true"，缺行默认开）。开关关闭时
+    连签行不再宣称「自动续公益资格」——功能在到期 tick 侧同样被门控，
+    文案不许继续承诺一个已关掉的功能。
+    """
+    try:
+        row = (
+            db.query(models.SystemConfig)
+            .filter_by(key="welfare_streak_renew_enabled")
+            .first()
+        )
+        if row is None or row.value is None:
+            return True
+        return str(row.value).strip().lower() == "true"
+    except Exception:
+        return True
+
+
 def _streak_line(db, user_id: int) -> str:
     """连签：取最近一条签到记录的 streak 列，无记录为 0 天。"""
     row = (
@@ -175,6 +195,8 @@ def _streak_line(db, user_id: int) -> str:
         .first()
     )
     streak = int(row.streak) if row is not None and row.streak is not None else 0
+    if not _streak_renew_enabled(db):
+        return f"📋 连签：{streak} 天"
     return f"📋 连签：{streak} 天（满 {_streak_renew_min(db)} 天自动续公益资格）"
 
 
