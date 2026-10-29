@@ -1014,15 +1014,105 @@ def ensure_user_copy_public(db, user_id, file_id) -> bool:
         binding = _active_binding(db, user_id, "drive")
         if binding is None:
             return False
+        if _copy_public_cache_valid(db, user_id, fid):
+            return True
         from backend.emby_server import drive_oauth as _do
         from backend.emby_server import drive_share as _ds
         token = _do.get_binding_drive_access_token(db, binding)
         if not token:
             return False
-        return _ds.ensure_shared(fid, token) in ("ok", "already")
+        ok = _ds.ensure_shared(fid, token) in ("ok", "already")
+        if ok:
+            _copy_public_cache_put(user_id, fid)
+        return ok
     except Exception:
         logger.warning("用户副本 anyone-reader 自愈失败 user=%s",
                        user_id, exc_info=True)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 起播去重（2026-10-29）：已确认公开的副本不再每次 permissions.create
+# ---------------------------------------------------------------------------
+# 生产实测每次 PlaybackInfo 都打一次 permissions.create（300-400ms），
+# 即使副本早已 anyone-reader。缓存值是“确认公开的时间”。命中后仍回库
+# 核对，任一不满足即视为失效、走原逻辑重新授权：
+# - 该用户名下该 fid 的 Drive 副本行存在且 status == "ready"
+#   （LRU / 闲置清理 / 额度信号标 deleted/stale/released 即失效）；
+# - share_revoked_at 为空，或早于缓存写入时间（解绑 / 令牌失效 / 闲置
+#   收回都会写 share_revoked_at=now，晚于缓存即失效）。
+# 这样不依赖逐个失效写点，Redis 不可用（缓存退回本进程内存）时同样
+# 正确；收回点另外主动删键，只是让下次少一次回库。核对只读本地库，
+# 不打谷歌。
+
+def copy_public_cache_ttl() -> int:
+    """已公开缓存 TTL（秒），COPY_PUBLIC_CACHE_TTL_SEC，默认 6h，0 = 关。"""
+    raw = (os.getenv("COPY_PUBLIC_CACHE_TTL_SEC", "") or "").strip()
+    if not raw:
+        return 6 * 3600
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return 6 * 3600
+    return val if val >= 0 else 6 * 3600
+
+
+def _copy_public_key(user_id, fid) -> str:
+    return f"usercopy_public:{user_id}:{fid}"
+
+
+def _copy_public_cache_put(user_id, fid) -> None:
+    ttl = copy_public_cache_ttl()
+    if ttl <= 0:
+        return
+    try:
+        from backend.database import CacheManager
+        CacheManager.set(_copy_public_key(user_id, fid),
+                         datetime.now().isoformat(), ttl,
+                         domain="playback")
+    except Exception:  # noqa: BLE001 — 缓存只是加速
+        logger.debug("已公开缓存写入失败", exc_info=True)
+
+
+def copy_public_cache_drop(user_id, fid) -> None:
+    """收回 / 删除副本时主动删键（正确性由命中核对兜底，这里只是提速）。"""
+    try:
+        from backend.database import CacheManager
+        CacheManager.delete(_copy_public_key(user_id, fid),
+                            domain="playback")
+    except Exception:  # noqa: BLE001
+        logger.debug("已公开缓存删除失败", exc_info=True)
+
+
+def _copy_public_cache_valid(db, user_id, fid) -> bool:
+    """缓存命中且回库核对通过 → True；任何异常 / 不确定 → False（走原逻辑）。"""
+    if copy_public_cache_ttl() <= 0:
+        return False
+    try:
+        from backend.database import CacheManager
+        raw = CacheManager.get(_copy_public_key(user_id, fid),
+                               domain="playback")
+        if not raw:
+            return False
+        cached_at = datetime.fromisoformat(str(raw))
+        rows = (db.query(em.TransferVariant)
+                .filter(em.TransferVariant.owner_scope == "user",
+                        em.TransferVariant.owner_ref == str(user_id),
+                        em.TransferVariant.variant_drive_id.like(
+                            "userdrive:%"),
+                        em.TransferVariant.variant_file_id == fid)
+                .all())
+        if not rows:
+            return False
+        for row in rows:
+            if getattr(row, "status", None) != "ready":
+                return False
+            revoked = getattr(row, "share_revoked_at", None)
+            if revoked is not None and revoked >= cached_at:
+                return False
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("已公开缓存核对失败，按未命中", exc_info=True)
         return False
 
 
@@ -1156,6 +1246,9 @@ def revoke_user_copy_sharing(db, user_id, binding=None, row_ids=None,
         if not fid or any(c in fid for c in (" ", "/")):
             stats["errors"] += 1
             continue
+        # 收回动作发起前先删缓存：并发 PlaybackInfo 不得再把该 fid
+        # 当成已公开；即使远端收回失败，命中核对也会按原逻辑重新确认。
+        copy_public_cache_drop(user_id, fid)
         outcome = None
         for client in clients:
             try:

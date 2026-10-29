@@ -4650,10 +4650,59 @@ def drive_exists_rapid_retry(request, user, file_id: str) -> bool:
                         _drive_exists_retry[local_key] = now
                 if prev is not None and 0 <= (now - prev) <= window:
                     local_hit = True
-        return local_hit or _retry_seen_redis(identity, file_id, token, window)
+        hit = local_hit or _retry_seen_redis(identity, file_id, token, window)
+        if hit and not _force_recheck_allowed(file_id):
+            # 起播去重（2026-10-29）：同一文件在间隔内已强制复验过一次。
+            # 那次若 404 已摘缓存并立墓碑，后续请求自然 miss 再查，
+            # 不会把死链 302 出去；这里只省掉重复的 files.get。
+            return False
+        return hit
     except Exception:  # noqa: BLE001
         logger.debug("Drive 存在性缓存重试判定失败", exc_info=True)
         return False
+
+
+#: 同一文件两次强制复验的最小间隔（秒），DRIVE_EXISTS_FORCE_MIN_INTERVAL_SEC，
+#: 默认 60，0 = 不限频（回到每次重试都复验）。生产实测 Hills 起播连发 4 次
+#: /stream（间隔 0.3-3 秒，起始字节相同），每次都被判成重试打一次 files.get。
+_DRIVE_EXISTS_FORCE_PREFIX = "aetrix:drive_exists:forced:"
+_drive_exists_forced: dict = {}
+_drive_exists_forced_lock = threading.Lock()
+
+
+def _force_min_interval() -> int:
+    return env_int("DRIVE_EXISTS_FORCE_MIN_INTERVAL_SEC", 60, 0, 3600)
+
+
+def _force_recheck_allowed(file_id: str) -> bool:
+    """本文件距上次强制复验已超最小间隔 → True（并登记本次）。
+
+    本进程字典 + Redis SET NX 双层；Redis 不可用只看本进程。任何异常 → True
+    （宁可多查一次，不放过真重试）。
+    """
+    try:
+        interval = _force_min_interval()
+        if interval <= 0:
+            return True
+        now = time.monotonic()
+        with _drive_exists_forced_lock:
+            prev = _drive_exists_forced.get(file_id)
+            if prev is not None and 0 <= now - prev < interval:
+                return False
+            _drive_exists_forced[file_id] = now
+            if len(_drive_exists_forced) > _DRIVE_EXISTS_RETRY_MAX:
+                cutoff = now - interval
+                for k in [k for k, v in _drive_exists_forced.items()
+                          if v < cutoff]:
+                    _drive_exists_forced.pop(k, None)
+        rc = _drive_exists_redis()
+        if rc is None:
+            return True
+        created = rc.set(_DRIVE_EXISTS_FORCE_PREFIX + file_id, "1",
+                         nx=True, ex=int(interval))
+        return bool(created)
+    except Exception:  # noqa: BLE001
+        return True
 
 
 #: 单次 files.get 超时（秒）：只做存在性判定，不许引入新的长等待。
@@ -4895,8 +4944,14 @@ def _drive_file_exists_remote(drive_id: str, file_id: str) -> None:
         raise _DriveFileUnavailable("Drive 凭据失效（401）")
     if resp.status_code != 200:
         raise _DriveFileUnavailable(f"files.get 返回 {resp.status_code}")
-    # 200：文件存在 → 写入正缓存（404/401/异常路径不缓存）
+    # 200：文件存在 → 写入本进程正缓存，并发布跨 worker 正缓存。
+    # 404/401/异常路径不缓存；Redis 失败只损失命中率，不影响播放。
     _drive_exists_cache_put(drive_id, file_id)
+    try:
+        from backend.emby_server.transfer_variant import publish_drive_exists_ok
+        publish_drive_exists_ok(file_id)
+    except Exception:  # noqa: BLE001 — 加速缓存失败不挡播放
+        logger.debug("Drive 存在性正缓存跨进程发布失败", exc_info=True)
 
 
 async def _ensure_drive_file_playable(db: Session, item: em.MediaItem,

@@ -103,9 +103,14 @@ def _iso(monkeypatch):
     monkeypatch.setattr(playback_risk, "_ensure_flusher", lambda: None)
     api._drive_exists_cache.clear()
     api._drive_exists_retry.clear()
+    api._drive_exists_forced.clear()
+    # 本文件钉“每次真重试都复验”的旧口径；强制复验限频另见
+    # tests/test_startup_dedup.py。
+    monkeypatch.setenv("DRIVE_EXISTS_FORCE_MIN_INTERVAL_SEC", "0")
     yield
     api._drive_exists_cache.clear()
     api._drive_exists_retry.clear()
+    api._drive_exists_forced.clear()
 
 
 @pytest.fixture()
