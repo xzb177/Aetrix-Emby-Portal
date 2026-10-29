@@ -37,7 +37,7 @@
 ### 不要配的
 
 - ❌ 不要对 `/emby/` API 路径开缓存（`Items`、`PlaybackInfo` 是动态的）
-- ❌ 不要对 `master.m3u8` 开缓存（播放列表动态）
+- （`master.m3u8` 等 HLS 转码地址已随服务端转码删除，一律 404，无需单独配规则）
 - ❌ 不要开 "Cache Everything" 页面规则（一刀切会缓存 API）
 
 ## 验证

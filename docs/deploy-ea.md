@@ -1,6 +1,6 @@
 # EA · Emby API —— 协议网关部署
 
-**EA 是客户端眼里的"那台 Emby 服务器"**：Infuse / Fileball / Forward+ / Hills / SenPlayer / 官方 App 直接连 EA，媒体流由 EA 直连透传（HTTP Range）或 HLS 转码后送出。
+**EA 是客户端眼里的"那台 Emby 服务器"**：Infuse / Fileball / Forward+ / Hills / SenPlayer / 官方 App 直接连 EA，媒体流由 EA 以 302 直链或中继直出（HTTP Range 透传）送出。服务端不转码（2026-10-24 删除），`PlaybackInfo` 恒报 `SupportsTranscoding=false`。
 
 EA 自己**不定义任何业务策略**——用户、媒体库、套餐与订阅、设备上限、下载开关、限流口径全部由 EM 写入共享数据库，EA 只按要求兑现。所以：
 
@@ -22,7 +22,7 @@ panel.example.com ──┤  EM 控制面（注册登录、订阅权限、求片
         私网 API / WireGuard / Tailscale
                     │
                     ▼
-              EA 播放节点（Emby 协议、认证、权限校验、直链代理、HLS 转码、播放会话）
+              EA 播放节点（Emby 协议、认证、权限校验、直链 / 中继出流、字幕、播放会话）
                     │
           共享存储（WebDAV / rclone / 115 / AList）
                     ▼
@@ -31,7 +31,7 @@ panel.example.com ──┤  EM 控制面（注册登录、订阅权限、求片
 
 | 职责 | 跑在哪 | 关键配置 |
 | --- | --- | --- |
-| EM 控制面 | 当前服务器（`serve.py`） | `ENABLE_EMBY_GATEWAY=false`：面板只做控制，不提供协议面、不转码 |
+| EM 控制面 | 当前服务器（`serve.py`） | `ENABLE_EMBY_GATEWAY=false`：面板只做控制，不提供协议面、不出流 |
 | EA 数据面 | 另一台服务器（`serve_emby.py`） | `NODE_KEY` 认领节点。播放器连这台 EA；播放地址用 EA 上的 `EMBY_PUBLIC_URL`（只填根，不要带路径）。账号卡由 EM 给出，顺序是服对外地址 → 服务入口 → EM 的 `EMBY_PUBLIC_URL`，不是只看 EA 这一行 |
 | 数据库 | 独立一处（推荐托管 PostgreSQL） | 不开放公网，只允许 EM / EA 的私网来源 |
 | 媒体存储 | 独立存储服务（WebDAV / rclone RC / 群晖 / 115） | EM 与 EA 用**同一个地址**读写，不依赖任何一方的本机路径 |
@@ -84,8 +84,7 @@ EM ── WireGuard / Tailscale ── EA
 - EA 的数据库账号只给必要权限（见上面的提醒）；
 - EM → EA 的调用全部走私网，公网只用于客户端；
 - EA 只通过节点 API 获取必要配置（现在仍然读同一份库，是过渡期做法）；
-- 转码目录放 EA 本地 SSD（`EMBY_TRANSCODE_DIR`），不要放网络盘：HLS 切片是高频小块写；
-- 给 EA 做独立监控与限流（ffmpeg 并发、磁盘水位、出口带宽）。
+- 给 EA 做独立监控与限流（中继出口带宽、磁盘水位、字幕缓存）。服务端转码已删除，不再需要转码目录。
 
 分阶段落地：**现在**就是上面这张拓扑（EM 控制面 + EA 数据面 + 独立 PostgreSQL + 共享 WebDAV/rclone
 + 内网 WireGuard/Tailscale）；**下一步**把 EA 的库权限与调用链路收窄；**长期**才是控制面 / 数据面集群 /
@@ -113,9 +112,9 @@ Emby 客户端把「服务器地址」当成服务器根来用，因此 `emby_ro
 | 组件 | 说明 |
 | --- | --- |
 | Python | 3.10+，与 EM **同一份代码与依赖**（`pip install -r backend/requirements.txt`） |
-| **ffmpeg** | **EA 这边必需**（转码发生在 EA）；直连播放不需要 |
-| 磁盘 | `EMBY_TRANSCODE_DIR` 需要放得下 HLS 切片；并发多时要留余量 |
-| 媒体目录 | 必须是 **EA 这台机器能看到**的路径（读文件、探测轨道、转码都在 EA 做） |
+| **ffmpeg** | 建议安装：只用于内封文本字幕抽取为 WebVTT（缺了该类字幕返回 503）；服务端不转码，播放本身不需要 |
+| 磁盘 | 字幕缓存与图片缓存（`EMBY_CACHE_DIR`）留些余量即可；不再有转码切片 |
+| 媒体目录 | 必须是 **EA 这台机器能看到**的路径（读文件、探测轨道、抽字幕都在 EA 做） |
 | 网络 | 能访问与 EM 相同的数据库；若跨机部署，用 PostgreSQL（见第 3 节） |
 
 ## 3. 前置：与 EM 配对（EA 的硬依赖）
@@ -130,7 +129,7 @@ EA 与 EM 必须共用**同一个数据库**与**同一个 `SECRET_KEY`**（客�
 | `EMBY_SERVER_NAME` / `EMBY_SERVER_ID` | 与 EM 保持一致（客户端按 ID 识别服务器） |
 | `EMBY_API_PORT` | EA 监听端口，默认 `8001` |
 | `EM_PANEL_URL` | 可选，EA 启动时探测 EM 是否可达（仅告警） |
-| `EMBY_TRANSCODE_DIR` / `EMBY_FFMPEG_PATH` | EA 这边的转码目录与 ffmpeg 路径 |
+| `EMBY_FFMPEG_PATH` | EA 这边的 ffmpeg 路径（字幕抽取用）。`EMBY_TRANSCODE_DIR` 随转码删除已不再被代码读取 |
 | `CORS_ORIGINS` | 与 EM 同口径 |
 
 ### 数据库能不能跨机（重要）
@@ -179,7 +178,7 @@ EnvironmentFile=/opt/Aetrix-Portal/.env
 ExecStart=/opt/Aetrix-Portal/.venv/bin/python serve_emby.py
 Restart=always
 RestartSec=5
-# 转码进程组需要能被整体回收
+# 回收字幕抽取等子进程
 KillMode=control-group
 TimeoutStopSec=20
 
@@ -192,7 +191,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now aetrix-ea
 journalctl -u aetrix-ea -f
 ```
 
-> **不要**用 `uvicorn --workers N` 起多个 worker：转码子进程管理与内存态会话在同一进程内闭环，多 worker 会重复 fork、会话失效无法回收。
+> **不要**用 `uvicorn --workers N` 起多个 worker：限流计数、各类缓存与后台调度都是进程内状态，多 worker 会让它们分散、互不可见（服务端转码已删除，与转码无关）。
 
 ## 5. Nginx + HTTPS（客户端域名）
 
@@ -211,13 +210,13 @@ server {
     ssl_certificate_key /etc/nginx/ssl/privkey.pem;
 
     add_header X-Content-Type-Options nosniff always;
-    # 直连流与切片要能带 Range，且响应头要给客户端读
+    # 直连流要能带 Range，且响应头要给客户端读
     add_header Accept-Ranges bytes always;
 
-    # 转码首片可能等十几秒；默认 60s 读超时会提前断流
+    # 中继直出是长连接大流量；默认 60s 读超时可能提前断流
     proxy_read_timeout 300s;
     proxy_send_timeout 300s;
-    proxy_buffering off;          # 边转码边播放，禁止缓冲
+    proxy_buffering off;          # 中继直出边收边发，禁止缓冲
 
     location / {
         proxy_pass http://127.0.0.1:8001;
@@ -240,9 +239,9 @@ server {
 
 播放器里的拉流地址，和门户账号卡上让用户填写的服务器根，不是同一个函数。
 
-- **播放地址**（PlaybackInfo、字幕、图片、HLS、`System/Info`）在 **EA 进程**上解析：`EMBY_PUBLIC_URL` 只填根（字面为 `http://` 或 `https://`，不要带路径；代码不剥路径）优先；没配时，只在直连方属于 `TRUSTED_PROXIES` 或 `FORWARDED_ALLOW_IPS` 里的精确 IP / CIDR（或这次请求已由可信代理还原出真实 IP）时采信 `X-Forwarded-Proto` / `X-Forwarded-Host`；否则用请求自己的地址。本机 Nginx 反代到 `127.0.0.1` 时回环默认可信。Docker 网关不在默认名单里，不配信任网段就会把 `http://` 写进播放地址，不跟随 301 的客户端（例如 SenPlayer）播不了。`FORWARDED_ALLOW_IPS=*` 会被丢掉并记一次 WARNING：`*` 能让任意直连方伪造客户端 IP，绕过限流和按 IP 做的访问判断。只写了 `*` 时，uvicorn 只信回环。
+- **播放地址**（PlaybackInfo、字幕、图片、`System/Info`）在 **EA 进程**上解析：`EMBY_PUBLIC_URL` 只填根（字面为 `http://` 或 `https://`，不要带路径；代码不剥路径）优先；没配时，只在直连方属于 `TRUSTED_PROXIES` 或 `FORWARDED_ALLOW_IPS` 里的精确 IP / CIDR（或这次请求已由可信代理还原出真实 IP）时采信 `X-Forwarded-Proto` / `X-Forwarded-Host`；否则用请求自己的地址。本机 Nginx 反代到 `127.0.0.1` 时回环默认可信。Docker 网关不在默认名单里，不配信任网段就会把 `http://` 写进播放地址，不跟随 301 的客户端（例如 SenPlayer）播不了。`FORWARDED_ALLOW_IPS=*` 会被丢掉并记一次 WARNING：`*` 能让任意直连方伪造客户端 IP，绕过限流和按 IP 做的访问判断。只写了 `*` 时，uvicorn 只信回环。
 - **账号卡 / 一键导入**只在 **EM 进程**上解析（EA 不挂这些门户路由）。顺序是：该服「服管理」里的对外地址 → 该服「服务器」页的服务入口 →（仅默认服）EM 的 `EMBY_PUBLIC_URL` → 可信转发头或当前请求地址。非默认服前两项都空时，账号卡不下发地址，也不会去读 EA 的环境变量。EM 和 EA 都要设 `EMBY_PUBLIC_URL`；服对外地址或服务入口填了，只代替 EM 这一侧。
-- 有健康的公网流节点时，`DirectStreamUrl` / `TranscodingUrl` 改写成**该节点自己登记的地址**，不是主站的 `EMBY_PUBLIC_URL`。EA 自登记用 `EMBY_API_PUBLIC_URL`。
+- 有健康的公网流节点时，`DirectStreamUrl` 改写成**该节点自己登记的地址**，不是主站的 `EMBY_PUBLIC_URL`。EA 自登记用 `EMBY_API_PUBLIC_URL`。
 
 推荐 EM 和 EA 都写 `EMBY_PUBLIC_URL=https://emby.example.com`（只填根），并在「服管理」填同一个根。启动时不是 `https://` 开头只打 WARNING，`http://` 仍会用。域名守卫的名单：流媒体加速开关打开并且填了域名时用那份域名，否则看 `ENFORCE_DOMAIN`；名单非空而主机不在里面时，进来的请求按 Host 403。改环境变量要重启对应进程。PlaybackInfo 里三条播放 URL 按当次基址重拼；字幕 `DeliveryUrl` 在缓存里最多再留 `PLAYBACKINFO_CACHE_TTL` 秒（默认 300）。完整口径、Compose 里网页容器会把协议头盖成 http 的情况，见 [Docker 部署 · 客户端对外地址](./deploy-docker.md#客户端对外地址)。
 
@@ -255,7 +254,7 @@ server {
    - 门户改密仍会覆盖已有的 Emby 播放密码。
 3. 若中途改过 `EMBY_SERVER_ID`，客户端会把同一台服务器当成新服务器，需要重新添加。
 
-协议面已覆盖 40+ 端点（节选）：`/Users/AuthenticateByName`、`/Users/{uid}/Items`、`/Items/{id}/PlaybackInfo`（GET/POST）、`/Videos/{id}/stream`（Range 直连）、`/videos/{id}/master.m3u8`（HLS 转码，切片自带 `api_key`）、字幕投递 `/Videos/{id}/{mid}/Subtitles/{i}/Stream.{fmt}`、`/Search/Hints`、`/Items/{id}/Images/{Type}/{Index}`、`/Sessions/Playing/*` 进度上报、`/System/Info`、`/Branding/Configuration` 等。
+协议面已覆盖 40+ 端点（节选）：`/Users/AuthenticateByName`、`/Users/{uid}/Items`、`/Items/{id}/PlaybackInfo`（GET/POST）、`/Videos/{id}/stream`（Range 直连）、（`master.m3u8` 等 HLS 转码地址已随转码删除，返回 404；`/videos/{id}/stream.{ext}` 仍转交直连流）、字幕投递 `/Videos/{id}/{mid}/Subtitles/{i}/Stream.{fmt}`、`/Search/Hints`、`/Items/{id}/Images/{Type}/{Index}`、`/Sessions/Playing/*` 进度上报、`/System/Info`、`/Branding/Configuration` 等。
 
 ## 7. 权限、限流与设备控制
 
@@ -263,7 +262,7 @@ server {
 
 | 能力 | 行为 |
 | --- | --- |
-| 付费墙 | 非会员的 `PlaybackInfo`、直连流、HLS 会话、下载全部被拦（403 + 文案），管理员始终放行 |
+| 付费墙 | 非会员的 `PlaybackInfo`、直连流、下载全部被拦（403 + 文案），管理员始终放行 |
 | 下载门禁 | `allow_download=false` 时，`/Download` 与 `/Items/{id}/File` 等等价路径在**网关层**统一兜底，新增下载路由也不会漏 |
 | 每用户设备上限 | `device_limit_per_user`：客户端 `AuthenticateByName` 登录即登记设备（名称/客户端/版本/IP/首末次出现），超限按策略拒绝或自动踢最久未使用 |
 | 远程踢设备 / 撤销 token | 管理端封禁设备会**同时吊销令牌**（该设备立即不可用）；移除设备即踢下线 |
@@ -295,9 +294,9 @@ EA 不提供交互式 API 文档（`/docs` 已关闭），也不托管任何页�
 | 客户端提示"服务器无法连接" | 证书不受信任（换受信证书）、端口未放行、或地址带了 `/emby` 后缀 |
 | 认证 401 | 用了旧账号/旧密码；确认用户已在接线员页设置接线用户名和密码，且两边 `SECRET_KEY` 一致 |
 | 播放 403 | 付费墙生效（非会员）或站点关闭了下载；管理员不受限 |
-| 转码 503 | EA 这台机器没装 ffmpeg，或 `EMBY_FFMPEG_PATH` 指错；直连播放不受影响 |
-| 首片久等 / 中途断流 | Nginx 默认 60s 读超时所致：`proxy_read_timeout 300s` + `proxy_buffering off` |
-| 切片 404 | 客户端请求早于 ffmpeg 写出（EA 会短暂等待）；ffmpeg 已退出时返回 503，看 `journalctl -u aetrix-ea` 里的 ffmpeg 报错（常见：源文件不可读、磁盘满） |
+| 内封字幕 503 | 提示「服务器未安装 ffmpeg」：EA 这台没装 ffmpeg 或 `EMBY_FFMPEG_PATH` 指错；只影响内封文本字幕抽取，播放不受影响 |
+| 中途断流 | Nginx 默认 60s 读超时所致：`proxy_read_timeout 300s` + `proxy_buffering off` |
+| `master.m3u8` / 切片 404 | 预期行为：服务端转码已删除，HLS 转码地址一律 404。客户端应走直连；仍去请求转码说明它认为源格式不能直放，需换能解该格式的客户端 |
 | 网页播放器没声音/黑屏但客户端正常 | 检查 EM 域名的 Nginx 是否配了 `/emby/` 反代到 EA（网页走同源 `/emby/*`） |
 | 客户端误连了面板域名 | 分离模式下 EM 会返回明确的 404 指引（含 EA 地址）；按提示把客户端指向 EA |
 | **面板扫描正常，客户端点播放 404/502** | 典型是「内容只在面板那台机器上」：库用的是本机目录 / `local` 挂载，而 EA 读不到。看「媒体库」页的**播放可达性**（或 `GET /api/admin/emby/reachability`）：`bad` 说明 EA 体检已证实读不到，`待确认` 说明还没在 EA 上体检过；改用共享 WebDAV/rclone 是最稳定的改法 |
@@ -360,7 +359,7 @@ curl -s $EA/api/health | python3 -m json.tool | grep -A 8 '"node"'
 
 如果只需要一台机器：把 `ENABLE_EMBY_GATEWAY` 保持 `true`（默认），**不要部署 EA**，EM（`serve.py`）会自己一并提供 `/emby/*` 与裸根协议面。此时客户端地址就是面板地址。
 
-代价是面板与协议面同生共死：一次面板发布重启会中断正在播放的会话，转码也挤在同一进程里。站点上量后建议再切到分离部署。
+代价是面板与协议面同生共死：一次面板发布重启会中断正在播放的会话，中继出流也挤在同一进程里。站点上量后建议再切到分离部署。
 
 ## 下一步
 

@@ -30,7 +30,7 @@
 
 ## 已确认原有良好实践（未改）
 - 路由全懒加载 + KeepAlive
-- hls.js 动态 import
+- ~~hls.js 动态 import~~（服务端转码删除后网页播放不再走 HLS，hls.js 已不在依赖里）
 - Element Plus 按需引入
 - MediaCard 原生懒加载 + 骨架
 - Vite manualChunks

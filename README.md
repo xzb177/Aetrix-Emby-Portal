@@ -5,7 +5,7 @@ English: [README.en.md](README.en.md)
 [![CI](https://github.com/xzb177/Aetrix-Emby-Portal/actions/workflows/ci.yml/badge.svg)](https://github.com/xzb177/Aetrix-Emby-Portal/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED.svg?logo=docker&logoColor=white)](docs/deploy-docker.md)
 
-自建影视媒体服务器，完整实现 Emby 协议（`/emby/*`），第三方 Emby 客户端直连，无需部署官方 Emby Server。
+自建影视媒体服务器，实现 Emby 客户端常用的协议面（`/emby/*`），第三方 Emby 客户端直连，无需部署官方 Emby Server。播放只走直链与中继直出，不做服务端转码。
 
 Python 3.12 + FastAPI · Vue 3 + TypeScript · PostgreSQL · Redis 7 · ffmpeg
 
@@ -13,9 +13,9 @@ Python 3.12 + FastAPI · Vue 3 + TypeScript · PostgreSQL · Redis 7 · ffmpeg
 
 ## 这是什么
 
-Aetrix Portal 是一套自托管的影视媒体服务器。后端完整实现 Emby 协议，Infuse、SenPlayer、Forward、Emby 官方 App 等客户端可以把它当作一台 Emby Server 直接连接——但服务端完全由本项目提供，不依赖官方 Emby Server。
+Aetrix Portal 是一套自托管的影视媒体服务器。后端实现了 Emby 客户端常用的协议端点（认证、浏览、`PlaybackInfo`、取流、字幕、进度上报），Infuse、SenPlayer、Forward、Emby 官方 App 等客户端可以把它当作一台 Emby Server 直接连接——但服务端完全由本项目提供，不依赖官方 Emby Server。服务端不转码（`SupportsTranscoding` 恒为 false），需要转码才能播的格式要靠客户端自己解码。
 
-系统按职责拆成两个进程：**EM**（面板，用户门户 / 管理后台 / 媒体库扫描 / 会员计费）和 **EA**（Emby 协议网关，认证 / 浏览 / 出流 / 转码 / 字幕）。两者共用同一个 PostgreSQL 和同一个 `SECRET_KEY`，默认单机部署（自建版是 api / ea / worker 三个容器，授权版合并为一个容器），也可以拆到不同机器上分离部署。
+系统按职责拆成两个进程：**EM**（面板，用户门户 / 管理后台 / 媒体库扫描 / 会员计费）和 **EA**（Emby 协议网关，认证 / 浏览 / 出流 / 字幕）。两者共用同一个 PostgreSQL 和同一个 `SECRET_KEY`，默认单机部署（自建版是 api / ea / worker 三个容器，授权版合并为一个容器），也可以拆到不同机器上分离部署。
 
 面向自己搭服务器、自己管媒体库和用户的技术用户。
 
@@ -26,10 +26,10 @@ Aetrix Portal 是一套自托管的影视媒体服务器。后端完整实现 Em
 | 组件 | 职责 |
 | --- | --- |
 | **EM** | 面板：用户门户、管理后台、媒体库扫描、会员计费 |
-| **EA** | Emby 协议网关：认证、浏览、出流、转码、字幕 |
+| **EA** | Emby 协议网关：认证、浏览、出流（直链 / 中继直出）、字幕 |
 | **PostgreSQL** | 元数据、用户、计费数据（默认） |
 | **Redis 7** | 缓存、会话、任务队列 |
-| **ffmpeg** | HLS 转码 |
+| **ffmpeg** | 辅助用途：内封文本字幕抽取、缩略图抽帧等（不做视频转码） |
 
 ```
 Emby 客户端 ──HTTP──▶ EA（出流）
@@ -137,8 +137,8 @@ MEDIA_ROOT=/srv/media
 ### 播放与出流
 
 - HTTP Range 直连流，支持客户端拖动进度
-- ffmpeg HLS 转码
-- Emby 协议全兼容，含 `PlaybackInfo`、字幕下发、进度上报
+- 不做服务端转码：只有直链（302 到网盘直链，字节不经服务器）与中继直出（服务器原样转发字节）两种交付形态
+- 兼容 Emby 客户端常用协议面，含 `PlaybackInfo`、字幕下发、进度上报；`PlaybackInfo` 恒报不支持转码，HLS 转码地址返回 404
 - `.strm` 直链播放（Google Drive / rclone 挂载）
 
 ### 用户与运营

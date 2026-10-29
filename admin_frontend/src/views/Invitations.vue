@@ -3,7 +3,8 @@
  * 邀请与积分管理：邀请记录、积分流水、手动调整
  *
  * 参数配置（签到 / 支付 / 返利比例）已统一收归「系统设置」页，
- * 本页只负责台账与人工干预，避免两处入口改同一份配置。
+ * 本页负责台账与人工干预；例外是推广奖励策略（PUT /promotion/policy），
+ * 在本页的「推广奖励」卡上直接展示与编辑，与系统设置写的是同一组键。
  *
  * v2.6.11：两张台账改用 DataTable（手机上变成卡片列表，不再需要横向拖），
  * 统计瓦片统一为全局 .stat-tile。
@@ -12,11 +13,11 @@
  * 邀请码的筛选在左、「批量生成」在右；积分流水分页收进卡片底栏；
  * 推广奖励的配置条改成发丝线分隔的表单行；三处台账加载失败都有可重试的错误态。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import {
-  AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Search, ShieldCheck, UserPlus,
+  AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Save, Search, ShieldCheck, UserPlus,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
@@ -37,9 +38,12 @@ import {
   generateInvitationCodes,
   revokeInvitationCodes,
   updateInvitationCode,
+  updatePromotionPolicy,
   type InvitationCodeRow,
+  type PromotionPolicy,
   type PromotionResponse,
 } from '@/api/admin'
+import { useAuthStore } from '@/stores/auth'
 import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 import { useTableSelection } from '@/composables/useTableSelection'
@@ -446,19 +450,113 @@ async function handleRevoke(rows: InvitationCodeRow[]) {
   await loadCodes()
 }
 
-// ===== 推广奖励：发放记录台账（开关与数值统一在「系统设置 → 邀请返利」里改） =====
+// ===== 推广奖励：当前策略（可编辑）+ 发放记录台账 =====
+// 策略写的是 SystemConfig 的 promotion_reward_* 四个键（PUT /promotion/policy），
+// 与「系统设置 → 邀请返利」里的同名字段是同一份配置。
+const auth = useAuthStore()
+/** 只读角色（viewer）不能写；服务端 admin_roles 仍会自己判一次 */
+const canWrite = computed(() => auth.admin?.can_write !== false)
+
 const promo = ref<PromotionResponse | null>(null)
 const promoLoading = ref(false)
+const promoSaving = ref(false)
+
+/** 编辑表单：加载后从服务端策略回填，前端不维护默认值 */
+const promoForm = reactive({
+  enabled: false,
+  reward_type: 'balance' as PromotionPolicy['reward_type'],
+  amount: 0,
+  days: 0,
+})
+
+function fillPromoForm(policy: PromotionPolicy) {
+  promoForm.enabled = policy.enabled
+  promoForm.reward_type = policy.reward_type
+  promoForm.amount = policy.amount
+  promoForm.days = policy.days
+}
 
 async function loadPromotion() {
   promoLoading.value = true
   try {
     promo.value = await fetchPromotion({ limit: 100 })
+    fillPromoForm(promo.value.policy)
   } catch {
     /* 拦截器已提示 */
   } finally {
     promoLoading.value = false
   }
+}
+
+const promoPolicy = computed(() => promo.value?.policy ?? null)
+
+/** 类型标签以服务端给的为准，缺了再兜底 */
+function promoTypeLabel(type: string): string {
+  return promoPolicy.value?.reward_type_labels?.[type]
+    ?? (type === 'days' ? '有效期（天）' : '余额（积分）')
+}
+
+/** 当前（已保存的）策略为什么不发：关着 / 当前档位数值为 0 */
+const promoInactiveReason = computed(() => {
+  const p = promoPolicy.value
+  if (!p || p.active) return ''
+  if (!p.enabled) return '推广奖励开关已关闭。'
+  return p.reward_type === 'days'
+    ? '奖励类型为「有效期」，但天数为 0。'
+    : '奖励类型为「余额」，但积分数值为 0。'
+})
+
+/** 表单里的值是否和已保存的不同（没改就不让点保存） */
+const promoDirty = computed(() => {
+  const p = promoPolicy.value
+  if (!p) return false
+  return p.enabled !== promoForm.enabled
+    || p.reward_type !== promoForm.reward_type
+    || p.amount !== promoForm.amount
+    || p.days !== promoForm.days
+})
+
+/** 按表单值预判保存后的效果，写进二次确认文案 */
+function promoEffectText(): string {
+  if (!promoForm.enabled) return '保存后推广奖励关闭：邀请成功不再给邀请人发推广奖励（渠道码专属奖励也不发）。'
+  const value = promoForm.reward_type === 'days' ? promoForm.days : promoForm.amount
+  if (value <= 0) return '保存后当前档位数值为 0：邀请成功不会给邀请人发放任何推广奖励。'
+  return promoForm.reward_type === 'days'
+    ? `保存后每成功邀请 1 人，邀请人加 ${value} 天会员有效期（归属当前服）。`
+    : `保存后每成功邀请 1 人，邀请人加 ${value} 积分余额。`
+}
+
+async function savePromotionPolicy() {
+  if (!promoPolicy.value) return
+  try {
+    await ElMessageBox.confirm(
+      `${promoEffectText()}只影响之后的邀请，已发放的记录不变。确认保存？`,
+      '修改推广奖励策略',
+      { type: 'warning', confirmButtonText: '确认保存', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  promoSaving.value = true
+  try {
+    const res = await updatePromotionPolicy({
+      promotion_reward_enabled: promoForm.enabled,
+      promotion_reward_type: promoForm.reward_type,
+      promotion_reward_amount: promoForm.amount,
+      promotion_reward_days: promoForm.days,
+    })
+    if (promo.value) promo.value = { ...promo.value, policy: res.policy }
+    fillPromoForm(res.policy)
+    ElMessage.success('推广奖励策略已保存')
+  } catch {
+    /* 拦截器已提示（只读角色会收到 403） */
+  } finally {
+    promoSaving.value = false
+  }
+}
+
+function resetPromoForm() {
+  if (promoPolicy.value) fillPromoForm(promoPolicy.value)
 }
 
 const promoColumns: DataColumn[] = [
@@ -707,11 +805,11 @@ onMounted(reloadAll)
       </div>
     </SectionCard>
 
-    <!-- 推广奖励发放记录：台账。开关与数值统一在「系统设置 → 邀请返利」里改 -->
+    <!-- 推广奖励：当前策略（可编辑，PUT /promotion/policy）+ 发放记录台账 -->
     <SectionCard
       id="invite-promo"
       :icon="Megaphone"
-      description="邀请成功后在双向积分之外「另发」一笔，类型与数值全走配置。默认关闭——不手动打开就不会发；开关与数值统一在「系统设置 → 邀请返利」里改。"
+      description="邀请成功后给邀请人的那一笔，类型与数值全走配置。出厂开关为开、积分与天数都是 0，所以不改数值就不会发。这里与「系统设置 → 邀请返利」改的是同一份配置。"
       flush
     >
       <template #title>
@@ -728,13 +826,90 @@ onMounted(reloadAll)
       </EmptyState>
 
       <template v-else>
+        <div v-if="promoPolicy" class="promo-policy">
+          <el-alert
+            v-if="!promoPolicy.active"
+            type="warning"
+            show-icon
+            :closable="false"
+            class="promo-zero-alert"
+            title="当前邀请成功不会发放任何奖励"
+          >
+            <template #default>
+              {{ promoInactiveReason }}这里指给邀请人的推广奖励；被邀请人奖励在「系统设置 → 邀请返利」里单独配置，
+              渠道码上设置的专属奖励在开关开着时仍按码发放。需要发奖请在下方填写数值并保存。
+            </template>
+          </el-alert>
+          <div v-else class="promo-active-line">
+            <span class="au-badge au-badge-green">生效中</span>
+            <span>
+              每成功邀请 1 人，邀请人得
+              <strong class="num">
+                {{ promoPolicy.reward_type === 'days' ? `${promoPolicy.days} 天会员有效期` : `${promoPolicy.amount} 积分` }}
+              </strong>
+            </span>
+          </div>
+
+          <el-form label-position="top" class="promo-form" :disabled="!canWrite || promoSaving" @submit.prevent>
+            <el-form-item label="推广奖励开关">
+              <el-switch v-model="promoForm.enabled" active-text="开启" inactive-text="关闭" />
+            </el-form-item>
+            <el-form-item label="奖励类型">
+              <el-radio-group v-model="promoForm.reward_type">
+                <el-radio-button
+                  v-for="type in promoPolicy.reward_types"
+                  :key="type"
+                  :value="type"
+                >
+                  {{ promoTypeLabel(type) }}
+                </el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="余额数值（类型为「余额」时生效，0 = 不发）">
+              <el-input-number
+                v-model="promoForm.amount"
+                :min="0"
+                :max="1000000"
+                :step="10"
+                :precision="0"
+                aria-label="推广奖励余额数值（积分）"
+              />
+              <span class="field-suffix">积分</span>
+            </el-form-item>
+            <el-form-item label="有效期天数（类型为「有效期」时生效，0 = 不发）">
+              <el-input-number
+                v-model="promoForm.days"
+                :min="0"
+                :max="3650"
+                :precision="0"
+                aria-label="推广奖励有效期天数"
+              />
+              <span class="field-suffix">天</span>
+            </el-form-item>
+          </el-form>
+          <div class="promo-actions">
+            <span v-if="!canWrite" class="promo-hint">当前账号是只读角色，只能查看。</span>
+            <span v-else class="promo-hint">保存前会再确认一次；只影响之后的邀请。</span>
+            <el-button :disabled="!promoDirty || promoSaving" @click="resetPromoForm">撤销修改</el-button>
+            <el-button
+              type="primary"
+              :icon="Save"
+              :loading="promoSaving"
+              :disabled="!canWrite || !promoDirty"
+              @click="savePromotionPolicy"
+            >
+              保存策略
+            </el-button>
+          </div>
+        </div>
+
         <DataTable
           class="flush-table"
           :rows="promo?.rewards || []"
           :columns="promoColumns"
           :loading="promoLoading"
           empty="还没有推广奖励记录"
-          empty-description="有人通过你的邀请链接下单后，奖励记录会出现在这里。"
+          empty-description="策略生效后，有人通过邀请注册成功，奖励记录会出现在这里。"
         >
           <template #cell-inviter_username="{ row }">
             <span class="user-name">{{ row.inviter_username || '—' }}</span>
@@ -752,7 +927,7 @@ onMounted(reloadAll)
               compact
               :icon="Megaphone"
               title="还没有推广奖励记录"
-              description="开关默认关闭，打开后邀请成功才会记在这里。"
+              description="策略生效（开关开且数值大于 0）后，邀请成功发出的奖励会记在这里。"
             />
           </template>
         </DataTable>
@@ -956,6 +1131,24 @@ onMounted(reloadAll)
 
 .field-suffix { font-size: 12px; color: var(--au-text-3); }
 
+/* ---------- 推广奖励策略 ---------- */
+.promo-policy {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 20px 16px;
+  border-bottom: 1px solid var(--au-border);
+}
+.promo-active-line { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--au-text-2); }
+.promo-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0 16px;
+}
+.promo-form :deep(.el-form-item__content) { gap: 8px; flex-wrap: nowrap; }
+.promo-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.promo-hint { font-size: 12px; color: var(--au-text-3); margin-right: auto; }
+
 /* ---------- 对话框 ---------- */
 .adjust-preview {
   padding: 10px 12px;
@@ -985,5 +1178,6 @@ onMounted(reloadAll)
   .view-toolbar__actions { width: 100%; }
   .view-toolbar__actions > .el-button { flex: 1; }
   .card-pager { justify-content: center; }
+  .promo-policy { padding: 2px 16px 14px; }
 }
 </style>

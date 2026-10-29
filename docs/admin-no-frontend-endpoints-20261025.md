@@ -110,7 +110,7 @@
 | 9 | GET /api/admin/emby/visibility-governance/events | backend/api/admin_media_governance.py:111 | 待接线 | 两站前端路径集合无命中；M4 治理事件清单，无治理页。 |
 | 10 | GET /api/admin/emby/library-scan-presets/{param} | backend/api/admin_media_governance.py:143 | 待接线 | 两站前端路径集合无命中；M4 库扫描预设读取，无治理页。 |
 | 11 | PUT /api/admin/emby/library-scan-presets/{param} | backend/api/admin_media_governance.py:160 | 待接线 | 两站前端路径集合无命中；M4 库扫描预设写入，无治理页。 |
-| 12 | PUT /api/admin/promotion/policy | backend/api/admin_ops.py:1354 | 待接线 | 两站前端路径集合无命中；邀请页只读推广配置，未调策略写入口。 |
+| 12 | PUT /api/admin/promotion/policy | backend/api/admin_ops.py:1354 | 待接线（2026-10-29 已接线） | 两站前端路径集合无命中；邀请页只读推广配置，未调策略写入口。**后续**：已由 `fix/docs-transcode-and-promo-hint` 接到「邀请与积分 → 推广奖励」卡（`updatePromotionPolicy`），见第 7 节末条。 |
 | 13 | GET /api/admin/emby/scrape/items/{param} | backend/api/admin_scrape.py:1719 | 待接线 | 两站前端路径集合无命中；元数据源页用预览与搜索口，未调条目详情口。 |
 | 14 | POST /api/admin/emby/upstream-sources/{param}/sync-applecms | backend/api/admin_upstream_sources.py:199 | 待接线 | 两站前端路径集合无命中；上游页只做源管理，未调苹果 CMS 同步口。 |
 | 15 | POST /api/admin/emby/upstream-sources/{param}/aggregate | backend/api/admin_upstream_sources.py:255 | 待接线 | 两站前端路径集合无命中；上游聚合动作，后端已接线，前端页未接。 |
@@ -173,6 +173,7 @@
 - 待接线 42 条的接线（合集页、治理页、版本页等）各另立项；运维专用 16 条不强制进页面。
 - 未知项照实写：字符串对账不能证实运行时调用；生产访问日志窗口短，运维手工调用无法证实；同路径不同方法的 7 条记录未在本批定性，须另行核查。
 - 回滚：revert 本 PR 即可，文档删除不影响任何接口行为。
+- 基线后更新（2026-10-29）：第 6.1 节第 12 行 `PUT /api/admin/promotion/policy` 已接到管理前端「邀请与积分」页的推广奖励卡（`admin_frontend/src/api/admin.ts` 的 `updatePromotionPolicy`），不再属于无前端调用。上面各节的计数仍是 `2778c5df` 基线口径，未重算。
 
 ## 8. 基线后接线记录
 
