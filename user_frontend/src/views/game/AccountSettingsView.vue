@@ -269,7 +269,7 @@
           <div v-if="driveLoading && !pan115Bindings.length" class="v4-skeleton" style="height:120px"></div>
           <div v-else-if="pan115Error" class="v4-err">{{ pan115Error }}<br><button class="v4-retry" @click="loadDriveBindings">重试</button></div>
           <div v-else-if="!pan115Bindings.length" class="v4-empty">
-            <p>① 这是什么：绑了自己的 115，播 115 的片子就走你自己的 115 账号现签直链，字节不过服务器；没绑定只能浏览、不能点播。</p>
+            <p>① 这是什么：绑了自己的 115，播 115 的片子就走你自己的 115 账号现签直链，字节不过服务器；没绑定只能浏览、不能点播。账号必须是 115 VIP，非 VIP 账号绑了也播不了。</p>
             <p>② 怎么做：去 115 网页版取登录 Cookie→粘到下面框里点“绑定 115”→本站只密封存、只用于你自己的播放；Cookie 过期了重绑。</p>
             <p>③ 绑完怎么验：去播一集 115 的片子，看走不走自己的账号。</p>
           </div>
@@ -977,7 +977,7 @@ async function handleVerifyPan115(b: StorageBinding) {
   try {
     const updated = await storageBindingApi.verify(b.id)
     pan115Bindings.value = pan115Bindings.value.map((x) => (x.id === b.id ? updated : x))
-    toast.success(updated.status === 'active' ? '验证通过，这个 115 账号可以用了' : '验证后仍不可用，请重新绑定')
+    toast.success(updated.status === 'active' ? '验证通过，这个 115 账号可以用了' : (updated.error_message ? `验证后仍不可用：${updated.error_message}` : '验证后仍不可用，请重新绑定'))
   } catch (err: any) {
     toast.error(toUserMessage(err, 'removeFailed'))
   } finally {

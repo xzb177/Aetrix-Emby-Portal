@@ -21,6 +21,13 @@
 三档之外的一过性失败（网络等）不落状态、不改行，只把错误抛回
 调用方重试——不把“网抖了一下”写成“凭据死了”。
 
+另有一档不是凭据失效、是账号资格问题：pan115_vip_required
+（2026-10-29 用户亲定）——115 非 VIP 账号绑了也播不了（下载/接口
+对非会员关闭），故建绑/重验时 Cookie 验活通过后追加 VIP 校验：
+确凿非 VIP → 落 invalid + 该 kind 明示原因（不许说成 Cookie
+失效）；查不清（网络/上游 5xx/响应形状对不上）不拦、照常走。
+开关 pan115_bind_vip_check_enabled（SystemConfig，默认开）。
+
 凭据纪律：本模块是唯一经手绑定凭据明文的地方（创建时接收入参、
 验证时解密封后立即用、用完不存变量外泄）；日志与返回值永远不出
 凭据原文、不出密封值（只出 has_credential 布尔值）。
@@ -42,6 +49,7 @@ from backend.emby_server.upstream_sources import (
     seal_secret,
     unseal_secret,
 )
+from backend.integrations import store
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +64,7 @@ ERROR_KIND_TO_STATUS = {
     "auth_error": "invalid",
     "expired": "expired",
     "throttled": "invalid",
+    "pan115_vip_required": "invalid",
 }
 
 #: 失效三档 → 用户端文案（照抄定稿 BYOS-4 暂定三句，非 FMBY 原文）。
@@ -63,6 +72,7 @@ BINDING_ERROR_MESSAGES = {
     "auth_error": "账号凭据不对，请重新绑定。",
     "expired": "115 登录已过期，请重新绑定。",
     "throttled": "账号被限制，请稍后再试或更换账号绑定。",
+    "pan115_vip_required": "该 115 账号不是 VIP，115 绑定需要 VIP 账号，请开通后重新绑定。",
 }
 
 #: 115 直链变体名（见 play_variants.BYOS115_DIRECT）。
@@ -74,6 +84,7 @@ class BindingError(RuntimeError):
     """绑定操作失败（带可分类的 kind，供调用方定状态码与文案）。
 
     kind 取值：auth_error / expired / throttled（落状态三档）、
+    pan115_vip_required（非 VIP 账号，落 invalid）、
     validation（入参/上限/重名，400）、unsupported（P1 不支持的
     provider，如 drive，400）、not_found（非本人或不存在，404）、
     transient（一过性失败，不落状态，调用方按 502 处理）。
@@ -88,6 +99,28 @@ class BindingError(RuntimeError):
 def binding_limit_per_user() -> int:
     """单用户绑定上限（配置，不写死；非法值回落默认值 3）"""
     return env_int(BINDING_LIMIT_ENV, BINDING_LIMIT_DEFAULT, lo=1)
+
+
+#: 115 绑定 VIP 校验开关（SystemConfig 键，非 env；仅此一处定义，
+#: 管理端/运维改 system_configs 行即生效）。
+KEY_PAN115_BIND_VIP_CHECK = "pan115_bind_vip_check_enabled"
+
+
+def pan115_bind_vip_check_enabled(db: Session) -> bool:
+    """115 绑定 VIP 校验开关（默认开）。
+
+    读法与 playback_strategy 的同类键同款（store 热读 + fail-safe）：
+    读失败回默认开并记日志——校验是防呆不是门禁本体，读不到配置
+    不该悄悄关掉。关的口径与同类键一致：0/false/no/off 视为关。
+    """
+    try:
+        raw = (store.get_value(
+            db, KEY_PAN115_BIND_VIP_CHECK, "true") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB 场景下保默认
+        logger.warning(
+            "pan115_bind_vip_check_enabled 读取失败，回默认开", exc_info=True)
+        return True
+    return raw not in ("0", "false", "no", "off")
 
 
 def error_message(kind: str | None) -> str:
@@ -294,6 +327,36 @@ def _verify_pan115_cookie(cookie: str) -> None:
     client.list_dir("0")
 
 
+def _pan115_vip_status(cookie: str) -> str:
+    """115 账号 VIP 三态（vip / not_vip / unknown）；永不抛。
+
+    任何异常（网络、上游失败、客户端构造失败）都收敛成 unknown：
+    查不清不拦绑定，只记日志，不误杀。
+    """
+    try:
+        return transfer115.Pan115Client(cookie).vip_status()
+    except Exception:  # noqa: BLE001 — 查不清不拦，见上
+        logger.warning("115 VIP 校验未得出结论，按查不清放行", exc_info=True)
+        return "unknown"
+
+
+def _pan115_vip_blocked(db: Session, cookie: str) -> bool:
+    """绑定/重验的 VIP 门：开关开且确凿非 VIP 才拦。
+
+    unknown（查不清）只记一行日志、按现行流程放行；是 VIP 或开关
+    关时同样放行。调用点在 Cookie 验活通过之后——Cookie 本身死活
+    仍由 _verify_pan115_cookie + _classify_pan115_error 那套定性，
+    两件事不许混（非 VIP 不许说成 Cookie 失效，反之亦然）。
+    """
+    if not pan115_bind_vip_check_enabled(db):
+        return False
+    status = _pan115_vip_status(cookie)
+    if status == "unknown":
+        logger.info("115 VIP 校验查不清（unknown），绑定按现行流程放行")
+        return False
+    return status == "not_vip"
+
+
 def create_binding(db: Session, user_id: int, provider: str,
                    account_label: str, credential: str,
                    ) -> em.UserStorageBinding:
@@ -375,6 +438,11 @@ def create_binding(db: Session, user_id: int, provider: str,
         db.commit()
         return binding
 
+    if _pan115_vip_blocked(db, cookie):
+        _mark_failed(db, binding, "pan115_vip_required")
+        db.commit()
+        return binding
+
     now = datetime.now()
     binding.status = "active"
     binding.last_verified_at = now
@@ -431,6 +499,10 @@ def verify_binding(db: Session, user_id: int,
                 "transient", f"重验时上游失败（状态未改，可重试）：{exc}") from exc
         kind, _message = classified
         _mark_failed(db, binding, kind)
+        db.commit()
+        return binding
+    if _pan115_vip_blocked(db, cookie):
+        _mark_failed(db, binding, "pan115_vip_required")
         db.commit()
         return binding
     now = datetime.now()
