@@ -516,6 +516,17 @@ def drive_usercontent_download_url(file_id: str) -> str:
     按入口分开算未经证实，靠救援计数实测）。该域名在 DRIVE_HOSTS
     白名单内，跳转时 Bearer 凭据保留；支持 Range。file_id 为空返回空串，
     永不抛异常。
+
+    confirm=t 契约（2026-10-30 生产实证，不许删）：本函数是全站
+    usercontent 地址的唯一构造点——PlaybackInfo 用户副本直链、
+    video_stream 两处 302、/Items Download 与 /File 两口、用户副本
+    额度探测都只许经这里构造，不许在调用点另拼。串里的 confirm=t
+    是过谷歌病毒扫描确认页的必需参数：大文件（实测 173MB 用户
+    副本）无 confirm 时谷歌回 HTTP 200 + text/html「Google Drive -
+    Virus scan warning」页，播放器拿到网页播不了；带 confirm=t
+    回 206 真字节。小文件谷歌忽略该参数，故无条件携带。删它即
+    大文件全灭，回归由 tests/test_usercontent_confirm_t.py 逐
+    下发点钉死。
     """
     try:
         if not file_id:
