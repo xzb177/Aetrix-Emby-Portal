@@ -242,6 +242,74 @@ def per_owner_inflight(db=None):
     return max(1, min(16, worker_per_user_max()))
 
 
+# ---------------------------------------------------------------------------
+# 点播当场先办配置（2026-10-29 用户亲点）：点播触发的同 provider
+# 服务端 copy 不再必经工人队列——请求路径当场领取、当场执行，
+# 办成即同一请求内放行；办不完才留给工人兜底。三键走
+# SystemConfig（管理端可改、保存即生效），读失败一律 fail-safe
+# 回默认，绝不因配置读取把点播打停。
+# ---------------------------------------------------------------------------
+
+#: 点播当场先办总开关 SystemConfig 键；默认开（用户亲令 + 部署
+#: 默认开口径）。关 = 点播完整回退现行纯队列行为（门禁
+#: preparing → 等流/409、工人队列办），当场路径一行都不走。
+KEY_PLAY_INLINE_TRANSFER_ENABLED = "play_inline_transfer_enabled"
+#: 当场执行时间预算（秒）SystemConfig 键；默认 20：同盘 copy
+#: 实测约 2.9 秒（找目录 0.25 + 谷歌 copy 1.67 + 核对 0.24 +
+#: 加权限 0.68），20 秒覆盖慢服务端 copy 与 115 目录核对绰绰
+#: 有余；到点不取消执行（见 maybe_run_play_inline），请求先
+#: 回 preparing。钳 [1, 120]，不许配成无限等。
+KEY_PLAY_INLINE_TRANSFER_BUDGET_SEC = "play_inline_transfer_budget_sec"
+PLAY_INLINE_TRANSFER_BUDGET_DEFAULT = 20
+#: API 进程内当场执行并发上限 SystemConfig 键；默认 4（保守）：
+#: 当场执行跑在 API 进程的线程里，上限是护主链路的闸——名额
+#: 满的请求直接回 preparing 走队列，绝不在请求里排队等名额。
+#: 钳 [1, 16]。
+KEY_PLAY_INLINE_TRANSFER_CONCURRENCY = "play_inline_transfer_concurrency"
+PLAY_INLINE_TRANSFER_CONCURRENCY_DEFAULT = 4
+
+
+def _system_config_bool(db, key, default=True):
+    """SystemConfig 布尔热读：无行/非法/异常一律回 default。
+
+    与 playback_strategy 同类键同口径：0/false/no/off 视为关，
+    1/true/yes/on 视为开，其余（空行/乱写）回 default，不猜。
+    """
+    if db is None:
+        return default
+    try:
+        from backend.integrations import store
+        raw = (store.get_value(db, key, "") or "").strip().lower()
+    except Exception:
+        return default
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    return default
+
+
+def play_inline_enabled(db=None):
+    """点播当场先办总开关：SystemConfig 热读，默认开，读失败回默认开。"""
+    return _system_config_bool(db, KEY_PLAY_INLINE_TRANSFER_ENABLED, True)
+
+
+def play_inline_budget_sec(db=None):
+    """当场执行时间预算（秒）：SystemConfig > 默认 20，钳 [1, 120]。"""
+    configured = _system_config_int(db, KEY_PLAY_INLINE_TRANSFER_BUDGET_SEC)
+    if configured is not None:
+        return max(1, min(120, configured))
+    return PLAY_INLINE_TRANSFER_BUDGET_DEFAULT
+
+
+def play_inline_concurrency(db=None):
+    """当场执行并发上限：SystemConfig > 默认 4，钳 [1, 16]。"""
+    configured = _system_config_int(db, KEY_PLAY_INLINE_TRANSFER_CONCURRENCY)
+    if configured is not None:
+        return max(1, min(16, configured))
+    return PLAY_INLINE_TRANSFER_CONCURRENCY_DEFAULT
+
+
 def worker_lease_sec():
     """认领租约时长（秒），默认 300；执行中由心跳续租。"""
     return max(60, int(TRANSFER_WORKER_LEASE_SEC or 300))
@@ -2413,6 +2481,233 @@ async def wait_for_transfer_ready(initial_gate, gate_callable, *,
         if gate.get("verdict") != "preparing":
             return gate
     return gate
+
+
+# ---------------------------------------------------------------------------
+# 点播当场先办（2026-10-29 用户亲点“点播当场先办，办不完才转
+# 后台”）：工人从点播的必经之路降为兜底。
+#
+# 形状：门禁判 preparing 且带 job_id 时，请求路径先试当场执行——
+# 用与工人同一套认领语义把这一单从 pending 原子领走（与工人
+# 互斥），复用工人执行核心 _execute_claimed_job 跑完（心跳/
+# 租约/终态/清租约全是工人同一套），办成立即重查门禁、本请求
+# 内放行。领不到（工人或另一请求已在办）、不合格（非点播触发/
+# 跨 provider/file-only/无绑定）、名额满、预算内没办完——一律
+# 原样回 preparing，工人按现行队列兜底，一行状态都不多动。
+# ---------------------------------------------------------------------------
+
+#: 当场认领的 claimed_by 标记（与工人 _WORKER_ID 区分，便于观测
+#: 一单到底是被请求当场办的还是工人办的）。
+_INLINE_WORKER_ID = "inline-" + uuid.uuid4().hex[:12]
+
+_inline_inflight = 0
+_inline_inflight_lock = threading.Lock()
+
+
+def _inline_try_acquire(limit):
+    """非阻塞抢当场执行名额：在飞数达上限直接 False，绝不等待。"""
+    global _inline_inflight
+    with _inline_inflight_lock:
+        if _inline_inflight >= max(1, int(limit or 1)):
+            return False
+        _inline_inflight += 1
+        return True
+
+
+def _inline_release():
+    global _inline_inflight
+    with _inline_inflight_lock:
+        _inline_inflight = max(0, _inline_inflight - 1)
+
+
+def claim_job_for_inline(db, job_id, worker_id=None, now=None):
+    """单单原子认领，与 claim_due_jobs 同语义（工人/请求互斥关键）。
+
+    只认领 pending 且已到期（next_retry_at 为空或已到点）的行：
+    条件 UPDATE，rowcount==1 才算领到；已被领走（running）、已
+    终态、还在重试退避期的行 rowcount==0。认领即置 running +
+    租约（时长与工人同口径）+ claimed_by 并提交；执行中由
+    _execute_claimed_job 的心跳续租，与工人完全同一套标记，
+    绝不跨 copy 持有数据库行锁。
+    """
+    from sqlalchemy import text
+    now = now or datetime.now()
+    worker_id = worker_id or _INLINE_WORKER_ID
+    lease_until = now + timedelta(seconds=worker_lease_sec())
+    result = db.execute(
+        text("UPDATE emby_transfer_jobs SET status='running', "
+             "lease_expires_at=:lease, claimed_by=:worker "
+             "WHERE id=:jid AND status='pending' "
+             "AND (next_retry_at IS NULL OR next_retry_at <= :now)"),
+        {"lease": lease_until, "worker": worker_id, "jid": job_id,
+         "now": now})
+    db.commit()
+    return result.rowcount == 1
+
+
+def _inline_job_eligible(db, job):
+    """当场执行只限点播触发的同 provider 服务端 copy：
+
+    - trigger 必须 playback：预取/批量/重建/Quota 信号等非点播
+      触发一律仍走工人，请求路径不当场跑；
+    - owner_scope 必须 user：服主盘任务不在用户请求里执行；
+    - 跨 provider 已关停（_is_cross_job）：不进当场路径，照旧
+      以 cross_provider_relay_disabled 明示终态；
+    - Drive file-only 绑定无服务端 copy 路（令牌看不见源
+      文件）：不进当场路径，照旧由工人落
+      file_only_copy_unavailable 明确失败，不在这里假装能办；
+    - 无生效绑定时执行只会落 no_binding，一样不当场跑（工人
+      会按同一 error_kind 落账，口径不变）。
+    """
+    if job is None:
+        return False
+    if (getattr(job, "trigger", "") or "") != "playback":
+        return False
+    if (getattr(job, "owner_scope", "") or "") != "user":
+        return False
+    if _is_cross_job(job):
+        return False
+    provider = (getattr(job, "provider", "") or "").strip()
+    if provider not in ("drive", "pan115"):
+        return False
+    try:
+        user_id = int((getattr(job, "owner_ref", "") or "").strip())
+    except (TypeError, ValueError):
+        return False
+    binding = _active_binding(db, user_id, provider)
+    if binding is None:
+        return False
+    if provider == "drive" and _is_file_only_binding(binding):
+        return False
+    return True
+
+
+def claim_and_execute_inline(job_id, session_factory=None,
+                             drive_api_factory=None):
+    """当场执行一单（同步，调用方须放线程里跑）。
+
+    独立短会话查合格性 → 原子认领 → 复用工人执行核心
+    _execute_claimed_job（自带独立会话/心跳/清租约/metrics，
+    与工人执行逐字同一条路，绝不另抄一份 copy 逻辑）。
+    返回：执行核心的 outcome（done/failed/retried/missing）；
+    没领到 "not_claimed"；不合格 "ineligible"；查不到行
+    "missing"；认领段异常 "error"。本函数绝不抛异常——当场
+    执行出什么问题都不能把点播请求打成 500，回 preparing 让
+    工人兜底才是正解。
+    """
+    if session_factory is None:
+        from backend.database import SessionLocal
+        session_factory = SessionLocal
+    if drive_api_factory is None:
+        drive_api_factory = DriveApiClient
+    db = session_factory()
+    try:
+        job = (db.query(em.TransferJob)
+               .filter(em.TransferJob.id == job_id).first())
+        if job is None:
+            return "missing"
+        if not _inline_job_eligible(db, job):
+            return "ineligible"
+        if not claim_job_for_inline(db, job_id):
+            return "not_claimed"
+    except Exception:
+        logger.warning("点播当场转存：认领失败 job=%s", job_id,
+                       exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return "error"
+    finally:
+        db.close()
+    return _execute_claimed_job(job_id, session_factory, drive_api_factory)
+
+
+def _play_inline_config():
+    """当场先办配置快照（独立短会话热读）：{enabled, budget_sec,
+    concurrency}。读失败 fail-safe 回默认（开 / 20 秒 / 4）——
+    配置读不到时不悄悄关掉救播放的路（与同类开关同口径）。"""
+    try:
+        from backend.database import SessionLocal
+        db = SessionLocal()
+        try:
+            return {"enabled": play_inline_enabled(db),
+                    "budget_sec": play_inline_budget_sec(db),
+                    "concurrency": play_inline_concurrency(db)}
+        finally:
+            db.close()
+    except Exception:
+        return {"enabled": True,
+                "budget_sec": PLAY_INLINE_TRANSFER_BUDGET_DEFAULT,
+                "concurrency": PLAY_INLINE_TRANSFER_CONCURRENCY_DEFAULT}
+
+
+async def maybe_run_play_inline(initial_gate, gate_callable, *,
+                                session_factory=None,
+                                drive_api_factory=None):
+    """点播当场先办（请求路径入口，形状与 wait_for_transfer_ready 同款）。
+
+    initial_gate 为 preparing 且带 job_id 时尝试当场执行，办完用
+    gate_callable 重查门禁并返回新 verdict（proceed 时调用方在
+    同一请求内继续正常选路放行，用户一次点播直接出画面）。
+
+    以下任一情况原样返回 initial_gate（调用方按现行 preparing
+    口径继续，工人队列兜底不变）：
+    - verdict 不是 preparing、没有 job_id、或总开关关；
+    - 当场执行名额已满（不排队等名额）；
+    - 任务不合格或已被工人/另一请求认领（同一 (item, owner)
+      任何时刻只有一个执行者，执行核心只会被调一次）；
+    - 预算内没办完：执行**不取消**——已认领的单在租约 + 心跳
+      保护下由同一执行核心收尾；万一进程/线程中途死掉，租约
+      过期回收（reclaim_expired_leases）会把单交还工人。请求
+      侧对任务行零额外手术，状态/租约与工人接手完全同口径。
+
+    gate_callable 抛异常时返回 initial_gate（与等流同口径，
+    不把重查异常读成播放失败）。
+    """
+    gate = initial_gate or {}
+    if gate.get("verdict") != "preparing":
+        return gate
+    job_id = gate.get("job_id")
+    if not job_id:
+        return gate
+    cfg = await asyncio.to_thread(_play_inline_config)
+    if not cfg["enabled"]:
+        return gate
+    if not _inline_try_acquire(cfg["concurrency"]):
+        logger.info("[byos] play_inline_skipped job=%s reason=no_slot",
+                    job_id)
+        return gate
+
+    async def _run():
+        try:
+            return await asyncio.to_thread(
+                claim_and_execute_inline, job_id,
+                session_factory=session_factory,
+                drive_api_factory=drive_api_factory)
+        finally:
+            _inline_release()
+
+    task = asyncio.ensure_future(_run())
+    try:
+        outcome = await asyncio.wait_for(
+            asyncio.shield(task), timeout=cfg["budget_sec"])
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.info("[byos] play_inline_timeout job=%s budget_sec=%s",
+                    job_id, cfg["budget_sec"])
+        return gate
+    except Exception:
+        logger.warning("点播当场转存异常 job=%s", job_id, exc_info=True)
+        return gate
+    logger.info("[byos] play_inline_outcome job=%s outcome=%s",
+                job_id, outcome)
+    if outcome in ("not_claimed", "ineligible", "missing", "error"):
+        return gate
+    try:
+        new_gate = await gate_callable()
+    except Exception:  # noqa: BLE001 — 重查失败不改 verdict
+        return gate
+    return new_gate or gate
 
 
 def get_ready_variant_for_user(db, item_id, user_id):
@@ -4775,4 +5070,7 @@ __all__ = [
     "worker_sweep_sec", "notify_transfer_wakeup", "pause_user_queue",
     "is_user_paused", "reclaim_expired_leases", "claim_due_jobs",
     "queue_stats", "queue_alerts", "process_claimed_round",
+    "play_inline_enabled", "play_inline_budget_sec",
+    "play_inline_concurrency", "claim_job_for_inline",
+    "claim_and_execute_inline", "maybe_run_play_inline",
 ]

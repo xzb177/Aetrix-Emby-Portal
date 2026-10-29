@@ -5436,6 +5436,17 @@ async def playback_info(
         _pi_gate = await run_db(
             _tv_pi.ensure_user_copy_gate, db, item, user)
         _pi_verdict = (_pi_gate or {}).get("verdict")
+        if _pi_verdict == "preparing":
+            # 点播当场先办（2026-10-29 用户亲点）：合格的同
+            # provider copy 单在本次请求内当场执行，办成即本
+            # 响应按 proceed 放行（清单不再标准备中）；没办
+            # 成/不合格原样回 preparing，工人队列兜底不变。
+            async def _pi_regate():
+                return await run_db(
+                    _tv_pi.ensure_user_copy_gate, db, item, user)
+            _pi_gate = await _tv_pi.maybe_run_play_inline(
+                _pi_gate, _pi_regate)
+            _pi_verdict = (_pi_gate or {}).get("verdict")
         if _pi_verdict in ("preparing", "failed"):
             play_variants.apply_transfer_status(sources, _pi_verdict)
         # 就绪态分级（FMBY 全部学第 2 项）：每条源都有 Readiness；
@@ -5828,6 +5839,15 @@ async def video_stream(
                 return await run_db(
                     _tv.ensure_user_copy_gate, db, item, user,
                     play_sign_consume=_play_sign_consume)
+            # 点播当场先办（2026-10-29 用户亲点）：先当场执行
+            # 合格的同 provider copy 单，预算内办成即本请求
+            # 继续选路放行；没办成再走下面的等流轮询（工人
+            # 可能正在办同一单）。两条路都不 serve 字节、
+            # 不回落共享。
+            _transfer_gate = await _tv.maybe_run_play_inline(
+                _transfer_gate, _re_gate)
+            _gate_verdict = (_transfer_gate or {}).get("verdict")
+        if _gate_verdict == "preparing":
             _transfer_gate = await _tv.wait_for_transfer_ready(
                 _transfer_gate, _re_gate)
             _gate_verdict = (_transfer_gate or {}).get("verdict")
