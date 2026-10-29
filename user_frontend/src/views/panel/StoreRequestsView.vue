@@ -76,6 +76,29 @@
                 @click="vote(r.tmdb_id)"
               >{{ voting === r.tmdb_id ? '附议中…' : '附议' }}</button>
               <span v-else-if="r.voted" class="req-voted">已附议</span>
+              <button
+                v-if="welfareRealm && r.request_id !== null && !reportedIds.has(r.request_id)"
+                class="v4-retry"
+                @click="openReport(r.request_id)"
+              >举报</button>
+              <span v-else-if="welfareRealm && r.request_id !== null && reportedIds.has(r.request_id)" class="req-voted">已举报</span>
+              <div v-if="reportingId === r.request_id" class="req-report">
+                <select v-model="reportReason" class="req-input" aria-label="举报原因">
+                  <option value="spam">垃圾内容</option>
+                  <option value="duplicate">重复求片</option>
+                  <option value="violation">违规内容</option>
+                </select>
+                <input
+                  v-model="reportDetail"
+                  type="text"
+                  placeholder="补充说明（可选）"
+                  class="req-input"
+                  maxlength="500"
+                />
+                <button class="v4-retry" :disabled="reportBusy" @click="submitReport(r.request_id)">{{ reportBusy ? '提交中…' : '提交举报' }}</button>
+                <button class="v4-retry" :disabled="reportBusy" @click="reportingId = null">取消</button>
+                <div v-if="reportErr" class="v4-err">{{ reportErr }}</div>
+              </div>
             </div>
           </div>
         </section>
@@ -101,12 +124,17 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { storeRequestsApi, type StoreRequestRecord, type StoreRequestState } from '@/api'
+import { governanceApi, type GovernanceReportReason } from '@/api/governance'
+import { useUserStore } from '@/stores/user'
 import { useToast } from '@/composables/useToast'
 
 const toast = useToast()
+const userStore = useUserStore()
+/** 举报入口仅公益服：与补给站同款 userStore.isFreeRealm 信号，拿不到按非公益服处理 */
+const welfareRealm = computed(() => userStore.isFreeRealm)
 
 const storeOff = ref(false)
 const needLogin = ref(false)
@@ -209,8 +237,42 @@ async function vote(tmdbId: string) {
   }
 }
 
-async function loadBoard() {
-  boardLoading.value = true
+// 举报：仅公益服入口；原因与后端 REPORT_REASONS 逐字一致；服务端文案原样回
+const reportingId = ref<number | null>(null)
+const reportReason = ref<GovernanceReportReason>('spam')
+const reportDetail = ref('')
+const reportBusy = ref(false)
+const reportErr = ref('')
+const reportedIds = ref(new Set<number>())
+
+function openReport(requestId: number) {
+  reportingId.value = requestId
+  reportReason.value = 'spam'
+  reportDetail.value = ''
+  reportErr.value = ''
+}
+
+async function submitReport(requestId: number) {
+  reportBusy.value = true
+  reportErr.value = ''
+  try {
+    await governanceApi.createReport(
+      requestId,
+      reportReason.value,
+      reportDetail.value.trim() || undefined,
+    )
+    reportedIds.value = new Set(reportedIds.value).add(requestId)
+    reportingId.value = null
+    toast.success('举报已提交，待复核')
+  } catch (err) {
+    // 后端文案原样回：403 治理特权已被冻结、409 已举报过该求片、404 求片不存在
+    reportErr.value = detailOf(err) || '举报失败，稍后再试'
+  } finally {
+    reportBusy.value = false
+  }
+}
+
+async function loadBoard() {  boardLoading.value = true
   boardErr.value = ''
   try {
     const res = await storeRequestsApi.getBoard()
@@ -317,5 +379,15 @@ onMounted(() => {
 .req-voted {
   color: var(--ink2);
   font-size: 13px;
+}
+.req-report {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.req-report .v4-err {
+  flex: 1 1 100%;
 }
 </style>
