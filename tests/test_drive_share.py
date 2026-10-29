@@ -25,6 +25,7 @@ from sqlalchemy.orm import sessionmaker as _sm
 _dbmod.engine = _ce(os.environ["DATABASE_URL"])
 _dbmod.configure_session_local(_sm(bind=_dbmod.engine))
 
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -91,7 +92,13 @@ def db():
 
 @pytest.fixture()
 def share_state(monkeypatch):
-    """隔离 drive_share 的进程级队列/线程状态；抖动与退避归零。"""
+    """隔离 drive_share 的进程级队列/线程状态；抖动归零，退避钉死。
+
+    后台 worker 是 daemon 线程、一旦启动便活到进程结束，fixture 清队列
+    也杀不掉它；它会把本用例新入队的文件中途领走（复现：巡检 n==1
+    但 seen 里多出 fid-q1，即 CI 第 3 轮的签名）。退避钉死 1 小时，
+    worker 在循环顶就睡过、不再 pop 队列；teardown 恢复 0.0。
+    """
     monkeypatch.setattr(dsh, "_JITTER_MIN_SEC", 0.0)
     monkeypatch.setattr(dsh, "_JITTER_MAX_SEC", 0.0)
     monkeypatch.setattr(dsh, "_BACKOFF_MIN_SEC", 0.0)
@@ -104,7 +111,7 @@ def share_state(monkeypatch):
         dsh._queue.clear()
         dsh._in_flight.clear()
         dsh._attempts.clear()
-        dsh._backoff_until = 0.0
+        dsh._backoff_until = time.monotonic() + 3600.0
     yield
     with dsh._lock:
         dsh._queue.clear()
