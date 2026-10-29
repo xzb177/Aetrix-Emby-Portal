@@ -27,6 +27,8 @@
 """
 from __future__ import annotations
 
+import os
+
 import logging
 from datetime import datetime
 
@@ -105,6 +107,19 @@ _MOUNT_TYPE_TO_BINDING_PROVIDER = {
 }
 
 
+#: 额外开放的绑定入口（逗号分隔，取值 drive / pan115）。用于"后台没有该类
+#: 型挂载、但要让用户先绑上"的场景，例如 Drive 源条目经跨盘转存给 115
+#: 用户播放：源走 SA 读，用户只需 115 绑定，后台无需 115 挂载。
+#: 默认空 = 行为不变（只按启用挂载映射）。非法值忽略。
+EXTRA_PROVIDERS_ENV = "BYOS_EXTRA_BINDING_PROVIDERS"
+
+
+def _extra_binding_providers() -> set[str]:
+    raw = os.getenv(EXTRA_PROVIDERS_ENV, "") or ""
+    vals = {v.strip().lower() for v in raw.split(",") if v.strip()}
+    return {v for v in vals if v in ("drive", "pan115")}
+
+
 def list_binding_providers(db: Session) -> list[str]:
     """后台实际启用的挂载类型映射后的 provider 名单（只读小口的查询本体）。
 
@@ -122,6 +137,7 @@ def list_binding_providers(db: Session) -> list[str]:
         mapped = _MOUNT_TYPE_TO_BINDING_PROVIDER.get((raw or "").strip().lower())
         if mapped:
             found.add(mapped)
+    found |= _extra_binding_providers()
     # 固定顺序输出；前端只做 includes 判断，不依赖顺序
     return [p for p in ("drive", "pan115") if p in found]
 
