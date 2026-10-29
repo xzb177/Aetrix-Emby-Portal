@@ -221,6 +221,7 @@ def test_register_gifts_custom_days(db):
     from backend.api.emby_portal import _grant_register_gifts
 
     _set_config(db, "register_gift_welfare_enabled", "true")
+    _set_config(db, "register_gift_view_enabled", "true")
     _set_config(db, "register_gift_welfare_days", "45")
     _set_config(db, "register_gift_view_days", "15")
     user = _make_user(db, "newbie")
@@ -241,6 +242,7 @@ def test_register_gifts_invalid_rows_fall_back_to_30(db):
     from backend.api.emby_portal import _grant_register_gifts
 
     _set_config(db, "register_gift_welfare_enabled", "true")
+    _set_config(db, "register_gift_view_enabled", "true")
     _set_config(db, "register_gift_welfare_days", "abc")
     _set_config(db, "register_gift_view_days", "0")
     user = _make_user(db, "newbie2")

@@ -309,7 +309,9 @@ def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
 # 均不扣积分。资格复用 grant_welfare（channel=register_gift）；查看行复用
 # EmbyViewUnlock（points_spent=0 标记赠送）。只给新用户，不动现有用户行。
 # 2026-10-29 用户拍板：公益资格改由总开关 register_gift_welfare_enabled
-# 控制、默认关（开放注册但不送资格，管理端可重开）；查看行照送不受影响。
+# 控制、默认关（开放注册但不送资格，管理端可重开）。
+# 2026-10-29 用户再拍板：查看凭证改由总开关 register_gift_view_enabled
+# 控制、默认关（新注册不送凭证、可以送资格）；两个开关彼此独立。
 # 天数走 SystemConfig（管理端公益配置里改；未配行／非法行回退下面默认值）：
 # register_gift_welfare_days（0=永不过期，grant_welfare 口径），
 # register_gift_view_days（最小 1；0 天按 timedelta 算是“立即过期”，不是永久）。
@@ -343,12 +345,28 @@ def _get_register_gift_welfare_enabled(db):
     return str(row.value).strip().lower() in ("1", "true", "yes", "on")
 
 
-def _grant_register_gifts(db, user):
-    """新注册冷启动赠送：查看行照送；公益资格只在总开关开时赠送。
+def _get_register_gift_view_enabled(db):
+    """读新注册送查看凭证总开关：直查 SystemConfig，无进程缓存，保存即生效。
 
-    开关 register_gift_welfare_enabled 默认关（2026-10-29 用户拍板：
-    开放注册但不送资格）；开时行为与此前一致，天数走
-    register_gift_welfare_days（0=永不过期口径不变）。
+    默认 False（2026-10-29 用户拍板不送）；行缺失／空值／非法值一律按关。
+    真值口径与 config_schema 的布尔真值集对齐（"1"/"true"/"yes"/"on"）。
+    与资格开关 register_gift_welfare_enabled 彼此独立（那把归那把读）。
+    """
+    row = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == "register_gift_view_enabled").first()
+    if row is None or row.value is None:
+        return False
+    return str(row.value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _grant_register_gifts(db, user):
+    """新注册冷启动赠送：资格与查看行各由自己的总开关把关，彼此独立。
+
+    资格开关 register_gift_welfare_enabled、凭证开关
+    register_gift_view_enabled 均默认关（2026-10-29 用户拍板：开放注册
+    默认不送资格、不送凭证，管理端可分别重开）；任一开时行为与此前
+    一致，天数走 register_gift_welfare_days（0=永不过期口径不变）／
+    register_gift_view_days（最小 1 口径不变）。
     """
     from backend import realms
     from backend.emby_server.portal import grant_welfare
@@ -359,6 +377,9 @@ def _grant_register_gifts(db, user):
         grant_welfare(db, user, channel="register_gift", days=welfare_days)
     else:
         logger.info("新注册送公益资格开关关闭，跳过资格赠送: user=%s", user.id)
+    if not _get_register_gift_view_enabled(db):
+        logger.info("新注册送查看凭证开关关闭，跳过凭证赠送: user=%s", user.id)
+        return
     view_days = _get_register_gift_days(
         db, "register_gift_view_days", REGISTER_GIFT_VIEW_DAYS, 1)
     realm_id = realms.active_realm_id(db)
