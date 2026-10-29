@@ -458,11 +458,24 @@ export interface PromotionResponse {
 export const fetchPromotion = (params: { limit?: number; offset?: number } = {}) =>
   get<PromotionResponse>('/promotion', params)
 
+/** PUT /promotion/policy 可写的四个键（后端 backend/promotion.py 的白名单） */
+export interface PromotionPolicyWrite {
+  promotion_reward_enabled?: boolean
+  promotion_reward_type?: 'balance' | 'days'
+  promotion_reward_amount?: number
+  promotion_reward_days?: number
+}
+
 /**
- * Batch D 入口收敛（2026-10-14）：推广奖励的写入口收拢到「系统设置 → 邀请返利」
- * （走 updateEconomySettings / PUT /economy/settings），PUT /promotion/policy 的
- * 直写辅助已无人调用，随入口一起移除。
+ * 写回推广奖励策略（邀请页「推广奖励」卡直接编辑）。
+ * 后端只认白名单键、非法值保持原值不动，返回落库后的策略；只读角色会被 403。
+ * 「系统设置 → 邀请返利」里的同名字段写的是同一组 SystemConfig 键，两处一致。
  */
+export const updatePromotionPolicy = (policy: PromotionPolicyWrite) =>
+  put<{ success: boolean; applied: Record<string, string>; policy: PromotionPolicy }>(
+    '/promotion/policy',
+    { policy },
+  )
 
 // ==================== 媒体库可见范围：服务器默认 + 指定用户覆盖 =============
 /** 媒体库下拉选项（后端返回的全部库，含启用/虚拟状态） */
@@ -2042,7 +2055,7 @@ export const updateAdmin = (userId: number, data: { role?: AdminRole; is_active?
 export const revokeAdmin = (userId: number) =>
   del<{ success: boolean }>(`/admins/${userId}`)
 
-// ==================== 播放与客户端策略（v2.26.0，/api/admin/playback） =============// 转码开关 / 并发上限 / 码率上限：改完对 EM 与 EA 同时生效（同一个库）。
+// ==================== 播放与客户端策略（v2.26.0，/api/admin/playback） =============// 转码开关 / 并发上限 / 码率上限均已删除（2026-10-24 转码删除），现只剩只读的 Drive 直链状态。
 
 export const fetchPlaybackPolicy = () =>
   get<{ policy: PlaybackPolicy; keys: Record<string, string>; runtime: PlaybackRuntime }>(
