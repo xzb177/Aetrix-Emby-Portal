@@ -2086,17 +2086,27 @@ class DriveApiClient:
     def _list_params(cls, drive_id):
         if cls._is_personal(drive_id):
             return {"spaces": "drive"}
-        return {"driveId": drive_id, "corpora": "drive"}
+        # 共享盘 files.list 的硬要求（Google 原话）：driveId 指定时
+        # 或 corpora 含 drive/allDrives 时，必须带
+        # includeItemsFromAllDrives=true，否则 403；此前本处缺失，
+        # Path B 在源共享盘建暂存目录的第一步即 403（生产 168 单
+        # 同款失败，见 tests/test_transfer_shared_list_params.py）。
+        # mount_drive / drive_changes 的共享盘列举早已带此参数，
+        # 本处是唯一缺失点，四处 files.list 共用此口径。
+        return {"driveId": drive_id, "corpora": "drive",
+                "includeItemsFromAllDrives": "true"}
 
     def ensure_folder(self, drive_id, dir_name):
         """转存目录在就返回 id，没有就建（同盘根目录下）。
 
-        file-only 兼容（2026-10-29 #1453 回归修复）：drive.file
-        令牌只认应用自创文件，带 ``'root' in parents`` 的根枚举
-        查询会回 403——此时改按名查应用自创文件（不带 parents
-        条件），查到即复用，不重复建；按名查 200 但无匹配时才
-        走创建；按名查也失败时不盲建（会重名），带错误体报
-        可重试失败。双范围／SA 令牌首查即 200，走旧路径不变。
+        列举 403 时的回落（2026-10-29 #1462 引入）：根枚举 403
+        后改按名查应用自创文件（不带 parents 条件），查到即复用，
+        不重复建；按名查 200 但无匹配时才走创建；按名查也失败时
+        不盲建（会重名），带错误体报可重试失败。注意：生产 168 单
+        失败的真因并非用户侧根查询，而是共享盘列举缺
+        includeItemsFromAllDrives 参数（见 _list_params），回落与
+        首查共用同一参数口径，缺参时两者同 403——本回落只兜其它
+        403 成因，不替代参数本身。
         """
         root = self._root_parent(drive_id)
         escaped = dir_name.replace("'", "\\'")
