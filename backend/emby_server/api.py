@@ -5037,6 +5037,103 @@ def _note_upstream_play_start_safe(user_id, resolve_ms) -> None:
         pass
 
 
+async def _usercopy_quota_relay_attempt(
+        request: Request, db: Session, item: em.MediaItem, user,
+        play_fid: str, play_variant, *, media_type: str, pt=None):
+    """额度后路（2026-10-29 用户亲令）：用户副本公开直链被谷歌额度页
+    挡住（probe 判 quota）时，用用户本人 Drive 绑定令牌走 API 中继取
+    同一份副本——公开下载池与 Drive API 不是一个额度池（亲验：公开
+    池已回额度页的副本，用本人令牌走 API alt=media 仍 206 出字节）。
+
+    成功返回中继响应；未启用 / 无可用绑定令牌 / 中继任何失败都返回
+    None，调用方回现行 quota 口径（本人 115 副本优先、否则 409 明
+    示），分毫不差。红线：只许本人令牌、只试一次——走
+    serve_drive_relay_async 的 access_token 腿（该腿单次直试、原样
+    抛错、从不调 get_token_for_drive、也不进 #1482 的 SA failover
+    轮换）；本函数同样绝不直接或间接取 SA 令牌，失败绝不回落共享。
+    """
+    from backend.emby_server.async_db import run_db
+    from backend.emby_server import playback_strategy as _strategy_q
+    from backend.emby_server import transfer_variant as _tv_q
+
+    uid = getattr(user, "id", None)
+    if uid is None or not play_fid:
+        return None
+    try:
+        _enabled_q = await run_db(
+            _strategy_q.usercopy_quota_relay_fallback_enabled, db)
+    except Exception:  # noqa: BLE001 — 开关读不到不贸然改道，回现行口径
+        return None
+    if not _enabled_q:
+        return None
+    _tv_q.log_byos(
+        "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+        user=uid, fid=play_fid, result="attempt")
+    _t0 = time.perf_counter()
+    try:
+        from backend.emby_server import drive_oauth as _drive_oauth_q
+        _token_q = await run_db(
+            _drive_oauth_q.get_user_drive_access_token, db, uid)
+    except Exception as exc:  # noqa: BLE001 — 无绑定/令牌失效都回现行口径
+        _tv_q.log_byos(
+            "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+            user=uid, fid=play_fid, result="error",
+            error_kind="token_%s" % (
+                getattr(exc, "kind", None) or type(exc).__name__))
+        return None
+    if pt is not None:
+        pt.mark("relay")
+    try:
+        _resp_q = await serve_drive_relay_async(
+            request,
+            getattr(play_variant, "variant_drive_id", None)
+            or f"userdrive:{uid}",
+            play_fid, media_type=media_type, pt=pt,
+            access_token=_token_q)
+    except HTTPException as exc:
+        _tv_q.log_byos(
+            "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+            user=uid, fid=play_fid, result="error",
+            error_kind=f"upstream_{exc.status_code}")
+        _note_play_start_safe(
+            item, user_id=uid, method="relay",
+            variant=play_variants.BYOS_DRIVE_RELAY, result="error",
+            error_kind=f"usercopy_quota_relay_{exc.status_code}",
+            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+        return None
+    except Exception as exc:  # noqa: BLE001 — 中继任何失败都回现行口径
+        _tv_q.log_byos(
+            "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+            user=uid, fid=play_fid, result="error",
+            error_kind=type(exc).__name__)
+        _note_play_start_safe(
+            item, user_id=uid, method="relay",
+            variant=play_variants.BYOS_DRIVE_RELAY, result="error",
+            error_kind="usercopy_quota_relay_error",
+            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+        return None
+    if _resp_q is None or getattr(_resp_q, "status_code", 500) >= 400:
+        _tv_q.log_byos(
+            "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+            user=uid, fid=play_fid, result="error",
+            error_kind="upstream_%s" % getattr(
+                _resp_q, "status_code", None))
+        _note_play_start_safe(
+            item, user_id=uid, method="relay",
+            variant=play_variants.BYOS_DRIVE_RELAY, result="error",
+            error_kind="usercopy_quota_relay_status",
+            resolve_ms=int((time.perf_counter() - _t0) * 1000))
+        return None
+    _tv_q.log_byos(
+        "byos_usercopy_quota_relay", item=getattr(item, "id", None),
+        user=uid, fid=play_fid, result="ok")
+    _note_play_start_safe(
+        item, user_id=uid, method="relay",
+        variant=play_variants.BYOS_DRIVE_RELAY, result="ok",
+        resolve_ms=int((time.perf_counter() - _t0) * 1000))
+    return _resp_q
+
+
 def _play_target(db: Session, item: em.MediaItem, *, variant=None):
     """把条目的 ``file_path`` 解析成播放目标（本机文件 或 挂载直链）
 
@@ -5393,9 +5490,24 @@ async def playback_info(
                             cached=_pi_quota_cached)
                         _alt_is_user_copy = False
                         _alt_applied = True  # 跳过下面 alt=media+头各段
+                        # 额度后路（2026-10-29 用户亲令）：后路开且有
+                        # active Drive 绑定时保留本站 /stream 入口——
+                        # 客户端打进 video_stream 先试本人令牌中继，
+                        # 判定以 video_stream 每次重查门禁＋探测为准，
+                        # 这里不剥光清单、不报 NoCompatibleStream。
+                        _keep_stream_q = False
+                        if await run_db(
+                                _ps_alt
+                                .usercopy_quota_relay_fallback_enabled, db):
+                            from backend.emby_server import (
+                                user_bindings as _ub_alt)
+                            _keep_stream_q = await run_db(
+                                _ub_alt.get_active_binding,
+                                db, user.id, _ub_alt.PROVIDER_DRIVE) \
+                                is not None
                         _v115 = await run_db(_tv_alt.ready_user115_variant,
                                              db, item.id, user.id)
-                        if _v115 is None:
+                        if _v115 is None and not _keep_stream_q:
                             for _s in sources:
                                 for _k in ("DirectPlayUrl", "DirectStreamUrl",
                                            "TranscodingUrl", "Path"):
@@ -5807,6 +5919,14 @@ async def video_stream(
                 cached=_quota_cached)
             # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
             # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
+            # 额度后路（2026-10-29 用户亲令）：先试本人令牌中继取同一
+            # 份副本（API 额度与公开池分开）；中继未启用/无令牌/任何
+            # 失败才回下面的现行口径（115 优先 / 409 明示），分毫不差。
+            _quota_relay_resp = await _usercopy_quota_relay_attempt(
+                request, db, item, user, _play_fid, _play_variant,
+                media_type=media_type, pt=_pt)
+            if _quota_relay_resp is not None:
+                return _observe_traffic(_quota_relay_resp)
             _v115q = await run_db(_tv.ready_user115_variant, db,
                                   getattr(item, "id", None),
                                   getattr(user, "id", None))

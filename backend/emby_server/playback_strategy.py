@@ -72,6 +72,12 @@ KEY_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS = \
 DEFAULT_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS = 3
 MIN_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS = 1
 MAX_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS = 10
+#: 用户副本额度后路（2026-10-29 用户亲令）：本人 Drive 副本的公开
+#: usercontent 直链被谷歌额度页挡住（probe 判 quota）时，video_stream
+#: 先用用户本人绑定令牌走 API 中继取同一份副本（API 额度与公开下载
+#: 池不是一个池子）；关掉即回到 quota 现行口径（115 优先 / 409 明示）。
+#: 默认开。仅 SystemConfig 键（非 env）。
+KEY_USERCOPY_QUOTA_RELAY_FALLBACK = "usercopy_quota_relay_fallback_enabled"
 #: IntroDB 自动片头片尾（2026-10-17 用户拍板学 raisemby）：开启时播放信息
 #: 组装 Chapters 会把众包库 api.introdb.app 的分段并入手打标记。默认开。
 KEY_INTRODB_ENABLED = "introdb_enabled"
@@ -188,6 +194,25 @@ def drive_relay_sa_failover_max_attempts(db: Session) -> int:
         return DEFAULT_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS
     return max(MIN_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS,
                min(MAX_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS, value))
+
+
+def usercopy_quota_relay_fallback_enabled(db: Session) -> bool:
+    """用户副本额度后路开关（默认开）。
+
+    读法与 drive_direct_play_enabled 同款（store 热读 + fail-safe）：
+    读失败回默认开并记日志——后路是救播放的，开关读不到时不该悄悄
+    把它关掉；真关掉的行为也只是回到 quota 现行口径（115 / 409），
+    不伤数据。关的口径与同类键一致：0/false/no/off 视为关。
+    """
+    try:
+        raw = (store.get_value(
+            db, KEY_USERCOPY_QUOTA_RELAY_FALLBACK, "true") or "").strip().lower()
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB 场景下保默认
+        logger.warning(
+            "usercopy_quota_relay_fallback_enabled 读取失败，回默认开",
+            exc_info=True)
+        return True
+    return raw not in ("0", "false", "no", "off")
 # ---------------------------------------------------------------------------
 # 可观测：直链/回落计数（进程内，重启清零；与 prewarm 计数同口径）
 # ---------------------------------------------------------------------------
