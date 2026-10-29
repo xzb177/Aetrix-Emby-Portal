@@ -1,5 +1,5 @@
 /** 公益服管理后台 API（全部走 /api/admin/welfare/*） */
-import { get, post, put } from '@/utils/request'
+import { del, get, post, put } from '@/utils/request'
 
 const E = '/welfare'
 
@@ -101,3 +101,79 @@ export const drawLotteryRound = (id: number) =>
 
 export const cancelLotteryRound = (id: number) =>
   post<{ success: boolean }>(`${E}/lottery/rounds/${id}/cancel`, {})
+
+// ==================== 活动提案审批（等级治理 Step 3） ====================
+// 用户端 Lv.2+ 提交提案（POST /api/lottery/proposals），管理员在这里审批：
+// 批准 -> 后端按提案内容建轮次（created_by=提案人）并发群公告，之后走正常开奖流程；
+// 拒绝 -> 只改提案行，不建轮次、不发奖。note 两边都可选（后端库字段上限 500 字）。
+export type LotteryProposalStatus = 'pending' | 'approved' | 'rejected'
+
+export interface LotteryProposalPrize {
+  name: string
+  type: 'days' | 'points' | 'whitelist'
+  value: number
+  quantity: number
+}
+
+/** 对齐 backend/lottery_governance.py::proposal_to_dict */
+export interface LotteryProposalRow {
+  id: number
+  user_id: number
+  title: string
+  chat_id: number | string
+  lottery_type: 'button' | 'password'
+  password_keyword: string | null
+  prizes: LotteryProposalPrize[]
+  draw_at: string | null
+  max_participants: number
+  level_snapshot: number
+  status: LotteryProposalStatus
+  reviewer_id: number | null
+  reviewed_at: string | null
+  review_note: string | null
+  round_id: number | null
+  created_at: string | null
+}
+
+export interface ApproveProposalResult {
+  proposal: LotteryProposalRow
+  round: {
+    id: number
+    title: string
+    chat_id: number | string
+    status: LotteryRoundStatus
+    lottery_type: string
+    seed_hash: string | null
+  }
+  /** 群公告结果：成功 {sent, group}；通知异常时为 {ok: false}（不影响批准本身） */
+  notify: { sent?: boolean; group?: boolean; ok?: boolean }
+}
+
+export const fetchLotteryProposals = (params: { page?: number; page_size?: number; status?: LotteryProposalStatus } = {}) =>
+  get<{ total: number; items: LotteryProposalRow[] }>(`${E}/lottery/proposals`, params)
+
+export const approveLotteryProposal = (id: number, note?: string | null) =>
+  post<ApproveProposalResult>(`${E}/lottery/proposals/${id}/approve`, { note: note || null })
+
+export const rejectLotteryProposal = (id: number, note?: string | null) =>
+  post<LotteryProposalRow>(`${E}/lottery/proposals/${id}/reject`, { note: note || null })
+
+// ==================== 抽奖黑名单（三重门·资格门） ====================
+// 被拉黑的用户无法参加任何群抽奖（lottery.is_blacklisted 在参加时拦截）。
+// 增删都以站内用户 ID（web_users.id）为准；移除按 user_id，不是黑名单行 id。
+export interface LotteryBlacklistRow {
+  id: number
+  user_id: number
+  username: string | null
+  reason: string | null
+  created_at: string | null
+}
+
+export const fetchLotteryBlacklist = (params: { page?: number; page_size?: number } = {}) =>
+  get<{ total: number; page: number; page_size: number; items: LotteryBlacklistRow[] }>(`${E}/lottery/blacklist`, params)
+
+export const addLotteryBlacklist = (data: { user_id: number; reason?: string }) =>
+  post<{ success: boolean; id: number }>(`${E}/lottery/blacklist`, { user_id: data.user_id, reason: data.reason ?? '' })
+
+export const removeLotteryBlacklist = (userId: number) =>
+  del<{ success: boolean }>(`${E}/lottery/blacklist/${userId}`)

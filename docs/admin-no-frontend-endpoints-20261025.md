@@ -136,9 +136,9 @@
 | 35 | POST /api/admin/welfare/requests/{param}/approve | backend/api/welfare_admin.py:208 | 待接线 | 两站前端路径集合无命中；求片审核通过口，求片页走 media-seek 口（现行版）。 |
 | 36 | POST /api/admin/welfare/requests/{param}/reject | backend/api/welfare_admin.py:226 | 待接线 | 两站前端路径集合无命中；求片审核驳回口，求片页走 media-seek 口（现行版）。 |
 | 37 | POST /api/admin/welfare/requests/{param}/done | backend/api/welfare_admin.py:244 | 待接线 | 两站前端路径集合无命中；求片标记入库口，求片页走 media-seek 口（现行版）。 |
-| 38 | GET /api/admin/welfare/lottery/blacklist | backend/api/welfare_admin.py:726 | 待接线 | 两站前端路径集合无命中；抽奖黑名单清单，抽奖页无黑名单区。 |
-| 39 | POST /api/admin/welfare/lottery/blacklist | backend/api/welfare_admin.py:762 | 待接线 | 两站前端路径集合无命中；抽奖黑名单加入，抽奖页无黑名单区。 |
-| 40 | DELETE /api/admin/welfare/lottery/blacklist/{param} | backend/api/welfare_admin.py:791 | 待接线 | 两站前端路径集合无命中；抽奖黑名单移出，抽奖页无黑名单区。 |
+| 38 | GET /api/admin/welfare/lottery/blacklist | backend/api/welfare_admin.py:726 | 待接线 | 两站前端路径集合无命中；抽奖黑名单清单，抽奖页无黑名单区。（基线后已接线：管理端「公益服 → 抽奖黑名单」标签，见第 8 节） |
+| 39 | POST /api/admin/welfare/lottery/blacklist | backend/api/welfare_admin.py:762 | 待接线 | 两站前端路径集合无命中；抽奖黑名单加入，抽奖页无黑名单区。（基线后已接线：管理端「公益服 → 抽奖黑名单」标签，见第 8 节） |
+| 40 | DELETE /api/admin/welfare/lottery/blacklist/{param} | backend/api/welfare_admin.py:791 | 待接线 | 两站前端路径集合无命中；抽奖黑名单移出，抽奖页无黑名单区。（基线后已接线：管理端「公益服 → 抽奖黑名单」标签，见第 8 节） |
 | 41 | GET /api/admin/emby/libraries/{param}/scan-live | backend/emby_server/portal.py:2618 | 待接线 | 两站前端路径集合无命中；库扫描实时行，媒体库页走扫描队列口（存疑：同前缀多口，按精确路径区分）。 |
 | 42 | GET /api/admin/emby/items | backend/emby_server/portal.py:2634 | 待接线 | 两站前端路径集合无命中；媒体库条目清单口，管理端暂无条目清单页。 |
 
@@ -173,3 +173,17 @@
 - 待接线 42 条的接线（合集页、治理页、版本页等）各另立项；运维专用 16 条不强制进页面。
 - 未知项照实写：字符串对账不能证实运行时调用；生产访问日志窗口短，运维手工调用无法证实；同路径不同方法的 7 条记录未在本批定性，须另行核查。
 - 回滚：revert 本 PR 即可，文档删除不影响任何接口行为。
+
+## 8. 基线后接线记录
+
+本节记录基线之后**已接上管理前端**的口；第 1 节计数与第 6 节标签仍是基线快照，不回改，
+复算时这些口应退出「待接线」。
+
+| 接口 | 接线位置 | 说明 |
+|---|---|---|
+| GET /api/admin/welfare/lottery/blacklist | `admin_frontend/src/views/WelfareLotteryBlacklist.vue` | 原 6.1 节第 38 行；公益服页「抽奖黑名单」标签列表。 |
+| POST /api/admin/welfare/lottery/blacklist | 同上 | 原 6.1 节第 39 行；按站内用户 ID 加入（可按用户名/邮箱搜索后选）。 |
+| DELETE /api/admin/welfare/lottery/blacklist/{param} | 同上 | 原 6.1 节第 40 行；按 user_id 移出。 |
+| GET /api/admin/welfare/lottery/proposals | `admin_frontend/src/views/WelfareLotteryProposals.vue` | 基线后新增口（等级治理 Step 3），不在原表；公益服页「活动提案」标签，可按状态筛选。 |
+| POST /api/admin/welfare/lottery/proposals/{param}/approve | 同上 | 基线后新增口；通过即建轮次并发群公告。 |
+| POST /api/admin/welfare/lottery/proposals/{param}/reject | 同上 | 基线后新增口；驳回只改提案行，可填理由。 |
