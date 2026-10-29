@@ -191,9 +191,10 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
     seen = {}
 
     async def fake_relay(request, drive_id, file_id, media_type="video/mp4",
-                         pt=None, access_token=None, rotate_on_quota=True):
+                         pt=None, access_token=None, rotate_on_quota=True, max_attempts=None):
         seen.update(drive_id=drive_id, file_id=file_id, media_type=media_type,
-                    rotate_on_quota=rotate_on_quota)
+                    rotate_on_quota=rotate_on_quota,
+                    max_attempts=max_attempts)
         return Response(content=b"x", media_type="video/mp4")
 
     monkeypatch.setattr(api, "serve_drive_relay_async", fake_relay)
@@ -237,7 +238,8 @@ def test_video_stream_relay_branch_wiring(monkeypatch):
     resp = _run(api.video_stream("item", Request(scope), object(), _FakeDB()))
     assert resp.status_code == 200
     assert seen == {"drive_id": "DRIVE9", "file_id": "FID123",
-                    "media_type": "video/mkv", "rotate_on_quota": True}
+                    "media_type": "video/mkv", "rotate_on_quota": True,
+                    "max_attempts": 3}
 
 # ---------- Quota 额度页：与 403 同口径轮换重试 ----------
 

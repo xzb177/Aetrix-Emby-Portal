@@ -290,7 +290,7 @@ def test_legacy_no_variant_drive_goes_direct_first(db, monkeypatch):
     calls = []
 
     async def fake_relay(request, drive_id, file_id, media_type="video/mp4",
-                         pt=None, access_token=None, rotate_on_quota=True):
+                         pt=None, access_token=None, rotate_on_quota=True, max_attempts=None):
         calls.append(("relay", drive_id, file_id))
         return Response(content=b"relay-bytes", media_type=media_type)
 
@@ -342,7 +342,7 @@ def test_forced_drive_relay_skips_direct(db, monkeypatch):
     calls = []
 
     async def fake_relay(request, drive_id, file_id, media_type="video/mp4",
-                         pt=None, access_token=None, rotate_on_quota=True):
+                         pt=None, access_token=None, rotate_on_quota=True, max_attempts=None):
         calls.append("relay")
         return Response(content=b"relay-bytes", media_type=media_type)
 

@@ -689,14 +689,66 @@ async def serve_mount_relay_async(
         raise
 
 
+#: Drive 中继 SA failover 的触发状态码：令牌死（401）/ 权限与配额类
+#: （403）/ 限流（429）——都是「换一个 SA 就可能好」的失败。404 是文件
+#: 不存在、换号也没用，原样透传（#1192 定版）；其余状态码维持挂载
+#: 中继既有口径（不触发换号）。
+_RELAY_SA_FAILOVER_STATUSES = frozenset({401, 403, 429})
+
+#: 中继 SA failover 总尝试次数缺省（调用方未传 max_attempts 时用；
+#: 与 playback_strategy 的 SystemConfig 缺省同为 3，见该模块键注释）。
+_RELAY_SA_FAILOVER_DEFAULT_ATTEMPTS = 3
+
+
+def _note_relay_sa_cooldown(url: str, token: str, status: int) -> None:
+    """把本次取流失败的 SA 凭据按值失效（冷却记账，只记账、绝不抛错）。
+
+    复用核查（横切只许一套，不另起第二套冷却）：
+    - drive_changes._api_get 的指数退避是请求级、无 per-SA 状态；
+      _mark_dead_drive 是 per-盘 404 退避——对象都不是 SA，不适用。
+    - 本仓唯一的「凭据失败→失效」实现是 drive_auth 的按值双层失效
+      （401 毒化修复）：401 走其指定入口 note_drive_unauthorized，
+      403/429 走 invalidate_drive_bearer_token，本函数只分发不新造。
+    失效后，该 SA 在双层缓存里的坏令牌被清掉，下次轮到它时重新换取；
+    本次重试则靠 get_token_for_drive 的轮换直接换下一个 SA。
+    记账本身失败只记日志——冷却记账不能拖垮 failover。
+    """
+    try:
+        from backend.emby_server import drive_auth
+
+        if status == 401:
+            drive_auth.note_drive_unauthorized(url, f"Bearer {token}")
+        else:
+            drive_auth.invalidate_drive_bearer_token(token)
+    except Exception as exc:  # noqa: BLE001 - 记账失败只记日志
+        logger.warning("Drive 中继 SA 冷却记账失败 status=%s: %s",
+                       status, exc)
+
+
+def _relay_sa_email_for_log(token: str) -> str:
+    """best-effort 按令牌反查 SA 邮箱（failover 日志的 sa= 字段用）。
+
+    走 drive_auth.sa_email_for_token（其按 SA 分账号缓存）；api/EA
+    启动时 premint 已把全部 SA 令牌预铸进该缓存，生产常态可命中。
+    查不到返回 "-"，不影响 failover 本身。
+    """
+    try:
+        from backend.emby_server import drive_auth
+
+        return drive_auth.sa_email_for_token(token) or "-"
+    except Exception:  # noqa: BLE001 - 日志字段尽力而为
+        return "-"
+
+
 async def serve_drive_relay_async(
     request: Request,
     drive_id: str,
     file_id: str,
     media_type: str = "video/mp4",
     pt=None,
-    access_token=None,
+    access_token: Optional[str] = None,
     rotate_on_quota: bool = True,
+    max_attempts: Optional[int] = None,
 ):
     """Drive 条目 SA 中继：服务端用盘凭据从 Drive API 取流、流式转发。
 
@@ -709,13 +761,28 @@ async def serve_drive_relay_async(
       （横切只许一套）；这里只管 Drive 特有的凭据与地址：API 地址由
       drive_auth 的现成构造函数拼，凭据走 get_token_for_drive
       （全项目唯一入口：共享盘 SA 轮换 / 个人盘 OAuth 不回退）。
-    - 上游 403（多为当前 SA 的下载额度被打满）→ 轮换/刷新凭据重试
-      一次；再失败按挂载中继的口径抛错（403 透传、5xx 转 502）。
+    - SA failover（2026-10-29 用户亲令「中转加上换号能力」）：上游
+      取流回 401/403/429（令牌死 / 当前 SA 下载额度被打满 / 限流）→
+      先按值失效该 SA 凭据（drive_auth 既有机制，见
+      _note_relay_sa_cooldown），再轮换凭据重试；总尝试次数由
+      ``max_attempts`` 界定（调用方传 SystemConfig 键
+      drive_relay_sa_failover_max_attempts 的值，未传缺省 3，含首次），
+      次数耗尽回最后一次的原始错误。每次换号打一条
+      drive_relay_sa_failover 日志（sa= 字段与 drive_token_mint 同
+      形态）。404 与其余状态码不换号、按挂载中继口径抛错（404
+      透传、5xx 在下层已转 502）。
     - 整段请求撞上 Quota 额度页（上游回 200 HTML 额度页）→ 默认与
-      403 同口径：先轮换凭据重试一次；两次都撞额度页才原样抛
-      QuotaPageError。``rotate_on_quota=False``（绑定用户正在啃共享
-      原件）时第一次额度页就抛，不换下一个 SA。调用方记信号；绑定
-      用户不改播共享原件。BYOS 用户令牌腿不嗅探、不重试，原样不动。
+      403 同口径：轮换凭据重试（与状态码 failover 共用尝试预算）；
+      预算耗尽才原样抛 QuotaPageError。``rotate_on_quota=False``
+      （绑定用户正在啃共享原件）时第一次额度页就抛，不换下一个 SA。
+      调用方记信号；绑定用户不改播共享原件。BYOS 用户令牌腿不
+      嗅探、不重试，原样不动。
+    - failover 覆盖边界（按取流实情）：serve_mount_relay_async 在
+      上游响应头阶段就把 ≥400 抛成 HTTPException、整段请求的 Quota
+      页也在首块嗅探时抛出——都发生在首字节送达播放器之前（客户端
+      Range 原样透传、同一 Range 段换号重取）。流已开始后的中途
+      断流不在覆盖内（下层结束该流，播放器对剩余区间重新发 Range，
+      那是新请求、新一轮 failover）。
     - 凭据获取失败（个人盘 OAuth 抛错、无 SA 可用）→ 503。
     - access_token 给了（BYOS 用户令牌中继）：直接用它、只试一次，
       上游 403 原样抛、绝不换凭据重试——换凭据就是跨用户复用，
@@ -735,7 +802,10 @@ async def serve_drive_relay_async(
             url, request,
             headers={"Authorization": f"Bearer {access_token}"},
             media_type=media_type, pt=pt)
-    for attempt in (0, 1):
+    total = (_RELAY_SA_FAILOVER_DEFAULT_ATTEMPTS if max_attempts is None
+             else max(1, int(max_attempts)))
+    for attempt in range(total):
+        last = attempt == total - 1
         try:
             token = await asyncio.to_thread(
                 get_token_for_drive, drive_id, attempt > 0)
@@ -751,15 +821,21 @@ async def serve_drive_relay_async(
                 headers={"Authorization": f"Bearer {token}"},
                 media_type=media_type, pt=pt, sniff_quota_page=True)
         except _tv.QuotaPageError:
-            if attempt == 1 or not rotate_on_quota:
+            if last or not rotate_on_quota:
                 raise
             logger.warning(
-                "Drive 中继上游额度页，轮换凭据重试 file_id=%s", file_id)
+                "drive_relay_sa_failover sa=%s failover_attempt=%d/%d "
+                "status=quota_page file_id=%s",
+                _relay_sa_email_for_log(token), attempt + 1, total, file_id)
         except HTTPException as exc:
-            if exc.status_code != 403 or attempt == 1:
+            if exc.status_code not in _RELAY_SA_FAILOVER_STATUSES or last:
                 raise
+            _note_relay_sa_cooldown(url, token, exc.status_code)
             logger.warning(
-                "Drive 中继上游 403，轮换凭据重试 file_id=%s", file_id)
+                "drive_relay_sa_failover sa=%s failover_attempt=%d/%d "
+                "status=%d file_id=%s",
+                _relay_sa_email_for_log(token), attempt + 1, total,
+                exc.status_code, file_id)
     raise HTTPException(status_code=502, detail="Drive 中继失败")  # pragma: no cover
 
 
