@@ -275,6 +275,9 @@ WELFARE_CONFIG_KEYS = {
     "register_gift_view_enabled": "false",
     "welfare_grace_days": "7",
     "welfare_streak_renew_min": "30",
+    # 连签保资格（streak_renew）总开关（默认开＝现行行为）＋续期天数（默认 30）
+    "welfare_streak_renew_enabled": "true",
+    "welfare_streak_renew_days": "30",
     "welfare_inactive_days": "30",
     "welfare_request_monthly": "3",
     # P0 统一货币体系：充值比例与红包规则
