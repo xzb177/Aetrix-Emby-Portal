@@ -1096,6 +1096,16 @@ def _auto_migrate():
         ("emby_transfer_variants", [
             ("share_revoked_at", "DATETIME", "NULL"),
         ]),
+        # 安全收口（2026-10-30）：死令牌待收回登记列。老库补列
+        # 后为 NULL（= 无待收回义务）。
+        ("emby_transfer_variants", [
+            ("share_revoke_pending_at", "DATETIME", "NULL"),
+        ]),
+        # 安全收口（2026-10-30）：Drive OAuth 回调浏览器会话
+        # nonce 哈希列。老库补列后为 NULL（在途行回调拒绝）。
+        ("drive_oauth_states", [
+            ("nonce_hash", "VARCHAR(64)", "NULL"),
+        ]),
     ]
 
     _newly_added_columns: list[tuple[str, str]] = []

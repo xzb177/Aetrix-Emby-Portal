@@ -1446,6 +1446,12 @@ class TransferVariant(Base):
     # 闲置 TTL 的收回 pass 只处理本列为 NULL 的行，避免每轮重复调
     # Drive permissions 列表。老库由 _auto_migrate 补列（NULL）。
     share_revoked_at = Column(DateTime)
+    # 死令牌待收回登记（2026-10-30 安全收口）：凭据死亡时 anyone-
+    # reader 收回无令牌可执行，先在本列落登记时间；重绑成功或
+    # 闲置清理轮到时凭可用令牌补收，收回成功（share_revoked_at
+    # 置时）同步清空。NULL = 无待收回义务。老库由 _auto_migrate
+    # 补列（NULL）。
+    share_revoke_pending_at = Column(DateTime)
 
 
 class DirectIssueLog(Base):
@@ -2442,6 +2448,13 @@ class DriveOAuthState(Base):
     #: 重绑目标绑定 id（NULL = 新绑；非 NULL = 回调成功时原地换该行
     #: 凭据）。老库由 database._auto_migrate 补列。
     rebind_binding_id = Column(Integer, nullable=True)
+    #: 浏览器会话 nonce 的 sha256（2026-10-30 安全收口）：start 时
+    #: 生成随机 nonce，哈希入库、原文只下发到 HttpOnly cookie；
+    #: 回调必须出示同一 nonce 才放行（见 drive_oauth 的回调会话
+    #: 校验）。老库由 database._auto_migrate 补列；上线前发起的
+    #: 在途行本列为 NULL，回调一律拒绝（在途流程 10 分钟内自然
+    #: 过期，重新发起一次即可），不给无 nonce 的行留 fail-open。
+    nonce_hash = Column(String(64))
 
 
 class EmbyMediaSet(Base):
