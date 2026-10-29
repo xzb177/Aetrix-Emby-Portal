@@ -266,11 +266,14 @@ def _level_line(db, user) -> str:
 
 
 def compact_dashboard(db, user, display_name: str | None = None) -> str:
-    """/start 已绑定用户 dashboard（用户 2026-10-29 08:44 亲批版式，逐字照搬）：
+    """/start 已绑定用户 dashboard（用户 2026-10-29 晚间亲批瘦身版式，逐字照搬）：
 
-    问候＋账号·等级行＋资格／状态／成长三组；活力条按活力上限满格渲染，
-    馆灵条 10 格按本阶段进度渲染；经验与下一级差值不进精简版（只放 /account 与 /level）。
-    display_name 缺省取账号名；低于活力阈值时保留“暂时播不了”提示（样例未覆盖该情形）。
+    问候＋账号·等级行之后把资格／状态／成长压成单行，全文 7 行：删三段标题、
+    删活力条与馆灵条，资格两行并一行、能量活力并一行、成就连签并一行。
+    字段与取值口径沿用上一版（各 helper 三态文案不变），仅改呈现：helper 文案
+    里标签后的全角冒号在合并行里换成空格。经验与下一级差值仍不进精简版
+    （只放 /account 与 /level）。display_name 缺省取账号名；低于活力阈值时
+    保留“暂时播不了”提示，挂 ⚡ 行行尾；馆灵已满级时去掉距下一阶段的括号。
     """
     shown_ach, total_ach = _achievement_summary(db, user.id)
     total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
@@ -278,46 +281,46 @@ def compact_dashboard(db, user, display_name: str | None = None) -> str:
     info = _level_info(db, user)
     greet = display_name or getattr(user, "username", "") or "朋友"
 
+    welfare_text = _welfare_line(user).replace("：", " ", 1)
+    view_text = _view_unlock_line(db, user.id).replace("：", " ", 1)
+
     vitality = getattr(user, "vitality", None)
     if vitality is None:
-        vitality_text = "活力：—"
+        vitality_text = "活力 —"
     elif cap <= 0:
-        vitality_text = f"活力：{int(vitality)}"
+        vitality_text = f"活力 {int(vitality)}"
     else:
         v = int(vitality)
-        vitality_text = f"活力：{_bar(v / cap, cap)} {v}/{cap}"
+        vitality_text = f"活力 {v}/{cap}"
         if v < threshold:
             vitality_text += "（暂时播不了）"
 
+    bindings_text = _bindings_line(db, user.id)
+    if bindings_text.startswith("网盘："):
+        bindings_text = bindings_text[len("网盘："):]
+
+    pet_text = (
+        f"🌱 馆灵 {_esc(pet_cur.get('name', ''))} · 已观影 {total_hours:.1f} 小时"
+    )
     if pet_nxt is not None:
-        span = pet_nxt["hours"] - pet_cur["hours"]
-        frac = (total_hours - pet_cur["hours"]) / span if span > 0 else 1.0
-        pet_next_text = (
-            f"距{_esc(pet_nxt.get('name', ''))}还差 {pet_nxt['hours'] - total_hours:.1f} 小时 "
-            f"{_bar(frac, 10)}"
+        pet_text += (
+            f"（距{_esc(pet_nxt.get('name', ''))}还差 "
+            f"{pet_nxt['hours'] - total_hours:.1f} 小时）"
         )
-    else:
-        pet_next_text = "已满级"
+
+    streak_text = _streak_line(db, user.id)
+    if streak_text.startswith("📋 "):
+        streak_text = streak_text[len("📋 "):]
+    streak_text = streak_text.replace("：", " ", 1)
 
     lines = [
         f"✨ 欢迎回来，{_esc(greet)}",
-        "",
         f"👤 {_esc(user.username)} · ⭐ Lv.{info['level']} {_esc(info['name'])}",
-        "",
-        "── 🎫 资格 ──",
-        _welfare_line(user),
-        _view_unlock_line(db, user.id),
-        "",
-        "── ⚡ 状态 ──",
-        f"能量：{int(user.points or 0)}",
-        vitality_text,
-        _bindings_line(db, user.id),
-        "",
-        "── 🌱 成长 ──",
-        f"{_esc(pet_cur.get('icon', ''))} 馆灵：{_esc(pet_cur.get('name', ''))} · 已观影 {total_hours:.1f} 小时",
-        pet_next_text,
-        f"🏅 成就：{len(shown_ach)}/{total_ach}",
-        _streak_line(db, user.id),
+        f"🎫 {welfare_text} · {view_text}",
+        f"⚡ 能量 {int(user.points or 0)} · {vitality_text}",
+        f"💾 网盘 {bindings_text}",
+        pet_text,
+        f"🏅 成就 {len(shown_ach)}/{total_ach} · {streak_text}",
     ]
     return "\n".join(lines)
 
