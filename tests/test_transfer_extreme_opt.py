@@ -327,15 +327,16 @@ def test_prefetch_no_binding_no_job(db):
 
 
 def test_prefetch_cross_provider_follows_bind_which(db):
-    """只绑 115、条目是 Drive：建跨单（落盘 pan115），不偷换同盘单。"""
+    """只绑 115、条目是 Drive：2026-10-29 关停前是建跨单（落盘
+    pan115）；关停后预取同样不建跨单、不偷换同盘单，triggered
+    为 False 且 reason 明示关停原因。"""
     _mount(db)
     item = _item(db)
     _binding(db, 7, provider="pan115")
     out = tv.maybe_prefetch_transfer(db, item, _user(7))
-    assert out["triggered"] is True
-    job = db.query(em.TransferJob).first()
-    assert job.provider == "drive"
-    assert job.dest_drive_id == "pan115:user-7"
+    assert out["triggered"] is False
+    assert out["reason"] == "cross_provider_relay_disabled"
+    assert db.query(em.TransferJob).count() == 0
 
 
 def test_prefetch_daily_cap(db, monkeypatch):
