@@ -270,6 +270,9 @@ WELFARE_CONFIG_KEYS = {
     # 新注册送公益资格总开关（2026-10-29 默认关：开放注册但不送资格；
     # 服主在管理端改成 true 即可重开，天数仍走上面两个键）
     "register_gift_welfare_enabled": "false",
+    # 新注册送查看凭证总开关（2026-10-29 默认关：新注册不送凭证、可以送资格；
+    # 服主在管理端改成 true 即可重开，天数仍走 register_gift_view_days）
+    "register_gift_view_enabled": "false",
     "welfare_grace_days": "7",
     "welfare_streak_renew_min": "30",
     "welfare_inactive_days": "30",

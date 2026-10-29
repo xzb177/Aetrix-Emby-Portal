@@ -100,6 +100,7 @@ def test_payment_methods_purchase_on_qqpay_enabled(db):
 def test_grant_register_gifts_creates_both_rows_no_points_spent(db):
     """开关开（新用户 0 分）：赠送后资格＋查看行齐全，积分一分没扣。"""
     _set_config(db, "register_gift_welfare_enabled", "true")
+    _set_config(db, "register_gift_view_enabled", "true")
     user = _make_user(db)
     before = datetime.now()
     _grant_register_gifts(db, user)
@@ -127,6 +128,7 @@ def test_grant_register_gifts_view_row_not_duplicated(db):
     """开关开时重复赠送：查看行不重复建（唯一约束 user+realm），资格按
     grant_welfare 语义在未过期到期日上累加，不缩短。"""
     _set_config(db, "register_gift_welfare_enabled", "true")
+    _set_config(db, "register_gift_view_enabled", "true")
     user = _make_user(db)
     _grant_register_gifts(db, user)
     db.refresh(user)
@@ -154,6 +156,7 @@ def test_grant_register_gifts_existing_view_row_untouched(db):
     """已有查看行（非新用户场景的防御分支）：原行到期日与花费一字不动。"""
     from backend import realms
 
+    _set_config(db, "register_gift_view_enabled", "true")
     user = _make_user(db)
     realm_id = realms.active_realm_id(db)
     far = datetime.now() + timedelta(days=365)
@@ -185,7 +188,9 @@ def _view_rows(db, user):
 
 
 def test_grant_register_gifts_welfare_off_by_default(db):
-    """开关未配（默认关）：不送公益资格，查看行照常建（points_spent=0）。"""
+    """资格开关未配（默认关）：不送公益资格；凭证开关单独打开时
+    查看行照常建（points_spent=0）——两开关独立。"""
+    _set_config(db, "register_gift_view_enabled", "true")
     user = _make_user(db)
     _grant_register_gifts(db, user)
 
@@ -200,8 +205,9 @@ def test_grant_register_gifts_welfare_off_by_default(db):
 
 
 def test_grant_register_gifts_welfare_off_explicit_false(db):
-    """开关显式 false：与默认关一致，资格不送、查看行照建。"""
+    """资格开关显式 false：资格不送；凭证开关打开时查看行照建。"""
     _set_config(db, "register_gift_welfare_enabled", "false")
+    _set_config(db, "register_gift_view_enabled", "true")
     user = _make_user(db)
     _grant_register_gifts(db, user)
 
@@ -215,6 +221,7 @@ def test_grant_register_gifts_days_zero_means_never_expires_when_on(db):
     """天数 0 是“永不过期”不是关闭：开关开＋天数 0 时送的是永不过期
     资格（到期日为空），查看行照建。关闭只能靠开关本身（见上面两测）。"""
     _set_config(db, "register_gift_welfare_enabled", "true")
+    _set_config(db, "register_gift_view_enabled", "true")
     _set_config(db, "register_gift_welfare_days", "0")
     user = _make_user(db)
     _grant_register_gifts(db, user)
@@ -224,3 +231,57 @@ def test_grant_register_gifts_days_zero_means_never_expires_when_on(db):
     assert user.welfare_grant_channel == "register_gift"
     assert user.welfare_expires_at is None
     assert len(_view_rows(db, user)) == 1
+
+
+# ==================== 送凭证总开关（2026-10-29 默认关） ====================
+
+def test_grant_register_gifts_view_off_by_default(db):
+    """凭证开关未配（默认关）：不建查看行；资格开关同样未配，两样都不送。"""
+    user = _make_user(db)
+    _grant_register_gifts(db, user)
+
+    db.refresh(user)
+    assert not user.is_welfare
+    assert user.points == 0
+    assert _view_rows(db, user) == []
+
+
+def test_grant_register_gifts_view_off_explicit_false(db):
+    """凭证开关显式 false：与默认关一致，不建查看行。"""
+    _set_config(db, "register_gift_view_enabled", "false")
+    user = _make_user(db)
+    _grant_register_gifts(db, user)
+
+    assert _view_rows(db, user) == []
+
+
+def test_grant_register_gifts_welfare_on_view_off(db):
+    """新默认组合：资格开＋凭证关——资格照送（channel=register_gift），
+    查看行不建，积分一分没扣。"""
+    _set_config(db, "register_gift_welfare_enabled", "true")
+    user = _make_user(db)
+    _grant_register_gifts(db, user)
+
+    db.refresh(user)
+    assert user.is_welfare is True
+    assert user.welfare_grant_channel == "register_gift"
+    assert user.points == 0
+    assert _view_rows(db, user) == []
+
+
+def test_grant_register_gifts_view_on_creates_row_welfare_stays_off(db):
+    """凭证开关单独开：查看行照建 30 天（points_spent=0），资格不送。"""
+    _set_config(db, "register_gift_view_enabled", "true")
+    user = _make_user(db)
+    before = datetime.now()
+    _grant_register_gifts(db, user)
+    after = datetime.now()
+
+    db.refresh(user)
+    assert not user.is_welfare
+    assert user.welfare_grant_channel != "register_gift"
+    rows = _view_rows(db, user)
+    assert len(rows) == 1
+    assert rows[0].points_spent == 0
+    assert before + timedelta(days=30) - timedelta(seconds=5) <= rows[0].expires_at
+    assert rows[0].expires_at <= after + timedelta(days=30) + timedelta(seconds=5)

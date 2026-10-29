@@ -120,6 +120,10 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     # ("bool",) 存 "true"/"false"（同 ECONOMY 家族口径）。关≠天数 0——
     # 0 在 grant_welfare 口径是"永不过期"，必须独立布尔键，不能复用天数键。
     "register_gift_welfare_enabled": ("bool",),
+    # 新注册送查看凭证总开关（2026-10-29 用户拍板默认关）：与资格开关对称的
+    # 独立布尔键，同为 word 风格 ("bool",)。关≠天数 0——查看天数 schema
+    # 下限是 1，0 天只会“立即过期”，不是关闭，不能复用天数键。
+    "register_gift_view_enabled": ("bool",),
     "recharge_ratio": ("float", 0.0001, 1000000),
     "recharge_quick_amounts": ("int_list", 1, 1000000),
     "bot_rate_limit_seconds": ("int", 0, 3600),
