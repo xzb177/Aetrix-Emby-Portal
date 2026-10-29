@@ -1794,22 +1794,23 @@ def _api_key_for(db: Session, request: Request) -> str:
     return _up.quote(raw, safe="")
 
 
-# 门户（JWT）播放地址的签名有效期：网页端暂停 / 切片请求可能拖很久，默认 6 小时。
-# 签名只绑定「这个用户 + 这一部片」，泄露的影响远小于整把 JWT（含管理员 JWT）。
-PLAY_SIGN_URL_TTL = env_int("PLAY_SIGN_URL_TTL", 21600)
-
-
-def _url_auth_qs(db: Session, request: Request, user, item_guid: str) -> str:
+def _url_auth_qs(db: Session, request: Request, user, item_guid: str,
+                 runtime_seconds: int | None = None) -> str:
     """放进播放 / 字幕 / HLS 地址的鉴权查询串（不含前导 ``?`` / ``&``）
 
     - 请求带的是 Emby 客户端 token：``api_key=<token>``（Emby 协议兼容，第三方客户端依赖它）；
     - 否则（门户 JWT / 管理员 JWT）：``uid&exp&sign`` 短期播放签名（``play_sign``），
-      JWT 不进 URL（H2）。
+      JWT 不进 URL（H2）。签名只绑定「这个用户 + 这一部片」，泄露的影响
+      远小于整把 JWT（含管理员 JWT）。
+
+    签名有效期按条目时长发放（``play_sign.play_sign_ttl_for_runtime``）；
+    调用方拿不到条目时长时 runtime_seconds 留 None，按「时长未知」口径。
     """
     key = _api_key_for(db, request)
     if key:
         return f"api_key={key}"
-    exp, sig = play_sign.issue_play_sign(user.id, item_guid, PLAY_SIGN_URL_TTL)
+    ttl = play_sign.play_sign_ttl_for_runtime(db, runtime_seconds)
+    exp, sig = play_sign.issue_play_sign(user.id, item_guid, ttl)
     return f"uid={user.id}&exp={exp}&sign={sig}"
 
 
@@ -3529,7 +3530,9 @@ def get_item_detail(
     except Exception:  # noqa: BLE001 — 预热启动失败不影响详情页
         pass
     return _item_dto(item, _base_url(request), user.id, db, full=True,
-                     auth_qs=_url_auth_qs(db, request, user, item.guid))
+                     auth_qs=_url_auth_qs(
+                         db, request, user, item.guid,
+                         runtime_seconds=_run_time_ticks(item) // TICKS))
 
 
 _FAMILY_BFS_MAX_DEPTH = 8
@@ -3883,7 +3886,9 @@ def get_episodes(item_id: str, request: Request,
     want_sources = "mediasources" in fields
     return {"Items": [_item_dto(e, base, user.id, db, series_names=series_names,
                                full=want_sources,
-                               auth_qs=_url_auth_qs(db, request, user, e.guid)
+                               auth_qs=_url_auth_qs(
+                                   db, request, user, e.guid,
+                                   runtime_seconds=_run_time_ticks(e) // TICKS)
                                if want_sources else "")
                       for e in episodes],
             "TotalRecordCount": total, "StartIndex": start}
@@ -5308,11 +5313,14 @@ async def playback_info(
     # 安全修复 H2：门户 / 管理员 JWT 不再进 URL——网页端只拿短期播放签名（uid/exp/sign）。
     api_key = _api_key_for(db, request)
     # 播放短期签名（双轨）：老客户端继续用 api_key；新 URL 额外带 uid/exp/sign，
-    # 播放端点优先验签。签名有效期可配（play_sign_ttl_seconds，默认 15 分钟）、绑定
-    # user_id+item_id，泄露后窗口极小。网页端（无 api_key）保留 6 小时：
-    # 暂停/切片请求可能拖很久（见 PLAY_SIGN_URL_TTL 注释），缩短会断长片播放。
+    # 播放端点优先验签。签名有效期按条目时长发放（2026-10-29 用户拍板：
+    # 电视剧一集的时间、电影一部电影的时间）：时长 + 缓冲（默认 15 分钟），
+    # 下限 30 分钟 / 上限 6 小时 / 时长未知默认 60 分钟，四旋钮走 play_sign
+    # 的 SystemConfig 键热读（play_sign_ttl_for_runtime）；双轨（api_key 轨 /
+    # 网页端轨）统一此口径。绑定 user_id+item_id，泄露窗口随片长走但有上限。
     # P0：async 路由里同步 DB 读走 run_db 线程池（store 热缓存命中时只是内存读）。
-    play_ttl = await run_db(play_sign.play_sign_ttl_seconds, db) if api_key else PLAY_SIGN_URL_TTL
+    play_ttl = await run_db(
+        play_sign.play_sign_ttl_for_runtime, db, _run_time_ticks(item) // TICKS)
     play_exp, play_sig = play_sign.issue_play_sign(user.id, item.guid, play_ttl)
     signed_qs = f"&uid={user.id}&exp={play_exp}&sign={play_sig}"
     key_qs = f"&api_key={api_key}" if api_key else ""

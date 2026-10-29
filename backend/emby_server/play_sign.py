@@ -3,7 +3,13 @@
 三件事收拢在一个模块，避免横切能力散落各处：
 
 1. **播放 URL 短期签名**（P0 安全加固）：
-   ``HMAC-SHA256(SECRET_KEY, "user_id:item_id:exp")``，默认 15 分钟有效。
+   ``HMAC-SHA256(SECRET_KEY, "user_id:item_id:exp")``。有效期在签发时
+   写进签名载荷（exp），校验侧只认载荷、不设固定窗口。条目播放签发
+   的有效期按条目时长发放（2026-10-29 用户拍板「电视剧一集的时间、
+   电影一部电影的时间」）：时长 + 缓冲，下限/上限钳制，时长未知走
+   默认，四个旋钮走 SystemConfig（见 ``play_sign_ttl_for_runtime``）。
+   旧的固定 15 分钟口径（``play_sign_ttl_seconds``）不再驱动条目播放
+   签发，保留兼容。
    ``PlaybackInfo`` 同时发放 ``api_key``（老客户端）与 ``uid/exp/sign``（新）——
    双轨并行，逐步迁移。播放端点优先验签：签名在且无效/过期 → 403；
    无签时回退原有 token/JWT 鉴权，老客户端不受影响。
@@ -55,16 +61,31 @@ CONFIG_ALLOWED_REFERERS = "play_allowed_referers"
 # --- 防盗链配置（SystemConfig + store 热读，风格同 backend/emby_server/cdn.py） ---
 CONFIG_HOTLINK_ENABLED = "hotlink_protection_enabled"
 CONFIG_PLAY_SIGN_TTL = "play_sign_ttl_seconds"
+# 按时长发放的四个旋钮（条目播放签发专用，2026-10-29 用户拍板）
+CONFIG_PLAY_SIGN_TTL_BUFFER = "play_sign_ttl_buffer_seconds"
+CONFIG_PLAY_SIGN_TTL_MIN = "play_sign_ttl_min_seconds"
+CONFIG_PLAY_SIGN_TTL_MAX = "play_sign_ttl_max_seconds"
+CONFIG_PLAY_SIGN_TTL_UNKNOWN = "play_sign_ttl_unknown_seconds"
 
 DESCRIPTIONS = {
     CONFIG_HOTLINK_ENABLED: "防盗链总开关：关闭后播放端点跳过播放签名校验（兼容老客户端）",
-    CONFIG_PLAY_SIGN_TTL: "播放签名有效期（秒），范围 60~86400",
+    CONFIG_PLAY_SIGN_TTL: "播放签名固定有效期（秒），范围 60~86400（旧口径：条目播放已改按时长发放，本键不再驱动条目播放签发，保留兼容）",
+    CONFIG_PLAY_SIGN_TTL_BUFFER: "播放签名按时长发放的缓冲（秒）：有效期 = 条目时长 + 本值，范围 0~86400",
+    CONFIG_PLAY_SIGN_TTL_MIN: "播放签名按时长发放的下限（秒）：有效期不低于本值，范围 60~86400",
+    CONFIG_PLAY_SIGN_TTL_MAX: "播放签名按时长发放的上限（秒）：有效期不高于本值，范围 60~86400",
+    CONFIG_PLAY_SIGN_TTL_UNKNOWN: "条目时长未知时播放签名有效期（秒），范围 60~86400（仍受下限/上限钳制）",
     CONFIG_ALLOWED_REFERERS: "播放防盗链 Referer 白名单（逗号分隔域名），空=不检查",
 }
 
 HOTLINK_DEFAULT = True
 PLAY_TTL_DEFAULT = 900
 PLAY_TTL_MIN, PLAY_TTL_MAX = 60, 86400
+# 按时长发放的旋钮默认值（2026-10-29 用户口径：缓冲 15 分钟、下限
+# 30 分钟、上限 6 小时、时长未知默认 60 分钟）
+PLAY_TTL_BUFFER_DEFAULT = 900
+PLAY_TTL_FLOOR_DEFAULT = 1800
+PLAY_TTL_CAP_DEFAULT = 21600
+PLAY_TTL_UNKNOWN_DEFAULT = 3600
 
 _TRUTHY = {"true", "1", "yes", "on"}
 _FALSY = {"false", "0", "no", "off"}
@@ -113,6 +134,52 @@ def play_sign_ttl_seconds(db: Session | None = None) -> int:
         logger.warning("播放签名 TTL 读取失败，用默认值: %s", exc)
         return PLAY_TTL_DEFAULT
     return _clamp_ttl(raw, PLAY_TTL_MIN, PLAY_TTL_MAX, PLAY_TTL_DEFAULT)
+
+
+def _ttl_knob(db: Session | None, key: str, lo: int, hi: int, default: int) -> int:
+    """单个时长旋钮的热读：db 为 None / 读失败 / 非法值都回落默认（不弱化签发）。"""
+    if db is None:
+        return default
+    try:
+        raw = store.get_value(db, key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("播放签名时长旋钮 %s 读取失败，用默认值: %s", key, exc)
+        return default
+    return _clamp_ttl(raw, lo, hi, default)
+
+
+def duration_ttl_knobs(db: Session | None = None) -> dict:
+    """按时长发放的四个旋钮（秒），返回 ``ttl_for_runtime`` 的关键字参数字典。"""
+    return {
+        "buffer_seconds": _ttl_knob(db, CONFIG_PLAY_SIGN_TTL_BUFFER,
+                                    0, PLAY_TTL_MAX, PLAY_TTL_BUFFER_DEFAULT),
+        "floor_seconds": _ttl_knob(db, CONFIG_PLAY_SIGN_TTL_MIN,
+                                   PLAY_TTL_MIN, PLAY_TTL_MAX, PLAY_TTL_FLOOR_DEFAULT),
+        "cap_seconds": _ttl_knob(db, CONFIG_PLAY_SIGN_TTL_MAX,
+                                 PLAY_TTL_MIN, PLAY_TTL_MAX, PLAY_TTL_CAP_DEFAULT),
+        "unknown_seconds": _ttl_knob(db, CONFIG_PLAY_SIGN_TTL_UNKNOWN,
+                                     PLAY_TTL_MIN, PLAY_TTL_MAX, PLAY_TTL_UNKNOWN_DEFAULT),
+    }
+
+
+def ttl_for_runtime(runtime_seconds, *, buffer_seconds: int, floor_seconds: int,
+                    cap_seconds: int, unknown_seconds: int) -> int:
+    """按条目时长算播放签名有效期（秒），纯计算。
+
+    时长已知（>0）：时长 + 缓冲；时长未知（<=0 / 非法）：未知默认值。
+    结果统一按下限/上限钳制（下限与上限配反时下限优先，至少保证能播完）。
+    """
+    try:
+        runtime = int(runtime_seconds or 0)
+    except (TypeError, ValueError):
+        runtime = 0
+    base = runtime + int(buffer_seconds) if runtime > 0 else int(unknown_seconds)
+    return max(int(floor_seconds), min(int(cap_seconds), base))
+
+
+def play_sign_ttl_for_runtime(db: Session | None, runtime_seconds) -> int:
+    """条目播放签发的有效期（秒）：旋钮热读 + ``ttl_for_runtime`` 按时长发放。"""
+    return ttl_for_runtime(runtime_seconds, **duration_ttl_knobs(db))
 
 
 def config_payload(db: Session | None = None) -> dict:
