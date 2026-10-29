@@ -158,7 +158,7 @@ def test_compact_dashboard_counts(db):
     _achievements(db, row.id)
     text = features.compact_dashboard(db, row)
     assert all(x in text for x in ("alice", "能量", "活力", "夜枭", "120.0"))
-    assert "成就：1/2" in text
+    assert "成就 1/2" in text
     assert "订阅" not in text  # 精简版不展开订阅
 
 
