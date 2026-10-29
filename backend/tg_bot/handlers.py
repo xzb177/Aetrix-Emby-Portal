@@ -240,14 +240,9 @@ def handle_start(db, tg_user: dict, chat_id: int, args: str) -> str | tuple[str,
     if web_user:
         from backend.tg_bot.features import compact_dashboard
 
-        dashboard = compact_dashboard(db, web_user)
-        text = (
-            f"✨ <b>欢迎回到{site_name}</b> ✨\n"
-            "\n"
-            f"👋 亲爱的 <b>{name}</b>\n"
-            "\n"
-            f"{dashboard}"
-        )
+        greet = tg_user.get("first_name") or web_user.username
+        dashboard = compact_dashboard(db, web_user, display_name=greet)
+        text = dashboard
         if not is_private:
             return text
         return text, _menu_markup(db, web_user, is_private=True)
@@ -544,6 +539,22 @@ def handle_request_board(db, tg_user, chat_id, args):
 
 def handle_rules(db, tg_user, chat_id, args):
     from backend.tg_bot.features import handle_rules as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_level(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_level as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_report(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_report as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_propose(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_propose as _impl
+    return _impl(db, tg_user, chat_id, args)
+
+def handle_direct_launch(db, tg_user, chat_id, args):
+    from backend.tg_bot.features import handle_direct_launch as _impl
     return _impl(db, tg_user, chat_id, args)
 # ---- P1 自助查询（只读）：统一先拦群聊、再验绑定，最后调 queries 只读渲染 ----
 # 群聊里查个人数据会把结果公开给全群：一律只许私聊（私聊 chat_id == tg id）。

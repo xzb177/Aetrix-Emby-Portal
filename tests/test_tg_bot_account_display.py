@@ -95,7 +95,7 @@ def test_start_bound_private_has_dashboard_no_command_list(db):
     text, _markup = reply
     assert "可用命令" not in text
     assert "左下角" not in text  # 末尾菜单指引行已删
-    assert all(x in text for x in ("alice", "能量", "活力值", "夜枭", "120.0", "成就"))
+    assert all(x in text for x in ("alice", "能量", "活力", "夜枭", "120.0", "成就"))
 
 
 def test_start_bound_group_has_dashboard_no_login_link(db):
@@ -157,8 +157,8 @@ def test_compact_dashboard_counts(db):
     _watch(db, row.id, [100, 20])
     _achievements(db, row.id)
     text = features.compact_dashboard(db, row)
-    assert all(x in text for x in ("alice", "能量", "活力值", "夜枭", "120.0"))
-    assert "成就：1／2" in text
+    assert all(x in text for x in ("alice", "能量", "活力", "夜枭", "120.0"))
+    assert "成就：1/2" in text
     assert "订阅" not in text  # 精简版不展开订阅
 
 
@@ -234,6 +234,7 @@ def test_bot_commands_cover_router_commands():
         "request", "myrequests", "rank", "requestboard", "rules",
         "login", "renew", "redeem", "lottery", "redpacket",
         "bindings", "transfers", "whyplay", "wants",
+        "level", "report", "propose", "launch",
     }
     assert router_commands <= registered
     assert ("me", "账号中心") in poller.BOT_COMMANDS
