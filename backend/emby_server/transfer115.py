@@ -224,6 +224,30 @@ class Pan115Client:
         return {"ok": True, "uid": str(info.get("uid") or "") or None,
                 "vip": bool(info.get("vip") or info.get("is_vip"))}
 
+    def vip_status(self) -> str:
+        """账号 VIP 三态：``"vip"`` / ``"not_vip"`` / ``"unknown"``。
+
+        与 check() 同一个账号信息口（/files 的 data 同时带 uid 与
+        vip/is_vip，check() 已在读这两个字段，本方法只是不把「字段
+        不在场」压成 False）：vip/is_vip 在场且为真 → vip；在场且为
+        假 → not_vip（确凿非 VIP）；两个字段都不在场、或 data 不是
+        字典 → unknown（响应形状对不上，不下结论）。网络/上游异常
+        照常抛，由调用方按「查不清」处理——本方法只解析、不吞异常。
+        """
+        body = self._call(
+            "GET", f"{PAN115_WEBAPI_BASE}/files",
+            params={"aid": 1, "cid": 0, "limit": 1, "offset": 0, "show_dir": 1},
+        )
+        _raise_for_state(body)
+        info = body.get("data") or {}
+        if not isinstance(info, dict):
+            return "unknown"
+        if info.get("vip") or info.get("is_vip"):
+            return "vip"
+        if "vip" in info or "is_vip" in info:
+            return "not_vip"
+        return "unknown"
+
     # ---- 目录 ----
 
     def list_dir(self, cid: str = "0", limit: int = 200) -> list[dict]:
