@@ -308,9 +308,12 @@ def _get_register_ratelimit(db: Session) -> tuple[bool, int, int]:
 # 公益服冷启动赠送（2026-10-28）：新注册默认送 30 天公益资格 + 30 天查看行，
 # 均不扣积分。资格复用 grant_welfare（channel=register_gift）；查看行复用
 # EmbyViewUnlock（points_spent=0 标记赠送）。只给新用户，不动现有用户行。
+# 2026-10-29 用户拍板：公益资格改由总开关 register_gift_welfare_enabled
+# 控制、默认关（开放注册但不送资格，管理端可重开）；查看行照送不受影响。
 # 天数走 SystemConfig（管理端公益配置里改；未配行／非法行回退下面默认值）：
 # register_gift_welfare_days（0=永不过期，grant_welfare 口径），
 # register_gift_view_days（最小 1；0 天按 timedelta 算是“立即过期”，不是永久）。
+# 注意：关资格只能用上面的布尔开关，天数 0 是“永不过期”，不是关闭。
 REGISTER_GIFT_WELFARE_DAYS = 30
 REGISTER_GIFT_VIEW_DAYS = 30
 
@@ -327,16 +330,37 @@ def _get_register_gift_days(db, key, default, min_value):
     return value if value >= min_value else default
 
 
+def _get_register_gift_welfare_enabled(db):
+    """读新注册送公益资格总开关：直查 SystemConfig，无进程缓存，保存即生效。
+
+    默认 False（2026-10-29 用户拍板不送）；行缺失／空值／非法值一律按关。
+    真值口径与 config_schema 的布尔真值集对齐（"1"/"true"/"yes"/"on"）。
+    """
+    row = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == "register_gift_welfare_enabled").first()
+    if row is None or row.value is None:
+        return False
+    return str(row.value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _grant_register_gifts(db, user):
-    """新注册冷启动赠送：公益资格 + 查看行（不扣积分），天数见上面两键。"""
+    """新注册冷启动赠送：查看行照送；公益资格只在总开关开时赠送。
+
+    开关 register_gift_welfare_enabled 默认关（2026-10-29 用户拍板：
+    开放注册但不送资格）；开时行为与此前一致，天数走
+    register_gift_welfare_days（0=永不过期口径不变）。
+    """
     from backend import realms
     from backend.emby_server.portal import grant_welfare
 
-    welfare_days = _get_register_gift_days(
-        db, "register_gift_welfare_days", REGISTER_GIFT_WELFARE_DAYS, 0)
+    if _get_register_gift_welfare_enabled(db):
+        welfare_days = _get_register_gift_days(
+            db, "register_gift_welfare_days", REGISTER_GIFT_WELFARE_DAYS, 0)
+        grant_welfare(db, user, channel="register_gift", days=welfare_days)
+    else:
+        logger.info("新注册送公益资格开关关闭，跳过资格赠送: user=%s", user.id)
     view_days = _get_register_gift_days(
         db, "register_gift_view_days", REGISTER_GIFT_VIEW_DAYS, 1)
-    grant_welfare(db, user, channel="register_gift", days=welfare_days)
     realm_id = realms.active_realm_id(db)
     existing = (
         db.query(models.EmbyViewUnlock)

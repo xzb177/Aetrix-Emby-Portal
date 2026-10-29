@@ -116,6 +116,10 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     #（0 天按 timedelta 算是“立即过期”，不是永久，管理端直接禁掉）
     "register_gift_welfare_days": ("int", 0, _BIG),
     "register_gift_view_days": ("int", 1, _BIG),
+    # 新注册送公益资格总开关（2026-10-29 用户拍板默认关）：word 风格
+    # ("bool",) 存 "true"/"false"（同 ECONOMY 家族口径）。关≠天数 0——
+    # 0 在 grant_welfare 口径是"永不过期"，必须独立布尔键，不能复用天数键。
+    "register_gift_welfare_enabled": ("bool",),
     "recharge_ratio": ("float", 0.0001, 1000000),
     "recharge_quick_amounts": ("int_list", 1, 1000000),
     "bot_rate_limit_seconds": ("int", 0, 3600),
