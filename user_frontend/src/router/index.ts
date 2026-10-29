@@ -193,6 +193,15 @@ const router = createRouter({
       component: () => import('@/views/panel/StoreRequestsView.vue'),
       meta: { title: '求片登记', requiresAuth: true },
     },
+    // 活动提案：独立页 /activities（等级治理用户端补完批）。
+    // 仅公益服开放，页内按等级给门槛提示（Lv.2+ 提案、Lv.5+ 直接发起），低等级不画饼。
+    // 不挂首页/发现页、不占底栏；入口在补给站公益服等级区治理权表。
+    {
+      path: '/activities',
+      name: 'activities',
+      component: () => import('@/views/panel/ActivityProposalView.vue'),
+      meta: { title: '活动提案', requiresAuth: true },
+    },
     // 找源：独立页 /source-discovery（找源前端挂接批）。
     // 搜索与确认两个口都要登录，路由守卫先拦未登录；总闸关时页内明示未开启。
     // 不挂首页/发现页、不占底栏；候选绝不挂播放入口（playable_now 恒 false）。
@@ -281,7 +290,7 @@ router.beforeEach(async (to) => {
 
 // v4 面板第一版只做纸色浅色：在 v4 路由下强制 light，离开时恢复
 // （v4 视图自带 .v4-scope 纸色变量，这里只处理 html data-theme 与浏览器工具栏色）
-export const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/want', '/store-requests', '/source-discovery', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit', '/game/account'])
+export const V4_PATHS = new Set(['/', '/collector', '/server', '/shop', '/want', '/store-requests', '/activities', '/source-discovery', '/game', '/game/checkin', '/game/calendar', '/game/wishlist', '/game/signal', '/game/pigeon', '/game/ledger', '/game/supply', '/game/companion', '/game/guide', '/game/outfit', '/game/account'])
 // 底部坞由 App.vue 全局常驻渲染（PanelTabbar，≤768px 唯一一套，
 // 桌面 ≥769px 由 CSS 隐藏）；各视图模板不再自带 <PanelTabbar/>。
 function restoreUserTheme() {

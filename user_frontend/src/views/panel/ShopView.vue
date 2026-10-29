@@ -214,16 +214,36 @@
         </template>
       </section>
 
-      <!-- ⛰️ 探险家等级：公益服下整块隐藏（等级特权全是执照折扣，公益服不卖执照） -->
-      <section v-if="!welfareRealm" class="shop-sec">
+      <!-- ⛰️ 等级：付费服走登山路线（执照折扣），公益服走治理权表（折扣不生效） -->
+      <section class="shop-sec">
         <div class="v4-sec-title">等级</div>
-        <div class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
+        <div v-if="!welfareRealm" class="v4-sec-sub">Lv.1 → Lv.6 登山路线 —— 等级越高，执照越便宜，点开看特权</div>
+        <div v-else class="v4-sec-sub">等级越高，能为社区做的事越多 —— 不换钱、不卡权益，月限与权重以服务端为准</div>
         <div v-if="loading" class="v4-skeleton" style="height:260px"></div>
         <div v-else-if="memberFailed" class="v4-err">等级数据加载失败<br><button class="v4-retry" @click="loadAll">重试</button></div>
         <div v-else-if="!member" class="v4-empty">暂无等级记录，默认从 Lv.1 开始</div>
         <!-- 「暂未开启/暂未上架」是配置态（非故障），不挂"重试"按钮（重试只给加载失败类错误态）；
              但页面被 KeepAlive 缓存、无其他站内刷新入口，所以配置态给一个叫"刷新看看"的按钮，与错误态区分 -->
         <div v-else-if="!trailLevels.length" class="v4-empty empty-compact"><span class="lbl">等级路线暂未开启，稍后再来看看</span><button class="v4-retry" @click="loadAll">刷新看看</button></div>
+        <!-- 公益服治理权表：与设计稿 §三逐字对齐；折扣只在付费服生效，这里不显示任何折扣 -->
+        <template v-else-if="welfareRealm">
+          <div class="gov-current">
+            <div class="gov-lv">Lv.{{ member.level }} {{ member.level_name }}</div>
+            <div class="gov-xp">经验 {{ member.xp }}<span v-if="member.next_level && member.xp_to_next != null"> → 下一级 Lv.{{ member.next_level }} 还差 {{ member.xp_to_next }}</span></div>
+            <div v-if="member.progress_pct != null" class="gov-bar"><div :style="{ width: member.progress_pct + '%', height: '100%', background: 'var(--red)' }"></div></div>
+          </div>
+          <div class="gov-table">
+            <div class="gov-row gov-head"><span>等级</span><span>附议权重</span><span>活动</span><span>举报复核</span></div>
+            <div v-for="row in govRows" :key="row.level" class="gov-row" :class="{ now: row.level === member.level }">
+              <span class="gov-name">Lv.{{ row.level }} {{ row.name }}</span>
+              <span>{{ row.weight }}</span>
+              <span>{{ row.activity }}</span>
+              <span>{{ row.review }}</span>
+            </div>
+          </div>
+          <div class="gov-note">各等级均有等级徽章；Lv.6 另有专属徽章＋专属活动邀请，可只读查看治理审计日志。提案与发起不产生经验。</div>
+          <RouterLink to="/activities" class="v4-retry">去提案 →</RouterLink>
+        </template>
         <div v-else class="trail">
           <div
             v-for="lv in trailLevels"
@@ -913,6 +933,27 @@ const trailLevels = computed(() => {
   const ls = member.value?.levels || []
   return [...ls].sort((a, b) => a.level - b.level)
 })
+/* 公益服治理权表：与设计稿 §三逐字对齐（前端只展示，月限、权重、停权一律以服务端为准） */
+const govRights = [
+  { level: 1, weight: 1, activity: '参与活动', review: '可举报' },
+  { level: 2, weight: 2, activity: '活动提案，每月 1 次', review: '—' },
+  { level: 3, weight: 3, activity: '活动提案，每月 1 次', review: '复核投票权重 1' },
+  { level: 4, weight: 4, activity: '活动提案，每月 2 次', review: '复核投票权重 2' },
+  { level: 5, weight: 5, activity: '直接发起活动，每月 1 次', review: '复核投票权重 2' },
+  { level: 6, weight: 6, activity: '直接发起活动，每月 2 次', review: '复核投票权重 3 · 审计日志可见' },
+]
+const govRows = computed(() =>
+  trailLevels.value.map((lv) => {
+    const r = govRights.find((g) => g.level === lv.level)
+    return {
+      level: lv.level,
+      name: lv.name,
+      weight: r?.weight ?? '—',
+      activity: r?.activity ?? '—',
+      review: r?.review ?? '—',
+    }
+  }),
+)
 function campClass(lv: { level: number }): string {
   if (!member.value) return 'locked'
   if (lv.level < member.value.level) return 'done'
@@ -1358,6 +1399,61 @@ async function copyInviteCode() {
 }
 .buy:disabled {
   opacity: 0.6;
+}
+.gov-current {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-top: 12px;
+}
+.gov-lv {
+  font-weight: 700;
+  font-size: 15px;
+}
+.gov-xp {
+  color: var(--ink2);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.gov-bar {
+  background: var(--paper2);
+  border-radius: 6px;
+  height: 8px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.gov-table {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 12px;
+}
+.gov-row {
+  display: grid;
+  grid-template-columns: 78px 48px 1fr 1fr;
+  gap: 6px;
+  padding: 9px 10px;
+  border-top: 1px solid var(--line);
+  align-items: start;
+}
+.gov-row:first-child {
+  border-top: none;
+}
+.gov-head {
+  color: var(--ink2);
+  font-weight: 600;
+}
+.gov-row.now {
+  background: var(--paper2);
+}
+.gov-name {
+  font-weight: 600;
+}
+.gov-note {
+  color: var(--ink2);
+  font-size: 12px;
+  margin-top: 10px;
 }
 .trail {
   position: relative;
