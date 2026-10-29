@@ -404,6 +404,14 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
         (play_sign.CONFIG_HOTLINK_ENABLED, "true", play_sign.DESCRIPTIONS[play_sign.CONFIG_HOTLINK_ENABLED]),
         (play_sign.CONFIG_PLAY_SIGN_TTL, str(play_sign.PLAY_TTL_DEFAULT),
          play_sign.DESCRIPTIONS[play_sign.CONFIG_PLAY_SIGN_TTL]),
+        (play_sign.CONFIG_PLAY_SIGN_TTL_BUFFER, str(play_sign.PLAY_TTL_BUFFER_DEFAULT),
+         play_sign.DESCRIPTIONS[play_sign.CONFIG_PLAY_SIGN_TTL_BUFFER]),
+        (play_sign.CONFIG_PLAY_SIGN_TTL_MIN, str(play_sign.PLAY_TTL_FLOOR_DEFAULT),
+         play_sign.DESCRIPTIONS[play_sign.CONFIG_PLAY_SIGN_TTL_MIN]),
+        (play_sign.CONFIG_PLAY_SIGN_TTL_MAX, str(play_sign.PLAY_TTL_CAP_DEFAULT),
+         play_sign.DESCRIPTIONS[play_sign.CONFIG_PLAY_SIGN_TTL_MAX]),
+        (play_sign.CONFIG_PLAY_SIGN_TTL_UNKNOWN, str(play_sign.PLAY_TTL_UNKNOWN_DEFAULT),
+         play_sign.DESCRIPTIONS[play_sign.CONFIG_PLAY_SIGN_TTL_UNKNOWN]),
     ])
 
     # 8. 公益服查看权限价格
