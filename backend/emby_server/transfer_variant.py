@@ -452,6 +452,8 @@ def is_quota_page_bytes(status, content_type, body) -> bool:
 
 USERCOPY_QUOTA_DETAIL = "你的谷歌盘今日下载额度已满，约 24 小时后恢复"
 
+USERCOPY_INTERSTITIAL_DETAIL = "你的谷歌盘副本被谷歌拦截页挡住，暂时无法直接播放，请稍后重试"
+
 
 def usercopy_quota_probe_enabled() -> bool:
     """用户副本额度探测开关（TRANSFER_USERCOPY_QUOTA_PROBE_ENABLED），默认开。
@@ -471,12 +473,15 @@ def _usercopy_quota_probe_ttl() -> int:
 
 
 def _usercopy_probe_http(url):
-    """额度探测的 HTTP 入口（测试打桩用）。
+    """额度探测第一腿 HTTP 入口（测试打桩用）：开放式 Range 形态。
 
-    返回 (status, content_type, head_bytes)。``Range: bytes=0-``
-    是关键：谷歌对小段 Range（如 bytes=0-1）即使额度已满也回 206 视频，
-    只有开放式 Range / 无 Range 才回 200 额度页——与播放器真实请求同口径。
-    只读响应头 + 前 512 字节后立刻关连接，不下整段。
+    返回 (status, content_type, head_bytes)，请求带 ``Range: bytes=0-``。
+    这条形态能抓到一部分额度页，但**不**与播放器真实请求同口径：
+    2026-10-30 生产实证（variant 627）——同一副本 Range 形态两次回
+    206 视频、整段 GET / HEAD 却回 200 额度页，播放器吃额度页判死
+    而本腿放行。故只作第一腿：判 ok 前必须再过整拉形态第二腿
+    （``_usercopy_probe_http_get``）。只读响应头 + 前段字节后立刻
+    关连接，不下整段。不带任何凭据。
     """
     with httpx.stream("GET", url, headers={"Range": "bytes=0-"},
                       timeout=3.0, follow_redirects=True) as resp:
@@ -492,6 +497,53 @@ def _usercopy_probe_http(url):
                 head += chunk
                 if len(head) >= 512:
                     break
+        return resp.status_code, ctype, head
+
+
+_SCAN_PAGE_MARKERS = (b"virus scan", b"virusscan",
+                      b"too large for google to scan",
+                      b"cannot scan this file", b"can't scan this file")
+
+
+def _html_page_kind(status, content_type, body):
+    """下载地址回 200 + text/html 时的插页分类。
+
+    返回 "quota"（额度页）/ "scan"（病毒扫描警告页）/ "html"（其它
+    谷歌插页）；不是 200 HTML 时返回 None（不归插页）。下载地址回
+    HTML 永远不是视频字节——凡命中即直链不可安全播；分类只决定
+    判定名、日志与明示文案，不决定是否放行。
+    """
+    if status != 200:
+        return None
+    ctype = (content_type or "").lower()
+    if not ctype.startswith("text/html"):
+        return None
+    if is_quota_page_bytes(status, content_type, body):
+        return "quota"
+    if isinstance(body, str):
+        body = body.encode("utf-8", "ignore")
+    text = (body or b"").lower()
+    if any(m in text for m in _SCAN_PAGE_MARKERS):
+        return "scan"
+    return "html"
+
+
+def _usercopy_probe_http_get(url):
+    """额度探测第二腿 HTTP 入口（测试打桩用）：整拉形态。
+
+    与播放器起播同形态：plain GET、不带 Range。只读响应头 + 前段
+    字节（HTML 读 4096、其余 512）后立刻关连接，严禁整文件下载。
+    返回 (status, content_type, head_bytes)。不带任何凭据。
+    """
+    with httpx.stream("GET", url, timeout=3.0,
+                      follow_redirects=True) as resp:
+        head = b""
+        ctype = resp.headers.get("content-type", "")
+        limit = 4096 if ctype.lower().startswith("text/html") else 512
+        for chunk in resp.iter_bytes():
+            head += chunk
+            if len(head) >= limit:
+                break
         return resp.status_code, ctype, head
 
 
@@ -511,16 +563,56 @@ def usercopy_quota_probe_cached(user_id, fid) -> bool:
     try:
         from backend.database import CacheManager
         return CacheManager.get(_usercopy_quota_cache_key(user_id, fid),
-                                domain="playback") in ("ok", "quota")
+                                domain="playback") in (
+                                    "ok", "quota", "interstitial")
     except Exception:  # noqa: BLE001 — 缓存不可用按未命中
         return False
 
 
-def probe_user_copy_quota(user_id, fid) -> str:
-    """探测用户副本免凭证直链是否被谷歌下载额度挡住。
+def _usercopy_quota_detail_key(user_id, fid) -> str:
+    return f"usercopy_quota_detail:{user_id}:{fid}"
 
-    返回 "ok"（可拉流）/ "quota"（额度页）/ "error"（探测本身失败）。
-    ok / quota 按 (user, fid) 短缓存（默认 300 秒，可调），error 不缓存。
+
+def usercopy_quota_probe_detail(user_id, fid) -> dict:
+    """只读探测明细（判定点打结构化日志用），不触发探测。
+
+    明细随判定以同 TTL 写在判定缓存旁：shape=range（第一腿 Range
+    形态）/ get（第二腿整拉形态），page=quota / scan / html。无记录
+    或缓存不可用返回 {}。永不抛异常。
+    """
+    fid = (fid or "").strip()
+    if not fid:
+        return {}
+    try:
+        from backend.database import CacheManager
+        raw = CacheManager.get(_usercopy_quota_detail_key(user_id, fid),
+                               domain="playback")
+    except Exception:  # noqa: BLE001 — 明细读不到不影响播放
+        return {}
+    if not raw or not isinstance(raw, str):
+        return {}
+    shape, _, page = raw.partition(":")
+    detail = {}
+    if shape:
+        detail["shape"] = shape
+    if page:
+        detail["page"] = page
+    return detail
+
+
+def probe_user_copy_quota(user_id, fid) -> str:
+    """探测用户副本免凭证直链是否可被播放器安全拉流。
+
+    两腿形态（2026-10-30 事故修订）：第一腿开放 Range 判额度页强
+    信号；第一腿放行时再跑第二腿整拉形态（plain GET、无 Range、
+    与播放器起播同形态）——Range 回 206 视频不代表整拉可播（生产
+    实证：同一副本 Range 206、整拉 / HEAD 回额度页，播放器吃页
+    判死）。第二腿回 HTML 插页即不可安全播：额度页判 "quota"，
+    其它插页（病毒扫描警告页等）判 "interstitial"。
+
+    返回 "ok" / "quota" / "interstitial" / "error"（探测本身失败）。
+    ok / quota / interstitial 按 (user, fid) 短缓存（默认 300 秒，
+    可调；判定形态与插页分类同 TTL 存明细缓存），error 不缓存。
     只请求用户本人副本的 usercontent 地址：不带任何令牌、不碰共享
     原件、不碰 SA。永不抛异常。开关关时恒返回 "ok"。
     """
@@ -533,7 +625,7 @@ def probe_user_copy_quota(user_id, fid) -> str:
     try:
         from backend.database import CacheManager
         cached = CacheManager.get(key, domain="playback")
-        if cached in ("ok", "quota"):
+        if cached in ("ok", "quota", "interstitial"):
             return cached
     except Exception:  # noqa: BLE001 — 缓存不可用按未命中
         CacheManager = None  # type: ignore[assignment]
@@ -545,13 +637,31 @@ def probe_user_copy_quota(user_id, fid) -> str:
         logger.info("用户副本额度探测失败 user=%s fid=%s，照常下发",
                     user_id, fid, exc_info=True)
         return "error"
+    verdict = None
+    shape = None
+    page = None
     if is_quota_page_bytes(status, ctype, head):
-        verdict = "quota"
-    elif status in (200, 206):
-        verdict = "ok"
-    else:
+        verdict, shape, page = "quota", "range", "quota"
+    elif status not in (200, 206):
         # 404/403/5xx 不归额度：交给后续既有存在性/错误口径处理。
         return "error"
+    if verdict is None:
+        # 第二腿（整拉形态）：Range 放行只证明分段可拉，播放器起播
+        # 的整拉 / HEAD 形态可能撞插页，必须按播放器口径再判一次。
+        try:
+            g_status, g_ctype, g_head = _usercopy_probe_http_get(url)
+        except Exception:  # noqa: BLE001 — 第二腿失败不推翻第一腿
+            logger.info("用户副本整拉探测失败 user=%s fid=%s，"
+                        "按 Range 形态放行", user_id, fid, exc_info=True)
+            verdict, shape = "ok", "range"
+        else:
+            kind = _html_page_kind(g_status, g_ctype, g_head)
+            if kind == "quota":
+                verdict, shape, page = "quota", "get", "quota"
+            elif kind is not None:
+                verdict, shape, page = "interstitial", "get", kind
+            else:
+                verdict, shape = "ok", "get"
     if verdict == "ok":
         try:
             publish_drive_exists_ok(fid)
@@ -561,6 +671,10 @@ def probe_user_copy_quota(user_id, fid) -> str:
         if CacheManager is not None:
             CacheManager.set(key, verdict, _usercopy_quota_probe_ttl(),
                              domain="playback")
+            CacheManager.set(
+                _usercopy_quota_detail_key(user_id, fid),
+                f"{shape or ''}:{page or ''}",
+                _usercopy_quota_probe_ttl(), domain="playback")
     except Exception:  # noqa: BLE001
         pass
     return verdict
@@ -1045,7 +1159,8 @@ def log_byos(event: str, **fields) -> None:
     """方案 2 结构化日志。
 
     事件名只认 ``byos_gate_block`` / ``byos_enqueue`` /
-    ``byos_quota_force`` / ``byos_ready_play`` / ``byos_usercopy_quota``。
+    ``byos_quota_force`` / ``byos_ready_play`` / ``byos_usercopy_quota`` /
+    ``byos_usercopy_interstitial`` / ``byos_usercopy_quota_relay``。
     日志失败不影响播放。
     """
     try:

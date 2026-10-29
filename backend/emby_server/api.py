@@ -5490,12 +5490,22 @@ async def playback_info(
                     _pi_quota_cached = await run_db(
                         _tv_alt.usercopy_quota_probe_cached,
                         user.id, _alt_fid)
-                    if await run_db(_tv_alt.probe_user_copy_quota,
-                                    user.id, _alt_fid) == "quota":
+                    _pi_probe_verdict = await run_db(
+                        _tv_alt.probe_user_copy_quota,
+                        user.id, _alt_fid)
+                    if _pi_probe_verdict in ("quota", "interstitial"):
+                        _pi_probe_detail = await run_db(
+                            _tv_alt.usercopy_quota_probe_detail,
+                            user.id, _alt_fid)
                         _tv_alt.log_byos(
-                            "byos_usercopy_quota", item=item.id,
-                            user=user.id, fid=_alt_fid,
-                            cached=_pi_quota_cached)
+                            "byos_usercopy_quota"
+                            if _pi_probe_verdict == "quota"
+                            else "byos_usercopy_interstitial",
+                            item=item.id, user=user.id, fid=_alt_fid,
+                            cached=_pi_quota_cached,
+                            verdict=_pi_probe_verdict,
+                            shape=_pi_probe_detail.get("shape"),
+                            page=_pi_probe_detail.get("page"))
                         _alt_is_user_copy = False
                         _alt_applied = True  # 跳过下面 alt=media+头各段
                         # 额度后路（2026-10-29 用户亲令）：后路开且有
@@ -5523,7 +5533,10 @@ async def playback_info(
                                 _s["SupportsDirectPlay"] = False
                                 _s["SupportsDirectStream"] = False
                                 _s["RequiredHttpHeaders"] = {}
-                            _pi_quota_error = _tv_alt.USERCOPY_QUOTA_DETAIL
+                            _pi_quota_error = (
+                                _tv_alt.USERCOPY_QUOTA_DETAIL
+                                if _pi_probe_verdict == "quota"
+                                else _tv_alt.USERCOPY_INTERSTITIAL_DETAIL)
                 if _alt_is_user_copy:
                     # 用户副本直链：免凭证 usercontent + 空头；授权限
                     # 失败时 _alt_applied 仍为 False，下面走旧链路。
@@ -5918,15 +5931,32 @@ async def video_stream(
             _quota_verdict = await run_db(
                 _tv.probe_user_copy_quota,
                 getattr(user, "id", None), _play_fid)
-        if _quota_verdict == "quota":
-            # quota 409 不再只有 _note_play_start_safe 打点：应用日志
-            # 里留一条带 item/user/fid/缓存命中的结构化行。
+        if _quota_verdict in ("quota", "interstitial"):
+            # 判定打点：应用日志里留一条带 item/user/fid/缓存命中/
+            # 探测形态/插页分类的结构化行（quota 与 interstitial
+            # 分事件名；走向由下面 relay / 115 / 409 的打点续记）。
+            _probe_detail = await run_db(
+                _tv.usercopy_quota_probe_detail,
+                getattr(user, "id", None), _play_fid)
             _tv.log_byos(
-                "byos_usercopy_quota", item=getattr(item, "id", None),
+                "byos_usercopy_quota" if _quota_verdict == "quota"
+                else "byos_usercopy_interstitial",
+                item=getattr(item, "id", None),
                 user=getattr(user, "id", None), fid=_play_fid,
-                cached=_quota_cached)
+                cached=_quota_cached, verdict=_quota_verdict,
+                shape=_probe_detail.get("shape"),
+                page=_probe_detail.get("page"))
+            _block_detail = (
+                _tv.USERCOPY_QUOTA_DETAIL if _quota_verdict == "quota"
+                else _tv.USERCOPY_INTERSTITIAL_DETAIL)
+            _block_kind = (
+                "usercopy_quota" if _quota_verdict == "quota"
+                else "usercopy_interstitial")
             # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
             # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
+            # interstitial（扫描警告页等其它 HTML 插页，2026-10-30）
+            # 同走本段：中继走 Drive API、不经公开下载页，同样绕得开；
+            # 只有 409 明示文案按分类取 _block_detail。
             # 额度后路（2026-10-29 用户亲令）：先试本人令牌中继取同一
             # 份副本（API 额度与公开池分开）；中继未启用/无令牌/任何
             # 失败才回下面的现行口径（115 优先 / 409 明示），分毫不差。
@@ -5944,9 +5974,9 @@ async def video_stream(
                 _note_play_start_safe(
                     item, user_id=getattr(user, "id", None),
                     method="direct_302", variant=play_variants.DRIVE_DIRECT,
-                    result="error", error_kind="usercopy_quota")
+                    result="error", error_kind=_block_kind)
                 raise HTTPException(status_code=409,
-                                    detail=_tv.USERCOPY_QUOTA_DETAIL)
+                                    detail=_block_detail)
             from backend.emby_server import user_bindings as _ub115q
             _byos_t0q = time.perf_counter()
             try:
@@ -5962,7 +5992,7 @@ async def video_stream(
                     resolve_ms=int((time.perf_counter() - _byos_t0q) * 1000))
                 raise HTTPException(
                     status_code=409,
-                    detail=_tv.USERCOPY_QUOTA_DETAIL) from exc
+                    detail=_block_detail) from exc
             _note_play_start_safe(
                 item, user_id=getattr(user, "id", None),
                 method="transfer115_copy",
@@ -5984,7 +6014,7 @@ async def video_stream(
                     result="error", error_kind="115_copy_dead")
                 raise HTTPException(
                     status_code=409,
-                    detail=_tv.USERCOPY_QUOTA_DETAIL)
+                    detail=_block_detail)
             return _observe_traffic(
                 RedirectResponse(_url115, status_code=302,
                                  headers=_strategy.DIRECT_REDIRECT_HEADERS))

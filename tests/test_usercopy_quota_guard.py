@@ -6,8 +6,9 @@ text/html “Google Drive - Quota exceeded”，播放器拿到额度页黑屏�
 
 钉死（用户硬底线：共享盘 SA 下载额度绝不能碰）：
 - probe_user_copy_quota：额度页 → quota；206/200 视频 → ok；网络异常 /
-  非 2xx → error；ok/quota 缓存，error 不缓存；开关关恒 ok；请求必须带
-  ``Range: bytes=0-`` 且不带任何凭据。
+  非 2xx → error；ok/quota 缓存，error 不缓存；开关关恒 ok；第一腿请求
+  必须带 ``Range: bytes=0-`` 且不带任何凭据。整拉第二腿与其事故形态
+  见 test_usercopy_probe_get_shape.py。
 - video_stream：本人 Drive 副本额度满 → 有本人 115 副本走 115 现签 302，
   无 115 / 115 签发失败 → 409 明示；探测 error → 照常 302 本人副本。
   任何分支 Location 都不含共享原件 fid，且不取 SA 令牌。
@@ -147,6 +148,11 @@ def test_probe_quota_page(monkeypatch):
         return 200, "text/html; charset=utf-8", QUOTA_HTML
 
     monkeypatch.setattr(tv, "_usercopy_probe_http", fake_http)
+
+    def _get_forbidden(url):
+        raise AssertionError("Range 形态已判 quota，不许再跑整拉第二腿")
+
+    monkeypatch.setattr(tv, "_usercopy_probe_http_get", _get_forbidden)
     assert tv.probe_user_copy_quota(7, COPY_FID) == "quota"
     assert COPY_FID in seen["url"] and SHARED_FID not in seen["url"]
 
@@ -159,6 +165,9 @@ def test_probe_video_ok_and_cached(monkeypatch):
         return 206, "video/mp4", b"\x00\x00\x00 ftypisom"
 
     monkeypatch.setattr(tv, "_usercopy_probe_http", fake_http)
+    monkeypatch.setattr(
+        tv, "_usercopy_probe_http_get",
+        lambda url: (200, "video/mp4", b"\x00\x00\x00 ftypisom"))
     assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
     assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
     assert calls["n"] == 1
