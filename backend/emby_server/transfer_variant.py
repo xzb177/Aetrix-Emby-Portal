@@ -610,6 +610,14 @@ def probe_user_copy_quota(user_id, fid) -> str:
     判死）。第二腿回 HTML 插页即不可安全播：额度页判 "quota"，
     其它插页（病毒扫描警告页等）判 "interstitial"。
 
+    注意：返回值是探测信号，不是出法裁决——出法只认 Range 腿
+    （shape=range 的 quota 才在判定点触发改道中继 / 115 / 409）；
+    GET 腿的 quota / interstitial 只打信号日志、照常发直链
+    （2026-10-30 01:40 证据修订，用户「直链优先、中继第二位」
+    定版；专门钉这条规矩的回归测试见
+    tests/test_usercopy_probe_get_shape.py 的
+    test_rule_direct_first_relay_second_*）。
+
     返回 "ok" / "quota" / "interstitial" / "error"（探测本身失败）。
     ok / quota / interstitial 按 (user, fid) 短缓存（默认 300 秒，
     可调；判定形态与插页分类同 TTL 存明细缓存），error 不缓存。

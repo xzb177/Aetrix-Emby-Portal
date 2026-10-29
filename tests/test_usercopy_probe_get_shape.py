@@ -8,15 +8,19 @@ text/html「Google Drive - Quota exceeded」。播放器起播含整拉形态
 看到 206 就判 ok 发裸 302，探测口径与播放器形态脱节。
 
 钉死：
-- probe 两腿组合：Range 206 + 整拉额度页 → quota（事故形态）；
+- probe 两腿组合：Range 206 + 整拉额度页 → quota 信号（事故
+  形态，detail shape=get——信号归信号，出法见下面矩阵）；
   Range 206 + 整拉扫描警告页 / 其它 HTML 插页 → interstitial；
   Range 206 + 整拉视频 → ok；整拉第二腿失败不推翻 Range 的 ok；
   Range 已判 quota 时不跑第二腿。
 - 判定与明细（shape/page）同 TTL 缓存，缓存命中不重复外呼。
 - 第二腿 plain GET 不带 Range、不带凭据，只读前段字节即断开。
-- video_stream：interstitial 与 quota 同路——先本人令牌中继，
-  中继不可用且无本人 115 → 409，文案用 INTERSTITIAL 明示，不发
-  裸直链；PlaybackInfo：interstitial 同样清掉直链并带明示。
+- 出法矩阵（2026-10-30 01:40 证据修订，用户「直链优先、中继
+  第二位」定版）：发直链只看 Range 腿——GET 腿信号（quota /
+  interstitial）单独出现时，两判定点照常发直链、只打信号日志
+  （verdict=direct）；只有 Range 腿判 quota（shape=range）才走
+  本人令牌中继 → 本人 115 → 409 明示的改道链。专门钉这条规矩
+  的回归测试见下方 test_rule_direct_first_relay_second_*。
 全部离线。
 """
 import os
@@ -158,7 +162,9 @@ def _stub_legs(monkeypatch, range_resp, get_resp):
 
 
 def test_probe_range206_get_quota_is_quota(monkeypatch):
-    """事故形态钉死：Range 206 视频、整拉回额度页 → 必须判 quota。"""
+    """事故形态：Range 206 视频、整拉回额度页 → probe 判 quota
+    信号（shape=get）。这只是信号：判定点按 Range 腿裁决出法、
+    本形态最终发直链，见 test_rule_direct_first_relay_second_*。"""
     calls = _stub_legs(monkeypatch,
                        (206, "video/mp4", VIDEO_HEAD),
                        (200, "text/html; charset=utf-8", QUOTA_HTML))
@@ -216,7 +222,8 @@ def test_probe_get_leg_failure_keeps_range_ok(monkeypatch):
 
 
 def test_probe_range200_html_scan_also_interstitial(monkeypatch):
-    """Range 形态回 200 HTML（非额度）时旧口径判 ok，新口径经第二腿拦下。"""
+    """Range 形态回 200 HTML（非额度页）：第二腿分类出 interstitial
+    信号（旧口径会直接判 ok、连信号都没有）。"""
     _stub_legs(monkeypatch,
                (200, "text/html", SCAN_HTML),
                (200, "text/html", SCAN_HTML))
@@ -342,9 +349,19 @@ def _token_missing(monkeypatch):
     monkeypatch.setattr(drive_oauth, "get_user_drive_access_token", _raise)
 
 
-def test_stream_interstitial_goes_relay_with_user_token(db, monkeypatch):
+def _stub_detail(monkeypatch, shape, page):
+    monkeypatch.setattr(tv, "usercopy_quota_probe_detail",
+                        lambda u, f: {"shape": shape, "page": page})
+
+
+def test_stream_get_interstitial_issues_direct_not_relay(db, monkeypatch):
+    """GET 腿 interstitial 信号（shape=get）：照常发直链，中继不许动。
+
+    即使本人令牌可用也一样——直链优先（规矩全程版见
+    test_rule_direct_first_relay_second_*，这里是桩判定版）。"""
     monkeypatch.setattr(tv, "probe_user_copy_quota",
                         lambda u, f: "interstitial")
+    _stub_detail(monkeypatch, "get", "scan")
     monkeypatch.setattr(tv, "ready_user115_variant",
                         lambda db_, iid, uid: None)
     _token_ok(monkeypatch)
@@ -359,26 +376,29 @@ def test_stream_interstitial_goes_relay_with_user_token(db, monkeypatch):
     monkeypatch.setattr(api, "serve_drive_relay_async", fake_relay)
     resp = asyncio.run(api.video_stream(
         item.guid, _stream_request(), user=_user(), db=db))
-    assert resp.status_code == 206
-    assert record["file_id"] == COPY_FID
-    assert record["kwargs"]["access_token"] == USER_TOKEN
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"https://usercontent.test/{COPY_FID}"
+    assert record == {}
 
 
-def test_stream_interstitial_no_relay_no_115_is_409(db, monkeypatch):
+def test_stream_get_interstitial_no_115_still_direct(db, monkeypatch):
+    """GET 腿 interstitial 信号 + 无令牌 + 无 115：仍然直链，不许 409。"""
     monkeypatch.setattr(tv, "probe_user_copy_quota",
                         lambda u, f: "interstitial")
+    _stub_detail(monkeypatch, "get", "scan")
     monkeypatch.setattr(tv, "ready_user115_variant",
                         lambda db_, iid, uid: None)
     _token_missing(monkeypatch)
-    with pytest.raises(HTTPException) as excinfo:
-        _stream(monkeypatch, db)
-    assert excinfo.value.status_code == 409
-    assert excinfo.value.detail == tv.USERCOPY_INTERSTITIAL_DETAIL
+    resp = _stream(monkeypatch, db)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"https://usercontent.test/{COPY_FID}"
 
 
-def test_stream_interstitial_with_115_redirects_115(db, monkeypatch):
+def test_stream_get_interstitial_with_115_still_direct(db, monkeypatch):
+    """GET 腿 interstitial 信号 + 有本人 115 副本：直链优先，不许跳 115。"""
     monkeypatch.setattr(tv, "probe_user_copy_quota",
                         lambda u, f: "interstitial")
+    _stub_detail(monkeypatch, "get", "scan")
     v115 = SimpleNamespace(id=10, owner_scope="user", owner_ref="7",
                            variant_drive_id="pan115:user-7",
                            variant_file_id="115fid", status="ready",
@@ -390,7 +410,7 @@ def test_stream_interstitial_with_115_redirects_115(db, monkeypatch):
     _token_missing(monkeypatch)
     resp = _stream(monkeypatch, db)
     assert resp.status_code == 302
-    assert resp.headers["location"] == "https://cdn.115.test/pc115"
+    assert resp.headers["location"] == f"https://usercontent.test/{COPY_FID}"
     assert SHARED_FID not in resp.headers["location"]
 
 
@@ -435,15 +455,126 @@ def _pi(monkeypatch, db):
         item.guid, _pi_request(), user_id="", user=_user(), db=db))
 
 
-def test_pi_interstitial_no_115_errors_and_strips_urls(db, monkeypatch):
+def test_pi_get_interstitial_keeps_direct_manifest(db, monkeypatch):
+    """GET 腿 interstitial 信号（shape=get）：清单直链保留、不报错。"""
     monkeypatch.setattr(tv, "probe_user_copy_quota",
                         lambda u, f: "interstitial")
+    _stub_detail(monkeypatch, "get", "scan")
     monkeypatch.setattr(tv, "ready_user115_variant",
                         lambda db_, iid, uid: None)
     resp = _pi(monkeypatch, db)
-    assert resp["ErrorMessage"] == tv.USERCOPY_INTERSTITIAL_DETAIL
-    assert resp["ErrorCode"]
-    for src in resp["MediaSources"]:
-        assert not src.get("DirectPlayUrl")
-        assert not src.get("DirectStreamUrl")
-        assert SHARED_FID not in str(src.get("DirectStreamUrl") or "")
+    assert not resp.get("ErrorMessage")
+    urls = [(src.get("DirectPlayUrl") or "")
+            + (src.get("DirectStreamUrl") or "")
+            for src in resp["MediaSources"]]
+    assert any(COPY_FID in u for u in urls), urls
+    assert all(SHARED_FID not in u for u in urls)
+
+
+# ------------------------------------------------------------------
+# 规矩兜底（2026-10-30 01:40 用户亲点立规矩）：直链优先、中继
+# 第二位。用户副本 Range 腿健康时，两个判定点的最终出法必须是
+# 直链；GET 腿的 quota / interstitial 信号单独出现，绝不许触发
+# 中继改道、绝不许清 PlaybackInfo 清单。只有 Range 腿本身判
+# quota，才轮到中继（第二位）出场。谁改判定，先红这一组。
+# 本组全部走真实 probe（只桩两条 HTTP 腿），不桩判定本身。
+# ------------------------------------------------------------------
+
+def _record_byos(monkeypatch):
+    events = []
+    monkeypatch.setattr(tv, "log_byos",
+                        lambda event, **kw: events.append((event, kw)))
+    return events
+
+
+def test_rule_direct_first_relay_second_stream_get_quota_keeps_direct(
+        db, monkeypatch):
+    """事故形态全程：Range 206 视频 + 整拉额度页 → 仍发直链 302。
+
+    probe 判 quota 信号（shape=get），但 video_stream 的最终出法
+    必须是本人副本 usercontent 直链；中继不许被调用（_stub_stream
+    已把 serve_drive_relay_async 桩成一调就炸）；信号日志要在，
+    且 verdict=direct、shape=get、page=quota。
+    """
+    _stub_legs(monkeypatch,
+               (206, "video/mp4", VIDEO_HEAD),
+               (200, "text/html; charset=utf-8", QUOTA_HTML))
+    events = _record_byos(monkeypatch)
+    resp = _stream(monkeypatch, db)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"https://usercontent.test/{COPY_FID}"
+    sig = [kw for ev, kw in events if ev == "byos_usercopy_quota"]
+    assert sig and sig[0]["verdict"] == "direct"
+    assert sig[0]["shape"] == "get" and sig[0]["page"] == "quota"
+
+
+def test_rule_direct_first_relay_second_stream_get_scan_keeps_direct(
+        db, monkeypatch):
+    """GET 腿扫描页（interstitial 信号）同样不许改道：直链 302。"""
+    _stub_legs(monkeypatch,
+               (206, "video/mp4", VIDEO_HEAD),
+               (200, "text/html; charset=utf-8", SCAN_HTML))
+    events = _record_byos(monkeypatch)
+    resp = _stream(monkeypatch, db)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == f"https://usercontent.test/{COPY_FID}"
+    sig = [kw for ev, kw in events if ev == "byos_usercopy_interstitial"]
+    assert sig and sig[0]["verdict"] == "direct"
+    assert sig[0]["shape"] == "get" and sig[0]["page"] == "scan"
+
+
+def test_rule_direct_first_relay_second_pi_get_signal_keeps_manifest(
+        db, monkeypatch):
+    """PlaybackInfo：GET 腿额度页信号在，清单里的直链不许被清。
+
+    最终清单必须保留本人副本直链条目、无 ErrorMessage；信号日志
+    verdict=direct 要在。
+    """
+    _stub_legs(monkeypatch,
+               (206, "video/mp4", VIDEO_HEAD),
+               (200, "text/html; charset=utf-8", QUOTA_HTML))
+    monkeypatch.setattr(tv, "ready_user115_variant",
+                        lambda db_, iid, uid: None)
+    events = _record_byos(monkeypatch)
+    resp = _pi(monkeypatch, db)
+    assert not resp.get("ErrorMessage")
+    urls = [(src.get("DirectPlayUrl") or "")
+            + (src.get("DirectStreamUrl") or "")
+            for src in resp["MediaSources"]]
+    assert any(COPY_FID in u for u in urls), urls
+    assert all(SHARED_FID not in u for u in urls)
+    sig = [kw for ev, kw in events if ev == "byos_usercopy_quota"]
+    assert sig and sig[0]["verdict"] == "direct"
+    assert sig[0]["shape"] == "get" and sig[0]["page"] == "quota"
+
+
+def test_rule_direct_first_relay_second_stream_range_quota_diverts(
+        db, monkeypatch):
+    """规矩的另一半：Range 腿本身判 quota（shape=range）才轮到中继。
+
+    本人令牌中继成功 → 出中继流（206）；日志 verdict=quota、
+    shape=range；GET 腿不许被跑（Range 已判死，短路）。
+    """
+    calls = _stub_legs(monkeypatch,
+                       (200, "text/html; charset=utf-8", QUOTA_HTML),
+                       AssertionError("Range 已判 quota 不许跑第二腿"))
+    _token_ok(monkeypatch)
+    record = {}
+
+    async def fake_relay(request, drive_id, file_id, **kwargs):
+        record.update(file_id=file_id, kwargs=kwargs)
+        return Response(b"vid", status_code=206)
+
+    item = _drive_item()
+    _stub_stream(monkeypatch, item)
+    monkeypatch.setattr(api, "serve_drive_relay_async", fake_relay)
+    events = _record_byos(monkeypatch)
+    resp = asyncio.run(api.video_stream(
+        item.guid, _stream_request(), user=_user(), db=db))
+    assert resp.status_code == 206
+    assert record["file_id"] == COPY_FID
+    assert record["kwargs"]["access_token"] == USER_TOKEN
+    assert calls["get"] == 0
+    sig = [kw for ev, kw in events if ev == "byos_usercopy_quota"]
+    assert sig and sig[0]["verdict"] == "quota"
+    assert sig[0]["shape"] == "range"
