@@ -85,7 +85,7 @@ def _pet_summary(db, user_id: int):
 
 
 def _welfare_line(user) -> str:
-    """公益资格三态：未开通／长期有效／有效期至 YYYY-MM-DD。
+    """公益资格三态：未开通／长期有效／至 YYYY-MM-DD。
 
     口径与 /account 既有写法一致（is_welfare＋welfare_expires_at），只补未开通分支。
     """
@@ -94,7 +94,7 @@ def _welfare_line(user) -> str:
     end = getattr(user, "welfare_expires_at", None)
     if end is None:
         return "公益资格：长期有效"
-    return f"公益资格：有效期至 {end.strftime('%Y-%m-%d')}"
+    return f"公益资格：至 {end.strftime('%Y-%m-%d')}"
 
 
 def _view_unlock_line(db, user_id: int) -> str:
@@ -115,11 +115,11 @@ def _view_unlock_line(db, user_id: int) -> str:
     if any(r.expires_at is None for r in valid):
         return "查看凭证：长期有效"
     latest = max(r.expires_at for r in valid)
-    return f"查看凭证：有效期至 {latest.strftime('%Y-%m-%d')}"
+    return f"查看凭证：至 {latest.strftime('%Y-%m-%d')}"
 
 
 def _bindings_line(db, user_id: int) -> str:
-    """网盘绑定：仅 active 行，按 provider 区分展示。"""
+    """网盘绑定：仅 active 行，按 provider 区分展示；已绑带 ✓。"""
     from backend.emby_server import models as em
 
     rows = (
@@ -131,14 +131,14 @@ def _bindings_line(db, user_id: int) -> str:
     providers = {r.provider for r in rows}
     names = []
     if "drive" in providers:
-        names.append("Drive 已绑")
+        names.append("Drive 已绑 ✓")
     if "pan115" in providers:
-        names.append("115 已绑")
+        names.append("115 已绑 ✓")
     for p in sorted(providers - {"drive", "pan115"}):
-        names.append(f"{_esc(p)} 已绑")
+        names.append(f"{_esc(p)} 已绑 ✓")
     if not names:
-        return "网盘绑定：未绑定，绑定后才能点播"
-    return "网盘绑定：" + "、".join(names)
+        return "网盘：未绑定，绑定后才能点播"
+    return "网盘：" + "、".join(names)
 
 
 def _vitality_config(db) -> tuple[int, int]:
@@ -175,43 +175,148 @@ def _streak_line(db, user_id: int) -> str:
         .first()
     )
     streak = int(row.streak) if row is not None and row.streak is not None else 0
-    return f"📋 连签：{streak} 天（连签 {_streak_renew_min(db)} 天自动续公益资格）"
+    return f"📋 连签：{streak} 天（满 {_streak_renew_min(db)} 天自动续公益资格）"
 
 
-def compact_dashboard(db, user) -> str:
-    """/start 已绑定用户 dashboard：账号、公益资格、查看凭证、能量·活力、网盘绑定、馆灵、成就、连签。"""
+def _bar(frac: float, width: int) -> str:
+    """进度条：█ 已完成／░ 未完成；frac 钳制 0–1，格数四舍五入。"""
+    try:
+        f = float(frac)
+    except (TypeError, ValueError):
+        f = 0.0
+    f = min(1.0, max(0.0, f))
+    filled = min(width, max(0, int(f * width + 0.5)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _level_info(db, user) -> dict:
+    """会员等级只读快照：等级名／经验／下一级阈值与差值；不写库。
+
+    等级数按 member_xp 纯算（复用 lottery_governance.user_level，不触发
+    get_member_info 的种子／迁移写副作用）；等级名与阈值取 member_levels
+    active 行，表空时回落 DEFAULT_LEVELS。
+    """
+    from backend import member_level as _ml
+    from backend.lottery_governance import user_level as _user_level
+
+    try:
+        level = _user_level(db, user.id)
+        rows = (
+            db.query(models.MemberLevel)
+            .filter(models.MemberLevel.is_active == True)  # noqa: E712
+            .order_by(models.MemberLevel.level.asc())
+            .all()
+        )
+    except Exception:
+        # 部分建表夹具（如 tg_bot 旧测试）没有 member_levels 表：user_level 本身
+        # 也会查该表，一并回落默认阈值纯算，dashboard 仍可渲染。本函数只用于
+        # 只读展示路径，rollback 安全（后续属性访问按需从库刷新）。
+        db.rollback()
+        level = None
+        rows = []
+    levels = (
+        [(r.level, r.name, r.xp_threshold or 0) for r in rows]
+        if rows
+        else [(d["level"], d["name"], d["xp_threshold"]) for d in _ml.DEFAULT_LEVELS]
+    )
+    xp = int(getattr(user, "member_xp", 0) or 0)
+    if level is None:
+        level = 1
+        for lv, _name, threshold in levels:
+            if xp >= threshold:
+                level = lv
+    cur = None
+    for lv, name, threshold in levels:
+        if lv == level:
+            cur = (lv, name, threshold)
+            break
+    if cur is None:
+        below = [t for t in levels if t[2] <= xp]
+        cur = below[-1] if below else levels[0]
+        level = cur[0]
+    higher = [t for t in levels if t[0] > cur[0]]
+    nxt = higher[0] if higher else None
+    return {
+        "level": cur[0],
+        "name": cur[1],
+        "xp": xp,
+        "cur_threshold": cur[2],
+        "next_level": nxt[0] if nxt else None,
+        "next_name": nxt[1] if nxt else None,
+        "next_threshold": nxt[2] if nxt else None,
+        "xp_to_next": (nxt[2] - xp) if nxt else None,
+    }
+
+
+def _level_line(db, user) -> str:
+    """会员等级行（/account 完整版）：等级名＋经验＋下一级差值＋进度条。"""
+    info = _level_info(db, user)
+    if info["next_level"] is None:
+        return (
+            f"⭐ 会员等级：Lv.{info['level']} {_esc(info['name'])}"
+            f" · 经验 {info['xp']}（已满级）"
+        )
+    span = info["next_threshold"] - info["cur_threshold"]
+    frac = (info["xp"] - info["cur_threshold"]) / span if span > 0 else 1.0
+    return (
+        f"⭐ 会员等级：Lv.{info['level']} {_esc(info['name'])}"
+        f" · 经验 {info['xp']}／{info['next_threshold']} {_bar(frac, 10)}"
+        f"（距 Lv.{info['next_level']} {_esc(info['next_name'])}还差 {info['xp_to_next']} 经验）"
+    )
+
+
+def compact_dashboard(db, user, display_name: str | None = None) -> str:
+    """/start 已绑定用户 dashboard（用户 2026-10-29 08:44 亲批版式，逐字照搬）：
+
+    问候＋账号·等级行＋资格／状态／成长三组；活力条按活力上限满格渲染，
+    馆灵条 10 格按本阶段进度渲染；经验与下一级差值不进精简版（只放 /account 与 /level）。
+    display_name 缺省取账号名；低于活力阈值时保留“暂时播不了”提示（样例未覆盖该情形）。
+    """
     shown_ach, total_ach = _achievement_summary(db, user.id)
     total_hours, pet_cur, pet_nxt = _pet_summary(db, user.id)
     cap, threshold = _vitality_config(db)
+    info = _level_info(db, user)
+    greet = display_name or getattr(user, "username", "") or "朋友"
+
     vitality = getattr(user, "vitality", None)
     if vitality is None:
-        vitality_text = "—"
+        vitality_text = "活力：—"
+    elif cap <= 0:
+        vitality_text = f"活力：{int(vitality)}"
     else:
-        vitality_text = f"<b>{int(vitality)}</b>／{cap}"
-        if int(vitality) < threshold:
+        v = int(vitality)
+        vitality_text = f"活力：{_bar(v / cap, cap)} {v}/{cap}"
+        if v < threshold:
             vitality_text += "（暂时播不了）"
+
     if pet_nxt is not None:
-        remain = pet_nxt["hours"] - total_hours
-        pet_text = (
-            f"{_esc(pet_cur.get('icon', ''))} 馆灵：{_esc(pet_cur.get('name', ''))}"
-            f"（累计观影 {total_hours:.1f} 小时，"
-            f"距{_esc(pet_nxt.get('name', ''))}还差 {remain:.1f} 小时）"
+        span = pet_nxt["hours"] - pet_cur["hours"]
+        frac = (total_hours - pet_cur["hours"]) / span if span > 0 else 1.0
+        pet_next_text = (
+            f"距{_esc(pet_nxt.get('name', ''))}还差 {pet_nxt['hours'] - total_hours:.1f} 小时 "
+            f"{_bar(frac, 10)}"
         )
     else:
-        pet_text = (
-            f"{_esc(pet_cur.get('icon', ''))} 馆灵：{_esc(pet_cur.get('name', ''))}"
-            f"（累计观影 {total_hours:.1f} 小时，已满级）"
-        )
+        pet_next_text = "已满级"
+
     lines = [
-        "👤 <b>账号中心</b>",
+        f"✨ 欢迎回来，{_esc(greet)}",
         "",
-        f"账号：<b>{_esc(user.username)}</b>",
+        f"👤 {_esc(user.username)} · ⭐ Lv.{info['level']} {_esc(info['name'])}",
+        "",
+        "── 🎫 资格 ──",
         _welfare_line(user),
         _view_unlock_line(db, user.id),
-        f"能量：<b>{int(user.points or 0)}</b> · 活力值：{vitality_text}",
+        "",
+        "── ⚡ 状态 ──",
+        f"能量：{int(user.points or 0)}",
+        vitality_text,
         _bindings_line(db, user.id),
-        pet_text,
-        f"🏅 成就：{len(shown_ach)}／{total_ach}",
+        "",
+        "── 🌱 成长 ──",
+        f"{_esc(pet_cur.get('icon', ''))} 馆灵：{_esc(pet_cur.get('name', ''))} · 已观影 {total_hours:.1f} 小时",
+        pet_next_text,
+        f"🏅 成就：{len(shown_ach)}/{total_ach}",
         _streak_line(db, user.id),
     ]
     return "\n".join(lines)
@@ -240,6 +345,7 @@ def handle_account(db, tg_user: dict, chat_id: int, args: str) -> str:
         "👤 <b>账号中心</b>",
         "",
         f"账号：<b>{_esc(user.username)}</b>",
+        _level_line(db, user),
         f"能量：<b>{int(user.points or 0)}</b>",
     ]
     if bool(getattr(user, "is_welfare", False)):
@@ -538,3 +644,288 @@ def handle_govlog(db, tg_user: dict, chat_id: int, args: str) -> str:
         created = e.created_at.strftime("%m-%d %H:%M") if e.created_at else ""
         lines.append(f"{created} {_esc(actor)} {action_text} {_esc(target)}")
     return "\n".join(lines)
+
+
+# ---------- 等级治理 bot 补完（Step 0–4＋停权接线，bot 侧入口） ----------
+
+def handle_level(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """会员等级：等级＋经验进度＋治理权表（公益服）；付费服只显等级。
+
+    群里可放行（同 /account：只展示个人等级与通用权表，不含凭据）。
+    """
+    from datetime import datetime as _dt
+
+    from backend import governance as _governance
+    from backend import media_seek as _media_seek
+    from backend.governance_report import review_weight as _review_weight
+    from backend.lottery_governance import (
+        direct_cap_for_level as _direct_cap,
+        direct_count_this_month as _direct_count,
+        proposal_cap_for_level as _proposal_cap,
+        proposal_count_this_month as _proposal_count,
+    )
+    from backend.subscriptions import is_free_realm as _is_free_realm
+
+    user = _bound_user(db, tg_user)
+    if user is None:
+        return "🔒 会员等级需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+    info = _level_info(db, user)
+    level = info["level"]
+    if info["next_level"] is None:
+        progress = f"经验 {info['xp']}（已满级）"
+    else:
+        span = info["next_threshold"] - info["cur_threshold"]
+        frac = (info["xp"] - info["cur_threshold"]) / span if span > 0 else 1.0
+        progress = (
+            f"经验 {info['xp']}／{info['next_threshold']} {_bar(frac, 10)}"
+            f"（距 Lv.{info['next_level']} {_esc(info['next_name'])}还差 {info['xp_to_next']} 经验）"
+        )
+    lines = [
+        "⭐ <b>会员等级</b>",
+        "",
+        f"👤 {_esc(user.username)} · ⭐ Lv.{level} {_esc(info['name'])}",
+        progress,
+    ]
+    frozen = _governance.is_governance_frozen(db, user.id)
+    if frozen:
+        lines += ["", "⚠️ 治理特权已被冻结（附议仍按 1 票计，提案／举报／复核暂停）"]
+    if not _is_free_realm(db):
+        lines += ["", "治理权表仅公益服开放，付费服等级仅展示。"]
+        return "\n".join(lines)
+    weight = 1 if frozen else _media_seek.vote_weight_for_level(level)
+    if level >= 2:
+        p_used = _proposal_count(db, user.id, _dt.now())
+        p_cap = _proposal_cap(db, level)
+        propose_line = f"本月提案：{p_used}／{p_cap} 次"
+    else:
+        propose_line = "本月提案：Lv.2 起开放"
+    if level >= 5:
+        d_used = _direct_count(db, user.id, _dt.now())
+        d_cap = _direct_cap(db, level)
+        direct_line = f"本月直接发起：{d_used}／{d_cap} 次"
+    else:
+        direct_line = "本月直接发起：Lv.5 起开放"
+    rw = _review_weight(level)
+    rw_text = str(rw) if rw else "无（Lv.3 起获得）"
+    lines += [
+        "",
+        propose_line + " · " + direct_line,
+        "",
+        "── 治理权表 ──",
+        f"附议权重：Lv.1–Lv.6 ＝ 1–6 票（我的权重：{weight} 票）",
+        "活动提案：Lv.2+ 可提案，Lv.2/3 每月 1 次、Lv.4+ 每月 2 次",
+        "直接发起：Lv.5 每月 1 次、Lv.6 每月 2 次（事后审计）",
+        f"举报复核：Lv.3 权重 1、Lv.4 权重 2、Lv.5 权重 2、Lv.6 权重 3（我的权重：{rw_text}）",
+    ]
+    if level >= 6:
+        lines.append("治理审计日志：Lv.6 可用 /govlog 只读查看")
+    else:
+        lines.append("治理审计日志：仅 Lv.6 可见（/govlog）")
+    return "\n".join(lines)
+
+
+_REPORT_REASON_ALIASES = {
+    "spam": "spam", "刷屏": "spam", "广告": "spam",
+    "duplicate": "duplicate", "重复": "duplicate",
+    "violation": "violation", "违规": "violation",
+}
+_REPORT_REASON_NAMES = {"spam": "刷屏／广告", "duplicate": "重复求片", "violation": "违规内容"}
+
+
+def _report_help() -> str:
+    return (
+        "🚩 <b>举报求片</b>\n\n"
+        "私聊发送：\n"
+        "<code>/report 求片编号 原因 [补充说明]</code>\n\n"
+        "求片编号来自 /myrequests（如 #123）；\n"
+        "原因：刷屏、重复、违规。\n\n"
+        "例：<code>/report 123 刷屏 这条求了好几次了</code>"
+    )
+
+
+def handle_report(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """举报一条求片：复用 Step 2 create_report，门禁文案由服务端原样返回。"""
+    from backend.governance_report import GovernanceError, create_report
+
+    user = _bound_user(db, tg_user)
+    if user is None:
+        return "🔒 举报需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+    parts = (args or "").strip().split(None, 2)
+    if len(parts) < 2:
+        return _report_help()
+    try:
+        target_id = int(parts[0].lstrip("#"))
+    except ValueError:
+        return "求片编号须为数字（如 123）。\n\n" + _report_help()
+    reason = _REPORT_REASON_ALIASES.get(parts[1])
+    if reason is None:
+        return "举报原因只能是：刷屏、重复、违规。\n\n" + _report_help()
+    detail = parts[2].strip() if len(parts) > 2 else None
+    try:
+        row = create_report(db, user, target_id, reason, detail)
+    except GovernanceError as exc:
+        db.rollback()
+        return f"⛔ {_esc(exc.detail)}"
+    except Exception:
+        db.rollback()
+        logger.exception("TG 举报提交失败 user=%s", user.id)
+        return "举报提交失败，请稍后再试。"
+    target = (
+        db.query(models.MovieRequest)
+        .filter(models.MovieRequest.id == target_id)
+        .first()
+    )
+    title = f"《{_esc(target.movie_name)}》" if target is not None else f"求片 #{target_id}"
+    return (
+        "✅ <b>举报已提交</b>\n\n"
+        f"{title}\n"
+        f"举报编号：<code>#{row['id']}</code> · 原因：{_REPORT_REASON_NAMES[reason]}\n\n"
+        "进入复核流程，结果会在复核后更新。"
+    )
+
+
+_PRIZE_TYPE_ALIASES = {
+    "points": "points", "积分": "points",
+    "days": "days", "天数": "days",
+    "whitelist": "whitelist", "白名单": "whitelist",
+}
+
+
+def _parse_prize_spec(spec: str) -> list[dict]:
+    """奖品段：逗号分隔，每项 类型:价值[x数量]，如 积分:100x2,天数:30x1。"""
+    prizes = []
+    for chunk in spec.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            raise ValueError("奖品格式应为 类型:价值[x数量]，如 积分:100x2")
+        ptype_raw, rest = chunk.split(":", 1)
+        ptype = _PRIZE_TYPE_ALIASES.get(ptype_raw.strip())
+        if ptype is None:
+            raise ValueError("奖品类型只能是 积分／天数／白名单")
+        if "x" in rest:
+            value_raw, qty_raw = rest.split("x", 1)
+        else:
+            value_raw, qty_raw = rest, "1"
+        try:
+            value = int(value_raw.strip())
+            qty = int(qty_raw.strip())
+        except ValueError:
+            raise ValueError("奖品价值与数量须为整数")
+        prizes.append({"type": ptype, "value": value, "quantity": qty, "name": ""})
+    if not prizes:
+        raise ValueError("至少需要配置 1 个奖品")
+    return prizes
+
+
+def _parse_lottery_args(args: str) -> dict:
+    """提案／直接发起参数：标题 | 奖品 | 群组ID [| 开奖时间] [| 人数上限] [| 口令]。
+
+    群组ID 可空（仅当允许群恰好一个时服务端自动取）；开奖时间如 2026-11-01 20:00，
+    为空则开奖时间待定；人数上限为空则不限；口令给出时为口令抽奖，否则为按钮抽奖。
+    """
+    segments = [s.strip() for s in (args or "").split("|")]
+    if len(segments) < 2 or not segments[0] or not segments[1]:
+        raise ValueError("参数不足")
+    title = segments[0]
+    prizes = _parse_prize_spec(segments[1])
+    chat_id = None
+    if len(segments) > 2 and segments[2]:
+        try:
+            chat_id = int(segments[2])
+        except ValueError:
+            raise ValueError("群组ID 须为整数")
+    draw_at = segments[3] if len(segments) > 3 and segments[3] else None
+    max_participants = None
+    if len(segments) > 4 and segments[4]:
+        try:
+            max_participants = int(segments[4])
+        except ValueError:
+            raise ValueError("人数上限须为整数")
+    keyword = segments[5] if len(segments) > 5 and segments[5] else None
+    return {
+        "title": title,
+        "prizes": prizes,
+        "chat_id": chat_id,
+        "draw_at": draw_at,
+        "max_participants": max_participants,
+        "lottery_type": "password" if keyword else "button",
+        "password_keyword": keyword,
+    }
+
+
+def _propose_help(direct: bool) -> str:
+    verb = "直接发起" if direct else "活动提案"
+    cmd = "/launch" if direct else "/propose"
+    level = "Lv.5+" if direct else "Lv.2+"
+    return (
+        f"🎲 <b>{verb}</b>（仅公益服、{level}）\n\n"
+        "私聊发送：\n"
+        f"<code>{cmd} 标题 | 奖品 | 群组ID | 开奖时间 | 人数上限 | 口令</code>\n\n"
+        "奖品：逗号分隔，类型:价值[x数量]，类型为 积分／天数／白名单，\n"
+        "如 <code>积分:100x2,天数:30x1</code>。\n"
+        "群组ID 可空（仅当允许群恰好一个时自动取）；开奖时间如 2026-11-01 20:00，\n"
+        "为空则待定；人数上限为空则不限；口令给出时为口令抽奖，否则为按钮抽奖。\n\n"
+        "例：<code>/propose 周末观影趴 | 积分:100x2 | -1001234567890</code>"
+    )
+
+
+def handle_propose(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """活动提案：复用 Step 3 submit_proposal，门禁文案由服务端原样返回。"""
+    from backend.lottery_governance import LotteryGovernanceError, submit_proposal
+
+    user = _bound_user(db, tg_user)
+    if user is None:
+        return "🔒 活动提案需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+    if not (args or "").strip():
+        return _propose_help(direct=False)
+    try:
+        payload = _parse_lottery_args(args)
+    except ValueError as exc:
+        return f"{_esc(exc)}\n\n" + _propose_help(direct=False)
+    try:
+        proposal = submit_proposal(db, user.id, payload)
+    except LotteryGovernanceError as exc:
+        db.rollback()
+        return f"⛔ {_esc(exc.detail)}"
+    except Exception:
+        db.rollback()
+        logger.exception("TG 活动提案提交失败 user=%s", user.id)
+        return "活动提案提交失败，请稍后再试。"
+    return (
+        "✅ <b>活动提案已提交</b>\n\n"
+        f"📌 {_esc(proposal.title)}\n"
+        f"提案编号：<code>#{proposal.id}</code>\n\n"
+        "等待管理员批准，批准后开奖。"
+    )
+
+
+def handle_direct_launch(db, tg_user: dict, chat_id: int, args: str) -> str:
+    """直接发起活动：复用 Step 3 direct_launch，门禁文案由服务端原样返回。"""
+    from backend.lottery_governance import LotteryGovernanceError, direct_launch
+
+    user = _bound_user(db, tg_user)
+    if user is None:
+        return "🔒 直接发起活动需要先绑定网站账号。\n\n发送 /bind 查看绑定方法。"
+    if not (args or "").strip():
+        return _propose_help(direct=True)
+    try:
+        payload = _parse_lottery_args(args)
+    except ValueError as exc:
+        return f"{_esc(exc)}\n\n" + _propose_help(direct=True)
+    try:
+        round_obj, _record = direct_launch(db, user.id, payload)
+    except LotteryGovernanceError as exc:
+        db.rollback()
+        return f"⛔ {_esc(exc.detail)}"
+    except Exception:
+        db.rollback()
+        logger.exception("TG 直接发起活动失败 user=%s", user.id)
+        return "直接发起活动失败，请稍后再试。"
+    return (
+        "✅ <b>活动已直接发起</b>\n\n"
+        f"📌 {_esc(round_obj.title)}\n"
+        f"轮次编号：<code>#{round_obj.id}</code>\n\n"
+        "直接发起已记入事后审计，管理员可复核。"
+    )

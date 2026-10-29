@@ -218,6 +218,10 @@ def dispatch(db, update: dict) -> None:
             "/myrequests": handlers.handle_my_requests,
             "/rank": handlers.handle_rank,
             "/govlog": handlers.handle_govlog,
+            "/level": handlers.handle_level,
+            "/report": handlers.handle_report,
+            "/propose": handlers.handle_propose,
+            "/launch": handlers.handle_direct_launch,
             "/requestboard": handlers.handle_request_board,
             "/rules": handlers.handle_rules,
             "/login": handlers.handle_login,
@@ -238,7 +242,8 @@ def dispatch(db, update: dict) -> None:
         # 账号、求片和免密登录都可能泄露隐私/凭据，强制私聊。
         # 账号展示（/account、/me）已放行群聊：只展示能量/活力/馆灵/成就等
         # 个人面板信息，不含任何凭据；登录与求片仍私聊限定。
-        private_only = {"/request", "/myrequests", "/login", "/renew", "/govlog"}
+        private_only = {"/request", "/myrequests", "/login", "/renew", "/govlog",
+                        "/report", "/propose", "/launch"}
         if cmd in private_only and in_group:
             sender.send_message(db, chat_id, "🔒 这个功能请私聊机器人使用")
             return

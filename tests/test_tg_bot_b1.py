@@ -81,7 +81,7 @@ def test_handle_start_bound(db):
     tg_user = {"id": 555, "first_name": "Tom"}
     result = handlers.handle_start(db, tg_user, 555, "")
     text = result[0] if isinstance(result, tuple) else result
-    assert "欢迎回到" in text and "账号：" in text
+    assert "欢迎回来" in text and "👤" in text and "⭐ Lv." in text
 
 
 def test_handle_help(db):

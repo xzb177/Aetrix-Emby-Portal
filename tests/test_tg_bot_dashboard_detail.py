@@ -1,8 +1,9 @@
 """TG Bot /start 已绑定用户 dashboard 详细版：批准版式各字段状态。
 
 只测本模块：DB 用内存 SQLite；Telegram 发送全部 patch 掉，不发真实请求。
-版式（用户 2026-10-29 00:15 亲点）：公益资格／查看凭证／能量·活力／网盘绑定／
-馆灵＋下一阶段差值／成就数／连签；末尾两行指引已删；订阅与最近设备不进精简面板。
+版式（用户 2026-10-29 08:44 亲批，取代 00:15 版）：问候＋账号·等级行＋
+资格／状态／成长三组；活力条按上限满格、馆灵条 10 格按本阶段进度；
+末尾两行指引已删；订阅与最近设备不进精简面板。
 """
 from __future__ import annotations
 
@@ -108,7 +109,7 @@ def test_welfare_states(db):
     assert "公益资格：未开通" in features.compact_dashboard(db, off)
     dated = _user(db, tg=TG + 1, name="dated", is_welfare=True,
                   welfare_expires_at=datetime(2026, 11, 27))
-    assert "公益资格：有效期至 2026-11-27" in features.compact_dashboard(db, dated)
+    assert "公益资格：至 2026-11-27" in features.compact_dashboard(db, dated)
     perm = _user(db, tg=TG + 2, name="perm", is_welfare=True,
                  welfare_expires_at=None)
     assert "公益资格：长期有效" in features.compact_dashboard(db, perm)
@@ -121,7 +122,7 @@ def test_view_unlock_states(db):
     assert "查看凭证：未开通" in features.compact_dashboard(db, none)
     dated = _user(db, tg=TG + 1, name="dated")
     _unlock(db, dated.id, datetime(2030, 1, 1))
-    assert "查看凭证：有效期至 2030-01-01" in features.compact_dashboard(db, dated)
+    assert "查看凭证：至 2030-01-01" in features.compact_dashboard(db, dated)
     perm = _user(db, tg=TG + 2, name="perm")
     _unlock(db, perm.id, None)
     assert "查看凭证：长期有效" in features.compact_dashboard(db, perm)
@@ -131,20 +132,20 @@ def test_view_unlock_states(db):
     mixed = _user(db, tg=TG + 4, name="mixed")
     _unlock(db, mixed.id, datetime(2020, 1, 1), realm_id=1)
     _unlock(db, mixed.id, datetime(2030, 6, 1), realm_id=2)
-    assert "查看凭证：有效期至 2030-06-01" in features.compact_dashboard(db, mixed)
+    assert "查看凭证：至 2030-06-01" in features.compact_dashboard(db, mixed)
 
 
 # ---------- 网盘绑定 ----------
 
 def test_bindings_line(db):
     none = _user(db, tg=TG, name="none")
-    assert "网盘绑定：未绑定，绑定后才能点播" in features.compact_dashboard(db, none)
+    assert "网盘：未绑定，绑定后才能点播" in features.compact_dashboard(db, none)
     drive = _user(db, tg=TG + 1, name="drive")
     _binding(db, drive.id, "drive")
-    assert "网盘绑定：Drive 已绑" in features.compact_dashboard(db, drive)
+    assert "网盘：Drive 已绑 ✓" in features.compact_dashboard(db, drive)
     pan = _user(db, tg=TG + 2, name="pan")
     _binding(db, pan.id, "pan115")
-    assert "网盘绑定：115 已绑" in features.compact_dashboard(db, pan)
+    assert "网盘：115 已绑 ✓" in features.compact_dashboard(db, pan)
     both = _user(db, tg=TG + 3, name="both")
     _binding(db, both.id, "drive")
     _binding(db, both.id, "pan115")
@@ -152,7 +153,7 @@ def test_bindings_line(db):
     assert "Drive 已绑" in text and "115 已绑" in text
     invalid = _user(db, tg=TG + 4, name="invalid")
     _binding(db, invalid.id, "drive", status="invalid")
-    assert "网盘绑定：未绑定，绑定后才能点播" in features.compact_dashboard(db, invalid)
+    assert "网盘：未绑定，绑定后才能点播" in features.compact_dashboard(db, invalid)
 
 
 # ---------- 活力值／上限／低于阈值提示 ----------
@@ -160,11 +161,11 @@ def test_bindings_line(db):
 def test_vitality_line(db):
     ok = _user(db, tg=TG, name="ok", vitality=14)
     text = features.compact_dashboard(db, ok)
-    assert "活力值：<b>14</b>／14" in text
+    assert "活力：██████████████ 14/14" in text
     assert "暂时播不了" not in text
     low = _user(db, tg=TG + 1, name="low", vitality=2)
     text = features.compact_dashboard(db, low)
-    assert "活力值：<b>2</b>／14" in text
+    assert "活力：██░░░░░░░░░░░░ 2/14" in text
     assert "暂时播不了" in text
 
 
@@ -175,7 +176,7 @@ def test_pet_next_and_max(db):
     _watch(db, row.id, [100, 20])
     text = features.compact_dashboard(db, row)
     assert "夜枭" in text and "120.0" in text
-    assert "距守夜者还差 80.0 小时" in text
+    assert "距守夜者还差 80.0 小时 █████░░░░░" in text
     top = _user(db, tg=TG + 1, name="top")
     _watch(db, top.id, [1200])
     text = features.compact_dashboard(db, top)
@@ -191,7 +192,7 @@ def test_streak_line(db):
     _checkin(db, row.id, 5)
     text = features.compact_dashboard(db, row)
     assert "连签：5 天" in text
-    assert "连签 30 天自动续公益资格" in text
+    assert "满 30 天自动续公益资格" in text
 
 
 # ---------- 批准版式整版：字段齐全、两行已删、精简面板不展开订阅 ----------
@@ -206,12 +207,13 @@ def test_approved_layout_full(db):
     _checkin(db, row.id, 7)
     reply = handlers.handle_start(db, _tg(), GROUP, "")
     assert isinstance(reply, str)
-    for frag in ("账号：", "公益资格：有效期至 2026-11-27",
-                 "查看凭证：有效期至 2026-11-27",
-                 "能量：<b>16</b> · 活力值：<b>14</b>／14",
-                 "网盘绑定：Drive 已绑",
-                 "夜枭", "距守夜者还差 80.0 小时",
-                 "成就：1／2", "连签：7 天"):
+    for frag in ("✨ 欢迎回来，Alice", "👤 alice · ⭐ Lv.1 初幕",
+                 "公益资格：至 2026-11-27",
+                 "查看凭证：至 2026-11-27",
+                 "能量：16", "活力：██████████████ 14/14",
+                 "网盘：Drive 已绑 ✓",
+                 "夜枭", "距守夜者还差 80.0 小时 █████░░░░░",
+                 "成就：1/2", "连签：7 天"):
         assert frag in reply, frag
     assert "左下角" not in reply
     assert "一键免密登录请私聊" not in reply

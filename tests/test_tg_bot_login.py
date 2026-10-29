@@ -73,7 +73,7 @@ def test_handle_start_bound_returns_tuple(db):
     reply = handlers.handle_start(db, {"id": 1004, "first_name": "Tester"}, 1004, "")
     assert isinstance(reply, tuple)
     text, markup = reply
-    assert "账号：" in text
+    assert "👤 u_1004" in text and "⭐ Lv." in text
     assert isinstance(markup, dict)
     assert "inline_keyboard" in markup
     assert markup["inline_keyboard"][0][0]["url"].startswith("https://example.com/tg-login?token=")
