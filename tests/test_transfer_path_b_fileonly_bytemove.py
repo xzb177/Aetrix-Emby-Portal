@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Path B file-only 搬字节分流（2026-10-29 copy 404 修复）。
+"""Path B file-only 分流（2026-10-29 copy 404 定性 + 搬字节关停）。
 
 机制（生产实测钉住，mock 按谷歌真实语义建模）：
 - file-only 令牌对非应用自创文件 files.get/copy 一律 404（源共享盘
   原件、SA 暂存副本皆然），故 Path A 与 Path B 的 user copy 永不
   可能成功；双范围令牌可见 anyone-reader 源，copy 404 只是分享
   传播延迟、可重试。
-- 修复：Path B 用户 copy 被拒且绑定纯 file-only 时，改走搬字节
-  （SA 按段下载暂存 → 用户令牌可续传上传，上传即应用自创文件），
-  随后走同一条核对／anyone／登记／删暂存尾巴。
-- 大小以 SA 侧暂存实测为准，绝不用条目 size 猜（猜小会静默截断；
-  本文件有条目 size 故意写 stale 的用例钉住这一点）。
+- #1470 曾给 file-only 加搬字节后路（SA 按段下载暂存 → 用户令牌
+  可续传上传）；2026-10-29 用户亲令搬字节路线整条取消——file-only
+  在 Path B 用户 copy 被拒时直接以 file_only_copy_unavailable
+  明确失败（等只读授权恢复后重绑再播），下载/上传桩必须零调用。
+- 双范围令牌的 Path B 服务端 copy 路（SA 暂存 + 用户再拷）不是
+  搬字节，保留不动，本文件双范围用例继续钉住。
 
-全部离线：Drive API 一律用桩替身；真实 file-only 令牌行为、GB 级
-搬运全链路、部署后打回观察均未在本文件实测，见 PR 未验证项。
+全部离线：Drive API 一律用桩替身；真实 file-only 令牌行为未在本
+文件实测，见 PR 未验证项。
 """
 import os
 
@@ -171,6 +172,7 @@ class _FakeSABytemove:
         return {"id": fid, "size": self.get_size}
 
     def download_range(self, drive_id, fid, start, end):
+        self.download_calls = getattr(self, "download_calls", 0) + 1
         assert fid == "tmpfid"
         return self.data[start:end + 1]
 
@@ -181,7 +183,10 @@ class _FakeSABytemove:
         self.deleted.append(fid)
 
 
-def test_path_b_fileonly_copy404_falls_back_to_bytemove(db, monkeypatch):
+def test_path_b_fileonly_copy404_fails_without_bytemove(db, monkeypatch):
+    # 2026-10-29 关停：file-only 在 Path B 用户 copy 被拒时直接
+    # file_only_copy_unavailable 终态；下载/上传零调用；SA 暂存
+    # 已建（服务端 copy 不是搬字节，保留），终态不删暂存。
     item = _item(db)
     binding = _binding(db, 7, FILE_SCOPE)
     job = _user_job(db, item.id)
@@ -191,50 +196,17 @@ def test_path_b_fileonly_copy404_falls_back_to_bytemove(db, monkeypatch):
                         lambda db_arg, b: fake)
     sa = _FakeSABytemove(b"x" * 1000)
     result = tv.run_transfer_job_once(db, job, sa)
-    assert result["outcome"] == "done" and job.status == "done"
+    assert result["outcome"] == "failed"
+    assert result["error_kind"] == "file_only_copy_unavailable"
+    assert job.status == "failed"
+    assert job.error_kind == "file_only_copy_unavailable"
     assert fake.copy_calls == ["origfid", "tmpfid"]
-    assert fake.upload_calls == [("a.mkv", "ufolder", 1000)]
-    assert fake.uploaded == b"x" * 1000
-    assert fake.perm_calls == ["uploadfid"]
-    assert sa.copy_calls == 1 and sa.deleted == ["tmpfid"]
-    row = db.query(em.TransferVariant).filter(
-        em.TransferVariant.status == "ready").one()
-    assert row.variant_file_id == "uploadfid"
-    assert row.variant_drive_id == "userdrive:7"
-    assert row.owner_ref == "7"
-
-
-def test_path_b_fileonly_upload_uses_sa_size_not_item_size(db, monkeypatch):
-    # 条目 size 故意写 stale（999），SA 暂存实测 1000：上传必须按
-    # 1000 字节搬，绝不能按条目 size 截断。
-    item = _item(db, size=999)
-    binding = _binding(db, 7, FILE_SCOPE)
-    job = _user_job(db, item.id)
-    fake = _FakeUserBytemove()
-    fake._binding = binding
-    monkeypatch.setattr(tv, "UserDriveApiClient",
-                        lambda db_arg, b: fake)
-    sa = _FakeSABytemove(b"y" * 1000)
-    result = tv.run_transfer_job_once(db, job, sa)
-    assert result["outcome"] == "done"
-    assert fake.upload_calls == [("a.mkv", "ufolder", 1000)]
-    assert fake.uploaded == b"y" * 1000
-
-
-def test_path_b_fileonly_bytemove_multisegment_exact(db, monkeypatch):
-    n = 8 * 1024 * 1024 + 13
-    data = bytes((i * 7) % 256 for i in range(n))
-    item = _item(db, size=n)
-    binding = _binding(db, 7, FILE_SCOPE)
-    job = _user_job(db, item.id)
-    fake = _FakeUserBytemove()
-    fake._binding = binding
-    monkeypatch.setattr(tv, "UserDriveApiClient",
-                        lambda db_arg, b: fake)
-    sa = _FakeSABytemove(data)
-    result = tv.run_transfer_job_once(db, job, sa)
-    assert result["outcome"] == "done"
-    assert fake.uploaded == data
+    assert fake.upload_calls == []
+    assert fake.uploaded == b""
+    assert fake.perm_calls == []
+    assert getattr(sa, "download_calls", 0) == 0
+    assert sa.copy_calls == 1 and sa.deleted == []
+    assert db.query(em.TransferVariant).count() == 0
 
 
 def test_path_b_dual_scope_copy404_still_retries(db, monkeypatch):
@@ -257,7 +229,9 @@ def test_path_b_dual_scope_copy404_still_retries(db, monkeypatch):
     assert sa.copy_calls == 1 and sa.deleted == ["tmpfid"]
 
 
-def test_path_b_fileonly_bytemove_size_unknown_unsupported(db, monkeypatch):
+def test_path_b_fileonly_size_unknown_still_unavailable(db, monkeypatch):
+    # 关停后终态与暂存大小无关：不再有"按 size 分段搬运"这一步，
+    # get_size=0 也照样 file_only_copy_unavailable，零搬运调用。
     item = _item(db)
     binding = _binding(db, 7, FILE_SCOPE)
     job = _user_job(db, item.id)
@@ -268,8 +242,9 @@ def test_path_b_fileonly_bytemove_size_unknown_unsupported(db, monkeypatch):
     sa = _FakeSABytemove(b"w" * 1000, get_size=0)
     result = tv.run_transfer_job_once(db, job, sa)
     assert result["outcome"] == "failed"
-    assert result["error_kind"] == "unsupported"
+    assert result["error_kind"] == "file_only_copy_unavailable"
     assert fake.upload_calls == []
+    assert getattr(sa, "download_calls", 0) == 0
     assert db.query(em.TransferVariant).count() == 0
 
 
