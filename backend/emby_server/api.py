@@ -5483,47 +5483,90 @@ async def playback_info(
                 # 到免凭证 usercontent——全权 SA 令牌绝不随清单出门。
                 _alt_is_user_copy = _is_user_drive_copy_variant(_alt_variant)
                 if _alt_is_user_copy:
-                    # 额度探测（2026-10-29）：用户副本被谷歌下载额度挡住时
-                    # 不下发额度页直链。有本人 115 副本 → 清单指回本站
-                    # /stream（video_stream 走 115 现签 302）；没有 → 明确报
-                    # 错。绝不回落共享原件、绝不带 SA 令牌。
+                    # 额度探测（2026-10-29；2026-10-30 修订）：只有
+                    # Range 腿判 quota（分段也拉不到）才不下发直链：
+                    # 走本人令牌中继后路保留 /stream，或有本人 115
+                    # 副本时清单指回本站 /stream（video_stream 走 115
+                    # 现签 302）；都没有 → 明确报错。GET 腿探到的额度
+                    # 页/插页只是信号——Range 分段健康就照常下发直链
+                    # （直链优先定版），不清清单。绝不回落共享原件、
+                    # 绝不带 SA 令牌。
                     _pi_quota_cached = await run_db(
                         _tv_alt.usercopy_quota_probe_cached,
                         user.id, _alt_fid)
-                    if await run_db(_tv_alt.probe_user_copy_quota,
-                                    user.id, _alt_fid) == "quota":
+                    _pi_probe_verdict = await run_db(
+                        _tv_alt.probe_user_copy_quota,
+                        user.id, _alt_fid)
+                    _pi_probe_detail = await run_db(
+                        _tv_alt.usercopy_quota_probe_detail,
+                        user.id, _alt_fid)
+                    if _pi_probe_verdict in ("quota", "interstitial"):
+                        # 改道只认 Range 腿（2026-10-30 01:40 证据
+                        # 修订，用户「直链优先、中继第二位」定版）：
+                        # GET 腿探到额度页/插页只是信号，Range 分段
+                        # 健康就照常下发直链——不清清单、不保留
+                        # /stream 改道；信号日志 verdict=direct 与
+                        # 改道区分。interstitial 只由 GET 腿产生、
+                        # 按定义不改道；quota 只有 shape=range 才
+                        # 改道（明细缺失时按 Range 腿保守处理）。
+                        _pi_divert = (
+                            _pi_probe_verdict == "quota"
+                            and _pi_probe_detail.get("shape") != "get")
                         _tv_alt.log_byos(
-                            "byos_usercopy_quota", item=item.id,
-                            user=user.id, fid=_alt_fid,
-                            cached=_pi_quota_cached)
-                        _alt_is_user_copy = False
-                        _alt_applied = True  # 跳过下面 alt=media+头各段
-                        # 额度后路（2026-10-29 用户亲令）：后路开且有
-                        # active Drive 绑定时保留本站 /stream 入口——
-                        # 客户端打进 video_stream 先试本人令牌中继，
-                        # 判定以 video_stream 每次重查门禁＋探测为准，
-                        # 这里不剥光清单、不报 NoCompatibleStream。
-                        _keep_stream_q = False
-                        if await run_db(
-                                _ps_alt
-                                .usercopy_quota_relay_fallback_enabled, db):
-                            from backend.emby_server import (
-                                user_bindings as _ub_alt)
-                            _keep_stream_q = await run_db(
-                                _ub_alt.get_active_binding,
-                                db, user.id, _ub_alt.PROVIDER_DRIVE) \
-                                is not None
-                        _v115 = await run_db(_tv_alt.ready_user115_variant,
-                                             db, item.id, user.id)
-                        if _v115 is None and not _keep_stream_q:
-                            for _s in sources:
-                                for _k in ("DirectPlayUrl", "DirectStreamUrl",
-                                           "TranscodingUrl", "Path"):
-                                    _s.pop(_k, None)
-                                _s["SupportsDirectPlay"] = False
-                                _s["SupportsDirectStream"] = False
-                                _s["RequiredHttpHeaders"] = {}
-                            _pi_quota_error = _tv_alt.USERCOPY_QUOTA_DETAIL
+                            "byos_usercopy_quota"
+                            if _pi_probe_verdict == "quota"
+                            else "byos_usercopy_interstitial",
+                            item=item.id, user=user.id, fid=_alt_fid,
+                            cached=_pi_quota_cached,
+                            verdict=(_pi_probe_verdict if _pi_divert
+                                     else "direct"),
+                            shape=_pi_probe_detail.get("shape"),
+                            page=_pi_probe_detail.get("page"))
+                        if _pi_divert:
+                            _alt_is_user_copy = False
+                            _alt_applied = True  # 跳过下面 alt=media+头各段
+                            # 额度后路（2026-10-29 用户亲令）：后路开且有
+                            # active Drive 绑定时保留本站 /stream 入口——
+                            # 客户端打进 video_stream 先试本人令牌中继，
+                            # 判定以 video_stream 每次重查门禁＋探测为准，
+                            # 这里不剥光清单、不报 NoCompatibleStream。
+                            _keep_stream_q = False
+                            if await run_db(
+                                    _ps_alt
+                                    .usercopy_quota_relay_fallback_enabled, db):
+                                from backend.emby_server import (
+                                    user_bindings as _ub_alt)
+                                _keep_stream_q = await run_db(
+                                    _ub_alt.get_active_binding,
+                                    db, user.id, _ub_alt.PROVIDER_DRIVE) \
+                                    is not None
+                            _v115 = await run_db(_tv_alt.ready_user115_variant,
+                                                 db, item.id, user.id)
+                            if _v115 is None and not _keep_stream_q:
+                                for _s in sources:
+                                    for _k in ("DirectPlayUrl", "DirectStreamUrl",
+                                               "TranscodingUrl", "Path"):
+                                        _s.pop(_k, None)
+                                    _s["SupportsDirectPlay"] = False
+                                    _s["SupportsDirectStream"] = False
+                                    _s["RequiredHttpHeaders"] = {}
+                                _pi_quota_error = (
+                                    _tv_alt.USERCOPY_QUOTA_DETAIL
+                                    if _pi_probe_verdict == "quota"
+                                    else _tv_alt.USERCOPY_INTERSTITIAL_DETAIL)
+                    elif _pi_probe_detail.get("shape") == "get" and _pi_probe_detail.get("page"):
+                        # Range 健康但 GET 腿探到页：只打信号、仍发直链
+                        # （probe 返回值已是出法裁决口径，GET 信号只在
+                        # detail 里；事件名按 page 取，verdict 恒为 direct）。
+                        _tv_alt.log_byos(
+                            "byos_usercopy_quota"
+                            if _pi_probe_detail["page"] == "quota"
+                            else "byos_usercopy_interstitial",
+                            item=item.id, user=user.id, fid=_alt_fid,
+                            cached=_pi_quota_cached,
+                            verdict="direct",
+                            shape="get",
+                            page=_pi_probe_detail["page"])
                 if _alt_is_user_copy:
                     # 用户副本直链：免凭证 usercontent + 空头；授权限
                     # 失败时 _alt_applied 仍为 False，下面走旧链路。
@@ -5918,76 +5961,119 @@ async def video_stream(
             _quota_verdict = await run_db(
                 _tv.probe_user_copy_quota,
                 getattr(user, "id", None), _play_fid)
-        if _quota_verdict == "quota":
-            # quota 409 不再只有 _note_play_start_safe 打点：应用日志
-            # 里留一条带 item/user/fid/缓存命中的结构化行。
+        _probe_detail = await run_db(
+            _tv.usercopy_quota_probe_detail,
+            getattr(user, "id", None), _play_fid)
+        if _quota_verdict in ("quota", "interstitial"):
+            # 判定打点：应用日志里留一条带 item/user/fid/缓存命中/
+            # 探测形态/插页分类的结构化行（quota 与 interstitial
+            # 分事件名；改道时走向由下面 relay / 115 / 409 的打点
+            # 续记，只打信号时 verdict=direct 标明仍发直链）。
+            # 改道只认 Range 腿（2026-10-30 01:40 证据修订，用户
+            # 「直链优先、中继第二位」定版）：GET 腿探到额度页/插页
+            # 只是信号——Range 分段健康就照常发直链，绝不因整拉
+            # 形态把用户推进经服务器的中继（竞品同盘直链实证可播，
+            # 我方中继改道反而全程黑屏）。interstitial 只由 GET 腿
+            # 产生，按定义不改道；quota 只有 shape=range 才改道
+            # （明细缺失时按 Range 腿保守处理）。
+            _divert = (_quota_verdict == "quota"
+                      and _probe_detail.get("shape") != "get")
             _tv.log_byos(
-                "byos_usercopy_quota", item=getattr(item, "id", None),
+                "byos_usercopy_quota" if _quota_verdict == "quota"
+                else "byos_usercopy_interstitial",
+                item=getattr(item, "id", None),
                 user=getattr(user, "id", None), fid=_play_fid,
-                cached=_quota_cached)
-            # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
-            # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
-            # 额度后路（2026-10-29 用户亲令）：先试本人令牌中继取同一
-            # 份副本（API 额度与公开池分开）；中继未启用/无令牌/任何
-            # 失败才回下面的现行口径（115 优先 / 409 明示），分毫不差。
-            _quota_relay_resp = await _usercopy_quota_relay_attempt(
-                request, db, item, user, _play_fid, _play_variant,
-                media_type=media_type, pt=_pt)
-            if _quota_relay_resp is not None:
-                return _observe_traffic(_quota_relay_resp)
-            _v115q = await run_db(_tv.ready_user115_variant, db,
-                                  getattr(item, "id", None),
-                                  getattr(user, "id", None))
-            _pc115q = (getattr(_v115q, "pickcode", "") or "").strip() \
-                if _v115q is not None else ""
-            if not _pc115q:
-                _note_play_start_safe(
-                    item, user_id=getattr(user, "id", None),
-                    method="direct_302", variant=play_variants.DRIVE_DIRECT,
-                    result="error", error_kind="usercopy_quota")
-                raise HTTPException(status_code=409,
-                                    detail=_tv.USERCOPY_QUOTA_DETAIL)
-            from backend.emby_server import user_bindings as _ub115q
-            _byos_t0q = time.perf_counter()
-            try:
-                _url115 = await run_db(
-                    _ub115q.resolve_user115_copy_url, db,
-                    getattr(user, "id", None), _pc115q)
-            except _ub115q.BindingError as exc:
+                cached=_quota_cached,
+                verdict=_quota_verdict if _divert else "direct",
+                shape=_probe_detail.get("shape"),
+                page=_probe_detail.get("page"))
+            if _divert:
+                _block_detail = (
+                    _tv.USERCOPY_QUOTA_DETAIL if _quota_verdict == "quota"
+                    else _tv.USERCOPY_INTERSTITIAL_DETAIL)
+                _block_kind = (
+                    "usercopy_quota" if _quota_verdict == "quota"
+                    else "usercopy_interstitial")
+                # 额度探测（2026-10-29）：本人 Drive 副本被谷歌额度挡住。
+                # 有本人 115 副本 → 现签 302；否则 409 明示。绝不回落共享。
+                # 本段只有 Range 腿判 quota 才进得来——GET 腿信号
+                # 在上面只打日志、不改道；_block_detail / _block_kind
+                # 按 verdict 取，本段内恒为额度口径。
+                # 额度后路（2026-10-29 用户亲令）：先试本人令牌中继取同一
+                # 份副本（API 额度与公开池分开）；中继未启用/无令牌/任何
+                # 失败才回下面的现行口径（115 优先 / 409 明示），分毫不差。
+                _quota_relay_resp = await _usercopy_quota_relay_attempt(
+                    request, db, item, user, _play_fid, _play_variant,
+                    media_type=media_type, pt=_pt)
+                if _quota_relay_resp is not None:
+                    return _observe_traffic(_quota_relay_resp)
+                _v115q = await run_db(_tv.ready_user115_variant, db,
+                                      getattr(item, "id", None),
+                                      getattr(user, "id", None))
+                _pc115q = (getattr(_v115q, "pickcode", "") or "").strip() \
+                    if _v115q is not None else ""
+                if not _pc115q:
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None),
+                        method="direct_302", variant=play_variants.DRIVE_DIRECT,
+                        result="error", error_kind=_block_kind)
+                    raise HTTPException(status_code=409,
+                                        detail=_block_detail)
+                from backend.emby_server import user_bindings as _ub115q
+                _byos_t0q = time.perf_counter()
+                try:
+                    _url115 = await run_db(
+                        _ub115q.resolve_user115_copy_url, db,
+                        getattr(user, "id", None), _pc115q)
+                except _ub115q.BindingError as exc:
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None),
+                        method="transfer115_copy",
+                        variant=play_variants.BYOS115_DIRECT,
+                        result="error", error_kind=exc.kind,
+                        resolve_ms=int((time.perf_counter() - _byos_t0q) * 1000))
+                    raise HTTPException(
+                        status_code=409,
+                        detail=_block_detail) from exc
                 _note_play_start_safe(
                     item, user_id=getattr(user, "id", None),
                     method="transfer115_copy",
-                    variant=play_variants.BYOS115_DIRECT,
-                    result="error", error_kind=exc.kind,
+                    variant=play_variants.BYOS115_DIRECT, result="ok",
                     resolve_ms=int((time.perf_counter() - _byos_t0q) * 1000))
-                raise HTTPException(
-                    status_code=409,
-                    detail=_tv.USERCOPY_QUOTA_DETAIL) from exc
-            _note_play_start_safe(
-                item, user_id=getattr(user, "id", None),
-                method="transfer115_copy",
-                variant=play_variants.BYOS115_DIRECT, result="ok",
-                resolve_ms=int((time.perf_counter() - _byos_t0q) * 1000))
-            _alive115q = await run_db(_ub115q.check_115_download_alive,
-                                      _url115)
-            if _alive115q == "dead":
-                # 115 回落链也是死链：不 302，记 strike 并预算内重建；
-                # 仍报额度 409（主因是 Drive 副本额度满），重建后台跑。
-                await run_db(_tv.mark_variant_stale_once, db,
-                             getattr(_v115q, "id", None))
-                await run_db(_tv.rebuild_dead_user115_copy, db, item,
-                             getattr(user, "id", None))
-                _note_play_start_safe(
-                    item, user_id=getattr(user, "id", None),
-                    method="transfer115_copy",
-                    variant=play_variants.BYOS115_DIRECT,
-                    result="error", error_kind="115_copy_dead")
-                raise HTTPException(
-                    status_code=409,
-                    detail=_tv.USERCOPY_QUOTA_DETAIL)
-            return _observe_traffic(
-                RedirectResponse(_url115, status_code=302,
-                                 headers=_strategy.DIRECT_REDIRECT_HEADERS))
+                _alive115q = await run_db(_ub115q.check_115_download_alive,
+                                          _url115)
+                if _alive115q == "dead":
+                    # 115 回落链也是死链：不 302，记 strike 并预算内重建；
+                    # 仍报额度 409（主因是 Drive 副本额度满），重建后台跑。
+                    await run_db(_tv.mark_variant_stale_once, db,
+                                 getattr(_v115q, "id", None))
+                    await run_db(_tv.rebuild_dead_user115_copy, db, item,
+                                 getattr(user, "id", None))
+                    _note_play_start_safe(
+                        item, user_id=getattr(user, "id", None),
+                        method="transfer115_copy",
+                        variant=play_variants.BYOS115_DIRECT,
+                        result="error", error_kind="115_copy_dead")
+                    raise HTTPException(
+                        status_code=409,
+                        detail=_block_detail)
+                return _observe_traffic(
+                    RedirectResponse(_url115, status_code=302,
+                                     headers=_strategy.DIRECT_REDIRECT_HEADERS))
+        elif _probe_detail.get("shape") == "get" and _probe_detail.get("page"):
+            # Range 健康但 GET 腿探到页：只打信号、仍发直链（probe
+            # 返回值已是出法裁决口径，GET 信号只在 detail 里；事件名
+            # 按 page 取，verdict 恒为 direct）。
+            _tv.log_byos(
+                "byos_usercopy_quota"
+                if _probe_detail["page"] == "quota"
+                else "byos_usercopy_interstitial",
+                item=getattr(item, "id", None),
+                user=getattr(user, "id", None), fid=_play_fid,
+                cached=_quota_cached,
+                verdict="direct",
+                shape="get",
+                page=_probe_detail["page"])
         # 只有可能播到共享 Drive 原件时才查绑定。本机文件 / 无 fid
         # 走不到 SA 轮换，也不存在「静默播共享原件」；这里多查一次
         # 会打到只实现了 close() 的会话桩。
