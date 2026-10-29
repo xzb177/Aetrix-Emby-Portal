@@ -2937,6 +2937,23 @@ def _run_drive_user_job(db, job, item, drive_api):
     return {"job_id": job.id, "outcome": "done", "variant_id": row.id}
 
 
+def _is_file_only_binding(binding) -> bool:
+    """绑定是否纯 file-only（有 drive.file、无 drive.readonly）。
+
+    实测定性（2026-10-29 copy 404）：file-only 令牌对非应用自创
+    文件（源共享盘原件、SA 暂存副本）files.get 一律 404，files.copy
+    永不可能成功；双范围（带 readonly）令牌可见 anyone-reader 源，
+    copy 404 只是分享传播延迟、可重试。调用方据此分流：file-only
+    的 Path B 用户 copy 被拒时改走搬字节，不进重试循环。
+    binding 为 None 或桩对象无 granted_scopes 时按非 file-only
+    计（走旧口径重试），绝不因桩缺字段改变老行为。
+    """
+    from backend.emby_server.drive_oauth import (
+        DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, granted_scope_set)
+    scopes = granted_scope_set(getattr(binding, "granted_scopes", None))
+    return DRIVE_FILE_SCOPE in scopes and DRIVE_READONLY_SCOPE not in scopes
+
+
 def _run_drive_user_job_path_b(db, job, item, drive_api, user_client,
                                user_drive, name):
     """Path B：SA 暂存中转（用户无权源）。
@@ -2996,9 +3013,39 @@ def _run_drive_user_job_path_b(db, job, item, drive_api, user_client,
         copied = user_client.copy_file(user_drive, tmp_fid, user_folder,
                                        name)
     except _CopyForbidden as exc:
-        # 分享传播延迟：可重试（重试复用暂存）。
-        return {"job_id": job.id,
-                "outcome": _schedule_retry(db, job, exc)}
+        if not _is_file_only_binding(getattr(user_client, "_binding", None)):
+            # 双范围：分享传播延迟，可重试（重试复用暂存）。
+            return {"job_id": job.id,
+                    "outcome": _schedule_retry(db, job, exc)}
+        # file-only：令牌看不见非应用自创文件（源与暂存 get 均实测
+        # 404），user copy 永不可能成功——改走搬字节：SA 按段下载
+        # 暂存 → 用户令牌可续传上传（上传即应用自创文件，file-only
+        # 可见）。大小以 SA 侧暂存实测为准，绝不用条目 size 猜
+        # （猜小会静默截断）。成功后落入同一条核对／anyone／登记／
+        # 删暂存尾巴；下载凭据失效记 auth_error，其余走有界重试。
+        try:
+            info = drive_api.get_file(job.drive_id, tmp_fid)
+            size = _to_int((info or {}).get("size"))
+            if size <= 0:
+                return _fail_job(
+                    db, job, "unsupported",
+                    "file-only 搬字节：暂存文件大小未知/为零，"
+                    "无法分段搬运（不猜大小）")
+            reader = _SegmentReader(
+                size,
+                lambda s, e: drive_api.download_range(
+                    job.drive_id, tmp_fid, s, e))
+            new_fid = user_client.resumable_upload(
+                user_drive, name, user_folder, size, reader)
+        except DriveOAuthError as exc2:
+            return _fail_job(db, job, "no_binding",
+                             f"用户 Drive 令牌失效：{exc2}")
+        except _CrossAuthError as exc2:
+            return _fail_job(db, job, "auth_error", str(exc2))
+        except Exception as exc2:
+            return {"job_id": job.id,
+                    "outcome": _schedule_retry(db, job, exc2)}
+        copied = {"id": new_fid, "size": size}
     except DriveOAuthError as exc:
         return _fail_job(db, job, "no_binding",
                          f"用户 Drive 令牌失效：{exc}")
