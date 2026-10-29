@@ -70,9 +70,26 @@
   因为一次配额查询抖动就把转存直接判死。115 盘无 Drive
   about.get 口径，本单不覆盖：evict 只删 userdrive: 行，
   pan115: 行一律跳过、行不动。
+- 追剧保护（2026-10-29，生产实证：用户正在追的剧的副本被 LRU
+  腾掉，再播又要重新转存）：触发条件不变——仍然只有空间不足
+  时才腾，不新增任何定时或主动删除。ensure_space 改为两轮：
+  第一轮排除“正在播 + exclude_item_ids + 受保护”；腾完仍不够
+  时第二轮只排除“正在播 + exclude_item_ids”，按原 LRU 顺序只在
+  受保护行里继续腾，被迫删掉的受保护行逐条 warning——宁可删
+  受保护行，也不阻断新转存。受保护 = protected_variant_ids：
+  (1) TRANSFER_EVICT_RECENT_HOURS（默认 6）小时内播过的 ready
+  副本，“播过”与 LRU 排序键同口径（变体 last_played_at > 会话
+  进度代理 session_progress；不看 created_at，刚转存没播过的不
+  算）；(2) 最近在追的剧：按 emby_user_media_data.last_played_at
+  与该用户会话上报取每部剧最近播的那一集，按 season_number /
+  episode_number 排序，当前集 + 其后 TRANSFER_EVICT_NEXT_EPISODES
+  （默认 2）集的 ready 副本。保护集算不出来时记 warning、按无
+  保护处理（退回原行为），不阻断转存；“正在播”的排除集算不出
+  来仍按 active_check_failed 一条不腾（硬排除，口径不变）。
 """
 
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 
@@ -90,6 +107,16 @@ PLAYED_WRITE_MIN_INTERVAL_SEC = 3600
 # is_paused 的未结束会话，对应条目的副本一律不腾；600 秒内
 # 有播放回写的副本同样不腾（会话行缺失时的代理口径）。
 ACTIVE_PLAYING_WINDOW_SEC = 600
+# 追剧保护（软排除，空间仍不够时第二轮可删）：近期播放窗口（小时）
+# 与追剧往后保护的集数，均可由同名环境变量调；非法值或负数回落
+# 默认，0 = 关掉该条保护。调用时读（不在 import 时固化）。
+EVICT_RECENT_HOURS_DEFAULT = 6.0
+EVICT_NEXT_EPISODES_DEFAULT = 2
+# “最近在追”的回看范围与剧数上限（模块常量，不开放环境变量）：
+# 只看 14 天内播过的剧，最多取最近 10 部，防止追剧保护面无限扩大
+# 后第一轮几乎总腾不够、两轮退化成纯 LRU。
+WATCHING_LOOKBACK_DAYS = 14
+WATCHING_MAX_SERIES = 10
 
 
 def active_playing_variant_ids(db, user_id, *, now=None,
@@ -137,6 +164,167 @@ def active_playing_variant_ids(db, user_id, *, now=None,
                       em.TransferVariant.last_played_at >= cutoff)
               .all())
     ids.update(row.id for row in recent)
+    return ids
+
+
+def _env_non_negative(name, default, cast):
+    """读非负数环境变量：未设/非法/负数回落默认，0 合法（= 关）。"""
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = cast(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def evict_recent_hours():
+    """近期播放保护窗口（小时），TRANSFER_EVICT_RECENT_HOURS，默认 6。"""
+    return _env_non_negative("TRANSFER_EVICT_RECENT_HOURS",
+                             EVICT_RECENT_HOURS_DEFAULT, float)
+
+
+def evict_next_episodes():
+    """追剧往后保护集数，TRANSFER_EVICT_NEXT_EPISODES，默认 2。"""
+    return _env_non_negative("TRANSFER_EVICT_NEXT_EPISODES",
+                             EVICT_NEXT_EPISODES_DEFAULT, int)
+
+
+def _played_marker(row, session_progress):
+    """“播过”的时间点：与 _effective_last_played 同口径但不回落创建时间。
+
+    变体 last_played_at > 会话进度代理；两者皆无返回 None（刚转存
+    还没播过的副本不算“近期播过”，否则新副本全成受保护行）。
+    """
+    last = getattr(row, "last_played_at", None)
+    if last is not None:
+        return last
+    if session_progress:
+        try:
+            return session_progress.get((int(row.owner_ref), row.item_id))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _episode_order_key(item):
+    """同剧单集排序：季号、集号（缺号排后），再按 id 兜成全序。"""
+    season = getattr(item, "season_number", None)
+    episode = getattr(item, "episode_number", None)
+    return (season is None, season or 0, episode is None, episode or 0,
+            item.id)
+
+
+def _watching_item_ids(db, user_id, now, next_episodes):
+    """最近在追的剧：每部剧“当前集 + 其后 next_episodes 集”的条目 id。
+
+    当前集 = 该剧里该用户最近播过的那一集，时间取
+    emby_user_media_data.last_played_at 与会话上报（last_update_at，
+    缺则 start_time）中较晚者；只看 WATCHING_LOOKBACK_DAYS 天内、
+    最近 WATCHING_MAX_SERIES 部剧。已软删、已合并的单集不进排序。
+    """
+    cutoff = now - timedelta(days=WATCHING_LOOKBACK_DAYS)
+    latest = {}
+
+    def _bump(item_id, ts):
+        if item_id is None or ts is None or ts < cutoff:
+            return
+        if item_id not in latest or ts > latest[item_id]:
+            latest[item_id] = ts
+
+    umd_rows = (db.query(em.UserMediaData.item_id,
+                         em.UserMediaData.last_played_at)
+                .filter(em.UserMediaData.user_id == user_id,
+                        em.UserMediaData.last_played_at.isnot(None),
+                        em.UserMediaData.last_played_at >= cutoff)
+                .all())
+    for item_id, ts in umd_rows:
+        _bump(item_id, ts)
+    sess_rows = (db.query(em.PlaybackSession.item_id,
+                          em.PlaybackSession.last_update_at,
+                          em.PlaybackSession.start_time)
+                 .filter(em.PlaybackSession.user_id == user_id,
+                         em.PlaybackSession.item_id.isnot(None))
+                 .all())
+    for item_id, last_update, start in sess_rows:
+        _bump(item_id, last_update or start)
+    if not latest:
+        return set()
+    played_items = (db.query(em.MediaItem)
+                    .filter(em.MediaItem.id.in_(list(latest)))
+                    .all())
+    # 每部剧取最近播的那一集（同时刻按 id 兜底，保证确定）。
+    current_by_series = {}
+    protected = set()
+    for item in played_items:
+        if (getattr(item, "item_type", "") or "").lower() != "episode":
+            continue
+        series_id = getattr(item, "series_id", None)
+        if series_id is None:
+            # 挂不到剧上：找不到后续集，只保护这一集本身。
+            protected.add(item.id)
+            continue
+        ts = latest[item.id]
+        cur = current_by_series.get(series_id)
+        if cur is None or (ts, item.id) > (latest[cur.id], cur.id):
+            current_by_series[series_id] = item
+    ranked = sorted(current_by_series.items(),
+                    key=lambda kv: (latest[kv[1].id], kv[1].id),
+                    reverse=True)[:WATCHING_MAX_SERIES]
+    for series_id, current in ranked:
+        protected.add(current.id)
+        if next_episodes <= 0:
+            continue
+        episodes = (db.query(em.MediaItem)
+                    .filter(em.MediaItem.series_id == series_id,
+                            em.MediaItem.deleted_at.is_(None),
+                            em.MediaItem.merged_into_id.is_(None))
+                    .all())
+        episodes = [e for e in episodes
+                    if (getattr(e, "item_type", "") or "").lower()
+                    == "episode"]
+        episodes.sort(key=_episode_order_key)
+        cur_key = _episode_order_key(current)
+        after = [e for e in episodes if _episode_order_key(e) > cur_key]
+        protected.update(e.id for e in after[:next_episodes])
+    return protected
+
+
+def protected_variant_ids(db, user_id, now=None, *, session_progress=None):
+    """该用户受保护副本的变体 id 集合（LRU 第一轮软排除，只选不删）。
+
+    两条口径取并集，只返回 ready + 同用户的行：
+    - 近期播过：TRANSFER_EVICT_RECENT_HOURS 小时内有播放（与 LRU
+      排序键同口径：last_played_at，空则会话进度代理）；
+    - 最近在追：见 _watching_item_ids，当前集 + 其后
+      TRANSFER_EVICT_NEXT_EPISODES 集；该集被合并的版本行
+      （merged_into_id 指向它）的副本一并保护。
+    异常原样上抛，由 ensure_space 记 warning 后按无保护处理。
+    """
+    now = now or datetime.now()
+    rows = (db.query(em.TransferVariant)
+            .filter(em.TransferVariant.owner_scope == "user",
+                    em.TransferVariant.owner_ref == str(user_id),
+                    em.TransferVariant.status == "ready")
+            .all())
+    if not rows:
+        return set()
+    ids = set()
+    hours = evict_recent_hours()
+    if hours > 0:
+        cutoff = now - timedelta(hours=hours)
+        for row in rows:
+            marker = _played_marker(row, session_progress)
+            if marker is not None and marker >= cutoff:
+                ids.add(row.id)
+    item_ids = _watching_item_ids(db, user_id, now, evict_next_episodes())
+    if item_ids:
+        merged = (db.query(em.MediaItem.id)
+                  .filter(em.MediaItem.merged_into_id.in_(list(item_ids)))
+                  .all())
+        item_ids.update(mid for (mid,) in merged)
+        ids.update(row.id for row in rows if row.item_id in item_ids)
     return ids
 
 
@@ -480,7 +668,9 @@ def ensure_space_for_transfer(db, drive_client_factory, user_id, *,
     """新转存前量空间（自动触发的唯一入口，只对 Drive 用户盘）。
 
     返回 dict：{reason, proceed, file_size, free_bytes, shortfall,
-    evicted, bytes_freed}。reason 取值：
+    evicted, bytes_freed}；真正进入腾地方时另带 protected（本次
+    软排除的受保护变体 id）与 evicted_protected（第二轮被迫腾掉
+    的受保护变体 id，evicted 已含）。reason 取值：
     - "sufficient"：剩余 >= 文件大小，一条不腾，直接转；
     - "evicted_enough"：腾后估算剩余（实测剩余 + 实际删掉的
       字节数，about 配额有传播延迟，不以二次 about 为准）>=
@@ -562,13 +752,50 @@ def ensure_space_for_transfer(db, drive_client_factory, user_id, *,
                             list(exclude_item_ids)))
                 .all())
         excluded.update(row.id for row in rows)
+    # 追剧保护（软排除）：算不出来就按无保护处理，退回原行为。
+    try:
+        protected = protected_variant_ids(
+            db, user_id, now, session_progress=session_progress)
+    except Exception as exc:  # noqa: BLE001 — 保护集失败不阻断转存
+        logger.warning(
+            "[transfer-cleanup] 追剧保护集计算失败：user=%s err=%s，"
+            "按无保护处理（原 LRU 行为）", user_id, exc)
+        protected = set()
+    soft = set(protected) - excluded
+    result["protected"] = sorted(soft)
+    result["evicted_protected"] = []
     evicted_result = evict_lru_variants(
         db, drive_client_factory, user_id, need_bytes=need,
         session_progress=session_progress,
-        exclude_variant_ids=sorted(excluded))
-    result["evicted"] = evicted_result["evicted"]
+        exclude_variant_ids=sorted(excluded | soft))
+    result["evicted"] = list(evicted_result["evicted"])
     result["bytes_freed"] = evicted_result["bytes_freed"]
-    estimate = free + evicted_result["bytes_freed"]
+    estimate = free + result["bytes_freed"]
+    if estimate < size and soft:
+        # 第二轮：非受保护行第一轮已按 LRU 全过一遍（删掉的已非
+        # ready，删失败的不重试），这里只在受保护行里按原 LRU 顺序
+        # 继续腾；正在播 + exclude_item_ids 仍是硬排除。
+        ready_ids = {
+            rid for (rid,) in (
+                db.query(em.TransferVariant.id)
+                .filter(em.TransferVariant.owner_scope == "user",
+                        em.TransferVariant.owner_ref == str(user_id),
+                        em.TransferVariant.status == "ready")
+                .all())}
+        round2 = evict_lru_variants(
+            db, drive_client_factory, user_id, need_bytes=size - estimate,
+            session_progress=session_progress,
+            exclude_variant_ids=sorted(excluded | (ready_ids - soft)))
+        forced = [vid for vid in round2["evicted"] if vid in soft]
+        for vid in forced:
+            logger.warning(
+                "[transfer-cleanup] 空间不足，被迫腾掉受保护副本 "
+                "user=%s variant=%s（近期播过或在追的剧）",
+                user_id, vid)
+        result["evicted"].extend(round2["evicted"])
+        result["evicted_protected"] = forced
+        result["bytes_freed"] += round2["bytes_freed"]
+        estimate = free + result["bytes_freed"]
     if estimate >= size:
         result["reason"] = "evicted_enough"
         return result
