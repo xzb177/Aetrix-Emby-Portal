@@ -6080,11 +6080,14 @@ async def video_stream(
                 # 回答（文件没了上游 404 透传），不再单跑存在性校验。
                 # 观测口径与直链快路径一致（_observe_traffic + play-timing）。
                 _pt.mark("relay")
+                _relay_max_attempts = await run_db(
+                    _strategy.drive_relay_sa_failover_max_attempts, db)
                 try:
                     _relay_resp = await serve_drive_relay_async(
                         request, _relay_drive_id, _play_fid,
                         media_type=media_type, pt=_pt,
-                        rotate_on_quota=_rotate_on_quota)
+                        rotate_on_quota=_rotate_on_quota,
+                        max_attempts=_relay_max_attempts)
                 except _tv.QuotaPageError:
                     # Quota 强信号：记信号，是否入队看
                     # quota_auto_enqueue_enabled（默认关，24h 节流）。

@@ -61,6 +61,17 @@ KEY_DRIVE_DIRECT_PLAY = "drive_direct_play_enabled"
 #: 默认关；与直链开关并存，直链优先（2026-10-27 用户改令直链为主线；
 #: 直链开关关时整体回旧路径）。
 KEY_DRIVE_RELAY = "drive_relay_enabled"
+#: Drive SA 中继取流 failover 总尝试次数（2026-10-29 用户亲令「中转加上
+#: 换号能力」）：共享/挂载中继上游回 401/403/429 时失效当前 SA 凭据并
+#: 轮换下一个 SA 重试，本值含首次尝试（3 = 首试 + 最多换 2 个 SA）。
+#: 404 不换号、原样透传（#1192 定版）。仅 SystemConfig 键（非 env）。
+KEY_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS = \
+    "drive_relay_sa_failover_max_attempts"
+#: failover 总尝试次数缺省与钳制（防呆：至少试 1 次；上限防配置写飞
+#: 后一次播放把整个 SA 池轮一遍）。
+DEFAULT_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS = 3
+MIN_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS = 1
+MAX_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS = 10
 #: IntroDB 自动片头片尾（2026-10-17 用户拍板学 raisemby）：开启时播放信息
 #: 组装 Chapters 会把众包库 api.introdb.app 的分段并入手打标记。默认开。
 KEY_INTRODB_ENABLED = "introdb_enabled"
@@ -156,6 +167,27 @@ def drive_relay_enabled(db: Session) -> bool:
         logger.warning("drive_relay_enabled 读取失败，回默认关", exc_info=True)
         return False
     return raw not in ("0", "false", "no", "off", "")
+
+
+def drive_relay_sa_failover_max_attempts(db: Session) -> int:
+    """Drive SA 中继取流 failover 总尝试次数（默认 3，钳制 [1, 10]）。
+
+    读法与 drive_relay_enabled 同款（store 热读 + fail-safe）：读失败 /
+    非整数一律回默认 3——failover 是中继的抗造兜底，配置读不到时不该
+    把重试次数悄悄改没，也不能被非法值放大成无界轮换。
+    """
+    try:
+        raw = (store.get_value(
+            db, KEY_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS,
+            str(DEFAULT_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS)) or "").strip()
+        value = int(raw)
+    except Exception:  # noqa: BLE001 - 测试桩/异常 DB/非法值场景下保默认
+        logger.warning(
+            "drive_relay_sa_failover_max_attempts 读取失败，回默认 %d",
+            DEFAULT_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS, exc_info=True)
+        return DEFAULT_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS
+    return max(MIN_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS,
+               min(MAX_DRIVE_RELAY_SA_FAILOVER_MAX_ATTEMPTS, value))
 # ---------------------------------------------------------------------------
 # 可观测：直链/回落计数（进程内，重启清零；与 prewarm 计数同口径）
 # ---------------------------------------------------------------------------
