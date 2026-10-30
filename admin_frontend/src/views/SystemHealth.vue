@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Activity, AlertTriangle, Bell, Cpu, Database, Download, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, ShieldCheck, Sparkles, Users, Zap } from 'lucide-vue-next'
+import { Activity, AlertTriangle, Bell, Bot, Cpu, Database, Download, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, ShieldCheck, Sparkles, Users, Zap } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 /** 重新布局批 3：播放总线降为本页「总线」区（旧 /playback-bus 跳到本页） */
 import PlaybackBus from './PlaybackBus.vue'
-import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
+import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions, fetchTgBotStatus } from '@/api/admin'
 import { fetchBackupConfig, saveBackupConfig, runBackupNow, fetchBackupFileInfo, downloadBackupFile } from '@/api/admin'
 import {
   fetchAlertRules,
@@ -18,7 +18,7 @@ import {
 } from '@/api/admin'
 import type { EmbySessionRow, StorageMount } from '@/types'
 import type { PanelHealth } from '@/api/admin'
-import type { BackupConfig, BackupFileInfo } from '@/api/admin'
+import type { BackupConfig, BackupFileInfo, TgBotStatus } from '@/api/admin'
 import type {
   AlertChannel,
   AlertRecord,
@@ -75,6 +75,23 @@ async function onCheckBackup(name: string) {
   } finally {
     backupInfoLoading.value = ''
   }
+}
+
+// ---------- Telegram 机器人状态（现成只读接口 GET /tg-bot/status） ----------
+const tgBot = ref<TgBotStatus | null>(null)
+let tgBotTimer: number | undefined
+
+async function loadTgBot() {
+  // 独立轻刷新：失败保留旧数据（首次失败保持空态），不拖垮整页
+  tgBot.value = await fetchTgBotStatus().catch(() => tgBot.value)
+}
+
+function tgHeartbeatAgeText(): string {
+  const age = tgBot.value?.heartbeat_age_seconds
+  if (age === null || age === undefined) return '无心跳记录'
+  if (age < 60) return `${age} 秒前`
+  if (age < 3600) return `${Math.floor(age / 60)} 分钟前`
+  return `${Math.floor(age / 3600)} 小时前`
 }
 
 // ---------- 健康灯（原「健康总览」页并入，Batch E：健康体系合并） ----------
@@ -302,18 +319,20 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const [h, o, s, m, b] = await Promise.all([
+    const [h, o, s, m, b, tgb] = await Promise.all([
       fetchPanelHealth(),
       fetchEmbyOverview().catch(() => null),
       fetchSessions().catch(() => ({ sessions: [] as EmbySessionRow[] })),
       fetchMounts().catch(() => ({ mounts: [], mount_types: [] })),
       fetchBackupConfig().catch(() => null),
+      fetchTgBotStatus().catch(() => null),
     ])
     health.value = h
     overview.value = o
     sessions.value = s.sessions
     mounts.value = m.mounts
     backup.value = b
+    if (tgb) tgBot.value = tgb
     lastChecked.value = new Date().toLocaleTimeString()
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : '请求失败'
@@ -501,6 +520,12 @@ onMounted(() => {
   loadAlertSettings()
   loadAlertRules()
   loadAlerts()
+  // 机器人状态 30 秒轻刷新：只打状态小接口，不重拉整页重数据
+  tgBotTimer = window.setInterval(() => { void loadTgBot() }, 30_000)
+})
+
+onUnmounted(() => {
+  if (tgBotTimer !== undefined) window.clearInterval(tgBotTimer)
 })
 </script>
 
@@ -630,6 +655,30 @@ onMounted(() => {
           </li>
         </ul>
         <EmptyState v-else compact :icon="Users" title="当前没有播放会话" />
+      </SectionCard>
+
+      <SectionCard title="Telegram 机器人" :icon="Bot" :meta="tgBot ? (tgBot.poller_active ? '轮询中' : '未在轮询') : ''">
+        <div v-if="tgBot" class="backup-form">
+          <div class="backup-row">
+            <span class="au-badge" :class="tgBot.poller_active ? 'au-badge-green' : 'au-badge-rose'">
+              {{ tgBot.poller_active ? 'Poller 运行中' : 'Poller 未运行 / 已失联' }}
+            </span>
+            <span class="muted">已绑定用户 {{ tgBot.bound_users }} 人</span>
+          </div>
+          <ul class="status-list">
+            <li class="status-row">
+              <span class="status-main">最近心跳</span>
+              <span class="muted">{{ tgBot.last_heartbeat ? `${fmtDate(tgBot.last_heartbeat)}（${tgHeartbeatAgeText()}）` : '无心跳记录' }}</span>
+            </li>
+            <li class="status-row">
+              <span class="status-main">最后报错</span>
+              <span v-if="tgBot.last_error" class="mono tg-error" :title="tgBot.last_error">{{ tgBot.last_error }}</span>
+              <span v-else class="muted">无</span>
+            </li>
+          </ul>
+          <p class="muted">每 30 秒自动刷新；机器人挂没挂先看心跳，细节去 worker 日志查。</p>
+        </div>
+        <EmptyState v-else compact :icon="Bot" title="机器人状态加载失败" description="不影响页面其他内容，可点「重新检查」再试。" />
       </SectionCard>
 
       <SectionCard title="数据库备份" :icon="Database" :meta="`上次执行 ${backup?.last_run || '—'}`">
@@ -899,6 +948,7 @@ onMounted(() => {
 }
 
 .ops-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.tg-error { color: var(--au-danger); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 340px; }
 
 .status-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 .status-row {
