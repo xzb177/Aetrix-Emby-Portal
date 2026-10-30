@@ -202,7 +202,7 @@ def main_markup(db, web_user, is_private: bool) -> dict:
         {"text": "👥 用户功能", "callback_data": "menu:user"},
         {"text": "🌐 服务器", "callback_data": "menu:server"},
     ])
-    rows.append([{"text": "🎟️ 使用续期码", "callback_data": "menu:renewcode"}])
+    rows.append([{"text": "🎟️ 使用兑换码", "callback_data": "menu:renewcode"}])
     if bool(getattr(web_user, "is_staff", False)):
         rows.append([{"text": "👮 管理", "callback_data": "menu:admin"}])
     return {"inline_keyboard": rows}
