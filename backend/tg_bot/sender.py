@@ -372,7 +372,7 @@ def answer_callback_query(db, callback_query_id: str, text: str | None = None, s
     return _call(db, "answerCallbackQuery", payload)
 
 
-def set_my_commands(db, commands: list[tuple[str, str]]) -> tuple[bool, str | None]:
+def set_my_commands(db, commands: list[tuple[str, str]], scope: dict | None = None) -> tuple[bool, str | None]:
     """
     注册 Bot 命令菜单（客户端输入框旁的「菜单」按钮里显示）。
 
@@ -381,6 +381,8 @@ def set_my_commands(db, commands: list[tuple[str, str]]) -> tuple[bool, str | No
 
     :param db: 数据库会话对象
     :param commands: [(command, description)]，command 不带斜杠、小写字母数字下划线
+    :param scope: 可选 BotCommandScope（如 {"type": "chat", "chat_id": 123}）；
+        不传 = default scope（全体用户），payload 与旧行为逐字一致
     :return: (是否成功, 错误信息)，成功时为 (True, None)
     """
     payload = {
@@ -389,6 +391,8 @@ def set_my_commands(db, commands: list[tuple[str, str]]) -> tuple[bool, str | No
             for command, description in commands
         ]
     }
+    if scope is not None:
+        payload["scope"] = scope
     return _call(db, "setMyCommands", payload)
 
 

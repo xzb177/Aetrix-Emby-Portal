@@ -198,14 +198,14 @@ def poll_forever() -> None:
     error_recorded = False
 
     # 启动时注册一次 Bot 命令菜单（客户端「菜单」按钮可见）；幂等，失败不影响轮询
+    # 三级下发（command_scopes）：default 只含普通命令、管理员私聊全量、
+    # 名单群只含群内可执行命令；单级失败只记日志，不拖垮轮询启动
     try:
-        from backend.tg_bot import sender as _sender
+        from backend.tg_bot import command_scopes
 
         _db = SessionLocal()
         try:
-            ok, err = _sender.set_my_commands(_db, BOT_COMMANDS)
-            if not ok:
-                logger.debug("tg setMyCommands failed: %s", err)
+            command_scopes.register_command_scopes(_db, BOT_COMMANDS)
         finally:
             _db.close()
     except Exception as exc:  # noqa: BLE001
