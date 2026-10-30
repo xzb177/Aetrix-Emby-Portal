@@ -796,6 +796,33 @@ def handle_slots_group(db, tg_user: dict, chat_id: int, args: str) -> str | tupl
     return (text, slots_markup(db))
 
 
+def handle_slots_command(db, tg_user: dict, chat_id: int, args: str,
+                         in_group: bool = False) -> str | tuple[str, dict | None]:
+    """老虎机 /slots 命令入口：与 menu:slots 面板按钮同一口径分发。
+
+    群里：总开关＋群开关都开才出公共面板（handle_slots_group），任一
+    关闭回落与面板入口逐字相同的「请私聊使用」卡——命令不许成为绕开
+    开关的第二通道。私聊：未绑定回绑定指引（带回主界面按钮，与面板
+    私聊分支一致），已绑定走私聊面板 handle_slots（总开关在其内部
+    判定）。渲染、注额与结算全部复用既有函数，本函数只做场景分发。
+    """
+    from backend import slots as slots_svc
+
+    if in_group:
+        if slots_svc.is_enabled(db) and slots_svc.group_enabled(db):
+            return handle_slots_group(db, tg_user, chat_id, args)
+        return (
+            layout.card(
+                layout.title("老虎机"),
+                [layout.row("🔒", "使用方式", "老虎机请私聊机器人使用")]),
+            back_markup(),
+        )
+    user = resolve(db, int(tg_user.get("id") or 0))
+    if user is None:
+        return (_bind_guide_text(), back_markup())
+    return handle_slots(db, tg_user, chat_id, args)
+
+
 def slots_group_result_text(db, spin, player_name: str) -> str:
     """老虎机群公开结果：点注人 / 结果 / 注额 / 奖金 / 头奖池。
 

@@ -443,7 +443,7 @@ def _msg_update(tg_id, chat_id, text, chat_type="private", **msg_kw):
 
 def test_rankpush_registered_in_bot_commands():
     cmds = dict(poller.BOT_COMMANDS)
-    assert cmds.get("rankpush") == "推送观影榜（管理员）"
+    assert cmds.get("rankpush") == "[私聊] 推送观影榜（管理员）"
 
 
 def test_rankpush_dispatch_reaches_handler(db, sent, monkeypatch):

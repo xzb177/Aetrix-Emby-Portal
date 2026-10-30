@@ -241,10 +241,10 @@ def test_bot_commands_cover_router_commands():
     router_commands = {
         "start", "help", "bind", "checkin", "points", "account", "me",
         "request", "myrequests", "rank", "requestboard", "rules",
-        "login", "renew", "redeem", "lottery", "redpacket",
+        "login", "renew", "redeem", "lottery", "redpacket", "slots",
         "bindings", "transfers", "whyplay", "wants",
         "level", "report", "propose", "launch",
     }
     assert router_commands <= registered
-    assert ("me", "账号中心") in poller.BOT_COMMANDS
-    assert ("renew", "快捷登录") in poller.BOT_COMMANDS
+    assert ("me", "[群/私聊] 账号中心") in poller.BOT_COMMANDS
+    assert ("renew", "[私聊] 快捷登录") in poller.BOT_COMMANDS

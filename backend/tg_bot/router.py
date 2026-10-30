@@ -182,8 +182,9 @@ ANON_ADMIN_TEXT = (
 
 # 需要发送者身份的命令全集：handler 内走 resolve / _bound_user /
 # _p1_user，匿名发在 router 层统一拦下回 ANON_ADMIN_TEXT。
-# 不在表内＝公开命令（/help /rank /requestboard /rules：不查发送者
-# 身份、只读全站或群级数据），匿名发照常执行。
+# 不在表内＝公开命令（/help /rank /requestboard /rules /slots：不查
+# 发送者身份、只读全站或群级数据；/slots 群面板不带个人数据、绑定
+# 在点注时才判），匿名发照常执行。
 _IDENTITY_COMMANDS = {
     "/start", "/bind", "/checkin", "/points", "/chatpoints",
     "/account", "/me", "/request", "/myrequests", "/login", "/renew",
@@ -455,6 +456,7 @@ def dispatch(db, update: dict) -> None:
             "/redeem": handlers.handle_redeem,
             "/lottery": handlers.handle_lottery,
             "/redpacket": handlers.handle_redpacket,
+            "/slots": handlers.handle_slots_command,
             "/bindings": handlers.handle_bindings,
             "/transfers": handlers.handle_transfers,
             "/whyplay": handlers.handle_whyplay,
@@ -547,6 +549,11 @@ def dispatch(db, update: dict) -> None:
             # P1 修复：把 update_id 传给 handler 做发红包幂等（防 poller 重放双花）
             reply = handlers.handle_redpacket(
                 db, tg_user, chat_id, args, update_id=update.get("update_id"))
+        elif cmd == "/slots":
+            # /slots 需要群聊/私聊上下文（群公共面板 vs 私聊本人面板，
+            # 开关口径与 menu:slots 面板入口一致），单独分发
+            reply = handlers.handle_slots_command(
+                db, tg_user, chat_id, args, in_group=in_group)
         else:
             reply = fn(db, tg_user, chat_id, args)
         # handler 可返回 str 或 (text, reply_markup) 元组（一键登录按钮）
