@@ -251,7 +251,9 @@ def dispatch(db, update: dict) -> None:
 
         # P1 个人查询在群里不执行（结果会公开给全群看）
         if cmd in _P1_COMMANDS and in_group:
-            sender.send_message(db, chat_id, "🔒 个人查询请私聊我发送，群里不查")
+            from backend.tg_bot import queries
+
+            sender.send_message(db, chat_id, queries.PRIVATE_ONLY_TEXT)
             return
 
         # /redeem 在群里发 = 把兑换码公开给全群：拒绝执行，尽量删掉原消息（没权限就算了），提示私聊
@@ -300,7 +302,11 @@ def dispatch(db, update: dict) -> None:
             text, markup = reply
         else:
             text, markup = reply, None
-        sender.send_message(db, chat_id, text, reply_markup=markup)
+        if cmd == "/start" and not in_group:
+            # 私聊主界面走图卡（caption 超限/发图失败时 send_panel 自动回退文本）
+            sender.send_panel(db, chat_id, text, reply_markup=markup)
+        else:
+            sender.send_message(db, chat_id, text, reply_markup=markup)
     except Exception as exc:  # noqa: BLE001
         logger.error("tg dispatch failed: %s", exc, exc_info=True)
         if chat_id:

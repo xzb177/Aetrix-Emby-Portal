@@ -194,7 +194,7 @@ def test_command_switch_start_always_on(db, sent):
     _set_cfg(db, "bot_cmd_checkin", "false")
     _set_cfg(db, "bot_cmd_bind", "false")
     router.dispatch(db, _msg(630002, 630002, "/start"))
-    assert len(sent) == 1 and "欢迎" in sent[0]
+    assert len(sent) == 1 and "想看的片，喊一声就来" in sent[0]
 
 
 def test_redpacket_switch_off_dispatch(db, sent):

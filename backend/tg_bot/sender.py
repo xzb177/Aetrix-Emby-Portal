@@ -3,6 +3,7 @@
 import httpx
 
 from backend.integrations.telegram import token as get_telegram_token
+from backend.tg_bot.layout import BRAND_IMAGE, caption_fits
 
 
 def _call(db, method: str, payload: dict) -> tuple[bool, str | None]:
@@ -80,6 +81,118 @@ def send_message(
         payload["reply_markup"] = reply_markup
 
     return _call(db, "sendMessage", payload)
+
+
+def _call_multipart(db, method: str, payload: dict, files: dict) -> tuple[bool, str | None]:
+    """调用需要 multipart/form-data 的 Telegram API（如 sendPhoto）。"""
+    bot_token = get_telegram_token(db)
+    if not bot_token:
+        return False, "token 未配置"
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    try:
+        response = httpx.post(url, data=payload, files=files, timeout=20.0)
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok", False):
+            return False, f"Telegram API 错误: {data.get('description', '未知错误')}"
+        return True, None
+    except httpx.HTTPStatusError as exc:
+        return False, f"HTTP 状态码错误: {exc.response.status_code}"
+    except httpx.TimeoutException:
+        return False, "请求超时"
+    except httpx.RequestError as exc:
+        return False, f"网络请求失败: {exc}"
+    except ValueError:
+        return False, "响应解析失败"
+
+
+def send_photo(
+    db,
+    chat_id: int,
+    caption: str,
+    reply_markup: dict | None = None,
+    photo_path=None,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None]:
+    """发送品牌图卡片；caption 必须由调用方保证在 Telegram 上限内。"""
+    if not caption_fits(caption):
+        return False, "caption 超过 1024 字符"
+    path = photo_path or BRAND_IMAGE
+    try:
+        photo_file = open(path, "rb")
+    except OSError as exc:
+        return False, f"品牌图不可用: {exc}"
+    payload: dict[str, str] = {"chat_id": str(chat_id), "caption": caption}
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        import json
+
+        payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    with photo_file:
+        return _call_multipart(
+            db, "sendPhoto", payload, {"photo": ("aetrix-card.png", photo_file, "image/png")}
+        )
+
+
+def send_panel(
+    db,
+    chat_id: int,
+    text: str,
+    reply_markup: dict | None = None,
+    *,
+    prefer_photo: bool = True,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None]:
+    """优先发送图卡；caption 放不下、资产不可用或 API 失败时回退纯文本。"""
+    if prefer_photo and caption_fits(text):
+        ok, _err = send_photo(db, chat_id, text, reply_markup, parse_mode=parse_mode)
+        if ok:
+            return True, None
+    return send_message(db, chat_id, text, reply_markup, parse_mode=parse_mode)
+
+
+def edit_message_caption(
+    db,
+    chat_id: int,
+    message_id: int,
+    caption: str,
+    reply_markup: dict | None = None,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None]:
+    """原地编辑图片消息的 caption 与按钮（图卡面板间切换专用）。"""
+    if not caption_fits(caption):
+        return False, "caption 超过 1024 字符"
+    payload = {"chat_id": chat_id, "message_id": message_id, "caption": caption}
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    return _call(db, "editMessageCaption", payload)
+
+
+def edit_panel(
+    db,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup: dict | None = None,
+    *,
+    has_photo: bool = False,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None]:
+    """按原消息形态编辑面板：图卡走 caption，旧纯文本消息走 text。
+
+    图卡的新内容超过 caption 上限时不能硬塞，改为另发一条完整纯文本面板；
+    旧消息保留在原处，新面板的返回按钮仍可继续工作。
+    """
+    if has_photo:
+        if caption_fits(text):
+            return edit_message_caption(
+                db, chat_id, message_id, text, reply_markup, parse_mode=parse_mode
+            )
+        return send_message(db, chat_id, text, reply_markup, parse_mode=parse_mode)
+    return edit_message_text(db, chat_id, message_id, text, reply_markup, parse_mode=parse_mode)
 
 
 def delete_message(db, chat_id: int, message_id: int) -> tuple[bool, str | None]:

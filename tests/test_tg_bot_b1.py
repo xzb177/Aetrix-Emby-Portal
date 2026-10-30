@@ -81,7 +81,9 @@ def test_handle_start_bound(db):
     tg_user = {"id": 555, "first_name": "Tom"}
     result = handlers.handle_start(db, tg_user, 555, "")
     text = result[0] if isinstance(result, tuple) else result
-    assert "欢迎回来" in text and "👤" in text and "⭐ Lv." in text
+    # 卡片式主界面（已批准样稿）：标语＋带用户名问候，面板内容在用户面板里
+    assert "✨ 想看的片，喊一声就来" in text
+    assert "你好呀" in text and "Tom" in text and "请选择功能" in text
 
 
 def test_handle_help(db):
@@ -109,7 +111,7 @@ def test_handle_bind_with_valid_code(db):
     text = handlers.handle_bind(db, {"id": 999011}, 999011, "234567")
 
     assert "绑定成功" in text
-    assert "👤 用户名：webuser2" in text
+    assert "👤 用户名 | webuser2" in text
     assert "无有效订阅" in text
     db.refresh(u)
     assert u.telegram_id == 999011
@@ -145,7 +147,7 @@ def test_handle_bind_success_with_subscription(db):
 
     text = handlers.handle_bind(db, {"id": 999013}, 999013, "345678")
 
-    assert "📦 订阅服务：月卡" in text
+    assert "📦 订阅服务 | 月卡" in text
     assert "有有效订阅" in text
 
 

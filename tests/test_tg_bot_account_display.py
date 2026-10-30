@@ -95,7 +95,8 @@ def test_start_bound_private_has_dashboard_no_command_list(db):
     text, _markup = reply
     assert "可用命令" not in text
     assert "左下角" not in text  # 末尾菜单指引行已删
-    assert all(x in text for x in ("alice", "能量", "活力", "夜枭", "120.0", "成就"))
+    # 私聊 /start 已按批准样稿改主卡（仪表盘在用户面板/群聊 /start）
+    assert "✨ 想看的片，喊一声就来" in text and "请选择功能" in text
 
 
 def test_start_bound_group_has_dashboard_no_login_link(db):
@@ -125,7 +126,7 @@ def test_account_full_display(db):
     _watch(db, row.id, [100, 20])
     _achievements(db, row.id)
     text = features.handle_account(db, _tg(), TG, "")
-    assert "能量：" in text and "积分：" not in text
+    assert "🍒 能量 |" in text and "积分：" not in text
     assert "活力值" in text
     # 成就：只展示 enabled 且已解锁的定义；总数 Y 只计 enabled
     assert "已解锁 1／共 2 个" in text
@@ -158,7 +159,7 @@ def test_compact_dashboard_counts(db):
     _achievements(db, row.id)
     text = features.compact_dashboard(db, row)
     assert all(x in text for x in ("alice", "能量", "活力", "夜枭", "120.0"))
-    assert "成就 1/2" in text
+    assert "成就 | 1/2" in text
     assert "订阅" not in text  # 精简版不展开订阅
 
 
