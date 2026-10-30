@@ -111,7 +111,7 @@ def test_handle_bind_with_valid_code(db):
     text = handlers.handle_bind(db, {"id": 999011}, 999011, "234567")
 
     assert "绑定成功" in text
-    assert "👤 用户名 | webuser2" in text
+    assert "👤 <b>账号名称</b> | webuser2" in text
     assert "无有效订阅" in text
     db.refresh(u)
     assert u.telegram_id == 999011
@@ -147,7 +147,7 @@ def test_handle_bind_success_with_subscription(db):
 
     text = handlers.handle_bind(db, {"id": 999013}, 999013, "345678")
 
-    assert "📦 订阅服务 | 月卡" in text
+    assert "📦 <b>订阅服务</b> | 月卡" in text
     assert "有有效订阅" in text
 
 

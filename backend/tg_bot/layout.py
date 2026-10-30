@@ -3,7 +3,7 @@
 所有面板共用同一套呈现约定，业务模块只负责取值与语义：
 
 - 标题行：``▎<b>标题</b>``，主界面改用 ✨ 标语＋问候行；
-- 信息行：``· emoji 标签 | 值``，一行一个数据；
+- 信息行：``· emoji <b>标签</b> | 值``，一行一个数据；
 - 说明、步骤与列表摘要可以跟在信息行之后，但不再另起一套段标题格式；
 - 按钮由调用方按两列网格组织，末行用 :func:`home_row` 整行返回主界面。
 
@@ -42,8 +42,8 @@ def title(text: str, username: str | None = None) -> str:
 
 
 def row(emoji: str, label: str, value) -> str:
-    """标准信息行：``· emoji 标签 | 值``。值允许调用方传入已转义 HTML。"""
-    return f"· {emoji} {label} | {value}"
+    """标准信息行：``· emoji <b>标签</b> | 值``（标签统一加粗）。值允许调用方传入已转义 HTML。"""
+    return f"· {emoji} <b>{label}</b> | {value}"
 
 
 def card(title_line: str, rows: list[str] | tuple[str, ...] = (),

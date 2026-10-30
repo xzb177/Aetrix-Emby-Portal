@@ -56,9 +56,9 @@ def test_layout_title_variants():
 
 
 def test_layout_row_and_card():
-    assert layout.row("🍒", "能量", 16) == "· 🍒 能量 | 16"
+    assert layout.row("🍒", "能量", 16) == "· 🍒 <b>能量</b> | 16"
     text = layout.card("▎标题", [layout.row("🍒", "能量", 16)], ["备注行"])
-    assert text == "▎标题\n· 🍒 能量 | 16\n\n备注行"
+    assert text == "▎标题\n· 🍒 <b>能量</b> | 16\n\n备注行"
 
 
 def test_caption_limit_boundary():
@@ -265,7 +265,7 @@ def test_callback_photo_message_edits_caption(db, monkeypatch):
     _user(db)
     state = _patch_callback_sender(monkeypatch)
     callbacks.handle_callback(db, _cq("points", photo=True))
-    assert state["caption"] and "当前能量" in state["caption"][0]
+    assert state["caption"] and "能量余额" in state["caption"][0]
     assert state["text"] == []
 
 
@@ -273,7 +273,7 @@ def test_callback_legacy_text_message_edits_text(db, monkeypatch):
     _user(db)
     state = _patch_callback_sender(monkeypatch)
     callbacks.handle_callback(db, _cq("points", photo=False))
-    assert state["text"] and "当前能量" in state["text"][0]
+    assert state["text"] and "能量余额" in state["text"][0]
     assert state["caption"] == []
 
 
@@ -282,7 +282,7 @@ def test_callback_user_action_renders_panel(db, monkeypatch):
     state = _patch_callback_sender(monkeypatch)
     callbacks.handle_callback(db, _cq("user"))
     assert state["text"] and "欢迎进入用户面板" in state["text"][0]
-    assert "用户 ID" in state["text"][0]
+    assert "用户编号" in state["text"][0]
 
 
 def test_callback_server_and_renewcode_actions(db, monkeypatch):
@@ -318,7 +318,7 @@ def test_callback_user_action_group_blocked(db, monkeypatch):
     state = _patch_callback_sender(monkeypatch)
     callbacks.handle_callback(db, _cq("user", chat={"id": -100999}))
     assert state["text"] and "私聊" in state["text"][0]
-    assert "用户 ID" not in state["text"][0]
+    assert "用户编号" not in state["text"][0]
 
 
 # ---------- 用户面板与查询文案 ----------
@@ -340,7 +340,7 @@ def test_private_only_text_is_card():
 def test_unbound_card_text(db):
     text = handlers.unbound_card_text(_tg(), "Aetrix")
     assert "想看的片，喊一声就来" in text
-    assert "账号绑定 | 未绑定" in text
+    assert "<b>账号绑定</b> | 未绑定" in text
     assert "Aetrix" in text
 
 
@@ -348,7 +348,7 @@ def test_handle_server_panel(db):
     _user(db)
     text = handlers.handle_server(db, _tg(), TG, "")
     assert text.startswith("▎<b>服务器</b>")
-    assert "站点 | Aetrix" in text
+    assert "<b>站点名称</b> | Aetrix" in text
 
 
 def test_handle_admin_denies_non_staff(db):

@@ -197,8 +197,8 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         text = layout.card(
             layout.title("发红包"),
             [
-                layout.row("🧧", "用法", f"{handlers._cmd('/redpacket')} <i>总能量 个数</i>"),
-                layout.row("💡", "例如", f"{handlers._cmd('/redpacket 100 10')}（100 能量分成 10 个）"),
+                layout.row("🧧", "使用方法", f"{handlers._cmd('/redpacket')} <i>总能量 个数</i>"),
+                layout.row("💡", "红包示例", f"{handlers._cmd('/redpacket 100 10')}（100 能量分成 10 个）"),
             ],
             ["💡 请直接发送命令发红包（按钮不支持输入参数）"],
         )

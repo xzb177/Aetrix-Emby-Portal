@@ -209,8 +209,8 @@ def diagnose_whyplay(db, user, title: str) -> str:
     title = (title or "").strip()
     if not title:
         return _whyplay_card("", [
-            layout.row("❓", "用法", "<code>/whyplay 片名</code>"),
-            layout.row("💡", "例如", "<code>/whyplay 嫁金钗</code>"),
+            layout.row("❓", "使用方法", "<code>/whyplay 片名</code>"),
+            layout.row("💡", "使用示例", "<code>/whyplay 嫁金钗</code>"),
         ])
     items = _find_items(db, title)
     if not items:
@@ -235,7 +235,7 @@ def diagnose_whyplay(db, user, title: str) -> str:
     provider = _item_provider(db, item)
     if provider is None:
         return _whyplay_card(name, [
-            layout.row("❓", "来源", "这部片的来源暂无法识别，请在网页端重试一次，仍播不了请联系客服"),
+            layout.row("❓", "影片来源", "这部片的来源暂无法识别，请在网页端重试一次，仍播不了请联系客服"),
         ])
     provider_text = PROVIDER_TEXT.get(provider, html.escape(str(provider)))
     bindings = (
@@ -263,21 +263,21 @@ def diagnose_whyplay(db, user, title: str) -> str:
         other_text = PROVIDER_TEXT.get(other, html.escape(str(other)))
         return _whyplay_card(name, [
             layout.row(
-                "🔀", "绑定与来源",
+                "🔀", "绑定来源",
                 f"你只绑了{other_text}，这部片是{provider_text}的片，"
                 "按“绑哪播哪”会转存到你绑的盘里再播"),
-            layout.row("▶️", "下一步", "去详情页点一次播放，系统会先转存，转完才可点"),
+            layout.row("▶️", "操作步骤", "去详情页点一次播放，系统会先转存，转完才可点"),
         ])
     variant = _ready_variant(db, user.id, item.id)
     if variant is not None:
         if getattr(variant, "share_revoked_at", None) is not None:
             return _whyplay_card(name, [
                 layout.row("📦", "副本状态", "副本已就绪，但分享权限曾被收回，重新点播时会自动恢复"),
-                layout.row("▶️", "下一步", "如果仍播不了，把这部片从播放器的“继续观看”里移除，再从详情页重新点播放"),
+                layout.row("▶️", "操作步骤", "如果仍播不了，把这部片从播放器的“继续观看”里移除，再从详情页重新点播放"),
             ])
         return _whyplay_card(name, [
             layout.row("📦", "副本状态", "副本已就绪，服务端这边没问题"),
-            layout.row("▶️", "下一步", "如果播放器里仍播不了，多半是它用了旧链接：把这部片从“继续观看”里移除（或退出重进），再从详情页重新点播放，拿到新链接即可"),
+            layout.row("▶️", "操作步骤", "如果播放器里仍播不了，多半是它用了旧链接：把这部片从“继续观看”里移除（或退出重进），再从详情页重新点播放，拿到新链接即可"),
         ])
     job = _latest_job(db, user.id, item.id)
     if job is not None:
@@ -291,16 +291,16 @@ def diagnose_whyplay(db, user, title: str) -> str:
             reason = JOB_ERROR_TEXT.get(kind, f"原因码：{html.escape(kind)}" if kind else "未知原因")
             return _whyplay_card(name, [
                 layout.row("📦", "转存状态", f"上一次转存失败（{reason}）"),
-                layout.row("▶️", "下一步", "重新点播一次可再试，仍失败请联系客服"),
+                layout.row("▶️", "操作步骤", "重新点播一次可再试，仍失败请联系客服"),
             ])
         if job.status == "done":
             return _whyplay_card(name, [
                 layout.row("📦", "转存状态", "转存任务已完成，但副本行暂未就绪"),
-                layout.row("▶️", "下一步", "重新点播一次，仍播不了请联系客服"),
+                layout.row("▶️", "操作步骤", "重新点播一次，仍播不了请联系客服"),
             ])
     return _whyplay_card(name, [
         layout.row("📦", "转存状态", "这部片还没有转存到你的盘里"),
-        layout.row("▶️", "下一步", "去详情页点一次播放，系统会先转存再播，转完才可点"),
+        layout.row("▶️", "操作步骤", "去详情页点一次播放，系统会先转存再播，转完才可点"),
     ])
 
 

@@ -87,7 +87,7 @@ def test_checkin_vitality_gained(db):
     db.commit()
     user = _make_user(db, username="u5", tg_id=910005, is_welfare=True)
     text = handlers.handle_checkin(db, {"id": 910005}, 910005, "")
-    assert "⚡ 活力值 | +1" in text
+    assert "⚡ <b>活力数值</b> | +1" in text
 
 
 def test_checkin_duplicate(db):
@@ -114,20 +114,20 @@ def test_points_bound(db):
     db.commit()
     text = handlers.handle_points(db, {"id": 910008}, 910008, "")
     assert "▎<b>我的能量</b>" in text
-    assert "✨ 当前能量 | 250" in text
+    assert "✨ <b>能量余额</b> | 250" in text
 
 
 def test_points_vitality_row(db):
     user = _make_user(db, username="u9", tg_id=910009, is_welfare=True)
     text = handlers.handle_points(db, {"id": 910009}, 910009, "")
-    assert "✨ 当前能量" in text
-    assert "活力值" in text
+    assert "✨ <b>能量余额</b>" in text
+    assert "活力数值" in text
 
 
 def test_redeem_no_args(db):
     user = _make_user(db, username="u10", tg_id=910010)
     text = handlers.handle_redeem(db, {"id": 910010}, 910010, "")
-    assert "用法" in text
+    assert "使用方法" in text
 
 
 def test_redeem_invalid_code(db):

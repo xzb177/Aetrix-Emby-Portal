@@ -179,14 +179,14 @@ def test_classification_and_report(db, member):
     _seed(db)
     text, markup = handlers.handle_reconcile(db, {"id": STAFF_TG}, STAFF_TG, "")
     # 总体：已绑号 5 人（erin 未绑 TG 不计）
-    assert "已绑号用户 | 5" in text
+    assert "<b>已绑号用户</b> | 5" in text
     # ② 已绑但不在群：bob + carol = 2
-    assert "已绑但不在群 | 2 人" in text
+    assert "<b>已绑但不在群</b> | 2 人" in text
     assert "bob" in text and "carol" in text
     # ③ 其中仍有公益资格：carol = 1
-    assert "仍有公益资格 | 1 人" in text
+    assert "<b>仍有公益资格</b> | 1 人" in text
     # 未核验：dave = 1，且不被算进「不在群」
-    assert "未核验 | 1 人" in text
+    assert "<b>未核验</b> | 1 人" in text
     assert "dave" in text
     # ① 不可枚举的覆盖声明必须在报告里
     assert "无法全量统计" in text
