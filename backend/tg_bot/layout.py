@@ -17,6 +17,16 @@ from pathlib import Path
 
 CAPTION_LIMIT = 1024
 BRAND_IMAGE = Path(__file__).with_name("assets") / "aetrix-card.png"
+REDPACKET_IMAGE = Path(__file__).with_name("assets") / "redpacket-cover.jpg"
+
+
+def panel_image(override=None):
+    """面板图解析：给了专属图且文件在就用专属图，缺失一律回退品牌图。"""
+    if override is not None and Path(override).is_file():
+        return Path(override)
+    return BRAND_IMAGE
+
+
 HOME_CALLBACK = "menu:main"
 
 

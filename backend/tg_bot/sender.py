@@ -2,8 +2,10 @@
 
 import httpx
 
+from pathlib import Path
+
 from backend.integrations.telegram import token as get_telegram_token
-from backend.tg_bot.layout import BRAND_IMAGE, caption_fits
+from backend.tg_bot.layout import BRAND_IMAGE, caption_fits, panel_image
 
 
 def _call(db, method: str, payload: dict) -> tuple[bool, str | None]:
@@ -186,6 +188,14 @@ def _call_multipart_ex(db, method: str, payload: dict, files: dict) -> tuple[boo
         return False, "响应解析失败", None
 
 
+def _photo_upload(path) -> tuple[str, str]:
+    """按扩展名给出 multipart 上传的 (文件名, MIME)；未知扩展名按 PNG。"""
+    suffix = Path(path).suffix.lower()
+    mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(
+        suffix, "image/png")
+    return Path(path).name, mime
+
+
 def send_photo(
     db,
     chat_id: int,
@@ -197,7 +207,7 @@ def send_photo(
     """发送品牌图卡片；caption 必须由调用方保证在 Telegram 上限内。"""
     if not caption_fits(caption):
         return False, "caption 超过 1024 字符"
-    path = photo_path or BRAND_IMAGE
+    path = panel_image(photo_path)
     try:
         photo_file = open(path, "rb")
     except OSError as exc:
@@ -209,9 +219,10 @@ def send_photo(
         import json
 
         payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    name, mime = _photo_upload(path)
     with photo_file:
         return _call_multipart(
-            db, "sendPhoto", payload, {"photo": ("aetrix-card.png", photo_file, "image/png")}
+            db, "sendPhoto", payload, {"photo": (name, photo_file, mime)}
         )
 
 
@@ -226,7 +237,7 @@ def send_photo_ex(
     """send_photo 的带 message_id 版本；前置校验与旧接口一致。"""
     if not caption_fits(caption):
         return False, "caption 超过 1024 字符", None
-    path = photo_path or BRAND_IMAGE
+    path = panel_image(photo_path)
     try:
         photo_file = open(path, "rb")
     except OSError as exc:
@@ -238,9 +249,10 @@ def send_photo_ex(
         import json
 
         payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    name, mime = _photo_upload(path)
     with photo_file:
         ok, err, result = _call_multipart_ex(
-            db, "sendPhoto", payload, {"photo": ("aetrix-card.png", photo_file, "image/png")}
+            db, "sendPhoto", payload, {"photo": (name, photo_file, mime)}
         )
     if not ok or not result:
         return ok, err, None
@@ -255,14 +267,62 @@ def send_panel(
     reply_markup: dict | None = None,
     *,
     prefer_photo: bool = True,
+    photo_path=None,
     parse_mode: str | None = "HTML",
 ) -> tuple[bool, str | None]:
-    """优先发送图卡；caption 放不下、资产不可用或 API 失败时回退纯文本。"""
+    """优先发送图卡；caption 放不下、资产不可用或 API 失败时回退纯文本。
+
+    photo_path 是面板专属图覆盖（默认品牌图）；覆盖图缺失时发送层
+    自动回退品牌图，品牌图也发不出才回退纯文本，面板不会发不出去。
+    """
     if prefer_photo and caption_fits(text):
-        ok, _err = send_photo(db, chat_id, text, reply_markup, parse_mode=parse_mode)
+        ok, _err = send_photo(
+            db, chat_id, text, reply_markup, photo_path=photo_path, parse_mode=parse_mode)
         if ok:
             return True, None
     return send_message(db, chat_id, text, reply_markup, parse_mode=parse_mode)
+
+
+def edit_message_media(
+    db,
+    chat_id: int,
+    message_id: int,
+    caption: str,
+    reply_markup: dict | None = None,
+    photo_path=None,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None]:
+    """原地替换图卡消息的图片与 caption（editMessageMedia）。
+
+    caption 编辑换不了图片，面板要换专属图时走这里；photo_path
+    缺失时回退品牌图（与 send_photo 同一解析口）。失败由调用方决定
+    是否回退普通 caption 编辑。
+    """
+    if not caption_fits(caption):
+        return False, "caption 超过 1024 字符"
+    path = panel_image(photo_path)
+    try:
+        photo_file = open(path, "rb")
+    except OSError as exc:
+        return False, f"面板图不可用: {exc}"
+    import json
+
+    media: dict[str, str] = {
+        "type": "photo", "media": "attach://photo", "caption": caption}
+    if parse_mode is not None:
+        media["parse_mode"] = parse_mode
+    payload: dict[str, str] = {
+        "chat_id": str(chat_id),
+        "message_id": str(message_id),
+        "media": json.dumps(media, ensure_ascii=False),
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    name, mime = _photo_upload(path)
+    with photo_file:
+        return _call_multipart(
+            db, "editMessageMedia", payload, {"photo": (name, photo_file, mime)}
+        )
 
 
 def edit_message_caption(
