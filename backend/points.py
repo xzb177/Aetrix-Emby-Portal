@@ -17,12 +17,20 @@ SystemConfig 键（实际生效的签到键在 backend/api/economy._checkin_rule
 - checkin_streak_bonus（连签加成）
 - points_chat_daily_cap=20, points_chat_per_msg=1
 - points_redeem_7d=100, points_redeem_30d=300
+
+兑换门槛（2026-10-30 用户亲点方案，管理后台「积分与公益配置 → 获取与兑换」可配）：
+- welfare_redeem_self_earned_only=true：兑换资格只认自挣能量（见下方来源分类）
+- welfare_redeem_min_account_age_days=3：自助兑换的注册满天数（0=关）
+- welfare_redeem_min_active_days=2：自助兑换需近 7 天活跃天数（0=关）
+只卡 redeem_welfare 这一个自助消费口；管理员发放（含后续机器人申请流批准）
+与买查看行、转让、下注等其余消费一律不走这道门。
 """
 
 from __future__ import annotations
 
 import logging
 import random
+from datetime import datetime, timedelta
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +40,127 @@ from backend import models
 from backend.api import economy
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== 能量来源分类（全仓唯一实现） ====================
+# PointsLog.type → 是否「自挣」。自挣＝本人真实行为入账（签到、发言/影评）；
+# 其余一律非自挣：转入、邀请类、红包、卡码、充值/退款、管理员发放、抽奖、
+# 老虎机赢分/退注、观影榜活动发分。未知 type 按非自挣处理（fail-closed：
+# 新增入账来源必须先来这里登记分类，才可能被认作自挣）。
+#
+# 口径说明：
+# - 站内影评与 TG 发言共用 award_chat_points 入账，type 同为 "chat"。
+# - 观影本身不直接产生能量入账（观影奖励走活力值，不进能量台账）；
+#   rankpush 是观影榜活动奖品（名次发分），按活动口径计非自挣。
+# - 回款类（slots_refund、红包过期退回、订单 refund）不是行为入账，
+#   不恢复自挣额——与「支出先扣自挣」的公式口径一致（见 self_earned_balance）。
+# - 支出类 type（redeem/view_unlock/...）分类无实际作用（公式只对正额入账
+#   按分类汇总），列全是为了让覆盖测试能逐一对账。
+POINT_TYPE_SELF_EARNED: dict[str, bool] = {
+    # 自挣（本人行为）
+    "checkin": True,
+    "chat": True,
+    # 非自挣入账
+    "transfer_in": False,
+    "invitee": False,
+    "rebate": False,
+    "promotion": False,
+    "redpacket": False,
+    "code_redeem": False,
+    "exchange": False,
+    "recharge": False,
+    "refund": False,
+    "admin_grant": False,
+    "lottery_win": False,
+    "slots_win": False,
+    "slots_jackpot": False,
+    "slots_refund": False,
+    "rankpush": False,
+    # 支出（分类仅作登记，公式不消费）
+    "redeem": False,
+    "view_unlock": False,
+    "vitality_recharge": False,
+    "subscription_buy": False,
+    "subscription_auto_renew": False,
+    "transfer_out": False,
+    "transfer_fee": False,
+    "slots_bet": False,
+    "admin_deduct": False,
+    "redpacket_fee": False,
+}
+
+SELF_EARNED_POINT_TYPES = frozenset(
+    t for t, earned in POINT_TYPE_SELF_EARNED.items() if earned
+)
+
+
+def is_self_earned_point_type(type_: str) -> bool:
+    """某个 PointsLog.type 是否算自挣能量（未登记的一律 False）。"""
+    return POINT_TYPE_SELF_EARNED.get(type_, False)
+
+
+def self_earned_balance(db: Session, user: models.WebUser) -> int:
+    """用户当前余额中可归于「自挣」的部分（台账纯函数，不新增余额字段）。
+
+    公式（2026-10-30 定版，存量用户上线即按此口径折算、无特殊过渡分支）：
+        max(0, min(当前余额, 自挣类累计入账 − 累计全部支出))
+    即：花钱先花自挣挣来的部分。这样富余余额里混着多少转入/赠送，
+    都不会抬高可兑换资格的额度；正常自挣自花的用户则恒等于其余额
+    （自挣入账 − 支出 = 余额，当且仅当没有非自挣入账时）。
+    """
+    self_inflow = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
+        models.PointsLog.user_id == user.id,
+        models.PointsLog.amount > 0,
+        models.PointsLog.type.in_(SELF_EARNED_POINT_TYPES),
+    ).scalar() or 0
+    total_spent = -(db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
+        models.PointsLog.user_id == user.id,
+        models.PointsLog.amount < 0,
+    ).scalar() or 0)
+    balance = int(
+        db.query(models.WebUser.points).filter(models.WebUser.id == user.id).scalar() or 0
+    )
+    return max(0, min(balance, int(self_inflow) - int(total_spent)))
+
+
+def _recent_active_days(db: Session, user_id: int, window_days: int = 7) -> int:
+    """近 window_days 个自然日（含今天，上海日界）内的活跃天数。
+
+    硬信号（签到 CheckinRecord、播放 PlaybackSession）出现的天数直接计数；
+    发言（chat 类入账）出现的天数最多只计 1 天——发言是圈外主攒分通道，
+    若全额计数，水发言即可刷满活跃门，等于没加门（方案 A2 口径）。
+    签到对非公益用户同样落记录（奖励 0），故新人可用签到攒活跃天数。
+    """
+    today_start = economy._today_start_utc_naive()
+    window_start = today_start - timedelta(days=window_days - 1)
+
+    def _bucket(ts) -> int:
+        return (ts - window_start).days
+
+    hard_days: set[int] = set()
+    for (ts,) in db.query(models.CheckinRecord.checkin_date).filter(
+        models.CheckinRecord.user_id == user_id,
+        models.CheckinRecord.checkin_date >= window_start,
+    ).all():
+        if ts:
+            hard_days.add(_bucket(ts))
+    from backend.emby_server import models as em_models
+    for (ts,) in db.query(em_models.PlaybackSession.start_time).filter(
+        em_models.PlaybackSession.user_id == user_id,
+        em_models.PlaybackSession.start_time >= window_start,
+    ).all():
+        if ts:
+            hard_days.add(_bucket(ts))
+    chat_days: set[int] = set()
+    for (ts,) in db.query(models.PointsLog.created_at).filter(
+        models.PointsLog.user_id == user_id,
+        models.PointsLog.type == "chat",
+        models.PointsLog.amount > 0,
+        models.PointsLog.created_at >= window_start,
+    ).all():
+        if ts:
+            chat_days.add(_bucket(ts))
+    return len(hard_days) + (1 if chat_days - hard_days else 0)
 
 
 def _get_int(db: Session, key: str, default: int) -> int:
@@ -174,8 +303,20 @@ def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
     """能量兑换公益天数
 
     days_option: 只能是 7 或 30
-    流程：扣能量 → 调 portal.grant_welfare 开通/续期
+    流程：过兑换门槛（来源限定＋双钥匙）→ 原子扣能量 → portal.grant_welfare
     注意：grant_welfare 内部会 db.commit()，所以扣能量后不再单独 commit
+
+    门槛（2026-10-30 定版，只卡这个自助口）：
+    1. 来源限定（welfare_redeem_self_earned_only，默认开）：花费额必须能被
+       自挣可用额覆盖（见 self_earned_balance），转入/赠送/中奖的能量不能
+       用来兑换资格——掐断「A 攒分供 B 开号」与小号矩阵变现。
+    2. 号龄（welfare_redeem_min_account_age_days，默认 3，0=关）。
+    3. 活跃（welfare_redeem_min_active_days，默认 2，0=关）：近 7 天活跃
+       天数，口径见 _recent_active_days。
+    判定全程持用户行锁，与随后的原子扣减同一事务：否则并发两笔兑换可
+    各自通过自挣额判定、合计兑出超过自挣额的天数（总余额原子扣只防
+    余额双花，防不住归属双花）。不满足时明确报错差什么，不静默拒绝；
+    管理员发放是豁免通道，不经过这里。
     """
     if days_option not in (7, 30):
         raise ValueError("仅支持兑换 7 天或 30 天")
@@ -183,6 +324,51 @@ def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
     cost_key = "points_redeem_7d" if days_option == 7 else "points_redeem_30d"
     default_cost = 100 if days_option == 7 else 300
     cost = _get_int(db, cost_key, default_cost)
+
+    economy.lock_user_row(db, user.id)
+    try:
+        balance = int(
+            db.query(models.WebUser.points).filter(
+                models.WebUser.id == user.id).scalar() or 0
+        )
+        if balance < cost:
+            raise ValueError(f"能量不足，需要 {cost} 能量，当前 {balance} 能量")
+
+        if economy._get_bool_config(db, "welfare_redeem_self_earned_only", True):
+            earned = self_earned_balance(db, user)
+            if earned < cost:
+                raise ValueError(
+                    f"自挣能量不足：兑换公益资格只能使用自己挣的能量"
+                    f"（签到、发言等），当前自挣能量 {earned}，需要 {cost}；"
+                    f"转入、赠送、中奖的能量不能用于兑换资格"
+                )
+
+        min_age_days = max(
+            0, _get_int(db, "welfare_redeem_min_account_age_days", 3))
+        if min_age_days > 0:
+            created_at = user.created_at
+            age_days = (datetime.now() - created_at).days if created_at else 0
+            if age_days < min_age_days:
+                raise ValueError(
+                    f"账号注册未满 {min_age_days} 天（当前 {age_days} 天，"
+                    f"还差 {min_age_days - age_days} 天），暂时不能自助兑换"
+                    f"公益资格；可联系管理员发放"
+                )
+
+        min_active_days = min(
+            7, max(0, _get_int(db, "welfare_redeem_min_active_days", 2)))
+        if min_active_days > 0:
+            active_days = _recent_active_days(db, user.id)
+            if active_days < min_active_days:
+                raise ValueError(
+                    f"近 7 天活跃天数不足（当前 {active_days} 天，"
+                    f"需要 {min_active_days} 天；签到、播放算活跃，"
+                    f"发言最多计 1 天），暂时不能自助兑换公益资格；"
+                    f"可联系管理员发放"
+                )
+    except ValueError:
+        db.rollback()  # 释放行锁（与 award_chat_points 的回滚口径一致）
+        raise
 
     # P1 修复（审查）：「先读余额判断、再 _add_points 扣」是读-改-写双花。
     # _spend_points 把「够不够」放进 UPDATE 的 WHERE 由数据库原子判定。

@@ -116,6 +116,11 @@ WELFARE_CONFIG_SCHEMA: dict[str, tuple] = {
     "points_redeem_30d": ("int", 0, _BIG),
     # G1 资格码月配额：0 在读侧是「不限」，故下限 0 合法
     "welfare_code_monthly_quota": ("int", 0, _BIG),
+    # 兑换资格门槛：来源限定开关 word 风格 ("bool",)（读侧 _get_bool_config
+    # 只认 "true"）；号龄上限 365 天；活跃天数窗口固定近 7 天，故钳 0~7
+    "welfare_redeem_self_earned_only": ("bool",),
+    "welfare_redeem_min_account_age_days": ("int", 0, 365),
+    "welfare_redeem_min_active_days": ("int", 0, 7),
     "welfare_grace_days": ("int", 0, 3650),
     "welfare_streak_renew_min": ("int", 0, 3650),
     # 连签保资格（streak_renew）总开关＋续期天数：此前无开关、续期天数在
