@@ -211,8 +211,13 @@ def ensure_playback_allowed(db: Session, user: models.WebUser,
     """
     if not can_play(db, user, realm_id):
         raise HTTPException(status_code=403, detail=gate_message(db))
-    # C1 活力值：公益服用户活力值低于阈值时限制观影（管理员/非公益用户不受影响）
-    _vitality.ensure_can_play(db, user)
+    # C1 活力值：只拦公益服播放——活力是公益服的观影燃料，付费服用户买的是
+    # 订阅权益，不该被活力误拦（管理员/非公益用户本来就不受活力影响）。
+    # 判服必须用本模块的 scoped 版 is_free_realm（没传 realm_id 时回退本进程
+    # 的服/面板当前服）；realms.is_free_realm(db, None) 恒为 False，误用它会
+    # 把公益服的活力门也整体关掉（lottery_governance.py 有同款踩坑注释）。
+    if is_free_realm(db, realm_id):
+        _vitality.ensure_can_play(db, user)
 
 
 def download_allowed(db: Session, realm_id: Optional[int] = None) -> bool:
