@@ -172,8 +172,8 @@ def _render_menu(db, tg_user: dict, tg_id: int, chat_id: int, is_private: bool,
         text = layout.card(
             layout.title("发红包"),
             [
-                layout.row("🧧", "用法", f"{handlers._cmd('/redpacket')} <i>总积分 个数</i>"),
-                layout.row("💡", "例如", f"{handlers._cmd('/redpacket 100 10')}（100 积分分成 10 个）"),
+                layout.row("🧧", "用法", f"{handlers._cmd('/redpacket')} <i>总能量 个数</i>"),
+                layout.row("💡", "例如", f"{handlers._cmd('/redpacket 100 10')}（100 能量分成 10 个）"),
             ],
             ["💡 请直接发送命令发红包（按钮不支持输入参数）"],
         )
@@ -560,7 +560,7 @@ def _handle_redpacket_claim(db, callback_query: dict, redpacket_enabled: bool | 
         return
 
     amount = result["amount"]
-    _answer(f"🧧 恭喜抢到 {amount} 积分！")
+    _answer(f"🧧 恭喜抢到 {amount} 能量！")
     if chat.get("type") in ("group", "supergroup"):
         _send_claim_feedback(db, chat_id, user, amount, packet.remaining_count)
     logger.info(

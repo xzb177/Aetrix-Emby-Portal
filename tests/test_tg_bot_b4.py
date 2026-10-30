@@ -130,14 +130,14 @@ def test_group_whitelist_allows(db, sent):
     _set_cfg(db, "bot_group_ids", "-100111, -100222")
     _make_user(db, "g2", 610002)
     router.dispatch(db, _msg(610002, -100222, "/points", "group"))
-    assert len(sent) == 1 and "当前积分" in sent[0]
+    assert len(sent) == 1 and "当前能量" in sent[0]
 
 
 def test_private_chat_unaffected_by_whitelist(db, sent):
     _set_cfg(db, "bot_group_ids", "-100111")
     _make_user(db, "p1", 610003)
     router.dispatch(db, _msg(610003, 610003, "/points", "private"))
-    assert len(sent) == 1 and "当前积分" in sent[0]
+    assert len(sent) == 1 and "当前能量" in sent[0]
 
 
 def test_bind_code_in_blocked_group_ignored(db, sent):
@@ -225,7 +225,7 @@ def test_user_rate_limit_triggers(db, sent):
     router.dispatch(db, _msg(640001, 640001, "/points"))
     router.dispatch(db, _msg(640001, 640001, "/points"))
     assert len(sent) == 2
-    assert "当前积分" in sent[0]
+    assert "当前能量" in sent[0]
     assert sent[1] == "操作太快了，稍后再试"
 
 
@@ -251,7 +251,7 @@ def test_group_rate_limit_drops_silently(db, sent):
         router.dispatch(db, _msg(tg_id, -100650, "/points", "group"))
     # 前两条正常处理，第三条静默丢弃（无任何回复）
     assert len(sent) == 2
-    assert all("当前积分" in s for s in sent)
+    assert all("当前能量" in s for s in sent)
 
 
 def test_group_chatter_does_not_consume_budget(db, sent):
@@ -260,7 +260,7 @@ def test_group_chatter_does_not_consume_budget(db, sent):
     for _ in range(25):
         router.dispatch(db, _msg(650011, -100651, "普通聊天内容", "group"))
     router.dispatch(db, _msg(650011, -100651, "/points", "group"))
-    assert len(sent) == 1 and "当前积分" in sent[0]
+    assert len(sent) == 1 and "当前能量" in sent[0]
 
 
 def test_group_window_slides():

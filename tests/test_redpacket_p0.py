@@ -86,7 +86,7 @@ def test_send_no_fee_when_disabled(db):
 def test_insufficient_balance_includes_fee(db):
     """余额不足提示要包含手续费"""
     u = _make_user(db, "sender4", points=102)
-    with pytest.raises(ValueError, match="积分不足"):
+    with pytest.raises(ValueError, match="能量不足"):
         rp.send_packet(db, u, 100, 2)
 
 

@@ -213,7 +213,7 @@ def _group_menu_markup() -> dict:
     rows: list[list[dict]] = [
         [
             {"text": "✅ 签到", "callback_data": "menu:checkin"},
-            {"text": "✨ 积分", "callback_data": "menu:points"},
+            {"text": "✨ 能量", "callback_data": "menu:points"},
         ],
         [
             {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
@@ -221,7 +221,7 @@ def _group_menu_markup() -> dict:
         ],
         [
             {"text": "👤 账号中心", "callback_data": "menu:account"},
-            {"text": "🏆 积分榜", "callback_data": "menu:rank"},
+            {"text": "🏆 能量榜", "callback_data": "menu:rank"},
         ],
         [
             {"text": "🔥 求片榜", "callback_data": "menu:requestboard"},
@@ -259,8 +259,8 @@ def user_panel_markup() -> dict:
             {"text": "🎟️ 续期", "callback_data": "menu:login"},
         ],
         [
-            {"text": "✨ 积分", "callback_data": "menu:points"},
-            {"text": "🏆 积分榜", "callback_data": "menu:rank"},
+            {"text": "✨ 能量", "callback_data": "menu:points"},
+            {"text": "🏆 能量榜", "callback_data": "menu:rank"},
         ],
         [
             {"text": "🎲 抽奖", "callback_data": "menu:lottery"},
@@ -370,7 +370,7 @@ def handle_help(db, tg_user: dict, chat_id: int, args: str) -> str:
     return layout.card(
         layout.title("使用帮助"),
         [
-            layout.row("🤖", "用途", "公益服快捷操作：签到领积分、查积分、发红包、抽奖，以及接收求片进度、订阅到期等通知"),
+            layout.row("🤖", "用途", "公益服快捷操作：签到领能量、查能量、发红包、抽奖，以及接收求片进度、订阅到期等通知"),
             layout.row("📋", "全部命令", "点左下角的 / 菜单查看"),
             layout.row("💬", "遇到问题", "请在网页端联系客服"),
         ],
@@ -405,9 +405,9 @@ def handle_checkin(db, tg_user: dict, chat_id: int, args: str) -> str:
         return "签到失败，请稍后再试"
     rows = [layout.row("📅", "连签", f"已连续签到 <b>{award['streak']}</b> 天")]
     if award["points_awarded"] > 0:
-        rows.insert(0, layout.row("💰", "积分", f"<b>+{award['points_awarded']}</b>"))
+        rows.insert(0, layout.row("💰", "能量", f"<b>+{award['points_awarded']}</b>"))
     else:
-        rows.append(layout.row("💡", "积分", "积分仅限公益服用户领取"))
+        rows.append(layout.row("💡", "能量", "能量仅限公益服用户领取"))
     if award.get("vitality_gained", 0) > 0:
         rows.append(layout.row("⚡", "活力值", f"+{award['vitality_gained']}"))
     return layout.card(layout.title("签到成功！"), rows)
@@ -418,7 +418,7 @@ def handle_points(db, tg_user: dict, chat_id: int, args: str) -> str:
     if user is None:
         return _bind_guide_text()
     points = int(user.points or 0)
-    rows = [layout.row("✨", "当前积分", points)]
+    rows = [layout.row("✨", "当前能量", points)]
     try:
         from backend import vitality as _vitality
 
@@ -446,23 +446,23 @@ def handle_chatpoints(db, tg_user: dict, chat_id: int, args: str) -> str:
     per_msg = status["per_msg"]
     if per_msg == 0:
         return layout.card(
-            layout.title("群发言积分"),
+            layout.title("群发言能量"),
             [
-                layout.row("💬", "发言奖励", "当前已关闭，在群里发言暂不发放积分"),
-                layout.row("🏆", "累计发言积分", f"<b>{status['total_earned']}</b> 分"),
+                layout.row("💬", "发言奖励", "当前已关闭，在群里发言暂不发放能量"),
+                layout.row("🏆", "累计发言能量", f"<b>{status['total_earned']}</b> 能量"),
             ],
         )
     filled = round(earned / cap * 10) if cap > 0 else 0
     bar = "▓" * filled + "░" * (10 - filled)
     rows = [
-        layout.row("📅", "今日已得", f"<b>{earned}</b> / {cap} 分 <code>{bar}</code>"),
-        layout.row("🏆", "累计发言积分", f"<b>{status['total_earned']}</b> 分"),
-        layout.row("📏", "规则", f"在公益群里发言每条 +{per_msg} 分，每天最多 {cap} 分"),
+        layout.row("📅", "今日已得", f"<b>{earned}</b> / {cap} 能量 <code>{bar}</code>"),
+        layout.row("🏆", "累计发言能量", f"<b>{status['total_earned']}</b> 能量"),
+        layout.row("📏", "规则", f"在公益群里发言每条 +{per_msg} 能量，每天最多 {cap} 能量"),
     ]
     notes = []
     if earned >= cap:
-        notes.append("✅ 今日发言积分已达上限，明天再继续。")
-    return layout.card(layout.title("群发言积分"), rows, notes)
+        notes.append("✅ 今日发言能量已达上限，明天再继续。")
+    return layout.card(layout.title("群发言能量"), rows, notes)
 
 
 def handle_redeem(db, tg_user: dict, chat_id: int, args: str) -> str:
@@ -602,8 +602,8 @@ def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
         return layout.card(
             layout.title("发红包"),
             [
-                layout.row("🧧", "用法", "/redpacket <i>总积分 个数</i>"),
-                layout.row("💡", "例如", f"{_cmd('/redpacket 100 10')}（100 积分分成 10 个）"),
+                layout.row("🧧", "用法", "/redpacket <i>总能量 个数</i>"),
+                layout.row("💡", "例如", f"{_cmd('/redpacket 100 10')}（100 能量分成 10 个）"),
             ],
         )
     try:
@@ -612,7 +612,7 @@ def handle_redpacket(db, tg_user: dict, chat_id: int, args: str,
         return layout.card(
             layout.title("发红包"),
             [
-                layout.row("🧧", "用法", "/redpacket <i>总积分 个数</i>"),
+                layout.row("🧧", "用法", "/redpacket <i>总能量 个数</i>"),
                 layout.row("💡", "例如", _cmd('/redpacket 100 10')),
             ],
         )

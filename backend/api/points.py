@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""公益服积分 API 路由（挂载到 backend/points.py 的 router）
+"""公益服能量 API 路由（挂载到 backend/points.py 的 router）
 
 端点（前缀 /api/points）：
 - POST /signin          【已废弃】转发到 POST /api/user/economy/checkin
-- POST /redeem          积分兑换公益天数 {days_option: 7 | 30}
-- GET  /balance         积分概览（余额/今日获得/累计获得）
+- POST /redeem          能量兑换公益天数 {days_option: 7 | 30}
+- GET  /balance         能量概览（余额/今日获得/累计获得）
 - GET  /welfare-status  福利资格状态（本人：是否公益用户 + 资格到期日）
-- GET  /logs            积分明细（分页）
+- GET  /logs            能量明细（分页）
 - POST /chat-award      发言奖励（内部调用，供聊天模块用）
 """
 
@@ -22,7 +22,7 @@ from backend.api.user import get_current_user
 from backend.database import get_db
 from backend.tg_bind import require_tg_bound
 
-router = APIRouter(prefix="/api/points", tags=["公益服-积分"])
+router = APIRouter(prefix="/api/points", tags=["公益服-能量"])
 
 
 class RedeemRequest(BaseModel):
@@ -52,7 +52,7 @@ def redeem_welfare(
     db: Session = Depends(get_db),
     _tg: models.WebUser = Depends(require_tg_bound)
 ):
-    """积分兑换公益天数"""
+    """能量兑换公益天数"""
     try:
         return points_mod.redeem_welfare(db, current_user, req.days_option)
     except ValueError as e:
@@ -73,7 +73,7 @@ def points_balance(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """积分概览"""
+    """能量概览"""
     return points_mod.get_points_summary(db, current_user)
 
 
@@ -84,7 +84,7 @@ def points_logs(
     current_user: models.WebUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """积分明细（分页）"""
+    """能量明细（分页）"""
     q = db.query(models.PointsLog).filter(
         models.PointsLog.user_id == current_user.id
     ).order_by(models.PointsLog.id.desc())
@@ -118,7 +118,7 @@ def chat_award(
     """发言奖励（内部接口）
 
     P1 修复（审查）：此前任意登录用户可给任意 user_id 发奖励，
-    零发言每天白嫖上限积分。现强制只能给自己发。
+    零发言每天白嫖上限能量。现强制只能给自己发。
     """
     if user_id != current_user.id:
         raise HTTPException(status_code=403, detail="只能为自己领取发言奖励")

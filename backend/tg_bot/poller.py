@@ -31,12 +31,12 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("help", "帮助"),
     ("bind", "绑定 Telegram"),
     ("checkin", "每日签到"),
-    ("points", "查积分"),
+    ("points", "查能量"),
     ("account", "账号中心"),
     ("me", "账号中心"),
     ("request", "求片"),
     ("myrequests", "我的求片"),
-    ("rank", "积分排行榜"),
+    ("rank", "能量排行榜"),
     ("govlog", "治理审计日志"),
     ("level", "会员等级"),
     ("report", "举报求片"),
@@ -49,7 +49,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("redpacket", "发红包"),
     ("lottery", "抽奖"),
     ("redeem", "兑换码兑换"),
-    ("chatpoints", "群发言积分查询"),
+    ("chatpoints", "群发言能量查询"),
     ("bindings", "查网盘绑定"),
     ("transfers", "查转存进度"),
     ("whyplay", "为什么播不了"),
@@ -168,7 +168,7 @@ def _process_updates(updates: list, offset: int, save) -> int:
 
     以前入队即推进 offset：进程崩溃或队列满（put_nowait 直接丢弃）都会永久丢 update。
     现在队列满就阻塞等待；全部 handler 跑完才 save。崩溃会重放这一批：
-    抢红包（uq_rpc_packet_user）、兑换码（uq_code_redemption_user）、群发言积分
+    抢红包（uq_rpc_packet_user）、兑换码（uq_code_redemption_user）、群发言能量
     （uq_chat_points_msg）、绑定码（used_at）有库级幂等；发红包 /redpacket 重放可能重复（待补）。
     """
     max_id = offset
