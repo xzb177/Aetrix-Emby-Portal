@@ -33,7 +33,6 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from backend import models as base_models
 from backend.emby_server import models as em
@@ -44,13 +43,25 @@ from backend.integrations import store
 
 
 @pytest.fixture()
-def db_factory():
+def db_factory(tmp_path):
+    # 文件库 + 默认连接池：每条线程（两路 to_thread 认领线程、心跳
+    # 线程、主线程）各自独立连接——与生产真实连接池同语义。
+    # 不许用 StaticPool 共享单连接：pysqlite 的 cursor.rowcount 取自
+    # 连接级 sqlite3_changes() 计数，两路并发认领的 UPDATE 在同一
+    # 连接上交错时，输家命中 0 行的 UPDATE 会把计数清零，赢家随后
+    # 读到的 rowcount 变 0，两路都误判 not_claimed、执行核心零调用
+    # （2026-10-30 抖动定性 trace 实锤：UPDATE 后行已是 running，
+    # 两路 rowcount 却同为 0，test_concurrent_requests_execute_once
+    # 因此随机红无关 PR 的 CI）。timeout 是 sqlite 忙等上限：输家
+    # 的 UPDATE 要等赢家提交后才看得到 status 已变，需要忙等而非
+    # 直接报 database is locked。
     engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False},
-        poolclass=StaticPool)
+        f"sqlite:///{tmp_path}/play_inline.db",
+        connect_args={"check_same_thread": False, "timeout": 30})
     base_models.Base.metadata.create_all(engine)
     em.Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine)
+    yield sessionmaker(bind=engine)
+    engine.dispose()
 
 
 @pytest.fixture()
