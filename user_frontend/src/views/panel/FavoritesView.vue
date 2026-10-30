@@ -141,7 +141,7 @@ onMounted(load)
   aspect-ratio: 2 / 3;
   border: 1px solid var(--paper2, #e3e3e2);
   border-radius: 10px;
-  background: var(--paper2-2, #f4f3f0);
+  background: var(--au-bg-soft, #f4f3f0);
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -155,7 +155,7 @@ onMounted(load)
   object-fit: cover;
 }
 .fav-fallback {
-  color: var(--ink-3, #a8a29a);
+  color: var(--au-text-3, #a8a29a);
 }
 .fav-star {
   position: absolute;
