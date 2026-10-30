@@ -582,3 +582,58 @@ def test_rule_direct_first_relay_second_stream_range_quota_diverts(
     sig = [kw for ev, kw in events if ev == "byos_usercopy_quota"]
     assert sig and sig[0]["verdict"] == "quota"
     assert sig[0]["shape"] == "range"
+
+
+# ---------- 改道判定零缓存（2026-10-30 08:29 事故回归兜底） ----------
+# 事故：user 1 播《大唐妖探》（本人副本 fid 当场 Range 实测已回
+# 206 真字节），日志却连续 byos_usercopy_quota verdict=quota
+# cached=True——几分钟前间歇额度页留下的缓存裁决（TTL 300 秒）
+# 被两判定点反复当成实时裁决改道中继，播放器 8 次重连播不出。
+# 钉死：改道判定（probe_user_copy_quota_decision）不读裁决缓存、
+# 当场跑新鲜两腿；非判定调用仍可吃缓存（日志探活/复用口径不变）。
+
+def _seed_verdict_cache(verdict, detail="range:quota"):
+    from backend.database import CacheManager
+    CacheManager.set(tv._usercopy_quota_cache_key(7, COPY_FID),
+                     verdict, 300, domain="playback")
+    CacheManager.set(tv._usercopy_quota_detail_key(7, COPY_FID),
+                     detail, 300, domain="playback")
+
+
+def test_rule_decision_fresh_probe_ignores_cached_quota(monkeypatch):
+    """缓存预置 quota 裁决 + 新鲜 Range 回 206 → 改道判定发直链。
+
+    fresh 判定必须真跑两腿（calls 计数证明不是吃缓存），且新鲜
+    结果回写缓存：其后的非判定调用看到的不再是旧 quota。
+    """
+    _seed_verdict_cache("quota")
+    calls = _stub_legs(monkeypatch,
+                       (206, "video/mp4", VIDEO_HEAD),
+                       (200, "video/mp4", VIDEO_HEAD))
+    # 非判定调用仍吃缓存：返回旧 quota、零外呼（复用口径保留）。
+    assert tv.probe_user_copy_quota(7, COPY_FID) == "quota"
+    assert calls == {"range": 0, "get": 0}
+    assert tv.usercopy_quota_probe_cached(7, COPY_FID)
+    # 改道判定：无视缓存 quota，新鲜 Range 206 → ok（发直链）。
+    assert tv.probe_user_copy_quota_decision(7, COPY_FID) == "ok"
+    assert calls == {"range": 1, "get": 1}
+    # 新鲜裁决已回写：非判定调用不再吃到旧 quota。
+    assert tv.probe_user_copy_quota(7, COPY_FID) == "ok"
+    assert calls == {"range": 1, "get": 1}
+
+
+def test_rule_decision_fresh_probe_range_quota_still_diverts(monkeypatch):
+    """新鲜 Range 回额度页 → fresh 判定才返回 quota（改道成立）。
+
+    缓存里预置 ok 也盖不过去：判定当场 Range 判 quota、短路不跑
+    第二腿、detail 同步刷新为 range/quota，判定点据此改道。
+    """
+    _seed_verdict_cache("ok", "get:")
+    calls = _stub_legs(
+        monkeypatch,
+        (200, "text/html; charset=utf-8", QUOTA_HTML),
+        AssertionError("Range 已判 quota 不许跑第二腿"))
+    assert tv.probe_user_copy_quota_decision(7, COPY_FID) == "quota"
+    assert calls == {"range": 1, "get": 0}
+    assert tv.usercopy_quota_probe_detail(7, COPY_FID) == {
+        "shape": "range", "page": "quota"}

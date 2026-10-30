@@ -776,6 +776,13 @@ def probe_user_copy_quota(user_id, fid) -> str:
     可调；判定形态与插页分类同 TTL 存明细缓存），error 不缓存。
     只请求用户本人副本的 usercontent 地址：不带任何令牌、不碰共享
     原件、不碰 SA。永不抛异常。开关关时恒返回 "ok"。
+
+    改道判定（PlaybackInfo / video_stream）不许直接调本函数吃
+    缓存裁决，必须走 probe_user_copy_quota_decision（先失效缓存
+    再探测）：缓存里的 quota 可能是几分钟前谷歌间歇性额度页留
+    下的，同一 fid 此刻 Range 已回 206 真字节——2026-10-30
+    08:29 事故正是缓存 quota（TTL 300 秒）把 user 1 反复改道
+    中继、播放器 8 次重连播不出，而当场 Range 实测 206。
     """
     if not usercopy_quota_probe_enabled():
         return "ok"
@@ -839,6 +846,38 @@ def probe_user_copy_quota(user_id, fid) -> str:
     except Exception:  # noqa: BLE001
         pass
     return verdict
+
+
+def probe_user_copy_quota_decision(user_id, fid) -> str:
+    """改道判定专用入口（PlaybackInfo / video_stream 两判定点）。
+
+    改道判定零缓存：先失效 (user, fid) 的裁决与明细缓存，再走
+    probe_user_copy_quota——缓存被清后 probe 必然当场跑新鲜两腿，
+    新结果照常回写缓存（非判定调用随后仍可复用）。本函数与 probe
+    的区别只在缓存，不在判定逻辑：出法仍只认 Range 腿（#1492）。
+
+    为什么判定不许吃缓存：缓存里的 quota 裁决可能是几分钟前
+    谷歌间歇性额度页留下的（TTL 默认 300 秒），同一 fid 此刻
+    Range 已回 206 真字节。2026-10-30 08:29 事故：user 1 播
+    《大唐妖探》本人副本，日志连续 byos_usercopy_quota
+    verdict=quota cached=True 反复改道中继、播放器 8 次重连播
+    不出，同一时段实测该 fid 的 Range 已回 206。
+
+    失效失败（缓存不可用）不阻断：吞掉异常照常探测——probe 对
+    缓存异常本就按未命中处理，最坏退化为原缓存口径。永不抛异常
+    的口径与 probe 一致（probe 本身永不抛）。
+    """
+    fid = (fid or "").strip()
+    if fid:
+        try:
+            from backend.database import CacheManager
+            CacheManager.delete(_usercopy_quota_cache_key(user_id, fid),
+                                domain="playback")
+            CacheManager.delete(_usercopy_quota_detail_key(user_id, fid),
+                                domain="playback")
+        except Exception:  # noqa: BLE001 — 失效失败不阻断判定
+            pass
+    return probe_user_copy_quota(user_id, fid)
 
 
 def ready_user115_variant(db, item_id, user_id):

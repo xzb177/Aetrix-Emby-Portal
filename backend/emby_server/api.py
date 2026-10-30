@@ -5505,8 +5505,14 @@ async def playback_info(
                     _pi_quota_cached = await run_db(
                         _tv_alt.usercopy_quota_probe_cached,
                         user.id, _alt_fid)
+                    # 改道判定零缓存（2026-10-30 08:29 事故修订）：
+                    # 走 decision 入口（先失效缓存再当场跑新鲜
+                    # Range 探测）——缓存里的 quota 裁决（最长
+                    # 300 秒）可能是间歇额度页的残留，Range 已回
+                    # 206 时不许再按缓存改道。_pi_quota_cached 只
+                    # 喂日志（此前是否有缓存记录），不参与裁决。
                     _pi_probe_verdict = await run_db(
-                        _tv_alt.probe_user_copy_quota,
+                        _tv_alt.probe_user_copy_quota_decision,
                         user.id, _alt_fid)
                     _pi_probe_detail = await run_db(
                         _tv_alt.usercopy_quota_probe_detail,
@@ -5977,11 +5983,16 @@ async def video_stream(
         if (_on_user_copy and _play_fid
                 and _is_user_drive_copy_variant(_play_variant)):
             # 先问缓存再探测：顺序不能反，探测跑完缓存里就有了。
+            # _quota_cached 只喂日志（此前是否有缓存记录）；裁决
+            # 本身零缓存（2026-10-30 08:29 事故修订）：走 decision
+            # 入口（先失效缓存再当场跑新鲜 Range 探测），缓存
+            # quota 不许再改道——事故里同一 fid 的 Range 已回
+            # 206，缓存却把用户反复推进中继、8 次重连播不出。
             _quota_cached = await run_db(
                 _tv.usercopy_quota_probe_cached,
                 getattr(user, "id", None), _play_fid)
             _quota_verdict = await run_db(
-                _tv.probe_user_copy_quota,
+                _tv.probe_user_copy_quota_decision,
                 getattr(user, "id", None), _play_fid)
         _probe_detail = await run_db(
             _tv.usercopy_quota_probe_detail,
