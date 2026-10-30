@@ -260,7 +260,7 @@ def dispatch(db, update: dict) -> None:
                 return
             # 匿名发的绑定码认不出是谁，验了也绑不到本人：回匿名说明
             if _is_anonymous_admin(msg):
-                sender.send_message(db, chat_id, ANON_ADMIN_TEXT)
+                _send_reply(db, chat_id, ANON_ADMIN_TEXT, autodelete=in_group)
                 return
             _verify_bind_code(db, update)
             return
@@ -336,7 +336,7 @@ def dispatch(db, update: dict) -> None:
             and cmd in _IDENTITY_COMMANDS
             and not (cmd == "/redeem" and in_group)
         ):
-            sender.send_message(db, chat_id, ANON_ADMIN_TEXT)
+            _send_reply(db, chat_id, ANON_ADMIN_TEXT, autodelete=True)
             return
 
         # 账号、求片和免密登录都可能泄露隐私/凭据，强制私聊。

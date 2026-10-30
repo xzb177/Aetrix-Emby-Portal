@@ -9,8 +9,8 @@
 - 私聊发送点一律不挂自毁；
 - 延时配置为 0 时全不挂；
 - 群内 /redeem 原命令消息走既有即时删除，不再重复挂定时自毁；
-- 匿名说明（#1516 的 ANON_ADMIN_TEXT）发送点在本基线尚不存在，
-  用例以 skipif 守卫：#1516 合并、本分支变基后自动激活。
+- 匿名说明（#1516 的 ANON_ADMIN_TEXT）发送点同样挂 30 秒自毁；
+  用例原以 skipif 守卫，#1516 合并、本分支变基后已激活真跑。
 """
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ def test_group_redpacket_success_body_exempt(db, wires):
     packet = db.query(models.RedPacket).first()
     assert packet is not None
     assert wires["ex"] == []
-    assert any("总额 100 积分" in t for (_c, t, _m) in wires["plain"])
+    assert any("总额 100 能量" in t for (_c, t, _m) in wires["plain"])
     # 唯一被挂的只有用户命令消息的 3 秒自毁
     assert wires["scheduled"] == [(GROUP_CHAT, 4245, 3)]
 
