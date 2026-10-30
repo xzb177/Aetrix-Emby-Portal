@@ -273,3 +273,105 @@ def test_create_cross_provider_job_refused_when_switch_off(db):
         tv.create_cross_provider_job(db, item, 7, "drive")
     assert excinfo.value.kind == "cross_provider_relay_disabled"
     assert db.query(em.TransferJob).count() == 0
+
+
+# ---------- 池分支：慢单在飞时轮中到达不等待（2026-10-30 生产实锤） ----------
+
+def test_pool_round_tops_up_free_slots_while_slow_job_runs(
+        tmp_path, monkeypatch):
+    """道并发 4、只有 1 条慢单在飞：轮中先后到达 prefetch 与
+    playback 两单（同一事务落行），必须在慢单跑完之前就被补
+    认领启动（池里有空位，不许等完成事件）；且同批补认领的
+    顺序里 playback 先于先入队的 prefetch。
+
+    生产实锤（job 1056/1057/1058）：慢单跑 5m40s，期间建的
+    点播单干等约 4.5 分钟才被认领——池分支 wait 无超时、补
+    认领只挂完成事件，守护主循环单线程阻塞在整轮内、建单
+    唤醒在轮内无人消费。旧实现下本用例的到达单在慢单放行前
+    永远不会启动（断言超时失败，不挂死：慢单有兜底超时）。
+    """
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/pool_topup.db",
+        connect_args={"check_same_thread": False})
+    base_models.Base.metadata.create_all(engine)
+    em.Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    db = factory()
+    monkeypatch.setattr(tv, "lane_concurrency", lambda db=None: 4)
+    slow = _job(db, item_id=1, trigger="prefetch", owner_ref="u1")
+    slow_id = slow.id
+    db.close()
+
+    slow_release = threading.Event()
+    started = {}
+    started_lock = threading.Lock()
+
+    def _run(db_session, job_row, drive_api):
+        with started_lock:
+            started[job_row.id] = time.monotonic()
+        if job_row.id == slow_id:
+            # 慢单：等测试放行（兜底超时防异常路径下全套挂死）
+            slow_release.wait(timeout=60)
+        job_row.status = "done"
+        job_row.next_retry_at = None
+        db_session.commit()
+        return {"job_id": job_row.id, "outcome": "done"}
+
+    monkeypatch.setattr(tv, "run_transfer_job_once", _run)
+    outcome_box = {}
+
+    def _round():
+        outcome_box["stats"] = tv.process_claimed_round(
+            factory, lambda: SimpleNamespace())
+
+    thread = threading.Thread(target=_round, daemon=True)
+    thread.start()
+    try:
+        # 等慢单真正开跑（本轮已认领它，池里还剩 3 个空位）
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with started_lock:
+                if slow_id in started:
+                    break
+            time.sleep(0.05)
+        with started_lock:
+            assert slow_id in started
+        # 轮中到达：prefetch 先落行、playback 后落行，同一事务
+        # 提交，保证两单对认领方同时可见（同批补认领）
+        s2 = factory()
+        try:
+            queued_prefetch = em.TransferJob(
+                item_id=2, trigger="prefetch", drive_id="drive1",
+                provider="drive", owner_scope="user", owner_ref="u3",
+                status="pending")
+            playback = em.TransferJob(
+                item_id=3, trigger="playback", drive_id="drive1",
+                provider="drive", owner_scope="user", owner_ref="u2",
+                status="pending")
+            s2.add_all([queued_prefetch, playback])
+            s2.commit()
+            prefetch_id, playback_id = queued_prefetch.id, playback.id
+        finally:
+            s2.close()
+        # 两单必须在慢单仍在飞时就被补认领并启动
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with started_lock:
+                if playback_id in started and prefetch_id in started:
+                    break
+            time.sleep(0.05)
+        with started_lock:
+            assert playback_id in started, \
+                "点播单未在慢单完成前被补认领（池分支补认领被完成事件堵住）"
+            assert prefetch_id in started, \
+                "排队 prefetch 未在慢单完成前被补认领"
+    finally:
+        slow_release.set()
+        thread.join(timeout=30)
+    stats = outcome_box["stats"]
+    assert stats["processed"] == 3
+    assert stats["done"] == 3
+    # 认领顺序：慢单第一；同批补认领里 playback 先于先入队的 prefetch
+    assert stats["claimed"][0] == slow_id
+    assert stats["claimed"].index(playback_id) < stats["claimed"].index(
+        prefetch_id)
