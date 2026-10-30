@@ -137,7 +137,12 @@ def _poll_once(token: str, offset: int, timeout: int = 30) -> list:
     # 群管理员时才稳定推送他人的成员变动，非管理员场景可能收不到
     # （2026-10-30 接入时真机未验）；my_chat_member（bot 自身入群/被踢）
     # 一并订阅，router 显式忽略不处理。inline_query 为内联搜片所用。
-    params = {offset: offset, timeout: timeout,
+    # 键必须是字符串字面量：2026-10-30 实证 #1527 变基时引号被传
+    # 输层吃掉、写成 {offset: offset, ...}（键是变量本身），请求只带
+    # "758207xxx=758207xxx&30=30"，offset/timeout 从未到达 Telegram、
+    # update 永不被服务器确认，重启即整批重投递刷屏。回归锁在
+    # tests/test_tg_bot_poller_redelivery.py（断言键为 str 且值对上）。
+    params = {"offset": offset, "timeout": timeout,
               "allowed_updates": ["message", "callback_query", "inline_query",
                                   "chat_member", "my_chat_member"]}
     with httpx.Client(timeout=timeout + 10) as client:
@@ -182,11 +187,24 @@ def _process_updates(updates: list, offset: int, save) -> int:
     （uq_chat_points_msg）、绑定码（used_at）有库级幂等；发红包 /redpacket 重放可能重复（待补）。
     """
     max_id = offset
+    skipped = 0
     for u in updates:
-        uid = u.get("update_id", 0)
-        if uid >= max_id:
-            max_id = uid + 1
+        uid = u.get("update_id")
+        if isinstance(uid, int):
+            if uid < offset:
+                # 已提交水位之下的 update：Telegram 重投递的旧批，
+                # 绝不二次分发 handler（2026-10-30 刷屏教训：参数
+                # 失效时整批反复重投，靠本地水位兜底也绝不刷屏）。
+                # 本批提交后水位推进，重投的同批从此全部命中过滤。
+                skipped += 1
+                continue
+            if uid >= max_id:
+                max_id = uid + 1
         _UPDATE_QUEUE.put(u)  # 阻塞：宁可慢，不丢
+    if skipped:
+        logger.warning(
+            "tg poller: skipped %s already-committed updates (offset=%s)",
+            skipped, offset)
     _UPDATE_QUEUE.join()
     save(max_id)
     return max_id
