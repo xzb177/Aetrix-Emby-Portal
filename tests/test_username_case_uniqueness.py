@@ -79,7 +79,7 @@ def test_register_rejects_case_variants_of_existing_portal_name(db):
         with pytest.raises(HTTPException) as exc:
             _register(db, name)
         assert exc.value.status_code == 409
-        assert exc.value.detail == "用户名已被占用"
+        assert exc.value.detail == "用户名已被注册"
     assert db.query(models.WebUser).count() == 1
 
 

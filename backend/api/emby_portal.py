@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend import models, register_channel
-from backend.usernames import username_conflict
+from backend.usernames import find_users_by_username_ci, username_conflict
 from backend.integrations.store import switch_env_value as _switch_env_value
 from backend.db_retry import commit_with_retry
 from backend.authlog import REASONS as AUTHLOG_REASONS, client_ip as log_ip, record_event, user_agent
@@ -450,7 +450,11 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
 
     # 大小写不敏感撞名检查（门户名＋接线名都查）：只按精确大小写查会放行
     # Foo/foo 异壳账号，而转账、指名码等消费侧按不敏感匹配时会命中不确定，
-    # 甚至冒充已有用户名。落库前一律 409，与设接线名撞名同一口径。
+    # 甚至冒充已有用户名。落库前一律 409。文案不新造、沿用本端点改动前的
+    # 两条原句：撞门户名（精确或大小写变体）回「用户名已被注册」，撞接线名
+    # 回「用户名已被占用」（与注册关闭模式测试锁定的既有口径一致）。
+    if find_users_by_username_ci(db, username):
+        raise HTTPException(status_code=409, detail="用户名已被注册")
     if username_conflict(db, username):
         raise HTTPException(status_code=409, detail="用户名已被占用")
     if req.email:
