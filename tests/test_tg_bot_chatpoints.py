@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""TG Bot /chatpoints 群发言积分查询（补菜单有、命令无的半截功能）。
+"""TG Bot /chatpoints 群发言能量查询（补菜单有、命令无的半截功能）。
 
 口径：只读自助查询，只显示调用者本人数据（今日已得/日封顶进度/累计）；
 私聊与群聊都可用（与 /points、/account 同款放行）；未绑定回绑定指引；
@@ -84,7 +84,7 @@ def _update(chat_type, chat_id, from_id, text):
 
 def _seed_chat_history(db, user_id):
     """今日 chat +3（两条）、昨日 chat +5（只计累计）、今日签到 +10 与
-    chat 扣分 -1（都不计入发言积分）。"""
+    chat 扣分 -1（都不计入发言能量）。"""
     today_start = economy_mod._today_start_utc_naive()
     _add_log(db, user_id, 1, when=today_start + timedelta(hours=1))
     _add_log(db, user_id, 2, when=today_start + timedelta(hours=2))
@@ -108,9 +108,9 @@ def test_handler_bound_shows_today_progress_and_total(db):
     }
 
     text = handlers.handle_chatpoints(db, {"id": 6101}, 6101, "")
-    assert "群发言积分" in text
-    assert "今日已得 | <b>3</b> / 20 分" in text
-    assert "累计发言积分 | <b>8</b> 分" in text
+    assert "群发言能量" in text
+    assert "今日已得 | <b>3</b> / 20 能量" in text
+    assert "累计发言能量 | <b>8</b> 能量" in text
 
 
 def test_handler_unbound_returns_bind_guide(db):
@@ -123,7 +123,7 @@ def test_handler_cap_reached_notes_full(db):
     today_start = economy_mod._today_start_utc_naive()
     _add_log(db, u.id, 20, when=today_start + timedelta(hours=1))
     text = handlers.handle_chatpoints(db, {"id": 6102}, 6102, "")
-    assert "今日已得 | <b>20</b> / 20 分" in text
+    assert "今日已得 | <b>20</b> / 20 能量" in text
     assert "已达上限" in text
 
 
@@ -136,7 +136,7 @@ def test_dispatch_private_bound(db, sent):
     assert len(sent) == 1
     chat_id, text = sent[0]
     assert chat_id == 6201
-    assert "群发言积分" in text and "今日已得" in text
+    assert "群发言能量" in text and "今日已得" in text
     assert "未知命令" not in text
 
 
@@ -158,8 +158,8 @@ def test_dispatch_group_bound_shows_only_own_data(db, sent):
     assert len(sent) == 1
     chat_id, text = sent[0]
     assert chat_id == -100777  # 群里可用，回复发回群里
-    assert "群发言积分" in text
-    assert "累计发言积分 | <b>8</b> 分" in text
+    assert "群发言能量" in text
+    assert "累计发言能量 | <b>8</b> 能量" in text
     assert "17" not in text  # 只显示调用者本人数据
     assert "请私聊" not in text and "未知命令" not in text
 

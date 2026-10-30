@@ -1,7 +1,7 @@
 """Telegram bot 的账号、求片和群运营功能。
 
 这里是 Telegram 交互适配层：业务规则优先复用现有模块，避免在 bot 内复制
-订阅、积分和求片的判定口径。
+订阅、能量和求片的判定口径。
 """
 from __future__ import annotations
 
@@ -592,9 +592,9 @@ def handle_rules(db, tg_user: dict, chat_id: int, args: str) -> str:
 
 
 def handle_rank(db, tg_user: dict, chat_id: int, args: str) -> str:
-    """积分排行榜，复用 WebUser.points 单一积分余额。
+    """能量排行榜，复用 WebUser.points 单一能量余额。
 
-    排序口径不变（积分降序、同分按 id 升序、前 10 名）；等级公益服活动
+    排序口径不变（能量降序、同分按 id 升序、前 10 名）；等级公益服活动
     治理 Step 4：仅公益服下追加等级列展示（Lv.数字＋等级名），付费服
     输出与此前逐字一致。
     """
@@ -632,7 +632,7 @@ def handle_rank(db, tg_user: dict, chat_id: int, args: str) -> str:
             lines.append(layout.row(mark, f"第 {index} 名", f"{_esc(row.username)}：<b>{int(row.points or 0)}</b>{level_text}{mine}"))
         else:
             lines.append(layout.row(mark, f"第 {index} 名", f"{_esc(row.username)}：<b>{int(row.points or 0)}</b>{mine}"))
-    return layout.card(layout.title("全站积分排行榜"), lines)
+    return layout.card(layout.title("全站能量排行榜"), lines)
 
 
 _GOVLOG_ACTION_TEXT = {
@@ -821,25 +821,25 @@ def handle_report(db, tg_user: dict, chat_id: int, args: str) -> str:
 
 
 _PRIZE_TYPE_ALIASES = {
-    "points": "points", "积分": "points",
+    "points": "points", "能量": "points",
     "days": "days", "天数": "days",
     "whitelist": "whitelist", "白名单": "whitelist",
 }
 
 
 def _parse_prize_spec(spec: str) -> list[dict]:
-    """奖品段：逗号分隔，每项 类型:价值[x数量]，如 积分:100x2,天数:30x1。"""
+    """奖品段：逗号分隔，每项 类型:价值[x数量]，如 能量:100x2,天数:30x1。"""
     prizes = []
     for chunk in spec.split(","):
         chunk = chunk.strip()
         if not chunk:
             continue
         if ":" not in chunk:
-            raise ValueError("奖品格式应为 类型:价值[x数量]，如 积分:100x2")
+            raise ValueError("奖品格式应为 类型:价值[x数量]，如 能量:100x2")
         ptype_raw, rest = chunk.split(":", 1)
         ptype = _PRIZE_TYPE_ALIASES.get(ptype_raw.strip())
         if ptype is None:
-            raise ValueError("奖品类型只能是 积分／天数／白名单")
+            raise ValueError("奖品类型只能是 能量／天数／白名单")
         if "x" in rest:
             value_raw, qty_raw = rest.split("x", 1)
         else:
@@ -900,9 +900,9 @@ def _propose_help(direct: bool) -> str:
         [
             layout.row("🎲", "开放范围", f"仅公益服、{level}"),
             layout.row("📝", "提交方式", f"私聊发送 <code>{cmd} 标题 | 奖品 | 群组ID | 开奖时间 | 人数上限 | 口令</code>"),
-            layout.row("🎁", "奖品格式", "逗号分隔，类型:价值[x数量]，类型为 积分／天数／白名单，如 <code>积分:100x2,天数:30x1</code>"),
+            layout.row("🎁", "奖品格式", "逗号分隔，类型:价值[x数量]，类型为 能量／天数／白名单，如 <code>能量:100x2,天数:30x1</code>"),
             layout.row("💡", "填写说明", "群组ID 可空（仅当允许群恰好一个时自动取）；开奖时间如 2026-11-01 20:00，为空则待定；人数上限为空则不限；口令给出时为口令抽奖，否则为按钮抽奖"),
-            layout.row("💡", "示例", "<code>/propose 周末观影趴 | 积分:100x2 | -1001234567890</code>"),
+            layout.row("💡", "示例", "<code>/propose 周末观影趴 | 能量:100x2 | -1001234567890</code>"),
         ],
     )
 

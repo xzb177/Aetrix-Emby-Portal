@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
-"""公益服积分模块（模块2）
+"""公益服能量模块（模块2）
 
 定位：公益服的"货币"层。复用 economy.py 的基础设施
 （WebUser.points 余额 + PointsLog 流水 + _add_points 原子更新），
 只提供公益服专用的业务逻辑：
 
 - award_chat_points：发言奖励（每日上限）
-- get_points_summary：积分概览
-- redeem_welfare：积分兑换公益天数
+- get_points_summary：能量概览
+- redeem_welfare：能量兑换公益天数
 - welfare_signin：【已废弃 2026-10-09】转发到 backend.api.economy._do_checkin_core，
   签到已统一到 POST /api/user/economy/checkin（配置在系统设置→每日签到）
 
 SystemConfig 键（实际生效的签到键在 backend/api/economy._checkin_rules 读取，
 管理后台「系统设置 → 每日签到」可配）：
-- checkin_base_min / checkin_base_max（基础积分随机范围）
+- checkin_base_min / checkin_base_max（基础能量随机范围）
 - checkin_streak_bonus（连签加成）
 - points_chat_daily_cap=20, points_chat_per_msg=1
 - points_redeem_7d=100, points_redeem_30d=300
@@ -42,7 +42,7 @@ def _get_int(db: Session, key: str, default: int) -> int:
 def award_chat_points(db: Session, user_id: int) -> int:
     """发言奖励（供聊天/评论模块调用）
 
-    每条发言奖励 points_chat_per_msg 分，每日上限 points_chat_daily_cap 分。
+    每条发言奖励 points_chat_per_msg 能量，每日上限 points_chat_daily_cap 能量。
     达到上限后返回 0，不再奖励。
     """
     user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
@@ -92,7 +92,7 @@ def award_chat_points(db: Session, user_id: int) -> int:
 
 
 def get_chat_points_status(db: Session, user_id: int) -> dict:
-    """发言积分只读状态（供 TG /chatpoints 等自助查询）。
+    """发言能量只读状态（供 TG /chatpoints 等自助查询）。
 
     口径与 award_chat_points 完全一致：今日已得 = PointsLog 中 type="chat"
     且 amount>0、created_at >= 今日起点（上海自然日，UTC 入库帧）的合计；
@@ -131,7 +131,7 @@ def get_chat_points_status(db: Session, user_id: int) -> dict:
 
 
 def get_points_summary(db: Session, user: models.WebUser) -> dict:
-    """积分概览：余额 / 今日获得 / 累计获得"""
+    """能量概览：余额 / 今日获得 / 累计获得"""
     balance = int(user.points or 0)
     today = economy._today_start_utc_naive()  # r34：上海自然日（UTC 入库帧），此前服务器本地口径在北京时间 08:00 才重置
 
@@ -171,11 +171,11 @@ def get_welfare_status(db: Session, user: models.WebUser) -> dict:
 
 
 def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
-    """积分兑换公益天数
+    """能量兑换公益天数
 
     days_option: 只能是 7 或 30
-    流程：扣分 → 调 portal.grant_welfare 开通/续期
-    注意：grant_welfare 内部会 db.commit()，所以扣分后不再单独 commit
+    流程：扣能量 → 调 portal.grant_welfare 开通/续期
+    注意：grant_welfare 内部会 db.commit()，所以扣能量后不再单独 commit
     """
     if days_option not in (7, 30):
         raise ValueError("仅支持兑换 7 天或 30 天")
@@ -189,7 +189,7 @@ def redeem_welfare(db: Session, user: models.WebUser, days_option: int) -> dict:
     from backend.api.economy import _spend_points, InsufficientPoints
     try:
         new_balance = _spend_points(
-            db, user, cost, "redeem", f"积分兑换公益{days_option}天"
+            db, user, cost, "redeem", f"能量兑换公益{days_option}天"
         )
     except InsufficientPoints as exc:
         raise ValueError(str(exc)) from exc

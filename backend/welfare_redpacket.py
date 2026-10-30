@@ -2,10 +2,10 @@
 """红包业务逻辑（公益服模块3-娱乐板块）
 
 规则：
-- 发红包：从发送者积分扣除 total_amount + 手续费，创建红包（24小时过期）
-- 抢红包：随机金额（剩余金额随机分配，保证每人至少1分）
+- 发红包：从发送者能量扣除 total_amount + 手续费，创建红包（24小时过期）
+- 抢红包：随机金额（剩余金额随机分配，保证每人至少 1 能量）
 - 防重复：同一用户不能重复领取同一红包
-- 红包过期后剩余积分退回发送者（领取时检查）
+- 红包过期后剩余能量退回发送者（领取时检查）
 
 金额分配：随机红包算法，最后一个领取者拿剩余全部。
 
@@ -57,7 +57,7 @@ def send_packet(
 ) -> models.RedPacket:
     """发红包
 
-    校验：金额>0，个数>0，金额>=个数（每人至少1分），余额充足（含手续费）
+    校验：金额>0，个数>0，金额>=个数（每人至少 1 能量），余额充足（含手续费）
     频率：7天内发送次数上限（redpacket_send_limit_7d，0=不限）
     手续费：按 redpacket_fee_pct 比例额外扣除，记 redpacket_fee 账本
 
@@ -70,7 +70,7 @@ def send_packet(
     if total_count <= 0:
         raise ValueError("红包个数必须大于0")
     if total_amount < total_count:
-        raise ValueError("红包金额不能小于个数（每人至少1分）")
+        raise ValueError("红包金额不能小于个数（每人至少 1 能量）")
     if total_count > 100:
         raise ValueError("红包个数不能超过100")
 
@@ -108,20 +108,20 @@ def send_packet(
     if balance < need:
         if fee > 0:
             raise ValueError(
-                f"积分不足，需要 {need} 分（含手续费 {fee} 分），当前 {balance} 分")
-        raise ValueError(f"积分不足，需要 {need} 分，当前 {balance} 分")
+                f"能量不足，需要 {need} 能量（含手续费 {fee} 能量），当前 {balance} 能量")
+        raise ValueError(f"能量不足，需要 {need} 能量，当前 {balance} 能量")
 
     # 扣分：红包本体 + 手续费（分开记账）
     # 原子条件扣减：上面的余额检查读的是 ORM 内存旧值，并发连发多个红包都能通过它；
     # 「够不够」交给 UPDATE ... WHERE points >= x，扣不到整笔回滚（防双花/余额变负）
     try:
-        economy._spend_points(db, sender, total_amount, "redpacket", f"发出红包 {total_amount} 分")
+        economy._spend_points(db, sender, total_amount, "redpacket", f"发出红包 {total_amount} 能量")
         if fee > 0:
             economy._spend_points(
-                db, sender, fee, "redpacket_fee", f"红包手续费 {fee} 分（{fee_pct}%）")
+                db, sender, fee, "redpacket_fee", f"红包手续费 {fee} 能量（{fee_pct}%）")
     except economy.InsufficientPoints:
         db.rollback()
-        raise ValueError(f"积分不足，需要 {need} 分")
+        raise ValueError(f"能量不足，需要 {need} 能量")
 
     packet = models.RedPacket(
         sender_id=sender.id,
@@ -213,7 +213,7 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
     packet.remaining_count -= 1
 
     # 给领取者加分
-    economy._add_points(db, user, amount, "redpacket", f"抢到红包 {amount} 分")
+    economy._add_points(db, user, amount, "redpacket", f"抢到红包 {amount} 能量")
 
     # 写领取记录（唯一约束 (packet_id, user_id) 兜底并发重复）
     db.add(models.RedPacketClaim(
@@ -234,7 +234,7 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
 
 
 def refund_expired(db: Session) -> int:
-    """过期红包退款（供定时任务调用）：剩余积分退回发送者。
+    """过期红包退款（供定时任务调用）：剩余能量退回发送者。
 
     行锁（FOR UPDATE SKIP LOCKED）+ 锁后二次校验 + 逐包提交，幂等：
     多 worker 并发跑也不会重复退款。
@@ -269,7 +269,7 @@ def refund_expired(db: Session) -> int:
             continue
         refund = packet.remaining_amount
         economy._add_points(
-            db, sender, refund, "redpacket", f"红包过期退回 {refund} 分")
+            db, sender, refund, "redpacket", f"红包过期退回 {refund} 能量")
         packet.remaining_amount = 0
         packet.remaining_count = 0
         db.commit()

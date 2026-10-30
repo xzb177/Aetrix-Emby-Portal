@@ -244,16 +244,16 @@ def test_report_frozen(db):
 def test_propose_success_and_cap(db):
     _free_realm(db)
     row = _user(db, xp=100)
-    text = features.handle_propose(db, _tg(), TG, "周末观影趴 | 积分:100x2 | -100123")
+    text = features.handle_propose(db, _tg(), TG, "周末观影趴 | 能量:100x2 | -100123")
     assert "活动提案已提交" in text
-    capped = features.handle_propose(db, _tg(), TG, "第二场 | 积分:50x1 | -100123")
+    capped = features.handle_propose(db, _tg(), TG, "第二场 | 能量:50x1 | -100123")
     assert "本月活动提案已达上限" in capped
 
 
 def test_propose_level_gate_and_bad_prize(db):
     _free_realm(db)
     _user(db, xp=0)
-    gated = features.handle_propose(db, _tg(), TG, "周末趴 | 积分:100x1 | -100123")
+    gated = features.handle_propose(db, _tg(), TG, "周末趴 | 能量:100x1 | -100123")
     assert "Lv.2" in gated
     bad = features.handle_propose(db, _tg(), TG, "周末趴 | 金币:100x1 | -100123")
     assert "奖品类型只能是" in bad
@@ -262,10 +262,10 @@ def test_propose_level_gate_and_bad_prize(db):
 def test_launch_success_and_gate(db):
     _free_realm(db)
     row = _user(db, xp=5000)
-    text = features.handle_direct_launch(db, _tg(), TG, "周末观影趴 | 积分:100x2 | -100123")
+    text = features.handle_direct_launch(db, _tg(), TG, "周末观影趴 | 能量:100x2 | -100123")
     assert "活动已直接发起" in text
     low = _user(db, tg=TG + 1, name="low", xp=100)
-    gated = features.handle_direct_launch(db, _tg(TG + 1), TG + 1, "周末趴 | 积分:100x1 | -100123")
+    gated = features.handle_direct_launch(db, _tg(TG + 1), TG + 1, "周末趴 | 能量:100x1 | -100123")
     assert "Lv.5" in gated
 
 
@@ -275,7 +275,7 @@ def test_level_allowed_in_group_report_propose_private_only(db, monkeypatch):
     _user(db)
     sent = _dispatch(db, monkeypatch, "/level", chat_id=GROUP, chat_type="group")
     assert sent and "会员等级" in sent[0] and "请私聊" not in sent[0]
-    for cmd in ("/report 1 违规", "/propose 标题 | 积分:10x1 | -100123"):
+    for cmd in ("/report 1 违规", "/propose 标题 | 能量:10x1 | -100123"):
         sent = _dispatch(db, monkeypatch, cmd, chat_id=GROUP, chat_type="group")
         assert sent and "请私聊" in sent[0], cmd
 

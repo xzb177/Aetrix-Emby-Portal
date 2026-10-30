@@ -237,7 +237,7 @@ def test_callback_photo_message_edits_caption(db, monkeypatch):
     _user(db)
     state = _patch_callback_sender(monkeypatch)
     callbacks.handle_callback(db, _cq("points", photo=True))
-    assert state["caption"] and "当前积分" in state["caption"][0]
+    assert state["caption"] and "当前能量" in state["caption"][0]
     assert state["text"] == []
 
 
@@ -245,7 +245,7 @@ def test_callback_legacy_text_message_edits_text(db, monkeypatch):
     _user(db)
     state = _patch_callback_sender(monkeypatch)
     callbacks.handle_callback(db, _cq("points", photo=False))
-    assert state["text"] and "当前积分" in state["text"][0]
+    assert state["text"] and "当前能量" in state["text"][0]
     assert state["caption"] == []
 
 

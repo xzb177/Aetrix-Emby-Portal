@@ -88,7 +88,7 @@ def test_redpacket_amount_less_than_count(db):
 def test_redpacket_insufficient_points(db):
     _make_user(db, username="erin", tg_id=1005, points=50)
     result = handlers.handle_redpacket(db, {"id": 1005}, 1, "100 10")
-    assert "积分不足" in _text(result)
+    assert "能量不足" in _text(result)
 
 
 def test_redpacket_success(db):
@@ -96,7 +96,7 @@ def test_redpacket_success(db):
     result = handlers.handle_redpacket(db, {"id": 1001}, 1, "100 10")
     assert isinstance(result, tuple)
     text, reply_markup = result
-    assert "总额 100 积分" in text
+    assert "总额 100 能量" in text
     assert "共 10 个" in text
     assert "剩余 10 个" in text
     assert isinstance(reply_markup, dict)
@@ -324,7 +324,7 @@ def test_router_dispatch_redpacket(db, monkeypatch):
     update = {"update_id": 43, "message": {"message_id": 43, "from": {"id": 700043, "first_name": "R"}, "chat": {"id": -10043, "type": "group"}, "text": "/redpacket 100 5"}}
     router.dispatch(db, update)
     assert len(sent) == 1
-    assert "总额 100 积分" in sent[0][0]
+    assert "总额 100 能量" in sent[0][0]
     assert sent[0][1]["inline_keyboard"][0][0]["text"] == "🧧 抢红包"
 
 
@@ -358,7 +358,7 @@ def test_router_dispatch_redpacket_replay_idempotent(db, monkeypatch):
 
     router.dispatch(db, update)
     assert len(sent) == 1
-    assert "总额 100 积分" in sent[0][0]
+    assert "总额 100 能量" in sent[0][0]
 
     # 模拟 poller 崩溃重启：进程内限流状态全部清零，update 被重放
     router._user_cmd_limits.clear()
@@ -368,7 +368,7 @@ def test_router_dispatch_redpacket_replay_idempotent(db, monkeypatch):
 
     # 两次都发出消息
     assert len(sent) == 2
-    assert "总额 100 积分" in sent[1][0]
+    assert "总额 100 能量" in sent[1][0]
 
     # 只创建了一个红包
     assert db.query(models.RedPacket).count() == 1

@@ -38,14 +38,14 @@ def packet_text(packet, sender_name: str) -> str:
     """红包进行中的按钮消息正文（卡片式）。
 
     packet 是 backend.models.RedPacket 对象；sender_name 须已做 HTML 转义。
-    保留 "总额 X 积分 / 共 N 个 / 剩余 M 个" 口径（测试与客户端展示依赖）。
+    保留 "总额 X 能量 / 共 N 个 / 剩余 M 个" 口径（测试与客户端展示依赖）。
     """
     return layout.card(
         layout.title("幸运红包！", sender_name),
         [
             layout.row("🧧", "红包", f"<b>{sender_name} 的幸运红包</b>"),
-            layout.row("💰", "总额", f"<b>总额 {packet.total_amount} 积分</b> ｜ <b>共 {packet.total_count} 个</b>"),
-            layout.row("📦", "剩余", f"<b>剩余 {packet.remaining_count} 个</b>（待领 <b>{packet.remaining_amount}</b> 积分）"),
+            layout.row("💰", "总额", f"<b>总额 {packet.total_amount} 能量</b> ｜ <b>共 {packet.total_count} 个</b>"),
+            layout.row("📦", "剩余", f"<b>剩余 {packet.remaining_count} 个</b>（待领 <b>{packet.remaining_amount}</b> 能量）"),
             layout.row("⏰", "有效期", "24 小时后过期，手慢无"),
         ],
         ["👇 点击下方按钮开抢"],
@@ -63,7 +63,7 @@ def claim_feedback_text(claimer_name: str, amount: int, remaining_count: int) ->
         layout.title("红包动态"),
         [
             layout.row("🧧", "抢红包",
-                       f"<b>{claimer_name}</b> 抢到了 <b>{amount} 积分</b> · 还剩 <b>{remaining_count} 个</b>"),
+                       f"<b>{claimer_name}</b> 抢到了 <b>{amount} 能量</b> · 还剩 <b>{remaining_count} 个</b>"),
         ],
     )
 
@@ -78,13 +78,13 @@ def finished_text(packet, sender_name: str, reason: str) -> str:
     else:
         status_rows = [
             layout.row("⌛", "状态", "<b>红包已过期</b>"),
-            layout.row("💸", "退款", "剩余积分已退回发送者"),
+            layout.row("💸", "退款", "剩余能量已退回发送者"),
         ]
     return layout.card(
         layout.title("红包！", sender_name),
         [
             layout.row("🧧", "红包", f"<b>{sender_name} 的红包</b>"),
-            layout.row("💰", "总额", f"总额 {packet.total_amount} 积分 ｜ 共 {packet.total_count} 个"),
+            layout.row("💰", "总额", f"总额 {packet.total_amount} 能量 ｜ 共 {packet.total_count} 个"),
             *status_rows,
         ],
     )
