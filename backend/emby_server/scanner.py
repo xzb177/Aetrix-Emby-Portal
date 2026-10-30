@@ -5122,9 +5122,9 @@ def _iter_prepared(ctx: "_ScanContext", files, pool, db: Session, process_one,
 def _purge_items(db: Session, item_ids: list) -> None:
     """批量删条目与从属数据（用批量语句：不逐条加载 ORM 对象，也不触发级联查询）
 
-    `MediaStream` 在 ORM 上有级联会被一起带走，但 `UserMediaData`
-    （播放进度 / 收藏）**没有级联**——只 `db.delete(item)` 会留下永远指向不存在条目的
-    孤儿行；这类行只增不减，追新久了就是几十万条垃圾，也是「跑久了变慢」的来源之一。
+    从属表清单共用 :func:`soft_delete.delete_item_child_rows`：只 `db.delete(item)`
+    会留下指向不存在条目的孤儿行（UserMediaData 等没有级联），且在 PG 上漏掉
+    任何一张 FK 子表都会让条目 DELETE 直接撞外键；清单只在此一处维护。
     """
     ids = list(item_ids)
     # 媒体信息 JSON 清理（对标 DeleteMediaInfoJson）：先取 guid 再删库，
@@ -5145,20 +5145,9 @@ def _purge_items(db: Session, item_ids: list) -> None:
                 pass
     except Exception:
         pass
-    db.query(emby_models.UserMediaData).filter(
-        emby_models.UserMediaData.item_id.in_(ids)
-    ).delete(synchronize_session=False)
-    db.query(emby_models.MediaStream).filter(
-        emby_models.MediaStream.item_id.in_(ids)
-    ).delete(synchronize_session=False)
-    db.query(emby_models.ItemFacet).filter(
-        emby_models.ItemFacet.item_id.in_(ids)
-    ).delete(synchronize_session=False)
-    # v2.51.0 演员表：emby_people.item_id 外键指向 emby_items，不清掉这里
-    # PG 会报 FK 违反（与上面三个从属表同口径：批量删，不逐条）。
-    db.query(emby_models.EmbyPerson).filter(
-        emby_models.EmbyPerson.item_id.in_(ids)
-    ).delete(synchronize_session=False)
+    # A-048/A-049：子表清单共用 soft_delete.delete_item_child_rows，
+    # 此处再漏一张都会在 PG 上让下面的条目 DELETE 撞外键。
+    _soft_delete.delete_item_child_rows(db, ids)
     db.query(emby_models.MediaItem).filter(
         emby_models.MediaItem.id.in_(ids)
     ).delete(synchronize_session=False)

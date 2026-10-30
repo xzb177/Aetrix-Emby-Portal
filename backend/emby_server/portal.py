@@ -2387,6 +2387,15 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
         {em.MediaItem.parent_id: None, em.MediaItem.series_id: None},
         synchronize_session=False,
     )
+    # 合并家族跨 chunk 边界（A-048 附带项）：分批删时 root 可能先于分身被删，
+    # 分身的 merged_into_id 外键会撞 500。整个库都要删，先把库内外指向库内
+    # 条目的合并关系一次性置空（Core 语句不走软删可见性钩子，已下架的分身
+    # 也要算进来；置空后分身变独立 root，随后同样被删，不留悬空指向）。
+    from sqlalchemy import text as _sql_text
+    db.execute(_sql_text(
+        "UPDATE emby_items SET merged_into_id=NULL WHERE merged_into_id IN "
+        "(SELECT id FROM emby_items WHERE library_id=:lid)"),
+        {"lid": lib.id})
     db.commit()
 
     # 分批删除：老实现把整库条目一次载入内存再逐条删（十万级库会直接把面板拖死）
@@ -2406,18 +2415,9 @@ def delete_library(lib_id: int, staff: models.WebUser = Depends(require_staff), 
             ]
             if not chunk:
                 break
-            db.query(em.MediaStream).filter(
-                em.MediaStream.item_id.in_(chunk)
-            ).delete(synchronize_session=False)
-            db.query(em.UserMediaData).filter(
-                em.UserMediaData.item_id.in_(chunk)
-            ).delete(synchronize_session=False)
-            db.query(em.ItemFacet).filter(
-                em.ItemFacet.item_id.in_(chunk)
-            ).delete(synchronize_session=False)
-            db.query(em.PlaybackSession).filter(
-                em.PlaybackSession.item_id.in_(chunk)
-            ).delete(synchronize_session=False)
+            # 子表清单共用 soft_delete.delete_item_child_rows（A-048），
+            # 此处再漏一张都会在 PG 上让下面的条目 DELETE 撞外键 500。
+            soft_delete.delete_item_child_rows(db, chunk)
             db.query(em.MediaItem).filter(
                 em.MediaItem.id.in_(chunk)
             ).delete(synchronize_session=False)
@@ -2808,9 +2808,55 @@ def admin_delete_item(item_id: str, staff: models.WebUser = Depends(require_staf
         invalidate_resolve_cache_for_path(getattr(item, "file_path", ""))
     except Exception:  # noqa: BLE001
         logger.debug("删除条目时失效解析缓存失败", exc_info=True)
-    db.query(em.MediaStream).filter(em.MediaStream.item_id == item.id).delete()
-    db.query(em.UserMediaData).filter(em.UserMediaData.item_id == item.id).delete()
-    db.delete(item)
+    # A-048：删条目必须先清全部 FK 子表（共用 soft_delete.delete_item_child_rows），
+    # 再处理自引用与合并副本，否则 PG 上直接撞外键 500。facets after_flush 钩子
+    # 在强制外键下救不了单条删除（条目 DELETE 先于钩子清理执行即撞键），
+    # 所以 ItemFacet 也必须在这里显式先删。
+    # 子树：series/season 的子集行（parent_id / series_id 指向本行）随父行同删，
+    # 不许只删父行；已下架的子集行也要算进来（include_deleted），否则同样撞键。
+    with soft_delete.include_deleted():
+        subtree = [item.id]
+        seen = {item.id}
+        frontier = [item.id]
+        while frontier:
+            rows = db.query(em.MediaItem.id).filter(
+                or_(em.MediaItem.parent_id.in_(frontier),
+                    em.MediaItem.series_id.in_(frontier))).all()
+            frontier = [r[0] for r in rows if r[0] not in seen]
+            seen.update(frontier)
+            subtree.extend(frontier)
+    with soft_delete.include_deleted():
+        rows = db.query(em.MediaItem).filter(
+            em.MediaItem.id.in_(subtree)).all()
+    # 合并副本先改指：指向子树行的库外分身改指到其它可见 root 或被提升为 root；
+    # 改不动则 fail-closed，整单不删（不许留悬空 merged_into_id）。
+    try:
+        for row in rows:
+            soft_delete.rehome_merged_children(db, row, skip_ids=set(subtree))
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="该条目有合并副本无法安全改指，暂不删除") from exc
+    with soft_delete.include_deleted():
+        leftover = db.query(em.MediaItem.id).filter(
+            em.MediaItem.merged_into_id.in_(subtree),
+            ~em.MediaItem.id.in_(subtree)).first()
+    if leftover is not None:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="该条目仍有合并副本指向，暂不删除")
+    # 子树行都要删，自引用全部置空无副作用；再清子表、删行。
+    db.query(em.MediaItem).filter(
+        em.MediaItem.id.in_(subtree)
+    ).update(
+        {em.MediaItem.parent_id: None, em.MediaItem.series_id: None,
+         em.MediaItem.merged_into_id: None},
+        synchronize_session=False,
+    )
+    soft_delete.delete_item_child_rows(db, subtree)
+    db.query(em.MediaItem).filter(
+        em.MediaItem.id.in_(subtree)
+    ).delete(synchronize_session=False)
     db.commit()
     return {"success": True}
 
