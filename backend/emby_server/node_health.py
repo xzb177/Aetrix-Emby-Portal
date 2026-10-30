@@ -28,6 +28,12 @@ _node_health: dict = {}
 _lock = threading.Lock()
 _daemon_started = False
 _daemon_lock = threading.Lock()
+# 循环线程入口置位；start_health_daemon 等到它才返回，保证“已启动”
+# 在 threading.enumerate() 中立即可见（新线程向 _active 的注册发生在
+# target 运行之前，start() 返回时未必已完成——直接数线程是观测竞态，
+# 曾致并发幂等测试在 CI 全量负载下抖动）。
+_daemon_ready = threading.Event()
+_DAEMON_START_TIMEOUT = 10
 
 
 def get_nodes(db: Session) -> list:
@@ -66,6 +72,7 @@ def _check_one(url: str) -> bool:
 
 
 def _health_loop(get_db):
+    _daemon_ready.set()
     while True:
         try:
             db = get_db()
@@ -110,6 +117,9 @@ def start_health_daemon(get_db) -> None:
             return
         _daemon_started = True
     threading.Thread(target=_health_loop, args=(get_db,), daemon=True, name="node-health").start()
+    if not _daemon_ready.wait(timeout=_DAEMON_START_TIMEOUT):
+        # 只告警不抛错：守护线程缺席不得拖垮服务启动
+        logger.warning("节点健康检查线程未在 %ss 内就绪", _DAEMON_START_TIMEOUT)
     logger.info("节点健康检查已启动")
 
 
