@@ -424,6 +424,8 @@ export interface TransferConfig {
   transfer_fast_lane_concurrency: number
   /** 单用户道内在飞上限（默认 2，范围 1~16） */
   transfer_per_owner_inflight: number
+  /** 115 秒传开关（默认开；关 = 转存到 115 不试秒传、只走全量上传） */
+  pan115_rapid_upload_enabled: boolean
   /** 115 分片上传开关（默认开；关 = >5 GiB 且秒传未命中判 unsupported） */
   pan115_multipart_upload_enabled: boolean
   /** 换绑节流豁免计数窗口天数（默认 7，范围 1~365） */
