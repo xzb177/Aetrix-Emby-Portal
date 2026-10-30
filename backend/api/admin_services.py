@@ -5,10 +5,11 @@ import os
 import time
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.api.admin_core import get_current_admin
+from backend.api.admin_core import _audit, get_current_admin
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,34 @@ def run_backup_now(admin=Depends(get_current_admin), db: Session = Depends(get_d
     return {"success": True, "backup": {"name": result["name"], "size": result["size"]},
             **{k: v for k, v in cfg.items() if k != "backups"},
             "backups": db_backup.list_backups()}
+
+
+@services_router.get("/system/backup/files/{name}/info")
+def get_backup_file_info(name: str, admin=Depends(get_current_admin),
+                         db: Session = Depends(get_db)):
+    """备份校验信息（只读）：sha256 / gzip 完整性 / 格式判定 / 人工恢复说明。
+
+    只展示校验信息，**不提供一键覆盖恢复**——覆盖恢复是停服人工操作。
+    """
+    from backend.emby_server import db_backup
+    info = db_backup.backup_info(name)
+    if info is None:
+        raise HTTPException(status_code=404, detail="备份文件不存在")
+    return {"success": True, **info}
+
+
+@services_router.get("/system/backup/files/{name}/download")
+def download_backup_file(name: str, admin=Depends(get_current_admin),
+                         db: Session = Depends(get_db)):
+    """下载一份备份文件（带审计）。只提供下载 + 校验，不做一键覆盖恢复。"""
+    from backend.emby_server import db_backup
+    path = db_backup.find_backup(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="备份文件不存在")
+    _audit(db, admin, "backup.download",
+           target_type="backup_file", details={"name": name})
+    db.commit()
+    return FileResponse(path, filename=name, media_type="application/gzip")
 
 
 __all__ = ["services_router"]

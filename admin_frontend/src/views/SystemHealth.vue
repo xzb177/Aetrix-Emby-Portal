@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Activity, AlertTriangle, Bell, Cpu, Database, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, Sparkles, Users, Zap } from 'lucide-vue-next'
+import { Activity, AlertTriangle, Bell, Cpu, Database, Download, Film, HardDrive, KeyRound, Radar, RefreshCw, Radio, ScanLine, ShieldCheck, Sparkles, Users, Zap } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 /** 重新布局批 3：播放总线降为本页「总线」区（旧 /playback-bus 跳到本页） */
 import PlaybackBus from './PlaybackBus.vue'
 import { fetchEmbyOverview, fetchMounts, fetchPanelHealth, fetchSessions } from '@/api/admin'
-import { fetchBackupConfig, saveBackupConfig, runBackupNow } from '@/api/admin'
+import { fetchBackupConfig, saveBackupConfig, runBackupNow, fetchBackupFileInfo, downloadBackupFile } from '@/api/admin'
 import {
   fetchAlertRules,
   updateAlertRule,
@@ -18,7 +18,7 @@ import {
 } from '@/api/admin'
 import type { EmbySessionRow, StorageMount } from '@/types'
 import type { PanelHealth } from '@/api/admin'
-import type { BackupConfig } from '@/api/admin'
+import type { BackupConfig, BackupFileInfo } from '@/api/admin'
 import type {
   AlertChannel,
   AlertRecord,
@@ -40,6 +40,42 @@ const loadError = ref('')
 const backup = ref<BackupConfig | null>(null)
 const backupSaving = ref(false)
 const backupRunning = ref(false)
+
+// ---------- 备份下载 / 校验（只做下载 + 校验展示，不做一键覆盖恢复） ----------
+const backupInfo = ref<BackupFileInfo | null>(null)
+const backupInfoVisible = ref(false)
+const backupInfoLoading = ref('')
+const downloadingBackup = ref('')
+
+async function onDownloadBackup(name: string) {
+  downloadingBackup.value = name
+  try {
+    const blob = await downloadBackupFile(name)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success(`开始下载 ${name}`)
+  } catch {
+    ElMessage.error('下载失败，备份可能已被轮转删除，刷新列表再试')
+  } finally {
+    downloadingBackup.value = ''
+  }
+}
+
+async function onCheckBackup(name: string) {
+  backupInfoLoading.value = name
+  try {
+    backupInfo.value = await fetchBackupFileInfo(name)
+    backupInfoVisible.value = true
+  } catch {
+    ElMessage.error('校验信息读取失败')
+  } finally {
+    backupInfoLoading.value = ''
+  }
+}
 
 // ---------- 健康灯（原「健康总览」页并入，Batch E：健康体系合并） ----------
 // 数据源与本页共用一次 GET /api/health：observability 字段由后端开关 OBSERVABILITY_ENABLED 控制。
@@ -622,8 +658,13 @@ onMounted(() => {
             <li v-for="f in backup.backups.slice(0, 7)" :key="f.name" class="status-row">
               <span class="status-main mono">{{ f.name }}</span>
               <span class="muted">{{ fmtSize(f.size) }} · {{ f.created_at }}</span>
+              <span class="backup-file-actions">
+                <el-button size="small" text :icon="Download" :loading="downloadingBackup === f.name" @click="onDownloadBackup(f.name)">下载</el-button>
+                <el-button size="small" text :icon="ShieldCheck" :loading="backupInfoLoading === f.name" @click="onCheckBackup(f.name)">校验</el-button>
+              </span>
             </li>
           </ul>
+          <p v-if="backup.backups.length" class="muted">下载拿走异地保存；「校验」看完整性、哈希与恢复说明。本页只做下载与校验，不做一键恢复。</p>
           <EmptyState v-else compact title="暂无备份文件" description="开启定时备份，或点「立即备份」生成第一份。" />
         </div>
         <div v-else-if="loading" class="backup-skeleton">
@@ -632,6 +673,44 @@ onMounted(() => {
         <EmptyState v-else compact :icon="AlertTriangle" title="备份信息加载失败" description="不影响页面其他内容，可点「重新检查」再试。" />
       </SectionCard>
     </div>
+
+    <!-- 备份校验信息弹窗（只读展示） -->
+    <el-dialog v-model="backupInfoVisible" title="备份校验信息" width="min(560px, 92vw)">
+      <div v-if="backupInfo">
+        <ul class="status-list">
+          <li class="status-row">
+            <span class="status-main">文件名</span>
+            <span class="mono">{{ backupInfo.name }}</span>
+          </li>
+          <li class="status-row">
+            <span class="status-main">格式</span>
+            <span>{{ backupInfo.format_text }}</span>
+          </li>
+          <li class="status-row">
+            <span class="status-main">文件头</span>
+            <span>{{ backupInfo.header_ok ? '对得上' : '对不上 / 无法判定' }}</span>
+          </li>
+          <li class="status-row">
+            <span class="status-main">gzip 完整性</span>
+            <span>{{ backupInfo.gzip_ok ? '完整（可全量解压）' : `损坏：${backupInfo.gzip_error}` }}</span>
+          </li>
+          <li class="status-row">
+            <span class="status-main">压缩大小</span>
+            <span>{{ fmtSize(backupInfo.size) }}</span>
+          </li>
+          <li class="status-row">
+            <span class="status-main">解压后大小</span>
+            <span>{{ backupInfo.uncompressed_size !== null ? fmtSize(backupInfo.uncompressed_size) : '—' }}</span>
+          </li>
+          <li class="status-row">
+            <span class="status-main">SHA-256</span>
+            <span class="mono sha-text">{{ backupInfo.sha256 }}</span>
+          </li>
+        </ul>
+        <p class="muted">{{ backupInfo.restore_hint }}</p>
+        <p class="muted">本页只提供下载与校验，不提供一键恢复：覆盖恢复是停服人工操作，照上面的说明来。</p>
+      </div>
+    </el-dialog>
 
     <!-- 告警通知 -->
     <SectionCard id="alerts" title="告警通知" :icon="Bell" :meta="alertEnabled ? '已启用' : '已关闭'" class="alert-card">
@@ -843,6 +922,8 @@ onMounted(() => {
 .w-time { width: 130px; }
 .w-days { width: 70px; }
 .backup-list { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--au-border); }
+.backup-file-actions { display: inline-flex; gap: 2px; flex-shrink: 0; }
+.sha-text { word-break: break-all; font-size: 11px; max-width: 320px; text-align: right; }
 .backup-skeleton { display: flex; flex-direction: column; gap: 10px; }
 .backup-skeleton .au-skeleton { display: block; height: 14px; border-radius: var(--au-r-sm); }
 .backup-skeleton .is-short { width: 60%; }

@@ -392,6 +392,96 @@ def list_backups() -> list[dict]:
     return rows
 
 
+def find_backup(name: str) -> Path | None:
+    """按文件名找备份文件：只认 list_backups() 会列出的名字。
+
+    防路径穿越：name 必须是纯文件名（不带任何目录分隔符），且必须与
+    备份目录里实际存在的文件逐字对上——绝不拿请求参数拼文件系统路径。
+    """
+    if not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    if not (name.endswith(".db.gz") or name.endswith(".dump.gz")):
+        return None
+    for backup_dir in _backup_dirs():
+        f = backup_dir / name
+        if f.is_file():
+            return f
+    return None
+
+
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+_PG_DUMP_MAGIC = b"PGDMP"
+
+_RESTORE_HINTS = {
+    "sqlite": (
+        "人工恢复（停服操作）：先停 api/worker/ea 三个容器，把当前主库文件"
+        "改名留底，再 gunzip 解开本备份、改名为主库文件名放回原位，删掉同名"
+        " -wal/-shm 后再启服务。切勿在服务运行时直接覆盖主库——WAL 模式下"
+        "会读到旧数据甚至损坏。"
+    ),
+    "pg_dump": (
+        "人工恢复（停服操作）：先停 api/worker/ea 三个容器，gunzip 解开本"
+        "备份得到 custom 格式 dump，用 pg_restore 恢复到一个新库，核对"
+        "无误后再切换连接。切勿直接覆盖正在服务的库。"
+    ),
+    "unknown": (
+        "无法判定备份格式（文件头对不上或 gzip 已损坏），不要拿它做覆盖"
+        "恢复；先人工核对文件来源与完整性。"
+    ),
+}
+
+
+def backup_info(name: str) -> dict | None:
+    """备份校验信息：sha256 / gzip 完整性 / 格式判定 / 人工恢复说明。
+
+    只读校验，不做任何恢复动作。gzip 校验会整文件解压读一遍（本地磁盘
+    文件、管理端低频调用，可接受）；读失败即 gzip_ok=False 并带原因。
+    文件不存在（或名字非法）返回 None。
+    """
+    import hashlib
+
+    path = find_backup(name)
+    if path is None:
+        return None
+    st = path.stat()
+    sha = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1024 * 1024):
+            sha.update(chunk)
+    raw_size = 0
+    head = b""
+    gzip_ok = True
+    gzip_error = ""
+    try:
+        with gzip.open(path, "rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                if not head:
+                    head = chunk[:16]
+                raw_size += len(chunk)
+    except (OSError, EOFError) as exc:  # gzip 损坏/截断
+        gzip_ok = False
+        gzip_error = str(exc)[:200]
+    if gzip_ok and head.startswith(_SQLITE_MAGIC):
+        fmt, format_text = "sqlite", "SQLite 数据库（gzip）"
+    elif gzip_ok and head.startswith(_PG_DUMP_MAGIC):
+        fmt, format_text = "pg_dump", "PostgreSQL custom dump（gzip）"
+    else:
+        fmt, format_text = "unknown", "未知格式"
+    return {
+        "name": path.name,
+        "size": st.st_size,
+        "created_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+        "format": fmt,
+        "format_text": format_text,
+        "header_ok": fmt != "unknown",
+        "gzip_ok": gzip_ok,
+        "gzip_error": gzip_error,
+        "uncompressed_size": raw_size if gzip_ok else None,
+        "sha256": sha.hexdigest(),
+        "restore_hint": _RESTORE_HINTS[fmt],
+    }
+
+
 def get_config(db: Session) -> dict:
     """读备份配置（管理后台展示用）。"""
     vals = store.read_values(
