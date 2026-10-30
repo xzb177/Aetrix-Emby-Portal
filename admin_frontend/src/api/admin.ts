@@ -2057,6 +2057,29 @@ export const saveBackupConfig = (time: string, keep_days: number) =>
 export const runBackupNow = () =>
   post<{ success: boolean; backup: { name: string; size: number } } & BackupConfig>(`/system/backup/run`, {})
 
+/** 备份校验信息（只读展示）：完整性/格式/SHA-256/人工恢复说明，不做一键恢复 */
+export interface BackupFileInfo {
+  name: string
+  size: number
+  created_at: string
+  /** sqlite / pg_dump / unknown */
+  format: string
+  format_text: string
+  header_ok: boolean
+  gzip_ok: boolean
+  gzip_error: string
+  uncompressed_size: number | null
+  sha256: string
+  restore_hint: string
+}
+
+export const fetchBackupFileInfo = (name: string) =>
+  get<{ success: boolean } & BackupFileInfo>(`/system/backup/files/${encodeURIComponent(name)}/info`)
+
+/** 下载一份备份文件（后端带审计） */
+export const downloadBackupFile = (name: string) =>
+  getBlob(`/system/backup/files/${encodeURIComponent(name)}/download`)
+
 /**
  * 播放可达性报告（v2.28.0）：出流方式 + 逐库判定 + 用户端地址一致性
  *
