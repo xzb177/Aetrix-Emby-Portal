@@ -514,6 +514,7 @@ def items_dedup_cache_update_config(
 class TransferConfigRequest(BaseModel):
     cross_provider_transfer_enabled: bool = True
     transfer_cross_lane_concurrency: int = 2
+    transfer_cross_aging_sec: int = 1800
     transfer_fast_lane_concurrency: int = 8
     transfer_per_owner_inflight: int = 2
     pan115_rapid_upload_enabled: bool = True
@@ -549,6 +550,8 @@ def transfer_update_config(
                 request.cross_provider_transfer_enabled),
             transfer_cross_lane_concurrency=(
                 request.transfer_cross_lane_concurrency),
+            transfer_cross_aging_sec=(
+                request.transfer_cross_aging_sec),
             transfer_fast_lane_concurrency=(
                 request.transfer_fast_lane_concurrency),
             transfer_per_owner_inflight=request.transfer_per_owner_inflight,
@@ -568,6 +571,8 @@ def transfer_update_config(
             request.cross_provider_transfer_enabled,
             "transfer_cross_lane_concurrency":
             request.transfer_cross_lane_concurrency,
+            "transfer_cross_aging_sec":
+            request.transfer_cross_aging_sec,
             "transfer_fast_lane_concurrency":
             request.transfer_fast_lane_concurrency,
             "transfer_per_owner_inflight":
