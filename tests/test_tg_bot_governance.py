@@ -125,6 +125,14 @@ def _dispatch(db, monkeypatch, text, chat_id=TG, chat_type="private"):
         return (True, None)
 
     monkeypatch.setattr(sender, "send_message", fake_send)
+
+    def fake_send_ex(db_, chat_id_, text_, reply_markup=None, parse_mode="HTML"):
+        sent.append(text_)
+        return (True, None, 1)
+
+    monkeypatch.setattr(sender, "send_message_ex", fake_send_ex)
+    monkeypatch.setattr(
+        "backend.tg_bot.ephemeral.schedule_delete", lambda *a, **k: True)
     update = {
         "update_id": 1,
         "message": {"message_id": 1, "from": _tg(), "chat": {"id": chat_id, "type": chat_type},

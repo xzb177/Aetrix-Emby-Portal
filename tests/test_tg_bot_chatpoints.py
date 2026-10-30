@@ -50,6 +50,14 @@ def sent(monkeypatch):
         return (True, None)
 
     monkeypatch.setattr(sender, "send_message", fake_send)
+
+    def fake_send_ex(db_, chat_id, text, reply_markup=None, **k):
+        messages.append((chat_id, text))
+        return (True, None, 1)
+
+    monkeypatch.setattr(sender, "send_message_ex", fake_send_ex)
+    monkeypatch.setattr(
+        "backend.tg_bot.ephemeral.schedule_delete", lambda *a, **k: True)
     return messages
 
 

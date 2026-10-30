@@ -68,6 +68,15 @@ def sent(monkeypatch):
         "send_message",
         lambda db_, chat_id, text, reply_markup=None, **kw: out.append(text) or (True, None),
     )
+    # 二期自毁接线：群回复改走 send_message_ex 拿 message_id，同样记录；
+    # schedule_delete 打桩成空操作，避免测试里起真定时器
+    monkeypatch.setattr(
+        sender,
+        "send_message_ex",
+        lambda db_, chat_id, text, reply_markup=None, **kw: out.append(text) or (True, None, 1),
+    )
+    monkeypatch.setattr(
+        "backend.tg_bot.ephemeral.schedule_delete", lambda *a, **k: True)
     return out
 
 
