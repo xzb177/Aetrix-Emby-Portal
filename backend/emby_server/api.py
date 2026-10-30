@@ -6601,6 +6601,33 @@ async def video_stream(
                             status_code=503,
                             detail="Drive 副本已失效且暂时无法重建，请稍后重试或重新绑定网盘后重试")
                     return _observe_traffic(_relay_resp)
+    # 挂载直读判定（2026-10-30 顺序修复）：原判定在 _play_target
+    # 之后的尾部分支，生产 drive_direct_play_enabled=true 时
+    # fast302 对带 drive_file_id 的 Drive 条目先存在性校验并 302
+    # 返回，mount:// 的 Drive 条目永远到不了尾部（取证实测四次
+    # 请求全 302、mount_serving 打点零出现）。判定前移到 fast302
+    # 之前：位置在鉴权 / play_sign 消费 / 绑定门禁 / 转存门禁 /
+    # BYOS 各分支 / 共享中继块之后，中继块与 fast302 的既有相对
+    # 顺序一字不动。只接主线、且未解析到任何转存变体
+    # （_play_variant is None ＝ 播共享原件本身）时判定——用户
+    # 副本已由前面分支与 _play_fid 选路接管，不许在这里截走。
+    # resolve 返回 None（非 mount 路径 / 不在白名单 / 无根映射）
+    # → 原流程逐字继续；engages 后文件缺失在 mount_serving 里
+    # 响亮失败，这里转 503、不回落（与原尾部分支同口径）。
+    if _requested_variant is None and _play_variant is None:
+        from backend.emby_server import mount_serving
+
+        try:
+            _ms_path = await run_db(
+                mount_serving.resolve_local_file, db, item)
+        except mount_serving.MountServingUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if _ms_path is not None:
+            _pt.mark("mount_serving")
+            _pt.done()
+            return serve_file(
+                _ms_path, request, media_type,
+                cache_control=cdn.cache_control_for(str(request.url.path)))
     _fast302 = False
     _evt_t0 = time.perf_counter()
     if _drive_switch_on:
@@ -6752,24 +6779,9 @@ async def video_stream(
     if _requested_variant == play_variants.LOCAL_FILE and target.kind == "url":
         raise HTTPException(
             status_code=409, detail="播放变体当前不可用：local_file")
-    # 挂载直读出流（2026-10-30 立项，设计见 mount_serving.py）：主线
-    # 原件命中白名单 mount 时以本地挂载文件出流（绕公开链 Quota 与
-    # 中继交付不稳定）。判定与路径解析在 mount_serving；engages 后
-    # 文件缺失在那里响亮失败，这里不做任何静默回落。显式变体请求
-    # 不走本分支（变体不变量在上，这里只接 variant=None 的主线）。
-    if _requested_variant is None and target.kind == "url":
-        from backend.emby_server import mount_serving
-
-        try:
-            _ms_path = await run_db(mount_serving.resolve_local_file, db, item)
-        except mount_serving.MountServingUnavailable as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        if _ms_path is not None:
-            _pt.mark("mount_serving")
-            _pt.done()
-            return serve_file(
-                _ms_path, request, media_type,
-                cache_control=cdn.cache_control_for(str(request.url.path)))
+    # 挂载直读判定已前移到 fast302 之前（见上方「挂载直读判定」
+    # 块，2026-10-30 顺序修复）：此处不再重复判定，全站只许
+    # 一个判定点；走到这里的 url 目标按下面现行回落逐字处理。
     if target.kind == "url":
         # 播放策略能力：对象存储直链名单命中时 302 到对象存储；Drive 条目
         # 直接 302 到谷歌 usercontent 直链。判定逻辑见 playback_strategy。
