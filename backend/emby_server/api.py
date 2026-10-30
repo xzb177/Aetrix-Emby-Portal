@@ -1333,7 +1333,8 @@ def _effective_bitrate(item) -> int | None:
 
 
 def _signed_local_stream_url(item, base: str, user_id, db,
-                             api_key: str = "", with_sign: bool = True):
+                             api_key: str = "", with_sign: bool = True,
+                             ttl_seconds=None):
     """本站 Videos/stream 播放地址的唯一构造点（横切只许一套）。
 
     PlaybackInfo 与详情 MediaSource 共用，形态逐字一致：
@@ -1350,14 +1351,23 @@ def _signed_local_stream_url(item, base: str, user_id, db,
     绑定），详情面没有过门禁，未绑定用户绝不能在这里拿到签名——他们拿
     无签地址打流端点，由流端点现场过门禁回 403 并给出绑定引导。
 
+    ttl_seconds 非 None 时签名有效期用它替代播放按时长口径：仅供
+    转存形态 B 云下载现铸（transfer_variant 的 cloudpull lane，
+    TTL 走 transfer_cross_cloudpull_ttl_sec 配置）——115 排队＋
+    GB 级抓取的时长与播放时长无关，绝不改播放侧的发放口径；
+    播放调用方一律不传此参数。
+
     返回 (url, play_exp, play_sig)；with_sign=False 时后两项为 None。
     PlaybackInfo 还需要 exp/sig 拼字幕授权串，故一并返回。
     """
     play_exp = play_sig = None
     signed_qs = ""
     if with_sign:
-        play_ttl = play_sign.play_sign_ttl_for_runtime(
-            db, _run_time_ticks(item) // TICKS)
+        if ttl_seconds is not None:
+            play_ttl = int(ttl_seconds)
+        else:
+            play_ttl = play_sign.play_sign_ttl_for_runtime(
+                db, _run_time_ticks(item) // TICKS)
         play_exp, play_sig = play_sign.issue_play_sign(
             user_id, item.guid, play_ttl)
         signed_qs = f"&uid={user_id}&exp={play_exp}&sign={play_sig}"

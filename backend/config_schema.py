@@ -289,6 +289,14 @@ TRANSFER_CONFIG_SCHEMA: dict[str, tuple] = {
     "pan115_multipart_upload_enabled": ("bool",),
     "transfer_rebind_waiver_window_days": ("int", 1, 365),
     "transfer_rebind_waiver_max_uses": ("int", 1, 20),
+    # 形态 B 云下载（2026-10-30 立项，用户亲批默认关）：开关默认
+    # 关由 transfer_variant.cross_cloudpull_enabled 的读取默认
+    # 兜底（无行=False）；TTL 默认 43200 覆盖 115 排队调度＋
+    # GB 级慢拉＋其内置重试，钳 [1800, 86400]；轮询超时默认
+    # 3600，钳 [60, 21600]。纯 SystemConfig 键，不进 env.example。
+    "transfer_cross_cloudpull_enabled": ("bool",),
+    "transfer_cross_cloudpull_ttl_sec": ("int", 1800, 86400),
+    "transfer_cross_cloudpull_timeout_sec": ("int", 60, 21600),
 }
 
 # Drive API 全局限速（2026-10-30）：扫描列举与 Changes 增量共用的

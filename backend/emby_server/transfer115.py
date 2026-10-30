@@ -752,6 +752,121 @@ class Pan115Client:
         )
         return _raise_for_state(body)
 
+    def rename_file(self, fid: str, new_name: str) -> dict:
+        """改名（云下载落盘名是 URL 尾段，认领后改回副本名用）。
+
+        请求形态：POST /files/edit，fid + file_name（p115client
+        fs_edit 口径）。返回原始 body 经 state 校验。
+        """
+        body = self._call(
+            "POST", f"{PAN115_WEBAPI_BASE}/files/edit",
+            data={"fid": fid, "file_name": new_name},
+        )
+        return _raise_for_state(body)
+
+    # ---- 云下载（形态 B：让 115 自己拉，2026-10-30 立项） ----
+    # 协议形态以 2026-10-30 生产探针实证为准（报告
+    # pan115-cloudpull-feasibility-20261030.md 第六节）：web 形态
+    # lixian 接口，签名先行；抓取器是单次普通 GET、无 HEAD/Range。
+    # 任务记录里存有提交的 URL（我方场景下是带签名的取流地址），
+    # 调用方用完必须 cloudpull_del_task 删掉，不许留痕。
+
+    def cloudpull_uid(self) -> str:
+        """云下载接口要的 uid：Cookie 里 UID 段下划线前段。"""
+        for part in (self.cookie or "").split(";"):
+            part = part.strip()
+            if part.startswith("UID="):
+                return part[4:].split("_", 1)[0].strip()
+        return ""
+
+    def cloudpull_sign(self) -> tuple:
+        """取云下载签名 (sign, time)：GET 115.com/ ct=clouddownload
+        &ac=space。签名与时间戳成对使用，建单时现取现用。"""
+        body = self._call(
+            "GET", "https://115.com/",
+            params={"ct": "clouddownload", "ac": "space"},
+        )
+        _raise_for_state(body)
+        sign = str(body.get("sign") or "")
+        ts = str(body.get("time") or "")
+        if not sign or not ts:
+            raise Pan115Error("115 云下载签名响应缺 sign/time")
+        return sign, ts
+
+    def cloudpull_add_task(self, url: str, wp_path_id: str) -> dict:
+        """建云下载任务：POST 115.com/web/lixian/ ac=add_task_url。
+
+        url 原样提交（调用方传我方现铸签名取流地址）；wp_path_id
+        是落点目录 cid。返回原始 body 经 state 校验。
+        """
+        uid = self.cloudpull_uid()
+        if not uid:
+            raise Pan115Error("115 Cookie 里取不到 UID，无法建云下载单")
+        sign, ts = self.cloudpull_sign()
+        body = self._call(
+            "POST", "https://115.com/web/lixian/",
+            params={"ct": "lixian", "ac": "add_task_url"},
+            data={"url": url, "uid": uid, "sign": sign, "time": ts,
+                  "wp_path_id": str(wp_path_id)},
+        )
+        return _raise_for_state(body)
+
+    def cloudpull_tasks(self) -> list:
+        """云下载任务列表（归一化）：info_hash/url/name/status/
+        percentDone/file_id/size。status<0 为终态失败，percentDone
+        >=100 或 status==2 为完成（实测口径）。"""
+        uid = self.cloudpull_uid()
+        body = self._call(
+            "POST", "https://115.com/web/lixian/",
+            params={"ct": "lixian", "ac": "task_lists"},
+            data={"uid": uid, "page": 1, "time": int(time.time())},
+        )
+        _raise_for_state(body)
+        raw = body.get("tasks")
+        if not isinstance(raw, list):
+            raw = []
+            data = body.get("data")
+            if isinstance(data, dict) and isinstance(data.get("tasks"), list):
+                raw = data["tasks"]
+        out = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                status = int(entry.get("status"))
+            except (TypeError, ValueError):
+                status = 0
+            try:
+                percent = float(entry.get("percentDone"))
+            except (TypeError, ValueError):
+                percent = 0.0
+            try:
+                size = int(entry.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            out.append({
+                "info_hash": str(entry.get("info_hash") or ""),
+                "url": str(entry.get("url") or ""),
+                "name": str(entry.get("name") or ""),
+                "status": status,
+                "percentDone": percent,
+                "file_id": str(entry.get("file_id") or ""),
+                "size": size,
+            })
+        return out
+
+    def cloudpull_del_task(self, info_hash: str) -> dict:
+        """删云下载任务记录：POST ac=task_del，hash[0]=info_hash。
+
+        任务记录里存着提交的 URL（带签名地址），转存收尾必须删。
+        """
+        body = self._call(
+            "POST", "https://115.com/web/lixian/",
+            params={"ct": "lixian", "ac": "task_del"},
+            data={"hash[0]": info_hash},
+        )
+        return _raise_for_state(body)
+
     # ---- 上传（跨 provider 转存 Drive→115 用） ----
 
     def simple_upload(self, fileobj, filename: str, pid: str) -> dict:

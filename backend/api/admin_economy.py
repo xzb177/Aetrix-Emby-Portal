@@ -523,6 +523,12 @@ class TransferConfigRequest(BaseModel):
     pan115_multipart_upload_enabled: bool = True
     transfer_rebind_waiver_window_days: int = 7
     transfer_rebind_waiver_max_uses: int = 1
+    # 形态 B 云下载（2026-10-30 立项）：开关默认关（用户亲批），
+    # TTL 默认 43200（12 小时，转存专用签名口径），轮询超时默认
+    # 3600；范围钳在 config_schema 的 transfer 家族里校验。
+    transfer_cross_cloudpull_enabled: bool = False
+    transfer_cross_cloudpull_ttl_sec: int = 43200
+    transfer_cross_cloudpull_timeout_sec: int = 3600
 
 
 @admin_router.get("/transfer-config")
@@ -565,6 +571,12 @@ def transfer_update_config(
                 request.transfer_rebind_waiver_window_days),
             transfer_rebind_waiver_max_uses=(
                 request.transfer_rebind_waiver_max_uses),
+            transfer_cross_cloudpull_enabled=(
+                request.transfer_cross_cloudpull_enabled),
+            transfer_cross_cloudpull_ttl_sec=(
+                request.transfer_cross_cloudpull_ttl_sec),
+            transfer_cross_cloudpull_timeout_sec=(
+                request.transfer_cross_cloudpull_timeout_sec),
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -586,7 +598,13 @@ def transfer_update_config(
             "transfer_rebind_waiver_window_days":
             request.transfer_rebind_waiver_window_days,
             "transfer_rebind_waiver_max_uses":
-            request.transfer_rebind_waiver_max_uses})
+            request.transfer_rebind_waiver_max_uses,
+            "transfer_cross_cloudpull_enabled":
+            request.transfer_cross_cloudpull_enabled,
+            "transfer_cross_cloudpull_ttl_sec":
+            request.transfer_cross_cloudpull_ttl_sec,
+            "transfer_cross_cloudpull_timeout_sec":
+            request.transfer_cross_cloudpull_timeout_sec})
     db.commit()
     return result
 
