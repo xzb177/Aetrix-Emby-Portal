@@ -51,30 +51,30 @@ def test_locks_initialized_at_import():
 
 def test_115_url_cache_roundtrip():
     _reset_cache()
-    assert m._get_cached_115_url("pc1") is None
-    m._set_cached_115_url("pc1", "https://example.com/a", ttl=60)
-    assert m._get_cached_115_url("pc1") == "https://example.com/a"
-    m._invalidate_115_url("pc1")
-    assert m._get_cached_115_url("pc1") is None
+    assert m._get_cached_115_url("pc1", "r53-scope") is None
+    m._set_cached_115_url("pc1", "https://example.com/a", "r53-scope", ttl=60)
+    assert m._get_cached_115_url("pc1", "r53-scope") == "https://example.com/a"
+    m._invalidate_115_url("pc1", "r53-scope")
+    assert m._get_cached_115_url("pc1", "r53-scope") is None
     # 删不存在的 key 不抛
-    m._invalidate_115_url("pc-missing")
+    m._invalidate_115_url("pc-missing", "r53-scope")
 
 
 def test_115_url_cache_expiry():
     _reset_cache()
-    m._set_cached_115_url("pc-exp", "https://example.com/e", ttl=0.05)
-    assert m._get_cached_115_url("pc-exp") == "https://example.com/e"
+    m._set_cached_115_url("pc-exp", "https://example.com/e", "r53-scope", ttl=0.05)
+    assert m._get_cached_115_url("pc-exp", "r53-scope") == "https://example.com/e"
     time.sleep(0.1)
     # 过期后读不到，且过期条目被顺手清掉
-    assert m._get_cached_115_url("pc-exp") is None
+    assert m._get_cached_115_url("pc-exp", "r53-scope") is None
     with m._pan115_url_cache_lock:
-        assert "pc-exp" not in m._pan115_url_cache
+        assert ("r53-scope", "pc-exp") not in m._pan115_url_cache
 
 
 def test_115_url_cache_eviction_bounded():
     _reset_cache()
     for i in range(1050):
-        m._set_cached_115_url(f"pc-{i}", f"https://example.com/{i}", ttl=3600)
+        m._set_cached_115_url(f"pc-{i}", f"https://example.com/{i}", "r53-scope", ttl=3600)
     with m._pan115_url_cache_lock:
         size = len(m._pan115_url_cache)
     # 1000 上限触发驱逐：一次清掉最早过期的 500 条，规模回到 1000 以内
@@ -89,15 +89,15 @@ def test_115_url_cache_concurrent_rw():
     def writer(n):
         try:
             for i in range(50):
-                m._set_cached_115_url(f"w{n}-{i}", f"url-{n}-{i}", ttl=60)
+                m._set_cached_115_url(f"w{n}-{i}", f"url-{n}-{i}", "r53-scope", ttl=60)
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
     def reader(n):
         try:
             for i in range(50):
-                m._get_cached_115_url(f"w{n}-{i}")
-                m._invalidate_115_url(f"nope-{n}-{i}")
+                m._get_cached_115_url(f"w{n}-{i}", "r53-scope")
+                m._invalidate_115_url(f"nope-{n}-{i}", "r53-scope")
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 

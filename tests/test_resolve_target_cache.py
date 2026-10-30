@@ -390,7 +390,7 @@ def test_relay_404_clears_resolve_and_115_url_caches(pan115, notfound_upstream):
     target = mnt.resolve_play_target("mount://7/电影/a.mkv", db)
     # 两份缓存都已喂热：解析缓存 1 条 + 115 换链缓存有值
     assert mnt.resolve_cache_stats()["entries"] == 1
-    assert mnt._get_cached_115_url(PC) is not None
+    assert mnt._get_cached_115_url(PC, mnt._pan115_cache_scope(pan115["cookie"])) is not None
 
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(streaming.serve_mount_relay_async(
@@ -398,7 +398,7 @@ def test_relay_404_clears_resolve_and_115_url_caches(pan115, notfound_upstream):
             {"User-Agent": "ua-115", "Cookie": "cookie-1", "X-Pickcode": PC},
             "video/mp4"))
     assert exc_info.value.status_code == 404
-    assert mnt._get_cached_115_url(PC) is None, "115 换链缓存必须被清"
+    assert mnt._get_cached_115_url(PC, mnt._pan115_cache_scope(pan115["cookie"])) is None, "115 换链缓存必须被清"
     assert mnt.resolve_cache_stats()["entries"] == 0, \
         "解析缓存必须连带被清——否则死链会被它续命一个 TTL"
 
