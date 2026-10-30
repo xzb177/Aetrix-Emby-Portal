@@ -104,6 +104,8 @@ from urllib.parse import urlparse
 
 from backend.emby_server.env_util import env_float, env_int
 from backend.emby_server.metasources import breaker as provider_breaker
+from backend.emby_server import upstream_http
+from backend.emby_server import upstream_sources as us
 
 logger = logging.getLogger(__name__)
 
@@ -579,6 +581,11 @@ def validate_base_url(base_url: str) -> str:
         raise ValueError("上游地址缺少 host")
     if parsed.query or parsed.fragment:
         raise ValueError("上游地址不得带 query/fragment")
+    # 公网校验委托给建源口径（normalize_base_url）：字面私网 IP 与
+    # localhost 后缀类域名在此即被拒；域名解析到内网则由请求时
+    # 的出站层复验（upstream_http.verify_outbound_url）。
+    # UpstreamSourceError 本就是 ValueError 子类，调用方契约不变。
+    us.normalize_base_url(base_url)
     return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
 
 
@@ -592,7 +599,7 @@ def _default_http_get(url: str, headers: dict, timeout: float):
     headers.setdefault("User-Agent", "Aetrix/1.0")
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with upstream_http.safe_urlopen(req, timeout=timeout) as resp:
             try:
                 body = json.loads(resp.read().decode("utf-8", "replace"))
             except (ValueError, UnicodeDecodeError):

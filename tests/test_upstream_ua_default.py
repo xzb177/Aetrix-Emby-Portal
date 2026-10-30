@@ -38,7 +38,10 @@ def test_default_http_get_sets_ua_when_missing():
         seen["ua"] = req.get_header("User-agent") or req.get_header("User-Agent")
         return _Resp()
 
-    with mock.patch("urllib.request.urlopen", fake_urlopen):
+    # 传输已收进出站公共层：缝合点随之上移，断言一字未动。
+    with mock.patch(
+        "backend.emby_server.upstream_http.safe_urlopen", fake_urlopen
+    ):
         status, _body = agg._default_http_get("http://example.invalid/Items", {"Accept": "application/json"}, 5)
     assert status == 200
     assert seen["ua"] == "Aetrix/1.0"
